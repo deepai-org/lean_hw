@@ -120,11 +120,19 @@ capability is its own parent) proved. Both of `cap_drop`'s "no cell points at th
 dropped ref" obligations are also proved — `reparent_no_ref` (reparent onto a
 distinct parent) and `orphan_no_ref` (root drop) — so with `wf_reparent` and
 `wf_clearSlot_sweep` both `cap_drop` branches are supported at the lemma level.
-**Remaining for `cap_drop`:** `wf_orphanChildren` (the orphan branch's Wf
-preservation, mechanical) and the invariant plumbing — strengthening the workhorse
-invariant to `Wf ∧ Acyclic` and re-establishing `Acyclic` across all ops (trivial
-for the non-lineage ops; a fresh-leaf/pigeonhole argument for `installDerived`).
-`cap_revoke` needs `destroyMarked`; the gate ops need `transferCap`. Infrastructure in
+**The acyclicity preservation framework is now built and all of `cap_drop`'s
+`Acyclic`-preservation is proved** (`Logic/Acyclic` + `Logic/ExecWf`):
+`acyclic_of_parentRef_eq` (links unchanged → free, all non-lineage ops),
+`acyclic_of_parentRef_le` (links only dropped → `clearSlot`, `orphanChildren`,
+sweeps), and `acyclic_contract` (links rerouted onto the parent → `reparent`), on
+top of the `climb`/`climb_add`/`climb_none_ge` well-foundedness kit. Concrete:
+`acyclic_clearSlot`, `acyclic_orphanChildren`, `acyclic_sweepRegions`,
+`acyclic_sweepMover`, and `acyclic_reparent` (via `reparent_parentRef`). **Remaining
+for `cap_drop`:** `wf_orphanChildren` (orphan-branch Wf preservation, mechanical but
+fiddly) and the invariant plumbing — strengthening the workhorse invariant to
+`Wf ∧ Acyclic` and re-establishing `Acyclic` across the remaining ops (free for the
+non-lineage ops via the framework; a fresh-leaf/pigeonhole argument, `acyclic_installDerived`,
+for `cap_dup`/`mem_grant`). `cap_revoke` needs `destroyMarked`; the gate ops need `transferCap`. Infrastructure in
 place: `capLive_ok`/`capLive_err_state` (cap-op state characterization),
 `freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`,
 and — the two hardest kernel lemmas — **`wf_installDerived`** (capability
