@@ -843,4 +843,179 @@ theorem base_dkle : ∀ instr ∈ Machines.Lnp64u.Isa.base, ∀ c : Ctx, c.d = c
 
 end Kit
 
+/-! ## System-op helpers -/
+
+section SysHelpers
+
+variable {d cd : DomainId} {R : Addr → Prop} {σ : MachineState}
+
+/-- `setReg` at any foreign domain (the errno write-back / reply write). -/
+theorem dkeep_setRegOther (hctx : DCtx d R σ) (e : DomainId) (he : e ≠ d)
+    (r : RegId) (v : Loom.Word32) :
+    DKeep d cd R σ (σ.setDom e (fun ds => ds.setReg r v)) :=
+  dkeep_setDom hctx e _ he (setReg_caps _ r v) (setReg_regions _ r v)
+
+/-- Programming the Mover with a job owned by the executing domain. -/
+theorem dkeep_setMover (hctx : DCtx d R σ) (job : MoverJob)
+    (hj : job.owner = cd) :
+    DKeep d cd R σ { σ with mover := some job } where
+  ddoms := rfl
+  mem := fun _ _ => rfl
+  gcfg := fun _ => rfl
+  acts := fun _ _ h => Or.inl h
+  mover := fun job' h => by
+    have : some job = some job' := h
+    injection this with hjj
+    exact Or.inr (hjj ▸ hj)
+  ro := hctx.ro
+  fo := hctx.fo
+  regR := fun _ _ _ _ h => Or.inl h
+
+/-- Writing one region register of the executing domain (`map`/`unmap`):
+an installed region must be own-backed and, when `cd ≠ d`, cover only
+non-`R` addresses. -/
+theorem dkeep_regionsSet (hctx : DCtx d R σ) (hne : cd ≠ d) (ri : RegionId)
+    (v : Option Region)
+    (hv : ∀ rg, v = some rg → rg.backing.dom = cd ∧
+      ∀ a : Addr, rg.base.toNat ≤ a.toNat →
+        a.toNat < rg.base.toNat + rg.len.toNat → ¬ R a) :
+    DKeep d cd R σ (σ.setDom cd
+      (fun ds => { ds with regions := Loom.Fun.update ds.regions ri v })) where
+  ddoms := setDom_doms_ne σ cd _ d (fun h => hne h.symm)
+  mem := fun _ _ => rfl
+  gcfg := fun _ => rfl
+  acts := fun _ _ h => Or.inl h
+  mover := fun _ h => Or.inl h
+  ro := fun e r rg h => by
+    by_cases hee : e = cd
+    · subst hee
+      rw [setDom_doms_same] at h
+      have h' : Loom.Fun.update (σ.doms e).regions ri v r = some rg := h
+      by_cases hr : r = ri
+      · subst hr
+        rw [Loom.Fun.update_same] at h'
+        exact (hv rg h').1
+      · rw [Loom.Fun.update_ne _ _ _ _ hr] at h'
+        exact hctx.ro e r rg h'
+    · rw [setDom_doms_ne _ _ _ _ hee] at h
+      exact hctx.ro e r rg h
+  fo := fun e he s entry b l p hc hkind => by
+    by_cases hee : e = cd
+    · subst hee
+      rw [setDom_doms_same] at hc
+      exact hctx.fo e he s entry b l p hc hkind
+    · rw [setDom_doms_ne _ _ _ _ hee] at hc
+      exact hctx.fo e he s entry b l p hc hkind
+  regR := fun e _ r rg h => by
+    by_cases hee : e = cd
+    · subst hee
+      rw [setDom_doms_same] at h
+      have h' : Loom.Fun.update (σ.doms e).regions ri v r = some rg := h
+      by_cases hr : r = ri
+      · subst hr
+        rw [Loom.Fun.update_same] at h'
+        exact Or.inr (hv rg h').2
+      · rw [Loom.Fun.update_ne _ _ _ _ hr] at h'
+        exact Or.inl h'
+    · rw [setDom_doms_ne _ _ _ _ hee] at h
+      exact Or.inl h
+
+/-- A kind narrowed from a range that avoids `R` avoids `R`. -/
+theorem narrow_off_R {base : Addr} {len : BitVec 13} {perms : Perms} {dw : Loom.Word32}
+    {kind : CapKind} {σ σ' : MachineState}
+    (hn : Machines.Lnp64u.Isa.narrow base len perms dw σ = .ok kind σ')
+    (hR : ∀ a : Addr, base.toNat ≤ a.toNat → a.toNat < base.toNat + len.toNat → ¬ R a) :
+    ∀ b ln p, kind = .mem b ln p → ∀ a : Addr, b.toNat ≤ a.toNat →
+      a.toNat < b.toNat + ln.toNat → ¬ R a := by
+  intro b ln p hkind a h1 h2
+  unfold Machines.Lnp64u.Isa.narrow at hn
+  simp only [SpecM.require, specM_bind, specM_pure] at hn
+  split_ifs at hn with hc1 hc2 hc3 hc4
+  · injection hn with hk hσ
+    rw [hkind] at hk
+    injection hk with hb hln hp
+    have hoff : (Machines.Lnp64u.Isa.descOff dw).toNat +
+        (Machines.Lnp64u.Isa.descLen dw).toNat ≤ len.toNat := by simpa using hc1
+    have hlt : base.toNat + (Machines.Lnp64u.Isa.descOff dw).toNat < memWords := by
+      simpa using hc2
+    have hmw : memWords = 4096 := rfl
+    have hadd : (base + Machines.Lnp64u.Isa.descOff dw).toNat =
+        base.toNat + (Machines.Lnp64u.Isa.descOff dw).toNat := by
+      rw [BitVec.toNat_add,
+        Nat.mod_eq_of_lt (by omega : base.toNat + (Machines.Lnp64u.Isa.descOff dw).toNat < 2 ^ 12)]
+    have hbn : b.toNat = base.toNat + (Machines.Lnp64u.Isa.descOff dw).toNat := by
+      rw [← hb]; exact hadd
+    have hlnn : ln.toNat = (Machines.Lnp64u.Isa.descLen dw).toNat := by rw [← hln]
+    exact hR a (by omega) (by omega)
+  all_goals simp [SpecM.raise] at hn
+
+/-- The range of a live entry of the executing domain avoids `R`. -/
+theorem entry_off_R {s : Slot} {e : CapEntry} {base : Addr} {len : BitVec 13}
+    {perms : Perms} (hctx : DCtx d R σ) (hne : cd ≠ d)
+    (hcaps : (σ.doms cd).caps s = some e) (hek : e.kind = .mem base len perms) :
+    ∀ a : Addr, base.toNat ≤ a.toNat → a.toNat < base.toNat + len.toNat → ¬ R a :=
+  fun a hlo hhi => hctx.fo cd hne s e base len perms hcaps hek a hlo hhi
+
+/-- `transferByHandle` from the executing domain to a foreign recipient. -/
+theorem DKLe.transferByHandle (to_ : DomainId) (hw : Loom.Word32) (hto : to_ ≠ d) :
+    DKLe d cd R (Machines.Lnp64u.Isa.transferByHandle cd to_ hw) := by
+  intro σ hctx hne
+  unfold Machines.Lnp64u.Isa.transferByHandle
+  by_cases hz : hw = 0
+  · rw [if_pos hz]
+    refine ⟨fun a σ' he => ?_, fun e σ' he => ?_⟩
+    · simp only [specM_pure] at he
+      obtain ⟨-, rfl⟩ := he
+      exact DKeep.refl hctx.ro hctx.fo
+    · simp [specM_pure] at he
+  · simp only [if_neg hz, specM_bind]
+    refine ⟨?_, ?_⟩
+    · intro a σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive cd hw σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, -⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok cd _ σ hcl
+          subst σ0
+          rw [hcl] at he
+          obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap cd sslot to_ with
+          | none => rw [htc] at he; simp [SpecM.raise] at he
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he
+              simp only [SpecM.set, specM_bind, specM_pure] at he
+              injection he with _ h2
+              subst h2
+              exact dkeep_transferCap hctx hne cd sslot to_ σ2 ref hne hto htc
+    · intro er σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive cd hw σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state cd _ σ hcl
+          rw [hcl] at he
+          injection he with _ h2
+          subst h2
+          exact DKeep.of_eq hs hctx.ro hctx.fo
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, -⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok cd _ σ hcl
+          subst σ0
+          rw [hcl] at he
+          obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap cd sslot to_ with
+          | none =>
+              rw [htc] at he
+              simp only [SpecM.raise] at he
+              injection he with _ h2
+              subst h2
+              exact DKeep.refl hctx.ro hctx.fo
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he
+              simp [SpecM.set, specM_bind, specM_pure] at he
+
+end SysHelpers
+
 end Machines.Lnp64u.DFrame
