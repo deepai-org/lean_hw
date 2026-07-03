@@ -177,4 +177,28 @@ theorem SlotGenLe.updDomGen (d : DomainId) (f : DomainState → DomainState)
     · simp [Loom.Fun.update_ne _ _ _ _ h]
   · intro e σ' he d' s; simp [SpecM.updDom, SpecM.modify] at he
 
+theorem haltDom_slotGen (σ : MachineState) (d : DomainId) (c : Loom.Word32) (d' : DomainId) (s : Slot) :
+    ((σ.haltDom d c).doms d').slotGen s = (σ.doms d').slotGen s := by
+  unfold MachineState.haltDom
+  split
+  · rw [haltBase_slotGen]
+  · split
+    · rw [haltBase_slotGen]
+    · rw [unwindGate_slotGen, haltBase_slotGen]
+
+/-- `halt`'s exec never lowers a slot generation (`haltDom` touches run/serving/gates). -/
+theorem SlotGenLe.halt (c : Ctx) :
+    SlotGenLe (SpecM.modify (fun σ => σ.haltDom c.d 0)) :=
+  SlotGenLe.of_preservesGen _
+    (fun σ a σ' he d s => by
+      simp only [SpecM.modify, SpecM.set] at he; injection he with _ h2; subst h2
+      exact haltDom_slotGen σ c.d 0 d s)
+    (fun σ e σ' he d s => by simp [SpecM.modify, SpecM.set] at he)
+
+/-- `yield`'s exec never lowers a slot generation. -/
+theorem SlotGenLe.yield (c : Ctx) :
+    SlotGenLe (SpecM.updDom c.d (fun ds => { ds with budget := 0 }) >>=
+      fun _ => SpecM.setReg c.d c.op.rd 0) :=
+  SlotGenLe.bind (SlotGenLe.updDomGen _ _ (fun ds => rfl)) (fun _ => SlotGenLe.setReg _ _ _)
+
 end Machines.Lnp64u
