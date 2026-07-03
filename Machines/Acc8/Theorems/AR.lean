@@ -37,7 +37,7 @@ private def execRule : Act :=
   .ite (isOp 1) (.seq (.write 8 "acc" imm) pcNext) <|
   .ite (isOp 2) (.seq (.write 8 "acc" (.add rAcc imm)) pcNext) <|
   .ite (isOp 3) (.seq (.write 8 "acc" (.memRead 8 "mem" imm)) pcNext) <|
-  .ite (isOp 4) (.seq (.memWrite 8 8 "mem" imm rAcc) pcNext) <|
+  .ite (isOp 4) (.seq (.memWrite 8 8 "mem" 0 imm rAcc) pcNext) <|
   .ite (isOp 5) (.ite (.eq rAcc (.lit 0)) pcNext (.write 8 "pc" imm)) <|
   .ite (isOp 6) (.seq (.write 8 "acc" (.sub rAcc imm)) pcNext) <|
   haltNow

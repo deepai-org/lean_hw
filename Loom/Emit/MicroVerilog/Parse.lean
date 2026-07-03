@@ -425,31 +425,53 @@ def pRegNexts (regs : List RegHdr) (env : Env) : List RegInit →
     let (rest, ls) ← pRegNexts regs env rs ls
     pure ({ name := r.name, width := r.width, init := r.init, next := e } :: rest, ls)
 
-/-- Write ports: `      if (en) m[a] <= d;` per declared memory, in order. -/
+/-- One write port of memory `mname`: `      if (en) m[a] <= d;`. `none`
+if the line is not a write to `mname` (the caller then moves on to the
+next declared memory). -/
+def pMemPortLine (regs : List RegHdr) (env : Env) (mname : String)
+    (aw dw : Nat) (l : List Char) : Option (WritePort aw dw) := do
+  let cs ← eatS "      if (" l
+  let (en, cs) ← pIdent cs
+  let cs ← eatS ") " cs
+  let (x, cs) ← pIdent cs
+  guard (x == mname)
+  let cs ← eatS "[" cs
+  let (adr, cs) ← pIdent cs
+  let cs ← eatS "] <= " cs
+  let (dt, cs) ← pIdent cs
+  let cs ← eatS ";" cs
+  guard cs.isEmpty
+  let en ← resolve regs env en 1
+  let addr ← resolve regs env adr aw
+  let data ← resolve regs env dt dw
+  pure { en := en, addr := addr, data := data }
+
+/-- The (possibly empty) run of consecutive write-port lines targeting
+memory `mname`, in printed = commit order. Stops (without consuming) at
+the first line that is not a write to `mname`. -/
+def pMemPorts (regs : List RegHdr) (env : Env) (mname : String)
+    (aw dw : Nat) : List (List Char) →
+    List (WritePort aw dw) × List (List Char)
+  | [] => ([], [])
+  | l :: ls =>
+    match pMemPortLine regs env mname aw dw l with
+    | none => ([], l :: ls)
+    | some p =>
+      let (rest, ls') := pMemPorts regs env mname aw dw ls
+      (p :: rest, ls')
+
+/-- Write ports: for each declared memory, in declaration order, its run
+of guarded write lines (one per port, in port order; possibly none). -/
 def pMemWrites (regs : List RegHdr) (env : Env) :
     List (MemHdr × List Nat) → List (List Char) →
     Option (List MemDef × List (List Char))
   | [], ls => some ([], ls)
-  | _ :: _, [] => none
-  | (m, tbl) :: ms, l :: ls => do
-    let cs ← eatS "      if (" l
-    let (en, cs) ← pIdent cs
-    let cs ← eatS ") " cs
-    let (x, cs) ← pIdent cs
-    guard (x == m.name)
-    let cs ← eatS "[" cs
-    let (adr, cs) ← pIdent cs
-    let cs ← eatS "] <= " cs
-    let (dt, cs) ← pIdent cs
-    let cs ← eatS ";" cs
-    guard cs.isEmpty
-    let wrEn ← resolve regs env en 1
-    let wrAddr ← resolve regs env adr m.addrWidth
-    let wrData ← resolve regs env dt m.dataWidth
+  | (m, tbl) :: ms, ls => do
+    let (ports, ls) := pMemPorts regs env m.name m.addrWidth m.dataWidth ls
     let (rest, ls) ← pMemWrites regs env ms ls
     pure ({ name := m.name, addrWidth := m.addrWidth, dataWidth := m.dataWidth,
             init := fun a => BitVec.ofNat m.dataWidth (tbl.getD a 0),
-            wrEn := wrEn, wrAddr := wrAddr, wrData := wrData } :: rest, ls)
+            wrPorts := ports } :: rest, ls)
 
 /-- Output assigns: `  assign o = x;` per declared port, in order. -/
 def pAssigns (regs : List RegHdr) (env : Env) : List (String × Nat) →

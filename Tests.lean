@@ -2,5 +2,6 @@ import Tests.Acc8
 import Tests.Acc8Core
 import Tests.Lnp64u
 import Tests.Lnp64uCore
+import Tests.MultiPort
 import Tests.LratBench
 import Tests.CheckBench

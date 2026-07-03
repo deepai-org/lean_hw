@@ -31,6 +31,37 @@ constructor*, so construction is proof-carrying — correct-by-construction view
 semantics preservation stated as `TSys` equality against the ORAAT semantics. One-rule
 designs first (Acc8's core is a single rule); the log/schedule composition after.
 
+## Memory write ports (`wrPorts`, decided 2026-07-03)
+
+The LNP64-µ Mover phase needs up to three same-cycle writes into one memory
+(core store, mover data word, mover status word), priority = phase order.
+Toolchain support:
+
+- **EDSL**: `Act.memWrite` carries an explicit `port : Nat` field (no default —
+  optionality on an inductive field would still change constructor arity, so all
+  call sites/pattern matches were fixed up once; single-writer designs use port 0).
+  The port index is *compilation metadata only*: `Act.run` is unchanged in meaning —
+  writes apply in rule order, last write wins. `MemDecl` is unchanged; the compiler
+  derives the port count as 1 + the largest port index used on that memory.
+- **µVerilog**: `MemDef` holds `wrPorts : List (WritePort aw dw)` (uniform list
+  replacing the scalar `wrEn/wrAddr/wrData`). `Module.cycle` commits ports in list
+  order; the printer emits one guarded nonblocking assignment per port inside the
+  single `always @(posedge clk)` block, in order — IEEE 1800 gives last-update-wins
+  for multiple nonblocking updates to the same variable in one time step, so the
+  formal commit order is standard-conformant (corroborated by iverilog + yosys on a
+  three-port collision).
+- **Correctness** (`Compile.MemWriteWF`, both conditions decidable): (a) every write
+  to a memory carries its declared widths; (b) port indices strictly increase along
+  the design's syntactic write order (`portTrace` Pairwise `<`) — so each port has at
+  most one write per cycle and the ascending commit order linearizes the run order.
+  Under this WF, `compile_cycle_mems` (proved, generic, sorry-free) gives the memory
+  half of the emission theorem via a write-log factoring: `run_memLog` (the design
+  cycle replays its executed write log), `memPort_correct`/`rules_memPort` (each
+  compiled port evaluates to the log's last write on that port), and
+  `range_commit_applyLog` (ascending port commits replay a port-sorted log).
+- The Lnp64u core assigns core-store → port 0, mover data → port 1, mover status →
+  port 2, satisfying the WF syntactically.
+
 ## Order of construction
 
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)

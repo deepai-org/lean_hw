@@ -34,14 +34,12 @@ theorem cycle_agree (prog : BitVec 8 → BitVec 16) (σ : Loom.Hw.St) :
     of_decide_eq_true rfl
   have hnd_mems : ((Core.design prog).mems.map (·.name)).Nodup :=
     of_decide_eq_true rfl
-  have hwf_mem : ∀ rl ∈ (Core.design prog).rules,
-      rl.body.memWfFor "mem" 8 8 = true := of_decide_eq_true rfl
-  have hwf_prog : ∀ rl ∈ (Core.design prog).rules,
-      rl.body.memWfFor "prog" 8 16 = true := of_decide_eq_true rfl
-  have honce_mem : (Core.design prog).rules.countP
-      (fun rl => rl.body.memWrites.contains "mem") ≤ 1 := of_decide_eq_true rfl
-  have honce_prog : (Core.design prog).rules.countP
-      (fun rl => rl.body.memWrites.contains "prog") ≤ 1 := of_decide_eq_true rfl
+  have hwf_mem : Compile.MemWriteWF (Core.design prog)
+      ⟨"mem", 8, 8, fun _ => 0⟩ :=
+    ⟨of_decide_eq_true rfl, of_decide_eq_true rfl⟩
+  have hwf_prog : Compile.MemWriteWF (Core.design prog)
+      ⟨"prog", 8, 16, fun a => prog (BitVec.ofNat 8 a)⟩ :=
+    ⟨of_decide_eq_true rfl, of_decide_eq_true rfl⟩
   -- every register write in the rules targets a declared (name, width)
   have hregw : (Core.design prog).rules.all
       (fun rl => rl.body.regWrites.all
@@ -94,18 +92,18 @@ theorem cycle_agree (prog : BitVec 8 → BitVec 16) (σ : Loom.Hw.St) :
     funext n a' w'
     by_cases hpn : n = "prog"
     · subst hpn
-      exact Compile.compile_cycle_mems (Core.design prog) σ
+      exact Compile.compile_cycle_mems_all (Core.design prog) σ
         ⟨"prog", 8, 16, fun a => prog (BitVec.ofNat 8 a)⟩
-        (List.mem_cons_self ..) hnd_mems hwf_prog honce_prog a' w'
+        (List.mem_cons_self ..) hnd_mems hwf_prog a' w'
     · by_cases hmn : n = "mem"
       · subst hmn
-        exact Compile.compile_cycle_mems (Core.design prog) σ
+        exact Compile.compile_cycle_mems_all (Core.design prog) σ
           ⟨"mem", 8, 8, fun _ => 0⟩
           (List.mem_cons_of_mem _ (List.mem_cons_self ..)) hnd_mems
-          hwf_mem honce_mem a' w'
+          hwf_mem a' w'
       · -- n names no declared memory: both sides leave it alone
-        refine Eq.trans (Compile.memFold_nomatch (conv σ) n
-          (Compile.compile (Core.design prog)).mems (conv σ).mems ?_ a' w') ?_
+        refine Eq.trans (Compile.memsFold_other (conv σ) n
+          (Compile.compile (Core.design prog)).mems ?_ (conv σ).mems a' w') ?_
         · intro md hmd
           obtain ⟨m0, hm0, rfl⟩ := List.mem_map.mp hmd
           have hm0' : m0 = (⟨"prog", 8, 16, fun a => prog (BitVec.ofNat 8 a)⟩ :

@@ -13,7 +13,12 @@ synchronous transition-system semantics `Module.cycle`/`Module.reset` of
 `Semantics.lean`. This is the assumption every trusted-pretty-printer
 design makes silently; here it is stated, minimized by the subset's
 austerity, and corroborated per target by lockstep and the conformance
-suite (never proven — that is the honest boundary).
+suite (never proven — that is the honest boundary). One point the reading
+leans on explicitly: a memory's write ports are printed as successive
+guarded nonblocking assignments to the same array in one
+`always @(posedge clk)` block, and IEEE 1800 prescribes last-update-wins
+for multiple nonblocking updates to the same variable in the same time
+step — exactly `Module.cycle`'s in-order port commit.
 
 Formally we phrase it as an opaque predicate `ImplementsStandard tool m`
 asserting a tool's observed cycle behavior on module `m` equals

@@ -3,7 +3,7 @@
 
 A deliberately minimal synthesizable Verilog subset: one module, one clock,
 synchronous reset, `always_ff` registers with explicit next-value
-expressions, memory arrays with one synchronous write port and in-expression
+expressions, memory arrays with ordered synchronous write ports and in-expression
 asynchronous reads (`mem[addr]` — LUTRAM-shaped at these sizes), and
 combinational expressions with no inference-sensitive constructs. No
 latches, no tri-states, no tasks, no delays, no multiple drivers: where the
@@ -47,16 +47,25 @@ structure RegDef where
   init  : BitVec width
   next  : Expr width
 
-/-- A memory array: one synchronous write port; reads appear inside
-expressions. Initial contents via an `initial` block (bounded, explicit). -/
+/-- One synchronous write port: `if (en) mem[addr] <= data;`. -/
+structure WritePort (aw dw : Nat) where
+  en   : Expr 1
+  addr : Expr aw
+  data : Expr dw
+
+/-- A memory array: synchronous write ports, committed in list order (on a
+same-cycle address collision the LAST port wins — the ports are emitted as
+successive guarded nonblocking assignments to the same array in one
+`always @(posedge clk)` block, and IEEE 1800 gives last-update-wins for
+multiple nonblocking updates to the same variable in the same time step);
+reads appear inside expressions. Initial contents via an `initial` block
+(bounded, explicit). -/
 structure MemDef where
   name      : String
   addrWidth : Nat
   dataWidth : Nat
   init      : Nat → BitVec dataWidth
-  wrEn      : Expr 1
-  wrAddr    : Expr addrWidth
-  wrData    : Expr dataWidth
+  wrPorts   : List (WritePort addrWidth dataWidth)
 
 /-- An observability output port (a named combinational view). -/
 structure OutDef where
