@@ -23,7 +23,7 @@ edge-removal, so acyclicity survives via `acyclic_of_parentRef_le`); its Wf core
 `clearSlot` + sweeps, the most intricate remaining Acyclic core. Then each of the three
 remaining ops is finished by its own `capLive → …` thread, exactly as `cap_drop` was.
 
-> **Update:** `system_preserves_acyclic` now proves **8 of 11** ops' Acyclic clauses ops' Acyclic clauses (cap_drop, cap_dup, mem_grant via `acyclic_allocDerived`; map/unmap/yield/halt/move via the combinator + threading). Only **cap_revoke and the 2 gate ops** remain — exactly the 3 that need the hard kernel lemmas `wf_destroyMarked`/`transferCap`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already proved. **The combined obligation `system_preserves_wfa` is now proved** (`SystemOpsPreserveWfA`,
+> **Update:** `system_preserves_acyclic` now proves **9 of 11** ops' Acyclic clauses ops' Acyclic clauses (cap_drop, cap_dup, mem_grant via `acyclic_allocDerived`; map/unmap/yield/halt/move via the combinator + threading). Only **cap_revoke and the 2 gate ops** remain — exactly the 3 that need the hard kernel lemmas `wf_destroyMarked`/`transferCap`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already proved. **The combined obligation `system_preserves_wfa` is now proved** (`SystemOpsPreserveWfA`,
 8 of 11 ops: cap_drop via `capdrop_preserves_wfa`, the other 7 by pairing each op's Wf
 proof with `system_preserves_acyclic`). **DONE — the combined invariant is now machine-wide:** `wfa_invariant_of_system` proves
 `Invariant (Wf ∧ Acyclic)` reduced to exactly one obligation, `SystemOpsPreserveWfA`, via
