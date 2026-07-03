@@ -2002,4 +2002,562 @@ theorem corePhase_dcycle (m : Manifest) (σ : MachineState) (hctx : DCtx d R σ)
 
 end Cycle
 
+/-! ## The self sweep: `d`'s own (code_local-constrained) retirement -/
+
+/-- What `d`'s own constrained instruction preserves: `d`'s capability
+bookkeeping, everyone else's whole record, memory under `RX` (the
+executable roots), gate records, and the Mover. -/
+structure DSelf (d : DomainId) (RX : Addr → Prop) (σ σ' : MachineState) : Prop where
+  caps : (σ'.doms d).caps = (σ.doms d).caps
+  slotGen : (σ'.doms d).slotGen = (σ.doms d).slotGen
+  lineage : (σ'.doms d).lineage = (σ.doms d).lineage
+  serving : (σ'.doms d).serving = (σ.doms d).serving
+  nb : ∀ g, (σ'.doms d).run = .blocked g → (σ.doms d).run = .blocked g
+  bud : (σ'.doms d).budget ≤ (σ.doms d).budget
+  mdon : (σ'.doms d).maxDonation = (σ.doms d).maxDonation
+  regsown : ∀ r rg, (σ'.doms d).regions r = some rg →
+    rg.backing.dom = d ∨ (σ.doms d).regions r = some rg
+  odoms : ∀ e, e ≠ d → σ'.doms e = σ.doms e
+  memX : ∀ a, RX a → σ'.mem a = σ.mem a
+  gcfg : ∀ g, (σ'.gates g).config = (σ.gates g).config
+  acts : ∀ g a, (σ'.gates g).act = some a → (σ.gates g).act = some a
+  mover : ∀ job, σ'.mover = some job → σ.mover = some job
+
+section Self
+
+variable {d : DomainId} {RX : Addr → Prop} {σ : MachineState}
+
+theorem DSelf.refl : DSelf d RX σ σ :=
+  ⟨rfl, rfl, rfl, rfl, fun _ h => h, Nat.le_refl _, rfl, fun _ _ h => Or.inr h,
+   fun _ _ => rfl, fun _ _ => rfl, fun _ => rfl, fun _ _ h => h, fun _ h => h⟩
+
+theorem DSelf.of_eq {σ' : MachineState} (h : σ' = σ) : DSelf d RX σ σ' := by
+  rw [h]; exact DSelf.refl
+
+theorem DSelf.trans {σ₁ σ₂ : MachineState} (h1 : DSelf d RX σ σ₁)
+    (h2 : DSelf d RX σ₁ σ₂) : DSelf d RX σ σ₂ where
+  caps := h2.caps.trans h1.caps
+  slotGen := h2.slotGen.trans h1.slotGen
+  lineage := h2.lineage.trans h1.lineage
+  serving := h2.serving.trans h1.serving
+  nb := fun g h => h1.nb g (h2.nb g h)
+  bud := Nat.le_trans h2.bud h1.bud
+  mdon := h2.mdon.trans h1.mdon
+  regsown := fun r rg h => by
+    rcases h2.regsown r rg h with h' | h'
+    · exact Or.inl h'
+    · exact h1.regsown r rg h'
+  odoms := fun e he => (h2.odoms e he).trans (h1.odoms e he)
+  memX := fun a ha => (h2.memX a ha).trans (h1.memX a ha)
+  gcfg := fun g => (h2.gcfg g).trans (h1.gcfg g)
+  acts := fun g a h => h1.acts g a (h2.acts g a h)
+  mover := fun job h => h1.mover job (h2.mover job h)
+
+/-- A `setDom` at `d` whose update respects the self frame. -/
+theorem dself_updD (f : DomainState → DomainState)
+    (hcaps : (f (σ.doms d)).caps = (σ.doms d).caps)
+    (hgen : (f (σ.doms d)).slotGen = (σ.doms d).slotGen)
+    (hlin : (f (σ.doms d)).lineage = (σ.doms d).lineage)
+    (hserv : (f (σ.doms d)).serving = (σ.doms d).serving)
+    (hrun : ∀ g, (f (σ.doms d)).run = .blocked g → (σ.doms d).run = .blocked g)
+    (hbud : (f (σ.doms d)).budget ≤ (σ.doms d).budget)
+    (hmdon : (f (σ.doms d)).maxDonation = (σ.doms d).maxDonation)
+    (hreg : ∀ r rg, (f (σ.doms d)).regions r = some rg →
+      rg.backing.dom = d ∨ (σ.doms d).regions r = some rg) :
+    DSelf d RX σ (σ.setDom d f) where
+  caps := by rw [setDom_doms_same]; exact hcaps
+  slotGen := by rw [setDom_doms_same]; exact hgen
+  lineage := by rw [setDom_doms_same]; exact hlin
+  serving := by rw [setDom_doms_same]; exact hserv
+  nb := fun g h => hrun g (by rw [setDom_doms_same] at h; exact h)
+  bud := by rw [setDom_doms_same]; exact hbud
+  mdon := by rw [setDom_doms_same]; exact hmdon
+  regsown := fun r rg h => hreg r rg (by rw [setDom_doms_same] at h; exact h)
+  odoms := fun e he => setDom_doms_ne σ d f e he
+  memX := fun _ _ => rfl
+  gcfg := fun _ => rfl
+  acts := fun _ _ h => h
+  mover := fun _ h => h
+
+theorem dself_setRegD (r : RegId) (v : Loom.Word32) :
+    DSelf d RX σ (σ.setDom d (fun ds => ds.setReg r v)) :=
+  dself_updD _ (setReg_caps _ r v) (setReg_slotGen _ r v) (setReg_lineage _ r v)
+    (setReg_serving _ r v) (fun g h => by rw [setReg_run] at h; exact h)
+    (by rw [show ((σ.doms d).setReg r v).budget = (σ.doms d).budget from by
+      unfold DomainState.setReg; split <;> rfl])
+    (by unfold DomainState.setReg; split <;> rfl)
+    (fun r' rg h => Or.inr (by rw [setReg_regions] at h; exact h))
+
+/-- A memory write at an address `d` covers writably misses `RX`. -/
+theorem dself_write (a : Addr) (v : Loom.Word32)
+    (hnx : ∀ a', σ.domCovers d a' { r := false, w := true, x := false } = true → ¬ RX a')
+    (hcov : σ.domCovers d a { r := false, w := true, x := false } = true) :
+    DSelf d RX σ (σ.write a v) where
+  caps := rfl
+  slotGen := rfl
+  lineage := rfl
+  serving := rfl
+  nb := fun _ h => h
+  bud := Nat.le_refl _
+  mdon := rfl
+  regsown := fun _ _ h => Or.inr h
+  odoms := fun _ _ => rfl
+  memX := fun a' ha' => by
+    show Loom.Fun.update σ.mem a v a' = σ.mem a'
+    exact Loom.Fun.update_ne _ _ _ _ (fun h => hnx a hcov (h ▸ ha'))
+  gcfg := fun _ => rfl
+  acts := fun _ _ h => h
+  mover := fun _ h => h
+
+/-- `haltBase` at `d` (with `d` serving nobody). -/
+theorem dself_haltBase (cv : Loom.Word32) (hserv : (σ.doms d).serving = none) :
+    DSelf d RX σ (σ.haltBase d cv) := by
+  unfold MachineState.haltBase
+  refine dself_updD _ rfl rfl rfl ?_ ?_ (Nat.le_refl _) rfl
+    (fun r rg h => Or.inr h)
+  · show none = (σ.doms d).serving
+    exact hserv.symm
+  · intro g h
+    exact absurd h (by simp)
+
+/-- `haltDom` at a non-serving `d` reduces to `haltBase`. -/
+theorem dself_haltDom (cv : Loom.Word32) (hserv : (σ.doms d).serving = none) :
+    DSelf d RX σ (σ.haltDom d cv) := by
+  rw [haltDom_base σ d cv hserv]
+  exact dself_haltBase cv hserv
+
+/-- A full capability table has no free slot. -/
+theorem freeSlot_none_of_full (hfull : ∀ s, (σ.doms d).caps s ≠ none) :
+    σ.freeSlot d = none := by
+  unfold MachineState.freeSlot
+  rw [List.find?_eq_none]
+  intro s _
+  cases hc : (σ.doms d).caps s with
+  | none => exact absurd hc (hfull s)
+  | some e => simp [hc]
+
+end Self
+
+/-! ### Context-free `DSelf` combinators -/
+
+/-- Context-free self obligation (no store): every outcome is `DSelf`. -/
+def DSLe0 (d : DomainId) (RX : Addr → Prop) {α : Type} (mm : SpecM α) : Prop :=
+  ∀ σ, (∀ a σ', mm σ = .ok a σ' → DSelf d RX σ σ') ∧
+       (∀ er σ', mm σ = .err er σ' → DSelf d RX σ σ')
+
+section SelfKit
+
+variable {d : DomainId} {RX : Addr → Prop}
+
+theorem DSLe0.of_state_eq {α : Type} {mm : SpecM α}
+    (hok : ∀ σ a σ', mm σ = .ok a σ' → σ' = σ)
+    (herr : ∀ σ e σ', mm σ = .err e σ' → σ' = σ) : DSLe0 d RX mm :=
+  fun σ => ⟨fun a σ' he => DSelf.of_eq (hok σ a σ' he),
+            fun e σ' he => DSelf.of_eq (herr σ e σ' he)⟩
+
+theorem DSLe0.pure {α : Type} (a : α) : DSLe0 d RX (Pure.pure a : SpecM α) :=
+  DSLe0.of_state_eq
+    (fun σ a' σ' he => by rw [specM_pure] at he; injection he with _ h2; exact h2.symm)
+    (fun σ e σ' he => by rw [specM_pure] at he; simp at he)
+
+theorem DSLe0.bind {α β : Type} {m : SpecM α} {f : α → SpecM β}
+    (hm : DSLe0 d RX m) (hf : ∀ a, DSLe0 d RX (f a)) : DSLe0 d RX (m >>= f) := by
+  intro σ
+  refine ⟨?_, ?_⟩
+  · intro b σ' he
+    rw [specM_bind] at he
+    cases hmσ : m σ with
+    | ok a σ1 =>
+        rw [hmσ] at he
+        exact ((hm σ).1 a σ1 hmσ).trans ((hf a σ1).1 b σ' he)
+    | err e σ1 => rw [hmσ] at he; simp at he
+    | fault g => rw [hmσ] at he; simp at he
+  · intro e σ' he
+    rw [specM_bind] at he
+    cases hmσ : m σ with
+    | ok a σ1 =>
+        rw [hmσ] at he
+        exact ((hm σ).1 a σ1 hmσ).trans ((hf a σ1).2 e σ' he)
+    | err e1 σ1 =>
+        rw [hmσ] at he
+        injection he with _ h2
+        subst h2
+        exact (hm σ).2 e1 σ1 hmσ
+    | fault g => rw [hmσ] at he; simp at he
+
+theorem DSLe0.iteBool {α : Type} (b : Bool) {m1 m2 : SpecM α}
+    (h1 : DSLe0 d RX m1) (h2 : DSLe0 d RX m2) :
+    DSLe0 d RX (if b then m1 else m2) := by
+  cases b <;> simp only [Bool.false_eq_true, if_true, if_false]
+  · exact h2
+  · exact h1
+
+theorem DSLe0.reg (d' : DomainId) (r : RegId) : DSLe0 d RX (SpecM.reg d' r) :=
+  DSLe0.of_state_eq
+    (fun σ a σ' he => by unfold SpecM.reg at he; injection he with _ h2; exact h2.symm)
+    (fun σ e σ' he => by unfold SpecM.reg at he; simp at he)
+
+theorem DSLe0.load (d' : DomainId) (a : Addr) : DSLe0 d RX (SpecM.load d' a) :=
+  DSLe0.of_state_eq
+    (fun σ v σ' he => load_ok d' a σ he)
+    (fun σ e σ' he => load_err_state d' a σ he)
+
+theorem DSLe0.setRegD (r : RegId) (v : Loom.Word32) :
+    DSLe0 d RX (SpecM.setReg d r v) := by
+  intro σ
+  refine ⟨?_, ?_⟩
+  · intro a σ' he
+    unfold SpecM.setReg SpecM.modify at he
+    injection he with _ h2
+    subst h2
+    exact dself_setRegD r v
+  · intro e σ' he
+    unfold SpecM.setReg SpecM.modify at he
+    simp at he
+
+theorem DSLe0.updDomOf (f : DomainState → DomainState)
+    (hcaps : ∀ ds, (f ds).caps = ds.caps)
+    (hgen : ∀ ds, (f ds).slotGen = ds.slotGen)
+    (hlin : ∀ ds, (f ds).lineage = ds.lineage)
+    (hserv : ∀ ds, (f ds).serving = ds.serving)
+    (hrun : ∀ ds g, (f ds).run = .blocked g → ds.run = .blocked g)
+    (hbud : ∀ ds, (f ds).budget ≤ ds.budget)
+    (hmdon : ∀ ds, (f ds).maxDonation = ds.maxDonation)
+    (hreg : ∀ ds r rg, (f ds).regions r = some rg →
+      rg.backing.dom = d ∨ ds.regions r = some rg) :
+    DSLe0 d RX (SpecM.updDom d f) := by
+  intro σ
+  refine ⟨?_, ?_⟩
+  · intro a σ' he
+    unfold SpecM.updDom SpecM.modify at he
+    injection he with _ h2
+    subst h2
+    exact dself_updD f (hcaps _) (hgen _) (hlin _) (hserv _) (hrun _) (hbud _)
+      (hmdon _) (hreg _)
+  · intro e σ' he
+    unfold SpecM.updDom SpecM.modify at he
+    simp at he
+
+theorem DSLe0.capLive (d' : DomainId) (hw : Loom.Word32) :
+    DSLe0 d RX (Machines.Lnp64u.Isa.capLive d' hw) :=
+  DSLe0.of_state_eq
+    (fun σ r σ' he => (Machines.Lnp64u.Isa.Wip.capLive_ok d' hw σ he).1)
+    (fun σ e σ' he => Machines.Lnp64u.Isa.Wip.capLive_err_state d' hw σ he)
+
+end SelfKit
+
+/-! ### The self sweep -/
+
+section SelfSweep
+
+variable {d : DomainId} {RX : Addr → Prop}
+
+/-- The per-state obligation of the self sweep. -/
+def SelfObl (d : DomainId) (RX : Addr → Prop) {α : Type} (mm : SpecM α)
+    (σ : MachineState) : Prop :=
+  (∀ a σ', mm σ = .ok a σ' → DSelf d RX σ σ') ∧
+  (∀ er σ', mm σ = .err er σ' → DSelf d RX σ σ')
+
+/-- **`d`'s own executable instructions respect the self frame.**
+Requires the `code_local` opcode exclusions, `d`'s full gate-free boot
+table, an empty serving mark, and the W^X coverage separation `hnx`. -/
+theorem exec_dself : ∀ instr ∈ isa,
+    instr.opcode ≠ 17 → instr.opcode ≠ 18 → instr.opcode ≠ 19 → instr.opcode ≠ 24 →
+    ∀ c : Ctx, c.d = d → ∀ σ : MachineState,
+    (∀ s, (σ.doms c.d).caps s ≠ none) →
+    (∀ s e g, (σ.doms c.d).caps s = some e → e.kind ≠ .gate g) →
+    (σ.doms c.d).serving = none →
+    (∀ a, σ.domCovers d a { r := false, w := true, x := false } = true → ¬ RX a) →
+    SelfObl d RX (instr.sem.exec c) σ := by
+  intro instr hmem h17 h18 h19 h24 c hcd
+  subst hcd
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem
+    exact hmem
+  rcases List.mem_append.mp hmem' with hb | hs
+  · -- base ops
+    clear h17 h18 h19 h24
+    fin_cases hb
+    -- 7 rrr ops
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    -- addi
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.setRegD _ _) σ
+    -- lui
+    case _ => exact fun σ _ _ _ _ => DSLe0.setRegD _ _ σ
+    -- lw
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.load _ _) (fun _ => DSLe0.setRegD _ _)) σ
+    -- sw (the store: `hnx` closes the RX frame)
+    case _ =>
+      intro σ _ _ _ hnx
+      refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+      · simp only [SpecM.reg, specM_bind, SpecM.store, SpecM.get, SpecM.demand] at he
+        by_cases hcov : σ.domCovers c.d (effAddr
+            ((σ.doms c.d).reg c.op.rs1) c.op.imm) { r := false, w := true, x := false }
+        · simp only [hcov, if_true, specM_pure, specM_bind, SpecM.set] at he
+          injection he with _ h2
+          subst h2
+          exact dself_write _ _ hnx hcov
+        · simp [hcov, SpecM.fatal, specM_bind] at he
+      · simp only [SpecM.reg, specM_bind, SpecM.store, SpecM.get, SpecM.demand] at he
+        by_cases hcov : σ.domCovers c.d (effAddr
+            ((σ.doms c.d).reg c.op.rs1) c.op.imm) { r := false, w := true, x := false }
+        · simp [hcov, specM_pure, specM_bind, SpecM.set] at he
+        · simp [hcov, SpecM.fatal, specM_bind] at he
+    -- beq / blt
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.iteBool _ (DSLe0.updDomOf (fun ds => { ds with pc := branchTarget c.pc c.op.imm }) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ _ h => h) (fun _ => Nat.le_refl _) (fun _ => rfl) (fun _ _ _ h => Or.inr h)) (DSLe0.pure ()))) σ
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.bind (DSLe0.reg _ _) (fun _ => DSLe0.iteBool _ (DSLe0.updDomOf (fun ds => { ds with pc := branchTarget c.pc c.op.imm }) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ _ h => h) (fun _ => Nat.le_refl _) (fun _ => rfl) (fun _ _ _ h => Or.inr h)) (DSLe0.pure ()))) σ
+    -- jalr
+    case _ => exact fun σ _ _ _ _ => DSLe0.bind (DSLe0.reg _ _) (fun a => DSLe0.bind (DSLe0.setRegD _ _) (fun _ => DSLe0.updDomOf (fun ds => { ds with pc := effAddr a c.op.imm }) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ _ h => h) (fun _ => Nat.le_refl _) (fun _ => rfl) (fun _ _ _ h => Or.inr h))) σ
+  · -- system ops
+    fin_cases hs
+    case _ => -- cap_dup: the full table rejects the install
+      intro σ hfull _ _ _
+      refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+      · simp only [SpecM.reg, specM_bind] at he
+        cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+        | err e0 σ0 => rw [hcl] at he; simp at he
+        | fault f => rw [hcl] at he; simp at he
+        | ok r σ0 =>
+            obtain ⟨hσeq, -⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+            subst σ0
+            rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+            have halloc : ∀ kd, Machines.Lnp64u.Isa.allocDerived c.d kd ⟨c.d, sl, gg⟩ σ
+                = .err .slotOccupied σ := by
+              intro kd
+              unfold Machines.Lnp64u.Isa.allocDerived
+              simp only [SpecM.get, specM_bind, freeSlot_none_of_full hfull]
+              rfl
+            cases hk : e.kind with
+            | gate g =>
+                rw [hk] at he
+                simp [specM_pure, specM_bind, halloc] at he
+            | mem base len perms =>
+                rw [hk] at he; simp only [specM_bind] at he
+                cases hn : Machines.Lnp64u.Isa.narrow base len perms
+                    ((σ.doms c.d).reg c.op.rs2) σ with
+                | err e1 σ1 => rw [hn] at he; simp at he
+                | fault f => rw [hn] at he; simp at he
+                | ok kd σ1 =>
+                    have := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1
+                    subst σ1
+                    rw [hn] at he
+                    simp [specM_bind, halloc] at he
+      · simp only [SpecM.reg, specM_bind] at he
+        cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+        | err e0 σ0 =>
+            have hs0 := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+            rw [hcl] at he; injection he with _ h2; subst h2
+            exact DSelf.of_eq hs0
+        | fault f => rw [hcl] at he; simp at he
+        | ok r σ0 =>
+            obtain ⟨hσeq, -⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+            subst σ0
+            rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+            have halloc : ∀ kd, Machines.Lnp64u.Isa.allocDerived c.d kd ⟨c.d, sl, gg⟩ σ
+                = .err .slotOccupied σ := by
+              intro kd
+              unfold Machines.Lnp64u.Isa.allocDerived
+              simp only [SpecM.get, specM_bind, freeSlot_none_of_full hfull]
+              rfl
+            cases hk : e.kind with
+            | gate g =>
+                rw [hk] at he
+                simp only [specM_pure, specM_bind, halloc] at he
+                injection he with _ h2
+                subst h2
+                exact DSelf.refl
+            | mem base len perms =>
+                rw [hk] at he; simp only [specM_bind] at he
+                cases hn : Machines.Lnp64u.Isa.narrow base len perms
+                    ((σ.doms c.d).reg c.op.rs2) σ with
+                | err e1 σ1 =>
+                    have hs1 := Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms _ σ hn
+                    rw [hn] at he; injection he with _ h2; subst h2
+                    exact DSelf.of_eq hs1
+                | fault f => rw [hn] at he; simp at he
+                | ok kd σ1 =>
+                    have := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1
+                    subst σ1
+                    rw [hn] at he
+                    simp only [specM_bind, halloc] at he
+                    injection he with _ h2
+                    subst h2
+                    exact DSelf.refl
+    case _ => exact absurd rfl h17 -- cap_drop
+    case _ => exact absurd rfl h18 -- cap_revoke
+    case _ => exact absurd rfl h19 -- mem_grant
+    case _ => -- map: installs an own-backed region
+      intro σ _ _ _ _
+      refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+      · simp only [SpecM.reg, specM_bind] at he
+        cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+        | err e0 σ0 => rw [hcl] at he; simp at he
+        | fault f => rw [hcl] at he; simp at he
+        | ok r σ0 =>
+            obtain ⟨hσeq, -⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+            subst σ0
+            rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+            cases hk : e.kind with
+            | gate g => rw [hk] at he; simp [SpecM.raise] at he
+            | mem base len perms =>
+                rw [hk] at he
+                simp only [SpecM.updDom, SpecM.modify, specM_bind, SpecM.setReg] at he
+                injection he with _ h2
+                subst h2
+                refine (dself_updD _ rfl rfl rfl rfl (fun g h => h) (Nat.le_refl _)
+                  rfl ?_).trans (dself_setRegD _ _)
+                intro r rg hrg
+                have hrg' : Loom.Fun.update (σ.doms c.d).regions
+                    ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩
+                    (some { base := base, len := len, perms := perms
+                            backing := ⟨c.d, sl, gg⟩ }) r = some rg := hrg
+                by_cases hr : r = ⟨(c.op.imm.extractLsb' 0 2).toNat,
+                    (c.op.imm.extractLsb' 0 2).isLt⟩
+                · subst hr
+                  rw [Loom.Fun.update_same] at hrg'
+                  injection hrg' with hrg'
+                  subst hrg'
+                  exact Or.inl rfl
+                · rw [Loom.Fun.update_ne _ _ _ _ hr] at hrg'
+                  exact Or.inr hrg'
+      · simp only [SpecM.reg, specM_bind] at he
+        cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+        | err e0 σ0 =>
+            have hs0 := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+            rw [hcl] at he; injection he with _ h2; subst h2
+            exact DSelf.of_eq hs0
+        | fault f => rw [hcl] at he; simp at he
+        | ok r σ0 =>
+            obtain ⟨hσeq, -⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+            subst σ0
+            rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+            cases hk : e.kind with
+            | gate g =>
+                rw [hk] at he; simp only [SpecM.raise] at he
+                injection he with _ h2; subst h2
+                exact DSelf.refl
+            | mem base len perms =>
+                rw [hk] at he
+                simp [SpecM.updDom, SpecM.modify, specM_bind, SpecM.setReg] at he
+    case _ => -- unmap
+      intro σ _ _ _ _
+      exact DSLe0.bind (DSLe0.updDomOf (fun ds => { ds with
+          regions := Loom.Fun.update ds.regions
+            ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩ none })
+        (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+        (fun _ => rfl) (fun _ _ h => h) (fun _ => Nat.le_refl _) (fun _ => rfl)
+        (fun ds r rg hrg => by
+          have hrg' : Loom.Fun.update ds.regions
+              ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩
+              none r = some rg := hrg
+          by_cases hr : r = ⟨(c.op.imm.extractLsb' 0 2).toNat,
+              (c.op.imm.extractLsb' 0 2).isLt⟩
+          · subst hr
+            rw [Loom.Fun.update_same] at hrg'
+            cases hrg'
+          · rw [Loom.Fun.update_ne _ _ _ _ hr] at hrg'
+            exact Or.inr hrg'))
+        (fun _ => DSLe0.setRegD _ _) σ
+    case _ => -- gate_call: `d` holds no gate capabilities
+      intro σ _ hgates _ _
+      refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+      · simp only [SpecM.reg, specM_bind] at he
+        cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+        | err e0 σ0 => rw [hcl] at he; simp at he
+        | fault f => rw [hcl] at he; simp at he
+        | ok r σ0 =>
+            obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+            subst σ0
+            rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he hlc
+            cases hk : e.kind with
+            | gate g => exact absurd hk (hgates sl e g (caps_of_liveCap hlc))
+            | mem base len perms => rw [hk] at he; simp [SpecM.raise] at he
+      · simp only [SpecM.reg, specM_bind] at he
+        cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+        | err e0 σ0 =>
+            have hs0 := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+            rw [hcl] at he; injection he with _ h2; subst h2
+            exact DSelf.of_eq hs0
+        | fault f => rw [hcl] at he; simp at he
+        | ok r σ0 =>
+            obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+            subst σ0
+            rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he hlc
+            cases hk : e.kind with
+            | gate g => exact absurd hk (hgates sl e g (caps_of_liveCap hlc))
+            | mem base len perms =>
+                rw [hk] at he; simp only [SpecM.raise] at he
+                injection he with _ h2; subst h2
+                exact DSelf.refl
+    case _ => -- gate_return: `d` serves nobody, so it faults
+      intro σ _ _ hserv _
+      refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩ <;>
+      · simp only [SpecM.get, specM_bind, hserv] at he
+        simp [SpecM.fatal] at he
+    case _ => exact absurd rfl h24 -- move
+    case _ => -- yield
+      intro σ _ _ _ _
+      exact DSLe0.bind (DSLe0.updDomOf (fun ds => { ds with budget := 0 })
+        (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+        (fun _ => rfl) (fun _ _ h => h) (fun _ => Nat.zero_le _) (fun _ => rfl)
+        (fun _ _ _ h => Or.inr h))
+        (fun _ => DSLe0.setRegD _ _) σ
+    case _ => -- halt
+      intro σ _ _ hserv _
+      refine ⟨fun a σ' he => ?_, fun e σ' he => by simp [SpecM.modify] at he⟩
+      simp only [SpecM.modify] at he
+      injection he with _ h2
+      subst h2
+      exact dself_haltDom 0 hserv
+
+/-- **`retire` of `d`'s own constrained word respects the self frame.** -/
+theorem retire_dself (σ : MachineState) (w : Loom.Word32)
+    (hfull : ∀ s, (σ.doms d).caps s ≠ none)
+    (hgates : ∀ s e g, (σ.doms d).caps s = some e → e.kind ≠ .gate g)
+    (hserv : (σ.doms d).serving = none)
+    (hnx : ∀ a, σ.domCovers d a { r := false, w := true, x := false } = true → ¬ RX a)
+    (hop : ∀ instr, Loom.Isa.decode isa w = some instr →
+      instr.opcode ≠ 17 ∧ instr.opcode ≠ 18 ∧ instr.opcode ≠ 19 ∧ instr.opcode ≠ 24) :
+    DSelf d RX σ (retire σ d w) := by
+  unfold retire
+  split
+  · exact dself_haltDom _ hserv
+  · rename_i instr hdec
+    obtain ⟨h17, h18, h19, h24⟩ := hop instr hdec
+    set σ1 := σ.setDom d (fun ds => { ds with pc := ds.pc + 1 }) with hσ1
+    have h1 : DSelf d RX σ σ1 :=
+      dself_updD _ rfl rfl rfl rfl (fun g h => h) (Nat.le_refl _) rfl
+        (fun r rg h => Or.inr h)
+    have hd1 : (σ1.doms d).caps = (σ.doms d).caps := h1.caps
+    have hcov1 : ∀ a need, σ1.domCovers d a need = σ.domCovers d a need := by
+      intro a need
+      unfold MachineState.domCovers
+      rw [hσ1, setDom_doms_same]
+    have hobl := exec_dself instr (Loom.Isa.decode_mem isa hdec) h17 h18 h19 h24
+      { d := d, pc := (σ.doms d).pc, op := operandsOf w } rfl σ1
+      (fun s => by rw [hd1]; exact hfull s)
+      (fun s e g h => hgates s e g (by rw [← hd1]; exact h))
+      (by rw [h1.serving]; exact hserv)
+      (fun a hcov => hnx a (by rw [← hcov1]; exact hcov))
+    cases hexr : instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 with
+    | ok a σ' =>
+        simp only [hexr]
+        exact h1.trans (hobl.1 a σ' hexr)
+    | err er σ' =>
+        simp only [hexr]
+        exact (h1.trans (hobl.2 er σ' hexr)).trans (dself_setRegD _ _)
+    | fault f =>
+        simp only [hexr]
+        exact dself_haltDom _ hserv
+
+end SelfSweep
+
 end Machines.Lnp64u.DFrame
