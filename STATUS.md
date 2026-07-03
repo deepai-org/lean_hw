@@ -44,7 +44,13 @@ lines). (2) **transferCap Wf composition** — `wf_reparent` (newRef live) + `re
 **reparent-to-fresh-sibling acyclicity** — `parentRef newRef = parentRef oldRef` with newRef
 fresh; distinct from `acyclic_contract` (which needs `parentRef oldRef = newRef`), needs a
 new climb argument (~100 lines). (4) **gate-consistency Wf** for the activation updates
-(gate_serving/serving_gate/blocked_gate) in each gate op (~150 lines each) — exactly parallel to how the Wf-only invariant rested on
+(gate_serving/serving_gate/blocked_gate) in each gate op (~150 lines each).
+
+**Progress (this session):** all transferCap building blocks + the Wf core are now proved —
+`acyclic_reparent_sibling` (novel), `setDom_installMove_parentRef`, `wf_installMove`,
+`wf_installCapNone`, `wf_reparent_clear_sweep`, and **`wf_transferCap`** (the full Wf, both
+lineage cases). Remaining for the gate ops: `acyclic_transferCap` (compose the acyclic pieces —
+all exist), the `transferByHandle` wrapper, and gate-consistency for `gate_call`/`gate_return`. — exactly parallel to how the Wf-only invariant rested on
 `SystemOpsPreserveWf`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already done.
 
 ## What builds and runs (verified end to end)
