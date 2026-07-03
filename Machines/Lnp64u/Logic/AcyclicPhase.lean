@@ -114,4 +114,57 @@ theorem retire_preserves_acyclic (hexec : ExecPreservesAcyclic) (σ : MachineSta
     | err e σ' => simp only [hexr]; exact acyclic_setReg_dom σ' d _ _ (herr e σ' hexr)
     | fault f => simp only [hexr]; exact acyclic_haltWith σ d f hac
 
+/-- `corePhase` preserves acyclicity, reduced to `ExecPreservesAcyclic`. Every
+branch but `retire` (schedule/fetch/decode failures, budget draw, gate donation,
+in-flight tick) touches only `budget`/`gates`/`inflight`/`run` — never
+`caps`/`lineage` — so acyclicity carries through; `retire` uses the obligation. -/
+theorem corePhase_preserves_acyclic (hexec : ExecPreservesAcyclic) (m : Manifest)
+    (σ : MachineState) (hwf : Wf σ) (hac : Acyclic σ) : Acyclic (corePhase m σ) := by
+  -- helper: a state agreeing with σ on all caps/lineage is acyclic
+  have dl : ∀ (τ : MachineState),
+      (∀ d, (τ.doms d).caps = (σ.doms d).caps ∧ (τ.doms d).lineage = (σ.doms d).lineage) →
+      Acyclic τ := fun τ hτ => acyclic_of_parentRef_eq σ τ (parentRef_eq_of_doms σ τ hτ) hac
+  unfold corePhase
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · simp only [hc, if_true]
+        have hwf' : Wf { σ with inflight := none } :=
+          wf_of_skeleton_sameGates σ { σ with inflight := none }
+            (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+            (fun _ => rfl) rfl rfl (by simp) hwf
+        refine retire_preserves_acyclic hexec { σ with inflight := none } fl.dom fl.word hwf' ?_ ?_ rfl
+        · exact dl _ (fun _ => ⟨rfl, rfl⟩)
+        · show (σ.doms fl.dom).run = .running
+          exact hwf.inflight_running fl hinf
+      · simp only [hc, if_false]; exact dl _ (fun _ => ⟨rfl, rfl⟩)
+  | none =>
+      simp only []
+      split
+      · exact hac
+      · rename_i d hsched
+        have hdrun : (σ.doms d).run = .running := schedule_running m σ d hsched
+        split
+        · exact acyclic_haltWith σ d .memoryAuthority hac
+        · rename_i w hfetch
+          split
+          · exact acyclic_haltWith σ d .illegalInstruction hac
+          · rename_i instr hdec
+            by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer d)).budget
+            · simp only [hbud, if_true]
+              obtain ⟨pc, pl, _, _, _, _, _, _⟩ :=
+                setBudget_proj σ (σ.payer d) (fun ds => ds.budget - instr.cost.cost)
+              cases hserv : (σ.doms d).serving with
+              | none => simp only [hserv]; exact dl _ (fun d' => ⟨pc d', pl d'⟩)
+              | some g =>
+                  simp only [hserv]
+                  cases hact : (σ.gates g).act with
+                  | none => exact acyclic_haltWith σ d .protocol hac
+                  | some a =>
+                      simp only [hact]
+                      by_cases hdon : instr.cost.cost ≤ a.donated
+                      · simp only [hdon, if_true]; exact dl _ (fun d' => ⟨pc d', pl d'⟩)
+                      · simp only [hdon, if_false]; exact acyclic_haltWith σ d .budget hac
+            · simp only [hbud, if_false]; exact hac
+
 end Machines.Lnp64u
