@@ -34,11 +34,17 @@ def MachineState.climb (σ : MachineState) : Nat → CapRef → Option CapRef
   | 0,     r => some r
   | k + 1, r => (σ.parentRef r).bind (σ.climb k)
 
+/-- The maximum length of an acyclic parent chain: distinct references use
+distinct lineage cells (`ptr_inj`), and there are `numDomains × numLineage`
+cells in all — chains cross domains (e.g. `mem_grant` derives into another
+domain), so the bound is the *total* cell count, not one domain's. -/
+def chainBound : Nat := numDomains * numLineage
+
 /-- **Lineage acyclicity.** From every reference the parent chain reaches a
-root within `numLineage` links — equivalently, the lineage forest has no
+root within `chainBound` links — equivalently, the lineage forest has no
 cycle. The companion invariant `cap_drop`/`cap_revoke`/the gate ops need. -/
 def Acyclic (σ : MachineState) : Prop :=
-  ∀ r : CapRef, σ.climb (numLineage + 1) r = none
+  ∀ r : CapRef, σ.climb (chainBound + 1) r = none
 
 /-- Climbing past a root stays `none`. -/
 @[simp] theorem MachineState.climb_none (σ : MachineState) (k : Nat) :
@@ -58,8 +64,8 @@ theorem acyclic_of_no_lineage (σ : MachineState)
         | none => simp [hle]
         | some l => simp [hle, h r.dom l]
   intro r
-  cases hnl : numLineage + 1 with
-  | zero => simp [numLineage] at hnl
+  cases hnl : chainBound + 1 with
+  | zero => simp [chainBound, numDomains, numLineage] at hnl
   | succ k => rw [σ.climb_none k r (hpar r)]
 
 /-- **Boot acyclicity.** The reset state's lineage tables are empty. -/
@@ -78,7 +84,7 @@ parent — the fact `cap_drop`'s reparent branch turns on. -/
 theorem Acyclic.parentRef_ne (σ : MachineState) (hac : Acyclic σ)
     (r p : CapRef) (h : σ.parentRef r = some p) : p ≠ r := by
   rintro rfl
-  have := σ.climb_self p h (numLineage + 1)
+  have := σ.climb_self p h (chainBound + 1)
   rw [hac p] at this; simp at this
 
 /-- Climbing depends only on the parent function: two states with the same
@@ -100,7 +106,7 @@ register writes, PC updates, scheduling, region installs, Mover programming,
 gate bookkeeping) preserves acyclicity for free. -/
 theorem acyclic_of_parentRef_eq (σ σ' : MachineState)
     (hpar : ∀ r, σ'.parentRef r = σ.parentRef r) (hac : Acyclic σ) : Acyclic σ' := by
-  intro r; rw [σ.climb_congr σ' hpar (numLineage + 1) r]; exact hac r
+  intro r; rw [σ.climb_congr σ' hpar (chainBound + 1) r]; exact hac r
 
 /-- Parent links are determined by each domain's `caps` and `lineage`
 tables; an operation preserving both preserves every parent link. -/
@@ -136,7 +142,7 @@ parent links preserves acyclicity. -/
 theorem acyclic_of_parentRef_le (σ σ' : MachineState)
     (hpar : ∀ r, σ'.parentRef r = σ.parentRef r ∨ σ'.parentRef r = none)
     (hac : Acyclic σ) : Acyclic σ' :=
-  fun r => σ.climb_none_mono σ' hpar (numLineage + 1) r (hac r)
+  fun r => σ.climb_none_mono σ' hpar (chainBound + 1) r (hac r)
 
 /-- Climbs compose: `a + b` links is `a` links then `b` more. -/
 theorem MachineState.climb_add (σ : MachineState) (b : Nat) :
@@ -236,8 +242,8 @@ theorem acyclic_contract (σ σ' : MachineState) (a b : CapRef)
               rw [he, σ.climb_add m 1 r, hc1 r, hq, Option.bind_some]
   
   intro r
-  obtain ⟨m, hm, he⟩ := hkey (numLineage + 1) r
-  rw [he]; exact σ.climb_none_ge (numLineage + 1) r (hac r) m hm
+  obtain ⟨m, hm, he⟩ := hkey (chainBound + 1) r
+  rw [he]; exact σ.climb_none_ge (chainBound + 1) r (hac r) m hm
 
 
 
