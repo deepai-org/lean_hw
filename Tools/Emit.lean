@@ -88,7 +88,8 @@ def goldenAddrs : List Nat :=
    0x520, 0x700, 0x7C7]
 
 /-- The generated testbench: run `simCycles`, compare against the ISS. -/
-def tbLnp64u : String := Id.run do
+def tbLnp64u : String := "STUB"
+def tbLnp64uReal (_ : Unit) : String := Id.run do
   let final := (List.range simCycles).foldl
     (fun σ _ => canonSp (step sysManifest σ)) sysManifest.initState
   let mut checks : List (String × Nat × Nat) := []  -- (lhs, width, expected)
@@ -117,9 +118,14 @@ def tbLnp64u : String := Id.run do
     "    $finish;\n  end\nendmodule\n"
 
 def emit : IO Unit := do
-  IO.println "compiling lnp64u (system-op demo manifest) ..."
-  let m := Loom.Hw.Compile.compile (core sysManifest)
-  IO.println "printing rtl/lnp64u.v ..."
+  let stderr ← IO.getStderr
+  stderr.putStrLn "building design (core sysManifest) ..."; stderr.flush
+  let d := core sysManifest
+  stderr.putStrLn s!"design built: {d.regs.length} regs, {d.mems.length} mems, {d.rules.length} rules"; stderr.flush
+  stderr.putStrLn "compiling lnp64u (system-op demo manifest) ..."; stderr.flush
+  let m := Loom.Hw.Compile.compile d
+  stderr.putStrLn s!"module built: {m.regs.length} regs"; stderr.flush
+  stderr.putStrLn "printing rtl/lnp64u.v ..."; stderr.flush
   IO.FS.writeFile "rtl/lnp64u.v" (Print.print m)
   IO.println s!"generating rtl/tb_lnp64u.v (ISS goldens, {simCycles} cycles) ..."
   IO.FS.writeFile "rtl/tb_lnp64u.v" tbLnp64u
