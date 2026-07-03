@@ -26,10 +26,14 @@ structure St where
 def RegEnv.set (ρ : RegEnv) (name : String) {w : Nat} (v : BitVec w) : RegEnv :=
   fun n w' => if n = name then (if h : w = w' then h ▸ v else ρ n w') else ρ n w'
 
+/-- A memory write touches exactly the written `(name, addr, width)` entry;
+entries at other widths are junk (unobservable at declared widths) and are
+preserved, mirroring `RegEnv.set` and the µVerilog write-port semantics. -/
 def MemEnv.set (μ : MemEnv) (name : String) (a : Nat) {w : Nat} (v : BitVec w) :
     MemEnv :=
   fun n a' w' =>
-    if n = name ∧ a' = a then (if h : w = w' then h ▸ v else 0#w') else μ n a' w'
+    if n = name ∧ a' = a then (if h : w = w' then h ▸ v else μ n a' w')
+    else μ n a' w'
 
 /-- Evaluate an expression against the pre-cycle state. Total. -/
 def Expr.eval (σ : St) : {w : Nat} → Expr w → BitVec w
