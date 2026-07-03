@@ -212,8 +212,12 @@ All three side conditions are proof-forced (2026-07-03): without
 `hsched` the priority hog starves the chain (header refutation 1, and in
 its charge-only form, refutation 2); without `hstall` the stall-lock
 freezes the core forever (refutation 3); without `hpos` a zero-quota
-origin never refunds the chain. Remaining assembly (the per-cycle
-ingredients are proved in `Logic/Hostage.lean`), itemized:
+origin never refunds the chain. **PROVED sorry-free (2026-07-03)** — the
+assembly lives in `Logic/HostageChain.lean` (chain structure),
+`Logic/HostageMeasure.lean` (radix measure), `Logic/HostageFrame.lean`
+(foreign-cycle frames) and `Logic/HostageCount.lean` (`cycle_master`,
+`drain`, `scan`, `window`, `resume_of_measure`). The obligations,
+itemized:
 
 1. **Chain structure** (from `Wf.blocked_gate`/`gate_serving`/
    `serving_gate` + `wfa_invariant`): the serving chain above `d` is a
