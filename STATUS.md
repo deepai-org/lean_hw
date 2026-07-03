@@ -72,13 +72,14 @@ assembled from proved pieces: `refillPhase_preserves_wf` ✓,
 obligation is further decomposed with proved scaffolding —
 `wf_of_skeleton` ✓ (Wf congruence under skeleton-preserving edits),
 `wf_of_skeleton_sameGates` ✓, `schedule_running` ✓ — and the
-inflight-countdown and retirement dispatch are proved. **`haltWith_preserves_wf` is now proved** — the gate-unwind congruence,
-via a clean refactor of `haltDom` into `haltBase`/`unwindGate` with full
-projection kits and `haltBase_preserves_wf`. Two localized sorries remain in
-the L1 chain: `corePhase_preserves_wf`'s issue-path assembly (mechanical,
-pending a match-reduction cleanup) and `retire_preserves_wf` (the 25-opcode
-per-instruction argument, the irreducible core). Landing these flips
-`wf_invariant`, `T8.wx_machine_wide`, and `T3.no_resurrection` to CLEAN.
+inflight-countdown and retirement dispatch are proved. **`corePhase_preserves_wf` and `haltWith_preserves_wf` are now proved.** The
+**entire L1 invariant chain bottoms out at a single remaining sorry** —
+`retire_preserves_wf` (the 25-opcode per-instruction argument, the irreducible
+research core). Everything else is proved: `refillPhase`/`moverPhase`/`corePhase`
+preservation, `haltWith` gate-unwind, `wf_of_skeleton`, `schedule_running`, the
+`haltBase`/`unwindGate` projection kits, and the issue-path helpers. Landing
+`retire_preserves_wf` alone flips `wf_invariant`, `T8.wx_machine_wide`, and
+`T3.no_resurrection` to CLEAN.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the

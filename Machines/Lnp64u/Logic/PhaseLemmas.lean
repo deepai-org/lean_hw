@@ -521,6 +521,44 @@ theorem schedule_running (m : Manifest) (σ : MachineState) (d : DomainId)
     exact hin.2.1
   · exact absurd hcontra (by simp)
 
+/-- Charging a domain's budget preserves every skeleton projection. -/
+theorem setBudget_proj (σ : MachineState) (p : DomainId) (bf : DomainState → Nat) :
+    let σ0 := σ.setDom p (fun ds => { ds with budget := bf ds })
+    (∀ d, (σ0.doms d).caps = (σ.doms d).caps) ∧
+    (∀ d, (σ0.doms d).lineage = (σ.doms d).lineage) ∧
+    (∀ d, (σ0.doms d).slotGen = (σ.doms d).slotGen) ∧
+    (∀ d, (σ0.doms d).regions = (σ.doms d).regions) ∧
+    (∀ d, (σ0.doms d).run = (σ.doms d).run) ∧
+    (∀ d, (σ0.doms d).serving = (σ.doms d).serving) ∧
+    (σ0.gates = σ.gates) ∧ (σ0.mover = σ.mover) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, rfl, rfl⟩ <;>
+    (intro d; unfold MachineState.setDom
+     by_cases hp : d = p
+     · subst hp; simp [Loom.Fun.update_same]
+     · simp [Loom.Fun.update_ne _ _ _ _ hp])
+
+/-- Setting an in-flight instruction whose domain is running, on a state that
+otherwise preserves the skeleton, preserves `Wf`. Used by the issue path. -/
+theorem wf_setInflight (σ σ0 : MachineState) (fl : InFlight)
+    (hcaps : ∀ d, (σ0.doms d).caps = (σ.doms d).caps)
+    (hlin : ∀ d, (σ0.doms d).lineage = (σ.doms d).lineage)
+    (hgen : ∀ d, (σ0.doms d).slotGen = (σ.doms d).slotGen)
+    (hreg : ∀ d, (σ0.doms d).regions = (σ.doms d).regions)
+    (hrun : ∀ d, (σ0.doms d).run = (σ.doms d).run)
+    (hserv : ∀ d, (σ0.doms d).serving = (σ.doms d).serving)
+    (hcfg : ∀ g, (σ0.gates g).config = (σ.gates g).config)
+    (hact : ∀ g a', (σ0.gates g).act = some a' →
+      ∃ a, (σ.gates g).act = some a ∧ a'.caller = a.caller ∧ a'.depth = a.depth)
+    (hactSome : ∀ g, ((σ.gates g).act).isSome → ((σ0.gates g).act).isSome)
+    (hmover : σ0.mover = σ.mover)
+    (hflrun : (σ0.doms fl.dom).run = .running)
+    (h : Wf σ) : Wf { σ0 with inflight := some fl } := by
+  refine wf_of_skeleton σ { σ0 with inflight := some fl }
+    hcaps hlin hgen hreg hrun hserv hcfg hact hactSome hmover ?_ h
+  intro fl' hfl'
+  have hfe : fl' = fl := (by simpa using hfl' : fl = fl').symm
+  subst hfe; exact hflrun
+
 /-- The core phase preserves `Wf`. The countdown, budget-charge, and stall
 paths preserve the skeleton (via `wf_of_skeleton`); the fault paths delegate
 to `haltWith_preserves_wf`, and retirement to `retire_preserves_wf`. The
@@ -545,9 +583,68 @@ theorem corePhase_preserves_wf (m : Manifest) (hwf : m.WF) (σ : MachineState)
           simp only [Option.some.injEq] at hfl'; exact hfl' ▸ rfl
         rw [hdom]; exact h.inflight_running fl hinf
   | none =>
-      -- schedule / fetch / decode / issue. The four fault paths now discharge
-      -- via the proved `haltWith_preserves_wf`; the two issue paths (budget
-      -- charge + set inflight, with the optional donation-counter update) go
-      -- through `wf_of_skeleton`. Assembly pending a match-reduction cleanup.
-      sorry
+      simp only []
+      split
+      · exact h
+      · rename_i d hsched
+        have hdrun : (σ.doms d).run = .running := schedule_running m σ d hsched
+        split
+        · exact haltWith_preserves_wf σ d .memoryAuthority h hdrun hinf
+        · rename_i w hfetch
+          split
+          · exact haltWith_preserves_wf σ d .illegalInstruction h hdrun hinf
+          · rename_i instr hdec
+            by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer d)).budget
+            · simp only [hbud, if_true]
+              obtain ⟨pc, pl, pg, pr, pru, ps, pgates, pmov⟩ :=
+                setBudget_proj σ (σ.payer d) (fun ds => ds.budget - instr.cost.cost)
+              cases hserv : (σ.doms d).serving with
+              | none =>
+                  simp only [hserv]
+                  refine wf_setInflight σ (σ.setDom (σ.payer d) (fun ds => { ds with budget := ds.budget - instr.cost.cost }))
+                    (⟨d, w, instr.cost.cost⟩ : InFlight) pc pl pg pr pru ps
+                    (fun g => by rw [pgates]) (fun g a' ha' => ⟨a', by rw [pgates] at ha'; exact ha', rfl, rfl⟩)
+                    (fun g hh => by rw [pgates]; exact hh) pmov ?_ h
+                  rw [pru]; exact hdrun
+              | some g =>
+                  simp only [hserv]
+                  cases hact : (σ.gates g).act with
+                  | none => exact haltWith_preserves_wf σ d .protocol h hdrun hinf
+                  | some a =>
+                      simp only [hact]
+                      by_cases hdon : instr.cost.cost ≤ a.donated
+                      · simp only [hdon, if_true]
+                        set sb := σ.setDom (σ.payer d)
+                          (fun ds => { ds with budget := ds.budget - instr.cost.cost }) with hsb
+                        have hg0 : sb.gates = σ.gates := pgates
+                        set gv : GateState :=
+                          { (sb.gates g) with act := some { a with donated := a.donated - instr.cost.cost } }
+                          with hgv
+                        refine wf_setInflight σ
+                          { sb with gates := Loom.Fun.update sb.gates g gv }
+                          (⟨d, w, instr.cost.cost⟩ : InFlight) pc pl pg pr pru ps ?_ ?_ ?_ pmov ?_ h
+                        · intro g'
+                          show (Loom.Fun.update sb.gates g gv g').config = (σ.gates g').config
+                          by_cases hg : g' = g
+                          · subst hg; simp only [Loom.Fun.update_same, hgv, hg0]
+                          · simp only [Loom.Fun.update_ne _ _ _ _ hg, hg0]
+                        · intro g' a' ha'
+                          simp only at ha'
+                          show ∃ a0, (σ.gates g').act = some a0 ∧ _ ∧ _
+                          by_cases hg : g' = g
+                          · subst hg
+                            rw [Loom.Fun.update_same, hgv] at ha'
+                            injection ha' with haa; subst haa
+                            exact ⟨a, hact, rfl, rfl⟩
+                          · rw [Loom.Fun.update_ne _ _ _ _ hg, hg0] at ha'
+                            exact ⟨a', ha', rfl, rfl⟩
+                        · intro g' hh
+                          show ((Loom.Fun.update sb.gates g gv g').act).isSome
+                          by_cases hg : g' = g
+                          · subst hg; simp only [Loom.Fun.update_same, hgv, Option.isSome_some]
+                          · rw [Loom.Fun.update_ne _ _ _ _ hg, hg0]; exact hh
+                        · rw [pru]; exact hdrun
+                      · simp only [hdon, if_false]
+                        exact haltWith_preserves_wf σ d .budget h hdrun hinf
+            · simp only [hbud, if_false]; exact h
 end Machines.Lnp64u
