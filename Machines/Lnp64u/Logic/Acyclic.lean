@@ -1,0 +1,84 @@
+import Machines.Lnp64u.Logic.Wf
+
+/-!
+# Lineage acyclicity (L1, the revocation prerequisite)
+
+The `Wf` invariant guarantees every parent pointer reaches a *live*
+capability, but not that the parent forest is acyclic. Acyclicity is what
+`cap_drop`'s reparent branch needs: splicing a dropped capability's
+children onto its parent is only safe when that parent is not itself a
+descendant (in particular, not the dropped capability). It is unreachable
+by construction — `installDerived` always allocates a *fresh* slot, so a
+child's reference never equals an ancestor's — but the bare `Wf` invariant
+does not exclude it, so we track it as a companion invariant.
+
+We phrase acyclicity operationally: from any reference, following parent
+links terminates at a root (empty parent) within `numLineage` steps. A
+cycle would admit an unbounded chain, so this is exactly well-foundedness
+of the finite lineage forest. Stated this way the invariant is decidable
+per-state and its preservation proofs never need explicit rank arithmetic.
+-/
+
+namespace Machines.Lnp64u
+
+open Loom
+
+/-- The parent of the capability referenced by `r` (via its lineage cell),
+or `none` if `r` names a root capability or an empty slot. Unlike
+`parentOf` this is keyed by a full `CapRef` so parent links compose. -/
+def MachineState.parentRef (σ : MachineState) (r : CapRef) : Option CapRef :=
+  σ.parentOf r.dom r.slot
+
+/-- Climb `k` parent links from `r`; `none` once a root/empty slot is hit. -/
+def MachineState.climb (σ : MachineState) : Nat → CapRef → Option CapRef
+  | 0,     r => some r
+  | k + 1, r => (σ.parentRef r).bind (σ.climb k)
+
+/-- **Lineage acyclicity.** From every reference the parent chain reaches a
+root within `numLineage` links — equivalently, the lineage forest has no
+cycle. The companion invariant `cap_drop`/`cap_revoke`/the gate ops need. -/
+def Acyclic (σ : MachineState) : Prop :=
+  ∀ r : CapRef, σ.climb (numLineage + 1) r = none
+
+/-- Climbing past a root stays `none`. -/
+@[simp] theorem MachineState.climb_none (σ : MachineState) (k : Nat) :
+    ∀ (r : CapRef), σ.parentRef r = none → σ.climb (k + 1) r = none := by
+  intro r hr; unfold MachineState.climb; rw [hr]; rfl
+
+/-- If a state has *no* occupied lineage cells, every parent link is empty,
+so it is trivially acyclic. Covers the boot state. -/
+theorem acyclic_of_no_lineage (σ : MachineState)
+    (h : ∀ d l, (σ.doms d).lineage l = none) : Acyclic σ := by
+  have hpar : ∀ r, σ.parentRef r = none := by
+    intro r; unfold MachineState.parentRef MachineState.parentOf
+    cases hc : (σ.doms r.dom).caps r.slot with
+    | none => simp
+    | some e =>
+        cases hle : e.lineage with
+        | none => simp [hle]
+        | some l => simp [hle, h r.dom l]
+  intro r
+  cases hnl : numLineage + 1 with
+  | zero => simp [numLineage] at hnl
+  | succ k => rw [σ.climb_none k r (hpar r)]
+
+/-- **Boot acyclicity.** The reset state's lineage tables are empty. -/
+theorem init_acyclic (m : Manifest) : Acyclic (m.initState) :=
+  acyclic_of_no_lineage _ (fun _ _ => rfl)
+
+/-- A self-parenting reference climbs to itself forever. -/
+theorem MachineState.climb_self (σ : MachineState) (r : CapRef)
+    (h : σ.parentRef r = some r) : ∀ k, σ.climb k r = some r := by
+  intro k; induction k with
+  | zero => rfl
+  | succ n ih => unfold MachineState.climb; rw [h]; simpa using ih
+
+/-- **No self-parenting.** Under acyclicity, no capability is its own
+parent — the fact `cap_drop`'s reparent branch turns on. -/
+theorem Acyclic.parentRef_ne (σ : MachineState) (hac : Acyclic σ)
+    (r p : CapRef) (h : σ.parentRef r = some p) : p ≠ r := by
+  rintro rfl
+  have := σ.climb_self p h (numLineage + 1)
+  rw [hac p] at this; simp at this
+
+end Machines.Lnp64u
