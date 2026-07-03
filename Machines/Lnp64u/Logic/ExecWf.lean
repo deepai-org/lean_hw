@@ -590,6 +590,13 @@ theorem require_ok (cond : Bool) (e : Errno) (σ : MachineState) {σ' : MachineS
   · injection he with _ h2; exact h2.symm
   · simp [SpecM.raise] at he
 
+
+theorem require_cond (cond : Bool) (e : Errno) (σ : MachineState) {σ' : MachineState}
+    (he : SpecM.require cond e σ = .ok () σ') : cond = true := by
+  unfold SpecM.require at he; split at he
+  · assumption
+  · simp [SpecM.raise] at he
+
 theorem demand_ok (cond : Bool) (f : Fault) (σ : MachineState) {σ' : MachineState}
     (he : SpecM.demand cond f σ = .ok () σ') : σ' = σ := by
   unfold SpecM.demand at he; split at he

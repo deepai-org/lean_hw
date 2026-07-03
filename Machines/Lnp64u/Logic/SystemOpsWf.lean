@@ -397,6 +397,47 @@ theorem memgrant_preserves (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
                 | fault f => rw [ha] at he; simp at he
                 | ok hh σ2 => rw [ha] at he; simp [SpecM.setReg, SpecM.modify] at he
 
+/-- The `gate_call` opcode's operational semantics (matches `Isa.system`'s
+`gate_call`). Named for the preservation proof. -/
+def gateCallExec (c : Ctx) : SpecM Unit := do
+  let hw ← reg c.d c.op.rs1
+  let (_, _, e) ← capLive c.d hw
+  match e.kind with
+  | .mem .. => raise .badCap
+  | .gate gid => do
+      let σ ← get
+      let gs := σ.gates gid
+      require gs.act.isNone .gateBusy
+      let cal := gs.config.callee
+      require (decide (cal ≠ c.d)) .gateBusy
+      require (decide ((σ.doms cal).run = .running)) .gateBusy
+      require (σ.doms cal).serving.isNone .gateBusy
+      let depth :=
+        match (σ.doms c.d).serving with
+        | some g' =>
+            match (σ.gates g').act with
+            | some a => a.depth + 1
+            | none => 1
+        | none => 1
+      require (decide (depth ≤ maxChainDepth)) .gateBusy
+      let argw ← reg c.d c.op.rs2
+      let argHandle ← transferByHandle c.d cal argw
+      let σ ← get
+      let cd := σ.doms cal
+      let act : Activation :=
+        { caller := c.d, callerRd := c.op.rd
+          savedRegs := cd.regs, savedPc := cd.pc
+          savedServing := cd.serving, depth := depth
+          donated := (σ.doms c.d).maxDonation }
+      set ({ σ with
+        gates := Loom.Fun.update σ.gates gid { gs with act := some act } })
+      updDom cal fun ds =>
+        { ds with
+          regs := fun r => if r = (1 : Fin numRegs) then argHandle else 0
+          pc := gs.config.entry
+          serving := some gid }
+      updDom c.d fun ds => { ds with run := .blocked gid }
+
 /-- The `move` opcode's operational semantics (matches `Isa.system`'s `move`). -/
 def moveExec (c : Ctx) : SpecM Unit := do
   let σ0 ← SpecM.get
