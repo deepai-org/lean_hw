@@ -96,7 +96,6 @@ theorem PreservesAcyclic.updDomPc (d : DomainId) (k : DomainState → Addr) :
     simp only [SpecM.updDom, SpecM.modify] at he; injection he with _ h2; subst h2
     exact acyclic_setDom σ d _ (fun ds => ⟨rfl, rfl⟩) hac
   · intro e σ' he; simp [SpecM.updDom, SpecM.modify] at he
-
 theorem PreservesAcyclic.store (d : DomainId) (a : Addr) (v : Loom.Word32) :
     PreservesAcyclic (SpecM.store d a v) := by
   intro σ hac
@@ -171,5 +170,14 @@ theorem PreservesAcyclic.updDom (d : DomainId) (f : DomainState → DomainState)
   · intro a σ' he; simp only [SpecM.updDom, SpecM.modify] at he; injection he with _ h2; subst h2
     exact acyclic_setDom σ d f hf hac
   · intro e σ' he; simp [SpecM.updDom, SpecM.modify] at he
+
+theorem PreservesAcyclic.clearRegion (d : DomainId) (ri : RegionId) :
+    PreservesAcyclic (SpecM.updDom d (fun ds => { ds with regions := Loom.Fun.update ds.regions ri none })) :=
+  PreservesAcyclic.updDom d _ (fun _ => ⟨rfl, rfl⟩)
+
+theorem PreservesAcyclic.updDomBudget (d : DomainId) (bf : DomainState → Nat) :
+    PreservesAcyclic (SpecM.updDom d (fun ds => { ds with budget := bf ds })) :=
+  PreservesAcyclic.updDom d _ (fun _ => ⟨rfl, rfl⟩)
+
 
 end Machines.Lnp64u

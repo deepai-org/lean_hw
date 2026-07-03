@@ -75,4 +75,41 @@ theorem capdrop_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac :
         rw [hcl] at he; obtain ⟨s, g, e0⟩ := r
         simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
 
+namespace Isa.Wip
+
+open Machines.Lnp64u
+
+/-- Per-opcode dispatch of `SystemOpsPreserveAcyclic`. `cap_drop` (via
+`capdrop_preserves_wfa`), `unmap`/`yield` (region/budget update + `setReg`), and
+`halt` (`haltDom`) are proved; the derivation/revoke/gate/Mover ops remain. -/
+theorem system_preserves_acyclic : SystemOpsPreserveAcyclic := by
+  intro instr hmem c σ hwf hac hrun hinf
+  fin_cases hmem
+  case _ => sorry  -- cap_dup   (installDerived)
+  case _ => exact ⟨fun a σ' he => ((capdrop_preserves_wfa c σ hwf hac).1 a σ' he).2,
+                   fun e σ' he => ((capdrop_preserves_wfa c σ hwf hac).2 e σ' he).2⟩
+  case _ => sorry  -- cap_revoke (destroyMarked + sweeps)
+  case _ => sorry  -- mem_grant (installDerived)
+  case _ => sorry  -- map       (capLive + installRegion)
+  case _ =>
+    exact ⟨fun a σ' he => (PreservesAcyclic.bind (PreservesAcyclic.clearRegion _ _)
+        (fun _ => PreservesAcyclic.setReg _ _ _) σ hac).1 a σ' he,
+      fun e σ' he => (PreservesAcyclic.bind (PreservesAcyclic.clearRegion _ _)
+        (fun _ => PreservesAcyclic.setReg _ _ _) σ hac).2 e σ' he⟩
+  case _ => sorry  -- gate_call
+  case _ => sorry  -- gate_return
+  case _ => sorry  -- move
+  case _ =>
+    exact ⟨fun a σ' he => (PreservesAcyclic.bind (PreservesAcyclic.updDomBudget _ _)
+        (fun _ => PreservesAcyclic.setReg _ _ _) σ hac).1 a σ' he,
+      fun e σ' he => (PreservesAcyclic.bind (PreservesAcyclic.updDomBudget _ _)
+        (fun _ => PreservesAcyclic.setReg _ _ _) σ hac).2 e σ' he⟩
+  case _ =>
+    refine ⟨fun a σ' he => ?_, fun e σ' he => ?_⟩
+    · simp only [SpecM.modify] at he; injection he with h1 h2; subst h2
+      exact acyclic_haltDom σ c.d 0 hac
+    · simp [SpecM.modify] at he
+
+end Isa.Wip
+
 end Machines.Lnp64u
