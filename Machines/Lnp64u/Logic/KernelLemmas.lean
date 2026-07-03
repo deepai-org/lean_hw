@@ -1,4 +1,6 @@
 import Machines.Lnp64u.Kernel
+import Mathlib.Data.Fintype.Card
+import Mathlib.Data.Fintype.Prod
 
 /-!
 # Kernel-function lemmas (L1 support)
@@ -476,5 +478,79 @@ theorem iterMark_stable (σ : MachineState) (root : CapRef) {k : Nat}
   induction hj with
   | refl => rfl
   | step _ ih => rw [iterMark_succ, ih, ← iterMark_succ, hfix]
+
+
+/-- The count of marked slots at iterate `k`. -/
+def MachineState.markCount (σ : MachineState) (root : CapRef) (k : Nat) : Nat :=
+  (Finset.univ.filter (fun p : DomainId × Slot => σ.iterMark root k p.1 p.2 = true)).card
+
+theorem markCount_mono (σ : MachineState) (root : CapRef) {k k' : Nat} (hk : k ≤ k') :
+    σ.markCount root k ≤ σ.markCount root k' := by
+  unfold MachineState.markCount; apply Finset.card_le_card
+  intro p hp; simp only [Finset.mem_filter, Finset.mem_univ, true_and] at hp ⊢
+  exact iterMark_mono σ root hk p.1 p.2 hp
+
+theorem markCount_le (σ : MachineState) (root : CapRef) (k : Nat) :
+    σ.markCount root k ≤ numDomains * numSlots := by
+  unfold MachineState.markCount
+  refine le_trans (Finset.card_filter_le _ _) ?_
+  rw [Finset.card_univ]
+  simp [Fintype.card_prod, numDomains, numSlots]
+
+theorem markCount_zero (σ : MachineState) (root : CapRef) : σ.markCount root 0 = 0 := by
+  unfold MachineState.markCount MachineState.iterMark
+  simp [Nat.fold]
+
+/-- A strict marking step strictly increases the count. -/
+theorem markCount_lt_of_ne (σ : MachineState) (root : CapRef) (k : Nat)
+    (hne : σ.iterMark root (k + 1) ≠ σ.iterMark root k) :
+    σ.markCount root k < σ.markCount root (k + 1) := by
+  unfold MachineState.markCount; apply Finset.card_lt_card
+  rw [Finset.ssubset_iff_of_subset]
+  · by_contra hc; push_neg at hc
+    apply hne; funext d s
+    by_cases hb : σ.iterMark root (k + 1) d s = true
+    · have : (d, s) ∈ Finset.univ.filter
+          (fun p : DomainId × Slot => σ.iterMark root (k + 1) p.1 p.2 = true) := by
+        simp [hb]
+      have hmem := hc (d, s) this
+      simp only [Finset.mem_filter, Finset.mem_univ, true_and] at hmem
+      rw [hb, hmem]
+    · simp only [Bool.not_eq_true] at hb
+      have hk : σ.iterMark root k d s = false := by
+        by_contra hh; simp only [Bool.not_eq_false] at hh
+        have := iterMark_le_succ σ root k d s hh; rw [this] at hb; exact absurd hb (by decide)
+      rw [hb, hk]
+  · intro p hp; simp only [Finset.mem_filter, Finset.mem_univ, true_and] at hp ⊢
+    exact iterMark_le_succ σ root k p.1 p.2 hp
+
+/-- If the count strictly increases at every step up to `j`, then `j ≤ count j`. -/
+theorem le_markCount_of_strict (σ : MachineState) (root : CapRef) (j : Nat)
+    (hstrict : ∀ k, k < j → σ.markCount root k < σ.markCount root (k + 1)) :
+    j ≤ σ.markCount root j := by
+  induction j with
+  | zero => omega
+  | succ n ih =>
+      have h1 := hstrict n (by omega)
+      have h2 := ih (fun k hk => hstrict k (by omega))
+      omega
+
+/-- **The marking fixpoint.** After `numDomains * numSlots` iterations, `markStep`
+adds nothing: `marks` is a fixpoint. (A strict chain would exceed the slot count.) -/
+theorem marks_fixpoint (σ : MachineState) (root : CapRef) :
+    σ.markStep root (σ.marks root) = σ.marks root := by
+  set N := numDomains * numSlots with hN
+  -- some step ≤ N is already a fixpoint
+  have hfix : ∃ k ≤ N, σ.iterMark root (k + 1) = σ.iterMark root k := by
+    by_contra hc; push_neg at hc
+    have hstrict : ∀ k, k < N + 1 → σ.markCount root k < σ.markCount root (k + 1) :=
+      fun k hk => markCount_lt_of_ne σ root k (hc k (by omega))
+    have := le_markCount_of_strict σ root (N + 1) hstrict
+    have hle := markCount_le σ root (N + 1)
+    omega
+  obtain ⟨k, hkN, hkfix⟩ := hfix
+  rw [marks_eq_iter, ← iterMark_succ,
+    iterMark_stable σ root hkfix (N + 1) (by omega),
+    iterMark_stable σ root hkfix N hkN]
 
 end Machines.Lnp64u
