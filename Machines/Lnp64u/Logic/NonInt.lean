@@ -1150,37 +1150,29 @@ theorem refillPhase_covers (m : Manifest) (σ : MachineState) (e : DomainId)
   unfold MachineState.domCovers
   rw [refillPhase_regions]
 
-/-! ## Work-in-progress engine lemmas
+/-! ## The engine lemmas
 
-The four cycle-level engines the T5 assembly consumes. Statements are
-final; proofs are the remaining T5 work, itemized:
+The four cycle-level engines the T5 assembly consumes — all discharged
+(2026-07-03) on the sweep infrastructure of `Logic/DFrame.lean` (the unary
+d-frame sweep: `DCtx`/`DKeep`/`DCycle` for foreign cycles, `DSelf` for
+`d`'s own `code_local`-constrained retirement) and `Logic/DRel.lean` (the
+two-run relational sweep `RC`/`RLe` behind the lockstep):
 
-1. `insulated_step` — invariant preservation. Requires a per-instruction
-   sweep (executing domain `e ≠ d` cannot touch `d`'s tables: `slots_full`
-   blocks `mem_grant`/transfers in, lineage locality blocks
-   reparent/orphan/marking, `regions_own` + liveness blocks the sweeps)
-   plus `d`'s own issue/retire cases (`d`'s executable ops never free a
-   slot or install an entry — `cap_dup` fails on the full table).
-2. `frame_step` — the d-slice frame over a non-`d` cycle. Same sweep
-   machinery as (1) restricted to the frame fields, plus memory
-   disjointness from `foreign_off` (core stores, Mover copies, Mover
-   status writes).
-3. `retire_step_lockstep` — the relational sweep: `exec` of every
-   instruction `d` may fetch (ROM ⇒ opcode ∉ {17,18,19,24}) is a function
-   of the coupled slice (`d` holds no gate capabilities, so both gate ops
-   fail identically; `load`/`store`/fetch addresses stay under `d`'s
-   coupled roots).
-4. `progress` — scheduling liveness: the core frees within the in-flight
-   countdown, `d`'s budget refills to `budgetQ` within a period, foreign
-   payers never draw on `d`, so with `TopPriority` an idle cycle with
-   funded `d` arrives, and the required cost is payable there.
-5. `issue_step` — the d-issue cycle dichotomy (fetch fault / decode fault
-   / stall / latch). Light: issue only charges budget and latches, and the
-   halt is `haltBase` — but `DFrozen.mem`/`DHalt.mem` still need the
-   Mover-memory disjointness `frame_step` also uses.
+1. `insulated_step` — invariant preservation: foreign cycles via
+   `DFrame.corePhase_dcycle`, `d`'s own retirement via
+   `DFrame.retire_dself` (ROM pinning + `code_local` exclude the four
+   global opcodes), `d`'s issue instants by direct `corePhase` shapes;
+   `Wf`/`Acyclic` via `step_wfa`.
+2. `frame_step` — the d-slice frame over a non-`d` cycle
+   (`corePhase_dcycle` + the Mover memory frame).
+3. `retire_step_lockstep` — the relational sweep `DRel.retire_rel`: the
+   same ROM word retires from `RC`-coupled slices to `RC`-coupled slices.
+4. `progress` — scheduling liveness: `frame_step`/`stall_step` walk,
+   `refill_within_period` funds `d`, `TopPriority` (`schedule_top`) hands
+   `d` the first idle instant, and the in-flight countdown bounds the wait.
 
-`step_quiet` (below) is discharged (`corePhase_inflight_dom`); the five
-`sorry`s above remain, each a cycle-level sweep as itemized.
+They remain in `Wip` purely to avoid churning the `T5.lean` consumers'
+names; all are `sorry`-free.
 -/
 
 namespace Wip
@@ -1197,10 +1189,10 @@ theorem frame_step_full (m : Manifest) (d : DomainId) (σ : MachineState)
   have hctx := dctx_of_insulated hiso hins
   have hctxρ : DFrame.DCtx d (UnderRoots m d) (refillPhase m σ) := dctx_refill hctx
   have hwfρ : Wf (refillPhase m σ) := refillPhase_preserves_wf m σ hins.wf
-  have hexec : ExecPreservesWf :=
-    Machines.Lnp64u.Isa.execPreservesWf_of_system
-      Machines.Lnp64u.Isa.Wip.system_preserves
-  have hwfκ : Wf (corePhase m (refillPhase m σ)) := corePhase_preserves_wf hexec m hm _ hwfρ
+  have hexecA : ExecPreservesWfA :=
+    execPreservesWfA_of_system Machines.Lnp64u.Isa.Wip.system_preserves_wfa
+  have hwfκ : Wf (corePhase m (refillPhase m σ)) :=
+    (corePhase_preserves_wfa hexecA m hm _ hwfρ (acyclic_refillPhase m σ hins.acyclic)).1
   have hcy : DFrame.DCycle d (UnderRoots m d) (refillPhase m σ)
       (corePhase m (refillPhase m σ)) := by
     refine DFrame.corePhase_dcycle m _ hctxρ ?_ ?_
@@ -1259,12 +1251,11 @@ theorem insulated_step (m : Manifest) (d : DomainId) (σ : MachineState)
     Insulated m d (step m σ) := by
   have hexecA := execPreservesWfA_of_system Machines.Lnp64u.Isa.Wip.system_preserves_wfa
   obtain ⟨hwf', hac'⟩ := step_wfa hexecA m hm σ hins.wf hins.acyclic
-  have hexec : ExecPreservesWf :=
-    Machines.Lnp64u.Isa.execPreservesWf_of_system Machines.Lnp64u.Isa.Wip.system_preserves
   have hctx := dctx_of_insulated hiso hins
   have hctxρ := dctx_refill (m := m) hctx
   have hwfρ : Wf (refillPhase m σ) := refillPhase_preserves_wf m σ hins.wf
-  have hwfκ : Wf (corePhase m (refillPhase m σ)) := corePhase_preserves_wf hexec m hm _ hwfρ
+  have hwfκ : Wf (corePhase m (refillPhase m σ)) :=
+    (corePhase_preserves_wfa hexecA m hm _ hwfρ (acyclic_refillPhase m σ hins.acyclic)).1
   set ρ := refillPhase m σ with hρdef
   set κ := corePhase m ρ with hκdef
   have hdoms : (step m σ).doms = κ.doms := step_doms m σ
@@ -1788,14 +1779,14 @@ theorem retire_step_lockstep (m₁ m₂ : Manifest) (d : DomainId)
   have hctxρ₁ := dctx_refill (m := m₁) hctx₁
   have hctx₂ := dctx_of_insulated hiso₂ hins₂
   have hctxρ₂ := dctx_refill (m := m₂) hctx₂
-  have hexec : ExecPreservesWf :=
-    Machines.Lnp64u.Isa.execPreservesWf_of_system Machines.Lnp64u.Isa.Wip.system_preserves
+  have hexecA : ExecPreservesWfA :=
+    execPreservesWfA_of_system Machines.Lnp64u.Isa.Wip.system_preserves_wfa
   have hwfρ₁ : Wf (refillPhase m₁ σ₁) := refillPhase_preserves_wf m₁ σ₁ hins₁.wf
   have hwfρ₂ : Wf (refillPhase m₂ σ₂) := refillPhase_preserves_wf m₂ σ₂ hins₂.wf
   have hwfκ₁ : Wf (corePhase m₁ (refillPhase m₁ σ₁)) :=
-    corePhase_preserves_wf hexec m₁ hm₁ _ hwfρ₁
+    (corePhase_preserves_wfa hexecA m₁ hm₁ _ hwfρ₁ (acyclic_refillPhase m₁ σ₁ hins₁.acyclic)).1
   have hwfκ₂ : Wf (corePhase m₂ (refillPhase m₂ σ₂)) :=
-    corePhase_preserves_wf hexec m₂ hm₂ _ hwfρ₂
+    (corePhase_preserves_wfa hexecA m₂ hm₂ _ hwfρ₂ (acyclic_refillPhase m₂ σ₂ hins₂.acyclic)).1
   -- 1. both cores retire the latched word
   have hρinf₁ : (refillPhase m₁ σ₁).inflight = some ⟨d, w, c₁⟩ := by
     rw [refillPhase_inflight]; exact hf₁
@@ -2448,8 +2439,7 @@ theorem issue_step (m : Manifest) (d : DomainId) (σ : MachineState)
             · rw [hdomsd, hρdef, refillPhase_lineage]
             · rw [hdomsd, hρdef, refillPhase_regions]
 
-/-! ## Iterated engine corollaries (depend on the engine `sorry`s, so kept
-in `Wip`). -/
+
 
 end Wip
 
