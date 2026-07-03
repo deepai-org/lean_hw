@@ -138,4 +138,106 @@ theorem acyclic_of_parentRef_le (σ σ' : MachineState)
     (hac : Acyclic σ) : Acyclic σ' :=
   fun r => σ.climb_none_mono σ' hpar (numLineage + 1) r (hac r)
 
+/-- Climbs compose: `a + b` links is `a` links then `b` more. -/
+theorem MachineState.climb_add (σ : MachineState) (b : Nat) :
+    ∀ (a : Nat) (r : CapRef), σ.climb (a + b) r = (σ.climb a r).bind (σ.climb b) := by
+  intro a; induction a with
+  | zero => intro r; simp [MachineState.climb]
+  | succ n ih =>
+      intro r
+      show σ.climb (n + 1 + b) r = _
+      have : n + 1 + b = (n + b) + 1 := by omega
+      rw [this]
+      rw [show σ.climb ((n + b) + 1) r = (σ.parentRef r).bind (σ.climb (n + b)) from by
+        cases hp : σ.parentRef r with
+        | none => simp [MachineState.climb, hp]
+        | some p => simp [MachineState.climb, hp]]
+      rw [show σ.climb (n + 1) r = (σ.parentRef r).bind (σ.climb n) from by
+        cases hp : σ.parentRef r with
+        | none => simp [MachineState.climb, hp]
+        | some p => simp [MachineState.climb, hp]]
+      cases hp : σ.parentRef r with
+      | none => simp
+      | some p => simp only [hp, Option.bind_some]; exact ih p
+
+/-- Once a chain dies it stays dead as the horizon grows. -/
+theorem MachineState.climb_mono_none (σ : MachineState) :
+    ∀ k r, σ.climb k r = none → σ.climb (k + 1) r = none := by
+  intro k; induction k with
+  | zero => intro r h; simp [MachineState.climb] at h
+  | succ n ih =>
+      intro r h
+      rw [show σ.climb (n + 1) r = (σ.parentRef r).bind (σ.climb n) from by
+        cases hp : σ.parentRef r with
+        | none => simp [MachineState.climb, hp]
+        | some p => simp [MachineState.climb, hp]] at h
+      rw [show σ.climb (n + 1 + 1) r = (σ.parentRef r).bind (σ.climb (n + 1)) from by
+        cases hp : σ.parentRef r with
+        | none => simp [MachineState.climb, hp]
+        | some p => simp [MachineState.climb, hp]]
+      cases hp : σ.parentRef r with
+      | none => simp
+      | some p => simp only [hp, Option.bind_some] at h ⊢; exact ih p h
+
+/-- A dead chain stays dead at every larger horizon. -/
+theorem MachineState.climb_none_ge (σ : MachineState) (k : Nat) (r : CapRef)
+    (h : σ.climb k r = none) : ∀ m, k ≤ m → σ.climb m r = none := by
+  intro m
+  induction m with
+  | zero => intro hm; have hk : k = 0 := Nat.le_zero.mp hm; subst hk; exact h
+  | succ n ih =>
+      intro hm
+      rcases Nat.lt_or_ge k (n + 1) with hlt | hge
+      · exact σ.climb_mono_none n r (ih (by omega))
+      · have hk : k = n + 1 := by omega
+        rw [← hk]; exact h
+
+/-- **Acyclicity survives edge contraction.** If an operation reroutes every
+link into `a` onto `a`'s own parent `b` (splicing `a` out) and leaves all
+other links unchanged, acyclicity is preserved: each rerouted chain is the
+original with `a` skipped, hence no longer. This is exactly what `reparent`
+does in `cap_drop` (`a` = dropped ref, `b` = its parent). -/
+theorem acyclic_contract (σ σ' : MachineState) (a b : CapRef)
+    (hab : σ.parentRef a = some b)
+    (hpar : ∀ r, σ'.parentRef r =
+      if σ.parentRef r = some a then some b else σ.parentRef r)
+    (hac : Acyclic σ) : Acyclic σ' := by
+  have hc1 : ∀ x, σ.climb 1 x = σ.parentRef x := by intro x; simp [MachineState.climb]
+  have hkey : ∀ k r, ∃ m, k ≤ m ∧ σ'.climb k r = σ.climb m r := by
+    intro k; induction k with
+    | zero => intro r; exact ⟨0, le_refl _, rfl⟩
+    | succ n ih =>
+        intro r
+        have hstep : σ'.climb (n + 1) r = (σ'.parentRef r).bind (σ'.climb n) := by
+          cases hp : σ'.parentRef r with
+          | none => simp [MachineState.climb, hp]
+          | some p => simp [MachineState.climb, hp]
+        rw [hstep, hpar r]
+        by_cases hra : σ.parentRef r = some a
+        · rw [if_pos hra]; simp only [Option.bind_some]
+          obtain ⟨m, hm, he⟩ := ih b
+          refine ⟨2 + m, by omega, ?_⟩
+          rw [he, σ.climb_add m 2 r]
+          have h2 : σ.climb 2 r = some b := by
+            show σ.climb (1 + 1) r = some b
+            rw [σ.climb_add 1 1 r, hc1 r, hra, Option.bind_some, hc1 a, hab]
+          rw [h2]; simp
+        · rw [if_neg hra]
+          cases hq : σ.parentRef r with
+          | none =>
+              refine ⟨n + 1, le_refl _, ?_⟩
+              simp only [Option.bind_none]
+              have : σ.climb (n + 1) r = none := by rw [σ.climb_none n r hq]
+              rw [this]
+          | some q =>
+              simp only [Option.bind_some]
+              obtain ⟨m, hm, he⟩ := ih q
+              refine ⟨1 + m, by omega, ?_⟩
+              rw [he, σ.climb_add m 1 r, hc1 r, hq, Option.bind_some]
+  
+  intro r
+  obtain ⟨m, hm, he⟩ := hkey (numLineage + 1) r
+  rw [he]; exact σ.climb_none_ge (numLineage + 1) r (hac r) m hm
+
+
 end Machines.Lnp64u
