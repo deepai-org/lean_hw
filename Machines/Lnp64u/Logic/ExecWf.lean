@@ -1107,6 +1107,43 @@ theorem acyclic_reparent (σ : MachineState) (ref new : CapRef)
     Acyclic (σ.reparent ref new) :=
   acyclic_contract σ _ ref new hpar (reparent_parentRef σ ref new) hac
 
+
+/-- Structure of a surviving cap after `orphanChildren`: kind preserved, and
+its lineage kept-or-cleared (if kept, the cell is not a child of `old`).
+Infrastructure for `wf_orphanChildren` / `cap_drop`'s root-drop branch. -/
+theorem orphan_key (σ : MachineState) (old : CapRef) (d : DomainId) (s : Slot)
+    (e : CapEntry) (he : ((σ.orphanChildren old).doms d).caps s = some e) :
+    ∃ e0, (σ.doms d).caps s = some e0 ∧ e.kind = e0.kind ∧
+      (e.lineage = none ∨
+       (e.lineage = e0.lineage ∧ ∀ l, e0.lineage = some l →
+          ∀ cell, (σ.doms d).lineage l = some cell → cell.parent ≠ old)) := by
+  rw [orphanChildren_caps] at he
+  split at he
+  · next e0 hc0 =>
+      split at he
+      · next l0 hle0 =>
+          split at he
+          · next cellf hff =>
+              split at he
+              · next hpe =>
+                  injection he with he; subst e
+                  exact ⟨e0, hc0, rfl, Or.inl rfl⟩
+              · next hpe =>
+                  injection he with he; subst e
+                  refine ⟨e0, hc0, rfl, Or.inr ⟨rfl, fun l hl cell hcell => ?_⟩⟩
+                  rw [hle0] at hl; simp only [Option.some.injEq] at hl; subst hl
+                  rw [hcell] at hff; injection hff with hff; subst hff
+                  intro hx; exact hpe (by simp [hx])
+          · next hff =>
+              injection he with he; subst e
+              exact ⟨e0, hc0, rfl, Or.inr ⟨rfl, fun l hl cell hcell => by
+                rw [hle0] at hl; simp only [Option.some.injEq] at hl; subst hl
+                rw [hcell] at hff; simp at hff⟩⟩
+      · next hle0 =>
+          injection he with he; subst e
+          exact ⟨e0, hc0, rfl, Or.inr ⟨rfl, fun l hl => by rw [hle0] at hl; simp at hl⟩⟩
+  · next => simp at he
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
