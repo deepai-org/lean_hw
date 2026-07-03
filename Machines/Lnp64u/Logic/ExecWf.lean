@@ -2,6 +2,7 @@ import Machines.Lnp64u.SpecM
 import Machines.Lnp64u.Isa.System
 import Machines.Lnp64u.Logic.Wf
 import Machines.Lnp64u.Logic.PhaseLemmas
+import Machines.Lnp64u.Logic.Acyclic
 
 /-!
 # `SpecM` computations that preserve the invariant (L1 support for ExecPreservesWf)
@@ -997,6 +998,78 @@ theorem orphan_no_ref (σ : MachineState) (ref : CapRef) (dd : DomainId) (ss : S
               by_cases hpe : cell.parent = ref <;>
                 simp [hc0, hle0, hcc, hpe, Option.bind_eq_bind, orphanChildren_lineage] at hp
 
+
+
+/-- `clearSlot` only removes parent links: for every reference its parent is
+either unchanged or dropped to `none`. -/
+theorem clearSlot_parentRef_le (σ : MachineState) (d : DomainId) (s : Slot) (r : CapRef) :
+    (σ.clearSlot d s).parentRef r = σ.parentRef r ∨ (σ.clearSlot d s).parentRef r = none := by
+  unfold MachineState.parentRef MachineState.parentOf
+  rw [clearSlot_caps]
+  by_cases hds : r.dom = d ∧ r.slot = s
+  · right; rw [if_pos hds]; rfl
+  · rw [if_neg hds]
+    cases hc : (σ.doms r.dom).caps r.slot with
+    | none => left; rfl
+    | some e =>
+        cases hle : e.lineage with
+        | none => left; simp [hle]
+        | some l =>
+            simp only [hle, Option.bind_eq_bind, Option.bind_some]
+            rw [clearSlot_lineage]
+            by_cases hlrm : r.dom = d ∧ removedCell σ d s = some l
+            · right; rw [if_pos hlrm]; rfl
+            · left; rw [if_neg hlrm]
+
+/-- `clearSlot` preserves acyclicity. -/
+theorem acyclic_clearSlot (σ : MachineState) (d : DomainId) (s : Slot)
+    (hac : Acyclic σ) : Acyclic (σ.clearSlot d s) :=
+  acyclic_of_parentRef_le σ _ (clearSlot_parentRef_le σ d s) hac
+
+/-- `orphanChildren` only removes parent links (orphaned caps lose their
+lineage index; their cells are freed). -/
+theorem orphanChildren_parentRef_le (σ : MachineState) (old : CapRef) (r : CapRef) :
+    (σ.orphanChildren old).parentRef r = σ.parentRef r ∨
+    (σ.orphanChildren old).parentRef r = none := by
+  unfold MachineState.parentRef MachineState.parentOf
+  rw [orphanChildren_caps]
+  cases hc : (σ.doms r.dom).caps r.slot with
+  | none => left; rfl
+  | some e =>
+      cases hle : e.lineage with
+      | none => left; simp [hle]
+      | some l =>
+          cases hcc : (σ.doms r.dom).lineage l with
+          | none =>
+              -- not a child (lineage none), cap survives, lineage l stays none
+              left; simp only [hle, hcc, Bool.false_eq_true, if_false, Option.bind_eq_bind,
+                Option.bind_some, orphanChildren_lineage, hcc]
+          | some cell =>
+              by_cases hpe : cell.parent = old
+              · -- orphaned: cap's lineage cleared
+                right; simp [hle, hcc, hpe, Option.bind_eq_bind]
+              · -- survives unchanged
+                left; simp only [hle, hcc, hpe, decide_false, Bool.false_eq_true, if_false,
+                  Option.bind_eq_bind, Option.bind_some, orphanChildren_lineage, hcc]
+
+/-- `orphanChildren` preserves acyclicity. -/
+theorem acyclic_orphanChildren (σ : MachineState) (old : CapRef)
+    (hac : Acyclic σ) : Acyclic (σ.orphanChildren old) :=
+  acyclic_of_parentRef_le σ _ (orphanChildren_parentRef_le σ old) hac
+
+/-- The sweeps leave `caps`/`lineage` untouched, hence acyclicity. -/
+theorem acyclic_sweepRegions (σ : MachineState) (hac : Acyclic σ) :
+    Acyclic σ.sweepRegions :=
+  acyclic_of_parentRef_eq σ _
+    (parentRef_eq_of_doms σ _ (fun d => ⟨sweepRegions_caps σ d, sweepRegions_lineage σ d⟩)) hac
+
+theorem acyclic_sweepMover (σ : MachineState) (hac : Acyclic σ) :
+    Acyclic σ.sweepMover :=
+  acyclic_of_parentRef_eq σ _
+    (parentRef_eq_of_doms σ _ (fun d => by
+      constructor
+      · rw [sweepMover_doms]
+      · rw [sweepMover_doms])) hac
 
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
