@@ -167,4 +167,14 @@ theorem corePhase_preserves_acyclic (hexec : ExecPreservesAcyclic) (m : Manifest
                       · simp only [hdon, if_false]; exact acyclic_haltWith σ d .budget hac
             · simp only [hbud, if_false]; exact hac
 
+/-- **Acyclicity is preserved by one cycle**, reduced to `ExecPreservesAcyclic`.
+The three non-instruction phases preserve it freely; `corePhase` uses the exec
+obligation (which needs `Wf`, threaded from the refill phase). -/
+theorem acyclic_step (hexec : ExecPreservesAcyclic) (m : Manifest) (σ : MachineState)
+    (hwf : Wf σ) (hac : Acyclic σ) : Acyclic (step m σ) := by
+  unfold step
+  refine acyclic_setCycle _ _ (acyclic_moverPhase _ (corePhase_preserves_acyclic hexec m _ ?_ ?_))
+  · exact refillPhase_preserves_wf m σ hwf
+  · exact acyclic_refillPhase m σ hac
+
 end Machines.Lnp64u
