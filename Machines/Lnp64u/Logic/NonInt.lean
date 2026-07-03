@@ -1,14 +1,18 @@
-import Machines.Lnp64u.Logic.Wf
+import Machines.Lnp64u.Logic.GateStep
+import Machines.Lnp64u.Logic.Inflight
+import Machines.Lnp64u.Logic.Authority
+import Machines.Lnp64u.Logic.Hostage
+import Machines.Lnp64u.Theorems.Inv
 import Mathlib.Data.List.Basic
 
 /-!
-# Noninterference vocabulary and scheduling lemmas (T5 support)
+# Noninterference vocabulary and engine lemmas (T5 support)
 
-Definitions and sorry-free lemmas for T5 (`Theorems/T5.lean`). This file
-records the *adjudicated* form of the theorem's vocabulary; the original
-statement was falsifiable — see the adjudication note below.
+Definitions and lemmas for T5 (`Theorems/T5.lean`). This file records the
+*adjudicated* form of the theorem's vocabulary; the original statement was
+falsified twice — see the adjudication notes below.
 
-## Adjudication: the original T5 statement was FALSE
+## Adjudication 1: the original T5 statement was FALSE (scheduling/grants)
 
 The original statement hypothesized only `Isolated` (no gate caps held by
 `d`, no gate whose callee is `d`, root-range disjointness) and `AgreeOn`
@@ -30,69 +34,77 @@ counterexample refutes it:
   than falling through to the next domain). With `Q = P`, `H`'s budget is
   refilled every period and upfront charging can never exhaust it below 1
   at an issue opportunity, so `d` is never scheduled: `d` never retires,
-  its compared fields (`regs`/`pc`/`run`/`cause`) never change (refill
-  touches only `budget`, which `destutter` ignores), and its destuttered
-  trajectory has length 1 forever.
+  its compared fields (`regs`/`pc`/`run`/`cause`) never change, and its
+  destuttered trajectory has length 1 forever.
 
-For `n` large enough that `destutter (trajectory m₁ d n)` has length ≥ 2,
-no `k` makes it a prefix of the length-≤ 1 list `destutter (trajectory m₂
-d k)`. Hence the statement was false; the theorem now additionally
-hypothesizes `TopPriority` for both manifests, and `Isolated` gains the
-clauses below.
+Hence the theorem now hypothesizes `TopPriority` for both manifests, and
+`Isolated` gains clauses closing the *grant-in* channel (`mem_grant`
+installs capabilities into the target's table without consent, perturbing
+the target's later `cap_dup` handle values) and the *globally-sensitive
+instruction* channel (`d`'s own `mem_grant`/`move` read foreign table
+state / machine-global Mover state into `d`'s `rd`):
 
-## Why `Isolated` needed strengthening beyond priority
+* `slots_full` — `d`'s slot table boots full, so every grant into `d`
+  fails with `-ESLOTOCCUPIED` at the granter;
+* `code_local` — no word of `d`'s code decodes to `cap_drop` (17),
+  `cap_revoke` (18), `mem_grant` (19), or `move` (24).
 
-Even with `d` at top priority in both manifests, other domains still get
-core cycles (whenever `d`'s budget is exhausted or `d` is in flight), and
-the machine has cross-domain channels that reach `d` *without* `d`'s
-authority ranges overlapping anyone's:
+## Adjudication 2 (this pass): two further proof-forced repairs
 
-1. **Grants in.** `mem_grant` installs a capability into the *target*
-   domain's lowest free slot and consumes one of the target's lineage
-   cells (`allocDerived (descDom dw) …`), requiring no consent from the
-   target. A foreign capability parked in `d`'s table never changes `d`'s
-   compared fields directly, but it perturbs `d`'s *own* subsequent
-   `cap_dup` results: the chosen free slot (hence the handle word written
-   to `rd`) and the lineage quota (hence `-ENOLINEAGE`) both depend on
-   table occupancy. Since the granter's behavior is unconstrained and
-   differs between manifests, this leaks into `d`'s register trajectory.
-   Closed by `slots_full`: `d`'s slot table boots full, so `freeSlot d =
-   none` and every grant into `d` fails with `-ESLOTOCCUPIED` at the
-   granter — *provided `d` never frees a slot*, which `code_local` below
-   guarantees (no `cap_drop`/`cap_revoke` in `d`'s code).
+**2a. The observation had to become a projection.** The first repair kept
+`destutter : List DomainState → List DomainState` (deduplicating by the
+compared fields) and demanded a *list prefix* — i.e. full `DomainState`
+equality of the kept representatives. But the kept elements carry `budget`,
+and the two runs' budgets provably drift: refill happens at *absolute*
+cycles (`σ.cycle % periodP = 0`, and `σ.cycle` advances identically in both
+runs) while spending happens at *drifted* issue cycles (the other domains'
+in-flight instructions delay `d` differently in the two manifests). Whether
+a refill lands between `d`'s j-th and (j+1)-th retirement is therefore
+run-dependent, so the pre-event `budget` values differ and no prefix of
+full `DomainState`s exists. The observation is now an explicit projection
+`Obs` (`regs`/`pc`/`run`/`cause`) and `destutter`/`trajectory` work on
+`List Obs`. This is the honest statement: budget and capability
+bookkeeping are timing/authority state, not architectural observation.
 
-2. **`d`'s own globally-sensitive instructions.** Even with no foreign
-   state in `d`'s tables, three of `d`'s own operations read shared or
-   foreign state into `d`'s registers:
-   * `mem_grant` *out of* `d` returns the target-relative handle (the
-     target's free slot and generation) or `-ESLOTOCCUPIED`/`-ENOLINEAGE`
-     depending on the *target's* table — unconstrained across manifests.
-   * `move` returns `-EMOVERBUSY` whenever the single machine-wide Mover
-     is running *anyone's* job.
-   * `cap_drop`/`cap_revoke` free `d`'s slots, reopening channel 1.
-   Closed by `code_local`: no word of `d`'s ROM (under `d`'s roots, which
-   is everywhere `d` can ever fetch, by authority confinement) decodes to
-   `cap_drop` (17), `cap_revoke` (18), `mem_grant` (19), or `move` (24).
-   Everything else `d` can execute — ALU/branch ops, `lw`/`sw` in its own
-   disjoint ranges, `cap_dup`, `map`/`unmap`, `yield`, `halt`, and the
-   (deterministically failing, since `d` holds no gate capabilities)
-   `gate_call`/`gate_return` — reads and writes only `d`'s slice plus
-   memory under `d`'s own authority.
+**2b. `Isolated` needs W^X *across* `d`'s roots (`wx_disjoint`).** The
+machine enforces W^X per capability, but nothing stops a manifest giving
+`d` two *overlapping* roots, one writable and one executable. `d` could
+then rewrite its own code region and execute words that are not in the
+ROM — in particular `move` (reads the machine-global Mover busy state
+into `rd`) or `mem_grant` (reads the target's table state) — reopening
+the global channels `code_local` closed, because `code_local` constrains
+only the *ROM*. `wx_disjoint` requires `d`'s writable roots to be
+range-disjoint from its executable roots, which makes "memory under
+`d`'s executable roots equals the ROM" (`Insulated.code_intact`) an
+invariant, so every word `d` ever fetches is a ROM word.
 
 ## The residual argument (why the strengthened statement is true)
 
-With `TopPriority`, `schedule_top` below gives: whenever the core is idle
-and `d` is running with positive budget, `d` is issued. Other domains'
+With `TopPriority`, `schedule_top` gives: whenever the core is idle and
+`d` is running with positive budget, `d` is issued. Other domains'
 in-flight instructions still *delay* `d` (issue cycles drift between the
-two runs) and `d`'s budget *values* differ transiently (refill happens at
-absolute cycles, spending happens at drifted issue cycles), but budget is
-never architecturally observable (no instruction reads it), so the drift
-is pure stutter: `d`'s *k*-th retirement computes the same architectural
-`d`-state in both runs (coupling `Coupled` below), and `d` is never
-starved (each in-flight instruction finishes, each period refills `d` to
-`budgetQ`), so run 2 eventually makes as many `d`-retirements as run 1's
-`n`-cycle prefix contains. Destuttering erases the drift and yields the
-prefix relation.
+two runs) and `d`'s budget *values* differ transiently, but budget is
+never architecturally observable, so the drift is pure stutter: `d`'s
+k-th observation change computes the same `Obs` in both runs (the
+`Coupled` invariant below), and `d` is never starved (each in-flight
+instruction finishes, each period refills `d` to `budgetQ`, and `d`'s
+issue costs are ≤ `budgetQ` whenever they were ever payable), so run 2
+eventually realizes every observation change of run 1's `n`-cycle prefix.
+Destuttering erases the drift and yields the prefix.
+
+The proof is assembled in `Theorems/T5.lean` from four engine lemmas
+(stated at the bottom of this file, in the `Wip` namespace while their
+sweeps are completed):
+
+* `insulated_step` — the per-run invariant `Insulated` is inductive;
+* `frame_step` — on a cycle that neither retires `d`'s instruction nor
+  issues for `d`, `d`'s architectural slice and the memory under `d`'s
+  roots are untouched (`DFrozen`);
+* `retire_step_lockstep` — when both runs retire the same latched word
+  for `d` from `Coupled` states, the post-states are `Coupled`;
+* `progress` — from any quiescent state with `d` running, run 2 reaches
+  an issue instant for `d` (with any required budget ≤ `budgetQ`
+  available) through a `d`-frozen window.
 -/
 
 namespace Machines.Lnp64u.NonInt
@@ -114,10 +126,25 @@ def UnderRoots (m : Manifest) (d : DomainId) (a : Addr) : Prop :=
   ∃ s b l p, (m.doms d).initCaps s = some (.mem b l p) ∧
     b.toNat ≤ a.toNat ∧ a.toNat < b.toNat + l.toNat
 
+/-- Address `a` lies under an *executable* root of `d`: everywhere `d` can
+ever fetch from. -/
+def UnderXRoots (m : Manifest) (d : DomainId) (a : Addr) : Prop :=
+  ∃ s b l p, (m.doms d).initCaps s = some (.mem b l p) ∧ p.x = true ∧
+    b.toNat ≤ a.toNat ∧ a.toNat < b.toNat + l.toNat
+
+theorem UnderXRoots.underRoots {m : Manifest} {d : DomainId} {a : Addr}
+    (h : UnderXRoots m d a) : UnderRoots m d a := by
+  obtain ⟨s, b, l, p, h1, _, h3, h4⟩ := h
+  exact ⟨s, b, l, p, h1, h3, h4⟩
+
+theorem underRoots_congr {m₁ m₂ : Manifest} {d : DomainId}
+    (h : m₁.doms d = m₂.doms d) (a : Addr) :
+    UnderRoots m₁ d a ↔ UnderRoots m₂ d a := by
+  unfold UnderRoots; rw [h]
+
 /-- Domain `d` is authority-isolated in manifest `m`. Clauses 1–3 are the
-original path-freedom conditions; clauses 4–5 were forced by adjudication
-(see the module docstring): they close the grant-in channel and forbid
-`d`'s own globally-sensitive instructions. -/
+original path-freedom conditions; the rest were forced by adjudication
+(see the module docstring). -/
 structure Isolated (m : Manifest) (d : DomainId) : Prop where
   /-- `d` holds no gate capabilities (it can call nobody). -/
   no_gates_held : ∀ s g, (m.doms d).initCaps s ≠ some (.gate g)
@@ -136,11 +163,19 @@ structure Isolated (m : Manifest) (d : DomainId) : Prop where
   /-- No word of `d`'s code decodes to a slot-freeing or globally-sensitive
   op: `cap_drop` (17) and `cap_revoke` (18) would reopen the grant-in
   channel by freeing a slot; `mem_grant` (19) by `d` reads the *target's*
-  table state into `d`'s `rd`; `move` reads the machine-global Mover
+  table state into `d`'s `rd`; `move` (24) reads the machine-global Mover
   busy/idle state into `d`'s `rd`. -/
   code_local : ∀ a, UnderRoots m d a →
     ∀ i, Loom.Isa.decode isa (m.rom a) = some i →
       i.opcode ≠ 17 ∧ i.opcode ≠ 18 ∧ i.opcode ≠ 19 ∧ i.opcode ≠ 24
+  /-- W^X across `d`'s roots (adjudication 2b): `d`'s writable roots are
+  range-disjoint from its executable roots, so `d` cannot rewrite its own
+  code and smuggle in the opcodes `code_local` excludes. -/
+  wx_disjoint : ∀ s s' b l p b' l' p',
+    (m.doms d).initCaps s = some (.mem b l p) →
+    (m.doms d).initCaps s' = some (.mem b' l' p') →
+    p.w = true → p'.x = true →
+    b.toNat + l.toNat ≤ b'.toNat ∨ b'.toNat + l'.toNat ≤ b.toNat
 
 /-- Two manifests agree on everything `d` can see: `d`'s configuration and
 the ROM under `d`'s root ranges. -/
@@ -148,45 +183,162 @@ def AgreeOn (m₁ m₂ : Manifest) (d : DomainId) : Prop :=
   m₁.doms d = m₂.doms d ∧
   (∀ a, UnderRoots m₁ d a → m₁.rom a = m₂.rom a)
 
-/-! ## Observation and destuttering -/
+/-! ## Observation and destuttering (adjudication 2a) -/
 
-/-- The observation equivalence `destutter` collapses under: equal compared
-fields (registers, PC, run state, cause). Budget, capability tables, and
-region registers are deliberately *not* observed — timing and authority
-bookkeeping are where the two runs are allowed to drift. -/
-def ObsEq (x y : DomainState) : Prop :=
-  x.regs = y.regs ∧ x.pc = y.pc ∧ x.run = y.run ∧ x.cause = y.cause
+/-- The architectural observation of one domain: registers, program
+counter, run state, cause. Budget, capability tables, and region registers
+are deliberately *not* observed — timing and authority bookkeeping are
+where the two runs are allowed to drift. -/
+structure Obs where
+  regs : RegId → Loom.Word32
+  pc : Addr
+  run : RunState
+  cause : Loom.Word32
 
-instance (x y : DomainState) : Decidable (ObsEq x y) :=
-  inferInstanceAs (Decidable (_ ∧ _ ∧ _ ∧ _))
+theorem Obs.ext_iff (x y : Obs) :
+    x = y ↔ x.regs = y.regs ∧ x.pc = y.pc ∧ x.run = y.run ∧ x.cause = y.cause := by
+  constructor
+  · intro h; subst h; exact ⟨rfl, rfl, rfl, rfl⟩
+  · rintro ⟨h1, h2, h3, h4⟩; cases x; cases y; simp_all
 
-theorem ObsEq.refl (x : DomainState) : ObsEq x x := ⟨rfl, rfl, rfl, rfl⟩
+instance : DecidableEq Obs := fun x y =>
+  decidable_of_iff _ (Obs.ext_iff x y).symm
 
-/-- Remove consecutive `ObsEq`-duplicates (keeping the last of each run). -/
-def destutter : List DomainState → List DomainState
+/-- Project a domain state to its observation. -/
+def obsOf (ds : DomainState) : Obs :=
+  { regs := ds.regs, pc := ds.pc, run := ds.run, cause := ds.cause }
+
+/-- Remove consecutive duplicates. -/
+def destutter : List Obs → List Obs
   | [] => []
   | [x] => [x]
   | x :: y :: rest =>
-      if ObsEq x y then destutter (y :: rest) else x :: destutter (y :: rest)
+      if x = y then destutter (y :: rest) else x :: destutter (y :: rest)
 
-/-- `d`'s architectural trajectory over `n` cycles. -/
-def trajectory (m : Manifest) (d : DomainId) (n : Nat) : List DomainState :=
-  (List.range n).map fun i => (stepN m i m.initState).doms d
+/-- `d`'s observed trajectory over `n` cycles. -/
+def trajectory (m : Manifest) (d : DomainId) (n : Nat) : List Obs :=
+  (List.range n).map fun i => obsOf ((stepN m i m.initState).doms d)
 
-/-- A constant trajectory destutters to a single point. -/
-theorem destutter_replicate (x : DomainState) :
-    ∀ n, destutter (List.replicate (n + 1) x) = [x]
-  | 0 => rfl
-  | n + 1 => by
-      show destutter (x :: x :: List.replicate n x) = [x]
-      rw [destutter, if_pos (ObsEq.refl x)]
-      exact destutter_replicate x n
+/-! ### Destutter combinatorics -/
 
-/-- Destuttering a pointwise-`ObsEq`… more useful here: prepending an
-`ObsEq`-equal head does not change the destuttered list. -/
-theorem destutter_cons_obsEq (x y : DomainState) (l : List DomainState)
-    (h : ObsEq x y) : destutter (x :: y :: l) = destutter (y :: l) := by
-  rw [destutter, if_pos h]
+theorem destutter_snoc_stutter :
+    ∀ (l : List Obs) (x : Obs), l.getLast? = some x →
+      destutter (l ++ [x]) = destutter l
+  | [], x, h => by simp at h
+  | [a], x, h => by
+      simp only [List.getLast?_singleton, Option.some.injEq] at h
+      subst h
+      show destutter [a, a] = destutter [a]
+      show (if a = a then destutter [a] else a :: destutter [a]) = destutter [a]
+      rw [if_pos rfl]
+  | a :: b :: t, x, h => by
+      have hlast : (b :: t).getLast? = some x := by
+        rw [← h, List.getLast?_cons_cons]
+      have ih : destutter (b :: (t ++ [x])) = destutter (b :: t) := by
+        rw [← List.cons_append]
+        exact destutter_snoc_stutter (b :: t) x hlast
+      show destutter (a :: b :: (t ++ [x])) = destutter (a :: b :: t)
+      show (if a = b then destutter (b :: (t ++ [x]))
+            else a :: destutter (b :: (t ++ [x]))) =
+           (if a = b then destutter (b :: t) else a :: destutter (b :: t))
+      by_cases hab : a = b
+      · rw [if_pos hab, if_pos hab]
+        exact ih
+      · rw [if_neg hab, if_neg hab, ih]
+
+theorem destutter_snoc_new :
+    ∀ (l : List Obs) (x y : Obs), l.getLast? = some x → x ≠ y →
+      destutter (l ++ [y]) = destutter l ++ [y]
+  | [], x, y, h, _ => by simp at h
+  | [a], x, y, h, hxy => by
+      simp only [List.getLast?_singleton, Option.some.injEq] at h
+      subst h
+      show destutter [a, y] = destutter [a] ++ [y]
+      show (if a = y then destutter [y] else a :: destutter [y]) = destutter [a] ++ [y]
+      rw [if_neg hxy]
+      rfl
+  | a :: b :: t, x, y, h, hxy => by
+      have hlast : (b :: t).getLast? = some x := by
+        rw [← h, List.getLast?_cons_cons]
+      have ih : destutter (b :: (t ++ [y])) = destutter (b :: t) ++ [y] := by
+        rw [← List.cons_append]
+        exact destutter_snoc_new (b :: t) x y hlast hxy
+      show destutter (a :: b :: (t ++ [y])) = destutter (a :: b :: t) ++ [y]
+      show (if a = b then destutter (b :: (t ++ [y]))
+            else a :: destutter (b :: (t ++ [y]))) =
+           (if a = b then destutter (b :: t) else a :: destutter (b :: t)) ++ [y]
+      by_cases hab : a = b
+      · rw [if_pos hab, if_pos hab]
+        exact ih
+      · rw [if_neg hab, if_neg hab, ih]
+        rfl
+
+/-- Appending one element to two lists with equal destutters and equal last
+elements keeps the destutters equal (uniform in whether the new element
+stutters). -/
+theorem destutter_snoc_congr {l₁ l₂ : List Obs} {x : Obs} (y : Obs)
+    (heq : destutter l₁ = destutter l₂)
+    (h₁ : l₁.getLast? = some x) (h₂ : l₂.getLast? = some x) :
+    destutter (l₁ ++ [y]) = destutter (l₂ ++ [y]) := by
+  by_cases hxy : x = y
+  · subst hxy
+    rw [destutter_snoc_stutter l₁ x h₁, destutter_snoc_stutter l₂ x h₂, heq]
+  · rw [destutter_snoc_new l₁ x y h₁ hxy, destutter_snoc_new l₂ x y h₂ hxy, heq]
+
+/-- Appending a run of stutters changes nothing. -/
+theorem destutter_append_replicate (l : List Obs) (x : Obs) (j : Nat)
+    (h : l.getLast? = some x) :
+    destutter (l ++ List.replicate j x) = destutter l := by
+  induction j generalizing l with
+  | zero => simp
+  | succ n ih =>
+      have : l ++ List.replicate (n + 1) x = (l ++ [x]) ++ List.replicate n x := by
+        rw [List.replicate_succ, List.append_assoc]
+        rfl
+      rw [this, ih (l ++ [x]) (by simp), destutter_snoc_stutter l x h]
+
+theorem getLast?_append_replicate {α : Type} (l : List α) (x : α) (j : Nat)
+    (h : l.getLast? = some x) :
+    (l ++ List.replicate j x).getLast? = some x := by
+  cases j with
+  | zero => simpa using h
+  | succ n =>
+      have : l ++ List.replicate (n + 1) x = (l ++ List.replicate n x) ++ [x] := by
+        rw [List.replicate_succ', ← List.append_assoc]
+      rw [this]
+      exact List.getLast?_concat
+
+/-! ### Trajectory algebra -/
+
+theorem trajectory_succ (m : Manifest) (d : DomainId) (n : Nat) :
+    trajectory m d (n + 1) =
+      trajectory m d n ++ [obsOf ((stepN m n m.initState).doms d)] := by
+  unfold trajectory
+  rw [List.range_succ, List.map_append]
+  rfl
+
+theorem trajectory_one (m : Manifest) (d : DomainId) :
+    trajectory m d 1 = [obsOf (m.initState.doms d)] := by
+  show [obsOf ((stepN m 0 m.initState).doms d)] = [obsOf (m.initState.doms d)]
+  rfl
+
+theorem trajectory_getLast (m : Manifest) (d : DomainId) (n : Nat) :
+    (trajectory m d (n + 1)).getLast? =
+      some (obsOf ((stepN m n m.initState).doms d)) := by
+  rw [trajectory_succ]
+  exact List.getLast?_concat
+
+/-- Splitting a trajectory at cycle `a`. -/
+theorem trajectory_add (m : Manifest) (d : DomainId) (a : Nat) :
+    ∀ b, trajectory m d (a + b) =
+      trajectory m d a ++
+        (List.range b).map (fun i => obsOf ((stepN m (a + i) m.initState).doms d))
+  | 0 => by simp [trajectory]
+  | b + 1 => by
+      rw [show a + (b + 1) = (a + b) + 1 from rfl, trajectory_succ,
+        trajectory_add m d a b, List.range_succ, List.map_append,
+        List.append_assoc]
+      rfl
 
 /-! ## Scheduling: top priority wins -/
 
@@ -309,6 +461,13 @@ theorem refillPhase_frame (m : Manifest) (σ : MachineState) :
   · rw [if_pos h0]; exact ⟨rfl, rfl, rfl, rfl, rfl⟩
   · rw [if_neg h0]; exact ⟨rfl, rfl, rfl, rfl, rfl⟩
 
+/-- Refill keeps a bounded budget bounded (it only ever resets to `Q`). -/
+theorem refillPhase_budget_le (m : Manifest) (σ : MachineState) (d : DomainId)
+    (h : (σ.doms d).budget ≤ (m.doms d).budgetQ) :
+    ((refillPhase m σ).doms d).budget ≤ (m.doms d).budgetQ := by
+  rcases refillPhase_doms m σ d with hr | hr <;> rw [hr]
+  exact h
+
 /-- The mover phase touches nothing but memory and the job record: every
 domain's state, the in-flight instruction, the gates, and the cycle
 counter pass through unchanged. -/
@@ -320,49 +479,192 @@ theorem moverPhase_frame (σ : MachineState) :
   | none => exact ⟨rfl, rfl, rfl, rfl⟩
   | some job => dsimp only; split_ifs <;> exact ⟨rfl, rfl, rfl, rfl⟩
 
-/-! ## The two-run coupling invariant -/
+/-- Refill leaves fetch alone (it touches only budgets). -/
+theorem refillPhase_fetch (m : Manifest) (σ : MachineState) (d : DomainId) :
+    fetch (refillPhase m σ) d = fetch σ d := by
+  unfold fetch MachineState.domCovers MachineState.read
+  rw [refillPhase_regions, refillPhase_pc, (refillPhase_frame m σ).1]
 
-/-- The coupling between the two runs, asserted at *aligned* instants
-(equal counts of `d`-retirements, not equal cycle numbers — issue cycles
-drift because the other domains' in-flight instructions occupy the core
-for run-dependent stretches).
+/-! ## Instruction costs are positive -/
+
+theorem cost_pos : ∀ c : WcetClass, 0 < c.cost := by
+  intro c; cases c <;> decide
+
+/-! ## The d-slice frame and the two-run coupling -/
+
+/-- Nothing of `d`'s architectural slice moved between `σ` and `σ'`, and
+memory under `d`'s roots is untouched. (`budget` is deliberately absent —
+refill touches it on every period boundary.) -/
+structure DFrozen (m : Manifest) (d : DomainId) (σ σ' : MachineState) : Prop where
+  regs : (σ'.doms d).regs = (σ.doms d).regs
+  pc : (σ'.doms d).pc = (σ.doms d).pc
+  run : (σ'.doms d).run = (σ.doms d).run
+  cause : (σ'.doms d).cause = (σ.doms d).cause
+  serving : (σ'.doms d).serving = (σ.doms d).serving
+  caps : (σ'.doms d).caps = (σ.doms d).caps
+  slotGen : (σ'.doms d).slotGen = (σ.doms d).slotGen
+  lineage : (σ'.doms d).lineage = (σ.doms d).lineage
+  regions : (σ'.doms d).regions = (σ.doms d).regions
+  mem : ∀ a, UnderRoots m d a → σ'.mem a = σ.mem a
+
+theorem DFrozen.refl (m : Manifest) (d : DomainId) (σ : MachineState) :
+    DFrozen m d σ σ :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, fun _ _ => rfl⟩
+
+theorem DFrozen.trans {m : Manifest} {d : DomainId} {σ σ₁ σ₂ : MachineState}
+    (h1 : DFrozen m d σ σ₁) (h2 : DFrozen m d σ₁ σ₂) : DFrozen m d σ σ₂ :=
+  ⟨h2.regs.trans h1.regs, h2.pc.trans h1.pc, h2.run.trans h1.run,
+   h2.cause.trans h1.cause, h2.serving.trans h1.serving, h2.caps.trans h1.caps,
+   h2.slotGen.trans h1.slotGen, h2.lineage.trans h1.lineage,
+   h2.regions.trans h1.regions,
+   fun a ha => (h2.mem a ha).trans (h1.mem a ha)⟩
+
+theorem DFrozen.obs_eq {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (h : DFrozen m d σ σ') : obsOf (σ'.doms d) = obsOf (σ.doms d) := by
+  unfold obsOf; rw [h.regs, h.pc, h.run, h.cause]
+
+/-- The two-run coupling on `d`'s dynamic architectural slice, asserted at
+*aligned* instants (equal counts of `d`-observation changes, not equal
+cycle numbers — issue cycles drift because the other domains' in-flight
+instructions occupy the core for run-dependent stretches).
 
 What is deliberately **excluded**, and why it is sound to exclude it:
 
-* `budget` of `d` — refill happens at absolute cycles (`σ.cycle %
-  periodP`), spending at drifted issue cycles, so the two budgets differ
-  transiently. No instruction reads the budget (only `yield` writes it,
-  to the constant 0), so the difference is unobservable; it affects only
-  *when* `d` issues, never *what* the issued instruction computes. It
-  does force the coupling to carry a liveness side-argument (`d` is
-  refilled every period and wins every idle cycle, so it is never starved)
-  rather than a budget equality.
-* everything about the other domains, the gates, and memory outside `d`'s
-  roots — unconstrained by hypothesis, unread by `d` (`code_local` +
-  root disjointness + authority confinement).
-* `σ.cycle`, `σ.mover`, and non-`d` in-flight state — pure timing. -/
+* `budget` — refill happens at absolute cycles, spending at drifted issue
+  cycles, so the two budgets differ transiently. No instruction reads the
+  budget, so the difference only affects *when* `d` issues, never *what*
+  the issued instruction computes; the liveness side (`progress`) covers
+  the "when".
+* `caps`/`slotGen`/`lineage` — for an insulated `d` these are *constant*
+  (equal to boot in both runs, `Insulated.boot_*` + `AgreeOn`), so they
+  need no coupling clause.
+* everything about the other domains, the gates, memory outside `d`'s
+  roots, `σ.cycle`, `σ.mover`, and the in-flight latch — timing and
+  foreign state, unread by `d`'s slice. -/
 structure Coupled (m : Manifest) (d : DomainId) (σ₁ σ₂ : MachineState) : Prop where
   regs : (σ₁.doms d).regs = (σ₂.doms d).regs
   pc : (σ₁.doms d).pc = (σ₂.doms d).pc
   run : (σ₁.doms d).run = (σ₂.doms d).run
   cause : (σ₁.doms d).cause = (σ₂.doms d).cause
-  /-- Isolation keeps `d` out of gate service in both runs. -/
-  serving : (σ₁.doms d).serving = none ∧ (σ₂.doms d).serving = none
-  /-- Full authority-bookkeeping equality: `d`'s own cap ops (`cap_dup`,
-  `map`, `unmap`) read and write these, and no foreign grant ever lands
-  (`slots_full` + `code_local`), so they evolve in lockstep. -/
-  caps : (σ₁.doms d).caps = (σ₂.doms d).caps
-  slotGen : (σ₁.doms d).slotGen = (σ₂.doms d).slotGen
-  lineage : (σ₁.doms d).lineage = (σ₂.doms d).lineage
   regions : (σ₁.doms d).regions = (σ₂.doms d).regions
-  /-- Memory under `d`'s roots is equal: only `d` writes there (roots
-  disjoint + confinement + Mover jobs re-check the issuer's own caps). -/
+  /-- Memory under `d`'s roots is equal: only `d` writes there. -/
   mem : ∀ a, UnderRoots m d a → σ₁.mem a = σ₂.mem a
-  /-- `d`'s in-flight status is aligned: at aligned instants either `d` is
-  in flight in both runs with the same latched word and countdown, or in
-  neither. (Non-`d` in-flight records are unconstrained.) -/
-  inflight : ∀ fl, fl.dom = d →
-    (σ₁.inflight = some fl ↔ σ₂.inflight = some fl)
+
+theorem Coupled.obs_eq {m : Manifest} {d : DomainId} {σ₁ σ₂ : MachineState}
+    (h : Coupled m d σ₁ σ₂) : obsOf (σ₁.doms d) = obsOf (σ₂.doms d) := by
+  unfold obsOf; rw [h.regs, h.pc, h.run, h.cause]
+
+/-- Transport a coupling across a frozen stretch of run 1. -/
+theorem Coupled.frozen_left {m : Manifest} {d : DomainId} {σ₁ σ₁' σ₂ : MachineState}
+    (h : Coupled m d σ₁ σ₂) (hf : DFrozen m d σ₁ σ₁') : Coupled m d σ₁' σ₂ :=
+  ⟨hf.regs.trans h.regs, hf.pc.trans h.pc, hf.run.trans h.run,
+   hf.cause.trans h.cause, hf.regions.trans h.regions,
+   fun a ha => (hf.mem a ha).trans (h.mem a ha)⟩
+
+/-- Transport a coupling across a frozen stretch of run 2 (whose frame is
+stated against `m₂`'s roots — equal to `m₁`'s under agreement). -/
+theorem Coupled.frozen_right {m₁ m₂ : Manifest} {d : DomainId}
+    {σ₁ σ₂ σ₂' : MachineState} (h : Coupled m₁ d σ₁ σ₂)
+    (hf : DFrozen m₂ d σ₂ σ₂') (hdom : m₁.doms d = m₂.doms d) :
+    Coupled m₁ d σ₁ σ₂' :=
+  ⟨h.regs.trans hf.regs.symm, h.pc.trans hf.pc.symm, h.run.trans hf.run.symm,
+   h.cause.trans hf.cause.symm, h.regions.trans hf.regions.symm,
+   fun a ha =>
+     (h.mem a ha).trans (hf.mem a ((underRoots_congr hdom a).mp ha)).symm⟩
+
+/-! ## The per-run insulation invariant -/
+
+/-- `d` is not in flight. -/
+def Quiet (d : DomainId) (σ : MachineState) : Prop :=
+  ∀ fl, σ.inflight = some fl → fl.dom ≠ d
+
+/-- `d` is mid-flight, and the latched word is re-derivable from `d`'s
+(frozen) slice: it is what `d` fetches at its current `pc`, it decodes,
+and its cost is within `d`'s per-period budget (it was once payable). The
+run-1 arm of the T5 simulation invariant between issue and retirement. -/
+def Midflight (m : Manifest) (d : DomainId) (σ : MachineState) : Prop :=
+  ∃ fl instr, σ.inflight = some fl ∧ fl.dom = d ∧
+    fetch σ d = some fl.word ∧
+    Loom.Isa.decode isa fl.word = some instr ∧
+    fl.cyclesLeft ≤ instr.cost.cost ∧
+    instr.cost.cost ≤ (m.doms d).budgetQ
+
+/-- The single-run inductive invariant of an isolated, insulated domain:
+`d`'s capability bookkeeping is frozen at boot (its slot table is full and
+nothing it may execute can free a slot or install an entry), it never
+serves or blocks on a gate, its region registers cache only its own boot
+roots, no foreign capability reaches under its roots, the Mover never
+carries its authority, and the memory under its executable roots is still
+the ROM (`wx_disjoint`). -/
+structure Insulated (m : Manifest) (d : DomainId) (σ : MachineState) : Prop where
+  wf : Wf σ
+  acyclic : Acyclic σ
+  /-- `d`'s capability table is its boot table, forever. -/
+  boot_caps : (σ.doms d).caps =
+    fun s => ((m.doms d).initCaps s).map (fun k => { kind := k, lineage := none })
+  boot_slotGen : (σ.doms d).slotGen = fun _ => genFirst
+  boot_lineage : (σ.doms d).lineage = fun _ => none
+  serving_none : (σ.doms d).serving = none
+  not_blocked : ∀ g, (σ.doms d).run ≠ .blocked g
+  /-- Machine-wide: every region register is backed by a capability of its
+  own domain (regions are only ever installed by `map`, which caches the
+  executing domain's own capability). -/
+  regions_own : ∀ e r rg, (σ.doms e).regions r = some rg → rg.backing.dom = e
+  /-- No foreign capability's range reaches under `d`'s roots. -/
+  foreign_off : ∀ e, e ≠ d → ∀ s entry b l p, (σ.doms e).caps s = some entry →
+    entry.kind = .mem b l p → ∀ a : Addr, b.toNat ≤ a.toNat →
+    a.toNat < b.toNat + l.toNat → ¬ UnderRoots m d a
+  /-- The Mover never runs `d`'s job (`d`'s code has no `move`). -/
+  mover_foreign : ∀ job, σ.mover = some job → job.owner ≠ d
+  /-- Gate configurations are boot-static. -/
+  gates_static : ∀ g, (σ.gates g).config = m.gates g
+  budget_le : (σ.doms d).budget ≤ (m.doms d).budgetQ
+  maxDon_eq : (σ.doms d).maxDonation = (m.doms d).maxDonation
+  /-- Memory under `d`'s executable roots is still the ROM. -/
+  code_intact : ∀ a, UnderXRoots m d a → σ.mem a = m.rom a
+
+/-- Boot states are insulated. -/
+theorem insulated_init (m : Manifest) (d : DomainId) (hm : m.WF)
+    (hiso : Isolated m d) : Insulated m d m.initState := by
+  refine ⟨Machines.Lnp64u.Theorems.Inv.init_wf m hm, init_acyclic m,
+    rfl, rfl, rfl, rfl, ?_, ?_, ?_, ?_, ?_, Nat.le_refl _, rfl, fun _ _ => rfl⟩
+  · intro g h
+    simp only [Manifest.initState, Manifest.bootDom] at h
+    exact absurd h (by simp)
+  · intro e r rg hrg
+    simp only [Manifest.initState, Manifest.bootDom] at hrg
+    rcases hcfg : (m.doms e).initRegions r with _ | s
+    · simp only [hcfg] at hrg; cases hrg
+    · simp only [hcfg] at hrg
+      rcases hcap : (m.doms e).initCaps s with _ | k
+      · simp only [hcap] at hrg; cases hrg
+      · simp only [hcap] at hrg
+        cases k with
+        | mem b l p =>
+            simp only [Option.some.injEq] at hrg
+            rw [← hrg]
+        | gate g => simp at hrg
+  · intro e hne s entry b l p hcap hkind a hba hab hur
+    obtain ⟨sd, bd, ld, pd, hd, hda, had⟩ := hur
+    simp only [Manifest.initState, Manifest.bootDom, Option.map_eq_some_iff] at hcap
+    obtain ⟨k, hk, hke⟩ := hcap
+    have hkind' : k = .mem b l p := by rw [← hkind, ← hke]
+    rw [hkind'] at hk
+    rcases hiso.roots_disjoint e sd s bd ld pd b l p hne hd hk with hle | hle <;> omega
+  · intro job h; exact absurd h (by simp [Manifest.initState])
+  · intro g; rfl
+
+/-- `Insulated` pins `d`'s whole capability bookkeeping to boot, so two
+insulated runs of agreeing manifests have equal `d`-tables. -/
+theorem Insulated.caps_eq {m₁ m₂ : Manifest} {d : DomainId}
+    {σ₁ σ₂ : MachineState} (h₁ : Insulated m₁ d σ₁) (h₂ : Insulated m₂ d σ₂)
+    (hdom : m₁.doms d = m₂.doms d) :
+    (σ₁.doms d).caps = (σ₂.doms d).caps ∧
+    (σ₁.doms d).slotGen = (σ₂.doms d).slotGen ∧
+    (σ₁.doms d).lineage = (σ₂.doms d).lineage := by
+  refine ⟨?_, h₁.boot_slotGen.trans h₂.boot_slotGen.symm,
+    h₁.boot_lineage.trans h₂.boot_lineage.symm⟩
+  rw [h₁.boot_caps, h₂.boot_caps, hdom]
 
 /-- Boot states are coupled whenever the manifests agree on `d`. -/
 theorem coupled_init (m₁ m₂ : Manifest) (d : DomainId)
@@ -374,10 +676,341 @@ theorem coupled_init (m₁ m₂ : Manifest) (d : DomainId)
     rw [hdom]
   exact
     { regs := by rw [hboot], pc := by rw [hboot], run := by rw [hboot]
-      cause := by rw [hboot], serving := ⟨rfl, rfl⟩
-      caps := by rw [hboot], slotGen := by rw [hboot], lineage := by rw [hboot]
-      regions := by rw [hboot]
-      mem := fun a ha => hrom a ha
-      inflight := fun _ _ => Iff.rfl }
+      cause := by rw [hboot], regions := by rw [hboot]
+      mem := fun a ha => hrom a ha }
+
+/-! ## Authority geometry: who can touch memory under `d`'s roots -/
+
+/-- A region register of `d` caches (a fragment of) one of `d`'s roots:
+its range is inside the root's range and its permissions are below the
+root's. The bridge from `fetch`/`load`/`store` checks to root geometry. -/
+theorem region_of_insulated {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hins : Insulated m d σ) {r : RegionId} {rg : Region}
+    (hrg : (σ.doms d).regions r = some rg) :
+    ∃ b l p, (m.doms d).initCaps rg.backing.slot = some (.mem b l p) ∧
+      b.toNat ≤ rg.base.toNat ∧
+      rg.base.toNat + rg.len.toNat ≤ b.toNat + l.toNat ∧
+      rg.perms.le p = true := by
+  have hown : rg.backing.dom = d := hins.regions_own d r rg hrg
+  obtain ⟨e, hlive, hle⟩ := hins.wf.region_backed d r rg hrg
+  rw [hown] at hlive
+  -- the live entry is a boot entry
+  have hcaps : (σ.doms d).caps rg.backing.slot = some e := caps_of_liveCap hlive
+  have hboot := hins.boot_caps
+  have : (fun s => ((m.doms d).initCaps s).map
+      (fun k => ({ kind := k, lineage := none } : CapEntry))) rg.backing.slot = some e := by
+    rw [← hboot]; exact hcaps
+  simp only [Option.map_eq_some_iff] at this
+  obtain ⟨k, hk, hke⟩ := this
+  have hek : e.kind = k := by rw [← hke]
+  cases k with
+  | gate g =>
+      rw [hek] at hle
+      cases hle
+  | mem b l p =>
+      rw [hek] at hle
+      obtain ⟨hb, hbl, hp⟩ := hle
+      exact ⟨b, l, p, hk, hb, hbl, hp⟩
+
+/-- Whatever `d`'s regions cover lies under `d`'s roots (with matching
+permission classes): coverage with an `x`-need lands under `x`-roots. -/
+theorem domCovers_underRoots {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hins : Insulated m d σ) {a : Addr} {need : Perms}
+    (hcov : σ.domCovers d a need = true) :
+    UnderRoots m d a ∧ (need.x = true → UnderXRoots m d a) := by
+  unfold MachineState.domCovers at hcov
+  rw [decide_eq_true_iff] at hcov
+  obtain ⟨r, rg, hrg, hc⟩ := hcov
+  unfold Region.covers at hc
+  simp only [Bool.and_eq_true, decide_eq_true_iff] at hc
+  obtain ⟨⟨hlo, hhi⟩, hperm⟩ := hc
+  obtain ⟨b, l, p, hk, hb, hbl, hp⟩ := region_of_insulated hins hrg
+  refine ⟨⟨_, b, l, p, hk, by omega, by omega⟩, fun hx => ?_⟩
+  have hpx : p.x = true := by
+    -- need ≤ rg.perms ≤ p, and need.x
+    unfold Perms.le at hperm hp
+    simp only [Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at hperm hp
+    rcases hperm.2 with h | h
+    · rw [hx] at h; cases h
+    · rcases hp.2 with h' | h'
+      · rw [h] at h'; cases h'
+      · exact h'
+  exact ⟨_, b, l, p, hk, hpx, by omega, by omega⟩
+
+/-- A successful fetch of an insulated domain reads a ROM word under an
+executable root — hence one `code_local` constrains. -/
+theorem fetch_of_insulated {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hins : Insulated m d σ) {w : Loom.Word32} (hf : fetch σ d = some w) :
+    UnderXRoots m d ((σ.doms d).pc) ∧ w = m.rom ((σ.doms d).pc) := by
+  unfold fetch at hf
+  split at hf
+  · rename_i hcov
+    have hux := (domCovers_underRoots hins hcov).2 rfl
+    refine ⟨hux, ?_⟩
+    have : σ.read (σ.doms d).pc = w := by injection hf
+    rw [← this]
+    exact hins.code_intact _ hux
+  · exact absurd hf (by simp)
+
+/-- Fetch is a function of the frozen `d`-slice. -/
+theorem fetch_frozen {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (hins : Insulated m d σ) (hf : DFrozen m d σ σ') :
+    fetch σ' d = fetch σ d := by
+  unfold fetch
+  have hcov : ∀ need, σ'.domCovers d ((σ'.doms d).pc) need =
+      σ.domCovers d ((σ.doms d).pc) need := by
+    intro need
+    unfold MachineState.domCovers
+    rw [hf.regions, hf.pc]
+  by_cases hc : σ.domCovers d ((σ.doms d).pc) { r := false, w := false, x := true }
+  · have hc' : σ'.domCovers d ((σ'.doms d).pc)
+        { r := false, w := false, x := true } = true := by rw [hcov]; exact hc
+    rw [if_pos hc, if_pos hc']
+    have hux := (domCovers_underRoots hins hc).2 rfl
+    show some (σ'.mem ((σ'.doms d).pc)) = some (σ.mem ((σ.doms d).pc))
+    rw [hf.pc, hf.mem _ hux.underRoots]
+  · have hc' : ¬ σ'.domCovers d ((σ'.doms d).pc)
+        { r := false, w := false, x := true } = true := by rw [hcov]; exact hc
+    rw [if_neg hc, if_neg hc']
+
+/-- Fetch is a function of the coupled `d`-slice: the two runs fetch the
+same word (or both fail). -/
+theorem fetch_coupled {m₁ : Manifest} {d : DomainId} {σ₁ σ₂ : MachineState}
+    (hins₁ : Insulated m₁ d σ₁) (hcpl : Coupled m₁ d σ₁ σ₂) :
+    fetch σ₁ d = fetch σ₂ d := by
+  unfold fetch
+  have hcov : ∀ need, σ₁.domCovers d ((σ₁.doms d).pc) need =
+      σ₂.domCovers d ((σ₂.doms d).pc) need := by
+    intro need
+    unfold MachineState.domCovers
+    rw [hcpl.regions, hcpl.pc]
+  by_cases hc : σ₁.domCovers d ((σ₁.doms d).pc) { r := false, w := false, x := true }
+  · have hc₂ : σ₂.domCovers d ((σ₂.doms d).pc)
+        { r := false, w := false, x := true } = true := by rw [← hcov]; exact hc
+    rw [if_pos hc, if_pos hc₂]
+    have hux := (domCovers_underRoots hins₁ hc).2 rfl
+    show some (σ₁.mem ((σ₁.doms d).pc)) = some (σ₂.mem ((σ₂.doms d).pc))
+    rw [hcpl.mem _ hux.underRoots, hcpl.pc]
+  · have hc₂ : ¬ σ₂.domCovers d ((σ₂.doms d).pc)
+        { r := false, w := false, x := true } = true := by rw [← hcov]; exact hc
+    rw [if_neg hc, if_neg hc₂]
+
+/-! ## The halt observation (issue-time faults) -/
+
+/-- `step m σ` halted `d` with fault `f` and touched nothing else of `d`'s
+slice (nor the memory under `d`'s roots). -/
+structure DHalt (m : Manifest) (d : DomainId) (σ σ' : MachineState)
+    (f : Fault) : Prop where
+  regs : (σ'.doms d).regs = (σ.doms d).regs
+  pc : (σ'.doms d).pc = (σ.doms d).pc
+  run : (σ'.doms d).run = .halted
+  cause : (σ'.doms d).cause = BitVec.ofNat 32 f.code
+  serving : (σ'.doms d).serving = none
+  caps : (σ'.doms d).caps = (σ.doms d).caps
+  slotGen : (σ'.doms d).slotGen = (σ.doms d).slotGen
+  lineage : (σ'.doms d).lineage = (σ.doms d).lineage
+  regions : (σ'.doms d).regions = (σ.doms d).regions
+  mem : ∀ a, UnderRoots m d a → σ'.mem a = σ.mem a
+  inflight : σ'.inflight = none
+
+/-- Two matching halts from coupled states leave coupled states. -/
+theorem coupled_of_dhalt {m₁ m₂ : Manifest} {d : DomainId}
+    {σ₁ σ₂ σ₁' σ₂' : MachineState} {f : Fault}
+    (hcpl : Coupled m₁ d σ₁ σ₂) (hdom : m₁.doms d = m₂.doms d)
+    (h₁ : DHalt m₁ d σ₁ σ₁' f) (h₂ : DHalt m₂ d σ₂ σ₂' f) :
+    Coupled m₁ d σ₁' σ₂' :=
+  { regs := by rw [h₁.regs, h₂.regs, hcpl.regs]
+    pc := by rw [h₁.pc, h₂.pc, hcpl.pc]
+    run := by rw [h₁.run, h₂.run]
+    cause := by rw [h₁.cause, h₂.cause]
+    regions := by rw [h₁.regions, h₂.regions, hcpl.regions]
+    mem := fun a ha => by
+      rw [h₁.mem a ha, h₂.mem a ((underRoots_congr hdom a).mp ha)]
+      exact hcpl.mem a ha }
+
+/-! ## The core phase latches only the running domain -/
+
+/-- Every in-flight record produced by the core phase belongs either to the
+domain already in flight (countdown) or, on an idle core, to the scheduled
+domain (issue). The clean characterization `step_quiet` needs. -/
+theorem corePhase_inflight_dom (m : Manifest) (σ : MachineState) (fl : InFlight)
+    (h : (corePhase m σ).inflight = some fl) :
+    (∃ fl0, σ.inflight = some fl0 ∧ fl.dom = fl0.dom) ∨
+    (σ.inflight = none ∧ schedule m σ = some fl.dom) := by
+  have hhalt : ∀ (d' : DomainId) (f : Fault),
+      (haltWith σ d' f).inflight = σ.inflight := fun d' f => by
+    rw [haltWith, haltDom_inflight]
+  unfold corePhase at h
+  rcases hi : σ.inflight with _ | fl0
+  · -- idle core
+    simp only [hi] at h
+    refine Or.inr ⟨rfl, ?_⟩
+    rcases hs : schedule m σ with _ | d'
+    · simp only [hs] at h; rw [hi] at h; exact absurd h (by simp)
+    · simp only [hs] at h
+      rcases hf : fetch σ d' with _ | w
+      · simp only [hf] at h; rw [hhalt, hi] at h; exact absurd h (by simp)
+      · simp only [hf] at h
+        rcases hd : Loom.Isa.decode isa w with _ | instr
+        · simp only [hd] at h; rw [hhalt, hi] at h; exact absurd h (by simp)
+        · simp only [hd] at h
+          by_cases hb : instr.cost.cost ≤ (σ.doms (σ.payer d')).budget
+          · rw [if_pos hb] at h
+            rcases hserv : (σ.doms d').serving with _ | g
+            · simp only [hserv] at h
+              have h2 : some (⟨d', w, instr.cost.cost⟩ : InFlight) = some fl := h
+              injection h2 with h2; rw [← h2]
+            · simp only [hserv] at h
+              rcases hact : (σ.gates g).act with _ | a
+              · simp only [hact] at h; rw [hhalt, hi] at h; exact absurd h (by simp)
+              · simp only [hact] at h
+                by_cases hdon : instr.cost.cost ≤ a.donated
+                · rw [if_pos hdon] at h
+                  have h2 : some (⟨d', w, instr.cost.cost⟩ : InFlight) = some fl := h
+                  injection h2 with h2; rw [← h2]
+                · rw [if_neg hdon] at h; rw [hhalt, hi] at h; exact absurd h (by simp)
+          · rw [if_neg hb] at h; rw [hi] at h; exact absurd h (by simp)
+  · -- some fl0 in flight
+    simp only [hi] at h
+    by_cases hc : fl0.cyclesLeft ≤ 1
+    · rw [if_pos hc, Machines.Lnp64u.Wip.retire_inflight] at h
+      exact absurd h (by simp)
+    · rw [if_neg hc] at h
+      refine Or.inl ⟨fl0, rfl, ?_⟩
+      have h2 : some (⟨fl0.dom, fl0.word, fl0.cyclesLeft - 1⟩ : InFlight) = some fl := h
+      injection h2 with h2; rw [← h2]
+
+/-! ## Work-in-progress engine lemmas
+
+The four cycle-level engines the T5 assembly consumes. Statements are
+final; proofs are the remaining T5 work, itemized:
+
+1. `insulated_step` — invariant preservation. Requires a per-instruction
+   sweep (executing domain `e ≠ d` cannot touch `d`'s tables: `slots_full`
+   blocks `mem_grant`/transfers in, lineage locality blocks
+   reparent/orphan/marking, `regions_own` + liveness blocks the sweeps)
+   plus `d`'s own issue/retire cases (`d`'s executable ops never free a
+   slot or install an entry — `cap_dup` fails on the full table).
+2. `frame_step` — the d-slice frame over a non-`d` cycle. Same sweep
+   machinery as (1) restricted to the frame fields, plus memory
+   disjointness from `foreign_off` (core stores, Mover copies, Mover
+   status writes).
+3. `retire_step_lockstep` — the relational sweep: `exec` of every
+   instruction `d` may fetch (ROM ⇒ opcode ∉ {17,18,19,24}) is a function
+   of the coupled slice (`d` holds no gate capabilities, so both gate ops
+   fail identically; `load`/`store`/fetch addresses stay under `d`'s
+   coupled roots).
+4. `progress` — scheduling liveness: the core frees within the in-flight
+   countdown, `d`'s budget refills to `budgetQ` within a period, foreign
+   payers never draw on `d`, so with `TopPriority` an idle cycle with
+   funded `d` arrives, and the required cost is payable there.
+5. `issue_step` — the d-issue cycle dichotomy (fetch fault / decode fault
+   / stall / latch). Light: issue only charges budget and latches, and the
+   halt is `haltBase` — but `DFrozen.mem`/`DHalt.mem` still need the
+   Mover-memory disjointness `frame_step` also uses.
+
+`step_quiet` (below) is discharged (`corePhase_inflight_dom`); the five
+`sorry`s above remain, each a cycle-level sweep as itemized.
+-/
+
+namespace Wip
+
+/-- **Engine 1: the insulation invariant is inductive.** -/
+theorem insulated_step (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ) :
+    Insulated m d (step m σ) := by
+  sorry
+
+/-- **Engine 2: the d-slice frame.** A cycle that does not retire `d`'s
+in-flight instruction and does not issue for `d` leaves `d`'s slice and
+the memory under `d`'s roots untouched. -/
+theorem frame_step (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ)
+    (hnr : ∀ fl, σ.inflight = some fl → fl.dom = d → 1 < fl.cyclesLeft)
+    (hni : σ.inflight = none → schedule m (refillPhase m σ) ≠ some d) :
+    DFrozen m d σ (step m σ) := by
+  sorry
+
+/-- **Engine 3: retirement lockstep.** Both runs retire the same latched
+word for `d` from coupled, insulated states: the post-states are coupled.
+(The fetch provenance hypothesis pins the word to `d`'s ROM, so the
+decoded opcode is one the relational sweep covers.) -/
+theorem retire_step_lockstep (m₁ m₂ : Manifest) (d : DomainId)
+    (σ₁ σ₂ : MachineState)
+    (hm₁ : m₁.WF) (hm₂ : m₂.WF)
+    (hiso₁ : Isolated m₁ d) (hiso₂ : Isolated m₂ d)
+    (hag : AgreeOn m₁ m₂ d)
+    (hins₁ : Insulated m₁ d σ₁) (hins₂ : Insulated m₂ d σ₂)
+    (hcpl : Coupled m₁ d σ₁ σ₂)
+    (w : Loom.Word32) (c₁ c₂ : Nat) (hc₁ : c₁ ≤ 1) (hc₂ : c₂ ≤ 1)
+    (hf₁ : σ₁.inflight = some ⟨d, w, c₁⟩) (hf₂ : σ₂.inflight = some ⟨d, w, c₂⟩)
+    (hfetch : fetch σ₁ d = some w) :
+    Coupled m₁ d (step m₁ σ₁) (step m₂ σ₂) := by
+  sorry
+
+/-- **Engine 4: progress.** From a quiescent insulated state with `d`
+running, some cycle `j` later the machine is at an issue instant for `d`
+with any required budget `c ≤ budgetQ` available, and `d`'s slice was
+frozen (and quiescent) throughout the wait. -/
+theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hm : m.WF) (hpri : TopPriority m d) (hiso : Isolated m d)
+    (hins : Insulated m d σ) (hq : Quiet d σ)
+    (hrun : (σ.doms d).run = .running)
+    (c : Nat) (hc0 : 0 < c) (hcQ : c ≤ (m.doms d).budgetQ) :
+    ∃ j, (∀ i, i ≤ j → DFrozen m d σ (stepN m i σ) ∧ Quiet d (stepN m i σ)) ∧
+      (stepN m j σ).inflight = none ∧
+      schedule m (refillPhase m (stepN m j σ)) = some d ∧
+      c ≤ ((refillPhase m (stepN m j σ)).doms d).budget := by
+  sorry
+
+/-- **Quiet preservation** over a cycle that does not issue for `d`. -/
+theorem step_quiet (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hq : Quiet d σ)
+    (hni : σ.inflight = none → schedule m (refillPhase m σ) ≠ some d) :
+    Quiet d (step m σ) := by
+  intro fl hfl
+  rw [Machines.Lnp64u.Wip.step_inflight_reduce] at hfl
+  set ρ := refillPhase m σ with hρ
+  have hρinf : ρ.inflight = σ.inflight := refillPhase_inflight m σ
+  rcases corePhase_inflight_dom m ρ fl hfl with ⟨fl0, hfl0, hdd⟩ | ⟨h0, hs⟩
+  · rw [hρinf] at hfl0
+    rw [hdd]
+    exact hq fl0 hfl0
+  · -- issue on an idle core: fl.dom is the scheduled domain
+    rw [hρinf] at h0
+    intro hcontra
+    exact hni h0 (hcontra ▸ hs)
+
+/-- **The issue-cycle case split** for `d` at an idle core: fetch fault,
+decode fault, stall, or latch — with the d-slice frame in every case. -/
+theorem issue_step (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ)
+    (hinf : σ.inflight = none)
+    (hsched : schedule m (refillPhase m σ) = some d) :
+    (fetch σ d = none ∧ DHalt m d σ (step m σ) Fault.memoryAuthority) ∨
+    (∃ w, fetch σ d = some w ∧ Loom.Isa.decode isa w = none ∧
+       DHalt m d σ (step m σ) Fault.illegalInstruction) ∨
+    (∃ w instr, fetch σ d = some w ∧ Loom.Isa.decode isa w = some instr ∧
+       ((refillPhase m σ).doms d).budget < instr.cost.cost ∧
+       DFrozen m d σ (step m σ) ∧ (step m σ).inflight = none) ∨
+    (∃ w instr, fetch σ d = some w ∧ Loom.Isa.decode isa w = some instr ∧
+       instr.cost.cost ≤ ((refillPhase m σ).doms d).budget ∧
+       DFrozen m d σ (step m σ) ∧
+       (step m σ).inflight = some ⟨d, w, instr.cost.cost⟩) := by
+  sorry
+
+/-! ## Iterated engine corollaries (depend on the engine `sorry`s, so kept
+in `Wip`). -/
+
+/-- Insulation along a run. -/
+theorem insulated_stepN (m : Manifest) (d : DomainId)
+    (hm : m.WF) (hiso : Isolated m d) :
+    ∀ (n : Nat) (σ : MachineState), Insulated m d σ →
+      Insulated m d (stepN m n σ)
+  | 0, σ, h => h
+  | n + 1, σ, h =>
+      insulated_stepN m d hm hiso n (step m σ) (insulated_step m d σ hm hiso h)
+
+end Wip
 
 end Machines.Lnp64u.NonInt
