@@ -81,4 +81,61 @@ theorem Acyclic.parentRef_ne (σ : MachineState) (hac : Acyclic σ)
   have := σ.climb_self p h (numLineage + 1)
   rw [hac p] at this; simp at this
 
+/-- Climbing depends only on the parent function: two states with the same
+parent links agree on every climb. -/
+theorem MachineState.climb_congr (σ σ' : MachineState)
+    (hpar : ∀ r, σ'.parentRef r = σ.parentRef r) :
+    ∀ k r, σ'.climb k r = σ.climb k r := by
+  intro k; induction k with
+  | zero => intro r; rfl
+  | succ n ih =>
+      intro r; unfold MachineState.climb; rw [hpar r]
+      cases σ.parentRef r with
+      | none => rfl
+      | some p => simpa using ih p
+
+/-- **Acyclicity transports along equal parent structure.** Any operation
+that leaves every parent link unchanged (all non-lineage-touching ops:
+register writes, PC updates, scheduling, region installs, Mover programming,
+gate bookkeeping) preserves acyclicity for free. -/
+theorem acyclic_of_parentRef_eq (σ σ' : MachineState)
+    (hpar : ∀ r, σ'.parentRef r = σ.parentRef r) (hac : Acyclic σ) : Acyclic σ' := by
+  intro r; rw [σ.climb_congr σ' hpar (numLineage + 1) r]; exact hac r
+
+/-- Parent links are determined by each domain's `caps` and `lineage`
+tables; an operation preserving both preserves every parent link. -/
+theorem parentRef_eq_of_doms (σ σ' : MachineState)
+    (hd : ∀ d, (σ'.doms d).caps = (σ.doms d).caps ∧
+               (σ'.doms d).lineage = (σ.doms d).lineage) :
+    ∀ r, σ'.parentRef r = σ.parentRef r := by
+  intro r; unfold MachineState.parentRef MachineState.parentOf
+  rw [(hd r.dom).1, (hd r.dom).2]
+
+/-- If an operation only *removes* parent links (each link is either
+unchanged or dropped to `none`), then any chain that terminated still
+terminates. Covers `clearSlot`, `orphanChildren`, and the sweeps — every
+edge-removing revocation step. -/
+theorem MachineState.climb_none_mono (σ σ' : MachineState)
+    (hpar : ∀ r, σ'.parentRef r = σ.parentRef r ∨ σ'.parentRef r = none) :
+    ∀ k r, σ.climb k r = none → σ'.climb k r = none := by
+  intro k; induction k with
+  | zero => intro r h; simp [MachineState.climb] at h
+  | succ n ih =>
+      intro r h
+      unfold MachineState.climb
+      rcases hpar r with he | he
+      · rw [he]
+        rw [MachineState.climb] at h
+        cases hp : σ.parentRef r with
+        | none => rfl
+        | some p => rw [hp] at h; simp only [Option.bind_some] at h ⊢; exact ih p h
+      · rw [he]; rfl
+
+/-- **Acyclicity survives edge removal.** An operation that only drops
+parent links preserves acyclicity. -/
+theorem acyclic_of_parentRef_le (σ σ' : MachineState)
+    (hpar : ∀ r, σ'.parentRef r = σ.parentRef r ∨ σ'.parentRef r = none)
+    (hac : Acyclic σ) : Acyclic σ' :=
+  fun r => σ.climb_none_mono σ' hpar (numLineage + 1) r (hac r)
+
 end Machines.Lnp64u
