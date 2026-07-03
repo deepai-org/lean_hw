@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.Wf
 import Machines.Lnp64u.Logic.AcyclicWfa
+import Machines.Lnp64u.Logic.Budget
 
 /-!
 # T9 — Conservation
@@ -42,6 +43,12 @@ theorem ledger_balanced (m : Manifest) (hwf : m.WF) :
 theorem budget_bounded (m : Manifest) (hwf : m.WF) :
     (machine m).Invariant
       (fun σ => ∀ d, (σ.doms d).budget ≤ (m.doms d).budgetQ) := by
-  sorry
+  refine Loom.TSys.Inductive.invariant
+    { init := fun σ hi d => ?_
+      step := fun σ σ' hσ hstep d => ?_ }
+  · subst hi
+    simp [Manifest.initState, Manifest.bootDom]
+  · have hst : step m σ = σ' := hstep
+    exact hst ▸ Wip.step_budget_bounded m σ hσ d
 
 end Machines.Lnp64u.Theorems.T9
