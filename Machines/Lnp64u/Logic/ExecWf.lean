@@ -170,4 +170,33 @@ theorem PreservesWf.store (d : DomainId) (a : Addr) (v : Loom.Word32) :
     · simp [SpecM.demand, hcov, specM_pure, specM_bind, SpecM.set] at he
     · simp [SpecM.demand, hcov, SpecM.fatal, specM_bind] at he
 
+
+/-- Preservation is closed under `if`. -/
+theorem PreservesWf.ite {α : Type} (c : Prop) [Decidable c] {m1 m2 : SpecM α}
+    (h1 : PreservesWf m1) (h2 : PreservesWf m2) : PreservesWf (if c then m1 else m2) := by
+  split
+  · exact h1
+  · exact h2
+
+/-- Preservation is closed under `Bool`-guarded `if`. -/
+theorem PreservesWf.iteBool {α : Type} (b : Bool) {m1 m2 : SpecM α}
+    (h1 : PreservesWf m1) (h2 : PreservesWf m2) :
+    PreservesWf (if b = true then m1 else m2) := by
+  split
+  · exact h1
+  · exact h2
+
+/-!
+The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
+`get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
+preserve the invariant. Every **base** ALU/branch/memory instruction's `exec`
+is a composition of these, so `PreservesWf (baseOp.sem.exec c)` follows
+mechanically for each. What remains for a full `ExecPreservesWf` is the eleven
+**system** opcodes, whose `exec` calls the capability-kernel operations
+(`installDerived`, `clearSlot`, `destroyMarked`, `transferCap`, the region/Mover
+sweeps, gate call/return) — proving those preserve `Wf` is exactly T2/T3/T8/T9's
+kernel-level content, the irreducible Phase-1 core.
+-/
+
+
 end Machines.Lnp64u
