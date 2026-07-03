@@ -3487,7 +3487,7 @@ theorem gatecall_chain (c : Ctx) (σ : MachineState) :
                                             setDom_doms_ne _ _ _ _ hecal, hXgates]
                                         exact hτ.2.2.1 e'
                                     · rw [← hcaldef,
-                                          setDom_doms_ne _ _ _ _ hcalne.symm, setDom_doms_same]
+                                          setDom_doms_ne _ _ _ _ hcalne, setDom_doms_same]
                                     · intro e' hecd
                                       rw [setDom_doms_ne _ _ _ _ hecd]
                                       by_cases hecal : e' = cal
