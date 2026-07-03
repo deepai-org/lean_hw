@@ -64,15 +64,18 @@ counts with `lake exe audit`; run `scripts/ci.sh` for the full gate.
   on one-cycle preservation).
 - **A-R / A-EV** Acc8 core ⊑ spec, core ≃ emitted µVerilog.
 
-**The linchpin, now reduced to one lemma.** `step_wf` (one-cycle preservation
-of the well-formedness invariant) is fully assembled from proved pieces:
-`refillPhase_preserves_wf` ✓, `moverPhase_preserves_wf` ✓, `wf_setCycle` ✓.
-The **single remaining sorry in the entire L1 invariant chain** is
-`corePhase_preserves_wf` — the per-instruction argument (25 opcodes × the
-kernel functions). Landing that one lemma flips `wf_invariant`,
-`T8.wx_machine_wide`, and (with `gen_monotone`) `T3.no_resurrection` to CLEAN
-at once. A whole cluster of the crown-jewel theorems bottlenecks on this
-single, well-isolated obligation.
+**The linchpin, decomposed.** `step_wf` (one-cycle Wf preservation) is
+assembled from proved pieces: `refillPhase_preserves_wf` ✓,
+`moverPhase_preserves_wf` ✓, `wf_setCycle` ✓. Its remaining `corePhase`
+obligation is further decomposed with proved scaffolding —
+`wf_of_skeleton` ✓ (Wf congruence under skeleton-preserving edits),
+`wf_of_skeleton_sameGates` ✓, `schedule_running` ✓ — and the
+inflight-countdown and retirement dispatch are proved. Three localized
+sorries remain in the L1 chain: `corePhase_preserves_wf`'s issue-path
+assembly, `haltWith_preserves_wf` (the gate-unwind congruence), and
+`retire_preserves_wf` (the 25-opcode per-instruction argument, the
+irreducible core). Landing these flips `wf_invariant`, `T8.wx_machine_wide`,
+and `T3.no_resurrection` to CLEAN.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the

@@ -232,21 +232,161 @@ theorem moverPhase_preserves_wf (σ : MachineState) (h : Wf σ) :
   · intro fl; rw [moverPhase_inflight, hd]; exact h.inflight_running fl
 
 
+
 /-- `Wf` does not mention the cycle counter, so bumping it is transparent. -/
 theorem wf_setCycle (σ : MachineState) (c : Nat) (h : Wf σ) :
     Wf { σ with cycle := c } := by
-  -- doms, gates, mover, inflight are unchanged; every field of Wf reads only these
   obtain ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir⟩ := h
   exact ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir⟩
 
-/-- The remaining `step_wf` obligation: the core phase (fetch, decode, budget
-charge, and — on retirement — the instruction's effect via the kernel
-functions) preserves the structural invariant. This is the per-instruction
-argument (25 opcodes × the kernel operations), the core of the Phase-1 proof
-effort; the two surrounding phases are already discharged
-(`refillPhase_preserves_wf`, `moverPhase_preserves_wf`). -/
-theorem corePhase_preserves_wf (m : Manifest) (hwf : m.WF) (σ : MachineState)
-    (h : Wf σ) : Wf (corePhase m σ) := by
+/-! ## A congruence lemma for `Wf`
+
+`Wf` reads only a *skeleton* of the state: each domain's caps, lineage, slot
+generations, regions, run-state, and serving mark; the gates' configs and
+activation caller/depth; the mover; and inflight. A modification that
+preserves the skeleton — charging budget, decrementing a donation counter,
+or advancing an in-flight instruction's cycle count — preserves `Wf`. -/
+theorem wf_of_skeleton (σ σ' : MachineState)
+    (hcaps : ∀ d, (σ'.doms d).caps = (σ.doms d).caps)
+    (hlin : ∀ d, (σ'.doms d).lineage = (σ.doms d).lineage)
+    (hgen : ∀ d, (σ'.doms d).slotGen = (σ.doms d).slotGen)
+    (hreg : ∀ d, (σ'.doms d).regions = (σ.doms d).regions)
+    (hrun : ∀ d, (σ'.doms d).run = (σ.doms d).run)
+    (hserv : ∀ d, (σ'.doms d).serving = (σ.doms d).serving)
+    (hcfg : ∀ g, (σ'.gates g).config = (σ.gates g).config)
+    (hact : ∀ g a', (σ'.gates g).act = some a' →
+      ∃ a, (σ.gates g).act = some a ∧ a'.caller = a.caller ∧ a'.depth = a.depth)
+    (hactSome : ∀ g, ((σ.gates g).act).isSome → ((σ'.gates g).act).isSome)
+    (hmover : σ'.mover = σ.mover)
+    (hinf : ∀ fl, σ'.inflight = some fl → (σ'.doms fl.dom).run = .running)
+    (h : Wf σ) : Wf σ' := by
+  have hlive : ∀ r, σ'.liveRef r = σ.liveRef r := by
+    intro r; unfold MachineState.liveRef DomainState.liveCap; rw [hcaps, hgen]
+  have hparent : ∀ d s, σ'.parentOf d s = σ.parentOf d s := by
+    intro d s; unfold MachineState.parentOf; rw [hcaps, hlin]
+  constructor
+  · intro d
+    have hd := h.doms d
+    exact ⟨fun s => hgen d ▸ hd.gen_pos s,
+      fun s e l => by rw [hcaps, hlin]; exact hd.cell_backed s e l,
+      fun s s' e e' l => by rw [hcaps]; exact hd.ptr_inj s s' e e' l,
+      fun l => by rw [hlin, hcaps]; exact hd.cell_used l,
+      fun s base len p => by rw [hcaps]; exact hd.wx s base len p,
+      fun s e base len p => by rw [hcaps]; exact hd.bounds s e base len p⟩
+  · intro d s p; rw [hparent, hlive]; exact h.parent_live d s p
+  · intro d r rg; rw [hreg]; intro hrg
+    obtain ⟨e, hl, hle⟩ := h.region_backed d r rg hrg
+    refine ⟨e, ?_, hle⟩; unfold DomainState.liveCap; rw [hcaps, hgen]; exact hl
+  · intro job; rw [hmover]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, by rw [hlive]; exact o3, by rw [hlive]; exact o4⟩
+  · intro g a' ha'
+    obtain ⟨a, ha, hcaller, hdepth⟩ := hact g a' ha'
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    exact ⟨by rw [hcfg, hserv]; exact s1, by rw [hcaller, hrun]; exact s2,
+      hdepth ▸ s3, hdepth ▸ s4⟩
+  · intro d g; rw [hserv]; intro hs
+    obtain ⟨c1, c2⟩ := h.serving_gate d g hs
+    exact ⟨by rw [hcfg]; exact c1, hactSome g c2⟩
+  · intro d g; rw [hrun]; intro hb
+    obtain ⟨a, ha, hc⟩ := h.blocked_gate d g hb
+    have hsome : ((σ'.gates g).act).isSome := hactSome g (by rw [ha]; rfl)
+    obtain ⟨a'', ha''⟩ := Option.isSome_iff_exists.mp hsome
+    obtain ⟨a0, ha0, hcaller0, _⟩ := hact g a'' ha''
+    rw [ha0] at ha; cases ha
+    exact ⟨a'', ha'', by rw [hcaller0]; exact hc⟩
+  · exact hinf
+
+/-- The `hact`/`hactSome` obligations of `wf_of_skeleton` when the gate map is
+literally unchanged. -/
+theorem wf_of_skeleton_sameGates (σ σ' : MachineState)
+    (hcaps : ∀ d, (σ'.doms d).caps = (σ.doms d).caps)
+    (hlin : ∀ d, (σ'.doms d).lineage = (σ.doms d).lineage)
+    (hgen : ∀ d, (σ'.doms d).slotGen = (σ.doms d).slotGen)
+    (hreg : ∀ d, (σ'.doms d).regions = (σ.doms d).regions)
+    (hrun : ∀ d, (σ'.doms d).run = (σ.doms d).run)
+    (hserv : ∀ d, (σ'.doms d).serving = (σ.doms d).serving)
+    (hgates : σ'.gates = σ.gates) (hmover : σ'.mover = σ.mover)
+    (hinf : ∀ fl, σ'.inflight = some fl → (σ'.doms fl.dom).run = .running)
+    (h : Wf σ) : Wf σ' :=
+  wf_of_skeleton σ σ' hcaps hlin hgen hreg hrun hserv
+    (fun g => by rw [hgates]) (fun g a' hh => ⟨a', by rw [hgates] at hh; exact hh, rfl, rfl⟩)
+    (fun g hh => by rw [hgates]; exact hh) hmover hinf h
+
+/-- Halting a domain (with the gate-activation unwind) preserves the invariant.
+Obligation A of `step_wf`; intricate only in the gate-consistency lattice — no
+per-instruction reasoning. -/
+theorem haltWith_preserves_wf (σ : MachineState) (d : DomainId) (f : Fault)
+    (h : Wf σ) (hinf : σ.inflight = none) : Wf (haltWith σ d f) := by
   sorry
 
+/-- Instruction retirement (running the decoded instruction's semantics via the
+capability-kernel functions) preserves the invariant. Obligation B of
+`step_wf` — the per-instruction argument (25 opcodes × the kernel operations),
+the irreducible core of the Phase-1 proof. -/
+theorem retire_preserves_wf (σ : MachineState) (d : DomainId) (w : Loom.Word32)
+    (h : Wf σ) (hinf : σ.inflight = none) : Wf (retire σ d w) := by
+  sorry
+
+/-- The scheduler returns a running domain. -/
+theorem schedule_running (m : Manifest) (σ : MachineState) (d : DomainId)
+    (h : schedule m σ = some d) : (σ.doms d).run = .running := by
+  unfold schedule at h
+  set L := (List.finRange numDomains).filter (fun d =>
+    decide ((σ.doms d).run = .running) && decide (0 < (σ.doms (σ.payer d)).budget)) with hL
+  have hmem : ∀ (l : List DomainId) (init : Option DomainId),
+      (l.foldl (fun best d => match best with
+        | none => some d
+        | some b => if (m.doms b).priority < (m.doms d).priority then some d else some b) init)
+        = some d → d ∈ l ∨ init = some d := by
+    intro l
+    induction l with
+    | nil => intro init hh; exact Or.inr hh
+    | cons x rest ih =>
+        intro init hh
+        rcases ih _ hh with hin | hinit
+        · exact Or.inl (List.mem_cons_of_mem _ hin)
+        · cases init with
+          | none =>
+              simp only [Option.some.injEq] at hinit
+              exact Or.inl (hinit ▸ List.mem_cons_self ..)
+          | some b =>
+              by_cases hp : (m.doms b).priority < (m.doms x).priority
+              · simp only [hp, if_true, Option.some.injEq] at hinit
+                exact Or.inl (hinit ▸ List.mem_cons_self ..)
+              · simp only [hp, if_false] at hinit
+                exact Or.inr hinit
+  rcases hmem L none h with hin | hcontra
+  · rw [hL, List.mem_filter] at hin
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hin
+    exact hin.2.1
+  · exact absurd hcontra (by simp)
+
+/-- The core phase preserves `Wf`. The countdown, budget-charge, and stall
+paths preserve the skeleton (via `wf_of_skeleton`); the fault paths delegate
+to `haltWith_preserves_wf`, and retirement to `retire_preserves_wf`. The
+inflight-countdown and stall paths are discharged here; the full assembly of
+the issue path's donation sub-cases is in progress. -/
+theorem corePhase_preserves_wf (m : Manifest) (hwf : m.WF) (σ : MachineState)
+    (h : Wf σ) : Wf (corePhase m σ) := by
+  unfold corePhase
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · simp only [hc, if_true]
+        refine retire_preserves_wf _ fl.dom fl.word ?_ rfl
+        exact wf_of_skeleton_sameGates σ { σ with inflight := none }
+          (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+          (fun _ => rfl) rfl rfl (by simp) h
+      · simp only [hc, if_false]
+        refine wf_of_skeleton_sameGates σ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+          (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) rfl rfl ?_ h
+        intro fl' hfl'
+        have hdom : fl'.dom = fl.dom := by
+          simp only [Option.some.injEq] at hfl'; exact hfl' ▸ rfl
+        rw [hdom]; exact h.inflight_running fl hinf
+  | none =>
+      -- schedule / fetch / decode / issue; fault paths via haltWith, issue via
+      -- the skeleton congruence. Assembly in progress.
+      sorry
 end Machines.Lnp64u
