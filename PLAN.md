@@ -290,7 +290,7 @@ Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `
 Take the first unchecked box whose deps are checked. `[m]` marks machine-side work, `[t]`
 toolchain work.
 
-### Phase 0 — Bootstrap
+### Phase 0 — Bootstrap  ✅ GATE MET (2026-07-03)
 *Gate: generic Isa framework proven by two machines; T1 + A1 discharged; both ISSes boot with
 the lockstep trace format; skeletal book; L3 semantics designed; µLog design doc; µVerilog
 subset + semantics drafted.*
@@ -313,7 +313,7 @@ subset + semantics drafted.*
       first user. *(deps: 0.7)*
 - [x] **0.9** [m] `Machines/Lnp64u/Isa/Base.lean` (~15 base ops) over the generic framework;
       Lnp64u decode/encode instances. *(deps: 0.6, 0.7)*
-- [ ] **0.10** [t] `Loom/Dp/Cert/Lrat.lean` — verified LRAT checker + kernel-reduction
+- [x] **0.10** [t] `Loom/Dp/Cert/Lrat.lean` — verified LRAT checker + kernel-reduction
       benchmark (go/no-go). *(deps: 0.2)*
 - [x] **0.11** [m] **T1 (base ops) stated + discharged**; `Theorems/Ledger.lean` exists.
       *(deps: 0.9, 0.10)*
@@ -325,11 +325,11 @@ subset + semantics drafted.*
 - [x] **0.15** [t+m] `Loom/Core/Trace.lean` frozen; `Iss.lean` + `Tools/Iss.lean` — **first
       light: both machines boot under `lake exe iss`**. *(deps: 0.14, 0.8)*
 - [x] **0.16** [m] T1 extended to the full opcode set. *(deps: 0.13, 0.11)*
-- [ ] **0.17** [t] `Loom/Isa/Dsl/` — macro front-end; defeq regression on both machines'
+- [x] **0.17** [t] `Loom/Isa/Dsl/` — macro front-end; defeq regression on both machines'
       `isa`. *(deps: 0.16)*
-- [ ] **0.18** [t] `Loom/Book/` skeleton — generic extractor + HTML; Acc8 book as smoke test,
+- [x] **0.18** [t] `Loom/Book/` skeleton — generic extractor + HTML; Acc8 book as smoke test,
       Lnp64u opcode table + instruction pages. *(deps: 0.15)*
-- [ ] **0.19** [t] Design docs: `Loom/Hw/DESIGN.md`, `Machines/Lnp64u/Logic/DESIGN.md`,
+- [x] **0.19** [t] Design docs: `Loom/Hw/DESIGN.md`, `Machines/Lnp64u/Logic/DESIGN.md`,
       `Loom/Emit/MicroVerilog/` Ast + Semantics drafted. *(deps: 0.3; parallel)*
 
 ### Phase 1 — Spec-level security (LNP64-µ) + engine bring-up (Loom)
@@ -337,8 +337,11 @@ subset + semantics drafted.*
 multicycle core in the EDSL lockstep against the ISS.*
 
 - [ ] **1.1** [m] `BitLevel.lean` for both machines (Acc8 first) + correspondences (P3).
+- [ ] **1.2a** [t] `Dp/Cert/Check.lean` — in-house kernel-reducible LRAT/RUP checker
+      (structural recursion, List-based) + soundness vs `Std.Sat.CNF.Unsat`; benchmarked by
+      kernel `decide` on pigeonhole certificates (the real D2 numbers).
 - [ ] **1.2** [t] `Dp/Cnf, Solver, Bmc` — first certificate-checked BMC result (on Acc8, then
-      Lnp64u).
+      Lnp64u). *(deps: 1.2a)*
 - [ ] **1.3** [m] T9 conservation (seeds `Logic/Sep/Resource.lean`).
 - [ ] **1.4** [m] T2 invariant form. **1.5** [m] T8, T4. **1.6** [t+m] `Dp/KInduction`; T3 +
       revoke-bound lemmas. **1.7** [m] T6; T5 as 2-safety product. **1.8** [m] T7 + WCET
@@ -380,7 +383,7 @@ two vendors' FPGAs, chain kernel-checked to the Verilog.*
 | # | Decision | Resolve by | Current lean |
 |---|----------|-----------|--------------|
 | D1 | LNP64-µ encoding layout | 0.9 | 32-bit word; opcode [5:0], rd [8:6], rs1 [11:9], rs2 [14:12], imm17 [31:15]; packed-word operands for cap ops |
-| D2 | LRAT via kernel reduction fast enough? | 0.10 | If slow: smaller per-obligation certificates; Rule 1 non-negotiable |
+| D2 | LRAT via kernel reduction fast enough? | **resolved 2026-07-03** | Core's `LRAT.check` is *not kernel-reducible* (wf-recursion sticks). In-house structurally-recursive checker required → task 1.2a; core checker kept as untrusted cross-validation. Pipeline (cadical → LRAT → parse → check) validated under compiled eval. |
 | D3 | Simulation function vs relation for Burch-Dill | 3.1 | Both already on the spine (`Simulation`, `StutterSimulation`); add relation variant only if flushing demands it |
 | D4 | SAT solver + protocol | 1.2 | cadical, DIMACS in / LRAT out, subprocess, untrusted |
 | D5 | Memory representation | done | Function at Prop level (built); packed arrays at bit level; P3 bridges |
