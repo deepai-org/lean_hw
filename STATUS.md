@@ -100,7 +100,14 @@ capability-kernel operations (`installDerived`, `clearSlot`, `destroyMarked`,
 `transferCap`, gate machinery, Mover programming) preserving `Wf` — exactly
 T2/T3/T8/T9's kernel content, the irreducible research core. Infrastructure in
 place: `capLive_ok`/`capLive_err_state` (cap-op state characterization),
-`freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`.
+`freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`,
+and — the two hardest kernel lemmas — **`wf_installDerived`** (capability
+derivation preserves Wf including the full T9 lineage bijection, ~150 lines)
+and **`allocDerived_ok`** (its bridge). With these, `cap_dup`/`mem_grant`
+reduce to threading `capLive` + a `narrow` characterization (plus the
+narrowed range's BitVec no-wrap bound); `cap_drop`/`cap_revoke` to
+`clearSlot`/`destroyMarked` + sweep lemmas; the gate ops to the gate
+machinery; `move` to the Mover.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the
