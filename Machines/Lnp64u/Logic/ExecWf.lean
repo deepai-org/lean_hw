@@ -1451,6 +1451,202 @@ theorem acyclic_allocDerived (owner : DomainId) (kind : CapKind) (parent : CapRe
           exact acyclic_installDerived σ owner s l kind parent
             (freeSlot_caps_none σ owner hfs) (freeCell_none σ owner hfc) hpar h hac
 
+
+/-- **The bulk revocation core.** Destroying all descendants of `root` (via
+`marks`) plus the sweeps preserves `Wf`. Marking closure (`marks_closed`) gives
+`parent_live`: a surviving cell cannot point at a destroyed capability, since it
+would itself be a marked descendant. The `cap_revoke` analog of
+`wf_clearSlot_sweep`. -/
+theorem wf_destroyMarked_sweep (σ : MachineState) (root : CapRef) (h : Wf σ) :
+    Wf (((((σ.destroyMarked (σ.marks root)).sweepRegions).sweepMover))) := by
+  set m := σ.marks root with hm
+  set σ1 := σ.destroyMarked m with hσ1
+  set σ3 := (σ1.sweepRegions).sweepMover with hσ3
+  have hcaps : ∀ d s, (σ3.doms d).caps s = if m d s then none else (σ.doms d).caps s := by
+    intro d s; rw [hσ3, sweepMover_doms, sweepRegions_caps, hσ1, destroyMarked_caps]
+  have hgen : ∀ d s, (σ3.doms d).slotGen s =
+      if m d s && ((σ.doms d).caps s).isSome then bumpGen ((σ.doms d).slotGen s)
+      else (σ.doms d).slotGen s := by
+    intro d s; rw [hσ3, sweepMover_doms, sweepRegions_slotGen, hσ1, destroyMarked_slotGen]
+  have hrun : ∀ d, (σ3.doms d).run = (σ.doms d).run := by
+    intro d; rw [hσ3, sweepMover_doms, sweepRegions_run, hσ1, destroyMarked_run]
+  have hserv : ∀ d, (σ3.doms d).serving = (σ.doms d).serving := by
+    intro d; rw [hσ3, sweepMover_doms, sweepRegions_serving, hσ1, destroyMarked_serving]
+  have hgates : σ3.gates = σ.gates := by rw [hσ3, sweepMover_gates, sweepRegions_gates, hσ1, destroyMarked_gates]
+  have hinf : σ3.inflight = σ.inflight := by rw [hσ3, sweepMover_inflight, sweepRegions_inflight, hσ1, destroyMarked_inflight]
+  have hlin : ∀ d l, (σ3.doms d).lineage l = ((σ.destroyMarked m).doms d).lineage l := by
+    intro d l; rw [hσ3, sweepMover_doms, sweepRegions_lineage, hσ1]
+  -- a surviving cap is unmarked; its live ref survives
+  have hlc : ∀ dd ss gg e, m dd ss = false → (σ.doms dd).liveCap ss gg = some e →
+      (σ3.doms dd).liveCap ss gg = some e := by
+    intro dd ss gg e hnm hlive
+    unfold DomainState.liveCap at hlive ⊢
+    rw [hcaps dd ss, hgen dd ss]
+    simp only [hnm, Bool.false_eq_true, if_false, Bool.false_and]
+    exact hlive
+  have hlr : ∀ r, σ.liveRef r = true → m r.dom r.slot = false → σ3.liveRef r = true := by
+    intro r hr hnm
+    unfold MachineState.liveRef at hr ⊢; rw [Option.isSome_iff_exists] at hr
+    obtain ⟨e, he⟩ := hr; rw [hlc r.dom r.slot r.gen e hnm he]; rfl
+  -- caps s = some e in σ3 ⟹ unmarked and caps s = some e in σ
+  have hcapσ : ∀ d s e, (σ3.doms d).caps s = some e → m d s = false ∧ (σ.doms d).caps s = some e := by
+    intro d s e he; rw [hcaps] at he
+    by_cases hmk : m d s
+    · rw [if_pos hmk] at he; simp at he
+    · simp only [Bool.not_eq_true] at hmk; simp only [hmk, Bool.false_eq_true, if_false] at he; exact ⟨hmk, he⟩
+  constructor
+  · intro d; have hd := h.doms d
+    refine ⟨fun s => by rw [hgen]; split; exact bumpGen_pos _; exact hd.gen_pos s, ?_, ?_, ?_, ?_, ?_⟩
+    · -- cell_backed
+      intro s e l he hle
+      obtain ⟨hnm, hcs⟩ := hcapσ d s e he
+      rw [hlin]
+      have hlin' : ((σ.destroyMarked m).doms d).lineage l =
+          if (List.finRange numSlots).any (fun s' => m d s' &&
+              match (σ.doms d).caps s' with | some e' => e'.lineage == some l | none => false)
+          then none else (σ.doms d).lineage l := rfl
+      rw [hlin']
+      have hnd : ¬ (List.finRange numSlots).any (fun s' => m d s' &&
+              match (σ.doms d).caps s' with | some e' => e'.lineage == some l | none => false) = true := by
+        rw [List.any_eq_true]; rintro ⟨s', _, hs'⟩
+        rw [Bool.and_eq_true] at hs'; obtain ⟨hms', hce'⟩ := hs'
+        cases hc' : (σ.doms d).caps s' with
+        | none => rw [hc'] at hce'; simp at hce'
+        | some e' =>
+            rw [hc'] at hce'; simp only [beq_iff_eq] at hce'
+            have := hd.ptr_inj s s' e e' l hcs hc' hle hce'
+            rw [← this] at hms'; rw [hnm] at hms'; simp at hms'
+      rw [if_neg hnd]; exact hd.cell_backed s e l hcs hle
+    · -- ptr_inj
+      intro s s' e e' l he he' hl hl'
+      obtain ⟨_, hcs⟩ := hcapσ d s e he
+      obtain ⟨_, hcs'⟩ := hcapσ d s' e' he'
+      exact hd.ptr_inj s s' e e' l hcs hcs' hl hl'
+    · -- cell_used
+      intro l hl
+      rw [hlin] at hl
+      have hlin' : ((σ.destroyMarked m).doms d).lineage l =
+          if (List.finRange numSlots).any (fun s' => m d s' &&
+              match (σ.doms d).caps s' with | some e' => e'.lineage == some l | none => false)
+          then none else (σ.doms d).lineage l := rfl
+      rw [hlin'] at hl
+      have hnd : ¬ (List.finRange numSlots).any (fun s' => m d s' &&
+              match (σ.doms d).caps s' with | some e' => e'.lineage == some l | none => false) = true := by
+        intro hb; rw [if_pos hb] at hl; simp at hl
+      rw [if_neg hnd] at hl
+      obtain ⟨s, e0, hc0, he0⟩ := hd.cell_used l hl
+      -- s not marked, else cellDead
+      have hnm : m d s = false := by
+        by_contra hmk; simp only [Bool.not_eq_false] at hmk
+        apply hnd; rw [List.any_eq_true]
+        exact ⟨s, List.mem_finRange s, by rw [Bool.and_eq_true]; exact ⟨hmk, by rw [hc0]; simp [he0]⟩⟩
+      exact ⟨s, e0, by rw [hcaps]; simp only [hnm, Bool.false_eq_true, if_false]; exact hc0, he0⟩
+    · intro s base len p hcase
+      rcases hcase with hc | ⟨l, hc⟩ <;> (obtain ⟨_, hcs⟩ := hcapσ d s _ hc)
+      · exact hd.wx s base len p (Or.inl hcs)
+      · exact hd.wx s base len p (Or.inr ⟨l, hcs⟩)
+    · intro s e base len p hc hk
+      obtain ⟨_, hcs⟩ := hcapσ d s e hc
+      exact hd.bounds s e base len p hcs hk
+  · -- parent_live
+    intro d s p hp
+    have hpσ : σ.parentOf d s = some p := by
+      have hpc : (σ3.doms d).caps s = (σ.doms d).caps s := by
+        by_cases hmk : m d s
+        · exfalso; revert hp; unfold MachineState.parentOf; rw [hcaps]
+          simp only [hmk, if_true]; simp
+        · simp only [Bool.not_eq_true] at hmk; rw [hcaps]
+          simp only [hmk, Bool.false_eq_true, if_false]
+      revert hp; unfold MachineState.parentOf; rw [hpc]
+      cases hcc : (σ.doms d).caps s with
+      | none => simp
+      | some e =>
+          cases hle : e.lineage with
+          | none => simp [hle]
+          | some l =>
+              simp only [hle, Option.bind_eq_bind, Option.bind_some]; rw [hlin]
+              have hdl : ((σ.destroyMarked m).doms d).lineage l =
+                  if (List.finRange numSlots).any (fun s' => m d s' &&
+                      match (σ.doms d).caps s' with | some e' => e'.lineage == some l | none => false)
+                  then none else (σ.doms d).lineage l := rfl
+              have : ((σ.destroyMarked m).doms d).lineage l = (σ.doms d).lineage l ∨
+                     ((σ.destroyMarked m).doms d).lineage l = none := by
+                rw [hdl]; split <;> [right; left] <;> rfl
+              rcases this with heq | heq
+              · rw [heq]; exact id
+              · rw [heq]; simp
+    have hmns : m d s = false := by
+      by_contra hmk; simp only [Bool.not_eq_false] at hmk
+      -- (d,s) marked ⟹ caps s destroyed ⟹ parent_live vacuous; but hp is about σ3.parentOf
+      revert hp; unfold MachineState.parentOf; rw [hcaps]; simp only [hmk, if_true]; simp
+    -- p not marked (else (d,s) marked by marks_closed)
+    have hplive := h.parent_live d s p hpσ
+    have hpnm : m p.dom p.slot = false := by
+      by_contra hpmk; simp only [Bool.not_eq_false] at hpmk
+      have hpg : (σ.doms p.dom).slotGen p.slot = p.gen := by
+        unfold MachineState.liveRef DomainState.liveCap at hplive
+        cases hcp : (σ.doms p.dom).caps p.slot with
+        | none => simp only [hcp] at hplive; simp at hplive
+        | some e =>
+            simp only [hcp] at hplive
+            split at hplive
+            · next hgg => exact of_decide_eq_true ((Bool.and_eq_true _ _).mp hgg).1
+            · next => simp at hplive
+      have := marks_closed σ root d s p hpσ hpg hpmk
+      rw [← hm] at this; rw [this] at hmns; simp at hmns
+    exact hlr p hplive hpnm
+  · -- region_backed
+    intro d r rg hrg
+    have hrg' : (σ1.doms d).regions r = some rg ∧ σ1.liveRef rg.backing = true := by
+      have hh : (σ3.doms d).regions r = ((σ1.sweepRegions).doms d).regions r := by
+        rw [hσ3, sweepMover_doms]
+      rw [hh] at hrg
+      unfold MachineState.sweepRegions at hrg; simp only at hrg
+      split at hrg
+      · next rg0 hr0 =>
+          split at hrg
+          · next hlv => simp only [Option.some.injEq] at hrg; subst hrg; exact ⟨hr0, hlv⟩
+          · next => simp at hrg
+      · next => simp at hrg
+    have hrgσ : (σ.doms d).regions r = some rg := by
+      have : (σ1.doms d).regions r = (σ.doms d).regions r := by rw [hσ1, destroyMarked_regions]
+      rw [← this]; exact hrg'.1
+    obtain ⟨e, hlive, hle⟩ := h.region_backed d r rg hrgσ
+    have hbnm : m rg.backing.dom rg.backing.slot = false := by
+      by_contra hbmk; simp only [Bool.not_eq_false] at hbmk
+      have hd0 := hrg'.2; rw [hσ1] at hd0
+      unfold MachineState.liveRef DomainState.liveCap at hd0
+      rw [show ((σ.destroyMarked m).doms rg.backing.dom).caps rg.backing.slot = none from by
+        simp only [destroyMarked_caps, hbmk, if_true]] at hd0; simp at hd0
+    exact ⟨e, hlc rg.backing.dom rg.backing.slot rg.backing.gen e hbnm hlive, hle⟩
+  · -- mover_wf
+    intro job hj
+    have hmvsome : σ1.liveRef job.src = true ∧ σ1.liveRef job.dst = true ∧ σ.mover = some job := by
+      have hj3 : (σ1.sweepRegions).sweepMover.mover = some job := by rw [← hσ3]; exact hj
+      obtain ⟨hm0, hl1, hl2⟩ := sweepMover_mover_some (σ1.sweepRegions) job hj3
+      rw [sweepRegions_liveRef] at hl1 hl2
+      refine ⟨hl1, hl2, ?_⟩
+      rw [sweepRegions_mover] at hm0; rw [hσ1, destroyMarked_mover] at hm0; exact hm0
+    obtain ⟨hs1, hs2, hjeq⟩ := hmvsome
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hjeq
+    have hb1 : m job.src.dom job.src.slot = false := by
+      by_contra hbmk; simp only [Bool.not_eq_false] at hbmk; rw [hσ1] at hs1
+      unfold MachineState.liveRef DomainState.liveCap at hs1
+      rw [show ((σ.destroyMarked m).doms job.src.dom).caps job.src.slot = none from by
+        simp only [destroyMarked_caps, hbmk, if_true]] at hs1; simp at hs1
+    have hb2 : m job.dst.dom job.dst.slot = false := by
+      by_contra hbmk; simp only [Bool.not_eq_false] at hbmk; rw [hσ1] at hs2
+      unfold MachineState.liveRef DomainState.liveCap at hs2
+      rw [show ((σ.destroyMarked m).doms job.dst.dom).caps job.dst.slot = none from by
+        simp only [destroyMarked_caps, hbmk, if_true]] at hs2; simp at hs2
+    exact ⟨o1, o2, hlr job.src o3 hb1, hlr job.dst o4 hb2⟩
+  · intro g a; rw [hgates]; intro ha
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    exact ⟨by rw [hserv]; exact s1, by rw [hrun]; exact s2, s3, s4⟩
+  · intro d g; rw [hserv]; intro hs; rw [hgates]; exact h.serving_gate d g hs
+  · intro d g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d g hb
+  · intro fl hfl; rw [hinf] at hfl; rw [hrun]; exact h.inflight_running fl hfl
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
