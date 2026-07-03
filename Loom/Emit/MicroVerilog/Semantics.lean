@@ -48,17 +48,24 @@ def Expr.eval (σ : St) : {w : Nat} → Expr w → BitVec w
   | _, .zext a w' => (a.eval σ).setWidth w'
   | _, .sext a w' => (a.eval σ).signExtend w'
 
-/-- One clock cycle (reset deasserted). -/
+/-- Commit one write port of memory `name` (a guarded nonblocking
+assignment): if enabled, update the addressed word at the declared width. -/
+def WritePort.commit {aw dw : Nat} (name : String) (σ : St)
+    (p : WritePort aw dw) (μ : MemEnv) : MemEnv :=
+  if p.en.eval σ = 1#1 then
+    fun n a w =>
+      if n = name ∧ a = (p.addr.eval σ).toNat ∧ w = dw
+      then (p.data.eval σ).setWidth w
+      else μ n a w
+  else μ
+
+/-- One clock cycle (reset deasserted). Each memory commits its write ports
+in list order — successive nonblocking assignments in one `always` block, so
+on a same-cycle address collision the last port wins (IEEE 1800). -/
 def Module.cycle (m : Module) (σ : St) : St where
   regs := m.regs.foldl (fun ρ r => ρ.set r.name (r.next.eval σ)) σ.regs
   mems := m.mems.foldl
-    (fun μ mem =>
-      if mem.wrEn.eval σ = 1#1 then
-        fun n a w =>
-          if n = mem.name ∧ a = (mem.wrAddr.eval σ).toNat ∧ w = mem.dataWidth
-          then (mem.wrData.eval σ).setWidth w
-          else μ n a w
-      else μ)
+    (fun μ mem => mem.wrPorts.foldl (fun μ p => p.commit mem.name σ μ) μ)
     σ.mems
 
 /-- The reset state (what asserting `rst` for one cycle establishes,

@@ -90,10 +90,11 @@ def print (m : Module) : String := Id.run do
       regNexts := regNexts ++ [(r.name, nw)]
     let mut memPorts : List (String × String × String × String) := []
     for mm in m.mems do
-      let en ← pExpr mm.wrEn
-      let ad ← pExpr mm.wrAddr
-      let dt ← pExpr mm.wrData
-      memPorts := memPorts ++ [(mm.name, en, ad, dt)]
+      for p in mm.wrPorts do
+        let en ← pExpr p.en
+        let ad ← pExpr p.addr
+        let dt ← pExpr p.data
+        memPorts := memPorts ++ [(mm.name, en, ad, dt)]
     let mut outAssigns : List String := []
     for o in m.outs do
       let v ← pExpr o.val
