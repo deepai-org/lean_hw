@@ -1313,6 +1313,81 @@ theorem dropCore_preserves (σ : MachineState) (d : DomainId) (s : Slot)
       · simp only [hpo]
         exact acyclic_sweepMover _ (acyclic_sweepRegions _ (acyclic_clearSlot σ' d s hac'))
 
+
+/-- `installDerived` into a free slot/cell adds the parent link at exactly the
+`(d, s)` references (its parent function is `σ`'s plus `some parent` at every
+`⟨d, s, ·⟩`). Requires the target slot and cell to be free (as `freeSlot`/
+`freeCell` guarantee) and `Wf σ` (so no other cap uses the freed cell). -/
+theorem installDerived_parentRef (σ : MachineState) (d : DomainId) (s : Slot)
+    (l : LineageId) (kind : CapKind) (parent : CapRef)
+    (hs : (σ.doms d).caps s = none) (hl : (σ.doms d).lineage l = none)
+    (hwf : Wf σ) (r : CapRef) :
+    (σ.installDerived d s l kind parent).1.parentRef r =
+      if r.dom = d ∧ r.slot = s then some parent else σ.parentRef r := by
+  set σ' := (σ.installDerived d s l kind parent).1 with hσ'
+  have hcaps : ∀ d' s', (σ'.doms d').caps s' =
+      if d' = d ∧ s' = s then some ⟨kind, some l⟩ else (σ.doms d').caps s' := by
+    intro d' s'; rw [hσ']; unfold MachineState.installDerived MachineState.setDom; simp only
+    by_cases hd : d' = d
+    · subst hd; rw [Loom.Fun.update_same]
+      by_cases hss : s' = s
+      · subst hss; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hss, hss]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+  have hlin : ∀ d' l', (σ'.doms d').lineage l' =
+      if d' = d ∧ l' = l then some ⟨parent⟩ else (σ.doms d').lineage l' := by
+    intro d' l'; rw [hσ']; unfold MachineState.installDerived MachineState.setDom; simp only
+    by_cases hd : d' = d
+    · subst hd; rw [Loom.Fun.update_same]
+      by_cases hll : l' = l
+      · subst hll; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hll, hll]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+  unfold MachineState.parentRef MachineState.parentOf
+  rw [hcaps r.dom r.slot]
+  by_cases hp : r.dom = d ∧ r.slot = s
+  · simp only [if_pos hp, Option.bind_eq_bind, Option.bind_some]
+    rw [hlin r.dom l, if_pos ⟨hp.1, rfl⟩]
+    rfl
+  · simp only [if_neg hp]
+    cases hc : (σ.doms r.dom).caps r.slot with
+    | none => simp [hc, Option.bind_eq_bind]
+    | some e =>
+        cases hle : e.lineage with
+        | none => simp [hc, hle]
+        | some l' =>
+            simp only [hc, hle, Option.bind_eq_bind, Option.bind_some]
+            rw [hlin r.dom l']
+            have hll : ¬ (r.dom = d ∧ l' = l) := by
+              rintro ⟨hrd, hll⟩; subst hll
+              have := (hwf.doms r.dom).cell_backed r.slot e l' hc hle
+              rw [hrd, hl] at this; simp at this
+            rw [if_neg hll]
+
+/-- `installDerived` into a free slot/cell preserves acyclicity: it is a
+fresh-leaf addition (nothing points to a dead ref, by `Wf`; the parent is live
+so it is not the new ref). -/
+theorem acyclic_installDerived (σ : MachineState) (d : DomainId) (s : Slot)
+    (l : LineageId) (kind : CapKind) (parent : CapRef)
+    (hs : (σ.doms d).caps s = none) (hl : (σ.doms d).lineage l = none)
+    (hplive : σ.liveRef parent = true) (hwf : Wf σ) (hac : Acyclic σ) :
+    Acyclic (σ.installDerived d s l kind parent).1 := by
+  refine acyclic_add_leaves σ _ (fun r => decide (r.dom = d ∧ r.slot = s)) parent ?_ ?_ ?_ hac
+  · -- no p-ref is parent: parent is live, but (d,s) is empty
+    intro a hpa heq; subst heq
+    simp only [decide_eq_true_eq] at hpa
+    unfold MachineState.liveRef DomainState.liveCap at hplive
+    rw [hpa.1, hpa.2, hs] at hplive; simp at hplive
+  · -- parentRef characterization
+    intro r; rw [installDerived_parentRef σ d s l kind parent hs hl hwf r]
+    simp only [decide_eq_true_eq]
+  · -- nothing points to a p-ref (dead slot) in σ
+    intro r a hpa hcyc
+    simp only [decide_eq_true_eq] at hpa
+    have hlive := hwf.parent_live r.dom r.slot a hcyc
+    unfold MachineState.liveRef DomainState.liveCap at hlive
+    rw [hpa.1, hpa.2, hs] at hlive; simp at hlive
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
