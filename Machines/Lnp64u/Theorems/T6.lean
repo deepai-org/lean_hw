@@ -234,18 +234,30 @@ ingredients are proved in `Logic/Hostage.lean`), itemized:
    decreases ≥ 1 per non-progress cycle (`corePhase_cases` arms: issue
    via `massExcept_sub` + `cost_pos` — foreign because `payer e = origin`
    forces `e` onto the chain by 1; burn/retire via the countdown; halt
-   via the halted count — needs halted-monotonicity of `step`, still
-   unproved at the exec level; idle-with-funded-origin impossible via
+   via the halted count — **DONE (2026-07-03)**: halted-monotonicity is
+   now proved sorry-free as `Hostage.halted_stays`/`stepN_halted` (a
+   `HaltedStays` ISA sweep: calm ops via `CalmOut.haltedStays`, the gate
+   ops via `gateCall_end_halted`/`gateReturn_end_halted` — the resumed
+   caller is `.blocked`, never `.halted`, by `Wf.gate_serving` — and the
+   halts via `haltDom_halted`); idle-with-funded-origin impossible via
    `Eligible` head + `schedule_isSome_of_eligible`; stall excluded by
    `hstall`), refunded ≤ `2Q_e` per boundary (`refillPhase_budget_cases`)
    and `2·Σ Q·(L/P) ≤ L-1` per hyperperiod (`hsched`,
-   `periodP_dvd_hyperL`). Needs the cycle-counter lemma
-   `(step m σ).cycle = σ.cycle + 1` (exec never writes `cycle`; prove as
-   an `InflightEq`-style combinator sweep).
+   `periodP_dvd_hyperL`). The cycle-counter lemma is **DONE
+   (2026-07-03)**: `(step m σ).cycle = σ.cycle + 1` is
+   `Hostage.step_cycle` (with `stepN_cycle` for windows), via the
+   `CycleEq` combinator sweep (exec never writes `cycle`), mirroring
+   `InflightEq`.
 4. **Origin refill**: `origin.budget = budgetQ > 0` (`hpos`,
    `refillPhase_budget_cases`) within one period (≤ `hyperL`,
    `periodP_le_hyperL`) of any cycle; only chain issues draw it down
    (item 1), so the head stays eligible until the next progress event.
+   **DONE (2026-07-03)**: the refill brick is
+   `Hostage.refill_within_period` (a boundary at most `periodP` cycles
+   ahead restores `budget = budgetQ`, via `stepN_cycle`) and
+   `origin_refill_eligible` (`0 < budget` within `hyperL` cycles, at the
+   very `refillPhase` state `corePhase` runs in). The "stays eligible"
+   half is the chain-frame part of item 1.
 5. **Assembly**: split `[0, resumeBound]` by `stepN_add` into ≤
    `(maxDonationBound+2)^maxChainDepth` windows of
    `interferenceWindow + 2·hyperL + maxCostBound + 2` cycles; items 3+4
