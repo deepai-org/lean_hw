@@ -1,4 +1,5 @@
 import Machines.Lnp64u.Logic.GateStep
+import Machines.Lnp64u.Logic.DFrame
 import Machines.Lnp64u.Logic.Inflight
 import Machines.Lnp64u.Logic.Authority
 import Machines.Lnp64u.Logic.Hostage
@@ -1023,6 +1024,90 @@ theorem corePhase_inflight_dom (m : Manifest) (σ : MachineState) (fl : InFlight
       have h2 : some (⟨fl0.dom, fl0.word, fl0.cyclesLeft - 1⟩ : InFlight) = some fl := h
       injection h2 with h2; rw [← h2]
 
+/-! ## Bridge to the `DFrame` sweep -/
+
+/-- An insulated state satisfies the sweep context. -/
+theorem dctx_of_insulated {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hiso : Isolated m d) (hins : Insulated m d σ) :
+    DFrame.DCtx d (UnderRoots m d) σ where
+  dfull := fun s hc => by
+    have := congrFun hins.boot_caps s
+    rw [hc] at this
+    cases hi : (m.doms d).initCaps s with
+    | none => exact hiso.slots_full s hi
+    | some k => rw [hi] at this; cases this
+  dlin := fun l => congrFun hins.boot_lineage l
+  dent := fun s e h => by
+    have := congrFun hins.boot_caps s
+    rw [h] at this
+    cases hi : (m.doms d).initCaps s with
+    | none => rw [hi] at this; cases this
+    | some k =>
+        rw [hi] at this
+        injection this with this
+        rw [this]
+  dgates := fun s e g h hk => by
+    have := congrFun hins.boot_caps s
+    rw [h] at this
+    cases hi : (m.doms d).initCaps s with
+    | none => rw [hi] at this; cases this
+    | some k =>
+        rw [hi] at this
+        injection this with this
+        have hkk : k = .gate g := by
+          have := congrArg CapEntry.kind this
+          simp only [hk] at this
+          exact this.symm
+        exact hiso.no_gates_held s g (hkk ▸ hi)
+  dserv := hins.serving_none
+  dnoblk := hins.not_blocked
+  dreg := fun r rg hrg => by
+    have hown := hins.regions_own d r rg hrg
+    obtain ⟨entry, hlive, -⟩ := hins.wf.region_backed d r rg hrg
+    rw [hown] at hlive
+    exact ⟨hown, by rw [hlive]; rfl⟩
+  ro := hins.regions_own
+  fo := hins.foreign_off
+  covOff := fun e he a need hcov =>
+    covers_not_underRoots hins.wf.region_backed hins.regions_own hins.foreign_off
+      he hcov
+  movOff := hins.mover_foreign
+  ncallee := fun g => by rw [hins.gates_static g]; exact hiso.no_gates_in g
+  acaller := fun g a ha hc => by
+    have hblk := (hins.wf.gate_serving g a ha).2.1
+    rw [hc] at hblk
+    exact hins.not_blocked g hblk
+
+/-- The sweep context survives the refill phase (budgets only). -/
+theorem dctx_refill {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hctx : DFrame.DCtx d (UnderRoots m d) σ) :
+    DFrame.DCtx d (UnderRoots m d) (refillPhase m σ) where
+  dfull := fun s => by rw [refillPhase_caps]; exact hctx.dfull s
+  dlin := fun l => by rw [refillPhase_lineage]; exact hctx.dlin l
+  dent := fun s e h => hctx.dent s e (by rw [← refillPhase_caps m σ d]; exact h)
+  dgates := fun s e g h => hctx.dgates s e g (by rw [← refillPhase_caps m σ d]; exact h)
+  dserv := by rw [refillPhase_serving]; exact hctx.dserv
+  dnoblk := fun g => by rw [refillPhase_run]; exact hctx.dnoblk g
+  dreg := fun r rg hrg => by
+    rw [refillPhase_regions] at hrg
+    obtain ⟨hown, hlive⟩ := hctx.dreg r rg hrg
+    refine ⟨hown, ?_⟩
+    rw [liveCap_congr_of_eq _ _ (refillPhase_caps m σ d) (refillPhase_slotGen m σ d)]
+    exact hlive
+  ro := fun e r rg h => hctx.ro e r rg (by rw [← refillPhase_regions m σ e]; exact h)
+  fo := fun e he s entry b l p hc =>
+    hctx.fo e he s entry b l p (by rw [← refillPhase_caps m σ e]; exact hc)
+  covOff := fun e he a need hcov => by
+    refine hctx.covOff e he a need ?_
+    unfold MachineState.domCovers at hcov ⊢
+    rw [decide_eq_true_iff] at hcov ⊢
+    obtain ⟨r, rg, hrg, hc⟩ := hcov
+    rw [refillPhase_regions] at hrg
+    exact ⟨r, rg, hrg, hc⟩
+  movOff := fun job hj => hctx.movOff job (by rw [← refillPhase_mover m σ]; exact hj)
+  ncallee := fun g => by rw [refillPhase_gates]; exact hctx.ncallee g
+  acaller := fun g a ha => hctx.acaller g a (by rw [← refillPhase_gates m σ]; exact ha)
+
 /-! ## Work-in-progress engine lemmas
 
 The four cycle-level engines the T5 assembly consumes. Statements are
@@ -1072,7 +1157,54 @@ theorem frame_step (m : Manifest) (d : DomainId) (σ : MachineState)
     (hnr : ∀ fl, σ.inflight = some fl → fl.dom = d → 1 < fl.cyclesLeft)
     (hni : σ.inflight = none → schedule m (refillPhase m σ) ≠ some d) :
     DFrozen m d σ (step m σ) := by
-  sorry
+  have hctx := dctx_of_insulated hiso hins
+  have hctxρ : DFrame.DCtx d (UnderRoots m d) (refillPhase m σ) := dctx_refill hctx
+  have hwfρ : Wf (refillPhase m σ) := refillPhase_preserves_wf m σ hins.wf
+  have hexec : ExecPreservesWf :=
+    Machines.Lnp64u.Isa.execPreservesWf_of_system
+      Machines.Lnp64u.Isa.Wip.system_preserves
+  have hwfκ : Wf (corePhase m (refillPhase m σ)) := corePhase_preserves_wf hexec m hm _ hwfρ
+  have hcy : DFrame.DCycle d (UnderRoots m d) (refillPhase m σ)
+      (corePhase m (refillPhase m σ)) := by
+    refine DFrame.corePhase_dcycle m _ hctxρ ?_ ?_
+    · intro fl hfl hfd
+      rw [refillPhase_inflight] at hfl
+      exact hnr fl hfl hfd
+    · intro h
+      rw [refillPhase_inflight] at h
+      exact hni h
+  have hmemμ : ∀ a, UnderRoots m d a →
+      (moverPhase (corePhase m (refillPhase m σ))).mem a
+        = (corePhase m (refillPhase m σ)).mem a := by
+    intro a ha
+    refine moverPhase_mem_frame hwfκ.region_backed hcy.ro hcy.fo ?_ ?_ a ha
+    · intro job hj
+      rcases hcy.mover job hj with hj' | hj'
+      · rw [refillPhase_mover] at hj'
+        exact hins.mover_foreign job hj'
+      · exact hj'
+    · intro job hj
+      exact (hwfκ.mover_wf job hj).2.1
+  have hdd : (step m σ).doms d = (refillPhase m σ).doms d := by
+    rw [step_doms]
+    exact hcy.ddoms
+  have hmem : ∀ a, UnderRoots m d a → (step m σ).mem a = σ.mem a := by
+    intro a ha
+    have h1 : (step m σ).mem a
+        = (moverPhase (corePhase m (refillPhase m σ))).mem a := rfl
+    rw [h1, hmemμ a ha, hcy.mem a ha]
+    exact congrFun (refillPhase_frame m σ).1 a
+  exact
+    { regs := by rw [hdd, refillPhase_regs]
+      pc := by rw [hdd, refillPhase_pc]
+      run := by rw [hdd, refillPhase_run]
+      cause := by rw [hdd, refillPhase_cause]
+      serving := by rw [hdd, refillPhase_serving]
+      caps := by rw [hdd, refillPhase_caps]
+      slotGen := by rw [hdd, refillPhase_slotGen]
+      lineage := by rw [hdd, refillPhase_lineage]
+      regions := by rw [hdd, refillPhase_regions]
+      mem := hmem }
 
 /-- **Engine 3: retirement lockstep.** Both runs retire the same latched
 word for `d` from coupled, insulated states: the post-states are coupled.
