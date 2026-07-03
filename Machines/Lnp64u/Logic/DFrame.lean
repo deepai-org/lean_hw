@@ -1813,4 +1813,193 @@ theorem exec_dkle : ∀ instr ∈ isa, ∀ c : Ctx, DKLe d c.d R (instr.sem.exec
 
 end Dispatch
 
+/-! ## Cycle-level assembly: `retire` and `corePhase` -/
+
+/-- The cycle-level frame at `d`, with the executing domain abstracted. -/
+structure DCycle (d : DomainId) (R : Addr → Prop) (σ σ' : MachineState) : Prop where
+  ddoms : σ'.doms d = σ.doms d
+  mem : ∀ a, R a → σ'.mem a = σ.mem a
+  gcfg : ∀ g, (σ'.gates g).config = (σ.gates g).config
+  acts : ∀ g a, (σ'.gates g).act = some a → (σ.gates g).act = some a ∨ a.caller ≠ d
+  mover : ∀ job, σ'.mover = some job → σ.mover = some job ∨ job.owner ≠ d
+  ro : RegionsOwn σ'
+  fo : ForeignOff d R σ'
+
+section Cycle
+
+variable {d : DomainId} {R : Addr → Prop} {σ : MachineState}
+
+theorem DKeep.toCycle {cd : DomainId} {σ' : MachineState} (hne : cd ≠ d)
+    (h : DKeep d cd R σ σ') : DCycle d R σ σ' :=
+  ⟨h.ddoms, h.mem, h.gcfg,
+   fun g a ha => (h.acts g a ha).imp id (fun hc => by rw [hc]; exact hne),
+   fun job hj => (h.mover job hj).imp id (fun hc => by rw [hc]; exact hne),
+   h.ro, h.fo⟩
+
+theorem DCycle.refl (hro : RegionsOwn σ) (hfo : ForeignOff d R σ) : DCycle d R σ σ :=
+  ⟨rfl, fun _ _ => rfl, fun _ => rfl, fun _ _ h => Or.inl h, fun _ h => Or.inl h, hro, hfo⟩
+
+/-- Setting only the in-flight latch on the left is transparent. -/
+theorem DCycle.castInflight {σ' : MachineState} {i : Option InFlight}
+    (h : DCycle d R { σ with inflight := i } σ') : DCycle d R σ σ' :=
+  ⟨h.ddoms, h.mem, h.gcfg, h.acts, h.mover, h.ro, h.fo⟩
+
+/-- The context ignores the in-flight latch. -/
+theorem DCtx.setInflight (hctx : DCtx d R σ) (i : Option InFlight) :
+    DCtx d R { σ with inflight := i } :=
+  ⟨hctx.dfull, hctx.dlin, hctx.dent, hctx.dgates, hctx.dserv, hctx.dnoblk, hctx.dreg,
+   hctx.ro, hctx.fo, hctx.covOff, hctx.movOff, hctx.ncallee, hctx.acaller⟩
+
+/-- No serving chain from a foreign domain ends at `d` (`d` is never a
+recorded caller). -/
+theorem chainOrigin_ne (hctx : DCtx d R σ) :
+    ∀ (fuel : Nat) (e : DomainId), e ≠ d → σ.chainOrigin fuel e ≠ d := by
+  intro fuel
+  induction fuel with
+  | zero => intro e he; exact he
+  | succ n ih =>
+      intro e he
+      unfold MachineState.chainOrigin
+      cases hs : (σ.doms e).serving with
+      | none => simp only [hs]; exact he
+      | some g =>
+          simp only [hs]
+          cases ha : (σ.gates g).act with
+          | some a => simp only [ha]; exact ih a.caller (hctx.acaller g a ha)
+          | none => simp only [ha]; exact he
+
+theorem payer_ne (hctx : DCtx d R σ) (e : DomainId) (he : e ≠ d) : σ.payer e ≠ d :=
+  chainOrigin_ne hctx maxChainDepth e he
+
+/-- Charging a payer's budget (and latching) is a `DCycle`. -/
+theorem dcycle_charge (hctx : DCtx d R σ) (p : DomainId) (hp : p ≠ d)
+    (f : DomainState → DomainState)
+    (hcaps : (f (σ.doms p)).caps = (σ.doms p).caps)
+    (hreg : (f (σ.doms p)).regions = (σ.doms p).regions)
+    (i : Option InFlight) :
+    DCycle d R σ { σ.setDom p f with inflight := i } := by
+  have hk : DKeep d p R σ (σ.setDom p f) := dkeep_setDom hctx p f hp hcaps hreg
+  exact
+    { ddoms := hk.ddoms, mem := hk.mem, gcfg := hk.gcfg
+      acts := fun g a ha => (hk.acts g a ha).imp id (fun hc => by rw [hc]; exact hp)
+      mover := fun job hj => (hk.mover job hj).imp id (fun hc => by rw [hc]; exact hp)
+      ro := hk.ro, fo := hk.fo }
+
+/-- **`retire` of a foreign instruction is a `DCycle`.** -/
+theorem retire_dcycle (σ : MachineState) (e : DomainId) (w : Loom.Word32)
+    (hctx : DCtx d R σ) (hne : e ≠ d) :
+    DCycle d R σ (retire σ e w) := by
+  unfold retire
+  split
+  · exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
+  · rename_i instr hdec
+    set σ1 := σ.setDom e (fun ds => { ds with pc := ds.pc + 1 }) with hσ1
+    have h1 : DKeep d e R σ σ1 := dkeep_setDom hctx e _ hne rfl rfl
+    have hctx1 : DCtx d R σ1 := hctx.transport hne h1
+    have hexk := exec_dkle instr (Loom.Isa.decode_mem isa hdec)
+      { d := e, pc := (σ.doms e).pc, op := operandsOf w } σ1 hctx1 hne
+    cases hexr : instr.sem.exec { d := e, pc := (σ.doms e).pc, op := operandsOf w } σ1 with
+    | ok a σ' =>
+        simp only [hexr]
+        exact (h1.trans (hexk.1 a σ' hexr)).toCycle hne
+    | err er σ' =>
+        simp only [hexr]
+        have h2 := hexk.2 er σ' hexr
+        have hctx2 := hctx1.transport hne h2
+        exact ((h1.trans h2).trans
+          (dkeep_setRegOther (cd := e) hctx2 e hne (operandsOf w).rd er.toWord)).toCycle hne
+    | fault f =>
+        simp only [hexr]
+        exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
+
+/-- **A `corePhase` cycle with no `d`-event is a `DCycle`.** -/
+theorem corePhase_dcycle (m : Manifest) (σ : MachineState) (hctx : DCtx d R σ)
+    (hnr : ∀ fl, σ.inflight = some fl → fl.dom = d → 1 < fl.cyclesLeft)
+    (hni : σ.inflight = none → schedule m σ ≠ some d) :
+    DCycle d R σ (corePhase m σ) := by
+  unfold corePhase
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hcl : fl.cyclesLeft ≤ 1
+      · simp only [hcl, if_true]
+        have hfld : fl.dom ≠ d := by
+          intro hcontra
+          have := hnr fl hinf hcontra
+          omega
+        have hctxI : DCtx d R { σ with inflight := none } := hctx.setInflight none
+        exact (retire_dcycle { σ with inflight := none } fl.dom fl.word
+          hctxI hfld).castInflight
+      · simp only [hcl, if_false]
+        exact
+          { ddoms := rfl, mem := fun _ _ => rfl, gcfg := fun _ => rfl
+            acts := fun _ _ h => Or.inl h, mover := fun _ h => Or.inl h
+            ro := hctx.ro, fo := hctx.fo }
+  | none =>
+      simp only []
+      split
+      · exact DCycle.refl hctx.ro hctx.fo
+      · rename_i e hsched
+        have hne : e ≠ d := by
+          intro hcontra
+          subst hcontra
+          exact hni hinf hsched
+        split
+        · exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
+        · rename_i w hfetch
+          split
+          · exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
+          · rename_i instr hdec
+            have hpne : σ.payer e ≠ d := payer_ne hctx e hne
+            by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer e)).budget
+            · simp only [hbud, if_true]
+              cases hservd : (σ.doms e).serving with
+              | none =>
+                  simp only [hservd]
+                  exact dcycle_charge hctx (σ.payer e) hpne _ rfl rfl _
+              | some g =>
+                  simp only [hservd]
+                  cases hactg : (σ.gates g).act with
+                  | none => exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
+                  | some a =>
+                      simp only [hactg]
+                      by_cases hdon : instr.cost.cost ≤ a.donated
+                      · simp only [hdon, if_true]
+                        have hcaller : a.caller ≠ d := hctx.acaller g a hactg
+                        set σ' := σ.setDom (σ.payer e)
+                          (fun ds => { ds with budget := ds.budget - instr.cost.cost })
+                          with hσ'
+                        have h1 : DKeep d (σ.payer e) R σ σ' :=
+                          dkeep_setDom hctx (σ.payer e) _ hpne rfl rfl
+                        have hcy1 : DCycle d R σ σ' := h1.toCycle hpne
+                        refine
+                          { ddoms := hcy1.ddoms, mem := hcy1.mem
+                            gcfg := fun g' => ?_, acts := fun g' a' ha' => ?_
+                            mover := hcy1.mover, ro := hcy1.ro, fo := hcy1.fo }
+                        · show (Loom.Fun.update σ'.gates g _ g').config = _
+                          by_cases hgg : g' = g
+                          · subst hgg
+                            rw [Loom.Fun.update_same]
+                            exact hcy1.gcfg g'
+                          · rw [Loom.Fun.update_ne _ _ _ _ hgg]
+                            exact hcy1.gcfg g'
+                        · have ha'' : (Loom.Fun.update σ'.gates g
+                              { σ'.gates g with act := some { a with
+                                donated := a.donated - instr.cost.cost } } g').act
+                              = some a' := ha'
+                          by_cases hgg : g' = g
+                          · subst hgg
+                            rw [Loom.Fun.update_same] at ha''
+                            refine Or.inr ?_
+                            injection ha'' with ha''
+                            rw [← ha'']
+                            exact hcaller
+                          · rw [Loom.Fun.update_ne _ _ _ _ hgg] at ha''
+                            exact hcy1.acts g' a' ha''
+                      · simp only [hdon, if_false]
+                        exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
+            · simp only [hbud, if_false]
+              exact DCycle.refl hctx.ro hctx.fo
+
+end Cycle
+
 end Machines.Lnp64u.DFrame
