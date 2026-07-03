@@ -3917,4 +3917,249 @@ theorem exec_chain (instr) (hmem : instr ∈ isa) (c : Ctx) (σ : MachineState) 
       · intro er σ' he
         simp [SpecM.modify] at he
 
+/-! ## Retire-level chain shapes
+
+`exec_chain`'s postconditions are stated against the pc-bumped state and a
+`Ctx`; the T6 counting works at `retire`/`corePhase` granularity against the
+pre-cycle state. `CallShape`/`RetShape`/`HaltShape` are the domain-indexed
+versions, closed under pre-composition with a `ChainOut` frame, and
+`retire_chain` is the resulting retire-level classification. -/
+
+/-- The serving-chain depth a `gate_call` by `d` would record (matches
+`Isa.Wip.gateDepth` at `c.d = d`). -/
+def chainDepthAt (σ : MachineState) (d : DomainId) : Nat :=
+  match (σ.doms d).serving with
+  | some g' =>
+      match (σ.gates g').act with
+      | some a => a.depth + 1
+      | none => 1
+  | none => 1
+
+theorem gateDepth_eq_chainDepthAt (c : Ctx) (σ : MachineState) :
+    Machines.Lnp64u.Isa.Wip.gateDepth c σ = chainDepthAt σ c.d := rfl
+
+theorem chainDepthAt_congr {σ σ1 : MachineState} (d : DomainId)
+    (hs : (σ1.doms d).serving = (σ.doms d).serving) (hg : σ1.gates = σ.gates) :
+    chainDepthAt σ1 d = chainDepthAt σ d := by
+  unfold chainDepthAt
+  rw [hs, hg]
+
+/-- Domain-indexed `GateCallShape` (see there for the clause-by-clause
+reading), plus the recorded depth equation. -/
+def CallShape (d : DomainId) (σ σ' : MachineState) : Prop :=
+  ∃ gid act,
+    (σ.gates gid).act = none ∧
+    (σ.gates gid).config.callee ≠ d ∧
+    (σ.doms (σ.gates gid).config.callee).run = .running ∧
+    (σ.doms (σ.gates gid).config.callee).serving = none ∧
+    act.caller = d ∧
+    act.depth = chainDepthAt σ d ∧
+    act.depth ≤ maxChainDepth ∧
+    act.donated = (σ.doms d).maxDonation ∧
+    (∀ g', g' ≠ gid → σ'.gates g' = σ.gates g') ∧
+    (σ'.gates gid).act = some act ∧
+    (σ'.gates gid).config = (σ.gates gid).config ∧
+    (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+    (∀ e, e ≠ d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+    (∀ e, e ≠ (σ.gates gid).config.callee → (σ'.doms e).serving = (σ.doms e).serving) ∧
+    (σ'.doms (σ.gates gid).config.callee).serving = some gid ∧
+    (∀ e, e ≠ d → (σ'.doms e).run = (σ.doms e).run) ∧
+    (σ'.doms d).run = .blocked gid
+
+/-- Domain-indexed `GateReturnShape`. -/
+def RetShape (d : DomainId) (σ σ' : MachineState) : Prop :=
+  ∃ gid act,
+    (σ.doms d).serving = some gid ∧
+    (σ.gates gid).act = some act ∧
+    (∀ g', g' ≠ gid → σ'.gates g' = σ.gates g') ∧
+    (σ'.gates gid).act = none ∧
+    (σ'.gates gid).config = (σ.gates gid).config ∧
+    (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+    (∀ e, e ≠ d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+    (∀ e, e ≠ d → (σ'.doms e).serving = (σ.doms e).serving) ∧
+    (σ'.doms d).serving = act.savedServing ∧
+    (∀ e, e ≠ act.caller → (σ'.doms e).run = (σ.doms e).run) ∧
+    (σ'.doms act.caller).run = .running
+
+/-- The chain effect of `d` halting (fault at fetch/decode/retire, voluntary
+`halt`, donation exhaustion): `d` is halted with a cleared serving mark, no
+budget or `maxDonation` moves, and either no gate record moves (`d` was not
+serving a live activation) or `d`'s served gate is freed and its caller
+resumed — the forced unwind. -/
+def HaltShape (d : DomainId) (σ σ' : MachineState) : Prop :=
+  (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+  (∀ e, e ≠ d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+  (σ'.doms d).run = .halted ∧
+  (σ'.doms d).serving = none ∧
+  (∀ e, e ≠ d → (σ'.doms e).serving = (σ.doms e).serving) ∧
+  ((σ'.gates = σ.gates ∧ (∀ e, e ≠ d → (σ'.doms e).run = (σ.doms e).run)) ∨
+   (∃ g a, (σ.doms d).serving = some g ∧ (σ.gates g).act = some a ∧ a.caller ≠ d ∧
+     (∀ g', g' ≠ g → σ'.gates g' = σ.gates g') ∧ (σ'.gates g).act = none ∧
+     (σ'.gates g).config = (σ.gates g).config ∧
+     (σ'.doms a.caller).run = .running ∧
+     (∀ e, e ≠ d → e ≠ a.caller → (σ'.doms e).run = (σ.doms e).run)))
+
+theorem GateCallShape.toCallShape {c : Ctx} {σ σ' : MachineState}
+    (h : GateCallShape c σ σ') : CallShape c.d σ σ' := by
+  obtain ⟨gid, act, h1, h2, h3, h4, h5, h6, h7, h8, hrest⟩ := h
+  exact ⟨gid, act, h1, h2, h3, h4, h5, h6.trans (gateDepth_eq_chainDepthAt c σ), h7, h8, hrest⟩
+
+theorem GateReturnShape.toRetShape {c : Ctx} {σ σ' : MachineState}
+    (h : GateReturnShape c σ σ') : RetShape c.d σ σ' := h
+
+/-- `CallShape` absorbs a leading `ChainOut` frame. -/
+theorem CallShape.of_chainOut {d : DomainId} {σ σ1 σ' : MachineState}
+    (h0 : ChainOut d σ σ1) (h : CallShape d σ1 σ') : CallShape d σ σ' := by
+  obtain ⟨hg, hrun, hserv, hmax, hbud⟩ := h0
+  obtain ⟨gid, act, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, h15, h16, h17⟩ := h
+  rw [hg] at h1 h2 h3 h4 h9 h11 h14 h15
+  rw [hrun] at h3
+  rw [hserv] at h4
+  rw [hmax d] at h8
+  refine ⟨gid, act, h1, h2, h3, h4, h5,
+    h6.trans (chainDepthAt_congr d (hserv d) hg), h7, h8,
+    h9, h10, h11, fun e => (h12 e).trans (hmax e),
+    fun e he => (h13 e he).trans (hbud e he), fun e he => (h14 e he).trans (hserv e),
+    h15, fun e he => (h16 e he).trans (hrun e), h17⟩
+
+/-- `RetShape` absorbs a leading `ChainOut` frame. -/
+theorem RetShape.of_chainOut {d : DomainId} {σ σ1 σ' : MachineState}
+    (h0 : ChainOut d σ σ1) (h : RetShape d σ1 σ') : RetShape d σ σ' := by
+  obtain ⟨hg, hrun, hserv, hmax, hbud⟩ := h0
+  obtain ⟨gid, act, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11⟩ := h
+  rw [hserv _] at h1
+  rw [hg] at h2 h5
+  refine ⟨gid, act, h1, h2,
+    fun g' hg' => (h3 g' hg').trans (congrFun hg g'), h4, h5,
+    fun e => (h6 e).trans (hmax e), fun e he => (h7 e he).trans (hbud e he),
+    fun e he => (h8 e he).trans (hserv e), h9,
+    fun e he => (h10 e he).trans (hrun e), h11⟩
+
+/-- `HaltShape` absorbs a leading `ChainOut` frame. -/
+theorem HaltShape.of_chainOut {d : DomainId} {σ σ1 σ' : MachineState}
+    (h0 : ChainOut d σ σ1) (h : HaltShape d σ1 σ') : HaltShape d σ σ' := by
+  obtain ⟨hg, hrun, hserv, hmax, hbud⟩ := h0
+  obtain ⟨h1, h2, h3, h4, h5, h6⟩ := h
+  refine ⟨fun e => (h1 e).trans (hmax e), fun e he => (h2 e he).trans (hbud e he),
+    h3, h4, fun e he => (h5 e he).trans (hserv e), ?_⟩
+  rcases h6 with ⟨hgeq, hr⟩ | ⟨g, a, hs, ha, hne, hgo, hga, hgc, hcr, hor⟩
+  · exact .inl ⟨hgeq.trans hg, fun e he => (hr e he).trans (hrun e)⟩
+  · refine .inr ⟨g, a, (hserv d) ▸ hs, (congrFun hg g) ▸ ha, hne,
+      fun g' hg' => (hgo g' hg').trans (congrFun hg g'), hga,
+      hgc.trans (congrFun hg g ▸ rfl), hcr,
+      fun e he1 he2 => (hor e he1 he2).trans (hrun e)⟩
+
+theorem haltBase_maxDonation (σ : MachineState) (d : DomainId) (c : Loom.Word32)
+    (d' : DomainId) : ((σ.haltBase d c).doms d').maxDonation = (σ.doms d').maxDonation := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+
+theorem unwindGate_maxDonation (σ : MachineState) (g : GateId) (cl : DomainId)
+    (rd : RegId) (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').maxDonation = (σ.doms d').maxDonation := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd
+    simp only [Loom.Fun.update_same]
+    unfold DomainState.setReg
+    split <;> rfl
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+
+/-- `haltDom` realizes `HaltShape` — provided the unwound caller (if any) is
+not the halting domain itself, which `Wf.gate_serving` guarantees whenever
+the halting domain is running. -/
+theorem haltDom_chainShape (σ : MachineState) (d : DomainId) (cause : Loom.Word32)
+    (hnc : ∀ g a, (σ.doms d).serving = some g → (σ.gates g).act = some a →
+      a.caller ≠ d) :
+    HaltShape d σ (σ.haltDom d cause) := by
+  cases hserv : (σ.doms d).serving with
+  | none =>
+      rw [haltDom_base σ d cause hserv]
+      refine ⟨fun e => haltBase_maxDonation σ d cause e, fun e _ => haltBase_budget σ d cause e,
+        ?_, ?_, ?_, .inl ⟨rfl, ?_⟩⟩
+      · rw [haltBase_run]; simp
+      · rw [haltBase_serving]; simp
+      · intro e he; rw [haltBase_serving, if_neg he]
+      · intro e he; rw [haltBase_run, if_neg he]
+  | some g =>
+      cases hact : (σ.gates g).act with
+      | none =>
+          rw [haltDom_base' σ d cause g hserv hact]
+          refine ⟨fun e => haltBase_maxDonation σ d cause e,
+            fun e _ => haltBase_budget σ d cause e, ?_, ?_, ?_, .inl ⟨rfl, ?_⟩⟩
+          · rw [haltBase_run]; simp
+          · rw [haltBase_serving]; simp
+          · intro e he; rw [haltBase_serving, if_neg he]
+          · intro e he; rw [haltBase_run, if_neg he]
+      | some a =>
+          have hcne : a.caller ≠ d := hnc g a hserv hact
+          rw [haltDom_unwind σ d cause g a hserv hact]
+          refine ⟨fun e => (unwindGate_maxDonation _ g a.caller a.callerRd e).trans
+              (haltBase_maxDonation σ d cause e),
+            fun e _ => (unwindGate_budget _ g a.caller a.callerRd e).trans
+              (haltBase_budget σ d cause e), ?_, ?_, ?_,
+            .inr ⟨g, a, hserv, hact, hcne, ?_, ?_, ?_, ?_, ?_⟩⟩
+          · rw [unwindGate_run, if_neg hcne.symm, haltBase_run, if_pos rfl]
+          · rw [unwindGate_serving, haltBase_serving, if_pos rfl]
+          · intro e he
+            rw [unwindGate_serving, haltBase_serving, if_neg he]
+          · intro g' hg'
+            show Loom.Fun.update _ g _ g' = σ.gates g'
+            rw [Loom.Fun.update_ne _ _ _ _ hg']
+            rfl
+          · rw [unwindGate_gates_act, if_pos rfl]
+          · rw [unwindGate_gates_config]; rfl
+          · rw [unwindGate_run, if_pos rfl]
+          · intro e he1 he2
+            rw [unwindGate_run, if_neg he2, haltBase_run, if_neg he1]
+
+/-- **The retire-level chain classification**: one retirement by a running
+domain `d` is a chain frame, a `gate_call` push, a `gate_return` pop, or a
+halt/unwind — relative to the *pre-retire* state. -/
+theorem retire_chain (σ : MachineState) (d : DomainId) (w : Loom.Word32)
+    (hwf : Wf σ) (hrun : (σ.doms d).run = .running) :
+    ChainOut d σ (retire σ d w) ∨ CallShape d σ (retire σ d w) ∨
+    RetShape d σ (retire σ d w) ∨ HaltShape d σ (retire σ d w) := by
+  have hnc : ∀ g a, (σ.doms d).serving = some g → (σ.gates g).act = some a →
+      a.caller ≠ d := by
+    intro g a hs ha heq
+    have := (hwf.gate_serving g a ha).2.1
+    rw [heq, hrun] at this
+    exact absurd this (by simp)
+  unfold retire
+  split
+  · exact .inr (.inr (.inr (haltDom_chainShape σ d _ hnc)))
+  · rename_i instr hdec
+    set σ1 := σ.setDom d (fun ds => { ds with pc := ds.pc + 1 }) with hσ1
+    have h01 : ChainOut d σ σ1 :=
+      ChainOut.setDomOf σ d d _ rfl rfl rfl (fun _ => rfl)
+    have hnc1 : ∀ g a, (σ1.doms d).serving = some g → (σ1.gates g).act = some a →
+        a.caller ≠ d := by
+      intro g a hs ha
+      rw [h01.2.2.1 d] at hs
+      rw [congrFun h01.1 g] at ha
+      exact hnc g a hs ha
+    obtain ⟨hok, herr⟩ := exec_chain instr (Loom.Isa.decode_mem isa hdec)
+      { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1
+    cases hexr : instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 with
+    | ok a σ' =>
+        simp only [hexr]
+        rcases hok a σ' hexr with hc | hcall | hret | hhalt
+        · exact .inl (h01.trans hc)
+        · exact .inr (.inl (CallShape.of_chainOut h01 hcall.toCallShape))
+        · exact .inr (.inr (.inl (RetShape.of_chainOut h01 hret.toRetShape)))
+        · refine .inr (.inr (.inr (HaltShape.of_chainOut h01 ?_)))
+          exact hhalt ▸ haltDom_chainShape σ1 d 0 hnc1
+    | err er σ' =>
+        simp only [hexr]
+        refine .inl ((h01.trans (herr er σ' hexr)).trans ?_)
+        exact ChainOut.setDomOf σ' d d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+          (by unfold DomainState.setReg; split <;> rfl)
+          (fun _ => by unfold DomainState.setReg; split <;> rfl)
+    | fault f =>
+        simp only [hexr]
+        exact .inr (.inr (.inr (haltDom_chainShape σ d _ hnc)))
+
 end Machines.Lnp64u
