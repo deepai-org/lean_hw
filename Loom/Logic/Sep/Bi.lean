@@ -21,6 +21,8 @@ partial-monoid axioms; the BI layer proves the (affine) BI algebra laws:
 
 namespace Loom.Logic
 
+universe u
+
 /-- A partial commutative monoid of resources: the carrier of ownership. -/
 structure Pcm (α : Type u) where
   /-- Disjointness: `a ⊥ b` when both fragments can be held together. -/

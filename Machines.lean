@@ -11,3 +11,4 @@ import Machines.Lnp64u.Logic.PhaseLemmas
 import Machines.Lnp64u.Logic.ExecWf
 import Machines.Lnp64u.Logic.BaseOpsWf
 import Machines.Lnp64u.Logic.SystemOpsWf
+import Machines.Lnp64u.Logic.Sep.Resource

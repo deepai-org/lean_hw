@@ -13,3 +13,5 @@ import Loom.Hw.Compile
 import Loom.Emit.MicroVerilog.Print
 import Loom.Emit.MicroVerilog.Axiom
 import Loom.Emit.MicroVerilog.Parse
+import Loom.Logic.Sep.Bi
+import Loom.Logic.StepIndex
