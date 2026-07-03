@@ -1254,4 +1254,1637 @@ theorem halted_serving_none_invariant (m : Manifest) (hwf : m.WF) :
       have hst : step m s = s' := hstep
       exact hst ▸ step_hsn m s (wfa_invariant m hwf s hprev).1 ih
 
+/-! ## The cycle counter (T6 obligation 3 support)
+
+No instruction's `exec` ever writes the `cycle` counter: every state
+primitive touches `doms`/`gates`/`mover`/`mem` only. `CycleEq` is the
+`SpecM`-level combinator (mirroring `InflightEq`) carrying this through the
+exec semantics of all 25 opcodes; `retire_cycle`/`corePhase_cycle` lift it
+to the phase glue, and `step_cycle` is the whole-cycle counter equation the
+T6 potential counting is stated against. -/
+
+@[simp] theorem setDom_cycle (σ : MachineState) (d : DomainId)
+    (f : DomainState → DomainState) : (σ.setDom d f).cycle = σ.cycle := rfl
+
+@[simp] theorem write_cycle (σ : MachineState) (a : Addr) (v : Loom.Word32) :
+    (σ.write a v).cycle = σ.cycle := rfl
+
+@[simp] theorem reparent_cycle (σ : MachineState) (old new : CapRef) :
+    (σ.reparent old new).cycle = σ.cycle := rfl
+
+@[simp] theorem orphanChildren_cycle (σ : MachineState) (old : CapRef) :
+    (σ.orphanChildren old).cycle = σ.cycle := rfl
+
+@[simp] theorem clearSlot_cycle (σ : MachineState) (d : DomainId) (s : Slot) :
+    (σ.clearSlot d s).cycle = σ.cycle := rfl
+
+@[simp] theorem destroyMarked_cycle (σ : MachineState) (mk : DomainId → Slot → Bool) :
+    (σ.destroyMarked mk).cycle = σ.cycle := rfl
+
+@[simp] theorem sweepRegions_cycle (σ : MachineState) :
+    σ.sweepRegions.cycle = σ.cycle := rfl
+
+@[simp] theorem sweepMover_cycle (σ : MachineState) : σ.sweepMover.cycle = σ.cycle := by
+  unfold MachineState.sweepMover
+  cases σ.mover with
+  | none => rfl
+  | some job =>
+      by_cases h1 : σ.liveRef job.src && σ.liveRef job.dst
+      · simp [h1]
+      · simp only [h1, if_false]
+        by_cases h2 : ({ σ with mover := none } : MachineState).domCovers job.owner
+            job.statusAddr { r := false, w := true, x := false }
+        · simp [h2, MachineState.write]
+        · simp [h2]
+
+/-- `haltDom` never touches `cycle`: `haltBase` is a `setDom`, and the gate
+unwind is a gates-record update plus a `setDom`. -/
+theorem haltDom_cycle (σ : MachineState) (d : DomainId) (c : Loom.Word32) :
+    (σ.haltDom d c).cycle = σ.cycle := by
+  unfold MachineState.haltDom
+  split
+  · rfl
+  · split
+    · rfl
+    · rfl
+
+/-- A `SpecM` computation leaves `cycle` untouched on every `ok`/`err`
+outcome (`fault` carries no state). -/
+def CycleEq {α : Type} (mm : SpecM α) : Prop :=
+  ∀ σ, (∀ a σ', mm σ = .ok a σ' → σ'.cycle = σ.cycle) ∧
+       (∀ e σ', mm σ = .err e σ' → σ'.cycle = σ.cycle)
+
+theorem CycleEq.of_preserves {α : Type} (mm : SpecM α)
+    (hok : ∀ σ a σ', mm σ = .ok a σ' → σ'.cycle = σ.cycle)
+    (herr : ∀ σ e σ', mm σ = .err e σ' → σ'.cycle = σ.cycle) :
+    CycleEq mm :=
+  fun σ => ⟨hok σ, herr σ⟩
+
+theorem CycleEq.pure {α : Type} (a : α) : CycleEq (Pure.pure a : SpecM α) :=
+  CycleEq.of_preserves _
+    (fun σ a' σ' he => by rw [specM_pure] at he; injection he with _ h2; subst h2; rfl)
+    (fun σ e σ' he => by rw [specM_pure] at he; simp at he)
+
+theorem CycleEq.bind {α β : Type} {m : SpecM α} {f : α → SpecM β}
+    (hm : CycleEq m) (hf : ∀ a, CycleEq (f a)) : CycleEq (m >>= f) := by
+  intro σ
+  refine ⟨?_, ?_⟩
+  · intro b σ' he
+    rw [specM_bind] at he
+    cases hmσ : m σ with
+    | ok a σ1 => rw [hmσ] at he
+                 rw [(hf a σ1).1 b σ' he, (hm σ).1 a σ1 hmσ]
+    | err e σ1 => rw [hmσ] at he; simp at he
+    | fault g => rw [hmσ] at he; simp at he
+  · intro e σ' he
+    rw [specM_bind] at he
+    cases hmσ : m σ with
+    | ok a σ1 => rw [hmσ] at he
+                 rw [(hf a σ1).2 e σ' he, (hm σ).1 a σ1 hmσ]
+    | err e1 σ1 => rw [hmσ] at he; injection he with h1 h2; subst h2; exact (hm σ).2 e1 σ1 hmσ
+    | fault g => rw [hmσ] at he; simp at he
+
+theorem CycleEq.iteBool {α : Type} (b : Bool) {m1 m2 : SpecM α}
+    (h1 : CycleEq m1) (h2 : CycleEq m2) : CycleEq (if b then m1 else m2) := by
+  cases b <;> simp only [Bool.false_eq_true, if_true, if_false]
+  · exact h2
+  · exact h1
+
+theorem CycleEq.reg (d : DomainId) (r : RegId) : CycleEq (SpecM.reg d r) :=
+  CycleEq.of_preserves _
+    (fun σ a σ' he => by unfold SpecM.reg at he; injection he with _ h2; subst h2; rfl)
+    (fun σ e σ' he => by unfold SpecM.reg at he; simp at he)
+
+theorem CycleEq.raise {α : Type} (e : Errno) : CycleEq (SpecM.raise e : SpecM α) :=
+  CycleEq.of_preserves _
+    (fun σ a σ' he => by unfold SpecM.raise at he; simp at he)
+    (fun σ e' σ' he => by unfold SpecM.raise at he; injection he with _ h2; subst h2; rfl)
+
+theorem CycleEq.require (cond : Bool) (e : Errno) : CycleEq (SpecM.require cond e) :=
+  CycleEq.of_preserves _
+    (fun σ a σ' he => by rw [require_ok cond e σ he])
+    (fun σ e' σ' he => by rw [require_err_state cond e σ he])
+
+theorem CycleEq.demand (cond : Bool) (f : Fault) : CycleEq (SpecM.demand cond f) :=
+  CycleEq.of_preserves _
+    (fun σ a σ' he => by rw [demand_ok cond f σ he])
+    (fun σ e σ' he => by
+      unfold SpecM.demand at he; split at he
+      · simp [specM_pure] at he
+      · simp [SpecM.fatal] at he)
+
+theorem CycleEq.load (d : DomainId) (a : Addr) : CycleEq (SpecM.load d a) :=
+  CycleEq.of_preserves _
+    (fun σ v σ' he => by rw [load_ok d a σ he])
+    (fun σ e σ' he => by rw [load_err_state d a σ he])
+
+theorem CycleEq.get : CycleEq SpecM.get :=
+  CycleEq.of_preserves _
+    (fun σ a σ' he => by unfold SpecM.get at he; injection he with _ h2; subst h2; rfl)
+    (fun σ e σ' he => by unfold SpecM.get at he; simp at he)
+
+/-- A `modify` whose function preserves `cycle` is `CycleEq`. -/
+theorem CycleEq.modifyPres (f : MachineState → MachineState)
+    (hf : ∀ σ, (f σ).cycle = σ.cycle) : CycleEq (SpecM.modify f) :=
+  CycleEq.of_preserves _
+    (fun σ a σ' he => by
+      unfold SpecM.modify at he; injection he with _ h2; subst h2; exact hf σ)
+    (fun σ e σ' he => by unfold SpecM.modify at he; simp at he)
+
+theorem CycleEq.setReg (d : DomainId) (r : RegId) (v : Loom.Word32) :
+    CycleEq (SpecM.setReg d r v) :=
+  CycleEq.modifyPres _ (fun _ => rfl)
+
+theorem CycleEq.updDom (d : DomainId) (f : DomainState → DomainState) :
+    CycleEq (SpecM.updDom d f) :=
+  CycleEq.modifyPres _ (fun _ => rfl)
+
+theorem CycleEq.store (d : DomainId) (a : Addr) (v : Loom.Word32) :
+    CycleEq (SpecM.store d a v) := by
+  intro σ; unfold SpecM.store; refine ⟨?_, ?_⟩
+  · intro x σ' he
+    simp only [SpecM.get, specM_bind] at he
+    by_cases hc : σ.domCovers d a { r := false, w := true, x := false }
+    · simp only [SpecM.demand, hc, if_true, specM_pure, specM_bind, SpecM.set] at he
+      injection he with _ h2; subst h2; rfl
+    · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+  · intro e σ' he
+    simp only [SpecM.get, specM_bind] at he
+    by_cases hc : σ.domCovers d a { r := false, w := true, x := false }
+    · simp [SpecM.demand, hc, specM_pure, specM_bind, SpecM.set] at he
+    · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+
+theorem CycleEq.halt (c : Ctx) :
+    CycleEq (SpecM.modify (fun σ => σ.haltDom c.d 0)) :=
+  CycleEq.modifyPres _ (fun σ => haltDom_cycle σ c.d 0)
+
+theorem CycleEq.capLive (d : DomainId) (hw : Loom.Word32) :
+    CycleEq (Machines.Lnp64u.Isa.capLive d hw) :=
+  CycleEq.of_preserves _
+    (fun σ r σ' he => by rw [(Machines.Lnp64u.Isa.Wip.capLive_ok d hw σ he).1])
+    (fun σ e σ' he => by rw [Machines.Lnp64u.Isa.Wip.capLive_err_state d hw σ he])
+
+theorem CycleEq.narrow (base : Addr) (len : BitVec 13) (perms : Perms) (dw : Loom.Word32) :
+    CycleEq (Machines.Lnp64u.Isa.narrow base len perms dw) :=
+  CycleEq.of_preserves _
+    (fun σ k σ' he => by rw [(Machines.Lnp64u.Isa.Wip.narrow_ok base len perms dw σ he).1])
+    (fun σ e σ' he => by rw [Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms dw σ he])
+
+theorem CycleEq.allocDerived (owner : DomainId) (kind : CapKind) (parent : CapRef) :
+    CycleEq (Machines.Lnp64u.Isa.allocDerived owner kind parent) := by
+  intro σ; refine ⟨?_, ?_⟩
+  · intro hw σ' he
+    unfold Machines.Lnp64u.Isa.allocDerived at he
+    simp only [SpecM.get, specM_bind] at he
+    cases hfs : σ.freeSlot owner with
+    | none => rw [hfs] at he; simp [SpecM.raise] at he
+    | some sl =>
+        rw [hfs] at he
+        cases hfc : σ.freeCell owner with
+        | none => rw [hfc] at he; simp [SpecM.raise] at he
+        | some lc =>
+            rw [hfc] at he
+            simp only [SpecM.set, specM_bind, specM_pure] at he
+            injection he with _ h2
+            rw [← h2]; rfl
+  · intro e σ' he
+    unfold Machines.Lnp64u.Isa.allocDerived at he
+    simp only [SpecM.get, specM_bind] at he
+    cases hfs : σ.freeSlot owner with
+    | none => rw [hfs] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; rfl
+    | some sl =>
+        rw [hfs] at he
+        cases hfc : σ.freeCell owner with
+        | none => rw [hfc] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; rfl
+        | some lc => rw [hfc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
+/-- **The base opcodes never touch `cycle`.** Their `exec` only writes
+regs/pc/memory. -/
+theorem base_cycle_eq : ∀ instr ∈ Machines.Lnp64u.Isa.base, ∀ c : Ctx,
+    CycleEq (instr.sem.exec c) := by
+  intro instr hmem c
+  fin_cases hmem
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.setReg _ _ _)
+  · exact CycleEq.setReg _ _ _
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.load _ _) (fun _ => CycleEq.setReg _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.store _ _ _))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.iteBool _ (CycleEq.updDom _ _) (CycleEq.pure ())))
+  · exact CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.bind (CycleEq.reg _ _) (fun _ => CycleEq.iteBool _ (CycleEq.updDom _ _) (CycleEq.pure ())))
+  · exact CycleEq.bind (CycleEq.reg _ _)
+      (fun _ => CycleEq.bind (CycleEq.setReg _ _ _) (fun _ => CycleEq.updDom _ _))
+
+/-- **`transferCap` never touches `cycle`**: install-at-recipient, reparent,
+`clearSlot`, and both sweeps are `doms`/`mover`/`mem`-level only. -/
+theorem transferCap_cycle (σ : MachineState) (from_ : DomainId) (s : Slot) (to_ : DomainId)
+    (τ : MachineState) (ref : CapRef) (h : σ.transferCap from_ s to_ = some (τ, ref)) :
+    τ.cycle = σ.cycle := by
+  unfold MachineState.transferCap at h
+  cases he : (σ.doms from_).caps s with
+  | none => rw [he] at h; simp at h
+  | some e =>
+      rw [he] at h; simp only [Option.bind_eq_bind, Option.bind_some] at h
+      cases hfs : σ.freeSlot to_ with
+      | none => rw [hfs] at h; simp at h
+      | some s2 =>
+          rw [hfs] at h; simp only [Option.bind_some] at h
+          have key : ∀ (σ₁ : MachineState), σ₁.cycle = σ.cycle →
+              some (((((σ₁.reparent ⟨from_, s, (σ.doms from_).slotGen s⟩
+                ⟨to_, s2, (σ.doms to_).slotGen s2⟩).clearSlot from_ s).sweepRegions).sweepMover),
+                (⟨to_, s2, (σ.doms to_).slotGen s2⟩ : CapRef))
+                = some (τ, ref) →
+              τ.cycle = σ.cycle := by
+            intro σ₁ hpre heq
+            injection heq with heq; injection heq with hτ _; subst hτ
+            rw [sweepMover_cycle, sweepRegions_cycle, clearSlot_cycle,
+                reparent_cycle]
+            exact hpre
+          cases hl : e.lineage with
+          | none =>
+              rw [hl] at h; simp only [Option.pure_def, Option.bind_some] at h
+              exact key (σ.setDom to_ (fun ds =>
+                  { ds with caps := Loom.Fun.update ds.caps s2 (some { kind := e.kind, lineage := none }) }))
+                rfl h
+          | some l =>
+              rw [hl] at h; simp only [Option.bind_eq_bind, Option.bind_some] at h
+              cases hc : (σ.doms from_).lineage l with
+              | none => rw [hc] at h; simp at h
+              | some cell =>
+                  rw [hc] at h; simp only [Option.bind_some] at h
+                  cases hfc : σ.freeCell to_ with
+                  | none => rw [hfc] at h; simp at h
+                  | some l' =>
+                      rw [hfc] at h; simp only [Option.pure_def, Option.bind_some] at h
+                      exact key (σ.setDom to_ (fun ds =>
+                          { ds with
+                            caps := Loom.Fun.update ds.caps s2 (some { kind := e.kind, lineage := some l' })
+                            lineage := Loom.Fun.update ds.lineage l' (some cell) }))
+                        rfl h
+
+theorem transferByHandle_cycle_eq (d to_ : DomainId) (hw : Loom.Word32) :
+    CycleEq (Machines.Lnp64u.Isa.transferByHandle d to_ hw) := by
+  intro σ
+  unfold Machines.Lnp64u.Isa.transferByHandle
+  by_cases hz : hw = 0
+  · rw [if_pos hz]
+    exact ⟨fun a σ' he => by
+        simp only [specM_pure] at he; obtain ⟨_, rfl⟩ := he; rfl,
+      fun e σ' he => by simp [specM_pure] at he⟩
+  · simp only [if_neg hz, specM_bind]
+    constructor
+    · intro a σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive d hw σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none => rw [htc] at he; simp [SpecM.raise] at he
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp only [SpecM.set, specM_bind, specM_pure] at he
+              injection he with _ h2; subst h2
+              exact transferCap_cycle σ d sslot to_ σ2 ref htc
+    · intro er σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive d hw σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state d _ σ hcl; rw [hcl] at he
+          injection he with _ h2; subst h2; subst hs; rfl
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none =>
+              rw [htc] at he; simp only [SpecM.raise] at he
+              injection he with _ h2; subst h2; rfl
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
+/-- `gate_call` never touches `cycle`: the capability transfer preserves it
+and the activation / serving / run bookkeeping is `gates`/`doms`-level. -/
+theorem gatecall_cycle_eq (c : Ctx) : CycleEq (Machines.Lnp64u.Isa.Wip.gateCallExec c) := by
+  intro σ
+  have body : ∀ (out : Res Unit), Machines.Lnp64u.Isa.Wip.gateCallExec c σ = out →
+      (∀ a σ', out = .ok a σ' → σ'.cycle = σ.cycle) ∧
+      (∀ e σ', out = .err e σ' → σ'.cycle = σ.cycle) := by
+    intro out hout
+    unfold Machines.Lnp64u.Isa.Wip.gateCallExec at hout
+    simp only [SpecM.reg, specM_bind] at hout
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+        rw [hcl] at hout; subst hout
+        exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+          simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hs; rfl⟩
+    | fault f => rw [hcl] at hout; subst hout
+                 exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at hout; obtain ⟨s0, g0, e⟩ := r; simp only at hout
+        cases hk : e.kind with
+        | mem base len perms =>
+            rw [hk] at hout; simp only [SpecM.raise] at hout; subst hout
+            exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+              simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; rfl⟩
+        | gate gid =>
+            rw [hk] at hout; simp only [SpecM.get, specM_bind] at hout
+            set cal := (σ.gates gid).config.callee with hcaldef
+            cases hr1 : SpecM.require (σ.gates gid).act.isNone .gateBusy σ with
+            | err e1 σ1 => have hst := require_err_state _ _ σ hr1; rw [hr1] at hout; simp only [specM_bind] at hout; subst hout
+                           exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                             simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; rfl⟩
+            | fault f => rw [hr1] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+            | ok u1 σ1 =>
+                have hst := require_ok _ _ σ hr1; subst σ1
+                rw [hr1] at hout; simp only [specM_bind] at hout
+                cases hr2 : SpecM.require (decide (cal ≠ c.d)) .gateBusy σ with
+                | err e2 σ2 => have hst := require_err_state _ _ σ hr2; rw [hr2] at hout; simp only [specM_bind] at hout; subst hout
+                               exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                 simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; rfl⟩
+                | fault f => rw [hr2] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                | ok u2 σ2 =>
+                    have hst := require_ok _ _ σ hr2; subst σ2
+                    rw [hr2] at hout; simp only [specM_bind] at hout
+                    cases hr3 : SpecM.require (decide ((σ.doms cal).run = .running)) .gateBusy σ with
+                    | err e3 σ3 => have hst := require_err_state _ _ σ hr3; rw [hr3] at hout; simp only [specM_bind] at hout; subst hout
+                                   exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                     simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; rfl⟩
+                    | fault f => rw [hr3] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                    | ok u3 σ3 =>
+                        have hst := require_ok _ _ σ hr3; subst σ3
+                        rw [hr3] at hout; simp only [specM_bind] at hout
+                        cases hr4 : SpecM.require (σ.doms cal).serving.isNone .gateBusy σ with
+                        | err e4 σ4 => have hst := require_err_state _ _ σ hr4; rw [hr4] at hout; simp only [specM_bind] at hout; subst hout
+                                       exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                         simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; rfl⟩
+                        | fault f => rw [hr4] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                        | ok u4 σ4 =>
+                            have hst := require_ok _ _ σ hr4; subst σ4
+                            rw [hr4] at hout; simp only [specM_bind] at hout
+                            cases hr5 : SpecM.require (decide (Machines.Lnp64u.Isa.Wip.gateDepth c σ ≤ maxChainDepth)) .gateBusy σ with
+                            | err e5 σ5 => have hst := require_err_state _ _ σ hr5; rw [hr5] at hout; simp only [specM_bind] at hout; subst hout
+                                           exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                             simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; rfl⟩
+                            | fault f => rw [hr5] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                            | ok u5 σ5 =>
+                                have hst := require_ok _ _ σ hr5; subst σ5
+                                rw [hr5] at hout; simp only [specM_bind, SpecM.reg] at hout
+                                cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d cal ((σ.doms c.d).reg c.op.rs2) σ with
+                                | fault f => rw [htbh] at hout; subst hout
+                                             exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                                | err e6 τ =>
+                                    rw [htbh] at hout; subst hout
+                                    have hτ := (transferByHandle_cycle_eq c.d cal _ σ).2 e6 τ htbh
+                                    exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                      simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hτ⟩
+                                | ok argHandle τ =>
+                                    rw [htbh] at hout
+                                    have hτ := (transferByHandle_cycle_eq c.d cal _ σ).1 argHandle τ htbh
+                                    simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify] at hout
+                                    subst hout
+                                    refine ⟨fun a σ' h => ?_, fun e σ' h => by simp at h⟩
+                                    simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                                    exact hτ
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun e σ' h => (body _ h).2 e σ' rfl⟩
+
+/-- `gate_return` never touches `cycle`: the reply transfer preserves it and
+the context restore is `gates`/`doms`-level. -/
+theorem gatereturn_cycle_eq (c : Ctx) :
+    CycleEq ((do
+      let σ0 ← SpecM.get
+      match (σ0.doms c.d).serving with
+      | none => SpecM.fatal .protocol
+      | some gid =>
+          match (σ0.gates gid).act with
+          | none => SpecM.fatal .protocol
+          | some act => do
+              let rw ← SpecM.reg c.d c.op.rs1
+              let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+              let σ1 ← SpecM.get
+              SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+              SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+              SpecM.updDom act.caller (fun ds => { ds with run := .running })
+              SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) := by
+  intro σ
+  have body : ∀ (out : Res Unit),
+      ((do
+        let σ0 ← SpecM.get
+        match (σ0.doms c.d).serving with
+        | none => SpecM.fatal .protocol
+        | some gid =>
+            match (σ0.gates gid).act with
+            | none => SpecM.fatal .protocol
+            | some act => do
+                let rw ← SpecM.reg c.d c.op.rs1
+                let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                let σ1 ← SpecM.get
+                SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = out →
+      (∀ a σ', out = .ok a σ' → σ'.cycle = σ.cycle) ∧
+      (∀ e σ', out = .err e σ' → σ'.cycle = σ.cycle) := by
+    intro out hout
+    simp only [SpecM.get, specM_bind] at hout
+    cases hserv : (σ.doms c.d).serving with
+    | none => rw [hserv] at hout; simp only [SpecM.fatal] at hout; subst hout
+              exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+    | some gid =>
+        simp only [hserv] at hout
+        cases hgact : (σ.gates gid).act with
+        | none => simp only [hgact] at hout; simp only [SpecM.fatal] at hout; subst hout
+                  exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+        | some act =>
+            simp only [hgact, SpecM.reg, specM_bind] at hout
+            cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d act.caller ((σ.doms c.d).reg c.op.rs1) σ with
+            | fault f => rw [htbh] at hout; subst hout
+                         exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+            | err e1 τ =>
+                rw [htbh] at hout; subst hout
+                have hτ := (transferByHandle_cycle_eq c.d act.caller _ σ).2 e1 τ htbh
+                exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hτ⟩
+            | ok reply τ =>
+                rw [htbh] at hout
+                have hτ := (transferByHandle_cycle_eq c.d act.caller _ σ).1 reply τ htbh
+                simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify,
+                           SpecM.setReg] at hout
+                subst hout
+                refine ⟨fun a σ' h => ?_, fun e σ' h => by simp at h⟩
+                simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                exact hτ
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun e σ' h => (body _ h).2 e σ' rfl⟩
+
+/-- `move` never touches `cycle`: a read-only prefix, then a `mover`-record
+write plus the `rd` write-back. -/
+theorem move_cycle_eq (c : Ctx) : CycleEq (Machines.Lnp64u.Isa.Wip.moveExec c) := by
+  intro σ; refine ⟨fun x σ' he => ?_, fun x σ' he => ?_⟩
+  ·
+    simp only [Machines.Lnp64u.Isa.Wip.moveExec, SpecM.get, specM_bind] at he
+    cases hr0 : SpecM.require σ.mover.isNone .moverBusy σ with
+    | err e0 σ0 => rw [hr0] at he; simp at he
+    | fault f => rw [hr0] at he; simp at he
+    | ok u0 σ0 =>
+        have hh0 := require_ok _ _ σ hr0; subst σ0
+        rw [hr0] at he; simp only [SpecM.reg] at he
+        set B : Addr := ((σ.doms c.d).reg c.op.rs1).setWidth 12 with hB
+        cases hl1 : load c.d B σ with
+        | err e σe => rw [hl1] at he; simp at he
+        | fault f => rw [hl1] at he; simp at he
+        | ok srcH σ1 =>
+            have hh1 := load_ok _ _ σ hl1; subst σ1; rw [hl1] at he; simp only [specM_bind] at he
+            cases hl2 : load c.d (B + 1) σ with
+            | err e σe => rw [hl2] at he; simp at he
+            | fault f => rw [hl2] at he; simp at he
+            | ok dstH σ2 =>
+                have hh2 := load_ok _ _ σ hl2; subst σ2; rw [hl2] at he; simp only [specM_bind] at he
+                cases hl3 : load c.d (B + 2) σ with
+                | err e σe => rw [hl3] at he; simp at he
+                | fault f => rw [hl3] at he; simp at he
+                | ok lenW σ3 =>
+                    have hh3 := load_ok _ _ σ hl3; subst σ3; rw [hl3] at he; simp only [specM_bind] at he
+                    cases hl4 : load c.d (B + 3) σ with
+                    | err e σe => rw [hl4] at he; simp at he
+                    | fault f => rw [hl4] at he; simp at he
+                    | ok stW σ4 =>
+                        have hh4 := load_ok _ _ σ hl4; subst σ4; rw [hl4] at he; simp only [specM_bind] at he
+                        cases hc1 : Machines.Lnp64u.Isa.capLive c.d srcH σ with
+                        | err e σe => rw [hc1] at he; simp at he
+                        | fault f => rw [hc1] at he; simp at he
+                        | ok rs σ5 =>
+                            have hcs := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hc1
+                            obtain ⟨hhs, hslive⟩ := hcs; subst σ5
+                            rw [hc1] at he; obtain ⟨ss, gs_, es⟩ := rs; simp only at he hslive
+                            cases hc2 : Machines.Lnp64u.Isa.capLive c.d dstH σ with
+                            | err e σe => rw [hc2] at he; simp at he
+                            | fault f => rw [hc2] at he; simp at he
+                            | ok rdd σ6 =>
+                                have hcd := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hc2
+                                obtain ⟨hhd, hdlive⟩ := hcd; subst σ6
+                                rw [hc2] at he; obtain ⟨sd, gd, ed⟩ := rdd; simp only at he hdlive
+                                cases hks : es.kind with
+                                | gate _ => rw [hks] at he; cases hkd : ed.kind with
+                                            | gate _ => rw [hkd] at he; simp [SpecM.raise] at he
+                                            | mem _ _ _ => rw [hkd] at he; simp [SpecM.raise] at he
+                                | mem sb sl sp =>
+                                    cases hkd : ed.kind with
+                                    | gate _ => rw [hks, hkd] at he; simp [SpecM.raise] at he
+                                    | mem db dl dp =>
+                                        rw [hks, hkd] at he; simp only [specM_bind] at he
+                                        cases hq1 : SpecM.require sp.r .permDenied σ with
+                                        | err e σe => rw [hq1] at he; simp at he
+                                        | fault f => rw [hq1] at he; simp at he
+                                        | ok _ σq1 =>
+                                            have := require_ok _ _ σ hq1; subst σq1; rw [hq1] at he; simp only [specM_bind] at he
+                                            cases hq2 : SpecM.require dp.w .permDenied σ with
+                                            | err e σe => rw [hq2] at he; simp at he
+                                            | fault f => rw [hq2] at he; simp at he
+                                            | ok _ σq2 =>
+                                                have := require_ok _ _ σ hq2; subst σq2; rw [hq2] at he; simp only [specM_bind] at he
+                                                cases hq3 : SpecM.require (decide (lenW.toNat ≤ sl.toNat) && decide (lenW.toNat ≤ dl.toNat)) .outOfRange σ with
+                                                | err e σe => rw [hq3] at he; simp at he
+                                                | fault f => rw [hq3] at he; simp at he
+                                                | ok _ σq3 =>
+                                                    have := require_ok _ _ σ hq3; subst σq3; rw [hq3] at he; simp only [SpecM.get, specM_bind] at he
+                                                    cases hd : SpecM.demand (σ.domCovers c.d (stW.setWidth 12) { r := false, w := true, x := false }) .memoryAuthority σ with
+                                                    | err e σe => rw [hd] at he; simp at he
+                                                    | fault f => rw [hd] at he; simp at he
+                                                    | ok _ σdd =>
+                                                        have := demand_ok _ _ σ hd; subst σdd; rw [hd] at he
+                                                        simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+                                                        injection he with _ h2; subst h2
+                                                        rfl
+  ·
+    simp only [Machines.Lnp64u.Isa.Wip.moveExec, SpecM.get, specM_bind] at he
+    cases hr0 : SpecM.require σ.mover.isNone .moverBusy σ with
+    | err e0 σ0 => have hq := require_err_state _ _ σ hr0; rw [hr0] at he; injection he with _ h2; subst h2; subst hq; rfl
+    | fault f => rw [hr0] at he; simp at he
+    | ok u0 σ0 =>
+        have hh0 := require_ok _ _ σ hr0; subst σ0
+        rw [hr0] at he; simp only [SpecM.reg] at he
+        set B : Addr := ((σ.doms c.d).reg c.op.rs1).setWidth 12 with hB
+        cases hl1 : load c.d B σ with
+        | err e σe => have hq := load_err_state _ _ σ hl1; rw [hl1] at he; injection he with _ h2; subst h2; subst hq; rfl
+        | fault f => rw [hl1] at he; simp at he
+        | ok srcH σ1 =>
+            have hh1 := load_ok _ _ σ hl1; subst σ1; rw [hl1] at he; simp only [specM_bind] at he
+            cases hl2 : load c.d (B + 1) σ with
+            | err e σe => have hq := load_err_state _ _ σ hl2; rw [hl2] at he; injection he with _ h2; subst h2; subst hq; rfl
+            | fault f => rw [hl2] at he; simp at he
+            | ok dstH σ2 =>
+                have hh2 := load_ok _ _ σ hl2; subst σ2; rw [hl2] at he; simp only [specM_bind] at he
+                cases hl3 : load c.d (B + 2) σ with
+                | err e σe => have hq := load_err_state _ _ σ hl3; rw [hl3] at he; injection he with _ h2; subst h2; subst hq; rfl
+                | fault f => rw [hl3] at he; simp at he
+                | ok lenW σ3 =>
+                    have hh3 := load_ok _ _ σ hl3; subst σ3; rw [hl3] at he; simp only [specM_bind] at he
+                    cases hl4 : load c.d (B + 3) σ with
+                    | err e σe => have hq := load_err_state _ _ σ hl4; rw [hl4] at he; injection he with _ h2; subst h2; subst hq; rfl
+                    | fault f => rw [hl4] at he; simp at he
+                    | ok stW σ4 =>
+                        have hh4 := load_ok _ _ σ hl4; subst σ4; rw [hl4] at he; simp only [specM_bind] at he
+                        cases hc1 : Machines.Lnp64u.Isa.capLive c.d srcH σ with
+                        | err e σe => have hq := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hc1; rw [hc1] at he; injection he with _ h2; subst h2; subst hq; rfl
+                        | fault f => rw [hc1] at he; simp at he
+                        | ok rs σ5 =>
+                            have hcs := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hc1
+                            obtain ⟨hhs, hslive⟩ := hcs; subst σ5
+                            rw [hc1] at he; obtain ⟨ss, gs_, es⟩ := rs; simp only at he hslive
+                            cases hc2 : Machines.Lnp64u.Isa.capLive c.d dstH σ with
+                            | err e σe => have hq := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hc2; rw [hc2] at he; injection he with _ h2; subst h2; subst hq; rfl
+                            | fault f => rw [hc2] at he; simp at he
+                            | ok rdd σ6 =>
+                                have hcd := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hc2
+                                obtain ⟨hhd, hdlive⟩ := hcd; subst σ6
+                                rw [hc2] at he; obtain ⟨sd, gd, ed⟩ := rdd; simp only at he hdlive
+                                cases hks : es.kind with
+                                | gate _ => rw [hks] at he; cases hkd : ed.kind with
+                                            | gate _ => rw [hkd] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; rfl
+                                            | mem _ _ _ => rw [hkd] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; rfl
+                                | mem sb sl sp =>
+                                    cases hkd : ed.kind with
+                                    | gate _ => rw [hks, hkd] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; rfl
+                                    | mem db dl dp =>
+                                        rw [hks, hkd] at he; simp only [specM_bind] at he
+                                        cases hq1 : SpecM.require sp.r .permDenied σ with
+                                        | err e σe => have hq := require_err_state _ _ σ hq1; rw [hq1] at he; injection he with _ h2; subst h2; subst hq; rfl
+                                        | fault f => rw [hq1] at he; simp at he
+                                        | ok _ σq1 =>
+                                            have := require_ok _ _ σ hq1; subst σq1; rw [hq1] at he; simp only [specM_bind] at he
+                                            cases hq2 : SpecM.require dp.w .permDenied σ with
+                                            | err e σe => have hq := require_err_state _ _ σ hq2; rw [hq2] at he; injection he with _ h2; subst h2; subst hq; rfl
+                                            | fault f => rw [hq2] at he; simp at he
+                                            | ok _ σq2 =>
+                                                have := require_ok _ _ σ hq2; subst σq2; rw [hq2] at he; simp only [specM_bind] at he
+                                                cases hq3 : SpecM.require (decide (lenW.toNat ≤ sl.toNat) && decide (lenW.toNat ≤ dl.toNat)) .outOfRange σ with
+                                                | err e σe => have hq := require_err_state _ _ σ hq3; rw [hq3] at he; injection he with _ h2; subst h2; subst hq; rfl
+                                                | fault f => rw [hq3] at he; simp at he
+                                                | ok _ σq3 =>
+                                                    have := require_ok _ _ σ hq3; subst σq3; rw [hq3] at he; simp only [SpecM.get, specM_bind] at he
+                                                    cases hd : SpecM.demand (σ.domCovers c.d (stW.setWidth 12) { r := false, w := true, x := false }) .memoryAuthority σ with
+                                                    | err e σe => exact absurd hd (by simp [SpecM.demand]; split <;> simp [SpecM.fatal])
+                                                    | fault f => rw [hd] at he; simp at he
+                                                    | ok _ σdd =>
+                                                        have := demand_ok _ _ σ hd; subst σdd; rw [hd] at he
+                                                        simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+
+/-- **The system opcodes never touch `cycle`** — the capability/gate/Mover
+kernel operations are `doms`/`gates`/`mover`/`mem`-level only. -/
+theorem system_cycle_eq : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ctx,
+    CycleEq (instr.sem.exec c) := by
+  intro instr hmem c
+  fin_cases hmem
+  case _ => -- cap_dup
+    intro σ; constructor
+    · intro a σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          have hstep : ∀ (kd : CapKind) (hh : Loom.Word32) (τ : MachineState),
+              Machines.Lnp64u.Isa.allocDerived c.d kd ⟨c.d, sl, gg⟩ σ = .ok hh τ →
+              (SpecM.setReg c.d c.op.rd hh) τ = .ok a σ' →
+              σ'.cycle = σ.cycle := by
+            intro kd hh τ hal hsr
+            have h1 := (CycleEq.allocDerived c.d kd ⟨c.d, sl, gg⟩ σ).1 hh τ hal
+            have h2 := (CycleEq.setReg c.d c.op.rd hh τ).1 a σ' hsr
+            exact h2.trans h1
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [specM_pure, specM_bind] at he
+              cases hal : Machines.Lnp64u.Isa.allocDerived c.d (.gate g) ⟨c.d, sl, gg⟩ σ with
+              | err e1 σ1 => rw [hal] at he; simp at he
+              | fault f => rw [hal] at he; simp at he
+              | ok hh τ => rw [hal] at he; exact hstep _ hh τ hal he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => rw [hn] at he; simp at he
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1; subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  cases hal : Machines.Lnp64u.Isa.allocDerived c.d kd ⟨c.d, sl, gg⟩ σ with
+                  | err e2 σ2 => rw [hal] at he; simp at he
+                  | fault f => rw [hal] at he; simp at he
+                  | ok hh τ => rw [hal] at he; exact hstep _ hh τ hal he
+    · intro e σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; rfl
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [specM_pure, specM_bind] at he
+              cases hal : Machines.Lnp64u.Isa.allocDerived c.d (.gate g) ⟨c.d, sl, gg⟩ σ with
+              | err e1 σ1 => have hs := Machines.Lnp64u.Isa.Wip.allocDerived_err_state c.d _ _ σ hal
+                             rw [hal] at he; injection he with _ h2; subst h2; subst hs; rfl
+              | fault f => rw [hal] at he; simp at he
+              | ok hh τ => rw [hal] at he; simp [SpecM.setReg, SpecM.modify] at he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => have hs := Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms _ σ hn
+                             rw [hn] at he; injection he with _ h2; subst h2; subst hs; rfl
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1; subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  cases hal : Machines.Lnp64u.Isa.allocDerived c.d kd ⟨c.d, sl, gg⟩ σ with
+                  | err e2 σ2 => have hs := Machines.Lnp64u.Isa.Wip.allocDerived_err_state c.d _ _ σ hal
+                                 rw [hal] at he; injection he with _ h2; subst h2; subst hs; rfl
+                  | fault f => rw [hal] at he; simp at he
+                  | ok hh τ => rw [hal] at he; simp [SpecM.setReg, SpecM.modify] at he
+  case _ => -- cap_drop
+    intro σ; constructor
+    · intro a σ'' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, _⟩ := r; simp only at he
+          simp only [SpecM.get, specM_bind] at he
+          have key : ∀ (σ' : MachineState), σ'.cycle = σ.cycle →
+              (SpecM.set (((σ'.clearSlot c.d sl).sweepRegions).sweepMover) >>=
+                fun _ => SpecM.setReg c.d c.op.rd 0) σ = .ok a σ'' →
+              σ''.cycle = σ.cycle := by
+            intro σ' hpre hset
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at hset
+            injection hset with _ h2; subst h2
+            rw [setDom_cycle, sweepMover_cycle, sweepRegions_cycle, clearSlot_cycle]
+            exact hpre
+          cases hp : σ.parentOf c.d sl with
+          | some p => rw [hp] at he
+                      exact key _ (reparent_cycle σ _ _) he
+          | none => rw [hp] at he
+                    exact key _ (orphanChildren_cycle σ _) he
+    · intro e σ'' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; rfl
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, _⟩ := r; simp only at he
+          simp only [SpecM.get, specM_bind] at he
+          cases hp : σ.parentOf c.d sl with
+          | some p => rw [hp] at he; simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+          | none => rw [hp] at he; simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+  case _ => -- cap_revoke
+    intro σ; constructor
+    · intro a σ'' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          simp only [SpecM.require] at he
+          by_cases hcls : decide (e.kind.cls = .mem) = true
+          · simp only [hcls, if_true, specM_pure, specM_bind, SpecM.get] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            rw [setDom_cycle, sweepMover_cycle, sweepRegions_cycle,
+                destroyMarked_cycle]
+          · rw [if_neg hcls] at he; simp [SpecM.raise, specM_bind] at he
+    · intro e σ'' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; rfl
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          simp only [SpecM.require] at he
+          by_cases hcls : decide (e.kind.cls = .mem) = true
+          · simp only [hcls, if_true, specM_pure, specM_bind, SpecM.get] at he
+            simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+          · rw [if_neg hcls] at he; simp only [SpecM.raise, specM_bind] at he
+            injection he with _ h2; subst h2; rfl
+  case _ => -- mem_grant
+    intro σ; constructor
+    · intro a σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate g => rw [hk] at he; simp [SpecM.raise] at he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => rw [hn] at he; simp at he
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1; subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  cases hal : Machines.Lnp64u.Isa.allocDerived (descDom ((σ.doms c.d).reg c.op.rs2)) kd ⟨c.d, sl, gg⟩ σ with
+                  | err e2 σ2 => rw [hal] at he; simp at he
+                  | fault f => rw [hal] at he; simp at he
+                  | ok hh τ =>
+                      rw [hal] at he
+                      have h1 := (CycleEq.allocDerived (descDom _) kd ⟨c.d, sl, gg⟩ σ).1 hh τ hal
+                      have h2 := (CycleEq.setReg c.d c.op.rd hh τ).1 a σ' he
+                      exact h2.trans h1
+    · intro e σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; rfl
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate g => rw [hk] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; rfl
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => have hs := Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms _ σ hn
+                             rw [hn] at he; injection he with _ h2; subst h2; subst hs; rfl
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1; subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  cases hal : Machines.Lnp64u.Isa.allocDerived (descDom ((σ.doms c.d).reg c.op.rs2)) kd ⟨c.d, sl, gg⟩ σ with
+                  | err e2 σ2 => have hs := Machines.Lnp64u.Isa.Wip.allocDerived_err_state (descDom _) _ _ σ hal
+                                 rw [hal] at he; injection he with _ h2; subst h2; subst hs; rfl
+                  | fault f => rw [hal] at he; simp at he
+                  | ok hh τ => rw [hal] at he; simp [SpecM.setReg, SpecM.modify] at he
+  case _ => -- map
+    intro σ; constructor
+    · intro a σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate g => rw [hk] at he; simp [SpecM.raise] at he
+          | mem base len perms =>
+              rw [hk] at he
+              simp only [SpecM.updDom, SpecM.modify, SpecM.setReg, specM_bind, SpecM.set] at he
+              injection he with _ h2; subst h2
+              rfl
+    · intro e σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; rfl
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate g => rw [hk] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; rfl
+          | mem base len perms =>
+              rw [hk] at he
+              simp [SpecM.updDom, SpecM.modify, SpecM.setReg, specM_bind, SpecM.set] at he
+  case _ => -- unmap
+    exact CycleEq.bind (CycleEq.updDom _ _) (fun _ => CycleEq.setReg _ _ _)
+  case _ => exact gatecall_cycle_eq c
+  case _ => exact gatereturn_cycle_eq c
+  case _ => exact move_cycle_eq c
+  case _ => -- yield
+    exact CycleEq.bind (CycleEq.updDom _ _) (fun _ => CycleEq.setReg _ _ _)
+  case _ => exact CycleEq.halt c
+
+/-- **No instruction's exec ever touches `cycle`.** -/
+theorem exec_cycle_eq : ∀ instr ∈ isa, ∀ c : Ctx, CycleEq (instr.sem.exec c) := by
+  intro instr hmem c
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem; exact hmem
+  rcases List.mem_append.mp hmem' with hb | hs
+  · exact base_cycle_eq instr hb c
+  · exact system_cycle_eq instr hs c
+
+/-- **`retire` never advances `cycle`**: the pc bump, exec effect, errno
+write-back, and halts all preserve it. -/
+theorem retire_cycle (σ : MachineState) (d : DomainId) (w : Loom.Word32) :
+    (retire σ d w).cycle = σ.cycle := by
+  unfold retire
+  split
+  · exact haltDom_cycle σ d _
+  · rename_i instr hdec
+    have hex := exec_cycle_eq instr (Loom.Isa.decode_mem isa hdec)
+      { d := d, pc := (σ.doms d).pc, op := operandsOf w }
+      (σ.setDom d (fun ds => { ds with pc := ds.pc + 1 }))
+    cases hexr : instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w }
+        (σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })) with
+    | ok a σ' =>
+        simp only [hexr]
+        exact hex.1 a σ' hexr
+    | err e σ' =>
+        simp only [hexr]
+        exact hex.2 e σ' hexr
+    | fault f =>
+        simp only [hexr]
+        exact haltDom_cycle σ d _
+
+/-- The refill phase never advances `cycle`. -/
+theorem refillPhase_cycle (m : Manifest) (σ : MachineState) :
+    (refillPhase m σ).cycle = σ.cycle := by
+  unfold refillPhase; split <;> rfl
+
+/-- The Mover phase never advances `cycle`. -/
+theorem moverPhase_cycle (σ : MachineState) : (moverPhase σ).cycle = σ.cycle := by
+  unfold moverPhase moverStatus MachineState.write
+  cases σ.mover with
+  | none => rfl
+  | some job => dsimp only; split_ifs <;> rfl
+
+/-- The core phase never advances `cycle`: countdown/idle/stall are frame,
+retirements are `retire_cycle`, halts are `haltDom_cycle`, issues touch only
+budgets/gates/inflight. -/
+theorem corePhase_cycle (m : Manifest) (σ : MachineState) :
+    (corePhase m σ).cycle = σ.cycle := by
+  unfold corePhase
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · simp only [hc, if_true]
+        exact retire_cycle { σ with inflight := none } fl.dom fl.word
+      · simp only [hc, if_false]
+  | none =>
+      simp only []
+      split
+      · rfl
+      · rename_i d hsched
+        split
+        · exact haltDom_cycle σ d _
+        · rename_i w hfetch
+          split
+          · exact haltDom_cycle σ d _
+          · rename_i instr hdec
+            by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer d)).budget
+            · simp only [hbud, if_true]
+              cases hservd : (σ.doms d).serving with
+              | none => rfl
+              | some g =>
+                  simp only [hservd]
+                  cases hactg : (σ.gates g).act with
+                  | none => exact haltDom_cycle σ d _
+                  | some a =>
+                      simp only [hactg]
+                      by_cases hdon : instr.cost.cost ≤ a.donated
+                      · simp only [hdon, if_true]
+                        rfl
+                      · simp only [hdon, if_false]
+                        exact haltDom_cycle σ d _
+            · simp only [hbud, if_false]
+
+/-- **The cycle counter advances by exactly one per step** (T6 obligation 3
+support): no phase — and in particular no instruction's `exec` — ever writes
+`cycle`; only the final bump does. -/
+theorem step_cycle (m : Manifest) (σ : MachineState) :
+    (step m σ).cycle = σ.cycle + 1 := by
+  show (moverPhase (corePhase m (refillPhase m σ))).cycle + 1 = σ.cycle + 1
+  rw [moverPhase_cycle, corePhase_cycle, refillPhase_cycle]
+
+/-- The cycle counter after `n` steps. -/
+theorem stepN_cycle (m : Manifest) : ∀ (n : Nat) (σ : MachineState),
+    (stepN m n σ).cycle = σ.cycle + n
+  | 0, _ => rfl
+  | n + 1, σ => by
+      show (stepN m n (step m σ)).cycle = σ.cycle + (n + 1)
+      rw [stepN_cycle m n (step m σ), step_cycle]
+      omega
+
+/-! ## Halted is absorbing (T6 potential support)
+
+A halted domain never runs again: the only two `run`-reviving writers are
+`gate_return`'s caller resume and the forced unwind's caller resume, and in
+both cases `Wf.gate_serving` pins the resumed caller to `.blocked g` — never
+`.halted`. Every other transition preserves each domain's `run` (calm ops)
+or writes only `.halted`/`.blocked` (halts, `gate_call`). Swept `CalmOut`-
+style through the ISA, `retire`, `corePhase`, and `step`. -/
+
+/-- Every `σ`-halted domain is still halted in `σ'`. -/
+def HaltedStays (σ σ' : MachineState) : Prop :=
+  ∀ e, (σ.doms e).run = .halted → (σ'.doms e).run = .halted
+
+theorem HaltedStays.of_run_eq {σ σ' : MachineState}
+    (h : ∀ e, (σ'.doms e).run = (σ.doms e).run) : HaltedStays σ σ' :=
+  fun e he => (h e).trans he
+
+/-- A calm transition preserves every domain's `run`, so halted stays. -/
+theorem CalmOut.haltedStays {cd : DomainId} {σ σ' : MachineState}
+    (h : CalmOut cd σ σ') : HaltedStays σ σ' :=
+  HaltedStays.of_run_eq h.2.1
+
+/-- A calm `ok` outcome keeps halted domains halted (the ISA-sweep
+workhorse). -/
+theorem CalmLe.halted_ok {cd : DomainId} {α : Type} {mm : SpecM α} (h : CalmLe cd mm)
+    {σ : MachineState} {a : α} {σ' : MachineState} (he : mm σ = .ok a σ') :
+    HaltedStays σ σ' :=
+  ((h σ).1 a σ' he).haltedStays
+
+/-- `haltDom` keeps halted domains halted: the target goes (or stays)
+halted, the resumed caller of an unwind was `.blocked` (never halted, by
+`Wf.gate_serving`), everyone else is untouched. -/
+theorem haltDom_halted (σ : MachineState) (d : DomainId) (cv : Loom.Word32)
+    (hwf : Wf σ) : HaltedStays σ (σ.haltDom d cv) := by
+  cases hserv : (σ.doms d).serving with
+  | none =>
+      rw [haltDom_base σ d cv hserv]
+      intro e he
+      simp only [haltBase_run]
+      by_cases hed : e = d
+      · simp [hed]
+      · rw [if_neg hed]; exact he
+  | some g =>
+      cases hact : (σ.gates g).act with
+      | none =>
+          rw [haltDom_base' σ d cv g hserv hact]
+          intro e he
+          simp only [haltBase_run]
+          by_cases hed : e = d
+          · simp [hed]
+          · rw [if_neg hed]; exact he
+      | some a =>
+          rw [haltDom_unwind σ d cv g a hserv hact]
+          have hcallerblk : (σ.doms a.caller).run = .blocked g :=
+            (hwf.gate_serving g a hact).2.1
+          intro e he
+          simp only [unwindGate_run, haltBase_run]
+          by_cases hec : e = a.caller
+          · subst hec; rw [hcallerblk] at he; exact absurd he (by simp)
+          · rw [if_neg hec]
+            by_cases hed : e = d
+            · simp [hed]
+            · rw [if_neg hed]; exact he
+
+/-- `gate_call`'s activation-entry end state keeps halted domains halted:
+the caller (executing, hence running) merely blocks, the callee (running by
+the `require`) gains `serving` but keeps `run = running`; everyone else is
+framed back to `σ0`. -/
+theorem gateCall_end_halted (τ σ0 : MachineState) (caller cal : DomainId) (gid : GateId)
+    (G : GateState) (argHandle : Loom.Word32) (entry : Addr)
+    (hfrun : ∀ d', (τ.doms d').run = (σ0.doms d').run)
+    (hcallerrun : (σ0.doms caller).run = .running)
+    (hcalrun : (σ0.doms cal).run = .running) :
+    HaltedStays σ0 ((({ τ with gates := Loom.Fun.update τ.gates gid G }).setDom cal
+        (fun ds => { ds with
+          regs := fun r => if r = (1 : Fin numRegs) then argHandle else 0
+          pc := entry, serving := some gid })).setDom caller
+        (fun ds => { ds with run := .blocked gid })) := by
+  have hXd : ({ τ with gates := Loom.Fun.update τ.gates gid G } : MachineState).doms
+      = τ.doms := rfl
+  intro e he
+  by_cases hecaller : e = caller
+  · subst hecaller; rw [hcallerrun] at he; exact absurd he (by simp)
+  · rw [setDom_doms_ne _ _ _ _ hecaller]
+    by_cases hecal : e = cal
+    · subst hecal; rw [hcalrun] at he; exact absurd he (by simp)
+    · rw [setDom_doms_ne _ _ _ _ hecal]
+      simp only [hXd]
+      rw [hfrun e]; exact he
+
+/-- `gate_return`'s end state keeps halted domains halted: the returning
+callee is running, the resumed caller was `.blocked` (`Wf.gate_serving`);
+everyone else is framed back to `σ0`. -/
+theorem gateReturn_end_halted (τ σ0 : MachineState) (cd : DomainId) (gid : GateId)
+    (act : Activation) (reply : Loom.Word32) (G : GateState)
+    (hfrun : ∀ d', (τ.doms d').run = (σ0.doms d').run)
+    (hrun : (σ0.doms cd).run = .running)
+    (hgact : (σ0.gates gid).act = some act)
+    (hwf : Wf σ0) :
+    HaltedStays σ0 (((({ τ with gates := Loom.Fun.update τ.gates gid G }).setDom cd
+        (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc
+                             serving := act.savedServing })).setDom act.caller
+        (fun ds => { ds with run := .running })).setDom act.caller
+        (fun ds => ds.setReg act.callerRd reply)) := by
+  have hXd : ({ τ with gates := Loom.Fun.update τ.gates gid G } : MachineState).doms
+      = τ.doms := rfl
+  have hcallerblk : (σ0.doms act.caller).run = .blocked gid :=
+    (hwf.gate_serving gid act hgact).2.1
+  intro e he
+  by_cases hecl : e = act.caller
+  · subst hecl; rw [hcallerblk] at he; exact absurd he (by simp)
+  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl]
+    by_cases hecd : e = cd
+    · subst hecd; rw [hrun] at he; exact absurd he (by simp)
+    · rw [setDom_doms_ne _ _ _ _ hecd]
+      simp only [hXd]
+      rw [hfrun e]; exact he
+
+/-- `gate_call` keeps halted domains halted on its `ok` (activation-entry)
+path. -/
+theorem gatecall_halted (c : Ctx) (σ : MachineState) (hwf : Wf σ)
+    (hrun : (σ.doms c.d).run = .running) :
+    ∀ a σ', (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = .ok a σ' →
+      HaltedStays σ σ' := by
+  have body : ∀ (out : Res Unit),
+      (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = out →
+      ∀ a σ', out = .ok a σ' → HaltedStays σ σ' := by
+    intro out hout
+    unfold Machines.Lnp64u.Isa.Wip.gateCallExec at hout
+    simp only [SpecM.reg, specM_bind] at hout
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 => rw [hcl] at hout; subst hout; exact fun a σ' h => by simp at h
+    | fault f => rw [hcl] at hout; subst hout; exact fun a σ' h => by simp at h
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at hout; obtain ⟨s0, g0, e⟩ := r; simp only at hout
+        cases hk : e.kind with
+        | mem base len perms => rw [hk] at hout; simp only [SpecM.raise] at hout; subst hout
+                                exact fun a σ' h => by simp at h
+        | gate gid =>
+            rw [hk] at hout; simp only [SpecM.get, specM_bind] at hout
+            set cal := (σ.gates gid).config.callee with hcaldef
+            cases hr1 : SpecM.require (σ.gates gid).act.isNone .gateBusy σ with
+            | err e1 σ1 => rw [hr1] at hout; simp only [specM_bind] at hout; subst hout
+                           exact fun a σ' h => by simp at h
+            | fault f => rw [hr1] at hout; simp only [specM_bind] at hout; subst hout
+                         exact fun a σ' h => by simp at h
+            | ok u1 σ1 =>
+                have hst := require_ok _ _ σ hr1; subst σ1
+                rw [hr1] at hout; simp only [specM_bind] at hout
+                cases hr2 : SpecM.require (decide (cal ≠ c.d)) .gateBusy σ with
+                | err e2 σ2 => rw [hr2] at hout; simp only [specM_bind] at hout; subst hout
+                               exact fun a σ' h => by simp at h
+                | fault f => rw [hr2] at hout; simp only [specM_bind] at hout; subst hout
+                             exact fun a σ' h => by simp at h
+                | ok u2 σ2 =>
+                    have hc2 := require_cond _ _ σ hr2; have hst := require_ok _ _ σ hr2; subst σ2
+                    rw [hr2] at hout; simp only [specM_bind] at hout
+                    cases hr3 : SpecM.require (decide ((σ.doms cal).run = .running)) .gateBusy σ with
+                    | err e3 σ3 => rw [hr3] at hout; simp only [specM_bind] at hout; subst hout
+                                   exact fun a σ' h => by simp at h
+                    | fault f => rw [hr3] at hout; simp only [specM_bind] at hout; subst hout
+                                 exact fun a σ' h => by simp at h
+                    | ok u3 σ3 =>
+                        have hc3 := require_cond _ _ σ hr3; have hst := require_ok _ _ σ hr3; subst σ3
+                        rw [hr3] at hout; simp only [specM_bind] at hout
+                        cases hr4 : SpecM.require (σ.doms cal).serving.isNone .gateBusy σ with
+                        | err e4 σ4 => rw [hr4] at hout; simp only [specM_bind] at hout; subst hout
+                                       exact fun a σ' h => by simp at h
+                        | fault f => rw [hr4] at hout; simp only [specM_bind] at hout; subst hout
+                                     exact fun a σ' h => by simp at h
+                        | ok u4 σ4 =>
+                            have hst := require_ok _ _ σ hr4; subst σ4
+                            rw [hr4] at hout; simp only [specM_bind] at hout
+                            cases hr5 : SpecM.require (decide (Machines.Lnp64u.Isa.Wip.gateDepth c σ ≤ maxChainDepth)) .gateBusy σ with
+                            | err e5 σ5 => rw [hr5] at hout; simp only [specM_bind] at hout; subst hout
+                                           exact fun a σ' h => by simp at h
+                            | fault f => rw [hr5] at hout; simp only [specM_bind] at hout; subst hout
+                                         exact fun a σ' h => by simp at h
+                            | ok u5 σ5 =>
+                                have hst := require_ok _ _ σ hr5; subst σ5
+                                rw [hr5] at hout; simp only [specM_bind, SpecM.reg] at hout
+                                cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d cal ((σ.doms c.d).reg c.op.rs2) σ with
+                                | fault f => rw [htbh] at hout; subst hout
+                                             exact fun a σ' h => by simp at h
+                                | err e6 τ => rw [htbh] at hout; subst hout
+                                              exact fun a σ' h => by simp at h
+                                | ok argHandle τ =>
+                                    rw [htbh] at hout
+                                    obtain ⟨hfrun, hfserv, _, _⟩ :=
+                                      transferByHandle_frame c.d cal _ σ argHandle τ htbh
+                                    simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom,
+                                      SpecM.modify] at hout
+                                    subst hout
+                                    have hcalrunσ : (σ.doms cal).run = .running := of_decide_eq_true hc3
+                                    intro a σ' h
+                                    simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                                    exact gateCall_end_halted τ σ c.d cal gid _ _ _
+                                      hfrun hrun hcalrunσ
+  exact fun a σ' h => body _ rfl a σ' h
+
+/-- `gate_return` keeps halted domains halted on its `ok` path. -/
+theorem gatereturn_halted (c : Ctx) (σ : MachineState) (hwf : Wf σ)
+    (hrun : (σ.doms c.d).run = .running) :
+    ∀ a σ',
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = .ok a σ' →
+      HaltedStays σ σ' := by
+  have body : ∀ (out : Res Unit),
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = out →
+      ∀ a σ', out = .ok a σ' → HaltedStays σ σ' := by
+    intro out hout
+    simp only [SpecM.get, specM_bind] at hout
+    cases hserv : (σ.doms c.d).serving with
+    | none => rw [hserv] at hout; simp [SpecM.fatal] at hout; subst hout
+              exact fun a σ' h => by simp at h
+    | some gid =>
+        simp only [hserv] at hout
+        cases hgact : (σ.gates gid).act with
+        | none => simp only [hgact] at hout; simp [SpecM.fatal] at hout; subst hout
+                  exact fun a σ' h => by simp at h
+        | some act =>
+            simp only [hgact] at hout; simp only [SpecM.reg, specM_bind] at hout
+            cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d act.caller ((σ.doms c.d).reg c.op.rs1) σ with
+            | fault f => rw [htbh] at hout; subst hout; exact fun a σ' h => by simp at h
+            | err e0 τ => rw [htbh] at hout; subst hout; exact fun a σ' h => by simp at h
+            | ok reply τ =>
+                rw [htbh] at hout
+                obtain ⟨hfrun, hfserv, _, _⟩ := transferByHandle_frame c.d act.caller _ σ reply τ htbh
+                simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify,
+                  SpecM.setReg] at hout
+                subst hout
+                intro a σ' h
+                simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                exact gateReturn_end_halted τ σ c.d gid act reply _ hfrun hrun hgact hwf
+  exact fun a σ' h => body _ rfl a σ' h
+
+/-- **Every instruction keeps halted domains halted** (both outcomes). The
+err arm is uniform (`TouchExec`'s err is `CalmOut`); the ok arm sweeps the
+ISA: calm ops via `CalmLe`, the gate ops via `gatecall_halted`/
+`gatereturn_halted`, `halt` via `haltDom_halted`. -/
+theorem exec_halted (instr) (hmem : instr ∈ isa) (c : Ctx) (σ : MachineState)
+    (hwf : Wf σ) (hrun : (σ.doms c.d).run = .running) :
+    (∀ a σ', instr.sem.exec c σ = .ok a σ' → HaltedStays σ σ') ∧
+    (∀ er σ', instr.sem.exec c σ = .err er σ' → HaltedStays σ σ') := by
+  refine ⟨?_, fun er σ' he =>
+    ((exec_touch instr hmem c σ hwf hrun).2 er σ' he).haltedStays⟩
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem; exact hmem
+  intro a σ' he
+  rcases List.mem_append.mp hmem' with hb | hs
+  · exact CalmLe.halted_ok (cd := c.d) (base_calm instr hb c) he
+  · fin_cases hs
+    case _ => -- cap_dup
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      refine CalmLe.bind (CalmLe.reg _ _) fun hw => ?_
+      refine CalmLe.bind (CalmLe.reg _ _) fun dw => ?_
+      refine CalmLe.bind (CalmLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show CalmLe c.d (match e.kind with
+        | .mem base len perms =>
+            Machines.Lnp64u.Isa.narrow base len perms dw >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h
+        | .gate gid =>
+            (Pure.pure (CapKind.gate gid) : SpecM CapKind) >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h)
+      cases e.kind with
+      | mem b l p =>
+          exact CalmLe.bind (CalmLe.narrow _ _ _ _) fun kind =>
+            CalmLe.bind (CalmLe.allocDerived _ _ _) fun h => CalmLe.setReg _ _ _
+      | gate i =>
+          exact CalmLe.bind (CalmLe.pure _) fun kind =>
+            CalmLe.bind (CalmLe.allocDerived _ _ _) fun h => CalmLe.setReg _ _ _
+    case _ => -- cap_drop
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      refine CalmLe.bind (CalmLe.reg _ _) fun hw => ?_
+      refine CalmLe.bind (CalmLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show CalmLe c.d (SpecM.get >>= fun σ0 =>
+        SpecM.set ((((match σ0.parentOf c.d s with
+            | some p => σ0.reparent ⟨c.d, s, g⟩ p
+            | none => σ0.orphanChildren ⟨c.d, s, g⟩).clearSlot c.d s).sweepRegions).sweepMover) >>=
+          fun _ => SpecM.setReg c.d c.op.rd 0)
+      refine CalmLe.getD _ fun σ0 => ?_
+      constructor
+      · intro a σ' he
+        cases hp : σ0.parentOf c.d s with
+        | some p =>
+            rw [hp] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            refine CalmOut.trans ?_
+              (CalmOut.setDomExec _ c.d _ (setReg_serving _ _ _) (setReg_run _ _ _))
+            exact ⟨fun e' => by simp, fun e' => by simp, fun e' _ => ⟨by simp, by simp, by simp⟩⟩
+        | none =>
+            rw [hp] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            refine CalmOut.trans ?_
+              (CalmOut.setDomExec _ c.d _ (setReg_serving _ _ _) (setReg_run _ _ _))
+            exact ⟨fun e' => by simp, fun e' => by simp, fun e' _ => ⟨by simp, by simp, by simp⟩⟩
+      · intro er σ' he
+        cases hp : σ0.parentOf c.d s with
+        | some p => rw [hp] at he
+                    simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+        | none => rw [hp] at he
+                  simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+    case _ => -- cap_revoke
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      refine CalmLe.bind (CalmLe.reg _ _) fun hw => ?_
+      refine CalmLe.bind (CalmLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show CalmLe c.d (SpecM.require (decide (e.kind.cls = .mem)) .badCap >>= fun _ =>
+        SpecM.get >>= fun σ0 =>
+        SpecM.set (((σ0.destroyMarked (σ0.marks ⟨c.d, s, g⟩)).sweepRegions).sweepMover) >>=
+        fun _ => SpecM.setReg c.d c.op.rd 0)
+      refine CalmLe.bind (CalmLe.require _ _) fun _ => ?_
+      refine CalmLe.getD _ fun σ0 => ?_
+      constructor
+      · intro a σ' he
+        simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+        injection he with _ h2; subst h2
+        refine CalmOut.trans ?_
+          (CalmOut.setDomExec _ c.d _ (setReg_serving _ _ _) (setReg_run _ _ _))
+        exact ⟨fun e' => by simp, fun e' => by simp, fun e' _ => ⟨by simp, by simp, by simp⟩⟩
+      · intro er σ' he
+        simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+    case _ => -- mem_grant
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      refine CalmLe.bind (CalmLe.reg _ _) fun hw => ?_
+      refine CalmLe.bind (CalmLe.reg _ _) fun dw => ?_
+      refine CalmLe.bind (CalmLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show CalmLe c.d (match e.kind with
+        | .gate _ => (SpecM.raise .badCap : SpecM Unit)
+        | .mem base len perms =>
+            Machines.Lnp64u.Isa.narrow base len perms dw >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived (descDom dw) kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h)
+      cases e.kind with
+      | gate gid => exact CalmLe.raise _
+      | mem base len perms =>
+          exact CalmLe.bind (CalmLe.narrow _ _ _ _) fun kind =>
+            CalmLe.bind (CalmLe.allocDerived _ _ _) fun h => CalmLe.setReg _ _ _
+    case _ => -- map
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      refine CalmLe.bind (CalmLe.reg _ _) fun hw => ?_
+      refine CalmLe.bind (CalmLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show CalmLe c.d (match e.kind with
+        | .gate _ => (SpecM.raise .badCap : SpecM Unit)
+        | .mem base len perms =>
+            SpecM.updDom c.d (fun ds =>
+              { ds with regions :=
+                  (Loom.Fun.update ds.regions
+                    ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩
+                    (some { base := base, len := len, perms := perms
+                            backing := ⟨c.d, s, g⟩ })) }) >>= fun _ =>
+            SpecM.setReg c.d c.op.rd 0)
+      cases e.kind with
+      | gate gid => exact CalmLe.raise _
+      | mem base len perms =>
+          exact CalmLe.bind (CalmLe.updDomExec _ _ (fun _ => rfl) (fun _ => rfl))
+            fun _ => CalmLe.setReg _ _ _
+    case _ => -- unmap
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      exact CalmLe.bind (CalmLe.updDomExec _ _ (fun _ => rfl) (fun _ => rfl))
+        fun _ => CalmLe.setReg _ _ _
+    case _ => -- gate_call
+      exact gatecall_halted c σ hwf hrun a σ' he
+    case _ => -- gate_return
+      exact gatereturn_halted c σ hwf hrun a σ' he
+    case _ => -- move
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      refine CalmLe.getD _ fun σg => (?_ : CalmLe c.d _) σg
+      refine CalmLe.bind (CalmLe.require _ _) fun _ => ?_
+      refine CalmLe.bind (CalmLe.reg _ _) fun aw => ?_
+      refine CalmLe.bind (CalmLe.load _ _) fun srcH => ?_
+      refine CalmLe.bind (CalmLe.load _ _) fun dstH => ?_
+      refine CalmLe.bind (CalmLe.load _ _) fun lenW => ?_
+      refine CalmLe.bind (CalmLe.load _ _) fun stW => ?_
+      refine CalmLe.bind (CalmLe.capLive _ _) fun rs => ?_
+      obtain ⟨ss, gs_, es⟩ := rs
+      refine CalmLe.bind (CalmLe.capLive _ _) fun rd_ => ?_
+      obtain ⟨sd, gd, ed⟩ := rd_
+      show CalmLe c.d (match es.kind, ed.kind with
+        | .mem sb sl sp, .mem db dl dp =>
+            SpecM.require sp.r .permDenied >>= fun _ =>
+            SpecM.require dp.w .permDenied >>= fun _ =>
+            SpecM.require (decide (lenW.toNat ≤ sl.toNat) && decide (lenW.toNat ≤ dl.toNat))
+              .outOfRange >>= fun _ =>
+            SpecM.get >>= fun σ1 =>
+            SpecM.demand (σ1.domCovers c.d (stW.setWidth 12)
+              { r := false, w := true, x := false }) .memoryAuthority >>= fun _ =>
+            SpecM.set ({ σ1 with mover :=
+              (some { owner := c.d, src := ⟨c.d, ss, gs_⟩, dst := ⟨c.d, sd, gd⟩
+                      srcCur := sb, dstCur := db, remaining := lenW.toNat
+                      statusAddr := stW.setWidth 12 }) }) >>= fun _ =>
+            SpecM.setReg c.d c.op.rd 0
+        | _, _ => (SpecM.raise .badCap : SpecM Unit))
+      cases es.kind with
+      | gate gi =>
+          cases ed.kind with
+          | gate _ => exact CalmLe.raise _
+          | mem db dl dp => exact CalmLe.raise _
+      | mem sb sl sp =>
+          cases ed.kind with
+          | gate _ => exact CalmLe.raise _
+          | mem db dl dp =>
+              refine CalmLe.bind (CalmLe.require _ _) fun _ => ?_
+              refine CalmLe.bind (CalmLe.require _ _) fun _ => ?_
+              refine CalmLe.bind (CalmLe.require _ _) fun _ => ?_
+              refine CalmLe.getD _ fun σ1 => ?_
+              constructor
+              · intro a σ' he
+                by_cases hcov : σ1.domCovers c.d (stW.setWidth 12)
+                    { r := false, w := true, x := false }
+                · simp only [SpecM.demand, hcov, if_true, specM_pure, specM_bind, SpecM.set,
+                    SpecM.setReg, SpecM.modify] at he
+                  injection he with _ h2; subst h2
+                  refine CalmOut.trans ?_
+                    (CalmOut.setDomExec _ c.d _ (setReg_serving _ _ _) (setReg_run _ _ _))
+                  exact CalmOut.of_doms_eq (fun e' => rfl)
+                · simp [SpecM.demand, hcov, SpecM.fatal, specM_bind] at he
+              · intro er σ' he
+                by_cases hcov : σ1.domCovers c.d (stW.setWidth 12)
+                    { r := false, w := true, x := false }
+                · simp [SpecM.demand, hcov, specM_pure, specM_bind, SpecM.set,
+                    SpecM.setReg, SpecM.modify] at he
+                · simp [SpecM.demand, hcov, SpecM.fatal, specM_bind] at he
+    case _ => -- yield
+      refine CalmLe.halted_ok (cd := c.d) ?_ he
+      exact CalmLe.bind (CalmLe.updDomExec _ _ (fun _ => rfl) (fun _ => rfl))
+        fun _ => CalmLe.setReg _ _ _
+    case _ => -- halt
+      simp only [SpecM.modify] at he; injection he with _ h2; subst h2
+      exact haltDom_halted σ c.d 0 hwf
+
+/-- `retire` keeps halted domains halted: the pc bump and errno write hit no
+`run` mark, the instruction effect is `exec_halted`, decode failure and
+faults are `haltDom_halted`. -/
+theorem retire_halted (σ : MachineState) (d : DomainId) (w : Loom.Word32)
+    (hwf : Wf σ) (hrun : (σ.doms d).run = .running) (hinf : σ.inflight = none) :
+    HaltedStays σ (retire σ d w) := by
+  unfold retire
+  split
+  · exact haltDom_halted σ d _ hwf
+  · rename_i instr hdec
+    set σ1 := σ.setDom d (fun ds => { ds with pc := ds.pc + 1 }) with hσ1
+    have hall : ∀ (d' : DomainId),
+        ((σ1.doms d').caps = (σ.doms d').caps) ∧
+        ((σ1.doms d').lineage = (σ.doms d').lineage) ∧
+        ((σ1.doms d').slotGen = (σ.doms d').slotGen) ∧
+        ((σ1.doms d').regions = (σ.doms d').regions) ∧
+        ((σ1.doms d').run = (σ.doms d').run) ∧
+        ((σ1.doms d').serving = (σ.doms d').serving) ∧
+        ((σ1.doms d').regs = (σ.doms d').regs) ∧
+        ((σ1.doms d').cause = (σ.doms d').cause) := by
+      intro d'; rw [hσ1]; unfold MachineState.setDom
+      by_cases hp : d' = d
+      · subst hp; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hp]
+    have hwf1 : Wf σ1 := by
+      refine wf_of_skeleton_sameGates σ σ1
+        (fun d' => (hall d').1) (fun d' => (hall d').2.1) (fun d' => (hall d').2.2.1)
+        (fun d' => (hall d').2.2.2.1) (fun d' => (hall d').2.2.2.2.1)
+        (fun d' => (hall d').2.2.2.2.2.1) rfl rfl ?_ hwf
+      intro fl' hfl'; rw [show σ1.inflight = σ.inflight from rfl, hinf] at hfl'
+      exact absurd hfl' (by simp)
+    have hrun1 : (σ1.doms d).run = .running := by rw [(hall d).2.2.2.2.1]; exact hrun
+    obtain ⟨hok, herr⟩ := exec_halted instr (Loom.Isa.decode_mem isa hdec)
+      { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 hwf1 hrun1
+    cases hexr : instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 with
+    | ok a σ' =>
+        simp only [hexr]
+        intro e he
+        exact hok a σ' hexr e (by rw [(hall e).2.2.2.2.1]; exact he)
+    | err er σ' =>
+        simp only [hexr]
+        intro e he
+        have hpost : ((σ'.setDom d fun ds => ds.setReg (operandsOf w).rd er.toWord).doms e).run
+            = (σ'.doms e).run := by
+          unfold MachineState.setDom
+          by_cases hp : e = d
+          · subst hp; simp [Loom.Fun.update_same, setReg_run]
+          · simp [Loom.Fun.update_ne _ _ _ _ hp]
+        rw [hpost]
+        exact herr er σ' hexr e (by rw [(hall e).2.2.2.2.1]; exact he)
+    | fault f =>
+        simp only [hexr]
+        exact haltDom_halted σ d _ hwf
+
+/-- Charging a payer's budget moves no `run` mark. -/
+theorem setDomBudget_run_eq (σ : MachineState) (p : DomainId) (n : Nat) (e : DomainId) :
+    ((σ.setDom p (fun ds => { ds with budget := ds.budget - n })).doms e).run
+      = (σ.doms e).run := by
+  unfold MachineState.setDom
+  by_cases h : e = p
+  · subst h; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ h]
+
+/-- The core phase keeps halted domains halted: countdown/idle/stall leave
+doms alone, issues touch only budgets, retirements are `retire_halted`,
+halts are `haltDom_halted`. -/
+theorem corePhase_halted (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
+    HaltedStays σ (corePhase m σ) := by
+  unfold corePhase
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · simp only [hc, if_true]
+        have hwfI : Wf { σ with inflight := none } :=
+          wf_of_skeleton_sameGates σ { σ with inflight := none }
+            (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+            (fun _ => rfl) rfl rfl (by simp) hwf
+        exact retire_halted { σ with inflight := none } fl.dom fl.word hwfI
+          (hwf.inflight_running fl hinf) rfl
+      · simp only [hc, if_false]
+        exact HaltedStays.of_run_eq (fun e => rfl)
+  | none =>
+      simp only []
+      split
+      · exact HaltedStays.of_run_eq (fun e => rfl)
+      · rename_i d hsched
+        split
+        · exact haltDom_halted σ d _ hwf
+        · rename_i w hfetch
+          split
+          · exact haltDom_halted σ d _ hwf
+          · rename_i instr hdec
+            by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer d)).budget
+            · simp only [hbud, if_true]
+              cases hservd : (σ.doms d).serving with
+              | none =>
+                  simp only [hservd]
+                  exact HaltedStays.of_run_eq
+                    (fun e => setDomBudget_run_eq σ (σ.payer d) _ e)
+              | some g =>
+                  simp only [hservd]
+                  cases hactg : (σ.gates g).act with
+                  | none => exact haltDom_halted σ d _ hwf
+                  | some a =>
+                      simp only [hactg]
+                      by_cases hdon : instr.cost.cost ≤ a.donated
+                      · simp only [hdon, if_true]
+                        exact HaltedStays.of_run_eq
+                          (fun e => setDomBudget_run_eq σ (σ.payer d) _ e)
+                      · simp only [hdon, if_false]
+                        exact haltDom_halted σ d _ hwf
+            · simp only [hbud, if_false]
+              exact HaltedStays.of_run_eq (fun e => rfl)
+
+/-- **Halted is absorbing** (T6 potential support, per cycle): under `Wf`
+(available at every reachable state via `wfa_invariant`), a halted domain is
+still halted after one machine cycle — the `#non-halted` term of the T6
+potential never increases. -/
+theorem halted_stays (m : Manifest) (σ : MachineState) (hwf : Wf σ)
+    (e : DomainId) (h : (σ.doms e).run = .halted) :
+    ((step m σ).doms e).run = .halted := by
+  rw [congrFun (step_doms m σ) e]
+  exact corePhase_halted m (refillPhase m σ) (refillPhase_preserves_wf m σ hwf) e
+    (by rw [refillPhase_run]; exact h)
+
+/-- Halted is absorbing along any run from a reachable state. -/
+theorem stepN_halted (m : Manifest) (hwf : m.WF) (σ : MachineState)
+    (hreach : (machine m).Reachable σ) (e : DomainId)
+    (h : (σ.doms e).run = .halted) :
+    ∀ n, ((stepN m n σ).doms e).run = .halted := by
+  intro n
+  induction n generalizing σ with
+  | zero => exact h
+  | succ k ih =>
+      exact ih (step m σ) (Loom.TSys.Reachable.step hreach rfl)
+        (halted_stays m σ (wfa_invariant m hwf σ hreach).1 e h)
+
+/-! ## Origin refill eligibility (T6 obligation 4)
+
+Within one period of any cycle, the refill phase restores a domain's budget
+to its full quota `Q`; with `hpos` (`0 < Q`) the chain origin is therefore
+funded — and the chain head `Eligible` — at some cycle of every window of
+`periodP ≤ hyperL` cycles, unless a chain issue spends the refund first
+(which is itself a progress event). Stated on `refillPhase m (stepN m k σ)`
+because that is exactly the state `corePhase` runs in within
+`step m (stepN m k σ)` (cf. `StallFree`). -/
+
+/-- **Refill within one period**: for every state and domain there is a
+period boundary at most `periodP` cycles ahead, where `refillPhase`
+restores the budget to exactly `budgetQ`. Uses `step_cycle`: the counter
+advances by one per step, so boundaries are hit on schedule. -/
+theorem refill_within_period (m : Manifest) (hwf : m.WF) (σ : MachineState)
+    (e : DomainId) :
+    ∃ k ≤ (m.doms e).periodP,
+      ((refillPhase m (stepN m k σ)).doms e).budget = (m.doms e).budgetQ := by
+  have hP : 0 < (m.doms e).periodP := hwf.period_pos e
+  by_cases hc : σ.cycle % (m.doms e).periodP = 0 ∧ σ.cycle ≠ 0
+  · refine ⟨0, Nat.zero_le _, ?_⟩
+    show ((refillPhase m σ).doms e).budget = _
+    unfold refillPhase
+    rw [if_neg hc.2]
+    simp [hc.1]
+  · refine ⟨(m.doms e).periodP - σ.cycle % (m.doms e).periodP, Nat.sub_le _ _, ?_⟩
+    have hcyc : (stepN m ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) σ).cycle
+        = σ.cycle + ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) :=
+      stepN_cycle m _ σ
+    have hlt : σ.cycle % (m.doms e).periodP < (m.doms e).periodP :=
+      Nat.mod_lt _ hP
+    -- the landing cycle is the next multiple of the period
+    have hmul : σ.cycle + ((m.doms e).periodP - σ.cycle % (m.doms e).periodP)
+        = (m.doms e).periodP * (σ.cycle / (m.doms e).periodP + 1) := by
+      have hdm : (m.doms e).periodP * (σ.cycle / (m.doms e).periodP)
+          + σ.cycle % (m.doms e).periodP = σ.cycle :=
+        Nat.div_add_mod σ.cycle (m.doms e).periodP
+      have hsucc : (m.doms e).periodP * (σ.cycle / (m.doms e).periodP + 1)
+          = (m.doms e).periodP * (σ.cycle / (m.doms e).periodP) + (m.doms e).periodP :=
+        Nat.mul_succ _ _
+      omega
+    have hb : (stepN m ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) σ).cycle
+        % (m.doms e).periodP = 0 := by
+      rw [hcyc, hmul]; exact Nat.mul_mod_right _ _
+    have h0 : (stepN m ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) σ).cycle ≠ 0 := by
+      rw [hcyc, hmul]
+      exact Nat.ne_of_gt (Nat.mul_pos hP (Nat.succ_pos _))
+    unfold refillPhase
+    rw [if_neg h0]
+    simp [hb]
+
+/-- **Origin refill eligibility** (T6 obligation 4): with positive quota
+(`hpos`), within one period — hence within one hyperperiod — of any cycle
+the origin's budget is restored to `Q > 0` at the very state the core phase
+runs in. Combined with the chain-structure item (only chain issues draw the
+origin's budget down, `payer_ne_of_serving_none`), the chain head is
+`Eligible` from that point until the next progress event. -/
+theorem origin_refill_eligible (m : Manifest) (hwf : m.WF) (σ : MachineState)
+    (e : DomainId) (hpos : 0 < (m.doms e).budgetQ) :
+    ∃ k ≤ hyperL m, 0 < ((refillPhase m (stepN m k σ)).doms e).budget := by
+  obtain ⟨k, hk, hb⟩ := refill_within_period m hwf σ e
+  exact ⟨k, Nat.le_trans hk (periodP_le_hyperL m hwf e), by rw [hb]; exact hpos⟩
+
 end Machines.Lnp64u
