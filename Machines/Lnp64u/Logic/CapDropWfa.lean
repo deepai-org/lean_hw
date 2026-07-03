@@ -679,6 +679,123 @@ theorem caprevoke_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac
 
 
 
+/-- `gate_call` preserves `Wf ∧ Acyclic`. -/
+theorem gatecall_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ)
+    (hac : Acyclic σ) (hrun : (σ.doms c.d).run = .running) (hinf : σ.inflight = none) :
+    (∀ a σ', (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
+    (∀ e σ', (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = .err e σ' → Wf σ' ∧ Acyclic σ') := by
+  have body : ∀ (out : Res Unit),
+      (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = out →
+      (∀ a σ', out = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
+      (∀ e σ', out = .err e σ' → Wf σ' ∧ Acyclic σ') := by
+    intro out hout
+    unfold Machines.Lnp64u.Isa.Wip.gateCallExec at hout
+    simp only [SpecM.reg, specM_bind] at hout
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl; rw [hcl] at hout; subst hout
+        exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+          simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hs; exact ⟨hwf, hac⟩⟩
+    | fault f => rw [hcl] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at hout; obtain ⟨s0, g0, e⟩ := r; simp only at hout
+        cases hk : e.kind with
+        | mem base len perms => rw [hk] at hout; simp only [SpecM.raise] at hout; subst hout
+                                exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact ⟨hwf, hac⟩⟩
+        | gate gid =>
+            rw [hk] at hout; simp only [SpecM.get, specM_bind] at hout
+            set cal := (σ.gates gid).config.callee with hcaldef
+            cases hr1 : SpecM.require (σ.gates gid).act.isNone .gateBusy σ with
+            | err e1 σ1 => have hst := require_err_state _ _ σ hr1; rw [hr1] at hout; simp only [specM_bind] at hout; subst hout
+                           exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                             simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; exact ⟨hwf, hac⟩⟩
+            | fault f => rw [hr1] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+            | ok u1 σ1 =>
+                have hc1 := require_cond _ _ σ hr1; have hst := require_ok _ _ σ hr1; subst σ1
+                rw [hr1] at hout; simp only [specM_bind] at hout
+                cases hr2 : SpecM.require (decide (cal ≠ c.d)) .gateBusy σ with
+                | err e2 σ2 => have hst := require_err_state _ _ σ hr2; rw [hr2] at hout; simp only [specM_bind] at hout; subst hout
+                               exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                 simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; exact ⟨hwf, hac⟩⟩
+                | fault f => rw [hr2] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                | ok u2 σ2 =>
+                    have hc2 := require_cond _ _ σ hr2; have hst := require_ok _ _ σ hr2; subst σ2
+                    rw [hr2] at hout; simp only [specM_bind] at hout
+                    cases hr3 : SpecM.require (decide ((σ.doms cal).run = .running)) .gateBusy σ with
+                    | err e3 σ3 => have hst := require_err_state _ _ σ hr3; rw [hr3] at hout; simp only [specM_bind] at hout; subst hout
+                                   exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                     simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; exact ⟨hwf, hac⟩⟩
+                    | fault f => rw [hr3] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                    | ok u3 σ3 =>
+                        have hc3 := require_cond _ _ σ hr3; have hst := require_ok _ _ σ hr3; subst σ3
+                        rw [hr3] at hout; simp only [specM_bind] at hout
+                        cases hr4 : SpecM.require (σ.doms cal).serving.isNone .gateBusy σ with
+                        | err e4 σ4 => have hst := require_err_state _ _ σ hr4; rw [hr4] at hout; simp only [specM_bind] at hout; subst hout
+                                       exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                         simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; exact ⟨hwf, hac⟩⟩
+                        | fault f => rw [hr4] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                        | ok u4 σ4 =>
+                            have hc4 := require_cond _ _ σ hr4; have hst := require_ok _ _ σ hr4; subst σ4
+                            rw [hr4] at hout; simp only [specM_bind] at hout
+                            cases hr5 : SpecM.require (decide (Machines.Lnp64u.Isa.Wip.gateDepth c σ ≤ maxChainDepth)) .gateBusy σ with
+                            | err e5 σ5 => have hst := require_err_state _ _ σ hr5; rw [hr5] at hout; simp only [specM_bind] at hout; subst hout
+                                           exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                             simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; exact ⟨hwf, hac⟩⟩
+                            | fault f => rw [hr5] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                            | ok u5 σ5 =>
+                                have hc5 := require_cond _ _ σ hr5; have hst := require_ok _ _ σ hr5; subst σ5
+                                rw [hr5] at hout; simp only [specM_bind, SpecM.reg] at hout
+                                cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d cal ((σ.doms c.d).reg c.op.rs2) σ with
+                                | fault f => rw [htbh] at hout; subst hout
+                                             exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                                | err e6 τ =>
+                                    rw [htbh] at hout; subst hout
+                                    have hτ := (transferByHandle_preserves c.d cal _ σ hwf hac).2 e6 τ htbh
+                                    exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                      simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hτ⟩
+                                | ok argHandle τ =>
+                                    rw [htbh] at hout
+                                    obtain ⟨hwfτ, hacτ⟩ := (transferByHandle_preserves c.d cal _ σ hwf hac).1 argHandle τ htbh
+                                    obtain ⟨hfrun, hfserv, hfgates, hfinf⟩ := transferByHandle_frame c.d cal _ σ argHandle τ htbh
+                                    simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify] at hout
+                                    subst hout
+                                    have hgsnoneσ : (σ.gates gid).act = none := by
+                                      rw [Option.isNone_iff_eq_none] at hc1; exact hc1
+                                    have hcalne : cal ≠ c.d := of_decide_eq_true hc2
+                                    have hcalrunσ : (σ.doms cal).run = .running := of_decide_eq_true hc3
+                                    have hcalservσ : (σ.doms cal).serving = none := by
+                                      rw [Option.isNone_iff_eq_none] at hc4; exact hc4
+                                    have hdepthmax : Machines.Lnp64u.Isa.Wip.gateDepth c σ ≤ maxChainDepth := of_decide_eq_true hc5
+                                    have hdepth1 : 1 ≤ Machines.Lnp64u.Isa.Wip.gateDepth c σ := by
+                                      unfold Machines.Lnp64u.Isa.Wip.gateDepth
+                                      split
+                                      · split
+                                        · omega
+                                        · omega
+                                      · omega
+                                    have hgsnoneτ : (τ.gates gid).act = none := by rw [hfgates]; exact hgsnoneσ
+                                    have hcalleeτ : (τ.gates gid).config.callee = cal := by rw [hfgates]
+                                    have hcalrunτ : (τ.doms cal).run = .running := by rw [hfrun]; exact hcalrunσ
+                                    have hcalservτ : (τ.doms cal).serving = none := by rw [hfserv]; exact hcalservσ
+                                    have hcallerrunτ : (τ.doms c.d).run = .running := by rw [hfrun]; exact hrun
+                                    have hinfτ : τ.inflight = none := by rw [hfinf]; exact hinf
+                                    have hgseqτ : (σ.gates gid) = (τ.gates gid) := by rw [hfgates]
+                                    obtain ⟨hw', ha'⟩ := wf_acyclic_gateCall τ c.d cal gid
+                                      { caller := c.d, callerRd := c.op.rd, savedRegs := (τ.doms cal).regs,
+                                        savedPc := (τ.doms cal).pc, savedServing := (τ.doms cal).serving,
+                                        depth := Machines.Lnp64u.Isa.Wip.gateDepth c σ, donated := (τ.doms c.d).maxDonation }
+                                      (fun r => if r = (1 : Fin numRegs) then argHandle else 0)
+                                      (τ.gates gid).config.entry
+                                      hgsnoneτ hcalleeτ hcalne hcalrunτ hcalservτ rfl hcalservτ hdepth1 hdepthmax
+                                      hcallerrunτ hinfτ hwfτ hacτ
+                                    refine ⟨fun a σ' h => ?_, fun e σ' h => by simp at h⟩
+                                    simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                                    rw [hgseqτ]; exact ⟨hw', ha'⟩
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun e σ' h => (body _ h).2 e σ' rfl⟩
+
+
 /-- `gate_return` preserves `Wf ∧ Acyclic`. -/
 theorem gatereturn_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ)
     (hac : Acyclic σ) (hrun : (σ.doms c.d).run = .running) (hinf : σ.inflight = none) :
@@ -793,7 +910,7 @@ theorem system_preserves_wfa : SystemOpsPreserveWfA := by
         (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).1 a σ' he |>.1
     · exact ((PreservesWf.bind (PreservesWf.clearRegion _ _)
         (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).2 e σ' he |>.1
-  case _ => sorry  -- gate_call (core wf_acyclic_gateCall proven; exec-threading pending)
+  case _ => exact gatecall_preserves_wfa c σ hwf hac hrun hinf
   case _ => exact gatereturn_preserves_wfa c σ hwf hac hrun hinf
   case _ => -- move
     exact ⟨fun a σ' he => ⟨move_ok c σ hwf a σ' he, hA.1 a σ' he⟩,

@@ -397,6 +397,15 @@ theorem memgrant_preserves (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
                 | fault f => rw [ha] at he; simp at he
                 | ok hh σ2 => rw [ha] at he; simp [SpecM.setReg, SpecM.modify] at he
 
+/-- The gate-call chain depth (named so the preservation proof can rewrite it). -/
+def gateDepth (c : Ctx) (σ : MachineState) : Nat :=
+  match (σ.doms c.d).serving with
+  | some g' =>
+      match (σ.gates g').act with
+      | some a => a.depth + 1
+      | none => 1
+  | none => 1
+
 /-- The `gate_call` opcode's operational semantics (matches `Isa.system`'s
 `gate_call`). Named for the preservation proof. -/
 def gateCallExec (c : Ctx) : SpecM Unit := do
@@ -412,13 +421,7 @@ def gateCallExec (c : Ctx) : SpecM Unit := do
       require (decide (cal ≠ c.d)) .gateBusy
       require (decide ((σ.doms cal).run = .running)) .gateBusy
       require (σ.doms cal).serving.isNone .gateBusy
-      let depth :=
-        match (σ.doms c.d).serving with
-        | some g' =>
-            match (σ.gates g').act with
-            | some a => a.depth + 1
-            | none => 1
-        | none => 1
+      let depth := gateDepth c σ
       require (decide (depth ≤ maxChainDepth)) .gateBusy
       let argw ← reg c.d c.op.rs2
       let argHandle ← transferByHandle c.d cal argw
