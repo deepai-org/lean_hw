@@ -514,6 +514,220 @@ theorem move_slotGen_le (c : Ctx) : SlotGenLe (moveExec c) := by
                                                         have := demand_ok _ _ σ hd; subst σdd; rw [hd] at he
                                                         simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
 
+/-- `transferByHandle` never lowers a slot generation: the `hw = 0` and error
+paths leave the state unchanged; the transfer path is `transferCap_slotGen_ge`. -/
+theorem transferByHandle_slotGen_le (d to_ : DomainId) (hw : Loom.Word32) :
+    SlotGenLe (transferByHandle d to_ hw) := by
+  intro σ
+  unfold Machines.Lnp64u.Isa.transferByHandle
+  by_cases hz : hw = 0
+  · rw [if_pos hz]
+    exact ⟨fun a σ' he d' s => by
+        simp only [specM_pure] at he; obtain ⟨_, rfl⟩ := he; exact le_refl _,
+      fun e σ' he d' s => by simp [specM_pure] at he⟩
+  · simp only [if_neg hz, specM_bind]
+    constructor
+    · intro a σ' he d' s
+      cases hcl : capLive d hw σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none => rw [htc] at he; simp [SpecM.raise] at he
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp only [SpecM.set, specM_bind, specM_pure] at he
+              injection he with _ h2; subst h2
+              exact transferCap_slotGen_ge σ d sslot to_ σ2 ref htc d' s
+    · intro er σ' he d' s
+      cases hcl : capLive d hw σ with
+      | err e0 σ0 =>
+          have hs := capLive_err_state d _ σ hcl; rw [hcl] at he
+          injection he with _ h2; subst h2; subst hs; exact le_refl _
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none =>
+              rw [htc] at he; simp only [SpecM.raise] at he
+              injection he with _ h2; subst h2; exact le_refl _
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
+/-- `gate_call` never lowers a slot generation: the only lineage-touching piece
+is the capability transfer (`transferByHandle_slotGen_le`); the activation /
+serving / run bookkeeping leaves `slotGen` alone. -/
+theorem gatecall_slotGen_le (c : Ctx) : SlotGenLe (gateCallExec c) := by
+  intro σ
+  have body : ∀ (out : Res Unit), gateCallExec c σ = out →
+      (∀ a σ', out = .ok a σ' →
+        ∀ d' s, ((σ.doms d').slotGen s).toNat ≤ ((σ'.doms d').slotGen s).toNat) ∧
+      (∀ e σ', out = .err e σ' →
+        ∀ d' s, ((σ.doms d').slotGen s).toNat ≤ ((σ'.doms d').slotGen s).toNat) := by
+    intro out hout
+    unfold gateCallExec at hout
+    simp only [SpecM.reg, specM_bind] at hout
+    cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := capLive_err_state c.d _ σ hcl; rw [hcl] at hout; subst hout
+        exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+          simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hs
+          intro d' s; exact le_refl _⟩
+    | fault f => rw [hcl] at hout; subst hout
+                 exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at hout; obtain ⟨s0, g0, e⟩ := r; simp only at hout
+        cases hk : e.kind with
+        | mem base len perms =>
+            rw [hk] at hout; simp only [SpecM.raise] at hout; subst hout
+            exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+              simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h
+              intro d' s; exact le_refl _⟩
+        | gate gid =>
+            rw [hk] at hout; simp only [SpecM.get, specM_bind] at hout
+            set cal := (σ.gates gid).config.callee with hcaldef
+            cases hr1 : SpecM.require (σ.gates gid).act.isNone .gateBusy σ with
+            | err e1 σ1 => have hst := require_err_state _ _ σ hr1; rw [hr1] at hout; simp only [specM_bind] at hout; subst hout
+                           exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                             simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; intro d' s; exact le_refl _⟩
+            | fault f => rw [hr1] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+            | ok u1 σ1 =>
+                have hst := require_ok _ _ σ hr1; subst σ1
+                rw [hr1] at hout; simp only [specM_bind] at hout
+                cases hr2 : SpecM.require (decide (cal ≠ c.d)) .gateBusy σ with
+                | err e2 σ2 => have hst := require_err_state _ _ σ hr2; rw [hr2] at hout; simp only [specM_bind] at hout; subst hout
+                               exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                 simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; intro d' s; exact le_refl _⟩
+                | fault f => rw [hr2] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                | ok u2 σ2 =>
+                    have hst := require_ok _ _ σ hr2; subst σ2
+                    rw [hr2] at hout; simp only [specM_bind] at hout
+                    cases hr3 : SpecM.require (decide ((σ.doms cal).run = .running)) .gateBusy σ with
+                    | err e3 σ3 => have hst := require_err_state _ _ σ hr3; rw [hr3] at hout; simp only [specM_bind] at hout; subst hout
+                                   exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                     simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; intro d' s; exact le_refl _⟩
+                    | fault f => rw [hr3] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                    | ok u3 σ3 =>
+                        have hst := require_ok _ _ σ hr3; subst σ3
+                        rw [hr3] at hout; simp only [specM_bind] at hout
+                        cases hr4 : SpecM.require (σ.doms cal).serving.isNone .gateBusy σ with
+                        | err e4 σ4 => have hst := require_err_state _ _ σ hr4; rw [hr4] at hout; simp only [specM_bind] at hout; subst hout
+                                       exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                         simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; intro d' s; exact le_refl _⟩
+                        | fault f => rw [hr4] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                        | ok u4 σ4 =>
+                            have hst := require_ok _ _ σ hr4; subst σ4
+                            rw [hr4] at hout; simp only [specM_bind] at hout
+                            cases hr5 : SpecM.require (decide (gateDepth c σ ≤ maxChainDepth)) .gateBusy σ with
+                            | err e5 σ5 => have hst := require_err_state _ _ σ hr5; rw [hr5] at hout; simp only [specM_bind] at hout; subst hout
+                                           exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                             simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; subst hst; intro d' s; exact le_refl _⟩
+                            | fault f => rw [hr5] at hout; simp only [specM_bind] at hout; subst hout; exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                            | ok u5 σ5 =>
+                                have hst := require_ok _ _ σ hr5; subst σ5
+                                rw [hr5] at hout; simp only [specM_bind, SpecM.reg] at hout
+                                cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d cal ((σ.doms c.d).reg c.op.rs2) σ with
+                                | fault f => rw [htbh] at hout; subst hout
+                                             exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+                                | err e6 τ =>
+                                    rw [htbh] at hout; subst hout
+                                    have hτ := (transferByHandle_slotGen_le c.d cal _ σ).2 e6 τ htbh
+                                    exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                                      simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hτ⟩
+                                | ok argHandle τ =>
+                                    rw [htbh] at hout
+                                    have hτ := (transferByHandle_slotGen_le c.d cal _ σ).1 argHandle τ htbh
+                                    simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify] at hout
+                                    subst hout
+                                    refine ⟨fun a σ' h => ?_, fun e σ' h => by simp at h⟩
+                                    simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                                    intro d' s
+                                    refine le_trans (hτ d' s) (le_of_eq ?_)
+                                    rw [setDom_slotGen_of _ c.d _ rfl, setDom_slotGen_of _ cal _ rfl]
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun e σ' h => (body _ h).2 e σ' rfl⟩
+
+/-- `gate_return` never lowers a slot generation: the only lineage-touching
+piece is the reply transfer; restoring the caller's context leaves `slotGen`
+alone. -/
+theorem gatereturn_slotGen_le (c : Ctx) :
+    SlotGenLe ((do
+      let σ0 ← SpecM.get
+      match (σ0.doms c.d).serving with
+      | none => SpecM.fatal .protocol
+      | some gid =>
+          match (σ0.gates gid).act with
+          | none => SpecM.fatal .protocol
+          | some act => do
+              let rw ← SpecM.reg c.d c.op.rs1
+              let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+              let σ1 ← SpecM.get
+              SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+              SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+              SpecM.updDom act.caller (fun ds => { ds with run := .running })
+              SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) := by
+  intro σ
+  have body : ∀ (out : Res Unit),
+      ((do
+        let σ0 ← SpecM.get
+        match (σ0.doms c.d).serving with
+        | none => SpecM.fatal .protocol
+        | some gid =>
+            match (σ0.gates gid).act with
+            | none => SpecM.fatal .protocol
+            | some act => do
+                let rw ← SpecM.reg c.d c.op.rs1
+                let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                let σ1 ← SpecM.get
+                SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = out →
+      (∀ a σ', out = .ok a σ' →
+        ∀ d' s, ((σ.doms d').slotGen s).toNat ≤ ((σ'.doms d').slotGen s).toNat) ∧
+      (∀ e σ', out = .err e σ' →
+        ∀ d' s, ((σ.doms d').slotGen s).toNat ≤ ((σ'.doms d').slotGen s).toNat) := by
+    intro out hout
+    simp only [SpecM.get, specM_bind] at hout
+    cases hserv : (σ.doms c.d).serving with
+    | none => rw [hserv] at hout; simp only [SpecM.fatal] at hout; subst hout
+              exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+    | some gid =>
+        simp only [hserv] at hout
+        cases hgact : (σ.gates gid).act with
+        | none => simp only [hgact] at hout; simp only [SpecM.fatal] at hout; subst hout
+                  exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+        | some act =>
+            simp only [hgact, SpecM.reg, specM_bind] at hout
+            cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d act.caller ((σ.doms c.d).reg c.op.rs1) σ with
+            | fault f => rw [htbh] at hout; subst hout
+                         exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+            | err e1 τ =>
+                rw [htbh] at hout; subst hout
+                have hτ := (transferByHandle_slotGen_le c.d act.caller _ σ).2 e1 τ htbh
+                exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hτ⟩
+            | ok reply τ =>
+                rw [htbh] at hout
+                have hτ := (transferByHandle_slotGen_le c.d act.caller _ σ).1 reply τ htbh
+                simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify,
+                           SpecM.setReg] at hout
+                subst hout
+                refine ⟨fun a σ' h => ?_, fun e σ' h => by simp at h⟩
+                simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                intro d' s
+                refine le_trans (hτ d' s) (le_of_eq ?_)
+                rw [setDom_slotGen_of _ act.caller _ (by unfold DomainState.setReg; split <;> rfl),
+                    setDom_slotGen_of _ act.caller _ rfl,
+                    setDom_slotGen_of _ c.d _ rfl]
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun e σ' h => (body _ h).2 e σ' rfl⟩
+
 /-- **The system opcodes never lower a slot generation** (7 preserving via the
 combinator, 4 bumping via the kernel `clearSlot`/`destroyMarked` bounds). -/
 theorem system_slotGen_le : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ctx,
@@ -759,8 +973,8 @@ theorem system_slotGen_le : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ct
               rw [hk] at he
               simp [SpecM.updDom, SpecM.modify, SpecM.setReg, specM_bind, SpecM.set] at he
   case _ => exact SlotGenLe.unmap c _
-  case _ => sorry -- gate_call
-  case _ => sorry -- gate_return
+  case _ => exact gatecall_slotGen_le c
+  case _ => exact gatereturn_slotGen_le c
   case _ => exact move_slotGen_le c
   case _ => exact SlotGenLe.yield c
   case _ => exact SlotGenLe.halt c
