@@ -979,6 +979,104 @@ theorem system_slotGen_le : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ct
   case _ => exact SlotGenLe.yield c
   case _ => exact SlotGenLe.halt c
 
+/-- Transport a `Gen` equality to the `toNat` bound. -/
+theorem toNat_le_of_eq {w : Nat} {a b : BitVec w} (h : a = b) : a.toNat ≤ b.toNat :=
+  h ▸ Nat.le_refl _
+
+/-- **Every instruction's exec never lowers a slot generation** — the base
+combinator dispatch plus the 11 system-op cases. -/
+theorem exec_slotGen_le : ∀ instr ∈ isa, ∀ c : Ctx, SlotGenLe (instr.sem.exec c) := by
+  intro instr hmem c
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem; exact hmem
+  rcases List.mem_append.mp hmem' with hb | hs
+  · exact base_slotGen_le instr hb c
+  · exact system_slotGen_le instr hs c
+
+/-- `retire` never lowers a slot generation: the pc bump and the errno
+write-back preserve `slotGen`; halts preserve; the instruction effect is
+`exec_slotGen_le`. -/
+theorem retire_slotGen_ge (σ : MachineState) (d : DomainId) (w : Loom.Word32)
+    (d' : DomainId) (s : Slot) :
+    ((σ.doms d').slotGen s).toNat ≤ (((retire σ d w).doms d').slotGen s).toNat := by
+  unfold retire
+  split
+  · exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
+  · rename_i instr hdec
+    have h1 : (((σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })).doms d').slotGen s)
+        = (σ.doms d').slotGen s :=
+      setDom_slotGen_of σ d _ rfl d' s
+    have hex := exec_slotGen_le instr (Loom.Isa.decode_mem isa hdec)
+      { d := d, pc := (σ.doms d).pc, op := operandsOf w }
+      (σ.setDom d (fun ds => { ds with pc := ds.pc + 1 }))
+    cases hexr : instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w }
+        (σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })) with
+    | ok a σ' =>
+        simp only [hexr]
+        rw [← h1]; exact hex.1 a σ' hexr d' s
+    | err e σ' =>
+        simp only [hexr]
+        rw [setDom_slotGen_of σ' d _ (by unfold DomainState.setReg; split <;> rfl) d' s, ← h1]
+        exact hex.2 e σ' hexr d' s
+    | fault f =>
+        simp only [hexr]
+        exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
+
+/-- `corePhase` never lowers a slot generation: countdown/stall/issue leave
+`slotGen` alone; retirement is `retire_slotGen_ge`; halts preserve. -/
+theorem corePhase_slotGen_ge (m : Manifest) (σ : MachineState)
+    (d' : DomainId) (s : Slot) :
+    ((σ.doms d').slotGen s).toNat ≤ (((corePhase m σ).doms d').slotGen s).toNat := by
+  unfold corePhase
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · simp only [hc, if_true]
+        exact retire_slotGen_ge { σ with inflight := none } fl.dom fl.word d' s
+      · simp only [hc, if_false]
+        exact Nat.le_refl _
+  | none =>
+      simp only []
+      split
+      · exact Nat.le_refl _
+      · rename_i d hsched
+        split
+        · exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
+        · rename_i w hfetch
+          split
+          · exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
+          · rename_i instr hdec
+            by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer d)).budget
+            · simp only [hbud, if_true]
+              cases hserv : (σ.doms d).serving with
+              | none =>
+                  simp only [hserv]
+                  exact toNat_le_of_eq (setDom_slotGen_of σ (σ.payer d) _ rfl d' s).symm
+              | some g =>
+                  simp only [hserv]
+                  cases hact : (σ.gates g).act with
+                  | none => exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
+                  | some a =>
+                      simp only [hact]
+                      by_cases hdon : instr.cost.cost ≤ a.donated
+                      · simp only [hdon, if_true]
+                        exact toNat_le_of_eq (setDom_slotGen_of σ (σ.payer d) _ rfl d' s).symm
+                      · simp only [hdon, if_false]
+                        exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
+            · simp only [hbud, if_false]; exact Nat.le_refl _
+
+/-- **Slot generations never decrease across one cycle** — the `step`-level
+monotonicity bound feeding T3's `gen_monotone`. -/
+theorem step_slotGen_ge (m : Manifest) (σ : MachineState) (d : DomainId) (s : Slot) :
+    ((σ.doms d).slotGen s).toNat ≤ (((step m σ).doms d).slotGen s).toNat := by
+  rw [step_slotGen_reduce]
+  have h1 : (σ.doms d).slotGen s = ((refillPhase m σ).doms d).slotGen s := by
+    rw [refillPhase_slotGen]
+  rw [show ((σ.doms d).slotGen s) = ((refillPhase m σ).doms d).slotGen s from h1]
+  exact corePhase_slotGen_ge m (refillPhase m σ) d s
+
 end Wip
 
 end Machines.Lnp64u

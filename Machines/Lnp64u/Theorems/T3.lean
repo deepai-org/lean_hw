@@ -1,4 +1,5 @@
 import Machines.Lnp64u.Logic.Wf
+import Machines.Lnp64u.Logic.SlotGen
 
 /-!
 # T3 — Temporal safety, machine-wide (spec level)
@@ -15,8 +16,8 @@ open Machines.Lnp64u Loom
 
 /-- Slot generations never decrease (saturating bump only). -/
 theorem gen_monotone (m : Manifest) (σ : MachineState) (d : DomainId) (s : Slot) :
-    ((σ.doms d).slotGen s).toNat ≤ (((step m σ).doms d).slotGen s).toNat := by
-  sorry
+    ((σ.doms d).slotGen s).toNat ≤ (((step m σ).doms d).slotGen s).toNat :=
+  Wip.step_slotGen_ge m σ d s
 
 /-- Generation monotonicity extends to any number of cycles. -/
 theorem gen_monotone_n (m : Manifest) (σ : MachineState) (d : DomainId) (s : Slot) :
