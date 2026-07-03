@@ -345,9 +345,12 @@ multicycle core in the EDSL lockstep against the ISS.*
 - [ ] **1.2** [t] `Dp/Cnf, Solver, Bmc` — first certificate-checked BMC result (on Acc8, then
       Lnp64u). *(deps: 1.2a)*
 - [~] **1.3** [m] T9: `init_balanced` proved; `ledger_balanced`/`budget_bounded` stated. Logic/Defs seeds the resource algebra.
-- [~] **1.4–1.8** All of T2/T4/T5/T6/T7/T8 stated precisely; `Inv.init_wf`, `T2.init_confined`,
-      `T6.totality`, `T3.no_resurrection` (mod one lemma) proved. Remaining: `step_wf` and the
-      per-theorem induction bodies; the L2 engines.
+- [~] **1.4–1.8** All of T2/T4/T5/T6/T7/T8 stated precisely. Proved: `Inv.init_wf`,
+      `T2.init_confined`, `T6.totality`, `T8.wx_machine_wide`, `T3.no_resurrection`,
+      `T9.init_balanced`. `step_wf` reduced to three localized obligations via proved
+      scaffolding (`refillPhase_preserves_wf`, `moverPhase_preserves_wf`, `wf_of_skeleton`,
+      `schedule_running`, haltDom structural kit); remaining: `corePhase` issue-path,
+      `haltWith` gate-unwind, `retire` per-instruction. Then the L2 engines.
 - [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
 - [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
 - [ ] **1.11** [m] Acc8 core in the EDSL, lockstep vs Acc8 ISS; then Lnp64u multicycle core,
@@ -358,8 +361,9 @@ multicycle core in the EDSL lockstep against the ISS.*
 *Gate: compiler verified; emission theorem + round-trip done; Acc8 then LNP64-µ multicycle on
 two vendors' FPGAs, chain kernel-checked to the Verilog.*
 
-- [~] **2.1/2.2** Compiler built (`Hw/Compile`, direct-to-µVerilog per D10); `compileExpr_eval`
-      keystone proved; C-HW/E-V bodies remain.
+- [~] **2.1/2.2** Compiler built (`Hw/Compile`, direct-to-µVerilog per D10). **Emission theorem
+      register half fully proved, sorry-free** (`compileExpr_eval`, `nextReg_correct`,
+      `rules_nextReg`, `compile_cycle_regs`). Memory-port half + A-EV/E-V assembly remain.
 - [~] **2.3** (print ✓, emit-to-Verilog ✓, iverilog+yosys corroborated; parser WIP) [t] µVerilog Print/Parse/RoundTrip; **2.4** [t] Emitter + Axiom + emission
       theorem (E-V, instantiated as A-EV first); **2.5** [t] `lake exe emit` / `rtl` target.
 - [ ] **2.6** [t] `fpga/` lockstep harness over `Loom.Core.Trace`.
