@@ -15,6 +15,13 @@ cap_drop Wf↔Acyclic coupling, and `Wf.gate_saved_none` (activations never stac
 `marks_fixpoint` (Finset-counting saturation), `acyclic_reparent_sibling` (relabeling-commutes-with-
 climb), plus the complete transferCap verification machinery.
 
+**T-theorems grounded on the invariant (this session):** T9's `ledger_balanced` (via
+`LedgerBalanced_of_Wf`, a `Finset.card_bij` from the DomWf bijection) and T8's `wx_machine_wide`
+(machine-wide W^X, now unconditional) both follow from `wfa_invariant`. Remaining T-theorem bodies
+(T2 confinement, T3 `gen_monotone`→temporal safety, T4 frame/scrub, T5 noninterference, T6 no_hostage,
+T7/T9 budget) are per-cycle operational proofs over the semantics, each with the L1 invariant now
+available as their foundation.
+
 (The 5 remaining sorries in `SystemOpsWf.system_preserves` are the *superseded* standalone Wf-only
 obligation — not used by `wfa_invariant`, which routes through the combined `system_preserves_wfa`.)
 
