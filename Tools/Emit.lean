@@ -40,6 +40,7 @@ module tb;
 endmodule
 "
 
+set_option compiler.extract_closed false in
 def emitAcc8 : IO Unit := do
   let img := Machines.Acc8.loadProg Machines.Acc8.golden
   let m := Loom.Hw.Compile.compile (Machines.Acc8.Core.design img)
@@ -87,9 +88,11 @@ def goldenAddrs : List Nat :=
    0x42D, 0x42E, 0x440, 0x480, 0x481, 0x482, 0x483, 0x500, 0x501, 0x502,
    0x520, 0x700, 0x7C7]
 
-/-- The generated testbench: run `simCycles`, compare against the ISS. -/
-def tbLnp64u : String := "STUB"
-def tbLnp64uReal (_ : Unit) : String := Id.run do
+/-- The generated testbench: run `simCycles`, compare against the ISS.
+(A function of `Unit`: a top-level `String` constant would be evaluated at
+module initialization — i.e. the 2000-cycle ISS run would execute at every
+`emit` invocation, `acc8` included.) -/
+def tbLnp64u (_ : Unit) : String := Id.run do
   let final := (List.range simCycles).foldl
     (fun σ _ => canonSp (step sysManifest σ)) sysManifest.initState
   let mut checks : List (String × Nat × Nat) := []  -- (lhs, width, expected)
@@ -117,18 +120,19 @@ def tbLnp64uReal (_ : Unit) : String := Id.run do
     "    else $display(\"LNP64U: FAIL (%0d mismatches)\", errs);\n" ++
     "    $finish;\n  end\nendmodule\n"
 
+/- `compiler.extract_closed` off: closed terms like `compile (core
+sysManifest)` would otherwise be lifted to module-initialization-time
+constants — every `emit` invocation (any target) would pay for every
+machine's elaboration at startup. -/
+set_option compiler.extract_closed false in
 def emit : IO Unit := do
-  let stderr ← IO.getStderr
-  stderr.putStrLn "building design (core sysManifest) ..."; stderr.flush
-  let d := core sysManifest
-  stderr.putStrLn s!"design built: {d.regs.length} regs, {d.mems.length} mems, {d.rules.length} rules"; stderr.flush
-  stderr.putStrLn "compiling lnp64u (system-op demo manifest) ..."; stderr.flush
-  let m := Loom.Hw.Compile.compile d
-  stderr.putStrLn s!"module built: {m.regs.length} regs"; stderr.flush
-  stderr.putStrLn "printing rtl/lnp64u.v ..."; stderr.flush
+  IO.println "compiling lnp64u (system-op demo manifest) ..."
+  let m := Loom.Hw.Compile.compile (core sysManifest)
+  IO.println s!"module built: {m.regs.length} regs"
+  IO.println "printing rtl/lnp64u.v ..."
   IO.FS.writeFile "rtl/lnp64u.v" (Print.print m)
   IO.println s!"generating rtl/tb_lnp64u.v (ISS goldens, {simCycles} cycles) ..."
-  IO.FS.writeFile "rtl/tb_lnp64u.v" tbLnp64u
+  IO.FS.writeFile "rtl/tb_lnp64u.v" (tbLnp64u ())
   let sz ← (System.FilePath.mk "rtl/lnp64u.v").metadata
   IO.println s!"rtl/lnp64u.v ({sz.byteSize} bytes) + rtl/tb_lnp64u.v written"
 
