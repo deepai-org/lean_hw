@@ -51,7 +51,15 @@ new climb argument (~100 lines). (4) **gate-consistency Wf** for the activation 
 `wf_installCapNone`, `wf_reparent_clear_sweep`, and **`wf_transferCap`** (the full Wf, both
 lineage cases). **`acyclic_transferCap` and `transferByHandle_preserves` are now also proved** — the entire
 capability-transfer core (transferCap preserves `Wf ∧ Acyclic`, and the `transferByHandle`
-wrapper) is complete, with no kernel lemmas left. The only remaining piece for the 2 gate ops
+wrapper) is complete, with no kernel lemmas left. **gate_return is fully proved and wired (10 of 11 combined ops).** `gate_call`'s gate-consistency
+core `wf_acyclic_gateCall` is also fully proved (installing the activation / activating the callee /
+blocking the caller preserves `Wf ∧ Acyclic`, using `gate_saved_none`), along with `gateCallExec`,
+`require_cond`, `transferCap_frame`, `transferByHandle_frame`. Only `gate_call`'s exec-threading
+remains — connecting `gateCallExec` to `wf_acyclic_gateCall` through the 5-require chain — which is
+blocked on a finicky Lean reduction of the `require`-chain + inlined `depth`-match (a tactics
+mechanics issue, not a math gap; the `require5` condition term resists syntactic rewriting).
+
+The earlier remaining piece for the gate ops
 is the **gate-activation consistency**: the gates/serving/run/blocked updates in
 `gate_call`/`gate_return` must preserve `gate_serving`/`serving_gate`/`blocked_gate` (the gate
 chain bookkeeping) — intricate but needs no new kernel machinery.
