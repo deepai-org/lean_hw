@@ -23,6 +23,8 @@ edge-removal, so acyclicity survives via `acyclic_of_parentRef_le`); its Wf core
 `clearSlot` + sweeps, the most intricate remaining Acyclic core. Then each of the three
 remaining ops is finished by its own `capLive → …` thread, exactly as `cap_drop` was.
 
+> **Update:** `system_preserves_acyclic` now proves **5 of 11** ops' Acyclic clauses (cap_drop via `capdrop_preserves_wfa`; unmap/yield/halt/map via the `PreservesAcyclic` combinator + threading). Remaining: cap_dup/mem_grant (installDerived threading), move (Mover threading), cap_revoke (`wf_destroyMarked`), and the gate ops (`transferCap`).
+
 ## What builds and runs (verified end to end)
 
 - **`lake build`** — the whole stack compiles: Loom toolchain (Core, Isa, Dp,
