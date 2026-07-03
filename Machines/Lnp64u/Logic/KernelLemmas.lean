@@ -417,4 +417,29 @@ theorem orphanChildren_caps_isSome (σ : MachineState) (old : CapRef) (d : Domai
                | none => simp [hc, hl]
                | some l => simp only [hc, hl]; split <;> simp
 
+
+/-! ### Descendant-marking monotonicity (`cap_revoke` support) -/
+
+/-- `markStep` is inflationary: it only ever adds marks. -/
+theorem markStep_infl (σ : MachineState) (root : CapRef) (m : DomainId → Slot → Bool)
+    (d : DomainId) (s : Slot) : m d s = true → σ.markStep root m d s = true := by
+  intro h; unfold MachineState.markStep; rw [h]; rfl
+
+/-- `markStep` is monotone in the mark set. -/
+theorem markStep_mono (σ : MachineState) (root : CapRef) (m m' : DomainId → Slot → Bool)
+    (hle : ∀ d s, m d s = true → m' d s = true) (d : DomainId) (s : Slot) :
+    σ.markStep root m d s = true → σ.markStep root m' d s = true := by
+  unfold MachineState.markStep
+  intro h
+  rcases Bool.or_eq_true _ _ |>.mp h with h1 | h2
+  · rw [hle d s h1]; rfl
+  · cases hp : σ.parentOf d s with
+    | none => rw [hp] at h2; simp at h2
+    | some p =>
+        rw [hp] at h2
+        rcases Bool.or_eq_true _ _ |>.mp h2 with hr | hpm
+        · simp [hr]
+        · rcases Bool.and_eq_true _ _ |>.mp hpm with ⟨hg, hmm⟩
+          simp [hg, hle p.dom p.slot hmm]
+
 end Machines.Lnp64u
