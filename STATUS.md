@@ -1,3 +1,25 @@
+# STATUS — LNP64-µ / Loom
+
+## ★ L1 CULMINATION: the machine-wide `Wf ∧ Acyclic` invariant is UNCONDITIONALLY PROVEN ★
+
+`wfa_invariant (m : Manifest) (hwf : m.WF) : (machine m).Invariant (fun σ => Wf σ ∧ Acyclic σ)`
+holds for **every reachable state**, with **no hypotheses** beyond a well-formed manifest and
+**no `sorry`** — `#print axioms wfa_invariant` = `[propext, Classical.choice, Quot.sound]` (the
+standard axioms only). All **11 system opcodes** (cap_dup, cap_drop, cap_revoke, mem_grant, map,
+unmap, gate_call, gate_return, move, yield, halt) and all **14 base opcodes** preserve the combined
+invariant: a well-formed capability table with an acyclic lineage forest. This is the L1
+capability-safety result the charter's Phase 1 targets.
+
+Proof-forced findings surfaced and fixed along the way: the acyclicity bound unsoundness, the
+cap_drop Wf↔Acyclic coupling, and `Wf.gate_saved_none` (activations never stack in µ). Novel lemmas:
+`marks_fixpoint` (Finset-counting saturation), `acyclic_reparent_sibling` (relabeling-commutes-with-
+climb), plus the complete transferCap verification machinery.
+
+(The 5 remaining sorries in `SystemOpsWf.system_preserves` are the *superseded* standalone Wf-only
+obligation — not used by `wfa_invariant`, which routes through the combined `system_preserves_wfa`.)
+
+---
+
 # Status
 
 Honest, mechanically-checked state of the build. Regenerate the theorem
