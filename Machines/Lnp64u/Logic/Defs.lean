@@ -57,6 +57,25 @@ theorem CapKind.le_trans {k₁ k₂ k₃ : CapKind} (h₁ : k₁.le k₂) (h₂ 
   cases k₁ <;> cases k₂ <;> cases k₃ <;> simp_all [CapKind.le]
   · exact ⟨by omega, by omega, Perms.le_trans h₁.2.2 h₂.2.2⟩
 
+/-- `Perms.le` is antisymmetric: mutual containment forces equality. `Perms`
+is finite, so this is decidable. -/
+theorem Perms.le_antisymm {p q : Perms} (h₁ : p.le q = true) (h₂ : q.le p = true) :
+    p = q := by
+  obtain ⟨r, w, x⟩ := p; obtain ⟨r', w', x'⟩ := q
+  revert h₁ h₂
+  cases r <;> cases w <;> cases x <;> cases r' <;> cases w' <;> cases x' <;> decide
+
+/-- `CapKind.le` is antisymmetric — the authority order is a genuine partial
+order, so the T2 authority closure has no cycles that could smuggle in extra
+authority. -/
+theorem CapKind.le_antisymm {k₁ k₂ : CapKind} (h₁ : k₁.le k₂) (h₂ : k₂.le k₁) :
+    k₁ = k₂ := by
+  cases k₁ <;> cases k₂ <;> simp_all [CapKind.le]
+  · obtain ⟨hb1, hl1, hp1⟩ := h₁; obtain ⟨hb2, hl2, hp2⟩ := h₂
+    refine ⟨?_, ?_, Perms.le_antisymm hp1 hp2⟩
+    · apply BitVec.eq_of_toNat_eq; omega
+    · apply BitVec.eq_of_toNat_eq; omega
+
 /-- A root authority: some manifest initial capability dominates `k`. The
 right-hand side of T2 — the closure of the manifest under the five
 operations never escapes the downward closure of the roots. -/
