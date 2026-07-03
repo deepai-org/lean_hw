@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.GateStep
 import Machines.Lnp64u.Logic.DFrame
+import Machines.Lnp64u.Logic.DRel
 import Machines.Lnp64u.Logic.Inflight
 import Machines.Lnp64u.Logic.Authority
 import Machines.Lnp64u.Logic.Hostage
@@ -1782,7 +1783,165 @@ theorem retire_step_lockstep (m₁ m₂ : Manifest) (d : DomainId)
     (hf₁ : σ₁.inflight = some ⟨d, w, c₁⟩) (hf₂ : σ₂.inflight = some ⟨d, w, c₂⟩)
     (hfetch : fetch σ₁ d = some w) :
     Coupled m₁ d (step m₁ σ₁) (step m₂ σ₂) := by
-  sorry
+  have hdom : m₁.doms d = m₂.doms d := hag.1
+  have hctx₁ := dctx_of_insulated hiso₁ hins₁
+  have hctxρ₁ := dctx_refill (m := m₁) hctx₁
+  have hctx₂ := dctx_of_insulated hiso₂ hins₂
+  have hctxρ₂ := dctx_refill (m := m₂) hctx₂
+  have hexec : ExecPreservesWf :=
+    Machines.Lnp64u.Isa.execPreservesWf_of_system Machines.Lnp64u.Isa.Wip.system_preserves
+  have hwfρ₁ : Wf (refillPhase m₁ σ₁) := refillPhase_preserves_wf m₁ σ₁ hins₁.wf
+  have hwfρ₂ : Wf (refillPhase m₂ σ₂) := refillPhase_preserves_wf m₂ σ₂ hins₂.wf
+  have hwfκ₁ : Wf (corePhase m₁ (refillPhase m₁ σ₁)) :=
+    corePhase_preserves_wf hexec m₁ hm₁ _ hwfρ₁
+  have hwfκ₂ : Wf (corePhase m₂ (refillPhase m₂ σ₂)) :=
+    corePhase_preserves_wf hexec m₂ hm₂ _ hwfρ₂
+  -- 1. both cores retire the latched word
+  have hρinf₁ : (refillPhase m₁ σ₁).inflight = some ⟨d, w, c₁⟩ := by
+    rw [refillPhase_inflight]; exact hf₁
+  have hρinf₂ : (refillPhase m₂ σ₂).inflight = some ⟨d, w, c₂⟩ := by
+    rw [refillPhase_inflight]; exact hf₂
+  have hcore₁ : corePhase m₁ (refillPhase m₁ σ₁)
+      = retire { refillPhase m₁ σ₁ with inflight := none } d w := by
+    unfold corePhase
+    simp only [hρinf₁]
+    rw [if_pos hc₁]
+  have hcore₂ : corePhase m₂ (refillPhase m₂ σ₂)
+      = retire { refillPhase m₂ σ₂ with inflight := none } d w := by
+    unfold corePhase
+    simp only [hρinf₂]
+    rw [if_pos hc₂]
+  -- 2. the ROM pins the opcode
+  obtain ⟨hux, hwrom⟩ := fetch_of_insulated hins₁ hfetch
+  have hop : ∀ instr, Loom.Isa.decode isa w = some instr →
+      instr.opcode ≠ 17 ∧ instr.opcode ≠ 18 ∧ instr.opcode ≠ 19 ∧
+      instr.opcode ≠ 24 := by
+    intro instr hdec
+    refine hiso₁.code_local _ hux.underRoots instr ?_
+    rw [← hwrom]
+    exact hdec
+  -- 3. the relational coupling at the pre-retire states
+  have hrcρ : DRel.RC d (UnderRoots m₁ d)
+      { refillPhase m₁ σ₁ with inflight := none }
+      { refillPhase m₂ σ₂ with inflight := none } := by
+    have hcaps12 : ((refillPhase m₁ σ₁).doms d).caps
+        = ((refillPhase m₂ σ₂).doms d).caps := by
+      rw [refillPhase_caps, refillPhase_caps]
+      exact (Insulated.caps_eq hins₁ hins₂ hdom).1
+    have hgen12 : ((refillPhase m₁ σ₁).doms d).slotGen
+        = ((refillPhase m₂ σ₂).doms d).slotGen := by
+      rw [refillPhase_slotGen, refillPhase_slotGen]
+      exact (Insulated.caps_eq hins₁ hins₂ hdom).2.1
+    exact
+      { regs := by rw [refillPhase_regs, refillPhase_regs]; exact hcpl.regs
+        pc := by rw [refillPhase_pc, refillPhase_pc]; exact hcpl.pc
+        run := by rw [refillPhase_run, refillPhase_run]; exact hcpl.run
+        cause := by rw [refillPhase_cause, refillPhase_cause]; exact hcpl.cause
+        regions := by rw [refillPhase_regions, refillPhase_regions]; exact hcpl.regions
+        caps := hcaps12
+        gen := hgen12
+        serv1 := hctxρ₁.dserv
+        serv2 := hctxρ₂.dserv
+        full1 := hctxρ₁.dfull
+        nog1 := hctxρ₁.dgates
+        capsR := by
+          intro s e b l p hc hk a h1 h2
+          have hcσ : (σ₁.doms d).caps s = some e := by
+            rw [← refillPhase_caps m₁ σ₁ d]
+            exact hc
+          have hboot := congrFun hins₁.boot_caps s
+          rw [hcσ] at hboot
+          cases hi : (m₁.doms d).initCaps s with
+          | none => rw [hi] at hboot; cases hboot
+          | some k =>
+              rw [hi] at hboot
+              injection hboot with hboot
+              have hkk : k = .mem b l p := by
+                have := congrArg CapEntry.kind hboot
+                simp only [hk] at this
+                exact this.symm
+              exact ⟨s, b, l, p, hkk ▸ hi, h1, h2⟩
+        memR := fun a ha => by
+          show (refillPhase m₁ σ₁).mem a = (refillPhase m₂ σ₂).mem a
+          rw [congrFun (refillPhase_frame m₁ σ₁).1 a,
+            congrFun (refillPhase_frame m₂ σ₂).1 a]
+          exact hcpl.mem a ha
+        covR := fun a need hcov => by
+          have hcov' : σ₁.domCovers d a need = true := by
+            rw [← refillPhase_covers m₁ σ₁ d a need]
+            exact hcov
+          exact (domCovers_underRoots hins₁ hcov').1 }
+  have hrcκ : DRel.RC d (UnderRoots m₁ d) (corePhase m₁ (refillPhase m₁ σ₁))
+      (corePhase m₂ (refillPhase m₂ σ₂)) := by
+    rw [hcore₁, hcore₂]
+    exact DRel.retire_rel _ _ w hrcρ hop
+  -- 4. the self-frame gives the mover-phase facts on each side
+  have hDS₁ : DFrame.DSelf d (UnderXRoots m₁ d) { refillPhase m₁ σ₁ with inflight := none }
+      (corePhase m₁ (refillPhase m₁ σ₁)) := by
+    rw [hcore₁]
+    refine DFrame.retire_dself _ w hctxρ₁.dfull hctxρ₁.dgates hctxρ₁.dserv ?_ hop
+    intro a hcov
+    refine covers_w_not_underXRoots hiso₁ hins₁ a ?_
+    rw [← refillPhase_covers m₁ σ₁ d a]
+    exact hcov
+  have hDS₂ : DFrame.DSelf d (UnderXRoots m₂ d) { refillPhase m₂ σ₂ with inflight := none }
+      (corePhase m₂ (refillPhase m₂ σ₂)) := by
+    rw [hcore₂]
+    refine DFrame.retire_dself _ w hctxρ₂.dfull hctxρ₂.dgates hctxρ₂.dserv ?_ hop
+    intro a hcov
+    refine covers_w_not_underXRoots hiso₂ hins₂ a ?_
+    rw [← refillPhase_covers m₂ σ₂ d a]
+    exact hcov
+  -- 5. mover-phase memory frames
+  have hmemS : ∀ (m : Manifest) (σ : MachineState)
+      (hctxρ : DFrame.DCtx d (UnderRoots m d) (refillPhase m σ))
+      (hins : Insulated m d σ)
+      (hDS : DFrame.DSelf d (UnderXRoots m d) { refillPhase m σ with inflight := none }
+        (corePhase m (refillPhase m σ)))
+      (hwfκ : Wf (corePhase m (refillPhase m σ))),
+      ∀ a, UnderRoots m d a →
+        (step m σ).mem a = (corePhase m (refillPhase m σ)).mem a := by
+    intro m σ hctxρ hins hDS hwfκ a ha
+    refine moverPhase_mem_frame hwfκ.region_backed ?_ ?_ ?_
+      (fun job hj => (hwfκ.mover_wf job hj).2.1) a ha
+    · intro e r rg h
+      by_cases he : e = d
+      · subst he
+        rcases hDS.regsown r rg h with h' | h'
+        · exact h'
+        · exact hctxρ.ro e r rg h'
+      · rw [show ((corePhase m (refillPhase m σ)).doms e = (refillPhase m σ).doms e)
+          from hDS.odoms e he] at h
+        exact hctxρ.ro e r rg h
+    · intro e he s entry b l p hc hk
+      rw [show ((corePhase m (refillPhase m σ)).doms e = (refillPhase m σ).doms e)
+        from hDS.odoms e he] at hc
+      exact hctxρ.fo e he s entry b l p hc hk
+    · intro job hj
+      exact hctxρ.movOff job (hDS.mover job hj)
+  have hmem₁ := hmemS m₁ σ₁ hctxρ₁ hins₁ hDS₁ hwfκ₁
+  have hmem₂ := hmemS m₂ σ₂ hctxρ₂ hins₂ hDS₂ hwfκ₂
+  -- 6. assemble the post coupling
+  exact
+    { regs := by
+        rw [congrFun (step_doms m₁ σ₁) d, congrFun (step_doms m₂ σ₂) d]
+        exact hrcκ.regs
+      pc := by
+        rw [congrFun (step_doms m₁ σ₁) d, congrFun (step_doms m₂ σ₂) d]
+        exact hrcκ.pc
+      run := by
+        rw [congrFun (step_doms m₁ σ₁) d, congrFun (step_doms m₂ σ₂) d]
+        exact hrcκ.run
+      cause := by
+        rw [congrFun (step_doms m₁ σ₁) d, congrFun (step_doms m₂ σ₂) d]
+        exact hrcκ.cause
+      regions := by
+        rw [congrFun (step_doms m₁ σ₁) d, congrFun (step_doms m₂ σ₂) d]
+        exact hrcκ.regions
+      mem := fun a ha => by
+        rw [hmem₁ a ha, hmem₂ a ((underRoots_congr hdom a).mp ha)]
+        exact hrcκ.memR a ha }
+
 
 /-! ## Engine 4 support: the frozen-quiet walk -/
 
