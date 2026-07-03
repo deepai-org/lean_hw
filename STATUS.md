@@ -3,6 +3,8 @@
 Honest, mechanically-checked state of the build. Regenerate the theorem
 counts with `lake exe audit`; run `scripts/ci.sh` for the full gate.
 
+> **Update:** `wf_orphanChildren` is PROVED (via `orphan_key` + `liveCap_isSome_congr`). Both `cap_drop` branches now have complete `Wf` + `Acyclic` preservation at the lemma level; only the `Wf ∧ Acyclic` invariant plumbing + the `cap_drop` `capLive→dispatch→clearSlot+sweeps` thread remain.
+
 ## What builds and runs (verified end to end)
 
 - **`lake build`** — the whole stack compiles: Loom toolchain (Core, Isa, Dp,
@@ -128,7 +130,7 @@ sweeps), and `acyclic_contract` (links rerouted onto the parent → `reparent`),
 top of the `climb`/`climb_add`/`climb_none_ge` well-foundedness kit. Concrete:
 `acyclic_clearSlot`, `acyclic_orphanChildren`, `acyclic_sweepRegions`,
 `acyclic_sweepMover`, and `acyclic_reparent` (via `reparent_parentRef`). **Remaining
-for `cap_drop`:** `wf_orphanChildren` (orphan-branch Wf preservation, mechanical but
+for `cap_drop`:** ~~`wf_orphanChildren`~~ **(now PROVED)** and — mechanical but
 fiddly) and the invariant plumbing — strengthening the workhorse invariant to
 `Wf ∧ Acyclic` and re-establishing `Acyclic` across the remaining ops (free for the
 non-lineage ops via the framework; a fresh-leaf/pigeonhole argument, `acyclic_installDerived`,
