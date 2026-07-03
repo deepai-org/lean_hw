@@ -47,11 +47,19 @@ counts with `lake exe audit`; run `scripts/ci.sh` for the full gate.
 - **T5** noninterference (2-safety, path-free pairs).
 - **T6** no_hostage (donation-bounded resume).
 - **T7** wcet_retirement, budget_delivery.
-- **T8** wx_machine_wide, prior_holder_excluded, status_word_safety.
+- **T8** wx_machine_wide (**body complete**, rests on step_wf),
+  prior_holder_excluded, status_word_safety.
 - **T9** ledger_balanced, budget_bounded.
 - **Inv** step_wf, wf_invariant (init_wf is done; the invariant rests only
   on one-cycle preservation).
 - **A-R / A-EV** Acc8 core ⊑ spec, core ≃ emitted µVerilog.
+
+**The linchpin.** `Inv.step_wf` (one-cycle preservation of the well-formedness
+invariant) is the single obligation under which a whole cluster already has
+complete bodies: `Inv.wf_invariant`, `T8.wx_machine_wide`, `T3.no_resurrection`
+(with `gen_monotone`). It is a case analysis over all 25 instructions and the
+kernel functions — the core of the Phase-1 proof effort. Landing it flips
+several STATED rows to CLEAN at once.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the
