@@ -185,4 +185,48 @@ theorem haltDom_unwind (g : GateId) (a : Activation)
 
 end HaltDom
 
+
+/-- `clearSlot` changes `caps` only at the cleared slot. -/
+theorem clearSlot_caps (σ : MachineState) (d : DomainId) (s : Slot)
+    (d' : DomainId) (s' : Slot) :
+    ((σ.clearSlot d s).doms d').caps s' =
+      if d' = d ∧ s' = s then none else (σ.doms d').caps s' := by
+  unfold MachineState.clearSlot MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd
+    by_cases hs : s' = s
+    · subst hs; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hs, hs]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+
+/-- `clearSlot` preserves the gates/mover/inflight. -/
+@[simp] theorem clearSlot_gates (σ : MachineState) (d : DomainId) (s : Slot) :
+    (σ.clearSlot d s).gates = σ.gates := rfl
+@[simp] theorem clearSlot_mover (σ : MachineState) (d : DomainId) (s : Slot) :
+    (σ.clearSlot d s).mover = σ.mover := rfl
+@[simp] theorem clearSlot_inflight (σ : MachineState) (d : DomainId) (s : Slot) :
+    (σ.clearSlot d s).inflight = σ.inflight := rfl
+@[simp] theorem clearSlot_run (σ : MachineState) (d : DomainId) (s : Slot) (d' : DomainId) :
+    ((σ.clearSlot d s).doms d').run = (σ.doms d').run := by
+  unfold MachineState.clearSlot MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem clearSlot_serving (σ : MachineState) (d : DomainId) (s : Slot) (d' : DomainId) :
+    ((σ.clearSlot d s).doms d').serving = (σ.doms d').serving := by
+  unfold MachineState.clearSlot MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+
+/-- `clearSlot` preserves the live capability at any ref other than the cleared
+slot (its caps and generation are untouched). -/
+theorem clearSlot_liveCap_of_ne (σ : MachineState) (d : DomainId) (s : Slot)
+    (dd : DomainId) (ss : Slot) (gg : Gen) (e : CapEntry)
+    (hne : ¬ (dd = d ∧ ss = s)) (hlc : (σ.doms dd).liveCap ss gg = some e) :
+    ((σ.clearSlot d s).doms dd).liveCap ss gg = some e := by
+  unfold DomainState.liveCap at hlc ⊢
+  rw [clearSlot_caps, if_neg hne, clearSlot_slotGen]
+  rw [if_neg (fun hc => hne ⟨hc.1, hc.2⟩)]; exact hlc
+
 end Machines.Lnp64u
