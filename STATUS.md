@@ -23,7 +23,7 @@ edge-removal, so acyclicity survives via `acyclic_of_parentRef_le`); its Wf core
 `clearSlot` + sweeps, the most intricate remaining Acyclic core. Then each of the three
 remaining ops is finished by its own `capLive → …` thread, exactly as `cap_drop` was.
 
-> **Update:** `system_preserves_acyclic` now proves **5 of 11** ops' Acyclic clauses (cap_drop via `capdrop_preserves_wfa`; unmap/yield/halt/map via the `PreservesAcyclic` combinator + threading). Remaining: cap_dup/mem_grant (installDerived threading), move (Mover threading), cap_revoke (`wf_destroyMarked`), and the gate ops (`transferCap`).
+> **Update:** `system_preserves_acyclic` now proves **8 of 11** ops' Acyclic clauses ops' Acyclic clauses (cap_drop, cap_dup, mem_grant via `acyclic_allocDerived`; map/unmap/yield/halt/move via the combinator + threading). Only **cap_revoke and the 2 gate ops** remain — exactly the 3 that need the hard kernel lemmas `wf_destroyMarked`/`transferCap`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already proved. The remaining structural work is the combined `Wf ∧ Acyclic` system-op obligation + threading it into `wfa_invariant` (so `cap_drop`'s Wf clause, which needs Acyclic, is dischargeable machine-wide).
 
 ## What builds and runs (verified end to end)
 
