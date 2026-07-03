@@ -2012,6 +2012,101 @@ theorem wf_installCapNone (σ : MachineState) (d : DomainId) (s : Slot) (kind : 
   · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl' hfl'; rw [hinf] at hfl'; rw [hrun]; exact h.inflight_running fl' hfl'
 
+
+/-- **`transferCap` preserves `Wf`.** Composing the recipient install
+(`wf_installMove` / `wf_installCapNone`) with the reparent+clear+sweep tail
+(`wf_reparent_clear_sweep`). The moved cell's parent is live by the source's
+`parent_live`; the fresh recipient slot is live by `gen_pos`. -/
+theorem wf_transferCap (σ : MachineState) (from_ : DomainId) (s : Slot) (to_ : DomainId)
+    (σ' : MachineState) (newRef : CapRef) (hwf : Wf σ)
+    (ht : σ.transferCap from_ s to_ = some (σ', newRef)) : Wf σ' := by
+  unfold MachineState.transferCap at ht
+  simp only [Option.bind_eq_bind] at ht
+  cases he : (σ.doms from_).caps s with
+  | none => rw [he] at ht; simp at ht
+  | some e =>
+    rw [he] at ht; simp only [Option.bind_some] at ht
+    cases hfs : σ.freeSlot to_ with
+    | none => rw [hfs] at ht; simp at ht
+    | some s' =>
+      rw [hfs] at ht; simp only [Option.bind_some] at ht
+      have hs'none : (σ.doms to_).caps s' = none := freeSlot_caps_none σ to_ hfs
+      have hwx : ∀ base len p, e.kind = .mem base len p →
+          p.wx = true ∧ base.toNat + len.toNat ≤ memWords := by
+        intro base len p hk
+        refine ⟨(hwf.doms from_).wx s base len p ?_, (hwf.doms from_).bounds s e base len p he hk⟩
+        cases hlin2 : e.lineage with
+        | none => exact Or.inl (by rw [he]; cases e with | mk k lin => simp_all)
+        | some l0 => exact Or.inr ⟨l0, by rw [he]; cases e with | mk k lin => simp_all⟩
+      -- newRef and oldRef
+      have hnewne : (⟨to_, s', (σ.doms to_).slotGen s'⟩ : CapRef) ≠ ⟨from_, s, (σ.doms from_).slotGen s⟩ := by
+        intro heq; injection heq with h1 h2 h3
+        rw [h1, h2] at hs'none; rw [hs'none] at he; simp at he
+      have hgenpos : (σ.doms to_).slotGen s' ≠ 0 := by
+        have h1 := (hwf.doms to_).gen_pos s'
+        intro heq; rw [heq] at h1; simp at h1
+      cases hle : e.lineage with
+      | some l =>
+        cases hcell : (σ.doms from_).lineage l with
+        | none => simp [hle, hcell] at ht
+        | some cell =>
+          cases hfc : σ.freeCell to_ with
+          | none => simp [hle, hcell, hfc] at ht
+          | some l' =>
+            simp only [hle, hcell, hfc, Option.bind_eq_bind, Option.bind_some,
+              Option.some.injEq, Prod.mk.injEq] at ht
+            obtain ⟨rfl, _⟩ := ht
+            set σ1 := σ.setDom to_ (fun ds =>
+              { ds with
+                caps := Loom.Fun.update ds.caps s' (some { kind := e.kind, lineage := some l' })
+                lineage := Loom.Fun.update ds.lineage l' (some cell) }) with hσ1
+            have hlpar : σ.liveRef cell.parent = true := by
+              have hpo : σ.parentOf from_ s = some cell.parent := by
+                simp [MachineState.parentOf, he, hle, hcell]
+              exact hwf.parent_live from_ s cell.parent hpo
+            have hwf1 : Wf σ1 :=
+              wf_installMove σ to_ s' l' e.kind cell hs'none (freeCell_none σ to_ hfc) hwx hlpar hwf
+            have hgeq : ∀ d, (σ1.doms d).slotGen = (σ.doms d).slotGen := by
+              intro d; rw [hσ1]; unfold MachineState.setDom
+              by_cases hd : d = to_
+              · subst hd; simp [Loom.Fun.update_same]
+              · simp [Loom.Fun.update_ne _ _ _ _ hd]
+            have hnewlive : σ1.liveRef ⟨to_, s', (σ.doms to_).slotGen s'⟩ = true := by
+              unfold MachineState.liveRef DomainState.liveCap
+              have hc1 : (σ1.doms to_).caps s' = some { kind := e.kind, lineage := some l' } := by
+                rw [hσ1]; simp [MachineState.setDom, Loom.Fun.update_same]
+              simp [MachineState.liveRef, DomainState.liveCap, hc1, hgeq to_]
+              exact hgenpos
+            have holdgen : (⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).gen =
+                (σ1.doms (⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).dom).slotGen
+                  (⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).slot := by
+              simp only [hgeq from_]
+            exact wf_reparent_clear_sweep σ1 ⟨from_, s, (σ.doms from_).slotGen s⟩
+              ⟨to_, s', (σ.doms to_).slotGen s'⟩ hnewne hnewlive holdgen hwf1
+      | none =>
+        simp only [hle, Option.bind_eq_bind, Option.bind_some,
+          Option.some.injEq, Prod.mk.injEq] at ht
+        obtain ⟨rfl, _⟩ := ht
+        set σ1 := σ.setDom to_ (fun ds =>
+          { ds with caps := Loom.Fun.update ds.caps s' (some { kind := e.kind, lineage := none }) }) with hσ1
+        have hwf1 : Wf σ1 := wf_installCapNone σ to_ s' e.kind hs'none hwx hwf
+        have hgeq : ∀ d, (σ1.doms d).slotGen = (σ.doms d).slotGen := by
+          intro d; rw [hσ1]; unfold MachineState.setDom
+          by_cases hd : d = to_
+          · subst hd; simp [Loom.Fun.update_same]
+          · simp [Loom.Fun.update_ne _ _ _ _ hd]
+        have hnewlive : σ1.liveRef ⟨to_, s', (σ.doms to_).slotGen s'⟩ = true := by
+          have hc1 : (σ1.doms to_).caps s' = some { kind := e.kind, lineage := none } := by
+            rw [hσ1]; simp [MachineState.setDom, Loom.Fun.update_same]
+          simp [MachineState.liveRef, DomainState.liveCap, hc1, hgeq to_]
+          exact hgenpos
+        have holdgen : (⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).gen =
+            (σ1.doms (⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).dom).slotGen
+              (⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).slot := by
+          simp only [hgeq from_]
+        exact wf_reparent_clear_sweep σ1 ⟨from_, s, (σ.doms from_).slotGen s⟩
+          ⟨to_, s', (σ.doms to_).slotGen s'⟩ hnewne hnewlive holdgen hwf1
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
