@@ -1388,6 +1388,45 @@ theorem acyclic_installDerived (σ : MachineState) (d : DomainId) (s : Slot)
     unfold MachineState.liveRef DomainState.liveCap at hlive
     rw [hpa.1, hpa.2, hs] at hlive; simp at hlive
 
+
+/-- `destroyMarked` only removes parent links: a marked capability's slot goes
+empty (`parentRef` → `none`), a surviving capability whose cell was destroyed
+loses its parent (`none`), and all others are unchanged. -/
+theorem destroyMarked_parentRef_le (σ : MachineState) (m : DomainId → Slot → Bool)
+    (r : CapRef) :
+    (σ.destroyMarked m).parentRef r = σ.parentRef r ∨ (σ.destroyMarked m).parentRef r = none := by
+  unfold MachineState.parentRef MachineState.parentOf
+  have hcaps : ((σ.destroyMarked m).doms r.dom).caps r.slot =
+      if m r.dom r.slot then none else (σ.doms r.dom).caps r.slot := rfl
+  rw [hcaps]
+  by_cases hmk : m r.dom r.slot
+  · right; rw [if_pos hmk]; rfl
+  · rw [if_neg hmk]
+    cases hc : (σ.doms r.dom).caps r.slot with
+    | none => left; rfl
+    | some e =>
+        cases hle : e.lineage with
+        | none => left; simp [hle]
+        | some l =>
+            simp only [hle, Option.bind_eq_bind, Option.bind_some]
+            have hlin : ((σ.destroyMarked m).doms r.dom).lineage l =
+                if (List.finRange numSlots).any (fun s => m r.dom s &&
+                    match (σ.doms r.dom).caps s with
+                    | some e => e.lineage == some l | none => false)
+                then none else (σ.doms r.dom).lineage l := rfl
+            rw [hlin]
+            by_cases hcd : (List.finRange numSlots).any (fun s => m r.dom s &&
+                    match (σ.doms r.dom).caps s with
+                    | some e => e.lineage == some l | none => false)
+            · right; rw [if_pos hcd]; rfl
+            · left; rw [if_neg hcd]
+
+/-- `destroyMarked` preserves acyclicity (it only removes parent links). The
+Acyclic core of `cap_revoke`. -/
+theorem acyclic_destroyMarked (σ : MachineState) (m : DomainId → Slot → Bool)
+    (hac : Acyclic σ) : Acyclic (σ.destroyMarked m) :=
+  acyclic_of_parentRef_le σ _ (destroyMarked_parentRef_le σ m) hac
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
