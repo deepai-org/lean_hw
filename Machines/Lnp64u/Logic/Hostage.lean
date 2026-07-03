@@ -2887,4 +2887,616 @@ theorem origin_refill_eligible (m : Manifest) (hwf : m.WF) (σ : MachineState)
   obtain ⟨k, hk, hb⟩ := refill_within_period m hwf σ e
   exact ⟨k, Nat.le_trans hk (periodP_le_hyperL m hwf e), by rw [hb]; exact hpos⟩
 
+/-! ## The chain-relevant transition classification (T6 obligation 2/5 core)
+
+The T6 measure and counting arguments need, per instruction, exactly what
+happens to the *chain observables*: the gate records, every domain's
+`run`/`serving`/`maxDonation`, and (for the budget ledgers) every
+non-executing domain's budget. `ChainOut`/`ChainLe` is the frame predicate
+satisfied by the 22 calm ops; `GateCallShape`/`GateReturnShape` are the full
+postcondition characterizations of the two gate ops; `halt` is `haltDom`
+verbatim. `exec_chain_cases` is the resulting exhaustive classification —
+the 6th (and final) ISA sweep of this development. -/
+
+/-- The chain-observable frame: gate records untouched, every domain's
+`run`/`serving`/`maxDonation` untouched, every non-executing domain's
+budget untouched (`yield` zeroes its own budget, nothing touches others'). -/
+def ChainOut (cd : DomainId) (σ σ' : MachineState) : Prop :=
+  σ'.gates = σ.gates ∧
+  (∀ e, (σ'.doms e).run = (σ.doms e).run) ∧
+  (∀ e, (σ'.doms e).serving = (σ.doms e).serving) ∧
+  (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+  (∀ e, e ≠ cd → (σ'.doms e).budget = (σ.doms e).budget)
+
+theorem ChainOut.refl (cd : DomainId) (σ : MachineState) : ChainOut cd σ σ :=
+  ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+
+theorem ChainOut.of_eq {cd : DomainId} {σ σ' : MachineState} (h : σ' = σ) :
+    ChainOut cd σ σ' := h ▸ ChainOut.refl cd σ
+
+theorem ChainOut.trans {cd : DomainId} {σ σ1 σ2 : MachineState}
+    (h1 : ChainOut cd σ σ1) (h2 : ChainOut cd σ1 σ2) : ChainOut cd σ σ2 :=
+  ⟨h2.1.trans h1.1, fun e => (h2.2.1 e).trans (h1.2.1 e),
+   fun e => (h2.2.2.1 e).trans (h1.2.2.1 e),
+   fun e => (h2.2.2.2.1 e).trans (h1.2.2.2.1 e),
+   fun e he => (h2.2.2.2.2 e he).trans (h1.2.2.2.2 e he)⟩
+
+/-- `setDom` with an update preserving the chain fields is `ChainOut`. -/
+theorem ChainOut.setDomOf (σ : MachineState) (cd d : DomainId)
+    (f : DomainState → DomainState)
+    (hr : (f (σ.doms d)).run = (σ.doms d).run)
+    (hs : (f (σ.doms d)).serving = (σ.doms d).serving)
+    (hm : (f (σ.doms d)).maxDonation = (σ.doms d).maxDonation)
+    (hb : d ≠ cd → (f (σ.doms d)).budget = (σ.doms d).budget) :
+    ChainOut cd σ (σ.setDom d f) := by
+  refine ⟨rfl, fun e => ?_, fun e => ?_, fun e => ?_, fun e he => ?_⟩ <;>
+    by_cases hed : e = d
+  · subst hed; rw [setDom_doms_same]; exact hr
+  · rw [setDom_doms_ne _ _ _ _ hed]
+  · subst hed; rw [setDom_doms_same]; exact hs
+  · rw [setDom_doms_ne _ _ _ _ hed]
+  · subst hed; rw [setDom_doms_same]; exact hm
+  · rw [setDom_doms_ne _ _ _ _ hed]
+  · subst hed; rw [setDom_doms_same]; exact hb he
+  · rw [setDom_doms_ne _ _ _ _ hed]
+
+/-- A calm outcome relation for `SpecM` fragments: both `ok` and `err`
+land in `ChainOut` (mirrors `CalmLe`). -/
+def ChainLe (cd : DomainId) {α : Type} (mm : SpecM α) : Prop :=
+  ∀ σ, (∀ a σ', mm σ = .ok a σ' → ChainOut cd σ σ') ∧
+       (∀ e σ', mm σ = .err e σ' → ChainOut cd σ σ')
+
+theorem ChainLe.of_state_eq {cd : DomainId} {α : Type} {mm : SpecM α}
+    (h : ∀ σ, (∀ a σ', mm σ = .ok a σ' → σ' = σ) ∧
+              (∀ e σ', mm σ = .err e σ' → σ' = σ)) : ChainLe cd mm :=
+  fun σ => ⟨fun a σ' he => ChainOut.of_eq ((h σ).1 a σ' he),
+            fun e σ' he => ChainOut.of_eq ((h σ).2 e σ' he)⟩
+
+theorem ChainLe.pure {cd : DomainId} {α : Type} (a : α) :
+    ChainLe cd (Pure.pure a : SpecM α) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun a' σ' he => by rw [specM_pure] at he; injection he with _ h2; exact h2.symm ▸ rfl,
+     fun e σ' he => by rw [specM_pure] at he; simp at he⟩
+
+theorem ChainLe.bind {cd : DomainId} {α β : Type} {mm : SpecM α} {f : α → SpecM β}
+    (hm : ChainLe cd mm) (hf : ∀ a, ChainLe cd (f a)) : ChainLe cd (mm >>= f) := by
+  intro σ
+  refine ⟨?_, ?_⟩
+  · intro b σ' he
+    rw [specM_bind] at he
+    cases hmσ : mm σ with
+    | ok a σ1 => rw [hmσ] at he
+                 exact ChainOut.trans ((hm σ).1 a σ1 hmσ) ((hf a σ1).1 b σ' he)
+    | err e σ1 => rw [hmσ] at he; simp at he
+    | fault g => rw [hmσ] at he; simp at he
+  · intro e σ' he
+    rw [specM_bind] at he
+    cases hmσ : mm σ with
+    | ok a σ1 => rw [hmσ] at he
+                 exact ChainOut.trans ((hm σ).1 a σ1 hmσ) ((hf a σ1).2 e σ' he)
+    | err e1 σ1 => rw [hmσ] at he; injection he with h1 h2; subst h2
+                   exact (hm σ).2 e1 σ1 hmσ
+    | fault g => rw [hmσ] at he; simp at he
+
+theorem ChainLe.iteBool {cd : DomainId} {α : Type} (b : Bool) {m1 m2 : SpecM α}
+    (h1 : ChainLe cd m1) (h2 : ChainLe cd m2) :
+    ChainLe cd (if b then m1 else m2) := by
+  cases b
+  · simpa using h2
+  · simpa using h1
+
+theorem ChainLe.reg {cd : DomainId} (d : DomainId) (r : RegId) :
+    ChainLe cd (SpecM.reg d r) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun a σ' he => by unfold SpecM.reg at he; injection he with _ h2; exact h2.symm,
+     fun e σ' he => by unfold SpecM.reg at he; simp at he⟩
+
+theorem ChainLe.get {cd : DomainId} : ChainLe cd SpecM.get :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun a σ' he => by unfold SpecM.get at he; injection he with _ h2; exact h2.symm,
+     fun e σ' he => by unfold SpecM.get at he; simp at he⟩
+
+theorem ChainLe.raise {cd : DomainId} {α : Type} (e : Errno) :
+    ChainLe cd (SpecM.raise e : SpecM α) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun a σ' he => by unfold SpecM.raise at he; simp at he,
+     fun e' σ' he => by unfold SpecM.raise at he; injection he with _ h2; exact h2.symm⟩
+
+theorem ChainLe.require {cd : DomainId} (cond : Bool) (e : Errno) :
+    ChainLe cd (SpecM.require cond e) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun a σ' he => (require_ok cond e σ he).symm ▸ rfl,
+     fun e' σ' he => (require_err_state cond e σ he).symm ▸ rfl⟩
+
+theorem ChainLe.demand {cd : DomainId} (cond : Bool) (f : Fault) :
+    ChainLe cd (SpecM.demand cond f) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun a σ' he => (demand_ok cond f σ he).symm ▸ rfl,
+     fun e σ' he => by
+       unfold SpecM.demand at he; split at he
+       · simp [specM_pure] at he
+       · simp [SpecM.fatal] at he⟩
+
+theorem ChainLe.load {cd : DomainId} (d : DomainId) (a : Addr) :
+    ChainLe cd (SpecM.load d a) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun v σ' he => (load_ok d a σ he).symm ▸ rfl,
+     fun e σ' he => (load_err_state d a σ he).symm ▸ rfl⟩
+
+theorem ChainLe.capLive {cd : DomainId} (d : DomainId) (hw : Loom.Word32) :
+    ChainLe cd (Machines.Lnp64u.Isa.capLive d hw) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun r σ' he => (Machines.Lnp64u.Isa.Wip.capLive_ok d hw σ he).1.symm ▸ rfl,
+     fun e σ' he => (Machines.Lnp64u.Isa.Wip.capLive_err_state d hw σ he).symm ▸ rfl⟩
+
+theorem ChainLe.narrow {cd : DomainId} (base : Addr) (len : BitVec 13) (perms : Perms)
+    (dw : Loom.Word32) : ChainLe cd (Machines.Lnp64u.Isa.narrow base len perms dw) :=
+  ChainLe.of_state_eq fun σ =>
+    ⟨fun k σ' he => (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms dw σ he).1.symm ▸ rfl,
+     fun e σ' he => (Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms dw σ he).symm ▸ rfl⟩
+
+/-- A `modify` whose function is `ChainOut` is `ChainLe`. -/
+theorem ChainLe.modifyOf {cd : DomainId} (f : MachineState → MachineState)
+    (hf : ∀ σ, ChainOut cd σ (f σ)) : ChainLe cd (SpecM.modify f) :=
+  fun σ => ⟨fun a σ' he => by
+              unfold SpecM.modify at he; injection he with _ h2; exact h2 ▸ hf σ,
+            fun e σ' he => by unfold SpecM.modify at he; simp at he⟩
+
+theorem ChainLe.setReg (cd d : DomainId) (r : RegId) (v : Loom.Word32) :
+    ChainLe cd (SpecM.setReg d r v) :=
+  ChainLe.modifyOf _ fun σ =>
+    ChainOut.setDomOf σ cd d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+      (by unfold DomainState.setReg; split <;> rfl)
+      (fun _ => by unfold DomainState.setReg; split <;> rfl)
+
+theorem ChainLe.updDomOf (cd d : DomainId) (f : DomainState → DomainState)
+    (hr : ∀ ds, (f ds).run = ds.run) (hs : ∀ ds, (f ds).serving = ds.serving)
+    (hm : ∀ ds, (f ds).maxDonation = ds.maxDonation)
+    (hb : ∀ ds, d ≠ cd → (f ds).budget = ds.budget) :
+    ChainLe cd (SpecM.updDom d f) :=
+  ChainLe.modifyOf _ fun σ =>
+    ChainOut.setDomOf σ cd d f (hr _) (hs _) (hm _) (fun h => hb _ h)
+
+theorem ChainLe.store {cd : DomainId} (d : DomainId) (a : Addr) (v : Loom.Word32) :
+    ChainLe cd (SpecM.store d a v) := by
+  intro σ; unfold SpecM.store
+  refine ⟨?_, ?_⟩
+  · intro x σ' he
+    simp only [SpecM.get, specM_bind] at he
+    by_cases hc : σ.domCovers d a { r := false, w := true, x := false }
+    · simp only [SpecM.demand, hc, if_true, specM_pure, specM_bind, SpecM.set] at he
+      injection he with _ h2; subst h2
+      exact ChainOut.refl cd σ
+    · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+  · intro e σ' he
+    simp only [SpecM.get, specM_bind] at he
+    by_cases hc : σ.domCovers d a { r := false, w := true, x := false }
+    · simp [SpecM.demand, hc, specM_pure, specM_bind, SpecM.set] at he
+    · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+
+theorem ChainLe.allocDerived {cd : DomainId} (owner : DomainId) (kind : CapKind)
+    (parent : CapRef) : ChainLe cd (Machines.Lnp64u.Isa.allocDerived owner kind parent) := by
+  intro σ
+  refine ⟨?_, ?_⟩
+  · intro hw σ' he
+    unfold Machines.Lnp64u.Isa.allocDerived at he
+    simp only [SpecM.get, specM_bind] at he
+    cases hfs : σ.freeSlot owner with
+    | none => rw [hfs] at he; simp [SpecM.raise] at he
+    | some sl =>
+        rw [hfs] at he
+        cases hfc : σ.freeCell owner with
+        | none => rw [hfc] at he; simp [SpecM.raise] at he
+        | some lc =>
+            rw [hfc] at he
+            simp only [SpecM.set, specM_bind, specM_pure] at he
+            injection he with _ h2; subst h2
+            exact ChainOut.setDomOf σ cd owner _ rfl rfl rfl (fun _ => rfl)
+  · intro e σ' he
+    unfold Machines.Lnp64u.Isa.allocDerived at he
+    simp only [SpecM.get, specM_bind] at he
+    cases hfs : σ.freeSlot owner with
+    | none => rw [hfs] at he; simp only [SpecM.raise] at he
+              injection he with _ h2; exact h2.symm ▸ ChainOut.refl cd σ
+    | some sl =>
+        rw [hfs] at he
+        cases hfc : σ.freeCell owner with
+        | none => rw [hfc] at he; simp only [SpecM.raise] at he
+                  injection he with _ h2; exact h2.symm ▸ ChainOut.refl cd σ
+        | some lc => rw [hfc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
+/-- Case on the current state first (mirrors `CalmLe.getD`). -/
+theorem ChainLe.getD {cd : DomainId} {α : Type} (f : MachineState → SpecM α)
+    (hf : ∀ σ, (∀ a σ', f σ σ = .ok a σ' → ChainOut cd σ σ') ∧
+               (∀ e σ', f σ σ = .err e σ' → ChainOut cd σ σ')) :
+    ChainLe cd (SpecM.get >>= f) := by
+  intro σ
+  have hb : (SpecM.get >>= f) σ = f σ σ := rfl
+  exact ⟨fun a σ' he => (hf σ).1 a σ' (hb ▸ he),
+         fun e σ' he => (hf σ).2 e σ' (hb ▸ he)⟩
+
+/-- Every base opcode is chain-calm. -/
+theorem base_chain_le (cd : DomainId) : ∀ instr ∈ Machines.Lnp64u.Isa.base, ∀ c : Ctx,
+    ChainLe cd (instr.sem.exec c) := by
+  intro instr hmem c
+  fin_cases hmem
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.setReg _ _ _ _)
+  · exact ChainLe.setReg _ _ _ _
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.load _ _) (fun _ => ChainLe.setReg _ _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.store _ _ _))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ =>
+      ChainLe.iteBool _ (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ _ => rfl)) (ChainLe.pure ())))
+  · exact ChainLe.bind (ChainLe.reg _ _) (fun _ => ChainLe.bind (ChainLe.reg _ _) (fun _ =>
+      ChainLe.iteBool _ (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ _ => rfl)) (ChainLe.pure ())))
+  · exact ChainLe.bind (ChainLe.reg _ _)
+      (fun _ => ChainLe.bind (ChainLe.setReg _ _ _ _)
+        (fun _ => ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ _ => rfl)))
+
+/-! ### Kernel-op chain frames -/
+
+theorem reparent_chainOut (cd : DomainId) (σ : MachineState) (o n : CapRef) :
+    ChainOut cd σ (σ.reparent o n) :=
+  ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+
+theorem orphanChildren_chainOut (cd : DomainId) (σ : MachineState) (o : CapRef) :
+    ChainOut cd σ (σ.orphanChildren o) :=
+  ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+
+theorem clearSlot_chainOut (cd : DomainId) (σ : MachineState) (d : DomainId) (s : Slot) :
+    ChainOut cd σ (σ.clearSlot d s) :=
+  ChainOut.setDomOf σ cd d _ rfl rfl rfl (fun _ => rfl)
+
+theorem destroyMarked_chainOut (cd : DomainId) (σ : MachineState)
+    (mk : DomainId → Slot → Bool) : ChainOut cd σ (σ.destroyMarked mk) :=
+  ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+
+theorem sweepRegions_chainOut (cd : DomainId) (σ : MachineState) :
+    ChainOut cd σ σ.sweepRegions :=
+  ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+
+theorem sweepMover_chainOut (cd : DomainId) (σ : MachineState) :
+    ChainOut cd σ σ.sweepMover := by
+  unfold MachineState.sweepMover
+  cases σ.mover with
+  | none => exact ChainOut.refl cd σ
+  | some job =>
+      by_cases h1 : σ.liveRef job.src && σ.liveRef job.dst
+      · simp only [h1, if_true]; exact ChainOut.refl cd σ
+      · simp only [h1, if_false]
+        by_cases h2 : ({ σ with mover := none } : MachineState).domCovers job.owner
+            job.statusAddr { r := false, w := true, x := false }
+        · simp only [h2, if_true]
+          exact ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+        · simp only [h2, if_false]
+          exact ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+
+theorem transferCap_chainOut (cd : DomainId) (σ : MachineState) (from_ : DomainId)
+    (s : Slot) (to_ : DomainId) (τ : MachineState) (ref : CapRef)
+    (h : σ.transferCap from_ s to_ = some (τ, ref)) : ChainOut cd σ τ := by
+  unfold MachineState.transferCap at h
+  cases he : (σ.doms from_).caps s with
+  | none => rw [he] at h; simp at h
+  | some e =>
+      rw [he] at h; simp only [Option.bind_eq_bind, Option.bind_some] at h
+      cases hfs : σ.freeSlot to_ with
+      | none => rw [hfs] at h; simp at h
+      | some s2 =>
+          rw [hfs] at h; simp only [Option.bind_some] at h
+          have key : ∀ (σ₁ : MachineState), ChainOut cd σ σ₁ →
+              some (((((σ₁.reparent ⟨from_, s, (σ.doms from_).slotGen s⟩
+                ⟨to_, s2, (σ.doms to_).slotGen s2⟩).clearSlot from_ s).sweepRegions).sweepMover),
+                (⟨to_, s2, (σ.doms to_).slotGen s2⟩ : CapRef))
+                = some (τ, ref) →
+              ChainOut cd σ τ := by
+            intro σ₁ hpre heq
+            injection heq with heq; injection heq with hτ _; subst hτ
+            exact hpre.trans ((reparent_chainOut cd σ₁ _ _).trans
+              ((clearSlot_chainOut cd _ from_ s).trans
+                ((sweepRegions_chainOut cd _).trans (sweepMover_chainOut cd _))))
+          cases hl : e.lineage with
+          | none =>
+              rw [hl] at h; simp only [Option.pure_def, Option.bind_some] at h
+              exact key _ (ChainOut.setDomOf σ cd to_ _ rfl rfl rfl (fun _ => rfl)) h
+          | some l =>
+              rw [hl] at h; simp only [Option.bind_eq_bind, Option.bind_some] at h
+              cases hc : (σ.doms from_).lineage l with
+              | none => rw [hc] at h; simp at h
+              | some cell =>
+                  rw [hc] at h; simp only [Option.bind_some] at h
+                  cases hfc : σ.freeCell to_ with
+                  | none => rw [hfc] at h; simp at h
+                  | some l' =>
+                      rw [hfc] at h; simp only [Option.pure_def, Option.bind_some] at h
+                      exact key _ (ChainOut.setDomOf σ cd to_ _ rfl rfl rfl (fun _ => rfl)) h
+
+theorem transferByHandle_chain_le (cd : DomainId) (d to_ : DomainId) (hw : Loom.Word32) :
+    ChainLe cd (Machines.Lnp64u.Isa.transferByHandle d to_ hw) := by
+  intro σ
+  unfold Machines.Lnp64u.Isa.transferByHandle
+  by_cases hz : hw = 0
+  · rw [if_pos hz]
+    exact ⟨fun a σ' he => by
+        simp only [specM_pure] at he; obtain ⟨_, rfl⟩ := he; exact ChainOut.refl cd σ,
+      fun e σ' he => by simp [specM_pure] at he⟩
+  · simp only [if_neg hz, specM_bind]
+    constructor
+    · intro a σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive d hw σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none => rw [htc] at he; simp [SpecM.raise] at he
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp only [SpecM.set, specM_bind, specM_pure] at he
+              injection he with _ h2; subst h2
+              exact transferCap_chainOut cd σ d sslot to_ σ2 ref htc
+    · intro er σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive d hw σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state d _ σ hcl; rw [hcl] at he
+          injection he with _ h2; subst h2; exact ChainOut.of_eq hs
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none =>
+              rw [htc] at he; simp only [SpecM.raise] at he
+              injection he with _ h2; subst h2; exact ChainOut.refl cd σ
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
+/-! ### The two gate ops' full chain postconditions -/
+
+/-- The full chain-observable postcondition of a successful `gate_call` by
+`c.d`: the target gate `gid` was free, its callee `cal` was running,
+unmarked, and distinct from the caller; the fresh activation records
+`c.d` as caller with depth `gateDepth c σ ≤ maxChainDepth` and donation
+`(σ.doms c.d).maxDonation`; every other gate record, every domain's
+`maxDonation`, every non-caller budget, every non-callee serving mark and
+every non-caller run mark is untouched; the callee now serves `gid` and the
+caller is `.blocked gid`. -/
+def GateCallShape (c : Ctx) (σ σ' : MachineState) : Prop :=
+  ∃ gid act,
+    (σ.gates gid).act = none ∧
+    (σ.gates gid).config.callee ≠ c.d ∧
+    (σ.doms (σ.gates gid).config.callee).run = .running ∧
+    (σ.doms (σ.gates gid).config.callee).serving = none ∧
+    act.caller = c.d ∧
+    act.depth = Machines.Lnp64u.Isa.Wip.gateDepth c σ ∧
+    act.depth ≤ maxChainDepth ∧
+    act.donated = (σ.doms c.d).maxDonation ∧
+    (∀ g', g' ≠ gid → σ'.gates g' = σ.gates g') ∧
+    (σ'.gates gid).act = some act ∧
+    (σ'.gates gid).config = (σ.gates gid).config ∧
+    (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+    (∀ e, e ≠ c.d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+    (∀ e, e ≠ (σ.gates gid).config.callee → (σ'.doms e).serving = (σ.doms e).serving) ∧
+    (σ'.doms (σ.gates gid).config.callee).serving = some gid ∧
+    (∀ e, e ≠ c.d → (σ'.doms e).run = (σ.doms e).run) ∧
+    (σ'.doms c.d).run = .blocked gid
+
+/-- The full chain-observable postcondition of a successful `gate_return` by
+`c.d` (serving `gid` with activation `act`): the gate record is freed, every
+other gate record, every `maxDonation`, every non-`c.d` budget and serving
+mark is untouched; `c.d`'s serving mark is restored to `act.savedServing`;
+every domain except the resumed caller keeps its run mark and the caller
+runs. -/
+def GateReturnShape (c : Ctx) (σ σ' : MachineState) : Prop :=
+  ∃ gid act,
+    (σ.doms c.d).serving = some gid ∧
+    (σ.gates gid).act = some act ∧
+    (∀ g', g' ≠ gid → σ'.gates g' = σ.gates g') ∧
+    (σ'.gates gid).act = none ∧
+    (σ'.gates gid).config = (σ.gates gid).config ∧
+    (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+    (∀ e, e ≠ c.d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+    (∀ e, e ≠ c.d → (σ'.doms e).serving = (σ.doms e).serving) ∧
+    (σ'.doms c.d).serving = act.savedServing ∧
+    (∀ e, e ≠ act.caller → (σ'.doms e).run = (σ.doms e).run) ∧
+    (σ'.doms act.caller).run = .running
+
+/-- `gate_call`'s chain classification: err leaves the state unchanged, ok
+produces exactly `GateCallShape`. -/
+theorem gatecall_chain (c : Ctx) (σ : MachineState) :
+    (∀ a σ', (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = .ok a σ' →
+       GateCallShape c σ σ') ∧
+    (∀ er σ', (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = .err er σ' → σ' = σ) := by
+  have body : ∀ (out : Res Unit),
+      (Machines.Lnp64u.Isa.Wip.gateCallExec c) σ = out →
+      (∀ a σ', out = .ok a σ' → GateCallShape c σ σ') ∧
+      (∀ er σ', out = .err er σ' → σ' = σ) := by
+    intro out hout
+    unfold Machines.Lnp64u.Isa.Wip.gateCallExec at hout
+    simp only [SpecM.reg, specM_bind] at hout
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+        rw [hcl] at hout; subst hout
+        exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+          simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hs⟩
+    | fault f => rw [hcl] at hout; subst hout
+                 exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at hout; obtain ⟨s0, g0, e⟩ := r; simp only at hout
+        cases hk : e.kind with
+        | mem base len perms =>
+            rw [hk] at hout; simp only [SpecM.raise] at hout; subst hout
+            exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+              simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; rfl⟩
+        | gate gid =>
+            rw [hk] at hout; simp only [SpecM.get, specM_bind] at hout
+            set cal := (σ.gates gid).config.callee with hcaldef
+            cases hr1 : SpecM.require (σ.gates gid).act.isNone .gateBusy σ with
+            | err e1 σ1 =>
+                have hst := require_err_state _ _ σ hr1
+                rw [hr1] at hout; simp only [specM_bind] at hout; subst hout
+                exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hst⟩
+            | fault f => rw [hr1] at hout; simp only [specM_bind] at hout; subst hout
+                         exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+            | ok u1 σ1 =>
+                have hc1 := require_cond _ _ σ hr1
+                have hst := require_ok _ _ σ hr1; subst σ1
+                rw [hr1] at hout; simp only [specM_bind] at hout
+                cases hr2 : SpecM.require (decide (cal ≠ c.d)) .gateBusy σ with
+                | err e2 σ2 =>
+                    have hst := require_err_state _ _ σ hr2
+                    rw [hr2] at hout; simp only [specM_bind] at hout; subst hout
+                    exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                      simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hst⟩
+                | fault f => rw [hr2] at hout; simp only [specM_bind] at hout; subst hout
+                             exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+                | ok u2 σ2 =>
+                    have hc2 := require_cond _ _ σ hr2
+                    have hst := require_ok _ _ σ hr2; subst σ2
+                    rw [hr2] at hout; simp only [specM_bind] at hout
+                    cases hr3 : SpecM.require (decide ((σ.doms cal).run = .running)) .gateBusy σ with
+                    | err e3 σ3 =>
+                        have hst := require_err_state _ _ σ hr3
+                        rw [hr3] at hout; simp only [specM_bind] at hout; subst hout
+                        exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                          simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hst⟩
+                    | fault f => rw [hr3] at hout; simp only [specM_bind] at hout; subst hout
+                                 exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+                    | ok u3 σ3 =>
+                        have hc3 := require_cond _ _ σ hr3
+                        have hst := require_ok _ _ σ hr3; subst σ3
+                        rw [hr3] at hout; simp only [specM_bind] at hout
+                        cases hr4 : SpecM.require (σ.doms cal).serving.isNone .gateBusy σ with
+                        | err e4 σ4 =>
+                            have hst := require_err_state _ _ σ hr4
+                            rw [hr4] at hout; simp only [specM_bind] at hout; subst hout
+                            exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                              simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hst⟩
+                        | fault f => rw [hr4] at hout; simp only [specM_bind] at hout; subst hout
+                                     exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+                        | ok u4 σ4 =>
+                            have hc4 := require_cond _ _ σ hr4
+                            have hst := require_ok _ _ σ hr4; subst σ4
+                            rw [hr4] at hout; simp only [specM_bind] at hout
+                            cases hr5 : SpecM.require (decide (Machines.Lnp64u.Isa.Wip.gateDepth c σ ≤ maxChainDepth)) .gateBusy σ with
+                            | err e5 σ5 =>
+                                have hst := require_err_state _ _ σ hr5
+                                rw [hr5] at hout; simp only [specM_bind] at hout; subst hout
+                                exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hst⟩
+                            | fault f => rw [hr5] at hout; simp only [specM_bind] at hout; subst hout
+                                         exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+                            | ok u5 σ5 =>
+                                have hc5 := require_cond _ _ σ hr5
+                                have hst := require_ok _ _ σ hr5; subst σ5
+                                rw [hr5] at hout; simp only [specM_bind, SpecM.reg] at hout
+                                cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d cal ((σ.doms c.d).reg c.op.rs2) σ with
+                                | fault f => rw [htbh] at hout; subst hout
+                                             exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+                                | err e6 τ =>
+                                    have hs := transferByHandle_err_state c.d cal _ σ e6 τ htbh
+                                    rw [htbh] at hout; subst hout
+                                    exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                                      simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hs⟩
+                                | ok argHandle τ =>
+                                    rw [htbh] at hout
+                                    have hτ : ChainOut c.d σ τ :=
+                                      (transferByHandle_chain_le c.d c.d cal _ σ).1 argHandle τ htbh
+                                    simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom,
+                                      SpecM.modify] at hout
+                                    subst hout
+                                    refine ⟨fun a σ' h => ?_, fun er σ' h => by simp at h⟩
+                                    simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                                    -- assemble the shape
+                                    have hcalne : cal ≠ c.d := of_decide_eq_true hc2
+                                    have hgnone : (σ.gates gid).act = none :=
+                                      Option.isNone_iff_eq_none.mp hc1
+                                    set act0 : Activation :=
+                                      { caller := c.d, callerRd := c.op.rd
+                                        savedRegs := (τ.doms cal).regs
+                                        savedPc := (τ.doms cal).pc
+                                        savedServing := (τ.doms cal).serving
+                                        depth := Machines.Lnp64u.Isa.Wip.gateDepth c σ
+                                        donated := (τ.doms c.d).maxDonation } with hact0
+                                    set G0 : GateState :=
+                                      { σ.gates gid with act := some act0 } with hG0
+                                    have hXgates : ({ τ with
+                                        gates := Loom.Fun.update τ.gates gid G0 } : MachineState).doms
+                                        = τ.doms := rfl
+                                    refine ⟨gid, act0,
+                                      hgnone, hcalne, of_decide_eq_true hc3,
+                                      Option.isNone_iff_eq_none.mp hc4,
+                                      rfl, rfl, of_decide_eq_true hc5,
+                                      hτ.2.2.2.1 c.d,
+                                      ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+                                    · intro g' hg'
+                                      show Loom.Fun.update τ.gates gid _ g' = σ.gates g'
+                                      rw [Loom.Fun.update_ne _ _ _ _ hg']
+                                      exact congrFun hτ.1 g'
+                                    · show (Loom.Fun.update τ.gates gid _ gid).act = _
+                                      rw [Loom.Fun.update_same]
+                                    · show (Loom.Fun.update τ.gates gid _ gid).config = _
+                                      rw [Loom.Fun.update_same]
+                                    · intro e'
+                                      by_cases hecd : e' = c.d
+                                      · subst hecd
+                                        rw [setDom_doms_same]
+                                        show ((_ : MachineState).doms c.d).maxDonation = _
+                                        rw [setDom_doms_ne _ _ _ _ hcalne.symm, hXgates]
+                                        exact hτ.2.2.2.1 c.d
+                                      · rw [setDom_doms_ne _ _ _ _ hecd]
+                                        by_cases hecal : e' = cal
+                                        · subst hecal
+                                          rw [setDom_doms_same]
+                                          show ((({ τ.doms cal with
+                                            regs := fun r => if r = (1 : Fin numRegs) then argHandle else 0
+                                            pc := (σ.gates gid).config.entry
+                                            serving := some gid } : DomainState)).maxDonation) = _
+                                          exact hτ.2.2.2.1 cal
+                                        · rw [setDom_doms_ne _ _ _ _ hecal, hXgates]
+                                          exact hτ.2.2.2.1 e'
+                                    · intro e' hecd
+                                      rw [setDom_doms_ne _ _ _ _ hecd]
+                                      by_cases hecal : e' = cal
+                                      · subst hecal
+                                        rw [setDom_doms_same]
+                                        exact hτ.2.2.2.2 cal hecd
+                                      · rw [setDom_doms_ne _ _ _ _ hecal, hXgates]
+                                        exact hτ.2.2.2.2 e' hecd
+                                    · intro e' hecal
+                                      rw [← hcaldef] at hecal
+                                      by_cases hecd : e' = c.d
+                                      · subst hecd
+                                        rw [setDom_doms_same]
+                                        show ((_ : MachineState).doms c.d).serving = _
+                                        rw [setDom_doms_ne _ _ _ _ hcalne.symm, hXgates]
+                                        exact hτ.2.2.1 c.d
+                                      · rw [setDom_doms_ne _ _ _ _ hecd,
+                                            setDom_doms_ne _ _ _ _ hecal, hXgates]
+                                        exact hτ.2.2.1 e'
+                                    · rw [← hcaldef,
+                                          setDom_doms_ne _ _ _ _ hcalne.symm, setDom_doms_same]
+                                    · intro e' hecd
+                                      rw [setDom_doms_ne _ _ _ _ hecd]
+                                      by_cases hecal : e' = cal
+                                      · subst hecal
+                                        rw [setDom_doms_same]
+                                        exact hτ.2.1 cal
+                                      · rw [setDom_doms_ne _ _ _ _ hecal, hXgates]
+                                        exact hτ.2.1 e'
+                                    · rw [setDom_doms_same]
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun er σ' h => (body _ h).2 er σ' rfl⟩
+
 end Machines.Lnp64u
