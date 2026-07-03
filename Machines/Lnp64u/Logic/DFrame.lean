@@ -1463,4 +1463,354 @@ theorem move_dkle (c : Ctx) :
 
 end BigOps
 
+/-! ## The system-op dispatch -/
+
+section Dispatch
+
+variable {d : DomainId} {R : Addr → Prop}
+
+/-- **The system opcodes are `DKLe`.** -/
+theorem system_dkle : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ctx,
+    DKLe d c.d R (instr.sem.exec c) := by
+  intro instr hmem c
+  fin_cases hmem
+  case _ => -- cap_dup
+    intro σ hctx hne
+    have hstep : ∀ (kd : CapKind)
+        (hk : c.d ≠ d → ∀ b len p, kd = .mem b len p → ∀ a : Addr, b.toNat ≤ a.toNat →
+          a.toNat < b.toNat + len.toNat → ¬ R a)
+        (sl : Slot) (gg : Gen) (x : Unit) (σ' : MachineState),
+        ((Machines.Lnp64u.Isa.allocDerived c.d kd ⟨c.d, sl, gg⟩ >>=
+          fun h => SpecM.setReg c.d c.op.rd h) σ = .ok x σ' → DKeep d c.d R σ σ') ∧
+        (∀ er, (Machines.Lnp64u.Isa.allocDerived c.d kd ⟨c.d, sl, gg⟩ >>=
+          fun h => SpecM.setReg c.d c.op.rd h) σ = .err er σ' → DKeep d c.d R σ σ') := by
+      intro kd hk sl gg x σ'
+      have htail := DKLe.bind (DKLe.allocDerived (d := d) (cd := c.d) (R := R)
+          c.d kd ⟨c.d, sl, gg⟩ (fun h => hk h))
+        (fun h => DKLe.setReg (d := d) (cd := c.d) (R := R) c.op.rd h) σ hctx hne
+      exact ⟨fun he => htail.1 x σ' he, fun er he => htail.2 er σ' he⟩
+    refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he hlc
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [specM_pure, specM_bind] at he
+              cases hal : Machines.Lnp64u.Isa.allocDerived c.d (.gate g) ⟨c.d, sl, gg⟩ σ with
+              | err e1 σ1 => rw [hal] at he; simp at he
+              | fault f => rw [hal] at he; simp at he
+              | ok hh τ =>
+                  refine (hstep (.gate g) (fun _ b len p hcontra => by cases hcontra)
+                    sl gg x σ').1 ?_
+                  rw [specM_bind, hal]
+                  rw [hal] at he
+                  exact he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms
+                  ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => rw [hn] at he; simp at he
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1
+                  subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  refine (hstep kd (fun hnd => narrow_off_R hn
+                    (entry_off_R hctx hnd (caps_of_liveCap hlc) hk)) sl gg x σ').1 ?_
+                  rw [specM_bind]
+                  exact he
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+          rw [hcl] at he; injection he with _ h2; subst h2
+          exact DKeep.of_eq hs hctx.ro hctx.fo
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he hlc
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [specM_pure, specM_bind] at he
+              refine (hstep (.gate g) (fun _ b len p hcontra => by cases hcontra)
+                sl gg () σ').2 er ?_
+              rw [specM_bind]
+              exact he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms
+                  ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 =>
+                  have hs := Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms _ σ hn
+                  rw [hn] at he; injection he with _ h2; subst h2
+                  exact DKeep.of_eq hs hctx.ro hctx.fo
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1
+                  subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  refine (hstep kd (fun hnd => narrow_off_R hn
+                    (entry_off_R hctx hnd (caps_of_liveCap hlc) hk)) sl gg () σ').2 er ?_
+                  rw [specM_bind]
+                  exact he
+  case _ => -- cap_drop
+    intro σ hctx hne
+    refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          simp only [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+          injection he with _ h2
+          subst h2
+          have h1 : DKeep d c.d R σ (match σ.parentOf c.d sl with
+              | some p => σ.reparent ⟨c.d, sl, gg⟩ p
+              | none => σ.orphanChildren ⟨c.d, sl, gg⟩) := by
+            cases hpar : σ.parentOf c.d sl with
+            | some p => exact dkeep_reparent hctx _ p
+            | none => exact dkeep_orphanChildren hctx _
+          have hctx1 := hctx.transport hne h1
+          have h2 := dkeep_clearSlot (cd := c.d) hctx1 c.d sl hne
+          have hctx2 := hctx1.transport hne h2
+          have h3 := dkeep_sweepRegions (cd := c.d) hctx2
+          have hctx3 := hctx2.transport hne h3
+          have h4 := dkeep_sweepMover (cd := c.d) hctx3
+          have hctx4 := hctx3.transport hne h4
+          have h5 := dkeep_setRegOther (cd := c.d) hctx4 c.d hne c.op.rd 0
+          exact (((h1.trans h2).trans h3).trans h4).trans h5
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+          rw [hcl] at he; injection he with _ h2; subst h2
+          exact DKeep.of_eq hs hctx.ro hctx.fo
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+  case _ => -- cap_revoke
+    intro σ hctx hne
+    refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hr1 : SpecM.require (e.kind.cls = .mem) .badCap σ with
+          | err e1 σ1 => rw [hr1] at he; simp at he
+          | fault f => rw [hr1] at he; simp at he
+          | ok u1 σ1 =>
+              have hst := require_ok _ _ σ hr1; subst σ1
+              rw [hr1] at he
+              simp only [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+              injection he with _ h2
+              subst h2
+              have h1 := dkeep_destroyMarked (cd := c.d) hctx (σ.marks ⟨c.d, sl, gg⟩)
+                (fun s => marks_d_false hctx _ s)
+              have hctx1 := hctx.transport hne h1
+              have h2 := dkeep_sweepRegions (cd := c.d) hctx1
+              have hctx2 := hctx1.transport hne h2
+              have h3 := dkeep_sweepMover (cd := c.d) hctx2
+              have hctx3 := hctx2.transport hne h3
+              have h4 := dkeep_setRegOther (cd := c.d) hctx3 c.d hne c.op.rd 0
+              exact ((h1.trans h2).trans h3).trans h4
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+          rw [hcl] at he; injection he with _ h2; subst h2
+          exact DKeep.of_eq hs hctx.ro hctx.fo
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hr1 : SpecM.require (e.kind.cls = .mem) .badCap σ with
+          | err e1 σ1 =>
+              have hs := require_err_state _ _ σ hr1
+              rw [hr1] at he; simp only [specM_bind] at he
+              injection he with _ h2; subst h2
+              exact DKeep.of_eq hs hctx.ro hctx.fo
+          | fault f => rw [hr1] at he; simp at he
+          | ok u1 σ1 =>
+              have hst := require_ok _ _ σ hr1; subst σ1
+              rw [hr1] at he
+              simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+  case _ => -- mem_grant
+    intro σ hctx hne
+    have hstep : ∀ (kd : CapKind) (owner : DomainId)
+        (hk : owner ≠ d → ∀ b len p, kd = .mem b len p → ∀ a : Addr, b.toNat ≤ a.toNat →
+          a.toNat < b.toNat + len.toNat → ¬ R a)
+        (sl : Slot) (gg : Gen) (x : Unit) (σ' : MachineState),
+        ((Machines.Lnp64u.Isa.allocDerived owner kd ⟨c.d, sl, gg⟩ >>=
+          fun h => SpecM.setReg c.d c.op.rd h) σ = .ok x σ' → DKeep d c.d R σ σ') ∧
+        (∀ er, (Machines.Lnp64u.Isa.allocDerived owner kd ⟨c.d, sl, gg⟩ >>=
+          fun h => SpecM.setReg c.d c.op.rd h) σ = .err er σ' → DKeep d c.d R σ σ') := by
+      intro kd owner hk sl gg x σ'
+      have htail := DKLe.bind (DKLe.allocDerived (d := d) (cd := c.d) (R := R)
+          owner kd ⟨c.d, sl, gg⟩ hk)
+        (fun h => DKLe.setReg (d := d) (cd := c.d) (R := R) c.op.rd h) σ hctx hne
+      exact ⟨fun he => htail.1 x σ' he, fun er he => htail.2 er σ' he⟩
+    refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he hlc
+          cases hk : e.kind with
+          | gate g => rw [hk] at he; simp [SpecM.raise] at he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms
+                  ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => rw [hn] at he; simp at he
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1
+                  subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  refine (hstep kd (Machines.Lnp64u.Isa.descDom ((σ.doms c.d).reg c.op.rs2))
+                    (fun _ => narrow_off_R hn
+                      (entry_off_R hctx hne (caps_of_liveCap hlc) hk)) sl gg x σ').1 ?_
+                  rw [specM_bind]
+                  exact he
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+          rw [hcl] at he; injection he with _ h2; subst h2
+          exact DKeep.of_eq hs hctx.ro hctx.fo
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he hlc
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [SpecM.raise] at he
+              injection he with _ h2; subst h2
+              exact DKeep.refl hctx.ro hctx.fo
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : Machines.Lnp64u.Isa.narrow base len perms
+                  ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 =>
+                  have hs := Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms _ σ hn
+                  rw [hn] at he; injection he with _ h2; subst h2
+                  exact DKeep.of_eq hs hctx.ro hctx.fo
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1
+                  subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  refine (hstep kd (Machines.Lnp64u.Isa.descDom ((σ.doms c.d).reg c.op.rs2))
+                    (fun _ => narrow_off_R hn
+                      (entry_off_R hctx hne (caps_of_liveCap hlc) hk)) sl gg () σ').2 er ?_
+                  rw [specM_bind]
+                  exact he
+  case _ => -- map
+    intro σ hctx hne
+    refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he hlc
+          cases hk : e.kind with
+          | gate g => rw [hk] at he; simp [SpecM.raise] at he
+          | mem base len perms =>
+              rw [hk] at he
+              simp only [SpecM.updDom, SpecM.modify, specM_bind, SpecM.setReg] at he
+              injection he with _ h2
+              subst h2
+              have h1 := dkeep_regionsSet (cd := c.d) hctx hne
+                ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩
+                (some { base := base, len := len, perms := perms
+                        backing := ⟨c.d, sl, gg⟩ })
+                (fun rg hrg => by
+                  injection hrg with hrg
+                  subst hrg
+                  exact ⟨rfl, entry_off_R hctx hne (caps_of_liveCap hlc) hk⟩)
+              have hctx1 := hctx.transport hne h1
+              exact h1.trans (dkeep_setRegOther (cd := c.d) hctx1 c.d hne c.op.rd 0)
+    · simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+          rw [hcl] at he; injection he with _ h2; subst h2
+          exact DKeep.of_eq hs hctx.ro hctx.fo
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, hlc⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl
+          subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [SpecM.raise] at he
+              injection he with _ h2; subst h2
+              exact DKeep.refl hctx.ro hctx.fo
+          | mem base len perms =>
+              rw [hk] at he
+              simp [SpecM.updDom, SpecM.modify, specM_bind, SpecM.setReg] at he
+  case _ => -- unmap
+    intro σ hctx hne
+    refine ⟨fun x σ' he => ?_, fun er σ' he => ?_⟩
+    · simp only [SpecM.updDom, SpecM.modify, specM_bind, SpecM.setReg] at he
+      injection he with _ h2
+      subst h2
+      have h1 := dkeep_regionsSet (cd := c.d) hctx hne
+        ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩
+        none (fun rg hrg => by cases hrg)
+      have hctx1 := hctx.transport hne h1
+      exact h1.trans (dkeep_setRegOther (cd := c.d) hctx1 c.d hne c.op.rd 0)
+    · simp [SpecM.updDom, SpecM.modify, specM_bind, SpecM.setReg] at he
+  case _ => exact fun σ hctx hne => gatecall_dkle c σ hctx hne
+  case _ => exact fun σ hctx hne => gatereturn_dkle c σ hctx hne
+  case _ => exact fun σ hctx hne => move_dkle c σ hctx hne
+  case _ => -- yield
+    exact DKLe.bind (DKLe.updDomExec _ (fun _ => rfl) (fun _ => rfl))
+      (fun _ => DKLe.setReg _ _)
+  case _ => -- halt
+    intro σ hctx hne
+    refine ⟨fun a σ' he => ?_, fun e σ' he => by simp [SpecM.modify] at he⟩
+    simp only [SpecM.modify] at he
+    injection he with _ h2
+    subst h2
+    exact dkeep_haltDom hctx hne c.d 0 hne
+
+/-- **Every instruction of the ISA is `DKLe`.** -/
+theorem exec_dkle : ∀ instr ∈ isa, ∀ c : Ctx, DKLe d c.d R (instr.sem.exec c) := by
+  intro instr hmem c
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem
+    exact hmem
+  rcases List.mem_append.mp hmem' with hb | hs
+  · exact base_dkle instr hb c rfl
+  · exact system_dkle instr hs c
+
+end Dispatch
+
 end Machines.Lnp64u.DFrame
