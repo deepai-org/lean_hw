@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.Budget
 import Machines.Lnp64u.Logic.GateStep
+import Machines.Lnp64u.Logic.Inflight
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
@@ -4161,5 +4162,185 @@ theorem retire_chain (σ : MachineState) (d : DomainId) (w : Loom.Word32)
     | fault f =>
         simp only [hexr]
         exact .inr (.inr (.inr (haltDom_chainShape σ d _ hnc)))
+
+/-- The chain effect of an issue cycle for domain `e` charging payer `p`
+cost `c`: no run/serving/maxDonation moves, `p` is charged exactly `c`, no
+other budget moves, and the gate records are untouched (a non-serving
+issuer) or exactly the served gate's `donated` is drawn down by `c`. -/
+def IssueShape (e p : DomainId) (c : Nat) (σ σ' : MachineState) : Prop :=
+  (∀ e', (σ'.doms e').run = (σ.doms e').run) ∧
+  (∀ e', (σ'.doms e').serving = (σ.doms e').serving) ∧
+  (∀ e', (σ'.doms e').maxDonation = (σ.doms e').maxDonation) ∧
+  (σ'.doms p).budget = (σ.doms p).budget - c ∧
+  (∀ e', e' ≠ p → (σ'.doms e').budget = (σ.doms e').budget) ∧
+  (((σ.doms e).serving = none ∧ σ'.gates = σ.gates) ∨
+   (∃ g a, (σ.doms e).serving = some g ∧ (σ.gates g).act = some a ∧ c ≤ a.donated ∧
+     (∀ g', g' ≠ g → σ'.gates g' = σ.gates g') ∧
+     (σ'.gates g).act = some { a with donated := a.donated - c } ∧
+     (σ'.gates g).config = (σ.gates g).config))
+
+/-- **The corePhase-level chain classification**: every core cycle is
+exactly one of idle/stall (state frozen), burn (inflight countdown only), a
+retirement by the running in-flight domain (retire-level shapes), a
+fault-halt of the scheduled domain, or an issue (`IssueShape`, with the
+in-flight instruction latched at its positive cost). -/
+theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
+    (corePhase m σ = σ ∧ σ.inflight = none ∧ (schedule m σ = none ∨ StallsAt m σ)) ∨
+    (∃ fl, σ.inflight = some fl ∧ 1 < fl.cyclesLeft ∧
+      corePhase m σ =
+        { σ with inflight := some { fl with cyclesLeft := fl.cyclesLeft - 1 } }) ∨
+    (∃ fl, σ.inflight = some fl ∧ fl.cyclesLeft ≤ 1 ∧
+      (σ.doms fl.dom).run = .running ∧ (corePhase m σ).inflight = none ∧
+      (ChainOut fl.dom σ (corePhase m σ) ∨ CallShape fl.dom σ (corePhase m σ) ∨
+       RetShape fl.dom σ (corePhase m σ) ∨ HaltShape fl.dom σ (corePhase m σ))) ∨
+    (∃ e, σ.inflight = none ∧ schedule m σ = some e ∧ (σ.doms e).run = .running ∧
+      (corePhase m σ).inflight = none ∧ HaltShape e σ (corePhase m σ)) ∨
+    (∃ e w c, σ.inflight = none ∧ schedule m σ = some e ∧
+      (σ.doms e).run = .running ∧ 0 < c ∧ c ≤ maxCostBound ∧
+      c ≤ (σ.doms (σ.payer e)).budget ∧
+      (corePhase m σ).inflight = some ⟨e, w, c⟩ ∧
+      IssueShape e (σ.payer e) c σ (corePhase m σ)) := by
+  have hnc : ∀ (e : DomainId), (σ.doms e).run = .running →
+      ∀ g a, (σ.doms e).serving = some g → (σ.gates g).act = some a → a.caller ≠ e := by
+    intro e hrun g a hs ha heq
+    have := (hwf.gate_serving g a ha).2.1
+    rw [heq, hrun] at this
+    exact absurd this (by simp)
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · -- retire
+        refine .inr (.inr (.inl ⟨fl, rfl, hc, hwf.inflight_running fl hinf, ?_, ?_⟩))
+        · unfold corePhase
+          simp only [hinf, hc, if_true]
+          rw [Wip.retire_inflight]
+        · have hcore : corePhase m σ = retire { σ with inflight := none } fl.dom fl.word := by
+            unfold corePhase; simp only [hinf, hc, if_true]
+          set σI : MachineState := { σ with inflight := none } with hσI
+          have hwfI : Wf σI :=
+            wf_of_skeleton_sameGates σ σI
+              (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+              (fun _ => rfl) rfl rfl (by simp [hσI]) hwf
+          have hrunI : (σI.doms fl.dom).run = .running := hwf.inflight_running fl hinf
+          have h0 : ChainOut fl.dom σ σI :=
+            ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+          rw [hcore]
+          rcases retire_chain σI fl.dom fl.word hwfI hrunI with h | h | h | h
+          · exact .inl (h0.trans h)
+          · exact .inr (.inl (CallShape.of_chainOut h0 h))
+          · exact .inr (.inr (.inl (RetShape.of_chainOut h0 h)))
+          · exact .inr (.inr (.inr (HaltShape.of_chainOut h0 h)))
+      · -- burn
+        refine .inr (.inl ⟨fl, rfl, by omega, ?_⟩)
+        unfold corePhase; simp only [hinf, hc, if_false]
+  | none =>
+      cases hsched : schedule m σ with
+      | none =>
+          refine .inl ⟨?_, rfl, .inl rfl⟩
+          unfold corePhase; simp only [hinf, hsched]
+      | some e =>
+          have hrun : (σ.doms e).run = .running := schedule_running m σ e hsched
+          cases hfetch : fetch σ e with
+          | none =>
+              refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+              · unfold corePhase; simp only [hinf, hsched, hfetch]
+                unfold haltWith
+                rw [haltDom_inflight]
+                exact hinf
+              · have hcore : corePhase m σ = haltWith σ e .memoryAuthority := by
+                  unfold corePhase; simp only [hinf, hsched, hfetch]
+                rw [hcore]
+                exact haltDom_chainShape σ e _ (hnc e hrun)
+          | some w =>
+              cases hdec : Loom.Isa.decode isa w with
+              | none =>
+                  refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+                  · unfold corePhase; simp only [hinf, hsched, hfetch, hdec]
+                    unfold haltWith
+                    rw [haltDom_inflight]
+                    exact hinf
+                  · have hcore : corePhase m σ = haltWith σ e .illegalInstruction := by
+                      unfold corePhase; simp only [hinf, hsched, hfetch, hdec]
+                    rw [hcore]
+                    exact haltDom_chainShape σ e _ (hnc e hrun)
+              | some instr =>
+                  by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer e)).budget
+                  · cases hserv : (σ.doms e).serving with
+                    | none =>
+                        refine .inr (.inr (.inr (.inr
+                          ⟨e, w, instr.cost.cost, rfl, rfl, hrun, cost_pos _,
+                           cost_le_maxCostBound _, hbud, ?_⟩)))
+                        unfold corePhase
+                        simp only [hinf, hsched, hfetch, hdec, hbud, if_true, hserv]
+                        refine ⟨trivial, fun e' => ?_, fun e' => ?_, fun e' => ?_, ?_,
+                          fun e' he' => ?_, .inl ⟨hserv, rfl⟩⟩
+                        · by_cases he' : e' = σ.payer e
+                          · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                        · by_cases he' : e' = σ.payer e
+                          · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                        · by_cases he' : e' = σ.payer e
+                          · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                        · simp [MachineState.setDom, Loom.Fun.update_same]
+                        · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                    | some g =>
+                        cases hact : (σ.gates g).act with
+                        | none =>
+                            refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+                            · unfold corePhase
+                              simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                hserv, hact]
+                              unfold haltWith
+                              rw [haltDom_inflight]
+                              exact hinf
+                            · have hcore : corePhase m σ = haltWith σ e .protocol := by
+                                unfold corePhase
+                                simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                  hserv, hact]
+                              rw [hcore]
+                              exact haltDom_chainShape σ e _ (hnc e hrun)
+                        | some a =>
+                            by_cases hdon : instr.cost.cost ≤ a.donated
+                            · refine .inr (.inr (.inr (.inr
+                                ⟨e, w, instr.cost.cost, rfl, rfl, hrun, cost_pos _,
+                                 cost_le_maxCostBound _, hbud, ?_⟩)))
+                              unfold corePhase
+                              simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                hserv, hact, hdon]
+                              refine ⟨trivial, fun e' => ?_, fun e' => ?_, fun e' => ?_, ?_,
+                                fun e' he' => ?_,
+                                .inr ⟨g, a, hserv, hact, hdon, ?_, ?_, ?_⟩⟩
+                              · by_cases he' : e' = σ.payer e
+                                · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                                · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · by_cases he' : e' = σ.payer e
+                                · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                                · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · by_cases he' : e' = σ.payer e
+                                · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                                · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · simp [MachineState.setDom, Loom.Fun.update_same]
+                              · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · intro g' hg'
+                                simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hg']
+                              · simp [MachineState.setDom, Loom.Fun.update_same]
+                              · simp [MachineState.setDom, Loom.Fun.update_same]
+                            · refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+                              · unfold corePhase
+                                simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                  hserv, hact, hdon, if_false]
+                                unfold haltWith
+                                rw [haltDom_inflight]
+                                exact hinf
+                              · have hcore : corePhase m σ = haltWith σ e .budget := by
+                                  unfold corePhase
+                                  simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                    hserv, hact, hdon, if_false]
+                                rw [hcore]
+                                exact haltDom_chainShape σ e _ (hnc e hrun)
+                  · refine .inl ⟨corePhase_stall m σ e w instr hinf hsched hfetch hdec hbud,
+                      rfl, .inr ⟨e, w, instr, hinf, hsched, hfetch, hdec, hbud⟩⟩
 
 end Machines.Lnp64u
