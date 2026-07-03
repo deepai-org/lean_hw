@@ -1,4 +1,4 @@
-import Machines.Lnp64u.Logic.Hostage
+import Machines.Lnp64u.Logic.HostageCount
 import Machines.Lnp64u.Theorems.T7
 
 /-!
@@ -153,19 +153,27 @@ number of cycles within which, under `StrictlySchedulable` + `StallFree`
 + positive budgets, the serving chain above a blocked caller must have
 been issued (or unwound) at least once. Derived from the potential
 `Ψ = 2·massExcept σ origin + inflight-remaining + #non-halted`: every
-non-progress cycle decreases `Ψ` by ≥ 1 (issue: `corePhase_cases` charge
-equation + `cost_pos`; burn/retire: countdown; fault-halt: the halted
-count; idle with the origin funded: impossible, the chain head is
-eligible and `schedule_isSome_of_eligible` fires; stall: excluded), while
-refills refund at most `2·Q_e` per boundary — `2·Σ Q·(L/P) ≤ L - 1` per
-hyperperiod (`StrictlySchedulable`) plus one partial hyperperiod at each
-window edge. Solving `n ≤ Ψ₀ + (n/L + 1)·(L-1) + 2·budgetMass` with
-`Ψ₀ ≤ 2·budgetMass + maxCostBound + numDomains` gives
-`n ≤ L·(4·budgetMass + L + maxCostBound + numDomains + 2)`, plus one
-period (≤ `L`) of origin-refill wait folded in by the caller. Coarse and
+non-progress cycle decreases `Ψ` by ≥ 1 (issue: charge equation +
+`cost_pos`; burn/retire: countdown; fault-halt: the halted count; idle
+with the origin funded: impossible, the chain head is eligible and
+`schedule_isSome_of_eligible` fires; stall: excluded), while refills
+refund at most `gainAt` per cycle — bounded per window through
+`StrictlySchedulable` (`gainSum_bound`).
+
+**Constants adjusted to the mechanized count (2026-07-03, as this
+docstring anticipated):** the multiple-counting lemma
+(`card_multiples`, an interval-endpoints argument) certifies
+`n/P + 2` boundaries per window rather than `n/P + 1`, and the origin
+funding wait (≤ one hyperperiod) is absorbed into the same window, so
+the honest solution of
+`n ≤ L + Ψ₀ + (n/L + 1)·(L-1) + 4·budgetMass` with
+`Ψ₀ ≤ 2·budgetMass + maxCostBound + numDomains` is
+`n = L·(6·budgetMass + maxCostBound + numDomains + 2·L + 2)` — exactly
+`Logic/HostageCount.lean`'s `scanBound`, with which this definition
+agrees definitionally (`scan_arith` closes the window). Coarse and
 manifest-computable. -/
 def interferenceWindow (m : Manifest) : Nat :=
-  hyperL m * (4 * budgetMass m + hyperL m + maxCostBound + numDomains + 2)
+  hyperL m * (6 * budgetMass m + maxCostBound + numDomains + 2 * hyperL m + 2)
 
 /-- The caller-side resume bound, repaired twice (2026-07-03; see the
 header refutations for WHY each predecessor was false):
@@ -204,8 +212,12 @@ All three side conditions are proof-forced (2026-07-03): without
 `hsched` the priority hog starves the chain (header refutation 1, and in
 its charge-only form, refutation 2); without `hstall` the stall-lock
 freezes the core forever (refutation 3); without `hpos` a zero-quota
-origin never refunds the chain. Remaining assembly (the per-cycle
-ingredients are proved in `Logic/Hostage.lean`), itemized:
+origin never refunds the chain. **PROVED sorry-free (2026-07-03)** — the
+assembly lives in `Logic/HostageChain.lean` (chain structure),
+`Logic/HostageMeasure.lean` (radix measure), `Logic/HostageFrame.lean`
+(foreign-cycle frames) and `Logic/HostageCount.lean` (`cycle_master`,
+`drain`, `scan`, `window`, `resume_of_measure`). The obligations,
+itemized:
 
 1. **Chain structure** (from `Wf.blocked_gate`/`gate_serving`/
    `serving_gate` + `wfa_invariant`): the serving chain above `d` is a
@@ -272,6 +284,64 @@ theorem no_hostage (m : Manifest) (hwf : m.WF) (hsched : StrictlySchedulable m)
     (σ : MachineState) (hreach : (machine m).Reachable σ)
     (d : DomainId) (g : GateId) (hblocked : (σ.doms d).run = .blocked g) :
     ∃ n ≤ resumeBound m d, ((stepN m n σ).doms d).run ≠ .blocked g := by
-  sorry
+  have hsched' : 2 * ((List.finRange numDomains).map
+      (fun e => (m.doms e).budgetQ * (hyperL m / (m.doms e).periodP))).sum < hyperL m :=
+    hsched
+  have hstall' : ∀ σ', (machine m).Reachable σ' → ¬ StallsAt m (refillPhase m σ') := hstall
+  have hci : ChainInv m σ := chain_invariant m hwf σ hreach
+  obtain ⟨j, hj, hclean⟩ := to_clean m hwf maxCostBound σ hreach
+    (fun fl hfl => hci.inflightLe fl hfl)
+  have hreachj : (machine m).Reachable (stepN m j σ) := stepN_reachable m σ hreach j
+  -- window-arithmetic facts, shared by both branches
+  have hWpow : 1 ≤ (maxDonationBound m + 2) ^ maxChainDepth :=
+    Nat.pow_pos (by omega)
+  have hIW : interferenceWindow m = scanBound m := rfl
+  have hwl : windowLen m ≤ interferenceWindow m + 2 * hyperL m + maxCostBound + 2 := by
+    unfold windowLen
+    rw [hIW]
+    omega
+  have hnw : maxCostBound ≤ interferenceWindow m + 2 * hyperL m + maxCostBound + 2 := by
+    omega
+  by_cases hbj : ((stepN m j σ).doms d).run = .blocked g
+  · have hwfj : Wf (stepN m j σ) := (wfa_invariant m hwf _ hreachj).1
+    have hsnj : HaltedServingNone (stepN m j σ) :=
+      halted_serving_none_invariant m hwf _ hreachj
+    have hcij : ChainInv m (stepN m j σ) := chain_invariant m hwf _ hreachj
+    obtain ⟨l, hh, hcf, hlenb⟩ := chain_exists hwfj hsnj hcij.depthLink hbj
+    have hMlt : chainMeasure m (stepN m j σ) d < chainW m ^ maxChainDepth :=
+      chainMeasure_lt m hwfj hcij.depthLink hcij.donatedLe hcf
+    have hWeq : chainW m = maxDonationBound m + 2 := rfl
+    obtain ⟨n, hn, hout⟩ := resume_of_measure m hwf hstall' hsched' hpos
+      (chainW m ^ maxChainDepth - 1) (stepN m j σ) hreachj hbj hclean (by omega)
+    refine ⟨j + n, ?_, ?_⟩
+    · -- j + n ≤ resumeBound
+      unfold resumeBound
+      have hM1 : chainW m ^ maxChainDepth - 1 + 1 = chainW m ^ maxChainDepth := by
+        have : 1 ≤ chainW m ^ maxChainDepth := by
+          rw [hWeq]
+          exact hWpow
+        omega
+      rw [hM1] at hn
+      have hmul : chainW m ^ maxChainDepth * windowLen m ≤
+          chainW m ^ maxChainDepth *
+            (interferenceWindow m + 2 * hyperL m + maxCostBound + 2) :=
+        Nat.mul_le_mul_left _ hwl
+      rw [hWeq] at hmul hn
+      have hvexp : ((maxDonationBound m + 2) ^ maxChainDepth + 1) *
+          (interferenceWindow m + 2 * hyperL m + maxCostBound + 2) =
+          (maxDonationBound m + 2) ^ maxChainDepth *
+            (interferenceWindow m + 2 * hyperL m + maxCostBound + 2) +
+          (interferenceWindow m + 2 * hyperL m + maxCostBound + 2) := by
+        ring
+      omega
+    · rw [stepN_add]
+      exact hout
+  · refine ⟨j, ?_, hbj⟩
+    unfold resumeBound
+    have h1 : 1 * (interferenceWindow m + 2 * hyperL m + maxCostBound + 2) ≤
+        ((maxDonationBound m + 2) ^ maxChainDepth + 1) *
+          (interferenceWindow m + 2 * hyperL m + maxCostBound + 2) :=
+      Nat.mul_le_mul_right _ (by omega)
+    omega
 
 end Machines.Lnp64u.Theorems.T6
