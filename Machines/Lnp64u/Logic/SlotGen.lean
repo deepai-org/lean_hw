@@ -301,4 +301,27 @@ theorem SlotGenLe.get : SlotGenLe SpecM.get :=
     (fun σ a σ' he d s => by unfold SpecM.get at he; injection he with _ h2; subst h2; rfl)
     (fun σ e σ' he d s => by unfold SpecM.get at he; simp at he)
 
+namespace Wip
+open Machines.Lnp64u.Isa
+
+/-- **The system opcodes never lower a slot generation** (7 preserving via the
+combinator, 4 bumping via the kernel `clearSlot`/`destroyMarked` bounds). -/
+theorem system_slotGen_le : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ctx,
+    SlotGenLe (instr.sem.exec c) := by
+  intro instr hmem c
+  fin_cases hmem
+  case _ => sorry -- cap_dup
+  case _ => sorry -- cap_drop
+  case _ => sorry -- cap_revoke
+  case _ => sorry -- mem_grant
+  case _ => sorry -- map
+  case _ => exact SlotGenLe.unmap c _
+  case _ => sorry -- gate_call
+  case _ => sorry -- gate_return
+  case _ => sorry -- move
+  case _ => exact SlotGenLe.yield c
+  case _ => exact SlotGenLe.halt c
+
+end Wip
+
 end Machines.Lnp64u
