@@ -238,4 +238,16 @@ theorem SlotGenLe.allocDerived (owner : DomainId) (kind : CapKind) (parent : Cap
         | none => rw [hfc] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; exact le_refl _
         | some lc => rw [hfc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
 
+/-- `unmap`'s exec never lowers a slot generation (only clears a region register). -/
+theorem SlotGenLe.unmap (c : Ctx) (ri : RegionId) :
+    SlotGenLe (SpecM.updDom c.d (fun ds => { ds with regions := Loom.Fun.update ds.regions ri none }) >>=
+      fun _ => SpecM.setReg c.d c.op.rd 0) :=
+  SlotGenLe.bind (SlotGenLe.updDomGen _ _ (fun ds => rfl)) (fun _ => SlotGenLe.setReg _ _ _)
+
+/-- The `map` region-install update never lowers a slot generation. -/
+theorem SlotGenLe.mapUpd (c : Ctx) (ri : RegionId) (rgn : Region) :
+    SlotGenLe (SpecM.updDom c.d (fun ds => { ds with regions := Loom.Fun.update ds.regions ri (some rgn) }) >>=
+      fun _ => SpecM.setReg c.d c.op.rd 0) :=
+  SlotGenLe.bind (SlotGenLe.updDomGen _ _ (fun ds => rfl)) (fun _ => SlotGenLe.setReg _ _ _)
+
 end Machines.Lnp64u
