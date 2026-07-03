@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.Wf
 import Machines.Lnp64u.Logic.Inflight
+import Machines.Lnp64u.Theorems.T9
 
 /-!
 # T7 — Real time
@@ -58,7 +59,7 @@ theorem budget_delivery (m : Manifest) (hwf : m.WF) (hsched : Schedulable m)
       (σ.doms d).run = .running →
       -- within the current period, the cycles already charged to d plus its
       -- remaining budget equal the quota
-      (σ.doms d).budget ≤ (m.doms d).budgetQ) := by
-  sorry
+      (σ.doms d).budget ≤ (m.doms d).budgetQ) :=
+  fun σ hreach _ => Machines.Lnp64u.Theorems.T9.budget_bounded m hwf σ hreach d
 
 end Machines.Lnp64u.Theorems.T7
