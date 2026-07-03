@@ -301,6 +301,102 @@ theorem capdup_err (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
               rw [hn] at he; simp only [specM_bind] at he
               exact halloc kind he
 
+/-- `mem_grant` preserves the invariant: it narrows a live memory capability and
+installs it in another domain via `allocDerived`. Same structure as `cap_dup`
+(the recipient domain is `descDom dw`, and gate handles error out). -/
+theorem memgrant_preserves (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
+    (∀ x σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, e) ← capLive c.d hw
+           match e.kind with
+           | .gate _ => raise .badCap
+           | .mem base len perms => do
+               let kind ← narrow base len perms dw
+               let h ← allocDerived (descDom dw) kind ⟨c.d, s, g⟩
+               setReg c.d c.op.rd h) : SpecM Unit) σ = .ok x σ' → Wf σ') ∧
+    (∀ e σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, e) ← capLive c.d hw
+           match e.kind with
+           | .gate _ => raise .badCap
+           | .mem base len perms => do
+               let kind ← narrow base len perms dw
+               let h ← allocDerived (descDom dw) kind ⟨c.d, s, g⟩
+               setReg c.d c.op.rd h) : SpecM Unit) σ = .err e σ' → Wf σ') := by
+  constructor
+  · intro x σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 => rw [hcl] at he; simp at he
+    | fault f => rw [hcl] at he; simp at he
+    | ok rr σ0 =>
+        obtain ⟨hσeq, hlive⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, en⟩ := rr; simp only at he hlive
+        have hpar : σ.liveRef ⟨c.d, s, g⟩ = true := by
+          unfold MachineState.liveRef; rw [hlive]; rfl
+        cases hk : en.kind with
+        | gate gid => rw [hk] at he; simp [SpecM.raise] at he
+        | mem base len perms =>
+            rw [hk] at he; simp only [specM_bind] at he
+            cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+            | err e1 σ1 => rw [hn] at he; simp at he
+            | fault f => rw [hn] at he; simp at he
+            | ok kind σ1 =>
+                obtain ⟨hσn, off, nlen, np, hkind, hwx, hin⟩ := narrow_ok base len perms _ σ hn
+                subst σ1; rw [hn] at he; simp only [specM_bind] at he
+                cases ha : allocDerived (descDom ((σ.doms c.d).reg c.op.rs2)) kind ⟨c.d, s, g⟩ σ with
+                | err e2 σ2 => rw [ha] at he; simp at he
+                | fault f => rw [ha] at he; simp at he
+                | ok hh σ2 =>
+                    rw [ha] at he
+                    simp only [specM_bind, SpecM.setReg, SpecM.modify] at he
+                    injection he with _ h2; subst h2
+                    have hbnd : base.toNat + len.toNat ≤ memWords :=
+                      (hwf.doms c.d).bounds s en base len perms
+                        (by unfold DomainState.liveCap at hlive
+                            revert hlive; cases hcc : (σ.doms c.d).caps s with
+                            | none => intro hh0; simp at hh0
+                            | some ee => intro hh0; split at hh0 <;> simp_all) hk
+                    have hwx' : ∀ b' l' p', kind = .mem b' l' p' →
+                        p'.wx = true ∧ b'.toNat + l'.toNat ≤ memWords := by
+                      intro b' l' p' hkeq; rw [hkind] at hkeq; injection hkeq with hb hl hp
+                      subst hb; subst hl; subst hp
+                      exact ⟨hwx, narrow_bounds base len off nlen hin hbnd⟩
+                    exact wf_setReg σ2 c.d _ hh
+                      (allocDerived_ok (descDom _) kind _ σ hwx' hpar hwf ha)
+  · intro e σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := capLive_err_state c.d _ σ hcl; rw [hcl] at he
+        injection he with _ h2; subst h2; subst hs; exact hwf
+    | fault f => rw [hcl] at he; simp at he
+    | ok rr σ0 =>
+        obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, en⟩ := rr; simp only at he
+        cases hk : en.kind with
+        | gate gid =>
+            rw [hk] at he; simp only [SpecM.raise] at he
+            injection he with _ h2; subst h2; exact hwf
+        | mem base len perms =>
+            rw [hk] at he; simp only [specM_bind] at he
+            cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+            | err e1 σ1 =>
+                have hs := narrow_err_state base len perms _ σ hn; rw [hn] at he
+                injection he with _ h2; subst h2; subst hs; exact hwf
+            | fault f => rw [hn] at he; simp at he
+            | ok kind σ1 =>
+                have hσn := narrow_ok base len perms _ σ hn |>.1; subst σ1
+                rw [hn] at he; simp only [specM_bind] at he
+                cases ha : allocDerived (descDom ((σ.doms c.d).reg c.op.rs2)) kind ⟨c.d, s, g⟩ σ with
+                | err e2 σ2 =>
+                    have hs := allocDerived_err_state (descDom _) kind _ σ ha; rw [ha] at he
+                    injection he with _ h2; subst h2; subst hs; exact hwf
+                | fault f => rw [ha] at he; simp at he
+                | ok hh σ2 => rw [ha] at he; simp [SpecM.setReg, SpecM.modify] at he
+
 /-- The per-opcode dispatch of `SystemOpsPreserveWf`. Two of eleven ops proved
 (`unmap`, `yield`); the nine capability/gate/Mover ops are the remaining
 kernel-level core. -/
@@ -310,7 +406,7 @@ theorem system_preserves : SystemOpsPreserveWf := by
   case _ => exact ⟨capdup_preserves c σ hwf hinf, capdup_err c σ hwf⟩
   case _ => sorry  -- cap_drop   (reparent/orphan + clearSlot + sweeps)
   case _ => sorry  -- cap_revoke (destroyMarked + sweeps)
-  case _ => sorry  -- mem_grant  (installDerived, cross-domain)
+  case _ => exact memgrant_preserves c σ hwf
   case _ => exact map_preserves c σ hwf hinf
   -- unmap: clear a region register — proved
   case _ =>
