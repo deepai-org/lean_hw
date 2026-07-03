@@ -11,9 +11,13 @@ combinator, `base_preserves_acyclic` (all 14 base ops), `execPreservesAcyclic_of
 *Wf* clause itself needs `Acyclic` (its reparent branch's no-dangling-ref obligation uses
 `Acyclic.parentRef_ne`), so the two invariants cannot be proved independently for the
 revocation ops — the system-op obligation must be the *combined* `Wf ∧ Acyclic → Wf ∧ Acyclic`.
-Remaining: prove the combined system-op obligation (the 7 non-revocation ops' Acyclic clauses
-are trivial/`installDerived`; `cap_drop` via `dropCore_preserves`) and refactor the Wf exec
-chain to carry `Acyclic` so `cap_drop`'s Wf clause is dischargeable.
+**`cap_drop` is now FULLY DISCHARGED** — `capdrop_preserves_wfa` proves it preserves the
+combined `Wf ∧ Acyclic` by threading `capLive → dropCore_preserves`. The first (and hardest)
+revocation opcode is a kernel-verified theorem. Remaining for the combined invariant: the
+7 non-revocation ops' `Acyclic` clauses (trivial for the non-lineage ops; `acyclic_installDerived`
+for `cap_dup`/`mem_grant`), assembling `SystemOpsPreserveAcyclic`, and the mechanical refactor
+threading the combined obligation into `wfa_invariant`. `cap_revoke`/gate ops still need
+`destroyMarked`/`transferCap` (their own kernel lemmas, then the same thread).
 
 ## What builds and runs (verified end to end)
 
