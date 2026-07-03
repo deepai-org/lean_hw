@@ -1889,6 +1889,129 @@ theorem wf_reparent_clear_sweep (σ₁ : MachineState) (old new : CapRef)
   have holdeq : (⟨old.dom, old.slot, old.gen⟩ : CapRef) = old := by cases old; rfl
   rw [holdeq]; exact hno
 
+
+/-- Installing a fresh lineage-less capability (a gate cap) preserves `Wf`: the
+new slot has no cell, so `cell_backed`/`parent_live` are vacuous for it. The
+lineage-`none` case of `transferCap`. -/
+theorem wf_installCapNone (σ : MachineState) (d : DomainId) (s : Slot) (kind : CapKind)
+    (hs : (σ.doms d).caps s = none)
+    (hwx : ∀ base len p, kind = .mem base len p → p.wx = true ∧ base.toNat + len.toNat ≤ memWords)
+    (h : Wf σ) :
+    Wf (σ.setDom d (fun ds =>
+      { ds with caps := Loom.Fun.update ds.caps s (some { kind := kind, lineage := none }) })) := by
+  set σ' := σ.setDom d (fun ds =>
+      { ds with caps := Loom.Fun.update ds.caps s (some { kind := kind, lineage := none }) }) with hσ'
+  have hcaps : ∀ d' s'', (σ'.doms d').caps s'' =
+      if d' = d ∧ s'' = s then some ⟨kind, none⟩ else (σ.doms d').caps s'' := by
+    intro d' s''; rw [hσ']; unfold MachineState.setDom; simp only
+    by_cases hd : d' = d
+    · subst hd; rw [Loom.Fun.update_same]
+      by_cases hss : s'' = s
+      · subst hss; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hss, hss]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+  have hlin : ∀ d' l', (σ'.doms d').lineage l' = (σ.doms d').lineage l' := by
+    intro d' l'; rw [hσ']; unfold MachineState.setDom; simp only
+    by_cases hd : d' = d
+    · subst hd; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd]
+  have hgen : ∀ d', (σ'.doms d').slotGen = (σ.doms d').slotGen := by
+    intro d'; rw [hσ']; unfold MachineState.setDom
+    by_cases hd : d' = d
+    · subst hd; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd]
+  have hrun : ∀ d', (σ'.doms d').run = (σ.doms d').run := by
+    intro d'; rw [hσ']; unfold MachineState.setDom
+    by_cases hd : d' = d
+    · subst hd; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd]
+  have hserv : ∀ d', (σ'.doms d').serving = (σ.doms d').serving := by
+    intro d'; rw [hσ']; unfold MachineState.setDom
+    by_cases hd : d' = d
+    · subst hd; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd]
+  have hreg : ∀ d', (σ'.doms d').regions = (σ.doms d').regions := by
+    intro d'; rw [hσ']; unfold MachineState.setDom
+    by_cases hd : d' = d
+    · subst hd; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd]
+  have hgates : σ'.gates = σ.gates := by rw [hσ']; rfl
+  have hmover : σ'.mover = σ.mover := by rw [hσ']; rfl
+  have hinf : σ'.inflight = σ.inflight := by rw [hσ']; rfl
+  have hlivecap : ∀ (dd : DomainId) (ss : Slot) (gg : Gen) (e : CapEntry),
+      (σ.doms dd).liveCap ss gg = some e → (σ'.doms dd).liveCap ss gg = some e := by
+    intro dd ss gg e hlc
+    have hne : ¬ (dd = d ∧ ss = s) := by
+      rintro ⟨rfl, rfl⟩; unfold DomainState.liveCap at hlc; rw [hs] at hlc; simp at hlc
+    unfold DomainState.liveCap at hlc ⊢; rw [hcaps, if_neg hne, hgen]; exact hlc
+  have hliveref : ∀ r, σ.liveRef r = true → σ'.liveRef r = true := by
+    intro r hr; unfold MachineState.liveRef at hr ⊢
+    rw [Option.isSome_iff_exists] at hr; obtain ⟨e, he⟩ := hr
+    rw [hlivecap r.dom r.slot r.gen e he]; rfl
+  constructor
+  · intro d'
+    have hd := h.doms d'
+    constructor
+    · intro s0; rw [hgen]; exact hd.gen_pos s0
+    · intro s0 e0 l0 he0 hle0
+      rw [hlin]
+      by_cases hnew : d' = d ∧ s0 = s
+      · rw [hcaps, if_pos hnew] at he0; injection he0 with hek; subst hek; simp at hle0
+      · rw [hcaps, if_neg hnew] at he0; exact hd.cell_backed s0 e0 l0 he0 hle0
+    · intro s1 s2 e1 e2 l0 he1 he2 hl1 hl2
+      by_cases h1 : d' = d ∧ s1 = s
+      · rw [hcaps, if_pos h1] at he1; injection he1 with hek1; subst hek1; simp at hl1
+      · by_cases h2 : d' = d ∧ s2 = s
+        · rw [hcaps, if_pos h2] at he2; injection he2 with hek2; subst hek2; simp at hl2
+        · rw [hcaps, if_neg h1] at he1; rw [hcaps, if_neg h2] at he2
+          exact hd.ptr_inj s1 s2 e1 e2 l0 he1 he2 hl1 hl2
+    · intro l0 hl0
+      rw [hlin] at hl0
+      obtain ⟨s0, e0, hc0, he0⟩ := hd.cell_used l0 hl0
+      refine ⟨s0, e0, ?_, he0⟩
+      rw [hcaps]; by_cases hns : d' = d ∧ s0 = s
+      · exfalso; obtain ⟨hd1, hd2⟩ := hns; rw [hd1, hd2, hs] at hc0; exact absurd hc0 (by simp)
+      · rw [if_neg hns]; exact hc0
+    · intro s0 base len p hcase
+      by_cases hnew : d' = d ∧ s0 = s
+      · rcases hcase with hc | ⟨l0, hc⟩ <;>
+          (rw [hcaps, if_pos hnew] at hc
+           simp only [Option.some.injEq, CapEntry.mk.injEq] at hc
+           exact (hwx base len p hc.1).1)
+      · rcases hcase with hc | ⟨l0, hc⟩
+        · rw [hcaps, if_neg hnew] at hc; exact hd.wx s0 base len p (Or.inl hc)
+        · rw [hcaps, if_neg hnew] at hc; exact hd.wx s0 base len p (Or.inr ⟨l0, hc⟩)
+    · intro s0 e0 base len p hc hk
+      by_cases hnew : d' = d ∧ s0 = s
+      · rw [hcaps, if_pos hnew] at hc; simp only [Option.some.injEq] at hc; subst hc
+        exact (hwx base len p hk).2
+      · rw [hcaps, if_neg hnew] at hc; exact hd.bounds s0 e0 base len p hc hk
+  · intro d' s0 p0 hpar0
+    have hpeq : σ'.parentOf d' s0 = σ.parentOf d' s0 := by
+      unfold MachineState.parentOf
+      by_cases hnew : d' = d ∧ s0 = s
+      · obtain ⟨hd1, hd2⟩ := hnew
+        rw [hd1, hd2, hcaps d s, if_pos ⟨rfl, rfl⟩, hs]; simp
+      · rw [hcaps, if_neg hnew]
+        cases hc0 : (σ.doms d').caps s0 with
+        | none => rfl
+        | some e0 => cases hle0 : e0.lineage with
+                     | none => simp [hle0]
+                     | some l0 => simp only [hle0, Option.bind_eq_bind, Option.bind_some]; rw [hlin]
+    rw [hpeq] at hpar0; exact hliveref p0 (h.parent_live d' s0 p0 hpar0)
+  · intro d' r rg; rw [hreg]; intro hrg
+    obtain ⟨e, hl0, hle⟩ := h.region_backed d' r rg hrg
+    exact ⟨e, hlivecap _ _ _ _ hl0, hle⟩
+  · intro job; rw [hmover]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, hliveref _ o3, hliveref _ o4⟩
+  · intro g a; rw [hgates]; intro ha
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    exact ⟨by rw [hserv]; exact s1, by rw [hrun]; exact s2, s3, s4⟩
+  · intro d' g; rw [hserv]; intro hs0; rw [hgates]; exact h.serving_gate d' g hs0
+  · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
+  · intro fl' hfl'; rw [hinf] at hfl'; rw [hrun]; exact h.inflight_running fl' hfl'
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
