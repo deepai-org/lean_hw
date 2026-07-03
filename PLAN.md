@@ -349,10 +349,15 @@ multicycle core in the EDSL lockstep against the ISS.*
       `T2.init_confined`, `T6.totality`, `T8.wx_machine_wide`, `T3.no_resurrection`,
       `T9.init_balanced`. `step_wf` reduced to three localized obligations via proved
       scaffolding (`refillPhase_preserves_wf`, `moverPhase_preserves_wf`, `wf_of_skeleton`,
-      `schedule_running`, the haltDom/haltBase/unwindGate kits, the issue-path helpers).
-      **`Logic/` is now 0 sorries**: the whole invariant (`wf_invariant`, `step_wf`,
-      `wx_machine_wide`) is proved *conditional on `ExecPreservesWf`* — the single
-      per-instruction obligation. Then the L2 engines.
+      `schedule_running`, haltDom/haltBase/unwindGate, issue-path helpers). The whole
+      invariant (`wf_invariant`, `step_wf`, `wx_machine_wide`) is **proved** conditional
+      on `ExecPreservesWf`, which is itself reduced (`execPreservesWf_of_system`) to
+      `SystemOpsPreserveWf`. Of the ISA: **all 14 base opcodes proved**
+      (`BaseOpsWf.base_preserves` via the `PreservesWf` toolkit); **3 of 11 system opcodes
+      proved** (`unmap`/`yield`/`halt`). Remaining: the **8 capability/gate/Mover opcodes'**
+      kernel-operation preservation (`installDerived`/`clearSlot`/`destroyMarked`/
+      `transferCap`/sweeps/gate call-return/Mover) — the T2/T3/T8/T9 kernel core — and
+      the L2 engines.
 - [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
 - [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
 - [ ] **1.11** [m] Acc8 core in the EDSL, lockstep vs Acc8 ISS; then Lnp64u multicycle core,
