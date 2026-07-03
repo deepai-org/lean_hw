@@ -943,6 +943,37 @@ theorem wf_clearSlot_sweep (σ : MachineState) (d : DomainId) (s : Slot)
   · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl hfl; rw [hinf] at hfl; rw [hrun]; exact h.inflight_running fl hfl
 
+
+/-- After reparenting `ref`'s children onto `new ≠ ref`, no cell points at
+`ref`. The `hno` hypothesis `wf_clearSlot_sweep` needs for `cap_drop`'s
+reparent branch (`new` is `ref`'s parent, distinct from `ref` by acyclicity). -/
+theorem reparent_no_ref (σ : MachineState) (ref new : CapRef) (hne : new ≠ ref)
+    (dd : DomainId) (ss : Slot) :
+    (σ.reparent ref new).parentOf dd ss ≠ some ref := by
+  intro hp
+  unfold MachineState.parentOf at hp
+  have hcaps : ((σ.reparent ref new).doms dd).caps = (σ.doms dd).caps := rfl
+  rw [hcaps] at hp
+  cases hc0 : (σ.doms dd).caps ss with
+  | none => simp [hc0, Option.bind_eq_bind] at hp
+  | some e0 =>
+      cases hle0 : e0.lineage with
+      | none => simp [hc0, hle0, Option.bind_eq_bind] at hp
+      | some l0 =>
+          have hlin : ((σ.reparent ref new).doms dd).lineage l0 =
+              match (σ.doms dd).lineage l0 with
+              | some cell => some (if cell.parent = ref then { parent := new } else cell)
+              | none => none := rfl
+          simp only [hc0, hle0, hlin, Option.bind_eq_bind, Option.bind_some] at hp
+          cases hcc : (σ.doms dd).lineage l0 with
+          | none => rw [hcc] at hp; simp at hp
+          | some cell =>
+              rw [hcc] at hp
+              simp only [Option.bind_some] at hp
+              by_cases hpp : cell.parent = ref
+              · rw [if_pos hpp] at hp; exact hne (Option.some.inj hp)
+              · rw [if_neg hpp] at hp; exact hpp (Option.some.inj hp)
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
