@@ -60,7 +60,10 @@ Their `exec` calls the capability-kernel operations (`installDerived`,
 `clearSlot`, `destroyMarked`, `transferCap`, the region/Mover sweeps, gate
 call/return) — proving this is exactly T2/T3/T8/T9's kernel-level content. -/
 def SystemOpsPreserveWf : Prop :=
-  ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ctx, PreservesWf (instr.sem.exec c)
+  ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ (c : Ctx) (σ : MachineState),
+    Wf σ → (σ.doms c.d).run = .running → σ.inflight = none →
+    (∀ a σ', instr.sem.exec c σ = .ok a σ' → Wf σ') ∧
+    (∀ e σ', instr.sem.exec c σ = .err e σ' → Wf σ')
 
 /-- `ExecPreservesWf` (the sole Phase-1 obligation for the whole invariant)
 follows from the proved base-op preservation plus the system-op obligation.
@@ -68,15 +71,13 @@ follows from the proved base-op preservation plus the system-op obligation.
 gives (minus the extra `inflight` conclusion). -/
 theorem execPreservesWf_of_system (hsys : SystemOpsPreserveWf) : ExecPreservesWf := by
   intro instr hmem c σ hwf hrun hinf
-  have hp : PreservesWf (instr.sem.exec c) := by
-    have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
-      have : Machines.Lnp64u.isa = (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray :=
-        rfl
-      rw [this, Array.mem_toArray] at hmem; exact hmem
-    rcases List.mem_append.mp hmem' with hb | hsys'
-    · exact base_preserves instr hb c
-    · exact hsys instr hsys' c
-  exact ⟨fun a σ' he => (hp σ hwf hinf).1 a σ' he |>.1,
-         fun e σ' he => (hp σ hwf hinf).2 e σ' he |>.1⟩
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem; exact hmem
+  rcases List.mem_append.mp hmem' with hb | hsys'
+  · exact ⟨fun a σ' he => (base_preserves instr hb c σ hwf hinf).1 a σ' he |>.1,
+           fun e σ' he => (base_preserves instr hb c σ hwf hinf).2 e σ' he |>.1⟩
+  · exact hsys instr hsys' c σ hwf hrun hinf
 
 end Machines.Lnp64u.Isa
