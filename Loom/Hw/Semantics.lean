@@ -24,7 +24,7 @@ structure St where
   mems : MemEnv
 
 def RegEnv.set (ρ : RegEnv) (name : String) {w : Nat} (v : BitVec w) : RegEnv :=
-  fun n w' => if n = name then (if h : w = w' then h ▸ v else 0#w') else ρ n w'
+  fun n w' => if n = name then (if h : w = w' then h ▸ v else ρ n w') else ρ n w'
 
 def MemEnv.set (μ : MemEnv) (name : String) (a : Nat) {w : Nat} (v : BitVec w) :
     MemEnv :=

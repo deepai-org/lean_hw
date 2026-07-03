@@ -134,4 +134,66 @@ def compile (d : Design) : MV.Module where
   outs := d.regs.map fun r =>
     { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
 
+
+/-! ## Register-fold correctness
+
+The keystone half of the emission theorem: the compiled next-value mux tree
+for a register evaluates, under `convSt`, to the value the design's action
+writes to that register (last write wins). Proved by induction on actions,
+using `compileExpr_eval` at the leaves. -/
+
+open Loom.Emit.MicroVerilog in
+/-- Reading a register out of the µVerilog state built from an EDSL state. -/
+private theorem convSt_regs (σ : Loom.Hw.St) (rn : String) (w : Nat) :
+    (convSt σ).regs rn w = σ.regs rn w := rfl
+
+/-- `nextReg` correctness: the compiled next-value expression evaluates to the
+register's post-action value, given the fallback expression `cur` already
+reflects the accumulator's current value at that register. -/
+theorem nextReg_correct : ∀ (a : Act) (σ acc : Loom.Hw.St) (rn : String) (w : Nat)
+    (cur : MV.Expr w), mvEval (convSt σ) cur = acc.regs rn w →
+    mvEval (convSt σ) (nextReg rn w a cur) = (a.run σ acc).regs rn w := by
+  intro a
+  induction a with
+  | skip => intro σ acc rn w cur hcur; exact hcur
+  | seq x y ihx ihy =>
+      intro σ acc rn w cur hcur
+      exact ihy σ (x.run σ acc) rn w (nextReg rn w x cur) (ihx σ acc rn w cur hcur)
+  | ite c t e iht ihe =>
+      intro σ acc rn w cur hcur
+      have hce : Loom.Emit.MicroVerilog.Expr.eval (convSt σ) (compileExpr c) = c.eval σ :=
+        compileExpr_eval c σ
+      show Loom.Emit.MicroVerilog.Expr.eval (convSt σ)
+            (.mux (compileExpr c) (nextReg rn w t cur) (nextReg rn w e cur)) = _
+      simp only [Loom.Emit.MicroVerilog.Expr.eval, hce]
+      by_cases hc : c.eval σ = 1#1
+      · simp only [hc, if_true, Act.run]
+        exact iht σ acc rn w cur hcur
+      · simp only [hc, if_false, Act.run]
+        exact ihe σ acc rn w cur hcur
+  | write w' r' v =>
+      intro σ acc rn w cur hcur
+      by_cases hr : r' = rn
+      · subst hr
+        by_cases hw : w' = w
+        · subst hw
+          have hlhs : nextReg r' w' (Act.write w' r' v) cur = compileExpr v := by
+            simp [nextReg]
+          rw [hlhs, show mvEval (convSt σ) (compileExpr v)
+                = v.eval σ from compileExpr_eval v σ]
+          simp [Act.run, Loom.Hw.RegEnv.set]
+        · have hlhs : nextReg r' w (Act.write w' r' v) cur = cur := by
+            simp [nextReg, hw]
+          rw [hlhs, hcur]
+          simp [Act.run, Loom.Hw.RegEnv.set, hw]
+      · have hlhs : nextReg rn w (Act.write w' r' v) cur = cur := by
+          simp only [nextReg, if_neg hr]
+        rw [hlhs, hcur]
+        simp only [Act.run, Loom.Hw.RegEnv.set]
+        rw [if_neg (fun (h : rn = r') => hr h.symm)]
+  | memWrite aw dw mn addr data =>
+      intro σ acc rn w cur hcur
+      have hlhs : nextReg rn w (Act.memWrite aw dw mn addr data) cur = cur := rfl
+      rw [hlhs, hcur]; rfl
+
 end Loom.Hw.Compile

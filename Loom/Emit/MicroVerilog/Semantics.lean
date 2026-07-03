@@ -25,7 +25,7 @@ structure St where
   mems : MemEnv
 
 def RegEnv.set (ρ : RegEnv) (name : String) {w : Nat} (v : BitVec w) : RegEnv :=
-  fun n w' => if n = name then (if h : w = w' then h ▸ v else 0#w') else ρ n w'
+  fun n w' => if n = name then (if h : w = w' then h ▸ v else ρ n w') else ρ n w'
 
 /-- Evaluate an expression against the pre-cycle state. Total. -/
 def Expr.eval (σ : St) : {w : Nat} → Expr w → BitVec w

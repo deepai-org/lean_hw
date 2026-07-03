@@ -33,8 +33,12 @@ counts with `lake exe audit`; run `scripts/ci.sh` for the full gate.
 - **Inv.init_wf** — the whole machine well-formedness invariant holds at boot
   (all 8 machine-wide + 6 per-domain conditions), resting only on `step_wf`.
 - **T6.totality** — the machine is total and deterministic.
-- **Loom.Hw.Compile.compileExpr_eval** — the compiler keystone: emitted
-  combinational logic evaluates to the source expression (full induction).
+- **Loom.Hw.Compile.compileExpr_eval** — emitted combinational logic evaluates
+  to the source expression (full induction).
+- **Loom.Hw.Compile.nextReg_correct** — the register-fold keystone: the compiled
+  next-value mux tree evaluates to the value the design's action writes (last
+  write wins), by induction on actions. This is the core of C-HW/E-V; the
+  emission theorems now reduce to assembling it over the register/memory folds.
 - **Logic/KernelLemmas** — `bumpGen` monotonicity, `clearSlot_slotGen`.
 
 **Stated precisely, proof in progress** (`sorry` in body or transitively):
