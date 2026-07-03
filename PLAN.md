@@ -336,7 +336,7 @@ subset + semantics drafted.*
 *Gate: T2–T9 in invariant form; k-induction + BMC online; conformance suites generating; the
 multicycle core in the EDSL lockstep against the ISS.*
 
-- [ ] **1.1** [m] `BitLevel.lean` for both machines (Acc8 first) + correspondences (P3).
+- [x] **1.1** — folded into 1.10/1.11 by decision D8 (netlist is the engine-facing circuit; transport via refinement).
 - [ ] **1.2a** [t] `Dp/Cert/Check.lean` — in-house kernel-reducible LRAT/RUP checker
       (structural recursion, List-based) + soundness vs `Std.Sat.CNF.Unsat`; benchmarked by
       kernel `decide` on pigeonhole certificates (the real D2 numbers).
@@ -402,6 +402,8 @@ two vendors' FPGAs, chain kernel-checked to the Verilog.*
 | D5 | Memory representation | done | Function at Prop level (built); packed arrays at bit level; P3 bridges |
 | D6 | Book render targets | 0.18 HTML; print by 4.3 | HTML first; in-house print pass, scoped ruthlessly |
 | D7 | Variable-length / exotic encodings in Loom.Isa | with the machine that needs them | Fixed-width `Sig` now; extension lands only with a consuming machine (e.g. 6502) |
+| D8 | Engine-facing bit-level representation | **resolved 2026-07-03** | An opaque `BitSys` function can't be CNF-encoded; the L3 EDSL/netlist is the one circuit representation, and engine results transport to specs via refinement (R-MC / A-R), not per-machine BitLevel correspondences. Task 1.1 is folded into 1.10/1.11; `BitSys` stays as the spine's semantic face. |
+| D9 | EDSL write semantics | **resolved 2026-07-03** | v1: reads see pre-cycle state, writes commit at cycle end, last-write-wins across ordered rules (nonblocking-assignment discipline, 1:1 with netlist mux trees). Kôika-style intra-cycle forwarding (read1/write0 ports) added only when a core needs it (Rule 2). |
 
 ---
 

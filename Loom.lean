@@ -8,3 +8,4 @@ import Loom.Dp.Cert.Lrat
 import Loom.Book.Extract
 import Loom.Book.Render.Html
 import Loom.Emit.MicroVerilog.Semantics
+import Loom.Hw.Semantics
