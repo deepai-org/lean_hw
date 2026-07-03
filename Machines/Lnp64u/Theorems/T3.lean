@@ -18,12 +18,40 @@ theorem gen_monotone (m : Manifest) (σ : MachineState) (d : DomainId) (s : Slot
     ((σ.doms d).slotGen s).toNat ≤ (((step m σ).doms d).slotGen s).toNat := by
   sorry
 
+/-- Generation monotonicity extends to any number of cycles. -/
+theorem gen_monotone_n (m : Manifest) (σ : MachineState) (d : DomainId) (s : Slot) :
+    ∀ n, ((σ.doms d).slotGen s).toNat ≤ (((stepN m n σ).doms d).slotGen s).toNat := by
+  intro n
+  induction n generalizing σ with
+  | zero => exact Nat.le_refl _
+  | succ k ih =>
+      calc ((σ.doms d).slotGen s).toNat
+          ≤ (((step m σ).doms d).slotGen s).toNat := gen_monotone m σ d s
+        _ ≤ (((stepN m k (step m σ)).doms d).slotGen s).toNat := ih (step m σ)
+
 /-- **No resurrection.** A dead reference stays dead: once a slot's
-generation has moved past a reference's, no future state revives it. -/
+generation has moved strictly past a reference's, no future state revives
+it. Follows from generation monotonicity: `liveRef` requires the slot's
+current generation to equal the reference's, which monotonicity forbids
+once it has advanced. -/
 theorem no_resurrection (m : Manifest) (σ : MachineState) (r : CapRef)
     (h : r.gen.toNat < ((σ.doms r.dom).slotGen r.slot).toNat) :
     ∀ n, (stepN m n σ).liveRef r = false := by
-  sorry
+  intro n
+  have hmono := gen_monotone_n m σ r.dom r.slot n
+  have hne : ((stepN m n σ).doms r.dom).slotGen r.slot ≠ r.gen := by
+    intro heq
+    rw [heq] at hmono
+    omega
+  unfold MachineState.liveRef DomainState.liveCap
+  cases hc : ((stepN m n σ).doms r.dom).caps r.slot with
+  | none => simp [hc]
+  | some e =>
+      simp only [hc]
+      rw [if_neg]
+      · rfl
+      · simp only [Bool.and_eq_true, decide_eq_true_eq, not_and]
+        intro heq; exact absurd heq hne
 
 /-- **T3.** If `cap_revoke` retires this cycle — the in-flight instruction
 is `cap_revoke` on its last cycle, its handle naming the live memory

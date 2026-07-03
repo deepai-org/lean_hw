@@ -18,8 +18,12 @@ namespace Loom.Hw.Compile
 
 open Loom.Hw
 namespace MV
-export Loom.Emit.MicroVerilog (Expr RegDef MemDef OutDef Module)
+export Loom.Emit.MicroVerilog (Expr RegDef MemDef OutDef Module St)
 end MV
+
+/-- µVerilog expression evaluation, re-exposed for lemma statements. -/
+abbrev mvEval {w : Nat} (σ : Loom.Emit.MicroVerilog.St) (e : MV.Expr w) : BitVec w :=
+  Loom.Emit.MicroVerilog.Expr.eval σ e
 
 /-- Structural expression translation. -/
 def compileExpr : {w : Nat} → Expr w → MV.Expr w
@@ -41,6 +45,38 @@ def compileExpr : {w : Nat} → Expr w → MV.Expr w
   | _, .slice a lo width => .slice (compileExpr a) lo width
   | _, .zext a w' => .zext (compileExpr a) w'
   | _, .sext a w' => .sext (compileExpr a) w'
+
+/-- The state conversion between EDSL and µVerilog state (both are
+name/width-indexed valuations, so this is definitional on the maps). -/
+def convSt (σ : Loom.Hw.St) : MV.St := ⟨σ.regs, σ.mems⟩
+
+/-- Expression translation preserves evaluation. The keystone of the
+emission theorem: the compiled combinational logic computes what the source
+expression means. -/
+theorem compileExpr_eval : ∀ {w : Nat} (e : Expr w) (σ : Loom.Hw.St),
+    mvEval (convSt σ) (compileExpr e) = e.eval σ := by
+  intro w e
+  induction e with
+  | lit v => intro σ; rfl
+  | reg w n => intro σ; rfl
+  | memRead dw m addr ih => intro σ
+                            show σ.mems m (mvEval (convSt σ) (compileExpr addr)).toNat dw = _
+                            rw [ih σ]; rfl
+  | and a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | or a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | xor a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | not a ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
+  | add a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | sub a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | shl a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | shr a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | eq a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | ult a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | slt a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | mux c t f ihc iht ihf => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ihc, iht, ihf]
+  | slice a lo width ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
+  | zext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
+  | sext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
 
 /-- Fold an action into a register's next-value expression: `cur` is the
 value the register takes if this action does not write it. -/
