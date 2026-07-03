@@ -1,169 +1,149 @@
-# Session Report — 2026-07-03
+# Session Report — 2026-07-03 (updated, second stretch)
 
-Scope: the Loom charter (`readme.md`) and `PLAN.md` — a machine-generic verified-processor
-toolchain in Lean 4, LNP64-µ as the first modeled machine. This report records what this
-session accomplished, what remains, and where the genuine blockers are.
+Scope: the Loom charter (`readme.md`) and `PLAN.md`. This report records what the
+continuing session accomplished, what remains, and where the genuine blockers are.
+Every completion claim is Lean-kernel-checked (`lake exe audit`); the flip side is
+that nothing is claimed done that isn't.
 
-Repository state at time of writing: **green build (741 jobs), audit clean**, all work
-committed to `github.com/deepai-org/lean_hw`.
+Repository state at time of writing: **green build, audit clean, 44 CLEAN ledger
+theorems**; full CI (`scripts/ci.sh`) and the Acc8 hardware lockstep pass.
 
 ---
 
-## 1. Accomplished
+## 1. Accomplished this stretch
 
-### 1.1 The L1 capability-safety invariant — complete, unconditional, sorry-free
+### 1.1 The T-theorem program is essentially complete
 
-The central Phase-1 deliverable. `wfa_invariant` (`Machines/Lnp64u/Logic/AcyclicWfa.lean`)
-proves that **every reachable machine state satisfies `Wf ∧ Acyclic`**, across all 25
-opcodes (14 base + 11 system), with no hypotheses and no `sorry`:
+**CLEAN (kernel-checked, standard axioms only):** T1 (complete), **T2 complete**
+(`step_confined`, `authority_confined` — the `KindsLe`/`Dominated` authority sweep),
+**T3 complete including the crown jewel** (`gen_monotone` → `no_resurrection` →
+**`revoke_temporal_safety`**: after a retiring `cap_revoke`, no agent ever writes
+under any marked descendant, forever — via the `Evo`/`RefFate`/tombstone relation and
+two new machine invariants, `ClassLineage` and `MoverLiveMem`), **T4 complete**
+(scrub equalities + the frame theorem via the `Touch`/`CalmLe` whole-cycle
+characterization), **T7 complete** (`wcet_retirement` via the `InflightEq` sweep;
+`budget_delivery`), **T8 complete** (`wx_machine_wide`, `status_word_safety`,
+`prior_holder_excluded`), **T9 complete** (`ledger_balanced`, `budget_bounded` via
+the `BudgetLe` sweep), plus A1, A-R, A-EV (below).
 
-- `#print axioms` = `[propext, Classical.choice, Quot.sound]` — Lean-kernel-verified.
-- Route: `system_preserves_wfa` (all 11 system ops) → `ExecPreservesWfA` →
-  `retire_preserves_wfa` → `corePhase_preserves_wfa` → `step_wfa` → `wfa_invariant`.
-- The hard cases done in full: **cap_drop** (reparent/orphan + clearSlot + sweeps),
-  **cap_revoke** (bulk mark-and-destroy), **gate_call** / **gate_return** (activation
-  bookkeeping routed through the capability-transfer core `transferCap`).
+**STATED (in progress):** T5 `noninterference` — the two-run aligned-instant
+stuttering simulation is fully assembled; five cycle-level engine lemmas remain
+(Wip-sorried, precisely itemized). T6 `no_hostage` — statement repaired three times
+(see §1.2), sorry-free scheduler/progress/potential bricks landed; the final
+counting assembly remains.
 
-Supporting theory built from scratch this session:
+### 1.2 Proof-forced findings (the charter's predicted class) — seven this stretch
 
-- **Acyclicity theory** (`Acyclic.lean`, `AcyclicExec.lean`, `AcyclicPhase.lean`):
-  `climb`/`parentRef` lineage-following, `NoCycle`, preservation through every state
-  operation.
-- **Two novel lemmas**:
-  - `marks_fixpoint` — the revoke sweep's mark set saturates (Finset-counting argument:
-    `markStep` is monotone + inflationary, marked count strictly increases until stable,
-    bounded by `numDomains × numSlots`).
-  - `acyclic_reparent_sibling` — a relabeling function ψ collapsing `new ↦ old` commutes
-    with `climb`, so sibling reparenting preserves acyclicity.
-- **The capability-transfer core**: `wf_transferCap`, `acyclic_transferCap`,
-  `transferCap_frame`, `transferByHandle_preserves`.
+1. **T8 retired-vs-dead**: `prior_holder_excluded` was false with `liveRef = false`
+   (a dead-but-not-retired ref can be re-installed at the same generation); the
+   faithful hypothesis is *retired* (`r.gen < slotGen`).
+2. **T2 narrow wraparound (machine-checked counterexample)**: a zero-length narrow
+   at exactly the end of memory wrapped the 12-bit base to 0, minting authority
+   outside the roots' closure while remaining `Wf`. Fixed with a no-wrap `require`
+   in `narrow` (semantics change, PLAN §8b).
+3. **T6 starvation**: a legal top-priority hog (`Q = P`) starves the serving chain
+   forever; `resumeBound` had no interference term → `StrictlySchedulable`.
+4. **T6 occupancy ≠ charges**: an issue of cost c occupies c+1 cycles but charges c
+   → occupancy factor in the utilization bound.
+5. **T6 residual-budget stall-lock**: the core's stall arm spends nothing and
+   re-picks the same underfunded domain forever — unbounded priority inversion in
+   the frozen scheduler. v1: explicit `StallFree` hypothesis; scheduler redesign
+   filed as PLAN D11.
+6. **T5 three leak channels**: scheduler starvation freezes the destuttered
+   trajectory in one run only; `mem_grant` installs into the isolated domain's
+   table without consent (register-visible via later handle values); the isolated
+   domain's own `mem_grant`/`move` read global state into rd. Fixes: `TopPriority`
+   hypotheses, `Isolated.slots_full`/`code_local`/`wx_disjoint`, observation
+   projected to regs/pc/run/cause (budget provably drifts).
+7. **T3 gate-class gap**: `revoke_temporal_safety`'s hypotheses admit a live
+   gate-class handle (revoke then destroys nothing); the theorem survives only via
+   the new `ClassLineage` + `MoverLiveMem` invariants.
 
-### 1.2 Three proof-forced design findings
+### 1.3 Phase 2 — the silicon path is now real for both machines
 
-The charter predicts formalization will force invariant strengthenings; three occurred
-(each recorded in `STATUS.md` and project memory):
+- **Acc8 chain closed end to end, kernel-checked**: spec ⊑ EDSL core (**A-R**),
+  core ≃ compiled µVerilog module (**A-EV**, register AND memory halves of the
+  generic emission theorem proved — `compile_cycle_regs`, `compile_cycle_mems`),
+  µVerilog **parser + round-trip** (`parseCheck` soundness; a kernel-`decide`d
+  full-grammar demo; byte-level `#guard` regression on the emitted `rtl/acc8.v`),
+  and iverilog/yosys corroboration (`scripts/lockstep_acc8.sh`). The trusted base
+  remains the Lean kernel + the single `ImplementsStandard` axiom.
+- **Multi-port memories (`wrPorts`)**: Loom extension driven by the µ Mover's
+  same-cycle dst+status writes (Rule 2); per-port compiler folds with the memory
+  half of the emission theorem re-proved generically over port lists;
+  3-port collision kernel test.
+- **LNP64-µ core in the EDSL (task 1.11), base half**: full state encoding
+  (633 registers, DESIGN.md naming/packing contract), `abs`, refill/scheduler/
+  issue/retire/halt-unwind circuits, all 14 base ops; **256-cycle full-state
+  lockstep vs the ISS is green**. System-op + Mover circuits and `rtl/lnp64u.v`
+  emission are in flight (see §2).
+- **µLog seed (L1)**: generic BI core (`Pcm`/`Prp`, sep/wand adjunction laws),
+  step-indexing (`later`, Löb induction), and the µ resource-algebra instance
+  wired to T9's conserved quantities.
 
-1. **Acyclicity bound** — the chain-depth bound must be `numDomains × numLineage`
-   (cross-domain), not per-domain.
-2. **cap_drop Wf↔Acyclic coupling** — cap_drop's Wf preservation is unprovable without
-   acyclicity (the Wf-only obligation `system_preserves` is dead/superseded); the combined
-   invariant is the correct statement.
-3. **gate_saved_none** — `Wf` needs the clause `∀ g a, (gates g).act = some a →
-   a.savedServing = none` (activations never stack in µ); without it `gate_return`'s
-   serving-restore is unprovable. Added to `Wf` and re-discharged in all ~25 op proofs.
+### 1.4 Phase 3 — L2 proof engines
 
-Also proof-forced (found while stating T3/T8): `transferCap` must sweep regions/mover
-after the move, else the giver retains cached authority over the moved range.
+- **`Loom/Dp/Cert/Check.lean`**: in-house, kernel-reducible RUP/LRAT checker with
+  a full soundness proof (`check_sound → CNF.Unsat`), axioms `[propext, Quot.sound]`.
+  Real D2 numbers (cadical certs under plain kernel `decide`): php4 ≈ 0.2 s,
+  php5 ≈ 1.5 s, php6 ≈ 13.5 s, php7 ≈ 4.5 min — **D2: go**, budget ~10²–10³
+  solver-LRAT steps per query.
+- **`checker/`**: the independent second checker — a standalone Lake package
+  (zero Loom/Machines/Mathlib imports, own CNF/LRAT types, full deletion
+  support) with a `chk` CLI, cross-validated against the Loom leg on cadical
+  proofs plus a mutation-rejection matrix; CI-wired with solver-absent skip.
+- **BMC/k-induction** (`Dp/Cnf, Solver, Bmc, KInduction`) are in flight.
 
-### 1.3 T-theorems discharged (2 of 9 → plus one nearly complete)
+### 1.5 Earlier in this same continuing session
 
-- **T9 `ledger_balanced`** — lineage ledger balances in every reachable state, via a
-  `Finset.card_bij` bijection between derived caps and occupied cells
-  (`LedgerBalanced_of_Wf`, from the invariant). Unconditional.
-- **T8 `wx_machine_wide`** — W^X machine-wide, discharged from `wfa_invariant`
-  (dropped its former `ExecPreservesWf` hypothesis). Unconditional.
-
-### 1.4 gen_monotone (T3) — infrastructure complete, dispatch 9/11
-
-`gen_monotone` (slot generations never decrease across `step`) unlocks T3 temporal safety
-(`gen_monotone_n` and `no_resurrection` are already proven modulo it). Built this session
-in `Machines/Lnp64u/Logic/SlotGen.lean`:
-
-- **`SlotGenLe` combinator** — SpecM-level monotonicity, mirroring `PreservesAcyclic`:
-  `of_preservesGen`, `pure`, `bind`, `iteBool`, `reg`, `raise`, `require`, `load`,
-  `setReg`, `updDomPc`, `store`, `demand`, `get`, `narrow`, `capLive`, `updDomGen`,
-  `allocDerived`.
-- **`base_slotGen_le`** — all 14 base opcodes proven.
-- **Kernel bounds** — slotGen is written in exactly two places (`clearSlot`,
-  `destroyMarked`), both via `bumpGen`: `clearSlot_slotGen_ge`,
-  `destroyMarked_slotGen_ge`, plus composite bounds `clearSlot_sweeps_slotGen_ge`
-  (cap_drop core) and `destroyMarked_sweeps_slotGen_ge` (cap_revoke core), and
-  preservation lemmas (`haltDom_slotGen`, `installDerived_slotGen`, `reparent_slotGen`,
-  `sweepMover_slotGen`, `setDom_slotGen_of`).
-- **`transferCap_slotGen_ge`** — the gate-op kernel core never lowers slotGen (just
-  completed, builds green).
-- **Phase reduction** — `step_slotGen_reduce`: step's slotGen equals
-  `corePhase (refillPhase σ)`'s (mover phase and cycle bump leave domains untouched).
-- **`system_slotGen_le` dispatch: 9 of 11 ops done** — cap_dup, cap_drop, cap_revoke,
-  mem_grant, map, unmap, move (via `move_slotGen_le`, mirroring `move_ok`/`move_err`),
-  yield, halt. In the audit-permitted `Wip` namespace with 2 sorries remaining
-  (gate_call, gate_return).
-
-### 1.5 Session-earlier context (same continuing session)
-
-Phase 0 and the Phase-1 skeleton predate this stretch: machine-generic `Loom` core
-(SpecM, machine/manifest, Invariant), the full LNP64-µ ISA (25 opcodes with semantics,
-cost model, prose), `init_wf`, phase lemmas, the audit executable, and STATUS tracking.
+The L1 capability-safety invariant `wfa_invariant` (`Wf ∧ Acyclic` for every
+reachable state, all 25 opcodes, no hypotheses, no sorry) — see STATUS.md for the
+full account, including `marks_fixpoint`, `acyclic_reparent_sibling`, and the
+`transferCap` verification core.
 
 ---
 
 ## 2. Remaining work
 
-### 2.1 Immediate (Phase 1, mechanical from here)
-
-- **`system_slotGen_le`: gate_call + gate_return** — the last two dispatch cases. Both
-  route through `transferByHandle` → `transferCap`; `transferCap_slotGen_ge` (done) is
-  the hard kernel piece. What remains is threading each gate op's exec prefix
-  (requires/gate-config reads/depth check) exactly as their Wf proofs did — fiddly
-  (the gateDepth match-motive issue returns) but established-pattern work.
-- **`corePhase_slotGen_ge` + `gen_monotone`** — lift the exec bound through retire →
-  corePhase, compose with `step_slotGen_reduce`. Then **T3 temporal safety**
-  (`gen_monotone_n`, `no_resurrection`) discharges immediately.
-
-### 2.2 Phase 1: remaining T-theorem bodies (each ~150–400 lines, sorried)
-
-| Theorem | Content | Character |
-|---|---|---|
-| T2 | `step_confined`, `authority_confined` | per-op frame analysis over exec |
-| T4 | `activation_entry_scrubbed`, `caller_resumption`, frame | gate-op operational detail |
-| T5 | noninterference | two-run relational proof — hardest remaining |
-| T6 | `no_hostage` | liveness-flavored, needs budget/refill reasoning |
-| T7 | `wcet_retirement`, `budget_delivery` | cost-model accounting |
-| T8 | `prior_holder_excluded`, `status_word_safety` | from invariant + transfer frame |
-| T9 | `budget_bounded` | refill-phase budget ≤ quota, near-mechanical |
-
-The completed L1 invariant is the correct foundation for all of these — each is now a
-matter of per-cycle operational reasoning above it, not new invariant discovery.
-
-### 2.3 Phases 2–4 (not started; multi-person-scale per the charter)
-
-- **Phase 2**: µLog (the HDL subset) and its logical relation to the spec; the pipeline
-  model; the memory-port emission half.
-- **Phase 3**: the L2 proof engines; the second (independent) checker.
-- **Phase 4**: FPGA bring-up and hardware corroboration of the verified core.
+1. **T6 assembly** (in flight): the lex-measure/potential counting argument on top
+   of the landed bricks.
+2. **T5 engine lemmas** (in flight): five Wip cycle-level sweeps
+   (`insulated_step`, `frame_step`, `retire_step_lockstep`, `progress`, `issue_step`).
+3. **LNP64-µ core completion** (in flight): the 11 system-op circuits (including
+   the unrolled 64-iteration revoke marking fixpoint), the Mover rule on write
+   ports 1/2, full-ISA lockstep, `rtl/lnp64u.v` emission + iverilog/yosys.
+4. **BMC/k-induction** (in flight): Tseitin encoding with the `encode_sound`
+   direction proved, cadical driver, first certificate-checked result on Acc8.
+5. **R-MC** (LNP64-µ core ⊑ spec): by the 1-cycle-per-spec-cycle design this is a
+   plain `Simulation` per field; statement lands with the completed core; the proof
+   is the natural next major stretch (Phase 3).
+6. **Scheduler redesign (PLAN D11)**: fix the stall-lock priority inversion in the
+   machine and re-run the (mechanical) invariant stack; would let T6 drop the
+   `StallFree` hypothesis.
+7. FPGA bring-up and hardware corroboration: **explicitly out of scope** this
+   session (per direction); the flow stops at iverilog/yosys.
 
 ---
 
-## 3. Blockers
+## 3. Blockers and honest caveats
 
-1. **Charter scope vs. session scope (the fundamental one).** `readme.md` explicitly
-   scopes Loom as a multi-phase, multi-person research program. "Fully implement
-   PLAN.md and readme.md" is not achievable in any single session; the honest stopping
-   state is maximal verified progress plus an accurate record (this file). Every
-   completion claim in this repo is Lean-kernel-checked; the flip side is that nothing
-   can be claimed done that isn't.
-2. **Proof-labor scaling, not conceptual difficulty.** No remaining Phase-1 item is
-   blocked on an unknown: the invariant, kernel bounds, and reduction lemmas exist. But
-   each opcode case is 30–80 lines of exact syntactic threading (SpecM bind-casing per
-   the `specM_bind`-expansion style), and Lean's dependent-match motives make shortcuts
-   fail (`cases h : e` non-substitution; `let`-inlined matches breaking syntactic
-   rewriting — twice worked around by extracting named defs, `gateDepth`/`gateCallExec`).
-   This is throughput-bound, not idea-bound.
-3. **T5 noninterference needs new machinery.** Unlike the others, it needs a two-run
-   state relation (low-equivalence) and a simulation argument — the one remaining
-   Phase-1 item that is design work, not threading.
-4. **Phases 2–4 need artifacts that don't exist yet** (µLog definition, pipeline model,
-   second checker, FPGA target) — they are green-field subprojects, not proofs over the
-   current codebase.
-
----
+1. **T6/T5 closure risk.** Both are genuine liveness/relational proofs; the
+   remaining pieces are precisely itemized but nontrivial. If they don't close this
+   session, the ledger will honestly show them STATED with sorry-free
+   infrastructure beneath.
+2. **The stall-lock is a real machine bug** (D11), not a proof artifact: the frozen
+   scheduler admits unbounded priority inversion. T6 currently carries `StallFree`
+   as an explicit hypothesis; the honest fix is a semantics change.
+3. **Emission scale.** The unrolled revoke fixpoint makes `rtl/lnp64u.v` large;
+   yosys runtimes/cell counts will be reported as measured, and the DESIGN.md
+   records the multicycle-marking optimization path if needed.
+4. **checker/ divergence note**: Std's LRAT checker does full propagation and so
+   accepts one hint-dropping mutant the strict checker rejects (both sound); noted
+   in the crosscheck script.
 
 ## 4. Where to resume
 
-1. Finish `system_slotGen_le` gate cases (use `gateCallExec`/`gateDepth` named defs;
-   `transferCap_slotGen_ge` + `transferByHandle` threading).
-2. `corePhase_slotGen_ge` → `gen_monotone` → T3 closes.
-3. T9 `budget_bounded` (likely the cheapest remaining theorem: refill sets budget := Q,
-   exec only decrements — mirror the slotGen combinator with a budget bound).
-4. T2/T4/T8 residuals from the frame lemmas already in `ExecWf.lean`/`CapDropWfa.lean`.
-5. T5 design (low-equivalence relation) before its proof.
+1. Land the four in-flight branches (T6, T5 engines, core completion, BMC).
+2. R-MC statement + proof for the completed core.
+3. D11 scheduler change + re-verification sweep; then drop `StallFree` from T6.
+4. Phase 3 logical relation (T2′/T4′) on the µLog seed; PDR as scaling demands.
