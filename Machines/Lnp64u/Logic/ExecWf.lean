@@ -555,6 +555,19 @@ theorem allocDerived_ok (owner : DomainId) (kind : CapKind) (parent : CapRef)
             (freeSlot_caps_none σ owner hfs) (freeCell_none σ owner hfc) hwx hpar h
 
 
+
+/-- Programming the Mover preserves `Wf`, given the job's capabilities are live
+and owned by the job's owner (the `mover_wf` obligation for the new job; only
+the `mover` field changes). Infrastructure for the `move` opcode. -/
+theorem wf_setMover (σ : MachineState) (job : MoverJob)
+    (h1 : job.src.dom = job.owner) (h2 : job.dst.dom = job.owner)
+    (h3 : σ.liveRef job.src = true) (h4 : σ.liveRef job.dst = true) (h : Wf σ) :
+    Wf { σ with mover := some job } := by
+  obtain ⟨hdoms, hpl, hrb, _hmw, hgs, hsg, hbg, hir⟩ := h
+  refine ⟨hdoms, hpl, hrb, ?_, hgs, hsg, hbg, hir⟩
+  intro j hj; simp only [Option.some.injEq] at hj; subst hj
+  exact ⟨h1, h2, h3, h4⟩
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all

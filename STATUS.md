@@ -90,15 +90,14 @@ ALU/branch/memory opcodes; and `execPreservesWf_of_system` proves the whole
 `ExecPreservesWf` from a single remaining obligation, **`SystemOpsPreserveWf`
 — the 11 system opcodes**. So the entire machine invariant now reduces, with
 everything else proved, to `SystemOpsPreserveWf` — the eleven system opcodes.
-Of those, **4 are proved** (`Logic/SystemOpsWf`): `unmap` (via `wf_clearRegion`),
-`yield` (`wf_updDomBudget`), `halt` (`haltDom_preserves_wf`), and `map` (via
-`capLive_ok` + `wf_installRegion`). **7 capability/gate/Mover opcodes remain** —
-each isolated as its own `sorry` in the `Wip` namespace: `cap_dup`, `cap_drop`,
-`cap_revoke`, `mem_grant` (capability derivation/revocation), `gate_call`,
-`gate_return` (gate transfer), `move` (Mover). Their proofs are the
-capability-kernel operations (`installDerived`, `clearSlot`, `destroyMarked`,
-`transferCap`, gate machinery, Mover programming) preserving `Wf` — exactly
-T2/T3/T8/T9's kernel content, the irreducible research core. Infrastructure in
+Of those, **6 are proved** (`Logic/SystemOpsWf`): `unmap`, `yield`, `halt`,
+`map`, and — the full capability-derivation ops — `cap_dup` and `mem_grant`
+(via the `capLive_ok` → `narrow_ok` → `allocDerived_ok` → `wf_installDerived`
+chain, which maintains the entire T9 lineage bijection). **5 opcodes remain**:
+`cap_drop`, `cap_revoke` (revocation — `clearSlot`/`destroyMarked` + the
+region/Mover sweeps), `gate_call`, `gate_return` (gate transfer machinery), and
+`move` (the Mover — `wf_setMover` infrastructure is proved). These are the
+deepest T3/T8 kernel content, the irreducible research core. Infrastructure in
 place: `capLive_ok`/`capLive_err_state` (cap-op state characterization),
 `freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`,
 and — the two hardest kernel lemmas — **`wf_installDerived`** (capability
@@ -107,7 +106,7 @@ and **`allocDerived_ok`** (its bridge). With these, `cap_dup`/`mem_grant`
 reduce to threading `capLive` + a `narrow` characterization (plus the
 narrowed range's BitVec no-wrap bound); `cap_drop`/`cap_revoke` to
 `clearSlot`/`destroyMarked` + sweep lemmas; the gate ops to the gate
-machinery; `move` to the Mover.
+machinery; `move` to the Mover (`wf_setMover` proved).
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the
