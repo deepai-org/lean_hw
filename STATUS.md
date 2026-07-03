@@ -288,3 +288,14 @@ statement moving.
 
 No trusted printer, no importers, no solver in the TCB. Mathlib is a
 dependency but adds nothing to the TCB (kernel-checked, P8).
+
+**gen_monotone (T3) infrastructure — COMPLETE (as of this session):** the `SlotGenLe` combinator
+(`Machines/Lnp64u/Logic/SlotGen.lean`), all 14 base opcodes (`base_slotGen_le`), both kernel bump
+lemmas (`clearSlot_slotGen_ge`/`destroyMarked_slotGen_ge` — the only slotGen writers, both via
+`bumpGen`), the composite cap_drop/cap_revoke bounds, the preserving-op lemmas (halt/yield/unmap/
+mapUpd/allocDerived/installDerived_slotGen/capLive/updDomGen/reparent/sweepMover), and the phase
+reduction (`step_slotGen_reduce`: step's slotGen = corePhase(refillPhase σ)'s). **Remaining:** the
+exec dispatch (`system_slotGen_le`, 11 system-op cases — 7 preserving via the combinator, 4 bumping
+via the kernel bounds) + `corePhase_slotGen_ge` + `gen_monotone`. Same threading pattern as the
+already-completed `system_preserves`/`system_preserves_acyclic`.
+
