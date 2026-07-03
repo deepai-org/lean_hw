@@ -1108,6 +1108,47 @@ theorem dctx_refill {m : Manifest} {d : DomainId} {σ : MachineState}
   ncallee := fun g => by rw [refillPhase_gates]; exact hctx.ncallee g
   acaller := fun g a ha => hctx.acaller g a (by rw [← refillPhase_gates m σ]; exact ha)
 
+/-- Refill never touches `maxDonation`. -/
+theorem refillPhase_maxDon (m : Manifest) (σ : MachineState) (d : DomainId) :
+    ((refillPhase m σ).doms d).maxDonation = (σ.doms d).maxDonation := by
+  rcases refillPhase_doms m σ d with h | h <;> rw [h]
+
+/-- A writable coverage of `d` never lands under `d`'s executable roots
+(`wx_disjoint`): `d` cannot rewrite its own code. -/
+theorem covers_w_not_underXRoots {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hiso : Isolated m d) (hins : Insulated m d σ) :
+    ∀ a, σ.domCovers d a { r := false, w := true, x := false } = true →
+      ¬ UnderXRoots m d a := by
+  intro a hcov hX
+  unfold MachineState.domCovers at hcov
+  rw [decide_eq_true_iff] at hcov
+  obtain ⟨r, rg, hrg, hc⟩ := hcov
+  unfold Region.covers at hc
+  simp only [Bool.and_eq_true, decide_eq_true_iff] at hc
+  obtain ⟨⟨hlo, hhi⟩, hperm⟩ := hc
+  obtain ⟨b, l, p, hk, hb, hbl, hp⟩ := region_of_insulated hins hrg
+  have hw : rg.perms.w = true := by
+    by_contra hn
+    have hz : rg.perms.w = false := by revert hn; cases rg.perms.w <;> simp
+    unfold Perms.le at hperm
+    rw [hz] at hperm
+    simp at hperm
+  have hpw : p.w = true := by
+    by_contra hn
+    have hz : p.w = false := by revert hn; cases p.w <;> simp
+    unfold Perms.le at hp
+    rw [hz, hw] at hp
+    simp at hp
+  obtain ⟨s', b', l', p', hk', hx', hb', hbl'⟩ := hX
+  rcases hiso.wx_disjoint _ s' b l p b' l' p' hk hk' hpw hx' with hle | hle <;> omega
+
+/-- The refill phase leaves coverage alone. -/
+theorem refillPhase_covers (m : Manifest) (σ : MachineState) (e : DomainId)
+    (a : Addr) (need : Perms) :
+    (refillPhase m σ).domCovers e a need = σ.domCovers e a need := by
+  unfold MachineState.domCovers
+  rw [refillPhase_regions]
+
 /-! ## Work-in-progress engine lemmas
 
 The four cycle-level engines the T5 assembly consumes. Statements are
@@ -1142,12 +1183,6 @@ final; proofs are the remaining T5 work, itemized:
 -/
 
 namespace Wip
-
-/-- **Engine 1: the insulation invariant is inductive.** -/
-theorem insulated_step (m : Manifest) (d : DomainId) (σ : MachineState)
-    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ) :
-    Insulated m d (step m σ) := by
-  sorry
 
 /-- **Engine 2: the d-slice frame.** A cycle that does not retire `d`'s
 in-flight instruction and does not issue for `d` leaves `d`'s slice and
@@ -1205,6 +1240,492 @@ theorem frame_step (m : Manifest) (d : DomainId) (σ : MachineState)
       lineage := by rw [hdd, refillPhase_lineage]
       regions := by rw [hdd, refillPhase_regions]
       mem := hmem }
+
+/-- **Engine 1: the insulation invariant is inductive.** -/
+theorem insulated_step (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ) :
+    Insulated m d (step m σ) := by
+  have hexecA := execPreservesWfA_of_system Machines.Lnp64u.Isa.Wip.system_preserves_wfa
+  obtain ⟨hwf', hac'⟩ := step_wfa hexecA m hm σ hins.wf hins.acyclic
+  have hexec : ExecPreservesWf :=
+    Machines.Lnp64u.Isa.execPreservesWf_of_system Machines.Lnp64u.Isa.Wip.system_preserves
+  have hctx := dctx_of_insulated hiso hins
+  have hctxρ := dctx_refill (m := m) hctx
+  have hwfρ : Wf (refillPhase m σ) := refillPhase_preserves_wf m σ hins.wf
+  have hwfκ : Wf (corePhase m (refillPhase m σ)) := corePhase_preserves_wf hexec m hm _ hwfρ
+  set ρ := refillPhase m σ with hρdef
+  set κ := corePhase m ρ with hκdef
+  have hdoms : (step m σ).doms = κ.doms := step_doms m σ
+  have hgatesS : (step m σ).gates = κ.gates := moverPhase_gates κ
+  have hinfS : (step m σ).inflight = κ.inflight := moverPhase_inflight κ
+  have hservρ : (ρ.doms d).serving = none := hctxρ.dserv
+  have hmemρ : ∀ a, ρ.mem a = σ.mem a := fun a => congrFun (refillPhase_frame m σ).1 a
+  -- the common assembly from κ-level facts
+  have assemble :
+      (κ.doms d).caps = (σ.doms d).caps →
+      (κ.doms d).slotGen = (σ.doms d).slotGen →
+      (κ.doms d).lineage = (σ.doms d).lineage →
+      (κ.doms d).serving = none →
+      (∀ g, (κ.doms d).run ≠ .blocked g) →
+      (∀ e r rg, (κ.doms e).regions r = some rg → rg.backing.dom = e) →
+      (∀ e, e ≠ d → ∀ s entry b l p, (κ.doms e).caps s = some entry →
+        entry.kind = .mem b l p → ∀ a : Addr, b.toNat ≤ a.toNat →
+        a.toNat < b.toNat + l.toNat → ¬ UnderRoots m d a) →
+      (∀ job, κ.mover = some job → job.owner ≠ d) →
+      (∀ g, (κ.gates g).config = (σ.gates g).config) →
+      (κ.doms d).budget ≤ (m.doms d).budgetQ →
+      (κ.doms d).maxDonation = (m.doms d).maxDonation →
+      (∀ a, UnderXRoots m d a → κ.mem a = σ.mem a) →
+      ((∀ a, UnderRoots m d a → (step m σ).mem a = κ.mem a) →
+        ∀ fl, κ.inflight = some fl → fl.dom = d →
+          fetch (step m σ) d = some fl.word) →
+      Insulated m d (step m σ) := by
+    intro hcaps hgen hlin hserv hnb hro hfo hmov hgcfg hbud hmdon hmemX hlatch
+    have hmemR : ∀ a, UnderRoots m d a → (step m σ).mem a = κ.mem a := by
+      intro a ha
+      exact moverPhase_mem_frame hwfκ.region_backed hro hfo hmov
+        (fun job hj => (hwfκ.mover_wf job hj).2.1) a ha
+    refine ⟨hwf', hac', ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    · rw [congrFun hdoms d, hcaps]; exact hins.boot_caps
+    · rw [congrFun hdoms d, hgen]; exact hins.boot_slotGen
+    · rw [congrFun hdoms d, hlin]; exact hins.boot_lineage
+    · rw [congrFun hdoms d]; exact hserv
+    · intro g; rw [congrFun hdoms d]; exact hnb g
+    · intro e r rg h
+      rw [congrFun hdoms e] at h
+      exact hro e r rg h
+    · intro e he s entry b l p hc hk
+      rw [congrFun hdoms e] at hc
+      exact hfo e he s entry b l p hc hk
+    · intro job hj
+      have hj' : (moverPhase κ).mover = some job := hj
+      rcases moverPhase_mover κ with hnone | ⟨job0, job', hj0, hjeq, howner, -, -⟩
+      · rw [hnone] at hj'; cases hj'
+      · rw [hjeq] at hj'
+        injection hj' with hj'
+        rw [← hj', howner]
+        exact hmov job0 hj0
+    · intro g
+      have h1 : ((step m σ).gates g).config = ((κ.gates g)).config := by rw [hgatesS]
+      rw [h1, hgcfg g]
+      exact hins.gates_static g
+    · rw [congrFun hdoms d]; exact hbud
+    · rw [congrFun hdoms d]; exact hmdon
+    · intro a hX
+      rw [hmemR a hX.underRoots, hmemX a hX]
+      exact hins.code_intact a hX
+    · intro fl hfl hfd
+      rw [hinfS] at hfl
+      exact hlatch hmemR fl hfl hfd
+  rcases hinf : σ.inflight with _ | fl
+  · -- idle core
+    have hρinf : ρ.inflight = none := by rw [hρdef, refillPhase_inflight]; exact hinf
+    by_cases hsd : schedule m ρ = some d
+    · -- CASE C: issue instant for d
+      have hpay : ρ.payer d = d := payer_eq_self ρ d hservρ
+      have hfρ : fetch ρ d = fetch σ d := by rw [hρdef]; exact refillPhase_fetch m σ d
+      -- a sub-assembly for the two issue-halt shapes and the stall
+      have haltcase : ∀ f : Fault, corePhase m ρ = haltWith ρ d f →
+          Insulated m d (step m σ) := by
+        intro f hcore
+        have hbase : κ = ρ.haltBase d (BitVec.ofNat 32 f.code) := by
+          rw [hκdef, hcore]
+          exact haltDom_base ρ d _ hservρ
+        have hdd : ∀ pr : DomainState → Prop,
+            pr (ρ.haltBase d (BitVec.ofNat 32 f.code) |>.doms d) → pr (κ.doms d) := by
+          intro pr h
+          rw [hbase]
+          exact h
+        refine assemble ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+        · rw [hbase, haltBase_caps, hρdef, refillPhase_caps]
+        · rw [hbase, haltBase_slotGen, hρdef, refillPhase_slotGen]
+        · rw [hbase, haltBase_lineage, hρdef, refillPhase_lineage]
+        · rw [hbase, haltBase_serving, if_pos rfl]
+        · intro g
+          rw [hbase, haltBase_run, if_pos rfl]
+          simp
+        · intro e r rg h
+          rw [hbase, haltBase_regions] at h
+          exact hctxρ.ro e r rg h
+        · intro e he s entry b l p hc hk
+          rw [hbase, haltBase_caps] at hc
+          exact hctxρ.fo e he s entry b l p hc hk
+        · intro job hj
+          rw [hbase, haltBase_mover] at hj
+          exact hctxρ.movOff job hj
+        · intro g
+          rw [hbase]
+          show ((ρ.haltBase d _).gates g).config = _
+          rw [haltBase_gates, hρdef, refillPhase_gates]
+        · have : (κ.doms d).budget = (ρ.doms d).budget := by
+            rw [hbase]
+            unfold MachineState.haltBase
+            rw [setDom_doms_same]
+          rw [this]
+          exact refillPhase_budget_le m σ d hins.budget_le
+        · have : (κ.doms d).maxDonation = (ρ.doms d).maxDonation := by
+            rw [hbase]
+            unfold MachineState.haltBase
+            rw [setDom_doms_same]
+          rw [this, hρdef, refillPhase_maxDon]
+          exact hins.maxDon_eq
+        · intro a hX
+          rw [hbase]
+          show (ρ.haltBase d _).mem a = σ.mem a
+          exact hmemρ a
+        · intro _ fl hfl
+          rw [hbase, haltBase_inflight, hρinf] at hfl
+          cases hfl
+      cases hf : fetch σ d with
+      | none =>
+          refine haltcase .memoryAuthority ?_
+          have hfρ' : fetch ρ d = none := by rw [hfρ]; exact hf
+          unfold corePhase
+          simp only [hρinf, hsd, hfρ']
+      | some w =>
+          have hfρ' : fetch ρ d = some w := by rw [hfρ]; exact hf
+          cases hd : Loom.Isa.decode isa w with
+          | none =>
+              refine haltcase .illegalInstruction ?_
+              unfold corePhase
+              simp only [hρinf, hsd, hfρ', hd]
+          | some instr =>
+              by_cases hbud : instr.cost.cost ≤ (ρ.doms d).budget
+              · -- latch
+                have hbud' : instr.cost.cost ≤ (ρ.doms (ρ.payer d)).budget := by
+                  rw [hpay]; exact hbud
+                have hcore : κ =
+                    { ρ.setDom (ρ.payer d)
+                        (fun ds => { ds with budget := ds.budget - instr.cost.cost })
+                      with inflight := some ⟨d, w, instr.cost.cost⟩ } := by
+                  rw [hκdef]
+                  unfold corePhase
+                  simp only [hρinf, hsd, hfρ', hd, hservρ]
+                  rw [if_pos hbud']
+                rw [hpay] at hcore
+                have hκd : κ.doms d =
+                    { ρ.doms d with budget := (ρ.doms d).budget - instr.cost.cost } := by
+                  rw [hcore]
+                  exact setDom_doms_same ρ d
+                    (fun ds => { ds with budget := ds.budget - instr.cost.cost })
+                have hκe : ∀ e, e ≠ d → κ.doms e = ρ.doms e := by
+                  intro e he
+                  rw [hcore]
+                  exact setDom_doms_ne ρ d
+                    (fun ds => { ds with budget := ds.budget - instr.cost.cost }) e he
+                refine assemble ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+                · rw [hκd, hρdef, refillPhase_caps]
+                · rw [hκd, hρdef, refillPhase_slotGen]
+                · rw [hκd, hρdef, refillPhase_lineage]
+                · rw [hκd]; exact hservρ
+                · intro g
+                  rw [hκd]
+                  show (ρ.doms d).run ≠ .blocked g
+                  exact hctxρ.dnoblk g
+                · intro e r rg h
+                  by_cases he : e = d
+                  · subst he
+                    rw [hκd] at h
+                    exact hctxρ.ro e r rg h
+                  · rw [hκe e he] at h
+                    exact hctxρ.ro e r rg h
+                · intro e he s entry b l p hc hk
+                  rw [hκe e he] at hc
+                  exact hctxρ.fo e he s entry b l p hc hk
+                · intro job hj
+                  rw [hcore] at hj
+                  exact hctxρ.movOff job hj
+                · intro g
+                  have h1 : (κ.gates g).config = (ρ.gates g).config := by
+                    rw [hcore]
+                    rfl
+                  rw [h1, hρdef, refillPhase_gates]
+                · rw [hκd]
+                  show (ρ.doms d).budget - instr.cost.cost ≤ (m.doms d).budgetQ
+                  have := refillPhase_budget_le m σ d hins.budget_le
+                  rw [← hρdef] at this
+                  omega
+                · rw [hκd]
+                  show (ρ.doms d).maxDonation = _
+                  rw [hρdef, refillPhase_maxDon]
+                  exact hins.maxDon_eq
+                · intro a hX
+                  rw [hcore]
+                  show ρ.mem a = σ.mem a
+                  exact hmemρ a
+                · intro hmemR fl hfl hfd
+                  rw [hcore] at hfl
+                  have hfl' : some (⟨d, w, instr.cost.cost⟩ : InFlight) = some fl := hfl
+                  injection hfl' with hfl'
+                  rw [← hfl']
+                  show fetch (step m σ) d = some w
+                  have hfz : DFrozen m d σ (step m σ) := by
+                    have hd1 : (step m σ).doms d = κ.doms d := congrFun hdoms d
+                    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).regs = _
+                      rw [hρdef, refillPhase_regs]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).pc = _
+                      rw [hρdef, refillPhase_pc]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).run = _
+                      rw [hρdef, refillPhase_run]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).cause = _
+                      rw [hρdef, refillPhase_cause]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).serving = _
+                      rw [hρdef, refillPhase_serving]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).caps = _
+                      rw [hρdef, refillPhase_caps]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).slotGen = _
+                      rw [hρdef, refillPhase_slotGen]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).lineage = _
+                      rw [hρdef, refillPhase_lineage]
+                    · rw [hd1, hκd]
+                      show (ρ.doms d).regions = _
+                      rw [hρdef, refillPhase_regions]
+                    · intro a ha
+                      rw [hmemR a ha, hcore]
+                      show ρ.mem a = σ.mem a
+                      exact hmemρ a
+                  rw [fetch_frozen hins hfz]
+                  exact hf
+              · -- stall
+                have hcore : κ = ρ :=
+                  corePhase_stall m ρ d w instr hρinf hsd hfρ' hd
+                    (by rw [hpay]; exact hbud)
+                refine assemble ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+                · rw [hcore, hρdef, refillPhase_caps]
+                · rw [hcore, hρdef, refillPhase_slotGen]
+                · rw [hcore, hρdef, refillPhase_lineage]
+                · rw [hcore]; exact hservρ
+                · intro g; rw [hcore]; exact hctxρ.dnoblk g
+                · intro e r rg h; rw [hcore] at h; exact hctxρ.ro e r rg h
+                · intro e he s entry b l p hc hk
+                  rw [hcore] at hc
+                  exact hctxρ.fo e he s entry b l p hc hk
+                · intro job hj; rw [hcore] at hj; exact hctxρ.movOff job hj
+                · intro g; rw [hcore, hρdef, refillPhase_gates]
+                · rw [hcore]
+                  exact refillPhase_budget_le m σ d hins.budget_le
+                · rw [hcore, hρdef, refillPhase_maxDon]; exact hins.maxDon_eq
+                · intro a _; rw [hcore]; exact hmemρ a
+                · intro _ fl hfl
+                  rw [hcore, hρinf] at hfl
+                  cases hfl
+    · -- CASE A3: idle, no d-issue
+      have hfz := frame_step m d σ hm hiso hins
+        (fun fl' hfl' _ => by rw [hinf] at hfl'; cases hfl')
+        (fun _ => by rw [← hρdef]; exact hsd)
+      have hcy : DFrame.DCycle d (UnderRoots m d) ρ κ := by
+        rw [hκdef]
+        refine DFrame.corePhase_dcycle m ρ hctxρ ?_ ?_
+        · intro fl' hfl' _
+          rw [hρinf] at hfl'
+          cases hfl'
+        · intro _
+          exact hsd
+      refine assemble ?_ ?_ ?_ ?_ ?_ hcy.ro hcy.fo ?_ ?_ ?_ ?_ ?_ ?_
+      · rw [hcy.ddoms, hρdef, refillPhase_caps]
+      · rw [hcy.ddoms, hρdef, refillPhase_slotGen]
+      · rw [hcy.ddoms, hρdef, refillPhase_lineage]
+      · rw [hcy.ddoms]; exact hservρ
+      · intro g; rw [hcy.ddoms]; exact hctxρ.dnoblk g
+      · intro job hj
+        rcases hcy.mover job hj with hj' | hj'
+        · rw [hρdef, refillPhase_mover] at hj'
+          exact hins.mover_foreign job hj'
+        · exact hj'
+      · intro g
+        rw [hcy.gcfg g, hρdef, refillPhase_gates]
+      · rw [hcy.ddoms]
+        exact refillPhase_budget_le m σ d hins.budget_le
+      · rw [hcy.ddoms, hρdef, refillPhase_maxDon]; exact hins.maxDon_eq
+      · intro a hX
+        rw [hcy.mem a hX.underRoots]
+        exact hmemρ a
+      · intro _ fl' hfl' hfd'
+        rcases corePhase_inflight_dom m ρ fl' (by rw [← hκdef]; exact hfl') with
+          ⟨fl0, hfl0, -⟩ | ⟨-, hs⟩
+        · rw [hρinf] at hfl0; cases hfl0
+        · rw [hfd'] at hs
+          exact absurd hs hsd
+  · -- an instruction is in flight
+    have hρinf : ρ.inflight = some fl := by rw [hρdef, refillPhase_inflight]; exact hinf
+    by_cases hcl : fl.cyclesLeft ≤ 1
+    · by_cases hfld : fl.dom = d
+      · -- CASE B: d retires its latched (ROM-pinned) word
+        have hword : fetch σ d = some fl.word := hins.latch_rom fl hinf hfld
+        obtain ⟨hux, hwrom⟩ := fetch_of_insulated hins hword
+        have hop : ∀ instr, Loom.Isa.decode isa fl.word = some instr →
+            instr.opcode ≠ 17 ∧ instr.opcode ≠ 18 ∧ instr.opcode ≠ 19 ∧
+            instr.opcode ≠ 24 := by
+          intro instr hdec
+          refine hiso.code_local _ hux.underRoots instr ?_
+          rw [← hwrom]
+          exact hdec
+        have hcore : κ = retire { ρ with inflight := none } d fl.word := by
+          rw [hκdef]
+          unfold corePhase
+          simp only [hρinf]
+          rw [if_pos hcl, hfld]
+        have hDS : DFrame.DSelf d (UnderXRoots m d) { ρ with inflight := none } κ := by
+          rw [hcore]
+          refine DFrame.retire_dself _ fl.word ?_ ?_ ?_ ?_ hop
+          · exact hctxρ.dfull
+          · exact hctxρ.dgates
+          · exact hctxρ.dserv
+          · intro a hcov
+            refine covers_w_not_underXRoots hiso hins a ?_
+            rw [← refillPhase_covers m σ d a]
+            exact hcov
+        refine assemble ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+        · rw [show ((κ.doms d).caps = (ρ.doms d).caps) from hDS.caps,
+            hρdef, refillPhase_caps]
+        · rw [show ((κ.doms d).slotGen = (ρ.doms d).slotGen) from hDS.slotGen,
+            hρdef, refillPhase_slotGen]
+        · rw [show ((κ.doms d).lineage = (ρ.doms d).lineage) from hDS.lineage,
+            hρdef, refillPhase_lineage]
+        · rw [show ((κ.doms d).serving = (ρ.doms d).serving) from hDS.serving]
+          exact hservρ
+        · intro g hblk
+          exact hctxρ.dnoblk g (hDS.nb g hblk)
+        · intro e r rg h
+          by_cases he : e = d
+          · subst he
+            rcases hDS.regsown r rg h with h' | h'
+            · exact h'
+            · exact hctxρ.ro e r rg h'
+          · rw [show (κ.doms e = ρ.doms e) from hDS.odoms e he] at h
+            exact hctxρ.ro e r rg h
+        · intro e he s entry b l p hc hk
+          rw [show (κ.doms e = ρ.doms e) from hDS.odoms e he] at hc
+          exact hctxρ.fo e he s entry b l p hc hk
+        · intro job hj
+          exact hctxρ.movOff job (hDS.mover job hj)
+        · intro g
+          rw [show ((κ.gates g).config = (ρ.gates g).config) from hDS.gcfg g,
+            hρdef, refillPhase_gates]
+        · have hb := hDS.bud
+          have := refillPhase_budget_le m σ d hins.budget_le
+          rw [← hρdef] at this
+          show (κ.doms d).budget ≤ _
+          have hb' : (κ.doms d).budget ≤ (ρ.doms d).budget := hb
+          omega
+        · rw [show ((κ.doms d).maxDonation = (ρ.doms d).maxDonation) from hDS.mdon,
+            hρdef, refillPhase_maxDon]
+          exact hins.maxDon_eq
+        · intro a hX
+          rw [show (κ.mem a = ρ.mem a) from hDS.memX a hX]
+          exact hmemρ a
+        · intro _ fl' hfl' _
+          rw [hcore, Machines.Lnp64u.Wip.retire_inflight] at hfl'
+          cases hfl'
+      · -- CASE A1: a foreign instruction retires
+        have hfz := frame_step m d σ hm hiso hins
+          (fun fl' hfl' hfd' => by
+            rw [hinf] at hfl'
+            injection hfl' with hfl'
+            rw [← hfl'] at hfd'
+            exact absurd hfd' hfld)
+          (fun h => by rw [hinf] at h; cases h)
+        have hcy : DFrame.DCycle d (UnderRoots m d) ρ κ := by
+          rw [hκdef]
+          refine DFrame.corePhase_dcycle m ρ hctxρ ?_ ?_
+          · intro fl' hfl' hfd'
+            rw [hρinf] at hfl'
+            injection hfl' with hfl'
+            rw [← hfl'] at hfd'
+            exact absurd hfd' hfld
+          · intro h
+            rw [hρinf] at h
+            cases h
+        have hκinf : κ.inflight = none := by
+          rw [hκdef]
+          unfold corePhase
+          simp only [hρinf]
+          rw [if_pos hcl, Machines.Lnp64u.Wip.retire_inflight]
+        refine assemble ?_ ?_ ?_ ?_ ?_ hcy.ro hcy.fo ?_ ?_ ?_ ?_ ?_ ?_
+        · rw [hcy.ddoms, hρdef, refillPhase_caps]
+        · rw [hcy.ddoms, hρdef, refillPhase_slotGen]
+        · rw [hcy.ddoms, hρdef, refillPhase_lineage]
+        · rw [hcy.ddoms]; exact hservρ
+        · intro g; rw [hcy.ddoms]; exact hctxρ.dnoblk g
+        · intro job hj
+          rcases hcy.mover job hj with hj' | hj'
+          · rw [hρdef, refillPhase_mover] at hj'
+            exact hins.mover_foreign job hj'
+          · exact hj'
+        · intro g
+          rw [hcy.gcfg g, hρdef, refillPhase_gates]
+        · rw [hcy.ddoms]
+          exact refillPhase_budget_le m σ d hins.budget_le
+        · rw [hcy.ddoms, hρdef, refillPhase_maxDon]; exact hins.maxDon_eq
+        · intro a hX
+          rw [hcy.mem a hX.underRoots]
+          exact hmemρ a
+        · intro _ fl' hfl' _
+          rw [hκinf] at hfl'
+          cases hfl'
+    · -- CASE A2: countdown
+      have hfz := frame_step m d σ hm hiso hins
+        (fun fl' hfl' _ => by
+          rw [hinf] at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          omega)
+        (fun h => by rw [hinf] at h; cases h)
+      have hcy : DFrame.DCycle d (UnderRoots m d) ρ κ := by
+        rw [hκdef]
+        refine DFrame.corePhase_dcycle m ρ hctxρ ?_ ?_
+        · intro fl' hfl' _
+          rw [hρinf] at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          omega
+        · intro h
+          rw [hρinf] at h
+          cases h
+      have hκinf : κ.inflight = some { fl with cyclesLeft := fl.cyclesLeft - 1 } := by
+        rw [hκdef]
+        unfold corePhase
+        simp only [hρinf]
+        rw [if_neg hcl]
+      refine assemble ?_ ?_ ?_ ?_ ?_ hcy.ro hcy.fo ?_ ?_ ?_ ?_ ?_ ?_
+      · rw [hcy.ddoms, hρdef, refillPhase_caps]
+      · rw [hcy.ddoms, hρdef, refillPhase_slotGen]
+      · rw [hcy.ddoms, hρdef, refillPhase_lineage]
+      · rw [hcy.ddoms]; exact hservρ
+      · intro g; rw [hcy.ddoms]; exact hctxρ.dnoblk g
+      · intro job hj
+        rcases hcy.mover job hj with hj' | hj'
+        · rw [hρdef, refillPhase_mover] at hj'
+          exact hins.mover_foreign job hj'
+        · exact hj'
+      · intro g
+        rw [hcy.gcfg g, hρdef, refillPhase_gates]
+      · rw [hcy.ddoms]
+        exact refillPhase_budget_le m σ d hins.budget_le
+      · rw [hcy.ddoms, hρdef, refillPhase_maxDon]; exact hins.maxDon_eq
+      · intro a hX
+        rw [hcy.mem a hX.underRoots]
+        exact hmemρ a
+      · intro _ fl' hfl' hfd'
+        rw [hκinf] at hfl'
+        injection hfl' with hfl'
+        have hword : fetch σ d = some fl.word := by
+          refine hins.latch_rom fl hinf ?_
+          rw [← hfl'] at hfd'
+          exact hfd'
+        rw [← hfl']
+        show fetch (step m σ) d = some fl.word
+        rw [fetch_frozen hins hfz]
+        exact hword
 
 /-- **Engine 3: retirement lockstep.** Both runs retire the same latched
 word for `d` from coupled, insulated states: the post-states are coupled.
