@@ -47,6 +47,11 @@ theorem system_preserves : SystemOpsPreserveWf := by
         (fun _ => PreservesWf.setReg _ _ _) σ hwf hinf).1 a σ' he |>.1
     · exact (PreservesWf.bind (PreservesWf.updDomBudget _ _)
         (fun _ => PreservesWf.setReg _ _ _) σ hwf hinf).2 e σ' he |>.1
-  case _ => sorry  -- halt (haltDom on a running domain)
+  -- halt: voluntary domain-fatal — haltDom on the running caller
+  case _ =>
+    refine ⟨fun a σ' he => ?_, fun e σ' he => ?_⟩
+    · simp only [SpecM.modify] at he; injection he with h1 h2; subst h2
+      exact haltDom_preserves_wf σ c.d 0 hwf hrun hinf
+    · simp [SpecM.modify] at he
 
 end Machines.Lnp64u.Isa.Wip

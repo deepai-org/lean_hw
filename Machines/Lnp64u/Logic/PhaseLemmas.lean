@@ -368,14 +368,11 @@ theorem haltBase_preserves_wf (σ : MachineState) (d : DomainId) (c : Loom.Word3
       rw [haltBase_gates]; exact ⟨a, ha, hc⟩
   · intro fl; rw [haltBase_inflight, hinf]; simp
 
-/-- Halting a domain (with the gate-activation unwind) preserves the invariant.
-Obligation A of `step_wf`; no per-instruction reasoning. Requires the halted
-domain to be running (true at every `haltWith` call site: scheduled domains
-run). -/
-theorem haltWith_preserves_wf (σ : MachineState) (d : DomainId) (f : Fault)
+/-- Halting a *running* domain (with the gate-activation unwind) preserves
+the invariant, for any cause word. -/
+theorem haltDom_preserves_wf (σ : MachineState) (d : DomainId) (c : Loom.Word32)
     (h : Wf σ) (hrun : (σ.doms d).run = .running) (hinf : σ.inflight = none) :
-    Wf (haltWith σ d f) := by
-  unfold haltWith
+    Wf (σ.haltDom d c) := by
   cases hserv : (σ.doms d).serving with
   | none =>
       rw [haltDom_base σ d _ hserv]
@@ -393,7 +390,7 @@ theorem haltWith_preserves_wf (σ : MachineState) (d : DomainId) (f : Fault)
           have hcaller_ne_d : a.caller ≠ d := by
             intro he; rw [he, hrun] at hcaller_blk; exact absurd hcaller_blk (by simp)
           -- structural projections of the result state
-          set σ' := (σ.haltBase d (BitVec.ofNat 32 f.code)).unwindGate g a.caller a.callerRd
+          set σ' := (σ.haltBase d (c)).unwindGate g a.caller a.callerRd
             with hσ'
           have hcaps : ∀ d', (σ'.doms d').caps = (σ.doms d').caps := by
             intro d'; rw [hσ']; simp
@@ -479,6 +476,13 @@ theorem haltWith_preserves_wf (σ : MachineState) (d : DomainId) (f : Fault)
                 rw [if_neg hne]; exact ⟨a0, ha0, hc0⟩
           · intro fl; rw [hinfv]; simp
 
+
+/-- Halting a domain with a fault preserves the invariant (the `step_wf`
+fault-path corollary of `haltDom_preserves_wf`). -/
+theorem haltWith_preserves_wf (σ : MachineState) (d : DomainId) (f : Fault)
+    (h : Wf σ) (hrun : (σ.doms d).run = .running) (hinf : σ.inflight = none) :
+    Wf (haltWith σ d f) :=
+  haltDom_preserves_wf σ d (BitVec.ofNat 32 f.code) h hrun hinf
 /-- Updating a domain's registers preserves `Wf` — `regs` is not read by `Wf`. -/
 theorem wf_setReg (σ : MachineState) (d : DomainId) (r : RegId) (v : Loom.Word32)
     (h : Wf σ) :
