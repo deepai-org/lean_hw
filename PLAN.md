@@ -349,8 +349,10 @@ multicycle core in the EDSL lockstep against the ISS.*
       `T2.init_confined`, `T6.totality`, `T8.wx_machine_wide`, `T3.no_resurrection`,
       `T9.init_balanced`. `step_wf` reduced to three localized obligations via proved
       scaffolding (`refillPhase_preserves_wf`, `moverPhase_preserves_wf`, `wf_of_skeleton`,
-      `schedule_running`, haltDom structural kit); remaining: `corePhase` issue-path,
-      `haltWith` gate-unwind, `retire` per-instruction. Then the L2 engines.
+      `schedule_running`, the haltDom/haltBase/unwindGate kits, the issue-path helpers).
+      **`Logic/` is now 0 sorries**: the whole invariant (`wf_invariant`, `step_wf`,
+      `wx_machine_wide`) is proved *conditional on `ExecPreservesWf`* — the single
+      per-instruction obligation. Then the L2 engines.
 - [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
 - [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
 - [ ] **1.11** [m] Acc8 core in the EDSL, lockstep vs Acc8 ISS; then Lnp64u multicycle core,

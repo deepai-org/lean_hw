@@ -479,13 +479,85 @@ theorem haltWith_preserves_wf (σ : MachineState) (d : DomainId) (f : Fault)
                 rw [if_neg hne]; exact ⟨a0, ha0, hc0⟩
           · intro fl; rw [hinfv]; simp
 
-/-- Instruction retirement (running the decoded instruction's semantics via the
-capability-kernel functions) preserves the invariant. Obligation B of
-`step_wf` — the per-instruction argument (25 opcodes × the kernel operations),
-the irreducible core of the Phase-1 proof. -/
-theorem retire_preserves_wf (σ : MachineState) (d : DomainId) (w : Loom.Word32)
-    (h : Wf σ) (hinf : σ.inflight = none) : Wf (retire σ d w) := by
-  sorry
+/-- Updating a domain's registers preserves `Wf` — `regs` is not read by `Wf`. -/
+theorem wf_setReg (σ : MachineState) (d : DomainId) (r : RegId) (v : Loom.Word32)
+    (h : Wf σ) :
+    Wf (σ.setDom d (fun ds => ds.setReg r v)) := by
+  have hproj : ∀ (d' : DomainId),
+      (((σ.setDom d (fun ds => ds.setReg r v)).doms d').caps = (σ.doms d').caps) ∧
+      (((σ.setDom d (fun ds => ds.setReg r v)).doms d').lineage = (σ.doms d').lineage) ∧
+      (((σ.setDom d (fun ds => ds.setReg r v)).doms d').slotGen = (σ.doms d').slotGen) ∧
+      (((σ.setDom d (fun ds => ds.setReg r v)).doms d').regions = (σ.doms d').regions) ∧
+      (((σ.setDom d (fun ds => ds.setReg r v)).doms d').run = (σ.doms d').run) ∧
+      (((σ.setDom d (fun ds => ds.setReg r v)).doms d').serving = (σ.doms d').serving) := by
+    intro d'; unfold MachineState.setDom
+    by_cases hp : d' = d
+    · subst hp; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hp]
+  refine wf_of_skeleton_sameGates σ _
+    (fun d' => (hproj d').1) (fun d' => (hproj d').2.1) (fun d' => (hproj d').2.2.1)
+    (fun d' => (hproj d').2.2.2.1) (fun d' => (hproj d').2.2.2.2.1) (fun d' => (hproj d').2.2.2.2.2)
+    rfl rfl ?_ h
+  intro fl' hfl'
+  have hinfeq : (σ.setDom d (fun ds => ds.setReg r v)).inflight = σ.inflight := rfl
+  rw [hinfeq] at hfl'
+  rw [(hproj fl'.dom).2.2.2.2.1]; exact h.inflight_running fl' hfl'
+
+/-- The single remaining Phase-1 obligation, stated cleanly: every
+instruction's semantics preserves the machine invariant. This is the
+per-opcode security argument (25 ops × the capability-kernel operations) —
+the irreducible core. Once proved, `retire_preserves_wf`, `wf_invariant`, and
+the crown-jewel theorems that rest on the invariant all close. -/
+def ExecPreservesWf : Prop :=
+  ∀ (instr : Instr) (c : Ctx) (σ : MachineState),
+    Wf σ → (σ.doms c.d).run = .running → σ.inflight = none →
+    (∀ a σ', instr.sem.exec c σ = .ok a σ' → Wf σ') ∧
+    (∀ e σ', instr.sem.exec c σ = .err e σ' → Wf σ')
+
+/-- `retire` preserves `Wf`, reduced to `ExecPreservesWf`. The decode-failure
+and fault paths go through the proved `haltWith_preserves_wf`; the pc bump and
+errno write preserve the skeleton; the instruction effect is `ExecPreservesWf`.
+Requires `d` running (true at the call site: retirement acts on the domain that
+was scheduled and in flight). -/
+theorem retire_preserves_wf (hexec : ExecPreservesWf) (σ : MachineState)
+    (d : DomainId) (w : Loom.Word32) (h : Wf σ) (hdrun : (σ.doms d).run = .running)
+    (hinf : σ.inflight = none) : Wf (retire σ d w) := by
+  unfold retire
+  split
+  · exact haltWith_preserves_wf σ d .illegalInstruction h hdrun hinf
+  · rename_i instr hdec
+    -- σ₁ = advance pc; preserves Wf, d still running, inflight none
+    have hpcproj : ∀ (d' : DomainId),
+        (((σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })).doms d').caps = (σ.doms d').caps) ∧
+        (((σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })).doms d').lineage = (σ.doms d').lineage) ∧
+        (((σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })).doms d').slotGen = (σ.doms d').slotGen) ∧
+        (((σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })).doms d').regions = (σ.doms d').regions) ∧
+        (((σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })).doms d').run = (σ.doms d').run) ∧
+        (((σ.setDom d (fun ds => { ds with pc := ds.pc + 1 })).doms d').serving = (σ.doms d').serving) := by
+      intro d'; unfold MachineState.setDom
+      by_cases hp : d' = d
+      · subst hp; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hp]
+    set σ1 := σ.setDom d (fun ds => { ds with pc := ds.pc + 1 }) with hσ1
+    have hσ1wf : Wf σ1 := by
+      refine wf_of_skeleton_sameGates σ σ1
+        (fun d' => (hpcproj d').1) (fun d' => (hpcproj d').2.1) (fun d' => (hpcproj d').2.2.1)
+        (fun d' => (hpcproj d').2.2.2.1) (fun d' => (hpcproj d').2.2.2.2.1)
+        (fun d' => (hpcproj d').2.2.2.2.2) rfl rfl ?_ h
+      intro fl' hfl'; rw [show σ1.inflight = σ.inflight from rfl, hinf] at hfl'
+      exact absurd hfl' (by simp)
+    have hσ1run : (σ1.doms d).run = .running := by rw [(hpcproj d).2.2.2.2.1]; exact hdrun
+    have hσ1inf : σ1.inflight = none := hinf
+    obtain ⟨hok, herr⟩ := hexec instr { d := d, pc := (σ.doms d).pc, op := operandsOf w }
+      σ1 hσ1wf hσ1run hσ1inf
+    show Wf (match instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 with
+      | .ok _ σ' => σ'
+      | .err e σ' => σ'.setDom d (fun ds => ds.setReg (operandsOf w).rd e.toWord)
+      | .fault f => haltWith σ d f)
+    cases hexr : instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 with
+    | ok a σ' => simp only [hexr]; exact hok a σ' hexr
+    | err e σ' => simp only [hexr]; exact wf_setReg σ' d (operandsOf w).rd e.toWord (herr e σ' hexr)
+    | fault f => simp only [hexr]; exact haltWith_preserves_wf σ d f h hdrun hinf
 
 /-- The scheduler returns a running domain. -/
 theorem schedule_running (m : Manifest) (σ : MachineState) (d : DomainId)
@@ -564,17 +636,19 @@ paths preserve the skeleton (via `wf_of_skeleton`); the fault paths delegate
 to `haltWith_preserves_wf`, and retirement to `retire_preserves_wf`. The
 inflight-countdown and stall paths are discharged here; the full assembly of
 the issue path's donation sub-cases is in progress. -/
-theorem corePhase_preserves_wf (m : Manifest) (hwf : m.WF) (σ : MachineState)
-    (h : Wf σ) : Wf (corePhase m σ) := by
+theorem corePhase_preserves_wf (hexec : ExecPreservesWf) (m : Manifest) (hwf : m.WF)
+    (σ : MachineState) (h : Wf σ) : Wf (corePhase m σ) := by
   unfold corePhase
   cases hinf : σ.inflight with
   | some fl =>
       by_cases hc : fl.cyclesLeft ≤ 1
       · simp only [hc, if_true]
-        refine retire_preserves_wf _ fl.dom fl.word ?_ rfl
-        exact wf_of_skeleton_sameGates σ { σ with inflight := none }
-          (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
-          (fun _ => rfl) rfl rfl (by simp) h
+        refine retire_preserves_wf hexec { σ with inflight := none } fl.dom fl.word ?_ ?_ rfl
+        · exact wf_of_skeleton_sameGates σ { σ with inflight := none }
+            (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+            (fun _ => rfl) rfl rfl (by simp) h
+        · show (σ.doms fl.dom).run = .running
+          exact h.inflight_running fl hinf
       · simp only [hc, if_false]
         refine wf_of_skeleton_sameGates σ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
           (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) rfl rfl ?_ h

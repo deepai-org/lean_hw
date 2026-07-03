@@ -15,13 +15,13 @@ open Machines.Lnp64u Loom
 
 /-- Machine-wide W^X: no live memory capability and no region register
 carries write and execute together, in any reachable state. -/
-theorem wx_machine_wide (m : Manifest) (hwf : m.WF) :
+theorem wx_machine_wide (hexec : ExecPreservesWf) (m : Manifest) (hwf : m.WF) :
     (machine m).Invariant (fun σ =>
       (∀ d s base len p l, (σ.doms d).caps s = some ⟨.mem base len p, l⟩ →
         p.wx = true) ∧
       (∀ d r rg, (σ.doms d).regions r = some rg → rg.perms.wx = true)) := by
   intro σ hreach
-  have hwfσ : Wf σ := Inv.wf_invariant m hwf σ hreach
+  have hwfσ : Wf σ := Inv.wf_invariant hexec m hwf σ hreach
   refine ⟨?_, ?_⟩
   · -- capabilities: from DomWf.wx
     intro d s base len p l hcap

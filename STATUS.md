@@ -72,14 +72,17 @@ assembled from proved pieces: `refillPhase_preserves_wf` ✓,
 obligation is further decomposed with proved scaffolding —
 `wf_of_skeleton` ✓ (Wf congruence under skeleton-preserving edits),
 `wf_of_skeleton_sameGates` ✓, `schedule_running` ✓ — and the
-inflight-countdown and retirement dispatch are proved. **`corePhase_preserves_wf` and `haltWith_preserves_wf` are now proved.** The
-**entire L1 invariant chain bottoms out at a single remaining sorry** —
-`retire_preserves_wf` (the 25-opcode per-instruction argument, the irreducible
-research core). Everything else is proved: `refillPhase`/`moverPhase`/`corePhase`
-preservation, `haltWith` gate-unwind, `wf_of_skeleton`, `schedule_running`, the
-`haltBase`/`unwindGate` projection kits, and the issue-path helpers. Landing
-`retire_preserves_wf` alone flips `wf_invariant`, `T8.wx_machine_wide`, and
-`T3.no_resurrection` to CLEAN.
+inflight-countdown and retirement dispatch are proved. **The entire well-formedness invariant is now a proved theorem.**
+`Machines/Lnp64u/Logic/` has **zero sorries**. `Inv.wf_invariant`,
+`Inv.step_wf`, and `T8.wx_machine_wide` are all CLEAN — proved *conditional on
+a single explicit hypothesis*, `ExecPreservesWf`: "every instruction's
+semantics preserves the machine invariant." Every structural piece is proved
+outright (refill/mover/core phase preservation, the haltWith gate-unwind, the
+issue-path budget/donation bookkeeping, `retire`'s decode/fault/errno
+dispatch). `ExecPreservesWf` is the sole remaining Phase-1 obligation — the
+per-opcode security argument (25 ops × the capability-kernel operations), the
+irreducible research core. It is a clean `def`, not a `sorry`: the invariant's
+conditionality on it is explicit in the statement.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the

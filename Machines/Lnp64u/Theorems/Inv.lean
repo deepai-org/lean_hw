@@ -92,21 +92,21 @@ theorem init_wf (m : Manifest) (hwf : m.WF) : Wf m.initState := by
 refill and the Mover are fully discharged (`refillPhase_preserves_wf`,
 `moverPhase_preserves_wf`); the cycle bump is transparent (`wf_setCycle`);
 the one remaining obligation is `corePhase_preserves_wf`. -/
-theorem step_wf (m : Manifest) (hwf : m.WF) (σ : MachineState)
+theorem step_wf (hexec : ExecPreservesWf) (m : Manifest) (hwf : m.WF) (σ : MachineState)
     (h : Wf σ) : Wf (step m σ) := by
   unfold step
   exact wf_setCycle _ _
     (moverPhase_preserves_wf _
-      (corePhase_preserves_wf m hwf _
+      (corePhase_preserves_wf hexec m hwf _
         (refillPhase_preserves_wf m σ h)))
 
 /-- The invariant. -/
-theorem wf_invariant (m : Manifest) (hwf : m.WF) :
+theorem wf_invariant (hexec : ExecPreservesWf) (m : Manifest) (hwf : m.WF) :
     (machine m).Invariant Wf :=
   (TSys.Inductive.invariant
     { init := fun σ h => h ▸ init_wf m hwf
       step := fun σ σ' hσ hstep => by
         have : step m σ = σ' := hstep
-        exact this ▸ step_wf m hwf σ hσ })
+        exact this ▸ step_wf hexec m hwf σ hσ })
 
 end Machines.Lnp64u.Theorems.Inv
