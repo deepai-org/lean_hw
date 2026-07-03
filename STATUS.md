@@ -49,8 +49,12 @@ new climb argument (~100 lines). (4) **gate-consistency Wf** for the activation 
 **Progress (this session):** all transferCap building blocks + the Wf core are now proved —
 `acyclic_reparent_sibling` (novel), `setDom_installMove_parentRef`, `wf_installMove`,
 `wf_installCapNone`, `wf_reparent_clear_sweep`, and **`wf_transferCap`** (the full Wf, both
-lineage cases). Remaining for the gate ops: `acyclic_transferCap` (compose the acyclic pieces —
-all exist), the `transferByHandle` wrapper, and gate-consistency for `gate_call`/`gate_return`. — exactly parallel to how the Wf-only invariant rested on
+lineage cases). **`acyclic_transferCap` and `transferByHandle_preserves` are now also proved** — the entire
+capability-transfer core (transferCap preserves `Wf ∧ Acyclic`, and the `transferByHandle`
+wrapper) is complete, with no kernel lemmas left. The only remaining piece for the 2 gate ops
+is the **gate-activation consistency**: the gates/serving/run/blocked updates in
+`gate_call`/`gate_return` must preserve `gate_serving`/`serving_gate`/`blocked_gate` (the gate
+chain bookkeeping) — intricate but needs no new kernel machinery. — exactly parallel to how the Wf-only invariant rested on
 `SystemOpsPreserveWf`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already done.
 
 ## What builds and runs (verified end to end)
