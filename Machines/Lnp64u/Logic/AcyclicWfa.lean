@@ -133,7 +133,7 @@ theorem corePhase_Wf_from_wfa (hexec : ExecPreservesWfA) (m : Manifest) (hwf : m
                   simp only [hserv]
                   refine wf_setInflight σ (σ.setDom (σ.payer d) (fun ds => { ds with budget := ds.budget - instr.cost.cost }))
                     (⟨d, w, instr.cost.cost⟩ : InFlight) pc pl pg pr pru ps
-                    (fun g => by rw [pgates]) (fun g a' ha' => ⟨a', by rw [pgates] at ha'; exact ha', rfl, rfl⟩)
+                    (fun g => by rw [pgates]) (fun g a' ha' => ⟨a', by rw [pgates] at ha'; exact ha', rfl, rfl, rfl⟩)
                     (fun g hh => by rw [pgates]; exact hh) pmov ?_ h
                   rw [pru]; exact hdrun
               | some g =>
@@ -165,9 +165,9 @@ theorem corePhase_Wf_from_wfa (hexec : ExecPreservesWfA) (m : Manifest) (hwf : m
                           · subst hg
                             rw [Loom.Fun.update_same, hgv] at ha'
                             injection ha' with haa; subst haa
-                            exact ⟨a, hact, rfl, rfl⟩
+                            exact ⟨a, hact, rfl, rfl, rfl⟩
                           · rw [Loom.Fun.update_ne _ _ _ _ hg, hg0] at ha'
-                            exact ⟨a', ha', rfl, rfl⟩
+                            exact ⟨a', ha', rfl, rfl, rfl⟩
                         · intro g' hh
                           show ((Loom.Fun.update sb.gates g gv g').act).isSome
                           by_cases hg : g' = g
@@ -211,5 +211,14 @@ theorem wfa_invariant_of_system (hsys : SystemOpsPreserveWfA) (m : Manifest) (hw
       step := fun σ σ' hσ hstep => by
         have hst : step m σ = σ' := hstep
         exact hst ▸ step_wfa hexec m hwf σ hσ.1 hσ.2 })
+
+
+/-- **The machine-wide combined invariant, unconditionally.** Every reachable
+state of any well-formed manifest's machine satisfies `Wf ∧ Acyclic`. All eleven
+system opcodes (and the fourteen base opcodes) are discharged — the combined
+obligation `system_preserves_wfa` is complete. -/
+theorem wfa_invariant (m : Manifest) (hwf : m.WF) :
+    (machine m).Invariant (fun σ => Wf σ ∧ Acyclic σ) :=
+  wfa_invariant_of_system Machines.Lnp64u.Isa.Wip.system_preserves_wfa m hwf
 
 end Machines.Lnp64u
