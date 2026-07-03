@@ -4343,4 +4343,425 @@ theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
                   · refine .inl ⟨corePhase_stall m σ e w instr hinf hsched hfetch hdec hbud,
                       rfl, .inr ⟨e, w, instr, hinf, hsched, hfetch, hdec, hbud⟩⟩
 
+/-! ## The T6 chain invariants
+
+Five auxiliary reachability invariants, all discharged from the chain
+classification (`corePhase_chain`) — no further ISA sweeps:
+
+* `DepthLink` — activation depths increment along the serving chain (what
+  bounds the chain length by `maxChainDepth`);
+* `MaxDonationEq` — the `maxDonation` field is boot-immutable;
+* `DonatedLe` — every live activation's `donated` is at most
+  `maxDonationBound` (the radix bound of the T6 measure);
+* `InflightPos` — a latched instruction always has cycles to burn;
+* `BudgetCap` — budgets never exceed their quota (refills *set*, issues
+  subtract). -/
+
+/-- Activation depths increment along the serving chain. -/
+def DepthLink (σ : MachineState) : Prop :=
+  ∀ g a, (σ.gates g).act = some a →
+    ((σ.doms a.caller).serving = none → a.depth = 1) ∧
+    (∀ g' a', (σ.doms a.caller).serving = some g' → (σ.gates g').act = some a' →
+      a.depth = a'.depth + 1)
+
+/-- The `maxDonation` field never changes from its manifest value. -/
+def MaxDonationEq (m : Manifest) (σ : MachineState) : Prop :=
+  ∀ e, (σ.doms e).maxDonation = (m.doms e).maxDonation
+
+/-- Every live activation's donation is below the machine ceiling. -/
+def DonatedLe (m : Manifest) (σ : MachineState) : Prop :=
+  ∀ g a, (σ.gates g).act = some a → a.donated ≤ maxDonationBound m
+
+/-- A latched instruction has at least one cycle left. -/
+def InflightPos (σ : MachineState) : Prop :=
+  ∀ fl, σ.inflight = some fl → 1 ≤ fl.cyclesLeft
+
+/-- Budgets never exceed quota. -/
+def BudgetCap (m : Manifest) (σ : MachineState) : Prop :=
+  ∀ e, (σ.doms e).budget ≤ (m.doms e).budgetQ
+
+/-- The bundled T6 chain invariant. -/
+structure ChainInv (m : Manifest) (σ : MachineState) : Prop where
+  depthLink : DepthLink σ
+  maxDon : MaxDonationEq m σ
+  donatedLe : DonatedLe m σ
+  inflightPos : InflightPos σ
+  budgetLe : BudgetCap m σ
+
+/-- `DepthLink` transports across any gates- and serving-preserving map. -/
+theorem DepthLink.of_frame {σ σ' : MachineState} (hg : σ'.gates = σ.gates)
+    (hs : ∀ e, (σ'.doms e).serving = (σ.doms e).serving) (hD : DepthLink σ) :
+    DepthLink σ' := by
+  intro g a ha
+  rw [congrFun hg g] at ha
+  obtain ⟨h1, h2⟩ := hD g a ha
+  refine ⟨fun hn => h1 (by rw [hs] at hn; exact hn), fun g' a' hs' ha' => ?_⟩
+  rw [hs] at hs'
+  rw [congrFun hg g'] at ha'
+  exact h2 g' a' hs' ha'
+
+theorem DonatedLe.of_gates {m : Manifest} {σ σ' : MachineState}
+    (hg : σ'.gates = σ.gates) (hD : DonatedLe m σ) : DonatedLe m σ' := by
+  intro g a ha
+  rw [congrFun hg g] at ha
+  exact hD g a ha
+
+theorem MaxDonationEq.of_frame {m : Manifest} {σ σ' : MachineState}
+    (hm : ∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation)
+    (h : MaxDonationEq m σ) : MaxDonationEq m σ' :=
+  fun e => (hm e).trans (h e)
+
+/-! ### Per-shape preservation of `DepthLink` -/
+
+theorem DepthLink.chainOut {cd : DomainId} {σ σ' : MachineState}
+    (h : ChainOut cd σ σ') (hD : DepthLink σ) : DepthLink σ' :=
+  DepthLink.of_frame h.1 h.2.2.1 hD
+
+theorem DepthLink.callShape {d : DomainId} {σ σ' : MachineState} (hwf : Wf σ)
+    (h : CallShape d σ σ') (hD : DepthLink σ) : DepthLink σ' := by
+  obtain ⟨gid, act, hgnone, hcalne, hcalrun, hcalserv, hcaller, hdepth, hdle, hdon,
+    hgo, hga, hgc, hmax, hbud, hso, hsc, hro, hrb⟩ := h
+  intro g0 a0 ha0
+  by_cases hg0 : g0 = gid
+  · subst hg0
+    rw [hga] at ha0
+    injection ha0 with ha0
+    subst ha0
+    rw [hcaller]
+    have hsd : (σ'.doms d).serving = (σ.doms d).serving := hso d (Ne.symm hcalne)
+    constructor
+    · intro hs
+      rw [hsd] at hs
+      rw [hdepth]
+      unfold chainDepthAt
+      simp only [hs]
+    · intro g' a' hs' ha'
+      rw [hsd] at hs'
+      have hg'ne : g' ≠ g0 := by
+        intro hE
+        subst hE
+        have := (hwf.serving_gate d g' hs').2
+        rw [hgnone] at this
+        simp at this
+      rw [hgo g' hg'ne] at ha'
+      rw [hdepth]
+      unfold chainDepthAt
+      simp only [hs', ha']
+  · rw [hgo g0 hg0] at ha0
+    obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+    have hcallerne : a0.caller ≠ (σ.gates gid).config.callee := by
+      intro hE
+      have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+      rw [hE, hcalrun] at hblk
+      exact absurd hblk (by simp)
+    have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcallerne
+    constructor
+    · intro hs
+      exact h1 (hs0 ▸ hs)
+    · intro g' a' hs' ha'
+      rw [hs0] at hs'
+      have hg'ne : g' ≠ gid := by
+        intro hE
+        subst hE
+        exact hcallerne (hwf.serving_gate a0.caller g' hs').1.symm
+      rw [hgo g' hg'ne] at ha'
+      exact h2 g' a' hs' ha'
+
+theorem DepthLink.retShape {d : DomainId} {σ σ' : MachineState} (hwf : Wf σ)
+    (hrun : (σ.doms d).run = .running) (h : RetShape d σ σ') (hD : DepthLink σ) :
+    DepthLink σ' := by
+  obtain ⟨gid, act, hserv, hact, hgo, hga, hgc, hmax, hbud, hso, hsd, hro, hrc⟩ := h
+  intro g0 a0 ha0
+  have hg0 : g0 ≠ gid := by
+    intro hE
+    subst hE
+    rw [hga] at ha0
+    simp at ha0
+  rw [hgo g0 hg0] at ha0
+  obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+  have hcne : a0.caller ≠ d := by
+    intro hE
+    have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+    rw [hE, hrun] at hblk
+    exact absurd hblk (by simp)
+  have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcne
+  constructor
+  · intro hs
+    exact h1 (hs0 ▸ hs)
+  · intro g' a' hs' ha'
+    rw [hs0] at hs'
+    have hg' : g' ≠ gid := by
+      intro hE
+      subst hE
+      have hc := (hwf.serving_gate a0.caller g' hs').1
+      have hc2 := (hwf.serving_gate d g' hserv).1
+      exact hcne (hc.symm.trans hc2)
+    rw [hgo g' hg'] at ha'
+    exact h2 g' a' hs' ha'
+
+theorem DepthLink.haltShape {d : DomainId} {σ σ' : MachineState} (hwf : Wf σ)
+    (hrun : (σ.doms d).run = .running) (h : HaltShape d σ σ') (hD : DepthLink σ) :
+    DepthLink σ' := by
+  obtain ⟨hmax, hbud, hrh, hsdnone, hso, hcase⟩ := h
+  rcases hcase with ⟨hgeq, hro⟩ | ⟨g, a, hsg, hag, hacne, hgo, hga, hgc, hcr, hro⟩
+  · intro g0 a0 ha0
+    rw [congrFun hgeq g0] at ha0
+    obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+    have hcne : a0.caller ≠ d := by
+      intro hE
+      have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+      rw [hE, hrun] at hblk
+      exact absurd hblk (by simp)
+    have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcne
+    refine ⟨fun hs => h1 (hs0 ▸ hs), fun g' a' hs' ha' => ?_⟩
+    rw [hs0] at hs'
+    rw [congrFun hgeq g'] at ha'
+    exact h2 g' a' hs' ha'
+  · intro g0 a0 ha0
+    have hg0 : g0 ≠ g := by
+      intro hE
+      subst hE
+      rw [hga] at ha0
+      simp at ha0
+    rw [hgo g0 hg0] at ha0
+    obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+    have hcne : a0.caller ≠ d := by
+      intro hE
+      have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+      rw [hE, hrun] at hblk
+      exact absurd hblk (by simp)
+    have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcne
+    refine ⟨fun hs => h1 (hs0 ▸ hs), fun g' a' hs' ha' => ?_⟩
+    rw [hs0] at hs'
+    have hg' : g' ≠ g := by
+      intro hE
+      subst hE
+      have hc := (hwf.serving_gate a0.caller g' hs').1
+      have hc2 := (hwf.serving_gate d g' hsg).1
+      exact hcne (hc.symm.trans hc2)
+    rw [hgo g' hg'] at ha'
+    exact h2 g' a' hs' ha'
+
+theorem DepthLink.issueShape {e p : DomainId} {c : Nat} {σ σ' : MachineState}
+    (h : IssueShape e p c σ σ') (hD : DepthLink σ) : DepthLink σ' := by
+  obtain ⟨hro, hso, hmax, hbp, hbo, hgates⟩ := h
+  rcases hgates with ⟨hsv, hgeq⟩ | ⟨g, a, hsv, hag, hdon, hgo, hga, hgc⟩
+  · exact DepthLink.of_frame hgeq hso hD
+  · intro g0 a0 ha0
+    by_cases hg0 : g0 = g
+    · subst hg0
+      rw [hga] at ha0
+      injection ha0 with ha0
+      subst ha0
+      obtain ⟨h1, h2⟩ := hD g0 a hag
+      constructor
+      · intro hs
+        rw [hso] at hs
+        exact h1 hs
+      · intro g' a' hs' ha'
+        rw [hso] at hs'
+        by_cases hg' : g' = g0
+        · subst hg'
+          have := h2 g' a hs' hag
+          omega
+        · rw [hgo g' hg'] at ha'
+          exact h2 g' a' hs' ha'
+    · rw [hgo g0 hg0] at ha0
+      obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+      constructor
+      · intro hs
+        rw [hso] at hs
+        exact h1 hs
+      · intro g' a' hs' ha'
+        rw [hso] at hs'
+        by_cases hg' : g' = g
+        · subst hg'
+          rw [hga] at ha'
+          injection ha' with ha'
+          have h2' := h2 g' a hs' hag
+          rw [← ha']
+          exact h2'
+        · rw [hgo g' hg'] at ha'
+          exact h2 g' a' hs' ha'
+
+/-! ### Per-shape preservation of `DonatedLe` -/
+
+theorem DonatedLe.callShape {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (hmd : MaxDonationEq m σ) (h : CallShape d σ σ') (hD : DonatedLe m σ) :
+    DonatedLe m σ' := by
+  obtain ⟨gid, act, hgnone, hcalne, hcalrun, hcalserv, hcaller, hdepth, hdle, hdon,
+    hgo, hga, hgc, hmax, hbud, hso, hsc, hro, hrb⟩ := h
+  intro g0 a0 ha0
+  by_cases hg0 : g0 = gid
+  · subst hg0
+    rw [hga] at ha0
+    injection ha0 with ha0
+    subst ha0
+    rw [hdon, hmd d]
+    exact maxDonation_le_bound m d
+  · rw [hgo g0 hg0] at ha0
+    exact hD g0 a0 ha0
+
+theorem DonatedLe.retShape {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (h : RetShape d σ σ') (hD : DonatedLe m σ) : DonatedLe m σ' := by
+  obtain ⟨gid, act, hserv, hact, hgo, hga, hgc, _⟩ := h
+  intro g0 a0 ha0
+  have hg0 : g0 ≠ gid := by
+    intro hE; subst hE; rw [hga] at ha0; simp at ha0
+  rw [hgo g0 hg0] at ha0
+  exact hD g0 a0 ha0
+
+theorem DonatedLe.haltShape {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (h : HaltShape d σ σ') (hD : DonatedLe m σ) : DonatedLe m σ' := by
+  obtain ⟨hmax, hbud, hrh, hsdnone, hso, hcase⟩ := h
+  rcases hcase with ⟨hgeq, hro⟩ | ⟨g, a, hsg, hag, hacne, hgo, hga, hgc, hcr, hro⟩
+  · exact DonatedLe.of_gates hgeq hD
+  · intro g0 a0 ha0
+    have hg0 : g0 ≠ g := by
+      intro hE; subst hE; rw [hga] at ha0; simp at ha0
+    rw [hgo g0 hg0] at ha0
+    exact hD g0 a0 ha0
+
+theorem DonatedLe.issueShape {m : Manifest} {e p : DomainId} {c : Nat}
+    {σ σ' : MachineState} (h : IssueShape e p c σ σ') (hD : DonatedLe m σ) :
+    DonatedLe m σ' := by
+  obtain ⟨hro, hso, hmax, hbp, hbo, hgates⟩ := h
+  rcases hgates with ⟨hsv, hgeq⟩ | ⟨g, a, hsv, hag, hdon, hgo, hga, hgc⟩
+  · exact DonatedLe.of_gates hgeq hD
+  · intro g0 a0 ha0
+    by_cases hg0 : g0 = g
+    · subst hg0
+      rw [hga] at ha0
+      injection ha0 with ha0
+      subst ha0
+      exact Nat.le_trans (Nat.sub_le _ _) (hD g0 a hag)
+    · rw [hgo g0 hg0] at ha0
+      exact hD g0 a0 ha0
+
+/-! ### Refill-phase transports -/
+
+theorem refillPhase_maxDonation (m : Manifest) (σ : MachineState) (e : DomainId) :
+    ((refillPhase m σ).doms e).maxDonation = (σ.doms e).maxDonation := by
+  unfold refillPhase
+  by_cases h0 : σ.cycle = 0
+  · rw [if_pos h0]
+  · rw [if_neg h0]
+    by_cases hb : σ.cycle % (m.doms e).periodP = 0
+    · simp [hb]
+    · simp [hb]
+
+theorem refillPhase_budget_le (m : Manifest) (σ : MachineState) (e : DomainId)
+    (h : (σ.doms e).budget ≤ (m.doms e).budgetQ) :
+    ((refillPhase m σ).doms e).budget ≤ (m.doms e).budgetQ := by
+  rcases refillPhase_budget_cases m σ e with h' | ⟨_, _, h'⟩
+  · rw [h']; exact h
+  · rw [h']
+
+/-! ### The invariant, one whole cycle -/
+
+theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
+    (hinv : ChainInv m σ) : ChainInv m (step m σ) := by
+  set ρ := refillPhase m σ with hρ
+  have hwfρ : Wf ρ := refillPhase_preserves_wf m σ hwf
+  have hρD : DepthLink ρ :=
+    DepthLink.of_frame (refillPhase_gates m σ) (fun e => refillPhase_serving m σ e)
+      hinv.depthLink
+  have hρM : MaxDonationEq m ρ :=
+    MaxDonationEq.of_frame (fun e => refillPhase_maxDonation m σ e) hinv.maxDon
+  have hρL : DonatedLe m ρ := DonatedLe.of_gates (refillPhase_gates m σ) hinv.donatedLe
+  have hρI : InflightPos ρ := by
+    intro fl hfl
+    rw [refillPhase_inflight] at hfl
+    exact hinv.inflightPos fl hfl
+  have hρB : BudgetCap m ρ := fun e => refillPhase_budget_le m σ e (hinv.budgetLe e)
+  set κ := corePhase m ρ with hκ
+  have hκB : BudgetCap m κ := fun e =>
+    Nat.le_trans (Wip.corePhase_budget_le m ρ e) (hρB e)
+  have hκDML : DepthLink κ ∧ MaxDonationEq m κ ∧ DonatedLe m κ ∧ InflightPos κ := by
+    rcases corePhase_chain m ρ hwfρ with
+      ⟨heq, hinfn, _⟩ |
+      ⟨fl, hfl, hgt, heq⟩ |
+      ⟨fl, hfl, hle, hrunfl, hinfn, hsh⟩ |
+      ⟨e, hinfn, hsch, hrune, hinfn', hsh⟩ |
+      ⟨e, w, c, hinfn, hsch, hrune, hcpos, hcle, hcbud, hinfs, hsh⟩
+    · rw [← hκ] at heq
+      rw [heq]
+      exact ⟨hρD, hρM, hρL, hρI⟩
+    · rw [← hκ] at heq
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · exact DepthLink.of_frame (by rw [heq]) (fun e => by rw [heq]) hρD
+      · exact MaxDonationEq.of_frame (fun e => by rw [heq]) hρM
+      · exact DonatedLe.of_gates (by rw [heq]) hρL
+      · intro fl' hfl'
+        rw [heq] at hfl'
+        simp only at hfl'
+        injection hfl' with hfl'
+        rw [← hfl']
+        show 1 ≤ fl.cyclesLeft - 1
+        omega
+    · refine ⟨?_, ?_, ?_, fun fl' hfl' => absurd (hinfn ▸ hfl') (by simp)⟩
+      · rcases hsh with h | h | h | h
+        · exact DepthLink.chainOut h hρD
+        · exact DepthLink.callShape hwfρ h hρD
+        · exact DepthLink.retShape hwfρ hrunfl h hρD
+        · exact DepthLink.haltShape hwfρ hrunfl h hρD
+      · rcases hsh with h | h | h | h
+        · exact MaxDonationEq.of_frame h.2.2.2.1 hρM
+        · obtain ⟨gid, act, h⟩ := h
+          exact MaxDonationEq.of_frame h.2.2.2.2.2.2.2.2.2.2.2.1 hρM
+        · obtain ⟨gid, act, h⟩ := h
+          exact MaxDonationEq.of_frame h.2.2.2.2.2.1 hρM
+        · exact MaxDonationEq.of_frame h.1 hρM
+      · rcases hsh with h | h | h | h
+        · exact DonatedLe.of_gates h.1 hρL
+        · exact DonatedLe.callShape hρM h hρL
+        · exact DonatedLe.retShape h hρL
+        · exact DonatedLe.haltShape h hρL
+    · refine ⟨?_, ?_, ?_, fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp)⟩
+      · exact DepthLink.haltShape hwfρ hrune hsh hρD
+      · exact MaxDonationEq.of_frame hsh.1 hρM
+      · exact DonatedLe.haltShape hsh hρL
+    · refine ⟨?_, ?_, ?_, ?_⟩
+      · exact DepthLink.issueShape hsh hρD
+      · exact MaxDonationEq.of_frame hsh.2.2.1 hρM
+      · exact DonatedLe.issueShape hsh hρL
+      · intro fl' hfl'
+        rw [hinfs] at hfl'
+        injection hfl' with hfl'
+        rw [← hfl']
+        exact hcpos
+  obtain ⟨hκD, hκM, hκL, hκI⟩ := hκDML
+  have hgs : (step m σ).gates = κ.gates := by
+    show (moverPhase κ).gates = κ.gates
+    exact moverPhase_gates κ
+  have hds : (step m σ).doms = κ.doms := step_doms m σ
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · exact DepthLink.of_frame hgs (fun e => by rw [congrFun hds e]) hκD
+  · exact MaxDonationEq.of_frame (fun e => by rw [congrFun hds e]) hκM
+  · exact DonatedLe.of_gates hgs hκL
+  · intro fl hfl
+    rw [Wip.step_inflight_reduce] at hfl
+    exact hκI fl hfl
+  · intro e
+    rw [congrFun hds e]
+    exact hκB e
+
+/-- **The chain invariant holds at every reachable state.** -/
+theorem chain_invariant (m : Manifest) (hwf : m.WF) :
+    (machine m).Invariant (ChainInv m) := by
+  intro σ hreach
+  induction hreach with
+  | init hi =>
+      subst hi
+      refine ⟨?_, fun e => rfl, ?_, ?_, fun e => Nat.le_refl _⟩
+      · intro g a ha
+        exact absurd ha (by simp [Manifest.initState])
+      · intro g a ha
+        exact absurd ha (by simp [Manifest.initState])
+      · intro fl hfl
+        exact absurd hfl (by simp [Manifest.initState])
+  | @step s s' hprev hstep ih =>
+      have hst : step m s = s' := hstep
+      exact hst ▸ chainInv_step m s (wfa_invariant m hwf s hprev).1 ih
+
 end Machines.Lnp64u
