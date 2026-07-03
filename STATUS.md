@@ -299,3 +299,21 @@ exec dispatch (`system_slotGen_le`, 11 system-op cases — 7 preserving via the 
 via the kernel bounds) + `corePhase_slotGen_ge` + `gen_monotone`. Same threading pattern as the
 already-completed `system_preserves`/`system_preserves_acyclic`.
 
+
+## Session update (2026-07-03, continued): T3 monotonicity chain, T9 budget, T8 complete
+
+- **T3 `gen_monotone` CLEAN** — `system_slotGen_le` finished (gate_call/gate_return via
+  `transferByHandle_slotGen_le`), lifted through `exec_slotGen_le` → `retire_slotGen_ge` →
+  `corePhase_slotGen_ge` → `step_slotGen_ge`. `gen_monotone_n` and `no_resurrection` now
+  unconditional. Remaining in T3: `revoke_temporal_safety`.
+- **T9 `budget_bounded` CLEAN** — `Logic/Budget.lean`, a full `BudgetLe` combinator sweep
+  (exec never raises budget; yield's 0 is the one inequality; refill restores exactly Q),
+  assembled by `TSys.Inductive`.
+- **T8 complete (all three CLEAN)** — `status_word_safety` (moverPhase case analysis) and
+  `prior_holder_excluded`, with a **proof-forced statement fix**: the hypothesis must be
+  *retired* (`r.gen < slotGen`), not merely *dead* (`liveRef = false`) — a dead-but-not-retired
+  ref (empty slot at the ref's gen) can be re-installed at the same generation and become
+  writable again, so the dead form is false. Destruction always retires (bumpGen strict off
+  saturation; `freeSlot` tombstones saturated slots), so the retired form is the faithful
+  reading of "destroyed". Proof: `no_resurrection` + `Wf.mover_wf`/`Wf.region_backed` over
+  `reachable_stepN`.
