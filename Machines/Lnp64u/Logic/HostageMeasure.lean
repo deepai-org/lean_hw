@@ -412,4 +412,70 @@ theorem chainMeasure_pos (m : Manifest) {σ : MachineState} (hwf : Wf σ)
           (Nat.pow_pos (by have := chainW_ge_two m; omega))
       omega
 
+/-- Break at a member known to sit strictly below the head: if `b` (now
+running) is a non-head member and every other non-head member keeps its run,
+the new chain from `x` is the prefix of `l` up to `b`'s first occurrence. -/
+theorem ChainFrom.breakAt {σ σ' : MachineState} {x : DomainId} {l : List GateId}
+    {h : DomainId} (hcf : ChainFrom σ x l h)
+    (hconf : ∀ g ∈ l, gateCallee σ' g = gateCallee σ g)
+    {b : DomainId} (hbmem : b ∈ chainMembers σ x l) (hbh : b ≠ h)
+    (hbrun : (σ'.doms b).run = .running)
+    (hrun : ∀ y ∈ chainMembers σ x l, y ≠ b → y ≠ h → (σ'.doms y).run = (σ.doms y).run) :
+    ∃ l₁ g0 l₂, l = l₁ ++ g0 :: l₂ ∧ ChainFrom σ' x l₁ b := by
+  induction hcf with
+  | top _ =>
+      exact absurd (List.mem_singleton.mp hbmem) hbh
+  | link hb2 hrest ih =>
+      rename_i x' g rest h'
+      by_cases hxb : x' = b
+      · subst hxb
+        exact ⟨[], g, rest, rfl, .top hbrun⟩
+      · have hxh : x' ≠ h' := by
+          intro hE
+          have htop := hrest.top_running
+          rw [← hE] at htop
+          rw [htop] at hb2
+          exact absurd hb2 (by simp)
+        have hbmem' : b ∈ chainMembers σ (gateCallee σ g) rest := by
+          unfold chainMembers at hbmem ⊢
+          simp only [List.map_cons] at hbmem
+          exact (List.mem_cons.mp hbmem).resolve_left (fun hE => hxb hE.symm)
+        have hsub : ∀ y ∈ chainMembers σ (gateCallee σ g) rest, y ≠ b → y ≠ h' →
+            (σ'.doms y).run = (σ.doms y).run := by
+          intro y hy hyb hyh
+          refine hrun y ?_ hyb hyh
+          unfold chainMembers at hy ⊢
+          simp only [List.map_cons]
+          rcases List.mem_cons.mp hy with h1 | h1
+          · exact List.mem_cons_of_mem _ (h1 ▸ List.mem_cons_self)
+          · exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _ h1)
+        obtain ⟨l₁, g0, l₂, hl, hcf'⟩ :=
+          ih (fun g' hg' => hconf g' (List.mem_cons_of_mem _ hg')) hbmem' hbh hsub
+        refine ⟨g :: l₁, g0, l₂, by rw [hl]; rfl, .link ?_ ?_⟩
+        · rw [hrun x' List.mem_cons_self hxb hxh]
+          exact hb2
+        · rw [hconf g List.mem_cons_self]
+          exact hcf'
+
+/-- Every chain gate's activation was installed by the member below it. -/
+theorem ChainFrom.act_caller_mem {σ : MachineState} (hwf : Wf σ) {x : DomainId}
+    {l : List GateId} {h : DomainId} (hcf : ChainFrom σ x l h) :
+    ∀ g' ∈ l, ∀ a', (σ.gates g').act = some a' → a'.caller ∈ chainMembers σ x l := by
+  induction hcf with
+  | top _ => intro g' hg'; exact absurd hg' List.not_mem_nil
+  | link hb2 hrest ih =>
+      rename_i x' g rest h'
+      intro g' hg' a' ha'
+      rcases List.mem_cons.mp hg' with h1 | h1
+      · subst h1
+        obtain ⟨a0, ha0, hc0⟩ := hwf.blocked_gate x' g' hb2
+        rw [ha0] at ha'
+        injection ha' with ha'
+        rw [← ha', hc0]
+        exact List.mem_cons_self
+      · have := ih g' h1 a' ha'
+        unfold chainMembers at this ⊢
+        simp only [List.map_cons]
+        exact List.mem_cons_of_mem _ this
+
 end Machines.Lnp64u
