@@ -284,4 +284,15 @@ theorem clearSlot_liveCap_of_ne (σ : MachineState) (d : DomainId) (s : Slot)
         · simp [h2, MachineState.write]
         · simp [h2]
 
+
+/-- Any bumped generation is at least 1 (bumping 0 gives 1; else it only
+increases a positive value or saturates at 255). Needed for `gen_pos` after
+`clearSlot` bumps a slot's generation. -/
+theorem bumpGen_pos (g : Gen) : 1 ≤ (bumpGen g).toNat := by
+  by_cases h : g = genRetired
+  · subst h; decide
+  · have := bumpGen_gt g h
+    have hg := g.isLt
+    omega
+
 end Machines.Lnp64u
