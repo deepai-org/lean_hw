@@ -229,4 +229,59 @@ theorem clearSlot_liveCap_of_ne (σ : MachineState) (d : DomainId) (s : Slot)
   rw [clearSlot_caps, if_neg hne, clearSlot_slotGen]
   rw [if_neg (fun hc => hne ⟨hc.1, hc.2⟩)]; exact hlc
 
+
+/-! ### sweepRegions / sweepMover projections -/
+
+@[simp] theorem sweepRegions_caps (σ : MachineState) (d : DomainId) :
+    (σ.sweepRegions.doms d).caps = (σ.doms d).caps := rfl
+@[simp] theorem sweepRegions_lineage (σ : MachineState) (d : DomainId) :
+    (σ.sweepRegions.doms d).lineage = (σ.doms d).lineage := rfl
+@[simp] theorem sweepRegions_slotGen (σ : MachineState) (d : DomainId) :
+    (σ.sweepRegions.doms d).slotGen = (σ.doms d).slotGen := rfl
+@[simp] theorem sweepRegions_run (σ : MachineState) (d : DomainId) :
+    (σ.sweepRegions.doms d).run = (σ.doms d).run := rfl
+@[simp] theorem sweepRegions_serving (σ : MachineState) (d : DomainId) :
+    (σ.sweepRegions.doms d).serving = (σ.doms d).serving := rfl
+@[simp] theorem sweepRegions_gates (σ : MachineState) : σ.sweepRegions.gates = σ.gates := rfl
+@[simp] theorem sweepRegions_mover (σ : MachineState) : σ.sweepRegions.mover = σ.mover := rfl
+@[simp] theorem sweepRegions_inflight (σ : MachineState) : σ.sweepRegions.inflight = σ.inflight := rfl
+
+@[simp] theorem sweepMover_doms (σ : MachineState) (d : DomainId) :
+    (σ.sweepMover.doms d) = σ.doms d := by
+  unfold MachineState.sweepMover
+  cases σ.mover with
+  | none => rfl
+  | some job =>
+      by_cases h1 : σ.liveRef job.src && σ.liveRef job.dst
+      · simp [h1]
+      · simp only [h1, if_false]
+        by_cases h2 : ({ σ with mover := none } : MachineState).domCovers job.owner
+            job.statusAddr { r := false, w := true, x := false }
+        · simp [h2, MachineState.write]
+        · simp [h2]
+@[simp] theorem sweepMover_gates (σ : MachineState) : σ.sweepMover.gates = σ.gates := by
+  unfold MachineState.sweepMover
+  cases σ.mover with
+  | none => rfl
+  | some job =>
+      by_cases h1 : σ.liveRef job.src && σ.liveRef job.dst
+      · simp [h1]
+      · simp only [h1, if_false]
+        by_cases h2 : ({ σ with mover := none } : MachineState).domCovers job.owner
+            job.statusAddr { r := false, w := true, x := false }
+        · simp [h2, MachineState.write]
+        · simp [h2]
+@[simp] theorem sweepMover_inflight (σ : MachineState) : σ.sweepMover.inflight = σ.inflight := by
+  unfold MachineState.sweepMover
+  cases σ.mover with
+  | none => rfl
+  | some job =>
+      by_cases h1 : σ.liveRef job.src && σ.liveRef job.dst
+      · simp [h1]
+      · simp only [h1, if_false]
+        by_cases h2 : ({ σ with mover := none } : MachineState).domCovers job.owner
+            job.statusAddr { r := false, w := true, x := false }
+        · simp [h2, MachineState.write]
+        · simp [h2]
+
 end Machines.Lnp64u
