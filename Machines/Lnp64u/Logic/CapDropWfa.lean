@@ -90,7 +90,40 @@ theorem system_preserves_acyclic : SystemOpsPreserveAcyclic := by
                    fun e σ' he => ((capdrop_preserves_wfa c σ hwf hac).2 e σ' he).2⟩
   case _ => sorry  -- cap_revoke (destroyMarked + sweeps)
   case _ => sorry  -- mem_grant (installDerived)
-  case _ => sorry  -- map       (capLive + installRegion)
+  case _ =>
+    constructor
+    · intro a σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨s, g, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate gid => rw [hk] at he; simp [SpecM.raise] at he
+          | mem base len perms =>
+              rw [hk] at he
+              simp only [specM_bind, SpecM.updDom, SpecM.modify, SpecM.set, SpecM.setReg] at he
+              injection he with _ h2; subst h2
+              exact acyclic_setReg_dom _ c.d _ _
+                (acyclic_setDom σ c.d _ (fun _ => ⟨rfl, rfl⟩) hac)
+    · intro er σ' he
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+          rw [hcl] at he; injection he with _ h2; subst h2; subst hs; exact hac
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨s, g, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate gid => rw [hk] at he; simp only [SpecM.raise] at he
+                        injection he with _ h2; subst h2; exact hac
+          | mem base len perms =>
+              rw [hk] at he
+              simp [specM_bind, SpecM.updDom, SpecM.modify, SpecM.set, SpecM.setReg] at he
   case _ =>
     exact ⟨fun a σ' he => (PreservesAcyclic.bind (PreservesAcyclic.clearRegion _ _)
         (fun _ => PreservesAcyclic.setReg _ _ _) σ hac).1 a σ' he,
