@@ -23,7 +23,14 @@ edge-removal, so acyclicity survives via `acyclic_of_parentRef_le`); its Wf core
 `clearSlot` + sweeps, the most intricate remaining Acyclic core. Then each of the three
 remaining ops is finished by its own `capLive → …` thread, exactly as `cap_drop` was.
 
-> **Update:** `system_preserves_acyclic` now proves **8 of 11** ops' Acyclic clauses ops' Acyclic clauses (cap_drop, cap_dup, mem_grant via `acyclic_allocDerived`; map/unmap/yield/halt/move via the combinator + threading). Only **cap_revoke and the 2 gate ops** remain — exactly the 3 that need the hard kernel lemmas `wf_destroyMarked`/`transferCap`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already proved. The remaining structural work is the combined `Wf ∧ Acyclic` system-op obligation + threading it into `wfa_invariant` (so `cap_drop`'s Wf clause, which needs Acyclic, is dischargeable machine-wide).
+> **Update:** `system_preserves_acyclic` now proves **8 of 11** ops' Acyclic clauses ops' Acyclic clauses (cap_drop, cap_dup, mem_grant via `acyclic_allocDerived`; map/unmap/yield/halt/move via the combinator + threading). Only **cap_revoke and the 2 gate ops** remain — exactly the 3 that need the hard kernel lemmas `wf_destroyMarked`/`transferCap`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already proved. **The combined obligation `system_preserves_wfa` is now proved** (`SystemOpsPreserveWfA`,
+8 of 11 ops: cap_drop via `capdrop_preserves_wfa`, the other 7 by pairing each op's Wf
+proof with `system_preserves_acyclic`). The last structural step is threading it into an
+unconditional `wfa_invariant` — a combined `ExecPreservesWfA` and re-proving
+`retire`/`corePhase`/`step` to carry `Wf ∧ Acyclic` together (mechanical; all component
+lemmas exist), since `cap_drop`'s Wf clause needs Acyclic available mid-chain. Then only
+`cap_revoke` (`wf_destroyMarked`) and the 2 gate ops (`transferCap`) remain — the same 3
+throughout, `acyclic_destroyMarked` already done for cap_revoke's Acyclic half.
 
 ## What builds and runs (verified end to end)
 
