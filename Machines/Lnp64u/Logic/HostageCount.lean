@@ -705,4 +705,308 @@ theorem cycle_master (m : Manifest) (hwfm : m.WF)
         rw [hmass2, hil2, hnh2, hil1]
         omega
 
+/-- **Draining the head instruction**: with the head's instruction in flight,
+within its remaining cycles the caller resumes, or the core is clean again
+with the measure no higher than before — except a `gate_call` retirement,
+which pushes one fresh digit at the next-lower weight (and certifies the
+chain had room). -/
+theorem drain (m : Manifest) (hwfm : m.WF) :
+    ∀ (c : Nat) (σ : MachineState), (machine m).Reachable σ →
+    ∀ {d : DomainId} {gd : GateId}, (σ.doms d).run = .blocked gd →
+    ∀ {l : List GateId} {h : DomainId}, ChainFrom σ d l h →
+    ∀ {fl : InFlight}, σ.inflight = some fl → fl.dom = h → fl.cyclesLeft ≤ c →
+    ∃ k, k ≤ c ∧
+      (((stepN m k σ).doms d).run ≠ .blocked gd ∨
+       (((stepN m k σ).doms d).run = .blocked gd ∧ (stepN m k σ).inflight = none ∧
+        (chainMeasure m (stepN m k σ) d ≤ chainMeasure m σ d ∨
+         (l.length + 1 ≤ maxChainDepth ∧
+          chainMeasure m (stepN m k σ) d ≤ chainMeasure m σ d +
+            (chainW m - 1) * chainW m ^ (maxChainDepth - 1 - l.length))))) := by
+  intro c
+  induction c with
+  | zero =>
+      intro σ hreach d gd hb l h hcf fl hinf hflh hcl
+      have := (chain_invariant m hwfm σ hreach).inflightPos fl hinf
+      omega
+  | succ c ih =>
+      intro σ hreach d gd hb l h hcf fl hinf hflh hcl
+      -- shared prelude
+      have hwfσ : Wf σ := (wfa_invariant m hwfm σ hreach).1
+      have hci : ChainInv m σ := chain_invariant m hwfm σ hreach
+      have hdlσ : DepthLink σ := hci.depthLink
+      set ρ := refillPhase m σ with hρdef
+      have hwfρ : Wf ρ := refillPhase_preserves_wf m σ hwfσ
+      have hdlρ : DepthLink ρ :=
+        DepthLink.of_frame (refillPhase_gates m σ) (fun e => refillPhase_serving m σ e) hdlσ
+      have hgρ : ρ.gates = σ.gates := refillPhase_gates m σ
+      have hrρ : ∀ e, (ρ.doms e).run = (σ.doms e).run := fun e => refillPhase_run m σ e
+      have hiρ : ρ.inflight = σ.inflight := refillPhase_inflight m σ
+      have hbρ : (ρ.doms d).run = .blocked gd := by rw [hrρ d]; exact hb
+      have hcfρ : ChainFrom ρ d l h :=
+        hcf.frame (fun g' _ => by unfold gateCallee; rw [hgρ]) (fun y _ => hrρ y)
+      have hlen : l.length ≤ maxChainDepth := chain_length_le hwfσ hdlσ hcf
+      have hne : l ≠ [] := by
+        cases hcf with
+        | top hr => rw [hr] at hb; exact absurd hb (by simp)
+        | link _ _ => simp
+      have hdh : d ≠ h := by
+        intro hE
+        rw [hE, hcf.top_running] at hb
+        exact absurd hb (by simp)
+      have hheadserv : (ρ.doms h).serving = some (l.getLast hne) :=
+        hcfρ.head_serving hwfρ hne
+      have hmeasρ : measAux (chainW m) ρ (maxChainDepth - 1) l =
+          measAux (chainW m) σ (maxChainDepth - 1) l :=
+        measAux_congr (fun g' _ => by rw [hgρ]) _
+      have hmeasσ : chainMeasure m σ d = measAux (chainW m) σ (maxChainDepth - 1) l :=
+        chainMeasure_of_chain hcf hlen
+      have hd2 : (step m σ).doms = (corePhase m ρ).doms := by
+        rw [hρdef]
+        exact step_doms m σ
+      have hg2 : (step m σ).gates = (corePhase m ρ).gates := by
+        rw [hρdef]
+        show (moverPhase (corePhase m (refillPhase m σ))).gates = _
+        exact moverPhase_gates _
+      have hi2 : (step m σ).inflight = (corePhase m ρ).inflight := by
+        rw [hρdef]
+        exact Wip.step_inflight_reduce m σ
+      have hreach2 : (machine m).Reachable (step m σ) := Loom.TSys.Reachable.step hreach rfl
+      have hwf2 : Wf (step m σ) := (wfa_invariant m hwfm _ hreach2).1
+      have hci2 : ChainInv m (step m σ) := chain_invariant m hwfm _ hreach2
+      have hflρ : ρ.inflight = some fl := by rw [hiρ]; exact hinf
+      rcases corePhase_chain m ρ hwfρ with
+        ⟨heq, hinfρ, hns⟩ |
+        ⟨fl', hfl', hgt, heq⟩ |
+        ⟨fl', hfl', hle', hrunfl, hinfκ, hsh⟩ |
+        ⟨e, hinfρ, hsch, hrune, hinfκ, hsh⟩ |
+        ⟨e, w, cc, hinfρ, hsch, hrune, hcpos, hcle, hcbud, hinfs, hsh⟩
+      · rw [hflρ] at hinfρ
+        exact absurd hinfρ (by simp)
+      · -- burn: recurse
+        have hfleq : fl' = fl := by
+          rw [hflρ] at hfl'
+          exact (Option.some.inj hfl').symm
+        subst hfleq
+        have hfz : FrozenStep d l h ρ (corePhase m ρ) := FrozenStep.of_eq_parts hcfρ
+          (by rw [heq]) (by rw [heq])
+        have hfz2 : FrozenStep d l h (corePhase m ρ) (step m σ) :=
+          FrozenStep.of_eq_parts hfz.chain hd2 hg2
+        have hfz3 : FrozenStep d l h ρ (step m σ) := hfz.trans hfz2
+        have hb2 : ((step m σ).doms d).run = .blocked gd := by
+          rw [hfz3.run_d]
+          exact hbρ
+        have hmeas2 : chainMeasure m (step m σ) d = chainMeasure m σ d := by
+          rw [chainMeasure_of_chain hfz3.chain hlen, hmeasσ, ← hmeasρ]
+          exact measAux_congr (fun g' hg' => hfz3.acts g' hg') _
+        have hinf2 : (step m σ).inflight = some { fl' with cyclesLeft := fl'.cyclesLeft - 1 } := by
+          rw [hi2, heq]
+        obtain ⟨k, hk, hout⟩ := ih (step m σ) hreach2 hb2 hfz3.chain hinf2 hflh
+          (by show fl'.cyclesLeft - 1 ≤ c; omega)
+        refine ⟨k + 1, by omega, ?_⟩
+        show _ ∨ _
+        have hstepN : stepN m (k + 1) σ = stepN m k (step m σ) := rfl
+        rw [hstepN]
+        rcases hout with hU | ⟨hB, hI, hM⟩
+        · exact .inl hU
+        · refine .inr ⟨hB, hI, ?_⟩
+          rw [hmeas2] at hM
+          exact hM
+      · -- retire of the head instruction
+        have hfleq : fl' = fl := by
+          rw [hflρ] at hfl'
+          exact (Option.some.inj hfl').symm
+        subst hfleq
+        rw [hflh] at hsh hrunfl
+        refine ⟨1, by omega, ?_⟩
+        have hstep1 : stepN m 1 σ = step m σ := rfl
+        rw [hstep1]
+        rcases hsh with hS | hS | hS | hS
+        · -- calm retire: frozen
+          have hfz : FrozenStep d l h ρ (corePhase m ρ) :=
+            FrozenStep.of_chainOut hwfρ hdlρ hbρ hcfρ hS hrunfl
+          have hfz2 : FrozenStep d l h (corePhase m ρ) (step m σ) :=
+            FrozenStep.of_eq_parts hfz.chain hd2 hg2
+          have hfz3 : FrozenStep d l h ρ (step m σ) := hfz.trans hfz2
+          refine .inr ⟨by rw [hfz3.run_d]; exact hbρ, by rw [hi2]; exact hinfκ, .inl ?_⟩
+          rw [chainMeasure_of_chain hfz3.chain hlen, hmeasσ, ← hmeasρ]
+          exact Nat.le_of_eq (measAux_congr (fun g' hg' => hfz3.acts g' hg') _)
+        · -- gate_call retiring: push
+          obtain ⟨gid, act, hgnone, hcalne, hcalrun, hcalserv, hcaller, hdepth, hdle,
+            hdon, hgo, hga, hgc, hmax, hbud, hso, hsc, hro, hrb⟩ := hS
+          have hgid_l : gid ∉ l := by
+            intro hmem
+            obtain ⟨a', ha'⟩ := hcfρ.gates_act hwfρ gid hmem
+            rw [hgnone] at ha'
+            exact absurd ha' (by simp)
+          have hcalneh : (ρ.gates gid).config.callee ≠ h := by
+            intro hE
+            rw [hE, hheadserv] at hcalserv
+            exact absurd hcalserv (by simp)
+          have hextend : ChainFrom (corePhase m ρ) d (l ++ [gid])
+              (gateCallee (corePhase m ρ) gid) := by
+            refine hcfρ.extend ?_ ?_ ?_ ?_
+            · intro g' hg'
+              unfold gateCallee
+              rw [congrArg GateState.config (hgo g' (fun hE => hgid_l (hE ▸ hg')))]
+            · exact hrb
+            · have hcal : gateCallee (corePhase m ρ) gid = (ρ.gates gid).config.callee := by
+                unfold gateCallee
+                rw [hgc]
+              rw [hcal, hro _ hcalneh]
+              exact hcalrun
+            · intro y hy hyh
+              exact hro y hyh
+          have hcf2 : ChainFrom (step m σ) d (l ++ [gid]) (gateCallee (corePhase m ρ) gid) :=
+            hextend.frame (fun g' _ => by unfold gateCallee; rw [hg2]) (fun y _ => by rw [hd2])
+          have hlen2 : (l ++ [gid]).length ≤ maxChainDepth :=
+            chain_length_le hwf2 hci2.depthLink hcf2
+          have hlen2' : l.length + 1 ≤ maxChainDepth := by
+            simpa using hlen2
+          refine .inr ⟨by rw [congrFun hd2 d, hro d hdh, hrρ d]; exact hb,
+            by rw [hi2]; exact hinfκ, .inr ⟨hlen2', ?_⟩⟩
+          rw [chainMeasure_of_chain hcf2 hlen2, hmeasσ, ← hmeasρ]
+          have hstepx : measAux (chainW m) (step m σ) (maxChainDepth - 1) (l ++ [gid]) =
+              measAux (chainW m) (corePhase m ρ) (maxChainDepth - 1) (l ++ [gid]) :=
+            measAux_congr (fun g' _ => by rw [hg2]) _
+          rw [hstepx, measAux_append]
+          have hll : measAux (chainW m) (corePhase m ρ) (maxChainDepth - 1) l =
+              measAux (chainW m) ρ (maxChainDepth - 1) l :=
+            measAux_congr (fun g' hg' => by
+              rw [hgo g' (fun hE => hgid_l (hE ▸ hg'))]) _
+          rw [hll]
+          have hav : actVal (corePhase m ρ) gid ≤ chainW m - 1 := by
+            have havq : actVal (corePhase m ρ) gid = act.donated + 1 := by
+              simp only [actVal, hga]
+            have hmdρ : MaxDonationEq m ρ :=
+              MaxDonationEq.of_frame (fun e => refillPhase_maxDonation m σ e) hci.maxDon
+            have hdb : act.donated ≤ maxDonationBound m := by
+              rw [hdon, hmdρ h]
+              exact maxDonation_le_bound m h
+            unfold chainW
+            omega
+          have hkey : actVal (corePhase m ρ) gid * chainW m ^ (maxChainDepth - 1 - l.length) ≤
+              (chainW m - 1) * chainW m ^ (maxChainDepth - 1 - l.length) :=
+            Nat.mul_le_mul_right _ hav
+          omega
+        · -- gate_return retiring: pop or resume
+          obtain ⟨gid, act, hserv2, hact2, hgo, hga, hgc, hmax, hbud, hso, hsd, hro, hrc⟩ := hS
+          have hgL : gid = l.getLast hne := Option.some.inj (hserv2.symm.trans hheadserv)
+          by_cases hcd : act.caller = d
+          · refine .inl ?_
+            rw [congrFun hd2 d, ← hcd, hrc]
+            simp
+          · have hcmem : act.caller ∈ chainMembers ρ d l :=
+              hcfρ.act_caller_mem hwfρ gid (hgL ▸ List.getLast_mem hne) act hact2
+            have hacnh : act.caller ≠ h := by
+              intro hE
+              have hblk := (hwfρ.gate_serving gid act hact2).2.1
+              rw [hE, hcfρ.top_running] at hblk
+              exact absurd hblk (by simp)
+            obtain ⟨l₁, g0, l₂, hlsplit, hcfκ⟩ := hcfρ.breakAt
+              (fun g' hg' => by
+                unfold gateCallee
+                by_cases hE : g' = gid
+                · rw [hE, hgc]
+                · rw [congrArg GateState.config (hgo g' hE)])
+              hcmem hacnh hrc
+              (fun y hy hyb hyh => hro y hyb)
+            have hlen₁ : l₁.length ≤ maxChainDepth := by
+              have : l₁.length ≤ l.length := by
+                rw [hlsplit]
+                simp
+              omega
+            have hcf2 : ChainFrom (step m σ) d l₁ act.caller :=
+              hcfκ.frame (fun g' _ => by unfold gateCallee; rw [hg2]) (fun y _ => by rw [hd2])
+            refine .inr ⟨?_, by rw [hi2]; exact hinfκ, .inl ?_⟩
+            · rw [congrFun hd2 d, hro d (Ne.symm hcd), hrρ d]
+              exact hb
+            · refine Nat.le_of_lt ?_
+              rw [chainMeasure_of_chain hcf2 hlen₁, hmeasσ, ← hmeasρ]
+              have hstep1' : measAux (chainW m) (step m σ) (maxChainDepth - 1) l₁ =
+                  measAux (chainW m) (corePhase m ρ) (maxChainDepth - 1) l₁ :=
+                measAux_congr (fun g' _ => by rw [hg2]) _
+              rw [hstep1']
+              have hWpos : 0 < chainW m := by
+                have := chainW_ge_two m
+                omega
+              have hpw : ∀ g' ∈ l₁, actVal (corePhase m ρ) g' ≤ actVal ρ g' := by
+                intro g' _
+                by_cases hE : g' = gid
+                · rw [hE, actVal_none hga]
+                  exact Nat.zero_le _
+                · rw [actVal_congr (congrArg GateState.act (hgo g' hE))]
+              have hg0pos : 1 ≤ actVal ρ g0 := by
+                obtain ⟨a1, ha1⟩ := hcfρ.gates_act hwfρ g0
+                  (by rw [hlsplit]; exact List.mem_append_right _ List.mem_cons_self)
+                exact actVal_pos ha1
+              rw [hlsplit]
+              exact measAux_prefix_lt hWpos l₁ g0 l₂ (maxChainDepth - 1) hpw hg0pos
+        · -- head fault at retire: unwind pop or resume
+          obtain ⟨hmax, hbudo, hrh, hsdnone, hsoκ, hcase⟩ := hS
+          rcases hcase with ⟨hgeq, hro⟩ | ⟨g, a, hsg, hag, hacne, hgo, hga, hgc, hcr, hro⟩
+          · exfalso
+            obtain ⟨a0, ha0⟩ := hcfρ.gates_act hwfρ (l.getLast hne) (List.getLast_mem hne)
+            have hact2 : ((step m σ).gates (l.getLast hne)).act = some a0 := by
+              rw [hg2, hgeq]
+              exact ha0
+            have hcal2 : ((step m σ).gates (l.getLast hne)).config.callee = h := by
+              rw [hg2, hgeq]
+              exact (hwfρ.serving_gate h _ hheadserv).1
+            have := (hwf2.gate_serving _ a0 hact2).1
+            rw [hcal2] at this
+            rw [congrFun hd2 h] at this
+            rw [hsdnone] at this
+            exact absurd this (by simp)
+          · have hgL : g = l.getLast hne := Option.some.inj (hsg.symm.trans hheadserv)
+            by_cases hcd : a.caller = d
+            · refine .inl ?_
+              rw [congrFun hd2 d, ← hcd, hcr]
+              simp
+            · have hcmem : a.caller ∈ chainMembers ρ d l :=
+                hcfρ.act_caller_mem hwfρ g (hgL ▸ List.getLast_mem hne) a hag
+              obtain ⟨l₁, g0, l₂, hlsplit, hcfκ⟩ := hcfρ.breakAt
+                (fun g' hg' => by
+                  unfold gateCallee
+                  by_cases hE : g' = g
+                  · rw [hE, hgc]
+                  · rw [hgo g' hE])
+                hcmem hacne hcr
+                (fun y hy hyb hyh => hro y hyh hyb)
+              have hlen₁ : l₁.length ≤ maxChainDepth := by
+                have : l₁.length ≤ l.length := by
+                  rw [hlsplit]
+                  simp
+                omega
+              have hcf2 : ChainFrom (step m σ) d l₁ a.caller :=
+                hcfκ.frame (fun g' _ => by unfold gateCallee; rw [hg2]) (fun y _ => by rw [hd2])
+              refine .inr ⟨?_, by rw [hi2]; exact hinfκ, .inl ?_⟩
+              · rw [congrFun hd2 d, hro d hdh (Ne.symm hcd), hrρ d]
+                exact hb
+              · refine Nat.le_of_lt ?_
+                rw [chainMeasure_of_chain hcf2 hlen₁, hmeasσ, ← hmeasρ]
+                have hstep1' : measAux (chainW m) (step m σ) (maxChainDepth - 1) l₁ =
+                    measAux (chainW m) (corePhase m ρ) (maxChainDepth - 1) l₁ :=
+                  measAux_congr (fun g' _ => by rw [hg2]) _
+                rw [hstep1']
+                have hWpos : 0 < chainW m := by
+                  have := chainW_ge_two m
+                  omega
+                have hpw : ∀ g' ∈ l₁, actVal (corePhase m ρ) g' ≤ actVal ρ g' := by
+                  intro g' _
+                  by_cases hE : g' = g
+                  · rw [hE, actVal_none hga]
+                    exact Nat.zero_le _
+                  · rw [actVal_congr (congrArg GateState.act (hgo g' hE))]
+                have hg0pos : 1 ≤ actVal ρ g0 := by
+                  obtain ⟨a1, ha1⟩ := hcfρ.gates_act hwfρ g0
+                    (by rw [hlsplit]; exact List.mem_append_right _ List.mem_cons_self)
+                  exact actVal_pos ha1
+                rw [hlsplit]
+                exact measAux_prefix_lt hWpos l₁ g0 l₂ (maxChainDepth - 1) hpw hg0pos
+      · -- issue arm: impossible, an instruction is in flight
+        rw [hflρ] at hinfρ
+        exact absurd hinfρ (by simp)
+      · rw [hflρ] at hinfρ
+        exact absurd hinfρ (by simp)
+
 end Machines.Lnp64u
