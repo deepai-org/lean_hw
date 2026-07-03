@@ -342,3 +342,13 @@ already-completed `system_preserves`/`system_preserves_acyclic`.
   hypotheses + `Isolated` gains `slots_full` and `code_local` clauses. Coupling
   infrastructure proved (`Logic/NonInt.lean`, sorry-free); the aligned-instant simulation
   assembly remains (plan in T5.lean).
+- **★ T3 COMPLETE — `revoke_temporal_safety` (the crown jewel) is CLEAN ★** After a
+  retiring `cap_revoke`, no agent ever writes under any marked descendant, forever.
+  Proof machinery (`Logic/Tombstone.lean`, ~2700 lines): the `Evo` per-step relation
+  (gen monotonicity + `RefFate` transport + tombstone permanence + Mover-liveness),
+  the `ClassLineage` invariant (derived caps share their parent's class), and forward
+  evaluation of the retiring revoke. **Proof-forced finding:** the statement admits a
+  live *gate*-class handle (nothing forces mem class), where nothing is destroyed —
+  the theorem survives only because gate-class descendants can never back a region
+  register or Mover destination, which required the new `ClassLineage` and
+  `MoverLiveMem` reachability invariants. All of T3 is now unconditional.
