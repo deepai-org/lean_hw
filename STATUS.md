@@ -54,7 +54,18 @@ capability-transfer core (transferCap preserves `Wf ∧ Acyclic`, and the `trans
 wrapper) is complete, with no kernel lemmas left. The only remaining piece for the 2 gate ops
 is the **gate-activation consistency**: the gates/serving/run/blocked updates in
 `gate_call`/`gate_return` must preserve `gate_serving`/`serving_gate`/`blocked_gate` (the gate
-chain bookkeeping) — intricate but needs no new kernel machinery. — exactly parallel to how the Wf-only invariant rested on
+chain bookkeeping) — intricate but needs no new kernel machinery.
+
+**Proof-forced finding (this session):** `gate_return` restores `c.d.serving := act.savedServing`,
+so `serving_gate` needs `savedServing`'s consistency. In µ, `savedServing` is always `none`
+(gate_call requires `cal.serving.isNone`), making `serving_gate` vacuous after return — **but the
+current `Wf` does not state this**, so it's unusable in the proof. The invariant needs a new
+machine-level clause `gate_saved_none : ∀ g a, gates(g).act = some a → a.savedServing = none`.
+Adding it: strengthen `wf_of_skeleton`'s `hact` to also carry `a'.savedServing = a.savedServing`,
+then discharge the clause in each direct Wf constructor (mechanical — gates unchanged for ~13 ops;
+`gate_call` establishes it from its require). This is the same proof-forced pattern as the
+acyclicity-bound and cap_drop-coupling findings earlier this session — the formalization forcing a
+real invariant strengthening. It is the concrete unblocker for both gate ops. — exactly parallel to how the Wf-only invariant rested on
 `SystemOpsPreserveWf`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already done.
 
 ## What builds and runs (verified end to end)
