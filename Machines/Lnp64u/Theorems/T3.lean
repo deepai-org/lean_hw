@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.Wf
 import Machines.Lnp64u.Logic.SlotGen
+import Machines.Lnp64u.Logic.Tombstone
 
 /-!
 # T3 — Temporal safety, machine-wide (spec level)
@@ -72,6 +73,102 @@ theorem revoke_temporal_safety (m : Manifest) (hwf : m.WF)
       σ.marks ⟨fl.dom, s, g⟩ d' s' = true →
       ∀ a : Addr,
         ¬ WritesUnder (stepN m n σ) ⟨d', s', (σ.doms d').slotGen s'⟩ a := by
-  sorry
+  intro n hn d' s' hmark a hwu
+  set r : CapRef := ⟨d', s', (σ.doms d').slotGen s'⟩ with hr
+  -- invariants at the future state
+  have hreachτ : (machine m).Reachable (stepN m n σ) := reachable_stepN m σ hreach n
+  obtain ⟨hwfτ, hacτ, hclτ⟩ := wfacl_invariant m hwf _ hreachτ
+  have hmlτ : MoverLiveMem (stepN m n σ) := moverLiveMem_invariant m _ hreachτ
+  obtain ⟨hwfσ, hacσ, hclσ⟩ := wfacl_invariant m hwf σ hreach
+  -- either way, `WritesUnder` needs `r` live at the future state, with a
+  -- memory-class entry; case on the revoked capability's class
+  cases hclseq : e.kind.cls with
+  | mem =>
+      -- the retirement destroys every marked slot: `r` is dead forever
+      obtain ⟨k, rfl⟩ : ∃ k, n = k + 1 := ⟨n - 1, by omega⟩
+      obtain ⟨hcaps, hgen⟩ := revoke_step_projections m σ fl hfl hlast i hdec hrev
+        s g e hlive hhandle hclseq d' s' hmark
+      have hstepN : stepN m (k + 1) σ = stepN m k (step m σ) := rfl
+      have hdead : (stepN m (k + 1) σ).liveRef r = false := by
+        rw [hstepN]
+        by_cases hret : (σ.doms d').slotGen s' = genRetired
+        · -- saturated generation: the slot is tombstoned forever
+          have hts : Tombstoned d' s' (step m σ) :=
+            ⟨hcaps, by rw [hgen, hret]; exact bumpGen_retired⟩
+          have htsτ := (stepN_evo m k (step m σ)).2.2.1 d' s' hts
+          unfold MachineState.liveRef DomainState.liveCap
+          rw [htsτ.1]
+          rfl
+        · -- strict bump: no resurrection
+          have h1 : ((σ.doms d').slotGen s').toNat
+              < (((step m σ).doms d').slotGen s').toNat := by
+            rw [hgen]; exact bumpGen_gt _ hret
+          have h2 := (stepN_evo m k (step m σ)).1 d' s'
+          have hne : ((stepN m k (step m σ)).doms d').slotGen s' ≠ r.gen := by
+            intro heq
+            rw [heq] at h2
+            show False
+            have : r.gen = (σ.doms d').slotGen s' := rfl
+            rw [this] at h2
+            omega
+          unfold MachineState.liveRef DomainState.liveCap
+          cases hc : ((stepN m k (step m σ)).doms d').caps r.slot with
+          | none => simp
+          | some e0 =>
+              simp only [hc]
+              simp
+              intro heq
+              exact absurd heq hne
+      -- but a write under `r` requires `r` live (Mover job or region backing)
+      rcases hwu with ⟨job, hjob, hdst, _, _⟩ | ⟨fl2, rg, reg2, hfl2, _, hrg, hback, _⟩
+      · have hl := (hwfτ.mover_wf job hjob).2.2.2
+        rw [hdst] at hl
+        rw [hl] at hdead
+        cases hdead
+      · obtain ⟨e4, hlive4, _⟩ := hwfτ.region_backed _ reg2 rg hrg
+        rw [hback] at hlive4
+        unfold MachineState.liveRef at hdead
+        rw [hlive4] at hdead
+        cases hdead
+  | gate =>
+      -- gate-class root: every marked descendant is gate-class, and its kind
+      -- is pinned while it lives — it can never back a region or Mover job
+      obtain ⟨e', hce', hcls'⟩ := marked_cls σ hwfσ hclσ ⟨fl.dom, s, g⟩ e hlive d' s' hmark
+      have hfate : RefFate r e'.kind σ := Or.inl ⟨rfl, e', hce', rfl⟩
+      have hfateτ := (stepN_evo m n σ).2.1 r e'.kind hfate
+      have hclsgate : e'.kind.cls = .gate := by rw [hcls', hclseq]
+      rcases hwu with ⟨job, hjob, hdst, _, _⟩ | ⟨fl2, rg, reg2, hfl2, _, hrg, hback, _⟩
+      · -- Mover destination: always live memory-class
+        obtain ⟨e4, hlive4, hcls4⟩ := hmlτ job hjob
+        rw [hdst] at hlive4
+        obtain ⟨hc4, hg4, _⟩ := (liveCap_eq_some _ _ _ _).mp hlive4
+        rcases hfateτ with ⟨hgt, e5, hce5, hk5⟩ | hlt | ⟨hnone, _, _⟩
+        · rw [hce5] at hc4
+          injection hc4 with h4; subst h4
+          rw [hk5, hclsgate] at hcls4
+          cases hcls4
+        · rw [hg4] at hlt
+          exact absurd hlt (lt_irrefl _)
+        · rw [hnone] at hc4
+          cases hc4
+      · -- region backing: must be dominated by a memory kind
+        obtain ⟨e4, hlive4, hle⟩ := hwfτ.region_backed _ reg2 rg hrg
+        rw [hback] at hlive4
+        obtain ⟨hc4, hg4, _⟩ := (liveCap_eq_some _ _ _ _).mp hlive4
+        rcases hfateτ with ⟨hgt, e5, hce5, hk5⟩ | hlt | ⟨hnone, _, _⟩
+        · rw [hce5] at hc4
+          injection hc4 with h4; subst h4
+          cases hk4 : e5.kind with
+          | mem b4 l4 p4 =>
+              rw [hk4] at hk5
+              rw [← hk5] at hclsgate
+              cases hclsgate
+          | gate g4 =>
+              rw [hk4] at hle
+              exact absurd hle (by simp [CapKind.le])
+        · rw [hg4] at hlt
+          exact absurd hlt (lt_irrefl _)
+        · rw [hnone] at hc4
+          cases hc4
 
 end Machines.Lnp64u.Theorems.T3
