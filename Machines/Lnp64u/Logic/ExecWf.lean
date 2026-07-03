@@ -2408,6 +2408,61 @@ theorem wf_acyclic_gateReturn (σ : MachineState) (cd : DomainId) (gid : GateId)
     · rw [if_pos hg] at ha; simp at ha
     · rw [if_neg hg] at ha; exact h.gate_saved_none g a ha
 
+
+/-- `transferCap` preserves `run`, `serving`, and `gates` (it touches only
+caps/lineage/regions/mover). The frame `gate_return`/`gate_call` need to carry
+their gate/serving/run facts across the capability transfer. -/
+theorem transferCap_frame (σ : MachineState) (from_ : DomainId) (s : Slot) (to_ : DomainId)
+    (σ' : MachineState) (ref : CapRef)
+    (ht : σ.transferCap from_ s to_ = some (σ', ref)) :
+    (∀ d, (σ'.doms d).run = (σ.doms d).run) ∧
+    (∀ d, (σ'.doms d).serving = (σ.doms d).serving) ∧ σ'.gates = σ.gates := by
+  unfold MachineState.transferCap at ht
+  simp only [Option.bind_eq_bind] at ht
+  cases he : (σ.doms from_).caps s with
+  | none => rw [he] at ht; simp at ht
+  | some e =>
+    rw [he] at ht; simp only [Option.bind_some] at ht
+    cases hfs : σ.freeSlot to_ with
+    | none => rw [hfs] at ht; simp at ht
+    | some s' =>
+      rw [hfs] at ht; simp only [Option.bind_some] at ht
+      cases hle : e.lineage with
+      | some l =>
+        cases hcell : (σ.doms from_).lineage l with
+        | none => simp [hle, hcell] at ht
+        | some cell =>
+          cases hfc : σ.freeCell to_ with
+          | none => simp [hle, hcell, hfc] at ht
+          | some l' =>
+            simp only [hle, hcell, hfc, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at ht
+            obtain ⟨rfl, _⟩ := ht
+            refine ⟨fun d => ?_, fun d => ?_, ?_⟩
+            · simp only [sweepMover_doms, sweepRegions_run, clearSlot_run, reparent_run]
+              by_cases hd : d = to_
+              · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
+              · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hd]
+            · simp only [sweepMover_doms, sweepRegions_serving, clearSlot_serving, reparent_serving]
+              by_cases hd : d = to_
+              · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
+              · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hd]
+            · simp only [sweepMover_gates, sweepRegions_gates, clearSlot_gates, reparent_gates]
+              rfl
+      | none =>
+        simp only [hle, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at ht
+        obtain ⟨rfl, _⟩ := ht
+        refine ⟨fun d => ?_, fun d => ?_, ?_⟩
+        · simp only [sweepMover_doms, sweepRegions_run, clearSlot_run, reparent_run]
+          by_cases hd : d = to_
+          · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
+          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hd]
+        · simp only [sweepMover_doms, sweepRegions_serving, clearSlot_serving, reparent_serving]
+          by_cases hd : d = to_
+          · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
+          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hd]
+        · simp only [sweepMover_gates, sweepRegions_gates, clearSlot_gates, reparent_gates]
+          rfl
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all

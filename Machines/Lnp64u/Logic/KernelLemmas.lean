@@ -602,4 +602,12 @@ theorem destroyMarked_liveCap_of_not_marked (σ : MachineState) (m : DomainId �
     Bool.false_and]
   exact hlc
 
+
+@[simp] theorem reparent_run (σ : MachineState) (old new : CapRef) (d : DomainId) :
+    ((σ.reparent old new).doms d).run = (σ.doms d).run := rfl
+@[simp] theorem reparent_serving (σ : MachineState) (old new : CapRef) (d : DomainId) :
+    ((σ.reparent old new).doms d).serving = (σ.doms d).serving := rfl
+@[simp] theorem reparent_gates (σ : MachineState) (old new : CapRef) :
+    (σ.reparent old new).gates = σ.gates := rfl
+
 end Machines.Lnp64u
