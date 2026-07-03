@@ -392,4 +392,29 @@ theorem orphanChildren_caps (σ : MachineState) (old : CapRef) (d : DomainId) (s
 @[simp] theorem orphanChildren_inflight (σ : MachineState) (old : CapRef) :
     (σ.orphanChildren old).inflight = σ.inflight := rfl
 
+
+/-- `liveCap` present-ness depends only on the slot's occupancy and generation,
+not on the stored entry's contents. -/
+theorem liveCap_isSome_congr (ds ds' : DomainState) (s : Slot) (g : Gen)
+    (hp : (ds.caps s).isSome = (ds'.caps s).isSome) (hg : ds.slotGen s = ds'.slotGen s) :
+    (ds.liveCap s g).isSome = (ds'.liveCap s g).isSome := by
+  unfold DomainState.liveCap
+  cases h1 : ds.caps s with
+  | none => cases h2 : ds'.caps s with
+            | none => rfl
+            | some e2 => rw [h1, h2] at hp; simp at hp
+  | some e1 => cases h2 : ds'.caps s with
+               | none => rw [h1, h2] at hp; simp at hp
+               | some e2 => rw [hg]; cases hc : (decide (ds'.slotGen s = g) && g != 0) <;> simp [hc]
+
+/-- `orphanChildren` preserves each slot's occupancy. -/
+theorem orphanChildren_caps_isSome (σ : MachineState) (old : CapRef) (d : DomainId) (s : Slot) :
+    (((σ.orphanChildren old).doms d).caps s).isSome = (((σ.doms d).caps s).isSome) := by
+  rw [orphanChildren_caps]
+  cases hc : (σ.doms d).caps s with
+  | none => simp [hc]
+  | some e0 => cases hl : e0.lineage with
+               | none => simp [hc, hl]
+               | some l => simp only [hc, hl]; split <;> simp
+
 end Machines.Lnp64u
