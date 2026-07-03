@@ -98,7 +98,12 @@ read-only-prefix thread into `wf_setMover`). **4 opcodes remain**: `cap_drop`,
 maintenance; the `wf_sweepRegions`/`wf_sweepMover` cached-authority sweeps they
 need are **proved**), and `gate_call`/`gate_return` (the gate-transfer
 machinery). These are the deepest T3 revocation + gate content, the irreducible
-research core. Infrastructure in
+research core. **Infrastructure landed:** `wf_reparent` (lineage reparenting
+preserves Wf — the graph half of `cap_drop`), `wf_sweepRegions`, `wf_sweepMover`.
+The remaining `cap_drop` core is the `clearSlot`+sweep composition (removing a
+capability breaks `region_backed`, which the sweep then repairs — the single
+hardest lemma); `cap_revoke` needs `destroyMarked`; the gate ops need
+`transferCap`. Infrastructure in
 place: `capLive_ok`/`capLive_err_state` (cap-op state characterization),
 `freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`,
 and — the two hardest kernel lemmas — **`wf_installDerived`** (capability
