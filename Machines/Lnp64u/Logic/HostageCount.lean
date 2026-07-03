@@ -1306,4 +1306,82 @@ theorem window (m : Manifest) (hwfm : m.WF)
     exact scan_arith (hyperL m) (6 * budgetMass m + maxCostBound + numDomains)
       (scanBound m) hL (by unfold scanBound; ring) hfinal
 
+/-! ## The outer induction -/
+
+/-- Any in-flight instruction drains within `maxCostBound` cycles. -/
+theorem to_clean (m : Manifest) (hwfm : m.WF) :
+    ∀ (c : Nat) (σ : MachineState), (machine m).Reachable σ →
+    (∀ fl, σ.inflight = some fl → fl.cyclesLeft ≤ c) →
+    ∃ j, j ≤ c ∧ (stepN m j σ).inflight = none := by
+  intro c
+  induction c with
+  | zero =>
+      intro σ hreach hle
+      cases hi : σ.inflight with
+      | none => exact ⟨0, Nat.le_refl _, hi⟩
+      | some fl =>
+          have h1 := (chain_invariant m hwfm σ hreach).inflightPos fl hi
+          have h2 := hle fl hi
+          omega
+  | succ c ih =>
+      intro σ hreach hle
+      cases hi : σ.inflight with
+      | none => exact ⟨0, Nat.zero_le _, hi⟩
+      | some fl =>
+          by_cases hgt : 1 < fl.cyclesLeft
+          · have hstep := Wip.step_inflight_countdown m σ fl hi hgt
+            have hreach2 : (machine m).Reachable (step m σ) :=
+              Loom.TSys.Reachable.step hreach rfl
+            have hle2 : ∀ fl', (step m σ).inflight = some fl' → fl'.cyclesLeft ≤ c := by
+              intro fl' hfl'
+              rw [hstep] at hfl'
+              injection hfl' with hfl'
+              rw [← hfl']
+              show fl.cyclesLeft - 1 ≤ c
+              have := hle fl hi
+              omega
+            obtain ⟨j, hj, hout⟩ := ih (step m σ) hreach2 hle2
+            exact ⟨j + 1, by omega, hout⟩
+          · have hstep := Wip.step_inflight_retire m σ fl hi (by omega)
+            exact ⟨1, by omega, hstep⟩
+
+/-- **Measure induction**: from any clean blocked reachable state, `d`
+resumes within `(M + 1) · windowLen` cycles, `M` the measure bound. -/
+theorem resume_of_measure (m : Manifest) (hwfm : m.WF)
+    (hstall : ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ))
+    (hsched : 2 * ((List.finRange numDomains).map
+      (fun e => (m.doms e).budgetQ * (hyperL m / (m.doms e).periodP))).sum < hyperL m)
+    (hpos : ∀ e, 0 < (m.doms e).budgetQ) :
+    ∀ (M : Nat) (σ : MachineState), (machine m).Reachable σ →
+    ∀ {d : DomainId} {gd : GateId}, (σ.doms d).run = .blocked gd →
+    σ.inflight = none → chainMeasure m σ d ≤ M →
+    ∃ n, n ≤ (M + 1) * windowLen m ∧ ((stepN m n σ).doms d).run ≠ .blocked gd := by
+  intro M
+  induction M with
+  | zero =>
+      intro σ hreach d gd hb hclean hM
+      exfalso
+      have hwfσ : Wf σ := (wfa_invariant m hwfm σ hreach).1
+      have hsnσ : HaltedServingNone σ := halted_serving_none_invariant m hwfm σ hreach
+      have hci : ChainInv m σ := chain_invariant m hwfm σ hreach
+      obtain ⟨l, h, hcf, hlenb⟩ := chain_exists hwfσ hsnσ hci.depthLink hb
+      have := chainMeasure_pos m hwfσ hcf hlenb hb
+      omega
+  | succ M ih =>
+      intro σ hreach d gd hb hclean hM
+      obtain ⟨k, hk, hout⟩ := window m hwfm hstall hsched hpos σ hreach hb hclean
+      rcases hout with hU | ⟨hB, hI, hMlt⟩
+      · exact ⟨k, by
+          have h1 : windowLen m ≤ (M + 1 + 1) * windowLen m :=
+            Nat.le_mul_of_pos_left _ (by omega)
+          omega, hU⟩
+      · have hreach2 : (machine m).Reachable (stepN m k σ) := stepN_reachable m σ hreach k
+        obtain ⟨n', hn', hout'⟩ := ih (stepN m k σ) hreach2 hB hI (by omega)
+        refine ⟨k + n', ?_, ?_⟩
+        · have : (M + 1 + 1) * windowLen m = windowLen m + (M + 1) * windowLen m := by
+            ring
+          omega
+        · rw [stepN_add]
+          exact hout'
+
 end Machines.Lnp64u
