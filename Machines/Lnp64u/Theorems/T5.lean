@@ -109,7 +109,7 @@ theorem catchup_halt
     (hpri₂ : TopPriority m₂ d) (hag : AgreeOn m₁ m₂ d)
     (σ₁ σ₂ : MachineState)
     (hins₁ : Insulated m₁ d σ₁) (hins₂ : Insulated m₂ d σ₂)
-    (hcpl : Coupled m₁ d σ₁ σ₂) (hq₂ : Quiet d σ₂)
+    (hcpl : Coupled m₁ d σ₁ σ₂) (hq₂ : NonInt.Quiet d σ₂)
     (hinf₁ : σ₁.inflight = none)
     (hsched₁ : schedule m₁ (refillPhase m₁ σ₁) = some d)
     (hbad : fetch σ₁ d = none ∨
@@ -117,7 +117,7 @@ theorem catchup_halt
     ∃ j, (∀ i, i ≤ j → obsOf ((stepN m₂ i σ₂).doms d) = obsOf (σ₂.doms d)) ∧
       Coupled m₁ d (step m₁ σ₁) (stepN m₂ (j + 1) σ₂) ∧
       Insulated m₂ d (stepN m₂ (j + 1) σ₂) ∧
-      Quiet d (stepN m₂ (j + 1) σ₂) ∧ Quiet d (step m₁ σ₁) := by
+      NonInt.Quiet d (stepN m₂ (j + 1) σ₂) ∧ NonInt.Quiet d (step m₁ σ₁) := by
   have hdom : m₁.doms d = m₂.doms d := hag.1
   -- d is running and its per-period budget is positive
   have hrun₁ : (σ₁.doms d).run = .running := by
@@ -205,7 +205,7 @@ theorem catchup_retire
     (hpri₂ : TopPriority m₂ d) (hag : AgreeOn m₁ m₂ d)
     (σ₁ σ₂ : MachineState)
     (hins₁ : Insulated m₁ d σ₁) (hins₂ : Insulated m₂ d σ₂)
-    (hcpl : Coupled m₁ d σ₁ σ₂) (hq₂ : Quiet d σ₂)
+    (hcpl : Coupled m₁ d σ₁ σ₂) (hq₂ : NonInt.Quiet d σ₂)
     (fl : InFlight) (instr : Loom.Isa.InstrDecl sig Semantics WcetClass)
     (hfl : σ₁.inflight = some fl) (hfd : fl.dom = d)
     (hfetch : fetch σ₁ d = some fl.word)
@@ -215,7 +215,7 @@ theorem catchup_retire
     ∃ j, (∀ i, i ≤ j → obsOf ((stepN m₂ i σ₂).doms d) = obsOf (σ₂.doms d)) ∧
       Coupled m₁ d (step m₁ σ₁) (stepN m₂ (j + 1) σ₂) ∧
       Insulated m₂ d (stepN m₂ (j + 1) σ₂) ∧
-      Quiet d (stepN m₂ (j + 1) σ₂) ∧ Quiet d (step m₁ σ₁) := by
+      NonInt.Quiet d (stepN m₂ (j + 1) σ₂) ∧ NonInt.Quiet d (step m₁ σ₁) := by
   have hdom : m₁.doms d = m₂.doms d := hag.1
   set c := instr.cost.cost with hcdef
   have hc0 : 0 < c := cost_pos _
@@ -355,8 +355,8 @@ theorem sim (m₁ m₂ : Manifest) (h₁ : m₁.WF) (h₂ : m₂.WF)
       Insulated m₁ d (stepN m₁ N m₁.initState) ∧
       Insulated m₂ d (stepN m₂ K m₂.initState) ∧
       Coupled m₁ d (stepN m₁ N m₁.initState) (stepN m₂ K m₂.initState) ∧
-      Quiet d (stepN m₂ K m₂.initState) ∧
-      (Quiet d (stepN m₁ N m₁.initState) ∨
+      NonInt.Quiet d (stepN m₂ K m₂.initState) ∧
+      (NonInt.Quiet d (stepN m₁ N m₁.initState) ∨
         Midflight m₁ d (stepN m₁ N m₁.initState)) := by
   have hdom : m₁.doms d = m₂.doms d := hag.1
   intro N
@@ -384,15 +384,15 @@ theorem sim (m₁ m₂ : Manifest) (h₁ : m₁.WF) (h₂ : m₂.WF)
       -- a reusable "run-1 stutters" package
       have stutter_pack :
           DFrozen m₁ d σ₁ (step m₁ σ₁) →
-          Quiet d (step m₁ σ₁) ∨ Midflight m₁ d (step m₁ σ₁) →
+          NonInt.Quiet d (step m₁ σ₁) ∨ Midflight m₁ d (step m₁ σ₁) →
           ∃ K' : Nat,
             destutter (trajectory m₁ d (N + 1 + 1)) =
               destutter (trajectory m₂ d (K' + 1)) ∧
             Insulated m₁ d (stepN m₁ (N + 1) m₁.initState) ∧
             Insulated m₂ d (stepN m₂ K' m₂.initState) ∧
             Coupled m₁ d (stepN m₁ (N + 1) m₁.initState) (stepN m₂ K' m₂.initState) ∧
-            Quiet d (stepN m₂ K' m₂.initState) ∧
-            (Quiet d (stepN m₁ (N + 1) m₁.initState) ∨
+            NonInt.Quiet d (stepN m₂ K' m₂.initState) ∧
+            (NonInt.Quiet d (stepN m₁ (N + 1) m₁.initState) ∨
               Midflight m₁ d (stepN m₁ (N + 1) m₁.initState)) := by
         intro hfz harm'
         refine ⟨K, ?_, hinsA, hins₂, ?_, hq₂, by rw [hsuccA]; exact harm'⟩
@@ -407,16 +407,16 @@ theorem sim (m₁ m₂ : Manifest) (h₁ : m₁.WF) (h₂ : m₂.WF)
           (∀ i, i ≤ j → obsOf ((stepN m₂ i σ₂).doms d) = obsOf (σ₂.doms d)) →
           Coupled m₁ d (step m₁ σ₁) (stepN m₂ (j + 1) σ₂) →
           Insulated m₂ d (stepN m₂ (j + 1) σ₂) →
-          Quiet d (stepN m₂ (j + 1) σ₂) →
-          Quiet d (step m₁ σ₁) →
+          NonInt.Quiet d (stepN m₂ (j + 1) σ₂) →
+          NonInt.Quiet d (step m₁ σ₁) →
           ∃ K' : Nat,
             destutter (trajectory m₁ d (N + 1 + 1)) =
               destutter (trajectory m₂ d (K' + 1)) ∧
             Insulated m₁ d (stepN m₁ (N + 1) m₁.initState) ∧
             Insulated m₂ d (stepN m₂ K' m₂.initState) ∧
             Coupled m₁ d (stepN m₁ (N + 1) m₁.initState) (stepN m₂ K' m₂.initState) ∧
-            Quiet d (stepN m₂ K' m₂.initState) ∧
-            (Quiet d (stepN m₁ (N + 1) m₁.initState) ∨
+            NonInt.Quiet d (stepN m₂ K' m₂.initState) ∧
+            (NonInt.Quiet d (stepN m₁ (N + 1) m₁.initState) ∨
               Midflight m₁ d (stepN m₁ (N + 1) m₁.initState)) := by
         intro j hfro hcpl' hins' hq' hq1'
         have habs : ∀ i, stepN m₂ i σ₂ = stepN m₂ (K + i) m₂.initState := by
