@@ -1427,6 +1427,30 @@ theorem acyclic_destroyMarked (σ : MachineState) (m : DomainId → Slot → Boo
     (hac : Acyclic σ) : Acyclic (σ.destroyMarked m) :=
   acyclic_of_parentRef_le σ _ (destroyMarked_parentRef_le σ m) hac
 
+
+/-- `allocDerived` preserves acyclicity: it allocates a fresh slot/cell and
+`installDerived`s there — a fresh-leaf addition (`acyclic_installDerived`). -/
+theorem acyclic_allocDerived (owner : DomainId) (kind : CapKind) (parent : CapRef)
+    (σ : MachineState) {hw : Loom.Word32} {σ' : MachineState}
+    (hpar : σ.liveRef parent = true) (h : Wf σ) (hac : Acyclic σ)
+    (he : Machines.Lnp64u.Isa.allocDerived owner kind parent σ = .ok hw σ') : Acyclic σ' := by
+  unfold Machines.Lnp64u.Isa.allocDerived at he
+  simp only [SpecM.get, specM_bind] at he
+  cases hfs : σ.freeSlot owner with
+  | none => rw [hfs] at he; simp [SpecM.raise] at he
+  | some s =>
+      rw [hfs] at he
+      cases hfc : σ.freeCell owner with
+      | none => rw [hfc] at he; simp [SpecM.raise] at he
+      | some l =>
+          rw [hfc] at he
+          simp only [SpecM.set, specM_bind, specM_pure] at he
+          injection he with _ h2
+          have hσ' : σ' = (σ.installDerived owner s l kind parent).1 := by rw [← h2]
+          rw [hσ']
+          exact acyclic_installDerived σ owner s l kind parent
+            (freeSlot_caps_none σ owner hfs) (freeCell_none σ owner hfc) hpar h hac
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
