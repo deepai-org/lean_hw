@@ -30,6 +30,11 @@ theorem acyclic_moverPhase (σ : MachineState) (hac : Acyclic σ) :
   acyclic_of_parentRef_eq σ _
     (parentRef_eq_of_doms σ _ (fun d => by simp [moverPhase_doms])) hac
 
+/-- Programming the Mover changes only the `mover` field, hence preserves acyclicity. -/
+theorem acyclic_setMover (σ : MachineState) (job : MoverJob) (hac : Acyclic σ) :
+    Acyclic { σ with mover := some job } :=
+  acyclic_of_parentRef_eq σ _ (parentRef_eq_of_doms σ _ (fun _ => ⟨rfl, rfl⟩)) hac
+
 /-- Bumping the cycle counter touches no domain. -/
 theorem acyclic_setCycle (σ : MachineState) (n : Nat) (hac : Acyclic σ) :
     Acyclic { σ with cycle := n } :=
