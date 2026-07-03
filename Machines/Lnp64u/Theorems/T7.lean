@@ -1,4 +1,5 @@
 import Machines.Lnp64u.Logic.Wf
+import Machines.Lnp64u.Logic.Inflight
 
 /-!
 # T7 — Real time
@@ -32,7 +33,19 @@ theorem wcet_retirement (m : Manifest) (σ : MachineState) (fl : InFlight)
     ((stepN m fl.cyclesLeft σ).inflight = none ∨
      ∃ fl', (stepN m fl.cyclesLeft σ).inflight = some fl' ∧ fl'.word ≠ fl.word ∨
             fl'.dom ≠ fl.dom) := by
-  sorry
+  constructor
+  · intro k hk
+    exact ⟨⟨fl.dom, fl.word, fl.cyclesLeft - (k + 1)⟩,
+      Wip.stepN_inflight_countdown m (k + 1) σ fl hfl (by omega), rfl, rfl⟩
+  · left
+    have harith : fl.cyclesLeft - (fl.cyclesLeft - 1) = 1 := by omega
+    have hpre : (stepN m (fl.cyclesLeft - 1) σ).inflight =
+        some ⟨fl.dom, fl.word, 1⟩ := by
+      rw [Wip.stepN_inflight_countdown m (fl.cyclesLeft - 1) σ fl hfl (by omega), harith]
+    have hlast := Wip.step_inflight_retire m (stepN m (fl.cyclesLeft - 1) σ)
+      ⟨fl.dom, fl.word, 1⟩ hpre (le_refl 1)
+    rw [show fl.cyclesLeft = (fl.cyclesLeft - 1) + 1 from by omega, Wip.stepN_succ]
+    exact hlast
 
 /-- **Budget delivery.** Under schedulability, a running domain that never
 blocks receives its full budget every period: within each period window it
