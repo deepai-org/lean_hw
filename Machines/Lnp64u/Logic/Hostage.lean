@@ -3499,4 +3499,183 @@ theorem gatecall_chain (c : Ctx) (σ : MachineState) :
                                     · rw [setDom_doms_same]
   exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun er σ' h => (body _ h).2 er σ' rfl⟩
 
+/-- `gate_return`'s chain classification: err leaves the state unchanged, ok
+produces exactly `GateReturnShape` (mirrors `gatecall_chain`). -/
+theorem gatereturn_chain (c : Ctx) (σ : MachineState) :
+    (∀ a σ',
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = .ok a σ' →
+      GateReturnShape c σ σ') ∧
+    (∀ er σ',
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = .err er σ' →
+      σ' = σ) := by
+  have body : ∀ (out : Res Unit),
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = out →
+      (∀ a σ', out = .ok a σ' → GateReturnShape c σ σ') ∧
+      (∀ er σ', out = .err er σ' → σ' = σ) := by
+    intro out hout
+    simp only [SpecM.get, specM_bind] at hout
+    cases hserv : (σ.doms c.d).serving with
+    | none =>
+        rw [hserv] at hout; simp [SpecM.fatal] at hout; subst hout
+        exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+    | some gid =>
+        simp only [hserv] at hout
+        cases hgact : (σ.gates gid).act with
+        | none =>
+            simp only [hgact] at hout; simp [SpecM.fatal] at hout; subst hout
+            exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+        | some act =>
+            simp only [hgact] at hout; simp only [SpecM.reg, specM_bind] at hout
+            cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d act.caller
+                ((σ.doms c.d).reg c.op.rs1) σ with
+            | fault f => rw [htbh] at hout; subst hout
+                         exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+            | err e0 τ =>
+                have hs := transferByHandle_err_state c.d act.caller _ σ e0 τ htbh
+                rw [htbh] at hout; subst hout
+                exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hs⟩
+            | ok reply τ =>
+                rw [htbh] at hout
+                have hτ : ChainOut c.d σ τ :=
+                  (transferByHandle_chain_le c.d c.d act.caller _ σ).1 reply τ htbh
+                simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify,
+                  SpecM.setReg] at hout
+                subst hout
+                refine ⟨fun a σ' h => ?_, fun er σ' h => by simp at h⟩
+                simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                set X : MachineState := { τ with
+                  gates := Loom.Fun.update τ.gates gid
+                    { (τ.gates gid) with act := none } } with hX
+                have hXd : X.doms = τ.doms := rfl
+                refine ⟨gid, act, hserv, hgact, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+                · intro g' hg'
+                  show Loom.Fun.update τ.gates gid _ g' = σ.gates g'
+                  rw [Loom.Fun.update_ne _ _ _ _ hg']
+                  exact congrFun hτ.1 g'
+                · show (Loom.Fun.update τ.gates gid _ gid).act = none
+                  rw [Loom.Fun.update_same]
+                · show (Loom.Fun.update τ.gates gid _ gid).config = _
+                  rw [Loom.Fun.update_same]
+                  show (τ.gates gid).config = (σ.gates gid).config
+                  rw [congrFun hτ.1 gid]
+                · -- maxDonation
+                  intro e'
+                  by_cases hecl : e' = act.caller
+                  · subst hecl
+                    rw [setDom_doms_same]
+                    show (((_ : MachineState).doms act.caller).setReg
+                      act.callerRd reply).maxDonation = _
+                    rw [setDom_doms_same]
+                    unfold DomainState.setReg
+                    split
+                    · by_cases hecd : act.caller = c.d
+                      · rw [hecd, setDom_doms_same, hXd]; exact hτ.2.2.2.1 c.d
+                      · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.1 act.caller
+                    · by_cases hecd : act.caller = c.d
+                      · rw [hecd, setDom_doms_same, hXd]; exact hτ.2.2.2.1 c.d
+                      · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.1 act.caller
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl]
+                    by_cases hecd : e' = c.d
+                    · subst hecd
+                      rw [setDom_doms_same, hXd]; exact hτ.2.2.2.1 c.d
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.1 e'
+                · -- budgets outside c.d
+                  intro e' hecd
+                  by_cases hecl : e' = act.caller
+                  · subst hecl
+                    rw [setDom_doms_same]
+                    show (((_ : MachineState).doms act.caller).setReg
+                      act.callerRd reply).budget = _
+                    rw [setDom_doms_same]
+                    unfold DomainState.setReg
+                    split
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.2 act.caller hecd
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.2 act.caller hecd
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl,
+                        setDom_doms_ne _ _ _ _ hecd, hXd]
+                    exact hτ.2.2.2.2 e' hecd
+                · -- serving outside c.d
+                  intro e' hecd
+                  by_cases hecl : e' = act.caller
+                  · subst hecl
+                    rw [setDom_doms_same]
+                    show (((_ : MachineState).doms act.caller).setReg
+                      act.callerRd reply).serving = _
+                    rw [setDom_doms_same]
+                    unfold DomainState.setReg
+                    split
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.1 act.caller
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.1 act.caller
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl,
+                        setDom_doms_ne _ _ _ _ hecd, hXd]
+                    exact hτ.2.2.1 e'
+                · -- serving of c.d restored
+                  by_cases hecl : c.d = act.caller
+                  · rw [← hecl, setDom_doms_same]
+                    show (((_ : MachineState).doms c.d).setReg
+                      act.callerRd reply).serving = _
+                    unfold DomainState.setReg
+                    split
+                    · rw [setDom_doms_same, setDom_doms_same]
+                    · rw [setDom_doms_same, setDom_doms_same]
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl,
+                        setDom_doms_same]
+                · -- run outside act.caller
+                  intro e' hecl
+                  rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl]
+                  by_cases hecd : e' = c.d
+                  · subst hecd
+                    rw [setDom_doms_same]
+                    show ((X.doms c.d)).run = _
+                    rw [hXd]; exact hτ.2.1 c.d
+                  · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.1 e'
+                · -- the caller runs
+                  rw [setDom_doms_same]
+                  show (((_ : MachineState).doms act.caller).setReg
+                    act.callerRd reply).run = _
+                  rw [setDom_doms_same]
+                  unfold DomainState.setReg
+                  split <;> rfl
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun er σ' h => (body _ h).2 er σ' rfl⟩
+
 end Machines.Lnp64u
