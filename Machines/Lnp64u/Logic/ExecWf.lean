@@ -974,6 +974,30 @@ theorem reparent_no_ref (σ : MachineState) (ref new : CapRef) (hne : new ≠ re
               · rw [if_pos hpp] at hp; exact hne (Option.some.inj hp)
               · rw [if_neg hpp] at hp; exact hpp (Option.some.inj hp)
 
+
+/-- After orphaning `ref`'s children (clearing their cells), no cell points
+at `ref`. The `hno` hypothesis for `cap_drop`'s root-drop branch. -/
+theorem orphan_no_ref (σ : MachineState) (ref : CapRef) (dd : DomainId) (ss : Slot) :
+    (σ.orphanChildren ref).parentOf dd ss ≠ some ref := by
+  intro hp
+  unfold MachineState.parentOf at hp
+  rw [orphanChildren_caps] at hp
+  cases hc0 : (σ.doms dd).caps ss with
+  | none => simp [hc0, Option.bind_eq_bind] at hp
+  | some e0 =>
+      cases hle0 : e0.lineage with
+      | none => simp [hc0, hle0, Option.bind_eq_bind] at hp
+      | some l0 =>
+          cases hcc : (σ.doms dd).lineage l0 with
+          | none =>
+              simp only [hc0, hle0, hcc, Option.bind_eq_bind, Option.bind_some,
+                Bool.false_eq_true, if_false, orphanChildren_lineage] at hp
+              simp [hcc] at hp
+          | some cell =>
+              by_cases hpe : cell.parent = ref <;>
+                simp [hc0, hle0, hcc, hpe, Option.bind_eq_bind, orphanChildren_lineage] at hp
+
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all

@@ -356,4 +356,40 @@ theorem sweepMover_mover_some (σ : MachineState) (job : MoverJob)
           simp only [MachineState.write] at h
           split at h <;> simp at h
 
+
+/-- `orphanChildren` clears exactly the cells whose parent is `old`. -/
+theorem orphanChildren_lineage (σ : MachineState) (old : CapRef) (d : DomainId)
+    (l : LineageId) :
+    ((σ.orphanChildren old).doms d).lineage l =
+      if (match (σ.doms d).lineage l with
+          | some cell => decide (cell.parent = old) | none => false)
+      then none else (σ.doms d).lineage l := rfl
+
+/-- `orphanChildren` drops the lineage index of exactly the orphaned caps;
+kinds and generations are untouched. -/
+theorem orphanChildren_caps (σ : MachineState) (old : CapRef) (d : DomainId) (s : Slot) :
+    ((σ.orphanChildren old).doms d).caps s =
+      match (σ.doms d).caps s with
+      | some e => match e.lineage with
+        | some l => some (if (match (σ.doms d).lineage l with
+                              | some cell => decide (cell.parent = old) | none => false)
+                          then { e with lineage := none } else e)
+        | none => some e
+      | none => none := rfl
+
+@[simp] theorem orphanChildren_slotGen (σ : MachineState) (old : CapRef) (d : DomainId) :
+    ((σ.orphanChildren old).doms d).slotGen = (σ.doms d).slotGen := rfl
+@[simp] theorem orphanChildren_regions (σ : MachineState) (old : CapRef) (d : DomainId) :
+    ((σ.orphanChildren old).doms d).regions = (σ.doms d).regions := rfl
+@[simp] theorem orphanChildren_run (σ : MachineState) (old : CapRef) (d : DomainId) :
+    ((σ.orphanChildren old).doms d).run = (σ.doms d).run := rfl
+@[simp] theorem orphanChildren_serving (σ : MachineState) (old : CapRef) (d : DomainId) :
+    ((σ.orphanChildren old).doms d).serving = (σ.doms d).serving := rfl
+@[simp] theorem orphanChildren_gates (σ : MachineState) (old : CapRef) :
+    (σ.orphanChildren old).gates = σ.gates := rfl
+@[simp] theorem orphanChildren_mover (σ : MachineState) (old : CapRef) :
+    (σ.orphanChildren old).mover = σ.mover := rfl
+@[simp] theorem orphanChildren_inflight (σ : MachineState) (old : CapRef) :
+    (σ.orphanChildren old).inflight = σ.inflight := rfl
+
 end Machines.Lnp64u
