@@ -1263,6 +1263,56 @@ theorem wf_orphanChildren (σ : MachineState) (old : CapRef) (h : Wf σ) :
   · intro fl hfl; rw [orphanChildren_inflight] at hfl; rw [orphanChildren_run]
     exact h.inflight_running fl hfl
 
+
+/-- The core of `cap_drop`: reparent-or-orphan the dropped capability's
+children, then `clearSlot` + sweeps. Preserves both `Wf` and `Acyclic`. This
+assembles every `cap_drop` preservation lemma (`wf_reparent`/`wf_orphanChildren`,
+`reparent_no_ref`/`orphan_no_ref`, `Acyclic.parentRef_ne`, `wf_clearSlot_sweep`,
+and the acyclicity transports). -/
+theorem dropCore_preserves (σ : MachineState) (d : DomainId) (s : Slot)
+    (hwf : Wf σ) (hac : Acyclic σ) :
+    Wf (((((match σ.parentOf d s with
+            | some p => σ.reparent ⟨d, s, (σ.doms d).slotGen s⟩ p
+            | none => σ.orphanChildren ⟨d, s, (σ.doms d).slotGen s⟩).clearSlot d s)
+          ).sweepRegions).sweepMover)
+    ∧ Acyclic (((((match σ.parentOf d s with
+            | some p => σ.reparent ⟨d, s, (σ.doms d).slotGen s⟩ p
+            | none => σ.orphanChildren ⟨d, s, (σ.doms d).slotGen s⟩).clearSlot d s)
+          ).sweepRegions).sweepMover) := by
+  set ref : CapRef := ⟨d, s, (σ.doms d).slotGen s⟩ with href
+  have hpref : σ.parentRef ref = σ.parentOf d s := by
+    unfold MachineState.parentRef; rw [href]
+  cases hpo : σ.parentOf d s with
+  | some p =>
+      -- reparent branch
+      have hplive : σ.liveRef p = true := hwf.parent_live d s p hpo
+      have hpne : p ≠ ref := hac.parentRef_ne σ ref p (by rw [hpref, hpo])
+      set σ' := σ.reparent ref p with hσ'
+      have hwf' : Wf σ' := wf_reparent σ ref p hplive hwf
+      have hac' : Acyclic σ' := acyclic_reparent σ ref p (by rw [hpref, hpo]) hac
+      have hslot : (σ'.doms d).slotGen s = (σ.doms d).slotGen s := rfl
+      have hno : ∀ dd ss, σ'.parentOf dd ss ≠ some ⟨d, s, (σ'.doms d).slotGen s⟩ := by
+        intro dd ss; rw [hslot, ← href]; exact reparent_no_ref σ ref p hpne dd ss
+      refine ⟨?_, ?_⟩
+      · simp only [hpo]
+        exact wf_clearSlot_sweep σ' d s hno hwf'
+      · simp only [hpo]
+        exact acyclic_sweepMover _ (acyclic_sweepRegions _ (acyclic_clearSlot σ' d s hac'))
+  | none =>
+      -- orphan branch
+      set σ' := σ.orphanChildren ref with hσ'
+      have hwf' : Wf σ' := wf_orphanChildren σ ref hwf
+      have hac' : Acyclic σ' := acyclic_orphanChildren σ ref hac
+      have hslot : (σ'.doms d).slotGen s = (σ.doms d).slotGen s :=
+        congrFun (orphanChildren_slotGen σ ref d) s
+      have hno : ∀ dd ss, σ'.parentOf dd ss ≠ some ⟨d, s, (σ'.doms d).slotGen s⟩ := by
+        intro dd ss; rw [hslot, ← href]; exact orphan_no_ref σ ref dd ss
+      refine ⟨?_, ?_⟩
+      · simp only [hpo]
+        exact wf_clearSlot_sweep σ' d s hno hwf'
+      · simp only [hpo]
+        exact acyclic_sweepMover _ (acyclic_sweepRegions _ (acyclic_clearSlot σ' d s hac'))
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
