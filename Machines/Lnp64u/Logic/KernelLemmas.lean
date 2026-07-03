@@ -553,4 +553,17 @@ theorem marks_fixpoint (σ : MachineState) (root : CapRef) :
     iterMark_stable σ root hkfix (N + 1) (by omega),
     iterMark_stable σ root hkfix N hkN]
 
+
+/-- **Marking closure.** If a slot's parent is a live, marked capability, the
+slot is marked too. The downward-closure `wf_destroyMarked`'s parent_live needs:
+no surviving cell points at a destroyed (marked) capability. -/
+theorem marks_closed (σ : MachineState) (root : CapRef) (d : DomainId) (s : Slot)
+    (p : CapRef) (hp : σ.parentOf d s = some p)
+    (hlive : (σ.doms p.dom).slotGen p.slot = p.gen)
+    (hpm : σ.marks root p.dom p.slot = true) : σ.marks root d s = true := by
+  have hstep : σ.markStep root (σ.marks root) d s = true := by
+    unfold MachineState.markStep
+    simp only [hp, ← hlive, hpm, decide_true, Bool.and_true, Bool.or_true]
+  rw [marks_fixpoint σ root] at hstep; exact hstep
+
 end Machines.Lnp64u
