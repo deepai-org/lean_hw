@@ -273,4 +273,13 @@ theorem destroyMarked_sweeps_slotGen_ge (σ : MachineState) (m : DomainId → Sl
   rw [sweepMover_slotGen, sweepRegions_slotGen']
   exact destroyMarked_slotGen_ge σ m d s
 
+@[simp] theorem moverPhase_slotGen (σ : MachineState) (d : DomainId) (s : Slot) :
+    ((moverPhase σ).doms d).slotGen s = (σ.doms d).slotGen s := by rw [moverPhase_doms]
+
+/-- `step`'s slot generations equal `corePhase`'s (refill and the cycle bump leave
+`slotGen` untouched; `moverPhase` leaves all domains untouched). -/
+theorem step_slotGen_reduce (m : Manifest) (σ : MachineState) (d : DomainId) (s : Slot) :
+    ((step m σ).doms d).slotGen s = ((corePhase m (refillPhase m σ)).doms d).slotGen s := by
+  unfold step; simp only [moverPhase_slotGen]
+
 end Machines.Lnp64u
