@@ -310,7 +310,74 @@ theorem system_slotGen_le : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ct
     SlotGenLe (instr.sem.exec c) := by
   intro instr hmem c
   fin_cases hmem
-  case _ => sorry -- cap_dup
+  case _ => -- cap_dup
+    intro σ; constructor
+    · intro a σ' he d' s
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          have hstep : ∀ (kd : CapKind) (hh : Loom.Word32) (τ : MachineState),
+              allocDerived c.d kd ⟨c.d, sl, gg⟩ σ = .ok hh τ →
+              (SpecM.setReg c.d c.op.rd hh) τ = .ok a σ' →
+              ((σ.doms d').slotGen s).toNat ≤ ((σ'.doms d').slotGen s).toNat := by
+            intro kd hh τ hal hsr
+            have h1 := (SlotGenLe.allocDerived c.d kd ⟨c.d, sl, gg⟩ σ).1 hh τ hal d' s
+            have h2 := (SlotGenLe.setReg c.d c.op.rd hh τ).1 a σ' hsr d' s
+            exact le_trans h1 h2
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [specM_pure, specM_bind] at he
+              cases hal : allocDerived c.d (.gate g) ⟨c.d, sl, gg⟩ σ with
+              | err e1 σ1 => rw [hal] at he; simp at he
+              | fault f => rw [hal] at he; simp at he
+              | ok hh τ => rw [hal] at he; exact hstep _ hh τ hal he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => rw [hn] at he; simp at he
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1; subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  cases hal : allocDerived c.d kd ⟨c.d, sl, gg⟩ σ with
+                  | err e2 σ2 => rw [hal] at he; simp at he
+                  | fault f => rw [hal] at he; simp at he
+                  | ok hh τ => rw [hal] at he; exact hstep _ hh τ hal he
+    · intro e σ' he d' s
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; exact le_refl _
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          cases hk : e.kind with
+          | gate g =>
+              rw [hk] at he; simp only [specM_pure, specM_bind] at he
+              cases hal : allocDerived c.d (.gate g) ⟨c.d, sl, gg⟩ σ with
+              | err e1 σ1 => have hs := Machines.Lnp64u.Isa.Wip.allocDerived_err_state c.d _ _ σ hal
+                             rw [hal] at he; injection he with _ h2; subst h2; subst hs; exact le_refl _
+              | fault f => rw [hal] at he; simp at he
+              | ok hh τ => rw [hal] at he; simp [SpecM.setReg, SpecM.modify] at he
+          | mem base len perms =>
+              rw [hk] at he; simp only [specM_bind] at he
+              cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+              | err e1 σ1 => have hs := Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms _ σ hn
+                             rw [hn] at he; injection he with _ h2; subst h2; subst hs; exact le_refl _
+              | fault f => rw [hn] at he; simp at he
+              | ok kd σ1 =>
+                  have hσn := (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms _ σ hn).1; subst σ1
+                  rw [hn] at he; simp only [specM_bind] at he
+                  cases hal : allocDerived c.d kd ⟨c.d, sl, gg⟩ σ with
+                  | err e2 σ2 => have hs := Machines.Lnp64u.Isa.Wip.allocDerived_err_state c.d _ _ σ hal
+                                 rw [hal] at he; injection he with _ h2; subst h2; subst hs; exact le_refl _
+                  | fault f => rw [hal] at he; simp at he
+                  | ok hh τ => rw [hal] at he; simp [SpecM.setReg, SpecM.modify] at he
   case _ => sorry -- cap_drop
   case _ => sorry -- cap_revoke
   case _ => sorry -- mem_grant
