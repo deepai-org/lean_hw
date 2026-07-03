@@ -1187,11 +1187,12 @@ namespace Wip
 /-- **Engine 2: the d-slice frame.** A cycle that does not retire `d`'s
 in-flight instruction and does not issue for `d` leaves `d`'s slice and
 the memory under `d`'s roots untouched. -/
-theorem frame_step (m : Manifest) (d : DomainId) (σ : MachineState)
+theorem frame_step_full (m : Manifest) (d : DomainId) (σ : MachineState)
     (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ)
     (hnr : ∀ fl, σ.inflight = some fl → fl.dom = d → 1 < fl.cyclesLeft)
     (hni : σ.inflight = none → schedule m (refillPhase m σ) ≠ some d) :
-    DFrozen m d σ (step m σ) := by
+    DFrozen m d σ (step m σ) ∧
+    (step m σ).doms d = (refillPhase m σ).doms d := by
   have hctx := dctx_of_insulated hiso hins
   have hctxρ : DFrame.DCtx d (UnderRoots m d) (refillPhase m σ) := dctx_refill hctx
   have hwfρ : Wf (refillPhase m σ) := refillPhase_preserves_wf m σ hins.wf
@@ -1230,16 +1231,26 @@ theorem frame_step (m : Manifest) (d : DomainId) (σ : MachineState)
     rw [h1, hmemμ a ha, hcy.mem a ha]
     exact congrFun (refillPhase_frame m σ).1 a
   exact
-    { regs := by rw [hdd, refillPhase_regs]
-      pc := by rw [hdd, refillPhase_pc]
-      run := by rw [hdd, refillPhase_run]
-      cause := by rw [hdd, refillPhase_cause]
-      serving := by rw [hdd, refillPhase_serving]
-      caps := by rw [hdd, refillPhase_caps]
-      slotGen := by rw [hdd, refillPhase_slotGen]
-      lineage := by rw [hdd, refillPhase_lineage]
-      regions := by rw [hdd, refillPhase_regions]
-      mem := hmem }
+    ⟨{ regs := by rw [hdd, refillPhase_regs]
+       pc := by rw [hdd, refillPhase_pc]
+       run := by rw [hdd, refillPhase_run]
+       cause := by rw [hdd, refillPhase_cause]
+       serving := by rw [hdd, refillPhase_serving]
+       caps := by rw [hdd, refillPhase_caps]
+       slotGen := by rw [hdd, refillPhase_slotGen]
+       lineage := by rw [hdd, refillPhase_lineage]
+       regions := by rw [hdd, refillPhase_regions]
+       mem := hmem }, hdd⟩
+
+/-- **Engine 2: the d-slice frame.** A cycle that does not retire `d`'s
+in-flight instruction and does not issue for `d` leaves `d`'s slice and
+the memory under `d`'s roots untouched. -/
+theorem frame_step (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ)
+    (hnr : ∀ fl, σ.inflight = some fl → fl.dom = d → 1 < fl.cyclesLeft)
+    (hni : σ.inflight = none → schedule m (refillPhase m σ) ≠ some d) :
+    DFrozen m d σ (step m σ) :=
+  (frame_step_full m d σ hm hiso hins hnr hni).1
 
 /-- **Engine 1: the insulation invariant is inductive.** -/
 theorem insulated_step (m : Manifest) (d : DomainId) (σ : MachineState)
@@ -1727,6 +1738,35 @@ theorem insulated_step (m : Manifest) (d : DomainId) (σ : MachineState)
         rw [fetch_frozen hins hfz]
         exact hword
 
+/-- Insulation along a run. -/
+theorem insulated_stepN (m : Manifest) (d : DomainId)
+    (hm : m.WF) (hiso : Isolated m d) :
+    ∀ (n : Nat) (σ : MachineState), Insulated m d σ →
+      Insulated m d (stepN m n σ)
+  | 0, σ, h => h
+  | n + 1, σ, h =>
+      insulated_stepN m d hm hiso n (step m σ) (insulated_step m d σ hm hiso h)
+
+
+/-- **Quiet preservation** over a cycle that does not issue for `d`. -/
+theorem step_quiet (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hq : Quiet d σ)
+    (hni : σ.inflight = none → schedule m (refillPhase m σ) ≠ some d) :
+    Quiet d (step m σ) := by
+  intro fl hfl
+  rw [Machines.Lnp64u.Wip.step_inflight_reduce] at hfl
+  set ρ := refillPhase m σ with hρ
+  have hρinf : ρ.inflight = σ.inflight := refillPhase_inflight m σ
+  rcases corePhase_inflight_dom m ρ fl hfl with ⟨fl0, hfl0, hdd⟩ | ⟨h0, hs⟩
+  · rw [hρinf] at hfl0
+    rw [hdd]
+    exact hq fl0 hfl0
+  · -- issue on an idle core: fl.dom is the scheduled domain
+    rw [hρinf] at h0
+    intro hcontra
+    exact hni h0 (hcontra ▸ hs)
+
+
 /-- **Engine 3: retirement lockstep.** Both runs retire the same latched
 word for `d` from coupled, insulated states: the post-states are coupled.
 (The fetch provenance hypothesis pins the word to `d`'s ROM, so the
@@ -1743,6 +1783,113 @@ theorem retire_step_lockstep (m₁ m₂ : Manifest) (d : DomainId)
     (hfetch : fetch σ₁ d = some w) :
     Coupled m₁ d (step m₁ σ₁) (step m₂ σ₂) := by
   sorry
+
+/-! ## Engine 4 support: the frozen-quiet walk -/
+
+/-- The full frame of a stalled issue instant for `d`: the core stalls, so
+the whole cycle is refill + Mover only. -/
+private theorem stall_step (m : Manifest) (d : DomainId) (σ : MachineState)
+    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d σ)
+    (hinf : σ.inflight = none)
+    (hsched : schedule m (refillPhase m σ) = some d)
+    (w : Loom.Word32) (instr : Loom.Isa.InstrDecl sig Semantics WcetClass)
+    (hf : fetch σ d = some w) (hd : Loom.Isa.decode isa w = some instr)
+    (hbud : ¬ instr.cost.cost ≤ ((refillPhase m σ).doms d).budget) :
+    DFrozen m d σ (step m σ) ∧
+    (step m σ).doms d = (refillPhase m σ).doms d ∧
+    (step m σ).inflight = none := by
+  have hctx := dctx_of_insulated hiso hins
+  have hctxρ : DFrame.DCtx d (UnderRoots m d) (refillPhase m σ) := dctx_refill hctx
+  have hwfρ : Wf (refillPhase m σ) := refillPhase_preserves_wf m σ hins.wf
+  have hρinf : (refillPhase m σ).inflight = none := by
+    rw [refillPhase_inflight]; exact hinf
+  have hservρ : ((refillPhase m σ).doms d).serving = none := hctxρ.dserv
+  have hpay : (refillPhase m σ).payer d = d := payer_eq_self _ d hservρ
+  have hfρ : fetch (refillPhase m σ) d = some w := by
+    rw [refillPhase_fetch]; exact hf
+  have hcore : corePhase m (refillPhase m σ) = refillPhase m σ :=
+    corePhase_stall m _ d w instr hρinf hsched hfρ hd (by rw [hpay]; exact hbud)
+  have hdd : (step m σ).doms d = (refillPhase m σ).doms d := by
+    rw [step_doms, hcore]
+  have hmem : ∀ a, UnderRoots m d a → (step m σ).mem a = σ.mem a := by
+    intro a ha
+    have h1 : (step m σ).mem a = (moverPhase (corePhase m (refillPhase m σ))).mem a := rfl
+    rw [h1, hcore,
+      moverPhase_mem_frame hwfρ.region_backed hctxρ.ro hctxρ.fo hctxρ.movOff
+        (fun job hj => (hwfρ.mover_wf job hj).2.1) a ha]
+    exact congrFun (refillPhase_frame m σ).1 a
+  refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hmem⟩, hdd, ?_⟩
+  · rw [hdd, refillPhase_regs]
+  · rw [hdd, refillPhase_pc]
+  · rw [hdd, refillPhase_run]
+  · rw [hdd, refillPhase_cause]
+  · rw [hdd, refillPhase_serving]
+  · rw [hdd, refillPhase_caps]
+  · rw [hdd, refillPhase_slotGen]
+  · rw [hdd, refillPhase_lineage]
+  · rw [hdd, refillPhase_regions]
+  · show (moverPhase (corePhase m (refillPhase m σ))).inflight = none
+    rw [moverPhase_inflight, hcore]
+    exact hρinf
+
+/-- Refill only ever tops the budget up to `Q`. -/
+private theorem refill_budget_ge (m : Manifest) (σ : MachineState) (d : DomainId)
+    (c : Nat) (hb : c ≤ (σ.doms d).budget) (hcQ : c ≤ (m.doms d).budgetQ) :
+    c ≤ ((refillPhase m σ).doms d).budget := by
+  rcases refillPhase_doms m σ d with h | h <;> rw [h]
+  · exact hb
+  · exact hcQ
+
+/-- One step of the catch-up walk: a cycle that is not a funded issue
+instant for `d` keeps `d` frozen and quiescent (and only refill touches
+`d`'s budget). -/
+private theorem progress_extend (m : Manifest) (d : DomainId) (τ : MachineState)
+    (hm : m.WF) (hiso : Isolated m d) (hins : Insulated m d τ) (hq : Quiet d τ)
+    (c : Nat) (hc0 : 0 < c)
+    (hcost : c = 1 ∨ ∃ w instr, fetch τ d = some w ∧
+      Loom.Isa.decode isa w = some instr ∧ instr.cost.cost = c)
+    (hnotdone : ¬ (τ.inflight = none ∧ schedule m (refillPhase m τ) = some d ∧
+        c ≤ ((refillPhase m τ).doms d).budget)) :
+    DFrozen m d τ (step m τ) ∧ (step m τ).doms d = (refillPhase m τ).doms d ∧
+    Quiet d (step m τ) := by
+  rcases hinfτ : τ.inflight with _ | fl
+  · by_cases hsd : schedule m (refillPhase m τ) = some d
+    · -- an unfunded issue instant: the machine stalls
+      have hbud : ¬ c ≤ ((refillPhase m τ).doms d).budget := by
+        intro hc
+        exact hnotdone ⟨hinfτ, hsd, hc⟩
+      rcases hcost with hc1 | ⟨w, instr, hf, hd, hcc⟩
+      · -- c = 1: schedulability already implies a positive budget
+        exfalso
+        subst hc1
+        have helig := schedule_eligible m (refillPhase m τ) d hsd
+        obtain ⟨-, hbpos⟩ := helig
+        have hpay : (refillPhase m τ).payer d = d :=
+          payer_eq_self _ d (by rw [refillPhase_serving]; exact hins.serving_none)
+        rw [hpay] at hbpos
+        exact hbud hbpos
+      · obtain ⟨hfz, hdd, hinf'⟩ := stall_step m d τ hm hiso hins hinfτ hsd w instr hf hd
+          (by rw [hcc]; exact hbud)
+        exact ⟨hfz, hdd, fun fl' hfl' => by rw [hinf'] at hfl'; cases hfl'⟩
+    · obtain ⟨hfz, hdd⟩ := frame_step_full m d τ hm hiso hins
+        (fun fl' hfl' _ => by rw [hinfτ] at hfl'; cases hfl')
+        (fun _ => hsd)
+      refine ⟨hfz, hdd, ?_⟩
+      exact step_quiet m d τ hq
+        (fun _ => hsd)
+  · have hfld : fl.dom ≠ d := hq fl hinfτ
+    obtain ⟨hfz, hdd⟩ := frame_step_full m d τ hm hiso hins
+      (fun fl' hfl' hfd' => by
+        rw [hinfτ] at hfl'
+        injection hfl' with hfl'
+        rw [← hfl'] at hfd'
+        exact absurd hfd' hfld)
+      (fun h => by rw [hinfτ] at h; cases h)
+    refine ⟨hfz, hdd, ?_⟩
+    refine step_quiet m d τ hq ?_
+    intro h
+    rw [hinfτ] at h
+    cases h
 
 /-- **Engine 4: progress.** From a quiescent insulated state with `d`
 running, some cycle `j` later the machine is at an issue instant for `d`
@@ -1769,25 +1916,146 @@ theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
       (stepN m j σ).inflight = none ∧
       schedule m (refillPhase m (stepN m j σ)) = some d ∧
       c ≤ ((refillPhase m (stepN m j σ)).doms d).budget := by
-  sorry
-
-/-- **Quiet preservation** over a cycle that does not issue for `d`. -/
-theorem step_quiet (m : Manifest) (d : DomainId) (σ : MachineState)
-    (hq : Quiet d σ)
-    (hni : σ.inflight = none → schedule m (refillPhase m σ) ≠ some d) :
-    Quiet d (step m σ) := by
-  intro fl hfl
-  rw [Machines.Lnp64u.Wip.step_inflight_reduce] at hfl
-  set ρ := refillPhase m σ with hρ
-  have hρinf : ρ.inflight = σ.inflight := refillPhase_inflight m σ
-  rcases corePhase_inflight_dom m ρ fl hfl with ⟨fl0, hfl0, hdd⟩ | ⟨h0, hs⟩
-  · rw [hρinf] at hfl0
+  -- vocabulary
+  set W : Nat → Prop := fun n => ∀ i, i ≤ n →
+    DFrozen m d σ (stepN m i σ) ∧ Quiet d (stepN m i σ) with hW
+  set D : Nat → Prop := fun j => (stepN m j σ).inflight = none ∧
+    schedule m (refillPhase m (stepN m j σ)) = some d ∧
+    c ≤ ((refillPhase m (stepN m j σ)).doms d).budget with hD
+  suffices h : ∃ j, W j ∧ D j by
+    obtain ⟨j, hw, hd⟩ := h
+    exact ⟨j, hw, hd.1, hd.2.1, hd.2.2⟩
+  have hinsN : ∀ n, Insulated m d (stepN m n σ) :=
+    fun n => insulated_stepN m d hm hiso n σ hins
+  have hcostN : ∀ n, W n → (c = 1 ∨ ∃ w instr, fetch (stepN m n σ) d = some w ∧
+      Loom.Isa.decode isa w = some instr ∧ instr.cost.cost = c) := by
+    intro n hw
+    rcases hcost with h1 | ⟨w, instr, hf, hd, hcc⟩
+    · exact Or.inl h1
+    · refine Or.inr ⟨w, instr, ?_, hd, hcc⟩
+      rw [fetch_frozen hins (hw n (Nat.le_refl n)).1]
+      exact hf
+  -- one-step extension of a not-yet-done window
+  have extend : ∀ n, W n → ¬ D n → W (n + 1) ∧
+      ((stepN m (n + 1) σ).doms d = (refillPhase m (stepN m n σ)).doms d) := by
+    intro n hw hnd
+    obtain ⟨hfz, hdd, hq'⟩ := progress_extend m d (stepN m n σ) hm hiso (hinsN n)
+      (hw n (Nat.le_refl n)).2 c hc0 (hcostN n hw) hnd
+    have hsucc : stepN m (n + 1) σ = step m (stepN m n σ) :=
+      Machines.Lnp64u.Wip.stepN_succ m n σ
+    refine ⟨?_, by rw [hsucc]; exact hdd⟩
+    intro i hi
+    by_cases hin : i ≤ n
+    · exact hw i hin
+    · have : i = n + 1 := by omega
+      subst this
+      rw [hsucc]
+      exact ⟨(hw n (Nat.le_refl n)).1.trans hfz, hq'⟩
+  -- an idle instant with a funded refilled budget is done
+  have done_of_idle : ∀ j, W j → c ≤ ((refillPhase m (stepN m j σ)).doms d).budget →
+      (stepN m j σ).inflight = none → D j := by
+    intro j hw hb hidle
+    refine ⟨hidle, ?_, hb⟩
+    refine schedule_top m d hpri _ ?_ ?_
+    · rw [refillPhase_run, (hw j (Nat.le_refl j)).1.run]
+      exact hrun
+    · have hpay : (refillPhase m (stepN m j σ)).payer d = d := by
+        refine payer_eq_self _ d ?_
+        rw [refillPhase_serving]
+        exact (hinsN j).serving_none
+      rw [hpay]
+      omega
+  -- the budget floor propagates across not-done steps
+  have floor_step : ∀ n, W n → ¬ D n →
+      c ≤ ((refillPhase m (stepN m n σ)).doms d).budget →
+      c ≤ ((refillPhase m (stepN m (n + 1) σ)).doms d).budget := by
+    intro n hw hnd hb
+    obtain ⟨-, hdd⟩ := extend n hw hnd
+    refine refill_budget_ge m _ d c ?_ hcQ
     rw [hdd]
-    exact hq fl0 hfl0
-  · -- issue on an idle core: fl.dom is the scheduled domain
-    rw [hρinf] at h0
-    intro hcontra
-    exact hni h0 (hcontra ▸ hs)
+    exact hb
+  -- stage 2: drain the in-flight instruction after the refill instant
+  have drain : ∀ (t : Nat) (n : Nat), W n →
+      c ≤ ((refillPhase m (stepN m n σ)).doms d).budget →
+      (∀ fl, (stepN m n σ).inflight = some fl → fl.cyclesLeft ≤ t) →
+      ∃ j, W j ∧ D j := by
+    intro t
+    induction t with
+    | zero =>
+        intro n hw hb hbound
+        rcases hinfn : (stepN m n σ).inflight with _ | fl
+        · exact ⟨n, hw, done_of_idle n hw hb hinfn⟩
+        · -- cyclesLeft ≤ 0 retires this cycle
+          have hnd : ¬ D n := by
+            intro hdn
+            rw [hdn.1] at hinfn
+            cases hinfn
+          obtain ⟨hw', hdd⟩ := extend n hw hnd
+          have hb' := floor_step n hw hnd hb
+          have hretire : (step m (stepN m n σ)).inflight = none :=
+            Machines.Lnp64u.Wip.step_inflight_retire m _ fl hinfn
+              (Nat.le_trans (hbound fl hinfn) (Nat.zero_le 1))
+          have hidle : (stepN m (n + 1) σ).inflight = none := by
+            rw [Machines.Lnp64u.Wip.stepN_succ]
+            exact hretire
+          exact ⟨n + 1, hw', done_of_idle (n + 1) hw' hb' hidle⟩
+    | succ t ih =>
+        intro n hw hb hbound
+        rcases hinfn : (stepN m n σ).inflight with _ | fl
+        · exact ⟨n, hw, done_of_idle n hw hb hinfn⟩
+        · have hnd : ¬ D n := by
+            intro hdn
+            rw [hdn.1] at hinfn
+            cases hinfn
+          obtain ⟨hw', hdd⟩ := extend n hw hnd
+          have hb' := floor_step n hw hnd hb
+          by_cases hcl : fl.cyclesLeft ≤ 1
+          · have hidle : (stepN m (n + 1) σ).inflight = none := by
+              rw [Machines.Lnp64u.Wip.stepN_succ]
+              exact Machines.Lnp64u.Wip.step_inflight_retire m _ fl hinfn hcl
+            exact ⟨n + 1, hw', done_of_idle (n + 1) hw' hb' hidle⟩
+          · have hcount : (stepN m (n + 1) σ).inflight =
+                some { fl with cyclesLeft := fl.cyclesLeft - 1 } := by
+              rw [Machines.Lnp64u.Wip.stepN_succ]
+              exact Machines.Lnp64u.Wip.step_inflight_countdown m _ fl hinfn (by omega)
+            refine ih (n + 1) hw' hb' ?_
+            intro fl' hfl'
+            rw [hcount] at hfl'
+            injection hfl' with hfl'
+            rw [← hfl']
+            have := hbound fl hinfn
+            show fl.cyclesLeft - 1 ≤ t
+            omega
+  -- stage 1: reach the refill instant (or finish early)
+  obtain ⟨k, hkle, hbQ⟩ := refill_within_period m hm σ d
+  have stage1 : ∀ n, (∃ j, W j ∧ D j) ∨ W n := by
+    intro n
+    induction n with
+    | zero =>
+        refine Or.inr ?_
+        intro i hi
+        have : i = 0 := Nat.le_zero.mp hi
+        subst this
+        exact ⟨DFrozen.refl m d σ, hq⟩
+    | succ n ih =>
+        rcases ih with hdone | hw
+        · exact Or.inl hdone
+        · by_cases hdn : D n
+          · exact Or.inl ⟨n, hw, hdn⟩
+          · exact Or.inr (extend n hw hdn).1
+  rcases stage1 k with hdone | hwk
+  · exact hdone
+  · have hbk : c ≤ ((refillPhase m (stepN m k σ)).doms d).budget := by
+      rw [hbQ]
+      exact hcQ
+    rcases hinfk : (stepN m k σ).inflight with _ | fl
+    · exact ⟨k, hwk, done_of_idle k hwk hbk hinfk⟩
+    · exact drain fl.cyclesLeft k hwk hbk
+        (fun fl' hfl' => by
+          rw [hinfk] at hfl'
+          injection hfl' with hfl'
+          rw [← hfl'])
+
 
 private theorem haltBase_cause' (σ : MachineState) (d : DomainId) (c : Loom.Word32)
     (d' : DomainId) :
@@ -2023,15 +2291,6 @@ theorem issue_step (m : Manifest) (d : DomainId) (σ : MachineState)
 
 /-! ## Iterated engine corollaries (depend on the engine `sorry`s, so kept
 in `Wip`). -/
-
-/-- Insulation along a run. -/
-theorem insulated_stepN (m : Manifest) (d : DomainId)
-    (hm : m.WF) (hiso : Isolated m d) :
-    ∀ (n : Nat) (σ : MachineState), Insulated m d σ →
-      Insulated m d (stepN m n σ)
-  | 0, σ, h => h
-  | n + 1, σ, h =>
-      insulated_stepN m d hm hiso n (step m σ) (insulated_step m d σ hm hiso h)
 
 end Wip
 
