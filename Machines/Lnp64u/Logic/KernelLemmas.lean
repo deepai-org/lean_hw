@@ -295,4 +295,31 @@ theorem bumpGen_pos (g : Gen) : 1 ≤ (bumpGen g).toNat := by
     have hg := g.isLt
     omega
 
+
+/-- The lineage cell freed by `clearSlot`: the removed capability's own cell. -/
+def removedCell (σ : MachineState) (d : DomainId) (s : Slot) : Option LineageId :=
+  ((σ.doms d).caps s).bind (·.lineage)
+
+/-- `clearSlot` frees exactly the removed capability's lineage cell. -/
+theorem clearSlot_lineage (σ : MachineState) (d : DomainId) (s : Slot)
+    (d' : DomainId) (l : LineageId) :
+    ((σ.clearSlot d s).doms d').lineage l =
+      if d' = d ∧ removedCell σ d s = some l then none else (σ.doms d').lineage l := by
+  unfold MachineState.clearSlot MachineState.setDom
+  by_cases hd : d' = d
+  · subst d'
+    simp only [Loom.Fun.update_same, removedCell]
+    cases hrc : (σ.doms d).caps s with
+    | none => simp [hrc]
+    | some e =>
+        cases hrl : e.lineage with
+        | none => simp [hrc, hrl]
+        | some lr =>
+            simp only [hrc, hrl, Option.bind_some, true_and]
+            by_cases hll : lr = l
+            · subst hll; simp [Loom.Fun.update_same]
+            · rw [Loom.Fun.update_ne _ _ _ _ (fun h => hll h.symm)]
+              rw [if_neg (by simp only [Option.some.injEq]; exact hll)]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd, hd, removedCell]
+
 end Machines.Lnp64u
