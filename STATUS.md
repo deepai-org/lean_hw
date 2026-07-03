@@ -90,12 +90,17 @@ ALU/branch/memory opcodes; and `execPreservesWf_of_system` proves the whole
 `ExecPreservesWf` from a single remaining obligation, **`SystemOpsPreserveWf`
 — the 11 system opcodes**. So the entire machine invariant now reduces, with
 everything else proved, to `SystemOpsPreserveWf` — the eleven system opcodes.
-Of those, **`unmap` and `yield` are proved** (`Logic/SystemOpsWf`, via
-`wf_clearRegion`/`wf_updDomBudget`), leaving **nine capability/gate/Mover
-opcodes** — each isolated as its own `sorry` in the `Wip` namespace
-(`cap_dup`/`cap_drop`/`cap_revoke`/`mem_grant`/`map`/`gate_call`/`gate_return`/
-`move`/`halt`). Their proofs are the capability-kernel operations preserving
-`Wf` — exactly T2/T3/T8/T9's kernel content, the irreducible research core.
+Of those, **4 are proved** (`Logic/SystemOpsWf`): `unmap` (via `wf_clearRegion`),
+`yield` (`wf_updDomBudget`), `halt` (`haltDom_preserves_wf`), and `map` (via
+`capLive_ok` + `wf_installRegion`). **7 capability/gate/Mover opcodes remain** —
+each isolated as its own `sorry` in the `Wip` namespace: `cap_dup`, `cap_drop`,
+`cap_revoke`, `mem_grant` (capability derivation/revocation), `gate_call`,
+`gate_return` (gate transfer), `move` (Mover). Their proofs are the
+capability-kernel operations (`installDerived`, `clearSlot`, `destroyMarked`,
+`transferCap`, gate machinery, Mover programming) preserving `Wf` — exactly
+T2/T3/T8/T9's kernel content, the irreducible research core. Infrastructure in
+place: `capLive_ok`/`capLive_err_state` (cap-op state characterization),
+`freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the

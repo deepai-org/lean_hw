@@ -347,6 +347,22 @@ theorem wf_installRegion (σ : MachineState) (d : DomainId) (ri : RegionId) (rgn
   · intro d' g; rw [(hdoms d').2.2.2.1]; intro hb'; rw [hgates]; exact h.blocked_gate d' g hb'
   · intro fl' hfl'; rw [hinf] at hfl'; rw [(hdoms fl'.dom).2.2.2.1]; exact h.inflight_running fl' hfl'
 
+
+/-- A free slot has no capability entry. -/
+theorem freeSlot_caps_none (σ : MachineState) (d : DomainId) {s : Slot}
+    (h : σ.freeSlot d = some s) : (σ.doms d).caps s = none := by
+  unfold MachineState.freeSlot at h
+  have := List.find?_some h
+  simp only [Bool.and_eq_true, Option.isNone_iff_eq_none, bne_iff_ne] at this
+  exact this.1
+
+/-- A free lineage cell is empty. -/
+theorem freeCell_none (σ : MachineState) (d : DomainId) {l : LineageId}
+    (h : σ.freeCell d = some l) : (σ.doms d).lineage l = none := by
+  unfold MachineState.freeCell at h
+  have := List.find?_some h
+  simpa only [Option.isNone_iff_eq_none] using this
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
