@@ -234,15 +234,200 @@ theorem move_acyclic_err (c : Ctx) (σ : MachineState) (hac : Acyclic σ) :
                                                       simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
 
 
+theorem capdup_acyclic (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac : Acyclic σ) :
+    (∀ x σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, e) ← capLive c.d hw
+           let kind ← match e.kind with
+             | .mem base len perms => narrow base len perms dw
+             | .gate gid => (Pure.pure (.gate gid) : SpecM _)
+           let h ← allocDerived c.d kind ⟨c.d, s, g⟩
+           setReg c.d c.op.rd h) : SpecM Unit) σ = .ok x σ' → Acyclic σ') := by
+  intro x σ' he
+  simp only [SpecM.reg, specM_bind] at he
+  cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+  | err e0 σ0 => rw [hcl] at he; simp at he
+  | fault f => rw [hcl] at he; simp at he
+  | ok rr σ0 =>
+      obtain ⟨hσeq, hlive⟩ := capLive_ok c.d _ σ hcl; subst σ0
+      rw [hcl] at he
+      obtain ⟨s, g, en⟩ := rr
+      simp only at he hlive
+      -- the parent ⟨c.d, s, g⟩ is live
+      have hpar : σ.liveRef ⟨c.d, s, g⟩ = true := by
+        unfold MachineState.liveRef; rw [hlive]; rfl
+      -- compute the kind, then allocDerived
+      cases hk : en.kind with
+      | gate gid =>
+          rw [hk] at he; simp only [specM_pure, specM_bind] at he
+          cases ha : allocDerived c.d (.gate gid) ⟨c.d, s, g⟩ σ with
+          | err e1 σ1 => rw [ha] at he; simp at he
+          | fault f => rw [ha] at he; simp at he
+          | ok hh σ1 =>
+              rw [ha] at he
+              simp only [specM_bind, SpecM.setReg, SpecM.modify] at he
+              injection he with _ h2; subst h2
+              exact acyclic_setReg_dom σ1 c.d _ hh
+                (acyclic_allocDerived c.d (.gate gid) _ σ hpar hwf hac ha)
+      | mem base len perms =>
+          rw [hk] at he; simp only [specM_bind] at he
+          cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+          | err e1 σ1 => rw [hn] at he; simp at he
+          | fault f => rw [hn] at he; simp at he
+          | ok kind σ1 =>
+              obtain ⟨hσn, off, nlen, np, hkind, hwx, hin⟩ := narrow_ok base len perms _ σ hn
+              subst σ1; rw [hn] at he
+              simp only [specM_bind] at he
+              cases ha : allocDerived c.d kind ⟨c.d, s, g⟩ σ with
+              | err e2 σ2 => rw [ha] at he; simp at he
+              | fault f => rw [ha] at he; simp at he
+              | ok hh σ2 =>
+                  rw [ha] at he
+                  simp only [specM_bind, SpecM.setReg, SpecM.modify] at he
+                  injection he with _ h2; subst h2
+                  exact acyclic_setReg_dom σ2 c.d _ hh
+                    (acyclic_allocDerived c.d kind _ σ hpar hwf hac ha)
+
+
+theorem capdup_acyclic_err (c : Ctx) (σ : MachineState) (hac : Acyclic σ) :
+    (∀ e σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, en) ← capLive c.d hw
+           let kind ← match en.kind with
+             | .mem base len perms => narrow base len perms dw
+             | .gate gid => (Pure.pure (.gate gid) : SpecM _)
+           let h ← allocDerived c.d kind ⟨c.d, s, g⟩
+           setReg c.d c.op.rd h) : SpecM Unit) σ = .err e σ' → Acyclic σ') := by
+  intro e σ' he
+  simp only [SpecM.reg, specM_bind] at he
+  cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+  | err e0 σ0 =>
+      have := capLive_err_state c.d _ σ hcl; rw [hcl] at he
+      injection he with _ h2; subst h2; subst this; exact hac
+  | fault f => rw [hcl] at he; simp at he
+  | ok rr σ0 =>
+      obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+      rw [hcl] at he; obtain ⟨s, g, en⟩ := rr; simp only at he
+      have halloc : ∀ (kind : CapKind),
+          ((allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h => setReg c.d c.op.rd h) : SpecM Unit) σ
+            = .err e σ' → Acyclic σ' := by
+        intro kind hh
+        simp only [specM_bind] at hh
+        cases haD : allocDerived c.d kind ⟨c.d, s, g⟩ σ with
+        | err e1 σ1 =>
+            have hs := allocDerived_err_state c.d kind _ σ haD; rw [haD] at hh
+            injection hh with _ h2; subst h2; subst hs; exact hac
+        | fault f => rw [haD] at hh; simp at hh
+        | ok hval σ1 => rw [haD] at hh; simp [SpecM.setReg, SpecM.modify] at hh
+      cases hk : en.kind with
+      | gate gid =>
+          rw [hk] at he; simp only [specM_pure, specM_bind] at he
+          exact halloc (.gate gid) he
+      | mem base len perms =>
+          rw [hk] at he; simp only [specM_bind] at he
+          cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+          | err e1 σ1 =>
+              have hs := narrow_err_state base len perms _ σ hn; rw [hn] at he
+              injection he with _ h2; subst h2; subst hs; exact hac
+          | fault f => rw [hn] at he; simp at he
+          | ok kind σ1 =>
+              have hσn := narrow_ok base len perms _ σ hn |>.1; subst σ1
+              rw [hn] at he; simp only [specM_bind] at he
+              exact halloc kind he
+
+theorem memgrant_acyclic (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac : Acyclic σ) :
+    (∀ x σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, e) ← capLive c.d hw
+           match e.kind with
+           | .gate _ => raise .badCap
+           | .mem base len perms => do
+               let kind ← narrow base len perms dw
+               let h ← allocDerived (descDom dw) kind ⟨c.d, s, g⟩
+               setReg c.d c.op.rd h) : SpecM Unit) σ = .ok x σ' → Acyclic σ') ∧
+    (∀ e σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, e) ← capLive c.d hw
+           match e.kind with
+           | .gate _ => raise .badCap
+           | .mem base len perms => do
+               let kind ← narrow base len perms dw
+               let h ← allocDerived (descDom dw) kind ⟨c.d, s, g⟩
+               setReg c.d c.op.rd h) : SpecM Unit) σ = .err e σ' → Acyclic σ') := by
+  constructor
+  · intro x σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 => rw [hcl] at he; simp at he
+    | fault f => rw [hcl] at he; simp at he
+    | ok rr σ0 =>
+        obtain ⟨hσeq, hlive⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, en⟩ := rr; simp only at he hlive
+        have hpar : σ.liveRef ⟨c.d, s, g⟩ = true := by
+          unfold MachineState.liveRef; rw [hlive]; rfl
+        cases hk : en.kind with
+        | gate gid => rw [hk] at he; simp [SpecM.raise] at he
+        | mem base len perms =>
+            rw [hk] at he; simp only [specM_bind] at he
+            cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+            | err e1 σ1 => rw [hn] at he; simp at he
+            | fault f => rw [hn] at he; simp at he
+            | ok kind σ1 =>
+                obtain ⟨hσn, off, nlen, np, hkind, hwx, hin⟩ := narrow_ok base len perms _ σ hn
+                subst σ1; rw [hn] at he; simp only [specM_bind] at he
+                cases haD : allocDerived (descDom ((σ.doms c.d).reg c.op.rs2)) kind ⟨c.d, s, g⟩ σ with
+                | err e2 σ2 => rw [haD] at he; simp at he
+                | fault f => rw [haD] at he; simp at he
+                | ok hh σ2 =>
+                    rw [haD] at he
+                    simp only [specM_bind, SpecM.setReg, SpecM.modify] at he
+                    injection he with _ h2; subst h2
+                    exact acyclic_setReg_dom σ2 c.d _ hh
+                      (acyclic_allocDerived (descDom _) kind _ σ hpar hwf hac haD)
+  · intro e σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := capLive_err_state c.d _ σ hcl; rw [hcl] at he
+        injection he with _ h2; subst h2; subst hs; exact hac
+    | fault f => rw [hcl] at he; simp at he
+    | ok rr σ0 =>
+        obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, en⟩ := rr; simp only at he
+        cases hk : en.kind with
+        | gate gid =>
+            rw [hk] at he; simp only [SpecM.raise] at he
+            injection he with _ h2; subst h2; exact hac
+        | mem base len perms =>
+            rw [hk] at he; simp only [specM_bind] at he
+            cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+            | err e1 σ1 =>
+                have hs := narrow_err_state base len perms _ σ hn; rw [hn] at he
+                injection he with _ h2; subst h2; subst hs; exact hac
+            | fault f => rw [hn] at he; simp at he
+            | ok kind σ1 =>
+                have hσn := narrow_ok base len perms _ σ hn |>.1; subst σ1
+                rw [hn] at he; simp only [specM_bind] at he
+                cases haD : allocDerived (descDom ((σ.doms c.d).reg c.op.rs2)) kind ⟨c.d, s, g⟩ σ with
+                | err e2 σ2 =>
+                    have hs := allocDerived_err_state (descDom _) kind _ σ haD; rw [haD] at he
+                    injection he with _ h2; subst h2; subst hs; exact hac
+                | fault f => rw [haD] at he; simp at he
+                | ok hh σ2 => rw [haD] at he; simp [SpecM.setReg, SpecM.modify] at he
+
 /-- Dispatch. -/
 theorem system_preserves_acyclic : SystemOpsPreserveAcyclic := by
   intro instr hmem c σ hwf hac hrun hinf
   fin_cases hmem
-  case _ => sorry  -- cap_dup   (installDerived)
+  case _ => exact ⟨capdup_acyclic c σ hwf hac, capdup_acyclic_err c σ hac⟩
   case _ => exact ⟨fun a σ' he => ((capdrop_preserves_wfa c σ hwf hac).1 a σ' he).2,
                    fun e σ' he => ((capdrop_preserves_wfa c σ hwf hac).2 e σ' he).2⟩
   case _ => sorry  -- cap_revoke (destroyMarked + sweeps)
-  case _ => sorry  -- mem_grant (installDerived)
+  case _ => exact memgrant_acyclic c σ hwf hac
   case _ =>
     constructor
     · intro a σ' he
