@@ -378,8 +378,89 @@ theorem system_slotGen_le : ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ c : Ct
                                  rw [hal] at he; injection he with _ h2; subst h2; subst hs; exact le_refl _
                   | fault f => rw [hal] at he; simp at he
                   | ok hh τ => rw [hal] at he; simp [SpecM.setReg, SpecM.modify] at he
-  case _ => sorry -- cap_drop
-  case _ => sorry -- cap_revoke
+  case _ => -- cap_drop
+    intro σ; constructor
+    · intro a σ'' he d' s
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, _⟩ := r; simp only at he
+          simp only [SpecM.get, specM_bind] at he
+          have key : ∀ (σ' : MachineState), (σ'.doms d').slotGen s = (σ.doms d').slotGen s →
+              (SpecM.set (((σ'.clearSlot c.d sl).sweepRegions).sweepMover) >>=
+                fun _ => SpecM.setReg c.d c.op.rd 0) σ = .ok a σ'' →
+              ((σ.doms d').slotGen s).toNat ≤ ((σ''.doms d').slotGen s).toNat := by
+            intro σ' hpre hset
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at hset
+            injection hset with _ h2; subst h2
+            have hsr : ((((((σ'.clearSlot c.d sl).sweepRegions).sweepMover).setDom c.d
+                        (fun ds => ds.setReg c.op.rd 0)).doms d').slotGen s) =
+                       ((((σ'.clearSlot c.d sl).sweepRegions).sweepMover).doms d').slotGen s := by
+              unfold MachineState.setDom
+              by_cases h1 : d' = c.d
+              · subst h1; simp [Loom.Fun.update_same]
+              · simp [Loom.Fun.update_ne _ _ _ _ h1]
+            rw [hsr, ← hpre]; exact clearSlot_sweeps_slotGen_ge σ' c.d sl d' s
+          cases hp : σ.parentOf c.d sl with
+          | some p => rw [hp] at he
+                      exact key _ (reparent_slotGen σ _ _ d' s) he
+          | none => rw [hp] at he
+                    exact key _ (congrFun (orphanChildren_slotGen σ _ d') s) he
+    · intro e σ'' he d' s
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; exact le_refl _
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, _⟩ := r; simp only at he
+          simp only [SpecM.get, specM_bind] at he
+          cases hp : σ.parentOf c.d sl with
+          | some p => rw [hp] at he; simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+          | none => rw [hp] at he; simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+  case _ => -- cap_revoke
+    intro σ; constructor
+    · intro a σ'' he d' s
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          simp only [SpecM.require] at he
+          by_cases hcls : decide (e.kind.cls = .mem) = true
+          · simp only [hcls, if_true, specM_pure, specM_bind, SpecM.get] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            have hsr : (((((σ.destroyMarked (σ.marks ⟨c.d, sl, gg⟩)).sweepRegions).sweepMover).setDom c.d
+                        (fun ds => ds.setReg c.op.rd 0)).doms d').slotGen s =
+                       ((((σ.destroyMarked (σ.marks ⟨c.d, sl, gg⟩)).sweepRegions).sweepMover).doms d').slotGen s := by
+              unfold MachineState.setDom
+              by_cases h1 : d' = c.d
+              · subst h1; simp [Loom.Fun.update_same]
+              · simp [Loom.Fun.update_ne _ _ _ _ h1]
+            rw [hsr]; exact destroyMarked_sweeps_slotGen_ge σ _ d' s
+          · rw [if_neg hcls] at he; simp [SpecM.raise, specM_bind] at he
+    · intro e σ'' he d' s
+      simp only [SpecM.reg, specM_bind] at he
+      cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+      | err e0 σ0 => have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state c.d _ σ hcl
+                     rw [hcl] at he; injection he with _ h2; subst h2; subst hs; exact le_refl _
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok c.d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sl, gg, e⟩ := r; simp only at he
+          simp only [SpecM.require] at he
+          by_cases hcls : decide (e.kind.cls = .mem) = true
+          · simp only [hcls, if_true, specM_pure, specM_bind, SpecM.get] at he
+            simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+          · rw [if_neg hcls] at he; simp only [SpecM.raise, specM_bind] at he
+            injection he with _ h2; subst h2; exact le_refl _
   case _ => -- mem_grant
     intro σ; constructor
     · intro a σ' he d' s
