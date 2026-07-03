@@ -1,4 +1,5 @@
 import Machines.Lnp64u.Logic.Wf
+import Machines.Lnp64u.Logic.GateStep
 
 /-!
 # T4 — Integrity / frame theorem
@@ -25,7 +26,8 @@ theorem activation_entry_scrubbed (m : Manifest) (hwf : m.WF)
     (∀ r : RegId, r ≠ (1 : Fin numRegs) →
        ((step m σ).doms c).reg r = 0) ∧
     ((step m σ).doms c).pc = (σ.gates g).config.entry := by
-  sorry
+  have hwfσ : Wf σ := (Machines.Lnp64u.wfa_invariant m hwf σ hreach).1
+  exact (step_touch m σ hwfσ c).1 g hpre hpost
 
 /-- **Scrub equality (resumption).** When a blocked caller resumes —
 `blocked g` to `running` in one cycle — its register file is exactly its
@@ -41,7 +43,10 @@ theorem caller_resumption (m : Manifest) (hwf : m.WF)
       ((step m σ).doms d).reg r =
         if r = a.callerRd ∧ r ≠ (0 : Fin numRegs) then reply
         else (σ.doms d).reg r := by
-  sorry
+  have hwfσ : Wf σ := (Machines.Lnp64u.wfa_invariant m hwf σ hreach).1
+  obtain ⟨a', reply, ha', _, hform⟩ := (step_touch m σ hwfσ d).2.1 g hpre hpost
+  have haa : a' = a := by rw [hact] at ha'; exact (Option.some.inj ha').symm
+  exact ⟨reply, fun r => by rw [hform r, haa]⟩
 
 /-- **The frame.** A domain whose slice of the machine is untouched by
 this cycle's four channels does not change: if `e` is not the executing
@@ -63,6 +68,7 @@ theorem frame (m : Manifest) (hwf : m.WF)
     ((step m σ).doms e).regs = (σ.doms e).regs ∧
     ((step m σ).doms e).pc = (σ.doms e).pc ∧
     ((step m σ).doms e).cause = (σ.doms e).cause := by
-  sorry
+  have hwfσ : Wf σ := (Machines.Lnp64u.wfa_invariant m hwf σ hreach).1
+  exact (step_touch m σ hwfσ e).2.2 hexec hgate.1 hgate.2
 
 end Machines.Lnp64u.Theorems.T4
