@@ -1870,6 +1870,25 @@ theorem wf_installMove (σ : MachineState) (d : DomainId) (s : Slot) (l : Lineag
   · intro fl' hfl'; rw [hinf] at hfl'; rw [hrun]; exact h.inflight_running fl' hfl'
 
 
+
+/-- The shared tail of `transferCap`: after installing `new` and redirecting
+`old`'s children to it, clearing `old`'s slot and sweeping preserves `Wf`. The
+`reparent` guarantees no surviving cell points at `old` (`reparent_no_ref`), so
+`wf_clearSlot_sweep` applies. -/
+theorem wf_reparent_clear_sweep (σ₁ : MachineState) (old new : CapRef)
+    (hne : new ≠ old) (hnew : σ₁.liveRef new = true)
+    (hgen : old.gen = (σ₁.doms old.dom).slotGen old.slot) (h : Wf σ₁) :
+    Wf ((((σ₁.reparent old new).clearSlot old.dom old.slot).sweepRegions).sweepMover) := by
+  have h2 : Wf (σ₁.reparent old new) := wf_reparent σ₁ old new hnew h
+  apply wf_clearSlot_sweep (σ₁.reparent old new) old.dom old.slot ?_ h2
+  intro dd ss
+  have hno := reparent_no_ref σ₁ old new hne dd ss
+  have hgen2 : ((σ₁.reparent old new).doms old.dom).slotGen old.slot =
+      (σ₁.doms old.dom).slotGen old.slot := rfl
+  rw [hgen2, ← hgen]
+  have holdeq : (⟨old.dom, old.slot, old.gen⟩ : CapRef) = old := by cases old; rfl
+  rw [holdeq]; exact hno
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
