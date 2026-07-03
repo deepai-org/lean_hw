@@ -133,13 +133,181 @@ theorem map_preserves (c : Ctx) (σ : MachineState) (hwf : Wf σ)
             simp only [specM_bind, SpecM.updDom, SpecM.modify, SpecM.setReg] at he
             simp at he
 
+/-- `narrow` is read-only and, on success, yields a W^X memory kind whose range
+sits within the parent's. -/
+theorem narrow_ok (base : Addr) (len : BitVec 13) (perms : Perms) (dw : Loom.Word32)
+    (σ : MachineState) {kind : CapKind} {σ' : MachineState}
+    (he : narrow base len perms dw σ = .ok kind σ') :
+    σ' = σ ∧ ∃ off nlen np, kind = .mem (base + off) nlen np ∧ np.wx = true ∧
+      off.toNat + nlen.toNat ≤ len.toNat := by
+  unfold narrow at he
+  simp only [SpecM.require, specM_bind, specM_pure] at he
+  split_ifs at he with h1 h2 h3
+  · injection he with hk hσ; subst hσ
+    refine ⟨rfl, descOff dw, descLen dw, descPerms dw, hk.symm, h3, ?_⟩
+    simpa using h1
+  all_goals simp [SpecM.raise] at he
+
+/-- Bounds for a narrowed range: it sits within the parent's window. -/
+theorem narrow_bounds (base : Addr) (len : BitVec 13) (off : BitVec 12) (nlen : BitVec 13)
+    (hin : off.toNat + nlen.toNat ≤ len.toNat) (hpar : base.toNat + len.toNat ≤ memWords) :
+    (base + off).toNat + nlen.toNat ≤ memWords := by
+  have hle : (base + off).toNat ≤ base.toNat + off.toNat := by
+    rw [BitVec.toNat_add]; exact Nat.mod_le _ _
+  omega
+
+/-- `narrow` leaves the state unchanged on error (pre-mutation errno raises). -/
+theorem narrow_err_state (base : Addr) (len : BitVec 13) (perms : Perms) (dw : Loom.Word32)
+    (σ : MachineState) {e : Errno} {σ' : MachineState}
+    (he : narrow base len perms dw σ = .err e σ') : σ' = σ := by
+  unfold narrow at he
+  simp only [SpecM.require, specM_bind, specM_pure] at he
+  split_ifs at he with h1 h2 h3 <;>
+    simp only [SpecM.raise] at he <;>
+    (try (injection he with _ h2; exact h2.symm)) <;> simp at he
+
+/-- `allocDerived` leaves the state unchanged on error. -/
+theorem allocDerived_err_state (owner : DomainId) (kind : CapKind) (parent : CapRef)
+    (σ : MachineState) {e : Errno} {σ' : MachineState}
+    (he : allocDerived owner kind parent σ = .err e σ') : σ' = σ := by
+  unfold allocDerived at he
+  simp only [SpecM.get, specM_bind] at he
+  cases hfs : σ.freeSlot owner with
+  | none => rw [hfs] at he; simp only [SpecM.raise] at he; injection he with _ h2; exact h2.symm
+  | some s =>
+      rw [hfs] at he
+      cases hfc : σ.freeCell owner with
+      | none => rw [hfc] at he; simp only [SpecM.raise] at he; injection he with _ h2; exact h2.symm
+      | some l => rw [hfc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
+/-- `cap_dup` preserves the invariant: it derives a new capability from a live
+one (narrowed if memory), installed via `allocDerived`. All error paths leave
+the state unchanged (they are pre-mutation errno raises). -/
+theorem capdup_preserves (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hinf : σ.inflight = none) :
+    (∀ x σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, e) ← capLive c.d hw
+           let kind ← match e.kind with
+             | .mem base len perms => narrow base len perms dw
+             | .gate gid => (Pure.pure (.gate gid) : SpecM _)
+           let h ← allocDerived c.d kind ⟨c.d, s, g⟩
+           setReg c.d c.op.rd h) : SpecM Unit) σ = .ok x σ' → Wf σ') := by
+  intro x σ' he
+  simp only [SpecM.reg, specM_bind] at he
+  cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+  | err e0 σ0 => rw [hcl] at he; simp at he
+  | fault f => rw [hcl] at he; simp at he
+  | ok rr σ0 =>
+      obtain ⟨hσeq, hlive⟩ := capLive_ok c.d _ σ hcl; subst σ0
+      rw [hcl] at he
+      obtain ⟨s, g, en⟩ := rr
+      simp only at he hlive
+      -- the parent ⟨c.d, s, g⟩ is live
+      have hpar : σ.liveRef ⟨c.d, s, g⟩ = true := by
+        unfold MachineState.liveRef; rw [hlive]; rfl
+      -- compute the kind, then allocDerived
+      cases hk : en.kind with
+      | gate gid =>
+          rw [hk] at he; simp only [specM_pure, specM_bind] at he
+          cases ha : allocDerived c.d (.gate gid) ⟨c.d, s, g⟩ σ with
+          | err e1 σ1 => rw [ha] at he; simp at he
+          | fault f => rw [ha] at he; simp at he
+          | ok hh σ1 =>
+              rw [ha] at he
+              simp only [specM_bind, SpecM.setReg, SpecM.modify] at he
+              injection he with _ h2; subst h2
+              have hσ1 : Wf σ1 := allocDerived_ok c.d (.gate gid) _ σ (by simp) hpar hwf ha
+              exact wf_setReg σ1 c.d _ hh hσ1
+      | mem base len perms =>
+          rw [hk] at he; simp only [specM_bind] at he
+          cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+          | err e1 σ1 => rw [hn] at he; simp at he
+          | fault f => rw [hn] at he; simp at he
+          | ok kind σ1 =>
+              obtain ⟨hσn, off, nlen, np, hkind, hwx, hin⟩ := narrow_ok base len perms _ σ hn
+              subst σ1; rw [hn] at he
+              simp only [specM_bind] at he
+              cases ha : allocDerived c.d kind ⟨c.d, s, g⟩ σ with
+              | err e2 σ2 => rw [ha] at he; simp at he
+              | fault f => rw [ha] at he; simp at he
+              | ok hh σ2 =>
+                  rw [ha] at he
+                  simp only [specM_bind, SpecM.setReg, SpecM.modify] at he
+                  injection he with _ h2; subst h2
+                  -- the narrowed kind is W^X and in-bounds
+                  have hbnd : base.toNat + len.toNat ≤ memWords := by
+                    have := (hwf.doms c.d).bounds s en base len perms
+                      (by unfold DomainState.liveCap at hlive
+                          revert hlive; cases hcc : (σ.doms c.d).caps s with
+                          | none => intro hh0; simp at hh0
+                          | some ee => intro hh0; split at hh0 <;> simp_all) hk
+                    exact this
+                  have hwx' : ∀ b' l' p', kind = .mem b' l' p' →
+                      p'.wx = true ∧ b'.toNat + l'.toNat ≤ memWords := by
+                    intro b' l' p' hkeq; rw [hkind] at hkeq; injection hkeq with hb hl hp
+                    subst hb; subst hl; subst hp
+                    exact ⟨hwx, narrow_bounds base len off nlen hin hbnd⟩
+                  have hσ2 : Wf σ2 := allocDerived_ok c.d kind _ σ hwx' hpar hwf ha
+                  exact wf_setReg σ2 c.d _ hh hσ2
+
+
+/-- `cap_dup`'s error clause: every failure path is a pre-mutation errno raise,
+so the state is unchanged and `Wf` transfers. -/
+theorem capdup_err (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
+    (∀ e σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let dw ← reg c.d c.op.rs2
+           let (s, g, en) ← capLive c.d hw
+           let kind ← match en.kind with
+             | .mem base len perms => narrow base len perms dw
+             | .gate gid => (Pure.pure (.gate gid) : SpecM _)
+           let h ← allocDerived c.d kind ⟨c.d, s, g⟩
+           setReg c.d c.op.rd h) : SpecM Unit) σ = .err e σ' → Wf σ') := by
+  intro e σ' he
+  simp only [SpecM.reg, specM_bind] at he
+  cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+  | err e0 σ0 =>
+      have := capLive_err_state c.d _ σ hcl; rw [hcl] at he
+      injection he with _ h2; subst h2; subst this; exact hwf
+  | fault f => rw [hcl] at he; simp at he
+  | ok rr σ0 =>
+      obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+      rw [hcl] at he; obtain ⟨s, g, en⟩ := rr; simp only at he
+      have halloc : ∀ (kind : CapKind),
+          ((allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h => setReg c.d c.op.rd h) : SpecM Unit) σ
+            = .err e σ' → Wf σ' := by
+        intro kind hh
+        simp only [specM_bind] at hh
+        cases hac : allocDerived c.d kind ⟨c.d, s, g⟩ σ with
+        | err e1 σ1 =>
+            have hs := allocDerived_err_state c.d kind _ σ hac; rw [hac] at hh
+            injection hh with _ h2; subst h2; subst hs; exact hwf
+        | fault f => rw [hac] at hh; simp at hh
+        | ok hval σ1 => rw [hac] at hh; simp [SpecM.setReg, SpecM.modify] at hh
+      cases hk : en.kind with
+      | gate gid =>
+          rw [hk] at he; simp only [specM_pure, specM_bind] at he
+          exact halloc (.gate gid) he
+      | mem base len perms =>
+          rw [hk] at he; simp only [specM_bind] at he
+          cases hn : narrow base len perms ((σ.doms c.d).reg c.op.rs2) σ with
+          | err e1 σ1 =>
+              have hs := narrow_err_state base len perms _ σ hn; rw [hn] at he
+              injection he with _ h2; subst h2; subst hs; exact hwf
+          | fault f => rw [hn] at he; simp at he
+          | ok kind σ1 =>
+              have hσn := narrow_ok base len perms _ σ hn |>.1; subst σ1
+              rw [hn] at he; simp only [specM_bind] at he
+              exact halloc kind he
+
 /-- The per-opcode dispatch of `SystemOpsPreserveWf`. Two of eleven ops proved
 (`unmap`, `yield`); the nine capability/gate/Mover ops are the remaining
 kernel-level core. -/
 theorem system_preserves : SystemOpsPreserveWf := by
   intro instr hmem c σ hwf hrun hinf
   fin_cases hmem
-  case _ => sorry  -- cap_dup    (installDerived)
+  case _ => exact ⟨capdup_preserves c σ hwf hinf, capdup_err c σ hwf⟩
   case _ => sorry  -- cap_drop   (reparent/orphan + clearSlot + sweeps)
   case _ => sorry  -- cap_revoke (destroyMarked + sweeps)
   case _ => sorry  -- mem_grant  (installDerived, cross-domain)
