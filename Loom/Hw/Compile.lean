@@ -196,4 +196,28 @@ theorem nextReg_correct : ∀ (a : Act) (σ acc : Loom.Hw.St) (rn : String) (w :
       have hlhs : nextReg rn w (Act.memWrite aw dw mn addr data) cur = cur := rfl
       rw [hlhs, hcur]; rfl
 
+
+/-- Lifting `nextReg_correct` over the ordered rule list: the fold of
+`nextReg` across all rules evaluates to the register's value after the design
+runs every rule in order (each rule reads the pre-cycle state `σ`). -/
+theorem rules_nextReg (rules : List Rule) (σ : Loom.Hw.St) (rn : String) (w : Nat) :
+    ∀ (acc : Loom.Hw.St) (cur : MV.Expr w),
+      mvEval (convSt σ) cur = acc.regs rn w →
+      mvEval (convSt σ) (rules.foldl (fun c rl => nextReg rn w rl.body c) cur)
+        = (rules.foldl (fun a rl => rl.body.run σ a) acc).regs rn w := by
+  induction rules with
+  | nil => intro acc cur hcur; exact hcur
+  | cons rl rest ih =>
+      intro acc cur hcur
+      exact ih (rl.body.run σ acc) (nextReg rn w rl.body cur)
+        (nextReg_correct rl.body σ acc rn w cur hcur)
+
+/-- **The register half of the emission theorem.** Every register of the
+compiled µVerilog module takes, after one cycle, exactly the value the design
+gives it — for every machine, no per-instruction reasoning. -/
+theorem compile_cycle_regs (d : Design) (σ : Loom.Hw.St) (r : RegDecl) (hr : r ∈ d.regs) :
+    ((Loom.Emit.MicroVerilog.Module.cycle (compile d) (convSt σ)).regs r.name r.width)
+      = (d.cycle σ).regs r.name r.width := by
+  sorry
+
 end Loom.Hw.Compile

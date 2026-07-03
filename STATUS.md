@@ -39,6 +39,9 @@ counts with `lake exe audit`; run `scripts/ci.sh` for the full gate.
   next-value mux tree evaluates to the value the design's action writes (last
   write wins), by induction on actions. This is the core of C-HW/E-V; the
   emission theorems now reduce to assembling it over the register/memory folds.
+- **Loom.Hw.Compile.rules_nextReg** — that keystone lifted over the ordered rule
+  list (clean list induction). The register half of the emission theorem
+  (`compile_cycle_regs`) now needs only a register-name-uniqueness lookup lemma.
 - **Logic/KernelLemmas** — `bumpGen` monotonicity, `clearSlot_slotGen`.
 
 **Stated precisely, proof in progress** (`sorry` in body or transitively):
