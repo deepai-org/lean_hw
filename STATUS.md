@@ -16,8 +16,12 @@ combined `Wf ∧ Acyclic` by threading `capLive → dropCore_preserves`. The fir
 revocation opcode is a kernel-verified theorem. Remaining for the combined invariant: the
 7 non-revocation ops' `Acyclic` clauses (trivial for the non-lineage ops; `acyclic_installDerived`
 for `cap_dup`/`mem_grant`), assembling `SystemOpsPreserveAcyclic`, and the mechanical refactor
-threading the combined obligation into `wfa_invariant`. `cap_revoke`/gate ops still need
-`destroyMarked`/`transferCap` (their own kernel lemmas, then the same thread).
+threading the combined obligation into `wfa_invariant`. **`cap_revoke`'s Acyclic core is now proved** (`acyclic_destroyMarked` — bulk removal is
+edge-removal, so acyclicity survives via `acyclic_of_parentRef_le`); its Wf core
+(`wf_destroyMarked`, the bulk lineage-bijection lemma) remains. The gate ops (`gate_call`/
+`gate_return`) need `transferCap`'s preservation — a fresh-leaf install + sibling-reparent +
+`clearSlot` + sweeps, the most intricate remaining Acyclic core. Then each of the three
+remaining ops is finished by its own `capLive → …` thread, exactly as `cap_drop` was.
 
 ## What builds and runs (verified end to end)
 
