@@ -1120,4 +1120,190 @@ theorem scan (m : Manifest) (hwfm : m.WF)
                 rw [hpn] at this
                 exact this
 
+/-! ## The window: a progress event within `scanBound` cycles -/
+
+/-- The frozen-scan length: within this many cycles of a clean blocked
+state, some chain event must fire (else the potential runs dry). -/
+def scanBound (m : Manifest) : Nat :=
+  hyperL m * (6 * budgetMass m + maxCostBound + numDomains + 2 * hyperL m + 2)
+
+/-- One full window: the scan plus the drain of a head instruction. -/
+def windowLen (m : Manifest) : Nat := scanBound m + maxCostBound + 1
+
+theorem inflightLeft_le {σ : MachineState} (h : InflightLe σ) :
+    inflightLeft σ ≤ maxCostBound := by
+  cases hi : σ.inflight with
+  | none =>
+      rw [inflightLeft_none hi]
+      exact Nat.zero_le _
+  | some fl =>
+      rw [inflightLeft_some hi]
+      exact h fl hi
+
+theorem psi_le (m : Manifest) (σ : MachineState) (hcap : BudgetCap m σ)
+    (hil : InflightLe σ) (o : DomainId) :
+    psi σ o ≤ 2 * budgetMass m + maxCostBound + numDomains := by
+  unfold psi
+  have h1 := massExcept_le_budgetMass m σ hcap o
+  have h2 := inflightLeft_le hil
+  have h3 := nonHalted_le σ
+  omega
+
+theorem psi_telescope (m : Manifest) (σ' : MachineState) (o : DomainId) :
+    ∀ (j : Nat),
+    (∀ i, i < j → psi (stepN m (i + 1) σ') o + 1 ≤
+      psi (stepN m i σ') o + 2 * gainAt m (stepN m i σ') o) →
+    psi (stepN m j σ') o + j ≤
+      psi σ' o + 2 * ∑ i ∈ Finset.range j, gainAt m (stepN m i σ') o := by
+  intro j
+  induction j with
+  | zero =>
+      intro _
+      simp [stepN]
+  | succ jj ihh =>
+      intro hstep
+      have h1 := ihh (fun i hi => hstep i (by omega))
+      have h2 := hstep jj (by omega)
+      rw [Finset.sum_range_succ]
+      omega
+
+/-- The closing arithmetic: the scan length beats the refunds. -/
+theorem scan_arith (L A N : Nat) (hL : 1 ≤ L) (hN : N = L * (A + 2 * L + 2))
+    (hcon : N ≤ L + A + (N / L + 1) * (L - 1)) : False := by
+  have hL0 : 0 < L := hL
+  have hdiv : N / L = A + 2 * L + 2 := by
+    rw [hN, Nat.mul_div_cancel_left _ hL0]
+  rw [hdiv, hN] at hcon
+  obtain ⟨lm, rfl⟩ : ∃ lm, L = lm + 1 := ⟨L - 1, by omega⟩
+  simp only [Nat.add_sub_cancel] at hcon
+  have hexp : (lm + 1) * (A + 2 * (lm + 1) + 2) =
+      (lm + 1) + A + (A + 2 * (lm + 1) + 2 + 1) * lm + 3 := by ring
+  omega
+
+/-- **The window lemma**: from any clean blocked reachable state, within
+`windowLen` cycles the caller resumes or a clean strict measure drop
+occurs. -/
+theorem window (m : Manifest) (hwfm : m.WF)
+    (hstall : ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ))
+    (hsched : 2 * ((List.finRange numDomains).map
+      (fun e => (m.doms e).budgetQ * (hyperL m / (m.doms e).periodP))).sum < hyperL m)
+    (hpos : ∀ e, 0 < (m.doms e).budgetQ)
+    (σ : MachineState) (hreach : (machine m).Reachable σ)
+    {d : DomainId} {gd : GateId} (hb : (σ.doms d).run = .blocked gd)
+    (hclean : σ.inflight = none) :
+    ∃ k, k ≤ windowLen m ∧
+      (((stepN m k σ).doms d).run ≠ .blocked gd ∨
+       (((stepN m k σ).doms d).run = .blocked gd ∧ (stepN m k σ).inflight = none ∧
+        chainMeasure m (stepN m k σ) d < chainMeasure m σ d)) := by
+  have hwfσ : Wf σ := (wfa_invariant m hwfm σ hreach).1
+  have hsnσ : HaltedServingNone σ := halted_serving_none_invariant m hwfm σ hreach
+  have hci : ChainInv m σ := chain_invariant m hwfm σ hreach
+  obtain ⟨l, h, hcf, hlenb⟩ := chain_exists hwfσ hsnσ hci.depthLink hb
+  have hquiet : ∀ fl, σ.inflight = some fl → fl.dom ≠ h := by
+    intro fl hfl
+    rw [hclean] at hfl
+    exact absurd hfl (by simp)
+  have hL : 0 < hyperL m := hyperL_pos m hwfm
+  have hNL : hyperL m ≤ scanBound m := by
+    unfold scanBound
+    exact Nat.le_mul_of_pos_right _ (by omega)
+  rcases scan m hwfm hstall (scanBound m) σ hreach hb hcf hquiet with
+    ⟨t, ht, hout⟩ | ⟨t, ht, h1, h2, h3⟩ | ⟨t, ht, hB1, hC1, hM1, fl, hfl, hfldom⟩ |
+    ⟨hfz, hψall⟩
+  · exact ⟨t, by unfold windowLen; omega, .inl hout⟩
+  · exact ⟨t, by unfold windowLen; omega, .inr ⟨h1, h2, h3⟩⟩
+  · -- head issue at cycle t: drain the instruction
+    set σ' := stepN m (t + 1) σ with hσ'def
+    have hreach' : (machine m).Reachable σ' := stepN_reachable m σ hreach _
+    have hci' : ChainInv m σ' := chain_invariant m hwfm σ' hreach'
+    have hcl : fl.cyclesLeft ≤ maxCostBound := hci'.inflightLe fl hfl
+    obtain ⟨k2, hk2, hout⟩ := drain m hwfm maxCostBound σ' hreach' hB1 hC1 hfl hfldom hcl
+    refine ⟨(t + 1) + k2, by unfold windowLen; omega, ?_⟩
+    have hsplit : stepN m ((t + 1) + k2) σ = stepN m k2 σ' := by
+      rw [stepN_add]
+    rw [hsplit]
+    have hWpos : 0 < chainW m := by
+      have := chainW_ge_two m
+      omega
+    rcases hout with hU | ⟨hB2, hI2, hM2⟩
+    · exact .inl hU
+    · refine .inr ⟨hB2, hI2, ?_⟩
+      rcases hM2 with hM2 | ⟨hlen1, hM2⟩
+      · have hpow : 0 < chainW m ^ (maxChainDepth - l.length) := Nat.pow_pos hWpos
+        omega
+      · have hexp : maxChainDepth - l.length = (maxChainDepth - 1 - l.length) + 1 := by
+          omega
+        have hcomb : (chainW m - 1) * chainW m ^ (maxChainDepth - 1 - l.length) +
+            chainW m ^ (maxChainDepth - 1 - l.length) =
+            chainW m ^ (maxChainDepth - l.length) := by
+          rw [hexp, Nat.pow_succ]
+          obtain ⟨w, hw⟩ : ∃ w, chainW m = w + 1 := ⟨chainW m - 1, by omega⟩
+          rw [hw]
+          simp only [Nat.add_sub_cancel]
+          ring
+        have hxpos : 0 < chainW m ^ (maxChainDepth - 1 - l.length) := Nat.pow_pos hWpos
+        omega
+  · -- all frozen: the potential runs dry
+    exfalso
+    set o := σ.payer d with hodef
+    obtain ⟨tf, htf, hfundtf⟩ := origin_refill_eligible m hwfm σ o (hpos o)
+    have htfN : tf ≤ scanBound m := Nat.le_trans htf hNL
+    -- funded persistence along the frozen scan
+    have hfund : ∀ t, tf ≤ t → t ≤ scanBound m →
+        0 < ((refillPhase m (stepN m t σ)).doms o).budget := by
+      intro t htf' htN
+      induction t with
+      | zero =>
+          have : tf = 0 := by omega
+          rw [← this] at hfundtf ⊢
+          exact hfundtf
+      | succ tt ihh =>
+          rcases Nat.lt_or_ge tf (tt + 1) with hlt | hge
+          · have htt : tf ≤ tt := by omega
+            have hprev := ihh htt (by omega)
+            have hbud := (hψall tt (by omega)).1
+            have hstep : (stepN m (tt + 1) σ).cycle = (stepN m (tt + 1) σ).cycle := rfl
+            rcases refillPhase_budget_cases m (stepN m (tt + 1) σ) o with h' | ⟨_, _, h'⟩
+            · rw [h', hbud]
+              exact hprev
+            · rw [h']
+              exact hpos o
+          · have : tf = tt + 1 := by omega
+            rw [← this]
+            exact hfundtf
+    -- the potential telescope over [tf, scanBound]
+    set σ'' := stepN m tf σ with hσ''def
+    set j := scanBound m - tf with hjdef
+    have hconvert : ∀ i, stepN m i σ'' = stepN m (tf + i) σ := by
+      intro i
+      rw [hσ''def, ← stepN_add]
+    have hstepineq : ∀ i, i < j → psi (stepN m (i + 1) σ'') o + 1 ≤
+        psi (stepN m i σ'') o + 2 * gainAt m (stepN m i σ'') o := by
+      intro i hi
+      have h1 := (hψall (tf + i) (by omega)).2 (hfund (tf + i) (by omega) (by omega))
+      rw [hconvert i, hconvert (i + 1), show tf + (i + 1) = (tf + i) + 1 by omega]
+      exact h1
+    have htel := psi_telescope m σ'' o j hstepineq
+    -- start bound
+    have hreach'' : (machine m).Reachable σ'' := stepN_reachable m σ hreach tf
+    have hci'' : ChainInv m σ'' := chain_invariant m hwfm σ'' hreach''
+    have hstart : psi σ'' o ≤ 2 * budgetMass m + maxCostBound + numDomains :=
+      psi_le m σ'' hci''.budgetLe hci''.inflightLe o
+    -- gain bound
+    have hgain := gainSum_bound m hwfm hsched σ'' o j
+    have hjN : j ≤ scanBound m := by omega
+    have hdivj : j / hyperL m ≤ scanBound m / hyperL m := Nat.div_le_div_right hjN
+    have hgain2 : 2 * ∑ i ∈ Finset.range j, gainAt m (stepN m i σ'') o ≤
+        (scanBound m / hyperL m + 1) * (hyperL m - 1) + 4 * budgetMass m := by
+      refine Nat.le_trans hgain ?_
+      have := Nat.mul_le_mul_right (hyperL m - 1) (show j / hyperL m + 1 ≤
+        scanBound m / hyperL m + 1 by omega)
+      omega
+    have hfinal : scanBound m ≤ hyperL m + (6 * budgetMass m + maxCostBound + numDomains) +
+        (scanBound m / hyperL m + 1) * (hyperL m - 1) := by
+      have hpsi0 : 0 ≤ psi (stepN m j σ'') o := Nat.zero_le _
+      omega
+    exact scan_arith (hyperL m) (6 * budgetMass m + maxCostBound + numDomains)
+      (scanBound m) hL (by unfold scanBound; ring) hfinal
+
 end Machines.Lnp64u
