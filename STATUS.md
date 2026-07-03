@@ -323,3 +323,22 @@ already-completed `system_preserves`/`system_preserves_acyclic`.
   minting authority outside the roots' downward closure while remaining `Wf`. Fixed
   with a no-wrap `require` in `narrow` (PLAN §8b). `narrow_ok`/`narrow_err_state`
   re-proved; new `narrow_no_wrap` lemma.
+- **T2 complete (all three CLEAN)** — `step_confined`/`authority_confined` via the
+  `KindsLe`/`Dominated` sweep (`Logic/Authority.lean`); `narrow_kind_le` rests on the
+  no-wrap fix.
+- **T4 complete (all three CLEAN)** — `Touch`/`CalmLe` whole-cycle characterization
+  (`Logic/GateStep.lean`, ~1450 lines): scrub equalities + the frame theorem (the
+  `hcaps` hypothesis turned out unnecessary — caps traffic never reaches regs/pc/cause).
+- **T6 proof-forced statement fix (starvation counterexample)** — `no_hostage` was FALSE:
+  a top-priority hog with Q = P (legal) starves the serving chain forever; `resumeBound`
+  had no interference term. Fixed: `StrictlySchedulable m` hypothesis (strict hyperperiod
+  utilization) + interference-aware `resumeBound`. Scheduler/unwind/progress lemmas proved
+  (`Logic/Hostage.lean`, sorry-free); final measure assembly remains (itemized in T6.lean).
+- **T5 proof-forced statement fix (three channels)** — `noninterference` was FALSE:
+  (1) the same scheduler starvation (destuttered trajectory freezes in one run only);
+  (2) grants-in: `mem_grant` installs into the isolated domain's table without consent,
+  perturbing its later handle values (register-visible); (3) the isolated domain's own
+  `mem_grant`/`move` read globally-sensitive state into rd. Fixed: `TopPriority`
+  hypotheses + `Isolated` gains `slots_full` and `code_local` clauses. Coupling
+  infrastructure proved (`Logic/NonInt.lean`, sorry-free); the aligned-instant simulation
+  assembly remains (plan in T5.lean).
