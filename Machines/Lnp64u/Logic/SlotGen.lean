@@ -304,6 +304,66 @@ theorem SlotGenLe.get : SlotGenLe SpecM.get :=
 namespace Wip
 open Machines.Lnp64u.Isa Machines.Lnp64u.Isa.Wip
 
+/-- Helper: `setDom` with a `slotGen`-preserving update preserves `slotGen`. -/
+theorem setDom_slotGen_of (σ : MachineState) (dd : DomainId) (f : DomainState → DomainState)
+    (hf : (f (σ.doms dd)).slotGen = (σ.doms dd).slotGen) (d' : DomainId) (s' : Slot) :
+    ((σ.setDom dd f).doms d').slotGen s' = (σ.doms d').slotGen s' := by
+  unfold MachineState.setDom
+  by_cases h : d' = dd
+  · subst h; simp [Loom.Fun.update_same, hf]
+  · simp [Loom.Fun.update_ne _ _ _ _ h]
+
+/-- **`transferCap` never lowers a slot generation.** Install-at-recipient and
+reparent preserve `slotGen`; `clearSlot` bumps the source slot; the sweeps
+preserve. -/
+theorem transferCap_slotGen_ge (σ : MachineState) (from_ : DomainId) (s : Slot) (to_ : DomainId)
+    (τ : MachineState) (ref : CapRef) (h : σ.transferCap from_ s to_ = some (τ, ref))
+    (d' : DomainId) (s' : Slot) :
+    ((σ.doms d').slotGen s').toNat ≤ ((τ.doms d').slotGen s').toNat := by
+  unfold MachineState.transferCap at h
+  cases he : (σ.doms from_).caps s with
+  | none => rw [he] at h; simp at h
+  | some e =>
+      rw [he] at h; simp only [Option.bind_eq_bind, Option.bind_some] at h
+      cases hfs : σ.freeSlot to_ with
+      | none => rw [hfs] at h; simp at h
+      | some s2 =>
+          rw [hfs] at h; simp only [Option.bind_some] at h
+          have key : ∀ (σ₁ : MachineState), (∀ d s, (σ₁.doms d).slotGen s = (σ.doms d).slotGen s) →
+              some (((((σ₁.reparent ⟨from_, s, (σ.doms from_).slotGen s⟩
+                ⟨to_, s2, (σ.doms to_).slotGen s2⟩).clearSlot from_ s).sweepRegions).sweepMover),
+                (⟨to_, s2, (σ.doms to_).slotGen s2⟩ : CapRef))
+                = some (τ, ref) →
+              ((σ.doms d').slotGen s').toNat ≤ ((τ.doms d').slotGen s').toNat := by
+            intro σ₁ hpre heq
+            injection heq with heq; injection heq with hτ _; subst hτ
+            have h1 : (((σ₁.reparent ⟨from_, s, (σ.doms from_).slotGen s⟩
+                ⟨to_, s2, (σ.doms to_).slotGen s2⟩).doms d').slotGen s') = (σ.doms d').slotGen s' := by
+              rw [reparent_slotGen]; exact hpre d' s'
+            rw [← h1]
+            exact clearSlot_sweeps_slotGen_ge _ from_ s d' s'
+          cases hl : e.lineage with
+          | none =>
+              rw [hl] at h; simp only [Option.pure_def, Option.bind_some] at h
+              exact key (σ.setDom to_ (fun ds =>
+                  { ds with caps := Loom.Fun.update ds.caps s2 (some { kind := e.kind, lineage := none }) }))
+                (fun d ss => setDom_slotGen_of σ to_ _ rfl d ss) h
+          | some l =>
+              rw [hl] at h; simp only [Option.bind_eq_bind, Option.bind_some] at h
+              cases hc : (σ.doms from_).lineage l with
+              | none => rw [hc] at h; simp at h
+              | some cell =>
+                  rw [hc] at h; simp only [Option.bind_some] at h
+                  cases hfc : σ.freeCell to_ with
+                  | none => rw [hfc] at h; simp at h
+                  | some l' =>
+                      rw [hfc] at h; simp only [Option.pure_def, Option.bind_some] at h
+                      exact key (σ.setDom to_ (fun ds =>
+                          { ds with
+                            caps := Loom.Fun.update ds.caps s2 (some { kind := e.kind, lineage := some l' })
+                            lineage := Loom.Fun.update ds.lineage l' (some cell) }))
+                        (fun d ss => setDom_slotGen_of σ to_ _ rfl d ss) h
+
 theorem move_slotGen_le (c : Ctx) : SlotGenLe (moveExec c) := by
   intro σ; refine ⟨fun x σ' he d' s => ?_, fun x σ' he d' s => ?_⟩
   ·
