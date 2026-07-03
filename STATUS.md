@@ -111,8 +111,20 @@ ref" obligation holds iff the dropped cap's parent isn't itself. Self-parenting 
 unreachable by construction (`installDerived` always uses a fresh slot) but is not
 currently excluded by the invariant, so completing `cap_drop`'s reparent branch
 requires adding and re-establishing that clause — exactly the kind of
-proof-driven invariant strengthening the charter anticipates. `cap_revoke` needs
-`destroyMarked`; the gate ops need `transferCap`. Infrastructure in
+proof-driven invariant strengthening the charter anticipates.
+
+**The acyclicity invariant is now built** (`Logic/Acyclic`): `Acyclic σ` (the
+parent chain from any reference reaches a root within `numLineage` links), with
+`init_acyclic` (boot has empty lineage tables) and `Acyclic.parentRef_ne` (no
+capability is its own parent) proved. Both of `cap_drop`'s "no cell points at the
+dropped ref" obligations are also proved — `reparent_no_ref` (reparent onto a
+distinct parent) and `orphan_no_ref` (root drop) — so with `wf_reparent` and
+`wf_clearSlot_sweep` both `cap_drop` branches are supported at the lemma level.
+**Remaining for `cap_drop`:** `wf_orphanChildren` (the orphan branch's Wf
+preservation, mechanical) and the invariant plumbing — strengthening the workhorse
+invariant to `Wf ∧ Acyclic` and re-establishing `Acyclic` across all ops (trivial
+for the non-lineage ops; a fresh-leaf/pigeonhole argument for `installDerived`).
+`cap_revoke` needs `destroyMarked`; the gate ops need `transferCap`. Infrastructure in
 place: `capLive_ok`/`capLive_err_state` (cap-op state characterization),
 `freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`,
 and — the two hardest kernel lemmas — **`wf_installDerived`** (capability
