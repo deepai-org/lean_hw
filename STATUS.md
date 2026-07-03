@@ -362,3 +362,9 @@ already-completed `system_preserves`/`system_preserves_acyclic`.
   occupancy-corrected `StrictlySchedulable`, a `StallFree` side condition, and an
   exponential lex `resumeBound`; scheduler redesign filed as PLAN D11. Assembly still open
   (5 itemized obligations in T6.lean).
+- **L2 engines online (Phase 3)** — `Dp/Cnf` (Tseitin bit-blaster with the proved
+  `blast_spec` soundness direction), `Dp/Bmc` + `Dp/KInduction` (`bmc_sound`,
+  `kinduction_sound`: kernel-backed theorems over `Module.run` composing `blast_spec`
+  with the in-house checker's `check_sound`), `Dp/Solver` (untrusted cadical/LRAT
+  driver). **First certificate-checked BMC result**: Acc8's halted-stickiness at k=1
+  (1416 clauses, 244 RUP steps, kernel `decide` ≈ 32 s). Axioms: classical trio only.
