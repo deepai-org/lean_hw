@@ -545,6 +545,54 @@ def SystemOpsPreserveWfA : Prop :=
     (∀ a σ', instr.sem.exec c σ = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
     (∀ e σ', instr.sem.exec c σ = .err e σ' → Wf σ' ∧ Acyclic σ')
 
+/-- `transferByHandle` preserves `Wf ∧ Acyclic`: the `hw = 0` and error paths
+leave the state unchanged; the transfer path is `wf_transferCap` /
+`acyclic_transferCap`. -/
+theorem transferByHandle_preserves (d to_ : DomainId) (hw : Loom.Word32)
+    (σ : MachineState) (hwf : Wf σ) (hac : Acyclic σ) :
+    (∀ a σ', Machines.Lnp64u.Isa.transferByHandle d to_ hw σ = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
+    (∀ e σ', Machines.Lnp64u.Isa.transferByHandle d to_ hw σ = .err e σ' → Wf σ' ∧ Acyclic σ') := by
+  unfold Machines.Lnp64u.Isa.transferByHandle
+  by_cases hz : hw = 0
+  · rw [if_pos hz]
+    exact ⟨fun a σ' he => by simp only [specM_pure] at he; obtain ⟨_, rfl⟩ := he; exact ⟨hwf, hac⟩,
+           fun e σ' he => by simp [specM_pure] at he⟩
+  · simp only [if_neg hz, specM_bind]
+    constructor
+    · intro a σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive d hw σ with
+      | err e0 σ0 => rw [hcl] at he; simp at he
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none => rw [htc] at he; simp [SpecM.raise] at he
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp only [SpecM.set, specM_bind, specM_pure] at he
+              injection he with _ h2; subst h2
+              exact ⟨wf_transferCap σ d sslot to_ σ2 ref hwf htc,
+                     acyclic_transferCap σ d sslot to_ σ2 ref hwf hac htc⟩
+    · intro er σ' he
+      cases hcl : Machines.Lnp64u.Isa.capLive d hw σ with
+      | err e0 σ0 =>
+          have hs := Machines.Lnp64u.Isa.Wip.capLive_err_state d _ σ hcl; rw [hcl] at he
+          injection he with _ h2; subst h2; subst hs; exact ⟨hwf, hac⟩
+      | fault f => rw [hcl] at he; simp at he
+      | ok r σ0 =>
+          obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok d _ σ hcl; subst σ0
+          rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+          simp only [SpecM.get, specM_bind] at he
+          cases htc : σ.transferCap d sslot to_ with
+          | none =>
+              rw [htc] at he; simp only [SpecM.raise] at he
+              injection he with _ h2; subst h2; exact ⟨hwf, hac⟩
+          | some pr =>
+              obtain ⟨σ2, ref⟩ := pr
+              rw [htc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
 /-- `cap_revoke` preserves `Wf ∧ Acyclic`. -/
 theorem caprevoke_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac : Acyclic σ) :
     (∀ a σ',
