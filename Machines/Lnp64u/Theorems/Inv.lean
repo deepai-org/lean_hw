@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.Wf
 import Machines.Lnp64u.Logic.KernelLemmas
+import Machines.Lnp64u.Logic.PhaseLemmas
 
 /-!
 # The workhorse: machine well-formedness is invariant
@@ -87,10 +88,17 @@ theorem init_wf (m : Manifest) (hwf : m.WF) : Wf m.initState := by
   · intro d g h; exact absurd h (by simp [Manifest.initState, Manifest.bootDom])
   · intro fl h; exact absurd h (by simp [Manifest.initState])
 
-/-- `Wf` is preserved by one cycle. -/
+/-- `Wf` is preserved by one cycle. Decomposed across the three phases:
+refill and the Mover are fully discharged (`refillPhase_preserves_wf`,
+`moverPhase_preserves_wf`); the cycle bump is transparent (`wf_setCycle`);
+the one remaining obligation is `corePhase_preserves_wf`. -/
 theorem step_wf (m : Manifest) (hwf : m.WF) (σ : MachineState)
     (h : Wf σ) : Wf (step m σ) := by
-  sorry
+  unfold step
+  exact wf_setCycle _ _
+    (moverPhase_preserves_wf _
+      (corePhase_preserves_wf m hwf _
+        (refillPhase_preserves_wf m σ h)))
 
 /-- The invariant. -/
 theorem wf_invariant (m : Manifest) (hwf : m.WF) :
