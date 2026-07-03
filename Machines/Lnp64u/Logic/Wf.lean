@@ -74,4 +74,38 @@ conservation theorem quotes. -/
 def LedgerBalanced (σ : MachineState) : Prop :=
   ∀ d, cellCount (σ.doms d) = derivedCount (σ.doms d)
 
+
+/-- The lineage ledger balances in any well-formed state: derived capabilities
+are in bijection with occupied lineage cells (`cell_backed`/`cell_used`/`ptr_inj`).
+A consequence of `DomWf`, quoted by T9. -/
+theorem LedgerBalanced_of_Wf (σ : MachineState) (h : Wf σ) : LedgerBalanced σ := by
+  intro d
+  have hd := h.doms d
+  unfold cellCount derivedCount
+  refine Finset.card_bij
+    (fun l hl => Classical.choose (hd.cell_used l (by simpa using hl))) ?_ ?_ ?_
+  · intro l hl
+    obtain ⟨e0, he, hle⟩ := Classical.choose_spec (hd.cell_used l (by simpa using hl))
+    simp only [Finset.mem_filter, Finset.mem_univ, true_and, he, hle, Option.bind_some,
+      Option.isSome_some]
+  · intro l1 hl1 l2 hl2 heq
+    obtain ⟨e1, he1, hle1⟩ := Classical.choose_spec (hd.cell_used l1 (by simpa using hl1))
+    obtain ⟨e2, he2, hle2⟩ := Classical.choose_spec (hd.cell_used l2 (by simpa using hl2))
+    simp only at heq; rw [heq] at he1
+    rw [he2] at he1; injection he1 with hee; subst hee
+    exact Option.some.inj (hle1.symm.trans hle2)
+  · intro s hs
+    have hs' : (((σ.doms d).caps s).bind CapEntry.lineage).isSome = true := by simpa using hs
+    cases hc : (σ.doms d).caps s with
+    | none => rw [hc] at hs'; simp at hs'
+    | some e => cases hle : e.lineage with
+                | none => simp [hc, hle] at hs'
+                | some l =>
+                    refine ⟨l, ?_, ?_⟩
+                    · simp only [Finset.mem_filter, Finset.mem_univ, true_and]
+                      exact hd.cell_backed s e l hc hle
+                    · obtain ⟨e0, he', hle'⟩ := Classical.choose_spec
+                        (hd.cell_used l (hd.cell_backed s e l hc hle))
+                      exact hd.ptr_inj _ s e0 e l he' hc hle' hle
+
 end Machines.Lnp64u

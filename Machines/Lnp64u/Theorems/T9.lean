@@ -1,4 +1,5 @@
 import Machines.Lnp64u.Logic.Wf
+import Machines.Lnp64u.Logic.AcyclicWfa
 
 /-!
 # T9 — Conservation
@@ -34,8 +35,8 @@ theorem init_balanced (m : Manifest) : LedgerBalanced m.initState := by
 /-- **T9 (lineage ledger).** Cells and derived entries balance in every
 reachable state. -/
 theorem ledger_balanced (m : Manifest) (hwf : m.WF) :
-    (machine m).Invariant LedgerBalanced := by
-  sorry
+    (machine m).Invariant LedgerBalanced :=
+  fun s hr => LedgerBalanced_of_Wf s (wfa_invariant m hwf s hr).1
 
 /-- **T9 (budget).** No domain's remaining budget ever exceeds its quota. -/
 theorem budget_bounded (m : Manifest) (hwf : m.WF) :
