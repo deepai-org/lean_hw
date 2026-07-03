@@ -67,14 +67,18 @@ def pExpr : {w : Nat} → Expr w → StateM PSt String
       else if w' = w then fresh w' s!"{x}"
       else fresh w' s!"{x}[{w'-1}:0]"
 
-/-! ### Fast printing (pointer-memoized; same output subset)
+/-! ### Fast printing (pointer-memoized + hash-consed; same output subset)
 
 `pExpr` walks the expression as a tree: on modules whose expressions share
 nodes (the compiler's memoized build preserves the sharing the source
 design's `let`s create), that unfolds the DAG — exponentially in the worst
 case (LNP64-µ's pointer-doubling circuits). The implementation below gives
-each *pointer-distinct* node one wire and reuses its name on every further
-occurrence — output stays inside the same µVerilog subset (operands are
+each *structurally distinct* node one wire and reuses its name on every
+further occurrence: a pointer-identity memo short-circuits shared nodes,
+and `freshM`'s `(width, rendered RHS)` table hash-conses the rest
+(separately-built-but-equal nodes, interned constants; since operands are
+canonical wire names by the time an RHS is rendered, the merging cascades
+bottom-up). Output stays inside the same µVerilog subset (operands are
 wire/register identifiers either way), so the parser and the round-trip
 checker are unaffected; `parseCheck` (compiled) checks exactly this
 printer's output. Kernel-level proofs (the `demo` round trip in
@@ -84,17 +88,27 @@ implementation replaces for compiled evaluation only. -/
 private structure MSt where
   lines : Array String := #[]
   n : Nat := 0
+  /-- Pointer-identity memo: node address ↦ wire name. -/
   memo : Std.HashMap USize String := {}
+  /-- Structural hash-consing: `(width, rendered RHS)` ↦ wire name. Operand
+  names inside an RHS are already canonical (each operand is resolved
+  bottom-up before the RHS is rendered), so equal keys mean structurally
+  equal subcircuits and the CSE cascades: constants are interned, and any
+  node whose operands dedup to the same wires dedups too. -/
+  cse : Std.HashMap (Nat × String) String := {}
 
 private def emitM (s : String) : StateM MSt Unit :=
   modify fun st => { st with lines := st.lines.push s }
 
 private def freshM (w : Nat) (rhs : String) : StateM MSt String := do
+  if let some nm := (← get).cse[(w, rhs)]? then
+    return nm
   let st ← get
   let name := s!"n{st.n}"
   set { st with
         n := st.n + 1
-        lines := st.lines.push s!"  wire [{w-1}:0] {name} = {rhs};" }
+        lines := st.lines.push s!"  wire [{w-1}:0] {name} = {rhs};"
+        cse := st.cse.insert (w, rhs) name }
   pure name
 
 mutual
