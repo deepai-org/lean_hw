@@ -352,3 +352,13 @@ already-completed `system_preserves`/`system_preserves_acyclic`.
   the theorem survives only because gate-class descendants can never back a region
   register or Mover destination, which required the new `ClassLineage` and
   `MoverLiveMem` reachability invariants. All of T3 is now unconditional.
+- **Second checker landed** — `checker/` standalone Lake package (`chk` CLI): independent
+  from-scratch DIMACS+LRAT checker (own types, full deletion support, strict hints), zero
+  Loom/Machines/Mathlib imports; `scripts/crosscheck_lrat.sh` cross-validates both legs on
+  cadical php proofs + mutation rejections; CI-wired with solver-absent skip.
+- **T6 refuted twice more (proof-forced):** the occupancy-vs-charge gap and the
+  residual-budget **stall-lock** (the frozen scheduler's stall arm re-picks an underfunded
+  top-priority domain forever — unbounded priority inversion). Statement now carries the
+  occupancy-corrected `StrictlySchedulable`, a `StallFree` side condition, and an
+  exponential lex `resumeBound`; scheduler redesign filed as PLAN D11. Assembly still open
+  (5 itemized obligations in T6.lean).
