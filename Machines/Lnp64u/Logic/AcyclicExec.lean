@@ -162,4 +162,14 @@ theorem execPreservesAcyclic_of_system (hsys : SystemOpsPreserveAcyclic) :
            fun e σ' he => (base_preserves_acyclic instr hb c σ hac).2 e σ' he⟩
   · exact hsys instr hsys' c σ hwf hac ‹_› ‹_›
 
+/-- Any `updDom` whose update leaves `caps`/`lineage` fixed preserves acyclicity. -/
+theorem PreservesAcyclic.updDom (d : DomainId) (f : DomainState → DomainState)
+    (hf : ∀ ds, (f ds).caps = ds.caps ∧ (f ds).lineage = ds.lineage) :
+    PreservesAcyclic (SpecM.updDom d f) := by
+  intro σ hac
+  refine ⟨?_, ?_⟩
+  · intro a σ' he; simp only [SpecM.updDom, SpecM.modify] at he; injection he with _ h2; subst h2
+    exact acyclic_setDom σ d f hf hac
+  · intro e σ' he; simp [SpecM.updDom, SpecM.modify] at he
+
 end Machines.Lnp64u
