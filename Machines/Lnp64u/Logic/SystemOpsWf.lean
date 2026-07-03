@@ -142,10 +142,27 @@ theorem narrow_ok (base : Addr) (len : BitVec 13) (perms : Perms) (dw : Loom.Wor
       off.toNat + nlen.toNat ≤ len.toNat := by
   unfold narrow at he
   simp only [SpecM.require, specM_bind, specM_pure] at he
-  split_ifs at he with h1 h2 h3
+  split_ifs at he with h1 h2 h3 h4
   · injection he with hk hσ; subst hσ
-    refine ⟨rfl, descOff dw, descLen dw, descPerms dw, hk.symm, h3, ?_⟩
+    refine ⟨rfl, descOff dw, descLen dw, descPerms dw, hk.symm, h4, ?_⟩
     simpa using h1
+  all_goals simp [SpecM.raise] at he
+
+/-- `narrow` never wraps: on success the narrowed base is a genuine in-memory
+address, `(base + off).toNat = base.toNat + off.toNat < memWords` (the T2
+no-escalation corner — proof-forced 2026-07-03). -/
+theorem narrow_no_wrap (base : Addr) (len : BitVec 13) (perms : Perms) (dw : Loom.Word32)
+    (σ : MachineState) {kind : CapKind} {σ' : MachineState}
+    (he : narrow base len perms dw σ = .ok kind σ') :
+    base.toNat + (descOff dw).toNat < memWords ∧
+    (base + descOff dw).toNat = base.toNat + (descOff dw).toNat := by
+  unfold narrow at he
+  simp only [SpecM.require, specM_bind, specM_pure] at he
+  split_ifs at he with h1 h2 h3 h4
+  · have hlt : base.toNat + (descOff dw).toNat < memWords := by simpa using h2
+    have hmw : memWords = 4096 := rfl
+    refine ⟨hlt, ?_⟩
+    rw [BitVec.toNat_add, Nat.mod_eq_of_lt (by omega : base.toNat + (descOff dw).toNat < 2 ^ 12)]
   all_goals simp [SpecM.raise] at he
 
 /-- Bounds for a narrowed range: it sits within the parent's window. -/
@@ -162,7 +179,7 @@ theorem narrow_err_state (base : Addr) (len : BitVec 13) (perms : Perms) (dw : L
     (he : narrow base len perms dw σ = .err e σ') : σ' = σ := by
   unfold narrow at he
   simp only [SpecM.require, specM_bind, specM_pure] at he
-  split_ifs at he with h1 h2 h3 <;>
+  split_ifs at he with h1 h2 h3 h4 <;>
     simp only [SpecM.raise] at he <;>
     (try (injection he with _ h2; exact h2.symm)) <;> simp at he
 

@@ -317,3 +317,9 @@ already-completed `system_preserves`/`system_preserves_acyclic`.
   saturation; `freeSlot` tombstones saturated slots), so the retired form is the faithful
   reading of "destroyed". Proof: `no_resurrection` + `Wf.mover_wf`/`Wf.region_backed` over
   `reachable_stepN`.
+- **T2 proof-forced semantics fix (machine-checked counterexample):** `step_confined`
+  was FALSE — `narrow` allowed a zero-length narrow at exactly the end of memory to
+  wrap the 12-bit base (`.mem 1 4095 p` + `off = 4095, nlen = 0` → `.mem 0 0 ⊥`),
+  minting authority outside the roots' downward closure while remaining `Wf`. Fixed
+  with a no-wrap `require` in `narrow` (PLAN §8b). `narrow_ok`/`narrow_err_state`
+  re-proved; new `narrow_no_wrap` lemma.

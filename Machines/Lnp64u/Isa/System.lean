@@ -77,6 +77,11 @@ def narrow (base : Addr) (len : BitVec 13) (perms : Perms) (dw : Loom.Word32) :
   let nlen := descLen dw
   let np := descPerms dw
   require (decide (off.toNat + nlen.toNat ≤ len.toNat)) .outOfRange
+  -- No-wrap: the narrowed base must stay inside physical memory. Only the
+  -- degenerate `nlen = 0 ∧ base + off = memWords` corner can otherwise wrap
+  -- the 12-bit base back to 0 and mint authority at an address the parent
+  -- never held (proof-forced by T2 `step_confined`, 2026-07-03).
+  require (decide (base.toNat + off.toNat < memWords)) .outOfRange
   require (np.le perms) .permDenied
   require np.wx .permDenied
   pure (.mem (base + off) nlen np)

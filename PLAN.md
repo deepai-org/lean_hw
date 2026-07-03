@@ -398,6 +398,14 @@ two vendors' FPGAs, chain kernel-checked to the Verilog.*
   `transferCap` cleared the source slot without sweeping region registers or the Mover,
   leaving the giver cached authority over a range it had transferred away. Fix: transfer
   ends with the same region/Mover sweep as drop/revoke (`Kernel.lean`).
+- **2026-07-03 — narrow no-wrap require.** Proving T2 `step_confined` produced a
+  machine-checked counterexample: `narrow`'s range check permits the degenerate
+  `nlen = 0 ∧ base + off = memWords` corner, where the 12-bit base wraps to 0 and
+  the narrowed capability's kind (`.mem 0 0 ⊥`) escapes the parent's downward
+  closure — authority minted from thin air (invisible to `Wf`, which the wrapped
+  kind still satisfies). Fix: `narrow` requires `base.toNat + off.toNat < memWords`
+  (`Isa/System.lean`); only the degenerate corner is rejected — every `nlen ≥ 1`
+  request already implied no-wrap via the parent's `Wf.bounds`.
 - **2026-07-03 — donation bound + forced unwind.** Stating T6 exposed a hostage scenario:
   a serving callee that never returns held its caller blocked forever. Fix: each activation
   carries a `donated` cycle budget (manifest `maxDonation`); exhaustion, fault, or voluntary
