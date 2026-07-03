@@ -1144,6 +1144,125 @@ theorem orphan_key (σ : MachineState) (old : CapRef) (d : DomainId) (s : Slot)
           exact ⟨e0, hc0, rfl, Or.inr ⟨rfl, fun l hl => by rw [hle0] at hl; simp at hl⟩⟩
   · next => simp at he
 
+
+/-- Orphaning `old`'s children preserves `Wf`: kinds, generations, regions,
+gates, and the Mover are untouched; only children's lineage cells are freed. -/
+theorem wf_orphanChildren (σ : MachineState) (old : CapRef) (h : Wf σ) :
+    Wf (σ.orphanChildren old) := by
+  have hlr : ∀ r, (σ.orphanChildren old).liveRef r = σ.liveRef r := by
+    intro r; unfold MachineState.liveRef
+    exact liveCap_isSome_congr _ _ r.slot r.gen
+      (orphanChildren_caps_isSome σ old r.dom r.slot)
+      (congrFun (orphanChildren_slotGen σ old r.dom) r.slot)
+  have hocK : ∀ d s e0, (σ.doms d).caps s = some e0 →
+      ∃ e', ((σ.orphanChildren old).doms d).caps s = some e' ∧ e'.kind = e0.kind := by
+    intro d s e0 hc; simp only [orphanChildren_caps, hc]
+    cases hl : e0.lineage with
+    | none => exact ⟨e0, rfl, rfl⟩
+    | some l =>
+        refine ⟨_, rfl, ?_⟩
+        cases (σ.doms d).lineage l with
+        | none => rfl
+        | some cell => by_cases hp : cell.parent = old <;> simp [hp]
+  constructor
+  · intro d; have hd := h.doms d
+    refine ⟨fun s => by rw [orphanChildren_slotGen]; exact hd.gen_pos s, ?_, ?_, ?_, ?_, ?_⟩
+    · intro s e l he hle
+      obtain ⟨e0, hc0, _, hlin⟩ := orphan_key σ old d s e he
+      rcases hlin with hn | ⟨heq, hnc⟩
+      · rw [hn] at hle; simp at hle
+      · have hle0 : e0.lineage = some l := by rw [← heq]; exact hle
+        have hcb := hd.cell_backed s e0 l hc0 hle0
+        rw [orphanChildren_lineage]
+        cases hcc : (σ.doms d).lineage l with
+        | none => rw [hcc] at hcb; simp at hcb
+        | some cell => have hpar : cell.parent ≠ old := hnc l hle0 cell hcc
+                       simp [hcc, hpar]
+    · intro s s' e e' l he he' hl hl'
+      obtain ⟨e0, hc0, _, hlin⟩ := orphan_key σ old d s e he
+      obtain ⟨e0', hc0', _, hlin'⟩ := orphan_key σ old d s' e' he'
+      have hle0 : e0.lineage = some l := by
+        rcases hlin with hn | ⟨heq, _⟩
+        · rw [hn] at hl; simp at hl
+        · rw [← heq]; exact hl
+      have hle0' : e0'.lineage = some l := by
+        rcases hlin' with hn | ⟨heq, _⟩
+        · rw [hn] at hl'; simp at hl'
+        · rw [← heq]; exact hl'
+      exact hd.ptr_inj s s' e0 e0' l hc0 hc0' hle0 hle0'
+    · intro l hl
+      rw [orphanChildren_lineage] at hl
+      cases hcc : (σ.doms d).lineage l with
+      | none => rw [hcc] at hl; simp at hl
+      | some cell =>
+          by_cases hpe : cell.parent = old
+          · rw [hcc] at hl; simp [hpe] at hl
+          · obtain ⟨s, e0, hc0, he0⟩ := hd.cell_used l (by rw [hcc]; rfl)
+            obtain ⟨k0, ln0⟩ := e0; simp only at he0; subst he0
+            exact ⟨s, ⟨k0, some l⟩, by
+              simp only [orphanChildren_caps, hc0, hcc, hpe, decide_false,
+                Bool.false_eq_true, if_false], rfl⟩
+    · intro s base len p hcase
+      rcases hcase with hc | ⟨l, hc⟩ <;>
+        · obtain ⟨e0, hc0, hk, _⟩ := orphan_key σ old d s _ hc
+          rcases e0 with ⟨k0, ln0⟩; simp only at hk; subst hk
+          exact hd.wx s base len p (by cases ln0 <;> [exact Or.inl hc0; exact Or.inr ⟨_, hc0⟩])
+    · intro s e base len p hc hk
+      obtain ⟨e0, hc0, hkk, _⟩ := orphan_key σ old d s e hc
+      exact hd.bounds s e0 base len p hc0 (by rw [← hkk]; exact hk)
+  · intro d s p hp
+    rw [hlr]
+    apply h.parent_live d s p
+    revert hp; unfold MachineState.parentOf
+    cases hc0 : ((σ.orphanChildren old).doms d).caps s with
+    | none => simp
+    | some e =>
+        obtain ⟨e0, hc0', _, hlin⟩ := orphan_key σ old d s e hc0
+        cases hle : e.lineage with
+        | none => simp [hle]
+        | some l =>
+            rcases hlin with hn | ⟨heq, hnc⟩
+            · rw [hn] at hle; simp at hle
+            · have hle0 : e0.lineage = some l := by rw [← heq]; exact hle
+              simp only [hle, Option.bind_eq_bind, Option.bind_some, hc0']
+              rw [hle0]; simp only [Option.bind_eq_bind, Option.bind_some, orphanChildren_lineage]
+              cases hcc : (σ.doms d).lineage l with
+              | none => simp [hcc]
+              | some cell => have hpar : cell.parent ≠ old := hnc l hle0 cell hcc
+                             simp [hcc, hpar]
+  · intro d r rg hrg
+    rw [orphanChildren_regions] at hrg
+    obtain ⟨e, hlv, hle⟩ := h.region_backed d r rg hrg
+    have hce : (σ.doms rg.backing.dom).caps rg.backing.slot = some e ∧
+        (decide ((σ.doms rg.backing.dom).slotGen rg.backing.slot = rg.backing.gen)
+          && rg.backing.gen != 0) = true := by
+      unfold DomainState.liveCap at hlv
+      cases hc : (σ.doms rg.backing.dom).caps rg.backing.slot with
+      | none => simp [hc] at hlv
+      | some e0 =>
+          simp only [hc] at hlv
+          by_cases hg : (decide ((σ.doms rg.backing.dom).slotGen rg.backing.slot = rg.backing.gen)
+            && rg.backing.gen != 0) = true
+          · rw [if_pos hg] at hlv; exact ⟨hlv, hg⟩
+          · rw [if_neg hg] at hlv; exact absurd hlv (by simp)
+    obtain ⟨hcaps, hg⟩ := hce
+    obtain ⟨e', hoc, hk⟩ := hocK rg.backing.dom rg.backing.slot e hcaps
+    refine ⟨e', ?_, by rw [hk]; exact hle⟩
+    unfold DomainState.liveCap
+    simp only [orphanChildren_slotGen, hoc, if_pos hg]
+  · intro job; rw [orphanChildren_mover]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, by rw [hlr]; exact o3, by rw [hlr]; exact o4⟩
+  · intro g a; rw [orphanChildren_gates]; intro ha
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    exact ⟨by rw [orphanChildren_serving]; exact s1, by rw [orphanChildren_run]; exact s2, s3, s4⟩
+  · intro d g; rw [orphanChildren_serving]; intro hs; rw [orphanChildren_gates]
+    exact h.serving_gate d g hs
+  · intro d g; rw [orphanChildren_run]; intro hb; rw [orphanChildren_gates]
+    exact h.blocked_gate d g hb
+  · intro fl hfl; rw [orphanChildren_inflight] at hfl; rw [orphanChildren_run]
+    exact h.inflight_running fl hfl
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
