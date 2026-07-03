@@ -65,7 +65,16 @@ Adding it: strengthen `wf_of_skeleton`'s `hact` to also carry `a'.savedServing =
 then discharge the clause in each direct Wf constructor (mechanical — gates unchanged for ~13 ops;
 `gate_call` establishes it from its require). This is the same proof-forced pattern as the
 acyclicity-bound and cap_drop-coupling findings earlier this session — the formalization forcing a
-real invariant strengthening. It is the concrete unblocker for both gate ops. — exactly parallel to how the Wf-only invariant rested on
+real invariant strengthening. It is the concrete unblocker for both gate ops.
+
+**DONE:** the `gate_saved_none` clause is now added to `Wf` and discharged in all ~15
+constructors (`wf_of_skeleton`'s `hact` strengthened to carry `savedServing`; the `haltDom`
+unwind clears the activation; `init_wf` vacuous). Green build (742 jobs), audit clean. This
+unblocks the gate ops' Wf — with `c.d.serving` restored to `none`, `gate_return`'s `serving_gate`
+is vacuous, and the gate-consistency case analysis (a domain serves/blocks at most one gate, from
+`serving_gate`/`blocked_gate`) closes. The remaining gate-op work is now purely the combined
+`Wf ∧ Acyclic` threading of `gate_call`/`gate_return` — `transferByHandle_preserves` + the
+gate/serving/run updates — with every supporting lemma in place. — exactly parallel to how the Wf-only invariant rested on
 `SystemOpsPreserveWf`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already done.
 
 ## What builds and runs (verified end to end)
