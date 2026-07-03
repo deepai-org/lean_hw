@@ -147,7 +147,7 @@ def retireFor (d : DomainId) : Act :=
       (haltFault d .memoryAuthority)) <|
   .ite (is "sw")
     (.ite (domCoversE d eaddr ⟨false, true, false⟩)
-      (.seq (.memWrite 12 32 "mem" eaddr b) pcAdv)
+      (.seq (.memWrite 12 32 "mem" 0 eaddr b) pcAdv)
       (haltFault d .memoryAuthority)) <|
   .ite (is "beq") (.ite (.eq a b) (.write 12 (dpc d) btgt) pcAdv) <|
   .ite (is "blt") (.ite (.slt a b) (.write 12 (dpc d) btgt) pcAdv) <|

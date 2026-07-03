@@ -63,7 +63,7 @@ def Act.run (σ : St) : Act → St → St
   | .seq a b, acc => b.run σ (a.run σ acc)
   | .ite c t e, acc => if c.eval σ = 1#1 then t.run σ acc else e.run σ acc
   | .write _ r v, acc => { acc with regs := acc.regs.set r (v.eval σ) }
-  | .memWrite _ _ m addr data, acc =>
+  | .memWrite _ _ m _ addr data, acc =>
       { acc with mems := acc.mems.set m (addr.eval σ).toNat (data.eval σ) }
 
 /-- One cycle of a design. -/

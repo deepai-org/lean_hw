@@ -21,7 +21,9 @@ structure RegDecl where
   width : Nat
   init  : BitVec width
 
-/-- A memory declaration (one sync write port, async read). -/
+/-- A memory declaration (sync write ports, async read). The number of
+write ports is derived by the compiler from the largest `Act.memWrite`
+port index the design uses (at least one). -/
 structure MemDecl where
   name      : String
   addrWidth : Nat
@@ -51,13 +53,22 @@ inductive Expr : Nat → Type where
   | sext    {w : Nat} (a : Expr w) (w' : Nat) : Expr w'
 
 /-- Guarded write actions. Sequencing is syntactic only: all reads are
-pre-cycle (D9). -/
+pre-cycle (D9).
+
+`memWrite` carries an explicit write-port index `port` (a design with a
+single write per memory per cycle uses port 0 everywhere). The port index
+does not affect the EDSL semantics — `Act.run` applies memory writes in
+rule order, last write wins — it only tells the compiler which physical
+write port of the emitted memory carries this write. The compiler's
+correctness precondition (`Compile.MemWriteWF`) requires port indices to
+respect the syntactic write order per memory, so the µVerilog port-commit
+order (ascending index) reproduces the run order. -/
 inductive Act where
   | skip
   | seq (a b : Act)
   | ite (c : Expr 1) (t e : Act)
   | write (w : Nat) (reg : String) (v : Expr w)
-  | memWrite (aw dw : Nat) (mem : String) (addr : Expr aw) (data : Expr dw)
+  | memWrite (aw dw : Nat) (mem : String) (port : Nat) (addr : Expr aw) (data : Expr dw)
 
 /-- A named atomic rule. -/
 structure Rule where

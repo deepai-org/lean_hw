@@ -39,6 +39,7 @@ namespace Loom.Emit.MicroVerilog
 deriving instance DecidableEq for Expr
 deriving instance DecidableEq for RegDef
 deriving instance DecidableEq for OutDef
+deriving instance DecidableEq for WritePort
 
 /-- Pointwise conjunction of a Boolean test over two lists (false on a
 length mismatch). -/
@@ -66,25 +67,25 @@ structure MemDef.Matches (a b : MemDef) : Prop where
   name      : a.name = b.name
   addrWidth : a.addrWidth = b.addrWidth
   dataWidth : a.dataWidth = b.dataWidth
-  wrEn      : a.wrEn = b.wrEn
-  wrAddr    : HEq a.wrAddr b.wrAddr
-  wrData    : HEq a.wrData b.wrData
+  wrPorts   : HEq a.wrPorts b.wrPorts
   init      : ∀ i, i < 2 ^ a.addrWidth → (a.init i).toNat = (b.init i).toNat
 
-/-- Decidable form of `MemDef.Matches` (width-indexed expressions are
-compared as `Sigma Expr` values, which also decides the width fields). -/
+/-- Decidable form of `MemDef.Matches` (the width-indexed port lists are
+compared as `Sigma` values over the width pair, which also decides the
+width fields). -/
 def MemDef.matchesb (a b : MemDef) : Bool :=
   decide (a.name = b.name) &&
-  decide (a.wrEn = b.wrEn) &&
-  decide ((⟨a.addrWidth, a.wrAddr⟩ : Sigma Expr) = ⟨b.addrWidth, b.wrAddr⟩) &&
-  decide ((⟨a.dataWidth, a.wrData⟩ : Sigma Expr) = ⟨b.dataWidth, b.wrData⟩) &&
+  decide ((⟨(a.addrWidth, a.dataWidth), a.wrPorts⟩
+      : Σ p : Nat × Nat, List (WritePort p.1 p.2))
+    = ⟨(b.addrWidth, b.dataWidth), b.wrPorts⟩) &&
   decide (∀ i, i < 2 ^ a.addrWidth → (a.init i).toNat = (b.init i).toNat)
 
 theorem MemDef.matchesb_sound {a b : MemDef} (h : a.matchesb b = true) :
     a.Matches b := by
-  simp only [matchesb, Bool.and_eq_true, decide_eq_true_eq, Sigma.mk.injEq] at h
-  obtain ⟨⟨⟨⟨hn, hen⟩, haw, had⟩, hdw, hdt⟩, hinit⟩ := h
-  exact ⟨hn, haw, hdw, hen, had, hdt, hinit⟩
+  simp only [matchesb, Bool.and_eq_true, decide_eq_true_eq, Sigma.mk.injEq,
+    Prod.mk.injEq] at h
+  obtain ⟨⟨hn, ⟨haw, hdw⟩, hp⟩, hinit⟩ := h
+  exact ⟨hn, haw, hdw, hp, hinit⟩
 
 /-- Agreement of two modules on everything the printed text determines:
 syntactic equality except for memory init functions beyond the printed
@@ -140,11 +141,27 @@ private def demoMem : MemDef where
   addrWidth := 2
   dataWidth := 8
   init      := fun a => BitVec.ofNat 8 (3 * a + 1)
-  wrEn      := .eq (.reg 4 "r") (.lit 5#4)
-  wrAddr    := .slice (.reg 4 "r") 1 2
-  wrData    := .mux (.ult (.reg 4 "r") (.lit 2#4))
+  wrPorts   :=
+    [{ en   := .eq (.reg 4 "r") (.lit 5#4)
+       addr := .slice (.reg 4 "r") 1 2
+       data := .mux (.ult (.reg 4 "r") (.lit 2#4))
                     (.memRead 8 "m" (.lit 0#2))
-                    (.sext (.reg 4 "r") 8)
+                    (.sext (.reg 4 "r") 8) }]
+
+/-- A two-port memory: its two guarded write lines are printed (and
+parsed back) in port-commit order. -/
+private def demoMem2 : MemDef where
+  name      := "n"
+  addrWidth := 2
+  dataWidth := 4
+  init      := fun a => BitVec.ofNat 4 (2 * a)
+  wrPorts   :=
+    [{ en   := .ult (.reg 4 "s") (.reg 4 "r")
+       addr := .slice (.reg 4 "s") 0 2
+       data := .xor (.reg 4 "s") (.lit 1#4) },
+     { en   := .eq (.reg 4 "s") (.lit 7#4)
+       addr := .slice (.reg 4 "r") 0 2
+       data := .and (.reg 4 "r") (.reg 4 "s") }]
 
 private def demo : Module where
   name := "demo"
@@ -154,7 +171,7 @@ private def demo : Module where
            ⟨"s", 4, 0#4,
             .shr (.xor (.or (.reg 4 "s") (.reg 4 "r")) (.lit 3#4))
                  (.shl (.reg 4 "s") (.reg 4 "r"))⟩]
-  mems := [demoMem]
+  mems := [demoMem, demoMem2]
   outs := [⟨"o", 4, .reg 4 "r"⟩,
            ⟨"p", 8, .memRead 8 "m" (.slice (.reg 4 "r") 0 2)⟩]
 
