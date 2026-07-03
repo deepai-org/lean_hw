@@ -1,89 +1,84 @@
 import Loom.Emit.MicroVerilog.Ast
 import Loom.Core.Ts
-import Loom.Core.Fun
 
 /-!
-# µVerilog semantics (L4, drafted at task 0.19)
+# µVerilog semantics (L4)
 
 A module denotes a synchronous transition system: state = register and
-memory contents; one step = evaluate nets in order under the inputs,
-then commit register next-values and memory writes. This is the semantics
-the single trust axiom (`Axiom.lean`, Phase 2) asserts downstream tools
-implement on the subset.
-
-Draft: valuations are name-indexed with widths checked at lookup
-(mismatch reads zero); the emission theorem's fine print will replace the
-default-zero discipline with well-formedness preconditions discharged by
-the emitter.
+memory contents; one cycle = evaluate every register's next expression and
+every memory's write port against the pre-cycle state, then commit. This is
+the semantics the single trust axiom (`Axiom.lean`, task 2.4) asserts
+downstream tools implement on the subset.
 -/
 
 namespace Loom.Emit.MicroVerilog
 
-/-- A valuation: names to (width-tagged) values. -/
-def Env := String → (w : Nat) → BitVec w
+/-- Register valuation. -/
+def RegEnv := String → (w : Nat) → BitVec w
 
-def Env.empty : Env := fun _ w => 0#w
+/-- Memory contents. -/
+def MemEnv := String → Nat → (w : Nat) → BitVec w
 
-def Env.set (ρ : Env) (name : String) {w : Nat} (v : BitVec w) : Env :=
+/-- Module state. -/
+structure St where
+  regs : RegEnv
+  mems : MemEnv
+
+def RegEnv.set (ρ : RegEnv) (name : String) {w : Nat} (v : BitVec w) : RegEnv :=
   fun n w' => if n = name then (if h : w = w' then h ▸ v else 0#w') else ρ n w'
 
-/-- Evaluate an expression under a valuation. Total. -/
-def Expr.eval (ρ : Env) : {w : Nat} → Expr w → BitVec w
+/-- Evaluate an expression against the pre-cycle state. Total. -/
+def Expr.eval (σ : St) : {w : Nat} → Expr w → BitVec w
   | _, .lit v => v
-  | w, .var n => ρ n w
-  | _, .and a b => a.eval ρ &&& b.eval ρ
-  | _, .or a b => a.eval ρ ||| b.eval ρ
-  | _, .xor a b => a.eval ρ ^^^ b.eval ρ
-  | _, .not a => ~~~(a.eval ρ)
-  | _, .add a b => a.eval ρ + b.eval ρ
-  | _, .sub a b => a.eval ρ - b.eval ρ
-  | _, .eq a b => if a.eval ρ = b.eval ρ then 1#1 else 0#1
-  | _, .lt a b => if (a.eval ρ).ult (b.eval ρ) then 1#1 else 0#1
-  | _, .mux c t f => if c.eval ρ = 1#1 then t.eval ρ else f.eval ρ
-  | _, .slice a lo width => (a.eval ρ).extractLsb' lo width
-  | _, .zext a w' => (a.eval ρ).setWidth w'
-  | _, .concat a b => (b.eval ρ) ++ (a.eval ρ)
+  | w, .reg _ n => σ.regs n w
+  | dw, .memRead _ m addr => σ.mems m (addr.eval σ).toNat dw
+  | _, .and a b => a.eval σ &&& b.eval σ
+  | _, .or a b => a.eval σ ||| b.eval σ
+  | _, .xor a b => a.eval σ ^^^ b.eval σ
+  | _, .not a => ~~~(a.eval σ)
+  | _, .add a b => a.eval σ + b.eval σ
+  | _, .sub a b => a.eval σ - b.eval σ
+  | _, .shl a b => a.eval σ <<< (b.eval σ).toNat
+  | _, .shr a b => a.eval σ >>> (b.eval σ).toNat
+  | _, .eq a b => if a.eval σ = b.eval σ then 1#1 else 0#1
+  | _, .ult a b => if (a.eval σ).ult (b.eval σ) then 1#1 else 0#1
+  | _, .slt a b => if (a.eval σ).slt (b.eval σ) then 1#1 else 0#1
+  | _, .mux c t f => if c.eval σ = 1#1 then t.eval σ else f.eval σ
+  | _, .slice a lo width => (a.eval σ).extractLsb' lo width
+  | _, .zext a w' => (a.eval σ).setWidth w'
+  | _, .sext a w' => (a.eval σ).signExtend w'
 
-/-- Module state: register valuation plus memory contents. -/
-structure St (m : Module) where
-  regs : Env
-  mems : String → Nat → (w : Nat) → BitVec w   -- mem name → address → value
-
-/-- Extend a valuation with the nets, in declaration order. -/
-def elabNets (m : Module) (ρ : Env) : Env :=
-  (m.nets.foldl (init := ρ) fun ρ a => ρ.set a.lhs.name (a.rhs.eval ρ))
-
-/-- Read nets for memories' async read ports. -/
-def withMemReads (m : Module) (σ : St m) (ρ : Env) : Env :=
-  m.mems.foldl (init := ρ) fun ρ mem =>
-    ρ.set mem.rdNet (σ.mems mem.name ((mem.rdAddr.eval ρ).toNat) mem.dataWidth)
-
-/-- One clock cycle under input valuation `inp`. Nets are elaborated twice
-around memory reads (draft simplification: read addresses may not depend
-on memory read data — single-level memory pipelining, which is all the
-emitter produces). -/
-def cycle (m : Module) (inp : Env) (σ : St m) : St m :=
-  let ρ0 : Env := fun n w => if m.inputs.any (fun s => s.name = n) then inp n w else σ.regs n w
-  let ρ1 := elabNets m ρ0
-  let ρ := elabNets m (withMemReads m σ ρ1)
-  { regs := m.regs.foldl (init := σ.regs) fun env r =>
-      env.set r.reg.name (r.next.eval ρ)
-    mems := m.mems.foldl (init := σ.mems) fun f mem =>
-      if mem.wrEnable.eval ρ = 1#1 then
+/-- One clock cycle (reset deasserted). -/
+def Module.cycle (m : Module) (σ : St) : St where
+  regs := m.regs.foldl (fun ρ r => ρ.set r.name (r.next.eval σ)) σ.regs
+  mems := m.mems.foldl
+    (fun μ mem =>
+      if mem.wrEn.eval σ = 1#1 then
         fun n a w =>
-          if n = mem.name ∧ a = (mem.wrAddr.eval ρ).toNat ∧ w = mem.dataWidth
-          then (mem.wrData.eval ρ).setWidth w
-          else f n a w
-      else f }
+          if n = mem.name ∧ a = (mem.wrAddr.eval σ).toNat ∧ w = mem.dataWidth
+          then (mem.wrData.eval σ).setWidth w
+          else μ n a w
+      else μ)
+    σ.mems
 
-/-- The reset state. -/
-def resetSt (m : Module) : St m :=
-  { regs := m.regs.foldl (init := Env.empty) fun env r => env.set r.reg.name r.init
-    mems := fun _ _ w => 0#w }
+/-- The reset state (what asserting `rst` for one cycle establishes,
+together with the `initial` memory contents). -/
+def Module.reset (m : Module) : St where
+  regs := m.regs.foldl (fun ρ r => ρ.set r.name r.init) (fun _ w => 0#w)
+  mems := m.mems.foldl
+    (fun μ mem => fun n a w =>
+      if n = mem.name ∧ w = mem.dataWidth then (mem.init a).setWidth w
+      else μ n a w)
+    (fun _ _ w => 0#w)
 
-/-- A module as a transition system over a fixed input stream policy is
-Phase-2 work; the closed (no-input) denotation suffices for the draft. -/
-def toTSys (m : Module) : Loom.TSys :=
-  Loom.TSys.ofFun (St m) (fun σ => σ = resetSt m) (cycle m Env.empty)
+/-- Run `n` cycles. -/
+def Module.run (m : Module) : Nat → St → St
+  | 0, σ => σ
+  | n + 1, σ => m.run n (m.cycle σ)
+
+/-- A module as a transition system (P2): the right-hand side of the
+emission theorem (E-V / A-EV). -/
+def Module.toTSys (m : Module) : Loom.TSys :=
+  Loom.TSys.ofFun St (fun σ => σ = m.reset) m.cycle
 
 end Loom.Emit.MicroVerilog

@@ -259,8 +259,8 @@ Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `
 | Thm | Statement (short) | Phase | Status |
 |-----|-------------------|-------|--------|
 | A1 | decode total/det; asm∘disasm = id | 0 | ✓ |
-| A-R | Acc8 EDSL core ⊑ Acc8 spec | 2 | — |
-| A-EV | Acc8 netlist ≃ emitted µVerilog | 2 | — |
+| A-R | Acc8 EDSL core ⊑ Acc8 spec | 2 | S |
+| A-EV | Acc8 core ≃ emitted µVerilog (iverilog+yosys corroborated) | 2 | S |
 
 **LNP64-µ:**
 
@@ -280,8 +280,8 @@ Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `
 | T9 | conservation of slots/lineage/budget | invariant | 1 | S (init ✓) |
 | R-MC | multicycle core ⊑ spec | StutterSimulation | 3 | — |
 | R-PL | pipeline ⊑ spec (Burch-Dill) | Simulation | 3 | — |
-| C-HW | EDSL→netlist compiler correct | TSys equality | 2 | — |
-| E-V | netlist ≃ emitted µVerilog text | TSys eq + axiom | 2 | — |
+| C-HW | EDSL→µVerilog compiler correct | TSys equality | 2 | S (A-EV) |
+| E-V | core ≃ emitted µVerilog text | TSys eq + axiom | 2 | S (A-EV) |
 
 ---
 
@@ -347,7 +347,7 @@ multicycle core in the EDSL lockstep against the ISS.*
       revoke-bound lemmas. **1.7** [m] T6; T5 as 2-safety product. **1.8** [m] T7 + WCET
       lemma skeletons.
 - [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
-- [ ] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
+- [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
 - [ ] **1.11** [m] Acc8 core in the EDSL, lockstep vs Acc8 ISS; then Lnp64u multicycle core,
       lockstep vs ISS on the conformance suite.
 - [ ] **1.12** [t] `Dp/Pdr.lean` as scaling demands.
@@ -357,7 +357,7 @@ multicycle core in the EDSL lockstep against the ISS.*
 two vendors' FPGAs, chain kernel-checked to the Verilog.*
 
 - [ ] **2.1** [t] `Hw/Netlist(+Sem)`; **2.2** [t] `Hw/Compile` verified (C-HW).
-- [ ] **2.3** [t] µVerilog Print/Parse/RoundTrip; **2.4** [t] Emitter + Axiom + emission
+- [~] **2.3** (print ✓, emit-to-Verilog ✓, iverilog+yosys corroborated; parser WIP) [t] µVerilog Print/Parse/RoundTrip; **2.4** [t] Emitter + Axiom + emission
       theorem (E-V, instantiated as A-EV first); **2.5** [t] `lake exe emit` / `rtl` target.
 - [ ] **2.6** [t] `fpga/` lockstep harness over `Loom.Core.Trace`.
 - [ ] **2.7** Acc8 on FPGA (both vendors) — boundary/pathfinder; **2.8** Lnp64u multicycle on
@@ -403,6 +403,7 @@ two vendors' FPGAs, chain kernel-checked to the Verilog.*
 | D6 | Book render targets | 0.18 HTML; print by 4.3 | HTML first; in-house print pass, scoped ruthlessly |
 | D7 | Variable-length / exotic encodings in Loom.Isa | with the machine that needs them | Fixed-width `Sig` now; extension lands only with a consuming machine (e.g. 6502) |
 | D8 | Engine-facing bit-level representation | **resolved 2026-07-03** | An opaque `BitSys` function can't be CNF-encoded; the L3 EDSL/netlist is the one circuit representation, and engine results transport to specs via refinement (R-MC / A-R), not per-machine BitLevel correspondences. Task 1.1 is folded into 1.10/1.11; `BitSys` stays as the spine's semantic face. |
+| D10 | Separate netlist IR vs direct µVerilog emit | **resolved 2026-07-03** | The compiler targets µVerilog directly (`Loom/Hw/Compile.lean`): register mux-tree fold + memory write-port fold, structural. A distinct netlist IR lands only when an optimization pass needs one (Rule 2). C-HW and E-V collapse into one emission theorem. |
 | D9 | EDSL write semantics | **resolved 2026-07-03** | v1: reads see pre-cycle state, writes commit at cycle end, last-write-wins across ordered rules (nonblocking-assignment discipline, 1:1 with netlist mux trees). Kôika-style intra-cycle forwarding (read1/write0 ports) added only when a core needs it (Rule 2). |
 
 ---

@@ -33,6 +33,7 @@ lean_exe audit where
   supportInterpreter := true
 
 lean_exe emit where
+  supportInterpreter := true
   root := `Tools.Emit
 
 lean_exe bookgen where

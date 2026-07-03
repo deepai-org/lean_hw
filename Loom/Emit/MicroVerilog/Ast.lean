@@ -1,81 +1,74 @@
 /-!
-# µVerilog: the formalized subset (L4, drafted at task 0.19)
+# µVerilog: the formalized subset (L4)
 
-A deliberately minimal synthesizable Verilog subset — flat structural
-modules, `assign` continuous assignments, single-clock `always_ff`
-registers, explicit memory arrays. No inference-sensitive constructs, no
-latches, no tool-dependent idioms: the subset is chosen so that every
-serious tool, FPGA or ASIC, agrees on its meaning; where the standard
-leaves latitude, the construct is excluded.
+A deliberately minimal synthesizable Verilog subset: one module, one clock,
+synchronous reset, `always_ff` registers with explicit next-value
+expressions, memory arrays with one synchronous write port and in-expression
+asynchronous reads (`mem[addr]` — LUTRAM-shaped at these sizes), and
+combinational expressions with no inference-sensitive constructs. No
+latches, no tri-states, no tasks, no delays, no multiple drivers: where the
+standard leaves latitude, the construct is excluded.
 
-Draft status: shape frozen enough for the emitter design; the port/width
-discipline tightens with the emission theorem (task 2.4). The subset grows
-only by formalized construct, each addition carrying its semantics and its
-emission-theorem extension (charter §8, "subset expressiveness"), and the
-file is owned by one person so it does not grow by committee.
+Expressions mirror `Loom.Hw.Expr` deliberately (decision D10): the emitter
+is structural, and the netlist IR is introduced as a separate layer only
+when optimization passes need one (Rule 2 applied to the boundary). The
+subset grows only by formalized construct, each addition carrying its
+semantics and its emission-theorem extension; owned by one person.
 -/
 
 namespace Loom.Emit.MicroVerilog
 
-/-- A width-indexed combinational expression. Everything is unsigned;
-widths are explicit; there is no implicit extension or truncation — the
-emitter inserts explicit `zext`/`slice` nodes. -/
+/-- Width-indexed combinational expressions. Everything unsigned unless
+noted; widths explicit; extension/truncation always explicit. -/
 inductive Expr : Nat → Type where
   | lit     {w : Nat} (v : BitVec w) : Expr w
-  | var     {w : Nat} (name : String) : Expr w   -- port, net, or reg, by name
+  | reg     (w : Nat) (name : String) : Expr w
+  | memRead (dw : Nat) (mem : String) {aw : Nat} (addr : Expr aw) : Expr dw
   | and     {w : Nat} (a b : Expr w) : Expr w
   | or      {w : Nat} (a b : Expr w) : Expr w
   | xor     {w : Nat} (a b : Expr w) : Expr w
   | not     {w : Nat} (a : Expr w) : Expr w
   | add     {w : Nat} (a b : Expr w) : Expr w
   | sub     {w : Nat} (a b : Expr w) : Expr w
+  | shl     {w : Nat} (a b : Expr w) : Expr w
+  | shr     {w : Nat} (a b : Expr w) : Expr w
   | eq      {w : Nat} (a b : Expr w) : Expr 1
-  | lt      {w : Nat} (a b : Expr w) : Expr 1    -- unsigned
+  | ult     {w : Nat} (a b : Expr w) : Expr 1
+  | slt     {w : Nat} (a b : Expr w) : Expr 1
   | mux     {w : Nat} (c : Expr 1) (t f : Expr w) : Expr w
   | slice   {w : Nat} (a : Expr w) (lo width : Nat) : Expr width
   | zext    {w : Nat} (a : Expr w) (w' : Nat) : Expr w'
-  | concat  {w v : Nat} (a : Expr w) (b : Expr v) : Expr (v + w)
+  | sext    {w : Nat} (a : Expr w) (w' : Nat) : Expr w'
 
-/-- A signal declaration. -/
-structure Sig where
+/-- A register: `always @(posedge clk) r <= rst ? init : next;`. -/
+structure RegDef where
   name  : String
   width : Nat
-deriving Repr, DecidableEq
+  init  : BitVec width
+  next  : Expr width
 
-/-- One `assign` statement: `assign net = e;`. Nets must be ordered so
-each reads only ports, registers, and earlier nets (acyclicity by
-construction — combinational loops are unrepresentable). -/
-structure Assign where
-  lhs : Sig
-  rhs : Expr lhs.width
-
-/-- One registered assignment inside the single `always_ff @(posedge clk)`
-block: `r <= e;`. -/
-structure RegAssign where
-  reg  : Sig
-  init : BitVec reg.width          -- reset value (synchronous reset)
-  next : Expr reg.width
-
-/-- A memory array with one synchronous write port and one asynchronous
-read port (the one shape all FPGA and ASIC flows map identically at these
-sizes; more ports = a future formalized construct). -/
-structure Mem where
+/-- A memory array: one synchronous write port; reads appear inside
+expressions. Initial contents via an `initial` block (bounded, explicit). -/
+structure MemDef where
   name      : String
   addrWidth : Nat
   dataWidth : Nat
-  wrEnable  : Expr 1
+  init      : Nat → BitVec dataWidth
+  wrEn      : Expr 1
   wrAddr    : Expr addrWidth
   wrData    : Expr dataWidth
-  rdAddr    : Expr addrWidth
-  rdNet     : String               -- net carrying the read value
 
-/-- A flat µVerilog module: one clock, no instances, no parameters. -/
+/-- An observability output port (a named combinational view). -/
+structure OutDef where
+  name  : String
+  width : Nat
+  val   : Expr width
+
+/-- A flat µVerilog module: ports are `clk`, `rst`, and the outputs. -/
 structure Module where
-  name    : String
-  inputs  : List Sig
-  outputs : List Sig
-  nets    : List Assign            -- in dependency order
-  regs    : List RegAssign
-  mems    : List Mem
+  name : String
+  regs : List RegDef
+  mems : List MemDef
+  outs : List OutDef
 
 end Loom.Emit.MicroVerilog

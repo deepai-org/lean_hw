@@ -9,3 +9,7 @@ import Loom.Book.Extract
 import Loom.Book.Render.Html
 import Loom.Emit.MicroVerilog.Semantics
 import Loom.Hw.Semantics
+import Loom.Hw.Compile
+import Loom.Emit.MicroVerilog.Print
+import Loom.Emit.MicroVerilog.Axiom
+import Loom.Emit.MicroVerilog.Parse

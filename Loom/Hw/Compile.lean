@@ -1,0 +1,101 @@
+import Loom.Hw.Semantics
+import Loom.Emit.MicroVerilog.Semantics
+
+/-!
+# The EDSL compiler (L3 → L4 boundary, task 2.2)
+
+Compiles a rule-based `Design` to a µVerilog `Module`: every register's
+next-value expression is the fold of the ordered rules' writes into a mux
+tree (last write wins — exactly D9's commit semantics), and every memory's
+single write port is the analogous guarded fold. Expressions map
+structurally (D10).
+
+Correctness (C-HW, stated in `Machines/*/Theorems`): the module's transition
+system equals the design's under the evident state conversion.
+-/
+
+namespace Loom.Hw.Compile
+
+open Loom.Hw
+namespace MV
+export Loom.Emit.MicroVerilog (Expr RegDef MemDef OutDef Module)
+end MV
+
+/-- Structural expression translation. -/
+def compileExpr : {w : Nat} → Expr w → MV.Expr w
+  | _, .lit v => .lit v
+  | w, .reg _ n => .reg w n
+  | dw, .memRead _ m addr => .memRead dw m (compileExpr addr)
+  | _, .and a b => .and (compileExpr a) (compileExpr b)
+  | _, .or a b => .or (compileExpr a) (compileExpr b)
+  | _, .xor a b => .xor (compileExpr a) (compileExpr b)
+  | _, .not a => .not (compileExpr a)
+  | _, .add a b => .add (compileExpr a) (compileExpr b)
+  | _, .sub a b => .sub (compileExpr a) (compileExpr b)
+  | _, .shl a b => .shl (compileExpr a) (compileExpr b)
+  | _, .shr a b => .shr (compileExpr a) (compileExpr b)
+  | _, .eq a b => .eq (compileExpr a) (compileExpr b)
+  | _, .ult a b => .ult (compileExpr a) (compileExpr b)
+  | _, .slt a b => .slt (compileExpr a) (compileExpr b)
+  | _, .mux c t f => .mux (compileExpr c) (compileExpr t) (compileExpr f)
+  | _, .slice a lo width => .slice (compileExpr a) lo width
+  | _, .zext a w' => .zext (compileExpr a) w'
+  | _, .sext a w' => .sext (compileExpr a) w'
+
+/-- Fold an action into a register's next-value expression: `cur` is the
+value the register takes if this action does not write it. -/
+def nextReg (r : String) (w : Nat) : Act → MV.Expr w → MV.Expr w
+  | .skip, cur => cur
+  | .seq a b, cur => nextReg r w b (nextReg r w a cur)
+  | .ite c t e, cur =>
+      .mux (compileExpr c) (nextReg r w t cur) (nextReg r w e cur)
+  | .write w' r' v, cur =>
+      if r' = r then
+        if h : w' = w then h ▸ compileExpr v else cur
+      else cur
+  | .memWrite .., cur => cur
+
+/-- A guarded memory write port under construction. -/
+structure Port (aw dw : Nat) where
+  en   : MV.Expr 1
+  addr : MV.Expr aw
+  data : MV.Expr dw
+
+/-- Fold an action into a memory's write port (last write wins along each
+path; branches merge by mux). -/
+def memPort (m : String) (aw dw : Nat) : Act → Port aw dw → Port aw dw
+  | .skip, cur => cur
+  | .seq a b, cur => memPort m aw dw b (memPort m aw dw a cur)
+  | .ite c t e, cur =>
+      let ct := memPort m aw dw t cur
+      let ce := memPort m aw dw e cur
+      let g := compileExpr c
+      { en := .mux g ct.en ce.en, addr := .mux g ct.addr ce.addr
+        data := .mux g ct.data ce.data }
+  | .memWrite aw' dw' m' a v, cur =>
+      if m' = m then
+        if h : aw' = aw ∧ dw' = dw then
+          { en := .lit 1, addr := h.1 ▸ compileExpr a, data := h.2 ▸ compileExpr v }
+        else cur
+      else cur
+  | .write .., cur => cur
+
+/-- Compile a design. Registers become `RegDef`s whose next expression
+folds all rules in order; memories get their guarded write port; every
+register is exposed as an observability output. -/
+def compile (d : Design) : MV.Module where
+  name := d.name
+  regs := d.regs.map fun r =>
+    { name := r.name, width := r.width, init := r.init
+      next := d.rules.foldl (fun cur rl => nextReg r.name r.width rl.body cur)
+                (.reg r.width r.name) }
+  mems := d.mems.map fun m =>
+    let port := d.rules.foldl
+      (fun cur rl => memPort m.name m.addrWidth m.dataWidth rl.body cur)
+      { en := .lit 0, addr := .lit 0, data := .lit 0 }
+    { name := m.name, addrWidth := m.addrWidth, dataWidth := m.dataWidth
+      init := m.init, wrEn := port.en, wrAddr := port.addr, wrData := port.data }
+  outs := d.regs.map fun r =>
+    { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
+
+end Loom.Hw.Compile

@@ -36,7 +36,8 @@ def whitelistedAxioms : List Name :=
 
 /-- The one permitted declared axiom (L4's boundary; not yet defined). -/
 def permittedAxiomDecls : List Name :=
-  [`Loom.Emit.MicroVerilog.verilogSemanticsAxiom]
+  [`Loom.Emit.MicroVerilog.ImplementsStandard,
+   `Loom.Emit.MicroVerilog.implements_standard_spec]
 
 /-- Is this one of our modules (as opposed to Lean core / Mathlib)? -/
 def oursModule (n : Name) : Bool :=
