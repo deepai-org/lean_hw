@@ -2238,6 +2238,176 @@ theorem acyclic_transferCap (σ : MachineState) (from_ : DomainId) (s : Slot) (t
           acyclic_reparent_sibling σ1 _ _ _ hsib hfresh (reparent_parentRef σ1 _ _) hac1
         exact acyclic_sweepMover _ (acyclic_sweepRegions _ (acyclic_clearSlot _ from_ s hac2))
 
+
+/-- **The `gate_return` state update preserves `Wf ∧ Acyclic`.** Clearing the
+activation, restoring the callee's context (`serving := savedServing = none` by
+`gate_saved_none`), unblocking the caller, and writing the reply. Gate
+consistency closes because a domain serves/blocks at most one gate
+(`serving_gate`/`blocked_gate`), so no *other* gate's invariant is disturbed. -/
+theorem wf_acyclic_gateReturn (σ : MachineState) (cd : DomainId) (gid : GateId)
+    (act : Activation) (reply : Loom.Word32)
+    (hserv : (σ.doms cd).serving = some gid) (hgact : (σ.gates gid).act = some act)
+    (hruncd : (σ.doms cd).run = .running) (hinf : σ.inflight = none)
+    (h : Wf σ) (hac : Acyclic σ) :
+    Wf ((((({ σ with gates := Loom.Fun.update σ.gates gid { (σ.gates gid) with act := none } }).setDom
+          cd (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })).setDom
+          act.caller (fun ds => { ds with run := .running })).setDom
+          act.caller (fun ds => ds.setReg act.callerRd reply))) ∧
+    Acyclic ((((({ σ with gates := Loom.Fun.update σ.gates gid { (σ.gates gid) with act := none } }).setDom
+          cd (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })).setDom
+          act.caller (fun ds => { ds with run := .running })).setDom
+          act.caller (fun ds => ds.setReg act.callerRd reply))) := by
+  -- facts from Wf
+  have hgs := h.gate_serving gid act hgact
+  have hcallee : (σ.gates gid).config.callee = cd := (h.serving_gate cd gid hserv).1
+  have hcallerblk : (σ.doms act.caller).run = .blocked gid := hgs.2.1
+  have hsaved : act.savedServing = none := h.gate_saved_none gid act hgact
+  have hcdne : cd ≠ act.caller := by
+    intro he; rw [he, hcallerblk] at hruncd; exact absurd hruncd (by simp)
+  set σ' := (((({ σ with gates := Loom.Fun.update σ.gates gid { (σ.gates gid) with act := none } }).setDom
+        cd (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })).setDom
+        act.caller (fun ds => { ds with run := .running })).setDom
+        act.caller (fun ds => ds.setReg act.callerRd reply)) with hσ'
+  -- projections
+  have hcaps : ∀ d, (σ'.doms d).caps = (σ.doms d).caps := by
+    intro d; rw [hσ']; unfold MachineState.setDom
+    by_cases h1 : d = act.caller
+    · subst h1; by_cases h2 : act.caller = cd
+      · exact absurd h2.symm hcdne
+      · simp [Loom.Fun.update_same, Loom.Fun.update_ne _ _ _ _ h2]
+    · simp only [Loom.Fun.update_ne _ _ _ _ h1]
+      by_cases h2 : d = cd
+      · subst h2; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ h2]
+  have hlin : ∀ d, (σ'.doms d).lineage = (σ.doms d).lineage := by
+    intro d; rw [hσ']; unfold MachineState.setDom
+    by_cases h1 : d = act.caller
+    · subst h1; by_cases h2 : act.caller = cd
+      · exact absurd h2.symm hcdne
+      · simp [Loom.Fun.update_same, Loom.Fun.update_ne _ _ _ _ h2]
+    · simp only [Loom.Fun.update_ne _ _ _ _ h1]
+      by_cases h2 : d = cd
+      · subst h2; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ h2]
+  have hgen : ∀ d, (σ'.doms d).slotGen = (σ.doms d).slotGen := by
+    intro d; rw [hσ']; unfold MachineState.setDom
+    by_cases h1 : d = act.caller
+    · subst h1; by_cases h2 : act.caller = cd
+      · exact absurd h2.symm hcdne
+      · simp [Loom.Fun.update_same, Loom.Fun.update_ne _ _ _ _ h2]
+    · simp only [Loom.Fun.update_ne _ _ _ _ h1]
+      by_cases h2 : d = cd
+      · subst h2; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ h2]
+  have hreg : ∀ d, (σ'.doms d).regions = (σ.doms d).regions := by
+    intro d; rw [hσ']; unfold MachineState.setDom
+    by_cases h1 : d = act.caller
+    · subst h1; by_cases h2 : act.caller = cd
+      · exact absurd h2.symm hcdne
+      · simp [Loom.Fun.update_same, Loom.Fun.update_ne _ _ _ _ h2]
+    · simp only [Loom.Fun.update_ne _ _ _ _ h1]
+      by_cases h2 : d = cd
+      · subst h2; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ h2]
+  have hgates : ∀ g, (σ'.gates g).config = (σ.gates g).config ∧
+      (σ'.gates g).act = (if g = gid then none else (σ.gates g).act) := by
+    intro g; rw [hσ']
+    have : σ'.gates = Loom.Fun.update σ.gates gid { (σ.gates gid) with act := none } := by
+      rw [hσ']; rfl
+    constructor
+    · rw [this]; by_cases hg : g = gid
+      · subst hg; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hg]
+    · rw [this]; by_cases hg : g = gid
+      · subst hg; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hg, hg]
+  have hrun : ∀ d, (σ'.doms d).run = (if d = act.caller then .running else (σ.doms d).run) := by
+    intro d; rw [hσ']; unfold MachineState.setDom
+    by_cases h1 : d = act.caller
+    · subst h1; by_cases h2 : act.caller = cd
+      · exact absurd h2.symm hcdne
+      · simp [Loom.Fun.update_same, Loom.Fun.update_ne _ _ _ _ h2]
+    · simp only [Loom.Fun.update_ne _ _ _ _ h1, if_neg h1]
+      by_cases h2 : d = cd
+      · subst h2; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ h2]
+  have hservp : ∀ d, (σ'.doms d).serving = (if d = cd then act.savedServing else (σ.doms d).serving) := by
+    intro d; rw [hσ']; unfold MachineState.setDom
+    by_cases h1 : d = act.caller
+    · subst h1; rw [if_neg (Ne.symm hcdne)]
+      by_cases h2 : act.caller = cd
+      · exact absurd h2.symm hcdne
+      · simp [Loom.Fun.update_same, Loom.Fun.update_ne _ _ _ _ h2]
+    · simp only [Loom.Fun.update_ne _ _ _ _ h1]
+      by_cases h2 : d = cd
+      · subst h2; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ h2, if_neg h2]
+  have hmover : σ'.mover = σ.mover := by rw [hσ']; rfl
+  have hinfp : σ'.inflight = σ.inflight := by rw [hσ']; rfl
+  have hlive : ∀ r, σ'.liveRef r = σ.liveRef r := by
+    intro r; unfold MachineState.liveRef DomainState.liveCap; rw [hcaps, hgen]
+  have hparent : ∀ d s, σ'.parentOf d s = σ.parentOf d s := by
+    intro d s; unfold MachineState.parentOf; rw [hcaps, hlin]
+  refine ⟨?_, acyclic_of_parentRef_eq σ σ' (fun r => by
+    unfold MachineState.parentRef; rw [hparent]) hac⟩
+  constructor
+  · intro d
+    have hd := h.doms d
+    exact ⟨fun s => by rw [hgen]; exact hd.gen_pos s,
+      fun s e l => by rw [hcaps, hlin]; exact hd.cell_backed s e l,
+      fun s s' e e' l => by rw [hcaps]; exact hd.ptr_inj s s' e e' l,
+      fun l => by rw [hlin, hcaps]; exact hd.cell_used l,
+      fun s base len p => by rw [hcaps]; exact hd.wx s base len p,
+      fun s e base len p => by rw [hcaps]; exact hd.bounds s e base len p⟩
+  · intro d s p; rw [hparent, hlive]; exact h.parent_live d s p
+  · intro d r rg; rw [hreg]; intro hrg
+    obtain ⟨e, hl, hle⟩ := h.region_backed d r rg hrg
+    refine ⟨e, ?_, hle⟩; unfold DomainState.liveCap; rw [hcaps, hgen]; exact hl
+  · intro job; rw [hmover]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, by rw [hlive]; exact o3, by rw [hlive]; exact o4⟩
+  · -- gate_serving
+    intro g a ha; rw [(hgates g).2] at ha
+    by_cases hg : g = gid
+    · rw [if_pos hg] at ha; simp at ha
+    · rw [if_neg hg] at ha
+      obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+      rw [(hgates g).1]
+      refine ⟨?_, ?_, s3, s4⟩
+      · rw [hservp]; by_cases hcg : (σ.gates g).config.callee = cd
+        · -- callee(g) = cd serving g; but cd serves gid ≠ g → contradiction
+          exfalso; rw [hcg] at s1; rw [s1] at hserv; injection hserv with hh; exact hg hh
+        · rw [if_neg hcg]; exact s1
+      · rw [hrun]; by_cases hac2 : a.caller = act.caller
+        · exfalso; rw [hac2, hcallerblk] at s2; injection s2 with hh; exact hg hh.symm
+        · rw [if_neg hac2]; exact s2
+  · -- serving_gate
+    intro d g; rw [hservp]; by_cases hd : d = cd
+    · rw [if_pos hd, hsaved]; intro hh; exact absurd hh (by simp)
+    · rw [if_neg hd]; intro hs
+      obtain ⟨c1, c2⟩ := h.serving_gate d g hs
+      rw [(hgates g).1, (hgates g).2]
+      have hgne : g ≠ gid := by
+        intro he; subst he; rw [hcallee] at c1; exact hd c1.symm
+      rw [if_neg hgne]; exact ⟨c1, c2⟩
+  · -- blocked_gate
+    intro d g; rw [hrun]; by_cases hd : d = act.caller
+    · rw [if_pos hd]; intro hh; exact absurd hh (by simp)
+    · rw [if_neg hd]; intro hb
+      obtain ⟨a, ha, hc⟩ := h.blocked_gate d g hb
+      rw [(hgates g).2]
+      have hgne : g ≠ gid := by
+        intro he; subst he; rw [hgact] at ha; injection ha with hh
+        rw [← hh] at hc; exact hd hc.symm
+      rw [if_neg hgne]; exact ⟨a, ha, hc⟩
+  · -- inflight_running
+    intro fl hfl; rw [hinfp, hinf] at hfl; exact absurd hfl (by simp)
+  · -- gate_saved_none
+    intro g a ha; rw [(hgates g).2] at ha
+    by_cases hg : g = gid
+    · rw [if_pos hg] at ha; simp at ha
+    · rw [if_neg hg] at ha; exact h.gate_saved_none g a ha
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
