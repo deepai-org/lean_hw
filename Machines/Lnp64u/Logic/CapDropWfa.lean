@@ -419,6 +419,61 @@ theorem memgrant_acyclic (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac : Acyc
                 | fault f => rw [haD] at he; simp at he
                 | ok hh σ2 => rw [haD] at he; simp [SpecM.setReg, SpecM.modify] at he
 
+theorem caprevoke_acyclic (c : Ctx) (σ : MachineState) (hac : Acyclic σ) :
+    (∀ a σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let (s, g, e) ← capLive c.d hw
+           require (e.kind.cls = .mem) .badCap
+           let σ0 ← SpecM.get
+           let m := σ0.marks ⟨c.d, s, g⟩
+           SpecM.set (((σ0.destroyMarked m).sweepRegions).sweepMover)
+           setReg c.d c.op.rd 0) : SpecM Unit) σ = .ok a σ' → Acyclic σ') ∧
+    (∀ e σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let (s, g, e) ← capLive c.d hw
+           require (e.kind.cls = .mem) .badCap
+           let σ0 ← SpecM.get
+           let m := σ0.marks ⟨c.d, s, g⟩
+           SpecM.set (((σ0.destroyMarked m).sweepRegions).sweepMover)
+           setReg c.d c.op.rd 0) : SpecM Unit) σ = .err e σ' → Acyclic σ') := by
+  constructor
+  · intro a σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 => rw [hcl] at he; simp at he
+    | fault f => rw [hcl] at he; simp at he
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, e⟩ := r; simp only at he
+        cases hrq : SpecM.require (e.kind.cls = .mem) .badCap σ with
+        | err e1 σ1 => rw [hrq] at he; simp at he
+        | fault f => rw [hrq] at he; simp at he
+        | ok u σ1 =>
+            have := require_ok _ _ σ hrq; subst σ1; rw [hrq] at he
+            simp only [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            exact acyclic_setReg_dom _ c.d _ _
+              (acyclic_sweepMover _ (acyclic_sweepRegions _
+                (acyclic_destroyMarked σ _ hac)))
+  · intro e σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := capLive_err_state c.d _ σ hcl; rw [hcl] at he
+        injection he with _ h2; subst h2; subst hs; exact hac
+    | fault f => rw [hcl] at he; simp at he
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, e⟩ := r; simp only at he
+        cases hrq : SpecM.require (e.kind.cls = .mem) .badCap σ with
+        | err e1 σ1 =>
+            have hs := require_err_state _ _ σ hrq; rw [hrq] at he
+            injection he with _ h2; subst h2; subst hs; exact hac
+        | fault f => rw [hrq] at he; simp at he
+        | ok u σ1 =>
+            have := require_ok _ _ σ hrq; subst σ1; rw [hrq] at he
+            simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+
 /-- Dispatch. -/
 theorem system_preserves_acyclic : SystemOpsPreserveAcyclic := by
   intro instr hmem c σ hwf hac hrun hinf
@@ -426,7 +481,7 @@ theorem system_preserves_acyclic : SystemOpsPreserveAcyclic := by
   case _ => exact ⟨capdup_acyclic c σ hwf hac, capdup_acyclic_err c σ hac⟩
   case _ => exact ⟨fun a σ' he => ((capdrop_preserves_wfa c σ hwf hac).1 a σ' he).2,
                    fun e σ' he => ((capdrop_preserves_wfa c σ hwf hac).2 e σ' he).2⟩
-  case _ => sorry  -- cap_revoke (destroyMarked + sweeps)
+  case _ => exact caprevoke_acyclic c σ hac
   case _ => exact memgrant_acyclic c σ hwf hac
   case _ =>
     constructor
