@@ -32,7 +32,19 @@ proof with `system_preserves_acyclic`). **DONE — the combined invariant is now
 invariant.** The entire invariant now rests on `system_preserves_wfa` (**9 of 11 ops proved**);
 **`cap_revoke` is now fully discharged** (`wf_destroyMarked_sweep` via the marks-fixpoint
 saturation `marks_fixpoint`/`marks_closed`). Only the **2 gate ops** (`transferCap`) remain as
-that single obligation's sorries — exactly parallel to how the Wf-only invariant rested on
+that single obligation's sorries.
+
+**Gate-ops path (mapped this session).** Both `gate_call`/`gate_return` route through
+`transferByHandle` → `transferCap` (install-at-recipient + `reparent oldRef newRef` +
+`clearSlot from_ s` + sweeps), then update gates/serving/run/blocked. The concrete lemmas:
+(1) **install-move Wf** — install a fresh slot/cell holding the *moved* cell (parent =
+original cell's parent, live by `Wf.parent_live`); analogous to `wf_installDerived` (~150
+lines). (2) **transferCap Wf composition** — `wf_reparent` (newRef live) + `reparent_no_ref`
+(no cell points to oldRef) → `wf_clearSlot_sweep` (~50 lines; all pieces exist). (3)
+**reparent-to-fresh-sibling acyclicity** — `parentRef newRef = parentRef oldRef` with newRef
+fresh; distinct from `acyclic_contract` (which needs `parentRef oldRef = newRef`), needs a
+new climb argument (~100 lines). (4) **gate-consistency Wf** for the activation updates
+(gate_serving/serving_gate/blocked_gate) in each gate op (~150 lines each) — exactly parallel to how the Wf-only invariant rested on
 `SystemOpsPreserveWf`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already done.
 
 ## What builds and runs (verified end to end)
