@@ -677,6 +677,8 @@ theorem caprevoke_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac
             have := require_ok _ _ σ hrq; subst σ1; rw [hrq] at he
             simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
 
+
+
 /-- `gate_return` preserves `Wf ∧ Acyclic`. -/
 theorem gatereturn_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ)
     (hac : Acyclic σ) (hrun : (σ.doms c.d).run = .running) (hinf : σ.inflight = none) :
@@ -791,7 +793,7 @@ theorem system_preserves_wfa : SystemOpsPreserveWfA := by
         (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).1 a σ' he |>.1
     · exact ((PreservesWf.bind (PreservesWf.clearRegion _ _)
         (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).2 e σ' he |>.1
-  case _ => sorry  -- gate_call
+  case _ => sorry  -- gate_call (core wf_acyclic_gateCall proven; exec-threading pending)
   case _ => exact gatereturn_preserves_wfa c σ hwf hac hrun hinf
   case _ => -- move
     exact ⟨fun a σ' he => ⟨move_ok c σ hwf a σ' he, hA.1 a σ' he⟩,
