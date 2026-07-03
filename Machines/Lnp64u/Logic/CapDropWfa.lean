@@ -545,7 +545,63 @@ def SystemOpsPreserveWfA : Prop :=
     (∀ a σ', instr.sem.exec c σ = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
     (∀ e σ', instr.sem.exec c σ = .err e σ' → Wf σ' ∧ Acyclic σ')
 
-/-- **The combined dispatch.** 8 of 11 ops discharged: `cap_drop` via
+/-- `cap_revoke` preserves `Wf ∧ Acyclic`. -/
+theorem caprevoke_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac : Acyclic σ) :
+    (∀ a σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let (s, g, e) ← capLive c.d hw
+           require (e.kind.cls = .mem) .badCap
+           let σ0 ← SpecM.get
+           let m := σ0.marks ⟨c.d, s, g⟩
+           SpecM.set (((σ0.destroyMarked m).sweepRegions).sweepMover)
+           setReg c.d c.op.rd 0) : SpecM Unit) σ = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
+    (∀ e σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let (s, g, e) ← capLive c.d hw
+           require (e.kind.cls = .mem) .badCap
+           let σ0 ← SpecM.get
+           let m := σ0.marks ⟨c.d, s, g⟩
+           SpecM.set (((σ0.destroyMarked m).sweepRegions).sweepMover)
+           setReg c.d c.op.rd 0) : SpecM Unit) σ = .err e σ' → Wf σ' ∧ Acyclic σ') := by
+  constructor
+  · intro a σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 => rw [hcl] at he; simp at he
+    | fault f => rw [hcl] at he; simp at he
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, e⟩ := r; simp only at he
+        cases hrq : SpecM.require (e.kind.cls = .mem) .badCap σ with
+        | err e1 σ1 => rw [hrq] at he; simp at he
+        | fault f => rw [hrq] at he; simp at he
+        | ok u σ1 =>
+            have := require_ok _ _ σ hrq; subst σ1; rw [hrq] at he
+            simp only [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            exact ⟨wf_setReg _ c.d _ _ (wf_destroyMarked_sweep σ ⟨c.d, s, g⟩ hwf),
+              acyclic_setReg_dom _ c.d _ _
+                (acyclic_sweepMover _ (acyclic_sweepRegions _ (acyclic_destroyMarked σ _ hac)))⟩
+  · intro e σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : Machines.Lnp64u.Isa.capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := capLive_err_state c.d _ σ hcl; rw [hcl] at he
+        injection he with _ h2; subst h2; subst hs; exact ⟨hwf, hac⟩
+    | fault f => rw [hcl] at he; simp at he
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, e⟩ := r; simp only at he
+        cases hrq : SpecM.require (e.kind.cls = .mem) .badCap σ with
+        | err e1 σ1 =>
+            have hs := require_err_state _ _ σ hrq; rw [hrq] at he
+            injection he with _ h2; subst h2; subst hs; exact ⟨hwf, hac⟩
+        | fault f => rw [hrq] at he; simp at he
+        | ok u σ1 =>
+            have := require_ok _ _ σ hrq; subst σ1; rw [hrq] at he
+            simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+
+/-- **The combined dispatch.** 9 of 11 ops discharged: `cap_drop` via
 `capdrop_preserves_wfa`; the other 7 by pairing each op's `Wf` proof with its
 `system_preserves_acyclic` clause. Only `cap_revoke` and the 2 gate ops remain. -/
 theorem system_preserves_wfa : SystemOpsPreserveWfA := by
@@ -556,7 +612,7 @@ theorem system_preserves_wfa : SystemOpsPreserveWfA := by
     exact ⟨fun a σ' he => ⟨capdup_preserves c σ hwf hinf a σ' he, hA.1 a σ' he⟩,
            fun e σ' he => ⟨capdup_err c σ hwf e σ' he, hA.2 e σ' he⟩⟩
   case _ => exact capdrop_preserves_wfa c σ hwf hac  -- cap_drop
-  case _ => sorry  -- cap_revoke
+  case _ => exact caprevoke_preserves_wfa c σ hwf hac
   case _ => -- mem_grant
     exact ⟨fun a σ' he => ⟨(memgrant_preserves c σ hwf).1 a σ' he, hA.1 a σ' he⟩,
            fun e σ' he => ⟨(memgrant_preserves c σ hwf).2 e σ' he, hA.2 e σ' he⟩⟩
