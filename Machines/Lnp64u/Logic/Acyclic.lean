@@ -333,4 +333,60 @@ theorem acyclic_add_leaf (σ σ' : MachineState) (a b : CapRef) (hne : a ≠ b)
         exact havoid i' b (fun h => hne h.symm) hcyc
   · rw [heq i r hra] at hcyc; exact hac r i hi hcyc
 
+
+/-- Predicate-generalized fresh-leaf addition: adding the edge `a → b` for
+*every* `a` satisfying `p` (they all share one `parentOf` slot, since
+`parentOf` ignores generation) preserves acyclicity, given nothing points to
+any `p`-reference and no `p`-reference is `b`. This is `installDerived`'s
+actual shape (`p r := r.dom = d ∧ r.slot = s`). -/
+theorem acyclic_add_leaves (σ σ' : MachineState) (p : CapRef → Bool) (b : CapRef)
+    (hne : ∀ a, p a → a ≠ b)
+    (hpar : ∀ r, σ'.parentRef r = if p r then some b else σ.parentRef r)
+    (hno : ∀ r a, p a → σ.parentRef r ≠ some a) (hac : Acyclic σ) : Acyclic σ' := by
+  have hno' : ∀ r a, p a → σ'.parentRef r ≠ some a := by
+    intro r a hpa; rw [hpar]; split
+    · rename_i hpr; intro h; exact hne a hpa (Option.some.inj h).symm
+    · exact hno r a hpa
+  have havoid : ∀ k r a, ¬ p r → p a → σ'.climb k r ≠ some a := by
+    intro k; induction k with
+    | zero => intro r a hpr hpa h
+              simp only [MachineState.climb, Option.some.injEq] at h; subst h
+              exact hpr hpa
+    | succ n ih =>
+        intro r a hpr hpa h; rw [MachineState.climb] at h
+        cases hq : σ'.parentRef r with
+        | none => rw [hq] at h; simp at h
+        | some q =>
+            rw [hq] at h; simp only [Option.bind_some] at h
+            have hqnp : ¬ p q := fun hpq => hno' r q hpq (by rw [hq])
+            exact ih q a hqnp hpa h
+  have heq : ∀ k r, ¬ p r → σ'.climb k r = σ.climb k r := by
+    intro k; induction k with
+    | zero => intro r hr; rfl
+    | succ n ih =>
+        intro r hr
+        rw [MachineState.climb, MachineState.climb, hpar]
+        simp only [Bool.not_eq_true] at hr; rw [if_neg (by simp [hr])]
+        cases hq : σ.parentRef r with
+        | none => rfl
+        | some q =>
+            simp only [Option.bind_some]
+            have hqnp : ¬ p q := fun hpq => hno r q hpq (by rw [hq])
+            exact ih q hqnp
+  intro r i hi hcyc
+  by_cases hpr : p r
+  · cases hik : i with
+    | zero => omega
+    | succ i' =>
+        have hstep : σ'.climb (i' + 1) r = (σ'.parentRef r).bind (σ'.climb i') := by
+          cases hq : σ'.parentRef r with
+          | none => simp [MachineState.climb, hq]
+          | some q => simp [MachineState.climb, hq]
+        rw [hik, hstep, hpar, if_pos hpr] at hcyc
+        simp only [Option.bind_some] at hcyc
+        have hbnp : ¬ p b := fun hpb => hne b hpb rfl
+        exact havoid i' b r hbnp hpr hcyc
+  · rw [heq i r hpr] at hcyc
+    exact hac r i hi hcyc
+
 end Machines.Lnp64u
