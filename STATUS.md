@@ -27,6 +27,24 @@ obligation — not used by `wfa_invariant`, which routes through the combined `s
 
 ---
 
+## Phase 2: the LNP64-µ EDSL core is COMPLETE (task 1.11)
+
+All 25 opcode circuits (14 base + **all 11 system ops**), the Mover rule
+(multi-port memory: core store port 0, Mover data port 1, status port 2 —
+one syntactic write per port, so `MemWriteWF` holds by construction), and
+emission. `cap_revoke`'s marks fixpoint runs as a **pointer-doubling engine
+in hidden registers** across the in-flight countdown cycles (the naive 64×
+combinational unroll is unrepresentable without expression sharing —
+recorded in `Machines/Lnp64u/Hw/DESIGN.md`). Verified by full-state
+per-cycle lockstep against the spec: the base manifest (256 cycles) plus a
+system-op manifest exercising every system opcode, incl. a revoke of a
+cross-domain-granted tree aborting an in-flight Mover transfer (2000
+cycles) — `Tests/Lnp64uCore.lean`. Emission: `lake exe emit lnp64u` +
+`scripts/lockstep_lnp64u.sh` (iverilog ISS-golden lockstep + yosys synth;
+standalone, deliberately not in `ci.sh`).
+
+---
+
 # Status
 
 Honest, mechanically-checked state of the build. Regenerate the theorem

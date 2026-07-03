@@ -65,6 +65,28 @@ port order = phase order gives exactly spec behavior. Land `wrPorts` BEFORE
 the mover circuit; the Acc8 design uses one port and its proofs must keep
 working (list of one).
 
+**Landed (task 1.11).** `wrPorts` + `Act.memWrite port` exist; the core
+rule folds ALL its memory writers (`sw` stores and the sweeps' Mover-status
+writes, mutually exclusive per retirement) into ONE syntactic port-0 write
+at the dispatch level (`SysOps.retireMemFor` muxes), and the Mover rule
+carries one syntactic port-1 write (data word) and one port-2 write
+(status). `designTrace = [0, 1, 2]` therefore satisfies `MemWriteWF`'s
+strictly-increasing-port condition *by construction* (checked at run time
+in `Tests/Lnp64uCore.lean` together with register-name `Nodup` — the
+emission theorems' preconditions).
+
+**Cross-phase visibility (D9 vs the spec's phase composition).** The Mover
+phase runs on the *post-core* state, but EDSL reads are pre-cycle; the
+Mover rule therefore re-derives every post-core signal it consumes as
+expressions over the pre-cycle state (`SysOps.moverAct`): the retiring
+`move`'s new job, the sweeps' job-clear (`killedByCoreE`), capability
+liveness (live-pre ∧ not-killed-this-cycle), post-core region registers
+(map/unmap installs + sweeps) for the status-write authority, and the
+same-cycle `sw`-store forwarded into the source-word read. Reachability
+simplifications used by the sweeps (valid regions have live backings; live
+Mover jobs hold live refs — every kill sweeps) are recorded in
+`SysOps.lean`; the Phase-3 R-MC proof carries the matching invariant.
+
 ## Rules (ordered; later writes win = phase order)
 
 1. `refill` — per domain: `if cycle % P_d == 0 && cycle != 0 then budget := Q_d`
@@ -79,18 +101,31 @@ working (list of one).
 Decode is structural on `if_word` bit fields (D1 layout: opcode [5:0], rd
 [8:6], rs1 [11:9], rs2 [14:12], imm17 [31:15]).
 
-`cap_revoke`'s marks fixpoint: fully unrolled `numDomains × numSlots = 64`
-iterations of `markStep` over a 64-bit mark vector, each iteration a
-parent-lookup mux tree. Large but bounded; v1 accepts the area (no FPGA
-timing target). Optimization path (later): iterate marks in the in-flight
-countdown cycles into hidden mark registers, committing at retirement (abs
-ignores hidden state, R-MC unaffected).
+`cap_revoke`'s marks fixpoint: the planned fully-unrolled 64× `markStep`
+is NOT viable — `Expr` has no sharing, so composing iterations in one
+combinational expression multiplies the tree by ~65 per iteration.
+**Implemented instead (the design's own "optimization path", upgraded):
+a pointer-doubling mark engine in hidden registers** (`rv_j/rv_v/rv_r`,
+one node per machine slot; `abs` ignores them). `marks` equals the
+reachability closure "parent chain of live-generation hops ending at the
+revoked root", and pointer doubling (`R += V ∧ R[J]; V &= V[J]; J := J[J]`)
+reaches all chains of length `≤ 2^k` after `k` rounds — 7 rounds suffice
+for 64 nodes. The engine initializes on the first countdown cycle
+(`if_cl = revokeCost`; cap tables and the issuer's registers are provably
+stable while an instruction is in flight — only retirements mutate them)
+and runs one round per remaining countdown cycle (22 ≥ 7); retirement
+consumes the converged vector. Registers are the only sharing mechanism in
+the EDSL — this is the pattern for any multi-stage combinational fixpoint.
 
 ## Verification ladder
 
-- Lockstep: `Tests/Lnp64uCore.lean` runs `core m` vs the ISS for N cycles
-  of the four-domain demo manifest, comparing `abs` per cycle.
-- Emission: `lake exe emit` gains an `lnp64u` target; `scripts/lockstep_lnp64u.sh`
-  runs iverilog against the ISS trace and yosys for synthesis-cleanliness.
+- Lockstep: `Tests/Lnp64uCore.lean` runs `core m` vs the ISS, comparing
+  `abs` per cycle (full state): the base-op manifest (256 cycles) and the
+  system-op demo manifest (`Hw/Demo.lean`, 2000 cycles, every system op).
+- Emission: `lake exe emit lnp64u` emits `rtl/lnp64u.v` + a generated
+  ISS-golden testbench; `scripts/lockstep_lnp64u.sh` runs iverilog against
+  the goldens and yosys for synthesis-cleanliness. **Standalone script —
+  deliberately NOT in `scripts/ci.sh`** (the emitted core is large; see
+  the script's timings).
 - R-MC (Phase 3): `Simulation (machine m) (core m).toTSys` with `abs`;
   plain simulation by the 1:1 cycle design decision.
