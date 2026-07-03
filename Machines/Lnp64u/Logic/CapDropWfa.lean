@@ -481,6 +481,56 @@ theorem system_preserves_acyclic : SystemOpsPreserveAcyclic := by
       exact acyclic_haltDom σ c.d 0 hac
     · simp [SpecM.modify] at he
 
+/-- The combined system-op obligation: every system opcode preserves `Wf ∧ Acyclic`
+given `Wf ∧ Acyclic`. This is the shape the revocation ops need (`cap_drop`'s Wf
+clause itself uses `Acyclic`). -/
+def SystemOpsPreserveWfA : Prop :=
+  ∀ instr ∈ Machines.Lnp64u.Isa.system, ∀ (c : Ctx) (σ : MachineState),
+    Wf σ → Acyclic σ → (σ.doms c.d).run = .running → σ.inflight = none →
+    (∀ a σ', instr.sem.exec c σ = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
+    (∀ e σ', instr.sem.exec c σ = .err e σ' → Wf σ' ∧ Acyclic σ')
+
+/-- **The combined dispatch.** 8 of 11 ops discharged: `cap_drop` via
+`capdrop_preserves_wfa`; the other 7 by pairing each op's `Wf` proof with its
+`system_preserves_acyclic` clause. Only `cap_revoke` and the 2 gate ops remain. -/
+theorem system_preserves_wfa : SystemOpsPreserveWfA := by
+  intro instr hmem c σ hwf hac hrun hinf
+  have hA := system_preserves_acyclic instr hmem c σ hwf hac hrun hinf
+  fin_cases hmem
+  case _ => -- cap_dup
+    exact ⟨fun a σ' he => ⟨capdup_preserves c σ hwf hinf a σ' he, hA.1 a σ' he⟩,
+           fun e σ' he => ⟨capdup_err c σ hwf e σ' he, hA.2 e σ' he⟩⟩
+  case _ => exact capdrop_preserves_wfa c σ hwf hac  -- cap_drop
+  case _ => sorry  -- cap_revoke
+  case _ => -- mem_grant
+    exact ⟨fun a σ' he => ⟨(memgrant_preserves c σ hwf).1 a σ' he, hA.1 a σ' he⟩,
+           fun e σ' he => ⟨(memgrant_preserves c σ hwf).2 e σ' he, hA.2 e σ' he⟩⟩
+  case _ => -- map
+    exact ⟨fun a σ' he => ⟨(map_preserves c σ hwf hinf).1 a σ' he, hA.1 a σ' he⟩,
+           fun e σ' he => ⟨(map_preserves c σ hwf hinf).2 e σ' he, hA.2 e σ' he⟩⟩
+  case _ => -- unmap
+    refine ⟨fun a σ' he => ⟨?_, hA.1 a σ' he⟩, fun e σ' he => ⟨?_, hA.2 e σ' he⟩⟩
+    · exact ((PreservesWf.bind (PreservesWf.clearRegion _ _)
+        (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).1 a σ' he |>.1
+    · exact ((PreservesWf.bind (PreservesWf.clearRegion _ _)
+        (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).2 e σ' he |>.1
+  case _ => sorry  -- gate_call
+  case _ => sorry  -- gate_return
+  case _ => -- move
+    exact ⟨fun a σ' he => ⟨move_ok c σ hwf a σ' he, hA.1 a σ' he⟩,
+           fun e σ' he => ⟨move_err c σ hwf e σ' he, hA.2 e σ' he⟩⟩
+  case _ => -- yield
+    refine ⟨fun a σ' he => ⟨?_, hA.1 a σ' he⟩, fun e σ' he => ⟨?_, hA.2 e σ' he⟩⟩
+    · exact ((PreservesWf.bind (PreservesWf.updDomBudget _ _)
+        (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).1 a σ' he |>.1
+    · exact ((PreservesWf.bind (PreservesWf.updDomBudget _ _)
+        (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).2 e σ' he |>.1
+  case _ => -- halt
+    refine ⟨fun a σ' he => ⟨?_, hA.1 a σ' he⟩, fun e σ' he => ⟨?_, hA.2 e σ' he⟩⟩
+    · simp only [SpecM.modify] at he; injection he with h1 h2; subst h2
+      exact haltDom_preserves_wf σ c.d 0 hwf hrun hinf
+    · simp [SpecM.modify] at he
+
 end Isa.Wip
 
 end Machines.Lnp64u
