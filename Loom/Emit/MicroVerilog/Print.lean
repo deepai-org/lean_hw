@@ -62,7 +62,7 @@ def pExpr : {w : Nat} → Expr w → StateM PSt String
   | w', @Expr.sext w a _ => do
       let x ← pExpr a
       let sb := "{" ++ toString (w' - w) ++ "{" ++ x ++ "[" ++ toString (w-1) ++ "]}}"
-      if w' > w then fresh w' (sb ++ ", " ++ x)
+      if w' > w then fresh w' ("{" ++ sb ++ ", " ++ x ++ "}")
       else if w' = w then fresh w' s!"{x}"
       else fresh w' s!"{x}[{w'-1}:0]"
 
