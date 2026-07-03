@@ -607,6 +607,79 @@ theorem load_err_state (d : DomainId) (a : Addr) (σ : MachineState) {e0 : Errno
   · simp [SpecM.demand, hc, specM_pure, specM_bind] at he
   · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
 
+
+/-- Sweeping region registers preserves `Wf`: only dead-backed regions are
+cleared (`region_backed` survivors keep their live backing). -/
+theorem wf_sweepRegions (σ : MachineState) (h : Wf σ) : Wf σ.sweepRegions := by
+  have hd : ∀ d, (σ.sweepRegions.doms d).caps = (σ.doms d).caps ∧
+      (σ.sweepRegions.doms d).lineage = (σ.doms d).lineage ∧
+      (σ.sweepRegions.doms d).slotGen = (σ.doms d).slotGen ∧
+      (σ.sweepRegions.doms d).run = (σ.doms d).run ∧
+      (σ.sweepRegions.doms d).serving = (σ.doms d).serving := by
+    intro d; unfold MachineState.sweepRegions; exact ⟨rfl, rfl, rfl, rfl, rfl⟩
+  have hg : σ.sweepRegions.gates = σ.gates := rfl
+  have hm : σ.sweepRegions.mover = σ.mover := rfl
+  have hi : σ.sweepRegions.inflight = σ.inflight := rfl
+  have hlr : ∀ r, σ.sweepRegions.liveRef r = σ.liveRef r := by
+    intro r; unfold MachineState.liveRef DomainState.liveCap; rw [(hd r.dom).1, (hd r.dom).2.2.1]
+  have hpar : ∀ d s, σ.sweepRegions.parentOf d s = σ.parentOf d s := by
+    intro d s; unfold MachineState.parentOf; rw [(hd d).1, (hd d).2.1]
+  constructor
+  · intro d; have hh := h.doms d
+    exact ⟨fun s => by rw [(hd d).2.2.1]; exact hh.gen_pos s,
+      fun s e l => by rw [(hd d).1, (hd d).2.1]; exact hh.cell_backed s e l,
+      fun s s' e e' l => by rw [(hd d).1]; exact hh.ptr_inj s s' e e' l,
+      fun l => by rw [(hd d).2.1, (hd d).1]; exact hh.cell_used l,
+      fun s base len p => by rw [(hd d).1]; exact hh.wx s base len p,
+      fun s e base len p => by rw [(hd d).1]; exact hh.bounds s e base len p⟩
+  · intro d s p; rw [hpar, hlr]; exact h.parent_live d s p
+  · intro d r rg hrg
+    have horig : (σ.doms d).regions r = some rg ∧ σ.liveRef rg.backing = true := by
+      simp only [MachineState.sweepRegions] at hrg
+      split at hrg
+      · next rg0 hro =>
+          split at hrg
+          · next hlv =>
+              simp only [Option.some.injEq] at hrg; subst hrg; exact ⟨hro, hlv⟩
+          · next hlv => simp at hrg
+      · next => simp at hrg
+    obtain ⟨e, hl, hle⟩ := h.region_backed d r rg horig.1
+    refine ⟨e, ?_, hle⟩; unfold DomainState.liveCap
+    rw [(hd rg.backing.dom).1, (hd rg.backing.dom).2.2.1]; exact hl
+  · intro job; rw [hm]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, by rw [hlr]; exact o3, by rw [hlr]; exact o4⟩
+  · intro g a; rw [hg]; intro ha
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    exact ⟨by rw [(hd _).2.2.2.2]; exact s1, by rw [(hd _).2.2.2.1]; exact s2, s3, s4⟩
+  · intro d g; rw [(hd d).2.2.2.2]; intro hs; rw [hg]; exact h.serving_gate d g hs
+  · intro d g; rw [(hd d).2.2.2.1]; intro hb; rw [hg]; exact h.blocked_gate d g hb
+  · intro fl hfl; rw [hi] at hfl; rw [(hd fl.dom).2.2.2.1]; exact h.inflight_running fl hfl
+
+
+/-- Sweeping the Mover preserves `Wf`: it clears a job with a dead capability
+(then `mover_wf` is vacuous) or leaves a live job, and only writes memory. -/
+theorem wf_sweepMover (σ : MachineState) (h : Wf σ) : Wf σ.sweepMover := by
+  unfold MachineState.sweepMover
+  cases hmv : σ.mover with
+  | none => simpa [hmv] using h
+  | some job =>
+      by_cases hchk : σ.liveRef job.src && σ.liveRef job.dst
+      · simp only [hchk, if_true]; exact h
+      · simp only [hchk, if_false]
+        -- the resulting state clears the mover (and maybe writes memory)
+        set σ0 : MachineState := { σ with mover := none } with hσ0
+        have hcl : Wf σ0 := by
+          obtain ⟨hdoms, hpl, hrb, _, hgs, hsg, hbg, hir⟩ := h
+          exact ⟨hdoms, hpl, hrb, by intro j hj; rw [hσ0] at hj; simp at hj, hgs, hsg, hbg, hir⟩
+        by_cases hcov : σ0.domCovers job.owner job.statusAddr { r := false, w := true, x := false }
+        · simp only [hcov, if_true]
+          -- writing the status word changes only memory
+          exact wf_of_skeleton_sameGates σ0 (σ0.write job.statusAddr Errno.staleHandle.toWord)
+            (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+            (fun _ => rfl) rfl rfl (fun fl hfl => hcl.inflight_running fl hfl) hcl
+        · simp only [hcov, if_false]; exact hcl
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
