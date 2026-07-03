@@ -40,11 +40,14 @@ cells in all — chains cross domains (e.g. `mem_grant` derives into another
 domain), so the bound is the *total* cell count, not one domain's. -/
 def chainBound : Nat := numDomains * numLineage
 
-/-- **Lineage acyclicity.** From every reference the parent chain reaches a
-root within `chainBound` links — equivalently, the lineage forest has no
-cycle. The companion invariant `cap_drop`/`cap_revoke`/the gate ops need. -/
+/-- **Lineage acyclicity.** No reference is a proper ancestor of itself: the
+parent chain from `r` never returns to `r`. This is genuine acyclicity of the
+lineage forest — the companion invariant `cap_drop`/`cap_revoke`/the gate ops
+need. Stated as no-return-to-start, its preservation proofs never need cell
+counting: every kernel op is edge-removal, edge-contraction, or fresh-leaf
+addition, none of which can create a cycle. -/
 def Acyclic (σ : MachineState) : Prop :=
-  ∀ r : CapRef, σ.climb (chainBound + 1) r = none
+  ∀ (r : CapRef) (i : Nat), 0 < i → σ.climb i r ≠ some r
 
 /-- Climbing past a root stays `none`. -/
 @[simp] theorem MachineState.climb_none (σ : MachineState) (k : Nat) :
@@ -63,10 +66,10 @@ theorem acyclic_of_no_lineage (σ : MachineState)
         cases hle : e.lineage with
         | none => simp [hle]
         | some l => simp [hle, h r.dom l]
-  intro r
-  cases hnl : chainBound + 1 with
-  | zero => simp [chainBound, numDomains, numLineage] at hnl
-  | succ k => rw [σ.climb_none k r (hpar r)]
+  intro r i hi
+  cases hik : i with
+  | zero => omega
+  | succ k => rw [σ.climb_none k r (hpar r)]; simp
 
 /-- **Boot acyclicity.** The reset state's lineage tables are empty. -/
 theorem init_acyclic (m : Manifest) : Acyclic (m.initState) :=
@@ -84,8 +87,7 @@ parent — the fact `cap_drop`'s reparent branch turns on. -/
 theorem Acyclic.parentRef_ne (σ : MachineState) (hac : Acyclic σ)
     (r p : CapRef) (h : σ.parentRef r = some p) : p ≠ r := by
   rintro rfl
-  have := σ.climb_self p h (chainBound + 1)
-  rw [hac p] at this; simp at this
+  exact hac p 1 (by omega) (by unfold MachineState.climb; rw [h]; rfl)
 
 /-- Climbing depends only on the parent function: two states with the same
 parent links agree on every climb. -/
@@ -106,7 +108,7 @@ register writes, PC updates, scheduling, region installs, Mover programming,
 gate bookkeeping) preserves acyclicity for free. -/
 theorem acyclic_of_parentRef_eq (σ σ' : MachineState)
     (hpar : ∀ r, σ'.parentRef r = σ.parentRef r) (hac : Acyclic σ) : Acyclic σ' := by
-  intro r; rw [σ.climb_congr σ' hpar (chainBound + 1) r]; exact hac r
+  intro r i hi; rw [σ.climb_congr σ' hpar i r]; exact hac r i hi
 
 /-- Parent links are determined by each domain's `caps` and `lineage`
 tables; an operation preserving both preserves every parent link. -/
@@ -137,12 +139,29 @@ theorem MachineState.climb_none_mono (σ σ' : MachineState)
         | some p => rw [hp] at h; simp only [Option.bind_some] at h ⊢; exact ih p h
       · rw [he]; rfl
 
+/-- Under edge removal, any surviving (`some`) climb equals the original: each
+step that stayed `some` used the unchanged parent link. -/
+theorem MachineState.climb_le_eq (σ σ' : MachineState)
+    (hpar : ∀ r, σ'.parentRef r = σ.parentRef r ∨ σ'.parentRef r = none) :
+    ∀ k r x, σ'.climb k r = some x → σ.climb k r = some x := by
+  intro k; induction k with
+  | zero => intro r x h; simpa [MachineState.climb] using h
+  | succ n ih =>
+      intro r x h
+      rw [MachineState.climb] at h ⊢
+      rcases hpar r with he | he
+      · rw [he] at h
+        cases hp : σ.parentRef r with
+        | none => rw [hp] at h; simp at h
+        | some p => rw [hp] at h; simp only [Option.bind_some] at h ⊢; exact ih p x h
+      · rw [he] at h; simp at h
+
 /-- **Acyclicity survives edge removal.** An operation that only drops
-parent links preserves acyclicity. -/
+parent links preserves acyclicity: a cycle would survive back into `σ`. -/
 theorem acyclic_of_parentRef_le (σ σ' : MachineState)
     (hpar : ∀ r, σ'.parentRef r = σ.parentRef r ∨ σ'.parentRef r = none)
     (hac : Acyclic σ) : Acyclic σ' :=
-  fun r => σ.climb_none_mono σ' hpar (chainBound + 1) r (hac r)
+  fun r i hi hcyc => hac r i hi (σ.climb_le_eq σ' hpar i r r hcyc)
 
 /-- Climbs compose: `a + b` links is `a` links then `b` more. -/
 theorem MachineState.climb_add (σ : MachineState) (b : Nat) :
@@ -241,9 +260,10 @@ theorem acyclic_contract (σ σ' : MachineState) (a b : CapRef)
               refine ⟨1 + m, by omega, ?_⟩
               rw [he, σ.climb_add m 1 r, hc1 r, hq, Option.bind_some]
   
-  intro r
-  obtain ⟨m, hm, he⟩ := hkey (chainBound + 1) r
-  rw [he]; exact σ.climb_none_ge (chainBound + 1) r (hac r) m hm
+  intro r i hi hcyc
+  obtain ⟨m, hm, he⟩ := hkey i r
+  rw [hcyc] at he
+  exact hac r m (by omega) he.symm
 
 
 
