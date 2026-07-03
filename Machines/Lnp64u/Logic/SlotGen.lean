@@ -282,4 +282,23 @@ theorem step_slotGen_reduce (m : Manifest) (σ : MachineState) (d : DomainId) (s
     ((step m σ).doms d).slotGen s = ((corePhase m (refillPhase m σ)).doms d).slotGen s := by
   unfold step; simp only [moverPhase_slotGen]
 
+theorem SlotGenLe.narrow (base : Addr) (len : BitVec 13) (perms : Perms) (dw : Loom.Word32) :
+    SlotGenLe (Machines.Lnp64u.Isa.narrow base len perms dw) :=
+  SlotGenLe.of_preservesGen _
+    (fun σ k σ' he d s => by rw [(Machines.Lnp64u.Isa.Wip.narrow_ok base len perms dw σ he).1])
+    (fun σ e σ' he d s => by rw [Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms dw σ he])
+
+theorem SlotGenLe.demand (cond : Bool) (f : Fault) : SlotGenLe (SpecM.demand cond f) :=
+  SlotGenLe.of_preservesGen _
+    (fun σ a σ' he d s => by rw [demand_ok cond f σ he])
+    (fun σ e σ' he d s => by
+      unfold SpecM.demand at he; split at he
+      · simp [specM_pure] at he
+      · simp [SpecM.fatal] at he)
+
+theorem SlotGenLe.get : SlotGenLe SpecM.get :=
+  SlotGenLe.of_preservesGen _
+    (fun σ a σ' he d s => by unfold SpecM.get at he; injection he with _ h2; subst h2; rfl)
+    (fun σ e σ' he d s => by unfold SpecM.get at he; simp at he)
+
 end Machines.Lnp64u
