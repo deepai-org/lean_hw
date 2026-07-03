@@ -568,6 +568,30 @@ theorem wf_setMover (σ : MachineState) (job : MoverJob)
   intro j hj; simp only [Option.some.injEq] at hj; subst hj
   exact ⟨h1, h2, h3, h4⟩
 
+
+/-- `load` is read-only: on success the state is unchanged and the value read. -/
+theorem load_ok (d : DomainId) (a : Addr) (σ : MachineState) {v : Loom.Word32}
+    {σ' : MachineState} (he : SpecM.load d a σ = .ok v σ') : σ' = σ := by
+  unfold SpecM.load at he
+  simp only [SpecM.get, specM_bind] at he
+  by_cases hc : σ.domCovers d a { r := true, w := false, x := false }
+  · simp only [SpecM.demand, hc, if_true, specM_pure, specM_bind] at he
+    injection he with _ h2; exact h2.symm
+  · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+
+/-- `require`/`get`/`reg` are read-only on success. -/
+theorem require_ok (cond : Bool) (e : Errno) (σ : MachineState) {σ' : MachineState}
+    (he : SpecM.require cond e σ = .ok () σ') : σ' = σ := by
+  unfold SpecM.require at he; split at he
+  · injection he with _ h2; exact h2.symm
+  · simp [SpecM.raise] at he
+
+theorem demand_ok (cond : Bool) (f : Fault) (σ : MachineState) {σ' : MachineState}
+    (he : SpecM.demand cond f σ = .ok () σ') : σ' = σ := by
+  unfold SpecM.demand at he; split at he
+  · injection he with _ h2; exact h2.symm
+  · simp [SpecM.fatal] at he
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
