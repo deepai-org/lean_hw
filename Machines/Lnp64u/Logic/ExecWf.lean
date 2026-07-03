@@ -1071,6 +1071,42 @@ theorem acyclic_sweepMover (σ : MachineState) (hac : Acyclic σ) :
       · rw [sweepMover_doms]
       · rw [sweepMover_doms])) hac
 
+
+/-- `reparent ref new` reroutes exactly the links into `ref` onto `new`: its
+parent function is `σ`'s with every `some ref` replaced by `some new`. -/
+theorem reparent_parentRef (σ : MachineState) (ref new : CapRef) (r : CapRef) :
+    (σ.reparent ref new).parentRef r =
+      if σ.parentRef r = some ref then some new else σ.parentRef r := by
+  unfold MachineState.parentRef MachineState.parentOf
+  have hcaps : ((σ.reparent ref new).doms r.dom).caps = (σ.doms r.dom).caps := rfl
+  rw [hcaps]
+  cases hc : (σ.doms r.dom).caps r.slot with
+  | none => simp [hc]
+  | some e =>
+      cases hle : e.lineage with
+      | none => simp [hc, hle]
+      | some l =>
+          simp only [hc, hle, Option.bind_eq_bind, Option.bind_some]
+          have hlin : ((σ.reparent ref new).doms r.dom).lineage l =
+              match (σ.doms r.dom).lineage l with
+              | some cell => some (if cell.parent = ref then { parent := new } else cell)
+              | none => none := rfl
+          rw [hlin]
+          cases hcc : (σ.doms r.dom).lineage l with
+          | none => simp [hcc]
+          | some cell =>
+              simp only [hcc, Option.bind_some]
+              by_cases hpp : cell.parent = ref
+              · simp [hpp]
+              · simp [hpp]
+
+/-- `reparent`ing `ref`'s children onto its (live) parent `new` preserves
+acyclicity: it is the edge contraction that splices `ref` out. -/
+theorem acyclic_reparent (σ : MachineState) (ref new : CapRef)
+    (hpar : σ.parentRef ref = some new) (hac : Acyclic σ) :
+    Acyclic (σ.reparent ref new) :=
+  acyclic_contract σ _ ref new hpar (reparent_parentRef σ ref new) hac
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
