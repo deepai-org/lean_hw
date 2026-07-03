@@ -3678,4 +3678,243 @@ theorem gatereturn_chain (c : Ctx) (σ : MachineState) :
                   split <;> rfl
   exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun er σ' h => (body _ h).2 er σ' rfl⟩
 
+/-- **The exec-level chain classification** (the 6th ISA sweep): every
+instruction's `exec` either frames the chain observables (`ChainOut` — the
+22 calm ops and *every* err outcome), or is a successful `gate_call`
+(`GateCallShape`), a successful `gate_return` (`GateReturnShape`), or the
+voluntary `halt` (`haltDom`). -/
+theorem exec_chain (instr) (hmem : instr ∈ isa) (c : Ctx) (σ : MachineState) :
+    (∀ a σ', instr.sem.exec c σ = .ok a σ' →
+      ChainOut c.d σ σ' ∨ GateCallShape c σ σ' ∨ GateReturnShape c σ σ' ∨
+      σ' = σ.haltDom c.d 0) ∧
+    (∀ er σ', instr.sem.exec c σ = .err er σ' → ChainOut c.d σ σ') := by
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem; exact hmem
+  have ofChainLe : ∀ {mm : SpecM Unit}, ChainLe c.d mm →
+      (instr.sem.exec c σ = mm σ) →
+      (∀ a σ', instr.sem.exec c σ = .ok a σ' →
+        ChainOut c.d σ σ' ∨ GateCallShape c σ σ' ∨ GateReturnShape c σ σ' ∨
+        σ' = σ.haltDom c.d 0) ∧
+      (∀ er σ', instr.sem.exec c σ = .err er σ' → ChainOut c.d σ σ') := by
+    intro mm h heq
+    exact ⟨fun a σ' he => .inl ((h σ).1 a σ' (heq ▸ he)),
+           fun er σ' he => (h σ).2 er σ' (heq ▸ he)⟩
+  rcases List.mem_append.mp hmem' with hb | hs
+  · exact ofChainLe (base_chain_le c.d instr hb c) rfl
+  · fin_cases hs
+    case _ => -- cap_dup
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.reg _ _) fun dw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (match e.kind with
+        | .mem base len perms =>
+            Machines.Lnp64u.Isa.narrow base len perms dw >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h
+        | .gate gid =>
+            (Pure.pure (CapKind.gate gid) : SpecM CapKind) >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h)
+      cases e.kind with
+      | mem b l p =>
+          exact ChainLe.bind (ChainLe.narrow _ _ _ _) fun kind =>
+            ChainLe.bind (ChainLe.allocDerived _ _ _) fun h => ChainLe.setReg _ _ _ _
+      | gate i =>
+          exact ChainLe.bind (ChainLe.pure _) fun kind =>
+            ChainLe.bind (ChainLe.allocDerived _ _ _) fun h => ChainLe.setReg _ _ _ _
+    case _ => -- cap_drop
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (SpecM.get >>= fun σ0 =>
+        SpecM.set ((((match σ0.parentOf c.d s with
+            | some p => σ0.reparent ⟨c.d, s, g⟩ p
+            | none => σ0.orphanChildren ⟨c.d, s, g⟩).clearSlot c.d s).sweepRegions).sweepMover) >>=
+          fun _ => SpecM.setReg c.d c.op.rd 0)
+      refine ChainLe.getD _ fun σ0 => ?_
+      constructor
+      · intro a σ' he
+        cases hp : σ0.parentOf c.d s with
+        | some p =>
+            rw [hp] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            refine ChainOut.trans ?_
+              (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+                (by unfold DomainState.setReg; split <;> rfl)
+                (fun _ => by unfold DomainState.setReg; split <;> rfl))
+            exact (reparent_chainOut c.d σ0 _ _).trans
+              ((clearSlot_chainOut c.d _ c.d s).trans
+                ((sweepRegions_chainOut c.d _).trans (sweepMover_chainOut c.d _)))
+        | none =>
+            rw [hp] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            refine ChainOut.trans ?_
+              (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+                (by unfold DomainState.setReg; split <;> rfl)
+                (fun _ => by unfold DomainState.setReg; split <;> rfl))
+            exact (orphanChildren_chainOut c.d σ0 _).trans
+              ((clearSlot_chainOut c.d _ c.d s).trans
+                ((sweepRegions_chainOut c.d _).trans (sweepMover_chainOut c.d _)))
+      · intro er σ' he
+        cases hp : σ0.parentOf c.d s with
+        | some p => rw [hp] at he
+                    simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+        | none => rw [hp] at he
+                  simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+    case _ => -- cap_revoke
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (SpecM.require (decide (e.kind.cls = .mem)) .badCap >>= fun _ =>
+        SpecM.get >>= fun σ0 =>
+        SpecM.set (((σ0.destroyMarked (σ0.marks ⟨c.d, s, g⟩)).sweepRegions).sweepMover) >>=
+        fun _ => SpecM.setReg c.d c.op.rd 0)
+      refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+      refine ChainLe.getD _ fun σ0 => ?_
+      constructor
+      · intro a σ' he
+        simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+        injection he with _ h2; subst h2
+        refine ChainOut.trans ?_
+          (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+            (by unfold DomainState.setReg; split <;> rfl)
+            (fun _ => by unfold DomainState.setReg; split <;> rfl))
+        exact (destroyMarked_chainOut c.d σ0 _).trans
+          ((sweepRegions_chainOut c.d _).trans (sweepMover_chainOut c.d _))
+      · intro er σ' he
+        simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+    case _ => -- mem_grant
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.reg _ _) fun dw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (match e.kind with
+        | .gate _ => (SpecM.raise .badCap : SpecM Unit)
+        | .mem base len perms =>
+            Machines.Lnp64u.Isa.narrow base len perms dw >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived (descDom dw) kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h)
+      cases e.kind with
+      | gate gid => exact ChainLe.raise _
+      | mem base len perms =>
+          exact ChainLe.bind (ChainLe.narrow _ _ _ _) fun kind =>
+            ChainLe.bind (ChainLe.allocDerived _ _ _) fun h => ChainLe.setReg _ _ _ _
+    case _ => -- map
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (match e.kind with
+        | .gate _ => (SpecM.raise .badCap : SpecM Unit)
+        | .mem base len perms =>
+            SpecM.updDom c.d (fun ds =>
+              { ds with regions :=
+                  (Loom.Fun.update ds.regions
+                    ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩
+                    (some { base := base, len := len, perms := perms
+                            backing := ⟨c.d, s, g⟩ })) }) >>= fun _ =>
+            SpecM.setReg c.d c.op.rd 0)
+      cases e.kind with
+      | gate gid => exact ChainLe.raise _
+      | mem base len perms =>
+          exact ChainLe.bind
+            (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+              (fun _ _ => rfl))
+            fun _ => ChainLe.setReg _ _ _ _
+    case _ => -- unmap
+      refine ofChainLe ?_ rfl
+      exact ChainLe.bind
+        (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+          (fun _ _ => rfl))
+        fun _ => ChainLe.setReg _ _ _ _
+    case _ => -- gate_call
+      exact ⟨fun a σ' he => .inr (.inl ((gatecall_chain c σ).1 a σ' he)),
+             fun er σ' he => ChainOut.of_eq ((gatecall_chain c σ).2 er σ' he)⟩
+    case _ => -- gate_return
+      exact ⟨fun a σ' he => .inr (.inr (.inl ((gatereturn_chain c σ).1 a σ' he))),
+             fun er σ' he => ChainOut.of_eq ((gatereturn_chain c σ).2 er σ' he)⟩
+    case _ => -- move
+      refine ofChainLe ?_ rfl
+      refine ChainLe.getD _ fun σg => (?_ : ChainLe c.d _) σg
+      refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+      refine ChainLe.bind (ChainLe.reg _ _) fun aw => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun srcH => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun dstH => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun lenW => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun stW => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun rs => ?_
+      obtain ⟨ss, gs_, es⟩ := rs
+      refine ChainLe.bind (ChainLe.capLive _ _) fun rd_ => ?_
+      obtain ⟨sd, gd, ed⟩ := rd_
+      show ChainLe c.d (match es.kind, ed.kind with
+        | .mem sb sl sp, .mem db dl dp =>
+            SpecM.require sp.r .permDenied >>= fun _ =>
+            SpecM.require dp.w .permDenied >>= fun _ =>
+            SpecM.require (decide (lenW.toNat ≤ sl.toNat) && decide (lenW.toNat ≤ dl.toNat))
+              .outOfRange >>= fun _ =>
+            SpecM.get >>= fun σ1 =>
+            SpecM.demand (σ1.domCovers c.d (stW.setWidth 12)
+              { r := false, w := true, x := false }) .memoryAuthority >>= fun _ =>
+            SpecM.set ({ σ1 with mover :=
+              (some { owner := c.d, src := ⟨c.d, ss, gs_⟩, dst := ⟨c.d, sd, gd⟩
+                      srcCur := sb, dstCur := db, remaining := lenW.toNat
+                      statusAddr := stW.setWidth 12 }) }) >>= fun _ =>
+            SpecM.setReg c.d c.op.rd 0
+        | _, _ => (SpecM.raise .badCap : SpecM Unit))
+      cases es.kind with
+      | gate gi =>
+          cases ed.kind with
+          | gate _ => exact ChainLe.raise _
+          | mem db dl dp => exact ChainLe.raise _
+      | mem sb sl sp =>
+          cases ed.kind with
+          | gate _ => exact ChainLe.raise _
+          | mem db dl dp =>
+              refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+              refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+              refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+              refine ChainLe.getD _ fun σ1 => ?_
+              constructor
+              · intro a σ' he
+                by_cases hcov : σ1.domCovers c.d (stW.setWidth 12)
+                    { r := false, w := true, x := false }
+                · simp only [SpecM.demand, hcov, if_true, specM_pure, specM_bind, SpecM.set,
+                    SpecM.setReg, SpecM.modify] at he
+                  injection he with _ h2; subst h2
+                  refine ChainOut.trans ?_
+                    (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+                      (by unfold DomainState.setReg; split <;> rfl)
+                      (fun _ => by unfold DomainState.setReg; split <;> rfl))
+                  exact ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+                · simp [SpecM.demand, hcov, SpecM.fatal, specM_bind] at he
+              · intro er σ' he
+                by_cases hcov : σ1.domCovers c.d (stW.setWidth 12)
+                    { r := false, w := true, x := false }
+                · simp [SpecM.demand, hcov, specM_pure, specM_bind, SpecM.set,
+                    SpecM.setReg, SpecM.modify] at he
+                · simp [SpecM.demand, hcov, SpecM.fatal, specM_bind] at he
+    case _ => -- yield
+      refine ofChainLe ?_ rfl
+      exact ChainLe.bind
+        (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+          (fun _ h => absurd rfl h))
+        fun _ => ChainLe.setReg _ _ _ _
+    case _ => -- halt
+      constructor
+      · intro a σ' he
+        refine .inr (.inr (.inr ?_))
+        simp only [SpecM.modify] at he
+        injection he with _ h2; exact h2.symm
+      · intro er σ' he
+        simp [SpecM.modify] at he
+
 end Machines.Lnp64u
