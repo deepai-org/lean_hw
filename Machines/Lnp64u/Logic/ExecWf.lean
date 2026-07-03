@@ -275,6 +275,7 @@ theorem wf_clearRegion (σ : MachineState) (d : DomainId) (ri : RegionId) (h : W
   · intro d' g; rw [(hdoms d').2.2.2.2]; intro hs; rw [hgates]; exact h.serving_gate d' g hs
   · intro d' g; rw [(hdoms d').2.2.2.1]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl' hfl'; rw [hinf] at hfl'; rw [(hdoms fl'.dom).2.2.2.1]; exact h.inflight_running fl' hfl'
+  · intro g a; rw [hgates]; exact h.gate_saved_none g a
 
 theorem PreservesWf.clearRegion (d : DomainId) (ri : RegionId) :
     PreservesWf (SpecM.updDom d (fun ds => { ds with regions := Loom.Fun.update ds.regions ri none })) := by
@@ -348,6 +349,7 @@ theorem wf_installRegion (σ : MachineState) (d : DomainId) (ri : RegionId) (rgn
   · intro d' g; rw [(hdoms d').2.2.2.2]; intro hs; rw [hgates]; exact h.serving_gate d' g hs
   · intro d' g; rw [(hdoms d').2.2.2.1]; intro hb'; rw [hgates]; exact h.blocked_gate d' g hb'
   · intro fl' hfl'; rw [hinf] at hfl'; rw [(hdoms fl'.dom).2.2.2.1]; exact h.inflight_running fl' hfl'
+  · intro g a; rw [hgates]; exact h.gate_saved_none g a
 
 
 /-- A free slot has no capability entry. -/
@@ -527,6 +529,7 @@ theorem wf_installDerived (σ : MachineState) (d : DomainId) (s : Slot) (l : Lin
   · intro d' g; rw [hserv]; intro hs0; rw [hgates]; exact h.serving_gate d' g hs0
   · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl' hfl'; rw [hinf] at hfl'; rw [hrun]; exact h.inflight_running fl' hfl'
+  · intro g a; rw [hgates]; exact h.gate_saved_none g a
 
 
 /-- `allocDerived` preserves `Wf` on success, given the kind is W^X/in-bounds
@@ -564,8 +567,8 @@ theorem wf_setMover (σ : MachineState) (job : MoverJob)
     (h1 : job.src.dom = job.owner) (h2 : job.dst.dom = job.owner)
     (h3 : σ.liveRef job.src = true) (h4 : σ.liveRef job.dst = true) (h : Wf σ) :
     Wf { σ with mover := some job } := by
-  obtain ⟨hdoms, hpl, hrb, _hmw, hgs, hsg, hbg, hir⟩ := h
-  refine ⟨hdoms, hpl, hrb, ?_, hgs, hsg, hbg, hir⟩
+  obtain ⟨hdoms, hpl, hrb, _hmw, hgs, hsg, hbg, hir, hgsn⟩ := h
+  refine ⟨hdoms, hpl, hrb, ?_, hgs, hsg, hbg, hir, hgsn⟩
   intro j hj; simp only [Option.some.injEq] at hj; subst hj
   exact ⟨h1, h2, h3, h4⟩
 
@@ -656,6 +659,7 @@ theorem wf_sweepRegions (σ : MachineState) (h : Wf σ) : Wf σ.sweepRegions := 
   · intro d g; rw [(hd d).2.2.2.2]; intro hs; rw [hg]; exact h.serving_gate d g hs
   · intro d g; rw [(hd d).2.2.2.1]; intro hb; rw [hg]; exact h.blocked_gate d g hb
   · intro fl hfl; rw [hi] at hfl; rw [(hd fl.dom).2.2.2.1]; exact h.inflight_running fl hfl
+  · intro g a; rw [hg]; exact h.gate_saved_none g a
 
 
 /-- Sweeping the Mover preserves `Wf`: it clears a job with a dead capability
@@ -671,8 +675,8 @@ theorem wf_sweepMover (σ : MachineState) (h : Wf σ) : Wf σ.sweepMover := by
         -- the resulting state clears the mover (and maybe writes memory)
         set σ0 : MachineState := { σ with mover := none } with hσ0
         have hcl : Wf σ0 := by
-          obtain ⟨hdoms, hpl, hrb, _, hgs, hsg, hbg, hir⟩ := h
-          exact ⟨hdoms, hpl, hrb, by intro j hj; rw [hσ0] at hj; simp at hj, hgs, hsg, hbg, hir⟩
+          obtain ⟨hdoms, hpl, hrb, _, hgs, hsg, hbg, hir, hgsn⟩ := h
+          exact ⟨hdoms, hpl, hrb, by intro j hj; rw [hσ0] at hj; simp at hj, hgs, hsg, hbg, hir, hgsn⟩
         by_cases hcov : σ0.domCovers job.owner job.statusAddr { r := false, w := true, x := false }
         · simp only [hcov, if_true]
           -- writing the status word changes only memory
@@ -752,6 +756,7 @@ theorem wf_reparent (σ : MachineState) (old new : CapRef) (hnew : σ.liveRef ne
   · intro d g; rw [hserv]; intro hs; rw [hg]; exact h.serving_gate d g hs
   · intro d g; rw [hrun]; intro hb; rw [hg]; exact h.blocked_gate d g hb
   · intro fl hfl; rw [hi] at hfl; rw [hrun]; exact h.inflight_running fl hfl
+  · intro g a; rw [hg]; exact h.gate_saved_none g a
 
 
 /-- The composed `clearSlot` + region-sweep + Mover-sweep preserves `Wf`, given
@@ -943,6 +948,7 @@ theorem wf_clearSlot_sweep (σ : MachineState) (d : DomainId) (s : Slot)
   · intro d' g; rw [hserv]; intro hs; rw [hgates]; exact h.serving_gate d' g hs
   · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl hfl; rw [hinf] at hfl; rw [hrun]; exact h.inflight_running fl hfl
+  · intro g a; rw [hgates]; exact h.gate_saved_none g a
 
 
 /-- After reparenting `ref`'s children onto `new ≠ ref`, no cell points at
@@ -1262,6 +1268,7 @@ theorem wf_orphanChildren (σ : MachineState) (old : CapRef) (h : Wf σ) :
     exact h.blocked_gate d g hb
   · intro fl hfl; rw [orphanChildren_inflight] at hfl; rw [orphanChildren_run]
     exact h.inflight_running fl hfl
+  · intro g a; rw [orphanChildren_gates]; exact h.gate_saved_none g a
 
 
 /-- The core of `cap_drop`: reparent-or-orphan the dropped capability's
@@ -1646,6 +1653,7 @@ theorem wf_destroyMarked_sweep (σ : MachineState) (root : CapRef) (h : Wf σ) :
   · intro d g; rw [hserv]; intro hs; rw [hgates]; exact h.serving_gate d g hs
   · intro d g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d g hb
   · intro fl hfl; rw [hinf] at hfl; rw [hrun]; exact h.inflight_running fl hfl
+  · intro g a; rw [hgates]; exact h.gate_saved_none g a
 
 
 /-- `parentRef` after `transferCap`'s recipient install (a `setDom` writing a
@@ -1868,6 +1876,7 @@ theorem wf_installMove (σ : MachineState) (d : DomainId) (s : Slot) (l : Lineag
   · intro d' g; rw [hserv]; intro hs0; rw [hgates]; exact h.serving_gate d' g hs0
   · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl' hfl'; rw [hinf] at hfl'; rw [hrun]; exact h.inflight_running fl' hfl'
+  · intro g a; rw [hgates]; exact h.gate_saved_none g a
 
 
 
@@ -2011,6 +2020,7 @@ theorem wf_installCapNone (σ : MachineState) (d : DomainId) (s : Slot) (kind : 
   · intro d' g; rw [hserv]; intro hs0; rw [hgates]; exact h.serving_gate d' g hs0
   · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl' hfl'; rw [hinf] at hfl'; rw [hrun]; exact h.inflight_running fl' hfl'
+  · intro g a; rw [hgates]; exact h.gate_saved_none g a
 
 
 /-- **`transferCap` preserves `Wf`.** Composing the recipient install

@@ -63,6 +63,10 @@ structure Wf (σ : MachineState) : Prop where
     ∃ a, (σ.gates g).act = some a ∧ a.caller = d
   /-- The in-flight instruction belongs to a running domain. -/
   inflight_running : ∀ fl, σ.inflight = some fl → (σ.doms fl.dom).run = .running
+  /-- Activations never stack in µ: a live activation's saved serving mark is
+  always `none` (guaranteed by `gate_call`'s `serving.isNone` requirement). This
+  is what makes `gate_return` restore a consistent `serving = none`. -/
+  gate_saved_none : ∀ g a, (σ.gates g).act = some a → a.savedServing = none
 
 /-- The T9 lineage ledger: cells and derived entries balance exactly. A
 consequence of `DomWf` (bijection), stated as the counting equation the

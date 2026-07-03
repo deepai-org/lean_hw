@@ -87,6 +87,7 @@ theorem init_wf (m : Manifest) (hwf : m.WF) : Wf m.initState := by
   · intro d g h; exact absurd h (by simp [Manifest.initState, Manifest.bootDom])
   · intro d g h; exact absurd h (by simp [Manifest.initState, Manifest.bootDom])
   · intro fl h; exact absurd h (by simp [Manifest.initState])
+  · intro g a h; exact absurd h (by simp [Manifest.initState])
 
 /-- `Wf` is preserved by one cycle. Decomposed across the three phases:
 refill and the Mover are fully discharged (`refillPhase_preserves_wf`,

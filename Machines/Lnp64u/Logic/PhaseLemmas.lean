@@ -102,6 +102,7 @@ theorem refillPhase_preserves_wf (m : Manifest) (σ : MachineState) (h : Wf σ) 
   · intro fl; rw [show (refillPhase m σ).inflight = σ.inflight from by
       unfold refillPhase; split <;> rfl]
     intro hfl; rw [refillPhase_run]; exact h.inflight_running fl hfl
+  · intro g a; rw [refillPhase_gates]; exact h.gate_saved_none g a
 
 
 /-! ## moverPhase preserves everything structural
@@ -231,14 +232,15 @@ theorem moverPhase_preserves_wf (σ : MachineState) (h : Wf σ) :
   · intro d g; rw [hd, moverPhase_gates]; exact h.serving_gate d g
   · intro d g; rw [hd, moverPhase_gates]; exact h.blocked_gate d g
   · intro fl; rw [moverPhase_inflight, hd]; exact h.inflight_running fl
+  · intro g a; rw [moverPhase_gates]; exact h.gate_saved_none g a
 
 
 
 /-- `Wf` does not mention the cycle counter, so bumping it is transparent. -/
 theorem wf_setCycle (σ : MachineState) (c : Nat) (h : Wf σ) :
     Wf { σ with cycle := c } := by
-  obtain ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir⟩ := h
-  exact ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir⟩
+  obtain ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir, hgsn⟩ := h
+  exact ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir, hgsn⟩
 
 /-! ## A congruence lemma for `Wf`
 
@@ -256,7 +258,8 @@ theorem wf_of_skeleton (σ σ' : MachineState)
     (hserv : ∀ d, (σ'.doms d).serving = (σ.doms d).serving)
     (hcfg : ∀ g, (σ'.gates g).config = (σ.gates g).config)
     (hact : ∀ g a', (σ'.gates g).act = some a' →
-      ∃ a, (σ.gates g).act = some a ∧ a'.caller = a.caller ∧ a'.depth = a.depth)
+      ∃ a, (σ.gates g).act = some a ∧ a'.caller = a.caller ∧ a'.depth = a.depth ∧
+           a'.savedServing = a.savedServing)
     (hactSome : ∀ g, ((σ.gates g).act).isSome → ((σ'.gates g).act).isSome)
     (hmover : σ'.mover = σ.mover)
     (hinf : ∀ fl, σ'.inflight = some fl → (σ'.doms fl.dom).run = .running)
@@ -282,7 +285,7 @@ theorem wf_of_skeleton (σ σ' : MachineState)
     obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
     exact ⟨o1, o2, by rw [hlive]; exact o3, by rw [hlive]; exact o4⟩
   · intro g a' ha'
-    obtain ⟨a, ha, hcaller, hdepth⟩ := hact g a' ha'
+    obtain ⟨a, ha, hcaller, hdepth, _⟩ := hact g a' ha'
     obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
     exact ⟨by rw [hcfg, hserv]; exact s1, by rw [hcaller, hrun]; exact s2,
       hdepth ▸ s3, hdepth ▸ s4⟩
@@ -293,10 +296,13 @@ theorem wf_of_skeleton (σ σ' : MachineState)
     obtain ⟨a, ha, hc⟩ := h.blocked_gate d g hb
     have hsome : ((σ'.gates g).act).isSome := hactSome g (by rw [ha]; rfl)
     obtain ⟨a'', ha''⟩ := Option.isSome_iff_exists.mp hsome
-    obtain ⟨a0, ha0, hcaller0, _⟩ := hact g a'' ha''
+    obtain ⟨a0, ha0, hcaller0, _, _⟩ := hact g a'' ha''
     rw [ha0] at ha; cases ha
     exact ⟨a'', ha'', by rw [hcaller0]; exact hc⟩
   · exact hinf
+  · intro g a' ha'
+    obtain ⟨a, ha, _, _, hsaved⟩ := hact g a' ha'
+    rw [hsaved]; exact h.gate_saved_none g a ha
 
 /-- The `hact`/`hactSome` obligations of `wf_of_skeleton` when the gate map is
 literally unchanged. -/
@@ -311,7 +317,7 @@ theorem wf_of_skeleton_sameGates (σ σ' : MachineState)
     (hinf : ∀ fl, σ'.inflight = some fl → (σ'.doms fl.dom).run = .running)
     (h : Wf σ) : Wf σ' :=
   wf_of_skeleton σ σ' hcaps hlin hgen hreg hrun hserv
-    (fun g => by rw [hgates]) (fun g a' hh => ⟨a', by rw [hgates] at hh; exact hh, rfl, rfl⟩)
+    (fun g => by rw [hgates]) (fun g a' hh => ⟨a', by rw [hgates] at hh; exact hh, rfl, rfl, rfl⟩)
     (fun g hh => by rw [hgates]; exact hh) hmover hinf h
 
 /-- `haltBase` (halt a *running* domain, no unwind) preserves `Wf`: a running
@@ -367,6 +373,7 @@ theorem haltBase_preserves_wf (σ : MachineState) (d : DomainId) (c : Loom.Word3
       obtain ⟨a, ha, hc⟩ := h.blocked_gate d' g hb
       rw [haltBase_gates]; exact ⟨a, ha, hc⟩
   · intro fl; rw [haltBase_inflight, hinf]; simp
+  · intro g a; rw [haltBase_gates]; exact h.gate_saved_none g a
 
 /-- Halting a *running* domain (with the gate-activation unwind) preserves
 the invariant, for any cause word. -/
@@ -475,6 +482,10 @@ theorem haltDom_preserves_wf (σ : MachineState) (d : DomainId) (c : Loom.Word32
                   injection ha0 with hh; rw [← hh] at hc0; exact h1 hc0.symm
                 rw [if_neg hne]; exact ⟨a0, ha0, hc0⟩
           · intro fl; rw [hinfv]; simp
+          · intro g' a' ha'; rw [hactv] at ha'
+            by_cases hgg : g' = g
+            · rw [if_pos hgg] at ha'; simp at ha'
+            · rw [if_neg hgg] at ha'; exact h.gate_saved_none g' a' ha'
 
 
 /-- Halting a domain with a fault preserves the invariant (the `step_wf`
@@ -625,7 +636,8 @@ theorem wf_setInflight (σ σ0 : MachineState) (fl : InFlight)
     (hserv : ∀ d, (σ0.doms d).serving = (σ.doms d).serving)
     (hcfg : ∀ g, (σ0.gates g).config = (σ.gates g).config)
     (hact : ∀ g a', (σ0.gates g).act = some a' →
-      ∃ a, (σ.gates g).act = some a ∧ a'.caller = a.caller ∧ a'.depth = a.depth)
+      ∃ a, (σ.gates g).act = some a ∧ a'.caller = a.caller ∧ a'.depth = a.depth ∧
+           a'.savedServing = a.savedServing)
     (hactSome : ∀ g, ((σ.gates g).act).isSome → ((σ0.gates g).act).isSome)
     (hmover : σ0.mover = σ.mover)
     (hflrun : (σ0.doms fl.dom).run = .running)
@@ -682,7 +694,7 @@ theorem corePhase_preserves_wf (hexec : ExecPreservesWf) (m : Manifest) (hwf : m
                   simp only [hserv]
                   refine wf_setInflight σ (σ.setDom (σ.payer d) (fun ds => { ds with budget := ds.budget - instr.cost.cost }))
                     (⟨d, w, instr.cost.cost⟩ : InFlight) pc pl pg pr pru ps
-                    (fun g => by rw [pgates]) (fun g a' ha' => ⟨a', by rw [pgates] at ha'; exact ha', rfl, rfl⟩)
+                    (fun g => by rw [pgates]) (fun g a' ha' => ⟨a', by rw [pgates] at ha'; exact ha', rfl, rfl, rfl⟩)
                     (fun g hh => by rw [pgates]; exact hh) pmov ?_ h
                   rw [pru]; exact hdrun
               | some g =>
@@ -714,9 +726,9 @@ theorem corePhase_preserves_wf (hexec : ExecPreservesWf) (m : Manifest) (hwf : m
                           · subst hg
                             rw [Loom.Fun.update_same, hgv] at ha'
                             injection ha' with haa; subst haa
-                            exact ⟨a, hact, rfl, rfl⟩
+                            exact ⟨a, hact, rfl, rfl, rfl⟩
                           · rw [Loom.Fun.update_ne _ _ _ _ hg, hg0] at ha'
-                            exact ⟨a', ha', rfl, rfl⟩
+                            exact ⟨a', ha', rfl, rfl, rfl⟩
                         · intro g' hh
                           show ((Loom.Fun.update sb.gates g gv g').act).isSome
                           by_cases hg : g' = g
