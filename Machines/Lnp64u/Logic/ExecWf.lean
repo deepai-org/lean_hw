@@ -680,6 +680,78 @@ theorem wf_sweepMover (σ : MachineState) (h : Wf σ) : Wf σ.sweepMover := by
             (fun _ => rfl) rfl rfl (fun fl hfl => hcl.inflight_running fl hfl) hcl
         · simp only [hcov, if_false]; exact hcl
 
+
+/-- Reparenting (redirecting every cell whose parent is `old` to `new`)
+preserves `Wf`, given `new` is live. Only lineage-cell parents change; the
+redirected cells now point at a live capability. -/
+theorem wf_reparent (σ : MachineState) (old new : CapRef) (hnew : σ.liveRef new = true)
+    (h : Wf σ) : Wf (σ.reparent old new) := by
+  set σ' := σ.reparent old new with hσ'
+  have hcaps : ∀ d, (σ'.doms d).caps = (σ.doms d).caps := fun d => rfl
+  have hgen : ∀ d, (σ'.doms d).slotGen = (σ.doms d).slotGen := fun d => rfl
+  have hreg : ∀ d, (σ'.doms d).regions = (σ.doms d).regions := fun d => rfl
+  have hrun : ∀ d, (σ'.doms d).run = (σ.doms d).run := fun d => rfl
+  have hserv : ∀ d, (σ'.doms d).serving = (σ.doms d).serving := fun d => rfl
+  have hg : σ'.gates = σ.gates := rfl
+  have hm : σ'.mover = σ.mover := rfl
+  have hi : σ'.inflight = σ.inflight := rfl
+  have hlin : ∀ d l, (σ'.doms d).lineage l =
+      match (σ.doms d).lineage l with
+      | some cell => some (if cell.parent = old then { parent := new } else cell)
+      | none => none := fun d l => rfl
+  have hlr : ∀ r, σ'.liveRef r = σ.liveRef r := by
+    intro r; unfold MachineState.liveRef DomainState.liveCap; rw [hcaps, hgen]
+  constructor
+  · intro d; have hd := h.doms d
+    refine ⟨fun s => by rw [hgen]; exact hd.gen_pos s, ?_, ?_, ?_,
+      fun s base len p => by rw [hcaps]; exact hd.wx s base len p,
+      fun s e base len p => by rw [hcaps]; exact hd.bounds s e base len p⟩
+    · intro s e l he hl; rw [hlin]
+      cases hc : (σ.doms d).lineage l with
+      | none => have := hd.cell_backed s e l (by rw [hcaps] at he; exact he) hl
+                rw [hc] at this; simp at this
+      | some cell => simp [hc]
+    · intro s s' e e' l; rw [hcaps]; exact hd.ptr_inj s s' e e' l
+    · intro l hl; rw [hlin] at hl
+      have hl2 : ((σ.doms d).lineage l).isSome := by
+        cases hc : (σ.doms d).lineage l with
+        | none => rw [hc] at hl; simp at hl
+        | some _ => simp [hc]
+      obtain ⟨s, e, hc, he⟩ := hd.cell_used l hl2
+      exact ⟨s, e, by rw [hcaps]; exact hc, he⟩
+  · intro d s p hp
+    rw [hlr]
+    have hcompute : σ'.parentOf d s =
+        ((σ.parentOf d s).map (fun p0 => if p0 = old then new else p0)) := by
+      unfold MachineState.parentOf
+      cases hce : (σ.doms d).caps s with
+      | none => simp [hcaps, hce]
+      | some e =>
+          cases hle : e.lineage with
+          | none => simp [hcaps, hce, hle]
+          | some l =>
+              cases hc : (σ.doms d).lineage l with
+              | none => simp [hcaps, hce, hle, hlin, hc]
+              | some cell => by_cases hpp : cell.parent = old <;>
+                             simp [hcaps, hce, hle, hlin, hc, hpp]
+    rw [hcompute] at hp; simp only [Option.map_eq_some_iff] at hp
+    obtain ⟨p0, hp0, hpeq⟩ := hp
+    by_cases hpp : p0 = old
+    · rw [if_pos hpp] at hpeq; subst hpeq; exact hnew
+    · rw [if_neg hpp] at hpeq; subst hpeq; exact h.parent_live d s p0 hp0
+  · intro d r rg; rw [hreg]; intro hrg
+    obtain ⟨e, hl, hle⟩ := h.region_backed d r rg hrg
+    refine ⟨e, ?_, hle⟩; unfold DomainState.liveCap; rw [hcaps, hgen]; exact hl
+  · intro job; rw [hm]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, by rw [hlr]; exact o3, by rw [hlr]; exact o4⟩
+  · intro g a; rw [hg]; intro ha
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    exact ⟨by rw [hserv]; exact s1, by rw [hrun]; exact s2, s3, s4⟩
+  · intro d g; rw [hserv]; intro hs; rw [hg]; exact h.serving_gate d g hs
+  · intro d g; rw [hrun]; intro hb; rw [hg]; exact h.blocked_gate d g hb
+  · intro fl hfl; rw [hi] at hfl; rw [hrun]; exact h.inflight_running fl hfl
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
