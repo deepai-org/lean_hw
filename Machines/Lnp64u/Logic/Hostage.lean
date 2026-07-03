@@ -1,4 +1,5 @@
-import Machines.Lnp64u.Logic.Wf
+import Machines.Lnp64u.Logic.Budget
+import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
 # T6 support: hyperperiod, donation ceiling, unwind and scheduler lemmas
@@ -8,9 +9,9 @@ lemmas here are sorry-free; the assembly into the full resume bound lives
 in `Theorems/T6.lean`.
 
 Contents:
-* `hyperL` / `maxDonationBound` — the manifest-computable quantities the
-  (repaired) `resumeBound` is built from, with positivity/divisibility/
-  ceiling lemmas.
+* `hyperL` / `maxDonationBound` / `budgetMass` / `maxCostBound` — the
+  manifest-computable quantities the (repaired) `resumeBound` is built
+  from, with positivity/divisibility/ceiling lemmas.
 * `stepN_add` — window splitting for the counting argument.
 * Unwind lemmas — a serving domain that halts (fault, `halt`, or donation
   exhaustion) *unconditionally* frees its gate and resumes the caller:
@@ -25,6 +26,14 @@ Contents:
   at an issue cycle of a serving domain: either the activation's `donated`
   strictly decreases (and the instruction is in flight), or the donation
   is exhausted and the forced unwind fires this very cycle.
+* `StallsAt` and `corePhase_cases` — the exhaustive whole-cycle
+  classification of the core (burn / retire / idle / fault-halt / stall /
+  issue), with the payer-charge equation on the issue arm: the case split
+  every cycle of the T6 counting argument goes through.
+* `massExcept` — the total budget outside a distinguished domain (the T6
+  potential's main term), with its per-arm evolution lemmas: monotone
+  under `corePhase`, exact `-cost` decrement on a foreign issue, and
+  `≤ +Q`-per-boundary growth under `refillPhase`.
 -/
 
 namespace Machines.Lnp64u
@@ -112,6 +121,30 @@ theorem maxDonation_le_bound (m : Manifest) (d : DomainId) :
   exact (le_foldl_max (fun d' => (m.doms d').maxDonation) _ 0).2 d
     (List.mem_finRange d)
 
+/-- Every period is at most the hyperperiod (it divides it). -/
+theorem periodP_le_hyperL (m : Manifest) (hwf : m.WF) (d : DomainId) :
+    (m.doms d).periodP ≤ hyperL m :=
+  Nat.le_of_dvd (hyperL_pos m hwf) (periodP_dvd_hyperL m d)
+
+/-- The machine-wide instruction-cost ceiling (`cap_revoke`'s 24 cycles):
+an in-flight instruction occupies the core for at most `maxCostBound + 1`
+cycles (issue through retirement). -/
+def maxCostBound : Nat := 24
+
+theorem cost_le_maxCostBound (c : WcetClass) : c.cost ≤ maxCostBound := by
+  cases c <;> decide
+
+/-- Every instruction costs at least one cycle: an issue always charges the
+payer — the fact that makes charged cycles countable against budgets. -/
+theorem cost_pos (c : WcetClass) : 0 < c.cost := by
+  cases c <;> decide
+
+/-- Total manifest budget mass `Σ_e Q_e`: the ceiling on what refills can
+hand out per hyperperiod-boundary sweep, hence on the interference the T6
+potential must absorb. -/
+def budgetMass (m : Manifest) : Nat :=
+  ((List.finRange numDomains).map (fun e => (m.doms e).budgetQ)).sum
+
 /-! ## Window splitting -/
 
 theorem stepN_add (m : Manifest) :
@@ -123,6 +156,27 @@ theorem stepN_add (m : Manifest) :
       rw [h]
       show stepN m (a + b) (step m σ) = stepN m b (stepN m a (step m σ))
       exact stepN_add m a b (step m σ)
+
+/-- Reachability is closed under `stepN`: the T6 windows stay inside the
+reachable set, so `Wf`, `Acyclic`, and `StallFree` apply at every cycle. -/
+theorem stepN_reachable (m : Manifest) (σ : MachineState)
+    (hreach : (machine m).Reachable σ) :
+    ∀ n, (machine m).Reachable (stepN m n σ) := by
+  intro n
+  induction n generalizing σ with
+  | zero => exact hreach
+  | succ k ih => exact ih (step m σ) (Loom.TSys.Reachable.step hreach rfl)
+
+/-- A non-serving domain pays for itself — contrapositively, any domain
+whose payer is the blocked caller's chain origin (other than the origin
+itself) is *serving*, i.e. sits on the origin's chain: the fact that
+makes `massExcept σ origin` chargeable only by foreign issues. -/
+theorem payer_ne_of_serving_none (σ : MachineState) (e x : DomainId)
+    (hne : e ≠ x) (hserv : (σ.doms e).serving = none) : σ.payer e ≠ x := by
+  show σ.chainOrigin maxChainDepth e ≠ x
+  unfold MachineState.chainOrigin
+  rw [hserv]
+  exact hne
 
 /-! ## Unwind lemmas: a halting callee frees its caller *this cycle* -/
 
@@ -355,8 +409,10 @@ theorem corePhase_issue_serving (m : Manifest) (σ : MachineState)
 
 /-- **Stall characterization.** An issue cycle where the scheduled
 domain's payer cannot cover the instruction cost changes nothing: the
-core stalls until refill. (In the T6 counting argument such cycles are
-charged to the payer's spent budget since its last refill.) -/
+core stalls until refill. Stall cycles spend *no* budget anywhere, so
+they cannot be charged to any budget account — which is why the T6
+statement carries the `StallFree` hypothesis (see the stall-lock
+refutation in `Theorems/T6.lean`). -/
 theorem corePhase_stall (m : Manifest) (σ : MachineState)
     (d : DomainId) (w : Loom.Word32) (instr : Loom.Isa.InstrDecl sig Semantics WcetClass)
     (hinf : σ.inflight = none) (hsched : schedule m σ = some d)
@@ -367,5 +423,181 @@ theorem corePhase_stall (m : Manifest) (σ : MachineState)
   unfold corePhase
   simp only [hinf, hsched, hfetch, hdec]
   rw [if_neg hbud]
+
+/-! ## The whole-cycle core classification -/
+
+/-- A stall cycle: the core is idle, the scheduler picked `e`, fetch and
+decode succeeded, but `e`'s payer cannot cover the instruction's cost.
+`corePhase` then changes *nothing* (`corePhase_stall`): the cycle is lost
+and no budget moves — stalls are uncountable against budgets, the reason
+for T6's `StallFree` hypothesis. -/
+def StallsAt (m : Manifest) (σ : MachineState) : Prop :=
+  ∃ e w instr, σ.inflight = none ∧ schedule m σ = some e ∧
+    fetch σ e = some w ∧ Loom.Isa.decode isa w = some instr ∧
+    ¬ instr.cost.cost ≤ (σ.doms (σ.payer e)).budget
+
+/-- **The exhaustive core-cycle classification** — the case split every
+cycle of the T6 counting argument goes through. One `corePhase` is exactly
+one of:
+
+* **burn** — an in-flight instruction with cycles to go counts down;
+* **retire** — the in-flight instruction's last cycle;
+* **idle** — the core is free and nobody is eligible;
+* **fault-halt** — the scheduled domain halts this cycle (fetch or decode
+  failure, protocol violation, or donation exhaustion — every arm of the
+  form `haltWith`, so if the victim was serving, its caller resumes);
+* **stall** — the scheduled domain's payer cannot cover the cost; nothing
+  changes;
+* **issue** — the instruction is latched with `cyclesLeft = cost` and the
+  payer is charged `cost` upfront (every other budget untouched). -/
+theorem corePhase_cases (m : Manifest) (σ : MachineState) :
+    (∃ fl, σ.inflight = some fl ∧ 1 < fl.cyclesLeft ∧
+      corePhase m σ =
+        { σ with inflight := some { fl with cyclesLeft := fl.cyclesLeft - 1 } }) ∨
+    (∃ fl, σ.inflight = some fl ∧ fl.cyclesLeft ≤ 1 ∧
+      corePhase m σ = retire { σ with inflight := none } fl.dom fl.word) ∨
+    (σ.inflight = none ∧ schedule m σ = none ∧ corePhase m σ = σ) ∨
+    (∃ e f, σ.inflight = none ∧ schedule m σ = some e ∧
+      corePhase m σ = haltWith σ e f) ∨
+    (StallsAt m σ ∧ corePhase m σ = σ) ∨
+    (∃ e w instr, σ.inflight = none ∧ schedule m σ = some e ∧
+      fetch σ e = some w ∧ Loom.Isa.decode isa w = some instr ∧
+      instr.cost.cost ≤ (σ.doms (σ.payer e)).budget ∧
+      (corePhase m σ).inflight = some ⟨e, w, instr.cost.cost⟩ ∧
+      ∀ e', ((corePhase m σ).doms e').budget =
+        if e' = σ.payer e then (σ.doms e').budget - instr.cost.cost
+        else (σ.doms e').budget) := by
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · refine .inr (.inl ⟨fl, rfl, hc, ?_⟩)
+        unfold corePhase; simp only [hinf, hc, if_true]
+      · refine .inl ⟨fl, rfl, by omega, ?_⟩
+        unfold corePhase; simp only [hinf, hc, if_false]
+  | none =>
+      cases hsched : schedule m σ with
+      | none =>
+          refine .inr (.inr (.inl ⟨rfl, rfl, ?_⟩))
+          unfold corePhase; simp only [hinf, hsched]
+      | some e =>
+          cases hfetch : fetch σ e with
+          | none =>
+              refine .inr (.inr (.inr (.inl ⟨e, .memoryAuthority, rfl, rfl, ?_⟩)))
+              unfold corePhase; simp only [hinf, hsched, hfetch]
+          | some w =>
+              cases hdec : Loom.Isa.decode isa w with
+              | none =>
+                  refine .inr (.inr (.inr (.inl
+                    ⟨e, .illegalInstruction, rfl, rfl, ?_⟩)))
+                  unfold corePhase; simp only [hinf, hsched, hfetch, hdec]
+              | some instr =>
+                  by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer e)).budget
+                  · cases hserv : (σ.doms e).serving with
+                    | none =>
+                        refine .inr (.inr (.inr (.inr (.inr
+                          ⟨e, w, instr, rfl, rfl, hfetch, hdec, hbud, ?_, ?_⟩))))
+                        · unfold corePhase
+                          simp only [hinf, hsched, hfetch, hdec, hbud,
+                            if_true, hserv]
+                        · intro e'
+                          unfold corePhase
+                          simp only [hinf, hsched, hfetch, hdec, hbud,
+                            if_true, hserv]
+                          by_cases he' : e' = σ.payer e
+                          · subst he'
+                            simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, he']
+                    | some g =>
+                        cases hact : (σ.gates g).act with
+                        | none =>
+                            refine .inr (.inr (.inr (.inl
+                              ⟨e, .protocol, rfl, rfl, ?_⟩)))
+                            unfold corePhase
+                            simp only [hinf, hsched, hfetch, hdec, hbud,
+                              if_true, hserv, hact]
+                        | some a =>
+                            by_cases hdon : instr.cost.cost ≤ a.donated
+                            · refine .inr (.inr (.inr (.inr (.inr
+                                ⟨e, w, instr, rfl, rfl, hfetch, hdec, hbud, ?_, ?_⟩))))
+                              · unfold corePhase
+                                simp only [hinf, hsched, hfetch, hdec, hbud,
+                                  if_true, hserv, hact, hdon]
+                              · intro e'
+                                unfold corePhase
+                                simp only [hinf, hsched, hfetch, hdec, hbud,
+                                  if_true, hserv, hact, hdon]
+                                by_cases he' : e' = σ.payer e
+                                · subst he'
+                                  simp [MachineState.setDom,
+                                    Loom.Fun.update_same]
+                                · simp [MachineState.setDom, he']
+                            · refine .inr (.inr (.inr (.inl
+                                ⟨e, .budget, rfl, rfl, ?_⟩)))
+                              unfold corePhase
+                              simp only [hinf, hsched, hfetch, hdec, hbud,
+                                if_true, hserv, hact, hdon, if_false]
+                  · refine .inr (.inr (.inr (.inr (.inl
+                      ⟨⟨e, w, instr, hinf, hsched, hfetch, hdec, hbud⟩, ?_⟩))))
+                    exact corePhase_stall m σ e w instr hinf hsched hfetch hdec hbud
+
+/-! ## Budget mass outside a domain -/
+
+/-- Total budget held by every domain other than `x`. In T6, `x` is the
+blocked caller's chain origin — the one budget only the serving chain
+draws on — and `massExcept` is the main term of the interference
+potential: foreign issues strictly decrease it, refills grow it by at
+most `Q` per period boundary, and nothing else moves it. -/
+def massExcept (σ : MachineState) (x : DomainId) : Nat :=
+  ∑ e ∈ Finset.univ.erase x, (σ.doms e).budget
+
+/-- Pointwise budget domination gives mass domination. -/
+theorem massExcept_mono {σ σ' : MachineState} (x : DomainId)
+    (h : ∀ e, (σ'.doms e).budget ≤ (σ.doms e).budget) :
+    massExcept σ' x ≤ massExcept σ x :=
+  Finset.sum_le_sum (fun e _ => h e)
+
+/-- `corePhase` never raises the outside mass (issues charge, retires
+only lower budgets, halts and stalls leave them alone). -/
+theorem corePhase_massExcept_le (m : Manifest) (σ : MachineState)
+    (x : DomainId) : massExcept (corePhase m σ) x ≤ massExcept σ x :=
+  massExcept_mono x (fun e => Wip.corePhase_budget_le m σ e)
+
+/-- **The exact charge equation**: a transition that subtracts `c` from
+one domain `p ≠ x` and touches no other budget moves the outside mass
+down by exactly `c` — the strict-decrease brick of the T6 potential
+(instantiated with the issue arm of `corePhase_cases`, where `p` is the
+scheduled domain's payer and `c ≥ 1` by `cost_pos`). -/
+theorem massExcept_sub {σ σ' : MachineState} (x p : DomainId) (c : Nat)
+    (hpx : p ≠ x) (hc : c ≤ (σ.doms p).budget)
+    (hp : (σ'.doms p).budget = (σ.doms p).budget - c)
+    (hne : ∀ e, e ≠ p → (σ'.doms e).budget = (σ.doms e).budget) :
+    massExcept σ' x + c = massExcept σ x := by
+  have hmem : p ∈ Finset.univ.erase x :=
+    Finset.mem_erase.mpr ⟨hpx, Finset.mem_univ p⟩
+  have hrest : ∑ e ∈ (Finset.univ.erase x).erase p, (σ'.doms e).budget
+      = ∑ e ∈ (Finset.univ.erase x).erase p, (σ.doms e).budget :=
+    Finset.sum_congr rfl (fun e he => hne e (Finset.ne_of_mem_erase he))
+  unfold massExcept
+  rw [← Finset.add_sum_erase _ _ hmem,
+      ← Finset.add_sum_erase _ (fun e => (σ.doms e).budget) hmem, hrest, hp]
+  omega
+
+/-! ## Refill facts -/
+
+/-- `refillPhase` moves a budget only at that domain's period boundary
+(and never at boot), where it restores exactly `budgetQ` — the refund
+term of the T6 potential is `Q` per boundary crossed and nothing more. -/
+theorem refillPhase_budget_cases (m : Manifest) (σ : MachineState)
+    (e : DomainId) :
+    ((refillPhase m σ).doms e).budget = (σ.doms e).budget ∨
+    (σ.cycle ≠ 0 ∧ σ.cycle % (m.doms e).periodP = 0 ∧
+      ((refillPhase m σ).doms e).budget = (m.doms e).budgetQ) := by
+  unfold refillPhase
+  by_cases h0 : σ.cycle = 0
+  · exact .inl (by simp [h0])
+  · simp only [h0, if_false]
+    by_cases hb : σ.cycle % (m.doms e).periodP = 0
+    · exact .inr ⟨h0, hb, by simp [hb]⟩
+    · exact .inl (by simp [hb])
 
 end Machines.Lnp64u
