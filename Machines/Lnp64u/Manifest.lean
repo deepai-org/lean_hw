@@ -23,6 +23,10 @@ structure DomainCfg where
   entry : Addr
   /-- Root capabilities. These are the leaves of T2's authority closure. -/
   initCaps : Slot → Option CapKind
+  /-- Boot-time region mappings: region register `r` caches the root
+  capability in the named slot (fetch needs execute authority from cycle 0,
+  so at least the code capability must boot mapped). -/
+  initRegions : RegionId → Option Slot := fun _ => none
 
 /-- The manifest: the machine's complete static configuration. -/
 structure Manifest where
@@ -45,14 +49,22 @@ structure WF (m : Manifest) : Prop where
   caps_wx : ∀ d s base len perms, (m.doms d).initCaps s = some (.mem base len perms) →
     perms.wx = true ∧ base.toNat + len.toNat ≤ memWords
 
-/-- Boot state of one domain. -/
-def bootDom (cfg : DomainCfg) : DomainState where
+/-- Boot state of domain `d`. -/
+def bootDom (d : DomainId) (cfg : DomainCfg) : DomainState where
   regs := fun _ => 0
   pc := cfg.entry
   caps := fun s => (cfg.initCaps s).map (fun k => { kind := k, lineage := none })
   slotGen := fun _ => genFirst
   lineage := fun _ => none
-  regions := fun _ => none
+  regions := fun r =>
+    match cfg.initRegions r with
+    | some s =>
+        match cfg.initCaps s with
+        | some (.mem base len perms) =>
+            some { base := base, len := len, perms := perms
+                   backing := ⟨d, s, genFirst⟩ }
+        | _ => none
+    | none => none
   run := .running
   serving := none
   cause := 0
@@ -62,7 +74,7 @@ def bootDom (cfg : DomainCfg) : DomainState where
 def initState (m : Manifest) : MachineState where
   cycle := 0
   mem := m.rom
-  doms := fun d => bootDom (m.doms d)
+  doms := fun d => bootDom d (m.doms d)
   gates := fun g => { config := m.gates g, act := none }
   mover := none
   inflight := none

@@ -266,7 +266,7 @@ Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `
 
 | Thm | Statement (short) | Form | Phase | Status |
 |-----|-------------------|------|-------|--------|
-| T1 | decode total/det; asm∘disasm = id; ABI bound; null-handle | direct | 0 | — |
+| T1 | decode total/det; asm∘disasm = id; ABI bound; null-handle | direct | 0 | ✓ |
 | T2 | authority confinement (invariant form) | invariant | 1 | — |
 | T2′ | authority confinement (adversarial log-rel) | log-rel | 3 | — |
 | T3 | temporal safety, spec level | invariant | 1 | — |
@@ -302,29 +302,29 @@ subset + semantics drafted.*
 - [x] **0.4** [m] `Machines/Lnp64u/Types.lean`, `Cap.lean` — frozen parameters, handle shape,
       lineage cells, regions.
 - [x] **0.5a** [m] `Machines/Lnp64u/State.lean` — full machine state (gates, Mover, in-flight).
-- [ ] **0.5b** [m] `Machines/Lnp64u/Manifest.lean` — manifest, initial state, well-formedness.
+- [x] **0.5b** [m] `Machines/Lnp64u/Manifest.lean` — manifest, initial state, well-formedness.
       *(deps: 0.5a)*
-- [ ] **0.6** [m] `Machines/Lnp64u/SpecM.lean` — semantics monad, total, faults-as-values.
+- [x] **0.6** [m] `Machines/Lnp64u/SpecM.lean` — semantics monad, total, faults-as-values.
       *(deps: 0.5a)*
 - [x] **0.7** [t] `Loom/Isa/Sig.lean` + `Instr.lean` + `Decode.lean` — generic declarations,
       decode/encode, T1 obligation kit. *(deps: 0.2)*
 - [x] **0.8** [m] **Acc8 complete**: `Machines/Acc8/Spec.lean` (state, ISA as `InstrDecl`
       terms, step, `TSys`), `Iss.lean`; `Theorems/A1.lean` **discharged**. The framework's
       first user. *(deps: 0.7)*
-- [ ] **0.9** [m] `Machines/Lnp64u/Isa/Base.lean` (~15 base ops) over the generic framework;
+- [x] **0.9** [m] `Machines/Lnp64u/Isa/Base.lean` (~15 base ops) over the generic framework;
       Lnp64u decode/encode instances. *(deps: 0.6, 0.7)*
 - [ ] **0.10** [t] `Loom/Dp/Cert/Lrat.lean` — verified LRAT checker + kernel-reduction
       benchmark (go/no-go). *(deps: 0.2)*
-- [ ] **0.11** [m] **T1 (base ops) stated + discharged**; `Theorems/Ledger.lean` exists.
+- [x] **0.11** [m] **T1 (base ops) stated + discharged**; `Theorems/Ledger.lean` exists.
       *(deps: 0.9, 0.10)*
-- [ ] **0.12** [t] `Tools/Audit.lean` + `scripts/check-imports.sh` — ledger walk, sorry/axiom/
+- [x] **0.12** [t] `Tools/Audit.lean` + `scripts/check-imports.sh` — ledger walk, sorry/axiom/
       `native_decide` policing, import DAG (incl. P0), wired into CI. *(deps: 0.11)*
-- [ ] **0.13** [m] `Isa/System.lean` — the 11 system ops. *(deps: 0.9)*
-- [ ] **0.14** [m] `Step.lean` — cycle step: refill → core issue/retire → Mover word; `TSys`.
+- [x] **0.13** [m] `Isa/System.lean` — the 11 system ops. *(deps: 0.9)*
+- [x] **0.14** [m] `Step.lean` — cycle step: refill → core issue/retire → Mover word; `TSys`.
       *(deps: 0.13, 0.5b)*
-- [ ] **0.15** [t+m] `Loom/Core/Trace.lean` frozen; `Iss.lean` + `Tools/Iss.lean` — **first
+- [x] **0.15** [t+m] `Loom/Core/Trace.lean` frozen; `Iss.lean` + `Tools/Iss.lean` — **first
       light: both machines boot under `lake exe iss`**. *(deps: 0.14, 0.8)*
-- [ ] **0.16** [m] T1 extended to the full opcode set. *(deps: 0.13, 0.11)*
+- [x] **0.16** [m] T1 extended to the full opcode set. *(deps: 0.13, 0.11)*
 - [ ] **0.17** [t] `Loom/Isa/Dsl/` — macro front-end; defeq regression on both machines'
       `isa`. *(deps: 0.16)*
 - [ ] **0.18** [t] `Loom/Book/` skeleton — generic extractor + HTML; Acc8 book as smoke test,
