@@ -566,4 +566,40 @@ theorem marks_closed (σ : MachineState) (root : CapRef) (d : DomainId) (s : Slo
     simp only [hp, ← hlive, hpm, decide_true, Bool.and_true, Bool.or_true]
   rw [marks_fixpoint σ root] at hstep; exact hstep
 
+
+/-- `destroyMarked` caps: a slot is emptied iff marked. -/
+theorem destroyMarked_caps (σ : MachineState) (m : DomainId → Slot → Bool)
+    (d : DomainId) (s : Slot) :
+    ((σ.destroyMarked m).doms d).caps s = if m d s then none else (σ.doms d).caps s := rfl
+
+/-- `destroyMarked` slot generations: bumped iff a marked, occupied slot. -/
+theorem destroyMarked_slotGen (σ : MachineState) (m : DomainId → Slot → Bool)
+    (d : DomainId) (s : Slot) :
+    ((σ.destroyMarked m).doms d).slotGen s =
+      if m d s && ((σ.doms d).caps s).isSome then bumpGen ((σ.doms d).slotGen s)
+      else (σ.doms d).slotGen s := rfl
+
+@[simp] theorem destroyMarked_gates (σ : MachineState) (m : DomainId → Slot → Bool) :
+    (σ.destroyMarked m).gates = σ.gates := rfl
+@[simp] theorem destroyMarked_mover (σ : MachineState) (m : DomainId → Slot → Bool) :
+    (σ.destroyMarked m).mover = σ.mover := rfl
+@[simp] theorem destroyMarked_inflight (σ : MachineState) (m : DomainId → Slot → Bool) :
+    (σ.destroyMarked m).inflight = σ.inflight := rfl
+@[simp] theorem destroyMarked_run (σ : MachineState) (m : DomainId → Slot → Bool) (d : DomainId) :
+    ((σ.destroyMarked m).doms d).run = (σ.doms d).run := rfl
+@[simp] theorem destroyMarked_serving (σ : MachineState) (m : DomainId → Slot → Bool) (d : DomainId) :
+    ((σ.destroyMarked m).doms d).serving = (σ.doms d).serving := rfl
+@[simp] theorem destroyMarked_regions (σ : MachineState) (m : DomainId → Slot → Bool) (d : DomainId) :
+    ((σ.destroyMarked m).doms d).regions = (σ.doms d).regions := rfl
+
+/-- An unmarked live capability survives `destroyMarked` unchanged. -/
+theorem destroyMarked_liveCap_of_not_marked (σ : MachineState) (m : DomainId → Slot → Bool)
+    (d : DomainId) (s : Slot) (g : Gen) (e : CapEntry) (hm : m d s = false)
+    (hlc : (σ.doms d).liveCap s g = some e) :
+    ((σ.destroyMarked m).doms d).liveCap s g = some e := by
+  unfold DomainState.liveCap at hlc ⊢
+  simp only [destroyMarked_caps, destroyMarked_slotGen, hm, Bool.false_eq_true, if_false,
+    Bool.false_and]
+  exact hlc
+
 end Machines.Lnp64u
