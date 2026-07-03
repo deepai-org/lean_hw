@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.ExecWf
 import Mathlib.Tactic.FinCases
+import Machines.Lnp64u.Logic.SystemOpsWf
 
 /-!
 # Slot-generation monotonicity (T3 support)
@@ -140,5 +141,40 @@ theorem base_slotGen_le : ∀ instr ∈ base, ∀ c : Ctx, SlotGenLe (instr.sem.
   · exact SlotGenLe.bind (SlotGenLe.reg _ _) (fun _ => SlotGenLe.bind (SlotGenLe.reg _ _) (fun _ => SlotGenLe.iteBool _ (SlotGenLe.updDomPc _ _) (SlotGenLe.pure ())))
   · exact SlotGenLe.bind (SlotGenLe.reg _ _)
       (fun _ => SlotGenLe.bind (SlotGenLe.setReg _ _ _) (fun _ => SlotGenLe.updDomPc _ _))
+
+/-! ### Kernel-level slot-generation bounds -/
+
+theorem clearSlot_slotGen_ge (σ : MachineState) (d : DomainId) (s : Slot) (d' : DomainId) (s' : Slot) :
+    ((σ.doms d').slotGen s').toNat ≤ (((σ.clearSlot d s).doms d').slotGen s').toNat := by
+  rw [clearSlot_slotGen]; split
+  · rename_i h; obtain ⟨hd, hs⟩ := h; subst hd; subst hs; exact bumpGen_ge _
+  · exact le_refl _
+
+theorem destroyMarked_slotGen_ge (σ : MachineState) (m : DomainId → Slot → Bool) (d : DomainId) (s : Slot) :
+    ((σ.doms d).slotGen s).toNat ≤ (((σ.destroyMarked m).doms d).slotGen s).toNat := by
+  rw [destroyMarked_slotGen]; split
+  · exact bumpGen_ge _
+  · exact le_refl _
+
+@[simp] theorem sweepRegions_slotGen' (σ : MachineState) (d : DomainId) (s : Slot) :
+    ((σ.sweepRegions.doms d).slotGen s) = (σ.doms d).slotGen s := by rw [sweepRegions_slotGen]
+
+theorem SlotGenLe.capLive (d : DomainId) (hw : Loom.Word32) :
+    SlotGenLe (Machines.Lnp64u.Isa.capLive d hw) :=
+  SlotGenLe.of_preservesGen _
+    (fun σ r σ' he d' s => by rw [(Machines.Lnp64u.Isa.Wip.capLive_ok d hw σ he).1])
+    (fun σ e σ' he d' s => by rw [Machines.Lnp64u.Isa.Wip.capLive_err_state d hw σ he])
+
+/-- A `updDom` whose update leaves `slotGen` alone is slot-gen monotone. -/
+theorem SlotGenLe.updDomGen (d : DomainId) (f : DomainState → DomainState)
+    (hf : ∀ ds, (f ds).slotGen = ds.slotGen) : SlotGenLe (SpecM.updDom d f) := by
+  intro σ; refine ⟨?_, ?_⟩
+  · intro a σ' he d' s
+    simp only [SpecM.updDom, SpecM.modify] at he; injection he with _ h2; subst h2
+    unfold MachineState.setDom
+    by_cases h : d' = d
+    · subst h; simp [Loom.Fun.update_same, hf]
+    · simp [Loom.Fun.update_ne _ _ _ _ h]
+  · intro e σ' he d' s; simp [SpecM.updDom, SpecM.modify] at he
 
 end Machines.Lnp64u
