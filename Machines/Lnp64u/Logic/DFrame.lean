@@ -611,4 +611,236 @@ theorem dkeep_haltDom (hctx : DCtx d R σ) (hcd : cd ≠ d) (e : DomainId)
 
 end Kernel
 
+/-! ## The `SpecM` combinator kit -/
+
+/-- The per-fragment obligation: from any context state, both `ok` and
+`err` outcomes satisfy `DKeep`. -/
+def DKLe (d cd : DomainId) (R : Addr → Prop) {α : Type} (mm : SpecM α) : Prop :=
+  ∀ σ, DCtx d R σ → cd ≠ d →
+    (∀ a σ', mm σ = .ok a σ' → DKeep d cd R σ σ') ∧
+    (∀ er σ', mm σ = .err er σ' → DKeep d cd R σ σ')
+
+section Kit
+
+variable {d cd : DomainId} {R : Addr → Prop}
+
+theorem DKLe.of_state_eq {α : Type} {mm : SpecM α}
+    (hok : ∀ σ a σ', mm σ = .ok a σ' → σ' = σ)
+    (herr : ∀ σ e σ', mm σ = .err e σ' → σ' = σ) : DKLe d cd R mm :=
+  fun σ hctx _ =>
+    ⟨fun a σ' he => DKeep.of_eq (hok σ a σ' he) hctx.ro hctx.fo,
+     fun e σ' he => DKeep.of_eq (herr σ e σ' he) hctx.ro hctx.fo⟩
+
+theorem DKLe.pure {α : Type} (a : α) : DKLe d cd R (Pure.pure a : SpecM α) :=
+  DKLe.of_state_eq
+    (fun σ a' σ' he => by rw [specM_pure] at he; injection he with _ h2; exact h2.symm)
+    (fun σ e σ' he => by rw [specM_pure] at he; simp at he)
+
+theorem DKLe.bind {α β : Type} {m : SpecM α} {f : α → SpecM β}
+    (hm : DKLe d cd R m) (hf : ∀ a, DKLe d cd R (f a)) : DKLe d cd R (m >>= f) := by
+  intro σ hctx hne
+  refine ⟨?_, ?_⟩
+  · intro b σ' he
+    rw [specM_bind] at he
+    cases hmσ : m σ with
+    | ok a σ1 =>
+        rw [hmσ] at he
+        have h1 := (hm σ hctx hne).1 a σ1 hmσ
+        exact h1.trans ((hf a σ1 (hctx.transport hne h1) hne).1 b σ' he)
+    | err e σ1 => rw [hmσ] at he; simp at he
+    | fault g => rw [hmσ] at he; simp at he
+  · intro e σ' he
+    rw [specM_bind] at he
+    cases hmσ : m σ with
+    | ok a σ1 =>
+        rw [hmσ] at he
+        have h1 := (hm σ hctx hne).1 a σ1 hmσ
+        exact h1.trans ((hf a σ1 (hctx.transport hne h1) hne).2 e σ' he)
+    | err e1 σ1 =>
+        rw [hmσ] at he
+        injection he with _ h2
+        subst h2
+        exact (hm σ hctx hne).2 e1 σ1 hmσ
+    | fault g => rw [hmσ] at he; simp at he
+
+theorem DKLe.iteBool {α : Type} (b : Bool) {m1 m2 : SpecM α}
+    (h1 : DKLe d cd R m1) (h2 : DKLe d cd R m2) :
+    DKLe d cd R (if b then m1 else m2) := by
+  cases b <;> simp only [Bool.false_eq_true, if_true, if_false]
+  · exact h2
+  · exact h1
+
+theorem DKLe.reg (d' : DomainId) (r : RegId) : DKLe d cd R (SpecM.reg d' r) :=
+  DKLe.of_state_eq
+    (fun σ a σ' he => by unfold SpecM.reg at he; injection he with _ h2; exact h2.symm)
+    (fun σ e σ' he => by unfold SpecM.reg at he; simp at he)
+
+theorem DKLe.get : DKLe d cd R SpecM.get :=
+  DKLe.of_state_eq
+    (fun σ a σ' he => by unfold SpecM.get at he; injection he with _ h2; exact h2.symm)
+    (fun σ e σ' he => by unfold SpecM.get at he; simp at he)
+
+theorem DKLe.raise {α : Type} (e : Errno) : DKLe d cd R (SpecM.raise e : SpecM α) :=
+  DKLe.of_state_eq
+    (fun σ a σ' he => by unfold SpecM.raise at he; simp at he)
+    (fun σ e' σ' he => by unfold SpecM.raise at he; injection he with _ h2; exact h2.symm)
+
+theorem DKLe.require (cond : Bool) (e : Errno) : DKLe d cd R (SpecM.require cond e) :=
+  DKLe.of_state_eq
+    (fun σ a σ' he => by cases a; exact require_ok cond e σ he)
+    (fun σ e' σ' he => require_err_state cond e σ he)
+
+theorem DKLe.demand (cond : Bool) (f : Fault) : DKLe d cd R (SpecM.demand cond f) :=
+  DKLe.of_state_eq
+    (fun σ a σ' he => by cases a; exact demand_ok cond f σ he)
+    (fun σ e σ' he => by
+      unfold SpecM.demand at he
+      split at he
+      · simp [specM_pure] at he
+      · simp [SpecM.fatal] at he)
+
+theorem DKLe.load (d' : DomainId) (a : Addr) : DKLe d cd R (SpecM.load d' a) :=
+  DKLe.of_state_eq
+    (fun σ v σ' he => load_ok d' a σ he)
+    (fun σ e σ' he => load_err_state d' a σ he)
+
+theorem DKLe.capLive (d' : DomainId) (hw : Loom.Word32) :
+    DKLe d cd R (Machines.Lnp64u.Isa.capLive d' hw) :=
+  DKLe.of_state_eq
+    (fun σ r σ' he => (Machines.Lnp64u.Isa.Wip.capLive_ok d' hw σ he).1)
+    (fun σ e σ' he => Machines.Lnp64u.Isa.Wip.capLive_err_state d' hw σ he)
+
+theorem DKLe.narrow (base : Addr) (len : BitVec 13) (perms : Perms)
+    (dw : Loom.Word32) : DKLe d cd R (Machines.Lnp64u.Isa.narrow base len perms dw) :=
+  DKLe.of_state_eq
+    (fun σ k σ' he => (Machines.Lnp64u.Isa.Wip.narrow_ok base len perms dw σ he).1)
+    (fun σ e σ' he => Machines.Lnp64u.Isa.Wip.narrow_err_state base len perms dw σ he)
+
+/-- `updDom` at the executing domain, provided the update leaves the
+capability table and the region registers alone. -/
+theorem DKLe.updDomExec (f : DomainState → DomainState)
+    (hcaps : ∀ ds, (f ds).caps = ds.caps)
+    (hreg : ∀ ds, (f ds).regions = ds.regions) :
+    DKLe d cd R (SpecM.updDom cd f) := by
+  intro σ hctx hne
+  refine ⟨?_, ?_⟩
+  · intro a σ' he
+    unfold SpecM.updDom SpecM.modify at he
+    injection he with _ h2
+    subst h2
+    exact dkeep_setDom hctx cd f hne (hcaps _) (hreg _)
+  · intro e σ' he
+    unfold SpecM.updDom SpecM.modify at he
+    simp at he
+
+theorem DKLe.setReg (r : RegId) (v : Loom.Word32) :
+    DKLe d cd R (SpecM.setReg cd r v) :=
+  DKLe.updDomExec _ (fun ds => setReg_caps ds r v) (fun ds => setReg_regions ds r v)
+
+theorem DKLe.store (a : Addr) (v : Loom.Word32) :
+    DKLe d cd R (SpecM.store cd a v) := by
+  intro σ hctx hne
+  unfold SpecM.store
+  refine ⟨?_, ?_⟩
+  · intro x σ' he
+    simp only [SpecM.get, specM_bind] at he
+    by_cases hc : σ.domCovers cd a { r := false, w := true, x := false }
+    · simp only [SpecM.demand, hc, if_true, specM_pure, specM_bind, SpecM.set] at he
+      injection he with _ h2
+      subst h2
+      exact dkeep_write hctx cd hne a v _ hc
+    · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+  · intro e σ' he
+    simp only [SpecM.get, specM_bind] at he
+    by_cases hc : σ.domCovers cd a { r := false, w := true, x := false }
+    · simp [SpecM.demand, hc, specM_pure, specM_bind, SpecM.set] at he
+    · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+
+/-- `d`'s slot table being full, `freeSlot d` fails. -/
+theorem freeSlot_d_none {σ : MachineState} (hctx : DCtx d R σ) :
+    σ.freeSlot d = none := by
+  unfold MachineState.freeSlot
+  rw [List.find?_eq_none]
+  intro s _
+  cases hc : (σ.doms d).caps s with
+  | none => exact absurd hc (hctx.dfull s)
+  | some e => simp [hc]
+
+/-- `allocDerived`: grants into `d` fail at the granter; installs elsewhere
+carry a kind that avoids `R`. -/
+theorem DKLe.allocDerived (owner : DomainId) (kind : CapKind) (parent : CapRef)
+    (hk : owner ≠ d → ∀ b len p, kind = .mem b len p → ∀ a : Addr,
+      b.toNat ≤ a.toNat → a.toNat < b.toNat + len.toNat → ¬ R a) :
+    DKLe d cd R (Machines.Lnp64u.Isa.allocDerived owner kind parent) := by
+  intro σ hctx hne
+  refine ⟨?_, ?_⟩
+  · intro hw σ' he
+    unfold Machines.Lnp64u.Isa.allocDerived at he
+    simp only [SpecM.get, specM_bind] at he
+    cases hfs : σ.freeSlot owner with
+    | none => rw [hfs] at he; simp [SpecM.raise] at he
+    | some s =>
+        rw [hfs] at he
+        cases hfc : σ.freeCell owner with
+        | none => rw [hfc] at he; simp [SpecM.raise] at he
+        | some l =>
+            rw [hfc] at he
+            simp only [SpecM.set, specM_bind, specM_pure] at he
+            injection he with _ h2
+            subst h2
+            have howner : owner ≠ d := by
+              intro hod
+              subst hod
+              rw [freeSlot_d_none hctx] at hfs
+              cases hfs
+            exact dkeep_installAt hctx owner howner s
+              { kind := kind, lineage := some l } (hk howner)
+              (fun ds => { ds with
+                caps := Loom.Fun.update ds.caps s
+                  (some { kind := kind, lineage := some l })
+                lineage := Loom.Fun.update ds.lineage l
+                  (some { parent := parent }) }) rfl rfl
+  · intro e σ' he
+    exact DKeep.of_eq
+      (Machines.Lnp64u.Isa.Wip.allocDerived_err_state owner kind parent σ he)
+      hctx.ro hctx.fo
+
+/-- Case on the observed state first (for state-derived continuations). -/
+theorem DKLe.getD {α : Type} (f : MachineState → SpecM α)
+    (hf : ∀ σ0, DCtx d R σ0 → cd ≠ d →
+      (∀ a σ', f σ0 σ0 = .ok a σ' → DKeep d cd R σ0 σ') ∧
+      (∀ er σ', f σ0 σ0 = .err er σ' → DKeep d cd R σ0 σ')) :
+    DKLe d cd R (SpecM.get >>= f) := by
+  intro σ hctx hne
+  have hred : (SpecM.get >>= f) σ = f σ σ := rfl
+  rw [hred]
+  exact hf σ hctx hne
+
+/-- **The base opcodes are `DKLe`**: they only write the executing
+domain's registers/pc and store through its own coverage. -/
+theorem base_dkle : ∀ instr ∈ Machines.Lnp64u.Isa.base, ∀ c : Ctx, c.d = cd →
+    DKLe d cd R (instr.sem.exec c) := by
+  intro instr hmem c hc
+  subst hc
+  fin_cases hmem
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.setReg _ _)
+  · exact DKLe.setReg _ _
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.load _ _) (fun _ => DKLe.setReg _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.store _ _))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ =>
+      DKLe.iteBool _ (DKLe.updDomExec _ (fun _ => rfl) (fun _ => rfl)) (DKLe.pure ())))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.reg _ _) (fun _ =>
+      DKLe.iteBool _ (DKLe.updDomExec _ (fun _ => rfl) (fun _ => rfl)) (DKLe.pure ())))
+  · exact DKLe.bind (DKLe.reg _ _) (fun _ => DKLe.bind (DKLe.setReg _ _) (fun _ =>
+      DKLe.updDomExec _ (fun _ => rfl) (fun _ => rfl)))
+
+end Kit
+
 end Machines.Lnp64u.DFrame
