@@ -68,73 +68,120 @@ theorem clearSlot_slotGen (σ : MachineState) (d : DomainId) (s : Slot)
 section HaltDom
 variable (σ : MachineState) (d : DomainId) (c : Loom.Word32)
 
-/-- `haltDom` preserves every domain's caps/lineage/slotGen/regions. -/
-private theorem haltDom_dom_proj (d' : DomainId) :
-    ((σ.haltDom d c).doms d').caps = (σ.doms d').caps ∧
-    ((σ.haltDom d c).doms d').lineage = (σ.doms d').lineage ∧
-    ((σ.haltDom d c).doms d').slotGen = (σ.doms d').slotGen ∧
-    ((σ.haltDom d c).doms d').regions = (σ.doms d').regions := by
-  unfold MachineState.haltDom MachineState.setDom
-  split
-  · next =>
-      by_cases hd : d' = d
-      · subst hd; simp [Loom.Fun.update_same]
-      · simp [Loom.Fun.update_ne _ _ _ _ hd]
-  · next g _ =>
-      split
-      · next =>
-          by_cases hd : d' = d
-          · subst hd; simp [Loom.Fun.update_same]
-          · simp [Loom.Fun.update_ne _ _ _ _ hd]
-      · next a _ =>
-          by_cases hcl : d' = a.caller
-          · subst hcl
-            simp only [Loom.Fun.update_same, setReg_caps, setReg_lineage,
-              setReg_slotGen, setReg_regions]
-            by_cases hd : a.caller = d
-            · rw [hd]; simp [Loom.Fun.update_same]
-            · simp [Loom.Fun.update_ne _ _ _ _ hd]
-          · simp only [Loom.Fun.update_ne _ _ _ _ hcl]
-            by_cases hd : d' = d
-            · subst hd; simp [Loom.Fun.update_same]
-            · simp [Loom.Fun.update_ne _ _ _ _ hd]
+/-! ### haltBase projections (setDom of the halted domain) -/
 
-@[simp] theorem haltDom_caps (d' : DomainId) :
-    ((σ.haltDom d c).doms d').caps = (σ.doms d').caps := (haltDom_dom_proj σ d c d').1
-@[simp] theorem haltDom_lineage (d' : DomainId) :
-    ((σ.haltDom d c).doms d').lineage = (σ.doms d').lineage := (haltDom_dom_proj σ d c d').2.1
-@[simp] theorem haltDom_slotGen (d' : DomainId) :
-    ((σ.haltDom d c).doms d').slotGen = (σ.doms d').slotGen := (haltDom_dom_proj σ d c d').2.2.1
-@[simp] theorem haltDom_regions (d' : DomainId) :
-    ((σ.haltDom d c).doms d').regions = (σ.doms d').regions := (haltDom_dom_proj σ d c d').2.2.2
+@[simp] theorem haltBase_caps (d' : DomainId) :
+    ((σ.haltBase d c).doms d').caps = (σ.doms d').caps := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem haltBase_lineage (d' : DomainId) :
+    ((σ.haltBase d c).doms d').lineage = (σ.doms d').lineage := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem haltBase_slotGen (d' : DomainId) :
+    ((σ.haltBase d c).doms d').slotGen = (σ.doms d').slotGen := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem haltBase_regions (d' : DomainId) :
+    ((σ.haltBase d c).doms d').regions = (σ.doms d').regions := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem haltBase_run (d' : DomainId) :
+    ((σ.haltBase d c).doms d').run = if d' = d then .halted else (σ.doms d').run := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+@[simp] theorem haltBase_serving (d' : DomainId) :
+    ((σ.haltBase d c).doms d').serving = if d' = d then none else (σ.doms d').serving := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+@[simp] theorem haltBase_gates (g : GateId) : (σ.haltBase d c).gates g = σ.gates g := rfl
+@[simp] theorem haltBase_mover : (σ.haltBase d c).mover = σ.mover := rfl
+@[simp] theorem haltBase_inflight : (σ.haltBase d c).inflight = σ.inflight := rfl
+@[simp] theorem haltBase_liveRef (r : CapRef) : (σ.haltBase d c).liveRef r = σ.liveRef r := by
+  unfold MachineState.liveRef DomainState.liveCap; rw [haltBase_caps, haltBase_slotGen]
 
-@[simp] theorem haltDom_mover : (σ.haltDom d c).mover = σ.mover := by
-  unfold MachineState.haltDom; split
-  · rfl
-  · split
-    · rfl
-    · rfl
+/-! ### unwindGate projections -/
 
-@[simp] theorem haltDom_inflight : (σ.haltDom d c).inflight = σ.inflight := by
-  unfold MachineState.haltDom; split
-  · rfl
-  · split
-    · rfl
-    · rfl
+variable (g : GateId) (cl : DomainId) (rd : RegId)
 
-@[simp] theorem haltDom_liveRef (r : CapRef) : (σ.haltDom d c).liveRef r = σ.liveRef r := by
-  unfold MachineState.liveRef DomainState.liveCap; rw [haltDom_caps, haltDom_slotGen]
+@[simp] theorem unwindGate_caps (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').caps = (σ.doms d').caps := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem unwindGate_lineage (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').lineage = (σ.doms d').lineage := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem unwindGate_slotGen (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').slotGen = (σ.doms d').slotGen := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem unwindGate_regions (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').regions = (σ.doms d').regions := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem unwindGate_run (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').run = if d' = cl then .running else (σ.doms d').run := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd; simp [Loom.Fun.update_same, setReg_run]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+@[simp] theorem unwindGate_serving (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').serving = (σ.doms d').serving := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd; simp [Loom.Fun.update_same, setReg_serving]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+@[simp] theorem unwindGate_gates_act (g' : GateId) :
+    ((σ.unwindGate g cl rd).gates g').act = if g' = g then none else (σ.gates g').act := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hg : g' = g
+  · subst hg; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hg, hg]
+@[simp] theorem unwindGate_gates_config (g' : GateId) :
+    ((σ.unwindGate g cl rd).gates g').config = (σ.gates g').config := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hg : g' = g
+  · subst hg; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hg]
+@[simp] theorem unwindGate_mover : (σ.unwindGate g cl rd).mover = σ.mover := rfl
+@[simp] theorem unwindGate_inflight : (σ.unwindGate g cl rd).inflight = σ.inflight := rfl
+@[simp] theorem unwindGate_liveRef (r : CapRef) :
+    (σ.unwindGate g cl rd).liveRef r = σ.liveRef r := by
+  unfold MachineState.liveRef DomainState.liveCap; rw [unwindGate_caps, unwindGate_slotGen]
 
-@[simp] theorem haltDom_gates_config (g : GateId) :
-    ((σ.haltDom d c).gates g).config = (σ.gates g).config := by
-  unfold MachineState.haltDom; split
-  · rfl
-  · rename_i g' _
-    split
-    · rfl
-    · by_cases hg : g = g'
-      · subst hg; simp [MachineState.setDom, Loom.Fun.update_same]
-      · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hg]
+
+/-- Equation lemma: with no active served gate, `haltDom` is just `haltBase`. -/
+theorem haltDom_base (hs : (σ.doms d).serving = none) :
+    σ.haltDom d c = σ.haltBase d c := by simp only [MachineState.haltDom, hs]
+theorem haltDom_base' (g : GateId) (hs : (σ.doms d).serving = some g)
+    (ha : (σ.gates g).act = none) : σ.haltDom d c = σ.haltBase d c := by
+  simp only [MachineState.haltDom, hs, ha]
+/-- Equation lemma: unwinding the served gate's activation. -/
+theorem haltDom_unwind (g : GateId) (a : Activation)
+    (hs : (σ.doms d).serving = some g) (ha : (σ.gates g).act = some a) :
+    σ.haltDom d c = (σ.haltBase d c).unwindGate g a.caller a.callerRd := by
+  simp only [MachineState.haltDom, hs, ha]
 
 end HaltDom
 

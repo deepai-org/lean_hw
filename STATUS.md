@@ -59,6 +59,8 @@ counts with `lake exe audit`; run `scripts/ci.sh` for the full gate.
 - **T7** wcet_retirement, budget_delivery.
 - **T8** wx_machine_wide (**body complete**, rests on step_wf),
   prior_holder_excluded, status_word_safety.
+- **Inv** `haltWith_preserves_wf` **proved**; `refillPhase`/`moverPhase` preserve
+  Wf (proved); `step_wf` bottoms out at `corePhase` issue-path + `retire`.
 - **T9** ledger_balanced, budget_bounded.
 - **Inv** step_wf, wf_invariant (init_wf is done; the invariant rests only
   on one-cycle preservation).
@@ -70,12 +72,13 @@ assembled from proved pieces: `refillPhase_preserves_wf` ✓,
 obligation is further decomposed with proved scaffolding —
 `wf_of_skeleton` ✓ (Wf congruence under skeleton-preserving edits),
 `wf_of_skeleton_sameGates` ✓, `schedule_running` ✓ — and the
-inflight-countdown and retirement dispatch are proved. Three localized
-sorries remain in the L1 chain: `corePhase_preserves_wf`'s issue-path
-assembly, `haltWith_preserves_wf` (the gate-unwind congruence), and
-`retire_preserves_wf` (the 25-opcode per-instruction argument, the
-irreducible core). Landing these flips `wf_invariant`, `T8.wx_machine_wide`,
-and `T3.no_resurrection` to CLEAN.
+inflight-countdown and retirement dispatch are proved. **`haltWith_preserves_wf` is now proved** — the gate-unwind congruence,
+via a clean refactor of `haltDom` into `haltBase`/`unwindGate` with full
+projection kits and `haltBase_preserves_wf`. Two localized sorries remain in
+the L1 chain: `corePhase_preserves_wf`'s issue-path assembly (mechanical,
+pending a match-reduction cleanup) and `retire_preserves_wf` (the 25-opcode
+per-instruction argument, the irreducible core). Landing these flips
+`wf_invariant`, `T8.wx_machine_wide`, and `T3.no_resurrection` to CLEAN.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the

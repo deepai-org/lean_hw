@@ -123,20 +123,23 @@ if `d` was serving one: the suspended caller resumes with `-ECALLEEFAULT`
 in its reply register and the gate frees. The T6 no-hostage mechanism — a
 server that faults, halts, or exhausts its donation cannot hold its caller
 blocked. -/
+def haltBase (d : DomainId) (cause : Loom.Word32) : MachineState :=
+  σ.setDom d fun ds => { ds with run := .halted, cause := cause, serving := none }
+
+/-- Free gate `g` and resume its caller `cl` (reply register `rd`) as running,
+delivering `-ECALLEEFAULT`. The unwind step of `haltDom`, factored out so its
+projections have clean equation lemmas. -/
+def unwindGate (g : GateId) (cl : DomainId) (rd : RegId) : MachineState :=
+  ({ σ with gates := Loom.Fun.update σ.gates g { (σ.gates g) with act := none } }).setDom
+    cl fun ds => ({ ds with run := .running } : DomainState).setReg rd Errno.calleeFault.toWord
+
 def haltDom (d : DomainId) (cause : Loom.Word32) : MachineState :=
-  let σ₁ := σ.setDom d fun ds =>
-    { ds with run := .halted, cause := cause, serving := none }
   match (σ.doms d).serving with
-  | none => σ₁
+  | none => σ.haltBase d cause
   | some g =>
       match (σ.gates g).act with
-      | none => σ₁
-      | some a =>
-          let σ₂ := { σ₁ with
-            gates := Loom.Fun.update σ₁.gates g { (σ₁.gates g) with act := none } }
-          σ₂.setDom a.caller fun ds =>
-            ({ ds with run := .running } : DomainState).setReg a.callerRd
-              Errno.calleeFault.toWord
+      | none => σ.haltBase d cause
+      | some a => (σ.haltBase d cause).unwindGate g a.caller a.callerRd
 
 /-! ## Descendant marking (the revoke sweep) -/
 

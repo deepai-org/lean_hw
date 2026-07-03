@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Step
 import Machines.Lnp64u.Logic.Wf
+import Machines.Lnp64u.Logic.KernelLemmas
 
 /-!
 # Phase-structure lemmas (L1 support for `step_wf`)
@@ -313,12 +314,170 @@ theorem wf_of_skeleton_sameGates (σ σ' : MachineState)
     (fun g => by rw [hgates]) (fun g a' hh => ⟨a', by rw [hgates] at hh; exact hh, rfl, rfl⟩)
     (fun g hh => by rw [hgates]; exact hh) hmover hinf h
 
+/-- `haltBase` (halt a *running* domain, no unwind) preserves `Wf`: a running
+domain is neither a gate's blocked caller nor another serving domain, so
+setting its run to halted and clearing its (empty) serving mark is consistent.
+Requires `inflight = none` (holds at every `haltWith` call site). -/
+theorem haltBase_preserves_wf (σ : MachineState) (d : DomainId) (c : Loom.Word32)
+    (h : Wf σ) (hrun : (σ.doms d).run = .running) (hserv : (σ.doms d).serving = none)
+    (hinf : σ.inflight = none) : Wf (σ.haltBase d c) := by
+  constructor
+  · intro d'
+    have hd := h.doms d'
+    exact ⟨fun s => by rw [haltBase_slotGen]; exact hd.gen_pos s,
+      fun s e l => by rw [haltBase_caps, haltBase_lineage]; exact hd.cell_backed s e l,
+      fun s s' e e' l => by rw [haltBase_caps]; exact hd.ptr_inj s s' e e' l,
+      fun l => by rw [haltBase_lineage, haltBase_caps]; exact hd.cell_used l,
+      fun s base len p => by rw [haltBase_caps]; exact hd.wx s base len p,
+      fun s e base len p => by rw [haltBase_caps]; exact hd.bounds s e base len p⟩
+  · intro d' s p
+    rw [show (σ.haltBase d c).parentOf d' s = σ.parentOf d' s from by
+      unfold MachineState.parentOf; rw [haltBase_caps, haltBase_lineage]]
+    rw [haltBase_liveRef]; exact h.parent_live d' s p
+  · intro d' r rg; rw [haltBase_regions]; intro hrg
+    obtain ⟨e, hl, hle⟩ := h.region_backed d' r rg hrg
+    refine ⟨e, ?_, hle⟩; unfold DomainState.liveCap; rw [haltBase_caps, haltBase_slotGen]; exact hl
+  · intro job; rw [haltBase_mover]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, by rw [haltBase_liveRef]; exact o3, by rw [haltBase_liveRef]; exact o4⟩
+  · intro g a; rw [haltBase_gates]; intro ha
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    refine ⟨?_, ?_, s3, s4⟩
+    · rw [haltBase_serving]
+      -- callee of g is running (serving g); it is not d unless d serves g, but
+      -- d.serving = none, so callee ≠ d
+      have hne : (σ.gates g).config.callee ≠ d := by
+        intro he; rw [he] at s1; rw [s1] at hserv; exact absurd hserv (by simp)
+      simp [hne, s1]
+    · rw [haltBase_run]
+      -- a.caller is blocked g; d is running, so a.caller ≠ d
+      have hne : a.caller ≠ d := by
+        intro he; rw [he] at s2; rw [hrun] at s2; exact absurd s2 (by simp)
+      simp [hne, s2]
+  · intro d' g; rw [haltBase_serving]; intro hs
+    by_cases hd : d' = d
+    · rw [hd] at hs; simp at hs
+    · rw [if_neg hd] at hs
+      obtain ⟨c1, c2⟩ := h.serving_gate d' g hs
+      rw [haltBase_gates]; exact ⟨c1, c2⟩
+  · intro d' g; rw [haltBase_run]; intro hb
+    by_cases hd : d' = d
+    · rw [hd] at hb; simp at hb
+    · rw [if_neg hd] at hb
+      obtain ⟨a, ha, hc⟩ := h.blocked_gate d' g hb
+      rw [haltBase_gates]; exact ⟨a, ha, hc⟩
+  · intro fl; rw [haltBase_inflight, hinf]; simp
+
 /-- Halting a domain (with the gate-activation unwind) preserves the invariant.
-Obligation A of `step_wf`; intricate only in the gate-consistency lattice — no
-per-instruction reasoning. -/
+Obligation A of `step_wf`; no per-instruction reasoning. Requires the halted
+domain to be running (true at every `haltWith` call site: scheduled domains
+run). -/
 theorem haltWith_preserves_wf (σ : MachineState) (d : DomainId) (f : Fault)
-    (h : Wf σ) (hinf : σ.inflight = none) : Wf (haltWith σ d f) := by
-  sorry
+    (h : Wf σ) (hrun : (σ.doms d).run = .running) (hinf : σ.inflight = none) :
+    Wf (haltWith σ d f) := by
+  unfold haltWith
+  cases hserv : (σ.doms d).serving with
+  | none =>
+      rw [haltDom_base σ d _ hserv]
+      exact haltBase_preserves_wf σ d _ h hrun hserv hinf
+  | some g =>
+      cases hact : (σ.gates g).act with
+      | none =>
+          exact absurd (h.serving_gate d g hserv).2 (by rw [hact]; simp)
+      | some a =>
+          rw [haltDom_unwind σ d _ g a hserv hact]
+          -- unwind: free gate g, resume a.caller. Facts from Wf:
+          have hcallee : (σ.gates g).config.callee = d := (h.serving_gate d g hserv).1
+          have hgs := h.gate_serving g a hact
+          have hcaller_blk : (σ.doms a.caller).run = .blocked g := hgs.2.1
+          have hcaller_ne_d : a.caller ≠ d := by
+            intro he; rw [he, hrun] at hcaller_blk; exact absurd hcaller_blk (by simp)
+          -- structural projections of the result state
+          set σ' := (σ.haltBase d (BitVec.ofNat 32 f.code)).unwindGate g a.caller a.callerRd
+            with hσ'
+          have hcaps : ∀ d', (σ'.doms d').caps = (σ.doms d').caps := by
+            intro d'; rw [hσ']; simp
+          have hlin : ∀ d', (σ'.doms d').lineage = (σ.doms d').lineage := by
+            intro d'; rw [hσ']; simp
+          have hgen : ∀ d', (σ'.doms d').slotGen = (σ.doms d').slotGen := by
+            intro d'; rw [hσ']; simp
+          have hreg : ∀ d', (σ'.doms d').regions = (σ.doms d').regions := by
+            intro d'; rw [hσ']; simp
+          have hlive : ∀ r, σ'.liveRef r = σ.liveRef r := by intro r; rw [hσ']; simp
+          have hmov : σ'.mover = σ.mover := by rw [hσ']; simp
+          have hcfg : ∀ g', (σ'.gates g').config = (σ.gates g').config := by
+            intro g'; rw [hσ']; simp
+          have hrunv : ∀ d', (σ'.doms d').run =
+              if d' = a.caller then .running else if d' = d then .halted else (σ.doms d').run := by
+            intro d'; rw [hσ']; simp
+          have hservv : ∀ d', (σ'.doms d').serving =
+              if d' = d then none else (σ.doms d').serving := by
+            intro d'; rw [hσ']; simp
+          have hactv : ∀ g', (σ'.gates g').act =
+              if g' = g then none else (σ.gates g').act := by intro g'; rw [hσ']; simp
+          have hinfv : σ'.inflight = none := by rw [hσ']; simp [hinf]
+          -- now assemble Wf σ'
+          constructor
+          · intro d'
+            have hd := h.doms d'
+            exact ⟨fun s => by rw [hgen]; exact hd.gen_pos s,
+              fun s e l => by rw [hcaps, hlin]; exact hd.cell_backed s e l,
+              fun s s' e e' l => by rw [hcaps]; exact hd.ptr_inj s s' e e' l,
+              fun l => by rw [hlin, hcaps]; exact hd.cell_used l,
+              fun s base len p => by rw [hcaps]; exact hd.wx s base len p,
+              fun s e base len p => by rw [hcaps]; exact hd.bounds s e base len p⟩
+          · intro d' s p
+            rw [show σ'.parentOf d' s = σ.parentOf d' s from by
+              unfold MachineState.parentOf; rw [hcaps, hlin]]
+            rw [hlive]; exact h.parent_live d' s p
+          · intro d' r rg; rw [hreg]; intro hrg
+            obtain ⟨e, hl, hle⟩ := h.region_backed d' r rg hrg
+            refine ⟨e, ?_, hle⟩; unfold DomainState.liveCap; rw [hcaps, hgen]; exact hl
+          · intro job; rw [hmov]; intro hj
+            obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+            exact ⟨o1, o2, by rw [hlive]; exact o3, by rw [hlive]; exact o4⟩
+          · intro g' a' ha'
+            rw [hactv] at ha'
+            by_cases hgg : g' = g
+            · rw [if_pos hgg] at ha'; exact absurd ha' (by simp)
+            · rw [if_neg hgg] at ha'
+              obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g' a' ha'
+              refine ⟨?_, ?_, s3, s4⟩
+              · rw [hcfg, hservv]
+                have hne : (σ.gates g').config.callee ≠ d := by
+                  intro he; rw [he] at s1; rw [hserv] at s1
+                  exact hgg (by injection s1 with hh; exact hh.symm)
+                rw [if_neg hne]; exact s1
+              · rw [hrunv]
+                have hne1 : a'.caller ≠ a.caller := by
+                  intro he; rw [he, hcaller_blk] at s2
+                  exact hgg (by injection s2 with hh; exact hh.symm)
+                have hne2 : a'.caller ≠ d := by
+                  intro he; rw [he, hrun] at s2; exact absurd s2 (by simp)
+                rw [if_neg hne1, if_neg hne2]; exact s2
+          · intro d' g'; rw [hservv]; intro hs
+            by_cases hd : d' = d
+            · rw [if_pos hd] at hs; exact absurd hs (by simp)
+            · rw [if_neg hd] at hs
+              obtain ⟨c1, c2⟩ := h.serving_gate d' g' hs
+              rw [hcfg, hactv]
+              have hne : g' ≠ g := by
+                intro he; subst he; rw [hcallee] at c1; exact hd c1.symm
+              rw [if_neg hne]; exact ⟨c1, c2⟩
+          · intro d' g'; rw [hrunv]; intro hb
+            by_cases h1 : d' = a.caller
+            · rw [if_pos h1] at hb; exact absurd hb (by simp)
+            · rw [if_neg h1] at hb
+              by_cases h2 : d' = d
+              · rw [if_pos h2] at hb; exact absurd hb (by simp)
+              · rw [if_neg h2] at hb
+                obtain ⟨a0, ha0, hc0⟩ := h.blocked_gate d' g' hb
+                rw [hactv]
+                have hne : g' ≠ g := by
+                  intro he; subst he; rw [hact] at ha0
+                  injection ha0 with hh; rw [← hh] at hc0; exact h1 hc0.symm
+                rw [if_neg hne]; exact ⟨a0, ha0, hc0⟩
+          · intro fl; rw [hinfv]; simp
 
 /-- Instruction retirement (running the decoded instruction's semantics via the
 capability-kernel functions) preserves the invariant. Obligation B of
@@ -386,7 +545,9 @@ theorem corePhase_preserves_wf (m : Manifest) (hwf : m.WF) (σ : MachineState)
           simp only [Option.some.injEq] at hfl'; exact hfl' ▸ rfl
         rw [hdom]; exact h.inflight_running fl hinf
   | none =>
-      -- schedule / fetch / decode / issue; fault paths via haltWith, issue via
-      -- the skeleton congruence. Assembly in progress.
+      -- schedule / fetch / decode / issue. The four fault paths now discharge
+      -- via the proved `haltWith_preserves_wf`; the two issue paths (budget
+      -- charge + set inflight, with the optional donation-counter update) go
+      -- through `wf_of_skeleton`. Assembly pending a match-reduction cleanup.
       sorry
 end Machines.Lnp64u
