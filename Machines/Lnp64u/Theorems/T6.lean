@@ -214,8 +214,16 @@ ingredients are proved in `Logic/Hostage.lean`), itemized:
    domain's payer differs from `origin`; and the chain shape is frozen on
    cycles the head is not issued/in flight (`step_touch` + the gate ops'
    `require` guards: a foreign `gate_call` into a chain member is
-   `gateBusy`). Needs one new reachability invariant,
-   `run = halted → serving = none`, to exclude a half-halted chain.
+   `gateBusy`). **DONE (2026-07-03):** the one new reachability invariant
+   this needed — `run = halted → serving = none`, excluding a half-halted
+   chain — is now proved sorry-free as
+   `Hostage.halted_serving_none_invariant` (a full ISA combinator sweep:
+   `haltDom_hsn`/`CalmOut.hsn` for the halt and calm ops,
+   `gatecall_hsn`/`gatereturn_hsn` via `gateCall_end_hsn`/
+   `gateReturn_end_hsn` for the gate ops, lifted through
+   `retire_hsn`/`corePhase_hsn`/`step_hsn` to every reachable state). The
+   remaining part of this item — assembling the frozen-shape path itself —
+   is bundled into the measure/potential counting below.
 2. **Measure**: the lex order on the `donated` vector; every chain-head
    issue strictly decreases it (`corePhase_issue_serving` — donation
    charge or forced unwind) and every chain-head retirement of a gate op
