@@ -442,4 +442,39 @@ theorem markStep_mono (σ : MachineState) (root : CapRef) (m m' : DomainId → S
         · rcases Bool.and_eq_true _ _ |>.mp hpm with ⟨hg, hmm⟩
           simp [hg, hle p.dom p.slot hmm]
 
+
+/-- The `k`-th marking iterate. `marks` is this at `k = numDomains * numSlots`. -/
+def MachineState.iterMark (σ : MachineState) (root : CapRef) (k : Nat) : DomainId → Slot → Bool :=
+  Nat.fold k (fun _ _ m => σ.markStep root m) (fun _ _ => false)
+
+theorem iterMark_succ (σ : MachineState) (root : CapRef) (k : Nat) :
+    σ.iterMark root (k + 1) = σ.markStep root (σ.iterMark root k) := by
+  unfold MachineState.iterMark; rw [Nat.fold_succ]
+
+theorem marks_eq_iter (σ : MachineState) (root : CapRef) :
+    σ.marks root = σ.iterMark root (numDomains * numSlots) := by
+  unfold MachineState.marks MachineState.iterMark; rfl
+
+/-- Each iterate is contained in the next (marking only adds). -/
+theorem iterMark_le_succ (σ : MachineState) (root : CapRef) (k : Nat)
+    (d : DomainId) (s : Slot) :
+    σ.iterMark root k d s = true → σ.iterMark root (k + 1) d s = true := by
+  rw [iterMark_succ]; exact markStep_infl σ root _ d s
+
+/-- Iterates are monotone in the step count. -/
+theorem iterMark_mono (σ : MachineState) (root : CapRef) {k k' : Nat} (hk : k ≤ k')
+    (d : DomainId) (s : Slot) :
+    σ.iterMark root k d s = true → σ.iterMark root k' d s = true := by
+  induction hk with
+  | refl => exact id
+  | step _ ih => intro h; exact iterMark_le_succ σ root _ d s (ih h)
+
+/-- Once an iterate equals its successor, all later iterates agree. -/
+theorem iterMark_stable (σ : MachineState) (root : CapRef) {k : Nat}
+    (hfix : σ.iterMark root (k + 1) = σ.iterMark root k) (j : Nat) (hj : k ≤ j) :
+    σ.iterMark root j = σ.iterMark root k := by
+  induction hj with
+  | refl => rfl
+  | step _ ih => rw [iterMark_succ, ih, ← iterMark_succ, hfix]
+
 end Machines.Lnp64u
