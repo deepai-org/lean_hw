@@ -1009,4 +1009,115 @@ theorem drain (m : Manifest) (hwfm : m.WF) :
       · rw [hflρ] at hinfρ
         exact absurd hinfρ (by simp)
 
+/-- **The frozen scan**: iterating `cycle_master`, a window either sees the
+caller resume, a clean pop, a head issue — all with the measure still at its
+start value — or stays entirely frozen, accumulating the potential drop. -/
+theorem scan (m : Manifest) (hwfm : m.WF)
+    (hstall : ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ)) :
+    ∀ (n : Nat) (σ : MachineState), (machine m).Reachable σ →
+    ∀ {d : DomainId} {gd : GateId}, (σ.doms d).run = .blocked gd →
+    ∀ {l : List GateId} {h : DomainId}, ChainFrom σ d l h →
+    (∀ fl, σ.inflight = some fl → fl.dom ≠ h) →
+    (∃ t, t ≤ n ∧ ((stepN m t σ).doms d).run ≠ .blocked gd) ∨
+    (∃ t, t ≤ n ∧ ((stepN m t σ).doms d).run = .blocked gd ∧
+      (stepN m t σ).inflight = none ∧
+      chainMeasure m (stepN m t σ) d < chainMeasure m σ d) ∨
+    (∃ t, t < n ∧
+      ((stepN m (t + 1) σ).doms d).run = .blocked gd ∧
+      ChainFrom (stepN m (t + 1) σ) d l h ∧
+      chainMeasure m (stepN m (t + 1) σ) d + chainW m ^ (maxChainDepth - l.length)
+        ≤ chainMeasure m σ d ∧
+      (∃ fl, (stepN m (t + 1) σ).inflight = some fl ∧ fl.dom = h)) ∨
+    ((∀ t, t ≤ n → (((stepN m t σ).doms d).run = .blocked gd ∧
+        ChainFrom (stepN m t σ) d l h ∧
+        chainMeasure m (stepN m t σ) d = chainMeasure m σ d ∧
+        (stepN m t σ).payer d = σ.payer d ∧
+        (∀ fl, (stepN m t σ).inflight = some fl → fl.dom ≠ h))) ∧
+      (∀ t, t < n →
+        ((stepN m (t + 1) σ).doms (σ.payer d)).budget
+          = ((refillPhase m (stepN m t σ)).doms (σ.payer d)).budget ∧
+        (0 < ((refillPhase m (stepN m t σ)).doms (σ.payer d)).budget →
+          psi (stepN m (t + 1) σ) (σ.payer d) + 1 ≤
+            psi (stepN m t σ) (σ.payer d) + 2 * gainAt m (stepN m t σ) (σ.payer d)))) := by
+  intro n
+  induction n with
+  | zero =>
+      intro σ hreach d gd hb l h hcf hquiet
+      refine .inr (.inr (.inr ⟨?_, ?_⟩))
+      · intro t ht
+        have ht0 : t = 0 := by omega
+        subst ht0
+        exact ⟨hb, hcf, rfl, rfl, hquiet⟩
+      · intro t ht
+        omega
+  | succ n ihn =>
+      intro σ hreach d gd hb l h hcf hquiet
+      rcases ihn σ hreach hb hcf hquiet with hU | hE | hI | ⟨hfz, hψ⟩
+      · obtain ⟨t, ht, hout⟩ := hU
+        exact .inl ⟨t, by omega, hout⟩
+      · obtain ⟨t, ht, hout⟩ := hE
+        exact .inr (.inl ⟨t, by omega, hout⟩)
+      · obtain ⟨t, ht, hout⟩ := hI
+        exact .inr (.inr (.inl ⟨t, by omega, hout⟩))
+      · -- extend the frozen prefix by one cycle at t = n
+        obtain ⟨hbn, hcfn, hmn, hpn, hqn⟩ := hfz n (Nat.le_refl _)
+        have hreachn : (machine m).Reachable (stepN m n σ) := stepN_reachable m σ hreach n
+        have hstepn : stepN m (n + 1) σ = step m (stepN m n σ) := by
+          have : n + 1 = n + 1 := rfl
+          rw [show n + 1 = n + 1 from rfl]
+          calc stepN m (n + 1) σ = stepN m 1 (stepN m n σ) := by
+                rw [← stepN_add m n 1 σ]
+            _ = step m (stepN m n σ) := rfl
+        rcases cycle_master m hwfm hstall (stepN m n σ) hreachn hbn hcfn hqn with
+          hU | ⟨hB, hI2, hM⟩ | ⟨hB, hC, hP, hM, hF⟩ | ⟨hB, hC, hM, hP, hBud, hQ, hPsi⟩
+        · refine .inl ⟨n + 1, by omega, ?_⟩
+          rw [hstepn]
+          exact hU
+        · refine .inr (.inl ⟨n + 1, by omega, ?_, ?_, ?_⟩)
+          · rw [hstepn]; exact hB
+          · rw [hstepn]; exact hI2
+          · rw [hstepn]
+            calc chainMeasure m (step m (stepN m n σ)) d
+                < chainMeasure m (stepN m n σ) d := hM
+              _ = chainMeasure m σ d := hmn
+        · refine .inr (.inr (.inl ⟨n, by omega, ?_, ?_, ?_, ?_⟩))
+          · rw [hstepn]; exact hB
+          · rw [hstepn]; exact hC
+          · rw [hstepn]
+            calc chainMeasure m (step m (stepN m n σ)) d +
+                  chainW m ^ (maxChainDepth - l.length)
+                ≤ chainMeasure m (stepN m n σ) d := hM
+              _ = chainMeasure m σ d := hmn
+          · rw [hstepn]; exact hF
+        · refine .inr (.inr (.inr ⟨?_, ?_⟩))
+          · intro t ht
+            rcases Nat.lt_or_ge t (n + 1) with hlt | hge
+            · exact hfz t (by omega)
+            · have hteq : t = n + 1 := by omega
+              subst hteq
+              refine ⟨by rw [hstepn]; exact hB, by rw [hstepn]; exact hC, ?_, ?_, ?_⟩
+              · rw [hstepn]
+                calc chainMeasure m (step m (stepN m n σ)) d
+                    = chainMeasure m (stepN m n σ) d := hM
+                  _ = chainMeasure m σ d := hmn
+              · rw [hstepn]
+                calc (step m (stepN m n σ)).payer d
+                    = (stepN m n σ).payer d := hP
+                  _ = σ.payer d := hpn
+              · rw [hstepn]
+                exact hQ
+          · intro t ht
+            rcases Nat.lt_or_ge t n with hlt | hge
+            · exact hψ t hlt
+            · have hteq : t = n := by omega
+              subst hteq
+              constructor
+              · rw [hstepn, ← hpn]
+                exact hBud
+              · intro hfund
+                rw [hstepn]
+                have := hPsi (by rw [hpn]; exact hfund)
+                rw [hpn] at this
+                exact this
+
 end Machines.Lnp64u
