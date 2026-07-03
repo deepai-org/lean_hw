@@ -1,4 +1,5 @@
 import Machines.Lnp64u.SpecM
+import Machines.Lnp64u.Isa.System
 import Machines.Lnp64u.Logic.Wf
 import Machines.Lnp64u.Logic.PhaseLemmas
 
@@ -525,6 +526,34 @@ theorem wf_installDerived (σ : MachineState) (d : DomainId) (s : Slot) (l : Lin
   · intro d' g; rw [hserv]; intro hs0; rw [hgates]; exact h.serving_gate d' g hs0
   · intro d' g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d' g hb
   · intro fl' hfl'; rw [hinf] at hfl'; rw [hrun]; exact h.inflight_running fl' hfl'
+
+
+/-- `allocDerived` preserves `Wf` on success, given the kind is W^X/in-bounds
+(if memory) and the parent is live. It allocates a free slot and cell and calls
+`installDerived`. The bridge for `cap_dup`/`mem_grant`. -/
+theorem allocDerived_ok (owner : DomainId) (kind : CapKind) (parent : CapRef)
+    (σ : MachineState) {hw : Loom.Word32} {σ' : MachineState}
+    (hwx : ∀ base len p, kind = .mem base len p → p.wx = true ∧ base.toNat + len.toNat ≤ memWords)
+    (hpar : σ.liveRef parent = true) (h : Wf σ)
+    (he : Machines.Lnp64u.Isa.allocDerived owner kind parent σ = .ok hw σ') : Wf σ' := by
+  unfold Machines.Lnp64u.Isa.allocDerived at he
+  simp only [SpecM.get, specM_bind] at he
+  cases hfs : σ.freeSlot owner with
+  | none => rw [hfs] at he; simp [SpecM.raise] at he
+  | some s =>
+      rw [hfs] at he
+      cases hfc : σ.freeCell owner with
+      | none => rw [hfc] at he; simp [SpecM.raise] at he
+      | some l =>
+          rw [hfc] at he
+          simp only [SpecM.set, specM_bind, specM_pure] at he
+          injection he with _ h2
+          have hσ' : σ' = (σ.installDerived owner s l kind parent).1 := by
+            rw [← h2]
+          rw [hσ']
+          exact wf_installDerived σ owner s l kind parent
+            (freeSlot_caps_none σ owner hfs) (freeCell_none σ owner hfc) hwx hpar h
+
 
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
