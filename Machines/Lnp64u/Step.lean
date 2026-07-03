@@ -48,10 +48,10 @@ def fetch (σ : MachineState) (d : DomainId) : Option Loom.Word32 :=
   then some (σ.read (σ.doms d).pc)
   else none
 
-/-- Halt domain `d` with fault `f` (cause register set). -/
+/-- Halt domain `d` with fault `f` (cause register set), unwinding any
+gate activation `d` was serving (T6). -/
 def haltWith (σ : MachineState) (d : DomainId) (f : Fault) : MachineState :=
-  σ.setDom d fun ds =>
-    { ds with run := .halted, cause := BitVec.ofNat 32 f.code }
+  σ.haltDom d (BitVec.ofNat 32 f.code)
 
 /-- The scheduler: highest-priority domain that is running and whose payer
 has budget remaining. Distinct priorities (manifest WF) make the choice
@@ -101,8 +101,26 @@ def corePhase (m : Manifest) (σ : MachineState) : MachineState :=
                   let cost := instr.cost.cost
                   let p := σ.payer d
                   if cost ≤ (σ.doms p).budget then
-                    let σ' := σ.setDom p fun ds => { ds with budget := ds.budget - cost }
-                    { σ' with inflight := some { dom := d, word := w, cyclesLeft := cost } }
+                    -- donation check: a serving domain draws its activation down
+                    match (σ.doms d).serving with
+                    | some g =>
+                        match (σ.gates g).act with
+                        | some a =>
+                            if cost ≤ a.donated then
+                              let σ' := σ.setDom p fun ds =>
+                                { ds with budget := ds.budget - cost }
+                              let gs' : GateState :=
+                                { (σ'.gates g) with
+                                  act := some { a with donated := a.donated - cost } }
+                              let σ'' := { σ' with gates := Loom.Fun.update σ'.gates g gs' }
+                              { σ'' with inflight := some { dom := d, word := w, cyclesLeft := cost } }
+                            else
+                              -- donation exhausted: forced unwind (T6)
+                              haltWith σ d .budget
+                        | none => haltWith σ d .protocol
+                    | none =>
+                        let σ' := σ.setDom p fun ds => { ds with budget := ds.budget - cost }
+                        { σ' with inflight := some { dom := d, word := w, cyclesLeft := cost } }
                   else σ  -- stall until refill
 
 /-- Does the live capability behind `r` currently cover `a` with `need`?
@@ -147,6 +165,11 @@ def step (m : Manifest) (σ : MachineState) : MachineState :=
   let σ₂ := corePhase m σ₁
   let σ₃ := moverPhase σ₂
   { σ₃ with cycle := σ₃.cycle + 1 }
+
+/-- `n` cycles. -/
+def stepN (m : Manifest) : Nat → MachineState → MachineState
+  | 0, σ => σ
+  | n + 1, σ => stepN m n (step m σ)
 
 /-- The configured machine as a transition system (P2): the abstract side
 of the multicycle refinement (R-MC) and the subject of T2–T9. -/

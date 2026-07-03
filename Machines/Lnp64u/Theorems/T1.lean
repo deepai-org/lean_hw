@@ -87,10 +87,11 @@ theorem decode_illegal (w : sig.Word) (h : ¬ legalOp (sig.opcodeOf w).toNat) :
 
 /-! ## Return-ABI bound and the null handle -/
 
-/-- The errno ABI bound: every errno word is one of the top eight negative
-words — `-8 ≤ -errno ≤ -1` in two's complement — so no errno collides with
-a handle word (handles have bits 31:13 zero) or with success (0). -/
-theorem errno_bound : ∀ e : Errno, 2 ^ 32 - 8 ≤ e.toWord.toNat := by
+/-- The errno ABI bound: every errno word is one of the top sixteen
+negative words — `-16 ≤ -errno ≤ -1` in two's complement — so no errno
+collides with a handle word (handles have bits 31:13 zero) or with
+success (0). -/
+theorem errno_bound : ∀ e : Errno, 2 ^ 32 - 16 ≤ e.toWord.toNat := by
   intro e; cases e <;> decide
 
 set_option maxHeartbeats 4000000 in

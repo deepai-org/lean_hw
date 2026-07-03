@@ -257,7 +257,8 @@ def system : List Instr := [
               let act : Activation :=
                 { caller := c.d, callerRd := c.op.rd
                   savedRegs := cd.regs, savedPc := cd.pc
-                  savedServing := cd.serving, depth := depth }
+                  savedServing := cd.serving, depth := depth
+                  donated := (σ.doms c.d).maxDonation }
               set ({ σ with
                 gates := Loom.Fun.update σ.gates gid { gs with act := some act } })
               updDom cal fun ds =>
@@ -370,12 +371,14 @@ def system : List Instr := [
   { mnemonic := "halt", opcode := 26, operands := []
     sem :=
       { exec := fun c => do
-          updDom c.d fun ds => { ds with run := .halted } }
+          modify (fun σ => σ.haltDom c.d 0) }
     cost := .sched
     prose := { summary := "Halt this domain."
                operation := "The domain halts voluntarily; its cause \
                  register stays 0 (distinguishing `halt` from a fault). \
-                 Halting is terminal — µ has no domain restart." } }
+                 Halting is terminal — µ has no domain restart. If the \
+                 domain was serving a gate activation, the activation \
+                 unwinds: the caller resumes with `-ECALLEEFAULT` (T6)." } }
 ]
 
 end Machines.Lnp64u.Isa

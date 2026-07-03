@@ -66,6 +66,10 @@ structure DomainState where
   cause : Loom.Word32
   /-- Budget remaining in the current period, in cycles. -/
   budget : Nat
+  /-- Static copy of this domain's manifest donation bound: the cycle
+  budget each gate activation *called by this domain* may consume before
+  it is forcibly unwound (T6). -/
+  maxDonation : Nat
 
 namespace DomainState
 
@@ -113,6 +117,10 @@ structure Activation where
   /-- Chain depth of this activation (1 = called from a non-serving domain).
   Bounded by `maxChainDepth`. -/
   depth : Nat
+  /-- Donation cycles remaining: decremented at every issue by the serving
+  domain; exhaustion is a `budget` fault, which unwinds the activation
+  (T6's no-hostage bound is `f(maxDonation, depth, Mover word + sweep)`). -/
+  donated : Nat
 
 /-- Per-gate dynamic state: the serialized construct is one optional
 activation. The holder field *is* `Activation` existence plus the callee's

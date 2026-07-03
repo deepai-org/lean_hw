@@ -19,6 +19,9 @@ structure DomainCfg where
   /-- Budget: `budgetQ` cycles per `periodP`-cycle period. -/
   budgetQ : Nat
   periodP : Nat
+  /-- Donation bound: cycles a gate activation called by this domain may
+  consume before forced unwind (T6). -/
+  maxDonation : Nat := 32
   /-- Reset program counter. -/
   entry : Addr
   /-- Root capabilities. These are the leaves of T2's authority closure. -/
@@ -69,6 +72,7 @@ def bootDom (d : DomainId) (cfg : DomainCfg) : DomainState where
   serving := none
   cause := 0
   budget := cfg.budgetQ
+  maxDonation := cfg.maxDonation
 
 /-- The boot state: the one meaning of "reset". -/
 def initState (m : Manifest) : MachineState where

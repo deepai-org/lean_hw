@@ -118,6 +118,26 @@ def clearSlot (d : DomainId) (s : Slot) : MachineState :=
         | none => ds.lineage
       slotGen := Loom.Fun.update ds.slotGen s (bumpGen (ds.slotGen s)) }
 
+/-- Halt domain `d` with the given cause word, unwinding a gate activation
+if `d` was serving one: the suspended caller resumes with `-ECALLEEFAULT`
+in its reply register and the gate frees. The T6 no-hostage mechanism — a
+server that faults, halts, or exhausts its donation cannot hold its caller
+blocked. -/
+def haltDom (d : DomainId) (cause : Loom.Word32) : MachineState :=
+  let σ₁ := σ.setDom d fun ds =>
+    { ds with run := .halted, cause := cause, serving := none }
+  match (σ.doms d).serving with
+  | none => σ₁
+  | some g =>
+      match (σ.gates g).act with
+      | none => σ₁
+      | some a =>
+          let σ₂ := { σ₁ with
+            gates := Loom.Fun.update σ₁.gates g { (σ₁.gates g) with act := none } }
+          σ₂.setDom a.caller fun ds =>
+            ({ ds with run := .running } : DomainState).setReg a.callerRd
+              Errno.calleeFault.toWord
+
 /-! ## Descendant marking (the revoke sweep) -/
 
 /-- One propagation step of descendant marking from `root`: a capability is
@@ -210,7 +230,12 @@ def transferCap (from_ : DomainId) (s : Slot) (to_ : DomainId) :
         pure (σ.setDom to_ fun ds =>
           { ds with caps := Loom.Fun.update ds.caps s' (some { kind := e.kind, lineage := none }) })
   let σ₂ := σ₁.reparent oldRef newRef
-  pure (σ₂.clearSlot from_ s, newRef)
+  -- Sweep after the move: the source domain must not retain cached authority
+  -- (regions) or in-flight Mover traffic under the reference it just gave
+  -- away. Found while stating T3/T8 (2026-07-03) — the proof-forced fix the
+  -- charter predicts: without this sweep, gate-transferring a capability
+  -- leaves the giver a live region register over the moved range.
+  pure ((((σ₂.clearSlot from_ s).sweepRegions).sweepMover), newRef)
 
 end MachineState
 end Machines.Lnp64u

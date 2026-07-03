@@ -267,17 +267,17 @@ Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `
 | Thm | Statement (short) | Form | Phase | Status |
 |-----|-------------------|------|-------|--------|
 | T1 | decode total/det; asm∘disasm = id; ABI bound; null-handle | direct | 0 | ✓ |
-| T2 | authority confinement (invariant form) | invariant | 1 | — |
+| T2 | authority confinement (invariant form) | invariant | 1 | S |
 | T2′ | authority confinement (adversarial log-rel) | log-rel | 3 | — |
-| T3 | temporal safety, spec level | invariant | 1 | — |
+| T3 | temporal safety, spec level | invariant | 1 | S |
 | T3′ | temporal safety as RTL cycle bound K | cycle bound | 3 | — |
-| T4 | integrity / frame (4 channels + scrub equalities) | invariant | 1 | — |
+| T4 | integrity / frame (4 channels + scrub equalities) | invariant | 1 | S |
 | T4′ | frame, adversarial form | log-rel | 3 | — |
-| T5 | noninterference (2-safety, path-free pairs) | 2-safety | 1 | — |
-| T6 | totality / no-hostage | invariant + bound | 1 | — |
-| T7 | Σ Q/P ≤ 1 ⟹ budget delivery; WCET lemmas | conditional | 1/3 | — |
-| T8 | ownership transfer; W^X; status-word safety | invariant | 1 | — |
-| T9 | conservation of slots/lineage/budget | invariant | 1 | — |
+| T5 | noninterference (2-safety, path-free pairs) | 2-safety | 1 | S |
+| T6 | totality / no-hostage | invariant + bound | 1 | S (totality ✓) |
+| T7 | Σ Q/P ≤ 1 ⟹ budget delivery; WCET lemmas | conditional | 1/3 | S |
+| T8 | ownership transfer; W^X; status-word safety | invariant | 1 | S |
+| T9 | conservation of slots/lineage/budget | invariant | 1 | S (init ✓) |
 | R-MC | multicycle core ⊑ spec | StutterSimulation | 3 | — |
 | R-PL | pipeline ⊑ spec (Burch-Dill) | Simulation | 3 | — |
 | C-HW | EDSL→netlist compiler correct | TSys equality | 2 | — |
@@ -377,6 +377,19 @@ two vendors' FPGAs, chain kernel-checked to the Verilog.*
       criterion.
 
 ---
+
+## 8b. Proof-forced design changes (the charter's predicted class)
+
+- **2026-07-03 — transfer sweeps cached authority.** Stating T3/T8 exposed that
+  `transferCap` cleared the source slot without sweeping region registers or the Mover,
+  leaving the giver cached authority over a range it had transferred away. Fix: transfer
+  ends with the same region/Mover sweep as drop/revoke (`Kernel.lean`).
+- **2026-07-03 — donation bound + forced unwind.** Stating T6 exposed a hostage scenario:
+  a serving callee that never returns held its caller blocked forever. Fix: each activation
+  carries a `donated` cycle budget (manifest `maxDonation`); exhaustion, fault, or voluntary
+  halt of the server *unwinds* the activation — the caller resumes with `-ECALLEEFAULT`
+  (new errno 9, `Fault.budget` cause on the server). T6's `resumeBound` is now
+  manifest-computable.
 
 ## 9. Open decisions
 

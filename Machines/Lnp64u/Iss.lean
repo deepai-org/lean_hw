@@ -71,9 +71,7 @@ def runTraced (m : Manifest) : Nat → MachineState → MachineState × Array Tr
       (σ', evs ++ rest)
 
 /-- Run `n` cycles (no trace). -/
-def run (m : Manifest) : Nat → MachineState → MachineState
-  | 0, σ => σ
-  | n + 1, σ => run m n (step m σ)
+abbrev run (m : Manifest) : Nat → MachineState → MachineState := stepN m
 
 /-! ## The golden demo configuration -/
 

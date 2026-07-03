@@ -81,6 +81,9 @@ inductive Errno where
   | permDenied
   /-- The Mover is already executing a transfer for this domain. -/
   | moverBusy
+  /-- The gate callee faulted, halted, or exhausted its donation while
+  serving; the caller resumes with this errno (T6's no-hostage unwind). -/
+  | calleeFault
 deriving Repr, DecidableEq
 
 /-- Numeric errno codes (stable ABI; the book quotes these). -/
@@ -93,6 +96,7 @@ def Errno.code : Errno → Nat
   | .gateBusy     => 6
   | .permDenied   => 7
   | .moverBusy    => 8
+  | .calleeFault  => 9
 
 /-- The `-errno` return word. -/
 def Errno.toWord (e : Errno) : Loom.Word32 := -(BitVec.ofNat 32 e.code)
@@ -106,7 +110,9 @@ inductive Fault where
   | memoryAuthority
   /-- `gate_return` with no active call to return to. -/
   | protocol
-  /-- Budget exhausted mid-instruction (should be unreachable given T7). -/
+  /-- Donation exhausted while serving a gate activation (the T6
+  no-hostage enforcement: the activation unwinds, the caller resumes with
+  `-ECALLEEFAULT`). -/
   | budget
 deriving Repr, DecidableEq
 
