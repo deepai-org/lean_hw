@@ -240,4 +240,23 @@ theorem acyclic_contract (σ σ' : MachineState) (a b : CapRef)
   rw [he]; exact σ.climb_none_ge (numLineage + 1) r (hac r) m hm
 
 
+
+/-- Any `setDom` whose update preserves the domain's `caps` and `lineage`
+tables preserves acyclicity — covers every register/PC/region/budget/schedule
+update (all the non-lineage `setDom` operations). -/
+theorem acyclic_setDom (σ : MachineState) (d' : DomainId) (f : DomainState → DomainState)
+    (hf : ∀ ds, (f ds).caps = ds.caps ∧ (f ds).lineage = ds.lineage) (hac : Acyclic σ) :
+    Acyclic (σ.setDom d' f) := by
+  refine acyclic_of_parentRef_eq σ _ (parentRef_eq_of_doms σ _ (fun d => ?_)) hac
+  by_cases h : d = d'
+  · subst h
+    simp only [MachineState.setDom, Loom.Fun.update_same, (hf (σ.doms d)).1, (hf (σ.doms d)).2,
+      and_self]
+  · simp only [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ h, and_self]
+
+/-- Writing memory preserves acyclicity (it touches only `mem`). -/
+theorem acyclic_write (σ : MachineState) (a : Addr) (v : Loom.Word32) (hac : Acyclic σ) :
+    Acyclic (σ.write a v) :=
+  acyclic_of_parentRef_eq σ _ (parentRef_eq_of_doms σ _ (fun _ => ⟨rfl, rfl⟩)) hac
+
 end Machines.Lnp64u
