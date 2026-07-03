@@ -2107,6 +2107,127 @@ theorem wf_transferCap (σ : MachineState) (from_ : DomainId) (s : Slot) (to_ : 
         exact wf_reparent_clear_sweep σ1 ⟨from_, s, (σ.doms from_).slotGen s⟩
           ⟨to_, s', (σ.doms to_).slotGen s'⟩ hnewne hnewlive holdgen hwf1
 
+
+/-- **`transferCap` preserves acyclicity.** The recipient install adds a fresh
+leaf (`acyclic_add_leaves`, since nothing points at the free recipient slot),
+the reparent redirects `old`'s children to the fresh sibling `new`
+(`acyclic_reparent_sibling`), and clearing `old` + sweeps only remove edges. -/
+theorem acyclic_transferCap (σ : MachineState) (from_ : DomainId) (s : Slot) (to_ : DomainId)
+    (σ' : MachineState) (newRef : CapRef) (hwf : Wf σ) (hac : Acyclic σ)
+    (ht : σ.transferCap from_ s to_ = some (σ', newRef)) : Acyclic σ' := by
+  unfold MachineState.transferCap at ht
+  simp only [Option.bind_eq_bind] at ht
+  cases he : (σ.doms from_).caps s with
+  | none => rw [he] at ht; simp at ht
+  | some e =>
+    rw [he] at ht; simp only [Option.bind_some] at ht
+    cases hfs : σ.freeSlot to_ with
+    | none => rw [hfs] at ht; simp at ht
+    | some s' =>
+      rw [hfs] at ht; simp only [Option.bind_some] at ht
+      have hs'none : (σ.doms to_).caps s' = none := freeSlot_caps_none σ to_ hfs
+      have hno : ∀ (r a : CapRef), (a.dom = to_ ∧ a.slot = s') → σ.parentRef r ≠ some a := by
+        intro r a had hpr
+        have hlv := hwf.parent_live r.dom r.slot a hpr
+        unfold MachineState.liveRef DomainState.liveCap at hlv
+        rw [had.1, had.2, hs'none] at hlv; simp at hlv
+      have hnewne : (⟨to_, s', (σ.doms to_).slotGen s'⟩ : CapRef) ≠ ⟨from_, s, (σ.doms from_).slotGen s⟩ := by
+        intro heq; injection heq with h1 h2 h3
+        rw [h1, h2] at hs'none; rw [hs'none] at he; simp at he
+      -- the fresh recipient reference and its parent-relation facts
+      have hnewfresh : ∀ (τ : MachineState),
+          (∀ r, τ.parentRef r = if r.dom = to_ ∧ r.slot = s' then σ.parentRef ⟨to_, s', (0 : Gen)⟩
+            else σ.parentRef r) → True := fun _ _ => trivial
+      cases hle : e.lineage with
+      | some l =>
+        cases hcell : (σ.doms from_).lineage l with
+        | none => simp [hle, hcell] at ht
+        | some cell =>
+          cases hfc : σ.freeCell to_ with
+          | none => simp [hle, hcell, hfc] at ht
+          | some l' =>
+            simp only [hle, hcell, hfc, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at ht
+            obtain ⟨rfl, _⟩ := ht
+            set σ1 := σ.setDom to_ (fun ds =>
+              { ds with
+                caps := Loom.Fun.update ds.caps s' (some { kind := e.kind, lineage := some l' })
+                lineage := Loom.Fun.update ds.lineage l' (some cell) }) with hσ1
+            have hpar1 : ∀ r, σ1.parentRef r =
+                if r.dom = to_ ∧ r.slot = s' then some cell.parent else σ.parentRef r :=
+              fun r => setDom_installMove_parentRef σ to_ s' l' e.kind cell (freeCell_none σ to_ hfc) hwf r
+            have hlpar : σ.liveRef cell.parent = true := by
+              have hpo : σ.parentOf from_ s = some cell.parent := by
+                simp [MachineState.parentOf, he, hle, hcell]
+              exact hwf.parent_live from_ s cell.parent hpo
+            have hcpne : cell.parent ≠ ⟨to_, s', (σ.doms to_).slotGen s'⟩ := by
+              intro hh; rw [hh] at hlpar
+              unfold MachineState.liveRef DomainState.liveCap at hlpar
+              rw [hs'none] at hlpar; simp at hlpar
+            -- σ1 acyclic
+            have hac1 : Acyclic σ1 := by
+              refine acyclic_add_leaves σ σ1 (fun r => decide (r.dom = to_ ∧ r.slot = s'))
+                cell.parent ?_ ?_ ?_ hac
+              · intro a hpa hab; simp only [decide_eq_true_eq] at hpa; rw [hab] at hpa
+                unfold MachineState.liveRef DomainState.liveCap at hlpar
+                rw [hpa.1, hpa.2, hs'none] at hlpar; simp at hlpar
+              · intro r; rw [hpar1 r]; by_cases hc : r.dom = to_ ∧ r.slot = s'
+                · simp [hc]
+                · simp [hc]
+              · intro r a hpa; simp only [decide_eq_true_eq] at hpa; exact hno r a hpa
+            -- reparent to fresh sibling
+            have hcond : ¬ ((⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).dom = to_ ∧
+                (⟨from_, s, (σ.doms from_).slotGen s⟩ : CapRef).slot = s') := by
+              rintro ⟨hd, hsl⟩; simp only at hd hsl
+              rw [hd, hsl] at he; rw [he] at hs'none; simp at hs'none
+            have hsib : σ1.parentRef ⟨to_, s', (σ.doms to_).slotGen s'⟩ =
+                σ1.parentRef ⟨from_, s, (σ.doms from_).slotGen s⟩ := by
+              have e1 : σ1.parentRef ⟨to_, s', (σ.doms to_).slotGen s'⟩ = some cell.parent := by
+                rw [hpar1]; simp
+              have e2 : σ1.parentRef ⟨from_, s, (σ.doms from_).slotGen s⟩ = some cell.parent := by
+                rw [hpar1, if_neg hcond]
+                show σ.parentOf from_ s = some cell.parent
+                simp [MachineState.parentOf, he, hle, hcell]
+              rw [e1, e2]
+            have hfresh : ∀ r, σ1.parentRef r ≠ some ⟨to_, s', (σ.doms to_).slotGen s'⟩ := by
+              intro r; rw [hpar1 r]; by_cases hc : r.dom = to_ ∧ r.slot = s'
+              · rw [if_pos hc]; intro hh; exact hcpne (Option.some.inj hh)
+              · rw [if_neg hc]; exact hno r ⟨to_, s', (σ.doms to_).slotGen s'⟩ ⟨rfl, rfl⟩
+            have hac2 : Acyclic (σ1.reparent ⟨from_, s, (σ.doms from_).slotGen s⟩
+                ⟨to_, s', (σ.doms to_).slotGen s'⟩) :=
+              acyclic_reparent_sibling σ1 _ _ _ hsib hfresh
+                (reparent_parentRef σ1 _ _) hac1
+            exact acyclic_sweepMover _ (acyclic_sweepRegions _ (acyclic_clearSlot _ from_ s hac2))
+      | none =>
+        simp only [hle, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at ht
+        obtain ⟨rfl, _⟩ := ht
+        set σ1 := σ.setDom to_ (fun ds =>
+          { ds with caps := Loom.Fun.update ds.caps s' (some { kind := e.kind, lineage := none }) }) with hσ1
+        have hpar1 : ∀ r, σ1.parentRef r = σ.parentRef r := by
+          intro r; rw [hσ1]
+          unfold MachineState.parentRef MachineState.parentOf MachineState.setDom
+          by_cases hd : r.dom = to_
+          · subst hd
+            by_cases hss : r.slot = s'
+            · subst hss; simp [Loom.Fun.update_same, hs'none]
+            · simp [Loom.Fun.update_same, Loom.Fun.update_ne _ _ _ _ hss]
+          · simp [Loom.Fun.update_ne _ _ _ _ hd]
+        have hac1 : Acyclic σ1 := acyclic_of_parentRef_eq σ σ1 hpar1 hac
+        have hsib : σ1.parentRef ⟨to_, s', (σ.doms to_).slotGen s'⟩ =
+            σ1.parentRef ⟨from_, s, (σ.doms from_).slotGen s⟩ := by
+          rw [hpar1, hpar1]
+          have hnew0 : σ.parentRef ⟨to_, s', (σ.doms to_).slotGen s'⟩ = none := by
+            unfold MachineState.parentRef MachineState.parentOf; rw [hs'none]; rfl
+          have hold0 : σ.parentRef ⟨from_, s, (σ.doms from_).slotGen s⟩ = none := by
+            unfold MachineState.parentRef MachineState.parentOf; rw [he]
+            simp [hle]
+          rw [hnew0, hold0]
+        have hfresh : ∀ r, σ1.parentRef r ≠ some ⟨to_, s', (σ.doms to_).slotGen s'⟩ := by
+          intro r; rw [hpar1 r]; exact hno r ⟨to_, s', (σ.doms to_).slotGen s'⟩ ⟨rfl, rfl⟩
+        have hac2 : Acyclic (σ1.reparent ⟨from_, s, (σ.doms from_).slotGen s⟩
+            ⟨to_, s', (σ.doms to_).slotGen s'⟩) :=
+          acyclic_reparent_sibling σ1 _ _ _ hsib hfresh (reparent_parentRef σ1 _ _) hac1
+        exact acyclic_sweepMover _ (acyclic_sweepRegions _ (acyclic_clearSlot _ from_ s hac2))
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
