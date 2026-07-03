@@ -5,3 +5,4 @@ import Tests.Lnp64uCore
 import Tests.MultiPort
 import Tests.LratBench
 import Tests.CheckBench
+import Tests.Acc8Bmc
