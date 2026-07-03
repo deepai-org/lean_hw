@@ -261,29 +261,29 @@ Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `
 | Thm | Statement (short) | Phase | Status |
 |-----|-------------------|-------|--------|
 | A1 | decode total/det; asm∘disasm = id | 0 | ✓ |
-| A-R | Acc8 EDSL core ⊑ Acc8 spec | 2 | S |
-| A-EV | Acc8 core ≃ emitted µVerilog (iverilog+yosys corroborated) | 2 | S |
+| A-R | Acc8 EDSL core ⊑ Acc8 spec | 2 | ✓ |
+| A-EV | Acc8 core ≃ emitted µVerilog (iverilog+yosys corroborated) | 2 | ✓ |
 
 **LNP64-µ:**
 
 | Thm | Statement (short) | Form | Phase | Status |
 |-----|-------------------|------|-------|--------|
 | T1 | decode total/det; asm∘disasm = id; ABI bound; null-handle | direct | 0 | ✓ |
-| T2 | authority confinement (invariant form) | invariant | 1 | S |
+| T2 | authority confinement (invariant form) | invariant | 1 | ✓ |
 | T2′ | authority confinement (adversarial log-rel) | log-rel | 3 | — |
-| T3 | temporal safety, spec level | invariant | 1 | S |
+| T3 | temporal safety, spec level (incl. revoke_temporal_safety) | invariant | 1 | ✓ |
 | T3′ | temporal safety as RTL cycle bound K | cycle bound | 3 | — |
-| T4 | integrity / frame (4 channels + scrub equalities) | invariant | 1 | S |
+| T4 | integrity / frame (4 channels + scrub equalities) | invariant | 1 | ✓ |
 | T4′ | frame, adversarial form | log-rel | 3 | — |
-| T5 | noninterference (2-safety, path-free pairs) | 2-safety | 1 | S |
-| T6 | totality / no-hostage | invariant + bound | 1 | S (totality ✓) |
-| T7 | Σ Q/P ≤ 1 ⟹ budget delivery; WCET lemmas | conditional | 1/3 | S |
-| T8 | ownership transfer; W^X; status-word safety | invariant | 1 | S |
-| T9 | conservation of slots/lineage/budget | invariant | 1 | S (init ✓) |
+| T5 | noninterference (2-safety; TopPriority + hardened Isolated) | 2-safety | 1 | P (5 Wip engine lemmas) |
+| T6 | totality / no-hostage (StrictlySchedulable + StallFree; see D11) | invariant + bound | 1 | S (totality ✓; bricks proved) |
+| T7 | Σ Q/P ≤ 1 ⟹ budget delivery; WCET lemmas | conditional | 1/3 | ✓ |
+| T8 | ownership transfer (retired refs); W^X; status-word safety | invariant | 1 | ✓ |
+| T9 | conservation of slots/lineage/budget | invariant | 1 | ✓ |
 | R-MC | multicycle core ⊑ spec | StutterSimulation | 3 | — |
 | R-PL | pipeline ⊑ spec (Burch-Dill) | Simulation | 3 | — |
-| C-HW | EDSL→µVerilog compiler correct | TSys equality | 2 | S (A-EV) |
-| E-V | core ≃ emitted µVerilog text | TSys eq + axiom | 2 | S (A-EV) |
+| C-HW | EDSL→µVerilog compiler correct (reg + multi-port mem folds) | TSys equality | 2 | ✓ |
+| E-V | core ≃ emitted µVerilog text (parser round-trip per artifact) | TSys eq + axiom | 2 | ✓ (Acc8) |
 
 ---
 
@@ -339,7 +339,7 @@ subset + semantics drafted.*
 multicycle core in the EDSL lockstep against the ISS.*
 
 - [x] **1.1** — folded into 1.10/1.11 by decision D8 (netlist is the engine-facing circuit; transport via refinement).
-- [ ] **1.2a** [t] `Dp/Cert/Check.lean` — in-house kernel-reducible LRAT/RUP checker
+- [x] **1.2a** [t] `Dp/Cert/Check.lean` — in-house kernel-reducible LRAT/RUP checker
       (structural recursion, List-based) + soundness vs `Std.Sat.CNF.Unsat`; benchmarked by
       kernel `decide` on pigeonhole certificates (the real D2 numbers).
 - [ ] **1.2** [t] `Dp/Cnf, Solver, Bmc` — first certificate-checked BMC result (on Acc8, then
@@ -360,7 +360,7 @@ multicycle core in the EDSL lockstep against the ISS.*
       the L2 engines.
 - [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
 - [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
-- [ ] **1.11** [m] Acc8 core in the EDSL, lockstep vs Acc8 ISS; then Lnp64u multicycle core,
+- [~] **1.11** [m] Acc8 core in the EDSL ✓ (+ A-R proved); Lnp64u core: base half lockstep-green,
       lockstep vs ISS on the conformance suite.
 - [ ] **1.12** [t] `Dp/Pdr.lean` as scaling demands.
 
