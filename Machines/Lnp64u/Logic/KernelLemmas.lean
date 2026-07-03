@@ -322,4 +322,12 @@ theorem clearSlot_lineage (σ : MachineState) (d : DomainId) (s : Slot)
               rw [if_neg (by simp only [Option.some.injEq]; exact hll)]
   · simp [Loom.Fun.update_ne _ _ _ _ hd, hd, removedCell]
 
+
+@[simp] theorem clearSlot_regions (σ : MachineState) (d : DomainId) (s : Slot) (d' : DomainId) :
+    ((σ.clearSlot d s).doms d').regions = (σ.doms d').regions := by
+  unfold MachineState.clearSlot MachineState.setDom
+  by_cases hd : d' = d
+  · subst d'; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+
 end Machines.Lnp64u
