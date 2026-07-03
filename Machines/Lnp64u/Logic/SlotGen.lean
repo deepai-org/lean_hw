@@ -201,4 +201,41 @@ theorem SlotGenLe.yield (c : Ctx) :
       fun _ => SpecM.setReg c.d c.op.rd 0) :=
   SlotGenLe.bind (SlotGenLe.updDomGen _ _ (fun ds => rfl)) (fun _ => SlotGenLe.setReg _ _ _)
 
+theorem installDerived_slotGen (σ : MachineState) (d : DomainId) (s : Slot) (l : LineageId)
+    (kind : CapKind) (parent : CapRef) (d' : DomainId) (s' : Slot) :
+    (((σ.installDerived d s l kind parent).1).doms d').slotGen s' = (σ.doms d').slotGen s' := by
+  unfold MachineState.installDerived MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+
+theorem SlotGenLe.allocDerived (owner : DomainId) (kind : CapKind) (parent : CapRef) :
+    SlotGenLe (Machines.Lnp64u.Isa.allocDerived owner kind parent) := by
+  intro σ; refine ⟨?_, ?_⟩
+  · intro hw σ' he d' s
+    unfold Machines.Lnp64u.Isa.allocDerived at he
+    simp only [SpecM.get, specM_bind] at he
+    cases hfs : σ.freeSlot owner with
+    | none => rw [hfs] at he; simp [SpecM.raise] at he
+    | some sl =>
+        rw [hfs] at he
+        cases hfc : σ.freeCell owner with
+        | none => rw [hfc] at he; simp [SpecM.raise] at he
+        | some lc =>
+            rw [hfc] at he
+            simp only [SpecM.set, specM_bind, specM_pure] at he
+            injection he with _ h2
+            rw [show σ' = (σ.installDerived owner sl lc kind parent).1 from by rw [← h2]]
+            rw [installDerived_slotGen]
+  · intro e σ' he d' s
+    unfold Machines.Lnp64u.Isa.allocDerived at he
+    simp only [SpecM.get, specM_bind] at he
+    cases hfs : σ.freeSlot owner with
+    | none => rw [hfs] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; exact le_refl _
+    | some sl =>
+        rw [hfs] at he
+        cases hfc : σ.freeCell owner with
+        | none => rw [hfc] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; exact le_refl _
+        | some lc => rw [hfc] at he; simp [SpecM.set, specM_bind, specM_pure] at he
+
 end Machines.Lnp64u
