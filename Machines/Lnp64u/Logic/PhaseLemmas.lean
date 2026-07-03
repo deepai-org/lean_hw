@@ -509,7 +509,7 @@ per-opcode security argument (25 ops × the capability-kernel operations) —
 the irreducible core. Once proved, `retire_preserves_wf`, `wf_invariant`, and
 the crown-jewel theorems that rest on the invariant all close. -/
 def ExecPreservesWf : Prop :=
-  ∀ (instr : Instr) (c : Ctx) (σ : MachineState),
+  ∀ (instr : Instr), instr ∈ isa → ∀ (c : Ctx) (σ : MachineState),
     Wf σ → (σ.doms c.d).run = .running → σ.inflight = none →
     (∀ a σ', instr.sem.exec c σ = .ok a σ' → Wf σ') ∧
     (∀ e σ', instr.sem.exec c σ = .err e σ' → Wf σ')
@@ -548,7 +548,8 @@ theorem retire_preserves_wf (hexec : ExecPreservesWf) (σ : MachineState)
       exact absurd hfl' (by simp)
     have hσ1run : (σ1.doms d).run = .running := by rw [(hpcproj d).2.2.2.2.1]; exact hdrun
     have hσ1inf : σ1.inflight = none := hinf
-    obtain ⟨hok, herr⟩ := hexec instr { d := d, pc := (σ.doms d).pc, op := operandsOf w }
+    have hmem : instr ∈ isa := Loom.Isa.decode_mem isa hdec
+    obtain ⟨hok, herr⟩ := hexec instr hmem { d := d, pc := (σ.doms d).pc, op := operandsOf w }
       σ1 hσ1wf hσ1run hσ1inf
     show Wf (match instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 with
       | .ok _ σ' => σ'

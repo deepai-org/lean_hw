@@ -111,15 +111,15 @@ theorem wf_write (σ : MachineState) (a : Addr) (v : Loom.Word32) (h : Wf σ) :
     (fun _ => rfl) rfl rfl (fun fl hfl => h.inflight_running fl hfl) h
 
 /-- Advancing (or otherwise rewriting) a domain's pc preserves `Wf`. -/
-theorem wf_updDomPc (σ : MachineState) (d : DomainId) (g : Addr → Addr) (h : Wf σ) :
-    Wf (σ.setDom d (fun ds => { ds with pc := g ds.pc })) := by
+theorem wf_updDomPc (σ : MachineState) (d : DomainId) (k : DomainState → Addr) (h : Wf σ) :
+    Wf (σ.setDom d (fun ds => { ds with pc := k ds })) := by
   have hproj : ∀ (d' : DomainId),
-      (((σ.setDom d (fun ds => { ds with pc := g ds.pc })).doms d').caps = (σ.doms d').caps) ∧
-      (((σ.setDom d (fun ds => { ds with pc := g ds.pc })).doms d').lineage = (σ.doms d').lineage) ∧
-      (((σ.setDom d (fun ds => { ds with pc := g ds.pc })).doms d').slotGen = (σ.doms d').slotGen) ∧
-      (((σ.setDom d (fun ds => { ds with pc := g ds.pc })).doms d').regions = (σ.doms d').regions) ∧
-      (((σ.setDom d (fun ds => { ds with pc := g ds.pc })).doms d').run = (σ.doms d').run) ∧
-      (((σ.setDom d (fun ds => { ds with pc := g ds.pc })).doms d').serving = (σ.doms d').serving) := by
+      (((σ.setDom d (fun ds => { ds with pc := k ds })).doms d').caps = (σ.doms d').caps) ∧
+      (((σ.setDom d (fun ds => { ds with pc := k ds })).doms d').lineage = (σ.doms d').lineage) ∧
+      (((σ.setDom d (fun ds => { ds with pc := k ds })).doms d').slotGen = (σ.doms d').slotGen) ∧
+      (((σ.setDom d (fun ds => { ds with pc := k ds })).doms d').regions = (σ.doms d').regions) ∧
+      (((σ.setDom d (fun ds => { ds with pc := k ds })).doms d').run = (σ.doms d').run) ∧
+      (((σ.setDom d (fun ds => { ds with pc := k ds })).doms d').serving = (σ.doms d').serving) := by
     intro d'; unfold MachineState.setDom
     by_cases hp : d' = d
     · subst hp; simp [Loom.Fun.update_same]
@@ -129,16 +129,16 @@ theorem wf_updDomPc (σ : MachineState) (d : DomainId) (g : Addr → Addr) (h : 
     (fun d' => (hproj d').2.2.2.1) (fun d' => (hproj d').2.2.2.2.1) (fun d' => (hproj d').2.2.2.2.2)
     rfl rfl ?_ h
   intro fl' hfl'
-  have hinfeq : (σ.setDom d (fun ds => { ds with pc := g ds.pc })).inflight = σ.inflight := rfl
+  have hinfeq : (σ.setDom d (fun ds => { ds with pc := k ds })).inflight = σ.inflight := rfl
   rw [hinfeq] at hfl'; rw [(hproj fl'.dom).2.2.2.2.1]; exact h.inflight_running fl' hfl'
 
-theorem PreservesWf.updDomPc (d : DomainId) (g : Addr → Addr) :
-    PreservesWf (SpecM.updDom d (fun ds => { ds with pc := g ds.pc })) := by
+theorem PreservesWf.updDomPc (d : DomainId) (k : DomainState → Addr) :
+    PreservesWf (SpecM.updDom d (fun ds => { ds with pc := k ds })) := by
   intro σ hwf hinf
   refine ⟨?_, ?_⟩
   · intro a σ' he
     simp only [SpecM.updDom, SpecM.modify] at he; injection he with h1 h2; subst h2
-    exact ⟨wf_updDomPc σ d g hwf, hinf⟩
+    exact ⟨wf_updDomPc σ d k hwf, hinf⟩
   · intro e σ' he; simp [SpecM.updDom, SpecM.modify] at he
 
 theorem PreservesWf.demand (cond : Bool) (f : Fault) : PreservesWf (SpecM.demand cond f) := by

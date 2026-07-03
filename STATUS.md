@@ -83,14 +83,16 @@ dispatch). `ExecPreservesWf` is the sole remaining Phase-1 obligation — the
 per-opcode security argument (25 ops × the capability-kernel operations), the
 irreducible research core. It is a clean `def`, not a `sorry`: the invariant's
 conditionality on it is explicit in the statement. **`Logic/ExecWf` builds the
-compositional framework toward it**: `PreservesWf` (closed under
-`pure`/`bind`/`ite`) plus proofs that every base primitive
-(`get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store`,
-with `wf_write`/`wf_updDomPc`) preserves the invariant. The 14 base
-ALU/branch/memory opcodes compose from these mechanically; the 11 system
-opcodes (whose `exec` calls `installDerived`/`clearSlot`/`destroyMarked`/
-`transferCap`/the sweeps/gate call-return) are the remaining kernel-level
-content — proving them IS T2/T3/T8/T9's core.
+compositional framework, and the 14 base opcodes are proved.** `Logic/ExecWf`
+has the `PreservesWf` combinator (closed under `pure`/`bind`/`ite`) with every
+base primitive proved; `Logic/BaseOpsWf.base_preserves` discharges all 14 base
+ALU/branch/memory opcodes; and `execPreservesWf_of_system` proves the whole
+`ExecPreservesWf` from a single remaining obligation, **`SystemOpsPreserveWf`
+— the 11 system opcodes**. So the entire machine invariant now reduces, with
+everything else proved, to: *the eleven capability-kernel operations
+(`installDerived`, `clearSlot`, `destroyMarked`, `transferCap`, the sweeps,
+gate call/return) preserve `Wf`.* That is exactly T2/T3/T8/T9's kernel content
+— the irreducible research core.
 
 These stated theorems are the genuine mathematical content of the program —
 the readme's "honest budget" work. Every statement is fixed and audited; the

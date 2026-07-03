@@ -17,7 +17,7 @@ namespace Machines.Lnp64u.Isa
 
 open Machines.Lnp64u Loom.Isa SpecM
 
-private def rrr (mnemonic : String) (opcode : BitVec 6)
+def rrr (mnemonic : String) (opcode : BitVec 6)
     (f : Loom.Word32 → Loom.Word32 → Loom.Word32)
     (summary operation : String) : Instr where
   mnemonic := mnemonic
@@ -30,7 +30,7 @@ private def rrr (mnemonic : String) (opcode : BitVec 6)
   cost := .alu
   prose := { summary := summary, operation := operation }
 
-private def branch (mnemonic : String) (opcode : BitVec 6)
+def branch (mnemonic : String) (opcode : BitVec 6)
     (test : Loom.Word32 → Loom.Word32 → Bool)
     (summary operation : String) : Instr where
   mnemonic := mnemonic

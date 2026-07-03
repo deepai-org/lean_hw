@@ -75,6 +75,13 @@ theorem decode_encode (isa : Isa sig Sem Cost) (hwf : sig.WF)
     decode isa (encode isa i operands) = some isa[i] := by
   simp [decode, decodeIdx_encode isa hwf hd]
 
+/-- A successful decode returns a declaration that is a member of the ISA. -/
+theorem decode_mem (isa : Isa sig Sem Cost) {w : sig.Word} {d : InstrDecl sig Sem Cost}
+    (h : decode isa w = some d) : d ∈ isa := by
+  rw [decode, Option.map_eq_some_iff] at h
+  obtain ⟨i, _, hd⟩ := h
+  exact hd ▸ Array.getElem_mem i.isLt
+
 /-- Coverage: decode succeeds exactly when some declaration carries the
 word's opcode — the machine-independent core of each machine's decode
 totality statement. -/
