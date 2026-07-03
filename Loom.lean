@@ -5,6 +5,7 @@ import Loom.Core.Trace
 import Loom.Isa.Decode
 import Loom.Isa.Dsl
 import Loom.Dp.Cert.Lrat
+import Loom.Dp.Cert.Check
 import Loom.Book.Extract
 import Loom.Book.Render.Html
 import Loom.Emit.MicroVerilog.Semantics
