@@ -282,6 +282,71 @@ theorem PreservesWf.clearRegion (d : DomainId) (ri : RegionId) :
     subst h2; exact ⟨wf_clearRegion σ d ri hwf, hinf⟩
   · intro e σ' he; simp [SpecM.updDom, SpecM.modify] at he
 
+
+/-- Installing a region register preserves `Wf`, provided the region's backing
+capability is live and dominates the region's authority (the `region_backed`
+obligation for the new entry; every other region is unchanged). -/
+theorem wf_installRegion (σ : MachineState) (d : DomainId) (ri : RegionId) (rgn : Region)
+    (hb : ∃ e, ((σ.doms rgn.backing.dom).liveCap rgn.backing.slot rgn.backing.gen) = some e ∧
+      (CapKind.mem rgn.base rgn.len rgn.perms).le e.kind) (h : Wf σ) :
+    Wf (σ.setDom d (fun ds => { ds with regions := Loom.Fun.update ds.regions ri (some rgn) })) := by
+  set σ' := σ.setDom d (fun ds => { ds with regions := Loom.Fun.update ds.regions ri (some rgn) })
+    with hσ'
+  have hdoms : ∀ d' : DomainId,
+      (σ'.doms d').caps = (σ.doms d').caps ∧ (σ'.doms d').lineage = (σ.doms d').lineage ∧
+      (σ'.doms d').slotGen = (σ.doms d').slotGen ∧ (σ'.doms d').run = (σ.doms d').run ∧
+      (σ'.doms d').serving = (σ.doms d').serving := by
+    intro d'; rw [hσ']; unfold MachineState.setDom
+    by_cases hp : d' = d
+    · subst hp; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ hp]
+  have hreg : ∀ d' r, (σ'.doms d').regions r =
+      if d' = d ∧ r = ri then some rgn else (σ.doms d').regions r := by
+    intro d' r; rw [hσ']; unfold MachineState.setDom
+    by_cases hp : d' = d
+    · subst hp; simp only [Loom.Fun.update_same]
+      by_cases hr : r = ri
+      · subst hr; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hr, hr]
+    · simp [Loom.Fun.update_ne _ _ _ _ hp, hp]
+  have hlive : ∀ r, σ'.liveRef r = σ.liveRef r := by
+    intro r; unfold MachineState.liveRef DomainState.liveCap; rw [(hdoms r.dom).1, (hdoms r.dom).2.2.1]
+  have hgates : σ'.gates = σ.gates := by rw [hσ']; rfl
+  have hmover : σ'.mover = σ.mover := by rw [hσ']; rfl
+  have hinf : σ'.inflight = σ.inflight := by rw [hσ']; rfl
+  have hpar : ∀ d' s, σ'.parentOf d' s = σ.parentOf d' s := by
+    intro d' s; unfold MachineState.parentOf; rw [(hdoms d').1, (hdoms d').2.1]
+  constructor
+  · intro d'
+    have hd := h.doms d'
+    exact ⟨fun s => by rw [(hdoms d').2.2.1]; exact hd.gen_pos s,
+      fun s e l => by rw [(hdoms d').1, (hdoms d').2.1]; exact hd.cell_backed s e l,
+      fun s s' e e' l => by rw [(hdoms d').1]; exact hd.ptr_inj s s' e e' l,
+      fun l => by rw [(hdoms d').2.1, (hdoms d').1]; exact hd.cell_used l,
+      fun s base len p => by rw [(hdoms d').1]; exact hd.wx s base len p,
+      fun s e base len p => by rw [(hdoms d').1]; exact hd.bounds s e base len p⟩
+  · intro d' s p; rw [hpar, hlive]; exact h.parent_live d' s p
+  · intro d' r rg; rw [hreg]; split
+    · -- the newly-installed region: use the backing guarantee
+      intro hrg; simp only [Option.some.injEq] at hrg; subst hrg
+      obtain ⟨e, hle, hdom⟩ := hb
+      refine ⟨e, ?_, hdom⟩
+      unfold DomainState.liveCap; rw [(hdoms rgn.backing.dom).1, (hdoms rgn.backing.dom).2.2.1]
+      exact hle
+    · intro hrg
+      obtain ⟨e, hl, hle⟩ := h.region_backed d' r rg hrg
+      refine ⟨e, ?_, hle⟩; unfold DomainState.liveCap
+      rw [(hdoms rg.backing.dom).1, (hdoms rg.backing.dom).2.2.1]; exact hl
+  · intro job; rw [hmover]; intro hj
+    obtain ⟨o1, o2, o3, o4⟩ := h.mover_wf job hj
+    exact ⟨o1, o2, by rw [hlive]; exact o3, by rw [hlive]; exact o4⟩
+  · intro g a; rw [hgates]; intro ha
+    obtain ⟨s1, s2, s3, s4⟩ := h.gate_serving g a ha
+    exact ⟨by rw [(hdoms _).2.2.2.2]; exact s1, by rw [(hdoms _).2.2.2.1]; exact s2, s3, s4⟩
+  · intro d' g; rw [(hdoms d').2.2.2.2]; intro hs; rw [hgates]; exact h.serving_gate d' g hs
+  · intro d' g; rw [(hdoms d').2.2.2.1]; intro hb'; rw [hgates]; exact h.blocked_gate d' g hb'
+  · intro fl' hfl'; rw [hinf] at hfl'; rw [(hdoms fl'.dom).2.2.2.1]; exact h.inflight_running fl' hfl'
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
