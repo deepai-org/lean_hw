@@ -16,6 +16,8 @@ A second, deliberately tiny machine, **Acc8**, exists to keep the toolchain/mach
 structural: every generic Loom layer is exercised by two machines, and Acc8 — being small — reaches
 each layer first, as the pathfinder.
 
+**Current status:** see [STATUS.md](STATUS.md) for the mechanically-checked proved-vs-stated ledger (regenerable from `lake exe audit`). Phase 0 complete; Phase 1 in progress; Phase 2 substantially prototyped (real Verilog on iverilog+yosys).
+
 **How to use this document.** To find where to work next: read §8 top-to-bottom and take the first
 unchecked box in the current phase whose dependencies (listed with each task) are checked. To check
 overall health: run `lake exe audit` and compare against §7.
@@ -342,10 +344,10 @@ multicycle core in the EDSL lockstep against the ISS.*
       kernel `decide` on pigeonhole certificates (the real D2 numbers).
 - [ ] **1.2** [t] `Dp/Cnf, Solver, Bmc` — first certificate-checked BMC result (on Acc8, then
       Lnp64u). *(deps: 1.2a)*
-- [ ] **1.3** [m] T9 conservation (seeds `Logic/Sep/Resource.lean`).
-- [ ] **1.4** [m] T2 invariant form. **1.5** [m] T8, T4. **1.6** [t+m] `Dp/KInduction`; T3 +
-      revoke-bound lemmas. **1.7** [m] T6; T5 as 2-safety product. **1.8** [m] T7 + WCET
-      lemma skeletons.
+- [~] **1.3** [m] T9: `init_balanced` proved; `ledger_balanced`/`budget_bounded` stated. Logic/Defs seeds the resource algebra.
+- [~] **1.4–1.8** All of T2/T4/T5/T6/T7/T8 stated precisely; `Inv.init_wf`, `T2.init_confined`,
+      `T6.totality`, `T3.no_resurrection` (mod one lemma) proved. Remaining: `step_wf` and the
+      per-theorem induction bodies; the L2 engines.
 - [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
 - [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
 - [ ] **1.11** [m] Acc8 core in the EDSL, lockstep vs Acc8 ISS; then Lnp64u multicycle core,
@@ -356,7 +358,8 @@ multicycle core in the EDSL lockstep against the ISS.*
 *Gate: compiler verified; emission theorem + round-trip done; Acc8 then LNP64-µ multicycle on
 two vendors' FPGAs, chain kernel-checked to the Verilog.*
 
-- [ ] **2.1** [t] `Hw/Netlist(+Sem)`; **2.2** [t] `Hw/Compile` verified (C-HW).
+- [~] **2.1/2.2** Compiler built (`Hw/Compile`, direct-to-µVerilog per D10); `compileExpr_eval`
+      keystone proved; C-HW/E-V bodies remain.
 - [~] **2.3** (print ✓, emit-to-Verilog ✓, iverilog+yosys corroborated; parser WIP) [t] µVerilog Print/Parse/RoundTrip; **2.4** [t] Emitter + Axiom + emission
       theorem (E-V, instantiated as A-EV first); **2.5** [t] `lake exe emit` / `rtl` target.
 - [ ] **2.6** [t] `fpga/` lockstep harness over `Loom.Core.Trace`.
