@@ -592,6 +592,21 @@ theorem demand_ok (cond : Bool) (f : Fault) (σ : MachineState) {σ' : MachineSt
   · injection he with _ h2; exact h2.symm
   · simp [SpecM.fatal] at he
 
+
+theorem require_err_state (cond : Bool) (e : Errno) (σ : MachineState) {e0 : Errno}
+    {σ' : MachineState} (he : SpecM.require cond e σ = .err e0 σ') : σ' = σ := by
+  unfold SpecM.require at he; split at he
+  · simp at he
+  · simp only [SpecM.raise] at he; injection he with _ h2; exact h2.symm
+
+theorem load_err_state (d : DomainId) (a : Addr) (σ : MachineState) {e0 : Errno}
+    {σ' : MachineState} (he : SpecM.load d a σ = .err e0 σ') : σ' = σ := by
+  unfold SpecM.load at he
+  simp only [SpecM.get, specM_bind] at he
+  by_cases hc : σ.domCovers d a { r := true, w := false, x := false }
+  · simp [SpecM.demand, hc, specM_pure, specM_bind] at he
+  · simp [SpecM.demand, hc, SpecM.fatal, specM_bind] at he
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all

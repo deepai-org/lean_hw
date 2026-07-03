@@ -397,6 +397,197 @@ theorem memgrant_preserves (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
                 | fault f => rw [ha] at he; simp at he
                 | ok hh σ2 => rw [ha] at he; simp [SpecM.setReg, SpecM.modify] at he
 
+/-- The `move` opcode's operational semantics (matches `Isa.system`'s `move`). -/
+def moveExec (c : Ctx) : SpecM Unit := do
+  let σ0 ← SpecM.get
+  require σ0.mover.isNone .moverBusy
+  let aw ← reg c.d c.op.rs1
+  let base : Addr := aw.setWidth 12
+  let srcH ← load c.d base
+  let dstH ← load c.d (base + 1)
+  let lenW ← load c.d (base + 2)
+  let stW ← load c.d (base + 3)
+  let (ss, gs_, es) ← capLive c.d srcH
+  let (sd, gd, ed) ← capLive c.d dstH
+  match es.kind, ed.kind with
+  | .mem sb sl sp, .mem db dl dp => do
+      require sp.r .permDenied
+      require dp.w .permDenied
+      let n := lenW.toNat
+      require (decide (n ≤ sl.toNat) && decide (n ≤ dl.toNat)) .outOfRange
+      let sa : Addr := stW.setWidth 12
+      let σ ← SpecM.get
+      demand (σ.domCovers c.d sa { r := false, w := true, x := false }) .memoryAuthority
+      let job : MoverJob :=
+        { owner := c.d, src := ⟨c.d, ss, gs_⟩, dst := ⟨c.d, sd, gd⟩
+          srcCur := sb, dstCur := db, remaining := n, statusAddr := sa }
+      set ({ σ with mover := some job })
+      setReg c.d c.op.rd 0
+  | _, _ => raise .badCap
+
+
+/-- `move` ok clause: after a read-only prefix (require, register read, four
+descriptor loads, two `capLive` lookups, permission/range checks, authority
+`demand`), it programs the Mover with a live owned job (`wf_setMover`) and writes
+`rd` (`wf_setReg`). -/
+theorem move_ok (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
+    (∀ x σ', (moveExec c) σ = .ok x σ' → Wf σ') := by
+  intro x σ' he
+  simp only [moveExec, SpecM.get, specM_bind] at he
+  cases hr0 : SpecM.require σ.mover.isNone .moverBusy σ with
+  | err e0 σ0 => rw [hr0] at he; simp at he
+  | fault f => rw [hr0] at he; simp at he
+  | ok u0 σ0 =>
+      have hh0 := require_ok _ _ σ hr0; subst σ0
+      rw [hr0] at he; simp only [SpecM.reg] at he
+      set B : Addr := ((σ.doms c.d).reg c.op.rs1).setWidth 12 with hB
+      cases hl1 : load c.d B σ with
+      | err e σe => rw [hl1] at he; simp at he
+      | fault f => rw [hl1] at he; simp at he
+      | ok srcH σ1 =>
+          have hh1 := load_ok _ _ σ hl1; subst σ1; rw [hl1] at he; simp only [specM_bind] at he
+          cases hl2 : load c.d (B + 1) σ with
+          | err e σe => rw [hl2] at he; simp at he
+          | fault f => rw [hl2] at he; simp at he
+          | ok dstH σ2 =>
+              have hh2 := load_ok _ _ σ hl2; subst σ2; rw [hl2] at he; simp only [specM_bind] at he
+              cases hl3 : load c.d (B + 2) σ with
+              | err e σe => rw [hl3] at he; simp at he
+              | fault f => rw [hl3] at he; simp at he
+              | ok lenW σ3 =>
+                  have hh3 := load_ok _ _ σ hl3; subst σ3; rw [hl3] at he; simp only [specM_bind] at he
+                  cases hl4 : load c.d (B + 3) σ with
+                  | err e σe => rw [hl4] at he; simp at he
+                  | fault f => rw [hl4] at he; simp at he
+                  | ok stW σ4 =>
+                      have hh4 := load_ok _ _ σ hl4; subst σ4; rw [hl4] at he; simp only [specM_bind] at he
+                      cases hc1 : capLive c.d srcH σ with
+                      | err e σe => rw [hc1] at he; simp at he
+                      | fault f => rw [hc1] at he; simp at he
+                      | ok rs σ5 =>
+                          have hcs := capLive_ok c.d _ σ hc1; obtain ⟨hhs, hslive⟩ := hcs; subst σ5
+                          rw [hc1] at he; obtain ⟨ss, gs_, es⟩ := rs; simp only at he hslive
+                          cases hc2 : capLive c.d dstH σ with
+                          | err e σe => rw [hc2] at he; simp at he
+                          | fault f => rw [hc2] at he; simp at he
+                          | ok rdd σ6 =>
+                              have hcd := capLive_ok c.d _ σ hc2; obtain ⟨hhd, hdlive⟩ := hcd; subst σ6
+                              rw [hc2] at he; obtain ⟨sd, gd, ed⟩ := rdd; simp only at he hdlive
+                              cases hks : es.kind with
+                              | gate _ => rw [hks] at he; cases hkd : ed.kind with
+                                          | gate _ => rw [hkd] at he; simp [SpecM.raise] at he
+                                          | mem _ _ _ => rw [hkd] at he; simp [SpecM.raise] at he
+                              | mem sb sl sp =>
+                                  cases hkd : ed.kind with
+                                  | gate _ => rw [hks, hkd] at he; simp [SpecM.raise] at he
+                                  | mem db dl dp =>
+                                      rw [hks, hkd] at he; simp only [specM_bind] at he
+                                      cases hq1 : SpecM.require sp.r .permDenied σ with
+                                      | err e σe => rw [hq1] at he; simp at he
+                                      | fault f => rw [hq1] at he; simp at he
+                                      | ok _ σq1 =>
+                                          have := require_ok _ _ σ hq1; subst σq1; rw [hq1] at he; simp only [specM_bind] at he
+                                          cases hq2 : SpecM.require dp.w .permDenied σ with
+                                          | err e σe => rw [hq2] at he; simp at he
+                                          | fault f => rw [hq2] at he; simp at he
+                                          | ok _ σq2 =>
+                                              have := require_ok _ _ σ hq2; subst σq2; rw [hq2] at he; simp only [specM_bind] at he
+                                              cases hq3 : SpecM.require (decide (lenW.toNat ≤ sl.toNat) && decide (lenW.toNat ≤ dl.toNat)) .outOfRange σ with
+                                              | err e σe => rw [hq3] at he; simp at he
+                                              | fault f => rw [hq3] at he; simp at he
+                                              | ok _ σq3 =>
+                                                  have := require_ok _ _ σ hq3; subst σq3; rw [hq3] at he; simp only [SpecM.get, specM_bind] at he
+                                                  cases hd : SpecM.demand (σ.domCovers c.d (stW.setWidth 12) { r := false, w := true, x := false }) .memoryAuthority σ with
+                                                  | err e σe => rw [hd] at he; simp at he
+                                                  | fault f => rw [hd] at he; simp at he
+                                                  | ok _ σdd =>
+                                                      have := demand_ok _ _ σ hd; subst σdd; rw [hd] at he
+                                                      simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+                                                      injection he with _ h2; subst h2
+                                                      have hsl : σ.liveRef ⟨c.d, ss, gs_⟩ = true := by unfold MachineState.liveRef; rw [hslive]; rfl
+                                                      have hdl : σ.liveRef ⟨c.d, sd, gd⟩ = true := by unfold MachineState.liveRef; rw [hdlive]; rfl
+                                                      exact wf_setReg _ c.d _ 0 (wf_setMover σ _ rfl rfl hsl hdl hwf)
+
+
+/-- `move` err clause: after a read-only prefix (require, register read, four
+descriptor loads, two `capLive` lookups, permission/range checks, authority
+`demand`), it programs the Mover with a live owned job (`wf_setMover`) and writes
+`rd` (`wf_setReg`). -/
+theorem move_err (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
+    (∀ x σ', (moveExec c) σ = .err x σ' → Wf σ') := by
+  intro x σ' he
+  simp only [moveExec, SpecM.get, specM_bind] at he
+  cases hr0 : SpecM.require σ.mover.isNone .moverBusy σ with
+  | err e0 σ0 => have hq := require_err_state _ _ σ hr0; rw [hr0] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+  | fault f => rw [hr0] at he; simp at he
+  | ok u0 σ0 =>
+      have hh0 := require_ok _ _ σ hr0; subst σ0
+      rw [hr0] at he; simp only [SpecM.reg] at he
+      set B : Addr := ((σ.doms c.d).reg c.op.rs1).setWidth 12 with hB
+      cases hl1 : load c.d B σ with
+      | err e σe => have hq := load_err_state _ _ σ hl1; rw [hl1] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+      | fault f => rw [hl1] at he; simp at he
+      | ok srcH σ1 =>
+          have hh1 := load_ok _ _ σ hl1; subst σ1; rw [hl1] at he; simp only [specM_bind] at he
+          cases hl2 : load c.d (B + 1) σ with
+          | err e σe => have hq := load_err_state _ _ σ hl2; rw [hl2] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+          | fault f => rw [hl2] at he; simp at he
+          | ok dstH σ2 =>
+              have hh2 := load_ok _ _ σ hl2; subst σ2; rw [hl2] at he; simp only [specM_bind] at he
+              cases hl3 : load c.d (B + 2) σ with
+              | err e σe => have hq := load_err_state _ _ σ hl3; rw [hl3] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+              | fault f => rw [hl3] at he; simp at he
+              | ok lenW σ3 =>
+                  have hh3 := load_ok _ _ σ hl3; subst σ3; rw [hl3] at he; simp only [specM_bind] at he
+                  cases hl4 : load c.d (B + 3) σ with
+                  | err e σe => have hq := load_err_state _ _ σ hl4; rw [hl4] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+                  | fault f => rw [hl4] at he; simp at he
+                  | ok stW σ4 =>
+                      have hh4 := load_ok _ _ σ hl4; subst σ4; rw [hl4] at he; simp only [specM_bind] at he
+                      cases hc1 : capLive c.d srcH σ with
+                      | err e σe => have hq := capLive_err_state c.d _ σ hc1; rw [hc1] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+                      | fault f => rw [hc1] at he; simp at he
+                      | ok rs σ5 =>
+                          have hcs := capLive_ok c.d _ σ hc1; obtain ⟨hhs, hslive⟩ := hcs; subst σ5
+                          rw [hc1] at he; obtain ⟨ss, gs_, es⟩ := rs; simp only at he hslive
+                          cases hc2 : capLive c.d dstH σ with
+                          | err e σe => have hq := capLive_err_state c.d _ σ hc2; rw [hc2] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+                          | fault f => rw [hc2] at he; simp at he
+                          | ok rdd σ6 =>
+                              have hcd := capLive_ok c.d _ σ hc2; obtain ⟨hhd, hdlive⟩ := hcd; subst σ6
+                              rw [hc2] at he; obtain ⟨sd, gd, ed⟩ := rdd; simp only at he hdlive
+                              cases hks : es.kind with
+                              | gate _ => rw [hks] at he; cases hkd : ed.kind with
+                                          | gate _ => rw [hkd] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; exact hwf
+                                          | mem _ _ _ => rw [hkd] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; exact hwf
+                              | mem sb sl sp =>
+                                  cases hkd : ed.kind with
+                                  | gate _ => rw [hks, hkd] at he; simp only [SpecM.raise] at he; injection he with _ h2; subst h2; exact hwf
+                                  | mem db dl dp =>
+                                      rw [hks, hkd] at he; simp only [specM_bind] at he
+                                      cases hq1 : SpecM.require sp.r .permDenied σ with
+                                      | err e σe => have hq := require_err_state _ _ σ hq1; rw [hq1] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+                                      | fault f => rw [hq1] at he; simp at he
+                                      | ok _ σq1 =>
+                                          have := require_ok _ _ σ hq1; subst σq1; rw [hq1] at he; simp only [specM_bind] at he
+                                          cases hq2 : SpecM.require dp.w .permDenied σ with
+                                          | err e σe => have hq := require_err_state _ _ σ hq2; rw [hq2] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+                                          | fault f => rw [hq2] at he; simp at he
+                                          | ok _ σq2 =>
+                                              have := require_ok _ _ σ hq2; subst σq2; rw [hq2] at he; simp only [specM_bind] at he
+                                              cases hq3 : SpecM.require (decide (lenW.toNat ≤ sl.toNat) && decide (lenW.toNat ≤ dl.toNat)) .outOfRange σ with
+                                              | err e σe => have hq := require_err_state _ _ σ hq3; rw [hq3] at he; injection he with _ h2; subst h2; subst hq; exact hwf
+                                              | fault f => rw [hq3] at he; simp at he
+                                              | ok _ σq3 =>
+                                                  have := require_ok _ _ σ hq3; subst σq3; rw [hq3] at he; simp only [SpecM.get, specM_bind] at he
+                                                  cases hd : SpecM.demand (σ.domCovers c.d (stW.setWidth 12) { r := false, w := true, x := false }) .memoryAuthority σ with
+                                                  | err e σe => exact absurd hd (by simp [SpecM.demand]; split <;> simp [SpecM.fatal])
+                                                  | fault f => rw [hd] at he; simp at he
+                                                  | ok _ σdd =>
+                                                      have := demand_ok _ _ σ hd; subst σdd; rw [hd] at he
+                                                      simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+
+
 /-- The per-opcode dispatch of `SystemOpsPreserveWf`. Two of eleven ops proved
 (`unmap`, `yield`); the nine capability/gate/Mover ops are the remaining
 kernel-level core. -/
@@ -417,7 +608,7 @@ theorem system_preserves : SystemOpsPreserveWf := by
         (fun _ => PreservesWf.setReg _ _ _) σ hwf hinf).2 e σ' he |>.1
   case _ => sorry  -- gate_call
   case _ => sorry  -- gate_return
-  case _ => sorry  -- move
+  case _ => exact ⟨move_ok c σ hwf, move_err c σ hwf⟩
   -- yield: zero the budget — proved
   case _ =>
     refine ⟨fun a σ' he => ?_, fun e σ' he => ?_⟩
