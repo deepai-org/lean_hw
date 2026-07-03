@@ -90,14 +90,15 @@ ALU/branch/memory opcodes; and `execPreservesWf_of_system` proves the whole
 `ExecPreservesWf` from a single remaining obligation, **`SystemOpsPreserveWf`
 — the 11 system opcodes**. So the entire machine invariant now reduces, with
 everything else proved, to `SystemOpsPreserveWf` — the eleven system opcodes.
-Of those, **6 are proved** (`Logic/SystemOpsWf`): `unmap`, `yield`, `halt`,
-`map`, and — the full capability-derivation ops — `cap_dup` and `mem_grant`
-(via the `capLive_ok` → `narrow_ok` → `allocDerived_ok` → `wf_installDerived`
-chain, which maintains the entire T9 lineage bijection). **5 opcodes remain**:
-`cap_drop`, `cap_revoke` (revocation — `clearSlot`/`destroyMarked` + the
-region/Mover sweeps), `gate_call`, `gate_return` (gate transfer machinery), and
-`move` (the Mover — `wf_setMover` infrastructure is proved). These are the
-deepest T3/T8 kernel content, the irreducible research core. Infrastructure in
+Of those, **7 are proved** (`Logic/SystemOpsWf`): `unmap`, `yield`, `halt`,
+`map`, `cap_dup`, `mem_grant` (the full capability-derivation authority ops, via
+the `wf_installDerived` lineage-bijection chain), and `move` (the Mover, via a
+read-only-prefix thread into `wf_setMover`). **4 opcodes remain**: `cap_drop`,
+`cap_revoke` (revocation — the `clearSlot`/`destroyMarked` lineage-graph
+maintenance; the `wf_sweepRegions`/`wf_sweepMover` cached-authority sweeps they
+need are **proved**), and `gate_call`/`gate_return` (the gate-transfer
+machinery). These are the deepest T3 revocation + gate content, the irreducible
+research core. Infrastructure in
 place: `capLive_ok`/`capLive_err_state` (cap-op state characterization),
 `freeSlot_caps_none`/`freeCell_none` (allocation specs), `wf_installRegion`,
 and — the two hardest kernel lemmas — **`wf_installDerived`** (capability

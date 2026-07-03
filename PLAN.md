@@ -353,10 +353,10 @@ multicycle core in the EDSL lockstep against the ISS.*
       invariant (`wf_invariant`, `step_wf`, `wx_machine_wide`) is **proved** conditional
       on `ExecPreservesWf`, which is itself reduced (`execPreservesWf_of_system`) to
       `SystemOpsPreserveWf`. Of the ISA: **all 14 base opcodes proved**
-      (`BaseOpsWf.base_preserves` via the `PreservesWf` toolkit); **3 of 11 system opcodes
-      proved** (`unmap`/`yield`/`halt`). Remaining: the **8 capability/gate/Mover opcodes'**
-      kernel-operation preservation (`installDerived`/`clearSlot`/`destroyMarked`/
-      `transferCap`/sweeps/gate call-return/Mover) — the T2/T3/T8/T9 kernel core — and
+      (`BaseOpsWf.base_preserves` via the `PreservesWf` toolkit); **7 of 11 system opcodes
+      proved** (`unmap`/`yield`/`halt`/`map`/`cap_dup`/`mem_grant`/`move`). Remaining: the **4 revocation/gate opcodes'**
+      kernel-operation preservation (`clearSlot`/`destroyMarked`/`transferCap`/gate call-return;
+      `installDerived`/Mover/sweeps are proved) — the T2/T3/T8/T9 kernel core — and
       the L2 engines.
 - [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
 - [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
