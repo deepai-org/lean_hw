@@ -4376,6 +4376,10 @@ def DonatedLe (m : Manifest) (σ : MachineState) : Prop :=
 def InflightPos (σ : MachineState) : Prop :=
   ∀ fl, σ.inflight = some fl → 1 ≤ fl.cyclesLeft
 
+/-- A latched instruction has at most `maxCostBound` cycles left. -/
+def InflightLe (σ : MachineState) : Prop :=
+  ∀ fl, σ.inflight = some fl → fl.cyclesLeft ≤ maxCostBound
+
 /-- Budgets never exceed quota. -/
 def BudgetCap (m : Manifest) (σ : MachineState) : Prop :=
   ∀ e, (σ.doms e).budget ≤ (m.doms e).budgetQ
@@ -4386,6 +4390,7 @@ structure ChainInv (m : Manifest) (σ : MachineState) : Prop where
   maxDon : MaxDonationEq m σ
   donatedLe : DonatedLe m σ
   inflightPos : InflightPos σ
+  inflightLe : InflightLe σ
   budgetLe : BudgetCap m σ
 
 /-- `DepthLink` transports across any gates- and serving-preserving map. -/
@@ -4673,11 +4678,16 @@ theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
     intro fl hfl
     rw [refillPhase_inflight] at hfl
     exact hinv.inflightPos fl hfl
+  have hρIL : InflightLe ρ := by
+    intro fl hfl
+    rw [refillPhase_inflight] at hfl
+    exact hinv.inflightLe fl hfl
   have hρB : BudgetCap m ρ := fun e => refillPhase_budget_le m σ e (hinv.budgetLe e)
   set κ := corePhase m ρ with hκ
   have hκB : BudgetCap m κ := fun e =>
     Nat.le_trans (Wip.corePhase_budget_le m ρ e) (hρB e)
-  have hκDML : DepthLink κ ∧ MaxDonationEq m κ ∧ DonatedLe m κ ∧ InflightPos κ := by
+  have hκDML : DepthLink κ ∧ MaxDonationEq m κ ∧ DonatedLe m κ ∧
+      (InflightPos κ ∧ InflightLe κ) := by
     rcases corePhase_chain m ρ hwfρ with
       ⟨heq, hinfn, _⟩ |
       ⟨fl, hfl, hgt, heq⟩ |
@@ -4686,20 +4696,31 @@ theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
       ⟨e, w, c, hinfn, hsch, hrune, hcpos, hcle, hcbud, hinfs, hsh⟩
     · rw [← hκ] at heq
       rw [heq]
-      exact ⟨hρD, hρM, hρL, hρI⟩
+      exact ⟨hρD, hρM, hρL, hρI, hρIL⟩
     · rw [← hκ] at heq
       refine ⟨?_, ?_, ?_, ?_⟩
       · exact DepthLink.of_frame (by rw [heq]) (fun e => by rw [heq]) hρD
       · exact MaxDonationEq.of_frame (fun e => by rw [heq]) hρM
       · exact DonatedLe.of_gates (by rw [heq]) hρL
-      · intro fl' hfl'
-        rw [heq] at hfl'
-        simp only at hfl'
-        injection hfl' with hfl'
-        rw [← hfl']
-        show 1 ≤ fl.cyclesLeft - 1
-        omega
-    · refine ⟨?_, ?_, ?_, fun fl' hfl' => absurd (hinfn ▸ hfl') (by simp)⟩
+      · constructor
+        · intro fl' hfl'
+          rw [heq] at hfl'
+          simp only at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          show 1 ≤ fl.cyclesLeft - 1
+          omega
+        · intro fl' hfl'
+          rw [heq] at hfl'
+          simp only at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          show fl.cyclesLeft - 1 ≤ maxCostBound
+          have := hρIL fl hfl
+          omega
+    · refine ⟨?_, ?_, ?_,
+        fun fl' hfl' => absurd (hinfn ▸ hfl') (by simp),
+        fun fl' hfl' => absurd (hinfn ▸ hfl') (by simp)⟩
       · rcases hsh with h | h | h | h
         · exact DepthLink.chainOut h hρD
         · exact DepthLink.callShape hwfρ h hρD
@@ -4717,7 +4738,9 @@ theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
         · exact DonatedLe.callShape hρM h hρL
         · exact DonatedLe.retShape h hρL
         · exact DonatedLe.haltShape h hρL
-    · refine ⟨?_, ?_, ?_, fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp)⟩
+    · refine ⟨?_, ?_, ?_,
+        fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp),
+        fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp)⟩
       · exact DepthLink.haltShape hwfρ hrune hsh hρD
       · exact MaxDonationEq.of_frame hsh.1 hρM
       · exact DonatedLe.haltShape hsh hρL
@@ -4725,23 +4748,32 @@ theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
       · exact DepthLink.issueShape hsh hρD
       · exact MaxDonationEq.of_frame hsh.2.2.1 hρM
       · exact DonatedLe.issueShape hsh hρL
-      · intro fl' hfl'
-        rw [hinfs] at hfl'
-        injection hfl' with hfl'
-        rw [← hfl']
-        exact hcpos
-  obtain ⟨hκD, hκM, hκL, hκI⟩ := hκDML
+      · constructor
+        · intro fl' hfl'
+          rw [hinfs] at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          exact hcpos
+        · intro fl' hfl'
+          rw [hinfs] at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          exact hcle
+  obtain ⟨hκD, hκM, hκL, hκI, hκIL⟩ := hκDML
   have hgs : (step m σ).gates = κ.gates := by
     show (moverPhase κ).gates = κ.gates
     exact moverPhase_gates κ
   have hds : (step m σ).doms = κ.doms := step_doms m σ
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
   · exact DepthLink.of_frame hgs (fun e => by rw [congrFun hds e]) hκD
   · exact MaxDonationEq.of_frame (fun e => by rw [congrFun hds e]) hκM
   · exact DonatedLe.of_gates hgs hκL
   · intro fl hfl
     rw [Wip.step_inflight_reduce] at hfl
     exact hκI fl hfl
+  · intro fl hfl
+    rw [Wip.step_inflight_reduce] at hfl
+    exact hκIL fl hfl
   · intro e
     rw [congrFun hds e]
     exact hκB e
@@ -4753,11 +4785,13 @@ theorem chain_invariant (m : Manifest) (hwf : m.WF) :
   induction hreach with
   | init hi =>
       subst hi
-      refine ⟨?_, fun e => rfl, ?_, ?_, fun e => Nat.le_refl _⟩
+      refine ⟨?_, fun e => rfl, ?_, ?_, ?_, fun e => Nat.le_refl _⟩
       · intro g a ha
         exact absurd ha (by simp [Manifest.initState])
       · intro g a ha
         exact absurd ha (by simp [Manifest.initState])
+      · intro fl hfl
+        exact absurd hfl (by simp [Manifest.initState])
       · intro fl hfl
         exact absurd hfl (by simp [Manifest.initState])
   | @step s s' hprev hstep ih =>
