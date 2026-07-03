@@ -1647,6 +1647,61 @@ theorem wf_destroyMarked_sweep (σ : MachineState) (root : CapRef) (h : Wf σ) :
   · intro d g; rw [hrun]; intro hb; rw [hgates]; exact h.blocked_gate d g hb
   · intro fl hfl; rw [hinf] at hfl; rw [hrun]; exact h.inflight_running fl hfl
 
+
+/-- `parentRef` after `transferCap`'s recipient install (a `setDom` writing a
+fresh slot `s'` holding a cap with lineage `l'`, and cell `l'` = the moved cell):
+the new slot points at the moved cell's parent; all others are unchanged. The
+`transferCap` analog of `installDerived_parentRef`. -/
+theorem setDom_installMove_parentRef (σ : MachineState) (to_ : DomainId) (s' : Slot)
+    (l' : LineageId) (kind : CapKind) (cell : LineageCell)
+    (hl : (σ.doms to_).lineage l' = none) (hwf : Wf σ) (r : CapRef) :
+    (σ.setDom to_ (fun ds =>
+      { ds with
+        caps := Loom.Fun.update ds.caps s' (some { kind := kind, lineage := some l' })
+        lineage := Loom.Fun.update ds.lineage l' (some cell) })).parentRef r =
+      if r.dom = to_ ∧ r.slot = s' then some cell.parent else σ.parentRef r := by
+  set σ' := σ.setDom to_ (fun ds =>
+      { ds with
+        caps := Loom.Fun.update ds.caps s' (some { kind := kind, lineage := some l' })
+        lineage := Loom.Fun.update ds.lineage l' (some cell) }) with hσ'
+  have hcaps : ∀ d' s'', (σ'.doms d').caps s'' =
+      if d' = to_ ∧ s'' = s' then some ⟨kind, some l'⟩ else (σ.doms d').caps s'' := by
+    intro d' s''; rw [hσ']; unfold MachineState.setDom; simp only
+    by_cases hd : d' = to_
+    · subst hd; rw [Loom.Fun.update_same]
+      by_cases hss : s'' = s'
+      · subst hss; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hss, hss]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+  have hlin : ∀ d' l'' , (σ'.doms d').lineage l'' =
+      if d' = to_ ∧ l'' = l' then some cell else (σ.doms d').lineage l'' := by
+    intro d' l''; rw [hσ']; unfold MachineState.setDom; simp only
+    by_cases hd : d' = to_
+    · subst hd; rw [Loom.Fun.update_same]
+      by_cases hll : l'' = l'
+      · subst hll; simp [Loom.Fun.update_same]
+      · simp [Loom.Fun.update_ne _ _ _ _ hll, hll]
+    · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+  unfold MachineState.parentRef MachineState.parentOf
+  rw [hcaps r.dom r.slot]
+  by_cases hp : r.dom = to_ ∧ r.slot = s'
+  · simp only [if_pos hp, Option.bind_eq_bind, Option.bind_some]
+    rw [hlin r.dom l', if_pos ⟨hp.1, rfl⟩]; rfl
+  · simp only [if_neg hp]
+    cases hc : (σ.doms r.dom).caps r.slot with
+    | none => simp [hc, Option.bind_eq_bind]
+    | some e =>
+        cases hle : e.lineage with
+        | none => simp [hc, hle]
+        | some l'' =>
+            simp only [hc, hle, Option.bind_eq_bind, Option.bind_some]
+            rw [hlin r.dom l'']
+            by_cases hpp : r.dom = to_ ∧ l'' = l'
+            · exfalso; obtain ⟨hd, hll⟩ := hpp
+              have hcb := (hwf.doms r.dom).cell_backed r.slot e l'' hc hle
+              rw [hd, hll, hl] at hcb; simp at hcb
+            · rw [if_neg hpp]
+
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives
 `get`/`reg`/`setReg`/`raise`/`require`/`demand`/`updDomPc`/`load`/`store` all
