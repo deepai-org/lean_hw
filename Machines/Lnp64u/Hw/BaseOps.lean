@@ -2,21 +2,19 @@ import Machines.Lnp64u.Hw.Enc
 import Machines.Lnp64u.Isa
 
 /-!
-# LNP64-µ core: shared circuits and the retirement datapath (task 1.11)
+# LNP64-µ core: shared circuits (task 1.11)
 
-The per-op exec circuits for the 14 base opcodes, plus the circuit pieces
-every rule shares: architectural register read/write (`r0` hardwired — the
-register is simply never written, so reading it is reading zero), the
-`domCovers` OR-tree over region registers, and the `haltWith` circuit
-(halt + cause + gate unwind, the T6 no-hostage path).
+The circuit pieces every rule shares: `isa`-derived opcode/cost tables,
+architectural register read/write (`r0` hardwired — the register is simply
+never written, so reading it is reading zero), the `domCovers` OR-tree over
+region registers, the `haltWith` circuit (halt + cause + gate unwind, the
+T6 no-hostage path), and the in-flight word's D1 bit fields.
 
 Spec-fidelity notes:
-* Retirement mirrors `Step.retire` exactly: `pc` advances on every
-  non-faulting outcome; a **fault** leaves `pc` at the faulting instruction
-  (the spec's fault arm runs `haltWith` on the *pre-advance* state).
-* System opcodes (16–26) retire as domain-fatal halts for now
-  (`SYSOP-TODO` markers below); the base-only lockstep test never issues
-  them.
+* Retirement (in `SysOps.lean`) mirrors `Step.retire` exactly: `pc`
+  advances on every non-faulting outcome; a **fault** leaves `pc` at the
+  faulting instruction (the spec's fault arm runs `haltWith` on the
+  *pre-advance* state).
 * Opcode dispatch is keyed by mnemonic through `isa`, so opcode numbers,
   validity, and WCET costs stay in sync with the spec by construction.
 -/
@@ -107,7 +105,7 @@ def haltAct (d : DomainId) (cause : BitVec 32) : Act :=
 def haltFault (d : DomainId) (f : Fault) : Act :=
   haltAct d (BitVec.ofNat 32 f.code)
 
-/-! ## Retirement (decode `if_word` by the D1 bit fields, dispatch) -/
+/-! ## In-flight word fields (D1 layout; retirement lives in `SysOps.lean`) -/
 
 def ifWord : Expr 32 := .reg 32 "if_word"
 def opcE : Expr 6 := field ifWord 0 6
@@ -117,56 +115,5 @@ def rs2E : Expr 3 := field ifWord 12 3
 def immE : Expr 17 := field ifWord 15 17
 /-- Sign-extended immediate (`immExt`). -/
 def immX : Expr 32 := .sext immE 32
-
-/-- Retire the in-flight word for domain `d` (guarded by `if_dom = d` in the
-core rule). Mirrors `Step.retire` + `Isa.base` per op. -/
-def retireFor (d : DomainId) : Act :=
-  let pc := rPc d
-  let pcAdv : Act := .write 12 (dpc d) (.add pc (.lit 1))
-  let a := readReg d rs1E
-  let b := readReg d rs2E
-  let alu (v : Expr 32) : Act := .seq (writeReg d rdE v) pcAdv
-  let is (mn : String) : Expr 1 := .eq opcE (.lit (opcodeOf mn))
-  -- effective address `(rs1 + sext imm) mod 4096` and branch target
-  let eaddr : Expr 12 := field (.add a immX) 0 12
-  let btgt : Expr 12 := .add pc (field immX 0 12)
-  -- temporary system-op retirement: domain-fatal halt (fleet fills these in)
-  let sysHalt : Act := haltFault d .illegalInstruction
-  .ite (is "add") (alu (.add a b)) <|
-  .ite (is "sub") (alu (.sub a b)) <|
-  .ite (is "and") (alu (.and a b)) <|
-  .ite (is "or") (alu (.or a b)) <|
-  .ite (is "xor") (alu (.xor a b)) <|
-  .ite (is "shl") (alu (.shl a (.and b (.lit 31)))) <|
-  .ite (is "shr") (alu (.shr a (.and b (.lit 31)))) <|
-  .ite (is "addi") (alu (.add a immX)) <|
-  .ite (is "lui") (alu (.shl (.zext immE 32) (.lit 15))) <|
-  .ite (is "lw")
-    (.ite (domCoversE d eaddr ⟨true, false, false⟩)
-      (.seq (writeReg d rdE (.memRead 32 "mem" eaddr)) pcAdv)
-      (haltFault d .memoryAuthority)) <|
-  .ite (is "sw")
-    (.ite (domCoversE d eaddr ⟨false, true, false⟩)
-      (.seq (.memWrite 12 32 "mem" 0 eaddr b) pcAdv)
-      (haltFault d .memoryAuthority)) <|
-  .ite (is "beq") (.ite (.eq a b) (.write 12 (dpc d) btgt) pcAdv) <|
-  .ite (is "blt") (.ite (.slt a b) (.write 12 (dpc d) btgt) pcAdv) <|
-  .ite (is "jalr")
-    (.seq (writeReg d rdE (.zext (.add pc (.lit 1)) 32))
-      (.write 12 (dpc d) eaddr)) <|
-  .ite (is "cap_dup") sysHalt <|      -- SYSOP-TODO(cap_dup)
-  .ite (is "cap_drop") sysHalt <|     -- SYSOP-TODO(cap_drop)
-  .ite (is "cap_revoke") sysHalt <|   -- SYSOP-TODO(cap_revoke)
-  .ite (is "mem_grant") sysHalt <|    -- SYSOP-TODO(mem_grant)
-  .ite (is "map") sysHalt <|          -- SYSOP-TODO(map)
-  .ite (is "unmap") sysHalt <|        -- SYSOP-TODO(unmap)
-  .ite (is "gate_call") sysHalt <|    -- SYSOP-TODO(gate_call)
-  .ite (is "gate_return") sysHalt <|  -- SYSOP-TODO(gate_return)
-  .ite (is "move") sysHalt <|         -- SYSOP-TODO(move)
-  .ite (is "yield") sysHalt <|        -- SYSOP-TODO(yield)
-  .ite (is "halt") sysHalt <|         -- SYSOP-TODO(halt)
-  -- decode failure (opcodes 14/15, ≥ 27): unreachable for issued words,
-  -- kept for totality (spec's `retire` `none` arm)
-  haltFault d .illegalInstruction
 
 end Machines.Lnp64u.Hw

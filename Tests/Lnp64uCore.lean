@@ -1,31 +1,41 @@
 import Machines.Lnp64u.Hw.Core
+import Machines.Lnp64u.Hw.Demo
 import Machines.Lnp64u.Iss
+import Loom.Hw.Compile
 import Std.Data.HashMap
 
 /-!
 # LNP64-µ lockstep: EDSL core vs the spec (task 1.11)
 
-Runs `(core testManifest)` against `Step.step` for 256 cycles, comparing
-`abs` of the hardware state with the spec state **every cycle**.
+Runs `(core m)` against `Step.step` comparing `abs` of the hardware state
+with the spec state **every cycle** — the *complete* architectural state
+(cycle counter, all 4096 memory words, per-domain register files / pc /
+cap tables / slot generations / lineage cells / region registers / run /
+serving / cause / budget / maxDonation, every gate's config + activation,
+the Mover job, the in-flight latch). Nothing is projected away.
 
-What is compared (per cycle, via `stateEq`): the *complete* architectural
-state — cycle counter, all 4096 memory words, and for every domain the
-register file, pc, cap table (entries + lineage links), slot generations,
-lineage cells, region registers, run state, serving, cause, budget and
-maxDonation; every gate's config and activation; the mover job; the
-in-flight latch. Nothing is projected away.
+Two configurations:
 
-The test manifest uses **base ops only** (the HW's system-op retirement is
-a temporary halt), and covers: ALU ops, `lui`/`addi` constants, `lw`/`sw`
-inside granted regions, taken/untaken branches, a countdown loop, `jalr`,
-infinite spin loops, an intentional store fault (d2, `memoryAuthority`
-retirement fault — pc must not advance), a fetch fault (d3 boots with no
-region registers), budget-exhaustion scheduling rotation, stalls, and
-period refill.
+1. **Base ops** (`testManifest`, 256 cycles): ALU, constants, loads/stores,
+   branches, `jalr`, store/fetch faults, budget rotation, stalls, refill.
+2. **System ops** (`Demo.sysManifest`, 2000 cycles): every system opcode —
+   dup/narrow (+ `-EPERMDENIED`/`-EOUTOFRANGE`/`-ESTALE` paths), drop
+   (reparent *and* orphan branches, region sweep), a revoke of a derivation
+   tree with a cross-domain grant that also aborts an in-flight Mover job
+   (`-ESTALE` status write), `mem_grant`, `map`/`unmap`, gate call/return
+   with capability transfer + reply (incl. a nested depth-2 call and the
+   three-hop payer walk), donation drain → forced unwind, callee `halt`
+   unwind, a completing Mover job (same-cycle final word + status),
+   `-EMOVERBUSY`/`-EGATEBUSY`, `yield`. Golden final-state expectations
+   guard against a manifest that silently exercises nothing.
 
-`canonHw` re-materializes the hardware register environment each cycle
-(HashMap-backed) so the closure chains stay shallow — test-harness
-plumbing only, pointwise identity on everything the design and `abs` read.
+Also checked at run time: the compiled design's write-port discipline
+(`designTrace = [0, 1, 2]`, the `MemWriteWF` port condition) and register
+name uniqueness (`Nodup`), the preconditions of the emission theorems.
+
+`canonHw`/`canonSp` re-materialize both states each cycle (HashMap/Array
+backed) so closure chains stay shallow — test-harness plumbing only,
+pointwise identity on everything the design, `abs`, and `step` read.
 -/
 
 namespace Tests.Lnp64uCore
@@ -142,14 +152,51 @@ private def stateEq (a b : MachineState) : Bool :=
   (List.range memWords).all (fun i =>
     a.mem (BitVec.ofNat 12 i) == b.mem (BitVec.ofNat 12 i))
 
+/-- Which components diverge (`hw` vs `spec`) — the debugging report. -/
+private def diffReport (a b : MachineState) : String :=
+  let parts :=
+    (if a.cycle != b.cycle then [s!"cycle {a.cycle}≠{b.cycle}"] else [])
+    ++ ((List.finRange numDomains).filterMap fun d =>
+        if !domEq (a.doms d) (b.doms d) then
+          let x := a.doms d
+          let y := b.doms d
+          let sub :=
+            (if !(List.finRange numRegs).all (fun r => x.regs r == y.regs r)
+             then ["regs"] else [])
+            ++ (if x.pc != y.pc then [s!"pc {x.pc.toNat}≠{y.pc.toNat}"] else [])
+            ++ (if !(List.finRange numSlots).all (fun s =>
+                  decide (x.caps s = y.caps s)) then ["caps"] else [])
+            ++ (if !(List.finRange numSlots).all (fun s =>
+                  x.slotGen s == y.slotGen s) then ["gens"] else [])
+            ++ (if !(List.finRange numLineage).all (fun l =>
+                  decide (x.lineage l = y.lineage l)) then ["lineage"] else [])
+            ++ (if !(List.finRange numRegions).all (fun r =>
+                  decide (x.regions r = y.regions r)) then ["regions"] else [])
+            ++ (if x.run != y.run then ["run"] else [])
+            ++ (if x.serving != y.serving then ["serving"] else [])
+            ++ (if x.cause != y.cause then ["cause"] else [])
+            ++ (if x.budget != y.budget then
+                  [s!"budget {x.budget}≠{y.budget}"] else [])
+          some s!"dom{d.val}({String.intercalate "," sub})"
+        else none)
+    ++ ((List.finRange numGates).filterMap fun g =>
+        if !gateEq (a.gates g) (b.gates g) then some s!"gate{g.val}" else none)
+    ++ (if !moverEq a.mover b.mover then ["mover"] else [])
+    ++ (if !inflEq a.inflight b.inflight then ["inflight"] else [])
+    ++ (match (List.range memWords).find? (fun i =>
+          a.mem (BitVec.ofNat 12 i) != b.mem (BitVec.ofNat 12 i)) with
+        | some i => [s!"mem[{i}] {(a.mem (BitVec.ofNat 12 i)).toNat}≠{(b.mem (BitVec.ofNat 12 i)).toNat}"]
+        | none => [])
+  String.intercalate ", " parts
+
 /-! ## Lockstep driver -/
 
 /-- Re-materialize the hardware state (registers into a HashMap, memory
 into an array) so closure chains stay shallow. Pointwise identity on every
 signal the design and `abs` read. -/
-private def canonHw (σ : Loom.Hw.St) : Loom.Hw.St :=
+private def canonHw (m : Manifest) (σ : Loom.Hw.St) : Loom.Hw.St :=
   let rmap : Std.HashMap String ((w : Nat) × BitVec w) :=
-    (regDecls testManifest).foldl
+    (regDecls m).foldl
       (fun mp rd => mp.insert rd.name ⟨rd.width, σ.regs rd.name rd.width⟩) ∅
   let mimg : Array Loom.Word32 :=
     Array.ofFn (fun i : Fin memWords => σ.mems "mem" i.val 32)
@@ -161,29 +208,61 @@ private def canonHw (σ : Loom.Hw.St) : Loom.Hw.St :=
       if h : n = "mem" ∧ w = 32 then (mimg[a]?.getD 0).cast h.2.symm
       else 0 }
 
-/-- Run both sides `n` cycles; `some c` is the first divergent cycle. -/
-private def lockstep (n : Nat) : Option Nat :=
-  let dsg := Machines.Lnp64u.Hw.core testManifest
-  let rec go : Nat → Nat → Loom.Hw.St → MachineState → Option Nat
-    | _, 0, hw, sp => if stateEq (abs hw) sp then none else some 0
+/-- Re-materialize the spec state (`Fun.update` chains grow with every
+write; over thousands of cycles reads become the bottleneck). Pointwise
+identity. -/
+private def canonDom (ds : DomainState) : DomainState :=
+  let regs := Array.ofFn (fun r : Fin numRegs => ds.regs r)
+  let caps := Array.ofFn (fun s : Fin numSlots => ds.caps s)
+  let gens := Array.ofFn (fun s : Fin numSlots => ds.slotGen s)
+  let lin := Array.ofFn (fun l : Fin numLineage => ds.lineage l)
+  let rgn := Array.ofFn (fun r : Fin numRegions => ds.regions r)
+  { ds with
+    regs := fun r => regs[r.val]!
+    caps := fun s => caps[s.val]!
+    slotGen := fun s => gens[s.val]!
+    lineage := fun l => lin[l.val]!
+    regions := fun r => rgn[r.val]! }
+
+private def canonSp (σ : MachineState) : MachineState :=
+  let mem := Array.ofFn (fun i : Fin memWords => σ.mem (BitVec.ofNat 12 i.val))
+  let d0 := canonDom (σ.doms 0)
+  let d1 := canonDom (σ.doms 1)
+  let d2 := canonDom (σ.doms 2)
+  let d3 := canonDom (σ.doms 3)
+  { σ with
+    mem := fun a => mem[a.toNat]!
+    doms := fun d =>
+      if d.val = 0 then d0 else if d.val = 1 then d1
+      else if d.val = 2 then d2 else d3 }
+
+/-- Run both sides `n` cycles; `.error (c, report)` is the first
+divergence, `.ok final` the final (canonicalized) spec state. -/
+private def lockstep (m : Manifest) (n : Nat) :
+    Except (Nat × String) MachineState :=
+  let dsg := Machines.Lnp64u.Hw.core m
+  let rec go : Nat → Nat → Loom.Hw.St → MachineState →
+      Except (Nat × String) MachineState
+    | c, 0, hw, sp =>
+        if stateEq (abs hw) sp then .ok sp else .error (c, diffReport (abs hw) sp)
     | c, k + 1, hw, sp =>
         if stateEq (abs hw) sp then
-          go (c + 1) k (canonHw (dsg.cycle hw)) (step testManifest sp)
-        else some c
-  go 0 n (canonHw dsg.reset) testManifest.initState
+          go (c + 1) k (canonHw m (dsg.cycle hw)) (canonSp (step m sp))
+        else .error (c, diffReport (abs hw) sp)
+  go 0 n (canonHw m dsg.reset) (canonSp m.initState)
 
 private def check (name : String) (b : Bool) : IO Unit :=
   unless b do throw (IO.userError s!"Lnp64u core test failed: {name}")
 
+/-! ## 1. Base-op lockstep (256 cycles = 8 refill periods) -/
+
 #eval do
-  -- lockstep over 256 cycles = 8 refill periods
-  match lockstep 256 with
-  | some c => throw (IO.userError
-      s!"Lnp64u core/spec lockstep diverged at cycle {c}")
-  | none => pure ()
+  let final ← match lockstep testManifest 256 with
+  | .error (c, r) => throw (IO.userError
+      s!"Lnp64u base lockstep diverged at cycle {c}: {r}")
+  | .ok f => pure f
   -- golden expectations on the final spec state (guards against a test
   -- manifest that silently exercises nothing)
-  let final := stepN testManifest 256 testManifest.initState
   check "d0 sum stored" (final.read (BitVec.ofNat 12 (dataBase 0)) == 6)
   check "d0 or-result stored"
     (final.read (BitVec.ofNat 12 (dataBase 0 + 1)) == (6 ||| (1 <<< 15)))
@@ -201,6 +280,54 @@ private def check (name : String) (b : Bool) : IO Unit :=
     ((final.doms 2).pc == BitVec.ofNat 12 (codeBase 2))
   check "d3 fetch-fault halted" (decide ((final.doms 3).run = RunState.halted) &&
     (final.doms 3).cause == BitVec.ofNat 32 Fault.memoryAuthority.code)
-  IO.println "Lnp64u core/spec lockstep passed (256 cycles, full state)"
+  IO.println "Lnp64u base-op lockstep passed (256 cycles, full state)"
+
+/-! ## 2. System-op lockstep (2000 cycles; see module docstring) -/
+
+#eval do
+  -- compiled-design well-formedness (the emission theorems' preconditions):
+  -- one syntactic memory write per port, ascending; distinct signal names
+  let dsg := Machines.Lnp64u.Hw.core Demo.sysManifest
+  check "designTrace = [0,1,2] (MemWriteWF ports)"
+    (decide (Loom.Hw.Compile.designTrace dsg "mem" = [0, 1, 2]))
+  let names := dsg.regs.map RegDecl.name
+  let uniq : Std.HashMap String Unit :=
+    names.foldl (fun mp n => mp.insert n ()) ∅
+  check "register names Nodup" (uniq.size == names.length)
+  let final ← match lockstep Demo.sysManifest 2000 with
+  | .error (c, r) => throw (IO.userError
+      s!"Lnp64u system lockstep diverged at cycle {c}: {r}")
+  | .ok f => pure f
+  -- golden expectations on the final spec state
+  let rd (a : Nat) : Loom.Word32 := final.read (BitVec.ofNat 12 a)
+  check "dup+map store" (rd 0x410 == 1234)
+  check "stale handle errno" (rd 0x426 == Errno.staleHandle.toWord)
+  check "permDenied errno" (rd 0x428 == Errno.permDenied.toWord)
+  check "outOfRange errno" (rd 0x429 == Errno.outOfRange.toWord)
+  check "gateBusy errno (self-callee)" (rd 0x42A == Errno.gateBusy.toWord)
+  check "moverBusy errno" (rd 0x42B == Errno.moverBusy.toWord)
+  check "gate reply readback" (rd 0x42C == 777)
+  check "donation-drain unwind errno" (rd 0x42D == Errno.calleeFault.toWord)
+  check "callee-halt unwind errno" (rd 0x42E == Errno.calleeFault.toWord)
+  check "aborted mover status = -ESTALE" (rd 0x424 == Errno.staleHandle.toWord)
+  check "completed mover status = 1" (rd 0x425 == 1)
+  check "mover payload copied"
+    (rd 0x480 == 111 && rd 0x481 == 222 && rd 0x482 == 333 && rd 0x483 == 444)
+  check "callee wrote through transferred cap" (rd 0x440 == 777)
+  check "d2 read through granted cap" (rd 0x520 == 48879)
+  check "aborted mover ran partially" (rd 0x700 == 48879 && rd 0x7C7 == 0)
+  check "mailbox handshake" (rd 0x500 == 1 && rd 0x501 == 1 && rd 0x502 == 1)
+  check "d1 halted voluntarily (cause 0)"
+    (decide ((final.doms 1).run = RunState.halted) && (final.doms 1).cause == 0)
+  check "d2 halted on swept region (memoryAuthority)"
+    (decide ((final.doms 2).run = RunState.halted) &&
+     (final.doms 2).cause == BitVec.ofNat 32 Fault.memoryAuthority.code)
+  check "d3 halted by donation drain (budget)"
+    (decide ((final.doms 3).run = RunState.halted) &&
+     (final.doms 3).cause == BitVec.ofNat 32 Fault.budget.code)
+  check "d0 spinning at the end"
+    (decide ((final.doms 0).run = RunState.running) &&
+     (final.doms 0).pc == BitVec.ofNat 12 Demo.prog0Spin)
+  IO.println "Lnp64u system-op lockstep passed (2000 cycles, full state)"
 
 end Tests.Lnp64uCore

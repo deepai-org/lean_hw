@@ -26,7 +26,9 @@ The R-MC contract's vocabulary, per `Hw/DESIGN.md` (binding):
 
 Hidden state (ignored by `abs`, reported for the R-MC invariant): the
 per-domain refill counters `d{d}_rctr`, which track `cycle % periodP d`
-because the Expr language has no modulo.
+because the Expr language has no modulo, and the `cap_revoke` mark engine
+`rv_j/rv_v/rv_r` (one pointer-doubling node per machine slot, iterated in
+the in-flight countdown cycles — see `Hw/SysOps.lean`).
 -/
 
 namespace Machines.Lnp64u.Hw
@@ -56,6 +58,21 @@ def dmaxdon (d : DomainId) : String := s!"d{d.val}_maxdon"
 /-- Hidden: refill counter tracking `cycle % periodP d` (no mod in `Expr`).
 Not part of the state-encoding table; `abs` ignores it. -/
 def drctr (d : DomainId) : String := s!"d{d.val}_rctr"
+
+/-- A machine-wide slot index: node `i` is slot `i % 16` of domain `i / 16`
+(the `cap_revoke` mark engine's vertex set). -/
+abbrev NodeId := Fin (numDomains * numSlots)
+
+def nDom (i : NodeId) : DomainId :=
+  ⟨i.val / 16, by show i.val / 16 < 4; have h : i.val < 64 := i.isLt; omega⟩
+def nSlot (i : NodeId) : Slot :=
+  ⟨i.val % 16, by show i.val % 16 < 16; omega⟩
+
+/-- Hidden `cap_revoke` mark-engine registers (pointer doubling): current
+jump target (6-bit node), chain-valid, reached-root. `abs` ignores them. -/
+def rvJ (i : NodeId) : String := s!"rv_j{i.val}"
+def rvV (i : NodeId) : String := s!"rv_v{i.val}"
+def rvR (i : NodeId) : String := s!"rv_r{i.val}"
 
 def gcallee (g : GateId) : String := s!"g{g.val}_callee"
 def gentry (g : GateId) : String := s!"g{g.val}_entry"
@@ -234,6 +251,9 @@ def regDecls (m : Manifest) : List RegDecl :=
   ((List.finRange numDomains).flatMap (domDecls m))
   ++ ((List.finRange numGates).flatMap (gateDecls m))
   ++ globalDecls m
+  -- hidden cap_revoke mark engine (see module docstring); abs ignores these
+  ++ ((List.finRange (numDomains * numSlots)).flatMap fun i =>
+      [⟨rvJ i, 6, 0⟩, ⟨rvV i, 1, 0⟩, ⟨rvR i, 1, 0⟩])
 
 /-- The 4096×32 physical memory, initialized from the manifest's boot image
 (`initState.mem = m.rom`). -/
