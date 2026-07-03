@@ -286,6 +286,61 @@ theorem acyclic_write (σ : MachineState) (a : Addr) (v : Loom.Word32) (hac : Ac
   acyclic_of_parentRef_eq σ _ (parentRef_eq_of_doms σ _ (fun _ => ⟨rfl, rfl⟩)) hac
 
 
+/-- **Reparent to a fresh sibling preserves acyclicity.** When `new` shares
+`old`'s parent (`hsib`) and nothing points at `new` in `σ` (`hfresh`), redirecting
+every `old`-parent edge to `new` cannot create a cycle: the relabeling `ψ` that
+collapses `new` back to `old` commutes with `climb`, so a `σ'`-cycle would map to
+a `σ`-cycle. This is `transferCap`'s reparent case — distinct from
+`acyclic_contract`, which instead needs `parentRef old = some new`. -/
+theorem acyclic_reparent_sibling (σ σ' : MachineState) (old new : CapRef)
+    (hsib : σ.parentRef new = σ.parentRef old)
+    (hfresh : ∀ r, σ.parentRef r ≠ some new)
+    (hpar : ∀ r, σ'.parentRef r =
+      if σ.parentRef r = some old then some new else σ.parentRef r)
+    (hac : Acyclic σ) : Acyclic σ' := by
+  classical
+  let ψ : CapRef → CapRef := fun x => if x = new then old else x
+  have hpold : σ.parentRef old ≠ some old := fun h =>
+    Acyclic.parentRef_ne σ hac old old h rfl
+  have hψfix : ∀ (o : Option CapRef), (∀ v, o = some v → v ≠ new) →
+      Option.map ψ o = o := by
+    intro o ho; cases o with
+    | none => rfl
+    | some v => simp only [Option.map_some, ψ]; rw [if_neg (ho v rfl)]
+  have hψnew : ψ new = old := by simp [ψ]
+  have hψne : ∀ r, r ≠ new → ψ r = r := fun r hr => by simp [ψ, hr]
+  have hcomm : ∀ r, Option.map ψ (σ'.parentRef r) = σ.parentRef (ψ r) := by
+    intro r
+    by_cases hrn : r = new
+    · rw [hrn, hpar new, hsib, if_neg hpold, hψnew]
+      exact hψfix (σ.parentRef old) (fun v hv h => hfresh old (by rw [hv, h]))
+    · rw [hpar r, hψne r hrn]
+      by_cases hro : σ.parentRef r = some old
+      · rw [if_pos hro, hro]; simp only [Option.map_some, hψnew]
+      · rw [if_neg hro]
+        exact hψfix (σ.parentRef r) (fun v hv h => hfresh r (by rw [hv, h]))
+  have hstep : ∀ (τ : MachineState) (n : Nat) (r : CapRef),
+      τ.climb (n + 1) r = (τ.parentRef r).bind (τ.climb n) := by
+    intro τ n r; cases hp : τ.parentRef r <;> simp [MachineState.climb, hp]
+  have hclimb : ∀ k r, Option.map ψ (σ'.climb k r) = σ.climb k (ψ r) := by
+    intro k; induction k with
+    | zero => intro r; simp [MachineState.climb]
+    | succ n ih =>
+        intro r
+        rw [hstep σ' n r, hstep σ n (ψ r)]
+        cases hp : σ'.parentRef r with
+        | none =>
+            have hn : σ.parentRef (ψ r) = none := by rw [← hcomm r, hp]; rfl
+            simp [hp, hn]
+        | some p =>
+            have hpc : σ.parentRef (ψ r) = some (ψ p) := by
+              rw [← hcomm r, hp]; rfl
+            simp only [hp, hpc, Option.bind_some]; exact ih p
+  intro r i hi hcy
+  have hh := hclimb i r
+  rw [hcy] at hh; simp only [Option.map_some] at hh
+  exact hac (ψ r) i hi hh.symm
+
 /-- **Acyclicity survives fresh-leaf addition.** Adding a single parent link
 `a → b` where `a` was a root (nothing pointed to `a`, and `a ≠ b`) cannot
 create a cycle: a cycle would have to re-enter `a`, but nothing points to it.
