@@ -29,8 +29,9 @@ proof with `system_preserves_acyclic`). **DONE — the combined invariant is now
 `Invariant (Wf ∧ Acyclic)` reduced to exactly one obligation, `SystemOpsPreserveWfA`, via
 `ExecPreservesWfA` and the combined phase lemmas (`retire_preserves_wfa`,
 `corePhase_preserves_wfa`, `step_wfa`). **`cap_drop` is fully proven in the reachable-state
-invariant.** The entire invariant now rests on `system_preserves_wfa` (8 of 11 ops proved);
-only **`cap_revoke`** (`wf_destroyMarked`) and the **2 gate ops** (`transferCap`) remain as
+invariant.** The entire invariant now rests on `system_preserves_wfa` (**9 of 11 ops proved**);
+**`cap_revoke` is now fully discharged** (`wf_destroyMarked_sweep` via the marks-fixpoint
+saturation `marks_fixpoint`/`marks_closed`). Only the **2 gate ops** (`transferCap`) remain as
 that single obligation's sorries — exactly parallel to how the Wf-only invariant rested on
 `SystemOpsPreserveWf`. `acyclic_destroyMarked` (cap_revoke's Acyclic half) is already done.
 
