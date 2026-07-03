@@ -212,12 +212,71 @@ theorem rules_nextReg (rules : List Rule) (σ : Loom.Hw.St) (rn : String) (w : N
       exact ih (rl.body.run σ acc) (nextReg rn w rl.body cur)
         (nextReg_correct rl.body σ acc rn w cur hcur)
 
+/-- A fold of register-`set`s over a list with no entry named `nm` leaves the
+value at `nm` untouched. -/
+theorem foldl_set_nomatch (L : List MV.RegDef) (ρ0 : Loom.Emit.MicroVerilog.RegEnv)
+    (σmv : MV.St) (nm : String) (w : Nat) (h : ∀ rd ∈ L, rd.name ≠ nm) :
+    (L.foldl (fun ρ rd => ρ.set rd.name (rd.next.eval σmv)) ρ0) nm w = ρ0 nm w := by
+  induction L generalizing ρ0 with
+  | nil => rfl
+  | cons rd rest ih =>
+      rw [List.foldl_cons]
+      rw [ih (ρ0.set rd.name (rd.next.eval σmv))
+        (fun x hx => h x (List.mem_cons_of_mem _ hx))]
+      show (ρ0.set rd.name (rd.next.eval σmv)) nm w = ρ0 nm w
+      unfold Loom.Emit.MicroVerilog.RegEnv.set
+      rw [if_neg (fun he => h rd (List.mem_cons_self ..) he.symm)]
+
+/-- Fold-lookup under distinct register names: the fold of register-`set`s
+returns the target register's own next-value. -/
+theorem foldl_set_get (L : List MV.RegDef) (ρ0 : Loom.Emit.MicroVerilog.RegEnv)
+    (σmv : MV.St) (rd0 : MV.RegDef) (hin : rd0 ∈ L)
+    (hnd : (L.map (·.name)).Nodup) :
+    (L.foldl (fun ρ rd => ρ.set rd.name (rd.next.eval σmv)) ρ0) rd0.name rd0.width
+      = rd0.next.eval σmv := by
+  induction L generalizing ρ0 with
+  | nil => exact absurd hin (List.not_mem_nil)
+  | cons rd rest ih =>
+      rw [List.map_cons, List.nodup_cons] at hnd
+      obtain ⟨hrd, hrest⟩ := hnd
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp hin with heq | hmem
+      · subst heq
+        rw [foldl_set_nomatch rest _ σmv rd0.name rd0.width
+          (fun x hx he => hrd (he ▸ List.mem_map_of_mem hx))]
+        show (ρ0.set rd0.name (rd0.next.eval σmv)) rd0.name rd0.width = _
+        unfold Loom.Emit.MicroVerilog.RegEnv.set
+        rw [if_pos rfl, dif_pos rfl]
+      · have hne : rd.name ≠ rd0.name := by
+          intro he; exact hrd (he ▸ List.mem_map_of_mem hmem)
+        exact ih _ hmem hrest
+
 /-- **The register half of the emission theorem.** Every register of the
 compiled µVerilog module takes, after one cycle, exactly the value the design
-gives it — for every machine, no per-instruction reasoning. -/
-theorem compile_cycle_regs (d : Design) (σ : Loom.Hw.St) (r : RegDecl) (hr : r ∈ d.regs) :
+gives it — for every machine with distinct register names, no per-instruction
+reasoning. -/
+theorem compile_cycle_regs (d : Design) (σ : Loom.Hw.St) (r : RegDecl) (hr : r ∈ d.regs)
+    (hnd : (d.regs.map (·.name)).Nodup) :
     ((Loom.Emit.MicroVerilog.Module.cycle (compile d) (convSt σ)).regs r.name r.width)
       = (d.cycle σ).regs r.name r.width := by
-  sorry
+  -- the compiled reg def for r
+  let rd0 : MV.RegDef :=
+    { name := r.name, width := r.width, init := r.init
+      next := d.rules.foldl (fun cur rl => nextReg r.name r.width rl.body cur)
+                (.reg r.width r.name) }
+  have hin : rd0 ∈ (compile d).regs := by
+    unfold compile; exact List.mem_map_of_mem hr
+  have hnd' : ((compile d).regs.map (·.name)).Nodup := by
+    unfold compile
+    simpa [List.map_map, Function.comp] using hnd
+  show (((compile d).regs.foldl
+    (fun ρ x => ρ.set x.name (x.next.eval (convSt σ))) (convSt σ).regs)) r.name r.width = _
+  rw [show r.name = rd0.name from rfl, show r.width = rd0.width from rfl,
+    foldl_set_get (compile d).regs (convSt σ).regs (convSt σ) rd0 hin hnd']
+  show mvEval (convSt σ) rd0.next = (d.cycle σ).regs r.name r.width
+  rw [show rd0.next = d.rules.foldl (fun c rl => nextReg r.name r.width rl.body c)
+        (.reg r.width r.name) from rfl,
+    rules_nextReg d.rules σ r.name r.width σ (.reg r.width r.name) rfl]
+  rfl
 
 end Loom.Hw.Compile
