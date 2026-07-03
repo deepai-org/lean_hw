@@ -250,4 +250,27 @@ theorem SlotGenLe.mapUpd (c : Ctx) (ri : RegionId) (rgn : Region) :
       fun _ => SpecM.setReg c.d c.op.rd 0) :=
   SlotGenLe.bind (SlotGenLe.updDomGen _ _ (fun ds => rfl)) (fun _ => SlotGenLe.setReg _ _ _)
 
+@[simp] theorem reparent_slotGen (σ : MachineState) (old new : CapRef) (d : DomainId) (s : Slot) :
+    ((σ.reparent old new).doms d).slotGen s = (σ.doms d).slotGen s := rfl
+
+@[simp] theorem sweepMover_slotGen (σ : MachineState) (d : DomainId) (s : Slot) :
+    ((σ.sweepMover.doms d).slotGen s) = (σ.doms d).slotGen s := by rw [sweepMover_doms]
+
+/-- The `cap_drop` kernel core (reparent/orphan + clearSlot + sweeps) never lowers a
+slot generation: `clearSlot` bumps the dropped slot, everything else preserves. -/
+theorem clearSlot_sweeps_slotGen_ge (σ : MachineState) (d : DomainId) (s : Slot)
+    (d' : DomainId) (s' : Slot) :
+    ((σ.doms d').slotGen s').toNat ≤
+      (((((σ.clearSlot d s).sweepRegions).sweepMover).doms d').slotGen s').toNat := by
+  rw [sweepMover_slotGen, sweepRegions_slotGen']
+  exact clearSlot_slotGen_ge σ d s d' s'
+
+/-- The `cap_revoke` kernel core (destroyMarked + sweeps) never lowers a slot generation. -/
+theorem destroyMarked_sweeps_slotGen_ge (σ : MachineState) (m : DomainId → Slot → Bool)
+    (d : DomainId) (s : Slot) :
+    ((σ.doms d).slotGen s).toNat ≤
+      (((((σ.destroyMarked m).sweepRegions).sweepMover).doms d).slotGen s).toNat := by
+  rw [sweepMover_slotGen, sweepRegions_slotGen']
+  exact destroyMarked_slotGen_ge σ m d s
+
 end Machines.Lnp64u
