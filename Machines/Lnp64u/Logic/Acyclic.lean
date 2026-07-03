@@ -285,4 +285,52 @@ theorem acyclic_write (σ : MachineState) (a : Addr) (v : Loom.Word32) (hac : Ac
     Acyclic (σ.write a v) :=
   acyclic_of_parentRef_eq σ _ (parentRef_eq_of_doms σ _ (fun _ => ⟨rfl, rfl⟩)) hac
 
+
+/-- **Acyclicity survives fresh-leaf addition.** Adding a single parent link
+`a → b` where `a` was a root (nothing pointed to `a`, and `a ≠ b`) cannot
+create a cycle: a cycle would have to re-enter `a`, but nothing points to it.
+This is exactly `installDerived` (a new capability in a free slot). No counting. -/
+theorem acyclic_add_leaf (σ σ' : MachineState) (a b : CapRef) (hne : a ≠ b)
+    (hpar : ∀ r, σ'.parentRef r = if r = a then some b else σ.parentRef r)
+    (hno : ∀ r, σ.parentRef r ≠ some a) (hac : Acyclic σ) : Acyclic σ' := by
+  have hno' : ∀ r, σ'.parentRef r ≠ some a := by
+    intro r; rw [hpar]; split
+    · intro h; exact hne (Option.some.inj h).symm
+    · exact hno r
+  have havoid : ∀ k r, r ≠ a → σ'.climb k r ≠ some a := by
+    intro k; induction k with
+    | zero => intro r hr h; simp only [MachineState.climb, Option.some.injEq] at h; exact hr h
+    | succ n ih =>
+        intro r hr h; rw [MachineState.climb] at h
+        cases hp : σ'.parentRef r with
+        | none => rw [hp] at h; simp at h
+        | some p =>
+            rw [hp] at h; simp only [Option.bind_some] at h
+            exact ih p (fun hpe => hno' r (by rw [hp, hpe])) h
+  have heq : ∀ k r, r ≠ a → σ'.climb k r = σ.climb k r := by
+    intro k; induction k with
+    | zero => intro r hr; rfl
+    | succ n ih =>
+        intro r hr
+        rw [MachineState.climb, MachineState.climb, hpar, if_neg hr]
+        cases hp : σ.parentRef r with
+        | none => rfl
+        | some p =>
+            simp only [Option.bind_some]
+            exact ih p (fun hpe => hno r (by rw [hp, hpe]))
+  intro r i hi hcyc
+  by_cases hra : r = a
+  · cases hik : i with
+    | zero => omega
+    | succ i' =>
+        have hstep : σ'.climb (i' + 1) r = (σ'.parentRef r).bind (σ'.climb i') := by
+          cases hp : σ'.parentRef r with
+          | none => simp [MachineState.climb, hp]
+          | some p => simp [MachineState.climb, hp]
+        rw [hik, hstep, hpar, if_pos hra] at hcyc
+        simp only [Option.bind_some] at hcyc
+        rw [hra] at hcyc
+        exact havoid i' b (fun h => hne h.symm) hcyc
+  · rw [heq i r hra] at hcyc; exact hac r i hi hcyc
+
 end Machines.Lnp64u
