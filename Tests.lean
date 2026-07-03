@@ -4,3 +4,4 @@ import Tests.Lnp64u
 import Tests.Lnp64uCore
 import Tests.LratBench
 import Tests.CheckBench
+import Tests.Acc8Bmc

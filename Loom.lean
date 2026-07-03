@@ -6,6 +6,10 @@ import Loom.Isa.Decode
 import Loom.Isa.Dsl
 import Loom.Dp.Cert.Lrat
 import Loom.Dp.Cert.Check
+import Loom.Dp.Cnf
+import Loom.Dp.Bmc
+import Loom.Dp.Solver
+import Loom.Dp.KInduction
 import Loom.Book.Extract
 import Loom.Book.Render.Html
 import Loom.Emit.MicroVerilog.Semantics
