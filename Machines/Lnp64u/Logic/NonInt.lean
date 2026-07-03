@@ -622,12 +622,22 @@ structure Insulated (m : Manifest) (d : DomainId) (σ : MachineState) : Prop whe
   maxDon_eq : (σ.doms d).maxDonation = (m.doms d).maxDonation
   /-- Memory under `d`'s executable roots is still the ROM. -/
   code_intact : ∀ a, UnderXRoots m d a → σ.mem a = m.rom a
+  /-- Latch provenance (proof-forced, 2026-07-03): whenever `d`'s
+  instruction is in flight, the latched word is what `d` fetches at its
+  (frozen) `pc` — hence a ROM word under an executable root, so its decoded
+  opcode is one `code_local` constrains. Without this clause
+  `insulated_step` is *false*: `Insulated` said nothing about the latch, so
+  a rogue in-flight `mem_grant`/`cap_drop` word retiring for `d` could
+  break the boot pinning. The clause is self-propagating: the issue path
+  latches exactly the fetched word and freezes `d`'s fetch inputs. -/
+  latch_rom : ∀ fl, σ.inflight = some fl → fl.dom = d → fetch σ d = some fl.word
 
 /-- Boot states are insulated. -/
 theorem insulated_init (m : Manifest) (d : DomainId) (hm : m.WF)
     (hiso : Isolated m d) : Insulated m d m.initState := by
   refine ⟨Machines.Lnp64u.Theorems.Inv.init_wf m hm, init_acyclic m,
-    rfl, rfl, rfl, rfl, ?_, ?_, ?_, ?_, ?_, Nat.le_refl _, rfl, fun _ _ => rfl⟩
+    rfl, rfl, rfl, rfl, ?_, ?_, ?_, ?_, ?_, Nat.le_refl _, rfl, fun _ _ => rfl,
+    fun fl h _ => absurd h (by simp [Manifest.initState])⟩
   · intro g h
     simp only [Manifest.initState, Manifest.bootDom] at h
     exact absurd h (by simp)
@@ -795,6 +805,139 @@ theorem fetch_coupled {m₁ : Manifest} {d : DomainId} {σ₁ σ₂ : MachineSta
         { r := false, w := false, x := true } = true := by rw [← hcov]; exact hc
     rw [if_neg hc, if_neg hc₂]
 
+/-! ## Foreign accesses never reach under `d`'s roots
+
+The three memory channels of a cycle that are *not* `d`'s own instruction —
+foreign stores, the Mover's data words, and the Mover status writes — all
+go through either `domCovers` of a foreign domain or `moverCheck` of a
+foreign capability. Both are excluded from `d`'s roots by
+`regions_own`/`foreign_off`. Stated with component hypotheses (all about
+`doms`/`mover` only) so they transport across the decorations of a cycle. -/
+
+/-- A covered access by `e ≠ d` misses `d`'s roots: `e`'s region registers
+cache `e`'s own capabilities, which are excluded by `foreign_off`. -/
+theorem covers_not_underRoots {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hrb : ∀ e r rg, (σ.doms e).regions r = some rg →
+      ∃ entry, ((σ.doms rg.backing.dom).liveCap rg.backing.slot rg.backing.gen)
+          = some entry ∧
+        (CapKind.mem rg.base rg.len rg.perms).le entry.kind)
+    (hro : ∀ e r rg, (σ.doms e).regions r = some rg → rg.backing.dom = e)
+    (hfo : ∀ e, e ≠ d → ∀ s entry b l p, (σ.doms e).caps s = some entry →
+      entry.kind = .mem b l p → ∀ a : Addr, b.toNat ≤ a.toNat →
+      a.toNat < b.toNat + l.toNat → ¬ UnderRoots m d a)
+    {e : DomainId} {a : Addr} {need : Perms} (hne : e ≠ d)
+    (hcov : σ.domCovers e a need = true) : ¬ UnderRoots m d a := by
+  unfold MachineState.domCovers at hcov
+  rw [decide_eq_true_iff] at hcov
+  obtain ⟨r, rg, hrg, hc⟩ := hcov
+  unfold Region.covers at hc
+  simp only [Bool.and_eq_true, decide_eq_true_iff] at hc
+  obtain ⟨⟨hlo, hhi⟩, _⟩ := hc
+  have hown : rg.backing.dom = e := hro e r rg hrg
+  obtain ⟨entry, hlive, hle⟩ := hrb e r rg hrg
+  rw [hown] at hlive
+  have hcaps : (σ.doms e).caps rg.backing.slot = some entry := caps_of_liveCap hlive
+  cases hk : entry.kind with
+  | gate g => rw [hk] at hle; cases hle
+  | mem b l p =>
+      rw [hk] at hle
+      obtain ⟨hb, hbl, _⟩ := hle
+      exact hfo e hne rg.backing.slot entry b l p hcaps hk a (by omega) (by omega)
+
+/-- A Mover per-word check through a capability of `e ≠ d` misses `d`'s
+roots. -/
+theorem moverCheck_not_underRoots {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hfo : ∀ e, e ≠ d → ∀ s entry b l p, (σ.doms e).caps s = some entry →
+      entry.kind = .mem b l p → ∀ a : Addr, b.toNat ≤ a.toNat →
+      a.toNat < b.toNat + l.toNat → ¬ UnderRoots m d a)
+    {r : CapRef} (hne : r.dom ≠ d) {a : Addr} {need : Perms}
+    (hc : moverCheck σ r a need = true) : ¬ UnderRoots m d a := by
+  unfold moverCheck at hc
+  cases hl : (σ.doms r.dom).liveCap r.slot r.gen with
+  | none => simp [hl] at hc
+  | some e =>
+      simp only [hl] at hc
+      have hcaps := caps_of_liveCap hl
+      cases hk : e.kind with
+      | gate g => rw [hk] at hc; simp [CapKind.covers] at hc
+      | mem b l p =>
+          rw [hk] at hc
+          unfold CapKind.covers at hc
+          simp only [Bool.and_eq_true, decide_eq_true_iff] at hc
+          exact hfo r.dom hne r.slot e b l p hcaps hk a hc.1.1 hc.1.2
+
+/-- The Mover status write never lands under `d`'s roots when the job's
+owner is not `d`. -/
+theorem moverStatus_mem_frame {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hrb : ∀ e r rg, (σ.doms e).regions r = some rg →
+      ∃ entry, ((σ.doms rg.backing.dom).liveCap rg.backing.slot rg.backing.gen)
+          = some entry ∧
+        (CapKind.mem rg.base rg.len rg.perms).le entry.kind)
+    (hro : ∀ e r rg, (σ.doms e).regions r = some rg → rg.backing.dom = e)
+    (hfo : ∀ e, e ≠ d → ∀ s entry b l p, (σ.doms e).caps s = some entry →
+      entry.kind = .mem b l p → ∀ a : Addr, b.toNat ≤ a.toNat →
+      a.toNat < b.toNat + l.toNat → ¬ UnderRoots m d a)
+    {job : MoverJob} (howner : job.owner ≠ d) (v : Loom.Word32)
+    (a : Addr) (ha : UnderRoots m d a) :
+    (moverStatus σ job v).mem a = σ.mem a := by
+  unfold moverStatus
+  by_cases hcov : σ.domCovers job.owner job.statusAddr
+      { r := false, w := true, x := false } = true
+  · rw [if_pos hcov]
+    have hns := covers_not_underRoots hrb hro hfo howner hcov
+    show Loom.Fun.update σ.mem job.statusAddr v a = σ.mem a
+    exact Loom.Fun.update_ne _ _ _ _ (fun h => hns (h ▸ ha))
+  · rw [if_neg hcov]
+
+/-- **The Mover phase leaves memory under `d`'s roots untouched** when its
+job (if any) is foreign. -/
+theorem moverPhase_mem_frame {m : Manifest} {d : DomainId} {σ : MachineState}
+    (hrb : ∀ e r rg, (σ.doms e).regions r = some rg →
+      ∃ entry, ((σ.doms rg.backing.dom).liveCap rg.backing.slot rg.backing.gen)
+          = some entry ∧
+        (CapKind.mem rg.base rg.len rg.perms).le entry.kind)
+    (hro : ∀ e r rg, (σ.doms e).regions r = some rg → rg.backing.dom = e)
+    (hfo : ∀ e, e ≠ d → ∀ s entry b l p, (σ.doms e).caps s = some entry →
+      entry.kind = .mem b l p → ∀ a : Addr, b.toNat ≤ a.toNat →
+      a.toNat < b.toNat + l.toNat → ¬ UnderRoots m d a)
+    (hmf : ∀ job, σ.mover = some job → job.owner ≠ d)
+    (hmw : ∀ job, σ.mover = some job → job.dst.dom = job.owner)
+    (a : Addr) (ha : UnderRoots m d a) : (moverPhase σ).mem a = σ.mem a := by
+  unfold moverPhase
+  cases hj : σ.mover with
+  | none => rfl
+  | some job =>
+      have howner := hmf job hj
+      have hdst := hmw job hj
+      dsimp only
+      by_cases hrem : job.remaining = 0
+      · rw [if_pos hrem]
+        exact moverStatus_mem_frame (σ := { σ with mover := none })
+          hrb hro hfo howner 1 a ha
+      · rw [if_neg hrem]
+        by_cases hchk : (moverCheck σ job.src job.srcCur
+              { r := true, w := false, x := false } &&
+            moverCheck σ job.dst job.dstCur
+              { r := false, w := true, x := false }) = true
+        · rw [if_pos hchk]
+          simp only [Bool.and_eq_true] at hchk
+          have hnd : ¬ UnderRoots m d job.dstCur :=
+            moverCheck_not_underRoots hfo (hdst ▸ howner) hchk.2
+          have hwr : (σ.write job.dstCur (σ.read job.srcCur)).mem a = σ.mem a := by
+            show Loom.Fun.update σ.mem job.dstCur _ a = σ.mem a
+            exact Loom.Fun.update_ne _ _ _ _ (fun h => hnd (h ▸ ha))
+          set σ' := σ.write job.dstCur (σ.read job.srcCur) with hσ'
+          by_cases hrem' : job.remaining - 1 = 0
+          · rw [if_pos hrem']
+            refine Eq.trans ?_ hwr
+            exact moverStatus_mem_frame (σ := { σ' with mover := none })
+              hrb hro hfo howner 1 a ha
+          · rw [if_neg hrem']
+            exact hwr
+        · rw [if_neg hchk]
+          exact moverStatus_mem_frame (σ := { σ with mover := none })
+            hrb hro hfo howner _ a ha
+
 /-! ## The halt observation (issue-time faults) -/
 
 /-- `step m σ` halted `d` with fault `f` and touched nothing else of `d`'s
@@ -951,12 +1094,24 @@ theorem retire_step_lockstep (m₁ m₂ : Manifest) (d : DomainId)
 /-- **Engine 4: progress.** From a quiescent insulated state with `d`
 running, some cycle `j` later the machine is at an issue instant for `d`
 with any required budget `c ≤ budgetQ` available, and `d`'s slice was
-frozen (and quiescent) throughout the wait. -/
+frozen (and quiescent) throughout the wait.
+
+The `hcost` hypothesis is proof-forced (2026-07-03): without it the
+statement is *false* for a `c` exceeding the cost of the instruction `d`
+actually fetches — at the first idle instant with `0 < budget < c` the
+machine would *issue* `d`'s (cheaper) instruction rather than stall, so no
+`d`-frozen window reaches a `c`-funded instant. The consumers use exactly
+the two sound instantiations: `c = 1` (the halting catch-up — eligibility
+alone) and `c` = the cost of the word `d`'s frozen fetch yields (the
+retirement catch-up), under which every underfunded idle instant provably
+stalls. -/
 theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
     (hm : m.WF) (hpri : TopPriority m d) (hiso : Isolated m d)
     (hins : Insulated m d σ) (hq : Quiet d σ)
     (hrun : (σ.doms d).run = .running)
-    (c : Nat) (hc0 : 0 < c) (hcQ : c ≤ (m.doms d).budgetQ) :
+    (c : Nat) (hc0 : 0 < c) (hcQ : c ≤ (m.doms d).budgetQ)
+    (hcost : c = 1 ∨ ∃ w instr, fetch σ d = some w ∧
+      Loom.Isa.decode isa w = some instr ∧ instr.cost.cost = c) :
     ∃ j, (∀ i, i ≤ j → DFrozen m d σ (stepN m i σ) ∧ Quiet d (stepN m i σ)) ∧
       (stepN m j σ).inflight = none ∧
       schedule m (refillPhase m (stepN m j σ)) = some d ∧
@@ -981,6 +1136,14 @@ theorem step_quiet (m : Manifest) (d : DomainId) (σ : MachineState)
     intro hcontra
     exact hni h0 (hcontra ▸ hs)
 
+private theorem haltBase_cause' (σ : MachineState) (d : DomainId) (c : Loom.Word32)
+    (d' : DomainId) :
+    ((σ.haltBase d c).doms d').cause = if d' = d then c else (σ.doms d').cause := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd, hd]
+
 /-- **The issue-cycle case split** for `d` at an idle core: fetch fault,
 decode fault, stall, or latch — with the d-slice frame in every case. -/
 theorem issue_step (m : Manifest) (d : DomainId) (σ : MachineState)
@@ -997,7 +1160,213 @@ theorem issue_step (m : Manifest) (d : DomainId) (σ : MachineState)
        instr.cost.cost ≤ ((refillPhase m σ).doms d).budget ∧
        DFrozen m d σ (step m σ) ∧
        (step m σ).inflight = some ⟨d, w, instr.cost.cost⟩) := by
-  sorry
+  have hwfρ : Wf (refillPhase m σ) := refillPhase_preserves_wf m σ hins.wf
+  set ρ := refillPhase m σ with hρdef
+  have hρinf : ρ.inflight = none := by
+    rw [hρdef, refillPhase_inflight]; exact hinf
+  have hservρ : (ρ.doms d).serving = none := by
+    rw [hρdef, refillPhase_serving]; exact hins.serving_none
+  have hfρ : fetch ρ d = fetch σ d := by rw [hρdef]; exact refillPhase_fetch m σ d
+  have hrunρ : (ρ.doms d).run = .running := schedule_running m ρ d hsched
+  have hroρ : ∀ e r rg, (ρ.doms e).regions r = some rg → rg.backing.dom = e := by
+    intro e r rg hrg
+    rw [hρdef, refillPhase_regions] at hrg
+    exact hins.regions_own e r rg hrg
+  have hfoρ : ∀ e, e ≠ d → ∀ s entry b l p, (ρ.doms e).caps s = some entry →
+      entry.kind = .mem b l p → ∀ a : Addr, b.toNat ≤ a.toNat →
+      a.toNat < b.toNat + l.toNat → ¬ UnderRoots m d a := by
+    intro e hne s entry b l p hcap hk a h1 h2
+    rw [hρdef, refillPhase_caps] at hcap
+    exact hins.foreign_off e hne s entry b l p hcap hk a h1 h2
+  have hmfρ : ∀ job, ρ.mover = some job → job.owner ≠ d := by
+    intro job hj
+    rw [hρdef, refillPhase_mover] at hj
+    exact hins.mover_foreign job hj
+  have hmwρ : ∀ job, ρ.mover = some job → job.dst.dom = job.owner := by
+    intro job hj; exact (hwfρ.mover_wf job hj).2.1
+  have hmemρ : ∀ a, ρ.mem a = σ.mem a := by
+    intro a; rw [hρdef]; exact congrFun (refillPhase_frame m σ).1 a
+  -- the fault-halt package: `corePhase` halted `d` at issue
+  have halt_pack : ∀ f : Fault, corePhase m ρ = haltWith ρ d f →
+      DHalt m d σ (step m σ) f := by
+    intro f hcore
+    have hbase : corePhase m ρ = ρ.haltBase d (BitVec.ofNat 32 f.code) := by
+      rw [hcore]
+      show ρ.haltDom d (BitVec.ofNat 32 f.code) = _
+      exact haltDom_base ρ d _ hservρ
+    set τ := ρ.haltBase d (BitVec.ofNat 32 f.code) with hτdef
+    have hwfτ : Wf τ := haltBase_preserves_wf ρ d _ hwfρ hrunρ hservρ hρinf
+    have hdoms : (step m σ).doms = τ.doms := by
+      rw [step_doms, ← hρdef, hbase]
+    have hdomsd : (step m σ).doms d = τ.doms d := congrFun hdoms d
+    have hmem : ∀ a, UnderRoots m d a → (step m σ).mem a = σ.mem a := by
+      intro a ha
+      have h1 : (step m σ).mem a = (moverPhase τ).mem a := by
+        show (moverPhase (corePhase m (refillPhase m σ))).mem a = _
+        rw [← hρdef, hbase]
+      rw [h1]
+      have h2 : (moverPhase τ).mem a = τ.mem a := by
+        refine moverPhase_mem_frame ?_ ?_ ?_ ?_ ?_ a ha
+        · exact hwfτ.region_backed
+        · intro e r rg hrg
+          rw [hτdef, haltBase_regions] at hrg
+          exact hroρ e r rg hrg
+        · intro e hne s entry b l p hcap hk a' h1' h2'
+          rw [hτdef, haltBase_caps] at hcap
+          exact hfoρ e hne s entry b l p hcap hk a' h1' h2'
+        · intro job hj
+          rw [hτdef, haltBase_mover] at hj
+          exact hmfρ job hj
+        · intro job hj
+          rw [hτdef, haltBase_mover] at hj
+          exact hmwρ job hj
+      rw [h2]
+      have h3 : τ.mem a = ρ.mem a := by rw [hτdef]; rfl
+      rw [h3, hmemρ a]
+    have hinfS : (step m σ).inflight = none := by
+      show (moverPhase (corePhase m (refillPhase m σ))).inflight = none
+      rw [moverPhase_inflight, ← hρdef, hbase, hτdef, haltBase_inflight]
+      exact hρinf
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hmem, hinfS⟩
+    · rw [hdomsd, hτdef, haltBase_regs, hρdef, refillPhase_regs]
+    · rw [hdomsd, hτdef, haltBase_pc, hρdef, refillPhase_pc]
+    · rw [hdomsd, hτdef, haltBase_run, if_pos rfl]
+    · rw [hdomsd, hτdef, haltBase_cause', if_pos rfl]
+    · rw [hdomsd, hτdef, haltBase_serving, if_pos rfl]
+    · rw [hdomsd, hτdef, haltBase_caps, hρdef, refillPhase_caps]
+    · rw [hdomsd, hτdef, haltBase_slotGen, hρdef, refillPhase_slotGen]
+    · rw [hdomsd, hτdef, haltBase_lineage, hρdef, refillPhase_lineage]
+    · rw [hdomsd, hτdef, haltBase_regions, hρdef, refillPhase_regions]
+  cases hf : fetch σ d with
+  | none =>
+      refine Or.inl ⟨rfl, halt_pack .memoryAuthority ?_⟩
+      have hfρ' : fetch ρ d = none := by rw [hfρ]; exact hf
+      unfold corePhase
+      simp only [hρinf, hsched, hfρ']
+  | some w =>
+      have hfρ' : fetch ρ d = some w := by rw [hfρ]; exact hf
+      cases hd : Loom.Isa.decode isa w with
+      | none =>
+          refine Or.inr (Or.inl ⟨w, rfl, hd, halt_pack .illegalInstruction ?_⟩)
+          unfold corePhase
+          simp only [hρinf, hsched, hfρ', hd]
+      | some instr =>
+          have hpay : ρ.payer d = d := payer_eq_self ρ d hservρ
+          by_cases hbud : instr.cost.cost ≤ (ρ.doms d).budget
+          · -- latch
+            have hbud' : instr.cost.cost ≤ (ρ.doms (ρ.payer d)).budget := by
+              rw [hpay]; exact hbud
+            have hcore : corePhase m ρ =
+                { ρ.setDom (ρ.payer d)
+                    (fun ds => { ds with budget := ds.budget - instr.cost.cost })
+                  with inflight := some ⟨d, w, instr.cost.cost⟩ } := by
+              unfold corePhase
+              simp only [hρinf, hsched, hfρ', hd, hservρ]
+              rw [if_pos hbud']
+            rw [hpay] at hcore
+            set σL := ρ.setDom d
+              (fun ds => { ds with budget := ds.budget - instr.cost.cost }) with hσL
+            obtain ⟨hLcaps, hLlin, hLgen, hLreg, hLrun, hLserv, hLgates, hLmover⟩ :=
+              setBudget_proj ρ d (fun ds => ds.budget - instr.cost.cost)
+            have hLall : ∀ e, ((σL.doms e).regs = (ρ.doms e).regs) ∧
+                ((σL.doms e).pc = (ρ.doms e).pc) ∧
+                ((σL.doms e).cause = (ρ.doms e).cause) := by
+              intro e
+              rw [hσL]
+              unfold MachineState.setDom
+              by_cases he : e = d
+              · subst he; simp [Loom.Fun.update_same]
+              · simp [Loom.Fun.update_ne _ _ _ _ he]
+            have hLlive : ∀ e s g, ((σL.doms e).liveCap s g) = ((ρ.doms e).liveCap s g) := by
+              intro e s g
+              unfold DomainState.liveCap
+              rw [hLcaps, hLgen]
+            have hdoms : (step m σ).doms = σL.doms := by
+              rw [step_doms, ← hρdef, hcore]
+            have hdomsd : (step m σ).doms d = σL.doms d := congrFun hdoms d
+            have hmem : ∀ a, UnderRoots m d a → (step m σ).mem a = σ.mem a := by
+              intro a ha
+              have h1 : (step m σ).mem a =
+                  (moverPhase ({ σL with inflight := some ⟨d, w, instr.cost.cost⟩ }
+                    : MachineState)).mem a := by
+                show (moverPhase (corePhase m (refillPhase m σ))).mem a = _
+                rw [← hρdef, hcore]
+              rw [h1]
+              have h2 : (moverPhase ({ σL with inflight := some ⟨d, w, instr.cost.cost⟩ }
+                  : MachineState)).mem a = σL.mem a := by
+                refine moverPhase_mem_frame ?_ ?_ ?_ ?_ ?_ a ha
+                · intro e r rg hrg
+                  have hrg' : (σL.doms e).regions r = some rg := hrg
+                  rw [hLreg] at hrg'
+                  obtain ⟨entry, hlive, hle⟩ := hwfρ.region_backed e r rg hrg'
+                  refine ⟨entry, ?_, hle⟩
+                  show (σL.doms rg.backing.dom).liveCap rg.backing.slot rg.backing.gen
+                    = some entry
+                  rw [hLlive]
+                  exact hlive
+                · intro e r rg hrg
+                  have hrg' : (σL.doms e).regions r = some rg := hrg
+                  rw [hLreg] at hrg'
+                  exact hroρ e r rg hrg'
+                · intro e hne s entry b l p hcap hk a' h1' h2'
+                  have hcap' : (σL.doms e).caps s = some entry := hcap
+                  rw [hLcaps] at hcap'
+                  exact hfoρ e hne s entry b l p hcap' hk a' h1' h2'
+                · intro job hj
+                  have hj' : σL.mover = some job := hj
+                  rw [hLmover] at hj'
+                  exact hmfρ job hj'
+                · intro job hj
+                  have hj' : σL.mover = some job := hj
+                  rw [hLmover] at hj'
+                  exact hmwρ job hj'
+              rw [h2]
+              have h3 : σL.mem a = ρ.mem a := by rw [hσL]; rfl
+              rw [h3, hmemρ a]
+            have hinfS : (step m σ).inflight = some ⟨d, w, instr.cost.cost⟩ := by
+              show (moverPhase (corePhase m (refillPhase m σ))).inflight = _
+              rw [moverPhase_inflight, ← hρdef, hcore]
+            refine Or.inr (Or.inr (Or.inr ⟨w, instr, rfl, hd, hbud, ?_, hinfS⟩))
+            refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hmem⟩
+            · rw [hdomsd, (hLall d).1, hρdef, refillPhase_regs]
+            · rw [hdomsd, (hLall d).2.1, hρdef, refillPhase_pc]
+            · rw [hdomsd, hLrun d, hρdef, refillPhase_run]
+            · rw [hdomsd, (hLall d).2.2, hρdef, refillPhase_cause]
+            · rw [hdomsd, hLserv d, hρdef, refillPhase_serving]
+            · rw [hdomsd, hLcaps d, hρdef, refillPhase_caps]
+            · rw [hdomsd, hLgen d, hρdef, refillPhase_slotGen]
+            · rw [hdomsd, hLlin d, hρdef, refillPhase_lineage]
+            · rw [hdomsd, hLreg d, hρdef, refillPhase_regions]
+          · -- stall
+            have hcore : corePhase m ρ = ρ :=
+              corePhase_stall m ρ d w instr hρinf hsched hfρ' hd
+                (by rw [hpay]; exact hbud)
+            have hdoms : (step m σ).doms = ρ.doms := by
+              rw [step_doms, ← hρdef, hcore]
+            have hdomsd : (step m σ).doms d = ρ.doms d := congrFun hdoms d
+            have hmem : ∀ a, UnderRoots m d a → (step m σ).mem a = σ.mem a := by
+              intro a ha
+              have h1 : (step m σ).mem a = (moverPhase ρ).mem a := by
+                show (moverPhase (corePhase m (refillPhase m σ))).mem a = _
+                rw [← hρdef, hcore]
+              rw [h1, moverPhase_mem_frame hwfρ.region_backed hroρ hfoρ hmfρ hmwρ a ha,
+                hmemρ a]
+            have hinfS : (step m σ).inflight = none := by
+              show (moverPhase (corePhase m (refillPhase m σ))).inflight = none
+              rw [moverPhase_inflight, ← hρdef, hcore]
+              exact hρinf
+            refine Or.inr (Or.inr (Or.inl ⟨w, instr, rfl, hd, Nat.lt_of_not_le hbud,
+              ?_, hinfS⟩))
+            refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hmem⟩
+            · rw [hdomsd, hρdef, refillPhase_regs]
+            · rw [hdomsd, hρdef, refillPhase_pc]
+            · rw [hdomsd, hρdef, refillPhase_run]
+            · rw [hdomsd, hρdef, refillPhase_cause]
+            · rw [hdomsd, hρdef, refillPhase_serving]
+            · rw [hdomsd, hρdef, refillPhase_caps]
+            · rw [hdomsd, hρdef, refillPhase_slotGen]
+            · rw [hdomsd, hρdef, refillPhase_lineage]
+            · rw [hdomsd, hρdef, refillPhase_regions]
 
 /-! ## Iterated engine corollaries (depend on the engine `sorry`s, so kept
 in `Wip`). -/

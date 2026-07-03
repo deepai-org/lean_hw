@@ -136,6 +136,7 @@ theorem catchup_halt
   -- run 2 progresses to its own issue instant
   obtain ⟨j, hfro, hinf₀, hsched₀, _⟩ :=
     Wip.progress m₂ d σ₂ h₂ hpri₂ hiso₂ hins₂ hq₂ hrun₂ 1 Nat.one_pos hQpos
+      (Or.inl rfl)
   have hins₀ : Insulated m₂ d (stepN m₂ j σ₂) :=
     Wip.insulated_stepN m₂ d h₂ hiso₂ j σ₂ hins₂
   have hfro₀ : DFrozen m₂ d σ₂ (stepN m₂ j σ₂) := (hfro j (Nat.le_refl _)).1
@@ -226,6 +227,8 @@ theorem catchup_retire
   -- 1. progress to run 2's issue instant
   obtain ⟨j₀, hfro, hinf₀, hsched₀, hbud₀⟩ :=
     Wip.progress m₂ d σ₂ h₂ hpri₂ hiso₂ hins₂ hq₂ hrun₂ c hc0 hcQ₂
+      (Or.inr ⟨fl.word, instr, by rw [← fetch_coupled hins₁ hcpl]; exact hfetch,
+        hdec, hcdef.symm⟩)
   have hins₀ : Insulated m₂ d (stepN m₂ j₀ σ₂) :=
     Wip.insulated_stepN m₂ d h₂ hiso₂ j₀ σ₂ hins₂
   have hfro₀ : DFrozen m₂ d σ₂ (stepN m₂ j₀ σ₂) := (hfro j₀ (Nat.le_refl _)).1
