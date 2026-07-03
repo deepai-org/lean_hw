@@ -330,4 +330,30 @@ theorem clearSlot_lineage (σ : MachineState) (d : DomainId) (s : Slot)
   · subst d'; simp [Loom.Fun.update_same]
   · simp [Loom.Fun.update_ne _ _ _ _ hd]
 
+
+@[simp] theorem sweepRegions_liveRef (σ : MachineState) (r : CapRef) :
+    σ.sweepRegions.liveRef r = σ.liveRef r := by
+  unfold MachineState.liveRef DomainState.liveCap; rw [sweepRegions_caps, sweepRegions_slotGen]
+@[simp] theorem sweepMover_liveRef (σ : MachineState) (r : CapRef) :
+    σ.sweepMover.liveRef r = σ.liveRef r := by
+  unfold MachineState.liveRef DomainState.liveCap; rw [sweepMover_doms]
+
+
+/-- If the Mover survives a sweep, it was already present with live endpoints. -/
+theorem sweepMover_mover_some (σ : MachineState) (job : MoverJob)
+    (h : σ.sweepMover.mover = some job) :
+    σ.mover = some job ∧ σ.liveRef job.src = true ∧ σ.liveRef job.dst = true := by
+  unfold MachineState.sweepMover at h
+  split at h
+  · next hmov => rw [hmov] at h; exact absurd h (by simp)
+  · next job0 hmov =>
+      split at h
+      · next hchk =>
+          simp only [Bool.and_eq_true] at hchk
+          have hjj : job0 = job := Option.some.inj (hmov ▸ h)
+          subst hjj; exact ⟨hmov, hchk.1, hchk.2⟩
+      · next =>
+          simp only [MachineState.write] at h
+          split at h <;> simp at h
+
 end Machines.Lnp64u
