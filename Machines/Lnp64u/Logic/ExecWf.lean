@@ -2416,7 +2416,8 @@ theorem transferCap_frame (σ : MachineState) (from_ : DomainId) (s : Slot) (to_
     (σ' : MachineState) (ref : CapRef)
     (ht : σ.transferCap from_ s to_ = some (σ', ref)) :
     (∀ d, (σ'.doms d).run = (σ.doms d).run) ∧
-    (∀ d, (σ'.doms d).serving = (σ.doms d).serving) ∧ σ'.gates = σ.gates := by
+    (∀ d, (σ'.doms d).serving = (σ.doms d).serving) ∧ σ'.gates = σ.gates ∧
+    σ'.inflight = σ.inflight := by
   unfold MachineState.transferCap at ht
   simp only [Option.bind_eq_bind] at ht
   cases he : (σ.doms from_).caps s with
@@ -2437,7 +2438,7 @@ theorem transferCap_frame (σ : MachineState) (from_ : DomainId) (s : Slot) (to_
           | some l' =>
             simp only [hle, hcell, hfc, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at ht
             obtain ⟨rfl, _⟩ := ht
-            refine ⟨fun d => ?_, fun d => ?_, ?_⟩
+            refine ⟨fun d => ?_, fun d => ?_, ?_, ?_⟩
             · simp only [sweepMover_doms, sweepRegions_run, clearSlot_run, reparent_run]
               by_cases hd : d = to_
               · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
@@ -2446,12 +2447,12 @@ theorem transferCap_frame (σ : MachineState) (from_ : DomainId) (s : Slot) (to_
               by_cases hd : d = to_
               · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
               · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hd]
-            · simp only [sweepMover_gates, sweepRegions_gates, clearSlot_gates, reparent_gates]
-              rfl
+            · simp only [sweepMover_gates, sweepRegions_gates, clearSlot_gates, reparent_gates]; rfl
+            · simp only [sweepMover_inflight, sweepRegions_inflight, clearSlot_inflight]; rfl
       | none =>
         simp only [hle, Option.bind_some, Option.some.injEq, Prod.mk.injEq] at ht
         obtain ⟨rfl, _⟩ := ht
-        refine ⟨fun d => ?_, fun d => ?_, ?_⟩
+        refine ⟨fun d => ?_, fun d => ?_, ?_, ?_⟩
         · simp only [sweepMover_doms, sweepRegions_run, clearSlot_run, reparent_run]
           by_cases hd : d = to_
           · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
@@ -2460,8 +2461,8 @@ theorem transferCap_frame (σ : MachineState) (from_ : DomainId) (s : Slot) (to_
           by_cases hd : d = to_
           · subst hd; simp [MachineState.setDom, Loom.Fun.update_same]
           · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hd]
-        · simp only [sweepMover_gates, sweepRegions_gates, clearSlot_gates, reparent_gates]
-          rfl
+        · simp only [sweepMover_gates, sweepRegions_gates, clearSlot_gates, reparent_gates]; rfl
+        · simp only [sweepMover_inflight, sweepRegions_inflight, clearSlot_inflight]; rfl
 
 /-!
 The combinator toolkit is complete: `pure`, `bind`, `ite`, and the primitives

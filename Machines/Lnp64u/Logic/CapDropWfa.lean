@@ -545,6 +545,34 @@ def SystemOpsPreserveWfA : Prop :=
     (∀ a σ', instr.sem.exec c σ = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
     (∀ e σ', instr.sem.exec c σ = .err e σ' → Wf σ' ∧ Acyclic σ')
 
+/-- `transferByHandle` preserves `run`/`serving`/`gates` (the `hw = 0` and error
+paths are no-ops; the transfer path is `transferCap_frame`). -/
+theorem transferByHandle_frame (d to_ : DomainId) (hw : Loom.Word32)
+    (σ : MachineState) (a : Loom.Word32) (σ' : MachineState)
+    (he : Machines.Lnp64u.Isa.transferByHandle d to_ hw σ = .ok a σ') :
+    (∀ d', (σ'.doms d').run = (σ.doms d').run) ∧
+    (∀ d', (σ'.doms d').serving = (σ.doms d').serving) ∧ σ'.gates = σ.gates ∧
+    σ'.inflight = σ.inflight := by
+  unfold Machines.Lnp64u.Isa.transferByHandle at he
+  by_cases hz : hw = 0
+  · rw [if_pos hz] at he; simp only [specM_pure] at he; obtain ⟨_, rfl⟩ := he
+    exact ⟨fun _ => rfl, fun _ => rfl, rfl, rfl⟩
+  · simp only [if_neg hz, specM_bind] at he
+    cases hcl : Machines.Lnp64u.Isa.capLive d hw σ with
+    | err e0 σ0 => rw [hcl] at he; simp at he
+    | fault f => rw [hcl] at he; simp at he
+    | ok r σ0 =>
+        obtain ⟨hσeq, _⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨sslot, gg, ee⟩ := r
+        simp only [SpecM.get, specM_bind] at he
+        cases htc : σ.transferCap d sslot to_ with
+        | none => rw [htc] at he; simp [SpecM.raise] at he
+        | some pr =>
+            obtain ⟨σ2, ref⟩ := pr
+            rw [htc] at he; simp only [SpecM.set, specM_bind, specM_pure] at he
+            injection he with _ h2; subst h2
+            exact transferCap_frame σ d sslot to_ σ2 ref htc
+
 /-- `transferByHandle` preserves `Wf ∧ Acyclic`: the `hw = 0` and error paths
 leave the state unchanged; the transfer path is `wf_transferCap` /
 `acyclic_transferCap`. -/
@@ -649,7 +677,97 @@ theorem caprevoke_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac
             have := require_ok _ _ σ hrq; subst σ1; rw [hrq] at he
             simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
 
-/-- **The combined dispatch.** 9 of 11 ops discharged: `cap_drop` via
+/-- `gate_return` preserves `Wf ∧ Acyclic`. -/
+theorem gatereturn_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ)
+    (hac : Acyclic σ) (hrun : (σ.doms c.d).run = .running) (hinf : σ.inflight = none) :
+    (∀ a σ',
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = .ok a σ' →
+        Wf σ' ∧ Acyclic σ') ∧
+    (∀ e σ',
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = .err e σ' →
+        Wf σ' ∧ Acyclic σ') := by
+  have body : ∀ (out : Res Unit),
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = out →
+      (∀ a σ', out = .ok a σ' → Wf σ' ∧ Acyclic σ') ∧
+      (∀ e σ', out = .err e σ' → Wf σ' ∧ Acyclic σ') := by
+    intro out hout
+    simp only [SpecM.get, specM_bind] at hout
+    cases hserv : (σ.doms c.d).serving with
+    | none => rw [hserv] at hout; simp [SpecM.fatal] at hout; subst hout
+              exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+    | some gid =>
+        simp only [hserv] at hout
+        cases hgact : (σ.gates gid).act with
+        | none => simp only [hgact] at hout; simp [SpecM.fatal] at hout; subst hout
+                  exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+        | some act =>
+            simp only [hgact] at hout; simp only [SpecM.reg, specM_bind] at hout
+            cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d act.caller ((σ.doms c.d).reg c.op.rs1) σ with
+            | fault f => rw [htbh] at hout; subst hout
+                         exact ⟨fun a σ' h => by simp at h, fun e σ' h => by simp at h⟩
+            | err e0 τ =>
+                rw [htbh] at hout; subst hout
+                have hτ := (transferByHandle_preserves c.d act.caller _ σ hwf hac).2 e0 τ htbh
+                exact ⟨fun a σ' h => by simp at h, fun e σ' h => by
+                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hτ⟩
+            | ok reply τ =>
+                rw [htbh] at hout
+                obtain ⟨hwfτ, hacτ⟩ := (transferByHandle_preserves c.d act.caller _ σ hwf hac).1 reply τ htbh
+                obtain ⟨hfrun, hfserv, hfgates, hfinf⟩ := transferByHandle_frame c.d act.caller _ σ reply τ htbh
+                simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify,
+                  SpecM.setReg] at hout
+                subst hout
+                have hservτ : (τ.doms c.d).serving = some gid := by rw [hfserv]; exact hserv
+                have hgactτ : (τ.gates gid).act = some act := by rw [hfgates]; exact hgact
+                have hrunτ : (τ.doms c.d).run = .running := by rw [hfrun]; exact hrun
+                have hinfτ : τ.inflight = none := by rw [hfinf]; exact hinf
+                obtain ⟨hw', ha'⟩ := wf_acyclic_gateReturn τ c.d gid act reply hservτ hgactτ hrunτ hinfτ hwfτ hacτ
+                exact ⟨fun a σ' h => by
+                  simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h; exact ⟨hw', ha'⟩,
+                  fun e σ' h => by simp at h⟩
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun e σ' h => (body _ h).2 e σ' rfl⟩
+
+
+/-- **The combined dispatch.** 10 of 11 ops discharged: `cap_drop` via
 `capdrop_preserves_wfa`; the other 7 by pairing each op's `Wf` proof with its
 `system_preserves_acyclic` clause. Only `cap_revoke` and the 2 gate ops remain. -/
 theorem system_preserves_wfa : SystemOpsPreserveWfA := by
@@ -674,7 +792,7 @@ theorem system_preserves_wfa : SystemOpsPreserveWfA := by
     · exact ((PreservesWf.bind (PreservesWf.clearRegion _ _)
         (fun _ => PreservesWf.setReg _ _ _)) σ hwf hinf).2 e σ' he |>.1
   case _ => sorry  -- gate_call
-  case _ => sorry  -- gate_return
+  case _ => exact gatereturn_preserves_wfa c σ hwf hac hrun hinf
   case _ => -- move
     exact ⟨fun a σ' he => ⟨move_ok c σ hwf a σ' he, hA.1 a σ' he⟩,
            fun e σ' he => ⟨move_err c σ hwf e σ' he, hA.2 e σ' he⟩⟩
