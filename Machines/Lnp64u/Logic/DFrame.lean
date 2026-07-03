@@ -435,6 +435,180 @@ theorem dkeep_sweepMover (hctx : DCtx d R σ) :
           exact base { σ with mover := none } rfl rfl (fun _ _ => rfl)
             (fun _ h => by cases h)
 
+/-- Installing a fresh capability entry at a foreign domain, provided the
+new entry's range avoids `R`. Covers `installDerived` and the transfer
+install. -/
+theorem dkeep_installAt (hctx : DCtx d R σ) (to_ : DomainId) (hto : to_ ≠ d)
+    (s' : Slot) (ent : CapEntry)
+    (hk : ∀ b len p, ent.kind = .mem b len p → ∀ a : Addr, b.toNat ≤ a.toNat →
+      a.toNat < b.toNat + len.toNat → ¬ R a)
+    (f : DomainState → DomainState)
+    (hf_caps : (f (σ.doms to_)).caps = Loom.Fun.update (σ.doms to_).caps s' (some ent))
+    (hf_reg : (f (σ.doms to_)).regions = (σ.doms to_).regions) :
+    DKeep d cd R σ (σ.setDom to_ f) where
+  ddoms := setDom_doms_ne σ to_ f d (fun h => hto h.symm)
+  mem := fun _ _ => rfl
+  gcfg := fun _ => rfl
+  acts := fun _ _ h => Or.inl h
+  mover := fun _ h => Or.inl h
+  ro := fun e r rg h => by
+    by_cases hee : e = to_
+    · subst hee
+      rw [setDom_doms_same, hf_reg] at h
+      exact hctx.ro e r rg h
+    · rw [setDom_doms_ne _ _ _ _ hee] at h
+      exact hctx.ro e r rg h
+  fo := fun e he s0 entry b l p hc hkind => by
+    by_cases hee : e = to_
+    · subst hee
+      rw [setDom_doms_same, hf_caps] at hc
+      by_cases hs : s0 = s'
+      · subst hs
+        rw [Loom.Fun.update_same] at hc
+        injection hc with hc
+        subst hc
+        exact hk b l p hkind
+      · rw [Loom.Fun.update_ne _ _ _ _ hs] at hc
+        exact hctx.fo e he s0 entry b l p hc hkind
+    · rw [setDom_doms_ne _ _ _ _ hee] at hc
+      exact hctx.fo e he s0 entry b l p hc hkind
+  regR := fun e _ r rg h => by
+    by_cases hee : e = to_
+    · subst hee
+      rw [setDom_doms_same, hf_reg] at h
+      exact Or.inl h
+    · rw [setDom_doms_ne _ _ _ _ hee] at h
+      exact Or.inl h
+
+/-- `transferCap` between two foreign domains. -/
+theorem dkeep_transferCap (hctx : DCtx d R σ) (hcd : cd ≠ d)
+    (from_ : DomainId) (s : Slot) (to_ : DomainId) (σ' : MachineState) (ref : CapRef)
+    (hfrom : from_ ≠ d) (hto : to_ ≠ d)
+    (ht : σ.transferCap from_ s to_ = some (σ', ref)) :
+    DKeep d cd R σ σ' := by
+  unfold MachineState.transferCap at ht
+  cases he : (σ.doms from_).caps s with
+  | none => rw [he] at ht; simp at ht
+  | some e =>
+      rw [he] at ht
+      simp only [Option.bind_eq_bind, Option.bind_some] at ht
+      cases hfs : σ.freeSlot to_ with
+      | none => rw [hfs] at ht; simp at ht
+      | some s2 =>
+          rw [hfs] at ht
+          simp only [Option.bind_some] at ht
+          -- the new entry's kind is `e.kind`, off `R` because `from_ ≠ d`
+          have hkoff : ∀ (ent : CapEntry), ent.kind = e.kind →
+              ∀ b len p, ent.kind = .mem b len p → ∀ a : Addr, b.toNat ≤ a.toNat →
+              a.toNat < b.toNat + len.toNat → ¬ R a := by
+            intro ent hent b len p hkind a h1 h2
+            exact hctx.fo from_ hfrom s e b len p he (by rw [← hent]; exact hkind) a h1 h2
+          -- the tail after the install: reparent → clearSlot → sweeps
+          have tail : ∀ (σ₁ : MachineState), DKeep d cd R σ σ₁ →
+              some ((((σ₁.reparent ⟨from_, s, (σ.doms from_).slotGen s⟩
+                  ⟨to_, s2, (σ.doms to_).slotGen s2⟩).clearSlot from_ s).sweepRegions).sweepMover,
+                (⟨to_, s2, (σ.doms to_).slotGen s2⟩ : CapRef)) = some (σ', ref) →
+              DKeep d cd R σ σ' := by
+            intro σ₁ h1 heq
+            injection heq with heq
+            injection heq with hσ' _
+            subst hσ'
+            have hctx1 := hctx.transport hcd h1
+            have h2 := dkeep_reparent (cd := cd) hctx1 ⟨from_, s, (σ.doms from_).slotGen s⟩
+              ⟨to_, s2, (σ.doms to_).slotGen s2⟩
+            have hctx2 := hctx1.transport hcd h2
+            have h3 := dkeep_clearSlot (cd := cd) hctx2 from_ s hfrom
+            have hctx3 := hctx2.transport hcd h3
+            have h4 := dkeep_sweepRegions (cd := cd) hctx3
+            have hctx4 := hctx3.transport hcd h4
+            have h5 := dkeep_sweepMover (cd := cd) hctx4
+            exact ((((h1.trans h2).trans h3).trans h4).trans h5)
+          cases hl : e.lineage with
+          | none =>
+              rw [hl] at ht
+              simp only [Option.pure_def, Option.bind_some] at ht
+              refine tail _ ?_ ht
+              exact dkeep_installAt hctx to_ hto s2 { kind := e.kind, lineage := none }
+                (hkoff _ rfl) _ rfl rfl
+          | some l =>
+              rw [hl] at ht
+              simp only [Option.bind_eq_bind, Option.bind_some] at ht
+              cases hc : (σ.doms from_).lineage l with
+              | none => rw [hc] at ht; simp at ht
+              | some cell =>
+                  rw [hc] at ht
+                  simp only [Option.bind_some] at ht
+                  cases hfc : σ.freeCell to_ with
+                  | none => rw [hfc] at ht; simp at ht
+                  | some l' =>
+                      rw [hfc] at ht
+                      simp only [Option.pure_def, Option.bind_some] at ht
+                      refine tail _ ?_ ht
+                      exact dkeep_installAt hctx to_ hto s2
+                        { kind := e.kind, lineage := some l' } (hkoff _ rfl) _
+                        rfl rfl
+
+/-- `haltBase` at a foreign domain. -/
+theorem dkeep_haltBase (hctx : DCtx d R σ) (e : DomainId) (cv : Loom.Word32)
+    (he : e ≠ d) : DKeep d cd R σ (σ.haltBase e cv) := by
+  unfold MachineState.haltBase
+  exact dkeep_setDom hctx e _ he rfl rfl
+
+/-- Updating one gate record (config kept, activation accounted for). -/
+theorem dkeep_gateUpd (hctx : DCtx d R σ) (g : GateId) (G : GateState)
+    (hcfg : G.config = (σ.gates g).config)
+    (hact : ∀ a, G.act = some a → (σ.gates g).act = some a ∨ a.caller = cd) :
+    DKeep d cd R σ { σ with gates := Loom.Fun.update σ.gates g G } where
+  ddoms := rfl
+  mem := fun _ _ => rfl
+  gcfg := fun g' => by
+    show (Loom.Fun.update σ.gates g G g').config = _
+    by_cases hgg : g' = g
+    · subst hgg
+      rw [Loom.Fun.update_same, hcfg]
+    · rw [Loom.Fun.update_ne _ _ _ _ hgg]
+  acts := fun g' a h => by
+    have h' : (Loom.Fun.update σ.gates g G g').act = some a := h
+    by_cases hgg : g' = g
+    · subst hgg
+      rw [Loom.Fun.update_same] at h'
+      exact hact a h'
+    · rw [Loom.Fun.update_ne _ _ _ _ hgg] at h'
+      exact Or.inl h'
+  mover := fun _ h => Or.inl h
+  ro := hctx.ro
+  fo := hctx.fo
+  regR := fun _ _ _ _ h => Or.inl h
+
+/-- `unwindGate` resuming a foreign caller. -/
+theorem dkeep_unwindGate (hctx : DCtx d R σ) (hcd : cd ≠ d) (g : GateId)
+    (cl : DomainId) (rd : RegId) (hcl : cl ≠ d) :
+    DKeep d cd R σ (σ.unwindGate g cl rd) := by
+  unfold MachineState.unwindGate
+  have hg : DKeep d cd R σ
+      { σ with gates := Loom.Fun.update σ.gates g { (σ.gates g) with act := none } } :=
+    dkeep_gateUpd hctx g _ rfl (fun a h => by cases h)
+  have hctx1 := hctx.transport hcd hg
+  refine hg.trans ?_
+  exact dkeep_setDom hctx1 cl _ hcl (setReg_caps _ _ _) (setReg_regions _ _ _)
+
+/-- `haltDom` of a foreign domain (the unwound caller, if any, is foreign
+too). -/
+theorem dkeep_haltDom (hctx : DCtx d R σ) (hcd : cd ≠ d) (e : DomainId)
+    (cv : Loom.Word32) (he : e ≠ d) : DKeep d cd R σ (σ.haltDom e cv) := by
+  cases hs : (σ.doms e).serving with
+  | none => rw [haltDom_base σ e cv hs]; exact dkeep_haltBase hctx e cv he
+  | some g =>
+      cases ha : (σ.gates g).act with
+      | none => rw [haltDom_base' σ e cv g hs ha]; exact dkeep_haltBase hctx e cv he
+      | some a =>
+          rw [haltDom_unwind σ e cv g a hs ha]
+          have hcaller : a.caller ≠ d := hctx.acaller g a ha
+          have h1 : DKeep d cd R σ (σ.haltBase e cv) := dkeep_haltBase hctx e cv he
+          have hctx1 := hctx.transport hcd h1
+          refine h1.trans ?_
+          exact dkeep_unwindGate hctx1 hcd g a.caller a.callerRd hcaller
+
 end Kernel
 
 end Machines.Lnp64u.DFrame
