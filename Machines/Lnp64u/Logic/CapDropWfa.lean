@@ -1,0 +1,78 @@
+import Machines.Lnp64u.Logic.AcyclicExec
+import Machines.Lnp64u.Logic.SystemOpsWf
+
+/-!
+# `cap_drop` preserves `Wf ∧ Acyclic` (the `capLive → dropCore` thread)
+
+Wires `cap_drop`'s `exec` to `dropCore_preserves`: after a read-only `reg` and
+`capLive` (which pins the dropped slot's live generation), the dispatch +
+`clearSlot` + sweeps is exactly `dropCore`, which preserves both invariants; the
+final `setReg` preserves them too. Because `cap_drop`'s *Wf* clause itself needs
+`Acyclic` (via `dropCore`'s reparent branch), this is proved against the combined
+`Wf ∧ Acyclic` — the first revocation opcode fully discharged.
+-/
+
+namespace Machines.Lnp64u
+
+open Loom.Isa SpecM Machines.Lnp64u.Isa Machines.Lnp64u.Isa.Wip
+
+/-- `cap_drop` preserves `Wf ∧ Acyclic`. -/
+theorem capdrop_preserves_wfa (c : Ctx) (σ : MachineState) (hwf : Wf σ) (hac : Acyclic σ) :
+    (∀ x σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let (s, g, _) ← capLive c.d hw
+           let ref : CapRef := ⟨c.d, s, g⟩
+           let σ0 ← SpecM.get
+           let σ' :=
+             match σ0.parentOf c.d s with
+             | some p => σ0.reparent ref p
+             | none => σ0.orphanChildren ref
+           SpecM.set (((σ'.clearSlot c.d s).sweepRegions).sweepMover)
+           setReg c.d c.op.rd 0) : SpecM Unit) σ = .ok x σ' → Wf σ' ∧ Acyclic σ') ∧
+    (∀ e σ',
+      ((do let hw ← reg c.d c.op.rs1
+           let (s, g, _) ← capLive c.d hw
+           let ref : CapRef := ⟨c.d, s, g⟩
+           let σ0 ← SpecM.get
+           let σ' :=
+             match σ0.parentOf c.d s with
+             | some p => σ0.reparent ref p
+             | none => σ0.orphanChildren ref
+           SpecM.set (((σ'.clearSlot c.d s).sweepRegions).sweepMover)
+           setReg c.d c.op.rd 0) : SpecM Unit) σ = .err e σ' → Wf σ' ∧ Acyclic σ') := by
+  constructor
+  · intro x σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 => rw [hcl] at he; simp at he
+    | fault f => rw [hcl] at he; simp at he
+    | ok r σ0 =>
+        obtain ⟨hσeq, hlive⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, e⟩ := r; simp only at he hlive
+        have hg : (σ.doms c.d).slotGen s = g := by
+          unfold DomainState.liveCap at hlive
+          cases hc : (σ.doms c.d).caps s with
+          | none => simp [hc] at hlive
+          | some e0 =>
+              simp only [hc] at hlive
+              split at hlive
+              · rename_i hgc; simp only [Bool.and_eq_true, decide_eq_true_eq] at hgc; exact hgc.1
+              · simp at hlive
+        subst g
+        simp only [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+        injection he with _ h2; subst h2
+        obtain ⟨hwfd, hacd⟩ := dropCore_preserves σ c.d s hwf hac
+        exact ⟨wf_setReg _ c.d c.op.rd 0 hwfd, acyclic_setReg_dom _ c.d c.op.rd 0 hacd⟩
+  · intro e σ' he
+    simp only [SpecM.reg, specM_bind] at he
+    cases hcl : capLive c.d ((σ.doms c.d).reg c.op.rs1) σ with
+    | err e0 σ0 =>
+        have hs := capLive_err_state c.d _ σ hcl; rw [hcl] at he
+        injection he with _ h2; subst h2; subst hs; exact ⟨hwf, hac⟩
+    | fault f => rw [hcl] at he; simp at he
+    | ok r σ0 =>
+        obtain ⟨hσeq, hlive⟩ := capLive_ok c.d _ σ hcl; subst σ0
+        rw [hcl] at he; obtain ⟨s, g, e0⟩ := r
+        simp [SpecM.get, specM_bind, SpecM.set, SpecM.setReg, SpecM.modify] at he
+
+end Machines.Lnp64u
