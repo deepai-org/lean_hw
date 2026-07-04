@@ -24,20 +24,13 @@ Layout constants (verified against Hw/Enc.lean's regDecls order on
                 if_cl, cycle)
   rv engine     633 + 3*i (j/v/r)   [hidden; abs ignores them]
 
-STATUS / WHY NOT LANDED: the generated file typechecks arm-by-arm but is
-too slow for CI as a single file (~600 arms at 5-20 s/arm: every arm's
-defeq check makes the elaborator walk the `regDecls m` spine, re-reducing
-the flatMap/append chain).  Before landing, apply the declList
-optimization:
-
-  private def declList (m : Manifest) : List RegDecl := [ <825 literals> ]
-  private theorem regDecls_eq (m : Manifest) : regDecls m = declList m := rfl
-
-(one ~40 s rfl, like RMCReset.names_stable), restate the lookups against
-the literal list (getElem then walks plain cons cells instead of
-re-evaluating flatMap per arm), and split the output into per-block files
-so lake parallelizes them.  See RMCAbs.lean for the hand-landed cheap arms
-(globals + gate config) consumed by the abs_reset field lemmas.
+STATUS: the declList optimization is landed in
+`Machines/Lnp64u/Theorems/RMCResetDeclList.lean`, with the canonical reset
+arms in `RMCResetCanon.lean`.  Future generated reset arms should target
+`reset_lookup_decl`, not the older `reset_lookup`, so each literal arm
+reduces over the explicit declaration list instead of re-walking the
+`regDecls m` flatMap/append spine.  Keep large generated families split
+into per-block files so lake can cache and parallelize them.
 """
 
 D = 137   # domain block stride
@@ -111,7 +104,7 @@ tail = [("drun", 129, 2, f"encRun ({ds}).run"),
         ("dcause", 133, 32, f"({ds}).cause"),
         ("dbudget", 134, 32, f"BitVec.ofNat 32 ({ds}).budget"),
         ("dmaxdon", 135, 32, f"BitVec.ofNat 32 ({ds}).maxDonation"),
-        ("drctr", 136, 32, "BitVec.ofNat 32 (m.initState.cycle % (m.doms d).periodP)")]
+        ("drctr", 136, 32, "BitVec.ofNat 32 (m.initState.cycle.toNat % (m.doms d).periodP)")]
 for nm, off, w, rhs in tail:
     fam(f"reset_{nm}", "(d : DomainId)", f"Hw.{nm} d", w, rhs,
         [((fp(d),), D*d + off) for d in range(4)])

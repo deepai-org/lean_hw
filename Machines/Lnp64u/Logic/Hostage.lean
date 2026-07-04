@@ -180,7 +180,7 @@ theorem stepN_add (m : Manifest) :
       exact stepN_add m a b (step m σ)
 
 /-- Reachability is closed under `stepN`: the T6 windows stay inside the
-reachable set, so `Wf`, `Acyclic`, and `StallFree` apply at every cycle. -/
+reachable set, so reachability invariants apply at every cycle. -/
 theorem stepN_reachable (m : Manifest) (σ : MachineState)
     (hreach : (machine m).Reachable σ) :
     ∀ n, (machine m).Reachable (stepN m n σ) := by
@@ -429,30 +429,45 @@ theorem corePhase_issue_serving (m : Manifest) (σ : MachineState)
     rw [if_neg hd]
     exact ⟨Nat.lt_of_not_le hd, rfl⟩
 
-/-- **Stall characterization.** An issue cycle where the scheduled
-domain's payer cannot cover the instruction cost changes nothing: the
-core stalls until refill. Stall cycles spend *no* budget anywhere, so
-they cannot be charged to any budget account — which is why the T6
-statement carries the `StallFree` hypothesis (see the stall-lock
-refutation in `Theorems/T6.lean`). -/
+/-- **Underfunded non-serving issue characterization.** An issue cycle
+where the scheduled domain's payer cannot cover the instruction cost burns
+the residual payer budget to zero. This consumes the replayable residual
+budget without changing `d`'s architectural observation. -/
 theorem corePhase_stall (m : Manifest) (σ : MachineState)
     (d : DomainId) (w : Loom.Word32) (instr : Loom.Isa.InstrDecl sig Semantics WcetClass)
     (hinf : σ.inflight = none) (hsched : schedule m σ = some d)
     (hfetch : fetch σ d = some w)
     (hdec : Loom.Isa.decode isa w = some instr)
+    (hserv : (σ.doms d).serving = none)
     (hbud : ¬ instr.cost.cost ≤ (σ.doms (σ.payer d)).budget) :
-    corePhase m σ = σ := by
+    corePhase m σ = σ.setDom (σ.payer d) (fun ds => { ds with budget := 0 }) := by
   unfold corePhase
   simp only [hinf, hsched, hfetch, hdec]
   rw [if_neg hbud]
+  simp [hserv]
+
+/-- **Underfunded serving issue characterization.** If a serving domain's
+payer cannot cover the instruction cost, the server budget-faults so the
+blocked caller can be unwound by `haltDom`. -/
+theorem corePhase_budget_fault_serving (m : Manifest) (σ : MachineState)
+    (d : DomainId) (w : Loom.Word32) (instr : Loom.Isa.InstrDecl sig Semantics WcetClass)
+    (g : GateId)
+    (hinf : σ.inflight = none) (hsched : schedule m σ = some d)
+    (hfetch : fetch σ d = some w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hserv : (σ.doms d).serving = some g)
+    (hbud : ¬ instr.cost.cost ≤ (σ.doms (σ.payer d)).budget) :
+    corePhase m σ = haltWith σ d .budget := by
+  unfold corePhase
+  simp only [hinf, hsched, hfetch, hdec]
+  rw [if_neg hbud]
+  simp [hserv]
 
 /-! ## The whole-cycle core classification -/
 
-/-- A stall cycle: the core is idle, the scheduler picked `e`, fetch and
-decode succeeded, but `e`'s payer cannot cover the instruction's cost.
-`corePhase` then changes *nothing* (`corePhase_stall`): the cycle is lost
-and no budget moves — stalls are uncountable against budgets, the reason
-for T6's `StallFree` hypothesis. -/
+/-- An underfunded issue cycle: the core is idle, the scheduler picked `e`,
+fetch and decode succeeded, but `e`'s payer cannot cover the instruction's
+cost. `corePhase` raises a budget fault for `e`. -/
 def StallsAt (m : Manifest) (σ : MachineState) : Prop :=
   ∃ e w instr, σ.inflight = none ∧ schedule m σ = some e ∧
     fetch σ e = some w ∧ Loom.Isa.decode isa w = some instr ∧
@@ -466,10 +481,10 @@ one of:
 * **retire** — the in-flight instruction's last cycle;
 * **idle** — the core is free and nobody is eligible;
 * **fault-halt** — the scheduled domain halts this cycle (fetch or decode
-  failure, protocol violation, or donation exhaustion — every arm of the
+  failure, protocol violation, payer underfunding, or donation exhaustion — every arm of the
   form `haltWith`, so if the victim was serving, its caller resumes);
-* **stall** — the scheduled domain's payer cannot cover the cost; nothing
-  changes;
+* **budget-burn** — an underfunded non-serving issue burns the payer's
+  residual budget to zero without changing architectural observations;
 * **issue** — the instruction is latched with `cyclesLeft = cost` and the
   payer is charged `cost` upfront (every other budget untouched). -/
 theorem corePhase_cases (m : Manifest) (σ : MachineState) :
@@ -481,7 +496,11 @@ theorem corePhase_cases (m : Manifest) (σ : MachineState) :
     (σ.inflight = none ∧ schedule m σ = none ∧ corePhase m σ = σ) ∨
     (∃ e f, σ.inflight = none ∧ schedule m σ = some e ∧
       corePhase m σ = haltWith σ e f) ∨
-    (StallsAt m σ ∧ corePhase m σ = σ) ∨
+    (∃ e w instr, σ.inflight = none ∧ schedule m σ = some e ∧
+      fetch σ e = some w ∧ Loom.Isa.decode isa w = some instr ∧
+      (σ.doms e).serving = none ∧
+      ¬ instr.cost.cost ≤ (σ.doms (σ.payer e)).budget ∧
+      corePhase m σ = σ.setDom (σ.payer e) (fun ds => { ds with budget := 0 })) ∨
     (∃ e w instr, σ.inflight = none ∧ schedule m σ = some e ∧
       fetch σ e = some w ∧ Loom.Isa.decode isa w = some instr ∧
       instr.cost.cost ≤ (σ.doms (σ.payer e)).budget ∧
@@ -558,9 +577,17 @@ theorem corePhase_cases (m : Manifest) (σ : MachineState) :
                               unfold corePhase
                               simp only [hinf, hsched, hfetch, hdec, hbud,
                                 if_true, hserv, hact, hdon, if_false]
-                  · refine .inr (.inr (.inr (.inr (.inl
-                      ⟨⟨e, w, instr, hinf, hsched, hfetch, hdec, hbud⟩, ?_⟩))))
-                    exact corePhase_stall m σ e w instr hinf hsched hfetch hdec hbud
+                  · cases hserv : (σ.doms e).serving with
+                    | some g =>
+                        refine .inr (.inr (.inr (.inl
+                          ⟨e, .budget, rfl, rfl, ?_⟩)))
+                        exact corePhase_budget_fault_serving m σ e w instr g
+                          hinf hsched hfetch hdec hserv hbud
+                    | none =>
+                        refine .inr (.inr (.inr (.inr (.inl
+                          ⟨e, w, instr, rfl, rfl, hfetch, hdec, hserv, hbud, ?_⟩))))
+                        exact corePhase_stall m σ e w instr hinf hsched hfetch hdec
+                          hserv hbud
 
 /-! ## Budget mass outside a domain -/
 
@@ -1153,6 +1180,21 @@ theorem setDomBudget_hsn (σ : MachineState) (p : DomainId) (n : Nat)
     · subst h; simp [Loom.Fun.update_same]
     · simp [Loom.Fun.update_ne _ _ _ _ h]
 
+/-- Burning a payer's residual budget preserves the invariant (budget is
+neither run nor serving). -/
+theorem setDomBudgetZero_hsn (σ : MachineState) (p : DomainId)
+    (hσ : HaltedServingNone σ) :
+    HaltedServingNone (σ.setDom p (fun ds => { ds with budget := 0 })) := by
+  refine hsn_of_doms_run_serving (fun e => ?_) (fun e => ?_) hσ
+  · unfold MachineState.setDom
+    by_cases h : e = p
+    · subst h; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ h]
+  · unfold MachineState.setDom
+    by_cases h : e = p
+    · subst h; simp [Loom.Fun.update_same]
+    · simp [Loom.Fun.update_ne _ _ _ _ h]
+
 /-- `retire` preserves the invariant: the pc bump and errno write hit no
 run/serving mark, the instruction effect is `exec_hsn`, decode failure and
 faults are `haltDom_hsn`. -/
@@ -1251,7 +1293,14 @@ theorem corePhase_hsn (m : Manifest) (σ : MachineState) (hwf : Wf σ)
                         exact setDomBudget_hsn σ (σ.payer d) _ hσ
                       · simp only [hdon, if_false]
                         exact haltDom_hsn σ d _ hσ
-            · simp only [hbud, if_false]; exact hσ
+            · simp only [hbud, if_false]
+              cases hservd : (σ.doms d).serving with
+              | some _ =>
+                  simp only [hservd]
+                  exact haltDom_hsn σ d _ hσ
+              | none =>
+                  simp only [hservd]
+                  exact setDomBudgetZero_hsn σ (σ.payer d) hσ
 
 /-- One cycle preserves the invariant. -/
 theorem step_hsn (m : Manifest) (σ : MachineState) (hwf : Wf σ)
@@ -2222,6 +2271,13 @@ theorem corePhase_cycle (m : Manifest) (σ : MachineState) :
                       · simp only [hdon, if_false]
                         exact haltDom_cycle σ d _
             · simp only [hbud, if_false]
+              cases hservd : (σ.doms d).serving with
+              | some _ =>
+                  simp only [hservd]
+                  exact haltDom_cycle σ d _
+              | none =>
+                  simp only [hservd]
+                  rfl
 
 /-- **The cycle counter advances by exactly one per step** (T6 obligation 3
 support): no phase — and in particular no instruction's `exec` — ever writes
@@ -2792,9 +2848,18 @@ theorem setDomBudget_run_eq (σ : MachineState) (p : DomainId) (n : Nat) (e : Do
   · subst h; simp [Loom.Fun.update_same]
   · simp [Loom.Fun.update_ne _ _ _ _ h]
 
-/-- The core phase keeps halted domains halted: countdown/idle/stall leave
-doms alone, issues touch only budgets, retirements are `retire_halted`,
-halts are `haltDom_halted`. -/
+/-- Burning a payer's residual budget moves no `run` mark. -/
+theorem setDomBudget_zero_run_eq (σ : MachineState) (p : DomainId) (e : DomainId) :
+    ((σ.setDom p (fun ds => { ds with budget := 0 })).doms e).run
+      = (σ.doms e).run := by
+  unfold MachineState.setDom
+  by_cases h : e = p
+  · subst h; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ h]
+
+/-- The core phase keeps halted domains halted: countdown/idle leave doms
+alone, paid issues touch only budgets, underfunded issue is a halt,
+retirements are `retire_halted`, halts are `haltDom_halted`. -/
 theorem corePhase_halted (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
     HaltedStays σ (corePhase m σ) := by
   unfold corePhase
@@ -2841,7 +2906,14 @@ theorem corePhase_halted (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
                       · simp only [hdon, if_false]
                         exact haltDom_halted σ d _ hwf
             · simp only [hbud, if_false]
-              exact HaltedStays.of_run_eq (fun e => rfl)
+              cases hservd : (σ.doms d).serving with
+              | some _ =>
+                  simp only [hservd]
+                  exact haltDom_halted σ d _ hwf
+              | none =>
+                  simp only [hservd]
+                  exact HaltedStays.of_run_eq
+                    (fun e => setDomBudget_zero_run_eq σ (σ.payer d) e)
 
 /-- **Halted is absorbing** (T6 potential support, per cycle): under `Wf`
 (available at every reachable state via `wfa_invariant`), a halted domain is
@@ -2874,7 +2946,7 @@ funded — and the chain head `Eligible` — at some cycle of every window of
 `periodP ≤ hyperL` cycles, unless a chain issue spends the refund first
 (which is itself a progress event). Stated on `refillPhase m (stepN m k σ)`
 because that is exactly the state `corePhase` runs in within
-`step m (stepN m k σ)` (cf. `StallFree`). -/
+`step m (stepN m k σ)`. -/
 
 /-- **Refill within one period**: for every state and domain there is a
 period boundary at most `periodP` cycles ahead, where `refillPhase`
@@ -4206,13 +4278,22 @@ def IssueShape (e p : DomainId) (c : Nat) (σ σ' : MachineState) : Prop :=
      (σ'.gates g).act = some { a with donated := a.donated - c } ∧
      (σ'.gates g).config = (σ.gates g).config))
 
+/-- A non-serving underfunded issue only burns the payer's residual budget. -/
+def BudgetBurnShape (p : DomainId) (σ σ' : MachineState) : Prop :=
+  (∀ e', (σ'.doms e').run = (σ.doms e').run) ∧
+  (∀ e', (σ'.doms e').serving = (σ.doms e').serving) ∧
+  (∀ e', (σ'.doms e').maxDonation = (σ.doms e').maxDonation) ∧
+  (σ'.doms p).budget = 0 ∧
+  (∀ e', e' ≠ p → (σ'.doms e').budget = (σ.doms e').budget) ∧
+  σ'.gates = σ.gates ∧ σ'.inflight = σ.inflight
+
 /-- **The corePhase-level chain classification**: every core cycle is
-exactly one of idle/stall (state frozen), burn (inflight countdown only), a
+exactly one of idle (state frozen), burn (inflight countdown only), a
 retirement by the running in-flight domain (retire-level shapes), a
-fault-halt of the scheduled domain, or an issue (`IssueShape`, with the
-in-flight instruction latched at its positive cost). -/
+fault-halt of the scheduled domain, a non-serving budget burn, or an issue
+(`IssueShape`, with the in-flight instruction latched at its positive cost). -/
 theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
-    (corePhase m σ = σ ∧ σ.inflight = none ∧ (schedule m σ = none ∨ StallsAt m σ)) ∨
+    (corePhase m σ = σ ∧ σ.inflight = none ∧ schedule m σ = none) ∨
     (∃ fl, σ.inflight = some fl ∧ 1 < fl.cyclesLeft ∧
       corePhase m σ =
         { σ with inflight := some { fl with cyclesLeft := fl.cyclesLeft - 1 } }) ∨
@@ -4222,6 +4303,12 @@ theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
        RetShape fl.dom σ (corePhase m σ) ∨ HaltShape fl.dom σ (corePhase m σ))) ∨
     (∃ e, σ.inflight = none ∧ schedule m σ = some e ∧ (σ.doms e).run = .running ∧
       (corePhase m σ).inflight = none ∧ HaltShape e σ (corePhase m σ)) ∨
+    (∃ e w instr, σ.inflight = none ∧ schedule m σ = some e ∧
+      fetch σ e = some w ∧ Loom.Isa.decode isa w = some instr ∧
+      (σ.doms e).run = .running ∧ (σ.doms e).serving = none ∧
+      ¬ instr.cost.cost ≤ (σ.doms (σ.payer e)).budget ∧
+      (corePhase m σ).inflight = none ∧
+      BudgetBurnShape (σ.payer e) σ (corePhase m σ)) ∨
     (∃ e w c, σ.inflight = none ∧ schedule m σ = some e ∧
       (σ.doms e).run = .running ∧ 0 < c ∧ c ≤ maxCostBound ∧
       c ≤ (σ.doms (σ.payer e)).budget ∧
@@ -4263,7 +4350,7 @@ theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
   | none =>
       cases hsched : schedule m σ with
       | none =>
-          refine .inl ⟨?_, rfl, .inl rfl⟩
+          refine .inl ⟨?_, rfl, rfl⟩
           unfold corePhase; simp only [hinf, hsched]
       | some e =>
           have hrun : (σ.doms e).run = .running := schedule_running m σ e hsched
@@ -4294,9 +4381,9 @@ theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
                   by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer e)).budget
                   · cases hserv : (σ.doms e).serving with
                     | none =>
-                        refine .inr (.inr (.inr (.inr
+                        refine .inr (.inr (.inr (.inr (.inr
                           ⟨e, w, instr.cost.cost, rfl, rfl, hrun, cost_pos _,
-                           cost_le_maxCostBound _, hbud, ?_⟩)))
+                           cost_le_maxCostBound _, hbud, ?_⟩))))
                         unfold corePhase
                         simp only [hinf, hsched, hfetch, hdec, hbud, if_true, hserv]
                         refine ⟨trivial, fun e' => ?_, fun e' => ?_, fun e' => ?_, ?_,
@@ -4330,9 +4417,9 @@ theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
                               exact haltDom_chainShape σ e _ (hnc e hrun)
                         | some a =>
                             by_cases hdon : instr.cost.cost ≤ a.donated
-                            · refine .inr (.inr (.inr (.inr
+                            · refine .inr (.inr (.inr (.inr (.inr
                                 ⟨e, w, instr.cost.cost, rfl, rfl, hrun, cost_pos _,
-                                 cost_le_maxCostBound _, hbud, ?_⟩)))
+                                 cost_le_maxCostBound _, hbud, ?_⟩))))
                               unfold corePhase
                               simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
                                 hserv, hact, hdon]
@@ -4367,8 +4454,44 @@ theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
                                     hserv, hact, hdon, if_false]
                                 rw [hcore]
                                 exact haltDom_chainShape σ e _ (hnc e hrun)
-                  · refine .inl ⟨corePhase_stall m σ e w instr hinf hsched hfetch hdec hbud,
-                      rfl, .inr ⟨e, w, instr, hinf, hsched, hfetch, hdec, hbud⟩⟩
+                  · cases hserv : (σ.doms e).serving with
+                    | some g =>
+                        refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+                        · unfold corePhase
+                          simp only [hinf, hsched, hfetch, hdec, hbud, if_false, hserv]
+                          unfold haltWith
+                          rw [haltDom_inflight]
+                          exact hinf
+                        · have hcore : corePhase m σ = haltWith σ e .budget :=
+                            corePhase_budget_fault_serving m σ e w instr g
+                              hinf hsched hfetch hdec hserv hbud
+                          rw [hcore]
+                          exact haltDom_chainShape σ e _ (hnc e hrun)
+                    | none =>
+                        refine .inr (.inr (.inr (.inr (.inl
+                          ⟨e, w, instr, rfl, rfl, hfetch, hdec, hrun, hserv, hbud, ?_, ?_⟩))))
+                        · have hcore :=
+                            corePhase_stall m σ e w instr hinf hsched hfetch hdec
+                              hserv hbud
+                          rw [hcore]
+                          exact hinf
+                        · have hcore :=
+                            corePhase_stall m σ e w instr hinf hsched hfetch hdec
+                              hserv hbud
+                          rw [hcore]
+                          refine ⟨fun e' => ?_, fun e' => ?_, fun e' => ?_, ?_,
+                            fun e' he' => ?_, rfl, rfl⟩
+                          · by_cases he' : e' = σ.payer e
+                            · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                            · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                          · by_cases he' : e' = σ.payer e
+                            · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                            · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                          · by_cases he' : e' = σ.payer e
+                            · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                            · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                          · simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
 
 /-! ## The T6 chain invariants
 
@@ -4716,6 +4839,7 @@ theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
       ⟨fl, hfl, hgt, heq⟩ |
       ⟨fl, hfl, hle, hrunfl, hinfn, hsh⟩ |
       ⟨e, hinfn, hsch, hrune, hinfn', hsh⟩ |
+      ⟨e, w, instr, hinfn, hsch, hfetch, hdec, hrune, hserv, hbud, hinfn', hsh⟩ |
       ⟨e, w, c, hinfn, hsch, hrune, hcpos, hcle, hcbud, hinfs, hsh⟩
     · rw [← hκ] at heq
       rw [heq]
@@ -4767,6 +4891,13 @@ theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
       · exact DepthLink.haltShape hwfρ hrune hsh hρD
       · exact MaxDonationEq.of_frame hsh.1 hρM
       · exact DonatedLe.haltShape hsh hρL
+    · rcases hsh with ⟨hrunF, hservF, hmaxF, hbudget0, hbudgetOther, hgates, hinflightF⟩
+      refine ⟨?_, ?_, ?_,
+        fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp),
+        fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp)⟩
+      · exact DepthLink.of_frame hgates hservF hρD
+      · exact MaxDonationEq.of_frame hmaxF hρM
+      · exact DonatedLe.of_gates hgates hρL
     · refine ⟨?_, ?_, ?_, ?_⟩
       · exact DepthLink.issueShape hsh hρD
       · exact MaxDonationEq.of_frame hsh.2.2.1 hρM

@@ -739,5 +739,22 @@ theorem corePhase_preserves_wf (hexec : ExecPreservesWf) (m : Manifest) (hwf : m
                         · rw [pru]; exact hdrun
                       · simp only [hdon, if_false]
                         exact haltWith_preserves_wf σ d .budget h hdrun hinf
-            · simp only [hbud, if_false]; exact h
+            · simp only [hbud, if_false]
+              cases hserv : (σ.doms d).serving with
+              | some _ =>
+                  simp only [hserv]
+                  exact haltWith_preserves_wf σ d .budget h hdrun hinf
+              | none =>
+                  simp only [hserv]
+                  obtain ⟨pc, pl, pg, pr, pru, ps, pgates, pmov⟩ :=
+                    setBudget_proj σ (σ.payer d) (fun _ => 0)
+                  refine wf_of_skeleton_sameGates σ
+                    (σ.setDom (σ.payer d) (fun ds => { ds with budget := 0 }))
+                    pc pl pg pr pru ps pgates pmov ?_ h
+                  intro fl' hfl'
+                  rw [show (σ.setDom (σ.payer d)
+                    (fun ds => { ds with budget := 0 })).inflight = σ.inflight from rfl]
+                    at hfl'
+                  rw [pru]
+                  exact h.inflight_running fl' hfl'
 end Machines.Lnp64u

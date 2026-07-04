@@ -19,7 +19,8 @@ the Mover job, the in-flight latch). Nothing is projected away.
 Two configurations:
 
 1. **Base ops** (`testManifest`, 256 cycles): ALU, constants, loads/stores,
-   branches, `jalr`, store/fetch faults, budget rotation, stalls, refill.
+   branches, `jalr`, store/fetch faults, budget rotation, budget faults,
+   refill.
 2. **System ops** (`Demo.sysManifest`, 2000 cycles): every system opcode —
    dup/narrow (+ `-EPERMDENIED`/`-EOUTOFRANGE`/`-ESTALE` paths), drop
    (reparent *and* orphan branches, region sweep), a revoke of a derivation

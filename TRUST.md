@@ -15,11 +15,13 @@ the repo at the audit date.
 - **The logic model is 2-state unless stated otherwise.** Lean, the EDSL,
   and the µVerilog semantics reason over `BitVec` values: every bit is 0 or
   1. Verilog simulation/synthesis has 4-state hazards (`X`/`Z`) and
-  X-optimism/X-pessimism mismatches. Today there is no committed static
-  check proving the emitted RTL is X-free/2-state-safe (no uninitialized
-  state, no out-of-bounds reads, no explicit unknowns, no inferred
-  don't-care leakage). The µVerilog boundary assumption must either carry
-  that restriction or CI must lint/prove it.
+  X-optimism/X-pessimism mismatches. Since 2026-07-04, CI re-emits Acc8 and
+  LNP64-µ and runs `scripts/check_xfree_rtl.py` over the exact core RTL,
+  rejecting X/Z/don't-care literals or constructs, missing register resets,
+  and partial memory initialization. Residual risk: this is a text-level
+  lint gate, not yet a Lean theorem tying the parser/AST to 2-state-safe
+  generated text or proving every synthesis don't-care optimization
+  impossible.
 - **Reset is a mathematical initial-state assumption.** The proofs start
   from `Manifest.initState` / `Module.reset`: a perfectly clean state in
   which every proof-visible register, memory cell, pipeline latch, and hidden
@@ -42,13 +44,15 @@ the repo at the audit date.
   assert interrupts with adversarial timing, it is outside T5 unless it is
   either ruled out by integration policy or brought into the manifest/spec and
   proved compatible with `Isolated`.
-- **RED FLAG: T6's `StallFree` hypothesis assumes away a known real bug**
-  (residual-budget stall-lock = unbounded priority inversion, PLAN D11).
-  Until D11 lands, `no_hostage` is a theorem about the fixed scheduler we
-  have not built.
+- **D11 fixed the residual-budget stall-lock.** Underfunded serving issue
+  now raises a deterministic `.budget` fault and unwinds the caller;
+  underfunded non-serving issue burns the payer's residual budget to zero.
+  `T6.no_hostage` no longer carries the former semantic `StallFree` side
+  condition. The remaining progress caveat is environmental, not this
+  scheduler bug.
 - **Progress is not global liveness.** T6 is the only serious progress-shaped
-  result, and today it is conditional on `StallFree`. Even after D11, it will
-  be a closed-machine scheduler/retirement theorem unless the model also
+  result, and after D11 it is a closed-machine scheduler/retirement theorem
+  unless the model also
   accounts for external memory backpressure, instruction-fetch stalls,
   interrupt storms, exception loops, clock gating, and reset reassertion.
   "Useful user instructions eventually retire under arbitrary platform
@@ -71,8 +75,8 @@ the repo at the audit date.
   `Manifest.WF`, `RMC.Fits`, T7 schedulability on the base lockstep
   manifest, plus a concrete isolated manifest satisfying T5's `Isolated ∧
   TopPriority ∧ AgreeOn` and T6's `StrictlySchedulable ∧ positive budgets`.
-  It deliberately does **not** discharge semantic `StallFree`; D11 should
-  delete that premise, or a separate reachability proof must justify it.
+  Since D11 deleted the semantic `StallFree` premise, the T6 witness now
+  covers the remaining finite manifest-side hypotheses.
 
 ## B. Did we state the theorems properly?
 
@@ -109,18 +113,18 @@ the repo at the audit date.
 | Link | Status (2026-07-04) |
 |---|---|
 | ISS (`machine m`) — where T1–T9 live | proved |
-| ISS ↔ EDSL core (R-MC) | **TESTED, not proved** (4 sorries; 2,256 directed full-state lockstep cycles) |
+| ISS ↔ EDSL core (R-MC) | **TESTED, not proved** (1 sorry: `square`; 2,256 directed full-state lockstep cycles) |
 | EDSL core → Module IR (`compile`) | proved generically, sorry-free |
 | Module → *executed* emission | **`@[implemented_by compileImpl]` — unproved replacement** |
 | Module ↔ emitted text | round-trip `#guard` = **compiled eval, NOT kernel** (Acc8); **lnp64u: none yet** |
-| text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration; **no X-free lint yet** |
+| text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration; CI X-free/reset/init lint over freshly emitted Acc8 + LNP64-µ RTL |
 | verified CPU netlist → SoC fabric / board | out of scope (DMA, interrupts, bus arbitration/backpressure, debug, MMU/IOMMU, coherency) |
 | netlist → silicon → physics | out of scope (reset sequencing, timing closure, glitches, metastability, power side channels) |
 
 - **Finding 1 — R-MC gap.** Today "T1–T9 hold of the RTL" is a
-  proved-tested-proved sandwich; the honest phrasing until
-  `square`/`coupled_step` close is "proved of the ISS; correspondence to
-  RTL mechanically tested and partially proved."
+  proved-tested-proved sandwich; the honest phrasing until `square` closes
+  is "proved of the ISS; correspondence to RTL mechanically tested and
+  partially proved."
 - **Finding 2 — `implemented_by` (Compile.lean:386) enlarged the TCB.**
   The kernel reasons about the reference `compile`; every executed
   artifact (emitted `.v`, BMC CNF) comes from the unproved `compileImpl`.
@@ -147,9 +151,12 @@ the repo at the audit date.
   without contradicting any current Lean theorem.
 - **Finding 6 — 2-state proofs need an X-free RTL contract.** A synthesized
   netlist can choose concrete values for Verilog `X`/don't-care behavior
-  that a simulator treats differently. Until CI statically rejects X/Z,
-  uninitialized state, and undefined reads in emitted RTL, the 2-state Lean
-  semantics has an extra unproved adequacy assumption.
+  that a simulator treats differently. The new `check_xfree_rtl.py` CI gate
+  rejects the main emitted text hazards (X/Z/don't-care literals or
+  constructs, un-reset registers, partially initialized memories). What
+  remains is the formal adequacy upgrade: prove or parser-check that every
+  emitted µVerilog artifact stays inside this 2-state-safe subset, including
+  no undefined array-read behavior under the synthesis interpretation.
 - **Finding 7 — physical event accounting is not specified.** The scheduler's
   budget proofs count modeled issue/retire behavior. Platform events such as
   interrupt delivery, exception flushes, wait states, and debug traps need an
@@ -177,7 +184,7 @@ the repo at the audit date.
   deployment target has no DMA/interrupt/MMU/peripheral nondeterminism, or
   which external components are trusted to preserve the machine's assumptions.
 - **Open: liveness adequacy.** Safety survives stuttering; useful progress
-  does not. Once D11 removes `StallFree`, the remaining question is whether
+  does not. After D11 removed `StallFree`, the remaining question is whether
   the environment can indefinitely prevent retirement by withholding memory,
   flooding interrupts, or repeatedly resetting/gating the core.
 - **Open: fault adequacy.** Deterministic `abs_run` transport assumes every
@@ -193,27 +200,33 @@ the repo at the audit date.
   statement.
 - **Behind today:** (1) R-MC gap ⇒ end-to-end guarantee currently
   comparable to seL4, not better; (2) `implemented_by` + eval-level
-  guards are unproved TCB residue; (3) T6 conditioned on an unfixed bug;
-  (4) reset, X-free RTL, platform I/O, budget-event accounting, fault
+  guards are unproved TCB residue; (3) reset, X-free RTL, platform I/O,
+  budget-event accounting, fault
   routing, and global progress are integration assumptions, not proved
   properties; (5) zero external scrutiny of spec and statements — most of
   what "seL4-trustworthy" socially means.
 
 ## Ranked punch list
 
-1. Close R-MC `square`/`coupled_step` (NEXTSTEPS §1/§4 fork).
-2. D11 scheduler fix → delete `StallFree` from T6.
+1. Close R-MC `square` (NEXTSTEPS §1/§4 fork).
+2. DONE 2026-07-04: D11 scheduler fix landed; serving underfunding raises
+   a `.budget` fault, non-serving underfunding burns residual budget, and
+   `StallFree` is deleted from T6.
 3. ● Prove or gate-check `compileImpl = compile`; land lnp64u
    `parseCheck`; one full-size kernel-checked round-trip.
-4. PARTIAL 2026-07-04: `Tests.Lnp64uWitnesses` gives kernel-checked
-   witnesses for finite manifest-side hypotheses. Remaining: discharge or
-   delete T6's semantic `StallFree` side condition.
+4. DONE 2026-07-04: `Tests.Lnp64uWitnesses` gives kernel-checked witnesses
+   for finite manifest-side hypotheses, and D11 deleted T6's semantic
+   `StallFree` side condition.
 5. Specify the reset contract needed to enter `Manifest.initState` /
    `Module.reset`, including clock/reset sequencing and proof-visible hidden
    state; decide whether it is a trusted integration assumption or a future
    checked artifact.
-6. Add X-free / 2-state-safety checking for emitted RTL, or make it an
-   explicit premise of the µVerilog boundary assumption.
+6. PARTIAL 2026-07-04: `scripts/check_xfree_rtl.py` runs in CI after fresh
+   Acc8 + LNP64-µ emission and rejects X/Z/don't-care literals or
+   constructs, missing register resets, and partial memory initialization.
+   Remaining: promote this from text-level lint to a Lean parser/AST
+   2-state-safety theorem, and cover synthesis undefined-read/don't-care
+   adequacy explicitly.
 7. Specify the SoC boundary: DMA/interrupt/MMU/peripheral/debug behavior,
    memory backpressure, and which pieces are trusted vs. modeled/proved.
 8. Specify budget-event accounting for interrupts, exceptions, flushes,

@@ -334,7 +334,7 @@ theorem foldl_set_get (l : List RegDecl) (hnd : (l.map (·.name)).Nodup)
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 2000000 in
 /-- The reset register file, as the bare fold (definitional). -/
-private theorem reset_regs_eq (m : Manifest) : (Hw.core m).reset.regs
+theorem reset_regs_eq (m : Manifest) : (Hw.core m).reset.regs
     = (regDecls m).foldl (fun (ρ : RegEnv) r => ρ.set r.name r.init)
         (fun _ w => 0#w) := rfl
 

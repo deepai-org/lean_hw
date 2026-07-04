@@ -208,7 +208,7 @@ def consts0 : List Loom.Word32 :=
 def sysManifest : Manifest where
   doms := fun d =>
     { priority := [10, 8, 6, 4].getD d.val 0
-      budgetQ := [24, 12, 10, 6].getD d.val 0
+      budgetQ := [64, 12, 10, 6].getD d.val 0
       periodP := 64
       maxDonation := [56, 20, 16, 16].getD d.val 16
       entry := BitVec.ofNat 12 ([0x100, 0x200, 0x280, 0x2C0].getD d.val 0)

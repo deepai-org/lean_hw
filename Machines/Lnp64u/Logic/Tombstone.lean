@@ -1225,7 +1225,14 @@ theorem corePhase_evo (m : Manifest) (σ : MachineState) : Evo σ (corePhase m �
                       · simp only [hdon, if_false]
                         exact evo_haltWith σ d _
             · simp only [hbud, if_false]
-              exact Evo.refl σ
+              cases hserv : (σ.doms d).serving with
+              | some g =>
+                  simp only [hserv]
+                  exact evo_haltWith σ d _
+              | none =>
+                  simp only [hserv]
+                  exact (quiet_setDom σ (σ.payer d)
+                    (fun ds => { ds with budget := 0 }) ⟨rfl, rfl, rfl⟩).evo
 
 theorem evo_refillPhase (m : Manifest) (σ : MachineState) : Evo σ (refillPhase m σ) :=
   evo_of_projs σ _ (fun d => refillPhase_caps m σ d) (fun d => refillPhase_slotGen m σ d)
@@ -2392,7 +2399,15 @@ theorem corePhase_cl (m : Manifest) (σ : MachineState)
                       · simp only [hdon, if_false]
                         exact classLineage_of_tablesEq (quiet_haltDom σ _ _).1 hcl
             · simp only [hbud, if_false]
-              exact hcl
+              cases hserv : (σ.doms d).serving with
+              | some g =>
+                  simp only [hserv]
+                  exact classLineage_of_tablesEq (quiet_haltDom σ _ _).1 hcl
+              | none =>
+                  simp only [hserv]
+                  exact classLineage_of_tablesEq
+                    (quiet_setDom σ (σ.payer d)
+                      (fun ds => { ds with budget := 0 }) ⟨rfl, rfl, rfl⟩).1 hcl
 
 theorem step_cl (m : Manifest) (σ : MachineState)
     (hwf : Wf σ) (hac : Acyclic σ) (hcl : ClassLineage σ) :

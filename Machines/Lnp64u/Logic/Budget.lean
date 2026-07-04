@@ -1025,8 +1025,18 @@ theorem setDom_budget_sub_le (σ : MachineState) (p : DomainId) (cst : Nat) (d' 
   · subst h; simp only [Loom.Fun.update_same]; exact Nat.sub_le _ _
   · simp [Loom.Fun.update_ne _ _ _ _ h]
 
-/-- `corePhase` never raises a budget: countdown/stall leave `budget` alone;
-the issue charge subtracts; retirement is `retire_budget_le`; halts preserve. -/
+/-- Burning a payer's residual budget to zero never raises any budget. -/
+theorem setDom_budget_zero_le (σ : MachineState) (p : DomainId) (d' : DomainId) :
+    ((σ.setDom p (fun ds => { ds with budget := 0 })).doms d').budget
+      ≤ (σ.doms d').budget := by
+  unfold MachineState.setDom
+  by_cases h : d' = p
+  · subst h; simp only [Loom.Fun.update_same]; exact Nat.zero_le _
+  · simp [Loom.Fun.update_ne _ _ _ _ h]
+
+/-- `corePhase` never raises a budget: countdown/idle leave `budget` alone;
+underfunded issue burns the residual budget to zero; the issue charge
+subtracts; retirement is `retire_budget_le`; halts preserve. -/
 theorem corePhase_budget_le (m : Manifest) (σ : MachineState) (d' : DomainId) :
     (((corePhase m σ).doms d').budget) ≤ ((σ.doms d').budget) := by
   unfold corePhase
@@ -1065,7 +1075,14 @@ theorem corePhase_budget_le (m : Manifest) (σ : MachineState) (d' : DomainId) :
                         exact setDom_budget_sub_le σ (σ.payer d) _ d'
                       · simp only [hdon, if_false]
                         exact le_of_eq (haltDom_budget σ d _ d')
-            · simp only [hbud, if_false]; exact Nat.le_refl _
+            · simp only [hbud, if_false]
+              cases hserv : (σ.doms d).serving with
+              | some _ =>
+                  simp only [hserv]
+                  exact le_of_eq (haltDom_budget σ d _ d')
+              | none =>
+                  simp only [hserv]
+                  exact setDom_budget_zero_le σ (σ.payer d) d'
 
 /-- `step`'s budgets equal `corePhase`'s (the Mover writes memory only; the
 cycle bump leaves `doms` untouched). -/

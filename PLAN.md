@@ -276,7 +276,7 @@ Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `
 | T4 | integrity / frame (4 channels + scrub equalities) | invariant | 1 | ✓ |
 | T4′ | frame, adversarial form | log-rel | 3 | — |
 | T5 | noninterference (2-safety; TopPriority + hardened Isolated) | 2-safety | 1 | P (5 Wip engine lemmas) |
-| T6 | totality / no-hostage (StrictlySchedulable + StallFree; see D11) | invariant + bound | 1 | S (totality ✓; bricks proved) |
+| T6 | totality / no-hostage (StrictlySchedulable + positive budgets; D11 landed) | invariant + bound | 1 | S (totality ✓; bricks proved) |
 | T7 | Σ Q/P ≤ 1 ⟹ budget delivery; WCET lemmas | conditional | 1/3 | ✓ |
 | T8 | ownership transfer (retired refs); W^X; status-word safety | invariant | 1 | ✓ |
 | T9 | conservation of slots/lineage/budget | invariant | 1 | ✓ |
@@ -420,8 +420,9 @@ two vendors' FPGAs, chain kernel-checked to the Verilog.*
   occupancy factor in the utilization bound; (3) **residual-budget stall-lock**: the
   core's stall arm (`0 < payer budget < cost`) spends nothing and re-picks the same
   domain forever — textbook unbounded priority inversion, present in the frozen
-  scheduler. v1 carries an explicit `StallFree` side condition; the real fix is a
-  scheduler change (skip or burn underfunded picks) — see D11.
+  scheduler. D11 landed by making serving underfunding a deterministic
+  `.budget` fault through the existing halt/unwind path, and non-serving
+  underfunding a residual-budget burn.
 
 ## 9. Open decisions
 
@@ -436,7 +437,7 @@ two vendors' FPGAs, chain kernel-checked to the Verilog.*
 | D7 | Variable-length / exotic encodings in Loom.Isa | with the machine that needs them | Fixed-width `Sig` now; extension lands only with a consuming machine (e.g. 6502) |
 | D8 | Engine-facing bit-level representation | **resolved 2026-07-03** | An opaque `BitSys` function can't be CNF-encoded; the L3 EDSL/netlist is the one circuit representation, and engine results transport to specs via refinement (R-MC / A-R), not per-machine BitLevel correspondences. Task 1.1 is folded into 1.10/1.11; `BitSys` stays as the spine's semantic face. |
 | D10 | Separate netlist IR vs direct µVerilog emit | **resolved 2026-07-03** | The compiler targets µVerilog directly (`Loom/Hw/Compile.lean`): register mux-tree fold + memory write-port fold, structural. A distinct netlist IR lands only when an optimization pass needs one (Rule 2). C-HW and E-V collapse into one emission theorem. |
-| D11 | Scheduler stall-lock (T6): skip/burn underfunded picks? | Phase 3 revisit | Stall arm re-picks the same underfunded domain forever (priority inversion). Change `corePhase` to charge-1-and-stall or skip to next eligible; requires re-running the full invariant stack (mechanical: stall arm is identity in all current proofs). v1: `StallFree` hypothesis on T6. |
+| D11 | DONE 2026-07-04: scheduler stall-lock (T6) | Phase 3 revisit | Underfunded serving issue raises `.budget`; underfunded non-serving issue burns residual payer budget. The invariant stack was repaired through halt/unwind and budget-burn arms, and `T6.no_hostage` no longer has a `StallFree` hypothesis. |
 | D9 | EDSL write semantics | **resolved 2026-07-03** | v1: reads see pre-cycle state, writes commit at cycle end, last-write-wins across ordered rules (nonblocking-assignment discipline, 1:1 with netlist mux trees). Kôika-style intra-cycle forwarding (read1/write0 ports) added only when a core needs it (Rule 2). |
 
 ---

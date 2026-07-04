@@ -1,8 +1,33 @@
 # NEXT STEPS - active plan as of 2026-07-04
 
-Current state: 92 ledger theorems, T1-T9 CLEAN, RTL corroborated
-(iverilog + yosys), R-MC unbounded with one audit-legal sorry (`square`).
+Current state: 116 ledger entries, T1-T9 CLEAN, RTL corroborated
+(iverilog + yosys), R-MC unbounded with two audit-legal R-MC sorries
+(`square`, `coupled_step`).
 See `STATUS.md` for the audited ledger and session history.
+
+## Stopping point - 2026-07-04
+
+The recovery loop is over. The active R-MC file now builds from current
+source with the generated reset helpers wired in:
+
+- `NEXTSTEPS.md` was reframed and committed as `83d09cc`.
+- `Machines/Lnp64u/Theorems/RMC.lean` imports
+  `RMCResetDom.lean` and proves `absDom_reset`, `abs_reset`, and
+  `coupled_reset` without sorries.
+- The generated helper targets `Machines.Lnp64u.Theorems.RMCResetCanon`
+  and `Machines.Lnp64u.Theorems.RMCResetDom` build.
+- `lake build Machines.Lnp64u.Theorems.RMC` succeeds; Lean reports only
+  the two intended remaining declarations using `sorry`: `square` and
+  `coupled_step`.
+- `lake exe audit` passes; `absDom_reset`, `abs_reset`, and
+  `coupled_reset` are CLEAN, while downstream R-MC transport theorems are
+  STATED only through `square`/`coupled_step`.
+
+Immediate next step: prove the shared core-cycle/refill/tick bridge lemmas
+needed by both remaining sorries, then attack `coupled_step` before the
+full per-op `square` grind. `coupled_step` is smaller and will force the
+right `Coupled` clauses for refill counters, run canonicality, and kind
+canonicality.
 
 ## 0. Working rule: write forward from source
 
@@ -24,13 +49,13 @@ fragments.
 
 ## 1. R-MC bridge rewrite - immediate target
 
-Target: `lake build Machines.Lnp64u.Theorems.RMC` succeeds with exactly one
-remaining `sorry`, the real `square` theorem. This is the current highest
-value engineering task.
+Target: `lake build Machines.Lnp64u.Theorems.RMC` succeeds while shrinking
+the remaining R-MC sorries in place. Current count: two (`square`,
+`coupled_step`). This is the current highest value engineering task.
 
 Build the file from scratch in this order:
 
-1. **External shape.** Keep the public statements downstream files depend on:
+1. **External shape.** DONE for reset. Keep the public statements downstream files depend on:
    `Fits`, `Coupled`, reset pullback facts, `coupled_step`,
    `design_run_succ`, and the invariant pullback section. Rename internals
    freely if that reduces proof friction.
@@ -67,21 +92,23 @@ Verification gate for this item:
 - `lake exe audit`
 - `scripts/ci.sh` before committing a claimed landing
 
-## 2. R-MC per-op square (`square`)
+## 2. R-MC remaining sorries (`coupled_step`, then `square`)
 
 The last link making T2-T9 theorems about the emitted netlist rather than
-the spec. Once item 1 lands, grind the current architecture. Do not block on
-a tagless-final refactor.
+the spec. Do not block on a tagless-final refactor.
 
 Work order:
 
-1. Countdown/no-retire arm.
-2. Issue arm.
-3. Fourteen base-op retirement cases.
-4. Ten system-op retirement cases.
-5. `cap_revoke` pointer-doubling mark engine and the corresponding
+1. Shared cycle/refill/tick bridge lemmas.
+2. `coupled_step` preservation of `rctr_sync`, `run_canon`, and
+   `kind_canon`; extend `Coupled` only when a proof obligation forces it.
+3. `square` countdown/no-retire arm.
+4. `square` issue arm.
+5. Fourteen base-op retirement cases.
+6. Ten system-op retirement cases.
+7. `cap_revoke` pointer-doubling mark engine and the corresponding
    `Coupled` clause.
-6. Final assembly and full CI.
+8. Final assembly and full CI.
 
 ## 3. Proof infrastructure - build only what the R-MC proof forces
 

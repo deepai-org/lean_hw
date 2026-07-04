@@ -10,8 +10,8 @@ import Mathlib.Tactic.Ring
 
 The per-cycle potential `Ψ = 2·massExcept + inflight-remaining + #non-halted`
 drops by ≥ 1 on every frozen (non-chain) cycle once the origin is funded —
-idle is impossible (the head is eligible), stalls are excluded (`StallFree`),
-and every other arm burns occupancy, budget, or a domain. Refills refund at
+idle is impossible (the head is eligible), underfunded issue is a budget
+fault, and every other arm burns occupancy, budget, or a domain. Refills refund at
 most `gainAt` per cycle; over `n` cycles the refund is bounded through
 `StrictlySchedulable` by `(n/L + 1)·(L-1)/2 + 2·budgetMass`.
 -/
@@ -289,7 +289,6 @@ head instruction in flight is: `d` resumes; a clean strict measure drop
 chain, measure, payer and origin budget carried, still quiet, and (when the
 origin is funded at the refill point) the potential drops. -/
 theorem cycle_master (m : Manifest) (hwfm : m.WF)
-    (hstall : ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ))
     (σ : MachineState) (hreach : (machine m).Reachable σ)
     {d : DomainId} {gd : GateId} (hb : (σ.doms d).run = .blocked gd)
     {l : List GateId} {h : DomainId} (hcf : ChainFrom σ d l h)
@@ -386,8 +385,9 @@ theorem cycle_master (m : Manifest) (hwfm : m.WF)
     ⟨fl, hflρ, hgt, heq⟩ |
     ⟨fl, hflρ, hle, hrunfl, hinfκ, hsh⟩ |
     ⟨e, hinfρ, hsch, hrune, hinfκ, hsh⟩ |
+    ⟨e, w, instr, hinfρ, hsch, hfetch, hdec, hrune, hserv, hbud, hinfκ, hsh⟩ |
     ⟨e, w, c, hinfρ, hsch, hrune, hcpos, hcle, hcbud, hinfs, hsh⟩
-  · -- idle / stall
+  · -- idle
     have hfz : FrozenStep d l h ρ (corePhase m ρ) := FrozenStep.of_eq_parts hcfρ
       (by rw [heq]) (by rw [heq])
     obtain ⟨hF1, hF2, hF3, hF4, hF5⟩ := glue hfz
@@ -397,15 +397,13 @@ theorem cycle_master (m : Manifest) (hwfm : m.WF)
       exact hquiet fl hfl
     · intro hfund
       exfalso
-      rcases hns with hnone | hstl
-      · have helig : Eligible ρ h := by
-          refine ⟨hcfρ.top_running, ?_⟩
-          rw [payer_chain hwfρ hdlρ hcfρ, hpayρ]
-          exact hfund
-        have := schedule_isSome_of_eligible m ρ h helig
-        rw [hnone] at this
-        simp at this
-      · exact hstall σ hreach hstl
+      have helig : Eligible ρ h := by
+        refine ⟨hcfρ.top_running, ?_⟩
+        rw [payer_chain hwfρ hdlρ hcfρ, hpayρ]
+        exact hfund
+      have := schedule_isSome_of_eligible m ρ h helig
+      rw [hns] at this
+      simp at this
   · -- burn
     have hκd : (corePhase m ρ).doms = ρ.doms := by rw [heq]
     have hκg : (corePhase m ρ).gates = ρ.gates := by rw [heq]
@@ -564,6 +562,45 @@ theorem cycle_master (m : Manifest) (hwfm : m.WF)
           refine nonHalted_lt (corePhase_halted m ρ hwfρ) (e₀ := e) ?_ hsh.2.2.1
           rw [hrune]
           simp
+        have hnhρ : nonHalted ρ = nonHalted σ := nonHalted_congr hrρ
+        unfold psi
+        rw [hmass2, hil2, hnh2, hil1]
+        omega
+  · -- non-serving budget burn
+    by_cases heh : e = h
+    · subst heh
+      rw [hheadserv] at hserv
+      exact absurd hserv (by simp)
+    · have hfz : FrozenStep d l h ρ (corePhase m ρ) :=
+        FrozenStep.of_budgetBurnShape hwfρ hdlρ hbρ hcfρ hsh hrune heh rfl
+      obtain ⟨hF1, hF2, hF3, hF4, hF5⟩ := glue hfz
+      refine .inr (.inr (.inr ⟨hF1, hF2, hF3, hF4, hF5, ?_, ?_⟩))
+      · intro fl' hfl'
+        rw [hi2, hinfκ] at hfl'
+        exact absurd hfl' (by simp)
+      · intro hfund
+        obtain ⟨hro, _hso, _hmax, hbp, hbo, _hgates, _hinf⟩ := hsh
+        have hpne : ρ.payer e ≠ σ.payer d := by
+          intro hE
+          exact heh (running_payer_eq_top hwfρ hdlρ hcfρ e hrune (by rw [hE, ← hpayρ]))
+        have hbpos : 0 < (ρ.doms (ρ.payer e)).budget :=
+          (schedule_eligible m ρ e hsch).2
+        have hmassk : massExcept (corePhase m ρ) (σ.payer d) +
+            (ρ.doms (ρ.payer e)).budget = massExcept ρ (σ.payer d) := by
+          refine massExcept_sub _ _ ((ρ.doms (ρ.payer e)).budget) hpne (Nat.le_refl _) ?_ hbo
+          rw [hbp]
+          omega
+        have hmass2 : massExcept (step m σ) (σ.payer d) =
+            massExcept (corePhase m ρ) (σ.payer d) :=
+          massExcept_congr (fun e' => by rw [congrFun hd2 e']) _
+        have hmassρ := massExcept_refill m σ (σ.payer d)
+        rw [← hρdef] at hmassρ
+        have hil1 : inflightLeft σ = 0 := inflightLeft_none (by rw [← hiρ]; exact hinfρ)
+        have hil2 : inflightLeft (step m σ) = 0 :=
+          inflightLeft_none (by rw [hi2]; exact hinfκ)
+        have hnh2 : nonHalted (step m σ) = nonHalted (corePhase m ρ) :=
+          nonHalted_congr (fun e' => by rw [congrFun hd2 e'])
+        have hnhκ : nonHalted (corePhase m ρ) = nonHalted ρ := nonHalted_congr hro
         have hnhρ : nonHalted ρ = nonHalted σ := nonHalted_congr hrρ
         unfold psi
         rw [hmass2, hil2, hnh2, hil1]
@@ -761,6 +798,7 @@ theorem drain (m : Manifest) (hwfm : m.WF) :
         ⟨fl', hfl', hgt, heq⟩ |
         ⟨fl', hfl', hle', hrunfl, hinfκ, hsh⟩ |
         ⟨e, hinfρ, hsch, hrune, hinfκ, hsh⟩ |
+        ⟨e, w, instr, hinfρ, hsch, hfetch, hdec, hrune, hserv, hbud, hinfκ, hsh⟩ |
         ⟨e, w, cc, hinfρ, hsch, hrune, hcpos, hcle, hcbud, hinfs, hsh⟩
       · rw [hflρ] at hinfρ
         exact absurd hinfρ (by simp)
@@ -990,12 +1028,13 @@ theorem drain (m : Manifest) (hwfm : m.WF) :
         exact absurd hinfρ (by simp)
       · rw [hflρ] at hinfρ
         exact absurd hinfρ (by simp)
+      · rw [hflρ] at hinfρ
+        exact absurd hinfρ (by simp)
 
 /-- **The frozen scan**: iterating `cycle_master`, a window either sees the
 caller resume, a clean pop, a head issue — all with the measure still at its
 start value — or stays entirely frozen, accumulating the potential drop. -/
-theorem scan (m : Manifest) (hwfm : m.WF)
-    (hstall : ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ)) :
+theorem scan (m : Manifest) (hwfm : m.WF) :
     ∀ (n : Nat) (σ : MachineState), (machine m).Reachable σ →
     ∀ {d : DomainId} {gd : GateId}, (σ.doms d).run = .blocked gd →
     ∀ {l : List GateId} {h : DomainId}, ChainFrom σ d l h →
@@ -1050,7 +1089,7 @@ theorem scan (m : Manifest) (hwfm : m.WF)
           calc stepN m (n + 1) σ = stepN m 1 (stepN m n σ) := by
                 rw [← stepN_add m n 1 σ]
             _ = step m (stepN m n σ) := rfl
-        rcases cycle_master m hwfm hstall (stepN m n σ) hreachn hbn hcfn hqn with
+        rcases cycle_master m hwfm (stepN m n σ) hreachn hbn hcfn hqn with
           hU | ⟨hB, hI2, hM⟩ | ⟨hB, hC, hP, hM, hF⟩ | ⟨hB, hC, hM, hP, hBud, hQ, hPsi⟩
         · refine .inl ⟨n + 1, by omega, ?_⟩
           rw [hstepn]
@@ -1166,7 +1205,6 @@ theorem scan_arith (L A N : Nat) (hL : 1 ≤ L) (hN : N = L * (A + 2 * L + 2))
 `windowLen` cycles the caller resumes or a clean strict measure drop
 occurs. -/
 theorem window (m : Manifest) (hwfm : m.WF)
-    (hstall : ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ))
     (hsched : 2 * ((List.finRange numDomains).map
       (fun e => (m.doms e).budgetQ * (hyperL m / (m.doms e).periodP))).sum < hyperL m)
     (hpos : ∀ e, 0 < (m.doms e).budgetQ)
@@ -1189,7 +1227,7 @@ theorem window (m : Manifest) (hwfm : m.WF)
   have hNL : hyperL m ≤ scanBound m := by
     unfold scanBound
     exact Nat.le_mul_of_pos_right _ (by omega)
-  rcases scan m hwfm hstall (scanBound m) σ hreach hb hcf hquiet with
+  rcases scan m hwfm (scanBound m) σ hreach hb hcf hquiet with
     ⟨t, ht, hout⟩ | ⟨t, ht, h1, h2, h3⟩ | ⟨t, ht, hB1, hC1, hM1, fl, hfl, hfldom⟩ |
     ⟨hfz, hψall⟩
   · exact ⟨t, by unfold windowLen; omega, .inl hout⟩
@@ -1329,7 +1367,6 @@ theorem to_clean (m : Manifest) (hwfm : m.WF) :
 /-- **Measure induction**: from any clean blocked reachable state, `d`
 resumes within `(M + 1) · windowLen` cycles, `M` the measure bound. -/
 theorem resume_of_measure (m : Manifest) (hwfm : m.WF)
-    (hstall : ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ))
     (hsched : 2 * ((List.finRange numDomains).map
       (fun e => (m.doms e).budgetQ * (hyperL m / (m.doms e).periodP))).sum < hyperL m)
     (hpos : ∀ e, 0 < (m.doms e).budgetQ) :
@@ -1350,7 +1387,7 @@ theorem resume_of_measure (m : Manifest) (hwfm : m.WF)
       omega
   | succ M ih =>
       intro σ hreach d gd hb hclean hM
-      obtain ⟨k, hk, hout⟩ := window m hwfm hstall hsched hpos σ hreach hb hclean
+      obtain ⟨k, hk, hout⟩ := window m hwfm hsched hpos σ hreach hb hclean
       rcases hout with hU | ⟨hB, hI, hMlt⟩
       · exact ⟨k, by
           have h1 : windowLen m ≤ (M + 1 + 1) * windowLen m :=
