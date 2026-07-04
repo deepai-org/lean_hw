@@ -727,21 +727,21 @@ theorem gateReturn_end_hsn (τ σ0 : MachineState) (cd : DomainId) (gid : GateId
 
 /-! ## Refill facts -/
 
-/-- `refillPhase` moves a budget only at that domain's period boundary
-(and never at boot), where it restores exactly `budgetQ` — the refund
-term of the T6 potential is `Q` per boundary crossed and nothing more. -/
+/-- `refillPhase` moves a budget only at that domain's period boundary,
+where it restores exactly `budgetQ` — the refund term of the T6 potential
+is `Q` per boundary crossed and nothing more. (The boundary test reads the
+wrapping 32-bit counter through `toNat`; at boot the "refill" rewrites the
+boot quota, a no-op.) -/
 theorem refillPhase_budget_cases (m : Manifest) (σ : MachineState)
     (e : DomainId) :
     ((refillPhase m σ).doms e).budget = (σ.doms e).budget ∨
-    (σ.cycle ≠ 0 ∧ σ.cycle % (m.doms e).periodP = 0 ∧
+    (σ.cycle.toNat % (m.doms e).periodP = 0 ∧
       ((refillPhase m σ).doms e).budget = (m.doms e).budgetQ) := by
   unfold refillPhase
-  by_cases h0 : σ.cycle = 0
-  · exact .inl (by simp [h0])
-  · simp only [h0, if_false]
-    by_cases hb : σ.cycle % (m.doms e).periodP = 0
-    · exact .inr ⟨h0, hb, by simp [hb]⟩
-    · exact .inl (by simp [hb])
+  dsimp only
+  by_cases hb : σ.cycle.toNat % (m.doms e).periodP = 0
+  · exact .inr ⟨hb, by simp [hb]⟩
+  · exact .inl (by simp [hb])
 
 open Loom.Isa SpecM Machines.Lnp64u.Isa Machines.Lnp64u.Isa.Wip
 
@@ -2154,8 +2154,7 @@ theorem retire_cycle (σ : MachineState) (d : DomainId) (w : Loom.Word32) :
 
 /-- The refill phase never advances `cycle`. -/
 theorem refillPhase_cycle (m : Manifest) (σ : MachineState) :
-    (refillPhase m σ).cycle = σ.cycle := by
-  unfold refillPhase; split <;> rfl
+    (refillPhase m σ).cycle = σ.cycle := rfl
 
 /-- The Mover phase never advances `cycle`. -/
 theorem moverPhase_cycle (σ : MachineState) : (moverPhase σ).cycle = σ.cycle := by
@@ -2212,14 +2211,36 @@ theorem step_cycle (m : Manifest) (σ : MachineState) :
   show (moverPhase (corePhase m (refillPhase m σ))).cycle + 1 = σ.cycle + 1
   rw [moverPhase_cycle, corePhase_cycle, refillPhase_cycle]
 
-/-- The cycle counter after `n` steps. -/
+/-- The cycle counter after `n` steps — `BitVec` addition, so this is the
+single point of truth for the **wrapping** counter arithmetic. Consumers
+that need the refill phase mod `P` go through `stepN_cycle_mod` below. -/
 theorem stepN_cycle (m : Manifest) : ∀ (n : Nat) (σ : MachineState),
-    (stepN m n σ).cycle = σ.cycle + n
-  | 0, _ => rfl
+    (stepN m n σ).cycle = σ.cycle + BitVec.ofNat 32 n
+  | 0, _ => by simp [stepN]
   | n + 1, σ => by
-      show (stepN m n (step m σ)).cycle = σ.cycle + (n + 1)
+      show (stepN m n (step m σ)).cycle = σ.cycle + BitVec.ofNat 32 (n + 1)
       rw [stepN_cycle m n (step m σ), step_cycle]
+      apply BitVec.eq_of_toNat_eq
+      simp [BitVec.toNat_add, BitVec.toNat_ofNat]
       omega
+
+/-- **The wrap-bridging kit** (proof-forced by the 2026-07-04 `BitVec 32`
+cycle counter): when `P ∣ 2 ^ 32`, reducing the wrapped counter mod `P`
+erases the wrap — the refill phase advances by exactly the step count.
+This is where `Manifest.WF.period_dvd` earns its keep; every window/
+boundary argument below reduces to `Nat` arithmetic through this lemma. -/
+theorem toNat_mod_of_dvd {P : Nat} (hP : P ∣ 2 ^ 32) (x : Nat) :
+    x % 2 ^ 32 % P = x % P :=
+  Nat.mod_mod_of_dvd x hP
+
+/-- The refill phase after `n` steps, in `Nat`: `P ∣ 2 ^ 32` makes the
+wrapped counter's residue advance linearly. -/
+theorem stepN_cycle_mod (m : Manifest) {P : Nat} (hP : P ∣ 2 ^ 32)
+    (n : Nat) (σ : MachineState) :
+    (stepN m n σ).cycle.toNat % P = (σ.cycle.toNat + n) % P := by
+  rw [stepN_cycle]
+  simp only [BitVec.toNat_add, BitVec.toNat_ofNat]
+  rw [toNat_mod_of_dvd hP, Nat.add_mod, toNat_mod_of_dvd hP, ← Nat.add_mod]
 
 /-! ## Halted is absorbing (T6 potential support)
 
@@ -2844,37 +2865,23 @@ theorem refill_within_period (m : Manifest) (hwf : m.WF) (σ : MachineState)
     ∃ k ≤ (m.doms e).periodP,
       ((refillPhase m (stepN m k σ)).doms e).budget = (m.doms e).budgetQ := by
   have hP : 0 < (m.doms e).periodP := hwf.period_pos e
-  by_cases hc : σ.cycle % (m.doms e).periodP = 0 ∧ σ.cycle ≠ 0
-  · refine ⟨0, Nat.zero_le _, ?_⟩
-    show ((refillPhase m σ).doms e).budget = _
-    unfold refillPhase
-    rw [if_neg hc.2]
-    simp [hc.1]
-  · refine ⟨(m.doms e).periodP - σ.cycle % (m.doms e).periodP, Nat.sub_le _ _, ?_⟩
-    have hcyc : (stepN m ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) σ).cycle
-        = σ.cycle + ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) :=
-      stepN_cycle m _ σ
-    have hlt : σ.cycle % (m.doms e).periodP < (m.doms e).periodP :=
-      Nat.mod_lt _ hP
-    -- the landing cycle is the next multiple of the period
-    have hmul : σ.cycle + ((m.doms e).periodP - σ.cycle % (m.doms e).periodP)
-        = (m.doms e).periodP * (σ.cycle / (m.doms e).periodP + 1) := by
-      have hdm : (m.doms e).periodP * (σ.cycle / (m.doms e).periodP)
-          + σ.cycle % (m.doms e).periodP = σ.cycle :=
-        Nat.div_add_mod σ.cycle (m.doms e).periodP
-      have hsucc : (m.doms e).periodP * (σ.cycle / (m.doms e).periodP + 1)
-          = (m.doms e).periodP * (σ.cycle / (m.doms e).periodP) + (m.doms e).periodP :=
-        Nat.mul_succ _ _
-      omega
-    have hb : (stepN m ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) σ).cycle
-        % (m.doms e).periodP = 0 := by
-      rw [hcyc, hmul]; exact Nat.mul_mod_right _ _
-    have h0 : (stepN m ((m.doms e).periodP - σ.cycle % (m.doms e).periodP) σ).cycle ≠ 0 := by
-      rw [hcyc, hmul]
-      exact Nat.ne_of_gt (Nat.mul_pos hP (Nat.succ_pos _))
-    unfold refillPhase
-    rw [if_neg h0]
-    simp [hb]
+  have hdvd : (m.doms e).periodP ∣ 2 ^ 32 := hwf.period_dvd e
+  -- distance to the next boundary of the wrapping counter (0 if on one)
+  set P := (m.doms e).periodP with hPdef
+  set c := σ.cycle.toNat with hcdef
+  refine ⟨(P - c % P) % P, Nat.le_of_lt (Nat.mod_lt _ hP), ?_⟩
+  have hb : (stepN m ((P - c % P) % P) σ).cycle.toNat % P = 0 := by
+    rw [stepN_cycle_mod m hdvd, ← hcdef, Nat.add_mod,
+        Nat.mod_mod_of_dvd _ (Nat.dvd_refl P)]
+    by_cases h0 : c % P = 0
+    · simp [h0, Nat.mod_self]
+    · have h1 : c % P < P := Nat.mod_lt _ hP
+      have h2 : (P - c % P) % P = P - c % P := Nat.mod_eq_of_lt (by omega)
+      rw [h2, show c % P + (P - c % P) = P from by omega, Nat.mod_self]
+  unfold refillPhase
+  dsimp only
+  rw [← hPdef]
+  simp [hb]
 
 /-- **Origin refill eligibility** (T6 obligation 4): with positive quota
 (`hpos`), within one period — hence within one hyperperiod — of any cycle
@@ -4648,17 +4655,13 @@ theorem DonatedLe.issueShape {m : Manifest} {e p : DomainId} {c : Nat}
 theorem refillPhase_maxDonation (m : Manifest) (σ : MachineState) (e : DomainId) :
     ((refillPhase m σ).doms e).maxDonation = (σ.doms e).maxDonation := by
   unfold refillPhase
-  by_cases h0 : σ.cycle = 0
-  · rw [if_pos h0]
-  · rw [if_neg h0]
-    by_cases hb : σ.cycle % (m.doms e).periodP = 0
-    · simp [hb]
-    · simp [hb]
+  dsimp only
+  by_cases hb : σ.cycle.toNat % (m.doms e).periodP = 0 <;> simp [hb]
 
 theorem refillPhase_budget_le (m : Manifest) (σ : MachineState) (e : DomainId)
     (h : (σ.doms e).budget ≤ (m.doms e).budgetQ) :
     ((refillPhase m σ).doms e).budget ≤ (m.doms e).budgetQ := by
-  rcases refillPhase_budget_cases m σ e with h' | ⟨_, _, h'⟩
+  rcases refillPhase_budget_cases m σ e with h' | ⟨_, h'⟩
   · rw [h']; exact h
   · rw [h']
 

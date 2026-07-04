@@ -446,22 +446,17 @@ theorem refillPhase_doms (m : Manifest) (σ : MachineState) (e : DomainId) :
     (refillPhase m σ).doms e = σ.doms e ∨
     (refillPhase m σ).doms e = { σ.doms e with budget := (m.doms e).budgetQ } := by
   unfold refillPhase
-  by_cases h0 : σ.cycle = 0
-  · exact Or.inl (by rw [if_pos h0])
-  · rw [if_neg h0]
-    by_cases hp : σ.cycle % (m.doms e).periodP = 0
-    · exact Or.inr (by simp [hp])
-    · exact Or.inl (by simp [hp])
+  dsimp only
+  by_cases hp : σ.cycle.toNat % (m.doms e).periodP = 0
+  · exact Or.inr (by simp [hp])
+  · exact Or.inl (by simp [hp])
 
 /-- The refill phase touches nothing but the domain table. -/
 theorem refillPhase_frame (m : Manifest) (σ : MachineState) :
     (refillPhase m σ).mem = σ.mem ∧ (refillPhase m σ).inflight = σ.inflight ∧
     (refillPhase m σ).mover = σ.mover ∧ (refillPhase m σ).gates = σ.gates ∧
     (refillPhase m σ).cycle = σ.cycle := by
-  unfold refillPhase
-  by_cases h0 : σ.cycle = 0
-  · rw [if_pos h0]; exact ⟨rfl, rfl, rfl, rfl, rfl⟩
-  · rw [if_neg h0]; exact ⟨rfl, rfl, rfl, rfl, rfl⟩
+  exact ⟨rfl, rfl, rfl, rfl, rfl⟩
 
 /-- Refill keeps a bounded budget bounded (it only ever resets to `Q`). -/
 theorem refillPhase_budget_le (m : Manifest) (σ : MachineState) (d : DomainId)

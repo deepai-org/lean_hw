@@ -2573,14 +2573,13 @@ theorem caprevoke_exec_of_mnemonic (i : Instr) (hmem : i ∈ isa)
 
 @[simp] theorem refillPhase_inflight (m : Manifest) (σ : MachineState) :
     (refillPhase m σ).inflight = σ.inflight := by
-  unfold refillPhase; split <;> rfl
+  rfl
 
 theorem refillPhase_regs (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).regs = (σ.doms d).regs := by
   unfold refillPhase
-  split
-  · rfl
-  · by_cases h : σ.cycle % (m.doms d).periodP = 0 <;> simp [h]
+  dsimp only
+  by_cases h : σ.cycle.toNat % (m.doms d).periodP = 0 <;> simp [h]
 
 theorem reg_congr {ds ds' : DomainState} (h : ds'.regs = ds.regs) : ds'.reg = ds.reg := by
   funext r; unfold DomainState.reg; rw [h]

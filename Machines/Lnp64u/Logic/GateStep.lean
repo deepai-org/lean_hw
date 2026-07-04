@@ -37,19 +37,19 @@ theorem setDom_doms_ne (σ : MachineState) (d : DomainId) (f : DomainState → D
 
 @[simp] theorem refillPhase_regs (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).regs = (σ.doms d).regs := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_pc (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).pc = (σ.doms d).pc := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_cause (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).cause = (σ.doms d).cause := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_inflight (m : Manifest) (σ : MachineState) :
     (refillPhase m σ).inflight = σ.inflight := by
-  unfold refillPhase; split <;> rfl
+  rfl
 
 /-- `step`'s domain table equals `corePhase`'s over the refilled state (the
 Mover phase and the cycle bump never touch `doms`). -/

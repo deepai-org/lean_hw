@@ -1077,12 +1077,10 @@ theorem refillPhase_budget_bounded (m : Manifest) (σ : MachineState)
     (h : ∀ d, (σ.doms d).budget ≤ (m.doms d).budgetQ) (d : DomainId) :
     ((refillPhase m σ).doms d).budget ≤ (m.doms d).budgetQ := by
   unfold refillPhase
+  dsimp only
   split
+  · exact Nat.le_refl _
   · exact h d
-  · simp only
-    split
-    · exact Nat.le_refl _
-    · exact h d
 
 /-- **Budgets stay within quota across one cycle** — the `step`-level bound
 feeding T9's `budget_bounded`. -/

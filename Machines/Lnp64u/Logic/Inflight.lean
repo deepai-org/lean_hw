@@ -881,7 +881,7 @@ theorem retire_inflight (σ : MachineState) (d : DomainId) (w : Loom.Word32) :
 
 theorem refillPhase_inflight (m : Manifest) (σ : MachineState) :
     (refillPhase m σ).inflight = σ.inflight := by
-  unfold refillPhase; split <;> rfl
+  rfl
 
 /-- `step`'s `inflight` equals `corePhase`'s (refill, mover, and the cycle
 bump leave it untouched). -/

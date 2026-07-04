@@ -69,31 +69,24 @@ theorem nonHalted_lt {σ σ' : MachineState} (h : HaltedStays σ σ')
 def psi (σ : MachineState) (o : DomainId) : Nat :=
   2 * massExcept σ o + inflightLeft σ + nonHalted σ
 
-/-- The refill inflow outside `o` this cycle. -/
+/-- The refill inflow outside `o` this cycle (boundary test on the wrapping
+counter, through `toNat`). -/
 def gainAt (m : Manifest) (σ : MachineState) (o : DomainId) : Nat :=
-  if σ.cycle = 0 then 0
-  else ∑ e ∈ Finset.univ.erase o,
-    (if σ.cycle % (m.doms e).periodP = 0 then (m.doms e).budgetQ else 0)
+  ∑ e ∈ Finset.univ.erase o,
+    (if σ.cycle.toNat % (m.doms e).periodP = 0 then (m.doms e).budgetQ else 0)
 
 /-- Refills raise the outside mass by at most `gainAt`. -/
 theorem massExcept_refill (m : Manifest) (σ : MachineState) (o : DomainId) :
     massExcept (refillPhase m σ) o ≤ massExcept σ o + gainAt m σ o := by
   unfold massExcept gainAt
-  by_cases h0 : σ.cycle = 0
-  · simp only [h0, if_true]
-    refine Nat.le_trans (Finset.sum_le_sum ?_) (Nat.le_add_right _ _)
-    intro e _
-    unfold refillPhase
-    rw [if_pos h0]
-  · simp only [h0, if_false]
-    rw [← Finset.sum_add_distrib]
-    refine Finset.sum_le_sum ?_
-    intro e _
-    rcases refillPhase_budget_cases m σ e with h' | ⟨_, hbd, h'⟩
-    · rw [h']
-      exact Nat.le_add_right _ _
-    · rw [h', if_pos hbd]
-      omega
+  rw [← Finset.sum_add_distrib]
+  refine Finset.sum_le_sum ?_
+  intro e _
+  rcases refillPhase_budget_cases m σ e with h' | ⟨hbd, h'⟩
+  · rw [h']
+    exact Nat.le_add_right _ _
+  · rw [h', if_pos hbd]
+    omega
 
 /-- The outside mass is bounded by the budget mass (given `BudgetCap`). -/
 theorem massExcept_le_budgetMass (m : Manifest) (σ : MachineState)
@@ -152,41 +145,28 @@ theorem gainSum_le (m : Manifest) (hwfm : m.WF) (σ : MachineState) (o : DomainI
     ∑ e ∈ Finset.univ.erase o, (m.doms e).budgetQ * (n / (m.doms e).periodP + 2) := by
   have hswap : ∑ t ∈ Finset.range n, gainAt m (stepN m t σ) o ≤
       ∑ t ∈ Finset.range n, ∑ e ∈ Finset.univ.erase o,
-        (if (σ.cycle + t) % (m.doms e).periodP = 0 ∧ σ.cycle + t ≠ 0
+        (if (σ.cycle.toNat + t) % (m.doms e).periodP = 0
          then (m.doms e).budgetQ else 0) := by
     refine Finset.sum_le_sum ?_
     intro t _
     unfold gainAt
-    rw [stepN_cycle]
-    by_cases h0 : σ.cycle + t = 0
-    · rw [if_pos h0]
-      exact Nat.zero_le _
-    · rw [if_neg h0]
-      refine Finset.sum_le_sum ?_
-      intro e _
-      by_cases hb : (σ.cycle + t) % (m.doms e).periodP = 0
-      · rw [if_pos hb, if_pos ⟨hb, h0⟩]
-      · rw [if_neg hb, if_neg (fun hc => hb hc.1)]
+    refine Finset.sum_le_sum ?_
+    intro e _
+    rw [stepN_cycle_mod m (hwfm.period_dvd e)]
   rw [Finset.sum_comm] at hswap
   refine Nat.le_trans hswap (Finset.sum_le_sum ?_)
   intro e _
   have hP : 0 < (m.doms e).periodP := hwfm.period_pos e
   have h1 : ∑ t ∈ Finset.range n,
-      (if (σ.cycle + t) % (m.doms e).periodP = 0 ∧ σ.cycle + t ≠ 0
+      (if (σ.cycle.toNat + t) % (m.doms e).periodP = 0
        then (m.doms e).budgetQ else 0) ≤
       ∑ t ∈ (Finset.range n).filter
-        (fun t => (σ.cycle + t) % (m.doms e).periodP = 0), (m.doms e).budgetQ := by
+        (fun t => (σ.cycle.toNat + t) % (m.doms e).periodP = 0), (m.doms e).budgetQ := by
     rw [Finset.sum_filter]
-    refine Finset.sum_le_sum ?_
-    intro t _
-    by_cases hc : (σ.cycle + t) % (m.doms e).periodP = 0 ∧ σ.cycle + t ≠ 0
-    · rw [if_pos hc, if_pos hc.1]
-    · rw [if_neg hc]
-      exact Nat.zero_le _
   have h1' : ∑ t ∈ (Finset.range n).filter
-      (fun t => (σ.cycle + t) % (m.doms e).periodP = 0), (m.doms e).budgetQ =
+      (fun t => (σ.cycle.toNat + t) % (m.doms e).periodP = 0), (m.doms e).budgetQ =
       ((Finset.range n).filter
-        (fun t => (σ.cycle + t) % (m.doms e).periodP = 0)).card * (m.doms e).budgetQ :=
+        (fun t => (σ.cycle.toNat + t) % (m.doms e).periodP = 0)).card * (m.doms e).budgetQ :=
     Finset.sum_const_nat (fun _ _ => rfl)
   rw [h1'] at h1
   refine Nat.le_trans h1 ?_
@@ -1262,8 +1242,7 @@ theorem window (m : Manifest) (hwfm : m.WF)
           · have htt : tf ≤ tt := by omega
             have hprev := ihh htt (by omega)
             have hbud := (hψall tt (by omega)).1
-            have hstep : (stepN m (tt + 1) σ).cycle = (stepN m (tt + 1) σ).cycle := rfl
-            rcases refillPhase_budget_cases m (stepN m (tt + 1) σ) o with h' | ⟨_, _, h'⟩
+            rcases refillPhase_budget_cases m (stepN m (tt + 1) σ) o with h' | ⟨_, h'⟩
             · rw [h', hbud]
               exact hprev
             · rw [h']

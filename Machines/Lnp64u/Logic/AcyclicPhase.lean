@@ -21,9 +21,8 @@ theorem acyclic_refillPhase (m : Manifest) (σ : MachineState) (hac : Acyclic σ
     Acyclic (refillPhase m σ) := by
   refine acyclic_of_parentRef_eq σ _ (parentRef_eq_of_doms σ _ (fun d => ?_)) hac
   unfold refillPhase
-  split
-  · exact ⟨rfl, rfl⟩
-  · simp only; split <;> exact ⟨rfl, rfl⟩
+  dsimp only
+  split <;> exact ⟨rfl, rfl⟩
 
 theorem acyclic_moverPhase (σ : MachineState) (hac : Acyclic σ) :
     Acyclic (moverPhase σ) :=
