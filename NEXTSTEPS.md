@@ -11,6 +11,8 @@ The recovery loop is over. The active R-MC file now builds from current
 source with the generated reset helpers wired in:
 
 - `NEXTSTEPS.md` was reframed and committed as `83d09cc`.
+- The source/docs/scripts checkpoint after the reset work was committed as
+  `47762aa`.
 - `Machines/Lnp64u/Theorems/RMC.lean` imports
   `RMCResetDom.lean` and proves `absDom_reset`, `abs_reset`, and
   `coupled_reset` without sorries.
