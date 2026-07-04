@@ -12,40 +12,52 @@ exactly through the abstraction function `Hw.abs` of `Hw/Enc.lean`. This is
 what transports T2–T9 from the ISS onto the emitted Verilog (text side via
 the parser round-trip, tool side via the single `ImplementsStandard` axiom).
 
-## Why the statement is the *bounded lockstep*, not a plain `Simulation`
+## The statement is now the *unbounded* lockstep (resolved 2026-07-04)
 
-The project plan's literal form `Simulation (machine m) ((core m).toTSys)`
-is **uninhabited** — with `Hw.abs` or any other abstraction function:
+Until 2026-07-04 the refinement was stated on the `n < 2 ^ 32` horizon,
+because the unbounded form was **uninhabited**: `MachineState.cycle` was a
+`Nat`, strictly increasing at every spec step, so `machine m` had no
+periodic points — while every forward orbit of `(core m).cycle` is
+eventually periodic (finitely many declared registers + finite RAM). A
+`Simulation.square` is a functional-graph homomorphism and would map a
+concrete periodic orbit to a spec periodic orbit; contradiction.
 
-* `MachineState.cycle : Nat` increases strictly at every spec step, so
-  `machine m` has no periodic points.
-* Every forward orbit of `(core m).cycle` is eventually periodic: a cycle
-  only rewrites the finitely many declared `(name, width)` register entries
-  and the finite RAM, so the orbit of any `St` lives in a finite set.
-* A `Simulation.square` is a functional-graph homomorphism `h` with
-  `h ∘ cycle = step m ∘ h`; it would map a concrete periodic orbit to a
-  spec periodic orbit. Contradiction.
+**Resolution (D-class, user decision 2026-07-04): the spec counter is the
+hardware counter.** `MachineState.cycle` is now a `BitVec 32` that wraps at
+`2 ^ 32` exactly like the RTL register — the `Nat` counter was non-physical.
+The proof-forced companion is `Manifest.WF.period_dvd` (`periodP ∣ 2 ^ 32`
+per domain): the refill cadence `cycle % P = 0` stays `P`-periodic across
+the wrap only under that divisibility — the same constraint real RTOS tick
+periods have against a free-running hardware timer. With it, the hidden
+mod-`P` counters (`Coupled.rctr_sync`) stay in sync *through* the wrap
+(`(2 ^ 32 - 1) + 1 ≡ 0` and `rctr` rolls `P - 1 → 0` simultaneously), so the
+old `hwrap` side conditions on `square`/`coupled_step` are gone.
 
-Concretely, the mismatch is the 32-bit `cycle` register wrapping at
-`2 ^ 32` while the spec counter keeps counting. The refinement therefore
-holds *on the 32-bit horizon*, and that is what is stated here:
+What is stated here, all horizon-free:
 
 * `square` — one core cycle = one spec step through `Hw.abs`, under the
-  hidden-state coupling `Coupled`, datapath-fit `Fits`, reachability on
-  both sides, and no counter wrap this cycle. This is the per-field,
-  per-opcode workhorse.
-* `abs_run` (**the R-MC headline**) — for every `n < 2 ^ 32`,
+  hidden-state coupling `Coupled`, datapath-fit `Fits`, and reachability on
+  both sides. The per-field, per-opcode workhorse.
+* `abs_run` (**the R-MC headline**) — for *every* `n`,
   `Hw.abs ((core m).run n reset) = stepN m n m.initState`: exact
-  whole-state lockstep from reset, the formal generalization of the
-  2000-cycle `Tests/Lnp64uCore.lean` run.
+  whole-state lockstep from reset, forever — through counter wraps. The
+  formal generalization of the 2000-cycle `Tests/Lnp64uCore.lean` run.
+* `refines` — the unbounded `Simulation` onto the ISS, with `Hw.abs` as the
+  abstraction function, for the core *on its boot orbit* (`reachCore`, the
+  same states/reset with the step exercised from reachable states — which
+  is every state the powered-on device ever occupies, and reachability
+  coincides with `(core m).toTSys`'s, `reachCore_reachable_iff`). The
+  restriction is inherent, not a wrap artifact: `square` is conditioned on
+  the physical coupling invariant `Coupled` (hidden refill counters in sync,
+  canonical encodings), and garbage register files outside the boot orbit
+  satisfy neither it nor the range invariants the per-opcode arms need. A
+  full-state-space simulation would need a commuting abstraction for
+  arbitrary junk states, which carries no verification content — every
+  invariant transport already factors through reachable states
+  (`invariant_transport`).
 * `invariant_transport` — every ISS invariant (T2–T9's currency) holds of
-  the abstraction of every core state on the horizon. Sorry-free given
-  `square`/`coupled_step` (which carry the sorries below).
-
-Restoring the plan's literal `Simulation` type would require a spec-side
-decision (D-class): make `MachineState.cycle` a `BitVec 32` (mod-`2 ^ 32`
-counter), or quotient the abstract system by counter epochs. Both touch
-T5–T9's refill arithmetic; not taken unilaterally here.
+  the abstraction of every core state, at every cycle count. Sorry-free
+  given `square`/`coupled_step` (which carry the sorries below).
 
 ## Landed support (sorry-free)
 
@@ -116,7 +128,8 @@ the concrete-reachability hypothesis of `square`; it becomes a clause here
 when the retirement arm forces its exact statement.) -/
 structure Coupled (m : Manifest) (σ : Loom.Hw.St) : Prop where
   /-- The hidden per-domain refill counter is `cycle % P` of the *register*
-  counter (both wrap together below the horizon). -/
+  counter. The two stay in sync *through* the `2 ^ 32` wrap because
+  `Manifest.WF.period_dvd` makes `P` divide `2 ^ 32`. -/
   rctr_sync : ∀ d : DomainId,
     (σ.regs (Hw.drctr d) 32).toNat =
       (σ.regs "cycle" 32).toNat % (m.doms d).periodP
@@ -178,23 +191,26 @@ exactly one spec step through `Hw.abs`. Hypotheses: manifest WF (scheduler
 determinism) and datapath fit, the hidden-state coupling, reachability on
 both sides (spec-side range invariants — budgets `≤ Q`, `depth <
 maxChainDepth`, `cyclesLeft ≤` max cost, mover regions valid — and the
-concrete-side mark-engine state), and no counter wrap this cycle. -/
+concrete-side mark-engine state). No wrap side condition: the spec counter
+is a `BitVec 32` too, so the tick arm is `cycle + 1` wrapping identically
+on both sides. -/
 theorem square (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
     (hcr : ((Hw.core m).toTSys).Reachable σ)
-    (hsr : (machine m).Reachable (Hw.abs σ))
-    (hwrap : (Hw.abs σ).cycle + 1 < 2 ^ 32) :
+    (hsr : (machine m).Reachable (Hw.abs σ)) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
   sorry
 
-/-- The coupling is preserved by one core cycle (below the horizon). -/
+/-- The coupling is preserved by one core cycle. At the wrap, `rctr` rolls
+`P - 1 → 0` exactly when `cycle` rolls `2 ^ 32 - 1 → 0`, and
+`(0 : Nat) % P = 0`; away from it both increment — `WF.period_dvd` is what
+makes the two roll-overs coincide. -/
 theorem coupled_step (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
     (hcr : ((Hw.core m).toTSys).Reachable σ)
-    (hsr : (machine m).Reachable (Hw.abs σ))
-    (hwrap : (Hw.abs σ).cycle + 1 < 2 ^ 32) :
+    (hsr : (machine m).Reachable (Hw.abs σ)) :
     Coupled m ((Hw.core m).cycle σ) := by
   sorry
 
@@ -232,51 +248,144 @@ theorem core_reachable_run (m : Manifest) (n : Nat) :
       rw [design_run_succ]
       exact .step ih rfl
 
-/-- The lockstep induction: abstraction equality and coupling, jointly. -/
+/-- The lockstep induction: abstraction equality and coupling, jointly —
+for **every** `n`, no horizon. -/
 theorem lockstep_coupled (m : Manifest) (hwf : m.WF) (hfit : Fits m) :
-    ∀ n : Nat, n < 2 ^ 32 →
+    ∀ n : Nat,
       Hw.abs ((Hw.core m).run n (Hw.core m).reset) = stepN m n m.initState ∧
       Coupled m ((Hw.core m).run n (Hw.core m).reset) := by
   intro n
   induction n with
-  | zero => exact fun _ => ⟨abs_reset m hwf hfit, coupled_reset m⟩
+  | zero => exact ⟨abs_reset m hwf hfit, coupled_reset m⟩
   | succ k ih =>
-      intro hk
-      obtain ⟨habs, hcpl⟩ := ih (Nat.lt_of_succ_lt hk)
+      obtain ⟨habs, hcpl⟩ := ih
       have hcr := core_reachable_run m k
       have hsr : (machine m).Reachable
           (Hw.abs ((Hw.core m).run k (Hw.core m).reset)) := by
         rw [habs]; exact machine_reachable_stepN m k
-      have hwrap : (Hw.abs ((Hw.core m).run k (Hw.core m).reset)).cycle + 1
-          < 2 ^ 32 := by
-        rw [habs, stepN_cycle]
-        show 0 + k + 1 < 2 ^ 32
-        omega
       refine ⟨?_, ?_⟩
-      · rw [design_run_succ, square m hwf hfit _ hcpl hcr hsr hwrap, habs,
+      · rw [design_run_succ, square m hwf hfit _ hcpl hcr hsr, habs,
           Wip.stepN_succ]
       · rw [design_run_succ]
-        exact coupled_step m hwf hfit _ hcpl hcr hsr hwrap
+        exact coupled_step m hwf hfit _ hcpl hcr hsr
 
-/-- **R-MC.** Exact whole-state lockstep on the 32-bit counter horizon:
-after any `n < 2 ^ 32` cycles from reset, decoding the core's register
-file yields precisely the ISS state after `n` steps from boot. (The
-formal generalization of the `Tests/Lnp64uCore.lean` lockstep runs; see
-the module docstring for why the horizon is inherent.) -/
-theorem abs_run (m : Manifest) (hwf : m.WF) (hfit : Fits m)
-    {n : Nat} (hn : n < 2 ^ 32) :
+/-- **R-MC.** Exact whole-state lockstep, **unbounded**: after any `n`
+cycles from reset — through any number of counter wraps — decoding the
+core's register file yields precisely the ISS state after `n` steps from
+boot. (The formal generalization of the `Tests/Lnp64uCore.lean` lockstep
+runs; horizon-free since the 2026-07-04 `BitVec 32` cycle decision.) -/
+theorem abs_run (m : Manifest) (hwf : m.WF) (hfit : Fits m) (n : Nat) :
     Hw.abs ((Hw.core m).run n (Hw.core m).reset) = stepN m n m.initState :=
-  (lockstep_coupled m hwf hfit n hn).1
+  (lockstep_coupled m hwf hfit n).1
 
 /-- **R-MC transport.** Every ISS invariant — in particular each of T2–T9's
-invariant forms — holds of the abstraction of every core state on the
-horizon. This is the theorem that carries the ledger onto the emitted
+invariant forms — holds of the abstraction of every core state, at every
+cycle count. This is the theorem that carries the ledger onto the emitted
 Verilog. -/
 theorem invariant_transport (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     {P : MachineState → Prop} (hP : (machine m).Invariant P)
-    {n : Nat} (hn : n < 2 ^ 32) :
+    (n : Nat) :
     P (Hw.abs ((Hw.core m).run n (Hw.core m).reset)) := by
-  rw [abs_run m hwf hfit hn]
+  rw [abs_run m hwf hfit n]
+  exact hP _ (machine_reachable_stepN m n)
+
+/-! ## The unbounded simulation -/
+
+/-- Reachability in a deterministic single-init system is membership in an
+indexed run: the generic engine behind `core_reachable_iff` (stated over an
+abstract `M` so the `Reachable` recursor applies cleanly). -/
+private theorem reachable_index {M : Loom.TSys} {σ : M.S} (h : M.Reachable σ)
+    (r : Nat → M.S) (hr0 : ∀ σ₀, M.init σ₀ → σ₀ = r 0)
+    (hrs : ∀ a b n, M.step a b → a = r n → b = r (n + 1)) :
+    ∃ n, σ = r n := by
+  induction h with
+  | init h0 => exact ⟨0, hr0 _ h0⟩
+  | step _ hs ih =>
+      obtain ⟨n, hn⟩ := ih
+      exact ⟨n + 1, hrs _ _ n hs hn⟩
+
+/-- Concrete reachability is exactly the boot orbit: the core is
+deterministic with the single initial state `reset`. -/
+theorem core_reachable_iff (m : Manifest) (σ : Loom.Hw.St) :
+    ((Hw.core m).toTSys).Reachable σ ↔
+      ∃ n, (Hw.core m).run n (Hw.core m).reset = σ := by
+  constructor
+  · intro h
+    obtain ⟨n, hn⟩ := reachable_index h (fun n => (Hw.core m).run n (Hw.core m).reset)
+      (fun σ₀ h0 => h0) (fun a b n hs ha => by
+        have ha' : a = (Hw.core m).run n (Hw.core m).reset := ha
+        show b = (Hw.core m).run (n + 1) (Hw.core m).reset
+        rw [design_run_succ, ← ha']; exact hs.symm)
+    exact ⟨n, hn.symm⟩
+  · rintro ⟨n, rfl⟩
+    exact core_reachable_run m n
+
+/-- The core **on its boot orbit**: same state space, same reset, the step
+exercised from reachable states — every state the powered-on device ever
+occupies. Its reachable set coincides with `(core m).toTSys`'s
+(`reachCore_reachable_iff`), so invariants proved against it are invariants
+of the full core. See the module docstring for why the unbounded simulation
+lives here and not on arbitrary (garbage) register files. -/
+def reachCore (m : Manifest) : Loom.TSys where
+  S := Loom.Hw.St
+  init := fun σ => σ = (Hw.core m).reset
+  step := fun σ σ' =>
+    ((Hw.core m).toTSys).Reachable σ ∧ (Hw.core m).cycle σ = σ'
+
+/-- The boot orbit is `reachCore`-reachable. -/
+theorem reachCore_reachable_run (m : Manifest) (n : Nat) :
+    (reachCore m).Reachable ((Hw.core m).run n (Hw.core m).reset) := by
+  induction n with
+  | zero => exact .init rfl
+  | succ k ih =>
+      rw [design_run_succ]
+      exact .step ih ⟨core_reachable_run m k, rfl⟩
+
+/-- `reachCore` and the full core system reach exactly the same states. -/
+theorem reachCore_reachable_iff (m : Manifest) (σ : Loom.Hw.St) :
+    (reachCore m).Reachable σ ↔ ((Hw.core m).toTSys).Reachable σ := by
+  constructor
+  · intro h
+    obtain ⟨n, hn⟩ := reachable_index h (fun n => (Hw.core m).run n (Hw.core m).reset)
+      (fun σ₀ h0 => h0) (fun a b n hs ha => by
+        have ha' : a = (Hw.core m).run n (Hw.core m).reset := ha
+        show b = (Hw.core m).run (n + 1) (Hw.core m).reset
+        rw [design_run_succ, ← ha']; exact hs.2.symm)
+    rw [hn]
+    exact core_reachable_run m n
+  · intro h
+    obtain ⟨n, hn⟩ := (core_reachable_iff m σ).mp h
+    rw [← hn]
+    exact reachCore_reachable_run m n
+
+/-- **R-MC (the unbounded simulation).** `Hw.abs` is a genuine
+`Simulation` of the ISS by the core on its boot orbit — the project plan's
+`Simulation (machine m) (core.toTSys)` restricted to the states the device
+can occupy. Inhabited *because* the spec counter now wraps with the
+hardware's; with the `Nat` counter this type was provably empty (module
+docstring). Sorry-free given `square` and the reset lemmas. -/
+theorem refines (m : Manifest) (hwf : m.WF) (hfit : Fits m) :
+    Nonempty (Simulation (machine m) (reachCore m)) := by
+  refine ⟨{ abs := Hw.abs, init_ok := ?_, square := ?_ }⟩
+  · intro σ hσ
+    show Hw.abs σ = m.initState
+    rw [show σ = (Hw.core m).reset from hσ]
+    exact abs_reset m hwf hfit
+  · rintro σ σ' ⟨hr, rfl⟩
+    obtain ⟨n, rfl⟩ := (core_reachable_iff m σ).mp hr
+    show step m _ = _
+    rw [← design_run_succ, abs_run m hwf hfit, abs_run m hwf hfit,
+      Wip.stepN_succ]
+
+/-- Invariant pullback along the unbounded simulation, restated on the
+full core system: any spec invariant holds of the abstraction of every
+reachable core state. -/
+theorem invariant_pullback (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    {P : MachineState → Prop} (hP : (machine m).Invariant P) :
+    ((Hw.core m).toTSys).Invariant (fun σ => P (Hw.abs σ)) := by
+  intro σ hσ
+  obtain ⟨n, rfl⟩ := (core_reachable_iff m σ).mp hσ
+  rw [abs_run m hwf hfit n]
   exact hP _ (machine_reachable_stepN m n)
 
 end Machines.Lnp64u.Theorems.RMC

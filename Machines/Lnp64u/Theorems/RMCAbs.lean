@@ -23,7 +23,7 @@ open Machines.Lnp64u Loom.Hw Machines.Lnp64u.Hw
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 16000000 in
 theorem reset_cycle (m : Manifest) :
-    (Hw.core m).reset.regs "cycle" 32 = BitVec.ofNat 32 m.initState.cycle :=
+    (Hw.core m).reset.regs "cycle" 32 = m.initState.cycle :=
   reset_lookup m 632 (by omega)
 
 set_option maxRecDepth 200000 in
@@ -77,9 +77,8 @@ set_option maxHeartbeats 16000000 in
 /-- The abstracted cycle counter boots at the spec's boot cycle (0). -/
 theorem abs_cycle_reset (m : Manifest) :
     (Hw.abs (Hw.core m).reset).cycle = m.initState.cycle := by
-  show ((Hw.core m).reset.regs "cycle" 32).toNat = m.initState.cycle
+  show (Hw.core m).reset.regs "cycle" 32 = m.initState.cycle
   rw [reset_cycle]
-  rfl
 
 set_option maxRecDepth 400000 in
 set_option maxHeartbeats 16000000 in
