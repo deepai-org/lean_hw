@@ -8,3 +8,4 @@ import Machines.Lnp64u.Theorems.T7
 import Machines.Lnp64u.Theorems.T8
 import Machines.Lnp64u.Theorems.T9
 import Machines.Lnp64u.Theorems.Inv
+import Machines.Lnp64u.Theorems.RMC
