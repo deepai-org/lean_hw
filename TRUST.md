@@ -12,6 +12,14 @@ the repo at the audit date.
   *when* things happen is erased before comparison. Honest (budget provably
   drifts between runs), but T5 says nothing about covert timing channels.
   Same exclusion as seL4; a timing-quantified T5′ is future work.
+- **The logic model is 2-state unless stated otherwise.** Lean, the EDSL,
+  and the µVerilog semantics reason over `BitVec` values: every bit is 0 or
+  1. Verilog simulation/synthesis has 4-state hazards (`X`/`Z`) and
+  X-optimism/X-pessimism mismatches. Today there is no committed static
+  check proving the emitted RTL is X-free/2-state-safe (no uninitialized
+  state, no out-of-bounds reads, no explicit unknowns, no inferred
+  don't-care leakage). The µVerilog boundary assumption must either carry
+  that restriction or CI must lint/prove it.
 - **Reset is a mathematical initial-state assumption.** The proofs start
   from `Manifest.initState` / `Module.reset`: a perfectly clean state in
   which every proof-visible register, memory cell, pipeline latch, and hidden
@@ -45,9 +53,26 @@ the repo at the audit date.
   interrupt storms, exception loops, clock gating, and reset reassertion.
   "Useful user instructions eventually retire under arbitrary platform
   conditions" is not a current theorem.
-- **Vacuity risk, unaddressed:** no kernel-checked witness that each
-  theorem's hypothesis conjunction is satisfiable by a useful manifest.
-  Fix: `decide`d instances on the lockstep manifests (NEXTSTEPS ● item).
+- **Budget accounting is only as strong as the event model.** The spec
+  charges instruction classes at issue and proves accounting over that
+  closed machine. Real integrations must say who pays for interrupt entry,
+  pipeline flushes, exception routing, memory stalls, and context-switch
+  overhead. If an external event can drain another domain's budget, the
+  scheduler becomes a denial-of-service channel even if T5's safety property
+  still holds.
+- **Fault routing must remain deterministic and local.** T1/T6 cover decode
+  refusal and fatal domain halt in the ISS. The hardware-level claim still
+  depends on every RTL/SoC fault source matching that deterministic behavior:
+  illegal opcodes, malformed instruction words, memory-authority faults,
+  double faults, unaligned/unsupported accesses, debug traps, and interrupt
+  exceptions must not enter undefined or globally visible behavior.
+- **Vacuity risk, partially addressed:** `Tests.Lnp64uWitnesses` now gives
+  kernel-checked witnesses for finite manifest-side premise families:
+  `Manifest.WF`, `RMC.Fits`, T7 schedulability on the base lockstep
+  manifest, plus a concrete isolated manifest satisfying T5's `Isolated ∧
+  TopPriority ∧ AgreeOn` and T6's `StrictlySchedulable ∧ positive budgets`.
+  It deliberately does **not** discharge semantic `StallFree`; D11 should
+  delete that premise, or a separate reachability proof must justify it.
 
 ## B. Did we state the theorems properly?
 
@@ -88,7 +113,7 @@ the repo at the audit date.
 | EDSL core → Module IR (`compile`) | proved generically, sorry-free |
 | Module → *executed* emission | **`@[implemented_by compileImpl]` — unproved replacement** |
 | Module ↔ emitted text | round-trip `#guard` = **compiled eval, NOT kernel** (Acc8); **lnp64u: none yet** |
-| text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration |
+| text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration; **no X-free lint yet** |
 | verified CPU netlist → SoC fabric / board | out of scope (DMA, interrupts, bus arbitration/backpressure, debug, MMU/IOMMU, coherency) |
 | netlist → silicon → physics | out of scope (reset sequencing, timing closure, glitches, metastability, power side channels) |
 
@@ -120,6 +145,16 @@ the repo at the audit date.
   protected memory or verify the bus/IOMMU/peripheral policy. Otherwise DMA,
   debug, interrupts, or memory backpressure can break isolation/progress
   without contradicting any current Lean theorem.
+- **Finding 6 — 2-state proofs need an X-free RTL contract.** A synthesized
+  netlist can choose concrete values for Verilog `X`/don't-care behavior
+  that a simulator treats differently. Until CI statically rejects X/Z,
+  uninitialized state, and undefined reads in emitted RTL, the 2-state Lean
+  semantics has an extra unproved adequacy assumption.
+- **Finding 7 — physical event accounting is not specified.** The scheduler's
+  budget proofs count modeled issue/retire behavior. Platform events such as
+  interrupt delivery, exception flushes, wait states, and debug traps need an
+  integration contract saying whether they are impossible, charged locally,
+  or modeled and proved.
 
 ## E. Conceptual traps
 
@@ -145,6 +180,10 @@ the repo at the audit date.
   does not. Once D11 removes `StallFree`, the remaining question is whether
   the environment can indefinitely prevent retirement by withholding memory,
   flooding interrupts, or repeatedly resetting/gating the core.
+- **Open: fault adequacy.** Deterministic `abs_run` transport assumes every
+  low-level fault is either modeled or impossible. Undocumented opcodes,
+  exception-priority ties, debug entry, bus errors, and double-fault-like
+  cases must not produce behavior outside the ISS transition relation.
 
 ## F. Verdict vs the seL4 bar
 
@@ -155,9 +194,10 @@ the repo at the audit date.
 - **Behind today:** (1) R-MC gap ⇒ end-to-end guarantee currently
   comparable to seL4, not better; (2) `implemented_by` + eval-level
   guards are unproved TCB residue; (3) T6 conditioned on an unfixed bug;
-  (4) reset, platform I/O, and global progress are integration assumptions,
-  not proved properties; (5) zero external scrutiny of spec and statements —
-  most of what "seL4-trustworthy" socially means.
+  (4) reset, X-free RTL, platform I/O, budget-event accounting, fault
+  routing, and global progress are integration assumptions, not proved
+  properties; (5) zero external scrutiny of spec and statements — most of
+  what "seL4-trustworthy" socially means.
 
 ## Ranked punch list
 
@@ -165,19 +205,26 @@ the repo at the audit date.
 2. D11 scheduler fix → delete `StallFree` from T6.
 3. ● Prove or gate-check `compileImpl = compile`; land lnp64u
    `parseCheck`; one full-size kernel-checked round-trip.
-4. ● Witness manifests: kernel-checked satisfiability of every theorem's
-   hypothesis conjunction.
+4. PARTIAL 2026-07-04: `Tests.Lnp64uWitnesses` gives kernel-checked
+   witnesses for finite manifest-side hypotheses. Remaining: discharge or
+   delete T6's semantic `StallFree` side condition.
 5. Specify the reset contract needed to enter `Manifest.initState` /
    `Module.reset`, including clock/reset sequencing and proof-visible hidden
    state; decide whether it is a trusted integration assumption or a future
    checked artifact.
-6. Specify the SoC boundary: DMA/interrupt/MMU/peripheral/debug behavior,
+6. Add X-free / 2-state-safety checking for emitted RTL, or make it an
+   explicit premise of the µVerilog boundary assumption.
+7. Specify the SoC boundary: DMA/interrupt/MMU/peripheral/debug behavior,
    memory backpressure, and which pieces are trusted vs. modeled/proved.
-7. After D11, state the remaining closed-world progress theorem precisely
+8. Specify budget-event accounting for interrupts, exceptions, flushes,
+   stalls, debug entry, and other non-retirement cycles.
+9. Specify and test/prove deterministic fault routing for every hardware
+   fault source, including illegal/unsupported opcodes and bus/debug faults.
+10. After D11, state the remaining closed-world progress theorem precisely
    and separate it from unproved platform-wide liveness.
-8. DONE 2026-07-04: axiom-closure printing landed in `lake exe audit`,
+11. DONE 2026-07-04: axiom-closure printing landed in `lake exe audit`,
    and the `ImplementsStandard` wording was narrowed to concrete µVerilog
    reset/cycle agreement for one emitted module and tool realization.
-9. DONE 2026-07-04: deleted superseded `SystemOpsWf` sorries and scrubbed
+12. DONE 2026-07-04: deleted superseded `SystemOpsWf` sorries and scrubbed
    stale "kernel-checked" claims that were actually eval-checked.
-10. External statement review — the one item no code closes.
+13. External statement review — the one item no code closes.

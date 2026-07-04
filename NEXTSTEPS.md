@@ -37,10 +37,21 @@ hypothesis — upgrading `no_hostage` to unconditional. Independent of item
   reference output in audit/ci) — `@[implemented_by]` at
   `Loom/Hw/Compile.lean:386` is an unproved executable replacement; every
   emitted artifact and BMC CNF flows through it.
-- **(from TRUST.md audit ●)** Witness manifests: kernel-checked (`decide`)
-  satisfiability instances for each theorem's hypothesis conjunction
-  (`Isolated ∧ TopPriority ∧ WF`, `StrictlySchedulable ∧ 0 < budgetQ`, …),
-  ideally on the lockstep manifests — kills the vacuity question.
+- PARTIAL 2026-07-04: witness manifests landed in
+  `Tests.Lnp64uWitnesses` and are explicitly built by `scripts/ci.sh`.
+  Covered: `Manifest.WF`, `RMC.Fits`, T7 schedulability on the base
+  lockstep manifest; a concrete isolated manifest for T5's finite
+  `Isolated ∧ TopPriority ∧ AgreeOn` premises and T6's finite
+  `StrictlySchedulable ∧ positive budgets` premises. Still open:
+  `T6.StallFree` is a semantic reachability side condition, not a finite
+  manifest predicate; discharge it for a deployment or delete it via D11.
+- **(from TRUST.md audit ●)** Add X-free / 2-state-safety checking for
+  emitted RTL (or make it an explicit µVerilog boundary premise): no
+  uninitialized state, out-of-bounds reads, explicit `X`/`Z`, or
+  synthesis-only don't-care leakage.
+- **(from TRUST.md audit ●)** Specify platform event accounting and fault
+  routing: who pays for interrupts/exceptions/flushes/stalls/debug entry,
+  and how every hardware fault maps to the deterministic ISS behavior.
 - DONE 2026-07-04: deleted the superseded `SystemOpsWf.Wip.system_preserves`
   sorry-bearing obligation and scrubbed stale "kernel-checked" claims that
   were actually compiled-eval (`#guard` round-trip). Still open: make one
