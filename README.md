@@ -60,7 +60,11 @@ full-state lockstep against the ISS (`scripts/lockstep_acc8.sh`,
   logic seed (`Logic/`).
 - `Machines/Acc8/`, `Machines/Lnp64u/` — the two machines: ISA spec, ISS,
   EDSL core (`Hw/`), invariants (`Logic/`), ledger theorems (`Theorems/`).
-- `STATUS.md` — the honest, mechanically-audited state of every theorem.
 - `lake exe audit` — the gate: sorries only in `Theorems/`/`Wip`,
   `native_decide` banned, single axiom whitelisted. `scripts/ci.sh` runs
   the full check.
+
+Documents: [`CHARTER.md`](CHARTER.md) (the program — what and why) →
+[`PLAN.md`](PLAN.md) (the task plan — how) → [`STATUS.md`](STATUS.md)
+(the honest, mechanically-audited state of every theorem) →
+[`NEXTSTEPS.md`](NEXTSTEPS.md) (the agreed roadmap + operational notes).

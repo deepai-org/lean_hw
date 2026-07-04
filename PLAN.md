@@ -1,6 +1,6 @@
 # Loom + LNP64-µ Implementation Plan
 
-Companion to [readme.md](readme.md) (the program charter). The charter says *what* and *why*; this
+Companion to [CHARTER.md](CHARTER.md) (the program charter). The charter says *what* and *why*; this
 document says *where the code goes, in what order, and how we know where we are*. It is the living
 progress ledger: the checklists in §8 are updated as work lands, and the theorem table in §7 is
 kept in sync with `lake exe audit` (the tool that makes the table honest).
@@ -104,7 +104,7 @@ kernel-checked certificates.
 
 ```
 lean_hw/
-├── readme.md                  # program charter
+├── CHARTER.md                 # program charter
 ├── PLAN.md                    # this file: architecture + progress ledger
 ├── lean-toolchain             # pinned: leanprover/lean4:v4.28.0
 ├── lakefile.lean              # libs: Loom, Machines, Tools; exes; require mathlib @ v4.28.0

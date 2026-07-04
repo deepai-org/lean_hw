@@ -2,7 +2,7 @@
 
 Current state: 92 ledger theorems, T1–T9 CLEAN, RTL corroborated
 (iverilog + yosys), R-MC unbounded with exactly 4 audit-legal sorries.
-See `STATUS.md` for the ledger, `HANDOFF.md` for session state.
+See `STATUS.md` for the audited ledger and session history.
 
 ## 1. R-MC per-op squares (`square` / `coupled_step`) — highest value
 
@@ -62,3 +62,21 @@ the 25 squares, or not at all.
 FPGA bring-up; `Dp/Pdr` (until scaling demands); the Phase-3 logical
 relation (T2′/T4′) on the µLog seed; spec-cycle epoch alternatives
 (superseded by the wrapping `BitVec 32` decision, see `STATUS.md`).
+
+## Operational notes (hard-won; keep)
+
+- Agent worktrees need a fully-copied `.lake` seed or they rebuild the
+  world (`cp -a .lake` then atomic swap; an interrupted copy leaves a
+  broken cache). Agents should `git merge main --no-edit` before starting.
+- Run emitters under `ulimit -v 25000000` — earlyoom kills whole process
+  groups on this box and `--prefer`s `lnp64*`/`yosys` names.
+- Baked SAT certificates go stale on ANY `Loom/Hw/Compile.lean` change,
+  and `decide` will *disprove* them; regenerate via the untrusted cadical
+  driver (`Loom/Dp/Solver.solve`). `ci.sh` does not currently build
+  `Tests.Acc8Bmc` (item 3 fixes that).
+- The SpecM sweep pattern has NINE worked instances (SlotGen, Budget,
+  Inflight, Authority, Tombstone, GateStep, Hostage's chain kit, DFrame,
+  DRel) — never write one from scratch.
+- Audit policy: sorries only in `Machines/*/Theorems/` + `Wip` namespaces;
+  `native_decide` banned; single `ImplementsStandard` axiom whitelisted.
+  `lake exe audit` is the gate; `scripts/ci.sh` the full check.
