@@ -24,14 +24,26 @@ landed, proof decomposed and in progress).
   RAM stays `$mem`).
 - `README.md` now documents the Design→compile→emit→proof pipeline.
 
-## The one open thread: R-MC (branch `wt-rmc` if unmerged)
+## The one open thread: R-MC (merged; 4 audit-legal sorries remain)
 
-`Simulation (machine m) ((core m).toTSys)` via `Hw/Enc.abs` — transports
-T2–T9 onto the emitted Verilog. Statement + sorry-free assembly over named
-sub-lemmas landed in `Machines/Lnp64u/Theorems/RMC*.lean`; encoder/decoder
-round-trip kit and abs-at-reset field lemmas proved. Remaining: the per-op
-square lemmas (mechanical, large — see the itemized docstring at the
-top-level sorry for the recommended decomposition).
+**Proof-forced finding:** the planned `Simulation (machine m)
+((core m).toTSys)` is UNINHABITED for any abstraction function — spec
+`cycle : Nat` strictly increases while every concrete orbit is eventually
+periodic (32-bit counter wraps at `2^32`). The honest statement landed
+instead (`Machines/Lnp64u/Theorems/RMC.lean`): horizon-bounded exact
+lockstep `abs_run : ∀ n < 2^32, Hw.abs ((core m).run n reset) = stepN m n
+initState` + `invariant_transport` — which is what actually transports
+T2–T9. Repairs restoring an unbounded simulation (spec cycle as `BitVec
+32`, or epoch-quotient) are D-class spec decisions, deliberately not taken.
+
+30 RMC ledger entries CLEAN (assembly induction, encoder round-trip kit,
+reset-lookup machinery with kernel-checked 825-name distinctness,
+`abs_reset` down to one sorry). 4 STATED with itemized recipes:
+`absDom_reset`/`coupled_reset` (mechanical; needs the declList optimization
+documented with `scripts/gen_rmc_reset_tab.py` to keep CI affordable) and
+`square`/`coupled_step` (the large piece — build an `Act.run` read/write
+frame kit first, then 25 per-op cases; `cap_revoke`'s mark engine is the
+one research-grade case).
 
 ## Optional hardening (unchanged from before)
 
