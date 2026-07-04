@@ -80,3 +80,138 @@ relation (T2′/T4′) on the µLog seed; spec-cycle epoch alternatives
 - Audit policy: sorries only in `Machines/*/Theorems/` + `Wip` namespaces;
   `native_decide` banned; single `ImplementsStandard` axiom whitelisted.
   `lake exe audit` is the gate; `scripts/ci.sh` the full check.
+
+---
+
+# Publication Readiness TODO
+
+Goal: get the repo and project to the quality bar for CPP/ITP/FMCAD submission with
+artifact evaluation, plus arXiv preprint. Ordered roughly by dependency, not priority —
+items marked ★ are the ones reviewers/AEC members check first.
+
+## P1. Proof ledger & trust story (the core claims)
+
+- [ ] ★ **Freeze the claimed-theorem set.** Decide which ledger theorems are *in* the
+      paper (proved, no `sorry` anywhere in their dependency cone) vs. explicitly
+      future work. Reviewers will `grep -r sorry` — every hit must be in `Theorems/`/`Wip`
+      *and* not upstream of anything the paper claims.
+- [ ] ★ **Axiom audit, printed.** Add a `lake exe axioms` (or extend `audit`) that prints
+      the full axiom closure of each headline theorem (`#print axioms` per theorem,
+      machine-collected). The paper's trust section should be generated from this, not
+      hand-written. `ImplementsStandard` should be the only non-kernel axiom listed.
+- [ ] **State `ImplementsStandard` precisely and minimally.** Reviewers will read this
+      axiom character by character. Ensure it quantifies over exactly the µVerilog subset
+      you emit, not "the Verilog standard" broadly. Consider splitting it if it currently
+      bundles simulator + synthesizer assumptions.
+- [ ] **Close or clearly fence the LNP64-µ ledger gaps.** STATUS.md rows that are
+      partial should say *what* is missing (e.g. "noninterference proved for DMA-off
+      configurations only"). Honest partiality is fine; vague partiality kills reviews.
+- [ ] **Emission theorem statement review.** The generic register + multi-port memory
+      fold theorem is the paper's centerpiece — have someone outside the project read
+      just its statement (not proof) and confirm it says what the prose claims,
+      especially `MemWriteWF` side conditions.
+- [ ] **Name and number the decisions.** D9 (last-write-wins ≡ nonblocking) style
+      decision records for every semantic choice; the paper's design-rationale section
+      writes itself from these.
+
+## P2. Repo hygiene & reproducibility ★ (artifact evaluation gate)
+
+- [ ] ★ **One-command cold build.** From a clean clone on a fresh machine:
+      `./scripts/ci.sh` (or a new `scripts/reproduce.sh`) must fetch the pinned
+      toolchain, build, run `lake exe audit`, run both lockstep scripts, and diff the
+      emitted `.v` against committed goldens. Time it; AEC budgets are ~2–4 hours.
+- [ ] ★ **Pin everything.** `lean-toolchain` committed; lake manifest committed;
+      exact versions of iverilog/verilator + yosys documented; SAT solver version
+      pinned (and its LRAT output format noted).
+- [ ] ★ **Container image.** Dockerfile (or Nix flake) that reproduces the CI run
+      bit-for-bit. Push a tagged image; artifact submissions that "just work" in a
+      container get badges, ones that don't get rejected.
+- [ ] **Committed golden artifacts + hashes.** Check in the emitted `Acc8.v` /
+      `Lnp64u.v` with SHA-256 hashes, and document the one-liner that verifies a
+      downloaded `.v` matches the kernel-checked bytes (the round-trip `#guard` story).
+- [ ] **CI on every push, publicly visible.** GitHub Actions badge running
+      `scripts/ci.sh`; add a separate badge for `lake exe audit` so the trust gate is
+      visible from the README.
+- [ ] **Repo layout cleanup.** Remove dead code, stale branches, `Wip` files not
+      referenced by STATUS.md. Reviewers browse; clutter reads as immaturity.
+- [ ] **LICENSE, NOTICE, output-exception text, DCO in CONTRIBUTING.md.** Plus the
+      "no patents filed or planned; this disclosure is intentional prior art" statement.
+
+## P3. Evaluation section material (what the paper measures)
+
+- [ ] ★ **Proof-effort table.** Lines of Lean per component (EDSL, compiler, emission
+      theorem, parser, per-machine specs/proofs), build time, proof-checking time.
+      Standard table in every ITP/CPP paper; script it so it regenerates.
+- [ ] ★ **Lockstep campaign statistics.** How many cycles, how many programs
+      (random? directed?), full-state vs. sampled comparison, for both machines.
+      "Corroborated by lockstep" needs numbers to survive review.
+- [ ] **Synthesis results.** Yosys (+ OpenROAD or at minimum a generic synth target)
+      area/timing for Acc8 and LNP64-µ. Even one table row each moves the paper from
+      "model" to "hardware" in reviewers' eyes. Record exact tool versions/scripts.
+- [ ] **Baseline comparison.** A qualitative (table-form) comparison against Kami,
+      Kôika, Bluespec, Cava/Silver Oak, and translation-validation flows: what is
+      proved, what is trusted, where the TCB boundary sits. This is the related-work
+      section's spine and the most common "reject: doesn't situate itself" fix.
+- [ ] **Trusted computing base inventory.** Explicit list: Lean kernel, `lake exe
+      audit` implementation(?), the `#guard` byte-check path, `ImplementsStandard`,
+      simulator binary. State what is *not* trusted (printer, compiler, parser impl).
+- [ ] **A worked example small enough to print.** A 3–5 rule `Design` whose full
+      journey (Lean value → mux-chain fold → emitted `.v` → re-parse) fits in two
+      pages. Acc8 is probably too big for inline listings; make a toy.
+
+## P4. Documentation & onboarding
+
+- [ ] ★ **README rewrite for three audiences.** Top: what is proved, in one screen,
+      with the axiom count. Then split paths: "I'm a Lean person" (Reservoir install,
+      Zulip link), "I'm a hardware person" (download the `.v`, verify the hash, run
+      lockstep), "I'm a reviewer" (reproduce.sh, STATUS.md, audit gate).
+- [ ] **STATUS.md → generated, not hand-edited.** If any part is manual, make
+      `lake exe audit` emit it. "Mechanically-audited ledger" is a headline claim;
+      it must literally be mechanical.
+- [ ] **Architecture document.** Promote `Hw/DESIGN.md` decisions into a top-level
+      ARCHITECTURE.md with the D-numbered decisions, the semantics discipline, and a
+      diagram of the trust chain (Design → Module → text → re-parse → #guard).
+- [ ] **Docstrings on every public definition** in `Loom/` (the toolchain half at
+      minimum). doc-gen4 output published via GitHub Pages.
+- [ ] **A tutorial: "your first proved processor."** Walk a reader from empty file to
+      a 2-register machine with one proved invariant and emitted Verilog. This is the
+      single highest-leverage adoption artifact and reviewers love citing it as
+      evidence of usability.
+
+## P5. The paper itself
+
+- [ ] ★ **Pick venue + deadline and work backwards.** CPP (~mid-Sept deadline),
+      ITP (~Feb), FMCAD (~May). Choose one primary; check current CFP dates now.
+- [ ] **arXiv preprint first** (cs.LO, cross-list cs.AR/cs.PL) — timestamp + defensive
+      publication. Can be a slightly rougher cut than the submission.
+- [ ] **Decide the paper's single claim.** Candidate: "a proof-carrying HDL toolchain
+      where the emitted Verilog's correspondence to the proved model is itself
+      kernel-checked, with a one-axiom TCB to physical reality." Everything not
+      serving that claim moves to future work or paper #2.
+- [ ] **Reserve paper #2.** LNP64-µ security theorems (isolation/noninterference/
+      revocation down to RTL) → S&P/USENIX/CCS later; don't dilute paper #1 with it
+      beyond a teaser.
+- [ ] **External pre-review.** One Lean/ITP person and one RTL/verification person
+      read the draft cold; fix everything they stumble on before submission.
+- [ ] **Artifact submission package.** Container + reproduce script + README-for-AEC
+      with expected runtimes and expected outputs (hashes). Dry-run it yourself on a
+      machine that has never seen the repo.
+
+## P6. Community & credibility (parallel track, low cost)
+
+- [ ] **Lean Zulip announcement thread** once README + tutorial land.
+- [ ] **Reservoir (Lake package index) publication** for `Loom/`.
+- [ ] **Talk proposals:** Lean Together; ORConf/Latch-Up; PLARCH or similar workshop
+      for early feedback before the main submission.
+- [ ] **Tag a versioned release** (`v0.x`) whose release notes are the theorem
+      ledger delta — establish the "guarantees are the changelog" convention now.
+- [ ] **(Optional) Tiny Tapeout run for Acc8** — cheap, and "the proved core exists
+      in silicon" is a one-sentence credibility multiplier in every future talk.
+
+### Suggested sequencing
+
+1. §P2 reproducibility + §P1 ledger freeze (everything else depends on a stable,
+   reproducible claim set).
+2. §P3 evaluation data collection (scripted, so it survives later proof changes).
+3. §P4 docs + §P6 community in parallel with…
+4. §P5 arXiv draft → external pre-review → venue submission with artifact.
