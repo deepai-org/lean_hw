@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
 import Loom.Core.Fun
 import Loom.Core.Word
 import Loom.Core.Ts

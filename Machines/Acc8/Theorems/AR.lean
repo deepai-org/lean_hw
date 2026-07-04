@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Acc8.Core
 import Machines.Acc8.Theorems.A1
 import Mathlib.Tactic.Set

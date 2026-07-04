@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Kevin Baragona
+# SPDX-License-Identifier: Apache-2.0
 """UNTRUSTED translator: cadical ASCII-LRAT proof -> Loom.Dp.Cert.Check.Step list.
 
 Mirrors `Loom/Dp/Solver.lean` (`parseLrat`) for offline certificate

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Kevin Baragona
+# SPDX-License-Identifier: Apache-2.0
 """UNTRUSTED certificate generator for Loom/Dp/Cert/Check.lean benchmarks.
 
 Generates the pigeonhole CNF php(n) (n pigeons, n-1 holes) and a hinted

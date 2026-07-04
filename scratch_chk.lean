@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
 import Machines.Acc8.Core
 open Machines.Acc8 Loom.Hw
 -- what does one cycle of the design look like?

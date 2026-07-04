@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
 import Batteries.Data.List.Basic
 import Mathlib.Data.Sigma.Basic
 import Loom.Emit.MicroVerilog.Print

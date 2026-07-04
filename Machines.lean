@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
 import Machines.Acc8.Theorems.A1
 import Machines.Acc8.Theorems.AR
 import Machines.Acc8.Theorems.AEV

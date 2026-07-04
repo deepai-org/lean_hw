@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Kevin Baragona
+# SPDX-License-Identifier: Apache-2.0
 # Cross-validation of the two LRAT checkers (charter Phase 3; PLAN P6 / §8 4.2).
 #
 # Legs:

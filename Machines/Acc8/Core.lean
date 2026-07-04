@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Loom.Hw.Semantics
 import Machines.Acc8.Spec
 

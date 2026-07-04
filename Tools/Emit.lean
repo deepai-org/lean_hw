@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Compile
 import Loom.Emit.MicroVerilog.Print
 import Machines.Acc8.Core

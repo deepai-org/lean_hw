@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Kevin Baragona
+# SPDX-License-Identifier: Apache-2.0
 """Generator for Machines/Lnp64u/Theorems/RMCResetTab.lean (NOT run in CI).
 
 Emits one lemma per register-name family of the LNP64-u core: the reset

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Kevin Baragona
+# SPDX-License-Identifier: Apache-2.0
 # Corroborate the emitted Acc8 µVerilog against the ISS golden (task 2.6,
 # pathfinder). Emits, simulates with iverilog, and checks the final state.
 set -euo pipefail

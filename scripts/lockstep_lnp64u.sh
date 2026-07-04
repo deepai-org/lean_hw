@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Kevin Baragona
+# SPDX-License-Identifier: Apache-2.0
 # Corroborate the emitted LNP64-µ µVerilog against the ISS (task 1.11).
 # Emits the core + a generated ISS-golden testbench, simulates 2000 cycles
 # with iverilog, checks the goldens, then runs yosys synth for

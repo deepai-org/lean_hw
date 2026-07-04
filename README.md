@@ -68,3 +68,19 @@ Documents: [`CHARTER.md`](CHARTER.md) (the program — what and why) →
 [`PLAN.md`](PLAN.md) (the task plan — how) → [`STATUS.md`](STATUS.md)
 (the honest, mechanically-audited state of every theorem) →
 [`NEXTSTEPS.md`](NEXTSTEPS.md) (the agreed roadmap + operational notes).
+
+## Licensing
+
+Copyright (c) 2026 Kevin Baragona. **Apache-2.0** across the repository
+([`LICENSE`](LICENSE)); the tapeout-bound `Machines/` subtree is
+additionally offered under **Solderpad SHL-2.1**
+([`Machines/LICENSE`](Machines/LICENSE)). Contributions via **DCO, not
+CLA** ([`CONTRIBUTING.md`](CONTRIBUTING.md)).
+
+**Output exception:** Verilog emitted by this toolchain from your own
+`Design` is yours, unencumbered — the licenses cover the toolchain and
+the designs in this repository, not your output (see [`NOTICE`](NOTICE)).
+
+**Patent pledge:** no patents are filed or planned on any technique in
+this project. This repository, its documentation, and the accompanying
+arXiv paper constitute intentional prior art.

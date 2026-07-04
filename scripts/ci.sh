@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Kevin Baragona
+# SPDX-License-Identifier: Apache-2.0
 # CI = build everything + the audit gate (PLAN §10).
 set -euo pipefail
 cd "$(dirname "$0")/.."

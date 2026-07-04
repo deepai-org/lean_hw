@@ -1,3 +1,5 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
 import Std.Data.HashMap
 import Loom.Emit.MicroVerilog.Ast
 
