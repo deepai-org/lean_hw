@@ -6,6 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 lake build Loom Machines Tests iss audit emit bookgen
 lake build Tests.Acc8Bmc
+lake build Tests.Lnp64uWitnesses
 lake exe audit
 lake exe bookgen >/dev/null
 # Independent-checker cross-validation (self-SKIPs if cadical/python3 absent,
