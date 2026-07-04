@@ -9,8 +9,8 @@ import Loom.Core.Ts
 A module denotes a synchronous transition system: state = register and
 memory contents; one cycle = evaluate every register's next expression and
 every memory's write port against the pre-cycle state, then commit. This is
-the semantics the single trust axiom (`Axiom.lean`, task 2.4) asserts
-downstream tools implement on the subset.
+the semantics that the µVerilog tool-boundary assumption (`Axiom.lean`,
+task 2.4) relates to a concrete downstream tool realization.
 -/
 
 namespace Loom.Emit.MicroVerilog
