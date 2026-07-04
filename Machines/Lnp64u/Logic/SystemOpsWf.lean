@@ -5,16 +5,12 @@ import Machines.Lnp64u.Logic.BaseOpsWf
 import Machines.Lnp64u.Isa.System
 
 /-!
-# System opcodes preserve the invariant (work in progress)
+# System-op preservation helpers
 
-`SystemOpsPreserveWf` (the sole remaining Phase-1 obligation) requires all 11
-system opcodes to preserve `Wf`. The scheduling/mapping ops (`yield`, `unmap`)
-touch only budget/region state and are **proved** here via the `PreservesWf`
-toolkit. The nine capability/gate/Mover ops call the capability-kernel
-operations (`installDerived`, `clearSlot`, `destroyMarked`, `transferCap`, the
-sweeps, gate call/return, the Mover programming) — proving those is exactly
-T2/T3/T8/T9's kernel content, and they remain (each isolated as its own
-`sorry` below, in the `Wip` namespace so the audit's sorry policy permits it).
+Superseded support for the original Wf-only system-op sweep. The final
+invariant path uses the stronger combined `Wf ∧ Acyclic` theorem
+`system_preserves_wfa`, but several helper facts here are still shared by
+Budget, SlotGen, DRel, Hostage, and related proof files.
 -/
 
 namespace Machines.Lnp64u.Isa.Wip
@@ -650,40 +646,5 @@ theorem move_err (c : Ctx) (σ : MachineState) (hwf : Wf σ) :
                                                       have := demand_ok _ _ σ hd; subst σdd; rw [hd] at he
                                                       simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
 
-
-/-- The per-opcode dispatch of `SystemOpsPreserveWf`. Two of eleven ops proved
-(`unmap`, `yield`); the nine capability/gate/Mover ops are the remaining
-kernel-level core. -/
-theorem system_preserves : SystemOpsPreserveWf := by
-  intro instr hmem c σ hwf hrun hinf
-  fin_cases hmem
-  case _ => exact ⟨capdup_preserves c σ hwf hinf, capdup_err c σ hwf⟩
-  case _ => sorry  -- cap_drop   (reparent/orphan + clearSlot + sweeps)
-  case _ => sorry  -- cap_revoke (destroyMarked + sweeps)
-  case _ => exact memgrant_preserves c σ hwf
-  case _ => exact map_preserves c σ hwf hinf
-  -- unmap: clear a region register — proved
-  case _ =>
-    refine ⟨fun a σ' he => ?_, fun e σ' he => ?_⟩
-    · exact (PreservesWf.bind (PreservesWf.clearRegion _ _)
-        (fun _ => PreservesWf.setReg _ _ _) σ hwf hinf).1 a σ' he |>.1
-    · exact (PreservesWf.bind (PreservesWf.clearRegion _ _)
-        (fun _ => PreservesWf.setReg _ _ _) σ hwf hinf).2 e σ' he |>.1
-  case _ => sorry  -- gate_call
-  case _ => sorry  -- gate_return
-  case _ => exact ⟨move_ok c σ hwf, move_err c σ hwf⟩
-  -- yield: zero the budget — proved
-  case _ =>
-    refine ⟨fun a σ' he => ?_, fun e σ' he => ?_⟩
-    · exact (PreservesWf.bind (PreservesWf.updDomBudget _ _)
-        (fun _ => PreservesWf.setReg _ _ _) σ hwf hinf).1 a σ' he |>.1
-    · exact (PreservesWf.bind (PreservesWf.updDomBudget _ _)
-        (fun _ => PreservesWf.setReg _ _ _) σ hwf hinf).2 e σ' he |>.1
-  -- halt: voluntary domain-fatal — haltDom on the running caller
-  case _ =>
-    refine ⟨fun a σ' he => ?_, fun e σ' he => ?_⟩
-    · simp only [SpecM.modify] at he; injection he with h1 h2; subst h2
-      exact haltDom_preserves_wf σ c.d 0 hwf hrun hinf
-    · simp [SpecM.modify] at he
 
 end Machines.Lnp64u.Isa.Wip

@@ -41,10 +41,11 @@ hypothesis — upgrading `no_hostage` to unconditional. Independent of item
   satisfiability instances for each theorem's hypothesis conjunction
   (`Isolated ∧ TopPriority ∧ WF`, `StrictlySchedulable ∧ 0 < budgetQ`, …),
   ideally on the lockstep manifests — kills the vacuity question.
-- **(from TRUST.md audit ●)** Delete the 5 superseded `SystemOpsWf.Wip`
-  sorries; scrub "kernel-checked" claims that are actually compiled-eval
-  (`#guard` round-trip); make one full-size round-trip genuinely
-  kernel-checked (needs the String→ByteArray kernel-cost fix).
+- DONE 2026-07-04: deleted the superseded `SystemOpsWf.Wip.system_preserves`
+  sorry-bearing obligation and scrubbed stale "kernel-checked" claims that
+  were actually compiled-eval (`#guard` round-trip). Still open: make one
+  full-size round-trip genuinely kernel-checked (needs the
+  String→ByteArray kernel-cost fix).
 
 - DONE 2026-07-04: `scripts/ci.sh` now explicitly runs
   `lake build Tests.Acc8Bmc`, so stale baked LRAT certificates are caught by

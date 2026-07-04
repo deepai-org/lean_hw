@@ -85,8 +85,9 @@ climb), plus the complete transferCap verification machinery.
 T7/T9 budget) are per-cycle operational proofs over the semantics, each with the L1 invariant now
 available as their foundation.
 
-(The 5 remaining sorries in `SystemOpsWf.system_preserves` are the *superseded* standalone Wf-only
-obligation — not used by `wfa_invariant`, which routes through the combined `system_preserves_wfa`.)
+The superseded standalone Wf-only `SystemOpsWf.system_preserves` obligation
+has been deleted; `wfa_invariant` routes through the stronger combined
+`system_preserves_wfa` path.
 
 ---
 
@@ -380,7 +381,7 @@ mapUpd/allocDerived/installDerived_slotGen/capLive/updDomGen/reparent/sweepMover
 reduction (`step_slotGen_reduce`: step's slotGen = corePhase(refillPhase σ)'s). **Remaining:** the
 exec dispatch (`system_slotGen_le`, 11 system-op cases — 7 preserving via the combinator, 4 bumping
 via the kernel bounds) + `corePhase_slotGen_ge` + `gen_monotone`. Same threading pattern as the
-already-completed `system_preserves`/`system_preserves_acyclic`.
+already-completed combined preservation sweeps.
 
 
 ## Session update (2026-07-03, continued): T3 monotonicity chain, T9 budget, T8 complete

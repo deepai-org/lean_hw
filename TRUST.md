@@ -53,9 +53,8 @@ the repo at the audit date.
    closure, so readers can inspect the raw closure behind each CLEAN/STATED
    verdict instead of trusting only the summary labels.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
-5. Five superseded sorries in `SystemOpsWf` (`Wip`, unused by anything
-   CLEAN) — delete before publication; every `grep -r sorry` hit costs
-   reviewer goodwill.
+5. Superseded `SystemOpsWf` sorries — deleted 2026-07-04; remaining
+   `sorry` hits are the audit-legal R-MC statements under `Theorems`.
 
 ## D. Does the generated Verilog comply with the proofs? (the chain)
 
@@ -121,6 +120,6 @@ the repo at the audit date.
 5. DONE 2026-07-04: axiom-closure printing landed in `lake exe audit`,
    and the `ImplementsStandard` wording was narrowed to concrete µVerilog
    reset/cycle agreement for one emitted module and tool realization.
-6. ● Delete superseded `SystemOpsWf` sorries; scrub every "kernel-checked"
-   claim that is actually eval-checked.
+6. DONE 2026-07-04: deleted superseded `SystemOpsWf` sorries and scrubbed
+   stale "kernel-checked" claims that were actually eval-checked.
 7. External statement review — the one item no code closes.
