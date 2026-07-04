@@ -60,15 +60,12 @@ mark engine is the one research-grade case; NOTE: the `hwrap` hypotheses
 are gone — the tick arm wraps identically on both sides, and `rctr_sync`
 survives the wrap via `period_dvd`).
 
-## Optional hardening (unchanged from before)
+## What's next
 
-D11 scheduler fix (drop `StallFree` from T6); per-artifact `parseCheck`
-kernel check for `rtl/lnp64u.v` (mirror `Machines/Acc8/TextRoundTrip.lean`);
-LNP64-µ BMC demo via `Dp/Bmc`; `Dp/Pdr` when scaling demands; the Phase-3
-logical relation (T2′/T4′) on the µLog seed; tagless-final unification of the
-per-op datapath semantics (single polymorphic definition interpreted as both
-ISS exec and circuit — would make most per-op R-MC obligations definitional;
-discussed 2026-07-04, deliberately not started).
+See **`NEXTSTEPS.md`** (decided 2026-07-04): (1) R-MC per-op squares,
+(2) D11 scheduler redesign dropping `StallFree`, (3) cheap hardening
+(Acc8Bmc in ci.sh, lnp64u parseCheck, LNP64-µ BMC demo), (4) the
+tagless-final datapath unification — with the 1-vs-4 fork called out.
 
 ## Operational notes
 
