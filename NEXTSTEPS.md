@@ -33,6 +33,19 @@ hypothesis — upgrading `no_hostage` to unconditional. Independent of item
 
 ## 3. Cheap hardening (one session, mostly independent)
 
+- **(from TRUST.md audit ●)** Prove `compileImpl = compile` (or gate-compare
+  reference output in audit/ci) — `@[implemented_by]` at
+  `Loom/Hw/Compile.lean:386` is an unproved executable replacement; every
+  emitted artifact and BMC CNF flows through it.
+- **(from TRUST.md audit ●)** Witness manifests: kernel-checked (`decide`)
+  satisfiability instances for each theorem's hypothesis conjunction
+  (`Isolated ∧ TopPriority ∧ WF`, `StrictlySchedulable ∧ 0 < budgetQ`, …),
+  ideally on the lockstep manifests — kills the vacuity question.
+- **(from TRUST.md audit ●)** Delete the 5 superseded `SystemOpsWf.Wip`
+  sorries; scrub "kernel-checked" claims that are actually compiled-eval
+  (`#guard` round-trip); make one full-size round-trip genuinely
+  kernel-checked (needs the String→ByteArray kernel-cost fix).
+
 - Add `lake build Tests.Acc8Bmc` to `scripts/ci.sh` — the 2026-07-04 cert
   staleness (compile change silently invalidated the baked LRAT cert;
   `decide` disproved it) was NOT caught by ci.sh. ~32 s kernel decide.
