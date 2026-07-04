@@ -2000,7 +2000,14 @@ theorem corePhase_dcycle (m : Manifest) (σ : MachineState) (hctx : DCtx d R σ)
                       · simp only [hdon, if_false]
                         exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
             · simp only [hbud, if_false]
-              exact DCycle.refl hctx.ro hctx.fo
+              cases hservd : (σ.doms e).serving with
+              | some g =>
+                  simp only [hservd]
+                  exact (dkeep_haltDom (cd := e) hctx hne e _ hne).toCycle hne
+              | none =>
+                  simp only [hservd]
+                  exact (dkeep_setDom hctx (σ.payer e)
+                    (fun ds => { ds with budget := 0 }) hpne rfl rfl).toCycle hpne
 
 end Cycle
 

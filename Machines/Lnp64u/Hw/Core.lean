@@ -106,8 +106,9 @@ def schedOrder (m : Manifest) : List DomainId :=
 /-- Attempt to issue for domain `d` (`Step.corePhase`'s idle path): fetch
 under execute authority, decode, upfront budget charge (payer, and the
 donation draw-down when serving), latch in-flight. Fetch/decode failure is
-a domain-fatal fault consuming the cycle; a short budget stalls (no
-writes). -/
+a domain-fatal fault consuming the cycle; a short payer budget burns the
+residual payer budget to zero for non-serving domains, or raises a budget
+fault for serving domains so the chain unwinds. -/
 def issueFor (m : Manifest) (d : DomainId) : Act :=
   let pc := rPc d
   let w : Expr 32 := .memRead 32 "mem" pc
@@ -119,6 +120,9 @@ def issueFor (m : Manifest) (d : DomainId) : Act :=
   let charge : Act := seqAll <| (List.finRange numDomains).map fun q =>
     .ite (.eq p (.lit (BitVec.ofNat 2 q.val)))
       (.write 32 (dbudget q) (.sub (effBudgetE m q) cost32)) .skip
+  let burn : Act := seqAll <| (List.finRange numDomains).map fun q =>
+    .ite (.eq p (.lit (BitVec.ofNat 2 q.val)))
+      (.write 32 (dbudget q) (.lit 0)) .skip
   let latch : Act :=
     .seq (.write 1 "if_v" (.lit 1)) <|
     .seq (.write 2 "if_dom" (.lit (BitVec.ofNat 2 d.val))) <|
@@ -132,7 +136,8 @@ def issueFor (m : Manifest) (d : DomainId) : Act :=
   .ite (.not (domCoversE d pc ⟨false, false, true⟩))
     (haltFault d .memoryAuthority) <|
   .ite (.not (knownE opc)) (haltFault d .illegalInstruction) <|
-  .ite (.ult effB cost32) .skip <|  -- stall until refill
+  .ite (.ult effB cost32)
+    (.ite (.reg 1 (dsrvV d)) (haltFault d .budget) burn) <|
   .ite (.reg 1 (dsrvV d))
     (-- serving: draw the activation's donation down as well (T6)
      .ite (.not actv) (haltFault d .protocol) <|

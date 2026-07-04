@@ -1067,7 +1067,14 @@ theorem corePhase_slotGen_ge (m : Manifest) (σ : MachineState)
                         exact toNat_le_of_eq (setDom_slotGen_of σ (σ.payer d) _ rfl d' s).symm
                       · simp only [hdon, if_false]
                         exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
-            · simp only [hbud, if_false]; exact Nat.le_refl _
+            · simp only [hbud, if_false]
+              cases hserv : (σ.doms d).serving with
+              | some g =>
+                  simp only [hserv]
+                  exact toNat_le_of_eq (haltDom_slotGen σ d _ d' s).symm
+              | none =>
+                  simp only [hserv]
+                  exact toNat_le_of_eq (setDom_slotGen_of σ (σ.payer d) _ rfl d' s).symm
 
 /-- **Slot generations never decrease across one cycle** — the `step`-level
 monotonicity bound feeding T3's `gen_monotone`. -/

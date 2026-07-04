@@ -1143,7 +1143,16 @@ theorem corePhase_dominated (m : Manifest) (σ : MachineState) :
                             (fun ds => { ds with budget := ds.budget - instr.cost.cost }) rfl d' s
                       · simp only [hdon, if_false]
                         exact Dominated.of_caps_eq fun d' s => haltDom_caps σ d _ d' s
-            · simp only [hbud, if_false]; exact Dominated.refl _
+            · simp only [hbud, if_false]
+              cases hserv : (σ.doms d).serving with
+              | some g =>
+                  simp only [hserv]
+                  exact Dominated.of_caps_eq fun d' s => haltDom_caps σ d _ d' s
+              | none =>
+                  simp only [hserv]
+                  exact Dominated.of_caps_eq fun d' s =>
+                    setDom_caps_of σ (σ.payer d)
+                      (fun ds => { ds with budget := 0 }) rfl d' s
 
 /-- `step`'s caps equal `corePhase`'s (refill and the cycle bump leave `caps`
 untouched; `moverPhase` leaves all domains untouched). -/

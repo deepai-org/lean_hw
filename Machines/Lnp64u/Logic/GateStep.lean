@@ -1325,6 +1325,20 @@ theorem touch_setBudget (σ : MachineState) (p : DomainId) (n : Nat) (P : Prop) 
   · rw [setDom_doms_ne _ _ _ _ hep] at hproj
     exact Touch.of_calm (by rw [hproj]) (by rw [hproj]) (fun _ => by rw [hproj]; exact ⟨rfl, rfl, rfl⟩)
 
+/-- Burning a payer's residual budget touches nothing T4 observes. -/
+theorem touch_setBudget_zero (σ : MachineState) (p : DomainId) (P : Prop) (e : DomainId)
+    (S : MachineState)
+    (hS : S.doms = (σ.setDom p (fun ds => { ds with budget := 0 })).doms) :
+    Touch σ S P e := by
+  have hproj : S.doms e = (σ.setDom p (fun ds => { ds with budget := 0 })).doms e :=
+    congrFun hS e
+  by_cases hep : e = p
+  · subst hep
+    rw [setDom_doms_same] at hproj
+    exact Touch.of_calm (by rw [hproj]) (by rw [hproj]) (fun _ => by rw [hproj]; exact ⟨rfl, rfl, rfl⟩)
+  · rw [setDom_doms_ne _ _ _ _ hep] at hproj
+    exact Touch.of_calm (by rw [hproj]) (by rw [hproj]) (fun _ => by rw [hproj]; exact ⟨rfl, rfl, rfl⟩)
+
 /-- The core phase satisfies the touch characterization. -/
 theorem corePhase_touch (m : Manifest) (σ : MachineState) (hwf : Wf σ) (e : DomainId) :
     Touch σ (corePhase m σ) (∀ fl, σ.inflight = some fl → fl.dom ≠ e) e := by
@@ -1374,7 +1388,13 @@ theorem corePhase_touch (m : Manifest) (σ : MachineState) (hwf : Wf σ) (e : Do
                       · simp only [hdon, if_false]
                         exact (haltDom_touch σ d _ hwf hdrun e).mono (fun _ => trivial)
             · simp only [hbud, if_false]
-              exact Touch.refl σ _ e
+              cases hservd : (σ.doms d).serving with
+              | some _ =>
+                  simp only [hservd]
+                  exact (haltDom_touch σ d _ hwf hdrun e).mono (fun _ => trivial)
+              | none =>
+                  simp only [hservd]
+                  exact touch_setBudget_zero σ (σ.payer d) _ e _ rfl
 
 /-- **The whole-cycle touch characterization** (T4's engine): in one `step`,
 a domain's serving mark flips `none → some g` only through the scrubbed

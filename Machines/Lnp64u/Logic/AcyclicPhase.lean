@@ -171,7 +171,15 @@ theorem corePhase_preserves_acyclic (hexec : ExecPreservesAcyclic) (m : Manifest
                       by_cases hdon : instr.cost.cost ≤ a.donated
                       · simp only [hdon, if_true]; exact dl _ (fun d' => ⟨pc d', pl d'⟩)
                       · simp only [hdon, if_false]; exact acyclic_haltWith σ d .budget hac
-            · simp only [hbud, if_false]; exact hac
+            · simp only [hbud, if_false]
+              cases hserv : (σ.doms d).serving with
+              | some _ =>
+                  simp only [hserv]
+                  exact acyclic_haltWith σ d .budget hac
+              | none =>
+                  simp only [hserv]
+                  exact acyclic_setDom σ (σ.payer d) _
+                    (fun _ => ⟨rfl, rfl⟩) hac
 
 /-- **Acyclicity is preserved by one cycle**, reduced to `ExecPreservesAcyclic`.
 The three non-instruction phases preserve it freely; `corePhase` uses the exec

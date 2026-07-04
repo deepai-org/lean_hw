@@ -15,15 +15,15 @@ This file is a vacuity tripwire for the theorem hypotheses called out in
 concrete checked-in configurations.
 
 The lockstep manifests witness the ordinary implementation-facing premises
-(`Manifest.WF`, `RMC.Fits`, and T7 schedulability).  T5's isolation premise
+(`Manifest.WF`, `RMC.Fits`, and T7 schedulability). T5's isolation premise
 intentionally needs a more locked-down configuration than the system-op demo:
 domain 0 has a full memory-only slot table, no incoming gates, disjoint roots,
 and no decodable globally-sensitive opcodes under its roots.
 
-`T6.StallFree` is deliberately not claimed here.  It is a semantic
-reachability side condition over `(machine m).Reachable`, not a finite
-manifest predicate; D11 should delete it, or a separate proof should discharge
-it for a specific deployment.
+T6's former semantic `StallFree` side condition is gone: D11 makes
+underfunded serving issue a deterministic `.budget` fault and non-serving
+underfunding a residual-budget burn, so the finite witness below covers
+the remaining manifest-side premises for `T6.no_hostage`.
 -/
 
 namespace Tests.Lnp64uWitnesses
@@ -157,11 +157,7 @@ theorem t5_finite_hypotheses :
   exact ⟨isolated_wf, isolated_wf, isolated_isolated, isolated_isolated,
     isolated_top_priority, isolated_top_priority, isolated_agree_self⟩
 
-/-- T6's finite manifest hypotheses are jointly satisfiable.
-
-This deliberately excludes `T6.StallFree`, the semantic reachability
-condition discussed in the module docstring.
--/
+/-- T6's finite manifest hypotheses are jointly satisfiable. -/
 theorem t6_finite_hypotheses :
     isolatedManifest.WF ∧ T6.StrictlySchedulable isolatedManifest ∧
       (∀ d : DomainId, 0 < (isolatedManifest.doms d).budgetQ) := by

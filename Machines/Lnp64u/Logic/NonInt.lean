@@ -33,13 +33,11 @@ counterexample refutes it:
   domain `H` with priority above `d`'s and `budgetQ = periodP` (legal:
   `Manifest.WF.budget_le` only requires `Q ≤ P`). `H` runs a tight loop.
   The scheduler (`schedule`) picks the highest-priority running domain
-  whose payer's budget is positive, and even an `H` too poor for its next
-  instruction *stalls the core* (`corePhase` returns `σ` unchanged rather
-  than falling through to the next domain). With `Q = P`, `H`'s budget is
-  refilled every period and upfront charging can never exhaust it below 1
-  at an issue opportunity, so `d` is never scheduled: `d` never retires,
-  its compared fields (`regs`/`pc`/`run`/`cause`) never change, and its
-  destuttered trajectory has length 1 forever.
+  whose payer's budget is positive. With `Q = P`, `H`'s budget is refilled
+  every period and a tight high-priority loop can keep `d` from ever being
+  scheduled: `d` never retires, its compared fields
+  (`regs`/`pc`/`run`/`cause`) never change, and its destuttered trajectory
+  has length 1 forever.
 
 Hence the theorem now hypothesizes `TopPriority` for both manifests, and
 `Isolated` gains clauses closing the *grant-in* channel (`mem_grant`
@@ -1011,7 +1009,14 @@ theorem corePhase_inflight_dom (m : Manifest) (σ : MachineState) (fl : InFlight
                   have h2 : some (⟨d', w, instr.cost.cost⟩ : InFlight) = some fl := h
                   injection h2 with h2; rw [← h2]
                 · rw [if_neg hdon] at h; rw [hhalt, hi] at h; exact absurd h (by simp)
-          · rw [if_neg hb] at h; rw [hi] at h; exact absurd h (by simp)
+          · rw [if_neg hb] at h
+            rcases hserv : (σ.doms d').serving with _ | g
+            · simp only [hserv] at h
+              rw [setDom_inflight, hi] at h
+              exact absurd h (by simp)
+            · simp only [hserv] at h
+              rw [hhalt, hi] at h
+              exact absurd h (by simp)
   · -- some fl0 in flight
     simp only [hi] at h
     by_cases hc : fl0.cyclesLeft ≤ 1
@@ -1496,27 +1501,36 @@ theorem insulated_step (m : Manifest) (d : DomainId) (σ : MachineState)
                   rw [fetch_frozen hins hfz]
                   exact hf
               · -- stall
-                have hcore : κ = ρ :=
-                  corePhase_stall m ρ d w instr hρinf hsd hfρ' hd
+                have hcore0 : corePhase m ρ =
+                    ρ.setDom (ρ.payer d) (fun ds => { ds with budget := 0 }) :=
+                  corePhase_stall m ρ d w instr hρinf hsd hfρ' hd hservρ
                     (by rw [hpay]; exact hbud)
+                have hcore : κ = ρ.setDom d (fun ds => { ds with budget := 0 }) := by
+                  rw [hκdef, hcore0, hpay]
                 refine assemble ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
-                · rw [hcore, hρdef, refillPhase_caps]
-                · rw [hcore, hρdef, refillPhase_slotGen]
-                · rw [hcore, hρdef, refillPhase_lineage]
-                · rw [hcore]; exact hservρ
-                · intro g; rw [hcore]; exact hctxρ.dnoblk g
-                · intro e r rg h; rw [hcore] at h; exact hctxρ.ro e r rg h
+                · rw [hcore, setDom_doms_same, hρdef, refillPhase_caps]
+                · rw [hcore, setDom_doms_same, hρdef, refillPhase_slotGen]
+                · rw [hcore, setDom_doms_same, hρdef, refillPhase_lineage]
+                · rw [hcore, setDom_doms_same]; exact hservρ
+                · intro g; rw [hcore, setDom_doms_same]; exact hctxρ.dnoblk g
+                · intro e r rg h
+                  by_cases hed : e = d
+                  · subst hed
+                    rw [hcore, setDom_doms_same] at h
+                    exact hctxρ.ro _ r rg h
+                  · rw [hcore, setDom_doms_ne _ _ _ _ hed] at h
+                    exact hctxρ.ro e r rg h
                 · intro e he s entry b l p hc hk
-                  rw [hcore] at hc
+                  rw [hcore, setDom_doms_ne _ _ _ _ he] at hc
                   exact hctxρ.fo e he s entry b l p hc hk
                 · intro job hj; rw [hcore] at hj; exact hctxρ.movOff job hj
-                · intro g; rw [hcore, hρdef, refillPhase_gates]
-                · rw [hcore]
-                  exact refillPhase_budget_le m σ d hins.budget_le
-                · rw [hcore, hρdef, refillPhase_maxDon]; exact hins.maxDon_eq
+                · intro g; rw [hcore, hρdef]; rfl
+                · rw [hcore, setDom_doms_same]
+                  simp
+                · rw [hcore, setDom_doms_same, hρdef, refillPhase_maxDon]; exact hins.maxDon_eq
                 · intro a _; rw [hcore]; exact hmemρ a
                 · intro _ fl hfl
-                  rw [hcore, hρinf] at hfl
+                  rw [hcore, setDom_inflight, hρinf] at hfl
                   cases hfl
     · -- CASE A3: idle, no d-issue
       have hfz := frame_step m d σ hm hiso hins
@@ -1943,7 +1957,6 @@ private theorem stall_step (m : Manifest) (d : DomainId) (σ : MachineState)
     (hf : fetch σ d = some w) (hd : Loom.Isa.decode isa w = some instr)
     (hbud : ¬ instr.cost.cost ≤ ((refillPhase m σ).doms d).budget) :
     DFrozen m d σ (step m σ) ∧
-    (step m σ).doms d = (refillPhase m σ).doms d ∧
     (step m σ).inflight = none := by
   have hctx := dctx_of_insulated hiso hins
   have hctxρ : DFrame.DCtx d (UnderRoots m d) (refillPhase m σ) := dctx_refill hctx
@@ -1954,29 +1967,70 @@ private theorem stall_step (m : Manifest) (d : DomainId) (σ : MachineState)
   have hpay : (refillPhase m σ).payer d = d := payer_eq_self _ d hservρ
   have hfρ : fetch (refillPhase m σ) d = some w := by
     rw [refillPhase_fetch]; exact hf
-  have hcore : corePhase m (refillPhase m σ) = refillPhase m σ :=
-    corePhase_stall m _ d w instr hρinf hsched hfρ hd (by rw [hpay]; exact hbud)
-  have hdd : (step m σ).doms d = (refillPhase m σ).doms d := by
+  have hcore : corePhase m (refillPhase m σ) =
+      (refillPhase m σ).setDom d (fun ds => { ds with budget := 0 }) := by
+    have h := corePhase_stall m _ d w instr hρinf hsched hfρ hd hservρ
+      (by rw [hpay]; exact hbud)
+    rw [hpay] at h
+    exact h
+  have hdd : (step m σ).doms d =
+      (((refillPhase m σ).setDom d (fun ds => { ds with budget := 0 })).doms d) := by
     rw [step_doms, hcore]
   have hmem : ∀ a, UnderRoots m d a → (step m σ).mem a = σ.mem a := by
     intro a ha
-    have h1 : (step m σ).mem a = (moverPhase (corePhase m (refillPhase m σ))).mem a := rfl
-    rw [h1, hcore,
-      moverPhase_mem_frame hwfρ.region_backed hctxρ.ro hctxρ.fo hctxρ.movOff
-        (fun job hj => (hwfρ.mover_wf job hj).2.1) a ha]
+    let ρ := refillPhase m σ
+    let ρb := ρ.setDom d (fun ds => { ds with budget := 0 })
+    have hρb : ρb = (refillPhase m σ).setDom d (fun ds => { ds with budget := 0 }) := rfl
+    have hwfρb : Wf ρb := by
+      obtain ⟨pc, pl, pg, pr, pru, ps, pgates, pmov⟩ :=
+        setBudget_proj ρ d (fun _ => 0)
+      exact wf_of_skeleton_sameGates ρ ρb pc pl pg pr pru ps pgates pmov
+        (by
+          intro fl hfl
+          rw [hρb, setDom_inflight] at hfl
+          have := hwfρ.inflight_running fl hfl
+          rw [hρb]
+          by_cases hfd : fl.dom = d
+          · subst hfd; rw [setDom_doms_same]; exact this
+          · rw [setDom_doms_ne _ _ _ _ hfd]; exact this)
+        hwfρ
+    have hroρb : DFrame.RegionsOwn ρb := by
+      intro e r rg hrg
+      rw [hρb] at hrg
+      by_cases hed : e = d
+      · subst hed
+        rw [setDom_doms_same] at hrg
+        exact hctxρ.ro _ r rg hrg
+      · rw [setDom_doms_ne _ _ _ _ hed] at hrg
+        exact hctxρ.ro e r rg hrg
+    have hfoρb : DFrame.ForeignOff d (UnderRoots m d) ρb := by
+      intro e he s entry b l p hcap hk a hle hlt
+      rw [hρb, setDom_doms_ne _ _ _ _ he] at hcap
+      exact hctxρ.fo e he s entry b l p hcap hk a hle hlt
+    have hmfρb : ∀ job, ρb.mover = some job → job.owner ≠ d := by
+      intro job hj
+      exact hctxρ.movOff job hj
+    have hmwρb : ∀ job, ρb.mover = some job → job.dst.dom = job.owner := by
+      intro job hj
+      exact (hwfρb.mover_wf job hj).2.1
+    have h1 : (step m σ).mem a = (moverPhase ρb).mem a := by
+      show (moverPhase (corePhase m (refillPhase m σ))).mem a = _
+      rw [hcore]
+    rw [h1, moverPhase_mem_frame hwfρb.region_backed hroρb hfoρb hmfρb hmwρb a ha]
+    show (refillPhase m σ).mem a = σ.mem a
     exact congrFun (refillPhase_frame m σ).1 a
-  refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hmem⟩, hdd, ?_⟩
-  · rw [hdd, refillPhase_regs]
-  · rw [hdd, refillPhase_pc]
-  · rw [hdd, refillPhase_run]
-  · rw [hdd, refillPhase_cause]
-  · rw [hdd, refillPhase_serving]
-  · rw [hdd, refillPhase_caps]
-  · rw [hdd, refillPhase_slotGen]
-  · rw [hdd, refillPhase_lineage]
-  · rw [hdd, refillPhase_regions]
+  refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hmem⟩, ?_⟩
+  · rw [hdd, setDom_doms_same, refillPhase_regs]
+  · rw [hdd, setDom_doms_same, refillPhase_pc]
+  · rw [hdd, setDom_doms_same, refillPhase_run]
+  · rw [hdd, setDom_doms_same, refillPhase_cause]
+  · rw [hdd, setDom_doms_same, refillPhase_serving]
+  · rw [hdd, setDom_doms_same, refillPhase_caps]
+  · rw [hdd, setDom_doms_same, refillPhase_slotGen]
+  · rw [hdd, setDom_doms_same, refillPhase_lineage]
+  · rw [hdd, setDom_doms_same, refillPhase_regions]
   · show (moverPhase (corePhase m (refillPhase m σ))).inflight = none
-    rw [moverPhase_inflight, hcore]
+    rw [moverPhase_inflight, hcore, setDom_inflight]
     exact hρinf
 
 /-- Refill only ever tops the budget up to `Q`. -/
@@ -1997,8 +2051,7 @@ private theorem progress_extend (m : Manifest) (d : DomainId) (τ : MachineState
       Loom.Isa.decode isa w = some instr ∧ instr.cost.cost = c)
     (hnotdone : ¬ (τ.inflight = none ∧ schedule m (refillPhase m τ) = some d ∧
         c ≤ ((refillPhase m τ).doms d).budget)) :
-    DFrozen m d τ (step m τ) ∧ (step m τ).doms d = (refillPhase m τ).doms d ∧
-    Quiet d (step m τ) := by
+    DFrozen m d τ (step m τ) ∧ Quiet d (step m τ) := by
   rcases hinfτ : τ.inflight with _ | fl
   · by_cases hsd : schedule m (refillPhase m τ) = some d
     · -- an unfunded issue instant: the machine stalls
@@ -2015,13 +2068,13 @@ private theorem progress_extend (m : Manifest) (d : DomainId) (τ : MachineState
           payer_eq_self _ d (by rw [refillPhase_serving]; exact hins.serving_none)
         rw [hpay] at hbpos
         exact hbud hbpos
-      · obtain ⟨hfz, hdd, hinf'⟩ := stall_step m d τ hm hiso hins hinfτ hsd w instr hf hd
+      · obtain ⟨hfz, hinf'⟩ := stall_step m d τ hm hiso hins hinfτ hsd w instr hf hd
           (by rw [hcc]; exact hbud)
-        exact ⟨hfz, hdd, fun fl' hfl' => by rw [hinf'] at hfl'; cases hfl'⟩
+        exact ⟨hfz, fun fl' hfl' => by rw [hinf'] at hfl'; cases hfl'⟩
     · obtain ⟨hfz, hdd⟩ := frame_step_full m d τ hm hiso hins
         (fun fl' hfl' _ => by rw [hinfτ] at hfl'; cases hfl')
         (fun _ => hsd)
-      refine ⟨hfz, hdd, ?_⟩
+      refine ⟨hfz, ?_⟩
       exact step_quiet m d τ hq
         (fun _ => hsd)
   · have hfld : fl.dom ≠ d := hq fl hinfτ
@@ -2032,7 +2085,7 @@ private theorem progress_extend (m : Manifest) (d : DomainId) (τ : MachineState
         rw [← hfl'] at hfd'
         exact absurd hfd' hfld)
       (fun h => by rw [hinfτ] at h; cases h)
-    refine ⟨hfz, hdd, ?_⟩
+    refine ⟨hfz, ?_⟩
     refine step_quiet m d τ hq ?_
     intro h
     rw [hinfτ] at h
@@ -2083,14 +2136,12 @@ theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
       rw [fetch_frozen hins (hw n (Nat.le_refl n)).1]
       exact hf
   -- one-step extension of a not-yet-done window
-  have extend : ∀ n, W n → ¬ D n → W (n + 1) ∧
-      ((stepN m (n + 1) σ).doms d = (refillPhase m (stepN m n σ)).doms d) := by
+  have extend : ∀ n, W n → ¬ D n → W (n + 1) := by
     intro n hw hnd
-    obtain ⟨hfz, hdd, hq'⟩ := progress_extend m d (stepN m n σ) hm hiso (hinsN n)
+    obtain ⟨hfz, hq'⟩ := progress_extend m d (stepN m n σ) hm hiso (hinsN n)
       (hw n (Nat.le_refl n)).2 c hc0 (hcostN n hw) hnd
     have hsucc : stepN m (n + 1) σ = step m (stepN m n σ) :=
       Machines.Lnp64u.Wip.stepN_succ m n σ
-    refine ⟨?_, by rw [hsucc]; exact hdd⟩
     intro i hi
     by_cases hin : i ≤ n
     · exact hw i hin
@@ -2117,7 +2168,21 @@ theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
       c ≤ ((refillPhase m (stepN m n σ)).doms d).budget →
       c ≤ ((refillPhase m (stepN m (n + 1) σ)).doms d).budget := by
     intro n hw hnd hb
-    obtain ⟨-, hdd⟩ := extend n hw hnd
+    have hdd : (stepN m (n + 1) σ).doms d =
+        (refillPhase m (stepN m n σ)).doms d := by
+      rcases hinf : (stepN m n σ).inflight with _ | fl
+      · by_cases hsd : schedule m (refillPhase m (stepN m n σ)) = some d
+        · exact absurd (done_of_idle n hw hb hinf) hnd
+        · obtain ⟨_, hdd⟩ := frame_step_full m d (stepN m n σ) hm hiso (hinsN n)
+            (fun fl' hfl' _ => by rw [hinf] at hfl'; cases hfl')
+            (fun _ => hsd)
+          rw [Machines.Lnp64u.Wip.stepN_succ]
+          exact hdd
+      · obtain ⟨_, hdd⟩ := frame_step_full m d (stepN m n σ) hm hiso (hinsN n)
+          (fun fl' hfl' hfd => False.elim ((hw n (Nat.le_refl n)).2 fl' hfl' hfd))
+          (fun h => by rw [hinf] at h; cases h)
+        rw [Machines.Lnp64u.Wip.stepN_succ]
+        exact hdd
     refine refill_budget_ge m _ d c ?_ hcQ
     rw [hdd]
     exact hb
@@ -2137,7 +2202,7 @@ theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
             intro hdn
             rw [hdn.1] at hinfn
             cases hinfn
-          obtain ⟨hw', hdd⟩ := extend n hw hnd
+          have hw' := extend n hw hnd
           have hb' := floor_step n hw hnd hb
           have hretire : (step m (stepN m n σ)).inflight = none :=
             Machines.Lnp64u.Wip.step_inflight_retire m _ fl hinfn
@@ -2154,7 +2219,7 @@ theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
             intro hdn
             rw [hdn.1] at hinfn
             cases hinfn
-          obtain ⟨hw', hdd⟩ := extend n hw hnd
+          have hw' := extend n hw hnd
           have hb' := floor_step n hw hnd hb
           by_cases hcl : fl.cyclesLeft ≤ 1
           · have hidle : (stepN m (n + 1) σ).inflight = none := by
@@ -2189,7 +2254,7 @@ theorem progress (m : Manifest) (d : DomainId) (σ : MachineState)
         · exact Or.inl hdone
         · by_cases hdn : D n
           · exact Or.inl ⟨n, hw, hdn⟩
-          · exact Or.inr (extend n hw hdn).1
+          · exact Or.inr (extend n hw hdn)
   rcases stage1 k with hdone | hwk
   · exact hdone
   · have hbk : c ≤ ((refillPhase m (stepN m k σ)).doms d).budget := by
@@ -2406,35 +2471,13 @@ theorem issue_step (m : Manifest) (d : DomainId) (σ : MachineState)
             · rw [hdomsd, hLlin d, hρdef, refillPhase_lineage]
             · rw [hdomsd, hLreg d, hρdef, refillPhase_regions]
           · -- stall
-            have hcore : corePhase m ρ = ρ :=
-              corePhase_stall m ρ d w instr hρinf hsched hfρ' hd
-                (by rw [hpay]; exact hbud)
-            have hdoms : (step m σ).doms = ρ.doms := by
-              rw [step_doms, ← hρdef, hcore]
-            have hdomsd : (step m σ).doms d = ρ.doms d := congrFun hdoms d
-            have hmem : ∀ a, UnderRoots m d a → (step m σ).mem a = σ.mem a := by
-              intro a ha
-              have h1 : (step m σ).mem a = (moverPhase ρ).mem a := by
-                show (moverPhase (corePhase m (refillPhase m σ))).mem a = _
-                rw [← hρdef, hcore]
-              rw [h1, moverPhase_mem_frame hwfρ.region_backed hroρ hfoρ hmfρ hmwρ a ha,
-                hmemρ a]
-            have hinfS : (step m σ).inflight = none := by
-              show (moverPhase (corePhase m (refillPhase m σ))).inflight = none
-              rw [moverPhase_inflight, ← hρdef, hcore]
-              exact hρinf
+            obtain ⟨hfzStall, hinfS⟩ :=
+              stall_step m d σ hm hiso hins hinf
+                (by rw [← hρdef]; exact hsched) w instr hf hd
+                (by rw [← hρdef]; exact hbud)
             refine Or.inr (Or.inr (Or.inl ⟨w, instr, rfl, hd, Nat.lt_of_not_le hbud,
               ?_, hinfS⟩))
-            refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hmem⟩
-            · rw [hdomsd, hρdef, refillPhase_regs]
-            · rw [hdomsd, hρdef, refillPhase_pc]
-            · rw [hdomsd, hρdef, refillPhase_run]
-            · rw [hdomsd, hρdef, refillPhase_cause]
-            · rw [hdomsd, hρdef, refillPhase_serving]
-            · rw [hdomsd, hρdef, refillPhase_caps]
-            · rw [hdomsd, hρdef, refillPhase_slotGen]
-            · rw [hdomsd, hρdef, refillPhase_lineage]
-            · rw [hdomsd, hρdef, refillPhase_regions]
+            exact hfzStall
 
 
 

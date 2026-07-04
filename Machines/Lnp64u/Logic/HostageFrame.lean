@@ -9,8 +9,8 @@ A cycle whose actor is *not* the chain head leaves the blocked caller's
 chain — the gate list, the head, every chain activation, the payer walk,
 and the origin's budget — untouched (`FrozenStep`). One lemma per shape of
 the classification (`ChainOut`/`CallShape`/`RetShape`/`HaltShape`/
-`IssueShape`), each by excluding the actor, its served gate, and any
-resumed caller from the chain members / descent visits.
+`BudgetBurnShape`/`IssueShape`), each by excluding the actor, its served
+gate, and any resumed caller from the chain members / descent visits.
 -/
 
 namespace Machines.Lnp64u
@@ -345,6 +345,27 @@ theorem FrozenStep.of_issueShape {X X' : MachineState} (hwf : Wf X) (hdl : Depth
         have hye : y = e := h1.symm.trans h2
         exact absurd (hrune.symm.trans (hye ▸ hgy)) (by simp)
       rw [hgo gv hne']
+  · exact hbo _ (Ne.symm hpne)
+
+/-- Foreign non-serving budget burn: only a non-origin budget moves. -/
+theorem FrozenStep.of_budgetBurnShape {X X' : MachineState} (hwf : Wf X)
+    (hdl : DepthLink X)
+    {d : DomainId} {gd : GateId} (hb : (X.doms d).run = .blocked gd)
+    {l : List GateId} {h : DomainId} (hcf : ChainFrom X d l h)
+    {e p : DomainId} (hsh : BudgetBurnShape p X X')
+    (hrune : (X.doms e).run = .running) (hne : e ≠ h)
+    (hpe : p = X.payer e) : FrozenStep d l h X X' := by
+  obtain ⟨hro, hso, _hmax, _hbp, hbo, hgates, _hinf⟩ := hsh
+  have hpne : p ≠ X.payer d := by
+    intro hE
+    exact hne (running_payer_eq_top hwf hdl hcf e hrune (hpe ▸ hE))
+  refine ⟨hro d, ?_, ?_, ?_, ?_⟩
+  · exact hcf.frame (fun g' _ => by unfold gateCallee; rw [hgates]) (fun y _ => hro y)
+  · intro g' _
+    rw [hgates]
+  · refine payer_frame_of hwf hb (fun y gy _ => hso y) ?_
+    intro y gy gv _ _
+    rw [hgates]
   · exact hbo _ (Ne.symm hpne)
 
 /-- Doms- and gates-preserving glue (burn, Mover, the cycle bump) freezes

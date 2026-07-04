@@ -75,33 +75,16 @@ domain, priority 0, gets the single idle cycle 17 and halts.) ∎
 The repair: `StrictlySchedulable` now carries the occupancy factor 2
 (`c + 1 ≤ 2c` for every cost `c ≥ 1`, `cost_pos`): `2·Σ Q·(L/P) < L`.
 
-## Third refutation: the residual-budget stall-lock (priority inversion)
+## Third refutation repaired: underfunded issue must be chargeable
 
-`corePhase`'s issue path *stalls the core* when the scheduled domain's
-payer has positive budget below the fetched instruction's cost
-(`corePhase_stall`: `corePhase m σ = σ`, no budget moves). A stall cycle
-spends nothing, so **no budget hypothesis can count it**, and the
-scheduler re-picks the same domain every cycle. Concrete counterexample
-(satisfies `Manifest.WF`, the 2× `StrictlySchedulable`, and positive
-budgets): **H** priority 3, `budgetQ = 1`, `periodP = 6`, program
-`yield; alu; …`. As above, H's `yield` retires at cycle 1 (budget 0), D
-blocks at cycle 10, H refilled to 1 at cycle 6. From cycle 11 on H is
-top-priority eligible (budget 1 > 0) at every cycle, fetch and decode of
-the ALU op succeed, and `cost = 2 > 1 = budget`: the core stalls,
-*forever* — refills restore exactly 1, D's refill at 64 makes C eligible
-but never scheduled. `2·Σ Q·(L/P) = 2·(1·32 + 8·3 + 1·3 + 1·3) = 124 <
-192`. D is a hostage. ∎
-
-No manifest-computable hypothesis can exclude this: the stalling residual
-is produced by the *program* (adversarial ROM mixing cost-1 and cost-2+
-instructions), and budgets evolve by arbitrary cost multisets, so any
-`0 < budget < cost` state is reachable for some program. The honest
-statement therefore carries the semantic side condition `StallFree` — no
-reachable cycle stalls. (The hardware fix is a scheduler change — skip or
-budget-burn on an underfunded pick — which belongs to a later µ revision;
-`Step.lean` is frozen for this phase. Sane manifests discharge
-`StallFree` per system by cost-aligning each program's issue sequence
-with its budget.)
+The original issue path stalled when the scheduled domain's payer had
+positive budget below the fetched instruction's cost. A stall cycle spent
+nothing and changed nothing, so no budget-counting hypothesis could
+exclude infinite replay of the same underfunded pick. The repaired
+semantics make serving underfunding a `.budget` fault, using the existing
+halt/unwind path to resume the caller; non-serving underfunding burns the
+payer's residual budget to zero. Both cases are chargeable progress, so T6
+no longer needs a semantic stall-freedom side condition.
 -/
 
 namespace Machines.Lnp64u.Theorems.T6
@@ -136,30 +119,16 @@ theorem strictlySchedulable_schedulable (m : Manifest)
   unfold StrictlySchedulable at h
   exact Nat.le_of_lt (Nat.lt_of_le_of_lt (Nat.le_add_left _ _) (Nat.two_mul _ ▸ h))
 
-/-- **Stall-freedom** (T6's semantic side condition; proof-forced
-2026-07-03 by the stall-lock refutation in this file's header): no
-reachable cycle stalls the core. A stall (`StallsAt`: scheduled, fetched,
-decoded, payer budget positive but below cost) freezes the machine state
-while spending nothing, so it can repeat forever and no budget-counting
-hypothesis excludes it. Stated on `refillPhase m σ` because that is the
-state `corePhase` runs in within `step`. Not manifest-computable —
-discharged per system by cost-aligning each program's issue sequence with
-its budgets (e.g. every domain only issues instructions of one cost `c`
-with `c ∣ Q`); the µ-successor hardware fix is a scheduler that skips or
-burns an underfunded pick. -/
-def StallFree (m : Manifest) : Prop :=
-  ∀ σ, (machine m).Reachable σ → ¬ StallsAt m (refillPhase m σ)
-
 /-- The per-progress-step interference window (see `resumeBound`): the
-number of cycles within which, under `StrictlySchedulable` + `StallFree`
-+ positive budgets, the serving chain above a blocked caller must have
+number of cycles within which, under `StrictlySchedulable` and positive
+budgets, the serving chain above a blocked caller must have
 been issued (or unwound) at least once. Derived from the potential
 `Ψ = 2·massExcept σ origin + inflight-remaining + #non-halted`: every
 non-progress cycle decreases `Ψ` by ≥ 1 (issue: charge equation +
 `cost_pos`; burn/retire: countdown; fault-halt: the halted count; idle
 with the origin funded: impossible, the chain head is eligible and
-`schedule_isSome_of_eligible` fires; stall: excluded), while refills
-refund at most `gainAt` per cycle — bounded per window through
+`schedule_isSome_of_eligible` fires), while refills refund at most
+`gainAt` per cycle — bounded per window through
 `StrictlySchedulable` (`gainSum_bound`).
 
 **Constants adjusted to the mechanized count (2026-07-03, as this
@@ -204,16 +173,15 @@ def resumeBound (m : Manifest) (_d : DomainId) : Nat :=
   ((maxDonationBound m + 2) ^ maxChainDepth + 1) *
     (interferenceWindow m + 2 * hyperL m + maxCostBound + 2)
 
-/-- **No-hostage.** Under strict (occupancy-corrected) schedulability,
-stall-freedom, and positive budgets, a domain blocked on a gate call
+/-- **No-hostage.** Under strict (occupancy-corrected) schedulability
+and positive budgets, a domain blocked on a gate call
 resumes (or its unwind fires) within `resumeBound` cycles, whatever the
 callee does: return, fault, halt, loop (donation exhaustion unwinds it),
 or call deeper (depth ≤ 4, each level donation-bounded).
 
-All three side conditions are proof-forced (2026-07-03): without
+Both side conditions are proof-forced: without
 `hsched` the priority hog starves the chain (header refutation 1, and in
-its charge-only form, refutation 2); without `hstall` the stall-lock
-freezes the core forever (refutation 3); without `hpos` a zero-quota
+its charge-only form, refutation 2); without `hpos` a zero-quota
 origin never refunds the chain. **PROVED sorry-free (2026-07-03)** — the
 assembly lives in `Logic/HostageChain.lean` (chain structure),
 `Logic/HostageMeasure.lean` (radix measure), `Logic/HostageFrame.lean`
@@ -254,8 +222,8 @@ itemized:
    ops via `gateCall_end_halted`/`gateReturn_end_halted` — the resumed
    caller is `.blocked`, never `.halted`, by `Wf.gate_serving` — and the
    halts via `haltDom_halted`); idle-with-funded-origin impossible via
-   `Eligible` head + `schedule_isSome_of_eligible`; stall excluded by
-   `hstall`), refunded ≤ `2Q_e` per boundary (`refillPhase_budget_cases`)
+   `Eligible` head + `schedule_isSome_of_eligible`; underfunded issue is
+   a `.budget` halt), refunded ≤ `2Q_e` per boundary (`refillPhase_budget_cases`)
    and `2·Σ Q·(L/P) ≤ L-1` per hyperperiod (`hsched`,
    `periodP_dvd_hyperL`). The cycle-counter lemma is **DONE
    (2026-07-03)**: `(step m σ).cycle = σ.cycle + 1` is
@@ -284,14 +252,13 @@ itemized:
    flips `(σ.doms d).run` off `.blocked g`. Adjust `resumeBound`'s
    constants here if the mechanized count differs. -/
 theorem no_hostage (m : Manifest) (hwf : m.WF) (hsched : StrictlySchedulable m)
-    (hstall : StallFree m) (hpos : ∀ e, 0 < (m.doms e).budgetQ)
+    (hpos : ∀ e, 0 < (m.doms e).budgetQ)
     (σ : MachineState) (hreach : (machine m).Reachable σ)
     (d : DomainId) (g : GateId) (hblocked : (σ.doms d).run = .blocked g) :
     ∃ n ≤ resumeBound m d, ((stepN m n σ).doms d).run ≠ .blocked g := by
   have hsched' : 2 * ((List.finRange numDomains).map
       (fun e => (m.doms e).budgetQ * (hyperL m / (m.doms e).periodP))).sum < hyperL m :=
     hsched
-  have hstall' : ∀ σ', (machine m).Reachable σ' → ¬ StallsAt m (refillPhase m σ') := hstall
   have hci : ChainInv m σ := chain_invariant m hwf σ hreach
   obtain ⟨j, hj, hclean⟩ := to_clean m hwf maxCostBound σ hreach
     (fun fl hfl => hci.inflightLe fl hfl)
@@ -315,7 +282,7 @@ theorem no_hostage (m : Manifest) (hwf : m.WF) (hsched : StrictlySchedulable m)
     have hMlt : chainMeasure m (stepN m j σ) d < chainW m ^ maxChainDepth :=
       chainMeasure_lt m hwfj hcij.depthLink hcij.donatedLe hcf
     have hWeq : chainW m = maxDonationBound m + 2 := rfl
-    obtain ⟨n, hn, hout⟩ := resume_of_measure m hwf hstall' hsched' hpos
+    obtain ⟨n, hn, hout⟩ := resume_of_measure m hwf hsched' hpos
       (chainW m ^ maxChainDepth - 1) (stepN m j σ) hreachj hbj hclean (by omega)
     refine ⟨j + n, ?_, ?_⟩
     · -- j + n ≤ resumeBound

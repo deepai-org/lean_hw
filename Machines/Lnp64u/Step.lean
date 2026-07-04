@@ -18,7 +18,9 @@ machine, fully deterministic. Phases, in order:
    running domain whose *payer* (donation: the origin of its serving chain)
    has any budget attempts fetch → decode → upfront budget charge; fetch or
    decode failure is a domain-fatal fault consuming the cycle; insufficient
-   budget for the fetched instruction stalls the core this cycle.
+   payer budget is chargeable too: a non-serving domain burns its residual
+   payer budget to zero, while a serving domain raises a budget fault so
+   the serving chain unwinds instead of replaying an unchargeable stall.
 3. **Mover** — one word: both capabilities are re-looked-up (generation,
    range, permission) in the *current* tables; a failed re-check aborts the
    job and reports `-ESTALE` through the status word (itself written only
@@ -131,7 +133,10 @@ def corePhase (m : Manifest) (σ : MachineState) : MachineState :=
                     | none =>
                         let σ' := σ.setDom p fun ds => { ds with budget := ds.budget - cost }
                         { σ' with inflight := some { dom := d, word := w, cyclesLeft := cost } }
-                  else σ  -- stall until refill
+                  else
+                    match (σ.doms d).serving with
+                    | some _ => haltWith σ d .budget
+                    | none => σ.setDom p fun ds => { ds with budget := 0 }
 
 /-- Does the live capability behind `r` currently cover `a` with `need`?
 The Mover's per-word re-check: generation, range, and permission against

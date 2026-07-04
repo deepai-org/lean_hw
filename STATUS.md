@@ -25,8 +25,9 @@ core was provably empty.
   abstraction function, where `reachCore` is the core on its boot orbit (same states/reset/
   reachable set as `(core m).toTSys` — `reachCore_reachable_iff`; `invariant_pullback`
   restates transport on the full core). The old `hwrap` side conditions on
-  `square`/`coupled_step` are gone; the same 4 audit-legal sorries remain
-  (`absDom_reset`, `coupled_reset`, `square`, `coupled_step`).
+  `square`/`coupled_step` are gone; reset and `coupled_reset` are now
+  sorry-free. The remaining audit-legal R-MC sorries are `square` and
+  `coupled_step`.
 - `Hw.abs` maps the cycle register **verbatim** (was `.toNat`); `Hw/` otherwise unchanged.
   Both Lnp64u lockstep tests (256-cycle base + 2000-cycle system, full state) still pass;
   full `lake build` green; audit clean with no ledger regressions.
@@ -441,10 +442,11 @@ already-completed combined preservation sweeps.
   Loom/Machines/Mathlib imports; `scripts/crosscheck_lrat.sh` cross-validates both legs on
   cadical php proofs + mutation rejections; CI-wired with solver-absent skip.
 - **T6 refuted twice more (proof-forced):** the occupancy-vs-charge gap and the
-  residual-budget **stall-lock** (the frozen scheduler's stall arm re-picks an underfunded
-  top-priority domain forever — unbounded priority inversion). Statement now carries the
-  occupancy-corrected `StrictlySchedulable`, a `StallFree` side condition, and an
-  exponential lex `resumeBound`; scheduler redesign filed as PLAN D11. Assembly still open
+  residual-budget **stall-lock** (the old scheduler's stall arm re-picked an underfunded
+  top-priority domain forever — unbounded priority inversion). D11 now makes
+  underfunded issue raise `.budget`, so the statement carries the
+  occupancy-corrected `StrictlySchedulable`, positive budgets, and an
+  exponential lex `resumeBound`. Assembly still open
   (5 itemized obligations in T6.lean).
 - **L2 engines online (Phase 3)** — `Dp/Cnf` (Tseitin bit-blaster with the proved
   `blast_spec` soundness direction), `Dp/Bmc` + `Dp/KInduction` (`bmc_sound`,
