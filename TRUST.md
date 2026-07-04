@@ -12,16 +12,39 @@ the repo at the audit date.
   *when* things happen is erased before comparison. Honest (budget provably
   drifts between runs), but T5 says nothing about covert timing channels.
   Same exclusion as seL4; a timing-quantified T5′ is future work.
+- **Reset is a mathematical initial-state assumption.** The proofs start
+  from `Manifest.initState` / `Module.reset`: a perfectly clean state in
+  which every proof-visible register, memory cell, pipeline latch, and hidden
+  control bit has the intended value. The current trust story does not prove
+  that a physical reset controller, asynchronous reset network, clock/PLL
+  sequencing, scan state, or synthesis-inserted state actually realizes that
+  state without glitches or metastability. Hardware claim shape: "from the
+  modeled reset state," not "from every electrical power-on behavior."
 - **The theorems are conditional on configuration.** T5 holds for domains
   configured `Isolated` (+`TopPriority`); T6 needs `StrictlySchedulable` +
   positive budgets. These conditions are proof-forced (the unconditioned
   statements are FALSE, with machine-checked counterexamples). Claim shape:
   "isolation holds for domains configured thus," never "the machine
   provides isolation."
+- **The CPU is modeled as a closed machine, not a hostile SoC.** T5 assumes
+  all architecturally relevant state changes come from the verified machine.
+  External DMA, AXI/AHB fabric behavior, MMU/IOMMU translation, memory-mapped
+  peripherals, timers, debug ports, and asynchronous interrupts are not in
+  the model. If an unverified peripheral can mutate RAM, inject faults, or
+  assert interrupts with adversarial timing, it is outside T5 unless it is
+  either ruled out by integration policy or brought into the manifest/spec and
+  proved compatible with `Isolated`.
 - **RED FLAG: T6's `StallFree` hypothesis assumes away a known real bug**
   (residual-budget stall-lock = unbounded priority inversion, PLAN D11).
   Until D11 lands, `no_hostage` is a theorem about the fixed scheduler we
   have not built.
+- **Progress is not global liveness.** T6 is the only serious progress-shaped
+  result, and today it is conditional on `StallFree`. Even after D11, it will
+  be a closed-machine scheduler/retirement theorem unless the model also
+  accounts for external memory backpressure, instruction-fetch stalls,
+  interrupt storms, exception loops, clock gating, and reset reassertion.
+  "Useful user instructions eventually retire under arbitrary platform
+  conditions" is not a current theorem.
 - **Vacuity risk, unaddressed:** no kernel-checked witness that each
   theorem's hypothesis conjunction is satisfiable by a useful manifest.
   Fix: `decide`d instances on the lockstep manifests (NEXTSTEPS ● item).
@@ -66,7 +89,8 @@ the repo at the audit date.
 | Module → *executed* emission | **`@[implemented_by compileImpl]` — unproved replacement** |
 | Module ↔ emitted text | round-trip `#guard` = **compiled eval, NOT kernel** (Acc8); **lnp64u: none yet** |
 | text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration |
-| netlist → silicon → physics | out of scope (timing closure, glitches, metastability, power side channels) |
+| verified CPU netlist → SoC fabric / board | out of scope (DMA, interrupts, bus arbitration/backpressure, debug, MMU/IOMMU, coherency) |
+| netlist → silicon → physics | out of scope (reset sequencing, timing closure, glitches, metastability, power side channels) |
 
 - **Finding 1 — R-MC gap.** Today "T1–T9 hold of the RTL" is a
   proved-tested-proved sandwich; the honest phrasing until
@@ -84,6 +108,18 @@ the repo at the audit date.
   Findings 2+3 compound. Fixes: prove `compileImpl = compile` (bounded:
   memoization + pruning) or gate-compare reference output; land lnp64u
   `parseCheck`; make one full-size round-trip genuinely kernel-checked.
+- **Finding 4 — reset realization is below the proof boundary.** The R-MC
+  reset obligations can show that the EDSL reset state abstracts to
+  `Manifest.initState`; they do not show that an electrical or SoC-level
+  reset sequence reaches that state on real hardware. Integration needs a
+  reset contract: all proof-visible state initialized, no unmodeled retained
+  state, reset held through clock stabilization, and no partially-reset
+  bus/peripheral interaction.
+- **Finding 5 — platform I/O can bypass the theorem.** The core's memory is
+  modeled internally. A real platform must either forbid external writers to
+  protected memory or verify the bus/IOMMU/peripheral policy. Otherwise DMA,
+  debug, interrupts, or memory backpressure can break isolation/progress
+  without contradicting any current Lean theorem.
 
 ## E. Conceptual traps
 
@@ -96,6 +132,19 @@ the repo at the audit date.
   ISS are projections of one declaration set — no divergence, but no
   independence. Adequacy evidence = executability + the falsification
   history. The only fix is external eyes.
+- **Open: initial-state adequacy.** Reset theorems over `Module.reset` are
+  not reset-controller theorems. A power-on or warm-reset path that leaves
+  one hidden flop, pipeline latch, SRAM, debug CSR, or bus bridge in a
+  non-model state starts execution outside the reachable-state set used by
+  T1–T9.
+- **Open: closed-world adequacy.** The theorems intentionally reason about
+  the verified machine, not the entire chip. The paper must say whether the
+  deployment target has no DMA/interrupt/MMU/peripheral nondeterminism, or
+  which external components are trusted to preserve the machine's assumptions.
+- **Open: liveness adequacy.** Safety survives stuttering; useful progress
+  does not. Once D11 removes `StallFree`, the remaining question is whether
+  the environment can indefinitely prevent retirement by withholding memory,
+  flooding interrupts, or repeatedly resetting/gating the core.
 
 ## F. Verdict vs the seL4 bar
 
@@ -106,8 +155,9 @@ the repo at the audit date.
 - **Behind today:** (1) R-MC gap ⇒ end-to-end guarantee currently
   comparable to seL4, not better; (2) `implemented_by` + eval-level
   guards are unproved TCB residue; (3) T6 conditioned on an unfixed bug;
-  (4) zero external scrutiny of spec and statements — most of what
-  "seL4-trustworthy" socially means.
+  (4) reset, platform I/O, and global progress are integration assumptions,
+  not proved properties; (5) zero external scrutiny of spec and statements —
+  most of what "seL4-trustworthy" socially means.
 
 ## Ranked punch list
 
@@ -117,9 +167,17 @@ the repo at the audit date.
    `parseCheck`; one full-size kernel-checked round-trip.
 4. ● Witness manifests: kernel-checked satisfiability of every theorem's
    hypothesis conjunction.
-5. DONE 2026-07-04: axiom-closure printing landed in `lake exe audit`,
+5. Specify the reset contract needed to enter `Manifest.initState` /
+   `Module.reset`, including clock/reset sequencing and proof-visible hidden
+   state; decide whether it is a trusted integration assumption or a future
+   checked artifact.
+6. Specify the SoC boundary: DMA/interrupt/MMU/peripheral/debug behavior,
+   memory backpressure, and which pieces are trusted vs. modeled/proved.
+7. After D11, state the remaining closed-world progress theorem precisely
+   and separate it from unproved platform-wide liveness.
+8. DONE 2026-07-04: axiom-closure printing landed in `lake exe audit`,
    and the `ImplementsStandard` wording was narrowed to concrete µVerilog
    reset/cycle agreement for one emitted module and tool realization.
-6. DONE 2026-07-04: deleted superseded `SystemOpsWf` sorries and scrubbed
+9. DONE 2026-07-04: deleted superseded `SystemOpsWf` sorries and scrubbed
    stale "kernel-checked" claims that were actually eval-checked.
-7. External statement review — the one item no code closes.
+10. External statement review — the one item no code closes.
