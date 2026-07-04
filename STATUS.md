@@ -23,8 +23,11 @@
 Also this session: the previously-unverified **2000-cycle full-state system-op lockstep
 passed** (Phase 2 claim below is now verified), and `lake exe emit lnp64u` was fixed from a
 115 GB memory blowup (pointer-memoized compile + structural hash-consing in the printer)
-with the emitted RTL passing the 2000-cycle iverilog ISS-golden sim. R-MC (transport of
-T2–T9 onto the emitted core) is stated and in progress in `Theorems/RMC*.lean`.
+with the emitted RTL passing the 2000-cycle iverilog ISS-golden sim and yosys synth clean
+(1.57M cells — 1.43M mux, 7,849 FFs ≈ the 633 registers' state bits, RAM kept as `$mem_v2`;
+emit now 11 s / <1 GB; `rtl/` stays untracked, regenerate via `scripts/lockstep_lnp64u.sh`).
+R-MC (transport of T2–T9 onto the emitted core) is stated and in progress in
+`Theorems/RMC*.lean`.
 
 ---
 
