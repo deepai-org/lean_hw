@@ -1,110 +1,196 @@
-# NEXT STEPS — decided 2026-07-04
+# NEXT STEPS - active plan as of 2026-07-04
 
-Current state: 92 ledger theorems, T1–T9 CLEAN, RTL corroborated
-(iverilog + yosys), R-MC unbounded with exactly 4 audit-legal sorries.
+Current state: 92 ledger theorems, T1-T9 CLEAN, RTL corroborated
+(iverilog + yosys), R-MC unbounded with one audit-legal sorry (`square`).
 See `STATUS.md` for the audited ledger and session history.
 
-## 1. R-MC per-op squares (`square` / `coupled_step`) — highest value
+## 0. Working rule: write forward from source
 
-The last link making T2–T9 theorems about the *emitted netlist* rather than
-the spec (lockstep tests then become mere corroboration). Recipes are
-itemized in the four sorries' docstrings in `Machines/Lnp64u/Theorems/RMC.lean`:
+Stop treating `RMC.lean` as a recovery job. The goal is a clean, compiling
+implementation rebuilt from the current source files, not a splice of old
+fragments.
 
-- Warm-up: `absDom_reset` / `coupled_reset` — mechanical; needs the
-  declList elaborator optimization documented with
-  `scripts/gen_rmc_reset_tab.py` to keep CI affordable (~548 lookup arms).
-- Main: build an `Act.run` read/write frame kit first, then the 25 per-op
-  cases. `cap_revoke`'s multi-cycle pointer-doubling mark engine is the one
-  research-grade case (one spec step ↔ ~64 hidden-register cycles).
+- Source of truth: `Machines/Lnp64u/Hw/*.lean`,
+  `Machines/Lnp64u/Step.lean`, `Machines/Lnp64u/Logic/*.lean`, and the
+  current public theorem API needed by downstream files.
+- Historical material under `/home/ubuntu/rmc_recovery/` is reference only.
+  Use it to recognize proof shapes, then re-derive statements and proofs
+  against today's code.
+- Do not run `git checkout`, `git restore`, or other path-reverting commands
+  in this dirty worktree. Remove experiments with edits, and preserve user
+  work before risky changes.
+- Work in compiling slices. After each slice, run the smallest useful Lean
+  command, then the full target once the slice is structurally complete.
 
-**Fork with item 4:** either grind the 25 squares on the current
-architecture, or do the tagless-final unification first and get most of
-them near-definitionally. Decide before starting either.
+## 1. R-MC bridge rewrite - immediate target
 
-## 2. D11 — scheduler stall-lock redesign (drop `StallFree` from T6)
+Target: `lake build Machines.Lnp64u.Theorems.RMC` succeeds with exactly one
+remaining `sorry`, the real `square` theorem. This is the current highest
+value engineering task.
 
-T6 carries the `StallFree` hypothesis because the real scheduler has an
+Build the file from scratch in this order:
+
+1. **External shape.** Keep the public statements downstream files depend on:
+   `Fits`, `Coupled`, reset pullback facts, `coupled_step`,
+   `design_run_succ`, and the invariant pullback section. Rename internals
+   freely if that reduces proof friction.
+2. **Generic frame layer.** Prove the small register and memory preservation
+   facts needed for `refillAct`, `coreAct`, `moverAct`, and `tickAct` directly
+   from `Act.regWrites`, `Act.memWrites`, and `Loom.Hw.Compile.run_regs_notin`.
+   Generate repetitive frame lemmas only after the hand-written wrapper is
+   compiling.
+3. **Refill bridge.** Prove the refill abstraction facts fieldwise:
+   `cycle`, `rctr`, `dbudget`, visible domain fields, gate state, inflight
+   state, and memory preservation. Use current `SysOps.lean` definitions as
+   the expression source.
+4. **Core/tick bridge.** Prove the core-cycle unfold and tick abstraction:
+   cycle increments, visible state is preserved except for the cycle field,
+   and the final statement rewrites cleanly into the spec-side cycle lemmas
+   already public in `Hostage.lean`.
+5. **Mover bridge.** Re-derive the mover expression names from
+   `Machines/Lnp64u/Hw/SysOps.lean` rather than copying old text. Prove the
+   two primary cases: no live mover job preserves `mem`/`absMover`; a live
+   mover job updates memory and `absMover` to match `Step.moverPhase`.
+6. **Spec phase equations.** Add only the match-form equations the proof
+   actually consumes for `refillPhase`, `corePhase`, and `moverPhase`.
+   Reuse existing public cycle lemmas from `Hostage.lean`; do not duplicate
+   them in `RMC.lean`.
+7. **Assembly.** Rebuild the decomposition lemmas that reduce `square` to
+   the per-arm cases, then reconnect `coupled_step`, `design_run_succ`, and
+   invariant pullback.
+
+Verification gate for this item:
+
+- `lake build Machines.Lnp64u.Theorems.RMC`
+- `lake build Machines.Lnp64u.Theorems.RMCAbs`
+- `lake build Machines.Lnp64u.Theorems.RMCReset`
+- `lake exe audit`
+- `scripts/ci.sh` before committing a claimed landing
+
+## 2. R-MC per-op square (`square`)
+
+The last link making T2-T9 theorems about the emitted netlist rather than
+the spec. Once item 1 lands, grind the current architecture. Do not block on
+a tagless-final refactor.
+
+Work order:
+
+1. Countdown/no-retire arm.
+2. Issue arm.
+3. Fourteen base-op retirement cases.
+4. Ten system-op retirement cases.
+5. `cap_revoke` pointer-doubling mark engine and the corresponding
+   `Coupled` clause.
+6. Final assembly and full CI.
+
+## 3. Proof infrastructure - build only what the R-MC proof forces
+
+Useful tooling should be extracted from the `RMC.lean` grind, not placed in
+front of it as a prerequisite.
+
+- **Automatic `Act` frame lemmas.** Compile/certify read-write sets and
+  generate lemmas such as "this rule cannot write `cycle`", "this action
+  preserves unrelated registers", and "this rule preserves memory `mem`".
+- **Last-write-wins `Act.run` normalizer.** A tactic/normal form for
+  projecting fields through nested `seqAll`, `.ite`, `RegEnv.set`,
+  `MemEnv.set`, and record updates.
+- **Rule-level abstraction contracts.** Standard theorem skeletons for
+  `abs (rule.run pre acc) = specPhase ...` or fieldwise variants.
+- **First-class post-rule derived state.** Support ghost/derived values for
+  post-core fields, especially mover fields represented as mux expressions
+  (`postJ`, `newJobSet`, kill sweeps, store forwarding).
+- **Generated reset/register-table proof support.** Make reset abstraction
+  automatic from register declarations, memory declarations, and encoder
+  round trips.
+- **BitVec/encoder simplification.** Certified simplifier for packed fields,
+  decode/encode round trips, and `BitVec.toNat` range side conditions.
+
+## 4. DONE 2026-07-04 - D11 scheduler stall-lock redesign
+
+T6 used to carry the `StallFree` hypothesis because the scheduler had an
 unbounded-priority-inversion bug (residual-budget stall-lock, found
-2026-07-03: an underfunded top-priority domain stalls the core instead of
-yielding the slot). Redesign the scheduler (skip-to-next-eligible or
-charge-at-retire), re-prove the touched T6/T7 bricks, and delete the
-hypothesis — upgrading `no_hostage` to unconditional. Independent of item
-1; good candidate to run in parallel.
+2026-07-03: an underfunded top-priority domain stalled the core instead of
+yielding the slot). Landed fix: underfunded serving issue now raises a
+deterministic `.budget` fault and routes through the existing halt/unwind
+proof path; underfunded non-serving issue burns the payer's residual
+budget to zero. `T6.no_hostage` no longer has a `StallFree` premise.
 
-## 3. Cheap hardening (one session, mostly independent)
+## 5. Cheap hardening (one session, mostly independent)
 
-- **(from TRUST.md audit ●)** Prove `compileImpl = compile` (or gate-compare
-  reference output in audit/ci) — `@[implemented_by]` at
+- **(from TRUST.md audit)** Prove `compileImpl = compile` (or gate-compare
+  reference output in audit/ci) - `@[implemented_by]` at
   `Loom/Hw/Compile.lean:386` is an unproved executable replacement; every
   emitted artifact and BMC CNF flows through it.
-- PARTIAL 2026-07-04: witness manifests landed in
+- DONE 2026-07-04: witness manifests landed in
   `Tests.Lnp64uWitnesses` and are explicitly built by `scripts/ci.sh`.
   Covered: `Manifest.WF`, `RMC.Fits`, T7 schedulability on the base
   lockstep manifest; a concrete isolated manifest for T5's finite
-  `Isolated ∧ TopPriority ∧ AgreeOn` premises and T6's finite
-  `StrictlySchedulable ∧ positive budgets` premises. Still open:
-  `T6.StallFree` is a semantic reachability side condition, not a finite
-  manifest predicate; discharge it for a deployment or delete it via D11.
-- **(from TRUST.md audit ●)** Add X-free / 2-state-safety checking for
-  emitted RTL (or make it an explicit µVerilog boundary premise): no
-  uninitialized state, out-of-bounds reads, explicit `X`/`Z`, or
-  synthesis-only don't-care leakage.
-- **(from TRUST.md audit ●)** Specify platform event accounting and fault
+  `Isolated & TopPriority & AgreeOn` premises and T6's finite
+  `StrictlySchedulable & positive budgets` premises. D11 deleted the former
+  semantic `StallFree` side condition.
+- PARTIAL 2026-07-04: `scripts/check_xfree_rtl.py` now runs in CI after
+  fresh Acc8 + LNP64-u emission. It rejects X/Z/don't-care literals or
+  constructs, missing register resets, and partial memory initialization in
+  the exact emitted core RTL. Still open: turn this into a Lean parser/AST
+  2-state-safety theorem and cover synthesis undefined-read/don't-care
+  adequacy explicitly.
+- **(from TRUST.md audit)** Specify platform event accounting and fault
   routing: who pays for interrupts/exceptions/flushes/stalls/debug entry,
   and how every hardware fault maps to the deterministic ISS behavior.
 - DONE 2026-07-04: deleted the superseded `SystemOpsWf.Wip.system_preserves`
   sorry-bearing obligation and scrubbed stale "kernel-checked" claims that
   were actually compiled-eval (`#guard` round-trip). Still open: make one
   full-size round-trip genuinely kernel-checked (needs the
-  String→ByteArray kernel-cost fix).
-
+  String-to-ByteArray kernel-cost fix).
 - DONE 2026-07-04: `scripts/ci.sh` now explicitly runs
   `lake build Tests.Acc8Bmc`, so stale baked LRAT certificates are caught by
   the normal CI path. The target is still intentionally documented because
   any `Loom/Hw/Compile.lean` change can invalidate the certificate.
 - `parseCheck` kernel round-trip for `rtl/lnp64u.v` (mirror
-  `Machines/Acc8/TextRoundTrip.lean`) — closes the printer out of the
-  lnp64u TCB the way it's already closed for Acc8. Note: rtl/ is
+  `Machines/Acc8/TextRoundTrip.lean`) - closes the printer out of the
+  lnp64u TCB the way it's already closed for Acc8. Note: `rtl/` is
   untracked, so this needs either committing the artifact or checking at
   emission time.
-- LNP64-µ BMC demo via `Dp/Bmc` (machinery proven on Acc8; hasn't bitten
+- LNP64-u BMC demo via `Dp/Bmc` (machinery proven on Acc8; hasn't bitten
   into the big core yet). Regenerate certs with the untrusted cadical
-  driver (`Loom/Dp/Solver.solve`) — remember baked certs go stale on ANY
+  driver (`Loom/Dp/Solver.solve`) - remember baked certs go stale on ANY
   `Loom/Hw/Compile.lean` change.
 
-## 4. Tagless-final per-op datapath unification (strategic refactor)
+## 6. Deferred strategic refactor: tagless-final datapath unification
 
 Write each opcode's datapath once, polymorphic over a `HwVal`-style
 interface; instantiate to `BitVec` (ISS exec) and `Expr` (circuit builder).
 Most per-op R-MC square obligations become near-definitional
-(parametricity/`rfl`), collapsing the bulk of item 1's grind. What canNOT
-unify — and must remain a two-sided refinement — is timing: issue/countdown/
-retire pipelining and `cap_revoke`'s multi-cycle engine (that gap is the
-theorem, not duplication). Discussed 2026-07-04; do this BEFORE hand-proving
-the 25 squares, or not at all.
+(parametricity/`rfl`), collapsing much of the eventual proof grind. What
+cannot unify, and must remain a two-sided refinement, is timing:
+issue/countdown/retire pipelining and `cap_revoke`'s multi-cycle engine.
+
+Decision for the active plan: defer this until after the current R-MC proof
+is compiling again. Revisit only if the per-op proof grind shows the same
+datapath equivalence being proved many times.
 
 ## Deferred / out of scope
 
 FPGA bring-up; `Dp/Pdr` (until scaling demands); the Phase-3 logical
-relation (T2′/T4′) on the µLog seed; spec-cycle epoch alternatives
+relation (T2'/T4') on the uLog seed; spec-cycle epoch alternatives
 (superseded by the wrapping `BitVec 32` decision, see `STATUS.md`).
 
-## Operational notes (hard-won; keep)
+## Operational notes
 
 - Agent worktrees need a fully-copied `.lake` seed or they rebuild the
   world (`cp -a .lake` then atomic swap; an interrupted copy leaves a
   broken cache). Agents should `git merge main --no-edit` before starting.
-- Run emitters under `ulimit -v 25000000` — earlyoom kills whole process
-  groups on this box and `--prefer`s `lnp64*`/`yosys` names.
+- Run emitters under `ulimit -v 25000000` - earlyoom kills whole process
+  groups on this box and prefers `lnp64*`/`yosys` names.
 - Baked SAT certificates go stale on ANY `Loom/Hw/Compile.lean` change,
-  and `decide` will *disprove* them; regenerate via the untrusted cadical
+  and `decide` will disprove them; regenerate via the untrusted cadical
   driver (`Loom/Dp/Solver.solve`). `ci.sh` now explicitly builds
   `Tests.Acc8Bmc`.
-- The SpecM sweep pattern has NINE worked instances (SlotGen, Budget,
+- The SpecM sweep pattern has nine worked instances (SlotGen, Budget,
   Inflight, Authority, Tombstone, GateStep, Hostage's chain kit, DFrame,
-  DRel) — never write one from scratch.
+  DRel) - never write one from scratch.
 - Audit policy: sorries only in `Machines/*/Theorems/` + `Wip` namespaces;
-  `native_decide` banned; only the two µVerilog boundary declarations are
+  `native_decide` banned; only the two uVerilog boundary declarations are
   whitelisted. `lake exe audit` is the gate; `scripts/ci.sh` the full check.
 
 ---
