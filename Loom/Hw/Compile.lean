@@ -1,3 +1,4 @@
+import Std.Data.HashMap
 import Loom.Hw.Semantics
 import Loom.Emit.MicroVerilog.Semantics
 
@@ -81,13 +82,81 @@ theorem compileExpr_eval : ∀ {w : Nat} (e : Expr w) (σ : Loom.Hw.St),
   | zext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
   | sext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
 
+/-! ## Write-footprint syntax
+
+Syntactic write footprints of actions, and the frame lemmas that go with
+them: registers and memories an action never writes are left untouched by
+`Act.run` (and by the rule fold). Used to discharge the "undeclared name"
+cases of end-to-end emission proofs, and — via `writesRegB` — to prune the
+compiled mux trees down to each register's own write sites. -/
+
+/-- Names of the memories an action may write (with multiplicity). -/
+def _root_.Loom.Hw.Act.memWrites : Act → List String
+  | .skip => []
+  | .seq a b => a.memWrites ++ b.memWrites
+  | .ite _ t e => t.memWrites ++ e.memWrites
+  | .write .. => []
+  | .memWrite _ _ m _ _ _ => [m]
+
+/-- `(name, width)` pairs of the registers an action may write. -/
+def _root_.Loom.Hw.Act.regWrites : Act → List (String × Nat)
+  | .skip => []
+  | .seq a b => a.regWrites ++ b.regWrites
+  | .ite _ t e => t.regWrites ++ e.regWrites
+  | .write w r _ => [(r, w)]
+  | .memWrite .. => []
+
+/-- Decidable "may write register `(rn, w)`" — the compiler's mux-tree
+pruning test. -/
+def writesRegB (rn : String) (w : Nat) (a : Act) : Bool :=
+  decide ((rn, w) ∈ a.regWrites)
+
+/-- Running an action that never writes register `rn` at width `w` leaves
+that entry untouched. -/
+theorem run_regs_notin (rn : String) (w : Nat) : ∀ (a : Act),
+    (rn, w) ∉ a.regWrites →
+    ∀ (σ acc : Loom.Hw.St), (a.run σ acc).regs rn w = acc.regs rn w := by
+  intro a
+  induction a with
+  | skip => intro _ σ acc; rfl
+  | seq x y ihx ihy =>
+      intro h σ acc
+      simp only [Act.regWrites, List.mem_append, not_or] at h
+      show (y.run σ (x.run σ acc)).regs rn w = _
+      rw [ihy h.2, ihx h.1]
+  | ite c t e iht ihe =>
+      intro h σ acc
+      simp only [Act.regWrites, List.mem_append, not_or] at h
+      show (if c.eval σ = 1#1 then t.run σ acc else e.run σ acc).regs rn w = _
+      by_cases hc : c.eval σ = 1#1
+      · rw [if_pos hc]; exact iht h.1 σ acc
+      · rw [if_neg hc]; exact ihe h.2 σ acc
+  | write w' r' v =>
+      intro h σ acc
+      have hp : ¬(r' = rn ∧ w' = w) := by
+        intro ⟨h1, h2⟩
+        exact h (by simp [Act.regWrites, h1, h2])
+      show (acc.regs.set r' (v.eval σ)) rn w = _
+      unfold Loom.Hw.RegEnv.set
+      by_cases hr : rn = r'
+      · rw [if_pos hr]
+        have hw : w' ≠ w := fun hw => hp ⟨hr.symm, hw⟩
+        rw [dif_neg hw]
+      · rw [if_neg hr]
+  | memWrite => intro _ σ acc; rfl
+
 /-- Fold an action into a register's next-value expression: `cur` is the
-value the register takes if this action does not write it. -/
+value the register takes if this action does not write it. An `ite` neither
+branch of which can write the register is pruned to `cur` (semantically
+`mux c cur cur = cur`), so the compiled mux tree is proportional to the
+register's own write sites, not to the whole design. -/
 def nextReg (r : String) (w : Nat) : Act → MV.Expr w → MV.Expr w
   | .skip, cur => cur
   | .seq a b, cur => nextReg r w b (nextReg r w a cur)
   | .ite c t e, cur =>
-      .mux (compileExpr c) (nextReg r w t cur) (nextReg r w e cur)
+      if writesRegB r w t || writesRegB r w e then
+        .mux (compileExpr c) (nextReg r w t cur) (nextReg r w e cur)
+      else cur
   | .write w' r' v, cur =>
       if r' = r then
         if h : w' = w then h ▸ compileExpr v else cur
@@ -98,26 +167,6 @@ def nextReg (r : String) (w : Nat) : Act → MV.Expr w → MV.Expr w
 is µVerilog's `WritePort` itself). -/
 abbrev Port (aw dw : Nat) := Loom.Emit.MicroVerilog.WritePort aw dw
 
-/-- Fold an action into write port `p` of memory `m`: only the `memWrite`s
-carrying port index `p` (and the declared widths) land in this port; last
-write wins along each path; branches merge by mux. -/
-def memPort (m : String) (aw dw p : Nat) : Act → Port aw dw → Port aw dw
-  | .skip, cur => cur
-  | .seq a b, cur => memPort m aw dw p b (memPort m aw dw p a cur)
-  | .ite c t e, cur =>
-      let ct := memPort m aw dw p t cur
-      let ce := memPort m aw dw p e cur
-      let g := compileExpr c
-      { en := .mux g ct.en ce.en, addr := .mux g ct.addr ce.addr
-        data := .mux g ct.data ce.data }
-  | .memWrite aw' dw' m' p' a v, cur =>
-      if m' = m ∧ p' = p then
-        if h : aw' = aw ∧ dw' = dw then
-          { en := .lit 1, addr := h.1 ▸ compileExpr a, data := h.2 ▸ compileExpr v }
-        else cur
-      else cur
-  | .write .., cur => cur
-
 /-- Port indices of all syntactic writes to memory `m`, in preorder (both
 branches of an `ite` contribute, `then` first). The compiler sizes the
 emitted memory's port list off this; `MemWriteWF` constrains it. -/
@@ -127,6 +176,35 @@ def portTrace (m : String) : Act → List Nat
   | .ite _ t e => portTrace m t ++ portTrace m e
   | .memWrite _ _ m' p _ _ => if m' = m then [p] else []
   | .write .. => []
+
+/-- Decidable "may write port `p` of memory `m`" — the compiler's
+port-mux pruning test. -/
+def writesPortB (m : String) (p : Nat) (a : Act) : Bool :=
+  decide (p ∈ portTrace m a)
+
+/-- Fold an action into write port `p` of memory `m`: only the `memWrite`s
+carrying port index `p` (and the declared widths) land in this port; last
+write wins along each path; branches merge by mux. An `ite` neither branch
+of which can write this port is pruned to `cur` (semantically
+`mux c cur cur = cur`). -/
+def memPort (m : String) (aw dw p : Nat) : Act → Port aw dw → Port aw dw
+  | .skip, cur => cur
+  | .seq a b, cur => memPort m aw dw p b (memPort m aw dw p a cur)
+  | .ite c t e, cur =>
+      if writesPortB m p t || writesPortB m p e then
+        let ct := memPort m aw dw p t cur
+        let ce := memPort m aw dw p e cur
+        let g := compileExpr c
+        { en := .mux g ct.en ce.en, addr := .mux g ct.addr ce.addr
+          data := .mux g ct.data ce.data }
+      else cur
+  | .memWrite aw' dw' m' p' a v, cur =>
+      if m' = m ∧ p' = p then
+        if h : aw' = aw ∧ dw' = dw then
+          { en := .lit 1, addr := h.1 ▸ compileExpr a, data := h.2 ▸ compileExpr v }
+        else cur
+      else cur
+  | .write .., cur => cur
 
 /-- The whole design's port trace for memory `m` (rule order). -/
 def designTrace (d : Design) (m : String) : List Nat :=
@@ -143,10 +221,167 @@ def compilePort (d : Design) (m : String) (aw dw p : Nat) : Port aw dw :=
   d.rules.foldl (fun cur rl => memPort m aw dw p rl.body cur)
     { en := .lit 0, addr := .lit 0, data := .lit 0 }
 
+/-! ### Fast compilation (pointer-memoized; extensionally identical)
+
+`compileExpr` and the folds above are pure structural recursions. Designs
+built with `let`-sharing (mandatory at LNP64-µ scale, see the machines'
+`Hw/DESIGN.md`) are expression **DAGs**; walking them as trees is
+exponential in time and heap. The implementations below memoize on
+physical pointer identity: pointer-equal inputs are equal inputs, the
+functions are pure, so every memoized result coincides with the reference
+definition — `@[implemented_by]` swaps them in for compiled evaluation
+only, and every theorem still speaks about the reference definitions. The
+memoization also *preserves* sharing in the produced `Module`, which the
+printer exploits (one wire per distinct node). -/
+
+mutual
+
+private unsafe def ceGo (cache : IO.Ref (Std.HashMap USize (MV.Expr 0))) :
+    {w : Nat} → Expr w → BaseIO (MV.Expr w)
+  | _, .lit v => pure (.lit v)
+  | _, .reg w' n => pure (.reg w' n)
+  | _, .memRead dw m a => do pure (.memRead dw m (← ceImpl cache a))
+  | _, .and a b => do pure (.and (← ceImpl cache a) (← ceImpl cache b))
+  | _, .or a b => do pure (.or (← ceImpl cache a) (← ceImpl cache b))
+  | _, .xor a b => do pure (.xor (← ceImpl cache a) (← ceImpl cache b))
+  | _, .not a => do pure (.not (← ceImpl cache a))
+  | _, .add a b => do pure (.add (← ceImpl cache a) (← ceImpl cache b))
+  | _, .sub a b => do pure (.sub (← ceImpl cache a) (← ceImpl cache b))
+  | _, .shl a b => do pure (.shl (← ceImpl cache a) (← ceImpl cache b))
+  | _, .shr a b => do pure (.shr (← ceImpl cache a) (← ceImpl cache b))
+  | _, .eq a b => do pure (.eq (← ceImpl cache a) (← ceImpl cache b))
+  | _, .ult a b => do pure (.ult (← ceImpl cache a) (← ceImpl cache b))
+  | _, .slt a b => do pure (.slt (← ceImpl cache a) (← ceImpl cache b))
+  | _, .mux c t f => do
+      pure (.mux (← ceImpl cache c) (← ceImpl cache t) (← ceImpl cache f))
+  | _, .slice a lo width => do pure (.slice (← ceImpl cache a) lo width)
+  | _, .zext a w' => do pure (.zext (← ceImpl cache a) w')
+  | _, .sext a w' => do pure (.sext (← ceImpl cache a) w')
+
+private unsafe def ceImpl (cache : IO.Ref (Std.HashMap USize (MV.Expr 0)))
+    {w : Nat} (e : Expr w) : BaseIO (MV.Expr w) := do
+  let k := ptrAddrUnsafe e
+  if let some r := (← cache.get).get? k then
+    return unsafeCast r
+  let r ← ceGo cache e
+  cache.modify (·.insert k (unsafeCast r))
+  return r
+
+end
+
+/-- Pointer-memoized `writesRegB rn w` (per-register cache). -/
+private unsafe def wrImpl (rn : String) (w : Nat)
+    (cache : IO.Ref (Std.HashMap USize Bool)) : Act → BaseIO Bool
+  | a => do
+    let k := ptrAddrUnsafe a
+    if let some r := (← cache.get).get? k then
+      return r
+    let r ←
+      match a with
+      | .skip => pure false
+      | .seq x y => do pure ((← wrImpl rn w cache x) || (← wrImpl rn w cache y))
+      | .ite _ t e => do pure ((← wrImpl rn w cache t) || (← wrImpl rn w cache e))
+      | .write w' r' _ => pure (r' == rn && w' == w)
+      | .memWrite .. => pure false
+    cache.modify (·.insert k r)
+    return r
+
+/-- `nextReg`, with memoized subcalls. The `wr`-false shortcut is faithful:
+if an action cannot write `(rn, w)` then `nextReg` returns `cur` unchanged
+(induction: `skip`/`memWrite`/mismatched `write` return `cur`, a pruned
+`ite` returns `cur`, `seq` composes the two identities). -/
+private unsafe def nrImpl (ce : {w' : Nat} → Expr w' → BaseIO (MV.Expr w'))
+    (wr : Act → BaseIO Bool) (rn : String) (w : Nat) :
+    Act → MV.Expr w → BaseIO (MV.Expr w)
+  | a, cur => do
+    if !(← wr a) then return cur
+    match a with
+    | .skip => return cur
+    | .seq x y => do nrImpl ce wr rn w y (← nrImpl ce wr rn w x cur)
+    | .ite c t e => do
+        -- `wr` true on an `ite` is exactly the reference guard
+        return .mux (← ce c) (← nrImpl ce wr rn w t cur) (← nrImpl ce wr rn w e cur)
+    | .write w' r' v =>
+        if r' = rn then
+          if h : w' = w then do return (h ▸ (← ce v)) else return cur
+        else return cur
+    | .memWrite .. => return cur
+
+/-- Pointer-memoized `writesPortB m p` (per-port cache). -/
+private unsafe def ptImpl (mn : String) (p : Nat)
+    (cache : IO.Ref (Std.HashMap USize Bool)) : Act → BaseIO Bool
+  | a => do
+    let k := ptrAddrUnsafe a
+    if let some r := (← cache.get).get? k then
+      return r
+    let r ←
+      match a with
+      | .skip => pure false
+      | .seq x y => do pure ((← ptImpl mn p cache x) || (← ptImpl mn p cache y))
+      | .ite _ t e => do pure ((← ptImpl mn p cache t) || (← ptImpl mn p cache e))
+      | .write .. => pure false
+      | .memWrite _ _ m' p' _ _ => pure (m' == mn && p' == p)
+    cache.modify (·.insert k r)
+    return r
+
+/-- `memPort`, with memoized subcalls (same faithful shortcut as `nrImpl`). -/
+private unsafe def mpImpl (ce : {w' : Nat} → Expr w' → BaseIO (MV.Expr w'))
+    (pt : Act → BaseIO Bool) (mn : String) (aw dw p : Nat) :
+    Act → Port aw dw → BaseIO (Port aw dw)
+  | a, cur => do
+    if !(← pt a) then return cur
+    match a with
+    | .skip => return cur
+    | .write .. => return cur
+    | .seq x y => do mpImpl ce pt mn aw dw p y (← mpImpl ce pt mn aw dw p x cur)
+    | .ite c t e => do
+        let ct ← mpImpl ce pt mn aw dw p t cur
+        let cf ← mpImpl ce pt mn aw dw p e cur
+        let g ← ce c
+        return { en := .mux g ct.en cf.en, addr := .mux g ct.addr cf.addr
+                 data := .mux g ct.data cf.data }
+    | .memWrite aw' dw' m' p' a' v =>
+        if m' = mn ∧ p' = p then
+          if h : aw' = aw ∧ dw' = dw then do
+            return { en := .lit 1, addr := h.1 ▸ (← ce a'), data := h.2 ▸ (← ce v) }
+          else return cur
+        else return cur
+
+/-- The memoized `compile` (see the section docstring): same module,
+computed in time and heap proportional to the design DAG. -/
+private unsafe def compileImpl (d : Design) : MV.Module := unsafeBaseIO do
+  let ceCache ← IO.mkRef ({} : Std.HashMap USize (MV.Expr 0))
+  let ce : {w' : Nat} → Expr w' → BaseIO (MV.Expr w') := fun e => ceImpl ceCache e
+  let mut regs : Array MV.RegDef := #[]
+  for r in d.regs do
+    let wrCache ← IO.mkRef ({} : Std.HashMap USize Bool)
+    let wr := wrImpl r.name r.width wrCache
+    let mut cur : MV.Expr r.width := .reg r.width r.name
+    for rl in d.rules do
+      cur ← nrImpl ce wr r.name r.width rl.body cur
+    regs := regs.push { name := r.name, width := r.width, init := r.init, next := cur }
+  let mut mems : Array MV.MemDef := #[]
+  for m in d.mems do
+    let mut ports : Array (Port m.addrWidth m.dataWidth) := #[]
+    for p in List.range (numPorts d m.name) do
+      let ptCache ← IO.mkRef ({} : Std.HashMap USize Bool)
+      let pt := ptImpl m.name p ptCache
+      let mut cur : Port m.addrWidth m.dataWidth := { en := .lit 0, addr := .lit 0, data := .lit 0 }
+      for rl in d.rules do
+        cur ← mpImpl ce pt m.name m.addrWidth m.dataWidth p rl.body cur
+      ports := ports.push cur
+    mems := mems.push { name := m.name, addrWidth := m.addrWidth
+                        dataWidth := m.dataWidth, init := m.init
+                        wrPorts := ports.toList }
+  let outs : List MV.OutDef := d.regs.map fun r =>
+    { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
+  return { name := d.name, regs := regs.toList, mems := mems.toList, outs := outs }
+
 /-- Compile a design. Registers become `RegDef`s whose next expression
 folds all rules in order; memories get one guarded write port per used
 port index, in ascending order (the µVerilog commit order); every register
 is exposed as an observability output. -/
+@[implemented_by compileImpl]
 def compile (d : Design) : MV.Module where
   name := d.name
   regs := d.regs.map fun r =>
@@ -188,16 +423,29 @@ theorem nextReg_correct : ∀ (a : Act) (σ acc : Loom.Hw.St) (rn : String) (w :
       exact ihy σ (x.run σ acc) rn w (nextReg rn w x cur) (ihx σ acc rn w cur hcur)
   | ite c t e iht ihe =>
       intro σ acc rn w cur hcur
-      have hce : Loom.Emit.MicroVerilog.Expr.eval (convSt σ) (compileExpr c) = c.eval σ :=
-        compileExpr_eval c σ
-      show Loom.Emit.MicroVerilog.Expr.eval (convSt σ)
-            (.mux (compileExpr c) (nextReg rn w t cur) (nextReg rn w e cur)) = _
-      simp only [Loom.Emit.MicroVerilog.Expr.eval, hce]
-      by_cases hc : c.eval σ = 1#1
-      · simp only [hc, if_true, Act.run]
-        exact iht σ acc rn w cur hcur
-      · simp only [hc, if_false, Act.run]
-        exact ihe σ acc rn w cur hcur
+      by_cases hp : (writesRegB rn w t || writesRegB rn w e) = true
+      · have hce : Loom.Emit.MicroVerilog.Expr.eval (convSt σ) (compileExpr c) = c.eval σ :=
+          compileExpr_eval c σ
+        have hlhs : nextReg rn w (.ite c t e) cur
+            = .mux (compileExpr c) (nextReg rn w t cur) (nextReg rn w e cur) := by
+          simp [nextReg, hp]
+        rw [hlhs]
+        show Loom.Emit.MicroVerilog.Expr.eval (convSt σ)
+              (.mux (compileExpr c) (nextReg rn w t cur) (nextReg rn w e cur)) = _
+        simp only [Loom.Emit.MicroVerilog.Expr.eval, hce]
+        by_cases hc : c.eval σ = 1#1
+        · simp only [hc, if_true, Act.run]
+          exact iht σ acc rn w cur hcur
+        · simp only [hc, if_false, Act.run]
+          exact ihe σ acc rn w cur hcur
+      · -- pruned: neither branch can write (rn, w)
+        have hlhs : nextReg rn w (.ite c t e) cur = cur := by
+          simp only [nextReg, if_neg hp]
+        rw [hlhs, hcur]
+        simp only [Bool.or_eq_true, not_or, writesRegB, decide_eq_true_eq] at hp
+        refine (run_regs_notin rn w (.ite c t e) ?_ σ acc).symm
+        simp only [Act.regWrites, List.mem_append, not_or]
+        exact hp
   | write w' r' v =>
       intro σ acc rn w cur hcur
       by_cases hr : r' = rn
@@ -306,28 +554,7 @@ theorem compile_cycle_regs (d : Design) (σ : Loom.Hw.St) (r : RegDecl) (hr : r 
     rules_nextReg d.rules σ r.name r.width σ (.reg r.width r.name) rfl]
   rfl
 
-/-! ## Write-footprint syntax
-
-Syntactic write footprints of actions, and the frame lemmas that go with
-them: registers and memories an action never writes are left untouched by
-`Act.run` (and by the rule fold). Used to discharge the "undeclared name"
-cases of end-to-end emission proofs. -/
-
-/-- Names of the memories an action may write (with multiplicity). -/
-def _root_.Loom.Hw.Act.memWrites : Act → List String
-  | .skip => []
-  | .seq a b => a.memWrites ++ b.memWrites
-  | .ite _ t e => t.memWrites ++ e.memWrites
-  | .write .. => []
-  | .memWrite _ _ m _ _ _ => [m]
-
-/-- `(name, width)` pairs of the registers an action may write. -/
-def _root_.Loom.Hw.Act.regWrites : Act → List (String × Nat)
-  | .skip => []
-  | .seq a b => a.regWrites ++ b.regWrites
-  | .ite _ t e => t.regWrites ++ e.regWrites
-  | .write w r _ => [(r, w)]
-  | .memWrite .. => []
+/-! ## Memory-footprint frame lemmas -/
 
 /-- Running an action that never writes memory `mn` leaves `mn`'s contents
 (at every address and width) untouched. -/
@@ -357,40 +584,6 @@ theorem run_mems_notin (mn : String) : ∀ (a : Act), mn ∉ a.memWrites →
       show (acc.mems.set m' (addr.eval σ).toNat (v.eval σ)) mn ad w = _
       unfold Loom.Hw.MemEnv.set
       rw [if_neg (fun hc => hm hc.1)]
-
-/-- Running an action that never writes register `rn` at width `w` leaves
-that entry untouched. -/
-theorem run_regs_notin (rn : String) (w : Nat) : ∀ (a : Act),
-    (rn, w) ∉ a.regWrites →
-    ∀ (σ acc : Loom.Hw.St), (a.run σ acc).regs rn w = acc.regs rn w := by
-  intro a
-  induction a with
-  | skip => intro _ σ acc; rfl
-  | seq x y ihx ihy =>
-      intro h σ acc
-      simp only [Act.regWrites, List.mem_append, not_or] at h
-      show (y.run σ (x.run σ acc)).regs rn w = _
-      rw [ihy h.2, ihx h.1]
-  | ite c t e iht ihe =>
-      intro h σ acc
-      simp only [Act.regWrites, List.mem_append, not_or] at h
-      show (if c.eval σ = 1#1 then t.run σ acc else e.run σ acc).regs rn w = _
-      by_cases hc : c.eval σ = 1#1
-      · rw [if_pos hc]; exact iht h.1 σ acc
-      · rw [if_neg hc]; exact ihe h.2 σ acc
-  | write w' r' v =>
-      intro h σ acc
-      have hp : ¬(r' = rn ∧ w' = w) := by
-        intro ⟨h1, h2⟩
-        exact h (by simp [Act.regWrites, h1, h2])
-      show (acc.regs.set r' (v.eval σ)) rn w = _
-      unfold Loom.Hw.RegEnv.set
-      by_cases hr : rn = r'
-      · rw [if_pos hr]
-        have hw : w' ≠ w := fun hw => hp ⟨hr.symm, hw⟩
-        rw [dif_neg hw]
-      · rw [if_neg hr]
-  | memWrite => intro _ σ acc; rfl
 
 /-- Fold form of `run_mems_notin` over a rule list. -/
 theorem rules_run_mems_notin (mn : String) (rules : List Rule)
@@ -580,6 +773,35 @@ theorem lastP_of_not_mem {aw dw : Nat} (p : Nat)
       rw [if_neg (fun he => h.1 he.symm)]
       exact ih _ h.2
 
+/-- The executed log's ports are a sublist of the syntactic port trace. -/
+theorem memLog_ports_sublist (σ : Loom.Hw.St) (mn : String) (aw dw : Nat) :
+    ∀ a : Act, ((memLog σ mn aw dw a).map (·.1)).Sublist (portTrace mn a) := by
+  intro a
+  induction a with
+  | skip => simp [memLog, portTrace]
+  | seq a b iha ihb =>
+      rw [show memLog σ mn aw dw (.seq a b)
+            = memLog σ mn aw dw a ++ memLog σ mn aw dw b from rfl,
+        show portTrace mn (.seq a b) = portTrace mn a ++ portTrace mn b from rfl,
+        List.map_append]
+      exact iha.append ihb
+  | ite c t e iht ihe =>
+      rw [show memLog σ mn aw dw (.ite c t e)
+            = if c.eval σ = 1#1 then memLog σ mn aw dw t else memLog σ mn aw dw e
+          from rfl,
+        show portTrace mn (.ite c t e) = portTrace mn t ++ portTrace mn e from rfl]
+      by_cases hc : c.eval σ = 1#1
+      · rw [if_pos hc]; exact iht.trans (List.sublist_append_left ..)
+      · rw [if_neg hc]; exact ihe.trans (List.sublist_append_right ..)
+  | write w r v => simp [memLog, portTrace]
+  | memWrite aw' dw' m' p addr data =>
+      by_cases hm : m' = mn
+      · subst hm
+        by_cases hwd : aw' = aw ∧ dw' = dw
+        · obtain ⟨rfl, rfl⟩ := hwd; simp [memLog, portTrace]
+        · simp [memLog, portTrace, hwd]
+      · simp [memLog, portTrace, hm]
+
 /-- **`memPort` correctness (per port).** The compiled port-`p` triple of an
 action evaluates to the last port-`p` write of its log. -/
 theorem memPort_correct (σ : Loom.Hw.St) (mn : String) (aw dw p : Nat) :
@@ -598,23 +820,36 @@ theorem memPort_correct (σ : Loom.Hw.St) (mn : String) (aw dw p : Nat) :
       exact ihy _ _ (ihx cur o ho)
   | ite c t e iht ihe =>
       intro cur o ho
-      have hce : mvEval (convSt σ) (compileExpr c) = c.eval σ := compileExpr_eval c σ
       rw [show memLog σ mn aw dw (.ite c t e)
             = if c.eval σ = 1#1 then memLog σ mn aw dw t else memLog σ mn aw dw e
           from rfl]
-      by_cases hc : c.eval σ = 1#1
-      · rw [if_pos hc]
-        have ht := iht cur o ho
-        rcases hlp : lastP p (memLog σ mn aw dw t) o with _ | ⟨av, dv⟩ <;>
-          rw [hlp] at ht <;>
-          simp only [Matches, memPort, mvEval, Loom.Emit.MicroVerilog.Expr.eval,
-            hce, hc, if_true] <;> exact ht
-      · rw [if_neg hc]
-        have he := ihe cur o ho
-        rcases hlp : lastP p (memLog σ mn aw dw e) o with _ | ⟨av, dv⟩ <;>
-          rw [hlp] at he <;>
-          simp only [Matches, memPort, mvEval, Loom.Emit.MicroVerilog.Expr.eval,
-            hce, hc, if_false] <;> exact he
+      by_cases hp : (writesPortB mn p t || writesPortB mn p e) = true
+      · have hce : mvEval (convSt σ) (compileExpr c) = c.eval σ := compileExpr_eval c σ
+        by_cases hc : c.eval σ = 1#1
+        · rw [if_pos hc]
+          have ht := iht cur o ho
+          rcases hlp : lastP p (memLog σ mn aw dw t) o with _ | ⟨av, dv⟩ <;>
+            rw [hlp] at ht <;>
+            simp only [Matches, memPort, hp, if_true, mvEval,
+              Loom.Emit.MicroVerilog.Expr.eval, hce, hc] <;> exact ht
+        · rw [if_neg hc]
+          have he := ihe cur o ho
+          rcases hlp : lastP p (memLog σ mn aw dw e) o with _ | ⟨av, dv⟩ <;>
+            rw [hlp] at he <;>
+            simp only [Matches, memPort, hp, if_true, if_false, mvEval,
+              Loom.Emit.MicroVerilog.Expr.eval, hce, hc] <;> exact he
+      · -- pruned: neither branch can write this port
+        have hmp : memPort mn aw dw p (.ite c t e) cur = cur := by
+          simp only [memPort, if_neg hp]
+        rw [hmp]
+        simp only [Bool.or_eq_true, not_or, writesPortB, decide_eq_true_eq] at hp
+        by_cases hc : c.eval σ = 1#1
+        · rw [if_pos hc, lastP_of_not_mem p _ o (fun hm =>
+            hp.1 ((memLog_ports_sublist σ mn aw dw t).subset hm))]
+          exact ho
+        · rw [if_neg hc, lastP_of_not_mem p _ o (fun hm =>
+            hp.2 ((memLog_ports_sublist σ mn aw dw e).subset hm))]
+          exact ho
   | write w r v => intro cur o ho; exact ho
   | memWrite aw' dw' m' p' addr data =>
       intro cur o ho
@@ -761,35 +996,6 @@ theorem rules_run_memLog (σ : Loom.Hw.St) (mn : String) (aw dw : Nat) :
         ih (rl.body.run σ acc) (fun r hr => hw r (List.mem_cons_of_mem _ hr)) x]
       exact applyLog_congr mn _ _ _
         (fun y => run_memLog σ mn aw dw rl.body acc (hw rl (List.mem_cons_self ..)) y) x
-
-/-- The executed log's ports are a sublist of the syntactic port trace. -/
-theorem memLog_ports_sublist (σ : Loom.Hw.St) (mn : String) (aw dw : Nat) :
-    ∀ a : Act, ((memLog σ mn aw dw a).map (·.1)).Sublist (portTrace mn a) := by
-  intro a
-  induction a with
-  | skip => simp [memLog, portTrace]
-  | seq a b iha ihb =>
-      rw [show memLog σ mn aw dw (.seq a b)
-            = memLog σ mn aw dw a ++ memLog σ mn aw dw b from rfl,
-        show portTrace mn (.seq a b) = portTrace mn a ++ portTrace mn b from rfl,
-        List.map_append]
-      exact iha.append ihb
-  | ite c t e iht ihe =>
-      rw [show memLog σ mn aw dw (.ite c t e)
-            = if c.eval σ = 1#1 then memLog σ mn aw dw t else memLog σ mn aw dw e
-          from rfl,
-        show portTrace mn (.ite c t e) = portTrace mn t ++ portTrace mn e from rfl]
-      by_cases hc : c.eval σ = 1#1
-      · rw [if_pos hc]; exact iht.trans (List.sublist_append_left ..)
-      · rw [if_neg hc]; exact ihe.trans (List.sublist_append_right ..)
-  | write w r v => simp [memLog, portTrace]
-  | memWrite aw' dw' m' p addr data =>
-      by_cases hm : m' = mn
-      · subst hm
-        by_cases hwd : aw' = aw ∧ dw' = dw
-        · obtain ⟨rfl, rfl⟩ := hwd; simp [memLog, portTrace]
-        · simp [memLog, portTrace, hwd]
-      · simp [memLog, portTrace, hm]
 
 theorem designLog_ports_sublist (d : Design) (σ : Loom.Hw.St) (mn : String)
     (aw dw : Nat) :
