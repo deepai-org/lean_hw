@@ -1,5 +1,6 @@
 import Machines.Lnp64u.Logic.Budget
 import Machines.Lnp64u.Logic.GateStep
+import Machines.Lnp64u.Logic.Inflight
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
@@ -3498,5 +3499,1303 @@ theorem gatecall_chain (c : Ctx) (σ : MachineState) :
                                         exact hτ.2.1 e'
                                     · rw [setDom_doms_same]
   exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun er σ' h => (body _ h).2 er σ' rfl⟩
+
+/-- `gate_return`'s chain classification: err leaves the state unchanged, ok
+produces exactly `GateReturnShape` (mirrors `gatecall_chain`). -/
+theorem gatereturn_chain (c : Ctx) (σ : MachineState) :
+    (∀ a σ',
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = .ok a σ' →
+      GateReturnShape c σ σ') ∧
+    (∀ er σ',
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = .err er σ' →
+      σ' = σ) := by
+  have body : ∀ (out : Res Unit),
+      ((do let σ0 ← SpecM.get
+           match (σ0.doms c.d).serving with
+           | none => SpecM.fatal .protocol
+           | some gid =>
+               match (σ0.gates gid).act with
+               | none => SpecM.fatal .protocol
+               | some act => do
+                   let rw ← reg c.d c.op.rs1
+                   let reply ← Machines.Lnp64u.Isa.transferByHandle c.d act.caller rw
+                   let σ1 ← SpecM.get
+                   SpecM.set ({ σ1 with gates := Loom.Fun.update σ1.gates gid { (σ1.gates gid) with act := none } })
+                   SpecM.updDom c.d (fun ds => { ds with regs := act.savedRegs, pc := act.savedPc, serving := act.savedServing })
+                   SpecM.updDom act.caller (fun ds => { ds with run := .running })
+                   SpecM.setReg act.caller act.callerRd reply) : SpecM Unit) σ = out →
+      (∀ a σ', out = .ok a σ' → GateReturnShape c σ σ') ∧
+      (∀ er σ', out = .err er σ' → σ' = σ) := by
+    intro out hout
+    simp only [SpecM.get, specM_bind] at hout
+    cases hserv : (σ.doms c.d).serving with
+    | none =>
+        rw [hserv] at hout; simp [SpecM.fatal] at hout; subst hout
+        exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+    | some gid =>
+        simp only [hserv] at hout
+        cases hgact : (σ.gates gid).act with
+        | none =>
+            simp only [hgact] at hout; simp [SpecM.fatal] at hout; subst hout
+            exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+        | some act =>
+            simp only [hgact] at hout; simp only [SpecM.reg, specM_bind] at hout
+            cases htbh : Machines.Lnp64u.Isa.transferByHandle c.d act.caller
+                ((σ.doms c.d).reg c.op.rs1) σ with
+            | fault f => rw [htbh] at hout; subst hout
+                         exact ⟨fun a σ' h => by simp at h, fun er σ' h => by simp at h⟩
+            | err e0 τ =>
+                have hs := transferByHandle_err_state c.d act.caller _ σ e0 τ htbh
+                rw [htbh] at hout; subst hout
+                exact ⟨fun a σ' h => by simp at h, fun er σ' h => by
+                  simp only [Res.err.injEq] at h; obtain ⟨_, rfl⟩ := h; exact hs⟩
+            | ok reply τ =>
+                rw [htbh] at hout
+                have hτ : ChainOut c.d σ τ :=
+                  (transferByHandle_chain_le c.d c.d act.caller _ σ).1 reply τ htbh
+                simp only [SpecM.get, specM_bind, SpecM.set, SpecM.updDom, SpecM.modify,
+                  SpecM.setReg] at hout
+                subst hout
+                refine ⟨fun a σ' h => ?_, fun er σ' h => by simp at h⟩
+                simp only [Res.ok.injEq] at h; obtain ⟨_, rfl⟩ := h
+                set X : MachineState := { τ with
+                  gates := Loom.Fun.update τ.gates gid
+                    { (τ.gates gid) with act := none } } with hX
+                have hXd : X.doms = τ.doms := rfl
+                refine ⟨gid, act, hserv, hgact, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+                · intro g' hg'
+                  show Loom.Fun.update τ.gates gid _ g' = σ.gates g'
+                  rw [Loom.Fun.update_ne _ _ _ _ hg']
+                  exact congrFun hτ.1 g'
+                · show (Loom.Fun.update τ.gates gid _ gid).act = none
+                  rw [Loom.Fun.update_same]
+                · show (Loom.Fun.update τ.gates gid _ gid).config = _
+                  rw [Loom.Fun.update_same]
+                  show (τ.gates gid).config = (σ.gates gid).config
+                  rw [congrFun hτ.1 gid]
+                · -- maxDonation
+                  intro e'
+                  by_cases hecl : e' = act.caller
+                  · subst hecl
+                    rw [setDom_doms_same]
+                    show (((_ : MachineState).doms act.caller).setReg
+                      act.callerRd reply).maxDonation = _
+                    rw [setDom_doms_same]
+                    unfold DomainState.setReg
+                    split
+                    · by_cases hecd : act.caller = c.d
+                      · rw [hecd, setDom_doms_same, hXd]; exact hτ.2.2.2.1 c.d
+                      · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.1 act.caller
+                    · by_cases hecd : act.caller = c.d
+                      · rw [hecd, setDom_doms_same, hXd]; exact hτ.2.2.2.1 c.d
+                      · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.1 act.caller
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl]
+                    by_cases hecd : e' = c.d
+                    · subst hecd
+                      rw [setDom_doms_same, hXd]; exact hτ.2.2.2.1 c.d
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.1 e'
+                · -- budgets outside c.d
+                  intro e' hecd
+                  by_cases hecl : e' = act.caller
+                  · subst hecl
+                    rw [setDom_doms_same]
+                    show (((_ : MachineState).doms act.caller).setReg
+                      act.callerRd reply).budget = _
+                    rw [setDom_doms_same]
+                    unfold DomainState.setReg
+                    split
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.2 act.caller hecd
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.2.2 act.caller hecd
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl,
+                        setDom_doms_ne _ _ _ _ hecd, hXd]
+                    exact hτ.2.2.2.2 e' hecd
+                · -- serving outside c.d
+                  intro e' hecd
+                  by_cases hecl : e' = act.caller
+                  · subst hecl
+                    rw [setDom_doms_same]
+                    show (((_ : MachineState).doms act.caller).setReg
+                      act.callerRd reply).serving = _
+                    rw [setDom_doms_same]
+                    unfold DomainState.setReg
+                    split
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.1 act.caller
+                    · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.2.1 act.caller
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl,
+                        setDom_doms_ne _ _ _ _ hecd, hXd]
+                    exact hτ.2.2.1 e'
+                · -- serving of c.d restored
+                  by_cases hecl : c.d = act.caller
+                  · rw [← hecl, setDom_doms_same]
+                    show (((_ : MachineState).doms c.d).setReg
+                      act.callerRd reply).serving = _
+                    unfold DomainState.setReg
+                    split
+                    · rw [setDom_doms_same, setDom_doms_same]
+                    · rw [setDom_doms_same, setDom_doms_same]
+                  · rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl,
+                        setDom_doms_same]
+                · -- run outside act.caller
+                  intro e' hecl
+                  rw [setDom_doms_ne _ _ _ _ hecl, setDom_doms_ne _ _ _ _ hecl]
+                  by_cases hecd : e' = c.d
+                  · subst hecd
+                    rw [setDom_doms_same]
+                    show ((X.doms c.d)).run = _
+                    rw [hXd]; exact hτ.2.1 c.d
+                  · rw [setDom_doms_ne _ _ _ _ hecd, hXd]; exact hτ.2.1 e'
+                · -- the caller runs
+                  rw [setDom_doms_same]
+                  show (((_ : MachineState).doms act.caller).setReg
+                    act.callerRd reply).run = _
+                  rw [setDom_doms_same]
+                  unfold DomainState.setReg
+                  split <;> rfl
+  exact ⟨fun a σ' h => (body _ h).1 a σ' rfl, fun er σ' h => (body _ h).2 er σ' rfl⟩
+
+/-- **The exec-level chain classification** (the 6th ISA sweep): every
+instruction's `exec` either frames the chain observables (`ChainOut` — the
+22 calm ops and *every* err outcome), or is a successful `gate_call`
+(`GateCallShape`), a successful `gate_return` (`GateReturnShape`), or the
+voluntary `halt` (`haltDom`). -/
+theorem exec_chain (instr) (hmem : instr ∈ isa) (c : Ctx) (σ : MachineState) :
+    (∀ a σ', instr.sem.exec c σ = .ok a σ' →
+      ChainOut c.d σ σ' ∨ GateCallShape c σ σ' ∨ GateReturnShape c σ σ' ∨
+      σ' = σ.haltDom c.d 0) ∧
+    (∀ er σ', instr.sem.exec c σ = .err er σ' → ChainOut c.d σ σ') := by
+  have hmem' : instr ∈ Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system := by
+    have hiseq : Machines.Lnp64u.isa =
+      (Machines.Lnp64u.Isa.base ++ Machines.Lnp64u.Isa.system).toArray := rfl
+    rw [hiseq, Array.mem_toArray] at hmem; exact hmem
+  have ofChainLe : ∀ {mm : SpecM Unit}, ChainLe c.d mm →
+      (instr.sem.exec c σ = mm σ) →
+      (∀ a σ', instr.sem.exec c σ = .ok a σ' →
+        ChainOut c.d σ σ' ∨ GateCallShape c σ σ' ∨ GateReturnShape c σ σ' ∨
+        σ' = σ.haltDom c.d 0) ∧
+      (∀ er σ', instr.sem.exec c σ = .err er σ' → ChainOut c.d σ σ') := by
+    intro mm h heq
+    exact ⟨fun a σ' he => .inl ((h σ).1 a σ' (heq ▸ he)),
+           fun er σ' he => (h σ).2 er σ' (heq ▸ he)⟩
+  rcases List.mem_append.mp hmem' with hb | hs
+  · exact ofChainLe (base_chain_le c.d instr hb c) rfl
+  · fin_cases hs
+    case _ => -- cap_dup
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.reg _ _) fun dw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (match e.kind with
+        | .mem base len perms =>
+            Machines.Lnp64u.Isa.narrow base len perms dw >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h
+        | .gate gid =>
+            (Pure.pure (CapKind.gate gid) : SpecM CapKind) >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived c.d kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h)
+      cases e.kind with
+      | mem b l p =>
+          exact ChainLe.bind (ChainLe.narrow _ _ _ _) fun kind =>
+            ChainLe.bind (ChainLe.allocDerived _ _ _) fun h => ChainLe.setReg _ _ _ _
+      | gate i =>
+          exact ChainLe.bind (ChainLe.pure _) fun kind =>
+            ChainLe.bind (ChainLe.allocDerived _ _ _) fun h => ChainLe.setReg _ _ _ _
+    case _ => -- cap_drop
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (SpecM.get >>= fun σ0 =>
+        SpecM.set ((((match σ0.parentOf c.d s with
+            | some p => σ0.reparent ⟨c.d, s, g⟩ p
+            | none => σ0.orphanChildren ⟨c.d, s, g⟩).clearSlot c.d s).sweepRegions).sweepMover) >>=
+          fun _ => SpecM.setReg c.d c.op.rd 0)
+      refine ChainLe.getD _ fun σ0 => ?_
+      constructor
+      · intro a σ' he
+        cases hp : σ0.parentOf c.d s with
+        | some p =>
+            rw [hp] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            refine ChainOut.trans ?_
+              (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+                (by unfold DomainState.setReg; split <;> rfl)
+                (fun _ => by unfold DomainState.setReg; split <;> rfl))
+            exact (reparent_chainOut c.d σ0 _ _).trans
+              ((clearSlot_chainOut c.d _ c.d s).trans
+                ((sweepRegions_chainOut c.d _).trans (sweepMover_chainOut c.d _)))
+        | none =>
+            rw [hp] at he
+            simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+            injection he with _ h2; subst h2
+            refine ChainOut.trans ?_
+              (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+                (by unfold DomainState.setReg; split <;> rfl)
+                (fun _ => by unfold DomainState.setReg; split <;> rfl))
+            exact (orphanChildren_chainOut c.d σ0 _).trans
+              ((clearSlot_chainOut c.d _ c.d s).trans
+                ((sweepRegions_chainOut c.d _).trans (sweepMover_chainOut c.d _)))
+      · intro er σ' he
+        cases hp : σ0.parentOf c.d s with
+        | some p => rw [hp] at he
+                    simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+        | none => rw [hp] at he
+                  simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+    case _ => -- cap_revoke
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (SpecM.require (decide (e.kind.cls = .mem)) .badCap >>= fun _ =>
+        SpecM.get >>= fun σ0 =>
+        SpecM.set (((σ0.destroyMarked (σ0.marks ⟨c.d, s, g⟩)).sweepRegions).sweepMover) >>=
+        fun _ => SpecM.setReg c.d c.op.rd 0)
+      refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+      refine ChainLe.getD _ fun σ0 => ?_
+      constructor
+      · intro a σ' he
+        simp only [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+        injection he with _ h2; subst h2
+        refine ChainOut.trans ?_
+          (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+            (by unfold DomainState.setReg; split <;> rfl)
+            (fun _ => by unfold DomainState.setReg; split <;> rfl))
+        exact (destroyMarked_chainOut c.d σ0 _).trans
+          ((sweepRegions_chainOut c.d _).trans (sweepMover_chainOut c.d _))
+      · intro er σ' he
+        simp [SpecM.set, specM_bind, SpecM.setReg, SpecM.modify] at he
+    case _ => -- mem_grant
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.reg _ _) fun dw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (match e.kind with
+        | .gate _ => (SpecM.raise .badCap : SpecM Unit)
+        | .mem base len perms =>
+            Machines.Lnp64u.Isa.narrow base len perms dw >>= fun kind =>
+            Machines.Lnp64u.Isa.allocDerived (descDom dw) kind ⟨c.d, s, g⟩ >>= fun h =>
+            SpecM.setReg c.d c.op.rd h)
+      cases e.kind with
+      | gate gid => exact ChainLe.raise _
+      | mem base len perms =>
+          exact ChainLe.bind (ChainLe.narrow _ _ _ _) fun kind =>
+            ChainLe.bind (ChainLe.allocDerived _ _ _) fun h => ChainLe.setReg _ _ _ _
+    case _ => -- map
+      refine ofChainLe ?_ rfl
+      refine ChainLe.bind (ChainLe.reg _ _) fun hw => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun r => ?_
+      obtain ⟨s, g, e⟩ := r
+      show ChainLe c.d (match e.kind with
+        | .gate _ => (SpecM.raise .badCap : SpecM Unit)
+        | .mem base len perms =>
+            SpecM.updDom c.d (fun ds =>
+              { ds with regions :=
+                  (Loom.Fun.update ds.regions
+                    ⟨(c.op.imm.extractLsb' 0 2).toNat, (c.op.imm.extractLsb' 0 2).isLt⟩
+                    (some { base := base, len := len, perms := perms
+                            backing := ⟨c.d, s, g⟩ })) }) >>= fun _ =>
+            SpecM.setReg c.d c.op.rd 0)
+      cases e.kind with
+      | gate gid => exact ChainLe.raise _
+      | mem base len perms =>
+          exact ChainLe.bind
+            (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+              (fun _ _ => rfl))
+            fun _ => ChainLe.setReg _ _ _ _
+    case _ => -- unmap
+      refine ofChainLe ?_ rfl
+      exact ChainLe.bind
+        (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+          (fun _ _ => rfl))
+        fun _ => ChainLe.setReg _ _ _ _
+    case _ => -- gate_call
+      exact ⟨fun a σ' he => .inr (.inl ((gatecall_chain c σ).1 a σ' he)),
+             fun er σ' he => ChainOut.of_eq ((gatecall_chain c σ).2 er σ' he)⟩
+    case _ => -- gate_return
+      exact ⟨fun a σ' he => .inr (.inr (.inl ((gatereturn_chain c σ).1 a σ' he))),
+             fun er σ' he => ChainOut.of_eq ((gatereturn_chain c σ).2 er σ' he)⟩
+    case _ => -- move
+      refine ofChainLe ?_ rfl
+      refine ChainLe.getD _ fun σg => (?_ : ChainLe c.d _) σg
+      refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+      refine ChainLe.bind (ChainLe.reg _ _) fun aw => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun srcH => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun dstH => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun lenW => ?_
+      refine ChainLe.bind (ChainLe.load _ _) fun stW => ?_
+      refine ChainLe.bind (ChainLe.capLive _ _) fun rs => ?_
+      obtain ⟨ss, gs_, es⟩ := rs
+      refine ChainLe.bind (ChainLe.capLive _ _) fun rd_ => ?_
+      obtain ⟨sd, gd, ed⟩ := rd_
+      show ChainLe c.d (match es.kind, ed.kind with
+        | .mem sb sl sp, .mem db dl dp =>
+            SpecM.require sp.r .permDenied >>= fun _ =>
+            SpecM.require dp.w .permDenied >>= fun _ =>
+            SpecM.require (decide (lenW.toNat ≤ sl.toNat) && decide (lenW.toNat ≤ dl.toNat))
+              .outOfRange >>= fun _ =>
+            SpecM.get >>= fun σ1 =>
+            SpecM.demand (σ1.domCovers c.d (stW.setWidth 12)
+              { r := false, w := true, x := false }) .memoryAuthority >>= fun _ =>
+            SpecM.set ({ σ1 with mover :=
+              (some { owner := c.d, src := ⟨c.d, ss, gs_⟩, dst := ⟨c.d, sd, gd⟩
+                      srcCur := sb, dstCur := db, remaining := lenW.toNat
+                      statusAddr := stW.setWidth 12 }) }) >>= fun _ =>
+            SpecM.setReg c.d c.op.rd 0
+        | _, _ => (SpecM.raise .badCap : SpecM Unit))
+      cases es.kind with
+      | gate gi =>
+          cases ed.kind with
+          | gate _ => exact ChainLe.raise _
+          | mem db dl dp => exact ChainLe.raise _
+      | mem sb sl sp =>
+          cases ed.kind with
+          | gate _ => exact ChainLe.raise _
+          | mem db dl dp =>
+              refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+              refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+              refine ChainLe.bind (ChainLe.require _ _) fun _ => ?_
+              refine ChainLe.getD _ fun σ1 => ?_
+              constructor
+              · intro a σ' he
+                by_cases hcov : σ1.domCovers c.d (stW.setWidth 12)
+                    { r := false, w := true, x := false }
+                · simp only [SpecM.demand, hcov, if_true, specM_pure, specM_bind, SpecM.set,
+                    SpecM.setReg, SpecM.modify] at he
+                  injection he with _ h2; subst h2
+                  refine ChainOut.trans ?_
+                    (ChainOut.setDomOf _ c.d c.d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+                      (by unfold DomainState.setReg; split <;> rfl)
+                      (fun _ => by unfold DomainState.setReg; split <;> rfl))
+                  exact ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+                · simp [SpecM.demand, hcov, SpecM.fatal, specM_bind] at he
+              · intro er σ' he
+                by_cases hcov : σ1.domCovers c.d (stW.setWidth 12)
+                    { r := false, w := true, x := false }
+                · simp [SpecM.demand, hcov, specM_pure, specM_bind, SpecM.set,
+                    SpecM.setReg, SpecM.modify] at he
+                · simp [SpecM.demand, hcov, SpecM.fatal, specM_bind] at he
+    case _ => -- yield
+      refine ofChainLe ?_ rfl
+      exact ChainLe.bind
+        (ChainLe.updDomOf _ _ _ (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+          (fun _ h => absurd rfl h))
+        fun _ => ChainLe.setReg _ _ _ _
+    case _ => -- halt
+      constructor
+      · intro a σ' he
+        refine .inr (.inr (.inr ?_))
+        simp only [SpecM.modify] at he
+        injection he with _ h2; exact h2.symm
+      · intro er σ' he
+        simp [SpecM.modify] at he
+
+/-! ## Retire-level chain shapes
+
+`exec_chain`'s postconditions are stated against the pc-bumped state and a
+`Ctx`; the T6 counting works at `retire`/`corePhase` granularity against the
+pre-cycle state. `CallShape`/`RetShape`/`HaltShape` are the domain-indexed
+versions, closed under pre-composition with a `ChainOut` frame, and
+`retire_chain` is the resulting retire-level classification. -/
+
+/-- The serving-chain depth a `gate_call` by `d` would record (matches
+`Isa.Wip.gateDepth` at `c.d = d`). -/
+def chainDepthAt (σ : MachineState) (d : DomainId) : Nat :=
+  match (σ.doms d).serving with
+  | some g' =>
+      match (σ.gates g').act with
+      | some a => a.depth + 1
+      | none => 1
+  | none => 1
+
+theorem gateDepth_eq_chainDepthAt (c : Ctx) (σ : MachineState) :
+    Machines.Lnp64u.Isa.Wip.gateDepth c σ = chainDepthAt σ c.d := rfl
+
+theorem chainDepthAt_congr {σ σ1 : MachineState} (d : DomainId)
+    (hs : (σ1.doms d).serving = (σ.doms d).serving) (hg : σ1.gates = σ.gates) :
+    chainDepthAt σ1 d = chainDepthAt σ d := by
+  unfold chainDepthAt
+  rw [hs, hg]
+
+/-- Domain-indexed `GateCallShape` (see there for the clause-by-clause
+reading), plus the recorded depth equation. -/
+def CallShape (d : DomainId) (σ σ' : MachineState) : Prop :=
+  ∃ gid act,
+    (σ.gates gid).act = none ∧
+    (σ.gates gid).config.callee ≠ d ∧
+    (σ.doms (σ.gates gid).config.callee).run = .running ∧
+    (σ.doms (σ.gates gid).config.callee).serving = none ∧
+    act.caller = d ∧
+    act.depth = chainDepthAt σ d ∧
+    act.depth ≤ maxChainDepth ∧
+    act.donated = (σ.doms d).maxDonation ∧
+    (∀ g', g' ≠ gid → σ'.gates g' = σ.gates g') ∧
+    (σ'.gates gid).act = some act ∧
+    (σ'.gates gid).config = (σ.gates gid).config ∧
+    (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+    (∀ e, e ≠ d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+    (∀ e, e ≠ (σ.gates gid).config.callee → (σ'.doms e).serving = (σ.doms e).serving) ∧
+    (σ'.doms (σ.gates gid).config.callee).serving = some gid ∧
+    (∀ e, e ≠ d → (σ'.doms e).run = (σ.doms e).run) ∧
+    (σ'.doms d).run = .blocked gid
+
+/-- Domain-indexed `GateReturnShape`. -/
+def RetShape (d : DomainId) (σ σ' : MachineState) : Prop :=
+  ∃ gid act,
+    (σ.doms d).serving = some gid ∧
+    (σ.gates gid).act = some act ∧
+    (∀ g', g' ≠ gid → σ'.gates g' = σ.gates g') ∧
+    (σ'.gates gid).act = none ∧
+    (σ'.gates gid).config = (σ.gates gid).config ∧
+    (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+    (∀ e, e ≠ d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+    (∀ e, e ≠ d → (σ'.doms e).serving = (σ.doms e).serving) ∧
+    (σ'.doms d).serving = act.savedServing ∧
+    (∀ e, e ≠ act.caller → (σ'.doms e).run = (σ.doms e).run) ∧
+    (σ'.doms act.caller).run = .running
+
+/-- The chain effect of `d` halting (fault at fetch/decode/retire, voluntary
+`halt`, donation exhaustion): `d` is halted with a cleared serving mark, no
+budget or `maxDonation` moves, and either no gate record moves (`d` was not
+serving a live activation) or `d`'s served gate is freed and its caller
+resumed — the forced unwind. -/
+def HaltShape (d : DomainId) (σ σ' : MachineState) : Prop :=
+  (∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation) ∧
+  (∀ e, e ≠ d → (σ'.doms e).budget = (σ.doms e).budget) ∧
+  (σ'.doms d).run = .halted ∧
+  (σ'.doms d).serving = none ∧
+  (∀ e, e ≠ d → (σ'.doms e).serving = (σ.doms e).serving) ∧
+  ((σ'.gates = σ.gates ∧ (∀ e, e ≠ d → (σ'.doms e).run = (σ.doms e).run)) ∨
+   (∃ g a, (σ.doms d).serving = some g ∧ (σ.gates g).act = some a ∧ a.caller ≠ d ∧
+     (∀ g', g' ≠ g → σ'.gates g' = σ.gates g') ∧ (σ'.gates g).act = none ∧
+     (σ'.gates g).config = (σ.gates g).config ∧
+     (σ'.doms a.caller).run = .running ∧
+     (∀ e, e ≠ d → e ≠ a.caller → (σ'.doms e).run = (σ.doms e).run)))
+
+theorem GateCallShape.toCallShape {c : Ctx} {σ σ' : MachineState}
+    (h : GateCallShape c σ σ') : CallShape c.d σ σ' := by
+  obtain ⟨gid, act, h1, h2, h3, h4, h5, h6, h7, h8, hrest⟩ := h
+  exact ⟨gid, act, h1, h2, h3, h4, h5, h6.trans (gateDepth_eq_chainDepthAt c σ), h7, h8, hrest⟩
+
+theorem GateReturnShape.toRetShape {c : Ctx} {σ σ' : MachineState}
+    (h : GateReturnShape c σ σ') : RetShape c.d σ σ' := h
+
+/-- `CallShape` absorbs a leading `ChainOut` frame. -/
+theorem CallShape.of_chainOut {d : DomainId} {σ σ1 σ' : MachineState}
+    (h0 : ChainOut d σ σ1) (h : CallShape d σ1 σ') : CallShape d σ σ' := by
+  obtain ⟨hg, hrun, hserv, hmax, hbud⟩ := h0
+  obtain ⟨gid, act, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, h15, h16, h17⟩ := h
+  rw [hg] at h1 h2 h3 h4 h9 h11 h14 h15
+  rw [hrun] at h3
+  rw [hserv] at h4
+  rw [hmax d] at h8
+  refine ⟨gid, act, h1, h2, h3, h4, h5,
+    h6.trans (chainDepthAt_congr d (hserv d) hg), h7, h8,
+    h9, h10, h11, fun e => (h12 e).trans (hmax e),
+    fun e he => (h13 e he).trans (hbud e he), fun e he => (h14 e he).trans (hserv e),
+    h15, fun e he => (h16 e he).trans (hrun e), h17⟩
+
+/-- `RetShape` absorbs a leading `ChainOut` frame. -/
+theorem RetShape.of_chainOut {d : DomainId} {σ σ1 σ' : MachineState}
+    (h0 : ChainOut d σ σ1) (h : RetShape d σ1 σ') : RetShape d σ σ' := by
+  obtain ⟨hg, hrun, hserv, hmax, hbud⟩ := h0
+  obtain ⟨gid, act, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11⟩ := h
+  rw [hserv _] at h1
+  rw [hg] at h2 h5
+  refine ⟨gid, act, h1, h2,
+    fun g' hg' => (h3 g' hg').trans (congrFun hg g'), h4, h5,
+    fun e => (h6 e).trans (hmax e), fun e he => (h7 e he).trans (hbud e he),
+    fun e he => (h8 e he).trans (hserv e), h9,
+    fun e he => (h10 e he).trans (hrun e), h11⟩
+
+/-- `HaltShape` absorbs a leading `ChainOut` frame. -/
+theorem HaltShape.of_chainOut {d : DomainId} {σ σ1 σ' : MachineState}
+    (h0 : ChainOut d σ σ1) (h : HaltShape d σ1 σ') : HaltShape d σ σ' := by
+  obtain ⟨hg, hrun, hserv, hmax, hbud⟩ := h0
+  obtain ⟨h1, h2, h3, h4, h5, h6⟩ := h
+  refine ⟨fun e => (h1 e).trans (hmax e), fun e he => (h2 e he).trans (hbud e he),
+    h3, h4, fun e he => (h5 e he).trans (hserv e), ?_⟩
+  rcases h6 with ⟨hgeq, hr⟩ | ⟨g, a, hs, ha, hne, hgo, hga, hgc, hcr, hor⟩
+  · exact .inl ⟨hgeq.trans hg, fun e he => (hr e he).trans (hrun e)⟩
+  · refine .inr ⟨g, a, (hserv d) ▸ hs, (congrFun hg g) ▸ ha, hne,
+      fun g' hg' => (hgo g' hg').trans (congrFun hg g'), hga,
+      hgc.trans (congrFun hg g ▸ rfl), hcr,
+      fun e he1 he2 => (hor e he1 he2).trans (hrun e)⟩
+
+theorem haltBase_maxDonation (σ : MachineState) (d : DomainId) (c : Loom.Word32)
+    (d' : DomainId) : ((σ.haltBase d c).doms d').maxDonation = (σ.doms d').maxDonation := by
+  unfold MachineState.haltBase MachineState.setDom
+  by_cases hd : d' = d
+  · subst hd; simp [Loom.Fun.update_same]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+
+theorem unwindGate_maxDonation (σ : MachineState) (g : GateId) (cl : DomainId)
+    (rd : RegId) (d' : DomainId) :
+    ((σ.unwindGate g cl rd).doms d').maxDonation = (σ.doms d').maxDonation := by
+  unfold MachineState.unwindGate MachineState.setDom
+  by_cases hd : d' = cl
+  · subst hd
+    simp only [Loom.Fun.update_same]
+    unfold DomainState.setReg
+    split <;> rfl
+  · simp [Loom.Fun.update_ne _ _ _ _ hd]
+
+/-- `haltDom` realizes `HaltShape` — provided the unwound caller (if any) is
+not the halting domain itself, which `Wf.gate_serving` guarantees whenever
+the halting domain is running. -/
+theorem haltDom_chainShape (σ : MachineState) (d : DomainId) (cause : Loom.Word32)
+    (hnc : ∀ g a, (σ.doms d).serving = some g → (σ.gates g).act = some a →
+      a.caller ≠ d) :
+    HaltShape d σ (σ.haltDom d cause) := by
+  cases hserv : (σ.doms d).serving with
+  | none =>
+      rw [haltDom_base σ d cause hserv]
+      refine ⟨fun e => haltBase_maxDonation σ d cause e, fun e _ => haltBase_budget σ d cause e,
+        ?_, ?_, ?_, .inl ⟨rfl, ?_⟩⟩
+      · rw [haltBase_run]; simp
+      · rw [haltBase_serving]; simp
+      · intro e he; rw [haltBase_serving, if_neg he]
+      · intro e he; rw [haltBase_run, if_neg he]
+  | some g =>
+      cases hact : (σ.gates g).act with
+      | none =>
+          rw [haltDom_base' σ d cause g hserv hact]
+          refine ⟨fun e => haltBase_maxDonation σ d cause e,
+            fun e _ => haltBase_budget σ d cause e, ?_, ?_, ?_, .inl ⟨rfl, ?_⟩⟩
+          · rw [haltBase_run]; simp
+          · rw [haltBase_serving]; simp
+          · intro e he; rw [haltBase_serving, if_neg he]
+          · intro e he; rw [haltBase_run, if_neg he]
+      | some a =>
+          have hcne : a.caller ≠ d := hnc g a hserv hact
+          rw [haltDom_unwind σ d cause g a hserv hact]
+          refine ⟨fun e => (unwindGate_maxDonation _ g a.caller a.callerRd e).trans
+              (haltBase_maxDonation σ d cause e),
+            fun e _ => (unwindGate_budget _ g a.caller a.callerRd e).trans
+              (haltBase_budget σ d cause e), ?_, ?_, ?_,
+            .inr ⟨g, a, hserv, hact, hcne, ?_, ?_, ?_, ?_, ?_⟩⟩
+          · rw [unwindGate_run, if_neg hcne.symm, haltBase_run, if_pos rfl]
+          · rw [unwindGate_serving, haltBase_serving, if_pos rfl]
+          · intro e he
+            rw [unwindGate_serving, haltBase_serving, if_neg he]
+          · intro g' hg'
+            show Loom.Fun.update _ g _ g' = σ.gates g'
+            rw [Loom.Fun.update_ne _ _ _ _ hg']
+            rfl
+          · rw [unwindGate_gates_act, if_pos rfl]
+          · rw [unwindGate_gates_config]; rfl
+          · rw [unwindGate_run, if_pos rfl]
+          · intro e he1 he2
+            rw [unwindGate_run, if_neg he2, haltBase_run, if_neg he1]
+
+/-- **The retire-level chain classification**: one retirement by a running
+domain `d` is a chain frame, a `gate_call` push, a `gate_return` pop, or a
+halt/unwind — relative to the *pre-retire* state. -/
+theorem retire_chain (σ : MachineState) (d : DomainId) (w : Loom.Word32)
+    (hwf : Wf σ) (hrun : (σ.doms d).run = .running) :
+    ChainOut d σ (retire σ d w) ∨ CallShape d σ (retire σ d w) ∨
+    RetShape d σ (retire σ d w) ∨ HaltShape d σ (retire σ d w) := by
+  have hnc : ∀ g a, (σ.doms d).serving = some g → (σ.gates g).act = some a →
+      a.caller ≠ d := by
+    intro g a hs ha heq
+    have := (hwf.gate_serving g a ha).2.1
+    rw [heq, hrun] at this
+    exact absurd this (by simp)
+  unfold retire
+  split
+  · exact .inr (.inr (.inr (haltDom_chainShape σ d _ hnc)))
+  · rename_i instr hdec
+    set σ1 := σ.setDom d (fun ds => { ds with pc := ds.pc + 1 }) with hσ1
+    have h01 : ChainOut d σ σ1 :=
+      ChainOut.setDomOf σ d d _ rfl rfl rfl (fun _ => rfl)
+    have hnc1 : ∀ g a, (σ1.doms d).serving = some g → (σ1.gates g).act = some a →
+        a.caller ≠ d := by
+      intro g a hs ha
+      rw [h01.2.2.1 d] at hs
+      rw [congrFun h01.1 g] at ha
+      exact hnc g a hs ha
+    obtain ⟨hok, herr⟩ := exec_chain instr (Loom.Isa.decode_mem isa hdec)
+      { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1
+    cases hexr : instr.sem.exec { d := d, pc := (σ.doms d).pc, op := operandsOf w } σ1 with
+    | ok a σ' =>
+        simp only [hexr]
+        rcases hok a σ' hexr with hc | hcall | hret | hhalt
+        · exact .inl (h01.trans hc)
+        · exact .inr (.inl (CallShape.of_chainOut h01 hcall.toCallShape))
+        · exact .inr (.inr (.inl (RetShape.of_chainOut h01 hret.toRetShape)))
+        · refine .inr (.inr (.inr (HaltShape.of_chainOut h01 ?_)))
+          exact hhalt ▸ haltDom_chainShape σ1 d 0 hnc1
+    | err er σ' =>
+        simp only [hexr]
+        refine .inl ((h01.trans (herr er σ' hexr)).trans ?_)
+        exact ChainOut.setDomOf σ' d d _ (setReg_run _ _ _) (setReg_serving _ _ _)
+          (by unfold DomainState.setReg; split <;> rfl)
+          (fun _ => by unfold DomainState.setReg; split <;> rfl)
+    | fault f =>
+        simp only [hexr]
+        exact .inr (.inr (.inr (haltDom_chainShape σ d _ hnc)))
+
+/-- The chain effect of an issue cycle for domain `e` charging payer `p`
+cost `c`: no run/serving/maxDonation moves, `p` is charged exactly `c`, no
+other budget moves, and the gate records are untouched (a non-serving
+issuer) or exactly the served gate's `donated` is drawn down by `c`. -/
+def IssueShape (e p : DomainId) (c : Nat) (σ σ' : MachineState) : Prop :=
+  (∀ e', (σ'.doms e').run = (σ.doms e').run) ∧
+  (∀ e', (σ'.doms e').serving = (σ.doms e').serving) ∧
+  (∀ e', (σ'.doms e').maxDonation = (σ.doms e').maxDonation) ∧
+  (σ'.doms p).budget = (σ.doms p).budget - c ∧
+  (∀ e', e' ≠ p → (σ'.doms e').budget = (σ.doms e').budget) ∧
+  (((σ.doms e).serving = none ∧ σ'.gates = σ.gates) ∨
+   (∃ g a, (σ.doms e).serving = some g ∧ (σ.gates g).act = some a ∧ c ≤ a.donated ∧
+     (∀ g', g' ≠ g → σ'.gates g' = σ.gates g') ∧
+     (σ'.gates g).act = some { a with donated := a.donated - c } ∧
+     (σ'.gates g).config = (σ.gates g).config))
+
+/-- **The corePhase-level chain classification**: every core cycle is
+exactly one of idle/stall (state frozen), burn (inflight countdown only), a
+retirement by the running in-flight domain (retire-level shapes), a
+fault-halt of the scheduled domain, or an issue (`IssueShape`, with the
+in-flight instruction latched at its positive cost). -/
+theorem corePhase_chain (m : Manifest) (σ : MachineState) (hwf : Wf σ) :
+    (corePhase m σ = σ ∧ σ.inflight = none ∧ (schedule m σ = none ∨ StallsAt m σ)) ∨
+    (∃ fl, σ.inflight = some fl ∧ 1 < fl.cyclesLeft ∧
+      corePhase m σ =
+        { σ with inflight := some { fl with cyclesLeft := fl.cyclesLeft - 1 } }) ∨
+    (∃ fl, σ.inflight = some fl ∧ fl.cyclesLeft ≤ 1 ∧
+      (σ.doms fl.dom).run = .running ∧ (corePhase m σ).inflight = none ∧
+      (ChainOut fl.dom σ (corePhase m σ) ∨ CallShape fl.dom σ (corePhase m σ) ∨
+       RetShape fl.dom σ (corePhase m σ) ∨ HaltShape fl.dom σ (corePhase m σ))) ∨
+    (∃ e, σ.inflight = none ∧ schedule m σ = some e ∧ (σ.doms e).run = .running ∧
+      (corePhase m σ).inflight = none ∧ HaltShape e σ (corePhase m σ)) ∨
+    (∃ e w c, σ.inflight = none ∧ schedule m σ = some e ∧
+      (σ.doms e).run = .running ∧ 0 < c ∧ c ≤ maxCostBound ∧
+      c ≤ (σ.doms (σ.payer e)).budget ∧
+      (corePhase m σ).inflight = some ⟨e, w, c⟩ ∧
+      IssueShape e (σ.payer e) c σ (corePhase m σ)) := by
+  have hnc : ∀ (e : DomainId), (σ.doms e).run = .running →
+      ∀ g a, (σ.doms e).serving = some g → (σ.gates g).act = some a → a.caller ≠ e := by
+    intro e hrun g a hs ha heq
+    have := (hwf.gate_serving g a ha).2.1
+    rw [heq, hrun] at this
+    exact absurd this (by simp)
+  cases hinf : σ.inflight with
+  | some fl =>
+      by_cases hc : fl.cyclesLeft ≤ 1
+      · -- retire
+        refine .inr (.inr (.inl ⟨fl, rfl, hc, hwf.inflight_running fl hinf, ?_, ?_⟩))
+        · unfold corePhase
+          simp only [hinf, hc, if_true]
+          rw [Wip.retire_inflight]
+        · have hcore : corePhase m σ = retire { σ with inflight := none } fl.dom fl.word := by
+            unfold corePhase; simp only [hinf, hc, if_true]
+          set σI : MachineState := { σ with inflight := none } with hσI
+          have hwfI : Wf σI :=
+            wf_of_skeleton_sameGates σ σI
+              (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl) (fun _ => rfl)
+              (fun _ => rfl) rfl rfl (by simp [hσI]) hwf
+          have hrunI : (σI.doms fl.dom).run = .running := hwf.inflight_running fl hinf
+          have h0 : ChainOut fl.dom σ σI :=
+            ⟨rfl, fun _ => rfl, fun _ => rfl, fun _ => rfl, fun _ _ => rfl⟩
+          rw [hcore]
+          rcases retire_chain σI fl.dom fl.word hwfI hrunI with h | h | h | h
+          · exact .inl (h0.trans h)
+          · exact .inr (.inl (CallShape.of_chainOut h0 h))
+          · exact .inr (.inr (.inl (RetShape.of_chainOut h0 h)))
+          · exact .inr (.inr (.inr (HaltShape.of_chainOut h0 h)))
+      · -- burn
+        refine .inr (.inl ⟨fl, rfl, by omega, ?_⟩)
+        unfold corePhase; simp only [hinf, hc, if_false]
+  | none =>
+      cases hsched : schedule m σ with
+      | none =>
+          refine .inl ⟨?_, rfl, .inl rfl⟩
+          unfold corePhase; simp only [hinf, hsched]
+      | some e =>
+          have hrun : (σ.doms e).run = .running := schedule_running m σ e hsched
+          cases hfetch : fetch σ e with
+          | none =>
+              refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+              · unfold corePhase; simp only [hinf, hsched, hfetch]
+                unfold haltWith
+                rw [haltDom_inflight]
+                exact hinf
+              · have hcore : corePhase m σ = haltWith σ e .memoryAuthority := by
+                  unfold corePhase; simp only [hinf, hsched, hfetch]
+                rw [hcore]
+                exact haltDom_chainShape σ e _ (hnc e hrun)
+          | some w =>
+              cases hdec : Loom.Isa.decode isa w with
+              | none =>
+                  refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+                  · unfold corePhase; simp only [hinf, hsched, hfetch, hdec]
+                    unfold haltWith
+                    rw [haltDom_inflight]
+                    exact hinf
+                  · have hcore : corePhase m σ = haltWith σ e .illegalInstruction := by
+                      unfold corePhase; simp only [hinf, hsched, hfetch, hdec]
+                    rw [hcore]
+                    exact haltDom_chainShape σ e _ (hnc e hrun)
+              | some instr =>
+                  by_cases hbud : instr.cost.cost ≤ (σ.doms (σ.payer e)).budget
+                  · cases hserv : (σ.doms e).serving with
+                    | none =>
+                        refine .inr (.inr (.inr (.inr
+                          ⟨e, w, instr.cost.cost, rfl, rfl, hrun, cost_pos _,
+                           cost_le_maxCostBound _, hbud, ?_⟩)))
+                        unfold corePhase
+                        simp only [hinf, hsched, hfetch, hdec, hbud, if_true, hserv]
+                        refine ⟨trivial, fun e' => ?_, fun e' => ?_, fun e' => ?_, ?_,
+                          fun e' he' => ?_, .inl ⟨hserv, rfl⟩⟩
+                        · by_cases he' : e' = σ.payer e
+                          · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                        · by_cases he' : e' = σ.payer e
+                          · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                        · by_cases he' : e' = σ.payer e
+                          · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                          · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                        · simp [MachineState.setDom, Loom.Fun.update_same]
+                        · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                    | some g =>
+                        cases hact : (σ.gates g).act with
+                        | none =>
+                            refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+                            · unfold corePhase
+                              simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                hserv, hact]
+                              unfold haltWith
+                              rw [haltDom_inflight]
+                              exact hinf
+                            · have hcore : corePhase m σ = haltWith σ e .protocol := by
+                                unfold corePhase
+                                simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                  hserv, hact]
+                              rw [hcore]
+                              exact haltDom_chainShape σ e _ (hnc e hrun)
+                        | some a =>
+                            by_cases hdon : instr.cost.cost ≤ a.donated
+                            · refine .inr (.inr (.inr (.inr
+                                ⟨e, w, instr.cost.cost, rfl, rfl, hrun, cost_pos _,
+                                 cost_le_maxCostBound _, hbud, ?_⟩)))
+                              unfold corePhase
+                              simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                hserv, hact, hdon]
+                              refine ⟨trivial, fun e' => ?_, fun e' => ?_, fun e' => ?_, ?_,
+                                fun e' he' => ?_,
+                                .inr ⟨g, a, hserv, hact, hdon, ?_, ?_, ?_⟩⟩
+                              · by_cases he' : e' = σ.payer e
+                                · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                                · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · by_cases he' : e' = σ.payer e
+                                · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                                · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · by_cases he' : e' = σ.payer e
+                                · subst he'; simp [MachineState.setDom, Loom.Fun.update_same]
+                                · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · simp [MachineState.setDom, Loom.Fun.update_same]
+                              · simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ he']
+                              · intro g' hg'
+                                simp [MachineState.setDom, Loom.Fun.update_ne _ _ _ _ hg']
+                              · simp [MachineState.setDom, Loom.Fun.update_same]
+                              · simp [MachineState.setDom, Loom.Fun.update_same]
+                            · refine .inr (.inr (.inr (.inl ⟨e, rfl, rfl, hrun, ?_, ?_⟩)))
+                              · unfold corePhase
+                                simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                  hserv, hact, hdon, if_false]
+                                unfold haltWith
+                                rw [haltDom_inflight]
+                                exact hinf
+                              · have hcore : corePhase m σ = haltWith σ e .budget := by
+                                  unfold corePhase
+                                  simp only [hinf, hsched, hfetch, hdec, hbud, if_true,
+                                    hserv, hact, hdon, if_false]
+                                rw [hcore]
+                                exact haltDom_chainShape σ e _ (hnc e hrun)
+                  · refine .inl ⟨corePhase_stall m σ e w instr hinf hsched hfetch hdec hbud,
+                      rfl, .inr ⟨e, w, instr, hinf, hsched, hfetch, hdec, hbud⟩⟩
+
+/-! ## The T6 chain invariants
+
+Five auxiliary reachability invariants, all discharged from the chain
+classification (`corePhase_chain`) — no further ISA sweeps:
+
+* `DepthLink` — activation depths increment along the serving chain (what
+  bounds the chain length by `maxChainDepth`);
+* `MaxDonationEq` — the `maxDonation` field is boot-immutable;
+* `DonatedLe` — every live activation's `donated` is at most
+  `maxDonationBound` (the radix bound of the T6 measure);
+* `InflightPos` — a latched instruction always has cycles to burn;
+* `BudgetCap` — budgets never exceed their quota (refills *set*, issues
+  subtract). -/
+
+/-- Activation depths increment along the serving chain. -/
+def DepthLink (σ : MachineState) : Prop :=
+  ∀ g a, (σ.gates g).act = some a →
+    ((σ.doms a.caller).serving = none → a.depth = 1) ∧
+    (∀ g' a', (σ.doms a.caller).serving = some g' → (σ.gates g').act = some a' →
+      a.depth = a'.depth + 1)
+
+/-- The `maxDonation` field never changes from its manifest value. -/
+def MaxDonationEq (m : Manifest) (σ : MachineState) : Prop :=
+  ∀ e, (σ.doms e).maxDonation = (m.doms e).maxDonation
+
+/-- Every live activation's donation is below the machine ceiling. -/
+def DonatedLe (m : Manifest) (σ : MachineState) : Prop :=
+  ∀ g a, (σ.gates g).act = some a → a.donated ≤ maxDonationBound m
+
+/-- A latched instruction has at least one cycle left. -/
+def InflightPos (σ : MachineState) : Prop :=
+  ∀ fl, σ.inflight = some fl → 1 ≤ fl.cyclesLeft
+
+/-- A latched instruction has at most `maxCostBound` cycles left. -/
+def InflightLe (σ : MachineState) : Prop :=
+  ∀ fl, σ.inflight = some fl → fl.cyclesLeft ≤ maxCostBound
+
+/-- Budgets never exceed quota. -/
+def BudgetCap (m : Manifest) (σ : MachineState) : Prop :=
+  ∀ e, (σ.doms e).budget ≤ (m.doms e).budgetQ
+
+/-- The bundled T6 chain invariant. -/
+structure ChainInv (m : Manifest) (σ : MachineState) : Prop where
+  depthLink : DepthLink σ
+  maxDon : MaxDonationEq m σ
+  donatedLe : DonatedLe m σ
+  inflightPos : InflightPos σ
+  inflightLe : InflightLe σ
+  budgetLe : BudgetCap m σ
+
+/-- `DepthLink` transports across any gates- and serving-preserving map. -/
+theorem DepthLink.of_frame {σ σ' : MachineState} (hg : σ'.gates = σ.gates)
+    (hs : ∀ e, (σ'.doms e).serving = (σ.doms e).serving) (hD : DepthLink σ) :
+    DepthLink σ' := by
+  intro g a ha
+  rw [congrFun hg g] at ha
+  obtain ⟨h1, h2⟩ := hD g a ha
+  refine ⟨fun hn => h1 (by rw [hs] at hn; exact hn), fun g' a' hs' ha' => ?_⟩
+  rw [hs] at hs'
+  rw [congrFun hg g'] at ha'
+  exact h2 g' a' hs' ha'
+
+theorem DonatedLe.of_gates {m : Manifest} {σ σ' : MachineState}
+    (hg : σ'.gates = σ.gates) (hD : DonatedLe m σ) : DonatedLe m σ' := by
+  intro g a ha
+  rw [congrFun hg g] at ha
+  exact hD g a ha
+
+theorem MaxDonationEq.of_frame {m : Manifest} {σ σ' : MachineState}
+    (hm : ∀ e, (σ'.doms e).maxDonation = (σ.doms e).maxDonation)
+    (h : MaxDonationEq m σ) : MaxDonationEq m σ' :=
+  fun e => (hm e).trans (h e)
+
+/-! ### Per-shape preservation of `DepthLink` -/
+
+theorem DepthLink.chainOut {cd : DomainId} {σ σ' : MachineState}
+    (h : ChainOut cd σ σ') (hD : DepthLink σ) : DepthLink σ' :=
+  DepthLink.of_frame h.1 h.2.2.1 hD
+
+theorem DepthLink.callShape {d : DomainId} {σ σ' : MachineState} (hwf : Wf σ)
+    (h : CallShape d σ σ') (hD : DepthLink σ) : DepthLink σ' := by
+  obtain ⟨gid, act, hgnone, hcalne, hcalrun, hcalserv, hcaller, hdepth, hdle, hdon,
+    hgo, hga, hgc, hmax, hbud, hso, hsc, hro, hrb⟩ := h
+  intro g0 a0 ha0
+  by_cases hg0 : g0 = gid
+  · subst hg0
+    rw [hga] at ha0
+    injection ha0 with ha0
+    subst ha0
+    rw [hcaller]
+    have hsd : (σ'.doms d).serving = (σ.doms d).serving := hso d (Ne.symm hcalne)
+    constructor
+    · intro hs
+      rw [hsd] at hs
+      rw [hdepth]
+      unfold chainDepthAt
+      simp only [hs]
+    · intro g' a' hs' ha'
+      rw [hsd] at hs'
+      have hg'ne : g' ≠ g0 := by
+        intro hE
+        subst hE
+        have := (hwf.serving_gate d g' hs').2
+        rw [hgnone] at this
+        simp at this
+      rw [hgo g' hg'ne] at ha'
+      rw [hdepth]
+      unfold chainDepthAt
+      simp only [hs', ha']
+  · rw [hgo g0 hg0] at ha0
+    obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+    have hcallerne : a0.caller ≠ (σ.gates gid).config.callee := by
+      intro hE
+      have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+      rw [hE, hcalrun] at hblk
+      exact absurd hblk (by simp)
+    have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcallerne
+    constructor
+    · intro hs
+      exact h1 (hs0 ▸ hs)
+    · intro g' a' hs' ha'
+      rw [hs0] at hs'
+      have hg'ne : g' ≠ gid := by
+        intro hE
+        subst hE
+        exact hcallerne (hwf.serving_gate a0.caller g' hs').1.symm
+      rw [hgo g' hg'ne] at ha'
+      exact h2 g' a' hs' ha'
+
+theorem DepthLink.retShape {d : DomainId} {σ σ' : MachineState} (hwf : Wf σ)
+    (hrun : (σ.doms d).run = .running) (h : RetShape d σ σ') (hD : DepthLink σ) :
+    DepthLink σ' := by
+  obtain ⟨gid, act, hserv, hact, hgo, hga, hgc, hmax, hbud, hso, hsd, hro, hrc⟩ := h
+  intro g0 a0 ha0
+  have hg0 : g0 ≠ gid := by
+    intro hE
+    subst hE
+    rw [hga] at ha0
+    simp at ha0
+  rw [hgo g0 hg0] at ha0
+  obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+  have hcne : a0.caller ≠ d := by
+    intro hE
+    have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+    rw [hE, hrun] at hblk
+    exact absurd hblk (by simp)
+  have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcne
+  constructor
+  · intro hs
+    exact h1 (hs0 ▸ hs)
+  · intro g' a' hs' ha'
+    rw [hs0] at hs'
+    have hg' : g' ≠ gid := by
+      intro hE
+      subst hE
+      have hc := (hwf.serving_gate a0.caller g' hs').1
+      have hc2 := (hwf.serving_gate d g' hserv).1
+      exact hcne (hc.symm.trans hc2)
+    rw [hgo g' hg'] at ha'
+    exact h2 g' a' hs' ha'
+
+theorem DepthLink.haltShape {d : DomainId} {σ σ' : MachineState} (hwf : Wf σ)
+    (hrun : (σ.doms d).run = .running) (h : HaltShape d σ σ') (hD : DepthLink σ) :
+    DepthLink σ' := by
+  obtain ⟨hmax, hbud, hrh, hsdnone, hso, hcase⟩ := h
+  rcases hcase with ⟨hgeq, hro⟩ | ⟨g, a, hsg, hag, hacne, hgo, hga, hgc, hcr, hro⟩
+  · intro g0 a0 ha0
+    rw [congrFun hgeq g0] at ha0
+    obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+    have hcne : a0.caller ≠ d := by
+      intro hE
+      have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+      rw [hE, hrun] at hblk
+      exact absurd hblk (by simp)
+    have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcne
+    refine ⟨fun hs => h1 (hs0 ▸ hs), fun g' a' hs' ha' => ?_⟩
+    rw [hs0] at hs'
+    rw [congrFun hgeq g'] at ha'
+    exact h2 g' a' hs' ha'
+  · intro g0 a0 ha0
+    have hg0 : g0 ≠ g := by
+      intro hE
+      subst hE
+      rw [hga] at ha0
+      simp at ha0
+    rw [hgo g0 hg0] at ha0
+    obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+    have hcne : a0.caller ≠ d := by
+      intro hE
+      have hblk := (hwf.gate_serving g0 a0 ha0).2.1
+      rw [hE, hrun] at hblk
+      exact absurd hblk (by simp)
+    have hs0 : (σ'.doms a0.caller).serving = (σ.doms a0.caller).serving := hso _ hcne
+    refine ⟨fun hs => h1 (hs0 ▸ hs), fun g' a' hs' ha' => ?_⟩
+    rw [hs0] at hs'
+    have hg' : g' ≠ g := by
+      intro hE
+      subst hE
+      have hc := (hwf.serving_gate a0.caller g' hs').1
+      have hc2 := (hwf.serving_gate d g' hsg).1
+      exact hcne (hc.symm.trans hc2)
+    rw [hgo g' hg'] at ha'
+    exact h2 g' a' hs' ha'
+
+theorem DepthLink.issueShape {e p : DomainId} {c : Nat} {σ σ' : MachineState}
+    (h : IssueShape e p c σ σ') (hD : DepthLink σ) : DepthLink σ' := by
+  obtain ⟨hro, hso, hmax, hbp, hbo, hgates⟩ := h
+  rcases hgates with ⟨hsv, hgeq⟩ | ⟨g, a, hsv, hag, hdon, hgo, hga, hgc⟩
+  · exact DepthLink.of_frame hgeq hso hD
+  · intro g0 a0 ha0
+    by_cases hg0 : g0 = g
+    · subst hg0
+      rw [hga] at ha0
+      injection ha0 with ha0
+      subst ha0
+      obtain ⟨h1, h2⟩ := hD g0 a hag
+      constructor
+      · intro hs
+        rw [hso] at hs
+        exact h1 hs
+      · intro g' a' hs' ha'
+        rw [hso] at hs'
+        by_cases hg' : g' = g0
+        · subst hg'
+          have := h2 g' a hs' hag
+          omega
+        · rw [hgo g' hg'] at ha'
+          exact h2 g' a' hs' ha'
+    · rw [hgo g0 hg0] at ha0
+      obtain ⟨h1, h2⟩ := hD g0 a0 ha0
+      constructor
+      · intro hs
+        rw [hso] at hs
+        exact h1 hs
+      · intro g' a' hs' ha'
+        rw [hso] at hs'
+        by_cases hg' : g' = g
+        · subst hg'
+          rw [hga] at ha'
+          injection ha' with ha'
+          have h2' := h2 g' a hs' hag
+          rw [← ha']
+          exact h2'
+        · rw [hgo g' hg'] at ha'
+          exact h2 g' a' hs' ha'
+
+/-! ### Per-shape preservation of `DonatedLe` -/
+
+theorem DonatedLe.callShape {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (hmd : MaxDonationEq m σ) (h : CallShape d σ σ') (hD : DonatedLe m σ) :
+    DonatedLe m σ' := by
+  obtain ⟨gid, act, hgnone, hcalne, hcalrun, hcalserv, hcaller, hdepth, hdle, hdon,
+    hgo, hga, hgc, hmax, hbud, hso, hsc, hro, hrb⟩ := h
+  intro g0 a0 ha0
+  by_cases hg0 : g0 = gid
+  · subst hg0
+    rw [hga] at ha0
+    injection ha0 with ha0
+    subst ha0
+    rw [hdon, hmd d]
+    exact maxDonation_le_bound m d
+  · rw [hgo g0 hg0] at ha0
+    exact hD g0 a0 ha0
+
+theorem DonatedLe.retShape {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (h : RetShape d σ σ') (hD : DonatedLe m σ) : DonatedLe m σ' := by
+  obtain ⟨gid, act, hserv, hact, hgo, hga, hgc, _⟩ := h
+  intro g0 a0 ha0
+  have hg0 : g0 ≠ gid := by
+    intro hE; subst hE; rw [hga] at ha0; simp at ha0
+  rw [hgo g0 hg0] at ha0
+  exact hD g0 a0 ha0
+
+theorem DonatedLe.haltShape {m : Manifest} {d : DomainId} {σ σ' : MachineState}
+    (h : HaltShape d σ σ') (hD : DonatedLe m σ) : DonatedLe m σ' := by
+  obtain ⟨hmax, hbud, hrh, hsdnone, hso, hcase⟩ := h
+  rcases hcase with ⟨hgeq, hro⟩ | ⟨g, a, hsg, hag, hacne, hgo, hga, hgc, hcr, hro⟩
+  · exact DonatedLe.of_gates hgeq hD
+  · intro g0 a0 ha0
+    have hg0 : g0 ≠ g := by
+      intro hE; subst hE; rw [hga] at ha0; simp at ha0
+    rw [hgo g0 hg0] at ha0
+    exact hD g0 a0 ha0
+
+theorem DonatedLe.issueShape {m : Manifest} {e p : DomainId} {c : Nat}
+    {σ σ' : MachineState} (h : IssueShape e p c σ σ') (hD : DonatedLe m σ) :
+    DonatedLe m σ' := by
+  obtain ⟨hro, hso, hmax, hbp, hbo, hgates⟩ := h
+  rcases hgates with ⟨hsv, hgeq⟩ | ⟨g, a, hsv, hag, hdon, hgo, hga, hgc⟩
+  · exact DonatedLe.of_gates hgeq hD
+  · intro g0 a0 ha0
+    by_cases hg0 : g0 = g
+    · subst hg0
+      rw [hga] at ha0
+      injection ha0 with ha0
+      subst ha0
+      exact Nat.le_trans (Nat.sub_le _ _) (hD g0 a hag)
+    · rw [hgo g0 hg0] at ha0
+      exact hD g0 a0 ha0
+
+/-! ### Refill-phase transports -/
+
+theorem refillPhase_maxDonation (m : Manifest) (σ : MachineState) (e : DomainId) :
+    ((refillPhase m σ).doms e).maxDonation = (σ.doms e).maxDonation := by
+  unfold refillPhase
+  by_cases h0 : σ.cycle = 0
+  · rw [if_pos h0]
+  · rw [if_neg h0]
+    by_cases hb : σ.cycle % (m.doms e).periodP = 0
+    · simp [hb]
+    · simp [hb]
+
+theorem refillPhase_budget_le (m : Manifest) (σ : MachineState) (e : DomainId)
+    (h : (σ.doms e).budget ≤ (m.doms e).budgetQ) :
+    ((refillPhase m σ).doms e).budget ≤ (m.doms e).budgetQ := by
+  rcases refillPhase_budget_cases m σ e with h' | ⟨_, _, h'⟩
+  · rw [h']; exact h
+  · rw [h']
+
+/-! ### The invariant, one whole cycle -/
+
+theorem chainInv_step (m : Manifest) (σ : MachineState) (hwf : Wf σ)
+    (hinv : ChainInv m σ) : ChainInv m (step m σ) := by
+  set ρ := refillPhase m σ with hρ
+  have hwfρ : Wf ρ := refillPhase_preserves_wf m σ hwf
+  have hρD : DepthLink ρ :=
+    DepthLink.of_frame (refillPhase_gates m σ) (fun e => refillPhase_serving m σ e)
+      hinv.depthLink
+  have hρM : MaxDonationEq m ρ :=
+    MaxDonationEq.of_frame (fun e => refillPhase_maxDonation m σ e) hinv.maxDon
+  have hρL : DonatedLe m ρ := DonatedLe.of_gates (refillPhase_gates m σ) hinv.donatedLe
+  have hρI : InflightPos ρ := by
+    intro fl hfl
+    rw [refillPhase_inflight] at hfl
+    exact hinv.inflightPos fl hfl
+  have hρIL : InflightLe ρ := by
+    intro fl hfl
+    rw [refillPhase_inflight] at hfl
+    exact hinv.inflightLe fl hfl
+  have hρB : BudgetCap m ρ := fun e => refillPhase_budget_le m σ e (hinv.budgetLe e)
+  set κ := corePhase m ρ with hκ
+  have hκB : BudgetCap m κ := fun e =>
+    Nat.le_trans (Wip.corePhase_budget_le m ρ e) (hρB e)
+  have hκDML : DepthLink κ ∧ MaxDonationEq m κ ∧ DonatedLe m κ ∧
+      (InflightPos κ ∧ InflightLe κ) := by
+    rcases corePhase_chain m ρ hwfρ with
+      ⟨heq, hinfn, _⟩ |
+      ⟨fl, hfl, hgt, heq⟩ |
+      ⟨fl, hfl, hle, hrunfl, hinfn, hsh⟩ |
+      ⟨e, hinfn, hsch, hrune, hinfn', hsh⟩ |
+      ⟨e, w, c, hinfn, hsch, hrune, hcpos, hcle, hcbud, hinfs, hsh⟩
+    · rw [← hκ] at heq
+      rw [heq]
+      exact ⟨hρD, hρM, hρL, hρI, hρIL⟩
+    · rw [← hκ] at heq
+      refine ⟨?_, ?_, ?_, ?_⟩
+      · exact DepthLink.of_frame (by rw [heq]) (fun e => by rw [heq]) hρD
+      · exact MaxDonationEq.of_frame (fun e => by rw [heq]) hρM
+      · exact DonatedLe.of_gates (by rw [heq]) hρL
+      · constructor
+        · intro fl' hfl'
+          rw [heq] at hfl'
+          simp only at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          show 1 ≤ fl.cyclesLeft - 1
+          omega
+        · intro fl' hfl'
+          rw [heq] at hfl'
+          simp only at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          show fl.cyclesLeft - 1 ≤ maxCostBound
+          have := hρIL fl hfl
+          omega
+    · refine ⟨?_, ?_, ?_,
+        fun fl' hfl' => absurd (hinfn ▸ hfl') (by simp),
+        fun fl' hfl' => absurd (hinfn ▸ hfl') (by simp)⟩
+      · rcases hsh with h | h | h | h
+        · exact DepthLink.chainOut h hρD
+        · exact DepthLink.callShape hwfρ h hρD
+        · exact DepthLink.retShape hwfρ hrunfl h hρD
+        · exact DepthLink.haltShape hwfρ hrunfl h hρD
+      · rcases hsh with h | h | h | h
+        · exact MaxDonationEq.of_frame h.2.2.2.1 hρM
+        · obtain ⟨gid, act, h⟩ := h
+          exact MaxDonationEq.of_frame h.2.2.2.2.2.2.2.2.2.2.2.1 hρM
+        · obtain ⟨gid, act, h⟩ := h
+          exact MaxDonationEq.of_frame h.2.2.2.2.2.1 hρM
+        · exact MaxDonationEq.of_frame h.1 hρM
+      · rcases hsh with h | h | h | h
+        · exact DonatedLe.of_gates h.1 hρL
+        · exact DonatedLe.callShape hρM h hρL
+        · exact DonatedLe.retShape h hρL
+        · exact DonatedLe.haltShape h hρL
+    · refine ⟨?_, ?_, ?_,
+        fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp),
+        fun fl' hfl' => absurd (hinfn' ▸ hfl') (by simp)⟩
+      · exact DepthLink.haltShape hwfρ hrune hsh hρD
+      · exact MaxDonationEq.of_frame hsh.1 hρM
+      · exact DonatedLe.haltShape hsh hρL
+    · refine ⟨?_, ?_, ?_, ?_⟩
+      · exact DepthLink.issueShape hsh hρD
+      · exact MaxDonationEq.of_frame hsh.2.2.1 hρM
+      · exact DonatedLe.issueShape hsh hρL
+      · constructor
+        · intro fl' hfl'
+          rw [hinfs] at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          exact hcpos
+        · intro fl' hfl'
+          rw [hinfs] at hfl'
+          injection hfl' with hfl'
+          rw [← hfl']
+          exact hcle
+  obtain ⟨hκD, hκM, hκL, hκI, hκIL⟩ := hκDML
+  have hgs : (step m σ).gates = κ.gates := by
+    show (moverPhase κ).gates = κ.gates
+    exact moverPhase_gates κ
+  have hds : (step m σ).doms = κ.doms := step_doms m σ
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+  · exact DepthLink.of_frame hgs (fun e => by rw [congrFun hds e]) hκD
+  · exact MaxDonationEq.of_frame (fun e => by rw [congrFun hds e]) hκM
+  · exact DonatedLe.of_gates hgs hκL
+  · intro fl hfl
+    rw [Wip.step_inflight_reduce] at hfl
+    exact hκI fl hfl
+  · intro fl hfl
+    rw [Wip.step_inflight_reduce] at hfl
+    exact hκIL fl hfl
+  · intro e
+    rw [congrFun hds e]
+    exact hκB e
+
+/-- **The chain invariant holds at every reachable state.** -/
+theorem chain_invariant (m : Manifest) (hwf : m.WF) :
+    (machine m).Invariant (ChainInv m) := by
+  intro σ hreach
+  induction hreach with
+  | init hi =>
+      subst hi
+      refine ⟨?_, fun e => rfl, ?_, ?_, ?_, fun e => Nat.le_refl _⟩
+      · intro g a ha
+        exact absurd ha (by simp [Manifest.initState])
+      · intro g a ha
+        exact absurd ha (by simp [Manifest.initState])
+      · intro fl hfl
+        exact absurd hfl (by simp [Manifest.initState])
+      · intro fl hfl
+        exact absurd hfl (by simp [Manifest.initState])
+  | @step s s' hprev hstep ih =>
+      have hst : step m s = s' := hstep
+      exact hst ▸ chainInv_step m s (wfa_invariant m hwf s hprev).1 ih
 
 end Machines.Lnp64u
