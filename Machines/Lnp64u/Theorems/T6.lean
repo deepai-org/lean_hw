@@ -40,8 +40,8 @@ H eligible — `run = .running` and `payer H = H` (H serves nothing) with
 (`schedule_priority_le`/`prio_inj`). H's budget never reaches 0: an ALU
 issue charges 2 and occupies the core 3 cycles (issue + 1 burn + retire),
 so H spends at most `2·⌈6/3⌉ = 4 < 6` per period window and is topped
-back to 6 at every boundary; the `cycle = 0` no-refill case is covered by
-the boot budget. C therefore never reaches the core, so none of the three
+back to 6 at every boundary (the boundary at cycle 0 rewrites the boot
+budget, a no-op — the wrapping counter has no boot-skip). C therefore never reaches the core, so none of the three
 unblock mechanisms — `gate_return` retiring, C halting/faulting
 (`haltDom` unwind), or donation exhaustion at C's issue — can ever fire;
 `refillPhase` and `moverPhase` never touch `run`. D stays `.blocked g`
@@ -257,9 +257,11 @@ itemized:
    and `2·Σ Q·(L/P) ≤ L-1` per hyperperiod (`hsched`,
    `periodP_dvd_hyperL`). The cycle-counter lemma is **DONE
    (2026-07-03)**: `(step m σ).cycle = σ.cycle + 1` is
-   `Hostage.step_cycle` (with `stepN_cycle` for windows), via the
-   `CycleEq` combinator sweep (exec never writes `cycle`), mirroring
-   `InflightEq`.
+   `Hostage.step_cycle` (with `stepN_cycle` for windows; since 2026-07-04
+   these are `BitVec 32` equations — the counter wraps — and window
+   arguments reduce mod `P` through `stepN_cycle_mod`, backed by
+   `Manifest.WF.period_dvd`), via the `CycleEq` combinator sweep (exec
+   never writes `cycle`), mirroring `InflightEq`.
 4. **Origin refill**: `origin.budget = budgetQ > 0` (`hpos`,
    `refillPhase_budget_cases`) within one period (≤ `hyperL`,
    `periodP_le_hyperL`) of any cycle; only chain issues draw it down

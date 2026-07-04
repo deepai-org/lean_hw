@@ -101,6 +101,24 @@ theorem periodP_dvd_hyperL (m : Manifest) (d : DomainId) :
   unfold hyperL
   exact mem_dvd_foldl_lcm _ _ 1 d (List.mem_finRange d)
 
+private theorem foldl_lcm_dvd (f : DomainId → Nat) (N : Nat) :
+    ∀ (l : List DomainId) (acc : Nat), acc ∣ N → (∀ d ∈ l, f d ∣ N) →
+      l.foldl (fun a d => Nat.lcm a (f d)) acc ∣ N := by
+  intro l
+  induction l with
+  | nil => intro acc hacc _; exact hacc
+  | cons x xs ih =>
+      intro acc hacc h
+      exact ih _ (Nat.lcm_dvd hacc (h x (by simp)))
+        (fun d hd => h d (List.mem_cons_of_mem _ hd))
+
+/-- The hyperperiod divides `2 ^ 32` (lcm of divisors — from the
+wrapping-timer WF clause `period_dvd`): whole hyperperiods also tile the
+counter's wrap orbit exactly. -/
+theorem hyperL_dvd_pow32 (m : Manifest) (hwf : m.WF) : hyperL m ∣ 2 ^ 32 := by
+  unfold hyperL
+  exact foldl_lcm_dvd _ _ _ _ (Nat.one_dvd _) (fun d _ => hwf.period_dvd d)
+
 private theorem le_foldl_max (f : DomainId → Nat) :
     ∀ (l : List DomainId) (acc : Nat),
       acc ≤ l.foldl (fun a d => max a (f d)) acc ∧
