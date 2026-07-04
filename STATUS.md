@@ -1,5 +1,37 @@
 # STATUS — LNP64-µ / Loom
 
+## ★ 2026-07-04: SPEC MADE PHYSICALLY HONEST — `cycle` IS A WRAPPING `BitVec 32`; R-MC IS UNBOUNDED ★
+
+D-class spec change (user decision): `MachineState.cycle : Nat` → `BitVec 32`, matching the
+hardware's wrapping counter exactly. This resolves the R-MC uninhabitedness finding — with a
+`Nat` counter the spec had no periodic points, so the unbounded simulation against the 32-bit
+core was provably empty.
+
+- **Proof-forced WF clause:** `Manifest.WF.period_dvd : ∀ d, periodP ∣ 2^32` (wrapping-timer
+  periodicity — the refill cadence `cycle % P = 0` stays `P`-periodic across the wrap only
+  under divisibility; same constraint real RTOS tick periods have). `hyperL_dvd_pow32`
+  derived. All checked-in manifests already comply (periods 32/64).
+- **Boot-skip guard removed** from `refillPhase` and `Hw.refillCondE` (`cycle ≠ 0` cannot be
+  implemented against a wrapping counter — boot *is* indistinguishable from a wrap; the
+  cycle-0 refill rewrites the boot quota, a no-op; the wrap boundary must refill).
+- **Counter arithmetic single point of truth:** `step_cycle`/`stepN_cycle` are now `BitVec`
+  equations (wrap silently); every window/boundary argument reduces to `Nat` mod-`P`
+  arithmetic through the one bridging lemma `Hostage.stepN_cycle_mod` (uses `period_dvd`).
+  T1–T9 statements unchanged; T6's counting stack re-proved with *simpler* proofs (the
+  `cycle = 0` case splits vanished).
+- **R-MC upgraded** (`Theorems/RMC.lean`): `abs_run` and `invariant_transport` are
+  horizon-free (∀ n — through any number of wraps), and the unbounded simulation is landed:
+  `refines : Nonempty (Simulation (machine m) (reachCore m))` with `Hw.abs` as the
+  abstraction function, where `reachCore` is the core on its boot orbit (same states/reset/
+  reachable set as `(core m).toTSys` — `reachCore_reachable_iff`; `invariant_pullback`
+  restates transport on the full core). The old `hwrap` side conditions on
+  `square`/`coupled_step` are gone; the same 4 audit-legal sorries remain
+  (`absDom_reset`, `coupled_reset`, `square`, `coupled_step`).
+- `Hw.abs` maps the cycle register **verbatim** (was `.toNat`); `Hw/` otherwise unchanged.
+  Both Lnp64u lockstep tests (256-cycle base + 2000-cycle system, full state) still pass;
+  full `lake build` green; audit clean with no ledger regressions.
+
+
 ## ★★ 2026-07-04: THE LEDGER IS FULLY CLEAN — ALL 49 THEOREMS, T1–T9, ZERO STATED ★★
 
 `lake exe audit`: **49/49 CLEAN, zero STATED entries.** The last two fell this session:

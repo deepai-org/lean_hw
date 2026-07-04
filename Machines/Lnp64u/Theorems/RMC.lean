@@ -103,7 +103,7 @@ What is stated here, all horizon-free:
       fetch/decode/charge/latch vs the spec issue path;
    e. mover: `SysOps.moverAct`'s pre-cycle re-derivations vs
       `moverPhase ∘ corePhase` (kill sweeps, same-cycle store forwarding);
-   f. tick: `cycle + 1` with no wrap (`hwrap`).
+   f. tick: `cycle + 1`, `BitVec` addition on both sides (wraps identically).
 4. `coupled_step` — preservation of `Coupled`: `rctr` increment vs counter
    increment mod `P`, canonical writes (every kind word the circuits write
    is an encoder image), `run` writes ∈ {0,1,2}.
@@ -186,8 +186,8 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
 
 /-! ## The commuting square and coupling preservation -/
 
-/-- **The R-MC square**: below the counter horizon, one core cycle is
-exactly one spec step through `Hw.abs`. Hypotheses: manifest WF (scheduler
+/-- **The R-MC square**: one core cycle is exactly one spec step through
+`Hw.abs`. Hypotheses: manifest WF (scheduler
 determinism) and datapath fit, the hidden-state coupling, reachability on
 both sides (spec-side range invariants — budgets `≤ Q`, `depth <
 maxChainDepth`, `cyclesLeft ≤` max cost, mover regions valid — and the

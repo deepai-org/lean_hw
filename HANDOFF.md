@@ -24,26 +24,41 @@ landed, proof decomposed and in progress).
   RAM stays `$mem`).
 - `README.md` now documents the Design→compile→emit→proof pipeline.
 
-## The one open thread: R-MC (merged; 4 audit-legal sorries remain)
+## The one open thread: R-MC (now UNBOUNDED; 4 audit-legal sorries remain)
 
-**Proof-forced finding:** the planned `Simulation (machine m)
-((core m).toTSys)` is UNINHABITED for any abstraction function — spec
-`cycle : Nat` strictly increases while every concrete orbit is eventually
-periodic (32-bit counter wraps at `2^32`). The honest statement landed
-instead (`Machines/Lnp64u/Theorems/RMC.lean`): horizon-bounded exact
-lockstep `abs_run : ∀ n < 2^32, Hw.abs ((core m).run n reset) = stepN m n
-initState` + `invariant_transport` — which is what actually transports
-T2–T9. Repairs restoring an unbounded simulation (spec cycle as `BitVec
-32`, or epoch-quotient) are D-class spec decisions, deliberately not taken.
+**Resolved 2026-07-04 (D-class, user decision):** the uninhabitedness
+finding (spec `cycle : Nat` strictly increases; concrete orbits are
+eventually periodic) was repaired by making the spec physically honest —
+`MachineState.cycle` is now a **wrapping `BitVec 32`**, exactly the
+hardware register. Proof-forced companion: `Manifest.WF.period_dvd`
+(`periodP ∣ 2^32` per domain; `hyperL_dvd_pow32` derived) — the refill
+cadence stays `P`-periodic across the wrap only under that divisibility
+(same constraint real RTOS tick periods have). The boot-skip guard in
+`refillPhase`/`Hw.refillCondE` is gone (boot is indistinguishable from a
+wrap; the cycle-0 refill rewrites the boot quota, a no-op). Counter
+arithmetic re-plumbed once: `step_cycle`/`stepN_cycle` are `BitVec`
+equations, windows reduce mod `P` through `Hostage.stepN_cycle_mod`.
 
-30 RMC ledger entries CLEAN (assembly induction, encoder round-trip kit,
-reset-lookup machinery with kernel-checked 825-name distinctness,
-`abs_reset` down to one sorry). 4 STATED with itemized recipes:
-`absDom_reset`/`coupled_reset` (mechanical; needs the declList optimization
-documented with `scripts/gen_rmc_reset_tab.py` to keep CI affordable) and
-`square`/`coupled_step` (the large piece — build an `Act.run` read/write
-frame kit first, then 25 per-op cases; `cap_revoke`'s mark engine is the
-one research-grade case).
+R-MC statements are now horizon-free (`Machines/Lnp64u/Theorems/RMC.lean`):
+`abs_run : ∀ n, Hw.abs ((core m).run n reset) = stepN m n initState`,
+`invariant_transport` for every cycle count, and the unbounded
+`refines : Nonempty (Simulation (machine m) (reachCore m))` — the plan's
+simulation for the core *on its boot orbit* (`reachCore` shares states,
+reset, and the whole reachable set with `(core m).toTSys`,
+`reachCore_reachable_iff`; `invariant_pullback` restates transport on the
+full core system). The full-garbage-state-space form is deliberately not
+stated: `square` is conditioned on the physical coupling `Coupled`, and a
+simulation over arbitrary junk register files would need spec-side
+predecessors for garbage states — no verification content.
+
+Ledger: RMC assembly entries CLEAN; the same 4 STATED with itemized
+recipes: `absDom_reset`/`coupled_reset` (mechanical; needs the declList
+optimization documented with `scripts/gen_rmc_reset_tab.py` to keep CI
+affordable) and `square`/`coupled_step` (the large piece — build an
+`Act.run` read/write frame kit first, then 25 per-op cases; `cap_revoke`'s
+mark engine is the one research-grade case; NOTE: the `hwrap` hypotheses
+are gone — the tick arm wraps identically on both sides, and `rctr_sync`
+survives the wrap via `period_dvd`).
 
 ## Optional hardening (unchanged from before)
 
