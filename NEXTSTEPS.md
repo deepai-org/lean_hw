@@ -99,6 +99,9 @@ items marked ★ are the ones reviewers/AEC members check first.
       the full axiom closure of each headline theorem (`#print axioms` per theorem,
       machine-collected). The paper's trust section should be generated from this, not
       hand-written. `ImplementsStandard` should be the only non-kernel axiom listed.
+      *(PARTIALLY IN HAND: `lake exe audit` already enforces the single-axiom
+      whitelist and per-theorem sorry-cone tracking; the delta is printing the
+      per-theorem axiom closures.)*
 - [ ] **State `ImplementsStandard` precisely and minimally.** Reviewers will read this
       axiom character by character. Ensure it quantifies over exactly the µVerilog subset
       you emit, not "the Verilog standard" broadly. Consider splitting it if it currently
@@ -120,15 +123,25 @@ items marked ★ are the ones reviewers/AEC members check first.
       `./scripts/ci.sh` (or a new `scripts/reproduce.sh`) must fetch the pinned
       toolchain, build, run `lake exe audit`, run both lockstep scripts, and diff the
       emitted `.v` against committed goldens. Time it; AEC budgets are ~2–4 hours.
+      *(PARTIALLY IN HAND: `scripts/ci.sh` exists and passes — build + audit +
+      LRAT dual-checker crosscheck. Missing: the lockstep scripts and
+      `Tests.Acc8Bmc` aren't in it, no golden diff, never timed from cold.)*
 - [ ] ★ **Pin everything.** `lean-toolchain` committed; lake manifest committed;
       exact versions of iverilog/verilator + yosys documented; SAT solver version
       pinned (and its LRAT output format noted).
+      *(PARTIALLY IN HAND: `lean-toolchain` (v4.28.0) and the lake manifest are
+      committed. Missing: documented versions of iverilog/yosys/cadical — this box
+      runs yosys 0.33, cadical via `--no-binary --lrat`.)*
 - [ ] ★ **Container image.** Dockerfile (or Nix flake) that reproduces the CI run
       bit-for-bit. Push a tagged image; artifact submissions that "just work" in a
       container get badges, ones that don't get rejected.
 - [ ] **Committed golden artifacts + hashes.** Check in the emitted `Acc8.v` /
       `Lnp64u.v` with SHA-256 hashes, and document the one-liner that verifies a
       downloaded `.v` matches the kernel-checked bytes (the round-trip `#guard` story).
+      *(NOTE: `rtl/` is currently deliberately untracked (regenerate-on-demand);
+      this item reverses that decision — and is the same call as the lnp64u
+      `parseCheck` item in engineering §3 above. Decide once, do both together.
+      Emission is deterministic: today's `lnp64u.v` re-emit was byte-identical.)*
 - [ ] **CI on every push, publicly visible.** GitHub Actions badge running
       `scripts/ci.sh`; add a separate badge for `lake exe audit` so the trust gate is
       visible from the README.
@@ -145,9 +158,18 @@ items marked ★ are the ones reviewers/AEC members check first.
 - [ ] ★ **Lockstep campaign statistics.** How many cycles, how many programs
       (random? directed?), full-state vs. sampled comparison, for both machines.
       "Corroborated by lockstep" needs numbers to survive review.
+      *(PARTIALLY IN HAND: LNP64-µ 256-cycle base-op + 2000-cycle system-op
+      manifests, full-state per-cycle, in Lean (`Tests/Lnp64uCore.lean`) AND in
+      iverilog vs ISS goldens (`scripts/lockstep_lnp64u.sh`); Acc8 likewise
+      (`scripts/lockstep_acc8.sh`). Directed manifests only — no random-program
+      campaign yet; that's the gap for review.)*
 - [ ] **Synthesis results.** Yosys (+ OpenROAD or at minimum a generic synth target)
       area/timing for Acc8 and LNP64-µ. Even one table row each moves the paper from
       "model" to "hardware" in reviewers' eyes. Record exact tool versions/scripts.
+      *(PARTIALLY IN HAND: yosys 0.33 generic-synth cell counts recorded in
+      STATUS.md — LNP64-µ: 1.57M cells / 7,849 FFs / RAM as `$mem_v2`, via the
+      memory-aware flow in `scripts/lockstep_lnp64u.sh`. Missing: Acc8 row in the
+      same table form, timing numbers, OpenROAD.)*
 - [ ] **Baseline comparison.** A qualitative (table-form) comparison against Kami,
       Kôika, Bluespec, Cava/Silver Oak, and translation-validation flows: what is
       proved, what is trusted, where the TCB boundary sits. This is the related-work
@@ -168,6 +190,10 @@ items marked ★ are the ones reviewers/AEC members check first.
 - [ ] **STATUS.md → generated, not hand-edited.** If any part is manual, make
       `lake exe audit` emit it. "Mechanically-audited ledger" is a headline claim;
       it must literally be mechanical.
+      *(CURRENT STATE: the CLEAN/STATED verdicts come from `lake exe audit` but
+      are transcribed into STATUS.md by hand; the narrative header sections are
+      entirely hand-written. The generated/manual split needs to become
+      structural.)*
 - [ ] **Architecture document.** Promote `Hw/DESIGN.md` decisions into a top-level
       ARCHITECTURE.md with the D-numbered decisions, the semantics discipline, and a
       diagram of the trust chain (Design → Module → text → re-parse → #guard).
