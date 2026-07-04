@@ -15,7 +15,8 @@ Walks the compiled environment and enforces the standing self-check
 2. **Sorry policy** — no declaration in our modules outside `Theorems`
    namespaces (or `Wip` segments) may depend on `sorryAx`.
 3. **Axiom policy** — our modules may declare no `axiom` at all except the
-   µVerilog-semantics axiom (once it exists).
+   two declarations that expose the µVerilog tool-boundary assumption:
+   `ImplementsStandard` and `implements_standard_spec`.
 4. **Import DAG (P0)** — no `Loom.*` module may import a `Machines.*`
    module; nothing imports `Tools`.
 
@@ -36,7 +37,8 @@ def collectFor (env : Environment) (n : Name) : Array Name :=
 def whitelistedAxioms : List Name :=
   [`propext, `Classical.choice, `Quot.sound]
 
-/-- The one permitted declared axiom (L4's boundary; not yet defined). -/
+/-- The only permitted project axiom declarations: one boundary assumption
+exposed as an opaque predicate plus its semantic eliminator. -/
 def permittedAxiomDecls : List Name :=
   [`Loom.Emit.MicroVerilog.ImplementsStandard,
    `Loom.Emit.MicroVerilog.implements_standard_spec]
@@ -62,6 +64,13 @@ def classify (axioms : Array Name) : String :=
     else "CLEAN"
   else "FLAGGED"
 
+def formatAxiomList (axioms : Array Name) : String :=
+  let names := (axioms.map (fun a => a.toString)).qsort (· < ·)
+  if names.isEmpty then
+    "[]"
+  else
+    "[" ++ String.intercalate ", " names.toList ++ "]"
+
 def main : IO UInt32 := do
   initSearchPath (← findSysroot)
   let env ← importModules #[{ module := `Loom }, { module := `Machines }] {}
@@ -78,7 +87,7 @@ def main : IO UInt32 := do
             s!"P0 violation: toolchain module {mod} imports {imp.module}"
 
   -- Gather our declarations, module-indexed
-  let mut ledger : Array (Name × String) := #[]
+  let mut ledger : Array (Name × String × Array Name) := #[]
   for (name, info) in env.constants.toList do
     match env.getModuleIdxFor? name with
     | none => pure ()
@@ -93,7 +102,7 @@ def main : IO UInt32 := do
         let axioms := collectFor env name
         if inLedger name && !name.isInternalDetail then
           if let .thmInfo _ := info then
-            ledger := ledger.push (name, classify axioms)
+            ledger := ledger.push (name, classify axioms, axioms)
             if classify axioms == "FLAGGED" then
               failures := failures.push
                 s!"ledger theorem {name} depends on non-whitelisted axioms: {axioms}"
@@ -106,9 +115,13 @@ def main : IO UInt32 := do
             failures := failures.push s!"Rule 1: {name} (in {mod}) uses native_decide/trusted compiler"
 
   IO.println "── Theorem ledger ──────────────────────────────────────────"
-  for (name, status) in ledger.qsort (fun a b => a.1.toString < b.1.toString) do
+  let sortedLedger := ledger.qsort (fun a b => a.1.toString < b.1.toString)
+  for (name, status, _) in sortedLedger do
     IO.println s!"{status.take 6}  {name}"
   IO.println s!"── {ledger.size} ledger theorems ──"
+  IO.println "── Ledger axiom closures ───────────────────────────────────"
+  for (name, _, axioms) in sortedLedger do
+    IO.println s!"axioms {name}: {formatAxiomList axioms}"
 
   if failures.isEmpty then
     IO.println "audit: all checks passed"

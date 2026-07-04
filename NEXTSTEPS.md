@@ -46,9 +46,10 @@ hypothesis — upgrading `no_hostage` to unconditional. Independent of item
   (`#guard` round-trip); make one full-size round-trip genuinely
   kernel-checked (needs the String→ByteArray kernel-cost fix).
 
-- Add `lake build Tests.Acc8Bmc` to `scripts/ci.sh` — the 2026-07-04 cert
-  staleness (compile change silently invalidated the baked LRAT cert;
-  `decide` disproved it) was NOT caught by ci.sh. ~32 s kernel decide.
+- DONE 2026-07-04: `scripts/ci.sh` now explicitly runs
+  `lake build Tests.Acc8Bmc`, so stale baked LRAT certificates are caught by
+  the normal CI path. The target is still intentionally documented because
+  any `Loom/Hw/Compile.lean` change can invalidate the certificate.
 - `parseCheck` kernel round-trip for `rtl/lnp64u.v` (mirror
   `Machines/Acc8/TextRoundTrip.lean`) — closes the printer out of the
   lnp64u TCB the way it's already closed for Acc8. Note: rtl/ is
@@ -85,14 +86,14 @@ relation (T2′/T4′) on the µLog seed; spec-cycle epoch alternatives
   groups on this box and `--prefer`s `lnp64*`/`yosys` names.
 - Baked SAT certificates go stale on ANY `Loom/Hw/Compile.lean` change,
   and `decide` will *disprove* them; regenerate via the untrusted cadical
-  driver (`Loom/Dp/Solver.solve`). `ci.sh` does not currently build
-  `Tests.Acc8Bmc` (item 3 fixes that).
+  driver (`Loom/Dp/Solver.solve`). `ci.sh` now explicitly builds
+  `Tests.Acc8Bmc`.
 - The SpecM sweep pattern has NINE worked instances (SlotGen, Budget,
   Inflight, Authority, Tombstone, GateStep, Hostage's chain kit, DFrame,
   DRel) — never write one from scratch.
 - Audit policy: sorries only in `Machines/*/Theorems/` + `Wip` namespaces;
-  `native_decide` banned; single `ImplementsStandard` axiom whitelisted.
-  `lake exe audit` is the gate; `scripts/ci.sh` the full check.
+  `native_decide` banned; only the two µVerilog boundary declarations are
+  whitelisted. `lake exe audit` is the gate; `scripts/ci.sh` the full check.
 
 ---
 
@@ -108,17 +109,24 @@ items marked ★ are the ones reviewers/AEC members check first.
       paper (proved, no `sorry` anywhere in their dependency cone) vs. explicitly
       future work. Reviewers will `grep -r sorry` — every hit must be in `Theorems/`/`Wip`
       *and* not upstream of anything the paper claims.
-- [ ] ★ **Axiom audit, printed.** Add a `lake exe axioms` (or extend `audit`) that prints
+- [x] ★ **Axiom audit, printed.** Add a `lake exe axioms` (or extend `audit`) that prints
       the full axiom closure of each headline theorem (`#print axioms` per theorem,
       machine-collected). The paper's trust section should be generated from this, not
-      hand-written. `ImplementsStandard` should be the only non-kernel axiom listed.
-      *(PARTIALLY IN HAND: `lake exe audit` already enforces the single-axiom
-      whitelist and per-theorem sorry-cone tracking; the delta is printing the
-      per-theorem axiom closures.)*
-- [ ] **State `ImplementsStandard` precisely and minimally.** Reviewers will read this
+      hand-written. The µVerilog boundary declarations should be the only
+      non-kernel project axioms listed.
+      *(DONE 2026-07-04: `lake exe audit` prints `axioms <theorem>: [...]`
+      for all 92 ledger theorems, reusing the same machine-collected closures
+      that drive the CLEAN/STATED/FLAGGED policy.)*
+- [x] **State `ImplementsStandard` precisely and minimally.** Reviewers will read this
       axiom character by character. Ensure it quantifies over exactly the µVerilog subset
       you emit, not "the Verilog standard" broadly. Consider splitting it if it currently
       bundles simulator + synthesizer assumptions.
+      *(DONE 2026-07-04: `Axiom.lean` now states the boundary as concrete
+      reset/cycle agreement for one emitted µVerilog module and one concrete
+      tool realization, explicitly excluding full-Verilog, timing, physical,
+      and arbitrary-flow claims. The Lean shape is documented as one boundary
+      assumption exposed by the `ImplementsStandard` predicate plus the
+      `implements_standard_spec` axiom.)*
 - [ ] **Close or clearly fence the LNP64-µ ledger gaps.** STATUS.md rows that are
       partial should say *what* is missing (e.g. "noninterference proved for DMA-off
       configurations only"). Honest partiality is fine; vague partiality kills reviews.
@@ -137,8 +145,8 @@ items marked ★ are the ones reviewers/AEC members check first.
       toolchain, build, run `lake exe audit`, run both lockstep scripts, and diff the
       emitted `.v` against committed goldens. Time it; AEC budgets are ~2–4 hours.
       *(PARTIALLY IN HAND: `scripts/ci.sh` exists and passes — build + audit +
-      LRAT dual-checker crosscheck. Missing: the lockstep scripts and
-      `Tests.Acc8Bmc` aren't in it, no golden diff, never timed from cold.)*
+      Acc8 BMC certificate check + LRAT dual-checker crosscheck. Missing: the
+      lockstep scripts, no golden diff, never timed from cold.)*
 - [ ] ★ **Pin everything.** `lean-toolchain` committed; lake manifest committed;
       exact versions of iverilog/verilator + yosys documented; SAT solver version
       pinned (and its LRAT output format noted).
@@ -150,7 +158,9 @@ items marked ★ are the ones reviewers/AEC members check first.
       container get badges, ones that don't get rejected.
 - [ ] **Committed golden artifacts + hashes.** Check in the emitted `Acc8.v` /
       `Lnp64u.v` with SHA-256 hashes, and document the one-liner that verifies a
-      downloaded `.v` matches the kernel-checked bytes (the round-trip `#guard` story).
+      downloaded `.v` matches the emitted bytes that the round-trip checker
+      parses. Do not call these bytes kernel-checked until the full-size
+      round-trip uses kernel reduction rather than compiled evaluation.
       *(NOTE: `rtl/` is currently deliberately untracked (regenerate-on-demand);
       this item reverses that decision — and is the same call as the lnp64u
       `parseCheck` item in engineering §3 above. Decide once, do both together.
@@ -229,8 +239,9 @@ items marked ★ are the ones reviewers/AEC members check first.
       publication. Can be a slightly rougher cut than the submission.
 - [ ] **Decide the paper's single claim.** Candidate: "a proof-carrying HDL toolchain
       where the emitted Verilog's correspondence to the proved model is itself
-      kernel-checked, with a one-axiom TCB to physical reality." Everything not
-      serving that claim moves to future work or paper #2.
+      kernel-checked for at least one full-size artifact, with one narrowly
+      stated µVerilog tool-boundary assumption to physical reality." Everything
+      not serving that claim moves to future work or paper #2.
 - [ ] **Reserve paper #2.** LNP64-µ security theorems (isolation/noninterference/
       revocation down to RTL) → S&P/USENIX/CCS later; don't dilute paper #1 with it
       beyond a teaser.

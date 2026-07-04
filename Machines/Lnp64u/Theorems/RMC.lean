@@ -12,7 +12,7 @@ The machine-code refinement theorem: the EDSL core (`Hw.core m`, 1 hardware
 cycle = 1 spec cycle) tracks the ISS (`machine m` = `Step.step` iterated)
 exactly through the abstraction function `Hw.abs` of `Hw/Enc.lean`. This is
 what transports T2–T9 from the ISS onto the emitted Verilog (text side via
-the parser round-trip, tool side via the single `ImplementsStandard` axiom).
+the parser round-trip, tool side via the µVerilog tool-boundary assumption).
 
 ## The statement is now the *unbounded* lockstep (resolved 2026-07-04)
 

@@ -98,7 +98,7 @@ def tbLnp64u (_ : Unit) : String := Id.run do
   let final := (List.range simCycles).foldl
     (fun σ _ => canonSp (step sysManifest σ)) sysManifest.initState
   let mut checks : List (String × Nat × Nat) := []  -- (lhs, width, expected)
-  checks := checks ++ [("dut.cycle", 32, final.cycle)]
+  checks := checks ++ [("dut.cycle", 32, final.cycle.toNat)]
   for d in List.finRange numDomains do
     let ds := final.doms d
     checks := checks ++

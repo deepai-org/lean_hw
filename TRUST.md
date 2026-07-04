@@ -42,12 +42,16 @@ the repo at the audit date.
 ## C. Does the proof stack have bugs? (Lean-side TCB, best to worst)
 
 1. **Lean 4 kernel + 3 standard axioms** — shared with Mathlib.
-2. **`ImplementsStandard`** — the one whitelisted axiom. Its precision
-   (quantifying over exactly the emitted µVerilog subset) needs review.
+2. **The µVerilog tool-boundary assumption** — one assumption exposed as
+   two whitelisted axiom declarations: `ImplementsStandard` and
+   `implements_standard_spec`. Its scope is now documented as concrete
+   reset/cycle agreement for a concrete emitted module and tool realization,
+   not a claim about full Verilog or physical implementation effects.
 3. **`Tools/Audit.lean` is a trusted ~100-line compiled tool.** It computes
-   real axiom closures (and caught the T5 `system_preserves` near-miss),
-   but CLEAN/STATED verdicts are repo code, not kernel output. Mitigation:
-   print per-theorem `#print axioms` closures so readers can bypass it.
+   real axiom closures (and caught the T5 `system_preserves` near-miss).
+   Since 2026-07-04, `lake exe audit` prints each ledger theorem's axiom
+   closure, so readers can inspect the raw closure behind each CLEAN/STATED
+   verdict instead of trusting only the summary labels.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
 5. Five superseded sorries in `SystemOpsWf` (`Wip`, unused by anything
    CLEAN) — delete before publication; every `grep -r sorry` hit costs
@@ -62,7 +66,7 @@ the repo at the audit date.
 | EDSL core → Module IR (`compile`) | proved generically, sorry-free |
 | Module → *executed* emission | **`@[implemented_by compileImpl]` — unproved replacement** |
 | Module ↔ emitted text | round-trip `#guard` = **compiled eval, NOT kernel** (Acc8); **lnp64u: none yet** |
-| text → simulator/synthesizer | `ImplementsStandard` + iverilog/yosys corroboration |
+| text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration |
 | netlist → silicon → physics | out of scope (timing closure, glitches, metastability, power side channels) |
 
 - **Finding 1 — R-MC gap.** Today "T1–T9 hold of the RTL" is a
@@ -97,8 +101,9 @@ the repo at the audit date.
 ## F. Verdict vs the seL4 bar
 
 - **Ahead in shape:** verification extends below the ISA into the RTL;
-  a completed chain trusts one Verilog-semantics axiom + the kernel —
-  smaller and cleaner than seL4's TCB statement.
+  a completed chain trusts the Lean kernel plus one narrowly documented
+  µVerilog tool-boundary assumption — smaller and cleaner than seL4's TCB
+  statement.
 - **Behind today:** (1) R-MC gap ⇒ end-to-end guarantee currently
   comparable to seL4, not better; (2) `implemented_by` + eval-level
   guards are unproved TCB residue; (3) T6 conditioned on an unfixed bug;
@@ -113,8 +118,9 @@ the repo at the audit date.
    `parseCheck`; one full-size kernel-checked round-trip.
 4. ● Witness manifests: kernel-checked satisfiability of every theorem's
    hypothesis conjunction.
-5. Axiom-closure printing (de-trust the audit tool) + `ImplementsStandard`
-   wording review (NEXTSTEPS P1).
+5. DONE 2026-07-04: axiom-closure printing landed in `lake exe audit`,
+   and the `ImplementsStandard` wording was narrowed to concrete µVerilog
+   reset/cycle agreement for one emitted module and tool realization.
 6. ● Delete superseded `SystemOpsWf` sorries; scrub every "kernel-checked"
    claim that is actually eval-checked.
 7. External statement review — the one item no code closes.

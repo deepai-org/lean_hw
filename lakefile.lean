@@ -27,9 +27,6 @@ lean_lib Tests
 lean_exe iss where
   root := `Tools.Iss
 
-lean_exe asm where
-  root := `Tools.Asm
-
 lean_exe audit where
   root := `Tools.Audit
   supportInterpreter := true

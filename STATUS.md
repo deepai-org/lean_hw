@@ -209,8 +209,10 @@ gate/serving/run updates — with every supporting lemma in place. — exactly p
 - **`lake exe bookgen`** → `book-out/{lnp64u,acc8}.html` — both ISA books as
   projections of the `isa` arrays.
 - **`lake exe audit`** — the CI gate: walks the ledger, enforces the sorry
-  policy, the single-axiom whitelist, the `native_decide` ban (Rule 1), and
-  the `Loom`-never-imports-`Machines` DAG (P0).
+  policy, the µVerilog-boundary axiom whitelist, the `native_decide` ban
+  (Rule 1), and the `Loom`-never-imports-`Machines` DAG (P0). It also prints
+  the raw axiom closure for each ledger theorem, so the CLEAN/STATED verdicts
+  are auditable from the command output.
 
 ## Theorem ledger (from `lake exe audit`)
 
@@ -362,8 +364,10 @@ statement moving.
 ## The two-item TCB, today
 
 1. The Lean kernel.
-2. `Loom.Emit.MicroVerilog.ImplementsStandard` — the single boundary axiom,
-   whitelisted by audit only for emission-dependent theorems.
+2. The µVerilog tool-boundary assumption, exposed as
+   `Loom.Emit.MicroVerilog.ImplementsStandard` plus
+   `Loom.Emit.MicroVerilog.implements_standard_spec` and whitelisted by
+   audit only for emission-dependent theorems.
 
 No trusted printer, no importers, no solver in the TCB. Mathlib is a
 dependency but adds nothing to the TCB (kernel-checked, P8).

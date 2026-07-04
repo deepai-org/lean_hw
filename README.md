@@ -44,14 +44,18 @@ commit order reproduces the run order).
 - the spec-level ISS is proved to refine the `Design` (A-R for Acc8; R-MC
   for LNP64-µ), so the ledger theorems transport onto the emitted core;
 - the emitted *text* is re-parsed by a verified µVerilog parser and
-  round-trip-checked against the `Module` (a kernel `#guard` on the file
-  bytes — `Machines/Acc8/TextRoundTrip.lean`).
+  round-trip-checked against the `Module` (`Machines/Acc8/TextRoundTrip.lean`;
+  Acc8's full artifact check currently runs through Lean's compiled
+  evaluator, while `Loom/Emit/MicroVerilog/RoundTrip.lean` contains the
+  small kernel-checked instance).
 
-The only unproved link to reality is the single `ImplementsStandard` axiom
-("the simulator/synthesizer implement the Verilog standard") — and even
-that is empirically corroborated by running the emitted RTL in per-cycle
-full-state lockstep against the ISS (`scripts/lockstep_acc8.sh`,
-`scripts/lockstep_lnp64u.sh`).
+The only unproved link to reality is the µVerilog tool-boundary assumption:
+for a concrete emitted module, a concrete simulator/synthesizer realization
+has the reset and one-cycle behavior given by the formal `Module` semantics.
+In Lean this is exposed as the whitelisted `ImplementsStandard` predicate
+plus its spec axiom, and it is empirically corroborated by running the
+emitted RTL in per-cycle full-state lockstep against the ISS
+(`scripts/lockstep_acc8.sh`, `scripts/lockstep_lnp64u.sh`).
 
 ## Orientation
 
@@ -61,8 +65,8 @@ full-state lockstep against the ISS (`scripts/lockstep_acc8.sh`,
 - `Machines/Acc8/`, `Machines/Lnp64u/` — the two machines: ISA spec, ISS,
   EDSL core (`Hw/`), invariants (`Logic/`), ledger theorems (`Theorems/`).
 - `lake exe audit` — the gate: sorries only in `Theorems/`/`Wip`,
-  `native_decide` banned, single axiom whitelisted. `scripts/ci.sh` runs
-  the full check.
+  `native_decide` banned, only the two µVerilog boundary declarations
+  whitelisted. `scripts/ci.sh` runs the full check.
 
 Documents: [`CHARTER.md`](CHARTER.md) (the program — what and why) →
 [`PLAN.md`](PLAN.md) (the task plan — how) → [`STATUS.md`](STATUS.md)
