@@ -1,5 +1,33 @@
 # STATUS — LNP64-µ / Loom
 
+## ★★ 2026-07-04: THE LEDGER IS FULLY CLEAN — ALL 49 THEOREMS, T1–T9, ZERO STATED ★★
+
+`lake exe audit`: **49/49 CLEAN, zero STATED entries.** The last two fell this session:
+
+- **T5 (`noninterference`, `sim`, `catchup_halt`, `catchup_retire`)** — the four engine
+  lemmas (`insulated_step`, `frame_step`, `retire_step_lockstep`, `progress`) closed via two
+  new sweeps: `Logic/DFrame.lean` (unary d-frame: `DCtx`/`DKeep`/`DKLe` over all 25 ops +
+  `DSelf` for d's own `code_local` retirements) and `Logic/DRel.lean` (two-run relational:
+  `RC` coupling, 21-op `exec_rel`, `retire_rel`). No statement changes — the adjudicated
+  signatures survived verbatim.
+- **T6 (`no_hostage`)** — proved bottom-up: whole-cycle chain classification
+  (`corePhase_chain` atop the `ChainOut`/`GateCallShape`/`GateReturnShape` sweep in
+  `Logic/Hostage.lean`), the serving chain as a deterministic relation with head uniqueness
+  (`Logic/HostageChain.lean`), the radix lex measure with chain surgery
+  (`Logic/HostageMeasure.lean`), per-shape foreign-cycle frames (`Logic/HostageFrame.lean`),
+  and the potential/window counting `cycle_master → drain → window → resume_of_measure`
+  (`Logic/HostageCount.lean`). One T6-owned constant honestly adjusted:
+  `interferenceWindow` (endpoint counting certifies `n/P + 2` refill boundaries per window,
+  and the origin-funding wait is absorbed); the `no_hostage` statement is unchanged.
+
+Also this session: the previously-unverified **2000-cycle full-state system-op lockstep
+passed** (Phase 2 claim below is now verified), and `lake exe emit lnp64u` was fixed from a
+115 GB memory blowup (pointer-memoized compile + structural hash-consing in the printer)
+with the emitted RTL passing the 2000-cycle iverilog ISS-golden sim. R-MC (transport of
+T2–T9 onto the emitted core) is stated and in progress in `Theorems/RMC*.lean`.
+
+---
+
 ## ★ L1 CULMINATION: the machine-wide `Wf ∧ Acyclic` invariant is UNCONDITIONALLY PROVEN ★
 
 `wfa_invariant (m : Manifest) (hwf : m.WF) : (machine m).Invariant (fun σ => Wf σ ∧ Acyclic σ)`
@@ -176,24 +204,22 @@ gate/serving/run updates — with every supporting lemma in place. — exactly p
   emission work is the memory-port half (guarded write-port fold).
 - **Logic/KernelLemmas** — `bumpGen` monotonicity, `clearSlot_slotGen`.
 
-**Stated precisely, proof in progress** (`sorry` in body or transitively):
+**Stated precisely, proof in progress** — *this list is now EMPTY for the
+T-ledger (2026-07-04: every entry below flipped to CLEAN; kept for history)*:
 
-- **T2** authority_confined, step_confined — the confinement induction.
-- **T3** gen_monotone (per-step) — the one remaining obligation under which
-  `gen_monotone_n` and **no_resurrection** are already fully proved; plus
-  revoke_temporal_safety (the crown jewel).
-- **T4** frame + two scrub equalities.
-- **T5** noninterference (2-safety, path-free pairs).
-- **T6** no_hostage (donation-bounded resume).
-- **T7** wcet_retirement, budget_delivery.
-- **T8** wx_machine_wide (**body complete**, rests on step_wf),
-  prior_holder_excluded, status_word_safety.
-- **Inv** `haltWith_preserves_wf` **proved**; `refillPhase`/`moverPhase` preserve
-  Wf (proved); `step_wf` bottoms out at `corePhase` issue-path + `retire`.
-- **T9** ledger_balanced, budget_bounded.
-- **Inv** step_wf, wf_invariant (init_wf is done; the invariant rests only
-  on one-cycle preservation).
-- **A-R / A-EV** Acc8 core ⊑ spec, core ≃ emitted µVerilog.
+- ~~T2 authority_confined, step_confined~~ ✓ — the confinement induction.
+- ~~T3 gen_monotone, revoke_temporal_safety~~ ✓ (the crown jewel).
+- ~~T4 frame + two scrub equalities~~ ✓.
+- ~~T5 noninterference (2-safety, path-free pairs)~~ ✓ (2026-07-04).
+- ~~T6 no_hostage (donation-bounded resume)~~ ✓ (2026-07-04).
+- ~~T7 wcet_retirement, budget_delivery~~ ✓.
+- ~~T8 wx_machine_wide, prior_holder_excluded, status_word_safety~~ ✓.
+- ~~T9 ledger_balanced, budget_bounded~~ ✓.
+- ~~Inv step_wf, wf_invariant~~ ✓ (subsumed by `wfa_invariant`).
+- ~~A-R / A-EV Acc8 core ⊑ spec, core ≃ emitted µVerilog~~ ✓.
+
+In progress now: **R-MC** (LNP64-µ ISS ⊑ EDSL core, transporting T2–T9 onto
+the emitted Verilog) — statement landed in `Theorems/RMC*.lean`.
 
 **The linchpin, decomposed.** `step_wf` (one-cycle Wf preservation) is
 assembled from proved pieces: `refillPhase_preserves_wf` ✓,
