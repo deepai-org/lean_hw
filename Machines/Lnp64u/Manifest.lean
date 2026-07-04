@@ -48,6 +48,15 @@ structure WF (m : Manifest) : Prop where
   /-- Periods are positive and budgets fit inside them. -/
   period_pos : ∀ d, 0 < (m.doms d).periodP
   budget_le : ∀ d, (m.doms d).budgetQ ≤ (m.doms d).periodP
+  /-- **Wrapping-timer periodicity (proof-forced 2026-07-04).** Every
+  period divides `2 ^ 32`: the refill cadence `cycle % periodP = 0` is
+  driven by the wrapping 32-bit cycle counter, and it stays periodic
+  across the wrap only if `periodP ∣ 2 ^ 32` (otherwise the phase jumps at
+  the wrap and a period boundary can be missed for up to `2·periodP`
+  cycles). The same constraint real RTOS tick periods have against a
+  free-running hardware timer. Since `hyperL` is the lcm of the periods,
+  it inherits the divisibility (`hyperL_dvd_pow32`). -/
+  period_dvd : ∀ d, (m.doms d).periodP ∣ 2 ^ 32
   /-- Root memory capabilities satisfy W^X and lie within physical memory. -/
   caps_wx : ∀ d s base len perms, (m.doms d).initCaps s = some (.mem base len perms) →
     perms.wx = true ∧ base.toNat + len.toNat ≤ memWords

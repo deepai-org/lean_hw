@@ -209,7 +209,7 @@ def domDecls (m : Manifest) (d : DomainId) : List RegDecl :=
       ⟨dbudget d, 32, BitVec.ofNat 32 ds.budget⟩,
       ⟨dmaxdon d, 32, BitVec.ofNat 32 ds.maxDonation⟩,
       -- hidden refill counter (see module docstring)
-      ⟨drctr d, 32, BitVec.ofNat 32 (m.initState.cycle % (m.doms d).periodP)⟩]
+      ⟨drctr d, 32, BitVec.ofNat 32 (m.initState.cycle.toNat % (m.doms d).periodP)⟩]
 
 def gateDecls (m : Manifest) (g : GateId) : List RegDecl :=
   let gs := m.initState.gates g
@@ -243,7 +243,7 @@ def globalDecls (m : Manifest) : List RegDecl :=
    ⟨"if_dom", 2, (fl.map fun x => BitVec.ofNat 2 x.dom.val).getD 0⟩,
    ⟨"if_word", 32, (fl.map (·.word)).getD 0⟩,
    ⟨"if_cl", 8, (fl.map fun x => BitVec.ofNat 8 x.cyclesLeft).getD 0⟩,
-   ⟨"cycle", 32, BitVec.ofNat 32 m.initState.cycle⟩]
+   ⟨"cycle", 32, m.initState.cycle⟩]
 
 /-- Every register of the design (state-encoding table + hidden counters),
 reset from `m.initState`. -/
@@ -331,7 +331,7 @@ def absInflight (σ : Loom.Hw.St) : Option InFlight :=
 /-- Decode the register file back to the spec state (total; the R-MC
 abstraction). -/
 def abs (σ : Loom.Hw.St) : MachineState where
-  cycle := (σ.regs "cycle" 32).toNat
+  cycle := σ.regs "cycle" 32  -- spec cycle is the hardware register, verbatim
   mem := fun a => σ.mems "mem" a.toNat 32
   doms := absDom σ
   gates := absGate σ

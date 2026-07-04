@@ -32,14 +32,22 @@ namespace Machines.Lnp64u
 
 open Loom
 
-/-- Phase 1: period-boundary budget refill. -/
+/-- Phase 1: period-boundary budget refill.
+
+The boundary test reads the **wrapping** 32-bit counter; with
+`Manifest.WF.period_dvd` (`periodP ∣ 2 ^ 32`) the boundaries stay exactly
+`periodP` apart across the wrap. There is deliberately no "skip at boot"
+guard: with a wrapping counter, `cycle = 0` at boot is indistinguishable
+from `cycle = 0` after a wrap, and the wrap boundary *must* refill (else a
+domain would wait up to `2·periodP` there). At boot the refill is a no-op —
+`initState` already carries the full quota `Q`. The hardware
+(`Hw.refillCondE`) tests the same condition via the hidden mod-`P`
+counters. -/
 def refillPhase (m : Manifest) (σ : MachineState) : MachineState :=
-  if σ.cycle = 0 then σ  -- boot state already carries Q
-  else
-    { σ with doms := fun d =>
-        let ds := σ.doms d
-        let cfg := m.doms d
-        if σ.cycle % cfg.periodP = 0 then { ds with budget := cfg.budgetQ } else ds }
+  { σ with doms := fun d =>
+      let ds := σ.doms d
+      let cfg := m.doms d
+      if σ.cycle.toNat % cfg.periodP = 0 then { ds with budget := cfg.budgetQ } else ds }
 
 /-- Fetch the instruction word at `d`'s PC, requiring execute authority via
 a region register. -/

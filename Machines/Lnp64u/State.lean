@@ -157,8 +157,15 @@ structure InFlight where
 
 /-- The complete machine state. -/
 structure MachineState where
-  /-- Global cycle counter (drives period refill). -/
-  cycle : Nat
+  /-- Global cycle counter (drives period refill). A **wrapping 32-bit
+  counter**, exactly the hardware's `cycle` register: `step` bumps it with
+  `BitVec` addition, which silently wraps at `2 ^ 32`. (It was `Nat` until
+  2026-07-04, which made the spec physically dishonest — a strictly
+  increasing counter has no periodic points, so the unbounded R-MC
+  simulation against the 32-bit core was *uninhabited*. See
+  `Theorems/RMC.lean`.) Refill cadence across the wrap is kept periodic by
+  `Manifest.WF.period_dvd`: every `periodP` divides `2 ^ 32`. -/
+  cycle : BitVec 32
   /-- Physical memory, one word per address (D5: function at Prop level). -/
   mem : Addr → Loom.Word32
   doms : DomainId → DomainState

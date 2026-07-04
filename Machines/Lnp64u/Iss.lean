@@ -27,7 +27,7 @@ def ins (mn : String) (rd rs1 rs2 : RegId) (imm : BitVec 17) : Loom.Word32 :=
 /-- Derive the trace events of one cycle. Recomputes the same pure phase
 functions `step` uses; tooling only, never on a trusted path. -/
 def cycleEvents (m : Manifest) (σ : MachineState) : List Trace.Line :=
-  let c := σ.cycle
+  let c := σ.cycle.toNat
   let σ₁ := refillPhase m σ
   -- core: a retirement this cycle?
   let coreEvs : List Trace.Line :=

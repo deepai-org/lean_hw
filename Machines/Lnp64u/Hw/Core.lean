@@ -43,11 +43,13 @@ open Loom.Hw
 
 /-! ## Refill and the budget bypass -/
 
-/-- Does domain `d`'s budget refill this cycle (`cycle % P = 0 ∧ cycle ≠ 0`,
-via the hidden mod-counter)? -/
+/-- Does domain `d`'s budget refill this cycle (`cycle % P = 0`, via the
+hidden mod-counter)? No boot-skip conjunct: with a wrapping counter, boot
+is indistinguishable from a wrap, and wrap boundaries must refill (spec
+`refillPhase`, 2026-07-04). At boot the refill re-writes the reset value
+`budgetQ`, a no-op. -/
 def refillCondE (d : DomainId) : Expr 1 :=
-  .and (.eq (.reg 32 (drctr d)) (.lit 0))
-       (.not (.eq (.reg 32 "cycle") (.lit 0)))
+  .eq (.reg 32 (drctr d)) (.lit 0)
 
 /-- Domain `d`'s budget *as the spec's core phase sees it* (post-refill). -/
 def effBudgetE (m : Manifest) (d : DomainId) : Expr 32 :=

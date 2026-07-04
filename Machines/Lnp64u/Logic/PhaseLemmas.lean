@@ -21,35 +21,35 @@ open Loom
 
 @[simp] theorem refillPhase_caps (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).caps = (σ.doms d).caps := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_lineage (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).lineage = (σ.doms d).lineage := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_slotGen (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).slotGen = (σ.doms d).slotGen := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_regions (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).regions = (σ.doms d).regions := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_run (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).run = (σ.doms d).run := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_serving (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).serving = (σ.doms d).serving := by
-  unfold refillPhase; split <;> [rfl; (simp only; split <;> rfl)]
+  unfold refillPhase; dsimp only; split <;> rfl
 
 @[simp] theorem refillPhase_gates (m : Manifest) (σ : MachineState) :
     (refillPhase m σ).gates = σ.gates := by
-  unfold refillPhase; split <;> rfl
+  rfl
 
 @[simp] theorem refillPhase_mover (m : Manifest) (σ : MachineState) :
     (refillPhase m σ).mover = σ.mover := by
-  unfold refillPhase; split <;> rfl
+  rfl
 
 /-- The Mover reference-liveness test only reads caps/slotGen, which refill
 preserves, so `liveRef` is unchanged. -/
@@ -100,7 +100,7 @@ theorem refillPhase_preserves_wf (m : Manifest) (σ : MachineState) (h : Wf σ) 
   · intro d g; rw [refillPhase_run, refillPhase_gates]; intro hb
     exact h.blocked_gate d g hb
   · intro fl; rw [show (refillPhase m σ).inflight = σ.inflight from by
-      unfold refillPhase; split <;> rfl]
+      rfl]
     intro hfl; rw [refillPhase_run]; exact h.inflight_running fl hfl
   · intro g a; rw [refillPhase_gates]; exact h.gate_saved_none g a
 
@@ -237,7 +237,7 @@ theorem moverPhase_preserves_wf (σ : MachineState) (h : Wf σ) :
 
 
 /-- `Wf` does not mention the cycle counter, so bumping it is transparent. -/
-theorem wf_setCycle (σ : MachineState) (c : Nat) (h : Wf σ) :
+theorem wf_setCycle (σ : MachineState) (c : BitVec 32) (h : Wf σ) :
     Wf { σ with cycle := c } := by
   obtain ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir, hgsn⟩ := h
   exact ⟨hdoms, hpl, hrb, hmw, hgs, hsg, hbg, hir, hgsn⟩
