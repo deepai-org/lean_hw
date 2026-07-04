@@ -147,8 +147,12 @@ items marked ★ are the ones reviewers/AEC members check first.
       visible from the README.
 - [ ] **Repo layout cleanup.** Remove dead code, stale branches, `Wip` files not
       referenced by STATUS.md. Reviewers browse; clutter reads as immaturity.
-- [ ] **LICENSE, NOTICE, output-exception text, DCO in CONTRIBUTING.md.** Plus the
+- [x] **LICENSE, NOTICE, output-exception text, DCO in CONTRIBUTING.md.** Plus the
       "no patents filed or planned; this disclosure is intentional prior art" statement.
+      *(DONE 2026-07-04: Apache-2.0 root + SHL-2.1 on Machines/ (dual, SPDX
+      `Apache-2.0 OR SHL-2.1`), NOTICE with output exception + patent pledge,
+      DCO CONTRIBUTING.md, SPDX headers on all 124 tracked source files;
+      copyright Kevin Baragona. README carries the exception + pledge up front.)*
 
 ## P3. Evaluation section material (what the paper measures)
 
