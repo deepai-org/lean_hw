@@ -39,6 +39,15 @@ open Machines.Lnp64u Loom Loom.Hw Machines.Lnp64u.Hw
 
 set_option maxRecDepth 1000000
 
+
+/-- The manifest's `Nat` scheduling parameters fit the 32-bit datapath
+registers that carry them (`budgetQ < 2 ^ 32` follows via `WF.budget_le`).
+Vacuous for any realistic manifest; `demoManifest` satisfies it by
+`decide`-scale arithmetic. -/
+structure Fits (m : Manifest) : Prop where
+  period_lt : ∀ d : DomainId, (m.doms d).periodP < 2 ^ 32
+  maxdon_lt : ∀ d : DomainId, (m.doms d).maxDonation < 2 ^ 32
+
 /-! ## The cycle as the four rules' composition -/
 
 theorem core_cycle_unfold (m : Manifest) (σ : Loom.Hw.St) :
@@ -182,7 +191,7 @@ theorem coreAct_WritesLit (m : Manifest) (rn : String) (wd : Nat)
 
 /-! ## Concrete frame instances (kernel-reduced write-set facts) -/
 
-private theorem finRange_dom :
+theorem finRange_dom :
     (List.finRange numDomains) = [(0 : DomainId), 1, 2, 3] := by decide
 
 section Instances

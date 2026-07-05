@@ -142,14 +142,6 @@ structure Coupled (m : Manifest) (σ : Loom.Hw.St) : Prop where
     Hw.encKind (Hw.decKind (σ.regs (Hw.dcapKind d s) 32)) =
       σ.regs (Hw.dcapKind d s) 32
 
-/-- The manifest's `Nat` scheduling parameters fit the 32-bit datapath
-registers that carry them (`budgetQ < 2 ^ 32` follows via `WF.budget_le`).
-Vacuous for any realistic manifest; `demoManifest` satisfies it by
-`decide`-scale arithmetic. -/
-structure Fits (m : Manifest) : Prop where
-  period_lt : ∀ d : DomainId, (m.doms d).periodP < 2 ^ 32
-  maxdon_lt : ∀ d : DomainId, (m.doms d).maxDonation < 2 ^ 32
-
 /-! ## Reset -/
 
 private theorem domainState_ext {a b : DomainState}
