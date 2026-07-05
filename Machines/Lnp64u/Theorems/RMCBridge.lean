@@ -27,11 +27,11 @@ set_option maxRecDepth 100000
 
 /-! ## Boolean-vector helpers -/
 
-private theorem bv1_or_eq_one (a b : BitVec 1) :
+theorem bv1_or_eq_one (a b : BitVec 1) :
     (a ||| b = 1#1) ↔ (a = 1#1 ∨ b = 1#1) := by
   revert a b; decide
 
-private theorem bv1_and_eq_one (a b : BitVec 1) :
+theorem bv1_and_eq_one (a b : BitVec 1) :
     (a &&& b = 1#1) ↔ (a = 1#1 ∧ b = 1#1) := by
   revert a b; decide
 
