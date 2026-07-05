@@ -33,7 +33,7 @@ theorem refillAct_regWrites (m : Manifest) :
   rfl
 
 /-- Frame fact for every register the refill rule does not write. -/
-private theorem pres (m : Manifest) (σ : Loom.Hw.St) {rn : String} {w : Nat}
+theorem refill_pres (m : Manifest) (σ : Loom.Hw.St) {rn : String} {w : Nat}
     (h : (rn, w) ∉
       ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32), ("d1_rctr", 32),
         ("d2_budget", 32), ("d2_rctr", 32), ("d3_budget", 32), ("d3_rctr", 32)] :
@@ -45,7 +45,7 @@ private theorem pres (m : Manifest) (σ : Loom.Hw.St) {rn : String} {w : Nat}
 theorem refillAct_memWrites (m : Manifest) :
     (Hw.refillAct m).memWrites = [] := rfl
 
-private theorem pres_mem (m : Manifest) (σ : Loom.Hw.St) (mn : String)
+theorem refill_pres_mem (m : Manifest) (σ : Loom.Hw.St) (mn : String)
     (a w : Nat) :
     ((Hw.refillAct m).run σ σ).mems mn a w = σ.mems mn a w :=
   Loom.Hw.Compile.run_mems_notin mn (Hw.refillAct m)
@@ -89,7 +89,7 @@ private theorem refillPhase_dbudget (m : Manifest) (σ : MachineState) (d : Doma
 
 /-! ## The fieldwise bridge -/
 
-private theorem domainState_ext' {a b : DomainState}
+theorem domainState_ext' {a b : DomainState}
     (h1 : a.regs = b.regs) (h2 : a.pc = b.pc) (h3 : a.caps = b.caps)
     (h4 : a.slotGen = b.slotGen) (h5 : a.lineage = b.lineage)
     (h6 : a.regions = b.regions) (h7 : a.run = b.run)
@@ -98,7 +98,7 @@ private theorem domainState_ext' {a b : DomainState}
     a = b := by
   cases a; cases b; simp_all
 
-private theorem machineState_ext' {a b : MachineState}
+theorem machineState_ext' {a b : MachineState}
     (h1 : a.cycle = b.cycle) (h2 : a.mem = b.mem) (h3 : a.doms = b.doms)
     (h4 : a.gates = b.gates) (h5 : a.mover = b.mover)
     (h6 : a.inflight = b.inflight) : a = b := by
@@ -116,65 +116,65 @@ theorem abs_refill (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   apply machineState_ext'
   · -- cycle
     show ((Hw.refillAct m).run σ σ).regs "cycle" 32 = _
-    rw [pres m σ (by decide)]
+    rw [refill_pres m σ (by decide)]
     rfl
   · -- mem
     funext a
     show ((Hw.refillAct m).run σ σ).mems "mem" a.toNat 32 = _
-    rw [pres_mem m σ "mem" a.toNat 32]
+    rw [refill_pres_mem m σ "mem" a.toNat 32]
     rfl
   · -- doms
     funext d
     apply domainState_ext'
     · rw [refillPhase_dregs]
       funext r
-      exact pres m σ (by fin_cases d <;> fin_cases r <;> decide)
+      exact refill_pres m σ (by fin_cases d <;> fin_cases r <;> decide)
     · rw [refillPhase_dpc]
-      exact pres m σ (by fin_cases d <;> decide)
+      exact refill_pres m σ (by fin_cases d <;> decide)
     · show _ = ((refillPhase m (Hw.abs σ)).doms d).caps
       rw [refillPhase_caps]
       funext s
       show (if ((Hw.refillAct m).run σ σ).regs (Hw.dcapV d s) 1 = 1 then _ else _) = _
-      rw [pres m σ (show (Hw.dcapV d s, 1) ∉ _ by fin_cases d <;> fin_cases s <;> decide),
-        pres m σ (show (Hw.dcapKind d s, 32) ∉ _ by fin_cases d <;> fin_cases s <;> decide),
-        pres m σ (show (Hw.dcapLinV d s, 1) ∉ _ by fin_cases d <;> fin_cases s <;> decide),
-        pres m σ (show (Hw.dcapLin d s, 4) ∉ _ by fin_cases d <;> fin_cases s <;> decide)]
+      rw [refill_pres m σ (show (Hw.dcapV d s, 1) ∉ _ by fin_cases d <;> fin_cases s <;> decide),
+        refill_pres m σ (show (Hw.dcapKind d s, 32) ∉ _ by fin_cases d <;> fin_cases s <;> decide),
+        refill_pres m σ (show (Hw.dcapLinV d s, 1) ∉ _ by fin_cases d <;> fin_cases s <;> decide),
+        refill_pres m σ (show (Hw.dcapLin d s, 4) ∉ _ by fin_cases d <;> fin_cases s <;> decide)]
       rfl
     · show _ = ((refillPhase m (Hw.abs σ)).doms d).slotGen
       rw [refillPhase_slotGen]
       funext s
       show ((Hw.refillAct m).run σ σ).regs (Hw.dgen d s) 8 = _
-      rw [pres m σ (by fin_cases d <;> fin_cases s <;> decide)]
+      rw [refill_pres m σ (by fin_cases d <;> fin_cases s <;> decide)]
       rfl
     · show _ = ((refillPhase m (Hw.abs σ)).doms d).lineage
       rw [refillPhase_lineage]
       funext l
       show (if ((Hw.refillAct m).run σ σ).regs (Hw.dcellV d l) 1 = 1 then _ else _) = _
-      rw [pres m σ (show (Hw.dcellV d l, 1) ∉ _ by fin_cases d <;> fin_cases l <;> decide),
-        pres m σ (show (Hw.dcellPar d l, 14) ∉ _ by fin_cases d <;> fin_cases l <;> decide)]
+      rw [refill_pres m σ (show (Hw.dcellV d l, 1) ∉ _ by fin_cases d <;> fin_cases l <;> decide),
+        refill_pres m σ (show (Hw.dcellPar d l, 14) ∉ _ by fin_cases d <;> fin_cases l <;> decide)]
       rfl
     · show _ = ((refillPhase m (Hw.abs σ)).doms d).regions
       rw [refillPhase_regions]
       funext r
       show (if ((Hw.refillAct m).run σ σ).regs (Hw.drgnV d r) 1 = 1 then _ else _) = _
-      rw [pres m σ (show (Hw.drgnV d r, 1) ∉ _ by fin_cases d <;> fin_cases r <;> decide),
-        pres m σ (show (Hw.drgn d r, 42) ∉ _ by fin_cases d <;> fin_cases r <;> decide)]
+      rw [refill_pres m σ (show (Hw.drgnV d r, 1) ∉ _ by fin_cases d <;> fin_cases r <;> decide),
+        refill_pres m σ (show (Hw.drgn d r, 42) ∉ _ by fin_cases d <;> fin_cases r <;> decide)]
       rfl
     · show _ = ((refillPhase m (Hw.abs σ)).doms d).run
       rw [refillPhase_run]
       show Hw.decRun (((Hw.refillAct m).run σ σ).regs (Hw.drun d) 2)
           (((Hw.refillAct m).run σ σ).regs (Hw.drunG d) 2) = _
-      rw [pres m σ (show (Hw.drun d, 2) ∉ _ by fin_cases d <;> decide),
-        pres m σ (show (Hw.drunG d, 2) ∉ _ by fin_cases d <;> decide)]
+      rw [refill_pres m σ (show (Hw.drun d, 2) ∉ _ by fin_cases d <;> decide),
+        refill_pres m σ (show (Hw.drunG d, 2) ∉ _ by fin_cases d <;> decide)]
       rfl
     · show _ = ((refillPhase m (Hw.abs σ)).doms d).serving
       rw [refillPhase_serving]
       show (if ((Hw.refillAct m).run σ σ).regs (Hw.dsrvV d) 1 = 1 then _ else _) = _
-      rw [pres m σ (show (Hw.dsrvV d, 1) ∉ _ by fin_cases d <;> decide),
-        pres m σ (show (Hw.dsrv d, 2) ∉ _ by fin_cases d <;> decide)]
+      rw [refill_pres m σ (show (Hw.dsrvV d, 1) ∉ _ by fin_cases d <;> decide),
+        refill_pres m σ (show (Hw.dsrv d, 2) ∉ _ by fin_cases d <;> decide)]
       rfl
     · rw [refillPhase_dcause]
-      exact pres m σ (by fin_cases d <;> decide)
+      exact refill_pres m σ (by fin_cases d <;> decide)
     · -- budget: the interesting arm
       rw [refillPhase_dbudget]
       show (((Hw.refillAct m).run σ σ).regs (Hw.dbudget d) 32).toNat = _
@@ -200,7 +200,7 @@ theorem abs_refill (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         rfl
     · rw [refillPhase_dmaxdon]
       show (((Hw.refillAct m).run σ σ).regs (Hw.dmaxdon d) 32).toNat = _
-      rw [pres m σ (by fin_cases d <;> decide)]
+      rw [refill_pres m σ (by fin_cases d <;> decide)]
       rfl
   · -- gates
     funext g
@@ -208,20 +208,20 @@ theorem abs_refill (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     have : (refillPhase m (Hw.abs σ)).gates = (Hw.abs σ).gates := refillPhase_gates m _
     rw [this]
     unfold Hw.absGate
-    rw [pres m σ (show (Hw.gcallee g, 2) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gentry g, 12) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gactV g, 1) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gcaller g, 2) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gcallerRd g, 3) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gspc g, 12) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gssrvV g, 1) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gssrv g, 2) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gdepth g, 3) ∉ _ by fin_cases g <;> decide),
-      pres m σ (show (Hw.gdon g, 32) ∉ _ by fin_cases g <;> decide)]
+    rw [refill_pres m σ (show (Hw.gcallee g, 2) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gentry g, 12) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gactV g, 1) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gcaller g, 2) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gcallerRd g, 3) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gspc g, 12) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gssrvV g, 1) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gssrv g, 2) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gdepth g, 3) ∉ _ by fin_cases g <;> decide),
+      refill_pres m σ (show (Hw.gdon g, 32) ∉ _ by fin_cases g <;> decide)]
     have hsreg : ∀ r : RegId,
         ((Hw.refillAct m).run σ σ).regs (Hw.gsreg g r) 32 =
           σ.regs (Hw.gsreg g r) 32 := fun r =>
-      pres m σ (by fin_cases g <;> fin_cases r <;> decide)
+      refill_pres m σ (by fin_cases g <;> fin_cases r <;> decide)
     simp only [hsreg]
     rfl
   · -- mover
@@ -229,24 +229,24 @@ theorem abs_refill (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     have : (refillPhase m (Hw.abs σ)).mover = (Hw.abs σ).mover := refillPhase_mover m _
     rw [this]
     unfold Hw.absMover
-    rw [pres m σ (show ("mov_v", 1) ∉ _ by decide),
-      pres m σ (show ("mov_owner", 2) ∉ _ by decide),
-      pres m σ (show ("mov_src", 14) ∉ _ by decide),
-      pres m σ (show ("mov_dst", 14) ∉ _ by decide),
-      pres m σ (show ("mov_srccur", 12) ∉ _ by decide),
-      pres m σ (show ("mov_dstcur", 12) ∉ _ by decide),
-      pres m σ (show ("mov_rem", 13) ∉ _ by decide),
-      pres m σ (show ("mov_status", 12) ∉ _ by decide)]
+    rw [refill_pres m σ (show ("mov_v", 1) ∉ _ by decide),
+      refill_pres m σ (show ("mov_owner", 2) ∉ _ by decide),
+      refill_pres m σ (show ("mov_src", 14) ∉ _ by decide),
+      refill_pres m σ (show ("mov_dst", 14) ∉ _ by decide),
+      refill_pres m σ (show ("mov_srccur", 12) ∉ _ by decide),
+      refill_pres m σ (show ("mov_dstcur", 12) ∉ _ by decide),
+      refill_pres m σ (show ("mov_rem", 13) ∉ _ by decide),
+      refill_pres m σ (show ("mov_status", 12) ∉ _ by decide)]
     rfl
   · -- inflight
     show Hw.absInflight _ = _
     have : (refillPhase m (Hw.abs σ)).inflight = (Hw.abs σ).inflight := rfl
     rw [this]
     unfold Hw.absInflight
-    rw [pres m σ (show ("if_v", 1) ∉ _ by decide),
-      pres m σ (show ("if_dom", 2) ∉ _ by decide),
-      pres m σ (show ("if_word", 32) ∉ _ by decide),
-      pres m σ (show ("if_cl", 8) ∉ _ by decide)]
+    rw [refill_pres m σ (show ("if_v", 1) ∉ _ by decide),
+      refill_pres m σ (show ("if_dom", 2) ∉ _ by decide),
+      refill_pres m σ (show ("if_word", 32) ∉ _ by decide),
+      refill_pres m σ (show ("if_cl", 8) ∉ _ by decide)]
     rfl
 
 end Machines.Lnp64u.Theorems.RMC
