@@ -1,8 +1,9 @@
 # NEXT STEPS - active plan as of 2026-07-04
 
-Current state: 116 ledger entries, T1-T9 CLEAN, RTL corroborated
-(iverilog + yosys), R-MC unbounded with two audit-legal R-MC sorries
-(`square`, `coupled_step`).
+Current state: T1-T9 CLEAN, RTL corroborated (iverilog + yosys), R-MC
+unbounded with ONE audit-legal R-MC sorry left (`square`);
+`coupled_step` is CLEAN as of 2026-07-05 (`RMCFrames.lean` +
+`RMCCanon.lean`, no native_decide).
 See `STATUS.md` for the audited ledger and session history.
 
 ## Stopping point - 2026-07-04
@@ -18,18 +19,22 @@ source with the generated reset helpers wired in:
   `coupled_reset` without sorries.
 - The generated helper targets `Machines.Lnp64u.Theorems.RMCResetCanon`
   and `Machines.Lnp64u.Theorems.RMCResetDom` build.
-- `lake build Machines.Lnp64u.Theorems.RMC` succeeds; Lean reports only
-  the two intended remaining declarations using `sorry`: `square` and
-  `coupled_step`.
+- `lake build Machines.Lnp64u.Theorems.RMC` succeeds; the only remaining
+  declaration using `sorry` is `square` (2026-07-05: `coupled_step`
+  proved via the new frame layer `RMCFrames.lean` and the kind-canon
+  checker `RMCCanon.lean`).
 - `lake exe audit` passes; `absDom_reset`, `abs_reset`, and
   `coupled_reset` are CLEAN, while downstream R-MC transport theorems are
   STATED only through `square`/`coupled_step`.
 
-Immediate next step: prove the shared core-cycle/refill/tick bridge lemmas
-needed by both remaining sorries, then attack `coupled_step` before the
-full per-op `square` grind. `coupled_step` is smaller and will force the
-right `Coupled` clauses for refill counters, run canonicality, and kind
-canonicality.
+Immediate next step (2026-07-05): `coupled_step` is done — the frame
+layer, literal-write checker, kind-canon checker, and mod-P counter
+arithmetic are landed. Next is the `square` decomposition: countdown arm
+first (only `if_cl` changes through `abs`), then the refill/tick abs
+lemmas, then issue, then the 24 retirement arms, then `cap_revoke`.
+Decision point before the per-op grind: evaluate the §6 tagless-final
+refactor — the per-op obligations are exactly the duplicated datapath
+equivalences it collapses.
 
 ## 0. Working rule: write forward from source
 
@@ -40,9 +45,8 @@ fragments.
 - Source of truth: `Machines/Lnp64u/Hw/*.lean`,
   `Machines/Lnp64u/Step.lean`, `Machines/Lnp64u/Logic/*.lean`, and the
   current public theorem API needed by downstream files.
-- Historical material under `/home/ubuntu/rmc_recovery/` is reference only.
-  Use it to recognize proof shapes, then re-derive statements and proofs
-  against today's code.
+- Historical recovery material was deleted 2026-07-04 (user decision); all
+  statements and proofs are re-derived against today's code.
 - Do not run `git checkout`, `git restore`, or other path-reverting commands
   in this dirty worktree. Remove experiments with edits, and preserve user
   work before risky changes.
