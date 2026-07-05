@@ -284,4 +284,296 @@ theorem moverCheck_abs (σ : Loom.Hw.St) (τ : MachineState)
     · rintro ⟨hl, -⟩
       exact absurd hl hcond
 
+
+/-! ## Job-valid collapse -/
+
+/-- No retiring `move` can program a new job on a non-retiring cycle. -/
+theorem newAny_quiescent (σ : Loom.Hw.St)
+    (hnr : Hw.retiringE.eval σ = 0#1) :
+    (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval σ = 0#1 := by
+  apply bv1_ne_one.mp
+  intro h
+  obtain ⟨e, hmem, he⟩ := (orAll_eval σ _).mp h
+  obtain ⟨d, -, rfl⟩ := List.mem_map.mp hmem
+  rw [newJobSet_quiescent σ hnr d] at he
+  exact absurd he (by decide)
+
+/-- `jobV` collapses to the job-valid register on a non-retiring cycle. -/
+theorem jobV_quiescent (σ : Loom.Hw.St)
+    (hnr : Hw.retiringE.eval σ = 0#1) :
+    ((Expr.or (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet))
+      (.and (.reg 1 "mov_v")
+        (.not (.and (.reg 1 "mov_v")
+          (.or (Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot)
+               (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot)))))).eval σ)
+      = σ.regs "mov_v" 1 := by
+  show (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval σ |||
+      (σ.regs "mov_v" 1 &&&
+        ~~~(σ.regs "mov_v" 1 &&&
+          ((Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot).eval σ |||
+           (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot).eval σ))) = _
+  rw [newAny_quiescent σ hnr, killedByCoreE_quiescent σ hnr _ _,
+    killedByCoreE_quiescent σ hnr _ _]
+  generalize σ.regs "mov_v" 1 = b
+  revert b; decide
+
+
+/-! ## The mover-field face of the quiescent bridge -/
+
+/-- Decoding of a live Mover job (job-valid register set). -/
+theorem absMover_some (σ : Loom.Hw.St) (hv : σ.regs "mov_v" 1 = 1#1) :
+    Hw.absMover σ = some
+      { owner := finOfBv (by decide) (σ.regs "mov_owner" 2)
+        src := Hw.decRef (σ.regs "mov_src" 14)
+        dst := Hw.decRef (σ.regs "mov_dst" 14)
+        srcCur := σ.regs "mov_srccur" 12
+        dstCur := σ.regs "mov_dstcur" 12
+        remaining := (σ.regs "mov_rem" 13).toNat
+        statusAddr := σ.regs "mov_status" 12 } := by
+  rw [Hw.absMover]
+  rw [if_pos (show σ.regs "mov_v" 1 = 1 from hv)]
+
+theorem absMover_none (σ : Loom.Hw.St) (hv : ¬ σ.regs "mov_v" 1 = 1#1) :
+    Hw.absMover σ = none := by
+  rw [Hw.absMover]
+  rw [if_neg (show ¬σ.regs "mov_v" 1 = 1 from hv)]
+
+/-- **The quiescent Mover bridge, mover-field face.** -/
+theorem absMover_moverAct_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
+    (hnr : Hw.retiringE.eval σ = 0#1)
+    (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
+    (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
+    (hjob : τ.mover = Hw.absMover σ) :
+    Hw.absMover (Hw.moverAct.run σ acc) = (moverPhase τ).mover := by
+  by_cases hv : σ.regs "mov_v" 1 = 1#1
+  case neg =>
+    have hnone : Hw.absMover (Hw.moverAct.run σ acc) = none := by
+      apply absMover_none
+      show ¬ (Act.run σ Hw.moverAct acc).regs "mov_v" 1 = 1#1
+      simp only [Hw.moverAct]
+      simp only [Act.run]
+      rw [jobV_quiescent σ hnr, if_neg hv]
+      simp [RegEnv.set, Expr.eval]
+    have hτ : τ.mover = none := by rw [hjob]; exact absMover_none σ hv
+    rw [hnone]
+    simp [Machines.Lnp64u.moverPhase, hτ]
+  case pos =>
+    have hjs : τ.mover = some
+        { owner := finOfBv (by decide) (σ.regs "mov_owner" 2)
+          src := Hw.decRef (σ.regs "mov_src" 14)
+          dst := Hw.decRef (σ.regs "mov_dst" 14)
+          srcCur := σ.regs "mov_srccur" 12
+          dstCur := σ.regs "mov_dstcur" 12
+          remaining := (σ.regs "mov_rem" 13).toNat
+          statusAddr := σ.regs "mov_status" 12 } := by
+      rw [hjob]; exact absMover_some σ hv
+    -- reduce the circuit side to the written registers
+    show Hw.absMover (Act.run σ Hw.moverAct acc) = _
+    simp only [Hw.moverAct]
+    simp only [Act.run]
+    rw [jobV_quiescent σ hnr, if_pos hv]
+    simp only [Hw.seqAll, List.foldr, Act.run]
+    rw [Hw.absMover]
+    simp only [RegEnv.set, regs_ite, ite_self, String.reduceEq, reduceIte,
+      dite_true]
+    -- name the derived-signal trees and collapse them to registers
+    set R := Hw.postJ (fun d => (Hw.moveJob d).rem) (Expr.reg 13 "mov_rem")
+      with hRdef
+    set SRC := Hw.postJ (fun d => (Hw.moveJob d).srcEnc)
+      (Expr.reg 14 "mov_src") with hSRCdef
+    set DST := Hw.postJ (fun d => (Hw.moveJob d).dstEnc)
+      (Expr.reg 14 "mov_dst") with hDSTdef
+    set SC := Hw.postJ (fun d => (Hw.moveJob d).srcCur)
+      (Expr.reg 12 "mov_srccur") with hSCdef
+    set DC := Hw.postJ (fun d => (Hw.moveJob d).dstCur)
+      (Expr.reg 12 "mov_dstcur") with hDCdef
+    set OW := Hw.postJ (fun d => Hw.dLit d) (Expr.reg 2 "mov_owner")
+      with hOWdef
+    set SA := Hw.postJ (fun d => (Hw.moveJob d).sa) (Expr.reg 12 "mov_status")
+      with hSAdef
+    have hR : R.eval σ = σ.regs "mov_rem" 13 := postJ_quiescent σ hnr _ _
+    have hSRC : SRC.eval σ = σ.regs "mov_src" 14 := postJ_quiescent σ hnr _ _
+    have hDST : DST.eval σ = σ.regs "mov_dst" 14 := postJ_quiescent σ hnr _ _
+    have hSC : SC.eval σ = σ.regs "mov_srccur" 12 := postJ_quiescent σ hnr _ _
+    have hDC : DC.eval σ = σ.regs "mov_dstcur" 12 := postJ_quiescent σ hnr _ _
+    have hOW : OW.eval σ = σ.regs "mov_owner" 2 := postJ_quiescent σ hnr _ _
+    have hSA : SA.eval σ = σ.regs "mov_status" 12 := postJ_quiescent σ hnr _ _
+    -- the check tree
+    set CHK := Hw.andAll
+      [(Hw.liveRefE (Hw.field SRC 12 2) (Hw.field SRC 8 4)
+          (Hw.field SRC 0 8)).and
+        (Expr.not (Hw.killedByCoreE (Hw.field SRC 12 2) (Hw.field SRC 8 4))),
+       Hw.kCovers (Hw.kindWAt (Hw.field SRC 8 6)) SC
+         { r := true, w := false, x := false },
+       (Hw.liveRefE (Hw.field DST 12 2) (Hw.field DST 8 4)
+          (Hw.field DST 0 8)).and
+        (Expr.not (Hw.killedByCoreE (Hw.field DST 12 2) (Hw.field DST 8 4))),
+       Hw.kCovers (Hw.kindWAt (Hw.field DST 8 6)) DC
+         { r := false, w := true, x := false }] with hCHKdef
+    -- the spec-side check, bridged
+    have hlivS : ((Hw.liveRefE (Hw.field SRC 12 2) (Hw.field SRC 8 4)
+          (Hw.field SRC 0 8)).and
+        (Expr.not (Hw.killedByCoreE (Hw.field SRC 12 2)
+          (Hw.field SRC 8 4)))).eval σ =
+        (Hw.liveRefE (Hw.field SRC 12 2) (Hw.field SRC 8 4)
+          (Hw.field SRC 0 8)).eval σ := by
+      show _ &&& ~~~((Hw.killedByCoreE _ _).eval σ) = _
+      rw [killedByCoreE_quiescent σ hnr]
+      generalize (Hw.liveRefE _ _ _).eval σ = b
+      revert b; decide
+    have hlivD : ((Hw.liveRefE (Hw.field DST 12 2) (Hw.field DST 8 4)
+          (Hw.field DST 0 8)).and
+        (Expr.not (Hw.killedByCoreE (Hw.field DST 12 2)
+          (Hw.field DST 8 4)))).eval σ =
+        (Hw.liveRefE (Hw.field DST 12 2) (Hw.field DST 8 4)
+          (Hw.field DST 0 8)).eval σ := by
+      show _ &&& ~~~((Hw.killedByCoreE _ _).eval σ) = _
+      rw [killedByCoreE_quiescent σ hnr]
+      generalize (Hw.liveRefE _ _ _).eval σ = b
+      revert b; decide
+    -- the re-check tree decodes to the spec's two per-word checks
+    have hsrcJ : SRC.eval σ = σ.regs "mov_src" 14 := hSRC
+    have hchkiff : (CHK.eval σ = 1#1) ↔
+        ((Machines.Lnp64u.moverCheck τ (Hw.decRef (σ.regs "mov_src" 14))
+            (σ.regs "mov_srccur" 12) ⟨true, false, false⟩ &&
+          Machines.Lnp64u.moverCheck τ (Hw.decRef (σ.regs "mov_dst" 14))
+            (σ.regs "mov_dstcur" 12) ⟨false, true, false⟩) = true) := by
+      rw [hCHKdef, andAll_eval, Bool.and_eq_true]
+      simp only [List.forall_mem_cons]
+      rw [hlivS, hlivD]
+      have hsrcLive : ((Hw.liveRefE (Hw.field SRC 12 2) (Hw.field SRC 8 4)
+            (Hw.field SRC 0 8)).eval σ = 1#1) ↔
+          ((Hw.abs σ).liveRef (Hw.decRef (σ.regs "mov_src" 14)) = true) := by
+        have := liveRefE_eval σ (Hw.field SRC 12 2) (Hw.field SRC 8 4)
+          (Hw.field SRC 0 8)
+          (Hw.decRef (σ.regs "mov_src" 14)).dom
+          (Hw.decRef (σ.regs "mov_src" 14)).slot
+          (by show _ = ((SRC.eval σ).extractLsb' 12 2).toNat; rw [hSRC]; rfl)
+          (by show _ = ((SRC.eval σ).extractLsb' 8 4).toNat; rw [hSRC]; rfl)
+        rw [this]
+        rw [show (Hw.field SRC 0 8).eval σ = (SRC.eval σ).extractLsb' 0 8
+          from rfl, hSRC]
+        rfl
+      have hdstLive : ((Hw.liveRefE (Hw.field DST 12 2) (Hw.field DST 8 4)
+            (Hw.field DST 0 8)).eval σ = 1#1) ↔
+          ((Hw.abs σ).liveRef (Hw.decRef (σ.regs "mov_dst" 14)) = true) := by
+        have := liveRefE_eval σ (Hw.field DST 12 2) (Hw.field DST 8 4)
+          (Hw.field DST 0 8)
+          (Hw.decRef (σ.regs "mov_dst" 14)).dom
+          (Hw.decRef (σ.regs "mov_dst" 14)).slot
+          (by show _ = ((DST.eval σ).extractLsb' 12 2).toNat; rw [hDST]; rfl)
+          (by show _ = ((DST.eval σ).extractLsb' 8 4).toNat; rw [hDST]; rfl)
+        rw [this]
+        rw [show (Hw.field DST 0 8).eval σ = (DST.eval σ).extractLsb' 0 8
+          from rfl, hDST]
+        rfl
+      have hsrcCov : ((Hw.kCovers (Hw.kindWAt (Hw.field SRC 8 6)) SC
+            { r := true, w := false, x := false }).eval σ = 1#1) ↔
+          ((Hw.decKind (σ.regs
+              (Hw.dcapKind (Hw.decRef (σ.regs "mov_src" 14)).dom
+                (Hw.decRef (σ.regs "mov_src" 14)).slot) 32)).covers
+            (σ.regs "mov_srccur" 12) ⟨true, false, false⟩ = true) := by
+        rw [kCovers_eval, kindWAt_ref_eval, hSRC, hSC]
+      have hdstCov : ((Hw.kCovers (Hw.kindWAt (Hw.field DST 8 6)) DC
+            { r := false, w := true, x := false }).eval σ = 1#1) ↔
+          ((Hw.decKind (σ.regs
+              (Hw.dcapKind (Hw.decRef (σ.regs "mov_dst" 14)).dom
+                (Hw.decRef (σ.regs "mov_dst" 14)).slot) 32)).covers
+            (σ.regs "mov_dstcur" 12) ⟨false, true, false⟩ = true) := by
+        rw [kCovers_eval, kindWAt_ref_eval, hDST, hDC]
+      rw [hsrcLive, hdstLive, hsrcCov, hdstCov,
+        moverCheck_abs σ τ hcaps hgen, moverCheck_abs σ τ hcaps hgen]
+      simp [and_assoc]
+    -- spec side: expose the phase's if-chain on the decoded job
+    simp only [Machines.Lnp64u.moverPhase, hjs]
+    -- rem/check facts
+    have hzero_and : ∀ x : BitVec 1, 0#1 &&& x = 0#1 := by decide
+    have hand_zero : ∀ x : BitVec 1, x &&& 0#1 = 0#1 := by decide
+    have hcondsplit : Expr.eval σ
+        (((Hw.neqE R (.lit 0)).and CHK).and (Hw.neqE R (.lit 1)))
+        = ((Hw.neqE R (.lit 0)).eval σ &&& CHK.eval σ) &&&
+          (Hw.neqE R (.lit 1)).eval σ := rfl
+    by_cases hrem0 : σ.regs "mov_rem" 13 = 0#13
+    · -- completed job: status write only, job cleared
+      have hn0 : (Hw.neqE R (.lit 0)).eval σ = 0#1 := by
+        apply bv1_ne_one.mp
+        intro hcon
+        rw [neqE_eval] at hcon
+        exact hcon (by rw [hR, hrem0]; rfl)
+      rw [if_neg (show ¬(Expr.eval σ
+          (((Hw.neqE R (.lit 0)).and CHK).and (Hw.neqE R (.lit 1))) = 1) from by
+        rw [hcondsplit, hn0, hzero_and, hzero_and]; decide)]
+      rw [if_pos (show ((σ.regs "mov_rem" 13).toNat = 0) from by
+        rw [hrem0]; rfl)]
+      rw [moverStatus_mover]
+    · by_cases hchk : CHK.eval σ = 1#1
+      · by_cases hrem1 : σ.regs "mov_rem" 13 = 1#13
+        · -- last word this cycle: transfer + status, job cleared
+          have hn1 : (Hw.neqE R (.lit 1)).eval σ = 0#1 := by
+            apply bv1_ne_one.mp
+            intro hcon
+            rw [neqE_eval] at hcon
+            exact hcon (by rw [hR, hrem1]; rfl)
+          rw [if_neg (show ¬(Expr.eval σ
+              (((Hw.neqE R (.lit 0)).and CHK).and (Hw.neqE R (.lit 1))) = 1)
+              from by
+            rw [hcondsplit, hn1, hand_zero]; decide)]
+          rw [if_neg (show ¬((σ.regs "mov_rem" 13).toNat = 0) from fun h =>
+            hrem0 (by apply BitVec.eq_of_toNat_eq; simpa using h))]
+          rw [if_pos (hchkiff.mp hchk)]
+          rw [if_pos (show (σ.regs "mov_rem" 13).toNat - 1 = 0 from by
+            rw [hrem1]; rfl)]
+          rw [moverStatus_mover]
+        · -- mid-transfer: move one word, job continues
+          have hn0 : (Hw.neqE R (.lit 0)).eval σ = 1#1 := by
+            rw [neqE_eval, hR]
+            intro hcon
+            exact hrem0 (by rw [hcon]; rfl)
+          have hn1 : (Hw.neqE R (.lit 1)).eval σ = 1#1 := by
+            rw [neqE_eval, hR]
+            intro hcon
+            exact hrem1 (by rw [hcon]; rfl)
+          rw [if_pos (show (Expr.eval σ
+              (((Hw.neqE R (.lit 0)).and CHK).and (Hw.neqE R (.lit 1))) = 1)
+              from by
+            rw [hcondsplit, hn0, hchk, hn1]; decide)]
+          rw [if_neg (show ¬((σ.regs "mov_rem" 13).toNat = 0) from fun h =>
+            hrem0 (by apply BitVec.eq_of_toNat_eq; simpa using h))]
+          rw [if_pos (hchkiff.mp hchk)]
+          have htoN1 : ¬((σ.regs "mov_rem" 13).toNat = 1) := fun h =>
+            hrem1 (by apply BitVec.eq_of_toNat_eq; simpa using h)
+          rw [if_neg (show ¬((σ.regs "mov_rem" 13).toNat - 1 = 0) from by
+            have h0 : (σ.regs "mov_rem" 13).toNat ≠ 0 := fun h =>
+              hrem0 (by apply BitVec.eq_of_toNat_eq; simpa using h)
+            omega)]
+          have hsub1 : (Expr.eval σ (R.sub (.lit 1))).toNat
+              = (σ.regs "mov_rem" 13).toNat - 1 := by
+            show (R.eval σ - (1:BitVec 13)).toNat = _
+            rw [hR, BitVec.toNat_sub]
+            have h0 : (σ.regs "mov_rem" 13).toNat ≠ 0 := fun h =>
+              hrem0 (by apply BitVec.eq_of_toNat_eq; simpa using h)
+            have hlt := (σ.regs "mov_rem" 13).isLt
+            show (2 ^ 13 - (1#13).toNat + (σ.regs "mov_rem" 13).toNat) % 2 ^ 13 = _
+            rw [show (1#13).toNat = 1 from rfl]
+            omega
+          rw [show Expr.eval σ (SC.add (.lit 1)) = SC.eval σ + 1 from rfl,
+            show Expr.eval σ (DC.add (.lit 1)) = DC.eval σ + 1 from rfl,
+            hsub1, hOW, hSRC, hDST, hSC, hDC, hSA]
+      · -- re-check failed: abort with -ESTALE, job cleared
+        have hchk0 : CHK.eval σ = 0#1 := bv1_ne_one.mp hchk
+        rw [if_neg (show ¬(Expr.eval σ
+            (((Hw.neqE R (.lit 0)).and CHK).and (Hw.neqE R (.lit 1))) = 1)
+            from by
+          rw [hcondsplit, hchk0, hand_zero, hzero_and]; decide)]
+        rw [if_neg (show ¬((σ.regs "mov_rem" 13).toNat = 0) from fun h =>
+          hrem0 (by apply BitVec.eq_of_toNat_eq; simpa using h))]
+        rw [if_neg (show ¬((Machines.Lnp64u.moverCheck τ
+            (Hw.decRef (σ.regs "mov_src" 14)) (σ.regs "mov_srccur" 12)
+            ⟨true, false, false⟩ &&
+          Machines.Lnp64u.moverCheck τ (Hw.decRef (σ.regs "mov_dst" 14))
+            (σ.regs "mov_dstcur" 12) ⟨false, true, false⟩) = true) from
+          fun h => hchk (hchkiff.mpr h))]
+        rw [moverStatus_mover]
+
+
 end Machines.Lnp64u.Theorems.RMC
