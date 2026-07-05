@@ -22,6 +22,9 @@ namespace Machines.Lnp64u.Theorems.RMC
 
 open Machines.Lnp64u Loom Loom.Hw Machines.Lnp64u.Hw
 
+set_option maxHeartbeats 1600000
+set_option maxRecDepth 100000
+
 /-! ## Boolean-vector helpers -/
 
 private theorem bv1_or_eq_one (a b : BitVec 1) :
@@ -249,5 +252,120 @@ theorem liveRefE_eval (σ : Loom.Hw.St) (domE : Expr 2) (slotE : Expr 4)
   · rw [neqE_eval]
     show genE.eval σ ≠ (0 : BitVec 8) ↔ _
     rfl
+
+
+/-! ## Small evaluators -/
+
+/-- 1-bit `not` flips `= 1` to `= 0`. -/
+theorem notE_eval (e : Expr 1) (σ : Loom.Hw.St) :
+    ((Expr.not e).eval σ = 1#1) ↔ e.eval σ = 0#1 := by
+  show (~~~(e.eval σ) = 1#1) ↔ _
+  constructor
+  · intro h
+    have := e.eval σ
+    revert h
+    generalize e.eval σ = b
+    revert b; decide
+  · intro h; rw [h]; decide
+
+/-- `Expr.ult` through `toNat`. -/
+theorem ultE_eval {w : Nat} (a b : Expr w) (σ : Loom.Hw.St) :
+    ((Expr.ult a b).eval σ = 1#1) ↔ (a.eval σ).toNat < (b.eval σ).toNat := by
+  show ((if (a.eval σ).ult (b.eval σ) then 1#1 else 0#1) = 1#1) ↔ _
+  rw [BitVec.ult]
+  by_cases h : (a.eval σ).toNat < (b.eval σ).toNat <;> simp [h]
+
+/-- Widening preserves `toNat`. -/
+theorem toNat_setWidth_le {n m : Nat} (h : n ≤ m) (x : BitVec n) :
+    (x.setWidth m).toNat = x.toNat := by
+  rw [BitVec.toNat_setWidth]
+  exact Nat.mod_eq_of_lt
+    (Nat.lt_of_lt_of_le x.isLt (Nat.pow_le_pow_right (by omega) h))
+
+/-! ## Kind-word coverage (`kCovers` ↔ `CapKind.covers ∘ decKind`) -/
+
+/-- `kIsMem` reads the tag bit. -/
+theorem kIsMem_eval (kw : Expr 32) (σ : Loom.Hw.St) :
+    ((Hw.kIsMem kw).eval σ = 1#1) ↔ (kw.eval σ).getLsbD 0 = false := by
+  rw [Hw.kIsMem, eqE_eval]
+  show (kw.eval σ).extractLsb' 0 1 = (Expr.lit 0#1).eval σ ↔ _
+  exact extract1_eq_zero (kw.eval σ) 0
+
+/-- The permission bits of the decoded kind word. -/
+theorem decPerms_bits (w : BitVec 32) :
+    (Hw.decPerms (w.extractLsb' 26 3)).r = w.getLsbD 26 ∧
+    (Hw.decPerms (w.extractLsb' 26 3)).w = w.getLsbD 27 ∧
+    (Hw.decPerms (w.extractLsb' 26 3)).x = w.getLsbD 28 := by
+  refine ⟨?_, ?_, ?_⟩ <;> simp [Hw.decPerms]
+
+/-- The coverage circuit against a kind word decodes to `CapKind.covers`
+of the decoded kind. -/
+theorem kCovers_eval (kw : Expr 32) (a : Expr 12) (need : Perms)
+    (σ : Loom.Hw.St) :
+    ((Hw.kCovers kw a need).eval σ = 1#1) ↔
+      (Hw.decKind (kw.eval σ)).covers (a.eval σ) need = true := by
+  obtain ⟨hr, hw, hx⟩ := decPerms_bits (kw.eval σ)
+  rw [Hw.kCovers, andAll_eval]
+  by_cases h0 : (kw.eval σ).getLsbD 0
+  · -- gate kind: both sides false
+    constructor
+    · intro hall
+      have h1 : (Hw.kIsMem kw).eval σ = 1#1 := hall _ (by simp)
+      rw [kIsMem_eval, h0] at h1
+      exact absurd h1 (by simp)
+    · intro hcov
+      exfalso
+      rw [Hw.decKind, if_pos h0] at hcov
+      exact absurd hcov (by simp [CapKind.covers])
+  · -- memory kind
+    rw [Hw.decKind, if_neg h0]
+    have hbase : ((Expr.not (.ult a (Hw.kBase kw))).eval σ = 1#1) ↔
+        ((kw.eval σ).extractLsb' 1 12).toNat ≤ (a.eval σ).toNat := by
+      have hkb : (Hw.kBase kw).eval σ = (kw.eval σ).extractLsb' 1 12 := rfl
+      rw [notE_eval]
+      constructor
+      · intro h
+        have hn : ¬((Expr.ult a (Hw.kBase kw)).eval σ = 1#1) := by
+          rw [h]; decide
+        rw [ultE_eval, hkb] at hn
+        omega
+      · intro h
+        apply bv1_ne_one.mp
+        intro hlt
+        rw [ultE_eval, hkb] at hlt
+        omega
+    have hlen : ((Expr.ult (.zext a 14)
+        (.add (.zext (Hw.kBase kw) 14) (.zext (Hw.kLen kw) 14))).eval σ = 1#1) ↔
+        (a.eval σ).toNat <
+          ((kw.eval σ).extractLsb' 1 12).toNat +
+          ((kw.eval σ).extractLsb' 13 13).toNat := by
+      rw [ultE_eval]
+      show ((a.eval σ).setWidth 14).toNat <
+          ((((kw.eval σ).extractLsb' 1 12).setWidth 14) +
+           (((kw.eval σ).extractLsb' 13 13).setWidth 14)).toNat ↔ _
+      rw [toNat_setWidth_le (by omega), BitVec.toNat_add,
+        toNat_setWidth_le (by omega), toNat_setWidth_le (by omega)]
+      have hb := ((kw.eval σ).extractLsb' 1 12).isLt
+      have hl := ((kw.eval σ).extractLsb' 13 13).isLt
+      rw [Nat.mod_eq_of_lt (by omega)]
+    have hKR : ((Hw.kR kw).eval σ = 1#1) ↔ (kw.eval σ).getLsbD 26 = true :=
+      extract1_eq_one (kw.eval σ) 26
+    have hKW : ((Hw.kW kw).eval σ = 1#1) ↔ (kw.eval σ).getLsbD 27 = true :=
+      extract1_eq_one (kw.eval σ) 27
+    have hKX : ((Hw.kX kw).eval σ = 1#1) ↔ (kw.eval σ).getLsbD 28 = true :=
+      extract1_eq_one (kw.eval σ) 28
+    rcases need with ⟨nr, nw, nx⟩
+    cases nr <;> cases nw <;> cases nx <;>
+    · simp only [reduceIte, List.cons_append, List.nil_append,
+        List.forall_mem_cons]
+      rw [kIsMem_eval, hbase, hlen]
+      simp only [CapKind.covers, Perms.le, Bool.and_eq_true,
+        decide_eq_true_eq, Bool.not_true, Bool.not_false, Bool.false_or,
+        Bool.true_or, Bool.true_and, Bool.and_true, hr, hw, hx,
+        hKR, hKW, hKX, h0, true_and,
+        Bool.false_eq_true, if_false, List.nil_append,
+        List.append_nil, List.cons_append,
+        List.forall_mem_cons, and_assoc]
+      try simp
 
 end Machines.Lnp64u.Theorems.RMC
