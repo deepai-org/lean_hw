@@ -80,7 +80,7 @@ private theorem refillPhase_dmaxdon (m : Manifest) (σ : MachineState) (d : Doma
     ((refillPhase m σ).doms d).maxDonation = (σ.doms d).maxDonation := by
   unfold refillPhase; dsimp only; split <;> rfl
 
-private theorem refillPhase_dbudget (m : Manifest) (σ : MachineState) (d : DomainId) :
+theorem refillPhase_dbudget (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).budget =
       if σ.cycle.toNat % (m.doms d).periodP = 0 then (m.doms d).budgetQ
       else (σ.doms d).budget := by
