@@ -368,4 +368,107 @@ theorem kCovers_eval (kw : Expr 32) (a : Expr 12) (need : Perms)
         List.forall_mem_cons, and_assoc]
       try simp
 
+
+/-! ## Region coverage (`coversE` ↔ `Region.covers ∘ decRegion`) -/
+
+/-- The permission bits of a decoded region value. -/
+theorem decRegion_perm_bits (v : BitVec 42) :
+    (Hw.decRegion v).perms.r = v.getLsbD 0 ∧
+    (Hw.decRegion v).perms.w = v.getLsbD 1 ∧
+    (Hw.decRegion v).perms.x = v.getLsbD 2 := by
+  refine ⟨?_, ?_, ?_⟩ <;> simp [Hw.decRegion, Hw.decPerms]
+
+/-- The per-region coverage circuit decodes to validity plus
+`Region.covers` of the decoded region. -/
+theorem coversE_eval (σ : Loom.Hw.St) (d : DomainId) (r : RegionId)
+    (a : Expr 12) (need : Perms) :
+    ((Hw.coversE d r a need).eval σ = 1#1) ↔
+      (σ.regs (Hw.drgnV d r) 1 = 1#1 ∧
+       (Hw.decRegion (σ.regs (Hw.drgn d r) 42)).covers (a.eval σ) need
+         = true) := by
+  obtain ⟨hr, hw, hx⟩ := decRegion_perm_bits (σ.regs (Hw.drgn d r) 42)
+  set v := σ.regs (Hw.drgn d r) 42 with hv
+  have hfb : (Hw.field (.reg 42 (Hw.drgn d r)) 16 12).eval σ
+      = v.extractLsb' 16 12 := rfl
+  have hbase : ((Expr.not (.ult a (Hw.field (.reg 42 (Hw.drgn d r)) 16 12))).eval σ
+        = 1#1) ↔ (v.extractLsb' 16 12).toNat ≤ (a.eval σ).toNat := by
+    rw [notE_eval]
+    constructor
+    · intro h
+      have hn : ¬((Expr.ult a (Hw.field (.reg 42 (Hw.drgn d r)) 16 12)).eval σ
+          = 1#1) := by rw [h]; decide
+      rw [ultE_eval, hfb] at hn
+      omega
+    · intro h
+      apply bv1_ne_one.mp
+      intro hlt
+      rw [ultE_eval, hfb] at hlt
+      omega
+  have hlen : ((Expr.ult (.zext a 14)
+      (.add (.zext (Hw.field (.reg 42 (Hw.drgn d r)) 16 12) 14)
+            (.zext (Hw.field (.reg 42 (Hw.drgn d r)) 3 13) 14))).eval σ = 1#1) ↔
+      (a.eval σ).toNat <
+        (v.extractLsb' 16 12).toNat + (v.extractLsb' 3 13).toNat := by
+    rw [ultE_eval]
+    show ((a.eval σ).setWidth 14).toNat <
+        (((v.extractLsb' 16 12).setWidth 14) +
+         ((v.extractLsb' 3 13).setWidth 14)).toNat ↔ _
+    rw [toNat_setWidth_le (by omega), BitVec.toNat_add,
+      toNat_setWidth_le (by omega), toNat_setWidth_le (by omega)]
+    have hb := (v.extractLsb' 16 12).isLt
+    have hl := (v.extractLsb' 3 13).isLt
+    rw [Nat.mod_eq_of_lt (by omega)]
+  have hPR : ((Hw.field (.reg 42 (Hw.drgn d r)) 0 1).eval σ = 1#1) ↔
+      v.getLsbD 0 = true := extract1_eq_one v 0
+  have hPW : ((Hw.field (.reg 42 (Hw.drgn d r)) 1 1).eval σ = 1#1) ↔
+      v.getLsbD 1 = true := extract1_eq_one v 1
+  have hPX : ((Hw.field (.reg 42 (Hw.drgn d r)) 2 1).eval σ = 1#1) ↔
+      v.getLsbD 2 = true := extract1_eq_one v 2
+  rw [Hw.coversE, andAll_eval]
+  rcases need with ⟨nr, nw, nx⟩
+  cases nr <;> cases nw <;> cases nx <;>
+  · simp only [reduceIte, List.cons_append, List.nil_append,
+      List.forall_mem_cons]
+    rw [hbase, hlen]
+    simp only [Region.covers, Perms.le, Bool.and_eq_true, decide_eq_true_eq,
+      Bool.not_true, Bool.not_false, Bool.false_or, Bool.true_or,
+      Bool.true_and, Bool.and_true, hr, hw, hx, hPR, hPW, hPX,
+      Bool.false_eq_true, if_false, List.nil_append, List.append_nil,
+      List.cons_append, List.forall_mem_cons, and_assoc]
+    try simp
+    try (show (_ ∧ _) ↔ _ ; rfl)
+
+/-- Decoded regions of the abstraction. -/
+theorem abs_regions (σ : Loom.Hw.St) (d : DomainId) (r : RegionId) :
+    ((Hw.abs σ).doms d).regions r =
+      (if σ.regs (Hw.drgnV d r) 1 = 1#1
+       then some (Hw.decRegion (σ.regs (Hw.drgn d r) 42)) else none) := rfl
+
+/-- The domain-coverage OR-tree decodes to `MachineState.domCovers`. -/
+theorem domCoversE_eval (σ : Loom.Hw.St) (d : DomainId) (a : Expr 12)
+    (need : Perms) :
+    ((Hw.domCoversE d a need).eval σ = 1#1) ↔
+      (Hw.abs σ).domCovers d (a.eval σ) need = true := by
+  rw [Hw.domCoversE, orAll_eval]
+  rw [show ((Hw.abs σ).domCovers d (a.eval σ) need = true) ↔
+      (∃ r : RegionId, ∃ rg, ((Hw.abs σ).doms d).regions r = some rg ∧
+        rg.covers (a.eval σ) need = true) from by
+    rw [MachineState.domCovers]
+    simp]
+  constructor
+  · rintro ⟨e, hmem, heval⟩
+    obtain ⟨r, -, rfl⟩ := List.mem_map.mp hmem
+    obtain ⟨hval, hcov⟩ := (coversE_eval σ d r a need).mp heval
+    refine ⟨r, Hw.decRegion (σ.regs (Hw.drgn d r) 42), ?_, hcov⟩
+    rw [abs_regions, if_pos hval]
+  · rintro ⟨r, rg, hsome, hcov⟩
+    refine ⟨Hw.coversE d r a need, List.mem_map.mpr ⟨r, List.mem_finRange r, rfl⟩, ?_⟩
+    rw [abs_regions] at hsome
+    by_cases hval : σ.regs (Hw.drgnV d r) 1 = 1#1
+    · rw [if_pos hval] at hsome
+      obtain rfl := Option.some.inj hsome
+      exact (coversE_eval σ d r a need).mpr ⟨hval, hcov⟩
+    · rw [if_neg hval] at hsome
+      exact absurd hsome (by simp)
+
 end Machines.Lnp64u.Theorems.RMC
