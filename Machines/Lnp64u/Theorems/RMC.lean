@@ -5,6 +5,8 @@ import Machines.Lnp64u.Logic.Inflight
 import Machines.Lnp64u.Logic.Hostage
 import Machines.Lnp64u.Theorems.RMCAbs
 import Machines.Lnp64u.Theorems.RMCResetDom
+import Machines.Lnp64u.Theorems.RMCFrames
+import Machines.Lnp64u.Theorems.RMCCanon
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -131,9 +133,12 @@ structure Coupled (m : Manifest) (σ : Loom.Hw.St) : Prop where
   /-- The run state is canonically encoded (`3#2` is decode fallback only;
   the circuits test `= 0`, the spec tests `.running`). -/
   run_canon : ∀ d : DomainId, σ.regs (Hw.drun d) 2 ≠ 3#2
-  /-- Every live capability's kind word is in the encoder image (`decKind`
-  drops the unused high bits, which the circuits copy verbatim). -/
-  kind_canon : ∀ (d : DomainId) (s : Slot), σ.regs (Hw.dcapV d s) 1 = 1#1 →
+  /-- Every capability kind word — live or dead — is in the encoder image
+  (`decKind` drops the unused high bits, which the circuits copy
+  verbatim). Unconditional (dead slots keep their last canonical word;
+  reset words are `0`, also canonical), so preservation never needs to
+  correlate the kind register with its valid bit. -/
+  kind_canon : ∀ (d : DomainId) (s : Slot),
     Hw.encKind (Hw.decKind (σ.regs (Hw.dcapKind d s) 32)) =
       σ.regs (Hw.dcapKind d s) 32
 
@@ -223,10 +228,12 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
     simp [reset_drctr, reset_cycle, Manifest.initState]
   · intro d
     simp [reset_drun, Manifest.initState, Manifest.bootDom, Hw.encRun]
-  · intro d s hlive
+  · intro d s
     cases hcap : (m.initState.doms d).caps s with
     | none =>
-        simp [reset_dcapV, hcap] at hlive
+        rw [reset_dcapKind]
+        simp only [hcap, Option.map_none, Option.getD_none]
+        decide
     | some c =>
         simp [reset_dcapKind, hcap, decKind_encKind]
 
@@ -248,6 +255,17 @@ theorem square (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
   sorry
 
+/-- The kind-canonicality clause of `coupled_step`: every write any rule
+makes to a `d*_cap*_kind` register is an encoder image (narrowed kinds are
+packed by `encMemKindE`; installs copy other kind registers, canonical by
+the unconditional invariant; everything else preserves). -/
+private theorem coupled_step_kind (m : Manifest) (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ) (d : DomainId) (s : Slot) :
+    Hw.encKind (Hw.decKind
+        (((Hw.core m).cycle σ).regs (Hw.dcapKind d s) 32)) =
+      ((Hw.core m).cycle σ).regs (Hw.dcapKind d s) 32 :=
+  cycle_kind_canon m σ (fun c s' => hcpl.kind_canon c s') d s
+
 /-- The coupling is preserved by one core cycle. At the wrap, `rctr` rolls
 `P - 1 → 0` exactly when `cycle` rolls `2 ^ 32 - 1 → 0`, and
 `(0 : Nat) % P = 0`; away from it both increment — `WF.period_dvd` is what
@@ -255,10 +273,16 @@ makes the two roll-overs coincide. -/
 theorem coupled_step (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
-    (hsr : (machine m).Reachable (Hw.abs σ)) :
+    (_hcr : ((Hw.core m).toTSys).Reachable σ)
+    (_hsr : (machine m).Reachable (Hw.abs σ)) :
     Coupled m ((Hw.core m).cycle σ) := by
-  sorry
+  refine ⟨fun d => ?_, fun d => ?_, coupled_step_kind m σ hcpl⟩
+  · -- rctr_sync: only refill writes `rctr`, only tick writes `cycle`
+    rw [cycle_regs_drctr, refillAct_run_drctr, cycle_regs_cycle]
+    exact rctr_step_sync (hwf.period_pos d) (hwf.period_dvd d)
+      (hfit.period_lt d) _ _ (hcpl.rctr_sync d)
+  · -- run_canon: every `d*_run` write is a literal 0/1/2
+    exact cycle_regs_drun_ne m σ d (hcpl.run_canon d)
 
 /-! ## Assembly (sorry-free given the square) -/
 

@@ -1,5 +1,43 @@
 # STATUS — LNP64-µ / Loom
 
+## ★ 2026-07-05: R-MC `coupled_step` IS CLEAN — ONE SORRY LEFT (`square`) ★
+
+The coupling-preservation half of R-MC is proved, audit-CLEAN, with no
+`native_decide` anywhere (the audit's Rule 1 would reject it — the old
+recovery-era frame fragments were built on `native_decide` and were never
+landable; this is a from-source rewrite).
+
+- **`Theorems/RMCFrames.lean`** (new): the generic frame layer. One design
+  cycle as the four rules' `Act.run` composition (`core_cycle_unfold`);
+  write-set membership facts kernel-reduced via `of_decide_eq_true rfl` —
+  `Act.regWrites` discards expressions, so the facts reduce **with a
+  symbolic manifest**; the issue fold (whose *order* is manifest-dependent
+  through `schedOrder`) handled by list induction over per-domain kernel
+  facts. `WritesLit`, a decidable "every write to this register is a
+  literal from this list" checker with a semantic preservation theorem.
+  Value characterizations: `refillAct_run_drctr` (mod-`P` counter step),
+  `cycle_regs_cycle` (tick increment), and `rctr_step_sync` — the
+  arithmetic heart: `P ∣ 2^32` makes the hidden counter's `P−1 → 0` roll
+  coincide with the 32-bit wrap.
+- **`Theorems/RMCCanon.lean`** (new): kind-word canonicality is preserved
+  by every rule, syntactically. `Coupled.kind_canon` was strengthened to
+  be **unconditional** (dead slots keep their last canonical word; reset
+  words are `0`, canonical) — this decouples the kind registers from the
+  valid bits, so preservation needs no liveness reasoning: kind-register
+  *copies* are canonical by the invariant itself, `encMemKindE` packings
+  are canonical by construction (`encMem_pack`: the packed fields live in
+  bits `[28:1]`, exactly what `decKind` keeps), and the fuel-based
+  recognizer `isCanonE` + one-walk act checker `CanonWritesAll` cover all
+  64 kind registers per rule in a single kernel reduction. (Fuel because
+  `Expr 32` is an indexed family: structural recursion is unavailable and
+  well-founded recursion does not reduce in the kernel.)
+- **`RMC.coupled_step` is CLEAN** (axioms: `Classical.choice`,
+  `Quot.sound`, `propext` — no `sorryAx`), assembled from the three
+  clauses. `coupled_reset` re-proved under the strengthened clause.
+- Remaining: `square` — the per-phase/per-op grind. `lake exe audit`
+  passes; `square` and its downstream transports are STATED.
+
+
 ## ★ 2026-07-04: SPEC MADE PHYSICALLY HONEST — `cycle` IS A WRAPPING `BitVec 32`; R-MC IS UNBOUNDED ★
 
 D-class spec change (user decision): `MachineState.cycle : Nat` → `BitVec 32`, matching the
