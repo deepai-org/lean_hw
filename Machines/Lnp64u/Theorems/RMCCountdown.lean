@@ -118,12 +118,12 @@ private theorem corePhase_countdown (m : Manifest) (τ : MachineState)
   show (if fl.cyclesLeft ≤ 1 then _ else _) = _
   rw [if_neg (by omega : ¬ fl.cyclesLeft ≤ 1)]
 
-private theorem moverStatus_cycle (τ : MachineState) (job : MoverJob)
+theorem moverStatus_cycle (τ : MachineState) (job : MoverJob)
     (v : Loom.Word32) : (moverStatus τ job v).cycle = τ.cycle := by
   unfold Machines.Lnp64u.moverStatus
   split <;> rfl
 
-private theorem moverPhase_cycle (τ : MachineState) :
+theorem moverPhase_cycle (τ : MachineState) :
     (moverPhase τ).cycle = τ.cycle := by
   cases hj : τ.mover with
   | none => simp [Machines.Lnp64u.moverPhase, hj]
