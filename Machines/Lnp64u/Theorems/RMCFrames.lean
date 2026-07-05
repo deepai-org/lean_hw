@@ -377,4 +377,55 @@ theorem cycle_regs_drun_ne (m : Manifest) (σ : Loom.Hw.St) (d : DomainId)
   · rw [frame (refill_notin_drun m d)]
     exact h
 
+
+/-! ## Prefix-classified write sets
+
+The hidden-register blocks have disciplined name prefixes (`rv_*` for the
+mark engine, `mov_*` for the Mover). One kernel walk per act certifies the
+prefix; any register whose name lacks the prefix is framed. -/
+
+/-- Every register write in the act targets a name with prefix `pre`. -/
+def WritesPrefixed (pre : String) : Act → Bool
+  | .skip => true
+  | .seq a b => WritesPrefixed pre a && WritesPrefixed pre b
+  | .ite _ t e => WritesPrefixed pre t && WritesPrefixed pre e
+  | .memWrite _ _ _ _ _ _ => true
+  | .write _ r _ => r.startsWith pre
+
+theorem run_WritesPrefixed {pre : String} {rn : String}
+    (hrn : rn.startsWith pre = false) (w : Nat) :
+    ∀ (a : Act), WritesPrefixed pre a = true →
+      ∀ (σ acc : Loom.Hw.St), (a.run σ acc).regs rn w = acc.regs rn w
+  | .skip, _, _, _ => rfl
+  | .seq a b, h, σ, acc => by
+      simp only [WritesPrefixed, Bool.and_eq_true] at h
+      show (b.run σ (a.run σ acc)).regs rn w = _
+      rw [run_WritesPrefixed hrn w b h.2, run_WritesPrefixed hrn w a h.1]
+  | .ite c t e, h, σ, acc => by
+      simp only [WritesPrefixed, Bool.and_eq_true] at h
+      show (if c.eval σ = 1#1 then t.run σ acc else e.run σ acc).regs rn w = _
+      split
+      · exact run_WritesPrefixed hrn w t h.1 σ acc
+      · exact run_WritesPrefixed hrn w e h.2 σ acc
+  | .memWrite .., _, _, _ => rfl
+  | .write w' r v, h, σ, acc => by
+      show (acc.regs.set r (v.eval σ)) rn w = acc.regs rn w
+      simp only [RegEnv.set]
+      rw [if_neg (fun hcon : rn = r => by
+        simp only [WritesPrefixed] at h
+        rw [hcon] at hrn
+        rw [h] at hrn
+        exact absurd hrn (by simp))]
+
+/-- The mark engine writes only `rv_*` registers. -/
+theorem rvInit_prefixed : WritesPrefixed "rv_" Hw.rvInit = true := by
+  decide +kernel
+
+theorem rvStep_prefixed : WritesPrefixed "rv_" Hw.rvStep = true := by
+  decide +kernel
+
+/-- The Mover rule writes only `mov_*` registers. -/
+theorem mover_prefixed : WritesPrefixed "mov_" Hw.moverAct = true := by
+  decide +kernel
+
 end Machines.Lnp64u.Theorems.RMC
