@@ -481,4 +481,127 @@ theorem finRange_regs : (List.finRange numRegs)
 
 theorem finRange_gates : (List.finRange numGates) = [0, 1, 2, 3] := by decide
 
+
+/-! ## Read-set congruence for the abstraction
+
+`absDom`/`absGate` read a fixed register list per index; two states
+agreeing on that list decode identically. The reusable frame for every
+arm of the square. -/
+
+/-- The registers `absDom · x` reads. -/
+def domReadNames (x : DomainId) : List (String × Nat) :=
+  ((List.finRange numRegs).map fun r => (Hw.dreg x r, 32))
+  ++ [(Hw.dpc x, 12)]
+  ++ ((List.finRange numSlots).flatMap fun s =>
+      [(Hw.dcapV x s, 1), (Hw.dcapKind x s, 32), (Hw.dcapLinV x s, 1),
+       (Hw.dcapLin x s, 4), (Hw.dgen x s, 8)])
+  ++ ((List.finRange numLineage).flatMap fun l =>
+      [(Hw.dcellV x l, 1), (Hw.dcellPar x l, 14)])
+  ++ ((List.finRange numRegions).flatMap fun r =>
+      [(Hw.drgnV x r, 1), (Hw.drgn x r, 42)])
+  ++ [(Hw.drun x, 2), (Hw.drunG x, 2), (Hw.dsrvV x, 1), (Hw.dsrv x, 2),
+      (Hw.dcause x, 32), (Hw.dbudget x, 32), (Hw.dmaxdon x, 32)]
+
+/-- The registers `absGate · g` reads. -/
+def gateReadNames (g : GateId) : List (String × Nat) :=
+  [(Hw.gcallee g, 2), (Hw.gentry g, 12), (Hw.gactV g, 1), (Hw.gcaller g, 2),
+   (Hw.gcallerRd g, 3), (Hw.gspc g, 12), (Hw.gssrvV g, 1), (Hw.gssrv g, 2),
+   (Hw.gdepth g, 3), (Hw.gdon g, 32)]
+  ++ ((List.finRange numRegs).map fun r => (Hw.gsreg g r, 32))
+
+theorem absDom_congr {S1 S2 : Loom.Hw.St} (x : DomainId)
+    (h : ∀ p ∈ domReadNames x, S1.regs p.1 p.2 = S2.regs p.1 p.2) :
+    Hw.absDom S1 x = Hw.absDom S2 x := by
+  have hm : ∀ (rn : String) (w : Nat), (rn, w) ∈ domReadNames x →
+      S1.regs rn w = S2.regs rn w := fun rn w hmem => h (rn, w) hmem
+  have hreg : ∀ r : RegId, S1.regs (Hw.dreg x r) 32
+      = S2.regs (Hw.dreg x r) 32 := fun r =>
+    hm _ _ (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_left _ (List.mem_append_left _
+        (List.mem_append_left _
+          (List.mem_map.mpr ⟨r, List.mem_finRange r, rfl⟩))))))
+  have hcapmem : ∀ (s : Slot) (p : String × Nat),
+      p ∈ [(Hw.dcapV x s, 1), (Hw.dcapKind x s, 32), (Hw.dcapLinV x s, 1),
+        (Hw.dcapLin x s, 4), (Hw.dgen x s, 8)] → p ∈ domReadNames x :=
+    fun s p hp =>
+      List.mem_append_left _ (List.mem_append_left _
+        (List.mem_append_left _ (List.mem_append_right _
+          (List.mem_flatMap.mpr ⟨s, List.mem_finRange s, hp⟩))))
+  have hcellmem : ∀ (l : LineageId) (p : String × Nat),
+      p ∈ [(Hw.dcellV x l, 1), (Hw.dcellPar x l, 14)] → p ∈ domReadNames x :=
+    fun l p hp =>
+      List.mem_append_left _ (List.mem_append_left _
+        (List.mem_append_right _
+          (List.mem_flatMap.mpr ⟨l, List.mem_finRange l, hp⟩)))
+  have hrgnmem : ∀ (r : RegionId) (p : String × Nat),
+      p ∈ [(Hw.drgnV x r, 1), (Hw.drgn x r, 42)] → p ∈ domReadNames x :=
+    fun r p hp =>
+      List.mem_append_left _ (List.mem_append_right _
+        (List.mem_flatMap.mpr ⟨r, List.mem_finRange r, hp⟩))
+  have htail : ∀ p : String × Nat,
+      p ∈ [(Hw.drun x, 2), (Hw.drunG x, 2), (Hw.dsrvV x, 1), (Hw.dsrv x, 2),
+        (Hw.dcause x, 32), (Hw.dbudget x, 32), (Hw.dmaxdon x, 32)] →
+      p ∈ domReadNames x := fun p hp => List.mem_append_right _ hp
+  have hpc : S1.regs (Hw.dpc x) 12 = S2.regs (Hw.dpc x) 12 :=
+    hm _ _ (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_left _ (List.mem_append_left _
+        (List.mem_append_right _ (by simp))))))
+  have h2 := hm (Hw.drun x) 2 (htail _ (by simp))
+  have h3 := hm (Hw.drunG x) 2 (htail _ (by simp))
+  have h4 := hm (Hw.dsrvV x) 1 (htail _ (by simp))
+  have h5 := hm (Hw.dsrv x) 2 (htail _ (by simp))
+  have h6 := hm (Hw.dcause x) 32 (htail _ (by simp))
+  have h7 := hm (Hw.dbudget x) 32 (htail _ (by simp))
+  have h8 := hm (Hw.dmaxdon x) 32 (htail _ (by simp))
+  have hcapV : ∀ s : Slot, S1.regs (Hw.dcapV x s) 1 = S2.regs (Hw.dcapV x s) 1 :=
+    fun s => hm _ _ (hcapmem s _ (by simp))
+  have hcapK : ∀ s : Slot, S1.regs (Hw.dcapKind x s) 32
+      = S2.regs (Hw.dcapKind x s) 32 :=
+    fun s => hm _ _ (hcapmem s _ (by simp))
+  have hcapLV : ∀ s : Slot, S1.regs (Hw.dcapLinV x s) 1
+      = S2.regs (Hw.dcapLinV x s) 1 :=
+    fun s => hm _ _ (hcapmem s _ (by simp))
+  have hcapL : ∀ s : Slot, S1.regs (Hw.dcapLin x s) 4
+      = S2.regs (Hw.dcapLin x s) 4 :=
+    fun s => hm _ _ (hcapmem s _ (by simp))
+  have hgen : ∀ s : Slot, S1.regs (Hw.dgen x s) 8 = S2.regs (Hw.dgen x s) 8 :=
+    fun s => hm _ _ (hcapmem s _ (by simp))
+  have hcellV : ∀ l : LineageId, S1.regs (Hw.dcellV x l) 1
+      = S2.regs (Hw.dcellV x l) 1 :=
+    fun l => hm _ _ (hcellmem l _ (by simp))
+  have hcellP : ∀ l : LineageId, S1.regs (Hw.dcellPar x l) 14
+      = S2.regs (Hw.dcellPar x l) 14 :=
+    fun l => hm _ _ (hcellmem l _ (by simp))
+  have hrgnV : ∀ r : RegionId, S1.regs (Hw.drgnV x r) 1
+      = S2.regs (Hw.drgnV x r) 1 :=
+    fun r => hm _ _ (hrgnmem r _ (by simp))
+  have hrgnv : ∀ r : RegionId, S1.regs (Hw.drgn x r) 42
+      = S2.regs (Hw.drgn x r) 42 :=
+    fun r => hm _ _ (hrgnmem r _ (by simp))
+  unfold Hw.absDom
+  simp only [hpc, h2, h3, h4, h5, h6, h7, h8, hreg, hcapV, hcapK, hcapLV,
+    hcapL, hgen, hcellV, hcellP, hrgnV, hrgnv]
+
+theorem absGate_congr {S1 S2 : Loom.Hw.St} (g : GateId)
+    (h : ∀ p ∈ gateReadNames g, S1.regs p.1 p.2 = S2.regs p.1 p.2) :
+    Hw.absGate S1 g = Hw.absGate S2 g := by
+  have hm : ∀ (rn : String) (w : Nat), (rn, w) ∈ gateReadNames g →
+      S1.regs rn w = S2.regs rn w := fun rn w hmem => h (rn, w) hmem
+  have hsreg : ∀ r : RegId, S1.regs (Hw.gsreg g r) 32
+      = S2.regs (Hw.gsreg g r) 32 := fun r =>
+    hm _ _ (List.mem_append_right _
+      (List.mem_map.mpr ⟨r, List.mem_finRange r, rfl⟩))
+  unfold Hw.absGate
+  rw [hm (Hw.gcallee g) 2 (List.mem_append_left _ (by simp)),
+    hm (Hw.gentry g) 12 (List.mem_append_left _ (by simp)),
+    hm (Hw.gactV g) 1 (List.mem_append_left _ (by simp)),
+    hm (Hw.gcaller g) 2 (List.mem_append_left _ (by simp)),
+    hm (Hw.gcallerRd g) 3 (List.mem_append_left _ (by simp)),
+    hm (Hw.gspc g) 12 (List.mem_append_left _ (by simp)),
+    hm (Hw.gssrvV g) 1 (List.mem_append_left _ (by simp)),
+    hm (Hw.gssrv g) 2 (List.mem_append_left _ (by simp)),
+    hm (Hw.gdepth g) 3 (List.mem_append_left _ (by simp)),
+    hm (Hw.gdon g) 32 (List.mem_append_left _ (by simp))]
+  simp only [hsreg]
+
 end Machines.Lnp64u.Theorems.RMC
