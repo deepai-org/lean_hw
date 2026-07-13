@@ -314,4 +314,89 @@ theorem issueFor_run_serve (m : Manifest) (σ acc : Loom.Hw.St)
   show (if (Expr.ult (donE e) (cost32E e)).eval σ = 1#1 then _ else _) = _
   rw [if_neg hdon]
 
+
+/-! ## Sub-circuit run characterizations -/
+
+private theorem payer_cond_iff (σ : Loom.Hw.St) (e q : DomainId) :
+    ((Expr.eq (Hw.payerE e) (.lit (BitVec.ofNat 2 q.val))).eval σ = 1#1)
+      ↔ (Hw.abs σ).payer e = q := by
+  rw [eqE_eval, ← payerE_eval σ e]
+  show ((Hw.payerE e).eval σ = BitVec.ofNat 2 q.val) ↔ _
+  exact bv2_lit_iff _ q
+
+/-- Generic payer-indexed fold selection (the payer expression stays
+opaque, so nothing forces the huge unrolled walk to reduce). -/
+private theorem payerFold_run (σ acc : Loom.Hw.St) (pe : Expr 2)
+    (body : DomainId → Act) (p : DomainId)
+    (hp : (pe.eval σ).toNat = p.val) :
+    (Hw.seqAll ((List.finRange numDomains).map fun q =>
+      Act.ite (.eq pe (.lit (BitVec.ofNat 2 q.val))) (body q) .skip)).run σ acc
+    = (body p).run σ acc := by
+  refine seqAll_ite_run_unique σ acc _ body p ?_ ?_ _
+    (List.mem_finRange p) (List.nodup_finRange _)
+  · rw [eqE_eval]
+    show pe.eval σ = BitVec.ofNat 2 p.val
+    apply BitVec.eq_of_toNat_eq
+    rw [hp, BitVec.toNat_ofNat]
+    exact (Nat.mod_eq_of_lt (by have := p.isLt; omega)).symm
+  · intro j hj hc
+    rw [eqE_eval] at hc
+    apply hj
+    apply Fin.ext
+    have hce : pe.eval σ = BitVec.ofNat 2 j.val := hc
+    rw [← hp, hce, BitVec.toNat_ofNat]
+    exact (Nat.mod_eq_of_lt (by have := j.isLt; omega)).symm
+
+private theorem finOfBv_val {w n : Nat} (h : 2 ^ w = n) (x : BitVec w) :
+    (finOfBv h x).val = x.toNat := rfl
+
+/-- The payer's decoded index (kept `toNat`-level to stay opaque). -/
+theorem payer_toNat (σ : Loom.Hw.St) (e : DomainId) (p : DomainId)
+    (hp : (Hw.abs σ).payer e = p) :
+    ((Hw.payerE e).eval σ).toNat = p.val := by
+  rw [← hp, ← payerE_eval σ e, finOfBv_val]
+
+/-- The charge fold writes exactly the payer's budget register. -/
+theorem chargeA_run (m : Manifest) (σ acc : Loom.Hw.St) (e : DomainId)
+    (p : DomainId) (hp : (Hw.abs σ).payer e = p) :
+    (chargeA m e).run σ acc
+      = (Act.write 32 (Hw.dbudget p)
+          (.sub (Hw.effBudgetE m p) (cost32E e))).run σ acc :=
+  payerFold_run σ acc (Hw.payerE e)
+    (fun q => Act.write 32 (Hw.dbudget q)
+      (.sub (Hw.effBudgetE m q) (cost32E e)))
+    p (payer_toNat σ e p hp)
+
+/-- The burn fold writes exactly the payer's budget register. -/
+theorem burnA_run (σ acc : Loom.Hw.St) (e : DomainId)
+    (p : DomainId) (hp : (Hw.abs σ).payer e = p) :
+    (burnA e).run σ acc
+      = (Act.write 32 (Hw.dbudget p) (.lit 0)).run σ acc :=
+  payerFold_run σ acc (Hw.payerE e)
+    (fun q => Act.write 32 (Hw.dbudget q) (.lit 0))
+    p (payer_toNat σ e p hp)
+
+/-- The donation fold writes exactly the served gate's donation. -/
+theorem drawDonA_run (σ acc : Loom.Hw.St) (e : DomainId) (g : GateId)
+    (hg : g.val = (σ.regs (Hw.dsrv e) 2).toNat) :
+    (drawDonA e).run σ acc
+      = (Act.write 32 (Hw.gdon g) (.sub (donE e) (cost32E e))).run σ acc := by
+  show (Hw.seqAll ((List.finRange numGates).map fun g' =>
+    Act.ite (.eq (gidE e) (.lit (BitVec.ofNat 2 g'.val)))
+      (.write 32 (Hw.gdon g') (.sub (donE e) (cost32E e))) .skip)).run σ acc = _
+  rw [seqAll_ite_run_unique σ acc _ _ g ?_ ?_ _ (List.mem_finRange g)
+    (List.nodup_finRange _)]
+  · rw [eqE_eval]
+    show σ.regs (Hw.dsrv e) 2 = BitVec.ofNat 2 g.val
+    apply BitVec.eq_of_toNat_eq
+    rw [BitVec.toNat_ofNat, ← hg]
+    exact (Nat.mod_eq_of_lt (by have := g.isLt; omega)).symm
+  · intro j hj hc
+    rw [eqE_eval] at hc
+    apply hj
+    apply Fin.ext
+    have : σ.regs (Hw.dsrv e) 2 = BitVec.ofNat 2 j.val := hc
+    rw [hg, this, BitVec.toNat_ofNat]
+    exact (Nat.mod_eq_of_lt (by have := j.isLt; omega)).symm
+
 end Machines.Lnp64u.Theorems.RMC
