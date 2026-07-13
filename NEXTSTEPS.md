@@ -189,18 +189,29 @@ budget to zero. `T6.no_hostage` no longer has a `StallFree` premise.
   driver (`Loom/Dp/Solver.solve`) - remember baked certs go stale on ANY
   `Loom/Hw/Compile.lean` change.
 
-## 6. Deferred strategic refactor: tagless-final datapath unification
+## 6. RESOLVED 2026-07-13 - tagless-final datapath unification REJECTED
 
-Write each opcode's datapath once, polymorphic over a `HwVal`-style
-interface; instantiate to `BitVec` (ISS exec) and `Expr` (circuit builder).
-Most per-op R-MC square obligations become near-definitional
-(parametricity/`rfl`), collapsing much of the eventual proof grind. What
-cannot unify, and must remain a two-sided refinement, is timing:
-issue/countdown/retire pipelining and `cap_revoke`'s multi-cycle engine.
+The Stage-1 experiment (RMCOps.lean) ran the refactor's own test case:
+prove `cap_dup`'s datapath-value equivalences (`handleE_pack`,
+`narrowKindE_pack`) and a representative ladder check (`freeSlotV_eval`)
+with the existing bridge machinery. Verdict: each falls in ~25 mechanical
+lines — the datapath values were never the cost center. The per-op cost
+lives in (a) the errno-ladder control flow and (b) the kernel-write
+structure, and both are *shared-helper-shaped* (`installA`, `clearSlotA`,
+`transferA`, sweeps, `haltAct`), used by several ops each. A
+tagless-final source refactor would not collapse (a) or (b), and would
+churn every emitted artifact (goldens, Acc8 BMC certificate, lockstep).
 
-Decision for the active plan: defer this until after the current R-MC proof
-is compiling again. Revisit only if the per-op proof grind shows the same
-datapath equivalence being proved many times.
+Adopted instead: keep `Hw/SysOps.lean` exactly as emitted; grow the
+proof-side shared library —
+
+1. `RMCOps.lean` — per-op value packings and ladder-check bridges
+   (encoder images, free-slot/free-cell scans, capSel).
+2. Kernel-helper bridges, one per helper, each serving several ops:
+   `haltAct` ↔ `haltDom` (all fault arms), `installA` ↔ `installDerived`
+   (dup/grant/call/return), `clearSlotA` ↔ `clearSlot`, `transferA` ↔
+   `transferCap`, sweeps ↔ `sweepRegions`/`sweepMover`.
+3. A generic errno-ladder ↔ `SpecM` require-chain correspondence.
 
 ## Deferred / out of scope
 
