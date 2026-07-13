@@ -586,7 +586,7 @@ theorem absMover_moverAct_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
       = if c then a.mems mn ad w else b.mems mn ad w := by
   split <;> rfl
 
-private theorem bv2_lit_iff (b : BitVec 2) (c : DomainId) :
+theorem bv2_lit_iff (b : BitVec 2) (c : DomainId) :
     (b = BitVec.ofNat 2 c.val) ↔ (finOfBv (by decide) b = c) := by
   constructor
   · intro h
