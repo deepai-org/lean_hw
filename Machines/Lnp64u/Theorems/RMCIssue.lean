@@ -1175,6 +1175,13 @@ theorem square_issue_burn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       hσ1, refill_pres m σ (by decide)]
     rw [if_neg (show ¬(σ.regs "if_v" 1 = 1) from hifv0)]
 
+private theorem toNat_sub_of_le32 (a b : BitVec 32) (h : b.toNat ≤ a.toNat) :
+    (a - b).toNat = a.toNat - b.toNat := by
+  rw [BitVec.toNat_sub]
+  have ha := a.isLt
+  have hb := b.isLt
+  omega
+
 /-- Plain (non-serving) issue: charge + latch. -/
 theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
@@ -1182,19 +1189,464 @@ theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
     (hifv0 : ¬ σ.regs "if_v" 1 = 1#1)
     (e : DomainId) (w : Loom.Word32) (instr : Machines.Lnp64u.Instr)
+    (p : DomainId) (hpay : (Hw.abs σ).payer e = p)
     (hw : (wE e).eval σ = w)
-    (hdec : Loom.Isa.decode isa w = some instr)
-    (hcost : ((cost32E e).eval σ).toNat = instr.cost.cost)
-    (hcost8 : (Hw.costE (opcEx e)).eval σ = BitVec.ofNat 8 instr.cost.cost)
+    (hcost : ((Hw.costE (opcEx e)).eval σ).toNat = instr.cost.cost)
+    (hble : instr.cost.cost ≤ ((refillPhase m (Hw.abs σ)).doms p).budget)
     (hcore : (Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)
       = ((chargeA m e).seq (latchA e)).run σ ((Hw.refillAct m).run σ σ))
     (hspec : corePhase m (refillPhase m (Hw.abs σ))
       = (let τ1 := refillPhase m (Hw.abs σ)
-        let σ' := τ1.setDom (τ1.payer e) fun ds =>
+        let σ' := τ1.setDom p fun ds =>
           { ds with budget := ds.budget - instr.cost.cost }
         { σ' with inflight := some ⟨e, w, instr.cost.cost⟩ })) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  have hnr := retiringE_eval_idle σ hifv0
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ) = refillPhase m (Hw.abs σ) :=
+    abs_refill m hwf hfit σ hsync
+  set σ1 := (Hw.refillAct m).run σ σ with hσ1
+  set τ1 := refillPhase m (Hw.abs σ) with hτ1
+  have hdoms1 : ∀ x, Hw.absDom σ1 x = τ1.doms x := fun x => by
+    rw [← habs1]; rfl
+  have hgates1 : ∀ g, Hw.absGate σ1 g = τ1.gates g := fun g => by
+    rw [← habs1]; rfl
+  -- the concrete write chain
+  have hchain : (Hw.coreAct m).run σ σ1
+      = (latchA e).run σ
+          ((Act.write 32 (Hw.dbudget p)
+            (.sub (Hw.effBudgetE m p) (cost32E e))).run σ σ1) := by
+    rw [hcore]
+    show (latchA e).run σ ((chargeA m e).run σ σ1) = _
+    rw [chargeA_run m σ σ1 e p hpay]
+  have hread : ∀ (rn : String) (w' : Nat), rn ≠ Hw.dbudget p →
+      rn ≠ "if_v" → rn ≠ "if_dom" → rn ≠ "if_word" → rn ≠ "if_cl" →
+      ((Hw.coreAct m).run σ σ1).regs rn w' = σ1.regs rn w' := by
+    intro rn w' h1 h2 h3 h4 h5
+    rw [hchain]
+    show ((((((σ1.regs.set (Hw.dbudget p) ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom" ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word" ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ)) : _root_.Loom.Hw.RegEnv) rn w' = _
+    simp only [RegEnv.set]
+    rw [if_neg h5, if_neg h4, if_neg h3, if_neg h2, if_neg h1]
+  -- spec-side doms
+  have hspecdoms : ∀ x, (corePhase m τ1).doms x
+      = if x = p then { (τ1.doms p) with
+          budget := (τ1.doms p).budget - instr.cost.cost }
+        else τ1.doms x := by
+    intro x
+    rw [hspec]
+    show (Loom.Fun.update τ1.doms p _) x = _
+    by_cases hxp : x = p
+    · subst hxp
+      rw [Loom.Fun.update_same, if_pos rfl]
+    · rw [Loom.Fun.update_ne _ _ _ _ hxp, if_neg hxp]
+  have hcaps : ∀ x, ((corePhase m τ1).doms x).caps
+      = ((Hw.abs σ).doms x).caps := by
+    intro x
+    rw [hspecdoms x]
+    by_cases hxp : x = p
+    · subst hxp
+      rw [if_pos rfl]
+      show (τ1.doms x).caps = _
+      rw [hτ1, refillPhase_caps]
+    · rw [if_neg hxp, hτ1, refillPhase_caps]
+  have hgen : ∀ x, ((corePhase m τ1).doms x).slotGen
+      = ((Hw.abs σ).doms x).slotGen := by
+    intro x
+    rw [hspecdoms x]
+    by_cases hxp : x = p
+    · subst hxp
+      rw [if_pos rfl]
+      show (τ1.doms x).slotGen = _
+      rw [hτ1, refillPhase_slotGen]
+    · rw [if_neg hxp, hτ1, refillPhase_slotGen]
+  have hrgn : ∀ x, ((corePhase m τ1).doms x).regions
+      = ((Hw.abs σ).doms x).regions := by
+    intro x
+    rw [hspecdoms x]
+    by_cases hxp : x = p
+    · subst hxp
+      rw [if_pos rfl]
+      show (τ1.doms x).regions = _
+      rw [hτ1, refillPhase_regions]
+    · rw [if_neg hxp, hτ1, refillPhase_regions]
+  have hjob : (corePhase m τ1).mover = Hw.absMover σ := by
+    rw [hspec]
+    show τ1.mover = _
+    rw [hτ1, refillPhase_mover]
+    rfl
+  have hmem2 : ∀ ad, ((Hw.coreAct m).run σ σ1).mems "mem" ad 32
+      = σ.mems "mem" ad 32 := by
+    intro ad
+    rw [hchain]
+    show σ1.mems "mem" ad 32 = _
+    rw [hσ1]
+    exact Loom.Hw.Compile.run_mems_notin "mem" _
+      (by rw [refillAct_memWrites]; simp) σ σ ad 32
+  have hτm : ∀ b : Addr, (corePhase m τ1).mem b
+      = σ.mems "mem" b.toNat 32 := by
+    intro b
+    rw [hspec]
+    show τ1.mem b = _
+    rw [hτ1]
+    rfl
+  have hp : ∀ (rn : String) (w' : Nat),
+      rn.startsWith "mov_" = false → ¬(rn = "cycle" ∧ w' = 32) →
+      ((Hw.core m).cycle σ).regs rn w'
+        = ((Hw.coreAct m).run σ σ1).regs rn w' := by
+    intro rn w' h2 h4
+    rw [core_cycle_unfold]
+    rw [frame (show (rn, w') ∉ Hw.tickAct.regWrites from by
+      intro hmem
+      simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+        Prod.mk.injEq] at hmem
+      exact h4 hmem)]
+    rw [run_WritesPrefixed h2 w' _ mover_prefixed]
+  have hstep : step m (Hw.abs σ) =
+      { moverPhase (corePhase m τ1) with
+        cycle := (moverPhase (corePhase m τ1)).cycle + 1 } := rfl
+  rw [hstep]
+  apply machineState_ext'
+  · show ((Hw.core m).cycle σ).regs "cycle" 32 = _
+    rw [cycle_regs_cycle]
+    show _ = (moverPhase (corePhase m τ1)).cycle + 1
+    rw [moverPhase_cycle, hspec]
+    rfl
+  · funext a
+    show ((Hw.core m).cycle σ).mems "mem" a.toNat 32 = _
+    rw [core_cycle_unfold]
+    rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
+      (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) hnr hcaps hgen hrgn
+      hjob hmem2 hτm a
+  · funext x
+    have hRHS : (moverPhase (corePhase m τ1)).doms x
+        = (corePhase m τ1).doms x := congrFun (moverPhase_doms _) x
+    show Hw.absDom ((Hw.core m).cycle σ) x = _
+    rw [hRHS, hspecdoms x]
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
+      fin_cases x <;> decide +kernel
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases x <;> exact of_decide_eq_true rfl
+    by_cases hxp : x = p
+    · rw [if_pos hxp, ← hxp, ← hdoms1 x]
+      apply domainState_ext'
+      · funext r
+        show ((Hw.core m).cycle σ).regs (Hw.dreg x r) 32 = _
+        rw [hp _ _ (by fin_cases x <;> fin_cases r <;> decide +kernel)
+          (by fin_cases x <;> fin_cases r <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+        rfl
+      · show ((Hw.core m).cycle σ).regs (Hw.dpc x) 12 = _
+        rw [hp _ _ (by fin_cases x <;> decide +kernel)
+          (by fin_cases x <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rfl
+      · funext s
+        show (if ((Hw.core m).cycle σ).regs (Hw.dcapV x s) 1 = 1
+          then _ else _) = _
+        rw [hp (Hw.dcapV x s) 1
+            (by fin_cases x <;> fin_cases s <;> decide +kernel)
+            (by fin_cases x <;> fin_cases s <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+          hp (Hw.dcapKind x s) 32
+            (by fin_cases x <;> fin_cases s <;> decide +kernel)
+            (by fin_cases x <;> fin_cases s <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+          hp (Hw.dcapLinV x s) 1
+            (by fin_cases x <;> fin_cases s <;> decide +kernel)
+            (by fin_cases x <;> fin_cases s <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+          hp (Hw.dcapLin x s) 4
+            (by fin_cases x <;> fin_cases s <;> decide +kernel)
+            (by fin_cases x <;> fin_cases s <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+        rfl
+      · funext s
+        show ((Hw.core m).cycle σ).regs (Hw.dgen x s) 8 = _
+        rw [hp _ _ (by fin_cases x <;> fin_cases s <;> decide +kernel)
+          (by fin_cases x <;> fin_cases s <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+        rfl
+      · funext l
+        show (if ((Hw.core m).cycle σ).regs (Hw.dcellV x l) 1 = 1
+          then _ else _) = _
+        rw [hp (Hw.dcellV x l) 1
+            (by fin_cases x <;> fin_cases l <;> decide +kernel)
+            (by fin_cases x <;> fin_cases l <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl),
+          hp (Hw.dcellPar x l) 14
+            (by fin_cases x <;> fin_cases l <;> decide +kernel)
+            (by fin_cases x <;> fin_cases l <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)]
+        rfl
+      · funext r
+        show (if ((Hw.core m).cycle σ).regs (Hw.drgnV x r) 1 = 1
+          then _ else _) = _
+        rw [hp (Hw.drgnV x r) 1
+            (by fin_cases x <;> fin_cases r <;> decide +kernel)
+            (by fin_cases x <;> fin_cases r <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl),
+          hp (Hw.drgn x r) 42
+            (by fin_cases x <;> fin_cases r <;> decide +kernel)
+            (by fin_cases x <;> fin_cases r <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+        rfl
+      · show Hw.decRun _ _ = _
+        rw [hp (Hw.drun x) 2 (by fin_cases x <;> decide +kernel)
+            (by fin_cases x <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl),
+          hp (Hw.drunG x) 2 (by fin_cases x <;> decide +kernel)
+            (by fin_cases x <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rfl
+      · show (if ((Hw.core m).cycle σ).regs (Hw.dsrvV x) 1 = 1
+          then _ else _) = _
+        rw [hp (Hw.dsrvV x) 1 (by fin_cases x <;> decide +kernel)
+            (by fin_cases x <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl),
+          hp (Hw.dsrv x) 2 (by fin_cases x <;> decide +kernel)
+            (by fin_cases x <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rfl
+      · show ((Hw.core m).cycle σ).regs (Hw.dcause x) 32 = _
+        rw [hp _ _ (by fin_cases x <;> decide +kernel)
+          (by fin_cases x <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rfl
+      · -- the charged budget
+        show (((Hw.core m).cycle σ).regs (Hw.dbudget x) 32).toNat = _
+        rw [hp _ _ (by fin_cases x <;> decide +kernel)
+          (by fin_cases x <;> decide +kernel),
+          hchain]
+        rw [show ((latchA e).run σ
+            ((Act.write 32 (Hw.dbudget p)
+              (.sub (Hw.effBudgetE m p) (cost32E e))).run σ σ1)).regs
+            (Hw.dbudget x) 32
+          = ((Act.write 32 (Hw.dbudget p)
+              (.sub (Hw.effBudgetE m p) (cost32E e))).run σ σ1).regs
+            (Hw.dbudget x) 32 from by
+          show ((((((σ1.regs.set (Hw.dbudget p) ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom" ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word" ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ)) : _root_.Loom.Hw.RegEnv) (Hw.dbudget x) 32 = _
+          simp only [RegEnv.set]
+          rw [if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
+              Hw.dbudget x ≠ "if_cl"),
+            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
+              Hw.dbudget x ≠ "if_word"),
+            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
+              Hw.dbudget x ≠ "if_dom"),
+            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
+              Hw.dbudget x ≠ "if_v")]
+          rfl]
+        rw [hxp]
+        show ((σ1.regs.set (Hw.dbudget p)
+          ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ))
+          (Hw.dbudget p) 32).toNat = _
+        simp only [RegEnv.set, if_pos rfl, dite_true]
+        show (((Hw.effBudgetE m p).eval σ - (cost32E e).eval σ)).toNat = _
+        have hEb : ((Hw.effBudgetE m p).eval σ).toNat
+            = (τ1.doms p).budget := effBudget_eval m hwf hfit σ hsync p
+        have hC32 : ((cost32E e).eval σ).toNat = instr.cost.cost := by
+          show (((Hw.costE (opcEx e)).eval σ).setWidth 32).toNat = _
+          rw [toNat_setWidth_le (by omega)]
+          exact hcost
+        rw [toNat_sub_of_le32 _ _ (by rw [hEb, hC32]; exact hble)]
+        rw [hEb, hC32, hdoms1 p]
+      · show (((Hw.core m).cycle σ).regs (Hw.dmaxdon x) 32).toNat = _
+        rw [hp _ _ (by fin_cases x <;> decide +kernel)
+          (by fin_cases x <;> decide +kernel),
+          hread _ _ (by rw [← hxp]; fin_cases x <;>
+            exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rfl
+    · rw [if_neg hxp, ← hdoms1 x]
+      apply absDom_congr
+      intro q hq
+      rw [hp q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
+      apply hread
+      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ Hw.dbudget p from by
+          fin_cases x <;> fin_cases p <;>
+            first
+              | exact absurd rfl hxp
+              | exact of_decide_eq_true rfl) q hq
+      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_v" from by
+          fin_cases x <;> exact of_decide_eq_true rfl) q hq
+      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_dom" from by
+          fin_cases x <;> exact of_decide_eq_true rfl) q hq
+      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_word" from by
+          fin_cases x <;> exact of_decide_eq_true rfl) q hq
+      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_cl" from by
+          fin_cases x <;> exact of_decide_eq_true rfl) q hq
+  · funext g
+    have hRHS : (moverPhase (corePhase m τ1)).gates g = τ1.gates g := by
+      rw [moverPhase_gates, hspec]
+      rfl
+    show Hw.absGate ((Hw.core m).cycle σ) g = _
+    rw [hRHS, ← hgates1 g]
+    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
+      fin_cases g <;> decide +kernel
+    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases g <;> exact of_decide_eq_true rfl
+    apply absGate_congr
+    intro q hq
+    rw [hp q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
+    apply hread
+    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ Hw.dbudget p from by
+        fin_cases g <;> fin_cases p <;> exact of_decide_eq_true rfl) q hq
+    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_v" from by
+        fin_cases g <;> exact of_decide_eq_true rfl) q hq
+    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_dom" from by
+        fin_cases g <;> exact of_decide_eq_true rfl) q hq
+    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_word" from by
+        fin_cases g <;> exact of_decide_eq_true rfl) q hq
+    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_cl" from by
+        fin_cases g <;> exact of_decide_eq_true rfl) q hq
+  · show Hw.absMover ((Hw.core m).cycle σ)
+      = (moverPhase (corePhase m τ1)).mover
+    rw [core_cycle_unfold]
+    have htick : ∀ (rn : String) (w' : Nat), ¬(rn = "cycle" ∧ w' = 32) →
+        (Hw.tickAct.run σ (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1))).regs
+          rn w' = (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)).regs rn w' := by
+      intro rn w' h4
+      exact frame (by
+        intro hmem
+        simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+          Prod.mk.injEq] at hmem
+        exact h4 hmem) σ _
+    rw [show Hw.absMover (Hw.tickAct.run σ
+        (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)))
+        = Hw.absMover (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)) from by
+      unfold Hw.absMover
+      rw [htick "mov_v" 1 (by decide), htick "mov_owner" 2 (by decide),
+        htick "mov_src" 14 (by decide), htick "mov_dst" 14 (by decide),
+        htick "mov_srccur" 12 (by decide), htick "mov_dstcur" 12 (by decide),
+        htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
+    exact absMover_moverAct_quiescent σ _ (corePhase m τ1) hnr hcaps hgen hjob
+  · -- the latched instruction
+    have hRHS : (moverPhase (corePhase m τ1)).inflight
+        = some ⟨e, w, instr.cost.cost⟩ := by
+      rw [moverPhase_inflight, hspec]
+    show Hw.absInflight ((Hw.core m).cycle σ) = _
+    rw [hRHS]
+    unfold Hw.absInflight
+    have hifv1 : ((Hw.core m).cycle σ).regs "if_v" 1 = 1#1 := by
+      rw [hp "if_v" 1 (by decide +kernel) (by decide), hchain]
+      show ((((((σ1.regs.set (Hw.dbudget p) ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom" ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word" ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ)) : _root_.Loom.Hw.RegEnv) "if_v" 1 = 1#1
+      simp only [RegEnv.set]
+      rw [if_neg (by decide : ("if_v":String) ≠ "if_cl"),
+        if_neg (by decide : ("if_v":String) ≠ "if_word"),
+        if_neg (by decide : ("if_v":String) ≠ "if_dom")]
+      simp [Expr.eval]
+    rw [if_pos (show ((Hw.core m).cycle σ).regs "if_v" 1 = 1 from hifv1)]
+    have hifd : ((Hw.core m).cycle σ).regs "if_dom" 2
+        = BitVec.ofNat 2 e.val := by
+      rw [hp "if_dom" 2 (by decide +kernel) (by decide), hchain]
+      show ((((((σ1.regs.set (Hw.dbudget p) ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom" ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word" ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ)) : _root_.Loom.Hw.RegEnv) "if_dom" 2 = _
+      simp only [RegEnv.set]
+      rw [if_neg (by decide : ("if_dom":String) ≠ "if_cl"),
+        if_neg (by decide : ("if_dom":String) ≠ "if_word")]
+      simp [Expr.eval]
+    have hifw : ((Hw.core m).cycle σ).regs "if_word" 32 = w := by
+      rw [hp "if_word" 32 (by decide +kernel) (by decide), hchain]
+      show ((((((σ1.regs.set (Hw.dbudget p) ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom" ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word" ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ)) : _root_.Loom.Hw.RegEnv) "if_word" 32 = _
+      simp only [RegEnv.set]
+      rw [if_neg (by decide : ("if_word":String) ≠ "if_cl")]
+      simp [hw]
+    have hifcl : ((Hw.core m).cycle σ).regs "if_cl" 8
+        = (Hw.costE (opcEx e)).eval σ := by
+      rw [hp "if_cl" 8 (by decide +kernel) (by decide), hchain]
+      show ((((((σ1.regs.set (Hw.dbudget p) ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom" ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word" ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ)) : _root_.Loom.Hw.RegEnv) "if_cl" 8 = _
+      simp [RegEnv.set]
+    rw [hifd, hifw, hifcl]
+    congr 1
+    show (⟨finOfBv (by decide) (BitVec.ofNat 2 e.val), w,
+      ((Hw.costE (opcEx e)).eval σ).toNat⟩ : InFlight) = _
+    rw [show (finOfBv (by decide : 2 ^ 2 = numDomains)
+        (BitVec.ofNat 2 e.val)) = e from by
+      apply Fin.ext
+      rw [finOfBv_val, BitVec.toNat_ofNat]
+      exact Nat.mod_eq_of_lt (by have := e.isLt; omega)]
+    rw [hcost]
 
 /-- Serving issue: charge + donation draw + latch. -/
 theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
