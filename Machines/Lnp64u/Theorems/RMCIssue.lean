@@ -399,4 +399,223 @@ theorem drawDonA_run (σ acc : Loom.Hw.St) (e : DomainId) (g : GateId)
     rw [hg, this, BitVec.toNat_ofNat]
     exact (Nat.mod_eq_of_lt (by have := j.isLt; omega)).symm
 
+
+/-! ## Spec-side issue-path selections -/
+
+section SpecSel
+
+variable (m : Manifest) (τ : MachineState) (e : DomainId)
+
+private theorem corePhase_idle_shape (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) :
+    corePhase m τ =
+      (match Machines.Lnp64u.fetch τ e with
+        | none => haltWith τ e .memoryAuthority
+        | some w =>
+          match Loom.Isa.decode isa w with
+          | none => haltWith τ e .illegalInstruction
+          | some instr =>
+            let cost := instr.cost.cost
+            let p := τ.payer e
+            if cost ≤ (τ.doms p).budget then
+              match (τ.doms e).serving with
+              | some g =>
+                  match (τ.gates g).act with
+                  | some a =>
+                      if cost ≤ a.donated then
+                        let σ' := τ.setDom p fun ds =>
+                          { ds with budget := ds.budget - cost }
+                        let gs' : GateState :=
+                          { (σ'.gates g) with
+                            act := some { a with donated := a.donated - cost } }
+                        let σ'' := { σ' with
+                          gates := Loom.Fun.update σ'.gates g gs' }
+                        { σ'' with inflight := some ⟨e, w, cost⟩ }
+                      else haltWith τ e .budget
+                  | none => haltWith τ e .protocol
+              | none =>
+                  let σ' := τ.setDom p fun ds =>
+                    { ds with budget := ds.budget - cost }
+                  { σ' with inflight := some ⟨e, w, cost⟩ }
+            else
+              match (τ.doms e).serving with
+              | some _ => haltWith τ e .budget
+              | none => τ.setDom p fun ds => { ds with budget := 0 }) := by
+  unfold corePhase
+  rw [hif]
+  show (match schedule m τ with
+    | none => τ
+    | some d => _) = _
+  rw [hs]
+  rfl
+
+theorem corePhase_fetchFault (hif : τ.inflight = none)
+    (hs : schedule m τ = some e)
+    (hf : Machines.Lnp64u.fetch τ e = none) :
+    corePhase m τ = haltWith τ e .memoryAuthority := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+
+theorem corePhase_decodeFault (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) (w : Loom.Word32)
+    (hf : Machines.Lnp64u.fetch τ e = some w)
+    (hdec : Loom.Isa.decode isa w = none) :
+    corePhase m τ = haltWith τ e .illegalInstruction := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+  show (match Loom.Isa.decode isa w with
+    | none => haltWith τ e .illegalInstruction
+    | some instr => _) = _
+  rw [hdec]
+
+theorem corePhase_budgetFault (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) (w : Loom.Word32)
+    (instr : Machines.Lnp64u.Instr)
+    (hf : Machines.Lnp64u.fetch τ e = some w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hb : ¬(instr.cost.cost ≤ (τ.doms (τ.payer e)).budget))
+    (g : GateId) (hsg : (τ.doms e).serving = some g) :
+    corePhase m τ = haltWith τ e .budget := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+  show (match Loom.Isa.decode isa w with
+    | none => haltWith τ e .illegalInstruction
+    | some instr => _) = _
+  rw [hdec]
+  show (if instr.cost.cost ≤ (τ.doms (τ.payer e)).budget then _ else _) = _
+  rw [if_neg hb]
+  show (match (τ.doms e).serving with
+    | some _ => haltWith τ e .budget
+    | none => _) = _
+  rw [hsg]
+
+theorem corePhase_burn (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) (w : Loom.Word32)
+    (instr : Machines.Lnp64u.Instr)
+    (hf : Machines.Lnp64u.fetch τ e = some w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hb : ¬(instr.cost.cost ≤ (τ.doms (τ.payer e)).budget))
+    (hsg : (τ.doms e).serving = none) :
+    corePhase m τ = τ.setDom (τ.payer e) (fun ds => { ds with budget := 0 }) := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+  show (match Loom.Isa.decode isa w with
+    | none => haltWith τ e .illegalInstruction
+    | some instr => _) = _
+  rw [hdec]
+  show (if instr.cost.cost ≤ (τ.doms (τ.payer e)).budget then _ else _) = _
+  rw [if_neg hb]
+  show (match (τ.doms e).serving with
+    | some _ => haltWith τ e .budget
+    | none => τ.setDom (τ.payer e) (fun ds => { ds with budget := 0 })) = _
+  rw [hsg]
+
+theorem corePhase_protoFault (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) (w : Loom.Word32)
+    (instr : Machines.Lnp64u.Instr)
+    (hf : Machines.Lnp64u.fetch τ e = some w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hb : instr.cost.cost ≤ (τ.doms (τ.payer e)).budget)
+    (g : GateId) (hsg : (τ.doms e).serving = some g)
+    (ha : (τ.gates g).act = none) :
+    corePhase m τ = haltWith τ e .protocol := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+  show (match Loom.Isa.decode isa w with
+    | none => haltWith τ e .illegalInstruction
+    | some instr => _) = _
+  rw [hdec]
+  show (if instr.cost.cost ≤ (τ.doms (τ.payer e)).budget then _ else _) = _
+  rw [if_pos hb]
+  show (match (τ.doms e).serving with
+    | some g => _
+    | none => _) = _
+  rw [hsg]
+  show (match (τ.gates g).act with
+    | some a => _
+    | none => haltWith τ e .protocol) = _
+  rw [ha]
+
+theorem corePhase_donFault (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) (w : Loom.Word32)
+    (instr : Machines.Lnp64u.Instr)
+    (hf : Machines.Lnp64u.fetch τ e = some w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hb : instr.cost.cost ≤ (τ.doms (τ.payer e)).budget)
+    (g : GateId) (hsg : (τ.doms e).serving = some g)
+    (a : Activation) (ha : (τ.gates g).act = some a)
+    (hd : ¬(instr.cost.cost ≤ a.donated)) :
+    corePhase m τ = haltWith τ e .budget := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+  show (match Loom.Isa.decode isa w with
+    | none => haltWith τ e .illegalInstruction
+    | some instr => _) = _
+  rw [hdec]
+  show (if instr.cost.cost ≤ (τ.doms (τ.payer e)).budget then _ else _) = _
+  rw [if_pos hb]
+  show (match (τ.doms e).serving with
+    | some g => _
+    | none => _) = _
+  rw [hsg]
+  show (match (τ.gates g).act with
+    | some a => _
+    | none => haltWith τ e .protocol) = _
+  rw [ha]
+  show (if instr.cost.cost ≤ a.donated then _ else _) = _
+  rw [if_neg hd]
+
+theorem corePhase_serveIssue (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) (w : Loom.Word32)
+    (instr : Machines.Lnp64u.Instr)
+    (hf : Machines.Lnp64u.fetch τ e = some w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hb : instr.cost.cost ≤ (τ.doms (τ.payer e)).budget)
+    (g : GateId) (hsg : (τ.doms e).serving = some g)
+    (a : Activation) (ha : (τ.gates g).act = some a)
+    (hd : instr.cost.cost ≤ a.donated) :
+    corePhase m τ =
+      (let σ' := τ.setDom (τ.payer e) fun ds =>
+        { ds with budget := ds.budget - instr.cost.cost }
+      let gs' : GateState := { (σ'.gates g) with
+        act := some { a with donated := a.donated - instr.cost.cost } }
+      let σ'' := { σ' with gates := Loom.Fun.update σ'.gates g gs' }
+      { σ'' with inflight := some ⟨e, w, instr.cost.cost⟩ }) := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+  show (match Loom.Isa.decode isa w with
+    | none => haltWith τ e .illegalInstruction
+    | some instr => _) = _
+  rw [hdec]
+  show (if instr.cost.cost ≤ (τ.doms (τ.payer e)).budget then _ else _) = _
+  rw [if_pos hb]
+  show (match (τ.doms e).serving with
+    | some g => _
+    | none => _) = _
+  rw [hsg]
+  show (match (τ.gates g).act with
+    | some a => _
+    | none => haltWith τ e .protocol) = _
+  rw [ha]
+  show (if instr.cost.cost ≤ a.donated then _ else _) = _
+  rw [if_pos hd]
+
+theorem corePhase_plainIssue (hif : τ.inflight = none)
+    (hs : schedule m τ = some e) (w : Loom.Word32)
+    (instr : Machines.Lnp64u.Instr)
+    (hf : Machines.Lnp64u.fetch τ e = some w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hb : instr.cost.cost ≤ (τ.doms (τ.payer e)).budget)
+    (hsg : (τ.doms e).serving = none) :
+    corePhase m τ =
+      (let σ' := τ.setDom (τ.payer e) fun ds =>
+        { ds with budget := ds.budget - instr.cost.cost }
+      { σ' with inflight := some ⟨e, w, instr.cost.cost⟩ }) := by
+  rw [corePhase_idle_shape m τ e hif hs, hf]
+  show (match Loom.Isa.decode isa w with
+    | none => haltWith τ e .illegalInstruction
+    | some instr => _) = _
+  rw [hdec]
+  show (if instr.cost.cost ≤ (τ.doms (τ.payer e)).budget then _ else _) = _
+  rw [if_pos hb]
+  show (match (τ.doms e).serving with
+    | some g => _
+    | none => _) = _
+  rw [hsg]
+
+end SpecSel
+
 end Machines.Lnp64u.Theorems.RMC
