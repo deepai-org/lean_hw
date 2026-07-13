@@ -428,4 +428,57 @@ theorem rvStep_prefixed : WritesPrefixed "rv_" Hw.rvStep = true := by
 theorem mover_prefixed : WritesPrefixed "mov_" Hw.moverAct = true := by
   decide +kernel
 
+
+/-! ## Guarded-fold dispatch
+
+Every per-index write block in the design is `seqAll` over
+`.ite (cond i) (body i) .skip` with mutually exclusive conditions (an
+index-register equality test). These two lemmas collapse such folds to
+the selected body — the dispatch workhorse for the halt unwind, the
+retirement dispatch, and the install/clear slot selections. -/
+
+theorem seqAll_ite_run_none {I : Type} (σ acc : Loom.Hw.St)
+    (cond : I → Expr 1) (body : I → Act) :
+    ∀ (l : List I), (∀ i ∈ l, (cond i).eval σ ≠ 1#1) →
+      (Hw.seqAll (l.map fun i => Act.ite (cond i) (body i) .skip)).run σ acc
+        = acc
+  | [], _ => rfl
+  | i :: t, h => by
+      show (Hw.seqAll ((t.map fun j => Act.ite (cond j) (body j) .skip))).run σ
+        ((if (cond i).eval σ = 1#1 then (body i).run σ acc else acc)) = acc
+      rw [if_neg (h i (List.mem_cons_self ..))]
+      exact seqAll_ite_run_none σ acc cond body t
+        (fun j hj => h j (List.mem_cons_of_mem i hj))
+
+theorem seqAll_ite_run_unique {I : Type} (σ acc : Loom.Hw.St)
+    (cond : I → Expr 1) (body : I → Act) (sel : I)
+    (hsel : (cond sel).eval σ = 1#1)
+    (hexcl : ∀ j, j ≠ sel → (cond j).eval σ ≠ 1#1) :
+    ∀ (l : List I), sel ∈ l → l.Nodup →
+      (Hw.seqAll (l.map fun i => Act.ite (cond i) (body i) .skip)).run σ acc
+        = (body sel).run σ acc
+  | [], hmem, _ => absurd hmem (List.not_mem_nil)
+  | i :: t, hmem, hnd => by
+      show (Hw.seqAll ((t.map fun j => Act.ite (cond j) (body j) .skip))).run σ
+        ((if (cond i).eval σ = 1#1 then (body i).run σ acc else acc)) = _
+      by_cases hi : i = sel
+      · subst hi
+        rw [if_pos hsel]
+        exact seqAll_ite_run_none σ _ cond body t
+          (fun j hj => hexcl j (fun hc =>
+            (List.nodup_cons.mp hnd).1 (hc ▸ hj)))
+      · rw [if_neg (hexcl i hi)]
+        have hmem' : sel ∈ t := by
+          rcases List.mem_cons.mp hmem with h | h
+          · exact absurd h.symm hi
+          · exact h
+        exact seqAll_ite_run_unique σ acc cond body sel hsel hexcl t hmem'
+          (List.nodup_cons.mp hnd).2
+
+/-- Unfoldings of the per-index ranges (kernel facts). -/
+theorem finRange_regs : (List.finRange numRegs)
+    = [0, 1, 2, 3, 4, 5, 6, 7] := by decide
+
+theorem finRange_gates : (List.finRange numGates) = [0, 1, 2, 3] := by decide
+
 end Machines.Lnp64u.Theorems.RMC
