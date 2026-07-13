@@ -2,6 +2,10 @@
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCHalt
 import Machines.Lnp64u.Theorems.RMCSched
+import Machines.Lnp64u.Theorems.RMCIdle
+import Machines.Lnp64u.Logic.Authority
+import Machines.Lnp64u.Logic.SlotGen
+import Machines.Lnp64u.Logic.Inflight
 
 /-!
 # R-MC support: the issue arm's condition bridges
@@ -617,5 +621,223 @@ theorem corePhase_plainIssue (hif : τ.inflight = none)
   rw [hsg]
 
 end SpecSel
+
+
+/-! ## Spec-side halt preservation (missing field forms) -/
+
+private theorem haltDom_regions' (τ : MachineState) (d : DomainId)
+    (c : Loom.Word32) (x : DomainId) :
+    ((τ.haltDom d c).doms x).regions = (τ.doms x).regions := by
+  unfold MachineState.haltDom
+  split
+  · exact haltBase_regions τ d c x
+  · split
+    · exact haltBase_regions τ d c x
+    · rw [unwindGate_regions, haltBase_regions]
+
+private theorem haltDom_caps' (τ : MachineState) (d : DomainId)
+    (c : Loom.Word32) (x : DomainId) :
+    ((τ.haltDom d c).doms x).caps = (τ.doms x).caps := by
+  funext s
+  exact haltDom_caps τ d c x s
+
+private theorem haltDom_slotGen' (τ : MachineState) (d : DomainId)
+    (c : Loom.Word32) (x : DomainId) :
+    ((τ.haltDom d c).doms x).slotGen = (τ.doms x).slotGen := by
+  funext s
+  exact haltDom_slotGen τ d c x s
+
+private theorem haltDom_mover' (τ : MachineState) (d : DomainId)
+    (c : Loom.Word32) : (τ.haltDom d c).mover = τ.mover := by
+  unfold MachineState.haltDom
+  split
+  · rfl
+  · split
+    · rfl
+    · rw [unwindGate_mover, haltBase_mover]
+
+private theorem haltDom_mem' (τ : MachineState) (d : DomainId)
+    (c : Loom.Word32) : (τ.haltDom d c).mem = τ.mem := by
+  unfold MachineState.haltDom
+  split
+  · rfl
+  · split
+    · rfl
+    · rfl
+
+/-! ## The shared fault-arm assembly -/
+
+/-- **Any idle-cycle fault outcome squares**: when the core rule reduces
+to `haltFault e f` and the spec's core phase to `haltWith τ1 e f`, the
+whole cycle squares — the halt bridge carries domains and gates, and
+everything else is the quiescent refill/Mover/tick composition. -/
+theorem square_issue_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv0 : ¬ σ.regs "if_v" 1 = 1#1)
+    (e : DomainId) (f : Fault)
+    (hcore : (Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)
+      = (Hw.haltFault e f).run σ ((Hw.refillAct m).run σ σ))
+    (hspec : corePhase m (refillPhase m (Hw.abs σ))
+      = haltWith (refillPhase m (Hw.abs σ)) e f) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  have hnr := retiringE_eval_idle σ hifv0
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ) = refillPhase m (Hw.abs σ) :=
+    abs_refill m hwf hfit σ hsync
+  set σ1 := (Hw.refillAct m).run σ σ with hσ1
+  set τ1 := refillPhase m (Hw.abs σ) with hτ1
+  -- the halt bridge, against the post-refill pair
+  have hdoms1 : ∀ x, Hw.absDom σ1 x = τ1.doms x := fun x => by
+    rw [← habs1]; rfl
+  have hgates1 : ∀ g, Hw.absGate σ1 g = τ1.gates g := fun g => by
+    rw [← habs1]; rfl
+  obtain ⟨hHD, hHG⟩ := abs_haltAct σ σ1 τ1 e (BitVec.ofNat 32 f.code)
+    hdoms1 hgates1
+    (by rw [hσ1, refill_pres m σ (by fin_cases e <;> decide)])
+    (by rw [hσ1, refill_pres m σ (by fin_cases e <;> decide)])
+    (fun g => by rw [hσ1, refill_pres m σ (by fin_cases g <;> decide)])
+    (fun g => by rw [hσ1, refill_pres m σ (by fin_cases g <;> decide)])
+    (fun g => by rw [hσ1, refill_pres m σ (by fin_cases g <;> decide)])
+  -- bridge hypotheses for the Mover
+  have hcaps : ∀ x, ((corePhase m τ1).doms x).caps
+      = ((Hw.abs σ).doms x).caps := by
+    intro x
+    rw [hspec]
+    show ((τ1.haltDom e _).doms x).caps = _
+    rw [haltDom_caps' τ1 e _ x, hτ1, refillPhase_caps]
+  have hgen : ∀ x, ((corePhase m τ1).doms x).slotGen
+      = ((Hw.abs σ).doms x).slotGen := by
+    intro x
+    rw [hspec]
+    show ((τ1.haltDom e _).doms x).slotGen = _
+    rw [haltDom_slotGen' τ1 e _ x, hτ1, refillPhase_slotGen]
+  have hrgn : ∀ x, ((corePhase m τ1).doms x).regions
+      = ((Hw.abs σ).doms x).regions := by
+    intro x
+    rw [hspec]
+    show ((τ1.haltDom e _).doms x).regions = _
+    rw [haltDom_regions' τ1 e _ x, hτ1, refillPhase_regions]
+  have hjob : (corePhase m τ1).mover = Hw.absMover σ := by
+    rw [hspec]
+    show (τ1.haltDom e _).mover = _
+    rw [haltDom_mover' τ1 e _, hτ1, refillPhase_mover]
+    rfl
+  have hmem2 : ∀ ad, ((Hw.coreAct m).run σ σ1).mems "mem" ad 32
+      = σ.mems "mem" ad 32 := by
+    intro ad
+    rw [hcore]
+    rw [Loom.Hw.Compile.run_mems_notin "mem" _
+      (by fin_cases e <;> exact of_decide_eq_true rfl) σ σ1 ad 32]
+    rw [hσ1]
+    exact Loom.Hw.Compile.run_mems_notin "mem" _
+      (by rw [refillAct_memWrites]; simp) σ σ ad 32
+  have hτm : ∀ b : Addr, (corePhase m τ1).mem b
+      = σ.mems "mem" b.toNat 32 := by
+    intro b
+    rw [hspec]
+    show (τ1.haltDom e _).mem b = _
+    rw [haltDom_mem' τ1 e _, hτ1]
+    rfl
+  -- register frame down to the post-core accumulator
+  have hp : ∀ (rn : String) (w : Nat),
+      rn.startsWith "mov_" = false → ¬(rn = "cycle" ∧ w = 32) →
+      ((Hw.core m).cycle σ).regs rn w
+        = ((Hw.coreAct m).run σ σ1).regs rn w := by
+    intro rn w h2 h4
+    rw [core_cycle_unfold]
+    rw [frame (show (rn, w) ∉ Hw.tickAct.regWrites from by
+      intro hmem
+      simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+        Prod.mk.injEq] at hmem
+      exact h4 hmem)]
+    rw [run_WritesPrefixed h2 w _ mover_prefixed]
+  have hstep : step m (Hw.abs σ) =
+      { moverPhase (corePhase m τ1) with
+        cycle := (moverPhase (corePhase m τ1)).cycle + 1 } := rfl
+  rw [hstep]
+  apply machineState_ext'
+  · show ((Hw.core m).cycle σ).regs "cycle" 32 = _
+    rw [cycle_regs_cycle]
+    show _ = (moverPhase (corePhase m τ1)).cycle + 1
+    rw [moverPhase_cycle, hspec]
+    show _ = (τ1.haltDom e _).cycle + 1
+    rw [haltDom_cycle]
+    rfl
+  · funext a
+    show ((Hw.core m).cycle σ).mems "mem" a.toNat 32 = _
+    rw [core_cycle_unfold]
+    rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
+      (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) hnr hcaps hgen hrgn
+      hjob hmem2 hτm a
+  · funext x
+    have hRHS : (moverPhase (corePhase m τ1)).doms x
+        = (τ1.haltDom e (BitVec.ofNat 32 f.code)).doms x := by
+      rw [moverPhase_doms, hspec]
+      rfl
+    show Hw.absDom ((Hw.core m).cycle σ) x = _
+    rw [hRHS, ← hHD x]
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
+      fin_cases x <;> decide +kernel
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases x <;> exact of_decide_eq_true rfl
+    apply absDom_congr
+    intro p hp'
+    rw [show Act.run σ (Hw.haltAct e (BitVec.ofNat 32 f.code)) σ1
+      = Act.run σ (Hw.haltFault e f) σ1 from rfl, ← hcore]
+    exact hp p.1 p.2 (hmovfree p hp') (hcycfree p hp')
+  · funext g
+    have hRHS : (moverPhase (corePhase m τ1)).gates g
+        = (τ1.haltDom e (BitVec.ofNat 32 f.code)).gates g := by
+      rw [moverPhase_gates, hspec]
+      rfl
+    show Hw.absGate ((Hw.core m).cycle σ) g = _
+    rw [hRHS, ← hHG g]
+    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
+      fin_cases g <;> decide +kernel
+    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases g <;> exact of_decide_eq_true rfl
+    apply absGate_congr
+    intro p hp'
+    rw [show Act.run σ (Hw.haltAct e (BitVec.ofNat 32 f.code)) σ1
+      = Act.run σ (Hw.haltFault e f) σ1 from rfl, ← hcore]
+    exact hp p.1 p.2 (hmovfree p hp') (hcycfree p hp')
+  · show Hw.absMover ((Hw.core m).cycle σ)
+      = (moverPhase (corePhase m τ1)).mover
+    rw [core_cycle_unfold]
+    have htick : ∀ (rn : String) (w : Nat), ¬(rn = "cycle" ∧ w = 32) →
+        (Hw.tickAct.run σ (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1))).regs
+          rn w = (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)).regs rn w := by
+      intro rn w h4
+      exact frame (by
+        intro hmem
+        simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+          Prod.mk.injEq] at hmem
+        exact h4 hmem) σ _
+    rw [show Hw.absMover (Hw.tickAct.run σ
+        (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)))
+        = Hw.absMover (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)) from by
+      unfold Hw.absMover
+      rw [htick "mov_v" 1 (by decide), htick "mov_owner" 2 (by decide),
+        htick "mov_src" 14 (by decide), htick "mov_dst" 14 (by decide),
+        htick "mov_srccur" 12 (by decide), htick "mov_dstcur" 12 (by decide),
+        htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
+    exact absMover_moverAct_quiescent σ _ (corePhase m τ1) hnr
+      (fun x => hcaps x) (fun x => hgen x) hjob
+  · have hRHS : (moverPhase (corePhase m τ1)).inflight = none := by
+      rw [moverPhase_inflight, hspec]
+      show (τ1.haltDom e _).inflight = none
+      rw [haltDom_inflight]
+      show Hw.absInflight σ = none
+      rw [Hw.absInflight, if_neg (show ¬(σ.regs "if_v" 1 = 1) from hifv0)]
+    show Hw.absInflight ((Hw.core m).cycle σ) = _
+    rw [hRHS]
+    unfold Hw.absInflight
+    rw [hp "if_v" 1 (by decide +kernel) (by decide), hcore,
+      frame (show ("if_v", 1) ∉ (Hw.haltFault e f).regWrites from by
+        fin_cases e <;> exact of_decide_eq_true rfl) σ σ1,
+      hσ1, refill_pres m σ (by decide)]
+    rw [if_neg (show ¬(σ.regs "if_v" 1 = 1) from hifv0)]
 
 end Machines.Lnp64u.Theorems.RMC
