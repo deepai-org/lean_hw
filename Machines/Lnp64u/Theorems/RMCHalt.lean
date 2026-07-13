@@ -154,4 +154,87 @@ theorem haltAct_run_of_serving (σ acc : Loom.Hw.St) (d : DomainId)
     revert a c
     decide
 
+
+/-- The architectural register write: a no-op for `r0`, else exactly one
+register write at the decoded index. -/
+theorem writeReg_run_of_zero (σ acc : Loom.Hw.St) (c : DomainId)
+    (rE : Expr 3) (vE : Expr 32) (hr : (rE.eval σ).toNat = 0) :
+    (Hw.writeReg c rE vE).run σ acc = acc := by
+  rw [Hw.writeReg, show (List.finRange numRegs).filterMap
+      (fun i => if i.val = 0 then none
+        else some (Act.ite (.eq rE (.lit (BitVec.ofNat 3 i.val)))
+          (.write 32 (Hw.dreg c i) vE) .skip))
+    = ([1, 2, 3, 4, 5, 6, 7] : List RegId).map
+      (fun i => Act.ite (.eq rE (.lit (BitVec.ofNat 3 i.val)))
+        (.write 32 (Hw.dreg c i) vE) .skip) from rfl]
+  refine seqAll_ite_run_none σ acc _ _ _ (fun i hi => ?_)
+  intro hc
+  rw [eqE_eval] at hc
+  have : (rE.eval σ).toNat = i.val := by
+    rw [hc, show (Expr.lit (BitVec.ofNat 3 i.val)).eval σ
+      = BitVec.ofNat 3 i.val from rfl, BitVec.toNat_ofNat]
+    exact Nat.mod_eq_of_lt (by have := i.isLt; omega)
+  rw [hr] at this
+  fin_cases hi <;> simp_all
+
+theorem writeReg_run_of_nz (σ acc : Loom.Hw.St) (c : DomainId)
+    (rE : Expr 3) (vE : Expr 32) (r : RegId)
+    (hr : r.val = (rE.eval σ).toNat) (hnz : r.val ≠ 0) :
+    (Hw.writeReg c rE vE).run σ acc
+      = (Act.write 32 (Hw.dreg c r) vE).run σ acc := by
+  rw [Hw.writeReg, show (List.finRange numRegs).filterMap
+      (fun i => if i.val = 0 then none
+        else some (Act.ite (.eq rE (.lit (BitVec.ofNat 3 i.val)))
+          (.write 32 (Hw.dreg c i) vE) .skip))
+    = ([1, 2, 3, 4, 5, 6, 7] : List RegId).map
+      (fun i => Act.ite (.eq rE (.lit (BitVec.ofNat 3 i.val)))
+        (.write 32 (Hw.dreg c i) vE) .skip) from rfl]
+  refine seqAll_ite_run_unique σ acc _ _ r ?_ ?_ _ ?_ (by decide)
+  · rw [eqE_eval]
+    show rE.eval σ = BitVec.ofNat 3 r.val
+    apply BitVec.eq_of_toNat_eq
+    rw [BitVec.toNat_ofNat, ← hr]
+    exact (Nat.mod_eq_of_lt (by have := r.isLt; omega)).symm
+  · intro j hj hc
+    rw [eqE_eval] at hc
+    apply hj
+    apply Fin.ext
+    have : (rE.eval σ).toNat = j.val := by
+      rw [hc, show (Expr.lit (BitVec.ofNat 3 j.val)).eval σ
+        = BitVec.ofNat 3 j.val from rfl, BitVec.toNat_ofNat]
+      exact Nat.mod_eq_of_lt (by have := j.isLt; omega)
+    omega
+  · fin_cases r <;> first | (exact absurd rfl hnz) | decide
+
+/-- The unwind body selects exactly the caller domain. -/
+theorem gateBody_run (σ acc : Loom.Hw.St) (d : DomainId) (g : GateId)
+    (c : DomainId) (hc : c.val = (σ.regs (Hw.gcaller g) 2).toNat) :
+    (gateBody d g).run σ acc
+      = (Hw.writeReg c (.reg 3 (Hw.gcallerRd g))
+          (.lit Errno.calleeFault.toWord)).run σ
+        ((Act.write 2 (Hw.drun c) (.lit 0)).run σ
+          ((Act.write 1 (Hw.gactV g) (.lit 0)).run σ acc)) := by
+  show (Hw.seqAll ((List.finRange numDomains).map fun c' =>
+      Act.ite (.eq (.reg 2 (Hw.gcaller g)) (.lit (BitVec.ofNat 2 c'.val)))
+        (.seq (.write 2 (Hw.drun c') (.lit 0))
+          (Hw.writeReg c' (.reg 3 (Hw.gcallerRd g))
+            (.lit Errno.calleeFault.toWord)))
+        .skip)).run σ
+    ((Act.write 1 (Hw.gactV g) (.lit 0)).run σ acc) = _
+  rw [seqAll_ite_run_unique σ _ _ _ c ?_ ?_ _ (List.mem_finRange c)
+    (List.nodup_finRange _)]
+  · rfl
+  · rw [eqE_eval]
+    show σ.regs (Hw.gcaller g) 2 = BitVec.ofNat 2 c.val
+    apply BitVec.eq_of_toNat_eq
+    rw [BitVec.toNat_ofNat, ← hc]
+    exact (Nat.mod_eq_of_lt (by have := c.isLt; omega)).symm
+  · intro j hj hcon
+    rw [eqE_eval] at hcon
+    apply hj
+    apply Fin.ext
+    have : σ.regs (Hw.gcaller g) 2 = BitVec.ofNat 2 j.val := hcon
+    rw [hc, this, BitVec.toNat_ofNat]
+    exact (Nat.mod_eq_of_lt (by have := j.isLt; omega)).symm
+
 end Machines.Lnp64u.Theorems.RMC
