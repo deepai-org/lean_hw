@@ -824,4 +824,97 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
             fin_cases h <;> fin_cases cl <;> fin_cases rd <;>
               exact of_decide_eq_true rfl) p hp
 
+
+/-! ## The halt bridge -/
+
+/-- **The halt bridge**: decoding `haltAct`'s output is `Kernel.haltDom`,
+for any spec state agreeing with the abstraction of the accumulator on
+domains and gates, when the pre-cycle state agrees with the accumulator
+on the unwind's condition registers. Registers outside `haltAct`'s write
+set (memory, Mover, in-flight, cycle, hidden counters) are untouched by
+construction. -/
+theorem abs_haltAct (σ acc : Loom.Hw.St) (τ : MachineState) (d : DomainId)
+    (cause : BitVec 32)
+    (hdoms : ∀ x, Hw.absDom acc x = τ.doms x)
+    (hgates : ∀ g, Hw.absGate acc g = τ.gates g)
+    (hsv : σ.regs (Hw.dsrvV d) 1 = acc.regs (Hw.dsrvV d) 1)
+    (hsrv : σ.regs (Hw.dsrv d) 2 = acc.regs (Hw.dsrv d) 2)
+    (hactv : ∀ g, σ.regs (Hw.gactV g) 1 = acc.regs (Hw.gactV g) 1)
+    (hcaller : ∀ g, σ.regs (Hw.gcaller g) 2 = acc.regs (Hw.gcaller g) 2)
+    (hcrd : ∀ g, σ.regs (Hw.gcallerRd g) 3 = acc.regs (Hw.gcallerRd g) 3) :
+    (∀ x, Hw.absDom ((Hw.haltAct d cause).run σ acc) x
+      = (τ.haltDom d cause).doms x) ∧
+    (∀ g, Hw.absGate ((Hw.haltAct d cause).run σ acc) g
+      = (τ.haltDom d cause).gates g) := by
+  by_cases hsvc : σ.regs (Hw.dsrvV d) 1 = 1#1
+  · set g : GateId := finOfBv (by decide) (σ.regs (Hw.dsrv d) 2) with hgdef
+    have hserv : (τ.doms d).serving = some g := by
+      rw [← hdoms d]
+      show (if acc.regs (Hw.dsrvV d) 1 = 1#1 then
+        some (finOfBv (by decide) (acc.regs (Hw.dsrv d) 2)) else none) = _
+      rw [if_pos (hsv ▸ hsvc), hgdef, hsrv]
+    have hgval : g.val = (σ.regs (Hw.dsrv d) 2).toNat := rfl
+    by_cases hactc : σ.regs (Hw.gactV g) 1 = 1#1
+    · -- serving with a live activation: base + unwind
+      have hact' : (τ.gates g).act = some
+          { caller := finOfBv (by decide) (acc.regs (Hw.gcaller g) 2)
+            callerRd := finOfBv (by decide) (acc.regs (Hw.gcallerRd g) 3)
+            savedRegs := fun r => acc.regs (Hw.gsreg g r) 32
+            savedPc := acc.regs (Hw.gspc g) 12
+            savedServing :=
+              if acc.regs (Hw.gssrvV g) 1 = 1#1 then
+                some (finOfBv (by decide) (acc.regs (Hw.gssrv g) 2))
+              else none
+            depth := (acc.regs (Hw.gdepth g) 3).toNat
+            donated := (acc.regs (Hw.gdon g) 32).toNat } := by
+        rw [← hgates g]
+        show (if acc.regs (Hw.gactV g) 1 = 1#1 then _ else none) = _
+        rw [if_pos ((hactv g) ▸ hactc)]
+        rfl
+      have hspec : τ.haltDom d cause =
+          (τ.haltBase d cause).unwindGate g
+            (finOfBv (by decide) (acc.regs (Hw.gcaller g) 2))
+            (finOfBv (by decide) (acc.regs (Hw.gcallerRd g) 3)) := by
+        rw [MachineState.haltDom, hserv]
+        show (match (τ.gates g).act with
+          | none => τ.haltBase d cause
+          | some a => (τ.haltBase d cause).unwindGate g a.caller a.callerRd)
+          = _
+        rw [hact']
+      rw [hspec, haltAct_run_of_serving σ acc d cause g hgval hsvc hactc]
+      obtain ⟨hbd, hbg⟩ := abs_haltBase3 σ acc τ d cause hdoms hgates
+      exact abs_gateBody σ _ (τ.haltBase d cause) d g
+        (finOfBv (by decide) (acc.regs (Hw.gcaller g) 2))
+        (finOfBv (by decide) (acc.regs (Hw.gcallerRd g) 3))
+        (by show (finOfBv _ (acc.regs (Hw.gcaller g) 2)).val = _
+            rw [hcaller g]
+            rfl)
+        (by show (finOfBv _ (acc.regs (Hw.gcallerRd g) 3)).val = _
+            rw [hcrd g]
+            rfl)
+        hbd hbg
+    · -- serving, but no live activation: base only
+      have hact' : (τ.gates g).act = none := by
+        rw [← hgates g]
+        show (if acc.regs (Hw.gactV g) 1 = 1#1 then _ else none) = _
+        rw [if_neg (fun hc => hactc ((hactv g) ▸ hc))]
+      have hspec : τ.haltDom d cause = τ.haltBase d cause := by
+        rw [MachineState.haltDom, hserv]
+        show (match (τ.gates g).act with
+          | none => τ.haltBase d cause
+          | some a => (τ.haltBase d cause).unwindGate g a.caller a.callerRd)
+          = _
+        rw [hact']
+      rw [hspec, haltAct_run_of_no_act σ acc d cause g hgval hactc]
+      exact abs_haltBase3 σ acc τ d cause hdoms hgates
+  · -- not serving: base only
+    have hserv : (τ.doms d).serving = none := by
+      rw [← hdoms d]
+      show (if acc.regs (Hw.dsrvV d) 1 = 1#1 then _ else none) = _
+      rw [if_neg (fun hc => hsvc (hsv ▸ hc))]
+    have hspec : τ.haltDom d cause = τ.haltBase d cause := by
+      rw [MachineState.haltDom, hserv]
+    rw [hspec, haltAct_run_of_not_serving σ acc d cause hsvc]
+    exact abs_haltBase3 σ acc τ d cause hdoms hgates
+
 end Machines.Lnp64u.Theorems.RMC
