@@ -840,4 +840,96 @@ theorem square_issue_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       hσ1, refill_pres m σ (by decide)]
     rw [if_neg (show ¬(σ.regs "if_v" 1 = 1) from hifv0)]
 
+
+/-! ## Condition glue -/
+
+/-- The effective-budget mux at the payer reads the post-refill payer
+budget (`eligE_eval`'s core, standalone). -/
+theorem effB_at_payer (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP) (e : DomainId) :
+    ((effBE m e).eval σ).toNat
+      = ((refillPhase m (Hw.abs σ)).doms
+          ((refillPhase m (Hw.abs σ)).payer e)).budget := by
+  show ((Hw.muxFin (fun q => Hw.effBudgetE m q) (Hw.payerE e)).eval σ).toNat = _
+  rw [muxFin_eval (by decide : 2 ^ 2 = numDomains)]
+  rw [show finOfBv (by decide : 2 ^ 2 = numDomains) ((Hw.payerE e).eval σ)
+    = (Hw.abs σ).payer e from payerE_eval σ e]
+  rw [refillPhase_payer]
+  exact effBudget_eval m hwf hfit σ hsync ((Hw.abs σ).payer e)
+
+/-- Costs fit the 8-bit charge register. -/
+private theorem cost_lt_256 (instr : Machines.Lnp64u.Instr)
+    (h : instr ∈ isa) : instr.cost.cost < 256 := by
+  rw [Array.mem_def] at h
+  fin_cases h <;> decide
+
+/-! ## The remaining outcome assemblies (staged) -/
+
+/-- Burn outcome: the payer's residual budget zeroed, nothing latched. -/
+theorem square_issue_burn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv0 : ¬ σ.regs "if_v" 1 = 1#1)
+    (e : DomainId)
+    (hcore : (Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)
+      = (burnA e).run σ ((Hw.refillAct m).run σ σ))
+    (hspec : corePhase m (refillPhase m (Hw.abs σ))
+      = (refillPhase m (Hw.abs σ)).setDom
+          ((refillPhase m (Hw.abs σ)).payer e)
+          (fun ds => { ds with budget := 0 })) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- Plain (non-serving) issue: charge + latch. -/
+theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv0 : ¬ σ.regs "if_v" 1 = 1#1)
+    (e : DomainId) (w : Loom.Word32) (instr : Machines.Lnp64u.Instr)
+    (hw : (wE e).eval σ = w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hcost : ((cost32E e).eval σ).toNat = instr.cost.cost)
+    (hcost8 : (Hw.costE (opcEx e)).eval σ = BitVec.ofNat 8 instr.cost.cost)
+    (hcore : (Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)
+      = ((chargeA m e).seq (latchA e)).run σ ((Hw.refillAct m).run σ σ))
+    (hspec : corePhase m (refillPhase m (Hw.abs σ))
+      = (let τ1 := refillPhase m (Hw.abs σ)
+        let σ' := τ1.setDom (τ1.payer e) fun ds =>
+          { ds with budget := ds.budget - instr.cost.cost }
+        { σ' with inflight := some ⟨e, w, instr.cost.cost⟩ })) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- Serving issue: charge + donation draw + latch. -/
+theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv0 : ¬ σ.regs "if_v" 1 = 1#1)
+    (e : DomainId) (w : Loom.Word32) (instr : Machines.Lnp64u.Instr)
+    (g : GateId) (a : Activation)
+    (hw : (wE e).eval σ = w)
+    (hdec : Loom.Isa.decode isa w = some instr)
+    (hcost : ((cost32E e).eval σ).toNat = instr.cost.cost)
+    (hcost8 : (Hw.costE (opcEx e)).eval σ = BitVec.ofNat 8 instr.cost.cost)
+    (hg : g.val = (σ.regs (Hw.dsrv e) 2).toNat)
+    (ha : ((refillPhase m (Hw.abs σ)).gates g).act = some a)
+    (hcore : (Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)
+      = ((chargeA m e).seq ((drawDonA e).seq (latchA e))).run σ
+          ((Hw.refillAct m).run σ σ))
+    (hspec : corePhase m (refillPhase m (Hw.abs σ))
+      = (let τ1 := refillPhase m (Hw.abs σ)
+        let σ' := τ1.setDom (τ1.payer e) fun ds =>
+          { ds with budget := ds.budget - instr.cost.cost }
+        let gs' : GateState := { (σ'.gates g) with
+          act := some { a with donated := a.donated - instr.cost.cost } }
+        let σ'' := { σ' with gates := Loom.Fun.update σ'.gates g gs' }
+        { σ'' with inflight := some ⟨e, w, instr.cost.cost⟩ })) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
 end Machines.Lnp64u.Theorems.RMC
