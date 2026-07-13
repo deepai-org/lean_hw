@@ -27,14 +27,18 @@ source with the generated reset helpers wired in:
   `coupled_reset` are CLEAN, while downstream R-MC transport theorems are
   STATED only through `square`/`coupled_step`.
 
-Immediate next step (2026-07-05): `coupled_step` is done — the frame
-layer, literal-write checker, kind-canon checker, and mod-P counter
-arithmetic are landed. Next is the `square` decomposition: countdown arm
-first (only `if_cl` changes through `abs`), then the refill/tick abs
-lemmas, then issue, then the 24 retirement arms, then `cap_revoke`.
-Decision point before the per-op grind: evaluate the §6 tagless-final
-refactor — the per-op obligations are exactly the duplicated datapath
-equivalences it collapses.
+Immediate next step (2026-07-13): Stage 1 resolved (§6: tagless-final
+REJECTED on experiment — see RMCOps.lean). Stage-2 progress: the square's
+countdown and idle-stall arms are fully proven (RMCCountdown.lean,
+RMCIdle.lean) on top of the landed bridge stack — refill bridge
+(RMCRefill), eval bridges (RMCBridge), quiescent Mover bridge both faces
+(RMCMover), scheduler bridge (RMCSched), decode/cost bridge (RMCIsa),
+value/check packs (RMCOps), and the complete halt bridge
+(RMCHalt.abs_haltAct = Kernel.haltDom). Next: the issue arm
+(fetch/decode/charge/donation/latch + fault paths through abs_haltAct),
+then the retirement dispatch skeleton, then the per-op arms via the
+shared kernel-helper bridges (installA/clearSlotA/transferA/sweeps),
+then the cap_revoke mark engine, then assembly.
 
 ## 0. Working rule: write forward from source
 
