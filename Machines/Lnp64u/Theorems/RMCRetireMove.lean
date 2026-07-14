@@ -274,6 +274,144 @@ theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         | .fault fl => haltWith { refillPhase m (Hw.abs σ) with inflight := none } E fl) := by
     rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
     rfl
+  have hladder : ∀ acc : Loom.Hw.St, (Hw.retireFor E).run σ acc
+      = (
+          if (Expr.reg 1 "mov_v").eval σ = 1#1
+          then (Hw.respA E (.err .moverBusy)).run σ acc
+          else if (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E) (.lit (BitVec.ofNat 12 0))) { r := true, w := false, x := false })).eval σ = 1#1
+          then (Hw.respA E (.fault .memoryAuthority)).run σ acc
+          else if (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E) (.lit (BitVec.ofNat 12 1))) { r := true, w := false, x := false })).eval σ = 1#1
+          then (Hw.respA E (.fault .memoryAuthority)).run σ acc
+          else if (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E) (.lit (BitVec.ofNat 12 2))) { r := true, w := false, x := false })).eval σ = 1#1
+          then (Hw.respA E (.fault .memoryAuthority)).run σ acc
+          else if (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E) (.lit (BitVec.ofNat 12 3))) { r := true, w := false, x := false })).eval σ = 1#1
+          then (Hw.respA E (.fault .memoryAuthority)).run σ acc
+          else if (Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1
+          then (Hw.respA E (.err .staleHandle)).run σ acc
+          else if (Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1
+          then (Hw.respA E (.err .badCap)).run σ acc
+          else if (Expr.not (Hw.moveDstSel E).live).eval σ = 1#1
+          then (Hw.respA E (.err .staleHandle)).run σ acc
+          else if (Expr.not (Hw.moveDstSel E).clsOk).eval σ = 1#1
+          then (Hw.respA E (.err .badCap)).run σ acc
+          else if (Expr.not (Expr.and (Hw.kIsMem (Hw.moveSrcSel E).kindW) (Hw.kIsMem (Hw.moveDstSel E).kindW))).eval σ = 1#1
+          then (Hw.respA E (.err .badCap)).run σ acc
+          else if (Expr.not (Hw.kR (Hw.moveSrcSel E).kindW)).eval σ = 1#1
+          then (Hw.respA E (.err .permDenied)).run σ acc
+          else if (Expr.not (Hw.kW (Hw.moveDstSel E).kindW)).eval σ = 1#1
+          then (Hw.respA E (.err .permDenied)).run σ acc
+          else if (Expr.or (Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32) (Hw.moveW E 2)) (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32) (Hw.moveW E 2))).eval σ = 1#1
+          then (Hw.respA E (.err .outOfRange)).run σ acc
+          else if (Expr.not (Hw.domCoversE E (Hw.field (Hw.moveW E 3) 0 12) { r := false, w := true, x := false })).eval σ = 1#1
+          then (Hw.respA E (.fault .memoryAuthority)).run σ acc
+          else (Act.seq (Hw.writeReg E Hw.rdE (.lit 0)) (Hw.pcAdvA E)).run σ acc) := by
+    intro acc
+    rw [hselC acc]
+    rfl
+  have hrd : ∀ a : Addr, ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).read a = σ.mems "mem" a.toNat 32 :=
+    fun a => rfl
+  have hRD : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1 = AW :=
+    hSPr (operandsOf W).rs1
+  have hextAW : AW.extractLsb' 0 12 = AW.setWidth 12 := by
+    apply BitVec.eq_of_toNat_eq
+    simp [BitVec.toNat_setWidth]
+  have hmwE : ∀ i : Nat, (Hw.moveW E i).eval σ
+      = σ.mems "mem" ((AW.setWidth 12 + BitVec.ofNat 12 i)).toNat 32 := by
+    intro i
+    rw [moveW_eval, hR1, hextAW]
+  by_cases hbusy : σ.regs "mov_v" 1 = 1#1
+  case pos =>
+    -- Mover busy
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.reg 1 "mov_v" : Expr 1), (Resp.err .moverBusy)),
+          List.mem_cons_self .., rfl⟩)
+      have h2 : ~~~(σ.regs "mov_v" 1) = 1#1 := h1
+      rw [hbusy] at h2
+      exact absurd h2 (by decide))
+    have hm1 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).mover = some
+        { owner := finOfBv (by decide) (σ.regs "mov_owner" 2)
+          src := Hw.decRef (σ.regs "mov_src" 14)
+          dst := Hw.decRef (σ.regs "mov_dst" 14)
+          srcCur := σ.regs "mov_srccur" 12
+          dstCur := σ.regs "mov_dstcur" 12
+          remaining := (σ.regs "mov_rem" 13).toNat
+          statusAddr := σ.regs "mov_status" 12 } := by
+      show Hw.absMover σ = _
+      exact absMover_some σ hbusy
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.moverBusy.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_pos (show (Expr.reg 1 "mov_v").eval σ = 1#1 from hbusy)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hm1]
+      rfl
+  case neg =>
+  have hmovN : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).mover = none := by
+    show Hw.absMover σ = _
+    exact absMover_none σ hbusy
+  by_cases hc0 : (Hw.domCoversE E (.add (Hw.moveBase E)
+      (.lit (BitVec.ofNat 12 0)))
+      { r := true, w := false, x := false }).eval σ = 1#1
+  case neg =>
+    -- read fault on descriptor word 0
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false }) : Expr 1),
+          (Resp.fault .memoryAuthority)),
+          List.mem_cons_of_mem _ (List.mem_cons_self ..), rfl⟩)
+      have h2 : ~~~(~~~((Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 0)))
+          { r := true, w := false, x := false }).eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hc0] at h2
+      exact absurd h2 (by decide))
+    have haddr0 : ((Expr.add (Hw.moveBase E)
+        (Expr.lit (BitVec.ofNat 12 0))).eval σ) = AW.setWidth 12 := by
+      show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+        + BitVec.ofNat 12 0 = _
+      rw [hR1, hextAW]
+      exact BitVec.add_zero _
+    have hcovF : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12)
+        { r := true, w := false, x := false } = false := by
+      rw [spec_covers_bridge]
+      rw [← Bool.not_eq_true]
+      intro hcv
+      exact hc0 ((domCoversE_eval σ E _ _).mpr (by rw [haddr0]; exact hcv))
+    refine square_retire_fault_of m hwf hfit σ hsync hifv hcl hin hswz
+      hmapz hunmapz
+      (fun ad => by
+        rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
+        exact refill_pres_mem m σ "mem" ad 32)
+      E rfl .memoryAuthority ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_pos (show (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1 from by
+          show ~~~((Hw.domCoversE E _ _).eval σ) = 1#1
+          rw [bv1_ne_one.mp hc0]
+          decide)]
+      rfl
+    · rw [hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand, specM_pure]
+      simp only [hRD, hcovF]
+      rfl
   sorry
+
 
 end Machines.Lnp64u.Theorems.RMC
