@@ -64,19 +64,19 @@ theorem refillAct_run_dbudget (m : Manifest) (σ acc : Loom.Hw.St) (d : DomainId
 
 /-! ## Missing `refillPhase` field lemmas (regs/pc/cause/maxDonation/budget) -/
 
-private theorem refillPhase_dregs (m : Manifest) (σ : MachineState) (d : DomainId) :
+theorem refillPhase_dregs (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).regs = (σ.doms d).regs := by
   unfold refillPhase; dsimp only; split <;> rfl
 
-private theorem refillPhase_dpc (m : Manifest) (σ : MachineState) (d : DomainId) :
+theorem refillPhase_dpc (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).pc = (σ.doms d).pc := by
   unfold refillPhase; dsimp only; split <;> rfl
 
-private theorem refillPhase_dcause (m : Manifest) (σ : MachineState) (d : DomainId) :
+theorem refillPhase_dcause (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).cause = (σ.doms d).cause := by
   unfold refillPhase; dsimp only; split <;> rfl
 
-private theorem refillPhase_dmaxdon (m : Manifest) (σ : MachineState) (d : DomainId) :
+theorem refillPhase_dmaxdon (m : Manifest) (σ : MachineState) (d : DomainId) :
     ((refillPhase m σ).doms d).maxDonation = (σ.doms d).maxDonation := by
   unfold refillPhase; dsimp only; split <;> rfl
 
