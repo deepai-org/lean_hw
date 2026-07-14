@@ -65,12 +65,6 @@ structure Inert (σ : Loom.Hw.St) : Prop where
   unmapSet : ∀ (c : DomainId) (r : RegionId),
     (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
       .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1
-  swHit : ∀ (d : DomainId) (srcCur : Expr 12),
-    (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
-      Hw.domCoversE d (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
-        ⟨false, true, false⟩,
-      .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
-        srcCur]).eval σ = 0#1
 
 /-- `killedByCoreE` is off on an inert cycle. -/
 theorem killedByCoreE_quiescent (σ : Loom.Hw.St)
@@ -108,7 +102,7 @@ private theorem bv1_or_zero (x : BitVec 1) : 0#1 ||| x = x := by
 private theorem bv1_not_zero : ~~~(0#1) = 1#1 := by decide
 
 /-- The head-`retiringE` `andAll` chains are off on a non-retiring cycle. -/
-private theorem andAll_retiring_quiescent (σ : Loom.Hw.St)
+theorem andAll_retiring_quiescent (σ : Loom.Hw.St)
     (hnr : Hw.retiringE.eval σ = 0#1) (rest : List (Expr 1)) :
     (Hw.andAll (Hw.retiringE :: rest)).eval σ = 0#1 := by
   cases rest with
@@ -128,7 +122,6 @@ theorem Inert.of_nonretiring (σ : Loom.Hw.St)
   newJob d := andAll_retiring_quiescent σ hnr _
   mapSet c r := andAll_retiring_quiescent σ hnr _
   unmapSet c r := andAll_retiring_quiescent σ hnr _
-  swHit d srcCur := andAll_retiring_quiescent σ hnr _
 
 /-- Every gate family is off when the latched mnemonic is none of the
 Mover-relevant ops (kill ops, `move`, `map`/`unmap`, `sw`) — the benign
@@ -203,12 +196,6 @@ theorem Inert.of_benign (σ : Loom.Hw.St)
       (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
         (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
           (List.mem_cons_self ..))))))))
-  swHit d srcCur := andAll_zero_of_mem σ
-    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
-    (hben "sw" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-          (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))))
 
 /-- `rgnVPostE` falls back to the validity register. -/
 theorem rgnVPostE_quiescent (σ : Loom.Hw.St)
@@ -238,7 +225,13 @@ theorem rgnValPostE_quiescent (σ : Loom.Hw.St)
 
 /-- The forwarding mux falls back to the memory read. -/
 theorem srcWord_quiescent (σ : Loom.Hw.St)
-    (hnr : Inert σ) (srcCur : Expr 12) :
+    (hswz : ∀ (d : DomainId) (srcCur' : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+        Hw.domCoversE d (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          srcCur']).eval σ = 0#1)
+    (srcCur : Expr 12) :
     (((List.finRange numDomains).foldr
       (fun d acc =>
         let eaddr : Expr 12 := Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12
@@ -252,7 +245,7 @@ theorem srcWord_quiescent (σ : Loom.Hw.St)
   | nil => rfl
   | cons d t ih =>
       show (if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _ else _) = _
-      rw [hnr.swHit d srcCur, if_neg (by decide)]
+      rw [hswz d srcCur, if_neg (by decide)]
       exact ih
 
 /-- `rgnCoversVal` decodes to `Region.covers` of the decoded value. -/
@@ -1249,13 +1242,19 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
     (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
     (hrgn : ∀ d, (τ.doms d).regions = ((Hw.abs σ).doms d).regions)
     (hjob : τ.mover = Hw.absMover σ)
+    (hswz : ∀ (d : DomainId) (srcCur' : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+        Hw.domCoversE d (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          srcCur']).eval σ = 0#1)
     (hmem : ∀ ad, acc.mems "mem" ad 32 = σ.mems "mem" ad 32)
     (hτm : ∀ b : Addr, τ.mem b = σ.mems "mem" b.toNat 32)
     (a : Addr) :
     (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a :=
   moverAct_mem_core σ acc τ hnr hcaps hgen hrgn hjob
     (fun b => (hmem b.toNat).trans (hτm b).symm)
-    (fun sc => (srcWord_quiescent σ hnr sc).trans (hτm (sc.eval σ)).symm)
+    (fun sc => (srcWord_quiescent σ hswz sc).trans (hτm (sc.eval σ)).symm)
     a
 
 end Machines.Lnp64u.Theorems.RMC
