@@ -149,4 +149,131 @@ theorem Inert.of_move_fail (σ : Loom.Hw.St)
     · exact andAll_zero_of_mem σ
         (List.mem_cons_of_mem _ (List.mem_cons_self ..)) (hifexcl d hd)
 
+
+/-! ## The `move` arm: head + spec do-term (stage M2) -/
+
+set_option maxHeartbeats 51200000 in
+/-- The `move` retirement arm (opcode 24). -/
+theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hkc : KindCanon σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 24#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (24#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (24#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel σ E rfl
+  have hmovemn : (Hw.isMn "move").eval σ = 1#1 := by
+    rw [isMn_eval, hopc]
+    exact (by decide +kernel : Hw.opcodeOf "move" = 24#6).symm
+  have hret := retiringE_one σ hifv hcl
+  have hkill : ∀ mn ∈ ["cap_drop", "cap_revoke", "gate_call",
+      "gate_return"], (Hw.isMn mn).eval σ ≠ 1#1 := fun mn hmn =>
+    isMn_ne_of_opc σ mn 24#6 hopc
+      ((by decide +kernel : ∀ mn ∈ ["cap_drop", "cap_revoke", "gate_call",
+        "gate_return"], (24#6 : BitVec 6) ≠ Hw.opcodeOf mn) mn hmn)
+  have hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1 := fun c r =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "map" 24#6 hopc (by decide +kernel))
+  have hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1 := fun c r =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "unmap" 24#6 hopc (by decide +kernel))
+  have hswz : ∀ (d : DomainId) (sc : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+        Hw.domCoversE d (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          sc]).eval σ = 0#1 := fun d sc =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "sw" 24#6 hopc (by decide +kernel))
+  have hben5 : ∀ mn ∈ memMns, (Hw.isMn mn).eval σ ≠ 1#1 := fun mn hmn =>
+    isMn_ne_of_opc σ mn 24#6 hopc
+      ((by decide +kernel : ∀ mn ∈ memMns, (24#6 : BitVec 6)
+        ≠ Hw.opcodeOf mn) mn hmn)
+  have hselC := retireFor_sel_of_opc σ E "move" 24#6 hopc
+    (by decide +kernel) (by decide +kernel)
+    ⟨Hw.ladder E (Hw.moveChecks E)
+      (.seq (Hw.writeReg E Hw.rdE (.lit 0)) (Hw.pcAdvA E)),
+      .lit 0, .lit 0, .lit 0⟩
+    (List.mem_append_right _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := finOfBv (by decide) (σ.regs "if_dom" 2)
+        word := W
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    exact absInflight_some σ hifv
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ)
+      = refillPhase m (Hw.abs σ) := abs_refill m hwf hfit σ hsync
+  have hL1 : ∀ y, (refillPhase m (Hw.abs σ)).doms y
+      = Hw.absDom ((Hw.refillAct m).run σ σ) y := by
+    intro y
+    rw [← habs1]
+    rfl
+  have hR1 : (Hw.readReg E Hw.rs1E).eval σ
+      = ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl
+  set AW := ((Hw.abs σ).doms E).reg (operandsOf W).rs1 with hAW
+  have hSPr : ∀ rs : RegId,
+      ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg rs
+        = ((Hw.abs σ).doms E).reg rs := fun rs => specReg_bridge m σ E rs
+  have hcore0 : corePhase m (refillPhase m (Hw.abs σ))
+      = retire { refillPhase m (Hw.abs σ) with inflight := none } E W := by
+    rw [corePhase_retire m _ _ hfl (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+  have hDO : retire { refillPhase m (Hw.abs σ) with inflight := none } E W
+      = (match ((SpecM.get >>= fun σ0 =>
+          SpecM.require σ0.mover.isNone .moverBusy >>= fun _ =>
+          SpecM.reg E (operandsOf W).rs1 >>= fun aw =>
+          SpecM.load E (aw.setWidth 12) >>= fun srcH =>
+          SpecM.load E (aw.setWidth 12 + 1) >>= fun dstH =>
+          SpecM.load E (aw.setWidth 12 + 2) >>= fun lenW =>
+          SpecM.load E (aw.setWidth 12 + 3) >>= fun stW =>
+          Machines.Lnp64u.Isa.capLive E srcH >>= fun x =>
+          match x with
+          | (ss, gs_, es) =>
+            Machines.Lnp64u.Isa.capLive E dstH >>= fun y =>
+            match y with
+            | (sd, gd, ed) =>
+              match es.kind, ed.kind with
+              | .mem sb sl sp, .mem db dl dp =>
+                  SpecM.require sp.r .permDenied >>= fun _ =>
+                  SpecM.require dp.w .permDenied >>= fun _ =>
+                  SpecM.require (decide (lenW.toNat ≤ sl.toNat)
+                      && decide (lenW.toNat ≤ dl.toNat))
+                    .outOfRange >>= fun _ =>
+                  SpecM.get >>= fun σq =>
+                  SpecM.demand (σq.domCovers E (stW.setWidth 12) { r := false, w := true, x := false }) .memoryAuthority >>= fun _ =>
+                  SpecM.set ({ σq with mover := some { owner := E, src := ⟨E, ss, gs_⟩, dst := ⟨E, sd, gd⟩, srcCur := sb, dstCur := db, remaining := lenW.toNat, statusAddr := stW.setWidth 12 } }) >>= fun _ =>
+                  SpecM.setReg E (operandsOf W).rd 0
+              | _, _ => SpecM.raise .badCap)
+          (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))) with
+        | .ok _ σ' => σ'
+        | .err e σ' =>
+            σ'.setDom E fun ds => ds.setReg (operandsOf W).rd e.toWord
+        | .fault fl => haltWith { refillPhase m (Hw.abs σ) with inflight := none } E fl) := by
+    rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+  sorry
+
 end Machines.Lnp64u.Theorems.RMC
