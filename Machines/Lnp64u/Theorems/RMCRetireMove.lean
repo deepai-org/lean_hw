@@ -411,7 +411,242 @@ theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         SpecM.require, SpecM.reg, SpecM.load, SpecM.demand, specM_pure]
       simp only [hRD, hcovF]
       rfl
+  case pos =>
+  have haddr0 : ((Expr.add (Hw.moveBase E)
+      (Expr.lit (BitVec.ofNat 12 0))).eval σ) = AW.setWidth 12 := by
+    show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+      + BitVec.ofNat 12 0 = _
+    rw [hR1, hextAW]
+    exact BitVec.add_zero _
+  have hcovT0 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12)
+      { r := true, w := false, x := false } = true := by
+    rw [spec_covers_bridge]
+    exact haddr0 ▸ (domCoversE_eval σ E _ _).mp hc0
+  by_cases hc1 : (Hw.domCoversE E (.add (Hw.moveBase E)
+      (.lit (BitVec.ofNat 12 1)))
+      { r := true, w := false, x := false }).eval σ = 1#1
+  case neg =>
+    -- read fault on descriptor word 1
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false }) : Expr 1),
+          (Resp.fault .memoryAuthority)),
+          List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)), rfl⟩)
+      have h2 : ~~~(~~~((Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 1)))
+          { r := true, w := false, x := false }).eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hc1] at h2
+      exact absurd h2 (by decide))
+    have haddr1X : ((Expr.add (Hw.moveBase E)
+        (Expr.lit (BitVec.ofNat 12 1))).eval σ) = AW.setWidth 12 + 1 := by
+      show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+        + BitVec.ofNat 12 1 = _
+      rw [hR1, hextAW]
+      rfl
+    have hcovF : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12 + 1)
+        { r := true, w := false, x := false } = false := by
+      rw [spec_covers_bridge]
+      rw [← Bool.not_eq_true]
+      intro hcv
+      exact hc1 ((domCoversE_eval σ E _ _).mpr (by rw [haddr1X]; exact hcv))
+    refine square_retire_fault_of m hwf hfit σ hsync hifv hcl hin hswz
+      hmapz hunmapz
+      (fun ad => by
+        rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
+        exact refill_pres_mem m σ "mem" ad 32)
+      E rfl .memoryAuthority ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_pos (show (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1 from by
+          show ~~~((Hw.domCoversE E _ _).eval σ) = 1#1
+          rw [bv1_ne_one.mp hc1]
+          decide)]
+      rfl
+    · rw [hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand, specM_pure]
+      simp only [hRD, hcovT0, hcovF, reduceIte]
+      rfl
+  case pos =>
+  have haddr1 : ((Expr.add (Hw.moveBase E)
+      (Expr.lit (BitVec.ofNat 12 1))).eval σ) = AW.setWidth 12 + 1 := by
+    show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+      + BitVec.ofNat 12 1 = _
+    rw [hR1, hextAW]
+    rfl
+  have hcovT1 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12 + 1)
+      { r := true, w := false, x := false } = true := by
+    rw [spec_covers_bridge]
+    exact haddr1 ▸ (domCoversE_eval σ E _ _).mp hc1
+  by_cases hc2 : (Hw.domCoversE E (.add (Hw.moveBase E)
+      (.lit (BitVec.ofNat 12 2)))
+      { r := true, w := false, x := false }).eval σ = 1#1
+  case neg =>
+    -- read fault on descriptor word 2
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false }) : Expr 1),
+          (Resp.fault .memoryAuthority)),
+          List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 2)))
+          { r := true, w := false, x := false }).eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hc2] at h2
+      exact absurd h2 (by decide))
+    have haddr2X : ((Expr.add (Hw.moveBase E)
+        (Expr.lit (BitVec.ofNat 12 2))).eval σ) = AW.setWidth 12 + 2 := by
+      show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+        + BitVec.ofNat 12 2 = _
+      rw [hR1, hextAW]
+      rfl
+    have hcovF : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12 + 2)
+        { r := true, w := false, x := false } = false := by
+      rw [spec_covers_bridge]
+      rw [← Bool.not_eq_true]
+      intro hcv
+      exact hc2 ((domCoversE_eval σ E _ _).mpr (by rw [haddr2X]; exact hcv))
+    refine square_retire_fault_of m hwf hfit σ hsync hifv hcl hin hswz
+      hmapz hunmapz
+      (fun ad => by
+        rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
+        exact refill_pres_mem m σ "mem" ad 32)
+      E rfl .memoryAuthority ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_pos (show (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1 from by
+          show ~~~((Hw.domCoversE E _ _).eval σ) = 1#1
+          rw [bv1_ne_one.mp hc2]
+          decide)]
+      rfl
+    · rw [hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovF, reduceIte]
+      rfl
+  case pos =>
+  have haddr2 : ((Expr.add (Hw.moveBase E)
+      (Expr.lit (BitVec.ofNat 12 2))).eval σ) = AW.setWidth 12 + 2 := by
+    show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+      + BitVec.ofNat 12 2 = _
+    rw [hR1, hextAW]
+    rfl
+  have hcovT2 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12 + 2)
+      { r := true, w := false, x := false } = true := by
+    rw [spec_covers_bridge]
+    exact haddr2 ▸ (domCoversE_eval σ E _ _).mp hc2
+  by_cases hc3 : (Hw.domCoversE E (.add (Hw.moveBase E)
+      (.lit (BitVec.ofNat 12 3)))
+      { r := true, w := false, x := false }).eval σ = 1#1
+  case neg =>
+    -- read fault on descriptor word 3
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false }) : Expr 1),
+          (Resp.fault .memoryAuthority)),
+          List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 3)))
+          { r := true, w := false, x := false }).eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hc3] at h2
+      exact absurd h2 (by decide))
+    have haddr3X : ((Expr.add (Hw.moveBase E)
+        (Expr.lit (BitVec.ofNat 12 3))).eval σ) = AW.setWidth 12 + 3 := by
+      show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+        + BitVec.ofNat 12 3 = _
+      rw [hR1, hextAW]
+      rfl
+    have hcovF : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12 + 3)
+        { r := true, w := false, x := false } = false := by
+      rw [spec_covers_bridge]
+      rw [← Bool.not_eq_true]
+      intro hcv
+      exact hc3 ((domCoversE_eval σ E _ _).mpr (by rw [haddr3X]; exact hcv))
+    refine square_retire_fault_of m hwf hfit σ hsync hifv hcl hin hswz
+      hmapz hunmapz
+      (fun ad => by
+        rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
+        exact refill_pres_mem m σ "mem" ad 32)
+      E rfl .memoryAuthority ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_pos (show (Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1 from by
+          show ~~~((Hw.domCoversE E _ _).eval σ) = 1#1
+          rw [bv1_ne_one.mp hc3]
+          decide)]
+      rfl
+    · rw [hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovF, reduceIte]
+      rfl
   sorry
+
 
 
 end Machines.Lnp64u.Theorems.RMC
