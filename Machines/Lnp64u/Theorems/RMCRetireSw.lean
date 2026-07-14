@@ -241,7 +241,7 @@ theorem square_retire_sw (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   have hin : Inert σ := Inert.of_benign7 σ (fun mn' hmn' =>
     isMn_ne_of_opc σ mn' 10#6 hopc
       ((by decide +kernel : ∀ mn' ∈ ["cap_drop", "cap_revoke", "gate_call",
-        "gate_return", "move", "map", "unmap"], (10#6 : BitVec 6)
+        "gate_return", "move"], (10#6 : BitVec 6)
         ≠ Hw.opcodeOf mn') mn' hmn'))
   have hspecA : ∀ rs : RegId,
       ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg rs
