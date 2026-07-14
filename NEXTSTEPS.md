@@ -62,6 +62,42 @@ arms are proven.** The retirement infrastructure is complete and landed:
 moverAct_mem_core generalization, swHit forwarding = post-core memory;
 Inert.of_benign7 + square_retire_store / square_retire_fault_of glues).
 
+
+### In flight (2026-07-15): the `map` arm (`RMCRetireMap.lean`)
+
+Helpers landed (bit bridges `extract1_eq_iff`/`cls_eq_iff_bits`/
+`decKind_mem_iff`; in `RMCRetireRgn`: `sAuth_map_eval`, `mapVal_pack`,
+`mapRI`/`mapRgn`, `capSel_live_eval`/`capSel_kindW_eval`/
+`specLiveCap_bridge`). The exec do-term show is **verified `rfl`**
+(scratch t3.lean pattern: `reg >>= fun hw => Isa.capLive >>= fun x =>
+match x with | (sl,g,e) => match e.kind with ...` with `mapRI`/`mapRgn`
+in the updDom lambda). Arm skeleton parked in
+`Machines/Lnp64u/Theorems/.maparm-draft.txt` (head through the selector
+facts; delete the trailing `sorry` line when resuming — do NOT commit
+it into the build). Remaining body:
+
+1. `by_cases hlv` (capV ∧ gen-match ∧ gen≠0 at `S`,`G` from the handle
+   `HWv`): neg → STALE arm via `square_retire_store` with
+   `X := .seq (pcAdvA E) (writeReg E rdE (.lit staleHandle.toWord))`;
+   ladder if_pos on `.not live` (via `capSel_live_eval`); spec: do-show
+   + `simp only [specM_bind, Isa.capLive, SpecM.get/require/raise/
+   updDom/setReg/modify, specM_pure]`, rewrite the liveCap scrutinee to
+   `none` via `specLiveCap_bridge`+`abs_liveCap`+`if_neg hlv`.
+2. `by_cases hbc : HWv.getLsbD 12 = KW.getLsbD 0 ∧ KW.getLsbD 0 =
+   false`: neg → BADCAP arm (same X shape, badCap word; spec splits
+   require-fail vs gate-kind internally — both `.err badCap`; use
+   `cls_eq_iff_bits` to drive the `decide` in `require`).
+3. pos → OK arm via `square_retire_rgnop`: `hok : mapOkE = 1`
+   (double-neg bv1); region fold with two writes per selected register
+   (variant of the unmap `hrgnV` analysis); `hauthτ2 :=
+   sAuth_map_eval`; value bridge: `hkc E S` gives `KW = encKind (.mem B
+   L P)` (via `decKind_mem_iff`), then `mapVal_pack` + `hrf :
+   encRefE-eval = encRef ⟨E,S,G⟩` (toNat/bit blast) +
+   `decRegion_encRegion` land `decRegion (mapValE eval) = mapRgn E S G
+   B L P`. Dispatcher: replace the opcode-20 stub with
+   `square_retire_map m hwf hfit σ hsync hz hcpl.kind_canon hifv hcl
+   h20`.
+
 Remaining (the deep tail): `cap_dup` /
 `mem_grant` (cap install — needs an install-vs-watched-refs argument or
 a Coupled clause that Mover job refs stay live/dead-stable under
