@@ -625,7 +625,7 @@ end SpecSel
 
 /-! ## Spec-side halt preservation (missing field forms) -/
 
-private theorem haltDom_regions' (τ : MachineState) (d : DomainId)
+theorem haltDom_regions' (τ : MachineState) (d : DomainId)
     (c : Loom.Word32) (x : DomainId) :
     ((τ.haltDom d c).doms x).regions = (τ.doms x).regions := by
   unfold MachineState.haltDom
@@ -635,19 +635,19 @@ private theorem haltDom_regions' (τ : MachineState) (d : DomainId)
     · exact haltBase_regions τ d c x
     · rw [unwindGate_regions, haltBase_regions]
 
-private theorem haltDom_caps' (τ : MachineState) (d : DomainId)
+theorem haltDom_caps' (τ : MachineState) (d : DomainId)
     (c : Loom.Word32) (x : DomainId) :
     ((τ.haltDom d c).doms x).caps = (τ.doms x).caps := by
   funext s
   exact haltDom_caps τ d c x s
 
-private theorem haltDom_slotGen' (τ : MachineState) (d : DomainId)
+theorem haltDom_slotGen' (τ : MachineState) (d : DomainId)
     (c : Loom.Word32) (x : DomainId) :
     ((τ.haltDom d c).doms x).slotGen = (τ.doms x).slotGen := by
   funext s
   exact haltDom_slotGen τ d c x s
 
-private theorem haltDom_mover' (τ : MachineState) (d : DomainId)
+theorem haltDom_mover' (τ : MachineState) (d : DomainId)
     (c : Loom.Word32) : (τ.haltDom d c).mover = τ.mover := by
   unfold MachineState.haltDom
   split
@@ -656,7 +656,7 @@ private theorem haltDom_mover' (τ : MachineState) (d : DomainId)
     · rfl
     · rw [unwindGate_mover, haltBase_mover]
 
-private theorem haltDom_mem' (τ : MachineState) (d : DomainId)
+theorem haltDom_mem' (τ : MachineState) (d : DomainId)
     (c : Loom.Word32) : (τ.haltDom d c).mem = τ.mem := by
   unfold MachineState.haltDom
   split
