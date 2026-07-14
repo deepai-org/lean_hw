@@ -2322,4 +2322,201 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       exact Nat.mod_eq_of_lt (by have := e.isLt; omega)]
     rw [hcost]
 
+
+/-! ## The issue-arm dispatcher -/
+
+/-- **The idle-issue arm of the square**: idle core, a domain scheduled —
+dispatch over the issue circuit's ladder, matching each outcome with its
+spec equation and proven assembly. -/
+theorem square_idle_issue (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hrc : ∀ d : DomainId, σ.regs (Hw.drun d) 2 ≠ 3#2)
+    (hifv0 : ¬ σ.regs "if_v" 1 = 1#1)
+    (e : DomainId)
+    (hsched : schedule m (refillPhase m (Hw.abs σ)) = some e) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set τ1 := refillPhase m (Hw.abs σ) with hτ1
+  set σ1 := (Hw.refillAct m).run σ σ with hσ1
+  -- the scheduled domain wins the circuit's fold
+  have helig : (Hw.eligE m e).eval σ = 1#1 :=
+    (eligE_eval m hwf hfit σ hsync hrc e).mpr (schedule_eligible m τ1 e hsched)
+  have htop : ∀ e' : DomainId, (Hw.eligE m e').eval σ = 1#1 →
+      (m.doms e').priority ≤ (m.doms e).priority := fun e' he' =>
+    schedule_priority_le m τ1 e' e
+      ((eligE_eval m hwf hfit σ hsync hrc e').mp he') hsched
+  have hsel : (Hw.coreAct m).run σ σ1 = (Hw.issueFor m e).run σ σ1 :=
+    coreAct_run_idle_issue m hwf σ σ1 e hifv0 helig htop
+  have hifl : τ1.inflight = none := by
+    show Hw.absInflight σ = none
+    rw [Hw.absInflight, if_neg (show ¬(σ.regs "if_v" 1 = 1) from hifv0)]
+  -- fetch bridge inputs
+  have hrgnτ : ∀ x, (τ1.doms x).regions = ((Hw.abs σ).doms x).regions :=
+    fun x => refillPhase_regions m _ x
+  have hpcτ : (τ1.doms e).pc = σ.regs (Hw.dpc e) 12 := by
+    rw [refillPhase_dpc]
+    rfl
+  have hmemτ : ∀ b : Addr, τ1.mem b = σ.mems "mem" b.toNat 32 := fun b => rfl
+  obtain ⟨hfok, hfnone⟩ := fetch_bridge σ e τ1 hrgnτ hpcτ hmemτ
+  by_cases hcov : (Hw.domCoversE e (Hw.rPc e) ⟨false, false, true⟩).eval σ = 1#1
+  case neg =>
+    -- fetch fault
+    refine square_issue_fault m hwf hfit σ hsync hifv0 e .memoryAuthority ?_ ?_
+    · rw [hsel]
+      exact issueFor_run_fetchFault m σ σ1 e hcov
+    · exact corePhase_fetchFault m τ1 e hifl hsched (hfnone hcov)
+  case pos =>
+  set W : Loom.Word32 := σ.mems "mem" (σ.regs (Hw.dpc e) 12).toNat 32 with hW
+  have hfetch : Machines.Lnp64u.fetch τ1 e = some W := hfok hcov
+  have hwE : (wE e).eval σ = W := rfl
+  have hopc : Machines.Lnp64u.sig.opcodeOf W = (opcEx e).eval σ := rfl
+  by_cases hkn : (Hw.knownE (opcEx e)).eval σ = 1#1
+  case neg =>
+    -- decode fault
+    refine square_issue_fault m hwf hfit σ hsync hifv0 e .illegalInstruction
+      ?_ ?_
+    · rw [hsel]
+      exact issueFor_run_decodeFault m σ σ1 e hcov hkn
+    · exact corePhase_decodeFault m τ1 e hifl hsched W hfetch
+        ((decode_none_iff σ (opcEx e) W hopc).mpr hkn)
+  case pos =>
+  -- decode succeeds
+  have hdecs : (Loom.Isa.decode isa W).isSome := by
+    rw [Loom.Isa.isSome_decode_iff]
+    obtain ⟨d, hd, hop⟩ := (knownE_eval σ (opcEx e)).mp hkn
+    exact ⟨d, hd, by rw [hop, hopc]⟩
+  obtain ⟨instr, hdec⟩ := Option.isSome_iff_exists.mp hdecs
+  have hcost8 : (Hw.costE (opcEx e)).eval σ = BitVec.ofNat 8 instr.cost.cost :=
+    costE_eval_of_decode σ (opcEx e) W instr hopc hdec
+  have hcost : ((Hw.costE (opcEx e)).eval σ).toNat = instr.cost.cost := by
+    rw [hcost8, BitVec.toNat_ofNat]
+    exact Nat.mod_eq_of_lt (Nat.lt_of_lt_of_le
+      (cost_lt_256 instr (Loom.Isa.decode_mem isa hdec)) (by norm_num))
+  have hC32' : ((cost32E e).eval σ).toNat = instr.cost.cost := by
+    show (((Hw.costE (opcEx e)).eval σ).setWidth 32).toNat = _
+    rw [toNat_setWidth_le (by omega)]
+    exact hcost
+  set p : DomainId := (Hw.abs σ).payer e with hpdef
+  have hpp : τ1.payer e = p := refillPhase_payer m _ e
+  have hEb : ((effBE m e).eval σ).toNat = (τ1.doms p).budget := by
+    have := effB_at_payer m hwf hfit σ hsync e
+    rw [hpp] at this
+    exact this
+  have hshort_iff : ((Expr.ult (effBE m e) (cost32E e)).eval σ = 1#1) ↔
+      ¬(instr.cost.cost ≤ (τ1.doms (τ1.payer e)).budget) := by
+    rw [ultE_eval, hEb, hC32', hpp]
+    omega
+  -- serving decode
+  have hserv_iff : ∀ (hv : σ.regs (Hw.dsrvV e) 1 = 1#1),
+      (τ1.doms e).serving
+        = some (finOfBv (by decide) (σ.regs (Hw.dsrv e) 2)) := by
+    intro hv
+    rw [refillPhase_serving]
+    show (if σ.regs (Hw.dsrvV e) 1 = 1#1 then _ else none) = _
+    rw [if_pos hv]
+  have hserv_none : ∀ (hv : ¬(σ.regs (Hw.dsrvV e) 1 = 1#1)),
+      (τ1.doms e).serving = none := by
+    intro hv
+    rw [refillPhase_serving]
+    show (if σ.regs (Hw.dsrvV e) 1 = 1#1 then _ else none) = _
+    rw [if_neg hv]
+  by_cases hshort : (Expr.ult (effBE m e) (cost32E e)).eval σ = 1#1
+  case pos =>
+    by_cases hsv : σ.regs (Hw.dsrvV e) 1 = 1#1
+    · -- budget fault
+      refine square_issue_fault m hwf hfit σ hsync hifv0 e .budget ?_ ?_
+      · rw [hsel]
+        exact issueFor_run_budgetFault m σ σ1 e hcov hkn hshort hsv
+      · exact corePhase_budgetFault m τ1 e hifl hsched W instr hfetch hdec
+          (hshort_iff.mp hshort) _ (hserv_iff hsv)
+    · -- residual burn
+      refine square_issue_burn m hwf hfit σ hsync hifv0 e p hpdef.symm ?_ ?_
+      · rw [hsel]
+        exact issueFor_run_burn m σ σ1 e hcov hkn hshort hsv
+      · rw [corePhase_burn m τ1 e hifl hsched W instr hfetch hdec
+          (hshort_iff.mp hshort) (hserv_none hsv), hpp]
+  case neg =>
+  have hble : instr.cost.cost ≤ (τ1.doms p).budget := by
+    have := hshort_iff.not.mp hshort
+    rw [hpp] at this
+    omega
+  by_cases hsv : σ.regs (Hw.dsrvV e) 1 = 1#1
+  case neg =>
+    -- plain issue
+    refine square_issue_plain m hwf hfit σ hsync hifv0 e W instr p
+      hpdef.symm hwE hcost hble ?_ ?_
+    · rw [hsel]
+      exact issueFor_run_plain m σ σ1 e hcov hkn hshort hsv
+    · rw [corePhase_plainIssue m τ1 e hifl hsched W instr hfetch hdec
+        (by rw [hpp]; exact hble) (hserv_none hsv), hpp]
+  case pos =>
+  set g : GateId := finOfBv (by decide) (σ.regs (Hw.dsrv e) 2) with hgdef
+  have hgv : g.val = (σ.regs (Hw.dsrv e) 2).toNat := rfl
+  have hsg : (τ1.doms e).serving = some g := hserv_iff hsv
+  have hactv_eval : (actvE e).eval σ = σ.regs (Hw.gactV g) 1 := by
+    show (Hw.muxFin (fun g' => Expr.reg 1 (Hw.gactV g')) (gidE e)).eval σ = _
+    rw [muxFin_eval (by decide : 2 ^ 2 = numGates)]
+    rfl
+  by_cases hactv : (actvE e).eval σ = 1#1
+  case neg =>
+    -- protocol fault
+    have hact_none : (τ1.gates g).act = none := by
+      show (Hw.absGate σ g).act = none
+      show (if σ.regs (Hw.gactV g) 1 = 1#1 then _ else none) = none
+      rw [if_neg (fun hc => hactv (by rw [hactv_eval]; exact hc))]
+    refine square_issue_fault m hwf hfit σ hsync hifv0 e .protocol ?_ ?_
+    · rw [hsel]
+      exact issueFor_run_protoFault m σ σ1 e hcov hkn hshort hsv hactv
+    · exact corePhase_protoFault m τ1 e hifl hsched W instr hfetch hdec
+        (by rw [hpp]; exact hble) g hsg hact_none
+  case pos =>
+  -- the live activation, decoded
+  have hact1 : σ.regs (Hw.gactV g) 1 = 1#1 := by
+    rw [← hactv_eval]
+    exact hactv
+  set a : Activation :=
+    { caller := finOfBv (by decide) (σ.regs (Hw.gcaller g) 2)
+      callerRd := finOfBv (by decide) (σ.regs (Hw.gcallerRd g) 3)
+      savedRegs := fun r => σ.regs (Hw.gsreg g r) 32
+      savedPc := σ.regs (Hw.gspc g) 12
+      savedServing :=
+        if σ.regs (Hw.gssrvV g) 1 = 1#1 then
+          some (finOfBv (by decide) (σ.regs (Hw.gssrv g) 2))
+        else none
+      depth := (σ.regs (Hw.gdepth g) 3).toNat
+      donated := (σ.regs (Hw.gdon g) 32).toNat } with hadef
+  have ha : (τ1.gates g).act = some a := by
+    show (Hw.absGate σ g).act = some a
+    show (if σ.regs (Hw.gactV g) 1 = 1#1 then _ else none) = some a
+    rw [if_pos hact1, hadef]
+    rfl
+  have hdon : ((donE e).eval σ).toNat = a.donated := by
+    show ((Hw.muxFin (fun g' => Expr.reg 32 (Hw.gdon g')) (gidE e)).eval
+      σ).toNat = _
+    rw [muxFin_eval (by decide : 2 ^ 2 = numGates)]
+    rfl
+  have hdshort_iff : ((Expr.ult (donE e) (cost32E e)).eval σ = 1#1) ↔
+      ¬(instr.cost.cost ≤ a.donated) := by
+    rw [ultE_eval, hdon, hC32']
+    omega
+  by_cases hdshort : (Expr.ult (donE e) (cost32E e)).eval σ = 1#1
+  case pos =>
+    -- donation fault
+    refine square_issue_fault m hwf hfit σ hsync hifv0 e .budget ?_ ?_
+    · rw [hsel]
+      exact issueFor_run_donFault m σ σ1 e hcov hkn hshort hsv hactv hdshort
+    · exact corePhase_donFault m τ1 e hifl hsched W instr hfetch hdec
+        (by rw [hpp]; exact hble) g hsg a ha (hdshort_iff.mp hdshort)
+  case neg =>
+    -- serving issue
+    refine square_issue_serve m hwf hfit σ hsync hifv0 e W instr p
+      hpdef.symm g hgv a ha hwE hcost hble
+      (by have := hdshort_iff.not.mp hdshort; omega) hdon ?_ ?_
+    · rw [hsel]
+      exact issueFor_run_serve m σ σ1 e hcov hkn hshort hsv hactv hdshort
+    · rw [corePhase_serveIssue m τ1 e hifl hsched W instr hfetch hdec
+        (by rw [hpp]; exact hble) g hsg a ha
+        (by have := hdshort_iff.not.mp hdshort; omega), hpp]
+
 end Machines.Lnp64u.Theorems.RMC
