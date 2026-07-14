@@ -738,6 +738,118 @@ theorem square_retire_dup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   have hdecT : (decide ((Handle.decode HWv).cls
       = (Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)).cls)) = true :=
     decide_eq_true ((cls_eq_iff_bits HWv (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)).mpr hbit)
+  by_cases hmem : (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).getLsbD 0 = false
+  case neg =>
+    -- gate kind: narrowing skipped
+    sorry
+  case pos =>
+  -- memory kind: narrowing applies
+  have hmk : Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32) = .mem ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 1 12)
+      ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 13 13) (Hw.decPerms ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 26 3)) :=
+    (decKind_mem_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)).mp hmem
+  have hkm1 : (Hw.kIsMem (Hw.dupSel E).kindW).eval σ = 1#1 := by
+    show (if ((Hw.dupSel E).kindW.eval σ).extractLsb' 0 1
+        = (Expr.lit 0).eval σ then (1#1 : BitVec 1) else 0#1) = 1#1
+    rw [show ((Expr.lit 0 : Expr 1)).eval σ = 0#1 from rfl]
+    simp only [hkwE]
+    rw [if_pos ((extract1_eq_zero_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32) 0).mpr hmem)]
+  have hklenE : (Hw.kLen (Hw.dupSel E).kindW).eval σ
+      = (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 13 13 := by
+    show ((Hw.dupSel E).kindW.eval σ).extractLsb' 13 13 = _
+    rw [hkwE]
+  have hkbaseE : (Hw.kBase (Hw.dupSel E).kindW).eval σ
+      = (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 1 12 := by
+    show ((Hw.dupSel E).kindW.eval σ).extractLsb' 1 12 = _
+    rw [hkwE]
+  have hoffE : (Hw.descOffE (Hw.readReg E Hw.rs2E)).eval σ = DWv.extractLsb' 5 12 := by
+    show ((Hw.readReg E Hw.rs2E).eval σ).extractLsb' 5 12 = _
+    rw [hR2]
+  have hlenE : (Hw.descLenE (Hw.readReg E Hw.rs2E)).eval σ = DWv.extractLsb' 17 13 := by
+    show ((Hw.readReg E Hw.rs2E).eval σ).extractLsb' 17 13 = _
+    rw [hR2]
+  -- range check
+  by_cases hr1 : ((DWv.extractLsb' 5 12).toNat
+      + (DWv.extractLsb' 17 13).toNat ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 13 13).toNat)
+  case neg =>
+    -- narrow out of range
+    have hc3 : (Expr.and (Hw.kIsMem (Hw.dupSel E).kindW) (Expr.ult (.zext (Hw.kLen (Hw.dupSel E).kindW) 14) (.add (.zext (Hw.descOffE (Hw.readReg E Hw.rs2E)) 14) (.zext (Hw.descLenE (Hw.readReg E Hw.rs2E)) 14)))).eval σ = 1#1 := by
+      show ((Hw.kIsMem (Hw.dupSel E).kindW).eval σ &&&
+        (Expr.ult (.zext (Hw.kLen (Hw.dupSel E).kindW) 14)
+          (.add (.zext (Hw.descOffE (Hw.readReg E Hw.rs2E)) 14)
+            (.zext (Hw.descLenE (Hw.readReg E Hw.rs2E)) 14))).eval σ) = 1#1
+      rw [hkm1]
+      rw [(ultE_eval _ _ σ).mpr (by
+        show (((Hw.kLen (Hw.dupSel E).kindW).eval σ).setWidth 14).toNat
+          < ((((Hw.descOffE (Hw.readReg E Hw.rs2E)).eval σ).setWidth 14)
+            + (((Hw.descLenE (Hw.readReg E Hw.rs2E)).eval σ).setWidth 14)).toNat
+        rw [hklenE, hoffE, hlenE, toNat_setWidth_le (by omega)]
+        rw [BitVec.toNat_add, toNat_setWidth_le (by omega),
+          toNat_setWidth_le (by omega)]
+        have b1 := (DWv.extractLsb' 5 12).isLt
+        have b2 := (DWv.extractLsb' 17 13).isLt
+        rw [Nat.mod_eq_of_lt (by omega)]
+        omega)]
+      decide
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.outOfRange.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.not (Hw.dupSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.dupSel E).live.eval σ) = 1#1)
+          rw [hliv1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.dupSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.dupSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1]
+          decide),
+        if_pos hc3]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hRD2]
+      simp only [hlcS', hcek]
+      rw [hdecT]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hcek]
+      simp only [hmk]
+      simp only [Machines.Lnp64u.Isa.narrow, specM_bind, SpecM.require,
+        SpecM.raise, specM_pure]
+      rw [show (decide ((Machines.Lnp64u.Isa.descOff DWv).toNat
+          + (Machines.Lnp64u.Isa.descLen DWv).toNat
+          ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 13 13).toNat)) = false from
+        decide_eq_false hr1]
+      rfl
+  case pos =>
+  have hc3z : ¬((Expr.and (Hw.kIsMem (Hw.dupSel E).kindW) (Expr.ult (.zext (Hw.kLen (Hw.dupSel E).kindW) 14) (.add (.zext (Hw.descOffE (Hw.readReg E Hw.rs2E)) 14) (.zext (Hw.descLenE (Hw.readReg E Hw.rs2E)) 14)))).eval σ = 1#1) := by
+    show ¬((Hw.kIsMem (Hw.dupSel E).kindW).eval σ &&&
+      (Expr.ult (.zext (Hw.kLen (Hw.dupSel E).kindW) 14)
+        (.add (.zext (Hw.descOffE (Hw.readReg E Hw.rs2E)) 14)
+          (.zext (Hw.descLenE (Hw.readReg E Hw.rs2E)) 14))).eval σ = 1#1)
+    rw [bv1_ne_one.mp (show ¬((Expr.ult
+        (.zext (Hw.kLen (Hw.dupSel E).kindW) 14)
+        (.add (.zext (Hw.descOffE (Hw.readReg E Hw.rs2E)) 14)
+          (.zext (Hw.descLenE (Hw.readReg E Hw.rs2E)) 14))).eval σ = 1#1) from by
+      intro hc
+      have h2 : ((((Hw.dupSel E).kindW.eval σ).extractLsb' 13 13
+          ).setWidth 14).toNat
+          < (((((Hw.readReg E Hw.rs2E).eval σ).extractLsb' 5 12
+            ).setWidth 14)
+            + ((((Hw.readReg E Hw.rs2E).eval σ).extractLsb' 17 13
+              ).setWidth 14)).toNat :=
+        (ultE_eval _ _ σ).mp hc
+      rw [hkwE, hR2] at h2
+      rw [toNat_setWidth_le (by omega), BitVec.toNat_add,
+        toNat_setWidth_le (by omega), toNat_setWidth_le (by omega)] at h2
+      have b1 := (DWv.extractLsb' 5 12).isLt
+      have b2 := (DWv.extractLsb' 17 13).isLt
+      rw [Nat.mod_eq_of_lt (by omega)] at h2
+      omega)]
+    generalize (Hw.kIsMem (Hw.dupSel E).kindW).eval σ = b
+    revert b
+    decide
   sorry
 
 end Machines.Lnp64u.Theorems.RMC
