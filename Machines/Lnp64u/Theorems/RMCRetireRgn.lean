@@ -306,7 +306,7 @@ theorem absDom_regpcrgn {S1 S2 : Loom.Hw.St} (e : DomainId)
 
 /-! ## The `unmap` arm -/
 
-private theorem seqAll_append_run (σ : Loom.Hw.St) :
+theorem seqAll_append_run (σ : Loom.Hw.St) :
     ∀ (l1 l2 : List Act) (acc : Loom.Hw.St),
       (Hw.seqAll (l1 ++ l2)).run σ acc
         = (Hw.seqAll l2).run σ ((Hw.seqAll l1).run σ acc)
@@ -316,17 +316,17 @@ private theorem seqAll_append_run (σ : Loom.Hw.St) :
       rw [seqAll_append_run σ t l2 (a.run σ acc)]
       rfl
 
-private theorem drgnV_inj : ∀ (e : DomainId) (r r' : RegionId),
+theorem drgnV_inj : ∀ (e : DomainId) (r r' : RegionId),
     Hw.drgnV e r = Hw.drgnV e r' → r = r' := by decide +kernel
 
-private theorem drgnV_notin_refill : ∀ (e : DomainId) (r : RegionId),
+theorem drgnV_notin_refill : ∀ (e : DomainId) (r : RegionId),
     ((Hw.drgnV e r : String), (1 : Nat)) ∉
       ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
         ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
         ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat)) := by
   decide +kernel
 
-private theorem drgn_notin_refill' : ∀ (e : DomainId) (r : RegionId),
+theorem drgn_notin_refill' : ∀ (e : DomainId) (r : RegionId),
     ((Hw.drgn e r : String), (42 : Nat)) ∉
       ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
         ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
