@@ -611,6 +611,42 @@ theorem square_retire_dup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         | .fault fl => haltWith { refillPhase m (Hw.abs σ) with inflight := none } E fl) := by
     rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
     rfl
+  have hladder : ∀ acc : Loom.Hw.St, (Hw.retireFor E).run σ acc
+      = (
+          if (Expr.not (Hw.dupSel E).live).eval σ = 1#1
+          then (Hw.respA E (.err .staleHandle)).run σ acc
+          else if (Expr.not (Hw.dupSel E).clsOk).eval σ = 1#1
+          then (Hw.respA E (.err .badCap)).run σ acc
+          else if (Expr.and (Hw.kIsMem (Hw.dupSel E).kindW) (Expr.ult (.zext (Hw.kLen (Hw.dupSel E).kindW) 14) (.add (.zext (Hw.descOffE (Hw.readReg E Hw.rs2E)) 14) (.zext (Hw.descLenE (Hw.readReg E Hw.rs2E)) 14)))).eval σ = 1#1
+          then (Hw.respA E (.err .outOfRange)).run σ acc
+          else if (Expr.and (Hw.kIsMem (Hw.dupSel E).kindW) (Expr.not (Expr.ult (.add (.zext (Hw.kBase (Hw.dupSel E).kindW) 13) (.zext (Hw.descOffE (Hw.readReg E Hw.rs2E)) 13)) (.lit 4096)))).eval σ = 1#1
+          then (Hw.respA E (.err .outOfRange)).run σ acc
+          else if (Expr.and (Hw.kIsMem (Hw.dupSel E).kindW) (Hw.orAll [.and (Hw.descR (Hw.readReg E Hw.rs2E)) (.not (Hw.kR (Hw.dupSel E).kindW)), .and (Hw.descW (Hw.readReg E Hw.rs2E)) (.not (Hw.kW (Hw.dupSel E).kindW)), .and (Hw.descX (Hw.readReg E Hw.rs2E)) (.not (Hw.kX (Hw.dupSel E).kindW))])).eval σ = 1#1
+          then (Hw.respA E (.err .permDenied)).run σ acc
+          else if (Expr.and (Hw.kIsMem (Hw.dupSel E).kindW) (Expr.and (Hw.descW (Hw.readReg E Hw.rs2E)) (Hw.descX (Hw.readReg E Hw.rs2E)))).eval σ = 1#1
+          then (Hw.respA E (.err .permDenied)).run σ acc
+          else if (Expr.not (Hw.freeSlotV E)).eval σ = 1#1
+          then (Hw.respA E (.err .slotOccupied)).run σ acc
+          else if (Expr.not (Hw.freeCellV E)).eval σ = 1#1
+          then (Hw.respA E (.err .noLineage)).run σ acc
+          else (Hw.seqAll
+            [ Hw.installA E (Hw.freeSlotIdx E)
+                (.mux (Hw.kIsMem (Hw.dupSel E).kindW)
+                  (Hw.narrowKindE (Hw.dupSel E).kindW (Hw.readReg E Hw.rs2E))
+                  (Hw.dupSel E).kindW)
+                (.lit 1) (Hw.freeCellIdx E)
+                (Hw.encRefE (Hw.dLit E) (Hw.dupSel E).slot (Hw.dupSel E).gen),
+              Hw.writeReg E Hw.rdE (Hw.handleE (Hw.freeSlotIdx E)
+                (Hw.genOfE E (Hw.freeSlotIdx E))
+                (Hw.field (Hw.dupSel E).kindW 0 1)),
+              Hw.pcAdvA E ]).run σ acc) := by
+    intro acc
+    rw [hselC acc]
+    rfl
+  have hRD : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1 = HWv :=
+    hSPr (operandsOf W).rs1
+  have hRD2 : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs2 = DWv :=
+    hSPr (operandsOf W).rs2
   sorry
 
 end Machines.Lnp64u.Theorems.RMC
