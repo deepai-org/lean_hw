@@ -1166,4 +1166,371 @@ theorem square_retire_lw (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         rw [if_neg hcov])
       (by rw [hred, if_neg hcovS])
 
+/-! ## The `yield` arm
+
+`yield` zeroes the caller's remaining budget — the one benign op whose
+footprint reaches past the file/`pc` into `dbudget`. -/
+
+/-- The quiet names with the budget carved out. -/
+def domQuietNamesY (x : DomainId) : List (String × Nat) :=
+  ((List.finRange numSlots).flatMap fun s =>
+      [(Hw.dcapV x s, 1), (Hw.dcapKind x s, 32), (Hw.dcapLinV x s, 1),
+       (Hw.dcapLin x s, 4), (Hw.dgen x s, 8)])
+  ++ ((List.finRange numLineage).flatMap fun l =>
+      [(Hw.dcellV x l, 1), (Hw.dcellPar x l, 14)])
+  ++ ((List.finRange numRegions).flatMap fun r =>
+      [(Hw.drgnV x r, 1), (Hw.drgn x r, 42)])
+  ++ [(Hw.drun x, 2), (Hw.drunG x, 2), (Hw.dsrvV x, 1), (Hw.dsrv x, 2),
+      (Hw.dcause x, 32), (Hw.dmaxdon x, 32)]
+
+/-- The `yield` payload with the latch clear in front. -/
+def yieldFull (e : DomainId) : Act :=
+  .seq (.write 1 "if_v" (.lit 0))
+    (Hw.seqAll [.write 32 (Hw.dbudget e) (.lit 0),
+      Hw.writeReg e Hw.rdE (.lit 0), Hw.pcAdvA e])
+
+private theorem yieldFull_writes (e : DomainId) :
+    (yieldFull e).regWrites
+      = [("if_v", 1), (Hw.dbudget e, 32), (Hw.dreg e 1, 32),
+         (Hw.dreg e 2, 32), (Hw.dreg e 3, 32), (Hw.dreg e 4, 32),
+         (Hw.dreg e 5, 32), (Hw.dreg e 6, 32), (Hw.dreg e 7, 32),
+         (Hw.dpc e, 12)] := rfl
+
+private theorem quietY_notin (x e : DomainId) :
+    ∀ q ∈ domQuietNamesY x, q ∉ (yieldFull e).regWrites := by
+  rw [yieldFull_writes]
+  fin_cases x <;> fin_cases e <;> decide +kernel
+
+private theorem read_notin_yield_ne (x e : DomainId) (hne : x ≠ e) :
+    ∀ q ∈ domReadNames x, q ∉ (yieldFull e).regWrites := by
+  rw [yieldFull_writes]
+  fin_cases x <;> fin_cases e <;>
+    first
+      | exact absurd rfl hne
+      | decide +kernel
+
+private theorem gate_notin_yield (g : GateId) (e : DomainId) :
+    ∀ q ∈ gateReadNames g, q ∉ (yieldFull e).regWrites := by
+  rw [yieldFull_writes]
+  fin_cases g <;> fin_cases e <;> decide +kernel
+
+/-- The regs/pc/budget face of `absDom` (quiet elsewhere). -/
+theorem absDom_regpcbud {S1 S2 : Loom.Hw.St} (e : DomainId)
+    (hq : ∀ q ∈ domQuietNamesY e, S2.regs q.1 q.2 = S1.regs q.1 q.2) :
+    Hw.absDom S2 e =
+      { Hw.absDom S1 e with
+        regs := fun r => S2.regs (Hw.dreg e r) 32
+        pc := S2.regs (Hw.dpc e) 12
+        budget := (S2.regs (Hw.dbudget e) 32).toNat } := by
+  have hs : ∀ (s : Slot) (rn : String) (w : Nat),
+      (rn, w) ∈ [(Hw.dcapV e s, 1), (Hw.dcapKind e s, 32),
+        (Hw.dcapLinV e s, 1), (Hw.dcapLin e s, 4), (Hw.dgen e s, 8)] →
+      S2.regs rn w = S1.regs rn w := fun s rn w hp =>
+    hq (rn, w) (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_left _ (List.mem_flatMap.mpr
+        ⟨s, List.mem_finRange s, hp⟩))))
+  have hl : ∀ (l : Fin numLineage) (rn : String) (w : Nat),
+      (rn, w) ∈ [(Hw.dcellV e l, 1), (Hw.dcellPar e l, 14)] →
+      S2.regs rn w = S1.regs rn w := fun l rn w hp =>
+    hq (rn, w) (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_right _ (List.mem_flatMap.mpr
+        ⟨l, List.mem_finRange l, hp⟩))))
+  have hr : ∀ (r : RegionId) (rn : String) (w : Nat),
+      (rn, w) ∈ [(Hw.drgnV e r, 1), (Hw.drgn e r, 42)] →
+      S2.regs rn w = S1.regs rn w := fun r rn w hp =>
+    hq (rn, w) (List.mem_append_left _ (List.mem_append_right _
+      (List.mem_flatMap.mpr ⟨r, List.mem_finRange r, hp⟩)))
+  have ht : ∀ (rn : String) (w : Nat),
+      (rn, w) ∈ [(Hw.drun e, 2), (Hw.drunG e, 2), (Hw.dsrvV e, 1),
+        (Hw.dsrv e, 2), (Hw.dcause e, 32), (Hw.dmaxdon e, 32)] →
+      S2.regs rn w = S1.regs rn w := fun rn w hp =>
+    hq (rn, w) (List.mem_append_right _ hp)
+  apply domainState_ext'
+  · rfl
+  · rfl
+  · show (Hw.absDom S2 e).caps = (Hw.absDom S1 e).caps
+    funext s
+    show (if S2.regs (Hw.dcapV e s) 1 = 1 then _ else none)
+      = (if S1.regs (Hw.dcapV e s) 1 = 1 then _ else none)
+    rw [hs s (Hw.dcapV e s) 1 (by simp), hs s (Hw.dcapKind e s) 32 (by simp),
+      hs s (Hw.dcapLinV e s) 1 (by simp), hs s (Hw.dcapLin e s) 4 (by simp)]
+  · show (Hw.absDom S2 e).slotGen = (Hw.absDom S1 e).slotGen
+    funext s
+    show S2.regs (Hw.dgen e s) 8 = S1.regs (Hw.dgen e s) 8
+    rw [hs s (Hw.dgen e s) 8 (by simp)]
+  · show (Hw.absDom S2 e).lineage = (Hw.absDom S1 e).lineage
+    funext l
+    show (if S2.regs (Hw.dcellV e l) 1 = 1 then _ else none)
+      = (if S1.regs (Hw.dcellV e l) 1 = 1 then _ else none)
+    rw [hl l (Hw.dcellV e l) 1 (by simp), hl l (Hw.dcellPar e l) 14 (by simp)]
+  · show (Hw.absDom S2 e).regions = (Hw.absDom S1 e).regions
+    funext r
+    show (if S2.regs (Hw.drgnV e r) 1 = 1 then _ else none)
+      = (if S1.regs (Hw.drgnV e r) 1 = 1 then _ else none)
+    rw [hr r (Hw.drgnV e r) 1 (by simp), hr r (Hw.drgn e r) 42 (by simp)]
+  · show decRun (S2.regs (Hw.drun e) 2) (S2.regs (Hw.drunG e) 2)
+      = decRun (S1.regs (Hw.drun e) 2) (S1.regs (Hw.drunG e) 2)
+    rw [ht (Hw.drun e) 2 (by simp), ht (Hw.drunG e) 2 (by simp)]
+  · show (if S2.regs (Hw.dsrvV e) 1 = 1 then _ else none)
+      = (if S1.regs (Hw.dsrvV e) 1 = 1 then _ else none)
+    rw [ht (Hw.dsrvV e) 1 (by simp), ht (Hw.dsrv e) 2 (by simp)]
+  · show S2.regs (Hw.dcause e) 32 = S1.regs (Hw.dcause e) 32
+    rw [ht (Hw.dcause e) 32 (by simp)]
+  · rfl
+  · show (S2.regs (Hw.dmaxdon e) 32).toNat = (S1.regs (Hw.dmaxdon e) 32).toNat
+    rw [ht (Hw.dmaxdon e) 32 (by simp)]
+
+set_option maxHeartbeats 12800000 in
+/-- The `yield` arm: opcode 25. -/
+theorem square_retire_yield (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 25#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (25#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (25#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  have hselC := retireFor_sel_of_opc σ E "yield" 25#6 hopc
+    (by decide +kernel) (by decide +kernel)
+    ⟨Hw.seqAll [.write 32 (Hw.dbudget E) (.lit 0),
+      Hw.writeReg E Hw.rdE (.lit 0), Hw.pcAdvA E], .lit 0, .lit 0, .lit 0⟩
+    (List.mem_append_right _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))))))
+  have hben : ∀ mn' ∈ moverMns, (Hw.isMn mn').eval σ ≠ 1#1 :=
+    fun mn' hmn' => isMn_ne_of_opc σ mn' 25#6 hopc
+      ((by decide +kernel : ∀ mn' ∈ moverMns, (25#6 : BitVec 6)
+        ≠ Hw.opcodeOf mn') mn' hmn')
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := finOfBv (by decide) (σ.regs "if_dom" 2)
+        word := W
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    exact absInflight_some σ hifv
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ) = refillPhase m (Hw.abs σ) :=
+    abs_refill m hwf hfit σ hsync
+  have hL1 : ∀ y, (refillPhase m (Hw.abs σ)).doms y
+      = Hw.absDom ((Hw.refillAct m).run σ σ) y := by
+    intro y
+    rw [← habs1]
+    rfl
+  have hspec : corePhase m (refillPhase m (Hw.abs σ))
+      = ({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+          (fun ds => ({ { ds with pc := ds.pc + 1 } with
+            budget := 0 }).setReg (operandsOf W).rd 0) := by
+    rw [corePhase_retire m _ _ hfl (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+    show retire { refillPhase m (Hw.abs σ) with inflight := none }
+      (finOfBv (by decide) (σ.regs "if_dom" 2)) W = _
+    rw [← hEdef]
+    have h1 : retire { refillPhase m (Hw.abs σ) with inflight := none } E W
+        = (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+            (fun ds => { ds with pc := ds.pc + 1 })).setDom E
+            (fun ds => { ds with budget := 0 })).setDom E
+            (fun ds => ds.setReg (operandsOf W).rd 0)) := by
+      rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+      rfl
+    rw [h1, setDom_setDom, setDom_setDom]
+  have hτ2doms : ∀ x, (({ refillPhase m (Hw.abs σ) with inflight := none
+      }).setDom E (fun ds => ({ { ds with pc := ds.pc + 1 } with
+        budget := 0 }).setReg (operandsOf W).rd 0)).doms x
+      = if x = E
+        then ({ { (refillPhase m (Hw.abs σ)).doms E with
+            pc := ((refillPhase m (Hw.abs σ)).doms E).pc + 1 } with
+            budget := 0 }).setReg (operandsOf W).rd 0
+        else (refillPhase m (Hw.abs σ)).doms x := by
+    intro x
+    show (Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) x = _
+    by_cases hx : x = E
+    · subst hx
+      rw [Loom.Fun.update_same, if_pos rfl]
+    · rw [Loom.Fun.update_ne _ _ _ _ hx, if_neg hx]
+  refine square_retire_benign m hwf hfit σ hsync hifv hcl hben
+    (Hw.seqAll [.write 32 (Hw.dbudget E) (.lit 0),
+      Hw.writeReg E Hw.rdE (.lit 0), Hw.pcAdvA E]) _
+    (fun rn w => by
+      rw [coreAct_run_retire_eq m σ _ hifv hcl,
+        retireAct_run_regs σ _ E rfl rn w, hselC]
+      rfl)
+    ((by decide +kernel : ∀ e : DomainId, (("if_v" : String), (1 : Nat))
+      ∉ (Hw.seqAll [.write 32 (Hw.dbudget e) (.lit 0),
+        Hw.writeReg e Hw.rdE (.lit 0), Hw.pcAdvA e]).regWrites) E)
+    hspec ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+  · -- absDom faces
+    intro x
+    rw [hτ2doms x]
+    by_cases hx : x = E
+    · rw [if_pos hx]
+      subst hx
+      show Hw.absDom ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)) E = _
+      have hq : ∀ q ∈ domQuietNamesY E,
+          ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)).regs q.1 q.2
+            = ((Hw.refillAct m).run σ σ).regs q.1 q.2 :=
+        fun q hq' => frame (quietY_notin E E q hq') σ _
+      rw [absDom_regpcbud E hq]
+      rw [show (refillPhase m (Hw.abs σ)).doms E
+        = Hw.absDom ((Hw.refillAct m).run σ σ) E from hL1 E]
+      apply domainState_ext'
+      · funext r
+        show ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)).regs
+          (Hw.dreg E r) 32 = _
+        rw [show ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)).regs
+            (Hw.dreg E r) 32
+            = ((Hw.writeReg E Hw.rdE (.lit 0)).run σ
+                ((Act.write 32 (Hw.dbudget E) (.lit 0)).run σ
+                  ((Act.write 1 "if_v" (.lit 0)).run σ
+                    ((Hw.refillAct m).run σ σ)))).regs (Hw.dreg E r) 32 from
+          frame (show (Hw.dreg E r, 32)
+              ∉ (Act.seq (Hw.pcAdvA E) Act.skip).regWrites from by
+            intro hm
+            rcases List.mem_append.mp (show (Hw.dreg E r, (32 : Nat)) ∈
+                [(Hw.dpc E, (12 : Nat))] ++ [] from hm) with h | h
+            · exact absurd (congrArg Prod.snd (List.mem_singleton.mp h))
+                (show ¬((32 : Nat) = 12) by decide)
+            · exact absurd h (List.not_mem_nil)) σ _]
+        show _ = (({ { Hw.absDom ((Hw.refillAct m).run σ σ) E with
+            pc := (Hw.absDom ((Hw.refillAct m).run σ σ) E).pc + 1 } with
+            budget := 0 }).setReg (operandsOf W).rd 0).regs r
+        rw [setReg_regs]
+        have hbudframe :
+            ((Act.write 32 (Hw.dbudget E) (.lit 0)).run σ
+              ((Act.write 1 "if_v" (.lit 0)).run σ
+                ((Hw.refillAct m).run σ σ))).regs (Hw.dreg E r) 32
+            = ((Act.write 1 "if_v" (.lit 0)).run σ
+                ((Hw.refillAct m).run σ σ)).regs (Hw.dreg E r) 32 :=
+          frame (fun hm => absurd
+            (congrArg Prod.fst (List.mem_singleton.mp hm))
+            ((by decide +kernel : ∀ (e : DomainId) (r' : RegId),
+              ¬(Hw.dreg e r' = Hw.dbudget e)) E r)) σ _
+        have hifvframe :
+            ((Act.write 1 "if_v" (.lit 0)).run σ
+              ((Hw.refillAct m).run σ σ)).regs (Hw.dreg E r) 32
+            = ((Hw.refillAct m).run σ σ).regs (Hw.dreg E r) 32 :=
+          frame (fun hm => absurd
+            (congrArg Prod.snd (List.mem_singleton.mp hm))
+            (show ¬((32 : Nat) = 1) by decide)) σ _
+        by_cases h0 : (operandsOf W).rd = (0 : Fin numRegs)
+        · rw [if_pos h0]
+          rw [writeReg_run_of_zero σ _ E Hw.rdE _ (by
+            rw [show ((Hw.rdE.eval σ)).toNat
+              = ((operandsOf W).rd : Fin numRegs).val from rfl, h0]
+            rfl)]
+          rw [hbudframe, hifvframe]
+          rfl
+        · rw [if_neg h0]
+          rw [writeReg_run_of_nz σ _ E Hw.rdE _ (operandsOf W).rd rfl
+            (fun hc => h0 (Fin.ext hc))]
+          show (RegEnv.set _ (Hw.dreg E (operandsOf W).rd) _)
+            (Hw.dreg E r) 32 = _
+          simp only [RegEnv.set]
+          by_cases hr : r = (operandsOf W).rd
+          · rw [if_pos (by rw [hr]), if_pos hr, dif_pos trivial]
+            rfl
+          · rw [if_neg (fun hc => hr (dreg_inj E r (operandsOf W).rd hc)),
+              if_neg hr]
+            rw [hbudframe, hifvframe]
+            rfl
+      · show ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)).regs
+          (Hw.dpc E) 12 = _
+        rw [show ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)).regs
+            (Hw.dpc E) 12 = σ.regs (Hw.dpc E) 12 + 1 from by
+          show (RegEnv.set _ (Hw.dpc E)
+            ((Expr.add (Hw.rPc E) (.lit 1)).eval σ)) (Hw.dpc E) 12 = _
+          simp [RegEnv.set, Expr.eval, Hw.rPc]]
+        rw [setReg_pc]
+        show σ.regs (Hw.dpc E) 12 + 1
+          = ((Hw.refillAct m).run σ σ).regs (Hw.dpc E) 12 + 1
+        rw [refill_pres m σ ((by decide +kernel : ∀ e : DomainId,
+          ((Hw.dpc e : String), (12 : Nat)) ∉
+          ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+            ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+            ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) E)]
+      · rw [setReg_caps]
+      · rw [setReg_slotGen]
+      · rw [setReg_lineage]
+      · rw [setReg_regions]
+      · rw [setReg_run]
+      · rw [setReg_serving]
+      · rw [setReg_cause]
+      · show (((yieldFull E).run σ ((Hw.refillAct m).run σ σ)).regs
+          (Hw.dbudget E) 32).toNat = _
+        have hbv : ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)).regs
+            (Hw.dbudget E) 32
+            = ((Act.write 32 (Hw.dbudget E) (.lit 0)).run σ
+                ((Act.write 1 "if_v" (.lit 0)).run σ
+                  ((Hw.refillAct m).run σ σ))).regs (Hw.dbudget E) 32 := by
+          refine frame (a := Act.seq (Hw.writeReg E Hw.rdE (Expr.lit 0))
+            (Act.seq (Hw.pcAdvA E) Act.skip)) ?_ σ _
+          intro hm
+          rcases List.mem_append.mp (show (Hw.dbudget E, (32 : Nat)) ∈
+              (Hw.writeReg E Hw.rdE (Expr.lit 0)).regWrites
+                ++ ((Hw.pcAdvA E).regWrites ++ []) from hm) with h | h
+          · exact absurd h ((by decide +kernel : ∀ e : DomainId,
+              ((Hw.dbudget e : String), (32 : Nat)) ∉
+                (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) E)
+          · rcases List.mem_append.mp h with h' | h'
+            · exact absurd (congrArg Prod.snd (List.mem_singleton.mp h'))
+                (show ¬((32 : Nat) = 12) by decide)
+            · exact absurd h' (List.not_mem_nil)
+        rw [hbv]
+        rw [show ((Act.write 32 (Hw.dbudget E) (.lit 0)).run σ
+            ((Act.write 1 "if_v" (.lit 0)).run σ
+              ((Hw.refillAct m).run σ σ))).regs (Hw.dbudget E) 32
+          = (0#32 : BitVec 32) from by
+          show (RegEnv.set _ (Hw.dbudget E) ((Expr.lit 0).eval σ))
+            (Hw.dbudget E) 32 = _
+          simp [RegEnv.set]
+          rfl]
+        rw [setReg_budget]
+        rfl
+      · rw [setReg_maxDonation]
+    · rw [if_neg hx]
+      show Hw.absDom ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)) x = _
+      rw [hL1 x]
+      exact absDom_congr x (fun p hp =>
+        frame (read_notin_yield_ne x E hx p hp) σ _)
+  · intro g
+    show Hw.absGate ((yieldFull E).run σ ((Hw.refillAct m).run σ σ)) g = _
+    rw [absGate_congr g (fun p hp =>
+      frame (gate_notin_yield g E p hp) σ _)]
+    rw [← habs1]
+    rfl
+  · intro x
+    rw [hτ2doms x]
+    by_cases hx : x = E
+    · rw [if_pos hx, setReg_caps]
+      show ((refillPhase m (Hw.abs σ)).doms E).caps = _
+      rw [refillPhase_caps, hx]
+    · rw [if_neg hx, refillPhase_caps]
+  · intro x
+    rw [hτ2doms x]
+    by_cases hx : x = E
+    · rw [if_pos hx, setReg_slotGen]
+      show ((refillPhase m (Hw.abs σ)).doms E).slotGen = _
+      rw [refillPhase_slotGen, hx]
+    · rw [if_neg hx, refillPhase_slotGen]
+  · intro x
+    rw [hτ2doms x]
+    by_cases hx : x = E
+    · rw [if_pos hx, setReg_regions]
+      show ((refillPhase m (Hw.abs σ)).doms E).regions = _
+      rw [refillPhase_regions, hx]
+    · rw [if_neg hx, refillPhase_regions]
+  · show (refillPhase m (Hw.abs σ)).mover = _
+    rw [refillPhase_mover]
+    rfl
+  · intro b
+    show (refillPhase m (Hw.abs σ)).mem b = _
+    rfl
+  · show (refillPhase m (Hw.abs σ)).cycle = _
+    rfl
+  · rfl
+
 end Machines.Lnp64u.Theorems.RMC
+
