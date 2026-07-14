@@ -1,5 +1,38 @@
 # STATUS — LNP64-µ / Loom
 
+## ★★ 2026-07-14: R-MC SQUARE PROVEN FOR 3 OF 4 ARMS — ONLY THE RETIREMENT ARM REMAINS ★★
+
+`square` in `Theorems/RMC.lean` is now a dispatcher over the cycle's four
+arms, three of them fully proven (audit-legal sorries: exactly one,
+`square_retire`):
+
+- **Countdown** (`RMCCountdown.square_countdown`) — in-flight, not last
+  cycle: `if_cl` decrement + hidden `rv_*` round vs `cyclesLeft - 1`.
+- **Idle-stall** (`RMCIdle.square_idle_stall`) — idle, nothing
+  schedulable: both sides are refill + Mover + tick.
+- **Idle-issue** (`RMCIssue.square_idle_issue`) — idle, a domain
+  scheduled: all eight outcomes proven — fetch/decode/budget/protocol/
+  donation faults (through the halt bridge), residual burn, plain and
+  serving issue (charge/donation/latch, BitVec=Nat arithmetic under the
+  funded-branch bounds).
+
+The bridge stack under them (all sorry-free, no `native_decide`):
+refill bridge (`RMCRefill.abs_refill`), eval bridges
+(`RMCBridge`: muxFin/orAll/andAll, liveness, kind/region coverage),
+quiescent Mover bridge both faces (`RMCMover`), scheduler bridge
+(`RMCSched`: payer walk, eligibility, priority-fold = `schedule`),
+decode/cost bridge (`RMCIsa`), value/check packs (`RMCOps`), the
+complete halt bridge (`RMCHalt.abs_haltAct` = `Kernel.haltDom`), and the
+frame layer (`RMCFrames`: symbolic-manifest write sets, prefix classes,
+guarded-fold dispatch, absDom/absGate read-set congruence).
+
+Remaining for R-MC: `square_retire` — the retirement dispatch skeleton,
+the 25 per-op arms (via the shared kernel-helper bridges per the §6
+resolution), and the `cap_revoke` mark-engine convergence with its
+`Coupled` clause. `scripts/ci.sh`: OK (build + audit + Acc8 BMC + LRAT
+crosscheck).
+
+
 ## ★ 2026-07-05: R-MC `coupled_step` IS CLEAN — ONE SORRY LEFT (`square`) ★
 
 The coupling-preservation half of R-MC is proved, audit-CLEAN, with no
