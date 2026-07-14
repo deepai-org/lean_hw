@@ -525,4 +525,333 @@ theorem square_retire_setReg (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   · -- latch cleared
     rfl
 
+/-! ## Per-op instantiation support -/
+
+/-- The post-refill, post-`pc`-advance architectural read is the
+pre-cycle abstraction's (refill and the `pc` bump touch neither the
+file nor `r0`). -/
+theorem specReg_bridge (m : Manifest) (σ : Loom.Hw.St) (E : DomainId)
+    (rs : RegId) :
+    ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg rs
+      = ((Hw.abs σ).doms E).reg rs := by
+  show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) E).reg rs = _
+  rw [Loom.Fun.update_same]
+  unfold DomainState.reg
+  by_cases h : rs = (0 : Fin numRegs)
+  · rw [if_pos h, if_pos h]
+  · rw [if_neg h, if_neg h]
+    exact congrFun (refillPhase_dregs m (Hw.abs σ) E) rs
+
+/-- The `add` arm: opcode 0 retires `rd := rs1 + rs2`. -/
+theorem square_retire_add (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 0#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (0#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (0#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "add" 0#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.add (Hw.readReg E Hw.rs1E) (Hw.readReg E Hw.rs2E))
+    (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1
+      + ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs2)
+    (List.mem_append_left _ (List.mem_cons_self ..))
+    ?_ ?_
+  · -- datapath value equivalence
+    show (Hw.readReg E Hw.rs1E).eval σ + (Hw.readReg E Hw.rs2E).eval σ = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl,
+        readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl,
+        specReg_bridge, specReg_bridge]
+  · -- spec exec reduction
+    rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+
+/-- The `sub` arm: opcode 1. -/
+theorem square_retire_sub (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 1#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (1#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (1#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "sub" 1#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.sub (Hw.readReg E Hw.rs1E) (Hw.readReg E Hw.rs2E))
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1)
+      - (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs2))
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+    ?_ ?_
+  · show (Hw.readReg E Hw.rs1E).eval σ - (Hw.readReg E Hw.rs2E).eval σ = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl,
+        readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl,
+        specReg_bridge, specReg_bridge]
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+/-- The `and` arm: opcode 2. -/
+theorem square_retire_and (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 2#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (2#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (2#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "and" 2#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.and (Hw.readReg E Hw.rs1E) (Hw.readReg E Hw.rs2E))
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1)
+      &&& (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs2))
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))))
+    ?_ ?_
+  · show (Hw.readReg E Hw.rs1E).eval σ &&& (Hw.readReg E Hw.rs2E).eval σ = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl,
+        readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl,
+        specReg_bridge, specReg_bridge]
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+/-- The `or` arm: opcode 3. -/
+theorem square_retire_or (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 3#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (3#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (3#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "or" 3#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.or (Hw.readReg E Hw.rs1E) (Hw.readReg E Hw.rs2E))
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1)
+      ||| (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs2))
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))
+    ?_ ?_
+  · show (Hw.readReg E Hw.rs1E).eval σ ||| (Hw.readReg E Hw.rs2E).eval σ = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl,
+        readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl,
+        specReg_bridge, specReg_bridge]
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+/-- The `xor` arm: opcode 4. -/
+theorem square_retire_xor (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 4#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (4#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (4#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "xor" 4#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.xor (Hw.readReg E Hw.rs1E) (Hw.readReg E Hw.rs2E))
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1)
+      ^^^ (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs2))
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))
+    ?_ ?_
+  · show (Hw.readReg E Hw.rs1E).eval σ ^^^ (Hw.readReg E Hw.rs2E).eval σ = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl,
+        readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl,
+        specReg_bridge, specReg_bridge]
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+/-- The `shl` arm: opcode 5. -/
+theorem square_retire_shl (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 5#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (5#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (5#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "shl" 5#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.shl (Hw.readReg E Hw.rs1E) (.and (Hw.readReg E Hw.rs2E) (.lit 31)))
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1)
+      <<< ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs2) &&& (31 : Loom.Word32)))
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))
+    ?_ ?_
+  · show (Hw.readReg E Hw.rs1E).eval σ <<<
+      ((Hw.readReg E Hw.rs2E).eval σ &&& (31#32 : BitVec 32)) = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl,
+        readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl,
+        specReg_bridge, specReg_bridge]
+    rfl
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+/-- The `shr` arm: opcode 6. -/
+theorem square_retire_shr (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 6#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (6#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (6#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "shr" 6#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.shr (Hw.readReg E Hw.rs1E) (.and (Hw.readReg E Hw.rs2E) (.lit 31)))
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1)
+      >>> ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs2) &&& (31 : Loom.Word32)))
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))
+    ?_ ?_
+  · show (Hw.readReg E Hw.rs1E).eval σ >>>
+      ((Hw.readReg E Hw.rs2E).eval σ &&& (31#32 : BitVec 32)) = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl,
+        readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl,
+        specReg_bridge, specReg_bridge]
+    rfl
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+/-- The `addi` arm: opcode 7. -/
+theorem square_retire_addi (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 7#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (7#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (7#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "addi" 7#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.add (Hw.readReg E Hw.rs1E) Hw.immX)
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 })).doms E).reg
+          (operandsOf W).rs1)
+      + immExt (operandsOf W).imm)
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))))
+    ?_ ?_
+  · show (Hw.readReg E Hw.rs1E).eval σ + Hw.immX.eval σ = _
+    rw [readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl, specReg_bridge]
+    rfl
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
+/-- The `lui` arm: opcode 8. -/
+theorem square_retire_lui (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 8#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (8#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (8#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  refine square_retire_setReg m hwf hfit σ hsync hifv hcl "lui" 8#6 hopc
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    E rfl
+    (.shl (.zext Hw.immE 32) (.lit 15))
+    (((operandsOf W).imm.setWidth 32) <<< (15 : Nat))
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))
+    ?_ ?_
+  · rfl
+  · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+
 end Machines.Lnp64u.Theorems.RMC
