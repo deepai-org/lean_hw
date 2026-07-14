@@ -239,7 +239,7 @@ theorem square_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [core_cycle_unfold]
     rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
-    exact moverAct_mem_quiescent σ _ (corePhase m τ1) hnr hcaps hgen hrgn
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
       hjob hmem2 hτm a
   · -- doms
     funext d
@@ -404,7 +404,7 @@ theorem square_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         htick "mov_src" 14 (by decide), htick "mov_dst" 14 (by decide),
         htick "mov_srccur" 12 (by decide), htick "mov_dstcur" 12 (by decide),
         htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
-    exact absMover_moverAct_quiescent σ _ (corePhase m τ1) hnr hcaps hgen hjob
+    exact absMover_moverAct_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hjob
   · -- inflight
     have hRHS : (moverPhase (corePhase m τ1)).inflight
         = some { dom := finOfBv (by decide) (σ.regs "if_dom" 2)

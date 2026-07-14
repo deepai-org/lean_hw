@@ -116,7 +116,7 @@ theorem square_idle_stall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [core_cycle_unfold]
     rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
-    exact moverAct_mem_quiescent σ _ (corePhase m τ1) hnr hcaps hgen hrgn
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
       hjob hmem2 hτm a
   · funext d
     have hRHS : (moverPhase (corePhase m τ1)).doms d = τ1.doms d := by
@@ -249,7 +249,7 @@ theorem square_idle_stall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         htick "mov_src" 14 (by decide), htick "mov_dst" 14 (by decide),
         htick "mov_srccur" 12 (by decide), htick "mov_dstcur" 12 (by decide),
         htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
-    exact absMover_moverAct_quiescent σ _ (corePhase m τ1) hnr hcaps hgen hjob
+    exact absMover_moverAct_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hjob
   · have hRHS : (moverPhase (corePhase m τ1)).inflight = none := by
       rw [moverPhase_inflight, hτ2]
       exact hifl
