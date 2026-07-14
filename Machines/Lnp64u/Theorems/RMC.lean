@@ -237,7 +237,7 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
 /-- The retirement arm — the remaining per-op grind (25 opcode circuits
 against the `Isa` exec semantics, plus the `cap_revoke` mark engine). The
 sole remaining R-MC obligation. -/
-private theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
     (hcr : ((Hw.core m).toTSys).Reachable σ)
