@@ -288,18 +288,16 @@ items marked ★ are the ones reviewers/AEC members check first.
 ## P2. Repo hygiene & reproducibility ★ (artifact evaluation gate)
 
 - [ ] ★ **One-command cold build.** From a clean clone on a fresh machine:
-      `./scripts/ci.sh` (or a new `scripts/reproduce.sh`) must fetch the pinned
-      toolchain, build, run `lake exe audit`, run both lockstep scripts, and diff the
-      emitted `.v` against committed goldens. Time it; AEC budgets are ~2–4 hours.
-      *(PARTIALLY IN HAND: `scripts/ci.sh` exists and passes — build + audit +
-      Acc8 BMC certificate check + LRAT dual-checker crosscheck. Missing: the
-      lockstep scripts, no golden diff, never timed from cold.)*
-- [ ] ★ **Pin everything.** `lean-toolchain` committed; lake manifest committed;
-      exact versions of iverilog/verilator + yosys documented; SAT solver version
-      pinned (and its LRAT output format noted).
-      *(PARTIALLY IN HAND: `lean-toolchain` (v4.28.0) and the lake manifest are
-      committed. Missing: documented versions of iverilog/yosys/cadical — this box
-      runs yosys 0.33, cadical via `--no-binary --lrat`.)*
+      `./scripts/reproduce.sh` fetches the pinned toolchain, builds, runs
+      `lake exe audit`, the BMC/LRAT checks, emission + RTL hygiene, and both
+      lockstep scripts. *(LANDED 2026-07-14: `scripts/reproduce.sh` = ci.sh +
+      lockstep, with pinned tool versions documented in its header. Missing:
+      golden `.v` diff (blocked on the rtl/ tracked-vs-regenerated decision),
+      never timed from a truly cold clone.)*
+- [x] ★ **Pin everything.** *(DONE 2026-07-14: `lean-toolchain` (v4.28.0) and
+      the lake manifest are committed; `scripts/reproduce.sh` documents the
+      external tool pins — iverilog 12.0, yosys 0.33, cadical 1.7.3 with
+      `--no-binary --lrat`.)*
 - [ ] ★ **Container image.** Dockerfile (or Nix flake) that reproduces the CI run
       bit-for-bit. Push a tagged image; artifact submissions that "just work" in a
       container get badges, ones that don't get rejected.
