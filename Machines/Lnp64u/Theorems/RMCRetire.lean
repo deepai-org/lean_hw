@@ -175,4 +175,62 @@ theorem retireAct_run_mems (σ acc : Loom.Hw.St) (ad' w' : Nat) :
   · rw [if_neg hen, if_neg hen]
     exact hdm ad' w'
 
+
+/-! ## Per-op selection inside `retireFor` -/
+
+/-- The op fold picks the first matching mnemonic; conditions are opcode
+tests, mutually exclusive by opcode distinctness. -/
+private theorem opFold_run_sel (σ acc : Loom.Hw.St) (fb : Act) :
+    ∀ (l : List (String × Hw.OpCirc)) (mn : String) (c : Hw.OpCirc),
+      (mn, c) ∈ l →
+      ((Hw.isMn mn).eval σ = 1#1) →
+      (∀ p ∈ l, p.1 ≠ mn → (Hw.isMn p.1).eval σ ≠ 1#1) →
+      (∀ p ∈ l, p.1 = mn → p.2 = c) →
+      ((l.foldr (fun p acc' => Act.ite (Hw.isMn p.1) p.2.act acc') fb).run σ
+        acc) = c.act.run σ acc
+  | [], _, _, hmem, _, _, _ => absurd hmem (List.not_mem_nil)
+  | (mn', c') :: t, mn, c, hmem, hsel, hexcl, huniq => by
+      show (if (Hw.isMn mn').eval σ = 1#1 then _ else _) = _
+      by_cases hm : mn' = mn
+      · rw [if_pos (hm ▸ hsel)]
+        rw [huniq (mn', c') (List.mem_cons_self ..) hm]
+      · rw [if_neg (hexcl (mn', c') (List.mem_cons_self ..) hm)]
+        have hmem' : (mn, c) ∈ t := by
+          rcases List.mem_cons.mp hmem with h | h
+          · exact absurd (congrArg Prod.fst h).symm hm
+          · exact h
+        exact opFold_run_sel σ acc fb t mn c hmem' hsel
+          (fun p hp => hexcl p (List.mem_cons_of_mem _ hp))
+          (fun p hp => huniq p (List.mem_cons_of_mem _ hp))
+
+/-- No mnemonic matches: the fold falls through to the fallback. -/
+private theorem opFold_run_none (σ acc : Loom.Hw.St) (fb : Act) :
+    ∀ (l : List (String × Hw.OpCirc)),
+      (∀ p ∈ l, (Hw.isMn p.1).eval σ ≠ 1#1) →
+      ((l.foldr (fun p acc' => Act.ite (Hw.isMn p.1) p.2.act acc') fb).run σ
+        acc) = fb.run σ acc
+  | [], _ => rfl
+  | (mn', c') :: t, hnone => by
+      show (if (Hw.isMn mn').eval σ = 1#1 then _ else _) = _
+      rw [if_neg (hnone (mn', c') (List.mem_cons_self ..))]
+      exact opFold_run_none σ acc fb t
+        (fun p hp => hnone p (List.mem_cons_of_mem _ hp))
+
+/-- `retireFor` runs exactly the matching op circuit. -/
+theorem retireFor_run_sel (σ acc : Loom.Hw.St) (e : DomainId) (mn : String)
+    (c : Hw.OpCirc) (hmem : (mn, c) ∈ Hw.opCircs e)
+    (hsel : (Hw.isMn mn).eval σ = 1#1)
+    (hexcl : ∀ p ∈ Hw.opCircs e, p.1 ≠ mn → (Hw.isMn p.1).eval σ ≠ 1#1)
+    (huniq : ∀ p ∈ Hw.opCircs e, p.1 = mn → p.2 = c) :
+    (Hw.retireFor e).run σ acc = c.act.run σ acc :=
+  opFold_run_sel σ acc _ (Hw.opCircs e) mn c hmem hsel hexcl huniq
+
+/-- No declared opcode matches: `retireFor` falls through to the
+illegal-instruction fault. -/
+theorem retireFor_run_none (σ acc : Loom.Hw.St) (e : DomainId)
+    (hnone : ∀ p ∈ Hw.opCircs e, (Hw.isMn p.1).eval σ ≠ 1#1) :
+    (Hw.retireFor e).run σ acc
+      = (Hw.haltFault e .illegalInstruction).run σ acc :=
+  opFold_run_none σ acc _ (Hw.opCircs e) hnone
+
 end Machines.Lnp64u.Theorems.RMC
