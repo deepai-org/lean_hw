@@ -769,8 +769,8 @@ theorem square_issue_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [core_cycle_unfold]
     rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
-    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) (fun d sc => andAll_retiring_quiescent σ hnr _) hcaps hgen hrgn
-      hjob hmem2 hτm a
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
+      hjob (fun d sc => andAll_retiring_quiescent σ hnr _) hmem2 hτm a
   · funext x
     have hRHS : (moverPhase (corePhase m τ1)).doms x
         = (τ1.haltDom e (BitVec.ofNat 32 f.code)).doms x := by
@@ -989,8 +989,8 @@ theorem square_issue_burn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [core_cycle_unfold]
     rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
-    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) (fun d sc => andAll_retiring_quiescent σ hnr _) hcaps hgen hrgn
-      hjob hmem2 hτm a
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
+      hjob (fun d sc => andAll_retiring_quiescent σ hnr _) hmem2 hτm a
   · funext x
     have hRHS : (moverPhase (corePhase m τ1)).doms x
         = (corePhase m τ1).doms x := congrFun (moverPhase_doms _) x
@@ -1315,8 +1315,8 @@ theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [core_cycle_unfold]
     rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
-    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) (fun d sc => andAll_retiring_quiescent σ hnr _) hcaps hgen hrgn
-      hjob hmem2 hτm a
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
+      hjob (fun d sc => andAll_retiring_quiescent σ hnr _) hmem2 hτm a
   · funext x
     have hRHS : (moverPhase (corePhase m τ1)).doms x
         = (corePhase m τ1).doms x := congrFun (moverPhase_doms _) x
@@ -1813,8 +1813,8 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [core_cycle_unfold]
     rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ b.toNat 32]
-    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) (fun d sc => andAll_retiring_quiescent σ hnr _) hcaps hgen hrgn
-      hjob hmem2 hτm b
+    exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
+      hjob (fun d sc => andAll_retiring_quiescent σ hnr _) hmem2 hτm b
   · funext x
     have hRHS : (moverPhase (corePhase m τ1)).doms x
         = (corePhase m τ1).doms x := congrFun (moverPhase_doms _) x
