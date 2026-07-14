@@ -114,7 +114,7 @@ private theorem ifv_notin_aluX (e : DomainId) (v : Expr 32) :
   fin_cases e <;> decide +kernel
 
 /-- `dreg` names are injective in the register index. -/
-private theorem dreg_inj : ∀ (e : DomainId) (r r' : RegId),
+theorem dreg_inj : ∀ (e : DomainId) (r r' : RegId),
     Hw.dreg e r = Hw.dreg e r' → r = r' := by decide +kernel
 
 /-- The refill rule never writes the architectural file or `pc`. -/
@@ -127,48 +127,48 @@ private theorem dreg_notin_refill : ∀ (e : DomainId) (r : RegId),
 
 /-! ## Spec-side field helpers -/
 
-private theorem setReg_caps (ds : DomainState) (r : RegId) (v : Loom.Word32) :
+theorem setReg_caps (ds : DomainState) (r : RegId) (v : Loom.Word32) :
     (ds.setReg r v).caps = ds.caps := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_slotGen (ds : DomainState) (r : RegId)
+theorem setReg_slotGen (ds : DomainState) (r : RegId)
     (v : Loom.Word32) : (ds.setReg r v).slotGen = ds.slotGen := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_lineage (ds : DomainState) (r : RegId)
+theorem setReg_lineage (ds : DomainState) (r : RegId)
     (v : Loom.Word32) : (ds.setReg r v).lineage = ds.lineage := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_regions (ds : DomainState) (r : RegId)
+theorem setReg_regions (ds : DomainState) (r : RegId)
     (v : Loom.Word32) : (ds.setReg r v).regions = ds.regions := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_run (ds : DomainState) (r : RegId) (v : Loom.Word32) :
+theorem setReg_run (ds : DomainState) (r : RegId) (v : Loom.Word32) :
     (ds.setReg r v).run = ds.run := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_serving (ds : DomainState) (r : RegId)
+theorem setReg_serving (ds : DomainState) (r : RegId)
     (v : Loom.Word32) : (ds.setReg r v).serving = ds.serving := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_cause (ds : DomainState) (r : RegId)
+theorem setReg_cause (ds : DomainState) (r : RegId)
     (v : Loom.Word32) : (ds.setReg r v).cause = ds.cause := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_budget (ds : DomainState) (r : RegId)
+theorem setReg_budget (ds : DomainState) (r : RegId)
     (v : Loom.Word32) : (ds.setReg r v).budget = ds.budget := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_maxDonation (ds : DomainState) (r : RegId)
+theorem setReg_maxDonation (ds : DomainState) (r : RegId)
     (v : Loom.Word32) : (ds.setReg r v).maxDonation = ds.maxDonation := by
   unfold DomainState.setReg; split <;> rfl
 
-private theorem setReg_pc (ds : DomainState) (r : RegId) (v : Loom.Word32) :
+theorem setReg_pc (ds : DomainState) (r : RegId) (v : Loom.Word32) :
     (ds.setReg r v).pc = ds.pc := by
   unfold DomainState.setReg; split <;> rfl
 
 /-- The updated register file of `setReg` (architectural: `r0` discards). -/
-private theorem setReg_regs (ds : DomainState) (r : RegId) (v : Loom.Word32)
+theorem setReg_regs (ds : DomainState) (r : RegId) (v : Loom.Word32)
     (r' : RegId) :
     (ds.setReg r v).regs r'
       = if r = (0 : Fin numRegs) then ds.regs r'
