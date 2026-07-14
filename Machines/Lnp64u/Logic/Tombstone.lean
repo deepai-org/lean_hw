@@ -58,6 +58,13 @@ def MoverLiveMem (σ : MachineState) : Prop :=
     ∃ e, (σ.doms job.dst.dom).liveCap job.dst.slot job.dst.gen = some e ∧
          e.kind.cls = .mem
 
+/-- The Mover's source (when a job is active) is still live: `sweepMover`
+clears the job on any kill touching either watched reference, installs
+check both live, and nothing else removes capabilities. -/
+def MoverLiveSrc (σ : MachineState) : Prop :=
+  ∀ job, σ.mover = some job →
+    ∃ e, (σ.doms job.src.dom).liveCap job.src.slot job.src.gen = some e
+
 /-- One-step state evolution: slot generations never decrease, reference
 fates and tombstones transport, and the Mover-destination invariant is
 preserved. Reflexive and transitive, hence composable along `step`. -/
@@ -65,17 +72,20 @@ def Evo (σ σ' : MachineState) : Prop :=
   (∀ d s, ((σ.doms d).slotGen s).toNat ≤ ((σ'.doms d).slotGen s).toNat) ∧
   (∀ r k, RefFate r k σ → RefFate r k σ') ∧
   (∀ d s, Tombstoned d s σ → Tombstoned d s σ') ∧
-  (MoverLiveMem σ → MoverLiveMem σ')
+  (MoverLiveMem σ → MoverLiveMem σ') ∧
+  (MoverLiveSrc σ → MoverLiveSrc σ')
 
 theorem Evo.refl (σ : MachineState) : Evo σ σ :=
-  ⟨fun _ _ => Nat.le_refl _, fun _ _ h => h, fun _ _ h => h, fun h => h⟩
+  ⟨fun _ _ => Nat.le_refl _, fun _ _ h => h, fun _ _ h => h, fun h => h,
+   fun h => h⟩
 
 theorem Evo.trans {σ₁ σ₂ σ₃ : MachineState} (h₁ : Evo σ₁ σ₂) (h₂ : Evo σ₂ σ₃) :
     Evo σ₁ σ₃ :=
   ⟨fun d s => le_trans (h₁.1 d s) (h₂.1 d s),
    fun r k h => h₂.2.1 r k (h₁.2.1 r k h),
    fun d s h => h₂.2.2.1 d s (h₁.2.2.1 d s h),
-   fun h => h₂.2.2.2 (h₁.2.2.2 h)⟩
+   fun h => h₂.2.2.2.1 (h₁.2.2.2.1 h),
+   fun h => h₂.2.2.2.2 (h₁.2.2.2.2 h)⟩
 
 /-- Generations are 8 bits: nothing exceeds `genRetired = 255`. -/
 theorem gen_le_retired (g : Gen) : g.toNat ≤ genRetired.toNat := by
@@ -158,7 +168,7 @@ theorem liveCap_eq_some (ds : DomainState) (s : Slot) (g : Gen) (e : CapEntry) :
 
 theorem Quiet.evo {σ σ' : MachineState} (h : Quiet σ σ') : Evo σ σ' := by
   obtain ⟨ht, hm⟩ := h
-  refine ⟨fun d s => by rw [(ht d).2.2], ?_, ?_, ?_⟩
+  refine ⟨fun d s => by rw [(ht d).2.2], ?_, ?_, ?_, ?_⟩
   · intro r k hf
     unfold RefFate at hf ⊢
     rw [(ht r.dom).1, (ht r.dom).2.2]; exact hf
@@ -170,6 +180,11 @@ theorem Quiet.evo {σ σ' : MachineState} (h : Quiet σ σ') : Evo σ σ' := by
     obtain ⟨e, he, hcls⟩ := hml job hj
     exact ⟨e, by rw [liveCap_congr_of_eq _ _ (ht job.dst.dom).1 (ht job.dst.dom).2.2]
                  exact he, hcls⟩
+  · intro hms job hj
+    rw [hm] at hj
+    obtain ⟨e, he⟩ := hms job hj
+    exact ⟨e, by rw [liveCap_congr_of_eq _ _ (ht job.src.dom).1 (ht job.src.dom).2.2]
+                 exact he⟩
 
 /-! ## The `SpecM`-level preservation kits -/
 
@@ -368,7 +383,7 @@ theorem evo_of_projs (σ σ' : MachineState)
     (hc : ∀ d, (σ'.doms d).caps = (σ.doms d).caps)
     (hg : ∀ d, (σ'.doms d).slotGen = (σ.doms d).slotGen)
     (hm : σ'.mover = σ.mover) : Evo σ σ' := by
-  refine ⟨fun d s => by rw [hg d], ?_, ?_, ?_⟩
+  refine ⟨fun d s => by rw [hg d], ?_, ?_, ?_, ?_⟩
   · intro r k hf; unfold RefFate at hf ⊢; rw [hc r.dom, hg r.dom]; exact hf
   · intro d s hts; unfold Tombstoned at hts ⊢; rw [hc d, hg d]; exact hts
   · intro hml job hj
@@ -376,6 +391,10 @@ theorem evo_of_projs (σ σ' : MachineState)
     obtain ⟨e, he, hcls⟩ := hml job hj
     exact ⟨e, by rw [liveCap_congr_of_eq _ _ (hc job.dst.dom) (hg job.dst.dom)]; exact he,
            hcls⟩
+  · intro hms job hj
+    rw [hm] at hj
+    obtain ⟨e, he⟩ := hms job hj
+    exact ⟨e, by rw [liveCap_congr_of_eq _ _ (hc job.src.dom) (hg job.src.dom)]; exact he⟩
 
 /-- What `freeSlot` promises about its result: unoccupied and not retired. -/
 theorem freeSlot_spec (σ : MachineState) (d : DomainId) (s : Slot)
@@ -414,7 +433,7 @@ theorem evo_capsUpdate (σ : MachineState) (dd : DomainId) (s2 : Slot)
     by_cases hd : d' = dd
     · subst hd; simp only [Loom.Fun.update_same, hgen]
     · simp [Loom.Fun.update_ne _ _ _ _ hd]
-  refine ⟨fun d s => by rw [hgproj d], ?_, ?_, ?_⟩
+  refine ⟨fun d s => by rw [hgproj d], ?_, ?_, ?_, ?_⟩
   · intro r k hf
     unfold RefFate at hf ⊢
     rw [hcproj r.dom r.slot, hgproj r.dom]
@@ -439,6 +458,16 @@ theorem evo_capsUpdate (σ : MachineState) (dd : DomainId) (s2 : Slot)
     unfold DomainState.liveCap at he ⊢
     rw [hcproj job.dst.dom job.dst.slot, hgproj job.dst.dom]
     have hne : ¬ (job.dst.dom = dd ∧ job.dst.slot = s2) := by
+      rintro ⟨h1, h2⟩
+      rw [h1, h2, hfree] at he; simp at he
+    rw [if_neg hne]; exact he
+  · intro hms job hj
+    rw [show (σ.setDom dd f).mover = σ.mover from rfl] at hj
+    obtain ⟨e, he⟩ := hms job hj
+    refine ⟨e, ?_⟩
+    unfold DomainState.liveCap at he ⊢
+    rw [hcproj job.src.dom job.src.slot, hgproj job.src.dom]
+    have hne : ¬ (job.src.dom = dd ∧ job.src.slot = s2) := by
       rintro ⟨h1, h2⟩
       rw [h1, h2, hfree] at he; simp at he
     rw [if_neg hne]; exact he
@@ -526,7 +555,7 @@ theorem orphanChildren_caps_kind (σ : MachineState) (old : CapRef) (d : DomainI
 
 theorem evo_orphanChildren (σ : MachineState) (old : CapRef) :
     Evo σ (σ.orphanChildren old) := by
-  refine ⟨fun d s => by rw [orphanChildren_slotGen], ?_, ?_, ?_⟩
+  refine ⟨fun d s => by rw [orphanChildren_slotGen], ?_, ?_, ?_, ?_⟩
   · intro r k hf
     unfold RefFate at hf ⊢
     rw [orphanChildren_slotGen]
@@ -557,6 +586,18 @@ theorem evo_orphanChildren (σ : MachineState) (old : CapRef) :
       · rw [liveCap_eq_some]
         exact ⟨hce1', by rw [orphanChildren_slotGen]; exact hg, hg0⟩
       · rw [show e1'.kind.cls = e.kind.cls from by rw [hk1]]; exact hcls
+  · intro hms job hj
+    rw [orphanChildren_mover] at hj
+    obtain ⟨e, he⟩ := hms job hj
+    rw [liveCap_eq_some] at he
+    obtain ⟨hce, hg, hg0⟩ := he
+    rcases orphanChildren_caps_kind σ old job.src.dom job.src.slot with
+      ⟨_, hn⟩ | ⟨e1, e1', hce1, hce1', hk1, _⟩
+    · rw [hn] at hce; exact absurd hce (by simp)
+    · rw [hce] at hce1; injection hce1 with hee; subst hee
+      refine ⟨e1', ?_⟩
+      rw [liveCap_eq_some]
+      exact ⟨hce1', by rw [orphanChildren_slotGen]; exact hg, hg0⟩
 
 /-- The clear-then-sweep composite (`cap_drop`, `transferCap` tail). -/
 theorem evo_clearSweep (σ : MachineState) (d : DomainId) (s : Slot) :
@@ -571,7 +612,7 @@ theorem evo_clearSweep (σ : MachineState) (d : DomainId) (s : Slot) :
     rw [show ((σ.clearSlot d s).sweepRegions.doms d').slotGen s' =
       ((σ.clearSlot d s).doms d').slotGen s' from by rw [sweepRegions_slotGen]]
     exact clearSlot_slotGen σ d s d' s'
-  refine ⟨?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · intro d' s'; rw [hgen d' s']
     split
     · rename_i h; rw [h.1, h.2]; exact bumpGen_ge _
@@ -620,6 +661,22 @@ theorem evo_clearSweep (σ : MachineState) (d : DomainId) (s : Slot) :
     refine ⟨?_, ?_, hg0⟩
     · rw [hcaps, if_neg hne]; exact hce
     · rw [hgen, if_neg hne]; exact hg
+  · intro hms job hj
+    obtain ⟨hmv, hsrc, hdst⟩ := sweepMover_mover_some _ job hj
+    rw [sweepRegions_mover, clearSlot_mover] at hmv
+    obtain ⟨e, he⟩ := hms job hmv
+    rw [liveCap_eq_some] at he
+    obtain ⟨hce, hg, hg0⟩ := he
+    have hne : ¬ (job.src.dom = d ∧ job.src.slot = s) := by
+      rintro ⟨h1, h2⟩
+      unfold MachineState.liveRef DomainState.liveCap at hsrc
+      rw [sweepRegions_caps, clearSlot_caps, if_pos ⟨h1, h2⟩] at hsrc
+      simp at hsrc
+    refine ⟨e, ?_⟩
+    rw [liveCap_eq_some]
+    refine ⟨?_, ?_, hg0⟩
+    · rw [hcaps, if_neg hne]; exact hce
+    · rw [hgen, if_neg hne]; exact hg
 
 /-- The destroy-then-sweep composite (`cap_revoke`). -/
 theorem evo_destroySweep (σ : MachineState) (M : DomainId → Slot → Bool) :
@@ -634,7 +691,7 @@ theorem evo_destroySweep (σ : MachineState) (M : DomainId → Slot → Bool) :
     rw [show ((σ.destroyMarked M).sweepRegions.doms d').slotGen s' =
       ((σ.destroyMarked M).doms d').slotGen s' from by rw [sweepRegions_slotGen]]
     exact destroyMarked_slotGen σ M d' s'
-  refine ⟨?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · intro d' s'; rw [hgen d' s']
     split
     · exact bumpGen_ge _
@@ -696,6 +753,26 @@ theorem evo_destroySweep (σ : MachineState) (M : DomainId → Slot → Bool) :
     · rw [hgen]
       rw [show (M job.dst.dom job.dst.slot &&
           ((σ.doms job.dst.dom).caps job.dst.slot).isSome) = false from by
+        simp only [Bool.not_eq_true] at hnm; rw [hnm]; simp, if_neg Bool.false_ne_true]
+      exact hg
+  · intro hms job hj
+    obtain ⟨hmv, hsrc, hdst⟩ := sweepMover_mover_some _ job hj
+    rw [sweepRegions_mover, destroyMarked_mover] at hmv
+    obtain ⟨e, he⟩ := hms job hmv
+    rw [liveCap_eq_some] at he
+    obtain ⟨hce, hg, hg0⟩ := he
+    have hnm : ¬ (M job.src.dom job.src.slot = true) := by
+      intro hMt
+      unfold MachineState.liveRef DomainState.liveCap at hsrc
+      rw [sweepRegions_caps, destroyMarked_caps, if_pos hMt] at hsrc
+      simp at hsrc
+    refine ⟨e, ?_⟩
+    rw [liveCap_eq_some]
+    refine ⟨?_, ?_, hg0⟩
+    · rw [hcaps, if_neg hnm]; exact hce
+    · rw [hgen]
+      rw [show (M job.src.dom job.src.slot &&
+          ((σ.doms job.src.dom).caps job.src.slot).isSome) = false from by
         simp only [Bool.not_eq_true] at hnm; rw [hnm]; simp, if_neg Bool.false_ne_true]
       exact hg
 
@@ -1051,8 +1128,10 @@ theorem move_evo (c : Ctx) : EvoPres (Machines.Lnp64u.Isa.Wip.moveExec c) := by
   refine EvoFrom.bind (EvoFrom.quiet (QuietPres.load _ _)) fun stW σ6 h6 => ?_
   obtain rfl : σ0 = σ6 := (load_ok _ _ _ h6).symm
   refine EvoFrom.bind (EvoFrom.quiet (QuietPres.capLive _ _)) fun rs σ7 h7 => ?_
-  obtain rfl : σ0 = σ7 := ((Machines.Lnp64u.Isa.Wip.capLive_ok _ _ _ h7).1).symm
+  obtain ⟨hσ7, hslive⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok _ _ _ h7
+  obtain rfl : σ0 = σ7 := hσ7.symm
   obtain ⟨ss, gs_, es⟩ := rs
+  simp only [] at hslive
   simp only []
   refine EvoFrom.bind (EvoFrom.quiet (QuietPres.capLive _ _)) fun rd σ8 h8 => ?_
   obtain ⟨hσ8, hdlive⟩ := Machines.Lnp64u.Isa.Wip.capLive_ok _ _ _ h8
@@ -1080,11 +1159,16 @@ theorem move_evo (c : Ctx) : EvoPres (Machines.Lnp64u.Isa.Wip.moveExec c) := by
           refine EvoFrom.bind (EvoFrom.set ?_) fun _ σe hset =>
             EvoFrom.quiet (QuietPres.setReg _ _ _)
           -- the fresh job: doms untouched, destination checked live-memory
-          refine ⟨fun d s => Nat.le_refl _, fun r k hf => hf, fun d s hts => hts, ?_⟩
-          intro _ job hj
-          simp only at hj
-          injection hj with hj; subst hj
-          exact ⟨ed, hdlive, by rw [hkd]; rfl⟩
+          refine ⟨fun d s => Nat.le_refl _, fun r k hf => hf, fun d s hts => hts,
+            ?_, ?_⟩
+          · intro _ job hj
+            simp only at hj
+            injection hj with hj; subst hj
+            exact ⟨ed, hdlive, by rw [hkd]; rfl⟩
+          · intro _ job hj
+            simp only at hj
+            injection hj with hj; subst hj
+            exact ⟨es, hslive⟩
 
 /-! ## Dispatch: every instruction evolves the state -/
 
@@ -1239,7 +1323,7 @@ theorem evo_refillPhase (m : Manifest) (σ : MachineState) : Evo σ (refillPhase
     (refillPhase_mover m σ)
 
 theorem evo_moverPhase (σ : MachineState) : Evo σ (moverPhase σ) := by
-  refine ⟨fun d s => by rw [moverPhase_doms], ?_, ?_, ?_⟩
+  refine ⟨fun d s => by rw [moverPhase_doms], ?_, ?_, ?_, ?_⟩
   · intro r k hf; unfold RefFate at hf ⊢; rw [moverPhase_doms]; exact hf
   · intro d s hts; unfold Tombstoned at hts ⊢; rw [moverPhase_doms]; exact hts
   · intro hml job hj
@@ -1249,6 +1333,14 @@ theorem evo_moverPhase (σ : MachineState) : Evo σ (moverPhase σ) := by
       obtain ⟨e, he, hcls⟩ := hml job0 hm0
       refine ⟨e, ?_, hcls⟩
       rw [hdst, moverPhase_doms]
+      exact he
+  · intro hms job hj
+    rcases moverPhase_mover σ with hnone | ⟨job0, job', hm0, hm', ho, hs, hdst⟩
+    · rw [hnone] at hj; exact absurd hj (by simp)
+    · rw [hm'] at hj; injection hj with hj; subst hj
+      obtain ⟨e, he⟩ := hms job0 hm0
+      refine ⟨e, ?_⟩
+      rw [hs, moverPhase_doms]
       exact he
 
 /-- **One machine cycle evolves the state.** -/
@@ -1276,7 +1368,20 @@ theorem moverLiveMem_invariant (m : Manifest) :
         exact absurd hj (by simp [Manifest.initState])
       step := fun σ σ2 hP hstep => by
         have hst : step m σ = σ2 := hstep
-        exact hst ▸ (step_evo m σ).2.2.2 hP }
+        exact hst ▸ (step_evo m σ).2.2.2.1 hP }
+
+/-- Every reachable state's Mover source (when a job is active) is still
+live. -/
+theorem moverLiveSrc_invariant (m : Manifest) :
+    (machine m).Invariant MoverLiveSrc :=
+  Loom.TSys.Inductive.invariant
+    { init := fun σ hi => by
+        subst hi
+        intro job hj
+        exact absurd hj (by simp [Manifest.initState])
+      step := fun σ σ2 hP hstep => by
+        have hst : step m σ = σ2 := hstep
+        exact hst ▸ (step_evo m σ).2.2.2.2 hP }
 
 /-- Reachability is closed under `stepN`. -/
 theorem reachable_stepN (m : Manifest) (σ : MachineState)
