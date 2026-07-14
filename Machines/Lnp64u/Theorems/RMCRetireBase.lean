@@ -408,7 +408,7 @@ theorem square_retire_store (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       (fun x => (hspec ▸ hcaps x : _)) (fun x => hspec ▸ hgen x)
       (hspec ▸ hjob)
       (fun ow sa => by
-        rw [sAuth_quiescent_eval σ hin hmapz hunmapz ow sa]
+        rw [sAuth_quiescent_eval σ hin.killed hmapz hunmapz ow sa]
         rw [MachineState.domCovers, MachineState.domCovers]
         simp only [hrgn])
       hmemτ2 hswτ2 a

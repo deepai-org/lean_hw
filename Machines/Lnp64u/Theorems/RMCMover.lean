@@ -198,7 +198,8 @@ theorem Inert.of_benign (σ : Loom.Hw.St)
 
 /-- `rgnVPostE` falls back to the validity register. -/
 theorem rgnVPostE_quiescent (σ : Loom.Hw.St)
-    (hnr : Inert σ)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = 0#1)
     (hmapz : ∀ (c : DomainId) (r : RegionId),
       (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
         .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
@@ -216,7 +217,7 @@ theorem rgnVPostE_quiescent (σ : Loom.Hw.St)
     else if (0#1 : BitVec 1) = 1#1 then _ else _) = _
   rw [if_neg (by decide), if_neg (by decide)]
   show σ.regs (Hw.drgnV c r) 1 &&& ~~~((Hw.killedByCoreE _ _).eval σ) = _
-  rw [killedByCoreE_quiescent σ hnr, bv1_not_zero, bv1_and_one]
+  rw [hkills, bv1_not_zero, bv1_and_one]
 
 /-- `rgnValPostE` falls back to the region register. -/
 theorem rgnValPostE_quiescent (σ : Loom.Hw.St)
@@ -769,7 +770,8 @@ theorem bv2_lit_iff (b : BitVec 2) (c : DomainId) :
 /-- The status-write authority OR-tree decodes to `domCovers` of the
 owner on the abstraction (quiescent core). -/
 theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
-    (hnr : Inert σ)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = 0#1)
     (hmapz : ∀ (c : DomainId) (r : RegionId),
       (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
         .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
@@ -805,7 +807,7 @@ theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
       ⟨false, true, false⟩) (by simp)
     rw [eqE_eval] at h1
     have hc : finOfBv (by decide) (ow.eval σ) = c := (bv2_lit_iff _ c).mp h1
-    rw [rgnVPostE_quiescent σ hnr hmapz hunmapz] at h2
+    rw [rgnVPostE_quiescent σ hkills hmapz hunmapz] at h2
     rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hmapz] at hcv
     refine ⟨r, Hw.decRegion (σ.regs (Hw.drgn c r) 42), ?_, hcv⟩
     rw [hc, abs_regions, if_pos h2]
@@ -825,7 +827,7 @@ theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
       rcases he with rfl | rfl | rfl
       · rw [eqE_eval]
         exact (bv2_lit_iff _ c).mpr rfl
-      · rw [rgnVPostE_quiescent σ hnr hmapz hunmapz]
+      · rw [rgnVPostE_quiescent σ hkills hmapz hunmapz]
         exact hval
       · rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hmapz]
         exact hcov
@@ -1380,7 +1382,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
     (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a :=
   moverAct_mem_core σ acc τ hnr hcaps hgen hjob
     (fun ow sa => by
-      rw [sAuth_quiescent_eval σ hnr hmapz hunmapz ow sa]
+      rw [sAuth_quiescent_eval σ hnr.killed hmapz hunmapz ow sa]
       rw [MachineState.domCovers, MachineState.domCovers]
       simp only [hrgn])
     (fun b => (hmem b.toNat).trans (hτm b).symm)
