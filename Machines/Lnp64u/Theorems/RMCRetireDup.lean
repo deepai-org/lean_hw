@@ -603,6 +603,93 @@ theorem finOfBv_ofNat4 {k : Nat} (h : (2:Nat) ^ 4 = k) (t : Fin k) :
   rw [BitVec.toNat_ofNat]
   exact Nat.mod_eq_of_lt (by have := t.isLt; omega)
 
+
+/-! ## `dupFull` register walks -/
+
+/-- Peel the trailing `writeReg`/`pcAdvA` and the leading `if_v` clear
+around `installA`, for any non-`dreg`/`dpc`/`if_v` register. -/
+private theorem dupFull_run_inst (m : Manifest) (σ : Loom.Hw.St)
+    (e : DomainId) (rn : String) (w : Nat)
+    (hwr : (rn, w) ∉ (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites)
+    (hpc : ¬(rn = Hw.dpc e))
+    (hifv : ¬(rn = "if_v")) :
+    ((dupFull e).run σ ((Hw.refillAct m).run σ σ)).regs rn w
+      = (((Hw.seqAll ((List.finRange numLineage).map fun l' => Act.ite (.and (.lit 1) (.eq (Hw.freeCellIdx e) (Hw.lLit l'))) (.seq (.write 1 (Hw.dcellV e l') (.lit 1)) (.write 14 (Hw.dcellPar e l') (Hw.encRefE (Hw.dLit e) (Hw.dupSel e).slot (Hw.dupSel e).gen))) .skip))).run σ (((Hw.seqAll ((List.finRange numSlots).map fun s' => Act.ite (.eq (Hw.freeSlotIdx e) (Hw.sLit s')) (Hw.seqAll [.write 1 (Hw.dcapV e s') (.lit 1), .write 32 (Hw.dcapKind e s') (Expr.mux (Hw.kIsMem (Hw.dupSel e).kindW) (Hw.narrowKindE (Hw.dupSel e).kindW (Hw.readReg e Hw.rs2E)) (Hw.dupSel e).kindW), .write 1 (Hw.dcapLinV e s') (.lit 1), .write 4 (Hw.dcapLin e s') (Hw.freeCellIdx e)]) .skip))).run σ
+          ((Act.write 1 "if_v" (.lit 0)).run σ
+            ((Hw.refillAct m).run σ σ)))).regs rn w := by
+  show ((Hw.pcAdvA e).run σ
+    ((Hw.writeReg e Hw.rdE (Hw.handleE (Hw.freeSlotIdx e) (Hw.genOfE e (Hw.freeSlotIdx e)) (Hw.field (Hw.dupSel e).kindW 0 1))).run σ
+      (((Hw.seqAll ((List.finRange numLineage).map fun l' => Act.ite (.and (.lit 1) (.eq (Hw.freeCellIdx e) (Hw.lLit l'))) (.seq (.write 1 (Hw.dcellV e l') (.lit 1)) (.write 14 (Hw.dcellPar e l') (Hw.encRefE (Hw.dLit e) (Hw.dupSel e).slot (Hw.dupSel e).gen))) .skip))).run σ (((Hw.seqAll ((List.finRange numSlots).map fun s' => Act.ite (.eq (Hw.freeSlotIdx e) (Hw.sLit s')) (Hw.seqAll [.write 1 (Hw.dcapV e s') (.lit 1), .write 32 (Hw.dcapKind e s') (Expr.mux (Hw.kIsMem (Hw.dupSel e).kindW) (Hw.narrowKindE (Hw.dupSel e).kindW (Hw.readReg e Hw.rs2E)) (Hw.dupSel e).kindW), .write 1 (Hw.dcapLinV e s') (.lit 1), .write 4 (Hw.dcapLin e s') (Hw.freeCellIdx e)]) .skip))).run σ
+        ((Act.write 1 "if_v" (.lit 0)).run σ
+          ((Hw.refillAct m).run σ σ)))))).regs rn w = _
+  rw [frame (fun hm => hpc (congrArg Prod.fst (List.mem_singleton.mp hm)))
+    σ _]
+  rw [frame (show (rn, w)
+      ∉ (Hw.writeReg e Hw.rdE (Hw.handleE (Hw.freeSlotIdx e) (Hw.genOfE e (Hw.freeSlotIdx e)) (Hw.field (Hw.dupSel e).kindW 0 1))).regWrites from hwr) σ _]
+
+/-- The capability-table registers through a fired `dupFull`. -/
+private theorem dupFull_capV (m : Manifest) (σ : Loom.Hw.St)
+    (e : DomainId) (NS2 : Slot)
+    (hidx : (Hw.freeSlotIdx e).eval σ = BitVec.ofNat 4 NS2.val)
+    (s : Slot) :
+    (((Hw.seqAll ((List.finRange numSlots).map fun s' => Act.ite (.eq (Hw.freeSlotIdx e) (Hw.sLit s')) (Hw.seqAll [.write 1 (Hw.dcapV e s') (.lit 1), .write 32 (Hw.dcapKind e s') (Expr.mux (Hw.kIsMem (Hw.dupSel e).kindW) (Hw.narrowKindE (Hw.dupSel e).kindW (Hw.readReg e Hw.rs2E)) (Hw.dupSel e).kindW), .write 1 (Hw.dcapLinV e s') (.lit 1), .write 4 (Hw.dcapLin e s') (Hw.freeCellIdx e)]) .skip))).run σ
+        ((Act.write 1 "if_v" (.lit 0)).run σ
+          ((Hw.refillAct m).run σ σ))).regs (Hw.dcapV e s) 1
+      = if s = NS2 then 1#1 else σ.regs (Hw.dcapV e s) 1 := by
+  rw [seqAll_ite_run_unique σ _
+    (fun s' : Slot => Expr.eq (Hw.freeSlotIdx e) (Hw.sLit s'))
+    (fun s' : Slot => Hw.seqAll [.write 1 (Hw.dcapV e s') (.lit 1),
+      .write 32 (Hw.dcapKind e s') (Expr.mux (Hw.kIsMem (Hw.dupSel e).kindW) (Hw.narrowKindE (Hw.dupSel e).kindW (Hw.readReg e Hw.rs2E)) (Hw.dupSel e).kindW),
+      .write 1 (Hw.dcapLinV e s') (.lit 1),
+      .write 4 (Hw.dcapLin e s') (Hw.freeCellIdx e)]) NS2
+    (by
+        show (Expr.eq (Hw.freeSlotIdx e) (Hw.sLit NS2)).eval σ = 1#1
+        rw [eqE_eval, hidx]
+        rfl)
+      (fun j hj => by
+        intro hc0
+        have hc : (Expr.eq (Hw.freeSlotIdx e) (Hw.sLit j)).eval σ = 1#1 := hc0
+        rw [eqE_eval, hidx] at hc
+        apply hj
+        apply Fin.ext
+        have : (BitVec.ofNat 4 NS2.val).toNat
+            = (BitVec.ofNat 4 j.val).toNat := by rw [hc]; rfl
+        rw [BitVec.toNat_ofNat, BitVec.toNat_ofNat,
+          Nat.mod_eq_of_lt (show j.val < 2 ^ 4 from by
+            have := j.isLt; omega),
+          Nat.mod_eq_of_lt (show NS2.val < 2 ^ 4 from by
+            have := NS2.isLt; omega)] at this
+        omega)
+    _ (List.mem_finRange NS2) (List.nodup_finRange _)]
+  show (RegEnv.set (RegEnv.set (RegEnv.set (RegEnv.set _
+      (Hw.dcapV e NS2) ((Expr.lit 1).eval σ))
+      (Hw.dcapKind e NS2) ((Expr.mux (Hw.kIsMem (Hw.dupSel e).kindW) (Hw.narrowKindE (Hw.dupSel e).kindW (Hw.readReg e Hw.rs2E)) (Hw.dupSel e).kindW).eval σ))
+      (Hw.dcapLinV e NS2) ((Expr.lit 1).eval σ))
+      (Hw.dcapLin e NS2) ((Hw.freeCellIdx e).eval σ))
+    (Hw.dcapV e s) 1 = _
+  simp only [RegEnv.set]
+  rw [if_neg ((by decide +kernel : ∀ (e : DomainId) (s1 s2 : Slot),
+    ¬(Hw.dcapV e s1 = Hw.dcapLin e s2)) e s NS2)]
+  rw [if_neg ((by decide +kernel : ∀ (e : DomainId) (s1 s2 : Slot),
+    ¬(Hw.dcapV e s1 = Hw.dcapLinV e s2)) e s NS2)]
+  rw [if_neg ((by decide +kernel : ∀ (e : DomainId) (s1 s2 : Slot),
+    ¬(Hw.dcapV e s1 = Hw.dcapKind e s2)) e s NS2)]
+  by_cases hs : s = NS2
+  · rw [if_pos (by rw [hs]), if_pos hs]
+    rfl
+  · rw [if_neg (fun hc => hs ((by decide +kernel :
+      ∀ (e : DomainId) (s1 s2 : Slot),
+        Hw.dcapV e s1 = Hw.dcapV e s2 → s1 = s2) e s NS2 hc)), if_neg hs]
+    rw [frame (fun hm => absurd
+      (congrArg Prod.fst (List.mem_singleton.mp hm))
+      ((by decide +kernel : ∀ (e : DomainId) (s' : Slot),
+        ¬(Hw.dcapV e s' = "if_v")) e s)) σ _]
+    exact refill_pres m σ ((by decide +kernel : ∀ (e : DomainId) (s' : Slot),
+      ((Hw.dcapV e s' : String), (1 : Nat)) ∉
+      ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) e s)
+
 /-! ## The `cap_dup` arm: head + spec do-term -/
 
 set_option maxHeartbeats 51200000 in
