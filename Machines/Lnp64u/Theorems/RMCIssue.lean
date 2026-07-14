@@ -1519,7 +1519,7 @@ theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         show ((σ1.regs.set (Hw.dbudget p)
           ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ))
           (Hw.dbudget p) 32).toNat = _
-        simp only [RegEnv.set, if_pos rfl, dite_true]
+        simp only [RegEnv.set, dite_true]
         show (((Hw.effBudgetE m p).eval σ - (cost32E e).eval σ)).toNat = _
         have hEb : ((Hw.effBudgetE m p).eval σ).toNat
             = (τ1.doms p).budget := effBudget_eval m hwf hfit σ hsync p
@@ -2100,33 +2100,120 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     by_cases hhg : h = g
     · -- the served gate: donation drawn down
       rw [if_pos hhg, ← hhg]
-      have hg1 : Hw.absGate σ1 h = τ1.gates h := hgates1 h
-      -- decode the activation on the σ1 side
       have hact1 : σ1.regs (Hw.gactV h) 1 = 1#1 := by
         by_contra hc
-        have : (τ1.gates h).act = none := by
-          rw [← hg1]
+        have hnone : (τ1.gates h).act = none := by
+          rw [← hgates1 h]
           show (if σ1.regs (Hw.gactV h) 1 = 1#1 then _ else none) = none
           rw [if_neg hc]
-        rw [hhg] at this
-        rw [this] at ha
+        rw [hhg] at hnone
+        rw [hnone] at ha
         exact absurd ha (by simp)
+      -- identify `a` with the decoded activation
+      have hah : (τ1.gates h).act = some a := by rw [hhg]; exact ha
+      have hasome : some a =
+          some { caller := finOfBv (by decide) (σ1.regs (Hw.gcaller h) 2)
+                 callerRd := finOfBv (by decide) (σ1.regs (Hw.gcallerRd h) 3)
+                 savedRegs := fun r => σ1.regs (Hw.gsreg h r) 32
+                 savedPc := σ1.regs (Hw.gspc h) 12
+                 savedServing :=
+                   if σ1.regs (Hw.gssrvV h) 1 = 1#1 then
+                     some (finOfBv (by decide) (σ1.regs (Hw.gssrv h) 2))
+                   else none
+                 depth := (σ1.regs (Hw.gdepth h) 3).toNat
+                 donated := (σ1.regs (Hw.gdon h) 32).toNat } := by
+        rw [← hah, ← hgates1 h]
+        show (Hw.absGate σ1 h).act = _
+        show (if σ1.regs (Hw.gactV h) 1 = 1#1 then _ else none) = _
+        rw [if_pos hact1]
+        rfl
+      have haact := Option.some.inj hasome
+      -- the run-side reads of the gate block
+      have hgread : ∀ (rn : String) (w' : Nat), rn ≠ Hw.gdon h →
+          (rn, w') ∈ gateReadNames h →
+          ((Hw.core m).cycle σ).regs rn w' = σ1.regs rn w' := by
+        intro rn w' hnd hmem
+        rw [hp' rn w'
+          ((show ∀ q ∈ gateReadNames h, q.1.startsWith "mov_" = false from by
+            fin_cases h <;> decide +kernel) (rn, w') hmem)
+          (fun hc => ((show ∀ q ∈ gateReadNames h, ¬(q.1 = "cycle" ∧
+              q.2 = 32) from by
+            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem) hc)]
+        apply hread
+        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.dbudget p from by
+            fin_cases h <;> fin_cases p <;>
+              exact of_decide_eq_true rfl) (rn, w') hmem
+        · rw [hhg] at hnd
+          exact hnd
+        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_v" from by
+            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
+        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_dom" from by
+            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
+        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_word" from by
+            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
+        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_cl" from by
+            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
+      have hgdonr : ((Hw.core m).cycle σ).regs (Hw.gdon h) 32
+          = (donE e).eval σ - (cost32E e).eval σ := by
+        rw [hp' (Hw.gdon h) 32 (by fin_cases h <;> decide +kernel)
+          (by fin_cases h <;> decide +kernel), hchain, hhg]
+        show ((((((σ1.regs.set (Hw.dbudget p)
+          ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set
+          (Hw.gdon g) ((Expr.sub (donE e) (cost32E e)).eval σ)).set
+          "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom"
+          ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word"
+          ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ) :
+          _root_.Loom.Hw.RegEnv) (Hw.gdon g) 32 = _
+        simp only [RegEnv.set]
+        rw [if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
+            Hw.gdon g ≠ "if_cl"),
+          if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
+            Hw.gdon g ≠ "if_word"),
+          if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
+            Hw.gdon g ≠ "if_dom"),
+          if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
+            Hw.gdon g ≠ "if_v")]
+        simp [Expr.eval]
       unfold Hw.absGate
-      have hgactV : ((Hw.core m).cycle σ).regs (Hw.gactV h) 1
-          = σ1.regs (Hw.gactV h) 1 := by
-        rw [hp' _ _ (by fin_cases h <;> decide +kernel)
-          (by fin_cases h <;> decide +kernel),
-          hread _ _ (by fin_cases h <;> fin_cases p <;>
-            exact of_decide_eq_true rfl)
-            (by rw [← hhg]; fin_cases h <;> fin_cases g <;>
-              first
-                | exact of_decide_eq_true rfl
-                | (exact fun hc => absurd rfl (hhg ▸ (by exact fun _ => hc rfl))))
-            (by fin_cases h <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> exact of_decide_eq_true rfl)]
-      sorry
+      rw [hgread (Hw.gcallee h) 2
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gentry h) 12
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gactV h) 1
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gcaller h) 2
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gcallerRd h) 3
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gspc h) 12
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gssrvV h) 1
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gssrv h) 2
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgread (Hw.gdepth h) 3
+          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+        hgdonr]
+      have hsreg : ∀ r : RegId, ((Hw.core m).cycle σ).regs (Hw.gsreg h r) 32
+          = σ1.regs (Hw.gsreg h r) 32 := fun r =>
+        hgread (Hw.gsreg h r) 32
+          (by fin_cases h <;> fin_cases r <;> exact of_decide_eq_true rfl)
+          (by simp [gateReadNames])
+      simp only [hsreg]
+      -- assemble: config from the decode, activation record fieldwise
+      rw [if_pos (show σ1.regs (Hw.gactV h) 1 = 1 from hact1)]
+      have hcfg : (τ1.gates h).config = GateConfig.mk
+          (finOfBv (by decide) (σ1.regs (Hw.gcallee h) 2))
+          (σ1.regs (Hw.gentry h) 12) := by
+        rw [← hgates1 h]
+        rfl
+      congr 1
+      · rw [hcfg]
+      · rw [haact] at hdon hdble ⊢
+        congr 1
+        rw [toNat_sub_of_le32 _ _ (by rw [hdon, hC32]; exact hdble),
+          hdon, hC32]
+        rfl
     · rw [if_neg hhg, ← hgates1 h]
       apply absGate_congr
       intro q hq
