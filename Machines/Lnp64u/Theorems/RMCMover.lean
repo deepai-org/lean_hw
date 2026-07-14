@@ -38,25 +38,55 @@ private theorem bv1_zero_and (x : BitVec 1) : 0#1 &&& x = 0#1 := by
 private theorem bv1_and_zero (x : BitVec 1) : x &&& 0#1 = 0#1 := by
   revert x; decide
 
-/-- `killedByCoreE` is off on a non-retiring cycle. -/
+/-- An `andAll` chain is off when any link is. -/
+theorem andAll_zero_of_mem (σ : Loom.Hw.St) {L : List (Expr 1)} {e : Expr 1}
+    (he : e ∈ L) (h0 : e.eval σ ≠ 1#1) : (Hw.andAll L).eval σ = 0#1 :=
+  bv1_ne_one.mp fun h => h0 ((andAll_eval σ L).mp h e he)
+
+/-- An `orAll` tree is off when every leaf is. -/
+theorem orAll_zero (σ : Loom.Hw.St) {L : List (Expr 1)}
+    (h : ∀ e ∈ L, e.eval σ ≠ 1#1) : (Hw.orAll L).eval σ = 0#1 :=
+  bv1_ne_one.mp fun hc =>
+    let ⟨e, hm, he⟩ := (orAll_eval σ L).mp hc
+    h e hm he
+
+/-- **Core inertness for the Mover rule.** The four gate families through
+which a retiring instruction can reach the Mover's re-derivation trees are
+all off. Holds on non-retiring cycles (countdown/idle/issue arms) and on
+cycles retiring an op that neither kills references, installs a job,
+edits regions, nor stores (the benign retirement arms). -/
+structure Inert (σ : Loom.Hw.St) : Prop where
+  killed : ∀ (dm : Expr 2) (sl : Expr 4),
+    (Hw.killedByCoreE dm sl).eval σ = 0#1
+  newJob : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1
+  mapSet : ∀ (c : DomainId) (r : RegionId),
+    (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+      .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1
+  unmapSet : ∀ (c : DomainId) (r : RegionId),
+    (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+      .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1
+  swHit : ∀ (d : DomainId) (srcCur : Expr 12),
+    (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+      Hw.domCoversE d (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+        ⟨false, true, false⟩,
+      .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+        srcCur]).eval σ = 0#1
+
+/-- `killedByCoreE` is off on an inert cycle. -/
 theorem killedByCoreE_quiescent (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) (dm : Expr 2) (sl : Expr 4) :
-    (Hw.killedByCoreE dm sl).eval σ = 0#1 := by
-  show Hw.retiringE.eval σ &&& _ = 0#1
-  rw [hnr]
-  exact bv1_zero_and _
+    (hnr : Inert σ) (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval σ = 0#1 :=
+  hnr.killed dm sl
 
-/-- `newJobSet` is off on a non-retiring cycle. -/
+/-- `newJobSet` is off on an inert cycle. -/
 theorem newJobSet_quiescent (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) (d : DomainId) :
-    (Hw.newJobSet d).eval σ = 0#1 := by
-  show Hw.retiringE.eval σ &&& _ = 0#1
-  rw [hnr]
-  exact bv1_zero_and _
+    (hnr : Inert σ) (d : DomainId) :
+    (Hw.newJobSet d).eval σ = 0#1 :=
+  hnr.newJob d
 
-/-- `postJ` falls back to the current register on a non-retiring cycle. -/
+/-- `postJ` falls back to the current register on an inert cycle. -/
 theorem postJ_quiescent {w : Nat} (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) (f : DomainId → Expr w)
+    (hnr : Inert σ) (f : DomainId → Expr w)
     (cur : Expr w) :
     (Hw.postJ f cur).eval σ = cur.eval σ := by
   show ((List.finRange numDomains).foldr
@@ -88,15 +118,107 @@ private theorem andAll_retiring_quiescent (σ : Loom.Hw.St)
       rw [hnr]
       exact bv1_zero_and _
 
+/-- Every gate family is off on a non-retiring cycle. -/
+theorem Inert.of_nonretiring (σ : Loom.Hw.St)
+    (hnr : Hw.retiringE.eval σ = 0#1) : Inert σ where
+  killed dm sl := by
+    show Hw.retiringE.eval σ &&& _ = 0#1
+    rw [hnr]
+    exact bv1_zero_and _
+  newJob d := andAll_retiring_quiescent σ hnr _
+  mapSet c r := andAll_retiring_quiescent σ hnr _
+  unmapSet c r := andAll_retiring_quiescent σ hnr _
+  swHit d srcCur := andAll_retiring_quiescent σ hnr _
+
+/-- Every gate family is off when the latched mnemonic is none of the
+Mover-relevant ops (kill ops, `move`, `map`/`unmap`, `sw`) — the benign
+retirement arms. -/
+theorem Inert.of_benign (σ : Loom.Hw.St)
+    (hben : ∀ mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return",
+      "move", "map", "unmap", "sw"], (Hw.isMn mn).eval σ ≠ 1#1) :
+    Inert σ where
+  killed dm sl := by
+    have hz : ∀ (mn : String) (Y : Expr 1),
+        mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return", "move",
+          "map", "unmap", "sw"] →
+        ¬(Expr.and (Hw.isMn mn) Y).eval σ = 1#1 := by
+      intro mn Y hmn hc
+      have hc' : (Hw.isMn mn).eval σ &&& Y.eval σ = 1#1 := hc
+      rw [bv1_ne_one.mp (hben mn hmn), bv1_zero_and] at hc'
+      exact absurd hc' (by decide)
+    show Hw.retiringE.eval σ &&&
+      (Hw.orAll ((List.finRange numDomains).map fun d =>
+        Expr.and (Hw.ifDomIs d) (Hw.orAll
+          [ .and (Hw.isMn "cap_drop")
+              (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
+            .and (Hw.isMn "cap_revoke")
+              (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
+            .and (Hw.isMn "gate_call")
+              (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
+            .and (Hw.isMn "gate_return")
+              (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]))).eval σ = 0#1
+    rw [orAll_zero σ (by
+      intro e he
+      obtain ⟨d, -, rfl⟩ := List.mem_map.mp he
+      intro hc
+      have hc' : (Hw.ifDomIs d).eval σ &&&
+          (Hw.orAll
+            [ .and (Hw.isMn "cap_drop")
+                (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
+              .and (Hw.isMn "cap_revoke")
+                (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
+              .and (Hw.isMn "gate_call")
+                (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
+              .and (Hw.isMn "gate_return")
+                (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]).eval σ = 1#1 :=
+        hc
+      rw [orAll_zero σ (by
+        intro e' he'
+        rcases he' with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, h⟩⟩⟩⟩
+        · exact hz "cap_drop" _ (List.mem_cons_self ..)
+        · exact hz "cap_revoke" _
+            (List.mem_cons_of_mem _ (List.mem_cons_self ..))
+        · exact hz "gate_call" _
+            (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+        · exact hz "gate_return" _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_self ..))))
+        · exact absurd h (List.not_mem_nil)), bv1_and_zero] at hc'
+      exact absurd hc' (by decide))]
+    exact bv1_and_zero _
+  newJob d := andAll_zero_of_mem σ
+    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+    (hben "move" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..))))))
+  mapSet c r := andAll_zero_of_mem σ
+    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+    (hben "map" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))
+  unmapSet c r := andAll_zero_of_mem σ
+    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+    (hben "unmap" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_self ..))))))))
+  swHit d srcCur := andAll_zero_of_mem σ
+    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+    (hben "sw" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))))
+
 /-- `rgnVPostE` falls back to the validity register. -/
 theorem rgnVPostE_quiescent (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) (c : DomainId) (r : RegionId) :
+    (hnr : Inert σ) (c : DomainId) (r : RegionId) :
     (Hw.rgnVPostE c r).eval σ = σ.regs (Hw.drgnV c r) 1 := by
   show (if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
     else if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
     else (Expr.and (.reg 1 (Hw.drgnV c r))
       (.not (Hw.killedByCoreE _ _))).eval σ) = _
-  rw [andAll_retiring_quiescent σ hnr, andAll_retiring_quiescent σ hnr]
+  rw [hnr.mapSet c r, hnr.unmapSet c r]
   show (if (0#1 : BitVec 1) = 1#1 then _
     else if (0#1 : BitVec 1) = 1#1 then _ else _) = _
   rw [if_neg (by decide), if_neg (by decide)]
@@ -105,18 +227,18 @@ theorem rgnVPostE_quiescent (σ : Loom.Hw.St)
 
 /-- `rgnValPostE` falls back to the region register. -/
 theorem rgnValPostE_quiescent (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) (c : DomainId) (r : RegionId) :
+    (hnr : Inert σ) (c : DomainId) (r : RegionId) :
     (Hw.rgnValPostE c r).eval σ = σ.regs (Hw.drgn c r) 42 := by
   show (if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
     else (Expr.reg 42 (Hw.drgn c r)).eval σ) = _
-  rw [andAll_retiring_quiescent σ hnr]
+  rw [hnr.mapSet c r]
   rw [if_neg (by decide)]
   rfl
 
 
 /-- The forwarding mux falls back to the memory read. -/
 theorem srcWord_quiescent (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) (srcCur : Expr 12) :
+    (hnr : Inert σ) (srcCur : Expr 12) :
     (((List.finRange numDomains).foldr
       (fun d acc =>
         let eaddr : Expr 12 := Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12
@@ -130,7 +252,7 @@ theorem srcWord_quiescent (σ : Loom.Hw.St)
   | nil => rfl
   | cons d t ih =>
       show (if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _ else _) = _
-      rw [andAll_retiring_quiescent σ hnr, if_neg (by decide)]
+      rw [hnr.swHit d srcCur, if_neg (by decide)]
       exact ih
 
 /-- `rgnCoversVal` decodes to `Region.covers` of the decoded value. -/
@@ -289,7 +411,7 @@ theorem moverCheck_abs (σ : Loom.Hw.St) (τ : MachineState)
 
 /-- No retiring `move` can program a new job on a non-retiring cycle. -/
 theorem newAny_quiescent (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) :
+    (hnr : Inert σ) :
     (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval σ = 0#1 := by
   apply bv1_ne_one.mp
   intro h
@@ -300,7 +422,7 @@ theorem newAny_quiescent (σ : Loom.Hw.St)
 
 /-- `jobV` collapses to the job-valid register on a non-retiring cycle. -/
 theorem jobV_quiescent (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) :
+    (hnr : Inert σ) :
     ((Expr.or (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet))
       (.and (.reg 1 "mov_v")
         (.not (.and (.reg 1 "mov_v")
@@ -340,7 +462,7 @@ theorem absMover_none (σ : Loom.Hw.St) (hv : ¬ σ.regs "mov_v" 1 = 1#1) :
 
 /-- **The quiescent Mover bridge, mover-field face.** -/
 theorem absMover_moverAct_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
-    (hnr : Hw.retiringE.eval σ = 0#1)
+    (hnr : Inert σ)
     (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
     (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
     (hjob : τ.mover = Hw.absMover σ) :
@@ -603,7 +725,7 @@ theorem bv2_lit_iff (b : BitVec 2) (c : DomainId) :
 /-- The status-write authority OR-tree decodes to `domCovers` of the
 owner on the abstraction (quiescent core). -/
 theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
-    (hnr : Hw.retiringE.eval σ = 0#1) (ow : Expr 2) (sa : Expr 12) :
+    (hnr : Inert σ) (ow : Expr 2) (sa : Expr 12) :
     ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
         (List.finRange numRegions).map fun r =>
           Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
@@ -662,7 +784,7 @@ theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
 
 /-- **The quiescent Mover bridge, memory face.** -/
 theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
-    (hnr : Hw.retiringE.eval σ = 0#1)
+    (hnr : Inert σ)
     (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
     (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
     (hrgn : ∀ d, (τ.doms d).regions = ((Hw.abs σ).doms d).regions)
