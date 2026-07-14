@@ -744,6 +744,128 @@ theorem square_retire_unmap (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rfl
   · rfl
 
+/-! ## Capability-selector bridges (shared by the system-op arms) -/
+
+/-- The selector's slot/gen expressions read the handle word's fields. -/
+theorem capSel_live_eval (σ : Loom.Hw.St) (E : DomainId) (hwE : Expr 32)
+    (S : Slot) (hS : S.val = ((hwE.eval σ).extractLsb' 0 4).toNat) :
+    ((Hw.capSel E hwE).live.eval σ = 1#1) ↔
+      (σ.regs (Hw.dcapV E S) 1 = 1#1
+        ∧ σ.regs (Hw.dgen E S) 8 = (hwE.eval σ).extractLsb' 4 8
+        ∧ (hwE.eval σ).extractLsb' 4 8 ≠ 0) := by
+  have hfin : finOfBv (by decide : 2 ^ 4 = numSlots)
+      ((Hw.field hwE 0 4).eval σ) = S :=
+    Fin.ext (by rw [hS]; rfl)
+  rw [show (Hw.capSel E hwE).live = Hw.andAll
+    [Hw.muxFin (fun s => .reg 1 (Hw.dcapV E s)) (Hw.field hwE 0 4),
+     .eq (Hw.muxFin (fun s => .reg 8 (Hw.dgen E s)) (Hw.field hwE 0 4))
+       (Hw.field hwE 4 8),
+     Hw.neqE (Hw.field hwE 4 8) (.lit 0)] from rfl]
+  constructor
+  · intro h
+    have h3 := (andAll_eval σ _).mp h
+    have h1 := h3 _ (List.mem_cons_self ..)
+    have h2 := h3 _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))
+    have h4 := h3 _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_self ..)))
+    rw [muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin] at h1
+    rw [eqE_eval, muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin] at h2
+    rw [neqE_eval] at h4
+    exact ⟨h1, h2, h4⟩
+  · rintro ⟨h1, h2, h3⟩
+    rw [andAll_eval]
+    intro e he
+    rcases he with _ | ⟨_, _ | ⟨_, _ | ⟨_, h⟩⟩⟩
+    · rw [muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin]
+      exact h1
+    · rw [eqE_eval, muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin]
+      exact h2
+    · rw [neqE_eval]
+      exact h3
+    · exact absurd h (List.not_mem_nil)
+
+/-- The selector's kind word reads the slot's kind register. -/
+theorem capSel_kindW_eval (σ : Loom.Hw.St) (E : DomainId) (hwE : Expr 32)
+    (S : Slot) (hS : S.val = ((hwE.eval σ).extractLsb' 0 4).toNat) :
+    (Hw.capSel E hwE).kindW.eval σ = σ.regs (Hw.dcapKind E S) 32 := by
+  have hfin : finOfBv (by decide : 2 ^ 4 = numSlots)
+      ((Hw.field hwE 0 4).eval σ) = S :=
+    Fin.ext (by rw [hS]; rfl)
+  show (Hw.muxFin (fun s => Expr.reg 32 (Hw.dcapKind E s))
+    (Hw.field hwE 0 4)).eval σ = _
+  rw [muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin]
+  rfl
+
+/-- `liveCap` of the advanced spec state against the selector's test. -/
+theorem specLiveCap_bridge (m : Manifest) (σ : Loom.Hw.St) (E : DomainId)
+    (S : Slot) (g : Gen) :
+    ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+      (fun ds => { ds with pc := ds.pc + 1 })).doms E)).liveCap S g)
+      = (((Hw.abs σ).doms E).liveCap S g) := by
+  have hcp : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+      (fun ds => { ds with pc := ds.pc + 1 })).doms E).caps
+      = ((Hw.abs σ).doms E).caps := by
+    show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) E).caps = _
+    rw [Loom.Fun.update_same]
+    show ((refillPhase m (Hw.abs σ)).doms E).caps = _
+    rw [refillPhase_caps]
+  have hgn : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+      (fun ds => { ds with pc := ds.pc + 1 })).doms E).slotGen
+      = ((Hw.abs σ).doms E).slotGen := by
+    show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) E).slotGen = _
+    rw [Loom.Fun.update_same]
+    show ((refillPhase m (Hw.abs σ)).doms E).slotGen = _
+    rw [refillPhase_slotGen]
+  show DomainState.liveCap _ S g = DomainState.liveCap _ S g
+  unfold DomainState.liveCap
+  rw [hcp, hgn]
+
+/-! ## The `map` value bridge -/
+
+private theorem encKindMem_base (B : BitVec 12) (L : BitVec 13) (P : Perms) :
+    (Hw.encKind (.mem B L P)).extractLsb' 1 12 = B := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro i hi
+  simp only [Hw.encKind, BitVec.getLsbD_extractLsb', BitVec.getLsbD_or,
+    BitVec.getLsbD_shiftLeft, BitVec.getLsbD_setWidth]
+  interval_cases i <;> simp [Hw.encPerms]
+
+private theorem encKindMem_len (B : BitVec 12) (L : BitVec 13) (P : Perms) :
+    (Hw.encKind (.mem B L P)).extractLsb' 13 13 = L := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro i hi
+  simp only [Hw.encKind, BitVec.getLsbD_extractLsb', BitVec.getLsbD_or,
+    BitVec.getLsbD_shiftLeft, BitVec.getLsbD_setWidth]
+  interval_cases i <;> simp [Hw.encPerms]
+
+private theorem encKindMem_perms (B : BitVec 12) (L : BitVec 13) (P : Perms) :
+    (Hw.encKind (.mem B L P)).extractLsb' 26 3 = Hw.encPerms P := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro i hi
+  simp only [Hw.encKind, BitVec.getLsbD_extractLsb', BitVec.getLsbD_or,
+    BitVec.getLsbD_shiftLeft, BitVec.getLsbD_setWidth]
+  interval_cases i <;> simp [Hw.encPerms]
+
+/-- The packed region value the `map` circuit writes, for a canonical
+memory kind word: exactly `encRegion`. -/
+private theorem mapVal_pack (B : BitVec 12) (L : BitVec 13) (P : Perms)
+    (rf : BitVec 14) :
+    (((Hw.encKind (.mem B L P)).extractLsb' 26 3).setWidth 42
+      ||| ((((Hw.encKind (.mem B L P)).extractLsb' 13 13).setWidth 42 <<< 3)
+      ||| ((((Hw.encKind (.mem B L P)).extractLsb' 1 12).setWidth 42 <<< 16)
+      ||| (rf.setWidth 42 <<< 28))))
+    = Hw.encRegion { base := B, len := L, perms := P,
+                     backing := Hw.decRef rf } := by
+  rw [encKindMem_base, encKindMem_len, encKindMem_perms]
+  have hER : Hw.encRegion { base := B, len := L, perms := P, backing := Hw.decRef rf }
+      = ((Hw.encPerms P).setWidth 42 ||| (L.setWidth 42 <<< 3) |||
+        (B.setWidth 42 <<< 16) |||
+        ((Hw.encRef (Hw.decRef rf)).setWidth 42 <<< 28)) := rfl
+  rw [hER, encRef_decRef]
+  simp [BitVec.or_assoc]
+
 end Machines.Lnp64u.Theorems.RMC
+
+
 
 
