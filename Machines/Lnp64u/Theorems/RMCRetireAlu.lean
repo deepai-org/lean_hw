@@ -868,22 +868,22 @@ def domWrites (e : DomainId) : List (String × Nat) :=
    (Hw.dreg e 4, 32), (Hw.dreg e 5, 32), (Hw.dreg e 6, 32),
    (Hw.dreg e 7, 32), (Hw.dpc e, 12)]
 
-private theorem quiet_notin_dom (x e : DomainId) :
+theorem quiet_notin_dom (x e : DomainId) :
     ∀ q ∈ domQuietNames x, q ∉ ("if_v", 1) :: domWrites e := by
   fin_cases x <;> fin_cases e <;> decide +kernel
 
-private theorem read_notin_dom_ne (x e : DomainId) (hne : x ≠ e) :
+theorem read_notin_dom_ne (x e : DomainId) (hne : x ≠ e) :
     ∀ q ∈ domReadNames x, q ∉ ("if_v", 1) :: domWrites e := by
   fin_cases x <;> fin_cases e <;>
     first
       | exact absurd rfl hne
       | decide +kernel
 
-private theorem gate_notin_dom (g : GateId) (e : DomainId) :
+theorem gate_notin_dom (g : GateId) (e : DomainId) :
     ∀ q ∈ gateReadNames g, q ∉ ("if_v", 1) :: domWrites e := by
   fin_cases g <;> fin_cases e <;> decide +kernel
 
-private theorem ifv_notin_dom (e : DomainId) :
+theorem ifv_notin_dom (e : DomainId) :
     ("if_v", 1) ∉ domWrites e := by
   fin_cases e <;> decide +kernel
 

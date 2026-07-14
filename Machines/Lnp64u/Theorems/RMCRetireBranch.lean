@@ -461,4 +461,303 @@ theorem square_retire_jalr (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   · -- spec: fold the three setDoms and σ-quote the reads
     rw [hred, setDom_setDom, setDom_setDom, specReg_bridge, tau1_pc m σ E]
 
+/-! ## The `halt` arm
+
+Voluntary halt retires as `pc += 1; haltAct` against the spec's
+`haltDom` — the halt bridge (`abs_haltAct`) supplies the dom/gate faces
+on top of the pc-advance correspondence below. -/
+
+/-- `absDom` after latch-clear + pc-advance is the spec's advanced
+state. -/
+theorem absDom_pcadv (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (E : DomainId) : ∀ x,
+    Hw.absDom ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA E)).run σ
+        ((Hw.refillAct m).run σ σ)) x
+      = ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+          (fun ds => { ds with pc := ds.pc + 1 })).doms) x := by
+  intro x
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ) = refillPhase m (Hw.abs σ) :=
+    abs_refill m hwf hfit σ hsync
+  have hL1 : ∀ y, (refillPhase m (Hw.abs σ)).doms y
+      = Hw.absDom ((Hw.refillAct m).run σ σ) y := by
+    intro y
+    rw [← habs1]
+    rfl
+  have hfullsub : ∀ q ∈ (Act.seq (.write 1 "if_v" (.lit 0))
+      (Hw.pcAdvA E)).regWrites, q ∈ ("if_v", 1) :: domWrites E := by
+    intro q hq
+    rcases List.mem_cons.mp (show q ∈ ("if_v", (1 : Nat)) ::
+        [(Hw.dpc E, (12 : Nat))] from hq) with rfl | h
+    · exact List.mem_cons_self ..
+    · rcases List.mem_singleton.mp h with rfl
+      exact List.mem_cons_of_mem _ (pcadv_sub E _
+        (List.mem_singleton.mpr rfl))
+  by_cases hx : x = E
+  · subst hx
+    show _ = (Loom.Fun.update (refillPhase m (Hw.abs σ)).doms x
+      { (refillPhase m (Hw.abs σ)).doms x with
+        pc := ((refillPhase m (Hw.abs σ)).doms x).pc + 1 }) x
+    rw [Loom.Fun.update_same]
+    have hq : ∀ q ∈ domQuietNames x,
+        ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA x)).run σ
+          ((Hw.refillAct m).run σ σ)).regs q.1 q.2
+          = ((Hw.refillAct m).run σ σ).regs q.1 q.2 :=
+      fun q hq' => frame (fun hm =>
+        absurd (hfullsub q hm) (quiet_notin_dom x x q hq')) σ _
+    rw [absDom_regpc x hq]
+    rw [hL1 x]
+    apply domainState_ext'
+    · funext r
+      show ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA x)).run σ
+        ((Hw.refillAct m).run σ σ)).regs (Hw.dreg x r) 32 = _
+      rw [dreg_frame_pcadv]
+      rfl
+    · show ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA x)).run σ
+        ((Hw.refillAct m).run σ σ)).regs (Hw.dpc x) 12 = _
+      rw [dpc_pcadv_val]
+      show _ = (Hw.absDom ((Hw.refillAct m).run σ σ) x).pc + 1
+      rw [show (Hw.absDom ((Hw.refillAct m).run σ σ) x).pc
+          = σ.regs (Hw.dpc x) 12 from by
+        show ((Hw.refillAct m).run σ σ).regs (Hw.dpc x) 12 = _
+        exact refill_pres m σ (by
+          intro hm
+          fin_cases x <;> revert hm <;> decide +kernel)]
+    · rfl
+    · rfl
+    · rfl
+    · rfl
+    · rfl
+    · rfl
+    · rfl
+    · rfl
+    · rfl
+  · show _ = (Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) x
+    rw [Loom.Fun.update_ne _ _ _ _ hx, hL1 x]
+    exact absDom_congr x (fun p hp => frame (fun hm =>
+      absurd (hfullsub p hm) (read_notin_dom_ne x E hx p hp)) σ _)
+
+/-- `absGate` after latch-clear + pc-advance is unchanged. -/
+theorem absGate_pcadv (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (E : DomainId) : ∀ g,
+    Hw.absGate ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA E)).run σ
+        ((Hw.refillAct m).run σ σ)) g
+      = (refillPhase m (Hw.abs σ)).gates g := by
+  intro g
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ) = refillPhase m (Hw.abs σ) :=
+    abs_refill m hwf hfit σ hsync
+  have hfullsub : ∀ q ∈ (Act.seq (.write 1 "if_v" (.lit 0))
+      (Hw.pcAdvA E)).regWrites, q ∈ ("if_v", 1) :: domWrites E := by
+    intro q hq
+    rcases List.mem_cons.mp (show q ∈ ("if_v", (1 : Nat)) ::
+        [(Hw.dpc E, (12 : Nat))] from hq) with rfl | h
+    · exact List.mem_cons_self ..
+    · rcases List.mem_singleton.mp h with rfl
+      exact List.mem_cons_of_mem _ (pcadv_sub E _
+        (List.mem_singleton.mpr rfl))
+  rw [absGate_congr g (fun p hp => frame (fun hm =>
+    absurd (hfullsub p hm) (gate_notin_dom g E p hp)) σ _)]
+  rw [← habs1]
+  rfl
+
+/-- Reads the halt bridge takes from the pre-cycle state pass through the
+latch clear, the pc advance, and the refill. -/
+private theorem acc_read_pres (m : Manifest) (σ : Loom.Hw.St) (E : DomainId)
+    (rn : String) (w : Nat)
+    (h1 : ¬(rn, w) = (("if_v" : String), (1 : Nat)))
+    (h2 : ¬w = 12)
+    (h3 : (rn, w) ∉
+      ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) :
+    ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA E)).run σ
+      ((Hw.refillAct m).run σ σ)).regs rn w = σ.regs rn w := by
+  rw [frame (show (rn, w) ∉ (Act.seq (.write 1 "if_v" (.lit 0))
+      (Hw.pcAdvA E)).regWrites from by
+    intro hm
+    rcases List.mem_cons.mp (show (rn, w) ∈ ("if_v", (1 : Nat)) ::
+        [(Hw.dpc E, (12 : Nat))] from hm) with h | h
+    · exact h1 h
+    · exact h2 (congrArg Prod.snd (List.mem_singleton.mp h))) σ _]
+  exact refill_pres m σ h3
+
+/-- The `halt` arm: opcode 26 — voluntary terminal halt (T6 unwind if
+serving). -/
+theorem square_retire_halt (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 26#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (26#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (26#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  have hselC := retireFor_sel_of_opc σ E "halt" 26#6 hopc
+    (by decide +kernel) (by decide +kernel)
+    ⟨.seq (Hw.pcAdvA E) (Hw.haltAct E 0), .lit 0, .lit 0, .lit 0⟩
+    (List.mem_append_right _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..))))))))))))
+  have hben : ∀ mn' ∈ moverMns, (Hw.isMn mn').eval σ ≠ 1#1 :=
+    fun mn' hmn' => isMn_ne_of_opc σ mn' 26#6 hopc
+      ((by decide +kernel : ∀ mn' ∈ moverMns, (26#6 : BitVec 6)
+        ≠ Hw.opcodeOf mn') mn' hmn')
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := finOfBv (by decide) (σ.regs "if_dom" 2)
+        word := W
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    exact absInflight_some σ hifv
+  have hspec : corePhase m (refillPhase m (Hw.abs σ))
+      = (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+          (fun ds => { ds with pc := ds.pc + 1 })).haltDom E 0 := by
+    rw [corePhase_retire m _ _ hfl (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+    show retire { refillPhase m (Hw.abs σ) with inflight := none }
+      (finOfBv (by decide) (σ.regs "if_dom" 2)) W = _
+    rw [← hEdef]
+    rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    rfl
+  -- the halt bridge on top of the pc-advance correspondence
+  obtain ⟨hHD, hHG⟩ := abs_haltAct σ
+    ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA E)).run σ
+      ((Hw.refillAct m).run σ σ))
+    (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+      (fun ds => { ds with pc := ds.pc + 1 }))
+    E 0
+    (absDom_pcadv m hwf hfit σ hsync E)
+    (fun g => by
+      rw [absGate_pcadv m hwf hfit σ hsync E g]
+      rfl)
+    ((acc_read_pres m σ E (Hw.dsrvV E) 1
+      ((by decide +kernel : ∀ e : DomainId,
+        ¬((Hw.dsrvV e, (1 : Nat)) = (("if_v" : String), (1 : Nat)))) E)
+      (by decide)
+      ((by decide +kernel : ∀ e : DomainId, ((Hw.dsrvV e : String), (1 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) E)).symm)
+    ((acc_read_pres m σ E (Hw.dsrv E) 2
+      (fun hc => absurd (congrArg Prod.snd hc)
+        (show ¬((2 : Nat) = 1) by decide))
+      (by decide)
+      ((by decide +kernel : ∀ e : DomainId, ((Hw.dsrv e : String), (2 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) E)).symm)
+    (fun g => (acc_read_pres m σ E (Hw.gactV g) 1
+      ((by decide +kernel : ∀ g' : GateId,
+        ¬((Hw.gactV g', (1 : Nat)) = (("if_v" : String), (1 : Nat)))) g)
+      (by decide)
+      ((by decide +kernel : ∀ g' : GateId, ((Hw.gactV g' : String), (1 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
+    (fun g => (acc_read_pres m σ E (Hw.gcaller g) 2
+      (fun hc => absurd (congrArg Prod.snd hc)
+        (show ¬((2 : Nat) = 1) by decide))
+      (by decide)
+      ((by decide +kernel : ∀ g' : GateId, ((Hw.gcaller g' : String), (2 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
+    (fun g => (acc_read_pres m σ E (Hw.gcallerRd g) 3
+      (fun hc => absurd (congrArg Prod.snd hc)
+        (show ¬((3 : Nat) = 1) by decide))
+      (by decide)
+      ((by decide +kernel : ∀ g' : GateId,
+        ((Hw.gcallerRd g' : String), (3 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
+  refine square_retire_benign m hwf hfit σ hsync hifv hcl hben
+    (.seq (Hw.pcAdvA E) (Hw.haltAct E 0)) _
+    (fun rn w => by
+      rw [coreAct_run_retire_eq m σ _ hifv hcl,
+        retireAct_run_regs σ _ E rfl rn w, hselC]
+      rfl)
+    ((by decide +kernel : ∀ e : DomainId, (("if_v" : String), (1 : Nat))
+      ∉ (Act.seq (Hw.pcAdvA e) (Hw.haltAct e 0)).regWrites) E)
+    hspec
+    (fun x => by
+      rw [show ((Act.seq (.write 1 "if_v" (.lit 0))
+          (.seq (Hw.pcAdvA E) (Hw.haltAct E 0))).run σ
+            ((Hw.refillAct m).run σ σ))
+          = (Hw.haltAct E 0).run σ
+            ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA E)).run σ
+              ((Hw.refillAct m).run σ σ)) from rfl]
+      exact hHD x)
+    (fun g => by
+      rw [show ((Act.seq (.write 1 "if_v" (.lit 0))
+          (.seq (Hw.pcAdvA E) (Hw.haltAct E 0))).run σ
+            ((Hw.refillAct m).run σ σ))
+          = (Hw.haltAct E 0).run σ
+            ((Act.seq (.write 1 "if_v" (.lit 0)) (Hw.pcAdvA E)).run σ
+              ((Hw.refillAct m).run σ σ)) from rfl]
+      exact hHG g)
+    (fun x => by
+      rw [haltDom_caps']
+      by_cases hx : x = E
+      · subst hx
+        show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) E).caps
+          = _
+        rw [Loom.Fun.update_same]
+        show ((refillPhase m (Hw.abs σ)).doms E).caps = _
+        rw [refillPhase_caps]
+      · show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) x).caps
+          = _
+        rw [Loom.Fun.update_ne _ _ _ _ hx, refillPhase_caps])
+    (fun x => by
+      rw [haltDom_slotGen']
+      by_cases hx : x = E
+      · subst hx
+        show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) E).slotGen
+          = _
+        rw [Loom.Fun.update_same]
+        show ((refillPhase m (Hw.abs σ)).doms E).slotGen = _
+        rw [refillPhase_slotGen]
+      · show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) x).slotGen
+          = _
+        rw [Loom.Fun.update_ne _ _ _ _ hx, refillPhase_slotGen])
+    (fun x => by
+      rw [haltDom_regions']
+      by_cases hx : x = E
+      · subst hx
+        show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) E).regions
+          = _
+        rw [Loom.Fun.update_same]
+        show ((refillPhase m (Hw.abs σ)).doms E).regions = _
+        rw [refillPhase_regions]
+      · show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) x).regions
+          = _
+        rw [Loom.Fun.update_ne _ _ _ _ hx, refillPhase_regions])
+    (by
+      rw [haltDom_mover']
+      show (refillPhase m (Hw.abs σ)).mover = _
+      rw [refillPhase_mover]
+      rfl)
+    (fun b => by
+      have h := congrFun (haltDom_mem'
+        (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+          (fun ds => { ds with pc := ds.pc + 1 })) E 0) b
+      rw [h]
+      rfl)
+    (by
+      rw [haltDom_cycle]
+      rfl)
+    (by
+      rw [haltDom_inflight]
+      rfl)
+
 end Machines.Lnp64u.Theorems.RMC
