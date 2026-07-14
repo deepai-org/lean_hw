@@ -120,12 +120,12 @@ Mover-relevant ops (kill ops, `move`, `map`/`unmap`, `sw`) — the benign
 retirement arms. -/
 theorem Inert.of_benign7 (σ : Loom.Hw.St)
     (hben : ∀ mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return",
-      "move", "map", "unmap"], (Hw.isMn mn).eval σ ≠ 1#1) :
+      "move"], (Hw.isMn mn).eval σ ≠ 1#1) :
     Inert σ where
   killed dm sl := by
     have hz : ∀ (mn : String) (Y : Expr 1),
-        mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return", "move",
-          "map", "unmap"] →
+        mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return",
+          "move"] →
         ¬(Expr.and (Hw.isMn mn) Y).eval σ = 1#1 := by
       intro mn Y hmn hc
       have hc' : (Hw.isMn mn).eval σ &&& Y.eval σ = 1#1 := hc
@@ -184,7 +184,7 @@ theorem Inert.of_benign (σ : Loom.Hw.St)
       "move", "map", "unmap", "sw"], (Hw.isMn mn).eval σ ≠ 1#1) :
     Inert σ :=
   Inert.of_benign7 σ (fun mn hmn => hben mn (by
-    rcases hmn with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, h⟩⟩⟩⟩⟩⟩⟩
+    rcases hmn with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, h⟩⟩⟩⟩⟩
     · exact List.mem_cons_self ..
     · exact List.mem_cons_of_mem _ (List.mem_cons_self ..)
     · exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _
@@ -194,13 +194,6 @@ theorem Inert.of_benign (σ : Loom.Hw.St)
     · exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _
         (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
           (List.mem_cons_self ..))))
-    · exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-          (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))
-    · exact List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-            (List.mem_cons_self ..))))))
     · exact absurd h (List.not_mem_nil)))
 
 /-- `rgnVPostE` falls back to the validity register. -/

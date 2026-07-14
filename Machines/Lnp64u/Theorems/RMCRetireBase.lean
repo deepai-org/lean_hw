@@ -478,6 +478,157 @@ theorem square_retire_store (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       from by simp [Act.run, RegEnv.set, Expr.eval]]
     rw [if_neg (by decide)]
 
+
+theorem square_retire_rgnop (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hin : Inert σ)
+    (X : Act) (τ2 : MachineState)
+    (hcoreR : ∀ (rn : String) (w : Nat),
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).regs rn w
+        = ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+            ((Hw.refillAct m).run σ σ)).regs rn w)
+    (hXifv : ("if_v", 1) ∉ X.regWrites)
+    (hspec : corePhase m (refillPhase m (Hw.abs σ)) = τ2)
+    (habsD : ∀ x, Hw.absDom ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+      ((Hw.refillAct m).run σ σ)) x = τ2.doms x)
+    (habsG : ∀ g, Hw.absGate ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+      ((Hw.refillAct m).run σ σ)) g = τ2.gates g)
+    (hcaps : ∀ x, (τ2.doms x).caps = ((Hw.abs σ).doms x).caps)
+    (hgen : ∀ x, (τ2.doms x).slotGen = ((Hw.abs σ).doms x).slotGen)
+    (hjob : τ2.mover = Hw.absMover σ)
+    (hauthτ2 : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ2.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmemτ2 : ∀ b : Addr,
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+        b.toNat 32 = τ2.mem b)
+    (hswτ2 : ∀ sc : Expr 12, Expr.eval σ
+      (((List.finRange numDomains).foldr
+        (fun d acc' =>
+          Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+              Hw.domCoversE d
+                (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                ⟨false, true, false⟩,
+              .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
+            (Hw.readReg d Hw.rs2E) acc')
+        (.memRead 32 "mem" sc)))
+      = τ2.mem (sc.eval σ))
+    (hcyc : τ2.cycle = σ.regs "cycle" 32)
+    (hτ2if : τ2.inflight = none) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set σ1 := (Hw.refillAct m).run σ σ with hσ1
+  set τ1 := refillPhase m (Hw.abs σ) with hτ1
+  -- register frame down to the post-core accumulator
+  have hp : ∀ (rn : String) (w : Nat),
+      rn.startsWith "mov_" = false → ¬(rn = "cycle" ∧ w = 32) →
+      ((Hw.core m).cycle σ).regs rn w
+        = ((Hw.coreAct m).run σ σ1).regs rn w := by
+    intro rn w h2 h4
+    rw [core_cycle_unfold]
+    rw [frame (show (rn, w) ∉ Hw.tickAct.regWrites from by
+      intro hmem
+      simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+        Prod.mk.injEq] at hmem
+      exact h4 hmem)]
+    rw [run_WritesPrefixed h2 w _ mover_prefixed]
+  have hstep : step m (Hw.abs σ) =
+      { moverPhase (corePhase m τ1) with
+        cycle := (moverPhase (corePhase m τ1)).cycle + 1 } := rfl
+  rw [hstep]
+  apply machineState_ext'
+  · -- cycle
+    show ((Hw.core m).cycle σ).regs "cycle" 32 = _
+    rw [cycle_regs_cycle]
+    show _ = (moverPhase (corePhase m τ1)).cycle + 1
+    rw [moverPhase_cycle, hspec, hcyc]
+  · -- mem
+    funext a
+    show ((Hw.core m).cycle σ).mems "mem" a.toNat 32 = _
+    rw [core_cycle_unfold]
+    rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
+      (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
+    rw [show (moverPhase (corePhase m τ1)).mem = (moverPhase τ2).mem from by
+      rw [hspec]]
+    exact moverAct_mem_core σ _ τ2 hin
+      (fun x => (hspec ▸ hcaps x : _)) (fun x => hspec ▸ hgen x)
+      (hspec ▸ hjob)
+      (fun ow sa => hspec ▸ hauthτ2 ow sa)
+      hmemτ2 hswτ2 a
+  · -- doms
+    funext x
+    have hRHS : (moverPhase (corePhase m τ1)).doms x = τ2.doms x := by
+      rw [moverPhase_doms, hspec]
+    show Hw.absDom ((Hw.core m).cycle σ) x = _
+    rw [hRHS, ← habsD x]
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
+      fin_cases x <;> decide +kernel
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases x <;> exact of_decide_eq_true rfl
+    apply absDom_congr
+    intro p hp'
+    rw [← hcoreR p.1 p.2]
+    exact hp p.1 p.2 (hmovfree p hp') (hcycfree p hp')
+  · -- gates
+    funext g
+    have hRHS : (moverPhase (corePhase m τ1)).gates g = τ2.gates g := by
+      rw [moverPhase_gates, hspec]
+    show Hw.absGate ((Hw.core m).cycle σ) g = _
+    rw [hRHS, ← habsG g]
+    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
+      fin_cases g <;> decide +kernel
+    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases g <;> exact of_decide_eq_true rfl
+    apply absGate_congr
+    intro p hp'
+    rw [← hcoreR p.1 p.2]
+    exact hp p.1 p.2 (hmovfree p hp') (hcycfree p hp')
+  · -- mover
+    show Hw.absMover ((Hw.core m).cycle σ)
+      = (moverPhase (corePhase m τ1)).mover
+    rw [core_cycle_unfold]
+    have htick : ∀ (rn : String) (w : Nat), ¬(rn = "cycle" ∧ w = 32) →
+        (Hw.tickAct.run σ (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1))).regs
+          rn w = (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)).regs rn w := by
+      intro rn w h4
+      exact frame (by
+        intro hmem
+        simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+          Prod.mk.injEq] at hmem
+        exact h4 hmem) σ _
+    rw [show Hw.absMover (Hw.tickAct.run σ
+        (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)))
+        = Hw.absMover (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)) from by
+      unfold Hw.absMover
+      rw [htick "mov_v" 1 (by decide), htick "mov_owner" 2 (by decide),
+        htick "mov_src" 14 (by decide), htick "mov_dst" 14 (by decide),
+        htick "mov_srccur" 12 (by decide), htick "mov_dstcur" 12 (by decide),
+        htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
+    rw [show (moverPhase (corePhase m τ1)).mover = (moverPhase τ2).mover
+      from by rw [hspec]]
+    exact absMover_moverAct_quiescent σ _ τ2 hin hcaps hgen hjob
+  · -- inflight
+    have hRHS : (moverPhase (corePhase m τ1)).inflight = none := by
+      rw [moverPhase_inflight, hspec, hτ2if]
+    show Hw.absInflight ((Hw.core m).cycle σ) = _
+    rw [hRHS]
+    unfold Hw.absInflight
+    rw [hp "if_v" 1 (by decide +kernel) (by decide), hcoreR "if_v" 1]
+    rw [show ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ σ1).regs "if_v" 1
+        = ((Act.write 1 "if_v" (.lit 0)).run σ σ1).regs "if_v" 1 from
+      frame hXifv σ _]
+    rw [show ((Act.write 1 "if_v" (.lit 0)).run σ σ1).regs "if_v" 1 = 0#1
+      from by simp [Act.run, RegEnv.set, Expr.eval]]
+    rw [if_neg (by decide)]
+
 /-! ## Port-0 commit selection for a retiring `sw` -/
 
 private theorem bv1_one_and (x : BitVec 1) : 1#1 &&& x = x := by
@@ -758,6 +909,66 @@ theorem retireMem_sw_sel (σ : Loom.Hw.St) (E : DomainId) (c : Hw.OpCirc)
       (.lit 0, .lit 0, .lit 0)).2.2).eval σ = _
     rw [(hd2 (by rw [hEn1]; exact hen)).2]
     exact (he2 hen).2
+
+/-- The five mnemonics whose circuits carry a real memory enable. -/
+def memMns : List String :=
+  ["sw", "cap_drop", "cap_revoke", "gate_call", "gate_return"]
+
+private def memInert5 (l : List (String × Hw.OpCirc)) : Bool :=
+  l.all fun p => decide (p.1 ∈ memMns) || isLit0 p.2.memEn
+
+private theorem memInert5_opCircs : ∀ d : DomainId,
+    memInert5 (Hw.opCircs d) = true := by
+  intro d
+  fin_cases d <;> decide +kernel
+
+/-- Port-quiet form of the per-op enable collapse: only the five
+mem-writing mnemonics need to be off. -/
+private theorem memFold_en_zero5 (σ : Loom.Hw.St)
+    (hben5 : ∀ mn ∈ memMns, (Hw.isMn mn).eval σ ≠ 1#1) :
+    ∀ (l : List (String × Hw.OpCirc)), memInert5 l = true →
+      ((enFold l).1).eval σ = 0#1
+  | [], _ => rfl
+  | p :: t, h => by
+      simp only [memInert5, List.all_cons, Bool.and_eq_true,
+        Bool.or_eq_true] at h
+      show ((Hw.isMn p.1).eval σ &&& p.2.memEn.eval σ) |||
+        ((enFold t).1).eval σ = 0#1
+      have hg : (Hw.isMn p.1).eval σ &&& p.2.memEn.eval σ = 0#1 := by
+        rcases h.1 with hmn | hlit
+        · rw [bv1_ne_one.mp (hben5 p.1 (of_decide_eq_true hmn))]
+          exact bv1_zero_and' _
+        · rw [isLit0_eval σ _ hlit]
+          exact bv1_and_zero' _
+      rw [hg, bv1_zero_or]
+      exact memFold_en_zero5 σ hben5 t
+        (by simp only [memInert5]; exact h.2)
+
+private theorem domFold_en_zero5 (σ : Loom.Hw.St)
+    (hben5 : ∀ mn ∈ memMns, (Hw.isMn mn).eval σ ≠ 1#1) :
+    ∀ (l : List DomainId), ((domFold l).1).eval σ = 0#1
+  | [] => rfl
+  | d :: t => by
+      show ((Hw.ifDomIs d).eval σ &&& ((Hw.retireMemFor d).1).eval σ) |||
+        ((domFold t).1).eval σ = 0#1
+      rw [show Hw.retireMemFor d = enFold (Hw.opCircs d) from rfl]
+      rw [memFold_en_zero5 σ hben5 (Hw.opCircs d) (memInert5_opCircs d),
+        bv1_and_zero', bv1_zero_or]
+      exact domFold_en_zero5 σ hben5 t
+
+/-- On a retiring cycle of a non-storing op the core writes no memory. -/
+theorem coreAct_mems_quiet (m : Manifest) (σ acc : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hben5 : ∀ mn ∈ memMns, (Hw.isMn mn).eval σ ≠ 1#1)
+    (ad w : Nat) :
+    ((Hw.coreAct m).run σ acc).mems "mem" ad w = acc.mems "mem" ad w := by
+  rw [coreAct_run_retire_eq m σ acc hifv hcl,
+    retireAct_run_mems σ acc ad w]
+  have hen := domFold_en_zero5 σ hben5 (List.finRange numDomains)
+  show (if ((domFold (List.finRange numDomains)).1).eval σ = 1#1
+    then _ else acc).mems "mem" ad w = _
+  rw [if_neg (by rw [hen]; decide)]
 
 end Machines.Lnp64u.Theorems.RMC
 

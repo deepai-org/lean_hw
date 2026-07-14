@@ -12,6 +12,7 @@ import Machines.Lnp64u.Theorems.RMCIdle
 import Machines.Lnp64u.Theorems.RMCIssue
 import Machines.Lnp64u.Theorems.RMCZero
 import Machines.Lnp64u.Theorems.RMCRetireSw
+import Machines.Lnp64u.Theorems.RMCRetireRgn
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -301,18 +302,6 @@ theorem square_retire_map (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
   sorry
 
-/-- The `unmap` retirement arm — remaining (NEXTSTEPS §1). -/
-theorem square_retire_unmap (m : Manifest) (hwf : m.WF) (hfit : Fits m)
-    (σ : Loom.Hw.St)
-    (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
-    (hsr : (machine m).Reachable (Hw.abs σ))
-    (hifv : σ.regs "if_v" 1 = 1#1)
-    (hcl : (σ.regs "if_cl" 8).toNat < 2)
-    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 21#6) :
-    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
-
 /-- The `gate_call` retirement arm — remaining (NEXTSTEPS §1). -/
 theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
@@ -401,7 +390,7 @@ theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   by_cases h20 : (σ.regs "if_word" 32).extractLsb' 0 6 = 20#6
   · exact square_retire_map m hwf hfit σ hcpl hcr hsr hifv hcl h20
   by_cases h21 : (σ.regs "if_word" 32).extractLsb' 0 6 = 21#6
-  · exact square_retire_unmap m hwf hfit σ hcpl hcr hsr hifv hcl h21
+  · exact square_retire_unmap m hwf hfit σ hsync hz hifv hcl h21
   by_cases h22 : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6
   · exact square_retire_gatecall m hwf hfit σ hcpl hcr hsr hifv hcl h22
   by_cases h23 : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6
