@@ -233,4 +233,54 @@ theorem retireFor_run_none (σ acc : Loom.Hw.St) (e : DomainId)
       = (Hw.haltFault e .illegalInstruction).run σ acc :=
   opFold_run_none σ acc _ (Hw.opCircs e) hnone
 
+/-! ## Spec-side unfolding of the retirement -/
+
+/-- An in-flight instruction on its last cycle retires. -/
+theorem corePhase_retire (m : Manifest) (τ : MachineState)
+    (fl : InFlight) (hfl : τ.inflight = some fl) (h1 : fl.cyclesLeft ≤ 1) :
+    corePhase m τ = retire { τ with inflight := none } fl.dom fl.word := by
+  unfold corePhase
+  rw [hfl]
+  show (if fl.cyclesLeft ≤ 1 then _ else _) = _
+  rw [if_pos h1]
+
+/-- Decode failure retires as an illegal-instruction fault (unreachable
+for issued words; kept total). -/
+theorem retire_of_decode_none (σ : MachineState) (d : DomainId)
+    (w : Loom.Word32) (hdec : Loom.Isa.decode isa w = none) :
+    retire σ d w = haltWith σ d .illegalInstruction := by
+  unfold retire
+  rw [hdec]
+
+/-- Retirement of a decoded instruction: `pc` advance, `exec` on the
+current state, the T6 outcome triage. -/
+theorem retire_of_decode_some (σ : MachineState) (d : DomainId)
+    (w : Loom.Word32) (instr : Instr)
+    (hdec : Loom.Isa.decode isa w = some instr) :
+    retire σ d w =
+      (match instr.sem.exec
+          { d := d, pc := (σ.doms d).pc, op := operandsOf w }
+          (σ.setDom d fun ds => { ds with pc := ds.pc + 1 }) with
+      | .ok _ σ' => σ'
+      | .err e σ' =>
+          σ'.setDom d fun ds => ds.setReg (operandsOf w).rd e.toWord
+      | .fault f => haltWith σ d f) := by
+  unfold retire
+  rw [hdec]
+  rfl
+
+/-- The latch decodes to the in-flight record. -/
+theorem absInflight_some (σ : Loom.Hw.St) (hifv : σ.regs "if_v" 1 = 1#1) :
+    Hw.absInflight σ = some
+      { dom := finOfBv (by decide) (σ.regs "if_dom" 2)
+        word := σ.regs "if_word" 32
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+  rw [Hw.absInflight]
+  rw [if_pos (show σ.regs "if_v" 1 = 1 from hifv)]
+
+/-- The dispatch's opcode expression reads the latched word's opcode. -/
+theorem opcE_opcodeOf (σ : Loom.Hw.St) :
+    Machines.Lnp64u.sig.opcodeOf (σ.regs "if_word" 32)
+      = Hw.opcE.eval σ := rfl
+
 end Machines.Lnp64u.Theorems.RMC

@@ -10,6 +10,7 @@ import Machines.Lnp64u.Theorems.RMCCanon
 import Machines.Lnp64u.Theorems.RMCCountdown
 import Machines.Lnp64u.Theorems.RMCIdle
 import Machines.Lnp64u.Theorems.RMCIssue
+import Machines.Lnp64u.Theorems.RMCZero
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -144,6 +145,11 @@ structure Coupled (m : Manifest) (σ : Loom.Hw.St) : Prop where
   kind_canon : ∀ (d : DomainId) (s : Slot),
     Hw.encKind (Hw.decKind (σ.regs (Hw.dcapKind d s) 32)) =
       σ.regs (Hw.dcapKind d s) 32
+  /-- The `r0` register family (each domain's `dreg d 0` and its
+  gate-saved mirror `gsreg g 0`) is pinned at zero — the spec hardwires
+  architectural reads of `r0` to `0`, the circuits read the real register
+  (`RMCZero`). -/
+  r0_zero : R0Zero σ
 
 /-! ## Reset -/
 
@@ -218,7 +224,7 @@ theorem abs_reset (m : Manifest) (hwf : m.WF) (hfit : Fits m) :
 /-- The coupling holds at reset (`cycle = 0`, `rctr = 0 % P`, all encodings
 canonical by construction). -/
 theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
-  constructor
+  refine ⟨?_, ?_, ?_, reset_r0_zero m⟩
   · intro d
     simp [reset_drctr, reset_cycle, Manifest.initState]
   · intro d
@@ -290,7 +296,8 @@ theorem coupled_step (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (_hcr : ((Hw.core m).toTSys).Reachable σ)
     (_hsr : (machine m).Reachable (Hw.abs σ)) :
     Coupled m ((Hw.core m).cycle σ) := by
-  refine ⟨fun d => ?_, fun d => ?_, coupled_step_kind m σ hcpl⟩
+  refine ⟨fun d => ?_, fun d => ?_, coupled_step_kind m σ hcpl,
+    cycle_r0_zero m σ hcpl.r0_zero⟩
   · -- rctr_sync: only refill writes `rctr`, only tick writes `cycle`
     rw [cycle_regs_drctr, refillAct_run_drctr, cycle_regs_cycle]
     exact rctr_step_sync (hwf.period_pos d) (hwf.period_dvd d)
