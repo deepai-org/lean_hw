@@ -20,7 +20,7 @@ set_option maxRecDepth 400000
 
 /-! ## Bit-level class/kind bridges -/
 
-private theorem extract1_eq_iff {n m : Nat} (a : BitVec n) (b : BitVec m)
+theorem extract1_eq_iff {n m : Nat} (a : BitVec n) (b : BitVec m)
     (i j : Nat) :
     (a.extractLsb' i 1 = b.extractLsb' j 1) ↔ (a.getLsbD i = b.getLsbD j) := by
   constructor
@@ -33,7 +33,7 @@ private theorem extract1_eq_iff {n m : Nat} (a : BitVec n) (b : BitVec m)
     interval_cases k
     simpa [BitVec.getLsbD_extractLsb'] using h
 
-private theorem extract1_eq_zero_iff {n : Nat} (a : BitVec n) (i : Nat) :
+theorem extract1_eq_zero_iff {n : Nat} (a : BitVec n) (i : Nat) :
     (a.extractLsb' i 1 = 0#1) ↔ (a.getLsbD i = false) := by
   constructor
   · intro h
@@ -47,7 +47,7 @@ private theorem extract1_eq_zero_iff {n : Nat} (a : BitVec n) (i : Nat) :
 
 /-- Class agreement between a handle word and a kind word is the
 tag-bit test. -/
-private theorem cls_eq_iff_bits (hw kw : BitVec 32) :
+theorem cls_eq_iff_bits (hw kw : BitVec 32) :
     ((Handle.decode hw).cls = (Hw.decKind kw).cls)
       ↔ (hw.getLsbD 12 = kw.getLsbD 0) := by
   rw [show (Handle.decode hw).cls
@@ -57,7 +57,7 @@ private theorem cls_eq_iff_bits (hw kw : BitVec 32) :
     simp [CapKind.cls]
 
 /-- The memory-kind test is the tag bit. -/
-private theorem decKind_mem_iff (kw : BitVec 32) :
+theorem decKind_mem_iff (kw : BitVec 32) :
     (kw.getLsbD 0 = false) ↔
       Hw.decKind kw = .mem (kw.extractLsb' 1 12) (kw.extractLsb' 13 13)
         (Hw.decPerms (kw.extractLsb' 26 3)) := by
@@ -70,7 +70,7 @@ set_option maxHeartbeats 25600000 in
 /-- Both `map` errno outcomes retire as `pc += 1; rd := errno` with the
 Mover fully quiescent (`mapOkE` is off, so even the fired-`map`
 composites collapse). -/
-private theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
       (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
