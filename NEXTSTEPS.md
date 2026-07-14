@@ -1,9 +1,11 @@
-# NEXT STEPS - active plan as of 2026-07-04
+# NEXT STEPS - active plan as of 2026-07-14
 
-Current state: T1-T9 CLEAN, RTL corroborated (iverilog + yosys), R-MC
-unbounded with ONE audit-legal R-MC sorry left (`square`);
-`coupled_step` is CLEAN as of 2026-07-05 (`RMCFrames.lean` +
-`RMCCanon.lean`, no native_decide).
+Current state: T1-T9 CLEAN (49/49 ledger), RTL corroborated (iverilog +
+yosys + SAT crosscheck, pinned tools, one-command `reproduce.sh`), R-MC
+down to ONE audit-legal sorry (`square_retire`): `coupled_step` CLEAN,
+3 of 4 cycle arms CLEAN, retirement infrastructure complete, 16 of 25
+op arms + the decode-failure fallback proven. The project is one
+theorem (§1) plus packaging (§P2 remainder) from its headline claim.
 See `STATUS.md` for the audited ledger and session history.
 
 ## Stopping point - 2026-07-04
@@ -87,90 +89,64 @@ fragments.
 - Work in compiling slices. After each slice, run the smallest useful Lean
   command, then the full target once the slice is structurally complete.
 
-## 1. R-MC bridge rewrite - immediate target
+## 1. R-MC endgame — the retirement tail (single remaining sorry)
 
-Target: `lake build Machines.Lnp64u.Theorems.RMC` succeeds while shrinking
-the remaining R-MC sorries in place. Current count: two (`square`,
-`coupled_step`). This is the current highest value engineering task.
+Target: close `square_retire` (the sole repo sorry, `RMC.lean`). All
+infrastructure exists; what remains is exactly enumerable. Work order
+(revised 2026-07-14, late — dispatcher first, revoke spike second):
 
-Build the file from scratch in this order:
+1. **Wire the 25-way dispatcher NOW.** Rewrite `square_retire` as a
+   `by_cases` chain on `(σ.regs "if_word" 32).extractLsb' 0 6` over the
+   25 declared opcodes: 16 branches call the proven arms
+   (`RMCRetireAlu`/`RMCRetireBranch`/`RMCRetireSw`), the not-in-table
+   branch derives `decode = none` and calls `square_retire_illegal`,
+   and the 9 unproven ops become independent leaf sorries (stub
+   theorems, one per op, in a single file so the ledger stays honest).
+   This retires final-assembly risk early and validates the 16 arm
+   signatures against the real call site.
+2. **Revoke design spike (statement only).** Read `rvInit`/`rvStep`
+   against the spec's `cap_revoke` exec and *state* the rv-coupling
+   `Coupled` clause (hidden `rv_*` registers = the spec mark-set after
+   `revokeCost - if_cl` doubling rounds). Do not prove preservation
+   yet. The countdown arm already runs `rvStep` rounds — check the
+   clause coexists with `square_countdown` as proven. Revoke is the
+   largest remaining unknown; surface its shape before grinding.
+3. **Tier 1 — pattern extensions** (one session each, recipe = the `sw`
+   arm): `map`/`unmap` (region-edit face: `mapSet`/`unmapSet` fire, so
+   an Inert-minus-map variant plus `rgnVPostE`/`rgnValPostE` selected
+   forms; region-face `absDom` variant like `absDom_regpcbud`), then
+   `move` (job install: `newJobSet` fires; `postJ` selected forms; the
+   mover-field face shows the installed job).
+4. **Tier 2 — the install invariant** (`cap_dup`, `mem_grant`): an
+   install must not flip a Mover-watched ref dead→live. First check
+   whether T3's `MoverLiveMem`-class spec invariants (available through
+   the arm's `hsr` reachability hypothesis) already give it; only add a
+   `Coupled` clause if not. Then the two arms (cap-table face variant
+   of `absDom`, errno ladders via the monad-unfold technique).
+5. **Tier 3 — kill machinery** (`cap_drop`, `gate_call`,
+   `gate_return`): `killedByCoreE` fires for real. Shared kill-variant
+   of the Mover faces (watched-ref liveness *after* the kill sweep =
+   spec `moverPhase` on the post-kill state), plus the gate
+   save/restore faces for call/return (`absGate` variant exposing the
+   activation fields).
+6. **Tier 4 — `cap_revoke`**: prove the clause from step 2 (rvInit
+   seeds, rvStep preserves through the countdown, retirement reads the
+   converged marks = spec `marks` closure in ≤ 7 doubling rounds), then
+   the arm.
+7. **Assembly**: delete the leaf sorries; `square`/`abs_run`/`refines`/
+   `invariant_transport` flip CLEAN. Full gate + STATUS/ledger update.
 
-1. **External shape.** DONE for reset. Keep the public statements downstream files depend on:
-   `Fits`, `Coupled`, reset pullback facts, `coupled_step`,
-   `design_run_succ`, and the invariant pullback section. Rename internals
-   freely if that reduces proof friction.
-2. **Generic frame layer.** Prove the small register and memory preservation
-   facts needed for `refillAct`, `coreAct`, `moverAct`, and `tickAct` directly
-   from `Act.regWrites`, `Act.memWrites`, and `Loom.Hw.Compile.run_regs_notin`.
-   Generate repetitive frame lemmas only after the hand-written wrapper is
-   compiling.
-3. **Refill bridge.** Prove the refill abstraction facts fieldwise:
-   `cycle`, `rctr`, `dbudget`, visible domain fields, gate state, inflight
-   state, and memory preservation. Use current `SysOps.lean` definitions as
-   the expression source.
-4. **Core/tick bridge.** Prove the core-cycle unfold and tick abstraction:
-   cycle increments, visible state is preserved except for the cycle field,
-   and the final statement rewrites cleanly into the spec-side cycle lemmas
-   already public in `Hostage.lean`.
-5. **Mover bridge.** Re-derive the mover expression names from
-   `Machines/Lnp64u/Hw/SysOps.lean` rather than copying old text. Prove the
-   two primary cases: no live mover job preserves `mem`/`absMover`; a live
-   mover job updates memory and `absMover` to match `Step.moverPhase`.
-6. **Spec phase equations.** Add only the match-form equations the proof
-   actually consumes for `refillPhase`, `corePhase`, and `moverPhase`.
-   Reuse existing public cycle lemmas from `Hostage.lean`; do not duplicate
-   them in `RMC.lean`.
-7. **Assembly.** Rebuild the decomposition lemmas that reduce `square` to
-   the per-arm cases, then reconnect `coupled_step`, `design_run_succ`, and
-   invariant pullback.
+Established recipes (do not rediscover): benign ops →
+`square_retire_domShape`; faults → `square_retire_fault_of`; memory
+writers → `square_retire_store` over `moverAct_mem_core`; spec exec
+reduction → show-the-do-term + `simp only [specM_bind, SpecM.<defs>]`
+(hand-written match trees do NOT defeq-check); write-set frames →
+value-free `regWrites` lists + quantified `decide +kernel`; new
+`Coupled` clauses → the `CanonWritesAll`/`ZeroWritesAll` checker
+pattern.
 
-Verification gate for this item:
-
-- `lake build Machines.Lnp64u.Theorems.RMC`
-- `lake build Machines.Lnp64u.Theorems.RMCAbs`
-- `lake build Machines.Lnp64u.Theorems.RMCReset`
-- `lake exe audit`
-- `scripts/ci.sh` before committing a claimed landing
-
-## 2. R-MC remaining sorries (`coupled_step`, then `square`)
-
-The last link making T2-T9 theorems about the emitted netlist rather than
-the spec. Do not block on a tagless-final refactor.
-
-Work order:
-
-1. Shared cycle/refill/tick bridge lemmas.
-2. `coupled_step` preservation of `rctr_sync`, `run_canon`, and
-   `kind_canon`; extend `Coupled` only when a proof obligation forces it.
-3. `square` countdown/no-retire arm.
-4. `square` issue arm.
-5. Fourteen base-op retirement cases.
-6. Ten system-op retirement cases.
-7. `cap_revoke` pointer-doubling mark engine and the corresponding
-   `Coupled` clause.
-8. Final assembly and full CI.
-
-## 3. Proof infrastructure - build only what the R-MC proof forces
-
-Useful tooling should be extracted from the `RMC.lean` grind, not placed in
-front of it as a prerequisite.
-
-- **Automatic `Act` frame lemmas.** Compile/certify read-write sets and
-  generate lemmas such as "this rule cannot write `cycle`", "this action
-  preserves unrelated registers", and "this rule preserves memory `mem`".
-- **Last-write-wins `Act.run` normalizer.** A tactic/normal form for
-  projecting fields through nested `seqAll`, `.ite`, `RegEnv.set`,
-  `MemEnv.set`, and record updates.
-- **Rule-level abstraction contracts.** Standard theorem skeletons for
-  `abs (rule.run pre acc) = specPhase ...` or fieldwise variants.
-- **First-class post-rule derived state.** Support ghost/derived values for
-  post-core fields, especially mover fields represented as mux expressions
-  (`postJ`, `newJobSet`, kill sweeps, store forwarding).
-- **Generated reset/register-table proof support.** Make reset abstraction
-  automatic from register declarations, memory declarations, and encoder
-  round trips.
-- **BitVec/encoder simplification.** Certified simplifier for packed fields,
-  decode/encode round trips, and `BitVec.toNat` range side conditions.
+Verification gate per landing: `lake build` (full), `lake exe audit`,
+`scripts/ci.sh`.
 
 ## 4. DONE 2026-07-04 - D11 scheduler stall-lock redesign
 
