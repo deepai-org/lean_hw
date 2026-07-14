@@ -319,5 +319,64 @@ private theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       rfl)
     rfl
 
+/-! ## The `map` ok-path write set and value bridge -/
+
+/-- The ok-path payload with the latch clear in front. -/
+def mapFull (e : DomainId) : Act :=
+  .seq (.write 1 "if_v" (.lit 0))
+    (Hw.seqAll
+      (((List.finRange numRegions).map fun r =>
+        .ite (.eq Hw.riE (Hw.rLit r))
+          (.seq (.write 1 (Hw.drgnV e r) (.lit 1))
+                (.write 42 (Hw.drgn e r) (Hw.mapValE e))) .skip)
+      ++ [Hw.writeReg e Hw.rdE (.lit 0), Hw.pcAdvA e]))
+
+private theorem mapFull_writes (e : DomainId) :
+    (mapFull e).regWrites
+      = [("if_v", 1), (Hw.drgnV e 0, 1), (Hw.drgn e 0, 42),
+         (Hw.drgnV e 1, 1), (Hw.drgn e 1, 42),
+         (Hw.drgnV e 2, 1), (Hw.drgn e 2, 42),
+         (Hw.drgnV e 3, 1), (Hw.drgn e 3, 42),
+         (Hw.dreg e 1, 32), (Hw.dreg e 2, 32), (Hw.dreg e 3, 32),
+         (Hw.dreg e 4, 32), (Hw.dreg e 5, 32), (Hw.dreg e 6, 32),
+         (Hw.dreg e 7, 32), (Hw.dpc e, 12)] := rfl
+
+private theorem quietRg_notin_map (x e : DomainId) :
+    ∀ q ∈ domQuietNamesRg x, q ∉ (mapFull e).regWrites := by
+  rw [mapFull_writes]
+  fin_cases x <;> fin_cases e <;> decide +kernel
+
+private theorem read_notin_map_ne (x e : DomainId) (hne : x ≠ e) :
+    ∀ q ∈ domReadNames x, q ∉ (mapFull e).regWrites := by
+  rw [mapFull_writes]
+  fin_cases x <;> fin_cases e <;>
+    first
+      | exact absurd rfl hne
+      | decide +kernel
+
+private theorem gate_notin_map (g : GateId) (e : DomainId) :
+    ∀ q ∈ gateReadNames g, q ∉ (mapFull e).regWrites := by
+  rw [mapFull_writes]
+  fin_cases g <;> fin_cases e <;> decide +kernel
+
+private theorem ifv_notin_mapX (e : DomainId) :
+    (("if_v" : String), (1 : Nat)) ∉
+      (Hw.seqAll
+        (((List.finRange numRegions).map fun r =>
+          Act.ite (.eq Hw.riE (Hw.rLit r))
+            (.seq (.write 1 (Hw.drgnV e r) (.lit 1))
+                  (.write 42 (Hw.drgn e r) (Hw.mapValE e))) .skip)
+        ++ [Hw.writeReg e Hw.rdE (Expr.lit 0), Hw.pcAdvA e])).regWrites := by
+  have h : (Hw.seqAll
+      (((List.finRange numRegions).map fun r =>
+        Act.ite (.eq Hw.riE (Hw.rLit r))
+          (.seq (.write 1 (Hw.drgnV e r) (.lit 1))
+                (.write 42 (Hw.drgn e r) (Hw.mapValE e))) .skip)
+      ++ [Hw.writeReg e Hw.rdE (Expr.lit 0), Hw.pcAdvA e])).regWrites
+      = (mapFull e).regWrites.tail := rfl
+  rw [h, mapFull_writes]
+  fin_cases e <;> decide +kernel
+
 end Machines.Lnp64u.Theorems.RMC
+
 
