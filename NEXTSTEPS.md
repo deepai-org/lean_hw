@@ -95,7 +95,7 @@ Target: close `square_retire` (the sole repo sorry, `RMC.lean`). All
 infrastructure exists; what remains is exactly enumerable. Work order
 (revised 2026-07-14, late — dispatcher first, revoke spike second):
 
-1. **Wire the 25-way dispatcher NOW.** Rewrite `square_retire` as a
+1. **DONE 2026-07-15.** (dispatcher wired; 9 leaf sorries.) Rewrite `square_retire` as a
    `by_cases` chain on `(σ.regs "if_word" 32).extractLsb' 0 6` over the
    25 declared opcodes: 16 branches call the proven arms
    (`RMCRetireAlu`/`RMCRetireBranch`/`RMCRetireSw`), the not-in-table
@@ -104,7 +104,7 @@ infrastructure exists; what remains is exactly enumerable. Work order
    theorems, one per op, in a single file so the ledger stays honest).
    This retires final-assembly risk early and validates the 16 arm
    signatures against the real call site.
-2. **Revoke design spike (statement only).** Read `rvInit`/`rvStep`
+2. **DONE 2026-07-15** (`RMCRv.lean`: `RvSync` triple over `reachRootN`/`liveChainN`/`chainEndN`, guard vacuity analysis, deferred-obligation list). Read `rvInit`/`rvStep`
    against the spec's `cap_revoke` exec and *state* the rv-coupling
    `Coupled` clause (hidden `rv_*` registers = the spec mark-set after
    `revokeCost - if_cl` doubling rounds). Do not prove preservation
