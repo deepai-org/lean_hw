@@ -848,7 +848,7 @@ private theorem encKindMem_perms (B : BitVec 12) (L : BitVec 13) (P : Perms) :
 
 /-- The packed region value the `map` circuit writes, for a canonical
 memory kind word: exactly `encRegion`. -/
-private theorem mapVal_pack (B : BitVec 12) (L : BitVec 13) (P : Perms)
+theorem mapVal_pack (B : BitVec 12) (L : BitVec 13) (P : Perms)
     (rf : BitVec 14) :
     (((Hw.encKind (.mem B L P)).extractLsb' 26 3).setWidth 42
       ||| ((((Hw.encKind (.mem B L P)).extractLsb' 13 13).setWidth 42 <<< 3)
@@ -1076,6 +1076,15 @@ theorem sAuth_map_eval (σ : Loom.Hw.St) (E : DomainId)
           exact hcov
       · rw [if_neg hval] at hsome
         exact absurd hsome (by simp)
+
+/-- The `map` spec's region index and cached region (definitional
+mirrors of the exec's lets, for readable statements). -/
+def mapRI (op : Operands) : RegionId :=
+  ⟨(op.imm.extractLsb' 0 2).toNat, (op.imm.extractLsb' 0 2).isLt⟩
+
+def mapRgn (E : DomainId) (sl : Slot) (g : Gen) (base : Addr)
+    (len : BitVec 13) (perms : Perms) : Region :=
+  { base := base, len := len, perms := perms, backing := ⟨E, sl, g⟩ }
 
 end Machines.Lnp64u.Theorems.RMC
 
