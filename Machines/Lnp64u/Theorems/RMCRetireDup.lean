@@ -476,6 +476,133 @@ theorem square_retire_install (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [if_neg (by decide)]
 
 
+
+/-! ## Install-face infrastructure -/
+
+/-- The full `cap_dup` core act (dispatch `if_v` clear + the ok action). -/
+def dupFull (e : DomainId) : Act :=
+  .seq (.write 1 "if_v" (.lit 0))
+    (Hw.seqAll
+      [ Hw.installA e (Hw.freeSlotIdx e)
+          (.mux (Hw.kIsMem (Hw.dupSel e).kindW)
+            (Hw.narrowKindE (Hw.dupSel e).kindW (Hw.readReg e Hw.rs2E))
+            (Hw.dupSel e).kindW)
+          (.lit 1) (Hw.freeCellIdx e)
+          (Hw.encRefE (Hw.dLit e) (Hw.dupSel e).slot (Hw.dupSel e).gen),
+        Hw.writeReg e Hw.rdE (Hw.handleE (Hw.freeSlotIdx e)
+          (Hw.genOfE e (Hw.freeSlotIdx e))
+          (Hw.field (Hw.dupSel e).kindW 0 1)),
+        Hw.pcAdvA e ])
+
+/-- The non-`regs`/`pc`/`caps`/`lineage` names `absDom · x` reads. -/
+def domQuietNamesCap (x : DomainId) : List (String × Nat) :=
+  ((List.finRange numSlots).map fun s => ((Hw.dgen x s : String), (8 : Nat)))
+  ++ ((List.finRange numRegions).flatMap fun r =>
+      [(Hw.drgnV x r, 1), (Hw.drgn x r, 42)])
+  ++ [(Hw.drun x, 2), (Hw.drunG x, 2), (Hw.dsrvV x, 1), (Hw.dsrv x, 2),
+      (Hw.dcause x, 32), (Hw.dbudget x, 32), (Hw.dmaxdon x, 32)]
+
+/-- The regs/pc/caps/lineage face of `absDom` (quiet elsewhere). -/
+theorem absDom_regpccap {S1 S2 : Loom.Hw.St} (e : DomainId)
+    (hq : ∀ q ∈ domQuietNamesCap e, S2.regs q.1 q.2 = S1.regs q.1 q.2) :
+    Hw.absDom S2 e =
+      { Hw.absDom S1 e with
+        regs := fun r => S2.regs (Hw.dreg e r) 32
+        pc := S2.regs (Hw.dpc e) 12
+        caps := fun s =>
+          if S2.regs (Hw.dcapV e s) 1 = 1 then
+            some { kind := Hw.decKind (S2.regs (Hw.dcapKind e s) 32)
+                   lineage :=
+                     if S2.regs (Hw.dcapLinV e s) 1 = 1 then
+                       some (finOfBv (by decide)
+                         (S2.regs (Hw.dcapLin e s) 4))
+                     else none }
+          else none
+        lineage := fun l =>
+          if S2.regs (Hw.dcellV e l) 1 = 1 then
+            some ⟨Hw.decRef (S2.regs (Hw.dcellPar e l) 14)⟩
+          else none } := by
+  have hg : ∀ (s : Slot),
+      S2.regs (Hw.dgen e s) 8 = S1.regs (Hw.dgen e s) 8 := fun s =>
+    hq (Hw.dgen e s, 8) (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_map.mpr ⟨s, List.mem_finRange s, rfl⟩)))
+  have hr : ∀ (r : RegionId) (rn : String) (w : Nat),
+      (rn, w) ∈ [(Hw.drgnV e r, 1), (Hw.drgn e r, 42)] →
+      S2.regs rn w = S1.regs rn w := fun r rn w hp =>
+    hq (rn, w) (List.mem_append_left _ (List.mem_append_right _
+      (List.mem_flatMap.mpr ⟨r, List.mem_finRange r, hp⟩)))
+  have ht : ∀ (rn : String) (w : Nat),
+      (rn, w) ∈ [(Hw.drun e, 2), (Hw.drunG e, 2), (Hw.dsrvV e, 1),
+        (Hw.dsrv e, 2), (Hw.dcause e, 32), (Hw.dbudget e, 32),
+        (Hw.dmaxdon e, 32)] →
+      S2.regs rn w = S1.regs rn w := fun rn w hp =>
+    hq (rn, w) (List.mem_append_right _ hp)
+  apply domainState_ext'
+  · rfl
+  · rfl
+  · rfl
+  · show (Hw.absDom S2 e).slotGen = (Hw.absDom S1 e).slotGen
+    funext s
+    show S2.regs (Hw.dgen e s) 8 = S1.regs (Hw.dgen e s) 8
+    rw [hg s]
+  · rfl
+  · show (Hw.absDom S2 e).regions = (Hw.absDom S1 e).regions
+    funext r
+    show (if S2.regs (Hw.drgnV e r) 1 = 1 then _ else none)
+      = (if S1.regs (Hw.drgnV e r) 1 = 1 then _ else none)
+    rw [hr r (Hw.drgnV e r) 1 (by simp), hr r (Hw.drgn e r) 42 (by simp)]
+  · show decRun (S2.regs (Hw.drun e) 2) (S2.regs (Hw.drunG e) 2)
+      = decRun (S1.regs (Hw.drun e) 2) (S1.regs (Hw.drunG e) 2)
+    rw [ht (Hw.drun e) 2 (by simp), ht (Hw.drunG e) 2 (by simp)]
+  · show (if S2.regs (Hw.dsrvV e) 1 = 1 then _ else none)
+      = (if S1.regs (Hw.dsrvV e) 1 = 1 then _ else none)
+    rw [ht (Hw.dsrvV e) 1 (by simp), ht (Hw.dsrv e) 2 (by simp)]
+  · show S2.regs (Hw.dcause e) 32 = S1.regs (Hw.dcause e) 32
+    rw [ht (Hw.dcause e) 32 (by simp)]
+  · show (S2.regs (Hw.dbudget e) 32).toNat = (S1.regs (Hw.dbudget e) 32).toNat
+    rw [ht (Hw.dbudget e) 32 (by simp)]
+  · show (S2.regs (Hw.dmaxdon e) 32).toNat
+      = (S1.regs (Hw.dmaxdon e) 32).toNat
+    rw [ht (Hw.dmaxdon e) 32 (by simp)]
+
+private theorem quietCap_notin_dup (x e : DomainId) :
+    ∀ q ∈ domQuietNamesCap x, q ∉ (dupFull e).regWrites := by
+  fin_cases x <;> fin_cases e <;> decide +kernel
+
+private theorem read_notin_dup_ne (x e : DomainId) (hne : x ≠ e) :
+    ∀ q ∈ domReadNames x, q ∉ (dupFull e).regWrites := by
+  fin_cases x <;> fin_cases e <;>
+    first
+      | exact absurd rfl hne
+      | decide +kernel
+
+private theorem gate_notin_dup (g : GateId) (e : DomainId) :
+    ∀ q ∈ gateReadNames g, q ∉ (dupFull e).regWrites := by
+  fin_cases g <;> fin_cases e <;> decide +kernel
+
+private theorem ifv_notin_dupX (e : DomainId) :
+    (("if_v" : String), (1 : Nat)) ∉
+      (Hw.seqAll
+        [ Hw.installA e (Hw.freeSlotIdx e)
+            (.mux (Hw.kIsMem (Hw.dupSel e).kindW)
+              (Hw.narrowKindE (Hw.dupSel e).kindW (Hw.readReg e Hw.rs2E))
+              (Hw.dupSel e).kindW)
+            (.lit 1) (Hw.freeCellIdx e)
+            (Hw.encRefE (Hw.dLit e) (Hw.dupSel e).slot (Hw.dupSel e).gen),
+          Hw.writeReg e Hw.rdE (Hw.handleE (Hw.freeSlotIdx e)
+            (Hw.genOfE e (Hw.freeSlotIdx e))
+            (Hw.field (Hw.dupSel e).kindW 0 1)),
+          Hw.pcAdvA e ]).regWrites := by
+  fin_cases e <;> decide +kernel
+
+/-- 4-bit `finOfBv`/`ofNat` round-trip (slot and cell indices). -/
+theorem finOfBv_ofNat4 {k : Nat} (h : (2:Nat) ^ 4 = k) (t : Fin k) :
+    finOfBv h (BitVec.ofNat 4 t.val) = t := by
+  apply Fin.ext
+  show (BitVec.ofNat 4 t.val).toNat = t.val
+  rw [BitVec.toNat_ofNat]
+  exact Nat.mod_eq_of_lt (by have := t.isLt; omega)
+
 /-! ## The `cap_dup` arm: head + spec do-term -/
 
 set_option maxHeartbeats 51200000 in
