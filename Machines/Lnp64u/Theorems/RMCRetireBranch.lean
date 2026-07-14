@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireAlu
+import Machines.Lnp64u.Logic.ExecWf
 
 /-!
 # R-MC support: the branch retirement arms
@@ -973,5 +974,196 @@ theorem square_retire_illegal (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         rw [← opCircs_fst_all E]
         exact List.mem_map_of_mem hp)))
     (retire_of_decode_none _ E _ hdec)
+
+/-! ## The `lw` arm -/
+
+/-- Memory authority of the advanced spec state is the pre-cycle
+abstraction's (regions untouched). -/
+private theorem spec_covers_bridge (m : Manifest) (σ : Loom.Hw.St)
+    (E : DomainId) (a : Addr) (need : Perms) :
+    (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E a need)
+      = (Hw.abs σ).domCovers E a need := by
+  have hrg : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })).doms E)).regions
+      = ((Hw.abs σ).doms E).regions := by
+    show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) E).regions = _
+    rw [Loom.Fun.update_same]
+    show ((refillPhase m (Hw.abs σ)).doms E).regions = _
+    rw [refillPhase_regions]
+  rw [MachineState.domCovers, MachineState.domCovers, hrg]
+
+set_option maxHeartbeats 12800000 in
+set_option maxRecDepth 1000000 in
+/-- The `lw` arm: opcode 9 — authorized load writes `rd` and advances;
+missing authority faults. -/
+theorem square_retire_lw (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 9#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (9#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W
+      = isa.find? (fun d => d.opcode == (9#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  have hselC := retireFor_sel_of_opc σ E "lw" 9#6 hopc
+    (by decide +kernel) (by decide +kernel)
+    ⟨.ite (Hw.domCoversE E (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12) ⟨true, false, false⟩)
+      (.seq (Hw.writeReg E Hw.rdE (.memRead 32 "mem" (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12))) (Hw.pcAdvA E))
+      (Hw.haltFault E .memoryAuthority), .lit 0, .lit 0, .lit 0⟩
+    (List.mem_append_left _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))))))
+  have hR1 : (Hw.readReg E Hw.rs1E).eval σ
+      = ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl
+  have haddr : (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12).eval σ
+      = effAddr (((Hw.abs σ).doms E).reg (operandsOf W).rs1)
+          (operandsOf W).imm := by
+    show ((Hw.readReg E Hw.rs1E).eval σ + Hw.immX.eval σ).extractLsb' 0 12 = _
+    rw [hR1]
+    rfl
+  have hben : ∀ mn' ∈ moverMns, (Hw.isMn mn').eval σ ≠ 1#1 :=
+    fun mn' hmn' => isMn_ne_of_opc σ mn' 9#6 hopc
+      ((by decide +kernel : ∀ mn' ∈ moverMns, (9#6 : BitVec 6)
+        ≠ Hw.opcodeOf mn') mn' hmn')
+  have hspecA : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1 = ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    specReg_bridge m σ E (operandsOf W).rs1
+  have hred : retire { refillPhase m (Hw.abs σ) with inflight := none } E W
+      = (if ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (effAddr ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1) (operandsOf W).imm) ⟨true, false, false⟩ = true
+         then ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).setDom E (fun ds => ds.setReg (operandsOf W).rd (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).read (effAddr ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1) (operandsOf W).imm)))
+         else haltWith { refillPhase m (Hw.abs σ) with inflight := none } E .memoryAuthority) := by
+    rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
+    show (match ((SpecM.reg E (operandsOf W).rs1 >>= fun a =>
+        SpecM.load E (effAddr a (operandsOf W).imm) >>= fun v =>
+        SpecM.setReg E (operandsOf W).rd v) (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))) with
+      | .ok _ σ' => σ'
+      | .err e σ' => σ'.setDom E fun ds => ds.setReg (operandsOf W).rd e.toWord
+      | .fault fl => haltWith { refillPhase m (Hw.abs σ) with inflight := none } E fl) = _
+    simp only [specM_bind, SpecM.reg, SpecM.load, SpecM.get, SpecM.demand,
+      SpecM.setReg, SpecM.modify, specM_pure]
+    by_cases hc : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (effAddr ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1) (operandsOf W).imm) ⟨true, false, false⟩ = true
+    · rw [if_pos hc, if_pos hc]
+    · rw [if_neg hc, if_neg hc]
+      rfl
+  by_cases hcov : (Hw.domCoversE E (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12) ⟨true, false, false⟩).eval σ = 1#1
+  · -- authorized load
+    have hcovS : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (effAddr ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1) (operandsOf W).imm) ⟨true, false, false⟩ = true := by
+      rw [hspecA, spec_covers_bridge]
+      have := (domCoversE_eval σ E (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12) ⟨true, false, false⟩).mp hcov
+      rwa [haddr] at this
+    refine square_retire_domShape m hwf hfit σ hsync hifv hcl 9#6 hopc
+      (by decide +kernel) E rfl
+      (.seq (Hw.writeReg E Hw.rdE (.memRead 32 "mem" (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12))) (Hw.pcAdvA E))
+      (fun q hq => hq)
+      (fun acc => by
+        rw [hselC acc]
+        show (if (Hw.domCoversE E (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12) ⟨true, false, false⟩).eval σ = 1#1
+          then _ else _) = _
+        rw [if_pos hcov])
+      (fun ds => ({ ds with pc := ds.pc + 1 }).setReg (operandsOf W).rd
+        (σ.mems "mem" ((effAddr (((Hw.abs σ).doms E).reg (operandsOf W).rs1)
+          (operandsOf W).imm)).toNat 32))
+      (fun ds => setReg_caps _ _ _)
+      (fun ds => setReg_slotGen _ _ _)
+      (fun ds => setReg_lineage _ _ _)
+      (fun ds => setReg_regions _ _ _)
+      (fun ds => setReg_run _ _ _)
+      (fun ds => setReg_serving _ _ _)
+      (fun ds => setReg_cause _ _ _)
+      (fun ds => setReg_budget _ _ _)
+      (fun ds => setReg_maxDonation _ _ _)
+      ?_ ?_ ?_
+    · -- the register file
+      intro r
+      rw [show ((Act.seq (.write 1 "if_v" (.lit 0))
+          (.seq (Hw.writeReg E Hw.rdE (Expr.memRead 32 "mem" (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12))) (Hw.pcAdvA E))).run σ
+            ((Hw.refillAct m).run σ σ)).regs (Hw.dreg E r) 32
+          = ((Hw.writeReg E Hw.rdE (Expr.memRead 32 "mem" (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12))).run σ
+              ((Act.write 1 "if_v" (.lit 0)).run σ
+                ((Hw.refillAct m).run σ σ))).regs (Hw.dreg E r) 32 from
+        frame (show (Hw.dreg E r, 32) ∉ (Hw.pcAdvA E).regWrites from by
+          intro hm
+          exact absurd (congrArg Prod.snd (List.mem_singleton.mp hm))
+            (show ¬((32 : Nat) = 12) by decide)) σ _]
+      show _ = (({ Hw.absDom ((Hw.refillAct m).run σ σ) E with
+          pc := (Hw.absDom ((Hw.refillAct m).run σ σ) E).pc + 1 }).setReg
+          (operandsOf W).rd _).regs r
+      rw [setReg_regs]
+      have hifvframe :
+          ((Act.write 1 "if_v" (.lit 0)).run σ
+            ((Hw.refillAct m).run σ σ)).regs (Hw.dreg E r) 32
+            = ((Hw.refillAct m).run σ σ).regs (Hw.dreg E r) 32 :=
+        frame (by
+          intro hm
+          exact absurd (congrArg Prod.snd (List.mem_singleton.mp hm))
+            (show ¬((32 : Nat) = 1) by decide)) σ _
+      by_cases h0 : (operandsOf W).rd = (0 : Fin numRegs)
+      · rw [if_pos h0]
+        rw [writeReg_run_of_zero σ _ E Hw.rdE _ (by
+          rw [show ((Hw.rdE.eval σ)).toNat
+            = ((operandsOf W).rd : Fin numRegs).val from rfl, h0]
+          rfl)]
+        rw [hifvframe]
+        rfl
+      · rw [if_neg h0]
+        rw [writeReg_run_of_nz σ _ E Hw.rdE _ (operandsOf W).rd rfl
+          (fun hc => h0 (Fin.ext hc))]
+        show (RegEnv.set _ (Hw.dreg E (operandsOf W).rd) _)
+          (Hw.dreg E r) 32 = _
+        simp only [RegEnv.set]
+        by_cases hr : r = (operandsOf W).rd
+        · rw [if_pos (by rw [hr]), if_pos hr, dif_pos trivial]
+          show σ.mems "mem" (((Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12).eval σ)).toNat 32 = _
+          rw [haddr]
+        · rw [if_neg (fun hc => hr (dreg_inj E r (operandsOf W).rd hc)),
+            if_neg hr]
+          rw [hifvframe]
+          rfl
+    · -- pc
+      show (RegEnv.set _ (Hw.dpc E)
+        ((Expr.add (Hw.rPc E) (.lit 1)).eval σ)) (Hw.dpc E) 12 = _
+      rw [show (RegEnv.set ((Hw.writeReg E Hw.rdE (Expr.memRead 32 "mem" (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12))).run σ
+            ((Act.write 1 "if_v" (.lit 0)).run σ
+              ((Hw.refillAct m).run σ σ))).regs (Hw.dpc E)
+          ((Expr.add (Hw.rPc E) (.lit 1)).eval σ)) (Hw.dpc E) 12
+        = σ.regs (Hw.dpc E) 12 + 1 from by
+        simp [RegEnv.set, Expr.eval, Hw.rPc]]
+      show σ.regs (Hw.dpc E) 12 + 1
+        = (({ Hw.absDom ((Hw.refillAct m).run σ σ) E with
+            pc := (Hw.absDom ((Hw.refillAct m).run σ σ) E).pc + 1 }).setReg
+            (operandsOf W).rd _).pc
+      rw [setReg_pc]
+      show σ.regs (Hw.dpc E) 12 + 1
+        = ((Hw.refillAct m).run σ σ).regs (Hw.dpc E) 12 + 1
+      rw [refill_pres m σ ((by decide +kernel : ∀ e : DomainId,
+        ((Hw.dpc e : String), (12 : Nat)) ∉
+        ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+          ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+          ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) E)]
+    · -- spec
+      rw [hred, if_pos hcovS, setDom_setDom, hspecA]
+      rfl
+  · -- authority fault
+    have hcovS : ¬(((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (effAddr ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs1) (operandsOf W).imm) ⟨true, false, false⟩ = true) := by
+      rw [hspecA, spec_covers_bridge]
+      intro hc
+      apply hcov
+      rw [show ((Hw.domCoversE E (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12) ⟨true, false, false⟩).eval σ = 1#1)
+        ↔ _ from domCoversE_eval σ E _ _]
+      rwa [haddr]
+    refine square_retire_fault m hwf hfit σ hsync hifv hcl hben E rfl
+      .memoryAuthority
+      (fun acc => by
+        rw [hselC acc]
+        show (if (Hw.domCoversE E (Hw.field (.add (Hw.readReg E Hw.rs1E) Hw.immX) 0 12) ⟨true, false, false⟩).eval σ = 1#1
+          then _ else _) = _
+        rw [if_neg hcov])
+      (by rw [hred, if_neg hcovS])
 
 end Machines.Lnp64u.Theorems.RMC
