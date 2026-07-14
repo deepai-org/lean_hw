@@ -7,6 +7,9 @@ import Machines.Lnp64u.Theorems.RMCAbs
 import Machines.Lnp64u.Theorems.RMCResetDom
 import Machines.Lnp64u.Theorems.RMCFrames
 import Machines.Lnp64u.Theorems.RMCCanon
+import Machines.Lnp64u.Theorems.RMCCountdown
+import Machines.Lnp64u.Theorems.RMCIdle
+import Machines.Lnp64u.Theorems.RMCIssue
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -231,21 +234,40 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
 
 /-! ## The commuting square and coupling preservation -/
 
+/-- The retirement arm — the remaining per-op grind (25 opcode circuits
+against the `Isa` exec semantics, plus the `cap_revoke` mark engine). The
+sole remaining R-MC obligation. -/
+private theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
 /-- **The R-MC square**: one core cycle is exactly one spec step through
-`Hw.abs`. Hypotheses: manifest WF (scheduler
-determinism) and datapath fit, the hidden-state coupling, reachability on
-both sides (spec-side range invariants — budgets `≤ Q`, `depth <
-maxChainDepth`, `cyclesLeft ≤` max cost, mover regions valid — and the
-concrete-side mark-engine state). No wrap side condition: the spec counter
-is a `BitVec 32` too, so the tick arm is `cycle + 1` wrapping identically
-on both sides. -/
+`Hw.abs`. Three of the four arms — countdown, idle-stall, idle-issue —
+are fully proven on the bridge stack; the retirement arm
+(`square_retire`) is the remaining obligation. -/
 theorem square (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
     (hcr : ((Hw.core m).toTSys).Reachable σ)
     (hsr : (machine m).Reachable (Hw.abs σ)) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  by_cases hifv : σ.regs "if_v" 1 = 1#1
+  · by_cases hcl : (σ.regs "if_cl" 8).toNat < 2
+    · exact square_retire m hwf hfit σ hcpl hcr hsr hifv hcl
+    · exact square_countdown m hwf hfit σ hcpl.rctr_sync hifv (by omega)
+  · cases hs : schedule m (refillPhase m (Hw.abs σ)) with
+    | none =>
+        exact square_idle_stall m hwf hfit σ hcpl.rctr_sync hcpl.run_canon
+          hifv hs
+    | some e =>
+        exact square_idle_issue m hwf hfit σ hcpl.rctr_sync hcpl.run_canon
+          hifv e hs
 
 /-- The kind-canonicality clause of `coupled_step`: every write any rule
 makes to a `d*_cap*_kind` register is an encoder image (narrowed kinds are
