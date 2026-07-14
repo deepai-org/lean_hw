@@ -647,6 +647,97 @@ theorem square_retire_dup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     hSPr (operandsOf W).rs1
   have hRD2 : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).reg (operandsOf W).rs2 = DWv :=
     hSPr (operandsOf W).rs2
+  by_cases hlv : σ.regs (Hw.dcapV E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 1 = 1#1
+      ∧ σ.regs (Hw.dgen E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 8 = HWv.extractLsb' 4 8
+      ∧ HWv.extractLsb' 4 8 ≠ 0
+  case neg =>
+    -- stale handle
+    have hlive0 : ¬((Hw.dupSel E).live.eval σ = 1#1) :=
+      fun hc => hlv (hlivE.mp hc)
+    have hlcN : ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E)).liveCap
+        (Handle.decode HWv).slot (Handle.decode HWv).gen = none := by
+      rw [specLiveCap_bridge, abs_liveCap]
+      exact if_neg hlv
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.staleHandle.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_pos (show (Expr.not (Hw.dupSel E).live).eval σ = 1#1 from by
+          show ~~~((Hw.dupSel E).live.eval σ) = 1#1
+          rw [bv1_ne_one.mp hlive0]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hRD2]
+      simp only [hlcN]
+      rfl
+  case pos =>
+  have hliv1 : (Hw.dupSel E).live.eval σ = 1#1 := hlivE.mpr hlv
+  have hlcS : ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E)).liveCap
+      (Handle.decode HWv).slot (Handle.decode HWv).gen
+      = some { kind := Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)
+               lineage := if σ.regs (Hw.dcapLinV E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 1 = 1#1
+                 then some (finOfBv (by decide)
+                   (σ.regs (Hw.dcapLin E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 4))
+                 else none } := by
+    rw [specLiveCap_bridge, abs_liveCap]
+    exact if_pos hlv
+  obtain ⟨ce, hlcS', hcek⟩ :
+      ∃ c0 : CapEntry, ((((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E)).liveCap
+        (Handle.decode HWv).slot (Handle.decode HWv).gen = some c0
+      ∧ c0.kind = Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32) := ⟨_, hlcS, rfl⟩
+  have hclsE2 : (Hw.dupSel E).clsOk.eval σ
+      = (if (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 0 1 = HWv.extractLsb' 12 1
+        then (1#1 : BitVec 1) else 0#1) := by
+    show (if ((Hw.dupSel E).kindW.eval σ).extractLsb' 0 1
+        = ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 12 1
+      then (1#1 : BitVec 1) else 0#1) = _
+    simp only [hkwE, hR1]
+  by_cases hbit : HWv.getLsbD 12 = (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).getLsbD 0
+  case neg =>
+    -- class mismatch
+    have hcls0 : ¬((Hw.dupSel E).clsOk.eval σ = 1#1) := by
+      rw [hclsE2]
+      intro h
+      by_cases hcx : (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 0 1 = HWv.extractLsb' 12 1
+      · exact hbit ((extract1_eq_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32) HWv 0 12).mp hcx).symm
+      · rw [if_neg hcx] at h
+        exact absurd h (by decide)
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.badCap.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.not (Hw.dupSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.dupSel E).live.eval σ) = 1#1)
+          rw [hliv1]
+          decide),
+        if_pos (show (Expr.not (Hw.dupSel E).clsOk).eval σ = 1#1 from by
+          show ~~~((Hw.dupSel E).clsOk.eval σ) = 1#1
+          rw [bv1_ne_one.mp hcls0]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hRD2]
+      simp only [hlcS', hcek]
+      rw [show (decide ((Handle.decode HWv).cls
+          = (Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)).cls)) = false from decide_eq_false
+        (fun hA => hbit ((cls_eq_iff_bits HWv (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)).mp hA))]
+      rfl
+  case pos =>
+  have hcls1 : (Hw.dupSel E).clsOk.eval σ = 1#1 := by
+    rw [hclsE2]
+    rw [if_pos ((extract1_eq_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32) HWv 0 12).mpr hbit.symm)]
+  have hdecT : (decide ((Handle.decode HWv).cls
+      = (Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)).cls)) = true :=
+    decide_eq_true ((cls_eq_iff_bits HWv (σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32)).mpr hbit)
   sorry
 
 end Machines.Lnp64u.Theorems.RMC
