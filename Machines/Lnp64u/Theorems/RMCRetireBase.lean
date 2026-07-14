@@ -231,7 +231,17 @@ theorem square_retire_benign (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       rw [hspec]]
     exact moverAct_mem_quiescent σ _ τ2 hin
       (fun x => (hspec ▸ hcaps x : _)) (fun x => hspec ▸ hgen x)
-      (fun x => hspec ▸ hrgn x) (hspec ▸ hjob) hmem2 hτm a
+      (fun x => hspec ▸ hrgn x) (hspec ▸ hjob)
+      (by
+        intro d sc
+        exact andAll_zero_of_mem σ
+          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_self ..)))
+          (hben "sw" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))
+      hmem2 hτm a
   · -- doms
     funext x
     have hRHS : (moverPhase (corePhase m τ1)).doms x = τ2.doms x := by
