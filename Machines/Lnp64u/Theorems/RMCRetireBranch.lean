@@ -823,13 +823,22 @@ private theorem acc_read_pres' (m : Manifest) (σ : Loom.Hw.St)
 
 set_option maxHeartbeats 6400000 in
 /-- **The retiring-fault square glue.** -/
-theorem square_retire_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+theorem square_retire_fault_of (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
       (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
-    (hben : ∀ mn' ∈ moverMns, (Hw.isMn mn').eval σ ≠ 1#1)
+    (hin : Inert σ)
+    (hswz : ∀ (d : DomainId) (srcCur' : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+        Hw.domCoversE d (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          srcCur']).eval σ = 0#1)
+    (hmemz : ∀ ad : Nat, ((Hw.coreAct m).run σ
+        ((Hw.refillAct m).run σ σ)).mems "mem" ad 32
+      = σ.mems "mem" ad 32)
     (E : DomainId) (hE : E.val = (σ.regs "if_dom" 2).toNat)
     (f : Fault)
     (hcoreF : ∀ acc, (Hw.retireFor E).run σ acc
@@ -898,7 +907,7 @@ theorem square_retire_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
         ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
         ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
-  refine square_retire_benign m hwf hfit σ hsync hifv hcl hben
+  refine square_retire_store m hwf hfit σ hsync hifv hcl hin
     (Hw.haltFault E f) _
     (fun rn w => by
       rw [coreAct_run_retire_eq m σ _ hifv hcl,
@@ -935,13 +944,50 @@ theorem square_retire_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       have h := congrFun (haltDom_mem'
         ({ refillPhase m (Hw.abs σ) with inflight := none }) E
         (BitVec.ofNat 32 f.code)) b
-      rw [h]
+      rw [hmemz, h]
+      rfl)
+    (fun sc => by
+      have h := congrFun (haltDom_mem'
+        ({ refillPhase m (Hw.abs σ) with inflight := none }) E
+        (BitVec.ofNat 32 f.code)) (sc.eval σ)
+      rw [srcWord_quiescent σ hswz sc, h]
       rfl)
     (by
       rw [haltDom_cycle]
       rfl)
     (by
       rw [haltDom_inflight])
+
+
+theorem square_retire_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hben : ∀ mn' ∈ moverMns, (Hw.isMn mn').eval σ ≠ 1#1)
+    (E : DomainId) (hE : E.val = (σ.regs "if_dom" 2).toNat)
+    (f : Fault)
+    (hcoreF : ∀ acc, (Hw.retireFor E).run σ acc
+      = (Hw.haltFault E f).run σ acc)
+    (hspecF : retire { refillPhase m (Hw.abs σ) with inflight := none } E
+        (σ.regs "if_word" 32)
+      = haltWith { refillPhase m (Hw.abs σ) with inflight := none } E f) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) :=
+  square_retire_fault_of m hwf hfit σ hsync hifv hcl
+    (Inert.of_benign σ hben)
+    (fun d sc => andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (hben "sw" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))
+    (fun ad => by
+      rw [coreAct_mems_benign m σ _ hifv hcl hben]
+      exact Loom.Hw.Compile.run_mems_notin "mem" _
+        (by rw [refillAct_memWrites]; simp) σ σ ad 32)
+    E hE f hcoreF hspecF
 
 /-- The unreachable-but-total decode-failure fallback: both sides fault
 with illegal-instruction. -/
