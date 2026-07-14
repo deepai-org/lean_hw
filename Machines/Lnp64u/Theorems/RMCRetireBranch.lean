@@ -1025,7 +1025,7 @@ theorem square_retire_illegal (m : Manifest) (hwf : m.WF) (hfit : Fits m)
 
 /-- Memory authority of the advanced spec state is the pre-cycle
 abstraction's (regions untouched). -/
-private theorem spec_covers_bridge (m : Manifest) (σ : Loom.Hw.St)
+theorem spec_covers_bridge (m : Manifest) (σ : Loom.Hw.St)
     (E : DomainId) (a : Addr) (need : Perms) :
     (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E a need)
       = (Hw.abs σ).domCovers E a need := by
