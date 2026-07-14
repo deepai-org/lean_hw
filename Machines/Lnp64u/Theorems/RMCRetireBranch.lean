@@ -836,6 +836,12 @@ theorem square_retire_fault_of (m : Manifest) (hwf : m.WF) (hfit : Fits m)
           ⟨false, true, false⟩,
         .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
           srcCur']).eval σ = 0#1)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
     (hmemz : ∀ ad : Nat, ((Hw.coreAct m).run σ
         ((Hw.refillAct m).run σ σ)).mems "mem" ad 32
       = σ.mems "mem" ad 32)
@@ -907,7 +913,7 @@ theorem square_retire_fault_of (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
         ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
         ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
-  refine square_retire_store m hwf hfit σ hsync hifv hcl hin
+  refine square_retire_store m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
     (Hw.haltFault E f) _
     (fun rn w => by
       rw [coreAct_run_retire_eq m σ _ hifv hcl,
@@ -983,6 +989,19 @@ theorem square_retire_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
             (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))
+    (fun c r => andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (hben "map" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))
+    (fun c r => andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (hben "unmap" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_self ..)))))))))
     (fun ad => by
       rw [coreAct_mems_benign m σ _ hifv hcl hben]
       exact Loom.Hw.Compile.run_mems_notin "mem" _

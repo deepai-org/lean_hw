@@ -240,7 +240,9 @@ theorem square_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
     exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
-      hjob (fun d sc => andAll_retiring_quiescent σ hnr _) hmem2 hτm a
+      hjob (fun d sc => andAll_retiring_quiescent σ hnr _)
+      (fun c r => andAll_retiring_quiescent σ hnr _)
+      (fun c r => andAll_retiring_quiescent σ hnr _) hmem2 hτm a
   · -- doms
     funext d
     have hRHS : (moverPhase (corePhase m τ1)).doms d = τ1.doms d := by

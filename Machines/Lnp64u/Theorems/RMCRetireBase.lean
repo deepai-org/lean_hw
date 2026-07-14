@@ -241,6 +241,23 @@ theorem square_retire_benign (m : Manifest) (hwf : m.WF) (hfit : Fits m)
             (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
               (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
                 (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))
+      (by
+        intro c r
+        exact andAll_zero_of_mem σ
+          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_self ..)))
+          (hben "map" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))
+      (by
+        intro c r
+        exact andAll_zero_of_mem σ
+          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_self ..)))
+          (hben "unmap" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_self ..)))))))))
       hmem2 hτm a
   · -- doms
     funext x
@@ -316,6 +333,12 @@ theorem square_retire_store (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
     (hin : Inert σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
     (X : Act) (τ2 : MachineState)
     (hcoreR : ∀ (rn : String) (w : Nat),
       ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).regs rn w
@@ -383,7 +406,11 @@ theorem square_retire_store (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       rw [hspec]]
     exact moverAct_mem_core σ _ τ2 hin
       (fun x => (hspec ▸ hcaps x : _)) (fun x => hspec ▸ hgen x)
-      (fun x => hspec ▸ hrgn x) (hspec ▸ hjob)
+      (hspec ▸ hjob)
+      (fun ow sa => by
+        rw [sAuth_quiescent_eval σ hin hmapz hunmapz ow sa]
+        rw [MachineState.domCovers, MachineState.domCovers]
+        simp only [hrgn])
       hmemτ2 hswτ2 a
   · -- doms
     funext x

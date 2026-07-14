@@ -59,12 +59,6 @@ structure Inert (σ : Loom.Hw.St) : Prop where
   killed : ∀ (dm : Expr 2) (sl : Expr 4),
     (Hw.killedByCoreE dm sl).eval σ = 0#1
   newJob : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1
-  mapSet : ∀ (c : DomainId) (r : RegionId),
-    (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
-      .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1
-  unmapSet : ∀ (c : DomainId) (r : RegionId),
-    (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
-      .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1
 
 /-- `killedByCoreE` is off on an inert cycle. -/
 theorem killedByCoreE_quiescent (σ : Loom.Hw.St)
@@ -120,8 +114,6 @@ theorem Inert.of_nonretiring (σ : Loom.Hw.St)
     rw [hnr]
     exact bv1_zero_and _
   newJob d := andAll_retiring_quiescent σ hnr _
-  mapSet c r := andAll_retiring_quiescent σ hnr _
-  unmapSet c r := andAll_retiring_quiescent σ hnr _
 
 /-- Every gate family is off when the latched mnemonic is none of the
 Mover-relevant ops (kill ops, `move`, `map`/`unmap`, `sw`) — the benign
@@ -185,17 +177,7 @@ theorem Inert.of_benign7 (σ : Loom.Hw.St)
     (hben "move" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
       (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
         (List.mem_cons_self ..))))))
-  mapSet c r := andAll_zero_of_mem σ
-    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
-    (hben "map" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-        (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))
-  unmapSet c r := andAll_zero_of_mem σ
-    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
-    (hben "unmap" (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
-          (List.mem_cons_self ..))))))))
+
 
 theorem Inert.of_benign (σ : Loom.Hw.St)
     (hben : ∀ mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return",
@@ -223,13 +205,20 @@ theorem Inert.of_benign (σ : Loom.Hw.St)
 
 /-- `rgnVPostE` falls back to the validity register. -/
 theorem rgnVPostE_quiescent (σ : Loom.Hw.St)
-    (hnr : Inert σ) (c : DomainId) (r : RegionId) :
+    (hnr : Inert σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (c : DomainId) (r : RegionId) :
     (Hw.rgnVPostE c r).eval σ = σ.regs (Hw.drgnV c r) 1 := by
   show (if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
     else if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
     else (Expr.and (.reg 1 (Hw.drgnV c r))
       (.not (Hw.killedByCoreE _ _))).eval σ) = _
-  rw [hnr.mapSet c r, hnr.unmapSet c r]
+  rw [hmapz c r, hunmapz c r]
   show (if (0#1 : BitVec 1) = 1#1 then _
     else if (0#1 : BitVec 1) = 1#1 then _ else _) = _
   rw [if_neg (by decide), if_neg (by decide)]
@@ -238,11 +227,14 @@ theorem rgnVPostE_quiescent (σ : Loom.Hw.St)
 
 /-- `rgnValPostE` falls back to the region register. -/
 theorem rgnValPostE_quiescent (σ : Loom.Hw.St)
-    (hnr : Inert σ) (c : DomainId) (r : RegionId) :
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (c : DomainId) (r : RegionId) :
     (Hw.rgnValPostE c r).eval σ = σ.regs (Hw.drgn c r) 42 := by
   show (if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
     else (Expr.reg 42 (Hw.drgn c r)).eval σ) = _
-  rw [hnr.mapSet c r]
+  rw [hmapz c r]
   rw [if_neg (by decide)]
   rfl
 
@@ -742,7 +734,14 @@ theorem bv2_lit_iff (b : BitVec 2) (c : DomainId) :
 /-- The status-write authority OR-tree decodes to `domCovers` of the
 owner on the abstraction (quiescent core). -/
 theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
-    (hnr : Inert σ) (ow : Expr 2) (sa : Expr 12) :
+    (hnr : Inert σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (ow : Expr 2) (sa : Expr 12) :
     ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
         (List.finRange numRegions).map fun r =>
           Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
@@ -771,8 +770,8 @@ theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
       ⟨false, true, false⟩) (by simp)
     rw [eqE_eval] at h1
     have hc : finOfBv (by decide) (ow.eval σ) = c := (bv2_lit_iff _ c).mp h1
-    rw [rgnVPostE_quiescent σ hnr] at h2
-    rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hnr] at hcv
+    rw [rgnVPostE_quiescent σ hnr hmapz hunmapz] at h2
+    rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hmapz] at hcv
     refine ⟨r, Hw.decRegion (σ.regs (Hw.drgn c r) 42), ?_, hcv⟩
     rw [hc, abs_regions, if_pos h2]
   · rintro ⟨r, rg, hsome, hcov⟩
@@ -791,9 +790,9 @@ theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
       rcases he with rfl | rfl | rfl
       · rw [eqE_eval]
         exact (bv2_lit_iff _ c).mpr rfl
-      · rw [rgnVPostE_quiescent σ hnr]
+      · rw [rgnVPostE_quiescent σ hnr hmapz hunmapz]
         exact hval
-      · rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hnr]
+      · rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hmapz]
         exact hcov
     · rw [if_neg hval] at hsome
       exact absurd hsome (by simp)
@@ -804,8 +803,15 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
     (hnr : Inert σ)
     (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
     (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
-    (hrgn : ∀ d, (τ.doms d).regions = ((Hw.abs σ).doms d).regions)
     (hjob : τ.mover = Hw.absMover σ)
+    (hauthτ : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
     (hmemτ : ∀ b : Addr, acc.mems "mem" b.toNat 32 = τ.mem b)
     (hswτ : ∀ sc : Expr 12, Expr.eval σ
       (((List.finRange numDomains).foldr
@@ -820,11 +826,6 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
       = τ.mem (sc.eval σ))
     (a : Addr) :
     (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a := by
-  have hdc : ∀ (c : DomainId) (b : Addr) (need : Perms),
-      τ.domCovers c b need = (Hw.abs σ).domCovers c b need := by
-    intro c b need
-    rw [MachineState.domCovers, MachineState.domCovers]
-    simp only [hrgn]
   by_cases hv : σ.regs "mov_v" 1 = 1#1
   case neg =>
     have hτn : τ.mover = none := by rw [hjob]; exact absMover_none σ hv
@@ -890,11 +891,12 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
             { r := false, w := true, x := false }]) with hAUTHdef
     -- the authority bridge
     have hauthiff : (AUTH.eval σ = 1#1) ↔
-        (Hw.abs σ).domCovers (finOfBv (by decide) (σ.regs "mov_owner" 2))
+        τ.domCovers (finOfBv (by decide) (σ.regs "mov_owner" 2))
           (σ.regs "mov_status" 12) ⟨false, true, false⟩ = true := by
       rw [hAUTHdef]
-      have := sAuth_quiescent_eval σ hnr OW SA
-      rw [this, hOW, hSA]
+      have h := hauthτ OW SA
+      rw [hOW, hSA] at h
+      exact h
     -- spec side
     simp only [Machines.Lnp64u.moverPhase, hjs]
     -- expression decompositions
@@ -1012,14 +1014,14 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
       rw [if_pos (show ((σ.regs "mov_rem" 13).toNat = 0) from by
         rw [hrem0]; rfl)]
       simp only [Machines.Lnp64u.moverStatus]
-      by_cases hauth : (Hw.abs σ).domCovers
+      by_cases hauth : τ.domCovers
           (finOfBv (by decide) (σ.regs "mov_owner" 2))
           (σ.regs "mov_status" 12) ⟨false, true, false⟩ = true
       · rw [if_pos (show Expr.eval σ (AUTH.and _) = 1#1 from by
           rw [hse]; exact hauthiff.mpr hauth)]
         rw [if_pos (show (({ τ with mover := none } :
             MachineState)).domCovers _ _ _ = true from
-          (show τ.domCovers _ _ _ = true from by rw [hdc]; exact hauth))]
+          (show τ.domCovers _ _ _ = true from hauth))]
         rw [show ((({ τ with mover := none } : MachineState)).write
             (σ.regs "mov_status" 12) 1).mem a =
           Loom.Fun.update τ.mem (σ.regs "mov_status" 12) 1 a from rfl, hup]
@@ -1049,8 +1051,7 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
           rw [hse]; exact fun h => hauth (hauthiff.mp h))]
         rw [if_neg (show ¬((({ τ with mover := none } :
             MachineState)).domCovers _ _ _ = true) from
-          (show ¬(τ.domCovers _ _ _ = true) from by
-            rw [hdc]; exact hauth))]
+          (show ¬(τ.domCovers _ _ _ = true) from hauth))]
         rw [hmw, if_neg (by decide : ¬((0#1:BitVec 1) = 1#1))]
         show acc.mems "mem" a.toNat 32 = τ.mem a
         rw [hmemτ a]
@@ -1109,7 +1110,7 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
           rw [if_pos (show (σ.regs "mov_rem" 13).toNat - 1 = 0 from by
             rw [hrem1]; rfl)]
           simp only [Machines.Lnp64u.moverStatus]
-          by_cases hauth : (Hw.abs σ).domCovers
+          by_cases hauth : τ.domCovers
               (finOfBv (by decide) (σ.regs "mov_owner" 2))
               (σ.regs "mov_status" 12) ⟨false, true, false⟩ = true
           · rw [if_pos (show Expr.eval σ (AUTH.and _) = 1#1 from by
@@ -1117,8 +1118,7 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
             rw [if_pos (show (({ (τ.write (σ.regs "mov_dstcur" 12)
                 (τ.read (σ.regs "mov_srccur" 12))) with mover := none } :
                 MachineState)).domCovers _ _ _ = true from
-              (show τ.domCovers _ _ _ = true from by
-                rw [hdc]; exact hauth))]
+              (show τ.domCovers _ _ _ = true from hauth))]
             rw [show ((({ (τ.write (σ.regs "mov_dstcur" 12)
                 (τ.read (σ.regs "mov_srccur" 12))) with mover := none } :
                 MachineState)).write (σ.regs "mov_status" 12) 1).mem a =
@@ -1149,8 +1149,7 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
             rw [if_neg (show ¬((({ (τ.write (σ.regs "mov_dstcur" 12)
                 (τ.read (σ.regs "mov_srccur" 12))) with mover := none } :
                 MachineState)).domCovers _ _ _ = true) from
-              (show ¬(τ.domCovers _ _ _ = true) from by
-                rw [hdc]; exact hauth))]
+              (show ¬(τ.domCovers _ _ _ = true) from hauth))]
             rw [if_pos hmw1,
               show (({ (τ.write (σ.regs "mov_dstcur" 12)
                 (τ.read (σ.regs "mov_srccur" 12))) with mover := none } :
@@ -1223,15 +1222,14 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
               (Expr.not CHK).eval σ = 1#1
             rw [hne0, hnotchk]; decide)]
         simp only [Machines.Lnp64u.moverStatus]
-        by_cases hauth : (Hw.abs σ).domCovers
+        by_cases hauth : τ.domCovers
             (finOfBv (by decide) (σ.regs "mov_owner" 2))
             (σ.regs "mov_status" 12) ⟨false, true, false⟩ = true
         · rw [if_pos (show Expr.eval σ (AUTH.and _) = 1#1 from by
             rw [hse]; exact hauthiff.mpr hauth)]
           rw [if_pos (show (({ τ with mover := none } :
               MachineState)).domCovers _ _ _ = true from
-            (show τ.domCovers _ _ _ = true from by
-              rw [hdc]; exact hauth))]
+            (show τ.domCovers _ _ _ = true from hauth))]
           rw [show ((({ τ with mover := none } : MachineState)).write
               (σ.regs "mov_status" 12) Errno.staleHandle.toWord).mem a =
             Loom.Fun.update τ.mem (σ.regs "mov_status" 12)
@@ -1250,8 +1248,7 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
             rw [hse]; exact fun h => hauth (hauthiff.mp h))]
           rw [if_neg (show ¬((({ τ with mover := none } :
               MachineState)).domCovers _ _ _ = true) from
-            (show ¬(τ.domCovers _ _ _ = true) from by
-              rw [hdc]; exact hauth))]
+            (show ¬(τ.domCovers _ _ _ = true) from hauth))]
           rw [hmw, if_neg (by decide : ¬((0#1:BitVec 1) = 1#1))]
           show acc.mems "mem" a.toNat 32 = τ.mem a
           rw [hmemτ a]
@@ -1272,11 +1269,21 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
           ⟨false, true, false⟩,
         .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
           srcCur']).eval σ = 0#1)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
     (hmem : ∀ ad, acc.mems "mem" ad 32 = σ.mems "mem" ad 32)
     (hτm : ∀ b : Addr, τ.mem b = σ.mems "mem" b.toNat 32)
     (a : Addr) :
     (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a :=
-  moverAct_mem_core σ acc τ hnr hcaps hgen hrgn hjob
+  moverAct_mem_core σ acc τ hnr hcaps hgen hjob
+    (fun ow sa => by
+      rw [sAuth_quiescent_eval σ hnr hmapz hunmapz ow sa]
+      rw [MachineState.domCovers, MachineState.domCovers]
+      simp only [hrgn])
     (fun b => (hmem b.toNat).trans (hτm b).symm)
     (fun sc => (srcWord_quiescent σ hswz sc).trans (hτm (sc.eval σ)).symm)
     a
