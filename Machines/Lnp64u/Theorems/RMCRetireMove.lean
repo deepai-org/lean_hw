@@ -361,8 +361,12 @@ theorem square_retire_movejob (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [show (moverPhase (corePhase m τ1)).mem = (moverPhase τ2).mem from by
       rw [hspec]]
     exact moverAct_mem_run σ _ τ2 hkills
-      (fun x => (hspec ▸ hcaps x : _)) (fun x => hspec ▸ hgen x)
-      VSRC VDST VOW VSC VDC VSA VREM hjobV
+      VSRC VDST VOW VSC VDC VSA VREM
+      (congrFun (hcaps (Hw.decRef VSRC).dom) _)
+      (congrFun (hgen (Hw.decRef VSRC).dom) _)
+      (congrFun (hcaps (Hw.decRef VDST).dom) _)
+      (congrFun (hgen (Hw.decRef VDST).dom) _)
+      hjobV
       hSRCe hDSTe hOWe hSCe hDCe hSAe hREMe (hspec ▸ hjs)
       (fun ow sa => hspec ▸ hauthτ2 ow sa)
       hmemτ2 hswτ2 a
@@ -417,8 +421,13 @@ theorem square_retire_movejob (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
     rw [show (moverPhase (corePhase m τ1)).mover = (moverPhase τ2).mover
       from by rw [hspec]]
-    exact absMover_moverAct_run σ _ τ2 hkills hcaps hgen
-      VSRC VDST VOW VSC VDC VSA VREM hjobV
+    exact absMover_moverAct_run σ _ τ2 hkills
+      VSRC VDST VOW VSC VDC VSA VREM
+      (congrFun (hcaps (Hw.decRef VSRC).dom) _)
+      (congrFun (hgen (Hw.decRef VSRC).dom) _)
+      (congrFun (hcaps (Hw.decRef VDST).dom) _)
+      (congrFun (hgen (Hw.decRef VDST).dom) _)
+      hjobV
       hSRCe hDSTe hOWe hSCe hDCe hSAe hREMe hjs
   · -- inflight
     have hRHS : (moverPhase (corePhase m τ1)).inflight = none := by

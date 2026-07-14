@@ -374,10 +374,12 @@ theorem abs_liveCap (σ : Loom.Hw.St) (c : DomainId) (s : Slot) (g : Gen) :
 
 /-- The spec's per-word Mover check against any state agreeing with the
 abstraction on the cap tables. -/
-theorem moverCheck_abs (σ : Loom.Hw.St) (τ : MachineState)
-    (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
-    (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
-    (r : CapRef) (a : Addr) (need : Perms) :
+theorem moverCheck_abs (σ : Loom.Hw.St) (τ : MachineState) (r : CapRef)
+    (hcapsr : (τ.doms r.dom).caps r.slot
+      = ((Hw.abs σ).doms r.dom).caps r.slot)
+    (hgenr : (τ.doms r.dom).slotGen r.slot
+      = ((Hw.abs σ).doms r.dom).slotGen r.slot)
+    (a : Addr) (need : Perms) :
     (Machines.Lnp64u.moverCheck τ r a need = true) ↔
       ((Hw.abs σ).liveRef r = true ∧
        (Hw.decKind (σ.regs (Hw.dcapKind r.dom r.slot) 32)).covers a need
@@ -385,7 +387,7 @@ theorem moverCheck_abs (σ : Loom.Hw.St) (τ : MachineState)
   rw [Machines.Lnp64u.moverCheck]
   have hlc : (τ.doms r.dom).liveCap r.slot r.gen
       = ((Hw.abs σ).doms r.dom).liveCap r.slot r.gen := by
-    rw [DomainState.liveCap, DomainState.liveCap, hcaps, hgen]
+    rw [DomainState.liveCap, DomainState.liveCap, hcapsr, hgenr]
   rw [hlc, abs_liveCap]
   have hRl : ((Hw.abs σ).liveRef r = true) ↔
       (σ.regs (Hw.dcapV r.dom r.slot) 1 = 1#1 ∧
@@ -469,10 +471,18 @@ job that the spec's `moverPhase` sees). -/
 theorem absMover_moverAct_run (σ acc : Loom.Hw.St) (τ : MachineState)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
       (Hw.killedByCoreE dm sl).eval σ = 0#1)
-    (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
-    (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
     (VSRC VDST : BitVec 14) (VOW : BitVec 2) (VSC VDC VSA : BitVec 12)
     (VREM : BitVec 13)
+    (hcapsS : (τ.doms (Hw.decRef VSRC).dom).caps (Hw.decRef VSRC).slot
+      = ((Hw.abs σ).doms (Hw.decRef VSRC).dom).caps (Hw.decRef VSRC).slot)
+    (hgenS : (τ.doms (Hw.decRef VSRC).dom).slotGen (Hw.decRef VSRC).slot
+      = ((Hw.abs σ).doms (Hw.decRef VSRC).dom).slotGen
+          (Hw.decRef VSRC).slot)
+    (hcapsD : (τ.doms (Hw.decRef VDST).dom).caps (Hw.decRef VDST).slot
+      = ((Hw.abs σ).doms (Hw.decRef VDST).dom).caps (Hw.decRef VDST).slot)
+    (hgenD : (τ.doms (Hw.decRef VDST).dom).slotGen (Hw.decRef VDST).slot
+      = ((Hw.abs σ).doms (Hw.decRef VDST).dom).slotGen
+          (Hw.decRef VDST).slot)
     (hjobV : (Expr.or (Hw.orAll ((List.finRange numDomains).map
         Hw.newJobSet))
       (.and (.reg 1 "mov_v")
@@ -618,7 +628,8 @@ theorem absMover_moverAct_run (σ acc : Loom.Hw.St) (τ : MachineState)
           (VDC) ⟨false, true, false⟩ = true) := by
       rw [kCovers_eval, kindWAt_ref_eval, hDST, hDC]
     rw [hsrcLive, hdstLive, hsrcCov, hdstCov,
-      moverCheck_abs σ τ hcaps hgen, moverCheck_abs σ τ hcaps hgen]
+      moverCheck_abs σ τ (Hw.decRef VSRC) hcapsS hgenS,
+        moverCheck_abs σ τ (Hw.decRef VDST) hcapsD hgenD]
     simp [and_assoc]
   -- spec side: expose the phase's if-chain on the decoded job
   simp only [Machines.Lnp64u.moverPhase, hjs]
@@ -731,11 +742,13 @@ theorem absMover_moverAct_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
     rw [hnone]
     simp [Machines.Lnp64u.moverPhase, hτ]
   case pos =>
-    exact absMover_moverAct_run σ acc τ hnr.killed hcaps hgen
+    exact absMover_moverAct_run σ acc τ hnr.killed
       (σ.regs "mov_src" 14) (σ.regs "mov_dst" 14)
       (σ.regs "mov_owner" 2) (σ.regs "mov_srccur" 12)
       (σ.regs "mov_dstcur" 12) (σ.regs "mov_status" 12)
       (σ.regs "mov_rem" 13)
+      (congrFun (hcaps _) _) (congrFun (hgen _) _)
+      (congrFun (hcaps _) _) (congrFun (hgen _) _)
       ((jobV_quiescent σ hnr).trans hv)
       (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
       (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
@@ -840,10 +853,18 @@ sibling of `absMover_moverAct_run`). -/
 theorem moverAct_mem_run (σ acc : Loom.Hw.St) (τ : MachineState)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
       (Hw.killedByCoreE dm sl).eval σ = 0#1)
-    (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
-    (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
     (VSRC VDST : BitVec 14) (VOW : BitVec 2) (VSC VDC VSA : BitVec 12)
     (VREM : BitVec 13)
+    (hcapsS : (τ.doms (Hw.decRef VSRC).dom).caps (Hw.decRef VSRC).slot
+      = ((Hw.abs σ).doms (Hw.decRef VSRC).dom).caps (Hw.decRef VSRC).slot)
+    (hgenS : (τ.doms (Hw.decRef VSRC).dom).slotGen (Hw.decRef VSRC).slot
+      = ((Hw.abs σ).doms (Hw.decRef VSRC).dom).slotGen
+          (Hw.decRef VSRC).slot)
+    (hcapsD : (τ.doms (Hw.decRef VDST).dom).caps (Hw.decRef VDST).slot
+      = ((Hw.abs σ).doms (Hw.decRef VDST).dom).caps (Hw.decRef VDST).slot)
+    (hgenD : (τ.doms (Hw.decRef VDST).dom).slotGen (Hw.decRef VDST).slot
+      = ((Hw.abs σ).doms (Hw.decRef VDST).dom).slotGen
+          (Hw.decRef VDST).slot)
     (hjobV : (Expr.or (Hw.orAll ((List.finRange numDomains).map
         Hw.newJobSet))
       (.and (.reg 1 "mov_v")
@@ -1034,7 +1055,8 @@ theorem moverAct_mem_run (σ acc : Loom.Hw.St) (τ : MachineState)
           (VDC) ⟨false, true, false⟩ = true) := by
       rw [kCovers_eval, kindWAt_ref_eval, hDST, hDC]
     rw [hsrcLive, hdstLive, hsrcCov, hdstCov,
-      moverCheck_abs σ τ hcaps hgen, moverCheck_abs σ τ hcaps hgen]
+      moverCheck_abs σ τ (Hw.decRef VSRC) hcapsS hgenS,
+        moverCheck_abs σ τ (Hw.decRef VDST) hcapsD hgenD]
     simp [and_assoc]
   -- shared spec-address facts
   have hup : ∀ (f : Addr → Loom.Word32) (x : Addr) (v : Loom.Word32),
@@ -1341,11 +1363,13 @@ theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
     rw [hlhs, hmemτ a]
     simp [Machines.Lnp64u.moverPhase, hτn]
   case pos =>
-    exact moverAct_mem_run σ acc τ hnr.killed hcaps hgen
+    exact moverAct_mem_run σ acc τ hnr.killed
       (σ.regs "mov_src" 14) (σ.regs "mov_dst" 14)
       (σ.regs "mov_owner" 2) (σ.regs "mov_srccur" 12)
       (σ.regs "mov_dstcur" 12) (σ.regs "mov_status" 12)
       (σ.regs "mov_rem" 13)
+      (congrFun (hcaps _) _) (congrFun (hgen _) _)
+      (congrFun (hcaps _) _) (congrFun (hgen _) _)
       ((jobV_quiescent σ hnr).trans hv)
       (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
       (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
