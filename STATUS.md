@@ -24,8 +24,16 @@ dispatcher over the arms):
 
 16/25: `sw` also landed (the first Mover-interacting op — port-0
 commit selection + the swHit forwarding face over moverAct_mem_core).
-Remaining: the cap ops, gates, map/unmap, move, and the `cap_revoke`
-mark engine; then the 25-way dispatcher.
+
+17/25 (2026-07-14): `unmap` — the first region-editing arm. The 25-way
+dispatcher is also wired (`square_retire` is now sorry-free; the
+remaining leaf sorries are the 7 unproven arm stubs in `RMC.lean`).
+
+18/25 (2026-07-14): `map` — three-outcome arm (stale/badCap errno via
+`map_err_common`, OK via `square_retire_rgnop` with the packed-value
+bridge `decRegion (mapValE eval) = mapRgn`, `KindCanon`-driven).
+Remaining: cap_dup, mem_grant, cap_drop, gate_call, gate_return, move,
+and the `cap_revoke` mark engine.
 
 ## ★★ 2026-07-14: R-MC SQUARE PROVEN FOR 3 OF 4 ARMS — ONLY THE RETIREMENT ARM REMAINS ★★
 
