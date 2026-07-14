@@ -645,8 +645,428 @@ theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         SpecM.require, SpecM.reg, SpecM.load, SpecM.demand, specM_pure]
       simp only [hRD, hcovT0, hcovT1, hcovT2, hcovF, reduceIte]
       rfl
+  case pos =>
+  have haddr3 : ((Expr.add (Hw.moveBase E)
+      (Expr.lit (BitVec.ofNat 12 3))).eval σ) = AW.setWidth 12 + 3 := by
+    show ((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 12
+      + BitVec.ofNat 12 3 = _
+    rw [hR1, hextAW]
+    rfl
+  have hcovT3 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E (AW.setWidth 12 + 3)
+      { r := true, w := false, x := false } = true := by
+    rw [spec_covers_bridge]
+    exact haddr3 ▸ (domCoversE_eval σ E _ _).mp hc3
+  -- descriptor words and the two selectors
+  have hmw0 : (Hw.moveW E 0).eval σ = (σ.mems "mem" (AW.setWidth 12).toNat 32) := by
+    rw [hmwE 0]
+    rw [show AW.setWidth 12 + BitVec.ofNat 12 0 = AW.setWidth 12 from
+      BitVec.add_zero _]
+  have hmw1 : (Hw.moveW E 1).eval σ = (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32) := hmwE 1
+  have hSsval : (finOfBv (by decide : 2 ^ 4 = numSlots)
+      ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4)).val
+      = (((Hw.moveW E 0).eval σ).extractLsb' 0 4).toNat := by
+    rw [hmw0]
+    rfl
+  have hSdval : (finOfBv (by decide : 2 ^ 4 = numSlots)
+      ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4)).val
+      = (((Hw.moveW E 1).eval σ).extractLsb' 0 4).toNat := by
+    rw [hmw1]
+    rfl
+  have hlivSiff := capSel_live_eval σ E (Hw.moveW E 0) _ hSsval
+  have hlivDiff := capSel_live_eval σ E (Hw.moveW E 1) _ hSdval
+  rw [hmw0] at hlivSiff
+  rw [hmw1] at hlivDiff
+  have hkwS : (Hw.moveSrcSel E).kindW.eval σ
+      = σ.regs (Hw.dcapKind E (finOfBv (by decide)
+          ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32 :=
+    capSel_kindW_eval σ E (Hw.moveW E 0) _ hSsval
+  have hkwD : (Hw.moveDstSel E).kindW.eval σ
+      = σ.regs (Hw.dcapKind E (finOfBv (by decide)
+          ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32 :=
+    capSel_kindW_eval σ E (Hw.moveW E 1) _ hSdval
+  have hrd0 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).read (AW.setWidth 12) = (σ.mems "mem" (AW.setWidth 12).toNat 32) := hrd _
+  have hrd1 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).read (AW.setWidth 12 + 1) = (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32) := hrd _
+  by_cases hlvS : σ.regs (Hw.dcapV E (finOfBv (by decide)
+        ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 1 = 1#1
+      ∧ σ.regs (Hw.dgen E (finOfBv (by decide)
+        ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 8 = (σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 4 8
+      ∧ (σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 4 8 ≠ 0
+  case neg =>
+    -- source handle stale
+    have hlive0S : ¬((Hw.moveSrcSel E).live.eval σ = 1#1) :=
+      fun hcc => hlvS (hlivSiff.mp hcc)
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.moveSrcSel E).live : Expr 1),
+          (Resp.err .staleHandle)),
+          List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_self ..))))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.moveSrcSel E).live.eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hlive0S] at h2
+      exact absurd h2 (by decide))
+    have hlcNS : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).liveCap
+        (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen = none := by
+      rw [specLiveCap_bridge, abs_liveCap]
+      exact if_neg hlvS
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.staleHandle.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_pos (show (Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1 from by
+          show ~~~((Hw.moveSrcSel E).live.eval σ) = 1#1
+          rw [bv1_ne_one.mp hlive0S]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcNS]
+      rfl
+  case pos =>
+  -- source selector passes liveness
+  have hliv1S : (Hw.moveSrcSel E).live.eval σ = 1#1 := hlivSiff.mpr hlvS
+  have hlcSS : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).liveCap
+      (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen
+      = some { kind := Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32)
+               lineage := if σ.regs (Hw.dcapLinV E (finOfBv (by decide)
+                   ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 1 = 1#1
+                 then some (finOfBv (by decide)
+                   (σ.regs (Hw.dcapLin E (finOfBv (by decide)
+                     ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 4))
+                 else none } := by
+    rw [specLiveCap_bridge, abs_liveCap]
+    exact if_pos hlvS
+  obtain ⟨ceS, hlcSS', hcekS⟩ :
+      ∃ ce : CapEntry, (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).liveCap
+        (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen = some ce
+      ∧ ce.kind = Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32) := ⟨_, hlcSS, rfl⟩
+  have hclsES : (Hw.moveSrcSel E).clsOk.eval σ
+      = (if (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 0 1 = (σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 12 1
+        then (1#1 : BitVec 1) else 0#1) := by
+    show (if ((Hw.moveSrcSel E).kindW.eval σ).extractLsb' 0 1
+        = ((Hw.moveW E 0).eval σ).extractLsb' 12 1
+      then (1#1 : BitVec 1) else 0#1) = _
+    simp only [hkwS, hmw0]
+  by_cases hbitS : (σ.mems "mem" (AW.setWidth 12).toNat 32).getLsbD 12 = (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).getLsbD 0
+  case neg =>
+    -- source class mismatch
+    have hcls0S : ¬((Hw.moveSrcSel E).clsOk.eval σ = 1#1) := by
+      rw [hclsES]
+      intro h
+      by_cases hcx : (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 0 1 = (σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 12 1
+      · exact hbitS ((extract1_eq_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32) (σ.mems "mem" (AW.setWidth 12).toNat 32) 0 12).mp hcx).symm
+      · rw [if_neg hcx] at h
+        exact absurd h (by decide)
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.moveSrcSel E).clsOk : Expr 1),
+          (Resp.err .badCap)),
+          List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_self ..)))))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.moveSrcSel E).clsOk.eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hcls0S] at h2
+      exact absurd h2 (by decide))
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.badCap.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1)
+            from by
+          show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+          rw [hliv1S]
+          decide),
+        if_pos (show (Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1 from by
+          show ~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1
+          rw [bv1_ne_one.mp hcls0S]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcSS', hcekS]
+      rw [show (decide ((Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).cls
+          = (Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32)).cls)) = false from decide_eq_false
+        (fun hA => hbitS ((cls_eq_iff_bits (σ.mems "mem" (AW.setWidth 12).toNat 32) (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32)).mp hA))]
+      rfl
+  case pos =>
+  -- source class agrees
+  have hcls1S : (Hw.moveSrcSel E).clsOk.eval σ = 1#1 := by
+    rw [hclsES]
+    rw [if_pos ((extract1_eq_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32) (σ.mems "mem" (AW.setWidth 12).toNat 32) 0 12).mpr hbitS.symm)]
+  have hdecS : (decide ((Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).cls
+      = (Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32)).cls)) = true :=
+    decide_eq_true ((cls_eq_iff_bits (σ.mems "mem" (AW.setWidth 12).toNat 32) (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32)).mpr hbitS)
+  by_cases hlvD : σ.regs (Hw.dcapV E (finOfBv (by decide)
+        ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 1 = 1#1
+      ∧ σ.regs (Hw.dgen E (finOfBv (by decide)
+        ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 8 = (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 4 8
+      ∧ (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 4 8 ≠ 0
+  case neg =>
+    -- destination handle stale
+    have hlive0D : ¬((Hw.moveDstSel E).live.eval σ = 1#1) :=
+      fun hcc => hlvD (hlivDiff.mp hcc)
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.moveDstSel E).live : Expr 1),
+          (Resp.err .staleHandle)),
+          List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))),
+          rfl⟩)
+      have h2 : ~~~(~~~((Hw.moveDstSel E).live.eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hlive0D] at h2
+      exact absurd h2 (by decide))
+    have hlcND : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).liveCap
+        (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen = none := by
+      rw [specLiveCap_bridge, abs_liveCap]
+      exact if_neg hlvD
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.staleHandle.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1)
+            from by
+          show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+          rw [hliv1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1)
+            from by
+          show ¬(~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1S]
+          decide),
+        if_pos (show (Expr.not (Hw.moveDstSel E).live).eval σ = 1#1 from by
+          show ~~~((Hw.moveDstSel E).live.eval σ) = 1#1
+          rw [bv1_ne_one.mp hlive0D]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcSS', hcekS]
+      rw [hdecS]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hlcND]
+      rfl
+  case pos =>
+  -- destination selector passes liveness
+  have hliv1D : (Hw.moveDstSel E).live.eval σ = 1#1 := hlivDiff.mpr hlvD
+  have hlcSD : (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).liveCap
+      (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen
+      = some { kind := Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32)
+               lineage := if σ.regs (Hw.dcapLinV E (finOfBv (by decide)
+                   ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 1 = 1#1
+                 then some (finOfBv (by decide)
+                   (σ.regs (Hw.dcapLin E (finOfBv (by decide)
+                     ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 4))
+                 else none } := by
+    rw [specLiveCap_bridge, abs_liveCap]
+    exact if_pos hlvD
+  obtain ⟨ceD, hlcSD', hcekD⟩ :
+      ∃ ce : CapEntry, (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).liveCap
+        (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen = some ce
+      ∧ ce.kind = Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32) := ⟨_, hlcSD, rfl⟩
+  have hclsED : (Hw.moveDstSel E).clsOk.eval σ
+      = (if (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 0 1 = (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 12 1
+        then (1#1 : BitVec 1) else 0#1) := by
+    show (if ((Hw.moveDstSel E).kindW.eval σ).extractLsb' 0 1
+        = ((Hw.moveW E 1).eval σ).extractLsb' 12 1
+      then (1#1 : BitVec 1) else 0#1) = _
+    simp only [hkwD, hmw1]
+  by_cases hbitD : (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).getLsbD 12 = (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).getLsbD 0
+  case neg =>
+    -- destination class mismatch
+    have hcls0D : ¬((Hw.moveDstSel E).clsOk.eval σ = 1#1) := by
+      rw [hclsED]
+      intro h
+      by_cases hcx : (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 0 1 = (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 12 1
+      · exact hbitD ((extract1_eq_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32) (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32) 0 12).mp hcx).symm
+      · rw [if_neg hcx] at h
+        exact absurd h (by decide)
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.moveDstSel E).clsOk : Expr 1),
+          (Resp.err .badCap)),
+          List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+            (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                  (List.mem_cons_self ..)))))))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.moveDstSel E).clsOk.eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hcls0D] at h2
+      exact absurd h2 (by decide))
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.badCap.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1)
+            from by
+          show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+          rw [hliv1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1)
+            from by
+          show ¬(~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).live).eval σ = 1#1)
+            from by
+          show ¬(~~~((Hw.moveDstSel E).live.eval σ) = 1#1)
+          rw [hliv1D]
+          decide),
+        if_pos (show (Expr.not (Hw.moveDstSel E).clsOk).eval σ = 1#1 from by
+          show ~~~((Hw.moveDstSel E).clsOk.eval σ) = 1#1
+          rw [bv1_ne_one.mp hcls0D]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcSS', hcekS]
+      rw [hdecS]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hlcSD', hcekD]
+      rw [show (decide ((Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).cls
+          = (Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32)).cls)) = false from decide_eq_false
+        (fun hA => hbitD ((cls_eq_iff_bits (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32) (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32)).mp hA))]
+      rfl
   sorry
-
-
-
-end Machines.Lnp64u.Theorems.RMC
