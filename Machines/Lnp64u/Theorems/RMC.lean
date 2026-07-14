@@ -14,6 +14,7 @@ import Machines.Lnp64u.Theorems.RMCZero
 import Machines.Lnp64u.Theorems.RMCRetireSw
 import Machines.Lnp64u.Theorems.RMCRetireRgn
 import Machines.Lnp64u.Theorems.RMCRetireMap
+import Machines.Lnp64u.Theorems.RMCRetireMove
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -315,18 +316,6 @@ theorem square_retire_gatereturn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
   sorry
 
-/-- The `move` retirement arm — remaining (NEXTSTEPS §1). -/
-theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
-    (σ : Loom.Hw.St)
-    (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
-    (hsr : (machine m).Reachable (Hw.abs σ))
-    (hifv : σ.regs "if_v" 1 = 1#1)
-    (hcl : (σ.regs "if_cl" 8).toNat < 2)
-    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 24#6) :
-    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
-
 /-- The retirement arm, dispatched over the latched opcode. Sixteen op
 arms plus the decode-failure fallback are proven; the nine remaining
 system-op arms are the leaf obligations above (NEXTSTEPS §1). -/
@@ -385,7 +374,7 @@ theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   by_cases h23 : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6
   · exact square_retire_gatereturn m hwf hfit σ hcpl hcr hsr hifv hcl h23
   by_cases h24 : (σ.regs "if_word" 32).extractLsb' 0 6 = 24#6
-  · exact square_retire_move m hwf hfit σ hcpl hcr hsr hifv hcl h24
+  · exact square_retire_move m hwf hfit σ hsync hz hcpl.kind_canon hifv hcl h24
   by_cases h25 : (σ.regs "if_word" 32).extractLsb' 0 6 = 25#6
   · exact square_retire_yield m hwf hfit σ hsync hifv hcl h25
   by_cases h26 : (σ.regs "if_word" 32).extractLsb' 0 6 = 26#6

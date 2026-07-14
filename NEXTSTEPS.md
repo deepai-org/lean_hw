@@ -86,48 +86,32 @@ dispatcher (opcode-20 stub deleted from `RMC.lean`). Shape that worked:
 - `RegEnv.set` if-conditions orient as `readName = writtenName`; the
   name-disjointness `decide +kernel` facts must match that order.
 
-### In flight (2026-07-14): the `move` arm (`RMCRetireMove.lean`)
+### DONE (2026-07-14): the `move` arm landed (19/25)
 
-The biggest arm: 15 ladder checks (moverBusy, 4 read-authority faults,
-2 selector stales, 2+1 badCaps, 2 permDenied, outOfRange, 1 write-
-authority fault) + the Mover job install on the OK path. Spec: require
-mover-none; 4 `load`s from the descriptor block at `rs1[11:0]`; 2
-`capLive`s; kind match (both mem); perm/range requires; `demand`
-write-cover of `sa`; `set mover := some job`; `setReg rd 0`.
+`square_retire_move` proven in `RMCRetireMove.lean` (the biggest arm:
+15 outcomes) and wired into the dispatcher. What made it tractable:
 
-Stage M1 — support bridges:
-- `moveW_eval i` : memRead expr → `σ.mems "mem"`, spec `load` value =
-  the same word through `Σ1.read`/abs-mem (refill doesn't touch mem).
-- selector bridges: `capSel_live_eval`/`capSel_kindW_eval` are generic
-  over `hwE` — instantiate at `moveW E 0`/`moveW E 1`.
-- perm-bit bridges: `kR`/`kW` extracts vs `(decPerms …).r/.w`
-  (extract1 lemmas + a `decPerms` bit lemma); `outOfRange` via
-  `BitVec.ult`/`toNat`.
-- `Inert.of_move_fail`: kill chains off (opcode 24 is no kill op) +
-  `newJobSet` off from `(moveJob E).ok = 0`.
-
-Stage M2 — the 13 failing outcomes: `move_err_common` (errno clone of
-`map_err_common` with the moveOk-off quiescence) + fault outcomes via
-`square_retire_fault_of`; ladder falls to the i-th check with all
-earlier guards bridged false. Spec reduction: shared `hcore0`/`hDO`
-do-term equation (the map-arm pattern), per-case scrutinee rewrites
-(the 4 loads case on `domCovers`, the 2 capLives on the liveCap
-records via the ce-obtain trick).
-
-Stage M3 — the OK install: `postJ_install`/`newJobSet_install`
-(selected-domain postJ collapse, `ifDomIs` exclusivity), then
-install variants of the two Mover bridges (`absMover_moverAct_*`,
-`moverAct_mem_*`: pre `mov_v = 0`, `jobV = 1` via `newAny`, the
-first copy word runs THIS cycle on both sides — spec `moverPhase`
-of the freshly-installed job), then a `square_retire_movejob` glue
-(clone of `square_retire_rgnop` with the mover-field face replaced
-by the install face) and the OK branch (hok = all 15 checks pass).
+- The map-arm spec-reduction pattern scales: one `hcore0`/`hDO` do-term
+  equation, a 14-level ladder-tower fact (`hladder` + per-case if_neg
+  chains), and per-outcome scrutinee rewrites. The reduction stalls at
+  each unresolved guard — re-run the SpecM simp set after each `rw`
+  (the require/demand ite blocks bind-reduction of the continuation).
+- The two Mover bridges were refactored into value-parameterized run
+  lemmas (`absMover_moverAct_run` / `moverAct_mem_run`): the seven
+  postJ field trees evaluate to abstract values + a decoded-job
+  equation. Quiescent wrappers instantiate at the `mov_*` registers;
+  the install instantiates at `moveJob E` evals (`postJ_install`,
+  `encRefE_sel_eval`, `finOfBv_dLit`), with `remaining` needing the
+  outOfRange bound to collapse the 13-bit truncation.
+- `square_retire_movejob` = `square_retire_rgnop` with the mover faces
+  swapped for the run bridges and `Inert` weakened to kill-chains-off
+  (`killedByCore_of_nokill`; `sAuth_quiescent_eval` relaxed likewise).
 
 Remaining (the deep tail): `cap_dup` /
 `mem_grant` (cap install — needs an install-vs-watched-refs argument or
 a Coupled clause that Mover job refs stay live/dead-stable under
 installs), `cap_drop` / `gate_call` / `gate_return` (kill sets + gate
-faces), `move` (job install), and
+faces), and
 `cap_revoke` (mark-engine convergence + rv `Coupled` clause). Then the
 25-way opcode dispatcher inside `square_retire` (case on
 `extractLsb' 0 6`; the not-in-table branch routes to

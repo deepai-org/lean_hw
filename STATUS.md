@@ -32,7 +32,10 @@ remaining leaf sorries are the 7 unproven arm stubs in `RMC.lean`).
 18/25 (2026-07-14): `map` — three-outcome arm (stale/badCap errno via
 `map_err_common`, OK via `square_retire_rgnop` with the packed-value
 bridge `decRegion (mapValE eval) = mapRgn`, `KindCanon`-driven).
-Remaining: cap_dup, mem_grant, cap_drop, gate_call, gate_return, move,
+19/25 (2026-07-14): `move` — the 15-outcome Mover-programming arm,
+including the job-install cycle (the Mover copies its first word the
+same cycle on both sides; value-parameterized run bridges).
+Remaining: cap_dup, mem_grant, cap_drop, gate_call, gate_return,
 and the `cap_revoke` mark engine.
 
 ## ★★ 2026-07-14: R-MC SQUARE PROVEN FOR 3 OF 4 ARMS — ONLY THE RETIREMENT ARM REMAINS ★★
