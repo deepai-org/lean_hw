@@ -63,6 +63,84 @@ theorem kW_eval_iff (σ : Loom.Hw.St) (kw : Expr 32) (KW : BitVec 32)
 
 /-! ## The failing-`move` `Inert` constructor -/
 
+/-- The kill trees are off whenever no kill op is latched. -/
+theorem killedByCore_of_nokill (σ : Loom.Hw.St)
+    (hkill : ∀ mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return"],
+      (Hw.isMn mn).eval σ ≠ 1#1)
+    (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval σ = 0#1 := by
+  have hz : ∀ (mn : String) (Y : Expr 1),
+      mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return"] →
+      ¬(Expr.and (Hw.isMn mn) Y).eval σ = 1#1 := by
+    intro mn Y hmn hc
+    have hc' : (Hw.isMn mn).eval σ &&& Y.eval σ = 1#1 := hc
+    rw [bv1_ne_one.mp (hkill mn hmn)] at hc'
+    exact absurd (by
+      rw [show (0#1 : BitVec 1) &&& Y.eval σ = 0#1 from by
+        generalize Y.eval σ = b
+        revert b
+        decide] at hc'
+      exact hc') (by decide)
+  apply bv1_ne_one.mp
+  intro hc
+  have h2 := (andAll_eval σ _).mp
+    (show (Hw.andAll [Hw.retiringE,
+      Hw.orAll ((List.finRange numDomains).map fun d =>
+        Expr.and (Hw.ifDomIs d) (Hw.orAll
+          [ .and (Hw.isMn "cap_drop")
+              (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
+            .and (Hw.isMn "cap_revoke")
+              (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
+            .and (Hw.isMn "gate_call")
+              (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
+            .and (Hw.isMn "gate_return")
+              (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]))]).eval σ
+      = 1#1 from hc)
+  have hor := h2 _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))
+  obtain ⟨e, hmem, he⟩ := (orAll_eval σ _).mp hor
+  obtain ⟨d, -, rfl⟩ := List.mem_map.mp hmem
+  have hand : (Hw.ifDomIs d).eval σ &&& (Hw.orAll
+      [ .and (Hw.isMn "cap_drop")
+          (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
+        .and (Hw.isMn "cap_revoke")
+          (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
+        .and (Hw.isMn "gate_call")
+          (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
+        .and (Hw.isMn "gate_return")
+          (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]).eval σ
+      = 1#1 := he
+  have hone : (Hw.orAll
+      [ .and (Hw.isMn "cap_drop")
+          (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
+        .and (Hw.isMn "cap_revoke")
+          (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
+        .and (Hw.isMn "gate_call")
+          (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
+        .and (Hw.isMn "gate_return")
+          (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]).eval σ = 1#1 := by
+    by_cases hi : (Hw.ifDomIs d).eval σ = 1#1
+    · rw [hi] at hand
+      rw [show (1#1 : BitVec 1) &&& (Hw.orAll _).eval σ
+          = (Hw.orAll _).eval σ from by
+        generalize (Hw.orAll _).eval σ = b
+        revert b
+        decide] at hand
+      exact hand
+    · rw [bv1_ne_one.mp hi] at hand
+      exact absurd (by
+        rw [show (0#1 : BitVec 1) &&& (Hw.orAll _).eval σ = 0#1 from by
+          generalize (Hw.orAll _).eval σ = b
+          revert b
+          decide] at hand
+        exact hand) (by decide)
+  obtain ⟨e2, hmem2, he2⟩ := (orAll_eval σ _).mp hone
+  rcases hmem2 with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, h⟩⟩⟩⟩
+  · exact hz "cap_drop" _ (by decide) he2
+  · exact hz "cap_revoke" _ (by decide) he2
+  · exact hz "gate_call" _ (by decide) he2
+  · exact hz "gate_return" _ (by decide) he2
+  · exact absurd h (List.not_mem_nil)
+
 /-- A retiring `move` whose check ladder failed keeps the Mover trees
 quiescent: no kill op is latched, and `newJobSet` needs `ok`. -/
 theorem Inert.of_move_fail (σ : Loom.Hw.St)
@@ -71,78 +149,7 @@ theorem Inert.of_move_fail (σ : Loom.Hw.St)
     (E : DomainId)
     (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
     (hok0 : ((Hw.moveJob E).ok).eval σ ≠ 1#1) : Inert σ where
-  killed dm sl := by
-    have hz : ∀ (mn : String) (Y : Expr 1),
-        mn ∈ ["cap_drop", "cap_revoke", "gate_call", "gate_return"] →
-        ¬(Expr.and (Hw.isMn mn) Y).eval σ = 1#1 := by
-      intro mn Y hmn hc
-      have hc' : (Hw.isMn mn).eval σ &&& Y.eval σ = 1#1 := hc
-      rw [bv1_ne_one.mp (hkill mn hmn)] at hc'
-      exact absurd (by
-        rw [show (0#1 : BitVec 1) &&& Y.eval σ = 0#1 from by
-          generalize Y.eval σ = b
-          revert b
-          decide] at hc'
-        exact hc') (by decide)
-    apply bv1_ne_one.mp
-    intro hc
-    have h2 := (andAll_eval σ _).mp
-      (show (Hw.andAll [Hw.retiringE,
-        Hw.orAll ((List.finRange numDomains).map fun d =>
-          Expr.and (Hw.ifDomIs d) (Hw.orAll
-            [ .and (Hw.isMn "cap_drop")
-                (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
-              .and (Hw.isMn "cap_revoke")
-                (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
-              .and (Hw.isMn "gate_call")
-                (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
-              .and (Hw.isMn "gate_return")
-                (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]))]).eval σ
-        = 1#1 from hc)
-    have hor := h2 _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))
-    obtain ⟨e, hmem, he⟩ := (orAll_eval σ _).mp hor
-    obtain ⟨d, -, rfl⟩ := List.mem_map.mp hmem
-    have hand : (Hw.ifDomIs d).eval σ &&& (Hw.orAll
-        [ .and (Hw.isMn "cap_drop")
-            (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
-          .and (Hw.isMn "cap_revoke")
-            (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
-          .and (Hw.isMn "gate_call")
-            (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
-          .and (Hw.isMn "gate_return")
-            (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]).eval σ
-        = 1#1 := he
-    have hone : (Hw.orAll
-        [ .and (Hw.isMn "cap_drop")
-            (.and (Hw.dropOkE d) (Hw.dropKilled d dm sl)),
-          .and (Hw.isMn "cap_revoke")
-            (.and (Hw.revOkE d) (Hw.revKilled dm sl)),
-          .and (Hw.isMn "gate_call")
-            (.and (Hw.callOkE d) (Hw.callKilled d dm sl)),
-          .and (Hw.isMn "gate_return")
-            (.and (Hw.retOkE d) (Hw.retKilled d dm sl)) ]).eval σ = 1#1 := by
-      by_cases hi : (Hw.ifDomIs d).eval σ = 1#1
-      · rw [hi] at hand
-        rw [show (1#1 : BitVec 1) &&& (Hw.orAll _).eval σ
-            = (Hw.orAll _).eval σ from by
-          generalize (Hw.orAll _).eval σ = b
-          revert b
-          decide] at hand
-        exact hand
-      · rw [bv1_ne_one.mp hi] at hand
-        exact absurd (by
-          rw [show (0#1 : BitVec 1) &&& (Hw.orAll _).eval σ = 0#1 from by
-            generalize (Hw.orAll _).eval σ = b
-            revert b
-            decide] at hand
-          exact hand) (by decide)
-    obtain ⟨e2, hmem2, he2⟩ := (orAll_eval σ _).mp hone
-    rcases hmem2 with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, h⟩⟩⟩⟩
-    · exact hz "cap_drop" _ (by decide) he2
-    · exact hz "cap_revoke" _ (by decide) he2
-    · exact hz "gate_call" _ (by decide) he2
-    · exact hz "gate_return" _ (by decide) he2
-    · exact absurd h (List.not_mem_nil)
+  killed dm sl := killedByCore_of_nokill σ hkill dm sl
   newJob d := by
     by_cases hd : d = E
     · subst hd
@@ -2230,5 +2237,90 @@ theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         hrd3, hlenB, SpecM.get, SpecM.demand, SpecM.fatal, hcovFsa]
       rfl
   case pos =>
-  -- all fifteen checks pass: the install (stage M3)
+  -- ==== OK: the job installs and the Mover starts ====
+  have hsa1 : (Hw.domCoversE E (Hw.field (Hw.moveW E 3) 0 12)
+      { r := false, w := true, x := false }).eval σ = 1#1 := hsaC
+  have haddrSA : ((Hw.field (Hw.moveW E 3) 0 12).eval σ)
+      = (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 := by
+    show ((Hw.moveW E 3).eval σ).extractLsb' 0 12 = _
+    rw [hmw3]
+    exact extract0_eq_setWidth _ _
+  have hcovTsa : (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })).domCovers E ((σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12)
+      { r := false, w := true, x := false } = true := by
+    rw [spec_covers_bridge]
+    exact haddrSA ▸ (domCoversE_eval σ E _ _).mp hsaC
+  have hok1 : ((Hw.moveJob E).ok).eval σ = 1#1 := by
+    show (Hw.andAll ((Hw.moveChecks E).map
+      (fun c => Expr.not c.1))).eval σ = 1#1
+    rw [andAll_eval]
+    intro e he
+    obtain ⟨c, hcmem, rfl⟩ := List.mem_map.mp he
+    rcases hcmem with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _
+      | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _
+      | ⟨_, hnil⟩⟩⟩⟩⟩⟩⟩⟩⟩⟩⟩⟩⟩⟩
+    · show ~~~(σ.regs "mov_v" 1) = 1#1
+      rw [bv1_ne_one.mp hbusy]
+      decide
+    · show ~~~(~~~((Hw.domCoversE E _ _).eval σ)) = 1#1
+      rw [hc0]
+      decide
+    · show ~~~(~~~((Hw.domCoversE E _ _).eval σ)) = 1#1
+      rw [hc1]
+      decide
+    · show ~~~(~~~((Hw.domCoversE E _ _).eval σ)) = 1#1
+      rw [hc2]
+      decide
+    · show ~~~(~~~((Hw.domCoversE E _ _).eval σ)) = 1#1
+      rw [hc3]
+      decide
+    · show ~~~(~~~((Hw.moveSrcSel E).live.eval σ)) = 1#1
+      rw [hliv1S]
+      decide
+    · show ~~~(~~~((Hw.moveSrcSel E).clsOk.eval σ)) = 1#1
+      rw [hcls1S]
+      decide
+    · show ~~~(~~~((Hw.moveDstSel E).live.eval σ)) = 1#1
+      rw [hliv1D]
+      decide
+    · show ~~~(~~~((Hw.moveDstSel E).clsOk.eval σ)) = 1#1
+      rw [hcls1D]
+      decide
+    · show ~~~(~~~((Hw.kIsMem (Hw.moveSrcSel E).kindW).eval σ &&&
+        (Hw.kIsMem (Hw.moveDstSel E).kindW).eval σ)) = 1#1
+      rw [hkm1S, hkm1D]
+      decide
+    · show ~~~(~~~((Hw.kR (Hw.moveSrcSel E).kindW).eval σ)) = 1#1
+      rw [hkr1]
+      decide
+    · show ~~~(~~~((Hw.kW (Hw.moveDstSel E).kindW).eval σ)) = 1#1
+      rw [hkw1]
+      decide
+    · show ~~~((Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32)
+          (Hw.moveW E 2)).eval σ |||
+        (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+          (Hw.moveW E 2)).eval σ) = 1#1
+      rw [hu0S, hu0D]
+      decide
+    · show ~~~(~~~((Hw.domCoversE E _ _).eval σ)) = 1#1
+      rw [hsaC]
+      decide
+    · exact absurd hnil (List.not_mem_nil)
+  have hnj1 : (Hw.newJobSet E).eval σ = 1#1 := by
+    show (Hw.andAll [Hw.retiringE, Hw.ifDomIs E, Hw.isMn "move",
+      (Hw.moveJob E).ok]).eval σ = 1#1
+    rw [andAll_eval]
+    intro e he
+    rcases he with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, hnil⟩⟩⟩⟩
+    · exact hret
+    · exact hifsel
+    · exact hmovemn
+    · exact hok1
+    · exact absurd hnil (List.not_mem_nil)
+  have hnj0 : ∀ d : DomainId, d ≠ E → (Hw.newJobSet d).eval σ = 0#1 :=
+    fun d hd => andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_self ..)) (hifexcl d hd)
+  have hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = 0#1 :=
+    killedByCore_of_nokill σ hkill
   sorry
+
