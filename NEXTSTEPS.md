@@ -107,6 +107,34 @@ dispatcher (opcode-20 stub deleted from `RMC.lean`). Shape that worked:
   swapped for the run bridges and `Inert` weakened to kill-chains-off
   (`killedByCore_of_nokill`; `sAuth_quiescent_eval` relaxed likewise).
 
+### Next up (tier 2): `cap_dup` / `mem_grant` — the install-vs-watched-refs argument
+
+The blocker: the Mover run-bridges take `hcaps`/`hgen` as FULL table
+agreement (`τ2.doms = abs σ.doms` at caps/slotGen), which fails for an
+installing op (new cap at the free slot `NS`). The re-check only probes
+the running job's two watched refs, so weaken `moverCheck_abs` (and the
+run bridges) to agreement AT THE WATCHED REFS' (dom, slot). Then:
+
+- dst ref: `MoverLiveMem` (Logic/Tombstone.lean, `moverLiveMem_invariant`
+  via `hsr`) — live ⟹ slot occupied ⟹ ≠ the free install slot ⟹ tables
+  agree there.
+- src ref: may be stale (that's the -ESTALE abort path), so its slot CAN
+  be the install target. The save is generation discipline: a watched
+  ref was live at job-install time; if since dropped, `clearSlot` bumped
+  `slotGen` past it, and `installDerived` mints at the CURRENT slotGen —
+  so `liveCap r.slot r.gen` stays `none` before AND after the install
+  (`RefFate` in Tombstone.lean is exactly this shape). Needs a spec-side
+  invariant `MoverSrcFated` (mover src is live-or-outgenned), provable
+  by the `Evo` transport (`RefFate` already transports); reach it
+  through `hsr` like T3 does. Conclusion to feed the weakened bridge:
+  `∀ post-install τ2, τ2.liveCap src = abs.liveCap src`.
+- Everything else in the arms is map/move-style: freeSlotV/freeSlotIdx
+  priority-encoder bridges (foldr-mux walks), `installA` write-set
+  faces (caps/lineage install at NS/NL), `handleE`/`genOfE` result
+  word, `narrowChecks` guard bridges vs the spec `narrow` requires
+  (descOff/descLen/descPerms extracts), and `allocDerived`'s
+  freeSlot/freeCell match vs the encoders (lowest-free agreement).
+
 Remaining (the deep tail): `cap_dup` /
 `mem_grant` (cap install — needs an install-vs-watched-refs argument or
 a Coupled clause that Mover job refs stay live/dead-stable under
