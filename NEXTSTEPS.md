@@ -56,8 +56,11 @@ arms are proven.** The retirement infrastructure is complete and landed:
   and case the guards (hand-written match trees do NOT defeq-check
   against the monad's matchers — see the lw arm).
 
-Remaining (the hard tail, all Mover/state-interacting): `sw` (port-0
-store + the Mover's same-cycle store forwarding `swHit`), `cap_dup` /
+16/25 as of the same evening: `sw` landed (port-0 commit selection,
+moverAct_mem_core generalization, swHit forwarding = post-core memory;
+Inert.of_benign7 + square_retire_store / square_retire_fault_of glues).
+
+Remaining (the deep tail): `cap_dup` /
 `mem_grant` (cap install — needs an install-vs-watched-refs argument or
 a Coupled clause that Mover job refs stay live/dead-stable under
 installs), `cap_drop` / `gate_call` / `gate_return` (kill sets + gate
