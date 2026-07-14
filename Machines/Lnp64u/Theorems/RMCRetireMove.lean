@@ -2322,5 +2322,389 @@ theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   have hkills : ∀ (dm : Expr 2) (sl : Expr 4),
       (Hw.killedByCoreE dm sl).eval σ = 0#1 :=
     killedByCore_of_nokill σ hkill
-  sorry
-
+  have hjobV : (Expr.or (Hw.orAll ((List.finRange numDomains).map
+        Hw.newJobSet))
+      (.and (.reg 1 "mov_v")
+        (.not (.and (.reg 1 "mov_v")
+          (.or (Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot)
+               (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot)))))).eval σ
+      = 1#1 := by
+    show (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval σ |||
+      (σ.regs "mov_v" 1 &&&
+        ~~~(σ.regs "mov_v" 1 &&&
+          ((Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot).eval σ |||
+           (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot).eval σ))) = 1#1
+    rw [show (Hw.orAll ((List.finRange numDomains).map
+        Hw.newJobSet)).eval σ = 1#1 from (orAll_eval σ _).mpr
+      ⟨Hw.newJobSet E, List.mem_map.mpr ⟨E, List.mem_finRange E, rfl⟩,
+        hnj1⟩]
+    generalize (σ.regs "mov_v" 1 &&&
+      ~~~(σ.regs "mov_v" 1 &&&
+        ((Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot).eval σ |||
+         (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot).eval σ))) = b
+    revert b
+    decide
+  have hspec : corePhase m (refillPhase m (Hw.abs σ)) = (({ (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })) with mover := some { owner := E, src := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen⟩, dst := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen⟩, srcCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, dstCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, remaining := (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat, statusAddr := (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 } }).setDom E (fun ds => ds.setReg (operandsOf W).rd 0)) := by
+    rw [hcore0, hDO]
+    simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+      SpecM.reg, SpecM.load, SpecM.demand,
+      Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+      SpecM.modify, specM_pure]
+    rw [hmovN]
+    simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+      SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+      Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+      SpecM.modify, specM_pure]
+    simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+      specM_bind, specM_pure, hrd0, hrd1]
+    simp only [hlcSS', hcekS]
+    rw [hdecS]
+    simp only [reduceIte, specM_bind, specM_pure]
+    simp only [hlcSD', hcekD]
+    rw [hdecD]
+    simp only [reduceIte, specM_bind, specM_pure]
+    simp only [hcekS, hcekD]
+    simp only [hmkS2, hmkD2]
+    simp only [hprS, hpwD, reduceIte, specM_bind, specM_pure, hrd2,
+      hrd3, hlenB, SpecM.get, SpecM.demand, SpecM.fatal, SpecM.set,
+      SpecM.setReg, SpecM.modify, hcovTsa]
+  have hτ2doms : ∀ x, ((({ (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })) with mover := some { owner := E, src := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen⟩, dst := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen⟩, srcCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, dstCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, remaining := (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat, statusAddr := (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 } }).setDom E (fun ds => ds.setReg (operandsOf W).rd 0))).doms x
+      = if x = E
+        then ({ (refillPhase m (Hw.abs σ)).doms E with
+            pc := ((refillPhase m (Hw.abs σ)).doms E).pc + 1 }).setReg
+          (operandsOf W).rd 0
+        else (refillPhase m (Hw.abs σ)).doms x := by
+    intro x
+    show (Loom.Fun.update (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })).doms E
+      (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })).doms E).setReg (operandsOf W).rd 0)) x = _
+    by_cases hx : x = E
+    · subst hx
+      rw [Loom.Fun.update_same, if_pos rfl]
+      show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E
+        ({ (refillPhase m (Hw.abs σ)).doms E with
+          pc := ((refillPhase m (Hw.abs σ)).doms E).pc + 1 }) E).setReg
+        (operandsOf W).rd 0) = _
+      rw [Loom.Fun.update_same]
+    · rw [Loom.Fun.update_ne _ _ _ _ hx, if_neg hx]
+      show (Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E _) x = _
+      rw [Loom.Fun.update_ne _ _ _ _ hx]
+  have hrgn2 : ∀ d, ((((({ (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })) with mover := some { owner := E, src := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen⟩, dst := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen⟩, srcCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, dstCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, remaining := (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat, statusAddr := (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 } }).setDom E (fun ds => ds.setReg (operandsOf W).rd 0))).doms d)).regions
+      = ((Hw.abs σ).doms d).regions := by
+    intro d
+    rw [hτ2doms d]
+    by_cases hd : d = E
+    · rw [if_pos hd, setReg_regions]
+      show ((refillPhase m (Hw.abs σ)).doms E).regions = _
+      rw [refillPhase_regions, hd]
+    · rw [if_neg hd, refillPhase_regions]
+  have hremEq : ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).extractLsb' 0 13).toNat = (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat := by
+    rw [extract0_eq_setWidth, BitVec.toNat_setWidth]
+    apply Nat.mod_eq_of_lt
+    have h1 := hlen.1
+    have h2 := ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).isLt
+    omega
+  have hjs : ((({ (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })) with mover := some { owner := E, src := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen⟩, dst := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen⟩, srcCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, dstCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, remaining := (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat, statusAddr := (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 } }).setDom E (fun ds => ds.setReg (operandsOf W).rd 0))).mover = some
+      { owner := finOfBv (by decide) (BitVec.ofNat 2 E.val)
+        src := Hw.decRef (Hw.encRef ⟨E, finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4), (σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 4 8⟩)
+        dst := Hw.decRef (Hw.encRef ⟨E, finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4), (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 4 8⟩)
+        srcCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12
+        dstCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12
+        remaining := ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).extractLsb' 0 13).toNat
+        statusAddr := (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 } := by
+    show some ({ owner := E, src := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12).toNat 32)).gen⟩, dst := ⟨E, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).slot, (Handle.decode (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32)).gen⟩, srcCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, dstCur := (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12, remaining := (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat, statusAddr := (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 } : MoverJob) = _
+    rw [decRef_encRef, decRef_encRef, finOfBv_dLit, hremEq]
+    rfl
+  have hcoreX : ∀ acc, (Hw.retireFor E).run σ acc
+      = (Act.seq (Hw.writeReg E Hw.rdE (.lit 0)) (Hw.pcAdvA E)).run σ
+          acc := by
+    intro acc
+    rw [hladder acc,
+      if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+      if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 0)))
+          { r := true, w := false, x := false })).eval σ = 1#1) from by
+        show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+        rw [hc0]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 1)))
+          { r := true, w := false, x := false })).eval σ = 1#1) from by
+        show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+        rw [hc1]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 2)))
+          { r := true, w := false, x := false })).eval σ = 1#1) from by
+        show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+        rw [hc2]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+          (.lit (BitVec.ofNat 12 3)))
+          { r := true, w := false, x := false })).eval σ = 1#1) from by
+        show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+        rw [hc3]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1) from by
+        show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+        rw [hliv1S]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1) from by
+        show ¬(~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1)
+        rw [hcls1S]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.moveDstSel E).live).eval σ = 1#1) from by
+        show ¬(~~~((Hw.moveDstSel E).live.eval σ) = 1#1)
+        rw [hliv1D]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.moveDstSel E).clsOk).eval σ = 1#1) from by
+        show ¬(~~~((Hw.moveDstSel E).clsOk.eval σ) = 1#1)
+        rw [hcls1D]
+        decide),
+      if_neg (show ¬((Expr.not (Expr.and
+          (Hw.kIsMem (Hw.moveSrcSel E).kindW)
+          (Hw.kIsMem (Hw.moveDstSel E).kindW))).eval σ = 1#1) from by
+        show ¬(~~~((Hw.kIsMem (Hw.moveSrcSel E).kindW).eval σ &&&
+          (Hw.kIsMem (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+        rw [hkm1S, hkm1D]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.kR (Hw.moveSrcSel E).kindW)).eval σ = 1#1) from by
+        show ¬(~~~((Hw.kR (Hw.moveSrcSel E).kindW).eval σ) = 1#1)
+        rw [hkr1]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.kW (Hw.moveDstSel E).kindW)).eval σ = 1#1) from by
+        show ¬(~~~((Hw.kW (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+        rw [hkw1]
+        decide),
+      if_neg (show ¬((Expr.or (Expr.ult
+          (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32) (Hw.moveW E 2))
+          (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+            (Hw.moveW E 2))).eval σ = 1#1) from by
+        show ¬(((Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32)
+            (Hw.moveW E 2)).eval σ |||
+          (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+            (Hw.moveW E 2)).eval σ) = 1#1)
+        rw [hu0S, hu0D]
+        decide),
+      if_neg (show ¬((Expr.not (Hw.domCoversE E
+          (Hw.field (Hw.moveW E 3) 0 12)
+          { r := false, w := true, x := false })).eval σ = 1#1) from by
+        show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+        rw [hsaC]
+        decide)]
+  refine square_retire_movejob m hwf hfit σ hsync hifv hcl hkills
+    (Hw.encRef ⟨E, finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4), (σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 4 8⟩) (Hw.encRef ⟨E, finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4), (σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 4 8⟩) (BitVec.ofNat 2 E.val)
+    ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12) ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12)
+    ((σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12) ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).extractLsb' 0 13)
+    hjobV
+    (by
+      rw [postJ_install σ E hnj1 hnj0]
+      show (Hw.encRefE (Hw.dLit E)
+        (Hw.capSel E (Hw.moveW E 0)).slot
+        (Hw.capSel E (Hw.moveW E 0)).gen).eval σ = _
+      rw [encRefE_sel_eval σ E (Hw.moveW E 0)]
+      simp only [hmw0])
+    (by
+      rw [postJ_install σ E hnj1 hnj0]
+      show (Hw.encRefE (Hw.dLit E)
+        (Hw.capSel E (Hw.moveW E 1)).slot
+        (Hw.capSel E (Hw.moveW E 1)).gen).eval σ = _
+      rw [encRefE_sel_eval σ E (Hw.moveW E 1)]
+      simp only [hmw1])
+    (by
+      rw [postJ_install σ E hnj1 hnj0]
+      rfl)
+    (by
+      rw [postJ_install σ E hnj1 hnj0]
+      show ((Hw.moveSrcSel E).kindW.eval σ).extractLsb' 1 12 = _
+      rw [hkwS])
+    (by
+      rw [postJ_install σ E hnj1 hnj0]
+      show ((Hw.moveDstSel E).kindW.eval σ).extractLsb' 1 12 = _
+      rw [hkwD])
+    (by
+      rw [postJ_install σ E hnj1 hnj0]
+      show ((Hw.moveW E 3).eval σ).extractLsb' 0 12 = _
+      rw [hmw3, extract0_eq_setWidth])
+    (by
+      rw [postJ_install σ E hnj1 hnj0]
+      show ((Hw.moveW E 2).eval σ).extractLsb' 0 13 = _
+      rw [hmw2])
+    (Act.seq (Hw.writeReg E Hw.rdE (.lit 0)) (Hw.pcAdvA E)) _
+    (fun rn w => by
+      rw [coreAct_run_retire_eq m σ _ hifv hcl,
+        retireAct_run_regs σ _ E rfl rn w, hcoreX]
+      rfl)
+    (by
+      intro hm
+      rcases List.mem_append.mp (show (("if_v" : String), (1 : Nat)) ∈
+          (Hw.writeReg E Hw.rdE (Expr.lit 0)).regWrites ++ [(Hw.dpc E, (12 : Nat))] from hm) with h | h
+      · exact absurd h ((by decide +kernel : ∀ e : DomainId,
+          (("if_v" : String), (1 : Nat))
+            ∉ (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) E)
+      · exact absurd (congrArg Prod.snd (List.mem_singleton.mp h))
+          (show ¬((1 : Nat) = 12) by decide))
+    hspec ?_ ?_ ?_ ?_ hjs (fun ow sa => ?_) ?_ ?_ ?_ ?_
+  · -- absDom faces
+    intro x
+    rw [hτ2doms x]
+    by_cases hx : x = E
+    · rw [if_pos hx]
+      subst hx
+      have hq : ∀ q ∈ domQuietNames E,
+          ((Act.seq (.write 1 "if_v" (.lit 0))
+            (Act.seq (Hw.writeReg E Hw.rdE (.lit 0))
+              (Hw.pcAdvA E))).run σ ((Hw.refillAct m).run σ σ)).regs
+            q.1 q.2 = ((Hw.refillAct m).run σ σ).regs q.1 q.2 := by
+        intro q hq'
+        refine frame ?_ σ _
+        intro hm
+        rcases List.mem_cons.mp (show q ∈ ("if_v", (1 : Nat)) ::
+            ((Hw.writeReg E Hw.rdE (Expr.lit 0)).regWrites ++ [(Hw.dpc E, (12 : Nat))]) from hm) with h | h
+        · exact (quiet_notin_dom E E q hq') (h ▸ List.mem_cons_self ..)
+        · rcases List.mem_append.mp h with h' | h'
+          · exact (quiet_notin_dom E E q hq')
+              ((by decide +kernel : ∀ (e : DomainId) (q' : String × Nat),
+                q' ∈ (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites →
+                q' ∈ ("if_v", 1) :: domWrites e) E q h')
+          · exact (quiet_notin_dom E E q hq')
+              ((List.mem_singleton.mp h') ▸ List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                  (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                    (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                      (List.mem_cons_self ..)))))))))
+      rw [absDom_regpc E hq, hL1 E]
+      apply domainState_ext'
+      · funext r
+        show ((Hw.pcAdvA E).run σ
+          ((Hw.writeReg E Hw.rdE (.lit 0)).run σ
+            ((Act.write 1 "if_v" (.lit 0)).run σ
+              ((Hw.refillAct m).run σ σ)))).regs (Hw.dreg E r) 32 = _
+        rw [setReg_regs]
+        rw [frame (show (Hw.dreg E r, 32) ∉ (Hw.pcAdvA E).regWrites from
+          fun hm => absurd (congrArg Prod.snd (List.mem_singleton.mp hm))
+            (show ¬((32 : Nat) = 12) by decide)) σ _]
+        have hifvframe : ∀ rr : RegId,
+            ((Act.write 1 "if_v" (.lit 0)).run σ
+              ((Hw.refillAct m).run σ σ)).regs (Hw.dreg E rr) 32
+            = ((Hw.refillAct m).run σ σ).regs (Hw.dreg E rr) 32 :=
+          fun rr => frame (fun hm => absurd
+            (congrArg Prod.snd (List.mem_singleton.mp hm))
+            (show ¬((32 : Nat) = 1) by decide)) σ _
+        by_cases h0 : (operandsOf W).rd = (0 : Fin numRegs)
+        · rw [if_pos h0]
+          rw [writeReg_run_of_zero σ _ E Hw.rdE _ (by
+            rw [show ((Hw.rdE.eval σ)).toNat
+              = ((operandsOf W).rd : Fin numRegs).val from rfl, h0]
+            rfl)]
+          rw [hifvframe r]
+          rfl
+        · rw [if_neg h0]
+          rw [writeReg_run_of_nz σ _ E Hw.rdE _ (operandsOf W).rd rfl
+            (fun hc => h0 (Fin.ext hc))]
+          show (RegEnv.set _ (Hw.dreg E (operandsOf W).rd) _)
+            (Hw.dreg E r) 32 = _
+          simp only [RegEnv.set]
+          by_cases hr : r = (operandsOf W).rd
+          · rw [if_pos (by rw [hr]), if_pos hr, dif_pos trivial]
+            rfl
+          · rw [if_neg (fun hc => hr (dreg_inj E r (operandsOf W).rd hc)),
+              if_neg hr]
+            rw [hifvframe r]
+            rfl
+      · show ((Hw.pcAdvA E).run σ
+          ((Hw.writeReg E Hw.rdE (.lit 0)).run σ
+            ((Act.write 1 "if_v" (.lit 0)).run σ
+              ((Hw.refillAct m).run σ σ)))).regs (Hw.dpc E) 12 = _
+        rw [setReg_pc]
+        rw [show ((Hw.pcAdvA E).run σ
+            ((Hw.writeReg E Hw.rdE (.lit 0)).run σ
+              ((Act.write 1 "if_v" (.lit 0)).run σ
+                ((Hw.refillAct m).run σ σ)))).regs (Hw.dpc E) 12
+          = σ.regs (Hw.dpc E) 12 + 1 from by
+          show (RegEnv.set _ (Hw.dpc E)
+            ((Expr.add (Hw.rPc E) (.lit 1)).eval σ)) (Hw.dpc E) 12 = _
+          simp [RegEnv.set, Expr.eval, Hw.rPc]]
+        show σ.regs (Hw.dpc E) 12 + 1
+          = ((Hw.refillAct m).run σ σ).regs (Hw.dpc E) 12 + 1
+        rw [refill_pres m σ ((by decide +kernel : ∀ e : DomainId,
+          ((Hw.dpc e : String), (12 : Nat)) ∉
+          ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+            ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+            ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat)))
+          E)]
+      · rw [setReg_caps]
+      · rw [setReg_slotGen]
+      · rw [setReg_lineage]
+      · rw [setReg_regions]
+      · rw [setReg_run]
+      · rw [setReg_serving]
+      · rw [setReg_cause]
+      · rw [setReg_budget]
+      · rw [setReg_maxDonation]
+    · rw [if_neg hx, hL1 x]
+      refine absDom_congr x (fun p hp => frame ?_ σ _)
+      intro hm
+      rcases List.mem_cons.mp (show p ∈ ("if_v", (1 : Nat)) ::
+          ((Hw.writeReg E Hw.rdE (Expr.lit 0)).regWrites ++ [(Hw.dpc E, (12 : Nat))]) from hm) with h | h
+      · exact (read_notin_dom_ne x E hx p hp) (h ▸ List.mem_cons_self ..)
+      · rcases List.mem_append.mp h with h' | h'
+        · exact (read_notin_dom_ne x E hx p hp)
+            ((by decide +kernel : ∀ (e : DomainId) (q' : String × Nat),
+              q' ∈ (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites →
+              q' ∈ ("if_v", 1) :: domWrites e) E p h')
+        · exact (read_notin_dom_ne x E hx p hp)
+            ((List.mem_singleton.mp h') ▸ List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                  (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                    (List.mem_cons_self ..)))))))))
+  · -- gates
+    intro g
+    rw [absGate_congr g (fun p hp => frame (by
+      intro hm
+      rcases List.mem_cons.mp (show p ∈ ("if_v", (1 : Nat)) ::
+          ((Hw.writeReg E Hw.rdE (Expr.lit 0)).regWrites ++ [(Hw.dpc E, (12 : Nat))]) from hm) with h | h
+      · exact (gate_notin_dom g E p hp) (h ▸ List.mem_cons_self ..)
+      · rcases List.mem_append.mp h with h' | h'
+        · exact (gate_notin_dom g E p hp)
+            ((by decide +kernel : ∀ (e : DomainId) (q' : String × Nat),
+              q' ∈ (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites →
+              q' ∈ ("if_v", 1) :: domWrites e) E p h')
+        · exact (gate_notin_dom g E p hp)
+            ((List.mem_singleton.mp h') ▸ List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+              (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                  (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+                    (List.mem_cons_self ..)))))))))) σ _)]
+    rw [← habs1]
+    rfl
+  · intro x
+    rw [hτ2doms x]
+    by_cases hx : x = E
+    · rw [if_pos hx, setReg_caps]
+      show ((refillPhase m (Hw.abs σ)).doms E).caps = _
+      rw [refillPhase_caps, hx]
+    · rw [if_neg hx, refillPhase_caps]
+  · intro x
+    rw [hτ2doms x]
+    by_cases hx : x = E
+    · rw [if_pos hx, setReg_slotGen]
+      show ((refillPhase m (Hw.abs σ)).doms E).slotGen = _
+      rw [refillPhase_slotGen, hx]
+    · rw [if_neg hx, refillPhase_slotGen]
+  · -- status authority (regions untouched)
+    rw [sAuth_quiescent_eval σ hkills hmapz hunmapz ow sa]
+    rw [MachineState.domCovers, MachineState.domCovers]
+    simp only [hrgn2]
+  · -- memory: no store
+    intro b
+    rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
+    rw [refill_pres_mem m σ "mem" b.toNat 32]
+    rfl
+  · -- forwarding quiescent
+    intro sc
+    rw [srcWord_quiescent σ hswz sc]
+    rfl
+  · show (refillPhase m (Hw.abs σ)).cycle = _
+    rfl
+  · rfl
