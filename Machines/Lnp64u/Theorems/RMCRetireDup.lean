@@ -174,4 +174,133 @@ theorem freeCell_congr (τ τ' : MachineState) (E : DomainId)
   funext l
   rw [hl l]
 
+
+/-! ## Watched-ref Mover wrappers (tier-2 installs)
+
+An installing op is core-inert for the kill/newJob trees, but its `τ2`
+tables differ from the abstraction at the freshly-installed slot. The
+re-check only probes the running job's refs, so agreement there (from
+`MoverLiveSrc`/`MoverLiveMem` through `hsr`) suffices. -/
+
+theorem absMover_moverAct_watched (σ acc : Loom.Hw.St) (τ : MachineState)
+    (hnr : Inert σ)
+    (hjob : τ.mover = Hw.absMover σ)
+    (hcapsS : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_src" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_src" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_src" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_src" 14)).slot)
+    (hgenS : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_src" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_src" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_src" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_src" 14)).slot)
+    (hcapsD : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot)
+    (hgenD : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot) :
+    Hw.absMover (Hw.moverAct.run σ acc) = (moverPhase τ).mover := by
+  by_cases hv : σ.regs "mov_v" 1 = 1#1
+  case neg =>
+    have hnone : Hw.absMover (Hw.moverAct.run σ acc) = none := by
+      apply absMover_none
+      show ¬ (Act.run σ Hw.moverAct acc).regs "mov_v" 1 = 1#1
+      simp only [Hw.moverAct]
+      simp only [Act.run]
+      rw [jobV_quiescent σ hnr, if_neg hv]
+      simp [RegEnv.set, Expr.eval]
+    have hτ : τ.mover = none := by rw [hjob]; exact absMover_none σ hv
+    rw [hnone]
+    simp [Machines.Lnp64u.moverPhase, hτ]
+  case pos =>
+    exact absMover_moverAct_run σ acc τ hnr.killed
+      (σ.regs "mov_src" 14) (σ.regs "mov_dst" 14)
+      (σ.regs "mov_owner" 2) (σ.regs "mov_srccur" 12)
+      (σ.regs "mov_dstcur" 12) (σ.regs "mov_status" 12)
+      (σ.regs "mov_rem" 13)
+      (hcapsS hv) (hgenS hv) (hcapsD hv) (hgenD hv)
+      ((jobV_quiescent σ hnr).trans hv)
+      (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
+      (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
+      (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
+      (postJ_quiescent σ hnr _ _)
+      (by rw [hjob]; exact absMover_some σ hv)
+
+theorem moverAct_mem_watched (σ acc : Loom.Hw.St) (τ : MachineState)
+    (hnr : Inert σ)
+    (hjob : τ.mover = Hw.absMover σ)
+    (hcapsS : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_src" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_src" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_src" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_src" 14)).slot)
+    (hgenS : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_src" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_src" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_src" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_src" 14)).slot)
+    (hcapsD : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot)
+    (hgenD : σ.regs "mov_v" 1 = 1#1 →
+      (τ.doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot)
+    (hauthτ : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmemτ : ∀ b : Addr, acc.mems "mem" b.toNat 32 = τ.mem b)
+    (hswτ : ∀ sc : Expr 12, Expr.eval σ
+      (((List.finRange numDomains).foldr
+        (fun d acc' =>
+          Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+              Hw.domCoversE d
+                (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                ⟨false, true, false⟩,
+              .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
+            (Hw.readReg d Hw.rs2E) acc')
+        (.memRead 32 "mem" sc)))
+      = τ.mem (sc.eval σ))
+    (a : Addr) :
+    (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a := by
+  by_cases hv : σ.regs "mov_v" 1 = 1#1
+  case neg =>
+    have hτn : τ.mover = none := by rw [hjob]; exact absMover_none σ hv
+    have hlhs : (Hw.moverAct.run σ acc).mems "mem" a.toNat 32
+        = acc.mems "mem" a.toNat 32 := by
+      show (Act.run σ Hw.moverAct acc).mems "mem" a.toNat 32 = _
+      simp only [Hw.moverAct]
+      simp only [Act.run]
+      rw [jobV_quiescent σ hnr, if_neg hv]
+    rw [hlhs, hmemτ a]
+    simp [Machines.Lnp64u.moverPhase, hτn]
+  case pos =>
+    exact moverAct_mem_run σ acc τ hnr.killed
+      (σ.regs "mov_src" 14) (σ.regs "mov_dst" 14)
+      (σ.regs "mov_owner" 2) (σ.regs "mov_srccur" 12)
+      (σ.regs "mov_dstcur" 12) (σ.regs "mov_status" 12)
+      (σ.regs "mov_rem" 13)
+      (hcapsS hv) (hgenS hv) (hcapsD hv) (hgenD hv)
+      ((jobV_quiescent σ hnr).trans hv)
+      (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
+      (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
+      (postJ_quiescent σ hnr _ _) (postJ_quiescent σ hnr _ _)
+      (postJ_quiescent σ hnr _ _)
+      (by rw [hjob]; exact absMover_some σ hv)
+      hauthτ hmemτ hswτ a
+
 end Machines.Lnp64u.Theorems.RMC
