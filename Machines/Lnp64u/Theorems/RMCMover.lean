@@ -783,14 +783,24 @@ theorem sAuth_quiescent_eval (σ : Loom.Hw.St)
 
 
 /-- **The quiescent Mover bridge, memory face.** -/
-theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
+theorem moverAct_mem_core (σ acc : Loom.Hw.St) (τ : MachineState)
     (hnr : Inert σ)
     (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
     (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
     (hrgn : ∀ d, (τ.doms d).regions = ((Hw.abs σ).doms d).regions)
     (hjob : τ.mover = Hw.absMover σ)
-    (hmem : ∀ ad, acc.mems "mem" ad 32 = σ.mems "mem" ad 32)
-    (hτm : ∀ b : Addr, τ.mem b = σ.mems "mem" b.toNat 32)
+    (hmemτ : ∀ b : Addr, acc.mems "mem" b.toNat 32 = τ.mem b)
+    (hswτ : ∀ sc : Expr 12, Expr.eval σ
+      (((List.finRange numDomains).foldr
+        (fun d acc' =>
+          Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+              Hw.domCoversE d
+                (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                ⟨false, true, false⟩,
+              .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
+            (Hw.readReg d Hw.rs2E) acc')
+        (.memRead 32 "mem" sc)))
+      = τ.mem (sc.eval σ))
     (a : Addr) :
     (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a := by
   have hdc : ∀ (c : DomainId) (b : Addr) (need : Perms),
@@ -807,7 +817,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
       simp only [Hw.moverAct]
       simp only [Act.run]
       rw [jobV_quiescent σ hnr, if_neg hv]
-    rw [hlhs, hmem, ← hτm]
+    rw [hlhs, hmemτ a]
     simp [Machines.Lnp64u.moverPhase, hτn]
   case pos =>
     have hjs : τ.mover = some
@@ -884,18 +894,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
           ((Expr.not CHK).eval σ ||| (Expr.eq R (.lit 1)).eval σ)) := rfl
     have haddr : ∀ x y : BitVec 12, (x.toNat = y.toNat) ↔ x = y :=
       fun x y => ⟨fun h => BitVec.eq_of_toNat_eq h, fun h => by rw [h]⟩
-    have hsw : ∀ (sc : Expr 12), Expr.eval σ
-        (((List.finRange numDomains).foldr
-          (fun d acc =>
-            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
-                Hw.domCoversE d
-                  (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
-                  ⟨false, true, false⟩,
-                .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
-              (Hw.readReg d Hw.rs2E) acc)
-          (.memRead 32 "mem" sc)))
-        = σ.mems "mem" ((sc.eval σ)).toNat 32 := fun sc =>
-      srcWord_quiescent σ hnr sc
+    have hsw := hswτ
     -- the re-check bridge (same as the mover-field face)
     have hlivS : ((Hw.liveRefE (Hw.field SRC 12 2) (Hw.field SRC 8 4)
           (Hw.field SRC 0 8)).and
@@ -1028,7 +1027,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
         · rw [if_neg haa, if_neg (show ¬(a = σ.regs "mov_status" 12) from by
             rw [← hSA]; exact fun h => haa ((haddr _ _).mpr h)), hmw]
           rw [if_neg (by decide : ¬((0#1:BitVec 1) = 1#1))]
-          rw [hmem, ← hτm]
+          rw [hmemτ a]
       · rw [if_neg (show ¬(Expr.eval σ (AUTH.and _) = 1#1) from by
           rw [hse]; exact fun h => hauth (hauthiff.mp h))]
         rw [if_neg (show ¬((({ τ with mover := none } :
@@ -1037,7 +1036,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
             rw [hdc]; exact hauth))]
         rw [hmw, if_neg (by decide : ¬((0#1:BitVec 1) = 1#1))]
         show acc.mems "mem" a.toNat 32 = τ.mem a
-        rw [hmem, ← hτm]
+        rw [hmemτ a]
     · -- an active word this cycle
       have htoN0 : ¬((σ.regs "mov_rem" 13).toNat = 0) := fun h =>
         hrem0 (by apply BitVec.eq_of_toNat_eq; simpa using h)
@@ -1082,7 +1081,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
               (.memRead 32 "mem" SC)))
             = τ.mem (σ.regs "mov_srccur" 12) := by
           intro _
-          rw [hsw SC, hSC, ← hτm]
+          rw [hsw SC, hSC]
         by_cases hrem1 : σ.regs "mov_rem" 13 = 1#13
         · -- last word: data + status
           have heq1 : (Expr.eq R (.lit 1)).eval σ = 1#1 := by
@@ -1127,7 +1126,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
               · rw [if_neg hab,
                   if_neg (show ¬(a = σ.regs "mov_dstcur" 12) from by
                     rw [← hDC]; exact fun h => hab ((haddr _ _).mpr h)),
-                  hmem, ← hτm]
+                  hmemτ a]
           · rw [if_neg (show ¬(Expr.eval σ (AUTH.and _) = 1#1) from by
               rw [hse]; exact fun h => hauth (hauthiff.mp h))]
             rw [if_neg (show ¬((({ (τ.write (σ.regs "mov_dstcur" 12)
@@ -1149,7 +1148,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
             · rw [if_neg hab,
                 if_neg (show ¬(a = σ.regs "mov_dstcur" 12) from by
                   rw [← hDC]; exact fun h => hab ((haddr _ _).mpr h)),
-                hmem, ← hτm]
+                hmemτ a]
         · -- mid-transfer: data write only
           have heq1 : (Expr.eq R (.lit 1)).eval σ = 0#1 := by
             apply bv1_ne_one.mp
@@ -1179,7 +1178,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
           · rw [if_neg hab,
               if_neg (show ¬(a = σ.regs "mov_dstcur" 12) from by
                 rw [← hDC]; exact fun h => hab ((haddr _ _).mpr h)),
-              hmem, ← hτm]
+              hmemτ a]
       · -- re-check failed: stale status write only
         rw [if_neg (show ¬((Machines.Lnp64u.moverCheck τ
             (Hw.decRef (σ.regs "mov_src" 14)) (σ.regs "mov_srccur" 12)
@@ -1229,7 +1228,7 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
               if_neg (show ¬(a = σ.regs "mov_status" 12) from by
                 rw [← hSA]; exact fun h => haa ((haddr _ _).mpr h)),
               hmw, if_neg (by decide : ¬((0#1:BitVec 1) = 1#1)),
-              hmem, ← hτm]
+              hmemτ a]
         · rw [if_neg (show ¬(Expr.eval σ (AUTH.and _) = 1#1) from by
             rw [hse]; exact fun h => hauth (hauthiff.mp h))]
           rw [if_neg (show ¬((({ τ with mover := none } :
@@ -1238,7 +1237,25 @@ theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
               rw [hdc]; exact hauth))]
           rw [hmw, if_neg (by decide : ¬((0#1:BitVec 1) = 1#1))]
           show acc.mems "mem" a.toNat 32 = τ.mem a
-          rw [hmem, ← hτm]
+          rw [hmemτ a]
 
+
+/-- **The quiescent Mover bridge, memory face** (compat wrapper over
+`moverAct_mem_core`: the core is silent on memory and the store-forward
+mux falls back to the memory read). -/
+theorem moverAct_mem_quiescent (σ acc : Loom.Hw.St) (τ : MachineState)
+    (hnr : Inert σ)
+    (hcaps : ∀ d, (τ.doms d).caps = ((Hw.abs σ).doms d).caps)
+    (hgen : ∀ d, (τ.doms d).slotGen = ((Hw.abs σ).doms d).slotGen)
+    (hrgn : ∀ d, (τ.doms d).regions = ((Hw.abs σ).doms d).regions)
+    (hjob : τ.mover = Hw.absMover σ)
+    (hmem : ∀ ad, acc.mems "mem" ad 32 = σ.mems "mem" ad 32)
+    (hτm : ∀ b : Addr, τ.mem b = σ.mems "mem" b.toNat 32)
+    (a : Addr) :
+    (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a :=
+  moverAct_mem_core σ acc τ hnr hcaps hgen hrgn hjob
+    (fun b => (hmem b.toNat).trans (hτm b).symm)
+    (fun sc => (srcWord_quiescent σ hnr sc).trans (hτm (sc.eval σ)).symm)
+    a
 
 end Machines.Lnp64u.Theorems.RMC
