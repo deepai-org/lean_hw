@@ -27,19 +27,45 @@ source with the generated reset helpers wired in:
   `coupled_reset` are CLEAN, while downstream R-MC transport theorems are
   STATED only through `square`/`coupled_step`.
 
-Immediate next step (2026-07-14): **`square` is proven modulo the
-retirement arm.** The master dispatcher in `RMC.lean` cases on
-countdown / idle-stall / idle-issue — all three fully proven — leaving
-`square_retire` (in-flight instruction on its last cycle: the 25-op
-retirement grind + the `cap_revoke` mark engine) as the sole R-MC sorry.
-The idle-issue arm landed complete (`RMCIssue.lean`): all eight outcomes
-(fetch/decode/budget/protocol/donation faults via the halt bridge,
-residual burn, plain and serving issue) with the scheduler/decode/
-budget/donation condition glue. Next: the retirement dispatch skeleton
-(retireAct: if_v clear, per-domain dispatch via the guarded-fold lemmas,
-port-0 memory commit), then per-op arms using the kernel-helper bridges
-(installA/clearSlotA/transferA/sweeps — the RMCOps/§6-resolution plan),
-then the `cap_revoke` rv-engine convergence and its Coupled clause.
+Immediate next step (2026-07-14, evening): **15 of 25 retirement op
+arms are proven.** The retirement infrastructure is complete and landed:
+
+- Dispatch skeleton (`RMCRetire.lean`): branch selection, register and
+  memory faces, first-match per-op fold selection + illegal fallthrough.
+- Proof-forced `Coupled` clause `r0_zero` (`RMCZero.lean`): the spec
+  hardwires architectural `r0` reads to 0; a `ZeroWritesAll` kernel
+  checker pins `dreg d 0`/`gsreg g 0` at zero across every rule
+  (gate_call save and gate_return restore stay inside the zero family).
+  `coupled_reset`/`coupled_step` extended; `readReg_eval` bridges the
+  register-file mux to the spec's architectural read.
+- Mover quiescence generalized to `Inert σ` (`RMCMover.lean`):
+  derivable from non-retiring cycles (old arms unchanged) or from
+  retiring a Mover-benign op (`Inert.of_benign`, opcode-driven).
+- Shared glue: `square_retire_benign` (full refill/Mover/tick assembly,
+  `RMCRetireBase.lean`; the muxed port-0 commit proven disabled via a
+  memInert kernel walk), `square_retire_setReg` + the general
+  `square_retire_domShape` (`RMCRetireAlu.lean`), and the retiring-fault
+  glue `square_retire_fault` (`RMCRetireBranch.lean`).
+- Proven arms: add sub and or xor shl shr addi lui (setReg shape), beq
+  blt (branch shape), jalr, lw (both authority branches), halt (T6
+  unwind via the halt bridge over the pc-advance correspondence), yield
+  (budget-footprint variant), plus the decode-failure fallback
+  (`square_retire_illegal` — closed without a reachability argument).
+- Spec-side technique for the remaining system ops: expose the do-term
+  by `show`, then `simp only [specM_bind, SpecM.<defs>, specM_pure]`
+  and case the guards (hand-written match trees do NOT defeq-check
+  against the monad's matchers — see the lw arm).
+
+Remaining (the hard tail, all Mover/state-interacting): `sw` (port-0
+store + the Mover's same-cycle store forwarding `swHit`), `cap_dup` /
+`mem_grant` (cap install — needs an install-vs-watched-refs argument or
+a Coupled clause that Mover job refs stay live/dead-stable under
+installs), `cap_drop` / `gate_call` / `gate_return` (kill sets + gate
+faces), `map`/`unmap` (region edits), `move` (job install), and
+`cap_revoke` (mark-engine convergence + rv `Coupled` clause). Then the
+25-way opcode dispatcher inside `square_retire` (case on
+`extractLsb' 0 6`; the not-in-table branch routes to
+`square_retire_illegal` via `decode_eq_find`).
 
 ## 0. Working rule: write forward from source
 

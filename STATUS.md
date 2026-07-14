@@ -1,5 +1,30 @@
 # STATUS — LNP64-µ / Loom
 
+## ★★ 2026-07-14 (evening): RETIREMENT ARM 15/25 OP ARMS PROVEN ★★
+
+The retirement infrastructure is complete and 15 of the 25 per-op arms
+(plus the decode-failure fallback) are fully proven, all audit-legal
+(sole remaining sorry: `square_retire`, the master retirement
+dispatcher over the arms):
+
+- Proof-forced `Coupled` clause **`r0_zero`** (`RMCZero.lean`): the
+  architectural `r0` family (`dreg d 0`, `gsreg g 0`) is pinned at zero
+  by a `ZeroWritesAll` kernel walk of every rule; `readReg_eval`
+  bridges the register-file mux to `DomainState.reg`.
+- Mover quiescence generalized to **`Inert σ`** with `of_nonretiring` /
+  `of_benign` constructors; retiring cycles of Mover-benign ops keep the
+  Mover collapse.
+- Shared glue: `square_retire_benign` (refill/Mover/tick assembly),
+  `square_retire_setReg` / `square_retire_domShape` (register-file/pc
+  footprints), `square_retire_fault` (retiring faults, pc not
+  advanced), the dispatch skeleton and per-op fold selection.
+- Arms: add sub and or xor shl shr addi lui · beq blt · jalr · lw
+  (both authority branches) · halt · yield · illegal-instruction
+  fallback.
+
+Remaining: sw, the cap ops, gates, map/unmap, move (Mover-interacting)
+and the `cap_revoke` mark engine; then the 25-way dispatcher.
+
 ## ★★ 2026-07-14: R-MC SQUARE PROVEN FOR 3 OF 4 ARMS — ONLY THE RETIREMENT ARM REMAINS ★★
 
 `square` in `Theorems/RMC.lean` is now a dispatcher over the cycle's four
