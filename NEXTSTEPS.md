@@ -27,18 +27,19 @@ source with the generated reset helpers wired in:
   `coupled_reset` are CLEAN, while downstream R-MC transport theorems are
   STATED only through `square`/`coupled_step`.
 
-Immediate next step (2026-07-13): Stage 1 resolved (§6: tagless-final
-REJECTED on experiment — see RMCOps.lean). Stage-2 progress: the square's
-countdown and idle-stall arms are fully proven (RMCCountdown.lean,
-RMCIdle.lean) on top of the landed bridge stack — refill bridge
-(RMCRefill), eval bridges (RMCBridge), quiescent Mover bridge both faces
-(RMCMover), scheduler bridge (RMCSched), decode/cost bridge (RMCIsa),
-value/check packs (RMCOps), and the complete halt bridge
-(RMCHalt.abs_haltAct = Kernel.haltDom). Next: the issue arm
-(fetch/decode/charge/donation/latch + fault paths through abs_haltAct),
-then the retirement dispatch skeleton, then the per-op arms via the
-shared kernel-helper bridges (installA/clearSlotA/transferA/sweeps),
-then the cap_revoke mark engine, then assembly.
+Immediate next step (2026-07-14): **`square` is proven modulo the
+retirement arm.** The master dispatcher in `RMC.lean` cases on
+countdown / idle-stall / idle-issue — all three fully proven — leaving
+`square_retire` (in-flight instruction on its last cycle: the 25-op
+retirement grind + the `cap_revoke` mark engine) as the sole R-MC sorry.
+The idle-issue arm landed complete (`RMCIssue.lean`): all eight outcomes
+(fetch/decode/budget/protocol/donation faults via the halt bridge,
+residual burn, plain and serving issue) with the scheduler/decode/
+budget/donation condition glue. Next: the retirement dispatch skeleton
+(retireAct: if_v clear, per-domain dispatch via the guarded-fold lemmas,
+port-0 memory commit), then per-op arms using the kernel-helper bridges
+(installA/clearSlotA/transferA/sweeps — the RMCOps/§6-resolution plan),
+then the `cap_revoke` rv-engine convergence and its Coupled clause.
 
 ## 0. Working rule: write forward from source
 
