@@ -22,8 +22,10 @@ dispatcher over the arms):
   (both authority branches) · halt · yield · illegal-instruction
   fallback.
 
-Remaining: sw, the cap ops, gates, map/unmap, move (Mover-interacting)
-and the `cap_revoke` mark engine; then the 25-way dispatcher.
+16/25: `sw` also landed (the first Mover-interacting op — port-0
+commit selection + the swHit forwarding face over moverAct_mem_core).
+Remaining: the cap ops, gates, map/unmap, move, and the `cap_revoke`
+mark engine; then the 25-way dispatcher.
 
 ## ★★ 2026-07-14: R-MC SQUARE PROVEN FOR 3 OF 4 ARMS — ONLY THE RETIREMENT ARM REMAINS ★★
 
