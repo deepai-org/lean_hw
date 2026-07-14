@@ -99,4 +99,79 @@ theorem freeSlotOk_eval (σ : Loom.Hw.St) (E : DomainId) (s : Slot) :
         decide_eq_false hg, if_neg hg, bv1_ne_one.mp hv]
       decide
 
+
+/-- The free-slot index mux selects the spec's lowest free slot. -/
+theorem freeSlotIdx_eval (σ : Loom.Hw.St) (E : DomainId) (s : Slot)
+    (hf : (Hw.abs σ).freeSlot E = some s) :
+    (Hw.freeSlotIdx E).eval σ = BitVec.ofNat 4 s.val :=
+  fold_mux_of_find_some σ (Hw.freeSlotOk E) (fun t => Hw.sLit t) (.lit 0)
+    _ (freeSlotOk_eval σ E) _ s hf
+
+/-! ## The free-cell encoder -/
+
+/-- Per-cell freeness test against the abstraction. -/
+theorem freeCellOk_eval (σ : Loom.Hw.St) (E : DomainId) (l : LineageId) :
+    ((Hw.freeCellOk E l).eval σ = 1#1)
+      ↔ ((((Hw.abs σ).doms E).lineage l).isNone = true) := by
+  show ((~~~(σ.regs (Hw.dcellV E l) 1)) = 1#1) ↔ _
+  rw [show (((Hw.abs σ).doms E).lineage l).isNone
+      = !(decide (σ.regs (Hw.dcellV E l) 1 = 1)) from by
+    show (if σ.regs (Hw.dcellV E l) 1 = 1 then some _ else none).isNone = _
+    by_cases hv : σ.regs (Hw.dcellV E l) 1 = 1
+    · rw [if_pos hv, decide_eq_true hv]; rfl
+    · rw [if_neg hv, decide_eq_false hv]; rfl]
+  by_cases hv : σ.regs (Hw.dcellV E l) 1 = 1#1
+  · rw [decide_eq_true (show (σ.regs (Hw.dcellV E l) 1 = 1) from hv), hv]
+    constructor
+    · intro h; exact absurd h (by decide)
+    · intro h; exact absurd h (by decide)
+  · rw [decide_eq_false (show ¬(σ.regs (Hw.dcellV E l) 1 = 1) from hv),
+      bv1_ne_one.mp hv]
+    constructor
+    · intro _; rfl
+    · intro _; decide
+
+/-- The free-cell valid bit tracks the spec's `freeCell`. -/
+theorem freeCellV_eval (σ : Loom.Hw.St) (E : DomainId) :
+    ((Hw.freeCellV E).eval σ = 1#1)
+      ↔ ((Hw.abs σ).freeCell E).isSome = true := by
+  rw [show (Hw.abs σ).freeCell E
+      = (List.finRange numLineage).find? (fun l =>
+          ((((Hw.abs σ).doms E).lineage l).isNone)) from rfl]
+  rw [List.find?_isSome]
+  constructor
+  · intro h
+    obtain ⟨e, hmem, he⟩ := (orAll_eval σ _).mp h
+    obtain ⟨l, hl, rfl⟩ := List.mem_map.mp hmem
+    exact ⟨l, hl, (freeCellOk_eval σ E l).mp he⟩
+  · rintro ⟨l, hl, hp⟩
+    exact (orAll_eval σ _).mpr ⟨Hw.freeCellOk E l,
+      List.mem_map.mpr ⟨l, hl, rfl⟩, (freeCellOk_eval σ E l).mpr hp⟩
+
+/-- The free-cell index mux selects the spec's lowest free cell. -/
+theorem freeCellIdx_eval (σ : Loom.Hw.St) (E : DomainId) (l : LineageId)
+    (hf : (Hw.abs σ).freeCell E = some l) :
+    (Hw.freeCellIdx E).eval σ = BitVec.ofNat 4 l.val :=
+  fold_mux_of_find_some σ (Hw.freeCellOk E) (fun t => Hw.lLit t) (.lit 0)
+    _ (freeCellOk_eval σ E) _ l hf
+
+/-- `freeSlot` only reads caps and slot generations. -/
+theorem freeSlot_congr (τ τ' : MachineState) (E : DomainId)
+    (hc : ∀ s, (τ'.doms E).caps s = (τ.doms E).caps s)
+    (hg : ∀ s, (τ'.doms E).slotGen s = (τ.doms E).slotGen s) :
+    τ'.freeSlot E = τ.freeSlot E := by
+  show (List.finRange numSlots).find? _ = (List.finRange numSlots).find? _
+  congr 1
+  funext s
+  rw [hc s, hg s]
+
+/-- `freeCell` only reads the lineage cells. -/
+theorem freeCell_congr (τ τ' : MachineState) (E : DomainId)
+    (hl : ∀ l, (τ'.doms E).lineage l = (τ.doms E).lineage l) :
+    τ'.freeCell E = τ.freeCell E := by
+  show (List.finRange numLineage).find? _ = (List.finRange numLineage).find? _
+  congr 1
+  funext l
+  rw [hl l]
+
 end Machines.Lnp64u.Theorems.RMC
