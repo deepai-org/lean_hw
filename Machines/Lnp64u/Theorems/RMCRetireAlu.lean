@@ -854,4 +854,210 @@ theorem square_retire_lui (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   · rw [retire_of_decode_some _ E W _ (hdec.trans rfl)]
     rfl
 
+/-! ## The general domain-footprint shape
+
+`square_retire_domShape` generalizes the `setReg` shape: the payload `X`
+may write any subset of the owner's file/`pc` registers, and the spec's
+per-domain effect is an arbitrary transform `DSF` that fixes the nine
+quiet fields. Branches (`pc` only), `jalr` (link + jump), and `lw`'s
+authorized branch all instantiate it. -/
+
+/-- The owner-file/`pc` write footprint. -/
+def domWrites (e : DomainId) : List (String × Nat) :=
+  [(Hw.dreg e 1, 32), (Hw.dreg e 2, 32), (Hw.dreg e 3, 32),
+   (Hw.dreg e 4, 32), (Hw.dreg e 5, 32), (Hw.dreg e 6, 32),
+   (Hw.dreg e 7, 32), (Hw.dpc e, 12)]
+
+private theorem quiet_notin_dom (x e : DomainId) :
+    ∀ q ∈ domQuietNames x, q ∉ ("if_v", 1) :: domWrites e := by
+  fin_cases x <;> fin_cases e <;> decide +kernel
+
+private theorem read_notin_dom_ne (x e : DomainId) (hne : x ≠ e) :
+    ∀ q ∈ domReadNames x, q ∉ ("if_v", 1) :: domWrites e := by
+  fin_cases x <;> fin_cases e <;>
+    first
+      | exact absurd rfl hne
+      | decide +kernel
+
+private theorem gate_notin_dom (g : GateId) (e : DomainId) :
+    ∀ q ∈ gateReadNames g, q ∉ ("if_v", 1) :: domWrites e := by
+  fin_cases g <;> fin_cases e <;> decide +kernel
+
+private theorem ifv_notin_dom (e : DomainId) :
+    ("if_v", 1) ∉ domWrites e := by
+  fin_cases e <;> decide +kernel
+
+set_option maxHeartbeats 6400000 in
+/-- **The general benign retirement square.** -/
+theorem square_retire_domShape (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (k : BitVec 6)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = k)
+    (hbenk : ∀ mn' ∈ moverMns, k ≠ Hw.opcodeOf mn')
+    (E : DomainId) (hE : E.val = (σ.regs "if_dom" 2).toNat)
+    (X : Act)
+    (hXsub : ∀ q ∈ X.regWrites, q ∈ domWrites E)
+    (hcoreX : ∀ acc, (Hw.retireFor E).run σ acc = X.run σ acc)
+    (DSF : DomainState → DomainState)
+    (hcapsF : ∀ ds, (DSF ds).caps = ds.caps)
+    (hgenF : ∀ ds, (DSF ds).slotGen = ds.slotGen)
+    (hlinF : ∀ ds, (DSF ds).lineage = ds.lineage)
+    (hrgnF : ∀ ds, (DSF ds).regions = ds.regions)
+    (hrunF : ∀ ds, (DSF ds).run = ds.run)
+    (hsrvF : ∀ ds, (DSF ds).serving = ds.serving)
+    (hcauF : ∀ ds, (DSF ds).cause = ds.cause)
+    (hbudF : ∀ ds, (DSF ds).budget = ds.budget)
+    (hmaxF : ∀ ds, (DSF ds).maxDonation = ds.maxDonation)
+    (hregs : ∀ r : RegId,
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+          ((Hw.refillAct m).run σ σ)).regs (Hw.dreg E r) 32
+        = (DSF (Hw.absDom ((Hw.refillAct m).run σ σ) E)).regs r)
+    (hpc :
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+          ((Hw.refillAct m).run σ σ)).regs (Hw.dpc E) 12
+        = (DSF (Hw.absDom ((Hw.refillAct m).run σ σ) E)).pc)
+    (hretire :
+      retire { refillPhase m (Hw.abs σ) with inflight := none } E
+          (σ.regs "if_word" 32)
+        = ({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+            DSF) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  have hben : ∀ mn' ∈ moverMns, (Hw.isMn mn').eval σ ≠ 1#1 :=
+    fun mn' hmn' => isMn_ne_of_opc σ mn' k hopc (hbenk mn' hmn')
+  set W := σ.regs "if_word" 32 with hWdef
+  set τ1 := refillPhase m (Hw.abs σ) with hτ1
+  set σ1 := (Hw.refillAct m).run σ σ with hσ1
+  have habs1 : Hw.abs σ1 = τ1 := abs_refill m hwf hfit σ hsync
+  have hfullsub : ∀ q ∈ (Act.seq (.write 1 "if_v" (.lit 0)) X).regWrites,
+      q ∈ ("if_v", 1) :: domWrites E := by
+    intro q hq
+    rcases List.mem_cons.mp
+      (show q ∈ ("if_v", (1 : Nat)) :: X.regWrites from hq) with rfl | h
+    · exact List.mem_cons_self ..
+    · exact List.mem_cons_of_mem _ (hXsub q h)
+  have hXifv : ("if_v", 1) ∉ X.regWrites :=
+    fun hm => absurd (hXsub _ hm) (ifv_notin_dom E)
+  have hcoreR : ∀ (rn : String) (w : Nat),
+      ((Hw.coreAct m).run σ σ1).regs rn w
+        = ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ σ1).regs rn w := by
+    intro rn w
+    rw [coreAct_run_retire_eq m σ σ1 hifv hcl,
+        retireAct_run_regs σ σ1 E hE rn w, hcoreX]
+    rfl
+  have hfl : τ1.inflight = some
+      { dom := finOfBv (by decide) (σ.regs "if_dom" 2)
+        word := W
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    exact absInflight_some σ hifv
+  have hdomE : (finOfBv (by decide : 2 ^ 2 = numDomains)
+      (σ.regs "if_dom" 2)) = E :=
+    Fin.ext hE.symm
+  have hspec : corePhase m τ1
+      = ({ τ1 with inflight := none }).setDom E DSF := by
+    rw [corePhase_retire m τ1 _ hfl (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+    show retire { τ1 with inflight := none }
+      (finOfBv (by decide) (σ.regs "if_dom" 2)) W = _
+    rw [hdomE]
+    exact hretire
+  have hτ2E : (({ τ1 with inflight := none }).setDom E DSF).doms E
+      = DSF (τ1.doms E) := by
+    show (Loom.Fun.update τ1.doms E (DSF (τ1.doms E))) E = _
+    rw [Loom.Fun.update_same]
+  have hτ2x : ∀ x, x ≠ E →
+      (({ τ1 with inflight := none }).setDom E DSF).doms x = τ1.doms x := by
+    intro x hx
+    show (Loom.Fun.update τ1.doms E (DSF (τ1.doms E))) x = _
+    rw [Loom.Fun.update_ne _ _ _ _ hx]
+  have hL1 : ∀ x, τ1.doms x = Hw.absDom σ1 x := by
+    intro x
+    rw [← habs1]
+    rfl
+  refine square_retire_benign m hwf hfit σ hsync hifv hcl hben
+    X _ hcoreR hXifv hspec ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_
+  · -- absDom faces
+    intro x
+    by_cases hx : x = E
+    · subst hx
+      rw [hτ2E, hL1 x]
+      have hq : ∀ q ∈ domQuietNames x,
+          ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ σ1).regs q.1 q.2
+            = σ1.regs q.1 q.2 :=
+        fun q hq' => frame (fun hm =>
+          absurd (hfullsub q hm) (quiet_notin_dom x x q hq')) σ σ1
+      rw [absDom_regpc x hq]
+      apply domainState_ext'
+      · funext r
+        exact hregs r
+      · exact hpc
+      · show (Hw.absDom σ1 x).caps = (DSF (Hw.absDom σ1 x)).caps
+        exact (hcapsF _).symm
+      · show (Hw.absDom σ1 x).slotGen = (DSF (Hw.absDom σ1 x)).slotGen
+        exact (hgenF _).symm
+      · show (Hw.absDom σ1 x).lineage = (DSF (Hw.absDom σ1 x)).lineage
+        exact (hlinF _).symm
+      · show (Hw.absDom σ1 x).regions = (DSF (Hw.absDom σ1 x)).regions
+        exact (hrgnF _).symm
+      · show (Hw.absDom σ1 x).run = (DSF (Hw.absDom σ1 x)).run
+        exact (hrunF _).symm
+      · show (Hw.absDom σ1 x).serving = (DSF (Hw.absDom σ1 x)).serving
+        exact (hsrvF _).symm
+      · show (Hw.absDom σ1 x).cause = (DSF (Hw.absDom σ1 x)).cause
+        exact (hcauF _).symm
+      · show (Hw.absDom σ1 x).budget = (DSF (Hw.absDom σ1 x)).budget
+        exact (hbudF _).symm
+      · show (Hw.absDom σ1 x).maxDonation
+          = (DSF (Hw.absDom σ1 x)).maxDonation
+        exact (hmaxF _).symm
+    · rw [hτ2x x hx, hL1 x]
+      exact absDom_congr x (fun p hp => frame (fun hm =>
+        absurd (hfullsub p hm) (read_notin_dom_ne x E hx p hp)) σ σ1)
+  · -- absGate faces
+    intro g
+    have hg : Hw.absGate
+        ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ σ1) g
+        = Hw.absGate σ1 g :=
+      absGate_congr g (fun p hp => frame (fun hm =>
+        absurd (hfullsub p hm) (gate_notin_dom g E p hp)) σ σ1)
+    rw [hg]
+    show Hw.absGate σ1 g = τ1.gates g
+    rw [← habs1]
+    rfl
+  · intro x
+    by_cases hx : x = E
+    · subst hx
+      rw [hτ2E, hcapsF]
+      show (τ1.doms x).caps = _
+      rw [hτ1, refillPhase_caps]
+    · rw [hτ2x x hx, hτ1, refillPhase_caps]
+  · intro x
+    by_cases hx : x = E
+    · subst hx
+      rw [hτ2E, hgenF]
+      show (τ1.doms x).slotGen = _
+      rw [hτ1, refillPhase_slotGen]
+    · rw [hτ2x x hx, hτ1, refillPhase_slotGen]
+  · intro x
+    by_cases hx : x = E
+    · subst hx
+      rw [hτ2E, hrgnF]
+      show (τ1.doms x).regions = _
+      rw [hτ1, refillPhase_regions]
+    · rw [hτ2x x hx, hτ1, refillPhase_regions]
+  · show τ1.mover = _
+    rw [hτ1, refillPhase_mover]
+    rfl
+  · intro b
+    show τ1.mem b = _
+    rw [hτ1]
+    rfl
+  · show τ1.cycle = _
+    rw [hτ1]
+    rfl
+  · rfl
+
 end Machines.Lnp64u.Theorems.RMC
