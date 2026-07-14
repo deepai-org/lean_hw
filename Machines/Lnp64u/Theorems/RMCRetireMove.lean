@@ -1451,4 +1451,507 @@ theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       rfl
   case pos =>
   -- both kinds are memory
+  have hmkS2 : Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32) = .mem ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12)
+      ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13) (Hw.decPerms ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 26 3)) :=
+    (decKind_mem_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32)).mp hmS
+  have hmkD2 : Hw.decKind (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32) = .mem ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 1 12)
+      ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13) (Hw.decPerms ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 26 3)) :=
+    (decKind_mem_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32)).mp hmD
+  have hkm1S : (Hw.kIsMem (Hw.moveSrcSel E).kindW).eval σ = 1#1 := by
+    rw [hmemES]
+    rw [if_pos ((extract1_eq_zero_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32) 0).mpr hmS)]
+  have hkm1D : (Hw.kIsMem (Hw.moveDstSel E).kindW).eval σ = 1#1 := by
+    rw [hmemED]
+    rw [if_pos ((extract1_eq_zero_iff (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32) 0).mpr hmD)]
+  have hmw2 : (Hw.moveW E 2).eval σ = (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32) := hmwE 2
+  have hmw3 : (Hw.moveW E 3).eval σ = (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32) := hmwE 3
+  have hrd2 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).read (AW.setWidth 12 + 2) = (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32) := hrd _
+  have hrd3 : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).read (AW.setWidth 12 + 3) = (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32) := hrd _
+  by_cases hprS : (Hw.decPerms ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 26 3)).r = true
+  case neg =>
+    -- source lacks read permission
+    have hkr0 : ¬((Hw.kR (Hw.moveSrcSel E).kindW).eval σ = 1#1) :=
+      fun h => hprS ((kR_eval_iff σ _ (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32) hkwS).mp h)
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.kR (Hw.moveSrcSel E).kindW) : Expr 1), (Resp.err .permDenied)), List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.kR (Hw.moveSrcSel E).kindW).eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hkr0] at h2
+      exact absurd h2 (by decide))
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.permDenied.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+          rw [hliv1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).live.eval σ) = 1#1)
+          rw [hliv1D]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1D]
+          decide),
+        if_neg (show ¬((Expr.not (Expr.and
+            (Hw.kIsMem (Hw.moveSrcSel E).kindW)
+            (Hw.kIsMem (Hw.moveDstSel E).kindW))).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kIsMem (Hw.moveSrcSel E).kindW).eval σ &&&
+            (Hw.kIsMem (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+          rw [hkm1S, hkm1D]
+          decide),
+        if_pos (show (Expr.not (Hw.kR
+            (Hw.moveSrcSel E).kindW)).eval σ = 1#1 from by
+          show ~~~((Hw.kR (Hw.moveSrcSel E).kindW).eval σ) = 1#1
+          rw [bv1_ne_one.mp hkr0]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcSS', hcekS]
+      rw [hdecS]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hlcSD', hcekD]
+      rw [hdecD]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hcekS, hcekD]
+      simp only [hmkS2, hmkD2]
+      rw [if_neg hprS]
+      rfl
+  case pos =>
+  have hkr1 : (Hw.kR (Hw.moveSrcSel E).kindW).eval σ = 1#1 :=
+    (kR_eval_iff σ _ (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32) hkwS).mpr hprS
+  by_cases hpwD : (Hw.decPerms ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 26 3)).w = true
+  case neg =>
+    -- destination lacks write permission
+    have hkw0 : ¬((Hw.kW (Hw.moveDstSel E).kindW).eval σ = 1#1) :=
+      fun h => hpwD ((kW_eval_iff σ _ (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32) hkwD).mp h)
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.kW (Hw.moveDstSel E).kindW) : Expr 1), (Resp.err .permDenied)), List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.kW (Hw.moveDstSel E).kindW).eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hkw0] at h2
+      exact absurd h2 (by decide))
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.permDenied.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+          rw [hliv1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).live.eval σ) = 1#1)
+          rw [hliv1D]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1D]
+          decide),
+        if_neg (show ¬((Expr.not (Expr.and
+            (Hw.kIsMem (Hw.moveSrcSel E).kindW)
+            (Hw.kIsMem (Hw.moveDstSel E).kindW))).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kIsMem (Hw.moveSrcSel E).kindW).eval σ &&&
+            (Hw.kIsMem (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+          rw [hkm1S, hkm1D]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.kR (Hw.moveSrcSel E).kindW)).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kR (Hw.moveSrcSel E).kindW).eval σ) = 1#1)
+          rw [hkr1]
+          decide),
+        if_pos (show (Expr.not (Hw.kW
+            (Hw.moveDstSel E).kindW)).eval σ = 1#1 from by
+          show ~~~((Hw.kW (Hw.moveDstSel E).kindW).eval σ) = 1#1
+          rw [bv1_ne_one.mp hkw0]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcSS', hcekS]
+      rw [hdecS]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hlcSD', hcekD]
+      rw [hdecD]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hcekS, hcekD]
+      simp only [hmkS2, hmkD2]
+      simp only [hprS, reduceIte, specM_bind, specM_pure]
+      rw [if_neg hpwD]
+      rfl
+  case pos =>
+  have hkw1 : (Hw.kW (Hw.moveDstSel E).kindW).eval σ = 1#1 :=
+    (kW_eval_iff σ _ (σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32) hkwD).mpr hpwD
+  by_cases hlen : ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat
+      ∧ (σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat)
+  case neg =>
+    -- word count exceeds a capability's length
+    have hor1 : ((Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32)
+          (Hw.moveW E 2)).eval σ |||
+        (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+          (Hw.moveW E 2)).eval σ) = 1#1 := by
+      rcases Decidable.not_and_iff_not_or_not.mp hlen with hA | hA
+      · have hu : (Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32)
+            (Hw.moveW E 2)).eval σ = 1#1 := by
+          rw [ultE_eval]
+          show ((((Hw.moveSrcSel E).kindW.eval σ).extractLsb' 13 13
+            ).setWidth 32).toNat < ((Hw.moveW E 2).eval σ).toNat
+          rw [hkwS, hmw2, toNat_setWidth_le (by omega)]
+          exact Nat.lt_of_not_le hA
+        rw [hu]
+        generalize (Expr.ult (.zext (Hw.kLen
+          (Hw.moveDstSel E).kindW) 32) (Hw.moveW E 2)).eval σ = b
+        revert b
+        decide
+      · have hu : (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+            (Hw.moveW E 2)).eval σ = 1#1 := by
+          rw [ultE_eval]
+          show ((((Hw.moveDstSel E).kindW.eval σ).extractLsb' 13 13
+            ).setWidth 32).toNat < ((Hw.moveW E 2).eval σ).toNat
+          rw [hkwD, hmw2, toNat_setWidth_le (by omega)]
+          exact Nat.lt_of_not_le hA
+        rw [hu]
+        generalize (Expr.ult (.zext (Hw.kLen
+          (Hw.moveSrcSel E).kindW) 32) (Hw.moveW E 2)).eval σ = a
+        revert a
+        decide
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.or (Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32) (Hw.moveW E 2)) (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32) (Hw.moveW E 2)) : Expr 1), (Resp.err .outOfRange)), List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))))))))))), rfl⟩)
+      have h2 : ~~~(((Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32) (Hw.moveW E 2)).eval σ ||| (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32) (Hw.moveW E 2)).eval σ)) = 1#1 := h1
+      rw [hor1] at h2
+      exact absurd h2 (by decide))
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.outOfRange.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+          rw [hliv1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).live.eval σ) = 1#1)
+          rw [hliv1D]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1D]
+          decide),
+        if_neg (show ¬((Expr.not (Expr.and
+            (Hw.kIsMem (Hw.moveSrcSel E).kindW)
+            (Hw.kIsMem (Hw.moveDstSel E).kindW))).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kIsMem (Hw.moveSrcSel E).kindW).eval σ &&&
+            (Hw.kIsMem (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+          rw [hkm1S, hkm1D]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.kR (Hw.moveSrcSel E).kindW)).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kR (Hw.moveSrcSel E).kindW).eval σ) = 1#1)
+          rw [hkr1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.kW (Hw.moveDstSel E).kindW)).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kW (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+          rw [hkw1]
+          decide),
+        if_pos (show (Expr.or (Expr.ult
+            (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32) (Hw.moveW E 2))
+            (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+              (Hw.moveW E 2))).eval σ = 1#1 from hor1)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcSS', hcekS]
+      rw [hdecS]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hlcSD', hcekD]
+      rw [hdecD]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hcekS, hcekD]
+      simp only [hmkS2, hmkD2]
+      simp only [hprS, hpwD, reduceIte, specM_bind, specM_pure, hrd2]
+      rw [show (decide ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat)
+          && decide ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat))
+          = false from by
+        rcases Decidable.not_and_iff_not_or_not.mp hlen with hA | hA
+        · rw [decide_eq_false hA]
+          generalize decide ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat
+            ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat) = b
+          revert b
+          decide
+        · rw [decide_eq_false hA]
+          generalize decide ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat
+            ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat) = a
+          revert a
+          decide]
+      rfl
+  case pos =>
+  have hu0S : (Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32)
+      (Hw.moveW E 2)).eval σ = 0#1 := by
+    apply bv1_ne_one.mp
+    intro h
+    have h2 : ((((Hw.moveSrcSel E).kindW.eval σ).extractLsb' 13 13
+      ).setWidth 32).toNat < ((Hw.moveW E 2).eval σ).toNat :=
+      (ultE_eval _ _ σ).mp h
+    rw [hkwS, hmw2, toNat_setWidth_le (by omega)] at h2
+    exact absurd hlen.1 (Nat.not_le_of_lt h2)
+  have hu0D : (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+      (Hw.moveW E 2)).eval σ = 0#1 := by
+    apply bv1_ne_one.mp
+    intro h
+    have h2 : ((((Hw.moveDstSel E).kindW.eval σ).extractLsb' 13 13
+      ).setWidth 32).toNat < ((Hw.moveW E 2).eval σ).toNat :=
+      (ultE_eval _ _ σ).mp h
+    rw [hkwD, hmw2, toNat_setWidth_le (by omega)] at h2
+    exact absurd hlen.2 (Nat.not_le_of_lt h2)
+  have hlenB : (decide ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat)
+      && decide ((σ.mems "mem" (AW.setWidth 12 + 2).toNat 32).toNat ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) ((σ.mems "mem" (AW.setWidth 12 + 1).toNat 32).extractLsb' 0 4))) 32).extractLsb' 13 13).toNat))
+      = true := by
+    rw [decide_eq_true hlen.1, decide_eq_true hlen.2]
+    decide
+  by_cases hsaC : (Hw.domCoversE E (Hw.field (Hw.moveW E 3) 0 12)
+      { r := false, w := true, x := false }).eval σ = 1#1
+  case neg =>
+    -- status-word write authority fault
+    have hin : Inert σ := Inert.of_move_fail σ hkill E hifexcl (fun hc => by
+      have h1 := (andAll_eval σ _).mp hc _ (List.mem_map.mpr
+        ⟨((Expr.not (Hw.domCoversE E (Hw.field (Hw.moveW E 3) 0 12) { r := false, w := true, x := false }) : Expr 1), (Resp.fault .memoryAuthority)), List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_self ..))))))))))))), rfl⟩)
+      have h2 : ~~~(~~~((Hw.domCoversE E (Hw.field (Hw.moveW E 3) 0 12) { r := false, w := true, x := false }).eval σ)) = 1#1 := h1
+      rw [bv1_ne_one.mp hsaC] at h2
+      exact absurd h2 (by decide))
+    have haddrSA : ((Hw.field (Hw.moveW E 3) 0 12).eval σ)
+        = (σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12 := by
+      show ((Hw.moveW E 3).eval σ).extractLsb' 0 12 = _
+      rw [hmw3]
+      apply BitVec.eq_of_toNat_eq
+      simp [BitVec.toNat_setWidth]
+    have hcovFsa : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).domCovers E ((σ.mems "mem" (AW.setWidth 12 + 3).toNat 32).setWidth 12)
+        { r := false, w := true, x := false } = false := by
+      rw [spec_covers_bridge]
+      rw [← Bool.not_eq_true]
+      intro hcv
+      exact hsaC ((domCoversE_eval σ E _ _).mpr (by
+        rw [haddrSA]
+        exact hcv))
+    refine square_retire_fault_of m hwf hfit σ hsync hifv hcl hin hswz
+      hmapz hunmapz
+      (fun ad => by
+        rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
+        exact refill_pres_mem m σ "mem" ad 32)
+      E rfl .memoryAuthority ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.reg 1 "mov_v").eval σ = 1#1) from hbusy),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 0)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc0]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 1)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 2)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc2]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.domCoversE E (.add (Hw.moveBase E)
+            (.lit (BitVec.ofNat 12 3)))
+            { r := true, w := false, x := false })).eval σ = 1#1) from by
+          show ¬(~~~((Hw.domCoversE E _ _).eval σ) = 1#1)
+          rw [hc3]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).live.eval σ) = 1#1)
+          rw [hliv1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveSrcSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveSrcSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1S]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).live.eval σ) = 1#1)
+          rw [hliv1D]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.moveDstSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.moveDstSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1D]
+          decide),
+        if_neg (show ¬((Expr.not (Expr.and
+            (Hw.kIsMem (Hw.moveSrcSel E).kindW)
+            (Hw.kIsMem (Hw.moveDstSel E).kindW))).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kIsMem (Hw.moveSrcSel E).kindW).eval σ &&&
+            (Hw.kIsMem (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+          rw [hkm1S, hkm1D]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.kR (Hw.moveSrcSel E).kindW)).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kR (Hw.moveSrcSel E).kindW).eval σ) = 1#1)
+          rw [hkr1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.kW (Hw.moveDstSel E).kindW)).eval σ = 1#1) from by
+          show ¬(~~~((Hw.kW (Hw.moveDstSel E).kindW).eval σ) = 1#1)
+          rw [hkw1]
+          decide),
+        if_neg (show ¬((Expr.or (Expr.ult
+            (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32) (Hw.moveW E 2))
+            (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+              (Hw.moveW E 2))).eval σ = 1#1) from by
+          show ¬(((Expr.ult (.zext (Hw.kLen (Hw.moveSrcSel E).kindW) 32)
+              (Hw.moveW E 2)).eval σ |||
+            (Expr.ult (.zext (Hw.kLen (Hw.moveDstSel E).kindW) 32)
+              (Hw.moveW E 2)).eval σ) = 1#1)
+          rw [hu0S, hu0D]
+          decide),
+        if_pos (show (Expr.not (Hw.domCoversE E
+            (Hw.field (Hw.moveW E 3) 0 12)
+            { r := false, w := true, x := false })).eval σ = 1#1 from by
+          show ~~~((Hw.domCoversE E _ _).eval σ) = 1#1
+          rw [bv1_ne_one.mp hsaC]
+          decide)]
+      rfl
+    · rw [hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      rw [hmovN]
+      simp only [Option.isNone_none, reduceIte, specM_bind, SpecM.get,
+        SpecM.require, SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hcovT0, hcovT1, hcovT2, hcovT3, reduceIte,
+        specM_bind, specM_pure, hrd0, hrd1]
+      simp only [hlcSS', hcekS]
+      rw [hdecS]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hlcSD', hcekD]
+      rw [hdecD]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hcekS, hcekD]
+      simp only [hmkS2, hmkD2]
+      simp only [hprS, hpwD, reduceIte, specM_bind, specM_pure, hrd2,
+        hrd3, hlenB, SpecM.get, SpecM.demand, SpecM.fatal, hcovFsa]
+      rfl
+  case pos =>
+  -- all fifteen checks pass: the install (stage M3)
   sorry
