@@ -281,6 +281,14 @@ theorem square_retire_sw (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         ⟨false, true, false⟩).mp hcov
       rwa [haddr] at this
     refine square_retire_store m hwf hfit σ hsync hifv hcl hin
+      (fun c r => andAll_zero_of_mem σ
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_self ..)))
+        (isMn_ne_of_opc σ "map" 10#6 hopc (by decide +kernel)))
+      (fun c r => andAll_zero_of_mem σ
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_self ..)))
+        (isMn_ne_of_opc σ "unmap" 10#6 hopc (by decide +kernel)))
       (Hw.pcAdvA E)
       ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 })).write (effAddr (((Hw.abs σ).doms E).reg (operandsOf W).rs1) (operandsOf W).imm) (((Hw.abs σ).doms E).reg (operandsOf W).rs2))
       (fun rn w => by
@@ -454,6 +462,14 @@ theorem square_retire_sw (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         · exact andAll_zero_of_mem σ
             (List.mem_cons_of_mem _ (List.mem_cons_self ..))
             (hifexcl d hd))
+      (fun c r => andAll_zero_of_mem σ
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_self ..)))
+        (isMn_ne_of_opc σ "map" 10#6 hopc (by decide +kernel)))
+      (fun c r => andAll_zero_of_mem σ
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+          (List.mem_cons_self ..)))
+        (isMn_ne_of_opc σ "unmap" 10#6 hopc (by decide +kernel)))
       (fun ad => by
         rw [coreAct_run_retire_eq m σ _ hifv hcl,
           retireAct_run_mems σ _ ad 32]
