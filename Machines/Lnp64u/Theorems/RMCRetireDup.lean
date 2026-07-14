@@ -1109,6 +1109,166 @@ theorem square_retire_dup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     generalize (Hw.kIsMem (Hw.dupSel E).kindW).eval σ = b
     revert b
     decide
-  sorry
+  -- free-slot / free-cell bridges (the pc bump touches neither table)
+  have hcapsB : ∀ s : Slot, (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).caps s
+      = ((Hw.abs σ).doms E).caps s := fun s => by
+    show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E
+      ({ (refillPhase m (Hw.abs σ)).doms E with
+        pc := ((refillPhase m (Hw.abs σ)).doms E).pc + 1 })) E).caps s = _
+    rw [Loom.Fun.update_same]
+    show ((refillPhase m (Hw.abs σ)).doms E).caps s = _
+    rw [refillPhase_caps]
+  have hgenB : ∀ s : Slot, (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).slotGen s
+      = ((Hw.abs σ).doms E).slotGen s := fun s => by
+    show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E
+      ({ (refillPhase m (Hw.abs σ)).doms E with
+        pc := ((refillPhase m (Hw.abs σ)).doms E).pc + 1 })) E).slotGen s
+      = _
+    rw [Loom.Fun.update_same]
+    show ((refillPhase m (Hw.abs σ)).doms E).slotGen s = _
+    rw [refillPhase_slotGen]
+  have hlinB : ∀ l : LineageId, (((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).doms E).lineage l
+      = ((Hw.abs σ).doms E).lineage l := fun l => by
+    show ((Loom.Fun.update (refillPhase m (Hw.abs σ)).doms E
+      ({ (refillPhase m (Hw.abs σ)).doms E with
+        pc := ((refillPhase m (Hw.abs σ)).doms E).pc + 1 })) E).lineage l
+      = _
+    rw [Loom.Fun.update_same]
+    show ((refillPhase m (Hw.abs σ)).doms E).lineage l = _
+    rw [refillPhase_lineage]
+  have hfsB : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).freeSlot E = (Hw.abs σ).freeSlot E :=
+    freeSlot_congr _ _ E hcapsB hgenB
+  have hfcB : ((({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E (fun ds => { ds with pc := ds.pc + 1 }))).freeCell E = (Hw.abs σ).freeCell E :=
+    freeCell_congr _ _ E hlinB
+  cases hfs : (Hw.abs σ).freeSlot E with
+  | none =>
+    -- no free slot
+    have hfsv0 : ¬((Hw.freeSlotV E).eval σ = 1#1) := fun hc => by
+      have h2 := (freeSlotV_eval σ E).mp hc
+      rw [hfs] at h2
+      exact absurd h2 (by decide)
+    refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+      hswz hben5 E rfl Errno.slotOccupied.toWord ?_ ?_
+    · intro acc
+      rw [hladder acc,
+        if_neg (show ¬((Expr.not (Hw.dupSel E).live).eval σ = 1#1) from by
+          show ¬(~~~((Hw.dupSel E).live.eval σ) = 1#1)
+          rw [hliv1]
+          decide),
+        if_neg (show ¬((Expr.not (Hw.dupSel E).clsOk).eval σ = 1#1) from by
+          show ¬(~~~((Hw.dupSel E).clsOk.eval σ) = 1#1)
+          rw [hcls1]
+          decide),
+        if_neg hc3z,
+        if_neg hc4z,
+        if_neg hc5z,
+        if_neg hc6z,
+        if_pos (show (Expr.not (Hw.freeSlotV E)).eval σ = 1#1 from by
+          show ~~~((Hw.freeSlotV E).eval σ) = 1#1
+          rw [bv1_ne_one.mp hfsv0]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, SpecM.load, SpecM.demand,
+        Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+        SpecM.modify, specM_pure]
+      simp only [hRD, hRD2]
+      simp only [hlcS', hcek]
+      rw [hdecT]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [hcek]
+      simp only [hmk]
+      simp only [Machines.Lnp64u.Isa.narrow, specM_bind, SpecM.require,
+        SpecM.raise, specM_pure]
+      rw [show (decide ((Machines.Lnp64u.Isa.descOff DWv).toNat
+          + (Machines.Lnp64u.Isa.descLen DWv).toNat
+          ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 13 13).toNat)) = true from
+        decide_eq_true hr1]
+      simp only [reduceIte, specM_bind, specM_pure]
+      rw [show (decide ((((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 1 12).toNat
+          + (Machines.Lnp64u.Isa.descOff DWv).toNat < memWords)))
+          = true from decide_eq_true hr2]
+      simp only [reduceIte, specM_bind, specM_pure]
+      rw [show ((Machines.Lnp64u.Isa.descPerms DWv).le
+          (Hw.decPerms ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 26 3))) = true from hr3]
+      simp only [reduceIte, specM_bind, specM_pure]
+      rw [show ((Machines.Lnp64u.Isa.descPerms DWv).wx) = true from hr4]
+      simp only [reduceIte, specM_bind, specM_pure]
+      simp only [Machines.Lnp64u.Isa.allocDerived, SpecM.get, specM_bind,
+        SpecM.raise, specM_pure]
+      rw [hfsB.trans hfs]
+      rfl
+  | some NS =>
+    have hfsv1 : (Hw.freeSlotV E).eval σ = 1#1 :=
+      (freeSlotV_eval σ E).mpr (by rw [hfs]; rfl)
+    cases hfc : (Hw.abs σ).freeCell E with
+    | none =>
+      -- no free lineage cell
+      have hfcv0 : ¬((Hw.freeCellV E).eval σ = 1#1) := fun hc => by
+        have h2 := (freeCellV_eval σ E).mp hc
+        rw [hfc] at h2
+        exact absurd h2 (by decide)
+      refine map_err_common m hwf hfit σ hsync hifv hcl hin hmapz hunmapz
+        hswz hben5 E rfl Errno.noLineage.toWord ?_ ?_
+      · intro acc
+        rw [hladder acc,
+          if_neg (show ¬((Expr.not (Hw.dupSel E).live).eval σ = 1#1) from by
+            show ¬(~~~((Hw.dupSel E).live.eval σ) = 1#1)
+            rw [hliv1]
+            decide),
+          if_neg (show ¬((Expr.not (Hw.dupSel E).clsOk).eval σ = 1#1) from by
+            show ¬(~~~((Hw.dupSel E).clsOk.eval σ) = 1#1)
+            rw [hcls1]
+            decide),
+          if_neg hc3z,
+          if_neg hc4z,
+          if_neg hc5z,
+          if_neg hc6z,
+          if_neg (show ¬((Expr.not (Hw.freeSlotV E)).eval σ = 1#1) from by
+            show ¬(~~~((Hw.freeSlotV E).eval σ) = 1#1)
+            rw [hfsv1]
+            decide),
+          if_pos (show (Expr.not (Hw.freeCellV E)).eval σ = 1#1 from by
+            show ~~~((Hw.freeCellV E).eval σ) = 1#1
+            rw [bv1_ne_one.mp hfcv0]
+            decide)]
+        rfl
+      · rw [hcore0, hDO]
+        simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+          SpecM.reg, SpecM.load, SpecM.demand,
+          Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+          SpecM.modify, specM_pure]
+        simp only [hRD, hRD2]
+        simp only [hlcS', hcek]
+        rw [hdecT]
+        simp only [reduceIte, specM_bind, specM_pure]
+        simp only [hcek]
+        simp only [hmk]
+        simp only [Machines.Lnp64u.Isa.narrow, specM_bind, SpecM.require,
+          SpecM.raise, specM_pure]
+        rw [show (decide ((Machines.Lnp64u.Isa.descOff DWv).toNat
+            + (Machines.Lnp64u.Isa.descLen DWv).toNat
+            ≤ ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 13 13).toNat)) = true from
+          decide_eq_true hr1]
+        simp only [reduceIte, specM_bind, specM_pure]
+        rw [show (decide ((((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 1 12).toNat
+            + (Machines.Lnp64u.Isa.descOff DWv).toNat < memWords)))
+            = true from decide_eq_true hr2]
+        simp only [reduceIte, specM_bind, specM_pure]
+        rw [show ((Machines.Lnp64u.Isa.descPerms DWv).le
+            (Hw.decPerms ((σ.regs (Hw.dcapKind E (finOfBv (by decide) (HWv.extractLsb' 0 4))) 32).extractLsb' 26 3))) = true from hr3]
+        simp only [reduceIte, specM_bind, specM_pure]
+        rw [show ((Machines.Lnp64u.Isa.descPerms DWv).wx) = true from hr4]
+        simp only [reduceIte, specM_bind, specM_pure]
+        simp only [Machines.Lnp64u.Isa.allocDerived, SpecM.get, specM_bind,
+          SpecM.raise, specM_pure]
+        rw [hfsB.trans hfs]
+        simp only [specM_bind, specM_pure]
+        rw [hfcB.trans hfc]
+        rfl
+    | some NL =>
+      -- install (mem kind)
+      sorry
 
 end Machines.Lnp64u.Theorems.RMC
