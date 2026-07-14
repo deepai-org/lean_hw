@@ -51,17 +51,17 @@ theorem inert_of_opc (σ : Loom.Hw.St) (k : BitVec 6)
 /-! ## The retirement memory port is idle for benign ops -/
 
 /-- Syntactic literal-zero test for enable expressions. -/
-private def isLit0 (e : Expr 1) : Bool :=
+def isLit0 (e : Expr 1) : Bool :=
   match e with
   | .lit v => v == 0#1
   | _ => false
 
 /-- Every op circuit's memory enable is either literally off or gated by
 a Mover-relevant mnemonic. -/
-private def memInert (l : List (String × Hw.OpCirc)) : Bool :=
+def memInert (l : List (String × Hw.OpCirc)) : Bool :=
   l.all fun p => decide (p.1 ∈ moverMns) || isLit0 p.2.memEn
 
-private theorem memInert_opCircs : ∀ d : DomainId,
+theorem memInert_opCircs : ∀ d : DomainId,
     memInert (Hw.opCircs d) = true := by
   intro d
   fin_cases d <;> decide +kernel
@@ -69,7 +69,7 @@ private theorem memInert_opCircs : ∀ d : DomainId,
 private theorem bv1_and_zero' (x : BitVec 1) : x &&& 0#1 = 0#1 := by
   revert x; decide
 
-private theorem isLit0_eval (σ : Loom.Hw.St) (e : Expr 1)
+theorem isLit0_eval (σ : Loom.Hw.St) (e : Expr 1)
     (h : isLit0 e = true) : e.eval σ = 0#1 := by
   cases e <;> simp_all [isLit0, Expr.eval]
 
