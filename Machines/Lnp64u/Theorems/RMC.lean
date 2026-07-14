@@ -11,6 +11,7 @@ import Machines.Lnp64u.Theorems.RMCCountdown
 import Machines.Lnp64u.Theorems.RMCIdle
 import Machines.Lnp64u.Theorems.RMCIssue
 import Machines.Lnp64u.Theorems.RMCZero
+import Machines.Lnp64u.Theorems.RMCRetireSw
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -240,9 +241,117 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
 
 /-! ## The commuting square and coupling preservation -/
 
-/-- The retirement arm — the remaining per-op grind (25 opcode circuits
-against the `Isa` exec semantics, plus the `cap_revoke` mark engine). The
-sole remaining R-MC obligation. -/
+/-- The `cap_dup` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_capdup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 16#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `cap_drop` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_capdrop (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 17#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `cap_revoke` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_caprevoke (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `mem_grant` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_memgrant (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 19#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `map` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_map (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 20#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `unmap` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_unmap (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 21#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `gate_call` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `gate_return` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_gatereturn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The `move` retirement arm — remaining (NEXTSTEPS §1). -/
+theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hcpl : Coupled m σ)
+    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 24#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  sorry
+
+/-- The retirement arm, dispatched over the latched opcode. Sixteen op
+arms plus the decode-failure fallback are proven; the nine remaining
+system-op arms are the leaf obligations above (NEXTSTEPS §1). -/
 theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
@@ -251,7 +360,102 @@ theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  have hsync := hcpl.rctr_sync
+  have hz := hcpl.r0_zero
+  by_cases h0 : (σ.regs "if_word" 32).extractLsb' 0 6 = 0#6
+  · exact square_retire_add m hwf hfit σ hsync hz hifv hcl h0
+  by_cases h1 : (σ.regs "if_word" 32).extractLsb' 0 6 = 1#6
+  · exact square_retire_sub m hwf hfit σ hsync hz hifv hcl h1
+  by_cases h2 : (σ.regs "if_word" 32).extractLsb' 0 6 = 2#6
+  · exact square_retire_and m hwf hfit σ hsync hz hifv hcl h2
+  by_cases h3 : (σ.regs "if_word" 32).extractLsb' 0 6 = 3#6
+  · exact square_retire_or m hwf hfit σ hsync hz hifv hcl h3
+  by_cases h4 : (σ.regs "if_word" 32).extractLsb' 0 6 = 4#6
+  · exact square_retire_xor m hwf hfit σ hsync hz hifv hcl h4
+  by_cases h5 : (σ.regs "if_word" 32).extractLsb' 0 6 = 5#6
+  · exact square_retire_shl m hwf hfit σ hsync hz hifv hcl h5
+  by_cases h6 : (σ.regs "if_word" 32).extractLsb' 0 6 = 6#6
+  · exact square_retire_shr m hwf hfit σ hsync hz hifv hcl h6
+  by_cases h7 : (σ.regs "if_word" 32).extractLsb' 0 6 = 7#6
+  · exact square_retire_addi m hwf hfit σ hsync hz hifv hcl h7
+  by_cases h8 : (σ.regs "if_word" 32).extractLsb' 0 6 = 8#6
+  · exact square_retire_lui m hwf hfit σ hsync hz hifv hcl h8
+  by_cases h9 : (σ.regs "if_word" 32).extractLsb' 0 6 = 9#6
+  · exact square_retire_lw m hwf hfit σ hsync hz hifv hcl h9
+  by_cases h10 : (σ.regs "if_word" 32).extractLsb' 0 6 = 10#6
+  · exact square_retire_sw m hwf hfit σ hsync hz hifv hcl h10
+  by_cases h11 : (σ.regs "if_word" 32).extractLsb' 0 6 = 11#6
+  · exact square_retire_beq m hwf hfit σ hsync hz hifv hcl h11
+  by_cases h12 : (σ.regs "if_word" 32).extractLsb' 0 6 = 12#6
+  · exact square_retire_blt m hwf hfit σ hsync hz hifv hcl h12
+  by_cases h13 : (σ.regs "if_word" 32).extractLsb' 0 6 = 13#6
+  · exact square_retire_jalr m hwf hfit σ hsync hz hifv hcl h13
+  by_cases h16 : (σ.regs "if_word" 32).extractLsb' 0 6 = 16#6
+  · exact square_retire_capdup m hwf hfit σ hcpl hcr hsr hifv hcl h16
+  by_cases h17 : (σ.regs "if_word" 32).extractLsb' 0 6 = 17#6
+  · exact square_retire_capdrop m hwf hfit σ hcpl hcr hsr hifv hcl h17
+  by_cases h18 : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6
+  · exact square_retire_caprevoke m hwf hfit σ hcpl hcr hsr hifv hcl h18
+  by_cases h19 : (σ.regs "if_word" 32).extractLsb' 0 6 = 19#6
+  · exact square_retire_memgrant m hwf hfit σ hcpl hcr hsr hifv hcl h19
+  by_cases h20 : (σ.regs "if_word" 32).extractLsb' 0 6 = 20#6
+  · exact square_retire_map m hwf hfit σ hcpl hcr hsr hifv hcl h20
+  by_cases h21 : (σ.regs "if_word" 32).extractLsb' 0 6 = 21#6
+  · exact square_retire_unmap m hwf hfit σ hcpl hcr hsr hifv hcl h21
+  by_cases h22 : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6
+  · exact square_retire_gatecall m hwf hfit σ hcpl hcr hsr hifv hcl h22
+  by_cases h23 : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6
+  · exact square_retire_gatereturn m hwf hfit σ hcpl hcr hsr hifv hcl h23
+  by_cases h24 : (σ.regs "if_word" 32).extractLsb' 0 6 = 24#6
+  · exact square_retire_move m hwf hfit σ hcpl hcr hsr hifv hcl h24
+  by_cases h25 : (σ.regs "if_word" 32).extractLsb' 0 6 = 25#6
+  · exact square_retire_yield m hwf hfit σ hsync hifv hcl h25
+  by_cases h26 : (σ.regs "if_word" 32).extractLsb' 0 6 = 26#6
+  · exact square_retire_halt m hwf hfit σ hsync hifv hcl h26
+  -- unknown opcode: both sides fault with illegal-instruction
+  refine square_retire_illegal m hwf hfit σ hsync hifv hcl ?_
+  rw [decode_none_iff σ Hw.opcE (σ.regs "if_word" 32) rfl]
+  intro hkn
+  obtain ⟨d, hd, hop⟩ := (knownE_eval σ Hw.opcE).mp hkn
+  have hmemop : d.opcode ∈ ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26] : List (BitVec 6)) :=
+    (by decide +kernel : ∀ d' ∈ isa, d'.opcode ∈
+      ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26] : List (BitVec 6)))
+      d hd
+  have hke : (σ.regs "if_word" 32).extractLsb' 0 6 ∈
+      ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26] : List (BitVec 6)) := by
+    rw [show (σ.regs "if_word" 32).extractLsb' 0 6 = d.opcode from
+      hop.symm]
+    exact hmemop
+  simp only [List.mem_cons, List.not_mem_nil, or_false] at hke
+  rcases hke with h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h|h
+  · exact h0 h
+  · exact h1 h
+  · exact h2 h
+  · exact h3 h
+  · exact h4 h
+  · exact h5 h
+  · exact h6 h
+  · exact h7 h
+  · exact h8 h
+  · exact h9 h
+  · exact h10 h
+  · exact h11 h
+  · exact h12 h
+  · exact h13 h
+  · exact h16 h
+  · exact h17 h
+  · exact h18 h
+  · exact h19 h
+  · exact h20 h
+  · exact h21 h
+  · exact h22 h
+  · exact h23 h
+  · exact h24 h
+  · exact h25 h
+  · exact h26 h
 
 /-- **The R-MC square**: one core cycle is exactly one spec step through
 `Hw.abs`. Three of the four arms — countdown, idle-stall, idle-issue —
