@@ -760,4 +760,218 @@ theorem square_retire_halt (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       rw [haltDom_inflight]
       rfl)
 
+/-! ## The retiring-fault glue
+
+A retiring op that faults (`lw` without authority, the unreachable
+decode-failure fallback) runs `haltFault` with the `pc` *not* advanced —
+the spec's `haltWith` on the pre-advance state. -/
+
+private theorem ifv_notin_domReads : ∀ (x : DomainId),
+    ∀ q ∈ domReadNames x, ¬q = (("if_v" : String), (1 : Nat)) := by
+  decide +kernel
+
+private theorem ifv_notin_gateReads : ∀ (g : GateId),
+    ∀ q ∈ gateReadNames g, ¬q = (("if_v" : String), (1 : Nat)) := by
+  decide +kernel
+
+/-- `absDom` after just the latch clear is the pre-advance spec state. -/
+theorem absDom_ifv (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP) : ∀ x,
+    Hw.absDom ((Act.write 1 "if_v" (.lit 0)).run σ
+        ((Hw.refillAct m).run σ σ)) x
+      = ({ refillPhase m (Hw.abs σ) with inflight := none }).doms x := by
+  intro x
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ) = refillPhase m (Hw.abs σ) :=
+    abs_refill m hwf hfit σ hsync
+  rw [absDom_congr x (fun p hp => frame (fun hm =>
+    absurd (List.mem_singleton.mp hm) (ifv_notin_domReads x p hp)) σ _)]
+  rw [← habs1]
+  rfl
+
+/-- `absGate` after just the latch clear is unchanged. -/
+theorem absGate_ifv (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP) : ∀ g,
+    Hw.absGate ((Act.write 1 "if_v" (.lit 0)).run σ
+        ((Hw.refillAct m).run σ σ)) g
+      = ({ refillPhase m (Hw.abs σ) with inflight := none }).gates g := by
+  intro g
+  have habs1 : Hw.abs ((Hw.refillAct m).run σ σ) = refillPhase m (Hw.abs σ) :=
+    abs_refill m hwf hfit σ hsync
+  rw [absGate_congr g (fun p hp => frame (fun hm =>
+    absurd (List.mem_singleton.mp hm) (ifv_notin_gateReads g p hp)) σ _)]
+  rw [← habs1]
+  rfl
+
+/-- Reads the halt bridge takes pass through the latch clear and the
+refill. -/
+private theorem acc_read_pres' (m : Manifest) (σ : Loom.Hw.St)
+    (rn : String) (w : Nat)
+    (h1 : ¬(rn, w) = (("if_v" : String), (1 : Nat)))
+    (h3 : (rn, w) ∉
+      ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) :
+    ((Act.write 1 "if_v" (.lit 0)).run σ
+      ((Hw.refillAct m).run σ σ)).regs rn w = σ.regs rn w := by
+  rw [frame (fun hm => absurd (List.mem_singleton.mp hm) h1) σ _]
+  exact refill_pres m σ h3
+
+set_option maxHeartbeats 6400000 in
+/-- **The retiring-fault square glue.** -/
+theorem square_retire_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hben : ∀ mn' ∈ moverMns, (Hw.isMn mn').eval σ ≠ 1#1)
+    (E : DomainId) (hE : E.val = (σ.regs "if_dom" 2).toNat)
+    (f : Fault)
+    (hcoreF : ∀ acc, (Hw.retireFor E).run σ acc
+      = (Hw.haltFault E f).run σ acc)
+    (hspecF : retire { refillPhase m (Hw.abs σ) with inflight := none } E
+        (σ.regs "if_word" 32)
+      = haltWith { refillPhase m (Hw.abs σ) with inflight := none } E f) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := finOfBv (by decide) (σ.regs "if_dom" 2)
+        word := σ.regs "if_word" 32
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    exact absInflight_some σ hifv
+  have hdomE : (finOfBv (by decide : 2 ^ 2 = numDomains)
+      (σ.regs "if_dom" 2)) = E :=
+    Fin.ext hE.symm
+  have hspec : corePhase m (refillPhase m (Hw.abs σ))
+      = ({ refillPhase m (Hw.abs σ) with inflight := none }).haltDom E
+          (BitVec.ofNat 32 f.code) := by
+    rw [corePhase_retire m _ _ hfl (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+    show retire { refillPhase m (Hw.abs σ) with inflight := none }
+      (finOfBv (by decide) (σ.regs "if_dom" 2)) (σ.regs "if_word" 32) = _
+    rw [hdomE]
+    exact hspecF
+  obtain ⟨hHD, hHG⟩ := abs_haltAct σ
+    ((Act.write 1 "if_v" (.lit 0)).run σ ((Hw.refillAct m).run σ σ))
+    ({ refillPhase m (Hw.abs σ) with inflight := none })
+    E (BitVec.ofNat 32 f.code)
+    (absDom_ifv m hwf hfit σ hsync)
+    (absGate_ifv m hwf hfit σ hsync)
+    ((acc_read_pres' m σ (Hw.dsrvV E) 1
+      ((by decide +kernel : ∀ e : DomainId,
+        ¬((Hw.dsrvV e, (1 : Nat)) = (("if_v" : String), (1 : Nat)))) E)
+      ((by decide +kernel : ∀ e : DomainId, ((Hw.dsrvV e : String), (1 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) E)).symm)
+    ((acc_read_pres' m σ (Hw.dsrv E) 2
+      (fun hc => absurd (congrArg Prod.snd hc)
+        (show ¬((2 : Nat) = 1) by decide))
+      ((by decide +kernel : ∀ e : DomainId, ((Hw.dsrv e : String), (2 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) E)).symm)
+    (fun g => (acc_read_pres' m σ (Hw.gactV g) 1
+      ((by decide +kernel : ∀ g' : GateId,
+        ¬((Hw.gactV g', (1 : Nat)) = (("if_v" : String), (1 : Nat)))) g)
+      ((by decide +kernel : ∀ g' : GateId, ((Hw.gactV g' : String), (1 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
+    (fun g => (acc_read_pres' m σ (Hw.gcaller g) 2
+      (fun hc => absurd (congrArg Prod.snd hc)
+        (show ¬((2 : Nat) = 1) by decide))
+      ((by decide +kernel : ∀ g' : GateId,
+        ((Hw.gcaller g' : String), (2 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
+    (fun g => (acc_read_pres' m σ (Hw.gcallerRd g) 3
+      (fun hc => absurd (congrArg Prod.snd hc)
+        (show ¬((3 : Nat) = 1) by decide))
+      ((by decide +kernel : ∀ g' : GateId,
+        ((Hw.gcallerRd g' : String), (3 : Nat))
+        ∉ ([("d0_budget", 32), ("d0_rctr", 32), ("d1_budget", 32),
+        ("d1_rctr", 32), ("d2_budget", 32), ("d2_rctr", 32),
+        ("d3_budget", 32), ("d3_rctr", 32)] : List (String × Nat))) g)).symm)
+  refine square_retire_benign m hwf hfit σ hsync hifv hcl hben
+    (Hw.haltFault E f) _
+    (fun rn w => by
+      rw [coreAct_run_retire_eq m σ _ hifv hcl,
+        retireAct_run_regs σ _ E hE rn w, hcoreF]
+      rfl)
+    (by
+      show (("if_v" : String), (1 : Nat))
+        ∉ (Hw.haltAct E (BitVec.ofNat 32 f.code)).regWrites
+      rw [show (Hw.haltAct E (BitVec.ofNat 32 f.code)).regWrites
+        = (Hw.haltAct E 0).regWrites from rfl]
+      exact (by decide +kernel : ∀ e : DomainId, (("if_v" : String), (1 : Nat))
+        ∉ (Hw.haltAct e 0).regWrites) E)
+    hspec
+    (fun x => hHD x)
+    (fun g => hHG g)
+    (fun x => by
+      rw [haltDom_caps']
+      show ((refillPhase m (Hw.abs σ)).doms x).caps = _
+      rw [refillPhase_caps])
+    (fun x => by
+      rw [haltDom_slotGen']
+      show ((refillPhase m (Hw.abs σ)).doms x).slotGen = _
+      rw [refillPhase_slotGen])
+    (fun x => by
+      rw [haltDom_regions']
+      show ((refillPhase m (Hw.abs σ)).doms x).regions = _
+      rw [refillPhase_regions])
+    (by
+      rw [haltDom_mover']
+      show (refillPhase m (Hw.abs σ)).mover = _
+      rw [refillPhase_mover]
+      rfl)
+    (fun b => by
+      have h := congrFun (haltDom_mem'
+        ({ refillPhase m (Hw.abs σ) with inflight := none }) E
+        (BitVec.ofNat 32 f.code)) b
+      rw [h]
+      rfl)
+    (by
+      rw [haltDom_cycle]
+      rfl)
+    (by
+      rw [haltDom_inflight])
+
+/-- The unreachable-but-total decode-failure fallback: both sides fault
+with illegal-instruction. -/
+theorem square_retire_illegal (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hdec : Loom.Isa.decode isa (σ.regs "if_word" 32) = none) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hknown : ∀ mn ∈ allMns, (Hw.isMn mn).eval σ ≠ 1#1 := by
+    intro mn hmn h
+    rw [isMn_eval] at h
+    have hopc : Machines.Lnp64u.sig.opcodeOf (σ.regs "if_word" 32)
+        = Hw.opcodeOf mn := h
+    obtain ⟨d, hd, hop⟩ := (by decide +kernel :
+      ∀ mn' ∈ allMns, ∃ d ∈ isa, d.opcode = Hw.opcodeOf mn') mn hmn
+    have := (Loom.Isa.isSome_decode_iff isa (σ.regs "if_word" 32)).mpr
+      ⟨d, hd, by rw [hop, hopc]⟩
+    rw [hdec] at this
+    exact absurd this (by simp)
+  refine square_retire_fault m hwf hfit σ hsync hifv hcl
+    (fun mn' hmn' => hknown mn' ((by decide : ∀ x ∈ moverMns, x ∈ allMns)
+      mn' hmn'))
+    E rfl .illegalInstruction
+    (fun acc => retireFor_run_none σ acc E (fun p hp =>
+      hknown p.1 (by
+        rw [← opCircs_fst_all E]
+        exact List.mem_map_of_mem hp)))
+    (retire_of_decode_none _ E _ hdec)
+
 end Machines.Lnp64u.Theorems.RMC
