@@ -303,4 +303,176 @@ theorem moverAct_mem_watched (σ acc : Loom.Hw.St) (τ : MachineState)
       (by rw [hjob]; exact absMover_some σ hv)
       hauthτ hmemτ hswτ a
 
+set_option maxHeartbeats 25600000 in
+/-- The installing-op square glue: `square_retire_rgnop` with the Mover
+faces routed through the watched-ref wrappers (tables may differ from
+the abstraction at the freshly-installed slot only). -/
+theorem square_retire_install (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hin : Inert σ)
+    (X : Act) (τ2 : MachineState)
+    (hcoreR : ∀ (rn : String) (w : Nat),
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).regs rn w
+        = ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+            ((Hw.refillAct m).run σ σ)).regs rn w)
+    (hXifv : ("if_v", 1) ∉ X.regWrites)
+    (hspec : corePhase m (refillPhase m (Hw.abs σ)) = τ2)
+    (habsD : ∀ x, Hw.absDom ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+      ((Hw.refillAct m).run σ σ)) x = τ2.doms x)
+    (habsG : ∀ g, Hw.absGate ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+      ((Hw.refillAct m).run σ σ)) g = τ2.gates g)
+    (hjob : τ2.mover = Hw.absMover σ)
+    (hwcapsS : σ.regs "mov_v" 1 = 1#1 →
+      (τ2.doms (Hw.decRef (σ.regs "mov_src" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_src" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_src" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_src" 14)).slot)
+    (hwgenS : σ.regs "mov_v" 1 = 1#1 →
+      (τ2.doms (Hw.decRef (σ.regs "mov_src" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_src" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_src" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_src" 14)).slot)
+    (hwcapsD : σ.regs "mov_v" 1 = 1#1 →
+      (τ2.doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).caps
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot)
+    (hwgenD : σ.regs "mov_v" 1 = 1#1 →
+      (τ2.doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot
+      = ((Hw.abs σ).doms (Hw.decRef (σ.regs "mov_dst" 14)).dom).slotGen
+        (Hw.decRef (σ.regs "mov_dst" 14)).slot)
+    (hauthτ2 : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ2.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmemτ2 : ∀ b : Addr,
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+        b.toNat 32 = τ2.mem b)
+    (hswτ2 : ∀ sc : Expr 12, Expr.eval σ
+      (((List.finRange numDomains).foldr
+        (fun d acc' =>
+          Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+              Hw.domCoversE d
+                (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                ⟨false, true, false⟩,
+              .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
+            (Hw.readReg d Hw.rs2E) acc')
+        (.memRead 32 "mem" sc)))
+      = τ2.mem (sc.eval σ))
+    (hcyc : τ2.cycle = σ.regs "cycle" 32)
+    (hτ2if : τ2.inflight = none) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set σ1 := (Hw.refillAct m).run σ σ with hσ1
+  set τ1 := refillPhase m (Hw.abs σ) with hτ1
+  -- register frame down to the post-core accumulator
+  have hp : ∀ (rn : String) (w : Nat),
+      rn.startsWith "mov_" = false → ¬(rn = "cycle" ∧ w = 32) →
+      ((Hw.core m).cycle σ).regs rn w
+        = ((Hw.coreAct m).run σ σ1).regs rn w := by
+    intro rn w h2 h4
+    rw [core_cycle_unfold]
+    rw [frame (show (rn, w) ∉ Hw.tickAct.regWrites from by
+      intro hmem
+      simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+        Prod.mk.injEq] at hmem
+      exact h4 hmem)]
+    rw [run_WritesPrefixed h2 w _ mover_prefixed]
+  have hstep : step m (Hw.abs σ) =
+      { moverPhase (corePhase m τ1) with
+        cycle := (moverPhase (corePhase m τ1)).cycle + 1 } := rfl
+  rw [hstep]
+  apply machineState_ext'
+  · -- cycle
+    show ((Hw.core m).cycle σ).regs "cycle" 32 = _
+    rw [cycle_regs_cycle]
+    show _ = (moverPhase (corePhase m τ1)).cycle + 1
+    rw [moverPhase_cycle, hspec, hcyc]
+  · -- mem
+    funext a
+    show ((Hw.core m).cycle σ).mems "mem" a.toNat 32 = _
+    rw [core_cycle_unfold]
+    rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
+      (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
+    rw [show (moverPhase (corePhase m τ1)).mem = (moverPhase τ2).mem from by
+      rw [hspec]]
+    exact moverAct_mem_watched σ _ τ2 hin hjob
+      hwcapsS hwgenS hwcapsD hwgenD
+      (fun ow sa => hspec ▸ hauthτ2 ow sa)
+      hmemτ2 hswτ2 a
+  · -- doms
+    funext x
+    have hRHS : (moverPhase (corePhase m τ1)).doms x = τ2.doms x := by
+      rw [moverPhase_doms, hspec]
+    show Hw.absDom ((Hw.core m).cycle σ) x = _
+    rw [hRHS, ← habsD x]
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
+      fin_cases x <;> decide +kernel
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases x <;> exact of_decide_eq_true rfl
+    apply absDom_congr
+    intro p hp'
+    rw [← hcoreR p.1 p.2]
+    exact hp p.1 p.2 (hmovfree p hp') (hcycfree p hp')
+  · -- gates
+    funext g
+    have hRHS : (moverPhase (corePhase m τ1)).gates g = τ2.gates g := by
+      rw [moverPhase_gates, hspec]
+    show Hw.absGate ((Hw.core m).cycle σ) g = _
+    rw [hRHS, ← habsG g]
+    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
+      fin_cases g <;> decide +kernel
+    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+      fin_cases g <;> exact of_decide_eq_true rfl
+    apply absGate_congr
+    intro p hp'
+    rw [← hcoreR p.1 p.2]
+    exact hp p.1 p.2 (hmovfree p hp') (hcycfree p hp')
+  · -- mover
+    show Hw.absMover ((Hw.core m).cycle σ)
+      = (moverPhase (corePhase m τ1)).mover
+    rw [core_cycle_unfold]
+    have htick : ∀ (rn : String) (w : Nat), ¬(rn = "cycle" ∧ w = 32) →
+        (Hw.tickAct.run σ (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1))).regs
+          rn w = (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)).regs rn w := by
+      intro rn w h4
+      exact frame (by
+        intro hmem
+        simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+          Prod.mk.injEq] at hmem
+        exact h4 hmem) σ _
+    rw [show Hw.absMover (Hw.tickAct.run σ
+        (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)))
+        = Hw.absMover (Hw.moverAct.run σ ((Hw.coreAct m).run σ σ1)) from by
+      unfold Hw.absMover
+      rw [htick "mov_v" 1 (by decide), htick "mov_owner" 2 (by decide),
+        htick "mov_src" 14 (by decide), htick "mov_dst" 14 (by decide),
+        htick "mov_srccur" 12 (by decide), htick "mov_dstcur" 12 (by decide),
+        htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
+    rw [show (moverPhase (corePhase m τ1)).mover = (moverPhase τ2).mover
+      from by rw [hspec]]
+    exact absMover_moverAct_watched σ _ τ2 hin hjob
+      hwcapsS hwgenS hwcapsD hwgenD
+  · -- inflight
+    have hRHS : (moverPhase (corePhase m τ1)).inflight = none := by
+      rw [moverPhase_inflight, hspec, hτ2if]
+    show Hw.absInflight ((Hw.core m).cycle σ) = _
+    rw [hRHS]
+    unfold Hw.absInflight
+    rw [hp "if_v" 1 (by decide +kernel) (by decide), hcoreR "if_v" 1]
+    rw [show ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ σ1).regs "if_v" 1
+        = ((Act.write 1 "if_v" (.lit 0)).run σ σ1).regs "if_v" 1 from
+      frame hXifv σ _]
+    rw [show ((Act.write 1 "if_v" (.lit 0)).run σ σ1).regs "if_v" 1 = 0#1
+      from by simp [Act.run, RegEnv.set, Expr.eval]]
+    rw [if_neg (by decide)]
+
 end Machines.Lnp64u.Theorems.RMC
