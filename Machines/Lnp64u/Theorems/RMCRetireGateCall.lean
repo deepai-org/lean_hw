@@ -240,6 +240,88 @@ theorem callStateChecks_pass (σ : Loom.Hw.St) (c : Ctx)
     simp [hserv] at this
   · exact fun h => (callDepthOverflow_eval σ c hwf).mp h hdepth
 
+/-- A live, class-matching gate capability discharges the first two call
+checks and yields the selected gate identifier. -/
+theorem callSelector_pass (σ : Loom.Hw.St) (d : DomainId)
+    (S : Slot) (e : CapEntry) (g : GateId)
+    (hkc : KindCanon σ)
+    (hslot : S.val = ((Hw.readReg d Hw.rs1E).eval σ).extractLsb' 0 4 |>.toNat)
+    (hlive : (Hw.abs σ).liveRef
+      ⟨d, S, ((Hw.readReg d Hw.rs1E).eval σ).extractLsb' 4 8⟩ = true)
+    (hcap : ((Hw.abs σ).doms d).caps S = some e)
+    (hcls : (Handle.decode ((Hw.readReg d Hw.rs1E).eval σ)).cls = e.kind.cls)
+    (hkind : e.kind = .gate g) :
+    (Expr.not (Hw.callSel d).live).eval σ ≠ 1#1 ∧
+    (Expr.not (.and (Hw.callSel d).clsOk
+      (.not (Hw.kIsMem (Hw.callSel d).kindW))).eval σ ≠ 1#1 ∧
+    finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g := by
+  have hliveE : (Hw.callSel d).live.eval σ = 1#1 := by
+    exact capSel_live_of_liveRef σ d (Hw.readReg d Hw.rs1E) S hslot hlive
+  have hclsE : (Hw.callSel d).clsOk.eval σ = 1#1 := by
+    exact capSel_clsOk_of_some σ d (Hw.readReg d Hw.rs1E) S e hkc hslot hcap hcls
+  have hkw : (Hw.callSel d).kindW.eval σ = Hw.encKind (.gate g) := by
+    rw [capSel_kind_of_some σ d (Hw.readReg d Hw.rs1E) S e hkc hslot hcap,
+      hkind]
+  have hmem : (Hw.kIsMem (Hw.callSel d).kindW).eval σ = 0#1 := by
+    rw [show (Hw.kIsMem (Hw.callSel d).kindW).eval σ =
+      if ((Hw.callSel d).kindW.eval σ).extractLsb' 0 1 = 0#1 then 1#1
+      else 0#1 from rfl, hkw]
+    fin_cases g <;> decide
+  constructor
+  · show ¬(~~~((Hw.callSel d).live.eval σ) = 1#1)
+    rw [hliveE]
+    decide
+  constructor
+  · show ¬(~~~((Hw.callSel d).clsOk.eval σ &&&
+      ~~~((Hw.kIsMem (Hw.callSel d).kindW).eval σ)) = 1#1)
+    rw [hclsE, hmem]
+    decide
+  · exact kGid_encGate_eval σ (Hw.callSel d).kindW g hkw
+
+/-- A null argument vacuously passes all three transfer-related checks. -/
+theorem callArgumentChecks_zero (σ : Loom.Hw.St) (d : DomainId)
+    (hz : (Hw.argW d).eval σ = 0#32) :
+    (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).live)).eval σ ≠ 1#1 ∧
+    (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).clsOk)).eval σ ≠ 1#1 ∧
+    (Expr.and (Hw.argNZ d)
+      (Hw.transferBlocked d (Hw.callCal d) (Hw.argSel d))).eval σ ≠ 1#1 := by
+  have hnz : (Hw.argNZ d).eval σ = 0#1 := by
+    apply bv1_ne_one.mp
+    intro h
+    exact (argNZ_eval_iff σ d).mp h hz
+  simp only [Expr.eval, hnz]
+  decide
+
+/-- A non-null live, class-matching argument discharges the liveness and
+class checks and exposes its canonical kind word. -/
+theorem callArgumentSelector_pass (σ : Loom.Hw.St) (d : DomainId)
+    (S : Slot) (e : CapEntry) (hkc : KindCanon σ)
+    (hnz : (Hw.argW d).eval σ ≠ 0#32)
+    (hslot : S.val = ((Hw.argW d).eval σ).extractLsb' 0 4 |>.toNat)
+    (hlive : (Hw.abs σ).liveRef
+      ⟨d, S, ((Hw.argW d).eval σ).extractLsb' 4 8⟩ = true)
+    (hcap : ((Hw.abs σ).doms d).caps S = some e)
+    (hcls : (Handle.decode ((Hw.argW d).eval σ)).cls = e.kind.cls) :
+    (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).live)).eval σ ≠ 1#1 ∧
+    (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).clsOk)).eval σ ≠ 1#1 ∧
+    (Hw.argSel d).kindW.eval σ = Hw.encKind e.kind := by
+  have hnzE : (Hw.argNZ d).eval σ = 1#1 :=
+    (argNZ_eval_iff σ d).mpr hnz
+  have hliveE : (Hw.argSel d).live.eval σ = 1#1 :=
+    capSel_live_of_liveRef σ d (Hw.argW d) S hslot hlive
+  have hclsE : (Hw.argSel d).clsOk.eval σ = 1#1 :=
+    capSel_clsOk_of_some σ d (Hw.argW d) S e hkc hslot hcap hcls
+  constructor
+  · show ¬((Hw.argNZ d).eval σ &&& ~~~((Hw.argSel d).live.eval σ) = 1#1)
+    rw [hnzE, hliveE]
+    decide
+  constructor
+  · show ¬((Hw.argNZ d).eval σ &&& ~~~((Hw.argSel d).clsOk.eval σ) = 1#1)
+    rw [hnzE, hclsE]
+    decide
+  · exact capSel_kind_of_some σ d (Hw.argW d) S e hkc hslot hcap
+
 /-! ## Activation-record writer -/
 
 /-- The gate-indexed activation-record fold from the successful call arm. -/

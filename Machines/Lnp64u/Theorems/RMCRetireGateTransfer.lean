@@ -944,4 +944,30 @@ theorem transferBlocked_eval_with_lineage (σ : Loom.Hw.St)
       intro hv
       exact hc (by simpa using hcell.mp hv)
 
+/-- A root transfer with an available target slot passes placement. -/
+theorem transferBlocked_pass_no_lineage (σ : Loom.Hw.St)
+    (D T : DomainId) (toE : Expr 2) (acs : Hw.CapSel)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hlinV : acs.linV.eval σ = 0#1)
+    (hslot : ((Hw.abs σ).freeSlot T).isSome) :
+    (Hw.transferBlocked D toE acs).eval σ ≠ 1#1 := by
+  intro h
+  exact (transferBlocked_eval_no_lineage σ D T toE acs hto hlinV).mp h hslot
+
+/-- A derived transfer with available target slot and lineage cell passes
+placement. -/
+theorem transferBlocked_pass_with_lineage (σ : Loom.Hw.St)
+    (D T : DomainId) (toE : Expr 2) (acs : Hw.CapSel)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hlinV : acs.linV.eval σ = 1#1)
+    (hcellV : (Hw.cellVAt D acs.lin).eval σ = 1#1)
+    (hslot : ((Hw.abs σ).freeSlot T).isSome)
+    (hcell : ((Hw.abs σ).freeCell T).isSome) :
+    (Hw.transferBlocked D toE acs).eval σ ≠ 1#1 := by
+  intro h
+  rcases (transferBlocked_eval_with_lineage σ D T toE acs hto hlinV
+    hcellV).mp h with hs | hc
+  · exact hs hslot
+  · exact hc hcell
+
 end Machines.Lnp64u.Theorems.RMC
