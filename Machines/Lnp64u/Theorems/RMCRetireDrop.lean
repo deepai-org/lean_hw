@@ -3402,9 +3402,18 @@ theorem absMover_moverAct_transfer (σ acc : Loom.Hw.St) (τ : MachineState)
       (Hw.killedByCoreE dm sl).eval σ =
         (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
     (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
-    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
-      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
-        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
     (hjob : τ.mover =
       match Hw.absMover σ with
       | none => none
@@ -3486,10 +3495,8 @@ theorem absMover_moverAct_transfer (σ acc : Loom.Hw.St) (τ : MachineState)
         (σ.regs "mov_dstcur" 12) (σ.regs "mov_status" 12)
         (σ.regs "mov_rem" 13)
         hkillS hkillD
-        (by simpa [job] using
-          hkind job.src.dom job.src.slot job.src.gen houtS)
-        (by simpa [job] using
-          hkind job.dst.dom job.dst.slot job.dst.gen houtD)
+        (by simpa [job] using hkindS job habs houtS)
+        (by simpa [job] using hkindD job habs houtD)
         hjobV
         (postJ_noNew σ hnew _ _) (postJ_noNew σ hnew _ _)
         (postJ_noNew σ hnew _ _) (postJ_noNew σ hnew _ _)
@@ -3524,7 +3531,10 @@ theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
   · intro dm sl
     simpa [Hw.dropKilled] using hkills dm sl
   · exact hnew
-  · exact hkind
+  · intro job _ hout
+    exact hkind job.src.dom job.src.slot job.src.gen hout
+  · intro job _ hout
+    exact hkind job.dst.dom job.dst.slot job.dst.gen hout
   · exact hjob
 
 /-- Memory-face sibling of `absMover_moverAct_transfer`. The killed case's
@@ -3537,9 +3547,18 @@ theorem moverAct_mem_transfer (σ acc : Loom.Hw.St) (τ : MachineState)
       (Hw.killedByCoreE dm sl).eval σ =
         (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
     (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
-    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
-      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
-        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
     (hjob : τ.mover =
       match Hw.absMover σ with
       | none => none
@@ -3645,10 +3664,8 @@ theorem moverAct_mem_transfer (σ acc : Loom.Hw.St) (τ : MachineState)
         (σ.regs "mov_dstcur" 12) (σ.regs "mov_status" 12)
         (σ.regs "mov_rem" 13)
         hkillS hkillD
-        (by simpa [job] using
-          hkind job.src.dom job.src.slot job.src.gen houtS)
-        (by simpa [job] using
-          hkind job.dst.dom job.dst.slot job.dst.gen houtD)
+        (by simpa [job] using hkindS job habs houtS)
+        (by simpa [job] using hkindD job habs houtD)
         hjobV
         (postJ_noNew σ hnew _ _) (postJ_noNew σ hnew _ _)
         (postJ_noNew σ hnew _ _) (postJ_noNew σ hnew _ _)
@@ -3707,7 +3724,10 @@ theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
   · intro dm sl
     simpa [Hw.dropKilled] using hkills dm sl
   · exact hnew
-  · exact hkind
+  · intro job _ hout
+    exact hkind job.src.dom job.src.slot job.src.gen hout
+  · intro job _ hout
+    exact hkind job.dst.dom job.dst.slot job.dst.gen hout
   · exact hjob
   · exact hauthτ
   · exact hmemτ

@@ -399,9 +399,18 @@ theorem square_retire_gateCall_payload (m : Manifest) (σ : Loom.Hw.St)
     (habsG : ∀ g, Hw.absGate
       ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
         ((Hw.refillAct m).run σ σ)) g = τ2.gates g)
-    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
-      Option.map CapEntry.kind ((τ2.doms d).liveCap s g) =
-        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ2.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ2.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
     (hjob : τ2.mover =
       match Hw.absMover σ with
       | none => none
@@ -439,11 +448,11 @@ theorem square_retire_gateCall_payload (m : Manifest) (σ : Loom.Hw.St)
   apply square_retire_gate_payload m σ X τ2 hcoreR hXifv hspec habsD habsG
   · exact absMover_moverAct_call σ
       ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)) τ2 E S hslot hnz
-      hkills hnew hkind hjob
+      hkills hnew hkindS hkindD hjob
   · intro a
     exact moverAct_mem_call σ
       ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)) τ2 E S hslot hnz
-      hkills hnew hkind hjob hauthτ2 hmemτ2 hswτ2 a
+      hkills hnew hkindS hkindD hjob hauthτ2 hmemτ2 hswτ2 a
   · exact hcyc
   · exact hτ2if
 

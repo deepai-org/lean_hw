@@ -476,9 +476,18 @@ theorem absMover_moverAct_call (σ acc : Loom.Hw.St) (τ : MachineState)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
       (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
     (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
-    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
-      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
-        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
     (hjob : τ.mover =
       match Hw.absMover σ with
       | none => none
@@ -492,7 +501,8 @@ theorem absMover_moverAct_call (σ acc : Loom.Hw.St) (τ : MachineState)
     rw [hkills]
     exact callKilled_nonzero_eval σ E hnz dm sl
   · exact hnew
-  · exact hkind
+  · exact hkindS
+  · exact hkindD
   · exact hjob
 
 /-- Successful non-null call specialization of the shared one-source-slot
@@ -504,9 +514,18 @@ theorem moverAct_mem_call (σ acc : Loom.Hw.St) (τ : MachineState)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
       (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
     (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
-    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
-      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
-        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
     (hjob : τ.mover =
       match Hw.absMover σ with
       | none => none
@@ -544,7 +563,8 @@ theorem moverAct_mem_call (σ acc : Loom.Hw.St) (τ : MachineState)
     rw [hkills]
     exact callKilled_nonzero_eval σ E hnz dm sl
   · exact hnew
-  · exact hkind
+  · exact hkindS
+  · exact hkindD
   · exact hjob
   · exact hauthτ
   · exact hmemτ
