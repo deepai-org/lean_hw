@@ -1593,6 +1593,87 @@ theorem gateCallExec_memCap (c : Ctx) (τ : MachineState) (e : CapEntry)
   rw [if_pos (by simpa using hcls)]
   simp only [specM_pure, hkind, SpecM.raise]
 
+/-- An already-active gate fails before any mutation. -/
+theorem gateCallExec_active (c : Ctx) (τ : MachineState)
+    (S : Slot) (G : Gen) (e : CapEntry) (g : GateId) (a : Activation)
+    (hlive : Machines.Lnp64u.Isa.capLive c.d
+      ((τ.doms c.d).reg c.op.rs1) τ = .ok (S, G, e) τ)
+    (hkind : e.kind = .gate g)
+    (hact : (τ.gates g).act = some a) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get,
+    SpecM.require, hact]
+  rfl
+
+/-- Self-call rejection after an idle gate. -/
+theorem gateCallExec_self (c : Ctx) (τ : MachineState)
+    (S : Slot) (G : Gen) (e : CapEntry) (g : GateId)
+    (hlive : Machines.Lnp64u.Isa.capLive c.d
+      ((τ.doms c.d).reg c.op.rs1) τ = .ok (S, G, e) τ)
+    (hkind : e.kind = .gate g)
+    (hact : (τ.gates g).act = none)
+    (hcal : (τ.gates g).config.callee = c.d) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
+    Option.isNone_none, SpecM.require, hcal]
+  rfl
+
+/-- A non-running callee is rejected before transfer. -/
+theorem gateCallExec_calleeNotRunning (c : Ctx) (τ : MachineState)
+    (S : Slot) (G : Gen) (e : CapEntry) (g : GateId) (cal : DomainId)
+    (hlive : Machines.Lnp64u.Isa.capLive c.d
+      ((τ.doms c.d).reg c.op.rs1) τ = .ok (S, G, e) τ)
+    (hkind : e.kind = .gate g)
+    (hact : (τ.gates g).act = none)
+    (hcal : (τ.gates g).config.callee = cal)
+    (hne : cal ≠ c.d)
+    (hrun : (τ.doms cal).run ≠ .running) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
+    Option.isNone_none, SpecM.require, hcal, hne, decide_true]
+  rw [if_neg (by simpa using hrun)]
+  rfl
+
+/-- A callee already serving another activation is rejected. -/
+theorem gateCallExec_calleeServing (c : Ctx) (τ : MachineState)
+    (S : Slot) (G : Gen) (e : CapEntry) (g : GateId) (cal : DomainId)
+    (served : GateId)
+    (hlive : Machines.Lnp64u.Isa.capLive c.d
+      ((τ.doms c.d).reg c.op.rs1) τ = .ok (S, G, e) τ)
+    (hkind : e.kind = .gate g)
+    (hact : (τ.gates g).act = none)
+    (hcal : (τ.gates g).config.callee = cal)
+    (hne : cal ≠ c.d)
+    (hrun : (τ.doms cal).run = .running)
+    (hserv : (τ.doms cal).serving = some served) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
+    Option.isNone_none, SpecM.require, hcal, hne, decide_true, hrun, hserv]
+  rfl
+
+/-- A call that would exceed the bounded activation depth is rejected. -/
+theorem gateCallExec_depthOverflow (c : Ctx) (τ : MachineState)
+    (S : Slot) (G : Gen) (e : CapEntry) (g : GateId) (cal : DomainId)
+    (hlive : Machines.Lnp64u.Isa.capLive c.d
+      ((τ.doms c.d).reg c.op.rs1) τ = .ok (S, G, e) τ)
+    (hkind : e.kind = .gate g)
+    (hact : (τ.gates g).act = none)
+    (hcal : (τ.gates g).config.callee = cal)
+    (hne : cal ≠ c.d)
+    (hrun : (τ.doms cal).run = .running)
+    (hserv : (τ.doms cal).serving = none)
+    (hdepth : ¬Machines.Lnp64u.Isa.Wip.gateDepth c τ ≤ maxChainDepth) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
+    Option.isNone_none, SpecM.require, hcal, hne, decide_true, hrun, hserv]
+  rw [if_neg (by simpa using hdepth)]
+  rfl
+
 /-- The named specification gate-call body reduces to the same pure state
 transformer as `abs_callSuccessA` once all checks and the optional transfer
 have succeeded.  The frame hypotheses are exactly the non-structural fields
