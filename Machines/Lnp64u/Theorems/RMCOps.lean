@@ -65,6 +65,22 @@ theorem handleE_pack (σ : Loom.Hw.St) (sE : Expr 4) (gE : Expr 8)
   rw [setWidth_eq_ofNat _ (by omega)]
   rfl
 
+/-- The transfer result handle is the recipient's selected free slot and
+generation, with the source capability class preserved.  This is the shared
+value projection used by both gate retirement arms. -/
+theorem transferHandleAt_eval (σ : Loom.Hw.St) (toE : Expr 2)
+    (acs : Hw.CapSel) (cls : CapClass)
+    (hcls : (Hw.field acs.kindW 0 1).eval σ =
+      if cls = .gate then 1#1 else 0#1) :
+    (Hw.transferHandleAt toE acs).eval σ =
+      let t : DomainId := finOfBv (by decide) (toE.eval σ)
+      Handle.encode
+        ⟨finOfBv (by decide) ((Hw.freeSlotIdx t).eval σ),
+          (Hw.genOfE t (Hw.freeSlotIdx t)).eval σ, cls⟩ := by
+  unfold Hw.transferHandleAt
+  rw [muxFin_eval (by decide : 2 ^ 2 = numDomains)]
+  exact handleE_pack σ _ _ _ cls hcls
+
 /-- The narrowing circuit packs the narrowed kind's encoding. -/
 theorem narrowKindE_pack (σ : Loom.Hw.St) (kw dw : Expr 32) :
     (Hw.narrowKindE kw dw).eval σ =
