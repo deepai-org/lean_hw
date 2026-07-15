@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireGateCallArm
+import Machines.Lnp64u.Theorems.RMCRetireGateSquare
 
 /-!
 # R-MC retirement: successful gate_call arms
