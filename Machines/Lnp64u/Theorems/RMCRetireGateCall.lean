@@ -1674,6 +1674,28 @@ theorem gateCallExec_depthOverflow (c : Ctx) (τ : MachineState)
   rw [if_neg (by simpa using hdepth)]
   rfl
 
+/-- After all gate-state checks pass, an optional-transfer errno is returned
+unchanged by the enclosing call. -/
+theorem gateCallExec_transferErr (c : Ctx) (τ : MachineState)
+    (S : Slot) (G : Gen) (e : CapEntry) (g : GateId) (cal : DomainId)
+    (er : Errno)
+    (hlive : Machines.Lnp64u.Isa.capLive c.d
+      ((τ.doms c.d).reg c.op.rs1) τ = .ok (S, G, e) τ)
+    (hkind : e.kind = .gate g)
+    (hact : (τ.gates g).act = none)
+    (hcal : (τ.gates g).config.callee = cal)
+    (hne : cal ≠ c.d)
+    (hrun : (τ.doms cal).run = .running)
+    (hserv : (τ.doms cal).serving = none)
+    (hdepth : Machines.Lnp64u.Isa.Wip.gateDepth c τ ≤ maxChainDepth)
+    (htransfer : Machines.Lnp64u.Isa.transferByHandle c.d cal
+      ((τ.doms c.d).reg c.op.rs2) τ = .err er τ) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err er τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
+    Option.isNone_none, SpecM.require, hcal, hne, decide_true, hrun, hserv,
+    hdepth, htransfer]
+
 /-- The named specification gate-call body reduces to the same pure state
 transformer as `abs_callSuccessA` once all checks and the optional transfer
 have succeeded.  The frame hypotheses are exactly the non-structural fields
