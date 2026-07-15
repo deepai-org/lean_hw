@@ -17,7 +17,7 @@ namespace Machines.Lnp64u.Theorems.RMC
 
 open Machines.Lnp64u Machines.Lnp64u.Hw
 
-private theorem toString_string (s : String) : toString s = s := rfl
+theorem toString_string (s : String) : toString s = s := rfl
 
 /-- Names carrying different architectural domain prefixes are disjoint. -/
 theorem domPrefix_ne (x y : DomainId) (hxy : x ≠ y) (a b : String) :

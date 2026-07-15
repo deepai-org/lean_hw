@@ -743,10 +743,25 @@ theorem absDom_grantExplicit_same (σ acc : Loom.Hw.St)
 private theorem quiet_notin_grantExplicit_owner_ne (e t : DomainId)
     (hne : e ≠ t) (NS : Slot) (NL : LineageId) :
     ∀ q ∈ domQuietNames e, q ∉ (grantExplicit e t NS NL).regWrites := by
-  fin_cases e <;> fin_cases t <;>
-    first
-      | exact absurd rfl hne
-      | native_decide +revert
+  intro q hq
+  have hbase := quiet_notin_dom e e q hq
+  have hprefix : ∃ suffix,
+      q.1 = "d" ++ (toString e.val ++ suffix) := by
+    rcases q with ⟨rn, w⟩
+    simp [domQuietNames, Hw.dcapV, Hw.dcapKind, Hw.dcapLinV, Hw.dcapLin,
+      Hw.dgen, Hw.dcellV, Hw.dcellPar, Hw.drgnV, Hw.drgn, Hw.drun,
+      Hw.drunG, Hw.dsrvV, Hw.dsrv, Hw.dcause, Hw.dbudget, Hw.dmaxdon,
+      toString_string, String.append_assoc] at hq ⊢
+    aesop
+  obtain ⟨suffix, hsuffix⟩ := hprefix
+  rw [grantExplicit_writes]
+  rcases q with ⟨rn, w⟩
+  simp only at hsuffix
+  subst rn
+  simp [domWrites] at hbase
+  simpa [Hw.dcapV, Hw.dcapKind, Hw.dcapLinV, Hw.dcapLin, Hw.dcellV,
+    Hw.dcellPar, toString_string, String.append_assoc,
+    domPrefix_ne e t hne] using hbase
 
 /-- For a cross-domain grant, the issuer changes only by `rd` and pc. -/
 theorem absDom_grantExplicit_owner_ne (σ acc : Loom.Hw.St)
