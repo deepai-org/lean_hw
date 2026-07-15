@@ -223,4 +223,147 @@ theorem absDom_gateReturnClearA (σ acc : Loom.Hw.St) (d : DomainId)
         fin_cases x <;> fin_cases gid <;> exact of_decide_eq_true rfl) p hp
     exact hn hm.1) σ acc
 
+/-! ## Context-restore reads -/
+
+private theorem return_seqAll_write_frame {I : Type} {w qW : Nat}
+    (σ acc : Loom.Hw.St) (rn : I → String) (v : I → Expr w)
+    (l : List I) (q : String) (hne : ∀ i ∈ l, q ≠ rn i) :
+    ((Hw.seqAll (l.map fun i => Act.write w (rn i) (v i))).run σ acc).regs
+      q qW = acc.regs q qW := by
+  induction l generalizing acc with
+  | nil => rfl
+  | cons i t ih =>
+      change ((Hw.seqAll (t.map fun j => Act.write w (rn j) (v j))).run σ
+        ((Act.write w (rn i) (v i)).run σ acc)).regs q qW = _
+      rw [ih _ (fun j hj => hne j (List.mem_cons_of_mem i hj))]
+      simp only [Act.run, RegEnv.set]
+      rw [if_neg (hne i (List.mem_cons_self ..))]
+
+private theorem return_seqAll_write_at {I : Type} {w : Nat}
+    (σ acc : Loom.Hw.St) (rn : I → String) (v : I → Expr w)
+    (l : List I) (i : I) (hi : i ∈ l) (hnd : l.Nodup)
+    (hinj : ∀ a ∈ l, ∀ b ∈ l, rn a = rn b → a = b) :
+    ((Hw.seqAll (l.map fun j => Act.write w (rn j) (v j))).run σ acc).regs
+      (rn i) w = (v i).eval σ := by
+  induction l generalizing acc with
+  | nil => exact absurd hi List.not_mem_nil
+  | cons a t ih =>
+      have hnd' := List.nodup_cons.mp hnd
+      by_cases hai : a = i
+      · subst a
+        change ((Hw.seqAll (t.map fun j => Act.write w (rn j) (v j))).run σ
+          ((Act.write w (rn i) (v i)).run σ acc)).regs (rn i) w = _
+        rw [return_seqAll_write_frame σ _ rn v t (rn i)
+          (fun j hj hname => hnd'.1
+            ((hinj i (List.mem_cons_self ..) j
+              (List.mem_cons_of_mem i hj) hname).symm ▸ hj))]
+        simp [Act.run, RegEnv.set]
+      · have hit : i ∈ t := (List.mem_cons.mp hi).resolve_left
+          (fun h => hai h.symm)
+        exact ih _ hit hnd'.2 (fun x hx y hy =>
+          hinj x (List.mem_cons_of_mem a hx) y (List.mem_cons_of_mem a hy))
+
+/-- The restore stage writes every architectural register from the sampled
+activation record. -/
+theorem gateReturnRestoreA_reg (σ acc : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation) (r : RegId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    ((gateReturnRestoreA d).run σ acc).regs (Hw.dreg d r) 32 =
+      act.savedRegs r := by
+  have hs := gateReturn_savedReg_eval σ d gid act r hgid hact
+  change ((Act.write 2 (Hw.dsrv d)
+      (Hw.muxFin (fun g => .reg 2 (Hw.gssrv g)) (Hw.retGid d))).run σ
+    ((Act.write 1 (Hw.dsrvV d)
+      (Hw.muxFin (fun g => .reg 1 (Hw.gssrvV g)) (Hw.retGid d))).run σ
+    ((Act.write 12 (Hw.dpc d)
+      (Hw.muxFin (fun g => .reg 12 (Hw.gspc g)) (Hw.retGid d))).run σ
+    ((Hw.seqAll ((List.finRange numRegs).map fun r =>
+      Act.write 32 (Hw.dreg d r)
+        (Hw.muxFin (fun g => .reg 32 (Hw.gsreg g r))
+          (Hw.retGid d)))).run σ acc)))).regs (Hw.dreg d r) 32 = _
+  rw [frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      exact (show Hw.dreg d r ≠ Hw.dsrv d from by
+        fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl) hm.1) σ _,
+    frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      exact (show Hw.dreg d r ≠ Hw.dsrvV d from by
+        fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl) hm.1) σ _,
+    frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      exact (show Hw.dreg d r ≠ Hw.dpc d from by
+        fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl) hm.1) σ _]
+  rw [return_seqAll_write_at σ acc (Hw.dreg d)
+    (fun r => Hw.muxFin (fun g => .reg 32 (Hw.gsreg g r)) (Hw.retGid d))
+    (List.finRange numRegs) r (List.mem_finRange r) (List.nodup_finRange _)
+    (fun a _ b _ hab => dreg_inj d a b hab)]
+  exact hs
+
+/-- The restore stage writes the sampled saved PC. -/
+theorem gateReturnRestoreA_pc (σ acc : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    ((gateReturnRestoreA d).run σ acc).regs (Hw.dpc d) 12 =
+      act.savedPc := by
+  have hs := gateReturn_savedPc_eval σ d gid act hgid hact
+  change ((Act.write 2 (Hw.dsrv d)
+      (Hw.muxFin (fun g => .reg 2 (Hw.gssrv g)) (Hw.retGid d))).run σ
+    ((Act.write 1 (Hw.dsrvV d)
+      (Hw.muxFin (fun g => .reg 1 (Hw.gssrvV g)) (Hw.retGid d))).run σ
+    ((Act.write 12 (Hw.dpc d)
+      (Hw.muxFin (fun g => .reg 12 (Hw.gspc g)) (Hw.retGid d))).run σ
+      _))).regs (Hw.dpc d) 12 = _
+  rw [frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      exact (show Hw.dpc d ≠ Hw.dsrv d from by
+        fin_cases d <;> exact of_decide_eq_true rfl) hm.1) σ _,
+    frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      exact (show Hw.dpc d ≠ Hw.dsrvV d from by
+        fin_cases d <;> exact of_decide_eq_true rfl) hm.1) σ _]
+  simpa only [Act.run, RegEnv.set, if_true] using hs
+
+/-- The restore stage's two serving registers decode to the sampled prior
+serving tag. -/
+theorem gateReturnRestoreA_serving (σ acc : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    (if ((gateReturnRestoreA d).run σ acc).regs (Hw.dsrvV d) 1 = 1#1 then
+       some (finOfBv (by decide)
+         (((gateReturnRestoreA d).run σ acc).regs (Hw.dsrv d) 2))
+     else none) = act.savedServing := by
+  have hs := gateReturn_savedServing_eval σ d gid act hgid hact
+  have hv : ((gateReturnRestoreA d).run σ acc).regs (Hw.dsrvV d) 1 =
+      (Hw.muxFin (fun g => .reg 1 (Hw.gssrvV g)) (Hw.retGid d)).eval σ := by
+    change ((Act.write 2 (Hw.dsrv d)
+        (Hw.muxFin (fun g => .reg 2 (Hw.gssrv g)) (Hw.retGid d))).run σ
+      ((Act.write 1 (Hw.dsrvV d)
+        (Hw.muxFin (fun g => .reg 1 (Hw.gssrvV g)) (Hw.retGid d))).run σ
+        _)).regs (Hw.dsrvV d) 1 = _
+    rw [frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      exact (show Hw.dsrvV d ≠ Hw.dsrv d from by
+        fin_cases d <;> exact of_decide_eq_true rfl) hm.1) σ _]
+    simp [Act.run, RegEnv.set]
+  have hg : ((gateReturnRestoreA d).run σ acc).regs (Hw.dsrv d) 2 =
+      (Hw.muxFin (fun g => .reg 2 (Hw.gssrv g)) (Hw.retGid d)).eval σ := by
+    change ((Act.write 2 (Hw.dsrv d)
+        (Hw.muxFin (fun g => .reg 2 (Hw.gssrv g)) (Hw.retGid d))).run σ
+      _).regs (Hw.dsrv d) 2 = _
+    simp [Act.run, RegEnv.set]
+  rw [hv, hg]
+  exact hs
+
 end Machines.Lnp64u.Theorems.RMC
