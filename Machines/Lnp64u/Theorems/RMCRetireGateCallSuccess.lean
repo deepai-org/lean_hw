@@ -37,6 +37,57 @@ theorem callTransferA_run_nonzero (σ acc : Loom.Hw.St) (d : DomainId)
     (argNZ_eval_iff σ d).mpr hnz
   simp [callTransferA, Act.run, hnzE]
 
+/-- A successful call with a null argument cannot invalidate a Mover
+endpoint, so its auxiliary status-memory port is disabled. -/
+theorem callCirc_memEn_zero_arg (σ : Loom.Hw.St) (d : DomainId)
+    (hz : (Hw.argW d).eval σ = 0#32) :
+    (Hw.callCirc d).memEn.eval σ = 0#1 := by
+  have hnz : (Hw.argNZ d).eval σ = 0#1 := by
+    apply bv1_ne_one.mp
+    intro h
+    exact (argNZ_eval_iff σ d).mp h hz
+  have hk : (Hw.movKilledE (Hw.callKilled d)).eval σ = 0#1 := by
+    unfold Hw.movKilledE Hw.callKilled Hw.andAll
+    simp only [Expr.eval]
+    rw [hnz]
+    exact (by decide : ∀ a b c : BitVec 1,
+      a &&& ((0#1 &&& b) ||| (0#1 &&& c)) = 0#1) _ _ _
+  unfold Hw.callCirc Hw.sweepMem Hw.andAll
+  change (Hw.callOkE d).eval σ &&&
+    ((Hw.movKilledE (Hw.callKilled d)).eval σ &&&
+      (Hw.statusAuthE (Hw.callKilled d)).eval σ) = 0#1
+  rw [hk]
+  exact (by decide : ∀ a b : BitVec 1, a &&& (0#1 &&& b) = 0#1) _ _
+
+/-- Consequently, the core phase of a null-argument call preserves memory,
+including when all call checks pass. -/
+theorem coreAct_mem_gateCall_zero_arg (m : Manifest) (σ : Loom.Hw.St)
+    (E : DomainId)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
+    (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6)
+    (hz : (Hw.argW E).eval σ = 0#32) (b : Addr) :
+    ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+      b.toNat 32 = σ.mems "mem" b.toNat 32 := by
+  have hport := retireMem_gateCall_sel σ E hifsel hifexcl hopc
+  have hmen : (Hw.callCirc E).memEn.eval σ = 0#1 :=
+    callCirc_memEn_zero_arg σ E hz
+  rw [coreAct_run_retire_eq m σ _ hifv hcl,
+    retireAct_run_mems σ _ b.toNat 32]
+  show (if (((List.finRange numDomains).foldr
+      (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+        let (en_d, ad_d, da_d) := Hw.retireMemFor d
+        let g := Expr.and (Hw.ifDomIs d) en_d
+        (.or g acc'.1, .mux g ad_d acc'.2.1,
+          .mux g da_d acc'.2.2))
+      ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+        (.lit 0 : Expr 32))).1).eval σ = 1#1 then _
+    else ((Hw.refillAct m).run σ σ)).mems "mem" b.toNat 32 = _
+  rw [if_neg (by rw [hport.1, hmen]; decide)]
+  exact refill_pres_mem m σ "mem" b.toNat 32
+
 /-- Clearing the retiring in-flight valid bit after refill has exactly the
 expected abstract effect.  This is the accumulator used by every successful
 retirement payload. -/
