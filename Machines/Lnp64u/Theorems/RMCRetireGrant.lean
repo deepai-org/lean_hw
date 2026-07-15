@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireDup
+import Machines.Lnp64u.Theorems.RMCNames
 
 /-!
 # R-MC retirement: `mem_grant`
@@ -251,6 +252,18 @@ def grantExplicit (e t : DomainId) (NS : Slot) (NL : LineageId) : Act :=
           (.lit 0)) (Hw.descTgt (Hw.readReg e Hw.rs2E))),
       Hw.pcAdvA e ]
 
+/-- The selected grant's exact architectural write set. -/
+theorem grantExplicit_writes (e t : DomainId) (NS : Slot)
+    (NL : LineageId) :
+    (grantExplicit e t NS NL).regWrites =
+      [("if_v", 1), (Hw.dcapV t NS, 1), (Hw.dcapKind t NS, 32),
+       (Hw.dcapLinV t NS, 1), (Hw.dcapLin t NS, 4),
+       (Hw.dcellV t NL, 1), (Hw.dcellPar t NL, 14),
+       (Hw.dreg e 1, 32), (Hw.dreg e 2, 32), (Hw.dreg e 3, 32),
+       (Hw.dreg e 4, 32), (Hw.dreg e 5, 32), (Hw.dreg e 6, 32),
+       (Hw.dreg e 7, 32), (Hw.dpc e, 12)] := by
+  rfl
+
 /-- Once both free indices are identified, the selected action is a fixed
 sequence of architectural register writes. -/
 theorem grantChosen_run_explicit (σ acc : Loom.Hw.St) (e t : DomainId)
@@ -342,35 +355,30 @@ private theorem grantTables_capV (σ acc : Loom.Hw.St) (e t : DomainId)
         (Hw.dcapV t NS) 1 = 1#1
     rw [frame (show ((Hw.dcapV t NS : String), (1 : Nat)) ∉
       (grantTableTailV e t NS NL).regWrites from by
-        exact (by native_decide : ∀ (e t : DomainId) (NS : Slot)
-          (NL : LineageId), ((Hw.dcapV t NS : String), (1 : Nat)) ∉
-            (grantTableTailV e t NS NL).regWrites) e t NS NL) σ _]
+        simp [grantTableTailV, grantTailKind, grantTailLinV, grantTailLin,
+          grantTailCellV, Act.regWrites, dcapV_ne_dcapLinV,
+          dcapV_ne_dcellV]) σ _]
     simp [Act.run, RegEnv.set]
     rfl
   · rw [if_neg hs]
     rw [frame (show ((Hw.dcapV t s : String), (1 : Nat)) ∉
       (grantTableTailV e t NS NL).regWrites from by
-        exact (by native_decide : ∀ (e t : DomainId) (NS s : Slot)
-          (NL : LineageId), ((Hw.dcapV t s : String), (1 : Nat)) ∉
-            (grantTableTailV e t NS NL).regWrites) e t NS s NL) σ _]
+        simp [grantTableTailV, grantTailKind, grantTailLinV, grantTailLin,
+          grantTailCellV, Act.regWrites, dcapV_ne_dcapLinV,
+          dcapV_ne_dcellV]) σ _]
     simp only [RegEnv.set]
     rw [if_neg (show ¬Hw.dcapV t s = Hw.dcapV t NS from by
-      intro h; apply hs; exact (by native_decide : ∀ (t : DomainId)
-        (s NS : Slot), Hw.dcapV t s = Hw.dcapV t NS → s = NS) t s NS h),
+      intro h; exact hs (dcapV_inj_slot t s NS h)),
       if_neg (show ¬Hw.dcapV t s = "if_v" from by
-        exact (by native_decide : ∀ (t : DomainId) (s : Slot),
-          Hw.dcapV t s ≠ "if_v") t s)]
+        exact dcapV_ne_ifv t s)]
 
 private theorem grantExplicit_capV (σ acc : Loom.Hw.St) (e t : DomainId)
     (NS : Slot) (NL : LineageId) (s : Slot) :
     ((grantExplicit e t NS NL).run σ acc).regs (Hw.dcapV t s) 1 =
       if s = NS then 1#1 else acc.regs (Hw.dcapV t s) 1 := by
   rw [grantExplicit_run_tables_reg σ acc e t NS NL (Hw.dcapV t s) 1
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapV t s : String), 1) ∉ (Hw.pcAdvA e).regWrites) e t s)
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapV t s : String), 1) ∉
-        (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) e t s)]
+    (by simp [Hw.pcAdvA, Act.regWrites])
+    (by rw [writeReg_writes]; simp)]
   exact grantTables_capV σ acc e t NS NL s
 
 private theorem grantTables_capKind (σ acc : Loom.Hw.St) (e t : DomainId)
@@ -386,14 +394,14 @@ private theorem grantTables_capKind (σ acc : Loom.Hw.St) (e t : DomainId)
     unfold grantTables grantTableTailV
     exact seq_write_suffix_hit σ _ (Hw.dcapKind t NS) 32 _
       (grantTailKind e t NS NL) (by
-        exact (by native_decide : ∀ (e t : DomainId) (NS : Slot)
-          (NL : LineageId), ((Hw.dcapKind t NS : String), (32 : Nat)) ∉
-            (grantTailKind e t NS NL).regWrites) e t NS NL)
+        simp [grantTailKind, grantTailLinV, grantTailLin, grantTailCellV,
+          Act.regWrites])
   · rw [if_neg hs]
     apply frame
-    exact (by native_decide : ∀ (e t : DomainId) (NS s : Slot)
-      (NL : LineageId), s ≠ NS → ((Hw.dcapKind t s : String), (32 : Nat)) ∉
-        (grantTables e t NS NL).regWrites) e t NS s NL hs
+    have hname : Hw.dcapKind t s ≠ Hw.dcapKind t NS := fun h =>
+      hs (dcapKind_inj_slot t s NS h)
+    simp [grantTables, grantTableTailV, grantTailKind, grantTailLinV,
+      grantTailLin, grantTailCellV, Act.regWrites, hname]
 
 private theorem grantExplicit_capKind (σ acc : Loom.Hw.St)
     (e t : DomainId) (NS : Slot) (NL : LineageId) (s : Slot) :
@@ -403,11 +411,8 @@ private theorem grantExplicit_capKind (σ acc : Loom.Hw.St)
           (Hw.readReg e Hw.rs2E)).eval σ
       else acc.regs (Hw.dcapKind t s) 32 := by
   rw [grantExplicit_run_tables_reg σ acc e t NS NL (Hw.dcapKind t s) 32
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapKind t s : String), 32) ∉ (Hw.pcAdvA e).regWrites) e t s)
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapKind t s : String), 32) ∉
-        (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) e t s)]
+    (by simp [Hw.pcAdvA, Act.regWrites])
+    (by rw [writeReg_writes]; simp [dcapKind_ne_dreg])]
   exact grantTables_capKind σ acc e t NS NL s
 
 private theorem grantTables_capLinV (σ acc : Loom.Hw.St) (e t : DomainId)
@@ -420,25 +425,25 @@ private theorem grantTables_capLinV (σ acc : Loom.Hw.St) (e t : DomainId)
     unfold grantTables grantTableTailV grantTailKind
     exact seq_write_suffix_hit σ _ (Hw.dcapLinV t NS) 1 _
       (grantTailLinV e t NS NL) (by
-        exact (by native_decide : ∀ (e t : DomainId) (NS : Slot)
-          (NL : LineageId), ((Hw.dcapLinV t NS : String), (1 : Nat)) ∉
-            (grantTailLinV e t NS NL).regWrites) e t NS NL)
+        simp [grantTailLinV, grantTailLin, grantTailCellV, Act.regWrites,
+          dcapLinV_ne_dcellV])
   · rw [if_neg hs]
     apply frame
-    exact (by native_decide : ∀ (e t : DomainId) (NS s : Slot)
-      (NL : LineageId), s ≠ NS → ((Hw.dcapLinV t s : String), (1 : Nat)) ∉
-        (grantTables e t NS NL).regWrites) e t NS s NL hs
+    have hcap : Hw.dcapLinV t s ≠ Hw.dcapV t NS := fun h =>
+      dcapV_ne_dcapLinV t NS s h.symm
+    have hlin : Hw.dcapLinV t s ≠ Hw.dcapLinV t NS := fun h =>
+      hs (dcapLinV_inj_slot t s NS h)
+    simp [grantTables, grantTableTailV, grantTailKind, grantTailLinV,
+      grantTailLin, grantTailCellV, Act.regWrites, dcapLinV_ne_ifv,
+      dcapLinV_ne_dcellV, hcap, hlin]
 
 private theorem grantExplicit_capLinV (σ acc : Loom.Hw.St)
     (e t : DomainId) (NS : Slot) (NL : LineageId) (s : Slot) :
     ((grantExplicit e t NS NL).run σ acc).regs (Hw.dcapLinV t s) 1 =
       if s = NS then 1#1 else acc.regs (Hw.dcapLinV t s) 1 := by
   rw [grantExplicit_run_tables_reg σ acc e t NS NL (Hw.dcapLinV t s) 1
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapLinV t s : String), 1) ∉ (Hw.pcAdvA e).regWrites) e t s)
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapLinV t s : String), 1) ∉
-        (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) e t s)]
+    (by simp [Hw.pcAdvA, Act.regWrites])
+    (by rw [writeReg_writes]; simp)]
   exact grantTables_capLinV σ acc e t NS NL s
 
 private theorem grantTables_capLin (σ acc : Loom.Hw.St) (e t : DomainId)
@@ -452,14 +457,13 @@ private theorem grantTables_capLin (σ acc : Loom.Hw.St) (e t : DomainId)
     unfold grantTables grantTableTailV grantTailKind grantTailLinV
     exact seq_write_suffix_hit σ _ (Hw.dcapLin t NS) 4 _
       (grantTailLin e t NL) (by
-        exact (by native_decide : ∀ (e t : DomainId) (NS : Slot)
-          (NL : LineageId), ((Hw.dcapLin t NS : String), (4 : Nat)) ∉
-            (grantTailLin e t NL).regWrites) e t NS NL)
+        simp [grantTailLin, grantTailCellV, Act.regWrites])
   · rw [if_neg hs]
     apply frame
-    exact (by native_decide : ∀ (e t : DomainId) (NS s : Slot)
-      (NL : LineageId), s ≠ NS → ((Hw.dcapLin t s : String), (4 : Nat)) ∉
-        (grantTables e t NS NL).regWrites) e t NS s NL hs
+    have hname : Hw.dcapLin t s ≠ Hw.dcapLin t NS := fun h =>
+      hs (dcapLin_inj_slot t s NS h)
+    simp [grantTables, grantTableTailV, grantTailKind, grantTailLinV,
+      grantTailLin, grantTailCellV, Act.regWrites, hname]
 
 private theorem grantExplicit_capLin (σ acc : Loom.Hw.St)
     (e t : DomainId) (NS : Slot) (NL : LineageId) (s : Slot) :
@@ -467,11 +471,8 @@ private theorem grantExplicit_capLin (σ acc : Loom.Hw.St)
       if s = NS then (Hw.freeCellIdx t).eval σ
       else acc.regs (Hw.dcapLin t s) 4 := by
   rw [grantExplicit_run_tables_reg σ acc e t NS NL (Hw.dcapLin t s) 4
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapLin t s : String), 4) ∉ (Hw.pcAdvA e).regWrites) e t s)
-    (by exact (by native_decide : ∀ (e t : DomainId) (s : Slot),
-      ((Hw.dcapLin t s : String), 4) ∉
-        (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) e t s)]
+    (by simp [Hw.pcAdvA, Act.regWrites])
+    (by rw [writeReg_writes]; simp)]
   exact grantTables_capLin σ acc e t NS NL s
 
 private theorem grantTables_cellV (σ acc : Loom.Hw.St) (e t : DomainId)
@@ -485,25 +486,26 @@ private theorem grantTables_cellV (σ acc : Loom.Hw.St) (e t : DomainId)
       grantTailLin
     exact seq_write_suffix_hit σ _ (Hw.dcellV t NL) 1 _
       (grantTailCellV e t NL) (by
-        exact (by native_decide : ∀ (e t : DomainId) (NL : LineageId),
-          ((Hw.dcellV t NL : String), (1 : Nat)) ∉
-            (grantTailCellV e t NL).regWrites) e t NL)
+        simp [grantTailCellV, Act.regWrites])
   · rw [if_neg hl]
     apply frame
-    exact (by native_decide : ∀ (e t : DomainId) (NS : Slot)
-      (NL l : LineageId), l ≠ NL → ((Hw.dcellV t l : String), (1 : Nat)) ∉
-        (grantTables e t NS NL).regWrites) e t NS NL l hl
+    have hcap : Hw.dcellV t l ≠ Hw.dcapV t NS := fun h =>
+      dcapV_ne_dcellV t NS l h.symm
+    have hlin : Hw.dcellV t l ≠ Hw.dcapLinV t NS := fun h =>
+      dcapLinV_ne_dcellV t NS l h.symm
+    have hcell : Hw.dcellV t l ≠ Hw.dcellV t NL := fun h =>
+      hl (dcellV_inj_lineage t l NL h)
+    simp [grantTables, grantTableTailV, grantTailKind, grantTailLinV,
+      grantTailLin, grantTailCellV, Act.regWrites, dcellV_ne_ifv, hcap,
+      hlin, hcell]
 
 private theorem grantExplicit_cellV (σ acc : Loom.Hw.St)
     (e t : DomainId) (NS : Slot) (NL : LineageId) (l : LineageId) :
     ((grantExplicit e t NS NL).run σ acc).regs (Hw.dcellV t l) 1 =
       if l = NL then 1#1 else acc.regs (Hw.dcellV t l) 1 := by
   rw [grantExplicit_run_tables_reg σ acc e t NS NL (Hw.dcellV t l) 1
-    (by exact (by native_decide : ∀ (e t : DomainId) (l : LineageId),
-      ((Hw.dcellV t l : String), 1) ∉ (Hw.pcAdvA e).regWrites) e t l)
-    (by exact (by native_decide : ∀ (e t : DomainId) (l : LineageId),
-      ((Hw.dcellV t l : String), 1) ∉
-        (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) e t l)]
+    (by simp [Hw.pcAdvA, Act.regWrites])
+    (by rw [writeReg_writes]; simp)]
   exact grantTables_cellV σ acc e t NS NL l
 
 private theorem grantTables_cellPar (σ acc : Loom.Hw.St) (e t : DomainId)
@@ -521,9 +523,10 @@ private theorem grantTables_cellPar (σ acc : Loom.Hw.St) (e t : DomainId)
     simp [Act.run, RegEnv.set]
   · rw [if_neg hl]
     apply frame
-    exact (by native_decide : ∀ (e t : DomainId) (NS : Slot)
-      (NL l : LineageId), l ≠ NL → ((Hw.dcellPar t l : String), (14 : Nat)) ∉
-        (grantTables e t NS NL).regWrites) e t NS NL l hl
+    have hname : Hw.dcellPar t l ≠ Hw.dcellPar t NL := fun h =>
+      hl (dcellPar_inj_lineage t l NL h)
+    simp [grantTables, grantTableTailV, grantTailKind, grantTailLinV,
+      grantTailLin, grantTailCellV, Act.regWrites, hname]
 
 private theorem grantExplicit_cellPar (σ acc : Loom.Hw.St)
     (e t : DomainId) (NS : Slot) (NL : LineageId) (l : LineageId) :
@@ -533,11 +536,8 @@ private theorem grantExplicit_cellPar (σ acc : Loom.Hw.St)
           (Hw.grantSel e).gen).eval σ
       else acc.regs (Hw.dcellPar t l) 14 := by
   rw [grantExplicit_run_tables_reg σ acc e t NS NL (Hw.dcellPar t l) 14
-    (by exact (by native_decide : ∀ (e t : DomainId) (l : LineageId),
-      ((Hw.dcellPar t l : String), 14) ∉ (Hw.pcAdvA e).regWrites) e t l)
-    (by exact (by native_decide : ∀ (e t : DomainId) (l : LineageId),
-      ((Hw.dcellPar t l : String), 14) ∉
-        (Hw.writeReg e Hw.rdE (Expr.lit 0)).regWrites) e t l)]
+    (by simp [Hw.pcAdvA, Act.regWrites])
+    (by rw [writeReg_writes]; simp)]
   exact grantTables_cellPar σ acc e t NS NL l
 
 private theorem quietCap_notin_grantExplicit (x e t : DomainId)
@@ -640,12 +640,12 @@ private theorem grantTables_dreg (σ acc : Loom.Hw.St)
     (e t : DomainId) (NS : Slot) (NL : LineageId) (r : RegId) :
     ((grantTables e t NS NL).run σ acc).regs (Hw.dreg e r) 32 =
       acc.regs (Hw.dreg e r) 32 := by
+  have hkind : Hw.dreg e r ≠ Hw.dcapKind t NS := fun h =>
+    dcapKind_ne_dreg t e NS r h.symm
   rw [frame (show ((Hw.dreg e r : String), (32 : Nat)) ∉
     (grantTables e t NS NL).regWrites from by
-      exact (by native_decide : ∀ (e t : DomainId) (NS : Slot)
-        (NL : LineageId) (r : RegId),
-          ((Hw.dreg e r : String), (32 : Nat)) ∉
-            (grantTables e t NS NL).regWrites) e t NS NL r) σ acc]
+      simp [grantTables, grantTableTailV, grantTailKind, grantTailLinV,
+        grantTailLin, grantTailCellV, Act.regWrites, hkind]) σ acc]
 
 /-- The issuing domain receives exactly the returned target-relative handle,
 with the architectural hardwired-r0 behavior. -/
@@ -782,19 +782,17 @@ private theorem grantExplicit_target_dreg_ne (e t : DomainId) (hne : e ≠ t)
     (NS : Slot) (NL : LineageId) (r : RegId) :
     ((Hw.dreg t r : String), (32 : Nat)) ∉
       (grantExplicit e t NS NL).regWrites := by
-  fin_cases e <;> fin_cases t <;>
-    first
-      | exact absurd rfl hne
-      | fin_cases r <;> native_decide +revert
+  rw [grantExplicit_writes]
+  have hkind : Hw.dreg t r ≠ Hw.dcapKind t NS := fun h =>
+    dcapKind_ne_dreg t t NS r h.symm
+  simp [hkind, dreg_ne_domain t e hne.symm]
 
 private theorem grantExplicit_target_dpc_ne (e t : DomainId) (hne : e ≠ t)
     (NS : Slot) (NL : LineageId) :
     ((Hw.dpc t : String), (12 : Nat)) ∉
       (grantExplicit e t NS NL).regWrites := by
-  fin_cases e <;> fin_cases t <;>
-    first
-      | exact absurd rfl hne
-      | native_decide +revert
+  rw [grantExplicit_writes]
+  simp [dpc_ne_domain t e hne.symm]
 
 /-- For a cross-domain grant, the target changes only by the fresh
 capability and lineage-cell updates. -/
