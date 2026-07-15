@@ -329,6 +329,77 @@ theorem transferStructural_retire_liveKind (m : Manifest)
     (by rw [retireBase_liveRef]; exact hlive) hout
   simpa [refillPhase_caps, refillPhase_slotGen] using h
 
+/-- Mover field after sweeping a retirement-base structural transfer. -/
+theorem transferStructural_retire_sweepMover_mover (m : Manifest)
+    (σ : Loom.Hw.St) (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (D : DomainId) (S : Slot)
+    (hfree : ((Hw.abs σ).doms T).caps NS = none)
+    (hwf : Wf (Hw.abs σ)) :
+    (transferStructural
+      { refillPhase m (Hw.abs σ) with inflight := none }
+      T NS kind moved oldRef newRef D S).sweepMover.mover =
+        match Hw.absMover σ with
+        | none => none
+        | some job =>
+            if (job.src.dom = D ∧ job.src.slot = S) ∨
+                (job.dst.dom = D ∧ job.dst.slot = S)
+            then none else some job := by
+  let τr := transferStructural
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
+    T NS kind moved oldRef newRef D S
+  apply sweepMover_transfer_mover (Hw.abs σ) τr D S
+  · simp [τr, transferStructural, retireBase_mover]
+  · intro job hjob
+    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
+      newRef D S job.src hfree (moverEndpoints_live hwf job hjob).1
+  · intro job hjob
+    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
+      newRef D S job.dst hfree (moverEndpoints_live hwf job hjob).2
+  · exact moverEndpoints_live hwf
+
+/-- Memory face of `transferStructural_retire_sweepMover_mover`. -/
+theorem transferStructural_retire_sweepMover_mem (m : Manifest)
+    (σ : Loom.Hw.St) (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (D : DomainId) (S : Slot)
+    (hfree : ((Hw.abs σ).doms T).caps NS = none)
+    (hwf : Wf (Hw.abs σ)) (b : Addr) :
+    (transferStructural
+      { refillPhase m (Hw.abs σ) with inflight := none }
+      T NS kind moved oldRef newRef D S).sweepMover.mem b =
+        match Hw.absMover σ with
+        | none => σ.mems "mem" b.toNat 32
+        | some job =>
+            if (job.src.dom = D ∧ job.src.slot = S) ∨
+                (job.dst.dom = D ∧ job.dst.slot = S) then
+              if (transferStructural
+                    { refillPhase m (Hw.abs σ) with inflight := none }
+                    T NS kind moved oldRef newRef D S).domCovers
+                    job.owner job.statusAddr
+                    { r := false, w := true, x := false } then
+                if b = job.statusAddr then Errno.staleHandle.toWord
+                else σ.mems "mem" b.toNat 32
+              else σ.mems "mem" b.toNat 32
+            else σ.mems "mem" b.toNat 32 := by
+  let τr := transferStructural
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
+    T NS kind moved oldRef newRef D S
+  rw [sweepMover_transfer_mem (Hw.abs σ) τr D S]
+  · simp only
+    have hmem : ∀ a, τr.mem a = σ.mems "mem" a.toNat 32 := by
+      intro a
+      simp [τr, transferStructural, retireBase_mem]
+    split <;> simp_all
+  · simp [τr, transferStructural, retireBase_mover]
+  · intro job hjob
+    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
+      newRef D S job.src hfree (moverEndpoints_live hwf job hjob).1
+  · intro job hjob
+    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
+      newRef D S job.dst hfree (moverEndpoints_live hwf job hjob).2
+  · exact moverEndpoints_live hwf
+
 /-- Root transfer specialized to the post-refill, cleared-inflight
 retirement accumulator. -/
 theorem abs_transferA_none_retireAcc (m : Manifest) (hwfm : m.WF)
