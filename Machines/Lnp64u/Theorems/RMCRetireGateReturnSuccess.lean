@@ -173,4 +173,54 @@ theorem gateReturn_savedServing_eval (σ : Loom.Hw.St) (d : DomainId)
   rw [gateReturn_activation_decode σ gid act hact]
   rfl
 
+/-! ## Gate-clear abstraction -/
+
+/-- Clearing the selected activation bit removes exactly the selected
+abstract activation. -/
+theorem absGate_gateReturnClearA (σ acc : Loom.Hw.St) (d : DomainId)
+    (gid h : GateId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid) :
+    Hw.absGate ((gateReturnClearA d).run σ acc) h =
+      if h = gid then { Hw.absGate acc gid with act := none }
+      else Hw.absGate acc h := by
+  rw [gateReturnClearA_run_selected σ acc d gid hgid]
+  by_cases hh : h = gid
+  · subst h
+    rw [if_pos rfl]
+    fin_cases gid <;>
+      simp [Hw.absGate, Act.run, RegEnv.set, Expr.eval, Hw.gactV,
+        Hw.gcallee, Hw.gentry, Hw.gcaller, Hw.gcallerRd, Hw.gsreg, Hw.gspc,
+        Hw.gssrvV, Hw.gssrv, Hw.gdepth, Hw.gdon]
+  · rw [if_neg hh]
+    apply absGate_congr
+    intro p hp
+    exact frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      have hn : p.1 ≠ Hw.gactV gid :=
+        (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.gactV gid from by
+          fin_cases h <;> fin_cases gid <;>
+            first
+              | exact absurd rfl hh
+              | exact of_decide_eq_true rfl) p hp
+      exact hn hm.1) σ acc
+
+/-- The selected gate clear frames every abstract domain. -/
+theorem absDom_gateReturnClearA (σ acc : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (x : DomainId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid) :
+    Hw.absDom ((gateReturnClearA d).run σ acc) x = Hw.absDom acc x := by
+  rw [gateReturnClearA_run_selected σ acc d gid hgid]
+  apply absDom_congr
+  intro p hp
+  exact frame (by
+    intro hm
+    simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+    have hn : p.1 ≠ Hw.gactV gid :=
+      (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.gactV gid from by
+        fin_cases x <;> fin_cases gid <;> exact of_decide_eq_true rfl) p hp
+    exact hn hm.1) σ acc
+
 end Machines.Lnp64u.Theorems.RMC
