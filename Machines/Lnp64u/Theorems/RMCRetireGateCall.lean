@@ -365,6 +365,29 @@ theorem callOkE_of_passes (σ : Loom.Hw.St) (d : DomainId)
 
 /-! ## Whole-core kill selection -/
 
+/-- With a non-null argument, the call kill predicate is exactly equality
+with the caller and the selected argument slot. -/
+theorem callKilled_nonzero_eval (σ : Loom.Hw.St) (d : DomainId)
+    (hnz : (Hw.argNZ d).eval σ = 1#1) (dm : Expr 2) (sl : Expr 4) :
+    (Hw.callKilled d dm sl).eval σ =
+      (Expr.and (.eq dm (Hw.dLit d))
+        (.eq sl (Hw.argSel d).slot)).eval σ := by
+  unfold Hw.callKilled Hw.andAll
+  change (Hw.argNZ d).eval σ &&&
+      ((Expr.eq dm (Hw.dLit d)).eval σ &&&
+        (Expr.eq sl (Hw.argSel d).slot).eval σ) = _
+  rw [hnz]
+  decide
+
+/-- A null argument gives the successful call an empty kill footprint. -/
+theorem callKilled_zero_eval (σ : Loom.Hw.St) (d : DomainId)
+    (hz : (Hw.argNZ d).eval σ = 0#1) (dm : Expr 2) (sl : Expr 4) :
+    (Hw.callKilled d dm sl).eval σ = 0#1 := by
+  unfold Hw.callKilled Hw.andAll
+  change (Hw.argNZ d).eval σ &&& _ = 0#1
+  rw [hz]
+  decide
+
 /-- On a successful retiring `gate_call`, the global core kill tree selects
 exactly that call's optional-transfer predicate. -/
 theorem killedByCoreE_call_eval (σ : Loom.Hw.St) (E : DomainId)
