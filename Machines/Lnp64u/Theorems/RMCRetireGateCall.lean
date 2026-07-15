@@ -623,4 +623,39 @@ theorem absDom_callCalleeChosen_selected (σ acc : Loom.Hw.St)
       (Hw.dmaxdon cal) 32).toNat = (acc.regs (Hw.dmaxdon cal) 32).toNat
     rw [hmaxdon]
 
+/-- The chosen callee writer leaves every other abstract domain unchanged. -/
+theorem absDom_callCalleeChosen_other (σ acc : Loom.Hw.St)
+    (d cal x : DomainId) (hne : x ≠ cal) :
+    Hw.absDom ((callCalleeChosenA d cal).run σ acc) x = Hw.absDom acc x := by
+  apply absDom_congr
+  intro q hq
+  apply frame
+  have hquiet : ∀ q ∈ domReadNames x,
+      q ∉ (callCalleeChosenA d cal).regWrites := by
+    fin_cases cal <;> fin_cases x <;>
+      first | exact absurd rfl hne | exact of_decide_eq_true rfl
+  exact hquiet q hq
+
+/-- The domain-indexed callee fold updates exactly its decoded callee. -/
+theorem absDom_callCalleeA (σ acc : Loom.Hw.St)
+    (d cal : DomainId) (g : GateId) (x : DomainId)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    Hw.absDom ((callCalleeA d).run σ acc) x =
+      if x = cal then
+        { Hw.absDom acc cal with
+          regs := fun r => if r.val = 1 then (callArgHandle d).eval σ else 0
+          pc := ((Hw.abs σ).gates g).config.entry
+          serving := some g }
+      else Hw.absDom acc x := by
+  rw [callCalleeA_run_selected σ acc d cal hcal]
+  by_cases hx : x = cal
+  · subst x
+    rw [if_pos rfl]
+    exact absDom_callCalleeChosen_selected σ acc d cal g hgid
+  · rw [if_neg hx]
+    exact absDom_callCalleeChosen_other σ acc d cal x hx
+
 end Machines.Lnp64u.Theorems.RMC
