@@ -35,6 +35,61 @@ theorem gateEntry_selected (σ : Loom.Hw.St) (g : GateId) :
     σ.regs (Hw.gentry g) 12 = ((Hw.abs σ).gates g).config.entry := by
   rfl
 
+/-- The selected gate-active check is exactly abstract activation presence. -/
+theorem callGateActive_eval (σ : Loom.Hw.St) (d : DomainId) (g : GateId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    (Hw.muxFin (fun h => .reg 1 (Hw.gactV h))
+      (Hw.callGid d)).eval σ = 1#1 ↔
+      ((Hw.abs σ).gates g).act.isSome := by
+  rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+  change σ.regs (Hw.gactV g) 1 = 1#1 ↔
+    (if σ.regs (Hw.gactV g) 1 = 1#1 then some _ else none).isSome
+  by_cases hv : σ.regs (Hw.gactV g) 1 = 1#1 <;> simp [hv]
+
+/-- The selected callee-serving check is exactly abstract serving presence. -/
+theorem callCalleeServing_eval (σ : Loom.Hw.St) (d cal : DomainId)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal) :
+    (Hw.muxFin (fun c => .reg 1 (Hw.dsrvV c))
+      (Hw.callCal d)).eval σ = 1#1 ↔
+      ((Hw.abs σ).doms cal).serving.isSome := by
+  rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hcal]
+  change σ.regs (Hw.dsrvV cal) 1 = 1#1 ↔
+    (if σ.regs (Hw.dsrvV cal) 1 = 1#1 then some _ else none).isSome
+  by_cases hv : σ.regs (Hw.dsrvV cal) 1 = 1#1 <;> simp [hv]
+
+/-- Under the canonical run-state invariant, the selected callee's raw
+nonzero check is exactly failure to be abstractly running. -/
+theorem callCalleeNotRunning_eval (σ : Loom.Hw.St) (d cal : DomainId)
+    (hrc : σ.regs (Hw.drun cal) 2 ≠ 3#2)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal) :
+    (Hw.neqE (Hw.muxFin (fun c => .reg 2 (Hw.drun c)) (Hw.callCal d))
+      (.lit 0)).eval σ = 1#1 ↔
+      ((Hw.abs σ).doms cal).run ≠ .running := by
+  rw [neqE_eval, muxFin_eval (by decide : 2 ^ 2 = numDomains), hcal]
+  change σ.regs (Hw.drun cal) 2 ≠ 0#2 ↔
+    Hw.decRun (σ.regs (Hw.drun cal) 2) (σ.regs (Hw.drunG cal) 2) ≠ .running
+  rcases (show σ.regs (Hw.drun cal) 2 = 0#2 ∨
+      σ.regs (Hw.drun cal) 2 = 1#2 ∨ σ.regs (Hw.drun cal) 2 = 2#2 ∨
+      σ.regs (Hw.drun cal) 2 = 3#2 by omega) with h | h | h | h
+  · simp [h, Hw.decRun]
+  · simp [h, Hw.decRun]
+  · simp [h, Hw.decRun]
+  · exact absurd h hrc
+
+/-- The hardware chain-overflow check is the negation of the specification's
+bounded-depth requirement. -/
+theorem callDepthOverflow_eval (σ : Loom.Hw.St) (c : Ctx)
+    (hwf : Wf (Hw.abs σ)) :
+    (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
+      (Hw.callDepth c.d)).eval σ = 1#1 ↔
+      ¬Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ≤ maxChainDepth := by
+  rw [ultE_eval, callDepth_eval σ c hwf]
+  change maxChainDepth < Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ↔ _
+  omega
+
 /-- The hardware null-argument predicate is equivalent to the argument
 word being nonzero. -/
 theorem argNZ_eval_iff (σ : Loom.Hw.St) (d : DomainId) :
