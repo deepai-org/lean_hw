@@ -259,6 +259,33 @@ theorem abs_refill_clearInflight (m : Manifest) (hwf : m.WF)
     exact congrArg MachineState.mover hrefill
   · rfl
 
+/-- The post-refill, cleared-inflight retirement base has exactly the same
+capability liveness as the sampled abstract state. -/
+theorem retireBase_liveRef (m : Manifest) (σ : Loom.Hw.St) (r : CapRef) :
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
+        .liveRef r = (Hw.abs σ).liveRef r := by
+  unfold MachineState.liveRef DomainState.liveCap
+  rw [refillPhase_caps, refillPhase_slotGen]
+
+/-- Refill and in-flight clearing frame region tables. -/
+theorem retireBase_regions (m : Manifest) (σ : Loom.Hw.St)
+    (d : DomainId) :
+    (({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
+        .doms d).regions = ((Hw.abs σ).doms d).regions := by
+  exact refillPhase_regions m (Hw.abs σ) d
+
+/-- Refill and in-flight clearing frame the active Mover job. -/
+theorem retireBase_mover (m : Manifest) (σ : Loom.Hw.St) :
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
+        .mover = Hw.absMover σ := by
+  exact refillPhase_mover m (Hw.abs σ)
+
+/-- Refill and in-flight clearing frame physical memory. -/
+theorem retireBase_mem (m : Manifest) (σ : Loom.Hw.St) (b : Addr) :
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
+        .mem b = σ.mems "mem" b.toNat 32 := by
+  rfl
+
 /-- Root transfer specialized to the post-refill, cleared-inflight
 retirement accumulator. -/
 theorem abs_transferA_none_retireAcc (m : Manifest) (hwfm : m.WF)
