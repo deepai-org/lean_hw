@@ -212,6 +212,48 @@ theorem square_retire_gateCall_error (m : Manifest) (hwf : m.WF)
   exact retire_err_common_mem m hwf hfit σ hsync hifv hcl hin hmapz
     hunmapz hswz hcoremem E hEval errw hcoreX hspecE
 
+/-- Turn a first failing gate-call check and its matching specification
+equation into the full-cycle retirement square.  This packages the repeated
+`callOkE = 0`, errno-ladder selection, memory quiescence, and common error
+assembly needed by all ten call checks. -/
+theorem square_retire_gateCall_firstError (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (E : DomainId)
+    (hEval : E.val = (σ.regs "if_dom" 2).toNat)
+    (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
+    (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6)
+    (pre post : List Hw.Check) (cond : Expr 1) (er : Errno)
+    (hchecks : Hw.callChecks E = pre ++ (cond, .err er) :: post)
+    (hpre : ∀ x ∈ pre, x.1.eval σ ≠ 1#1)
+    (hfail : cond.eval σ = 1#1)
+    (hspecE : corePhase m (refillPhase m (Hw.abs σ)) =
+      (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+          (fun ds => { ds with pc := ds.pc + 1 })).setDom E
+          (fun ds => ds.setReg
+            (operandsOf (σ.regs "if_word" 32)).rd er.toWord)) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  have hok0 : (Hw.callOkE E).eval σ = 0#1 := by
+    apply bv1_ne_one.mp
+    intro hok
+    have hall := (okOf_eval_iff σ (Hw.callChecks E)).mp hok
+    have hmem : (cond, .err er) ∈ Hw.callChecks E := by
+      rw [hchecks]
+      exact List.mem_append_right _ (List.mem_cons_self ..)
+    exact hall (cond, .err er) hmem hfail
+  have hcoreX : ∀ acc, (Hw.retireFor E).run σ acc =
+      (Act.seq (Hw.pcAdvA E)
+        (Hw.writeReg E Hw.rdE (.lit er.toWord))).run σ acc := by
+    intro acc
+    exact retireFor_gateCall_first_error σ acc E pre post cond er hopc
+      hchecks hpre hfail
+  exact square_retire_gateCall_error m hwf hfit σ hsync hifv hcl E hEval
+    hifsel hifexcl hopc hok0 er.toWord hcoreX hspecE
+
 /-- Complete first ladder arm: a stale primary gate handle retires with
 `-ESTALE`, with no architectural effect beyond PC and `rd`. -/
 theorem square_retire_gateCall_stale (m : Manifest) (hwf : m.WF)
@@ -292,26 +334,13 @@ theorem square_retire_gateCall_stale (m : Manifest) (hwf : m.WF)
     show ~~~((Hw.callSel E).live.eval σ) = 1#1
     rw [bv1_ne_one.mp hstale]
     decide
-  have hok0 : (Hw.callOkE E).eval σ = 0#1 := by
-    apply bv1_ne_one.mp
-    intro hok
-    have hp := (okOf_eval_iff σ (Hw.callChecks E)).mp hok
-      ((Expr.not (Hw.callSel E).live), .err .staleHandle)
-      (by simp [Hw.callChecks])
-    exact hp hfail
-  have hcoreX : ∀ acc, (Hw.retireFor E).run σ acc =
-      (Act.seq (Hw.pcAdvA E)
-        (Hw.writeReg E Hw.rdE (.lit Errno.staleHandle.toWord))).run σ acc := by
-    intro acc
-    apply retireFor_gateCall_first_error σ acc E []
-      (Hw.callChecks E).tail (Expr.not (Hw.callSel E).live)
-      .staleHandle hopc
-    · rfl
-    · intro x hx
-      simp at hx
-    · exact hfail
-  apply square_retire_gateCall_error m hwf hfit σ hsync hifv hcl E rfl
-    hifsel hifexcl hopc hok0 Errno.staleHandle.toWord hcoreX
+  apply square_retire_gateCall_firstError m hwf hfit σ hsync hifv hcl E
+    rfl hifsel hifexcl hopc [] (Hw.callChecks E).tail
+    (Expr.not (Hw.callSel E).live) .staleHandle
+  · rfl
+  · intro x hx
+    simp at hx
+  · exact hfail
   simpa [τ0, W] using hspec
 
 end Machines.Lnp64u.Theorems.RMC
