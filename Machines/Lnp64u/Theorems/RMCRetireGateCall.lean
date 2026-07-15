@@ -607,6 +607,42 @@ theorem sAuth_call_eval (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
   · exact hlive
   · exact hwf
 
+/-- Successful-call status authority with the precise transfer interface:
+liveness need only agree on references backing pre-transfer regions. -/
+theorem sAuth_call_backings_eval (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
+    (τ : MachineState)
+    (hslot : (Hw.argSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.argNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hregions : ∀ c : DomainId,
+      (τ.doms c).regions = ((Hw.abs σ).doms c).regions)
+    (hbacking : ∀ c r rg, ((Hw.abs σ).doms c).regions r = some rg →
+      τ.liveRef rg.backing =
+        if rg.backing.dom = E ∧ rg.backing.slot = S then false
+        else (Hw.abs σ).liveRef rg.backing)
+    (hwf : Wf (Hw.abs σ)) (ow : Expr 2) (sa : Expr 12) :
+    ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+      τ.sweepRegions.domCovers (finOfBv (by decide) (ow.eval σ))
+        (sa.eval σ) ⟨false, true, false⟩ = true := by
+  apply sAuth_region_eq_eval σ τ.sweepRegions hmapz
+  intro c r
+  exact sweepRegions_transfer_region_eq_backings σ E (Hw.argSel E).slot S
+    τ hslot (fun dm sl => by
+      rw [hkills]
+      exact callKilled_nonzero_eval σ E hnz dm sl)
+    hmapz hunmapz hregions hbacking hwf c r
+
 /-! ## Activation-record writer -/
 
 /-- The gate-indexed activation-record fold from the successful call arm. -/
