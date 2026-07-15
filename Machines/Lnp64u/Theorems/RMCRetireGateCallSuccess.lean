@@ -561,6 +561,72 @@ theorem callAbstractSuccess_refill_pc (m : Manifest) (σ : Loom.Hw.St)
         refillPhase_serving, refillPhase_dmaxdon]
     · simp [MachineState.setDom, hh, refillPhase_gates]
 
+/-- Domain and gate faces of a successful call agree across the complete
+structural-transfer prefix.  The specification performs its PC increment
+before transfer and its Mover sweep before the call tail; hardware performs
+the structural transfer first and advances PC in the tail.  Neither ordering
+difference is visible on domains or gates. -/
+theorem callAbstractSuccess_transfer_faces (m : Manifest) (σ : Loom.Hw.St)
+    (d cal T : DomainId) (g : GateId) (rd : RegId)
+    (argHandle : Loom.Word32) (depth : Nat) (hne : d ≠ cal)
+    (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (S : Slot) :
+    let base : MachineState :=
+      { refillPhase m (Hw.abs σ) with inflight := none }
+    let prefixed := base.setDom d (fun ds => { ds with pc := ds.pc + 1 })
+    let hwStruct :=
+      transferStructural base T NS kind moved oldRef newRef d S
+    let specStruct :=
+      (transferStructural prefixed T NS kind moved oldRef newRef d S)
+        .sweepMover
+    let specCall := callAbstractSuccessAt prefixed specStruct d cal g rd
+      argHandle depth (specStruct.doms d).pc
+    let hwCall := callAbstractSuccess (Hw.abs σ) hwStruct d cal g rd
+      argHandle depth
+    (∀ x, specCall.doms x = hwCall.doms x) ∧
+      (∀ h, specCall.gates h = hwCall.gates h) := by
+  dsimp only
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  let hwStruct :=
+    transferStructural base T NS kind moved oldRef newRef d S
+  have hcomm : transferStructural
+        (base.setDom d fun ds => { ds with pc := ds.pc + 1 })
+        T NS kind moved oldRef newRef d S =
+      hwStruct.setDom d (fun ds => { ds with pc := ds.pc + 1 }) := by
+    simpa [hwStruct] using transferStructural_setPc base d T NS kind moved
+      oldRef newRef d S
+  constructor
+  · intro x
+    rw [hcomm]
+    unfold callAbstractSuccess callAbstractSuccessAt
+    by_cases hxd : x = d
+    · subst x
+      simp [MachineState.setDom, Loom.Fun.update, hwStruct,
+        transferStructural, installTransferred]
+    · by_cases hxc : x = cal
+      · subst x
+        have hcald : cal ≠ d := hxd
+        simp [MachineState.setDom, Loom.Fun.update, hne, hcald,
+          hwStruct, transferStructural, installTransferred,
+          refillPhase_gates]
+      · simp [MachineState.setDom, Loom.Fun.update, hxd, hxc,
+          hwStruct, transferStructural, installTransferred]
+  · intro h
+    rw [hcomm]
+    unfold callAbstractSuccess callAbstractSuccessAt
+    by_cases hh : h = g
+    · subst h
+      have hcald : cal ≠ d := Ne.symm hne
+      simp [MachineState.setDom, Loom.Fun.update, hcald,
+        hwStruct, transferStructural, installTransferred,
+        refillPhase_gates, refillPhase_regs, refillPhase_pc,
+        refillPhase_serving, refillPhase_maxDonation]
+    · simp [MachineState.setDom, Loom.Fun.update, hh,
+        hwStruct, transferStructural, installTransferred,
+        refillPhase_gates]
+
 /-- The call control-state tail frames all capability structure and regions
 already produced by the optional transfer. -/
 theorem callAbstractSuccess_structural_frames (source base : MachineState)
