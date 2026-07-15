@@ -1355,4 +1355,209 @@ theorem square_retire_gateCall_argStale (m : Manifest) (hwf : m.WF)
   · simpa [E] using hargStale
   · simpa [τ0, W] using hspec
 
+/-- Complete ninth ladder arm.  A live non-null argument handle whose class
+bit disagrees with its capability entry retires with `badCap`. -/
+theorem square_retire_gateCall_argBadClass (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hrc : ∀ d : DomainId, σ.regs (Hw.drun d) 2 ≠ 3#2)
+    (hz : R0Zero σ) (hkc : KindCanon σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6)
+    (hlive : (Hw.callSel
+      (finOfBv (by decide) (σ.regs "if_dom" 2))).live.eval σ = 1#1)
+    (hprimary : (Expr.not (Expr.and
+      (Hw.callSel (finOfBv (by decide) (σ.regs "if_dom" 2))).clsOk
+      (Expr.not (Hw.kIsMem
+        (Hw.callSel (finOfBv (by decide)
+          (σ.regs "if_dom" 2))).kindW)))).eval σ ≠ 1#1)
+    (hidle : (Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+      (Hw.callGid (finOfBv (by decide)
+        (σ.regs "if_dom" 2)))).eval σ ≠ 1#1)
+    (hnotSelf : (Expr.eq
+      (Hw.callCal (finOfBv (by decide) (σ.regs "if_dom" 2)))
+      (Hw.dLit (finOfBv (by decide)
+        (σ.regs "if_dom" 2)))).eval σ ≠ 1#1)
+    (hrunning : (Hw.neqE
+      (Hw.muxFin (fun d => .reg 2 (Hw.drun d))
+        (Hw.callCal (finOfBv (by decide) (σ.regs "if_dom" 2))))
+      (.lit 0)).eval σ ≠ 1#1)
+    (hnotServing : (Hw.muxFin (fun d => .reg 1 (Hw.dsrvV d))
+      (Hw.callCal (finOfBv (by decide)
+        (σ.regs "if_dom" 2)))).eval σ ≠ 1#1)
+    (hdepthPass : (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
+      (Hw.callDepth (finOfBv (by decide)
+        (σ.regs "if_dom" 2)))).eval σ ≠ 1#1)
+    (hargLive : (Expr.and
+      (Hw.argNZ (finOfBv (by decide) (σ.regs "if_dom" 2)))
+      (Expr.not (Hw.argSel
+        (finOfBv (by decide) (σ.regs "if_dom" 2))).live)).eval σ ≠ 1#1)
+    (hargBad : (Expr.and
+      (Hw.argNZ (finOfBv (by decide) (σ.regs "if_dom" 2)))
+      (Expr.not (Hw.argSel
+        (finOfBv (by decide) (σ.regs "if_dom" 2))).clsOk)).eval σ = 1#1) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  let c : Ctx :=
+    { d := E
+      pc := (({ refillPhase m (Hw.abs σ) with inflight := none }).doms E).pc
+      op := operandsOf W }
+  let τ0 : MachineState :=
+    ({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+      (fun ds => { ds with pc := ds.pc + 1 })
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (22#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W =
+      isa.find? (fun d => d.opcode == (22#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel σ E rfl
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := E, word := W,
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    simpa [E, W] using absInflight_some σ hifv
+  have hcore0 : corePhase m (refillPhase m (Hw.abs σ)) =
+      retire { refillPhase m (Hw.abs σ) with inflight := none } E W := by
+    rw [corePhase_retire m _ _ hfl
+      (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+  have hR1 : (Hw.readReg E Hw.rs1E).eval σ =
+      ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl
+  have hR2 : (Hw.readReg E Hw.rs2E).eval σ =
+      ((Hw.abs σ).doms E).reg (operandsOf W).rs2 :=
+    readReg_eval σ hz E Hw.rs2E (operandsOf W).rs2 rfl
+  have hreg1 : (τ0.doms E).reg (operandsOf W).rs1 =
+      ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    specReg_bridge m σ E _
+  have hreg2 : (τ0.doms E).reg (operandsOf W).rs2 =
+      ((Hw.abs σ).doms E).reg (operandsOf W).rs2 :=
+    specReg_bridge m σ E _
+  have hword1 : (τ0.doms c.d).reg c.op.rs1 =
+      (Hw.readReg E Hw.rs1E).eval σ := by
+    simp only [c]
+    rw [hreg1, hR1]
+  have hword2 : (τ0.doms c.d).reg c.op.rs2 =
+      (Hw.argW E).eval σ := by
+    simp only [c, Hw.argW]
+    rw [hreg2, hR2]
+  have hbridge : ∀ (S : Slot) (G : Gen),
+      (τ0.doms E).liveCap S G = ((Hw.abs σ).doms E).liveCap S G := by
+    intro S G
+    exact specLiveCap_bridge m σ E S G
+  have hp := callPrimary_of_pass σ τ0 E c rfl hword1 hbridge hkc
+    (by simpa [E] using hlive) (by simpa [E] using hprimary)
+  have hgates : τ0.gates = (Hw.abs σ).gates := by
+    change (refillPhase m (Hw.abs σ)).gates = (Hw.abs σ).gates
+    exact refillPhase_gates m (Hw.abs σ)
+  have hcallee := callCallee_of_pass σ τ0 E c rfl hgates hp
+    (by simpa [E] using hidle) (by simpa [E] using hnotSelf)
+  have hrunBridge : ∀ x : DomainId,
+      (τ0.doms x).run = ((Hw.abs σ).doms x).run := by
+    intro x
+    by_cases hx : x = E
+    · subst x
+      simp [τ0, MachineState.setDom, Loom.Fun.update]
+    · simp [τ0, MachineState.setDom, Loom.Fun.update, hx]
+  have hservBridge : ∀ x : DomainId,
+      (τ0.doms x).serving = ((Hw.abs σ).doms x).serving := by
+    intro x
+    by_cases hx : x = E
+    · subst x
+      simp [τ0, MachineState.setDom, Loom.Fun.update]
+    · simp [τ0, MachineState.setDom, Loom.Fun.update, hx]
+  have hwfAbs : Wf (Hw.abs σ) :=
+    (Machines.Lnp64u.wfa_invariant m hwf (Hw.abs σ) hsr).1
+  obtain ⟨S, G, e, g, cal, hcapLive, hkind, hact, hcal, hne,
+      hrun, hserv, hdepth, hgid, hcalSel⟩ :=
+    callReady_of_pass σ τ0 E c rfl hwfAbs hrc hrunBridge hservBridge
+      hgates hcallee (by simpa [E] using hrunning)
+      (by simpa [E] using hnotServing) (by simpa [E] using hdepthPass)
+  have hargLogic : (Hw.argNZ E).eval σ = 1#1 ∧
+      (Hw.argSel E).clsOk.eval σ = 0#1 := by
+    apply (by decide : ∀ a b : BitVec 1,
+      a &&& ~~~b = 1#1 → a = 1#1 ∧ b = 0#1)
+    simpa [E] using hargBad
+  have hargLive1 : (Hw.argSel E).live.eval σ = 1#1 := by
+    exact (by decide : ∀ a b : BitVec 1,
+      a = 1#1 → a &&& ~~~b ≠ 1#1 → b = 1#1)
+      ((Hw.argNZ E).eval σ) ((Hw.argSel E).live.eval σ) hargLogic.1
+      (by simpa [E] using hargLive)
+  have hnz : (Hw.argW E).eval σ ≠ 0#32 :=
+    (argNZ_eval_iff σ E).mp hargLogic.1
+  obtain ⟨ae, alive, acap⟩ := capSel_entry_of_live σ τ0 E
+    (Hw.argW E) hbridge (by simpa [Hw.argSel] using hargLive1)
+  have aslot : (finOfBv (by decide : 2 ^ 4 = numSlots)
+      (((Hw.argW E).eval σ).extractLsb' 0 4)).val =
+      (((Hw.argW E).eval σ).extractLsb' 0 4).toNat := rfl
+  have aclsIff := capSel_clsOk_iff_some σ E (Hw.argW E)
+    (finOfBv (by decide) (((Hw.argW E).eval σ).extractLsb' 0 4))
+    ae hkc aslot acap
+  have aclsNe : (Handle.decode ((Hw.argW E).eval σ)).cls ≠ ae.kind.cls := by
+    intro heq
+    have hone := aclsIff.mpr heq
+    have hzero : (Hw.capSel E (Hw.argW E)).clsOk.eval σ = 0#1 := by
+      simpa [Hw.argSel] using hargLogic.2
+    rw [hzero] at hone
+    contradiction
+  have htransfer : Machines.Lnp64u.Isa.transferByHandle c.d cal
+      ((τ0.doms c.d).reg c.op.rs2) τ0 = .err .badCap τ0 := by
+    rw [hword2]
+    exact transferByHandle_badClass τ0 E cal ((Hw.argW E).eval σ)
+      (Handle.decode ((Hw.argW E).eval σ)).slot
+      (Handle.decode ((Hw.argW E).eval σ)).gen ae hnz rfl alive aclsNe
+  have hexec : Machines.Lnp64u.Isa.Wip.gateCallExec c τ0 =
+      .err .badCap τ0 :=
+    gateCallExec_transferErr c τ0 S G e g cal .badCap hcapLive hkind
+      hact hcal hne hrun hserv hdepth htransfer
+  have hspec : corePhase m (refillPhase m (Hw.abs σ)) =
+      τ0.setDom E (fun ds =>
+        ds.setReg (operandsOf W).rd Errno.badCap.toWord) := by
+    rw [hcore0, retire_gateCall_exec _ E W hdec]
+    change (match Machines.Lnp64u.Isa.Wip.gateCallExec c τ0 with
+      | .ok _ τ' => τ'
+      | .err er τ' => τ'.setDom E
+          (fun ds => ds.setReg (operandsOf W).rd er.toWord)
+      | .fault f => haltWith
+          { refillPhase m (Hw.abs σ) with inflight := none } E f) = _
+    rw [hexec]
+  have hpassLive : (Expr.not (Hw.callSel E).live).eval σ ≠ 1#1 := by
+    show ¬(~~~((Hw.callSel E).live.eval σ) = 1#1)
+    rw [show (Hw.callSel E).live.eval σ = 1#1 from by simpa [E] using hlive]
+    decide
+  apply square_retire_gateCall_firstError m hwf hfit σ hsync hifv hcl E
+    rfl hifsel hifexcl hopc
+    [((Expr.not (Hw.callSel E).live), .err .staleHandle),
+      ((Expr.not (Expr.and (Hw.callSel E).clsOk
+        (Expr.not (Hw.kIsMem (Hw.callSel E).kindW)))), .err .badCap),
+      ((Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+        (Hw.callGid E)), .err .gateBusy),
+      ((Expr.eq (Hw.callCal E) (Hw.dLit E)), .err .gateBusy),
+      ((Hw.neqE (Hw.muxFin (fun d => .reg 2 (Hw.drun d))
+        (Hw.callCal E)) (.lit 0)), .err .gateBusy),
+      ((Hw.muxFin (fun d => .reg 1 (Hw.dsrvV d))
+        (Hw.callCal E)), .err .gateBusy),
+      ((Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
+        (Hw.callDepth E)), .err .gateBusy),
+      ((Expr.and (Hw.argNZ E)
+        (Expr.not (Hw.argSel E).live)), .err .staleHandle)]
+    (List.drop 9 (Hw.callChecks E))
+    (Expr.and (Hw.argNZ E) (Expr.not (Hw.argSel E).clsOk)) .badCap
+  · rfl
+  · intro x hx
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hx
+    rcases hx with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+    · exact hpassLive
+    · simpa [E] using hprimary
+    · simpa [E] using hidle
+    · simpa [E] using hnotSelf
+    · simpa [E] using hrunning
+    · simpa [E] using hnotServing
+    · simpa [E] using hdepthPass
+    · simpa [E] using hargLive
+  · simpa [E] using hargBad
+  · simpa [τ0, W] using hspec
+
 end Machines.Lnp64u.Theorems.RMC
