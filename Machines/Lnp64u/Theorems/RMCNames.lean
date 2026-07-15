@@ -78,6 +78,22 @@ private theorem cellSuffix_ne_srvSuffix (a b : String) :
   have hs : "_srv".toList = ['_', 's', 'r', 'v'] := by decide
   simp [hc, hs] at h'
 
+private theorem capSuffix_ne_genSuffix (a b : String) :
+    "_cap" ++ a ≠ "_gen" ++ b := by
+  intro h
+  have h' := congrArg String.toList h
+  have hc : "_cap".toList = ['_', 'c', 'a', 'p'] := by decide
+  have hg : "_gen".toList = ['_', 'g', 'e', 'n'] := by decide
+  simp [hc, hg] at h'
+
+private theorem cellSuffix_ne_genSuffix (a b : String) :
+    "_cell" ++ a ≠ "_gen" ++ b := by
+  intro h
+  have h' := congrArg String.toList h
+  have hc : "_cell".toList = ['_', 'c', 'e', 'l', 'l'] := by decide
+  have hg : "_gen".toList = ['_', 'g', 'e', 'n'] := by decide
+  simp [hc, hg] at h'
+
 private theorem capSuffix_ne_cause (a : String) : "_cap" ++ a ≠ "_cause" := by
   intro h
   have h' := congrArg String.toList h
@@ -133,6 +149,17 @@ theorem dcellV_ne_dsrvV (d x : DomainId) (l : LineageId) :
   simpa [dcellV, dsrvV, toString_string, String.append_assoc] using
     domSuffix_ne d x ("_cell" ++ (toString l.val ++ "_v")) ("_srv" ++ "_v")
       (cellSuffix_ne_srvSuffix _ _)
+
+theorem dcapV_ne_dgen (d x : DomainId) (s u : Slot) : dcapV d s ≠ dgen x u := by
+  simpa [dcapV, dgen, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_cap" ++ (toString s.val ++ "_v"))
+      ("_gen" ++ toString u.val) (capSuffix_ne_genSuffix _ _)
+
+theorem dcellV_ne_dgen (d x : DomainId) (l : LineageId) (s : Slot) :
+    dcellV d l ≠ dgen x s := by
+  simpa [dcellV, dgen, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_cell" ++ (toString l.val ++ "_v"))
+      ("_gen" ++ toString s.val) (cellSuffix_ne_genSuffix _ _)
 
 theorem dcapKind_ne_dcause (d x : DomainId) (s : Slot) :
     dcapKind d s ≠ dcause x := by
@@ -195,6 +222,10 @@ theorem dcellV_inj_lineage (d : DomainId) (l u : LineageId) :
 theorem dcellPar_inj_lineage (d : DomainId) (l u : LineageId) :
     dcellPar d l = dcellPar d u → l = u := by
   fin_cases l <;> fin_cases u <;> decide +kernel +revert
+
+theorem dgen_inj_slot (d : DomainId) (s u : Slot) :
+    dgen d s = dgen d u → s = u := by
+  fin_cases s <;> fin_cases u <;> decide +kernel +revert
 
 /-- Capability-kind and architectural-register names are disjoint. -/
 theorem dcapKind_ne_dreg (d e : DomainId) (s : Slot) (r : RegId) :

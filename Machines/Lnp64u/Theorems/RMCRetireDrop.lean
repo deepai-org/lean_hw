@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireDup
+import Machines.Lnp64u.Theorems.RMCNames
 
 /-!
 # R-MC retirement: `cap_drop` kill support
@@ -346,8 +347,7 @@ theorem clearSlotA_capV (σ acc : Loom.Hw.St) (d : DomainId) (S s : Slot)
           (.write 1 (Hw.dcellV d l) (.lit 0)) .skip)).regWrites from by
       have hne : ∀ l : LineageId, Hw.dcapV d s ≠ Hw.dcellV d l := by
         intro l
-        exact ((by native_decide +revert : ∀ (d : DomainId) (s : Slot)
-          (l : LineageId), Hw.dcapV d s ≠ Hw.dcellV d l) d s l)
+        exact dcapV_ne_dcellV d s l
       generalize List.finRange numLineage = ls
       induction ls with
       | nil => simp [Hw.seqAll, Act.regWrites]
@@ -360,15 +360,12 @@ theorem clearSlotA_capV (σ acc : Loom.Hw.St) (d : DomainId) (S s : Slot)
       (.write 8 (Hw.dgen d s')
         (Hw.bumpE (.reg 8 (Hw.dgen d s'))))) S]
   · simp only [Act.run, RegEnv.set]
-    rw [if_neg ((by native_decide +revert : ∀ (d : DomainId) (s₁ s₂ : Slot),
-      ¬(Hw.dcapV d s₁ = Hw.dgen d s₂)) d s S)]
+    rw [if_neg (dcapV_ne_dgen d d s S)]
     by_cases hs : s = S
     · subst s
       simp
       rfl
-    · rw [if_neg (fun h => hs ((by native_decide +revert :
-          ∀ (d : DomainId) (s₁ s₂ : Slot),
-            Hw.dcapV d s₁ = Hw.dcapV d s₂ → s₁ = s₂) d s S h)), if_neg hs]
+    · rw [if_neg (fun h => hs (dcapV_inj_slot d s S h)), if_neg hs]
   · show (Expr.eq sE (Hw.sLit S)).eval σ = 1#1
     rw [eqE_eval, hslot]
     rfl
@@ -400,8 +397,7 @@ theorem clearSlotA_gen (σ acc : Loom.Hw.St) (d : DomainId) (S s : Slot)
           (.write 1 (Hw.dcellV d l) (.lit 0)) .skip)).regWrites from by
       have hne : ∀ l : LineageId, Hw.dgen d s ≠ Hw.dcellV d l := by
         intro l
-        exact ((by native_decide +revert : ∀ (d : DomainId) (s : Slot)
-          (l : LineageId), Hw.dgen d s ≠ Hw.dcellV d l) d s l)
+        exact (dcellV_ne_dgen d d l s).symm
       generalize List.finRange numLineage = ls
       induction ls with
       | nil => simp [Hw.seqAll, Act.regWrites]
@@ -418,11 +414,8 @@ theorem clearSlotA_gen (σ acc : Loom.Hw.St) (d : DomainId) (S s : Slot)
     · subst s
       rw [if_pos rfl, if_pos rfl, bumpE_eval]
       simp [Expr.eval]
-    · rw [if_neg (fun h => hs ((by native_decide +revert :
-          ∀ (d : DomainId) (s₁ s₂ : Slot),
-            Hw.dgen d s₁ = Hw.dgen d s₂ → s₁ = s₂) d s S h)),
-        if_neg ((by native_decide +revert : ∀ (d : DomainId) (s₁ s₂ : Slot),
-          Hw.dgen d s₁ ≠ Hw.dcapV d s₂) d s S), if_neg hs]
+    · rw [if_neg (fun h => hs (dgen_inj_slot d s S h)),
+        if_neg (dcapV_ne_dgen d d S s).symm, if_neg hs]
   · show (Expr.eq sE (Hw.sLit S)).eval σ = 1#1
     rw [eqE_eval, hslot]
     rfl
@@ -461,11 +454,9 @@ theorem clearSlotA_cellV_some (σ acc : Loom.Hw.St) (d : DomainId)
     dsimp only [slotAcc]
     apply frame
     have hcap : ∀ s' : Slot, Hw.dcellV d l ≠ Hw.dcapV d s' := by
-      intro s'; exact ((by native_decide +revert : ∀ (d : DomainId)
-        (l : LineageId) (s : Slot), Hw.dcellV d l ≠ Hw.dcapV d s) d l s')
+      intro s'; exact (dcapV_ne_dcellV d s' l).symm
     have hgen : ∀ s' : Slot, Hw.dcellV d l ≠ Hw.dgen d s' := by
-      intro s'; exact ((by native_decide +revert : ∀ (d : DomainId)
-        (l : LineageId) (s : Slot), Hw.dcellV d l ≠ Hw.dgen d s) d l s')
+      intro s'; exact dcellV_ne_dgen d d l s'
     generalize List.finRange numSlots = ls
     induction ls with
     | nil => simp [Hw.seqAll, Act.regWrites]
@@ -484,9 +475,7 @@ theorem clearSlotA_cellV_some (σ acc : Loom.Hw.St) (d : DomainId)
     · subst l
       simp
       rfl
-    · rw [if_neg (fun h => hl ((by native_decide +revert :
-          ∀ (d : DomainId) (l₁ l₂ : LineageId),
-            Hw.dcellV d l₁ = Hw.dcellV d l₂ → l₁ = l₂) d l L h)), if_neg hl,
+    · rw [if_neg (fun h => hl (dcellV_inj_lineage d l L h)), if_neg hl,
         hacc]
   · show linVE.eval σ &&& (Expr.eq linE (Hw.lLit L)).eval σ = 1#1
     rw [hlinV]
@@ -528,11 +517,9 @@ theorem clearSlotA_cellV_none (σ acc : Loom.Hw.St) (d : DomainId)
     (fun l' : LineageId => Act.write 1 (Hw.dcellV d l') (.lit 0))]
   · apply frame
     have hcap : ∀ s' : Slot, Hw.dcellV d l ≠ Hw.dcapV d s' := by
-      intro s'; exact ((by native_decide +revert : ∀ (d : DomainId)
-        (l : LineageId) (s : Slot), Hw.dcellV d l ≠ Hw.dcapV d s) d l s')
+      intro s'; exact (dcapV_ne_dcellV d s' l).symm
     have hgen : ∀ s' : Slot, Hw.dcellV d l ≠ Hw.dgen d s' := by
-      intro s'; exact ((by native_decide +revert : ∀ (d : DomainId)
-        (l : LineageId) (s : Slot), Hw.dcellV d l ≠ Hw.dgen d s) d l s')
+      intro s'; exact dcellV_ne_dgen d d l s'
     generalize List.finRange numSlots = ls
     induction ls with
     | nil => simp [Hw.seqAll, Act.regWrites]
