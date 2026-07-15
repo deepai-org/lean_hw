@@ -933,6 +933,28 @@ theorem callCirc_act_eq (d : DomainId) :
     (Hw.callCirc d).act = Hw.ladder d (Hw.callChecks d) (callSuccessA d) := by
   rfl
 
+/-- Retirement dispatch selects the gate-call circuit on opcode 22. -/
+theorem retireFor_gateCall_run (σ acc : Loom.Hw.St) (d : DomainId)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6) :
+    (Hw.retireFor d).run σ acc =
+      (Hw.ladder d (Hw.callChecks d) (callSuccessA d)).run σ acc := by
+  rw [← callCirc_act_eq]
+  exact retireFor_sel_of_opc σ d "gate_call" 22#6 hopc
+    (by decide +kernel)
+    (by decide +kernel)
+    (Hw.callCirc d)
+    (List.mem_append_right _ (by simp)) acc
+
+/-- When the combined call predicate is true, dispatch runs the factored
+successful payload directly. -/
+theorem retireFor_gateCall_success (σ acc : Loom.Hw.St) (d : DomainId)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6)
+    (hok : (Hw.callOkE d).eval σ = 1#1) :
+    (Hw.retireFor d).run σ acc = (callSuccessA d).run σ acc := by
+  rw [retireFor_gateCall_run σ acc d hopc]
+  apply ladder_run_all_pass
+  exact (okOf_eval_iff σ (Hw.callChecks d)).mp hok
+
 /-- Operational decomposition of the successful call payload into its four
 semantic stages. -/
 theorem callSuccessA_run (σ acc : Loom.Hw.St) (d : DomainId) :

@@ -235,6 +235,22 @@ theorem retireFor_run_none (σ acc : Loom.Hw.St) (e : DomainId)
 
 /-! ## Generic response-ladder selection -/
 
+/-- `okOf` is true exactly when every failure predicate is false. -/
+theorem okOf_eval_iff (σ : Loom.Hw.St) (cs : List Hw.Check) :
+    (Hw.okOf cs).eval σ = 1#1 ↔
+      ∀ c ∈ cs, c.1.eval σ ≠ 1#1 := by
+  unfold Hw.okOf
+  rw [andAll_eval]
+  constructor
+  · intro hall c hc hbad
+    have hn := hall (.not c.1) (List.mem_map.mpr ⟨c, hc, rfl⟩)
+    rw [notE_eval, hbad] at hn
+    exact absurd hn (by decide)
+  · intro hall e he
+    obtain ⟨c, hc, rfl⟩ := List.mem_map.mp he
+    rw [notE_eval]
+    exact bv1_ne_one.mp (hall c hc)
+
 /-- If every failure predicate is false, an errno/fault ladder runs its
 successful payload. -/
 theorem ladder_run_all_pass (σ acc : Loom.Hw.St) (d : DomainId)
