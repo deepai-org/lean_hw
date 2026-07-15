@@ -201,6 +201,114 @@ theorem sweepMover_drop_mem (σ τ : MachineState)
         · rw [hlive, if_neg hd, hl.2]
           simp [hs, hd]
 
+/-- Endpoint-scoped transfer sweep.  A transfer may create a fresh live
+destination reference, so only the pre-existing Mover endpoints are required
+to obey the source-slot liveness equation. -/
+theorem sweepMover_transfer_mover (σ τ : MachineState)
+    (d : DomainId) (s : Slot)
+    (hmover : τ.mover = σ.mover)
+    (hsrc : ∀ job, σ.mover = some job → τ.liveRef job.src =
+      if job.src.dom = d ∧ job.src.slot = s then false
+      else σ.liveRef job.src)
+    (hdst : ∀ job, σ.mover = some job → τ.liveRef job.dst =
+      if job.dst.dom = d ∧ job.dst.slot = s then false
+      else σ.liveRef job.dst)
+    (hmoverLive : ∀ job, σ.mover = some job →
+      σ.liveRef job.src = true ∧ σ.liveRef job.dst = true) :
+    τ.sweepMover.mover =
+      match σ.mover with
+      | none => none
+      | some job =>
+          if (job.src.dom = d ∧ job.src.slot = s) ∨
+              (job.dst.dom = d ∧ job.dst.slot = s)
+          then none else some job := by
+  unfold MachineState.sweepMover
+  rw [hmover]
+  cases hmov : σ.mover with
+  | none =>
+      simp only
+      exact hmover.trans hmov
+  | some job =>
+      simp only
+      have hl := hmoverLive job hmov
+      by_cases hs : job.src.dom = d ∧ job.src.slot = s
+      · rw [hsrc job hmov, if_pos hs]
+        simp [hs, MachineState.write]
+        split <;> rfl
+      · rw [hsrc job hmov, if_neg hs, hl.1]
+        by_cases hd : job.dst.dom = d ∧ job.dst.slot = s
+        · rw [hdst job hmov, if_pos hd]
+          simp [hs, hd, MachineState.write]
+          split <;> rfl
+        · rw [hdst job hmov, if_neg hd, hl.2]
+          simp [hs, hd]
+          exact hmover.trans hmov
+
+/-- Memory face of `sweepMover_transfer_mover`. -/
+theorem sweepMover_transfer_mem (σ τ : MachineState)
+    (d : DomainId) (s : Slot)
+    (hmover : τ.mover = σ.mover)
+    (hsrc : ∀ job, σ.mover = some job → τ.liveRef job.src =
+      if job.src.dom = d ∧ job.src.slot = s then false
+      else σ.liveRef job.src)
+    (hdst : ∀ job, σ.mover = some job → τ.liveRef job.dst =
+      if job.dst.dom = d ∧ job.dst.slot = s then false
+      else σ.liveRef job.dst)
+    (hmoverLive : ∀ job, σ.mover = some job →
+      σ.liveRef job.src = true ∧ σ.liveRef job.dst = true)
+    (b : Addr) :
+    τ.sweepMover.mem b =
+      match σ.mover with
+      | none => τ.mem b
+      | some job =>
+          if (job.src.dom = d ∧ job.src.slot = s) ∨
+              (job.dst.dom = d ∧ job.dst.slot = s) then
+            if ({ τ with mover := none } : MachineState).domCovers job.owner
+                job.statusAddr { r := false, w := true, x := false } then
+              if b = job.statusAddr then Errno.staleHandle.toWord else τ.mem b
+            else τ.mem b
+          else τ.mem b := by
+  unfold MachineState.sweepMover
+  rw [hmover]
+  cases hmov : σ.mover with
+  | none => simp only
+  | some job =>
+      simp only
+      have hl := hmoverLive job hmov
+      by_cases hs : job.src.dom = d ∧ job.src.slot = s
+      · rw [hsrc job hmov, if_pos hs]
+        simp only [Bool.false_and, Bool.false_eq_true, if_false]
+        by_cases hc : ({ τ with mover := none } : MachineState).domCovers
+            job.owner job.statusAddr { r := false, w := true, x := false }
+        · rw [if_pos hc]
+          by_cases hb : b = job.statusAddr
+          · subst b
+            rw [if_pos rfl]
+            simp [hs, hc, MachineState.write, Loom.Fun.update_same]
+          · rw [if_neg hb]
+            simp [hs, hc, hb, MachineState.write,
+              Loom.Fun.update_ne _ _ _ _ hb]
+        · rw [if_neg hc]
+          simp [hs, hc]
+      · rw [hsrc job hmov, if_neg hs, hl.1]
+        by_cases hd : job.dst.dom = d ∧ job.dst.slot = s
+        · rw [hdst job hmov, if_pos hd]
+          simp only [Bool.true_and, Bool.false_eq_true, if_false]
+          by_cases hc : ({ τ with mover := none } : MachineState).domCovers
+              job.owner job.statusAddr { r := false, w := true, x := false }
+          · rw [if_pos hc]
+            by_cases hb : b = job.statusAddr
+            · subst b
+              rw [if_pos rfl]
+              simp [hs, hd, hc, MachineState.write, Loom.Fun.update_same]
+            · rw [if_neg hb]
+              simp [hs, hd, hc, hb, MachineState.write,
+                Loom.Fun.update_ne _ _ _ _ hb]
+          · rw [if_neg hc]
+            simp [hs, hd, hc]
+        · rw [hdst job hmov, if_neg hd, hl.2]
+          simp [hs, hd]
+
 /-! ## Hardware structural walks -/
 
 /-- A guarded write walk frames a register whose name is distinct from
