@@ -17,6 +17,7 @@ import Machines.Lnp64u.Theorems.RMCRetireMap
 import Machines.Lnp64u.Theorems.RMCRetireDup
 import Machines.Lnp64u.Theorems.RMCRetireGrantArm
 import Machines.Lnp64u.Theorems.RMCRetireDropArm
+import Machines.Lnp64u.Theorems.RMCRetireGateCallSuccess
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
