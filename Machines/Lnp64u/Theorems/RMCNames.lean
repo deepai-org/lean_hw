@@ -110,6 +110,14 @@ private theorem srvSuffix_ne_genSuffix (a b : String) :
   have hg : "_gen".toList = ['_', 'g', 'e', 'n'] := by decide
   simp [hs, hg] at h'
 
+private theorem srvSuffix_ne_rgnSuffix (a b : String) :
+    "_srv" ++ a ≠ "_rgn" ++ b := by
+  intro h
+  have h' := congrArg String.toList h
+  have hs : "_srv".toList = ['_', 's', 'r', 'v'] := by decide
+  have hr : "_rgn".toList = ['_', 'r', 'g', 'n'] := by decide
+  simp [hs, hr] at h'
+
 private theorem capSuffix_ne_cellSuffix (a b : String) :
     "_cap" ++ a ≠ "_cell" ++ b := by
   intro h
@@ -168,6 +176,12 @@ theorem dcellV_ne_drgnV (d x : DomainId) (l : LineageId) (r : RegionId) :
     domSuffix_ne d x ("_cell" ++ (toString l.val ++ "_v"))
       ("_rgn" ++ (toString r.val ++ "_v")) (cellSuffix_ne_rgnSuffix _ _)
 
+theorem dcellPar_ne_drgnV (d x : DomainId) (l : LineageId) (r : RegionId) :
+    dcellPar d l ≠ drgnV x r := by
+  simpa [dcellPar, drgnV, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_cell" ++ (toString l.val ++ "_par"))
+      ("_rgn" ++ (toString r.val ++ "_v")) (cellSuffix_ne_rgnSuffix _ _)
+
 theorem dcellV_ne_dsrvV (d x : DomainId) (l : LineageId) :
     dcellV d l ≠ dsrvV x := by
   simpa [dcellV, dsrvV, toString_string, String.append_assoc] using
@@ -202,6 +216,12 @@ theorem dsrvV_ne_dgen (d x : DomainId) (s : Slot) :
   simpa [dsrvV, dgen, toString_string, String.append_assoc] using
     domSuffix_ne d x ("_srv" ++ "_v") ("_gen" ++ toString s.val)
       (srvSuffix_ne_genSuffix _ _)
+
+theorem dsrvV_ne_drgnV (d x : DomainId) (r : RegionId) :
+    dsrvV d ≠ drgnV x r := by
+  simpa [dsrvV, drgnV, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_srv" ++ "_v")
+      ("_rgn" ++ (toString r.val ++ "_v")) (srvSuffix_ne_rgnSuffix _ _)
 
 theorem dcapLinV_ne_dcellV_any (d x : DomainId) (s : Slot) (l : LineageId) :
     dcapLinV d s ≠ dcellV x l := by
