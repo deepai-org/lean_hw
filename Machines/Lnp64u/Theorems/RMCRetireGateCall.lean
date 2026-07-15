@@ -138,4 +138,240 @@ theorem callDepth_eval (σ : Loom.Hw.St) (c : Ctx)
       | none => simp [hact] at hisSome
       | some a => simp [hact]
 
+/-! ## Activation-record writer -/
+
+/-- The gate-indexed activation-record fold from the successful call arm. -/
+def callActivateA (d : DomainId) : Act :=
+  Hw.seqAll ((List.finRange numGates).map fun g =>
+    .ite (.eq (Hw.callGid d) (Hw.gLit g)) (Hw.seqAll <|
+      [ .write 1 (Hw.gactV g) (.lit 1),
+        .write 2 (Hw.gcaller g) (Hw.dLit d),
+        .write 3 (Hw.gcallerRd g) Hw.rdE ]
+      ++ ((List.finRange numRegs).map fun r =>
+          .write 32 (Hw.gsreg g r)
+            (Hw.muxFin (fun c => .reg 32 (Hw.dreg c r)) (Hw.callCal d)))
+      ++ [ .write 12 (Hw.gspc g)
+            (Hw.muxFin (fun c => .reg 12 (Hw.dpc c)) (Hw.callCal d)),
+           .write 1 (Hw.gssrvV g)
+            (Hw.muxFin (fun c => .reg 1 (Hw.dsrvV c)) (Hw.callCal d)),
+           .write 2 (Hw.gssrv g)
+            (Hw.muxFin (fun c => .reg 2 (Hw.dsrv c)) (Hw.callCal d)),
+           .write 3 (Hw.gdepth g) (Hw.callDepth d),
+           .write 32 (Hw.gdon g) (.reg 32 (Hw.dmaxdon d)) ]) .skip)
+
+/-- The concrete activation writer after selecting gate `g`. -/
+def callActivateChosenA (d : DomainId) (g : GateId) : Act :=
+  Hw.seqAll <|
+    [ .write 1 (Hw.gactV g) (.lit 1),
+      .write 2 (Hw.gcaller g) (Hw.dLit d),
+      .write 3 (Hw.gcallerRd g) Hw.rdE ]
+    ++ ((List.finRange numRegs).map fun r =>
+        .write 32 (Hw.gsreg g r)
+          (Hw.muxFin (fun c => .reg 32 (Hw.dreg c r)) (Hw.callCal d)))
+    ++ [ .write 12 (Hw.gspc g)
+          (Hw.muxFin (fun c => .reg 12 (Hw.dpc c)) (Hw.callCal d)),
+         .write 1 (Hw.gssrvV g)
+          (Hw.muxFin (fun c => .reg 1 (Hw.dsrvV c)) (Hw.callCal d)),
+         .write 2 (Hw.gssrv g)
+          (Hw.muxFin (fun c => .reg 2 (Hw.dsrv c)) (Hw.callCal d)),
+         .write 3 (Hw.gdepth g) (Hw.callDepth d),
+         .write 32 (Hw.gdon g) (.reg 32 (Hw.dmaxdon d)) ]
+
+/-- The activation-record fold selects exactly the decoded gate id. -/
+theorem callActivateA_run_selected (σ acc : Loom.Hw.St) (d : DomainId)
+    (g : GateId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    (callActivateA d).run σ acc = (callActivateChosenA d g).run σ acc := by
+  have hsel : (Expr.eq (Hw.callGid d) (Hw.gLit g)).eval σ = 1#1 :=
+    by rw [eqE_eval]; exact (bv2_lit_iff _ g).mpr hgid
+  have hexcl : ∀ j : GateId, j ≠ g →
+      (Expr.eq (Hw.callGid d) (Hw.gLit j)).eval σ ≠ 1#1 := by
+    intro j hne hj
+    rw [eqE_eval] at hj
+    exact hne ((bv2_lit_iff _ j).mp hj |>.symm.trans hgid)
+  exact seqAll_ite_run_unique σ acc
+    (fun j : GateId => Expr.eq (Hw.callGid d) (Hw.gLit j))
+    (fun j => callActivateChosenA d j) g hsel hexcl
+    (List.finRange numGates) (List.mem_finRange g) (List.nodup_finRange _)
+
+private theorem seqAll_write_frame {I : Type} {w qW : Nat}
+    (σ acc : Loom.Hw.St) (rn : I → String) (v : I → Expr w)
+    (l : List I) (q : String) (hne : ∀ i ∈ l, q ≠ rn i) :
+    ((Hw.seqAll (l.map fun i => Act.write w (rn i) (v i))).run σ acc).regs
+      q qW = acc.regs q qW := by
+  induction l generalizing acc with
+  | nil => rfl
+  | cons i t ih =>
+      change ((Hw.seqAll (t.map fun j => Act.write w (rn j) (v j))).run σ
+        ((Act.write w (rn i) (v i)).run σ acc)).regs q qW = _
+      rw [ih _ (fun j hj => hne j (List.mem_cons_of_mem i hj))]
+      simp only [Act.run, RegEnv.set]
+      rw [if_neg (hne i (List.mem_cons_self ..))]
+
+private theorem seqAll_write_at {I : Type} {w : Nat}
+    (σ acc : Loom.Hw.St) (rn : I → String) (v : I → Expr w)
+    (l : List I) (i : I) (hi : i ∈ l) (hnd : l.Nodup)
+    (hinj : ∀ a ∈ l, ∀ b ∈ l, rn a = rn b → a = b) :
+    ((Hw.seqAll (l.map fun j => Act.write w (rn j) (v j))).run σ acc).regs
+      (rn i) w = (v i).eval σ := by
+  induction l generalizing acc with
+  | nil => exact absurd hi List.not_mem_nil
+  | cons a t ih =>
+      have hnd' := List.nodup_cons.mp hnd
+      by_cases hai : a = i
+      · subst a
+        change ((Hw.seqAll (t.map fun j => Act.write w (rn j) (v j))).run σ
+          ((Act.write w (rn i) (v i)).run σ acc)).regs (rn i) w = _
+        rw [seqAll_write_frame σ _ rn v t (rn i)
+          (fun j hj hname => hnd'.1
+            ((hinj i (List.mem_cons_self ..) j
+              (List.mem_cons_of_mem i hj) hname).symm ▸ hj))]
+        simp [Act.run, RegEnv.set]
+      · have hit : i ∈ t := (List.mem_cons.mp hi).resolve_left
+          (fun h => hai h.symm)
+        exact ih _ hit hnd'.2 (fun x hx y hy =>
+          hinj x (List.mem_cons_of_mem a hx) y (List.mem_cons_of_mem a hy))
+
+/-- Decoding the chosen activation writer yields exactly the specification
+activation record, expressed over the sampled pre-call state. -/
+theorem absGate_callActivateChosen_selected (σ acc : Loom.Hw.St)
+    (d cal : DomainId) (g : GateId)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal) :
+    Hw.absGate ((callActivateChosenA d g).run σ acc) g =
+      { Hw.absGate acc g with
+        act := some
+          { caller := d
+            callerRd := finOfBv (by decide) (Hw.rdE.eval σ)
+            savedRegs := ((Hw.abs σ).doms cal).regs
+            savedPc := ((Hw.abs σ).doms cal).pc
+            savedServing := ((Hw.abs σ).doms cal).serving
+            depth := ((Hw.callDepth d).eval σ).toNat
+            donated := ((Hw.abs σ).doms d).maxDonation } } := by
+  have hreg : ∀ r : RegId,
+      (Hw.muxFin (fun c => .reg 32 (Hw.dreg c r))
+        (Hw.callCal d)).eval σ = σ.regs (Hw.dreg cal r) 32 := by
+    intro r
+    rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hcal]
+    rfl
+  have hpc : (Hw.muxFin (fun c => .reg 12 (Hw.dpc c))
+      (Hw.callCal d)).eval σ = σ.regs (Hw.dpc cal) 12 := by
+    rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hcal]
+    rfl
+  have hsv : (Hw.muxFin (fun c => .reg 1 (Hw.dsrvV c))
+      (Hw.callCal d)).eval σ = σ.regs (Hw.dsrvV cal) 1 := by
+    rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hcal]
+    rfl
+  have hsg : (Hw.muxFin (fun c => .reg 2 (Hw.dsrv c))
+      (Hw.callCal d)).eval σ = σ.regs (Hw.dsrv cal) 2 := by
+    rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hcal]
+    rfl
+  let pre : List Act :=
+    [ .write 1 (Hw.gactV g) (.lit 1),
+      .write 2 (Hw.gcaller g) (Hw.dLit d),
+      .write 3 (Hw.gcallerRd g) Hw.rdE ]
+  let saves : List Act := (List.finRange numRegs).map fun r =>
+    .write 32 (Hw.gsreg g r)
+      (Hw.muxFin (fun c => .reg 32 (Hw.dreg c r)) (Hw.callCal d))
+  let tail : List Act :=
+    [ .write 12 (Hw.gspc g)
+        (Hw.muxFin (fun c => .reg 12 (Hw.dpc c)) (Hw.callCal d)),
+      .write 1 (Hw.gssrvV g)
+        (Hw.muxFin (fun c => .reg 1 (Hw.dsrvV c)) (Hw.callCal d)),
+      .write 2 (Hw.gssrv g)
+        (Hw.muxFin (fun c => .reg 2 (Hw.dsrv c)) (Hw.callCal d)),
+      .write 3 (Hw.gdepth g) (Hw.callDepth d),
+      .write 32 (Hw.gdon g) (.reg 32 (Hw.dmaxdon d)) ]
+  let a0 := (Hw.seqAll pre).run σ acc
+  let a1 := (Hw.seqAll saves).run σ a0
+  have hrun : (callActivateChosenA d g).run σ acc =
+      (Hw.seqAll tail).run σ a1 := by
+    unfold callActivateChosenA a1 a0 pre saves tail
+    rw [seqAll_append_run, seqAll_append_run]
+  have hcfg1 : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gcallee g) 2 = acc.regs (Hw.gcallee g) 2 := by
+    apply frame
+    fin_cases g <;> exact of_decide_eq_true rfl
+  have hcfg2 : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gentry g) 12 = acc.regs (Hw.gentry g) 12 := by
+    apply frame
+    fin_cases g <;> exact of_decide_eq_true rfl
+  have hprefix : ∀ q ∈ [(Hw.gactV g, 1), (Hw.gcaller g, 2),
+      (Hw.gcallerRd g, 3)],
+      ((callActivateChosenA d g).run σ acc).regs q.1 q.2 = a0.regs q.1 q.2 := by
+    intro q hq
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+    rcases hq with hq | hq | hq <;> subst q
+    all_goals
+      rw [hrun, frame (by
+        unfold tail
+        fin_cases g <;> exact of_decide_eq_true rfl) σ a1]
+      apply seqAll_write_frame σ a0 (fun r => Hw.gsreg g r)
+        (fun r => Hw.muxFin (fun c => .reg 32 (Hw.dreg c r)) (Hw.callCal d))
+        (List.finRange numRegs) _
+      intro r _
+      fin_cases g <;> fin_cases r <;> exact of_decide_eq_true rfl
+  have hactV : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gactV g) 1 = 1#1 := by
+    rw [hprefix (Hw.gactV g, 1) (by simp)]
+    simp [a0, pre, Hw.seqAll, Act.run, RegEnv.set]
+    rfl
+  have hcaller : finOfBv (by decide)
+      (((callActivateChosenA d g).run σ acc).regs (Hw.gcaller g) 2) = d := by
+    rw [hprefix (Hw.gcaller g, 2) (by simp)]
+    simpa [a0, pre, Hw.seqAll, Act.run, RegEnv.set, Hw.dLit, Expr.eval] using
+      finOfBv_dLit d
+  have hcallerRd : finOfBv (by decide : 2 ^ 3 = numRegs)
+      (((callActivateChosenA d g).run σ acc).regs (Hw.gcallerRd g) 3) =
+      finOfBv (by decide : 2 ^ 3 = numRegs) (Hw.rdE.eval σ) := by
+    rw [hprefix (Hw.gcallerRd g, 3) (by simp)]
+    simp [a0, pre, Hw.seqAll, Act.run, RegEnv.set]
+  have hsaves : ∀ r : RegId,
+      ((callActivateChosenA d g).run σ acc).regs (Hw.gsreg g r) 32 =
+        σ.regs (Hw.dreg cal r) 32 := by
+    intro r
+    rw [hrun]
+    rw [show ((Hw.seqAll tail).run σ a1).regs (Hw.gsreg g r) 32 =
+        a1.regs (Hw.gsreg g r) 32 from frame (by
+          fin_cases g <;> fin_cases r <;>
+            exact of_decide_eq_true rfl) σ a1]
+    unfold a1 saves
+    rw [seqAll_write_at σ a0 (fun r => Hw.gsreg g r)
+      (fun r => Hw.muxFin (fun c => .reg 32 (Hw.dreg c r)) (Hw.callCal d))
+      (List.finRange numRegs) r (List.mem_finRange r) (List.nodup_finRange _)
+      (by
+        intro x _ y _ heq
+        fin_cases g <;> fin_cases x <;> fin_cases y <;>
+          first | rfl | exact absurd heq (by decide +kernel))]
+    exact hreg r
+  have hspc : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gspc g) 12 = σ.regs (Hw.dpc cal) 12 := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set, hpc]
+  have hssrvV : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gssrvV g) 1 = σ.regs (Hw.dsrvV cal) 1 := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set, hsv]
+  have hssrv : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gssrv g) 2 = σ.regs (Hw.dsrv cal) 2 := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set, hsg]
+  have hdepth : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gdepth g) 3 = (Hw.callDepth d).eval σ := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set]
+  have hdon : ((callActivateChosenA d g).run σ acc).regs
+      (Hw.gdon g) 32 = σ.regs (Hw.dmaxdon d) 32 := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set]
+    rfl
+  unfold Hw.absGate
+  rw [hcfg1, hcfg2, hactV]
+  simp only [if_pos (show (1#1 : BitVec 1) = 1 from rfl)]
+  rw [hcaller, hcallerRd, hspc,
+    hssrvV, hssrv, hdepth, hdon]
+  simp only [hsaves]
+  simp [Hw.abs, Hw.absDom]
+
 end Machines.Lnp64u.Theorems.RMC
