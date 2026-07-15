@@ -666,6 +666,209 @@ theorem absDom_reparent_installA_selected (σ acc : Loom.Hw.St)
     rw [reparentA_frame_width σ inst oldE newE (Hw.dmaxdon c) 32 (by decide)]
     rfl
 
+/-- Selected installation, reparenting, and source clearing implement the
+structural prefix of a capability transfer. The hypotheses expose exactly
+the sampled-state facts needed by `clearSlotA`; gate-call and gate-return
+derive them from their successful transfer checks. -/
+theorem absDom_reparent_install_clear_selected (σ acc : Loom.Hw.St)
+    (T : DomainId) (nsE : Expr 4) (kindE : Expr 32)
+    (linVE : Expr 1) (nlE : Expr 4) (parE oldE newE : Expr 14)
+    (NS : Slot) (kind : CapKind)
+    (D : DomainId) (sourceSlotE : Expr 4)
+    (sourceLinVE : Expr 1) (sourceLinE : Expr 4) (S : Slot)
+    (hns : nsE.eval σ = BitVec.ofNat 4 NS.val)
+    (hkind : kindE.eval σ = Hw.encKind kind)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hfree : linVE.eval σ = 1#1 →
+      σ.regs (Hw.dcellV T (finOfBv (by decide) (nlE.eval σ))) 1 ≠ 1#1)
+    (hparent : linVE.eval σ = 1#1 →
+      Hw.decRef (parE.eval σ) ≠ Hw.decRef (oldE.eval σ))
+    (hsourceSlot : sourceSlotE.eval σ = BitVec.ofNat 4 S.val)
+    (hgen : acc.regs (Hw.dgen D S) 8 = σ.regs (Hw.dgen D S) 8)
+    (hremoved : removedCell
+      ((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))) D S =
+      if sourceLinVE.eval σ = 1#1 then
+        some (finOfBv (by decide) (sourceLinE.eval σ)) else none)
+    (c : DomainId) :
+    Hw.absDom ((Hw.clearSlotA D sourceSlotE sourceLinVE sourceLinE).run σ
+      ((Hw.reparentA oldE newE).run σ
+        ((Hw.installA T nsE kindE linVE nlE parE).run σ acc))) c =
+      ((((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))).clearSlot D S).doms c) := by
+  let inst := (Hw.installA T nsE kindE linVE nlE parE).run σ acc
+  let repar := (Hw.reparentA oldE newE).run σ inst
+  let τr := (installTransferred (Hw.abs acc) T NS kind
+    (if linVE.eval σ = 1#1 then
+      some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+    else none)).reparent (Hw.decRef (oldE.eval σ))
+      (Hw.decRef (newE.eval σ))
+  have hdoms : (Hw.abs repar).doms = τr.doms := by
+    funext c'
+    exact absDom_reparent_installA_selected σ acc T nsE kindE linVE nlE
+      parE oldE newE NS kind hns hkind hV hP hfree hparent c'
+  have hgenInst : inst.regs (Hw.dgen D S) 8 = σ.regs (Hw.dgen D S) 8 := by
+    have hframe : inst.regs (Hw.dgen D S) 8 =
+        acc.regs (Hw.dgen D S) 8 := by
+      apply installA_selected_frame σ acc T nsE kindE linVE nlE parE NS
+        (Hw.dgen D S, 8) hns <;> simp
+    exact hframe.trans hgen
+  have hgenRepar : repar.regs (Hw.dgen D S) 8 =
+      σ.regs (Hw.dgen D S) 8 := by
+    exact (reparentA_frame_width σ inst oldE newE (Hw.dgen D S) 8
+      (by decide)).trans hgenInst
+  have hremovedRepar : removedCell (Hw.abs repar) D S =
+      if sourceLinVE.eval σ = 1#1 then
+        some (finOfBv (by decide) (sourceLinE.eval σ)) else none := by
+    unfold removedCell
+    rw [congrFun hdoms D]
+    exact hremoved
+  rw [show (Hw.clearSlotA D sourceSlotE sourceLinVE sourceLinE).run σ
+      ((Hw.reparentA oldE newE).run σ
+        ((Hw.installA T nsE kindE linVE nlE parE).run σ acc)) =
+      (Hw.clearSlotA D sourceSlotE sourceLinVE sourceLinE).run σ repar from rfl]
+  rw [absDom_clearSlotA σ repar D S sourceSlotE sourceLinVE sourceLinE
+    hsourceSlot hgenRepar hremovedRepar c]
+  unfold MachineState.clearSlot MachineState.setDom
+  rw [hdoms]
+
+/-! ## Region-sweep composition -/
+
+/-- A hardware region sweep implements the abstract liveness sweep once its
+predicate is known to recognize exactly the decoded dead backings. This
+bridge is deliberately independent of gate-call/return so both arms can
+share the structural proof and supply only their transfer-liveness fact. -/
+theorem absDom_sweepRegionsA_of_doms (σ acc : Loom.Hw.St)
+    (killed : Expr 2 → Expr 4 → Expr 1) (τ : MachineState)
+    (hdoms : (Hw.abs acc).doms = τ.doms)
+    (hvalid : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hkill : ∀ c : DomainId, ∀ r : RegionId,
+      (killed
+        (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+        (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ = 1#1 ↔
+      τ.liveRef (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing = false)
+    (c : DomainId) :
+    Hw.absDom ((Hw.sweepRegionsA killed).run σ acc) c =
+      (τ.sweepRegions.doms c) := by
+  let swept := (Hw.sweepRegionsA killed).run σ acc
+  unfold MachineState.sweepRegions
+  dsimp only
+  rw [← congrFun hdoms c]
+  apply domainState_ext
+  · funext rr
+    change swept.regs (Hw.dreg c rr) 32 = _
+    rw [sweepRegionsA_frame_width σ acc killed (Hw.dreg c rr) 32
+      (by decide)]
+    rfl
+  · change swept.regs (Hw.dpc c) 12 = _
+    rw [sweepRegionsA_frame_width σ acc killed (Hw.dpc c) 12 (by decide)]
+    rfl
+  · funext s
+    change (if swept.regs (Hw.dcapV c s) 1 = 1#1 then
+      some (⟨Hw.decKind (swept.regs (Hw.dcapKind c s) 32),
+        if swept.regs (Hw.dcapLinV c s) 1 = 1#1 then
+          some (finOfBv (by decide) (swept.regs (Hw.dcapLin c s) 4))
+        else none⟩ : CapEntry) else none) = _
+    rw [sweepRegionsA_frame σ acc killed (Hw.dcapV c s) 1
+        (fun c' r' => dcapV_ne_drgnV c c' s r'),
+      sweepRegionsA_frame_width σ acc killed (Hw.dcapKind c s) 32
+        (by decide),
+      sweepRegionsA_frame σ acc killed (Hw.dcapLinV c s) 1
+        (fun c' r' => dcapLinV_ne_drgnV c c' s r'),
+      sweepRegionsA_frame_width σ acc killed (Hw.dcapLin c s) 4
+        (by decide)]
+    rfl
+  · funext s
+    change swept.regs (Hw.dgen c s) 8 = _
+    rw [sweepRegionsA_frame_width σ acc killed (Hw.dgen c s) 8
+      (by decide)]
+    rfl
+  · funext l
+    change (if swept.regs (Hw.dcellV c l) 1 = 1#1 then
+      some (LineageCell.mk (Hw.decRef (swept.regs (Hw.dcellPar c l) 14)))
+      else none) = _
+    rw [sweepRegionsA_frame σ acc killed (Hw.dcellV c l) 1
+        (fun c' r' => dcellV_ne_drgnV c c' l r'),
+      sweepRegionsA_frame_width σ acc killed (Hw.dcellPar c l) 14
+        (by decide)]
+    rfl
+  · funext r
+    change (if swept.regs (Hw.drgnV c r) 1 = 1#1 then
+      some (Hw.decRegion (swept.regs (Hw.drgn c r) 42)) else none) =
+      match (if acc.regs (Hw.drgnV c r) 1 = 1#1 then
+        some (Hw.decRegion (acc.regs (Hw.drgn c r) 42)) else none) with
+      | some rg => if τ.liveRef rg.backing then some rg else none
+      | none => none
+    rw [sweepRegionsA_rgnV σ acc killed c r,
+      sweepRegionsA_rgn σ acc killed c r]
+    change (if (if
+          ((Expr.and (.reg 1 (Hw.drgnV c r))
+            (killed
+              (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+              (Hw.field (.reg 42 (Hw.drgn c r)) 36 4))).eval σ = 1#1)
+        then 0#1 else acc.regs (Hw.drgnV c r) 1) = 1#1 then
+      some (Hw.decRegion (acc.regs (Hw.drgn c r) 42)) else none) =
+      match (if acc.regs (Hw.drgnV c r) 1 = 1#1 then
+        some (Hw.decRegion (acc.regs (Hw.drgn c r) 42)) else none) with
+      | some rg => if τ.liveRef rg.backing then some rg else none
+      | none => none
+    rw [hvalid c r]
+    by_cases hv : σ.regs (Hw.drgnV c r) 1 = 1#1
+    · by_cases hlive : τ.liveRef
+          (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing = true
+      · have hkill0 : (killed
+            (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+            (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ ≠ 1#1 := by
+          intro hk
+          have := (hkill c r).mp hk
+          simp [hlive] at this
+        simp [Expr.eval, hv, hlive]
+        intro hand
+        exact hkill0 ((bv1_and_eq_one _ _).mp hand).2
+      · have hlive0 : τ.liveRef
+            (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing = false := by
+          exact Bool.eq_false_of_not_eq_true hlive
+        have hkill1 : (killed
+            (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+            (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ = 1#1 :=
+          (hkill c r).mpr hlive0
+        simp [Expr.eval, hv, hkill1, hlive0]
+    · have hv0 : σ.regs (Hw.drgnV c r) 1 = 0#1 := bv1_ne_one.mp hv
+      simp [Expr.eval, hv0]
+  · change Hw.decRun (swept.regs (Hw.drun c) 2)
+      (swept.regs (Hw.drunG c) 2) = _
+    rw [sweepRegionsA_frame_width σ acc killed (Hw.drun c) 2 (by decide),
+      sweepRegionsA_frame_width σ acc killed (Hw.drunG c) 2 (by decide)]
+    rfl
+  · change (if swept.regs (Hw.dsrvV c) 1 = 1#1 then
+      some (finOfBv (by decide) (swept.regs (Hw.dsrv c) 2)) else none) = _
+    rw [sweepRegionsA_frame σ acc killed (Hw.dsrvV c) 1
+        (fun c' r' => dsrvV_ne_drgnV c c' r'),
+      sweepRegionsA_frame_width σ acc killed (Hw.dsrv c) 2 (by decide)]
+    rfl
+  · change swept.regs (Hw.dcause c) 32 = _
+    rw [sweepRegionsA_frame_width σ acc killed (Hw.dcause c) 32
+      (by decide)]
+    rfl
+  · change (swept.regs (Hw.dbudget c) 32).toNat = _
+    rw [sweepRegionsA_frame_width σ acc killed (Hw.dbudget c) 32
+      (by decide)]
+    rfl
+  · change (swept.regs (Hw.dmaxdon c) 32).toNat = _
+    rw [sweepRegionsA_frame_width σ acc killed (Hw.dmaxdon c) 32
+      (by decide)]
+    rfl
+
 /-- Pre-adjusting the moved cell's parent is equivalent, on the domain map,
 to letting the abstract reparent pass adjust it. This is the semantic reason
 for the parent mux inside `Hw.transferA`. -/
