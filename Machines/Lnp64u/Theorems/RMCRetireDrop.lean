@@ -2359,6 +2359,56 @@ theorem dropKilled_ref_eval (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
   rw [dropKilled_eval σ E S hslot]
   rfl
 
+/-! The following predicate-generic variants are shared by capability drop
+and the optional transfer in both gate operations. -/
+
+/-- Equality with an arbitrary source-domain/source-slot expression. -/
+theorem slotKilled_eval (σ : Loom.Hw.St) (d : DomainId)
+    (slotE : Expr 4) (S : Slot)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (dm : Expr 2) (sl : Expr 4) :
+    ((Expr.and (.eq dm (Hw.dLit d)) (.eq sl slotE)).eval σ = 1#1) ↔
+      finOfBv (by decide) (dm.eval σ) = d ∧
+      finOfBv (by decide) (sl.eval σ) = S := by
+  change ((if dm.eval σ = (Hw.dLit d).eval σ then 1#1 else 0#1) &&&
+      (if sl.eval σ = slotE.eval σ then 1#1 else 0#1) = 1#1) ↔ _
+  rw [bv1_and_eq_one, hslot]
+  have ite_one_iff (p : Prop) [Decidable p] :
+      ((if p then 1#1 else 0#1) = 1#1) ↔ p := by
+    by_cases hp : p <;> simp [hp]
+  rw [ite_one_iff, ite_one_iff]
+  exact and_congr (bv2_lit_iff _ d) (bv4_slot_iff _ S)
+
+/-- Specialization of `slotKilled_eval` to a packed capability reference. -/
+theorem slotKilled_ref_eval (σ : Loom.Hw.St) (d : DomainId)
+    (slotE : Expr 4) (S : Slot)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val) (refE : Expr 14) :
+    ((Expr.and
+        (.eq (Hw.field refE 12 2) (Hw.dLit d))
+        (.eq (Hw.field refE 8 4) slotE)).eval σ = 1#1) ↔
+      (Hw.decRef (refE.eval σ)).dom = d ∧
+      (Hw.decRef (refE.eval σ)).slot = S := by
+  rw [slotKilled_eval σ d slotE S hslot]
+  rfl
+
+/-- A reference outside the selected source slot is silent in the
+specialized global kill tree. -/
+theorem killedByCoreE_transfer_ref_zero (σ : Loom.Hw.St) (d : DomainId)
+    (slotE : Expr 4) (S : Slot)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit d)) (.eq sl slotE)).eval σ)
+    (refE : Expr 14)
+    (hout : ¬((Hw.decRef (refE.eval σ)).dom = d ∧
+      (Hw.decRef (refE.eval σ)).slot = S)) :
+    (Hw.killedByCoreE (Hw.field refE 12 2)
+      (Hw.field refE 8 4)).eval σ = 0#1 := by
+  rw [hkills]
+  apply bv1_ne_one.mp
+  intro h
+  exact hout ((slotKilled_ref_eval σ d slotE S hslot refE).mp h)
+
 /-- A reference outside the dropped slot is silent in the successful
 drop's global kill tree.  This is the endpoint-local hypothesis needed by
 the active-job Mover bridge. -/
@@ -3010,6 +3060,49 @@ theorem movKilledE_drop_iff (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
   · have hv0 : σ.regs "mov_v" 1 = 0#1 := bv1_ne_one.mp hv
     simp [absMover_none σ hv, hv0]
 
+/-- Predicate-generic Mover abort expression for one selected source slot. -/
+theorem movKilledE_transfer_eval (σ : Loom.Hw.St) (d : DomainId)
+    (slotE : Expr 4)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit d)) (.eq sl slotE)).eval σ) :
+    (Hw.movKilledE (fun dm sl => Hw.killedByCoreE dm sl)).eval σ =
+      σ.regs "mov_v" 1 &&&
+        ((Expr.and (.eq Hw.movSrcDom (Hw.dLit d))
+            (.eq Hw.movSrcSlot slotE)).eval σ |||
+         (Expr.and (.eq Hw.movDstDom (Hw.dLit d))
+            (.eq Hw.movDstSlot slotE)).eval σ) := by
+  unfold Hw.movKilledE
+  change σ.regs "mov_v" 1 &&&
+      ((Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot).eval σ |||
+       (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot).eval σ) = _
+  rw [hkills, hkills]
+
+/-- The generic abort guard fires exactly when an active decoded job has an
+endpoint in the selected source slot. -/
+theorem movKilledE_transfer_iff (σ : Loom.Hw.St) (d : DomainId)
+    (slotE : Expr 4) (S : Slot)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit d)) (.eq sl slotE)).eval σ) :
+    ((Hw.movKilledE (fun dm sl => Hw.killedByCoreE dm sl)).eval σ = 1#1) ↔
+      match Hw.absMover σ with
+      | none => False
+      | some job =>
+          (job.src.dom = d ∧ job.src.slot = S) ∨
+          (job.dst.dom = d ∧ job.dst.slot = S) := by
+  rw [movKilledE_transfer_eval σ d slotE hkills]
+  by_cases hv : σ.regs "mov_v" 1 = 1#1
+  · rw [absMover_some σ hv, bv1_and_eq_one, bv1_or_eq_one]
+    simp only [Hw.movSrcDom, Hw.movSrcSlot, Hw.movDstDom, Hw.movDstSlot]
+    rw [slotKilled_ref_eval σ d slotE S hslot (.reg 14 "mov_src"),
+      slotKilled_ref_eval σ d slotE S hslot (.reg 14 "mov_dst")]
+    simp [hv]
+    rfl
+  · have hv0 : σ.regs "mov_v" 1 = 0#1 := bv1_ne_one.mp hv
+    simp [absMover_none σ hv, hv0]
+
 /-- With no same-cycle `move`, every post-job mux falls back to its current
 register input. -/
 theorem postJ_noNew {w : Nat} (σ : Loom.Hw.St)
@@ -3138,14 +3231,15 @@ theorem moverAct_mem_killed (σ acc : Loom.Hw.St)
   simp only [Hw.moverAct, Act.run]
   rw [if_neg (by rw [hjob0]; decide)]
 
-/-- Kill-aware Mover-field bridge for a successful drop. A pre-existing job
-is either absent, killed at one endpoint, or survives with both endpoints
-outside the dropped slot. -/
-theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
-    (E : DomainId) (S : Slot)
-    (hslot : (Hw.dropSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+/-- Kill-aware Mover-field bridge for an operation that transfers or clears
+one source slot. A pre-existing job is either absent, killed at one endpoint,
+or survives with both endpoints outside that slot. -/
+theorem absMover_moverAct_transfer (σ acc : Loom.Hw.St) (τ : MachineState)
+    (E : DomainId) (slotE : Expr 4) (S : Slot)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
-      (Hw.killedByCoreE dm sl).eval σ = (Hw.dropKilled E dm sl).eval σ)
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
     (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
     (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
       Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
@@ -3172,7 +3266,7 @@ theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
         (job.dst.dom = E ∧ job.dst.slot = S)
     · have hguard :
           (Hw.movKilledE (fun dm sl => Hw.killedByCoreE dm sl)).eval σ =
-            1#1 := (movKilledE_drop_iff σ E S hslot hkills).mpr (by
+            1#1 := (movKilledE_transfer_iff σ E slotE S hslot hkills).mpr (by
           rw [habs]
           exact hk)
       have hτ : τ.mover = none := by
@@ -3185,7 +3279,7 @@ theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
             0#1 := bv1_ne_one.mp (by
           intro h
           apply hk
-          have hh := (movKilledE_drop_iff σ E S hslot hkills).mp h
+          have hh := (movKilledE_transfer_iff σ E slotE S hslot hkills).mp h
           simpa [habs] using hh)
       have hnewAny := newJobAny_zero σ hnew
       have hjobV : (Expr.or
@@ -3204,7 +3298,7 @@ theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
           (Hw.killedByCoreE (Hw.field e 12 2)
             (Hw.field e 8 4)).eval σ = 0#1 := by
         intro refE href
-        apply killedByCoreE_drop_ref_zero σ E S hslot hkills refE
+        apply killedByCoreE_transfer_ref_zero σ E slotE S hslot hkills refE
         intro hout
         apply hk
         left
@@ -3213,7 +3307,7 @@ theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
           (Hw.killedByCoreE (Hw.field e 12 2)
             (Hw.field e 8 4)).eval σ = 0#1 := by
         intro refE href
-        apply killedByCoreE_drop_ref_zero σ E S hslot hkills refE
+        apply killedByCoreE_transfer_ref_zero σ E slotE S hslot hkills refE
         intro hout
         apply hk
         right
@@ -3247,14 +3341,40 @@ theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
     rw [absMover_moverAct_nojob σ acc hnew hv0]
     simp [Machines.Lnp64u.moverPhase, hτ]
 
-/-- Memory-face sibling of `absMover_moverAct_drop`. The killed case's
-stale-status write is already present in `τ.mem`; `moverAct` itself is quiet
-there, while a surviving job takes the ordinary active-job bridge. -/
-theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
+/-- `cap_drop` specialization of the shared one-source-slot Mover bridge. -/
+theorem absMover_moverAct_drop (σ acc : Loom.Hw.St) (τ : MachineState)
     (E : DomainId) (S : Slot)
     (hslot : (Hw.dropSel E).slot.eval σ = BitVec.ofNat 4 S.val)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
       (Hw.killedByCoreE dm sl).eval σ = (Hw.dropKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
+      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
+        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hjob : τ.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job) :
+    Hw.absMover (Hw.moverAct.run σ acc) = (moverPhase τ).mover := by
+  apply absMover_moverAct_transfer σ acc τ E (Hw.dropSel E).slot S hslot
+  · intro dm sl
+    simpa [Hw.dropKilled] using hkills dm sl
+  · exact hnew
+  · exact hkind
+  · exact hjob
+
+/-- Memory-face sibling of `absMover_moverAct_transfer`. The killed case's
+stale-status write is already present in `τ.mem`; `moverAct` itself is quiet
+there, while a surviving job takes the ordinary active-job bridge. -/
+theorem moverAct_mem_transfer (σ acc : Loom.Hw.St) (τ : MachineState)
+    (E : DomainId) (slotE : Expr 4) (S : Slot)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
     (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
     (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
       Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
@@ -3305,7 +3425,7 @@ theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
         (job.dst.dom = E ∧ job.dst.slot = S)
     · have hguard :
           (Hw.movKilledE (fun dm sl => Hw.killedByCoreE dm sl)).eval σ =
-            1#1 := (movKilledE_drop_iff σ E S hslot hkills).mpr (by
+            1#1 := (movKilledE_transfer_iff σ E slotE S hslot hkills).mpr (by
           rw [habs]
           exact hk)
       have hτ : τ.mover = none := by
@@ -3318,7 +3438,7 @@ theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
             0#1 := bv1_ne_one.mp (by
           intro h
           apply hk
-          have hh := (movKilledE_drop_iff σ E S hslot hkills).mp h
+          have hh := (movKilledE_transfer_iff σ E slotE S hslot hkills).mp h
           simpa [habs] using hh)
       have hnewAny := newJobAny_zero σ hnew
       have hjobV : (Expr.or
@@ -3337,7 +3457,7 @@ theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
           (Hw.killedByCoreE (Hw.field e 12 2)
             (Hw.field e 8 4)).eval σ = 0#1 := by
         intro refE href
-        apply killedByCoreE_drop_ref_zero σ E S hslot hkills refE
+        apply killedByCoreE_transfer_ref_zero σ E slotE S hslot hkills refE
         intro hout
         apply hk
         left
@@ -3346,7 +3466,7 @@ theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
           (Hw.killedByCoreE (Hw.field e 12 2)
             (Hw.field e 8 4)).eval σ = 0#1 := by
         intro refE href
-        apply killedByCoreE_drop_ref_zero σ E S hslot hkills refE
+        apply killedByCoreE_transfer_ref_zero σ E slotE S hslot hkills refE
         intro hout
         apply hk
         right
@@ -3379,6 +3499,59 @@ theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
     have hτ : τ.mover = none := by rw [hjob, habs]
     rw [moverAct_mem_nojob σ acc hnew hv0 a, hmemτ a]
     simp [Machines.Lnp64u.moverPhase, hτ]
+
+/-- `cap_drop` specialization of the shared one-source-slot memory bridge. -/
+theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
+    (E : DomainId) (S : Slot)
+    (hslot : (Hw.dropSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.dropKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
+      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
+        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hjob : τ.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job)
+    (hauthτ : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmemτ : ∀ b : Addr, acc.mems "mem" b.toNat 32 = τ.mem b)
+    (hswτ : ∀ job, Hw.absMover σ = some job →
+      ¬((job.src.dom = E ∧ job.src.slot = S) ∨
+        (job.dst.dom = E ∧ job.dst.slot = S)) →
+      ∀ sc : Expr 12, Expr.eval σ
+        (((List.finRange numDomains).foldr
+          (fun d acc' =>
+            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+                Hw.domCoversE d
+                  (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                  ⟨false, true, false⟩,
+                .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
+              (Hw.readReg d Hw.rs2E) acc')
+          (.memRead 32 "mem" sc))) = τ.mem (sc.eval σ))
+    (a : Addr) :
+    (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 =
+      (moverPhase τ).mem a := by
+  apply moverAct_mem_transfer σ acc τ E (Hw.dropSel E).slot S hslot
+  · intro dm sl
+    simpa [Hw.dropKilled] using hkills dm sl
+  · exact hnew
+  · exact hkind
+  · exact hjob
+  · exact hauthτ
+  · exact hmemτ
+  · exact hswτ
+  · exact a
 
 /-! ## Kill-aware retirement assembly -/
 
