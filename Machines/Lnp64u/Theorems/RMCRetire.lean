@@ -233,6 +233,40 @@ theorem retireFor_run_none (σ acc : Loom.Hw.St) (e : DomainId)
       = (Hw.haltFault e .illegalInstruction).run σ acc :=
   opFold_run_none σ acc _ (Hw.opCircs e) hnone
 
+/-! ## Generic response-ladder selection -/
+
+/-- If every failure predicate is false, an errno/fault ladder runs its
+successful payload. -/
+theorem ladder_run_all_pass (σ acc : Loom.Hw.St) (d : DomainId)
+    (cs : List Hw.Check) (ok : Act)
+    (hpass : ∀ c ∈ cs, c.1.eval σ ≠ 1#1) :
+    (Hw.ladder d cs ok).run σ acc = ok.run σ acc := by
+  induction cs with
+  | nil => rfl
+  | cons c t ih =>
+      change (if c.1.eval σ = 1#1 then _ else
+        (Hw.ladder d t ok).run σ acc) = _
+      rw [if_neg (hpass c (List.mem_cons_self ..))]
+      exact ih (fun x hx => hpass x (List.mem_cons_of_mem c hx))
+
+/-- If a prefix passes and the next predicate fails, the ladder runs that
+predicate's response, independently of the remaining suffix. -/
+theorem ladder_run_first_failure (σ acc : Loom.Hw.St) (d : DomainId)
+    (pre post : List Hw.Check) (c : Expr 1) (r : Hw.Resp) (ok : Act)
+    (hpre : ∀ x ∈ pre, x.1.eval σ ≠ 1#1)
+    (hfail : c.eval σ = 1#1) :
+    (Hw.ladder d (pre ++ (c, r) :: post) ok).run σ acc =
+      (Hw.respA d r).run σ acc := by
+  induction pre with
+  | nil =>
+      change (if c.eval σ = 1#1 then _ else _) = _
+      rw [if_pos hfail]
+  | cons x t ih =>
+      change (if x.1.eval σ = 1#1 then _ else
+        (Hw.ladder d (t ++ (c, r) :: post) ok).run σ acc) = _
+      rw [if_neg (hpre x (List.mem_cons_self ..))]
+      exact ih (fun y hy => hpre y (List.mem_cons_of_mem x hy))
+
 /-! ## Spec-side unfolding of the retirement -/
 
 /-- An in-flight instruction on its last cycle retires. -/
