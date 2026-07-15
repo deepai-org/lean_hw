@@ -288,43 +288,91 @@ successful call payload advances PC after its optional transfer. -/
 theorem transferStructural_setPc (τ : MachineState) (d T : DomainId)
     (NS : Slot) (kind : CapKind)
     (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
-    (D : DomainId) (S : Slot) :
+    (S : Slot) (hne : d ≠ T) :
     transferStructural
         (τ.setDom d fun ds => { ds with pc := ds.pc + 1 })
-        T NS kind moved oldRef newRef D S =
-      (transferStructural τ T NS kind moved oldRef newRef D S).setDom d
+        T NS kind moved oldRef newRef d S =
+      (transferStructural τ T NS kind moved oldRef newRef d S).setDom d
         (fun ds => { ds with pc := ds.pc + 1 }) := by
   apply machineState_ext'
   · rfl
   · rfl
   · funext x
-    by_cases hTd : T = d
-    · subst T
-      by_cases hxd : x = d
+    have hTd : T ≠ d := Ne.symm hne
+    by_cases hxd : x = d
+    · subst x
+      apply domainState_ext' <;>
+        simp [transferStructural, installTransferred,
+          MachineState.setDom, Loom.Fun.update, hne, hTd]
+    · by_cases hxT : x = T
       · subst x
         apply domainState_ext' <;>
           simp [transferStructural, installTransferred,
-            MachineState.setDom, Loom.Fun.update]
+            MachineState.setDom, Loom.Fun.update, hne, hTd, hxd]
       · apply domainState_ext' <;>
           simp [transferStructural, installTransferred,
-            MachineState.setDom, Loom.Fun.update, hxd]
-    · by_cases hxd : x = d
-      · subst x
-        have hdT : d ≠ T := Ne.symm hTd
-        apply domainState_ext' <;>
-          simp [transferStructural, installTransferred,
-            MachineState.setDom, Loom.Fun.update, hTd, hdT]
-      · by_cases hxT : x = T
-        · subst x
-          apply domainState_ext' <;>
-            simp [transferStructural, installTransferred,
-              MachineState.setDom, Loom.Fun.update, hTd, hxd]
-        · apply domainState_ext' <;>
-            simp [transferStructural, installTransferred,
-              MachineState.setDom, Loom.Fun.update, hTd, hxd, hxT]
+            MachineState.setDom, Loom.Fun.update, hne, hTd, hxd, hxT]
   · rfl
   · rfl
   · rfl
+
+/-- The Mover sweep also commutes with a PC-only domain update: its guards
+observe only capability liveness and region authority, and its effects touch
+only the Mover field and memory. -/
+theorem sweepMover_setPc (τ : MachineState) (d : DomainId) :
+    (τ.setDom d fun ds => { ds with pc := ds.pc + 1 }).sweepMover =
+      τ.sweepMover.setDom d (fun ds => { ds with pc := ds.pc + 1 }) := by
+  let τp := τ.setDom d fun ds => { ds with pc := ds.pc + 1 }
+  have hlive : ∀ r : CapRef, τp.liveRef r = τ.liveRef r := by
+    intro r
+    unfold τp MachineState.liveRef DomainState.liveCap MachineState.setDom
+    by_cases hr : r.dom = d
+    · subst r.dom
+      simp [Loom.Fun.update]
+    · simp [Loom.Fun.update, hr]
+  have hcover : ∀ owner a need,
+      τp.domCovers owner a need = τ.domCovers owner a need := by
+    intro owner a need
+    unfold τp MachineState.domCovers MachineState.setDom
+    by_cases ho : owner = d
+    · subst owner
+      simp [Loom.Fun.update]
+    · simp [Loom.Fun.update, ho]
+  unfold MachineState.sweepMover
+  change (match τp.mover with
+    | none => τp
+    | some job => if τp.liveRef job.src && τp.liveRef job.dst then τp
+      else let τ' := { τp with mover := none }
+        if τ'.domCovers job.owner job.statusAddr
+            { r := false, w := true, x := false }
+        then τ'.write job.statusAddr Errno.staleHandle.toWord else τ') = _
+  have hmover : τp.mover = τ.mover := rfl
+  rw [hmover]
+  cases hjob : τ.mover with
+  | none => rfl
+  | some job =>
+      rw [hlive, hlive]
+      by_cases hboth : τ.liveRef job.src && τ.liveRef job.dst
+      · rw [if_pos hboth]
+        rfl
+      · rw [if_neg hboth]
+        have hcover' :
+            ({ τp with mover := none } : MachineState).domCovers
+                job.owner job.statusAddr ⟨false, true, false⟩ =
+              ({ τ with mover := none } : MachineState).domCovers
+                job.owner job.statusAddr ⟨false, true, false⟩ := by
+          simpa [MachineState.domCovers, τp, MachineState.setDom,
+            Loom.Fun.update] using
+            hcover job.owner job.statusAddr ⟨false, true, false⟩
+        rw [hcover']
+        by_cases ha : ({ τ with mover := none } : MachineState).domCovers
+            job.owner job.statusAddr ⟨false, true, false⟩
+        · rw [if_pos ha]
+          apply machineState_ext' <;>
+            simp [τp, MachineState.setDom, MachineState.write,
+              Loom.Fun.update]
+        · rw [if_neg ha]
+          rfl
 
 /-- On a valid pre-transfer region, the hardware source-slot predicate is
 equivalent to the backing becoming dead after install/reparent/clear. The

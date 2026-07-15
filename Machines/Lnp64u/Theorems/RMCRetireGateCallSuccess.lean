@@ -567,7 +567,7 @@ before transfer and its Mover sweep before the call tail; hardware performs
 the structural transfer first and advances PC in the tail.  Neither ordering
 difference is visible on domains or gates. -/
 theorem callAbstractSuccess_transfer_faces (m : Manifest) (σ : Loom.Hw.St)
-    (d cal T : DomainId) (g : GateId) (rd : RegId)
+    (d cal : DomainId) (g : GateId) (rd : RegId)
     (argHandle : Loom.Word32) (depth : Nat) (hne : d ≠ cal)
     (NS : Slot) (kind : CapKind)
     (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
@@ -576,9 +576,9 @@ theorem callAbstractSuccess_transfer_faces (m : Manifest) (σ : Loom.Hw.St)
       { refillPhase m (Hw.abs σ) with inflight := none }
     let prefixed := base.setDom d (fun ds => { ds with pc := ds.pc + 1 })
     let hwStruct :=
-      transferStructural base T NS kind moved oldRef newRef d S
+      transferStructural base cal NS kind moved oldRef newRef d S
     let specStruct :=
-      (transferStructural prefixed T NS kind moved oldRef newRef d S)
+      (transferStructural prefixed cal NS kind moved oldRef newRef d S)
         .sweepMover
     let specCall := callAbstractSuccessAt prefixed specStruct d cal g rd
       argHandle depth (specStruct.doms d).pc
@@ -590,13 +590,13 @@ theorem callAbstractSuccess_transfer_faces (m : Manifest) (σ : Loom.Hw.St)
   let base : MachineState :=
     { refillPhase m (Hw.abs σ) with inflight := none }
   let hwStruct :=
-    transferStructural base T NS kind moved oldRef newRef d S
+    transferStructural base cal NS kind moved oldRef newRef d S
   have hcomm : transferStructural
         (base.setDom d fun ds => { ds with pc := ds.pc + 1 })
-        T NS kind moved oldRef newRef d S =
+        cal NS kind moved oldRef newRef d S =
       hwStruct.setDom d (fun ds => { ds with pc := ds.pc + 1 }) := by
-    simpa [hwStruct] using transferStructural_setPc base d T NS kind moved
-      oldRef newRef d S
+    simpa [hwStruct] using transferStructural_setPc base d cal NS kind moved
+      oldRef newRef S hne
   constructor
   · intro x
     rw [hcomm]
