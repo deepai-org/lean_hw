@@ -521,4 +521,130 @@ theorem absDom_gateReturnRestoreA (σ acc : Loom.Hw.St)
   · rw [if_neg hx]
     exact absDom_gateReturnRestoreA_other σ acc d x hx
 
+/-! ## Caller resume abstraction -/
+
+/-- The resume stage changes exactly the selected caller's run state. -/
+theorem absDom_gateReturnResumeA (σ acc : Loom.Hw.St)
+    (d cl x : DomainId)
+    (hcl : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.retCl d).eval σ) = cl) :
+    Hw.absDom ((gateReturnResumeA d).run σ acc) x =
+      if x = cl then { Hw.absDom acc cl with run := .running }
+      else Hw.absDom acc x := by
+  rw [gateReturnResumeA_run_selected σ acc d cl hcl]
+  by_cases hx : x = cl
+  · subst x
+    rw [if_pos rfl]
+    have hsrvrun : Hw.dsrv cl ≠ Hw.drun cl := by
+      fin_cases cl <;> exact of_decide_eq_true rfl
+    fin_cases cl <;>
+      simp [Hw.absDom, Act.run, RegEnv.set, Expr.eval, Hw.decRun,
+        Hw.dreg, Hw.dpc, Hw.dcapV, Hw.dcapKind, Hw.dcapLinV, Hw.dcapLin,
+        Hw.dgen, Hw.dcellV, Hw.dcellPar, Hw.drgnV, Hw.drgn, Hw.drun,
+        Hw.drunG, Hw.dsrvV, Hw.dsrv, Hw.dcause, Hw.dbudget, Hw.dmaxdon,
+        hsrvrun] <;>
+      split <;> simp_all <;> rw [if_neg (by decide)]
+  · rw [if_neg hx]
+    apply absDom_congr
+    intro q hq
+    exact frame (by
+      intro hm
+      simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+      have hn : q.1 ≠ Hw.drun cl :=
+        (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.drun cl from by
+          fin_cases x <;> fin_cases cl <;>
+            first | exact absurd rfl hx | exact of_decide_eq_true rfl) q hq
+      exact hn hm.1) σ acc
+
+/-! ## Reply-register abstraction -/
+
+/-- A decoded hardware `writeReg` is exactly the architectural `setReg`,
+including the discarded `r0` case, and frames every other domain. -/
+private theorem absDom_writeReg_eval (σ acc : Loom.Hw.St)
+    (c x : DomainId) (rE : Expr 3) (vE : Expr 32)
+    (rd : RegId) (V : Loom.Word32)
+    (hrd : rd.val = (rE.eval σ).toNat) (hval : vE.eval σ = V) :
+    Hw.absDom ((Hw.writeReg c rE vE).run σ acc) x =
+      if x = c then (Hw.absDom acc c).setReg rd V
+      else Hw.absDom acc x := by
+  by_cases h0 : rd = (0 : RegId)
+  · rw [writeReg_run_of_zero σ acc c rE vE (by rw [← hrd, h0]; rfl)]
+    by_cases hx : x = c
+    · subst x
+      rw [if_pos rfl]
+      simp [DomainState.setReg, h0]
+    · rw [if_neg hx]
+  · rw [writeReg_run_of_nz σ acc c rE vE rd hrd
+      (fun hz => h0 (Fin.ext hz))]
+    by_cases hx : x = c
+    · subst x
+      rw [if_pos rfl]
+      have hquiet : ∀ q ∈ domQuietNames c,
+          ((Act.write 32 (Hw.dreg c rd) vE).run σ acc).regs q.1 q.2 =
+            acc.regs q.1 q.2 := by
+        intro q hq
+        exact frame (by
+          intro hm
+          simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+          have hn : q.1 ≠ Hw.dreg c rd :=
+            (show ∀ q ∈ domQuietNames c, q.1 ≠ Hw.dreg c rd from by
+              fin_cases c <;> fin_cases rd <;> exact of_decide_eq_true rfl) q hq
+          exact hn hm.1) σ acc
+      rw [absDom_regpc c hquiet]
+      apply domainState_ext'
+      · funext r
+        rw [setReg_regs, if_neg h0]
+        simp only [Act.run, RegEnv.set]
+        by_cases hr : r = rd
+        · rw [if_pos (by rw [hr]), if_pos hr, dif_pos trivial, hval]
+        · rw [if_neg (fun heq => hr (dreg_inj c r rd heq)), if_neg hr]
+          rfl
+      · rw [setReg_pc]
+        change ((Act.write 32 (Hw.dreg c rd) vE).run σ acc).regs
+          (Hw.dpc c) 12 = acc.regs (Hw.dpc c) 12
+        exact frame (show ((Hw.dpc c : String), (12 : Nat)) ∉
+          (Act.write 32 (Hw.dreg c rd) vE).regWrites from by
+            fin_cases c <;> fin_cases rd <;> exact of_decide_eq_true rfl) σ acc
+      · rw [setReg_caps]
+      · rw [setReg_slotGen]
+      · rw [setReg_lineage]
+      · rw [setReg_regions]
+      · rw [setReg_run]
+      · rw [setReg_serving]
+      · rw [setReg_cause]
+      · rw [setReg_budget]
+      · rw [setReg_maxDonation]
+    · rw [if_neg hx]
+      apply absDom_congr
+      intro q hq
+      exact frame (by
+        intro hm
+        simp only [Act.regWrites, List.mem_singleton, Prod.mk.injEq] at hm
+        have hn : q.1 ≠ Hw.dreg c rd :=
+          (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.dreg c rd from by
+            fin_cases x <;> fin_cases c <;> fin_cases rd <;>
+              first | exact absurd rfl hx | exact of_decide_eq_true rfl) q hq
+        exact hn hm.1) σ acc
+
+/-- The reply stage writes exactly the sampled reply destination in the
+selected caller domain. -/
+theorem absDom_gateReturnReplyA (σ acc : Loom.Hw.St)
+    (d cl x : DomainId) (gid : GateId) (act : Activation)
+    (reply : Loom.Word32)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hcl : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.retCl d).eval σ) = cl)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hreply : (gateReturnReplyE d).eval σ = reply) :
+    Hw.absDom ((gateReturnReplyA d).run σ acc) x =
+      if x = cl then (Hw.absDom acc cl).setReg act.callerRd reply
+      else Hw.absDom acc x := by
+  rw [gateReturnReplyA_run_selected σ acc d cl hcl]
+  apply absDom_writeReg_eval σ acc cl x
+  · rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+    rw [gateReturn_activation_decode σ gid act hact]
+    rfl
+  · exact hreply
+
 end Machines.Lnp64u.Theorems.RMC
