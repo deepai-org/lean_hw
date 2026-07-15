@@ -432,4 +432,135 @@ theorem square_retire_gateReturn_inactive (m : Manifest) (hwf : m.WF)
   · exact hfail
   · exact hspecF
 
+/-- Complete third ladder arm: a non-null stale reply handle returns
+`staleHandle` without applying the restoration tail. -/
+theorem square_retire_gateReturn_stale (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (gid : GateId) (act : Activation)
+    (hserv : ((Hw.abs σ).doms
+      (finOfBv (by decide) (σ.regs "if_dom" 2))).serving = some gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hstale : (Expr.and
+      (Hw.retNZ (finOfBv (by decide) (σ.regs "if_dom" 2)))
+      (Expr.not (Hw.retSel
+        (finOfBv (by decide) (σ.regs "if_dom" 2))).live)).eval σ = 1#1) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  let c : Ctx := { d := E, pc := (base.doms E).pc, op := operandsOf W }
+  let τ0 := base.setDom E fun ds => { ds with pc := ds.pc + 1 }
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (23#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W =
+      isa.find? (fun d => d.opcode == (23#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel σ E rfl
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := E, word := W,
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    simpa [E, W] using absInflight_some σ hifv
+  have hcore0 : corePhase m (refillPhase m (Hw.abs σ)) = retire base E W := by
+    rw [corePhase_retire m _ _ hfl
+      (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+  have hR : (Hw.retW E).eval σ =
+      ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    retW_eval σ hz E (operandsOf W).rs1 rfl
+  have hreg : (τ0.doms E).reg (operandsOf W).rs1 =
+      ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    specReg_bridge m σ E _
+  have hword : (τ0.doms c.d).reg c.op.rs1 = (Hw.retW E).eval σ := by
+    simp only [c]
+    rw [hreg, hR]
+  have hlogic : (Hw.retNZ E).eval σ = 1#1 ∧
+      (Hw.retSel E).live.eval σ = 0#1 := by
+    apply (by decide : ∀ a b : BitVec 1,
+      a &&& ~~~b = 1#1 → a = 1#1 ∧ b = 0#1)
+    simpa [E] using hstale
+  have hnz : (Hw.retW E).eval σ ≠ 0#32 :=
+    (retNZ_eval_iff σ E).mp hlogic.1
+  let S : Slot := finOfBv (by decide)
+    (((Hw.retW E).eval σ).extractLsb' 0 4)
+  have hraw : ¬(σ.regs (Hw.dcapV E S) 1 = 1#1 ∧
+      σ.regs (Hw.dgen E S) 8 = ((Hw.retW E).eval σ).extractLsb' 4 8 ∧
+      ((Hw.retW E).eval σ).extractLsb' 4 8 ≠ 0) := by
+    intro hr
+    have hsel := (capSel_live_eval σ E (Hw.retW E) S rfl).mpr hr
+    have : (Hw.retSel E).live.eval σ = 1#1 := by
+      simpa [Hw.retSel] using hsel
+    rw [hlogic.2] at this
+    contradiction
+  have hnone : (τ0.doms E).liveCap
+      (Handle.decode ((Hw.retW E).eval σ)).slot
+      (Handle.decode ((Hw.retW E).eval σ)).gen = none := by
+    rw [specLiveCap_bridge m σ E, abs_liveCap]
+    exact if_neg hraw
+  have htransfer : Machines.Lnp64u.Isa.transferByHandle c.d act.caller
+      ((τ0.doms c.d).reg c.op.rs1) τ0 = .err .staleHandle τ0 := by
+    rw [hword]
+    exact transferByHandle_stale τ0 E act.caller ((Hw.retW E).eval σ)
+      hnz hnone
+  have hserv0 : (τ0.doms c.d).serving = some gid := by
+    simp [τ0, c, base, MachineState.setDom, Loom.Fun.update,
+      refillPhase_serving, hserv]
+  have hact0 : (τ0.gates gid).act = some act := by
+    simp [τ0, base, MachineState.setDom, refillPhase_gates, hact]
+  have hexec : Machines.Lnp64u.Isa.Wip.gateReturnExec c τ0 =
+      .err .staleHandle τ0 :=
+    gateReturnExec_transferErr c τ0 gid act .staleHandle hserv0 hact0 htransfer
+  have hspec : corePhase m (refillPhase m (Hw.abs σ)) =
+      τ0.setDom E fun ds =>
+        ds.setReg (operandsOf W).rd Errno.staleHandle.toWord := by
+    rw [hcore0, retire_gateReturn_exec base E W hdec]
+    change (match Machines.Lnp64u.Isa.Wip.gateReturnExec c τ0 with
+      | .ok _ τ' => τ'
+      | .err er τ' => τ'.setDom E
+          (fun ds => ds.setReg (operandsOf W).rd er.toWord)
+      | .fault f => haltWith base E f) = _
+    rw [hexec]
+  have hgid := retGid_eval_selected σ E gid (by simpa [E] using hserv)
+  have hservV : σ.regs (Hw.dsrvV E) 1 = 1#1 := by
+    change (if σ.regs (Hw.dsrvV E) 1 = 1#1 then some _ else none) =
+      some gid at hserv
+    by_contra hv
+    rw [if_neg hv] at hserv
+    contradiction
+  have hactV : σ.regs (Hw.gactV gid) 1 = 1#1 := by
+    change (if σ.regs (Hw.gactV gid) 1 = 1#1 then some _ else none) =
+      some act at hact
+    by_contra hv
+    rw [if_neg hv] at hact
+    contradiction
+  let p0 : Hw.Check :=
+    (.not (.reg 1 (Hw.dsrvV E)), .fault .protocol)
+  let p1 : Hw.Check :=
+    (.not (Hw.muxFin (fun g => .reg 1 (Hw.gactV g)) (Hw.retGid E)),
+      .fault .protocol)
+  have hpre : ∀ x ∈ [p0, p1], x.1.eval σ ≠ 1#1 := by
+    intro x hx
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hx
+    rcases hx with hx | hx
+    · subst x
+      simp [p0, Expr.eval, hservV]
+    · subst x
+      have hactive : (Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+          (Hw.retGid E)).eval σ = 1#1 := by
+        rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+        exact hactV
+      simp [p1, Expr.eval, hactive]
+  apply square_retire_gateReturn_firstError m hwf hfit σ hsync hifv hcl E
+    rfl hifsel hifexcl hopc [p0, p1] (List.drop 3 (Hw.retChecks E))
+    (.and (Hw.retNZ E) (.not (Hw.retSel E).live)) .staleHandle
+  · rfl
+  · exact hpre
+  · simpa [E] using hstale
+  · simpa [τ0, W, base] using hspec
+
 end Machines.Lnp64u.Theorems.RMC
