@@ -1553,6 +1553,46 @@ theorem abs_callSuccessA (σ acc : Loom.Hw.St)
 
 /-! ## Successful specification execution -/
 
+/-- A missing live capability is the first gate-call failure and leaves the
+specification state unchanged. -/
+theorem gateCallExec_stale (c : Ctx) (τ : MachineState)
+    (hnone : (τ.doms c.d).liveCap
+      (Handle.decode ((τ.doms c.d).reg c.op.rs1)).slot
+      (Handle.decode ((τ.doms c.d).reg c.op.rs1)).gen = none) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .staleHandle τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, Machines.Lnp64u.Isa.capLive, SpecM.get,
+    hnone, SpecM.raise]
+
+/-- A live capability whose class bit disagrees with its handle is the
+second gate-call failure and likewise leaves the state unchanged. -/
+theorem gateCallExec_badClass (c : Ctx) (τ : MachineState) (e : CapEntry)
+    (hsome : (τ.doms c.d).liveCap
+      (Handle.decode ((τ.doms c.d).reg c.op.rs1)).slot
+      (Handle.decode ((τ.doms c.d).reg c.op.rs1)).gen = some e)
+    (hcls : (Handle.decode ((τ.doms c.d).reg c.op.rs1)).cls ≠ e.kind.cls) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .badCap τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, Machines.Lnp64u.Isa.capLive, SpecM.get,
+    hsome, SpecM.require]
+  rw [if_neg (by simpa using hcls)]
+  rfl
+
+/-- A class-correct memory capability cannot be called as a gate. -/
+theorem gateCallExec_memCap (c : Ctx) (τ : MachineState) (e : CapEntry)
+    (hsome : (τ.doms c.d).liveCap
+      (Handle.decode ((τ.doms c.d).reg c.op.rs1)).slot
+      (Handle.decode ((τ.doms c.d).reg c.op.rs1)).gen = some e)
+    (hcls : (Handle.decode ((τ.doms c.d).reg c.op.rs1)).cls = e.kind.cls)
+    (base : Addr) (len : BitVec 13) (perms : Perms)
+    (hkind : e.kind = .mem base len perms) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .badCap τ := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind, Machines.Lnp64u.Isa.capLive, SpecM.get,
+    hsome, SpecM.require]
+  rw [if_pos (by simpa using hcls)]
+  simp only [specM_pure, hkind, SpecM.raise]
+
 /-- The named specification gate-call body reduces to the same pure state
 transformer as `abs_callSuccessA` once all checks and the optional transfer
 have succeeded.  The frame hypotheses are exactly the non-structural fields
