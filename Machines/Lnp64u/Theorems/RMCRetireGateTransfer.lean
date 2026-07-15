@@ -824,58 +824,66 @@ private theorem transferChosenA_frame_quiet (σ acc : Loom.Hw.St)
     exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.drgnV c r from by
       fin_cases c <;> fin_cases r <;> decide +kernel) q hq
 
-/-- A structural transfer changes only the abstract domain map. All other
-faces of `Hw.abs`, including memory and the Mover/inflight records, are
-preserved exactly. -/
-theorem abs_transferChosenA_frame (σ : Loom.Hw.St)
+/-- Accumulator-general structural-transfer frame. A transfer changes only
+the abstract domain map; memory, gates, Mover, cycle, and in-flight state are
+inherited from the supplied accumulator. -/
+theorem abs_transferChosenA_frame_acc (σ acc : Loom.Hw.St)
     (D T : DomainId) (acs : Hw.CapSel) :
-    Hw.abs ((transferChosenA D T acs).run σ σ) =
-      { Hw.abs σ with
-        doms := fun c => Hw.absDom ((transferChosenA D T acs).run σ σ) c } := by
-  let out := (transferChosenA D T acs).run σ σ
+    Hw.abs ((transferChosenA D T acs).run σ acc) =
+      { Hw.abs acc with
+        doms := fun c => Hw.absDom ((transferChosenA D T acs).run σ acc) c } := by
+  let out := (transferChosenA D T acs).run σ acc
   apply machineState_ext
-  · exact transferChosenA_frame_quiet σ σ D T acs ("cycle", 32)
+  · exact transferChosenA_frame_quiet σ acc D T acs ("cycle", 32)
       (by simp [transferQuietNames])
   · funext a
     exact Loom.Hw.Compile.run_mems_notin "mem" (transferChosenA D T acs)
-      (of_decide_eq_true rfl) σ σ a.toNat 32
+      (of_decide_eq_true rfl) σ acc a.toNat 32
   · rfl
   · funext g
     apply absGate_congr
     intro q hq
-    apply transferChosenA_frame_quiet σ σ D T acs q
+    apply transferChosenA_frame_quiet σ acc D T acs q
     simp only [transferQuietNames, List.mem_append]
     right
     exact List.mem_flatMap.mpr ⟨g, List.mem_finRange g, hq⟩
-  · change Hw.absMover ((transferChosenA D T acs).run σ σ) = Hw.absMover σ
+  · change Hw.absMover ((transferChosenA D T acs).run σ acc) = Hw.absMover acc
     unfold Hw.absMover
-    rw [transferChosenA_frame_quiet σ σ D T acs ("mov_v", 1)
+    rw [transferChosenA_frame_quiet σ acc D T acs ("mov_v", 1)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("mov_owner", 2)
+      transferChosenA_frame_quiet σ acc D T acs ("mov_owner", 2)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("mov_src", 14)
+      transferChosenA_frame_quiet σ acc D T acs ("mov_src", 14)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("mov_dst", 14)
+      transferChosenA_frame_quiet σ acc D T acs ("mov_dst", 14)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("mov_srccur", 12)
+      transferChosenA_frame_quiet σ acc D T acs ("mov_srccur", 12)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("mov_dstcur", 12)
+      transferChosenA_frame_quiet σ acc D T acs ("mov_dstcur", 12)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("mov_rem", 13)
+      transferChosenA_frame_quiet σ acc D T acs ("mov_rem", 13)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("mov_status", 12)
+      transferChosenA_frame_quiet σ acc D T acs ("mov_status", 12)
         (by simp [transferQuietNames])]
-  · change Hw.absInflight ((transferChosenA D T acs).run σ σ) =
-      Hw.absInflight σ
+  · change Hw.absInflight ((transferChosenA D T acs).run σ acc) =
+      Hw.absInflight acc
     unfold Hw.absInflight
-    rw [transferChosenA_frame_quiet σ σ D T acs ("if_v", 1)
+    rw [transferChosenA_frame_quiet σ acc D T acs ("if_v", 1)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("if_dom", 2)
+      transferChosenA_frame_quiet σ acc D T acs ("if_dom", 2)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("if_word", 32)
+      transferChosenA_frame_quiet σ acc D T acs ("if_word", 32)
         (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ σ D T acs ("if_cl", 8)
+      transferChosenA_frame_quiet σ acc D T acs ("if_cl", 8)
         (by simp [transferQuietNames])]
+
+/-- Sampled-state specialization retained for existing callers. -/
+theorem abs_transferChosenA_frame (σ : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) :
+    Hw.abs ((transferChosenA D T acs).run σ σ) =
+      { Hw.abs σ with
+        doms := fun c => Hw.absDom ((transferChosenA D T acs).run σ σ) c } :=
+  abs_transferChosenA_frame_acc σ σ D T acs
 
 /-! ## Whole-state transfer abstraction -/
 
