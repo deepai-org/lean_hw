@@ -315,4 +315,47 @@ theorem square_retire_gateReturn_firstFault (m : Manifest) (hwf : m.WF)
   exact square_retire_fault_of m hwf hfit σ hsync hifv hcl hin hswz hmapz
     hunmapz hcoremem E hEval f hcoreF hspecF
 
+/-- Complete first ladder arm: a return outside any serving activation
+retires as a protocol fault. -/
+theorem square_retire_gateReturn_notServing (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (hnotServing : σ.regs (Hw.dsrvV
+      (finOfBv (by decide) (σ.regs "if_dom" 2))) 1 ≠ 1#1) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (23#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W =
+      isa.find? (fun d => d.opcode == (23#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel σ E rfl
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  have hservAbs : ((Hw.abs σ).doms E).serving = none := by
+    change (if σ.regs (Hw.dsrvV E) 1 = 1#1 then some _ else none) = none
+    rw [if_neg (by simpa [E] using hnotServing)]
+  have hservBase : (base.doms E).serving = none := by
+    simp [base, refillPhase_serving, hservAbs]
+  have hspecF : retire base E W = haltWith base E .protocol := by
+    rw [retire_gateReturn_exec base E W hdec]
+    dsimp only
+    rw [gateReturnExec_notServing]
+    simp [MachineState.setDom, Loom.Fun.update, hservBase]
+  have hfail : (Expr.not (.reg 1 (Hw.dsrvV E))).eval σ = 1#1 := by
+    exact (notE_eval _ σ).mpr
+      (bv1_ne_one.mp (by simpa [E] using hnotServing))
+  apply square_retire_gateReturn_firstFault m hwf hfit σ hsync hifv hcl E
+    rfl hifsel hifexcl hopc [] (Hw.retChecks E).tail
+    (.not (.reg 1 (Hw.dsrvV E))) .protocol
+  · rfl
+  · intro x hx
+    contradiction
+  · exact hfail
+  · exact hspecF
+
 end Machines.Lnp64u.Theorems.RMC
