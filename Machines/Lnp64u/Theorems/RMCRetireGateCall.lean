@@ -387,6 +387,33 @@ theorem callKilled_nonzero_eval (σ : Loom.Hw.St) (d : DomainId)
   change 1#1 &&& (_ &&& _) = _ &&& _
   exact (by decide : ∀ a b : BitVec 1, 1#1 &&& (a &&& b) = a &&& b) _ _
 
+/-- With a non-null argument, the call circuit's Mover guard fires exactly
+when an active job has an endpoint in the transferred source slot. -/
+theorem movKilledE_call_nonzero_iff (σ : Loom.Hw.St) (d : DomainId)
+    (S : Slot)
+    (hslot : (Hw.argSel d).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.argNZ d).eval σ = 1#1) :
+    ((Hw.movKilledE (Hw.callKilled d)).eval σ = 1#1) ↔
+      match Hw.absMover σ with
+      | none => False
+      | some job =>
+          (job.src.dom = d ∧ job.src.slot = S) ∨
+          (job.dst.dom = d ∧ job.dst.slot = S) := by
+  unfold Hw.movKilledE
+  by_cases hv : σ.regs "mov_v" 1 = 1#1
+  · rw [absMover_some σ hv, bv1_and_eq_one, bv1_or_eq_one]
+    simp only [Hw.movSrcDom, Hw.movSrcSlot, Hw.movDstDom, Hw.movDstSlot]
+    rw [callKilled_nonzero_eval σ d hnz,
+      callKilled_nonzero_eval σ d hnz,
+      slotKilled_ref_eval σ d (Hw.argSel d).slot S hslot
+        (.reg 14 "mov_src"),
+      slotKilled_ref_eval σ d (Hw.argSel d).slot S hslot
+        (.reg 14 "mov_dst")]
+    simp [hv]
+    rfl
+  · have hv0 : σ.regs "mov_v" 1 = 0#1 := bv1_ne_one.mp hv
+    simp [absMover_none σ hv, hv0]
+
 /-- A null argument gives the successful call an empty kill footprint. -/
 theorem callKilled_zero_eval (σ : Loom.Hw.St) (d : DomainId)
     (hz : (Hw.argNZ d).eval σ = 0#1) (dm : Expr 2) (sl : Expr 4) :

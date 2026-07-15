@@ -107,6 +107,76 @@ theorem coreAct_mem_gateCall_zero_arg (m : Manifest) (σ : Loom.Hw.St)
   rw [if_neg (by rw [hport.1, hmen]; decide)]
   exact refill_pres_mem m σ "mem" b.toNat 32
 
+/-- Successful non-null gate-call memory commit, factored through the shared
+sweeping-operation bridge.  The caller supplies the post-structural region
+authority and the exact target-memory shape; opcode selection and the
+call-specific endpoint guard are discharged here. -/
+theorem coreAct_mem_gateCall_success_nonzero (m : Manifest)
+    (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
+    (base target : MachineState)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
+    (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6)
+    (hslot : (Hw.argSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.argNZ E).eval σ = 1#1)
+    (hok : (Hw.callOkE E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hauthPost : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        base.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hbase : ∀ b : Addr, base.mem b = σ.mems "mem" b.toNat 32)
+    (htarget : ∀ b : Addr, target.mem b =
+      match Hw.absMover σ with
+      | none => base.mem b
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S) then
+            if base.domCovers job.owner job.statusAddr
+                { r := false, w := true, x := false } then
+              if b = job.statusAddr then Errno.staleHandle.toWord
+              else base.mem b
+            else base.mem b
+          else base.mem b)
+    (b : Addr) :
+    ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+      b.toNat 32 = target.mem b := by
+  have hport := retireMem_gateCall_sel σ E hifsel hifexcl hopc
+  apply coreAct_mem_sweep_success m σ (Hw.callOkE E) (Hw.callKilled E)
+    (Hw.callCirc E) E S base target hifv hcl hport
+  · rfl
+  · rfl
+  · rfl
+  · exact hok
+  · exact movKilledE_call_nonzero_iff σ E S hslot hnz
+  · intro job hjob
+    have hstatus := statusAuthE_post_eval σ (Hw.callKilled E) hkills
+      hmapz hunmapz
+    have hv : σ.regs "mov_v" 1 = 1#1 := by
+      by_contra hn
+      rw [absMover_none σ hn] at hjob
+      contradiction
+    have hcanon := Option.some.inj ((absMover_some σ hv).symm.trans hjob)
+    subst job
+    exact hstatus.trans (by
+      simpa using hauthPost (.reg 2 "mov_owner") (.reg 12 "mov_status"))
+  · exact hbase
+  · exact htarget
+  · exact b
+
 /-- Although the call itself succeeds, a null argument gives it an empty
 structural kill footprint, so the ordinary inert Mover assembly applies. -/
 theorem Inert.of_successful_call_zero (σ : Loom.Hw.St) (E : DomainId)
