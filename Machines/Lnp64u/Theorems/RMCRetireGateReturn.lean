@@ -74,19 +74,57 @@ theorem retire_gateReturn_exec (τ : MachineState) (E : DomainId)
 
 /-! ## Hardware dispatch and response ladder -/
 
+/-- Optional reply-capability transfer at the head of a successful return. -/
+def gateReturnTransferA (d : DomainId) : Act :=
+  .ite (Hw.retNZ d) (Hw.transferA d (Hw.retCl d) (Hw.retSel d)) .skip
+
+/-- Clear the activation bit of the dynamically selected serving gate. -/
+def gateReturnClearA (d : DomainId) : Act :=
+  Hw.seqAll ((List.finRange numGates).map fun g =>
+    .ite (.eq (Hw.retGid d) (Hw.gLit g))
+      (.write 1 (Hw.gactV g) (.lit 0)) .skip)
+
+/-- Restore the returning domain's register file, PC, and prior serving tag. -/
+def gateReturnRestoreA (d : DomainId) : Act :=
+  let gid := Hw.retGid d
+  Hw.seqAll
+    [ Hw.seqAll ((List.finRange numRegs).map fun r =>
+        .write 32 (Hw.dreg d r)
+          (Hw.muxFin (fun g => .reg 32 (Hw.gsreg g r)) gid)),
+      .write 12 (Hw.dpc d)
+        (Hw.muxFin (fun g => .reg 12 (Hw.gspc g)) gid),
+      .write 1 (Hw.dsrvV d)
+        (Hw.muxFin (fun g => .reg 1 (Hw.gssrvV g)) gid),
+      .write 2 (Hw.dsrv d)
+        (Hw.muxFin (fun g => .reg 2 (Hw.gssrv g)) gid) ]
+
+/-- Resume the caller selected from the active gate. -/
+def gateReturnResumeA (d : DomainId) : Act :=
+  Hw.seqAll ((List.finRange numDomains).map fun c =>
+    .ite (.eq (Hw.retCl d) (Hw.dLit c))
+      (.write 2 (Hw.drun c) (.lit 0)) .skip)
+
+/-- Reply word returned to the caller: null for a null input, otherwise the
+target-relative handle produced by the structural transfer. -/
+def gateReturnReplyE (d : DomainId) : Expr 32 :=
+  .mux (Hw.retNZ d)
+    (Hw.transferHandleAt (Hw.retCl d) (Hw.retSel d)) (.lit 0)
+
+/-- Write the reply word to the caller's saved destination register. -/
+def gateReturnReplyA (d : DomainId) : Act :=
+  let rdi := Hw.muxFin (fun g => .reg 3 (Hw.gcallerRd g)) (Hw.retGid d)
+  Hw.seqAll ((List.finRange numDomains).map fun c =>
+    .ite (.eq (Hw.retCl d) (Hw.dLit c))
+      (Hw.writeReg c rdi (gateReturnReplyE d)) .skip)
+
 /-- Successful hardware payload selected after every `gate_return` check
-passes.  Naming the payload lets the abstraction proof reason about the
-return tail independently of opcode dispatch and the response ladder. -/
+passes.  Naming its stages lets the abstraction proof reason about the return
+tail independently of opcode dispatch and the response ladder. -/
 def gateReturnSuccessA (d : DomainId) : Act :=
   let gid := Hw.retGid d
-  let cl := Hw.retCl d
-  let rcs := Hw.retSel d
-  let reply := .mux (Hw.retNZ d) (Hw.transferHandleAt cl rcs) (.lit 0)
   Hw.seqAll
-    [ .ite (Hw.retNZ d) (Hw.transferA d cl rcs) .skip,
-      Hw.seqAll ((List.finRange numGates).map fun g =>
-        .ite (.eq gid (Hw.gLit g))
-          (.write 1 (Hw.gactV g) (.lit 0)) .skip),
+    [ gateReturnTransferA d,
+      gateReturnClearA d,
       Hw.seqAll ((List.finRange numRegs).map fun r =>
         .write 32 (Hw.dreg d r)
           (Hw.muxFin (fun g => .reg 32 (Hw.gsreg g r)) gid)),
@@ -96,12 +134,18 @@ def gateReturnSuccessA (d : DomainId) : Act :=
         (Hw.muxFin (fun g => .reg 1 (Hw.gssrvV g)) gid),
       .write 2 (Hw.dsrv d)
         (Hw.muxFin (fun g => .reg 2 (Hw.gssrv g)) gid),
-      Hw.seqAll ((List.finRange numDomains).map fun c =>
-        .ite (.eq cl (Hw.dLit c))
-          (.write 2 (Hw.drun c) (.lit 0)) .skip),
-      (let rdi := Hw.muxFin (fun g => .reg 3 (Hw.gcallerRd g)) gid
-       Hw.seqAll ((List.finRange numDomains).map fun c =>
-        .ite (.eq cl (Hw.dLit c)) (Hw.writeReg c rdi reply) .skip)) ]
+      gateReturnResumeA d,
+      gateReturnReplyA d ]
+
+/-- Operational decomposition of the successful return payload. -/
+theorem gateReturnSuccessA_run (σ acc : Loom.Hw.St) (d : DomainId) :
+    (gateReturnSuccessA d).run σ acc =
+      (gateReturnReplyA d).run σ
+        ((gateReturnResumeA d).run σ
+          ((gateReturnRestoreA d).run σ
+            ((gateReturnClearA d).run σ
+              ((gateReturnTransferA d).run σ acc)))) := by
+  rfl
 
 /-- The named successful payload is definitionally the body of the return
 response ladder. -/
