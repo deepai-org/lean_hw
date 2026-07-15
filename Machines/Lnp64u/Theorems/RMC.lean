@@ -298,7 +298,7 @@ theorem square_retire_memgrant (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   exact square_retire_grant m hwf hfit σ hcpl.rctr_sync hcpl.r0_zero
     hcpl.kind_canon hsr hifv hcl hopc
 
-/-- The `gate_call` retirement arm — remaining (NEXTSTEPS §1). -/
+/-- The `gate_call` retirement arm. -/
 theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
@@ -308,7 +308,9 @@ theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  exact square_retire_gateCall m hwf hfit σ hcpl.rctr_sync
+    hcpl.run_canon
+    hcpl.r0_zero hcpl.kind_canon hsr hifv hcl hopc
 
 /-- The `gate_return` retirement arm — remaining (NEXTSTEPS §1). -/
 theorem square_retire_gatereturn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
