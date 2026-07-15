@@ -415,6 +415,17 @@ theorem absGate_callActivateA (σ acc : Loom.Hw.St)
   · rw [if_neg hh]
     exact absGate_callActivateChosen_other σ acc d g h hh
 
+/-- Gate activation writes do not change any abstract domain. -/
+theorem absDom_callActivateA_frame (σ acc : Loom.Hw.St)
+    (d : DomainId) (x : DomainId) :
+    Hw.absDom ((callActivateA d).run σ acc) x = Hw.absDom acc x := by
+  apply absDom_congr
+  intro q hq
+  apply frame
+  have hquiet : ∀ q ∈ domReadNames x, q ∉ (callActivateA d).regWrites := by
+    fin_cases x <;> exact of_decide_eq_true rfl
+  exact hquiet q hq
+
 /-! ## Callee scrub and entry writer -/
 
 /-- The successful call's argument value as installed in callee register 1. -/
@@ -687,6 +698,17 @@ theorem absDom_callCalleeA (σ acc : Loom.Hw.St)
   · rw [if_neg hx]
     exact absDom_callCalleeChosen_other σ acc d cal x hx
 
+/-- Callee scrub and entry writes do not change any abstract gate. -/
+theorem absGate_callCalleeA_frame (σ acc : Loom.Hw.St)
+    (d : DomainId) (h : GateId) :
+    Hw.absGate ((callCalleeA d).run σ acc) h = Hw.absGate acc h := by
+  apply absGate_congr
+  intro q hq
+  apply frame
+  have hquiet : ∀ q ∈ gateReadNames h, q ∉ (callCalleeA d).regWrites := by
+    fin_cases h <;> exact of_decide_eq_true rfl
+  exact hquiet q hq
+
 /-! ## Caller block writer -/
 
 /-- The final successful-call writes to the caller domain. -/
@@ -819,5 +841,125 @@ theorem absDom_callCaller_other (σ acc : Loom.Hw.St)
   · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.drun d from by
       fin_cases x <;> fin_cases d <;>
         first | exact absurd rfl hne | exact of_decide_eq_true rfl) q hq
+
+/-- Caller status and PC writes do not change any abstract gate. -/
+theorem absGate_callCaller_frame (σ acc : Loom.Hw.St)
+    (d : DomainId) (h : GateId) :
+    Hw.absGate ((callCallerA d).run σ acc) h = Hw.absGate acc h := by
+  apply absGate_congr
+  intro q hq
+  apply callCaller_read
+  · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.dpc d from by
+      fin_cases h <;> fin_cases d <;> exact of_decide_eq_true rfl) q hq
+  · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.drunG d from by
+      fin_cases h <;> fin_cases d <;> exact of_decide_eq_true rfl) q hq
+  · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.drun d from by
+      fin_cases h <;> fin_cases d <;> exact of_decide_eq_true rfl) q hq
+
+/-! ## Successful call action -/
+
+/-- Optional structural argument transfer at the head of a successful call. -/
+def callTransferA (d : DomainId) : Act :=
+  .ite (Hw.argNZ d) (Hw.transferA d (Hw.callCal d) (Hw.argSel d)) .skip
+
+/-- The successful action payload factored out of `Hw.callCirc`. -/
+def callSuccessA (d : DomainId) : Act :=
+  Hw.seqAll
+    [ callTransferA d,
+      callActivateA d,
+      callCalleeA d,
+      .write 2 (Hw.drun d) (.lit 2),
+      .write 2 (Hw.drunG d) (Hw.callGid d),
+      Hw.pcAdvA d ]
+
+/-- The factored successful payload is definitionally the body selected by
+the hardware call check ladder. -/
+theorem callCirc_act_eq (d : DomainId) :
+    (Hw.callCirc d).act = Hw.ladder d (Hw.callChecks d) (callSuccessA d) := by
+  rfl
+
+/-- Operational decomposition of the successful call payload into its four
+semantic stages. -/
+theorem callSuccessA_run (σ acc : Loom.Hw.St) (d : DomainId) :
+    (callSuccessA d).run σ acc =
+      (callCallerA d).run σ
+        ((callCalleeA d).run σ
+          ((callActivateA d).run σ ((callTransferA d).run σ acc))) := by
+  rfl
+
+/-- Domain-map abstraction of the complete successful payload, relative to
+the state produced by its optional structural transfer. -/
+theorem absDom_callSuccessA (σ acc : Loom.Hw.St)
+    (d cal : DomainId) (g : GateId) (x : DomainId)
+    (hne : d ≠ cal)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    Hw.absDom ((callSuccessA d).run σ acc) x =
+      let base := (callTransferA d).run σ acc
+      if x = d then
+        { Hw.absDom base d with
+          pc := σ.regs (Hw.dpc d) 12 + 1
+          run := .blocked g }
+      else if x = cal then
+        { Hw.absDom base cal with
+          regs := fun r => if r.val = 1 then (callArgHandle d).eval σ else 0
+          pc := ((Hw.abs σ).gates g).config.entry
+          serving := some g }
+      else Hw.absDom base x := by
+  rw [callSuccessA_run]
+  let base := (callTransferA d).run σ acc
+  let activated := (callActivateA d).run σ base
+  let entered := (callCalleeA d).run σ activated
+  change Hw.absDom ((callCallerA d).run σ entered) x = _
+  by_cases hxd : x = d
+  · subst x
+    rw [if_pos rfl, absDom_callCaller_selected σ entered d g hgid]
+    have hdc : d ≠ cal := hne
+    rw [show Hw.absDom entered d = Hw.absDom activated d from
+      absDom_callCalleeA σ activated d cal g d hcal hgid |>.trans
+        (if_neg hdc)]
+    rw [absDom_callActivateA_frame σ base d d]
+  · rw [if_neg hxd, absDom_callCaller_other σ entered d x hxd]
+    by_cases hxc : x = cal
+    · subst x
+      rw [if_pos rfl]
+      rw [absDom_callCalleeA σ activated d cal g cal hcal hgid,
+        if_pos rfl]
+      rw [absDom_callActivateA_frame σ base d cal]
+    · rw [if_neg hxc]
+      rw [absDom_callCalleeA σ activated d cal g x hcal hgid,
+        if_neg hxc]
+      rw [absDom_callActivateA_frame σ base d x]
+
+/-- Gate-map abstraction of the complete successful payload. Only the
+selected gate receives the new activation record. -/
+theorem absGate_callSuccessA (σ acc : Loom.Hw.St)
+    (d cal : DomainId) (g h : GateId)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    Hw.absGate ((callSuccessA d).run σ acc) h =
+      let base := (callTransferA d).run σ acc
+      if h = g then
+        { Hw.absGate base g with
+          act := some
+            { caller := d
+              callerRd := finOfBv (by decide) (Hw.rdE.eval σ)
+              savedRegs := ((Hw.abs σ).doms cal).regs
+              savedPc := ((Hw.abs σ).doms cal).pc
+              savedServing := ((Hw.abs σ).doms cal).serving
+              depth := ((Hw.callDepth d).eval σ).toNat
+              donated := ((Hw.abs σ).doms d).maxDonation } }
+      else Hw.absGate base h := by
+  rw [callSuccessA_run]
+  let base := (callTransferA d).run σ acc
+  let activated := (callActivateA d).run σ base
+  let entered := (callCalleeA d).run σ activated
+  rw [absGate_callCaller_frame σ entered d h,
+    absGate_callCalleeA_frame σ activated d h]
+  exact absGate_callActivateA σ base d cal g h hgid hcal
 
 end Machines.Lnp64u.Theorems.RMC
