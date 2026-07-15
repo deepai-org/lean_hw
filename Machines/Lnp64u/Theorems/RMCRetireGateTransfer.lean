@@ -243,4 +243,56 @@ theorem encRefE_decoded_selected (σ : Loom.Hw.St) (D : DomainId)
     rw [hSv, hDv, BitVec.or_assoc]
   rw [henc, decRef_encRef]
 
+/-! ## Exact `transferCap` branch equations -/
+
+/-- The root-capability branch of `transferCap`, exposed in the same
+`installTransferred` vocabulary used by the hardware abstraction. -/
+theorem transferCap_eq_selected_none (τ : MachineState)
+    (D : DomainId) (S : Slot) (T : DomainId) (NS : Slot) (e : CapEntry)
+    (hsource : (τ.doms D).caps S = some e)
+    (hslot : τ.freeSlot T = some NS)
+    (hlin : e.lineage = none) :
+    τ.transferCap D S T =
+      some ((((((installTransferred τ T NS e.kind none).reparent
+        ⟨D, S, (τ.doms D).slotGen S⟩
+        ⟨T, NS, (τ.doms T).slotGen NS⟩).clearSlot D S).sweepRegions).sweepMover,
+        ⟨T, NS, (τ.doms T).slotGen NS⟩)) := by
+  unfold MachineState.transferCap
+  simp only [Option.bind_eq_bind]
+  rw [hsource]
+  simp only [Option.bind_some]
+  rw [hslot]
+  simp only [Option.bind_some, hlin]
+  rfl
+
+/-- The derived-capability branch of `transferCap`, likewise exposed through
+`installTransferred`; the selected free lineage cell receives the moved
+source cell unchanged. -/
+theorem transferCap_eq_selected_some (τ : MachineState)
+    (D : DomainId) (S : Slot) (T : DomainId) (NS : Slot) (e : CapEntry)
+    (L : LineageId) (cell : LineageCell) (NL : LineageId)
+    (hsource : (τ.doms D).caps S = some e)
+    (hslot : τ.freeSlot T = some NS)
+    (hlin : e.lineage = some L)
+    (hcell : (τ.doms D).lineage L = some cell)
+    (hfreeCell : τ.freeCell T = some NL) :
+    τ.transferCap D S T =
+      some ((((((installTransferred τ T NS e.kind
+        (some (NL, cell.parent))).reparent
+          ⟨D, S, (τ.doms D).slotGen S⟩
+          ⟨T, NS, (τ.doms T).slotGen NS⟩).clearSlot D S).sweepRegions).sweepMover,
+        ⟨T, NS, (τ.doms T).slotGen NS⟩)) := by
+  unfold MachineState.transferCap
+  simp only [Option.bind_eq_bind]
+  rw [hsource]
+  simp only [Option.bind_some]
+  rw [hslot]
+  simp only [Option.bind_some, hlin]
+  rw [hcell]
+  simp only [Option.bind_some]
+  rw [hfreeCell]
+  simp only [Option.bind_some]
+  cases cell
+  rfl
+
 end Machines.Lnp64u.Theorems.RMC
