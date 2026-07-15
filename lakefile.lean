@@ -4,6 +4,12 @@ import Lake
 open Lake DSL
 
 package loom where
+  version := v!"0.1.0-dev"
+  description := "A proof-carrying processor toolchain and hardware EDSL in Lean 4"
+  keywords := #["hardware", "formal-verification", "dsl", "verilog", "processor"]
+  license := "Apache-2.0"
+  licenseFiles := #["LICENSE", "NOTICE", "Machines/LICENSE"]
+  testDriver := "Tests"
   -- The trusted path forbids `native_decide` (Rule 1); nothing here changes kernel options.
   leanOptions := #[
     ⟨`autoImplicit, false⟩,
@@ -11,7 +17,7 @@ package loom where
   ]
 
 /-- The machine-generic toolchain. Never imports `Machines` (enforced by
-`scripts/check-imports.sh`). -/
+`lake exe audit`). -/
 @[default_target]
 lean_lib Loom
 

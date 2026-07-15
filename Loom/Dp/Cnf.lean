@@ -195,14 +195,14 @@ theorem mkGate2_sound {tbl : Bool → Bool → Bool} {v : Var} {x y : Bit}
     refine ⟨?_, Holds.nil⟩
     show (y.sel (tbl bx false) (tbl bx true)).denote f = _
     rw [Bit.denote_sel]
-    cases h : y.denote f <;> simp [h]
+    cases y.denote f <;> simp
   | lit vx px =>
     cases y with
     | const by' =>
       refine ⟨?_, Holds.nil⟩
       show ((Bit.lit vx px).sel (tbl false by') (tbl true by')).denote f = _
       rw [Bit.denote_sel]
-      cases h : (Bit.lit vx px).denote f <;> simp [h]
+      cases (Bit.lit vx px).denote f <;> simp
     | lit vy py =>
       constructor
       · show (Bit.lit v true).denote f = _
@@ -445,8 +445,8 @@ theorem mkGate2_scope {tbl : Bool → Bool → Bool} {n : Nat} {x y : Bit}
         intro p q b hb
         simp only [mint2, List.mem_cons, List.not_mem_nil, or_false] at hb
         rcases hb with rfl | rfl | rfl
-        · cases p <;> first | exact hx' | exact hx'.not
-        · cases q <;> first | exact hy' | exact hy'.not
+        · cases p <;> exact hx'
+        · cases q <;> exact hy'
         · exact hv
       rcases hcl with rfl | rfl | rfl | rfl <;> exact hbit _ _
 
@@ -481,9 +481,9 @@ theorem mkGate3_scope {tbl : Bool → Bool → Bool → Bool} {n : Nat} {x y z :
           intro p q r b hb
           simp only [mint3, List.mem_cons, List.not_mem_nil, or_false] at hb
           rcases hb with rfl | rfl | rfl | rfl
-          · cases p <;> first | exact hx' | exact hx'.not
-          · cases q <;> first | exact hy' | exact hy'.not
-          · cases r <;> first | exact hz' | exact hz'.not
+          · cases p <;> exact hx'
+          · cases q <;> exact hy'
+          · cases r <;> exact hz'
           · exact hv
         rcases hcl with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl <;> exact hbit _ _ _
 
@@ -779,7 +779,7 @@ def litBits {w : Nat} (v : BitVec w) : List Bit :=
 Returns `(bits, cnf, n', f')`. -/
 def blast (t : Nat) (σ : St) : {w : Nat} → Expr w → Nat → (Var → Bool) →
     List Bit × BCnf × Nat × (Var → Bool)
-  | w, .lit v, n, f => (litBits v, [], n, f)
+  | _, .lit v, n, f => (litBits v, [], n, f)
   | w, .reg _ nm, n, f => (regBits t nm w, [], n, f)
   | _, .and a b, n, f =>
       let ra := blast t σ a n f
