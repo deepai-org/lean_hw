@@ -2,8 +2,8 @@
 
 Current state: T1-T9 CLEAN (49/49 ledger), RTL corroborated (iverilog +
 yosys + SAT crosscheck, pinned tools, one-command `reproduce.sh`), R-MC
-down to ONE audit-legal sorry (`square_retire`): `coupled_step` CLEAN,
-3 of 4 cycle arms CLEAN, retirement infrastructure complete, 16 of 25
+down to four audit-legal retirement leaf sorries: `coupled_step` CLEAN,
+3 of 4 cycle arms CLEAN, retirement infrastructure complete, 21 of 25
 op arms + the decode-failure fallback proven. The project is one
 theorem (§1) plus packaging (§P2 remainder) from its headline claim.
 See `STATUS.md` for the audited ledger and session history.
@@ -107,43 +107,58 @@ dispatcher (opcode-20 stub deleted from `RMC.lean`). Shape that worked:
   swapped for the run bridges and `Inert` weakened to kill-chains-off
   (`killedByCore_of_nokill`; `sAuth_quiescent_eval` relaxed likewise).
 
-### Next up (tier 2): `cap_dup` / `mem_grant` — the install-vs-watched-refs argument
+### DONE (2026-07-14): the `cap_dup` arm landed (20/25)
 
-The blocker: the Mover run-bridges take `hcaps`/`hgen` as FULL table
-agreement (`τ2.doms = abs σ.doms` at caps/slotGen), which fails for an
-installing op (new cap at the free slot `NS`). The re-check only probes
-the running job's two watched refs, so weaken `moverCheck_abs` (and the
-run bridges) to agreement AT THE WATCHED REFS' (dom, slot). Then:
+`RMCRetireDup.lean` is sorry-free and wired into `RMC.lean`. The free-slot and
+free-cell encoder bridges, watched-ref Mover wrappers, generic
+`square_retire_install` glue, `dupFull` write-set frames, and the complete
+cap/lineage register walks are in place. The `cap_dup` control proof covers
+stale/class errors, every memory-narrowing error, both allocation errors,
+and both successful installs (gate and narrowed-memory kinds).
 
-- dst ref: `MoverLiveMem` (Logic/Tombstone.lean, `moverLiveMem_invariant`
-  via `hsr`) — live ⟹ slot occupied ⟹ ≠ the free install slot ⟹ tables
-  agree there.
-- src ref: may be stale (that's the -ESTALE abort path), so its slot CAN
-  be the install target. The save is generation discipline: a watched
-  ref was live at job-install time; if since dropped, `clearSlot` bumped
-  `slotGen` past it, and `installDerived` mints at the CURRENT slotGen —
-  so `liveCap r.slot r.gen` stays `none` before AND after the install
-  (`RefFate` in Tombstone.lean is exactly this shape). Needs a spec-side
-  invariant `MoverSrcFated` (mover src is live-or-outgenned), provable
-  by the `Evo` transport (`RefFate` already transports); reach it
-  through `hsr` like T3 does. Conclusion to feed the weakened bridge:
-  `∀ post-install τ2, τ2.liveCap src = abs.liveCap src`.
-- Everything else in the arms is map/move-style: freeSlotV/freeSlotIdx
-  priority-encoder bridges (foldr-mux walks), `installA` write-set
-  faces (caps/lineage install at NS/NL), `handleE`/`genOfE` result
-  word, `narrowChecks` guard bridges vs the spec `narrow` requires
-  (descOff/descLen/descPerms extracts), and `allocDerived`'s
-  freeSlot/freeCell match vs the encoders (lowest-free agreement).
+The install-vs-watched-refs argument turned out cleaner than the earlier
+`RefFate` contingency: current `Tombstone.lean` already proves both
+`MoverLiveSrc` and `MoverLiveMem` invariants. Thus each active watched ref
+is live, its slot is occupied, and it cannot be the free install slot.
+`installDerived_caps_at_live` packages exactly that fact; slot generations
+are unchanged by `installDerived`. No new `Coupled` clause was needed.
 
-Remaining (the deep tail): `cap_dup` /
-`mem_grant` (cap install — needs an install-vs-watched-refs argument or
-a Coupled clause that Mover job refs stay live/dead-stable under
-installs), `cap_drop` / `gate_call` / `gate_return` (kill sets + gate
-faces), and
-`cap_revoke` (mark-engine convergence + rv `Coupled` clause). Then the
-25-way opcode dispatcher inside `square_retire` (case on
-`extractLsb' 0 6`; the not-in-table branch routes to
-`square_retire_illegal` via `decode_eq_find`).
+The successful cases use `absDom_dupFull_install`: six final register walks
+collapse the cap and lineage tables to functional updates, while the result
+register and pc faces match `setReg` and retirement advance. The same
+infrastructure is intended for `mem_grant` next.
+
+### DONE (2026-07-15): the `mem_grant` arm landed (21/25)
+
+`RMCRetireGrant.lean` contains the shared sorry-free `mem_grant` slice:
+descriptor-target mux/free-encoder bridges, a proof that the four-way domain
+fold selects exactly `descDom dw`, reductions from the fired grant action to
+one selected `installA` and then to six fixed table writes, and the decoded
+target-domain cap/lineage functional updates. Both `RMCRetireDup` and this
+grant slice build from source. The issuer `rd`/pc face and both two-domain
+compositions are now proved: `E = T` merges all four updates in one domain;
+`E ≠ T` gives separate issuer-only and target-only records. The full-arm
+scaffold also has a source-checked decode/spec bridge and the exact
+eight-check hardware ladder. `RMCRetireGrantArm.lean` now proves every error
+outcome, including the two target-muxed allocation failures, and the success
+path for both `E = T` and `E ≠ T`. `RMCRetireGrantFrame.lean` supplies the
+unchanged-domain/gate frames; the arm closes through
+`square_retire_install` and is wired into `RMC.lean`.
+
+### DONE (2026-07-15): the `cap_drop` arm landed (22/25)
+
+`RMCRetireDrop.lean` and `RMCRetireDropArm.lean` are sorry-free and the arm is
+wired into `RMC.lean`. The proof covers stale-handle and bad-class failures,
+the reparent-or-orphan structural split, selected-slot clearing, region and
+Mover sweeps, the optional authorized stale-status write, and absent, killed,
+and surviving active Mover jobs. The shared Mover run bridge now depends only
+on endpoint kind, so orphaning a surviving capability's lineage does not
+overconstrain the datapath proof. `lake build Machines.Lnp64u.Theorems.RMC`
+rebuilt all 983 dependent jobs successfully.
+
+Remaining (the deep tail): `gate_call`, `gate_return`, and `cap_revoke`. The
+25-way dispatcher and illegal fallback are already wired; these are exactly
+the three audit-legal leaf sorries in `RMC.lean`.
 
 ## 0. Working rule: write forward from source
 
@@ -162,13 +177,13 @@ fragments.
 - Work in compiling slices. After each slice, run the smallest useful Lean
   command, then the full target once the slice is structurally complete.
 
-## 1. R-MC endgame — the retirement tail (single remaining sorry)
+## 1. R-MC endgame — the retirement tail (three remaining leaf sorries)
 
-Target: close `square_retire` (the sole repo sorry, `RMC.lean`). All
+Target: close the three remaining retirement stubs in `RMC.lean`. All
 infrastructure exists; what remains is exactly enumerable. Work order
 (revised 2026-07-14, late — dispatcher first, revoke spike second):
 
-1. **DONE 2026-07-15.** (dispatcher wired; 9 leaf sorries.) Rewrite `square_retire` as a
+1. **DONE 2026-07-15.** (dispatcher wired; now 5 leaf sorries.) Rewrite `square_retire` as a
    `by_cases` chain on `(σ.regs "if_word" 32).extractLsb' 0 6` over the
    25 declared opcodes: 16 branches call the proven arms
    (`RMCRetireAlu`/`RMCRetireBranch`/`RMCRetireSw`), the not-in-table
@@ -184,30 +199,103 @@ infrastructure exists; what remains is exactly enumerable. Work order
    yet. The countdown arm already runs `rvStep` rounds — check the
    clause coexists with `square_countdown` as proven. Revoke is the
    largest remaining unknown; surface its shape before grinding.
-3. **Tier 1 — pattern extensions** (one session each, recipe = the `sw`
+3. **DONE 2026-07-14 — Tier 1 pattern extensions.** `map`/`unmap` and
+   `move` are proved and wired. Original recipe (one session each, from `sw`):
    arm): `map`/`unmap` (region-edit face: `mapSet`/`unmapSet` fire, so
    an Inert-minus-map variant plus `rgnVPostE`/`rgnValPostE` selected
    forms; region-face `absDom` variant like `absDom_regpcbud`), then
    `move` (job install: `newJobSet` fires; `postJ` selected forms; the
    mover-field face shows the installed job).
-4. **Tier 2 — the install invariant** (`cap_dup`, `mem_grant`): an
+4. **DONE 2026-07-15 — Tier 2 install invariant.** (`cap_dup` and
+   `mem_grant`): an
    install must not flip a Mover-watched ref dead→live. First check
-   whether T3's `MoverLiveMem`-class spec invariants (available through
-   the arm's `hsr` reachability hypothesis) already give it; only add a
-   `Coupled` clause if not. Then the two arms (cap-table face variant
-   of `absDom`, errno ladders via the monad-unfold technique).
+   whether T3's Mover liveness invariants (available through the arm's
+   `hsr` reachability hypothesis) already give it. **Resolved:** both
+   `MoverLiveSrc` and `MoverLiveMem` do; no `Coupled` clause required.
+   Reuse `RMCRetireDup`'s cap-table/install face for `mem_grant`.
 5. **Tier 3 — kill machinery** (`cap_drop`, `gate_call`,
    `gate_return`): `killedByCoreE` fires for real. Shared kill-variant
    of the Mover faces (watched-ref liveness *after* the kill sweep =
    spec `moverPhase` on the post-kill state), plus the gate
    save/restore faces for call/return (`absGate` variant exposing the
    activation fields).
+   **Started 2026-07-15:** `RMCRetireDrop.lean` now proves the unique
+   retiring-domain selector pointwise, decodes the selected slot kill
+   predicate, reduces the global `killedByCoreE` tree to the successful
+   drop kill set, and proves failed drops Mover-inert because `dropOkE`
+   gates that tree. The spec-side clear/sweep equations are now exact for
+   every region, the Mover job, and the Mover status-memory write; the
+   hardware region-valid update is proved equal to the swept spec region
+   table, and `movKilledE` is proved to fire exactly when the decoded active
+   job has a source or destination in the dropped slot. The remaining Mover
+   execution bridge now has the required refinement on both shared active-job
+   faces: the mover-field and memory run theorems use endpoint-local kill
+   assumptions, with all existing callers rebuilt, and `RMCRetireDrop`
+   supplies the corresponding outside-the-slot silence lemma. The fired-kill
+   branch is also closed at the Mover layer: with no new job installation,
+   `moverAct` decodes to `none` and leaves memory unchanged (the sweeping core
+   owns the stale-status write). Next finish the drop status-authority bridge
+   and the cap/lineage reparent-or-orphan register face. **Status authority is
+   now closed:** the hardware post-region OR-tree is equivalent to
+   `domCovers` on the exact swept option-valued region table. Structural work
+   has started with `bumpE_eval` and the exact selected-slot `clearSlotA`
+   capability-valid projection. Its generation and both lineage cases are now
+   exact as well (derived entries free one cell; roots preserve all cells).
+   A reusable injective guarded-write walk theorem now supports the global
+   lineage scans, and `reparentA`'s pointwise parent update plus complete
+   non-parent register frame are proved. The two-part `orphanA` walk is now
+   exact on both affected valid-bit banks and frames everything else. Both
+   reparent/orphan branches have been lifted to decoded capability and
+   lineage-table equations, and `clearSlotA` now has decoded capability,
+   generation, and lineage equations for arbitrary domains. Those faces are
+   now composed into whole-domain theorems for each primitive and for both
+   reparent+clear/orphan+clear branches. The actual `dropSel` lineage bits,
+   dynamic cell lookup, parent word, and packed old reference are connected
+   to the selected abstract entry: under `Wf`, the hardware parent guard is
+   exactly the spec `parentOf` split. Consequently the first two successful
+   `dropCirc` actions now decode, for every domain, to the full structural
+   spec branch followed by `clearSlot`. The surrounding `sweepRegionsA` walk
+   now also has exact pointwise write semantics and a complete frame, and its
+   composition with that structural prefix is proved as a whole-domain
+   equality to spec `sweepRegions` (including the exact option-valued region
+   table). A generic decoded `writeReg; pcAdv` theorem (including hardwired
+   `r0`) now closes the successful five-action payload through `rd := 0` and
+   PC advance, with its run proved definitionally equal to `dropCirc`'s list.
+   The Mover phase is now closed parametrically as well: unified field and
+   memory bridges split absent, endpoint-killed, and surviving active jobs;
+   the surviving case reuses the endpoint-local run theorems, while the killed
+   case consumes the core's stale-status write. A new `square_retire_kill`
+   assembler accepts these exact non-inert Mover faces. **DONE 2026-07-15:**
+   `square_retire_drop` instantiates that assembler for all three outcomes and
+   `square_retire_capdrop` is wired into the dispatcher. Next reuse the
+   kill-aware assembly for the two gate arms and add their activation
+   save/restore plus capability-transfer faces.
 6. **Tier 4 — `cap_revoke`**: prove the clause from step 2 (rvInit
    seeds, rvStep preserves through the countdown, retirement reads the
    converged marks = spec `marks` closure in ≤ 7 doubling rounds), then
    the arm.
 7. **Assembly**: delete the leaf sorries; `square`/`abs_run`/`refines`/
    `invariant_transport` flip CLEAN. Full gate + STATUS/ledger update.
+
+### Remaining-arm timeboxes (checkpointed 2026-07-15)
+
+These are stop-and-reassess bounds, not promises to grind indefinitely:
+
+1. **`gate_call`: 6 focused hours maximum.** Spend at most 2 hours inventorying
+   the real `callAct`/`transferCap`/activation register faces and proving one
+   selected transfer projection. Continue for the remaining 4 hours only if
+   that projection composes with the existing kill-aware square. Otherwise
+   checkpoint the missing shared bridge explicitly before more case work.
+2. **`gate_return`: 4 focused hours maximum after the call checkpoint.** Reuse
+   the transfer and activation framing from `gate_call`; stop after 90 minutes
+   if return needs a materially different transfer theorem, and revise the
+   bound rather than silently absorbing a second infrastructure project.
+3. **`cap_revoke`: 8-hour convergence spike, then reassess.** First 3 hours:
+   prove one concrete `rvInit`/`rvStep`-to-`iterMark` round relation and verify
+   the proposed `RvSync` clause survives countdown. Remaining 5 hours only if
+   the doubling/convergence invariant closes at the statement level. A full
+   arm gets a separate estimate after that evidence; current source does not
+   justify bundling it into the gate-arm window.
 
 Established recipes (do not rediscover): benign ops →
 `square_retire_domShape`; faults → `square_retire_fault_of`; memory

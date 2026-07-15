@@ -1,11 +1,10 @@
 # STATUS — LNP64-µ / Loom
 
-## ★★ 2026-07-14 (evening): RETIREMENT ARM 15/25 OP ARMS PROVEN ★★
+## ★★ 2026-07-15: RETIREMENT ARM 22/25 OP ARMS PROVEN ★★
 
-The retirement infrastructure is complete and 15 of the 25 per-op arms
-(plus the decode-failure fallback) are fully proven, all audit-legal
-(sole remaining sorry: `square_retire`, the master retirement
-dispatcher over the arms):
+The retirement infrastructure is complete and 22 of the 25 per-op arms
+(plus the decode-failure fallback) are fully proven. The dispatcher is
+fully assembled; three audit-legal leaf sorries remain in `RMC.lean`.
 
 - Proof-forced `Coupled` clause **`r0_zero`** (`RMCZero.lean`): the
   architectural `r0` family (`dreg d 0`, `gsreg g 0`) is pinned at zero
@@ -35,8 +34,26 @@ bridge `decRegion (mapValE eval) = mapRgn`, `KindCanon`-driven).
 19/25 (2026-07-14): `move` — the 15-outcome Mover-programming arm,
 including the job-install cycle (the Mover copies its first word the
 same cycle on both sides; value-parameterized run bridges).
-Remaining: cap_dup, mem_grant, cap_drop, gate_call, gate_return,
-and the `cap_revoke` mark engine.
+20/25 (2026-07-14): `cap_dup` — complete gate/memory derivation ladder,
+free-slot/free-cell encoder agreement, cap+lineage install face, result
+handle, and watched-ref Mover agreement via the existing
+`MoverLiveSrc`/`MoverLiveMem` invariants. No new coupling clause needed.
+21/25 (2026-07-15): `mem_grant` — complete eight-error ladder and
+cross-domain success path. The descriptor-selected target receives the
+derived cap/lineage while the issuer receives the returned handle and pc
+advance; both `E = T` and `E ≠ T` compositions close through the shared
+`square_retire_install` frame.
+22/25 (2026-07-15): `cap_drop` — all failure and success paths are proved and
+wired. The successful path covers reparent-or-orphan plus `clearSlot`, exact
+region and Mover sweeps, the authority-gated stale-status memory write, result
+register/PC advance, and absent, endpoint-killed, and surviving Mover jobs.
+`RMCRetireDrop.lean` and `RMCRetireDropArm.lean` contain no `sorry`; a fresh
+`lake build Machines.Lnp64u.Theorems.RMC` rebuilt all 983 jobs successfully.
+
+Remaining: `gate_call`, `gate_return`, and the `cap_revoke` mark engine. Their
+bounded reassessment windows are recorded in `NEXTSTEPS.md`: 6 hours for call,
+4 hours for return after shared call infrastructure, and an 8-hour revoke
+convergence spike before assigning a full-arm estimate.
 
 ## ★★ 2026-07-14: R-MC SQUARE PROVEN FOR 3 OF 4 ARMS — ONLY THE RETIREMENT ARM REMAINS ★★
 

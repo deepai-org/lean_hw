@@ -686,13 +686,13 @@ private theorem enFoldR_skip (σ : Loom.Hw.St) :
           then p.2.memData.eval σ else ((enFoldR t rest).2.2).eval σ) = _
         rw [if_neg (by rw [hg]; decide), ih3]
 
-/-- The op-level fold selects the (unique) `sw` circuit. -/
-private theorem enFoldR_sw (σ : Loom.Hw.St) (c : Hw.OpCirc)
-    (hsel1 : (Hw.isMn "sw").eval σ = 1#1) :
+/-- The op-level fold selects one uniquely named circuit. -/
+private theorem enFoldR_op (σ : Loom.Hw.St) (mn : String) (c : Hw.OpCirc)
+    (hsel1 : (Hw.isMn mn).eval σ = 1#1) :
     ∀ (l : List (String × Hw.OpCirc)) (rest : Expr 1 × Expr 12 × Expr 32),
-      ("sw", c) ∈ l →
+      (mn, c) ∈ l →
       ((l.map Prod.fst).Nodup) →
-      (∀ p ∈ l, p.1 ≠ "sw" →
+      (∀ p ∈ l, p.1 ≠ mn →
         (Hw.isMn p.1).eval σ = 0#1 ∨ isLit0 p.2.memEn = true) →
       ((rest.1).eval σ = 0#1) →
       (((enFoldR l rest).1).eval σ = (c.memEn).eval σ)
@@ -702,37 +702,37 @@ private theorem enFoldR_sw (σ : Loom.Hw.St) (c : Hw.OpCirc)
   | [], _, hmem, _, _, _ => absurd hmem (List.not_mem_nil)
   | (mn', c') :: t, rest, hmem, hnd, hq, hr0 => by
       simp only [List.map_cons, List.nodup_cons] at hnd
-      by_cases hsw : mn' = "sw"
-      · subst hsw
+      by_cases hsw : mn' = mn
+      · subst mn'
         have hc' : c' = c := by
           rcases List.mem_cons.mp hmem with heq | hmt
           · cases heq
             rfl
-          · exact absurd (List.mem_map_of_mem hmt : ("sw" : String) ∈ _)
+          · exact absurd (List.mem_map_of_mem hmt : mn ∈ _)
               hnd.1
         subst hc'
         have htq : ∀ p ∈ t, (Hw.isMn p.1).eval σ = 0#1
             ∨ isLit0 p.2.memEn = true := by
           intro p hp
-          by_cases hps : p.1 = "sw"
+          by_cases hps : p.1 = mn
           · exact absurd (hps ▸ (List.mem_map_of_mem hp : p.1 ∈ _)) hnd.1
           · exact hq p (List.mem_cons_of_mem _ hp) hps
         obtain ⟨ht1, ht2, ht3⟩ := enFoldR_skip σ t rest htq
-        have hg : (Expr.and (Hw.isMn "sw") c'.memEn).eval σ
+        have hg : (Expr.and (Hw.isMn mn) c'.memEn).eval σ
             = c'.memEn.eval σ := by
-          show (Hw.isMn "sw").eval σ &&& c'.memEn.eval σ = _
+          show (Hw.isMn mn).eval σ &&& c'.memEn.eval σ = _
           rw [hsel1]
           exact bv1_one_and _
         refine ⟨?_, fun hen => ⟨?_, ?_⟩⟩
-        · show (Expr.and (Hw.isMn "sw") c'.memEn).eval σ
+        · show (Expr.and (Hw.isMn mn) c'.memEn).eval σ
             ||| ((enFoldR t rest).1).eval σ = _
           rw [hg, ht1, hr0]
           generalize c'.memEn.eval σ = b
           revert b; decide
-        · show (if (Expr.and (Hw.isMn "sw") c'.memEn).eval σ = 1#1
+        · show (if (Expr.and (Hw.isMn mn) c'.memEn).eval σ = 1#1
             then c'.memAddr.eval σ else ((enFoldR t rest).2.1).eval σ) = _
           rw [if_pos (by rw [hg]; exact hen)]
-        · show (if (Expr.and (Hw.isMn "sw") c'.memEn).eval σ = 1#1
+        · show (if (Expr.and (Hw.isMn mn) c'.memEn).eval σ = 1#1
             then c'.memData.eval σ else ((enFoldR t rest).2.2).eval σ) = _
           rw [if_pos (by rw [hg]; exact hen)]
       · have hg : (Expr.and (Hw.isMn mn') c'.memEn).eval σ = 0#1 := by
@@ -743,11 +743,11 @@ private theorem enFoldR_sw (σ : Loom.Hw.St) (c : Hw.OpCirc)
           · show (Hw.isMn mn').eval σ &&& c'.memEn.eval σ = 0#1
             rw [isLit0_eval σ _ h]
             exact bv1_and_zero' _
-        have hmem' : ("sw", c) ∈ t := by
+        have hmem' : (mn, c) ∈ t := by
           rcases List.mem_cons.mp hmem with heq | h
           · exact absurd (congrArg Prod.fst heq).symm hsw
           · exact h
-        obtain ⟨ih1, ih2⟩ := enFoldR_sw σ c hsel1 t rest hmem' hnd.2
+        obtain ⟨ih1, ih2⟩ := enFoldR_op σ mn c hsel1 t rest hmem' hnd.2
           (fun p hp => hq p (List.mem_cons_of_mem _ hp)) hr0
         refine ⟨?_, fun hen => ⟨?_, ?_⟩⟩
         · show (Expr.and (Hw.isMn mn') c'.memEn).eval σ
@@ -861,6 +861,57 @@ private theorem domFoldR_sw (σ : Loom.Hw.St) (E : DomainId)
 /-- **The retiring-`sw` commit**: the muxed port-0 triple evaluates to the
 `sw` circuit's enable/address/data. Stated against `retireAct`'s literal
 fold (the shape `retireAct_run_mems` exposes). -/
+theorem retireMem_op_sel (σ : Loom.Hw.St) (E : DomainId) (mn : String)
+    (c : Hw.OpCirc)
+    (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
+    (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
+    (hsel1 : (Hw.isMn mn).eval σ = 1#1)
+    (hmem : (mn, c) ∈ Hw.opCircs E)
+    (hnd : ((Hw.opCircs E).map Prod.fst).Nodup)
+    (hq : ∀ p ∈ Hw.opCircs E, p.1 ≠ mn →
+      (Hw.isMn p.1).eval σ = 0#1 ∨ isLit0 p.2.memEn = true) :
+    ((((List.finRange numDomains).foldr
+      (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+        let (en_d, ad_d, da_d) := Hw.retireMemFor d
+        let g := Expr.and (Hw.ifDomIs d) en_d
+        (.or g acc'.1, .mux g ad_d acc'.2.1, .mux g da_d acc'.2.2))
+      ((.lit 0 : Expr 1), (.lit 0 : Expr 12), (.lit 0 : Expr 32))).1).eval σ
+      = (c.memEn).eval σ)
+    ∧ ((c.memEn).eval σ = 1#1 →
+        ((((List.finRange numDomains).foldr
+          (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+            let (en_d, ad_d, da_d) := Hw.retireMemFor d
+            let g := Expr.and (Hw.ifDomIs d) en_d
+            (.or g acc'.1, .mux g ad_d acc'.2.1, .mux g da_d acc'.2.2))
+          ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+            (.lit 0 : Expr 32))).2.1).eval σ = (c.memAddr).eval σ)
+        ∧ ((((List.finRange numDomains).foldr
+          (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+            let (en_d, ad_d, da_d) := Hw.retireMemFor d
+            let g := Expr.and (Hw.ifDomIs d) en_d
+            (.or g acc'.1, .mux g ad_d acc'.2.1, .mux g da_d acc'.2.2))
+          ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+            (.lit 0 : Expr 32))).2.2).eval σ = (c.memData).eval σ)) := by
+  obtain ⟨he1, he2⟩ := enFoldR_op σ mn c hsel1 (Hw.opCircs E)
+    (.lit 0, .lit 0, .lit 0) hmem hnd hq rfl
+  obtain ⟨hd1, hd2⟩ := domFoldR_sw σ E hifsel hifexcl
+    (List.finRange numDomains) (.lit 0, .lit 0, .lit 0)
+    (List.mem_finRange E) (List.nodup_finRange _) rfl
+  have hEn1 : ((Hw.retireMemFor E).1).eval σ = (c.memEn).eval σ := he1
+  refine ⟨?_, fun hen => ⟨?_, ?_⟩⟩
+  · show ((domFoldR (List.finRange numDomains)
+      (.lit 0, .lit 0, .lit 0)).1).eval σ = _
+    rw [hd1, hEn1]
+  · show ((domFoldR (List.finRange numDomains)
+      (.lit 0, .lit 0, .lit 0)).2.1).eval σ = _
+    rw [(hd2 (by rw [hEn1]; exact hen)).1]
+    exact (he2 hen).1
+  · show ((domFoldR (List.finRange numDomains)
+      (.lit 0, .lit 0, .lit 0)).2.2).eval σ = _
+    rw [(hd2 (by rw [hEn1]; exact hen)).2]
+    exact (he2 hen).2
+
+/-- Specialization retained for the store arm. -/
 theorem retireMem_sw_sel (σ : Loom.Hw.St) (E : DomainId) (c : Hw.OpCirc)
     (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
     (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
@@ -890,25 +941,8 @@ theorem retireMem_sw_sel (σ : Loom.Hw.St) (E : DomainId) (c : Hw.OpCirc)
             let g := Expr.and (Hw.ifDomIs d) en_d
             (.or g acc'.1, .mux g ad_d acc'.2.1, .mux g da_d acc'.2.2))
           ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
-            (.lit 0 : Expr 32))).2.2).eval σ = (c.memData).eval σ)) := by
-  obtain ⟨he1, he2⟩ := enFoldR_sw σ c hsel1 (Hw.opCircs E)
-    (.lit 0, .lit 0, .lit 0) hmem hnd hq rfl
-  obtain ⟨hd1, hd2⟩ := domFoldR_sw σ E hifsel hifexcl
-    (List.finRange numDomains) (.lit 0, .lit 0, .lit 0)
-    (List.mem_finRange E) (List.nodup_finRange _) rfl
-  have hEn1 : ((Hw.retireMemFor E).1).eval σ = (c.memEn).eval σ := he1
-  refine ⟨?_, fun hen => ⟨?_, ?_⟩⟩
-  · show ((domFoldR (List.finRange numDomains)
-      (.lit 0, .lit 0, .lit 0)).1).eval σ = _
-    rw [hd1, hEn1]
-  · show ((domFoldR (List.finRange numDomains)
-      (.lit 0, .lit 0, .lit 0)).2.1).eval σ = _
-    rw [(hd2 (by rw [hEn1]; exact hen)).1]
-    exact (he2 hen).1
-  · show ((domFoldR (List.finRange numDomains)
-      (.lit 0, .lit 0, .lit 0)).2.2).eval σ = _
-    rw [(hd2 (by rw [hEn1]; exact hen)).2]
-    exact (he2 hen).2
+            (.lit 0 : Expr 32))).2.2).eval σ = (c.memData).eval σ)) :=
+  retireMem_op_sel σ E "sw" c hifsel hifexcl hsel1 hmem hnd hq
 
 /-- The five mnemonics whose circuits carry a real memory enable. -/
 def memMns : List String :=
@@ -971,4 +1005,3 @@ theorem coreAct_mems_quiet (m : Manifest) (σ acc : Loom.Hw.St)
   rw [if_neg (by rw [hen]; decide)]
 
 end Machines.Lnp64u.Theorems.RMC
-

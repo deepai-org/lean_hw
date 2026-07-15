@@ -14,7 +14,9 @@ import Machines.Lnp64u.Theorems.RMCZero
 import Machines.Lnp64u.Theorems.RMCRetireSw
 import Machines.Lnp64u.Theorems.RMCRetireRgn
 import Machines.Lnp64u.Theorems.RMCRetireMap
-import Machines.Lnp64u.Theorems.RMCRetireMove
+import Machines.Lnp64u.Theorems.RMCRetireDup
+import Machines.Lnp64u.Theorems.RMCRetireGrantArm
+import Machines.Lnp64u.Theorems.RMCRetireDropArm
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -157,7 +159,7 @@ structure Coupled (m : Manifest) (σ : Loom.Hw.St) : Prop where
 
 /-! ## Reset -/
 
-private theorem domainState_ext {a b : DomainState}
+private theorem rmc_domainState_ext {a b : DomainState}
     (h1 : a.regs = b.regs) (h2 : a.pc = b.pc) (h3 : a.caps = b.caps)
     (h4 : a.slotGen = b.slotGen) (h5 : a.lineage = b.lineage)
     (h6 : a.regions = b.regions) (h7 : a.run = b.run)
@@ -173,7 +175,7 @@ use `hwf.budget_le` and `hfit` to remove the `BitVec.toNat` mod. -/
 theorem absDom_reset (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (d : DomainId) :
     Hw.absDom (Hw.core m).reset d = m.initState.doms d := by
-  apply domainState_ext
+  apply rmc_domainState_ext
   · funext r
     simp [Hw.absDom, Manifest.initState, Manifest.bootDom, reset_dreg]
   · simp [Hw.absDom, Manifest.initState, Manifest.bootDom, reset_dpc]
@@ -211,7 +213,7 @@ theorem absDom_reset (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [BitVec.toNat_ofNat]
     exact Nat.mod_eq_of_lt (hfit.maxdon_lt d)
 
-private theorem machineState_ext {a b : MachineState}
+private theorem rmc_machineState_ext {a b : MachineState}
     (h1 : a.cycle = b.cycle) (h2 : a.mem = b.mem) (h3 : a.doms = b.doms)
     (h4 : a.gates = b.gates) (h5 : a.mover = b.mover)
     (h6 : a.inflight = b.inflight) : a = b := by
@@ -221,7 +223,7 @@ private theorem machineState_ext {a b : MachineState}
 `m.initState` field by field. -/
 theorem abs_reset (m : Manifest) (hwf : m.WF) (hfit : Fits m) :
     Hw.abs (Hw.core m).reset = m.initState :=
-  machineState_ext (abs_cycle_reset m) (abs_mem_reset m)
+  rmc_machineState_ext (abs_cycle_reset m) (abs_mem_reset m)
     (funext (absDom_reset m hwf hfit)) (funext (absGate_reset m))
     (abs_mover_reset m) (abs_inflight_reset m)
 
@@ -244,7 +246,7 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
 
 /-! ## The commuting square and coupling preservation -/
 
-/-- The `cap_dup` retirement arm — remaining (NEXTSTEPS §1). -/
+/-- The `cap_dup` retirement arm. -/
 theorem square_retire_capdup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
@@ -254,9 +256,10 @@ theorem square_retire_capdup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 16#6) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  exact square_retire_dup m hwf hfit σ hcpl.rctr_sync hcpl.r0_zero
+    hcpl.kind_canon hsr hifv hcl hopc
 
-/-- The `cap_drop` retirement arm — remaining (NEXTSTEPS §1). -/
+/-- The `cap_drop` retirement arm. -/
 theorem square_retire_capdrop (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
@@ -266,7 +269,8 @@ theorem square_retire_capdrop (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 17#6) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  exact square_retire_drop m hwf hfit σ hcpl.rctr_sync hcpl.r0_zero
+    hsr hifv hcl hopc
 
 /-- The `cap_revoke` retirement arm — remaining (NEXTSTEPS §1). -/
 theorem square_retire_caprevoke (m : Manifest) (hwf : m.WF) (hfit : Fits m)
@@ -280,7 +284,7 @@ theorem square_retire_caprevoke (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
   sorry
 
-/-- The `mem_grant` retirement arm — remaining (NEXTSTEPS §1). -/
+/-- The `mem_grant` retirement arm. -/
 theorem square_retire_memgrant (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
@@ -290,7 +294,8 @@ theorem square_retire_memgrant (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 19#6) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  exact square_retire_grant m hwf hfit σ hcpl.rctr_sync hcpl.r0_zero
+    hcpl.kind_canon hsr hifv hcl hopc
 
 /-- The `gate_call` retirement arm — remaining (NEXTSTEPS §1). -/
 theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
@@ -316,8 +321,8 @@ theorem square_retire_gatereturn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
   sorry
 
-/-- The retirement arm, dispatched over the latched opcode. Sixteen op
-arms plus the decode-failure fallback are proven; the nine remaining
+/-- The retirement arm, dispatched over the latched opcode. Twenty-two op
+arms plus the decode-failure fallback are proven; the three remaining
 system-op arms are the leaf obligations above (NEXTSTEPS §1). -/
 theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
