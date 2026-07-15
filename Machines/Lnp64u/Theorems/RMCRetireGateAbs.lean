@@ -869,6 +869,138 @@ theorem absDom_sweepRegionsA_of_doms (σ acc : Loom.Hw.St)
       (by decide)]
     rfl
 
+/-! ## Whole structural transfer composition -/
+
+/-- The four hardware actions that form `transferA` implement installation,
+reparenting, source clearing, and the abstract region sweep. All syntactic
+table-walk details are discharged here; callers need only provide the
+selected indices and the semantic fact that the sweep predicate recognizes
+exactly the dead backing references in the post-clear abstract state. -/
+theorem absDom_install_reparent_clear_sweep_selected (σ acc : Loom.Hw.St)
+    (T : DomainId) (nsE : Expr 4) (kindE : Expr 32)
+    (linVE : Expr 1) (nlE : Expr 4) (parE oldE newE : Expr 14)
+    (NS : Slot) (kind : CapKind)
+    (D : DomainId) (sourceSlotE : Expr 4)
+    (sourceLinVE : Expr 1) (sourceLinE : Expr 4) (S : Slot)
+    (killed : Expr 2 → Expr 4 → Expr 1)
+    (hns : nsE.eval σ = BitVec.ofNat 4 NS.val)
+    (hkind : kindE.eval σ = Hw.encKind kind)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hfree : linVE.eval σ = 1#1 →
+      σ.regs (Hw.dcellV T (finOfBv (by decide) (nlE.eval σ))) 1 ≠ 1#1)
+    (hparent : linVE.eval σ = 1#1 →
+      Hw.decRef (parE.eval σ) ≠ Hw.decRef (oldE.eval σ))
+    (hsourceSlot : sourceSlotE.eval σ = BitVec.ofNat 4 S.val)
+    (hgen : acc.regs (Hw.dgen D S) 8 = σ.regs (Hw.dgen D S) 8)
+    (hremoved : removedCell
+      ((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))) D S =
+      if sourceLinVE.eval σ = 1#1 then
+        some (finOfBv (by decide) (sourceLinE.eval σ)) else none)
+    (hkill : ∀ c : DomainId, ∀ r : RegionId,
+      (killed
+        (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+        (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ = 1#1 ↔
+      ((((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))).clearSlot D S).liveRef
+            (Hw.decRegion (σ.regs (Hw.drgn c r) 42)).backing = false))
+    (c : DomainId) :
+    Hw.absDom ((Hw.sweepRegionsA killed).run σ
+      ((Hw.clearSlotA D sourceSlotE sourceLinVE sourceLinE).run σ
+        ((Hw.reparentA oldE newE).run σ
+          ((Hw.installA T nsE kindE linVE nlE parE).run σ acc)))) c =
+      (((((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))).clearSlot D S).sweepRegions).doms c) := by
+  let inst := (Hw.installA T nsE kindE linVE nlE parE).run σ acc
+  let repar := (Hw.reparentA oldE newE).run σ inst
+  let cleared := (Hw.clearSlotA D sourceSlotE sourceLinVE sourceLinE).run σ repar
+  let τc := ((installTransferred (Hw.abs acc) T NS kind
+    (if linVE.eval σ = 1#1 then
+      some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+    else none)).reparent (Hw.decRef (oldE.eval σ))
+      (Hw.decRef (newE.eval σ))).clearSlot D S
+  have hdoms : (Hw.abs cleared).doms = τc.doms := by
+    funext c'
+    exact absDom_reparent_install_clear_selected σ acc T nsE kindE linVE nlE
+      parE oldE newE NS kind D sourceSlotE sourceLinVE sourceLinE S hns hkind
+      hV hP hfree hparent hsourceSlot hgen hremoved c'
+  have hvalidInst : ∀ c' : DomainId, ∀ r : RegionId,
+      inst.regs (Hw.drgnV c' r) 1 = σ.regs (Hw.drgnV c' r) 1 := by
+    intro c' r
+    have hf : inst.regs (Hw.drgnV c' r) 1 =
+        acc.regs (Hw.drgnV c' r) 1 := by
+      apply installA_selected_frame σ acc T nsE kindE linVE nlE parE NS
+        (Hw.drgnV c' r, 1) hns
+      · exact fun h => dcapV_ne_drgnV T c' NS r
+          (congrArg Prod.fst h).symm
+      · simp
+      · exact fun h => dcapLinV_ne_drgnV T c' NS r
+          (congrArg Prod.fst h).symm
+      · simp
+      · exact fun h => dcellV_ne_drgnV T c' _ r
+          (congrArg Prod.fst h).symm
+      · simp
+    exact hf.trans (hregionV c' r)
+  have hvalidRepar : ∀ c' : DomainId, ∀ r : RegionId,
+      repar.regs (Hw.drgnV c' r) 1 = σ.regs (Hw.drgnV c' r) 1 := by
+    intro c' r
+    exact (reparentA_frame_width σ inst oldE newE (Hw.drgnV c' r) 1
+      (by decide)).trans (hvalidInst c' r)
+  have hvalidCleared : ∀ c' : DomainId, ∀ r : RegionId,
+      cleared.regs (Hw.drgnV c' r) 1 = σ.regs (Hw.drgnV c' r) 1 := by
+    intro c' r
+    have hf := clearSlotA_frame σ repar D sourceSlotE sourceLinVE sourceLinE
+      (Hw.drgnV c' r) 1
+      (fun s' => (dcapV_ne_drgnV D c' s' r).symm)
+      (fun s' => drgnV_ne_dgen c' D r s')
+      (fun l' => (dcellV_ne_drgnV D c' l' r).symm)
+    exact hf.trans (hvalidRepar c' r)
+  have hpayloadInst : ∀ c' : DomainId, ∀ r : RegionId,
+      inst.regs (Hw.drgn c' r) 42 = σ.regs (Hw.drgn c' r) 42 := by
+    intro c' r
+    have hf : inst.regs (Hw.drgn c' r) 42 = acc.regs (Hw.drgn c' r) 42 := by
+      apply installA_selected_frame σ acc T nsE kindE linVE nlE parE NS
+        (Hw.drgn c' r, 42) hns <;> simp
+    exact hf.trans (hregion c' r)
+  have hpayloadRepar : ∀ c' : DomainId, ∀ r : RegionId,
+      repar.regs (Hw.drgn c' r) 42 = σ.regs (Hw.drgn c' r) 42 := by
+    intro c' r
+    exact (reparentA_frame_width σ inst oldE newE (Hw.drgn c' r) 42
+      (by decide)).trans (hpayloadInst c' r)
+  have hpayloadCleared : ∀ c' : DomainId, ∀ r : RegionId,
+      cleared.regs (Hw.drgn c' r) 42 = σ.regs (Hw.drgn c' r) 42 := by
+    intro c' r
+    exact (clearSlotA_frame_width σ repar D sourceSlotE sourceLinVE sourceLinE
+      (Hw.drgn c' r) 42 (by decide) (by decide)).trans
+        (hpayloadRepar c' r)
+  have hkillCleared : ∀ c' : DomainId, ∀ r : RegionId,
+      (killed
+        (Hw.field (.reg 42 (Hw.drgn c' r)) 40 2)
+        (Hw.field (.reg 42 (Hw.drgn c' r)) 36 4)).eval σ = 1#1 ↔
+      τc.liveRef (Hw.decRegion (cleared.regs (Hw.drgn c' r) 42)).backing =
+        false := by
+    intro c' r
+    rw [hpayloadCleared c' r]
+    exact hkill c' r
+  exact absDom_sweepRegionsA_of_doms σ cleared killed τc hdoms
+    hvalidCleared hkillCleared c
+
 /-- Pre-adjusting the moved cell's parent is equivalent, on the domain map,
 to letting the abstract reparent pass adjust it. This is the semantic reason
 for the parent mux inside `Hw.transferA`. -/
