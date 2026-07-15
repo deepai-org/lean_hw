@@ -614,6 +614,131 @@ theorem installTransferred_reparent_adjusted (τ : MachineState)
 
 /-! ## Selected `transferChosenA` branches -/
 
+/-- Accumulator-general root branch of the selected-recipient transfer.
+The sampled state supplies all combinational indices; the accumulator is the
+architectural base being transformed.  Retirement discharges the bank
+agreement hypotheses from refill framing. -/
+theorem absDom_transferChosenA_none_acc (σ acc : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) (S NS : Slot) (e : CapEntry)
+    (hsourceSlot : acs.slot.eval σ = BitVec.ofNat 4 S.val)
+    (hsource : ((Hw.abs acc).doms D).caps S = some e)
+    (hslot : (Hw.abs acc).freeSlot T = some NS)
+    (hslotSample : (Hw.abs σ).freeSlot T = some NS)
+    (hlin : e.lineage = none)
+    (hlinV : acs.linV.eval σ = 0#1)
+    (hkind : acs.kindW.eval σ = Hw.encKind e.kind)
+    (hold : Hw.decRef ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hgenAll : ∀ c : DomainId, ∀ s : Slot,
+      acc.regs (Hw.dgen c s) 8 = σ.regs (Hw.dgen c s) 8)
+    (hwf : Wf (Hw.abs acc)) (c : DomainId) :
+    Hw.absDom (transferChosenA D T acs |>.run σ acc) c =
+      (((((installTransferred (Hw.abs acc) T NS e.kind none).reparent
+        ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩
+        ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩).clearSlot D S).sweepRegions).doms c) := by
+  let oldE := Hw.encRefE (Hw.dLit D) acs.slot acs.gen
+  let nsE := Hw.freeSlotIdx T
+  let newE := Hw.encRefE (Hw.dLit T) nsE (Hw.genOfE T nsE)
+  let parE := Expr.mux (.eq (Hw.cellParAt D acs.lin) oldE) newE
+    (Hw.cellParAt D acs.lin)
+  have hns : nsE.eval σ = BitVec.ofNat 4 NS.val :=
+    freeSlotIdx_eval σ T NS hslotSample
+  have hfin : finOfBv (by decide : 2 ^ 4 = numSlots) (nsE.eval σ) = NS :=
+    (bv4_slot_iff _ NS).mp hns
+  have hgen : (Hw.genOfE T nsE).eval σ =
+      ((Hw.abs acc).doms T).slotGen NS := by
+    rw [Hw.genOfE, muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin]
+    exact (hgenAll T NS).symm
+  have hnew : Hw.decRef (newE.eval σ) =
+      ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩ := by
+    exact encRefE_decoded_selected σ T nsE (Hw.genOfE T nsE) NS
+      (((Hw.abs acc).doms T).slotGen NS) hns hgen
+  have hold' : Hw.decRef (oldE.eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩ := hold
+  have htargetFree : ((Hw.abs acc).doms T).caps NS = none :=
+    freeSlot_caps_none (Hw.abs acc) T hslot
+  have hnewne : Hw.decRef (newE.eval σ) ≠ Hw.decRef (oldE.eval σ) := by
+    rw [hnew, hold]
+    exact fresh_destination_ref_ne_source (Hw.abs acc) D S e hsource T NS
+      htargetFree
+  have hparent : acs.linV.eval σ = 1#1 →
+      Hw.decRef (parE.eval σ) ≠ Hw.decRef (oldE.eval σ) := by
+    intro _
+    exact decRef_transfer_parent_mux_ne σ (Hw.cellParAt D acs.lin) oldE
+      newE hnewne
+  have hfreeCell : acs.linV.eval σ = 1#1 →
+      σ.regs (Hw.dcellV T
+        (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ))) 1 ≠ 1#1 := by
+    intro h
+    rw [hlinV] at h
+    contradiction
+  have hremoved : removedCell
+      ((installTransferred (Hw.abs acc) T NS e.kind
+        (if acs.linV.eval σ = 1#1 then
+          some (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ),
+            Hw.decRef (parE.eval σ)) else none)).reparent
+        (Hw.decRef (oldE.eval σ)) (Hw.decRef (newE.eval σ))) D S =
+      if acs.linV.eval σ = 1#1 then
+        some (finOfBv (by decide) (acs.lin.eval σ)) else none := by
+    have hr := removedCell_installTransferred_reparent_source (Hw.abs acc)
+      D S e hsource T NS e.kind none htargetFree
+      (Hw.decRef (oldE.eval σ)) (Hw.decRef (newE.eval σ))
+    simpa [hlinV, hlin] using hr
+  rw [show (transferChosenA D T acs).run σ acc =
+      (Hw.sweepRegionsA
+        (fun dm sl => .and (.eq dm (Hw.dLit D)) (.eq sl acs.slot))).run σ
+        ((Hw.clearSlotA D acs.slot acs.linV acs.lin).run σ
+          ((Hw.reparentA oldE newE).run σ
+            ((Hw.installA T nsE acs.kindW acs.linV (Hw.freeCellIdx T)
+              parE).run σ acc))) from rfl]
+  simpa [hlinV, hold', hnew] using
+    (absDom_transferActions_selected_acc σ acc T nsE acs.kindW acs.linV
+      (Hw.freeCellIdx T) parE oldE newE NS e.kind D acs.slot acs.linV
+      acs.lin S hns hkind hV hP hregionV hregion (hgenAll D S) hfreeCell
+      hparent hsourceSlot hremoved htargetFree hwf c)
+
+/-- Whole-state accumulator-general root transfer. -/
+theorem abs_transferChosenA_none_acc (σ acc : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) (S NS : Slot) (e : CapEntry)
+    (hsourceSlot : acs.slot.eval σ = BitVec.ofNat 4 S.val)
+    (hsource : ((Hw.abs acc).doms D).caps S = some e)
+    (hslot : (Hw.abs acc).freeSlot T = some NS)
+    (hslotSample : (Hw.abs σ).freeSlot T = some NS)
+    (hlin : e.lineage = none)
+    (hlinV : acs.linV.eval σ = 0#1)
+    (hkind : acs.kindW.eval σ = Hw.encKind e.kind)
+    (hold : Hw.decRef ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hgenAll : ∀ c : DomainId, ∀ s : Slot,
+      acc.regs (Hw.dgen c s) 8 = σ.regs (Hw.dgen c s) 8)
+    (hwf : Wf (Hw.abs acc)) :
+    Hw.abs ((transferChosenA D T acs).run σ acc) =
+      ((((installTransferred (Hw.abs acc) T NS e.kind none).reparent
+        ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩
+        ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩).clearSlot D S).sweepRegions) := by
+  rw [abs_transferChosenA_frame_acc]
+  apply machineState_ext <;> try rfl
+  funext c
+  exact absDom_transferChosenA_none_acc σ acc D T acs S NS e hsourceSlot
+    hsource hslot hslotSample hlin hlinV hkind hold hV hP hregionV hregion
+    hgenAll hwf c
+
 /-- The selected-recipient hardware transfer of a root capability implements
 the explicit root branch of the abstract transfer through its region sweep.
 The final abstract Mover sweep is domain-neutral and is composed by the gate
