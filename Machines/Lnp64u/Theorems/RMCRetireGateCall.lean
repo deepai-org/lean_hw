@@ -59,6 +59,14 @@ theorem callCalleeServing_eval (σ : Loom.Hw.St) (d cal : DomainId)
     (if σ.regs (Hw.dsrvV cal) 1 = 1#1 then some _ else none).isSome
   by_cases hv : σ.regs (Hw.dsrvV cal) 1 = 1#1 <;> simp [hv]
 
+/-- The self-call check fires exactly when the selected callee is the caller. -/
+theorem callSameCallee_eval (σ : Loom.Hw.St) (d cal : DomainId)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal) :
+    (Expr.eq (Hw.callCal d) (Hw.dLit d)).eval σ = 1#1 ↔ cal = d := by
+  rw [eqE_eval, bv2_lit_iff]
+  exact ⟨fun h => h.symm.trans hcal, fun h => h ▸ hcal.symm⟩
+
 /-- Under the canonical run-state invariant, the selected callee's raw
 nonzero check is exactly failure to be abstractly running. -/
 theorem callCalleeNotRunning_eval (σ : Loom.Hw.St) (d cal : DomainId)
@@ -192,6 +200,45 @@ theorem callDepth_eval (σ : Loom.Hw.St) (c : Ctx)
       cases hact : ((Hw.abs σ).gates g).act with
       | none => simp [hact] at hisSome
       | some a => simp [hact]
+
+/-- The five gate/callee/depth predicates all pass under the corresponding
+abstract successful-call preconditions. -/
+theorem callStateChecks_pass (σ : Loom.Hw.St) (c : Ctx)
+    (g : GateId) (cal : DomainId)
+    (hwf : Wf (Hw.abs σ))
+    (hrc : σ.regs (Hw.drun cal) 2 ≠ 3#2)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid c.d).eval σ) = g)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal c.d).eval σ) = cal)
+    (hgate : ((Hw.abs σ).gates g).act = none)
+    (hne : cal ≠ c.d)
+    (hrun : ((Hw.abs σ).doms cal).run = .running)
+    (hserv : ((Hw.abs σ).doms cal).serving = none)
+    (hdepth : Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ≤
+      maxChainDepth) :
+    (Hw.muxFin (fun h => .reg 1 (Hw.gactV h))
+        (Hw.callGid c.d)).eval σ ≠ 1#1 ∧
+    (Expr.eq (Hw.callCal c.d) (Hw.dLit c.d)).eval σ ≠ 1#1 ∧
+    (Hw.neqE (Hw.muxFin (fun x => .reg 2 (Hw.drun x))
+        (Hw.callCal c.d)) (.lit 0)).eval σ ≠ 1#1 ∧
+    (Hw.muxFin (fun x => .reg 1 (Hw.dsrvV x))
+        (Hw.callCal c.d)).eval σ ≠ 1#1 ∧
+    (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
+        (Hw.callDepth c.d)).eval σ ≠ 1#1 := by
+  constructor
+  · intro h
+    have := (callGateActive_eval σ c.d g hgid).mp h
+    simp [hgate] at this
+  constructor
+  · exact fun h => hne ((callSameCallee_eval σ c.d cal hcal).mp h)
+  constructor
+  · exact fun h => (callCalleeNotRunning_eval σ c.d cal hrc hcal).mp h hrun
+  constructor
+  · intro h
+    have := (callCalleeServing_eval σ c.d cal hcal).mp h
+    simp [hserv] at this
+  · exact fun h => (callDepthOverflow_eval σ c hwf).mp h hdepth
 
 /-! ## Activation-record writer -/
 
