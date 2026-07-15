@@ -1097,6 +1097,46 @@ def callSuccessA (d : DomainId) : Act :=
       .write 2 (Hw.drunG d) (Hw.callGid d),
       Hw.pcAdvA d ]
 
+/-- Pure abstract state assembled by a successful call after the optional
+argument transfer.  `source` is the sampled pre-cycle architectural state;
+`base` is the state after that transfer. -/
+def callAbstractSuccess (source base : MachineState)
+    (d cal : DomainId) (g : GateId) (rd : RegId)
+    (argHandle : Loom.Word32) (depth : Nat) : MachineState :=
+  { base with
+    doms := fun x =>
+      if x = d then
+        { base.doms d with
+          pc := (source.doms d).pc + 1
+          run := .blocked g }
+      else if x = cal then
+        { base.doms cal with
+          regs := fun r => if r.val = 1 then argHandle else 0
+          pc := (source.gates g).config.entry
+          serving := some g }
+      else base.doms x
+    gates := fun h =>
+      if h = g then
+        { base.gates g with
+          act := some
+            { caller := d
+              callerRd := rd
+              savedRegs := (source.doms cal).regs
+              savedPc := (source.doms cal).pc
+              savedServing := (source.doms cal).serving
+              depth := depth
+              donated := (source.doms d).maxDonation } }
+      else base.gates h }
+
+/-- Register faces outside domains and gates that the successful-call tail
+must frame. -/
+private def callQuietNames : List (String × Nat) :=
+  [ ("cycle", 32),
+    ("mov_v", 1), ("mov_owner", 2), ("mov_src", 14), ("mov_dst", 14),
+    ("mov_srccur", 12), ("mov_dstcur", 12), ("mov_rem", 13),
+    ("mov_status", 12),
+    ("if_v", 1), ("if_dom", 2), ("if_word", 32), ("if_cl", 8) ]
+
 /-- The factored successful payload is definitionally the body selected by
 the hardware call check ladder. -/
 theorem callCirc_act_eq (d : DomainId) :
@@ -1133,6 +1173,20 @@ theorem callSuccessA_run (σ acc : Loom.Hw.St) (d : DomainId) :
         ((callCalleeA d).run σ
           ((callActivateA d).run σ ((callTransferA d).run σ acc))) := by
   rfl
+
+/-- After the optional transfer, the remainder of the call payload frames
+the cycle, Mover, and in-flight encodings. -/
+private theorem callSuccessA_frame_quiet (σ acc : Loom.Hw.St)
+    (d : DomainId) (q : String × Nat) (hq : q ∈ callQuietNames) :
+    ((callSuccessA d).run σ acc).regs q.1 q.2 =
+      ((callTransferA d).run σ acc).regs q.1 q.2 := by
+  rw [callSuccessA_run]
+  rw [Loom.Hw.Compile.run_regs_notin q.1 q.2 (callCallerA d)]
+  rw [Loom.Hw.Compile.run_regs_notin q.1 q.2 (callCalleeA d)]
+  rw [Loom.Hw.Compile.run_regs_notin q.1 q.2 (callActivateA d)]
+  all_goals
+    exact (show ∀ p ∈ callQuietNames, p ∉ _ from by
+      fin_cases d <;> decide +kernel) q hq
 
 /-- Domain-map abstraction of the complete successful payload, relative to
 the state produced by its optional structural transfer. -/
@@ -1208,5 +1262,76 @@ theorem absGate_callSuccessA (σ acc : Loom.Hw.St)
   rw [absGate_callCaller_frame σ entered d h,
     absGate_callCalleeA_frame σ activated d h]
   exact absGate_callActivateA σ base d cal g h hgid hcal
+
+/-- The successful call payload has no memory writes; its memory face is
+therefore exactly the optional transfer's memory face. -/
+private theorem callSuccessA_frame_mem (σ acc : Loom.Hw.St)
+    (d : DomainId) (mn : String) (a w : Nat) :
+    ((callSuccessA d).run σ acc).mems mn a w =
+      ((callTransferA d).run σ acc).mems mn a w := by
+  rw [callSuccessA_run]
+  rw [Loom.Hw.Compile.run_mems_notin mn (callCallerA d)
+    (by simp [callCallerA, Act.memWrites])]
+  rw [Loom.Hw.Compile.run_mems_notin mn (callCalleeA d)
+    (by simp [callCalleeA, callCalleeChosenA, Act.memWrites])]
+  rw [Loom.Hw.Compile.run_mems_notin mn (callActivateA d)
+    (by simp [callActivateA, callActivateChosenA, Act.memWrites])]
+
+/-- Whole-machine abstraction of a successful call, relative only to the
+state produced by its optional argument transfer.  This is the assembly
+lemma consumed by the full retirement square. -/
+theorem abs_callSuccessA (σ acc : Loom.Hw.St)
+    (d cal : DomainId) (g : GateId)
+    (hne : d ≠ cal)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    Hw.abs ((callSuccessA d).run σ acc) =
+      callAbstractSuccess (Hw.abs σ)
+        (Hw.abs ((callTransferA d).run σ acc)) d cal g
+        (finOfBv (by decide) (Hw.rdE.eval σ))
+        ((callArgHandle d).eval σ) ((Hw.callDepth d).eval σ).toNat := by
+  apply machineState_ext
+  · exact callSuccessA_frame_quiet σ acc d ("cycle", 32)
+      (by simp [callQuietNames])
+  · funext a
+    exact callSuccessA_frame_mem σ acc d "mem" a.toNat 32
+  · funext x
+    rw [absDom_callSuccessA σ acc d cal g x hne hcal hgid]
+    rfl
+  · funext h
+    rw [absGate_callSuccessA σ acc d cal g h hcal hgid]
+    rfl
+  · change Hw.absMover ((callSuccessA d).run σ acc) =
+      Hw.absMover ((callTransferA d).run σ acc)
+    unfold Hw.absMover
+    rw [callSuccessA_frame_quiet σ acc d ("mov_v", 1)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("mov_owner", 2)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("mov_src", 14)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("mov_dst", 14)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("mov_srccur", 12)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("mov_dstcur", 12)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("mov_rem", 13)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("mov_status", 12)
+        (by simp [callQuietNames])]
+  · change Hw.absInflight ((callSuccessA d).run σ acc) =
+      Hw.absInflight ((callTransferA d).run σ acc)
+    unfold Hw.absInflight
+    rw [callSuccessA_frame_quiet σ acc d ("if_v", 1)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("if_dom", 2)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("if_word", 32)
+        (by simp [callQuietNames]),
+      callSuccessA_frame_quiet σ acc d ("if_cl", 8)
+        (by simp [callQuietNames])]
 
 end Machines.Lnp64u.Theorems.RMC
