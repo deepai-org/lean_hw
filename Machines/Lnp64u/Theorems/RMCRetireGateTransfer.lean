@@ -218,6 +218,24 @@ theorem transferStructural_dead_iff_of_live (τ : MachineState)
       hfree hlive
     simp [hsrc, hi]
 
+/-- Exact liveness of a pre-existing live reference through the structural
+transfer prefix.  Only the removed source slot can make it dead. -/
+theorem transferStructural_liveRef_of_live (τ : MachineState)
+    (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef))
+    (oldRef newRef : CapRef) (D : DomainId) (S : Slot) (r : CapRef)
+    (hfree : (τ.doms T).caps NS = none)
+    (hlive : τ.liveRef r = true) :
+    (((installTransferred τ T NS kind moved).reparent oldRef newRef).clearSlot
+        D S).liveRef r =
+      if r.dom = D ∧ r.slot = S then false else true := by
+  rw [clearSlot_liveRef]
+  by_cases hsrc : r.dom = D ∧ r.slot = S
+  · simp [hsrc]
+  · rw [if_neg hsrc, reparent_liveRef]
+    simpa [hsrc] using
+      installTransferred_liveRef_of_live τ T NS kind moved r hfree hlive
+
 /-- A reference that was live before transfer and does not name the removed
 source slot retains its Mover-relevant capability kind.  The freshly
 installed destination cannot alias such a reference because its slot was
