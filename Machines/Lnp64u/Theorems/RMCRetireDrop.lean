@@ -309,6 +309,258 @@ theorem sweepMover_transfer_mem (σ τ : MachineState)
         · rw [hdst job hmov, if_neg hd, hl.2]
           simp [hs, hd]
 
+/-! ## Shared sweeping-operation memory commit -/
+
+/-- The status-authority expression used by a sweeping operation is exactly
+the equivalent authority search over the core's post-region view.  This is
+the common bridge between the port enable and the specification-side region
+sweep; only the operation's kill predicate varies. -/
+theorem statusAuthE_post_eval (σ : Loom.Hw.St)
+    (killed : Expr 2 → Expr 4 → Expr 1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (killed dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1) :
+    ((Hw.statusAuthE killed).eval σ = 1#1) ↔
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq (.reg 2 "mov_owner") (Hw.dLit c),
+            Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r)
+              (.reg 12 "mov_status")
+              ⟨false, true, false⟩])).eval σ = 1#1) := by
+  have hentry : ∀ (c : DomainId) (r : RegionId),
+      ((Hw.andAll [Expr.eq (.reg 2 "mov_owner") (Hw.dLit c),
+        .not (killed
+          (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+          (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)),
+        Hw.coversE c r (.reg 12 "mov_status")
+          ⟨false, true, false⟩]).eval σ = 1#1) ↔
+      ((Hw.andAll [Expr.eq (.reg 2 "mov_owner") (Hw.dLit c),
+        Hw.rgnVPostE c r,
+        Hw.rgnCoversVal (Hw.rgnValPostE c r)
+          (.reg 12 "mov_status")
+          ⟨false, true, false⟩]).eval σ = 1#1) := by
+    intro c r
+    have hrv : (Hw.rgnVPostE c r).eval σ =
+        σ.regs (Hw.drgnV c r) 1 &&&
+          ~~~((Hw.killedByCoreE
+            (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+            (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ) := by
+      show (if (Hw.andAll [Hw.retiringE, Hw.ifDomIs c,
+          Hw.isMn "map", Hw.mapOkE c,
+          .eq Hw.riE (Hw.rLit r)]).eval σ = 1#1 then _
+        else if (Hw.andAll [Hw.retiringE, Hw.ifDomIs c,
+          Hw.isMn "unmap", .eq Hw.riE (Hw.rLit r)]).eval σ = 1#1
+        then _ else _) = _
+      rw [hmapz c r, hunmapz c r]
+      rw [if_neg (by decide), if_neg (by decide)]
+      rfl
+    have hrval : (Hw.rgnValPostE c r).eval σ =
+        σ.regs (Hw.drgn c r) 42 := by
+      exact rgnValPostE_quiescent σ hmapz c r
+    have hcover :
+        ((Hw.coversE c r (.reg 12 "mov_status")
+            ⟨false, true, false⟩).eval σ = 1#1) ↔
+        (σ.regs (Hw.drgnV c r) 1 = 1#1 ∧
+          (Hw.rgnCoversVal (.reg 42 (Hw.drgn c r))
+            (.reg 12 "mov_status")
+            ⟨false, true, false⟩).eval σ = 1#1) := by
+      rw [Hw.coversE, andAll_eval, Hw.rgnCoversVal, andAll_eval]
+      simp only [reduceIte, List.cons_append, List.nil_append,
+        List.forall_mem_cons, List.not_mem_nil, implies_true, False.elim]
+      constructor
+      · rintro ⟨hv, hp, hlo, hhi⟩
+        exact ⟨hv, hp, hlo, hhi⟩
+      · rintro ⟨hv, hp, hlo, hhi⟩
+        exact ⟨hv, hp, hlo, hhi⟩
+    rw [andAll_eval, andAll_eval]
+    simp only [List.forall_mem_cons, List.not_mem_nil, implies_true,
+      False.elim]
+    rw [hcover, hrv, bv1_and_eq_one,
+      rgnCoversVal_eval, rgnCoversVal_eval, hrval]
+    simp [and_assoc, and_left_comm, and_comm]
+    intro _
+    rw [notE_eval, ← hkills]
+    constructor
+    · rintro ⟨hc, hk, hv⟩
+      refine ⟨?_, hk, hv⟩
+      rw [hc]
+      decide
+    · rintro ⟨hn, hc, hv⟩
+      refine ⟨?_, hc, hv⟩
+      apply bv1_ne_one.mp
+      intro hk
+      rw [hk] at hn
+      exact absurd hn (by decide)
+  unfold Hw.statusAuthE
+  rw [orAll_eval, orAll_eval]
+  constructor
+  · rintro ⟨e', he', hev⟩
+    rw [List.mem_flatMap] at he'
+    obtain ⟨c, hc, he'⟩ := he'
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp he'
+    exact ⟨_, List.mem_flatMap.mpr ⟨c, hc,
+      List.mem_map.mpr ⟨r, hr, rfl⟩⟩, (hentry c r).mp hev⟩
+  · rintro ⟨e', he', hev⟩
+    rw [List.mem_flatMap] at he'
+    obtain ⟨c, hc, he'⟩ := he'
+    obtain ⟨r, hr, rfl⟩ := List.mem_map.mp he'
+    exact ⟨_, List.mem_flatMap.mpr ⟨c, hc,
+      List.mem_map.mpr ⟨r, hr, rfl⟩⟩, (hentry c r).mpr hev⟩
+
+/-- A selected successful sweeping-operation port implements the exact
+status-word update prescribed by the specification.  Operation-specific
+proofs supply only the port selection, endpoint-kill characterization, and
+post-structural status-authority bridge; the memory commit itself is shared
+by drop, call, and return. -/
+theorem coreAct_mem_sweep_success (m : Manifest) (σ : Loom.Hw.St)
+    (okE : Expr 1) (killed : Expr 2 → Expr 4 → Expr 1)
+    (circ : Hw.OpCirc) (D : DomainId) (S : Slot)
+    (base target : MachineState)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hport :
+      ((((List.finRange numDomains).foldr
+        (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+          let (en_d, ad_d, da_d) := Hw.retireMemFor d
+          let g := Expr.and (Hw.ifDomIs d) en_d
+          (.or g acc'.1, .mux g ad_d acc'.2.1,
+            .mux g da_d acc'.2.2))
+        ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+          (.lit 0 : Expr 32))).1).eval σ =
+          circ.memEn.eval σ) ∧
+        (circ.memEn.eval σ = 1#1 →
+          ((((List.finRange numDomains).foldr
+            (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+              let (en_d, ad_d, da_d) := Hw.retireMemFor d
+              let g := Expr.and (Hw.ifDomIs d) en_d
+              (.or g acc'.1, .mux g ad_d acc'.2.1,
+                .mux g da_d acc'.2.2))
+            ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+              (.lit 0 : Expr 32))).2.1).eval σ =
+              circ.memAddr.eval σ) ∧
+           ((((List.finRange numDomains).foldr
+            (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+              let (en_d, ad_d, da_d) := Hw.retireMemFor d
+              let g := Expr.and (Hw.ifDomIs d) en_d
+              (.or g acc'.1, .mux g ad_d acc'.2.1,
+                .mux g da_d acc'.2.2))
+            ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+              (.lit 0 : Expr 32))).2.2).eval σ =
+              circ.memData.eval σ)))
+    (henShape : circ.memEn = Hw.andAll
+      [okE, Hw.movKilledE killed, Hw.statusAuthE killed])
+    (haddrShape : circ.memAddr = .reg 12 "mov_status")
+    (hdataShape : circ.memData = .lit Errno.staleHandle.toWord)
+    (hok : okE.eval σ = 1#1)
+    (hkilled : ((Hw.movKilledE killed).eval σ = 1#1) ↔
+      match Hw.absMover σ with
+      | none => False
+      | some job =>
+          (job.src.dom = D ∧ job.src.slot = S) ∨
+          (job.dst.dom = D ∧ job.dst.slot = S))
+    (hauth : ∀ job, Hw.absMover σ = some job →
+      (((Hw.statusAuthE killed).eval σ = 1#1) ↔
+        base.domCovers job.owner job.statusAddr
+          { r := false, w := true, x := false } = true))
+    (hbase : ∀ b : Addr, base.mem b = σ.mems "mem" b.toNat 32)
+    (htarget : ∀ b : Addr, target.mem b =
+      match Hw.absMover σ with
+      | none => base.mem b
+      | some job =>
+          if (job.src.dom = D ∧ job.src.slot = S) ∨
+              (job.dst.dom = D ∧ job.dst.slot = S) then
+            if base.domCovers job.owner job.statusAddr
+                { r := false, w := true, x := false } then
+              if b = job.statusAddr then Errno.staleHandle.toWord
+              else base.mem b
+            else base.mem b
+          else base.mem b)
+    (b : Addr) :
+    ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems
+        "mem" b.toNat 32 = target.mem b := by
+  rw [coreAct_run_retire_eq m σ _ hifv hcl,
+    retireAct_run_mems σ _ b.toNat 32]
+  simp only [Act.run]
+  rw [hport.1]
+  change _ = target.mem b
+  rw [htarget b]
+  by_cases hv : σ.regs "mov_v" 1 = 1#1
+  · let job : MoverJob :=
+      { owner := finOfBv (by decide) (σ.regs "mov_owner" 2)
+        src := Hw.decRef (σ.regs "mov_src" 14)
+        dst := Hw.decRef (σ.regs "mov_dst" 14)
+        srcCur := σ.regs "mov_srccur" 12
+        dstCur := σ.regs "mov_dstcur" 12
+        remaining := (σ.regs "mov_rem" 13).toNat
+        statusAddr := σ.regs "mov_status" 12 }
+    have habs : Hw.absMover σ = some job := absMover_some σ hv
+    rw [habs]
+    have hauth' : ((Hw.statusAuthE killed).eval σ = 1#1) ↔
+        base.domCovers job.owner job.statusAddr
+          ⟨false, true, false⟩ = true := hauth job habs
+    have hen : (circ.memEn.eval σ = 1#1) ↔
+        (((job.src.dom = D ∧ job.src.slot = S) ∨
+            (job.dst.dom = D ∧ job.dst.slot = S)) ∧
+          base.domCovers job.owner job.statusAddr
+            ⟨false, true, false⟩ = true) := by
+      rw [henShape]
+      rw [andAll_eval]
+      simp only [List.forall_mem_cons, List.not_mem_nil, implies_true]
+      rw [hok, hkilled, habs, hauth']
+      simp
+    by_cases hk : (job.src.dom = D ∧ job.src.slot = S) ∨
+        (job.dst.dom = D ∧ job.dst.slot = S)
+    · simp only
+      rw [if_pos hk]
+      by_cases ha : base.domCovers job.owner job.statusAddr
+          ⟨false, true, false⟩ = true
+      · have he : circ.memEn.eval σ = 1#1 :=
+          hen.mpr ⟨hk, ha⟩
+        rw [if_pos ha, if_pos he]
+        obtain ⟨had, hda⟩ := hport.2 he
+        rw [had, hda]
+        rw [haddrShape, hdataShape]
+        simp only [Act.run, refill_pres_mem m σ "mem" b.toNat 32]
+        by_cases hb : b = job.statusAddr
+        · subst b
+          simp only [MemEnv.set]
+          simp [Expr.eval, job]
+        · have hbn : b.toNat ≠ job.statusAddr.toNat :=
+            fun h => hb (BitVec.eq_of_toNat_eq h)
+          simp only [MemEnv.set]
+          rw [if_neg (fun h => hbn h.2),
+            refill_pres_mem m σ "mem" b.toNat 32]
+          rw [if_neg hb, hbase]
+      · have he : ¬(circ.memEn.eval σ = 1#1) :=
+          fun h => ha (hen.mp h).2
+        rw [if_neg ha, if_neg he,
+          refill_pres_mem m σ "mem" b.toNat 32]
+        exact (hbase b).symm
+    · simp only
+      have he : ¬(circ.memEn.eval σ = 1#1) :=
+        fun h => hk (hen.mp h).1
+      rw [if_neg hk, if_neg he,
+        refill_pres_mem m σ "mem" b.toNat 32]
+      exact (hbase b).symm
+  · have habs : Hw.absMover σ = none := absMover_none σ hv
+    rw [habs]
+    simp only
+    have he : ¬(circ.memEn.eval σ = 1#1) := by
+      intro h
+      have hm : (Hw.movKilledE killed).eval σ = 1#1 := by
+        rw [henShape] at h
+        exact (andAll_eval σ _).mp h _
+          (List.mem_cons_of_mem _ (List.mem_cons_self ..))
+      simpa [habs] using hkilled.mp hm
+    rw [if_neg he, refill_pres_mem m σ "mem" b.toNat 32]
+    exact (hbase b).symm
+
 /-! ## Hardware structural walks -/
 
 /-- A guarded write walk frames a register whose name is distinct from
