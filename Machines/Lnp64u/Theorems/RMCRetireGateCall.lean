@@ -459,6 +459,90 @@ theorem Inert.of_failed_call (σ : Loom.Hw.St) (E : DomainId)
     hreturn hbad
   newJob := hnew
 
+/-- Successful non-null call specialization of the shared one-source-slot
+Mover-state bridge. -/
+theorem absMover_moverAct_call (σ acc : Loom.Hw.St) (τ : MachineState)
+    (E : DomainId) (S : Slot)
+    (hslot : (Hw.argSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.argNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
+      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
+        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hjob : τ.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job) :
+    Hw.absMover (Hw.moverAct.run σ acc) = (moverPhase τ).mover := by
+  apply absMover_moverAct_transfer σ acc τ E (Hw.argSel E).slot S hslot
+  · intro dm sl
+    rw [hkills]
+    exact callKilled_nonzero_eval σ E hnz dm sl
+  · exact hnew
+  · exact hkind
+  · exact hjob
+
+/-- Successful non-null call specialization of the shared one-source-slot
+Mover memory bridge. -/
+theorem moverAct_mem_call (σ acc : Loom.Hw.St) (τ : MachineState)
+    (E : DomainId) (S : Slot)
+    (hslot : (Hw.argSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.argNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
+      Option.map CapEntry.kind ((τ.doms d).liveCap s g) =
+        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hjob : τ.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job)
+    (hauthτ : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmemτ : ∀ b : Addr, acc.mems "mem" b.toNat 32 = τ.mem b)
+    (hswτ : ∀ job, Hw.absMover σ = some job →
+      ¬((job.src.dom = E ∧ job.src.slot = S) ∨
+        (job.dst.dom = E ∧ job.dst.slot = S)) →
+      ∀ sc : Expr 12, Expr.eval σ
+        (((List.finRange numDomains).foldr
+          (fun d acc' =>
+            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+                Hw.domCoversE d
+                  (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                  ⟨false, true, false⟩,
+                .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
+              (Hw.readReg d Hw.rs2E) acc')
+          (.memRead 32 "mem" sc))) = τ.mem (sc.eval σ))
+    (a : Addr) :
+    (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 =
+      (moverPhase τ).mem a := by
+  apply moverAct_mem_transfer σ acc τ E (Hw.argSel E).slot S hslot
+  · intro dm sl
+    rw [hkills]
+    exact callKilled_nonzero_eval σ E hnz dm sl
+  · exact hnew
+  · exact hkind
+  · exact hjob
+  · exact hauthτ
+  · exact hmemτ
+  · exact hswτ
+  · exact a
+
 /-! ## Activation-record writer -/
 
 /-- The gate-indexed activation-record fold from the successful call arm. -/
