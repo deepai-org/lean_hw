@@ -2391,6 +2391,21 @@ theorem slotKilled_ref_eval (σ : Loom.Hw.St) (d : DomainId)
   rw [slotKilled_eval σ d slotE S hslot]
   rfl
 
+/-- Specialization of `slotKilled_eval` to a packed region backing. -/
+theorem slotKilled_region_eval (σ : Loom.Hw.St) (d : DomainId)
+    (slotE : Expr 4) (S : Slot)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val) (rgE : Expr 42) :
+    ((Expr.and
+        (.eq (Hw.field rgE 40 2) (Hw.dLit d))
+        (.eq (Hw.field rgE 36 4) slotE)).eval σ = 1#1) ↔
+      (Hw.decRegion (rgE.eval σ)).backing.dom = d ∧
+      (Hw.decRegion (rgE.eval σ)).backing.slot = S := by
+  rw [slotKilled_eval σ d slotE S hslot]
+  unfold Hw.decRegion Hw.decRef Hw.field
+  rw [extractLsb'_extractLsb' _ 28 12 (by omega),
+    extractLsb'_extractLsb' _ 28 8 (by omega)]
+  rfl
+
 /-- A reference outside the selected source slot is silent in the
 specialized global kill tree. -/
 theorem killedByCoreE_transfer_ref_zero (σ : Loom.Hw.St) (d : DomainId)
@@ -2515,6 +2530,35 @@ theorem Inert.of_failed_drop (σ : Loom.Hw.St) (E : DomainId)
 /-! ## Successful post-core sweep selectors -/
 
 /-- With map/unmap off, post-core region validity is the old valid bit
+masked by an arbitrary one-source-slot transfer predicate. -/
+theorem rgnVPostE_transfer_eval (σ : Loom.Hw.St) (E : DomainId)
+    (slotE : Expr 4)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (c : DomainId) (r : RegionId) :
+    (Hw.rgnVPostE c r).eval σ =
+      σ.regs (Hw.drgnV c r) 1 &&&
+        ~~~((Expr.and
+          (.eq (Hw.field (.reg 42 (Hw.drgn c r)) 40 2) (Hw.dLit E))
+          (.eq (Hw.field (.reg 42 (Hw.drgn c r)) 36 4) slotE)).eval σ) := by
+  show (if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
+    else if (Hw.andAll (Hw.retiringE :: _)).eval σ = 1#1 then _
+    else (Expr.and (.reg 1 (Hw.drgnV c r))
+      (.not (Hw.killedByCoreE _ _))).eval σ) = _
+  rw [hmapz c r, hunmapz c r]
+  rw [if_neg (by decide), if_neg (by decide)]
+  show σ.regs (Hw.drgnV c r) 1 &&&
+      ~~~((Hw.killedByCoreE _ _).eval σ) = _
+  rw [hkills]
+
+/-- With map/unmap off, post-core region validity is the old valid bit
 masked by the selected drop kill predicate. -/
 theorem rgnVPostE_drop_eval (σ : Loom.Hw.St) (E : DomainId)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
@@ -2630,6 +2674,49 @@ theorem rgnVPostE_drop_sweepRegions (σ : Loom.Hw.St) (E : DomainId)
   · have hv0 : σ.regs (Hw.drgnV c r) 1 = 0#1 := bv1_ne_one.mp hv
     simp [hv, hv0]
 
+/-- Generic one-source-slot counterpart of
+`rgnVPostE_drop_sweepRegions`, shared by gate transfers. -/
+theorem rgnVPostE_transfer_sweepRegions (σ : Loom.Hw.St) (E : DomainId)
+    (slotE : Expr 4) (S : Slot) (τ : MachineState)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hregions : ∀ c : DomainId,
+      (τ.doms c).regions = ((Hw.abs σ).doms c).regions)
+    (hlive : ∀ ref : CapRef, τ.liveRef ref =
+      if ref.dom = E ∧ ref.slot = S then false
+      else (Hw.abs σ).liveRef ref)
+    (hwf : Wf (Hw.abs σ)) (c : DomainId) (r : RegionId) :
+    (Hw.rgnVPostE c r).eval σ =
+      if ((τ.sweepRegions.doms c).regions r).isSome then 1#1 else 0#1 := by
+  rw [rgnVPostE_transfer_eval σ E slotE hkills hmapz hunmapz]
+  rw [sweepRegions_drop_regions (Hw.abs σ) τ E S hregions hlive
+    (fun c r rg hr => regionBacking_live hwf hr)]
+  rw [abs_regions]
+  let rg := Hw.decRegion (σ.regs (Hw.drgn c r) 42)
+  let killed := (Expr.and
+    (.eq (Hw.field (.reg 42 (Hw.drgn c r)) 40 2) (Hw.dLit E))
+    (.eq (Hw.field (.reg 42 (Hw.drgn c r)) 36 4) slotE)).eval σ
+  have hkiff : killed = 1#1 ↔ rg.backing.dom = E ∧ rg.backing.slot = S := by
+    exact slotKilled_region_eval σ E slotE S hslot
+      (.reg 42 (Hw.drgn c r))
+  by_cases hv : σ.regs (Hw.drgnV c r) 1 = 1#1
+  · rw [if_pos hv]
+    by_cases hk : rg.backing.dom = E ∧ rg.backing.slot = S
+    · have hk1 : killed = 1#1 := hkiff.mpr hk
+      simp [hv, hk, hk1, killed, rg]
+    · have hk0 : killed = 0#1 := bv1_ne_one.mp (fun h => hk (hkiff.mp h))
+      simp [hv, hk, hk0, killed, rg]
+  · have hv0 : σ.regs (Hw.drgnV c r) 1 = 0#1 := bv1_ne_one.mp hv
+    simp [hv, hv0]
+
 /-- Option-valued strengthening of `rgnVPostE_drop_sweepRegions`: the
 swept table is exactly the abstraction encoded by the post-core valid bit
 and the unchanged packed region value. -/
@@ -2655,6 +2742,45 @@ theorem sweepRegions_drop_region_eq (σ : Loom.Hw.St) (E : DomainId)
         some (Hw.decRegion (σ.regs (Hw.drgn c r) 42)) else none := by
   have hp := rgnVPostE_drop_sweepRegions σ E S τ hslot hkills hmapz
     hunmapz hregions hlive hwf c r
+  rw [sweepRegions_drop_regions (Hw.abs σ) τ E S hregions hlive
+    (fun c r rg hr => regionBacking_live hwf hr), abs_regions] at hp ⊢
+  by_cases hv : σ.regs (Hw.drgnV c r) 1 = 1#1
+  · rw [if_pos hv] at hp ⊢
+    by_cases hk :
+        (Hw.decRegion (σ.regs (Hw.drgn c r) 42)).backing.dom = E ∧
+        (Hw.decRegion (σ.regs (Hw.drgn c r) 42)).backing.slot = S
+    · simp [hk] at hp ⊢
+      rw [hp] <;> decide
+    · simp [hk] at hp ⊢
+      rw [hp] <;> decide
+  · rw [if_neg hv] at hp ⊢
+    simp at hp ⊢
+    rw [hp] <;> decide
+
+/-- Option-valued generic counterpart used by both gate transfers. -/
+theorem sweepRegions_transfer_region_eq (σ : Loom.Hw.St) (E : DomainId)
+    (slotE : Expr 4) (S : Slot) (τ : MachineState)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hregions : ∀ c : DomainId,
+      (τ.doms c).regions = ((Hw.abs σ).doms c).regions)
+    (hlive : ∀ ref : CapRef, τ.liveRef ref =
+      if ref.dom = E ∧ ref.slot = S then false
+      else (Hw.abs σ).liveRef ref)
+    (hwf : Wf (Hw.abs σ)) (c : DomainId) (r : RegionId) :
+    (τ.sweepRegions.doms c).regions r =
+      if (Hw.rgnVPostE c r).eval σ = 1#1 then
+        some (Hw.decRegion (σ.regs (Hw.drgn c r) 42)) else none := by
+  have hp := rgnVPostE_transfer_sweepRegions σ E slotE S τ hslot hkills
+    hmapz hunmapz hregions hlive hwf c r
   rw [sweepRegions_drop_regions (Hw.abs σ) τ E S hregions hlive
     (fun c r rg hr => regionBacking_live hwf hr), abs_regions] at hp ⊢
   by_cases hv : σ.regs (Hw.drgnV c r) 1 = 1#1
@@ -2944,13 +3070,14 @@ theorem absDom_dropSuccessA_refill (m : Manifest) (hwfm : m.WF)
     rw [hout (by fin_cases c <;> decide) (by fin_cases c <;> decide)]
     exact congrArg DomainState.maxDonation hold
 
-/-- The Mover status-authority tree decodes against the post-drop swept
+/-- The Mover status-authority tree decodes against a post-transfer swept
 region table. -/
-theorem sAuth_drop_eval (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
-    (τ : MachineState)
-    (hslot : (Hw.dropSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+theorem sAuth_transfer_eval (σ : Loom.Hw.St) (E : DomainId)
+    (slotE : Expr 4) (S : Slot) (τ : MachineState)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
     (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
-      (Hw.killedByCoreE dm sl).eval σ = (Hw.dropKilled E dm sl).eval σ)
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
     (hmapz : ∀ (c : DomainId) (r : RegionId),
       (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
         .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
@@ -2996,11 +3123,11 @@ theorem sAuth_drop_eval (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
       (bv2_lit_iff _ c).mp h1
     rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hmapz] at hcv
     refine ⟨r, Hw.decRegion (σ.regs (Hw.drgn c r) 42), ?_, hcv⟩
-    rw [hc, sweepRegions_drop_region_eq σ E S τ hslot hkills hmapz
+    rw [hc, sweepRegions_transfer_region_eq σ E slotE S τ hslot hkills hmapz
       hunmapz hregions hlive hwf c r, if_pos h2]
   · rintro ⟨r, rg, hsome, hcov⟩
     set c : DomainId := finOfBv (by decide) (ow.eval σ) with hcdef
-    rw [sweepRegions_drop_region_eq σ E S τ hslot hkills hmapz
+    rw [sweepRegions_transfer_region_eq σ E slotE S τ hslot hkills hmapz
       hunmapz hregions hlive hwf c r] at hsome
     by_cases hval : (Hw.rgnVPostE c r).eval σ = 1#1
     · rw [if_pos hval] at hsome
@@ -3020,6 +3147,40 @@ theorem sAuth_drop_eval (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
         exact hcov
     · rw [if_neg hval] at hsome
       exact absurd hsome (by simp)
+
+/-- `cap_drop` specialization of the shared status-authority bridge. -/
+theorem sAuth_drop_eval (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
+    (τ : MachineState)
+    (hslot : (Hw.dropSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.dropKilled E dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hregions : ∀ c : DomainId,
+      (τ.doms c).regions = ((Hw.abs σ).doms c).regions)
+    (hlive : ∀ ref : CapRef, τ.liveRef ref =
+      if ref.dom = E ∧ ref.slot = S then false
+      else (Hw.abs σ).liveRef ref)
+    (hwf : Wf (Hw.abs σ)) (ow : Expr 2) (sa : Expr 12) :
+    ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+      τ.sweepRegions.domCovers (finOfBv (by decide) (ow.eval σ))
+        (sa.eval σ) ⟨false, true, false⟩ = true := by
+  apply sAuth_transfer_eval σ E (Hw.dropSel E).slot S τ hslot
+  · intro dm sl
+    simpa [Hw.dropKilled] using hkills dm sl
+  · exact hmapz
+  · exact hunmapz
+  · exact hregions
+  · exact hlive
+  · exact hwf
 
 /-- The sweeping-op Mover abort guard likewise specializes to the drop
 kill predicate on the current source and destination references. -/
