@@ -201,6 +201,75 @@ theorem retNZ_eval_iff (σ : Loom.Hw.St) (d : DomainId) :
   unfold Hw.retNZ
   exact neqE_eval _ _ σ
 
+/-! ## Global kill-tree selection -/
+
+/-- On a successful retiring return, the global core kill tree selects
+exactly that return's optional reply-transfer predicate. -/
+theorem killedByCoreE_gateReturn_eval (σ : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval σ = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval σ =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval σ ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval σ ≠ 1#1)
+    (hcall : (Hw.isMn "gate_call").eval σ ≠ 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval σ = 1#1)
+    (hok : ∀ d : DomainId, d = E → (Hw.retOkE d).eval σ = 1#1)
+    (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ := by
+  have hdrop0 : (Hw.isMn "cap_drop").eval σ = 0#1 := bv1_ne_one.mp hdrop
+  have hrev0 : (Hw.isMn "cap_revoke").eval σ = 0#1 := bv1_ne_one.mp hrev
+  have hcall0 : (Hw.isMn "gate_call").eval σ = 0#1 := bv1_ne_one.mp hcall
+  have honeAnd : ∀ x : BitVec 1, 1#1 &&& x = x := by decide
+  have hzeroAnd : ∀ x : BitVec 1, 0#1 &&& x = 0#1 := by decide
+  have hzeroOr : ∀ x : BitVec 1, 0#1 ||| x = x := by decide
+  have horZero : ∀ x : BitVec 1, x ||| 0#1 = x := by decide
+  unfold Hw.killedByCoreE
+  fin_cases E <;>
+    simp [Hw.orAll, List.finRange, Expr.eval, Fin.ext_iff, hret, hif,
+      hdrop0, hrev0, hcall0, hreturn, hok, honeAnd, hzeroAnd, hzeroOr,
+      horZero] <;>
+    congr 2
+
+/-- A failed return has no kill footprint because `retOkE` gates its
+optional transfer in both retirement and Mover re-derivation. -/
+theorem killedByCoreE_gateReturn_failed (σ : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval σ = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval σ =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval σ ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval σ ≠ 1#1)
+    (hcall : (Hw.isMn "gate_call").eval σ ≠ 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval σ = 1#1)
+    (hbad : ∀ d : DomainId, d = E → (Hw.retOkE d).eval σ = 0#1)
+    (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval σ = 0#1 := by
+  have hdrop0 : (Hw.isMn "cap_drop").eval σ = 0#1 := bv1_ne_one.mp hdrop
+  have hrev0 : (Hw.isMn "cap_revoke").eval σ = 0#1 := bv1_ne_one.mp hrev
+  have hcall0 : (Hw.isMn "gate_call").eval σ = 0#1 := bv1_ne_one.mp hcall
+  have honeAnd : ∀ x : BitVec 1, 1#1 &&& x = x := by decide
+  have hzeroAnd : ∀ x : BitVec 1, 0#1 &&& x = 0#1 := by decide
+  have hzeroOr : ∀ x : BitVec 1, 0#1 ||| x = x := by decide
+  unfold Hw.killedByCoreE
+  fin_cases E <;>
+    simp [Hw.orAll, List.finRange, Expr.eval, Fin.ext_iff, hret, hif,
+      hdrop0, hrev0, hcall0, hreturn, hbad, honeAnd, hzeroAnd, hzeroOr]
+
+/-- Failed returns are Mover-inert once the unrelated job-install gate is
+known off. -/
+theorem Inert.of_failed_gateReturn (σ : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval σ = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval σ =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval σ ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval σ ≠ 1#1)
+    (hcall : (Hw.isMn "gate_call").eval σ ≠ 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval σ = 1#1)
+    (hbad : ∀ d : DomainId, d = E → (Hw.retOkE d).eval σ = 0#1)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1) : Inert σ where
+  killed := killedByCoreE_gateReturn_failed σ E hret hif hdrop hrev
+    hcall hreturn hbad
+  newJob := hnew
+
 /-- Pure successful-return tail after the optional reply transfer.  `base`
 is the state returned by `transferByHandle`. -/
 def returnAbstractSuccess (base : MachineState) (d : DomainId)
