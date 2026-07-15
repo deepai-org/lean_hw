@@ -271,6 +271,61 @@ theorem transferStructural_liveKind_of_live (τ : MachineState)
   · simp [installTransferred, MachineState.reparent, MachineState.setDom, hd,
       hout]
 
+/-! ## Structural transfer and the retirement PC prefix -/
+
+/-- Name the install/reparent/clear/region-sweep prefix shared by the
+hardware transfer abstraction and the specification's `transferCap`. -/
+def transferStructural (τ : MachineState) (T : DomainId) (NS : Slot)
+    (kind : CapKind) (moved : Option (LineageId × CapRef))
+    (oldRef newRef : CapRef) (D : DomainId) (S : Slot) : MachineState :=
+  (((installTransferred τ T NS kind moved).reparent oldRef newRef).clearSlot
+    D S).sweepRegions
+
+/-- The structural capability transfer commutes with the caller's retirement
+PC increment.  This is the key normalization between the specification,
+which advances PC before executing `gate_call`, and the hardware, whose
+successful call payload advances PC after its optional transfer. -/
+theorem transferStructural_setPc (τ : MachineState) (d T : DomainId)
+    (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (D : DomainId) (S : Slot) :
+    transferStructural
+        (τ.setDom d fun ds => { ds with pc := ds.pc + 1 })
+        T NS kind moved oldRef newRef D S =
+      (transferStructural τ T NS kind moved oldRef newRef D S).setDom d
+        (fun ds => { ds with pc := ds.pc + 1 }) := by
+  apply machineState_ext'
+  · rfl
+  · rfl
+  · funext x
+    by_cases hTd : T = d
+    · subst T
+      by_cases hxd : x = d
+      · subst x
+        apply domainState_ext' <;>
+          simp [transferStructural, installTransferred,
+            MachineState.setDom, Loom.Fun.update]
+      · apply domainState_ext' <;>
+          simp [transferStructural, installTransferred,
+            MachineState.setDom, Loom.Fun.update, hxd]
+    · by_cases hxd : x = d
+      · subst x
+        have hdT : d ≠ T := Ne.symm hTd
+        apply domainState_ext' <;>
+          simp [transferStructural, installTransferred,
+            MachineState.setDom, Loom.Fun.update, hTd, hdT]
+      · by_cases hxT : x = T
+        · subst x
+          apply domainState_ext' <;>
+            simp [transferStructural, installTransferred,
+              MachineState.setDom, Loom.Fun.update, hTd, hxd]
+        · apply domainState_ext' <;>
+            simp [transferStructural, installTransferred,
+              MachineState.setDom, Loom.Fun.update, hTd, hxd, hxT]
+  · rfl
+  · rfl
+  · rfl
+
 /-- On a valid pre-transfer region, the hardware source-slot predicate is
 equivalent to the backing becoming dead after install/reparent/clear. The
 Wf region invariant supplies the crucial pre-transfer liveness premise. -/
