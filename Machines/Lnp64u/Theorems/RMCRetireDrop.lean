@@ -2796,6 +2796,61 @@ theorem sweepRegions_transfer_region_eq (σ : Loom.Hw.St) (E : DomainId)
     simp at hp ⊢
     rw [hp] <;> decide
 
+/-- Transfer variant requiring liveness agreement only for references that
+actually back pre-transfer regions.  This is the precise interface needed by
+capability moves: the fresh destination becomes live, but cannot already back
+a well-formed region because its slot was free. -/
+theorem sweepRegions_transfer_region_eq_backings (σ : Loom.Hw.St)
+    (E : DomainId) (slotE : Expr 4) (S : Slot) (τ : MachineState)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ =
+        (Expr.and (.eq dm (Hw.dLit E)) (.eq sl slotE)).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hregions : ∀ c : DomainId,
+      (τ.doms c).regions = ((Hw.abs σ).doms c).regions)
+    (hbacking : ∀ c r rg, ((Hw.abs σ).doms c).regions r = some rg →
+      τ.liveRef rg.backing =
+        if rg.backing.dom = E ∧ rg.backing.slot = S then false
+        else (Hw.abs σ).liveRef rg.backing)
+    (hwf : Wf (Hw.abs σ)) (c : DomainId) (r : RegionId) :
+    (τ.sweepRegions.doms c).regions r =
+      if (Hw.rgnVPostE c r).eval σ = 1#1 then
+        some (Hw.decRegion (σ.regs (Hw.drgn c r) 42)) else none := by
+  rw [rgnVPostE_transfer_eval σ E slotE hkills hmapz hunmapz]
+  unfold MachineState.sweepRegions
+  dsimp only
+  rw [hregions c]
+  rw [abs_regions]
+  let rg := Hw.decRegion (σ.regs (Hw.drgn c r) 42)
+  let killed := (Expr.and
+    (.eq (Hw.field (.reg 42 (Hw.drgn c r)) 40 2) (Hw.dLit E))
+    (.eq (Hw.field (.reg 42 (Hw.drgn c r)) 36 4) slotE)).eval σ
+  have hkiff : killed = 1#1 ↔
+      rg.backing.dom = E ∧ rg.backing.slot = S :=
+    slotKilled_region_eval σ E slotE S hslot (.reg 42 (Hw.drgn c r))
+  by_cases hv : σ.regs (Hw.drgnV c r) 1 = 1#1
+  · rw [if_pos hv]
+    have hrg : ((Hw.abs σ).doms c).regions r = some rg := by
+      change (if σ.regs (Hw.drgnV c r) 1 = 1#1 then some rg else none) =
+        some rg
+      simp [hv]
+    have hlive := hbacking c r rg hrg
+    have hold : (Hw.abs σ).liveRef rg.backing = true :=
+      regionBacking_live hwf hrg
+    by_cases hk : rg.backing.dom = E ∧ rg.backing.slot = S
+    · have hk1 : killed = 1#1 := hkiff.mpr hk
+      simp [hlive, hk, hv, hk1, killed, rg]
+    · have hk0 : killed = 0#1 := bv1_ne_one.mp (fun h => hk (hkiff.mp h))
+      simp [hlive, hk, hold, hv, hk0, killed, rg]
+  · have hv0 : σ.regs (Hw.drgnV c r) 1 = 0#1 := bv1_ne_one.mp hv
+    simp [hv, hv0]
+
 /-- Whole-domain composition of the successful structural prefix and
 region sweep. -/
 theorem absDom_drop_structural_sweep (σ : Loom.Hw.St) (E : DomainId)
@@ -3069,6 +3124,70 @@ theorem absDom_dropSuccessA_refill (m : Manifest) (hwfm : m.WF)
   · change (out.regs (Hw.dmaxdon c) 32).toNat = _
     rw [hout (by fin_cases c <;> decide) (by fin_cases c <;> decide)]
     exact congrArg DomainState.maxDonation hold
+
+/-- The Mover status-authority tree decodes against any region table already
+proved equal to the hardware post-core region encoding. -/
+theorem sAuth_region_eq_eval (σ : Loom.Hw.St) (τ : MachineState)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hregionEq : ∀ c r, (τ.doms c).regions r =
+      if (Hw.rgnVPostE c r).eval σ = 1#1 then
+        some (Hw.decRegion (σ.regs (Hw.drgn c r) 42)) else none)
+    (ow : Expr 2) (sa : Expr 12) :
+    ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+      τ.domCovers (finOfBv (by decide) (ow.eval σ))
+        (sa.eval σ) ⟨false, true, false⟩ = true := by
+  rw [orAll_eval]
+  rw [show (τ.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+      ⟨false, true, false⟩ = true) ↔
+      (∃ r : RegionId, ∃ rg,
+        (τ.doms (finOfBv (by decide) (ow.eval σ))).regions r = some rg ∧
+        rg.covers (sa.eval σ) ⟨false, true, false⟩ = true) from by
+    rw [MachineState.domCovers]; simp]
+  constructor
+  · rintro ⟨e, hmem, heval⟩
+    rw [List.mem_flatMap] at hmem
+    obtain ⟨c, -, hmem⟩ := hmem
+    obtain ⟨r, -, rfl⟩ := List.mem_map.mp hmem
+    have h3 : ∀ e ∈ [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+        Hw.rgnCoversVal (Hw.rgnValPostE c r) sa ⟨false, true, false⟩],
+        e.eval σ = 1#1 := (andAll_eval σ _).mp heval
+    have h1 := h3 (Expr.eq ow (Hw.dLit c)) (by simp)
+    have h2 := h3 (Hw.rgnVPostE c r) (by simp)
+    have hcv := h3 (Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+      ⟨false, true, false⟩) (by simp)
+    rw [eqE_eval] at h1
+    have hc : finOfBv (by decide) (ow.eval σ) = c :=
+      (bv2_lit_iff _ c).mp h1
+    rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hmapz] at hcv
+    refine ⟨r, Hw.decRegion (σ.regs (Hw.drgn c r) 42), ?_, hcv⟩
+    rw [hc, hregionEq c r, if_pos h2]
+  · rintro ⟨r, rg, hsome, hcov⟩
+    set c : DomainId := finOfBv (by decide) (ow.eval σ) with hcdef
+    rw [hregionEq c r] at hsome
+    by_cases hval : (Hw.rgnVPostE c r).eval σ = 1#1
+    · rw [if_pos hval] at hsome
+      obtain rfl := Option.some.inj hsome
+      refine ⟨Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+          Hw.rgnCoversVal (Hw.rgnValPostE c r) sa ⟨false, true, false⟩],
+        List.mem_flatMap.mpr ⟨c, List.mem_finRange c,
+          List.mem_map.mpr ⟨r, List.mem_finRange r, rfl⟩⟩, ?_⟩
+      rw [andAll_eval]
+      intro e he
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at he
+      rcases he with rfl | rfl | rfl
+      · rw [eqE_eval]
+        exact (bv2_lit_iff _ c).mpr rfl
+      · exact hval
+      · rw [rgnCoversVal_eval, rgnValPostE_quiescent σ hmapz]
+        exact hcov
+    · rw [if_neg hval] at hsome
+      exact absurd hsome (by simp)
 
 /-- The Mover status-authority tree decodes against a post-transfer swept
 region table. -/
