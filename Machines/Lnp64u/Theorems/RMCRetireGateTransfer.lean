@@ -139,25 +139,33 @@ theorem capSel_isMem_iff_some (σ : Loom.Hw.St) (D : DomainId)
       · rintro ⟨base, len, perms, heq⟩
         cases heq
 
-/-- A live hardware selector yields an exact live-entry witness in any
-specification state whose `liveCap` view agrees with the sampled hardware
-abstraction.  The hypothesis is intentionally phrased as a view equality:
-gate call and gate return can instantiate it after their respective PC-only
-retirement prefixes without duplicating handle decoding. -/
-theorem liveCap_some_of_capSel_live (σ : Loom.Hw.St)
+/-- A live hardware selector yields both the exact specification `liveCap`
+witness and the corresponding abstract capability-table entry.  The view
+equality is intentionally generic: gate call and gate return instantiate it
+after their respective PC-only retirement prefixes. -/
+theorem capSel_entry_of_live (σ : Loom.Hw.St)
     (τ : MachineState) (D : DomainId) (hwE : Expr 32)
     (hbridge : ∀ (S : Slot) (G : Gen),
       (τ.doms D).liveCap S G = ((Hw.abs σ).doms D).liveCap S G)
     (hlive : (Hw.capSel D hwE).live.eval σ = 1#1) :
     ∃ e : CapEntry,
       (τ.doms D).liveCap (Handle.decode (hwE.eval σ)).slot
-        (Handle.decode (hwE.eval σ)).gen = some e := by
+          (Handle.decode (hwE.eval σ)).gen = some e ∧
+      ((Hw.abs σ).doms D).caps
+          (Handle.decode (hwE.eval σ)).slot = some e := by
   let S : Slot := finOfBv (by decide) ((hwE.eval σ).extractLsb' 0 4)
   have hraw := (capSel_live_eval σ D hwE S rfl).mp hlive
-  change ∃ e, (τ.doms D).liveCap S
-    ((hwE.eval σ).extractLsb' 4 8) = some e
-  rw [hbridge, abs_liveCap, if_pos hraw]
-  exact ⟨_, rfl⟩
+  let e : CapEntry :=
+    { kind := Hw.decKind (σ.regs (Hw.dcapKind D S) 32)
+      lineage := if σ.regs (Hw.dcapLinV D S) 1 = 1#1 then
+        some (finOfBv (by decide) (σ.regs (Hw.dcapLin D S) 4))
+      else none }
+  refine ⟨e, ?_, ?_⟩
+  · change (τ.doms D).liveCap S
+      ((hwE.eval σ).extractLsb' 4 8) = some e
+    rw [hbridge, abs_liveCap, if_pos hraw]
+  · change (if σ.regs (Hw.dcapV D S) 1 = 1#1 then some e else none) = some e
+    rw [if_pos hraw.1]
 
 /-- A canonical gate-kind word yields its encoded gate identifier. -/
 theorem kGid_encGate_eval (σ : Loom.Hw.St) (kw : Expr 32) (g : GateId)
