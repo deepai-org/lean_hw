@@ -72,12 +72,12 @@ theorem coreAct_mem_gateReturn_failed (m : Manifest) (σ : Loom.Hw.St)
     (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
     (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
-    (hok0 : (Hw.retOkE E).eval σ = 0#1) (b : Addr) :
+    (hok0 : (Hw.retOkE E).eval σ = 0#1) (ad : Nat) :
     ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
-      b.toNat 32 = σ.mems "mem" b.toNat 32 := by
+      ad 32 = σ.mems "mem" ad 32 := by
   have hport := retireMem_gateReturn_sel σ E hifsel hifexcl hopc
   rw [coreAct_run_retire_eq m σ _ hifv hcl,
-    retireAct_run_mems σ _ b.toNat 32]
+    retireAct_run_mems σ _ ad 32]
   show (if (((List.finRange numDomains).foldr
       (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
         let (en_d, ad_d, da_d) := Hw.retireMemFor d
@@ -86,7 +86,7 @@ theorem coreAct_mem_gateReturn_failed (m : Manifest) (σ : Loom.Hw.St)
           .mux g da_d acc'.2.2))
       ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
         (.lit 0 : Expr 32))).1).eval σ = 1#1 then _
-    else ((Hw.refillAct m).run σ σ)).mems "mem" b.toNat 32 = _
+    else ((Hw.refillAct m).run σ σ)).mems "mem" ad 32 = _
   rw [if_neg (by
     rw [hport.1]
     show ¬((Hw.retCirc E).memEn.eval σ = 1#1)
@@ -94,7 +94,7 @@ theorem coreAct_mem_gateReturn_failed (m : Manifest) (σ : Loom.Hw.St)
     change ¬((Hw.retOkE E).eval σ &&& _ = 1#1)
     rw [hok0]
     exact (by decide : ∀ x : BitVec 1, ¬(0#1 &&& x = 1#1)) _)]
-  rw [refill_pres_mem m σ "mem" b.toNat 32]
+  rw [refill_pres_mem m σ "mem" ad 32]
 
 /-- Common full-cycle square for every return errno branch. -/
 theorem square_retire_gateReturn_error (m : Manifest) (hwf : m.WF)
@@ -176,7 +176,8 @@ theorem square_retire_gateReturn_error (m : Manifest) (hwf : m.WF)
   have hcoremem : ∀ b : Addr,
       ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
         b.toNat 32 = σ.mems "mem" b.toNat 32 :=
-    coreAct_mem_gateReturn_failed m σ E hifv hcl hifsel hifexcl hopc hok0
+    fun b => coreAct_mem_gateReturn_failed m σ E hifv hcl hifsel hifexcl
+      hopc hok0 b.toNat
   exact retire_err_common_mem m hwf hfit σ hsync hifv hcl hin hmapz
     hunmapz hswz hcoremem E hEval errw hcoreX hspecE
 
@@ -218,5 +219,100 @@ theorem square_retire_gateReturn_firstError (m : Manifest) (hwf : m.WF)
       hopc hchecks hpre hfail
   exact square_retire_gateReturn_error m hwf hfit σ hsync hifv hcl E hEval
     hifsel hifexcl hopc hok0 er.toWord hcoreX hspecE
+
+/-- Turn the first failing return fault check into the full-cycle square. -/
+theorem square_retire_gateReturn_firstFault (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (E : DomainId)
+    (hEval : E.val = (σ.regs "if_dom" 2).toNat)
+    (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
+    (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (pre post : List Hw.Check) (cond : Expr 1) (f : Fault)
+    (hchecks : Hw.retChecks E = pre ++ (cond, .fault f) :: post)
+    (hpre : ∀ x ∈ pre, x.1.eval σ ≠ 1#1)
+    (hfail : cond.eval σ = 1#1)
+    (hspecF : retire { refillPhase m (Hw.abs σ) with inflight := none } E
+      (σ.regs "if_word" 32) =
+        haltWith { refillPhase m (Hw.abs σ) with inflight := none } E f) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  have hok0 : (Hw.retOkE E).eval σ = 0#1 := by
+    apply bv1_ne_one.mp
+    intro hok
+    have hall := (okOf_eval_iff σ (Hw.retChecks E)).mp hok
+    have hmem : (cond, .fault f) ∈ Hw.retChecks E := by
+      rw [hchecks]
+      exact List.mem_append_right _ (List.mem_cons_self ..)
+    exact hall (cond, .fault f) hmem hfail
+  have hret := retiringE_one σ hifv hcl
+  have hif : ∀ d : DomainId, (Hw.ifDomIs d).eval σ =
+      if d = E then 1#1 else 0#1 := by
+    intro d
+    by_cases hd : d = E
+    · subst d
+      rw [if_pos rfl]
+      exact hifsel
+    · rw [if_neg hd, bv1_ne_one.mp (hifexcl d hd)]
+  have hmn : (Hw.isMn "gate_return").eval σ = 1#1 := by
+    rw [isMn_eval, hopc]
+    exact (by decide +kernel : Hw.opcodeOf "gate_return" = 23#6).symm
+  have hdrop : (Hw.isMn "cap_drop").eval σ ≠ 1#1 :=
+    isMn_ne_of_opc σ "cap_drop" 23#6 hopc (by decide +kernel)
+  have hrev : (Hw.isMn "cap_revoke").eval σ ≠ 1#1 :=
+    isMn_ne_of_opc σ "cap_revoke" 23#6 hopc (by decide +kernel)
+  have hcall : (Hw.isMn "gate_call").eval σ ≠ 1#1 :=
+    isMn_ne_of_opc σ "gate_call" 23#6 hopc (by decide +kernel)
+  have hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1 := by
+    intro d
+    apply andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+    exact isMn_ne_of_opc σ "move" 23#6 hopc (by decide +kernel)
+  have hbad : ∀ d : DomainId, d = E → (Hw.retOkE d).eval σ = 0#1 := by
+    intro d hd
+    simpa [hd] using hok0
+  have hin : Inert σ := Inert.of_failed_gateReturn σ E hret hif hdrop hrev
+    hcall hmn hbad hnew
+  have hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1 := fun c r =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "map" 23#6 hopc (by decide +kernel))
+  have hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1 := fun c r =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "unmap" 23#6 hopc (by decide +kernel))
+  have hswz : ∀ (d : DomainId) (sc : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+        Hw.domCoversE d
+          (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          sc]).eval σ = 0#1 := fun d sc =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "sw" 23#6 hopc (by decide +kernel))
+  have hcoremem : ∀ ad : Nat,
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+        ad 32 = σ.mems "mem" ad 32 :=
+    coreAct_mem_gateReturn_failed m σ E hifv hcl hifsel hifexcl hopc hok0
+  have hcoreF : ∀ acc, (Hw.retireFor E).run σ acc =
+      (Hw.haltFault E f).run σ acc := by
+    intro acc
+    have h := retireFor_gateReturn_first_failure σ acc E pre post cond
+      (.fault f) hopc hchecks hpre hfail
+    simpa [Hw.respA] using h
+  exact square_retire_fault_of m hwf hfit σ hsync hifv hcl hin hswz hmapz
+    hunmapz hcoremem E hEval f hcoreF hspecF
 
 end Machines.Lnp64u.Theorems.RMC
