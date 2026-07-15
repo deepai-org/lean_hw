@@ -95,4 +95,82 @@ theorem gateReturnReplyA_run_selected (σ acc : Loom.Hw.St)
     (List.finRange numDomains) (List.mem_finRange cl)
     (List.nodup_finRange _)
 
+/-! ## Sampled activation record -/
+
+/-- A live abstract activation is exactly the record decoded from its gate
+register bank in the sampled hardware state. -/
+theorem gateReturn_activation_decode (σ : Loom.Hw.St) (gid : GateId)
+    (act : Activation) (hact : ((Hw.abs σ).gates gid).act = some act) :
+    act =
+      { caller := finOfBv (by decide) (σ.regs (Hw.gcaller gid) 2)
+        callerRd := finOfBv (by decide) (σ.regs (Hw.gcallerRd gid) 3)
+        savedRegs := fun r => σ.regs (Hw.gsreg gid r) 32
+        savedPc := σ.regs (Hw.gspc gid) 12
+        savedServing := if σ.regs (Hw.gssrvV gid) 1 = 1#1 then
+          some (finOfBv (by decide) (σ.regs (Hw.gssrv gid) 2)) else none
+        depth := (σ.regs (Hw.gdepth gid) 3).toNat
+        donated := (σ.regs (Hw.gdon gid) 32).toNat } := by
+  change (if σ.regs (Hw.gactV gid) 1 = 1#1 then some _ else none) =
+    some act at hact
+  by_cases hv : σ.regs (Hw.gactV gid) 1 = 1#1
+  · rw [if_pos hv] at hact
+    exact (Option.some.inj hact).symm
+  · rw [if_neg hv] at hact
+    contradiction
+
+/-- The sampled caller destination-register mux decodes to the activation's
+saved `callerRd`. -/
+theorem gateReturn_callerRd_eval (σ : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    finOfBv (by decide : 2 ^ 3 = numRegs)
+      ((Hw.muxFin (fun g => .reg 3 (Hw.gcallerRd g))
+        (Hw.retGid d)).eval σ) = act.callerRd := by
+  rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+  rw [gateReturn_activation_decode σ gid act hact]
+  rfl
+
+/-- Every sampled saved-register mux agrees with the activation record. -/
+theorem gateReturn_savedReg_eval (σ : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation) (r : RegId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    (Hw.muxFin (fun g => .reg 32 (Hw.gsreg g r))
+      (Hw.retGid d)).eval σ = act.savedRegs r := by
+  rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+  rw [gateReturn_activation_decode σ gid act hact]
+  rfl
+
+/-- The sampled saved-PC mux agrees with the activation record. -/
+theorem gateReturn_savedPc_eval (σ : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    (Hw.muxFin (fun g => .reg 12 (Hw.gspc g))
+      (Hw.retGid d)).eval σ = act.savedPc := by
+  rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+  rw [gateReturn_activation_decode σ gid act hact]
+  rfl
+
+/-- The sampled saved-serving mux pair agrees with the activation record. -/
+theorem gateReturn_savedServing_eval (σ : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    (if (Hw.muxFin (fun g => .reg 1 (Hw.gssrvV g))
+          (Hw.retGid d)).eval σ = 1#1 then
+       some (finOfBv (by decide)
+         ((Hw.muxFin (fun g => .reg 2 (Hw.gssrv g))
+           (Hw.retGid d)).eval σ))
+     else none) = act.savedServing := by
+  rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid,
+    muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+  rw [gateReturn_activation_decode σ gid act hact]
+  rfl
+
 end Machines.Lnp64u.Theorems.RMC
