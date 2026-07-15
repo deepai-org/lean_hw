@@ -318,6 +318,19 @@ theorem transferByHandle_eq_zero (τ : MachineState) (D T : DomainId) :
     Machines.Lnp64u.Isa.transferByHandle D T 0 τ = .ok 0 τ := by
   rfl
 
+/-- Exact successful capability lookup from its decoded handle and live-slot
+fact.  Gate call and return both need this bridge before invoking the shared
+transfer semantics. -/
+theorem capLive_eq_selected (τ : MachineState) (D : DomainId)
+    (hw : Loom.Word32) (S : Slot) (G : Gen) (e : CapEntry)
+    (hdecode : Handle.decode hw = ⟨S, G, e.kind.cls⟩)
+    (hlive : (τ.doms D).liveCap S G = some e) :
+    Machines.Lnp64u.Isa.capLive D hw τ = .ok (S, G, e) τ := by
+  unfold Machines.Lnp64u.Isa.capLive
+  simp only [SpecM.get]
+  rw [hdecode, hlive]
+  simp [SpecM.require]
+
 /-- Once capability lookup and structural transfer have been selected,
 `transferByHandle` only installs the returned state and re-encodes the new
 recipient-relative reference.  Keeping this monadic reduction here prevents
