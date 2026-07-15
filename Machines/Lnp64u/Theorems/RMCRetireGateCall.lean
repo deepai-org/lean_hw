@@ -687,4 +687,137 @@ theorem absDom_callCalleeA (σ acc : Loom.Hw.St)
   · rw [if_neg hx]
     exact absDom_callCalleeChosen_other σ acc d cal x hx
 
+/-! ## Caller block writer -/
+
+/-- The final successful-call writes to the caller domain. -/
+def callCallerA (d : DomainId) : Act :=
+  Hw.seqAll
+    [ .write 2 (Hw.drun d) (.lit 2),
+      .write 2 (Hw.drunG d) (Hw.callGid d),
+      Hw.pcAdvA d ]
+
+/-- A read disjoint from the caller status and PC writes is preserved. -/
+private theorem callCaller_read (σ acc : Loom.Hw.St) (d : DomainId)
+    (rn : String) (w : Nat)
+    (hpc : rn ≠ Hw.dpc d) (hrunG : rn ≠ Hw.drunG d)
+    (hrun : rn ≠ Hw.drun d) :
+    ((callCallerA d).run σ acc).regs rn w = acc.regs rn w := by
+  unfold callCallerA Hw.pcAdvA Hw.seqAll
+  simp only [Act.run, RegEnv.set]
+  rw [if_neg hpc, if_neg hrunG, if_neg hrun]
+
+/-- The caller writer advances the sampled PC and blocks on the selected
+gate, preserving the rest of the caller's abstract domain state. -/
+theorem absDom_callCaller_selected (σ acc : Loom.Hw.St)
+    (d : DomainId) (g : GateId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    Hw.absDom ((callCallerA d).run σ acc) d =
+      { Hw.absDom acc d with
+        pc := σ.regs (Hw.dpc d) 12 + 1
+        run := .blocked g } := by
+  have hgidRaw : (Hw.callGid d).eval σ = BitVec.ofNat 2 g.val :=
+    (bv2_lit_iff _ g).mpr hgid
+  have hpc : ((callCallerA d).run σ acc).regs (Hw.dpc d) 12 =
+      σ.regs (Hw.dpc d) 12 + 1 := by
+    simp [callCallerA, Hw.pcAdvA, Hw.seqAll, Act.run, RegEnv.set]
+  have hrun : Hw.decRun (((callCallerA d).run σ acc).regs (Hw.drun d) 2)
+      (((callCallerA d).run σ acc).regs (Hw.drunG d) 2) = .blocked g := by
+    simp [callCallerA, Hw.pcAdvA, Hw.seqAll, Act.run, RegEnv.set,
+      Hw.decRun, hgidRaw]
+    exact finOfBv_dLit g
+  apply domainState_ext'
+  · funext r
+    exact callCaller_read σ acc d _ _
+      (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+  · exact hpc
+  · funext s
+    change (if _ = 1#1 then some _ else none) = _
+    rw [callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl),
+      callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl),
+      callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl),
+      callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+    rfl
+  · funext s
+    exact callCaller_read σ acc d _ _
+      (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+  · funext l
+    change (if _ = 1#1 then some _ else none) = _
+    rw [callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl),
+      callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)]
+    rfl
+  · funext r
+    change (if _ = 1#1 then some _ else none) = _
+    rw [callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl),
+      callCaller_read σ acc d _ _
+          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+    rfl
+  · exact hrun
+  · change (if _ = 1#1 then some _ else none) = _
+    rw [callCaller_read σ acc d _ _
+          (by fin_cases d <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> exact of_decide_eq_true rfl),
+      callCaller_read σ acc d _ _
+          (by fin_cases d <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> exact of_decide_eq_true rfl)
+          (by fin_cases d <;> exact of_decide_eq_true rfl)]
+    rfl
+  · exact callCaller_read σ acc d _ _
+      (by fin_cases d <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> exact of_decide_eq_true rfl)
+  · rw [callCaller_read σ acc d _ _
+      (by fin_cases d <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> exact of_decide_eq_true rfl)]
+  · rw [callCaller_read σ acc d _ _
+      (by fin_cases d <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> exact of_decide_eq_true rfl)
+      (by fin_cases d <;> exact of_decide_eq_true rfl)]
+
+/-- Blocking the caller leaves every other abstract domain unchanged. -/
+theorem absDom_callCaller_other (σ acc : Loom.Hw.St)
+    (d x : DomainId) (hne : x ≠ d) :
+    Hw.absDom ((callCallerA d).run σ acc) x = Hw.absDom acc x := by
+  apply absDom_congr
+  intro q hq
+  apply callCaller_read
+  · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.dpc d from by
+      fin_cases x <;> fin_cases d <;>
+        first | exact absurd rfl hne | exact of_decide_eq_true rfl) q hq
+  · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.drunG d from by
+      fin_cases x <;> fin_cases d <;>
+        first | exact absurd rfl hne | exact of_decide_eq_true rfl) q hq
+  · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.drun d from by
+      fin_cases x <;> fin_cases d <;>
+        first | exact absurd rfl hne | exact of_decide_eq_true rfl) q hq
+
 end Machines.Lnp64u.Theorems.RMC
