@@ -79,6 +79,26 @@ theorem capSel_clsOk_of_some (σ : Loom.Hw.St) (D : DomainId)
   interval_cases k
   simpa [BitVec.getLsbD_extractLsb'] using hb.symm
 
+/-- A live hardware selector yields an exact live-entry witness in any
+specification state whose `liveCap` view agrees with the sampled hardware
+abstraction.  The hypothesis is intentionally phrased as a view equality:
+gate call and gate return can instantiate it after their respective PC-only
+retirement prefixes without duplicating handle decoding. -/
+theorem liveCap_some_of_capSel_live (σ : Loom.Hw.St)
+    (τ : MachineState) (D : DomainId) (hwE : Expr 32)
+    (hbridge : ∀ (S : Slot) (G : Gen),
+      (τ.doms D).liveCap S G = ((Hw.abs σ).doms D).liveCap S G)
+    (hlive : (Hw.capSel D hwE).live.eval σ = 1#1) :
+    ∃ e : CapEntry,
+      (τ.doms D).liveCap (Handle.decode (hwE.eval σ)).slot
+        (Handle.decode (hwE.eval σ)).gen = some e := by
+  let S : Slot := finOfBv (by decide) ((hwE.eval σ).extractLsb' 0 4)
+  have hraw := (capSel_live_eval σ D hwE S rfl).mp hlive
+  change ∃ e, (τ.doms D).liveCap S
+    ((hwE.eval σ).extractLsb' 4 8) = some e
+  rw [hbridge, abs_liveCap, if_pos hraw]
+  exact ⟨_, rfl⟩
+
 /-- A canonical gate-kind word yields its encoded gate identifier. -/
 theorem kGid_encGate_eval (σ : Loom.Hw.St) (kw : Expr 32) (g : GateId)
     (hkw : kw.eval σ = Hw.encKind (.gate g)) :
