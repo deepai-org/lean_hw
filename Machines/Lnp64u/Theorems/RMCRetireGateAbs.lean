@@ -753,10 +753,11 @@ theorem absDom_sweepRegionsA_of_doms (σ acc : Loom.Hw.St)
     (hvalid : ∀ c : DomainId, ∀ r : RegionId,
       acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
     (hkill : ∀ c : DomainId, ∀ r : RegionId,
-      (killed
+      acc.regs (Hw.drgnV c r) 1 = 1#1 →
+      ((killed
         (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
         (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ = 1#1 ↔
-      τ.liveRef (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing = false)
+      τ.liveRef (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing = false))
     (c : DomainId) :
     Hw.absDom ((Hw.sweepRegionsA killed).run σ acc) c =
       (τ.sweepRegions.doms c) := by
@@ -824,13 +825,16 @@ theorem absDom_sweepRegionsA_of_doms (σ acc : Loom.Hw.St)
       | none => none
     rw [hvalid c r]
     by_cases hv : σ.regs (Hw.drgnV c r) 1 = 1#1
-    · by_cases hlive : τ.liveRef
+    · have hvacc : acc.regs (Hw.drgnV c r) 1 = 1#1 :=
+        (hvalid c r).trans hv
+      have hkiff := hkill c r hvacc
+      by_cases hlive : τ.liveRef
           (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing = true
       · have hkill0 : (killed
             (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
             (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ ≠ 1#1 := by
           intro hk
-          have := (hkill c r).mp hk
+          have := hkiff.mp hk
           simp [hlive] at this
         simp [Expr.eval, hv, hlive]
         intro hand
@@ -841,7 +845,7 @@ theorem absDom_sweepRegionsA_of_doms (σ acc : Loom.Hw.St)
         have hkill1 : (killed
             (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
             (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ = 1#1 :=
-          (hkill c r).mpr hlive0
+          hkiff.mpr hlive0
         simp [Expr.eval, hv, hkill1, hlive0]
     · have hv0 : σ.regs (Hw.drgnV c r) 1 = 0#1 := bv1_ne_one.mp hv
       simp [Expr.eval, hv0]
@@ -908,7 +912,8 @@ theorem absDom_install_reparent_clear_sweep_selected (σ acc : Loom.Hw.St)
       if sourceLinVE.eval σ = 1#1 then
         some (finOfBv (by decide) (sourceLinE.eval σ)) else none)
     (hkill : ∀ c : DomainId, ∀ r : RegionId,
-      (killed
+      σ.regs (Hw.drgnV c r) 1 = 1#1 →
+      ((killed
         (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
         (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ = 1#1 ↔
       ((((installTransferred (Hw.abs acc) T NS kind
@@ -916,7 +921,7 @@ theorem absDom_install_reparent_clear_sweep_selected (σ acc : Loom.Hw.St)
           some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
         else none)).reparent (Hw.decRef (oldE.eval σ))
           (Hw.decRef (newE.eval σ))).clearSlot D S).liveRef
-            (Hw.decRegion (σ.regs (Hw.drgn c r) 42)).backing = false))
+            (Hw.decRegion (σ.regs (Hw.drgn c r) 42)).backing = false)))
     (c : DomainId) :
     Hw.absDom ((Hw.sweepRegionsA killed).run σ
       ((Hw.clearSlotA D sourceSlotE sourceLinVE sourceLinE).run σ
@@ -990,14 +995,15 @@ theorem absDom_install_reparent_clear_sweep_selected (σ acc : Loom.Hw.St)
       (Hw.drgn c' r) 42 (by decide) (by decide)).trans
         (hpayloadRepar c' r)
   have hkillCleared : ∀ c' : DomainId, ∀ r : RegionId,
-      (killed
+      cleared.regs (Hw.drgnV c' r) 1 = 1#1 →
+      ((killed
         (Hw.field (.reg 42 (Hw.drgn c' r)) 40 2)
         (Hw.field (.reg 42 (Hw.drgn c' r)) 36 4)).eval σ = 1#1 ↔
       τc.liveRef (Hw.decRegion (cleared.regs (Hw.drgn c' r) 42)).backing =
-        false := by
-    intro c' r
+        false) := by
+    intro c' r hv
     rw [hpayloadCleared c' r]
-    exact hkill c' r
+    exact hkill c' r ((hvalidCleared c' r).symm.trans hv)
   exact absDom_sweepRegionsA_of_doms σ cleared killed τc hdoms
     hvalidCleared hkillCleared c
 
