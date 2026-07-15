@@ -363,6 +363,79 @@ theorem callOkE_of_passes (σ : Loom.Hw.St) (d : DomainId)
   · exact h8
   · exact h9
 
+/-! ## Whole-core kill selection -/
+
+/-- On a successful retiring `gate_call`, the global core kill tree selects
+exactly that call's optional-transfer predicate. -/
+theorem killedByCoreE_call_eval (σ : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval σ = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval σ =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval σ ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval σ ≠ 1#1)
+    (hcall : (Hw.isMn "gate_call").eval σ = 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval σ ≠ 1#1)
+    (hok : ∀ d : DomainId, d = E → (Hw.callOkE d).eval σ = 1#1)
+    (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ := by
+  have hdrop0 : (Hw.isMn "cap_drop").eval σ = 0#1 := bv1_ne_one.mp hdrop
+  have hrev0 : (Hw.isMn "cap_revoke").eval σ = 0#1 := bv1_ne_one.mp hrev
+  have hreturn0 : (Hw.isMn "gate_return").eval σ = 0#1 :=
+    bv1_ne_one.mp hreturn
+  have honeAnd : ∀ x : BitVec 1, 1#1 &&& x = x := by decide
+  have hzeroAnd : ∀ x : BitVec 1, 0#1 &&& x = 0#1 := by decide
+  have hzeroOr : ∀ x : BitVec 1, 0#1 ||| x = x := by decide
+  have horZero : ∀ x : BitVec 1, x ||| 0#1 = x := by decide
+  unfold Hw.killedByCoreE
+  fin_cases E <;>
+    simp [Hw.orAll, List.finRange, Expr.eval, Fin.ext_iff, hret, hif,
+      hdrop0, hrev0, hcall, hok, hreturn0, honeAnd, hzeroAnd, hzeroOr,
+      horZero] <;>
+    congr 2
+
+/-- A failed call has no kill footprint; `callOkE` gates the optional
+transfer out of the Mover rule as well as out of the retirement action. -/
+theorem killedByCoreE_call_failed (σ : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval σ = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval σ =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval σ ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval σ ≠ 1#1)
+    (hcall : (Hw.isMn "gate_call").eval σ = 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval σ ≠ 1#1)
+    (hbad : ∀ d : DomainId, d = E → (Hw.callOkE d).eval σ = 0#1)
+    (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval σ = 0#1 := by
+  have hdrop0 : (Hw.isMn "cap_drop").eval σ = 0#1 := bv1_ne_one.mp hdrop
+  have hrev0 : (Hw.isMn "cap_revoke").eval σ = 0#1 := bv1_ne_one.mp hrev
+  have hreturn0 : (Hw.isMn "gate_return").eval σ = 0#1 :=
+    bv1_ne_one.mp hreturn
+  have honeAnd : ∀ x : BitVec 1, 1#1 &&& x = x := by decide
+  have hzeroAnd : ∀ x : BitVec 1, 0#1 &&& x = 0#1 := by decide
+  have hzeroOr : ∀ x : BitVec 1, 0#1 ||| x = x := by decide
+  have horZero : ∀ x : BitVec 1, x ||| 0#1 = x := by decide
+  unfold Hw.killedByCoreE
+  fin_cases E <;>
+    simp [Hw.orAll, List.finRange, Expr.eval, Fin.ext_iff, hret, hif,
+      hdrop0, hrev0, hcall, hbad, hreturn0, honeAnd, hzeroAnd, hzeroOr,
+      horZero]
+
+/-- Failed calls are Mover-inert once the unrelated job-install gate is
+known off. -/
+theorem Inert.of_failed_call (σ : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval σ = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval σ =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval σ ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval σ ≠ 1#1)
+    (hcall : (Hw.isMn "gate_call").eval σ = 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval σ ≠ 1#1)
+    (hbad : ∀ d : DomainId, d = E → (Hw.callOkE d).eval σ = 0#1)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1) : Inert σ where
+  killed := killedByCoreE_call_failed σ E hret hif hdrop hrev hcall
+    hreturn hbad
+  newJob := hnew
+
 /-! ## Activation-record writer -/
 
 /-- The gate-indexed activation-record fold from the successful call arm. -/
