@@ -18,6 +18,70 @@ set_option maxRecDepth 200000
 
 /-! ## Liveness of the structural transfer state -/
 
+/-- A live abstract capability exposes the canonical raw kind word stored in
+its selected slot. -/
+theorem capKindWord_of_some (σ : Loom.Hw.St) (D : DomainId) (S : Slot)
+    (e : CapEntry) (hkc : KindCanon σ)
+    (hcap : ((Hw.abs σ).doms D).caps S = some e) :
+    σ.regs (Hw.dcapKind D S) 32 = Hw.encKind e.kind := by
+  have hv : σ.regs (Hw.dcapV D S) 1 = 1#1 := by
+    by_contra hn
+    have hz := bv1_ne_one.mp hn
+    change (if σ.regs (Hw.dcapV D S) 1 = 1#1 then _ else none) = some e
+      at hcap
+    rw [if_neg (by simpa [hz])] at hcap
+    contradiction
+  have he : Hw.decKind (σ.regs (Hw.dcapKind D S) 32) = e.kind := by
+    change (if σ.regs (Hw.dcapV D S) 1 = 1#1 then some _ else none) = some e
+      at hcap
+    rw [if_pos hv] at hcap
+    exact congrArg CapEntry.kind (Option.some.inj hcap)
+  rw [← hkc D S, he]
+
+/-- A spec-live handle makes the corresponding hardware selector live. -/
+theorem capSel_live_of_liveRef (σ : Loom.Hw.St) (D : DomainId)
+    (hwE : Expr 32) (S : Slot)
+    (hslot : S.val = ((hwE.eval σ).extractLsb' 0 4).toNat)
+    (hlive : (Hw.abs σ).liveRef
+      ⟨D, S, (hwE.eval σ).extractLsb' 4 8⟩ = true) :
+    (Hw.capSel D hwE).live.eval σ = 1#1 := by
+  apply (capSel_live_eval σ D hwE S hslot).mpr
+  exact (abs_liveRef σ D S ((hwE.eval σ).extractLsb' 4 8)).mp hlive
+
+/-- Once its slot is decoded, a selector over a live abstract capability
+reads that capability's canonical kind encoding. -/
+theorem capSel_kind_of_some (σ : Loom.Hw.St) (D : DomainId) (hwE : Expr 32)
+    (S : Slot) (e : CapEntry) (hkc : KindCanon σ)
+    (hslot : S.val = ((hwE.eval σ).extractLsb' 0 4).toNat)
+    (hcap : ((Hw.abs σ).doms D).caps S = some e) :
+    (Hw.capSel D hwE).kindW.eval σ = Hw.encKind e.kind := by
+  rw [capSel_kindW_eval σ D hwE S hslot]
+  exact capKindWord_of_some σ D S e hkc hcap
+
+/-- A selector over a live capability whose handle class agrees with the
+entry passes the hardware class check. -/
+theorem capSel_clsOk_of_some (σ : Loom.Hw.St) (D : DomainId)
+    (hwE : Expr 32) (S : Slot) (e : CapEntry) (hkc : KindCanon σ)
+    (hslot : S.val = ((hwE.eval σ).extractLsb' 0 4).toNat)
+    (hcap : ((Hw.abs σ).doms D).caps S = some e)
+    (hcls : (Handle.decode (hwE.eval σ)).cls = e.kind.cls) :
+    (Hw.capSel D hwE).clsOk.eval σ = 1#1 := by
+  have hkind := capSel_kind_of_some σ D hwE S e hkc hslot hcap
+  show (if ((Hw.capSel D hwE).kindW.eval σ).extractLsb' 0 1 =
+      (hwE.eval σ).extractLsb' 12 1 then 1#1 else 0#1) = 1#1
+  rw [hkind]
+  rw [if_pos]
+  exact (cls_eq_iff_bits (hwE.eval σ) (Hw.encKind e.kind)).mp (by
+    rw [Hw.decKind_encKind]
+    exact hcls)
+
+/-- A canonical gate-kind word yields its encoded gate identifier. -/
+theorem kGid_encGate_eval (σ : Loom.Hw.St) (kw : Expr 32) (g : GateId)
+    (hkw : kw.eval σ = Hw.encKind (.gate g)) :
+    finOfBv (by decide : 2 ^ 2 = numGates) ((Hw.kGid kw).eval σ) = g := by
+  rw [hkw]
+  fin_cases g <;> rfl
+
 /-- Installing into a genuinely free slot preserves every reference that
 was live before the installation. A pre-existing live reference cannot name
 the selected free slot. -/
