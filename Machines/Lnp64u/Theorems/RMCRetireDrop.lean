@@ -921,6 +921,26 @@ theorem sweepRegionsA_frame (σ acc : Loom.Hw.St)
   intro i _
   exact hne i.1 i.2
 
+private theorem sweepRegionsA_onlyWidth
+    (killed : Expr 2 → Expr 4 → Expr 1) :
+    WritesOnlyWidth 1 (Hw.sweepRegionsA killed) = true := by
+  unfold Hw.sweepRegionsA
+  rw [← sweepRegions_actions]
+  apply seqAll_onlyWidth
+  intro a ha
+  rcases List.mem_map.mp ha with ⟨i, _, rfl⟩
+  rfl
+
+/-- The region sweep frames every register query whose width is not one bit. -/
+theorem sweepRegionsA_frame_width (σ acc : Loom.Hw.St)
+    (killed : Expr 2 → Expr 4 → Expr 1) (q : String) (qW : Nat)
+    (hne : qW ≠ 1) :
+    ((Hw.sweepRegionsA killed).run σ acc).regs q qW = acc.regs q qW := by
+  apply frame
+  intro hmem
+  apply hne
+  exact mem_regWrites_width (sweepRegionsA_onlyWidth killed) _ hmem
+
 /-- In particular, the packed region payload is unchanged by the valid-bit
 sweep. -/
 theorem sweepRegionsA_rgn (σ acc : Loom.Hw.St)
@@ -1968,7 +1988,7 @@ theorem retireFor_drop_ladder (σ : Loom.Hw.St) (E : DomainId)
       else (dropSuccessA E).run σ acc := by
   intro acc
   have hsel := retireFor_sel_of_opc σ E "cap_drop" 17#6 hopc
-    (by native_decide +revert) (by native_decide +revert) (Hw.dropCirc E)
+    (by decide +kernel +revert) (by decide +kernel +revert) (Hw.dropCirc E)
     (List.mem_append_right _ (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
   rw [hsel acc]
   rfl
@@ -2067,7 +2087,9 @@ theorem absDom_regPcTailA (σ acc : Loom.Hw.St) (E : DomainId)
           ((Hw.dreg c r, 32) ∉
             [(Hw.dreg E 1, 32), (Hw.dreg E 2, 32), (Hw.dreg E 3, 32),
              (Hw.dreg E 4, 32), (Hw.dreg E 5, 32), (Hw.dreg E 6, 32),
-             (Hw.dreg E 7, 32), (Hw.dpc E, 12)]) := by native_decide
+             (Hw.dreg E 7, 32), (Hw.dpc E, 12)]) := by
+        intro c E r hc
+        simp [dreg_ne_domain c E hc]
       exact frame (by rw [regPcTailA_writes]; exact hdis c E r hc) σ acc
     · change ((regPcTailA E vE).run σ acc).regs (Hw.dpc c) 12 =
         acc.regs (Hw.dpc c) 12
@@ -2075,7 +2097,9 @@ theorem absDom_regPcTailA (σ acc : Loom.Hw.St) (E : DomainId)
           ((Hw.dpc c, 12) ∉
             [(Hw.dreg E 1, 32), (Hw.dreg E 2, 32), (Hw.dreg E 3, 32),
              (Hw.dreg E 4, 32), (Hw.dreg E 5, 32), (Hw.dreg E 6, 32),
-             (Hw.dreg E 7, 32), (Hw.dpc E, 12)]) := by native_decide
+             (Hw.dreg E 7, 32), (Hw.dpc E, 12)]) := by
+        intro c E hc
+        simp [dpc_ne_domain c E hc]
       exact frame (by rw [regPcTailA_writes]; exact hdis c E hc) σ acc
 
 /-- The structural prefix frames every register outside the capability and
@@ -2098,6 +2122,21 @@ theorem dropStructuralA_frame (σ acc : Loom.Hw.St) (E : DomainId)
     exact reparentA_frame σ acc _ _ q qW hcellP
   · rw [if_neg hp]
     exact orphanA_frame σ acc _ q qW hcellV hlinV
+
+/-- The structural prefix writes only one-, eight-, and fourteen-bit banks. -/
+theorem dropStructuralA_frame_width (σ acc : Loom.Hw.St) (E : DomainId)
+    (q : String) (qW : Nat) (hne1 : qW ≠ 1) (hne8 : qW ≠ 8)
+    (hne14 : qW ≠ 14) :
+    ((dropStructuralA E).run σ acc).regs q qW = acc.regs q qW := by
+  simp only [dropStructuralA, Act.run]
+  rw [clearSlotA_frame_width σ _ E (Hw.dropSel E).slot
+    (Hw.dropSel E).linV (Hw.dropSel E).lin q qW hne1 hne8]
+  by_cases hp : (Expr.and (Hw.dropSel E).linV
+      (Hw.cellVAt E (Hw.dropSel E).lin)).eval σ = 1#1
+  · rw [if_pos hp]
+    exact reparentA_frame_width σ acc _ _ q qW hne14
+  · rw [if_neg hp]
+    exact orphanA_frame_width σ acc _ q qW hne1
 
 /-- The first two successful `dropCirc` actions (parent splice/orphan, then
 slot clear) implement the spec's structural `cap_drop` core on every
@@ -2472,11 +2511,11 @@ theorem drop_structural_sweep_rgnV (σ : Loom.Hw.St) (E : DomainId)
   have hframe : ((dropStructuralA E).run σ σ).regs
       (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1 := by
     apply dropStructuralA_frame
-    · intro s; clear * - c r E s; native_decide +revert
-    · intro s; clear * - c r E s; native_decide +revert
-    · intro c' l; clear * - c r c' l; native_decide +revert
-    · intro c' l; clear * - c r c' l; native_decide +revert
-    · intro c' s; clear * - c r c' s; native_decide +revert
+    · intro s; exact (dcapV_ne_drgnV E c s r).symm
+    · intro s; exact drgnV_ne_dgen c E r s
+    · intro c' l; exact (dcellV_ne_drgnV c' c l r).symm
+    · intro c' l; exact (dcellPar_ne_drgnV c' c l r).symm
+    · intro c' s; exact (dcapLinV_ne_drgnV c' c s r).symm
   change (if (σ.regs (Hw.drgnV c r) 1 &&&
       (Hw.dropKilled E (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
         (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ) = 1#1
@@ -2497,12 +2536,8 @@ theorem drop_structural_sweep_rgn (σ : Loom.Hw.St) (E : DomainId)
       ((dropStructuralA E).run σ σ)).regs (Hw.drgn c r) 42 =
       σ.regs (Hw.drgn c r) 42 := by
   rw [sweepRegionsA_rgn]
-  apply dropStructuralA_frame
-  · intro s; exact (by native_decide +revert)
-  · intro s; exact (by native_decide +revert)
-  · intro c' l; exact (by native_decide +revert)
-  · intro c' l; exact (by native_decide +revert)
-  · intro c' s; exact (by native_decide +revert)
+  exact dropStructuralA_frame_width σ σ E (Hw.drgn c r) 42
+    (by decide) (by decide) (by decide)
 
 /-- The hardware region-valid sweep and the spec `sweepRegions` retain
 exactly the same regions after a successful drop. -/
@@ -2614,17 +2649,18 @@ theorem absDom_drop_structural_sweep (σ : Loom.Hw.St) (E : DomainId)
       (hne : ∀ c' : DomainId, ∀ r' : RegionId, q ≠ Hw.drgnV c' r') :
       accR.regs q qW = accS.regs q qW := by
     exact sweepRegionsA_frame σ accS (Hw.dropKilled E) q qW hne
+  have hframeW (q : String) (qW : Nat) (hne : qW ≠ 1) :
+      accR.regs q qW = accS.regs q qW := by
+    exact sweepRegionsA_frame_width σ accS (Hw.dropKilled E) q qW hne
   apply domainState_ext
   · rw [sweepRegions_regs]
     funext rr
     change accR.regs (Hw.dreg c rr) 32 = _
-    rw [hframe _ _ (fun c' r' => by
-      clear * - c rr c' r'; native_decide +revert)]
+    rw [hframeW _ _ (by decide)]
     exact congrFun (congrArg DomainState.regs hstruct) rr
   · rw [sweepRegions_pc]
     change accR.regs (Hw.dpc c) 12 = _
-    rw [hframe _ _ (fun c' r' => by
-      clear * - c c' r'; native_decide +revert)]
+    rw [hframeW _ _ (by decide)]
     exact congrArg DomainState.pc hstruct
   · rw [sweepRegions_caps]
     funext s
@@ -2633,30 +2669,23 @@ theorem absDom_drop_structural_sweep (σ : Loom.Hw.St) (E : DomainId)
              if accR.regs (Hw.dcapLinV c s) 1 = 1#1 then
                some (finOfBv (by decide) (accR.regs (Hw.dcapLin c s) 4))
              else none⟩ : CapEntry) else none) = _
-    rw [hframe _ _ (fun c' r' => by
-          clear * - c s c' r'; native_decide +revert),
-      hframe _ _ (fun c' r' => by
-          clear * - c s c' r'; native_decide +revert),
-      hframe _ _ (fun c' r' => by
-          clear * - c s c' r'; native_decide +revert),
-      hframe _ _ (fun c' r' => by
-          clear * - c s c' r'; native_decide +revert)]
+    rw [hframe _ _ (fun c' r' => dcapV_ne_drgnV c c' s r'),
+      hframeW _ _ (by decide),
+      hframe _ _ (fun c' r' => dcapLinV_ne_drgnV c c' s r'),
+      hframeW _ _ (by decide)]
     exact congrFun (congrArg DomainState.caps hstruct) s
   · rw [sweepRegions_slotGen]
     funext s
     change accR.regs (Hw.dgen c s) 8 = _
-    rw [hframe _ _ (fun c' r' => by
-      clear * - c s c' r'; native_decide +revert)]
+    rw [hframeW _ _ (by decide)]
     exact congrFun (congrArg DomainState.slotGen hstruct) s
   · rw [sweepRegions_lineage]
     funext l
     change (if accR.regs (Hw.dcellV c l) 1 = 1#1 then
       some ({ parent := Hw.decRef (accR.regs (Hw.dcellPar c l) 14) } :
         LineageCell) else none) = _
-    rw [hframe _ _ (fun c' r' => by
-          clear * - c l c' r'; native_decide +revert),
-      hframe _ _ (fun c' r' => by
-          clear * - c l c' r'; native_decide +revert)]
+    rw [hframe _ _ (fun c' r' => dcellV_ne_drgnV c c' l r'),
+      hframeW _ _ (by decide)]
     exact congrFun (congrArg DomainState.lineage hstruct) l
   · funext r
     rw [sweepRegions_drop_region_eq σ E S τ hslot hkills hmapz hunmapz
@@ -2672,32 +2701,24 @@ theorem absDom_drop_structural_sweep (σ : Loom.Hw.St) (E : DomainId)
   · rw [sweepRegions_run]
     change Hw.decRun (accR.regs (Hw.drun c) 2)
       (accR.regs (Hw.drunG c) 2) = _
-    rw [hframe _ _ (fun c' r' => by
-          clear * - c c' r'; native_decide +revert),
-      hframe _ _ (fun c' r' => by
-          clear * - c c' r'; native_decide +revert)]
+    rw [hframeW _ _ (by decide), hframeW _ _ (by decide)]
     exact congrArg DomainState.run hstruct
   · rw [sweepRegions_serving]
     change (if accR.regs (Hw.dsrvV c) 1 = 1#1 then
       some (finOfBv (by decide) (accR.regs (Hw.dsrv c) 2)) else none) = _
-    rw [hframe _ _ (fun c' r' => by
-          clear * - c c' r'; native_decide +revert),
-      hframe _ _ (fun c' r' => by
-          clear * - c c' r'; native_decide +revert)]
+    rw [hframe _ _ (fun c' r' => dsrvV_ne_drgnV c c' r'),
+      hframeW _ _ (by decide)]
     exact congrArg DomainState.serving hstruct
   · rw [sweepRegions_cause]
     change accR.regs (Hw.dcause c) 32 = _
-    rw [hframe _ _ (fun c' r' => by
-      clear * - c c' r'; native_decide +revert)]
+    rw [hframeW _ _ (by decide)]
     exact congrArg DomainState.cause hstruct
   · rw [sweepRegions_budget]
     change (accR.regs (Hw.dbudget c) 32).toNat = _
-    rw [hframe _ _ (fun c' r' => by
-      clear * - c c' r'; native_decide +revert)]
+    rw [hframeW _ _ (by decide)]
     exact congrArg DomainState.budget hstruct
   · change (accR.regs (Hw.dmaxdon c) 32).toNat = (τ.doms c).maxDonation
-    rw [hframe _ _ (fun c' r' => by
-      clear * - c c' r'; native_decide +revert)]
+    rw [hframeW _ _ (by decide)]
     exact congrArg DomainState.maxDonation hstruct
 
 /-- Complete successful payload through `rd := 0` and retirement PC
@@ -2727,15 +2748,10 @@ theorem absDom_dropSuccessA (σ : Loom.Hw.St) (E : DomainId)
   let accR := (Hw.sweepRegionsA (Hw.dropKilled E)).run σ
     ((dropStructuralA E).run σ σ)
   have hpc : accR.regs (Hw.dpc E) 12 = σ.regs (Hw.dpc E) 12 := by
-    rw [sweepRegionsA_frame σ _ (Hw.dropKilled E) (Hw.dpc E) 12
-      (fun c' r' => by
-        clear * - E c' r'; native_decide +revert)]
-    apply dropStructuralA_frame
-    · intro s; clear * - E s; native_decide +revert
-    · intro s; clear * - E s; native_decide +revert
-    · intro c' l; clear * - E c' l; native_decide +revert
-    · intro c' l; clear * - E c' l; native_decide +revert
-    · intro c' s; clear * - E c' s; native_decide +revert
+    rw [sweepRegionsA_frame_width σ _ (Hw.dropKilled E) (Hw.dpc E) 12
+      (by decide)]
+    exact dropStructuralA_frame_width σ σ E (Hw.dpc E) 12
+      (by decide) (by decide) (by decide)
   change Hw.absDom ((regPcTailA E (.lit 0)).run σ accR) c = _
   rw [absDom_regPcTailA σ accR E (.lit 0) RD 0 hrd rfl hpc c]
   by_cases hc : c = E
@@ -2868,7 +2884,7 @@ theorem absDom_dropSuccessA_refill (m : Manifest) (hwfm : m.WF)
     rw [show out.regs (Hw.dbudget c) 32 = acc.regs (Hw.dbudget c) 32 from
       frame (by
         clear * - c E
-        native_decide +revert) σ acc]
+        decide +kernel +revert) σ acc]
     rw [show acc.regs (Hw.dbudget c) 32 =
         ((Hw.refillAct m).run σ σ).regs (Hw.dbudget c) 32 from
       frame (by fin_cases c <;> decide) σ ((Hw.refillAct m).run σ σ)]
@@ -3488,7 +3504,7 @@ theorem square_retire_kill (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     show Hw.absInflight ((Hw.core m).cycle σ) = _
     rw [hRHS]
     unfold Hw.absInflight
-    rw [hp "if_v" 1 (by native_decide +revert) (by decide), hcoreR "if_v" 1]
+    rw [hp "if_v" 1 (by decide +kernel +revert) (by decide), hcoreR "if_v" 1]
     rw [show ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ σ1).regs
         "if_v" 1 = ((Act.write 1 "if_v" (.lit 0)).run σ σ1).regs
           "if_v" 1 from frame hXifv σ _]
