@@ -823,6 +823,190 @@ theorem absDom_transferChosenA_none (σ : Loom.Hw.St)
 implements the explicit derived branch of the abstract transfer. The
 hardware pre-adjusts the moved cell's parent; the whole-state adjustment
 lemma shows this is equivalent to the specification's later reparent pass. -/
+theorem absDom_transferChosenA_some_acc (σ acc : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) (S NS : Slot) (e : CapEntry)
+    (L : LineageId) (cell : LineageCell) (NL : LineageId)
+    (hsourceSlot : acs.slot.eval σ = BitVec.ofNat 4 S.val)
+    (hsource : ((Hw.abs acc).doms D).caps S = some e)
+    (hslot : (Hw.abs acc).freeSlot T = some NS)
+    (hslotSample : (Hw.abs σ).freeSlot T = some NS)
+    (hlin : e.lineage = some L)
+    (hcell : ((Hw.abs acc).doms D).lineage L = some cell)
+    (hcellSample : ((Hw.abs σ).doms D).lineage L = some cell)
+    (hfreeCell : (Hw.abs acc).freeCell T = some NL)
+    (hfreeCellSample : (Hw.abs σ).freeCell T = some NL)
+    (hlinV : acs.linV.eval σ = 1#1)
+    (hlinIdx : acs.lin.eval σ = BitVec.ofNat 4 L.val)
+    (hkind : acs.kindW.eval σ = Hw.encKind e.kind)
+    (hold : Hw.decRef ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hgenAll : ∀ c : DomainId, ∀ s : Slot,
+      acc.regs (Hw.dgen c s) 8 = σ.regs (Hw.dgen c s) 8)
+    (hwf : Wf (Hw.abs acc)) (c : DomainId) :
+    Hw.absDom (transferChosenA D T acs |>.run σ acc) c =
+      (((((installTransferred (Hw.abs acc) T NS e.kind
+        (some (NL, cell.parent))).reparent
+          ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩
+          ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩).clearSlot D S).sweepRegions).doms c) := by
+  let oldE := Hw.encRefE (Hw.dLit D) acs.slot acs.gen
+  let nsE := Hw.freeSlotIdx T
+  let newE := Hw.encRefE (Hw.dLit T) nsE (Hw.genOfE T nsE)
+  let srcPar := Hw.cellParAt D acs.lin
+  let parE := Expr.mux (.eq srcPar oldE) newE srcPar
+  have hns : nsE.eval σ = BitVec.ofNat 4 NS.val :=
+    freeSlotIdx_eval σ T NS hslotSample
+  have hnl : (Hw.freeCellIdx T).eval σ = BitVec.ofNat 4 NL.val :=
+    freeCellIdx_eval σ T NL hfreeCellSample
+  have hfin : finOfBv (by decide : 2 ^ 4 = numSlots) (nsE.eval σ) = NS :=
+    (bv4_slot_iff _ NS).mp hns
+  have hgen : (Hw.genOfE T nsE).eval σ =
+      ((Hw.abs acc).doms T).slotGen NS := by
+    rw [Hw.genOfE, muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin]
+    exact (hgenAll T NS).symm
+  have hnew : Hw.decRef (newE.eval σ) =
+      ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩ := by
+    exact encRefE_decoded_selected σ T nsE (Hw.genOfE T nsE) NS
+      (((Hw.abs acc).doms T).slotGen NS) hns hgen
+  have hold' : Hw.decRef (oldE.eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩ := hold
+  have htargetFree : ((Hw.abs acc).doms T).caps NS = none :=
+    freeSlot_caps_none (Hw.abs acc) T hslot
+  have hnewne : Hw.decRef (newE.eval σ) ≠ Hw.decRef (oldE.eval σ) := by
+    rw [hnew, hold']
+    exact fresh_destination_ref_ne_source (Hw.abs acc) D S e hsource T NS
+      htargetFree
+  have hparent : acs.linV.eval σ = 1#1 →
+      Hw.decRef (parE.eval σ) ≠ Hw.decRef (oldE.eval σ) := by
+    intro _
+    exact decRef_transfer_parent_mux_ne σ srcPar oldE newE hnewne
+  have htargetCellFree : acs.linV.eval σ = 1#1 →
+      σ.regs (Hw.dcellV T
+        (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ))) 1 ≠ 1#1 := by
+    intro _ hv
+    have hnone := freeCell_none (Hw.abs σ) T hfreeCellSample
+    have hNL : finOfBv (by decide : 2 ^ 4 = numLineage)
+        ((Hw.freeCellIdx T).eval σ) = NL := (bv4_slot_iff _ NL).mp hnl
+    change (if σ.regs (Hw.dcellV T NL) 1 = 1#1 then
+      some (LineageCell.mk (Hw.decRef (σ.regs (Hw.dcellPar T NL) 14)))
+      else none) = none at hnone
+    have hvNL : σ.regs (Hw.dcellV T NL) 1 = 1#1 := by
+      rw [← hNL]
+      exact hv
+    rw [hvNL, if_pos rfl] at hnone
+    contradiction
+  have hremoved : removedCell
+      ((installTransferred (Hw.abs acc) T NS e.kind
+        (if acs.linV.eval σ = 1#1 then
+          some (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ),
+            Hw.decRef (parE.eval σ)) else none)).reparent
+        (Hw.decRef (oldE.eval σ)) (Hw.decRef (newE.eval σ))) D S =
+      if acs.linV.eval σ = 1#1 then
+        some (finOfBv (by decide) (acs.lin.eval σ)) else none := by
+    have hr := removedCell_installTransferred_reparent_source (Hw.abs acc)
+      D S e hsource T NS e.kind
+      (some (NL, Hw.decRef (parE.eval σ))) htargetFree
+      (Hw.decRef (oldE.eval σ)) (Hw.decRef (newE.eval σ))
+    have hL : finOfBv (by decide : 2 ^ 4 = numLineage) (acs.lin.eval σ) = L :=
+      (bv4_slot_iff _ L).mp hlinIdx
+    simpa [hlinV, hlin, hL, hnl] using hr
+  have hsrcParent : Hw.decRef (srcPar.eval σ) = cell.parent := by
+    rw [cellParAt_eval σ D acs.lin L hlinIdx]
+    change (if σ.regs (Hw.dcellV D L) 1 = 1#1 then
+      some (LineageCell.mk (Hw.decRef (σ.regs (Hw.dcellPar D L) 14)))
+      else none) = some cell at hcellSample
+    by_cases hv : σ.regs (Hw.dcellV D L) 1 = 1#1
+    · rw [if_pos hv] at hcellSample
+      exact congrArg LineageCell.parent (Option.some.inj hcellSample)
+    · rw [if_neg hv] at hcellSample
+      contradiction
+  have hparDecoded : Hw.decRef (parE.eval σ) =
+      if cell.parent = Hw.decRef (oldE.eval σ) then
+        Hw.decRef (newE.eval σ) else cell.parent := by
+    by_cases hp : srcPar.eval σ = oldE.eval σ
+    · have hp' : cell.parent = Hw.decRef (oldE.eval σ) := by
+        rw [← hsrcParent, hp]
+      simp [parE, Expr.eval, hp, hp', hnew]
+    · have hp' : cell.parent ≠ Hw.decRef (oldE.eval σ) := by
+        intro heq
+        apply hp
+        rw [← encRef_decRef (srcPar.eval σ), hsrcParent, heq,
+          encRef_decRef]
+      simp [parE, Expr.eval, hp, hp', hsrcParent]
+  rw [show (transferChosenA D T acs).run σ acc =
+      (Hw.sweepRegionsA
+        (fun dm sl => .and (.eq dm (Hw.dLit D)) (.eq sl acs.slot))).run σ
+        ((Hw.clearSlotA D acs.slot acs.linV acs.lin).run σ
+          ((Hw.reparentA oldE newE).run σ
+            ((Hw.installA T nsE acs.kindW acs.linV (Hw.freeCellIdx T)
+              parE).run σ acc))) from rfl]
+  have habs := absDom_transferActions_selected_acc σ acc T nsE acs.kindW
+    acs.linV (Hw.freeCellIdx T) parE oldE newE NS e.kind D acs.slot
+    acs.linV acs.lin S hns hkind hV hP hregionV hregion (hgenAll D S)
+    htargetCellFree hparent hsourceSlot hremoved htargetFree hwf c
+  simp only [hlinV, if_pos, hnl] at habs
+  have hNL' : finOfBv (by decide : 2 ^ 4 = numLineage)
+      (BitVec.ofNat 4 NL.val) = NL :=
+    (bv4_slot_iff _ NL).mp rfl
+  rw [hNL'] at habs
+  rw [hparDecoded, hold', hnew] at habs
+  rw [installTransferred_reparent_adjusted (Hw.abs acc) T NS e.kind NL
+    cell.parent
+    ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩
+    ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩
+    (fresh_destination_ref_ne_source (Hw.abs acc) D S e hsource T NS
+      htargetFree)] at habs
+  exact habs
+
+/-- Whole-state accumulator-general derived transfer. -/
+theorem abs_transferChosenA_some_acc (σ acc : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) (S NS : Slot) (e : CapEntry)
+    (L : LineageId) (cell : LineageCell) (NL : LineageId)
+    (hsourceSlot : acs.slot.eval σ = BitVec.ofNat 4 S.val)
+    (hsource : ((Hw.abs acc).doms D).caps S = some e)
+    (hslot : (Hw.abs acc).freeSlot T = some NS)
+    (hslotSample : (Hw.abs σ).freeSlot T = some NS)
+    (hlin : e.lineage = some L)
+    (hcell : ((Hw.abs acc).doms D).lineage L = some cell)
+    (hcellSample : ((Hw.abs σ).doms D).lineage L = some cell)
+    (hfreeCell : (Hw.abs acc).freeCell T = some NL)
+    (hfreeCellSample : (Hw.abs σ).freeCell T = some NL)
+    (hlinV : acs.linV.eval σ = 1#1)
+    (hlinIdx : acs.lin.eval σ = BitVec.ofNat 4 L.val)
+    (hkind : acs.kindW.eval σ = Hw.encKind e.kind)
+    (hold : Hw.decRef ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hgenAll : ∀ c : DomainId, ∀ s : Slot,
+      acc.regs (Hw.dgen c s) 8 = σ.regs (Hw.dgen c s) 8)
+    (hwf : Wf (Hw.abs acc)) :
+    Hw.abs ((transferChosenA D T acs).run σ acc) =
+      ((((installTransferred (Hw.abs acc) T NS e.kind
+        (some (NL, cell.parent))).reparent
+          ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩
+          ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩).clearSlot D S).sweepRegions) := by
+  rw [abs_transferChosenA_frame_acc]
+  apply machineState_ext <;> try rfl
+  funext c
+  exact absDom_transferChosenA_some_acc σ acc D T acs S NS e L cell NL
+    hsourceSlot hsource hslot hslotSample hlin hcell hcellSample hfreeCell
+    hfreeCellSample hlinV hlinIdx hkind hold hV hP hregionV hregion hgenAll
+    hwf c
+
 theorem absDom_transferChosenA_some (σ : Loom.Hw.St)
     (D T : DomainId) (acs : Hw.CapSel) (S NS : Slot) (e : CapEntry)
     (L : LineageId) (cell : LineageCell) (NL : LineageId)
