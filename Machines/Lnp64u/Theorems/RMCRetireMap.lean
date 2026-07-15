@@ -70,7 +70,7 @@ set_option maxHeartbeats 25600000 in
 /-- Both `map` errno outcomes retire as `pc += 1; rd := errno` with the
 Mover fully quiescent (`mapOkE` is off, so even the fired-`map`
 composites collapse). -/
-theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+theorem retire_err_common_mem (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
       (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
@@ -89,7 +89,9 @@ theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
           ⟨false, true, false⟩,
         .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
           sc]).eval σ = 0#1)
-    (hben5 : ∀ mn ∈ memMns, (Hw.isMn mn).eval σ ≠ 1#1)
+    (hcoremem : ∀ b : Addr,
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+        b.toNat 32 = σ.mems "mem" b.toNat 32)
     (E : DomainId) (hE : E.val = (σ.regs "if_dom" 2).toNat)
     (errw : Loom.Word32)
     (hcoreX : ∀ acc, (Hw.retireFor E).run σ acc
@@ -307,10 +309,7 @@ theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       show (refillPhase m (Hw.abs σ)).mover = _
       rw [refillPhase_mover]
       rfl)
-    (fun b => by
-      rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
-      rw [refill_pres_mem m σ "mem" b.toNat 32]
-      rfl)
+    hcoremem
     (fun sc => by
       rw [srcWord_quiescent σ hswz sc]
       rfl)
@@ -318,6 +317,47 @@ theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       show (refillPhase m (Hw.abs σ)).cycle = _
       rfl)
     rfl
+
+set_option maxHeartbeats 25600000 in
+/-- Backwards-compatible errno wrapper for mnemonics whose memory-capable
+circuits are not selected. -/
+theorem map_err_common (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hin : Inert σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hswz : ∀ (d : DomainId) (sc : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+        Hw.domCoversE d (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          sc]).eval σ = 0#1)
+    (hben5 : ∀ mn ∈ memMns, (Hw.isMn mn).eval σ ≠ 1#1)
+    (E : DomainId) (hE : E.val = (σ.regs "if_dom" 2).toNat)
+    (errw : Loom.Word32)
+    (hcoreX : ∀ acc, (Hw.retireFor E).run σ acc
+      = (Act.seq (Hw.pcAdvA E) (Hw.writeReg E Hw.rdE (.lit errw))).run σ acc)
+    (hspecE : corePhase m (refillPhase m (Hw.abs σ))
+      = (({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+          (fun ds => { ds with pc := ds.pc + 1 })).setDom E
+          (fun ds => ds.setReg (operandsOf (σ.regs "if_word" 32)).rd errw)) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  apply retire_err_common_mem m hwf hfit σ hsync hifv hcl hin hmapz
+    hunmapz hswz
+  · intro b
+    rw [coreAct_mems_quiet m σ _ hifv hcl hben5]
+    rw [refill_pres_mem m σ "mem" b.toNat 32]
+  · exact hE
+  · exact hcoreX
+  · exact hspecE
 
 /-! ## The `map` ok-path write set and value bridge -/
 
@@ -1310,6 +1350,5 @@ theorem square_retire_map (m : Manifest) (hwf : m.WF) (hfit : Fits m)
 
 
 end Machines.Lnp64u.Theorems.RMC
-
 
 

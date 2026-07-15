@@ -360,12 +360,13 @@ theorem square_retire_movejob (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
     rw [show (moverPhase (corePhase m τ1)).mem = (moverPhase τ2).mem from by
       rw [hspec]]
-    exact moverAct_mem_run σ _ τ2 hkills
+    exact moverAct_mem_run σ _ τ2
       VSRC VDST VOW VSC VDC VSA VREM
-      (congrFun (hcaps (Hw.decRef VSRC).dom) _)
-      (congrFun (hgen (Hw.decRef VSRC).dom) _)
-      (congrFun (hcaps (Hw.decRef VDST).dom) _)
-      (congrFun (hgen (Hw.decRef VDST).dom) _)
+      (fun _ _ => hkills _ _) (fun _ _ => hkills _ _)
+      (by unfold DomainState.liveCap
+          rw [hcaps (Hw.decRef VSRC).dom, hgen (Hw.decRef VSRC).dom])
+      (by unfold DomainState.liveCap
+          rw [hcaps (Hw.decRef VDST).dom, hgen (Hw.decRef VDST).dom])
       hjobV
       hSRCe hDSTe hOWe hSCe hDCe hSAe hREMe (hspec ▸ hjs)
       (fun ow sa => hspec ▸ hauthτ2 ow sa)
@@ -421,12 +422,13 @@ theorem square_retire_movejob (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         htick "mov_rem" 13 (by decide), htick "mov_status" 12 (by decide)]]
     rw [show (moverPhase (corePhase m τ1)).mover = (moverPhase τ2).mover
       from by rw [hspec]]
-    exact absMover_moverAct_run σ _ τ2 hkills
+    exact absMover_moverAct_run σ _ τ2
       VSRC VDST VOW VSC VDC VSA VREM
-      (congrFun (hcaps (Hw.decRef VSRC).dom) _)
-      (congrFun (hgen (Hw.decRef VSRC).dom) _)
-      (congrFun (hcaps (Hw.decRef VDST).dom) _)
-      (congrFun (hgen (Hw.decRef VDST).dom) _)
+      (fun _ _ => hkills _ _) (fun _ _ => hkills _ _)
+      (by unfold DomainState.liveCap
+          rw [hcaps (Hw.decRef VSRC).dom, hgen (Hw.decRef VSRC).dom])
+      (by unfold DomainState.liveCap
+          rw [hcaps (Hw.decRef VDST).dom, hgen (Hw.decRef VDST).dom])
       hjobV
       hSRCe hDSTe hOWe hSCe hDCe hSAe hREMe hjs
   · -- inflight
