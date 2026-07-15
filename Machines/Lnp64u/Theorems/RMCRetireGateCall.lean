@@ -399,13 +399,23 @@ theorem movKilledE_call_nonzero_iff (σ : Loom.Hw.St) (d : DomainId)
       | some job =>
           (job.src.dom = d ∧ job.src.slot = S) ∨
           (job.dst.dom = d ∧ job.dst.slot = S) := by
-  unfold Hw.movKilledE
+  have heval : (Hw.movKilledE (Hw.callKilled d)).eval σ =
+      σ.regs "mov_v" 1 &&&
+        ((Expr.and (.eq Hw.movSrcDom (Hw.dLit d))
+            (.eq Hw.movSrcSlot (Hw.argSel d).slot)).eval σ |||
+         (Expr.and (.eq Hw.movDstDom (Hw.dLit d))
+            (.eq Hw.movDstSlot (Hw.argSel d).slot)).eval σ) := by
+    unfold Hw.movKilledE
+    change σ.regs "mov_v" 1 &&&
+        ((Hw.callKilled d Hw.movSrcDom Hw.movSrcSlot).eval σ |||
+         (Hw.callKilled d Hw.movDstDom Hw.movDstSlot).eval σ) = _
+    rw [callKilled_nonzero_eval σ d hnz,
+      callKilled_nonzero_eval σ d hnz]
+  rw [heval]
   by_cases hv : σ.regs "mov_v" 1 = 1#1
   · rw [absMover_some σ hv, bv1_and_eq_one, bv1_or_eq_one]
     simp only [Hw.movSrcDom, Hw.movSrcSlot, Hw.movDstDom, Hw.movDstSlot]
-    rw [callKilled_nonzero_eval σ d hnz,
-      callKilled_nonzero_eval σ d hnz,
-      slotKilled_ref_eval σ d (Hw.argSel d).slot S hslot
+    rw [slotKilled_ref_eval σ d (Hw.argSel d).slot S hslot
         (.reg 14 "mov_src"),
       slotKilled_ref_eval σ d (Hw.argSel d).slot S hslot
         (.reg 14 "mov_dst")]
