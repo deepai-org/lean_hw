@@ -177,6 +177,113 @@ theorem installA_run_selected (σ acc : Loom.Hw.St) (c : DomainId)
       (.write 14 (Hw.dcellPar c l) parE)) NL hl hlx
     (List.finRange numLineage) (List.mem_finRange NL) (List.nodup_finRange _)
 
+/-- Selected installation for either a root or derived capability.  The slot
+writes always fire; the lineage-cell writes fire exactly when `linVE` is set.
+This is the form needed by capability transfer in both gate operations. -/
+theorem installA_run_selected_any (σ acc : Loom.Hw.St) (c : DomainId)
+    (nsE : Expr 4) (kindE : Expr 32) (linVE : Expr 1)
+    (nlE : Expr 4) (parE : Expr 14) (NS : Slot)
+    (hns : nsE.eval σ = BitVec.ofNat 4 NS.val) :
+    (Hw.installA c nsE kindE linVE nlE parE).run σ acc =
+      let NL : LineageId := finOfBv (by decide) (nlE.eval σ)
+      (Act.seq
+        (Hw.seqAll [.write 1 (Hw.dcapV c NS) (.lit 1),
+          .write 32 (Hw.dcapKind c NS) kindE,
+          .write 1 (Hw.dcapLinV c NS) linVE,
+          .write 4 (Hw.dcapLin c NS) nlE])
+        (if linVE.eval σ = 1#1 then
+          .seq (.write 1 (Hw.dcellV c NL) (.lit 1))
+            (.write 14 (Hw.dcellPar c NL) parE)
+        else .skip)).run σ acc := by
+  show ((Hw.seqAll ((List.finRange numLineage).map fun l =>
+      Act.ite (.and linVE (.eq nlE (Hw.lLit l)))
+        (.seq (.write 1 (Hw.dcellV c l) (.lit 1))
+          (.write 14 (Hw.dcellPar c l) parE)) .skip)).run σ
+    ((Hw.seqAll ((List.finRange numSlots).map fun s =>
+      Act.ite (.eq nsE (Hw.sLit s))
+        (Hw.seqAll [.write 1 (Hw.dcapV c s) (.lit 1),
+          .write 32 (Hw.dcapKind c s) kindE,
+          .write 1 (Hw.dcapLinV c s) linVE,
+          .write 4 (Hw.dcapLin c s) nlE]) .skip)).run σ acc)) = _
+  have hs : (Expr.eq nsE (Hw.sLit NS)).eval σ = 1#1 := by
+    rw [eqE_eval, hns]
+    rfl
+  have hsx : ∀ j : Slot, j ≠ NS →
+      (Expr.eq nsE (Hw.sLit j)).eval σ ≠ 1#1 := by
+    intro j hj hfire
+    apply hj
+    apply Fin.ext
+    rw [eqE_eval, hns] at hfire
+    have hnat := congrArg BitVec.toNat hfire
+    change (BitVec.ofNat 4 NS.val).toNat =
+      (BitVec.ofNat 4 j.val).toNat at hnat
+    simpa [BitVec.toNat_ofNat,
+      Nat.mod_eq_of_lt (show j.val < 2 ^ 4 from j.isLt),
+      Nat.mod_eq_of_lt (show NS.val < 2 ^ 4 from NS.isLt)] using hnat.symm
+  rw [seqAll_ite_run_unique σ acc
+    (fun s : Slot => Expr.eq nsE (Hw.sLit s))
+    (fun s : Slot => Hw.seqAll [.write 1 (Hw.dcapV c s) (.lit 1),
+      .write 32 (Hw.dcapKind c s) kindE,
+      .write 1 (Hw.dcapLinV c s) linVE,
+      .write 4 (Hw.dcapLin c s) nlE]) NS hs hsx
+    (List.finRange numSlots) (List.mem_finRange NS) (List.nodup_finRange _)]
+  let NL : LineageId := finOfBv (by decide) (nlE.eval σ)
+  change (Hw.seqAll ((List.finRange numLineage).map fun l =>
+      Act.ite (.and linVE (.eq nlE (Hw.lLit l)))
+        (.seq (.write 1 (Hw.dcellV c l) (.lit 1))
+          (.write 14 (Hw.dcellPar c l) parE)) .skip)).run σ
+      ((Hw.seqAll [.write 1 (Hw.dcapV c NS) (.lit 1),
+        .write 32 (Hw.dcapKind c NS) kindE,
+        .write 1 (Hw.dcapLinV c NS) linVE,
+        .write 4 (Hw.dcapLin c NS) nlE]).run σ acc) =
+    (if linVE.eval σ = 1#1 then
+      Act.seq (.write 1 (Hw.dcellV c NL) (.lit 1))
+        (.write 14 (Hw.dcellPar c NL) parE)
+    else .skip).run σ
+      ((Hw.seqAll [.write 1 (Hw.dcapV c NS) (.lit 1),
+        .write 32 (Hw.dcapKind c NS) kindE,
+        .write 1 (Hw.dcapLinV c NS) linVE,
+        .write 4 (Hw.dcapLin c NS) nlE]).run σ acc)
+  by_cases hv : linVE.eval σ = 1#1
+  · rw [if_pos hv]
+    have hnl : nlE.eval σ = BitVec.ofNat 4 NL.val := by
+      apply BitVec.eq_of_toNat_eq
+      rw [BitVec.toNat_ofNat]
+      exact (Nat.mod_eq_of_lt (nlE.eval σ).isLt).symm
+    have hl : (Expr.and linVE (Expr.eq nlE (Hw.lLit NL))).eval σ = 1#1 := by
+      change linVE.eval σ &&& (Expr.eq nlE (Hw.lLit NL)).eval σ = 1#1
+      rw [bv1_and_eq_one]
+      refine ⟨hv, ?_⟩
+      rw [eqE_eval, hnl]
+      change BitVec.ofNat 4 NL.val = BitVec.ofNat 4 NL.val
+      rfl
+    have hlx : ∀ j : LineageId, j ≠ NL →
+        (Expr.and linVE (Expr.eq nlE (Hw.lLit j))).eval σ ≠ 1#1 := by
+      intro j hj hfire
+      change linVE.eval σ &&& (Expr.eq nlE (Hw.lLit j)).eval σ = 1#1 at hfire
+      rw [bv1_and_eq_one] at hfire
+      apply hj
+      apply Fin.ext
+      rw [eqE_eval, hnl] at hfire
+      have hnat := congrArg BitVec.toNat hfire.2
+      change (BitVec.ofNat 4 NL.val).toNat =
+        (BitVec.ofNat 4 j.val).toNat at hnat
+      simpa [BitVec.toNat_ofNat,
+        Nat.mod_eq_of_lt (show j.val < 2 ^ 4 from j.isLt),
+        Nat.mod_eq_of_lt (show NL.val < 2 ^ 4 from NL.isLt)] using hnat.symm
+    exact seqAll_ite_run_unique σ _
+      (fun l : LineageId => Expr.and linVE (Expr.eq nlE (Hw.lLit l)))
+      (fun l : LineageId => Act.seq
+        (.write 1 (Hw.dcellV c l) (.lit 1))
+        (.write 14 (Hw.dcellPar c l) parE)) NL hl hlx
+      (List.finRange numLineage) (List.mem_finRange NL) (List.nodup_finRange _)
+  · rw [if_neg hv]
+    apply seqAll_ite_run_none
+    intro l _ hfire
+    change linVE.eval σ &&& (Expr.eq nlE (Hw.lLit l)).eval σ = 1#1 at hfire
+    rw [bv1_and_eq_one] at hfire
+    exact hv hfire.1
+
 /-! ## Selected full grant action -/
 
 /-- The complete fired `mem_grant` core action. -/
