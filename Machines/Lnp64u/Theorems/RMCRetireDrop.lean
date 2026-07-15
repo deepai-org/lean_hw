@@ -778,6 +778,24 @@ theorem orphanA_frame (σ acc : Loom.Hw.St) (oldE : Expr 14)
   · exact hcell c l
   · exact hcap c s
 
+private theorem orphanA_onlyWidth (oldE : Expr 14) :
+    WritesOnlyWidth 1 (Hw.orphanA oldE) = true := by
+  simp only [Hw.orphanA]
+  rw [← orphan_actions]
+  apply seqAll_onlyWidth
+  intro a ha
+  rcases List.mem_map.mp ha with ⟨i, _, rfl⟩
+  cases i <;> rfl
+
+/-- `orphanA` frames every register query whose width is not one bit. -/
+theorem orphanA_frame_width (σ acc : Loom.Hw.St) (oldE : Expr 14)
+    (q : String) (qW : Nat) (hne : qW ≠ 1) :
+    ((Hw.orphanA oldE).run σ acc).regs q qW = acc.regs q qW := by
+  apply frame
+  intro hmem
+  apply hne
+  exact mem_regWrites_width (orphanA_onlyWidth oldE) _ hmem
+
 /-! ## Region-sweep hardware walk -/
 
 private def regionIndices : List (DomainId × RegionId) :=
@@ -1007,15 +1025,7 @@ theorem abs_orphanA_lineage (σ acc : Loom.Hw.St) (oldE : Expr 14)
     else (if acc.regs (Hw.dcellV c l) 1 = 1#1 then
       some (⟨Hw.decRef (acc.regs (Hw.dcellPar c l) 14)⟩ : LineageCell) else none)
   rw [orphanA_cellV σ acc oldE c l,
-    orphanA_frame σ acc oldE (Hw.dcellPar c l) 14
-      (fun c' l' => by
-        clear * - c l c' l'
-        revert c l c' l'
-        native_decide)
-      (fun c' s' => by
-        clear * - c l c' s'
-        revert c l c' s'
-        native_decide), hP]
+    orphanA_frame_width σ acc oldE (Hw.dcellPar c l) 14 (by decide), hP]
   by_cases hv : σ.regs (Hw.dcellV c l) 1 = 1#1
   · have hva : acc.regs (Hw.dcellV c l) 1 = 1#1 := hV.trans hv
     by_cases hp : σ.regs (Hw.dcellPar c l) 14 = oldE.eval σ
@@ -1102,24 +1112,8 @@ theorem abs_orphanA_caps (σ acc : Loom.Hw.St) (oldE : Expr 14)
       clear * - c s c' s'
       revert c s c' s'
       native_decide)
-  have hK := orphanA_frame σ acc oldE (Hw.dcapKind c s) 32
-    (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide)
-    (fun c' s' => by
-      clear * - c s c' s'
-      revert c s c' s'
-      native_decide)
-  have hL := orphanA_frame σ acc oldE (Hw.dcapLin c s) 4
-    (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide)
-    (fun c' s' => by
-      clear * - c s c' s'
-      revert c s c' s'
-      native_decide)
+  have hK := orphanA_frame_width σ acc oldE (Hw.dcapKind c s) 32 (by decide)
+  have hL := orphanA_frame_width σ acc oldE (Hw.dcapLin c s) 4 (by decide)
   have hLV := orphanA_capLinV σ acc oldE c s
   change (if ((Hw.orphanA oldE).run σ acc).regs (Hw.dcapV c s) 1 = 1#1
     then some ({
@@ -1207,9 +1201,7 @@ theorem abs_orphanA_slotGen (σ acc : Loom.Hw.St) (oldE : Expr 14)
       (((Hw.abs acc).orphanChildren (Hw.decRef (oldE.eval σ))).doms c).slotGen s := by
   rw [orphanChildren_slotGen]
   change ((Hw.orphanA oldE).run σ acc).regs (Hw.dgen c s) 8 = _
-  exact orphanA_frame σ acc oldE (Hw.dgen c s) 8
-    (fun c' l' => (by native_decide +revert))
-    (fun c' s' => (by native_decide +revert))
+  exact orphanA_frame_width σ acc oldE (Hw.dgen c s) 8 (by decide)
 
 /-- Whole-domain abstraction of `orphanA`. -/
 theorem absDom_orphanA (σ acc : Loom.Hw.St) (oldE : Expr 14)
@@ -1230,10 +1222,8 @@ theorem absDom_orphanA (σ acc : Loom.Hw.St) (oldE : Expr 14)
   dsimp only
   apply domainState_ext
   · funext r
-    exact orphanA_frame σ acc oldE (Hw.dreg c r) 32
-      (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))
-  · exact orphanA_frame σ acc oldE (Hw.dpc c) 12
-      (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))
+    exact orphanA_frame_width σ acc oldE (Hw.dreg c r) 32 (by decide)
+  · exact orphanA_frame_width σ acc oldE (Hw.dpc c) 12 (by decide)
   · funext s
     exact abs_orphanA_caps σ acc oldE c s (hcapV c s) (hlinV c s)
       (hlin c s) (hcellV c) (hcellP c)
@@ -1248,16 +1238,13 @@ theorem absDom_orphanA (σ acc : Loom.Hw.St) (oldE : Expr 14)
         (Hw.drgn c r) 42)) else none) = _
     rw [orphanA_frame σ acc oldE (Hw.drgnV c r) 1
         (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert)),
-      orphanA_frame σ acc oldE (Hw.drgn c r) 42
-        (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))]
+      orphanA_frame_width σ acc oldE (Hw.drgn c r) 42 (by decide)]
     rfl
   · change Hw.decRun (((Hw.orphanA oldE).run σ acc).regs
       (Hw.drun c) 2) (((Hw.orphanA oldE).run σ acc).regs
       (Hw.drunG c) 2) = _
-    rw [orphanA_frame σ acc oldE (Hw.drun c) 2
-        (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert)),
-      orphanA_frame σ acc oldE (Hw.drunG c) 2
-        (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))]
+    rw [orphanA_frame_width σ acc oldE (Hw.drun c) 2 (by decide),
+      orphanA_frame_width σ acc oldE (Hw.drunG c) 2 (by decide)]
     rfl
   · change (if ((Hw.orphanA oldE).run σ acc).regs
       (Hw.dsrvV c) 1 = 1#1 then
@@ -1265,18 +1252,14 @@ theorem absDom_orphanA (σ acc : Loom.Hw.St) (oldE : Expr 14)
         (Hw.dsrv c) 2)) else none) = _
     rw [orphanA_frame σ acc oldE (Hw.dsrvV c) 1
         (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert)),
-      orphanA_frame σ acc oldE (Hw.dsrv c) 2
-        (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))]
+      orphanA_frame_width σ acc oldE (Hw.dsrv c) 2 (by decide)]
     rfl
-  · exact orphanA_frame σ acc oldE (Hw.dcause c) 32
-      (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))
+  · exact orphanA_frame_width σ acc oldE (Hw.dcause c) 32 (by decide)
   · change (((Hw.orphanA oldE).run σ acc).regs (Hw.dbudget c) 32).toNat = _
-    rw [orphanA_frame σ acc oldE (Hw.dbudget c) 32
-      (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))]
+    rw [orphanA_frame_width σ acc oldE (Hw.dbudget c) 32 (by decide)]
     rfl
   · change (((Hw.orphanA oldE).run σ acc).regs (Hw.dmaxdon c) 32).toNat = _
-    rw [orphanA_frame σ acc oldE (Hw.dmaxdon c) 32
-      (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert))]
+    rw [orphanA_frame_width σ acc oldE (Hw.dmaxdon c) 32 (by decide)]
     rfl
 
 /-- The capability-table face of `clearSlotA` decodes to spec
@@ -1592,9 +1575,7 @@ theorem absDom_orphan_clearSlotA (σ acc : Loom.Hw.St)
     funext c'
     exact absDom_orphanA σ acc oldE hcapV hlinV hlin hcellV hcellP c'
   have hgen1 : acc1.regs (Hw.dgen d S) 8 = σ.regs (Hw.dgen d S) 8 := by
-    rw [orphanA_frame σ acc oldE (Hw.dgen d S) 8
-      (fun c' l' => by clear * - d S c' l'; native_decide +revert)
-      (fun c' s' => by clear * - d S c' s'; native_decide +revert), hgen]
+    rw [orphanA_frame_width σ acc oldE (Hw.dgen d S) 8 (by decide), hgen]
   have hremoved1 : removedCell (Hw.abs acc1) d S =
       if linVE.eval σ = 1#1 then
         some (finOfBv (by decide) (linE.eval σ)) else none := by
