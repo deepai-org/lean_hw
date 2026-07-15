@@ -346,7 +346,7 @@ theorem square_retire_drop (m : Manifest) (hwfm : m.WF) (hfit : Fits m)
               (dropSuccessArmA E)).regWrites := by
           clear_value E
           clear * - g E
-          native_decide +revert
+          fin_cases g <;> fin_cases E <;> decide +kernel
         have hg := absGate_congr g (fun p hp => frame (hquiet p hp) σ
           ((Hw.refillAct m).run σ σ))
         rw [hg, ← hG1 g]
