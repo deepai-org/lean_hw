@@ -421,6 +421,35 @@ theorem absGate_callActivateA (σ acc : Loom.Hw.St)
 def callArgHandle (d : DomainId) : Expr 32 :=
   .mux (Hw.argNZ d) (Hw.transferHandleAt (Hw.callCal d) (Hw.argSel d)) (.lit 0)
 
+/-- A null call argument installs the null handle. -/
+theorem callArgHandle_eval_zero (σ : Loom.Hw.St) (d : DomainId)
+    (hz : (Hw.argW d).eval σ = 0#32) :
+    (callArgHandle d).eval σ = 0#32 := by
+  have hnz : (Hw.argNZ d).eval σ ≠ 1#1 := by
+    intro h
+    exact (argNZ_eval_iff σ d).mp h hz
+  have hzero := bv1_ne_one.mp hnz
+  simp only [callArgHandle, Expr.eval]
+  rw [hzero, if_neg (by decide)]
+  rfl
+
+/-- A non-null call argument installs the recipient-relative handle selected
+by the shared transfer machinery. -/
+theorem callArgHandle_eval_nonzero (σ : Loom.Hw.St) (d : DomainId)
+    (cls : CapClass) (hnz : (Hw.argW d).eval σ ≠ 0#32)
+    (hcls : (Hw.field (Hw.argSel d).kindW 0 1).eval σ =
+      if cls = .gate then 1#1 else 0#1) :
+    (callArgHandle d).eval σ =
+      let cal : DomainId := finOfBv (by decide) ((Hw.callCal d).eval σ)
+      Handle.encode
+        ⟨finOfBv (by decide) ((Hw.freeSlotIdx cal).eval σ),
+          (Hw.genOfE cal (Hw.freeSlotIdx cal)).eval σ, cls⟩ := by
+  have harg : (Hw.argNZ d).eval σ = 1#1 :=
+    (argNZ_eval_iff σ d).mpr hnz
+  simp only [callArgHandle, Expr.eval]
+  rw [harg, if_pos rfl]
+  exact transferHandleAt_eval σ (Hw.callCal d) (Hw.argSel d) cls hcls
+
 /-- The domain-indexed callee scrub and entry fold. -/
 def callCalleeA (d : DomainId) : Act :=
   Hw.seqAll ((List.finRange numDomains).map fun c =>
