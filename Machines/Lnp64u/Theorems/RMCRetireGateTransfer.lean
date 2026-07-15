@@ -218,6 +218,41 @@ theorem transferStructural_dead_iff_of_live (τ : MachineState)
       hfree hlive
     simp [hsrc, hi]
 
+/-- A reference that was live before transfer and does not name the removed
+source slot retains its Mover-relevant capability kind.  The freshly
+installed destination cannot alias such a reference because its slot was
+free in the pre-transfer state. -/
+theorem transferStructural_liveKind_of_live (τ : MachineState)
+    (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef))
+    (oldRef newRef : CapRef) (D : DomainId) (S : Slot) (r : CapRef)
+    (hfree : (τ.doms T).caps NS = none)
+    (hlive : τ.liveRef r = true)
+    (hout : ¬(r.dom = D ∧ r.slot = S)) :
+    Option.map CapEntry.kind
+        (((((installTransferred τ T NS kind moved).reparent oldRef newRef)
+          |>.clearSlot D S).sweepRegions.doms r.dom).liveCap r.slot r.gen) =
+      Option.map CapEntry.kind
+        ((τ.doms r.dom).liveCap r.slot r.gen) := by
+  have hdst : ¬(r.dom = T ∧ r.slot = NS) := by
+    rintro ⟨hd, hs⟩
+    subst hd
+    subst hs
+    unfold MachineState.liveRef DomainState.liveCap at hlive
+    simp [hfree] at hlive
+  unfold DomainState.liveCap
+  rw [sweepRegions_caps, sweepRegions_slotGen, clearSlot_caps,
+    clearSlot_slotGen, if_neg hout]
+  by_cases hd : r.dom = T
+  · have hs : r.slot ≠ NS := fun h => hdst ⟨hd, h⟩
+    have hout' : ¬(T = D ∧ r.slot = S) := by
+      rintro ⟨hTD, hrs⟩
+      exact hout ⟨hd.trans hTD, hrs⟩
+    simp [installTransferred, MachineState.reparent, MachineState.setDom, hd,
+      hs, hout']
+  · simp [installTransferred, MachineState.reparent, MachineState.setDom, hd,
+      hout]
+
 /-- On a valid pre-transfer region, the hardware source-slot predicate is
 equivalent to the backing becoming dead after install/reparent/clear. The
 Wf region invariant supplies the crucial pre-transfer liveness premise. -/
