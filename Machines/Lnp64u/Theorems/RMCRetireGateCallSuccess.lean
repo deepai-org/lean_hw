@@ -968,6 +968,45 @@ theorem gateCallExec_success_zero_of_ready (σ : Loom.Hw.St)
   exact gateCallExec_eq_selected c τ τ S G e g cal 0 hlive hkind hact
     hcal hne hrun hserv hdepth htransfer rfl rfl rfl rfl rfl
 
+/-- Once the common call checks have selected a ready callee, any successful
+argument transfer reduces `gateCallExec` to the same pure call transformer.
+This statement is deliberately independent of the root/derived transfer
+split so both allocation branches share the call-control proof. -/
+theorem gateCallExec_success_of_ready (σ : Loom.Hw.St)
+    (τ τ' : MachineState) (d : DomainId) (c : Ctx)
+    (hready : CallReady σ τ d c) (argHandle resultHandle : Loom.Word32)
+    (harg : (τ.doms c.d).reg c.op.rs2 = argHandle)
+    (htransfer : Machines.Lnp64u.Isa.transferByHandle c.d
+      (finOfBv (by decide : 2 ^ 2 = numDomains)
+        ((Hw.callCal d).eval σ)) argHandle τ = .ok resultHandle τ')
+    (hdonation : (τ'.doms c.d).maxDonation =
+      (τ.doms c.d).maxDonation) :
+    ∃ g : GateId, ∃ cal : DomainId,
+      cal ≠ c.d ∧
+      finOfBv (by decide : 2 ^ 2 = numGates)
+          ((Hw.callGid d).eval σ) = g ∧
+      finOfBv (by decide : 2 ^ 2 = numDomains)
+          ((Hw.callCal d).eval σ) = cal ∧
+      Machines.Lnp64u.Isa.Wip.gateCallExec c τ =
+        .ok () (callAbstractSuccessAt τ τ' c.d cal g c.op.rd
+          resultHandle (Machines.Lnp64u.Isa.Wip.gateDepth c τ)
+          (τ'.doms c.d).pc) := by
+  obtain ⟨S, G, e, g, cal, hlive, hkind, hact, hcal, hne, hrun,
+      hserv, hdepth, hgid, hcalSel⟩ := hready
+  have htransfer' : Machines.Lnp64u.Isa.transferByHandle c.d cal
+      ((τ.doms c.d).reg c.op.rs2) τ = .ok resultHandle τ' := by
+    rw [harg, ← hcalSel]
+    exact htransfer
+  have hcalm := transferByHandle_calm c.d cal
+    ((τ.doms c.d).reg c.op.rs2) τ resultHandle τ' htransfer'
+  have hframe := Machines.Lnp64u.Isa.Wip.transferByHandle_frame c.d cal
+    ((τ.doms c.d).reg c.op.rs2) τ resultHandle τ' htransfer'
+  refine ⟨g, cal, hne, hgid, hcalSel, ?_⟩
+  exact gateCallExec_eq_selected c τ τ' S G e g cal resultHandle
+    hlive hkind hact hcal hne hrun hserv hdepth htransfer'
+    hframe.2.2.1 (hcalm cal).1 (hcalm cal).2.1 (hframe.2.1 cal)
+    hdonation
+
 /-- Complete successful null-argument arm.  This is the first successful
 leaf of the gate-call check tree and the full-cycle template for the
 structural-transfer branches. -/
