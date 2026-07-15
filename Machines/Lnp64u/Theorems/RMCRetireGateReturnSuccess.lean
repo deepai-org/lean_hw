@@ -862,4 +862,68 @@ theorem abs_gateReturnSuccessA (σ acc : Loom.Hw.St)
       gateReturnSuccessA_frame_quiet σ acc d ("if_cl", 8)
         (by simp [gateReturnQuietNames])]
 
+/-! ## Specification-side normalization -/
+
+/-- The successful return tail overwrites the retiring domain's PC, so the
+specification's eager retirement increment is invisible after the tail. -/
+theorem returnAbstractSuccess_setPc (base : MachineState)
+    (d : DomainId) (gid : GateId) (act : Activation)
+    (reply : Loom.Word32) (hne : d ≠ act.caller) :
+    returnAbstractSuccess
+        (base.setDom d fun ds => { ds with pc := ds.pc + 1 })
+        d gid act reply =
+      returnAbstractSuccess base d gid act reply := by
+  unfold returnAbstractSuccess
+  apply machineState_ext'
+  · rfl
+  · rfl
+  · funext x
+    by_cases hxd : x = d
+    · subst x
+      simp [MachineState.setDom, Loom.Fun.update, hne]
+    · by_cases hxc : x = act.caller
+      · subst x
+        simp [MachineState.setDom, Loom.Fun.update, hne, hne.symm]
+      · simp [MachineState.setDom, Loom.Fun.update, hxd, hxc]
+  · rfl
+  · rfl
+  · rfl
+
+/-- The return control tail preserves every structural table produced by
+the optional transfer, as well as Mover and memory state. -/
+theorem returnAbstractSuccess_structural_frames (base : MachineState)
+    (d : DomainId) (gid : GateId) (act : Activation)
+    (reply : Loom.Word32) :
+    (∀ x, ((returnAbstractSuccess base d gid act reply).doms x).caps =
+      (base.doms x).caps) ∧
+    (∀ x, ((returnAbstractSuccess base d gid act reply).doms x).slotGen =
+      (base.doms x).slotGen) ∧
+    (∀ x, ((returnAbstractSuccess base d gid act reply).doms x).lineage =
+      (base.doms x).lineage) ∧
+    (∀ x, ((returnAbstractSuccess base d gid act reply).doms x).regions =
+      (base.doms x).regions) ∧
+    (returnAbstractSuccess base d gid act reply).mover = base.mover ∧
+    (returnAbstractSuccess base d gid act reply).mem = base.mem := by
+  constructor
+  · intro x
+    by_cases hxd : x = d <;> by_cases hxc : x = act.caller <;>
+      simp_all [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update,
+        setReg_caps]
+  constructor
+  · intro x
+    by_cases hxd : x = d <;> by_cases hxc : x = act.caller <;>
+      simp_all [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update,
+        setReg_slotGen]
+  constructor
+  · intro x
+    by_cases hxd : x = d <;> by_cases hxc : x = act.caller <;>
+      simp_all [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update,
+        setReg_lineage]
+  constructor
+  · intro x
+    by_cases hxd : x = d <;> by_cases hxc : x = act.caller <;>
+      simp_all [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update,
+        setReg_regions]
+  · exact ⟨rfl, rfl⟩
+
 end Machines.Lnp64u.Theorems.RMC
