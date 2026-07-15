@@ -449,6 +449,223 @@ theorem abs_installA_selected (σ acc : Loom.Hw.St)
   congr 1
   by_cases hl : linVE.eval σ = 1#1 <;> simp [hl, Hw.abs]
 
+/-! ## Installation followed by reparenting -/
+
+/-- Reparenting after a selected installation.  The fresh lineage cell is
+the sole exception to the usual pre-cycle/accumulator agreement premise:
+it was free in the sampled state and its already-adjusted parent is not the
+old reference, so neither the hardware nor abstract reparent pass changes it. -/
+theorem absDom_reparent_installA_selected (σ acc : Loom.Hw.St)
+    (T : DomainId) (nsE : Expr 4) (kindE : Expr 32)
+    (linVE : Expr 1) (nlE : Expr 4) (parE oldE newE : Expr 14)
+    (NS : Slot) (kind : CapKind)
+    (hns : nsE.eval σ = BitVec.ofNat 4 NS.val)
+    (hkind : kindE.eval σ = Hw.encKind kind)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hfree : linVE.eval σ = 1#1 →
+      σ.regs (Hw.dcellV T (finOfBv (by decide) (nlE.eval σ))) 1 ≠ 1#1)
+    (hparent : linVE.eval σ = 1#1 →
+      Hw.decRef (parE.eval σ) ≠ Hw.decRef (oldE.eval σ))
+    (c : DomainId) :
+    Hw.absDom ((Hw.reparentA oldE newE).run σ
+        ((Hw.installA T nsE kindE linVE nlE parE).run σ acc)) c =
+      ((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))).doms c := by
+  let inst := (Hw.installA T nsE kindE linVE nlE parE).run σ acc
+  let τi := installTransferred (Hw.abs acc) T NS kind
+    (if linVE.eval σ = 1#1 then
+      some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+    else none)
+  have hi : (Hw.abs inst).doms = τi.doms := by
+    exact abs_installA_selected σ acc T nsE kindE linVE nlE parE NS kind
+      hns hkind
+  have hr : ((Hw.abs inst).reparent (Hw.decRef (oldE.eval σ))
+      (Hw.decRef (newE.eval σ))).doms =
+      (τi.reparent (Hw.decRef (oldE.eval σ))
+        (Hw.decRef (newE.eval σ))).doms := by
+    unfold MachineState.reparent
+    dsimp only
+    rw [hi]
+  change Hw.absDom ((Hw.reparentA oldE newE).run σ inst) c = _
+  rw [← congrFun hr c]
+  unfold MachineState.reparent
+  dsimp only
+  apply domainState_ext
+  · funext r
+    exact reparentA_frame_width σ inst oldE newE (Hw.dreg c r) 32
+      (by decide)
+  · exact reparentA_frame_width σ inst oldE newE (Hw.dpc c) 12 (by decide)
+  · funext s
+    exact abs_reparentA_caps σ inst oldE newE c s
+  · funext s
+    exact abs_reparentA_slotGen σ inst oldE newE c s
+  · funext l
+    by_cases hl : linVE.eval σ = 1#1
+    · by_cases hexc : c = T ∧
+          l = finOfBv (by decide) (nlE.eval σ)
+      · obtain ⟨hc, hl'⟩ := hexc
+        subst c
+        subst l
+        dsimp only
+        change (if ((Hw.reparentA oldE newE).run σ inst).regs
+            (Hw.dcellV T (finOfBv (by decide) (nlE.eval σ))) 1 = 1#1 then
+          some (LineageCell.mk (Hw.decRef
+            (((Hw.reparentA oldE newE).run σ inst).regs
+              (Hw.dcellPar T (finOfBv (by decide) (nlE.eval σ))) 14)))
+          else none) =
+          match (if inst.regs
+              (Hw.dcellV T (finOfBv (by decide) (nlE.eval σ))) 1 = 1#1 then
+            some (LineageCell.mk (Hw.decRef (inst.regs
+              (Hw.dcellPar T (finOfBv (by decide) (nlE.eval σ))) 14)))
+          else none) with
+          | some cell => some (if cell.parent = Hw.decRef (oldE.eval σ) then
+              LineageCell.mk (Hw.decRef (newE.eval σ)) else cell)
+          | none => none
+        rw [reparentA_frame_width σ inst oldE newE
+          (Hw.dcellV T (finOfBv (by decide) (nlE.eval σ))) 1 (by decide),
+          installA_selected_cellV σ acc T nsE kindE linVE nlE parE NS hns,
+          reparentA_cellPar σ inst oldE newE T
+            (finOfBv (by decide) (nlE.eval σ)),
+          installA_selected_cellPar σ acc T nsE kindE linVE nlE parE NS hns]
+        have hfree0 := bv1_ne_one.mp (hfree hl)
+        simp [Expr.eval, hl, hfree0, hparent hl]
+      · have hVi : inst.regs (Hw.dcellV c l) 1 =
+            σ.regs (Hw.dcellV c l) 1 := by
+          by_cases hcT : c = T
+          · subst c
+            have hne : l ≠ finOfBv (by decide) (nlE.eval σ) := by
+              intro h
+              exact hexc ⟨rfl, h⟩
+            simpa [inst, hl, hne, hV T l] using
+              (installA_selected_cellV σ acc T nsE kindE linVE nlE parE NS
+                hns l)
+          · have hreg : inst.regs (Hw.dcellV c l) 1 =
+                acc.regs (Hw.dcellV c l) 1 := by
+              apply installA_selected_frame σ acc T nsE kindE linVE nlE
+                parE NS (Hw.dcellV c l, 1) hns
+              · intro h
+                exact dcapV_ne_dcellV_any T c NS l
+                  (congrArg Prod.fst h).symm
+              · simp
+              · intro h
+                exact dcapLinV_ne_dcellV_any T c NS l
+                  (congrArg Prod.fst h).symm
+              · simp
+              · intro h
+                exact hcT (dcellV_inj_pair c T l _
+                  (congrArg Prod.fst h)).1
+              · simp
+            exact hreg.trans (hV c l)
+        have hPi : inst.regs (Hw.dcellPar c l) 14 =
+            σ.regs (Hw.dcellPar c l) 14 := by
+          by_cases hcT : c = T
+          · subst c
+            have hne : l ≠ finOfBv (by decide) (nlE.eval σ) := by
+              intro h
+              exact hexc ⟨rfl, h⟩
+            simpa [inst, hl, hne, hP T l] using
+              (installA_selected_cellPar σ acc T nsE kindE linVE nlE parE NS
+                hns l)
+          · have hreg : inst.regs (Hw.dcellPar c l) 14 =
+                acc.regs (Hw.dcellPar c l) 14 := by
+              apply installA_selected_frame σ acc T nsE kindE linVE nlE
+                parE NS (Hw.dcellPar c l, 14) hns
+              · simp
+              · simp
+              · simp
+              · simp
+              · simp
+              · intro h
+                exact hcT (dcellPar_inj_pair c T l _
+                  (congrArg Prod.fst h)).1
+            exact hreg.trans (hP c l)
+        exact abs_reparentA_lineage σ inst oldE newE c l hVi hPi
+    · have hVi : inst.regs (Hw.dcellV c l) 1 =
+          σ.regs (Hw.dcellV c l) 1 := by
+        by_cases hcT : c = T
+        · subst c
+          simpa [inst, hl] using
+            (installA_selected_cellV σ acc T nsE kindE linVE nlE parE NS
+              hns l).trans (by simp [hl, hV T l])
+        · have hreg : inst.regs (Hw.dcellV c l) 1 =
+              acc.regs (Hw.dcellV c l) 1 := by
+            apply installA_selected_frame σ acc T nsE kindE linVE nlE parE
+              NS (Hw.dcellV c l, 1) hns
+            · intro h
+              exact dcapV_ne_dcellV_any T c NS l (congrArg Prod.fst h).symm
+            · simp
+            · intro h
+              exact dcapLinV_ne_dcellV_any T c NS l
+                (congrArg Prod.fst h).symm
+            · simp
+            · intro h
+              exact hcT (dcellV_inj_pair c T l _ (congrArg Prod.fst h)).1
+            · simp
+          exact hreg.trans (hV c l)
+      have hPi : inst.regs (Hw.dcellPar c l) 14 =
+          σ.regs (Hw.dcellPar c l) 14 := by
+        by_cases hcT : c = T
+        · subst c
+          simpa [inst, hl] using
+            (installA_selected_cellPar σ acc T nsE kindE linVE nlE parE NS
+              hns l).trans (by simp [hl, hP T l])
+        · have hreg : inst.regs (Hw.dcellPar c l) 14 =
+              acc.regs (Hw.dcellPar c l) 14 := by
+            apply installA_selected_frame σ acc T nsE kindE linVE nlE parE
+              NS (Hw.dcellPar c l, 14) hns
+            · simp
+            · simp
+            · simp
+            · simp
+            · simp
+            · intro h
+              exact hcT (dcellPar_inj_pair c T l _
+                (congrArg Prod.fst h)).1
+          exact hreg.trans (hP c l)
+      exact abs_reparentA_lineage σ inst oldE newE c l hVi hPi
+  · funext r
+    change (if ((Hw.reparentA oldE newE).run σ inst).regs
+        (Hw.drgnV c r) 1 = 1#1 then
+      some (Hw.decRegion (((Hw.reparentA oldE newE).run σ inst).regs
+        (Hw.drgn c r) 42)) else none) = _
+    rw [reparentA_frame_width σ inst oldE newE (Hw.drgnV c r) 1
+      (by decide), reparentA_frame_width σ inst oldE newE (Hw.drgn c r) 42
+      (by decide)]
+    rfl
+  ·
+    change Hw.decRun
+      (((Hw.reparentA oldE newE).run σ inst).regs (Hw.drun c) 2)
+      (((Hw.reparentA oldE newE).run σ inst).regs (Hw.drunG c) 2) = _
+    rw [reparentA_frame_width σ inst oldE newE (Hw.drun c) 2 (by decide),
+      reparentA_frame_width σ inst oldE newE (Hw.drunG c) 2 (by decide)]
+    rfl
+  ·
+    change (if ((Hw.reparentA oldE newE).run σ inst).regs
+        (Hw.dsrvV c) 1 = 1#1 then
+      some (finOfBv (by decide)
+        (((Hw.reparentA oldE newE).run σ inst).regs (Hw.dsrv c) 2))
+      else none) = _
+    rw [reparentA_frame_width σ inst oldE newE (Hw.dsrvV c) 1 (by decide),
+      reparentA_frame_width σ inst oldE newE (Hw.dsrv c) 2 (by decide)]
+    rfl
+  · exact reparentA_frame_width σ inst oldE newE (Hw.dcause c) 32 (by decide)
+  ·
+    change (((Hw.reparentA oldE newE).run σ inst).regs
+      (Hw.dbudget c) 32).toNat = _
+    rw [reparentA_frame_width σ inst oldE newE (Hw.dbudget c) 32 (by decide)]
+    rfl
+  ·
+    change (((Hw.reparentA oldE newE).run σ inst).regs
+      (Hw.dmaxdon c) 32).toNat = _
+    rw [reparentA_frame_width σ inst oldE newE (Hw.dmaxdon c) 32 (by decide)]
+    rfl
+
 /-- Pre-adjusting the moved cell's parent is equivalent, on the domain map,
 to letting the abstract reparent pass adjust it. This is the semantic reason
 for the parent mux inside `Hw.transferA`. -/
