@@ -276,6 +276,107 @@ theorem abs_transferA_none_retireAcc (m : Manifest) (hwfm : m.WF)
   rw [habs] at h
   simpa [base] using h
 
+/-- Derived transfer specialized to the post-refill, cleared-inflight
+retirement accumulator. -/
+theorem abs_transferA_some_retireAcc (m : Manifest) (hwfm : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (D T : DomainId) (toE : Expr 2) (acs : Hw.CapSel)
+    (S NS : Slot) (e : CapEntry) (L : LineageId)
+    (cell : LineageCell) (NL : LineageId)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hsourceSlot : acs.slot.eval σ = BitVec.ofNat 4 S.val)
+    (hsource : ((Hw.abs σ).doms D).caps S = some e)
+    (hslot : (Hw.abs σ).freeSlot T = some NS)
+    (hlin : e.lineage = some L)
+    (hcell : ((Hw.abs σ).doms D).lineage L = some cell)
+    (hfreeCell : (Hw.abs σ).freeCell T = some NL)
+    (hlinV : acs.linV.eval σ = 1#1)
+    (hlinIdx : acs.lin.eval σ = BitVec.ofNat 4 L.val)
+    (hkind : acs.kindW.eval σ = Hw.encKind e.kind)
+    (hold : Hw.decRef ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs σ).doms D).slotGen S⟩)
+    (hwf : Wf (Hw.abs σ)) :
+    let acc := (Act.write 1 "if_v" (.lit 0)).run σ
+      ((Hw.refillAct m).run σ σ)
+    Hw.abs ((Hw.transferA D toE acs).run σ acc) =
+      ((((installTransferred
+        { refillPhase m (Hw.abs σ) with inflight := none }
+        T NS e.kind (some (NL, cell.parent))).reparent
+          ⟨D, S, ((Hw.abs σ).doms D).slotGen S⟩
+          ⟨T, NS, ((Hw.abs σ).doms T).slotGen NS⟩).clearSlot D S).sweepRegions) := by
+  dsimp only
+  let acc := (Act.write 1 "if_v" (.lit 0)).run σ
+    ((Hw.refillAct m).run σ σ)
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  have habs : Hw.abs acc = base :=
+    abs_refill_clearInflight m hwfm hfit σ hsync
+  have hsourceAcc : ((Hw.abs acc).doms D).caps S = some e := by
+    rw [habs]
+    simpa [base] using hsource
+  have hslotAcc : (Hw.abs acc).freeSlot T = some NS := by
+    rw [habs]
+    unfold MachineState.freeSlot
+    simp only [base, refillPhase_caps, refillPhase_slotGen]
+    exact hslot
+  have hcellAcc : ((Hw.abs acc).doms D).lineage L = some cell := by
+    rw [habs]
+    simpa [base] using hcell
+  have hfreeCellAcc : (Hw.abs acc).freeCell T = some NL := by
+    rw [habs]
+    unfold MachineState.freeCell
+    simp only [base, refillPhase_lineage]
+    exact hfreeCell
+  have holdAcc : Hw.decRef
+      ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩ := by
+    rw [habs]
+    simpa [base] using hold
+  have hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1 := by
+    intro c l
+    exact refillClear_pres m σ _ _
+      (by fin_cases c <;> fin_cases l <;> decide +kernel)
+      (by fin_cases c <;> fin_cases l <;> decide +kernel)
+  have hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14 := by
+    intro c l
+    exact refillClear_pres m σ _ _
+      (by fin_cases c <;> fin_cases l <;> decide +kernel)
+      (by fin_cases c <;> fin_cases l <;> decide +kernel)
+  have hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1 := by
+    intro c r
+    exact refillClear_pres m σ _ _
+      (by fin_cases c <;> fin_cases r <;> decide +kernel)
+      (by fin_cases c <;> fin_cases r <;> decide +kernel)
+  have hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42 := by
+    intro c r
+    exact refillClear_pres m σ _ _
+      (by fin_cases c <;> fin_cases r <;> decide +kernel)
+      (by fin_cases c <;> fin_cases r <;> decide +kernel)
+  have hgenAll : ∀ c : DomainId, ∀ s : Slot,
+      acc.regs (Hw.dgen c s) 8 = σ.regs (Hw.dgen c s) 8 := by
+    intro c s
+    exact refillClear_pres m σ _ _
+      (by fin_cases c <;> fin_cases s <;> decide +kernel)
+      (by fin_cases c <;> fin_cases s <;> decide +kernel)
+  have hwfAcc : Wf (Hw.abs acc) := by
+    rw [habs]
+    have hρ := refillPhase_preserves_wf m (Hw.abs σ) hwf
+    refine { hρ with inflight_running := ?_ }
+    intro fl hfl
+    simp [base] at hfl
+  have h := abs_transferA_some_acc σ acc D T toE acs S NS e L cell NL hto
+    hsourceSlot hsourceAcc hslotAcc hslot hlin hcellAcc hcell hfreeCellAcc
+    hfreeCell hlinV hlinIdx hkind holdAcc hV hP hregionV hregion hgenAll
+    hwfAcc
+  rw [habs] at h
+  simpa [base] using h
+
 /-- The specification enters the call body after advancing the caller PC,
 whereas the hardware successful payload performs that advance itself.  Refill
 does not change any value captured by the activation record, so the two pure
