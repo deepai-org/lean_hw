@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireGateCall
+import Machines.Lnp64u.Theorems.RMCRetireGateTransferOutcomes
 
 /-!
 # R-MC gate-call primary selector context
@@ -144,5 +145,81 @@ theorem callCallee_of_pass (σ : Loom.Hw.St) (τ : MachineState)
     rw [hgates]
   exact ⟨S, G, e, g, cal, hlive, hkind, hact, hcal, hne,
     hgid, hcalSel⟩
+
+/-- Semantic payload after all five gate/callee/depth checks pass. -/
+def CallReady (σ : Loom.Hw.St) (τ : MachineState)
+    (d : DomainId) (c : Ctx) : Prop :=
+  ∃ slot : Slot, ∃ gen : Gen, ∃ entry : CapEntry, ∃ gate : GateId,
+    ∃ callee : DomainId,
+      Machines.Lnp64u.Isa.capLive c.d
+          ((τ.doms c.d).reg c.op.rs1) τ = .ok (slot, gen, entry) τ ∧
+        entry.kind = .gate gate ∧
+        (τ.gates gate).act = none ∧
+        (τ.gates gate).config.callee = callee ∧
+        callee ≠ c.d ∧
+        (τ.doms callee).run = .running ∧
+        (τ.doms callee).serving = none ∧
+        Machines.Lnp64u.Isa.Wip.gateDepth c τ ≤ maxChainDepth ∧
+        finOfBv (by decide : 2 ^ 2 = numGates)
+          ((Hw.callGid d).eval σ) = gate ∧
+        finOfBv (by decide : 2 ^ 2 = numDomains)
+          ((Hw.callCal d).eval σ) = callee
+
+/-- Extend the idle/non-self context through the running, non-serving, and
+bounded-depth checks.  State-view bridges are explicit so this lemma is
+reusable after either gate operation's PC-only retirement prefix. -/
+theorem callReady_of_pass (σ : Loom.Hw.St) (τ : MachineState)
+    (d : DomainId) (c : Ctx)
+    (hcd : c.d = d)
+    (hwf : Wf (Hw.abs σ))
+    (hrc : ∀ x : DomainId, σ.regs (Hw.drun x) 2 ≠ 3#2)
+    (hrunBridge : ∀ x : DomainId,
+      (τ.doms x).run = ((Hw.abs σ).doms x).run)
+    (hservBridge : ∀ x : DomainId,
+      (τ.doms x).serving = ((Hw.abs σ).doms x).serving)
+    (hgates : τ.gates = (Hw.abs σ).gates)
+    (hcallee : CallCallee σ τ d c)
+    (hrunning : (Hw.neqE
+      (Hw.muxFin (fun x => .reg 2 (Hw.drun x)) (Hw.callCal d))
+      (.lit 0)).eval σ ≠ 1#1)
+    (hnotServing : (Hw.muxFin (fun x => .reg 1 (Hw.dsrvV x))
+      (Hw.callCal d)).eval σ ≠ 1#1)
+    (hdepthPass : (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
+      (Hw.callDepth d)).eval σ ≠ 1#1) :
+    CallReady σ τ d c := by
+  obtain ⟨S, G, e, g, cal, hlive, hkind, hact, hcal, hne,
+      hgid, hcalSel⟩ := hcallee
+  have hrunAbs : ((Hw.abs σ).doms cal).run = .running := by
+    by_contra hn
+    exact hrunning ((callCalleeNotRunning_eval σ d cal (hrc cal)
+      hcalSel).mpr hn)
+  have hrun : (τ.doms cal).run = .running :=
+    (hrunBridge cal).trans hrunAbs
+  have hservAbs : ((Hw.abs σ).doms cal).serving = none := by
+    cases hs : ((Hw.abs σ).doms cal).serving with
+    | none => rfl
+    | some served =>
+        exfalso
+        apply hnotServing
+        apply (callCalleeServing_eval σ d cal hcalSel).mpr
+        simp [hs]
+  have hserv : (τ.doms cal).serving = none :=
+    (hservBridge cal).trans hservAbs
+  have hdepthAbs : Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ≤
+      maxChainDepth := by
+    by_contra hn
+    apply hdepthPass
+    have hover := (callDepthOverflow_eval σ c hwf).mpr hn
+    simpa [hcd] using hover
+  have hdepthEq : Machines.Lnp64u.Isa.Wip.gateDepth c τ =
+      Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) := by
+    unfold Machines.Lnp64u.Isa.Wip.gateDepth
+    rw [hservBridge c.d, hgates]
+  have hdepth : Machines.Lnp64u.Isa.Wip.gateDepth c τ ≤
+      maxChainDepth := by
+    rw [hdepthEq]
+    exact hdepthAbs
+  exact ⟨S, G, e, g, cal, hlive, hkind, hact, hcal, hne, hrun,
+    hserv, hdepth, hgid, hcalSel⟩
 
 end Machines.Lnp64u.Theorems.RMC
