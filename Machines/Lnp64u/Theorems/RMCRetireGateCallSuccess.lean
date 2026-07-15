@@ -378,6 +378,75 @@ theorem abs_transferA_some_retireAcc (m : Manifest) (hwfm : m.WF)
   rw [habs] at h
   simpa [base] using h
 
+/-- Full-cycle assembly for a successful non-null call after the semantic
+branch has identified the transferred source slot and post-core state. -/
+theorem square_retire_gateCall_payload (m : Manifest) (σ : Loom.Hw.St)
+    (E : DomainId) (S : Slot) (X : Act) (τ2 : MachineState)
+    (hslot : (Hw.argSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.argNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hcoreR : ∀ (rn : String) (w : Nat),
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).regs rn w =
+        ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+          ((Hw.refillAct m).run σ σ)).regs rn w)
+    (hXifv : ("if_v", 1) ∉ X.regWrites)
+    (hspec : corePhase m (refillPhase m (Hw.abs σ)) = τ2)
+    (habsD : ∀ x, Hw.absDom
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+        ((Hw.refillAct m).run σ σ)) x = τ2.doms x)
+    (habsG : ∀ g, Hw.absGate
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+        ((Hw.refillAct m).run σ σ)) g = τ2.gates g)
+    (hkind : ∀ d s g, ¬(d = E ∧ s = S) →
+      Option.map CapEntry.kind ((τ2.doms d).liveCap s g) =
+        Option.map CapEntry.kind (((Hw.abs σ).doms d).liveCap s g))
+    (hjob : τ2.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job)
+    (hauthτ2 : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ2.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmemτ2 : ∀ b : Addr,
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+        b.toNat 32 = τ2.mem b)
+    (hswτ2 : ∀ job, Hw.absMover σ = some job →
+      ¬((job.src.dom = E ∧ job.src.slot = S) ∨
+        (job.dst.dom = E ∧ job.dst.slot = S)) →
+      ∀ sc : Expr 12, Expr.eval σ
+        (((List.finRange numDomains).foldr
+          (fun d acc' =>
+            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+                Hw.domCoversE d
+                  (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                  ⟨false, true, false⟩,
+                .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX)
+                  0 12) sc]) (Hw.readReg d Hw.rs2E) acc')
+          (.memRead 32 "mem" sc))) = τ2.mem (sc.eval σ))
+    (hcyc : τ2.cycle = σ.regs "cycle" 32)
+    (hτ2if : τ2.inflight = none) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  apply square_retire_gate_payload m σ X τ2 hcoreR hXifv hspec habsD habsG
+  · exact absMover_moverAct_call σ
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)) τ2 E S hslot hnz
+      hkills hnew hkind hjob
+  · intro a
+    exact moverAct_mem_call σ
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)) τ2 E S hslot hnz
+      hkills hnew hkind hjob hauthτ2 hmemτ2 hswτ2 a
+  · exact hcyc
+  · exact hτ2if
+
 /-- The specification enters the call body after advancing the caller PC,
 whereas the hardware successful payload performs that advance itself.  Refill
 does not change any value captured by the activation record, so the two pure
