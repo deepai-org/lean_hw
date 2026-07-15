@@ -823,4 +823,61 @@ theorem abs_transferA_some (σ : Loom.Hw.St)
   exact abs_transferChosenA_some σ D T acs S NS e L cell NL hsourceSlot
     hsource hslot hlin hcell hfreeCell hlinV hlinIdx hkind hold hwf
 
+/-! ## Shared transfer-placement check -/
+
+/-- Without lineage, the shared transfer check is blocked exactly when the
+recipient has no free capability slot. -/
+theorem transferBlocked_eval_no_lineage (σ : Loom.Hw.St)
+    (D T : DomainId) (toE : Expr 2) (acs : Hw.CapSel)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hlinV : acs.linV.eval σ = 0#1) :
+    (Hw.transferBlocked D toE acs).eval σ = 1#1 ↔
+      ¬((Hw.abs σ).freeSlot T).isSome := by
+  have hslot := freeSlotV_eval σ T
+  simp only [Hw.transferBlocked, Expr.eval]
+  rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hto, hlinV]
+  by_cases hv : (Hw.freeSlotV T).eval σ = 1#1
+  · rw [hv]
+    simp [hslot.mp hv]
+  · have hz : (Hw.freeSlotV T).eval σ = 0#1 := bv1_ne_one.mp hv
+    rw [hz]
+    simp only [BitVec.not_zero, BitVec.or_zero, ne_eq, not_false_eq_true]
+    intro hs
+    exact hv (hslot.mpr hs)
+
+/-- With a live lineage cell, the shared transfer check is blocked exactly
+when the recipient lacks either a free capability slot or a free lineage
+cell. -/
+theorem transferBlocked_eval_with_lineage (σ : Loom.Hw.St)
+    (D T : DomainId) (toE : Expr 2) (acs : Hw.CapSel)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hlinV : acs.linV.eval σ = 1#1)
+    (hcellV : (Hw.cellVAt D acs.lin).eval σ = 1#1) :
+    (Hw.transferBlocked D toE acs).eval σ = 1#1 ↔
+      (¬((Hw.abs σ).freeSlot T).isSome ∨
+       ¬((Hw.abs σ).freeCell T).isSome) := by
+  have hslot := freeSlotV_eval σ T
+  have hcell := freeCellV_eval σ T
+  have hnot : ∀ b : BitVec 1, (~~~b = 1#1) ↔ b ≠ 1#1 := by decide
+  simp only [Hw.transferBlocked, Expr.eval]
+  rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hto, hlinV, hcellV,
+    muxFin_eval (by decide : 2 ^ 2 = numDomains), hto]
+  simp only [BitVec.not_allOnes, BitVec.zero_or, BitVec.allOnes_and,
+    bv1_or_eq_one, hnot]
+  constructor
+  · rintro (hs | hc)
+    · left
+      intro his
+      exact hs (hslot.mpr his)
+    · right
+      intro his
+      exact hc (hcell.mpr (by simpa using his))
+  · rintro (hs | hc)
+    · left
+      intro hv
+      exact hs (hslot.mp hv)
+    · right
+      intro hv
+      exact hc (by simpa using hcell.mp hv)
+
 end Machines.Lnp64u.Theorems.RMC
