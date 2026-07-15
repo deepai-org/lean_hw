@@ -593,9 +593,7 @@ theorem reparentA_cellPar (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
   · intro a _ b _ hab
     rcases a with ⟨ca, la⟩
     rcases b with ⟨cb, lb⟩
-    have h := ((by native_decide +revert : ∀ (ca cb : DomainId)
-      (la lb : LineageId), Hw.dcellPar ca la = Hw.dcellPar cb lb →
-        ca = cb ∧ la = lb) ca cb la lb hab)
+    have h := dcellPar_inj_pair ca cb la lb hab
     exact Prod.ext h.1 h.2
 
 /-- `reparentA` frames every register outside the lineage-parent bank. -/
@@ -677,20 +675,12 @@ private theorem orphanA_at (σ acc : Loom.Hw.St) (oldE : Expr 14)
   · intro a _ b _ hab
     rcases a with ⟨ca, la⟩ | ⟨ca, sa⟩ <;>
       rcases b with ⟨cb, lb⟩ | ⟨cb, sb⟩
-    · have h := ((by native_decide +revert : ∀ (ca cb : DomainId)
-        (la lb : LineageId), Hw.dcellV ca la = Hw.dcellV cb lb →
-          ca = cb ∧ la = lb) ca cb la lb hab)
+    · have h := dcellV_inj_pair ca cb la lb hab
       obtain ⟨rfl, rfl⟩ := h
       rfl
-    · exact absurd hab ((by native_decide +revert : ∀ (ca cb : DomainId)
-        (la : LineageId) (sb : Slot),
-          Hw.dcellV ca la ≠ Hw.dcapLinV cb sb) ca cb la sb)
-    · exact absurd hab ((by native_decide +revert : ∀ (ca cb : DomainId)
-        (sa : Slot) (lb : LineageId),
-          Hw.dcapLinV ca sa ≠ Hw.dcellV cb lb) ca cb sa lb)
-    · have h := ((by native_decide +revert : ∀ (ca cb : DomainId)
-        (sa sb : Slot), Hw.dcapLinV ca sa = Hw.dcapLinV cb sb →
-          ca = cb ∧ sa = sb) ca cb sa sb hab)
+    · exact absurd hab (dcapLinV_ne_dcellV_any cb ca sb la).symm
+    · exact absurd hab (dcapLinV_ne_dcellV_any ca cb sa lb)
+    · have h := dcapLinV_inj_pair ca cb sa sb hab
       obtain ⟨rfl, rfl⟩ := h
       rfl
 
@@ -770,9 +760,7 @@ theorem sweepRegionsA_rgnV (σ acc : Loom.Hw.St)
   · simp [regionIndices]
   · decide +kernel
   · intro a _ b _ hab
-    have h := ((by native_decide +revert : ∀ (ca cb : DomainId)
-      (ra rb : RegionId), Hw.drgnV ca ra = Hw.drgnV cb rb →
-        ca = cb ∧ ra = rb) a.1 b.1 a.2 b.2 hab)
+    have h := drgnV_inj_pair a.1 b.1 a.2 b.2 hab
     exact Prod.ext h.1 h.2
 
 /-- The sweep walk frames every register outside the region-valid bank. -/
@@ -794,8 +782,7 @@ theorem sweepRegionsA_rgn (σ acc : Loom.Hw.St)
       acc.regs (Hw.drgn c r) 42 := by
   apply sweepRegionsA_frame
   intro c' r'
-  exact ((by native_decide +revert : ∀ (c c' : DomainId) (r r' : RegionId),
-    Hw.drgn c r ≠ Hw.drgnV c' r') c c' r r')
+  exact drgn_ne_drgnV c c' r r'
 
 /-! ## Structural abstraction bridges -/
 

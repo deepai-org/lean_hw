@@ -94,6 +94,14 @@ private theorem cellSuffix_ne_genSuffix (a b : String) :
   have hg : "_gen".toList = ['_', 'g', 'e', 'n'] := by decide
   simp [hc, hg] at h'
 
+private theorem capSuffix_ne_cellSuffix (a b : String) :
+    "_cap" ++ a ≠ "_cell" ++ b := by
+  intro h
+  have h' := congrArg String.toList h
+  have hcap : "_cap".toList = ['_', 'c', 'a', 'p'] := by decide
+  have hcell : "_cell".toList = ['_', 'c', 'e', 'l', 'l'] := by decide
+  simp [hcap, hcell] at h'
+
 private theorem capSuffix_ne_cause (a : String) : "_cap" ++ a ≠ "_cause" := by
   intro h
   have h' := congrArg String.toList h
@@ -161,6 +169,12 @@ theorem dcellV_ne_dgen (d x : DomainId) (l : LineageId) (s : Slot) :
     domSuffix_ne d x ("_cell" ++ (toString l.val ++ "_v"))
       ("_gen" ++ toString s.val) (cellSuffix_ne_genSuffix _ _)
 
+theorem dcapLinV_ne_dcellV_any (d x : DomainId) (s : Slot) (l : LineageId) :
+    dcapLinV d s ≠ dcellV x l := by
+  simpa [dcapLinV, dcellV, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_cap" ++ (toString s.val ++ "_lin_v"))
+      ("_cell" ++ (toString l.val ++ "_v")) (capSuffix_ne_cellSuffix _ _)
+
 theorem dcapKind_ne_dcause (d x : DomainId) (s : Slot) :
     dcapKind d s ≠ dcause x := by
   simpa [dcapKind, dcause, toString_string, String.append_assoc] using
@@ -226,6 +240,69 @@ theorem dcellPar_inj_lineage (d : DomainId) (l u : LineageId) :
 theorem dgen_inj_slot (d : DomainId) (s u : Slot) :
     dgen d s = dgen d u → s = u := by
   fin_cases s <;> fin_cases u <;> decide +kernel +revert
+
+theorem dcellPar_inj_pair (c d : DomainId) (l u : LineageId) :
+    dcellPar c l = dcellPar d u → c = d ∧ l = u := by
+  intro h
+  have hcd : c = d := by
+    by_contra hne
+    exact domPrefix_ne c d hne ("_cell" ++ (toString l.val ++ "_par"))
+      ("_cell" ++ (toString u.val ++ "_par")) (by
+        simpa [dcellPar, toString_string, String.append_assoc] using h)
+  subst d
+  exact ⟨rfl, dcellPar_inj_lineage c l u h⟩
+
+theorem dcellV_inj_pair (c d : DomainId) (l u : LineageId) :
+    dcellV c l = dcellV d u → c = d ∧ l = u := by
+  intro h
+  have hcd : c = d := by
+    by_contra hne
+    exact domPrefix_ne c d hne ("_cell" ++ (toString l.val ++ "_v"))
+      ("_cell" ++ (toString u.val ++ "_v")) (by
+        simpa [dcellV, toString_string, String.append_assoc] using h)
+  subst d
+  exact ⟨rfl, dcellV_inj_lineage c l u h⟩
+
+theorem dcapLinV_inj_pair (c d : DomainId) (s u : Slot) :
+    dcapLinV c s = dcapLinV d u → c = d ∧ s = u := by
+  intro h
+  have hcd : c = d := by
+    by_contra hne
+    exact domPrefix_ne c d hne ("_cap" ++ (toString s.val ++ "_lin_v"))
+      ("_cap" ++ (toString u.val ++ "_lin_v")) (by
+        simpa [dcapLinV, toString_string, String.append_assoc] using h)
+  subst d
+  exact ⟨rfl, dcapLinV_inj_slot c s u h⟩
+
+theorem drgnV_inj_pair (c d : DomainId) (r u : RegionId) :
+    drgnV c r = drgnV d u → c = d ∧ r = u := by
+  intro h
+  have hcd : c = d := by
+    by_contra hne
+    exact domPrefix_ne c d hne ("_rgn" ++ (toString r.val ++ "_v"))
+      ("_rgn" ++ (toString u.val ++ "_v")) (by
+        simpa [drgnV, toString_string, String.append_assoc] using h)
+  subst d
+  constructor
+  · rfl
+  · fin_cases r <;> fin_cases u
+    all_goals first | rfl | skip
+    all_goals
+      have h' := congrArg String.toList h
+      have h0 : (toString 0).toList = ['0'] := by decide
+      have h1 : (toString 1).toList = ['1'] := by decide
+      have h2 : (toString 2).toList = ['2'] := by decide
+      have h3 : (toString 3).toList = ['3'] := by decide
+      simp [drgnV, toString_string, h0, h1, h2, h3] at h'
+
+theorem drgn_ne_drgnV (c d : DomainId) (r u : RegionId) :
+    drgn c r ≠ drgnV d u := by
+  by_cases hcd : c = d
+  · subst d
+    fin_cases r <;> fin_cases u <;> decide +kernel +revert
+  · simpa [drgn, drgnV, toString_string, String.append_assoc] using
+      domPrefix_ne c d hcd ("_rgn" ++ toString r.val)
+        ("_rgn" ++ (toString u.val ++ "_v"))
 
 /-- Capability-kind and architectural-register names are disjoint. -/
 theorem dcapKind_ne_dreg (d e : DomainId) (s : Slot) (r : RegId) :
