@@ -1007,6 +1007,82 @@ theorem abs_transferChosenA_some_acc (σ acc : Loom.Hw.St)
     hfreeCellSample hlinV hlinIdx hkind hold hV hP hregionV hregion hgenAll
     hwf c
 
+/-- Dynamic-recipient root transfer over an arbitrary accumulator. -/
+theorem abs_transferA_none_acc (σ acc : Loom.Hw.St)
+    (D T : DomainId) (toE : Expr 2) (acs : Hw.CapSel)
+    (S NS : Slot) (e : CapEntry)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hsourceSlot : acs.slot.eval σ = BitVec.ofNat 4 S.val)
+    (hsource : ((Hw.abs acc).doms D).caps S = some e)
+    (hslot : (Hw.abs acc).freeSlot T = some NS)
+    (hslotSample : (Hw.abs σ).freeSlot T = some NS)
+    (hlin : e.lineage = none)
+    (hlinV : acs.linV.eval σ = 0#1)
+    (hkind : acs.kindW.eval σ = Hw.encKind e.kind)
+    (hold : Hw.decRef ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hgenAll : ∀ c : DomainId, ∀ s : Slot,
+      acc.regs (Hw.dgen c s) 8 = σ.regs (Hw.dgen c s) 8)
+    (hwf : Wf (Hw.abs acc)) :
+    Hw.abs ((Hw.transferA D toE acs).run σ acc) =
+      ((((installTransferred (Hw.abs acc) T NS e.kind none).reparent
+        ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩
+        ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩).clearSlot D S).sweepRegions) := by
+  rw [transferA_run_selected, hto]
+  exact abs_transferChosenA_none_acc σ acc D T acs S NS e hsourceSlot
+    hsource hslot hslotSample hlin hlinV hkind hold hV hP hregionV hregion
+    hgenAll hwf
+
+/-- Dynamic-recipient derived transfer over an arbitrary accumulator. -/
+theorem abs_transferA_some_acc (σ acc : Loom.Hw.St)
+    (D T : DomainId) (toE : Expr 2) (acs : Hw.CapSel)
+    (S NS : Slot) (e : CapEntry) (L : LineageId)
+    (cell : LineageCell) (NL : LineageId)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hsourceSlot : acs.slot.eval σ = BitVec.ofNat 4 S.val)
+    (hsource : ((Hw.abs acc).doms D).caps S = some e)
+    (hslot : (Hw.abs acc).freeSlot T = some NS)
+    (hslotSample : (Hw.abs σ).freeSlot T = some NS)
+    (hlin : e.lineage = some L)
+    (hcell : ((Hw.abs acc).doms D).lineage L = some cell)
+    (hcellSample : ((Hw.abs σ).doms D).lineage L = some cell)
+    (hfreeCell : (Hw.abs acc).freeCell T = some NL)
+    (hfreeCellSample : (Hw.abs σ).freeCell T = some NL)
+    (hlinV : acs.linV.eval σ = 1#1)
+    (hlinIdx : acs.lin.eval σ = BitVec.ofNat 4 L.val)
+    (hkind : acs.kindW.eval σ = Hw.encKind e.kind)
+    (hold : Hw.decRef ((Hw.encRefE (Hw.dLit D) acs.slot acs.gen).eval σ) =
+      ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hgenAll : ∀ c : DomainId, ∀ s : Slot,
+      acc.regs (Hw.dgen c s) 8 = σ.regs (Hw.dgen c s) 8)
+    (hwf : Wf (Hw.abs acc)) :
+    Hw.abs ((Hw.transferA D toE acs).run σ acc) =
+      ((((installTransferred (Hw.abs acc) T NS e.kind
+        (some (NL, cell.parent))).reparent
+          ⟨D, S, ((Hw.abs acc).doms D).slotGen S⟩
+          ⟨T, NS, ((Hw.abs acc).doms T).slotGen NS⟩).clearSlot D S).sweepRegions) := by
+  rw [transferA_run_selected, hto]
+  exact abs_transferChosenA_some_acc σ acc D T acs S NS e L cell NL
+    hsourceSlot hsource hslot hslotSample hlin hcell hcellSample hfreeCell
+    hfreeCellSample hlinV hlinIdx hkind hold hV hP hregionV hregion hgenAll
+    hwf
+
 theorem absDom_transferChosenA_some (σ : Loom.Hw.St)
     (D T : DomainId) (acs : Hw.CapSel) (S NS : Slot) (e : CapEntry)
     (L : LineageId) (cell : LineageCell) (NL : LineageId)
