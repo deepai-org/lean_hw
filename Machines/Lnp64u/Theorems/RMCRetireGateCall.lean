@@ -1334,4 +1334,43 @@ theorem abs_callSuccessA (σ acc : Loom.Hw.St)
       callSuccessA_frame_quiet σ acc d ("if_cl", 8)
         (by simp [callQuietNames])]
 
+/-! ## Successful specification execution -/
+
+/-- The named specification gate-call body reduces to the same pure state
+transformer as `abs_callSuccessA` once all checks and the optional transfer
+have succeeded.  The frame hypotheses are exactly the non-structural fields
+preserved by `transferByHandle`. -/
+theorem gateCallExec_eq_selected (c : Ctx) (τ τt : MachineState)
+    (S : Slot) (G : Gen) (e : CapEntry) (g : GateId) (cal : DomainId)
+    (argHandle : Loom.Word32)
+    (hlive : Machines.Lnp64u.Isa.capLive c.d
+      ((τ.doms c.d).reg c.op.rs1) τ = .ok (S, G, e) τ)
+    (hkind : e.kind = .gate g)
+    (hact : (τ.gates g).act = none)
+    (hcal : (τ.gates g).config.callee = cal)
+    (hne : cal ≠ c.d)
+    (hrun : (τ.doms cal).run = .running)
+    (hserv : (τ.doms cal).serving = none)
+    (hdepth : Machines.Lnp64u.Isa.Wip.gateDepth c τ ≤ maxChainDepth)
+    (htransfer : Machines.Lnp64u.Isa.transferByHandle c.d cal
+      ((τ.doms c.d).reg c.op.rs2) τ = .ok argHandle τt)
+    (hgates : τt.gates = τ.gates)
+    (hcalRegs : (τt.doms cal).regs = (τ.doms cal).regs)
+    (hcalPc : (τt.doms cal).pc = (τ.doms cal).pc)
+    (hcalServing : (τt.doms cal).serving = (τ.doms cal).serving)
+    (hcallerDonation : (τt.doms c.d).maxDonation =
+      (τ.doms c.d).maxDonation) :
+    Machines.Lnp64u.Isa.Wip.gateCallExec c τ =
+      .ok () (callAbstractSuccess τ τt c.d cal g c.op.rd argHandle
+        (Machines.Lnp64u.Isa.Wip.gateDepth c τ)) := by
+  unfold Machines.Lnp64u.Isa.Wip.gateCallExec
+  simp only [SpecM.reg, specM_bind]
+  rw [hlive]
+  simp only [hkind, SpecM.get, hact, Option.isNone_none, SpecM.require,
+    hcal, hne, decide_true, hrun, hserv, hdepth, htransfer, SpecM.set,
+    SpecM.updDom, SpecM.modify]
+  unfold callAbstractSuccess
+  rw [hgates, hcalRegs, hcalPc, hcalServing, hcallerDonation]
+  rfl
+
 end Machines.Lnp64u.Theorems.RMC
