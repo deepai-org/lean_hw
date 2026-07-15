@@ -134,4 +134,99 @@ theorem transferCap_none_of_blocked (σ : Loom.Hw.St) (τ : MachineState)
             rw [hlin]
             simp [hcell, hnoneCell]
 
+/-- A passing shared placement check yields one of the two exact successful
+structural-transfer branches.  Besides the specification equation, the
+result exposes the selector and allocation witnesses needed by the hardware
+whole-state abstraction. -/
+theorem transferCap_selected_of_pass (σ : Loom.Hw.St) (τ : MachineState)
+    (D T : DomainId) (toE : Expr 2) (hwE : Expr 32)
+    (S : Slot) (e : CapEntry)
+    (hto : finOfBv (by decide : 2 ^ 2 = numDomains) (toE.eval σ) = T)
+    (hslotSel : (Hw.capSel D hwE).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hcap : ((Hw.abs σ).doms D).caps S = some e)
+    (hsource : (τ.doms D).caps S = some e)
+    (hlineage : ∀ L : LineageId,
+      (τ.doms D).lineage L = ((Hw.abs σ).doms D).lineage L)
+    (hfreeSlot : τ.freeSlot T = (Hw.abs σ).freeSlot T)
+    (hfreeCell : τ.freeCell T = (Hw.abs σ).freeCell T)
+    (hwf : Wf (Hw.abs σ))
+    (hpass : (Hw.transferBlocked D toE (Hw.capSel D hwE)).eval σ ≠ 1#1) :
+    (∃ NS : Slot,
+      e.lineage = none ∧
+      (Hw.abs σ).freeSlot T = some NS ∧
+      (Hw.capSel D hwE).linV.eval σ = 0#1 ∧
+      τ.transferCap D S T =
+        some (((((installTransferred τ T NS e.kind none).reparent
+          ⟨D, S, (τ.doms D).slotGen S⟩
+          ⟨T, NS, (τ.doms T).slotGen NS⟩).clearSlot D S).sweepRegions
+            |>.sweepMover,
+          ⟨T, NS, (τ.doms T).slotGen NS⟩))) ∨
+    (∃ L : LineageId, ∃ cell : LineageCell, ∃ NS : Slot,
+      ∃ NL : LineageId,
+      e.lineage = some L ∧
+      ((Hw.abs σ).doms D).lineage L = some cell ∧
+      (Hw.abs σ).freeSlot T = some NS ∧
+      (Hw.abs σ).freeCell T = some NL ∧
+      (Hw.capSel D hwE).linV.eval σ = 1#1 ∧
+      (Hw.capSel D hwE).lin.eval σ = BitVec.ofNat 4 L.val ∧
+      τ.transferCap D S T =
+        some (((((installTransferred τ T NS e.kind
+          (some (NL, cell.parent))).reparent
+            ⟨D, S, (τ.doms D).slotGen S⟩
+            ⟨T, NS, (τ.doms T).slotGen NS⟩).clearSlot D S).sweepRegions
+              |>.sweepMover,
+          ⟨T, NS, (τ.doms T).slotGen NS⟩))) := by
+  cases hlin : e.lineage with
+  | none =>
+      left
+      have hlinV : (Hw.capSel D hwE).linV.eval σ = 0#1 :=
+        capSel_lineage_none_eval σ D hwE S e hslotSel hcap hlin
+      have hsome : ((Hw.abs σ).freeSlot T).isSome := by
+        by_contra hn
+        exact hpass ((transferBlocked_eval_no_lineage σ D T toE
+          (Hw.capSel D hwE) hto hlinV).mpr hn)
+      obtain ⟨NS, hNS⟩ := Option.isSome_iff_exists.mp hsome
+      have hNSτ : τ.freeSlot T = some NS := hfreeSlot.trans hNS
+      refine ⟨NS, rfl, hNS, hlinV, ?_⟩
+      exact transferCap_eq_selected_none τ D S T NS e hsource hNSτ hlin
+  | some L =>
+      right
+      have hsel := capSel_lineage_some_eval σ D hwE S e L hslotSel hcap hlin
+      have hused := (hwf.doms D).cell_backed S e L hcap hlin
+      obtain ⟨cell, hcellAbs⟩ : ∃ cell,
+          ((Hw.abs σ).doms D).lineage L = some cell := by
+        cases hc : ((Hw.abs σ).doms D).lineage L with
+        | none => simp [hc] at hused
+        | some cell => exact ⟨cell, rfl⟩
+      have hcellV : (Hw.cellVAt D (Hw.capSel D hwE).lin).eval σ = 1#1 := by
+        rw [cellVAt_eval σ D (Hw.capSel D hwE).lin L hsel.2]
+        change σ.regs (Hw.dcellV D L) 1 = 1#1
+        change (if σ.regs (Hw.dcellV D L) 1 = 1#1 then
+            some ⟨Hw.decRef (σ.regs (Hw.dcellPar D L) 14)⟩
+          else none) = some cell at hcellAbs
+        by_cases hv : σ.regs (Hw.dcellV D L) 1 = 1#1
+        · exact hv
+        · rw [if_neg hv] at hcellAbs
+          contradiction
+      have hresources : ((Hw.abs σ).freeSlot T).isSome ∧
+          ((Hw.abs σ).freeCell T).isSome := by
+        constructor
+        · by_contra hn
+          exact hpass ((transferBlocked_eval_with_lineage σ D T toE
+            (Hw.capSel D hwE) hto hsel.1 hcellV).mpr (Or.inl hn))
+        · by_contra hn
+          exact hpass ((transferBlocked_eval_with_lineage σ D T toE
+            (Hw.capSel D hwE) hto hsel.1 hcellV).mpr (Or.inr hn))
+      obtain ⟨NS, hNS⟩ := Option.isSome_iff_exists.mp hresources.1
+      obtain ⟨NL, hNL⟩ := Option.isSome_iff_exists.mp hresources.2
+      have hNSτ : τ.freeSlot T = some NS := hfreeSlot.trans hNS
+      have hNLτ : τ.freeCell T = some NL := hfreeCell.trans hNL
+      have hcellτ : (τ.doms D).lineage L = some cell := by
+        rw [hlineage]
+        exact hcellAbs
+      refine ⟨L, cell, NS, NL, rfl, hcellAbs, hNS, hNL,
+        hsel.1, hsel.2, ?_⟩
+      exact transferCap_eq_selected_some τ D S T NS e L cell NL hsource
+        hNSτ hlin hcellτ hNLτ
+
 end Machines.Lnp64u.Theorems.RMC
