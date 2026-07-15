@@ -543,9 +543,27 @@ private theorem grantExplicit_cellPar (σ acc : Loom.Hw.St)
 private theorem quietCap_notin_grantExplicit (x e t : DomainId)
     (NS : Slot) (NL : LineageId) :
     ∀ q ∈ domQuietNamesCap x, q ∉ (grantExplicit e t NS NL).regWrites := by
-  exact (by native_decide : ∀ (x e t : DomainId) (NS : Slot)
-    (NL : LineageId), ∀ q ∈ domQuietNamesCap x,
-      q ∉ (grantExplicit e t NS NL).regWrites) x e t NS NL
+  intro q hq
+  have hqdom : q ∈ domQuietNames x := by
+    simp [domQuietNamesCap, domQuietNames] at hq ⊢
+    aesop
+  have hbase := quiet_notin_dom x e q hqdom
+  have htV : ((Hw.dcapV t NS : String), 1) ∉ domQuietNamesCap x := by
+    simp [domQuietNamesCap, dcapV_ne_drgnV, dcapV_ne_dsrvV]
+  have htK : ((Hw.dcapKind t NS : String), 32) ∉ domQuietNamesCap x := by
+    simp [domQuietNamesCap, dcapKind_ne_dcause, dcapKind_ne_dbudget,
+      dcapKind_ne_dmaxdon]
+  have htLV : ((Hw.dcapLinV t NS : String), 1) ∉ domQuietNamesCap x := by
+    simp [domQuietNamesCap, dcapLinV_ne_drgnV, dcapLinV_ne_dsrvV]
+  have htL : ((Hw.dcapLin t NS : String), 4) ∉ domQuietNamesCap x := by
+    simp [domQuietNamesCap]
+  have hcV : ((Hw.dcellV t NL : String), 1) ∉ domQuietNamesCap x := by
+    simp [domQuietNamesCap, dcellV_ne_drgnV, dcellV_ne_dsrvV]
+  have hcP : ((Hw.dcellPar t NL : String), 14) ∉ domQuietNamesCap x := by
+    simp [domQuietNamesCap]
+  rw [grantExplicit_writes]
+  simp [domWrites] at hbase ⊢
+  aesop
 
 private theorem absDom_grantExplicit_caps (σ acc : Loom.Hw.St)
     (e t : DomainId) (NS : Slot) (NL : LineageId) (kind : CapKind)
