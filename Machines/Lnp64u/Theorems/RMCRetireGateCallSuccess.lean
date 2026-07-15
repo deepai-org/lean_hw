@@ -286,6 +286,49 @@ theorem retireBase_mem (m : Manifest) (σ : Loom.Hw.St) (b : Addr) :
         .mem b = σ.mems "mem" b.toNat 32 := by
   rfl
 
+/-- Exact liveness of an old live reference after a structural transfer from
+the retirement base.  The region sweep does not alter capability liveness. -/
+theorem transferStructural_retire_liveRef (m : Manifest)
+    (σ : Loom.Hw.St) (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (D : DomainId) (S : Slot) (r : CapRef)
+    (hfree : ((Hw.abs σ).doms T).caps NS = none)
+    (hlive : (Hw.abs σ).liveRef r = true) :
+    (transferStructural
+      { refillPhase m (Hw.abs σ) with inflight := none }
+      T NS kind moved oldRef newRef D S).liveRef r =
+        if r.dom = D ∧ r.slot = S then false else true := by
+  unfold transferStructural
+  rw [sweepRegions_liveRef]
+  apply transferStructural_liveRef_of_live
+  · simpa [refillPhase_caps] using hfree
+  · rw [retireBase_liveRef]
+    exact hlive
+
+/-- Capability kind of an old live non-source reference is preserved by a
+structural transfer from the retirement base. -/
+theorem transferStructural_retire_liveKind (m : Manifest)
+    (σ : Loom.Hw.St) (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (D : DomainId) (S : Slot) (r : CapRef)
+    (hfree : ((Hw.abs σ).doms T).caps NS = none)
+    (hlive : (Hw.abs σ).liveRef r = true)
+    (hout : ¬(r.dom = D ∧ r.slot = S)) :
+    Option.map CapEntry.kind
+        (((transferStructural
+          { refillPhase m (Hw.abs σ) with inflight := none }
+          T NS kind moved oldRef newRef D S).doms r.dom)
+            .liveCap r.slot r.gen) =
+      Option.map CapEntry.kind
+        (((Hw.abs σ).doms r.dom).liveCap r.slot r.gen) := by
+  unfold transferStructural
+  have h := transferStructural_liveKind_of_live
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
+    T NS kind moved oldRef newRef D S r
+    (by simpa [refillPhase_caps] using hfree)
+    (by rw [retireBase_liveRef]; exact hlive) hout
+  simpa [refillPhase_caps, refillPhase_slotGen] using h
+
 /-- Root transfer specialized to the post-refill, cleared-inflight
 retirement accumulator. -/
 theorem abs_transferA_none_retireAcc (m : Manifest) (hwfm : m.WF)
