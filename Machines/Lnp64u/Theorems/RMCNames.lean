@@ -94,6 +94,22 @@ private theorem cellSuffix_ne_genSuffix (a b : String) :
   have hg : "_gen".toList = ['_', 'g', 'e', 'n'] := by decide
   simp [hc, hg] at h'
 
+private theorem rgnSuffix_ne_genSuffix (a b : String) :
+    "_rgn" ++ a ≠ "_gen" ++ b := by
+  intro h
+  have h' := congrArg String.toList h
+  have hr : "_rgn".toList = ['_', 'r', 'g', 'n'] := by decide
+  have hg : "_gen".toList = ['_', 'g', 'e', 'n'] := by decide
+  simp [hr, hg] at h'
+
+private theorem srvSuffix_ne_genSuffix (a b : String) :
+    "_srv" ++ a ≠ "_gen" ++ b := by
+  intro h
+  have h' := congrArg String.toList h
+  have hs : "_srv".toList = ['_', 's', 'r', 'v'] := by decide
+  have hg : "_gen".toList = ['_', 'g', 'e', 'n'] := by decide
+  simp [hs, hg] at h'
+
 private theorem capSuffix_ne_cellSuffix (a b : String) :
     "_cap" ++ a ≠ "_cell" ++ b := by
   intro h
@@ -168,6 +184,24 @@ theorem dcellV_ne_dgen (d x : DomainId) (l : LineageId) (s : Slot) :
   simpa [dcellV, dgen, toString_string, String.append_assoc] using
     domSuffix_ne d x ("_cell" ++ (toString l.val ++ "_v"))
       ("_gen" ++ toString s.val) (cellSuffix_ne_genSuffix _ _)
+
+theorem dcapLinV_ne_dgen (d x : DomainId) (s u : Slot) :
+    dcapLinV d s ≠ dgen x u := by
+  simpa [dcapLinV, dgen, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_cap" ++ (toString s.val ++ "_lin_v"))
+      ("_gen" ++ toString u.val) (capSuffix_ne_genSuffix _ _)
+
+theorem drgnV_ne_dgen (d x : DomainId) (r : RegionId) (s : Slot) :
+    drgnV d r ≠ dgen x s := by
+  simpa [drgnV, dgen, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_rgn" ++ (toString r.val ++ "_v"))
+      ("_gen" ++ toString s.val) (rgnSuffix_ne_genSuffix _ _)
+
+theorem dsrvV_ne_dgen (d x : DomainId) (s : Slot) :
+    dsrvV d ≠ dgen x s := by
+  simpa [dsrvV, dgen, toString_string, String.append_assoc] using
+    domSuffix_ne d x ("_srv" ++ "_v") ("_gen" ++ toString s.val)
+      (srvSuffix_ne_genSuffix _ _)
 
 theorem dcapLinV_ne_dcellV_any (d x : DomainId) (s : Slot) (l : LineageId) :
     dcapLinV d s ≠ dcellV x l := by
@@ -262,6 +296,28 @@ theorem dcellPar_inj_lineage (d : DomainId) (l u : LineageId) :
 theorem dgen_inj_slot (d : DomainId) (s u : Slot) :
     dgen d s = dgen d u → s = u := by
   fin_cases s <;> fin_cases u <;> decide +kernel +revert
+
+theorem dcapV_inj_pair (c d : DomainId) (s u : Slot) :
+    dcapV c s = dcapV d u → c = d ∧ s = u := by
+  intro h
+  have hcd : c = d := by
+    by_contra hne
+    exact domPrefix_ne c d hne ("_cap" ++ (toString s.val ++ "_v"))
+      ("_cap" ++ (toString u.val ++ "_v")) (by
+        simpa [dcapV, toString_string, String.append_assoc] using h)
+  subst d
+  exact ⟨rfl, dcapV_inj_slot c s u h⟩
+
+theorem dgen_inj_pair (c d : DomainId) (s u : Slot) :
+    dgen c s = dgen d u → c = d ∧ s = u := by
+  intro h
+  have hcd : c = d := by
+    by_contra hne
+    exact domPrefix_ne c d hne ("_gen" ++ toString s.val)
+      ("_gen" ++ toString u.val) (by
+        simpa [dgen, toString_string, String.append_assoc] using h)
+  subst d
+  exact ⟨rfl, dgen_inj_slot c s u h⟩
 
 theorem dcellPar_inj_pair (c d : DomainId) (l u : LineageId) :
     dcellPar c l = dcellPar d u → c = d ∧ l = u := by
