@@ -144,6 +144,63 @@ theorem retireFor_gateReturn_first_failure (σ acc : Loom.Hw.St)
   exact ladder_run_first_failure σ acc d pre post cond resp
     (gateReturnSuccessA d) hpre hfail
 
+/-! ## Dynamic return selectors -/
+
+/-- An abstract serving witness identifies the gate selected by `retGid`. -/
+theorem retGid_eval_selected (σ : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (hserv : ((Hw.abs σ).doms d).serving = some gid) :
+    finOfBv (by decide : 2 ^ 2 = numGates) ((Hw.retGid d).eval σ) = gid := by
+  change (if σ.regs (Hw.dsrvV d) 1 = 1#1 then
+      some (finOfBv (by decide) (σ.regs (Hw.dsrv d) 2)) else none) =
+    some gid at hserv
+  by_cases hv : σ.regs (Hw.dsrvV d) 1 = 1#1
+  · rw [if_pos hv] at hserv
+    exact Option.some.inj hserv
+  · rw [if_neg hv] at hserv
+    contradiction
+
+/-- The active selected gate identifies the caller selected by `retCl`. -/
+theorem retCl_eval_selected (σ : Loom.Hw.St) (d : DomainId)
+    (gid : GateId) (act : Activation)
+    (hserv : ((Hw.abs σ).doms d).serving = some gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    finOfBv (by decide : 2 ^ 2 = numDomains) ((Hw.retCl d).eval σ) =
+      act.caller := by
+  have hgid := retGid_eval_selected σ d gid hserv
+  unfold Hw.retCl
+  rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+  change (if σ.regs (Hw.gactV gid) 1 = 1#1 then
+      some
+        { caller := finOfBv (by decide) (σ.regs (Hw.gcaller gid) 2)
+          callerRd := finOfBv (by decide) (σ.regs (Hw.gcallerRd gid) 3)
+          savedRegs := fun r => σ.regs (Hw.gsreg gid r) 32
+          savedPc := σ.regs (Hw.gspc gid) 12
+          savedServing := if σ.regs (Hw.gssrvV gid) 1 = 1#1 then
+            some (finOfBv (by decide) (σ.regs (Hw.gssrv gid) 2)) else none
+          depth := (σ.regs (Hw.gdepth gid) 3).toNat
+          donated := (σ.regs (Hw.gdon gid) 32).toNat }
+      else none) = some act at hact
+  by_cases hv : σ.regs (Hw.gactV gid) 1 = 1#1
+  · rw [if_pos hv] at hact
+    have ha := Option.some.inj hact
+    rw [← ha]
+    rfl
+  · rw [if_neg hv] at hact
+    contradiction
+
+/-- The hardware return-word expression is the architectural `rs1` read. -/
+theorem retW_eval (σ : Loom.Hw.St) (hz : R0Zero σ) (d : DomainId)
+    (r : RegId) (hr : r.val = (Hw.rs1E.eval σ).toNat) :
+    (Hw.retW d).eval σ = ((Hw.abs σ).doms d).reg r := by
+  exact readReg_eval σ hz d Hw.rs1E r hr
+
+/-- The optional return-transfer guard is exactly non-nullness of the reply
+handle word. -/
+theorem retNZ_eval_iff (σ : Loom.Hw.St) (d : DomainId) :
+    (Hw.retNZ d).eval σ = 1#1 ↔ (Hw.retW d).eval σ ≠ 0#32 := by
+  unfold Hw.retNZ
+  exact neqE_eval _ _ σ
+
 /-- Pure successful-return tail after the optional reply transfer.  `base`
 is the state returned by `transferByHandle`. -/
 def returnAbstractSuccess (base : MachineState) (d : DomainId)
