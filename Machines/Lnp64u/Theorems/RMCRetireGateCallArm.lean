@@ -343,4 +343,123 @@ theorem square_retire_gateCall_stale (m : Manifest) (hwf : m.WF)
   · exact hfail
   simpa [τ0, W] using hspec
 
+/-- Complete second ladder arm.  Once the primary handle is live, the
+combined gate-capability check fails exactly when its class disagrees with
+the selected entry or that entry is a memory capability. -/
+theorem square_retire_gateCall_badPrimary (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ) (hkc : KindCanon σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6)
+    (hlive : (Hw.callSel
+      (finOfBv (by decide) (σ.regs "if_dom" 2))).live.eval σ = 1#1)
+    (hbad : (Expr.not (Expr.and
+      (Hw.callSel (finOfBv (by decide) (σ.regs "if_dom" 2))).clsOk
+      (Expr.not (Hw.kIsMem
+        (Hw.callSel (finOfBv (by decide)
+          (σ.regs "if_dom" 2))).kindW)))).eval σ = 1#1) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  let c : Ctx :=
+    { d := E
+      pc := (({ refillPhase m (Hw.abs σ) with inflight := none }).doms E).pc
+      op := operandsOf W }
+  let τ0 : MachineState :=
+    ({ refillPhase m (Hw.abs σ) with inflight := none }).setDom E
+      (fun ds => { ds with pc := ds.pc + 1 })
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (22#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W =
+      isa.find? (fun d => d.opcode == (22#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel σ E rfl
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := E, word := W,
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    simpa [E, W] using absInflight_some σ hifv
+  have hcore0 : corePhase m (refillPhase m (Hw.abs σ)) =
+      retire { refillPhase m (Hw.abs σ) with inflight := none } E W := by
+    rw [corePhase_retire m _ _ hfl
+      (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+  have hR1 : (Hw.readReg E Hw.rs1E).eval σ =
+      ((Hw.abs σ).doms E).reg (operandsOf W).rs1 :=
+    readReg_eval σ hz E Hw.rs1E (operandsOf W).rs1 rfl
+  set HWv := ((Hw.abs σ).doms E).reg (operandsOf W).rs1 with hHWv
+  have hreg : (τ0.doms E).reg (operandsOf W).rs1 = HWv := by
+    exact specReg_bridge m σ E _
+  have hword : (τ0.doms c.d).reg c.op.rs1 =
+      (Hw.readReg E Hw.rs1E).eval σ := by
+    simp only [c]
+    rw [hreg, hR1]
+  have hslot : (finOfBv (by decide : 2 ^ 4 = numSlots)
+      (((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 4)).val =
+      (((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 4).toNat := rfl
+  have hbridge : ∀ (S : Slot) (G : Gen),
+      (τ0.doms E).liveCap S G = ((Hw.abs σ).doms E).liveCap S G := by
+    intro S G
+    exact specLiveCap_bridge m σ E S G
+  obtain ⟨e, hliveτ, hcap⟩ := capSel_entry_of_live σ τ0 E
+    (Hw.readReg E Hw.rs1E) hbridge (by simpa [E] using hlive)
+  have hclsIff := capSel_clsOk_iff_some σ E (Hw.readReg E Hw.rs1E)
+    (finOfBv (by decide) (((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 4))
+    e hkc hslot hcap
+  have hmemIff := capSel_isMem_iff_some σ E (Hw.readReg E Hw.rs1E)
+    (finOfBv (by decide) (((Hw.readReg E Hw.rs1E).eval σ).extractLsb' 0 4))
+    e hkc hslot hcap
+  have hexec : Machines.Lnp64u.Isa.Wip.gateCallExec c τ0 =
+      .err .badCap τ0 := by
+    by_cases hcls : (Hw.callSel E).clsOk.eval σ = 1#1
+    · have hmem : (Hw.kIsMem (Hw.callSel E).kindW).eval σ = 1#1 := by
+        have hb : ~~~((Hw.callSel E).clsOk.eval σ &&&
+            ~~~((Hw.kIsMem (Hw.callSel E).kindW).eval σ)) = 1#1 := by
+          simpa [E] using hbad
+        rw [hcls] at hb
+        by_contra hm
+        rw [bv1_ne_one.mp hm] at hb
+        simp at hb
+      obtain ⟨base, len, perms, hkind⟩ := hmemIff.mp hmem
+      apply gateCallExec_memCap c τ0 e
+      · simpa [c, hreg, hR1] using hliveτ
+      · rw [hword]
+        exact hclsIff.mp hcls
+      · exact hkind
+    · apply gateCallExec_badClass c τ0 e
+      · simpa [c, hreg, hR1] using hliveτ
+      · intro heq
+        apply hcls
+        apply hclsIff.mpr
+        rwa [hword] at heq
+  have hspec : corePhase m (refillPhase m (Hw.abs σ)) =
+      τ0.setDom E (fun ds =>
+        ds.setReg (operandsOf W).rd Errno.badCap.toWord) := by
+    rw [hcore0, retire_gateCall_exec _ E W hdec]
+    change (match Machines.Lnp64u.Isa.Wip.gateCallExec c τ0 with
+      | .ok _ τ' => τ'
+      | .err er τ' => τ'.setDom E
+          (fun ds => ds.setReg (operandsOf W).rd er.toWord)
+      | .fault f => haltWith
+          { refillPhase m (Hw.abs σ) with inflight := none } E f) = _
+    rw [hexec]
+  have hpassLive : (Expr.not (Hw.callSel E).live).eval σ ≠ 1#1 := by
+    show ¬(~~~((Hw.callSel E).live.eval σ) = 1#1)
+    rw [show (Hw.callSel E).live.eval σ = 1#1 from by simpa [E] using hlive]
+    decide
+  apply square_retire_gateCall_firstError m hwf hfit σ hsync hifv hcl E
+    rfl hifsel hifexcl hopc
+    [((Expr.not (Hw.callSel E).live), .err .staleHandle)]
+    (List.drop 2 (Hw.callChecks E))
+    (Expr.not (Expr.and (Hw.callSel E).clsOk
+      (Expr.not (Hw.kIsMem (Hw.callSel E).kindW)))) .badCap
+  · rfl
+  · intro x hx
+    simp only [List.mem_singleton] at hx
+    subst x
+    exact hpassLive
+  · simpa [E] using hbad
+  · simpa [τ0, W] using hspec
+
 end Machines.Lnp64u.Theorems.RMC
