@@ -155,4 +155,92 @@ theorem absDom_transferActions_selected (σ : Loom.Hw.St)
       (Hw.decRef (oldE.eval σ)) (Hw.decRef (newE.eval σ)) htargetFree
       hwf c' r hv
 
+/-! ## Identifying the abstract source and destination updates -/
+
+/-- Installing into a free destination cannot overwrite the occupied source
+slot. Consequently the later reparent pass leaves `removedCell` at the
+source equal to the original entry's lineage selector. -/
+theorem removedCell_installTransferred_reparent_source (τ : MachineState)
+    (D : DomainId) (S : Slot) (e : CapEntry)
+    (hsource : (τ.doms D).caps S = some e)
+    (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef))
+    (hfree : (τ.doms T).caps NS = none)
+    (oldRef newRef : CapRef) :
+    removedCell ((installTransferred τ T NS kind moved).reparent
+      oldRef newRef) D S = e.lineage := by
+  have hpair : ¬(D = T ∧ S = NS) := by
+    rintro ⟨rfl, rfl⟩
+    rw [hfree] at hsource
+    contradiction
+  unfold removedCell
+  rw [reparent_caps]
+  unfold installTransferred MachineState.setDom
+  by_cases hd : D = T
+  · subst D
+    have hs : S ≠ NS := fun h => hpair ⟨rfl, h⟩
+    simp [Loom.Fun.update_same, hs, hsource]
+  · simp [Loom.Fun.update_ne _ _ _ _ hd, hsource]
+
+/-- The parent mux used by `transferA` never leaves the moved cell pointing
+at the old reference: an old-parent match selects the new reference, while a
+non-match retains a provably different packed parent. -/
+theorem decRef_transfer_parent_mux_ne (σ : Loom.Hw.St)
+    (srcPar oldE newE : Expr 14)
+    (hnew : Hw.decRef (newE.eval σ) ≠ Hw.decRef (oldE.eval σ)) :
+    Hw.decRef ((Expr.mux (.eq srcPar oldE) newE srcPar).eval σ) ≠
+      Hw.decRef (oldE.eval σ) := by
+  by_cases hp : srcPar.eval σ = oldE.eval σ
+  · simpa [Expr.eval, hp] using hnew
+  · have hdec : Hw.decRef (srcPar.eval σ) ≠ Hw.decRef (oldE.eval σ) := by
+      intro h
+      apply hp
+      rw [← encRef_decRef (srcPar.eval σ), h, encRef_decRef]
+    simpa [Expr.eval, hp] using hdec
+
+/-- The reference formed from a free destination slot differs from the
+reference of an occupied source slot, even for an intra-domain transfer. -/
+theorem fresh_destination_ref_ne_source (τ : MachineState)
+    (D : DomainId) (S : Slot) (e : CapEntry)
+    (hsource : (τ.doms D).caps S = some e)
+    (T : DomainId) (NS : Slot)
+    (hfree : (τ.doms T).caps NS = none) :
+    (⟨T, NS, (τ.doms T).slotGen NS⟩ : CapRef) ≠
+      ⟨D, S, (τ.doms D).slotGen S⟩ := by
+  intro h
+  injection h with hd hs hg
+  rw [hd, hs] at hfree
+  rw [hfree] at hsource
+  contradiction
+
+/-- Decoding a packed hardware reference with selected slot/generation
+values yields the corresponding abstract reference. -/
+theorem encRefE_decoded_selected (σ : Loom.Hw.St) (D : DomainId)
+    (slotE : Expr 4) (genE : Expr 8) (S : Slot) (G : Gen)
+    (hslot : slotE.eval σ = BitVec.ofNat 4 S.val)
+    (hgen : genE.eval σ = G) :
+    Hw.decRef ((Hw.encRefE (Hw.dLit D) slotE genE).eval σ) =
+      ⟨D, S, G⟩ := by
+  have henc : (Hw.encRefE (Hw.dLit D) slotE genE).eval σ =
+      Hw.encRef ⟨D, S, G⟩ := by
+    show (genE.eval σ).setWidth 14 |||
+      ((slotE.eval σ).setWidth 14 <<< 8 |||
+        (BitVec.ofNat 2 D.val).setWidth 14 <<< 12) = _
+    rw [hslot, hgen]
+    have hSv : BitVec.ofNat 14 S.val =
+        (BitVec.ofNat 4 S.val).setWidth 14 := by
+      apply BitVec.eq_of_toNat_eq
+      simp [BitVec.toNat_ofNat, BitVec.toNat_setWidth]
+    have hDv : BitVec.ofNat 14 D.val =
+        (BitVec.ofNat 2 D.val).setWidth 14 := by
+      apply BitVec.eq_of_toNat_eq
+      simp [BitVec.toNat_ofNat, BitVec.toNat_setWidth]
+    show G.setWidth 14 |||
+      ((BitVec.ofNat 4 S.val).setWidth 14 <<< 8 |||
+        (BitVec.ofNat 2 D.val).setWidth 14 <<< 12) =
+      G.setWidth 14 ||| (BitVec.ofNat 14 S.val <<< 8) |||
+        (BitVec.ofNat 14 D.val <<< 12)
+    rw [hSv, hDv, BitVec.or_assoc]
+  rw [henc, decRef_encRef]
+
 end Machines.Lnp64u.Theorems.RMC
