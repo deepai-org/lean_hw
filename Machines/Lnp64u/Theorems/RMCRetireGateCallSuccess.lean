@@ -2100,5 +2100,76 @@ theorem square_retire_gateCall_success_nonzero (m : Manifest) (hwf : m.WF)
       rw [sweepMover_inflight]
       simp [hwStruct, transferStructural, installTransferred, base]
 
+/-- Complete `gate_call` retirement arm, dispatching the ten hardware checks
+in ladder order and then splitting the successful optional transfer into its
+null and non-null cases. -/
+theorem square_retire_gateCall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hrc : ∀ d : DomainId, σ.regs (Hw.drun d) 2 ≠ 3#2)
+    (hz : R0Zero σ) (hkc : KindCanon σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  let E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2)
+  by_cases hlive : (Hw.callSel E).live.eval σ = 1#1
+  · by_cases hprimary : (Expr.not (Expr.and (Hw.callSel E).clsOk
+        (Expr.not (Hw.kIsMem (Hw.callSel E).kindW)))).eval σ = 1#1
+    · exact square_retire_gateCall_badPrimary m hwf hfit σ hsync hz hkc
+        hifv hcl hopc hlive hprimary
+    · by_cases hidle : (Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+          (Hw.callGid E)).eval σ = 1#1
+      · exact square_retire_gateCall_active m hwf hfit σ hsync hz hkc
+          hifv hcl hopc hlive hprimary hidle
+      · by_cases hself : (Expr.eq (Hw.callCal E) (Hw.dLit E)).eval σ = 1#1
+        · exact square_retire_gateCall_self m hwf hfit σ hsync hz hkc
+            hifv hcl hopc hlive hprimary hidle hself
+        · by_cases hrunning : (Hw.neqE
+              (Hw.muxFin (fun d => .reg 2 (Hw.drun d)) (Hw.callCal E))
+              (.lit 0)).eval σ = 1#1
+          · exact square_retire_gateCall_notRunning m hwf hfit σ hsync hrc
+              hz hkc hifv hcl hopc hlive hprimary hidle hself hrunning
+          · by_cases hserving : (Hw.muxFin (fun d => .reg 1 (Hw.dsrvV d))
+                (Hw.callCal E)).eval σ = 1#1
+            · exact square_retire_gateCall_serving m hwf hfit σ hsync hrc
+                hz hkc hifv hcl hopc hlive hprimary hidle hself hrunning
+                hserving
+            · by_cases hdepth : (Expr.ult
+                  (.lit (BitVec.ofNat 3 maxChainDepth))
+                  (Hw.callDepth E)).eval σ = 1#1
+              · exact square_retire_gateCall_depthOverflow m hwf hfit σ
+                  hsync hrc hz hkc hsr hifv hcl hopc hlive hprimary hidle
+                  hself hrunning hserving hdepth
+              · by_cases hargLive : (Expr.and (Hw.argNZ E)
+                    (Expr.not (Hw.argSel E).live)).eval σ = 1#1
+                · exact square_retire_gateCall_argStale m hwf hfit σ hsync
+                    hrc hz hkc hsr hifv hcl hopc hlive hprimary hidle hself
+                    hrunning hserving hdepth hargLive
+                · by_cases hargClass : (Expr.and (Hw.argNZ E)
+                      (Expr.not (Hw.argSel E).clsOk)).eval σ = 1#1
+                  · exact square_retire_gateCall_argBadClass m hwf hfit σ
+                      hsync hrc hz hkc hsr hifv hcl hopc hlive hprimary hidle
+                      hself hrunning hserving hdepth hargLive hargClass
+                  · by_cases hblocked : (Expr.and (Hw.argNZ E)
+                        (Hw.transferBlocked E (Hw.callCal E)
+                          (Hw.argSel E))).eval σ = 1#1
+                    · exact square_retire_gateCall_argBlocked m hwf hfit σ
+                        hsync hrc hz hkc hsr hifv hcl hopc hlive hprimary
+                        hidle hself hrunning hserving hdepth hargLive hargClass
+                        hblocked
+                    · by_cases hzero : (Hw.argW E).eval σ = 0#32
+                      · exact square_retire_gateCall_success_zero m hwf hfit σ
+                          hsync hrc hz hkc hsr hifv hcl hopc hlive hprimary
+                          hidle hself hrunning hserving hdepth hzero
+                      · exact square_retire_gateCall_success_nonzero m hwf hfit
+                          σ hsync hrc hz hkc hsr hifv hcl hopc hlive hprimary
+                          hidle hself hrunning hserving hdepth hzero hargLive
+                          hargClass hblocked
+  · exact square_retire_gateCall_stale m hwf hfit σ hsync hz hifv hcl
+      hopc hlive
+
 
 end Machines.Lnp64u.Theorems.RMC
