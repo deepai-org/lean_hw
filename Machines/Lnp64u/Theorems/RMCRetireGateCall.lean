@@ -374,4 +374,253 @@ theorem absGate_callActivateChosen_selected (σ acc : Loom.Hw.St)
   simp only [hsaves]
   simp [Hw.abs, Hw.absDom]
 
+/-- A chosen activation writer leaves every other abstract gate unchanged. -/
+theorem absGate_callActivateChosen_other (σ acc : Loom.Hw.St)
+    (d : DomainId) (g h : GateId) (hne : h ≠ g) :
+    Hw.absGate ((callActivateChosenA d g).run σ acc) h =
+      Hw.absGate acc h := by
+  apply absGate_congr
+  intro q hq
+  apply frame
+  have hquiet : ∀ q ∈ gateReadNames h,
+      q ∉ (callActivateChosenA d g).regWrites := by
+    fin_cases g <;> fin_cases h <;>
+      first | exact absurd rfl hne | decide +kernel +revert
+  exact hquiet q hq
+
+/-- The gate-indexed activation fold updates exactly its decoded gate. -/
+theorem absGate_callActivateA (σ acc : Loom.Hw.St)
+    (d cal : DomainId) (g h : GateId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal) :
+    Hw.absGate ((callActivateA d).run σ acc) h =
+      if h = g then
+        { Hw.absGate acc g with
+          act := some
+            { caller := d
+              callerRd := finOfBv (by decide) (Hw.rdE.eval σ)
+              savedRegs := ((Hw.abs σ).doms cal).regs
+              savedPc := ((Hw.abs σ).doms cal).pc
+              savedServing := ((Hw.abs σ).doms cal).serving
+              depth := ((Hw.callDepth d).eval σ).toNat
+              donated := ((Hw.abs σ).doms d).maxDonation } }
+      else Hw.absGate acc h := by
+  rw [callActivateA_run_selected σ acc d g hgid]
+  by_cases hh : h = g
+  · subst h
+    rw [if_pos rfl]
+    exact absGate_callActivateChosen_selected σ acc d cal g hcal
+  · rw [if_neg hh]
+    exact absGate_callActivateChosen_other σ acc d g h hh
+
+/-! ## Callee scrub and entry writer -/
+
+/-- The successful call's argument value as installed in callee register 1. -/
+def callArgHandle (d : DomainId) : Expr 32 :=
+  .mux (Hw.argNZ d) (Hw.transferHandleAt (Hw.callCal d) (Hw.argSel d)) (.lit 0)
+
+/-- The domain-indexed callee scrub and entry fold. -/
+def callCalleeA (d : DomainId) : Act :=
+  Hw.seqAll ((List.finRange numDomains).map fun c =>
+    .ite (.eq (Hw.callCal d) (Hw.dLit c)) (Hw.seqAll <|
+      ((List.finRange numRegs).map fun r =>
+        .write 32 (Hw.dreg c r)
+          (if r.val = 1 then callArgHandle d else .lit 0))
+      ++ [ .write 12 (Hw.dpc c)
+            (Hw.muxFin (fun g => .reg 12 (Hw.gentry g)) (Hw.callGid d)),
+           .write 1 (Hw.dsrvV c) (.lit 1),
+           .write 2 (Hw.dsrv c) (Hw.callGid d) ]) .skip)
+
+/-- The concrete scrub and entry writer after selecting callee `cal`. -/
+def callCalleeChosenA (d cal : DomainId) : Act :=
+  Hw.seqAll <|
+    ((List.finRange numRegs).map fun r =>
+      .write 32 (Hw.dreg cal r)
+        (if r.val = 1 then callArgHandle d else .lit 0))
+    ++ [ .write 12 (Hw.dpc cal)
+          (Hw.muxFin (fun g => .reg 12 (Hw.gentry g)) (Hw.callGid d)),
+         .write 1 (Hw.dsrvV cal) (.lit 1),
+         .write 2 (Hw.dsrv cal) (Hw.callGid d) ]
+
+/-- The callee fold selects exactly the decoded callee domain. -/
+theorem callCalleeA_run_selected (σ acc : Loom.Hw.St) (d cal : DomainId)
+    (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.callCal d).eval σ) = cal) :
+    (callCalleeA d).run σ acc = (callCalleeChosenA d cal).run σ acc := by
+  have hsel : (Expr.eq (Hw.callCal d) (Hw.dLit cal)).eval σ = 1#1 :=
+    by rw [eqE_eval]; exact (bv2_lit_iff _ cal).mpr hcal
+  have hexcl : ∀ c : DomainId, c ≠ cal →
+      (Expr.eq (Hw.callCal d) (Hw.dLit c)).eval σ ≠ 1#1 := by
+    intro c hne hc
+    rw [eqE_eval] at hc
+    exact hne ((bv2_lit_iff _ c).mp hc |>.symm.trans hcal)
+  exact seqAll_ite_run_unique σ acc
+    (fun c : DomainId => Expr.eq (Hw.callCal d) (Hw.dLit c))
+    (fun c => callCalleeChosenA d c) cal hsel hexcl
+    (List.finRange numDomains) (List.mem_finRange cal) (List.nodup_finRange _)
+
+/-- The chosen callee writer scrubs the register file, enters the gate, and
+marks the domain as serving that gate, preserving all other domain fields. -/
+theorem absDom_callCalleeChosen_selected (σ acc : Loom.Hw.St)
+    (d cal : DomainId) (g : GateId)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) :
+    Hw.absDom ((callCalleeChosenA d cal).run σ acc) cal =
+      { Hw.absDom acc cal with
+        regs := fun r => if r.val = 1 then (callArgHandle d).eval σ else 0
+        pc := ((Hw.abs σ).gates g).config.entry
+        serving := some g } := by
+  let writes : List Act := (List.finRange numRegs).map fun r =>
+    .write 32 (Hw.dreg cal r)
+      (if r.val = 1 then callArgHandle d else .lit 0)
+  let tail : List Act :=
+    [ .write 12 (Hw.dpc cal)
+        (Hw.muxFin (fun g => .reg 12 (Hw.gentry g)) (Hw.callGid d)),
+      .write 1 (Hw.dsrvV cal) (.lit 1),
+      .write 2 (Hw.dsrv cal) (Hw.callGid d) ]
+  let mid := (Hw.seqAll writes).run σ acc
+  have hrun : (callCalleeChosenA d cal).run σ acc =
+      (Hw.seqAll tail).run σ mid := by
+    unfold callCalleeChosenA mid writes tail
+    rw [seqAll_append_run]
+  have hframe {rn : String} {w : Nat}
+      (hn : (rn, w) ∉ (callCalleeChosenA d cal).regWrites) :
+      ((callCalleeChosenA d cal).run σ acc).regs rn w = acc.regs rn w :=
+    frame hn σ acc
+  have hregs : ∀ r : RegId,
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dreg cal r) 32 =
+        (if r.val = 1 then (callArgHandle d).eval σ else 0) := by
+    intro r
+    rw [hrun]
+    rw [show ((Hw.seqAll tail).run σ mid).regs (Hw.dreg cal r) 32 =
+        mid.regs (Hw.dreg cal r) 32 from frame (by
+          unfold tail
+          fin_cases cal <;> fin_cases r <;> exact of_decide_eq_true rfl) σ mid]
+    unfold mid writes
+    rw [seqAll_write_at σ acc (fun r => Hw.dreg cal r)
+      (fun r => if r.val = 1 then callArgHandle d else .lit 0)
+      (List.finRange numRegs) r (List.mem_finRange r) (List.nodup_finRange _)
+      (by
+        intro x _ y _ heq
+        fin_cases cal <;> fin_cases x <;> fin_cases y <;>
+          first | rfl | exact absurd heq (by decide +kernel))]
+    split <;> rfl
+  have hpc : ((callCalleeChosenA d cal).run σ acc).regs
+      (Hw.dpc cal) 12 = ((Hw.abs σ).gates g).config.entry := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set]
+    rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+    rfl
+  have hsrvV : ((callCalleeChosenA d cal).run σ acc).regs
+      (Hw.dsrvV cal) 1 = 1#1 := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set]
+    rfl
+  have hsrv : finOfBv (by decide : 2 ^ 2 = numGates)
+      (((callCalleeChosenA d cal).run σ acc).regs (Hw.dsrv cal) 2) = g := by
+    rw [hrun]
+    simp [tail, Hw.seqAll, Act.run, RegEnv.set]
+    exact hgid
+  have hcapV (s : Slot) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapV cal s) 1 =
+        acc.regs (Hw.dcapV cal s) 1 := hframe (by
+    fin_cases cal <;> fin_cases s <;>
+      exact of_decide_eq_true rfl)
+  have hcapK (s : Slot) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapKind cal s) 32 =
+        acc.regs (Hw.dcapKind cal s) 32 := hframe (by
+    fin_cases cal <;> fin_cases s <;>
+      exact of_decide_eq_true rfl)
+  have hcapLV (s : Slot) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapLinV cal s) 1 =
+        acc.regs (Hw.dcapLinV cal s) 1 := hframe (by
+    fin_cases cal <;> fin_cases s <;>
+      exact of_decide_eq_true rfl)
+  have hcapL (s : Slot) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapLin cal s) 4 =
+        acc.regs (Hw.dcapLin cal s) 4 := hframe (by
+    fin_cases cal <;> fin_cases s <;>
+      exact of_decide_eq_true rfl)
+  have hgen (s : Slot) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dgen cal s) 8 =
+        acc.regs (Hw.dgen cal s) 8 := hframe (by
+    fin_cases cal <;> fin_cases s <;>
+      exact of_decide_eq_true rfl)
+  have hcellV (l : LineageId) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcellV cal l) 1 =
+        acc.regs (Hw.dcellV cal l) 1 := hframe (by
+    fin_cases cal <;> fin_cases l <;>
+      exact of_decide_eq_true rfl)
+  have hcellP (l : LineageId) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcellPar cal l) 14 =
+        acc.regs (Hw.dcellPar cal l) 14 := hframe (by
+    fin_cases cal <;> fin_cases l <;>
+      exact of_decide_eq_true rfl)
+  have hrgnV (r : RegionId) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.drgnV cal r) 1 =
+        acc.regs (Hw.drgnV cal r) 1 := hframe (by
+    fin_cases cal <;> fin_cases r <;>
+      exact of_decide_eq_true rfl)
+  have hrgn (r : RegionId) :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.drgn cal r) 42 =
+        acc.regs (Hw.drgn cal r) 42 := hframe (by
+    fin_cases cal <;> fin_cases r <;>
+      exact of_decide_eq_true rfl)
+  have hrunV :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.drun cal) 2 =
+        acc.regs (Hw.drun cal) 2 := hframe (by
+    fin_cases cal <;> exact of_decide_eq_true rfl)
+  have hrunG :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.drunG cal) 2 =
+        acc.regs (Hw.drunG cal) 2 := hframe (by
+    fin_cases cal <;> exact of_decide_eq_true rfl)
+  have hcause :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcause cal) 32 =
+        acc.regs (Hw.dcause cal) 32 := hframe (by
+    fin_cases cal <;> exact of_decide_eq_true rfl)
+  have hbudget :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dbudget cal) 32 =
+        acc.regs (Hw.dbudget cal) 32 := hframe (by
+    fin_cases cal <;> exact of_decide_eq_true rfl)
+  have hmaxdon :
+      ((callCalleeChosenA d cal).run σ acc).regs (Hw.dmaxdon cal) 32 =
+        acc.regs (Hw.dmaxdon cal) 32 := hframe (by
+    fin_cases cal <;> exact of_decide_eq_true rfl)
+  apply domainState_ext'
+  · funext r
+    exact hregs r
+  · exact hpc
+  · funext s
+    change (Hw.absDom ((callCalleeChosenA d cal).run σ acc) cal).caps s =
+      (Hw.absDom acc cal).caps s
+    unfold Hw.absDom
+    simp only
+    rw [hcapV, hcapK, hcapLV, hcapL]
+  · funext s
+    change _ = acc.regs (Hw.dgen cal s) 8
+    exact hgen s
+  · funext l
+    change (if _ = 1#1 then some _ else none) = _
+    rw [hcellV, hcellP]
+    rfl
+  · funext r
+    change (if _ = 1#1 then some _ else none) = _
+    rw [hrgnV, hrgn]
+    rfl
+  · change Hw.decRun _ _ = Hw.decRun (acc.regs (Hw.drun cal) 2)
+      (acc.regs (Hw.drunG cal) 2)
+    rw [hrunV, hrunG]
+  · change (if _ = 1#1 then some _ else none) = some g
+    rw [hsrvV, if_pos rfl, hsrv]
+  · change _ = acc.regs (Hw.dcause cal) 32
+    exact hcause
+  · change (((callCalleeChosenA d cal).run σ acc).regs
+      (Hw.dbudget cal) 32).toNat = (acc.regs (Hw.dbudget cal) 32).toNat
+    rw [hbudget]
+  · change (((callCalleeChosenA d cal).run σ acc).regs
+      (Hw.dmaxdon cal) 32).toNat = (acc.regs (Hw.dmaxdon cal) 32).toNat
+    rw [hmaxdon]
+
 end Machines.Lnp64u.Theorems.RMC
