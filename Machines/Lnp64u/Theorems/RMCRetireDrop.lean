@@ -560,6 +560,79 @@ theorem clearSlotA_frame (σ acc : Loom.Hw.St) (d : DomainId)
         simp [Hw.seqAll, Act.regWrites, hcell l]
         simpa only [Hw.seqAll] using ih
 
+private def WritesOnly1or8 : Act → Bool
+  | .skip => true
+  | .seq a b => WritesOnly1or8 a && WritesOnly1or8 b
+  | .ite _ a b => WritesOnly1or8 a && WritesOnly1or8 b
+  | .write w _ _ => w == 1 || w == 8
+  | .memWrite .. => true
+
+private theorem mem_regWrites_width1or8 :
+    ∀ {a : Act}, WritesOnly1or8 a = true → ∀ p ∈ a.regWrites,
+      p.2 = 1 ∨ p.2 = 8
+  | .skip, _, _, h => nomatch h
+  | .seq a b, h, p, hp => by
+      simp only [WritesOnly1or8, Bool.and_eq_true] at h
+      rcases List.mem_append.mp hp with hp | hp
+      · exact mem_regWrites_width1or8 h.1 p hp
+      · exact mem_regWrites_width1or8 h.2 p hp
+  | .ite _ a b, h, p, hp => by
+      simp only [WritesOnly1or8, Bool.and_eq_true] at h
+      rcases List.mem_append.mp hp with hp | hp
+      · exact mem_regWrites_width1or8 h.1 p hp
+      · exact mem_regWrites_width1or8 h.2 p hp
+  | .write w r v, h, p, hp => by
+      simp only [WritesOnly1or8, Bool.or_eq_true, beq_iff_eq] at h
+      simp only [Act.regWrites, List.mem_singleton] at hp
+      subst p
+      exact h
+  | .memWrite .., _, _, h => nomatch h
+
+private theorem seqAll_onlyWidth1or8 (l : List Act)
+    (h : ∀ a ∈ l, WritesOnly1or8 a = true) :
+    WritesOnly1or8 (Hw.seqAll l) = true := by
+  induction l with
+  | nil => rfl
+  | cons a l ih =>
+      change (WritesOnly1or8 a && WritesOnly1or8 (Hw.seqAll l)) = true
+      rw [Bool.and_eq_true]
+      exact ⟨h a (List.mem_cons_self ..), ih (fun b hb =>
+        h b (List.mem_cons_of_mem a hb))⟩
+
+private theorem clearSlotA_onlyWidth1or8 (d : DomainId) (sE : Expr 4)
+    (linVE : Expr 1) (linE : Expr 4) :
+    WritesOnly1or8 (Hw.clearSlotA d sE linVE linE) = true := by
+  unfold Hw.clearSlotA
+  change (WritesOnly1or8 (Hw.seqAll ((List.finRange numSlots).map fun s =>
+      Act.ite (.eq sE (Hw.sLit s))
+        (.seq (.write 1 (Hw.dcapV d s) (.lit 0))
+          (.write 8 (Hw.dgen d s)
+            (Hw.bumpE (.reg 8 (Hw.dgen d s))))) .skip)) &&
+    WritesOnly1or8 (Hw.seqAll ((List.finRange numLineage).map fun l =>
+      Act.ite (.and linVE (.eq linE (Hw.lLit l)))
+        (.write 1 (Hw.dcellV d l) (.lit 0)) .skip))) = true
+  rw [Bool.and_eq_true]
+  constructor <;> apply seqAll_onlyWidth1or8
+  · intro a ha
+    rcases List.mem_map.mp ha with ⟨s, _, rfl⟩
+    rfl
+  · intro a ha
+    rcases List.mem_map.mp ha with ⟨l, _, rfl⟩
+    rfl
+
+/-- `clearSlotA` frames every query outside its one- and eight-bit writes. -/
+theorem clearSlotA_frame_width (σ acc : Loom.Hw.St) (d : DomainId)
+    (sE : Expr 4) (linVE : Expr 1) (linE : Expr 4)
+    (q : String) (qW : Nat) (hne1 : qW ≠ 1) (hne8 : qW ≠ 8) :
+    ((Hw.clearSlotA d sE linVE linE).run σ acc).regs q qW =
+      acc.regs q qW := by
+  apply frame
+  intro hmem
+  rcases mem_regWrites_width1or8
+      (clearSlotA_onlyWidth1or8 d sE linVE linE) _ hmem with h | h
+  · exact hne1 h
+  · exact hne8 h
+
 /-- Pointwise parent-register semantics of the hardware reparent walk. -/
 theorem reparentA_cellPar (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
     (c : DomainId) (l : LineageId) :
@@ -1104,14 +1177,8 @@ theorem abs_orphanA_caps (σ acc : Loom.Hw.St) (oldE : Expr 14)
       (.eq (.reg 14 (Hw.dcellPar c l)) oldE))
       (.reg 4 (Hw.dcapLin c s))]
   have hV := orphanA_frame σ acc oldE (Hw.dcapV c s) 1
-    (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide)
-    (fun c' s' => by
-      clear * - c s c' s'
-      revert c s c' s'
-      native_decide)
+    (fun c' l' => dcapV_ne_dcellV_any c c' s l')
+    (fun c' s' => dcapV_ne_dcapLinV_any c c' s s')
   have hK := orphanA_frame_width σ acc oldE (Hw.dcapKind c s) 32 (by decide)
   have hL := orphanA_frame_width σ acc oldE (Hw.dcapLin c s) 4 (by decide)
   have hLV := orphanA_capLinV σ acc oldE c s
@@ -1237,7 +1304,8 @@ theorem absDom_orphanA (σ acc : Loom.Hw.St) (oldE : Expr 14)
       some (Hw.decRegion (((Hw.orphanA oldE).run σ acc).regs
         (Hw.drgn c r) 42)) else none) = _
     rw [orphanA_frame σ acc oldE (Hw.drgnV c r) 1
-        (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert)),
+        (fun c' l' => (dcellV_ne_drgnV c' c l' r).symm)
+        (fun c' s' => (dcapLinV_ne_drgnV c' c s' r).symm),
       orphanA_frame_width σ acc oldE (Hw.drgn c r) 42 (by decide)]
     rfl
   · change Hw.decRun (((Hw.orphanA oldE).run σ acc).regs
@@ -1251,7 +1319,8 @@ theorem absDom_orphanA (σ acc : Loom.Hw.St) (oldE : Expr 14)
       some (finOfBv (by decide) (((Hw.orphanA oldE).run σ acc).regs
         (Hw.dsrv c) 2)) else none) = _
     rw [orphanA_frame σ acc oldE (Hw.dsrvV c) 1
-        (fun c' l' => (by native_decide +revert)) (fun c' s' => (by native_decide +revert)),
+        (fun c' l' => (dcellV_ne_dsrvV c' c l').symm)
+        (fun c' s' => (dcapLinV_ne_dsrvV c' c s').symm),
       orphanA_frame_width σ acc oldE (Hw.dsrv c) 2 (by decide)]
     rfl
   · exact orphanA_frame_width σ acc oldE (Hw.dcause c) 32 (by decide)
@@ -1285,15 +1354,13 @@ theorem abs_clearSlotA_caps (σ acc : Loom.Hw.St) (d : DomainId)
       } : CapEntry) else none) =
       if d = d ∧ s = S then none else _
     rw [clearSlotA_capV σ acc d S s sE linVE linE hslot,
-      clearSlotA_frame σ acc d sE linVE linE (Hw.dcapKind d s) 32
-        (fun s' => (by native_decide +revert)) (fun s' => (by native_decide +revert))
-        (fun l' => (by native_decide +revert)),
+      clearSlotA_frame_width σ acc d sE linVE linE (Hw.dcapKind d s) 32
+        (by decide) (by decide),
       clearSlotA_frame σ acc d sE linVE linE (Hw.dcapLinV d s) 1
         (fun s' => (by native_decide +revert)) (fun s' => (by native_decide +revert))
         (fun l' => (by native_decide +revert)),
-      clearSlotA_frame σ acc d sE linVE linE (Hw.dcapLin d s) 4
-        (fun s' => (by native_decide +revert)) (fun s' => (by native_decide +revert))
-        (fun l' => (by native_decide +revert))]
+      clearSlotA_frame_width σ acc d sE linVE linE (Hw.dcapLin d s) 4
+        (by decide) (by decide)]
     by_cases hs : s = S <;> simp [hs] <;> rfl
   · rw [if_neg (fun h => hc h.1)]
     change (if ((Hw.clearSlotA d sE linVE linE).run σ acc).regs
@@ -1309,15 +1376,13 @@ theorem abs_clearSlotA_caps (σ acc : Loom.Hw.St) (d : DomainId)
     rw [clearSlotA_frame σ acc d sE linVE linE (Hw.dcapV c s) 1
         (fun s' h => hc ((by native_decide +revert : Hw.dcapV c s = Hw.dcapV d s' → c = d) h))
         (fun s' => (by native_decide +revert)) (fun l' => (by native_decide +revert)),
-      clearSlotA_frame σ acc d sE linVE linE (Hw.dcapKind c s) 32
-        (fun s' => (by native_decide +revert)) (fun s' => (by native_decide +revert))
-        (fun l' => (by native_decide +revert)),
+      clearSlotA_frame_width σ acc d sE linVE linE (Hw.dcapKind c s) 32
+        (by decide) (by decide),
       clearSlotA_frame σ acc d sE linVE linE (Hw.dcapLinV c s) 1
         (fun s' => (by native_decide +revert)) (fun s' => (by native_decide +revert))
         (fun l' => (by native_decide +revert)),
-      clearSlotA_frame σ acc d sE linVE linE (Hw.dcapLin c s) 4
-        (fun s' => (by native_decide +revert)) (fun s' => (by native_decide +revert))
-        (fun l' => (by native_decide +revert))]
+      clearSlotA_frame_width σ acc d sE linVE linE (Hw.dcapLin c s) 4
+        (by decide) (by decide)]
     rfl
 
 /-- The generation face of `clearSlotA` decodes to spec `clearSlot`. -/
@@ -1376,10 +1441,8 @@ theorem abs_clearSlotA_lineage (σ acc : Loom.Hw.St) (d : DomainId)
     else none
   have hpar : ((Hw.clearSlotA d sE linVE linE).run σ acc).regs
       (Hw.dcellPar c l) 14 = acc.regs (Hw.dcellPar c l) 14 :=
-    clearSlotA_frame σ acc d sE linVE linE (Hw.dcellPar c l) 14
-      (fun s' => by clear * - c l d s'; native_decide +revert)
-      (fun s' => by clear * - c l d s'; native_decide +revert)
-      (fun l' => by clear * - c l d l'; native_decide +revert)
+    clearSlotA_frame_width σ acc d sE linVE linE (Hw.dcellPar c l) 14
+      (by decide) (by decide)
   rw [hpar]
   by_cases hc : c = d
   · subst c
@@ -1433,13 +1496,11 @@ theorem absDom_clearSlotA (σ acc : Loom.Hw.St) (d : DomainId)
   apply domainState_ext
   · rw [clearSlot_regs]
     funext r
-    exact clearSlotA_frame σ acc d sE linVE linE (Hw.dreg c r) 32
-      (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-      (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
+    exact clearSlotA_frame_width σ acc d sE linVE linE (Hw.dreg c r) 32
+      (by decide) (by decide)
   · rw [clearSlot_pc]
-    exact clearSlotA_frame σ acc d sE linVE linE (Hw.dpc c) 12
-      (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-      (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
+    exact clearSlotA_frame_width σ acc d sE linVE linE (Hw.dpc c) 12
+      (by decide) (by decide)
   · funext s
     exact abs_clearSlotA_caps σ acc d S sE linVE linE hslot c s
   · funext s
@@ -1455,20 +1516,17 @@ theorem absDom_clearSlotA (σ acc : Loom.Hw.St) (d : DomainId)
     rw [clearSlotA_frame σ acc d sE linVE linE (Hw.drgnV c r) 1
         (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
         (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)),
-      clearSlotA_frame σ acc d sE linVE linE (Hw.drgn c r) 42
-        (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-        (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))]
+      clearSlotA_frame_width σ acc d sE linVE linE (Hw.drgn c r) 42
+        (by decide) (by decide)]
     rfl
   · rw [clearSlot_run]
     change Hw.decRun (((Hw.clearSlotA d sE linVE linE).run σ acc).regs
       (Hw.drun c) 2) (((Hw.clearSlotA d sE linVE linE).run σ acc).regs
       (Hw.drunG c) 2) = _
-    rw [clearSlotA_frame σ acc d sE linVE linE (Hw.drun c) 2
-        (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-        (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)),
-      clearSlotA_frame σ acc d sE linVE linE (Hw.drunG c) 2
-        (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-        (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))]
+    rw [clearSlotA_frame_width σ acc d sE linVE linE (Hw.drun c) 2
+        (by decide) (by decide),
+      clearSlotA_frame_width σ acc d sE linVE linE (Hw.drunG c) 2
+        (by decide) (by decide)]
     rfl
   · rw [clearSlot_serving]
     change (if ((Hw.clearSlotA d sE linVE linE).run σ acc).regs
@@ -1478,27 +1536,23 @@ theorem absDom_clearSlotA (σ acc : Loom.Hw.St) (d : DomainId)
     rw [clearSlotA_frame σ acc d sE linVE linE (Hw.dsrvV c) 1
         (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
         (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)),
-      clearSlotA_frame σ acc d sE linVE linE (Hw.dsrv c) 2
-        (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-        (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))]
+      clearSlotA_frame_width σ acc d sE linVE linE (Hw.dsrv c) 2
+        (by decide) (by decide)]
     rfl
   · rw [clearSlot_cause]
-    exact clearSlotA_frame σ acc d sE linVE linE (Hw.dcause c) 32
-      (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-      (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
+    exact clearSlotA_frame_width σ acc d sE linVE linE (Hw.dcause c) 32
+      (by decide) (by decide)
   · rw [clearSlot_budget]
     change (((Hw.clearSlotA d sE linVE linE).run σ acc).regs
       (Hw.dbudget c) 32).toNat = _
-    rw [clearSlotA_frame σ acc d sE linVE linE (Hw.dbudget c) 32
-      (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-      (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))]
+    rw [clearSlotA_frame_width σ acc d sE linVE linE (Hw.dbudget c) 32
+      (by decide) (by decide)]
     rfl
   · change (((Hw.clearSlotA d sE linVE linE).run σ acc).regs
       (Hw.dmaxdon c) 32).toNat = _
     rw [clearSlot_maxDonation]
-    rw [clearSlotA_frame σ acc d sE linVE linE (Hw.dmaxdon c) 32
-      (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert)) (fun s' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))
-      (fun l' => (by clear hslot hgen hremoved σ acc S sE linVE linE; native_decide +revert))]
+    rw [clearSlotA_frame_width σ acc d sE linVE linE (Hw.dmaxdon c) 32
+      (by decide) (by decide)]
     rfl
 
 /-- Composition of the derived-entry structural branch: reparent children,

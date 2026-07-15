@@ -207,6 +207,28 @@ theorem dcapV_ne_dcellV (d : DomainId) (s : Slot) (l : LineageId) :
   have hcell : "_cell".toList = ['_', 'c', 'e', 'l', 'l'] := by decide
   simp [dcapV, dcellV, toString_string, hcap, hcell] at h'
 
+/-- Capability-valid and capability-lineage-valid names are disjoint across domains. -/
+theorem dcapV_ne_dcapLinV_any (d x : DomainId) (s u : Slot) :
+    dcapV d s ≠ dcapLinV x u := by
+  by_cases hdx : d = x
+  · subst x
+    exact dcapV_ne_dcapLinV d s u
+  · simpa [dcapV, dcapLinV, toString_string, String.append_assoc] using
+      domPrefix_ne d x hdx
+        ("_cap" ++ (toString s.val ++ "_v"))
+        ("_cap" ++ (toString u.val ++ "_lin_v"))
+
+/-- Capability-valid and lineage-cell-valid names are disjoint across domains. -/
+theorem dcapV_ne_dcellV_any (d x : DomainId) (s : Slot) (l : LineageId) :
+    dcapV d s ≠ dcellV x l := by
+  by_cases hdx : d = x
+  · subst x
+    exact dcapV_ne_dcellV d s l
+  · simpa [dcapV, dcellV, toString_string, String.append_assoc] using
+      domPrefix_ne d x hdx
+        ("_cap" ++ (toString s.val ++ "_v"))
+        ("_cell" ++ (toString l.val ++ "_v"))
+
 /-- Capability-valid names determine their slot within a domain. -/
 theorem dcapV_inj_slot (d : DomainId) (s u : Slot) :
     dcapV d s = dcapV d u → s = u := by
