@@ -449,4 +449,53 @@ theorem abs_installA_selected (σ acc : Loom.Hw.St)
   congr 1
   by_cases hl : linVE.eval σ = 1#1 <;> simp [hl, Hw.abs]
 
+/-- Pre-adjusting the moved cell's parent is equivalent, on the domain map,
+to letting the abstract reparent pass adjust it. This is the semantic reason
+for the parent mux inside `Hw.transferA`. -/
+theorem installTransferred_reparent_adjusted_doms (τ : MachineState)
+    (T : DomainId) (NS : Slot) (kind : CapKind) (NL : LineageId)
+    (parent oldRef newRef : CapRef) (hne : newRef ≠ oldRef) :
+    ((installTransferred τ T NS kind
+        (some (NL, if parent = oldRef then newRef else parent))).reparent
+      oldRef newRef).doms =
+    ((installTransferred τ T NS kind (some (NL, parent))).reparent
+      oldRef newRef).doms := by
+  by_cases hp : parent = oldRef
+  · subst parent
+    funext d
+    by_cases hd : d = T
+    · subst d
+      apply domainState_ext'
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · funext l
+        by_cases hl : l = NL
+        · subst l
+          simp [installTransferred, MachineState.reparent,
+            MachineState.setDom, hne]
+        · simp [installTransferred, MachineState.reparent,
+            MachineState.setDom, hl]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+      · simp [installTransferred, MachineState.reparent,
+          MachineState.setDom]
+    · simp [installTransferred, MachineState.reparent, MachineState.setDom,
+        hd]
+  · simp [installTransferred, MachineState.reparent, MachineState.setDom,
+      hp]
+
 end Machines.Lnp64u.Theorems.RMC
