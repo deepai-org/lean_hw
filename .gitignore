@@ -3,3 +3,8 @@ rtl/
 book-out/
 .claude/
 scratch/
+__pycache__/
+*.py[cod]
+scratch*.lean
+*.draft
+*-draft.txt

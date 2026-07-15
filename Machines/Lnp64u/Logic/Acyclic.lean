@@ -261,7 +261,7 @@ theorem acyclic_contract (σ σ' : MachineState) (a b : CapRef)
               obtain ⟨m, hm, he⟩ := ih q
               refine ⟨1 + m, by omega, ?_⟩
               rw [he, σ.climb_add m 1 r, hc1 r, hq, Option.bind_some]
-  
+
   intro r i hi hcyc
   obtain ⟨m, hm, he⟩ := hkey i r
   rw [hcyc] at he

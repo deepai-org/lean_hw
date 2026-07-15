@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+
 import Loom.Core.Fun
 import Loom.Core.Word
 import Loom.Core.Ts
@@ -23,3 +24,10 @@ import Loom.Emit.MicroVerilog.Parse
 import Loom.Emit.MicroVerilog.RoundTrip
 import Loom.Logic.Sep.Bi
 import Loom.Logic.StepIndex
+
+/-!
+# Loom
+
+Public umbrella module for Loom's machine-independent hardware EDSL, semantics,
+decision procedures, µVerilog boundary, and documentation support.
+-/

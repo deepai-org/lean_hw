@@ -8,6 +8,29 @@ tiny accumulator core used as the pathfinder for the whole proof chain, and
 **LNP64-µ**, the first real machine (4 domains, capabilities, gates, a DMA
 Mover, 25 opcodes).
 
+## Quick start
+
+Install [Elan](https://lean-lang.org/lean4/doc/quickstart.html), then run:
+
+```console
+git clone https://github.com/deepai-org/lean_hw.git
+cd lean_hw
+lake build
+lake test
+lake exe audit
+```
+
+`lean-toolchain` pins the exact Lean release and `lake-manifest.json` pins
+all package revisions. The ordinary `lake build` path needs no Verilog tools.
+The broader `scripts/ci.sh` gate additionally emits both cores and runs
+optional external corroboration when its SAT tooling is available.
+
+The project tracks stable Lean releases deliberately rather than automatically:
+a toolchain bump is tested on a branch, its manifest is regenerated, and the
+full proof/audit gate must pass before merging. See
+[`PACKAGE_QUALITY.md`](PACKAGE_QUALITY.md) for the current package-readiness
+assessment and any known red gates.
+
 ## From Lean to Verilog
 
 **1. A chip is a Lean value of type `Design`** (`Loom/Hw/Syntax.lean`): named
