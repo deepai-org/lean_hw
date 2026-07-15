@@ -281,6 +281,64 @@ def transferStructural (τ : MachineState) (T : DomainId) (NS : Slot)
   (((installTransferred τ T NS kind moved).reparent oldRef newRef).clearSlot
     D S).sweepRegions
 
+/-- The cached-region sweep commutes with a PC-only domain update because
+its guard observes capability liveness, not the program counter. -/
+theorem sweepRegions_setPc (τ : MachineState) (d : DomainId) :
+    (τ.setDom d fun ds => { ds with pc := ds.pc + 1 }).sweepRegions =
+      τ.sweepRegions.setDom d (fun ds => { ds with pc := ds.pc + 1 }) := by
+  let τp := τ.setDom d fun ds => { ds with pc := ds.pc + 1 }
+  have hlive : ∀ r : CapRef, τp.liveRef r = τ.liveRef r := by
+    intro r
+    unfold τp MachineState.liveRef DomainState.liveCap MachineState.setDom
+    by_cases hr : r.dom = d <;> simp [Loom.Fun.update, hr]
+  have hlive_fun : τp.liveRef = τ.liveRef := funext hlive
+  apply machineState_ext'
+  · rfl
+  · rfl
+  · funext x
+    apply domainState_ext'
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · funext y
+      change (match (τp.doms x).regions y with
+        | some rg => if τp.liveRef rg.backing then some rg else none
+        | none => none) = _
+      rw [hlive_fun]
+      by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd] <;> rfl
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+    · by_cases hxd : x = d <;>
+        simp [MachineState.sweepRegions, τp, MachineState.setDom,
+          Loom.Fun.update, hxd]
+  · rfl
+  · rfl
+  · rfl
+
 /-- The structural capability transfer commutes with the caller's retirement
 PC increment.  This is the key normalization between the specification,
 which advances PC before executing `gate_call`, and the hardware, whose
@@ -294,27 +352,57 @@ theorem transferStructural_setPc (τ : MachineState) (d T : DomainId)
         T NS kind moved oldRef newRef d S =
       (transferStructural τ T NS kind moved oldRef newRef d S).setDom d
         (fun ds => { ds with pc := ds.pc + 1 }) := by
-  apply machineState_ext'
-  · rfl
-  · rfl
-  · funext x
-    have hTd : T ≠ d := Ne.symm hne
-    by_cases hxd : x = d
-    · subst x
-      apply domainState_ext' <;>
-        simp [transferStructural, installTransferred,
-          MachineState.setDom, Loom.Fun.update, hne, hTd]
-    · by_cases hxT : x = T
+  have hTd : T ≠ d := Ne.symm hne
+  have hprefix :
+      (((installTransferred
+          (τ.setDom d fun ds => { ds with pc := ds.pc + 1 })
+          T NS kind moved).reparent oldRef newRef).clearSlot d S) =
+        (((installTransferred τ T NS kind moved).reparent oldRef newRef)
+          |>.clearSlot d S).setDom d
+            (fun ds => { ds with pc := ds.pc + 1 }) := by
+    apply machineState_ext'
+    · rfl
+    · rfl
+    · funext x
+      by_cases hxd : x = d
       · subst x
-        apply domainState_ext' <;>
-          simp [transferStructural, installTransferred,
-            MachineState.setDom, Loom.Fun.update, hne, hTd, hxd]
-      · apply domainState_ext' <;>
-          simp [transferStructural, installTransferred,
-            MachineState.setDom, Loom.Fun.update, hne, hTd, hxd, hxT]
-  · rfl
-  · rfl
-  · rfl
+        apply domainState_ext'
+        all_goals
+          first
+          | rfl
+          | (funext y; simp [installTransferred, MachineState.reparent,
+              MachineState.clearSlot, MachineState.setDom,
+              Loom.Fun.update, hne, hTd])
+          | simp [installTransferred, MachineState.reparent,
+              MachineState.clearSlot, MachineState.setDom,
+              Loom.Fun.update, hne, hTd]
+      · by_cases hxT : x = T
+        · subst x
+          apply domainState_ext'
+          all_goals
+            first
+            | rfl
+            | (funext y; simp [installTransferred, MachineState.reparent,
+                MachineState.clearSlot, MachineState.setDom,
+                Loom.Fun.update, hne, hTd, hxd])
+            | simp [installTransferred, MachineState.reparent,
+                MachineState.clearSlot, MachineState.setDom,
+                Loom.Fun.update, hne, hTd, hxd]
+        · apply domainState_ext'
+          all_goals
+            first
+            | rfl
+            | (funext y; simp [installTransferred, MachineState.reparent,
+                MachineState.clearSlot, MachineState.setDom,
+                Loom.Fun.update, hne, hTd, hxd, hxT])
+            | simp [installTransferred, MachineState.reparent,
+                MachineState.clearSlot, MachineState.setDom,
+                Loom.Fun.update, hne, hTd, hxd, hxT]
+    · rfl
+    · rfl
+    · rfl
+  unfold transferStructural
+  rw [hprefix, sweepRegions_setPc]
 
 /-- The Mover sweep also commutes with a PC-only domain update: its guards
 observe only capability liveness and region authority, and its effects touch
@@ -327,8 +415,7 @@ theorem sweepMover_setPc (τ : MachineState) (d : DomainId) :
     intro r
     unfold τp MachineState.liveRef DomainState.liveCap MachineState.setDom
     by_cases hr : r.dom = d
-    · subst r.dom
-      simp [Loom.Fun.update]
+    · simp [Loom.Fun.update, hr]
     · simp [Loom.Fun.update, hr]
   have hcover : ∀ owner a need,
       τp.domCovers owner a need = τ.domCovers owner a need := by
@@ -351,11 +438,11 @@ theorem sweepMover_setPc (τ : MachineState) (d : DomainId) :
   cases hjob : τ.mover with
   | none => rfl
   | some job =>
-      rw [hlive, hlive]
+      simp only
+      rw [hlive job.src, hlive job.dst]
       by_cases hboth : τ.liveRef job.src && τ.liveRef job.dst
-      · rw [if_pos hboth]
-        rfl
-      · rw [if_neg hboth]
+      · simpa [hboth, τp, MachineState.setDom]
+      · simp only [if_neg hboth]
         have hcover' :
             ({ τp with mover := none } : MachineState).domCovers
                 job.owner job.statusAddr ⟨false, true, false⟩ =
@@ -367,11 +454,11 @@ theorem sweepMover_setPc (τ : MachineState) (d : DomainId) :
         rw [hcover']
         by_cases ha : ({ τ with mover := none } : MachineState).domCovers
             job.owner job.statusAddr ⟨false, true, false⟩
-        · rw [if_pos ha]
+        · simp only [if_pos ha]
           apply machineState_ext' <;>
             simp [τp, MachineState.setDom, MachineState.write,
               Loom.Fun.update]
-        · rw [if_neg ha]
+        · simp only [if_neg ha]
           rfl
 
 /-- On a valid pre-transfer region, the hardware source-slot predicate is

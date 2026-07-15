@@ -175,7 +175,6 @@ theorem coreAct_mem_gateCall_success_nonzero (m : Manifest)
       simpa using hauthPost (.reg 2 "mov_owner") (.reg 12 "mov_status"))
   · exact hbase
   · exact htarget
-  · exact b
 
 /-- Although the call itself succeeds, a null argument gives it an empty
 structural kill footprint, so the ordinary inert Mover assembly applies. -/
@@ -262,28 +261,28 @@ theorem abs_refill_clearInflight (m : Manifest) (hwf : m.WF)
 /-- The post-refill, cleared-inflight retirement base has exactly the same
 capability liveness as the sampled abstract state. -/
 theorem retireBase_liveRef (m : Manifest) (σ : Loom.Hw.St) (r : CapRef) :
-    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
-        .liveRef r = (Hw.abs σ).liveRef r := by
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState).liveRef r =
+      (Hw.abs σ).liveRef r := by
   unfold MachineState.liveRef DomainState.liveCap
   rw [refillPhase_caps, refillPhase_slotGen]
 
 /-- Refill and in-flight clearing frame region tables. -/
 theorem retireBase_regions (m : Manifest) (σ : Loom.Hw.St)
     (d : DomainId) :
-    (({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
-        .doms d).regions = ((Hw.abs σ).doms d).regions := by
+    (({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState).doms
+      d).regions = ((Hw.abs σ).doms d).regions := by
   exact refillPhase_regions m (Hw.abs σ) d
 
 /-- Refill and in-flight clearing frame the active Mover job. -/
 theorem retireBase_mover (m : Manifest) (σ : Loom.Hw.St) :
-    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
-        .mover = Hw.absMover σ := by
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState).mover =
+      Hw.absMover σ := by
   exact refillPhase_mover m (Hw.abs σ)
 
 /-- Refill and in-flight clearing frame physical memory. -/
 theorem retireBase_mem (m : Manifest) (σ : Loom.Hw.St) (b : Addr) :
-    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
-        .mem b = σ.mems "mem" b.toNat 32 := by
+    ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState).mem b =
+      σ.mems "mem" b.toNat 32 := by
   rfl
 
 /-- Exact liveness of an old live reference after a structural transfer from
@@ -317,8 +316,7 @@ theorem transferStructural_retire_liveKind (m : Manifest)
     Option.map CapEntry.kind
         (((transferStructural
           { refillPhase m (Hw.abs σ) with inflight := none }
-          T NS kind moved oldRef newRef D S).doms r.dom)
-            .liveCap r.slot r.gen) =
+          T NS kind moved oldRef newRef D S).doms r.dom).liveCap r.slot r.gen) =
       Option.map CapEntry.kind
         (((Hw.abs σ).doms r.dom).liveCap r.slot r.gen) := by
   unfold transferStructural
@@ -327,7 +325,13 @@ theorem transferStructural_retire_liveKind (m : Manifest)
     T NS kind moved oldRef newRef D S r
     (by simpa [refillPhase_caps] using hfree)
     (by rw [retireBase_liveRef]; exact hlive) hout
-  simpa [refillPhase_caps, refillPhase_slotGen] using h
+  calc
+    _ = Option.map CapEntry.kind
+        (((refillPhase m (Hw.abs σ)).doms r.dom).liveCap r.slot r.gen) := h
+    _ = Option.map CapEntry.kind
+        (((Hw.abs σ).doms r.dom).liveCap r.slot r.gen) := by
+      unfold DomainState.liveCap
+      rw [refillPhase_caps, refillPhase_slotGen]
 
 /-- Mover field after sweeping a retirement-base structural transfer. -/
 theorem transferStructural_retire_sweepMover_mover (m : Manifest)
@@ -349,13 +353,19 @@ theorem transferStructural_retire_sweepMover_mover (m : Manifest)
     ({ refillPhase m (Hw.abs σ) with inflight := none } : MachineState)
     T NS kind moved oldRef newRef D S
   apply sweepMover_transfer_mover (Hw.abs σ) τr D S
-  · simp [τr, transferStructural, retireBase_mover]
+  · simp [τr, transferStructural, installTransferred,
+      MachineState.reparent, MachineState.clearSlot,
+      MachineState.sweepRegions, MachineState.setDom, retireBase_mover]
   · intro job hjob
-    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
-      newRef D S job.src hfree (moverEndpoints_live hwf job hjob).1
+    have hsrc := (moverEndpoints_live hwf job hjob).1
+    simpa [τr, hsrc] using
+      transferStructural_retire_liveRef m σ T NS kind moved oldRef
+        newRef D S job.src hfree hsrc
   · intro job hjob
-    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
-      newRef D S job.dst hfree (moverEndpoints_live hwf job hjob).2
+    have hdst := (moverEndpoints_live hwf job hjob).2
+    simpa [τr, hdst] using
+      transferStructural_retire_liveRef m σ T NS kind moved oldRef
+        newRef D S job.dst hfree hdst
   · exact moverEndpoints_live hwf
 
 /-- Memory face of `transferStructural_retire_sweepMover_mover`. -/
@@ -389,16 +399,88 @@ theorem transferStructural_retire_sweepMover_mem (m : Manifest)
   · simp only
     have hmem : ∀ a, τr.mem a = σ.mems "mem" a.toNat 32 := by
       intro a
-      simp [τr, transferStructural, retireBase_mem]
-    split <;> simp_all
-  · simp [τr, transferStructural, retireBase_mover]
+      simpa [τr, transferStructural, installTransferred,
+        MachineState.reparent, MachineState.clearSlot,
+        MachineState.sweepRegions, MachineState.setDom] using
+          retireBase_mem m σ a
+    simp only [hmem]
+    have habsm : (Hw.abs σ).mover = Hw.absMover σ := rfl
+    cases hm : Hw.absMover σ <;> rw [habsm, hm] <;> rfl
+  · simp [τr, transferStructural, installTransferred,
+      MachineState.reparent, MachineState.clearSlot,
+      MachineState.sweepRegions, MachineState.setDom, retireBase_mover]
   · intro job hjob
-    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
-      newRef D S job.src hfree (moverEndpoints_live hwf job hjob).1
+    have hsrc := (moverEndpoints_live hwf job hjob).1
+    simpa [τr, hsrc] using
+      transferStructural_retire_liveRef m σ T NS kind moved oldRef
+        newRef D S job.src hfree hsrc
   · intro job hjob
-    exact transferStructural_retire_liveRef m σ T NS kind moved oldRef
-      newRef D S job.dst hfree (moverEndpoints_live hwf job hjob).2
+    have hdst := (moverEndpoints_live hwf job hjob).2
+    simpa [τr, hdst] using
+      transferStructural_retire_liveRef m σ T NS kind moved oldRef
+        newRef D S job.dst hfree hdst
   · exact moverEndpoints_live hwf
+
+/-- Status-authority bridge specialized to a structural transfer from the
+retirement base. -/
+theorem sAuth_call_retire_transfer (m : Manifest) (σ : Loom.Hw.St)
+    (E T : DomainId) (S NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (hslot : (Hw.argSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.argNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.callKilled E dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hfree : ((Hw.abs σ).doms T).caps NS = none)
+    (hwf : Wf (Hw.abs σ)) (ow : Expr 2) (sa : Expr 12) :
+    ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+      (transferStructural
+        { refillPhase m (Hw.abs σ) with inflight := none }
+        T NS kind moved oldRef newRef E S).domCovers
+          (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true := by
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  let τc := ((installTransferred base T NS kind moved).reparent oldRef newRef)
+    |>.clearSlot E S
+  have hregions : ∀ c : DomainId,
+      (τc.doms c).regions = ((Hw.abs σ).doms c).regions := by
+    intro c
+    by_cases hcT : c = T
+    · subst c
+      by_cases hTE : T = E <;>
+        simp [τc, base, installTransferred, MachineState.reparent,
+          MachineState.clearSlot, MachineState.setDom, Loom.Fun.update,
+          retireBase_regions, hTE]
+    · by_cases hcE : c = E
+      · subst c
+        simp [τc, base, installTransferred, MachineState.reparent,
+          MachineState.clearSlot, MachineState.setDom, Loom.Fun.update,
+          retireBase_regions, hcT]
+      · simp [τc, base, installTransferred, MachineState.reparent,
+          MachineState.clearSlot, MachineState.setDom, Loom.Fun.update,
+          retireBase_regions, hcT, hcE]
+  have hbacking : ∀ c r rg, ((Hw.abs σ).doms c).regions r = some rg →
+      τc.liveRef rg.backing =
+        if rg.backing.dom = E ∧ rg.backing.slot = S then false
+        else (Hw.abs σ).liveRef rg.backing := by
+    intro c r rg hrg
+    have hlive := regionBacking_live hwf hrg
+    have h := transferStructural_retire_liveRef m σ T NS kind moved
+      oldRef newRef E S rg.backing hfree hlive
+    simpa [transferStructural, τc, base, sweepRegions_liveRef, hlive] using h
+  have h := sAuth_call_backings_eval σ E S τc hslot hnz hkills hmapz
+    hunmapz hregions hbacking hwf ow sa
+  simpa [transferStructural, τc, base] using h
 
 /-- Root transfer specialized to the post-refill, cleared-inflight
 retirement accumulator. -/
@@ -719,8 +801,7 @@ theorem callAbstractSuccess_transfer_faces (m : Manifest) (σ : Loom.Hw.St)
     let hwStruct :=
       transferStructural base cal NS kind moved oldRef newRef d S
     let specStruct :=
-      (transferStructural prefixed cal NS kind moved oldRef newRef d S)
-        .sweepMover
+      (transferStructural prefixed cal NS kind moved oldRef newRef d S).sweepMover
     let specCall := callAbstractSuccessAt prefixed specStruct d cal g rd
       argHandle depth (specStruct.doms d).pc
     let hwCall := callAbstractSuccess (Hw.abs σ) hwStruct d cal g rd
@@ -744,16 +825,16 @@ theorem callAbstractSuccess_transfer_faces (m : Manifest) (σ : Loom.Hw.St)
     unfold callAbstractSuccess callAbstractSuccessAt
     by_cases hxd : x = d
     · subst x
-      simp [MachineState.setDom, Loom.Fun.update, hwStruct,
+      simp [MachineState.setDom, Loom.Fun.update, hne, base, hwStruct,
         transferStructural, installTransferred]
     · by_cases hxc : x = cal
       · subst x
         have hcald : cal ≠ d := hxd
         simp [MachineState.setDom, Loom.Fun.update, hne, hcald,
-          hwStruct, transferStructural, installTransferred,
+          base, hwStruct, transferStructural, installTransferred,
           refillPhase_gates]
       · simp [MachineState.setDom, Loom.Fun.update, hxd, hxc,
-          hwStruct, transferStructural, installTransferred]
+          base, hwStruct, transferStructural, installTransferred]
   · intro h
     rw [hcomm]
     unfold callAbstractSuccess callAbstractSuccessAt
@@ -761,11 +842,11 @@ theorem callAbstractSuccess_transfer_faces (m : Manifest) (σ : Loom.Hw.St)
     · subst h
       have hcald : cal ≠ d := Ne.symm hne
       simp [MachineState.setDom, Loom.Fun.update, hcald,
-        hwStruct, transferStructural, installTransferred,
+        base, hwStruct, transferStructural, installTransferred,
         refillPhase_gates, refillPhase_regs, refillPhase_pc,
         refillPhase_serving, refillPhase_maxDonation]
     · simp [MachineState.setDom, Loom.Fun.update, hh,
-        hwStruct, transferStructural, installTransferred,
+        base, hwStruct, transferStructural, installTransferred,
         refillPhase_gates]
 
 /-- Whole-state strengthening of `callAbstractSuccess_transfer_faces` when
@@ -784,8 +865,7 @@ theorem callAbstractSuccess_transfer_state (m : Manifest) (σ : Loom.Hw.St)
     let hwStruct :=
       transferStructural base cal NS kind moved oldRef newRef d S
     let specStruct :=
-      (transferStructural prefixed cal NS kind moved oldRef newRef d S)
-        .sweepMover
+      (transferStructural prefixed cal NS kind moved oldRef newRef d S).sweepMover
     callAbstractSuccessAt prefixed specStruct d cal g rd argHandle depth
         (specStruct.doms d).pc =
       callAbstractSuccess (Hw.abs σ) hwStruct.sweepMover d cal g rd
@@ -809,26 +889,26 @@ theorem callAbstractSuccess_transfer_state (m : Manifest) (σ : Loom.Hw.St)
   · funext x
     by_cases hxd : x = d
     · subst x
-      simp [MachineState.setDom, Loom.Fun.update, hwStruct,
+      simp [MachineState.setDom, Loom.Fun.update, hne, base, hwStruct,
         transferStructural, installTransferred]
     · by_cases hxc : x = cal
       · subst x
         have hcald : cal ≠ d := hxd
         simp [MachineState.setDom, Loom.Fun.update, hne, hcald,
-          hwStruct, transferStructural, installTransferred,
+          base, hwStruct, transferStructural, installTransferred,
           refillPhase_gates]
       · simp [MachineState.setDom, Loom.Fun.update, hxd, hxc,
-          hwStruct, transferStructural, installTransferred]
+          base, hwStruct, transferStructural, installTransferred]
   · funext h
     by_cases hh : h = g
     · subst h
       have hcald : cal ≠ d := Ne.symm hne
       simp [MachineState.setDom, Loom.Fun.update, hcald,
-        hwStruct, transferStructural, installTransferred,
+        base, hwStruct, transferStructural, installTransferred,
         refillPhase_gates, refillPhase_regs, refillPhase_pc,
         refillPhase_serving, refillPhase_maxDonation]
     · simp [MachineState.setDom, Loom.Fun.update, hh,
-        hwStruct, transferStructural, installTransferred,
+        base, hwStruct, transferStructural, installTransferred,
         refillPhase_gates]
   · rfl
   · rfl
