@@ -248,6 +248,42 @@ theorem transferKilled_structural_iff_dead (σ : Loom.Hw.St)
       (transferStructural_dead_iff_of_live (Hw.abs σ) T NS kind moved
         oldRef newRef D S rg.backing hfree hlive).symm
 
+/-- Accumulator-general form of `transferKilled_structural_iff_dead`.
+The sampled state supplies the kill predicate, while the accumulator supplies
+the abstract state being transformed; equality of the region banks is the
+only bridge required between them. -/
+theorem transferKilled_structural_iff_dead_acc (σ acc : Loom.Hw.St)
+    (D : DomainId) (sourceSlotE : Expr 4) (S : Slot)
+    (hsourceSlot : sourceSlotE.eval σ = BitVec.ofNat 4 S.val)
+    (T : DomainId) (NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hfree : ((Hw.abs acc).doms T).caps NS = none)
+    (hwf : Wf (Hw.abs acc)) (c : DomainId) (r : RegionId)
+    (hv : σ.regs (Hw.drgnV c r) 1 = 1#1) :
+    ((Expr.and (.eq
+        (Hw.field (.reg 42 (Hw.drgn c r)) 40 2) (Hw.dLit D))
+      (.eq (Hw.field (.reg 42 (Hw.drgn c r)) 36 4) sourceSlotE)).eval σ =
+        1#1) ↔
+      ((((installTransferred (Hw.abs acc) T NS kind moved).reparent
+          oldRef newRef).clearSlot D S).liveRef
+        (Hw.decRegion (σ.regs (Hw.drgn c r) 42)).backing = false) := by
+  let rg := Hw.decRegion (σ.regs (Hw.drgn c r) 42)
+  have hrg : ((Hw.abs acc).doms c).regions r = some rg := by
+    change (if acc.regs (Hw.drgnV c r) 1 = 1#1 then
+      some (Hw.decRegion (acc.regs (Hw.drgn c r) 42)) else none) = some rg
+    rw [hregionV c r, hregion c r]
+    simp [hv, rg]
+  have hlive : (Hw.abs acc).liveRef rg.backing = true :=
+    regionBacking_live hwf hrg
+  exact (transferKilled_region_eval σ D sourceSlotE S hsourceSlot
+    (.reg 42 (Hw.drgn c r))).trans
+      (transferStructural_dead_iff_of_live (Hw.abs acc) T NS kind moved
+        oldRef newRef D S rg.backing hfree hlive).symm
+
 /-! ## Whole transfer action with semantic sweep discharge -/
 
 /-- Whole-domain abstraction of the four transfer actions when run directly
@@ -312,6 +348,65 @@ theorem absDom_transferActions_selected (σ : Loom.Hw.St)
       else none)
       (Hw.decRef (oldE.eval σ)) (Hw.decRef (newE.eval σ)) htargetFree
       hwf c' r hv
+
+/-- Accumulator-general whole-domain abstraction of the four transfer
+actions.  This is the form needed by retirement, whose accumulator already
+contains refill and in-flight-clear updates. -/
+theorem absDom_transferActions_selected_acc (σ acc : Loom.Hw.St)
+    (T : DomainId) (nsE : Expr 4) (kindE : Expr 32)
+    (linVE : Expr 1) (nlE : Expr 4) (parE oldE newE : Expr 14)
+    (NS : Slot) (kind : CapKind)
+    (D : DomainId) (sourceSlotE : Expr 4)
+    (sourceLinVE : Expr 1) (sourceLinE : Expr 4) (S : Slot)
+    (hns : nsE.eval σ = BitVec.ofNat 4 NS.val)
+    (hkind : kindE.eval σ = Hw.encKind kind)
+    (hV : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellV c l) 1 = σ.regs (Hw.dcellV c l) 1)
+    (hP : ∀ c : DomainId, ∀ l : LineageId,
+      acc.regs (Hw.dcellPar c l) 14 = σ.regs (Hw.dcellPar c l) 14)
+    (hregionV : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgnV c r) 1 = σ.regs (Hw.drgnV c r) 1)
+    (hregion : ∀ c : DomainId, ∀ r : RegionId,
+      acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42)
+    (hgen : acc.regs (Hw.dgen D S) 8 = σ.regs (Hw.dgen D S) 8)
+    (hfreeCell : linVE.eval σ = 1#1 →
+      σ.regs (Hw.dcellV T (finOfBv (by decide) (nlE.eval σ))) 1 ≠ 1#1)
+    (hparent : linVE.eval σ = 1#1 →
+      Hw.decRef (parE.eval σ) ≠ Hw.decRef (oldE.eval σ))
+    (hsourceSlot : sourceSlotE.eval σ = BitVec.ofNat 4 S.val)
+    (hremoved : removedCell
+      ((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))) D S =
+      if sourceLinVE.eval σ = 1#1 then
+        some (finOfBv (by decide) (sourceLinE.eval σ)) else none)
+    (htargetFree : ((Hw.abs acc).doms T).caps NS = none)
+    (hwf : Wf (Hw.abs acc)) (c : DomainId) :
+    Hw.absDom ((Hw.sweepRegionsA
+      (fun dm sl => .and (.eq dm (Hw.dLit D)) (.eq sl sourceSlotE))).run σ
+      ((Hw.clearSlotA D sourceSlotE sourceLinVE sourceLinE).run σ
+        ((Hw.reparentA oldE newE).run σ
+          ((Hw.installA T nsE kindE linVE nlE parE).run σ acc)))) c =
+      (((((installTransferred (Hw.abs acc) T NS kind
+        (if linVE.eval σ = 1#1 then
+          some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+        else none)).reparent (Hw.decRef (oldE.eval σ))
+          (Hw.decRef (newE.eval σ))).clearSlot D S).sweepRegions).doms c) := by
+  apply absDom_install_reparent_clear_sweep_selected σ acc T nsE kindE linVE
+    nlE parE oldE newE NS kind D sourceSlotE sourceLinVE sourceLinE S
+    (fun dm sl => .and (.eq dm (Hw.dLit D)) (.eq sl sourceSlotE))
+    hns hkind hV hP hregionV hregion hfreeCell hparent hsourceSlot hgen
+    hremoved
+  intro c' r hv
+  exact transferKilled_structural_iff_dead_acc σ acc D sourceSlotE S
+    hsourceSlot T NS kind
+    (if linVE.eval σ = 1#1 then
+      some (finOfBv (by decide) (nlE.eval σ), Hw.decRef (parE.eval σ))
+    else none)
+    (Hw.decRef (oldE.eval σ)) (Hw.decRef (newE.eval σ)) hregionV hregion
+    htargetFree hwf c' r hv
 
 /-! ## Identifying the abstract source and destination updates -/
 
