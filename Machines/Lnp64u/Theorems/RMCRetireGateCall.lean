@@ -1382,6 +1382,21 @@ theorem retireFor_gateCall_success (σ acc : Loom.Hw.St) (d : DomainId)
   apply ladder_run_all_pass
   exact (okOf_eval_iff σ (Hw.callChecks d)).mp hok
 
+/-- Generic first-failure selector for the gate-call errno ladder. -/
+theorem retireFor_gateCall_first_error (σ acc : Loom.Hw.St) (d : DomainId)
+    (pre post : List Hw.Check) (c : Expr 1) (er : Errno)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6)
+    (hchecks : Hw.callChecks d = pre ++ (c, .err er) :: post)
+    (hpre : ∀ x ∈ pre, x.1.eval σ ≠ 1#1)
+    (hfail : c.eval σ = 1#1) :
+    (Hw.retireFor d).run σ acc =
+      (Act.seq (Hw.pcAdvA d)
+        (Hw.writeReg d Hw.rdE (.lit er.toWord))).run σ acc := by
+  rw [retireFor_gateCall_run σ acc d hopc]
+  rw [hchecks]
+  exact ladder_run_first_failure σ acc d pre post c (.err er)
+    (callSuccessA d) hpre hfail
+
 /-- Operational decomposition of the successful call payload into its four
 semantic stages. -/
 theorem callSuccessA_run (σ acc : Loom.Hw.St) (d : DomainId) :
