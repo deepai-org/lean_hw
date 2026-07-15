@@ -620,6 +620,62 @@ theorem reparentA_frame (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
   intro p _
   exact hne p.1 p.2
 
+private def WritesOnlyWidth (w : Nat) : Act → Bool
+  | .skip => true
+  | .seq a b => WritesOnlyWidth w a && WritesOnlyWidth w b
+  | .ite _ a b => WritesOnlyWidth w a && WritesOnlyWidth w b
+  | .write w' _ _ => w' == w
+  | .memWrite .. => true
+
+private theorem mem_regWrites_width {w : Nat} :
+    ∀ {a : Act}, WritesOnlyWidth w a = true → ∀ p ∈ a.regWrites, p.2 = w
+  | .skip, _, _, h => nomatch h
+  | .seq a b, h, p, hp => by
+      simp only [WritesOnlyWidth, Bool.and_eq_true] at h
+      rcases List.mem_append.mp hp with hp | hp
+      · exact mem_regWrites_width h.1 p hp
+      · exact mem_regWrites_width h.2 p hp
+  | .ite _ a b, h, p, hp => by
+      simp only [WritesOnlyWidth, Bool.and_eq_true] at h
+      rcases List.mem_append.mp hp with hp | hp
+      · exact mem_regWrites_width h.1 p hp
+      · exact mem_regWrites_width h.2 p hp
+  | .write w' r v, h, p, hp => by
+      simp only [WritesOnlyWidth, beq_iff_eq] at h
+      simp only [Act.regWrites, List.mem_singleton] at hp
+      subst p
+      exact h
+  | .memWrite .., _, _, h => nomatch h
+
+private theorem seqAll_onlyWidth (w : Nat) (l : List Act)
+    (h : ∀ a ∈ l, WritesOnlyWidth w a = true) :
+    WritesOnlyWidth w (Hw.seqAll l) = true := by
+  induction l with
+  | nil => rfl
+  | cons a l ih =>
+      change (WritesOnlyWidth w a && WritesOnlyWidth w (Hw.seqAll l)) = true
+      rw [Bool.and_eq_true]
+      exact ⟨h a (List.mem_cons_self ..), ih (fun b hb =>
+        h b (List.mem_cons_of_mem a hb))⟩
+
+private theorem reparentA_onlyWidth (oldE newE : Expr 14) :
+    WritesOnlyWidth 14 (Hw.reparentA oldE newE) = true := by
+  unfold Hw.reparentA
+  apply seqAll_onlyWidth
+  intro a ha
+  simp only [List.mem_flatMap, List.mem_map] at ha
+  rcases ha with ⟨c, _, l, _, rfl⟩
+  rfl
+
+/-- `reparentA` frames every register query whose width is not 14 bits. -/
+theorem reparentA_frame_width (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
+    (q : String) (qW : Nat) (hne : qW ≠ 14) :
+    ((Hw.reparentA oldE newE).run σ acc).regs q qW = acc.regs q qW := by
+  apply frame
+  intro hmem
+  apply hne
+  exact mem_regWrites_width (reparentA_onlyWidth oldE newE) _ hmem
+
 private abbrev OrphanIx :=
   Sum (DomainId × LineageId) (DomainId × Slot)
 
@@ -825,11 +881,7 @@ theorem abs_reparentA_lineage (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
     | some cell => some (if cell.parent = Hw.decRef (oldE.eval σ) then
         { parent := Hw.decRef (newE.eval σ) } else cell)
     | none => none
-  rw [reparentA_frame σ acc oldE newE (Hw.dcellV c l) 1
-    (fun c' l' => by
-      clear * - c l c' l'
-      revert c l c' l'
-      native_decide), hV,
+  rw [reparentA_frame_width σ acc oldE newE (Hw.dcellV c l) 1 (by decide), hV,
     reparentA_cellPar σ acc oldE newE c l]
   by_cases hv : σ.regs (Hw.dcellV c l) 1 = 1#1
   · rw [if_pos hv]
@@ -865,26 +917,10 @@ theorem abs_reparentA_caps (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
           some (finOfBv (by decide) (((Hw.reparentA oldE newE).run σ acc).regs
             (Hw.dcapLin c s) 4)) else none
       } : CapEntry) else none) = _
-  rw [reparentA_frame σ acc oldE newE (Hw.dcapV c s) 1
-      (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide),
-    reparentA_frame σ acc oldE newE (Hw.dcapKind c s) 32
-      (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide),
-    reparentA_frame σ acc oldE newE (Hw.dcapLinV c s) 1
-      (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide),
-    reparentA_frame σ acc oldE newE (Hw.dcapLin c s) 4
-      (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide)]
+  rw [reparentA_frame_width σ acc oldE newE (Hw.dcapV c s) 1 (by decide),
+    reparentA_frame_width σ acc oldE newE (Hw.dcapKind c s) 32 (by decide),
+    reparentA_frame_width σ acc oldE newE (Hw.dcapLinV c s) 1 (by decide),
+    reparentA_frame_width σ acc oldE newE (Hw.dcapLin c s) 4 (by decide)]
   rfl
 
 /-- Reparenting does not change decoded slot generations. -/
@@ -895,11 +931,7 @@ theorem abs_reparentA_slotGen (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
         (Hw.decRef (newE.eval σ))).doms c).slotGen s := by
   rw [reparent_slotGen]
   change ((Hw.reparentA oldE newE).run σ acc).regs (Hw.dgen c s) 8 = _
-  exact reparentA_frame σ acc oldE newE (Hw.dgen c s) 8
-    (fun c' l' => by
-      clear * - c s c' l'
-      revert c s c' l'
-      native_decide)
+  exact reparentA_frame_width σ acc oldE newE (Hw.dgen c s) 8 (by decide)
 
 /-- Whole-domain abstraction of `reparentA`. -/
 theorem absDom_reparentA (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
@@ -915,16 +947,8 @@ theorem absDom_reparentA (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
   dsimp only
   apply domainState_ext
   · funext r
-    exact reparentA_frame σ acc oldE newE (Hw.dreg c r) 32
-      (fun c' l' => by
-      clear * - c r c' l'
-      revert c r c' l'
-      native_decide)
-  · exact reparentA_frame σ acc oldE newE (Hw.dpc c) 12
-      (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide)
+    exact reparentA_frame_width σ acc oldE newE (Hw.dreg c r) 32 (by decide)
+  · exact reparentA_frame_width σ acc oldE newE (Hw.dpc c) 12 (by decide)
   · funext s
     exact abs_reparentA_caps σ acc oldE newE c s
   · funext s
@@ -936,66 +960,30 @@ theorem absDom_reparentA (σ acc : Loom.Hw.St) (oldE newE : Expr 14)
         (Hw.drgnV c r) 1 = 1#1 then
       some (Hw.decRegion (((Hw.reparentA oldE newE).run σ acc).regs
         (Hw.drgn c r) 42)) else none) = _
-    rw [reparentA_frame σ acc oldE newE (Hw.drgnV c r) 1
-        (fun c' l' => by
-      clear * - c r c' l'
-      revert c r c' l'
-      native_decide),
-      reparentA_frame σ acc oldE newE (Hw.drgn c r) 42
-        (fun c' l' => by
-      clear * - c r c' l'
-      revert c r c' l'
-      native_decide)]
+    rw [reparentA_frame_width σ acc oldE newE (Hw.drgnV c r) 1 (by decide),
+      reparentA_frame_width σ acc oldE newE (Hw.drgn c r) 42 (by decide)]
     rfl
   · change Hw.decRun (((Hw.reparentA oldE newE).run σ acc).regs
       (Hw.drun c) 2) (((Hw.reparentA oldE newE).run σ acc).regs
       (Hw.drunG c) 2) = _
-    rw [reparentA_frame σ acc oldE newE (Hw.drun c) 2
-        (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide),
-      reparentA_frame σ acc oldE newE (Hw.drunG c) 2
-        (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide)]
+    rw [reparentA_frame_width σ acc oldE newE (Hw.drun c) 2 (by decide),
+      reparentA_frame_width σ acc oldE newE (Hw.drunG c) 2 (by decide)]
     rfl
   · change (if ((Hw.reparentA oldE newE).run σ acc).regs
       (Hw.dsrvV c) 1 = 1#1 then
       some (finOfBv (by decide) (((Hw.reparentA oldE newE).run σ acc).regs
         (Hw.dsrv c) 2)) else none) = _
-    rw [reparentA_frame σ acc oldE newE (Hw.dsrvV c) 1
-        (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide),
-      reparentA_frame σ acc oldE newE (Hw.dsrv c) 2
-        (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide)]
+    rw [reparentA_frame_width σ acc oldE newE (Hw.dsrvV c) 1 (by decide),
+      reparentA_frame_width σ acc oldE newE (Hw.dsrv c) 2 (by decide)]
     rfl
-  · exact reparentA_frame σ acc oldE newE (Hw.dcause c) 32
-      (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide)
+  · exact reparentA_frame_width σ acc oldE newE (Hw.dcause c) 32 (by decide)
   · change (((Hw.reparentA oldE newE).run σ acc).regs
       (Hw.dbudget c) 32).toNat = _
-    rw [reparentA_frame σ acc oldE newE (Hw.dbudget c) 32
-      (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide)]
+    rw [reparentA_frame_width σ acc oldE newE (Hw.dbudget c) 32 (by decide)]
     rfl
   · change (((Hw.reparentA oldE newE).run σ acc).regs
       (Hw.dmaxdon c) 32).toNat = _
-    rw [reparentA_frame σ acc oldE newE (Hw.dmaxdon c) 32
-      (fun c' l' => by
-      clear * - c c' l'
-      revert c c' l'
-      native_decide)]
+    rw [reparentA_frame_width σ acc oldE newE (Hw.dmaxdon c) 32 (by decide)]
     rfl
 
 /-- The lineage-valid half of `orphanA` decodes to the spec's removal of
@@ -1558,8 +1546,8 @@ theorem absDom_reparent_clearSlotA (σ acc : Loom.Hw.St)
     funext c'
     exact absDom_reparentA σ acc oldE newE hV hP c'
   have hgen1 : acc1.regs (Hw.dgen d S) 8 = σ.regs (Hw.dgen d S) 8 := by
-    rw [reparentA_frame σ acc oldE newE (Hw.dgen d S) 8
-      (fun c' l' => by clear * - d S c' l'; native_decide +revert), hgen]
+    rw [reparentA_frame_width σ acc oldE newE (Hw.dgen d S) 8 (by decide),
+      hgen]
   have hremoved1 : removedCell (Hw.abs acc1) d S =
       if linVE.eval σ = 1#1 then
         some (finOfBv (by decide) (linE.eval σ)) else none := by
