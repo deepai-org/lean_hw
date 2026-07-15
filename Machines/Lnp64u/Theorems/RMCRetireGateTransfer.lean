@@ -79,6 +79,66 @@ theorem capSel_clsOk_of_some (σ : Loom.Hw.St) (D : DomainId)
   interval_cases k
   simpa [BitVec.getLsbD_extractLsb'] using hb.symm
 
+/-- For a selected canonical entry, the hardware class predicate is exactly
+the specification handle-class check. -/
+theorem capSel_clsOk_iff_some (σ : Loom.Hw.St) (D : DomainId)
+    (hwE : Expr 32) (S : Slot) (e : CapEntry) (hkc : KindCanon σ)
+    (hslot : S.val = ((hwE.eval σ).extractLsb' 0 4).toNat)
+    (hcap : ((Hw.abs σ).doms D).caps S = some e) :
+    (Hw.capSel D hwE).clsOk.eval σ = 1#1 ↔
+      (Handle.decode (hwE.eval σ)).cls = e.kind.cls := by
+  constructor
+  · intro hok
+    have hkind := capSel_kind_of_some σ D hwE S e hkc hslot hcap
+    have hbits : (Hw.encKind e.kind).extractLsb' 0 1 =
+        (hwE.eval σ).extractLsb' 12 1 := by
+      change (if ((Hw.capSel D hwE).kindW.eval σ).extractLsb' 0 1 =
+          (hwE.eval σ).extractLsb' 12 1 then 1#1 else 0#1) = 1#1 at hok
+      rw [hkind] at hok
+      split at hok
+      next h => exact h
+      next => contradiction
+    have hb : (hwE.eval σ).getLsbD 12 =
+        (Hw.encKind e.kind).getLsbD 0 :=
+      ((extract1_eq_iff (Hw.encKind e.kind) (hwE.eval σ) 0 12).mp
+        hbits).symm
+    have hc := (cls_eq_iff_bits (hwE.eval σ)
+      (Hw.encKind e.kind)).mpr hb
+    simpa [decKind_encKind] using hc
+  · exact capSel_clsOk_of_some σ D hwE S e hkc hslot hcap
+
+/-- For a selected canonical entry, the hardware memory-kind predicate is
+true exactly for a specification memory capability. -/
+theorem capSel_isMem_iff_some (σ : Loom.Hw.St) (D : DomainId)
+    (hwE : Expr 32) (S : Slot) (e : CapEntry) (hkc : KindCanon σ)
+    (hslot : S.val = ((hwE.eval σ).extractLsb' 0 4).toNat)
+    (hcap : ((Hw.abs σ).doms D).caps S = some e) :
+    (Hw.kIsMem (Hw.capSel D hwE).kindW).eval σ = 1#1 ↔
+      ∃ base len perms, e.kind = .mem base len perms := by
+  have hkind := capSel_kind_of_some σ D hwE S e hkc hslot hcap
+  cases hk : e.kind with
+  | mem base len perms =>
+      constructor
+      · intro _
+        exact ⟨base, len, perms, rfl⟩
+      · intro _
+        change (if ((Hw.capSel D hwE).kindW.eval σ).extractLsb' 0 1 = 0#1
+          then 1#1 else 0#1) = 1#1
+        rw [hkind, hk, if_pos]
+        exact (extract1_eq_zero_iff _ 0).mpr (by simp [Hw.encKind])
+  | gate g =>
+      constructor
+      · intro hm
+        change (if ((Hw.capSel D hwE).kindW.eval σ).extractLsb' 0 1 = 0#1
+          then 1#1 else 0#1) = 1#1 at hm
+        rw [hkind, hk, if_neg] at hm
+        · contradiction
+        · intro hx
+          have hb := (extract1_eq_zero_iff _ 0).mp hx
+          simp [Hw.encKind] at hb
+      · rintro ⟨base, len, perms, heq⟩
+        cases heq
+
 /-- A live hardware selector yields an exact live-entry witness in any
 specification state whose `liveCap` view agrees with the sampled hardware
 abstraction.  The hypothesis is intentionally phrased as a view equality:
