@@ -612,6 +612,158 @@ theorem installTransferred_reparent_adjusted (τ : MachineState)
   exact installTransferred_reparent_adjusted_doms τ T NS kind NL parent
     oldRef newRef hne
 
+/-! ## Non-domain framing -/
+
+/-- The structural transfer circuit only writes the capability, lineage,
+generation, and region-valid banks. This single write-shape theorem is the
+frame boundary used to lift the per-domain abstraction to a complete
+`MachineState` abstraction. -/
+theorem transferChosenA_frame_nondomain (σ acc : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) (q : String) (qW : Nat)
+    (hcapV : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapV c s)
+    (hkind : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapKind c s)
+    (hlinV : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapLinV c s)
+    (hlin : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapLin c s)
+    (hgen : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dgen c s)
+    (hcellV : ∀ c : DomainId, ∀ l : LineageId, q ≠ Hw.dcellV c l)
+    (hcellPar : ∀ c : DomainId, ∀ l : LineageId, q ≠ Hw.dcellPar c l)
+    (hrgnV : ∀ c : DomainId, ∀ r : RegionId, q ≠ Hw.drgnV c r) :
+    ((transferChosenA D T acs).run σ acc).regs q qW = acc.regs q qW := by
+  let nsE := Hw.freeSlotIdx T
+  let oldE := Hw.encRefE (Hw.dLit D) acs.slot acs.gen
+  let newE := Hw.encRefE (Hw.dLit T) nsE (Hw.genOfE T nsE)
+  let parE := Expr.mux (.eq (Hw.cellParAt D acs.lin) oldE) newE
+    (Hw.cellParAt D acs.lin)
+  let NS : Slot := finOfBv (by decide) (nsE.eval σ)
+  have hns : nsE.eval σ = BitVec.ofNat 4 NS.val :=
+    (bv4_slot_iff _ NS).mpr rfl
+  rw [show (transferChosenA D T acs).run σ acc =
+      (Hw.sweepRegionsA
+        (fun dm sl => .and (.eq dm (Hw.dLit D)) (.eq sl acs.slot))).run σ
+        ((Hw.clearSlotA D acs.slot acs.linV acs.lin).run σ
+          ((Hw.reparentA oldE newE).run σ
+            ((Hw.installA T nsE acs.kindW acs.linV (Hw.freeCellIdx T)
+              parE).run σ acc))) from rfl]
+  rw [sweepRegionsA_frame σ _ _ q qW hrgnV]
+  rw [clearSlotA_frame σ _ D acs.slot acs.linV acs.lin q qW
+    (hcapV D) (hgen D) (hcellV D)]
+  rw [reparentA_frame σ _ oldE newE q qW hcellPar]
+  apply installA_selected_frame σ acc T nsE acs.kindW acs.linV
+    (Hw.freeCellIdx T) parE NS (q, qW) hns
+  · intro h; exact hcapV T NS (congrArg Prod.fst h)
+  · intro h; exact hkind T NS (congrArg Prod.fst h)
+  · intro h; exact hlinV T NS (congrArg Prod.fst h)
+  · intro h; exact hlin T NS (congrArg Prod.fst h)
+  · intro h
+    exact hcellV T (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ))
+      (congrArg Prod.fst h)
+  · intro h
+    exact hcellPar T (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ))
+      (congrArg Prod.fst h)
+
+/-- All register keys read by the non-domain faces of `Hw.abs`. -/
+private def transferQuietNames : List (String × Nat) :=
+  [ ("cycle", 32),
+    ("mov_v", 1), ("mov_owner", 2), ("mov_src", 14), ("mov_dst", 14),
+    ("mov_srccur", 12), ("mov_dstcur", 12), ("mov_rem", 13),
+    ("mov_status", 12),
+    ("if_v", 1), ("if_dom", 2), ("if_word", 32), ("if_cl", 8) ] ++
+  (List.finRange numGates).flatMap gateReadNames
+
+/-- Every non-domain register read by `Hw.abs` is framed by a structural
+transfer. The disjointness certificate is a finite kernel computation. -/
+private theorem transferChosenA_frame_quiet (σ acc : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) (q : String × Nat)
+    (hq : q ∈ transferQuietNames) :
+    ((transferChosenA D T acs).run σ acc).regs q.1 q.2 =
+      acc.regs q.1 q.2 := by
+  apply transferChosenA_frame_nondomain σ acc D T acs q.1 q.2
+  · intro c s
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapV c s from by
+      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
+  · intro c s
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapKind c s from by
+      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
+  · intro c s
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapLinV c s from by
+      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
+  · intro c s
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapLin c s from by
+      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
+  · intro c s
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dgen c s from by
+      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
+  · intro c l
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcellV c l from by
+      fin_cases c <;> fin_cases l <;> decide +kernel) q hq
+  · intro c l
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcellPar c l from by
+      fin_cases c <;> fin_cases l <;> decide +kernel) q hq
+  · intro c r
+    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.drgnV c r from by
+      fin_cases c <;> fin_cases r <;> decide +kernel) q hq
+
+/-- Accumulator-general structural-transfer frame. A transfer changes only
+the abstract domain map; memory, gates, Mover, cycle, and in-flight state are
+inherited from the supplied accumulator. -/
+theorem abs_transferChosenA_frame_acc (σ acc : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) :
+    Hw.abs ((transferChosenA D T acs).run σ acc) =
+      { Hw.abs acc with
+        doms := fun c => Hw.absDom ((transferChosenA D T acs).run σ acc) c } := by
+  let out := (transferChosenA D T acs).run σ acc
+  apply machineState_ext
+  · exact transferChosenA_frame_quiet σ acc D T acs ("cycle", 32)
+      (by simp [transferQuietNames])
+  · funext a
+    exact Loom.Hw.Compile.run_mems_notin "mem" (transferChosenA D T acs)
+      (of_decide_eq_true rfl) σ acc a.toNat 32
+  · rfl
+  · funext g
+    apply absGate_congr
+    intro q hq
+    apply transferChosenA_frame_quiet σ acc D T acs q
+    simp only [transferQuietNames, List.mem_append]
+    right
+    exact List.mem_flatMap.mpr ⟨g, List.mem_finRange g, hq⟩
+  · change Hw.absMover ((transferChosenA D T acs).run σ acc) = Hw.absMover acc
+    unfold Hw.absMover
+    rw [transferChosenA_frame_quiet σ acc D T acs ("mov_v", 1)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("mov_owner", 2)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("mov_src", 14)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("mov_dst", 14)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("mov_srccur", 12)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("mov_dstcur", 12)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("mov_rem", 13)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("mov_status", 12)
+        (by simp [transferQuietNames])]
+  · change Hw.absInflight ((transferChosenA D T acs).run σ acc) =
+      Hw.absInflight acc
+    unfold Hw.absInflight
+    rw [transferChosenA_frame_quiet σ acc D T acs ("if_v", 1)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("if_dom", 2)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("if_word", 32)
+        (by simp [transferQuietNames]),
+      transferChosenA_frame_quiet σ acc D T acs ("if_cl", 8)
+        (by simp [transferQuietNames])]
+
+/-- Sampled-state specialization retained for existing callers. -/
+theorem abs_transferChosenA_frame (σ : Loom.Hw.St)
+    (D T : DomainId) (acs : Hw.CapSel) :
+    Hw.abs ((transferChosenA D T acs).run σ σ) =
+      { Hw.abs σ with
+        doms := fun c => Hw.absDom ((transferChosenA D T acs).run σ σ) c } :=
+  abs_transferChosenA_frame_acc σ σ D T acs
+
 /-! ## Selected `transferChosenA` branches -/
 
 /-- Accumulator-general root branch of the selected-recipient transfer.
@@ -1212,159 +1364,6 @@ theorem absDom_transferChosenA_some (σ : Loom.Hw.St)
   exact habs
 
 /-! ## Dynamic-recipient `transferA` corollaries -/
-
-/-! ## Non-domain framing -/
-
-/-- The structural transfer circuit only writes the capability, lineage,
-generation, and region-valid banks. This single write-shape theorem is the
-frame boundary used to lift the per-domain abstraction to a complete
-`MachineState` abstraction. -/
-theorem transferChosenA_frame_nondomain (σ acc : Loom.Hw.St)
-    (D T : DomainId) (acs : Hw.CapSel) (q : String) (qW : Nat)
-    (hcapV : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapV c s)
-    (hkind : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapKind c s)
-    (hlinV : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapLinV c s)
-    (hlin : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dcapLin c s)
-    (hgen : ∀ c : DomainId, ∀ s : Slot, q ≠ Hw.dgen c s)
-    (hcellV : ∀ c : DomainId, ∀ l : LineageId, q ≠ Hw.dcellV c l)
-    (hcellPar : ∀ c : DomainId, ∀ l : LineageId, q ≠ Hw.dcellPar c l)
-    (hrgnV : ∀ c : DomainId, ∀ r : RegionId, q ≠ Hw.drgnV c r) :
-    ((transferChosenA D T acs).run σ acc).regs q qW = acc.regs q qW := by
-  let nsE := Hw.freeSlotIdx T
-  let oldE := Hw.encRefE (Hw.dLit D) acs.slot acs.gen
-  let newE := Hw.encRefE (Hw.dLit T) nsE (Hw.genOfE T nsE)
-  let parE := Expr.mux (.eq (Hw.cellParAt D acs.lin) oldE) newE
-    (Hw.cellParAt D acs.lin)
-  let NS : Slot := finOfBv (by decide) (nsE.eval σ)
-  have hns : nsE.eval σ = BitVec.ofNat 4 NS.val :=
-    (bv4_slot_iff _ NS).mpr rfl
-  rw [show (transferChosenA D T acs).run σ acc =
-      (Hw.sweepRegionsA
-        (fun dm sl => .and (.eq dm (Hw.dLit D)) (.eq sl acs.slot))).run σ
-        ((Hw.clearSlotA D acs.slot acs.linV acs.lin).run σ
-          ((Hw.reparentA oldE newE).run σ
-            ((Hw.installA T nsE acs.kindW acs.linV (Hw.freeCellIdx T)
-              parE).run σ acc))) from rfl]
-  rw [sweepRegionsA_frame σ _ _ q qW hrgnV]
-  rw [clearSlotA_frame σ _ D acs.slot acs.linV acs.lin q qW
-    (hcapV D) (hgen D) (hcellV D)]
-  rw [reparentA_frame σ _ oldE newE q qW hcellPar]
-  apply installA_selected_frame σ acc T nsE acs.kindW acs.linV
-    (Hw.freeCellIdx T) parE NS (q, qW) hns
-  · intro h; exact hcapV T NS (congrArg Prod.fst h)
-  · intro h; exact hkind T NS (congrArg Prod.fst h)
-  · intro h; exact hlinV T NS (congrArg Prod.fst h)
-  · intro h; exact hlin T NS (congrArg Prod.fst h)
-  · intro h
-    exact hcellV T (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ))
-      (congrArg Prod.fst h)
-  · intro h
-    exact hcellPar T (finOfBv (by decide) ((Hw.freeCellIdx T).eval σ))
-      (congrArg Prod.fst h)
-
-/-- All register keys read by the non-domain faces of `Hw.abs`. -/
-private def transferQuietNames : List (String × Nat) :=
-  [ ("cycle", 32),
-    ("mov_v", 1), ("mov_owner", 2), ("mov_src", 14), ("mov_dst", 14),
-    ("mov_srccur", 12), ("mov_dstcur", 12), ("mov_rem", 13),
-    ("mov_status", 12),
-    ("if_v", 1), ("if_dom", 2), ("if_word", 32), ("if_cl", 8) ] ++
-  (List.finRange numGates).flatMap gateReadNames
-
-/-- Every non-domain register read by `Hw.abs` is framed by a structural
-transfer. The disjointness certificate is a finite kernel computation. -/
-private theorem transferChosenA_frame_quiet (σ acc : Loom.Hw.St)
-    (D T : DomainId) (acs : Hw.CapSel) (q : String × Nat)
-    (hq : q ∈ transferQuietNames) :
-    ((transferChosenA D T acs).run σ acc).regs q.1 q.2 =
-      acc.regs q.1 q.2 := by
-  apply transferChosenA_frame_nondomain σ acc D T acs q.1 q.2
-  · intro c s
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapV c s from by
-      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
-  · intro c s
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapKind c s from by
-      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
-  · intro c s
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapLinV c s from by
-      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
-  · intro c s
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcapLin c s from by
-      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
-  · intro c s
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dgen c s from by
-      fin_cases c <;> fin_cases s <;> decide +kernel) q hq
-  · intro c l
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcellV c l from by
-      fin_cases c <;> fin_cases l <;> decide +kernel) q hq
-  · intro c l
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.dcellPar c l from by
-      fin_cases c <;> fin_cases l <;> decide +kernel) q hq
-  · intro c r
-    exact (show ∀ p ∈ transferQuietNames, p.1 ≠ Hw.drgnV c r from by
-      fin_cases c <;> fin_cases r <;> decide +kernel) q hq
-
-/-- Accumulator-general structural-transfer frame. A transfer changes only
-the abstract domain map; memory, gates, Mover, cycle, and in-flight state are
-inherited from the supplied accumulator. -/
-theorem abs_transferChosenA_frame_acc (σ acc : Loom.Hw.St)
-    (D T : DomainId) (acs : Hw.CapSel) :
-    Hw.abs ((transferChosenA D T acs).run σ acc) =
-      { Hw.abs acc with
-        doms := fun c => Hw.absDom ((transferChosenA D T acs).run σ acc) c } := by
-  let out := (transferChosenA D T acs).run σ acc
-  apply machineState_ext
-  · exact transferChosenA_frame_quiet σ acc D T acs ("cycle", 32)
-      (by simp [transferQuietNames])
-  · funext a
-    exact Loom.Hw.Compile.run_mems_notin "mem" (transferChosenA D T acs)
-      (of_decide_eq_true rfl) σ acc a.toNat 32
-  · rfl
-  · funext g
-    apply absGate_congr
-    intro q hq
-    apply transferChosenA_frame_quiet σ acc D T acs q
-    simp only [transferQuietNames, List.mem_append]
-    right
-    exact List.mem_flatMap.mpr ⟨g, List.mem_finRange g, hq⟩
-  · change Hw.absMover ((transferChosenA D T acs).run σ acc) = Hw.absMover acc
-    unfold Hw.absMover
-    rw [transferChosenA_frame_quiet σ acc D T acs ("mov_v", 1)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("mov_owner", 2)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("mov_src", 14)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("mov_dst", 14)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("mov_srccur", 12)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("mov_dstcur", 12)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("mov_rem", 13)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("mov_status", 12)
-        (by simp [transferQuietNames])]
-  · change Hw.absInflight ((transferChosenA D T acs).run σ acc) =
-      Hw.absInflight acc
-    unfold Hw.absInflight
-    rw [transferChosenA_frame_quiet σ acc D T acs ("if_v", 1)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("if_dom", 2)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("if_word", 32)
-        (by simp [transferQuietNames]),
-      transferChosenA_frame_quiet σ acc D T acs ("if_cl", 8)
-        (by simp [transferQuietNames])]
-
-/-- Sampled-state specialization retained for existing callers. -/
-theorem abs_transferChosenA_frame (σ : Loom.Hw.St)
-    (D T : DomainId) (acs : Hw.CapSel) :
-    Hw.abs ((transferChosenA D T acs).run σ σ) =
-      { Hw.abs σ with
-        doms := fun c => Hw.absDom ((transferChosenA D T acs).run σ σ) c } :=
-  abs_transferChosenA_frame_acc σ σ D T acs
-
 /-! ## Whole-state transfer abstraction -/
 
 /-- Whole-state root branch of the selected-recipient transfer. -/
