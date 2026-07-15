@@ -29,8 +29,6 @@ private theorem gPrefix_ne_ifv (a : String) : "g" ++ a ≠ "if_v" := by
   have hi : "if_v".toList = ['i', 'f', '_', 'v'] := by decide
   simp [hg, hi] at h'
 
-private theorem toString_string (s : String) : toString s = s := rfl
-
 private theorem domReadNames_prefix (x : DomainId) (q : String × Nat)
     (hq : q ∈ domReadNames x) :
     ∃ suffix, q.1 = "d" ++ (toString x.val ++ suffix) := by

@@ -3712,7 +3712,6 @@ theorem moverAct_mem_drop (σ acc : Loom.Hw.St) (τ : MachineState)
   · exact hauthτ
   · exact hmemτ
   · exact hswτ
-  · exact a
 
 /-! ## Kill-aware retirement assembly -/
 
