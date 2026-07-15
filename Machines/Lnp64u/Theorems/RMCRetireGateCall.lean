@@ -14,7 +14,7 @@ namespace Machines.Lnp64u.Theorems.RMC
 
 open Machines.Lnp64u Loom Loom.Hw Machines.Lnp64u.Hw
 
-set_option maxHeartbeats 3200000
+set_option maxHeartbeats 6400000
 set_option maxRecDepth 200000
 
 /-- The dynamically selected gate's callee expression decodes to the
@@ -64,8 +64,10 @@ theorem callSameCallee_eval (σ : Loom.Hw.St) (d cal : DomainId)
     (hcal : finOfBv (by decide : 2 ^ 2 = numDomains)
       ((Hw.callCal d).eval σ) = cal) :
     (Expr.eq (Hw.callCal d) (Hw.dLit d)).eval σ = 1#1 ↔ cal = d := by
-  rw [eqE_eval, bv2_lit_iff]
-  exact ⟨fun h => h.symm.trans hcal, fun h => h ▸ hcal.symm⟩
+  rw [eqE_eval]
+  change (Hw.callCal d).eval σ = BitVec.ofNat 2 d.val ↔ cal = d
+  rw [bv2_lit_iff]
+  exact ⟨fun h => hcal.symm.trans h, fun h => hcal.trans h⟩
 
 /-- Under the canonical run-state invariant, the selected callee's raw
 nonzero check is exactly failure to be abstractly running. -/
@@ -79,24 +81,13 @@ theorem callCalleeNotRunning_eval (σ : Loom.Hw.St) (d cal : DomainId)
   rw [neqE_eval, muxFin_eval (by decide : 2 ^ 2 = numDomains), hcal]
   change σ.regs (Hw.drun cal) 2 ≠ 0#2 ↔
     Hw.decRun (σ.regs (Hw.drun cal) 2) (σ.regs (Hw.drunG cal) 2) ≠ .running
-  rcases (show σ.regs (Hw.drun cal) 2 = 0#2 ∨
-      σ.regs (Hw.drun cal) 2 = 1#2 ∨ σ.regs (Hw.drun cal) 2 = 2#2 ∨
-      σ.regs (Hw.drun cal) 2 = 3#2 by omega) with h | h | h | h
+  have hall : ∀ b : BitVec 2,
+      b = 0#2 ∨ b = 1#2 ∨ b = 2#2 ∨ b = 3#2 := by decide
+  rcases hall (σ.regs (Hw.drun cal) 2) with h | h | h | h
   · simp [h, Hw.decRun]
   · simp [h, Hw.decRun]
   · simp [h, Hw.decRun]
   · exact absurd h hrc
-
-/-- The hardware chain-overflow check is the negation of the specification's
-bounded-depth requirement. -/
-theorem callDepthOverflow_eval (σ : Loom.Hw.St) (c : Ctx)
-    (hwf : Wf (Hw.abs σ)) :
-    (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
-      (Hw.callDepth c.d)).eval σ = 1#1 ↔
-      ¬Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ≤ maxChainDepth := by
-  rw [ultE_eval, callDepth_eval σ c hwf]
-  change maxChainDepth < Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ↔ _
-  omega
 
 /-- The hardware null-argument predicate is equivalent to the argument
 word being nonzero. -/
@@ -201,6 +192,17 @@ theorem callDepth_eval (σ : Loom.Hw.St) (c : Ctx)
       | none => simp [hact] at hisSome
       | some a => simp [hact]
 
+/-- The hardware chain-overflow check is the negation of the specification's
+bounded-depth requirement. -/
+theorem callDepthOverflow_eval (σ : Loom.Hw.St) (c : Ctx)
+    (hwf : Wf (Hw.abs σ)) :
+    (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
+      (Hw.callDepth c.d)).eval σ = 1#1 ↔
+      ¬Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ≤ maxChainDepth := by
+  rw [ultE_eval, callDepth_eval σ c hwf]
+  change maxChainDepth < Machines.Lnp64u.Isa.Wip.gateDepth c (Hw.abs σ) ↔ _
+  omega
+
 /-- The five gate/callee/depth predicates all pass under the corresponding
 abstract successful-call preconditions. -/
 theorem callStateChecks_pass (σ : Loom.Hw.St) (c : Ctx)
@@ -245,7 +247,7 @@ checks and yields the selected gate identifier. -/
 theorem callSelector_pass (σ : Loom.Hw.St) (d : DomainId)
     (S : Slot) (e : CapEntry) (g : GateId)
     (hkc : KindCanon σ)
-    (hslot : S.val = ((Hw.readReg d Hw.rs1E).eval σ).extractLsb' 0 4 |>.toNat)
+    (hslot : S.val = (((Hw.readReg d Hw.rs1E).eval σ).extractLsb' 0 4).toNat)
     (hlive : (Hw.abs σ).liveRef
       ⟨d, S, ((Hw.readReg d Hw.rs1E).eval σ).extractLsb' 4 8⟩ = true)
     (hcap : ((Hw.abs σ).doms d).caps S = some e)
@@ -253,16 +255,18 @@ theorem callSelector_pass (σ : Loom.Hw.St) (d : DomainId)
     (hkind : e.kind = .gate g) :
     (Expr.not (Hw.callSel d).live).eval σ ≠ 1#1 ∧
     (Expr.not (.and (Hw.callSel d).clsOk
-      (.not (Hw.kIsMem (Hw.callSel d).kindW))).eval σ ≠ 1#1 ∧
-    finOfBv (by decide : 2 ^ 2 = numGates)
-      ((Hw.callGid d).eval σ) = g := by
+      (.not (Hw.kIsMem (Hw.callSel d).kindW)))).eval σ ≠ 1#1 ∧
+    (finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.callGid d).eval σ) = g) := by
   have hliveE : (Hw.callSel d).live.eval σ = 1#1 := by
     exact capSel_live_of_liveRef σ d (Hw.readReg d Hw.rs1E) S hslot hlive
   have hclsE : (Hw.callSel d).clsOk.eval σ = 1#1 := by
     exact capSel_clsOk_of_some σ d (Hw.readReg d Hw.rs1E) S e hkc hslot hcap hcls
   have hkw : (Hw.callSel d).kindW.eval σ = Hw.encKind (.gate g) := by
-    rw [capSel_kind_of_some σ d (Hw.readReg d Hw.rs1E) S e hkc hslot hcap,
-      hkind]
+    have hk := capSel_kind_of_some σ d (Hw.readReg d Hw.rs1E) S e
+      hkc hslot hcap
+    rw [hkind] at hk
+    simpa [Hw.callSel] using hk
   have hmem : (Hw.kIsMem (Hw.callSel d).kindW).eval σ = 0#1 := by
     rw [show (Hw.kIsMem (Hw.callSel d).kindW).eval σ =
       if ((Hw.callSel d).kindW.eval σ).extractLsb' 0 1 = 0#1 then 1#1
@@ -291,14 +295,14 @@ theorem callArgumentChecks_zero (σ : Loom.Hw.St) (d : DomainId)
     intro h
     exact (argNZ_eval_iff σ d).mp h hz
   simp only [Expr.eval, hnz]
-  decide
+  simp
 
 /-- A non-null live, class-matching argument discharges the liveness and
 class checks and exposes its canonical kind word. -/
 theorem callArgumentSelector_pass (σ : Loom.Hw.St) (d : DomainId)
     (S : Slot) (e : CapEntry) (hkc : KindCanon σ)
     (hnz : (Hw.argW d).eval σ ≠ 0#32)
-    (hslot : S.val = ((Hw.argW d).eval σ).extractLsb' 0 4 |>.toNat)
+    (hslot : S.val = (((Hw.argW d).eval σ).extractLsb' 0 4).toNat)
     (hlive : (Hw.abs σ).liveRef
       ⟨d, S, ((Hw.argW d).eval σ).extractLsb' 4 8⟩ = true)
     (hcap : ((Hw.abs σ).doms d).caps S = some e)
@@ -328,7 +332,7 @@ theorem callOkE_of_passes (σ : Loom.Hw.St) (d : DomainId)
     (hsel :
       (Expr.not (Hw.callSel d).live).eval σ ≠ 1#1 ∧
       (Expr.not (.and (Hw.callSel d).clsOk
-        (.not (Hw.kIsMem (Hw.callSel d).kindW))).eval σ ≠ 1#1)
+        (.not (Hw.kIsMem (Hw.callSel d).kindW)))).eval σ ≠ 1#1)
     (hstate :
       (Hw.muxFin (fun h => .reg 1 (Hw.gactV h))
           (Hw.callGid d)).eval σ ≠ 1#1 ∧
@@ -339,29 +343,32 @@ theorem callOkE_of_passes (σ : Loom.Hw.St) (d : DomainId)
           (Hw.callCal d)).eval σ ≠ 1#1 ∧
       (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
           (Hw.callDepth d)).eval σ ≠ 1#1)
-    (harg :
-      (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).live)).eval σ ≠ 1#1 ∧
-      (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).clsOk)).eval σ ≠ 1#1 ∧
-      (Expr.and (Hw.argNZ d)
-        (Hw.transferBlocked d (Hw.callCal d) (Hw.argSel d))).eval σ ≠ 1#1) :
+    (hargLive : (Expr.and (Hw.argNZ d)
+      (.not (Hw.argSel d).live)).eval σ ≠ 1#1)
+    (hargClass : (Expr.and (Hw.argNZ d)
+      (.not (Hw.argSel d).clsOk)).eval σ ≠ 1#1)
+    (hargPlace : (Expr.and (Hw.argNZ d)
+      (Hw.transferBlocked d (Hw.callCal d) (Hw.argSel d))).eval σ ≠ 1#1) :
     (Hw.callOkE d).eval σ = 1#1 := by
   apply (okOf_eval_iff σ (Hw.callChecks d)).mpr
   intro c hc
   rcases hsel with ⟨h0, h1⟩
   rcases hstate with ⟨h2, h3, h4, h5, h6⟩
-  rcases harg with ⟨h7, h8, h9⟩
+  let h7 := hargLive
+  let h8 := hargClass
+  let h9 := hargPlace
   simp only [Hw.callChecks, List.mem_cons, List.not_mem_nil, or_false] at hc
   rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
-  · exact h0
-  · exact h1
-  · exact h2
-  · exact h3
-  · exact h4
-  · exact h5
-  · exact h6
-  · exact h7
-  · exact h8
-  · exact h9
+  · simpa using h0
+  · simpa using h1
+  · simpa using h2
+  · simpa using h3
+  · simpa using h4
+  · simpa using h5
+  · simpa using h6
+  · simpa using h7
+  · simpa using h8
+  · simpa using h9
 
 /-! ## Whole-core kill selection -/
 
@@ -377,7 +384,8 @@ theorem callKilled_nonzero_eval (σ : Loom.Hw.St) (d : DomainId)
       ((Expr.eq dm (Hw.dLit d)).eval σ &&&
         (Expr.eq sl (Hw.argSel d).slot).eval σ) = _
   rw [hnz]
-  decide
+  change 1#1 &&& (_ &&& _) = _ &&& _
+  exact (by decide : ∀ a b : BitVec 1, 1#1 &&& (a &&& b) = a &&& b) _ _
 
 /-- A null argument gives the successful call an empty kill footprint. -/
 theorem callKilled_zero_eval (σ : Loom.Hw.St) (d : DomainId)
@@ -386,7 +394,7 @@ theorem callKilled_zero_eval (σ : Loom.Hw.St) (d : DomainId)
   unfold Hw.callKilled Hw.andAll
   change (Hw.argNZ d).eval σ &&& _ = 0#1
   rw [hz]
-  decide
+  exact (by decide : ∀ a : BitVec 1, 0#1 &&& a = 0#1) _
 
 /-- On a successful retiring `gate_call`, the global core kill tree selects
 exactly that call's optional-transfer predicate. -/
@@ -541,7 +549,6 @@ theorem moverAct_mem_call (σ acc : Loom.Hw.St) (τ : MachineState)
   · exact hauthτ
   · exact hmemτ
   · exact hswτ
-  · exact a
 
 /-- The status-authority tree for a successful non-null call decodes against
 the post-transfer swept region table. -/
@@ -1166,9 +1173,8 @@ private theorem callCaller_read (σ acc : Loom.Hw.St) (d : DomainId)
     (hpc : rn ≠ Hw.dpc d) (hrunG : rn ≠ Hw.drunG d)
     (hrun : rn ≠ Hw.drun d) :
     ((callCallerA d).run σ acc).regs rn w = acc.regs rn w := by
-  unfold callCallerA Hw.pcAdvA Hw.seqAll
-  simp only [Act.run, RegEnv.set]
-  rw [if_neg hpc, if_neg hrunG, if_neg hrun]
+  simp [callCallerA, Hw.pcAdvA, Hw.seqAll, Act.run, RegEnv.set,
+    hpc, hrunG, hrun]
 
 /-- The caller writer advances the sampled PC and blocks on the selected
 gate, preserving the rest of the caller's abstract domain state. -/
@@ -1184,12 +1190,15 @@ theorem absDom_callCaller_selected (σ acc : Loom.Hw.St)
     (bv2_lit_iff _ g).mpr hgid
   have hpc : ((callCallerA d).run σ acc).regs (Hw.dpc d) 12 =
       σ.regs (Hw.dpc d) 12 + 1 := by
-    simp [callCallerA, Hw.pcAdvA, Hw.seqAll, Act.run, RegEnv.set]
+    simp [callCallerA, Hw.pcAdvA, Hw.rPc, Hw.seqAll, Act.run, RegEnv.set]
+    change σ.regs (Hw.dpc d) 12 + 1#12 = σ.regs (Hw.dpc d) 12 + 1#12
+    rfl
   have hrun : Hw.decRun (((callCallerA d).run σ acc).regs (Hw.drun d) 2)
       (((callCallerA d).run σ acc).regs (Hw.drunG d) 2) = .blocked g := by
-    simp [callCallerA, Hw.pcAdvA, Hw.seqAll, Act.run, RegEnv.set,
-      Hw.decRun, hgidRaw]
-    exact finOfBv_dLit g
+    have hnames : Hw.drun d ≠ Hw.drunG d := by
+      fin_cases d <;> decide
+    simp [callCallerA, Hw.pcAdvA, Hw.rPc, Hw.seqAll, Act.run, RegEnv.set,
+      Expr.eval, Hw.decRun, hnames, hgid]
   apply domainState_ext'
   · funext r
     exact callCaller_read σ acc d _ _
@@ -1258,11 +1267,15 @@ theorem absDom_callCaller_selected (σ acc : Loom.Hw.St)
       (by fin_cases d <;> exact of_decide_eq_true rfl)
       (by fin_cases d <;> exact of_decide_eq_true rfl)
       (by fin_cases d <;> exact of_decide_eq_true rfl)
-  · rw [callCaller_read σ acc d _ _
+  · change (((callCallerA d).run σ acc).regs (Hw.dbudget d) 32).toNat =
+      (acc.regs (Hw.dbudget d) 32).toNat
+    rw [callCaller_read σ acc d _ _
       (by fin_cases d <;> exact of_decide_eq_true rfl)
       (by fin_cases d <;> exact of_decide_eq_true rfl)
       (by fin_cases d <;> exact of_decide_eq_true rfl)]
-  · rw [callCaller_read σ acc d _ _
+  · change (((callCallerA d).run σ acc).regs (Hw.dmaxdon d) 32).toNat =
+      (acc.regs (Hw.dmaxdon d) 32).toNat
+    rw [callCaller_read σ acc d _ _
       (by fin_cases d <;> exact of_decide_eq_true rfl)
       (by fin_cases d <;> exact of_decide_eq_true rfl)
       (by fin_cases d <;> exact of_decide_eq_true rfl)]
@@ -1315,16 +1328,20 @@ def callSuccessA (d : DomainId) : Act :=
       Hw.pcAdvA d ]
 
 /-- Pure abstract state assembled by a successful call after the optional
-argument transfer.  `source` is the sampled pre-cycle architectural state;
-`base` is the state after that transfer. -/
-def callAbstractSuccess (source base : MachineState)
+argument transfer, with the caller's final PC made explicit.  `source`
+supplies the pre-call values saved in the activation record; `base` is the
+state after the optional transfer.  Making `callerPc` explicit lets the same
+transformer describe both the specification body (whose caller PC was already
+advanced by `retire`) and the hardware payload (which advances it itself). -/
+def callAbstractSuccessAt (source base : MachineState)
     (d cal : DomainId) (g : GateId) (rd : RegId)
-    (argHandle : Loom.Word32) (depth : Nat) : MachineState :=
+    (argHandle : Loom.Word32) (depth : Nat)
+    (callerPc : Addr) : MachineState :=
   { base with
     doms := fun x =>
       if x = d then
         { base.doms d with
-          pc := (source.doms d).pc + 1
+          pc := callerPc
           run := .blocked g }
       else if x = cal then
         { base.doms cal with
@@ -1344,6 +1361,14 @@ def callAbstractSuccess (source base : MachineState)
               depth := depth
               donated := (source.doms d).maxDonation } }
       else base.gates h }
+
+/-- Successful hardware retirement state.  Unlike `gateCallExec`, the
+hardware payload includes the architectural PC advance. -/
+def callAbstractSuccess (source base : MachineState)
+    (d cal : DomainId) (g : GateId) (rd : RegId)
+    (argHandle : Loom.Word32) (depth : Nat) : MachineState :=
+  callAbstractSuccessAt source base d cal g rd argHandle depth
+    ((source.doms d).pc + 1)
 
 /-- Register faces outside domains and gates that the successful-call tail
 must frame. -/
@@ -1503,11 +1528,11 @@ private theorem callSuccessA_frame_mem (σ acc : Loom.Hw.St)
       ((callTransferA d).run σ acc).mems mn a w := by
   rw [callSuccessA_run]
   rw [Loom.Hw.Compile.run_mems_notin mn (callCallerA d)
-    (by simp [callCallerA, Act.memWrites])]
+    (of_decide_eq_true rfl)]
   rw [Loom.Hw.Compile.run_mems_notin mn (callCalleeA d)
-    (by simp [callCalleeA, callCalleeChosenA, Act.memWrites])]
+    (of_decide_eq_true rfl)]
   rw [Loom.Hw.Compile.run_mems_notin mn (callActivateA d)
-    (by simp [callActivateA, callActivateChosenA, Act.memWrites])]
+    (of_decide_eq_true rfl)]
 
 /-- Whole-machine abstraction of a successful call, relative only to the
 state produced by its optional argument transfer.  This is the assembly
@@ -1530,9 +1555,11 @@ theorem abs_callSuccessA (σ acc : Loom.Hw.St)
   · funext a
     exact callSuccessA_frame_mem σ acc d "mem" a.toNat 32
   · funext x
+    change Hw.absDom ((callSuccessA d).run σ acc) x = _
     rw [absDom_callSuccessA σ acc d cal g x hne hcal hgid]
     rfl
   · funext h
+    change Hw.absGate ((callSuccessA d).run σ acc) h = _
     rw [absGate_callSuccessA σ acc d cal g h hcal hgid]
     rfl
   · change Hw.absMover ((callSuccessA d).run σ acc) =
@@ -1633,7 +1660,7 @@ theorem gateCallExec_self (c : Ctx) (τ : MachineState)
   unfold Machines.Lnp64u.Isa.Wip.gateCallExec
   simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
     Option.isNone_none, SpecM.require, hcal]
-  rfl
+  simp [SpecM.raise]
 
 /-- A non-running callee is rejected before transfer. -/
 theorem gateCallExec_calleeNotRunning (c : Ctx) (τ : MachineState)
@@ -1647,10 +1674,10 @@ theorem gateCallExec_calleeNotRunning (c : Ctx) (τ : MachineState)
     (hrun : (τ.doms cal).run ≠ .running) :
     Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
   unfold Machines.Lnp64u.Isa.Wip.gateCallExec
-  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
-    Option.isNone_none, SpecM.require, hcal, hne, decide_true]
-  rw [if_neg (by simpa using hrun)]
-  rfl
+  simp only [SpecM.reg, specM_bind]
+  rw [hlive]
+  simp [specM_bind, hkind, SpecM.get, hact, SpecM.require, SpecM.raise,
+    hcal, hne, hrun]
 
 /-- A callee already serving another activation is rejected. -/
 theorem gateCallExec_calleeServing (c : Ctx) (τ : MachineState)
@@ -1666,9 +1693,10 @@ theorem gateCallExec_calleeServing (c : Ctx) (τ : MachineState)
     (hserv : (τ.doms cal).serving = some served) :
     Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
   unfold Machines.Lnp64u.Isa.Wip.gateCallExec
-  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
-    Option.isNone_none, SpecM.require, hcal, hne, decide_true, hrun, hserv]
-  rfl
+  simp only [SpecM.reg, specM_bind]
+  rw [hlive]
+  simp [specM_bind, hkind, SpecM.get, hact, SpecM.require, SpecM.raise,
+    hcal, hne, hrun, hserv]
 
 /-- A call that would exceed the bounded activation depth is rejected. -/
 theorem gateCallExec_depthOverflow (c : Ctx) (τ : MachineState)
@@ -1684,10 +1712,10 @@ theorem gateCallExec_depthOverflow (c : Ctx) (τ : MachineState)
     (hdepth : ¬Machines.Lnp64u.Isa.Wip.gateDepth c τ ≤ maxChainDepth) :
     Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err .gateBusy τ := by
   unfold Machines.Lnp64u.Isa.Wip.gateCallExec
-  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
-    Option.isNone_none, SpecM.require, hcal, hne, decide_true, hrun, hserv]
-  rw [if_neg (by simpa using hdepth)]
-  rfl
+  simp only [SpecM.reg, specM_bind]
+  rw [hlive]
+  simp [specM_bind, hkind, SpecM.get, hact, SpecM.require, SpecM.raise,
+    hcal, hne, hrun, hserv, hdepth]
 
 /-- After all gate-state checks pass, an optional-transfer errno is returned
 unchanged by the enclosing call. -/
@@ -1707,9 +1735,10 @@ theorem gateCallExec_transferErr (c : Ctx) (τ : MachineState)
       ((τ.doms c.d).reg c.op.rs2) τ = .err er τ) :
     Machines.Lnp64u.Isa.Wip.gateCallExec c τ = .err er τ := by
   unfold Machines.Lnp64u.Isa.Wip.gateCallExec
-  simp only [SpecM.reg, specM_bind, hlive, hkind, SpecM.get, hact,
-    Option.isNone_none, SpecM.require, hcal, hne, decide_true, hrun, hserv,
-    hdepth, htransfer]
+  simp only [SpecM.reg, specM_bind]
+  rw [hlive]
+  simp [SpecM.reg, specM_bind, hkind, SpecM.get, hact, SpecM.require,
+    SpecM.raise, hcal, hne, hrun, hserv, hdepth, htransfer]
 
 /-- The named specification gate-call body reduces to the same pure state
 transformer as `abs_callSuccessA` once all checks and the optional transfer
@@ -1736,16 +1765,28 @@ theorem gateCallExec_eq_selected (c : Ctx) (τ τt : MachineState)
     (hcallerDonation : (τt.doms c.d).maxDonation =
       (τ.doms c.d).maxDonation) :
     Machines.Lnp64u.Isa.Wip.gateCallExec c τ =
-      .ok () (callAbstractSuccess τ τt c.d cal g c.op.rd argHandle
-        (Machines.Lnp64u.Isa.Wip.gateDepth c τ)) := by
+      .ok () (callAbstractSuccessAt τ τt c.d cal g c.op.rd argHandle
+        (Machines.Lnp64u.Isa.Wip.gateDepth c τ) (τt.doms c.d).pc) := by
   unfold Machines.Lnp64u.Isa.Wip.gateCallExec
   simp only [SpecM.reg, specM_bind]
   rw [hlive]
-  simp only [hkind, SpecM.get, hact, Option.isNone_none, SpecM.require,
-    hcal, hne, decide_true, hrun, hserv, hdepth, htransfer, SpecM.set,
-    SpecM.updDom, SpecM.modify]
-  unfold callAbstractSuccess
+  simp [specM_bind, hkind, SpecM.get, hact, SpecM.require, hcal, hne,
+    hrun, hserv, hdepth, SpecM.set, SpecM.updDom, SpecM.modify]
+  simp only [SpecM.reg, specM_bind]
+  rw [htransfer]
+  simp only
+  unfold callAbstractSuccessAt
   rw [hgates, hcalRegs, hcalPc, hcalServing, hcallerDonation]
-  rfl
+  congr 1
+  apply machineState_ext' <;> try rfl
+  · funext x
+    have hne' : c.d ≠ cal := Ne.symm hne
+    by_cases hxd : x = c.d
+    · subst x
+      simp [MachineState.setDom, Loom.Fun.update, hne']
+    · by_cases hxc : x = cal
+      · subst x
+        simp [MachineState.setDom, Loom.Fun.update, hne, hxd, Fin.ext_iff]
+      · simp [MachineState.setDom, Loom.Fun.update, hxd, hxc, hne']
 
 end Machines.Lnp64u.Theorems.RMC

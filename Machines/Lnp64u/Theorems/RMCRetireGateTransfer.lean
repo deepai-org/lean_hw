@@ -71,14 +71,20 @@ theorem capSel_clsOk_of_some (σ : Loom.Hw.St) (D : DomainId)
       (hwE.eval σ).extractLsb' 12 1 then 1#1 else 0#1) = 1#1
   rw [hkind]
   rw [if_pos]
-  exact (cls_eq_iff_bits (hwE.eval σ) (Hw.encKind e.kind)).mp (by
-    rw [Hw.decKind_encKind]
+  have hb := (cls_eq_iff_bits (hwE.eval σ) (Hw.encKind e.kind)).mp (by
+    rw [decKind_encKind]
     exact hcls)
+  apply BitVec.eq_of_getLsbD_eq
+  intro k hk
+  interval_cases k
+  simpa [BitVec.getLsbD_extractLsb'] using hb.symm
 
 /-- A canonical gate-kind word yields its encoded gate identifier. -/
 theorem kGid_encGate_eval (σ : Loom.Hw.St) (kw : Expr 32) (g : GateId)
     (hkw : kw.eval σ = Hw.encKind (.gate g)) :
     finOfBv (by decide : 2 ^ 2 = numGates) ((Hw.kGid kw).eval σ) = g := by
+  change finOfBv (by decide : 2 ^ 2 = numGates)
+    ((kw.eval σ).extractLsb' 1 2) = g
   rw [hkw]
   fin_cases g <;> rfl
 
@@ -327,7 +333,7 @@ theorem capLive_eq_selected (τ : MachineState) (D : DomainId)
     (hlive : (τ.doms D).liveCap S G = some e) :
     Machines.Lnp64u.Isa.capLive D hw τ = .ok (S, G, e) τ := by
   unfold Machines.Lnp64u.Isa.capLive
-  simp only [SpecM.get]
+  simp only [specM_bind, SpecM.get]
   rw [hdecode, hlive]
   simp [SpecM.require]
 
@@ -353,8 +359,9 @@ theorem transferByHandle_eq_selected (τ τ' : MachineState)
       | some (σ'', ref') =>
           SpecM.set σ'' >>= fun _ =>
           pure (Handle.encode ⟨ref'.slot, ref'.gen, e'.kind.cls⟩)) τ = _
-  rw [hlive]
-  simp only [SpecM.get, SpecM.set, htransfer, bind_pure_comp]
+  rw [specM_bind, hlive]
+  simp only [specM_bind, SpecM.get]
+  rw [htransfer]
   rfl
 
 /-- The root-capability branch of `transferCap`, exposed in the same
@@ -952,10 +959,10 @@ theorem transferBlocked_eval_no_lineage (σ : Loom.Hw.St)
   · rw [hv]
     simp [hslot.mp hv]
   · have hz : (Hw.freeSlotV T).eval σ = 0#1 := bv1_ne_one.mp hv
-    rw [hz]
-    simp only [BitVec.not_zero, BitVec.or_zero, ne_eq, not_false_eq_true]
-    intro hs
-    exact hv (hslot.mpr hs)
+    have hs : ¬((Hw.abs σ).freeSlot T).isSome := by
+      intro his
+      exact hv (hslot.mpr his)
+    simp [hz, hs]
 
 /-- With a live lineage cell, the shared transfer check is blocked exactly
 when the recipient lacks either a free capability slot or a free lineage
@@ -970,27 +977,31 @@ theorem transferBlocked_eval_with_lineage (σ : Loom.Hw.St)
        ¬((Hw.abs σ).freeCell T).isSome) := by
   have hslot := freeSlotV_eval σ T
   have hcell := freeCellV_eval σ T
-  have hnot : ∀ b : BitVec 1, (~~~b = 1#1) ↔ b ≠ 1#1 := by decide
   simp only [Hw.transferBlocked, Expr.eval]
   rw [muxFin_eval (by decide : 2 ^ 2 = numDomains), hto, hlinV, hcellV,
     muxFin_eval (by decide : 2 ^ 2 = numDomains), hto]
-  simp only [BitVec.not_allOnes, BitVec.zero_or, BitVec.allOnes_and,
-    bv1_or_eq_one, hnot]
-  constructor
-  · rintro (hs | hc)
-    · left
+  by_cases hsv : (Hw.freeSlotV T).eval σ = 1#1
+  · have hs := hslot.mp hsv
+    by_cases hcv : (Hw.freeCellV T).eval σ = 1#1
+    · have hc := hcell.mp hcv
+      simp [hsv, hcv, hs, hc]
+    · have hcz : (Hw.freeCellV T).eval σ = 0#1 := bv1_ne_one.mp hcv
+      have hc : ¬((Hw.abs σ).freeCell T).isSome := by
+        intro his
+        exact hcv (hcell.mpr his)
+      simp [hsv, hcz, hs, hc]
+  · have hsz : (Hw.freeSlotV T).eval σ = 0#1 := bv1_ne_one.mp hsv
+    have hs : ¬((Hw.abs σ).freeSlot T).isSome := by
       intro his
-      exact hs (hslot.mpr his)
-    · right
-      intro his
-      exact hc (hcell.mpr (by simpa using his))
-  · rintro (hs | hc)
-    · left
-      intro hv
-      exact hs (hslot.mp hv)
-    · right
-      intro hv
-      exact hc (by simpa using hcell.mp hv)
+      exact hsv (hslot.mpr his)
+    by_cases hcv : (Hw.freeCellV T).eval σ = 1#1
+    · have hc := hcell.mp hcv
+      simp [hsz, hcv, hs, hc]
+    · have hcz : (Hw.freeCellV T).eval σ = 0#1 := bv1_ne_one.mp hcv
+      have hc : ¬((Hw.abs σ).freeCell T).isSome := by
+        intro his
+        exact hcv (hcell.mpr his)
+      simp [hsz, hcz, hs, hc]
 
 /-- A root transfer with an available target slot passes placement. -/
 theorem transferBlocked_pass_no_lineage (σ : Loom.Hw.St)
