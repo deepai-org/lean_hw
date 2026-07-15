@@ -322,6 +322,47 @@ theorem callArgumentSelector_pass (σ : Loom.Hw.St) (d : DomainId)
     decide
   · exact capSel_kind_of_some σ d (Hw.argW d) S e hkc hslot hcap
 
+/-- Assemble the ten individual pass facts into the hardware's combined
+successful-call predicate. -/
+theorem callOkE_of_passes (σ : Loom.Hw.St) (d : DomainId)
+    (hsel :
+      (Expr.not (Hw.callSel d).live).eval σ ≠ 1#1 ∧
+      (Expr.not (.and (Hw.callSel d).clsOk
+        (.not (Hw.kIsMem (Hw.callSel d).kindW))).eval σ ≠ 1#1)
+    (hstate :
+      (Hw.muxFin (fun h => .reg 1 (Hw.gactV h))
+          (Hw.callGid d)).eval σ ≠ 1#1 ∧
+      (Expr.eq (Hw.callCal d) (Hw.dLit d)).eval σ ≠ 1#1 ∧
+      (Hw.neqE (Hw.muxFin (fun x => .reg 2 (Hw.drun x))
+          (Hw.callCal d)) (.lit 0)).eval σ ≠ 1#1 ∧
+      (Hw.muxFin (fun x => .reg 1 (Hw.dsrvV x))
+          (Hw.callCal d)).eval σ ≠ 1#1 ∧
+      (Expr.ult (.lit (BitVec.ofNat 3 maxChainDepth))
+          (Hw.callDepth d)).eval σ ≠ 1#1)
+    (harg :
+      (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).live)).eval σ ≠ 1#1 ∧
+      (Expr.and (Hw.argNZ d) (.not (Hw.argSel d).clsOk)).eval σ ≠ 1#1 ∧
+      (Expr.and (Hw.argNZ d)
+        (Hw.transferBlocked d (Hw.callCal d) (Hw.argSel d))).eval σ ≠ 1#1) :
+    (Hw.callOkE d).eval σ = 1#1 := by
+  apply (okOf_eval_iff σ (Hw.callChecks d)).mpr
+  intro c hc
+  rcases hsel with ⟨h0, h1⟩
+  rcases hstate with ⟨h2, h3, h4, h5, h6⟩
+  rcases harg with ⟨h7, h8, h9⟩
+  simp only [Hw.callChecks, List.mem_cons, List.not_mem_nil, or_false] at hc
+  rcases hc with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+  · exact h0
+  · exact h1
+  · exact h2
+  · exact h3
+  · exact h4
+  · exact h5
+  · exact h6
+  · exact h7
+  · exact h8
+  · exact h9
+
 /-! ## Activation-record writer -/
 
 /-- The gate-indexed activation-record fold from the successful call arm. -/
