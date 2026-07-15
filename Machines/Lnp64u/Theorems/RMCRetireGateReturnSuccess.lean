@@ -647,4 +647,219 @@ theorem absDom_gateReturnReplyA (σ acc : Loom.Hw.St)
     rfl
   · exact hreply
 
+/-! ## Successful payload abstraction -/
+
+/-- Reads outside the return control tail.  These faces are inherited
+unchanged from the optional structural transfer. -/
+private def gateReturnQuietNames : List (String × Nat) :=
+  [("cycle", 32), ("mov_v", 1), ("mov_owner", 2), ("mov_src", 14),
+   ("mov_dst", 14), ("mov_srccur", 12), ("mov_dstcur", 12),
+   ("mov_rem", 13), ("mov_status", 12), ("if_v", 1), ("if_dom", 2),
+   ("if_word", 32), ("if_cl", 8)]
+
+/-- The return control tail frames cycle, Mover, and in-flight reads relative
+to the state produced by the optional reply transfer. -/
+private theorem gateReturnSuccessA_frame_quiet (σ acc : Loom.Hw.St)
+    (d : DomainId) (q : String × Nat) (hq : q ∈ gateReturnQuietNames) :
+    ((gateReturnSuccessA d).run σ acc).regs q.1 q.2 =
+      ((gateReturnTransferA d).run σ acc).regs q.1 q.2 := by
+  rw [gateReturnSuccessA_run]
+  rw [frame (by
+      have hn : ∀ p ∈ gateReturnQuietNames,
+          p ∉ (gateReturnReplyA d).regWrites := by
+        fin_cases d <;> exact of_decide_eq_true rfl
+      exact hn q hq) σ _]
+  rw [frame (by
+      have hn : ∀ p ∈ gateReturnQuietNames,
+          p ∉ (gateReturnResumeA d).regWrites := by
+        fin_cases d <;> exact of_decide_eq_true rfl
+      exact hn q hq) σ _]
+  rw [frame (by
+      have hn : ∀ p ∈ gateReturnQuietNames,
+          p ∉ (gateReturnRestoreA d).regWrites := by
+        fin_cases d <;> exact of_decide_eq_true rfl
+      exact hn q hq) σ _]
+  exact frame (by
+    have hn : ∀ p ∈ gateReturnQuietNames,
+        p ∉ (gateReturnClearA d).regWrites := by
+      fin_cases d <;> exact of_decide_eq_true rfl
+    exact hn q hq) σ _
+
+/-- The return tail has no memory writes; memory is exactly the optional
+transfer's memory face. -/
+private theorem gateReturnSuccessA_frame_mem (σ acc : Loom.Hw.St)
+    (d : DomainId) (mn : String) (a w : Nat) :
+    ((gateReturnSuccessA d).run σ acc).mems mn a w =
+      ((gateReturnTransferA d).run σ acc).mems mn a w := by
+  rw [gateReturnSuccessA_run]
+  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnReplyA d)
+    (of_decide_eq_true rfl)]
+  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnResumeA d)
+    (of_decide_eq_true rfl)]
+  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnRestoreA d)
+    (of_decide_eq_true rfl)]
+  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnClearA d)
+    (of_decide_eq_true rfl)]
+
+/-- Domain-map face of the complete successful return payload. -/
+theorem absDom_gateReturnSuccessA (σ acc : Loom.Hw.St)
+    (d x : DomainId) (gid : GateId) (act : Activation)
+    (reply : Loom.Word32) (hne : d ≠ act.caller)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hcl : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.retCl d).eval σ) = act.caller)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hreply : (gateReturnReplyE d).eval σ = reply) :
+    Hw.absDom ((gateReturnSuccessA d).run σ acc) x =
+      (returnAbstractSuccess
+        (Hw.abs ((gateReturnTransferA d).run σ acc)) d gid act reply).doms x := by
+  rw [gateReturnSuccessA_run]
+  by_cases hxd : x = d
+  · subst x
+    rw [absDom_gateReturnReplyA σ _ d act.caller d gid act reply hgid hcl
+        hact hreply, if_neg hne,
+      absDom_gateReturnResumeA σ _ d act.caller d hcl, if_neg hne,
+      absDom_gateReturnRestoreA σ _ d d gid act hgid hact, if_pos rfl,
+      absDom_gateReturnClearA σ _ d gid d hgid]
+    simp [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update, hne] <;>
+      simp only [Hw.abs] <;> simp
+  · by_cases hxc : x = act.caller
+    · subst x
+      rw [absDom_gateReturnReplyA σ _ d act.caller act.caller gid act reply
+          hgid hcl hact hreply, if_pos rfl,
+        absDom_gateReturnResumeA σ _ d act.caller act.caller hcl, if_pos rfl,
+        absDom_gateReturnRestoreA σ _ d act.caller gid act hgid hact,
+        if_neg hne.symm,
+        absDom_gateReturnClearA σ _ d gid act.caller hgid]
+      simp [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update,
+        hne, hne.symm] <;> simp only [Hw.abs] <;> simp
+    · rw [absDom_gateReturnReplyA σ _ d act.caller x gid act reply hgid hcl
+          hact hreply, if_neg hxc,
+        absDom_gateReturnResumeA σ _ d act.caller x hcl, if_neg hxc,
+        absDom_gateReturnRestoreA σ _ d x gid act hgid hact, if_neg hxd,
+        absDom_gateReturnClearA σ _ d gid x hgid]
+      simp [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update, hxd,
+        hxc] <;> simp only [Hw.abs] <;> simp
+
+/-- Gate-map face of the complete successful return payload. -/
+theorem absGate_gateReturnSuccessA (σ acc : Loom.Hw.St)
+    (d : DomainId) (gid h : GateId) (act : Activation)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid) :
+    Hw.absGate ((gateReturnSuccessA d).run σ acc) h =
+      (returnAbstractSuccess
+        (Hw.abs ((gateReturnTransferA d).run σ acc)) d gid act 0).gates h := by
+  rw [gateReturnSuccessA_run]
+  have hreplyFrame : Hw.absGate
+      ((gateReturnReplyA d).run σ
+        ((gateReturnResumeA d).run σ
+          ((gateReturnRestoreA d).run σ
+            ((gateReturnClearA d).run σ
+              ((gateReturnTransferA d).run σ acc))))) h =
+      Hw.absGate
+        ((gateReturnResumeA d).run σ
+          ((gateReturnRestoreA d).run σ
+            ((gateReturnClearA d).run σ
+              ((gateReturnTransferA d).run σ acc)))) h := by
+    apply absGate_congr
+    intro q hq
+    exact frame (by
+      have hn : ∀ q ∈ gateReadNames h,
+          q ∉ (gateReturnReplyA d).regWrites := by
+        fin_cases d <;> fin_cases h <;> exact of_decide_eq_true rfl
+      exact hn q hq) σ _
+  rw [hreplyFrame]
+  have hresumeFrame : Hw.absGate
+      ((gateReturnResumeA d).run σ
+        ((gateReturnRestoreA d).run σ
+          ((gateReturnClearA d).run σ
+            ((gateReturnTransferA d).run σ acc)))) h =
+      Hw.absGate
+        ((gateReturnRestoreA d).run σ
+          ((gateReturnClearA d).run σ
+            ((gateReturnTransferA d).run σ acc))) h := by
+    apply absGate_congr
+    intro q hq
+    exact frame (by
+      have hn : ∀ q ∈ gateReadNames h,
+          q ∉ (gateReturnResumeA d).regWrites := by
+        fin_cases d <;> fin_cases h <;> exact of_decide_eq_true rfl
+      exact hn q hq) σ _
+  rw [hresumeFrame]
+  have hrestoreFrame : Hw.absGate
+      ((gateReturnRestoreA d).run σ
+        ((gateReturnClearA d).run σ
+          ((gateReturnTransferA d).run σ acc))) h =
+      Hw.absGate
+        ((gateReturnClearA d).run σ
+          ((gateReturnTransferA d).run σ acc)) h := by
+    apply absGate_congr
+    intro q hq
+    exact frame (by
+      have hn : ∀ q ∈ gateReadNames h,
+          q ∉ (gateReturnRestoreA d).regWrites := by
+        fin_cases d <;> fin_cases h <;> exact of_decide_eq_true rfl
+      exact hn q hq) σ _
+  rw [hrestoreFrame, absGate_gateReturnClearA σ _ d gid h hgid]
+  by_cases hh : h = gid <;>
+    simp_all [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update] <;>
+    rfl
+
+/-- Whole-machine abstraction of a successful return, relative only to the
+state produced by its optional reply transfer. -/
+theorem abs_gateReturnSuccessA (σ acc : Loom.Hw.St)
+    (d : DomainId) (gid : GateId) (act : Activation)
+    (reply : Loom.Word32) (hne : d ≠ act.caller)
+    (hgid : finOfBv (by decide : 2 ^ 2 = numGates)
+      ((Hw.retGid d).eval σ) = gid)
+    (hcl : finOfBv (by decide : 2 ^ 2 = numDomains)
+      ((Hw.retCl d).eval σ) = act.caller)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hreply : (gateReturnReplyE d).eval σ = reply) :
+    Hw.abs ((gateReturnSuccessA d).run σ acc) =
+      returnAbstractSuccess
+        (Hw.abs ((gateReturnTransferA d).run σ acc)) d gid act reply := by
+  apply machineState_ext'
+  · exact gateReturnSuccessA_frame_quiet σ acc d ("cycle", 32)
+      (by simp [gateReturnQuietNames])
+  · funext a
+    exact gateReturnSuccessA_frame_mem σ acc d "mem" a.toNat 32
+  · funext x
+    exact absDom_gateReturnSuccessA σ acc d x gid act reply hne hgid hcl
+      hact hreply
+  · funext h
+    have hg := absGate_gateReturnSuccessA σ acc d gid h act hgid
+    simpa [returnAbstractSuccess] using hg
+  · change Hw.absMover ((gateReturnSuccessA d).run σ acc) =
+      Hw.absMover ((gateReturnTransferA d).run σ acc)
+    unfold Hw.absMover
+    rw [gateReturnSuccessA_frame_quiet σ acc d ("mov_v", 1)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("mov_owner", 2)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("mov_src", 14)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("mov_dst", 14)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("mov_srccur", 12)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("mov_dstcur", 12)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("mov_rem", 13)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("mov_status", 12)
+        (by simp [gateReturnQuietNames])]
+  · change Hw.absInflight ((gateReturnSuccessA d).run σ acc) =
+      Hw.absInflight ((gateReturnTransferA d).run σ acc)
+    unfold Hw.absInflight
+    rw [gateReturnSuccessA_frame_quiet σ acc d ("if_v", 1)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("if_dom", 2)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("if_word", 32)
+        (by simp [gateReturnQuietNames]),
+      gateReturnSuccessA_frame_quiet σ acc d ("if_cl", 8)
+        (by simp [gateReturnQuietNames])]
+
 end Machines.Lnp64u.Theorems.RMC
