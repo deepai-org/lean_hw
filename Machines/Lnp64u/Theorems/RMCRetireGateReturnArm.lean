@@ -358,4 +358,78 @@ theorem square_retire_gateReturn_notServing (m : Manifest) (hwf : m.WF)
   · exact hfail
   · exact hspecF
 
+/-- Complete second ladder arm: a serving tag that selects an inactive gate
+retires as a protocol fault. -/
+theorem square_retire_gateReturn_inactive (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (hserving : σ.regs (Hw.dsrvV
+      (finOfBv (by decide) (σ.regs "if_dom" 2))) 1 = 1#1)
+    (hinactive : (Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+      (Hw.retGid (finOfBv (by decide) (σ.regs "if_dom" 2)))).eval σ ≠ 1#1) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set W := σ.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hEdef
+  set gid : GateId := finOfBv (by decide) ((Hw.retGid E).eval σ) with hgid
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (23#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W =
+      isa.find? (fun d => d.opcode == (23#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel σ E rfl
+  have hservingE : σ.regs (Hw.dsrvV E) 1 = 1#1 := by
+    simpa [E] using hserving
+  have hservAbs : ((Hw.abs σ).doms E).serving = some gid := by
+    change (if σ.regs (Hw.dsrvV E) 1 = 1#1 then
+      some (finOfBv (by decide) (σ.regs (Hw.dsrv E) 2)) else none) = some gid
+    rw [if_pos hservingE]
+    rfl
+  have hinactiveE : (Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+      (Hw.retGid E)).eval σ ≠ 1#1 := by
+    simpa [E] using hinactive
+  have hgateV : σ.regs (Hw.gactV gid) 1 ≠ 1#1 := by
+    rw [muxFin_eval (by decide : 2 ^ 2 = numGates), ← hgid] at hinactiveE
+    exact hinactiveE
+  have hactAbs : ((Hw.abs σ).gates gid).act = none := by
+    change (if σ.regs (Hw.gactV gid) 1 = 1#1 then some _ else none) = none
+    rw [if_neg hgateV]
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  have hservBase : (base.doms E).serving = some gid := by
+    simp [base, refillPhase_serving, hservAbs]
+  have hactBase : (base.gates gid).act = none := by
+    simp [base, refillPhase_gates, hactAbs]
+  have hspecF : retire base E W = haltWith base E .protocol := by
+    rw [retire_gateReturn_exec base E W hdec]
+    dsimp only
+    let c : Ctx := { d := E, pc := (base.doms E).pc, op := operandsOf W }
+    let τ0 := base.setDom E fun ds => { ds with pc := ds.pc + 1 }
+    have hserv0 : (τ0.doms c.d).serving = some gid := by
+      simp [τ0, c, MachineState.setDom, Loom.Fun.update, hservBase]
+    have hact0 : (τ0.gates gid).act = none := by
+      simp [τ0, MachineState.setDom, hactBase]
+    rw [gateReturnExec_inactive c τ0 gid hserv0 hact0]
+  let first : Hw.Check :=
+    (.not (.reg 1 (Hw.dsrvV E)), .fault .protocol)
+  have hpre : ∀ x ∈ [first], x.1.eval σ ≠ 1#1 := by
+    intro x hx
+    simp only [List.mem_singleton] at hx
+    subst x
+    change (Expr.not (.reg 1 (Hw.dsrvV E))).eval σ ≠ 1#1
+    simp [Expr.eval, hservingE]
+  have hfail : (Expr.not (Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+      (Hw.retGid E))).eval σ = 1#1 := by
+    exact (notE_eval _ σ).mpr (bv1_ne_one.mp hinactiveE)
+  apply square_retire_gateReturn_firstFault m hwf hfit σ hsync hifv hcl E
+    rfl hifsel hifexcl hopc [first] (List.drop 2 (Hw.retChecks E))
+    (.not (Hw.muxFin (fun g => .reg 1 (Hw.gactV g)) (Hw.retGid E)))
+    .protocol
+  · rfl
+  · exact hpre
+  · exact hfail
+  · exact hspecF
+
 end Machines.Lnp64u.Theorems.RMC
