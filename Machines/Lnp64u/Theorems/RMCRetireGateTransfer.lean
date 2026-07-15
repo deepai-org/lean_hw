@@ -309,6 +309,41 @@ theorem encRefE_decoded_selected (σ : Loom.Hw.St) (D : DomainId)
 
 /-! ## Exact `transferCap` branch equations -/
 
+/-! ## Exact `transferByHandle` outcomes -/
+
+/-- The null handle is the identity transfer and returns the null handle.
+This equation is shared by the successful `gate_call` and `gate_return`
+retirement arms. -/
+theorem transferByHandle_eq_zero (τ : MachineState) (D T : DomainId) :
+    Machines.Lnp64u.Isa.transferByHandle D T 0 τ = .ok 0 τ := by
+  rfl
+
+/-- Once capability lookup and structural transfer have been selected,
+`transferByHandle` only installs the returned state and re-encodes the new
+recipient-relative reference.  Keeping this monadic reduction here prevents
+the two gate retirement arms from duplicating the specification bind tree. -/
+theorem transferByHandle_eq_selected (τ τ' : MachineState)
+    (D T : DomainId) (hw : Loom.Word32) (S : Slot) (G : Gen)
+    (e : CapEntry) (ref : CapRef)
+    (hnz : hw ≠ 0)
+    (hlive : Machines.Lnp64u.Isa.capLive D hw τ = .ok (S, G, e) τ)
+    (htransfer : τ.transferCap D S T = some (τ', ref)) :
+    Machines.Lnp64u.Isa.transferByHandle D T hw τ =
+      .ok (Handle.encode ⟨ref.slot, ref.gen, e.kind.cls⟩) τ' := by
+  unfold Machines.Lnp64u.Isa.transferByHandle
+  rw [if_neg hnz]
+  change (Machines.Lnp64u.Isa.capLive D hw >>= fun x =>
+    let (s, _, e') := x
+    SpecM.get >>= fun σ' =>
+      match σ'.transferCap D s T with
+      | none => SpecM.raise .slotOccupied
+      | some (σ'', ref') =>
+          SpecM.set σ'' >>= fun _ =>
+          pure (Handle.encode ⟨ref'.slot, ref'.gen, e'.kind.cls⟩)) τ = _
+  rw [hlive]
+  simp only [SpecM.get, SpecM.set, htransfer, bind_pure_comp]
+  rfl
+
 /-- The root-capability branch of `transferCap`, exposed in the same
 `installTransferred` vocabulary used by the hardware abstraction. -/
 theorem transferCap_eq_selected_none (τ : MachineState)
