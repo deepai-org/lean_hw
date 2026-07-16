@@ -1,6 +1,38 @@
 # STATUS — LNP64-µ / Loom
 
-## ★★ 2026-07-15: RETIREMENT ARM 22/25 OP ARMS PROVEN ★★
+## ★★★ 2026-07-16: R-MC COMPLETE — UNBOUNDED ISS↔EDSL LOCKSTEP PROVED ★★★
+
+The LNP64-µ machine-code refinement is now complete. `RMC.square` proves
+that every reachable core cycle abstracts to exactly one ISS step, and the
+reset/run assembly lifts this to unbounded whole-state lockstep:
+
+- `square`, `abs_run`, `refines`, and `invariant_transport` are all
+  sorry-free and audit-CLEAN.
+- All 25 retirement opcode arms plus illegal-decode fallback are proved.
+  The final `cap_revoke` arm uses the bounded pointer-doubling engine:
+  `RvSync` is established at the first revoke countdown, doubled on later
+  countdowns, vacuous on fresh issue and retirement, carried by
+  `Coupled.rv_sync`, and consumed by `square_retire_rev` at retirement.
+- `lake build Machines.Lnp64u.Theorems.RMC` completed successfully through
+  1,005 jobs after the final invariant was wired.
+- `lake exe audit` reports `audit: all checks passed`. Direct
+  `#print axioms` checks for `square`, `abs_run`, `refines`, and
+  `invariant_transport` report only `propext`, `Classical.choice`, and
+  `Quot.sound`; there is no `sorryAx` or project-specific axiom in their
+  closure.
+- Proof checkpoint: commit `8b911b5` (`rmc: close bounded revoke
+  refinement`).
+
+The headline ISS→EDSL refinement gap described in older entries below is
+closed. Remaining work is release/trust hardening around executable
+replacements, emitted-text round trips, CI/package polish, and the explicit
+physical/SoC integration boundary—not an R-MC proof obligation.
+
+The dated sections below are retained as a chronological engineering record;
+their “remaining” counts describe those historical checkpoints, not the
+current state above.
+
+## Historical checkpoint — 2026-07-15: retirement arm 22/25
 
 The retirement infrastructure is complete and 22 of the 25 per-op arms
 (plus the decode-failure fallback) are fully proven. The dispatcher is
@@ -383,8 +415,10 @@ T-ledger (2026-07-04: every entry below flipped to CLEAN; kept for history)*:
 - ~~Inv step_wf, wf_invariant~~ ✓ (subsumed by `wfa_invariant`).
 - ~~A-R / A-EV Acc8 core ⊑ spec, core ≃ emitted µVerilog~~ ✓.
 
-In progress now: **R-MC** (LNP64-µ ISS ⊑ EDSL core, transporting T2–T9 onto
-the emitted Verilog) — statement landed in `Theorems/RMC*.lean`.
+**R-MC is complete as of 2026-07-16**: LNP64-µ ISS ⊑ EDSL core is proved
+by unbounded whole-state lockstep in `Theorems/RMC*.lean`, transporting the
+single-run ledger invariants through `invariant_transport` (with T5's
+hyperproperty transport resting on the stronger exact-run equality).
 
 **The linchpin, decomposed.** `step_wf` (one-cycle Wf preservation) is
 assembled from proved pieces: `refillPhase_preserves_wf` ✓,
