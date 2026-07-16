@@ -282,6 +282,71 @@ theorem rvInit_parent_some_iff (σ : Loom.Hw.St) (c : DomainId) (s : Slot)
     simp [hv0, MachineState.parentOf,
       Hw.abs, Hw.absDom]
 
+/-- The equivalent packed form of `rvInit_parent_some_iff`. -/
+theorem rvInit_parent_packed_iff (σ : Loom.Hw.St) (c : DomainId) (s : Slot)
+    (p : CapRef) :
+    ((rvInitPEx (Hw.nodeOf c s)).eval σ = 1#1 ∧
+      (rvInitPEnc (Hw.nodeOf c s)).eval σ = Hw.encRef p) ↔
+      (Hw.abs σ).parentOf c s = some p := by
+  rw [← rvInit_parent_some_iff σ c s p]
+  constructor
+  · rintro ⟨hex, hp⟩
+    exact ⟨hex, by rw [hp, decRef_encRef]⟩
+  · rintro ⟨hex, hp⟩
+    refine ⟨hex, ?_⟩
+    calc
+      (rvInitPEnc (Hw.nodeOf c s)).eval σ =
+          Hw.encRef (Hw.decRef ((rvInitPEnc (Hw.nodeOf c s)).eval σ)) :=
+        (encRef_decRef _).symm
+      _ = Hw.encRef p := congrArg Hw.encRef hp
+
+private theorem encRef_nodeField (p : CapRef) :
+    (Hw.encRef p).extractLsb' 8 6 =
+      BitVec.ofNat 6 (Hw.nodeOf p.dom p.slot).val := by
+  obtain ⟨d, s, g⟩ := p
+  revert d s g
+  decide +kernel
+
+private theorem encRef_genField (p : CapRef) :
+    (Hw.encRef p).extractLsb' 0 8 = p.gen := by
+  obtain ⟨d, s, g⟩ := p
+  revert d s g
+  decide +kernel
+
+/-- If initialization sees parent `p`, its packed parent-index field is
+exactly `nodeOf p.dom p.slot`. -/
+theorem rvInit_parent_index_eval (σ : Loom.Hw.St) (c : DomainId) (s : Slot)
+    (p : CapRef) (hp : (Hw.abs σ).parentOf c s = some p) :
+    (Hw.field (rvInitPEnc (Hw.nodeOf c s)) 8 6).eval σ =
+      BitVec.ofNat 6 (Hw.nodeOf p.dom p.slot).val := by
+  have hpack := (rvInit_parent_packed_iff σ c s p).mpr hp
+  change ((rvInitPEnc (Hw.nodeOf c s)).eval σ).extractLsb' 8 6 = _
+  rw [hpack.2, encRef_nodeField]
+
+/-- If initialization sees parent `p`, its packed generation field is
+exactly `p.gen`. -/
+theorem rvInit_parent_gen_eval (σ : Loom.Hw.St) (c : DomainId) (s : Slot)
+    (p : CapRef) (hp : (Hw.abs σ).parentOf c s = some p) :
+    (Hw.field (rvInitPEnc (Hw.nodeOf c s)) 0 8).eval σ = p.gen := by
+  have hpack := (rvInit_parent_packed_iff σ c s p).mpr hp
+  change ((rvInitPEnc (Hw.nodeOf c s)).eval σ).extractLsb' 0 8 = _
+  rw [hpack.2, encRef_genField]
+
+/-- The generation lookup selected by an initialized parent index reads the
+abstract parent node's current slot generation. -/
+theorem rvInit_genAt_eval (σ : Loom.Hw.St) (c : DomainId) (s : Slot)
+    (p : CapRef) (hp : (Hw.abs σ).parentOf c s = some p) :
+    (Hw.genAt (Hw.field (rvInitPEnc (Hw.nodeOf c s)) 8 6)).eval σ =
+      ((Hw.abs σ).doms p.dom).slotGen p.slot := by
+  have hidx := rvInit_parent_index_eval σ c s p hp
+  rw [Hw.genAt, muxFin_eval (by decide : 2 ^ 6 = numDomains * numSlots)]
+  have hi : finOfBv (by decide : 2 ^ 6 = numDomains * numSlots)
+      ((Hw.field (rvInitPEnc (Hw.nodeOf c s)) 8 6).eval σ) =
+      Hw.nodeOf p.dom p.slot := by
+    rw [hidx, finOfBv_ofNat]
+  rw [hi, nDom_nodeOf, nSlot_nodeOf]
+  rfl
+
 /-- Is the parent edge of `x` generation-live, and where does it go? -/
 def liveParent (τ : MachineState) (x : DomainId × Slot) :
     Option (DomainId × Slot) := do
@@ -454,6 +519,104 @@ theorem rvInitRootE_eval (σ : Loom.Hw.St) (hz : R0Zero σ) :
   rw [henc]
   unfold rvRoot
   rw [hreg]
+
+/-- `rvInit`'s root bit is exactly one-step bounded root reachability. -/
+theorem rvInit_run_r_semantic (m : Manifest) (σ acc : Loom.Hw.St)
+    (hz : R0Zero σ) (c : DomainId) (s : Slot) :
+    (Hw.rvInit.run σ acc).regs (Hw.rvR (Hw.nodeOf c s)) 1 =
+      if reachRootN (Hw.abs σ) (rvRoot σ) 1 (c, s)
+        then 1#1 else 0#1 := by
+  rw [rvInit_run_r m]
+  change
+    ((rvInitPEx (Hw.nodeOf c s)).eval σ &&&
+      (if (rvInitPEnc (Hw.nodeOf c s)).eval σ = rvInitRootE.eval σ
+        then 1#1 else 0#1)) = _
+  rw [rvInitRootE_eval σ hz]
+  cases hp : (Hw.abs σ).parentOf c s with
+  | none =>
+      have hex : (rvInitPEx (Hw.nodeOf c s)).eval σ ≠ 1#1 := by
+        intro hex
+        let p := Hw.decRef ((rvInitPEnc (Hw.nodeOf c s)).eval σ)
+        have hs := (rvInit_parent_some_iff σ c s p).mp ⟨hex, rfl⟩
+        rw [hp] at hs
+        contradiction
+      rw [bv1_ne_one.mp hex]
+      simp [reachRootN, hp]
+  | some p =>
+      have hpack := (rvInit_parent_packed_iff σ c s p).mpr hp
+      rw [hpack.1, hpack.2]
+      by_cases hroot : p = rvRoot σ
+      · simp [reachRootN, hp, hroot]
+      · have henc : Hw.encRef p ≠ Hw.encRef (rvRoot σ) := by
+          intro h
+          apply hroot
+          have := congrArg Hw.decRef h
+          simpa [decRef_encRef] using this
+        simp [reachRootN, hp, hroot, henc]
+
+/-- `rvInit`'s validity bit is exactly one live parent edge. -/
+theorem rvInit_run_v_semantic (m : Manifest) (σ acc : Loom.Hw.St)
+    (c : DomainId) (s : Slot) :
+    (Hw.rvInit.run σ acc).regs (Hw.rvV (Hw.nodeOf c s)) 1 =
+      if liveChainN (Hw.abs σ) 1 (c, s) then 1#1 else 0#1 := by
+  rw [rvInit_run_v m]
+  change
+    ((rvInitPEx (Hw.nodeOf c s)).eval σ &&&
+      (if (Hw.genAt (Hw.field (rvInitPEnc (Hw.nodeOf c s)) 8 6)).eval σ =
+          (Hw.field (rvInitPEnc (Hw.nodeOf c s)) 0 8).eval σ
+        then 1#1 else 0#1)) = _
+  cases hp : (Hw.abs σ).parentOf c s with
+  | none =>
+      have hex : (rvInitPEx (Hw.nodeOf c s)).eval σ ≠ 1#1 := by
+        intro hex
+        let p := Hw.decRef ((rvInitPEnc (Hw.nodeOf c s)).eval σ)
+        have hs := (rvInit_parent_some_iff σ c s p).mp ⟨hex, rfl⟩
+        rw [hp] at hs
+        contradiction
+      rw [bv1_ne_one.mp hex]
+      simp [liveChainN, liveParent, hp]
+  | some p =>
+      have hpack := (rvInit_parent_packed_iff σ c s p).mpr hp
+      have hgenAt := rvInit_genAt_eval σ c s p hp
+      have hgen := rvInit_parent_gen_eval σ c s p hp
+      rw [hpack.1, hgenAt, hgen]
+      by_cases hlive : p.gen = ((Hw.abs σ).doms p.dom).slotGen p.slot
+      · simp [liveChainN, liveParent, hp, hlive]
+      · have hne : ((Hw.abs σ).doms p.dom).slotGen p.slot ≠ p.gen :=
+          Ne.symm hlive
+        simp [liveChainN, liveParent, hp, hlive, hne]
+
+/-- On a live initialized edge, `rvInit`'s jump word names its endpoint. -/
+theorem rvInit_run_j_semantic (m : Manifest) (σ acc : Loom.Hw.St)
+    (c : DomainId) (s : Slot) (p : CapRef)
+    (hp : (Hw.abs σ).parentOf c s = some p) :
+    (Hw.rvInit.run σ acc).regs (Hw.rvJ (Hw.nodeOf c s)) 6 =
+      BitVec.ofNat 6 (Hw.nodeOf p.dom p.slot).val := by
+  rw [rvInit_run_j m, rvInit_parent_index_eval σ c s p hp]
+
+/-- The complete per-node semantic base case established by `rvInit`. -/
+theorem rvInit_establishes_horizon_one (m : Manifest) (σ acc : Loom.Hw.St)
+    (hz : R0Zero σ) (c : DomainId) (s : Slot) :
+    ((Hw.rvInit.run σ acc).regs (Hw.rvR (Hw.nodeOf c s)) 1 =
+      if reachRootN (Hw.abs σ) (rvRoot σ) 1 (c, s)
+        then 1#1 else 0#1)
+    ∧ ((Hw.rvInit.run σ acc).regs (Hw.rvV (Hw.nodeOf c s)) 1 =
+      if liveChainN (Hw.abs σ) 1 (c, s) then 1#1 else 0#1)
+    ∧ (liveChainN (Hw.abs σ) 1 (c, s) = true →
+      (Hw.rvInit.run σ acc).regs (Hw.rvJ (Hw.nodeOf c s)) 6 =
+        BitVec.ofNat 6 (Hw.nodeOf
+          (chainEndN (Hw.abs σ) 1 (c, s)).1
+          (chainEndN (Hw.abs σ) 1 (c, s)).2).val) := by
+  refine ⟨rvInit_run_r_semantic m σ acc hz c s,
+    rvInit_run_v_semantic m σ acc c s, ?_⟩
+  intro hlive
+  cases hp : (Hw.abs σ).parentOf c s with
+  | none => simp [liveChainN, liveParent, hp] at hlive
+  | some p =>
+      by_cases hgen : p.gen = ((Hw.abs σ).doms p.dom).slotGen p.slot
+      · simpa [chainEndN, liveParent, hp, hgen] using
+          (rvInit_run_j_semantic m σ acc c s p hp)
+      · simp [liveChainN, liveParent, hp, hgen] at hlive
 
 /-- The doubling rounds completed at pre-cycle countdown value `cl`. -/
 def rvRounds (cl : Nat) : Nat := revokeCost - 1 - cl
