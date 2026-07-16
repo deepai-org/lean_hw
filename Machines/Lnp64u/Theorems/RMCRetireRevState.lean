@@ -48,6 +48,28 @@ theorem revRetireBase_marks (m : Manifest) (sigma : MachineState)
   exact marks_congr sigma (revRetireBase m sigma E)
     (revRetireBase_tables m sigma E) root
 
+/-- Structural destruction commutes with the retirement PC update because
+its predicates and writes observe only capability tables. -/
+theorem destroyMarked_setPc (sigma : MachineState)
+    (marked : DomainId → Slot → Bool) (E : DomainId) :
+    (sigma.setDom E fun ds => { ds with pc := ds.pc + 1 }).destroyMarked
+        marked =
+      (sigma.destroyMarked marked).setDom E
+        (fun ds => { ds with pc := ds.pc + 1 }) := by
+  apply machineState_ext'
+  · rfl
+  · rfl
+  · funext d
+    by_cases hd : d = E
+    · subst d
+      apply domainState_ext' <;>
+        simp [MachineState.destroyMarked, MachineState.setDom]
+    · apply domainState_ext' <;>
+        simp [MachineState.destroyMarked, MachineState.setDom, hd]
+  · rfl
+  · rfl
+  · rfl
+
 /-- Successful revoke's final liveness is exactly pre-state liveness after
 destroying the sampled mark set. -/
 theorem revAbstractSuccess_liveRef (m : Manifest) (sigma : MachineState)
