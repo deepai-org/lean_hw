@@ -49,7 +49,7 @@ private theorem rvArm_prefixed :
 /-! ## The countdown branch's register/memory effects -/
 
 /-- Select the countdown branch of the core rule. -/
-private theorem coreAct_run_countdown_eq (m : Manifest) (σ acc : Loom.Hw.St)
+theorem coreAct_run_countdown_eq (m : Manifest) (σ acc : Loom.Hw.St)
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat) :
     (Hw.coreAct m).run σ acc =
