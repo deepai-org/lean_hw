@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Emit.MicroVerilog.Ast
 import Loom.Release.Rope
+import Std.Data.HashMap
 
 /-!
 # Concrete SSA release language
@@ -190,12 +191,12 @@ structure MemHdr where
   addrWidth : Nat
   dataWidth : Nat
 
-abbrev Env := List (String × Sigma Expr)
+abbrev Env := Std.HashMap String (Sigma Expr)
 
 private def resolveAny (regs : List RegHdr) (env : Env)
     (name : String) : Option (Sigma Expr) :=
-  match env.find? (fun entry => entry.1 == name) with
-  | some entry => some entry.2
+  match env[name]? with
+  | some entry => some entry
   | none =>
       match regs.find? (fun reg => reg.name == name) with
       | some reg => some ⟨reg.width, .reg reg.width name⟩
@@ -268,7 +269,7 @@ private def elaborateWires (regs : List RegHdr) (mems : List MemHdr) :
   | wire :: wires, env => do
       let value ← wire.rhs.elaborate regs mems env wire.width
       elaborateWires regs mems wires
-        ((wire.name, ⟨wire.width, value⟩) :: env)
+        (env.insert wire.name ⟨wire.width, value⟩)
 
 private def elaborateWireTree (regs : List RegHdr) (mems : List MemHdr) :
     Loom.Release.Rope (List Wire) → Env → Option Env
@@ -324,7 +325,7 @@ No generator property is assumed. -/
 def Program.elaborate (program : Program) : Option Module := do
   let regs := program.regs.map fun reg => ⟨reg.name, reg.width⟩
   let mems := program.mems.map fun mem => ⟨mem.name, mem.addrWidth, mem.dataWidth⟩
-  let env ← elaborateWireTree regs mems program.wires []
+  let env ← elaborateWireTree regs mems program.wires {}
   let regDefs ← elaborateRegs regs env program.regs
   let memDefs ← elaborateMems regs env program.mems
   let outDefs ← elaborateOuts regs env program.outs
