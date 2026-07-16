@@ -914,13 +914,82 @@ theorem rvStep_doubles_vectors (m : Manifest) (τ : MachineState)
   rw [rvStep_run_j m, hmux', hy.2.2 hliveY]
   rw [chainEndN_add]
 
-/-- The doubling rounds completed at pre-cycle countdown value `cl`. -/
-def rvRounds (cl : Nat) : Nat := revokeCost - 1 - cl
-
 /-- The ISA table fixes the revoke latency, hence the pointer-doubling
 budget, at 24 cycles. -/
 theorem revokeCost_eq_24 : revokeCost = 24 := by
   decide +kernel
+
+/-- On the first revoke countdown cycle, `coreAct` selects `rvInit` after
+decrementing `if_cl` in the accumulator. -/
+theorem coreAct_run_revoke_init_eq (m : Manifest) (σ acc : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (σ.regs "if_cl" 8).toNat = revokeCost) :
+    (Hw.coreAct m).run σ acc =
+      Hw.rvInit.run σ
+        ((Act.write 8 "if_cl" (.sub (.reg 8 "if_cl") (.lit 1))).run σ acc) := by
+  have hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat := by
+    rw [hcl, revokeCost_eq_24]
+  rw [coreAct_run_countdown_eq m σ acc hifv hcl2]
+  have his : (Hw.isMn "cap_revoke").eval σ = 1#1 := by
+    rw [isMn_eval, hopc]
+    exact (by decide +kernel : Hw.opcodeOf "cap_revoke" = 18#6).symm
+  have hclbv : σ.regs "if_cl" 8 = BitVec.ofNat 8 revokeCost := by
+    apply BitVec.eq_of_toNat_eq
+    rw [hcl, BitVec.toNat_ofNat, revokeCost_eq_24]
+  have heq : (Expr.eq (.reg 8 "if_cl")
+      (.lit (BitVec.ofNat 8 revokeCost))).eval σ = 1#1 :=
+    eqE_eval _ _ σ |>.mpr hclbv
+  simp [Act.run, his, heq]
+
+/-- On every later non-retiring revoke countdown cycle, `coreAct` selects
+one `rvStep` pointer-doubling round. -/
+theorem coreAct_run_revoke_step_eq (m : Manifest) (σ acc : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat)
+    (hcllt : (σ.regs "if_cl" 8).toNat < revokeCost) :
+    (Hw.coreAct m).run σ acc =
+      Hw.rvStep.run σ
+        ((Act.write 8 "if_cl" (.sub (.reg 8 "if_cl") (.lit 1))).run σ acc) := by
+  rw [coreAct_run_countdown_eq m σ acc hifv hcl2]
+  have his : (Hw.isMn "cap_revoke").eval σ = 1#1 := by
+    rw [isMn_eval, hopc]
+    exact (by decide +kernel : Hw.opcodeOf "cap_revoke" = 18#6).symm
+  have hne : (Expr.eq (.reg 8 "if_cl")
+      (.lit (BitVec.ofNat 8 revokeCost))).eval σ ≠ 1#1 := by
+    rw [eqE_eval]
+    intro h
+    have ht := congrArg BitVec.toNat h
+    rw [BitVec.toNat_ofNat, revokeCost_eq_24] at ht
+    rw [revokeCost_eq_24] at hcllt
+    omega
+  simp [Act.run, his, bv1_ne_one.mp hne]
+
+/-- The first revoke countdown core action establishes the vector base case. -/
+theorem coreAct_revoke_init_establishes_vectors (m : Manifest)
+    (σ acc : Loom.Hw.St) (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (σ.regs "if_cl" 8).toNat = revokeCost) :
+    RvVectors (Hw.abs σ) (rvRoot σ) 1 ((Hw.coreAct m).run σ acc) := by
+  rw [coreAct_run_revoke_init_eq m σ acc hifv hopc hcl]
+  exact rvInit_establishes_vectors m σ _ hz
+
+/-- A later revoke countdown core action doubles the represented horizon. -/
+theorem coreAct_revoke_step_doubles_vectors (m : Manifest)
+    (τ : MachineState) (root : CapRef) (n : Nat) (σ acc : Loom.Hw.St)
+    (hvec : RvVectors τ root n σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat)
+    (hcllt : (σ.regs "if_cl" 8).toNat < revokeCost) :
+    RvVectors τ root (n + n) ((Hw.coreAct m).run σ acc) := by
+  rw [coreAct_run_revoke_step_eq m σ acc hifv hopc hcl2 hcllt]
+  exact rvStep_doubles_vectors m τ root n σ _ hvec
+
+/-- The doubling rounds completed at pre-cycle countdown value `cl`. -/
+def rvRounds (cl : Nat) : Nat := revokeCost - 1 - cl
 
 /-- At either retirement countdown value, the completed doubling horizon
 dominates all 64 capability nodes. -/
