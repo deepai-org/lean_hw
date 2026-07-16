@@ -77,7 +77,9 @@ def Design.reset (d : Design) : St where
   regs := d.regs.foldl (fun ρ r => ρ.set r.name r.init) (fun _ w => 0#w)
   mems := d.mems.foldl
     (fun μ m => fun n a w =>
-      if n = m.name ∧ w = m.dataWidth then (m.init a).setWidth w else μ n a w)
+      if n = m.name ∧ w = m.dataWidth ∧ a < 2 ^ m.addrWidth then
+        (m.init a).setWidth w
+      else μ n a w)
     (fun _ _ w => 0#w)
 
 /-- Run `n` cycles. -/

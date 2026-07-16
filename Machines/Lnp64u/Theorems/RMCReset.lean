@@ -351,9 +351,11 @@ theorem reset_lookup (m : Manifest) (i : Nat) (hi : i < 825) :
   exact foldl_set_get (regDecls m) (names_nodup m) _ i (regDecls_length m ▸ hi)
 
 /-- The reset RAM is the boot image. -/
-theorem reset_mem (m : Manifest) (a : Nat) :
+theorem reset_mem (m : Manifest) (a : Nat) (ha : a < 2 ^ 12) :
     (Hw.core m).reset.mems "mem" a 32 = m.initState.mem (BitVec.ofNat 12 a) := by
-  show (if "mem" = "mem" ∧ 32 = (memDecl m).dataWidth
+  have ha' : a < 4096 := by norm_num at ha ⊢; exact ha
+  show (if "mem" = "mem" ∧ 32 = (memDecl m).dataWidth ∧
+        a < 2 ^ (memDecl m).addrWidth
         then ((memDecl m).init a).setWidth 32 else (0 : BitVec 32))
       = m.initState.mem (BitVec.ofNat 12 a)
-  simp [memDecl, BitVec.setWidth_eq]
+  simp [memDecl, BitVec.setWidth_eq, ha']

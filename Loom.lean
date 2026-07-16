@@ -22,6 +22,7 @@ import Loom.Hw.ArtifactCert
 import Loom.Release.Rope
 import Loom.Release.SSA
 import Loom.Release.Certificate
+import Loom.Emit.MicroVerilog.MatchesSemantics
 import Loom.Emit.MicroVerilog.Print
 import Loom.Emit.MicroVerilog.Axiom
 import Loom.Emit.MicroVerilog.Parse
