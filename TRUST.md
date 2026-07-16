@@ -106,8 +106,11 @@ at the refresh date.
    closure, so readers can inspect the raw closure behind each CLEAN/STATED
    verdict instead of trusting only the summary labels. Since 2026-07-16 it
    also enforces and prints the executable trust inventory: ten private
-   unsafe helpers, exactly two `implemented_by` replacements (`compile` and
-   `print`), and no project `partial` or `extern` declarations.
+   unsafe helpers plus the public generator-only `compileExprFast`, exactly
+   two `implemented_by` replacements (`compile` and `print`), and no project
+   `partial` or `extern` declarations. `compileExprFast` is used only to
+   synthesize untrusted release-certificate data; it is not reachable from
+   certificate acceptance or release theorems.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
 5. Superseded `SystemOpsWf` sorries were deleted 2026-07-04. As of
    2026-07-16 the R-MC dependency cone is also sorry-free: `square`,

@@ -21,6 +21,7 @@ abbrev HashMemo := Std.HashMap USize UInt64
 structure ExprIndex where
   hashed : Std.HashMap UInt64 String
   values : List (String × Sigma Loom.Emit.MicroVerilog.Expr)
+  rhsNames : Std.HashMap String String
 structure GenState where
   nextLookup : Nat := 0
 
@@ -41,6 +42,20 @@ private def finalRegNames (program : SSA.Program) :
     Std.HashMap (String × Nat) String :=
   program.regs.foldl (fun index reg =>
     index.insert (reg.name, reg.width) reg.next) {}
+
+private def rhsKey (width : Nat) (rhs : SSA.Rhs) : String :=
+  s!"{width}:{reprStr rhs}"
+
+private def addWireNames : Loom.Release.Rope (List SSA.Wire) →
+    Std.HashMap String String → Std.HashMap String String
+  | .leaf wires, index => wires.foldl (fun index wire =>
+      index.insert (rhsKey wire.width wire.rhs) wire.name) index
+  | .node left right, index =>
+      addWireNames right (addWireNames left index)
+
+private def findRhs (index : ExprIndex) (width : Nat) (rhs : SSA.Rhs) :
+    Option String :=
+  index.rhsNames[rhsKey width rhs]?
 
 private def tagged (tag width : Nat) : UInt64 :=
   mixHash (hash tag) (hash width)
@@ -79,7 +94,8 @@ private unsafe def exprHash : {w : Nat} →
       modify fun memo => memo.insert pointer result
       pure result
 
-private unsafe def buildIndex (env : SSA.Env) : ExprIndex × HashMemo := Id.run do
+private unsafe def buildIndex (program : SSA.Program) (env : SSA.Env) :
+    ExprIndex × HashMemo := Id.run do
   let values := env.toList
   let mut hashed : Std.HashMap UInt64 String := {}
   let mut memo : HashMemo := {}
@@ -87,7 +103,7 @@ private unsafe def buildIndex (env : SSA.Env) : ExprIndex × HashMemo := Id.run 
     let (key, nextMemo) := (exprHash value).run memo
     memo := nextMemo
     hashed := hashed.insert key name
-  return (⟨hashed, values⟩, memo)
+  return (⟨hashed, values, addWireNames program.wires {}⟩, memo)
 
 private def findExprLinear {w : Nat}
     (target : Loom.Emit.MicroVerilog.Expr w) :
@@ -144,13 +160,13 @@ private unsafe def synthNextReg (index : ExprIndex) (rn : String) (w : Nat) :
         let (elseWrites, elseOut, elseCert) ←
           synthNextReg index rn w elseAct cur
         if thenWrites || elseWrites then
-          pure (true, .mux (Compile.compileExpr guard) thenOut elseOut,
+          pure (true, .mux (Compile.compileExprFast guard) thenOut elseOut,
             .ite thenCert elseCert)
         else pure (false, cur, .same)
   | .write actualWidth name value, cur =>
       if _hname : name = rn then
         if hwidth : actualWidth = w then
-          some (true, Compile.compileExpr (hwidth ▸ value), .write)
+          some (true, Compile.compileExprFast (hwidth ▸ value), .write)
         else some (false, cur, .same)
       else some (false, cur, .same)
   | .memWrite .., cur => some (false, cur, .same)
@@ -177,7 +193,6 @@ private unsafe def synthRegs (index : ExprIndex)
     (regs : List RegDecl) → GenM (Named.RegsCert regs)
   | [] => some .nil
   | reg :: regs => do
-      dbg_trace s!"release certificate register {reg.name}"
       let some finalName := finalNames[(reg.name, reg.width)]? | failure
       let (_, rulesCert) ← synthNextRules index reg.name reg.width rules
         finalName (.reg reg.width reg.name) (some reg.name)
@@ -198,15 +213,24 @@ private unsafe def findPort? (index : ExprIndex) {aw dw : Nat}
     | some en, some addr, some data => some { en, addr, data }
     | _, _, _ => none
 
+private def findLiteral (index : ExprIndex) (width value : Nat) : Option String :=
+  findRhs index width (.lit width value)
+
+private def muxNames (index : ExprIndex) (aw dw : Nat) (guard : String)
+    (yes no : Named.PortNames) : Option Named.PortNames := do
+  pure { en := ← findRhs index 1 (.mux guard yes.en no.en)
+         addr := ← findRhs index aw (.mux guard yes.addr no.addr)
+         data := ← findRhs index dw (.mux guard yes.data no.data) }
+
 private unsafe def synthNextPort (index : ExprIndex) (mn : String) (aw dw p : Nat) :
-    Act → Compile.Port aw dw →
-      GenM (Bool × Compile.Port aw dw × Named.NextPortCert aw dw)
-  | .skip, cur => some (false, cur, .same)
+    Act → Named.PortNames →
+      GenM (Bool × Named.PortNames × Named.NextPortCert aw dw)
+  | .skip, cur => pure (false, cur, .same)
   | .seq left right, cur => do
       let (leftWrites, mid, leftCert) ← synthNextPort index mn aw dw p left cur
       let (rightWrites, out, rightCert) ← synthNextPort index mn aw dw p right mid
       if leftWrites || rightWrites then
-        pure (true, out, .seq none leftCert rightCert)
+        pure (true, out, .seq (some mid) leftCert rightCert)
       else pure (false, cur, .same)
   | .ite guard thenAct elseAct, cur =>
       do
@@ -215,65 +239,60 @@ private unsafe def synthNextPort (index : ExprIndex) (mn : String) (aw dw p : Na
         let (elseWrites, elsePort, elseCert) ←
           synthNextPort index mn aw dw p elseAct cur
         if thenWrites || elseWrites then
-          let guardExpr := Compile.compileExpr guard
-          let guardName ← findExpr index guardExpr
-          let thenNames ← findPort index thenPort
-          let elseNames ← findPort index elsePort
-          let out : Compile.Port aw dw :=
-            { en := .mux guardExpr thenPort.en elsePort.en
-              addr := .mux guardExpr thenPort.addr elsePort.addr
-              data := .mux guardExpr thenPort.data elsePort.data }
-          pure (true, out, .ite guardName thenNames elseNames thenCert elseCert)
+          let guardName ← findExpr index (Compile.compileExprFast guard)
+          let out ← muxNames index aw dw guardName thenPort elsePort
+          pure (true, out,
+            .ite guardName thenPort elsePort thenCert elseCert)
         else pure (false, cur, .same)
   | .write .., cur => some (false, cur, .same)
   | .memWrite actualAw actualDw name port address value, cur =>
       if _hport : name = mn ∧ port = p then
-        if hwidth : actualAw = aw ∧ actualDw = dw then
-          let out : Compile.Port aw dw :=
-            { en := .lit 1
-              addr := Compile.compileExpr (hwidth.1 ▸ address)
-              data := Compile.compileExpr (hwidth.2 ▸ value) }
+        if hwidth : actualAw = aw ∧ actualDw = dw then do
+          let en ← findLiteral index 1 1
+          let addr ← findExpr index (Compile.compileExprFast (hwidth.1 ▸ address))
+          let data ← findExpr index (Compile.compileExprFast (hwidth.2 ▸ value))
+          let out : Named.PortNames :=
+            { en, addr, data }
           some (true, out, .write)
         else some (false, cur, .same)
       else some (false, cur, .same)
 
 private unsafe def synthPortRules (index : ExprIndex) (mn : String) (aw dw p : Nat) :
-    List Rule → Compile.Port aw dw → Option Named.PortNames →
-      GenM (Compile.Port aw dw × Named.NextPortRulesCert aw dw)
-  | [], cur, _ => some (cur, .nil)
-  | rule :: rules, cur, curNames => do
-      let (writes, mid, head) ← synthNextPort index mn aw dw p rule.body cur
-      let midNames ← if writes then
-          findPort? index mid
-        else pure curNames
-      let (out, tail) ← synthPortRules index mn aw dw p rules mid midNames
-      pure (out, .cons midNames head tail)
+    List Rule → Named.PortNames →
+      GenM (Named.PortNames × Named.NextPortRulesCert aw dw)
+  | [], cur => pure (cur, .nil)
+  | rule :: rules, cur => do
+      let (_, mid, head) ← synthNextPort index mn aw dw p rule.body cur
+      let (out, tail) ← synthPortRules index mn aw dw p rules mid
+      pure (out, .cons (some mid) head tail)
 
 private unsafe def synthPorts (index : ExprIndex) (rules : List Rule)
     (mn : String) (aw dw : Nat) : (n p : Nat) →
       GenM (Named.PortsCert aw dw n)
   | 0, _ => some .nil
   | n + 1, p => do
-      let start : Compile.Port aw dw :=
-        { en := .lit 0, addr := .lit 0, data := .lit 0 }
-      let (_, head) ← synthPortRules index mn aw dw p rules start none
+      let start : Named.PortNames :=
+        { en := ← findLiteral index 1 0
+          addr := ← findLiteral index aw 0
+          data := ← findLiteral index dw 0 }
+      let (_, head) ← synthPortRules index mn aw dw p rules start
       pure (.cons head (← synthPorts index rules mn aw dw n (p + 1)))
 
 private unsafe def synthMems (index : ExprIndex) (d : Design) :
     (mems : List MemDecl) → GenM (Named.MemsCert d mems)
   | [] => some .nil
   | mem :: mems => do
-      dbg_trace s!"release certificate memory {mem.name}"
       let ports ← synthPorts index d.rules mem.name mem.addrWidth mem.dataWidth
         (Compile.numPorts d mem.name) 0
-      pure (.cons ⟨ports⟩ (← synthMems index d mems))
+      pure (.cons ⟨Compile.numPorts d mem.name, ports⟩
+        (← synthMems index d mems))
 
 /-- Synthesize compact untrusted proof data. `none` means some required
 intermediate expression was absent from the concrete SSA graph. -/
 unsafe def synthesize (design : Design) (program : SSA.Program) :
     Option (Named.ModuleCert design) := do
   let env ← program.elaborateEnv
-  let (index, _) := buildIndex env
+  let (index, _) := buildIndex program env
   let ruleSummaries := summarizes design.rules
   let names := finalRegNames program
   let action : GenM (Named.ModuleCert design) := do
@@ -308,6 +327,23 @@ private def regsToLean : {regs : List RegDecl} → Named.RegsCert regs → Strin
   | _ :: _, .cons head tail =>
       s!".cons ⟨{nextRulesToLean head.rules}⟩ ({regsToLean tail})"
 
+private def regCertName (index : Nat) : String :=
+  s!"releaseRegCert{index}"
+
+private def regDeclarationList : {regs : List RegDecl} →
+    Named.RegsCert regs → Nat → List String
+  | [], .nil, _ => []
+  | reg :: _, .cons head tail, index =>
+      (s!"def {regCertName index} : Named.NextRulesCert {reg.width} := " ++
+        nextRulesToLean head.rules) ::
+        regDeclarationList tail (index + 1)
+
+private def namedRegsToLean : {regs : List RegDecl} →
+    Named.RegsCert regs → Nat → String
+  | [], .nil, _ => ".nil"
+  | _ :: _, .cons _ tail, index =>
+      s!".cons ⟨{regCertName index}⟩ ({namedRegsToLean tail (index + 1)})"
+
 private def portNamesToLean (names : Named.PortNames) : String :=
   "{ en := " ++ quote names.en ++ ", addr := " ++ quote names.addr ++
     ", data := " ++ quote names.data ++ " }"
@@ -340,12 +376,26 @@ private def memsToLean (d : Design) :
     {mems : List MemDecl} → Named.MemsCert d mems → String
   | [], .nil => ".nil"
   | _ :: _, .cons head tail =>
-      s!".cons ⟨{portsToLean head.ports}⟩ ({memsToLean d tail})"
+      s!".cons ⟨{head.numPorts}, {portsToLean head.ports}⟩ ({memsToLean d tail})"
 
 /-- Serialize synthesized proof data as a Lean structure body. The serializer
 is untrusted; parsing and kernel acceptance of its output are the checks. -/
 def toLean {design : Design} (cert : Named.ModuleCert design) : String :=
-  "{ regs := " ++ regsToLean cert.regs ++
+  "{ regs := " ++ namedRegsToLean cert.regs 0 ++
     ", mems := " ++ memsToLean design cert.mems ++ " }"
+
+/-- Emit each large register proof tree as its own declaration. The final
+dependent certificate list names these constants, preventing elaboration of
+one monolithic multi-megabyte term. -/
+def declarationsToLean {design : Design}
+    (cert : Named.ModuleCert design) : String :=
+  String.intercalate "\n" (regDeclarationList cert.regs 0) ++ "\n"
+
+/-- Split large generated declaration sets into independently compiled module
+bodies. Later certificate modules reference these public constants by name. -/
+def declarationBatchesToLean {design : Design}
+    (cert : Named.ModuleCert design) (batchSize : Nat := 16) : List String :=
+  (regDeclarationList cert.regs 0).toChunks batchSize |>.map fun declarations =>
+    String.intercalate "\n" declarations ++ "\n"
 
 end Tools.ReleaseCertGen

@@ -271,6 +271,14 @@ private unsafe def ceImpl (cache : IO.Ref (Std.HashMap USize (MV.Expr 0)))
 
 end
 
+/-- Executable-only DAG-preserving expression translation for untrusted
+release-certificate synthesis. Kernel theorems must use `compileExpr`; data
+produced here is accepted only after `compileExprMatches` rechecks it. -/
+unsafe def compileExprFast {w : Nat} (expr : Expr w) : MV.Expr w :=
+  unsafeBaseIO do
+    let cache ← IO.mkRef ({} : Std.HashMap USize (MV.Expr 0))
+    ceImpl cache expr
+
 /-- Pointer-memoized `writesRegB rn w` (per-register cache). -/
 private unsafe def wrImpl (rn : String) (w : Nat)
     (cache : IO.Ref (Std.HashMap USize Bool)) : Act → BaseIO Bool

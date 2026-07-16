@@ -74,7 +74,8 @@ def permittedAxiomDecls : List Name :=
 module-local declarations; any new unsafe helper fails the audit until its
 purpose and trust impact are reviewed here and in `TRUST.md`. -/
 def permittedUnsafeDecls : List String :=
-  ["_private.Loom.Hw.Compile.0.Loom.Hw.Compile.ceGo",
+  ["Loom.Hw.Compile.compileExprFast",
+   "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.ceGo",
    "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.ceImpl",
    "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.wrImpl",
    "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.nrImpl",
