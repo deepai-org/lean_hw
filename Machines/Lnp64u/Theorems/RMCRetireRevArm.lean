@@ -523,4 +523,379 @@ theorem revAbstractSuccess_mem_of_surviving_job (m : Manifest)
   rw [if_pos hliveBase]
   rfl
 
+/-- Full retiring `cap_revoke` square, assuming the bounded mark engine is
+synchronized with the abstract descendant closure. -/
+theorem square_retire_rev (m : Manifest) (hwfm : m.WF) (hfit : Fits m)
+    (sigma : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (sigma.regs (Hw.drctr d) 32).toNat =
+      (sigma.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero sigma) (hkc : KindCanon sigma)
+    (hrv : RvSync sigma)
+    (hsr : (machine m).Reachable (Hw.abs sigma))
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6) :
+    Hw.abs ((Hw.core m).cycle sigma) = step m (Hw.abs sigma) := by
+  set W := sigma.regs "if_word" 32 with hW
+  set E : DomainId := finOfBv (by decide) (sigma.regs "if_dom" 2)
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (18#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W =
+      isa.find? (fun d => d.opcode == (18#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel sigma E rfl
+  have hif : ∀ d : DomainId, (Hw.ifDomIs d).eval sigma =
+      if d = E then 1#1 else 0#1 := by
+    intro d
+    by_cases hd : d = E
+    · subst d
+      rw [if_pos rfl]
+      exact hifsel
+    · rw [if_neg hd, bv1_ne_one.mp (hifexcl d hd)]
+  have hrev : (Hw.isMn "cap_revoke").eval sigma = 1#1 := by
+    rw [isMn_eval, hopc]
+    exact (by decide +kernel : Hw.opcodeOf "cap_revoke" = 18#6).symm
+  have hdrop : (Hw.isMn "cap_drop").eval sigma ≠ 1#1 :=
+    isMn_ne_of_opc sigma "cap_drop" 18#6 hopc (by decide +kernel)
+  have hcall : (Hw.isMn "gate_call").eval sigma ≠ 1#1 :=
+    isMn_ne_of_opc sigma "gate_call" 18#6 hopc (by decide +kernel)
+  have hreturn : (Hw.isMn "gate_return").eval sigma ≠ 1#1 :=
+    isMn_ne_of_opc sigma "gate_return" 18#6 hopc (by decide +kernel)
+  have hret := retiringE_one sigma hifv hcl
+  have hnew : ∀ d : DomainId, (Hw.newJobSet d).eval sigma = 0#1 := by
+    intro d
+    apply andAll_zero_of_mem sigma
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+    exact isMn_ne_of_opc sigma "move" 18#6 hopc (by decide +kernel)
+  have hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval sigma = 0#1 := fun c r =>
+    andAll_zero_of_mem sigma
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc sigma "map" 18#6 hopc (by decide +kernel))
+  have hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval sigma = 0#1 := fun c r =>
+    andAll_zero_of_mem sigma
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc sigma "unmap" 18#6 hopc (by decide +kernel))
+  have hswz : ∀ (d : DomainId) (sc : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+        Hw.domCoversE d
+          (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          { r := false, w := true, x := false },
+        .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+          sc]).eval sigma = 0#1 := fun d sc =>
+    andAll_zero_of_mem sigma
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc sigma "sw" 18#6 hopc (by decide +kernel))
+  have hsel := retireFor_rev_ladder sigma E hopc
+  have hfl : (refillPhase m (Hw.abs sigma)).inflight = some
+      { dom := finOfBv (by decide) (sigma.regs "if_dom" 2)
+        word := W
+        cyclesLeft := (sigma.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight sigma = _
+    exact absInflight_some sigma hifv
+  have hR1 : (Hw.readReg E Hw.rs1E).eval sigma =
+      ((Hw.abs sigma).doms E).reg (operandsOf W).rs1 :=
+    readReg_eval sigma hz E Hw.rs1E (operandsOf W).rs1 rfl
+  set HWv := ((Hw.abs sigma).doms E).reg (operandsOf W).rs1
+  have hRD : (((revRetireBase m (Hw.abs sigma) E).doms E).reg
+      (operandsOf W).rs1) = HWv := by
+    exact specReg_bridge m sigma E _
+  have hcore0 : corePhase m (refillPhase m (Hw.abs sigma)) =
+      retire { refillPhase m (Hw.abs sigma) with inflight := none } E W := by
+    rw [corePhase_retire m _ _ hfl
+      (by omega : (sigma.regs "if_cl" 8).toNat ≤ 1)]
+  have hDO : retire { refillPhase m (Hw.abs sigma) with inflight := none }
+      E W =
+      (match ((SpecM.reg E (operandsOf W).rs1 >>= fun hw =>
+        Machines.Lnp64u.Isa.capLive E hw >>= fun x =>
+        let (s, g, e) := x
+        SpecM.require (e.kind.cls = .mem) .badCap >>= fun _ =>
+        SpecM.get >>= fun rho =>
+        let marked := rho.marks ⟨E, s, g⟩
+        SpecM.set (((rho.destroyMarked marked).sweepRegions).sweepMover) >>=
+          fun _ => SpecM.setReg E (operandsOf W).rd 0)
+        (revRetireBase m (Hw.abs sigma) E)) with
+      | .ok _ rho => rho
+      | .err e rho => rho.setDom E
+          (fun ds => ds.setReg (operandsOf W).rd e.toWord)
+      | .fault fl => haltWith
+          { refillPhase m (Hw.abs sigma) with inflight := none } E fl) := by
+    have hfind : isa.find? (fun d => d.opcode == (18#6 : BitVec 6)) =
+        some (Machines.Lnp64u.Isa.system.get ⟨2, by decide⟩) := by rfl
+    have hexec :
+        (Machines.Lnp64u.Isa.system.get ⟨2, by decide⟩).sem.exec =
+          (fun c => do
+            let hw ← SpecM.reg c.d c.op.rs1
+            let (s, g, e) ← Machines.Lnp64u.Isa.capLive c.d hw
+            SpecM.require (e.kind.cls = .mem) .badCap
+            let rho ← SpecM.get
+            let marked := rho.marks ⟨c.d, s, g⟩
+            SpecM.set (((rho.destroyMarked marked).sweepRegions).sweepMover)
+            SpecM.setReg c.d c.op.rd 0) := by rfl
+    rw [retire_of_decode_some _ E W _ (hdec.trans hfind), hexec]
+    rfl
+  have hSval : (finOfBv (by decide : 2 ^ 4 = numSlots)
+      (HWv.extractLsb' 0 4)).val =
+      (((Hw.readReg E Hw.rs1E).eval sigma).extractLsb' 0 4).toNat := by
+    rw [hR1]
+    rfl
+  have hlivE := capSel_live_eval sigma E (Hw.readReg E Hw.rs1E) _ hSval
+  rw [hR1] at hlivE
+  have hnd : ((Hw.opCircs E).map Prod.fst).Nodup := by
+    rw [opCircs_fst_all E]
+    exact allMns_nodup
+  have hq : ∀ p ∈ Hw.opCircs E, p.1 ≠ "cap_revoke" →
+      (Hw.isMn p.1).eval sigma = 0#1 ∨ isLit0 p.2.memEn = true := by
+    intro p hp hne
+    left
+    exact bv1_ne_one.mp (isMn_ne_of_opc sigma p.1 18#6 hopc
+      ((by decide +kernel : ∀ mn' ∈ allMns, mn' ≠ "cap_revoke" →
+        (18#6 : BitVec 6) ≠ Hw.opcodeOf mn') p.1
+        (by rw [← opCircs_fst_all E]; exact List.mem_map_of_mem hp) hne))
+  have hmemrev : ("cap_revoke", Hw.revCirc E) ∈ Hw.opCircs E :=
+    List.mem_append_right _
+      (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+  have hport := retireMem_op_sel sigma E "cap_revoke" (Hw.revCirc E)
+    hifsel hifexcl hrev hmemrev hnd hq
+  have hcoremem_of_revOk_zero (hok0 : (Hw.revOkE E).eval sigma = 0#1) :
+      ∀ b : Addr,
+        ((Hw.coreAct m).run sigma ((Hw.refillAct m).run sigma sigma)).mems
+          "mem" b.toNat 32 = sigma.mems "mem" b.toNat 32 := by
+    intro b
+    rw [coreAct_run_retire_eq m sigma _ hifv hcl,
+      retireAct_run_mems sigma _ b.toNat 32]
+    show (if (((List.finRange numDomains).foldr
+        (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+          let (en_d, ad_d, da_d) := Hw.retireMemFor d
+          let g := Expr.and (Hw.ifDomIs d) en_d
+          (.or g acc'.1, .mux g ad_d acc'.2.1,
+            .mux g da_d acc'.2.2))
+        ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+          (.lit 0 : Expr 32))).1).eval sigma = 1#1 then _
+      else ((Hw.refillAct m).run sigma sigma)).mems "mem" b.toNat 32 = _
+    rw [if_neg (by
+      rw [hport.1]
+      show ¬((Hw.revCirc E).memEn.eval sigma = 1#1)
+      unfold Hw.revCirc Hw.sweepMem Hw.andAll
+      change ¬((Hw.revOkE E).eval sigma &&& _ = 1#1)
+      rw [hok0]
+      exact (by decide : ∀ q : BitVec 1, ¬(0#1 &&& q = 1#1)) _)]
+    rw [refill_pres_mem m sigma "mem" b.toNat 32]
+  by_cases hlv : sigma.regs (Hw.dcapV E
+        (finOfBv (by decide) (HWv.extractLsb' 0 4))) 1 = 1#1 ∧
+      sigma.regs (Hw.dgen E (finOfBv (by decide)
+        (HWv.extractLsb' 0 4))) 8 = HWv.extractLsb' 4 8 ∧
+      HWv.extractLsb' 4 8 ≠ 0
+  case neg =>
+    have hlive0 : ¬((Hw.revSel E).live.eval sigma = 1#1) :=
+      fun hc => hlv (hlivE.mp hc)
+    have hlcN : ((revRetireBase m (Hw.abs sigma) E).doms E).liveCap
+        (Handle.decode HWv).slot (Handle.decode HWv).gen = none := by
+      change ((({ refillPhase m (Hw.abs sigma) with inflight := none }).setDom
+        E (fun ds => { ds with pc := ds.pc + 1 })).doms E).liveCap
+          (Handle.decode HWv).slot (Handle.decode HWv).gen = none
+      rw [specLiveCap_bridge, abs_liveCap]
+      exact if_neg hlv
+    have hbad : ∀ d : DomainId, d = E →
+        (Hw.revOkE d).eval sigma = 0#1 := by
+      intro d hd
+      subst d
+      unfold Hw.revOkE Hw.okOf Hw.revChecks Hw.andAll
+      change ~~~(~~~((Hw.revSel E).live.eval sigma)) &&&
+        ~~~(~~~((Expr.and (Hw.revSel E).clsOk
+          (Hw.kIsMem (Hw.revSel E).kindW)).eval sigma)) = 0#1
+      rw [bv1_ne_one.mp hlive0]
+      generalize (Expr.and (Hw.revSel E).clsOk
+        (Hw.kIsMem (Hw.revSel E).kindW)).eval sigma = q
+      exact (by decide : ∀ q : BitVec 1,
+        ~~~(~~~(0#1)) &&& ~~~(~~~q) = 0#1) q
+    have hin : Inert sigma := Inert.of_failed_rev sigma E hret hif hdrop
+      hrev hcall hreturn hbad hnew
+    refine retire_err_common_mem m hwfm hfit sigma hsync hifv hcl hin
+      hmapz hunmapz hswz (hcoremem_of_revOk_zero (hbad E rfl)) E rfl
+      Errno.staleHandle.toWord ?_ ?_
+    · intro acc
+      rw [hsel acc, if_pos (show (Expr.not (Hw.revSel E).live).eval
+        sigma = 1#1 from by
+          show ~~~((Hw.revSel E).live.eval sigma) = 1#1
+          rw [bv1_ne_one.mp hlive0]
+          decide)]
+      rfl
+    · rw [hcore0, hDO]
+      simp only [specM_bind, SpecM.get, SpecM.require, SpecM.raise,
+        SpecM.reg, Machines.Lnp64u.Isa.capLive, SpecM.setReg, hRD, hlcN]
+      rfl
+  case pos =>
+    have hliv1 : (Hw.revSel E).live.eval sigma = 1#1 := hlivE.mpr hlv
+    let S : Slot := finOfBv (by decide) (HWv.extractLsb' 0 4)
+    let e : CapEntry :=
+      { kind := Hw.decKind (sigma.regs (Hw.dcapKind E S) 32)
+        lineage := if sigma.regs (Hw.dcapLinV E S) 1 = 1#1 then
+          some (finOfBv (by decide) (sigma.regs (Hw.dcapLin E S) 4))
+        else none }
+    have hcap : ((Hw.abs sigma).doms E).caps S = some e := by
+      change (if sigma.regs (Hw.dcapV E S) 1 = 1#1 then some e else none) =
+        some e
+      rw [if_pos hlv.1]
+    have hlcS : ((revRetireBase m (Hw.abs sigma) E).doms E).liveCap
+        (Handle.decode HWv).slot (Handle.decode HWv).gen = some e := by
+      change ((({ refillPhase m (Hw.abs sigma) with inflight := none }).setDom
+        E (fun ds => { ds with pc := ds.pc + 1 })).doms E).liveCap
+          (Handle.decode HWv).slot (Handle.decode HWv).gen = some e
+      rw [specLiveCap_bridge, abs_liveCap]
+      exact if_pos hlv
+    have hcls := capSel_clsOk_iff_some sigma E (Hw.readReg E Hw.rs1E)
+      S e hkc hSval hcap
+    have hmem := capSel_isMem_iff_some sigma E (Hw.readReg E Hw.rs1E)
+      S e hkc hSval hcap
+    rw [hR1] at hcls
+    by_cases hgood : (Expr.and (Hw.revSel E).clsOk
+        (Hw.kIsMem (Hw.revSel E).kindW)).eval sigma = 1#1
+    · have hg := (bv1_and_eq_one _ _).mp hgood
+      have hclsSpec : (Handle.decode HWv).cls = e.kind.cls := hcls.mp hg.1
+      obtain ⟨mb, ml, mp, hkind⟩ := hmem.mp hg.2
+      have hkindCls : e.kind.cls = .mem := by rw [hkind]; rfl
+      have hwf : Wf (Hw.abs sigma) :=
+        (Machines.Lnp64u.wfa_invariant m hwfm (Hw.abs sigma) hsr).1
+      have hok : ∀ d : DomainId, d = E →
+          (Hw.revOkE d).eval sigma = 1#1 := by
+        intro d hd
+        subst d
+        unfold Hw.revOkE Hw.okOf Hw.revChecks Hw.andAll
+        change ~~~(~~~((Hw.revSel E).live.eval sigma)) &&&
+          ~~~(~~~((Expr.and (Hw.revSel E).clsOk
+            (Hw.kIsMem (Hw.revSel E).kindW)).eval sigma)) = 1#1
+        rw [hliv1, hgood]
+        decide
+      have hkills : ∀ dm sl, (Hw.killedByCoreE dm sl).eval sigma =
+          (Hw.revKilled dm sl).eval sigma :=
+        killedByCoreE_rev_eval sigma E hret hif hdrop hrev hcall hreturn hok
+      let RD : RegId := (operandsOf W).rd
+      let tau := revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)
+      have hrd : (Hw.rdE.eval sigma).toNat = RD.val := rfl
+      have hspec : corePhase m (refillPhase m (Hw.abs sigma)) = tau := by
+        rw [hcore0, hDO]
+        simp only [specM_bind, SpecM.get, SpecM.require,
+          SpecM.reg,
+          Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+          SpecM.modify, specM_pure, hRD, hlcS]
+        rw [show decide ((Handle.decode HWv).cls = e.kind.cls) = true from
+          decide_eq_true hclsSpec]
+        simp only [reduceIte, specM_pure]
+        rw [show decide (e.kind.cls = .mem) = true from
+          decide_eq_true hkindCls]
+        simp only [reduceIte, specM_pure]
+        rw [revRetireBase_marks]
+        rfl
+      have hcoreR : ∀ rn w,
+          ((Hw.coreAct m).run sigma ((Hw.refillAct m).run sigma sigma)).regs
+              rn w =
+            ((Act.seq (.write 1 "if_v" (.lit 0))
+              (revSuccessArmA E)).run sigma
+                ((Hw.refillAct m).run sigma sigma)).regs rn w := by
+        intro rn w
+        rw [coreAct_run_retire_eq m sigma _ hifv hcl,
+          retireAct_run_regs sigma _ E rfl rn w, hsel]
+        rw [if_neg (by
+          show ¬(~~~((Hw.revSel E).live.eval sigma) = 1#1)
+          rw [hliv1]
+          decide), if_neg (by
+          show ¬(~~~((Expr.and (Hw.revSel E).clsOk
+            (Hw.kIsMem (Hw.revSel E).kindW)).eval sigma) = 1#1)
+          rw [hgood]
+          decide)]
+        rfl
+      refine square_retire_kill m hwfm hfit sigma hsync hifv hcl
+        (revSuccessArmA E) tau hcoreR (ifv_notin_revSuccessA E) hspec
+        ?_ ?_ ?_ ?_ ?_ ?_
+      · intro c
+        exact absDom_revSuccessA_refill m hwfm hfit sigma hsync hrv hifv
+          hopc hcl hwf E RD hrd c
+      · intro g
+        exact absGate_revSuccessA_refill m hwfm hfit sigma hsync E RD g
+      · exact absMover_moverAct_revAbstractSuccess m sigma
+          ((Hw.coreAct m).run sigma ((Hw.refillAct m).run sigma sigma)) E RD
+          hrv hifv hopc hcl hkills hnew hwf
+      · intro a
+        apply moverAct_mem_revAbstractSuccess m sigma
+          ((Hw.coreAct m).run sigma ((Hw.refillAct m).run sigma sigma)) E RD
+          hrv hifv hopc hcl hkills hnew hwf
+        · intro ow sa
+          exact sAuth_rev_eval m hwfm hfit sigma hsync hrv hifv hopc hcl
+            hwf E RD hrd hkills hmapz hunmapz ow sa
+        · intro b
+          exact coreAct_mem_revAbstractSuccess m hwfm hfit sigma hsync hrv
+            hifv hopc hcl hwf E RD hrd hifsel hifexcl hrev (hok E rfl)
+            hkills hmapz hunmapz b
+        · intro job habs hlive sc
+          rw [srcWord_quiescent sigma hswz sc]
+          exact (revAbstractSuccess_mem_of_surviving_job m sigma E RD job
+            habs hlive (sc.eval sigma)).symm
+      · rw [← hspec, corePhase_cycle, refillPhase_cycle]
+        rfl
+      · rw [← hspec, hcore0, Machines.Lnp64u.Wip.retire_inflight]
+    · have hbadE : (Expr.not (Expr.and (Hw.revSel E).clsOk
+          (Hw.kIsMem (Hw.revSel E).kindW))).eval sigma = 1#1 := by
+        show ~~~((Expr.and (Hw.revSel E).clsOk
+          (Hw.kIsMem (Hw.revSel E).kindW)).eval sigma) = 1#1
+        rw [bv1_ne_one.mp hgood]
+        decide
+      have hbad : ∀ d : DomainId, d = E →
+          (Hw.revOkE d).eval sigma = 0#1 := by
+        intro d hd
+        subst d
+        unfold Hw.revOkE Hw.okOf Hw.revChecks Hw.andAll
+        change ~~~(~~~((Hw.revSel E).live.eval sigma)) &&&
+          ~~~(~~~((Expr.and (Hw.revSel E).clsOk
+            (Hw.kIsMem (Hw.revSel E).kindW)).eval sigma)) = 0#1
+        rw [hliv1]
+        rw [bv1_ne_one.mp hgood]
+        decide
+      have hin : Inert sigma := Inert.of_failed_rev sigma E hret hif hdrop
+        hrev hcall hreturn hbad hnew
+      refine retire_err_common_mem m hwfm hfit sigma hsync hifv hcl hin
+        hmapz hunmapz hswz (hcoremem_of_revOk_zero (hbad E rfl)) E rfl
+        Errno.badCap.toWord ?_ ?_
+      · intro acc
+        rw [hsel acc, if_neg (by
+          show ¬(~~~((Hw.revSel E).live.eval sigma) = 1#1)
+          rw [hliv1]
+          decide), if_pos hbadE]
+        rfl
+      · rw [hcore0, hDO]
+        simp only [specM_bind, SpecM.get, SpecM.require,
+          SpecM.reg,
+          Machines.Lnp64u.Isa.capLive, SpecM.set, SpecM.setReg,
+          SpecM.modify, specM_pure, hRD, hlcS]
+        by_cases hc : (Handle.decode HWv).cls = e.kind.cls
+        · rw [show decide ((Handle.decode HWv).cls = e.kind.cls) = true from
+            decide_eq_true hc]
+          simp only [reduceIte, specM_pure]
+          have hcls1 : (Hw.revSel E).clsOk.eval sigma = 1#1 := hcls.mpr hc
+          have hmem0 : ¬((Hw.kIsMem (Hw.revSel E).kindW).eval sigma =
+              1#1) := by
+            intro hm
+            exact hgood ((bv1_and_eq_one _ _).mpr ⟨hcls1, hm⟩)
+          have hnmem : ¬(∃ mb ml mp, e.kind = .mem mb ml mp) := by
+            intro hm
+            exact hmem0 (hmem.mpr hm)
+          cases hk : e.kind with
+          | mem mb ml mp => exact absurd ⟨mb, ml, mp, hk⟩ hnmem
+          | gate g =>
+              have hgm : ¬(CapKind.gate g).cls = CapClass.mem := by
+                simp [CapKind.cls]
+              rw [show decide ((CapKind.gate g).cls = CapClass.mem) = false
+                from decide_eq_false hgm]
+              rfl
+        · rw [show decide ((Handle.decode HWv).cls = e.kind.cls) = false
+            from decide_eq_false hc]
+          rfl
+
 end Machines.Lnp64u.Theorems.RMC
