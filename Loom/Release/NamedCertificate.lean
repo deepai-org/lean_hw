@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.Certificate
+import Loom.Release.KernelDecide
 
 /-!
 # Compact name-based release certificates
@@ -64,7 +65,8 @@ inductive PortsCert (aw dw : Nat) : Nat → Type where
       PortsCert aw dw (n + 1)
 
 structure MemCert (d : Design) (m : MemDecl) where
-  ports : PortsCert m.addrWidth m.dataWidth (Compile.numPorts d m.name)
+  numPorts : Nat
+  ports : PortsCert m.addrWidth m.dataWidth numPorts
 
 inductive MemsCert (d : Design) : List MemDecl → Type where
   | nil : MemsCert d []
@@ -181,9 +183,14 @@ private def MemsCert.materialize (program : SSA.Program) (env : SSA.Env)
     (d : Design) : {mems : List MemDecl} → MemsCert d mems →
       Option (ArtifactCert.MemsCert d mems)
   | [], .nil => some .nil
-  | m :: _, .cons head tail => do
-      pure (.cons ⟨← head.ports.materialize program env m.name d.rules 0⟩
+  | m :: _, .cons head tail =>
+    if h : head.numPorts = Compile.numPorts d m.name then do
+      let ports : PortsCert m.addrWidth m.dataWidth
+          (Compile.numPorts d m.name) :=
+        Eq.mp (congrArg (PortsCert m.addrWidth m.dataWidth) h) head.ports
+      pure (.cons ⟨← ports.materialize program env m.name d.rules 0⟩
         (← tail.materialize program env d))
+    else none
 
 /-- Resolve a compact name certificate to the already-proved generic
 certificate type. Failure is explicit and makes the release checker reject. -/

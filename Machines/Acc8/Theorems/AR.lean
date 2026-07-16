@@ -209,8 +209,12 @@ theorem square (σ : Loom.Hw.St) :
 private theorem abs_reset (prog : BitVec 8 → BitVec 16) :
     Core.abs (Core.design prog).reset = boot prog := by
   simp only [Core.abs, Core.design, Design.reset, boot]
-  refine St.mk.injEq .. ▸ ⟨?_, ?_, ?_, ?_, ?_⟩ <;>
-    simp [List.foldl, RegEnv.set]
+  refine St.mk.injEq .. ▸ ⟨?_, ?_, ?_, ?_, ?_⟩
+  all_goals simp [List.foldl, RegEnv.set]
+  funext address
+  have haddress : address.toNat < 256 := by
+    simpa using address.isLt
+  simp [haddress]
 
 /-- **A-R.** The core refines the spec. -/
 theorem refines (prog : BitVec 8 → BitVec 16) :
