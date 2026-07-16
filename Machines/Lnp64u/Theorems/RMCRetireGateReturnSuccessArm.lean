@@ -120,6 +120,61 @@ theorem movKilledE_return_nonzero_iff (σ : Loom.Hw.St) (d : DomainId)
   · have hv0 : σ.regs "mov_v" 1 = 0#1 := bv1_ne_one.mp hv
     simp [absMover_none σ hv, hv0]
 
+/-- A non-null return reply is the recipient-relative handle selected by the
+shared transfer machinery. -/
+theorem gateReturnReplyE_eval_nonzero (σ : Loom.Hw.St) (d : DomainId)
+    (cls : CapClass) (hnz : (Hw.retNZ d).eval σ = 1#1)
+    (hcls : (Hw.field (Hw.retSel d).kindW 0 1).eval σ =
+      if cls = .gate then 1#1 else 0#1) :
+    (gateReturnReplyE d).eval σ =
+      let caller : DomainId := finOfBv (by decide) ((Hw.retCl d).eval σ)
+      Handle.encode
+        ⟨finOfBv (by decide) ((Hw.freeSlotIdx caller).eval σ),
+          (Hw.genOfE caller (Hw.freeSlotIdx caller)).eval σ, cls⟩ := by
+  simp only [gateReturnReplyE, Expr.eval]
+  rw [hnz, if_pos rfl]
+  exact transferHandleAt_eval σ (Hw.retCl d) (Hw.retSel d) cls hcls
+
+/-- The five concrete return checks all pass under the successful-arm
+hypotheses. -/
+theorem retOkE_of_passes (σ : Loom.Hw.St) (d : DomainId) (gid : GateId)
+    (act : Activation)
+    (hserv : ((Hw.abs σ).doms d).serving = some gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hstale : (Expr.and (Hw.retNZ d) (.not (Hw.retSel d).live)).eval σ ≠ 1#1)
+    (hclass : (Expr.and (Hw.retNZ d) (.not (Hw.retSel d).clsOk)).eval σ ≠ 1#1)
+    (hblocked : (Expr.and (Hw.retNZ d)
+      (Hw.transferBlocked d (Hw.retCl d) (Hw.retSel d))).eval σ ≠ 1#1) :
+    (Hw.retOkE d).eval σ = 1#1 := by
+  apply (okOf_eval_iff σ (Hw.retChecks d)).mpr
+  have hgid := retGid_eval_selected σ d gid hserv
+  have hservV : σ.regs (Hw.dsrvV d) 1 = 1#1 := by
+    change (if σ.regs (Hw.dsrvV d) 1 = 1#1 then some _ else none) =
+      some gid at hserv
+    by_contra hv
+    rw [if_neg hv] at hserv
+    contradiction
+  have hactV : σ.regs (Hw.gactV gid) 1 = 1#1 := by
+    change (if σ.regs (Hw.gactV gid) 1 = 1#1 then some _ else none) =
+      some act at hact
+    by_contra hv
+    rw [if_neg hv] at hact
+    contradiction
+  intro x hx
+  simp only [Hw.retChecks, List.mem_cons, List.not_mem_nil, or_false] at hx
+  rcases hx with hx | hx | hx | hx | hx
+  · subst x
+    simp [Expr.eval, hservV]
+  · subst x
+    have hactive : (Hw.muxFin (fun g => .reg 1 (Hw.gactV g))
+        (Hw.retGid d)).eval σ = 1#1 := by
+      rw [muxFin_eval (by decide : 2 ^ 2 = numGates), hgid]
+      exact hactV
+    simp [Expr.eval, hactive]
+  · simpa [hx] using hstale
+  · simpa [hx] using hclass
+  · simpa [hx] using hblocked
+
 /-- Successful non-null return memory commit, specialized from the shared
 sweeping-operation bridge. -/
 theorem coreAct_mem_gateReturn_success_nonzero (m : Manifest)
