@@ -149,11 +149,16 @@ at the refresh date.
   (a) complete ordered hierarchical line/chunk equality succeeds in 7.7 s,
   1.84 GB RSS, producing a 51 MB proof object; (b) a flat line list overflows
   the native stack; and (c) kernel normalization of one concatenated `String`
-  reached 28.9 GB RSS in under two minutes before termination. Therefore the
-  release theorem must compare bounded chunks and derive whole-stream equality
-  through a generic concatenation congruence; it must never normalize a
-  monolithic artifact string. The concrete renderer/elaborator and both
-  release witnesses remain open.
+  reached 28.9 GB RSS in under two minutes before termination. A further
+  control showed that even one theorem mapping an identity renderer across all
+  187,948 hierarchically stored lines overflows the native stack (34.5 s,
+  2.40 GB RSS), whereas three representative bounded 32-line render leaves
+  check in 1.77 s total (1.40 GB process RSS). Therefore the generator must
+  emit local render proofs and a balanced proof tree; the root composes
+  already-checked equalities without re-evaluating its children. Whole-stream
+  equality follows abstractly from that tree and a generic concatenation
+  congruence. The concrete renderer/elaborator, balanced composition prototype,
+  and both release witnesses remain open.
 - **Finding 4 — reset realization is below the proof boundary.** The R-MC
   reset obligations can show that the EDSL reset state abstracts to
   `Manifest.initState`; they do not show that an electrical or SoC-level
@@ -232,9 +237,10 @@ at the refresh date.
    `StallFree` is deleted from T6.
 3. ● Complete witnessed release validation: define the minimal concrete SSA
    syntax, prove arbitrary-witness renderer/elaborator soundness, generate
-   Acc8 and LNP64-µ witnesses, and kernel-check exact ordered chunk equality.
-   The full-size feasibility spike is complete; monolithic `String` reduction
-   is explicitly ruled out by measurement.
+   Acc8 and LNP64-µ witnesses, and kernel-check bounded render leaves composed
+   by a balanced proof tree. The full-size feasibility spike is complete:
+   local leaves are viable, while monolithic `String` reduction and a single
+   full-artifact render traversal are explicitly ruled out by measurement.
 4. DONE 2026-07-04: `Tests.Lnp64uWitnesses` gives kernel-checked witnesses
    for finite manifest-side hypotheses, and D11 deleted T6's semantic
    `StallFree` side condition.
