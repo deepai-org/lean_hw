@@ -462,6 +462,37 @@ theorem sAuth_return_retire_transfer (m : Manifest) (σ : Loom.Hw.St)
     hmapz hunmapz hregions hbacking hwf ow sa
   simpa [transferStructural, τc, base] using h
 
+/-- A structural return transfer commutes with the eager retirement PC
+increment: the successful return tail restores the callee PC and resumes the
+distinct caller, so the prefixed and hardware-base forms coincide. -/
+theorem returnAbstractSuccess_transfer_state (m : Manifest)
+    (σ : Loom.Hw.St) (d : DomainId) (gid : GateId) (act : Activation)
+    (reply : Loom.Word32) (hne : d ≠ act.caller) (NS : Slot)
+    (kind : CapKind) (moved : Option (LineageId × CapRef))
+    (oldRef newRef : CapRef) (S : Slot) :
+    let base : MachineState :=
+      { refillPhase m (Hw.abs σ) with inflight := none }
+    let prefixed := base.setDom d fun ds => { ds with pc := ds.pc + 1 }
+    let hwStruct := transferStructural base act.caller NS kind moved
+      oldRef newRef d S
+    let specStruct := (transferStructural prefixed act.caller NS kind moved
+      oldRef newRef d S).sweepMover
+    returnAbstractSuccess specStruct d gid act reply =
+      returnAbstractSuccess hwStruct.sweepMover d gid act reply := by
+  dsimp only
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  let hwStruct := transferStructural base act.caller NS kind moved
+    oldRef newRef d S
+  have hcomm : transferStructural
+        (base.setDom d fun ds => { ds with pc := ds.pc + 1 })
+        act.caller NS kind moved oldRef newRef d S =
+      hwStruct.setDom d (fun ds => { ds with pc := ds.pc + 1 }) := by
+    simpa [hwStruct] using transferStructural_setPc base d act.caller NS
+      kind moved oldRef newRef S hne
+  rw [hcomm, sweepMover_setPc]
+  exact returnAbstractSuccess_setPc hwStruct.sweepMover d gid act reply hne
+
 /-- A successful null reply has no core kill footprint. -/
 theorem Inert.of_successful_gateReturn_zero (σ : Loom.Hw.St)
     (E : DomainId)
