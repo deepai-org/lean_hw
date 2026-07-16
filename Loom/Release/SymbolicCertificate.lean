@@ -370,6 +370,35 @@ theorem nextRegMatches_seq_output
       (.seq none leftCert rightCert) = true := by
   simp only [nextRegMatches, hleft, hright, Bool.true_and, Bool.or_true]
 
+theorem nextRegMatches_ite_written
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (guard : Loom.Hw.Expr 1)
+    (thenAction elseAction : Loom.Hw.Act) (current : Option Ref)
+    (number : Nat) (guardRef thenRef elseRef : Ref)
+    (thenCert elseCert : NextRegCert)
+    (hwrites : (Loom.Hw.Compile.writesRegB register width thenAction ||
+      Loom.Hw.Compile.writesRegB register width elseAction) = true)
+    (hlookup : lookupIndexed? wires table number = some
+      { width := width, rhs := .mux guardRef thenRef elseRef })
+    (hguard : indexedExprMatches wires table
+      (Loom.Hw.Compile.compileExpr guard) guardRef = true)
+    (hthen : nextRegMatches wires table register width thenAction current
+      thenRef thenCert = true)
+    (helse : nextRegMatches wires table register width elseAction current
+      elseRef elseCert = true) :
+    nextRegMatches wires table register width
+      (.ite guard thenAction elseAction) current (.wire number)
+      (.ite thenCert elseCert) = true := by
+  simp [nextRegMatches, hwrites, hlookup, hguard, hthen, helse]
+
+theorem nextRulesMatches_nil
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (current out : Ref)
+    (hcurrent : current = out) :
+    nextRulesMatches wires table register width [] (some current) out .nil = true := by
+  subst out
+  simp only [nextRulesMatches, beq_self_eq_true]
+
 theorem nextRulesMatches_cons_named
     (wires : Rope (List IndexedWire)) (table : WireTable)
     (register : String) (width : Nat) (rule : Loom.Hw.Rule)
