@@ -475,4 +475,52 @@ theorem coreAct_mem_revAbstractSuccess (m : Manifest) (hwfm : m.WF)
             · simp [MachineState.write, ha]
           · rw [if_neg hc, if_neg hc]
 
+/-- If revoke leaves the current Mover job live, its ISA-level sweep writes
+no status word, so the named success state's memory is the pre-cycle memory. -/
+theorem revAbstractSuccess_mem_of_surviving_job (m : Manifest)
+    (sigma : Loom.Hw.St) (E : DomainId) (RD : RegId) (job : MoverJob)
+    (habs : Hw.absMover sigma = some job)
+    (hlive : ((revAbstractSuccess m (Hw.abs sigma) E RD
+      (rvRoot sigma)).liveRef job.src &&
+      (revAbstractSuccess m (Hw.abs sigma) E RD
+        (rvRoot sigma)).liveRef job.dst) = true)
+    (b : Addr) :
+    (revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)).mem b =
+      sigma.mems "mem" b.toNat 32 := by
+  let base := (((revRetireBase m (Hw.abs sigma) E).destroyMarked
+    ((Hw.abs sigma).marks (rvRoot sigma))).sweepRegions)
+  let target := revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)
+  have hmover : base.mover = some job := by
+    change (Hw.abs sigma).mover = some job
+    exact habs
+  have hliveBase : (base.liveRef job.src && base.liveRef job.dst) = true := by
+    have hsrc : base.liveRef job.src = target.liveRef job.src := by
+      unfold target revAbstractSuccess
+      change base.liveRef job.src =
+        (base.sweepMover.setDom E (fun ds => ds.setReg RD 0)).liveRef job.src
+      unfold MachineState.liveRef DomainState.liveCap
+      by_cases hd : job.src.dom = E
+      · rw [hd]
+        simp [MachineState.setDom]
+      · simp [MachineState.setDom, hd]
+    have hdst : base.liveRef job.dst = target.liveRef job.dst := by
+      unfold target revAbstractSuccess
+      change base.liveRef job.dst =
+        (base.sweepMover.setDom E (fun ds => ds.setReg RD 0)).liveRef job.dst
+      unfold MachineState.liveRef DomainState.liveCap
+      by_cases hd : job.dst.dom = E
+      · rw [hd]
+        simp [MachineState.setDom]
+      · simp [MachineState.setDom, hd]
+    rw [hsrc, hdst]
+    exact hlive
+  change target.mem b = _
+  unfold target revAbstractSuccess
+  change base.sweepMover.mem b = _
+  unfold MachineState.sweepMover
+  rw [hmover]
+  simp only
+  rw [if_pos hliveBase]
+  rfl
+
 end Machines.Lnp64u.Theorems.RMC
