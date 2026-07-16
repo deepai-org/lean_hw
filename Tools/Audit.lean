@@ -30,13 +30,35 @@ Exit code 0 iff all checks pass, so CI is `lake exe audit`.
 
 open Lean
 
-instance : MonadEnv (StateM Environment) where
-  getEnv := get
-  modifyEnv f := modify f
+/-- State shared by all axiom-closure queries. Lean's stock `collectAxioms`
+memoizes only within one query; the audit asks thousands of overlapping
+queries, so retaining completed closures is essential. -/
+structure AxiomCache where
+  done : NameMap (Array Name) := {}
+  visiting : NameSet := {}
 
-/-- Pure axiom collection against a fixed environment. -/
-def collectFor (env : Environment) (n : Name) : Array Name :=
-  ((collectAxioms n : StateM Environment (Array Name)).run env).1
+private def unionAxioms (a b : Array Name) : Array Name :=
+  b.foldl (fun out n => if out.contains n then out else out.push n) a
+
+/-- Bottom-up axiom closure with a global memo table. `fuel` is initialized
+to the number of declarations, which bounds every simple path in the
+constant-dependency graph; `visiting` cuts mutual-inductive cycles. -/
+private def collectForMemo (env : Environment) : Nat → Name →
+    StateM AxiomCache (Array Name)
+  | 0, _ => pure #[]
+  | fuel + 1, n => do
+      if let some out := (← get).done.find? n then return out
+      if (← get).visiting.contains n then return #[]
+      modify fun s => { s with visiting := s.visiting.insert n }
+      let mut out := #[]
+      if let some info := env.constants.find? n then
+        for dep in info.getUsedConstantsAsSet.toArray do
+          out := unionAxioms out (← collectForMemo env fuel dep)
+        if let .axiomInfo _ := info then
+          out := unionAxioms out #[n]
+      modify fun s =>
+        { done := s.done.insert n out, visiting := s.visiting.erase n }
+      return out
 
 /-- Axioms every classical Lean development uses; anything else is policy. -/
 def whitelistedAxioms : List Name :=
@@ -123,6 +145,8 @@ def main : IO UInt32 := do
   let mut ledger : Array (Name × String × Array Name) := #[]
   let mut unsafeDecls : Array Name := #[]
   let mut implementedByDecls : Array (Name × Name) := #[]
+  let mut axiomCache : AxiomCache := {}
+  let axiomFuel := env.constants.toList.length + 1
   for (name, info) in env.constants.toList do
     match env.getModuleIdxFor? name with
     | none => pure ()
@@ -148,7 +172,9 @@ def main : IO UInt32 := do
           unless permittedAxiomDecls.contains name do
             failures := failures.push s!"axiom policy: `axiom {name}` in {mod}"
         -- Classify
-        let axioms := collectFor env name
+        let (axioms, nextCache) :=
+          (collectForMemo env axiomFuel name).run axiomCache
+        axiomCache := nextCache
         if inLedger name && !name.isInternalDetail then
           if let .thmInfo _ := info then
             ledger := ledger.push (name, classify axioms, axioms)
