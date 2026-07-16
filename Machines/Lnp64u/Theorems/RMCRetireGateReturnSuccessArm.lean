@@ -525,6 +525,20 @@ private def gateReturnTransferPost (m : Manifest) (σ : Loom.Hw.St)
     (gateReturnHwStruct m σ d act S NS kind moved oldRef newRef).sweepMover
     d gid act reply
 
+private theorem returnAbstractSuccess_sweepMover_doms (τ : MachineState)
+    (d : DomainId) (gid : GateId) (act : Activation) (reply : Loom.Word32)
+    (x : DomainId) :
+    (returnAbstractSuccess τ d gid act reply).doms x =
+      (returnAbstractSuccess τ.sweepMover d gid act reply).doms x := by
+  simp [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update]
+
+private theorem returnAbstractSuccess_sweepMover_gates (τ : MachineState)
+    (d : DomainId) (gid : GateId) (act : Activation) (reply : Loom.Word32)
+    (g : GateId) :
+    (returnAbstractSuccess τ d gid act reply).gates g =
+      (returnAbstractSuccess τ.sweepMover d gid act reply).gates g := by
+  simp [returnAbstractSuccess, MachineState.setDom]
+
 /-- Specification normalization shared by the root and derived successful
 return transfers. -/
 private theorem gateReturn_success_transfer_spec (m : Manifest)
@@ -598,6 +612,222 @@ private theorem gateReturn_success_transfer_spec (m : Manifest)
     gateReturnHwStruct, gateReturnTransferBase, τ0, base] using
       returnAbstractSuccess_transfer_state m σ d gid act reply hne NS kind
         moved oldRef newRef S
+
+/-- Common full-cycle proof for root and derived successful return transfers. -/
+private theorem square_retire_gateReturn_success_transfer
+    (m : Manifest) (σ : Loom.Hw.St) (d : DomainId) (gid : GateId)
+    (act : Activation) (reply : Loom.Word32) (S NS : Slot)
+    (kind : CapKind) (moved : Option (LineageId × CapRef))
+    (oldRef newRef : CapRef)
+    (hz0 : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (hd : d = finOfBv (by decide) (σ.regs "if_dom" 2))
+    (hifsel : (Hw.ifDomIs d).eval σ = 1#1)
+    (hifexcl : ∀ x : DomainId, x ≠ d → (Hw.ifDomIs x).eval σ ≠ 1#1)
+    (hserv : ((Hw.abs σ).doms d).serving = some gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hne : d ≠ act.caller)
+    (hslot : (Hw.retSel d).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ d).eval σ = 1#1)
+    (hok : (Hw.retOkE d).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled d dm sl).eval σ)
+    (hnew : ∀ x : DomainId, (Hw.newJobSet x).eval σ = 0#1)
+    (hmapz : ∀ (x : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs x, Hw.isMn "map", Hw.mapOkE x,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (x : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs x, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hswz : ∀ (x : DomainId) (sc : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs x, Hw.isMn "sw",
+        Hw.domCoversE x
+          (Hw.field (.add (Hw.readReg x Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg x Hw.rs1E) Hw.immX) 0 12)
+          sc]).eval σ = 0#1)
+    (hwfAbs : Wf (Hw.abs σ))
+    (hfree : ((Hw.abs σ).doms act.caller).caps NS = none)
+    (htransfer : Machines.Lnp64u.Isa.transferByHandle d act.caller
+      ((Hw.retW d).eval σ) (gateReturnPrefixed m σ d) =
+        .ok reply (gateReturnSpecStruct m σ d act S NS kind moved
+          oldRef newRef))
+    (habsTransfer :
+      let acc0 := (Act.write 1 "if_v" (.lit 0)).run σ
+        ((Hw.refillAct m).run σ σ)
+      Hw.abs ((Hw.transferA d (Hw.retCl d) (Hw.retSel d)).run σ acc0) =
+        gateReturnHwStruct m σ d act S NS kind moved oldRef newRef)
+    (hreply : (gateReturnReplyE d).eval σ = reply) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  let acc0 := (Act.write 1 "if_v" (.lit 0)).run σ
+    ((Hw.refillAct m).run σ σ)
+  let X := gateReturnSuccessA d
+  let hwStruct := gateReturnHwStruct m σ d act S NS kind moved oldRef newRef
+  let τ2 := gateReturnTransferPost m σ d gid act reply S NS kind moved
+    oldRef newRef
+  have hspec : corePhase m (refillPhase m (Hw.abs σ)) = τ2 := by
+    exact gateReturn_success_transfer_spec m σ d gid act reply S NS kind
+      moved oldRef newRef hz0 hifv hcl hopc hd hserv hact hne htransfer
+  have hgid := retGid_eval_selected σ d gid hserv
+  have hcaller := retCl_eval_selected σ d gid act hserv hact
+  have habsRet : Hw.abs ((gateReturnSuccessA d).run σ acc0) =
+      returnAbstractSuccess hwStruct d gid act reply := by
+    rw [abs_gateReturnSuccessA σ acc0 d gid act reply hne hgid hcaller hact
+      hreply]
+    rw [gateReturnTransferA_run_nonzero σ acc0 d hnz, habsTransfer]
+  have hcoreR : ∀ (rn : String) (w : Nat),
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).regs rn w =
+        ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+          ((Hw.refillAct m).run σ σ)).regs rn w := by
+    intro rn w
+    have hdval : d.val = (σ.regs "if_dom" 2).toNat := by
+      rw [hd]
+      rfl
+    rw [coreAct_run_retire_eq m σ _ hifv hcl,
+      retireAct_run_regs σ _ d hdval rn w,
+      retireFor_gateReturn_success σ _ d hopc hok]
+    rfl
+  have hframes := returnAbstractSuccess_structural_frames
+    hwStruct.sweepMover d gid act reply
+  have habsD : ∀ x, Hw.absDom
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+        ((Hw.refillAct m).run σ σ)) x = τ2.doms x := by
+    intro x
+    change Hw.absDom ((gateReturnSuccessA d).run σ acc0) x = τ2.doms x
+    rw [show Hw.absDom ((gateReturnSuccessA d).run σ acc0) x =
+      (returnAbstractSuccess hwStruct d gid act reply).doms x from
+        congrFun (congrArg MachineState.doms habsRet) x]
+    change (returnAbstractSuccess hwStruct d gid act reply).doms x =
+      (returnAbstractSuccess hwStruct.sweepMover d gid act reply).doms x
+    exact returnAbstractSuccess_sweepMover_doms hwStruct d gid act reply x
+  have habsG : ∀ g, Hw.absGate
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+        ((Hw.refillAct m).run σ σ)) g = τ2.gates g := by
+    intro g
+    change Hw.absGate ((gateReturnSuccessA d).run σ acc0) g = τ2.gates g
+    rw [show Hw.absGate ((gateReturnSuccessA d).run σ acc0) g =
+      (returnAbstractSuccess hwStruct d gid act reply).gates g from
+        congrFun (congrArg MachineState.gates habsRet) g]
+    change (returnAbstractSuccess hwStruct d gid act reply).gates g =
+      (returnAbstractSuccess hwStruct.sweepMover d gid act reply).gates g
+    exact returnAbstractSuccess_sweepMover_gates hwStruct d gid act reply g
+  have hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = d ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ2.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen) := by
+    intro job hjob hout
+    unfold DomainState.liveCap
+    rw [show (τ2.doms job.src.dom).caps =
+        (hwStruct.sweepMover.doms job.src.dom).caps from hframes.1 _,
+      show (τ2.doms job.src.dom).slotGen =
+        (hwStruct.sweepMover.doms job.src.dom).slotGen from hframes.2.1 _,
+      sweepMover_doms]
+    exact transferStructural_retire_liveKind m σ act.caller NS kind moved
+      oldRef newRef d S job.src hfree
+      (moverEndpoints_live hwfAbs job hjob).1 hout
+  have hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = d ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ2.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen) := by
+    intro job hjob hout
+    unfold DomainState.liveCap
+    rw [show (τ2.doms job.dst.dom).caps =
+        (hwStruct.sweepMover.doms job.dst.dom).caps from hframes.1 _,
+      show (τ2.doms job.dst.dom).slotGen =
+        (hwStruct.sweepMover.doms job.dst.dom).slotGen from hframes.2.1 _,
+      sweepMover_doms]
+    exact transferStructural_retire_liveKind m σ act.caller NS kind moved
+      oldRef newRef d S job.dst hfree
+      (moverEndpoints_live hwfAbs job hjob).2 hout
+  have hjob : τ2.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = d ∧ job.src.slot = S) ∨
+              (job.dst.dom = d ∧ job.dst.slot = S)
+          then none else some job := by
+    rw [show τ2.mover = hwStruct.sweepMover.mover from hframes.2.2.2.2.1]
+    exact transferStructural_retire_sweepMover_mover m σ act.caller NS kind
+      moved oldRef newRef d S hfree hwfAbs
+  have hauth : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun x =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit x), Hw.rgnVPostE x r,
+            Hw.rgnCoversVal (Hw.rgnValPostE x r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ2.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true := by
+    intro ow sa
+    unfold MachineState.domCovers
+    rw [show (τ2.doms _).regions = (hwStruct.sweepMover.doms _).regions
+      from hframes.2.2.2.1 _, sweepMover_doms]
+    exact sAuth_return_retire_transfer m σ d act.caller S NS kind moved
+      oldRef newRef hslot hnz hkills hmapz hunmapz hfree hwfAbs ow sa
+  have hmem : ∀ b : Addr,
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+        b.toNat 32 = τ2.mem b := by
+    intro b
+    apply coreAct_mem_gateReturn_success_nonzero m σ d S hwStruct τ2
+      hifv hcl hifsel hifexcl hopc hslot hnz hok hkills hmapz hunmapz
+      (sAuth_return_retire_transfer m σ d act.caller S NS kind moved oldRef
+        newRef hslot hnz hkills hmapz hunmapz hfree hwfAbs) ?_ ?_ b
+    · intro a
+      change (gateReturnHwStruct m σ d act S NS kind moved oldRef newRef).mem a =
+        σ.mems "mem" a.toNat 32
+      exact retireBase_mem m σ a
+    · intro a
+      rw [show τ2.mem = hwStruct.sweepMover.mem from hframes.2.2.2.2.2]
+      exact transferStructural_retire_sweepMover_mem m σ act.caller NS kind
+        moved oldRef newRef d S hfree hwfAbs a
+  have hsw : ∀ job, Hw.absMover σ = some job →
+      ¬((job.src.dom = d ∧ job.src.slot = S) ∨
+        (job.dst.dom = d ∧ job.dst.slot = S)) →
+      ∀ sc : Expr 12, Expr.eval σ
+        (((List.finRange numDomains).foldr
+          (fun x acc' =>
+            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs x, Hw.isMn "sw",
+                Hw.domCoversE x
+                  (Hw.field (.add (Hw.readReg x Hw.rs1E) Hw.immX) 0 12)
+                  ⟨false, true, false⟩,
+                .eq (Hw.field (.add (Hw.readReg x Hw.rs1E) Hw.immX)
+                  0 12) sc]) (Hw.readReg x Hw.rs2E) acc')
+          (.memRead 32 "mem" sc))) = τ2.mem (sc.eval σ) := by
+    intro job hjob' hsurv sc
+    rw [srcWord_quiescent σ hswz sc,
+      show τ2.mem = hwStruct.sweepMover.mem from hframes.2.2.2.2.2]
+    change σ.mems "mem" (sc.eval σ).toNat 32 =
+      (transferStructural
+        { refillPhase m (Hw.abs σ) with inflight := none }
+        act.caller NS kind moved oldRef newRef d S).sweepMover.mem (sc.eval σ)
+    rw [transferStructural_retire_sweepMover_mem m σ act.caller NS kind
+      moved oldRef newRef d S hfree hwfAbs (sc.eval σ), hjob']
+    simp [hsurv]
+  apply square_retire_gateReturn_payload m σ d S X τ2 hslot hnz hkills
+    hnew hcoreR
+  · unfold X
+    exact ifv_notin_gateReturnSuccess d
+  · exact hspec
+  · exact habsD
+  · exact habsG
+  · exact hkindS
+  · exact hkindD
+  · exact hjob
+  · exact hauth
+  · exact hmem
+  · exact hsw
+  · rw [← hspec, corePhase_cycle, refillPhase_cycle]
+    rfl
+  · change (returnAbstractSuccess hwStruct.sweepMover d gid act reply).inflight =
+      none
+    simp [returnAbstractSuccess, MachineState.setDom, hwStruct,
+      gateReturnHwStruct, transferStructural, installTransferred,
+      gateReturnTransferBase]
 
 /-- A successful null reply has no core kill footprint. -/
 theorem Inert.of_successful_gateReturn_zero (σ : Loom.Hw.St)
