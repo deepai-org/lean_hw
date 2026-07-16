@@ -1273,6 +1273,70 @@ theorem cycle_ifv_ifword_countdown (m : Manifest) (σ : Loom.Hw.St)
       (by decide +kernel) (by decide +kernel) (by decide +kernel)
       (by decide +kernel) (by decide +kernel)
 
+private theorem ifv_notin_retireFor (E : DomainId) :
+    (("if_v", 1) : String × Nat) ∉ (Hw.retireFor E).regWrites := by
+  fin_cases E <;> decide +kernel
+
+/-- A retiring core cycle clears the in-flight-valid latch. Refill, the
+Mover, and tick do not write it, and the selected retirement circuit runs
+after the retirement skeleton's unconditional clear. -/
+theorem cycle_ifv_retire_zero (m : Manifest) (σ : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2) :
+    ((Hw.core m).cycle σ).regs "if_v" 1 = 0#1 := by
+  rw [core_cycle_unfold]
+  rw [frame (show (("if_v", 1) : String × Nat) ∉ Hw.tickAct.regWrites by
+    decide +kernel)]
+  rw [run_WritesPrefixed (by decide +kernel) 1 _ mover_prefixed]
+  rw [coreAct_run_retire_eq m σ _ hifv hcl]
+  let E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2)
+  rw [retireAct_run_regs σ _ E rfl "if_v" 1]
+  rw [frame (ifv_notin_retireFor E)]
+  rfl
+
+/-- Starting from an idle abstract core, any revoke that appears in flight
+after one step is freshly issued at the instruction's full WCET. In
+particular it cannot already satisfy the post-initialization `RvSync`
+guard. -/
+theorem step_idle_revoke_full_cost (m : Manifest) (τ : MachineState)
+    (hidle : τ.inflight = none) (fl : InFlight)
+    (hfl : (step m τ).inflight = some fl)
+    (hopc : Machines.Lnp64u.sig.opcodeOf fl.word = 18#6) :
+    fl.cyclesLeft = revokeCost := by
+  have hcore : (corePhase m (refillPhase m τ)).inflight = some fl := by
+    rw [← Wip.step_inflight_reduce m τ]
+    exact hfl
+  have hrefill : (refillPhase m τ).inflight = none := by
+    rw [Wip.refillPhase_inflight, hidle]
+  rcases corePhase_cases m (refillPhase m τ) with
+      hcount | hretire | hstall | hfault | hburn | hissue
+  · obtain ⟨fl', hsome, -⟩ := hcount
+    rw [hrefill] at hsome
+    cases hsome
+  · obtain ⟨fl', hsome, -⟩ := hretire
+    rw [hrefill] at hsome
+    cases hsome
+  · rw [hstall.2.2, hrefill] at hcore
+    cases hcore
+  · obtain ⟨e, f, _, _, hhalt⟩ := hfault
+    rw [hhalt, haltWith, haltDom_inflight, hrefill] at hcore
+    cases hcore
+  · obtain ⟨e, w, instr, _, _, _, _, _, _, hset⟩ := hburn
+    rw [hset, setDom_inflight, hrefill] at hcore
+    cases hcore
+  · obtain ⟨e, w, instr, _, _, _, hdec, _, hissued, _⟩ := hissue
+    rw [hissued] at hcore
+    injection hcore with hfl'
+    subst fl
+    have hfind : isa.find? (fun d => d.opcode == (18#6 : BitVec 6)) =
+        some (Machines.Lnp64u.Isa.system.get ⟨2, by decide⟩) := by
+      rfl
+    rw [decode_eq_find, hopc, hfind] at hdec
+    injection hdec with hi
+    subst instr
+    rw [revokeCost_eq_24]
+    rfl
+
 private theorem bv8_sub_one_toNat (x : BitVec 8) (h : 1 ≤ x.toNat) :
     (x - 1).toNat = x.toNat - 1 := by
   rw [BitVec.toNat_sub]
@@ -1364,6 +1428,51 @@ theorem rvSync_cycle_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [hclnat, rvHorizon_pred_double _ hcl2 hcllt]
     exact hv
 
+/-- `RvSync` is preserved by an arbitrary core cycle. Active countdown
+cycles initialize or advance the bounded mark engine; retirement clears
+the latch; and an idle cycle can only introduce a freshly issued revoke at
+`revokeCost`, where the invariant's strict-cost guard is still false. -/
+theorem rvSync_cycle (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hrun : ∀ d : DomainId, σ.regs (Hw.drun d) 2 ≠ 3#2)
+    (hz : R0Zero σ) (hrv : RvSync σ) :
+    RvSync ((Hw.core m).cycle σ) := by
+  by_cases hifv : σ.regs "if_v" 1 = 1#1
+  · by_cases hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat
+    · exact rvSync_cycle_countdown m hwf hfit σ hsync hz hrv hifv hcl2
+    · intro hifv' _ _
+      have hzero := cycle_ifv_retire_zero m σ hifv (by omega)
+      rw [hzero] at hifv'
+      contradiction
+  · have hsquare : Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+      cases hs : schedule m (refillPhase m (Hw.abs σ)) with
+      | none =>
+          exact square_idle_stall m hwf hfit σ hsync hrun hifv hs
+      | some e =>
+          exact square_idle_issue m hwf hfit σ hsync hrun hifv e hs
+    intro hifv' hopc' hcllt'
+    let fl : InFlight :=
+      { dom := finOfBv (by decide)
+          (((Hw.core m).cycle σ).regs "if_dom" 2)
+        word := ((Hw.core m).cycle σ).regs "if_word" 32
+        cyclesLeft := (((Hw.core m).cycle σ).regs "if_cl" 8).toNat }
+    have habsPost : (Hw.abs ((Hw.core m).cycle σ)).inflight = some fl := by
+      simpa [fl] using absInflight_some ((Hw.core m).cycle σ) hifv'
+    have hstep : (step m (Hw.abs σ)).inflight = some fl := by
+      rw [← hsquare]
+      exact habsPost
+    have habsIdle : (Hw.abs σ).inflight = none := by
+      show Hw.absInflight σ = none
+      rw [Hw.absInflight,
+        if_neg (show ¬ σ.regs "if_v" 1 = 1 from hifv)]
+    have hcost := step_idle_revoke_full_cost m (Hw.abs σ) (fl := fl)
+      habsIdle hstep
+      (show Machines.Lnp64u.sig.opcodeOf fl.word = 18#6 from hopc')
+    change (((Hw.core m).cycle σ).regs "if_cl" 8).toNat = revokeCost at hcost
+    omega
+
 /-- At retirement, `RvSync` turns every hidden `rv_r` bit into the exact
 kernel `marks` bit consumed by `destroyMarked`. -/
 theorem rvR_eq_marks_of_sync (σ : Loom.Hw.St) (hrv : RvSync σ)
@@ -1382,17 +1491,9 @@ theorem rvR_eq_marks_of_sync (σ : Loom.Hw.St) (hrv : RvSync σ)
     (nodeCount_le_revokeRetireHorizon _ hcl) c s] at hr
   exact hr
 
-/- Deferred obligations (tier 4, NEXTSTEPS §1.6):
-
-1. `rvInit` establishes `RvSync` at `k = 0` (chains of length < 1:
-   exactly the direct parent-is-root test `rvInit` computes; `2^0`-step
-   chain = one live edge; `rv_j` = the parent's node index).
-2. `rvStep` doubles: `reachRootN (2^k) ∨ (liveChainN (2^k) ∧
-   reachRootN (2^k) at chainEndN (2^k)) = reachRootN (2^(k+1))`, and
-   likewise for `liveChainN`/`chainEndN` composition.
-3. Frame preservation by refill/mover/tick and vacuity at issue/retire.
-4. The retirement arm uses the proved `rvR_eq_marks_of_sync` bridge so
-   `revKilled = marksAt` reads the kernel fixpoint exactly.
--/
+/- The convergence chain is complete: `rvInit` establishes horizon one,
+`rvStep` doubles it, `rvSync_cycle` handles all cycle boundaries, and
+`rvR_eq_marks_of_sync` exposes the saturated vector as the kernel `marks`
+fixpoint consumed by the revoke retirement arm. -/
 
 end Machines.Lnp64u.Theorems.RMC

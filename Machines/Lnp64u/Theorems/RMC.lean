@@ -19,6 +19,7 @@ import Machines.Lnp64u.Theorems.RMCRetireGrantArm
 import Machines.Lnp64u.Theorems.RMCRetireDropArm
 import Machines.Lnp64u.Theorems.RMCRetireGateCallSuccess
 import Machines.Lnp64u.Theorems.RMCRetireGateReturnComplete
+import Machines.Lnp64u.Theorems.RMCRetireRevArm
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -73,8 +74,7 @@ What is stated here, all horizon-free:
   invariant transport already factors through reachable states
   (`invariant_transport`).
 * `invariant_transport` — every ISS invariant (T2–T9's currency) holds of
-  the abstraction of every core state, at every cycle count. Its sole
-  remaining proof dependency is the `cap_revoke` retirement leaf below.
+  the abstraction of every core state, at every cycle count.
 
 ## Landed support (sorry-free)
 
@@ -92,35 +92,16 @@ What is stated here, all horizon-free:
   `inflight`, and all four gates. `absDom_reset`, `abs_reset`, and
   `coupled_reset` are now assembled below without sorries.
 
-## Remaining work (the sorries), itemized
+## Completed proof structure
 
-1. `square` — the big one. Phase decomposition mirroring `Step.step`:
-   a. rule-fold characterization: `(core m).cycle σ` as the four rules'
-      `Act.run` composition (later writes win);
-   b. refill: `refillCondE`/`drctr` vs `cycle % P` (uses `Coupled.rctr_sync`
-      and the `effBudgetE` bypass for the charge path);
-   c. core, in-flight arm: countdown vs `cyclesLeft - 1`; retirement
-      dispatch — per-opcode circuit vs `Isa` exec semantics (25 ops; base
-      ops first, mirroring Acc8 `AR.square`'s per-op `simp` pattern, then
-      the system ops of `Hw/SysOps.lean`); the `cap_revoke` arm needs the
-      pointer-doubling mark-engine correctness (`rv_*` registers converge
-      to the spec `marks` closure in ≤ 7 of the 22 rounds) — this forces
-      an `rv`-coupling clause into `Coupled` (currently absorbed by the
-      concrete-reachability hypothesis `hcr`);
-   d. core, idle arm: `schedOrder` fold vs `schedule`'s max-priority fold
-      (uses `WF.prio_inj`), `payerE` unrolled walk vs `MachineState.payer`,
-      fetch/decode/charge/latch vs the spec issue path;
-   e. mover: `SysOps.moverAct`'s pre-cycle re-derivations vs
-      `moverPhase ∘ corePhase` (kill sweeps, same-cycle store forwarding);
-   f. tick: `cycle + 1`, `BitVec` addition on both sides (wraps identically).
-2. `coupled_step` — preservation of `Coupled`: `rctr` increment vs counter
-   increment mod `P`, canonical writes (every kind word the circuits write
-   is an encoder image), `run` writes ∈ {0,1,2}.
-
-`Coupled` is expected to grow proof-forced clauses (repo pattern); `square`
-and `coupled_step` also carry `hcr` (concrete reachability), so clauses
-provable from reachability can be added to `Coupled` without weakening the
-assembled theorems — `lockstep_coupled` threads reachability on both sides.
+`square` dispatches over the idle, countdown, and retirement phases. The
+retirement dispatcher covers every declared opcode, including bounded
+`cap_revoke`: `RvSync` is established by `rvInit`, advanced by `rvStep`,
+preserved through every full cycle by `rvSync_cycle`, and consumed by
+`square_retire_rev`. `coupled_step` carries this mark-engine invariant
+alongside refill-counter synchronization, canonical run/kind encodings,
+and the hardwired-zero register family. The assembly below then proves
+unbounded lockstep from reset and invariant transport without proof holes.
 -/
 
 namespace Machines.Lnp64u.Theorems.RMC
@@ -131,10 +112,8 @@ open Machines.Lnp64u Loom Loom.Hw
 
 /-- Hidden-state / canonical-encoding coupling between a core state and its
 abstraction: the register file is in the image of the encoding discipline
-`Hw/Enc.lean` fixes, and the hidden refill counters track the cycle
-register. (The `cap_revoke` mark-engine coupling is currently supplied by
-the concrete-reachability hypothesis of `square`; it becomes a clause here
-when the retirement arm forces its exact statement.) -/
+`Hw/Enc.lean`, hidden refill counters track the cycle register, and the
+bounded revoke engine represents the current descendant-marking horizon. -/
 structure Coupled (m : Manifest) (σ : Loom.Hw.St) : Prop where
   /-- The hidden per-domain refill counter is `cycle % P` of the *register*
   counter. The two stay in sync *through* the `2 ^ 32` wrap because
@@ -158,6 +137,9 @@ structure Coupled (m : Manifest) (σ : Loom.Hw.St) : Prop where
   architectural reads of `r0` to `0`, the circuits read the real register
   (`RMCZero`). -/
   r0_zero : R0Zero σ
+  /-- Once an in-flight revoke has passed its initialization cycle, the
+  hidden pointer-doubling vectors represent its exact completed horizon. -/
+  rv_sync : RvSync σ
 
 /-! ## Reset -/
 
@@ -232,7 +214,7 @@ theorem abs_reset (m : Manifest) (hwf : m.WF) (hfit : Fits m) :
 /-- The coupling holds at reset (`cycle = 0`, `rctr = 0 % P`, all encodings
 canonical by construction). -/
 theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
-  refine ⟨?_, ?_, ?_, reset_r0_zero m⟩
+  refine ⟨?_, ?_, ?_, reset_r0_zero m, ?_⟩
   · intro d
     simp [reset_drctr, reset_cycle, Manifest.initState]
   · intro d
@@ -245,6 +227,9 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
         decide
     | some c =>
         simp [reset_dcapKind, hcap, decKind_encKind]
+  · intro hifv
+    rw [reset_ifV] at hifv
+    simp [Manifest.initState] at hifv
 
 /-! ## The commuting square and coupling preservation -/
 
@@ -252,7 +237,7 @@ theorem coupled_reset (m : Manifest) : Coupled m (Hw.core m).reset := by
 theorem square_retire_capdup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (_hcr : ((Hw.core m).toTSys).Reachable σ)
     (hsr : (machine m).Reachable (Hw.abs σ))
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
@@ -265,7 +250,7 @@ theorem square_retire_capdup (m : Manifest) (hwf : m.WF) (hfit : Fits m)
 theorem square_retire_capdrop (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (_hcr : ((Hw.core m).toTSys).Reachable σ)
     (hsr : (machine m).Reachable (Hw.abs σ))
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
@@ -274,23 +259,24 @@ theorem square_retire_capdrop (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   exact square_retire_drop m hwf hfit σ hcpl.rctr_sync hcpl.r0_zero
     hsr hifv hcl hopc
 
-/-- The `cap_revoke` retirement arm — remaining (NEXTSTEPS §1). -/
+/-- The `cap_revoke` retirement arm. -/
 theorem square_retire_caprevoke (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (_hcr : ((Hw.core m).toTSys).Reachable σ)
     (hsr : (machine m).Reachable (Hw.abs σ))
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  exact square_retire_rev m hwf hfit σ hcpl.rctr_sync hcpl.r0_zero
+    hcpl.kind_canon hcpl.rv_sync hsr hifv hcl hopc
 
 /-- The `mem_grant` retirement arm. -/
 theorem square_retire_memgrant (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (_hcr : ((Hw.core m).toTSys).Reachable σ)
     (hsr : (machine m).Reachable (Hw.abs σ))
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
@@ -303,7 +289,7 @@ theorem square_retire_memgrant (m : Manifest) (hwf : m.WF) (hfit : Fits m)
 theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (_hcr : ((Hw.core m).toTSys).Reachable σ)
     (hsr : (machine m).Reachable (Hw.abs σ))
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
@@ -317,7 +303,7 @@ theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
 theorem square_retire_gatereturn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
-    (hcr : ((Hw.core m).toTSys).Reachable σ)
+    (_hcr : ((Hw.core m).toTSys).Reachable σ)
     (hsr : (machine m).Reachable (Hw.abs σ))
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
@@ -434,9 +420,8 @@ theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   · exact h26 h
 
 /-- **The R-MC square**: one core cycle is exactly one spec step through
-`Hw.abs`. Three of the four arms — countdown, idle-stall, idle-issue —
-are fully proven on the bridge stack; the retirement arm
-(`square_retire`) is the remaining obligation. -/
+`Hw.abs`. The proof dispatches over countdown, idle-stall, idle-issue, and
+the complete per-opcode retirement dispatcher. -/
 theorem square (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
@@ -477,7 +462,9 @@ theorem coupled_step (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (_hsr : (machine m).Reachable (Hw.abs σ)) :
     Coupled m ((Hw.core m).cycle σ) := by
   refine ⟨fun d => ?_, fun d => ?_, coupled_step_kind m σ hcpl,
-    cycle_r0_zero m σ hcpl.r0_zero⟩
+    cycle_r0_zero m σ hcpl.r0_zero,
+    rvSync_cycle m hwf hfit σ hcpl.rctr_sync hcpl.run_canon
+      hcpl.r0_zero hcpl.rv_sync⟩
   · -- rctr_sync: only refill writes `rctr`, only tick writes `cycle`
     rw [cycle_regs_drctr, refillAct_run_drctr, cycle_regs_cycle]
     exact rctr_step_sync (hwf.period_pos d) (hwf.period_dvd d)
@@ -485,7 +472,7 @@ theorem coupled_step (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   · -- run_canon: every `d*_run` write is a literal 0/1/2
     exact cycle_regs_drun_ne m σ d (hcpl.run_canon d)
 
-/-! ## Assembly (sorry-free given the square) -/
+/-! ## Sorry-free unbounded assembly -/
 
 /-- `Design.run`'s successor on the right (its definition recurses on the
 left). -/
