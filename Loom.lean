@@ -18,6 +18,7 @@ import Loom.Book.Render.Html
 import Loom.Emit.MicroVerilog.Semantics
 import Loom.Hw.Semantics
 import Loom.Hw.Compile
+import Loom.Hw.CompileCorrect
 import Loom.Hw.ArtifactCert
 import Loom.Release.Rope
 import Loom.Release.SSA

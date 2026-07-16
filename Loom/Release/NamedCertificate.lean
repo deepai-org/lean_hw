@@ -24,13 +24,13 @@ namespace Named
 inductive NextRegCert (w : Nat) where
   | same
   | write
-  | seq (mid : String) (left right : NextRegCert w)
+  | seq (mid : Option String) (left right : NextRegCert w)
   | ite (thenCert elseCert : NextRegCert w)
 
 /-- Name-only proof data for an ordered register-rule fold. -/
 inductive NextRulesCert (w : Nat) where
   | nil
-  | cons (mid : String) (head : NextRegCert w) (tail : NextRulesCert w)
+  | cons (mid : Option String) (head : NextRegCert w) (tail : NextRulesCert w)
 
 structure RegCert (r : RegDecl) where
   rules : NextRulesCert r.width
@@ -49,13 +49,13 @@ structure PortNames where
 inductive NextPortCert (aw dw : Nat) where
   | same
   | write
-  | seq (mid : PortNames) (left right : NextPortCert aw dw)
+  | seq (mid : Option PortNames) (left right : NextPortCert aw dw)
   | ite (guard : String) (thenPort elsePort : PortNames)
       (thenCert elseCert : NextPortCert aw dw)
 
 inductive NextPortRulesCert (aw dw : Nat) where
   | nil
-  | cons (mid : PortNames) (head : NextPortCert aw dw)
+  | cons (mid : Option PortNames) (head : NextPortCert aw dw)
       (tail : NextPortRulesCert aw dw)
 
 inductive PortsCert (aw dw : Nat) : Nat → Type where
@@ -82,73 +82,114 @@ private def resolvePort (program : SSA.Program) (env : SSA.Env)
          addr := ← program.resolve env names.addr aw
          data := ← program.resolve env names.data dw }
 
-private def NextRegCert.materialize (program : SSA.Program) (env : SSA.Env) :
-    {w : Nat} → NextRegCert w → Option (ArtifactCert.NextRegCert w)
-  | _, .same => some .same
-  | _, .write => some .write
-  | w, .seq mid left right => do
-      pure (.seq (← program.resolve env mid w)
-        (← left.materialize program env) (← right.materialize program env))
-  | _, .ite thenCert elseCert => do
-      pure (.ite (← thenCert.materialize program env)
-        (← elseCert.materialize program env))
+private def resolveExprRef {w : Nat} (program : SSA.Program) (env : SSA.Env)
+    (fallback : Loom.Emit.MicroVerilog.Expr w) : Option String →
+      Option (Loom.Emit.MicroVerilog.Expr w)
+  | some name => program.resolve env name w
+  | none => some fallback
 
-private def NextRulesCert.materialize (program : SSA.Program) (env : SSA.Env) :
-    {w : Nat} → NextRulesCert w → Option (ArtifactCert.NextRulesCert w)
-  | _, .nil => some .nil
-  | w, .cons mid head tail => do
-      pure (.cons (← program.resolve env mid w)
-        (← head.materialize program env) (← tail.materialize program env))
+private def NextRegCert.materialize (program : SSA.Program) (env : SSA.Env)
+    (rn : String) : {w : Nat} → (action : Act) →
+      Loom.Emit.MicroVerilog.Expr w → NextRegCert w →
+      Option (ArtifactCert.NextRegCert w)
+  | _, _, _, .same => some .same
+  | _, _, _, .write => some .write
+  | w, .seq leftAction rightAction, cur, .seq mid left right => do
+      let computed := Compile.nextReg rn w leftAction cur
+      let mid ← resolveExprRef program env computed mid
+      pure (.seq mid
+        (← left.materialize program env rn leftAction cur)
+        (← right.materialize program env rn rightAction mid))
+  | _, .ite _ thenAction elseAction, cur, .ite thenCert elseCert => do
+      pure (.ite (← thenCert.materialize program env rn thenAction cur)
+        (← elseCert.materialize program env rn elseAction cur))
+  | _, _, _, _ => none
 
-private def RegsCert.materialize (program : SSA.Program) (env : SSA.Env) :
-    {regs : List RegDecl} → RegsCert regs → Option (ArtifactCert.RegsCert regs)
+private def NextRulesCert.materialize (program : SSA.Program) (env : SSA.Env)
+    (rn : String) : {w : Nat} → (rules : List Rule) →
+      Loom.Emit.MicroVerilog.Expr w → NextRulesCert w →
+      Option (ArtifactCert.NextRulesCert w)
+  | _, [], _, .nil => some .nil
+  | w, rule :: rules, cur, .cons mid head tail => do
+      let computed := Compile.nextReg rn w rule.body cur
+      let mid ← resolveExprRef program env computed mid
+      pure (.cons mid
+        (← head.materialize program env rn rule.body cur)
+        (← tail.materialize program env rn rules mid))
+  | _, _, _, _ => none
+
+private def RegsCert.materialize (program : SSA.Program) (env : SSA.Env)
+    (rules : List Rule) : {regs : List RegDecl} → RegsCert regs →
+      Option (ArtifactCert.RegsCert regs)
   | [], .nil => some .nil
-  | _ :: _, .cons head tail => do
-      pure (.cons ⟨← head.rules.materialize program env⟩
-        (← tail.materialize program env))
+  | reg :: _, .cons head tail => do
+      pure (.cons ⟨← head.rules.materialize program env reg.name rules
+        (.reg reg.width reg.name)⟩
+        (← tail.materialize program env rules))
 
-private def NextPortCert.materialize (program : SSA.Program) (env : SSA.Env) :
-    {aw dw : Nat} → NextPortCert aw dw → Option (ArtifactCert.NextPortCert aw dw)
-  | _, _, .same => some .same
-  | _, _, .write => some .write
-  | aw, dw, .seq mid left right => do
-      pure (.seq (← resolvePort program env aw dw mid)
-        (← left.materialize program env) (← right.materialize program env))
-  | aw, dw, .ite guard thenPort elsePort thenCert elseCert => do
+private def resolvePortRef {aw dw : Nat} (program : SSA.Program) (env : SSA.Env)
+    (fallback : Compile.Port aw dw) : Option PortNames →
+      Option (Compile.Port aw dw)
+  | some names => resolvePort program env aw dw names
+  | none => some fallback
+
+private def NextPortCert.materialize (program : SSA.Program) (env : SSA.Env)
+    (mn : String) (p : Nat) : {aw dw : Nat} → (action : Act) →
+      Compile.Port aw dw → NextPortCert aw dw →
+      Option (ArtifactCert.NextPortCert aw dw)
+  | _, _, _, _, .same => some .same
+  | _, _, _, _, .write => some .write
+  | aw, dw, .seq leftAction rightAction, cur, .seq mid left right => do
+      let computed := Compile.memPort mn aw dw p leftAction cur
+      let mid ← resolvePortRef program env computed mid
+      pure (.seq mid
+        (← left.materialize program env mn p leftAction cur)
+        (← right.materialize program env mn p rightAction mid))
+  | aw, dw, .ite _ thenAction elseAction, cur,
+      .ite guard thenPort elsePort thenCert elseCert => do
       pure (.ite (← program.resolve env guard 1)
         (← resolvePort program env aw dw thenPort)
         (← resolvePort program env aw dw elsePort)
-        (← thenCert.materialize program env)
-        (← elseCert.materialize program env))
+        (← thenCert.materialize program env mn p thenAction cur)
+        (← elseCert.materialize program env mn p elseAction cur))
+  | _, _, _, _, _ => none
 
 private def NextPortRulesCert.materialize (program : SSA.Program)
-    (env : SSA.Env) : {aw dw : Nat} → NextPortRulesCert aw dw →
+    (env : SSA.Env) (mn : String) (p : Nat) : {aw dw : Nat} →
+      (rules : List Rule) → Compile.Port aw dw → NextPortRulesCert aw dw →
       Option (ArtifactCert.NextPortRulesCert aw dw)
-  | _, _, .nil => some .nil
-  | aw, dw, .cons mid head tail => do
-      pure (.cons (← resolvePort program env aw dw mid)
-        (← head.materialize program env) (← tail.materialize program env))
+  | _, _, [], _, .nil => some .nil
+  | aw, dw, rule :: rules, cur, .cons mid head tail => do
+      let computed := Compile.memPort mn aw dw p rule.body cur
+      let mid ← resolvePortRef program env computed mid
+      pure (.cons mid
+        (← head.materialize program env mn p rule.body cur)
+        (← tail.materialize program env mn p rules mid))
+  | _, _, _, _, _ => none
 
-private def PortsCert.materialize (program : SSA.Program) (env : SSA.Env) :
-    {aw dw n : Nat} → PortsCert aw dw n → Option (ArtifactCert.PortsCert aw dw n)
-  | _, _, 0, .nil => some .nil
-  | _, _, _ + 1, .cons head tail => do
-      pure (.cons (← head.materialize program env)
-        (← tail.materialize program env))
+private def PortsCert.materialize (program : SSA.Program) (env : SSA.Env)
+    (mn : String) (rules : List Rule) : {aw dw n : Nat} →
+      (p : Nat) → PortsCert aw dw n → Option (ArtifactCert.PortsCert aw dw n)
+  | _, _, 0, _, .nil => some .nil
+  | aw, dw, _ + 1, p, .cons head tail => do
+      let start : Compile.Port aw dw :=
+        { en := .lit 0, addr := .lit 0, data := .lit 0 }
+      pure (.cons (← head.materialize program env mn p rules start)
+        (← tail.materialize program env mn rules (p + 1)))
 
 private def MemsCert.materialize (program : SSA.Program) (env : SSA.Env)
     (d : Design) : {mems : List MemDecl} → MemsCert d mems →
       Option (ArtifactCert.MemsCert d mems)
   | [], .nil => some .nil
-  | _ :: _, .cons head tail => do
-      pure (.cons ⟨← head.ports.materialize program env⟩
+  | m :: _, .cons head tail => do
+      pure (.cons ⟨← head.ports.materialize program env m.name d.rules 0⟩
         (← tail.materialize program env d))
 
 /-- Resolve a compact name certificate to the already-proved generic
 certificate type. Failure is explicit and makes the release checker reject. -/
 def ModuleCert.materialize (program : SSA.Program) (env : SSA.Env)
     {d : Design} (cert : ModuleCert d) : Option (ArtifactCert.ModuleCert d) := do
-  pure { regs := ← cert.regs.materialize program env
+  pure { regs := ← cert.regs.materialize program env d.rules
          mems := ← cert.mems.materialize program env d }
 
 end Named

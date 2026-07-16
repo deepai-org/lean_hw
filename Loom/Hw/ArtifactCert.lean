@@ -94,6 +94,41 @@ inductive NextRegCert (w : Nat) where
       (left right : NextRegCert w)
   | ite (thenCert elseCert : NextRegCert w)
 
+private theorem nextReg_eq_of_no_write (rn : String) (w : Nat) :
+    ∀ (a : Loom.Hw.Act) (cur : Loom.Emit.MicroVerilog.Expr w),
+      Compile.writesRegB rn w a = false → Compile.nextReg rn w a cur = cur := by
+  intro a
+  induction a with
+  | skip => intro _ _; rfl
+  | seq left right ihLeft ihRight =>
+      intro cur h
+      have hn : (rn, w) ∉ (left.seq right).regWrites := by
+        simpa [Compile.writesRegB] using h
+      simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at hn
+      rw [Compile.nextReg,
+        ihRight _ (by simpa [Compile.writesRegB] using hn.2),
+        ihLeft _ (by simpa [Compile.writesRegB] using hn.1)]
+  | ite guard thenAct elseAct ihThen ihElse =>
+      intro cur h
+      have hn : (rn, w) ∉ (Loom.Hw.Act.ite guard thenAct elseAct).regWrites := by
+        simpa [Compile.writesRegB] using h
+      simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at hn
+      rw [Compile.nextReg, if_neg]
+      simp [Compile.writesRegB, hn]
+  | write actualWidth name value =>
+      intro cur h
+      have hn : (rn, w) ∉ (Loom.Hw.Act.write actualWidth name value).regWrites := by
+        simpa [Compile.writesRegB] using h
+      simp only [Compile.nextReg]
+      by_cases hname : name = rn
+      · rw [if_pos hname]
+        have hwidth : actualWidth ≠ w := by
+          intro hw
+          exact hn (by simp [Loom.Hw.Act.regWrites, hname, hw])
+        rw [dif_neg hwidth]
+      · rw [if_neg hname]
+  | memWrite => intro _ _; rfl
+
 /-- Check a supplied result of one `nextReg` action locally. -/
 def nextRegMatches (rn : String) (w : Nat) : Loom.Hw.Act →
     Loom.Emit.MicroVerilog.Expr w → Loom.Emit.MicroVerilog.Expr w →
@@ -102,6 +137,8 @@ def nextRegMatches (rn : String) (w : Nat) : Loom.Hw.Act →
   | .seq a b, cur, out, .seq mid ca cb =>
       nextRegMatches rn w a cur mid ca &&
         nextRegMatches rn w b mid out cb
+  | .seq a b, cur, out, .same =>
+      if Compile.writesRegB rn w (.seq a b) then false else decide (out = cur)
   | .ite c t e, cur, out, .ite ct ce =>
       if Compile.writesRegB rn w t || Compile.writesRegB rn w e then
         match out with
@@ -148,6 +185,13 @@ theorem nextRegMatches_sound (rn : String) (w : Nat) :
         simp only [nextRegMatches, Bool.and_eq_true] at h
         rw [Compile.nextReg]
         rw [ihb mid out cb h.2, iha cur mid ca h.1]
+    | same =>
+        simp only [nextRegMatches] at h
+        split at h
+        · contradiction
+        · rename_i hn
+          simp only [decide_eq_true_eq] at h
+          rw [h, nextReg_eq_of_no_write rn w (.seq a b) cur (by simpa using hn)]
     | _ => simp [nextRegMatches] at h
   · rename_i c t e iht ihe
     by_cases hwrites : Compile.writesRegB rn w t ||
@@ -310,6 +354,40 @@ inductive NextPortCert (aw dw : Nat) where
       (thenPort elsePort : Compile.Port aw dw)
       (thenCert elseCert : NextPortCert aw dw)
 
+private theorem memPort_eq_of_no_write (mn : String) (aw dw p : Nat) :
+    ∀ (a : Loom.Hw.Act) (cur : Compile.Port aw dw),
+      Compile.writesPortB mn p a = false →
+        Compile.memPort mn aw dw p a cur = cur := by
+  intro a
+  induction a with
+  | skip => intro _ _; rfl
+  | seq left right ihLeft ihRight =>
+      intro cur h
+      have hn : p ∉ Compile.portTrace mn (left.seq right) := by
+        simpa [Compile.writesPortB] using h
+      simp only [Compile.portTrace, List.mem_append, not_or] at hn
+      rw [Compile.memPort,
+        ihRight _ (by simpa [Compile.writesPortB] using hn.2),
+        ihLeft _ (by simpa [Compile.writesPortB] using hn.1)]
+  | ite guard thenAct elseAct ihThen ihElse =>
+      intro cur h
+      have hn : p ∉ Compile.portTrace mn
+          (Loom.Hw.Act.ite guard thenAct elseAct) := by
+        simpa [Compile.writesPortB] using h
+      simp only [Compile.portTrace, List.mem_append, not_or] at hn
+      rw [Compile.memPort, if_neg]
+      simp [Compile.writesPortB, hn]
+  | write => intro _ _; rfl
+  | memWrite actualAw actualDw name port address value =>
+      intro cur h
+      have hn : p ∉ Compile.portTrace mn
+          (Loom.Hw.Act.memWrite actualAw actualDw name port address value) := by
+        simpa [Compile.writesPortB] using h
+      simp only [Compile.memPort]
+      by_cases hp : name = mn ∧ port = p
+      · exact False.elim (hn (by simp [Compile.portTrace, hp]))
+      · rw [if_neg hp]
+
 /-- Check a supplied result of one memory-port action locally. -/
 def nextPortMatches (mn : String) (aw dw p : Nat) : Loom.Hw.Act →
     Compile.Port aw dw → Compile.Port aw dw → NextPortCert aw dw → Bool
@@ -317,6 +395,8 @@ def nextPortMatches (mn : String) (aw dw p : Nat) : Loom.Hw.Act →
   | .seq a b, cur, out, .seq mid ca cb =>
       nextPortMatches mn aw dw p a cur mid ca &&
         nextPortMatches mn aw dw p b mid out cb
+  | .seq a b, cur, out, .same =>
+      if Compile.writesPortB mn p (.seq a b) then false else decide (out = cur)
   | .ite c t e, cur, out, .ite g ot oe ct ce =>
       if Compile.writesPortB mn p t || Compile.writesPortB mn p e then
         compileExprMatches c g &&
@@ -367,6 +447,13 @@ theorem nextPortMatches_sound (mn : String) (aw dw p : Nat) :
         simp only [nextPortMatches, Bool.and_eq_true] at h
         rw [Compile.memPort]
         rw [ihb mid out cb h.2, iha cur mid ca h.1]
+    | same =>
+        simp only [nextPortMatches] at h
+        split at h
+        · contradiction
+        · rename_i hn
+          simp only [decide_eq_true_eq] at h
+          rw [h, memPort_eq_of_no_write mn aw dw p (.seq a b) cur (by simpa using hn)]
     | _ => simp [nextPortMatches] at h
   · rename_i c t e iht ihe
     by_cases hwrites : Compile.writesPortB mn p t ||
