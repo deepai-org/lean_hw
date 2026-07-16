@@ -17,6 +17,141 @@ open Machines.Lnp64u Loom Loom.Hw Machines.Lnp64u.Hw
 set_option maxHeartbeats 64000000
 set_option maxRecDepth 200000
 
+/-- Predicate-general form of the successful sweeping-operation memory
+commit.  Unlike the older one-slot specialization, this accommodates
+`cap_revoke`'s arbitrary finite mark set. -/
+theorem coreAct_mem_sweep_success_pred (m : Manifest) (sigma : Loom.Hw.St)
+    (okE : Expr 1) (killed : Expr 2 → Expr 4 → Expr 1)
+    (circ : Hw.OpCirc) (killJob : MoverJob → Prop)
+    [DecidablePred killJob]
+    (base target : MachineState)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2)
+    (hport :
+      ((((List.finRange numDomains).foldr
+        (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+          let (en_d, ad_d, da_d) := Hw.retireMemFor d
+          let g := Expr.and (Hw.ifDomIs d) en_d
+          (.or g acc'.1, .mux g ad_d acc'.2.1,
+            .mux g da_d acc'.2.2))
+        ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+          (.lit 0 : Expr 32))).1).eval sigma = circ.memEn.eval sigma) ∧
+        (circ.memEn.eval sigma = 1#1 →
+          ((((List.finRange numDomains).foldr
+            (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+              let (en_d, ad_d, da_d) := Hw.retireMemFor d
+              let g := Expr.and (Hw.ifDomIs d) en_d
+              (.or g acc'.1, .mux g ad_d acc'.2.1,
+                .mux g da_d acc'.2.2))
+            ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+              (.lit 0 : Expr 32))).2.1).eval sigma =
+              circ.memAddr.eval sigma) ∧
+           ((((List.finRange numDomains).foldr
+            (fun d (acc' : Expr 1 × Expr 12 × Expr 32) =>
+              let (en_d, ad_d, da_d) := Hw.retireMemFor d
+              let g := Expr.and (Hw.ifDomIs d) en_d
+              (.or g acc'.1, .mux g ad_d acc'.2.1,
+                .mux g da_d acc'.2.2))
+            ((.lit 0 : Expr 1), (.lit 0 : Expr 12),
+              (.lit 0 : Expr 32))).2.2).eval sigma =
+              circ.memData.eval sigma)))
+    (henShape : circ.memEn = Hw.andAll
+      [okE, Hw.movKilledE killed, Hw.statusAuthE killed])
+    (haddrShape : circ.memAddr = .reg 12 "mov_status")
+    (hdataShape : circ.memData = .lit Errno.staleHandle.toWord)
+    (hok : okE.eval sigma = 1#1)
+    (hkilled : ((Hw.movKilledE killed).eval sigma = 1#1) ↔
+      match Hw.absMover sigma with
+      | none => False
+      | some job => killJob job)
+    (hauth : ∀ job, Hw.absMover sigma = some job →
+      (((Hw.statusAuthE killed).eval sigma = 1#1) ↔
+        base.domCovers job.owner job.statusAddr
+          { r := false, w := true, x := false } = true))
+    (hbase : ∀ b : Addr, base.mem b = sigma.mems "mem" b.toNat 32)
+    (htarget : ∀ b : Addr, target.mem b =
+      match Hw.absMover sigma with
+      | none => base.mem b
+      | some job =>
+          if killJob job then
+            if base.domCovers job.owner job.statusAddr
+                { r := false, w := true, x := false } then
+              if b = job.statusAddr then Errno.staleHandle.toWord
+              else base.mem b
+            else base.mem b
+          else base.mem b)
+    (b : Addr) :
+    ((Hw.coreAct m).run sigma ((Hw.refillAct m).run sigma sigma)).mems
+        "mem" b.toNat 32 = target.mem b := by
+  rw [coreAct_run_retire_eq m sigma _ hifv hcl,
+    retireAct_run_mems sigma _ b.toNat 32]
+  simp only [Act.run]
+  rw [hport.1]
+  change _ = target.mem b
+  rw [htarget b]
+  by_cases hv : sigma.regs "mov_v" 1 = 1#1
+  · let job : MoverJob :=
+      { owner := finOfBv (by decide) (sigma.regs "mov_owner" 2)
+        src := Hw.decRef (sigma.regs "mov_src" 14)
+        dst := Hw.decRef (sigma.regs "mov_dst" 14)
+        srcCur := sigma.regs "mov_srccur" 12
+        dstCur := sigma.regs "mov_dstcur" 12
+        remaining := (sigma.regs "mov_rem" 13).toNat
+        statusAddr := sigma.regs "mov_status" 12 }
+    have habs : Hw.absMover sigma = some job := absMover_some sigma hv
+    rw [habs]
+    simp only
+    have hauth' : ((Hw.statusAuthE killed).eval sigma = 1#1) ↔
+        base.domCovers job.owner job.statusAddr
+          { r := false, w := true, x := false } = true := hauth job habs
+    have hen : (circ.memEn.eval sigma = 1#1) ↔
+        (killJob job ∧ base.domCovers job.owner job.statusAddr
+          { r := false, w := true, x := false } = true) := by
+      rw [henShape, andAll_eval]
+      simp only [List.forall_mem_cons, List.not_mem_nil]
+      rw [hok, hkilled, habs, hauth']
+      simp
+    by_cases hk : killJob job
+    · rw [if_pos hk]
+      by_cases ha : base.domCovers job.owner job.statusAddr
+          { r := false, w := true, x := false } = true
+      · have he : circ.memEn.eval sigma = 1#1 := hen.mpr ⟨hk, ha⟩
+        rw [if_pos ha, if_pos he]
+        obtain ⟨had, hda⟩ := hport.2 he
+        rw [had, hda, haddrShape, hdataShape]
+        by_cases hb : b = job.statusAddr
+        · subst b
+          simp only [MemEnv.set]
+          simp [Expr.eval, job]
+        · have hbn : b.toNat ≠ job.statusAddr.toNat :=
+            fun h => hb (BitVec.eq_of_toNat_eq h)
+          simp only [MemEnv.set]
+          rw [if_neg (fun h => hbn h.2),
+            refill_pres_mem m sigma "mem" b.toNat 32]
+          rw [if_neg hb, hbase]
+      · have he : ¬(circ.memEn.eval sigma = 1#1) :=
+          fun h => ha (hen.mp h).2
+        rw [if_neg ha, if_neg he,
+          refill_pres_mem m sigma "mem" b.toNat 32]
+        exact (hbase b).symm
+    · have he : ¬(circ.memEn.eval sigma = 1#1) :=
+        fun h => hk (hen.mp h).1
+      rw [if_neg hk, if_neg he,
+        refill_pres_mem m sigma "mem" b.toNat 32]
+      exact (hbase b).symm
+  · have habs : Hw.absMover sigma = none := absMover_none sigma hv
+    rw [habs]
+    simp only
+    have he : ¬(circ.memEn.eval sigma = 1#1) := by
+      intro h
+      have hm : (Hw.movKilledE killed).eval sigma = 1#1 := by
+        rw [henShape] at h
+        exact (andAll_eval sigma _).mp h _
+          (List.mem_cons_of_mem _ (List.mem_cons_self ..))
+      simpa [habs] using hkilled.mp hm
+    rw [if_neg he, refill_pres_mem m sigma "mem" b.toNat 32]
+    exact (hbase b).symm
+
 private theorem revNewJobAny_zero (sigma : Loom.Hw.St)
     (hnew : forall d : DomainId, (Hw.newJobSet d).eval sigma = 0#1) :
     (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval sigma = 0#1 := by
