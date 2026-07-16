@@ -89,7 +89,7 @@ theorem abs_mem_reset (m : Manifest) :
     (Hw.abs (Hw.core m).reset).mem = m.initState.mem := by
   funext a
   show (Hw.core m).reset.mems "mem" a.toNat 32 = m.initState.mem a
-  rw [reset_mem]
+  rw [reset_mem m a.toNat (by exact a.isLt)]
   congr 1
   apply BitVec.eq_of_toNat_eq
   simp

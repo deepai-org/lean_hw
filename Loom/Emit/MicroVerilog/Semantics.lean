@@ -76,7 +76,8 @@ def Module.reset (m : Module) : St where
   regs := m.regs.foldl (fun ρ r => ρ.set r.name r.init) (fun _ w => 0#w)
   mems := m.mems.foldl
     (fun μ mem => fun n a w =>
-      if n = mem.name ∧ w = mem.dataWidth then (mem.init a).setWidth w
+      if n = mem.name ∧ w = mem.dataWidth ∧ a < 2 ^ mem.addrWidth then
+        (mem.init a).setWidth w
       else μ n a w)
     (fun _ _ w => 0#w)
 

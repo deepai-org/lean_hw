@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.ArtifactCert
+import Loom.Emit.MicroVerilog.MatchesSemantics
 import Loom.Release.Rope
 import Loom.Release.SSA
 
@@ -47,9 +48,18 @@ theorem ssaMatches_sound (design : Loom.Hw.Design) (program : SSA.Program)
       Loom.Hw.ArtifactCert.moduleMatches_sound design module cert.module h⟩
   · contradiction
 
-/-- The publication-facing release boundary before behavioral transport is
-attached: exact rendered bytes plus structural agreement with the proved
-reference compilation. `renderedLines` is generated as a balanced tree of
+/-- An accepted arbitrary concrete witness has exactly the transition-system
+behavior of the reference compiler output. -/
+theorem ssaMatches_behavior (design : Loom.Hw.Design) (program : SSA.Program)
+    (cert : SSACert design) (h : ssaMatches design program cert = true) :
+    ∃ module, program.elaborate = some module ∧
+      module.toTSys = (Loom.Hw.Compile.compile design).toTSys := by
+  obtain ⟨module, helab, hmatches⟩ := ssaMatches_sound design program cert h
+  exact ⟨module, helab, hmatches.toTSys_eq⟩
+
+/-- The publication-facing release boundary: exact rendered bytes plus equality
+with the transition-system behavior of the proved reference compilation.
+`renderedLines` is generated as a balanced tree of
 named local render results. -/
 theorem exactRenderingAndCompilation (design : Loom.Hw.Design)
     (program : SSA.Program) (disk : Rope (List String))
@@ -60,10 +70,10 @@ theorem exactRenderingAndCompilation (design : Loom.Hw.Design)
     (hcert : ssaMatches design program cert = true) :
     String.intercalate "\n" program.render = disk.flattenBytes ∧
     ∃ module, program.elaborate = some module ∧
-      module.Matches (Loom.Hw.Compile.compile design) := by
+      module.toTSys = (Loom.Hw.Compile.compile design).toTSys := by
   constructor
   · unfold Rope.flattenBytes
     rw [← hrender, hdisk]
-  · exact ssaMatches_sound design program cert hcert
+  · exact ssaMatches_behavior design program cert hcert
 
 end Loom.Release

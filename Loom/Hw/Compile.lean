@@ -667,11 +667,13 @@ theorem compile_reset (d : Design) :
            wrPorts := (List.range (numPorts d m.name)).map fun p =>
              compilePort d m.name m.addrWidth m.dataWidth p } : MV.MemDef))).foldl
         (fun μ mem => fun n a w =>
-          if n = mem.name ∧ w = mem.dataWidth then (mem.init a).setWidth w
+          if n = mem.name ∧ w = mem.dataWidth ∧ a < 2 ^ mem.addrWidth then
+            (mem.init a).setWidth w
           else μ n a w) μ0
       = L.foldl
         (fun μ m => fun n a w =>
-          if n = m.name ∧ w = m.dataWidth then (m.init a).setWidth w
+          if n = m.name ∧ w = m.dataWidth ∧ a < 2 ^ m.addrWidth then
+            (m.init a).setWidth w
           else μ n a w) μ0 := by
     intro L
     induction L with
