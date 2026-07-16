@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 lake build Loom Machines Tests iss audit emit bookgen
 lake build Tests.Acc8Bmc
 lake build Tests.Lnp64uWitnesses
+scripts/downstream_smoke.sh
 lake exe audit
 lake exe bookgen >/dev/null
 lake exe emit acc8 >/dev/null
