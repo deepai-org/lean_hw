@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireGateReturnArm
+import Machines.Lnp64u.Theorems.RMCReachableWf
 
 /-!
 # R-MC retirement: successful gate_return
@@ -925,5 +926,24 @@ theorem returnAbstractSuccess_structural_frames (base : MachineState)
       simp_all [returnAbstractSuccess, MachineState.setDom, Loom.Fun.update,
         setReg_regions]
   · exact ⟨rfl, rfl⟩
+
+/-- In a reachable return state, the running in-flight callee cannot also be
+the blocked caller recorded by its active gate. -/
+theorem gateReturnIssuer_ne_caller_of_reachable (m : Manifest) (hwf : m.WF)
+    (σ : Loom.Hw.St) (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1) (gid : GateId) (act : Activation)
+    (hact : ((Hw.abs σ).gates gid).act = some act) :
+    finOfBv (by decide) (σ.regs "if_dom" 2) ≠ act.caller := by
+  let E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2)
+  let W := σ.regs "if_word" 32
+  have hwfAbs : Wf (Hw.abs σ) := reachable_wf m hwf _ hsr
+  have hfl : (Hw.abs σ).inflight = some
+      { dom := E, word := W,
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    change Hw.absInflight σ = _
+    simpa [E, W] using absInflight_some σ hifv
+  change E ≠ act.caller
+  exact Machines.Lnp64u.Theorems.RMC.Wf.inflight_ne_gateCaller
+    hwfAbs _ hfl gid act hact
 
 end Machines.Lnp64u.Theorems.RMC
