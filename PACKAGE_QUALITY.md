@@ -1,38 +1,38 @@
 # Loom package-readiness audit
 
-Audited 2026-07-15 against the current repository, Lean/Lake documentation,
-Reservoir metadata requirements, `lean-action`, and `doc-gen4` guidance.
-This is an acceptance checklist, not a theorem-status ledger; proof progress
-remains in `STATUS.md` and `NEXTSTEPS.md`.
+Audited 2026-07-15 against Lean/Lake, Reservoir, `lean-action`, and doc-gen4
+guidance; repository-state findings refreshed 2026-07-16 after R-MC
+completion. This is an acceptance checklist, not a theorem-status ledger;
+proof progress remains in `STATUS.md` and `NEXTSTEPS.md`.
 
 ## Verdict
 
-Loom already has most baseline package infrastructure: a stable pinned
-toolchain, committed dependency manifest, public umbrella modules, Apache-2.0
-licensing, CI, tests, contribution policy, and an unusually explicit trust
-document. It is structurally packageable, but it is **not release-ready** yet.
+Loom has the baseline package infrastructure and its headline proof gate is
+green: the stable pinned toolchain, committed manifest, umbrella modules,
+licensing, CI, tests, contribution policy, completed R-MC theorem, and explicit
+trust document are all present. It is structurally packageable, but it is
+**not release-ready** yet.
 
-The blocking gap is consistency between the repository's trust claims and its
-current build products. `lake build Machines.Lnp64u.Theorems.RMC` succeeds, but
-the default `Machines` library still contains three `sorry` leaves and
-`lake exe audit` rejects trusted-compiler dependencies introduced by the recent
-retirement-arm proofs. CI correctly treats that audit as required, so current
-`main` is expected to be red until the trust cleanup lands.
+The former proof/audit blockers are resolved. The remaining release blockers
+are the executable compiler replacement policy, a clean-checkout full release
+run, Reservoir's external inclusion threshold, and the unresolved public
+package/module name collision.
 
 ## P0 — release blockers
 
-- [ ] **Restore the audit gate.** Remove the `native_decide`/trusted-compiler
+- [x] **Restore the audit gate.** Remove the `native_decide`/trusted-compiler
   dependencies from the newly imported retirement proof stack. At this audit,
   the concentrated source hits are 141 in `RMCRetireDrop.lean`, 30 in
   `RMCRetireGrant.lean`, two in `RMCRetireGrantFrame.lean`, and one in
   `RMCRetireDropArm.lean`. Prefer shared finite-name injectivity/disjointness
   lemmas over hundreds of one-off reductions; use `decide +kernel` only where
-  it remains tractable.
-- [ ] **Close the three R-MC leaves.** `cap_revoke`, `gate_call`, and
-  `gate_return` are the only remaining `sorry` bodies in the default library.
-- [ ] **Reconcile advertised status with machine output.** Once the two items
-  above land, regenerate or update `STATUS.md`, `NEXTSTEPS.md`, and `TRUST.md`
-  from a green audit. `TRUST.md` still describes the older one-sorry R-MC state.
+  it remains tractable. Completed: `lake exe audit` passes.
+- [x] **Close the three R-MC leaves.** `gate_call`, `gate_return`, and bounded
+  `cap_revoke` are proved and wired; the headline R-MC dependency cone is
+  sorry-free.
+- [x] **Reconcile advertised status with machine output.** `STATUS.md`,
+  `NEXTSTEPS.md`, `TRUST.md`, and the README now reflect the green build,
+  audit, and direct headline axiom closures.
 - [ ] **Prove or explicitly gate the executable compiler replacement.** The
   private unsafe fast path behind `@[implemented_by]` is already disclosed in
   `TRUST.md`, but it remains part of the artifact-generation TCB. Either prove
@@ -94,10 +94,11 @@ retirement-arm proofs. CI correctly treats that audit as required, so current
 - [ ] Minimize the broad `import Mathlib` in `Loom/Dp/Bmc.lean`; the rest of the
   tree mostly uses focused Mathlib imports. Keep Mathlib if the proof/tactic
   surface justifies it—dependency minimization should not duplicate libraries.
-- [ ] Extend the audit with an explicit inventory for `unsafe`, `partial`,
+- [x] Extend the audit with an explicit inventory for `unsafe`, `partial`,
   `extern`, and `implemented_by`. Unsafe code is currently concentrated in the
   compiler/printer fast paths and should be whitelisted by declaration and
-  documented, not merely found by an ad-hoc text search.
+  documented, not merely found by an ad-hoc text search. The audit now rejects
+  unreviewed additions and prints the complete executable trust inventory.
 - [ ] Add a deliberate lint driver for public declaration documentation,
   unused arguments, and exported simp lemmas. Mathlib's linters may be used
   because Mathlib is already a dependency; avoid a second linter framework.
@@ -117,10 +118,8 @@ retirement-arm proofs. CI correctly treats that audit as required, so current
   needed. A format migration has no acceptance value by itself.
 - The old external `lean4checker` repository is deprecated. Lean v4.28.0 and
   newer ship `leanchecker`; CI should use `lake env leanchecker`.
-- Moving incomplete theorems to a WIP library would make a distributable core
-  sorry-free, but it would also hide the actual headline refinement gap. Keep
-  the three R-MC leaves visible until proved unless publishing a deliberately
-  narrower `Loom`-only release.
+- Moving incomplete headline theorems to a WIP library was unnecessary: the
+  three final R-MC leaves are now proved in the default `Machines` library.
 - File-wide copyright headers are already complete. The remaining legal task
   is third-party attribution review, not mass header insertion.
 

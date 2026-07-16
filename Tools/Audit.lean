@@ -19,6 +19,11 @@ Walks the compiled environment and enforces the standing self-check
    `ImplementsStandard` and `implements_standard_spec`.
 4. **Import DAG (P0)** — no `Loom.*` module may import a `Machines.*`
    module; nothing imports `Tools`.
+5. **Executable trust surface** — every project `unsafe` declaration and
+   `implemented_by` replacement is an explicit declaration-level whitelist;
+   source `partial` and `extern` declarations are forbidden. Compiler-
+   generated structural-recursion helpers ending in `_unsafe_rec` are not
+   source `partial` declarations and are ignored.
 
 Exit code 0 iff all checks pass, so CI is `lake exe audit`.
 -/
@@ -42,6 +47,34 @@ exposed as an opaque predicate plus its semantic eliminator. -/
 def permittedAxiomDecls : List Name :=
   [`Loom.Emit.MicroVerilog.ImplementsStandard,
    `Loom.Emit.MicroVerilog.implements_standard_spec]
+
+/-- The complete executable unsafe surface. These private names are stable
+module-local declarations; any new unsafe helper fails the audit until its
+purpose and trust impact are reviewed here and in `TRUST.md`. -/
+def permittedUnsafeDecls : List String :=
+  ["_private.Loom.Hw.Compile.0.Loom.Hw.Compile.ceGo",
+   "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.ceImpl",
+   "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.wrImpl",
+   "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.nrImpl",
+   "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.ptImpl",
+   "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.mpImpl",
+   "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.compileImpl",
+   "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.pExprMGo",
+   "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.pExprM",
+   "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.printImpl"]
+
+/-- The reference definitions whose compiled execution is replaced. -/
+def permittedImplementedBy : List (String × String) :=
+  [("Loom.Hw.Compile.compile",
+    "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.compileImpl"),
+   ("Loom.Emit.MicroVerilog.Print.print",
+    "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.printImpl")]
+
+/-- Lean generates partial `_unsafe_rec` helpers while elaborating some
+ordinary structural definitions. They are compiler artifacts, not uses of
+the source-level `partial def` escape hatch. -/
+def generatedUnsafeRec (n : Name) : Bool :=
+  n.toString.endsWith "._unsafe_rec"
 
 /-- Is this one of our modules (as opposed to Lean core / Mathlib)? -/
 def oursModule (n : Name) : Bool :=
@@ -88,12 +121,28 @@ def main : IO UInt32 := do
 
   -- Gather our declarations, module-indexed
   let mut ledger : Array (Name × String × Array Name) := #[]
+  let mut unsafeDecls : Array Name := #[]
+  let mut implementedByDecls : Array (Name × Name) := #[]
   for (name, info) in env.constants.toList do
     match env.getModuleIdxFor? name with
     | none => pure ()
     | some idx =>
       let mod := header.moduleNames[idx.toNat]!
       if oursModule mod then
+        -- 5. Executable trust surface
+        if info.isUnsafe then
+          unsafeDecls := unsafeDecls.push name
+          unless permittedUnsafeDecls.contains name.toString do
+            failures := failures.push s!"unsafe policy: unreviewed unsafe declaration {name} in {mod}"
+        if info.isPartial && !generatedUnsafeRec name then
+          failures := failures.push s!"partial policy: source partial declaration {name} in {mod}"
+        if (Lean.getExternAttrData? env name).isSome then
+          failures := failures.push s!"extern policy: project extern declaration {name} in {mod}"
+        if let some impl := Lean.Compiler.getImplementedBy? env name then
+          implementedByDecls := implementedByDecls.push (name, impl)
+          unless permittedImplementedBy.contains (name.toString, impl.toString) do
+            failures := failures.push
+              s!"implemented_by policy: unreviewed replacement {name} => {impl} in {mod}"
         -- 3. Axiom policy
         if let .axiomInfo _ := info then
           unless permittedAxiomDecls.contains name do
@@ -122,6 +171,17 @@ def main : IO UInt32 := do
   IO.println "── Ledger axiom closures ───────────────────────────────────"
   for (name, _, axioms) in sortedLedger do
     IO.println s!"axioms {name}: {formatAxiomList axioms}"
+
+  IO.println "── Executable trust inventory ──────────────────────────────"
+  let sortedUnsafe := unsafeDecls.qsort (fun a b => a.toString < b.toString)
+  for name in sortedUnsafe do
+    IO.println s!"unsafe {name}"
+  let sortedImplementedBy := implementedByDecls.qsort
+    (fun a b => a.1.toString < b.1.toString)
+  for (name, impl) in sortedImplementedBy do
+    IO.println s!"implemented_by {name} => {impl}"
+  IO.println (s!"── {unsafeDecls.size} unsafe declarations; " ++
+    s!"{implementedByDecls.size} implemented_by replacements; 0 partial; 0 extern ──")
 
   if failures.isEmpty then
     IO.println "audit: all checks passed"
