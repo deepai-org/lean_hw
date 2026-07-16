@@ -103,4 +103,32 @@ theorem absDom_revSuccessA_refill (m : Manifest) (hwfm : m.WF)
     simp [MachineState.setDom]
   · simp [MachineState.setDom, hc]
 
+/-- The revoke payload does not alter gate records; after refill its gate
+abstraction is the gate face of the named successful abstract state. -/
+theorem absGate_revSuccessA_refill (m : Manifest) (hwfm : m.WF)
+    (hfit : Fits m) (sigma : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (sigma.regs (Hw.drctr d) 32).toNat =
+      (sigma.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (E : DomainId) (RD : RegId) (g : GateId) :
+    Hw.absGate
+        ((Act.seq (.write 1 "if_v" (.lit 0)) (revSuccessArmA E)).run
+          sigma ((Hw.refillAct m).run sigma sigma)) g =
+      (revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)).gates g := by
+  have hquiet : ∀ q ∈ gateReadNames g,
+      q ∉ (Act.seq (.write 1 "if_v" (.lit 0))
+        (revSuccessArmA E)).regWrites := by
+    clear * - g E
+    fin_cases g <;> fin_cases E <;> decide +kernel
+  have hg := absGate_congr g (fun q hq => frame (hquiet q hq) sigma
+    ((Hw.refillAct m).run sigma sigma))
+  rw [hg]
+  have hrefill := abs_refill m hwfm hfit sigma hsync
+  have hgate : Hw.absGate ((Hw.refillAct m).run sigma sigma) g =
+      ((refillPhase m (Hw.abs sigma)).gates g) := by
+    change (Hw.abs ((Hw.refillAct m).run sigma sigma)).gates g = _
+    rw [hrefill]
+  rw [hgate]
+  unfold revAbstractSuccess revRetireBase
+  simp [MachineState.setDom]
+
 end Machines.Lnp64u.Theorems.RMC
