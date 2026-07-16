@@ -85,7 +85,7 @@ private theorem rvNameBlock_disjoint (m : Manifest) (i j : Hw.NodeId)
         (b := ⟨i.val, by simpa using i.isLt⟩) hji
     simpa using hd.symm
 
-private theorem seqAll_actions_frame {I : Type} {w : Nat}
+theorem seqAll_actions_frame {I : Type} {w : Nat}
     (σ acc : Loom.Hw.St) (a : I → Act) (l : List I)
     (rn : String)
     (hframe : ∀ i ∈ l, ∀ acc', ((a i).run σ acc').regs rn w =
@@ -98,7 +98,7 @@ private theorem seqAll_actions_frame {I : Type} {w : Nat}
       rw [ih _ (fun j hj => hframe j (List.mem_cons_of_mem i hj))]
       exact hframe i (List.mem_cons_self ..) acc
 
-private theorem seqAll_actions_at {I : Type} {w : Nat}
+theorem seqAll_actions_at {I : Type} {w : Nat}
     (σ acc : Loom.Hw.St) (a : I → Act) (l : List I) (i : I)
     (hi : i ∈ l) (hnd : l.Nodup) (rn : String) (v : BitVec w)
     (hat : ∀ acc', ((a i).run σ acc').regs rn w = v)
@@ -551,6 +551,10 @@ theorem liveParent_congr (τ τ' : MachineState) (ht : TablesEq τ τ')
   cases hp : τ.parentOf x.1 x.2 with
   | none => rfl
   | some p =>
+      change (if p.gen = (τ'.doms p.dom).slotGen p.slot then
+          some (p.dom, p.slot) else none) =
+        (if p.gen = (τ.doms p.dom).slotGen p.slot then
+          some (p.dom, p.slot) else none)
       rw [(ht p.dom).2.2]
 
 /-- Bounded reachability depends only on the capability tables. -/
@@ -566,7 +570,12 @@ theorem reachRootN_congr (τ τ' : MachineState) (ht : TablesEq τ τ')
       cases hp : τ.parentOf x.1 x.2 with
       | none => rfl
       | some p =>
-          rw [(ht p.dom).2.2, ih]
+          simp only []
+          rw [(ht p.dom).2.2]
+          exact congrArg (fun b => reachRootN τ root n x ||
+            (decide (p = root) ||
+              (decide (p.gen = (τ.doms p.dom).slotGen p.slot) && b)))
+            (ih (p.dom, p.slot))
 
 /-- Live-chain validity depends only on the capability tables. -/
 theorem liveChainN_congr (τ τ' : MachineState) (ht : TablesEq τ τ')
@@ -604,9 +613,14 @@ theorem tablesEq_step_countdown (m : Manifest) (τ : MachineState)
     simpa using hfl
   have hc := corePhase_countdown m (refillPhase m τ) fl hfl' (by omega)
   intro d
-  unfold step
-  rw [hc]
-  simp only [moverPhase_doms]
+  change
+    ((moverPhase (corePhase m (refillPhase m τ))).doms d).caps =
+        (τ.doms d).caps ∧
+      ((moverPhase (corePhase m (refillPhase m τ))).doms d).lineage =
+        (τ.doms d).lineage ∧
+      ((moverPhase (corePhase m (refillPhase m τ))).doms d).slotGen =
+        (τ.doms d).slotGen
+  rw [moverPhase_doms, hc]
   exact ⟨refillPhase_caps m τ d, refillPhase_lineage m τ d,
     refillPhase_slotGen m τ d⟩
 
@@ -1027,6 +1041,7 @@ theorem coreAct_run_revoke_init_eq (m : Manifest) (σ acc : Loom.Hw.St)
         ((Act.write 8 "if_cl" (.sub (.reg 8 "if_cl") (.lit 1))).run σ acc) := by
   have hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat := by
     rw [hcl, revokeCost_eq_24]
+    omega
   rw [coreAct_run_countdown_eq m σ acc hifv hcl2]
   have his : (Hw.isMn "cap_revoke").eval σ = 1#1 := by
     rw [isMn_eval, hopc]
@@ -1055,9 +1070,11 @@ theorem coreAct_run_revoke_step_eq (m : Manifest) (σ acc : Loom.Hw.St)
     exact (by decide +kernel : Hw.opcodeOf "cap_revoke" = 18#6).symm
   have hne : (Expr.eq (.reg 8 "if_cl")
       (.lit (BitVec.ofNat 8 revokeCost))).eval σ ≠ 1#1 := by
-    rw [eqE_eval]
-    intro h
+    intro he
+    have h := (eqE_eval _ _ σ).mp he
     have ht := congrArg BitVec.toNat h
+    change (σ.regs "if_cl" 8).toNat =
+      (BitVec.ofNat 8 revokeCost).toNat at ht
     rw [BitVec.toNat_ofNat, revokeCost_eq_24] at ht
     rw [revokeCost_eq_24] at hcllt
     omega
@@ -1096,13 +1113,16 @@ theorem cycle_rvRegsEq_coreAct (m : Manifest) (σ : Loom.Hw.St) :
   refine ⟨?_, ?_, ?_⟩
   · rw [frame (show (Hw.rvR (Hw.nodeOf c s), 1) ∉ Hw.tickAct.regWrites by
       simp [Hw.tickAct, Act.regWrites, Hw.rvR])]
-    rw [run_WritesPrefixed (by simp [Hw.rvR]) 1 _ mover_prefixed]
+    rw [run_WritesPrefixed (by
+      fin_cases c <;> fin_cases s <;> decide +kernel) 1 _ mover_prefixed]
   · rw [frame (show (Hw.rvV (Hw.nodeOf c s), 1) ∉ Hw.tickAct.regWrites by
       simp [Hw.tickAct, Act.regWrites, Hw.rvV])]
-    rw [run_WritesPrefixed (by simp [Hw.rvV]) 1 _ mover_prefixed]
+    rw [run_WritesPrefixed (by
+      fin_cases c <;> fin_cases s <;> decide +kernel) 1 _ mover_prefixed]
   · rw [frame (show (Hw.rvJ (Hw.nodeOf c s), 6) ∉ Hw.tickAct.regWrites by
       simp [Hw.tickAct, Act.regWrites, Hw.rvJ])]
-    rw [run_WritesPrefixed (by simp [Hw.rvJ]) 6 _ mover_prefixed]
+    rw [run_WritesPrefixed (by
+      fin_cases c <;> fin_cases s <;> decide +kernel) 6 _ mover_prefixed]
 
 /-- A non-vector, non-countdown register framed by refill, core countdown,
 mover, and tick is unchanged by the full hardware cycle. -/
@@ -1139,11 +1159,13 @@ theorem rvRoot_cycle_countdown (m : Manifest) (σ : Loom.Hw.St)
   have hdom : ((Hw.core m).cycle σ).regs "if_dom" 2 =
       σ.regs "if_dom" 2 :=
     cycle_reg_countdown m σ hifv hcl2 "if_dom" 2
-      (by decide) (by decide) (by decide) (by decide) (by decide)
+      (by decide +kernel) (by decide +kernel) (by decide +kernel)
+      (by decide +kernel) (by decide +kernel)
   have hword : ((Hw.core m).cycle σ).regs "if_word" 32 =
       σ.regs "if_word" 32 :=
     cycle_reg_countdown m σ hifv hcl2 "if_word" 32
-      (by decide) (by decide) (by decide) (by decide) (by decide)
+      (by decide +kernel) (by decide +kernel) (by decide +kernel)
+      (by decide +kernel) (by decide +kernel)
   have hreg : ∀ (d : DomainId) (r : RegId),
       ((Hw.core m).cycle σ).regs (Hw.dreg d r) 32 =
         σ.regs (Hw.dreg d r) 32 := by
@@ -1174,7 +1196,7 @@ theorem tablesEq_abs_cycle_countdown (m : Manifest) (hwf : m.WF)
       cyclesLeft := (σ.regs "if_cl" 8).toNat }
   have hfl : (Hw.abs σ).inflight = some fl := by
     show Hw.absInflight σ = some fl
-    rw [Hw.absInflight, if_pos hifv]
+    rw [Hw.absInflight, if_pos (show σ.regs "if_v" 1 = 1 from hifv)]
   rw [square_countdown m hwf hfit σ hsync hifv hcl2]
   exact tablesEq_step_countdown m (Hw.abs σ) fl hfl hcl2
 
@@ -1188,10 +1210,11 @@ theorem cycle_revoke_init_establishes_vectors (m : Manifest) (hwf : m.WF)
     (hifv : σ.regs "if_v" 1 = 1#1)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
     (hcl : (σ.regs "if_cl" 8).toNat = revokeCost) :
-    RvVectors (Hw.abs ((Hw.core m).cycle σ)
+    RvVectors (Hw.abs ((Hw.core m).cycle σ))
       (rvRoot ((Hw.core m).cycle σ)) 1 ((Hw.core m).cycle σ) := by
   have hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat := by
     rw [hcl, revokeCost_eq_24]
+    omega
   have hbase := coreAct_revoke_init_establishes_vectors m σ
     ((Hw.refillAct m).run σ σ) hz hifv hopc hcl
   have ht := tablesEq_abs_cycle_countdown m hwf hfit σ hsync hifv hcl2
@@ -1204,7 +1227,7 @@ theorem cycle_revoke_init_establishes_vectors (m : Manifest) (hwf : m.WF)
 /-- Every later full revoke countdown cycle doubles the represented horizon
 against the post-cycle abstraction. -/
 theorem cycle_revoke_step_doubles_vectors (m : Manifest) (hwf : m.WF)
-    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hfit : Fits m) (σ : Loom.Hw.St) (n : Nat)
     (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
       (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
     (hvec : RvVectors (Hw.abs σ) (rvRoot σ) n σ)
@@ -1212,7 +1235,7 @@ theorem cycle_revoke_step_doubles_vectors (m : Manifest) (hwf : m.WF)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
     (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat)
     (hcllt : (σ.regs "if_cl" 8).toNat < revokeCost) :
-    RvVectors (Hw.abs ((Hw.core m).cycle σ)
+    RvVectors (Hw.abs ((Hw.core m).cycle σ))
       (rvRoot ((Hw.core m).cycle σ)) (n + n) ((Hw.core m).cycle σ) := by
   have hdouble := coreAct_revoke_step_doubles_vectors m
     (Hw.abs σ) (rvRoot σ) n σ ((Hw.refillAct m).run σ σ)
@@ -1244,9 +1267,11 @@ theorem cycle_ifv_ifword_countdown (m : Manifest) (σ : Loom.Hw.St)
     ((Hw.core m).cycle σ).regs "if_word" 32 = σ.regs "if_word" 32 := by
   constructor
   · exact cycle_reg_countdown m σ hifv hcl2 "if_v" 1
-      (by decide) (by decide) (by decide) (by decide) (by decide)
+      (by decide +kernel) (by decide +kernel) (by decide +kernel)
+      (by decide +kernel) (by decide +kernel)
   · exact cycle_reg_countdown m σ hifv hcl2 "if_word" 32
-      (by decide) (by decide) (by decide) (by decide) (by decide)
+      (by decide +kernel) (by decide +kernel) (by decide +kernel)
+      (by decide +kernel) (by decide +kernel)
 
 private theorem bv8_sub_one_toNat (x : BitVec 8) (h : 1 ≤ x.toNat) :
     (x - 1).toNat = x.toNat - 1 := by
@@ -1325,10 +1350,12 @@ theorem rvSync_cycle_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       ((Hw.core m).cycle σ)
     rw [hclnat, hinit, revokeCost_eq_24]
     simpa [rvRounds, revokeCost_eq_24] using hv
-  · have hcllt : (σ.regs "if_cl" 8).toNat < revokeCost :=
-      Nat.lt_of_le_of_ne hcle (Ne.symm hinit)
+  · have hcllt : (σ.regs "if_cl" 8).toNat < revokeCost := by
+      rw [revokeCost_eq_24] at hcle hinit ⊢
+      omega
     have hvec := hrv hifv hopc hcllt
-    have hv := cycle_revoke_step_doubles_vectors m hwf hfit σ hsync hvec
+    have hv := cycle_revoke_step_doubles_vectors m hwf hfit σ
+      (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) hsync hvec
       hifv hopc hcl2 hcllt
     change RvVectors (Hw.abs ((Hw.core m).cycle σ))
       (rvRoot ((Hw.core m).cycle σ))
