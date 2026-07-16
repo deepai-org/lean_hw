@@ -166,6 +166,38 @@ theorem destroyMarked_liveRef_true_iff_of_live (rho : MachineState)
     rw [destroyMarked_liveCap_eq_of_unmarked rho marked r.dom r.slot r.gen hm0]
     simp [hlive, hm0]
 
+/-- Under well-formedness, the selected global revoke guard is equivalent
+to at least one Mover endpoint being dead in the post-destruction state. -/
+theorem movKilledE_core_rev_endpoint_iff (sigma : Loom.Hw.St)
+    (tau : MachineState) (hrv : RvSync sigma)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2)
+    (hkills : forall dm sl, (Hw.killedByCoreE dm sl).eval sigma =
+      (Hw.revKilled dm sl).eval sigma)
+    (hwf : Wf (Hw.abs sigma))
+    (htauLive : forall r, tau.liveRef r =
+      ((Hw.abs sigma).destroyMarked
+        ((Hw.abs sigma).marks (rvRoot sigma))).liveRef r)
+    (job : MoverJob) (habs : Hw.absMover sigma = some job) :
+    ((Hw.movKilledE (fun dm sl => Hw.killedByCoreE dm sl)).eval sigma =
+        1#1) <->
+      (tau.liveRef job.src && tau.liveRef job.dst) = false := by
+  have hmove : (Hw.abs sigma).mover = some job := habs
+  have hlive := moverEndpoints_live hwf job hmove
+  have hsrc : tau.liveRef job.src = false <->
+      (Hw.abs sigma).marks (rvRoot sigma) job.src.dom job.src.slot = true := by
+    rw [htauLive]
+    exact destroyMarked_liveRef_false_iff_of_live (Hw.abs sigma)
+      ((Hw.abs sigma).marks (rvRoot sigma)) job.src hlive.1
+  have hdst : tau.liveRef job.dst = false <->
+      (Hw.abs sigma).marks (rvRoot sigma) job.dst.dom job.dst.slot = true := by
+    rw [htauLive]
+    exact destroyMarked_liveRef_false_iff_of_live (Hw.abs sigma)
+      ((Hw.abs sigma).marks (rvRoot sigma)) job.dst hlive.2
+  rw [movKilledE_core_rev_iff sigma hrv hifv hopc hcl hkills, habs,
+    Bool.and_eq_false_iff, hsrc, hdst]
+
 /-- Generic Mover-field correspondence for a core operation whose kill set
 is characterized by post-core endpoint liveness. -/
 theorem absMover_moverAct_endpointSweep (sigma acc : Loom.Hw.St)
