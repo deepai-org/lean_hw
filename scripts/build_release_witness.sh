@@ -52,11 +52,15 @@ find "$src" -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 
 lake env lean "$(realpath "$src/Root.lean")" -o "$lib/Root.olean"
+
 lake build Tools.ReleaseCertGen
 lake env lean --run "$(realpath "$src/CertGen.lean")"
 
-find "$src" -maxdepth 1 -name 'CertBatch*.lean' -print0 | sort -z | \
+find "$src" -maxdepth 1 -name 'IndexedCertBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 
-lake env lean "$(realpath "$src/CertData.lean")" -o "$lib/CertData.olean"
+find "$src" -maxdepth 1 -name 'SemanticRegBatch*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+lake env lean "$(realpath "$src/SemanticRegs.lean")" -o "$lib/SemanticRegs.olean"
+lake env lean "$(realpath "$src/SemanticMems.lean")" -o "$lib/SemanticMems.olean"
 echo "$artifact render and semantic certificate modules kernel-checked"

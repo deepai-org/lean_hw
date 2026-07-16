@@ -21,13 +21,301 @@ namespace Loom.Release.Symbolic
 
 open Loom.Release.SSA
 
+/-- A concrete operand is either a source register or a numbered SSA wire. -/
+inductive Ref where
+  | reg (name : String)
+  | wire (number : Nat)
+  deriving Repr, DecidableEq
+
+def Ref.render : Ref → String
+  | .reg name => name
+  | .wire number => s!"n{number}"
+
+/-- String-free certificate view of an SSA right-hand side. -/
+inductive IndexedRhs where
+  | lit (width value : Nat)
+  | ident (value : Ref)
+  | memRead (mem : String) (address : Ref)
+  | slice (value : Ref) (hi lo : Nat)
+  | not (value : Ref)
+  | bin (op : BinOp) (left right : Ref)
+  | slt (left right : Ref)
+  | mux (condition yes no : Ref)
+  | sext (amount : Nat) (value : Ref) (signBit : Nat)
+  deriving Repr, DecidableEq
+
+structure IndexedWire where
+  width : Nat
+  rhs : IndexedRhs
+  deriving Repr, DecidableEq
+
+/-- Check the indexed view against the exact raw witness node. This is run
+once per bounded wire leaf; later semantic checks never parse identifiers. -/
+def IndexedWire.matchesRaw (number : Nat) (raw : Wire)
+    (indexed : IndexedWire) : Bool :=
+  raw.name == (Ref.wire number).render && raw.width == indexed.width &&
+  match raw.rhs, indexed.rhs with
+  | .lit w v, .lit w' v' => w == w' && v == v'
+  | .ident value, .ident value' => value == value'.render
+  | .memRead mem address, .memRead mem' address' =>
+      mem == mem' && address == address'.render
+  | .slice value hi lo, .slice value' hi' lo' =>
+      value == value'.render && hi == hi' && lo == lo'
+  | .not value, .not value' => value == value'.render
+  | .bin op left right, .bin op' left' right' =>
+      op == op' && left == left'.render && right == right'.render
+  | .slt left right, .slt left' right' =>
+      left == left'.render && right == right'.render
+  | .mux condition yes no, .mux condition' yes' no' =>
+      condition == condition'.render && yes == yes'.render && no == no'.render
+  | .sext amount value signBit, .sext amount' value' signBit' =>
+      amount == amount' && value == value'.render && signBit == signBit'
+  | _, _ => false
+
+def indexedBlockMatches : Nat → List Wire → List IndexedWire → Bool
+  | _, [], [] => true
+  | number, raw :: raws, indexed :: indexeds =>
+      indexed.matchesRaw number raw &&
+        indexedBlockMatches (number + 1) raws indexeds
+  | _, _, _ => false
+
+/-- Balanced proof that the indexed graph is exactly the string-free view of
+the raw rendered wire rope, with globally correct wire numbering. -/
+inductive IndexedRopeMatches : Nat → Rope (List Wire) →
+    Rope (List IndexedWire) → Prop where
+  | leaf {start raws indexed}
+      (accepted : indexedBlockMatches start raws indexed = true) :
+      IndexedRopeMatches start (.leaf raws) (.leaf indexed)
+  | node {start rawLeft rawRight indexedLeft indexedRight}
+      (left : IndexedRopeMatches start rawLeft indexedLeft)
+      (right : IndexedRopeMatches (start + rawLeft.listLength)
+        rawRight indexedRight) :
+      IndexedRopeMatches start (.node rawLeft rawRight)
+        (.node indexedLeft indexedRight)
+
 /-- Compact layout proof data for fixed-size wire leaves. Only one path per
 leaf is stored; the numeric SSA suffix determines the leaf and offset.
 The last leaf may be shorter. -/
 structure WireTable where
   leafSize : Nat
-  paths : Array (List Bool)
+  paths : List (List Bool)
   deriving Repr, DecidableEq
+
+def lookupIndexed? (wires : Rope (List IndexedWire)) (table : WireTable)
+    (number : Nat) : Option IndexedWire := do
+  guard (table.leafSize > 0)
+  let path ← table.paths[number / table.leafSize]?
+  wires.resolve? ⟨path, number % table.leafSize⟩
+
+/-- String-free structural comparison with the reference compiler expression.
+Shared SSA nodes may be revisited, but each visit performs only bounded rope
+navigation and constructor/Nat comparisons. -/
+def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
+    {w : Nat} → Loom.Emit.MicroVerilog.Expr w → Ref → Bool
+  | _, .reg _ sourceName, .reg actualName => sourceName == actualName
+  | _, .reg .., .wire _ => false
+  | _, .lit _, .reg _ => false
+  | w, .lit value, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .lit literalWidth actualValue⟩ =>
+          actualWidth == w && literalWidth == w && actualValue == value.toNat
+      | _ => false
+
+  | _, .memRead .., .reg _ => false
+  | w, .memRead _ mem address, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .memRead actualMem actualAddress⟩ =>
+          actualWidth == w && actualMem == mem &&
+            indexedExprMatches wires table address actualAddress
+      | _ => false
+  | _, .and .., .reg _ | _, .or .., .reg _ | _, .xor .., .reg _
+  | _, .not _, .reg _ | _, .add .., .reg _ | _, .sub .., .reg _
+  | _, .shl .., .reg _ | _, .shr .., .reg _ | _, .eq .., .reg _
+  | _, .ult .., .reg _ | _, .slt .., .reg _ | _, .mux .., .reg _
+  | _, .slice .., .reg _ | _, .zext .., .reg _ | _, .sext .., .reg _ => false
+  | w, .and left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .bin .and actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .or left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .bin .or actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .xor left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .bin .xor actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .not value, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .not actual⟩ =>
+          actualWidth == w && indexedExprMatches wires table value actual
+      | _ => false
+  | w, .add left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .bin .add actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .sub left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .bin .sub actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .shl left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .bin .shl actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .shr left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .bin .shr actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | _, .eq left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨1, .bin .eq actualLeft actualRight⟩ =>
+          indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | _, .ult left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨1, .bin .ult actualLeft actualRight⟩ =>
+          indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | _, .slt left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨1, .slt actualLeft actualRight⟩ =>
+          indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .mux condition yes no, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .mux actualCondition actualYes actualNo⟩ =>
+          actualWidth == w &&
+            indexedExprMatches wires table condition actualCondition &&
+            indexedExprMatches wires table yes actualYes &&
+            indexedExprMatches wires table no actualNo
+      | _ => false
+  | w, .slice value lo _, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .slice actualValue hi actualLo⟩ =>
+          actualWidth == w && actualLo == lo && hi == lo + w - 1 &&
+            indexedExprMatches wires table value actualValue
+      | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.zext inputWidth value _, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .ident actual⟩ =>
+          actualWidth == w && inputWidth ≤ w &&
+            indexedExprMatches wires table value actual
+      | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.sext inputWidth value _, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨actualWidth, .sext amount actual signBit⟩ =>
+          actualWidth == w && inputWidth < w && amount == w - inputWidth &&
+            signBit + 1 == inputWidth &&
+            indexedExprMatches wires table value actual
+      | _ => false
+
+inductive NextRegCert where
+  | same
+  | write
+  | seq (mid : Option Ref) (left right : NextRegCert)
+  | ite (thenCert elseCert : NextRegCert)
+  deriving Repr, DecidableEq
+
+inductive NextRulesCert where
+  | nil
+  | cons (mid : Option Ref) (head : NextRegCert) (tail : NextRulesCert)
+  deriving Repr, DecidableEq
+
+/-- Validate one source action's contribution to a register root without
+materializing `Compile.nextReg`. -/
+def nextRegMatches (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) : Loom.Hw.Act → Option Ref → Ref →
+      NextRegCert → Bool
+  | .skip, some current, out, .same => current == out
+  | .seq left right, current, out, .seq mid leftCert rightCert =>
+      match mid with
+      | some mid =>
+          nextRegMatches wires table register width left current mid leftCert &&
+            nextRegMatches wires table register width right (some mid) out rightCert
+      | none =>
+          nextRegMatches wires table register width right none out rightCert ||
+          (match current with
+           | some current =>
+               nextRegMatches wires table register width left (some current) current leftCert &&
+                 nextRegMatches wires table register width right (some current) out rightCert
+           | none => false) ||
+          (nextRegMatches wires table register width left current out leftCert &&
+            nextRegMatches wires table register width right (some out) out rightCert)
+  | .seq left right, some current, out, .same =>
+      !Loom.Hw.Compile.writesRegB register width (.seq left right) &&
+        current == out
+  | .ite guard thenAction elseAction, current, .wire number,
+      .ite thenCert elseCert =>
+      if Loom.Hw.Compile.writesRegB register width thenAction ||
+          Loom.Hw.Compile.writesRegB register width elseAction then
+        match lookupIndexed? wires table number with
+        | some ⟨actualWidth, .mux guardRef thenRef elseRef⟩ =>
+            actualWidth == width &&
+              indexedExprMatches wires table
+                (Loom.Hw.Compile.compileExpr guard) guardRef &&
+              nextRegMatches wires table register width thenAction current
+                thenRef thenCert &&
+              nextRegMatches wires table register width elseAction current
+                elseRef elseCert
+        | _ => false
+      else false
+  | .ite _ thenAction elseAction, some current, out, .same =>
+      !(Loom.Hw.Compile.writesRegB register width thenAction ||
+        Loom.Hw.Compile.writesRegB register width elseAction) && current == out
+  | .write actualWidth actualRegister value, current, out, cert =>
+      if actualRegister = register then
+        if h : actualWidth = width then
+          match cert with
+          | .write => indexedExprMatches wires table
+              (Loom.Hw.Compile.compileExpr (h ▸ value)) out
+          | _ => false
+        else match current with
+          | some current => cert == .same && current == out
+          | none => false
+      else match current with
+        | some current => cert == .same && current == out
+        | none => false
+  | .memWrite .., some current, out, .same => current == out
+  | _, _, _, _ => false
+
+/-- Validate the ordered rule fold for one register. -/
+def nextRulesMatches (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) : List Loom.Hw.Rule → Option Ref → Ref →
+      NextRulesCert → Bool
+  | [], some current, out, .nil => current == out
+  | rule :: rules, current, out, .cons mid head tail =>
+      match mid with
+      | some mid =>
+          nextRegMatches wires table register width rule.body current mid head &&
+            nextRulesMatches wires table register width rules (some mid) out tail
+      | none =>
+          nextRulesMatches wires table register width rules none out tail ||
+          (match current with
+           | some current =>
+               nextRegMatches wires table register width rule.body
+                   (some current) current head &&
+                 nextRulesMatches wires table register width rules (some current) out tail
+           | none => false) ||
+          (nextRegMatches wires table register width rule.body current out head &&
+            nextRulesMatches wires table register width rules (some out) out tail)
+  | _, _, _, _ => false
 
 /-- Decode the deliberately tiny release-witness naming convention. -/
 def wireNumber? (name : String) : Option Nat := do
@@ -45,6 +333,91 @@ def lookupWire? (program : Program) (table : WireTable)
   let wire ← program.wires.resolve? reference
   guard (wire.name == name)
   pure wire
+
+private def lookupReg? (program : Program) (name : String) : Option Reg :=
+  program.regs.find? fun reg => reg.name == name
+
+private def nameWidth? (program : Program) (table : WireTable)
+    (name : String) : Option Nat :=
+  match lookupReg? program name with
+  | some reg => some reg.width
+  | none => (lookupWire? program table name).map (·.width)
+
+/-- Evaluate a named concrete SSA expression against a source-shaped state,
+without constructing an expression AST. Fuel bounds graph traversal; release
+checks separately establish that every wire only names lower-numbered wires. -/
+def evalNameFuel (program : Program) (table : WireTable)
+    (state : Loom.Emit.MicroVerilog.St) : (fuel : Nat) → (name : String) →
+      (width : Nat) → Option (BitVec width)
+  | 0, _, _ => none
+  | fuel + 1, name, width =>
+    match lookupReg? program name with
+    | some reg =>
+        if h : reg.width = width then some (h ▸ state.regs name reg.width)
+        else none
+    | none => do
+      let wire ← lookupWire? program table name
+      guard (wire.width == width)
+      let evalAt (operand : String) (operandWidth : Nat) :=
+        evalNameFuel program table state fuel operand operandWidth
+      let evalAny (operand : String) : Option (Sigma BitVec) := do
+        let operandWidth ← nameWidth? program table operand
+        pure ⟨operandWidth, ← evalAt operand operandWidth⟩
+      match wire.rhs with
+      | .lit actualWidth value => do
+          guard (actualWidth == width)
+          pure (BitVec.ofNat width value)
+      | .ident source => do
+          let ⟨_, value⟩ ← evalAny source
+          pure (value.setWidth width)
+      | .memRead mem address => do
+          let header ← program.mems.find? fun candidate => candidate.name == mem
+          guard (header.dataWidth == width)
+          let address ← evalAt address header.addrWidth
+          pure (state.mems mem address.toNat width)
+      | .slice source hi lo => do
+          guard (lo ≤ hi && hi + 1 - lo == width)
+          let ⟨_, value⟩ ← evalAny source
+          pure (value.extractLsb' lo width)
+      | .not source => pure (~~~(← evalAt source width))
+      | .bin op left right =>
+          match op with
+          | .and => pure ((← evalAt left width) &&& (← evalAt right width))
+          | .or => pure ((← evalAt left width) ||| (← evalAt right width))
+          | .xor => pure ((← evalAt left width) ^^^ (← evalAt right width))
+          | .add => pure ((← evalAt left width) + (← evalAt right width))
+          | .sub => pure ((← evalAt left width) - (← evalAt right width))
+          | .shl => pure ((← evalAt left width) <<< (← evalAt right width).toNat)
+          | .shr => pure ((← evalAt left width) >>> (← evalAt right width).toNat)
+          | .eq => do
+              if h : width = 1 then do
+                let operandWidth ← nameWidth? program table left
+                let leftValue ← evalAt left operandWidth
+                let rightValue ← evalAt right operandWidth
+                pure (h.symm ▸ if leftValue = rightValue then 1#1 else 0#1)
+              else none
+          | .ult => do
+              if h : width = 1 then do
+                let operandWidth ← nameWidth? program table left
+                let leftValue ← evalAt left operandWidth
+                let rightValue ← evalAt right operandWidth
+                pure (h.symm ▸ if leftValue.ult rightValue then 1#1 else 0#1)
+              else none
+      | .slt left right => do
+          if h : width = 1 then do
+            let operandWidth ← nameWidth? program table left
+            let leftValue ← evalAt left operandWidth
+            let rightValue ← evalAt right operandWidth
+            pure (h.symm ▸ if leftValue.slt rightValue then 1#1 else 0#1)
+          else none
+      | .mux condition yes no => do
+          let conditionValue ← evalAt condition 1
+          if conditionValue = 1#1 then evalAt yes width else evalAt no width
+      | .sext amount source signBit => do
+          let ⟨sourceWidth, value⟩ ← evalAny source
+          guard (signBit + 1 == sourceWidth && sourceWidth + amount == width &&
+            sourceWidth < width)
+          pure (value.signExtend width)
 
 /-- Successful symbolic lookup always returns a wire bearing the requested
 name. This is the first local soundness fact used by the graph checker. -/
@@ -85,7 +458,7 @@ Unlike `Program.elaborateEnv`, this never constructs an expanded µVerilog
 expression. Recursion follows the source expression, while every concrete
 edge is re-read from a checked rope address. -/
 def exprMatches (program : Program) (table : WireTable) :
-    {w : Nat} → Loom.Hw.Expr w → String → Bool
+    {w : Nat} → Loom.Emit.MicroVerilog.Expr w → String → Bool
   | _, .reg _ sourceName, name => sourceName == name
   | w, .lit value, name =>
       match wireRhs? program table name w with
@@ -174,17 +547,136 @@ def exprMatches (program : Program) (table : WireTable) :
           actualLo == lo && hi == lo + w - 1 &&
             exprMatches program table value actualValue
       | _ => false
-  | w, @Loom.Hw.Expr.zext inputWidth value _, name =>
+  | w, @Loom.Emit.MicroVerilog.Expr.zext inputWidth value _, name =>
       match wireRhs? program table name w with
       | some (.ident actual) =>
           inputWidth ≤ w && exprMatches program table value actual
       | _ => false
-  | w, @Loom.Hw.Expr.sext inputWidth value _, name =>
+  | w, @Loom.Emit.MicroVerilog.Expr.sext inputWidth value _, name =>
       match wireRhs? program table name w with
       | some (.sext amount actual signBit) =>
           inputWidth < w && amount == w - inputWidth &&
             signBit + 1 == inputWidth &&
             exprMatches program table value actual
       | _ => false
+
+/-- Check one concrete register declaration and its named next-state root
+against the reference source-design fold. This is independently decidable per
+register, enabling bounded generated proof modules. -/
+def registerMatchesAt (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) (index : Nat) : Bool :=
+  match design.regs[index]?, program.regs[index]? with
+  | some source, some concrete =>
+      source.name == concrete.name && source.width == concrete.width &&
+      source.init.toNat == concrete.init &&
+      exprMatches program table
+        (design.rules.foldl
+          (fun current rule => Loom.Hw.Compile.nextReg source.name
+            source.width rule.body current)
+          (.reg source.width source.name)) concrete.next
+  | _, _ => false
+
+/-- Numeric-reference form of `registerMatchesAt`, used by full artifacts. -/
+def indexedRegisterMatchesAt (design : Loom.Hw.Design) (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (index : Nat) (root : Ref) : Bool :=
+  match design.regs[index]?, program.regs[index]? with
+  | some source, some concrete =>
+      source.name == concrete.name && source.width == concrete.width &&
+      source.init.toNat == concrete.init && concrete.next == root.render &&
+      indexedExprMatches wires table
+        (design.rules.foldl
+          (fun current rule => Loom.Hw.Compile.nextReg source.name
+            source.width rule.body current)
+          (.reg source.width source.name)) root
+  | _, _ => false
+
+def indexedRegisterMetadataMatchesAt (design : Loom.Hw.Design)
+    (program : Program) (index : Nat) (root : Ref) : Bool :=
+  match design.regs[index]?, program.regs[index]? with
+  | some source, some concrete =>
+      source.name == concrete.name && source.width == concrete.width &&
+      source.init.toNat == concrete.init && concrete.next == root.render
+  | _, _ => false
+
+structure PortRefs where
+  en : Ref
+  addr : Ref
+  data : Ref
+  deriving Repr, DecidableEq
+
+structure RegisterRoot where
+  index : Nat
+  root : Ref
+  deriving Repr, DecidableEq
+
+def RegisterRoot.accepted (design : Loom.Hw.Design) (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (entry : RegisterRoot) : Bool :=
+  indexedRegisterMatchesAt design program wires table entry.index entry.root
+
+def registerRootsAccepted (design : Loom.Hw.Design) (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable) :
+    List RegisterRoot → Bool
+  | [] => true
+  | root :: roots => root.accepted design program wires table &&
+      registerRootsAccepted design program wires table roots
+
+theorem registerRootsAccepted_head (design : Loom.Hw.Design)
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (root : RegisterRoot) (roots : List RegisterRoot)
+    (h : registerRootsAccepted design program wires table (root :: roots) = true) :
+    root.accepted design program wires table = true := by
+  simp only [registerRootsAccepted, Bool.and_eq_true] at h
+  exact h.1
+
+theorem registerRootsAccepted_tail (design : Loom.Hw.Design)
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (root : RegisterRoot) (roots : List RegisterRoot)
+    (h : registerRootsAccepted design program wires table (root :: roots) = true) :
+    registerRootsAccepted design program wires table roots = true := by
+  simp only [registerRootsAccepted, Bool.and_eq_true] at h
+  exact h.2
+
+/-- Check one concrete memory write port against the corresponding reference
+compiler port, using only numeric SSA references. -/
+def indexedMemoryPortMatchesAt (design : Loom.Hw.Design) (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (memoryIndex portIndex : Nat) (refs : PortRefs) : Bool :=
+  match design.mems[memoryIndex]?, program.mems[memoryIndex]? with
+  | some source, some concrete =>
+      match concrete.writes[portIndex]? with
+      | some write =>
+          let compiled := Loom.Hw.Compile.compilePort design source.name
+            source.addrWidth source.dataWidth portIndex
+          source.name == concrete.name &&
+          source.addrWidth == concrete.addrWidth &&
+          source.dataWidth == concrete.dataWidth &&
+          write.en == refs.en.render && write.addr == refs.addr.render &&
+          write.data == refs.data.render &&
+          indexedExprMatches wires table compiled.en refs.en &&
+          indexedExprMatches wires table compiled.addr refs.addr &&
+          indexedExprMatches wires table compiled.data refs.data
+      | none => false
+  | _, _ => false
+
+/-- Check one bounded initialization leaf against the source memory function. -/
+def memoryInitBlockMatches (source : Loom.Hw.MemDecl) (start : Nat) :
+    List Nat → Bool
+  | [] => true
+  | value :: values => value == (source.init start).toNat &&
+      memoryInitBlockMatches source (start + 1) values
+
+/-- Metadata and complete initialized address space of one memory. -/
+def indexedMemoryMatchesAt (design : Loom.Hw.Design) (program : Program)
+    (memoryIndex : Nat) : Bool :=
+  match design.mems[memoryIndex]?, program.mems[memoryIndex]? with
+  | some source, some concrete =>
+      source.name == concrete.name &&
+      source.addrWidth == concrete.addrWidth &&
+      source.dataWidth == concrete.dataWidth &&
+      concrete.init.listLength == 2 ^ source.addrWidth &&
+      concrete.writes.length == Loom.Hw.Compile.numPorts design source.name
+  | _, _ => false
 
 end Loom.Release.Symbolic
