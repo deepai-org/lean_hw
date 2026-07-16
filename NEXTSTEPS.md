@@ -1,14 +1,28 @@
-# NEXT STEPS - active plan as of 2026-07-14
+# NEXT STEPS — active plan as of 2026-07-16
 
-Current state: T1-T9 CLEAN (49/49 ledger), RTL corroborated (iverilog +
-yosys + SAT crosscheck, pinned tools, one-command `reproduce.sh`), R-MC
-down to four audit-legal retirement leaf sorries: `coupled_step` CLEAN,
-3 of 4 cycle arms CLEAN, retirement infrastructure complete, 21 of 25
-op arms + the decode-failure fallback proven. The project is one
-theorem (§1) plus packaging (§P2 remainder) from its headline claim.
-See `STATUS.md` for the audited ledger and session history.
+Current state: T1–T9 are CLEAN, the generic emission theorem is proved,
+RTL is externally corroborated, and R-MC is complete. The LNP64-µ core now
+has sorry-free unbounded whole-state lockstep from reset (`square`,
+`abs_run`, `refines`, `invariant_transport`), including all 25 retirement
+opcodes and bounded `cap_revoke` convergence. The final R-MC build completed
+1,005 jobs; `lake exe audit` passed; the four headline R-MC declarations
+depend only on Lean's standard `propext`, `Classical.choice`, and
+`Quot.sound` axioms.
 
-## Stopping point - 2026-07-04
+The active priority is now the release/trust-hardening track:
+
+1. reconcile `STATUS.md`, `TRUST.md`, and package-facing claims with the
+   completed R-MC proof;
+2. reduce the executable TCB around `compileImpl`/printer replacements and
+   strengthen full-size emitted-text round-trip evidence;
+3. finish package/CI/documentation gates in §P1–§P6;
+4. state the physical reset, 2-state RTL, and SoC integration contracts
+   precisely enough that downstream users cannot overread the theorem.
+
+Section 1 below is retained as the completed proof-engineering record. See
+`STATUS.md` for the audited current state and chronological history.
+
+## Historical stopping point — 2026-07-04
 
 The recovery loop is over. The active R-MC file now builds from current
 source with the generated reset helpers wired in:
@@ -177,11 +191,15 @@ fragments.
 - Work in compiling slices. After each slice, run the smallest useful Lean
   command, then the full target once the slice is structurally complete.
 
-## 1. R-MC endgame — the retirement tail (three remaining leaf sorries)
+## 1. DONE 2026-07-16 — R-MC retirement tail and unbounded assembly
 
-Target: close the three remaining retirement stubs in `RMC.lean`. All
-infrastructure exists; what remains is exactly enumerable. Work order
-(revised 2026-07-14, late — dispatcher first, revoke spike second):
+All three final leaves (`gate_call`, `gate_return`, `cap_revoke`) are proved
+and wired. `Coupled.rv_sync` carries the bounded revoke-engine invariant;
+`rvSync_cycle` proves preservation across countdown, retirement, idle, and
+issue cycles; `square_retire_rev` closes the final retirement behavior.
+The resulting `square`/`abs_run`/`refines`/`invariant_transport` chain is
+sorry-free and audit-CLEAN. The work order below is retained to document how
+the proof was decomposed.
 
 1. **DONE 2026-07-15.** (dispatcher wired; now 5 leaf sorries.) Rewrite `square_retire` as a
    `by_cases` chain on `(σ.regs "if_word" 32).extractLsb' 0 6` over the
@@ -213,12 +231,16 @@ infrastructure exists; what remains is exactly enumerable. Work order
    `hsr` reachability hypothesis) already give it. **Resolved:** both
    `MoverLiveSrc` and `MoverLiveMem` do; no `Coupled` clause required.
    Reuse `RMCRetireDup`'s cap-table/install face for `mem_grant`.
-5. **Tier 3 — kill machinery** (`cap_drop`, `gate_call`,
+5. **DONE 2026-07-16 — Tier 3 kill machinery** (`cap_drop`, `gate_call`,
    `gate_return`): `killedByCoreE` fires for real. Shared kill-variant
    of the Mover faces (watched-ref liveness *after* the kill sweep =
    spec `moverPhase` on the post-kill state), plus the gate
    save/restore faces for call/return (`absGate` variant exposing the
    activation fields).
+   **Completion update:** the shared whole-state `transferA` abstraction,
+   complete call activation/transfer square, and return restore/transfer
+   square all landed and are wired into the dispatcher. The detailed notes
+   that follow capture the earlier drop-first construction sequence.
    **Started 2026-07-15:** `RMCRetireDrop.lean` now proves the unique
    retiring-domain selector pointwise, decodes the selected slot kill
    predicate, reduces the global `killedByCoreE` tree to the successful
@@ -270,14 +292,14 @@ infrastructure exists; what remains is exactly enumerable. Work order
    `square_retire_capdrop` is wired into the dispatcher. Next reuse the
    kill-aware assembly for the two gate arms and add their activation
    save/restore plus capability-transfer faces.
-6. **Tier 4 — `cap_revoke`**: prove the clause from step 2 (rvInit
-   seeds, rvStep preserves through the countdown, retirement reads the
-   converged marks = spec `marks` closure in ≤ 7 doubling rounds), then
-   the arm.
-7. **Assembly**: delete the leaf sorries; `square`/`abs_run`/`refines`/
-   `invariant_transport` flip CLEAN. Full gate + STATUS/ledger update.
+6. **DONE 2026-07-16 — Tier 4 `cap_revoke`.** `rvInit` establishes the
+   vector invariant, `rvStep` doubles its represented horizon, full-cycle
+   preservation handles issue/retire vacuity, and retirement identifies
+   the saturated `rv_r` vector with the spec's `marks` closure.
+7. **DONE 2026-07-16 — Assembly.** The leaf sorries were deleted and
+   `square`/`abs_run`/`refines`/`invariant_transport` are CLEAN.
 
-### Remaining-arm timeboxes (checkpointed 2026-07-15)
+### Historical remaining-arm timeboxes (checkpointed 2026-07-15)
 
 These are stop-and-reassess bounds, not promises to grind indefinitely:
 

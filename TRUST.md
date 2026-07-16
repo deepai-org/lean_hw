@@ -1,9 +1,10 @@
 # TRUST — an honest bird's-eye audit of what the LNP64-µ theorems rest on
 
-Audited 2026-07-04, against the bar: peer-review-grade, seL4-trustworthiness
-or better. This document is deliberately adversarial to the project's own
-claims; it is the seed of the paper's trust section. Facts verified against
-the repo at the audit date.
+Audited 2026-07-04 and refreshed 2026-07-16 after R-MC completion, against
+the bar: peer-review-grade, seL4-trustworthiness or better. This document is
+deliberately adversarial to the project's own claims; it is the seed of the
+paper's trust section. Facts marked current were rechecked against the repo
+at the refresh date.
 
 ## A. Is it the right question? (property adequacy)
 
@@ -105,15 +106,17 @@ the repo at the audit date.
    closure, so readers can inspect the raw closure behind each CLEAN/STATED
    verdict instead of trusting only the summary labels.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
-5. Superseded `SystemOpsWf` sorries — deleted 2026-07-04; remaining
-   `sorry` hits are the audit-legal R-MC statements under `Theorems`.
+5. Superseded `SystemOpsWf` sorries were deleted 2026-07-04. As of
+   2026-07-16 the R-MC dependency cone is also sorry-free: `square`,
+   `abs_run`, `refines`, and `invariant_transport` report only `propext`,
+   `Classical.choice`, and `Quot.sound` under `#print axioms`.
 
 ## D. Does the generated Verilog comply with the proofs? (the chain)
 
-| Link | Status (2026-07-04) |
+| Link | Status (refreshed 2026-07-16) |
 |---|---|
 | ISS (`machine m`) — where T1–T9 live | proved |
-| ISS ↔ EDSL core (R-MC) | **TESTED, not proved** (1 sorry: `square`; 2,256 directed full-state lockstep cycles) |
+| ISS ↔ EDSL core (R-MC) | **proved** (unbounded exact whole-state lockstep from reset; all 25 retirement opcodes) |
 | EDSL core → Module IR (`compile`) | proved generically, sorry-free |
 | Module → *executed* emission | **`@[implemented_by compileImpl]` — unproved replacement** |
 | Module ↔ emitted text | round-trip `#guard` = **compiled eval, NOT kernel** (Acc8); **lnp64u: none yet** |
@@ -121,10 +124,11 @@ the repo at the audit date.
 | verified CPU netlist → SoC fabric / board | out of scope (DMA, interrupts, bus arbitration/backpressure, debug, MMU/IOMMU, coherency) |
 | netlist → silicon → physics | out of scope (reset sequencing, timing closure, glitches, metastability, power side channels) |
 
-- **Finding 1 — R-MC gap.** Today "T1–T9 hold of the RTL" is a
-  proved-tested-proved sandwich; the honest phrasing until `square` closes
-  is "proved of the ISS; correspondence to RTL mechanically tested and
-  partially proved."
+- **Finding 1 — R-MC gap: RESOLVED 2026-07-16.** `RMC.square` and the
+  unbounded `abs_run`/`refines` assembly are proved, including bounded
+  `cap_revoke` convergence. This closes the ISS↔EDSL link. Claims about
+  emitted text and physical/tool realizations remain limited by Findings
+  2–7 below.
 - **Finding 2 — `implemented_by` (Compile.lean:386) enlarged the TCB.**
   The kernel reasons about the reference `compile`; every executed
   artifact (emitted `.v`, BMC CNF) comes from the unproved `compileImpl`.
@@ -198,17 +202,18 @@ the repo at the audit date.
   a completed chain trusts the Lean kernel plus one narrowly documented
   µVerilog tool-boundary assumption — smaller and cleaner than seL4's TCB
   statement.
-- **Behind today:** (1) R-MC gap ⇒ end-to-end guarantee currently
-  comparable to seL4, not better; (2) `implemented_by` + eval-level
-  guards are unproved TCB residue; (3) reset, X-free RTL, platform I/O,
+- **Behind today:** (1) `implemented_by` + eval-level guards are unproved
+  executable-TCB residue; (2) reset, X-free RTL, platform I/O,
   budget-event accounting, fault
   routing, and global progress are integration assumptions, not proved
-  properties; (5) zero external scrutiny of spec and statements — most of
+  properties; (3) zero external scrutiny of spec and statements — most of
   what "seL4-trustworthy" socially means.
 
 ## Ranked punch list
 
-1. Close R-MC `square` (NEXTSTEPS §1/§4 fork).
+1. DONE 2026-07-16: close R-MC `square`; the unbounded whole-state
+   refinement and invariant transport now pass build, audit, and direct
+   axiom-closure checks.
 2. DONE 2026-07-04: D11 scheduler fix landed; serving underfunding raises
    a `.budget` fault, non-serving underfunding burns residual budget, and
    `StallFree` is deleted from T6.

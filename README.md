@@ -94,6 +94,7 @@ emitted RTL in per-cycle full-state lockstep against the ISS
 Documents: [`CHARTER.md`](CHARTER.md) (the program — what and why) →
 [`PLAN.md`](PLAN.md) (the task plan — how) → [`STATUS.md`](STATUS.md)
 (the honest, mechanically-audited state of every theorem) →
+[`TRUST.md`](TRUST.md) (the explicit TCB and claim limits) →
 [`NEXTSTEPS.md`](NEXTSTEPS.md) (the agreed roadmap + operational notes).
 
 ## Licensing
