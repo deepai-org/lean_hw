@@ -10,9 +10,9 @@ private def demo : Program where
   name := "demo"
   regs := [{ name := "r", width := 8, init := 0, next := "n1" }]
   mems := []
-  wires := [
-    { width := 8, name := "n0", rhs := .lit 8 1 },
-    { width := 8, name := "n1", rhs := .bin .add "r" "n0" }]
+  wires := .node
+    (.leaf [{ width := 8, name := "n0", rhs := .lit 8 1 }])
+    (.leaf [{ width := 8, name := "n1", rhs := .bin .add "r" "n0" }])
   outs := [{ name := "o_r", width := 8, value := "r" }]
 
 #guard demo.elaborate |>.isSome

@@ -15,22 +15,21 @@ private def program : Program where
   name := "empty"
   regs := []
   mems := []
-  wires := []
+  wires := .leaf []
   outs := []
 
 private def disk : Rope (List String) :=
-  .node (.leaf ["module empty(", "  input wire clk,"])
-    (.leaf ["  input wire rst", ");", "  always @(posedge clk) begin",
-      "    if (rst) begin", "    end else begin", "    end", "  end",
-      "endmodule"])
+  .node (.leaf ["module empty(", "  input wire clk,", "  input wire rst", ");"])
+    (.node (.leaf [])
+      (.node (.leaf [])
+        (.leaf ["  always @(posedge clk) begin", "    if (rst) begin",
+          "    end else begin", "    end", "  end", "endmodule"])))
 
-private def rendered : Rope (List String) := disk
+private def rendered : Rope (List String) := program.renderTree
 
-example : rendered.flattenLists = program.render := by decide +kernel
+example : rendered = program.renderTree := rfl
 
-example : String.intercalate "\n" program.render = disk.flattenBytes := by
-  unfold Rope.flattenBytes
-  rw [← show rendered.flattenLists = program.render by decide +kernel]
-  rfl
+example : program.renderTree.flattenBytes = disk.flattenBytes := by
+  exact Rope.flattenBytes_congr (by decide +kernel)
 
 end Tests.ReleaseCertificate
