@@ -1183,4 +1183,312 @@ theorem square_retire_gateReturn_success_zero (m : Manifest) (hwf : m.WF)
   · rfl
   · rfl
 
+/-- Complete successful non-null return. The placement check exposes either a
+root or derived structural transfer; both instantiate the common cycle proof
+above. -/
+theorem square_retire_gateReturn_success_nonzero (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz0 : R0Zero σ) (hkc : KindCanon σ)
+    (hsr : (machine m).Reachable (Hw.abs σ))
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (gid : GateId) (act : Activation)
+    (hserv : ((Hw.abs σ).doms
+      (finOfBv (by decide) (σ.regs "if_dom" 2))).serving = some gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hnonzero : (Hw.retW
+      (finOfBv (by decide) (σ.regs "if_dom" 2))).eval σ ≠ 0#32)
+    (hstale : (Expr.and
+      (Hw.retNZ (finOfBv (by decide) (σ.regs "if_dom" 2)))
+      (Expr.not (Hw.retSel
+        (finOfBv (by decide) (σ.regs "if_dom" 2))).live)).eval σ ≠ 1#1)
+    (hclass : (Expr.and
+      (Hw.retNZ (finOfBv (by decide) (σ.regs "if_dom" 2)))
+      (Expr.not (Hw.retSel
+        (finOfBv (by decide) (σ.regs "if_dom" 2))).clsOk)).eval σ ≠ 1#1)
+    (hblocked : (Expr.and
+      (Hw.retNZ (finOfBv (by decide) (σ.regs "if_dom" 2)))
+      (Hw.transferBlocked
+        (finOfBv (by decide) (σ.regs "if_dom" 2))
+        (Hw.retCl (finOfBv (by decide) (σ.regs "if_dom" 2)))
+        (Hw.retSel
+          (finOfBv (by decide) (σ.regs "if_dom" 2))))).eval σ ≠ 1#1) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  set E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2) with hE
+  let base := gateReturnTransferBase m σ
+  let τ0 := gateReturnPrefixed m σ E
+  obtain ⟨hifsel, hifexcl⟩ := ifDomIs_sel σ E rfl
+  have hne : E ≠ act.caller := by
+    simpa [E] using gateReturnIssuer_ne_caller_of_reachable
+      m hwf σ hsr hifv gid act hact
+  have hnz : (Hw.retNZ E).eval σ = 1#1 :=
+    (retNZ_eval_iff σ E).mpr (by simpa [E] using hnonzero)
+  have hlive : (Hw.retSel E).live.eval σ = 1#1 := by
+    exact (by decide : ∀ a b : BitVec 1,
+      a = 1#1 → a &&& ~~~b ≠ 1#1 → b = 1#1)
+      ((Hw.retNZ E).eval σ) ((Hw.retSel E).live.eval σ) hnz
+      (by simpa [E] using hstale)
+  have hcls1 : (Hw.retSel E).clsOk.eval σ = 1#1 := by
+    exact (by decide : ∀ a b : BitVec 1,
+      a = 1#1 → a &&& ~~~b ≠ 1#1 → b = 1#1)
+      ((Hw.retNZ E).eval σ) ((Hw.retSel E).clsOk.eval σ) hnz
+      (by simpa [E] using hclass)
+  have hok : (Hw.retOkE E).eval σ = 1#1 :=
+    retOkE_of_passes σ E gid act (by simpa [E] using hserv) hact
+      (by simpa [E] using hstale) (by simpa [E] using hclass)
+      (by simpa [E] using hblocked)
+  have hbridge : ∀ (S : Slot) (G : Gen),
+      (τ0.doms E).liveCap S G = ((Hw.abs σ).doms E).liveCap S G := by
+    intro S G
+    exact specLiveCap_bridge m σ E S G
+  obtain ⟨e, alive, acap⟩ := capSel_entry_of_live σ τ0 E
+    (Hw.retW E) hbridge (by simpa [Hw.retSel] using hlive)
+  let S : Slot := (Handle.decode ((Hw.retW E).eval σ)).slot
+  let G : Gen := (Handle.decode ((Hw.retW E).eval σ)).gen
+  have hclsIff := capSel_clsOk_iff_some σ E (Hw.retW E)
+    (finOfBv (by decide) (((Hw.retW E).eval σ).extractLsb' 0 4)) e hkc
+    (show (finOfBv (by decide : 2 ^ 4 = numSlots)
+      (((Hw.retW E).eval σ).extractLsb' 0 4)).val =
+      (((Hw.retW E).eval σ).extractLsb' 0 4).toNat from rfl) acap
+  have hcls : (Handle.decode ((Hw.retW E).eval σ)).cls = e.kind.cls :=
+    hclsIff.mp (by simpa [Hw.retSel] using hcls1)
+  have hslot : (Hw.retSel E).slot.eval σ = BitVec.ofNat 4 S.val := by
+    exact (bv4_slot_iff _ S).mpr rfl
+  have hsource : (τ0.doms E).caps S = some e := by
+    change (τ0.doms E).liveCap S G = some e at alive
+    unfold DomainState.liveCap at alive
+    cases hc : (τ0.doms E).caps S with
+    | none => simp [hc] at alive
+    | some e' =>
+        rw [hc] at alive
+        change (if (decide ((τ0.doms E).slotGen S = G) && G != 0) = true
+          then some e' else none) = some e at alive
+        by_cases hg : (decide ((τ0.doms E).slotGen S = G) && G != 0) = true
+        · rw [if_pos hg] at alive
+          exact Option.some.inj alive ▸ rfl
+        · rw [if_neg hg] at alive
+          contradiction
+  have hgen : (τ0.doms E).slotGen S = G := by
+    change (τ0.doms E).liveCap S G = some e at alive
+    unfold DomainState.liveCap at alive
+    rw [hsource] at alive
+    change (if (decide ((τ0.doms E).slotGen S = G) && G != 0) = true
+      then some e else none) = some e at alive
+    by_cases hg : (decide ((τ0.doms E).slotGen S = G) && G != 0) = true
+    · simpa using (show (τ0.doms E).slotGen S = G ∧ G ≠ 0 from by
+        simpa using hg).1
+    · rw [if_neg hg] at alive
+      contradiction
+  have hgenAbs : ((Hw.abs σ).doms E).slotGen S = G := by
+    simpa [τ0, gateReturnPrefixed, gateReturnTransferBase,
+      MachineState.setDom, Loom.Fun.update] using hgen
+  have hkind : (Hw.retSel E).kindW.eval σ = Hw.encKind e.kind :=
+    capSel_kind_of_some σ E (Hw.retW E) S e hkc (by rfl) acap
+  have hold : Hw.decRef
+      ((Hw.encRefE (Hw.dLit E) (Hw.retSel E).slot
+        (Hw.retSel E).gen).eval σ) =
+      ⟨E, S, ((Hw.abs σ).doms E).slotGen S⟩ := by
+    apply encRefE_decoded_selected σ E (Hw.retSel E).slot
+      (Hw.retSel E).gen S (((Hw.abs σ).doms E).slotGen S) hslot
+    simpa [G] using hgenAbs.symm
+  have hdecode : Handle.decode ((Hw.retW E).eval σ) =
+      ⟨S, G, e.kind.cls⟩ := by
+    cases hd : Handle.decode ((Hw.retW E).eval σ) with
+    | mk slot gen cls =>
+        simp only [S, G, hd] at hcls ⊢
+        cases hcls
+        rfl
+  have hcapLive : Machines.Lnp64u.Isa.capLive E ((Hw.retW E).eval σ) τ0 =
+      .ok (S, G, e) τ0 :=
+    capLive_eq_selected τ0 E ((Hw.retW E).eval σ) S G e hdecode alive
+  have hlineage : ∀ L : LineageId,
+      (τ0.doms E).lineage L = ((Hw.abs σ).doms E).lineage L := by
+    intro L
+    simp [τ0, gateReturnPrefixed, gateReturnTransferBase,
+      MachineState.setDom, Loom.Fun.update]
+  have hfreeSlot : τ0.freeSlot act.caller =
+      (Hw.abs σ).freeSlot act.caller := by
+    unfold MachineState.freeSlot
+    simp [τ0, gateReturnPrefixed, gateReturnTransferBase,
+      MachineState.setDom, Loom.Fun.update, hne.symm]
+  have hfreeCell : τ0.freeCell act.caller =
+      (Hw.abs σ).freeCell act.caller := by
+    unfold MachineState.freeCell
+    simp [τ0, gateReturnPrefixed, gateReturnTransferBase,
+      MachineState.setDom, Loom.Fun.update, hne.symm]
+  have hwfAbs : Wf (Hw.abs σ) := reachable_wf m hwf _ hsr
+  have hto := retCl_eval_selected σ E gid act
+    (by simpa [E] using hserv) hact
+  have hpass : (Hw.transferBlocked E (Hw.retCl E) (Hw.retSel E)).eval σ ≠
+      1#1 := by
+    intro hb
+    apply hblocked
+    change (Hw.retNZ E).eval σ &&&
+      (Hw.transferBlocked E (Hw.retCl E) (Hw.retSel E)).eval σ = 1#1
+    rw [hnz, hb]
+    decide
+  have hret := retiringE_one σ hifv hcl
+  have hif : ∀ x : DomainId, (Hw.ifDomIs x).eval σ =
+      if x = E then 1#1 else 0#1 := by
+    intro x
+    by_cases hx : x = E
+    · subst x; simpa using hifsel
+    · rw [if_neg hx, bv1_ne_one.mp (hifexcl x hx)]
+  have hmn : (Hw.isMn "gate_return").eval σ = 1#1 := by
+    rw [isMn_eval, hopc]
+    exact (by decide +kernel : Hw.opcodeOf "gate_return" = 23#6).symm
+  have hdrop := isMn_ne_of_opc σ "cap_drop" 23#6 hopc (by decide +kernel)
+  have hrev := isMn_ne_of_opc σ "cap_revoke" 23#6 hopc (by decide +kernel)
+  have hcall := isMn_ne_of_opc σ "gate_call" 23#6 hopc (by decide +kernel)
+  have hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ :=
+    killedByCoreE_gateReturn_eval σ E hret hif hdrop hrev hcall hmn
+      (fun x hx => by simpa [hx] using hok)
+  have hnew : ∀ x : DomainId, (Hw.newJobSet x).eval σ = 0#1 := by
+    intro x
+    apply andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+    exact isMn_ne_of_opc σ "move" 23#6 hopc (by decide +kernel)
+  have hmapz : ∀ (x : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs x, Hw.isMn "map", Hw.mapOkE x,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1 := fun x r =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "map" 23#6 hopc (by decide +kernel))
+  have hunmapz : ∀ (x : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs x, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1 := fun x r =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "unmap" 23#6 hopc (by decide +kernel))
+  have hswz : ∀ (x : DomainId) (sc : Expr 12),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs x, Hw.isMn "sw",
+        Hw.domCoversE x
+          (Hw.field (.add (Hw.readReg x Hw.rs1E) Hw.immX) 0 12)
+          ⟨false, true, false⟩,
+        .eq (Hw.field (.add (Hw.readReg x Hw.rs1E) Hw.immX) 0 12)
+          sc]).eval σ = 0#1 := fun x sc =>
+    andAll_zero_of_mem σ
+      (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+        (List.mem_cons_self ..)))
+      (isMn_ne_of_opc σ "sw" 23#6 hopc (by decide +kernel))
+  let acc0 := (Act.write 1 "if_v" (.lit 0)).run σ
+    ((Hw.refillAct m).run σ σ)
+  rcases transferCap_selected_of_pass σ τ0 E act.caller (Hw.retCl E)
+      (Hw.retW E) S e hto hslot acap hsource hlineage hfreeSlot hfreeCell
+      hwfAbs hpass with hroot | hderived
+  · obtain ⟨NS, hlin, hNS, hlinV, htransferCap⟩ := hroot
+    let oldRef : CapRef := ⟨E, S, ((Hw.abs σ).doms E).slotGen S⟩
+    let newRef : CapRef :=
+      ⟨act.caller, NS, ((Hw.abs σ).doms act.caller).slotGen NS⟩
+    let reply := Handle.encode ⟨newRef.slot, newRef.gen, e.kind.cls⟩
+    have htransferCap' : τ0.transferCap E S act.caller =
+        some (gateReturnSpecStruct m σ E act S NS e.kind none oldRef newRef,
+          newRef) := by
+      simpa [gateReturnSpecStruct, gateReturnPrefixed, oldRef, newRef, τ0,
+        gateReturnTransferBase, MachineState.setDom, Loom.Fun.update, hne.symm,
+        refillPhase_slotGen] using htransferCap
+    have htransfer : Machines.Lnp64u.Isa.transferByHandle E act.caller
+        ((Hw.retW E).eval σ) τ0 =
+        .ok reply (gateReturnSpecStruct m σ E act S NS e.kind none
+          oldRef newRef) :=
+      transferByHandle_eq_selected τ0 _ E act.caller ((Hw.retW E).eval σ)
+        S G e newRef (by simpa [E] using hnonzero) hcapLive htransferCap'
+    have habsTransfer : Hw.abs
+        ((Hw.transferA E (Hw.retCl E) (Hw.retSel E)).run σ acc0) =
+        gateReturnHwStruct m σ E act S NS e.kind none oldRef newRef := by
+      simpa [acc0, gateReturnHwStruct, oldRef, newRef,
+        gateReturnTransferBase] using
+        (abs_transferA_none_retireAcc m hwf hfit σ hsync E act.caller
+          (Hw.retCl E) (Hw.retSel E) S NS e hto hslot acap hNS hlin hlinV
+          hkind hold hwfAbs)
+    have hsidx := freeSlotIdx_eval σ act.caller NS hNS
+    have hfin : finOfBv (by decide : 2 ^ 4 = numSlots)
+        ((Hw.freeSlotIdx act.caller).eval σ) = NS :=
+      (bv4_slot_iff _ NS).mp hsidx
+    have hgenNew : (Hw.genOfE act.caller
+        (Hw.freeSlotIdx act.caller)).eval σ =
+        ((Hw.abs σ).doms act.caller).slotGen NS := by
+      rw [Hw.genOfE, muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin]
+      rfl
+    have hclsbit : (Hw.field (Hw.retSel E).kindW 0 1).eval σ =
+        if e.kind.cls = .gate then 1#1 else 0#1 := by
+      show ((Hw.retSel E).kindW.eval σ).extractLsb' 0 1 = _
+      rw [hkind]
+      cases e.kind <;> simp only [CapKind.cls, Hw.encKind, if_false,
+        if_true] <;> apply BitVec.eq_of_getLsbD_eq <;>
+        intro i hi <;> interval_cases i <;> simp
+    have hreply : (gateReturnReplyE E).eval σ = reply := by
+      rw [gateReturnReplyE_eval_nonzero σ E e.kind.cls hnz hclsbit]
+      dsimp only [reply]
+      rw [hto, hsidx, hgenNew]
+      simp only [newRef]
+      rw [finOfBv_ofNat4]
+    exact square_retire_gateReturn_success_transfer m σ E gid act reply S NS
+      e.kind none oldRef newRef hz0 hifv hcl hopc rfl hifsel hifexcl
+      (by simpa [E] using hserv) hact hne hslot hnz hok hkills hnew hmapz
+      hunmapz hswz hwfAbs (freeSlot_caps_none (Hw.abs σ) act.caller hNS)
+      htransfer (by simpa [acc0] using habsTransfer) hreply
+  · obtain ⟨L, cell, NS, NL, hlin, hcell, hNS, hNL, hlinV, hlinIdx,
+      htransferCap⟩ := hderived
+    let moved : Option (LineageId × CapRef) := some (NL, cell.parent)
+    let oldRef : CapRef := ⟨E, S, ((Hw.abs σ).doms E).slotGen S⟩
+    let newRef : CapRef :=
+      ⟨act.caller, NS, ((Hw.abs σ).doms act.caller).slotGen NS⟩
+    let reply := Handle.encode ⟨newRef.slot, newRef.gen, e.kind.cls⟩
+    have htransferCap' : τ0.transferCap E S act.caller =
+        some (gateReturnSpecStruct m σ E act S NS e.kind moved oldRef newRef,
+          newRef) := by
+      simpa [gateReturnSpecStruct, gateReturnPrefixed, moved, oldRef, newRef,
+        τ0, gateReturnTransferBase, MachineState.setDom, Loom.Fun.update,
+        hne.symm,
+        refillPhase_slotGen] using htransferCap
+    have htransfer : Machines.Lnp64u.Isa.transferByHandle E act.caller
+        ((Hw.retW E).eval σ) τ0 =
+        .ok reply (gateReturnSpecStruct m σ E act S NS e.kind moved
+          oldRef newRef) :=
+      transferByHandle_eq_selected τ0 _ E act.caller ((Hw.retW E).eval σ)
+        S G e newRef (by simpa [E] using hnonzero) hcapLive htransferCap'
+    have habsTransfer : Hw.abs
+        ((Hw.transferA E (Hw.retCl E) (Hw.retSel E)).run σ acc0) =
+        gateReturnHwStruct m σ E act S NS e.kind moved oldRef newRef := by
+      simpa [acc0, gateReturnHwStruct, moved, oldRef, newRef,
+        gateReturnTransferBase] using
+        (abs_transferA_some_retireAcc m hwf hfit σ hsync E act.caller
+          (Hw.retCl E) (Hw.retSel E) S NS e L cell NL hto hslot acap hNS
+          hlin hcell hNL hlinV hlinIdx hkind hold hwfAbs)
+    have hsidx := freeSlotIdx_eval σ act.caller NS hNS
+    have hfin : finOfBv (by decide : 2 ^ 4 = numSlots)
+        ((Hw.freeSlotIdx act.caller).eval σ) = NS :=
+      (bv4_slot_iff _ NS).mp hsidx
+    have hgenNew : (Hw.genOfE act.caller
+        (Hw.freeSlotIdx act.caller)).eval σ =
+        ((Hw.abs σ).doms act.caller).slotGen NS := by
+      rw [Hw.genOfE, muxFin_eval (by decide : 2 ^ 4 = numSlots), hfin]
+      rfl
+    have hclsbit : (Hw.field (Hw.retSel E).kindW 0 1).eval σ =
+        if e.kind.cls = .gate then 1#1 else 0#1 := by
+      show ((Hw.retSel E).kindW.eval σ).extractLsb' 0 1 = _
+      rw [hkind]
+      cases e.kind <;> simp only [CapKind.cls, Hw.encKind, if_false,
+        if_true] <;> apply BitVec.eq_of_getLsbD_eq <;>
+        intro i hi <;> interval_cases i <;> simp
+    have hreply : (gateReturnReplyE E).eval σ = reply := by
+      rw [gateReturnReplyE_eval_nonzero σ E e.kind.cls hnz hclsbit]
+      dsimp only [reply]
+      rw [hto, hsidx, hgenNew]
+      simp only [newRef]
+      rw [finOfBv_ofNat4]
+    exact square_retire_gateReturn_success_transfer m σ E gid act reply S NS
+      e.kind moved oldRef newRef hz0 hifv hcl hopc rfl hifsel hifexcl
+      (by simpa [E] using hserv) hact hne hslot hnz hok hkills hnew hmapz
+      hunmapz hswz hwfAbs (freeSlot_caps_none (Hw.abs σ) act.caller hNS)
+      htransfer (by simpa [acc0] using habsTransfer) hreply
+
 end Machines.Lnp64u.Theorems.RMC
