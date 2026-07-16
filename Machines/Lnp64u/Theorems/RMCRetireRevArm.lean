@@ -21,6 +21,52 @@ private theorem ifv_notin_revSuccessA (E : DomainId) :
     (("if_v" : String), (1 : Nat)) ∉ (revSuccessArmA E).regWrites := by
   fin_cases E <;> decide +kernel
 
+/-- A selected but failed revoke has no structural kill footprint because
+`revOkE` gates its contribution to the global core kill tree. -/
+theorem killedByCoreE_rev_failed (sigma : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval sigma = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval sigma =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval sigma ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval sigma = 1#1)
+    (hcall : (Hw.isMn "gate_call").eval sigma ≠ 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval sigma ≠ 1#1)
+    (hbad : ∀ d : DomainId, d = E → (Hw.revOkE d).eval sigma = 0#1)
+    (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval sigma = 0#1 := by
+  have hdrop0 : (Hw.isMn "cap_drop").eval sigma = 0#1 :=
+    bv1_ne_one.mp hdrop
+  have hcall0 : (Hw.isMn "gate_call").eval sigma = 0#1 :=
+    bv1_ne_one.mp hcall
+  have hreturn0 : (Hw.isMn "gate_return").eval sigma = 0#1 :=
+    bv1_ne_one.mp hreturn
+  have honeAnd : ∀ x : BitVec 1, 1#1 &&& x = x := by decide
+  have hzeroAnd : ∀ x : BitVec 1, 0#1 &&& x = 0#1 := by decide
+  have hzeroOr : ∀ x : BitVec 1, 0#1 ||| x = x := by decide
+  have horZero : ∀ x : BitVec 1, x ||| 0#1 = x := by decide
+  unfold Hw.killedByCoreE
+  fin_cases E <;>
+    simp [Hw.orAll, List.finRange, Expr.eval, Fin.ext_iff, hret, hif,
+      hdrop0, hrev, hbad, hcall0, hreturn0, honeAnd, hzeroAnd,
+      hzeroOr, horZero]
+
+/-- Failed revokes are Mover-inert once the unrelated job-install gate is
+known off. -/
+theorem Inert.of_failed_rev (sigma : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval sigma = 1#1)
+    (hif : ∀ d : DomainId, (Hw.ifDomIs d).eval sigma =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval sigma ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval sigma = 1#1)
+    (hcall : (Hw.isMn "gate_call").eval sigma ≠ 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval sigma ≠ 1#1)
+    (hbad : ∀ d : DomainId, d = E → (Hw.revOkE d).eval sigma = 0#1)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval sigma = 0#1) :
+    Inert sigma where
+  killed := killedByCoreE_rev_failed sigma E hret hif hdrop hrev hcall
+    hreturn hbad
+  newJob := hnew
+
 /-- The successful circuit payload, run after refill and latch clear,
 decodes to the complete named abstract revoke state on every domain. -/
 theorem absDom_revSuccessA_refill (m : Manifest) (hwfm : m.WF)
