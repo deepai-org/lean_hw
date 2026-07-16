@@ -494,6 +494,111 @@ theorem returnAbstractSuccess_transfer_state (m : Manifest)
   rw [hcomm, sweepMover_setPc]
   exact returnAbstractSuccess_setPc hwStruct.sweepMover d gid act reply hne
 
+private def gateReturnTransferBase (m : Manifest) (σ : Loom.Hw.St) :
+    MachineState :=
+  { refillPhase m (Hw.abs σ) with inflight := none }
+
+private def gateReturnPrefixed (m : Manifest) (σ : Loom.Hw.St)
+    (d : DomainId) : MachineState :=
+  (gateReturnTransferBase m σ).setDom d fun ds => { ds with pc := ds.pc + 1 }
+
+private def gateReturnHwStruct (m : Manifest) (σ : Loom.Hw.St)
+    (d : DomainId) (act : Activation) (S NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef) :
+    MachineState :=
+  transferStructural (gateReturnTransferBase m σ) act.caller NS kind moved
+    oldRef newRef d S
+
+private def gateReturnSpecStruct (m : Manifest) (σ : Loom.Hw.St)
+    (d : DomainId) (act : Activation) (S NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef) :
+    MachineState :=
+  (transferStructural (gateReturnPrefixed m σ d) act.caller NS kind moved
+    oldRef newRef d S).sweepMover
+
+private def gateReturnTransferPost (m : Manifest) (σ : Loom.Hw.St)
+    (d : DomainId) (gid : GateId) (act : Activation) (reply : Loom.Word32)
+    (S NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef) :
+    MachineState :=
+  returnAbstractSuccess
+    (gateReturnHwStruct m σ d act S NS kind moved oldRef newRef).sweepMover
+    d gid act reply
+
+/-- Specification normalization shared by the root and derived successful
+return transfers. -/
+private theorem gateReturn_success_transfer_spec (m : Manifest)
+    (σ : Loom.Hw.St) (d : DomainId) (gid : GateId) (act : Activation)
+    (reply : Loom.Word32) (S NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (hz0 : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (hd : d = finOfBv (by decide) (σ.regs "if_dom" 2))
+    (hserv : ((Hw.abs σ).doms d).serving = some gid)
+    (hact : ((Hw.abs σ).gates gid).act = some act)
+    (hne : d ≠ act.caller)
+    (htransfer : Machines.Lnp64u.Isa.transferByHandle d act.caller
+      ((Hw.retW d).eval σ) (gateReturnPrefixed m σ d) =
+        .ok reply (gateReturnSpecStruct m σ d act S NS kind moved
+          oldRef newRef)) :
+    corePhase m (refillPhase m (Hw.abs σ)) =
+      gateReturnTransferPost m σ d gid act reply S NS kind moved
+        oldRef newRef := by
+  let W := σ.regs "if_word" 32
+  let base := gateReturnTransferBase m σ
+  let τ0 := gateReturnPrefixed m σ d
+  let c : Ctx := { d := d, pc := (base.doms d).pc, op := operandsOf W }
+  have hop : Machines.Lnp64u.sig.opcodeOf W = (23#6 : BitVec 6) := hopc
+  have hdec : Loom.Isa.decode isa W =
+      isa.find? (fun op => op.opcode == (23#6 : BitVec 6)) := by
+    rw [decode_eq_find, hop]
+  have hfl : (refillPhase m (Hw.abs σ)).inflight = some
+      { dom := d, word := W,
+        cyclesLeft := (σ.regs "if_cl" 8).toNat } := by
+    show Hw.absInflight σ = _
+    simpa [W, hd] using absInflight_some σ hifv
+  have hcore0 : corePhase m (refillPhase m (Hw.abs σ)) =
+      retire base d W := by
+    rw [corePhase_retire m _ _ hfl
+      (by omega : (σ.regs "if_cl" 8).toNat ≤ 1)]
+    rfl
+  have hR : (Hw.retW d).eval σ =
+      ((Hw.abs σ).doms d).reg (operandsOf W).rs1 :=
+    retW_eval σ hz0 d (operandsOf W).rs1 rfl
+  have hreg : (τ0.doms d).reg (operandsOf W).rs1 =
+      ((Hw.abs σ).doms d).reg (operandsOf W).rs1 :=
+    specReg_bridge m σ d _
+  have hword : (τ0.doms c.d).reg c.op.rs1 = (Hw.retW d).eval σ := by
+    simp only [c]
+    rw [hreg, hR]
+  have hserv0 : (τ0.doms c.d).serving = some gid := by
+    simp [τ0, gateReturnPrefixed, gateReturnTransferBase, c, MachineState.setDom,
+      Loom.Fun.update, refillPhase_serving, hserv]
+  have hact0 : (τ0.gates gid).act = some act := by
+    simp [τ0, gateReturnPrefixed, gateReturnTransferBase, MachineState.setDom,
+      refillPhase_gates, hact]
+  have hexec : Machines.Lnp64u.Isa.Wip.gateReturnExec c τ0 =
+      .ok () (returnAbstractSuccess
+        (gateReturnSpecStruct m σ d act S NS kind moved oldRef newRef)
+        d gid act reply) := by
+    exact gateReturnExec_success c τ0 _ gid act reply hserv0 hact0
+      (by simpa [c, hword] using htransfer)
+  rw [hcore0, retire_gateReturn_exec base d W hdec]
+  change (match Machines.Lnp64u.Isa.Wip.gateReturnExec c τ0 with
+    | .ok _ τ' => τ'
+    | .err er τ' => τ'.setDom d
+        (fun ds => ds.setReg (operandsOf W).rd er.toWord)
+    | .fault f => haltWith base d f) =
+      gateReturnTransferPost m σ d gid act reply S NS kind moved
+        oldRef newRef
+  rw [hexec]
+  simpa [gateReturnSpecStruct, gateReturnPrefixed, gateReturnTransferPost,
+    gateReturnHwStruct, gateReturnTransferBase, τ0, base] using
+      returnAbstractSuccess_transfer_state m σ d gid act reply hne NS kind
+        moved oldRef newRef S
+
 /-- A successful null reply has no core kill footprint. -/
 theorem Inert.of_successful_gateReturn_zero (σ : Loom.Hw.St)
     (E : DomainId)
