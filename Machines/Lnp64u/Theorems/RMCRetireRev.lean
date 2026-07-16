@@ -908,4 +908,69 @@ theorem absDom_revStructuralRegionsA (σ acc : Loom.Hw.St)
       ((Hw.abs σ).marks (rvRoot σ))
       (Hw.decRegion (acc.regs (Hw.drgn d r) 42)).backing hlive).symm
 
+/-- The full successful revoke payload, up to the separate Mover phase,
+decodes to structural destruction, region sweeping, result-register zero,
+and retirement PC advance. -/
+theorem absDom_revSuccessA (σ acc : Loom.Hw.St)
+    (hrv : RvSync σ) (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (haccV : ∀ c s, acc.regs (Hw.dcapV c s) 1 =
+      σ.regs (Hw.dcapV c s) 1)
+    (haccG : ∀ c s, acc.regs (Hw.dgen c s) 8 =
+      σ.regs (Hw.dgen c s) 8)
+    (hcaps : ∀ c, ((Hw.abs acc).doms c).caps =
+      ((Hw.abs σ).doms c).caps)
+    (hrgnV : ∀ c r, acc.regs (Hw.drgnV c r) 1 =
+      σ.regs (Hw.drgnV c r) 1)
+    (hrgn : ∀ c r, acc.regs (Hw.drgn c r) 42 =
+      σ.regs (Hw.drgn c r) 42)
+    (hpc : ∀ c, acc.regs (Hw.dpc c) 12 = σ.regs (Hw.dpc c) 12)
+    (hwf : Wf (Hw.abs acc)) (E : DomainId) (RD : RegId)
+    (hrd : (Hw.rdE.eval σ).toNat = RD.val) (c : DomainId) :
+    Hw.absDom ((revSuccessA E).run σ acc) c =
+      let tau := ((Hw.abs acc).destroyMarked
+        ((Hw.abs σ).marks (rvRoot σ))).sweepRegions
+      if c = E then
+        ({ tau.doms E with pc := (tau.doms E).pc + 1 }).setReg RD 0
+      else tau.doms c := by
+  let str := revStructuralA.run σ acc
+  let swept := (Hw.sweepRegionsA Hw.revKilled).run σ str
+  let tau := ((Hw.abs acc).destroyMarked
+    ((Hw.abs σ).marks (rvRoot σ))).sweepRegions
+  have habs : ∀ d, Hw.absDom swept d = tau.doms d := by
+    intro d
+    exact absDom_revStructuralRegionsA σ acc hrv hifv hopc hcl
+      haccV haccG hcaps hrgnV hrgn hwf d
+  have hpcStr : str.regs (Hw.dpc E) 12 = acc.regs (Hw.dpc E) 12 := by
+    apply frame
+    fin_cases E <;> decide +kernel
+  have hpcSwept : swept.regs (Hw.dpc E) 12 = σ.regs (Hw.dpc E) 12 := by
+    change ((Hw.sweepRegionsA Hw.revKilled).run σ str).regs
+      (Hw.dpc E) 12 = _
+    rw [sweepRegionsA_frame_width σ str Hw.revKilled (Hw.dpc E) 12
+      (by decide), hpcStr, hpc E]
+  have htail := absDom_regPcTailA σ swept E (.lit 0) RD 0
+    hrd (by rfl) hpcSwept c
+  change Hw.absDom ((Act.seq (Hw.writeReg E Hw.rdE (.lit 0))
+    (Hw.pcAdvA E)).run σ swept) c = _ at htail
+  rw [habs E, habs c] at htail
+  have hrun : (revSuccessA E).run σ acc =
+      (Hw.seqAll [Hw.writeReg E Hw.rdE (.lit 0), Hw.pcAdvA E]).run σ swept := by
+    unfold revSuccessA
+    rw [show revNodeIx.map revNodeA ++ revCellIx.map revCellA ++
+        [Hw.sweepRegionsA Hw.revKilled, Hw.writeReg E Hw.rdE (.lit 0),
+          Hw.pcAdvA E] =
+        (revNodeIx.map revNodeA ++ revCellIx.map revCellA ++
+          [Hw.sweepRegionsA Hw.revKilled]) ++
+          [Hw.writeReg E Hw.rdE (.lit 0), Hw.pcAdvA E] by simp]
+    rw [seqAll_append_run]
+    dsimp [swept, str, revStructuralA]
+    rw [seqAll_append_run]
+    rfl
+  rw [hrun]
+  change Hw.absDom ((Act.seq (Hw.writeReg E Hw.rdE (.lit 0))
+    (Hw.pcAdvA E)).run σ swept) c = _
+  exact htail
+
 end Machines.Lnp64u.Theorems.RMC
