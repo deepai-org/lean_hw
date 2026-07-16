@@ -176,4 +176,270 @@ theorem nextRegMatches_sound (rn : String) (w : Nat) :
   · cases cert <;> simp [nextRegMatches, Compile.nextReg] at h ⊢
     exact h
 
+/-- Proof data for folding an ordered rule list. Each entry supplies the
+post-rule intermediate expression and the local action certificate. -/
+inductive NextRulesCert (w : Nat) where
+  | nil
+  | cons (mid : Loom.Emit.MicroVerilog.Expr w) (head : NextRegCert w)
+      (tail : NextRulesCert w)
+
+/-- Check an entire ordered register-rule fold without constructing the
+reference `List.foldl` result. -/
+def nextRulesMatches (rn : String) (w : Nat) : List Loom.Hw.Rule →
+    Loom.Emit.MicroVerilog.Expr w → Loom.Emit.MicroVerilog.Expr w →
+    NextRulesCert w → Bool
+  | [], cur, out, .nil => decide (out = cur)
+  | rl :: rls, cur, out, .cons mid ch ct =>
+      nextRegMatches rn w rl.body cur mid ch &&
+        nextRulesMatches rn w rls mid out ct
+  | _, _, _, _ => false
+
+/-- A successful rule-fold certificate recovers the reference fold used in
+the register definition produced by `Compile.compile`. -/
+theorem nextRulesMatches_sound (rn : String) (w : Nat) :
+    ∀ (rules : List Loom.Hw.Rule)
+      (cur out : Loom.Emit.MicroVerilog.Expr w) (cert : NextRulesCert w),
+      nextRulesMatches rn w rules cur out cert = true →
+        out = rules.foldl
+          (fun acc rl => Compile.nextReg rn w rl.body acc) cur := by
+  intro rules
+  induction rules with
+  | nil =>
+      intro cur out cert h
+      cases cert <;> simp [nextRulesMatches] at h ⊢
+      exact h
+  | cons rl rls ih =>
+      intro cur out cert h
+      cases cert with
+      | cons mid ch ct =>
+          simp only [nextRulesMatches, Bool.and_eq_true] at h
+          simp only [List.foldl_cons]
+          rw [ih mid out ct h.2, nextRegMatches_sound rn w rl.body cur mid ch h.1]
+      | _ => simp [nextRulesMatches] at h
+
+/-! ## Register-list certificates -/
+
+/-- Certificate for the compiled definition of one source register. -/
+structure RegCert (r : Loom.Hw.RegDecl) where
+  rules : NextRulesCert r.width
+
+/-- Check one supplied register definition against its source declaration
+and the design's ordered rule list. -/
+def regMatches (rules : List Loom.Hw.Rule) (r : Loom.Hw.RegDecl)
+    (out : Loom.Emit.MicroVerilog.RegDef) (cert : RegCert r) : Bool :=
+  decide (out.name = r.name) &&
+  if h : out.width = r.width then
+    decide (h ▸ out.init = r.init) &&
+      nextRulesMatches r.name r.width rules (.reg r.width r.name)
+        (h ▸ out.next) cert.rules
+  else false
+
+/-- A successful register certificate recovers the exact reference
+`RegDef` produced by `Compile.compile`. -/
+theorem regMatches_sound (rules : List Loom.Hw.Rule) (r : Loom.Hw.RegDecl)
+    (out : Loom.Emit.MicroVerilog.RegDef) (cert : RegCert r)
+    (h : regMatches rules r out cert = true) :
+    out = ({ name := r.name, width := r.width, init := r.init,
+             next := rules.foldl
+               (fun cur rl => Compile.nextReg r.name r.width rl.body cur)
+               (.reg r.width r.name) } : Loom.Emit.MicroVerilog.RegDef) := by
+  unfold regMatches at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨hn, hrest⟩ := h
+  split at hrest
+  · rename_i hw
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hrest
+    obtain ⟨hi, hnxt⟩ := hrest
+    have hout := nextRulesMatches_sound r.name r.width rules
+      (.reg r.width r.name) (hw ▸ out.next) cert.rules hnxt
+    cases r
+    cases out
+    simp at hn hw hi hout ⊢
+    cases hn
+    cases hw
+    cases hi
+    cases hout
+    simp
+  · contradiction
+
+/-- A dependent certificate list aligned with the source register list. -/
+inductive RegsCert : List Loom.Hw.RegDecl → Type where
+  | nil : RegsCert []
+  | cons {r rs} (head : RegCert r) (tail : RegsCert rs) : RegsCert (r :: rs)
+
+/-- Check all supplied register definitions in declaration order. -/
+def regsMatch (rules : List Loom.Hw.Rule) :
+    ∀ {rs : List Loom.Hw.RegDecl}, List Loom.Emit.MicroVerilog.RegDef →
+      RegsCert rs → Bool
+  | [], [], .nil => true
+  | _ :: _, [], .cons _ _ => false
+  | [], _ :: _, .nil => false
+  | r :: _, out :: outs, .cons ch ct =>
+      regMatches rules r out ch && regsMatch rules outs ct
+
+/-- Successful register-list validation recovers the reference compiler's
+entire register list. -/
+theorem regsMatch_sound (rules : List Loom.Hw.Rule) :
+    ∀ {rs : List Loom.Hw.RegDecl} (outs : List Loom.Emit.MicroVerilog.RegDef)
+      (cert : RegsCert rs),
+      regsMatch rules outs cert = true →
+      outs = rs.map fun r =>
+        ({ name := r.name, width := r.width, init := r.init,
+           next := rules.foldl
+             (fun cur rl => Compile.nextReg r.name r.width rl.body cur)
+             (.reg r.width r.name) } : Loom.Emit.MicroVerilog.RegDef)
+  | [], [], .nil, _ => rfl
+  | [], _ :: _, .nil, h => by simp [regsMatch] at h
+  | _ :: _, [], .cons _ _, h => by simp [regsMatch] at h
+  | r :: rs, out :: outs, .cons ch ct, h => by
+      simp only [regsMatch, Bool.and_eq_true] at h
+      simp only [List.map_cons]
+      rw [regMatches_sound rules r out ch h.1,
+        regsMatch_sound rules outs ct h.2]
+
+/-! ## Memory-port certificates -/
+
+/-- Proof data for one `Compile.memPort` fold. Intermediate ports make the
+sequential and conditional structure explicit while expression leaves are
+checked by `compileExprMatches`. -/
+inductive NextPortCert (aw dw : Nat) where
+  | same
+  | write
+  | seq (mid : Compile.Port aw dw) (left right : NextPortCert aw dw)
+  | ite (guard : Loom.Emit.MicroVerilog.Expr 1)
+      (thenPort elsePort : Compile.Port aw dw)
+      (thenCert elseCert : NextPortCert aw dw)
+
+/-- Check a supplied result of one memory-port action locally. -/
+def nextPortMatches (mn : String) (aw dw p : Nat) : Loom.Hw.Act →
+    Compile.Port aw dw → Compile.Port aw dw → NextPortCert aw dw → Bool
+  | .skip, cur, out, .same => decide (out = cur)
+  | .seq a b, cur, out, .seq mid ca cb =>
+      nextPortMatches mn aw dw p a cur mid ca &&
+        nextPortMatches mn aw dw p b mid out cb
+  | .ite c t e, cur, out, .ite g ot oe ct ce =>
+      if Compile.writesPortB mn p t || Compile.writesPortB mn p e then
+        compileExprMatches c g &&
+          nextPortMatches mn aw dw p t cur ot ct &&
+          nextPortMatches mn aw dw p e cur oe ce &&
+          decide (out = {
+            en := .mux g ot.en oe.en
+            addr := .mux g ot.addr oe.addr
+            data := .mux g ot.data oe.data })
+      else false
+  | .ite _ t e, cur, out, .same =>
+      if Compile.writesPortB mn p t || Compile.writesPortB mn p e then false
+      else decide (out = cur)
+  | .memWrite aw' dw' mn' p' a v, cur, out, cert =>
+      if _hp : mn' = mn ∧ p' = p then
+        if hw : aw' = aw ∧ dw' = dw then
+          match cert with
+          | .write =>
+              decide (out.en = .lit 1) &&
+                compileExprMatches (hw.1 ▸ a) out.addr &&
+                compileExprMatches (hw.2 ▸ v) out.data
+          | _ => false
+        else
+          match cert with
+          | .same => decide (out = cur)
+          | _ => false
+      else
+        match cert with
+        | .same => decide (out = cur)
+        | _ => false
+  | .write .., cur, out, .same => decide (out = cur)
+  | _, _, _, _ => false
+
+/-- A successful memory-port certificate recovers equality with the
+reference `Compile.memPort` result. -/
+theorem nextPortMatches_sound (mn : String) (aw dw p : Nat) :
+    ∀ (a : Loom.Hw.Act) (cur out : Compile.Port aw dw)
+      (cert : NextPortCert aw dw),
+      nextPortMatches mn aw dw p a cur out cert = true →
+        out = Compile.memPort mn aw dw p a cur := by
+  intro a
+  induction a <;> intro cur out cert h
+  · cases cert <;> simp [nextPortMatches, Compile.memPort] at h ⊢
+    exact h
+  · rename_i a b iha ihb
+    cases cert with
+    | seq mid ca cb =>
+        simp only [nextPortMatches, Bool.and_eq_true] at h
+        rw [Compile.memPort]
+        rw [ihb mid out cb h.2, iha cur mid ca h.1]
+    | _ => simp [nextPortMatches] at h
+  · rename_i c t e iht ihe
+    by_cases hwrites : Compile.writesPortB mn p t ||
+        Compile.writesPortB mn p e
+    · cases cert with
+      | ite g ot oe ct ce =>
+          simp only [nextPortMatches, hwrites, if_true, Bool.and_eq_true,
+            decide_eq_true_eq] at h
+          obtain ⟨⟨⟨hg, ht⟩, he⟩, hout⟩ := h
+          rw [Compile.memPort, if_pos hwrites]
+          simp only
+          rw [hout, iht cur ot ct ht, ihe cur oe ce he,
+            compileExprMatches_sound c g hg]
+      | _ => simp [nextPortMatches, hwrites] at h
+    · cases cert <;> simp [nextPortMatches, Compile.memPort, hwrites] at h ⊢
+      exact h
+  · cases cert <;> simp [nextPortMatches, Compile.memPort] at h ⊢
+    exact h
+  · rename_i aw' dw' mn' p' a v
+    by_cases hp : mn' = mn ∧ p' = p
+    · by_cases hw : aw' = aw ∧ dw' = dw
+      · rcases hp with ⟨rfl, rfl⟩
+        rcases hw with ⟨rfl, rfl⟩
+        cases cert <;>
+          simp [nextPortMatches, Compile.memPort] at h ⊢
+        obtain ⟨⟨hen, ha⟩, hv⟩ := h
+        cases out
+        simp_all
+        exact ⟨compileExprMatches_sound a _ ha,
+          compileExprMatches_sound v _ hv⟩
+      · cases cert <;>
+          simp [nextPortMatches, Compile.memPort, hp, hw] at h ⊢
+        exact h
+    · cases cert <;> simp [nextPortMatches, Compile.memPort, hp] at h ⊢
+      exact h
+
+/-- Proof data for folding an ordered rule list into one write port. -/
+inductive NextPortRulesCert (aw dw : Nat) where
+  | nil
+  | cons (mid : Compile.Port aw dw) (head : NextPortCert aw dw)
+      (tail : NextPortRulesCert aw dw)
+
+/-- Check a complete rule fold for one memory write port. -/
+def nextPortRulesMatches (mn : String) (aw dw p : Nat) :
+    List Loom.Hw.Rule → Compile.Port aw dw → Compile.Port aw dw →
+      NextPortRulesCert aw dw → Bool
+  | [], cur, out, .nil => decide (out = cur)
+  | rl :: rls, cur, out, .cons mid ch ct =>
+      nextPortMatches mn aw dw p rl.body cur mid ch &&
+        nextPortRulesMatches mn aw dw p rls mid out ct
+  | _, _, _, _ => false
+
+/-- Successful write-port rule-fold validation recovers the reference fold. -/
+theorem nextPortRulesMatches_sound (mn : String) (aw dw p : Nat) :
+    ∀ (rules : List Loom.Hw.Rule) (cur out : Compile.Port aw dw)
+      (cert : NextPortRulesCert aw dw),
+      nextPortRulesMatches mn aw dw p rules cur out cert = true →
+        out = rules.foldl
+          (fun acc rl => Compile.memPort mn aw dw p rl.body acc) cur := by
+  intro rules
+  induction rules with
+  | nil =>
+      intro cur out cert h
+      cases cert <;> simp [nextPortRulesMatches] at h ⊢
+      exact h
+  | cons rl rls ih =>
+      intro cur out cert h
+      cases cert with
+      | cons mid ch ct =>
+          simp only [nextPortRulesMatches, Bool.and_eq_true] at h
+          simp only [List.foldl_cons]
+          rw [ih mid out ct h.2,
+            nextPortMatches_sound mn aw dw p rl.body cur mid ch h.1]
+      | _ => simp [nextPortRulesMatches] at h
+
 end Loom.Hw.ArtifactCert
