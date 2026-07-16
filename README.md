@@ -96,6 +96,8 @@ Documents: [`CHARTER.md`](CHARTER.md) (the program — what and why) →
 (the honest, mechanically-audited state of every theorem) →
 [`TRUST.md`](TRUST.md) (the explicit TCB and claim limits) →
 [`NEXTSTEPS.md`](NEXTSTEPS.md) (the agreed roadmap + operational notes).
+Release history and maintainership are recorded in
+[`CHANGELOG.md`](CHANGELOG.md) and [`AUTHORS.md`](AUTHORS.md).
 
 ## Licensing
 

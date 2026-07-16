@@ -13,7 +13,8 @@ if [[ ! -f lean-toolchain ]] || rg -q '(nightly|:latest$)' lean-toolchain; then
   fail=1
 fi
 
-for required in lakefile.lean lake-manifest.json README.md LICENSE NOTICE; do
+for required in lakefile.lean lake-manifest.json README.md LICENSE NOTICE \
+  CHANGELOG.md AUTHORS.md CONTRIBUTING.md CODE_OF_CONDUCT.md; do
   if [[ ! -f "$required" ]]; then
     echo "quality: missing required package file: $required" >&2
     fail=1
