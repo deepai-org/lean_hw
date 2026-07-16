@@ -428,6 +428,54 @@ theorem revSuccessA_run_cellV (σ acc : Loom.Hw.St) (E c : DomainId)
       (revCellIx.map revCellA) acc]
   rw [revTail_frame_dcellV, revCells_run_v, revNodes_frame_dcellV]
 
+/-- Full successful revoke payload: post-sweep region validity. -/
+theorem revSuccessA_run_rgnV (σ acc : Loom.Hw.St) (E c : DomainId)
+    (r : RegionId) :
+    ((revSuccessA E).run σ acc).regs (Hw.drgnV c r) 1 =
+      if (Expr.and (.reg 1 (Hw.drgnV c r))
+          (Hw.revKilled
+            (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+            (Hw.field (.reg 42 (Hw.drgn c r)) 36 4))).eval σ = 1#1
+      then 0#1
+      else acc.regs (Hw.drgnV c r) 1 := by
+  unfold revSuccessA
+  rw [seqAll_append_run σ (revNodeIx.map revNodeA ++
+      revCellIx.map revCellA)
+    [Hw.sweepRegionsA Hw.revKilled, Hw.writeReg E Hw.rdE (.lit 0),
+      Hw.pcAdvA E] acc]
+  let str := (Hw.seqAll (revNodeIx.map revNodeA ++
+    revCellIx.map revCellA)).run σ acc
+  have htail :
+      ((Hw.seqAll [Hw.sweepRegionsA Hw.revKilled,
+        Hw.writeReg E Hw.rdE (.lit 0), Hw.pcAdvA E]).run σ str).regs
+          (Hw.drgnV c r) 1 =
+        ((Hw.sweepRegionsA Hw.revKilled).run σ str).regs
+          (Hw.drgnV c r) 1 := by
+    change ((Act.seq (Hw.writeReg E Hw.rdE (.lit 0))
+      (Hw.pcAdvA E)).run σ
+        ((Hw.sweepRegionsA Hw.revKilled).run σ str)).regs
+          (Hw.drgnV c r) 1 = _
+    apply frame
+    fin_cases E <;> fin_cases c <;> fin_cases r <;> decide +kernel
+  rw [htail, sweepRegionsA_rgnV]
+  change (if (Expr.and (.reg 1 (Hw.drgnV c r))
+      (Hw.revKilled
+        (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+        (Hw.field (.reg 42 (Hw.drgn c r)) 36 4))).eval σ = 1#1
+    then 0#1 else str.regs (Hw.drgnV c r) 1) = _
+  have hstr : str.regs (Hw.drgnV c r) 1 = acc.regs (Hw.drgnV c r) 1 := by
+    apply frame
+    fin_cases c <;> fin_cases r <;> decide +kernel
+  rw [hstr]
+
+/-- The successful revoke payload never changes packed region values. -/
+theorem revSuccessA_run_rgn (σ acc : Loom.Hw.St) (E c : DomainId)
+    (r : RegionId) :
+    ((revSuccessA E).run σ acc).regs (Hw.drgn c r) 42 =
+      acc.regs (Hw.drgn c r) 42 := by
+  apply frame
+  fin_cases E <;> fin_cases c <;> fin_cases r <;> decide +kernel
+
 /-- Structural revoke sweep: validity bit before the region/register tail. -/
 theorem revStructuralA_run_v (σ acc : Loom.Hw.St) (c : DomainId) (s : Slot) :
     (revStructuralA.run σ acc).regs (Hw.dcapV c s) 1 =
