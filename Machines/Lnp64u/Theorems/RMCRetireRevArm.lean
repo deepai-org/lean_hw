@@ -315,4 +315,164 @@ theorem sAuth_rev_eval (m : Manifest) (hwfm : m.WF) (hfit : Fits m)
   exact revAbstractSuccess_regionEq m hwfm hfit sigma hsync hrv hifv
     hopc hcl hwf E RD hrd hkills hmapz hunmapz c r
 
+/-- The retiring core's revoke status write is exactly the memory face of
+the ISA-level `sweepMover` contained in `revAbstractSuccess`. -/
+theorem coreAct_mem_revAbstractSuccess (m : Manifest) (hwfm : m.WF)
+    (hfit : Fits m) (sigma : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (sigma.regs (Hw.drctr d) 32).toNat =
+      (sigma.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hrv : RvSync sigma)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2)
+    (hwf : Wf (Hw.abs sigma)) (E : DomainId) (RD : RegId)
+    (hrd : (Hw.rdE.eval sigma).toNat = RD.val)
+    (hifsel : (Hw.ifDomIs E).eval sigma = 1#1)
+    (hifexcl : ∀ d : DomainId, d ≠ E →
+      (Hw.ifDomIs d).eval sigma ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval sigma = 1#1)
+    (hok : (Hw.revOkE E).eval sigma = 1#1)
+    (hkills : ∀ dm sl, (Hw.killedByCoreE dm sl).eval sigma =
+      (Hw.revKilled dm sl).eval sigma)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval sigma = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval sigma = 0#1)
+    (b : Addr) :
+    ((Hw.coreAct m).run sigma ((Hw.refillAct m).run sigma sigma)).mems
+        "mem" b.toNat 32 =
+      (revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)).mem b := by
+  let base := (((revRetireBase m (Hw.abs sigma) E).destroyMarked
+    ((Hw.abs sigma).marks (rvRoot sigma))).sweepRegions)
+  let target := revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)
+  let killJob : MoverJob → Prop := fun job =>
+    (base.liveRef job.src && base.liveRef job.dst) = false
+  have hliveBase : ∀ r, base.liveRef r = target.liveRef r := by
+    intro r
+    unfold target revAbstractSuccess
+    change base.liveRef r =
+      (base.sweepMover.setDom E (fun ds => ds.setReg RD 0)).liveRef r
+    unfold MachineState.liveRef DomainState.liveCap
+    by_cases hd : r.dom = E
+    · rw [hd]
+      simp [MachineState.setDom]
+    · simp [MachineState.setDom, hd]
+  have hnd : ((Hw.opCircs E).map Prod.fst).Nodup := by
+    rw [opCircs_fst_all E]
+    exact allMns_nodup
+  have hq : ∀ p ∈ Hw.opCircs E, p.1 ≠ "cap_revoke" →
+      (Hw.isMn p.1).eval sigma = 0#1 ∨ isLit0 p.2.memEn = true := by
+    intro p hp hne
+    left
+    exact bv1_ne_one.mp (isMn_ne_of_opc sigma p.1 18#6 hopc
+      ((by decide +kernel : ∀ mn' ∈ allMns, mn' ≠ "cap_revoke" →
+        (18#6 : BitVec 6) ≠ Hw.opcodeOf mn') p.1
+        (by rw [← opCircs_fst_all E]; exact List.mem_map_of_mem hp) hne))
+  have hmemrev : ("cap_revoke", Hw.revCirc E) ∈ Hw.opCircs E :=
+    List.mem_append_right _
+      (List.mem_cons_of_mem _
+        (List.mem_cons_of_mem _ (List.mem_cons_self ..)))
+  have hport := retireMem_op_sel sigma E "cap_revoke" (Hw.revCirc E)
+    hifsel hifexcl hrev hmemrev hnd hq
+  apply coreAct_mem_sweep_success_pred m sigma (Hw.revOkE E)
+    Hw.revKilled (Hw.revCirc E) killJob base target hifv hcl hport
+  · rfl
+  · rfl
+  · rfl
+  · exact hok
+  · cases habs : Hw.absMover sigma with
+    | none =>
+        simpa [habs] using movKilledE_rev_iff sigma hrv hifv hopc hcl
+    | some job =>
+        simp only
+        unfold killJob
+        rw [← movKilledE_core_rev_endpoint_iff sigma base hrv hifv hopc
+          hcl hkills hwf (fun r => (hliveBase r).trans
+            (revAbstractSuccess_liveRef m (Hw.abs sigma) E RD
+              (rvRoot sigma) r)) job habs]
+        unfold Hw.movKilledE
+        simp only [Expr.eval]
+        rw [← hkills Hw.movSrcDom Hw.movSrcSlot,
+          ← hkills Hw.movDstDom Hw.movDstSlot]
+  · intro job habs
+    rw [statusAuthE_post_eval sigma Hw.revKilled hkills hmapz hunmapz]
+    rw [sAuth_rev_eval m hwfm hfit sigma hsync hrv hifv hopc hcl hwf E
+      RD hrd hkills hmapz hunmapz (.reg 2 "mov_owner")
+      (.reg 12 "mov_status")]
+    have hv : sigma.regs "mov_v" 1 = 1#1 := by
+      by_contra hn
+      rw [absMover_none sigma hn] at habs
+      contradiction
+    have hcanon := Option.some.inj ((absMover_some sigma hv).symm.trans habs)
+    have howner : finOfBv (by decide)
+        (sigma.regs "mov_owner" 2) = job.owner :=
+      congrArg MoverJob.owner hcanon
+    have hstatus : sigma.regs "mov_status" 12 = job.statusAddr :=
+      congrArg MoverJob.statusAddr hcanon
+    simp only [Expr.eval]
+    rw [howner, hstatus]
+    change (target.domCovers job.owner job.statusAddr
+      { r := false, w := true, x := false } = true) ↔ _
+    have hregions : ∀ d, (target.doms d).regions =
+        (base.doms d).regions := by
+      intro d
+      unfold target revAbstractSuccess
+      change ((base.sweepMover.setDom E
+        (fun ds => ds.setReg RD 0)).doms d).regions = _
+      by_cases hd : d = E
+      · subst d
+        simp [MachineState.setDom]
+      · simp [MachineState.setDom, hd]
+    unfold MachineState.domCovers
+    rw [hregions]
+  · intro a
+    rfl
+  · intro a
+    unfold target revAbstractSuccess
+    change (base.sweepMover.setDom E (fun ds => ds.setReg RD 0)).mem a = _
+    have hmover : base.mover = Hw.absMover sigma := by rfl
+    rw [show (base.sweepMover.setDom E
+      (fun ds => ds.setReg RD 0)).mem a = base.sweepMover.mem a from rfl]
+    cases habs : Hw.absMover sigma with
+    | none =>
+        have hb : base.mover = none := hmover.trans habs
+        simp [MachineState.sweepMover, hb]
+    | some job =>
+        have hb : base.mover = some job := hmover.trans habs
+        by_cases hbt : (base.liveRef job.src &&
+            base.liveRef job.dst) = true
+        ·
+          have hkfalse : ¬ killJob job := by
+            unfold killJob
+            rw [hbt]
+            decide
+          unfold MachineState.sweepMover
+          rw [hb]
+          simp only
+          rw [if_pos hbt, if_neg hkfalse]
+        · have hbf : (base.liveRef job.src && base.liveRef job.dst) = false :=
+            Bool.eq_false_of_not_eq_true hbt
+          have hktrue : killJob job := by
+            unfold killJob
+            exact hbf
+          unfold MachineState.sweepMover
+          rw [hb]
+          simp only
+          rw [if_neg hbt, if_pos hktrue]
+          have hcover : ({ base with mover := none } : MachineState).domCovers
+              job.owner job.statusAddr { r := false, w := true, x := false } =
+                base.domCovers job.owner job.statusAddr
+                  { r := false, w := true, x := false } := rfl
+          rw [hcover]
+          by_cases hc : base.domCovers job.owner job.statusAddr
+              { r := false, w := true, x := false } = true
+          · rw [if_pos hc, if_pos hc]
+            by_cases ha : a = job.statusAddr
+            · subst a
+              simp [MachineState.write, Loom.Fun.update_same]
+            · simp [MachineState.write, ha]
+          · rw [if_neg hc, if_neg hc]
+
 end Machines.Lnp64u.Theorems.RMC
