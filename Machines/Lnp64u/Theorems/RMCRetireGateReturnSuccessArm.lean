@@ -187,6 +187,184 @@ theorem coreAct_mem_gateReturn_success_nonzero (m : Manifest)
   · exact hbase
   · exact htarget
 
+/-- Successful non-null return specialization of the shared one-source-slot
+Mover-state bridge. -/
+theorem absMover_moverAct_return (σ acc : Loom.Hw.St) (τ : MachineState)
+    (E : DomainId) (S : Slot)
+    (hslot : (Hw.retSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
+    (hjob : τ.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job) :
+    Hw.absMover (Hw.moverAct.run σ acc) = (moverPhase τ).mover := by
+  apply absMover_moverAct_transfer σ acc τ E (Hw.retSel E).slot S hslot
+  · intro dm sl
+    rw [hkills]
+    exact retKilled_nonzero_eval σ E hnz dm sl
+  · exact hnew
+  · exact hkindS
+  · exact hkindD
+  · exact hjob
+
+/-- Successful non-null return specialization of the shared one-source-slot
+Mover-memory bridge. -/
+theorem moverAct_mem_return (σ acc : Loom.Hw.St) (τ : MachineState)
+    (E : DomainId) (S : Slot)
+    (hslot : (Hw.retSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
+    (hjob : τ.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job)
+    (hauthτ : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmemτ : ∀ b : Addr, acc.mems "mem" b.toNat 32 = τ.mem b)
+    (hswτ : ∀ job, Hw.absMover σ = some job →
+      ¬((job.src.dom = E ∧ job.src.slot = S) ∨
+        (job.dst.dom = E ∧ job.dst.slot = S)) →
+      ∀ sc : Expr 12, Expr.eval σ
+        (((List.finRange numDomains).foldr
+          (fun d acc' =>
+            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+                Hw.domCoversE d
+                  (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                  ⟨false, true, false⟩,
+                .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX)
+                  0 12) sc]) (Hw.readReg d Hw.rs2E) acc')
+          (.memRead 32 "mem" sc))) = τ.mem (sc.eval σ))
+    (a : Addr) :
+    (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 =
+      (moverPhase τ).mem a := by
+  apply moverAct_mem_transfer σ acc τ E (Hw.retSel E).slot S hslot
+  · intro dm sl
+    rw [hkills]
+    exact retKilled_nonzero_eval σ E hnz dm sl
+  · exact hnew
+  · exact hkindS
+  · exact hkindD
+  · exact hjob
+  · exact hauthτ
+  · exact hmemτ
+  · exact hswτ
+
+/-- Full-cycle assembly for a successful non-null return once its semantic
+branch and post-transfer faces have been identified. -/
+theorem square_retire_gateReturn_payload (m : Manifest) (σ : Loom.Hw.St)
+    (E : DomainId) (S : Slot) (X : Act) (τ2 : MachineState)
+    (hslot : (Hw.retSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval σ = 0#1)
+    (hcoreR : ∀ (rn : String) (w : Nat),
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).regs rn w =
+        ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+          ((Hw.refillAct m).run σ σ)).regs rn w)
+    (hXifv : ("if_v", 1) ∉ X.regWrites)
+    (hspec : corePhase m (refillPhase m (Hw.abs σ)) = τ2)
+    (habs : Hw.abs
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+        ((Hw.refillAct m).run σ σ)) = τ2)
+    (hkindS : ∀ job, Hw.absMover σ = some job →
+      ¬(job.src.dom = E ∧ job.src.slot = S) →
+      Option.map CapEntry.kind
+          ((τ2.doms job.src.dom).liveCap job.src.slot job.src.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.src.dom).liveCap job.src.slot job.src.gen))
+    (hkindD : ∀ job, Hw.absMover σ = some job →
+      ¬(job.dst.dom = E ∧ job.dst.slot = S) →
+      Option.map CapEntry.kind
+          ((τ2.doms job.dst.dom).liveCap job.dst.slot job.dst.gen) =
+        Option.map CapEntry.kind
+          (((Hw.abs σ).doms job.dst.dom).liveCap job.dst.slot job.dst.gen))
+    (hjob : τ2.mover =
+      match Hw.absMover σ with
+      | none => none
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S)
+          then none else some job)
+    (hauth : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        τ2.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hmem : ∀ b : Addr,
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+        b.toNat 32 = τ2.mem b)
+    (hsw : ∀ job, Hw.absMover σ = some job →
+      ¬((job.src.dom = E ∧ job.src.slot = S) ∨
+        (job.dst.dom = E ∧ job.dst.slot = S)) →
+      ∀ sc : Expr 12, Expr.eval σ
+        (((List.finRange numDomains).foldr
+          (fun d acc' =>
+            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+                Hw.domCoversE d
+                  (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                  ⟨false, true, false⟩,
+                .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX)
+                  0 12) sc]) (Hw.readReg d Hw.rs2E) acc')
+          (.memRead 32 "mem" sc))) = τ2.mem (sc.eval σ))
+    (hcyc : τ2.cycle = σ.regs "cycle" 32)
+    (hτ2if : τ2.inflight = none) :
+    Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
+  apply square_retire_gate_payload m σ X τ2 hcoreR hXifv hspec
+    (fun x => congrFun (congrArg MachineState.doms habs) x)
+    (fun g => congrFun (congrArg MachineState.gates habs) g)
+  · exact absMover_moverAct_return σ _ τ2 E S hslot hnz hkills hnew
+      hkindS hkindD hjob
+  · intro a
+    exact moverAct_mem_return σ _ τ2 E S hslot hnz hkills hnew
+      hkindS hkindD hjob hauth hmem hsw a
+  · exact hcyc
+  · exact hτ2if
+
 /-- A successful null reply has no core kill footprint. -/
 theorem Inert.of_successful_gateReturn_zero (σ : Loom.Hw.St)
     (E : DomainId)
