@@ -10,6 +10,7 @@ import Tests.LratBench
 import Tests.CheckBench
 import Tests.Acc8Bmc
 import Tests.ArtifactCert
+import Tests.ParserBoundary
 
 /-!
 # Tests
