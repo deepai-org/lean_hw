@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRv
+import Machines.Lnp64u.Theorems.RMCRetireGateAbs
 
 /-!
 # R-MC retirement: `cap_revoke`
@@ -800,5 +801,111 @@ theorem absDom_revStructuralA (σ acc : Loom.Hw.St)
     congr 1
     apply frame
     fin_cases c <;> decide +kernel
+
+/-- Destroying a reference known to be live makes it dead exactly when its
+slot is selected by the mark set. -/
+theorem destroyMarked_liveRef_false_iff_of_live (tau : MachineState)
+    (marked : DomainId → Slot → Bool) (r : CapRef)
+    (hlive : tau.liveRef r = true) :
+    (tau.destroyMarked marked).liveRef r = false ↔
+      marked r.dom r.slot = true := by
+  by_cases hm : marked r.dom r.slot = true
+  · unfold MachineState.liveRef DomainState.liveCap
+    rw [destroyMarked_caps, destroyMarked_slotGen]
+    simp [hm]
+  · have hm0 := Bool.eq_false_of_not_eq_true hm
+    have heq : (tau.destroyMarked marked).liveRef r = tau.liveRef r := by
+      unfold MachineState.liveRef DomainState.liveCap
+      rw [destroyMarked_caps, destroyMarked_slotGen]
+      simp [hm0]
+    rw [heq, hlive, hm0]
+    decide
+
+/-- The dynamic region-backing lookup used by the revoke sweep decodes to
+the corresponding abstract backing domain and slot. -/
+theorem revKilled_region_eval (σ acc : Loom.Hw.St) (hrv : RvSync σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (c : DomainId) (r : RegionId)
+    (hword : acc.regs (Hw.drgn c r) 42 = σ.regs (Hw.drgn c r) 42) :
+    ((Hw.revKilled
+      (Hw.field (.reg 42 (Hw.drgn c r)) 40 2)
+      (Hw.field (.reg 42 (Hw.drgn c r)) 36 4)).eval σ = 1#1) ↔
+      (Hw.abs σ).marks (rvRoot σ)
+        (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing.dom
+        (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing.slot = true := by
+  rw [revKilled_eval σ hrv hifv hopc hcl]
+  have hdom : finOfBv (by decide)
+      ((Hw.field (.reg 42 (Hw.drgn c r)) 40 2).eval σ) =
+      (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing.dom := by
+    rw [hword]
+    unfold Hw.field Hw.decRegion Hw.decRef finOfBv
+    simp only [Expr.eval]
+    rw [extractLsb'_extractLsb' _ 28 12 (by omega)]
+  have hslot : finOfBv (by decide)
+      ((Hw.field (.reg 42 (Hw.drgn c r)) 36 4).eval σ) =
+      (Hw.decRegion (acc.regs (Hw.drgn c r) 42)).backing.slot := by
+    rw [hword]
+    unfold Hw.field Hw.decRegion Hw.decRef finOfBv
+    simp only [Expr.eval]
+    rw [extractLsb'_extractLsb' _ 28 8 (by omega)]
+  rw [hdom, hslot]
+
+/-- Composing the structural revoke walk with the region sweep implements
+`destroyMarked` followed by the kernel region-authority sweep. -/
+theorem absDom_revStructuralRegionsA (σ acc : Loom.Hw.St)
+    (hrv : RvSync σ) (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (haccV : ∀ c s, acc.regs (Hw.dcapV c s) 1 =
+      σ.regs (Hw.dcapV c s) 1)
+    (haccG : ∀ c s, acc.regs (Hw.dgen c s) 8 =
+      σ.regs (Hw.dgen c s) 8)
+    (hcaps : ∀ c, ((Hw.abs acc).doms c).caps =
+      ((Hw.abs σ).doms c).caps)
+    (hrgnV : ∀ c r, acc.regs (Hw.drgnV c r) 1 =
+      σ.regs (Hw.drgnV c r) 1)
+    (hrgn : ∀ c r, acc.regs (Hw.drgn c r) 42 =
+      σ.regs (Hw.drgn c r) 42)
+    (hwf : Wf (Hw.abs acc)) (c : DomainId) :
+    Hw.absDom ((Hw.sweepRegionsA Hw.revKilled).run σ
+      (revStructuralA.run σ acc)) c =
+      (((((Hw.abs acc).destroyMarked
+        ((Hw.abs σ).marks (rvRoot σ))).sweepRegions).doms c)) := by
+  let str := revStructuralA.run σ acc
+  apply absDom_sweepRegionsA_of_doms σ str Hw.revKilled
+    ((Hw.abs acc).destroyMarked ((Hw.abs σ).marks (rvRoot σ)))
+  · funext d
+    exact absDom_revStructuralA σ acc hrv hifv hopc hcl haccV haccG hcaps d
+  · intro d r
+    change str.regs (Hw.drgnV d r) 1 = σ.regs (Hw.drgnV d r) 1
+    rw [frame (by
+      fin_cases d <;> fin_cases r <;> decide +kernel) σ acc]
+    exact hrgnV d r
+  · intro d r hv
+    have hvframe : str.regs (Hw.drgnV d r) 1 =
+        acc.regs (Hw.drgnV d r) 1 := by
+      apply frame
+      fin_cases d <;> fin_cases r <;> decide +kernel
+    have hvacc : acc.regs (Hw.drgnV d r) 1 = 1#1 := by
+      rw [← hvframe]
+      exact hv
+    have hwframe : str.regs (Hw.drgn d r) 42 =
+        acc.regs (Hw.drgn d r) 42 := by
+      apply frame
+      fin_cases d <;> fin_cases r <;> decide +kernel
+    have hregion : ((Hw.abs acc).doms d).regions r =
+        some (Hw.decRegion (acc.regs (Hw.drgn d r) 42)) := by
+      unfold Hw.abs Hw.absDom
+      simp [hvacc]
+    have hlive : (Hw.abs acc).liveRef
+        (Hw.decRegion (acc.regs (Hw.drgn d r) 42)).backing = true :=
+      regionBacking_live hwf hregion
+    rw [hwframe, revKilled_region_eval σ acc hrv hifv hopc hcl d r
+      (hrgn d r)]
+    exact (destroyMarked_liveRef_false_iff_of_live (Hw.abs acc)
+      ((Hw.abs σ).marks (rvRoot σ))
+      (Hw.decRegion (acc.regs (Hw.drgn d r) 42)).backing hlive).symm
 
 end Machines.Lnp64u.Theorems.RMC
