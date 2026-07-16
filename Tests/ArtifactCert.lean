@@ -80,4 +80,29 @@ example : suppliedPort = memRules.foldl
   nextPortRulesMatches_sound "ram" 4 8 0 memRules portStart suppliedPort
     portRulesCert (by decide +kernel)
 
+private def portsCert : PortsCert 4 8 1 :=
+  .cons portRulesCert .nil
+
+#guard portsMatch "ram" 4 8 memRules 0 1 [suppliedPort] portsCert
+
+example : [suppliedPort] = (List.range' 0 1).map fun q =>
+    memRules.foldl (fun cur rl =>
+      Compile.memPort "ram" 4 8 q rl.body cur) portStart :=
+  portsMatch_sound "ram" 4 8 memRules 0 1 [suppliedPort] portsCert
+    (by decide +kernel)
+
+private def sourceReg : RegDecl :=
+  { name := "r", width := 8, init := 0 }
+
+private def suppliedOut : Loom.Emit.MicroVerilog.OutDef :=
+  { name := "o_r", width := 8, val := .reg 8 "r" }
+
+#guard outMatches sourceReg suppliedOut
+#guard outsMatch [sourceReg] [suppliedOut]
+
+example : [suppliedOut] = [sourceReg].map fun r =>
+    ({ name := s!"o_{r.name}", width := r.width,
+       val := .reg r.width r.name } : Loom.Emit.MicroVerilog.OutDef) :=
+  outsMatch_sound [sourceReg] [suppliedOut] (by decide +kernel)
+
 end Tests.ArtifactCert
