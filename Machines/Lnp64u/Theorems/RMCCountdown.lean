@@ -109,7 +109,7 @@ theorem countdown_mems (m : Manifest) (σ acc : Loom.Hw.St)
 
 /-! ## Spec-side equations -/
 
-private theorem corePhase_countdown (m : Manifest) (τ : MachineState)
+theorem corePhase_countdown (m : Manifest) (τ : MachineState)
     (fl : InFlight) (hfl : τ.inflight = some fl) (h2 : 1 < fl.cyclesLeft) :
     corePhase m τ =
       { τ with inflight := some { fl with cyclesLeft := fl.cyclesLeft - 1 } } := by
