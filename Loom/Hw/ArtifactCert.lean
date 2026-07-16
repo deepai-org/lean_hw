@@ -533,4 +533,141 @@ theorem outsMatch_sound : ∀ (rs : List Loom.Hw.RegDecl)
       simp only [outsMatch, Bool.and_eq_true, List.map_cons] at h ⊢
       rw [outMatches_sound r out h.1, outsMatch_sound rs outs h.2]
 
+/-! ## Memory-definition certificates -/
+
+/-- The reference memory definition contributed by one source declaration. -/
+def compiledMem (d : Loom.Hw.Design) (m : Loom.Hw.MemDecl) :
+    Loom.Emit.MicroVerilog.MemDef where
+  name := m.name
+  addrWidth := m.addrWidth
+  dataWidth := m.dataWidth
+  init := m.init
+  wrPorts := (List.range (Compile.numPorts d m.name)).map fun p =>
+    Compile.compilePort d m.name m.addrWidth m.dataWidth p
+
+/-- Certificate for all write ports of one source memory. -/
+structure MemCert (d : Loom.Hw.Design) (m : Loom.Hw.MemDecl) where
+  ports : PortsCert m.addrWidth m.dataWidth (Compile.numPorts d m.name)
+
+/-- Check memory metadata, its complete addressable initialization image,
+and every generated write port. -/
+def memMatches (d : Loom.Hw.Design) (m : Loom.Hw.MemDecl)
+    (out : Loom.Emit.MicroVerilog.MemDef) (cert : MemCert d m) : Bool :=
+  decide (out.name = m.name) &&
+  if haw : out.addrWidth = m.addrWidth then
+    if hdw : out.dataWidth = m.dataWidth then
+      decide (∀ i, i < 2 ^ m.addrWidth →
+        ((hdw ▸ out.init) i).toNat = (m.init i).toNat) &&
+      portsMatch m.name m.addrWidth m.dataWidth d.rules 0
+        (Compile.numPorts d m.name) (haw ▸ (hdw ▸ out.wrPorts)) cert.ports
+    else false
+  else false
+
+private theorem init_cast_sound {outAw srcAw outDw srcDw : Nat}
+    (haw : outAw = srcAw) (hdw : outDw = srcDw)
+    (outInit : Nat → BitVec outDw) (srcInit : Nat → BitVec srcDw)
+    (h : ∀ i, i < 2 ^ srcAw →
+      ((hdw ▸ outInit) i).toNat = (srcInit i).toNat) :
+    ∀ i, i < 2 ^ outAw →
+      (outInit i).toNat = (srcInit i).toNat := by
+  cases haw
+  cases hdw
+  exact h
+
+/-- Successful memory validation proves agreement with the reference
+compiler on every field observable in emitted Verilog. -/
+theorem memMatches_sound (d : Loom.Hw.Design) (m : Loom.Hw.MemDecl)
+    (out : Loom.Emit.MicroVerilog.MemDef) (cert : MemCert d m)
+    (h : memMatches d m out cert = true) :
+    out.Matches (compiledMem d m) := by
+  unfold memMatches at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨hn, hrest⟩ := h
+  split at hrest
+  · rename_i haw
+    split at hrest
+    · rename_i hdw
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hrest
+      obtain ⟨hi, hpcheck⟩ := hrest
+      have hp := portsMatch_sound m.name m.addrWidth m.dataWidth d.rules 0
+        (Compile.numPorts d m.name) (haw ▸ (hdw ▸ out.wrPorts))
+        cert.ports hpcheck
+      simp only [List.range'_eq_map_range, Nat.zero_add, List.map_map] at hp
+      have hcast : HEq out.wrPorts (haw ▸ (hdw ▸ out.wrPorts)) :=
+        HEq.trans
+          (eqRec_heq (φ := fun w =>
+            List (Loom.Emit.MicroVerilog.WritePort out.addrWidth w))
+            hdw out.wrPorts).symm
+          (eqRec_heq (φ := fun w =>
+            List (Loom.Emit.MicroVerilog.WritePort w m.dataWidth))
+            haw (hdw ▸ out.wrPorts)).symm
+      have hports : HEq out.wrPorts (compiledMem d m).wrPorts :=
+        HEq.trans hcast (heq_of_eq hp)
+      refine ⟨hn, haw, hdw, hports, ?_⟩
+      exact init_cast_sound haw hdw out.init m.init hi
+    · contradiction
+  · contradiction
+
+/-- A dependent certificate list aligned with source memory declarations. -/
+inductive MemsCert (d : Loom.Hw.Design) : List Loom.Hw.MemDecl → Type where
+  | nil : MemsCert d []
+  | cons {m ms} (head : MemCert d m) (tail : MemsCert d ms) :
+      MemsCert d (m :: ms)
+
+/-- Check the complete supplied memory list in declaration order. -/
+def memsMatch (d : Loom.Hw.Design) : ∀ {ms : List Loom.Hw.MemDecl},
+    List Loom.Emit.MicroVerilog.MemDef → MemsCert d ms → Bool
+  | [], [], .nil => true
+  | [], _ :: _, .nil => false
+  | _ :: _, [], .cons _ _ => false
+  | m :: _, out :: outs, .cons ch ct =>
+      memMatches d m out ch && memsMatch d outs ct
+
+/-- Successful memory-list validation gives pairwise `MemDef.Matches`
+against the reference compiler's list. -/
+theorem memsMatch_sound (d : Loom.Hw.Design) :
+    ∀ {ms : List Loom.Hw.MemDecl}
+      (outs : List Loom.Emit.MicroVerilog.MemDef) (cert : MemsCert d ms),
+      memsMatch d outs cert = true →
+        List.Forall₂ Loom.Emit.MicroVerilog.MemDef.Matches outs
+          (ms.map (compiledMem d))
+  | [], [], .nil, _ => .nil
+  | [], _ :: _, .nil, h => by simp [memsMatch] at h
+  | _ :: _, [], .cons _ _, h => by simp [memsMatch] at h
+  | m :: ms, out :: outs, .cons ch ct, h => by
+      simp only [memsMatch, Bool.and_eq_true] at h
+      exact .cons (memMatches_sound d m out ch h.1)
+        (memsMatch_sound d outs ct h.2)
+
+/-! ## Whole-module certificates -/
+
+/-- Certificate data for every dependent component of a compiled design. -/
+structure ModuleCert (d : Loom.Hw.Design) where
+  regs : RegsCert d.regs
+  mems : MemsCert d d.mems
+
+/-- Check a supplied µVerilog module against the reference compiler locally. -/
+def moduleMatches (d : Loom.Hw.Design)
+    (out : Loom.Emit.MicroVerilog.Module) (cert : ModuleCert d) : Bool :=
+  decide (out.name = d.name) &&
+  regsMatch d.rules out.regs cert.regs &&
+  memsMatch d out.mems cert.mems &&
+  outsMatch d.regs out.outs
+
+/-- The whole-module checker is sound: acceptance proves the supplied module
+matches `Compile.compile d` on every Verilog-observable field. -/
+theorem moduleMatches_sound (d : Loom.Hw.Design)
+    (out : Loom.Emit.MicroVerilog.Module) (cert : ModuleCert d)
+    (h : moduleMatches d out cert = true) :
+    out.Matches (Compile.compile d) := by
+  simp only [moduleMatches, Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨⟨⟨hn, hrcheck⟩, hmcheck⟩, hocheck⟩ := h
+  have hr := regsMatch_sound d.rules out.regs cert.regs hrcheck
+  have hm := memsMatch_sound d out.mems cert.mems hmcheck
+  have ho := outsMatch_sound d.regs out.outs hocheck
+  refine ⟨hn, ?_, ?_, ?_⟩
+  · simpa only [Compile.compile] using hr
+  · simpa only [Compile.compile] using ho
+  · simpa only [Compile.compile, compiledMem, Compile.compilePort] using hm
+
 end Loom.Hw.ArtifactCert
