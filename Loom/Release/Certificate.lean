@@ -65,15 +65,14 @@ theorem exactRenderingAndCompilation (design : Loom.Hw.Design)
     (program : SSA.Program) (disk : Rope (List String))
     (cert : SSACert design)
     (renderedLines : Rope (List String))
-    (hrender : renderedLines.flattenLists = program.render)
+    (hrender : renderedLines = program.renderTree)
     (hdisk : renderedLines = disk)
     (hcert : ssaMatches design program cert = true) :
-    String.intercalate "\n" program.render = disk.flattenBytes ∧
+    program.renderTree.flattenBytes = disk.flattenBytes ∧
     ∃ module, program.elaborate = some module ∧
       module.toTSys = (Loom.Hw.Compile.compile design).toTSys := by
   constructor
-  · unfold Rope.flattenBytes
-    rw [← hrender, hdisk]
+  · exact Rope.flattenBytes_congr (hrender.symm.trans hdisk)
   · exact ssaMatches_behavior design program cert hcert
 
 end Loom.Release

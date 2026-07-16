@@ -24,7 +24,7 @@ logical lines at leaves. -/
 inductive Rope (α : Type u) where
   | leaf (value : α)
   | node (left right : Rope α)
-  deriving Repr
+  deriving Repr, DecidableEq
 
 /-- Apply a function independently at every leaf while preserving shape. -/
 def Rope.map {α : Type u} {β : Type v} (f : α → β) : Rope α → Rope β
@@ -44,6 +44,30 @@ used in theorem statements; full release proofs do not normalize it. -/
 def Rope.flattenLists {α : Type u} : Rope (List α) → List α
   | .leaf values => values
   | .node left right => left.flattenLists ++ right.flattenLists
+
+/-- Number of list elements stored across all leaves, without flattening. -/
+def Rope.listLength {α : Type u} : Rope (List α) → Nat
+  | .leaf values => values.length
+  | .node left right => left.listLength + right.listLength
+
+/-- Index a list-valued rope directly. This keeps large initialization images
+balanced in both the witness and its elaborated memory function. -/
+def Rope.getD {α : Type u} (rope : Rope (List α)) (index : Nat)
+    (fallback : α) : α :=
+  match rope with
+  | .leaf values => values.getD index fallback
+  | .node left right =>
+      if index < left.listLength then left.getD index fallback
+      else right.getD (index - left.listLength) fallback
+
+/-- Map list leaves while supplying each leaf's starting element offset. -/
+def Rope.mapWithOffset {α : Type u} {β : Type v}
+    (f : Nat → List α → List β) (start : Nat) :
+    Rope (List α) → Rope (List β)
+  | .leaf values => .leaf (f start values)
+  | .node left right =>
+      .node (left.mapWithOffset f start)
+        (right.mapWithOffset f (start + left.listLength))
 
 /-- Interpret a line rope as exact file bytes: LF between logical lines and no
 additional transformation. A trailing empty final line therefore represents a

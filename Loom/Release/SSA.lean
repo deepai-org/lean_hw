@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Emit.MicroVerilog.Ast
+import Loom.Release.Rope
 
 /-!
 # Concrete SSA release language
@@ -66,7 +67,7 @@ structure Mem where
   name : String
   addrWidth : Nat
   dataWidth : Nat
-  init : List Nat
+  init : Loom.Release.Rope (List Nat)
   writes : List Write
   deriving Repr, DecidableEq
 
@@ -82,7 +83,7 @@ structure Program where
   name : String
   regs : List Reg
   mems : List Mem
-  wires : List Wire
+  wires : Loom.Release.Rope (List Wire)
   outs : List Out
   deriving Repr, DecidableEq
 
@@ -138,11 +139,10 @@ private def declLines (program : Program) : List String :=
     s!"  reg [{mem.dataWidth - 1}:0] {mem.name} " ++
       s!"[0:{2 ^ mem.addrWidth - 1}];")
 
-private def initLines (mem : Mem) : List String :=
-  ["  initial begin"] ++
-  (((List.range mem.init.length).zip mem.init).map fun ⟨index, value⟩ =>
-    s!"    {mem.name}[{index}] = {mem.dataWidth}'d{value};") ++
-  ["  end"]
+private def initLines (mem : Mem) (start : Nat) (values : List Nat) :
+    List String :=
+  ((List.range values.length).zip values).map fun ⟨offset, value⟩ =>
+    s!"    {mem.name}[{start + offset}] = {mem.dataWidth}'d{value};"
 
 private def alwaysLines (program : Program) : List String :=
   ["  always @(posedge clk) begin", "    if (rst) begin"] ++
@@ -154,13 +154,30 @@ private def alwaysLines (program : Program) : List String :=
     s!"      if ({write.en}) {mem.name}[{write.addr}] <= {write.data};") ++
   ["    end", "  end"]
 
-/-- Render the complete concrete program as logical lines. Release artifacts
-place bounded consecutive portions of this list into rope leaves. -/
+private def Mem.renderTree (mem : Mem) : Loom.Release.Rope (List String) :=
+  .node (.leaf ["  initial begin"])
+    (.node (mem.init.mapWithOffset (initLines mem) 0) (.leaf ["  end"]))
+
+private def memRenderTrees : List Mem → Loom.Release.Rope (List String)
+  | [] => .leaf []
+  | [mem] => mem.renderTree
+  | mem :: mems => .node mem.renderTree (memRenderTrees mems)
+
+/-- Render without ever constructing a flat full-artifact list. Witness wire
+and initialization blocks remain bounded rope leaves all the way to the exact
+byte theorem. -/
+def Program.renderTree (program : Program) :
+    Loom.Release.Rope (List String) :=
+  .node (.leaf (headerLines program ++ declLines program))
+    (.node (memRenderTrees program.mems)
+      (.node (program.wires.map (fun wires => wires.map Wire.render))
+        (.leaf (alwaysLines program ++ program.outs.map (fun out =>
+          s!"  assign {out.name} = {out.value};") ++ ["endmodule"]))))
+
+/-- Flat logical lines, retained for small examples. Full release theorems use
+`renderTree` directly and never normalize this projection. -/
 def Program.render (program : Program) : List String :=
-  headerLines program ++ declLines program ++
-  program.mems.flatMap initLines ++ program.wires.map Wire.render ++
-  alwaysLines program ++ program.outs.map (fun out =>
-    s!"  assign {out.name} = {out.value};") ++ ["endmodule"]
+  program.renderTree.flattenLists
 
 /-! ## Typed elaborator -/
 
@@ -253,6 +270,13 @@ private def elaborateWires (regs : List RegHdr) (mems : List MemHdr) :
       elaborateWires regs mems wires
         ((wire.name, ⟨wire.width, value⟩) :: env)
 
+private def elaborateWireTree (regs : List RegHdr) (mems : List MemHdr) :
+    Loom.Release.Rope (List Wire) → Env → Option Env
+  | .leaf wires, env => elaborateWires regs mems wires env
+  | .node left right, env => do
+      let env ← elaborateWireTree regs mems left env
+      elaborateWireTree regs mems right env
+
 private def elaborateRegs (headers : List RegHdr) (env : Env) :
     List Reg → Option (List RegDef)
   | [] => some []
@@ -277,7 +301,7 @@ private def elaborateMems (regs : List RegHdr) (env : Env) :
     List Mem → Option (List MemDef)
   | [] => some []
   | mem :: mems => do
-      guard (mem.init.length == 2 ^ mem.addrWidth)
+      guard (mem.init.listLength == 2 ^ mem.addrWidth)
       let writes ← elaborateWrites regs env mem.addrWidth mem.dataWidth mem.writes
       let rest ← elaborateMems regs env mems
       pure (({ name := mem.name, addrWidth := mem.addrWidth,
@@ -300,7 +324,7 @@ No generator property is assumed. -/
 def Program.elaborate (program : Program) : Option Module := do
   let regs := program.regs.map fun reg => ⟨reg.name, reg.width⟩
   let mems := program.mems.map fun mem => ⟨mem.name, mem.addrWidth, mem.dataWidth⟩
-  let env ← elaborateWires regs mems program.wires []
+  let env ← elaborateWireTree regs mems program.wires []
   let regDefs ← elaborateRegs regs env program.regs
   let memDefs ← elaborateMems regs env program.mems
   let outDefs ← elaborateOuts regs env program.outs
