@@ -100,11 +100,14 @@ at the refresh date.
    `implements_standard_spec`. Its scope is now documented as concrete
    reset/cycle agreement for a concrete emitted module and tool realization,
    not a claim about full Verilog or physical implementation effects.
-3. **`Tools/Audit.lean` is a trusted ~100-line compiled tool.** It computes
+3. **`Tools/Audit.lean` is a small trusted compiled tool.** It computes
    real axiom closures (and caught the T5 `system_preserves` near-miss).
    Since 2026-07-04, `lake exe audit` prints each ledger theorem's axiom
    closure, so readers can inspect the raw closure behind each CLEAN/STATED
-   verdict instead of trusting only the summary labels.
+   verdict instead of trusting only the summary labels. Since 2026-07-16 it
+   also enforces and prints the executable trust inventory: ten private
+   unsafe helpers, exactly two `implemented_by` replacements (`compile` and
+   `print`), and no project `partial` or `extern` declarations.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
 5. Superseded `SystemOpsWf` sorries were deleted 2026-07-04. As of
    2026-07-16 the R-MC dependency cone is also sorry-free: `square`,
