@@ -140,7 +140,9 @@ private def declLines (program : Program) : List String :=
     s!"  reg [{mem.dataWidth - 1}:0] {mem.name} " ++
       s!"[0:{2 ^ mem.addrWidth - 1}];")
 
-private def initLines (mem : Mem) (start : Nat) (values : List Nat) :
+/-- Render one bounded memory-initialization leaf at its absolute address
+offset. Generated release proofs invoke this independently for each leaf. -/
+def Mem.renderInitLines (mem : Mem) (start : Nat) (values : List Nat) :
     List String :=
   ((List.range values.length).zip values).map fun ⟨offset, value⟩ =>
     s!"    {mem.name}[{start + offset}] = {mem.dataWidth}'d{value};"
@@ -155,25 +157,36 @@ private def alwaysLines (program : Program) : List String :=
     s!"      if ({write.en}) {mem.name}[{write.addr}] <= {write.data};") ++
   ["    end", "  end"]
 
-private def Mem.renderTree (mem : Mem) : Loom.Release.Rope (List String) :=
-  .node (.leaf ["  initial begin"])
-    (.node (mem.init.mapWithOffset (initLines mem) 0) (.leaf ["  end"]))
+/-- Header and declarations, kept as one small release rope leaf. -/
+def Program.renderPrefix (program : Program) : List String :=
+  headerLines program ++ declLines program
 
-private def memRenderTrees : List Mem → Loom.Release.Rope (List String)
+/-- Sequential block, output assignments, and module terminator. -/
+def Program.renderSuffix (program : Program) : List String :=
+  alwaysLines program ++ program.outs.map (fun out =>
+    s!"  assign {out.name} = {out.value};") ++ ["endmodule"]
+
+/-- Balanced rendering of one concrete memory initialization image. -/
+def Mem.renderTree (mem : Mem) : Loom.Release.Rope (List String) :=
+  .node (.leaf ["  initial begin"])
+    (.node (mem.init.mapWithOffset mem.renderInitLines 0) (.leaf ["  end"]))
+
+/-- Render memory declarations in source order without flattening their
+initialization ropes. -/
+def renderMemTrees : List Mem → Loom.Release.Rope (List String)
   | [] => .leaf []
   | [mem] => mem.renderTree
-  | mem :: mems => .node mem.renderTree (memRenderTrees mems)
+  | mem :: mems => .node mem.renderTree (renderMemTrees mems)
 
 /-- Render without ever constructing a flat full-artifact list. Witness wire
 and initialization blocks remain bounded rope leaves all the way to the exact
 byte theorem. -/
 def Program.renderTree (program : Program) :
     Loom.Release.Rope (List String) :=
-  .node (.leaf (headerLines program ++ declLines program))
-    (.node (memRenderTrees program.mems)
+  .node (.leaf program.renderPrefix)
+    (.node (renderMemTrees program.mems)
       (.node (program.wires.map (fun wires => wires.map Wire.render))
-        (.leaf (alwaysLines program ++ program.outs.map (fun out =>
-          s!"  assign {out.name} = {out.value};") ++ ["endmodule"]))))
+        (.leaf program.renderSuffix)))
 
 /-- Flat logical lines, retained for small examples. Full release theorems use
 `renderTree` directly and never normalize this projection. -/
