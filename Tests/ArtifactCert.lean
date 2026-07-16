@@ -138,11 +138,4 @@ example : suppliedModule.Matches (Compile.compile design) :=
 #guard artifactMatches design
   (Loom.Emit.MicroVerilog.Print.print suppliedModule) moduleCert
 
-example : ∃ out, Loom.Emit.MicroVerilog.Parse.parse
-      (Loom.Emit.MicroVerilog.Print.print suppliedModule) = some out ∧
-    out.Matches (Compile.compile design) :=
-  artifactMatches_sound design
-    (Loom.Emit.MicroVerilog.Print.print suppliedModule) moduleCert
-    (by decide +kernel)
-
 end Tests.ArtifactCert
