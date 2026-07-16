@@ -68,6 +68,125 @@ theorem coreAct_mem_gateReturn_zero_reply (m : Manifest) (σ : Loom.Hw.St)
   rw [if_neg (by rw [hport.1, hmen]; decide)]
   exact refill_pres_mem m σ "mem" ad 32
 
+/-- With a non-null reply, the return kill predicate is exactly the retiring
+domain and selected reply slot. -/
+theorem retKilled_nonzero_eval (σ : Loom.Hw.St) (d : DomainId)
+    (hnz : (Hw.retNZ d).eval σ = 1#1) (dm : Expr 2) (sl : Expr 4) :
+    (Hw.retKilled d dm sl).eval σ =
+      (Expr.and (.eq dm (Hw.dLit d))
+        (.eq sl (Hw.retSel d).slot)).eval σ := by
+  unfold Hw.retKilled Hw.andAll
+  change (Hw.retNZ d).eval σ &&&
+      ((Expr.eq dm (Hw.dLit d)).eval σ &&&
+        (Expr.eq sl (Hw.retSel d).slot).eval σ) = _
+  rw [hnz]
+  exact (by decide : ∀ a b : BitVec 1,
+    1#1 &&& (a &&& b) = a &&& b) _ _
+
+/-- The return Mover guard recognizes precisely an endpoint in the selected
+non-null reply slot. -/
+theorem movKilledE_return_nonzero_iff (σ : Loom.Hw.St) (d : DomainId)
+    (S : Slot)
+    (hslot : (Hw.retSel d).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ d).eval σ = 1#1) :
+    ((Hw.movKilledE (Hw.retKilled d)).eval σ = 1#1) ↔
+      match Hw.absMover σ with
+      | none => False
+      | some job =>
+          (job.src.dom = d ∧ job.src.slot = S) ∨
+          (job.dst.dom = d ∧ job.dst.slot = S) := by
+  have heval : (Hw.movKilledE (Hw.retKilled d)).eval σ =
+      σ.regs "mov_v" 1 &&&
+        ((Expr.and (.eq Hw.movSrcDom (Hw.dLit d))
+            (.eq Hw.movSrcSlot (Hw.retSel d).slot)).eval σ |||
+         (Expr.and (.eq Hw.movDstDom (Hw.dLit d))
+            (.eq Hw.movDstSlot (Hw.retSel d).slot)).eval σ) := by
+    unfold Hw.movKilledE
+    change σ.regs "mov_v" 1 &&&
+        ((Hw.retKilled d Hw.movSrcDom Hw.movSrcSlot).eval σ |||
+         (Hw.retKilled d Hw.movDstDom Hw.movDstSlot).eval σ) = _
+    rw [retKilled_nonzero_eval σ d hnz,
+      retKilled_nonzero_eval σ d hnz]
+  rw [heval]
+  by_cases hv : σ.regs "mov_v" 1 = 1#1
+  · rw [absMover_some σ hv, bv1_and_eq_one, bv1_or_eq_one]
+    simp only [Hw.movSrcDom, Hw.movSrcSlot, Hw.movDstDom, Hw.movDstSlot]
+    rw [slotKilled_ref_eval σ d (Hw.retSel d).slot S hslot
+        (.reg 14 "mov_src"),
+      slotKilled_ref_eval σ d (Hw.retSel d).slot S hslot
+        (.reg 14 "mov_dst")]
+    simp [hv]
+    rfl
+  · have hv0 : σ.regs "mov_v" 1 = 0#1 := bv1_ne_one.mp hv
+    simp [absMover_none σ hv, hv0]
+
+/-- Successful non-null return memory commit, specialized from the shared
+sweeping-operation bridge. -/
+theorem coreAct_mem_gateReturn_success_nonzero (m : Manifest)
+    (σ : Loom.Hw.St) (E : DomainId) (S : Slot)
+    (base target : MachineState)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (hifsel : (Hw.ifDomIs E).eval σ = 1#1)
+    (hifexcl : ∀ d : DomainId, d ≠ E → (Hw.ifDomIs d).eval σ ≠ 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6)
+    (hslot : (Hw.retSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ E).eval σ = 1#1)
+    (hok : (Hw.retOkE E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hauthPost : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+        base.domCovers (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true)
+    (hbase : ∀ b : Addr, base.mem b = σ.mems "mem" b.toNat 32)
+    (htarget : ∀ b : Addr, target.mem b =
+      match Hw.absMover σ with
+      | none => base.mem b
+      | some job =>
+          if (job.src.dom = E ∧ job.src.slot = S) ∨
+              (job.dst.dom = E ∧ job.dst.slot = S) then
+            if base.domCovers job.owner job.statusAddr
+                { r := false, w := true, x := false } then
+              if b = job.statusAddr then Errno.staleHandle.toWord
+              else base.mem b
+            else base.mem b
+          else base.mem b)
+    (b : Addr) :
+    ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ)).mems "mem"
+      b.toNat 32 = target.mem b := by
+  have hport := retireMem_gateReturn_sel σ E hifsel hifexcl hopc
+  apply coreAct_mem_sweep_success m σ (Hw.retOkE E) (Hw.retKilled E)
+    (Hw.retCirc E) E S base target hifv hcl hport
+  · rfl
+  · rfl
+  · rfl
+  · exact hok
+  · exact movKilledE_return_nonzero_iff σ E S hslot hnz
+  · intro job hjob
+    have hstatus := statusAuthE_post_eval σ (Hw.retKilled E) hkills
+      hmapz hunmapz
+    have hv : σ.regs "mov_v" 1 = 1#1 := by
+      by_contra hn
+      rw [absMover_none σ hn] at hjob
+      contradiction
+    have hcanon := Option.some.inj ((absMover_some σ hv).symm.trans hjob)
+    subst job
+    exact hstatus.trans (by
+      simpa using hauthPost (.reg 2 "mov_owner") (.reg 12 "mov_status"))
+  · exact hbase
+  · exact htarget
+
 /-- A successful null reply has no core kill footprint. -/
 theorem Inert.of_successful_gateReturn_zero (σ : Loom.Hw.St)
     (E : DomainId)
