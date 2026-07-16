@@ -14,6 +14,7 @@ import Tests.ParserBoundary
 import Tests.ReleaseRope
 import Tests.ReleaseSSA
 import Tests.ReleaseCertificate
+import Tests.NamedCertificate
 
 /-!
 # Tests

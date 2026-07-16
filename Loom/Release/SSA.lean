@@ -2,7 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Emit.MicroVerilog.Ast
 import Loom.Release.Rope
-import Std.Data.HashMap
+import Std.Data.TreeMap
 
 /-!
 # Concrete SSA release language
@@ -204,7 +204,7 @@ structure MemHdr where
   addrWidth : Nat
   dataWidth : Nat
 
-abbrev Env := Std.HashMap String (Sigma Expr)
+abbrev Env := Std.TreeMap String (Sigma Expr)
 
 private def resolveAny (regs : List RegHdr) (env : Env)
     (name : String) : Option (Sigma Expr) :=
@@ -215,22 +215,29 @@ private def resolveAny (regs : List RegHdr) (env : Env)
       | some reg => some ⟨reg.width, .reg reg.width name⟩
       | none => none
 
-private def resolve (regs : List RegHdr) (env : Env)
+private def resolveAt (regs : List RegHdr) (env : Env)
     (name : String) (width : Nat) : Option (Expr width) := do
   let ⟨actual, value⟩ ← resolveAny regs env name
   if h : actual = width then pure (h ▸ value) else none
 
+/-- Resolve a concrete SSA/register name at a requested width. This is public
+for compact generated certificates, which name intermediate values instead of
+serializing their potentially enormous expression trees. -/
+def Program.resolve (program : Program) (env : Env) (name : String)
+    (width : Nat) : Option (Expr width) :=
+  resolveAt (program.regs.map fun reg => ⟨reg.name, reg.width⟩) env name width
+
 private def binSame (regs : List RegHdr) (env : Env) (width : Nat)
     (left right : String) (make : Expr width → Expr width → Expr width) :
     Option (Expr width) := do
-  pure (make (← resolve regs env left width) (← resolve regs env right width))
+  pure (make (← resolveAt regs env left width) (← resolveAt regs env right width))
 
 private def comparison (regs : List RegHdr) (env : Env) (width : Nat)
     (left right : String)
     (make : {w : Nat} → Expr w → Expr w → Expr 1) : Option (Expr width) := do
   guard (width == 1)
   let ⟨operandWidth, a⟩ ← resolveAny regs env left
-  let b ← resolve regs env right operandWidth
+  let b ← resolveAt regs env right operandWidth
   if h : (1 : Nat) = width then pure (h ▸ make a b) else none
 
 /-- Elaborate one concrete RHS at its declared result width. -/
@@ -244,7 +251,7 @@ def Rhs.elaborate (regs : List RegHdr) (mems : List MemHdr) (env : Env)
       pure (.zext value width)
   | .memRead mem addr => do
       let header ← mems.find? (fun candidate => candidate.name == mem)
-      let address ← resolve regs env addr header.addrWidth
+      let address ← resolveAt regs env addr header.addrWidth
       if h : header.dataWidth = width then
         pure (h ▸ Expr.memRead header.dataWidth mem address)
       else none
@@ -253,7 +260,7 @@ def Rhs.elaborate (regs : List RegHdr) (mems : List MemHdr) (env : Env)
       let ⟨_, input⟩ ← resolveAny regs env value
       pure (.slice input lo width)
   | .not value => do
-      pure (.not (← resolve regs env value width))
+      pure (.not (← resolveAt regs env value width))
   | .bin op left right =>
       match op with
       | .and => binSame regs env width left right .and
@@ -268,8 +275,8 @@ def Rhs.elaborate (regs : List RegHdr) (mems : List MemHdr) (env : Env)
   | .slt left right =>
       comparison regs env width left right (fun a b => .slt a b)
   | .mux cond yes no => do
-      pure (.mux (← resolve regs env cond 1) (← resolve regs env yes width)
-        (← resolve regs env no width))
+      pure (.mux (← resolveAt regs env cond 1) (← resolveAt regs env yes width)
+        (← resolveAt regs env no width))
   | .sext amount value signBit => do
       let ⟨inputWidth, input⟩ ← resolveAny regs env value
       guard (signBit + 1 == inputWidth && inputWidth + amount == width &&
@@ -295,7 +302,7 @@ private def elaborateRegs (headers : List RegHdr) (env : Env) :
     List Reg → Option (List RegDef)
   | [] => some []
   | reg :: regs => do
-      let next ← resolve headers env reg.next reg.width
+      let next ← resolveAt headers env reg.next reg.width
       let rest ← elaborateRegs headers env regs
       pure (({ name := reg.name, width := reg.width,
                init := BitVec.ofNat reg.width reg.init,
@@ -306,9 +313,9 @@ private def elaborateWrites (regs : List RegHdr) (env : Env)
   | [] => some []
   | write :: writes => do
       let port : WritePort aw dw := {
-        en := ← resolve regs env write.en 1
-        addr := ← resolve regs env write.addr aw
-        data := ← resolve regs env write.data dw }
+        en := ← resolveAt regs env write.en 1
+        addr := ← resolveAt regs env write.addr aw
+        data := ← resolveAt regs env write.data dw }
       pure (port :: (← elaborateWrites regs env aw dw writes))
 
 private def elaborateMems (regs : List RegHdr) (env : Env) :
@@ -328,21 +335,31 @@ private def elaborateOuts (regs : List RegHdr) (env : Env) :
     List Out → Option (List OutDef)
   | [] => some []
   | out :: outs => do
-      let value ← resolve regs env out.value out.width
+      let value ← resolveAt regs env out.value out.width
       let rest ← elaborateOuts regs env outs
       pure (({ name := out.name, width := out.width,
                val := value } : OutDef) :: rest)
 
 /-- Elaborate an arbitrary concrete witness to the formal µVerilog module.
 No generator property is assumed. -/
-def Program.elaborate (program : Program) : Option Module := do
+def Program.elaborateEnv (program : Program) : Option Env := do
   let regs := program.regs.map fun reg => ⟨reg.name, reg.width⟩
   let mems := program.mems.map fun mem => ⟨mem.name, mem.addrWidth, mem.dataWidth⟩
-  let env ← elaborateWireTree regs mems program.wires {}
+  elaborateWireTree regs mems program.wires {}
+
+/-- Finish elaboration from an already-built SSA environment. Named release
+certificates share this environment across all constant-time name lookups. -/
+def Program.elaborateWithEnv (program : Program) (env : Env) : Option Module := do
+  let regs := program.regs.map fun reg => ⟨reg.name, reg.width⟩
   let regDefs ← elaborateRegs regs env program.regs
   let memDefs ← elaborateMems regs env program.mems
   let outDefs ← elaborateOuts regs env program.outs
   pure ({ name := program.name, regs := regDefs, mems := memDefs,
           outs := outDefs } : Module)
+
+/-- Elaborate an arbitrary concrete witness to the formal µVerilog module.
+No generator property is assumed. -/
+def Program.elaborate (program : Program) : Option Module := do
+  program.elaborateWithEnv (← program.elaborateEnv)
 
 end Loom.Release.SSA
