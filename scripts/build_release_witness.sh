@@ -52,6 +52,7 @@ find "$src" -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 
 lake env lean "$(realpath "$src/Root.lean")" -o "$lib/Root.olean"
+lake build Tools.ReleaseCertGen
 lake env lean --run "$(realpath "$src/CertGen.lean")"
 
 find "$src" -maxdepth 1 -name 'CertBatch*.lean' -print0 | sort -z | \

@@ -82,6 +82,26 @@ def balanced_proof(names: list[str]) -> str:
     return level[0]
 
 
+def balanced_paths(count: int) -> list[list[bool]]:
+    """Paths induced by `balanced`, indexed by the original leaf number."""
+    level = [{index: []} for index in range(count)]
+    while len(level) > 1:
+        nxt = []
+        for i in range(0, len(level), 2):
+            if i + 1 == len(level):
+                nxt.append(level[i])
+                continue
+            merged = {index: [False] + path
+                      for index, path in level[i].items()}
+            merged.update({index: [True] + path
+                           for index, path in level[i + 1].items()})
+            nxt.append(merged)
+        level = nxt
+    if not level:
+        return []
+    return [level[0][index] for index in range(count)]
+
+
 def chunks(values: list, size: int) -> list[list]:
     return [values[i:i + size] for i in range(0, len(values), size)] or [[]]
 
@@ -386,10 +406,17 @@ def emit_batched(data: dict, output: Path, block_size: int,
     names = [f"wireBlock{i:04d}" for i in range(len(blocks))]
     disk_names = [f"diskWireBlock{i:04d}" for i in range(len(blocks))]
     proofs = [f"renderWireBlock{i:04d}" for i in range(len(blocks))]
-    out = prelude(["Loom.Release.Certificate"] + batch_modules, namespace)
+    out = prelude(["Loom.Release.Certificate",
+                   "Loom.Release.SymbolicCertificate"] + batch_modules,
+                  namespace)
     out += ["def wireTree : Rope (List Wire) :=",
             "  " + balanced(names, ".leaf []").replace(
                 "wireBlock", ".leaf wireBlock"), "",
+            "def wireTable : Symbolic.WireTable where",
+            f"  leafSize := {block_size}",
+            "  paths := #[" + ", ".join(
+                "[" + ", ".join("true" if step else "false" for step in path) + "]"
+                for path in balanced_paths(len(blocks))) + "]", "",
             "def diskWireTree : Rope (List String) :=",
             "  " + balanced(disk_names, ".leaf []").replace(
                 "diskWireBlock", ".leaf diskWireBlock"), "",
