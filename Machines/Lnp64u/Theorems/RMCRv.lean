@@ -541,6 +541,75 @@ theorem liveChainN_add (τ : MachineState) (m n : Nat)
       | none => simp
       | some p => exact ih p
 
+/-- A live-parent lookup depends only on capability, lineage, and generation
+tables. -/
+theorem liveParent_congr (τ τ' : MachineState) (ht : TablesEq τ τ')
+    (x : DomainId × Slot) :
+    liveParent τ' x = liveParent τ x := by
+  unfold liveParent
+  rw [parentOf_congr τ τ' ht]
+  cases hp : τ.parentOf x.1 x.2 with
+  | none => rfl
+  | some p =>
+      rw [(ht p.dom).2.2]
+
+/-- Bounded reachability depends only on the capability tables. -/
+theorem reachRootN_congr (τ τ' : MachineState) (ht : TablesEq τ τ')
+    (root : CapRef) (n : Nat) (x : DomainId × Slot) :
+    reachRootN τ' root n x = reachRootN τ root n x := by
+  induction n generalizing x with
+  | zero => rfl
+  | succ n ih =>
+      simp only [reachRootN]
+      rw [ih]
+      rw [parentOf_congr τ τ' ht]
+      cases hp : τ.parentOf x.1 x.2 with
+      | none => rfl
+      | some p =>
+          rw [(ht p.dom).2.2, ih]
+
+/-- Live-chain validity depends only on the capability tables. -/
+theorem liveChainN_congr (τ τ' : MachineState) (ht : TablesEq τ τ')
+    (n : Nat) (x : DomainId × Slot) :
+    liveChainN τ' n x = liveChainN τ n x := by
+  induction n generalizing x with
+  | zero => rfl
+  | succ n ih =>
+      simp only [liveChainN]
+      rw [liveParent_congr τ τ' ht]
+      cases liveParent τ x with
+      | none => rfl
+      | some p => exact ih p
+
+/-- Pointer-jump endpoints depend only on the capability tables. -/
+theorem chainEndN_congr (τ τ' : MachineState) (ht : TablesEq τ τ')
+    (n : Nat) (x : DomainId × Slot) :
+    chainEndN τ' n x = chainEndN τ n x := by
+  induction n generalizing x with
+  | zero => rfl
+  | succ n ih =>
+      simp only [chainEndN]
+      rw [liveParent_congr τ τ' ht]
+      cases liveParent τ x with
+      | none => rfl
+      | some p => exact ih p
+
+/-- A specification countdown cycle changes no capability, lineage, or
+generation table. -/
+theorem tablesEq_step_countdown (m : Manifest) (τ : MachineState)
+    (fl : InFlight) (hfl : τ.inflight = some fl)
+    (hcl2 : 2 ≤ fl.cyclesLeft) :
+    TablesEq τ (step m τ) := by
+  have hfl' : (refillPhase m τ).inflight = some fl := by
+    simpa using hfl
+  have hc := corePhase_countdown m (refillPhase m τ) fl hfl' (by omega)
+  intro d
+  unfold step
+  rw [hc]
+  simp only [moverPhase_doms]
+  exact ⟨refillPhase_caps m τ d, refillPhase_lineage m τ d,
+    refillPhase_slotGen m τ d⟩
+
 /-- With no parent edge, no bounded marking horizon can reach the root. -/
 theorem reachRootN_of_parent_none (τ : MachineState) (root : CapRef)
     (x : DomainId × Slot) (hx : τ.parentOf x.1 x.2 = none) (n : Nat) :
@@ -695,6 +764,34 @@ def RvVectors (τ : MachineState) (root : CapRef) (n : Nat)
         BitVec.ofNat 6 (Hw.nodeOf
           (chainEndN τ n (c, s)).1
           (chainEndN τ n (c, s)).2).val)
+
+/-- Two hardware states agree on the hidden revoke vector registers. -/
+def RvRegsEq (σ σ' : Loom.Hw.St) : Prop :=
+  ∀ (c : DomainId) (s : Slot),
+    σ'.regs (Hw.rvR (Hw.nodeOf c s)) 1 =
+      σ.regs (Hw.rvR (Hw.nodeOf c s)) 1 ∧
+    σ'.regs (Hw.rvV (Hw.nodeOf c s)) 1 =
+      σ.regs (Hw.rvV (Hw.nodeOf c s)) 1 ∧
+    σ'.regs (Hw.rvJ (Hw.nodeOf c s)) 6 =
+      σ.regs (Hw.rvJ (Hw.nodeOf c s)) 6
+
+/-- The vector relation transports across table-equivalent abstract states
+and hardware states with identical hidden vectors. -/
+theorem RvVectors.congr (τ τ' : MachineState) (root : CapRef) (n : Nat)
+    (σ σ' : Loom.Hw.St) (ht : TablesEq τ τ') (hr : RvRegsEq σ σ')
+    (hvec : RvVectors τ root n σ) :
+    RvVectors τ' root n σ' := by
+  intro c s
+  have hv := hvec c s
+  have hreg := hr c s
+  refine ⟨?_, ?_, ?_⟩
+  · rw [hreg.1, hv.1, reachRootN_congr τ τ' ht]
+  · rw [hreg.2.1, hv.2.1, liveChainN_congr τ τ' ht]
+  · intro hlive
+    have hlive' : liveChainN τ n (c, s) = true := by
+      rw [← liveChainN_congr τ τ' ht]
+      exact hlive
+    rw [hreg.2.2, hv.2.2 hlive', chainEndN_congr τ τ' ht]
 
 /-- The packed root sampled by `rvInit` is the encoding of `rvRoot`. -/
 theorem rvInitRootE_eval (σ : Loom.Hw.St) (hz : R0Zero σ) :
@@ -988,8 +1085,195 @@ theorem coreAct_revoke_step_doubles_vectors (m : Manifest)
   rw [coreAct_run_revoke_step_eq m σ acc hifv hopc hcl2 hcllt]
   exact rvStep_doubles_vectors m τ root n σ _ hvec
 
+/-- Refill supplies the accumulator before `coreAct`; mover and tick frame
+all hidden revoke-vector registers afterward. -/
+theorem cycle_rvRegsEq_coreAct (m : Manifest) (σ : Loom.Hw.St) :
+    RvRegsEq
+      ((Hw.coreAct m).run σ ((Hw.refillAct m).run σ σ))
+      ((Hw.core m).cycle σ) := by
+  intro c s
+  rw [core_cycle_unfold]
+  refine ⟨?_, ?_, ?_⟩
+  · rw [frame (show (Hw.rvR (Hw.nodeOf c s), 1) ∉ Hw.tickAct.regWrites by
+      simp [Hw.tickAct, Act.regWrites, Hw.rvR])]
+    rw [run_WritesPrefixed (by simp [Hw.rvR]) 1 _ mover_prefixed]
+  · rw [frame (show (Hw.rvV (Hw.nodeOf c s), 1) ∉ Hw.tickAct.regWrites by
+      simp [Hw.tickAct, Act.regWrites, Hw.rvV])]
+    rw [run_WritesPrefixed (by simp [Hw.rvV]) 1 _ mover_prefixed]
+  · rw [frame (show (Hw.rvJ (Hw.nodeOf c s), 6) ∉ Hw.tickAct.regWrites by
+      simp [Hw.tickAct, Act.regWrites, Hw.rvJ])]
+    rw [run_WritesPrefixed (by simp [Hw.rvJ]) 6 _ mover_prefixed]
+
+/-- A non-vector, non-countdown register framed by refill, core countdown,
+mover, and tick is unchanged by the full hardware cycle. -/
+theorem cycle_reg_countdown (m : Manifest) (σ : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat)
+    (rn : String) (w : Nat)
+    (hrv : rn.startsWith "rv_" = false)
+    (hmov : rn.startsWith "mov_" = false)
+    (hcl : rn ≠ "if_cl") (hcyc : ¬(rn = "cycle" ∧ w = 32))
+    (hrefill : (rn, w) ∉
+      ([ ("d0_budget", 32), ("d0_rctr", 32),
+         ("d1_budget", 32), ("d1_rctr", 32),
+         ("d2_budget", 32), ("d2_rctr", 32),
+         ("d3_budget", 32), ("d3_rctr", 32) ] :
+        List (String × Nat))) :
+    ((Hw.core m).cycle σ).regs rn w = σ.regs rn w := by
+  rw [core_cycle_unfold]
+  rw [frame (show (rn, w) ∉ Hw.tickAct.regWrites by
+    intro hm
+    simp only [Hw.tickAct, Act.regWrites, List.mem_singleton,
+      Prod.mk.injEq] at hm
+    exact hcyc hm)]
+  rw [run_WritesPrefixed hmov w _ mover_prefixed]
+  rw [countdown_regs m σ _ hifv hcl2 rn w hrv hcl]
+  exact refill_pres m σ hrefill
+
+/-- The revoked root sampled from `if_dom`, `if_word`, and the issuing
+domain's register file is stable throughout a countdown cycle. -/
+theorem rvRoot_cycle_countdown (m : Manifest) (σ : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat) :
+    rvRoot ((Hw.core m).cycle σ) = rvRoot σ := by
+  have hdom : ((Hw.core m).cycle σ).regs "if_dom" 2 =
+      σ.regs "if_dom" 2 :=
+    cycle_reg_countdown m σ hifv hcl2 "if_dom" 2
+      (by decide) (by decide) (by decide) (by decide) (by decide)
+  have hword : ((Hw.core m).cycle σ).regs "if_word" 32 =
+      σ.regs "if_word" 32 :=
+    cycle_reg_countdown m σ hifv hcl2 "if_word" 32
+      (by decide) (by decide) (by decide) (by decide) (by decide)
+  have hreg : ∀ (d : DomainId) (r : RegId),
+      ((Hw.core m).cycle σ).regs (Hw.dreg d r) 32 =
+        σ.regs (Hw.dreg d r) 32 := by
+    intro d r
+    apply cycle_reg_countdown m σ hifv hcl2 (Hw.dreg d r) 32
+    · fin_cases d <;> fin_cases r <;> decide +kernel
+    · fin_cases d <;> fin_cases r <;> decide +kernel
+    · fin_cases d <;> fin_cases r <;> decide +kernel
+    · fin_cases d <;> fin_cases r <;> decide +kernel
+    · fin_cases d <;> fin_cases r <;> decide +kernel
+  unfold rvRoot
+  rw [hdom, hword]
+  simp only [Hw.abs, Hw.absDom, DomainState.reg]
+  rw [hreg]
+
+/-- Through a hardware countdown square, the abstraction's capability
+tables are unchanged. -/
+theorem tablesEq_abs_cycle_countdown (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat) :
+    TablesEq (Hw.abs σ) (Hw.abs ((Hw.core m).cycle σ)) := by
+  let fl : InFlight :=
+    { dom := finOfBv (by decide) (σ.regs "if_dom" 2)
+      word := σ.regs "if_word" 32
+      cyclesLeft := (σ.regs "if_cl" 8).toNat }
+  have hfl : (Hw.abs σ).inflight = some fl := by
+    show Hw.absInflight σ = some fl
+    rw [Hw.absInflight, if_pos hifv]
+  rw [square_countdown m hwf hfit σ hsync hifv hcl2]
+  exact tablesEq_step_countdown m (Hw.abs σ) fl hfl hcl2
+
+/-- The first full revoke countdown cycle establishes horizon-one vectors
+against the post-cycle abstraction. -/
+theorem cycle_revoke_init_establishes_vectors (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (σ.regs "if_cl" 8).toNat = revokeCost) :
+    RvVectors (Hw.abs ((Hw.core m).cycle σ)
+      (rvRoot ((Hw.core m).cycle σ)) 1 ((Hw.core m).cycle σ) := by
+  have hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat := by
+    rw [hcl, revokeCost_eq_24]
+  have hbase := coreAct_revoke_init_establishes_vectors m σ
+    ((Hw.refillAct m).run σ σ) hz hifv hopc hcl
+  have ht := tablesEq_abs_cycle_countdown m hwf hfit σ hsync hifv hcl2
+  have htrans := RvVectors.congr (Hw.abs σ)
+    (Hw.abs ((Hw.core m).cycle σ)) (rvRoot σ) 1 _ _ ht
+    (cycle_rvRegsEq_coreAct m σ) hbase
+  rw [rvRoot_cycle_countdown m σ hifv hcl2]
+  exact htrans
+
+/-- Every later full revoke countdown cycle doubles the represented horizon
+against the post-cycle abstraction. -/
+theorem cycle_revoke_step_doubles_vectors (m : Manifest) (hwf : m.WF)
+    (hfit : Fits m) (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hvec : RvVectors (Hw.abs σ) (rvRoot σ) n σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat)
+    (hcllt : (σ.regs "if_cl" 8).toNat < revokeCost) :
+    RvVectors (Hw.abs ((Hw.core m).cycle σ)
+      (rvRoot ((Hw.core m).cycle σ)) (n + n) ((Hw.core m).cycle σ) := by
+  have hdouble := coreAct_revoke_step_doubles_vectors m
+    (Hw.abs σ) (rvRoot σ) n σ ((Hw.refillAct m).run σ σ)
+    hvec hifv hopc hcl2 hcllt
+  have ht := tablesEq_abs_cycle_countdown m hwf hfit σ hsync hifv hcl2
+  have htrans := RvVectors.congr (Hw.abs σ)
+    (Hw.abs ((Hw.core m).cycle σ)) (rvRoot σ) (n + n) _ _ ht
+    (cycle_rvRegsEq_coreAct m σ) hdouble
+  rw [rvRoot_cycle_countdown m σ hifv hcl2]
+  exact htrans
+
+/-- The countdown latch's full-cycle value is the pre-cycle value minus one. -/
+theorem cycle_ifcl_countdown (m : Manifest) (σ : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat) :
+    ((Hw.core m).cycle σ).regs "if_cl" 8 = σ.regs "if_cl" 8 - 1 := by
+  rw [core_cycle_unfold]
+  rw [frame (show (("if_cl", 8) : String × Nat) ∉ Hw.tickAct.regWrites by
+    decide +kernel)]
+  rw [run_WritesPrefixed (by decide +kernel) 8 _ mover_prefixed]
+  exact countdown_ifcl m σ _ hifv hcl2
+
+/-- `if_v` and `if_word`, which form the revoke guard, are stable on a
+countdown cycle. -/
+theorem cycle_ifv_ifword_countdown (m : Manifest) (σ : Loom.Hw.St)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat) :
+    ((Hw.core m).cycle σ).regs "if_v" 1 = σ.regs "if_v" 1 ∧
+    ((Hw.core m).cycle σ).regs "if_word" 32 = σ.regs "if_word" 32 := by
+  constructor
+  · exact cycle_reg_countdown m σ hifv hcl2 "if_v" 1
+      (by decide) (by decide) (by decide) (by decide) (by decide)
+  · exact cycle_reg_countdown m σ hifv hcl2 "if_word" 32
+      (by decide) (by decide) (by decide) (by decide) (by decide)
+
+private theorem bv8_sub_one_toNat (x : BitVec 8) (h : 1 ≤ x.toNat) :
+    (x - 1).toNat = x.toNat - 1 := by
+  rw [BitVec.toNat_sub]
+  have hlt := x.isLt
+  change (2 ^ 8 - 1 + x.toNat) % 2 ^ 8 = x.toNat - 1
+  omega
+
 /-- The doubling rounds completed at pre-cycle countdown value `cl`. -/
 def rvRounds (cl : Nat) : Nat := revokeCost - 1 - cl
+
+/-- Decrementing a later-round countdown advances the round number by one. -/
+theorem rvRounds_pred_succ (cl : Nat) (h2 : 2 ≤ cl)
+    (hlt : cl < revokeCost) :
+    rvRounds (cl - 1) = rvRounds cl + 1 := by
+  unfold rvRounds
+  rw [revokeCost_eq_24] at hlt ⊢
+  omega
+
+/-- The horizon after a later countdown cycle is twice its pre-cycle
+horizon. -/
+theorem rvHorizon_pred_double (cl : Nat) (h2 : 2 ≤ cl)
+    (hlt : cl < revokeCost) :
+    2 ^ rvRounds (cl - 1) =
+      2 ^ rvRounds cl + 2 ^ rvRounds cl := by
+  rw [rvRounds_pred_succ cl h2 hlt, pow_succ]
+  omega
 
 /-- At either retirement countdown value, the completed doubling horizon
 dominates all 64 capability nodes. -/
@@ -1008,6 +1292,50 @@ def RvSync (σ : Loom.Hw.St) : Prop :=
   (σ.regs "if_cl" 8).toNat < revokeCost →
   RvVectors (Hw.abs σ) (rvRoot σ)
     (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) σ
+
+/-- `RvSync` is preserved by every non-retiring countdown cycle. The first
+revoke cycle establishes horizon one; every later cycle doubles it. -/
+theorem rvSync_cycle_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
+    (σ : Loom.Hw.St)
+    (hsync : ∀ d : DomainId, (σ.regs (Hw.drctr d) 32).toNat =
+      (σ.regs "cycle" 32).toNat % (m.doms d).periodP)
+    (hz : R0Zero σ) (hrv : RvSync σ)
+    (hifv : σ.regs "if_v" 1 = 1#1)
+    (hcl2 : 2 ≤ (σ.regs "if_cl" 8).toNat) :
+    RvSync ((Hw.core m).cycle σ) := by
+  intro _hifv' hopc' hcllt'
+  have hguard := cycle_ifv_ifword_countdown m σ hifv hcl2
+  have hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6 := by
+    rw [← hguard.2]
+    exact hopc'
+  have hclreg := cycle_ifcl_countdown m σ hifv hcl2
+  have hclnat : (((Hw.core m).cycle σ).regs "if_cl" 8).toNat =
+      (σ.regs "if_cl" 8).toNat - 1 := by
+    rw [hclreg, bv8_sub_one_toNat _ (by omega)]
+  have hcle : (σ.regs "if_cl" 8).toNat ≤ revokeCost := by
+    rw [hclnat] at hcllt'
+    rw [revokeCost_eq_24] at hcllt' ⊢
+    omega
+  by_cases hinit : (σ.regs "if_cl" 8).toNat = revokeCost
+  · have hv := cycle_revoke_init_establishes_vectors m hwf hfit σ
+      hsync hz hifv hopc hinit
+    change RvVectors (Hw.abs ((Hw.core m).cycle σ))
+      (rvRoot ((Hw.core m).cycle σ))
+      (2 ^ rvRounds (((Hw.core m).cycle σ).regs "if_cl" 8).toNat)
+      ((Hw.core m).cycle σ)
+    rw [hclnat, hinit, revokeCost_eq_24]
+    simpa [rvRounds, revokeCost_eq_24] using hv
+  · have hcllt : (σ.regs "if_cl" 8).toNat < revokeCost :=
+      Nat.lt_of_le_of_ne hcle (Ne.symm hinit)
+    have hvec := hrv hifv hopc hcllt
+    have hv := cycle_revoke_step_doubles_vectors m hwf hfit σ hsync hvec
+      hifv hopc hcl2 hcllt
+    change RvVectors (Hw.abs ((Hw.core m).cycle σ))
+      (rvRoot ((Hw.core m).cycle σ))
+      (2 ^ rvRounds (((Hw.core m).cycle σ).regs "if_cl" 8).toNat)
+      ((Hw.core m).cycle σ)
+    rw [hclnat, rvHorizon_pred_double _ hcl2 hcllt]
+    exact hv
 
 /-- At retirement, `RvSync` turns every hidden `rv_r` bit into the exact
 kernel `marks` bit consumed by `destroyMarked`. -/
