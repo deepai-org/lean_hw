@@ -105,4 +105,34 @@ example : [suppliedOut] = [sourceReg].map fun r =>
        val := .reg r.width r.name } : Loom.Emit.MicroVerilog.OutDef) :=
   outsMatch_sound [sourceReg] [suppliedOut] (by decide +kernel)
 
+private def sourceMem : MemDecl :=
+  { name := "ram", addrWidth := 4, dataWidth := 8, init := fun _ => 0 }
+
+private def design : Design :=
+  { name := "cert_demo", regs := [sourceReg], mems := [sourceMem],
+    rules := memRules }
+
+private def suppliedReg : Loom.Emit.MicroVerilog.RegDef :=
+  { name := "r", width := 8, init := 0, next := .reg 8 "r" }
+
+private def suppliedMem : Loom.Emit.MicroVerilog.MemDef :=
+  { name := "ram", addrWidth := 4, dataWidth := 8, init := fun _ => 0,
+    wrPorts := [suppliedPort] }
+
+private def suppliedModule : Loom.Emit.MicroVerilog.Module :=
+  { name := "cert_demo", regs := [suppliedReg], mems := [suppliedMem],
+    outs := [suppliedOut] }
+
+private def regRulesCert : NextRulesCert 8 :=
+  .cons (.reg 8 "r") .same .nil
+
+private def moduleCert : ModuleCert design where
+  regs := .cons ⟨regRulesCert⟩ .nil
+  mems := .cons ⟨portsCert⟩ .nil
+
+#guard moduleMatches design suppliedModule moduleCert
+
+example : suppliedModule.Matches (Compile.compile design) :=
+  moduleMatches_sound design suppliedModule moduleCert (by decide +kernel)
+
 end Tests.ArtifactCert
