@@ -23,7 +23,7 @@ private def program : Program where
   outs := [{ name := "o_r", width := 8, value := "r" }]
 
 private def cert : Named.ModuleCert design where
-  regs := .cons ⟨.cons "n0" .write .nil⟩ .nil
+  regs := .cons ⟨.cons (some "n0") .write .nil⟩ .nil
   mems := .nil
 
 #guard ssaNamedMatches design program cert

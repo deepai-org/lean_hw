@@ -9,6 +9,7 @@ import Machines.Acc8.Iss
 import Machines.Acc8.DslRegression
 import Machines.Acc8.Core
 import Machines.Lnp64u.Theorems.Ledger
+import Machines.Lnp64u.Theorems.DemoWitness
 import Machines.Lnp64u.Iss
 import Machines.Lnp64u.Hw.Core
 import Machines.Lnp64u.Logic.KernelLemmas
