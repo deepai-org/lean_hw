@@ -1,0 +1,69 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.ArtifactCert
+import Loom.Release.Rope
+import Loom.Release.SSA
+
+/-!
+# Parser-free release certificates
+
+The concrete SSA witness has two independent kernel-checked views:
+
+1. its structural renderer is equal, as logical lines, to the disk rope;
+2. its structural elaborator produces a µVerilog module accepted by the
+   generic compiler-result validator.
+
+No property of the untrusted witness generator is assumed. The exact-byte
+conclusion is obtained by congruence and therefore does not normalize the
+full file string.
+-/
+
+namespace Loom.Release
+
+open Loom.Emit.MicroVerilog
+
+/-- Proof data needed to compare the elaborated concrete module with the
+reference hardware compiler. -/
+structure SSACert (design : Loom.Hw.Design) where
+  module : Loom.Hw.ArtifactCert.ModuleCert design
+
+/-- Check an arbitrary concrete program against the reference compiler. -/
+def ssaMatches (design : Loom.Hw.Design) (program : SSA.Program)
+    (cert : SSACert design) : Bool :=
+  match program.elaborate with
+  | some module => Loom.Hw.ArtifactCert.moduleMatches design module cert.module
+  | none => false
+
+/-- The parser-free structural certificate is sound for every witness, not
+only witnesses produced by the release generator. -/
+theorem ssaMatches_sound (design : Loom.Hw.Design) (program : SSA.Program)
+    (cert : SSACert design) (h : ssaMatches design program cert = true) :
+    ∃ module, program.elaborate = some module ∧
+      module.Matches (Loom.Hw.Compile.compile design) := by
+  unfold ssaMatches at h
+  split at h
+  · rename_i module helab
+    exact ⟨module, helab,
+      Loom.Hw.ArtifactCert.moduleMatches_sound design module cert.module h⟩
+  · contradiction
+
+/-- The publication-facing release boundary before behavioral transport is
+attached: exact rendered bytes plus structural agreement with the proved
+reference compilation. `renderedLines` is generated as a balanced tree of
+named local render results. -/
+theorem exactRenderingAndCompilation (design : Loom.Hw.Design)
+    (program : SSA.Program) (disk : Rope (List String))
+    (cert : SSACert design)
+    (renderedLines : Rope (List String))
+    (hrender : renderedLines.flattenLists = program.render)
+    (hdisk : renderedLines = disk)
+    (hcert : ssaMatches design program cert = true) :
+    String.intercalate "\n" program.render = disk.flattenBytes ∧
+    ∃ module, program.elaborate = some module ∧
+      module.Matches (Loom.Hw.Compile.compile design) := by
+  constructor
+  · unfold Rope.flattenBytes
+    rw [← hrender, hdisk]
+  · exact ssaMatches_sound design program cert hcert
+
+end Loom.Release

@@ -11,6 +11,9 @@ import Tests.CheckBench
 import Tests.Acc8Bmc
 import Tests.ArtifactCert
 import Tests.ParserBoundary
+import Tests.ReleaseRope
+import Tests.ReleaseSSA
+import Tests.ReleaseCertificate
 
 /-!
 # Tests
