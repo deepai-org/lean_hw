@@ -121,8 +121,8 @@ at the refresh date.
 | ISS (`machine m`) — where T1–T9 live | proved |
 | ISS ↔ EDSL core (R-MC) | **proved** (unbounded exact whole-state lockstep from reset; all 25 retirement opcodes) |
 | EDSL core → Module IR (`compile`) | proved generically, sorry-free |
-| Module → *executed* emission | **`@[implemented_by compileImpl]` — unproved replacement** |
-| Module ↔ emitted text | round-trip `#guard` = **compiled eval, NOT kernel** (Acc8); **lnp64u: none yet** |
+| Module → supplied artifact AST | **generic kernel-checked translation validator proved; release witnesses pending** |
+| Concrete SSA witness → exact emitted text | **feasibility established only for hierarchical chunk equality; renderer/elaborator pending** |
 | text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration; CI X-free/reset/init lint over freshly emitted Acc8 + LNP64-µ RTL |
 | verified CPU netlist → SoC fabric / board | out of scope (DMA, interrupts, bus arbitration/backpressure, debug, MMU/IOMMU, coherency) |
 | netlist → silicon → physics | out of scope (reset sequencing, timing closure, glitches, metastability, power side channels) |
@@ -132,18 +132,28 @@ at the refresh date.
   `cap_revoke` convergence. This closes the ISS↔EDSL link. Claims about
   emitted text and physical/tool realizations remain limited by Findings
   2–7 below.
-- **Finding 2 — `implemented_by` (Compile.lean:386) enlarged the TCB.**
-  The kernel reasons about the reference `compile`; every executed
-  artifact (emitted `.v`, BMC CNF) comes from the unproved `compileImpl`.
-  Divergence = proving theorems about one circuit and shipping another.
-- **Finding 3 — the round-trip net has eval-level mesh.** Acc8's
-  `#guard acc8Module.parseCheck` runs in the compiled evaluator (the
-  kernel `decide +kernel` variant measured >4 min / >40 GB via String's
-  quadratic kernel model; only a small demo module is kernel-checked).
-  So the net meant to catch Finding 2 itself trusts the Lean compiler.
-  Findings 2+3 compound. Fixes: prove `compileImpl = compile` (bounded:
-  memoization + pruning) or gate-compare reference output; land lnp64u
-  `parseCheck`; make one full-size round-trip genuinely kernel-checked.
+- **Finding 2 — the generic AST translation validator is proved; concrete
+  release witnesses remain.** `Loom.Hw.ArtifactCert` checks arbitrary proof
+  data locally and proves that any accepted supplied module matches the
+  reference `Compile.compile` result. This removes `compileImpl` from the
+  eventual release theorem without proving the optimizer. The checker and
+  its soundness theorems are complete; generated, kernel-accepted Acc8 and
+  LNP64-µ witnesses are not yet committed.
+- **Finding 3 — exact-text certification must remain hierarchical.** The
+  proposed parser canonicity theorem was refuted by kernel-checked
+  counterexamples (`Tests.ParserBoundary`): SSA names are not canonical and
+  memory init functions are not serialized outside their address spaces.
+  The replacement is a concrete SSA witness with a verified renderer and
+  elaborator. A 2026-07-16 full-size feasibility spike over the 8,754,762-byte,
+  187,948-line LNP64-µ artifact measured:
+  (a) complete ordered hierarchical line/chunk equality succeeds in 7.7 s,
+  1.84 GB RSS, producing a 51 MB proof object; (b) a flat line list overflows
+  the native stack; and (c) kernel normalization of one concatenated `String`
+  reached 28.9 GB RSS in under two minutes before termination. Therefore the
+  release theorem must compare bounded chunks and derive whole-stream equality
+  through a generic concatenation congruence; it must never normalize a
+  monolithic artifact string. The concrete renderer/elaborator and both
+  release witnesses remain open.
 - **Finding 4 — reset realization is below the proof boundary.** The R-MC
   reset obligations can show that the EDSL reset state abstracts to
   `Manifest.initState`; they do not show that an electrical or SoC-level
@@ -220,8 +230,11 @@ at the refresh date.
 2. DONE 2026-07-04: D11 scheduler fix landed; serving underfunding raises
    a `.budget` fault, non-serving underfunding burns residual budget, and
    `StallFree` is deleted from T6.
-3. ● Prove or gate-check `compileImpl = compile`; land lnp64u
-   `parseCheck`; one full-size kernel-checked round-trip.
+3. ● Complete witnessed release validation: define the minimal concrete SSA
+   syntax, prove arbitrary-witness renderer/elaborator soundness, generate
+   Acc8 and LNP64-µ witnesses, and kernel-check exact ordered chunk equality.
+   The full-size feasibility spike is complete; monolithic `String` reduction
+   is explicitly ruled out by measurement.
 4. DONE 2026-07-04: `Tests.Lnp64uWitnesses` gives kernel-checked witnesses
    for finite manifest-side hypotheses, and D11 deleted T6's semantic
    `StallFree` side condition.
