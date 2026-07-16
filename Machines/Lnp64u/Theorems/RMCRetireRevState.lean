@@ -165,4 +165,64 @@ theorem absMover_moverAct_revAbstractSuccess (m : Manifest)
   · simpa [show (Hw.abs sigma).mover = Hw.absMover sigma from rfl] using
       revAbstractSuccess_mover m (Hw.abs sigma) E RD (rvRoot sigma)
 
+/-- Memory counterpart of `absMover_moverAct_revAbstractSuccess`.  Only the
+three genuinely circuit-facing facts remain as inputs: post-region
+authority, post-core memory, and the quiescent store/memory read face. -/
+theorem moverAct_mem_revAbstractSuccess (m : Manifest)
+    (sigma acc : Loom.Hw.St) (E : DomainId) (RD : RegId)
+    (hrv : RvSync sigma)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2)
+    (hkills : ∀ dm sl, (Hw.killedByCoreE dm sl).eval sigma =
+      (Hw.revKilled dm sl).eval sigma)
+    (hnew : ∀ d : DomainId, (Hw.newJobSet d).eval sigma = 0#1)
+    (hwf : Wf (Hw.abs sigma))
+    (hauth : ∀ (ow : Expr 2) (sa : Expr 12),
+      ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+          (List.finRange numRegions).map fun r =>
+            Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+              Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+                { r := false, w := true, x := false }])).eval sigma = 1#1) ↔
+        (revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)).domCovers
+          (finOfBv (by decide) (ow.eval sigma)) (sa.eval sigma)
+            { r := false, w := true, x := false } = true)
+    (hmem : ∀ b : Addr, acc.mems "mem" b.toNat 32 =
+      (revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)).mem b)
+    (hsw : ∀ job, Hw.absMover sigma = some job →
+      ((revAbstractSuccess m (Hw.abs sigma) E RD
+          (rvRoot sigma)).liveRef job.src &&
+        (revAbstractSuccess m (Hw.abs sigma) E RD
+          (rvRoot sigma)).liveRef job.dst) = true →
+      ∀ sc : Expr 12, Expr.eval sigma
+        (((List.finRange numDomains).foldr
+          (fun d acc' =>
+            Expr.mux (Hw.andAll [Hw.retiringE, Hw.ifDomIs d, Hw.isMn "sw",
+                Hw.domCoversE d
+                  (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12)
+                  { r := false, w := true, x := false },
+                .eq (Hw.field (.add (Hw.readReg d Hw.rs1E) Hw.immX) 0 12) sc])
+              (Hw.readReg d Hw.rs2E) acc')
+          (.memRead 32 "mem" sc))) =
+        (revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma)).mem
+          (sc.eval sigma))
+    (a : Addr) :
+    (Hw.moverAct.run sigma acc).mems "mem" a.toNat 32 =
+      (moverPhase (revAbstractSuccess m (Hw.abs sigma) E RD
+        (rvRoot sigma))).mem a := by
+  apply moverAct_mem_revoke sigma acc
+    (revAbstractSuccess m (Hw.abs sigma) E RD (rvRoot sigma))
+    hrv hifv hopc hcl hkills hnew hwf
+  · intro r
+    exact revAbstractSuccess_liveRef m (Hw.abs sigma) E RD
+      (rvRoot sigma) r
+  · intro d s g
+    exact revAbstractSuccess_liveKind m (Hw.abs sigma) E RD
+      (rvRoot sigma) d s g
+  · simpa [show (Hw.abs sigma).mover = Hw.absMover sigma from rfl] using
+      revAbstractSuccess_mover m (Hw.abs sigma) E RD (rvRoot sigma)
+  · exact hauth
+  · exact hmem
+  · exact hsw
+
 end Machines.Lnp64u.Theorems.RMC
