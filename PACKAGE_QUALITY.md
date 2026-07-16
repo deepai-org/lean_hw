@@ -82,8 +82,9 @@ package/module name collision.
 - [ ] **Release mechanics.** Add `CHANGELOG.md`, choose the first release tag,
   choose the final Reservoir scope/name, and document maintainers and the
   supported Lean-version window.
-- [ ] **Community files.** Add a Code of Conduct and issue/PR templates,
-  including an axiom/trust-surface checkbox.
+- [x] **Community files.** A Code of Conduct, maintainer/contributor record,
+  issue forms, and PR template are present, including explicit theorem and
+  axiom/trust-surface prompts.
 
 ## P2 — polish and maintainability
 

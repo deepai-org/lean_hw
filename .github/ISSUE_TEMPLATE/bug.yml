@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible build, runtime, or generated-artifact defect.
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Include commands, inputs, and the smallest reproducer you can provide.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Commit and platform
+      description: Commit SHA, OS, architecture, and Lean version.
+    validations:
+      required: true
+  - type: checkboxes
+    attributes:
+      label: Trust surface
+      options:
+        - label: This may affect axioms, sorries, unsafe code, executable replacements, or emitted-artifact trust.

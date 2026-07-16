@@ -1,0 +1,23 @@
+name: Proof or specification issue
+description: Report a proof gap, false statement, counterexample, or trust-boundary concern.
+title: "proof: "
+labels: [proof]
+body:
+  - type: textarea
+    attributes:
+      label: Declaration or claim
+      description: Name the theorem, definition, document claim, or trust link involved.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Evidence
+      description: Provide a counterexample, axiom closure, reduced goal, or reproduction command.
+    validations:
+      required: true
+  - type: checkboxes
+    attributes:
+      label: Scope
+      options:
+        - label: This changes or challenges the axiom/trust surface.
+        - label: This changes or challenges a public theorem statement.
