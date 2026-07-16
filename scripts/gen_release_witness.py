@@ -91,7 +91,7 @@ def prelude(imports: list[str], namespace: str) -> list[str]:
             [f"import {module}" for module in imports] +
             ["", f"namespace {namespace}", "",
              "open Loom.Release Loom.Release.SSA", "",
-             "set_option maxRecDepth 10000", "set_option maxHeartbeats 0", ""])
+             "set_option maxRecDepth 1000000", "set_option maxHeartbeats 0", ""])
 
 
 def wire_block_declarations(blocks: list[list[dict]], first: int = 0) -> list[str]:
@@ -136,8 +136,10 @@ def parse(path: Path) -> dict:
         aw = size.bit_length() - 1
         assert 1 << aw == size
         mems.append({"name": match[2], "dataWidth": int(match[1]) + 1,
-                     "addrWidth": aw, "init": [], "writes": []})
+                     "addrWidth": aw, "init": [], "initLines": [],
+                     "writes": []})
         i += 1
+    prefix = lines[:i]
     for mem in mems:
         assert lines[i] == "  initial begin"
         i += 1
@@ -148,6 +150,7 @@ def parse(path: Path) -> dict:
             if not match:
                 raise ValueError(f"bad init line {i + 1}: {lines[i]}")
             mem["init"].append(int(match[1]))
+            mem["initLines"].append(lines[i])
             i += 1
         assert lines[i] == "  end"
         i += 1
@@ -157,6 +160,7 @@ def parse(path: Path) -> dict:
         wires.append({"width": int(match[1]) + 1, "name": match[2],
                       "rhs": rhs(match[3]), "line": lines[i]})
         i += 1
+    suffix_start = i
     assert lines[i] == "  always @(posedge clk) begin"; i += 1
     assert lines[i] == "    if (rst) begin"; i += 1
     for reg in regs:
@@ -180,7 +184,8 @@ def parse(path: Path) -> dict:
         out["value"] = match[1]; i += 1
     assert lines[i:] == ["endmodule"]
     return {"name": module, "regs": regs, "mems": mems,
-            "wires": wires, "outs": outputs}
+            "wires": wires, "outs": outputs, "prefix": prefix,
+            "suffix": lines[suffix_start:]}
 
 
 def emit(data: dict, output: Path, block_size: int) -> None:
@@ -246,11 +251,21 @@ def emit_program_tail(out: list[str], data: dict, block_size: int,
                       namespace: str) -> None:
     """Append memory data and the complete concrete program to a root module."""
     mem_names = []
+    disk_mem_names = []
+    render_mem_proofs = []
     for mi, mem in enumerate(data["mems"]):
         init_names = []
-        for bi, block in enumerate(chunks(mem["init"], block_size)):
+        disk_init_names = []
+        render_init_proofs = []
+        init_blocks = chunks(mem["init"], block_size)
+        line_blocks = chunks(mem["initLines"], block_size)
+        for bi, (block, line_block) in enumerate(zip(init_blocks, line_blocks)):
             name = f"mem{mi}Init{bi:04d}"
+            disk_name = f"diskMem{mi}Init{bi:04d}"
+            proof_name = f"renderMem{mi}Init{bi:04d}"
             init_names.append(name)
+            disk_init_names.append(disk_name)
+            render_init_proofs.append(proof_name)
             out += [f"def {name} : List Nat := [{', '.join(map(str, block))}]", ""]
         tree = balanced(init_names, ".leaf []").replace("mem", ".leaf mem")
         writes = ", ".join(
@@ -261,6 +276,34 @@ def emit_program_tail(out: list[str], data: dict, block_size: int,
         out += [f"def {name} : Mem where", f"  name := {q(mem['name'])}",
                 f"  addrWidth := {mem['addrWidth']}", f"  dataWidth := {mem['dataWidth']}",
                 f"  init := {tree}", f"  writes := [{writes}]", ""]
+        for bi, line_block in enumerate(line_blocks):
+            disk_name = disk_init_names[bi]
+            proof_name = render_init_proofs[bi]
+            disk_entries = ",\n".join(f"  {q(line)}" for line in line_block)
+            out += [f"def {disk_name} : List String := [", disk_entries, "]", "",
+                    f"theorem {proof_name} :",
+                    f"    {name}.renderInitLines {bi * block_size} " +
+                      f"{init_names[bi]} = {disk_name} := rfl", ""]
+        disk_init_tree = f"diskMem{mi}InitTree"
+        out += [f"def {disk_init_tree} : Rope (List String) :=",
+                "  " + balanced(disk_init_names, ".leaf []").replace(
+                    "diskMem", ".leaf diskMem"), "",
+                f"theorem renderMem{mi}InitTree :",
+                f"    {name}.init.mapWithOffset {name}.renderInitLines 0 = " +
+                  f"{disk_init_tree} := by",
+                f"  unfold {name} {disk_init_tree}",
+                "  exact " + balanced_proof(render_init_proofs), ""]
+        disk_mem = f"diskMem{mi}Tree"
+        disk_mem_names.append(disk_mem)
+        render_mem_proofs.append(f"renderMem{mi}Tree")
+        out += [f"def diskMem{mi}Start : List String := [\"  initial begin\"]",
+                f"def diskMem{mi}End : List String := [\"  end\"]", "",
+                f"def {disk_mem} : Rope (List String) :=",
+                f"  .node (.leaf diskMem{mi}Start)",
+                f"    (.node {disk_init_tree} (.leaf diskMem{mi}End))", "",
+                f"theorem renderMem{mi}Tree : {name}.renderTree = {disk_mem} := by",
+                f"  unfold SSA.Mem.renderTree {disk_mem} diskMem{mi}Start diskMem{mi}End",
+                f"  exact Rope.node_congr rfl (Rope.node_congr renderMem{mi}InitTree rfl)", ""]
     regs = ",\n".join(
         f"  {{ name := {q(r['name'])}, width := {r['width']}, init := {r['init']}, next := {q(r['next'])} }}"
         for r in data["regs"])
@@ -269,12 +312,50 @@ def emit_program_tail(out: list[str], data: dict, block_size: int,
         for o in data["outs"])
     out += ["def program : Program where", f"  name := {q(data['name'])}",
             "  regs := [", regs, "  ]", f"  mems := [{', '.join(mem_names)}]",
-            "  wires := wireTree", "  outs := [", outs, "  ]", "",
+            "  wires := wireTree", "  outs := [", outs, "  ]", ""]
+
+    prefix_entries = ",\n".join(f"  {q(line)}" for line in data["prefix"])
+    suffix_entries = ",\n".join(f"  {q(line)}" for line in data["suffix"])
+    if not disk_mem_names:
+        disk_mems = ".leaf []"
+        mem_proof = "rfl"
+    elif len(disk_mem_names) == 1:
+        disk_mems = disk_mem_names[0]
+        mem_proof = render_mem_proofs[0]
+    else:
+        # `SSA.renderMemTrees` is right-associated, unlike the balanced wire tree.
+        disk_mems = disk_mem_names[-1]
+        mem_proof = render_mem_proofs[-1]
+        for disk_name, proof_name in reversed(list(zip(
+                disk_mem_names[:-1], render_mem_proofs[:-1]))):
+            disk_mems = f".node {disk_name} ({disk_mems})"
+            mem_proof = f"Rope.node_congr {proof_name} ({mem_proof})"
+    out += ["def diskPrefix : List String := [", prefix_entries, "]", "",
+            "def diskSuffix : List String := [", suffix_entries, "]", "",
+            "def diskMemTrees : Rope (List String) :=", f"  {disk_mems}", "",
+            "theorem renderMemTrees : SSA.renderMemTrees program.mems = " +
+              "diskMemTrees := by",
+            "  unfold program SSA.renderMemTrees diskMemTrees",
+            f"  exact {mem_proof}", "",
+            "theorem renderPrefix : program.renderPrefix = diskPrefix := rfl", "",
+            "theorem renderSuffix : program.renderSuffix = diskSuffix := rfl", "",
+            "def diskTree : Rope (List String) :=",
+            "  .node (.leaf diskPrefix)",
+            "    (.node diskMemTrees (.node diskWireTree (.leaf diskSuffix)))", "",
+            "theorem renderTree : program.renderTree = diskTree := by",
+            "  unfold SSA.Program.renderTree diskTree",
+            "  exact Rope.node_congr (congrArg Rope.leaf renderPrefix) " +
+              "(Rope.node_congr renderMemTrees " +
+              "(Rope.node_congr renderWireTree " +
+              "(congrArg Rope.leaf renderSuffix)))", "",
+            "theorem exactBytes : program.renderTree.flattenBytes = " +
+              "diskTree.flattenBytes := Rope.flattenBytes_congr renderTree", "",
             f"end {namespace}", ""]
 
 
 def emit_batched(data: dict, output: Path, block_size: int,
-                 batch_blocks: int) -> None:
+                 batch_blocks: int, design_expr: str | None = None,
+                 design_imports: list[str] | None = None) -> None:
     """Emit bounded leaf modules and a small constant-only composition root."""
     try:
         relative = output.resolve().relative_to(Path.cwd().resolve())
@@ -320,6 +401,34 @@ def emit_batched(data: dict, output: Path, block_size: int,
     manifest = output.parent / "modules.txt"
     write_if_changed(manifest, "\n".join(batch_modules + [root_module]) + "\n")
 
+    if design_expr is not None:
+        imports = design_imports or []
+        cert_data = output.parent / "CertData.lean"
+        cert_prefix = (f"import {root_module}\n" +
+                       "import Loom.Release.NamedCertificate\n" +
+                       "".join(f"import {module}\n" for module in imports) +
+                       f"namespace {namespace}\nopen Loom.Release\n" +
+                       "set_option maxRecDepth 1000000\n" +
+                       "set_option maxHeartbeats 0\n" +
+                       f"def design := {design_expr}\n" +
+                       "def cert : Named.ModuleCert design := ")
+        cert_suffix = ("\n" +
+                       "theorem accepted : ssaNamedMatches design program cert = true := " +
+                       "by decide +kernel\n" +
+                       f"end {namespace}\n")
+        cert_gen = (["-- Generated by scripts/gen_release_witness.py; DO NOT EDIT."] +
+                    [f"import {module}" for module in
+                     [root_module, "Tools.ReleaseCertGen"] + imports] +
+                    ["", "unsafe def main : IO Unit := do",
+                     f"  let design := {design_expr}",
+                     "  let some cert := Tools.ReleaseCertGen.synthesize design " +
+                       f"{namespace}.program",
+                     "    | throw (IO.userError \"certificate synthesis failed\")",
+                     f"  IO.FS.writeFile {q(str(cert_data))} <|",
+                     f"    {q(cert_prefix)} ++ Tools.ReleaseCertGen.toLean cert ++",
+                     f"      {q(cert_suffix)}", ""])
+        write_if_changed(output.parent / "CertGen.lean", "\n".join(cert_gen))
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -328,10 +437,15 @@ def main() -> None:
     parser.add_argument("--block-size", type=int, default=512)
     parser.add_argument("--batch-blocks", type=int, default=0,
                         help="write this many leaves per imported batch module")
+    parser.add_argument("--design-expr",
+                        help="Lean design expression for certificate generation")
+    parser.add_argument("--design-import", action="append", default=[],
+                        help="module imported by the generated certificate driver")
     args = parser.parse_args()
     data = parse(args.input)
     if args.batch_blocks:
-        emit_batched(data, args.output, args.block_size, args.batch_blocks)
+        emit_batched(data, args.output, args.block_size, args.batch_blocks,
+                     args.design_expr, args.design_import)
     else:
         emit(data, args.output, args.block_size)
 
