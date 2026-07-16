@@ -4,6 +4,7 @@ book-out/
 .claude/
 scratch/
 __pycache__/
+GeneratedRelease/
 *.py[cod]
 scratch*.lean
 *.draft
