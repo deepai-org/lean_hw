@@ -18,6 +18,7 @@ import Machines.Lnp64u.Theorems.RMCRetireDup
 import Machines.Lnp64u.Theorems.RMCRetireGrantArm
 import Machines.Lnp64u.Theorems.RMCRetireDropArm
 import Machines.Lnp64u.Theorems.RMCRetireGateCallSuccess
+import Machines.Lnp64u.Theorems.RMCRetireGateReturnComplete
 
 /-!
 # R-MC — the LNP64-µ EDSL core refines the ISS
@@ -72,8 +73,8 @@ What is stated here, all horizon-free:
   invariant transport already factors through reachable states
   (`invariant_transport`).
 * `invariant_transport` — every ISS invariant (T2–T9's currency) holds of
-  the abstraction of every core state, at every cycle count. Sorry-free
-  given `square`/`coupled_step` (the two remaining sorries below).
+  the abstraction of every core state, at every cycle count. Its sole
+  remaining proof dependency is the `cap_revoke` retirement leaf below.
 
 ## Landed support (sorry-free)
 
@@ -312,7 +313,7 @@ theorem square_retire_gatecall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     hcpl.run_canon
     hcpl.r0_zero hcpl.kind_canon hsr hifv hcl hopc
 
-/-- The `gate_return` retirement arm — remaining (NEXTSTEPS §1). -/
+/-- The `gate_return` retirement arm. -/
 theorem square_retire_gatereturn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
@@ -322,11 +323,11 @@ theorem square_retire_gatereturn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (hcl : (σ.regs "if_cl" 8).toNat < 2)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 23#6) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  sorry
+  exact square_retire_gateReturn m hwf hfit σ hcpl.rctr_sync hcpl.r0_zero
+    hcpl.kind_canon hsr hifv hcl hopc
 
-/-- The retirement arm, dispatched over the latched opcode. Twenty-two op
-arms plus the decode-failure fallback are proven; the three remaining
-system-op arms are the leaf obligations above (NEXTSTEPS §1). -/
+/-- The retirement arm, dispatched over the latched opcode. Every arm except
+`cap_revoke`, plus the decode-failure fallback, is proved. -/
 theorem square_retire (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     (σ : Loom.Hw.St)
     (hcpl : Coupled m σ)
