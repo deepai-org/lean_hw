@@ -305,9 +305,12 @@ theorem square_retire_gateReturn_payload (m : Manifest) (σ : Loom.Hw.St)
           ((Hw.refillAct m).run σ σ)).regs rn w)
     (hXifv : ("if_v", 1) ∉ X.regWrites)
     (hspec : corePhase m (refillPhase m (Hw.abs σ)) = τ2)
-    (habs : Hw.abs
+    (habsD : ∀ x, Hw.absDom
       ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
-        ((Hw.refillAct m).run σ σ)) = τ2)
+        ((Hw.refillAct m).run σ σ)) x = τ2.doms x)
+    (habsG : ∀ g, Hw.absGate
+      ((Act.seq (.write 1 "if_v" (.lit 0)) X).run σ
+        ((Hw.refillAct m).run σ σ)) g = τ2.gates g)
     (hkindS : ∀ job, Hw.absMover σ = some job →
       ¬(job.src.dom = E ∧ job.src.slot = S) →
       Option.map CapEntry.kind
@@ -354,9 +357,7 @@ theorem square_retire_gateReturn_payload (m : Manifest) (σ : Loom.Hw.St)
     (hcyc : τ2.cycle = σ.regs "cycle" 32)
     (hτ2if : τ2.inflight = none) :
     Hw.abs ((Hw.core m).cycle σ) = step m (Hw.abs σ) := by
-  apply square_retire_gate_payload m σ X τ2 hcoreR hXifv hspec
-    (fun x => congrFun (congrArg MachineState.doms habs) x)
-    (fun g => congrFun (congrArg MachineState.gates habs) g)
+  apply square_retire_gate_payload m σ X τ2 hcoreR hXifv hspec habsD habsG
   · exact absMover_moverAct_return σ _ τ2 E S hslot hnz hkills hnew
       hkindS hkindD hjob
   · intro a
