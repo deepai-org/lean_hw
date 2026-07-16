@@ -60,6 +60,39 @@ def Rope.getD {α : Type u} (rope : Rope (List α)) (index : Nat)
       if index < left.listLength then left.getD index fallback
       else right.getD (index - left.listLength) fallback
 
+/-- A compact, generator-supplied address of one element in a list-valued
+rope. `false` selects a left child and `true` a right child. A malformed path
+or out-of-range leaf offset rejects with `none`; no generator invariant is
+trusted. -/
+structure Rope.Ref where
+  path : List Bool
+  offset : Nat
+  deriving Repr, DecidableEq
+
+/-- Resolve a compact rope address without flattening or scanning unrelated
+leaves. This is the lookup primitive for symbolic release certificates. -/
+def Rope.resolve? {α : Type u} : Rope (List α) → Rope.Ref → Option α
+  | .leaf values, ⟨[], offset⟩ => values[offset]?
+  | .node left _, ⟨false :: path, offset⟩ =>
+      left.resolve? ⟨path, offset⟩
+  | .node _ right, ⟨true :: path, offset⟩ =>
+      right.resolve? ⟨path, offset⟩
+  | _, _ => none
+
+@[simp] theorem Rope.resolve_leaf {α : Type u} (values : List α)
+    (offset : Nat) :
+    (Rope.leaf values).resolve? ⟨[], offset⟩ = values[offset]? := rfl
+
+@[simp] theorem Rope.resolve_node_left {α : Type u}
+    (left right : Rope (List α)) (path : List Bool) (offset : Nat) :
+    (Rope.node left right).resolve? ⟨false :: path, offset⟩ =
+      left.resolve? ⟨path, offset⟩ := rfl
+
+@[simp] theorem Rope.resolve_node_right {α : Type u}
+    (left right : Rope (List α)) (path : List Bool) (offset : Nat) :
+    (Rope.node left right).resolve? ⟨true :: path, offset⟩ =
+      right.resolve? ⟨path, offset⟩ := rfl
+
 /-- Map list leaves while supplying each leaf's starting element offset. -/
 def Rope.mapWithOffset {α : Type u} {β : Type v}
     (f : Nat → List α → List β) (start : Nat) :
