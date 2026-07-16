@@ -239,6 +239,124 @@ theorem rvInit_run_j (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
     exact rvInitNodeA_run_block_frame m σ acc' j i hji (Hw.rvJ i) 6
       (by simp [rvNameBlock])
 
+private def rvStepNodeA (i : Hw.NodeId) : Act :=
+  let j : Expr 6 := .reg 6 (Hw.rvJ i)
+  Hw.seqAll
+    [ .write 1 (Hw.rvR i) (.or (.reg 1 (Hw.rvR i))
+        (.and (.reg 1 (Hw.rvV i))
+          (Hw.muxFin (fun k : Hw.NodeId => .reg 1 (Hw.rvR k)) j))),
+      .write 1 (Hw.rvV i) (.and (.reg 1 (Hw.rvV i))
+        (Hw.muxFin (fun k : Hw.NodeId => .reg 1 (Hw.rvV k)) j)),
+      .write 6 (Hw.rvJ i)
+        (Hw.muxFin (fun k : Hw.NodeId => .reg 6 (Hw.rvJ k)) j) ]
+
+private theorem rvStep_eq_nodes :
+    Hw.rvStep = Hw.seqAll
+      ((List.finRange (numDomains * numSlots)).map rvStepNodeA) := by
+  rfl
+
+private theorem rvStepNodeA_run_r_same (m : Manifest) (σ acc : Loom.Hw.St)
+    (i : Hw.NodeId) :
+    ((rvStepNodeA i).run σ acc).regs (Hw.rvR i) 1 =
+      (σ.regs (Hw.rvR i) 1 |||
+        (σ.regs (Hw.rvV i) 1 &&&
+          (Hw.muxFin (fun k : Hw.NodeId => .reg 1 (Hw.rvR k))
+            (.reg 6 (Hw.rvJ i))).eval σ)) := by
+  have hb := rvNameBlock_nodup m i
+  simp [rvNameBlock] at hb
+  have hrv : Hw.rvR i ≠ Hw.rvV i := Ne.symm hb.2
+  simp [rvStepNodeA, Hw.seqAll, Act.run, RegEnv.set, Expr.eval, hrv]
+
+private theorem rvStepNodeA_run_v_same (m : Manifest)
+    (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    ((rvStepNodeA i).run σ acc).regs (Hw.rvV i) 1 =
+      (σ.regs (Hw.rvV i) 1 &&&
+        (Hw.muxFin (fun k : Hw.NodeId => .reg 1 (Hw.rvV k))
+          (.reg 6 (Hw.rvJ i))).eval σ) := by
+  have hb := rvNameBlock_nodup m i
+  simp [rvNameBlock] at hb
+  simp [rvStepNodeA, Hw.seqAll, Act.run, RegEnv.set, Expr.eval, hb]
+
+private theorem rvStepNodeA_run_j_same (m : Manifest)
+    (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    ((rvStepNodeA i).run σ acc).regs (Hw.rvJ i) 6 =
+      (Hw.muxFin (fun k : Hw.NodeId => .reg 6 (Hw.rvJ k))
+        (.reg 6 (Hw.rvJ i))).eval σ := by
+  have hb := rvNameBlock_nodup m i
+  simp [rvNameBlock] at hb
+  simp [rvStepNodeA, Hw.seqAll, Act.run, RegEnv.set, hb]
+
+private theorem rvStepNodeA_run_block_frame (m : Manifest)
+    (σ acc : Loom.Hw.St) (i q : Hw.NodeId) (hne : i ≠ q)
+    (rn : String) (w : Nat) (hrn : rn ∈ rvNameBlock q) :
+    ((rvStepNodeA i).run σ acc).regs rn w = acc.regs rn w := by
+  have hd := rvNameBlock_disjoint m q i (Ne.symm hne)
+  have hnot : rn ∉ rvNameBlock i := by
+    intro hm
+    exact (List.disjoint_left.mp hd) hrn hm
+  simp [rvNameBlock] at hnot
+  simp [rvStepNodeA, Hw.seqAll, Act.run, RegEnv.set, hnot]
+
+/-- One full `rvStep` computes `R := R ∨ (V ∧ R[J])` from the pre-state. -/
+theorem rvStep_run_r (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    (Hw.rvStep.run σ acc).regs (Hw.rvR i) 1 =
+      (σ.regs (Hw.rvR i) 1 |||
+        (σ.regs (Hw.rvV i) 1 &&&
+          (Hw.muxFin (fun k : Hw.NodeId => .reg 1 (Hw.rvR k))
+            (.reg 6 (Hw.rvJ i))).eval σ)) := by
+  rw [rvStep_eq_nodes]
+  apply seqAll_actions_at σ acc rvStepNodeA
+    (List.finRange (numDomains * numSlots)) i
+    (List.mem_finRange i) (List.nodup_finRange _) (Hw.rvR i)
+  · intro acc'
+    exact rvStepNodeA_run_r_same m σ acc' i
+  · intro j _ hji acc'
+    exact rvStepNodeA_run_block_frame m σ acc' j i hji (Hw.rvR i) 1
+      (by simp [rvNameBlock])
+
+/-- One full `rvStep` computes `V := V ∧ V[J]` from the pre-state. -/
+theorem rvStep_run_v (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    (Hw.rvStep.run σ acc).regs (Hw.rvV i) 1 =
+      (σ.regs (Hw.rvV i) 1 &&&
+        (Hw.muxFin (fun k : Hw.NodeId => .reg 1 (Hw.rvV k))
+          (.reg 6 (Hw.rvJ i))).eval σ) := by
+  rw [rvStep_eq_nodes]
+  apply seqAll_actions_at σ acc rvStepNodeA
+    (List.finRange (numDomains * numSlots)) i
+    (List.mem_finRange i) (List.nodup_finRange _) (Hw.rvV i)
+  · intro acc'
+    exact rvStepNodeA_run_v_same m σ acc' i
+  · intro j _ hji acc'
+    exact rvStepNodeA_run_block_frame m σ acc' j i hji (Hw.rvV i) 1
+      (by simp [rvNameBlock])
+
+/-- One full `rvStep` computes `J := J[J]` from the pre-state. -/
+theorem rvStep_run_j (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    (Hw.rvStep.run σ acc).regs (Hw.rvJ i) 6 =
+      (Hw.muxFin (fun k : Hw.NodeId => .reg 6 (Hw.rvJ k))
+        (.reg 6 (Hw.rvJ i))).eval σ := by
+  rw [rvStep_eq_nodes]
+  apply seqAll_actions_at σ acc rvStepNodeA
+    (List.finRange (numDomains * numSlots)) i
+    (List.mem_finRange i) (List.nodup_finRange _) (Hw.rvJ i)
+  · intro acc'
+    exact rvStepNodeA_run_j_same m σ acc' i
+  · intro j _ hji acc'
+    exact rvStepNodeA_run_block_frame m σ acc' j i hji (Hw.rvJ i) 6
+      (by simp [rvNameBlock])
+
+/-- A node-indexed mux selects the named node when its index expression is
+the canonical `nodeOf` encoding. -/
+theorem muxNode_eval_of_nodeOf {w : Nat} (f : Hw.NodeId → Expr w)
+    (j : Expr 6) (σ : Loom.Hw.St) (c : DomainId) (s : Slot)
+    (hj : j.eval σ = BitVec.ofNat 6 (Hw.nodeOf c s).val) :
+    (Hw.muxFin f j).eval σ = (f (Hw.nodeOf c s)).eval σ := by
+  rw [muxFin_eval (by decide : 2 ^ 6 = numDomains * numSlots)]
+  have hi : finOfBv (by decide : 2 ^ 6 = numDomains * numSlots) (j.eval σ) =
+      Hw.nodeOf c s := by
+    rw [hj, finOfBv_ofNat]
+  rw [hi]
+
 private theorem nDom_nodeOf (c : DomainId) (s : Slot) :
     Hw.nDom (Hw.nodeOf c s) = c := by
   exact (nDom_pack c.val s.val c.isLt s.isLt).1
@@ -431,6 +549,88 @@ theorem reachRootN_of_parent_none (τ : MachineState) (root : CapRef)
   | zero => rfl
   | succ n ih => simp [reachRootN, hx, ih]
 
+/-- Bounded root reachability is persistent as the horizon grows. -/
+theorem reachRootN_succ_of_true (τ : MachineState) (root : CapRef)
+    (n : Nat) (x : DomainId × Slot)
+    (h : reachRootN τ root n x = true) :
+    reachRootN τ root (n + 1) x = true := by
+  simp [reachRootN, h]
+
+/-- Across a live non-root edge, adding the first step shifts bounded
+reachability to the parent node. -/
+theorem reachRootN_succ_of_parent_live_ne_root (τ : MachineState)
+    (root p : CapRef) (x : DomainId × Slot)
+    (hp : τ.parentOf x.1 x.2 = some p) (hroot : p ≠ root)
+    (hgen : p.gen = (τ.doms p.dom).slotGen p.slot) (n : Nat) :
+    reachRootN τ root (n + 1) x =
+      reachRootN τ root n (p.dom, p.slot) := by
+  induction n with
+  | zero => simp [reachRootN, hp, hroot, hgen]
+  | succ n ih =>
+      change (reachRootN τ root (n + 1) x ||
+        match τ.parentOf x.1 x.2 with
+        | some q => q = root ||
+            (decide (q.gen = (τ.doms q.dom).slotGen q.slot) &&
+              reachRootN τ root (n + 1) (q.dom, q.slot))
+        | none => false) = reachRootN τ root (n + 1) (p.dom, p.slot)
+      rw [hp, ih]
+      by_cases h : reachRootN τ root n (p.dom, p.slot) = true
+      · have hs := reachRootN_succ_of_true τ root n (p.dom, p.slot) h
+        simp [h, hs, hroot, hgen]
+      · have h0 : reachRootN τ root n (p.dom, p.slot) = false := by
+          exact Bool.eq_false_of_not_eq_true h
+        simp [h0, hroot, hgen]
+
+/-- A dead non-root parent edge can never reach the root. -/
+theorem reachRootN_succ_of_parent_dead_ne_root (τ : MachineState)
+    (root p : CapRef) (x : DomainId × Slot)
+    (hp : τ.parentOf x.1 x.2 = some p) (hroot : p ≠ root)
+    (hgen : p.gen ≠ (τ.doms p.dom).slotGen p.slot) (n : Nat) :
+    reachRootN τ root (n + 1) x = false := by
+  induction n with
+  | zero => simp [reachRootN, hp, hroot, hgen]
+  | succ n ih =>
+      change (reachRootN τ root (n + 1) x ||
+        match τ.parentOf x.1 x.2 with
+        | some q => q = root ||
+            (decide (q.gen = (τ.doms q.dom).slotGen q.slot) &&
+              reachRootN τ root (n + 1) (q.dom, q.slot))
+        | none => false) = false
+      rw [hp, ih]
+      simp [hroot, hgen]
+
+/-- Bounded root reachability composes across consecutive horizons. This is
+the semantic recurrence implemented by one `rvStep` pointer-doubling round. -/
+theorem reachRootN_add (τ : MachineState) (root : CapRef) (m n : Nat)
+    (x : DomainId × Slot) :
+    reachRootN τ root (m + n) x =
+      (reachRootN τ root m x ||
+        (liveChainN τ m x &&
+          reachRootN τ root n (chainEndN τ m x))) := by
+  induction m generalizing x with
+  | zero => simp [reachRootN, liveChainN, chainEndN]
+  | succ m ih =>
+      rw [Nat.succ_add]
+      cases hp : τ.parentOf x.1 x.2 with
+      | none =>
+          simp [reachRootN_of_parent_none τ root x hp,
+            reachRootN, liveChainN, liveParent, chainEndN, hp]
+      | some p =>
+          by_cases hroot : p = root
+          · simp [reachRootN, liveChainN, liveParent, chainEndN, hp, hroot]
+          · by_cases hgen : p.gen = (τ.doms p.dom).slotGen p.slot
+            · rw [reachRootN_succ_of_parent_live_ne_root τ root p x hp hroot
+                  hgen (m + n),
+                reachRootN_succ_of_parent_live_ne_root τ root p x hp hroot
+                  hgen m]
+              simpa [liveChainN, liveParent, chainEndN, hp, hgen] using
+                ih (p.dom, p.slot)
+            · rw [reachRootN_succ_of_parent_dead_ne_root τ root p x hp hroot
+                  hgen (m + n),
+                reachRootN_succ_of_parent_dead_ne_root τ root p x hp hroot
+                  hgen m]
+              simp [liveChainN, liveParent, hp, hgen]
+
 /-! ## Sequential marking and bounded saturation -/
 
 /-- The specification's sequential marking iterate is exactly bounded
@@ -480,6 +680,21 @@ def rvRoot (σ : Loom.Hw.St) : CapRef :=
   { dom := e
     slot := finOfBv (by decide) (hw.extractLsb' 0 4)
     gen := hw.extractLsb' 4 8 }
+
+/-- The three hidden pointer-jump vectors represent an abstract traversal
+horizon `n` over `τ`, rooted at `root`. -/
+def RvVectors (τ : MachineState) (root : CapRef) (n : Nat)
+    (σ : Loom.Hw.St) : Prop :=
+  ∀ (c : DomainId) (s : Slot),
+    (σ.regs (Hw.rvR (Hw.nodeOf c s)) 1 =
+      if reachRootN τ root n (c, s) then 1#1 else 0#1)
+    ∧ (σ.regs (Hw.rvV (Hw.nodeOf c s)) 1 =
+      if liveChainN τ n (c, s) then 1#1 else 0#1)
+    ∧ (liveChainN τ n (c, s) = true →
+      σ.regs (Hw.rvJ (Hw.nodeOf c s)) 6 =
+        BitVec.ofNat 6 (Hw.nodeOf
+          (chainEndN τ n (c, s)).1
+          (chainEndN τ n (c, s)).2).val)
 
 /-- The packed root sampled by `rvInit` is the encoding of `rvRoot`. -/
 theorem rvInitRootE_eval (σ : Loom.Hw.St) (hz : R0Zero σ) :
@@ -618,6 +833,87 @@ theorem rvInit_establishes_horizon_one (m : Manifest) (σ acc : Loom.Hw.St)
           (rvInit_run_j_semantic m σ acc c s p hp)
       · simp [liveChainN, liveParent, hp, hgen] at hlive
 
+/-- `rvInit` establishes the complete vector relation at horizon one. -/
+theorem rvInit_establishes_vectors (m : Manifest) (σ acc : Loom.Hw.St)
+    (hz : R0Zero σ) :
+    RvVectors (Hw.abs σ) (rvRoot σ) 1 (Hw.rvInit.run σ acc) := by
+  intro c s
+  exact rvInit_establishes_horizon_one m σ acc hz c s
+
+/-- One circuit pointer-jump round doubles the represented traversal
+horizon. All right-hand sides of `rvStep` read the same pre-state `σ`. -/
+theorem rvStep_doubles_vectors (m : Manifest) (τ : MachineState)
+    (root : CapRef) (n : Nat) (σ acc : Loom.Hw.St)
+    (hvec : RvVectors τ root n σ) :
+    RvVectors τ root (n + n) (Hw.rvStep.run σ acc) := by
+  intro c s
+  let x : DomainId × Slot := (c, s)
+  let y := chainEndN τ n x
+  have hx := hvec c s
+  have hy := hvec y.1 y.2
+  have hR : (Hw.rvStep.run σ acc).regs (Hw.rvR (Hw.nodeOf c s)) 1 =
+      if reachRootN τ root (n + n) x then 1#1 else 0#1 := by
+    rw [rvStep_run_r m]
+    by_cases hlive : liveChainN τ n x = true
+    · have hj := hx.2.2 hlive
+      have hmux := muxNode_eval_of_nodeOf
+        (fun k : Hw.NodeId => Expr.reg 1 (Hw.rvR k))
+        (.reg 6 (Hw.rvJ (Hw.nodeOf c s))) σ y.1 y.2 hj
+      have hmux' :
+          (Hw.muxFin (fun k : Hw.NodeId => Expr.reg 1 (Hw.rvR k))
+            (.reg 6 (Hw.rvJ (Hw.nodeOf c s)))).eval σ =
+            σ.regs (Hw.rvR (Hw.nodeOf y.1 y.2)) 1 := by
+        simpa only [Expr.eval] using hmux
+      rw [hmux', hx.1, hx.2.1, hy.1, reachRootN_add]
+      by_cases hrx : reachRootN τ root n x = true <;>
+        by_cases hry : reachRootN τ root n y = true <;>
+        simp [x, y, hlive, hrx, hry]
+    · have hlive0 : liveChainN τ n x = false :=
+        Bool.eq_false_of_not_eq_true hlive
+      rw [hx.1, hx.2.1, reachRootN_add]
+      simp [x, hlive0]
+  have hV : (Hw.rvStep.run σ acc).regs (Hw.rvV (Hw.nodeOf c s)) 1 =
+      if liveChainN τ (n + n) x then 1#1 else 0#1 := by
+    rw [rvStep_run_v m]
+    by_cases hlive : liveChainN τ n x = true
+    · have hj := hx.2.2 hlive
+      have hmux := muxNode_eval_of_nodeOf
+        (fun k : Hw.NodeId => Expr.reg 1 (Hw.rvV k))
+        (.reg 6 (Hw.rvJ (Hw.nodeOf c s))) σ y.1 y.2 hj
+      have hmux' :
+          (Hw.muxFin (fun k : Hw.NodeId => Expr.reg 1 (Hw.rvV k))
+            (.reg 6 (Hw.rvJ (Hw.nodeOf c s)))).eval σ =
+            σ.regs (Hw.rvV (Hw.nodeOf y.1 y.2)) 1 := by
+        simpa only [Expr.eval] using hmux
+      rw [hmux', hx.2.1, hy.2.1, liveChainN_add]
+      by_cases hliveY : liveChainN τ n y = true <;>
+        simp [x, y, hlive, hliveY]
+    · have hlive0 : liveChainN τ n x = false :=
+        Bool.eq_false_of_not_eq_true hlive
+      rw [hx.2.1, liveChainN_add]
+      simp [x, hlive0]
+  refine ⟨hR, hV, ?_⟩
+  intro hdouble
+  have hdouble' : liveChainN τ (n + n) x = true := by
+    simpa [x] using hdouble
+  rw [liveChainN_add] at hdouble'
+  change (liveChainN τ n x && liveChainN τ n y) = true at hdouble'
+  have hlive : liveChainN τ n x = true :=
+    (Bool.and_eq_true_iff.mp hdouble').1
+  have hliveY : liveChainN τ n y = true :=
+    (Bool.and_eq_true_iff.mp hdouble').2
+  have hj := hx.2.2 hlive
+  have hmux := muxNode_eval_of_nodeOf
+    (fun k : Hw.NodeId => Expr.reg 6 (Hw.rvJ k))
+    (.reg 6 (Hw.rvJ (Hw.nodeOf c s))) σ y.1 y.2 hj
+  have hmux' :
+      (Hw.muxFin (fun k : Hw.NodeId => Expr.reg 6 (Hw.rvJ k))
+        (.reg 6 (Hw.rvJ (Hw.nodeOf c s)))).eval σ =
+        σ.regs (Hw.rvJ (Hw.nodeOf y.1 y.2)) 6 := by
+    simpa only [Expr.eval] using hmux
+  rw [rvStep_run_j m, hmux', hy.2.2 hliveY]
+  rw [chainEndN_add]
+
 /-- The doubling rounds completed at pre-cycle countdown value `cl`. -/
 def rvRounds (cl : Nat) : Nat := revokeCost - 1 - cl
 
@@ -641,23 +937,8 @@ def RvSync (σ : Loom.Hw.St) : Prop :=
   σ.regs "if_v" 1 = 1#1 →
   (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6 →
   (σ.regs "if_cl" 8).toNat < revokeCost →
-  ∀ (c : DomainId) (s : Slot),
-    (σ.regs (Hw.rvR (Hw.nodeOf c s)) 1
-      = if reachRootN (Hw.abs σ) (rvRoot σ)
-            (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) (c, s)
-        then 1#1 else 0#1)
-    ∧ (σ.regs (Hw.rvV (Hw.nodeOf c s)) 1
-      = if liveChainN (Hw.abs σ)
-            (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) (c, s)
-        then 1#1 else 0#1)
-    ∧ (liveChainN (Hw.abs σ)
-        (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) (c, s) = true →
-      σ.regs (Hw.rvJ (Hw.nodeOf c s)) 6
-        = BitVec.ofNat 6 (Hw.nodeOf
-            (chainEndN (Hw.abs σ)
-              (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) (c, s)).1
-            (chainEndN (Hw.abs σ)
-              (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) (c, s)).2).val)
+  RvVectors (Hw.abs σ) (rvRoot σ)
+    (2 ^ rvRounds (σ.regs "if_cl" 8).toNat) σ
 
 /-- At retirement, `RvSync` turns every hidden `rv_r` bit into the exact
 kernel `marks` bit consumed by `destroyMarked`. -/
