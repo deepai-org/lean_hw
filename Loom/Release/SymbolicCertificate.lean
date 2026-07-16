@@ -317,6 +317,109 @@ def nextRulesMatches (wires : Rope (List IndexedWire)) (table : WireTable)
             nextRulesMatches wires table register width rules (some out) out tail)
   | _, _, _, _ => false
 
+/-! ## Compositional acceptance
+
+These lemmas are deliberately small. Generated release modules give every
+large child check its own named theorem and use the lemmas below to compose
+parents without unfolding or normalizing the child proofs again. -/
+
+theorem nextRegMatches_seq_named
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (left right : Loom.Hw.Act)
+    (current : Option Ref) (mid out : Ref) (leftCert rightCert : NextRegCert)
+    (hleft : nextRegMatches wires table register width left current mid
+      leftCert = true)
+    (hright : nextRegMatches wires table register width right (some mid) out
+      rightCert = true) :
+    nextRegMatches wires table register width (.seq left right) current out
+      (.seq (some mid) leftCert rightCert) = true := by
+  simp only [nextRegMatches, hleft, hright, Bool.true_and]
+
+theorem nextRegMatches_seq_discard
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (left right : Loom.Hw.Act)
+    (current : Option Ref) (out : Ref) (leftCert rightCert : NextRegCert)
+    (hright : nextRegMatches wires table register width right none out
+      rightCert = true) :
+    nextRegMatches wires table register width (.seq left right) current out
+      (.seq none leftCert rightCert) = true := by
+  simp only [nextRegMatches, hright, Bool.true_or]
+
+theorem nextRegMatches_seq_current
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (left right : Loom.Hw.Act)
+    (current out : Ref) (leftCert rightCert : NextRegCert)
+    (hleft : nextRegMatches wires table register width left (some current)
+      current leftCert = true)
+    (hright : nextRegMatches wires table register width right (some current)
+      out rightCert = true) :
+    nextRegMatches wires table register width (.seq left right) (some current)
+      out (.seq none leftCert rightCert) = true := by
+  simp only [nextRegMatches, hleft, hright, Bool.true_and, Bool.or_true,
+    Bool.true_or]
+
+theorem nextRegMatches_seq_output
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (left right : Loom.Hw.Act)
+    (current : Option Ref) (out : Ref) (leftCert rightCert : NextRegCert)
+    (hleft : nextRegMatches wires table register width left current out
+      leftCert = true)
+    (hright : nextRegMatches wires table register width right (some out) out
+      rightCert = true) :
+    nextRegMatches wires table register width (.seq left right) current out
+      (.seq none leftCert rightCert) = true := by
+  simp only [nextRegMatches, hleft, hright, Bool.true_and, Bool.or_true]
+
+theorem nextRulesMatches_cons_named
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (rule : Loom.Hw.Rule)
+    (rules : List Loom.Hw.Rule) (current : Option Ref) (mid out : Ref)
+    (head : NextRegCert) (tail : NextRulesCert)
+    (hhead : nextRegMatches wires table register width rule.body current mid
+      head = true)
+    (htail : nextRulesMatches wires table register width rules (some mid) out
+      tail = true) :
+    nextRulesMatches wires table register width (rule :: rules) current out
+      (.cons (some mid) head tail) = true := by
+  simp only [nextRulesMatches, hhead, htail, Bool.true_and]
+
+theorem nextRulesMatches_cons_discard
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (rule : Loom.Hw.Rule)
+    (rules : List Loom.Hw.Rule) (current : Option Ref) (out : Ref)
+    (head : NextRegCert) (tail : NextRulesCert)
+    (htail : nextRulesMatches wires table register width rules none out tail = true) :
+    nextRulesMatches wires table register width (rule :: rules) current out
+      (.cons none head tail) = true := by
+  simp only [nextRulesMatches, htail, Bool.true_or]
+
+theorem nextRulesMatches_cons_current
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (rule : Loom.Hw.Rule)
+    (rules : List Loom.Hw.Rule) (current out : Ref)
+    (head : NextRegCert) (tail : NextRulesCert)
+    (hhead : nextRegMatches wires table register width rule.body
+      (some current) current head = true)
+    (htail : nextRulesMatches wires table register width rules (some current)
+      out tail = true) :
+    nextRulesMatches wires table register width (rule :: rules) (some current)
+      out (.cons none head tail) = true := by
+  simp only [nextRulesMatches, hhead, htail, Bool.true_and, Bool.or_true,
+    Bool.true_or]
+
+theorem nextRulesMatches_cons_output
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (rule : Loom.Hw.Rule)
+    (rules : List Loom.Hw.Rule) (current : Option Ref) (out : Ref)
+    (head : NextRegCert) (tail : NextRulesCert)
+    (hhead : nextRegMatches wires table register width rule.body current out
+      head = true)
+    (htail : nextRulesMatches wires table register width rules (some out) out
+      tail = true) :
+    nextRulesMatches wires table register width (rule :: rules) current out
+      (.cons none head tail) = true := by
+  simp only [nextRulesMatches, hhead, htail, Bool.true_and, Bool.or_true]
+
 /-- Decode the deliberately tiny release-witness naming convention. -/
 def wireNumber? (name : String) : Option Nat := do
   guard (name.startsWith "n")
