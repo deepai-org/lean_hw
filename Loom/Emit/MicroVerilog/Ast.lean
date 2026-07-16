@@ -41,6 +41,7 @@ inductive Expr : Nat → Type where
   | slice   {w : Nat} (a : Expr w) (lo width : Nat) : Expr width
   | zext    {w : Nat} (a : Expr w) (w' : Nat) : Expr w'
   | sext    {w : Nat} (a : Expr w) (w' : Nat) : Expr w'
+  deriving DecidableEq
 
 /-- A register: `always @(posedge clk) r <= rst ? init : next;`. -/
 structure RegDef where

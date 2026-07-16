@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
-import Loom.Release.NamedCertificate
+import Tools.ReleaseCertGen
 
 namespace Tests.NamedCertificate
 
@@ -27,6 +27,7 @@ private def cert : Named.ModuleCert design where
   mems := .nil
 
 #guard ssaNamedMatches design program cert
+#eval (Tools.ReleaseCertGen.synthesize design program).isSome
 
 example : ∃ module, program.elaborate = some module ∧
     module.toTSys = (Compile.compile design).toTSys :=

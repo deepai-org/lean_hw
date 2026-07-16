@@ -181,4 +181,19 @@ theorem ssaNamedMatches_behavior (design : Design) (program : SSA.Program)
     simp [henv, hmodule]
   · exact (ArtifactCert.moduleMatches_sound design module materialized h).toTSys_eq
 
+/-- Publication-facing parser-free boundary using compact name-only proof
+data: exact rendered bytes and exact compiled transition-system behavior. -/
+theorem exactRenderingAndNamedCompilation (design : Design)
+    (program : SSA.Program) (disk : Rope (List String))
+    (cert : Named.ModuleCert design)
+    (renderedLines : Rope (List String))
+    (hrender : renderedLines = program.renderTree)
+    (hdisk : renderedLines = disk)
+    (hcert : ssaNamedMatches design program cert = true) :
+    program.renderTree.flattenBytes = disk.flattenBytes ∧
+    ∃ module, program.elaborate = some module ∧
+      module.toTSys = (Compile.compile design).toTSys := by
+  exact ⟨Rope.flattenBytes_congr (hrender.symm.trans hdisk),
+    ssaNamedMatches_behavior design program cert hcert⟩
+
 end Loom.Release
