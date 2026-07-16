@@ -442,4 +442,95 @@ theorem nextPortRulesMatches_sound (mn : String) (aw dw p : Nat) :
             nextPortMatches_sound mn aw dw p rl.body cur mid ch h.1]
       | _ => simp [nextPortRulesMatches] at h
 
+/-- Certificates for `n` consecutive compiled write ports. -/
+inductive PortsCert (aw dw : Nat) : Nat → Type where
+  | nil : PortsCert aw dw 0
+  | cons {n} (head : NextPortRulesCert aw dw)
+      (tail : PortsCert aw dw n) : PortsCert aw dw (n + 1)
+
+set_option linter.unusedVariables false in
+/-- Check consecutive write ports beginning at index `p`. -/
+def portsMatch (mn : String) (aw dw : Nat) (rules : List Loom.Hw.Rule) :
+    ∀ (p n : Nat), List (Compile.Port aw dw) → PortsCert aw dw n → Bool
+  | _, 0, [], .nil => true
+  | _, 0, _ :: _, .nil => false
+  | p, n + 1, out :: outs, .cons ch ct =>
+      nextPortRulesMatches mn aw dw p rules
+        { en := .lit 0, addr := .lit 0, data := .lit 0 } out ch &&
+      portsMatch mn aw dw rules (p + 1) n outs ct
+  | _, _ + 1, [], .cons _ _ => false
+
+/-- Successful consecutive-port validation recovers the reference compiler's
+port list for the corresponding index interval. -/
+theorem portsMatch_sound (mn : String) (aw dw : Nat)
+    (rules : List Loom.Hw.Rule) :
+    ∀ (p n : Nat) (outs : List (Compile.Port aw dw))
+      (cert : PortsCert aw dw n),
+      portsMatch mn aw dw rules p n outs cert = true →
+        outs = (List.range' p n).map fun q =>
+          rules.foldl (fun cur rl =>
+            Compile.memPort mn aw dw q rl.body cur)
+            { en := .lit 0, addr := .lit 0, data := .lit 0 }
+  | _, 0, [], .nil, _ => rfl
+  | _, 0, _ :: _, .nil, h => by simp [portsMatch] at h
+  | _, _ + 1, [], .cons _ _, h => by simp [portsMatch] at h
+  | p, n + 1, out :: outs, .cons ch ct, h => by
+      simp only [portsMatch, Bool.and_eq_true] at h
+      simp only [List.range'_succ, List.map_cons]
+      rw [nextPortRulesMatches_sound mn aw dw p rules _ out ch h.1,
+        portsMatch_sound mn aw dw rules (p + 1) n outs ct h.2]
+
+/-! ## Output certificates -/
+
+/-- Check the observability output generated for a source register. -/
+def outMatches (r : Loom.Hw.RegDecl)
+    (out : Loom.Emit.MicroVerilog.OutDef) : Bool :=
+  decide (out.name = s!"o_{r.name}") &&
+  if h : out.width = r.width then
+    compileExprMatches (.reg r.width r.name) (h ▸ out.val)
+  else false
+
+/-- Successful output validation recovers the exact reference output. -/
+theorem outMatches_sound (r : Loom.Hw.RegDecl)
+    (out : Loom.Emit.MicroVerilog.OutDef)
+    (h : outMatches r out = true) :
+    out = ({ name := s!"o_{r.name}", width := r.width,
+             val := .reg r.width r.name } : Loom.Emit.MicroVerilog.OutDef) := by
+  unfold outMatches at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨hn, hrest⟩ := h
+  split at hrest
+  · rename_i hw
+    have hv := compileExprMatches_sound (.reg r.width r.name)
+      (hw ▸ out.val) hrest
+    cases r
+    cases out
+    simp at hn hw hv ⊢
+    cases hn
+    cases hw
+    cases hv
+    simp
+  · contradiction
+
+/-- Check the complete output list against the source register list. -/
+def outsMatch : List Loom.Hw.RegDecl →
+    List Loom.Emit.MicroVerilog.OutDef → Bool
+  | [], [] => true
+  | r :: rs, out :: outs => outMatches r out && outsMatch rs outs
+  | _, _ => false
+
+/-- Successful output-list validation recovers the reference output list. -/
+theorem outsMatch_sound : ∀ (rs : List Loom.Hw.RegDecl)
+    (outs : List Loom.Emit.MicroVerilog.OutDef),
+    outsMatch rs outs = true →
+      outs = rs.map fun r =>
+        ({ name := s!"o_{r.name}", width := r.width,
+           val := .reg r.width r.name } : Loom.Emit.MicroVerilog.OutDef)
+  | [], [], _ => rfl
+  | [], _ :: _, h => by simp [outsMatch] at h
+  | _ :: _, [], h => by simp [outsMatch] at h
+  | r :: rs, out :: outs, h => by
+      simp only [outsMatch, Bool.and_eq_true, List.map_cons] at h ⊢
+      rw [outMatches_sound r out h.1, outsMatch_sound rs outs h.2]
+
 end Loom.Hw.ArtifactCert
