@@ -167,8 +167,9 @@ def wire_block_declarations(blocks: list[list[dict]], block_size: int,
         out += [f"def {name} : List Wire := [", ",\n".join(entries), "]", ""]
         indexed_name = f"indexedWireBlock{index:04d}"
         indexed_entries = [
-            f"  {{ width := {w['width']}, rhs := {w['indexedRhs']} }}"
-            for w in block]
+            f"  {{ number := {index * block_size + offset}, "
+            f"width := {w['width']}, rhs := {w['indexedRhs']} }}"
+            for offset, w in enumerate(block)]
         out += [f"def {indexed_name} : List Symbolic.IndexedWire := [",
                 ",\n".join(indexed_entries), "]", "",
                 f"theorem indexedWireBlockMatches{index:04d} :",
