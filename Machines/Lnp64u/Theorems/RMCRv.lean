@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
-import Machines.Lnp64u.Theorems.RMCRetireSw
+import Machines.Lnp64u.Theorems.RMCRetireDrop
 
 /-!
 # R-MC support: the `cap_revoke` mark-engine coupling (design spike)
@@ -50,6 +50,194 @@ finite marking fixpoint and needs no extra acyclicity assumption.
 namespace Machines.Lnp64u.Theorems.RMC
 
 open Machines.Lnp64u Loom Loom.Hw Machines.Lnp64u.Hw
+
+private def rvNameBlock (i : Hw.NodeId) : List String :=
+  [Hw.rvJ i, Hw.rvV i, Hw.rvR i]
+
+/-- The reset manifest's global name proof specializes to the hidden revoke
+register suffix. This gives structural disjointness without reducing all
+64-by-64 string pairs. -/
+private theorem rvNameBlocks_nodup (m : Manifest) :
+    ((List.finRange (numDomains * numSlots)).flatMap rvNameBlock).Nodup := by
+  have h := names_nodup m
+  unfold Hw.regDecls at h
+  simp only [List.map_append, List.map_flatMap, List.map_map] at h
+  exact (by simpa [rvNameBlock] using h.of_append_right)
+
+private theorem rvNameBlock_nodup (m : Manifest) (i : Hw.NodeId) :
+    (rvNameBlock i).Nodup := by
+  exact (List.nodup_flatMap.mp (rvNameBlocks_nodup m)).1 i
+    (List.mem_finRange i)
+
+private theorem rvNameBlock_disjoint (m : Manifest) (i j : Hw.NodeId)
+    (hne : i ≠ j) : List.Disjoint (rvNameBlock i) (rvNameBlock j) := by
+  have hp := (List.nodup_flatMap.mp (rvNameBlocks_nodup m)).2
+  by_cases hij : i.val < j.val
+  · have hd := hp.rel_get_of_lt
+        (a := ⟨i.val, by simpa using i.isLt⟩)
+        (b := ⟨j.val, by simpa using j.isLt⟩) hij
+    simpa using hd
+  · have hji : j.val < i.val := by
+      have hv : i.val ≠ j.val := fun h => hne (Fin.ext h)
+      omega
+    have hd := hp.rel_get_of_lt
+        (a := ⟨j.val, by simpa using j.isLt⟩)
+        (b := ⟨i.val, by simpa using i.isLt⟩) hji
+    simpa using hd.symm
+
+private theorem seqAll_actions_frame {I : Type} {w : Nat}
+    (σ acc : Loom.Hw.St) (a : I → Act) (l : List I)
+    (rn : String)
+    (hframe : ∀ i ∈ l, ∀ acc', ((a i).run σ acc').regs rn w =
+      acc'.regs rn w) :
+    ((Hw.seqAll (l.map a)).run σ acc).regs rn w = acc.regs rn w := by
+  induction l generalizing acc with
+  | nil => rfl
+  | cons i t ih =>
+      change ((Hw.seqAll (t.map a)).run σ ((a i).run σ acc)).regs rn w = _
+      rw [ih _ (fun j hj => hframe j (List.mem_cons_of_mem i hj))]
+      exact hframe i (List.mem_cons_self ..) acc
+
+private theorem seqAll_actions_at {I : Type} {w : Nat}
+    (σ acc : Loom.Hw.St) (a : I → Act) (l : List I) (i : I)
+    (hi : i ∈ l) (hnd : l.Nodup) (rn : String) (v : BitVec w)
+    (hat : ∀ acc', ((a i).run σ acc').regs rn w = v)
+    (hframe : ∀ j ∈ l, j ≠ i → ∀ acc',
+      ((a j).run σ acc').regs rn w = acc'.regs rn w) :
+    ((Hw.seqAll (l.map a)).run σ acc).regs rn w = v := by
+  induction l generalizing acc with
+  | nil => exact absurd hi List.not_mem_nil
+  | cons j t ih =>
+      have hnd' := List.nodup_cons.mp hnd
+      by_cases hji : j = i
+      · subst j
+        change ((Hw.seqAll (t.map a)).run σ ((a i).run σ acc)).regs rn w = v
+        rw [seqAll_actions_frame σ _ a t rn]
+        · exact hat acc
+        · intro k hk
+          exact hframe k (List.mem_cons_of_mem i hk)
+            (fun h => hnd'.1 (h ▸ hk))
+      · have hit : i ∈ t := (List.mem_cons.mp hi).resolve_left
+          (fun h => hji h.symm)
+        change ((Hw.seqAll (t.map a)).run σ ((a j).run σ acc)).regs rn w = v
+        exact ih _ hit hnd'.2
+          (fun k hk hki => hframe k (List.mem_cons_of_mem j hk) hki)
+
+private def rvInitPEx (i : Hw.NodeId) : Expr 1 :=
+  let c := Hw.nDom i
+  let s := Hw.nSlot i
+  let linE : Expr 4 := .reg 4 (Hw.dcapLin c s)
+  Hw.andAll [.reg 1 (Hw.dcapV c s), .reg 1 (Hw.dcapLinV c s),
+    Hw.cellVAt c linE]
+
+private def rvInitPEnc (i : Hw.NodeId) : Expr 14 :=
+  Hw.cellParAt (Hw.nDom i) (.reg 4 (Hw.dcapLin (Hw.nDom i) (Hw.nSlot i)))
+
+private def rvInitRootE : Expr 14 :=
+  let hw := Hw.muxFin (fun d => Hw.readReg d Hw.rs1E) (.reg 2 "if_dom")
+  Hw.encRefE (.reg 2 "if_dom") (Hw.field hw 0 4) (Hw.field hw 4 8)
+
+private def rvInitNodeA (i : Hw.NodeId) : Act :=
+  let pEx := rvInitPEx i
+  let pEnc := rvInitPEnc i
+  let pIdx : Expr 6 := Hw.field pEnc 8 6
+  Hw.seqAll
+    [ .write 6 (Hw.rvJ i) pIdx,
+      .write 1 (Hw.rvV i)
+        (.and pEx (.eq (Hw.genAt pIdx) (Hw.field pEnc 0 8))),
+      .write 1 (Hw.rvR i) (.and pEx (.eq pEnc rvInitRootE)) ]
+
+private theorem rvInit_eq_nodes :
+    Hw.rvInit = Hw.seqAll
+      ((List.finRange (numDomains * numSlots)).map rvInitNodeA) := by
+  rfl
+
+private theorem rvInitNodeA_run_r_same (σ acc : Loom.Hw.St)
+    (i : Hw.NodeId) :
+    ((rvInitNodeA i).run σ acc).regs (Hw.rvR i) 1 =
+      (Expr.and (rvInitPEx i) (.eq (rvInitPEnc i) rvInitRootE)).eval σ := by
+  simp [rvInitNodeA, Hw.seqAll, Act.run, RegEnv.set]
+
+private theorem rvInitNodeA_run_block_frame (m : Manifest)
+    (σ acc : Loom.Hw.St) (i q : Hw.NodeId) (hne : i ≠ q)
+    (rn : String) (w : Nat) (hrn : rn ∈ rvNameBlock q) :
+    ((rvInitNodeA i).run σ acc).regs rn w = acc.regs rn w := by
+  have hd := rvNameBlock_disjoint m q i (Ne.symm hne)
+  have hnot : rn ∉ rvNameBlock i := by
+    intro hm
+    exact (List.disjoint_left.mp hd) hrn hm
+  simp [rvNameBlock] at hnot
+  simp [rvInitNodeA, Hw.seqAll, Act.run, RegEnv.set, hnot]
+
+private theorem rvInitNodeA_run_r_frame (m : Manifest) (σ acc : Loom.Hw.St)
+    (i q : Hw.NodeId) (hne : i ≠ q) :
+    ((rvInitNodeA i).run σ acc).regs (Hw.rvR q) 1 =
+      acc.regs (Hw.rvR q) 1 :=
+  rvInitNodeA_run_block_frame m σ acc i q hne (Hw.rvR q) 1
+    (by simp [rvNameBlock])
+
+private theorem rvInitNodeA_run_v_same (m : Manifest) (σ acc : Loom.Hw.St)
+    (i : Hw.NodeId) :
+    ((rvInitNodeA i).run σ acc).regs (Hw.rvV i) 1 =
+      (Expr.and (rvInitPEx i)
+        (.eq (Hw.genAt (Hw.field (rvInitPEnc i) 8 6))
+          (Hw.field (rvInitPEnc i) 0 8))).eval σ := by
+  have hb := rvNameBlock_nodup m i
+  simp [rvNameBlock] at hb
+  simp [rvInitNodeA, Hw.seqAll, Act.run, RegEnv.set, hb]
+
+private theorem rvInitNodeA_run_j_same (m : Manifest) (σ acc : Loom.Hw.St)
+    (i : Hw.NodeId) :
+    ((rvInitNodeA i).run σ acc).regs (Hw.rvJ i) 6 =
+      (Hw.field (rvInitPEnc i) 8 6).eval σ := by
+  have hb := rvNameBlock_nodup m i
+  simp [rvNameBlock] at hb
+  simp [rvInitNodeA, Hw.seqAll, Act.run, RegEnv.set, hb]
+
+/-- `rvInit` writes the direct-root predicate to each node's `rv_r` bit.
+The proof selects the unique writer structurally from the globally-nodup
+register-name suffix. -/
+theorem rvInit_run_r (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    (Hw.rvInit.run σ acc).regs (Hw.rvR i) 1 =
+      (Expr.and (rvInitPEx i) (.eq (rvInitPEnc i) rvInitRootE)).eval σ := by
+  rw [rvInit_eq_nodes]
+  apply seqAll_actions_at σ acc rvInitNodeA
+    (List.finRange (numDomains * numSlots)) i
+    (List.mem_finRange i) (List.nodup_finRange _) (Hw.rvR i)
+  · intro acc'
+    exact rvInitNodeA_run_r_same σ acc' i
+  · intro j _ hji acc'
+    exact rvInitNodeA_run_r_frame m σ acc' j i hji
+
+/-- `rvInit` writes one-edge generation liveness to each `rv_v` bit. -/
+theorem rvInit_run_v (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    (Hw.rvInit.run σ acc).regs (Hw.rvV i) 1 =
+      (Expr.and (rvInitPEx i)
+        (.eq (Hw.genAt (Hw.field (rvInitPEnc i) 8 6))
+          (Hw.field (rvInitPEnc i) 0 8))).eval σ := by
+  rw [rvInit_eq_nodes]
+  apply seqAll_actions_at σ acc rvInitNodeA
+    (List.finRange (numDomains * numSlots)) i
+    (List.mem_finRange i) (List.nodup_finRange _) (Hw.rvV i)
+  · intro acc'
+    exact rvInitNodeA_run_v_same m σ acc' i
+  · intro j _ hji acc'
+    exact rvInitNodeA_run_block_frame m σ acc' j i hji (Hw.rvV i) 1
+      (by simp [rvNameBlock])
+
+/-- `rvInit` writes the direct parent-node endpoint to each `rv_j` word. -/
+theorem rvInit_run_j (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
+    (Hw.rvInit.run σ acc).regs (Hw.rvJ i) 6 =
+      (Hw.field (rvInitPEnc i) 8 6).eval σ := by
+  rw [rvInit_eq_nodes]
+  apply seqAll_actions_at σ acc rvInitNodeA
+    (List.finRange (numDomains * numSlots)) i
+    (List.mem_finRange i) (List.nodup_finRange _) (Hw.rvJ i)
+  · intro acc'
+    exact rvInitNodeA_run_j_same m σ acc' i
+  · intro j _ hji acc'
+    exact rvInitNodeA_run_block_frame m σ acc' j i hji (Hw.rvJ i) 6
+      (by simp [rvNameBlock])
 
 /-- Is the parent edge of `x` generation-live, and where does it go? -/
 def liveParent (τ : MachineState) (x : DomainId × Slot) :
