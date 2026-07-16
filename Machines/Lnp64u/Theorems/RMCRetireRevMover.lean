@@ -26,6 +26,146 @@ private theorem revNewJobAny_zero (sigma : Loom.Hw.St)
   rw [hnew d]
   decide
 
+/-- `revKilled` applied to the domain/slot fields of a packed reference is
+exactly the converged abstract mark bit for that decoded reference. -/
+theorem revKilled_ref_eval (sigma : Loom.Hw.St) (hrv : RvSync sigma)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2) (refE : Expr 14) :
+    ((Hw.revKilled (Hw.field refE 12 2) (Hw.field refE 8 4)).eval sigma =
+        1#1) <->
+      (Hw.abs sigma).marks (rvRoot sigma)
+        (Hw.decRef (refE.eval sigma)).dom
+        (Hw.decRef (refE.eval sigma)).slot = true := by
+  rw [revKilled_eval sigma hrv hifv hopc hcl]
+  congr 2 <;> rfl
+
+/-- The revoke-specific Mover kill guard fires exactly when a live encoded
+job has a marked source or destination slot. -/
+theorem movKilledE_rev_iff (sigma : Loom.Hw.St) (hrv : RvSync sigma)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2) :
+    ((Hw.movKilledE Hw.revKilled).eval sigma = 1#1) <->
+      match Hw.absMover sigma with
+      | none => False
+      | some job =>
+          (Hw.abs sigma).marks (rvRoot sigma) job.src.dom job.src.slot = true \/
+          (Hw.abs sigma).marks (rvRoot sigma) job.dst.dom job.dst.slot = true := by
+  unfold Hw.movKilledE
+  change (sigma.regs "mov_v" 1 &&&
+    ((Hw.revKilled Hw.movSrcDom Hw.movSrcSlot).eval sigma |||
+      (Hw.revKilled Hw.movDstDom Hw.movDstSlot).eval sigma) = 1#1) <-> _
+  by_cases hv : sigma.regs "mov_v" 1 = 1#1
+  · rw [absMover_some sigma hv, bv1_and_eq_one, bv1_or_eq_one]
+    simp only [Hw.movSrcDom, Hw.movSrcSlot, Hw.movDstDom, Hw.movDstSlot]
+    rw [
+      revKilled_ref_eval sigma hrv hifv hopc hcl (.reg 14 "mov_src"),
+      revKilled_ref_eval sigma hrv hifv hopc hcl (.reg 14 "mov_dst")]
+    simp [hv]
+    rfl
+  · have hv0 : sigma.regs "mov_v" 1 = 0#1 := bv1_ne_one.mp hv
+    simp [absMover_none sigma hv, hv0]
+
+/-- On a successful retiring `cap_revoke`, the global core kill tree is
+exactly the revoke mark lookup. -/
+theorem killedByCoreE_rev_eval (sigma : Loom.Hw.St) (E : DomainId)
+    (hret : Hw.retiringE.eval sigma = 1#1)
+    (hif : forall d : DomainId, (Hw.ifDomIs d).eval sigma =
+      if d = E then 1#1 else 0#1)
+    (hdrop : (Hw.isMn "cap_drop").eval sigma ≠ 1#1)
+    (hrev : (Hw.isMn "cap_revoke").eval sigma = 1#1)
+    (hcall : (Hw.isMn "gate_call").eval sigma ≠ 1#1)
+    (hreturn : (Hw.isMn "gate_return").eval sigma ≠ 1#1)
+    (hok : forall d : DomainId, d = E -> (Hw.revOkE d).eval sigma = 1#1)
+    (dm : Expr 2) (sl : Expr 4) :
+    (Hw.killedByCoreE dm sl).eval sigma = (Hw.revKilled dm sl).eval sigma := by
+  have hdrop0 : (Hw.isMn "cap_drop").eval sigma = 0#1 := bv1_ne_one.mp hdrop
+  have hcall0 : (Hw.isMn "gate_call").eval sigma = 0#1 := bv1_ne_one.mp hcall
+  have hreturn0 : (Hw.isMn "gate_return").eval sigma = 0#1 :=
+    bv1_ne_one.mp hreturn
+  have honeAnd : forall x : BitVec 1, 1#1 &&& x = x := by decide
+  have hzeroAnd : forall x : BitVec 1, 0#1 &&& x = 0#1 := by decide
+  have hzeroOr : forall x : BitVec 1, 0#1 ||| x = x := by decide
+  have horZero : forall x : BitVec 1, x ||| 0#1 = x := by decide
+  unfold Hw.killedByCoreE
+  fin_cases E <;>
+    simp [Hw.orAll, List.finRange, Expr.eval, Fin.ext_iff, hret, hif,
+      hdrop0, hrev, hok, hcall0, hreturn0, honeAnd, hzeroAnd, hzeroOr,
+      horZero] <;>
+    congr 2
+
+/-- The global Mover kill guard reduces to marked endpoints once the
+successful revoke branch is selected in `killedByCoreE`. -/
+theorem movKilledE_core_rev_iff (sigma : Loom.Hw.St) (hrv : RvSync sigma)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2)
+    (hkills : forall dm sl, (Hw.killedByCoreE dm sl).eval sigma =
+      (Hw.revKilled dm sl).eval sigma) :
+    ((Hw.movKilledE (fun dm sl => Hw.killedByCoreE dm sl)).eval sigma =
+        1#1) <->
+      match Hw.absMover sigma with
+      | none => False
+      | some job =>
+          (Hw.abs sigma).marks (rvRoot sigma) job.src.dom job.src.slot = true \/
+          (Hw.abs sigma).marks (rvRoot sigma) job.dst.dom job.dst.slot = true := by
+  unfold Hw.movKilledE
+  change (sigma.regs "mov_v" 1 &&&
+    ((Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot).eval sigma |||
+      (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot).eval sigma) = 1#1) <-> _
+  rw [hkills Hw.movSrcDom Hw.movSrcSlot,
+    hkills Hw.movDstDom Hw.movDstSlot]
+  exact movKilledE_rev_iff sigma hrv hifv hopc hcl
+
+/-- A packed unmarked reference is silent in the selected global revoke
+kill tree. -/
+theorem killedByCoreE_rev_ref_zero (sigma : Loom.Hw.St) (hrv : RvSync sigma)
+    (hifv : sigma.regs "if_v" 1 = 1#1)
+    (hopc : (sigma.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (sigma.regs "if_cl" 8).toNat < 2)
+    (hkills : forall dm sl, (Hw.killedByCoreE dm sl).eval sigma =
+      (Hw.revKilled dm sl).eval sigma)
+    (refE : Expr 14)
+    (hunmarked : (Hw.abs sigma).marks (rvRoot sigma)
+      (Hw.decRef (refE.eval sigma)).dom
+      (Hw.decRef (refE.eval sigma)).slot = false) :
+    (Hw.killedByCoreE (Hw.field refE 12 2)
+      (Hw.field refE 8 4)).eval sigma = 0#1 := by
+  rw [hkills]
+  apply bv1_ne_one.mp
+  intro hkill
+  have hm := (revKilled_ref_eval sigma hrv hifv hopc hcl refE).mp hkill
+  rw [hunmarked] at hm
+  contradiction
+
+/-- `destroyMarked` preserves the complete live-capability lookup at an
+unmarked slot, for any queried generation. -/
+theorem destroyMarked_liveCap_eq_of_unmarked (rho : MachineState)
+    (marked : DomainId -> Slot -> Bool) (d : DomainId) (s : Slot) (g : Gen)
+    (hm : marked d s = false) :
+    (((rho.destroyMarked marked).doms d).liveCap s g) =
+      ((rho.doms d).liveCap s g) := by
+  unfold DomainState.liveCap
+  rw [destroyMarked_caps, destroyMarked_slotGen]
+  simp [hm]
+
+/-- For a reference live before destruction, post-destruction liveness is
+equivalent to its slot being unmarked. -/
+theorem destroyMarked_liveRef_true_iff_of_live (rho : MachineState)
+    (marked : DomainId -> Slot -> Bool) (r : CapRef)
+    (hlive : rho.liveRef r = true) :
+    (rho.destroyMarked marked).liveRef r = true <->
+      marked r.dom r.slot = false := by
+  by_cases hm : marked r.dom r.slot = true
+  · have hmfalse : (rho.destroyMarked marked).liveRef r = false :=
+      (destroyMarked_liveRef_false_iff_of_live rho marked r hlive).mpr hm
+    simp [hm, hmfalse]
+  · have hm0 := Bool.eq_false_of_not_eq_true hm
+    unfold MachineState.liveRef at hlive ⊢
+    rw [destroyMarked_liveCap_eq_of_unmarked rho marked r.dom r.slot r.gen hm0]
+    simp [hlive, hm0]
+
 /-- Generic Mover-field correspondence for a core operation whose kill set
 is characterized by post-core endpoint liveness. -/
 theorem absMover_moverAct_endpointSweep (sigma acc : Loom.Hw.St)
