@@ -72,8 +72,8 @@ package/module name collision.
   source count finds 1,830 declaration docstrings for 2,526 public-looking
   declarations. Establish the intended public API first, mark helpers private
   or internal, then enforce documentation on the exported surface.
-- [ ] **Downstream smoke test.** In CI, create a tiny consumer package that
-  requires Loom at the checked-out path and imports `Loom` and `Machines`.
+- [x] **Downstream smoke test.** CI creates a fresh temporary consumer package,
+  requires Loom at the checked-out path, and imports `Loom` and `Machines`.
 - [ ] **Resolve the existing Loom collision before release.** Reservoir already
   indexes `@verse-lab/loom`, which also exports a top-level `Loom` library and
   namespace. Reservoir scopes disambiguate package lookup, but the shared Lean
