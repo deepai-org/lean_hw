@@ -16,7 +16,8 @@ case "$target" in
     rtl=rtl/lnp64u.v
     artifact=Lnp64u
     design_expr='Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest'
-    design_imports=(Machines.Lnp64u.Hw.Core Machines.Lnp64u.Hw.Demo)
+    design_imports=(Machines.Lnp64u.Hw.Core Machines.Lnp64u.Hw.Demo
+      Machines.Lnp64u.Theorems.ReleaseOrder)
     ;;
   *)
     echo "usage: scripts/build_release_witness.sh {acc8|lnp64u} [jobs]" >&2
