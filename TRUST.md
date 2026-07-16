@@ -152,13 +152,37 @@ at the refresh date.
   reached 28.9 GB RSS in under two minutes before termination. A further
   control showed that even one theorem mapping an identity renderer across all
   187,948 hierarchically stored lines overflows the native stack (34.5 s,
-  2.40 GB RSS), whereas three representative bounded 32-line render leaves
-  check in 1.77 s total (1.40 GB process RSS). Therefore the generator must
-  emit local render proofs and a balanced proof tree; the root composes
-  already-checked equalities without re-evaluating its children. Whole-stream
-  equality follows abstractly from that tree and a generic concatenation
-  congruence. The concrete renderer/elaborator, balanced composition prototype,
-  and both release witnesses remain open.
+  2.40 GB RSS). The subsequent full-scale named-theorem/balanced-rope prototype
+  settled the viable granularity:
+
+  | Lines/leaf | Leaves / proof nodes | Lean time | Peak RSS | Result |
+  |---:|---:|---:|---:|---|
+  | 512 | 368 / 735 | 3m22s | 6.05 GB | pass |
+  | 128 | 1,469 / 2,937 | 9m44s | 6.72 GB | pass |
+  | 32 | 5,874 / 11,747 | 1m13s | 6.24 GB | native stack overflow |
+
+  Raising the process stack to 64 MB did not change the 32-line failure. Both
+  passing roots have the intended final statement shape — equality of
+  `flatten diskTree` and `flatten (renderTree witnessTree)`, obtained by
+  `congrArg flatten` from named child constants, conjoined with a semantic
+  placeholder — and depend only on `propext`. The 128-line module's 2,937
+  named proof declarations and 284 MB `.olean` were also fed to the memoized
+  audit: all checks passed in 12.18 s (8.21 GB peak RSS while loading the full
+  enlarged environment). Therefore 512 lines is the current release default;
+  128 is a viable diagnostic fallback; 32 is rejected. The concrete
+  renderer/elaborator and both release witnesses remain open.
+
+- **Finding 3a — file binding is an explicit trusted build step.** Generated
+  proof modules will be produced during the build, not checked in. The fixed
+  rule is: split the exact release byte stream at LF boundaries, retain the
+  final empty segment when the file ends in LF, group 512 logical lines per
+  leaf, and preserve leaf order in a balanced rope. Lean checks every embedded
+  leaf literal against the witness renderer and composes the named equalities;
+  CI independently reconstructs those leaves, concatenates them with LF, and
+  uses exact `cmp` against `rtl/acc8.v` / `rtl/lnp64u.v`. The generator is
+  untrusted for correctness but must be deterministic: CI runs it twice and
+  compares generated sources byte-for-byte. This file read plus `cmp` is named
+  in the TCB; SHA-256 may identify releases but is not used as proof.
 - **Finding 4 — reset realization is below the proof boundary.** The R-MC
   reset obligations can show that the EDSL reset state abstracts to
   `Manifest.initState`; they do not show that an electrical or SoC-level
@@ -237,10 +261,10 @@ at the refresh date.
    `StallFree` is deleted from T6.
 3. ● Complete witnessed release validation: define the minimal concrete SSA
    syntax, prove arbitrary-witness renderer/elaborator soundness, generate
-   Acc8 and LNP64-µ witnesses, and kernel-check bounded render leaves composed
-   by a balanced proof tree. The full-size feasibility spike is complete:
-   local leaves are viable, while monolithic `String` reduction and a single
-   full-artifact render traversal are explicitly ruled out by measurement.
+   Acc8 and LNP64-µ witnesses, and kernel-check 512-line render leaves composed
+   by a balanced proof tree. The full-scale dummy prototype and audit are
+   complete; the remaining work is the concrete syntax/elaborator and release
+   witnesses, not proof-composition research.
 4. DONE 2026-07-04: `Tests.Lnp64uWitnesses` gives kernel-checked witnesses
    for finite manifest-side hypotheses, and D11 deleted T6's semantic
    `StallFree` side condition.
