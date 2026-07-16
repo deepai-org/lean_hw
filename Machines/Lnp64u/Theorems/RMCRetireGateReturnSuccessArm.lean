@@ -365,6 +365,103 @@ theorem square_retire_gateReturn_payload (m : Manifest) (σ : Loom.Hw.St)
   · exact hcyc
   · exact hτ2if
 
+/-- Return-specific status-authority bridge over an arbitrary structural
+transfer prefix. -/
+theorem sAuth_return_backings_eval (σ : Loom.Hw.St) (E : DomainId)
+    (S : Slot) (τ : MachineState)
+    (hslot : (Hw.retSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hregions : ∀ c : DomainId,
+      (τ.doms c).regions = ((Hw.abs σ).doms c).regions)
+    (hbacking : ∀ c r rg, ((Hw.abs σ).doms c).regions r = some rg →
+      τ.liveRef rg.backing =
+        if rg.backing.dom = E ∧ rg.backing.slot = S then false
+        else (Hw.abs σ).liveRef rg.backing)
+    (hwf : Wf (Hw.abs σ)) (ow : Expr 2) (sa : Expr 12) :
+    ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+      τ.sweepRegions.domCovers (finOfBv (by decide) (ow.eval σ))
+        (sa.eval σ) ⟨false, true, false⟩ = true := by
+  apply sAuth_region_eq_eval σ τ.sweepRegions hmapz
+  intro c r
+  exact sweepRegions_transfer_region_eq_backings σ E (Hw.retSel E).slot S
+    τ hslot (fun dm sl => by
+      rw [hkills]
+      exact retKilled_nonzero_eval σ E hnz dm sl)
+    hmapz hunmapz hregions hbacking hwf c r
+
+/-- Status authority for a return transfer from the post-refill retirement
+base. -/
+theorem sAuth_return_retire_transfer (m : Manifest) (σ : Loom.Hw.St)
+    (E T : DomainId) (S NS : Slot) (kind : CapKind)
+    (moved : Option (LineageId × CapRef)) (oldRef newRef : CapRef)
+    (hslot : (Hw.retSel E).slot.eval σ = BitVec.ofNat 4 S.val)
+    (hnz : (Hw.retNZ E).eval σ = 1#1)
+    (hkills : ∀ (dm : Expr 2) (sl : Expr 4),
+      (Hw.killedByCoreE dm sl).eval σ = (Hw.retKilled E dm sl).eval σ)
+    (hmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "map", Hw.mapOkE c,
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hunmapz : ∀ (c : DomainId) (r : RegionId),
+      (Hw.andAll [Hw.retiringE, Hw.ifDomIs c, Hw.isMn "unmap",
+        .eq Hw.riE (Hw.rLit r)]).eval σ = 0#1)
+    (hfree : ((Hw.abs σ).doms T).caps NS = none)
+    (hwf : Wf (Hw.abs σ)) (ow : Expr 2) (sa : Expr 12) :
+    ((Hw.orAll ((List.finRange numDomains).flatMap fun c =>
+        (List.finRange numRegions).map fun r =>
+          Hw.andAll [Expr.eq ow (Hw.dLit c), Hw.rgnVPostE c r,
+            Hw.rgnCoversVal (Hw.rgnValPostE c r) sa
+              ⟨false, true, false⟩])).eval σ = 1#1) ↔
+      (transferStructural
+        { refillPhase m (Hw.abs σ) with inflight := none }
+        T NS kind moved oldRef newRef E S).domCovers
+          (finOfBv (by decide) (ow.eval σ)) (sa.eval σ)
+          ⟨false, true, false⟩ = true := by
+  let base : MachineState :=
+    { refillPhase m (Hw.abs σ) with inflight := none }
+  let τc := ((installTransferred base T NS kind moved).reparent oldRef newRef)
+    |>.clearSlot E S
+  have hregions : ∀ c : DomainId,
+      (τc.doms c).regions = ((Hw.abs σ).doms c).regions := by
+    intro c
+    by_cases hcT : c = T
+    · subst c
+      by_cases hTE : T = E <;>
+        simp [τc, base, installTransferred, MachineState.reparent,
+          MachineState.clearSlot, MachineState.setDom, Loom.Fun.update,
+          retireBase_regions, hTE]
+    · by_cases hcE : c = E
+      · subst c
+        simp [τc, base, installTransferred, MachineState.reparent,
+          MachineState.clearSlot, MachineState.setDom, Loom.Fun.update,
+          retireBase_regions, hcT]
+      · simp [τc, base, installTransferred, MachineState.reparent,
+          MachineState.clearSlot, MachineState.setDom, Loom.Fun.update,
+          retireBase_regions, hcT, hcE]
+  have hbacking : ∀ c r rg, ((Hw.abs σ).doms c).regions r = some rg →
+      τc.liveRef rg.backing =
+        if rg.backing.dom = E ∧ rg.backing.slot = S then false
+        else (Hw.abs σ).liveRef rg.backing := by
+    intro c r rg hrg
+    have hlive := regionBacking_live hwf hrg
+    have h := transferStructural_retire_liveRef m σ T NS kind moved
+      oldRef newRef E S rg.backing hfree hlive
+    simpa [transferStructural, τc, base, sweepRegions_liveRef, hlive] using h
+  have h := sAuth_return_backings_eval σ E S τc hslot hnz hkills
+    hmapz hunmapz hregions hbacking hwf ow sa
+  simpa [transferStructural, τc, base] using h
+
 /-- A successful null reply has no core kill footprint. -/
 theorem Inert.of_successful_gateReturn_zero (σ : Loom.Hw.St)
     (E : DomainId)
