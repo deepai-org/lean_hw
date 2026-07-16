@@ -238,6 +238,76 @@ inductive NextRulesCert where
   | cons (mid : Option Ref) (head : NextRegCert) (tail : NextRulesCert)
   deriving Repr, DecidableEq
 
+/-- Structural evidence that an action cannot write one register. Generated
+release proofs compose this evidence as named constants, avoiding kernel
+normalization of a whole processor action merely to justify a `.same` node. -/
+inductive NoRegWrite (register : String) (width : Nat) : Loom.Hw.Act → Prop
+  | skip : NoRegWrite register width .skip
+  | seq {left right} : NoRegWrite register width left →
+      NoRegWrite register width right →
+      NoRegWrite register width (.seq left right)
+  | ite {guard thenAction elseAction} :
+      NoRegWrite register width thenAction →
+      NoRegWrite register width elseAction →
+      NoRegWrite register width (.ite guard thenAction elseAction)
+  | writeName {actualWidth name} (value : Loom.Hw.Expr actualWidth)
+      (different : name ≠ register) :
+      NoRegWrite register width (.write actualWidth name value)
+  | writeWidth {actualWidth} (value : Loom.Hw.Expr actualWidth)
+      (different : actualWidth ≠ width) :
+      NoRegWrite register width (.write actualWidth register value)
+  | memWrite {addressWidth dataWidth name port}
+      (address : Loom.Hw.Expr addressWidth) (value : Loom.Hw.Expr dataWidth) :
+      NoRegWrite register width
+        (.memWrite addressWidth dataWidth name port address value)
+
+theorem NoRegWrite.not_mem {register : String} {width : Nat}
+    {action : Loom.Hw.Act} (h : NoRegWrite register width action) :
+    (register, width) ∉ action.regWrites := by
+  induction h with
+  | skip => simp [Loom.Hw.Act.regWrites]
+  | seq _ _ left right =>
+      simp [Loom.Hw.Act.regWrites, left, right]
+  | ite _ _ thenProof elseProof =>
+      simp [Loom.Hw.Act.regWrites, thenProof, elseProof]
+  | writeName _ different =>
+      simp only [Loom.Hw.Act.regWrites, List.mem_singleton, Prod.mk.injEq,
+        not_and]
+      intro sameName _
+      exact different sameName.symm
+  | writeWidth _ different =>
+      simp only [Loom.Hw.Act.regWrites, List.mem_singleton, Prod.mk.injEq,
+        true_and]
+      exact fun sameWidth => different sameWidth.symm
+  | memWrite => simp [Loom.Hw.Act.regWrites]
+
+theorem NoRegWrite.of_not_mem (register : String) (width : Nat) :
+    ∀ action : Loom.Hw.Act, (register, width) ∉ action.regWrites →
+      NoRegWrite register width action
+  | .skip, _ => .skip
+  | .seq left right, h => by
+      simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at h
+      exact .seq (of_not_mem register width left h.1)
+        (of_not_mem register width right h.2)
+  | .ite _ thenAction elseAction, h => by
+      simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at h
+      exact .ite (of_not_mem register width thenAction h.1)
+        (of_not_mem register width elseAction h.2)
+  | .write actualWidth name value, h => by
+      by_cases hname : name = register
+      · subst name
+        apply NoRegWrite.writeWidth value
+        intro sameWidth
+        subst actualWidth
+        exact h (by simp [Loom.Hw.Act.regWrites])
+      · exact NoRegWrite.writeName value hname
+  | .memWrite _ _ _ _ address value, _ => NoRegWrite.memWrite address value
+
+theorem NoRegWrite.writesRegB_eq_false {register : String} {width : Nat}
+    {action : Loom.Hw.Act} (h : NoRegWrite register width action) :
+    Loom.Hw.Compile.writesRegB register width action = false := by
+  simp [Loom.Hw.Compile.writesRegB, h.not_mem]
+
 /-- Validate one source action's contribution to a register root without
 materializing `Compile.nextReg`. -/
 def nextRegMatches (wires : Rope (List IndexedWire)) (table : WireTable)
@@ -307,6 +377,26 @@ def nextRulesMatches (wires : Rope (List IndexedWire)) (table : WireTable)
 These lemmas are deliberately small. Generated release modules give every
 large child check its own named theorem and use the lemmas below to compose
 parents without unfolding or normalizing the child proofs again. -/
+
+theorem nextRegMatches_same_of_noWrite
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (action : Loom.Hw.Act)
+    (current : Ref) (h : NoRegWrite register width action) :
+    nextRegMatches wires table register width action (some current) current
+      .same = true := by
+  cases h with
+  | skip => simp [nextRegMatches]
+  | seq leftProof rightProof =>
+      simp [nextRegMatches,
+        (NoRegWrite.seq leftProof rightProof).writesRegB_eq_false]
+  | ite thenProof elseProof =>
+      simp [nextRegMatches, thenProof.writesRegB_eq_false,
+        elseProof.writesRegB_eq_false]
+  | writeName value different =>
+      simp [nextRegMatches, different]
+  | writeWidth value different =>
+      simp [nextRegMatches, different]
+  | memWrite => simp [nextRegMatches]
 
 theorem nextRegMatches_seq_named
     (wires : Rope (List IndexedWire)) (table : WireTable)
