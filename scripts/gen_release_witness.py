@@ -55,6 +55,46 @@ def rhs(text: str) -> str:
     raise ValueError(f"unsupported RHS: {text}")
 
 
+def indexed_ref(name: str) -> str:
+    match = re.fullmatch(r"n(\d+)", name)
+    return f".wire {match[1]}" if match else f".reg {q(name)}"
+
+
+def indexed_rhs(text: str) -> str:
+    """String-free certificate view of a parsed canonical RHS."""
+    patterns = [
+        (r"(\d+)'d(\d+)", lambda m: f".lit {m[1]} {m[2]}"),
+        (r"~([A-Za-z_]\w*)", lambda m: f".not ({indexed_ref(m[1])})"),
+        (r"\$signed\((\w+)\) < \$signed\((\w+)\)",
+         lambda m: f".slt ({indexed_ref(m[1])}) ({indexed_ref(m[2])})"),
+        (r"\{\{(\d+)\{(\w+)\[(\d+)\]\}\}, (\w+)\}",
+         lambda m: f".sext {m[1]} ({indexed_ref(m[2])}) {m[3]}" if m[2] == m[4]
+         else (_ for _ in ()).throw(ValueError("mismatched sext operand"))),
+        (r"(\w+)\[(\d+):(\d+)\]",
+         lambda m: f".slice ({indexed_ref(m[1])}) {m[2]} {m[3]}"),
+        (r"(\w+)\[(\w+)\]",
+         lambda m: f".memRead {q(m[1])} ({indexed_ref(m[2])})"),
+        (r"(\w+) \? (\w+) : (\w+)",
+         lambda m: f".mux ({indexed_ref(m[1])}) ({indexed_ref(m[2])}) "
+                   f"({indexed_ref(m[3])})"),
+    ]
+    operators = {"&": "and", "|": "or", "^": "xor", "+": "add",
+                 "-": "sub", "<<": "shl", ">>": "shr", "==": "eq",
+                 "<": "ult"}
+    for token in ("<<", ">>", "==", "&", "|", "^", "+", "-", "<"):
+        patterns.append((rf"(\w+) {re.escape(token)} (\w+)",
+                         lambda m, op=operators[token]:
+                         f".bin .{op} ({indexed_ref(m[1])}) "
+                         f"({indexed_ref(m[2])})"))
+    patterns.append((r"([A-Za-z_]\w*)",
+                     lambda m: f".ident ({indexed_ref(m[1])})"))
+    for pattern, build in patterns:
+        match = re.fullmatch(pattern, text)
+        if match:
+            return build(match)
+    raise ValueError(f"unsupported indexed RHS: {text}")
+
+
 def balanced(names: list[str], empty: str) -> str:
     if not names:
         return empty
@@ -114,7 +154,8 @@ def prelude(imports: list[str], namespace: str) -> list[str]:
              "set_option maxRecDepth 1000000", "set_option maxHeartbeats 0", ""])
 
 
-def wire_block_declarations(blocks: list[list[dict]], first: int = 0) -> list[str]:
+def wire_block_declarations(blocks: list[list[dict]], block_size: int,
+                            first: int = 0) -> list[str]:
     out: list[str] = []
     for offset, block in enumerate(blocks):
         index = first + offset
@@ -124,6 +165,19 @@ def wire_block_declarations(blocks: list[list[dict]], first: int = 0) -> list[st
         entries = [f"  {{ width := {w['width']}, name := {q(w['name'])}, rhs := {w['rhs']} }}"
                    for w in block]
         out += [f"def {name} : List Wire := [", ",\n".join(entries), "]", ""]
+        indexed_name = f"indexedWireBlock{index:04d}"
+        indexed_entries = [
+            f"  {{ width := {w['width']}, rhs := {w['indexedRhs']} }}"
+            for w in block]
+        out += [f"def {indexed_name} : List Symbolic.IndexedWire := [",
+                ",\n".join(indexed_entries), "]", "",
+                f"theorem indexedWireBlockMatches{index:04d} :",
+                f"    Symbolic.indexedBlockMatches {index * block_size} " +
+                  f"{name} {indexed_name} = true := rfl", ""]
+        out += [f"theorem indexedWireLeafMatches{index:04d} :",
+                f"    Symbolic.IndexedRopeMatches {index * block_size} " +
+                  f"(.leaf {name}) (.leaf {indexed_name}) :=",
+                f"  .leaf indexedWireBlockMatches{index:04d}", ""]
         disk_entries = ",\n".join(f"  {q(w['line'])}" for w in block)
         out += [f"def {disk_name} : List String := [", disk_entries, "]", "",
                 f"theorem {proof_name} :",
@@ -178,7 +232,8 @@ def parse(path: Path) -> dict:
     while i < len(lines) and (match := re.fullmatch(
             r"  wire \[(\d+):0\] (\w+) = (.*);", lines[i])):
         wires.append({"width": int(match[1]) + 1, "name": match[2],
-                      "rhs": rhs(match[3]), "line": lines[i]})
+                      "rhs": rhs(match[3]),
+                      "indexedRhs": indexed_rhs(match[3]), "line": lines[i]})
         i += 1
     suffix_start = i
     assert lines[i] == "  always @(posedge clk) begin"; i += 1
@@ -392,9 +447,9 @@ def emit_batched(data: dict, output: Path, block_size: int,
         module = ".".join(relative.parent.parts + (f"Batch{batch_index:03d}",))
         batch_modules.append(module)
         batch_path = output.parent / f"Batch{batch_index:03d}.lean"
-        batch = prelude(["Loom.Release.SSA"], namespace)
+        batch = prelude(["Loom.Release.SymbolicCertificate"], namespace)
         batch += wire_block_declarations(
-            blocks[start:start + batch_blocks], first=start)
+            blocks[start:start + batch_blocks], block_size, first=start)
         batch += [f"end {namespace}", ""]
         write_if_changed(batch_path, "\n".join(batch))
 
@@ -404,17 +459,27 @@ def emit_batched(data: dict, output: Path, block_size: int,
             stale.unlink()
 
     names = [f"wireBlock{i:04d}" for i in range(len(blocks))]
+    indexed_names = [f"indexedWireBlock{i:04d}" for i in range(len(blocks))]
     disk_names = [f"diskWireBlock{i:04d}" for i in range(len(blocks))]
     proofs = [f"renderWireBlock{i:04d}" for i in range(len(blocks))]
+    indexed_proofs = [f"indexedWireLeafMatches{i:04d}" for i in range(len(blocks))]
     out = prelude(["Loom.Release.Certificate",
                    "Loom.Release.SymbolicCertificate"] + batch_modules,
                   namespace)
     out += ["def wireTree : Rope (List Wire) :=",
             "  " + balanced(names, ".leaf []").replace(
                 "wireBlock", ".leaf wireBlock"), "",
+            "def indexedWireTree : Rope (List Symbolic.IndexedWire) :=",
+            "  " + balanced(indexed_names, ".leaf []").replace(
+                "indexedWireBlock", ".leaf indexedWireBlock"), "",
+            "theorem indexedWiresMatch :",
+            "    Symbolic.IndexedRopeMatches 0 wireTree indexedWireTree := by",
+            "  unfold wireTree indexedWireTree",
+            "  exact " + balanced(indexed_proofs, ".leaf rfl").replace(
+                ".node", ".node"), "",
             "def wireTable : Symbolic.WireTable where",
             f"  leafSize := {block_size}",
-            "  paths := #[" + ", ".join(
+            "  paths := [" + ", ".join(
                 "[" + ", ".join("true" if step else "false" for step in path) + "]"
                 for path in balanced_paths(len(blocks))) + "]", "",
             "def diskWireTree : Rope (List String) :=",
@@ -433,6 +498,75 @@ def emit_batched(data: dict, output: Path, block_size: int,
         imports = design_imports or []
         for stale in output.parent.glob("CertBatch*.lean"):
             stale.unlink()
+        for stale in output.parent.glob("SemanticRegBatch*.lean"):
+            stale.unlink()
+
+        reg_batch_modules = []
+        for batch_index, start in enumerate(range(0, len(data["regs"]), 16)):
+            module = f"{cert_module_prefix}.SemanticRegBatch{batch_index}"
+            reg_batch_modules.append(module)
+            declarations = [
+                "-- Generated by scripts/gen_release_witness.py; DO NOT EDIT.",
+                f"import {root_module}",
+                "import Loom.Release.KernelDecide",
+                f"import {cert_module_prefix}.IndexedCertBatch{batch_index}",
+                *[f"import {module}" for module in imports],
+                "", f"namespace {namespace}", "", "open Loom.Release", "",
+                "set_option maxRecDepth 1000000", "set_option maxHeartbeats 0", ""]
+            for index in range(start, min(start + 16, len(data["regs"]))):
+                root = indexed_ref(data["regs"][index]["next"])
+                reg = data["regs"][index]
+                declarations += [f"theorem semanticRegisterMetadata{index} :",
+                    f"    Symbolic.indexedRegisterMetadataMatchesAt ({design_expr}) program",
+                    f"      {index} ({root}) = true := rfl", "",
+                    f"theorem semanticRegister{index} :",
+                    f"    Symbolic.nextRulesMatches indexedWireTree wireTable",
+                    f"      {q(reg['name'])} {reg['width']} ({design_expr}).rules",
+                    f"      (some (.reg {q(reg['name'])})) ({root}) indexedReleaseRegCert{index} = true := kernel_decide", ""]
+            declarations += [f"end {namespace}", ""]
+            write_if_changed(output.parent / f"SemanticRegBatch{batch_index}.lean",
+                             "\n".join(declarations))
+
+        root_entries = [
+            f"{{ index := {index}, root := {indexed_ref(reg['next'])} }}"
+            for index, reg in enumerate(data["regs"])]
+        semantic_regs = (["-- Generated by scripts/gen_release_witness.py; DO NOT EDIT."] +
+                         [f"import {module}" for module in reg_batch_modules] +
+                         ["", f"namespace {namespace}", "", "open Loom.Release", "",
+                          "def registerRoots : List Symbolic.RegisterRoot := [",
+                          "  " + ",\n  ".join(root_entries), "]", "",
+                          f"end {namespace}", ""])
+        write_if_changed(output.parent / "SemanticRegs.lean", "\n".join(semantic_regs))
+
+        semantic_mems = (["-- Generated by scripts/gen_release_witness.py; DO NOT EDIT.",
+                          f"import {root_module}",
+                          "import Loom.Release.KernelDecide",
+                          *[f"import {module}" for module in imports],
+                          "", f"namespace {namespace}", "", "open Loom.Release", "",
+                          "set_option maxRecDepth 1000000", "set_option maxHeartbeats 0", ""])
+        for memory_index, memory in enumerate(data["mems"]):
+            semantic_mems += [f"theorem semanticMemory{memory_index} :",
+                f"    Symbolic.indexedMemoryMatchesAt ({design_expr}) program " +
+                f"{memory_index} = true := rfl", ""]
+            for block_index, _ in enumerate(chunks(memory["init"], block_size)):
+                start = block_index * block_size
+                semantic_mems += [
+                    f"theorem semanticMemory{memory_index}Init{block_index} :",
+                    f"    (match ({design_expr}).mems[{memory_index}]? with",
+                    f"      | some source => Symbolic.memoryInitBlockMatches source {start} " +
+                    f"mem{memory_index}Init{block_index:04d}",
+                    f"      | none => false) = true := kernel_decide", ""]
+            for port_index, write in enumerate(memory["writes"]):
+                refs = ("{ en := " + indexed_ref(write["en"]) +
+                        ", addr := " + indexed_ref(write["addr"]) +
+                        ", data := " + indexed_ref(write["data"]) + " }")
+                semantic_mems += [f"theorem semanticMemory{memory_index}Port{port_index} :",
+                    f"    Symbolic.indexedMemoryPortMatchesAt ({design_expr}) program",
+                    f"      indexedWireTree wireTable {memory_index} {port_index} " +
+                    f"({refs}) = true := rfl", ""]
+        semantic_mems += [f"end {namespace}", ""]
+        write_if_changed(output.parent / "SemanticMems.lean", "\n".join(semantic_mems))
+
         cert_data = output.parent / "CertData.lean"
         cert_prefix = (f"import {root_module}\n" +
                        "import Loom.Release.NamedCertificate\n" +
@@ -459,6 +593,11 @@ def emit_batched(data: dict, output: Path, block_size: int,
                      "  for (body, index) in batches.zipIdx do",
                      f"    IO.FS.writeFile (s!\"{output.parent}/CertBatch{{index}}.lean\") <|",
                      f"      {q('import Loom.Release.NamedCertificate\nnamespace ' + namespace + '\nopen Loom.Release\nset_option maxRecDepth 1000000\n')} ++",
+                     f"      body ++ {q('end ' + namespace + '\n')}",
+                     "  let indexedBatches := Tools.ReleaseCertGen.indexedDeclarationBatchesToLean cert 16",
+                     "  for (body, index) in indexedBatches.zipIdx do",
+                     f"    IO.FS.writeFile (s!\"{output.parent}/IndexedCertBatch{{index}}.lean\") <|",
+                     f"      {q('import Loom.Release.SymbolicCertificate\nnamespace ' + namespace + '\nopen Loom.Release\nset_option maxRecDepth 1000000\n')} ++",
                      f"      body ++ {q('end ' + namespace + '\n')}",
                      "  let batchImports := String.join <| batches.zipIdx.map fun (_, index) =>",
                      f"    s!\"import {cert_module_prefix}.CertBatch{{index}}\\n\"",

@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.NamedCertificate
+import Loom.Release.SymbolicCertificate
 import Std.Data.HashMap
 
 /-!
@@ -24,6 +25,7 @@ structure ExprIndex where
   rhsNames : Std.HashMap String String
 structure GenState where
   nextLookup : Nat := 0
+  hashMemo : HashMemo := {}
 
 abbrev GenM := StateT GenState Option
 
@@ -122,11 +124,10 @@ private unsafe def findExpr? (index : ExprIndex) {w : Nat}
   match target with
   | .reg _ name => pure (some name)
   | _ =>
-      -- Pointer memoization is intentionally local to this live expression
-      -- graph. Keeping it across independently compiled roots would require
-      -- retaining every enormous root to prevent address reuse.
+      -- Required expressions may be independently constructed, so pointer
+      -- identities must not escape this one hash traversal.
       let (key, _) := (exprHash target).run {}
-      modify fun state => { nextLookup := state.nextLookup + 1 }
+      modify fun state => { state with nextLookup := state.nextLookup + 1 }
       match index.hashed[key]? with
       | some name => pure (some name)
       | none =>
@@ -141,35 +142,72 @@ private unsafe def findExpr (index : ExprIndex) {w : Nat}
       dbg_trace s!"release certificate: missing required SSA expression width={w}"
       failure
 
+/-- Fast optional lookup for sequence intermediates. Unlike `findExpr?`, this
+does not scan the entire SSA environment when lowering did not name the
+intermediate; the symbolic checker can often validate such a sequence through
+its liveness alternatives. -/
+private unsafe def findIntermediate? (index : ExprIndex) {w : Nat}
+    (target : Loom.Emit.MicroVerilog.Expr w) : GenM (Option String) := do
+  match target with
+  | .reg _ name => pure (some name)
+  | _ =>
+      let state ← get
+      let (key, hashMemo) := (exprHash target).run state.hashMemo
+      set { state with
+        nextLookup := state.nextLookup + 1
+        hashMemo := hashMemo }
+      pure index.hashed[key]?
+
+private def nextRegDependsOnCurrent (rn : String) (w : Nat) : Act → Bool
+  | .skip => true
+  | .seq left right =>
+      nextRegDependsOnCurrent rn w left && nextRegDependsOnCurrent rn w right
+  | .ite _ thenAct elseAct =>
+      nextRegDependsOnCurrent rn w thenAct ||
+        nextRegDependsOnCurrent rn w elseAct
+  | .write actualWidth name _ => !(name == rn && actualWidth == w)
+  | .memWrite .. => true
+
+private def rulesDependOnCurrent (rn : String) (w : Nat) :
+    List RuleSummary → Bool
+  | [] => true
+  | summary :: rules =>
+      nextRegDependsOnCurrent rn w summary.rule.body &&
+        rulesDependOnCurrent rn w rules
+
 private unsafe def synthNextReg (index : ExprIndex) (rn : String) (w : Nat) :
-    Act → Loom.Emit.MicroVerilog.Expr w →
+    Act → Loom.Emit.MicroVerilog.Expr w → Bool →
       GenM (Bool × Loom.Emit.MicroVerilog.Expr w × Named.NextRegCert w)
-  | .skip, cur => some (false, cur, .same)
-  | .seq left right, cur => do
-      let (leftWrites, mid, leftCert) ← synthNextReg index rn w left cur
-      let (rightWrites, out, rightCert) ← synthNextReg index rn w right mid
+  | .skip, cur, _ => some (false, cur, .same)
+  | .seq left right, cur, outputNeeded => do
+      let midNeeded := outputNeeded && nextRegDependsOnCurrent rn w right
+      let (leftWrites, mid, leftCert) ←
+        synthNextReg index rn w left cur midNeeded
+      let (rightWrites, out, rightCert) ←
+        synthNextReg index rn w right mid outputNeeded
       if leftWrites || rightWrites then
-        -- Sequential intermediates need not be named. The total materializer
-        -- recomputes this local reference term from the source action.
-        pure (true, out, .seq none leftCert rightCert)
+        let midName ← if midNeeded then
+            findIntermediate? index mid
+          else pure none
+        pure (true, out, .seq midName leftCert rightCert)
       else pure (false, cur, .same)
-  | .ite guard thenAct elseAct, cur =>
+  | .ite guard thenAct elseAct, cur, outputNeeded =>
       do
-        let (thenWrites, thenOut, thenCert) ←
-          synthNextReg index rn w thenAct cur
-        let (elseWrites, elseOut, elseCert) ←
-          synthNextReg index rn w elseAct cur
-        if thenWrites || elseWrites then
+      let (thenWrites, thenOut, thenCert) ←
+          synthNextReg index rn w thenAct cur outputNeeded
+      let (elseWrites, elseOut, elseCert) ←
+          synthNextReg index rn w elseAct cur outputNeeded
+      if thenWrites || elseWrites then
           pure (true, .mux (Compile.compileExprFast guard) thenOut elseOut,
             .ite thenCert elseCert)
         else pure (false, cur, .same)
-  | .write actualWidth name value, cur =>
+  | .write actualWidth name value, cur, _ =>
       if _hname : name = rn then
         if hwidth : actualWidth = w then
           some (true, Compile.compileExprFast (hwidth ▸ value), .write)
         else some (false, cur, .same)
       else some (false, cur, .same)
-  | .memWrite .., cur => some (false, cur, .same)
+  | .memWrite .., cur, _ => some (false, cur, .same)
 
 private unsafe def synthNextRules (index : ExprIndex) (rn : String) (w : Nat) :
     List RuleSummary → String → Loom.Emit.MicroVerilog.Expr w → Option String →
@@ -177,11 +215,12 @@ private unsafe def synthNextRules (index : ExprIndex) (rn : String) (w : Nat) :
   | [], _, cur, _ => some (cur, .nil)
   | summary :: rules, finalName, cur, curName =>
       if summary.regWrites[(rn, w)]?.isSome then do
-        let (_, mid, head) ← synthNextReg index rn w summary.rule.body cur
-        let hasLaterWrite := rules.any fun later =>
-          later.regWrites[(rn, w)]?.isSome
-        let midName ← if hasLaterWrite then findExpr? index mid
-          else pure (some finalName)
+        let midNeeded := rulesDependOnCurrent rn w rules
+        let (_, mid, head) ← synthNextReg index rn w summary.rule.body cur midNeeded
+        let midName ← if midNeeded then
+            if rules.isEmpty then pure (some finalName)
+            else findIntermediate? index mid
+          else pure none
         let (out, tail) ← synthNextRules index rn w rules finalName mid midName
         pure (out, .cons midName head tail)
       else do
@@ -193,9 +232,11 @@ private unsafe def synthRegs (index : ExprIndex)
     (regs : List RegDecl) → GenM (Named.RegsCert regs)
   | [] => some .nil
   | reg :: regs => do
+      modify fun state => { state with hashMemo := {} }
       let some finalName := finalNames[(reg.name, reg.width)]? | failure
       let (_, rulesCert) ← synthNextRules index reg.name reg.width rules
         finalName (.reg reg.width reg.name) (some reg.name)
+      modify fun state => { state with hashMemo := {} }
       pure (.cons ⟨rulesCert⟩ (← synthRegs index rules finalNames regs))
 
 private unsafe def findPort (index : ExprIndex) {aw dw : Nat}
@@ -330,6 +371,36 @@ private def regsToLean : {regs : List RegDecl} → Named.RegsCert regs → Strin
 private def regCertName (index : Nat) : String :=
   s!"releaseRegCert{index}"
 
+private def indexedRegCertName (index : Nat) : String :=
+  s!"indexedReleaseRegCert{index}"
+
+private def refToLean (name : String) : String :=
+  if name.startsWith "n" then
+    match (name.drop 1).toNat? with
+    | some number => s!".wire {number}"
+    | none => s!".reg {quote name}"
+  else s!".reg {quote name}"
+
+private def optionalRefToLean (name : Option String) : String :=
+  match name with
+  | some name => s!"some ({refToLean name})"
+  | none => "none"
+
+private def indexedNextRegToLean {w : Nat} : Named.NextRegCert w → String
+  | .same => ".same"
+  | .write => ".write"
+  | .seq mid left right =>
+      s!".seq ({optionalRefToLean mid}) ({indexedNextRegToLean left}) " ++
+        s!"({indexedNextRegToLean right})"
+  | .ite thenCert elseCert =>
+      s!".ite ({indexedNextRegToLean thenCert}) ({indexedNextRegToLean elseCert})"
+
+private def indexedNextRulesToLean {w : Nat} : Named.NextRulesCert w → String
+  | .nil => ".nil"
+  | .cons mid head tail =>
+      s!".cons ({optionalRefToLean mid}) ({indexedNextRegToLean head}) " ++
+        s!"({indexedNextRulesToLean tail})"
+
 private def regDeclarationList : {regs : List RegDecl} →
     Named.RegsCert regs → Nat → List String
   | [], .nil, _ => []
@@ -337,6 +408,14 @@ private def regDeclarationList : {regs : List RegDecl} →
       (s!"def {regCertName index} : Named.NextRulesCert {reg.width} := " ++
         nextRulesToLean head.rules) ::
         regDeclarationList tail (index + 1)
+
+private def indexedRegDeclarationList : {regs : List RegDecl} →
+    Named.RegsCert regs → Nat → List String
+  | [], .nil, _ => []
+  | _ :: _, .cons head tail, index =>
+      (s!"def {indexedRegCertName index} : Symbolic.NextRulesCert := " ++
+        indexedNextRulesToLean head.rules) ::
+        indexedRegDeclarationList tail (index + 1)
 
 private def namedRegsToLean : {regs : List RegDecl} →
     Named.RegsCert regs → Nat → String
@@ -396,6 +475,12 @@ bodies. Later certificate modules reference these public constants by name. -/
 def declarationBatchesToLean {design : Design}
     (cert : Named.ModuleCert design) (batchSize : Nat := 16) : List String :=
   (regDeclarationList cert.regs 0).toChunks batchSize |>.map fun declarations =>
+    String.intercalate "\n" declarations ++ "\n"
+
+/-- String-free action-fold certificates for the bounded symbolic checker. -/
+def indexedDeclarationBatchesToLean {design : Design}
+    (cert : Named.ModuleCert design) (batchSize : Nat := 16) : List String :=
+  (indexedRegDeclarationList cert.regs 0).toChunks batchSize |>.map fun declarations =>
     String.intercalate "\n" declarations ++ "\n"
 
 end Tools.ReleaseCertGen
