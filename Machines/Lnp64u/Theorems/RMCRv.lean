@@ -61,7 +61,7 @@ private theorem rvNameBlocks_nodup (m : Manifest) :
     ((List.finRange (numDomains * numSlots)).flatMap rvNameBlock).Nodup := by
   have h := names_nodup m
   unfold Hw.regDecls at h
-  simp only [List.map_append, List.map_flatMap, List.map_map] at h
+  simp only [List.map_append, List.map_flatMap] at h
   exact (by simpa [rvNameBlock] using h.of_append_right)
 
 private theorem rvNameBlock_nodup (m : Manifest) (i : Hw.NodeId) :
@@ -239,6 +239,49 @@ theorem rvInit_run_j (m : Manifest) (σ acc : Loom.Hw.St) (i : Hw.NodeId) :
     exact rvInitNodeA_run_block_frame m σ acc' j i hji (Hw.rvJ i) 6
       (by simp [rvNameBlock])
 
+private theorem nDom_nodeOf (c : DomainId) (s : Slot) :
+    Hw.nDom (Hw.nodeOf c s) = c := by
+  exact (nDom_pack c.val s.val c.isLt s.isLt).1
+
+private theorem nSlot_nodeOf (c : DomainId) (s : Slot) :
+    Hw.nSlot (Hw.nodeOf c s) = s := by
+  exact (nDom_pack c.val s.val c.isLt s.isLt).2
+
+/-- The initialization circuit's parent-exists bit and packed parent decode
+exactly characterize `MachineState.parentOf` on the abstraction. -/
+theorem rvInit_parent_some_iff (σ : Loom.Hw.St) (c : DomainId) (s : Slot)
+    (p : CapRef) :
+    ((rvInitPEx (Hw.nodeOf c s)).eval σ = 1#1 ∧
+      Hw.decRef ((rvInitPEnc (Hw.nodeOf c s)).eval σ) = p) ↔
+      (Hw.abs σ).parentOf c s = some p := by
+  rw [rvInitPEx, rvInitPEnc, nDom_nodeOf, nSlot_nodeOf]
+  change
+    ((σ.regs (Hw.dcapV c s) 1 &&&
+        (σ.regs (Hw.dcapLinV c s) 1 &&&
+          (Hw.cellVAt c (Expr.reg 4 (Hw.dcapLin c s))).eval σ) = 1#1 ∧
+        Hw.decRef ((Hw.cellParAt c
+          (Expr.reg 4 (Hw.dcapLin c s))).eval σ) = p) ↔
+      (Hw.abs σ).parentOf c s = some p)
+  by_cases hv : σ.regs (Hw.dcapV c s) 1 = 1#1
+  · by_cases hlv : σ.regs (Hw.dcapLinV c s) 1 = 1#1
+    · let L : LineageId := finOfBv (by decide)
+        (σ.regs (Hw.dcapLin c s) 4)
+      have hlin : (Expr.reg 4 (Hw.dcapLin c s)).eval σ =
+          BitVec.ofNat 4 L.val := (bv4_slot_iff _ L).mpr rfl
+      rw [cellVAt_eval σ c _ L hlin, cellParAt_eval σ c _ L hlin]
+      by_cases hcv : σ.regs (Hw.dcellV c L) 1 = 1#1
+      · simp [hv, hlv, hcv, MachineState.parentOf,
+          Hw.abs, Hw.absDom, L]
+      · have hcv0 := bv1_ne_one.mp hcv
+        simp [hv, hlv, hcv0,
+          MachineState.parentOf, Hw.abs, Hw.absDom, L]
+    · have hlv0 := bv1_ne_one.mp hlv
+      simp [hv, hlv0, MachineState.parentOf,
+        Hw.abs, Hw.absDom]
+  · have hv0 := bv1_ne_one.mp hv
+    simp [hv0, MachineState.parentOf,
+      Hw.abs, Hw.absDom]
+
 /-- Is the parent edge of `x` generation-live, and where does it go? -/
 def liveParent (τ : MachineState) (x : DomainId × Slot) :
     Option (DomainId × Slot) := do
@@ -372,6 +415,45 @@ def rvRoot (σ : Loom.Hw.St) : CapRef :=
   { dom := e
     slot := finOfBv (by decide) (hw.extractLsb' 0 4)
     gen := hw.extractLsb' 4 8 }
+
+/-- The packed root sampled by `rvInit` is the encoding of `rvRoot`. -/
+theorem rvInitRootE_eval (σ : Loom.Hw.St) (hz : R0Zero σ) :
+    rvInitRootE.eval σ = Hw.encRef (rvRoot σ) := by
+  let E : DomainId := finOfBv (by decide) (σ.regs "if_dom" 2)
+  have hmux : (Hw.muxFin (fun d => Hw.readReg d Hw.rs1E)
+      (.reg 2 "if_dom")).eval σ = (Hw.readReg E Hw.rs1E).eval σ := by
+    rw [muxFin_eval (by decide : 2 ^ 2 = numDomains)]
+    rfl
+  have hreg : (Hw.readReg E Hw.rs1E).eval σ =
+      ((Hw.abs σ).doms E).reg
+        (operandsOf (σ.regs "if_word" 32)).rs1 :=
+    readReg_eval σ hz E Hw.rs1E
+      (operandsOf (σ.regs "if_word" 32)).rs1 rfl
+  have hdom : σ.regs "if_dom" 2 = BitVec.ofNat 2 E.val :=
+    (bv2_lit_iff _ E).mpr rfl
+  unfold rvInitRootE
+  dsimp only
+  change
+    (((((Hw.muxFin (fun d => Hw.readReg d Hw.rs1E)
+          (.reg 2 "if_dom")).eval σ).extractLsb' 4 8).setWidth 14) |||
+      (((((Hw.muxFin (fun d => Hw.readReg d Hw.rs1E)
+          (.reg 2 "if_dom")).eval σ).extractLsb' 0 4).setWidth 14 <<< 8) |||
+        ((σ.regs "if_dom" 2).setWidth 14 <<< 12))) = _
+  rw [hmux, hdom]
+  change (Hw.encRefE (Hw.dLit E)
+    (Hw.field (Hw.readReg E Hw.rs1E) 0 4)
+    (Hw.field (Hw.readReg E Hw.rs1E) 4 8)).eval σ = _
+  have henc : (Hw.encRefE (Hw.dLit E)
+      (Hw.field (Hw.readReg E Hw.rs1E) 0 4)
+      (Hw.field (Hw.readReg E Hw.rs1E) 4 8)).eval σ =
+      Hw.encRef ⟨E, finOfBv (by decide)
+        (BitVec.extractLsb' 0 4 ((Hw.readReg E Hw.rs1E).eval σ)),
+        BitVec.extractLsb' 4 8 ((Hw.readReg E Hw.rs1E).eval σ)⟩ := by
+    simpa [Hw.capSel] using
+      (encRefE_sel_eval σ E (Hw.readReg E Hw.rs1E))
+  rw [henc]
+  unfold rvRoot
+  rw [hreg]
 
 /-- The doubling rounds completed at pre-cycle countdown value `cl`. -/
 def rvRounds (cl : Nat) : Nat := revokeCost - 1 - cl
