@@ -45,6 +45,7 @@ inductive IndexedRhs where
   deriving Repr, DecidableEq
 
 structure IndexedWire where
+  number : Nat
   width : Nat
   rhs : IndexedRhs
   deriving Repr, DecidableEq
@@ -53,6 +54,7 @@ structure IndexedWire where
 once per bounded wire leaf; later semantic checks never parse identifiers. -/
 def IndexedWire.matchesRaw (number : Nat) (raw : Wire)
     (indexed : IndexedWire) : Bool :=
+  indexed.number == number &&
   raw.name == (Ref.wire number).render && raw.width == indexed.width &&
   match raw.rhs, indexed.rhs with
   | .lit w v, .lit w' v' => w == w' && v == v'
@@ -105,7 +107,9 @@ def lookupIndexed? (wires : Rope (List IndexedWire)) (table : WireTable)
     (number : Nat) : Option IndexedWire := do
   guard (table.leafSize > 0)
   let path ← table.paths[number / table.leafSize]?
-  wires.resolve? ⟨path, number % table.leafSize⟩
+  let wire ← wires.resolve? ⟨path, number % table.leafSize⟩
+  guard (wire.number == number)
+  pure wire
 
 /-- String-free structural comparison with the reference compiler expression.
 Shared SSA nodes may be revisited, but each visit performs only bounded rope
@@ -117,14 +121,14 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
   | _, .lit _, .reg _ => false
   | w, .lit value, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .lit literalWidth actualValue⟩ =>
+      | some ⟨_, actualWidth, .lit literalWidth actualValue⟩ =>
           actualWidth == w && literalWidth == w && actualValue == value.toNat
       | _ => false
 
   | _, .memRead .., .reg _ => false
   | w, .memRead _ mem address, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .memRead actualMem actualAddress⟩ =>
+      | some ⟨_, actualWidth, .memRead actualMem actualAddress⟩ =>
           actualWidth == w && actualMem == mem &&
             indexedExprMatches wires table address actualAddress
       | _ => false
@@ -135,72 +139,72 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
   | _, .slice .., .reg _ | _, .zext .., .reg _ | _, .sext .., .reg _ => false
   | w, .and left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .bin .and actualLeft actualRight⟩ =>
+      | some ⟨_, actualWidth, .bin .and actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | w, .or left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .bin .or actualLeft actualRight⟩ =>
+      | some ⟨_, actualWidth, .bin .or actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | w, .xor left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .bin .xor actualLeft actualRight⟩ =>
+      | some ⟨_, actualWidth, .bin .xor actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | w, .not value, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .not actual⟩ =>
+      | some ⟨_, actualWidth, .not actual⟩ =>
           actualWidth == w && indexedExprMatches wires table value actual
       | _ => false
   | w, .add left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .bin .add actualLeft actualRight⟩ =>
+      | some ⟨_, actualWidth, .bin .add actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | w, .sub left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .bin .sub actualLeft actualRight⟩ =>
+      | some ⟨_, actualWidth, .bin .sub actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | w, .shl left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .bin .shl actualLeft actualRight⟩ =>
+      | some ⟨_, actualWidth, .bin .shl actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | w, .shr left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .bin .shr actualLeft actualRight⟩ =>
+      | some ⟨_, actualWidth, .bin .shr actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | _, .eq left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨1, .bin .eq actualLeft actualRight⟩ =>
+      | some ⟨_, 1, .bin .eq actualLeft actualRight⟩ =>
           indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | _, .ult left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨1, .bin .ult actualLeft actualRight⟩ =>
+      | some ⟨_, 1, .bin .ult actualLeft actualRight⟩ =>
           indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | _, .slt left right, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨1, .slt actualLeft actualRight⟩ =>
+      | some ⟨_, 1, .slt actualLeft actualRight⟩ =>
           indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
   | w, .mux condition yes no, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .mux actualCondition actualYes actualNo⟩ =>
+      | some ⟨_, actualWidth, .mux actualCondition actualYes actualNo⟩ =>
           actualWidth == w &&
             indexedExprMatches wires table condition actualCondition &&
             indexedExprMatches wires table yes actualYes &&
@@ -208,19 +212,19 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
       | _ => false
   | w, .slice value lo _, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .slice actualValue hi actualLo⟩ =>
+      | some ⟨_, actualWidth, .slice actualValue hi actualLo⟩ =>
           actualWidth == w && actualLo == lo && hi == lo + w - 1 &&
             indexedExprMatches wires table value actualValue
       | _ => false
   | w, @Loom.Emit.MicroVerilog.Expr.zext inputWidth value _, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .ident actual⟩ =>
+      | some ⟨_, actualWidth, .ident actual⟩ =>
           actualWidth == w && inputWidth ≤ w &&
             indexedExprMatches wires table value actual
       | _ => false
   | w, @Loom.Emit.MicroVerilog.Expr.sext inputWidth value _, .wire number =>
       match lookupIndexed? wires table number with
-      | some ⟨actualWidth, .sext amount actual signBit⟩ =>
+      | some ⟨_, actualWidth, .sext amount actual signBit⟩ =>
           actualWidth == w && inputWidth < w && amount == w - inputWidth &&
             signBit + 1 == inputWidth &&
             indexedExprMatches wires table value actual
@@ -329,7 +333,7 @@ def nextRegMatches (wires : Rope (List IndexedWire)) (table : WireTable)
       if Loom.Hw.Compile.writesRegB register width thenAction ||
           Loom.Hw.Compile.writesRegB register width elseAction then
         match lookupIndexed? wires table number with
-        | some ⟨actualWidth, .mux guardRef thenRef elseRef⟩ =>
+        | some ⟨_, actualWidth, .mux guardRef thenRef elseRef⟩ =>
             actualWidth == width &&
               indexedExprMatches wires table
                 (Loom.Hw.Compile.compileExpr guard) guardRef &&
@@ -429,7 +433,8 @@ theorem nextRegMatches_ite_written
     (hwrites : (Loom.Hw.Compile.writesRegB register width thenAction ||
       Loom.Hw.Compile.writesRegB register width elseAction) = true)
     (hlookup : lookupIndexed? wires table number = some
-      { width := width, rhs := .mux guardRef thenRef elseRef })
+      { number := number, width := width,
+        rhs := .mux guardRef thenRef elseRef })
     (hguard : indexedExprMatches wires table
       (Loom.Hw.Compile.compileExpr guard) guardRef = true)
     (hthen : nextRegMatches wires table register width thenAction current
