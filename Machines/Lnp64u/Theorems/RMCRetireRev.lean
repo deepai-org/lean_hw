@@ -640,4 +640,165 @@ theorem revStructuralA_run_cellV_semantic (σ acc : Loom.Hw.St)
     refine ⟨s, List.mem_finRange s, ?_⟩
     simp [hm, hcap, hlin]
 
+/-- The complete structural revoke walk decodes to `destroyMarked` on every
+domain.  The accumulator may differ from the sampled state in unrelated
+fields (notably refill bookkeeping); only the capability-table view and the
+two sampled write banks must still agree. -/
+theorem absDom_revStructuralA (σ acc : Loom.Hw.St)
+    (hrv : RvSync σ) (hifv : σ.regs "if_v" 1 = 1#1)
+    (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 18#6)
+    (hcl : (σ.regs "if_cl" 8).toNat < 2)
+    (haccV : ∀ c s, acc.regs (Hw.dcapV c s) 1 =
+      σ.regs (Hw.dcapV c s) 1)
+    (haccG : ∀ c s, acc.regs (Hw.dgen c s) 8 =
+      σ.regs (Hw.dgen c s) 8)
+    (hcaps : ∀ c, ((Hw.abs acc).doms c).caps =
+      ((Hw.abs σ).doms c).caps)
+    (c : DomainId) :
+    Hw.absDom (revStructuralA.run σ acc) c =
+      (((Hw.abs acc).destroyMarked
+        ((Hw.abs σ).marks (rvRoot σ))).doms c) := by
+  let out := revStructuralA.run σ acc
+  apply domainState_ext
+  · funext r
+    change out.regs (Hw.dreg c r) 32 = acc.regs (Hw.dreg c r) 32
+    apply frame
+    fin_cases c <;> fin_cases r <;> decide +kernel
+  · change out.regs (Hw.dpc c) 12 = acc.regs (Hw.dpc c) 12
+    apply frame
+    fin_cases c <;> decide +kernel
+  · funext s
+    rw [destroyMarked_caps]
+    change (if out.regs (Hw.dcapV c s) 1 = 1#1 then
+        some (⟨Hw.decKind (out.regs (Hw.dcapKind c s) 32),
+          if out.regs (Hw.dcapLinV c s) 1 = 1#1 then
+            some (finOfBv (by decide) (out.regs (Hw.dcapLin c s) 4))
+          else none⟩ : CapEntry)
+      else none) = _
+    have hkind : out.regs (Hw.dcapKind c s) 32 =
+        acc.regs (Hw.dcapKind c s) 32 := by
+      apply frame
+      fin_cases c <;> fin_cases s <;> decide +kernel
+    have hlinV : out.regs (Hw.dcapLinV c s) 1 =
+        acc.regs (Hw.dcapLinV c s) 1 := by
+      apply frame
+      fin_cases c <;> fin_cases s <;> decide +kernel
+    have hlin : out.regs (Hw.dcapLin c s) 4 =
+        acc.regs (Hw.dcapLin c s) 4 := by
+      apply frame
+      fin_cases c <;> fin_cases s <;> decide +kernel
+    rw [revStructuralA_run_v_semantic σ acc hrv hifv hopc hcl
+      haccV c s, hkind, hlinV, hlin]
+    by_cases hm : (Hw.abs σ).marks (rvRoot σ) c s = true
+    · simp [hm]
+    · have hm0 := Bool.eq_false_of_not_eq_true hm
+      simp [hm0]
+      rfl
+  · funext s
+    rw [destroyMarked_slotGen]
+    change out.regs (Hw.dgen c s) 8 = _
+    rw [revStructuralA_run_gen_semantic σ acc hrv hifv hopc hcl
+      haccV haccG c s, ← hcaps c]
+    change (if (Hw.abs σ).marks (rvRoot σ) c s &&
+          (((Hw.abs acc).doms c).caps s).isSome
+        then bumpGen (acc.regs (Hw.dgen c s) 8)
+        else acc.regs (Hw.dgen c s) 8) =
+      if (Hw.abs σ).marks (rvRoot σ) c s &&
+          (((Hw.abs acc).doms c).caps s).isSome
+        then bumpGen (acc.regs (Hw.dgen c s) 8)
+        else acc.regs (Hw.dgen c s) 8
+    rfl
+  · funext l
+    change (if out.regs (Hw.dcellV c l) 1 = 1#1 then
+        some (LineageCell.mk (Hw.decRef (out.regs (Hw.dcellPar c l) 14)))
+      else none) = _
+    have hpar : out.regs (Hw.dcellPar c l) 14 =
+        acc.regs (Hw.dcellPar c l) 14 := by
+      apply frame
+      fin_cases c <;> fin_cases l <;> decide +kernel
+    have hdead :
+        (List.finRange numSlots).any (fun s =>
+          (Hw.abs σ).marks (rvRoot σ) c s &&
+          match ((Hw.abs σ).doms c).caps s with
+          | some e => e.lineage == some l
+          | none => false) =
+        (List.finRange numSlots).any (fun s =>
+          (Hw.abs σ).marks (rvRoot σ) c s &&
+          match ((Hw.abs acc).doms c).caps s with
+          | some e => e.lineage == some l
+          | none => false) := by
+      rw [hcaps c]
+    rw [revStructuralA_run_cellV_semantic σ acc hrv hifv hopc hcl c l,
+      hpar, hdead]
+    change (if (if (List.finRange numSlots).any (fun s =>
+          (Hw.abs σ).marks (rvRoot σ) c s &&
+          match ((Hw.abs acc).doms c).caps s with
+          | some e => e.lineage == some l
+          | none => false) then 0#1 else acc.regs (Hw.dcellV c l) 1) = 1#1
+        then some (LineageCell.mk (Hw.decRef (acc.regs (Hw.dcellPar c l) 14)))
+        else none) =
+      if (List.finRange numSlots).any (fun s =>
+          (Hw.abs σ).marks (rvRoot σ) c s &&
+          match ((Hw.abs acc).doms c).caps s with
+          | some e => e.lineage == some l
+          | none => false)
+        then none else ((Hw.abs acc).doms c).lineage l
+    by_cases hd : (List.finRange numSlots).any (fun s =>
+        (Hw.abs σ).marks (rvRoot σ) c s &&
+        match ((Hw.abs acc).doms c).caps s with
+        | some e => e.lineage == some l
+        | none => false) = true
+    · simp [hd]
+    · have hd0 := Bool.eq_false_of_not_eq_true hd
+      simp [hd0]
+      rfl
+  · funext r
+    change (if out.regs (Hw.drgnV c r) 1 = 1#1 then
+        some (Hw.decRegion (out.regs (Hw.drgn c r) 42)) else none) = _
+    have hv : out.regs (Hw.drgnV c r) 1 = acc.regs (Hw.drgnV c r) 1 := by
+      apply frame
+      fin_cases c <;> fin_cases r <;> decide +kernel
+    have hr : out.regs (Hw.drgn c r) 42 = acc.regs (Hw.drgn c r) 42 := by
+      apply frame
+      fin_cases c <;> fin_cases r <;> decide +kernel
+    rw [hv, hr]
+    rfl
+  · rw [destroyMarked_run]
+    change Hw.decRun (out.regs (Hw.drun c) 2)
+      (out.regs (Hw.drunG c) 2) = _
+    have hrun : out.regs (Hw.drun c) 2 = acc.regs (Hw.drun c) 2 := by
+      apply frame
+      fin_cases c <;> decide +kernel
+    have hrunG : out.regs (Hw.drunG c) 2 = acc.regs (Hw.drunG c) 2 := by
+      apply frame
+      fin_cases c <;> decide +kernel
+    rw [hrun, hrunG]
+    change Hw.decRun (acc.regs (Hw.drun c) 2)
+      (acc.regs (Hw.drunG c) 2) =
+      Hw.decRun (acc.regs (Hw.drun c) 2) (acc.regs (Hw.drunG c) 2)
+    rfl
+  · change (if out.regs (Hw.dsrvV c) 1 = 1#1 then
+        some (finOfBv (by decide) (out.regs (Hw.dsrv c) 2)) else none) = _
+    have hv : out.regs (Hw.dsrvV c) 1 = acc.regs (Hw.dsrvV c) 1 := by
+      apply frame
+      fin_cases c <;> decide +kernel
+    have hs : out.regs (Hw.dsrv c) 2 = acc.regs (Hw.dsrv c) 2 := by
+      apply frame
+      fin_cases c <;> decide +kernel
+    rw [hv, hs]
+    rfl
+  · change out.regs (Hw.dcause c) 32 = acc.regs (Hw.dcause c) 32
+    apply frame
+    fin_cases c <;> decide +kernel
+  · change (out.regs (Hw.dbudget c) 32).toNat =
+      (acc.regs (Hw.dbudget c) 32).toNat
+    congr 1
+    apply frame
+    fin_cases c <;> decide +kernel
+  · change (out.regs (Hw.dmaxdon c) 32).toNat =
+      (acc.regs (Hw.dmaxdon c) 32).toNat
+    congr 1
+    apply frame
+    fin_cases c <;> decide +kernel
+
 end Machines.Lnp64u.Theorems.RMC
