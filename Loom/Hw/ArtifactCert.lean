@@ -670,4 +670,26 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
   · simpa only [Compile.compile] using ho
   · simpa only [Compile.compile, compiledMem, Compile.compilePort] using hm
 
+/-! ## Exact-text release certificates -/
+
+/-- Check the exact supplied Verilog text by parsing it, then validate the
+resulting module against the reference compiler using proof data. -/
+def artifactMatches (d : Loom.Hw.Design) (text : String)
+    (cert : ModuleCert d) : Bool :=
+  match Loom.Emit.MicroVerilog.Parse.parse text with
+  | some out => moduleMatches d out cert
+  | none => false
+
+/-- An accepted exact-text certificate closes the release boundary: the
+literal supplied text parses to a module matching the proved compiler. -/
+theorem artifactMatches_sound (d : Loom.Hw.Design) (text : String)
+    (cert : ModuleCert d) (h : artifactMatches d text cert = true) :
+    ∃ out, Loom.Emit.MicroVerilog.Parse.parse text = some out ∧
+      out.Matches (Compile.compile d) := by
+  unfold artifactMatches at h
+  split at h
+  · rename_i out hparse
+    exact ⟨out, hparse, moduleMatches_sound d out cert h⟩
+  · contradiction
+
 end Loom.Hw.ArtifactCert
