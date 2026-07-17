@@ -87,4 +87,5 @@ if [[ -f "$src/SemanticDesignWF.lean" ]]; then
 fi
 lake env lean "$(realpath "$src/SemanticReads.lean")" -o "$lib/SemanticReads.olean"
 lake env lean "$(realpath "$src/SemanticMems.lean")" -o "$lib/SemanticMems.olean"
+lake env lean "$(realpath "$src/SemanticModule.lean")" -o "$lib/SemanticModule.olean"
 echo "$artifact render and semantic certificate modules kernel-checked"

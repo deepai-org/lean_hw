@@ -1966,4 +1966,86 @@ theorem memoryBehaviorAt_of_checks
   exact ⟨nameEq, addressWidthEq, dataWidthEq, initEq, portCount,
     initBehavior, portBehavior⟩
 
+/-- One complete concrete memory witness in source order. -/
+structure MemoryRoot where
+  index : Nat
+  init : Rope (List Nat)
+  ports : List MemoryPortRoot
+
+/-- Ordered, gap-free behavioral coverage of all concrete memories. -/
+inductive MemoryBehaviorsFrom (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) : Nat → List MemoryRoot → Prop
+  | nil (start : Nat) : MemoryBehaviorsFrom design program table start []
+  | cons {start : Nat} {entry : MemoryRoot} {entries : List MemoryRoot} :
+      entry.index = start →
+      MemoryBehaviorAt design program table entry.index entry.init entry.ports →
+      MemoryBehaviorsFrom design program table (start + 1) entries →
+      MemoryBehaviorsFrom design program table start (entry :: entries)
+
+/-- Exact concrete observability-output binding for one source register. -/
+def OutputBehaviorAt (design : Loom.Hw.Design) (program : Program)
+    (index : Nat) : Prop :=
+  match design.regs[index]?, program.outs[index]? with
+  | some source, some concrete =>
+      concrete.name = s!"o_{source.name}" ∧ concrete.width = source.width ∧
+      concrete.value = source.name
+  | _, _ => False
+
+/-- Ordered output behavior over one bounded leaf. -/
+inductive OutputBehaviorsFrom (design : Loom.Hw.Design) (program : Program) :
+    Nat → List Nat → Prop
+  | nil (start : Nat) : OutputBehaviorsFrom design program start []
+  | cons {start index : Nat} {indices : List Nat} :
+      index = start → OutputBehaviorAt design program index →
+      OutputBehaviorsFrom design program (start + 1) indices →
+      OutputBehaviorsFrom design program start (index :: indices)
+
+/-- Balanced output coverage used by processor-scale generated artifacts. -/
+inductive OutputBehaviorRopeFrom (design : Loom.Hw.Design) (program : Program) :
+    Nat → Rope (List Nat) → Prop
+  | leaf {start : Nat} {indices : List Nat} :
+      OutputBehaviorsFrom design program start indices →
+      OutputBehaviorRopeFrom design program start (.leaf indices)
+  | node {start : Nat} {left right : Rope (List Nat)} :
+      OutputBehaviorRopeFrom design program start left →
+      OutputBehaviorRopeFrom design program (start + left.listLength) right →
+      OutputBehaviorRopeFrom design program start (.node left right)
+
+/-- Single certificate-free statement connecting a source design to every
+state-bearing and observable component of an exact concrete SSA program. -/
+def ModuleBehavior (design : Loom.Hw.Design) (program : Program)
+    (indexeds : Rope (List IndexedWire)) (table : WireTable)
+    (registers : Rope (List RegisterRoot)) (memories : List MemoryRoot)
+    (outputs : Rope (List Nat)) : Prop :=
+  design.name = program.name ∧
+  IndexedRopeMatches 0 program.wires indexeds ∧
+  design.regs.length = registers.listLength ∧
+  program.regs.length = registers.listLength ∧
+  design.mems.length = memories.length ∧
+  program.mems.length = memories.length ∧
+  program.outs.length = outputs.listLength ∧
+  RegisterBehaviorRopeFrom design program table 0 registers ∧
+  MemoryBehaviorsFrom design program table 0 memories ∧
+  OutputBehaviorRopeFrom design program 0 outputs
+
+theorem moduleBehavior_of_checks
+    (design : Loom.Hw.Design) (program : Program)
+    (indexeds : Rope (List IndexedWire)) (table : WireTable)
+    (registers : Rope (List RegisterRoot)) (memories : List MemoryRoot)
+    (outputs : Rope (List Nat))
+    (name : design.name = program.name)
+    (wires : IndexedRopeMatches 0 program.wires indexeds)
+    (sourceRegisterCount : design.regs.length = registers.listLength)
+    (concreteRegisterCount : program.regs.length = registers.listLength)
+    (sourceMemoryCount : design.mems.length = memories.length)
+    (concreteMemoryCount : program.mems.length = memories.length)
+    (outputCount : program.outs.length = outputs.listLength)
+    (registerBehavior : RegisterBehaviorRopeFrom design program table 0 registers)
+    (memoryBehavior : MemoryBehaviorsFrom design program table 0 memories)
+    (outputBehavior : OutputBehaviorRopeFrom design program 0 outputs) :
+    ModuleBehavior design program indexeds table registers memories outputs :=
+  ⟨name, wires, sourceRegisterCount, concreteRegisterCount, sourceMemoryCount,
+    concreteMemoryCount, outputCount, registerBehavior, memoryBehavior,
+    outputBehavior⟩
+
 end Loom.Release.Symbolic
