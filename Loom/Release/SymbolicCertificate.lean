@@ -31,6 +31,11 @@ def Ref.render : Ref → String
   | .reg name => name
   | .wire number => s!"n{number}"
 
+/-- Decode the deliberately tiny release-witness naming convention. -/
+def wireNumber? (name : String) : Option Nat := do
+  guard (name.startsWith "n")
+  (name.drop 1).toNat?
+
 /-- String-free certificate view of an SSA right-hand side. -/
 inductive IndexedRhs where
   | lit (width value : Nat)
@@ -118,7 +123,9 @@ def refWidthBefore? (program : Program)
     (wires : Rope (List IndexedWire)) (table : WireTable)
     (current : Nat) : Ref → Option Nat
   | .reg name =>
-      (program.regs.find? fun reg => reg.name == name).map (·.width)
+      do
+        guard (wireNumber? name).isNone
+        pure (← program.regs.find? fun reg => reg.name == name).width
   | .wire number => do
       guard (number < current)
       pure (← lookupIndexed? wires table number).width
@@ -174,6 +181,7 @@ def indexedWireWellFormedAt (program : Program)
     (wires : Rope (List IndexedWire)) (table : WireTable)
     (number : Nat) (wire : IndexedWire) : Bool :=
   wire.number == number &&
+    lookupIndexed? wires table number == some wire &&
     indexedRhsWellFormed program wires table number wire.width wire.rhs
 
 def indexedSemanticBlockMatches (program : Program)
@@ -565,11 +573,6 @@ theorem nextRulesMatches_cons_discard
       (.cons none head tail) = true := by
   simpa only [nextRulesMatches] using htail
 
-
-/-- Decode the deliberately tiny release-witness naming convention. -/
-def wireNumber? (name : String) : Option Nat := do
-  guard (name.startsWith "n")
-  (name.drop 1).toNat?
 
 /-- Resolve an SSA wire in logarithmic rope depth without constructing its
 expanded µVerilog expression. All generator-provided information is checked. -/
