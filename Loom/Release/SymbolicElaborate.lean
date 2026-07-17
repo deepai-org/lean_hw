@@ -306,6 +306,62 @@ structure DesignReadsValid (design : Loom.Hw.Design) (program : Program) : Prop 
         wireNumber? source.name = none
   rule : ∀ rule ∈ design.rules, ActRegistersValid program rule.body
 
+/-- Exact validity of one source register declaration. -/
+def SourceRegisterValid (program : Program) (source : Loom.Hw.RegDecl) : Prop :=
+  ∃ concrete,
+    program.regs.find? (fun candidate => candidate.name == source.name) =
+      some concrete ∧ concrete.width = source.width ∧
+      wireNumber? source.name = none
+
+/-- A compositional certificate for the source register declarations. Unlike
+`List.all`, its proof can be assembled from separately named leaf theorems. -/
+def SourceRegistersValid (program : Program) : List Loom.Hw.RegDecl → Prop
+  | [] => True
+  | source :: rest =>
+      SourceRegisterValid program source ∧ SourceRegistersValid program rest
+
+/-- A compositional certificate for all rule-body reads. -/
+def RulesRegistersValid (program : Program) : List Loom.Hw.Rule → Prop
+  | [] => True
+  | rule :: rest =>
+      ActRegistersValid program rule.body ∧ RulesRegistersValid program rest
+
+theorem SourceRegistersValid.all {program : Program} {sources : List Loom.Hw.RegDecl}
+    (valid : SourceRegistersValid program sources) :
+    ∀ source ∈ sources,
+      ∃ concrete,
+        program.regs.find? (fun candidate => candidate.name == source.name) =
+          some concrete ∧ concrete.width = source.width ∧
+          wireNumber? source.name = none := by
+  induction sources with
+  | nil => simp
+  | cons head tail ih =>
+      intro source member
+      simp only [List.mem_cons] at member
+      cases member with
+      | inl equal => simpa [equal] using valid.1
+      | inr member => exact ih valid.2 source member
+
+theorem RulesRegistersValid.all {program : Program} {rules : List Loom.Hw.Rule}
+    (valid : RulesRegistersValid program rules) :
+    ∀ rule ∈ rules, ActRegistersValid program rule.body := by
+  induction rules with
+  | nil => simp
+  | cons head tail ih =>
+      intro rule member
+      simp only [List.mem_cons] at member
+      cases member with
+      | inl equal => simpa [equal] using valid.1
+      | inr member => exact ih valid.2 rule member
+
+/-- Assemble the public read-discipline proposition from compositional list
+certificates. -/
+theorem DesignReadsValid.ofLists {design : Loom.Hw.Design} {program : Program}
+    (registers : SourceRegistersValid program design.regs)
+    (rules : RulesRegistersValid program design.rules) :
+    DesignReadsValid design program :=
+  ⟨registers.all, rules.all⟩
+
 /-- Executable source-expression read check. -/
 def hwExprRegistersValidB (program : Program) :
     {width : Nat} → Loom.Hw.Expr width → Bool
@@ -338,17 +394,41 @@ def actRegistersValidB (program : Program) : Loom.Hw.Act → Bool
   | .memWrite _ _ _ _ address value =>
       hwExprRegistersValidB program address && hwExprRegistersValidB program value
 
-private def sourceRegisterValidB (program : Program)
+/-- Executable check for one source register declaration. -/
+def sourceRegisterValidB (program : Program)
     (source : Loom.Hw.RegDecl) : Bool :=
   match program.regs.find? (fun candidate => candidate.name == source.name) with
   | some concrete => concrete.width == source.width &&
       (wireNumber? source.name).isNone
   | none => false
 
+theorem sourceRegisterValidB_sound {program : Program} (source : Loom.Hw.RegDecl)
+    (accepted : sourceRegisterValidB program source = true) :
+    SourceRegisterValid program source := by
+  unfold sourceRegisterValidB at accepted
+  unfold SourceRegisterValid
+  cases found : program.regs.find? (fun candidate =>
+      candidate.name == source.name) with
+  | none => simp [found] at accepted
+  | some concrete =>
+      simp only [found, Bool.and_eq_true, beq_iff_eq,
+        Option.isNone_iff_eq_none] at accepted
+      exact ⟨concrete, rfl, accepted.1, accepted.2⟩
+
 /-- One bounded Boolean whose soundness yields the complete source read
 discipline used by exact release elaboration. -/
+def designRegisterReadsValidB (design : Loom.Hw.Design) (program : Program) : Bool :=
+  design.regs.all (sourceRegisterValidB program)
+
+theorem designRegisterReadsValidB_sound {design : Loom.Hw.Design} {program : Program}
+    (accepted : designRegisterReadsValidB design program = true) :
+    ∀ source ∈ design.regs, SourceRegisterValid program source := by
+  simp only [designRegisterReadsValidB, List.all_eq_true] at accepted
+  intro source member
+  exact sourceRegisterValidB_sound source (accepted source member)
+
 def designReadsValidB (design : Loom.Hw.Design) (program : Program) : Bool :=
-  design.regs.all (sourceRegisterValidB program) &&
+  designRegisterReadsValidB design program &&
     design.rules.all (fun rule => actRegistersValidB program rule.body)
 
 theorem hwExprRegistersValidB_sound {program : Program} {width : Nat}
@@ -377,15 +457,7 @@ theorem designReadsValidB_sound {design : Loom.Hw.Design} {program : Program}
   simp only [designReadsValidB, Bool.and_eq_true, List.all_eq_true] at accepted
   constructor
   · intro source sourceMem
-    have sourceOk := accepted.1 source sourceMem
-    unfold sourceRegisterValidB at sourceOk
-    cases found : program.regs.find? (fun candidate =>
-        candidate.name == source.name) with
-    | none => simp [found] at sourceOk
-    | some concrete =>
-        simp only [found, Bool.and_eq_true, beq_iff_eq,
-          Option.isNone_iff_eq_none] at sourceOk
-        exact ⟨concrete, rfl, sourceOk.1, sourceOk.2⟩
+    exact designRegisterReadsValidB_sound accepted.1 source sourceMem
   · intro rule ruleMem
     exact actRegistersValidB_sound rule.body (accepted.2 rule ruleMem)
 
