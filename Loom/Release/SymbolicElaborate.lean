@@ -306,6 +306,89 @@ structure DesignReadsValid (design : Loom.Hw.Design) (program : Program) : Prop 
         wireNumber? source.name = none
   rule : ∀ rule ∈ design.rules, ActRegistersValid program rule.body
 
+/-- Executable source-expression read check. -/
+def hwExprRegistersValidB (program : Program) :
+    {width : Nat} → Loom.Hw.Expr width → Bool
+  | width, .reg _ name =>
+      match program.regs.find? (fun candidate => candidate.name == name) with
+      | some reg => reg.width == width && (wireNumber? name).isNone
+      | none => false
+  | _, .lit _ => true
+  | _, .memRead _ _ address => hwExprRegistersValidB program address
+  | _, .and left right | _, .or left right | _, .xor left right
+  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .shr left right | _, .eq left right | _, .ult left right
+  | _, .slt left right =>
+      hwExprRegistersValidB program left && hwExprRegistersValidB program right
+  | _, .not value | _, .slice value _ _ | _, .zext value _
+  | _, .sext value _ => hwExprRegistersValidB program value
+  | _, .mux condition yes no =>
+      hwExprRegistersValidB program condition &&
+        hwExprRegistersValidB program yes && hwExprRegistersValidB program no
+
+/-- Executable action read check. -/
+def actRegistersValidB (program : Program) : Loom.Hw.Act → Bool
+  | .skip => true
+  | .seq left right =>
+      actRegistersValidB program left && actRegistersValidB program right
+  | .ite condition yes no =>
+      hwExprRegistersValidB program condition &&
+        actRegistersValidB program yes && actRegistersValidB program no
+  | .write _ _ value => hwExprRegistersValidB program value
+  | .memWrite _ _ _ _ address value =>
+      hwExprRegistersValidB program address && hwExprRegistersValidB program value
+
+private def sourceRegisterValidB (program : Program)
+    (source : Loom.Hw.RegDecl) : Bool :=
+  match program.regs.find? (fun candidate => candidate.name == source.name) with
+  | some concrete => concrete.width == source.width &&
+      (wireNumber? source.name).isNone
+  | none => false
+
+/-- One bounded Boolean whose soundness yields the complete source read
+discipline used by exact release elaboration. -/
+def designReadsValidB (design : Loom.Hw.Design) (program : Program) : Bool :=
+  design.regs.all (sourceRegisterValidB program) &&
+    design.rules.all (fun rule => actRegistersValidB program rule.body)
+
+theorem hwExprRegistersValidB_sound {program : Program} {width : Nat}
+    (expr : Loom.Hw.Expr width)
+    (accepted : hwExprRegistersValidB program expr = true) :
+    HwExprRegistersValid program expr := by
+  induction expr <;> simp_all [hwExprRegistersValidB, HwExprRegistersValid,
+    Bool.and_eq_true]
+  case reg width name =>
+    cases found : program.regs.find? (fun candidate => candidate.name == name) with
+    | none => simp [found] at accepted
+    | some reg =>
+        simp only [found, Bool.and_eq_true, beq_iff_eq,
+          Option.isNone_iff_eq_none] at accepted
+        exact ⟨reg, rfl, accepted.1, accepted.2⟩
+
+theorem actRegistersValidB_sound {program : Program} (action : Loom.Hw.Act)
+    (accepted : actRegistersValidB program action = true) :
+    ActRegistersValid program action := by
+  induction action <;> simp_all [actRegistersValidB, ActRegistersValid,
+    Bool.and_eq_true, hwExprRegistersValidB_sound]
+
+theorem designReadsValidB_sound {design : Loom.Hw.Design} {program : Program}
+    (accepted : designReadsValidB design program = true) :
+    DesignReadsValid design program := by
+  simp only [designReadsValidB, Bool.and_eq_true, List.all_eq_true] at accepted
+  constructor
+  · intro source sourceMem
+    have sourceOk := accepted.1 source sourceMem
+    unfold sourceRegisterValidB at sourceOk
+    cases found : program.regs.find? (fun candidate =>
+        candidate.name == source.name) with
+    | none => simp [found] at sourceOk
+    | some concrete =>
+        simp only [found, Bool.and_eq_true, beq_iff_eq,
+          Option.isNone_iff_eq_none] at sourceOk
+        exact ⟨concrete, rfl, sourceOk.1, sourceOk.2⟩
+  · intro rule ruleMem
+    exact actRegistersValidB_sound rule.body (accepted.2 rule ruleMem)
+
 /-- Structural compilation preserves source register validity. -/
 theorem compileExpr_registersValid {program : Program} {width : Nat}
     (expr : Loom.Hw.Expr width) (valid : HwExprRegistersValid program expr) :
@@ -361,6 +444,92 @@ theorem nextRules_registersValid {program : Program} (register : String)
         exact rulesValid tail (by simp [tailMem])
       · exact nextReg_registersValid register width rule.body current
           (rulesValid rule (by simp)) currentValid
+
+/-- Register-read validity for all three expressions of a compiled memory
+write port. -/
+def PortRegistersValid (program : Program) {addressWidth dataWidth : Nat}
+    (port : Loom.Hw.Compile.Port addressWidth dataWidth) : Prop :=
+  ExprRegistersValid program port.en ∧
+    ExprRegistersValid program port.addr ∧
+    ExprRegistersValid program port.data
+
+/-- Folding one valid source action into a valid memory port preserves the
+register-read discipline. -/
+theorem memPort_registersValid {program : Program} (memory : String)
+    (addressWidth dataWidth portIndex : Nat) (action : Loom.Hw.Act)
+    (current : Loom.Hw.Compile.Port addressWidth dataWidth)
+    (actionValid : ActRegistersValid program action)
+    (currentValid : PortRegistersValid program current) :
+    PortRegistersValid program
+      (Loom.Hw.Compile.memPort memory addressWidth dataWidth portIndex action
+        current) := by
+  induction action generalizing current with
+  | skip => exact currentValid
+  | seq left right leftIH rightIH =>
+      exact rightIH _ actionValid.2 (leftIH _ actionValid.1 currentValid)
+  | ite condition yes no yesIH noIH =>
+      simp only [Loom.Hw.Compile.memPort]
+      split
+      · let yesPort := Loom.Hw.Compile.memPort memory addressWidth dataWidth
+          portIndex yes current
+        let noPort := Loom.Hw.Compile.memPort memory addressWidth dataWidth
+          portIndex no current
+        have conditionValid := compileExpr_registersValid condition actionValid.1
+        have yesValid : PortRegistersValid program yesPort :=
+          yesIH _ actionValid.2.1 currentValid
+        have noValid : PortRegistersValid program noPort :=
+          noIH _ actionValid.2.2 currentValid
+        exact ⟨⟨conditionValid, yesValid.1, noValid.1⟩,
+          ⟨conditionValid, yesValid.2.1, noValid.2.1⟩,
+          ⟨conditionValid, yesValid.2.2, noValid.2.2⟩⟩
+      · exact currentValid
+  | write => exact currentValid
+  | memWrite actualAddressWidth actualDataWidth actualMemory actualPort
+      address value =>
+      simp only [Loom.Hw.Compile.memPort]
+      split
+      · split
+        next widths =>
+          rcases widths with ⟨addressWidthEq, dataWidthEq⟩
+          cases addressWidthEq
+          cases dataWidthEq
+          exact ⟨trivial,
+            compileExpr_registersValid address actionValid.1,
+            compileExpr_registersValid value actionValid.2⟩
+        · exact currentValid
+      · exact currentValid
+
+/-- Folding a valid rule list into one memory port preserves validity. -/
+theorem portRules_registersValid {program : Program} (memory : String)
+    (addressWidth dataWidth portIndex : Nat) (rules : List Loom.Hw.Rule)
+    (current : Loom.Hw.Compile.Port addressWidth dataWidth)
+    (rulesValid : ∀ rule ∈ rules, ActRegistersValid program rule.body)
+    (currentValid : PortRegistersValid program current) :
+    PortRegistersValid program
+      (rules.foldl (fun port rule => Loom.Hw.Compile.memPort memory
+        addressWidth dataWidth portIndex rule.body port) current) := by
+  induction rules generalizing current with
+  | nil => exact currentValid
+  | cons rule rules ih =>
+      simp only [List.foldl_cons]
+      apply ih
+      · intro tail tailMem
+        exact rulesValid tail (by simp [tailMem])
+      · exact memPort_registersValid memory addressWidth dataWidth portIndex
+          rule.body current (rulesValid rule (by simp)) currentValid
+
+/-- Every reference compiler memory port satisfies the release elaborator's
+register-validity premise under the source read discipline. -/
+theorem compilePort_registersValid {design : Loom.Hw.Design}
+    {program : Program} (readsValid : DesignReadsValid design program)
+    (memory : String) (addressWidth dataWidth portIndex : Nat) :
+    PortRegistersValid program
+      (Loom.Hw.Compile.compilePort design memory addressWidth dataWidth
+        portIndex) := by
+  apply portRules_registersValid memory addressWidth dataWidth portIndex
+    design.rules
+  · exact readsValid.rule
+  · exact ⟨trivial, trivial, trivial⟩
 
 /-- The reference compiler's next-state expression for any declared source
 register satisfies the release elaborator's register-validity premise. -/
@@ -1305,5 +1474,52 @@ theorem indexedRegisterMatchesAt_resolves
       have valid := registerNext_registersValid readsValid source sourceMem
       exact elaborateIndexedEnv_resolves program wires table hwellFormed _ root
         valid accepted.2
+
+/-- Accepted concrete memory-port roots resolve exactly to all three
+expressions of the reference compiler port. -/
+theorem indexedMemoryPortMatchesAt_resolves
+    (design : Loom.Hw.Design) (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (readsValid : DesignReadsValid design program)
+    (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
+    (memoryIndex portIndex : Nat) (source : Loom.Hw.MemDecl)
+    (refs : PortRefs) (sourceFound : design.mems[memoryIndex]? = some source)
+    (accepted : indexedMemoryPortMatchesAt design program wires table
+      memoryIndex portIndex refs = true) :
+    let compiled := Loom.Hw.Compile.compilePort design source.name
+      source.addrWidth source.dataWidth portIndex
+    ∃ env,
+      elaborateIndexedEnv program wires = some env ∧
+      env.resolveAt refs.en 1 = some compiled.en ∧
+      env.resolveAt refs.addr source.addrWidth = some compiled.addr ∧
+      env.resolveAt refs.data source.dataWidth = some compiled.data := by
+  cases concreteFound : program.mems[memoryIndex]? with
+  | none =>
+      simp [indexedMemoryPortMatchesAt, sourceFound, concreteFound] at accepted
+  | some concrete =>
+      cases writeFound : concrete.writes[portIndex]? with
+      | none =>
+          simp [indexedMemoryPortMatchesAt, sourceFound, concreteFound,
+            writeFound] at accepted
+      | some write =>
+          simp only [indexedMemoryPortMatchesAt, sourceFound, concreteFound,
+            writeFound, Bool.and_eq_true, beq_iff_eq] at accepted
+          let compiled := Loom.Hw.Compile.compilePort design source.name
+            source.addrWidth source.dataWidth portIndex
+          have valid : PortRegistersValid program compiled :=
+            compilePort_registersValid readsValid source.name source.addrWidth
+              source.dataWidth portIndex
+          obtain ⟨env, envEq, _, hmodels⟩ := elaborateIndexedEnv_models
+            program wires table hwellFormed
+          have enScope := indexedExprMatches_inScope program wires table
+            hwellFormed compiled.en refs.en valid.1 accepted.1.1.2
+          have addrScope := indexedExprMatches_inScope program wires table
+            hwellFormed compiled.addr refs.addr valid.2.1 accepted.1.2
+          have dataScope := indexedExprMatches_inScope program wires table
+            hwellFormed compiled.data refs.data valid.2.2 accepted.2
+          exact ⟨env, envEq,
+            hmodels compiled.en refs.en valid.1 accepted.1.1.2 enScope,
+            hmodels compiled.addr refs.addr valid.2.1 accepted.1.2 addrScope,
+            hmodels compiled.data refs.data valid.2.2 accepted.2 dataScope⟩
 
 end Loom.Release.Symbolic
