@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.SymbolicCertificate
+import Loom.Release.SymbolicElaborate
 import Lean.Elab.Term
 import Lean.Meta.Tactic.AuxLemma
 import Lean.Meta.Tactic.Simp
@@ -23,6 +24,96 @@ private def cacheClosedProof (type proof : Expr) : MetaM Expr := do
     mkAuxLemma [] type proof (kind? := `_symbolicNoWrite)
   pure (.const lemma [])
 
+private def cachePropProof (type : Expr) (proof : MetaM Expr) : MetaM Expr := do
+  cacheClosedProof type (← proof)
+
+private abbrev ProofCache := IO.Ref (Std.HashMap Expr Expr)
+
+private def cachePropProofMemo (cache : ProofCache) (type : Expr)
+    (proof : MetaM Expr) : MetaM Expr := do
+  if let some cached := (← cache.get).get? type then
+    return cached
+  let cached ← cachePropProof type proof
+  cache.modify (fun entries => entries.insert type cached)
+  pure cached
+
+private def mkAndProof (left right : Expr) : MetaM Expr :=
+  mkAppM ``And.intro #[left, right]
+
+private partial def exposeHwExpr (expression : Expr) : MetaM Expr := do
+  let reduced ← withTransparency .all <| whnf expression
+  if let some name := reduced.getAppFn.constName? then
+    if name == ``Loom.Hw.Expr.lit || name == ``Loom.Hw.Expr.reg ||
+        name == ``Loom.Hw.Expr.memRead || name == ``Loom.Hw.Expr.and ||
+        name == ``Loom.Hw.Expr.or || name == ``Loom.Hw.Expr.xor ||
+        name == ``Loom.Hw.Expr.not || name == ``Loom.Hw.Expr.add ||
+        name == ``Loom.Hw.Expr.sub || name == ``Loom.Hw.Expr.shl ||
+        name == ``Loom.Hw.Expr.shr || name == ``Loom.Hw.Expr.eq ||
+        name == ``Loom.Hw.Expr.ult || name == ``Loom.Hw.Expr.slt ||
+        name == ``Loom.Hw.Expr.mux || name == ``Loom.Hw.Expr.slice ||
+        name == ``Loom.Hw.Expr.zext || name == ``Loom.Hw.Expr.sext then
+      return reduced
+  match ← unfoldDefinition? reduced (ignoreTransparency := true) with
+  | some unfolded => exposeHwExpr unfolded
+  | none =>
+      try
+        let unfoldedFn ← unfoldDefinition reduced.getAppFn
+        exposeHwExpr (mkAppN unfoldedFn reduced.getAppArgs)
+      catch _ => return reduced
+
+private partial def proveHwExprRegistersValid (cache : ProofCache)
+    (program expression : Expr) : MetaM Expr := do
+  let reduced ← exposeHwExpr expression
+  let args := reduced.getAppArgs
+  match reduced.getAppFn.constName? with
+  | some ``Loom.Hw.Expr.lit => pure (mkConst ``True.intro)
+  | some ``Loom.Hw.Expr.reg =>
+      let check ← mkAppM ``hwExprRegistersValidB #[program, reduced]
+      let acceptedType ← mkEq check (mkConst ``Bool.true)
+      let accepted ← cachePropProofMemo cache acceptedType (mkDecideProof acceptedType)
+      mkAppM ``hwExprRegistersValidB_sound #[reduced, accepted]
+  | some ``Loom.Hw.Expr.memRead | some ``Loom.Hw.Expr.not =>
+      let child := args[args.size - 1]!
+      let childType ← mkAppM ``HwExprRegistersValid #[program, child]
+      cachePropProofMemo cache childType (proveHwExprRegistersValid cache program child)
+  | some ``Loom.Hw.Expr.slice =>
+      let child := args[args.size - 3]!
+      let childType ← mkAppM ``HwExprRegistersValid #[program, child]
+      cachePropProofMemo cache childType (proveHwExprRegistersValid cache program child)
+  | some ``Loom.Hw.Expr.zext | some ``Loom.Hw.Expr.sext =>
+      let child := args[args.size - 2]!
+      let childType ← mkAppM ``HwExprRegistersValid #[program, child]
+      cachePropProofMemo cache childType (proveHwExprRegistersValid cache program child)
+  | some ``Loom.Hw.Expr.and | some ``Loom.Hw.Expr.or |
+    some ``Loom.Hw.Expr.xor | some ``Loom.Hw.Expr.add |
+    some ``Loom.Hw.Expr.sub | some ``Loom.Hw.Expr.shl |
+    some ``Loom.Hw.Expr.shr | some ``Loom.Hw.Expr.eq |
+    some ``Loom.Hw.Expr.ult | some ``Loom.Hw.Expr.slt =>
+      let left := args[args.size - 2]!
+      let right := args[args.size - 1]!
+      let leftType ← mkAppM ``HwExprRegistersValid #[program, left]
+      let rightType ← mkAppM ``HwExprRegistersValid #[program, right]
+      mkAndProof
+        (← cachePropProofMemo cache leftType
+          (proveHwExprRegistersValid cache program left))
+        (← cachePropProofMemo cache rightType
+          (proveHwExprRegistersValid cache program right))
+  | some ``Loom.Hw.Expr.mux =>
+      let condition := args[args.size - 3]!
+      let yes := args[args.size - 2]!
+      let no := args[args.size - 1]!
+      let conditionType ← mkAppM ``HwExprRegistersValid #[program, condition]
+      let yesType ← mkAppM ``HwExprRegistersValid #[program, yes]
+      let noType ← mkAppM ``HwExprRegistersValid #[program, no]
+      let conditionProof ← cachePropProofMemo cache conditionType
+        (proveHwExprRegistersValid cache program condition)
+      let yesProof ← cachePropProofMemo cache yesType
+        (proveHwExprRegistersValid cache program yes)
+      let noProof ← cachePropProofMemo cache noType
+        (proveHwExprRegistersValid cache program no)
+      mkAndProof conditionProof (← mkAndProof yesProof noProof)
+  | _ => throwError "design_reads_valid: expression did not reduce to a constructor: {reduced}"
+
 private partial def exposeAction (action : Expr) : MetaM Expr := do
   let reduced ← withTransparency .all <| whnf action
   if let some name := reduced.getAppFn.constName? then
@@ -37,6 +128,134 @@ private partial def exposeAction (action : Expr) : MetaM Expr := do
         let unfoldedFn ← unfoldDefinition reduced.getAppFn
         exposeAction (mkAppN unfoldedFn reduced.getAppArgs)
       catch _ => return reduced
+
+private partial def proveActRegistersValid (cache : ProofCache)
+    (program action : Expr) : MetaM Expr := do
+  let reduced ← exposeAction action
+  let args := reduced.getAppArgs
+  match reduced.getAppFn.constName? with
+  | some ``Loom.Hw.Act.skip => pure (mkConst ``True.intro)
+  | some ``Loom.Hw.Act.seq =>
+      let left := args[args.size - 2]!
+      let right := args[args.size - 1]!
+      let leftType ← mkAppM ``ActRegistersValid #[program, left]
+      let rightType ← mkAppM ``ActRegistersValid #[program, right]
+      mkAndProof
+        (← cachePropProofMemo cache leftType (proveActRegistersValid cache program left))
+        (← cachePropProofMemo cache rightType (proveActRegistersValid cache program right))
+  | some ``Loom.Hw.Act.ite =>
+      let condition := args[args.size - 3]!
+      let yes := args[args.size - 2]!
+      let no := args[args.size - 1]!
+      let conditionType ← mkAppM ``HwExprRegistersValid #[program, condition]
+      let yesType ← mkAppM ``ActRegistersValid #[program, yes]
+      let noType ← mkAppM ``ActRegistersValid #[program, no]
+      let conditionProof ← cachePropProofMemo cache conditionType
+        (proveHwExprRegistersValid cache program condition)
+      let yesProof ← cachePropProofMemo cache yesType
+        (proveActRegistersValid cache program yes)
+      let noProof ← cachePropProofMemo cache noType
+        (proveActRegistersValid cache program no)
+      mkAndProof conditionProof (← mkAndProof yesProof noProof)
+  | some ``Loom.Hw.Act.write =>
+      let value := args[args.size - 1]!
+      let valueType ← mkAppM ``HwExprRegistersValid #[program, value]
+      cachePropProofMemo cache valueType (proveHwExprRegistersValid cache program value)
+  | some ``Loom.Hw.Act.memWrite =>
+      let address := args[args.size - 2]!
+      let value := args[args.size - 1]!
+      let addressType ← mkAppM ``HwExprRegistersValid #[program, address]
+      let valueType ← mkAppM ``HwExprRegistersValid #[program, value]
+      mkAndProof
+        (← cachePropProofMemo cache addressType
+          (proveHwExprRegistersValid cache program address))
+        (← cachePropProofMemo cache valueType
+          (proveHwExprRegistersValid cache program value))
+  | _ => throwError "design_reads_valid: action did not reduce to a constructor: {reduced}"
+
+private partial def exposeList (values : Expr) : MetaM (Name × Array Expr) := do
+  let reduced ← withTransparency .all <| whnf values
+  match reduced.getAppFn.constName? with
+  | some ``List.nil => pure (``List.nil, reduced.getAppArgs)
+  | some ``List.cons => pure (``List.cons, reduced.getAppArgs)
+  | _ =>
+      match ← unfoldDefinition? reduced (ignoreTransparency := true) with
+      | some unfolded => exposeList unfolded
+      | none => throwError "design_reads_valid: expected a concrete list, got {reduced}"
+
+private partial def proveSourceRegistersValid (program sources : Expr) : MetaM Expr := do
+  let (name, args) ← exposeList sources
+  if name == ``List.nil then
+    return mkConst ``True.intro
+  let source := args[args.size - 2]!
+  let rest := args[args.size - 1]!
+  let oneType ← mkAppM ``SourceRegisterValid #[program, source]
+  let check ← mkAppM ``sourceRegisterValidB #[program, source]
+  let acceptedType ← mkEq check (mkConst ``Bool.true)
+  let accepted ← cachePropProof acceptedType (mkDecideProof acceptedType)
+  let oneProof ← mkAppM ``sourceRegisterValidB_sound #[source, accepted]
+  let oneProof ← cacheClosedProof oneType oneProof
+  -- Keep the list composition in one linear proof term. Caching every tail
+  -- would repeat all remaining declarations in auxiliary theorem statements.
+  mkAndProof oneProof (← proveSourceRegistersValid program rest)
+
+private partial def proveRulesRegistersValid (cache : ProofCache)
+    (program rules : Expr) : MetaM Expr := do
+  let (name, args) ← exposeList rules
+  if name == ``List.nil then
+    return mkConst ``True.intro
+  let rule := args[args.size - 2]!
+  let rest := args[args.size - 1]!
+  let body ← mkAppM ``Loom.Hw.Rule.body #[rule]
+  let bodyType ← mkAppM ``ActRegistersValid #[program, body]
+  let restType ← mkAppM ``RulesRegistersValid #[program, rest]
+  mkAndProof
+    (← cachePropProofMemo cache bodyType (proveActRegistersValid cache program body))
+    (← cachePropProof restType (proveRulesRegistersValid cache program rest))
+
+/-- Build only the compositional rule-body portion of a read certificate. -/
+syntax (name := rulesReadsValidTerm) "rules_reads_valid" : term
+
+@[term_elab rulesReadsValidTerm]
+def elabRulesReadsValid : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "rules_reads_valid requires an expected RulesRegistersValid proposition"
+  let expected ← instantiateMVars expected
+  if expected.hasFVar || expected.hasMVar then
+    throwError "rules_reads_valid requires a closed proposition"
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``RulesRegistersValid && args.size == 2 do
+    throwError "rules_reads_valid expected RulesRegistersValid program rules"
+  let cache ← IO.mkRef ({} : Std.HashMap Expr Expr)
+  proveRulesRegistersValid cache args[0]! args[1]!
+
+/-- Build the complete source-read certificate from separately named
+constructor and list proofs. The generator is not trusted: every auxiliary
+declaration and the composed result are checked by the kernel. -/
+syntax (name := designReadsValidTerm) "design_reads_valid" : term
+
+@[term_elab designReadsValidTerm]
+def elabDesignReadsValid : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "design_reads_valid requires an expected DesignReadsValid proposition"
+  let expected ← instantiateMVars expected
+  if expected.hasFVar || expected.hasMVar then
+    throwError "design_reads_valid requires a closed proposition"
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``DesignReadsValid && args.size == 2 do
+    throwError "design_reads_valid expected DesignReadsValid design program"
+  let design := args[0]!
+  let program := args[1]!
+  let cache ← IO.mkRef ({} : Std.HashMap Expr Expr)
+  let sources ← mkAppM ``Loom.Hw.Design.regs #[design]
+  let rules ← mkAppM ``Loom.Hw.Design.rules #[design]
+  let sourceType ← mkAppM ``SourceRegistersValid #[program, sources]
+  let rulesType ← mkAppM ``RulesRegistersValid #[program, rules]
+  let sourceProof ← cachePropProof sourceType
+    (proveSourceRegistersValid program sources)
+  let rulesProof ← cachePropProof rulesType
+    (proveRulesRegistersValid cache program rules)
+  mkAppM ``DesignReadsValid.ofLists #[sourceProof, rulesProof]
 
 private partial def expandListFoldr (function initial values : Expr) : MetaM Expr := do
   let values ← withTransparency .all <| whnf values
