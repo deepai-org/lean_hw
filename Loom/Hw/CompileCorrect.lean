@@ -129,23 +129,37 @@ private theorem actionDeclsOk_widths (d : Design) (mem : MemDecl)
       simp [widthsOk, hname, hall.1.symm, hall.2.symm]
     · simp [widthsOk, hname]
 
+/-- Assemble compiler well-formedness from independently checked structural
+components. This form lets large release designs certify action trees and
+memory traces in bounded generated declarations instead of reducing one
+monolithic Boolean. -/
+theorem designWF_of_components (d : Design)
+    (hregs : (d.regs.map (·.name)).Nodup)
+    (hmems : (d.mems.map (·.name)).Nodup)
+    (hactions : ∀ rule ∈ d.rules, actionDeclsOk d rule.body = true)
+    (hmemory : ∀ mem ∈ d.mems,
+      (designTrace d mem.name).Pairwise (fun a b => a < b)) :
+    DesignWF d := by
+  refine ⟨hregs, hmems, ?_, ?_, ?_⟩
+  · intro rule hrule name width hwrite
+    exact actionDeclsOk_regWrites d rule.body
+      (hactions rule hrule) name width hwrite
+  · intro rule hrule name hwrite
+    exact actionDeclsOk_memWrites d rule.body
+      (hactions rule hrule) name hwrite
+  · intro mem hmem
+    exact ⟨fun rule hrule => actionDeclsOk_widths d mem hmem rule.body
+      (hactions rule hrule), hmemory mem hmem⟩
+
 /-- Acceptance of `designWFCheck` supplies all semantic compiler side
 conditions. -/
 theorem designWFCheck_sound (d : Design) (h : designWFCheck d = true) :
     DesignWF d := by
   simp only [designWFCheck, Bool.and_eq_true, decide_eq_true_eq] at h
   obtain ⟨⟨⟨hregs, hmems⟩, hactions⟩, hmemory⟩ := h
-  refine ⟨hregs, hmems, ?_, ?_, ?_⟩
-  · intro rule hrule name width hwrite
-    exact actionDeclsOk_regWrites d rule.body
-      (List.all_eq_true.mp hactions rule hrule) name width hwrite
-  · intro rule hrule name hwrite
-    exact actionDeclsOk_memWrites d rule.body
-      (List.all_eq_true.mp hactions rule hrule) name hwrite
-  · intro mem hmem
-    exact ⟨fun rule hrule => actionDeclsOk_widths d mem hmem rule.body
-      (List.all_eq_true.mp hactions rule hrule),
-      by simpa using List.all_eq_true.mp hmemory mem hmem⟩
+  exact designWF_of_components d hregs hmems
+    (List.all_eq_true.mp hactions) (fun mem hmem => by
+      simpa using List.all_eq_true.mp hmemory mem hmem)
 
 /-- Forget the nominal distinction between µVerilog and EDSL state records. -/
 def forgetSt (state : Loom.Emit.MicroVerilog.St) : Loom.Hw.St :=
