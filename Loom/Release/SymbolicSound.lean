@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.SymbolicCertificate
+import Loom.Release.SymbolicElaborate
 import Std.Data.TreeMap.Lemmas
 
 /-!
@@ -2019,6 +2020,8 @@ def ModuleBehavior (design : Loom.Hw.Design) (program : Program)
     (outputs : Rope (List Nat)) : Prop :=
   design.name = program.name ∧
   IndexedRopeMatches 0 program.wires indexeds ∧
+  IndexedRopeWellFormed program indexeds table 0 indexeds ∧
+  DesignReadsValid design program ∧
   design.regs.length = registers.listLength ∧
   program.regs.length = registers.listLength ∧
   design.mems.length = memories.length ∧
@@ -2035,6 +2038,8 @@ theorem moduleBehavior_of_checks
     (outputs : Rope (List Nat))
     (name : design.name = program.name)
     (wires : IndexedRopeMatches 0 program.wires indexeds)
+    (wiresWellFormed : IndexedRopeWellFormed program indexeds table 0 indexeds)
+    (readsValid : DesignReadsValid design program)
     (sourceRegisterCount : design.regs.length = registers.listLength)
     (concreteRegisterCount : program.regs.length = registers.listLength)
     (sourceMemoryCount : design.mems.length = memories.length)
@@ -2044,7 +2049,8 @@ theorem moduleBehavior_of_checks
     (memoryBehavior : MemoryBehaviorsFrom design program table 0 memories)
     (outputBehavior : OutputBehaviorRopeFrom design program 0 outputs) :
     ModuleBehavior design program indexeds table registers memories outputs :=
-  ⟨name, wires, sourceRegisterCount, concreteRegisterCount, sourceMemoryCount,
+  ⟨name, wires, wiresWellFormed, readsValid, sourceRegisterCount,
+    concreteRegisterCount, sourceMemoryCount,
     concreteMemoryCount, outputCount, registerBehavior, memoryBehavior,
     outputBehavior⟩
 
