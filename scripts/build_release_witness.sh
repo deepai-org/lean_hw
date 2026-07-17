@@ -2,6 +2,11 @@
 # Generate and kernel-check batched concrete-SSA render witnesses.
 set -euo pipefail
 
+# The generated compositional elaborators recurse over the concrete source
+# action tree. Their proof terms are shared through named declarations, but
+# the meta-level traversal itself can exceed the small default process stack.
+ulimit -s unlimited
+
 target=${1:-}
 jobs=${2:-8}
 
@@ -67,5 +72,9 @@ lake env lean "$(realpath "$src/SemanticWires.lean")" -o "$lib/SemanticWires.ole
 find "$src" -maxdepth 1 -name 'SemanticRegBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 lake env lean "$(realpath "$src/SemanticRegs.lean")" -o "$lib/SemanticRegs.olean"
+find "$src" -maxdepth 1 -name 'ReadRegBatch*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+lake env lean "$(realpath "$src/ReadRegs.lean")" -o "$lib/ReadRegs.olean"
+lake env lean "$(realpath "$src/SemanticReads.lean")" -o "$lib/SemanticReads.olean"
 lake env lean "$(realpath "$src/SemanticMems.lean")" -o "$lib/SemanticMems.olean"
 echo "$artifact render and semantic certificate modules kernel-checked"

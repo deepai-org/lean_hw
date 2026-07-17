@@ -5,6 +5,9 @@ import Loom.Release.SymbolicElaborate
 import Lean.Elab.Term
 import Lean.Meta.Tactic.AuxLemma
 import Lean.Meta.Tactic.Simp
+import Lean.Meta.Reduce
+import Lean.Meta.Eval
+import Batteries.Lean.TagAttribute
 
 /-!
 # Compositional symbolic release proofs
@@ -19,6 +22,12 @@ open Loom.Release
 
 namespace Loom.Release.Symbolic
 
+/-- Generated bounded register-lookup leaves. The term elaborator seeds its
+memo table from these already kernel-checked theorem constants. -/
+initialize releaseReadLeafAttr : TagAttribute ←
+  registerTagAttribute `release_read_leaf
+    "register-read leaf available to compositional release certificates"
+
 private def cacheClosedProof (type proof : Expr) : MetaM Expr := do
   let lemma ← withOptions (Elab.async.set · false) do
     mkAuxLemma [] type proof (kind? := `_symbolicNoWrite)
@@ -29,6 +38,18 @@ private def cachePropProof (type : Expr) (proof : MetaM Expr) : MetaM Expr := do
 
 private abbrev ProofCache := IO.Ref (Std.HashMap Expr Expr)
 
+private unsafe def normalizeRegisterExpression (expression : Expr) : MetaM Expr := do
+  let args := expression.getAppArgs
+  let simpContext ← Simp.Context.mkDefault
+  let (widthResult, _) ← simp args[args.size - 2]! simpContext
+  let (nameResult, _) ← simp args[args.size - 1]! simpContext
+  let reducedWidth ← Lean.Meta.reduce widthResult.expr
+  let reducedName ← Lean.Meta.reduce nameResult.expr
+  let some width ← getNatValue? reducedWidth
+    | throwError "design_reads_valid: register width did not reduce: {reducedWidth}"
+  let name ← evalExpr String (mkConst ``String) reducedName
+  pure <| mkApp2 (mkConst ``Loom.Hw.Expr.reg) (toExpr width) (toExpr name)
+
 private def cachePropProofMemo (cache : ProofCache) (type : Expr)
     (proof : MetaM Expr) : MetaM Expr := do
   if let some cached := (← cache.get).get? type then
@@ -36,6 +57,23 @@ private def cachePropProofMemo (cache : ProofCache) (type : Expr)
   let cached ← cachePropProof type proof
   cache.modify (fun entries => entries.insert type cached)
   pure cached
+
+private unsafe def seedReleaseReadProofs (cache : ProofCache) : MetaM Unit := do
+  let env ← getEnv
+  for declaration in releaseReadLeafAttr.getDecls env do
+    let info ← getConstInfo declaration
+    unless info.levelParams.isEmpty || info.type.hasFVar || info.type.hasMVar do
+      throwError "release_read_leaf theorem must be closed: {declaration}"
+    let args := info.type.getAppArgs
+    let type ← if info.type.getAppFn.constName? == some ``HwExprRegistersValid &&
+        !args.isEmpty then
+      let expression := args[args.size - 1]!
+      if expression.getAppFn.constName? == some ``Loom.Hw.Expr.reg then
+        mkAppM ``HwExprRegistersValid
+          #[args[0]!, ← normalizeRegisterExpression expression]
+      else pure info.type
+    else pure info.type
+    cache.modify (fun entries => entries.insert type (.const declaration []))
 
 private def mkAndProof (left right : Expr) : MetaM Expr :=
   mkAppM ``And.intro #[left, right]
@@ -61,10 +99,21 @@ private partial def exposeHwExpr (expression : Expr) : MetaM Expr := do
         exposeHwExpr (mkAppN unfoldedFn reduced.getAppArgs)
       catch _ => return reduced
 
-private partial def proveHwExprRegistersValid (cache : ProofCache)
+private unsafe def proveHwExprRegistersValid (cache : ProofCache)
     (program expression : Expr) : MetaM Expr := do
   let reduced ← exposeHwExpr expression
   let args := reduced.getAppArgs
+  let type ← mkAppM ``HwExprRegistersValid #[program, reduced]
+  if let some cached := (← cache.get).get? type then
+    return cached
+  if reduced.getAppFn.constName? == some ``Loom.Hw.Expr.reg then
+    let normalized ← normalizeRegisterExpression reduced
+    let normalizedType ← mkAppM ``HwExprRegistersValid #[program, normalized]
+    if let some cached := (← cache.get).get? normalizedType then
+      return cached
+    let env ← getEnv
+    unless releaseReadLeafAttr.getDecls env |>.isEmpty do
+      throwError "design_reads_valid: no generated register leaf for {normalized}"
   match reduced.getAppFn.constName? with
   | some ``Loom.Hw.Expr.lit => pure (mkConst ``True.intro)
   | some ``Loom.Hw.Expr.reg =>
@@ -129,7 +178,27 @@ private partial def exposeAction (action : Expr) : MetaM Expr := do
         exposeAction (mkAppN unfoldedFn reduced.getAppArgs)
       catch _ => return reduced
 
-private partial def proveActRegistersValid (cache : ProofCache)
+private partial def expandListFoldr (function initial values : Expr) : MetaM Expr := do
+  let values ← withTransparency .all <| whnf values
+  let args := values.getAppArgs
+  match values.getAppFn.constName? with
+  | some ``List.nil => pure initial
+  | some ``List.cons =>
+      let head := args[args.size - 2]!
+      let tail := args[args.size - 1]!
+      pure (mkApp2 function head (← expandListFoldr function initial tail))
+  | _ => throwError "design_reads_valid: List.foldr input did not reduce to a list: {values}"
+
+private def transportActRegistersValid (program actionEq proof : Expr) : MetaM Expr := do
+  let equalityType ← inferType actionEq
+  let actionType := equalityType.getAppArgs[0]!
+  let motive ← withLocalDeclD `action actionType fun act => do
+    let body ← mkAppM ``ActRegistersValid #[program, act]
+    mkLambdaFVars #[act] body
+  let propositionEq ← mkCongrArg motive actionEq
+  mkAppM ``Eq.mpr #[propositionEq, proof]
+
+private unsafe def proveActRegistersValid (cache : ProofCache)
     (program action : Expr) : MetaM Expr := do
   let reduced ← exposeAction action
   let args := reduced.getAppArgs
@@ -171,6 +240,21 @@ private partial def proveActRegistersValid (cache : ProofCache)
           (proveHwExprRegistersValid cache program address))
         (← cachePropProofMemo cache valueType
           (proveHwExprRegistersValid cache program value))
+  | some ``List.foldr =>
+      let function := args[args.size - 3]!
+      let initial := args[args.size - 2]!
+      let values := args[args.size - 1]!
+      let simpContext ← Simp.Context.mkDefault
+      let (result, _) ← simp values simpContext
+      let expanded ← expandListFoldr function initial result.expr
+      let proof ← proveActRegistersValid cache program expanded
+      match result.proof? with
+      | none => pure proof
+      | some valuesEq =>
+          let valuesType ← inferType values
+          let foldMotive ← withLocalDeclD `values valuesType fun xs =>
+            mkLambdaFVars #[xs] <| mkAppN reduced.getAppFn (args.pop.push xs)
+          transportActRegistersValid program (← mkCongrArg foldMotive valuesEq) proof
   | _ => throwError "design_reads_valid: action did not reduce to a constructor: {reduced}"
 
 private partial def exposeList (values : Expr) : MetaM (Name × Array Expr) := do
@@ -183,23 +267,25 @@ private partial def exposeList (values : Expr) : MetaM (Name × Array Expr) := d
       | some unfolded => exposeList unfolded
       | none => throwError "design_reads_valid: expected a concrete list, got {reduced}"
 
-private partial def proveSourceRegistersValid (program sources : Expr) : MetaM Expr := do
+private unsafe def proveSourceRegistersValid (cache : ProofCache)
+    (program sources : Expr) : MetaM Expr := do
   let (name, args) ← exposeList sources
   if name == ``List.nil then
     return mkConst ``True.intro
   let source := args[args.size - 2]!
   let rest := args[args.size - 1]!
   let oneType ← mkAppM ``SourceRegisterValid #[program, source]
-  let check ← mkAppM ``sourceRegisterValidB #[program, source]
-  let acceptedType ← mkEq check (mkConst ``Bool.true)
-  let accepted ← cachePropProof acceptedType (mkDecideProof acceptedType)
-  let oneProof ← mkAppM ``sourceRegisterValidB_sound #[source, accepted]
+  let width ← mkAppM ``Loom.Hw.RegDecl.width #[source]
+  let name ← mkAppM ``Loom.Hw.RegDecl.name #[source]
+  let expression := mkApp2 (mkConst ``Loom.Hw.Expr.reg) width name
+  let expressionProof ← proveHwExprRegistersValid cache program expression
+  let oneProof ← mkAppM ``SourceRegisterValid.ofHwReg #[source, expressionProof]
   let oneProof ← cacheClosedProof oneType oneProof
   -- Keep the list composition in one linear proof term. Caching every tail
   -- would repeat all remaining declarations in auxiliary theorem statements.
-  mkAndProof oneProof (← proveSourceRegistersValid program rest)
+  mkAndProof oneProof (← proveSourceRegistersValid cache program rest)
 
-private partial def proveRulesRegistersValid (cache : ProofCache)
+private unsafe def proveRulesRegistersValid (cache : ProofCache)
     (program rules : Expr) : MetaM Expr := do
   let (name, args) ← exposeList rules
   if name == ``List.nil then
@@ -217,7 +303,7 @@ private partial def proveRulesRegistersValid (cache : ProofCache)
 syntax (name := rulesReadsValidTerm) "rules_reads_valid" : term
 
 @[term_elab rulesReadsValidTerm]
-def elabRulesReadsValid : TermElab := fun _ expected? => do
+unsafe def elabRulesReadsValid : TermElab := fun _ expected? => do
   let some expected := expected?
     | throwError "rules_reads_valid requires an expected RulesRegistersValid proposition"
   let expected ← instantiateMVars expected
@@ -227,6 +313,7 @@ def elabRulesReadsValid : TermElab := fun _ expected? => do
   unless expected.getAppFn.constName? == some ``RulesRegistersValid && args.size == 2 do
     throwError "rules_reads_valid expected RulesRegistersValid program rules"
   let cache ← IO.mkRef ({} : Std.HashMap Expr Expr)
+  seedReleaseReadProofs cache
   proveRulesRegistersValid cache args[0]! args[1]!
 
 /-- Build the complete source-read certificate from separately named
@@ -235,7 +322,7 @@ declaration and the composed result are checked by the kernel. -/
 syntax (name := designReadsValidTerm) "design_reads_valid" : term
 
 @[term_elab designReadsValidTerm]
-def elabDesignReadsValid : TermElab := fun _ expected? => do
+unsafe def elabDesignReadsValid : TermElab := fun _ expected? => do
   let some expected := expected?
     | throwError "design_reads_valid requires an expected DesignReadsValid proposition"
   let expected ← instantiateMVars expected
@@ -247,26 +334,16 @@ def elabDesignReadsValid : TermElab := fun _ expected? => do
   let design := args[0]!
   let program := args[1]!
   let cache ← IO.mkRef ({} : Std.HashMap Expr Expr)
+  seedReleaseReadProofs cache
   let sources ← mkAppM ``Loom.Hw.Design.regs #[design]
   let rules ← mkAppM ``Loom.Hw.Design.rules #[design]
   let sourceType ← mkAppM ``SourceRegistersValid #[program, sources]
   let rulesType ← mkAppM ``RulesRegistersValid #[program, rules]
   let sourceProof ← cachePropProof sourceType
-    (proveSourceRegistersValid program sources)
+    (proveSourceRegistersValid cache program sources)
   let rulesProof ← cachePropProof rulesType
     (proveRulesRegistersValid cache program rules)
   mkAppM ``DesignReadsValid.ofLists #[sourceProof, rulesProof]
-
-private partial def expandListFoldr (function initial values : Expr) : MetaM Expr := do
-  let values ← withTransparency .all <| whnf values
-  let args := values.getAppArgs
-  match values.getAppFn.constName? with
-  | some ``List.nil => pure initial
-  | some ``List.cons =>
-      let head := args[args.size - 2]!
-      let tail := args[args.size - 1]!
-      pure (mkApp2 function head (← expandListFoldr function initial tail))
-  | _ => throwError "no_reg_write: List.foldr input did not reduce to a list: {values}"
 
 private def transportNoRegWrite (register width actionEq proof : Expr) : MetaM Expr := do
   let equalityType ← inferType actionEq
