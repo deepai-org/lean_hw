@@ -26,6 +26,7 @@ import Loom.Release.Certificate
 import Loom.Release.NamedCertificate
 import Loom.Release.SymbolicCertificate
 import Loom.Release.SymbolicElaborate
+import Loom.Release.Verified
 import Loom.Release.SymbolicSound
 import Loom.Emit.MicroVerilog.MatchesSemantics
 import Loom.Emit.MicroVerilog.Print

@@ -79,6 +79,32 @@ theorem ofFun_deterministic (S : Type) (init : S → Prop) (f : S → S) :
   simp only [ofFun_step] at h₁ h₂
   exact h₁ ▸ h₂
 
+/-- The powered-on portion of a transition system. It has the same reset
+states, but exposes steps only from states reachable from reset. This is the
+right concrete system for refinement claims whose source proof deliberately
+excludes arbitrary malformed register files. -/
+def reachablePart (M : TSys) : TSys where
+  S := M.S
+  init := M.init
+  step := fun state next => M.Reachable state ∧ M.step state next
+
+/-- Restricting steps to reachable sources does not change the reachable
+state set. -/
+theorem reachablePart_reachable_iff (M : TSys) (state : M.S) :
+    M.reachablePart.Reachable state ↔ M.Reachable state := by
+  constructor
+  · let rec goForward {state : M.S} :
+        M.reachablePart.Reachable state → M.Reachable state
+      | .init initial => .init initial
+      | .step previous transition => .step (goForward previous) transition.2
+    exact goForward
+  · let rec goBackward {state : M.S} :
+        M.Reachable state → M.reachablePart.Reachable state
+      | .init initial => .init initial
+      | .step previous transition =>
+          .step (goBackward previous) ⟨previous, transition⟩
+    exact goBackward
+
 end TSys
 
 /-- Forward simulation via an abstraction *function*: the refinement currency
@@ -116,6 +142,34 @@ def comp {A B C : TSys} (σ₁ : Simulation A B) (σ₂ : Simulation B C) :
   abs := σ₁.abs ∘ σ₂.abs
   init_ok := fun s h => σ₁.init_ok _ (σ₂.init_ok s h)
   square := fun s s' h => σ₁.square _ _ (σ₂.square s s' h)
+
+/-- A simulation restricts to the powered-on portions of both systems. The
+extra reachability premise is transported by the original simulation. -/
+def reachablePart {A C : TSys} (σ : Simulation A C) :
+    Simulation A.reachablePart C.reachablePart where
+  abs := σ.abs
+  init_ok := σ.init_ok
+  square := by
+    intro state next step
+    exact ⟨σ.reachable state step.1, σ.square state next step.2⟩
+
+/-- Restrict only the concrete system to powered-on steps. This keeps the
+original abstract model as the statement of the refinement theorem. -/
+def concreteReachablePart {A C : TSys} (σ : Simulation A C) :
+    Simulation A C.reachablePart where
+  abs := σ.abs
+  init_ok := σ.init_ok
+  square := fun state next step => σ.square state next step.2
+
+/-- An invariant transported through a reachable-part simulation holds on
+the original concrete system, because the restriction preserves exactly its
+powered-on reachable states. -/
+theorem invariant_pullback_reachablePart {A C : TSys}
+    (σ : Simulation A C.reachablePart) {P : A.S → Prop}
+    (invariant : A.Invariant P) :
+    C.Invariant (fun state => P (σ.abs state)) := by
+  intro state reachable
+  exact invariant _ (σ.reachable state ((C.reachablePart_reachable_iff state).2 reachable))
 
 end Simulation
 
