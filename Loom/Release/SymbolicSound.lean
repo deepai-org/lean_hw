@@ -637,4 +637,218 @@ theorem indexedExprMatches_raw
                     using rhsEq)
                   accepted.1.1.1.2 (valueIH actual accepted.2)
 
+/-- Meaning of the optional symbolic accumulator used while checking an
+action. `none` deliberately imposes no premise: a successful certificate
+must then establish an output independent of the discarded accumulator. -/
+def RawCurrentMatches (program : Program) (table : WireTable) {width : Nat}
+    (expr : Loom.Emit.MicroVerilog.Expr width) : Option Ref → Prop
+  | some reference => RawExprMatches program table expr reference
+  | none => True
+
+private theorem nextReg_eq_of_no_write (register : String) (width : Nat) :
+    ∀ (action : Loom.Hw.Act) (cur : Loom.Emit.MicroVerilog.Expr width),
+      Loom.Hw.Compile.writesRegB register width action = false →
+      Loom.Hw.Compile.nextReg register width action cur = cur := by
+  intro action
+  induction action with
+  | skip => intro _ _; rfl
+  | seq left right leftIH rightIH =>
+      intro cur accepted
+      have notMem : (register, width) ∉ (left.seq right).regWrites := by
+        simpa [Loom.Hw.Compile.writesRegB] using accepted
+      simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at notMem
+      rw [Loom.Hw.Compile.nextReg,
+        rightIH _ (by simpa [Loom.Hw.Compile.writesRegB] using notMem.2),
+        leftIH _ (by simpa [Loom.Hw.Compile.writesRegB] using notMem.1)]
+  | ite guard thenAction elseAction thenIH elseIH =>
+      intro cur accepted
+      have notMem :
+          (register, width) ∉ (Loom.Hw.Act.ite guard thenAction elseAction).regWrites := by
+        simpa [Loom.Hw.Compile.writesRegB] using accepted
+      simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at notMem
+      rw [Loom.Hw.Compile.nextReg, if_neg]
+      simp [Loom.Hw.Compile.writesRegB, notMem]
+  | write actualWidth name value =>
+      intro cur accepted
+      have notMem :
+          (register, width) ∉ (Loom.Hw.Act.write actualWidth name value).regWrites := by
+        simpa [Loom.Hw.Compile.writesRegB] using accepted
+      simp only [Loom.Hw.Compile.nextReg]
+      by_cases sameName : name = register
+      · rw [if_pos sameName]
+        have differentWidth : actualWidth ≠ width := by
+          intro sameWidth
+          exact notMem (by simp [Loom.Hw.Act.regWrites, sameName, sameWidth])
+        rw [dif_neg differentWidth]
+      · rw [if_neg sameName]
+  | memWrite => intro _ _; rfl
+
+/-- Soundness of the symbolic action checker against the reference
+`Compile.nextReg` function. -/
+theorem nextRegMatches_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (register : String) (width : Nat) :
+    ∀ (action : Loom.Hw.Act) (current : Option Ref) (out : Ref)
+      (cert : NextRegCert),
+      nextRegMatches indexeds table register width action current out cert = true →
+      ∀ cur : Loom.Emit.MicroVerilog.Expr width,
+        RawCurrentMatches program table cur current →
+        RawExprMatches program table
+          (Loom.Hw.Compile.nextReg register width action cur) out := by
+  intro action
+  induction action <;> intro current out cert accepted cur currentMatches
+  · cases current <;> cases cert <;>
+      simp [nextRegMatches] at accepted
+    subst out
+    simpa [Loom.Hw.Compile.nextReg] using currentMatches
+  · rename_i left right leftIH rightIH
+    cases cert with
+    | seq mid leftCert rightCert =>
+        cases mid with
+        | none =>
+            simp only [nextRegMatches] at accepted
+            simpa only [Loom.Hw.Compile.nextReg] using
+              rightIH none out rightCert accepted
+                (Loom.Hw.Compile.nextReg register width left cur) trivial
+        | some mid =>
+            simp only [nextRegMatches, Bool.and_eq_true] at accepted
+            have leftMatches := leftIH current mid leftCert accepted.1 cur currentMatches
+            simpa only [Loom.Hw.Compile.nextReg] using
+              rightIH (some mid) out rightCert accepted.2
+                (Loom.Hw.Compile.nextReg register width left cur) leftMatches
+    | same =>
+        cases current with
+        | none => simp [nextRegMatches] at accepted
+        | some current =>
+            simp only [nextRegMatches, Bool.and_eq_true, beq_iff_eq] at accepted
+            rw [← accepted.2]
+            rw [nextReg_eq_of_no_write register width
+              (.seq left right) cur (by simpa using accepted.1)]
+            exact currentMatches
+    | write => simp [nextRegMatches] at accepted
+    | ite thenCert elseCert => simp [nextRegMatches] at accepted
+  · rename_i guard thenAction elseAction thenIH elseIH
+    by_cases writes : Loom.Hw.Compile.writesRegB register width thenAction ||
+        Loom.Hw.Compile.writesRegB register width elseAction
+    · cases cert with
+      | ite thenCert elseCert =>
+          cases out with
+          | reg name => simp [nextRegMatches] at accepted
+          | wire number =>
+              simp only [nextRegMatches, writes, if_true] at accepted
+              cases found : lookupIndexed? indexeds table number with
+              | none => simp [found] at accepted
+              | some indexed =>
+                  obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+                  cases rhs <;> simp [found] at accepted
+                  next guardRef thenRef elseRef =>
+                    obtain ⟨raw, rawAt, rawMatch⟩ :=
+                      lookupIndexed_rawWireAt program hmatches table number
+                        ⟨indexedNumber, actualWidth,
+                          .mux guardRef thenRef elseRef⟩ found
+                    obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                      (indexed := ⟨indexedNumber, actualWidth,
+                        .mux guardRef thenRef elseRef⟩) rawMatch
+                    rw [Loom.Hw.Compile.nextReg, if_pos writes]
+                    exact .mux rawAt (widthEq.trans accepted.1.1.1) rhsEq
+                      (indexedExprMatches_raw program hmatches table _ _
+                        accepted.1.1.2)
+                      (thenIH current thenRef thenCert accepted.1.2 cur currentMatches)
+                      (elseIH current elseRef elseCert accepted.2 cur currentMatches)
+      | same => cases current <;> simp [nextRegMatches, writes] at accepted
+      | write => simp [nextRegMatches] at accepted
+      | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
+    · cases cert with
+      | same =>
+          have writesFalse :
+              (Loom.Hw.Compile.writesRegB register width thenAction ||
+                Loom.Hw.Compile.writesRegB register width elseAction) = false := by
+            cases value : (Loom.Hw.Compile.writesRegB register width thenAction ||
+              Loom.Hw.Compile.writesRegB register width elseAction) <;> simp_all
+          cases current with
+          | none => simp [nextRegMatches] at accepted
+          | some current =>
+              have currentEq : current = out := by
+                simpa [nextRegMatches, writesFalse] using accepted
+              rw [← currentEq]
+              rw [Loom.Hw.Compile.nextReg, writesFalse]
+              exact currentMatches
+      | ite thenCert elseCert =>
+          have writesFalse :
+              (Loom.Hw.Compile.writesRegB register width thenAction ||
+                Loom.Hw.Compile.writesRegB register width elseAction) = false := by
+            cases value : (Loom.Hw.Compile.writesRegB register width thenAction ||
+              Loom.Hw.Compile.writesRegB register width elseAction) <;> simp_all
+          cases out <;> simp [nextRegMatches, writesFalse] at accepted
+      | write => simp [nextRegMatches] at accepted
+      | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
+  · rename_i actualWidth actualRegister value
+    by_cases sameRegister : actualRegister = register
+    · by_cases sameWidth : actualWidth = width
+      · subst actualRegister
+        subst actualWidth
+        cases cert with
+        | write =>
+            simp only [nextRegMatches, if_pos, dif_pos] at accepted
+            rw [Loom.Hw.Compile.nextReg, if_pos rfl, dif_pos rfl]
+            exact indexedExprMatches_raw program hmatches table _ _ accepted
+        | same => simp [nextRegMatches] at accepted
+        | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
+        | ite thenCert elseCert => simp [nextRegMatches] at accepted
+      · cases current <;> cases cert <;>
+          simp [nextRegMatches, Loom.Hw.Compile.nextReg,
+            sameRegister, sameWidth] at accepted ⊢
+        subst out
+        exact currentMatches
+    · cases current <;> cases cert <;>
+        simp [nextRegMatches, Loom.Hw.Compile.nextReg,
+          sameRegister] at accepted ⊢
+      subst out
+      exact currentMatches
+  · cases current <;> cases cert <;>
+      simp [nextRegMatches] at accepted
+    subst out
+    simpa [Loom.Hw.Compile.nextReg] using currentMatches
+
+/-- Soundness of the ordered scheduler fold used to construct a compiled
+register's next-state expression. -/
+theorem nextRulesMatches_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (register : String) (width : Nat) :
+    ∀ (rules : List Loom.Hw.Rule) (current : Option Ref) (out : Ref)
+      (cert : NextRulesCert),
+      nextRulesMatches indexeds table register width rules current out cert = true →
+      ∀ cur : Loom.Emit.MicroVerilog.Expr width,
+        RawCurrentMatches program table cur current →
+        RawExprMatches program table
+          (rules.foldl (fun acc rule =>
+            Loom.Hw.Compile.nextReg register width rule.body acc) cur) out := by
+  intro rules
+  induction rules with
+  | nil =>
+      intro current out cert accepted cur currentMatches
+      cases current <;> cases cert <;> simp [nextRulesMatches] at accepted
+      rw [← accepted]
+      exact currentMatches
+  | cons rule rules rulesIH =>
+      intro current out cert accepted cur currentMatches
+      cases cert with
+      | nil => simp [nextRulesMatches] at accepted
+      | cons mid head tail =>
+          cases mid with
+          | none =>
+              simp only [nextRulesMatches] at accepted
+              simpa only [List.foldl_cons] using
+                rulesIH none out tail accepted
+                  (Loom.Hw.Compile.nextReg register width rule.body cur) trivial
+          | some mid =>
+              simp only [nextRulesMatches, Bool.and_eq_true] at accepted
+              have headMatches := nextRegMatches_raw program hmatches table
+                register width rule.body current mid head accepted.1 cur currentMatches
+              simpa only [List.foldl_cons] using
+                rulesIH (some mid) out tail accepted.2
+                  (Loom.Hw.Compile.nextReg register width rule.body cur) headMatches
+
 end Loom.Release.Symbolic
