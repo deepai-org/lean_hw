@@ -265,6 +265,119 @@ def ExprRegistersValid (program : Program) :
       ExprRegistersValid program condition ∧
         ExprRegistersValid program yes ∧ ExprRegistersValid program no
 
+/-- Source-EDSL expression form of register validity. -/
+def HwExprRegistersValid (program : Program) :
+    {width : Nat} → Loom.Hw.Expr width → Prop
+  | width, .reg _ name =>
+      ∃ reg, program.regs.find? (fun candidate => candidate.name == name) =
+        some reg ∧ reg.width = width ∧ wireNumber? name = none
+  | _, .lit _ => True
+  | _, .memRead _ _ address => HwExprRegistersValid program address
+  | _, .and left right | _, .or left right | _, .xor left right
+  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .shr left right | _, .eq left right | _, .ult left right
+  | _, .slt left right =>
+      HwExprRegistersValid program left ∧ HwExprRegistersValid program right
+  | _, .not value | _, .slice value _ _ | _, .zext value _
+  | _, .sext value _ => HwExprRegistersValid program value
+  | _, .mux condition yes no =>
+      HwExprRegistersValid program condition ∧
+        HwExprRegistersValid program yes ∧ HwExprRegistersValid program no
+
+/-- Every register read made by an action is declared at its intrinsic width. -/
+def ActRegistersValid (program : Program) : Loom.Hw.Act → Prop
+  | .skip => True
+  | .seq left right =>
+      ActRegistersValid program left ∧ ActRegistersValid program right
+  | .ite condition yes no =>
+      HwExprRegistersValid program condition ∧
+        ActRegistersValid program yes ∧ ActRegistersValid program no
+  | .write _ _ value => HwExprRegistersValid program value
+  | .memWrite _ _ _ _ address value =>
+      HwExprRegistersValid program address ∧ HwExprRegistersValid program value
+
+/-- Source-level read discipline needed by the release elaboration theorem.
+It is intentionally separate from compiler correctness's write discipline. -/
+structure DesignReadsValid (design : Loom.Hw.Design) (program : Program) : Prop where
+  register : ∀ source ∈ design.regs,
+    ∃ concrete,
+      program.regs.find? (fun candidate => candidate.name == source.name) =
+        some concrete ∧ concrete.width = source.width ∧
+        wireNumber? source.name = none
+  rule : ∀ rule ∈ design.rules, ActRegistersValid program rule.body
+
+/-- Structural compilation preserves source register validity. -/
+theorem compileExpr_registersValid {program : Program} {width : Nat}
+    (expr : Loom.Hw.Expr width) (valid : HwExprRegistersValid program expr) :
+    ExprRegistersValid program (Loom.Hw.Compile.compileExpr expr) := by
+  induction expr <;> simp_all [HwExprRegistersValid, ExprRegistersValid,
+    Loom.Hw.Compile.compileExpr]
+
+/-- Folding one valid action into a valid next-register expression preserves
+register validity. -/
+theorem nextReg_registersValid {program : Program} (register : String)
+    (width : Nat) (action : Loom.Hw.Act) (current : Expr width)
+    (actionValid : ActRegistersValid program action)
+    (currentValid : ExprRegistersValid program current) :
+    ExprRegistersValid program
+      (Loom.Hw.Compile.nextReg register width action current) := by
+  induction action generalizing current with
+  | skip => exact currentValid
+  | seq left right leftIH rightIH =>
+      exact rightIH _ actionValid.2 (leftIH _ actionValid.1 currentValid)
+  | ite condition yes no yesIH noIH =>
+      simp only [Loom.Hw.Compile.nextReg]
+      split
+      · exact ⟨compileExpr_registersValid condition actionValid.1,
+          yesIH _ actionValid.2.1 currentValid,
+          noIH _ actionValid.2.2 currentValid⟩
+      · exact currentValid
+  | write actualWidth actualName value =>
+      simp only [Loom.Hw.Compile.nextReg]
+      split
+      · split
+        next widthEq =>
+          cases widthEq
+          exact compileExpr_registersValid value actionValid
+        · exact currentValid
+      · exact currentValid
+  | memWrite => exact currentValid
+
+/-- The ordered rule fold used for a compiled register preserves register
+validity when every rule action is valid. -/
+theorem nextRules_registersValid {program : Program} (register : String)
+    (width : Nat) (rules : List Loom.Hw.Rule) (current : Expr width)
+    (rulesValid : ∀ rule ∈ rules, ActRegistersValid program rule.body)
+    (currentValid : ExprRegistersValid program current) :
+    ExprRegistersValid program
+      (rules.foldl (fun value rule => Loom.Hw.Compile.nextReg register width
+        rule.body value) current) := by
+  induction rules generalizing current with
+  | nil => exact currentValid
+  | cons rule rules ih =>
+      simp only [List.foldl_cons]
+      apply ih
+      · intro tail tailMem
+        exact rulesValid tail (by simp [tailMem])
+      · exact nextReg_registersValid register width rule.body current
+          (rulesValid rule (by simp)) currentValid
+
+/-- The reference compiler's next-state expression for any declared source
+register satisfies the release elaborator's register-validity premise. -/
+theorem registerNext_registersValid {design : Loom.Hw.Design}
+    {program : Program} (readsValid : DesignReadsValid design program)
+    (source : Loom.Hw.RegDecl) (sourceMem : source ∈ design.regs) :
+    ExprRegistersValid program
+      (design.rules.foldl
+        (fun current rule => Loom.Hw.Compile.nextReg source.name source.width
+          rule.body current)
+        (.reg source.width source.name)) := by
+  apply nextRules_registersValid source.name source.width design.rules
+  · exact readsValid.rule
+  · obtain ⟨concrete, found, widthEq, notWire⟩ :=
+      readsValid.register source sourceMem
+    exact ⟨concrete, found, widthEq, notWire⟩
+
 /-- Every well-typed compiler expression accepted for an in-scope structural
 reference resolves to that exact intrinsically typed expression. -/
 def IndexedEnvModelsBefore (program : Program)
@@ -1160,5 +1273,37 @@ theorem elaborateIndexedEnv_resolves
   have inScope := indexedExprMatches_inScope program wires table hwellFormed
     expr reference valid matchOk
   exact ⟨env, envEq, hmodels expr reference valid matchOk inScope⟩
+
+/-- An accepted concrete register root resolves exactly to the reference
+compiler's ordered next-state fold. -/
+theorem indexedRegisterMatchesAt_resolves
+    (design : Loom.Hw.Design) (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (readsValid : DesignReadsValid design program)
+    (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
+    (index : Nat) (source : Loom.Hw.RegDecl) (root : Ref)
+    (sourceFound : design.regs[index]? = some source)
+    (accepted : indexedRegisterMatchesAt design program wires table index root =
+      true) :
+    ∃ env,
+      elaborateIndexedEnv program wires = some env ∧
+      env.resolveAt root source.width = some
+        (design.rules.foldl
+          (fun current rule => Loom.Hw.Compile.nextReg source.name source.width
+            rule.body current)
+          (.reg source.width source.name)) := by
+  cases concreteFound : program.regs[index]? with
+  | none => simp [indexedRegisterMatchesAt, sourceFound, concreteFound] at accepted
+  | some concrete =>
+      simp only [indexedRegisterMatchesAt, sourceFound, concreteFound,
+        Bool.and_eq_true, beq_iff_eq] at accepted
+      have sourceMem : source ∈ design.regs := by
+        obtain ⟨inBounds, atIndex⟩ :=
+          List.getElem?_eq_some_iff.mp sourceFound
+        rw [← atIndex]
+        exact List.getElem_mem inBounds
+      have valid := registerNext_registersValid readsValid source sourceMem
+      exact elaborateIndexedEnv_resolves program wires table hwellFormed _ root
+        valid accepted.2
 
 end Loom.Release.Symbolic
