@@ -206,7 +206,9 @@ structure MemHdr where
 
 abbrev Env := Std.TreeMap String (Sigma Expr)
 
-private def resolveAny (regs : List RegHdr) (env : Env)
+/-- Internal elaborator primitive, exposed so release-certificate soundness can
+reason about name resolution without trusting evaluator execution. -/
+def resolveAny (regs : List RegHdr) (env : Env)
     (name : String) : Option (Sigma Expr) :=
   match env[name]? with
   | some entry => some entry
@@ -215,7 +217,8 @@ private def resolveAny (regs : List RegHdr) (env : Env)
       | some reg => some ⟨reg.width, .reg reg.width name⟩
       | none => none
 
-private def resolveAt (regs : List RegHdr) (env : Env)
+/-- Width-checked internal name resolution used by the concrete elaborator. -/
+def resolveAt (regs : List RegHdr) (env : Env)
     (name : String) (width : Nat) : Option (Expr width) := do
   let ⟨actual, value⟩ ← resolveAny regs env name
   if h : actual = width then pure (h ▸ value) else none
@@ -227,12 +230,12 @@ def Program.resolve (program : Program) (env : Env) (name : String)
     (width : Nat) : Option (Expr width) :=
   resolveAt (program.regs.map fun reg => ⟨reg.name, reg.width⟩) env name width
 
-private def binSame (regs : List RegHdr) (env : Env) (width : Nat)
+def binSame (regs : List RegHdr) (env : Env) (width : Nat)
     (left right : String) (make : Expr width → Expr width → Expr width) :
     Option (Expr width) := do
   pure (make (← resolveAt regs env left width) (← resolveAt regs env right width))
 
-private def comparison (regs : List RegHdr) (env : Env) (width : Nat)
+def comparison (regs : List RegHdr) (env : Env) (width : Nat)
     (left right : String)
     (make : {w : Nat} → Expr w → Expr w → Expr 1) : Option (Expr width) := do
   guard (width == 1)
@@ -283,7 +286,7 @@ def Rhs.elaborate (regs : List RegHdr) (mems : List MemHdr) (env : Env)
         inputWidth < width)
       pure (.sext input width)
 
-private def elaborateWires (regs : List RegHdr) (mems : List MemHdr) :
+def elaborateWires (regs : List RegHdr) (mems : List MemHdr) :
     List Wire → Env → Option Env
   | [], env => some env
   | wire :: wires, env => do
@@ -291,7 +294,7 @@ private def elaborateWires (regs : List RegHdr) (mems : List MemHdr) :
       elaborateWires regs mems wires
         (env.insert wire.name ⟨wire.width, value⟩)
 
-private def elaborateWireTree (regs : List RegHdr) (mems : List MemHdr) :
+def elaborateWireTree (regs : List RegHdr) (mems : List MemHdr) :
     Loom.Release.Rope (List Wire) → Env → Option Env
   | .leaf wires, env => elaborateWires regs mems wires env
   | .node left right, env => do
