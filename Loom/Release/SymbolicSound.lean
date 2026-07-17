@@ -1411,6 +1411,295 @@ theorem nextRulesMatches_raw
                 rulesIH (some mid) out tail accepted.2
                   (Loom.Hw.Compile.nextReg register width rule.body cur) headMatches
 
+/-! ## Memory-port checker soundness -/
+
+/-- Declarative meaning of three concrete SSA roots as one typed compiler
+memory-port value. -/
+def RawPortMatches (program : Program) (table : WireTable) {addressWidth
+    dataWidth : Nat} (port : Loom.Hw.Compile.Port addressWidth dataWidth)
+    (refs : PortRefs) : Prop :=
+  RawExprMatches program table port.en refs.en ∧
+  RawExprMatches program table port.addr refs.addr ∧
+  RawExprMatches program table port.data refs.data
+
+/-- A structural mux-root check is sound when its three operand references
+already denote the corresponding source expressions. -/
+theorem indexedMuxRootMatches_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) {width : Nat}
+    (condition : Loom.Emit.MicroVerilog.Expr 1)
+    (yes no : Loom.Emit.MicroVerilog.Expr width)
+    (conditionRef yesRef noRef out : Ref)
+    (accepted : indexedMuxRootMatches indexeds table width conditionRef yesRef
+      noRef out = true)
+    (conditionMatches : RawExprMatches program table condition conditionRef)
+    (yesMatches : RawExprMatches program table yes yesRef)
+    (noMatches : RawExprMatches program table no noRef) :
+    RawExprMatches program table (.mux condition yes no) out := by
+  cases out with
+  | reg name => simp [indexedMuxRootMatches] at accepted
+  | wire number =>
+      cases found : lookupIndexed? indexeds table number with
+      | none => simp [indexedMuxRootMatches, found] at accepted
+      | some indexed =>
+          obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+          cases rhs <;> simp [indexedMuxRootMatches, found] at accepted
+          case mux actualCondition actualYes actualNo =>
+            obtain ⟨raw, rawAt, rawMatch⟩ :=
+              lookupIndexed_rawWireAt program hmatches table number
+                ⟨indexedNumber, actualWidth,
+                  .mux actualCondition actualYes actualNo⟩ found
+            obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+              (indexed := ⟨indexedNumber, actualWidth,
+                .mux actualCondition actualYes actualNo⟩) rawMatch
+            rcases accepted with ⟨actualWidthEq, rhsMatches⟩
+            have rhsRefs :
+                (actualCondition, actualYes, actualNo) =
+                  (conditionRef, yesRef, noRef) := by
+              simpa using rhsMatches
+            cases rhsRefs
+            exact .mux rawAt (widthEq.trans actualWidthEq) rhsEq
+              conditionMatches yesMatches noMatches
+
+/-- Three accepted mux roots construct the exact conditional compiler port. -/
+theorem indexedPortMuxMatches_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) {addressWidth dataWidth : Nat}
+    (guard : Loom.Emit.MicroVerilog.Expr 1)
+    (thenPort elsePort : Loom.Hw.Compile.Port addressWidth dataWidth)
+    (guardRef : Ref) (thenRefs elseRefs out : PortRefs)
+    (accepted : indexedPortMuxMatches indexeds table addressWidth dataWidth
+      guardRef thenRefs elseRefs out = true)
+    (guardMatches : RawExprMatches program table guard guardRef)
+    (thenMatches : RawPortMatches program table thenPort thenRefs)
+    (elseMatches : RawPortMatches program table elsePort elseRefs) :
+    RawPortMatches program table
+      { en := .mux guard thenPort.en elsePort.en
+        addr := .mux guard thenPort.addr elsePort.addr
+        data := .mux guard thenPort.data elsePort.data } out := by
+  simp only [indexedPortMuxMatches, Bool.and_eq_true] at accepted
+  exact ⟨indexedMuxRootMatches_raw program hmatches table guard thenPort.en
+      elsePort.en guardRef thenRefs.en elseRefs.en out.en accepted.1.1
+      guardMatches thenMatches.1 elseMatches.1,
+    indexedMuxRootMatches_raw program hmatches table guard thenPort.addr
+      elsePort.addr guardRef thenRefs.addr elseRefs.addr out.addr accepted.1.2
+      guardMatches thenMatches.2.1 elseMatches.2.1,
+    indexedMuxRootMatches_raw program hmatches table guard thenPort.data
+      elsePort.data guardRef thenRefs.data elseRefs.data out.data accepted.2
+      guardMatches thenMatches.2.2 elseMatches.2.2⟩
+
+private theorem memPort_eq_of_no_write (memory : String)
+    (addressWidth dataWidth port : Nat) :
+    ∀ (action : Loom.Hw.Act)
+      (current : Loom.Hw.Compile.Port addressWidth dataWidth),
+      Loom.Hw.Compile.writesPortB memory port action = false →
+      Loom.Hw.Compile.memPort memory addressWidth dataWidth port action current =
+        current := by
+  intro action
+  induction action with
+  | skip => intro _ _; rfl
+  | seq left right leftIH rightIH =>
+      intro current accepted
+      have notMem : port ∉ Loom.Hw.Compile.portTrace memory (.seq left right) := by
+        simpa [Loom.Hw.Compile.writesPortB] using accepted
+      simp only [Loom.Hw.Compile.portTrace, List.mem_append, not_or] at notMem
+      rw [Loom.Hw.Compile.memPort,
+        rightIH _ (by simpa [Loom.Hw.Compile.writesPortB] using notMem.2),
+        leftIH _ (by simpa [Loom.Hw.Compile.writesPortB] using notMem.1)]
+  | ite guard thenAction elseAction thenIH elseIH =>
+      intro current accepted
+      have notMem : port ∉ Loom.Hw.Compile.portTrace memory
+          (.ite guard thenAction elseAction) := by
+        simpa [Loom.Hw.Compile.writesPortB] using accepted
+      simp only [Loom.Hw.Compile.portTrace, List.mem_append, not_or] at notMem
+      rw [Loom.Hw.Compile.memPort, if_neg]
+      simp [Loom.Hw.Compile.writesPortB, notMem]
+  | write => intro _ _; rfl
+  | memWrite actualAddressWidth actualDataWidth actualMemory actualPort
+      address value =>
+      intro current accepted
+      have notMem : port ∉ Loom.Hw.Compile.portTrace memory
+          (.memWrite actualAddressWidth actualDataWidth actualMemory actualPort
+            address value) := by
+        simpa [Loom.Hw.Compile.writesPortB] using accepted
+      simp only [Loom.Hw.Compile.memPort]
+      by_cases samePort : actualMemory = memory ∧ actualPort = port
+      · exact False.elim (notMem (by simp [Loom.Hw.Compile.portTrace, samePort]))
+      · rw [if_neg samePort]
+
+/-- Soundness of the string-free symbolic action checker against the
+reference `Compile.memPort` function. -/
+theorem nextPortMatches_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (memory : String)
+    (addressWidth dataWidth port : Nat) :
+    ∀ (action : Loom.Hw.Act) (current out : PortRefs) (cert : NextPortCert),
+      nextPortMatches indexeds table memory addressWidth dataWidth port action
+        current out cert = true →
+      ∀ currentPort : Loom.Hw.Compile.Port addressWidth dataWidth,
+        RawPortMatches program table currentPort current →
+        RawPortMatches program table
+          (Loom.Hw.Compile.memPort memory addressWidth dataWidth port action
+            currentPort) out := by
+  intro action
+  induction action <;> intro current out cert accepted currentPort currentMatches
+  · cases cert <;> simp [nextPortMatches] at accepted
+    subst out
+    simpa [Loom.Hw.Compile.memPort] using currentMatches
+  · rename_i left right leftIH rightIH
+    cases cert with
+    | seq mid leftCert rightCert =>
+        simp only [nextPortMatches, Bool.and_eq_true] at accepted
+        have leftMatches := leftIH current mid leftCert accepted.1
+          currentPort currentMatches
+        simpa only [Loom.Hw.Compile.memPort] using
+          rightIH mid out rightCert accepted.2
+            (Loom.Hw.Compile.memPort memory addressWidth dataWidth port left
+              currentPort) leftMatches
+    | same =>
+        simp only [nextPortMatches, Bool.and_eq_true, beq_iff_eq] at accepted
+        rw [← accepted.2]
+        have writesFalse :
+            Loom.Hw.Compile.writesPortB memory port (.seq left right) = false := by
+          cases found : Loom.Hw.Compile.writesPortB memory port (.seq left right) <;>
+            simp_all
+        rw [memPort_eq_of_no_write memory addressWidth dataWidth port
+          (.seq left right) currentPort writesFalse]
+        exact currentMatches
+    | _ => simp [nextPortMatches] at accepted
+  · rename_i guard thenAction elseAction thenIH elseIH
+    by_cases writes : Loom.Hw.Compile.writesPortB memory port thenAction ||
+        Loom.Hw.Compile.writesPortB memory port elseAction
+    · cases cert with
+      | ite guardRef thenRefs elseRefs thenCert elseCert =>
+          simp only [nextPortMatches, writes, if_true, Bool.and_eq_true]
+            at accepted
+          have guardMatches := indexedExprMatches_raw program hmatches table
+            (Loom.Hw.Compile.compileExpr guard) guardRef accepted.1.1.1
+          have thenMatches := thenIH current thenRefs thenCert accepted.1.1.2
+            currentPort currentMatches
+          have elseMatches := elseIH current elseRefs elseCert accepted.1.2
+            currentPort currentMatches
+          rw [Loom.Hw.Compile.memPort, if_pos writes]
+          exact indexedPortMuxMatches_raw program hmatches table
+            (Loom.Hw.Compile.compileExpr guard)
+            (Loom.Hw.Compile.memPort memory addressWidth dataWidth port
+              thenAction currentPort)
+            (Loom.Hw.Compile.memPort memory addressWidth dataWidth port
+              elseAction currentPort)
+            guardRef thenRefs elseRefs out accepted.2 guardMatches
+            thenMatches elseMatches
+      | _ => simp [nextPortMatches, writes] at accepted
+    · cases cert with
+      | same =>
+          simp only [nextPortMatches, writes, Bool.not_false,
+            Bool.true_and, beq_iff_eq] at accepted
+          rw [← accepted]
+          rw [Loom.Hw.Compile.memPort, if_neg writes]
+          exact currentMatches
+      | _ => simp [nextPortMatches, writes] at accepted
+  · cases cert <;> simp [nextPortMatches] at accepted
+    subst out
+    exact currentMatches
+  · rename_i actualAddressWidth actualDataWidth actualMemory actualPort
+      address value
+    by_cases samePort : actualMemory = memory ∧ actualPort = port
+    · by_cases sameWidths : actualAddressWidth = addressWidth ∧
+          actualDataWidth = dataWidth
+      · rcases samePort with ⟨rfl, rfl⟩
+        rcases sameWidths with ⟨rfl, rfl⟩
+        cases cert with
+        | write =>
+            simp [nextPortMatches] at accepted
+            simp only [Loom.Hw.Compile.memPort]
+            exact ⟨indexedExprMatches_raw program hmatches table _ _
+                accepted.1.1,
+              indexedExprMatches_raw program hmatches table _ _ accepted.1.2,
+              indexedExprMatches_raw program hmatches table _ _ accepted.2⟩
+        | _ => simp [nextPortMatches] at accepted
+      · cases cert <;>
+          simp [nextPortMatches, Loom.Hw.Compile.memPort, samePort, sameWidths]
+            at accepted ⊢
+        subst out
+        exact currentMatches
+    · cases cert <;>
+        simp [nextPortMatches, Loom.Hw.Compile.memPort, samePort] at accepted ⊢
+      subst out
+      exact currentMatches
+
+/-- Soundness of the ordered scheduler fold used to construct one compiled
+memory write port. -/
+theorem nextPortRulesMatches_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (memory : String)
+    (addressWidth dataWidth port : Nat) :
+    ∀ (rules : List Loom.Hw.Rule) (current out : PortRefs)
+      (cert : NextPortRulesCert),
+      nextPortRulesMatches indexeds table memory addressWidth dataWidth port
+        rules current out cert = true →
+      ∀ currentPort : Loom.Hw.Compile.Port addressWidth dataWidth,
+        RawPortMatches program table currentPort current →
+        RawPortMatches program table
+          (rules.foldl (fun acc rule => Loom.Hw.Compile.memPort memory
+            addressWidth dataWidth port rule.body acc) currentPort) out := by
+  intro rules
+  induction rules with
+  | nil =>
+      intro current out cert accepted currentPort currentMatches
+      cases cert <;> simp [nextPortRulesMatches] at accepted
+      subst out
+      exact currentMatches
+  | cons rule rules rulesIH =>
+      intro current out cert accepted currentPort currentMatches
+      cases cert with
+      | nil => simp [nextPortRulesMatches] at accepted
+      | cons mid head tail =>
+          simp only [nextPortRulesMatches, Bool.and_eq_true] at accepted
+          have headMatches := nextPortMatches_raw program hmatches table memory
+            addressWidth dataWidth port rule.body current mid head accepted.1
+            currentPort currentMatches
+          simpa only [List.foldl_cons] using
+            rulesIH mid out tail accepted.2
+              (Loom.Hw.Compile.memPort memory addressWidth dataWidth port
+                rule.body currentPort) headMatches
+
+/-- Certificate-free behavioral meaning of three SSA roots as one compiled
+memory port. Metadata and rendered-field binding are kept separate so this
+statement captures exactly the semantic result of the verified rule fold. -/
+def MemoryPortBehavior (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) (memory : String) (addressWidth dataWidth port : Nat)
+    (refs : PortRefs) : Prop :=
+  RawPortMatches program table
+    (Loom.Hw.Compile.compilePort design memory addressWidth dataWidth port) refs
+
+/-- An ordered action certificate plus three checked zero-port roots yields
+the certificate-free behavior of a complete compiled memory port. -/
+theorem memoryPortBehavior_of_checks
+    (design : Loom.Hw.Design) (program : Program)
+    {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (memory : String) (addressWidth dataWidth port : Nat)
+    (initial out : PortRefs) (cert : NextPortRulesCert)
+    (rules : nextPortRulesMatches indexeds table memory addressWidth dataWidth
+      port design.rules initial out cert = true)
+    (hen : indexedExprMatches indexeds table
+      (.lit (BitVec.ofNat 1 0)) initial.en = true)
+    (haddr : indexedExprMatches indexeds table
+      (.lit (BitVec.ofNat addressWidth 0)) initial.addr = true)
+    (hdata : indexedExprMatches indexeds table
+      (.lit (BitVec.ofNat dataWidth 0)) initial.data = true) :
+    MemoryPortBehavior design program table memory addressWidth dataWidth port
+      out := by
+  apply nextPortRulesMatches_raw program hmatches table memory addressWidth
+    dataWidth port design.rules initial out cert rules
+  exact ⟨indexedExprMatches_raw program hmatches table _ _ hen,
+    indexedExprMatches_raw program hmatches table _ _ haddr,
+    indexedExprMatches_raw program hmatches table _ _ hdata⟩
+
 /-- Declarative register-level meaning of a concrete SSA root.  This
 proposition deliberately contains no symbolic certificate data: generated
 leaf theorems discharge the Boolean check once, then the rest of the release

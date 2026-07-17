@@ -598,6 +598,161 @@ private partial def proveNoRegWrite (register width action : Expr) : MetaM Expr 
           transportNoRegWrite register width (← mkCongrArg foldMotive valuesEq) proof
   | _ => throwError "no_reg_write: action did not reduce to an Act constructor: {reduced}"
 
+private partial def proveNoPortWrite (memory port action : Expr) : MetaM Expr := do
+  let reduced ← exposeAction action
+  let args := reduced.getAppArgs
+  match reduced.getAppFn.constName? with
+  | some ``Loom.Hw.Act.skip =>
+      pure <| mkAppN (mkConst ``NoPortWrite.skip) #[memory, port]
+  | some ``Loom.Hw.Act.seq =>
+      let left := args[args.size - 2]!
+      let right := args[args.size - 1]!
+      let leftType ← mkAppM ``NoPortWrite #[memory, port, left]
+      let rightType ← mkAppM ``NoPortWrite #[memory, port, right]
+      let leftProof ← cacheClosedProof leftType
+        (← proveNoPortWrite memory port left)
+      let rightProof ← cacheClosedProof rightType
+        (← proveNoPortWrite memory port right)
+      pure <| mkAppN (mkConst ``NoPortWrite.seq)
+        #[memory, port, left, right, leftProof, rightProof]
+  | some ``Loom.Hw.Act.ite =>
+      let guard := args[args.size - 3]!
+      let thenAction := args[args.size - 2]!
+      let elseAction := args[args.size - 1]!
+      let thenType ← mkAppM ``NoPortWrite #[memory, port, thenAction]
+      let elseType ← mkAppM ``NoPortWrite #[memory, port, elseAction]
+      let thenProof ← cacheClosedProof thenType
+        (← proveNoPortWrite memory port thenAction)
+      let elseProof ← cacheClosedProof elseType
+        (← proveNoPortWrite memory port elseAction)
+      pure <| mkAppN (mkConst ``NoPortWrite.ite)
+        #[memory, port, guard, thenAction, elseAction, thenProof, elseProof]
+  | some ``Loom.Hw.Act.write =>
+      let width := args[args.size - 3]!
+      let name := args[args.size - 2]!
+      let value := args[args.size - 1]!
+      pure <| mkAppN (mkConst ``NoPortWrite.write)
+        #[memory, port, width, name, value]
+  | some ``Loom.Hw.Act.memWrite =>
+      let addressWidth := args[args.size - 6]!
+      let dataWidth := args[args.size - 5]!
+      let name := args[args.size - 4]!
+      let actualPort := args[args.size - 3]!
+      let address := args[args.size - 2]!
+      let value := args[args.size - 1]!
+      if ← isDefEq name memory then
+        let differentType ← mkAppM ``Ne #[actualPort, port]
+        let different ← cacheClosedProof differentType
+          (← mkDecideProof differentType)
+        pure <| mkAppN (mkConst ``NoPortWrite.memWritePort)
+          #[memory, port, addressWidth, dataWidth, actualPort, address, value,
+            different]
+      else
+        let differentType ← mkAppM ``Ne #[name, memory]
+        let different ← cacheClosedProof differentType
+          (← mkDecideProof differentType)
+        pure <| mkAppN (mkConst ``NoPortWrite.memWriteName)
+          #[memory, port, addressWidth, dataWidth, name, actualPort, address,
+            value, different]
+  | _ => throwError "symbolic_kernel_decide: action did not reduce for NoPortWrite"
+
+private def transportHasPortWrite (memory port actionEq proof : Expr) : MetaM Expr := do
+  let equalityType ← inferType actionEq
+  let actionType := equalityType.getAppArgs[0]!
+  let motive ← withLocalDeclD `action actionType fun act => do
+    let body ← mkAppM ``HasPortWrite #[memory, port, act]
+    mkLambdaFVars #[act] body
+  let propositionEq ← mkCongrArg motive actionEq
+  mkAppM ``Eq.mpr #[propositionEq, proof]
+
+private partial def proveHasPortWrite (memory port action : Expr) : MetaM Expr := do
+  let reduced ← exposeAction action
+  let args := reduced.getAppArgs
+  match reduced.getAppFn.constName? with
+  | some ``Loom.Hw.Act.seq =>
+      let left := args[args.size - 2]!
+      let right := args[args.size - 1]!
+      try
+        let childType ← mkAppM ``HasPortWrite #[memory, port, left]
+        let child ← cacheClosedProof childType
+          (← proveHasPortWrite memory port left)
+        pure <| mkAppN (mkConst ``HasPortWrite.seqLeft)
+          #[memory, port, left, right, child]
+      catch _ =>
+        let childType ← mkAppM ``HasPortWrite #[memory, port, right]
+        let child ← cacheClosedProof childType
+          (← proveHasPortWrite memory port right)
+        pure <| mkAppN (mkConst ``HasPortWrite.seqRight)
+          #[memory, port, left, right, child]
+  | some ``Loom.Hw.Act.ite =>
+      let guard := args[args.size - 3]!
+      let thenAction := args[args.size - 2]!
+      let elseAction := args[args.size - 1]!
+      try
+        let childType ← mkAppM ``HasPortWrite #[memory, port, thenAction]
+        let child ← cacheClosedProof childType
+          (← proveHasPortWrite memory port thenAction)
+        pure <| mkAppN (mkConst ``HasPortWrite.iteThen)
+          #[memory, port, guard, thenAction, elseAction, child]
+      catch _ =>
+        let childType ← mkAppM ``HasPortWrite #[memory, port, elseAction]
+        let child ← cacheClosedProof childType
+          (← proveHasPortWrite memory port elseAction)
+        pure <| mkAppN (mkConst ``HasPortWrite.iteElse)
+          #[memory, port, guard, thenAction, elseAction, child]
+  | some ``Loom.Hw.Act.memWrite =>
+      let addressWidth := args[args.size - 6]!
+      let dataWidth := args[args.size - 5]!
+      let name := args[args.size - 4]!
+      let actualPort := args[args.size - 3]!
+      let address := args[args.size - 2]!
+      let value := args[args.size - 1]!
+      unless ← isDefEq name memory do
+        throwError "symbolic_kernel_decide: memory write has a different name"
+      unless ← isDefEq actualPort port do
+        throwError "symbolic_kernel_decide: memory write has a different port"
+      pure <| mkAppN (mkConst ``HasPortWrite.memWrite)
+        #[memory, port, addressWidth, dataWidth, address, value]
+  | some ``List.foldr =>
+      let function := args[args.size - 3]!
+      let initial := args[args.size - 2]!
+      let values := args[args.size - 1]!
+      let simpContext ← Simp.Context.mkDefault
+      let (result, _) ← simp values simpContext
+      let expanded ← expandListFoldr function initial result.expr
+      let proof ← proveHasPortWrite memory port expanded
+      match result.proof? with
+      | none => pure proof
+      | some valuesEq =>
+          let valuesType ← inferType values
+          let foldMotive ← withLocalDeclD `values valuesType fun xs =>
+            mkLambdaFVars #[xs] <| mkAppN reduced.getAppFn (args.pop.push xs)
+          transportHasPortWrite memory port
+            (← mkCongrArg foldMotive valuesEq) proof
+  | _ => throwError "symbolic_kernel_decide: no write to requested memory port in {reduced}"
+
+private def provePortWritesOr (memory port left right : Expr) : MetaM Expr := do
+  let leftCheck ← mkAppM ``Loom.Hw.Compile.writesPortB #[memory, port, left]
+  let rightCheck ← mkAppM ``Loom.Hw.Compile.writesPortB #[memory, port, right]
+  let leftAccepted ← mkEq leftCheck (mkConst ``Bool.true)
+  let rightAccepted ← mkEq rightCheck (mkConst ``Bool.true)
+  let disjunction ← try
+    let witnessType ← mkAppM ``HasPortWrite #[memory, port, left]
+    let witness ← cacheClosedProof witnessType
+      (← proveHasPortWrite memory port left)
+    let accepted ← mkAppM ``HasPortWrite.writesPortB_eq_true #[witness]
+    pure <| mkAppN (mkConst ``Or.inl) #[leftAccepted, rightAccepted, accepted]
+  catch leftError =>
+    let witnessType ← mkAppM ``HasPortWrite #[memory, port, right]
+    let witness ← try
+      cacheClosedProof witnessType (← proveHasPortWrite memory port right)
+    catch rightError =>
+      throwError "symbolic_kernel_decide: neither conditional branch writes the port; left: {leftError.toMessageData}; right: {rightError.toMessageData}"
+    let accepted ← mkAppM ``HasPortWrite.writesPortB_eq_true #[witness]
+    pure <| mkAppN (mkConst ``Or.inr) #[leftAccepted, rightAccepted, accepted]
+  let decomposition ← mkAppM ``Bool.or_eq_true #[leftCheck, rightCheck]
+  mkAppM ``Eq.mpr #[decomposition, disjunction]
+
 /-- Construct closed, compositional evidence that an action cannot write the
 expected register. Every recursive child is checked as a named auxiliary
 theorem. -/
@@ -812,7 +967,140 @@ private partial def proveNextRules (wires table register width rules current out
           headCert, tailCert, tailProof]
   throwError "symbolic_kernel_decide: rule/certificate shape mismatch"
 
-/-- Kernel-check a closed symbolic register or rule-fold certificate by
+private def transportNextPortAction (wires table memory addressWidth dataWidth
+    port current out cert actionEq proof : Expr) : MetaM Expr := do
+  let equalityType ← inferType actionEq
+  let actionType := equalityType.getAppArgs[0]!
+  let motive ← withLocalDeclD `action actionType fun act => do
+    let value ← mkAppM ``nextPortMatches
+      #[wires, table, memory, addressWidth, dataWidth, port, act, current, out,
+        cert]
+    mkLambdaFVars #[act] (← mkBoolAccepted value)
+  let propositionEq ← mkCongrArg motive actionEq
+  mkAppM ``Eq.mpr #[propositionEq, proof]
+
+private partial def proveNextPort (wires table memory addressWidth dataWidth port
+    action current out cert : Expr) : MetaM Expr := do
+  let simpContext ← Simp.Context.mkDefault
+  let (actionResult, _) ← simp action simpContext
+  if let some actionEq := actionResult.proof? then
+    let proof ← proveNextPort wires table memory addressWidth dataWidth port
+      actionResult.expr current out cert
+    return ← transportNextPortAction wires table memory addressWidth dataWidth
+      port current out cert actionEq proof
+  let reduced ← exposeAction action
+  let actionName := reduced.getAppFn.constName?.getD Name.anonymous
+  let actionArgs := reduced.getAppArgs
+  let (certName, certArgs) ← expose cert
+  if certName == ``NextPortCert.same then
+    if ← isDefEq current out then
+      try
+        let noWriteType ← mkAppM ``NoPortWrite #[memory, port, action]
+        let noWriteProof ← cacheClosedProof noWriteType
+          (← proveNoPortWrite memory port action)
+        return ← mkAppM ``nextPortMatches_same_of_noWrite
+          #[wires, table, memory, addressWidth, dataWidth, port, action, current,
+            noWriteProof]
+      catch _ => pure ()
+  if actionName == ``Loom.Hw.Act.seq && certName == ``NextPortCert.seq then
+    let left := actionArgs[actionArgs.size - 2]!
+    let right := actionArgs[actionArgs.size - 1]!
+    let mid := certArgs[certArgs.size - 3]!
+    let leftCert := certArgs[certArgs.size - 2]!
+    let rightCert := certArgs[certArgs.size - 1]!
+    let leftValue ← mkAppM ``nextPortMatches
+      #[wires, table, memory, addressWidth, dataWidth, port, left, current, mid,
+        leftCert]
+    let leftType ← mkBoolAccepted leftValue
+    let leftProof ← cacheAccepted leftType
+      (← proveNextPort wires table memory addressWidth dataWidth port left
+        current mid leftCert)
+    let rightValue ← mkAppM ``nextPortMatches
+      #[wires, table, memory, addressWidth, dataWidth, port, right, mid, out,
+        rightCert]
+    let rightType ← mkBoolAccepted rightValue
+    let rightProof ← cacheAccepted rightType
+      (← proveNextPort wires table memory addressWidth dataWidth port right
+        mid out rightCert)
+    return ← mkAppM ``nextPortMatches_seq_named
+      #[wires, table, memory, addressWidth, dataWidth, port, left, right,
+        current, mid, out, leftCert, rightCert, leftProof, rightProof]
+  if actionName == ``Loom.Hw.Act.ite && certName == ``NextPortCert.ite then
+    let guard := actionArgs[actionArgs.size - 3]!
+    let thenAction := actionArgs[actionArgs.size - 2]!
+    let elseAction := actionArgs[actionArgs.size - 1]!
+    let guardRef := certArgs[certArgs.size - 5]!
+    let thenPort := certArgs[certArgs.size - 4]!
+    let elsePort := certArgs[certArgs.size - 3]!
+    let thenCert := certArgs[certArgs.size - 2]!
+    let elseCert := certArgs[certArgs.size - 1]!
+    let writesProof ← provePortWritesOr memory port thenAction elseAction
+    let compiledGuard ← mkAppM ``Loom.Hw.Compile.compileExpr #[guard]
+    let guardValue ← mkAppM ``indexedExprMatches
+      #[wires, table, compiledGuard, guardRef]
+    let guardProof ← decideAccepted (← mkBoolAccepted guardValue)
+    let thenValue ← mkAppM ``nextPortMatches
+      #[wires, table, memory, addressWidth, dataWidth, port, thenAction,
+        current, thenPort, thenCert]
+    let thenType ← mkBoolAccepted thenValue
+    let thenProof ← cacheAccepted thenType
+      (← proveNextPort wires table memory addressWidth dataWidth port
+        thenAction current thenPort thenCert)
+    let elseValue ← mkAppM ``nextPortMatches
+      #[wires, table, memory, addressWidth, dataWidth, port, elseAction,
+        current, elsePort, elseCert]
+    let elseType ← mkBoolAccepted elseValue
+    let elseProof ← cacheAccepted elseType
+      (← proveNextPort wires table memory addressWidth dataWidth port
+        elseAction current elsePort elseCert)
+    let muxValue ← mkAppM ``indexedPortMuxMatches
+      #[wires, table, addressWidth, dataWidth, guardRef, thenPort, elsePort, out]
+    let muxProof ← decideAccepted (← mkBoolAccepted muxValue)
+    return ← mkAppM ``nextPortMatches_ite_written
+      #[wires, table, memory, addressWidth, dataWidth, port, guard, thenAction,
+        elseAction, current, out, guardRef, thenPort, elsePort, thenCert,
+        elseCert, writesProof, guardProof, thenProof, elseProof, muxProof]
+  let value ← mkAppM ``nextPortMatches
+    #[wires, table, memory, addressWidth, dataWidth, port, action, current, out,
+      cert]
+  decideAccepted (← mkBoolAccepted value)
+
+private partial def proveNextPortRules (wires table memory addressWidth dataWidth
+    port rules current out cert : Expr) : MetaM Expr := do
+  let (rulesName, rulesArgs) ← expose rules
+  let (certName, certArgs) ← expose cert
+  if rulesName == ``List.nil && certName == ``NextPortRulesCert.nil then
+    unless ← isDefEq current out do
+      throwError "symbolic_kernel_decide: terminal port references differ"
+    return ← mkAppM ``nextPortRulesMatches_nil
+      #[wires, table, memory, addressWidth, dataWidth, port, current]
+  if rulesName == ``List.cons && certName == ``NextPortRulesCert.cons then
+    let rule := rulesArgs[rulesArgs.size - 2]!
+    let tailRules := rulesArgs[rulesArgs.size - 1]!
+    let mid := certArgs[certArgs.size - 3]!
+    let headCert := certArgs[certArgs.size - 2]!
+    let tailCert := certArgs[certArgs.size - 1]!
+    let ruleBody ← mkAppM ``Loom.Hw.Rule.body #[rule]
+    let headValue ← mkAppM ``nextPortMatches
+      #[wires, table, memory, addressWidth, dataWidth, port, ruleBody, current,
+        mid, headCert]
+    let headType ← mkBoolAccepted headValue
+    let headProof ← cacheAccepted headType
+      (← proveNextPort wires table memory addressWidth dataWidth port ruleBody
+        current mid headCert)
+    let tailValue ← mkAppM ``nextPortRulesMatches
+      #[wires, table, memory, addressWidth, dataWidth, port, tailRules, mid, out,
+        tailCert]
+    let tailType ← mkBoolAccepted tailValue
+    let tailProof ← cacheAccepted tailType
+      (← proveNextPortRules wires table memory addressWidth dataWidth port
+        tailRules mid out tailCert)
+    return ← mkAppM ``nextPortRulesMatches_cons_named
+      #[wires, table, memory, addressWidth, dataWidth, port, rule, tailRules,
+        current, mid, out, headCert, tailCert, headProof, tailProof]
+  throwError "symbolic_kernel_decide: port rule/certificate shape mismatch"
+
+/-- Kernel-check a closed symbolic expression, register, or port certificate by
 installing every recursive child as an auxiliary theorem. -/
 syntax (name := symbolicKernelDecide) "symbolic_kernel_decide" : term
 
@@ -829,6 +1117,10 @@ def elabSymbolicKernelDecide : TermElab := fun _ expected? => do
   let lhs := equalityArgs[1]!
   let lhsArgs := lhs.getAppArgs
   match lhs.getAppFn.constName? with
+  | some ``indexedExprMatches =>
+      unless lhsArgs.size == 5 do
+        throwError "symbolic_kernel_decide: malformed indexedExprMatches application"
+      decideAccepted expected
   | some ``nextRegMatches =>
       unless lhsArgs.size == 8 do
         throwError "symbolic_kernel_decide: malformed nextRegMatches application"
@@ -839,6 +1131,16 @@ def elabSymbolicKernelDecide : TermElab := fun _ expected? => do
         throwError "symbolic_kernel_decide: malformed nextRulesMatches application"
       proveNextRules lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
         lhsArgs[4]! lhsArgs[5]! lhsArgs[6]! lhsArgs[7]!
-  | _ => throwError "symbolic_kernel_decide expected nextRegMatches or nextRulesMatches"
+  | some ``nextPortMatches =>
+      unless lhsArgs.size == 10 do
+        throwError "symbolic_kernel_decide: malformed nextPortMatches application"
+      proveNextPort lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
+        lhsArgs[4]! lhsArgs[5]! lhsArgs[6]! lhsArgs[7]! lhsArgs[8]! lhsArgs[9]!
+  | some ``nextPortRulesMatches =>
+      unless lhsArgs.size == 10 do
+        throwError "symbolic_kernel_decide: malformed nextPortRulesMatches application"
+      proveNextPortRules lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
+        lhsArgs[4]! lhsArgs[5]! lhsArgs[6]! lhsArgs[7]! lhsArgs[8]! lhsArgs[9]!
+  | _ => throwError "symbolic_kernel_decide expected a register or port certificate"
 
 end Loom.Release.Symbolic

@@ -326,6 +326,13 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
             indexedExprMatches wires table value actual
       | _ => false
 
+/-- Three structural SSA references denoting one memory write-port value. -/
+structure PortRefs where
+  en : Ref
+  addr : Ref
+  data : Ref
+  deriving Repr, DecidableEq
+
 inductive NextRegCert where
   | same
   | write
@@ -408,6 +415,79 @@ theorem NoRegWrite.writesRegB_eq_false {register : String} {width : Nat}
     Loom.Hw.Compile.writesRegB register width action = false := by
   simp [Loom.Hw.Compile.writesRegB, h.not_mem]
 
+/-- Structural evidence that an action cannot write one concrete memory port.
+This is the memory analogue of `NoRegWrite`; its tree-shaped proofs let the
+release checker justify `.same` nodes without reducing an entire action. -/
+inductive NoPortWrite (memory : String) (port : Nat) : Loom.Hw.Act → Prop
+  | skip : NoPortWrite memory port .skip
+  | seq {left right} : NoPortWrite memory port left →
+      NoPortWrite memory port right →
+      NoPortWrite memory port (.seq left right)
+  | ite {guard thenAction elseAction} :
+      NoPortWrite memory port thenAction →
+      NoPortWrite memory port elseAction →
+      NoPortWrite memory port (.ite guard thenAction elseAction)
+  | write {width name} (value : Loom.Hw.Expr width) :
+      NoPortWrite memory port (.write width name value)
+  | memWriteName {addressWidth dataWidth name actualPort}
+      (address : Loom.Hw.Expr addressWidth) (value : Loom.Hw.Expr dataWidth)
+      (different : name ≠ memory) :
+      NoPortWrite memory port
+        (.memWrite addressWidth dataWidth name actualPort address value)
+  | memWritePort {addressWidth dataWidth actualPort}
+      (address : Loom.Hw.Expr addressWidth) (value : Loom.Hw.Expr dataWidth)
+      (different : actualPort ≠ port) :
+      NoPortWrite memory port
+        (.memWrite addressWidth dataWidth memory actualPort address value)
+
+theorem NoPortWrite.writesPortB_eq_false {memory : String} {port : Nat}
+    {action : Loom.Hw.Act} (h : NoPortWrite memory port action) :
+    Loom.Hw.Compile.writesPortB memory port action = false := by
+  induction h with
+  | skip => simp [Loom.Hw.Compile.writesPortB, Loom.Hw.Compile.portTrace]
+  | seq _ _ left right | ite _ _ left right =>
+      rw [Loom.Hw.Compile.writesPortB, decide_eq_false_iff_not]
+      simp only [Loom.Hw.Compile.portTrace, List.mem_append, not_or]
+      constructor
+      · simpa [Loom.Hw.Compile.writesPortB] using left
+      · simpa [Loom.Hw.Compile.writesPortB] using right
+  | write => simp [Loom.Hw.Compile.writesPortB, Loom.Hw.Compile.portTrace]
+  | memWriteName _ _ different =>
+      simp [Loom.Hw.Compile.writesPortB, Loom.Hw.Compile.portTrace, different]
+  | memWritePort _ _ different =>
+      have different' : port ≠ _ := fun same => different same.symm
+      simp [Loom.Hw.Compile.writesPortB, Loom.Hw.Compile.portTrace, different']
+
+/-- Structural evidence that an action contains a write to a concrete memory
+port. It lets conditional certificate nodes establish their pruning guard
+without normalizing the surrounding processor action. -/
+inductive HasPortWrite (memory : String) (port : Nat) : Loom.Hw.Act → Prop
+  | seqLeft {left right} : HasPortWrite memory port left →
+      HasPortWrite memory port (.seq left right)
+  | seqRight {left right} : HasPortWrite memory port right →
+      HasPortWrite memory port (.seq left right)
+  | iteThen {guard thenAction elseAction} :
+      HasPortWrite memory port thenAction →
+      HasPortWrite memory port (.ite guard thenAction elseAction)
+  | iteElse {guard thenAction elseAction} :
+      HasPortWrite memory port elseAction →
+      HasPortWrite memory port (.ite guard thenAction elseAction)
+  | memWrite {addressWidth dataWidth}
+      (address : Loom.Hw.Expr addressWidth) (value : Loom.Hw.Expr dataWidth) :
+      HasPortWrite memory port
+        (.memWrite addressWidth dataWidth memory port address value)
+
+theorem HasPortWrite.writesPortB_eq_true {memory : String} {port : Nat}
+    {action : Loom.Hw.Act} (h : HasPortWrite memory port action) :
+    Loom.Hw.Compile.writesPortB memory port action = true := by
+  induction h with
+  | seqLeft _ | iteThen _ =>
+      simp_all [Loom.Hw.Compile.writesPortB, Loom.Hw.Compile.portTrace]
+  | seqRight _ | iteElse _ =>
+      simp_all [Loom.Hw.Compile.writesPortB, Loom.Hw.Compile.portTrace]
+  | memWrite =>
+      simp [Loom.Hw.Compile.writesPortB, Loom.Hw.Compile.portTrace]
+
 /-- Validate one source action's contribution to a register root without
 materializing `Compile.nextReg`. -/
 def nextRegMatches (wires : Rope (List IndexedWire)) (table : WireTable)
@@ -470,6 +550,107 @@ def nextRulesMatches (wires : Rope (List IndexedWire)) (table : WireTable)
             nextRulesMatches wires table register width rules (some mid) out tail
       | none =>
           nextRulesMatches wires table register width rules none out tail
+  | _, _, _, _ => false
+
+/-! ## Structural memory-port certificates -/
+
+/-- String-free proof data for one `Compile.memPort` action fold. -/
+inductive NextPortCert where
+  | same
+  | write
+  | seq (mid : PortRefs) (left right : NextPortCert)
+  | ite (guard : Ref) (thenPort elsePort : PortRefs)
+      (thenCert elseCert : NextPortCert)
+  deriving Repr, DecidableEq
+
+/-- String-free proof data for an ordered memory-port rule fold. -/
+inductive NextPortRulesCert where
+  | nil
+  | cons (mid : PortRefs) (head : NextPortCert) (tail : NextPortRulesCert)
+  deriving Repr, DecidableEq
+
+/-- Check that one result root is exactly the SSA mux of three supplied
+references. -/
+def indexedMuxRootMatches (wires : Rope (List IndexedWire))
+    (table : WireTable) (width : Nat) (condition yes no out : Ref) : Bool :=
+  match out with
+  | .wire number =>
+      match lookupIndexed? wires table number with
+      | some indexed =>
+          indexed.width == width &&
+            indexed.rhs == .mux condition yes no
+      | none => false
+  | .reg _ => false
+
+/-- Check the three output muxes introduced by `Compile.memPort` for a
+conditional write. -/
+def indexedPortMuxMatches (wires : Rope (List IndexedWire))
+    (table : WireTable) (addressWidth dataWidth : Nat) (guard : Ref)
+    (thenPort elsePort out : PortRefs) : Bool :=
+  indexedMuxRootMatches wires table 1 guard thenPort.en elsePort.en out.en &&
+  indexedMuxRootMatches wires table addressWidth guard thenPort.addr
+    elsePort.addr out.addr &&
+  indexedMuxRootMatches wires table dataWidth guard thenPort.data
+    elsePort.data out.data
+
+/-- Validate one source action's contribution to a concrete memory write
+port without materializing `Compile.memPort`. -/
+def nextPortMatches (wires : Rope (List IndexedWire)) (table : WireTable)
+    (memory : String) (addressWidth dataWidth port : Nat) :
+      Loom.Hw.Act → PortRefs → PortRefs → NextPortCert → Bool
+  | .skip, current, out, .same => current == out
+  | .seq left right, current, out, .seq mid leftCert rightCert =>
+      nextPortMatches wires table memory addressWidth dataWidth port left
+          current mid leftCert &&
+        nextPortMatches wires table memory addressWidth dataWidth port right
+          mid out rightCert
+  | .seq left right, current, out, .same =>
+      !Loom.Hw.Compile.writesPortB memory port (.seq left right) &&
+        current == out
+  | .ite guard thenAction elseAction, current, out,
+      .ite guardRef thenPort elsePort thenCert elseCert =>
+      if Loom.Hw.Compile.writesPortB memory port thenAction ||
+          Loom.Hw.Compile.writesPortB memory port elseAction then
+        indexedExprMatches wires table
+            (Loom.Hw.Compile.compileExpr guard) guardRef &&
+          nextPortMatches wires table memory addressWidth dataWidth port
+            thenAction current thenPort thenCert &&
+          nextPortMatches wires table memory addressWidth dataWidth port
+            elseAction current elsePort elseCert &&
+          indexedPortMuxMatches wires table addressWidth dataWidth guardRef
+            thenPort elsePort out
+      else false
+  | .ite _ thenAction elseAction, current, out, .same =>
+      !(Loom.Hw.Compile.writesPortB memory port thenAction ||
+        Loom.Hw.Compile.writesPortB memory port elseAction) && current == out
+  | .memWrite actualAddressWidth actualDataWidth actualMemory actualPort
+      address value, current, out, cert =>
+      if _samePort : actualMemory = memory ∧ actualPort = port then
+        if sameWidths : actualAddressWidth = addressWidth ∧
+            actualDataWidth = dataWidth then
+          match cert with
+          | .write =>
+              indexedExprMatches wires table (.lit (BitVec.ofNat 1 1)) out.en &&
+              indexedExprMatches wires table
+                (Loom.Hw.Compile.compileExpr (sameWidths.1 ▸ address)) out.addr &&
+              indexedExprMatches wires table
+                (Loom.Hw.Compile.compileExpr (sameWidths.2 ▸ value)) out.data
+          | _ => false
+        else cert == .same && current == out
+      else cert == .same && current == out
+  | .write .., current, out, .same => current == out
+  | _, _, _, _ => false
+
+/-- Validate an ordered rule fold for one concrete memory write port. -/
+def nextPortRulesMatches (wires : Rope (List IndexedWire))
+    (table : WireTable) (memory : String) (addressWidth dataWidth port : Nat) :
+      List Loom.Hw.Rule → PortRefs → PortRefs → NextPortRulesCert → Bool
+  | [], current, out, .nil => current == out
+  | rule :: rules, current, out, .cons mid head tail =>
+      nextPortMatches wires table memory addressWidth dataWidth port rule.body
+          current mid head &&
+        nextPortRulesMatches wires table memory addressWidth dataWidth port rules
+          mid out tail
   | _, _, _, _ => false
 
 /-! ## Compositional acceptance
@@ -572,6 +753,82 @@ theorem nextRulesMatches_cons_discard
     nextRulesMatches wires table register width (rule :: rules) current out
       (.cons none head tail) = true := by
   simpa only [nextRulesMatches] using htail
+
+theorem nextPortMatches_same_of_noWrite
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (memory : String) (addressWidth dataWidth port : Nat)
+    (action : Loom.Hw.Act) (current : PortRefs)
+    (h : NoPortWrite memory port action) :
+    nextPortMatches wires table memory addressWidth dataWidth port action
+      current current .same = true := by
+  cases h with
+  | skip => simp [nextPortMatches]
+  | seq leftProof rightProof =>
+      simp [nextPortMatches,
+        (NoPortWrite.seq leftProof rightProof).writesPortB_eq_false]
+  | ite thenProof elseProof =>
+      simp [nextPortMatches, thenProof.writesPortB_eq_false,
+        elseProof.writesPortB_eq_false]
+  | write => simp [nextPortMatches]
+  | memWriteName address value different =>
+      simp [nextPortMatches, different]
+  | memWritePort address value different =>
+      simp [nextPortMatches, different]
+
+theorem nextPortMatches_seq_named
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (memory : String) (addressWidth dataWidth port : Nat)
+    (left right : Loom.Hw.Act) (current mid out : PortRefs)
+    (leftCert rightCert : NextPortCert)
+    (hleft : nextPortMatches wires table memory addressWidth dataWidth port left
+      current mid leftCert = true)
+    (hright : nextPortMatches wires table memory addressWidth dataWidth port right
+      mid out rightCert = true) :
+    nextPortMatches wires table memory addressWidth dataWidth port
+      (.seq left right) current out (.seq mid leftCert rightCert) = true := by
+  simp only [nextPortMatches, hleft, hright, Bool.true_and]
+
+theorem nextPortMatches_ite_written
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (memory : String) (addressWidth dataWidth port : Nat)
+    (guard : Loom.Hw.Expr 1) (thenAction elseAction : Loom.Hw.Act)
+    (current out : PortRefs) (guardRef : Ref) (thenPort elsePort : PortRefs)
+    (thenCert elseCert : NextPortCert)
+    (hwrites : (Loom.Hw.Compile.writesPortB memory port thenAction ||
+      Loom.Hw.Compile.writesPortB memory port elseAction) = true)
+    (hguard : indexedExprMatches wires table
+      (Loom.Hw.Compile.compileExpr guard) guardRef = true)
+    (hthen : nextPortMatches wires table memory addressWidth dataWidth port
+      thenAction current thenPort thenCert = true)
+    (helse : nextPortMatches wires table memory addressWidth dataWidth port
+      elseAction current elsePort elseCert = true)
+    (hmux : indexedPortMuxMatches wires table addressWidth dataWidth guardRef
+      thenPort elsePort out = true) :
+    nextPortMatches wires table memory addressWidth dataWidth port
+      (.ite guard thenAction elseAction) current out
+      (.ite guardRef thenPort elsePort thenCert elseCert) = true := by
+  simp [nextPortMatches, hwrites, hguard, hthen, helse, hmux]
+
+theorem nextPortRulesMatches_nil
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (memory : String) (addressWidth dataWidth port : Nat) (current : PortRefs) :
+    nextPortRulesMatches wires table memory addressWidth dataWidth port []
+      current current .nil = true := by
+  simp only [nextPortRulesMatches, beq_self_eq_true]
+
+theorem nextPortRulesMatches_cons_named
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (memory : String) (addressWidth dataWidth port : Nat)
+    (rule : Loom.Hw.Rule) (rules : List Loom.Hw.Rule)
+    (current mid out : PortRefs) (head : NextPortCert)
+    (tail : NextPortRulesCert)
+    (hhead : nextPortMatches wires table memory addressWidth dataWidth port
+      rule.body current mid head = true)
+    (htail : nextPortRulesMatches wires table memory addressWidth dataWidth port
+      rules mid out tail = true) :
+    nextPortRulesMatches wires table memory addressWidth dataWidth port
+      (rule :: rules) current out (.cons mid head tail) = true := by
+  simp only [nextPortRulesMatches, hhead, htail, Bool.true_and]
 
 
 /-- Resolve an SSA wire in logarithmic rope depth without constructing its
@@ -850,12 +1107,6 @@ def indexedRegisterMetadataMatchesAt (design : Loom.Hw.Design)
       source.name == concrete.name && source.width == concrete.width &&
       source.init.toNat == concrete.init && concrete.next == root.render
   | _, _ => false
-
-structure PortRefs where
-  en : Ref
-  addr : Ref
-  data : Ref
-  deriving Repr, DecidableEq
 
 structure RegisterRoot where
   index : Nat
