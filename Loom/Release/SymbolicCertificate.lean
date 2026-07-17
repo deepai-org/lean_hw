@@ -111,6 +111,94 @@ def lookupIndexed? (wires : Rope (List IndexedWire)) (table : WireTable)
   guard (wire.number == number)
   pure wire
 
+/-- Resolve the declared width of an operand while checking one numbered SSA
+wire. Wire operands must point strictly backward, which simultaneously makes
+the graph acyclic and matches the sequential concrete elaborator. -/
+def refWidthBefore? (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current : Nat) : Ref → Option Nat
+  | .reg name =>
+      (program.regs.find? fun reg => reg.name == name).map (·.width)
+  | .wire number => do
+      guard (number < current)
+      pure (← lookupIndexed? wires table number).width
+
+/-- Whole-node type check for the concrete SSA subset. This mirrors
+`SSA.Rhs.elaborate`, but retains only widths and bounded numeric lookups, so it
+can be kernel-checked on a full artifact without constructing expanded
+expression trees. -/
+def indexedRhsWellFormed (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (number resultWidth : Nat) : IndexedRhs → Bool
+  | .lit literalWidth _ => literalWidth == resultWidth
+  | .ident value => (refWidthBefore? program wires table number value).isSome
+  | .memRead mem address =>
+      match program.mems.find? (fun candidate => candidate.name == mem),
+          refWidthBefore? program wires table number address with
+      | some header, some addressWidth =>
+          header.addrWidth == addressWidth && header.dataWidth == resultWidth
+      | _, _ => false
+  | .slice value hi lo =>
+      (refWidthBefore? program wires table number value).isSome &&
+        lo ≤ hi && hi + 1 - lo == resultWidth
+  | .not value =>
+      refWidthBefore? program wires table number value == some resultWidth
+  | .bin op left right =>
+      match op with
+      | .and | .or | .xor | .add | .sub | .shl | .shr =>
+          refWidthBefore? program wires table number left == some resultWidth &&
+            refWidthBefore? program wires table number right == some resultWidth
+      | .eq | .ult =>
+          resultWidth == 1 &&
+            match refWidthBefore? program wires table number left,
+                refWidthBefore? program wires table number right with
+            | some leftWidth, some rightWidth => leftWidth == rightWidth
+            | _, _ => false
+  | .slt left right =>
+      resultWidth == 1 &&
+        match refWidthBefore? program wires table number left,
+            refWidthBefore? program wires table number right with
+        | some leftWidth, some rightWidth => leftWidth == rightWidth
+        | _, _ => false
+  | .mux condition yes no =>
+      refWidthBefore? program wires table number condition == some 1 &&
+        refWidthBefore? program wires table number yes == some resultWidth &&
+        refWidthBefore? program wires table number no == some resultWidth
+  | .sext amount value signBit =>
+      match refWidthBefore? program wires table number value with
+      | some inputWidth => signBit + 1 == inputWidth &&
+          inputWidth + amount == resultWidth && inputWidth < resultWidth
+      | none => false
+
+def indexedWireWellFormedAt (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (number : Nat) (wire : IndexedWire) : Bool :=
+  wire.number == number &&
+    indexedRhsWellFormed program wires table number wire.width wire.rhs
+
+def indexedSemanticBlockMatches (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable) :
+    Nat → List IndexedWire → Bool
+  | _, [] => true
+  | number, wire :: rest =>
+      indexedWireWellFormedAt program wires table number wire &&
+        indexedSemanticBlockMatches program wires table (number + 1) rest
+
+/-- Balanced evidence that every rendered SSA assignment is well-typed and
+only references a source register or a strictly earlier numbered wire. -/
+inductive IndexedRopeWellFormed (program : Program)
+    (allWires : Rope (List IndexedWire)) (table : WireTable) :
+    Nat → Rope (List IndexedWire) → Prop where
+  | leaf {start wires}
+      (accepted : indexedSemanticBlockMatches program allWires table
+        start wires = true) :
+      IndexedRopeWellFormed program allWires table start (.leaf wires)
+  | node {start left right}
+      (leftProof : IndexedRopeWellFormed program allWires table start left)
+      (rightProof : IndexedRopeWellFormed program allWires table
+        (start + left.listLength) right) :
+      IndexedRopeWellFormed program allWires table start (.node left right)
+
 /-- String-free structural comparison with the reference compiler expression.
 Shared SSA nodes may be revisited, but each visit performs only bounded rope
 navigation and constructor/Nat comparisons. -/
