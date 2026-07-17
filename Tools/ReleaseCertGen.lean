@@ -401,6 +401,33 @@ private def indexedNextRulesToLean {w : Nat} : Named.NextRulesCert w → String
       s!".cons ({optionalRefToLean mid}) ({indexedNextRegToLean head}) " ++
         s!"({indexedNextRulesToLean tail})"
 
+private def indexedPortRefsToLean (names : Named.PortNames) : String :=
+  "{ en := " ++ refToLean names.en ++ ", addr := " ++ refToLean names.addr ++
+    ", data := " ++ refToLean names.data ++ " }"
+
+private def indexedOptionalPortRefsToLean : Option Named.PortNames → String
+  | some names => indexedPortRefsToLean names
+  | none => "{ en := .reg \"\", addr := .reg \"\", data := .reg \"\" }"
+
+private def indexedNextPortToLean {aw dw : Nat} :
+    Named.NextPortCert aw dw → String
+  | .same => ".same"
+  | .write => ".write"
+  | .seq mid left right =>
+      s!".seq ({indexedOptionalPortRefsToLean mid}) " ++
+        s!"({indexedNextPortToLean left}) ({indexedNextPortToLean right})"
+  | .ite guard thenPort elsePort thenCert elseCert =>
+      s!".ite ({refToLean guard}) ({indexedPortRefsToLean thenPort}) " ++
+        s!"({indexedPortRefsToLean elsePort}) ({indexedNextPortToLean thenCert}) " ++
+        s!"({indexedNextPortToLean elseCert})"
+
+private def indexedPortRulesToLean {aw dw : Nat} :
+    Named.NextPortRulesCert aw dw → String
+  | .nil => ".nil"
+  | .cons mid head tail =>
+      s!".cons ({indexedOptionalPortRefsToLean mid}) " ++
+        s!"({indexedNextPortToLean head}) ({indexedPortRulesToLean tail})"
+
 private def regDeclarationList : {regs : List RegDecl} →
     Named.RegsCert regs → Nat → List String
   | [], .nil, _ => []
@@ -416,6 +443,24 @@ private def indexedRegDeclarationList : {regs : List RegDecl} →
       (s!"def {indexedRegCertName index} : Symbolic.NextRulesCert := " ++
         indexedNextRulesToLean head.rules) ::
         indexedRegDeclarationList tail (index + 1)
+
+private def indexedPortCertName (memoryIndex portIndex : Nat) : String :=
+  s!"indexedReleaseMem{memoryIndex}PortCert{portIndex}"
+
+private def indexedPortDeclarationList : {aw dw n : Nat} →
+    Named.PortsCert aw dw n → Nat → Nat → List String
+  | _, _, 0, .nil, _, _ => []
+  | _, _, _ + 1, .cons head tail, memoryIndex, portIndex =>
+      (s!"def {indexedPortCertName memoryIndex portIndex} : " ++
+        "Symbolic.NextPortRulesCert := " ++ indexedPortRulesToLean head) ::
+      indexedPortDeclarationList tail memoryIndex (portIndex + 1)
+
+private def indexedMemoryPortDeclarationList (design : Design) :
+    {mems : List MemDecl} → Named.MemsCert design mems → Nat → List String
+  | [], .nil, _ => []
+  | _ :: _, .cons head tail, memoryIndex =>
+      indexedPortDeclarationList head.ports memoryIndex 0 ++
+        indexedMemoryPortDeclarationList design tail (memoryIndex + 1)
 
 private def namedRegsToLean : {regs : List RegDecl} →
     Named.RegsCert regs → Nat → String
@@ -482,5 +527,12 @@ def indexedDeclarationBatchesToLean {design : Design}
     (cert : Named.ModuleCert design) (batchSize : Nat := 16) : List String :=
   (indexedRegDeclarationList cert.regs 0).toChunks batchSize |>.map fun declarations =>
     String.intercalate "\n" declarations ++ "\n"
+
+/-- String-free memory-port fold certificates, emitted separately so adding
+ports never perturbs the stable register batch numbering. -/
+def indexedPortDeclarationBatchesToLean {design : Design}
+    (cert : Named.ModuleCert design) (batchSize : Nat := 16) : List String :=
+  (indexedMemoryPortDeclarationList design cert.mems 0).toChunks batchSize |>.map
+    fun declarations => String.intercalate "\n" declarations ++ "\n"
 
 end Tools.ReleaseCertGen

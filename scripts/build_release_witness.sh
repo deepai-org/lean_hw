@@ -64,6 +64,8 @@ lake env lean --run "$(realpath "$src/CertGen.lean")"
 
 find "$src" -maxdepth 1 -name 'IndexedCertBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+find "$src" -maxdepth 1 -name 'IndexedPortCertBatch*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 
 find "$src" -maxdepth 1 -name 'SemanticWireBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
