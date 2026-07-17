@@ -1411,4 +1411,160 @@ theorem nextRulesMatches_raw
                 rulesIH (some mid) out tail accepted.2
                   (Loom.Hw.Compile.nextReg register width rule.body cur) headMatches
 
+/-- Declarative register-level meaning of a concrete SSA root.  This
+proposition deliberately contains no symbolic certificate data: generated
+leaf theorems discharge the Boolean check once, then the rest of the release
+proof graph depends only on this semantic statement. -/
+def RegisterBehaviorAt (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) (index : Nat) (root : Ref) : Prop :=
+  match design.regs[index]?, program.regs[index]? with
+  | some source, some concrete =>
+      source.name = concrete.name ∧ source.width = concrete.width ∧
+      source.init.toNat = concrete.init ∧ concrete.next = root.render ∧
+      RawExprMatches program table
+        (design.rules.foldl
+          (fun current rule => Loom.Hw.Compile.nextReg source.name
+            source.width rule.body current)
+          (.reg source.width source.name)) root
+  | _, _ => False
+
+/-- A bounded metadata check and an independently checked ordered-rule
+certificate yield the certificate-free semantic proposition for one source
+register.  The raw/indexed rope correspondence is the only bridge from the
+numeric witness to the exact names present in the rendered program. -/
+theorem registerBehaviorAt_of_checks
+    (design : Loom.Hw.Design) (program : Program)
+    {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (index : Nat) (source : Loom.Hw.RegDecl) (root : Ref)
+    (cert : NextRulesCert)
+    (sourceFound : design.regs[index]? = some source)
+    (metadata : indexedRegisterMetadataMatchesAt design program index root = true)
+    (rules : nextRulesMatches indexeds table source.name source.width
+      design.rules (some (.reg source.name)) root cert = true) :
+    RegisterBehaviorAt design program table index root := by
+  cases concreteFound : program.regs[index]? with
+  | none =>
+      simp [indexedRegisterMetadataMatchesAt, sourceFound, concreteFound]
+        at metadata
+  | some concrete =>
+      simp only [indexedRegisterMetadataMatchesAt, sourceFound, concreteFound,
+        Bool.and_eq_true, beq_iff_eq] at metadata
+      simp only [RegisterBehaviorAt, sourceFound, concreteFound]
+      exact ⟨metadata.1.1.1, metadata.1.1.2, metadata.1.2, metadata.2,
+        nextRulesMatches_raw program hmatches table source.name source.width
+          design.rules (some (.reg source.name)) root cert rules
+          (.reg source.width source.name) (.reg source.width source.name)⟩
+
+/-- Ordered certificate-free register behavior for one bounded list.  The
+explicit starting index makes completeness and source-order alignment part of
+the proposition rather than a generator convention. -/
+inductive RegisterBehaviorsFrom (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) : Nat → List RegisterRoot → Prop
+  | nil (start : Nat) : RegisterBehaviorsFrom design program table start []
+  | cons {start : Nat} {entry : RegisterRoot} {entries : List RegisterRoot} :
+      entry.index = start →
+      RegisterBehaviorAt design program table entry.index entry.root →
+      RegisterBehaviorsFrom design program table (start + 1) entries →
+      RegisterBehaviorsFrom design program table start (entry :: entries)
+
+/-- Balanced composition of bounded register-behavior leaves.  Generated
+artifacts use this rope-shaped proposition so the top-level proof has
+logarithmic depth and only references already-checked leaf declarations. -/
+inductive RegisterBehaviorRopeFrom (design : Loom.Hw.Design)
+    (program : Program) (table : WireTable) : Nat →
+      Rope (List RegisterRoot) → Prop
+  | leaf {start : Nat} {entries : List RegisterRoot} :
+      RegisterBehaviorsFrom design program table start entries →
+      RegisterBehaviorRopeFrom design program table start (.leaf entries)
+  | node {start : Nat} {left right : Rope (List RegisterRoot)} :
+      RegisterBehaviorRopeFrom design program table start left →
+      RegisterBehaviorRopeFrom design program table
+        (start + left.listLength) right →
+      RegisterBehaviorRopeFrom design program table start (.node left right)
+
+/-- Certificate-free meaning of one bounded memory-initialization leaf. -/
+def MemoryInitBlockBehavior (source : Loom.Hw.MemDecl) (start : Nat)
+    (values : List Nat) : Prop :=
+  ∀ index, index < values.length →
+    values.getD index 0 = (source.init (start + index)).toNat
+
+/-- A successful bounded initialization check yields its pointwise semantic
+meaning.  Subsequent proofs depend on this proposition rather than reducing
+the Boolean checker again. -/
+theorem memoryInitBlockBehavior_of_check (source : Loom.Hw.MemDecl)
+    (start : Nat) (values : List Nat)
+    (accepted : memoryInitBlockMatches source start values = true) :
+    MemoryInitBlockBehavior source start values := by
+  intro index inBounds
+  induction values generalizing start index with
+  | nil => simp at inBounds
+  | cons value values ih =>
+      simp only [memoryInitBlockMatches, Bool.and_eq_true, beq_iff_eq]
+        at accepted
+      cases index with
+      | zero => simpa [List.getD] using accepted.1
+      | succ index =>
+          simp only [List.length_cons, Nat.succ_lt_succ_iff] at inBounds
+          have tailExact := ih (start + 1) accepted.2 index inBounds
+          simp only [List.getD_cons_succ]
+          have indexEq : start + 1 + index = start + (index + 1) := by omega
+          rw [indexEq] at tailExact
+          exact tailExact
+
+/-- Match-packaged form used by generated memory leaves.  Keeping this case
+split generic avoids placing source-memory elimination tactics in generated
+proof files. -/
+theorem memoryInitBlockBehaviorAt_of_check (design : Loom.Hw.Design)
+    (memoryIndex start : Nat) (values : List Nat)
+    (accepted :
+      (match design.mems[memoryIndex]? with
+       | some source => memoryInitBlockMatches source start values
+       | none => false) = true) :
+    match design.mems[memoryIndex]? with
+    | some source => MemoryInitBlockBehavior source start values
+    | none => False := by
+  cases found : design.mems[memoryIndex]? with
+  | none => simp [found] at accepted
+  | some source =>
+      exact memoryInitBlockBehavior_of_check source start values
+        (by simpa only [found] using accepted)
+
+/-- Balanced pointwise meaning of a complete concrete initialization image. -/
+inductive MemoryInitBehaviorRopeFrom (source : Loom.Hw.MemDecl) :
+    Nat → Rope (List Nat) → Prop
+  | leaf {start : Nat} {values : List Nat} :
+      MemoryInitBlockBehavior source start values →
+      MemoryInitBehaviorRopeFrom source start (.leaf values)
+  | node {start : Nat} {left right : Rope (List Nat)} :
+      MemoryInitBehaviorRopeFrom source start left →
+      MemoryInitBehaviorRopeFrom source (start + left.listLength) right →
+      MemoryInitBehaviorRopeFrom source start (.node left right)
+
+/-- A balanced initialization proof gives exact direct-rope lookup at every
+in-bounds address, without flattening the image. -/
+theorem MemoryInitBehaviorRopeFrom.getD
+    {source : Loom.Hw.MemDecl} {start : Nat} {image : Rope (List Nat)}
+    (behavior : MemoryInitBehaviorRopeFrom source start image) :
+    ∀ address, address < image.listLength →
+      image.getD address 0 = (source.init (start + address)).toNat := by
+  induction behavior with
+  | leaf block =>
+      intro address inBounds
+      simpa [Rope.getD] using block address inBounds
+  | @node nodeStart left right leftBehavior rightBehavior leftIH rightIH =>
+      intro address inBounds
+      by_cases inLeft : address < left.listLength
+      · simpa [Rope.getD, inLeft] using leftIH address inLeft
+      · have inRight : address - left.listLength < right.listLength := by
+          simp only [Rope.listLength] at inBounds
+          omega
+        have rightExact := rightIH (address - left.listLength) inRight
+        rw [Rope.getD, if_neg inLeft]
+        have addressEq :
+            nodeStart + left.listLength + (address - left.listLength) =
+              nodeStart + address := by omega
+        rw [addressEq] at rightExact
+        exact rightExact
+
 end Loom.Release.Symbolic
