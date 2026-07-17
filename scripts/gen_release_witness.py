@@ -757,14 +757,50 @@ def emit_batched(data: dict, output: Path, block_size: int,
                           "", f"namespace {namespace}", "", "open Loom.Release", "",
                           "set_option maxRecDepth 1000000", "set_option maxHeartbeats 0", ""])
         for memory_index, memory in enumerate(data["mems"]):
+            source_name = f"sourceMemory{memory_index}"
+            semantic_mems += [f"def {source_name} : Loom.Hw.MemDecl :=",
+                f"  match ({design_expr}).mems[{memory_index}]? with",
+                "  | some source => source",
+                "  | none => { name := \"\", addrWidth := 0, dataWidth := 0,",
+                "              init := fun _ => 0 }", "",
+                f"theorem sourceMemory{memory_index}Found :",
+                f"    ({design_expr}).mems[{memory_index}]? = some {source_name} := rfl", "",
+                f"theorem concreteMemory{memory_index}Found :",
+                f"    program.mems[{memory_index}]? = some mem{memory_index} := rfl", ""]
+            init_behavior_names = []
+            init_leaf_names = []
             for block_index, _ in enumerate(chunks(memory["init"], block_size)):
                 start = block_index * block_size
+                init_behavior = f"semanticMemory{memory_index}Init{block_index}Behavior"
+                init_behavior_names.append(init_behavior)
+                init_leaf_names.append(f".leaf mem{memory_index}Init{block_index:04d}")
                 semantic_mems += [
                     f"theorem semanticMemory{memory_index}Init{block_index} :",
                     f"    (match ({design_expr}).mems[{memory_index}]? with",
                     f"      | some source => Symbolic.memoryInitBlockMatches source {start} " +
                     f"mem{memory_index}Init{block_index:04d}",
-                    f"      | none => false) = true := kernel_decide", ""]
+                    f"      | none => false) = true := kernel_decide", "",
+                    f"theorem {init_behavior} :",
+                    f"    match ({design_expr}).mems[{memory_index}]? with",
+                    f"    | some source => Symbolic.MemoryInitBlockBehavior source {start}",
+                    f"        mem{memory_index}Init{block_index:04d}",
+                    "    | none => False :=",
+                    "  Symbolic.memoryInitBlockBehaviorAt_of_check",
+                    f"    ({design_expr}) {memory_index} {start}",
+                    f"    mem{memory_index}Init{block_index:04d}",
+                    f"    semanticMemory{memory_index}Init{block_index}", ""]
+            init_tree = f"memoryInitTree{memory_index}"
+            semantic_mems += [f"def {init_tree} : Rope (List Nat) :=",
+                "  " + balanced(init_leaf_names, ".leaf []"), "",
+                f"theorem semanticMemory{memory_index}InitBehavior :",
+                f"    Symbolic.MemoryInitBehaviorAtRope ({design_expr})",
+                f"      {memory_index} 0 {init_tree} := by",
+                f"  unfold {init_tree}",
+                "  exact " + balanced(
+                    [f".leaf {name}" for name in init_behavior_names],
+                    f".leaf semanticMemory{memory_index}Init0Behavior"), ""]
+            port_at_names = []
+            port_entries = []
             for port_index, write in enumerate(memory["writes"]):
                 refs = ("{ en := " + indexed_ref(write["en"]) +
                         ", addr := " + indexed_ref(write["addr"]) +
@@ -773,6 +809,9 @@ def emit_batched(data: dict, output: Path, block_size: int,
                            ", addr := " + literal_ref(memory["addrWidth"], 0) +
                            ", data := " + literal_ref(memory["dataWidth"], 0) + " }")
                 prefix = f"semanticMemory{memory_index}Port{port_index}"
+                port_at_names.append(f"{prefix}At")
+                port_entries.append(
+                    f"{{ index := {port_index}, refs := {refs} }}")
                 semantic_mems += [f"theorem {prefix}Certificate :",
                     f"    Symbolic.nextPortRulesMatches indexedWireTree wireTable",
                     f"      {q(memory['name'])} {memory['addrWidth']} {memory['dataWidth']} {port_index}",
@@ -795,7 +834,38 @@ def emit_batched(data: dict, output: Path, block_size: int,
                     f"    {q(memory['name'])} {memory['addrWidth']} {memory['dataWidth']} {port_index}",
                     f"    ({initial}) ({refs}) indexedReleaseMem{memory_index}PortCert{port_index}",
                     f"    {prefix}Certificate {prefix}InitialEn",
-                    f"    {prefix}InitialAddr {prefix}InitialData", ""]
+                    f"    {prefix}InitialAddr {prefix}InitialData", "",
+                    f"theorem {prefix}At :",
+                    f"    Symbolic.MemoryPortBehaviorAt ({design_expr}) program wireTable",
+                    f"      {memory_index} {port_index} ({refs}) := by",
+                    "  apply Symbolic.memoryPortBehaviorAt_of_checks",
+                    f"    ({design_expr}) program wireTable {memory_index} {port_index}",
+                    f"    {source_name} mem{memory_index}",
+                    f"    ({{ en := {q(write['en'])}, addr := {q(write['addr'])},",
+                    f"       data := {q(write['data'])} }} : Loom.Release.SSA.Write)",
+                    f"    ({refs}) sourceMemory{memory_index}Found",
+                    f"    concreteMemory{memory_index}Found rfl rfl rfl rfl rfl rfl rfl",
+                    f"  simpa [{source_name}] using {prefix}Behavior", ""]
+            port_roots = f"memoryPortRoots{memory_index}"
+            port_proof = f".nil {len(port_entries)}"
+            for port_index, proof_name in reversed(list(enumerate(port_at_names))):
+                port_proof = f".cons rfl {proof_name} ({port_proof})"
+            semantic_mems += [f"def {port_roots} : List Symbolic.MemoryPortRoot := [",
+                "  " + ",\n  ".join(port_entries), "]", "",
+                f"theorem semanticMemory{memory_index}PortBehaviors :",
+                "    Symbolic.MemoryPortBehaviorsFrom",
+                f"      ({design_expr}) program wireTable {memory_index} 0 {port_roots} :=",
+                f"  {port_proof}", "",
+                f"theorem semanticMemory{memory_index}Behavior :",
+                f"    Symbolic.MemoryBehaviorAt ({design_expr}) program wireTable",
+                f"      {memory_index} {init_tree} {port_roots} := by",
+                "  apply Symbolic.memoryBehaviorAt_of_checks",
+                f"    ({design_expr}) program wireTable {memory_index}",
+                f"    {source_name} mem{memory_index} {init_tree} {port_roots}",
+                f"    sourceMemory{memory_index}Found concreteMemory{memory_index}Found",
+                f"    (by rfl) (by rfl) (by rfl) (by rfl) (by rfl)",
+                f"    semanticMemory{memory_index}InitBehavior",
+                f"    semanticMemory{memory_index}PortBehaviors", ""]
         semantic_mems += [f"end {namespace}", ""]
         write_if_changed(output.parent / "SemanticMems.lean", "\n".join(semantic_mems))
 
