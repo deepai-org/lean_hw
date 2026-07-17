@@ -126,6 +126,114 @@ def elaborateIndexedEnv (program : Program)
 private theorem semanticOptionFailure {α : Type} :
     (failure : Option α) = none := rfl
 
+private theorem indexedSemanticBlock_get_number
+    {program : Program} {allWires : Rope (List IndexedWire)}
+    {table : WireTable} {start : Nat} {block : List IndexedWire}
+    (accepted : indexedSemanticBlockMatches program allWires table start block =
+      true) (index : Nat) (wire : IndexedWire)
+    (found : block[index]? = some wire) :
+    wire.number = start + index := by
+  induction block generalizing start index with
+  | nil => simp at found
+  | cons head tail ih =>
+      simp only [indexedSemanticBlockMatches, Bool.and_eq_true] at accepted
+      cases index with
+      | zero =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at found
+          subst wire
+          have numberEq : head.number = start := by
+            have parts : (head.number = start ∧
+                lookupIndexed? allWires table start = some head) ∧
+                indexedRhsWellFormed program allWires table start head.width
+                  head.rhs = true := by
+              simpa only [indexedWireWellFormedAt, Bool.and_eq_true, beq_iff_eq]
+                using accepted.1
+            exact parts.1.1
+          simpa using numberEq
+      | succ index =>
+          simp only [List.getElem?_cons_succ] at found
+          have numberEq := ih accepted.2 index found
+          simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using numberEq
+
+private theorem IndexedRopeWellFormed.resolve_number_lt
+    {program : Program} {allWires : Rope (List IndexedWire)}
+    {table : WireTable} {start : Nat} {rope : Rope (List IndexedWire)}
+    (hwellFormed : IndexedRopeWellFormed program allWires table start rope)
+    (reference : Rope.Ref) (wire : IndexedWire)
+    (found : rope.resolve? reference = some wire) :
+    wire.number < start + rope.listLength := by
+  induction hwellFormed generalizing reference wire with
+  | leaf accepted =>
+      rcases reference with ⟨path, index⟩
+      cases path with
+      | nil =>
+          simp only [Rope.resolve_leaf] at found
+          have numberEq := indexedSemanticBlock_get_number accepted index wire found
+          have indexLt : index < List.length _ :=
+            (List.getElem?_eq_some_iff.mp found).choose
+          rw [numberEq]
+          exact Nat.add_lt_add_left indexLt _
+      | cons step path => simp [Rope.resolve?] at found
+  | @node nodeStart left right leftProof rightProof leftIH rightIH =>
+      rcases reference with ⟨path, index⟩
+      cases path with
+      | nil => simp [Rope.resolve?] at found
+      | cons step path =>
+          cases step with
+          | false =>
+              simp only [Rope.resolve_node_left] at found
+              have leftLt := leftIH ⟨path, index⟩ wire found
+              have leftLe : nodeStart + left.listLength ≤
+                  nodeStart + (left.listLength + right.listLength) :=
+                Nat.add_le_add_left (Nat.le_add_right _ _) _
+              exact Nat.lt_of_lt_of_le leftLt leftLe
+          | true =>
+              simp only [Rope.resolve_node_right] at found
+              simpa [Rope.listLength, Nat.add_assoc] using
+                rightIH ⟨path, index⟩ wire found
+
+private theorem lookupIndexed_number_lt
+    {program : Program} {wires : Rope (List IndexedWire)} {table : WireTable}
+    (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
+    (number : Nat) (wire : IndexedWire)
+    (found : lookupIndexed? wires table number = some wire) :
+    number < wires.listLength := by
+  unfold lookupIndexed? at found
+  by_cases size : table.leafSize > 0
+  · simp only [size, Option.bind_eq_bind] at found
+    cases pathEq : table.paths[number / table.leafSize]? with
+    | none => simp [pathEq] at found
+    | some path =>
+        simp only [pathEq, Option.bind_some] at found
+        cases wireEq : wires.resolve? ⟨path, number % table.leafSize⟩ with
+        | none => simp [wireEq] at found
+        | some actual =>
+            simp only [wireEq, Option.bind_some] at found
+            by_cases numberEq : actual.number = number
+            · simp [guard, numberEq] at found
+              subst wire
+              have actualLt := hwellFormed.resolve_number_lt
+                ⟨path, number % table.leafSize⟩ actual wireEq
+              simpa [numberEq] using actualLt
+            · exfalso
+              simp [guard, semanticOptionFailure, beq_iff_eq, numberEq] at found
+  · exfalso
+    simp [guard, semanticOptionFailure, size] at found
+
+private theorem indexedExprMatches_lookup
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    {width : Nat} (expr : Expr width) (number : Nat)
+    (matchOk : indexedExprMatches wires table expr (.wire number) = true) :
+    ∃ wire, lookupIndexed? wires table number = some wire ∧
+      wire.width = width := by
+  cases lookup : lookupIndexed? wires table number with
+  | none => cases expr <;> simp [indexedExprMatches, lookup] at matchOk
+  | some wire =>
+      refine ⟨wire, rfl, ?_⟩
+      cases expr <;> simp only [indexedExprMatches, lookup] at matchOk
+      all_goals try simp at matchOk
+      all_goals split at matchOk <;> simp_all
+
 /-- The semantic environment resolves exactly the widths accepted by the
 bounded whole-graph checker before wire `current`. -/
 def IndexedEnvResolvesBefore (program : Program)
@@ -134,6 +242,47 @@ def IndexedEnvResolvesBefore (program : Program)
   ∀ reference width,
     refWidthBefore? program wires table current reference = some width →
     ∃ value : Expr width, env.resolveAt reference width = some value
+
+/-- Every register occurrence in an expression agrees with the concrete
+program declaration. The indexed graph checker deliberately compares only
+structural expression shape; this predicate supplies the source-side typing
+fact needed to make register leaves exact. -/
+def ExprRegistersValid (program : Program) :
+    {width : Nat} → Expr width → Prop
+  | width, .reg _ name =>
+      ∃ reg, program.regs.find? (fun candidate => candidate.name == name) =
+        some reg ∧ reg.width = width ∧ wireNumber? name = none
+  | _, .lit _ => True
+  | _, .memRead _ _ address => ExprRegistersValid program address
+  | _, .and left right | _, .or left right | _, .xor left right
+  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .shr left right | _, .eq left right | _, .ult left right
+  | _, .slt left right =>
+      ExprRegistersValid program left ∧ ExprRegistersValid program right
+  | _, .not value | _, .slice value _ _ | _, .zext value _
+  | _, .sext value _ => ExprRegistersValid program value
+  | _, .mux condition yes no =>
+      ExprRegistersValid program condition ∧
+        ExprRegistersValid program yes ∧ ExprRegistersValid program no
+
+/-- Every well-typed compiler expression accepted for an in-scope structural
+reference resolves to that exact intrinsically typed expression. -/
+def IndexedEnvModelsBefore (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current : Nat) (env : SemanticEnv) : Prop :=
+  ∀ {width : Nat} (expr : Expr width) (reference : Ref),
+    ExprRegistersValid program expr →
+    indexedExprMatches wires table expr reference = true →
+    refWidthBefore? program wires table current reference = some width →
+    env.resolveAt reference width = some expr
+
+private theorem indexedModels_current_eq
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (left right : Nat) (env : SemanticEnv) (equal : left = right)
+    (hmodels : IndexedEnvModelsBefore program wires table left env) :
+    IndexedEnvModelsBefore program wires table right env := by
+  subst right
+  exact hmodels
 
 private theorem semanticEntry_of_resolveAt
     (env : SemanticEnv) (reference : Ref) (width : Nat) (value : Expr width)
@@ -316,6 +465,35 @@ theorem semanticInitial_resolvesBefore
       rw [semanticOptionFailure] at accepted
       simp at accepted
 
+theorem semanticInitial_modelsBefore
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable) :
+    IndexedEnvModelsBefore program wires table 0
+      (SemanticEnv.initial program) := by
+  intro width expr reference valid matchOk inScope
+  cases reference with
+  | wire number =>
+      unfold refWidthBefore? at inScope
+      have notEarlier : ¬number < 0 := Nat.not_lt_zero number
+      simp only [notEarlier, guard] at inScope
+      rw [semanticOptionFailure] at inScope
+      simp at inScope
+  | reg actualName =>
+      cases expr <;> simp [indexedExprMatches] at matchOk
+      case reg sourceName =>
+        subst actualName
+        rcases valid with ⟨source, sourceFound, sourceWidth, sourceNotWire⟩
+        unfold refWidthBefore? at inScope
+        cases found : program.regs.find? (fun reg => reg.name == sourceName) with
+        | none => simp [sourceNotWire, found, guard] at inScope
+        | some reg =>
+            have widthEq : reg.width = width := by
+              simpa [sourceNotWire, found, guard] using inScope
+            subst width
+            have sourceEq : source = reg := by
+              simpa [found] using sourceFound.symm
+            subst source
+            simp [SemanticEnv.resolveAt, SemanticEnv.initial, found]
+
 private theorem refWidthBefore_wire_previous
     (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
     (current number width : Nat) (different : number ≠ current)
@@ -334,6 +512,356 @@ private theorem refWidthBefore_wire_previous
   unfold refWidthBefore? at accepted ⊢
   simp only [earlierSucc, earlier, guard] at accepted ⊢
   exact accepted
+
+private theorem indexedModels_insertWire_previous
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current wireWidth : Nat) (value : Expr wireWidth) (env : SemanticEnv)
+    (hmodels : IndexedEnvModelsBefore program wires table current env) :
+    IndexedEnvModelsBefore program wires table current
+      (env.insertWire current wireWidth value) := by
+  intro width expr reference valid matchOk inScope
+  have resolved := hmodels expr reference valid matchOk inScope
+  cases reference with
+  | reg name =>
+      unfold SemanticEnv.resolveAt at resolved ⊢
+      simpa [SemanticEnv.insertWire] using resolved
+  | wire number =>
+      have different : number ≠ current := by
+        intro same
+        subst number
+        unfold refWidthBefore? at inScope
+        have notEarlier : ¬current < current := Nat.lt_irrefl current
+        simp only [notEarlier, guard] at inScope
+        rw [semanticOptionFailure] at inScope
+        simp at inScope
+      have refNe : Ref.wire number ≠ Ref.wire current := by
+        intro same
+        cases same
+        exact different rfl
+      unfold SemanticEnv.resolveAt at resolved ⊢
+      simpa [SemanticEnv.insertWire, refNe] using resolved
+
+private theorem indexedExprMatches_refWidth
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current actualWidth : Nat) {width : Nat} (expr : Expr width)
+    (reference : Ref) (valid : ExprRegistersValid program expr)
+    (matchOk : indexedExprMatches wires table expr reference = true)
+    (found : refWidthBefore? program wires table current reference =
+      some actualWidth) :
+    actualWidth = width := by
+  cases reference with
+  | reg actualName =>
+      cases expr <;> simp [indexedExprMatches] at matchOk
+      case reg sourceName =>
+        subst actualName
+        rcases valid with ⟨reg, regFound, regWidth, regNotWire⟩
+        simp only [refWidthBefore?] at found
+        simp [regNotWire, regFound, guard] at found
+        exact found.symm.trans regWidth
+  | wire number =>
+      simp only [refWidthBefore?] at found
+      by_cases earlier : number < current
+      · simp only [earlier, guard] at found
+        cases lookup : lookupIndexed? wires table number with
+        | none => simp [lookup] at found
+        | some wire =>
+            have wireWidthEq : wire.width = actualWidth := by
+              simpa [lookup] using found
+            cases expr <;> simp only [indexedExprMatches, lookup] at matchOk
+            all_goals try simp at matchOk
+            all_goals split at matchOk <;> simp_all
+      · simp only [earlier, guard] at found
+        rw [semanticOptionFailure] at found
+        simp at found
+
+private theorem indexedModels_resolve
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current : Nat) (env : SemanticEnv)
+    (hmodels : IndexedEnvModelsBefore program wires table current env)
+    {width actualWidth : Nat} (expr : Expr width) (reference : Ref)
+    (valid : ExprRegistersValid program expr)
+    (matchOk : indexedExprMatches wires table expr reference = true)
+    (found : refWidthBefore? program wires table current reference =
+      some actualWidth) :
+    env.resolveAt reference width = some expr := by
+  have widthEq := indexedExprMatches_refWidth program wires table current
+    actualWidth expr reference valid matchOk found
+  subst actualWidth
+  exact hmodels expr reference valid matchOk found
+
+private theorem indexedExprMatches_current_elaborate
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current : Nat) (env : SemanticEnv)
+    (hmodels : IndexedEnvModelsBefore program wires table current env)
+    {width : Nat} (expr : Expr width) (wire : IndexedWire)
+    (valid : ExprRegistersValid program expr)
+    (wireOk : indexedWireWellFormedAt program wires table current wire = true)
+    (matchOk : indexedExprMatches wires table expr (.wire current) = true) :
+    ∃ widthEq : wire.width = width,
+      wire.rhs.elaborate program env wire.width =
+        some (widthEq.symm ▸ expr) := by
+  rcases wire with ⟨wireNumber, wireWidth, rhs⟩
+  simp only [indexedWireWellFormedAt, Bool.and_eq_true, beq_iff_eq] at wireOk
+  rcases wireOk with ⟨⟨numberEq, lookupEq⟩, rhsOk⟩
+  subst wireNumber
+  cases expr <;> cases rhs <;>
+    simp [indexedExprMatches, lookupEq] at matchOk
+  case lit.lit value literalWidth actualValue =>
+    rcases matchOk with ⟨⟨widthEq, literalWidthEq⟩, valueEq⟩
+    subst wireWidth
+    subst literalWidth
+    subst actualValue
+    exact ⟨rfl, by simp [IndexedRhs.elaborate, guard]⟩
+  case memRead.memRead mem addressWidth address memRef addressRef =>
+    rcases matchOk with ⟨⟨widthEq, memEq⟩, addressMatch⟩
+    subst wireWidth
+    subst memRef
+    simp only [indexedRhsWellFormed] at rhsOk
+    cases headerFound : program.mems.find? (fun candidate =>
+        candidate.name == mem) with
+    | none => simp [headerFound] at rhsOk
+    | some header =>
+        cases addressFound : refWidthBefore? program wires table current
+            addressRef with
+        | none => simp [headerFound, addressFound] at rhsOk
+        | some actualAddressWidth =>
+            simp only [headerFound, addressFound, Bool.and_eq_true,
+              beq_iff_eq] at rhsOk
+            have actualEq := indexedExprMatches_refWidth program wires table
+              current actualAddressWidth address addressRef valid addressMatch
+                addressFound
+            have addressEq := indexedModels_resolve program wires table current
+              env hmodels address addressRef valid addressMatch addressFound
+            have headerAddressEq : header.addrWidth = addressWidth :=
+              rhsOk.1.trans actualEq
+            have headerDataEq : header.dataWidth = width := rhsOk.2
+            rcases header with ⟨headerName, headerAddrWidth,
+              headerDataWidth, headerInit, headerWrites⟩
+            simp only at headerAddressEq headerDataEq
+            subst headerAddrWidth
+            subst headerDataWidth
+            exact ⟨rfl, by
+              simp [IndexedRhs.elaborate, headerFound, addressEq]⟩
+  case not.not value valueRef =>
+    rcases matchOk with ⟨widthEq, valueMatch⟩
+    subst wireWidth
+    have valueScope : refWidthBefore? program wires table current valueRef =
+        some width := beq_iff_eq.mp rhsOk
+    have valueEq := hmodels value valueRef valid valueMatch valueScope
+    exact ⟨rfl, by simp [IndexedRhs.elaborate, valueEq]⟩
+  case and.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case and =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case or.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case or =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case xor.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case xor =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case add.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case add =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case sub.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case sub =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case shl.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case shl =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case shr.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case shr =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case eq.bin left right op leftRef rightRef =>
+    cases op <;> try simp at matchOk
+    case eq =>
+      split at matchOk
+      next matchEq =>
+        cases matchEq
+        simp only [Bool.and_eq_true] at matchOk
+        simp only [indexedRhsWellFormed] at rhsOk
+        cases leftFound : refWidthBefore? program wires table current leftRef with
+        | none => simp [leftFound] at rhsOk
+        | some operandWidth =>
+            cases rightFound : refWidthBefore? program wires table current
+                rightRef with
+            | none => simp [leftFound, rightFound] at rhsOk
+            | some rightWidth =>
+                simp only [leftFound, rightFound] at rhsOk
+                have operandEq : operandWidth = rightWidth :=
+                  beq_iff_eq.mp rhsOk
+                subst rightWidth
+                have leftEq := indexedModels_resolve program wires table
+                  current env hmodels left leftRef valid.1 matchOk.1 leftFound
+                have rightEq := indexedModels_resolve program wires table
+                  current env hmodels right rightRef valid.2 matchOk.2 rightFound
+                have leftEntry := semanticEntry_of_resolveAt env leftRef _ _ leftEq
+                exact ⟨rfl, semanticComparison_of_resolveAt _ _ _ _ _ _ _
+                  leftEntry rightEq⟩
+      next mismatch => simp at matchOk
+  case ult.bin left right op leftRef rightRef =>
+    cases op <;> try simp at matchOk
+    case ult =>
+      split at matchOk
+      next matchEq =>
+        cases matchEq
+        simp only [Bool.and_eq_true] at matchOk
+        simp only [indexedRhsWellFormed] at rhsOk
+        cases leftFound : refWidthBefore? program wires table current leftRef with
+        | none => simp [leftFound] at rhsOk
+        | some operandWidth =>
+            cases rightFound : refWidthBefore? program wires table current
+                rightRef with
+            | none => simp [leftFound, rightFound] at rhsOk
+            | some rightWidth =>
+                simp only [leftFound, rightFound] at rhsOk
+                have operandEq : operandWidth = rightWidth :=
+                  beq_iff_eq.mp rhsOk
+                subst rightWidth
+                have leftEq := indexedModels_resolve program wires table
+                  current env hmodels left leftRef valid.1 matchOk.1 leftFound
+                have rightEq := indexedModels_resolve program wires table
+                  current env hmodels right rightRef valid.2 matchOk.2 rightFound
+                have leftEntry := semanticEntry_of_resolveAt env leftRef _ _ leftEq
+                exact ⟨rfl, semanticComparison_of_resolveAt _ _ _ _ _ _ _
+                  leftEntry rightEq⟩
+      next mismatch => simp at matchOk
+  case slt.slt left right leftRef rightRef =>
+    split at matchOk
+    next matchEq =>
+      cases matchEq
+      simp only [Bool.and_eq_true] at matchOk
+      simp only [indexedRhsWellFormed] at rhsOk
+      cases leftFound : refWidthBefore? program wires table current leftRef with
+      | none => simp [leftFound] at rhsOk
+      | some operandWidth =>
+          cases rightFound : refWidthBefore? program wires table current
+              rightRef with
+          | none => simp [leftFound, rightFound] at rhsOk
+          | some rightWidth =>
+              simp only [leftFound, rightFound] at rhsOk
+              have operandEq : operandWidth = rightWidth :=
+                beq_iff_eq.mp (by simpa using rhsOk)
+              subst rightWidth
+              have leftEq := indexedModels_resolve program wires table current
+                env hmodels left leftRef valid.1 matchOk.1 leftFound
+              have rightEq := indexedModels_resolve program wires table current
+                env hmodels right rightRef valid.2 matchOk.2 rightFound
+              have leftEntry := semanticEntry_of_resolveAt env leftRef _ _ leftEq
+              exact ⟨rfl, semanticComparison_of_resolveAt _ _ _ _ _ _ _
+                leftEntry rightEq⟩
+    next mismatch => simp at matchOk
+  case mux.mux condition yes no conditionRef yesRef noRef =>
+    rcases matchOk with ⟨⟨⟨widthEq, conditionMatch⟩, yesMatch⟩, noMatch⟩
+    subst wireWidth
+    rcases valid with ⟨conditionValid, yesValid, noValid⟩
+    simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+    have conditionEq := indexedModels_resolve program wires table current env
+      hmodels condition conditionRef conditionValid conditionMatch rhsOk.1.1
+    have yesEq := indexedModels_resolve program wires table current env
+      hmodels yes yesRef yesValid yesMatch rhsOk.1.2
+    have noEq := indexedModels_resolve program wires table current env
+      hmodels no noRef noValid noMatch rhsOk.2
+    exact ⟨rfl, by
+      simp [IndexedRhs.elaborate, conditionEq, yesEq, noEq]⟩
+  case slice.slice value lo valueRef hi actualLo =>
+    rcases matchOk with ⟨⟨⟨widthEq, loEq⟩, hiEq⟩, valueMatch⟩
+    subst wireWidth
+    subst actualLo
+    subst hi
+    simp only [indexedRhsWellFormed, Bool.and_eq_true, decide_eq_true_eq,
+      beq_iff_eq] at rhsOk
+    cases valueFound : refWidthBefore? program wires table current valueRef with
+    | none => simp [valueFound] at rhsOk
+    | some inputWidth =>
+        have valueEq := indexedModels_resolve program wires table current env
+          hmodels value valueRef valid valueMatch valueFound
+        have valueEntry := semanticEntry_of_resolveAt env valueRef _ _ valueEq
+        exact ⟨rfl, by
+          simp [IndexedRhs.elaborate, guard, valueEntry, rhsOk]⟩
+  case zext.ident value valueRef =>
+    rcases matchOk with ⟨⟨widthEq, inputLe⟩, valueMatch⟩
+    subst wireWidth
+    simp only [indexedRhsWellFormed] at rhsOk
+    cases valueFound : refWidthBefore? program wires table current valueRef with
+    | none => simp [valueFound] at rhsOk
+    | some inputWidth =>
+        have valueEq := indexedModels_resolve program wires table current env
+          hmodels value valueRef valid valueMatch valueFound
+        have valueEntry := semanticEntry_of_resolveAt env valueRef _ _ valueEq
+        exact ⟨rfl, by
+          simp [IndexedRhs.elaborate, valueEntry]⟩
+  case sext.sext value amount valueRef signBit =>
+    rcases matchOk with
+      ⟨⟨⟨⟨widthEq, inputLt⟩, amountEq⟩, signBitEq⟩, valueMatch⟩
+    subst wireWidth
+    simp only [indexedRhsWellFormed] at rhsOk
+    cases valueFound : refWidthBefore? program wires table current valueRef with
+    | none => simp [valueFound] at rhsOk
+    | some actualInputWidth =>
+        simp only [valueFound, Bool.and_eq_true, beq_iff_eq,
+          decide_eq_true_eq] at rhsOk
+        have actualEq := indexedExprMatches_refWidth program wires table current
+          actualInputWidth value valueRef valid valueMatch valueFound
+        subst actualInputWidth
+        have valueEq := hmodels value valueRef valid valueMatch valueFound
+        have valueEntry := semanticEntry_of_resolveAt env valueRef _ _ valueEq
+        exact ⟨rfl, by
+          simp [IndexedRhs.elaborate, guard, valueEntry, rhsOk]⟩
 
 /-- Elaborating one accepted numbered wire extends the semantic environment
 invariant from `current` to `current + 1`. -/
@@ -382,6 +910,65 @@ theorem elaborateIndexedWire_preserves
           unfold SemanticEnv.resolveAt at resolvedEq ⊢
           simpa [SemanticEnv.insertWire, refNe] using resolvedEq⟩
 
+/-- One accepted assignment preserves both type resolution and exact
+compiler-expression correspondence. -/
+theorem elaborateIndexedWire_preservesModels
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current : Nat) (wire : IndexedWire) (env : SemanticEnv)
+    (henv : IndexedEnvResolvesBefore program wires table current env)
+    (hmodels : IndexedEnvModelsBefore program wires table current env)
+    (accepted : indexedWireWellFormedAt program wires table current wire = true) :
+    ∃ value : Expr wire.width,
+      wire.rhs.elaborate program env wire.width = some value ∧
+      IndexedEnvResolvesBefore program wires table (current + 1)
+        (env.insertWire wire.number wire.width value) ∧
+      IndexedEnvModelsBefore program wires table (current + 1)
+        (env.insertWire wire.number wire.width value) := by
+  obtain ⟨value, valueEq, nextEnv⟩ := elaborateIndexedWire_preserves
+    program wires table current wire env henv accepted
+  have numberEq : wire.number = current := by
+    have parts : (wire.number = current ∧
+        lookupIndexed? wires table current = some wire) ∧
+        indexedRhsWellFormed program wires table current wire.width wire.rhs =
+          true := by
+      simpa only [indexedWireWellFormedAt, Bool.and_eq_true, beq_iff_eq]
+        using accepted
+    exact parts.1.1
+  refine ⟨value, valueEq, nextEnv, ?_⟩
+  intro width expr reference valid matchOk inScope
+  cases reference with
+  | reg name =>
+      have previous : refWidthBefore? program wires table current (.reg name) =
+          some width := by
+        simpa [refWidthBefore?] using inScope
+      have resolved := hmodels expr (.reg name) valid matchOk previous
+      unfold SemanticEnv.resolveAt at resolved ⊢
+      simpa [SemanticEnv.insertWire] using resolved
+  | wire number =>
+      by_cases same : number = current
+      · subst number
+        obtain ⟨widthEq, exactEq⟩ := indexedExprMatches_current_elaborate
+          program wires table current env hmodels expr wire valid accepted matchOk
+        cases widthEq
+        have exactEq' : wire.rhs.elaborate program env wire.width =
+            some expr := by simpa using exactEq
+        have valueIsExpr : value = expr := by
+          rw [valueEq] at exactEq'
+          exact Option.some.inj exactEq'
+        subst value
+        rw [numberEq]
+        simp [SemanticEnv.insertWire, SemanticEnv.resolveAt]
+      · have previous := refWidthBefore_wire_previous program wires table
+          current number width same inScope
+        have resolved := hmodels expr (.wire number) valid matchOk previous
+        have refNe : Ref.wire number ≠ Ref.wire wire.number := by
+          rw [numberEq]
+          intro equal
+          cases equal
+          exact same rfl
+        unfold SemanticEnv.resolveAt at resolved ⊢
+        simpa [SemanticEnv.insertWire, refNe] using resolved
+
 /-- Elaborating an accepted sequential leaf preserves the lookup invariant
 through every numbered assignment in the leaf. -/
 theorem elaborateIndexedBlock_preserves
@@ -410,6 +997,43 @@ theorem elaborateIndexedBlock_preserves
       · simp [elaborateIndexedBlock, valueEq, outEq]
       · simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using outEnv
 
+/-- Exact expression correspondence composes through a sequential leaf. -/
+theorem elaborateIndexedBlock_preservesModels
+    (program : Program) (allWires : Rope (List IndexedWire))
+    (table : WireTable) (start : Nat) (block : List IndexedWire)
+    (env : SemanticEnv)
+    (henv : IndexedEnvResolvesBefore program allWires table start env)
+    (hmodels : IndexedEnvModelsBefore program allWires table start env)
+    (accepted : indexedSemanticBlockMatches program allWires table start block =
+      true) :
+    ∃ out,
+      elaborateIndexedBlock program block env = some out ∧
+      IndexedEnvResolvesBefore program allWires table
+        (start + block.length) out ∧
+      IndexedEnvModelsBefore program allWires table
+        (start + block.length) out := by
+  induction block generalizing start env with
+  | nil =>
+      exact ⟨env, rfl, by simpa using henv,
+        indexedModels_current_eq program allWires table _ _ env
+          (by simp) hmodels⟩
+  | cons wire rest ih =>
+      simp only [indexedSemanticBlockMatches, Bool.and_eq_true] at accepted
+      obtain ⟨value, valueEq, nextEnv, nextModels⟩ :=
+        elaborateIndexedWire_preservesModels program allWires table start wire
+          env henv hmodels accepted.1
+      obtain ⟨out, outEq, outEnv, outModels⟩ := ih
+        (start := start + 1)
+        (env := env.insertWire wire.number wire.width value)
+        nextEnv nextModels accepted.2
+      refine ⟨out, ?_, ?_, ?_⟩
+      · simp [elaborateIndexedBlock, valueEq, outEq]
+      · simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using outEnv
+      · apply indexedModels_current_eq program allWires table
+          ((start + 1) + rest.length) (start + (wire :: rest).length) out
+        · simp [Nat.add_comm, Nat.add_left_comm]
+        · exact outModels
+
 /-- Balanced well-formedness evidence is sufficient for elaborating the
 corresponding rope while preserving all earlier structural references. -/
 theorem elaborateIndexedRope_preserves
@@ -434,6 +1058,39 @@ theorem elaborateIndexedRope_preserves
       · simp [elaborateIndexedRope, leftEq, outEq]
       · simpa [Rope.listLength, Nat.add_assoc] using outInv
 
+/-- Exact expression correspondence composes across balanced rope nodes. -/
+theorem elaborateIndexedRope_preservesModels
+    (program : Program) (allWires : Rope (List IndexedWire))
+    (table : WireTable) (start : Nat) (rope : Rope (List IndexedWire))
+    (env : SemanticEnv)
+    (hwellFormed : IndexedRopeWellFormed program allWires table start rope)
+    (henv : IndexedEnvResolvesBefore program allWires table start env)
+    (hmodels : IndexedEnvModelsBefore program allWires table start env) :
+    ∃ out,
+      elaborateIndexedRope program rope env = some out ∧
+      IndexedEnvResolvesBefore program allWires table
+        (start + rope.listLength) out ∧
+      IndexedEnvModelsBefore program allWires table
+        (start + rope.listLength) out := by
+  induction hwellFormed generalizing env with
+  | leaf accepted =>
+      simpa [elaborateIndexedRope, Rope.listLength] using
+        elaborateIndexedBlock_preservesModels program allWires table _ _ env
+          henv hmodels accepted
+  | @node start left right leftProof rightProof leftIH rightIH =>
+      obtain ⟨leftEnv, leftEq, leftInv, leftModels⟩ :=
+        leftIH env henv hmodels
+      obtain ⟨out, outEq, outInv, outModels⟩ :=
+        rightIH leftEnv leftInv leftModels
+      refine ⟨out, ?_, ?_, ?_⟩
+      · simp [elaborateIndexedRope, leftEq, outEq]
+      · simpa [Rope.listLength, Nat.add_assoc] using outInv
+      · apply indexedModels_current_eq program allWires table
+          ((start + left.listLength) + right.listLength)
+          (start + (Rope.node left right).listLength) out
+        · simp [Rope.listLength, Nat.add_assoc]
+        · exact outModels
+
 /-- A whole-graph certificate guarantees that the structural SSA elaborator
 constructs a complete typed environment. -/
 theorem elaborateIndexedEnv_isSome
@@ -446,5 +1103,62 @@ theorem elaborateIndexedEnv_isSome
     program wires table 0 wires (SemanticEnv.initial program) hwellFormed
       (semanticInitial_resolvesBefore program wires table)
   exact ⟨env, envEq, by simpa using henv⟩
+
+/-- Whole-graph elaboration yields an environment in which every accepted,
+register-well-typed compiler expression resolves to the exact expression. -/
+theorem elaborateIndexedEnv_models
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (hwellFormed : IndexedRopeWellFormed program wires table 0 wires) :
+    ∃ env,
+      elaborateIndexedEnv program wires = some env ∧
+      IndexedEnvResolvesBefore program wires table wires.listLength env ∧
+      IndexedEnvModelsBefore program wires table wires.listLength env := by
+  obtain ⟨env, envEq, henv, hmodels⟩ := elaborateIndexedRope_preservesModels
+    program wires table 0 wires (SemanticEnv.initial program) hwellFormed
+      (semanticInitial_resolvesBefore program wires table)
+      (semanticInitial_modelsBefore program wires table)
+  exact ⟨env, envEq, by simpa using henv,
+    indexedModels_current_eq program wires table (0 + wires.listLength)
+      wires.listLength env (by simp) hmodels⟩
+
+/-- An accepted expression root is in scope after every well-formed SSA wire
+has been elaborated. -/
+theorem indexedExprMatches_inScope
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
+    {width : Nat} (expr : Expr width) (reference : Ref)
+    (valid : ExprRegistersValid program expr)
+    (matchOk : indexedExprMatches wires table expr reference = true) :
+    refWidthBefore? program wires table wires.listLength reference =
+      some width := by
+  cases reference with
+  | reg actualName =>
+      cases expr <;> simp [indexedExprMatches] at matchOk
+      case reg sourceName =>
+        subst actualName
+        rcases valid with ⟨reg, regFound, regWidth, regNotWire⟩
+        simp [refWidthBefore?, regNotWire, regFound, guard, regWidth]
+  | wire number =>
+      obtain ⟨wire, lookup, wireWidth⟩ :=
+        indexedExprMatches_lookup wires table expr number matchOk
+      have numberLt := lookupIndexed_number_lt hwellFormed number wire lookup
+      simp [refWidthBefore?, numberLt, guard, lookup, wireWidth]
+
+/-- The whole-graph certificate turns an accepted, well-typed symbolic root
+into exact equality with the corresponding reference-compiler expression. -/
+theorem elaborateIndexedEnv_resolves
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
+    {width : Nat} (expr : Expr width) (reference : Ref)
+    (valid : ExprRegistersValid program expr)
+    (matchOk : indexedExprMatches wires table expr reference = true) :
+    ∃ env,
+      elaborateIndexedEnv program wires = some env ∧
+      env.resolveAt reference width = some expr := by
+  obtain ⟨env, envEq, _, hmodels⟩ := elaborateIndexedEnv_models
+    program wires table hwellFormed
+  have inScope := indexedExprMatches_inScope program wires table hwellFormed
+    expr reference valid matchOk
+  exact ⟨env, envEq, hmodels expr reference valid matchOk inScope⟩
 
 end Loom.Release.Symbolic
