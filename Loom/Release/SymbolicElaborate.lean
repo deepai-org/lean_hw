@@ -313,6 +313,15 @@ def SourceRegisterValid (program : Program) (source : Loom.Hw.RegDecl) : Prop :=
       some concrete ∧ concrete.width = source.width ∧
       wireNumber? source.name = none
 
+/-- A typed register-read leaf supplies the corresponding source declaration
+certificate without another lookup reduction. -/
+theorem SourceRegisterValid.ofHwReg {program : Program}
+    (source : Loom.Hw.RegDecl)
+    (valid : HwExprRegistersValid program
+      (.reg source.width source.name)) :
+    SourceRegisterValid program source := by
+  simpa [HwExprRegistersValid, SourceRegisterValid] using valid
+
 /-- A compositional certificate for the source register declarations. Unlike
 `List.all`, its proof can be assembled from separately named leaf theorems. -/
 def SourceRegistersValid (program : Program) : List Loom.Hw.RegDecl → Prop
