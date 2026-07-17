@@ -75,6 +75,14 @@ lake env lean "$(realpath "$src/SemanticRegs.lean")" -o "$lib/SemanticRegs.olean
 find "$src" -maxdepth 1 -name 'ReadRegBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 lake env lean "$(realpath "$src/ReadRegs.lean")" -o "$lib/ReadRegs.olean"
+find "$src" -maxdepth 1 -name 'DeclMemBatch*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+lake env lean "$(realpath "$src/DeclMems.lean")" -o "$lib/DeclMems.olean"
+lake env lean "$(realpath "$src/SemanticActions.lean")" -o "$lib/SemanticActions.olean"
+if [[ -f "$src/SemanticDesignWF.lean" ]]; then
+  lake env lean "$(realpath "$src/SemanticDesignWF.lean")" \
+    -o "$lib/SemanticDesignWF.olean"
+fi
 lake env lean "$(realpath "$src/SemanticReads.lean")" -o "$lib/SemanticReads.olean"
 lake env lean "$(realpath "$src/SemanticMems.lean")" -o "$lib/SemanticMems.olean"
 echo "$artifact render and semantic certificate modules kernel-checked"

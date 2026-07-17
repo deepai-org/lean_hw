@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.SymbolicCertificate
 import Loom.Release.SymbolicElaborate
+import Loom.Hw.CompileCorrect
 import Lean.Elab.Term
 import Lean.Meta.Tactic.AuxLemma
 import Lean.Meta.Tactic.Simp
@@ -27,6 +28,11 @@ memo table from these already kernel-checked theorem constants. -/
 initialize releaseReadLeafAttr : TagAttribute ←
   registerTagAttribute `release_read_leaf
     "register-read leaf available to compositional release certificates"
+
+/-- Generated bounded source-declaration leaves used by `action_decls_ok`. -/
+initialize releaseDeclLeafAttr : TagAttribute ←
+  registerTagAttribute `release_decl_leaf
+    "source declaration leaf available to compositional release certificates"
 
 private def cacheClosedProof (type proof : Expr) : MetaM Expr := do
   let lemma ← withOptions (Elab.async.set · false) do
@@ -73,6 +79,44 @@ private unsafe def seedReleaseReadProofs (cache : ProofCache) : MetaM Unit := do
           #[args[0]!, ← normalizeRegisterExpression expression]
       else pure info.type
     else pure info.type
+    cache.modify (fun entries => entries.insert type (.const declaration []))
+
+private unsafe def normalizeDeclAcceptedType (type : Expr) : MetaM Expr := do
+  let equalityArgs := type.getAppArgs
+  unless type.getAppFn.constName? == some ``Eq && equalityArgs.size == 3 do
+    return type
+  let lhs := equalityArgs[1]!
+  let args := lhs.getAppArgs
+  if lhs.getAppFn.constName? == some ``Loom.Hw.Compile.registerDeclOk &&
+      args.size == 3 then
+    let widthExpr ← Lean.Meta.reduce args[1]!
+    let nameExpr ← Lean.Meta.reduce args[2]!
+    let some width ← getNatValue? widthExpr
+      | throwError "action_decls_ok: register width did not reduce: {widthExpr}"
+    let name ← evalExpr String (mkConst ``String) nameExpr
+    return ← mkEq (← mkAppM ``Loom.Hw.Compile.registerDeclOk
+      #[args[0]!, toExpr width, toExpr name]) (mkConst ``Bool.true)
+  if lhs.getAppFn.constName? == some ``Loom.Hw.Compile.memoryDeclOk &&
+      args.size == 4 then
+    let awExpr ← Lean.Meta.reduce args[1]!
+    let dwExpr ← Lean.Meta.reduce args[2]!
+    let nameExpr ← Lean.Meta.reduce args[3]!
+    let some aw ← getNatValue? awExpr
+      | throwError "action_decls_ok: address width did not reduce: {awExpr}"
+    let some dw ← getNatValue? dwExpr
+      | throwError "action_decls_ok: data width did not reduce: {dwExpr}"
+    let name ← evalExpr String (mkConst ``String) nameExpr
+    return ← mkEq (← mkAppM ``Loom.Hw.Compile.memoryDeclOk
+      #[args[0]!, toExpr aw, toExpr dw, toExpr name]) (mkConst ``Bool.true)
+  pure type
+
+private unsafe def seedReleaseDeclProofs (cache : ProofCache) : MetaM Unit := do
+  let env ← getEnv
+  for declaration in releaseDeclLeafAttr.getDecls env do
+    let info ← getConstInfo declaration
+    unless info.levelParams.isEmpty || info.type.hasFVar || info.type.hasMVar do
+      throwError "release_decl_leaf theorem must be closed: {declaration}"
+    let type ← normalizeDeclAcceptedType info.type
     cache.modify (fun entries => entries.insert type (.const declaration []))
 
 private def mkAndProof (left right : Expr) : MetaM Expr :=
@@ -198,6 +242,98 @@ private def transportActRegistersValid (program actionEq proof : Expr) : MetaM E
   let propositionEq ← mkCongrArg motive actionEq
   mkAppM ``Eq.mpr #[propositionEq, proof]
 
+private def transportActionDeclsOk (design actionEq proof : Expr) : MetaM Expr := do
+  let equalityType ← inferType actionEq
+  let actionType := equalityType.getAppArgs[0]!
+  let motive ← withLocalDeclD `action actionType fun act => do
+    let check ← mkAppM ``Loom.Hw.Compile.actionDeclsOk #[design, act]
+    let body ← mkEq check (mkConst ``Bool.true)
+    mkLambdaFVars #[act] body
+  let propositionEq ← mkCongrArg motive actionEq
+  mkAppM ``Eq.mpr #[propositionEq, proof]
+
+private unsafe def proveActionDeclsOk (cache : ProofCache)
+    (design action : Expr) : MetaM Expr := do
+  let reduced ← exposeAction action
+  let args := reduced.getAppArgs
+  match reduced.getAppFn.constName? with
+  | some ``Loom.Hw.Act.skip =>
+      let check ← mkAppM ``Loom.Hw.Compile.actionDeclsOk #[design, reduced]
+      mkEqRefl check
+  | some ``Loom.Hw.Act.seq | some ``Loom.Hw.Act.ite =>
+      let left := args[args.size - 2]!
+      let right := args[args.size - 1]!
+      let leftCheck ← mkAppM ``Loom.Hw.Compile.actionDeclsOk #[design, left]
+      let rightCheck ← mkAppM ``Loom.Hw.Compile.actionDeclsOk #[design, right]
+      let leftType ← mkEq leftCheck (mkConst ``Bool.true)
+      let rightType ← mkEq rightCheck (mkConst ``Bool.true)
+      let leftProof ← cachePropProofMemo cache leftType
+        (proveActionDeclsOk cache design left)
+      let rightProof ← cachePropProofMemo cache rightType
+        (proveActionDeclsOk cache design right)
+      let conjunction ← mkAndProof leftProof rightProof
+      let decomposition ← mkAppM ``Bool.and_eq_true #[leftCheck, rightCheck]
+      mkAppM ``Eq.mpr #[decomposition, conjunction]
+  | some ``Loom.Hw.Act.write =>
+      let width := args[args.size - 3]!
+      let name := args[args.size - 2]!
+      let leaf ← mkAppM ``Loom.Hw.Compile.registerDeclOk #[design, width, name]
+      let leafType ← normalizeDeclAcceptedType
+        (← mkEq leaf (mkConst ``Bool.true))
+      if let some proof := (← cache.get).get? leafType then
+        pure proof
+      else
+        throwError "action_decls_ok: no generated register declaration leaf for {leafType}"
+  | some ``Loom.Hw.Act.memWrite =>
+      let aw := args[args.size - 6]!
+      let dw := args[args.size - 5]!
+      let name := args[args.size - 4]!
+      let leaf ← mkAppM ``Loom.Hw.Compile.memoryDeclOk #[design, aw, dw, name]
+      let leafType ← normalizeDeclAcceptedType
+        (← mkEq leaf (mkConst ``Bool.true))
+      if let some proof := (← cache.get).get? leafType then
+        pure proof
+      else
+        throwError "action_decls_ok: no generated memory declaration leaf for {leafType}"
+  | some ``List.foldr =>
+      let function := args[args.size - 3]!
+      let initial := args[args.size - 2]!
+      let values := args[args.size - 1]!
+      let simpContext ← Simp.Context.mkDefault
+      let (result, _) ← simp values simpContext
+      let expanded ← expandListFoldr function initial result.expr
+      let proof ← proveActionDeclsOk cache design expanded
+      match result.proof? with
+      | none => pure proof
+      | some valuesEq =>
+          let valuesType ← inferType values
+          let foldMotive ← withLocalDeclD `values valuesType fun xs =>
+            mkLambdaFVars #[xs] <| mkAppN reduced.getAppFn (args.pop.push xs)
+          transportActionDeclsOk design (← mkCongrArg foldMotive valuesEq) proof
+  | _ => throwError "action_decls_ok: action did not reduce to a constructor: {reduced}"
+
+/-- Compose generated declaration leaves over an arbitrary closed action tree. -/
+syntax (name := actionDeclsOkTerm) "action_decls_ok" : term
+
+@[term_elab actionDeclsOkTerm]
+unsafe def elabActionDeclsOk : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "action_decls_ok requires an expected Boolean acceptance equality"
+  let expected ← instantiateMVars expected
+  if expected.hasFVar || expected.hasMVar then
+    throwError "action_decls_ok requires a closed proposition"
+  let equalityArgs := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``Eq && equalityArgs.size == 3 do
+    throwError "action_decls_ok expected actionDeclsOk design action = true"
+  let check := equalityArgs[1]!
+  let args := check.getAppArgs
+  unless check.getAppFn.constName? == some ``Loom.Hw.Compile.actionDeclsOk &&
+      args.size == 2 do
+    throwError "action_decls_ok expected actionDeclsOk design action = true"
+  let cache ← IO.mkRef ({} : Std.HashMap Expr Expr)
+  seedReleaseDeclProofs cache
+  proveActionDeclsOk cache args[0]! args[1]!
+
 private unsafe def proveActRegistersValid (cache : ProofCache)
     (program action : Expr) : MetaM Expr := do
   let reduced ← exposeAction action
@@ -266,6 +402,40 @@ private partial def exposeList (values : Expr) : MetaM (Name × Array Expr) := d
       match ← unfoldDefinition? reduced (ignoreTransparency := true) with
       | some unfolded => exposeList unfolded
       | none => throwError "design_reads_valid: expected a concrete list, got {reduced}"
+
+private unsafe def proveRulesDeclsOk (cache : ProofCache)
+    (design rules : Expr) : MetaM Expr := do
+  let (name, args) ← exposeList rules
+  if name == ``List.nil then
+    return mkConst ``True.intro
+  let rule := args[args.size - 2]!
+  let rest := args[args.size - 1]!
+  let body ← mkAppM ``Loom.Hw.Rule.body #[rule]
+  let headCheck ← mkAppM ``Loom.Hw.Compile.actionDeclsOk #[design, body]
+  let headType ← mkEq headCheck (mkConst ``Bool.true)
+  let headProof ← cachePropProofMemo cache headType
+    (proveActionDeclsOk cache design body)
+  let tailType ← mkAppM ``Loom.Hw.Compile.RulesDeclsOk #[design, rest]
+  let tailProof ← cachePropProof tailType (proveRulesDeclsOk cache design rest)
+  mkAndProof headProof tailProof
+
+/-- Compose generated declaration leaves over every concrete source rule. -/
+syntax (name := rulesDeclsOkTerm) "rules_decls_ok" : term
+
+@[term_elab rulesDeclsOkTerm]
+unsafe def elabRulesDeclsOk : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "rules_decls_ok requires an expected RulesDeclsOk proposition"
+  let expected ← instantiateMVars expected
+  if expected.hasFVar || expected.hasMVar then
+    throwError "rules_decls_ok requires a closed proposition"
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``Loom.Hw.Compile.RulesDeclsOk &&
+      args.size == 2 do
+    throwError "rules_decls_ok expected RulesDeclsOk design rules"
+  let cache ← IO.mkRef ({} : Std.HashMap Expr Expr)
+  seedReleaseDeclProofs cache
+  proveRulesDeclsOk cache args[0]! args[1]!
 
 private unsafe def proveSourceRegistersValid (cache : ProofCache)
     (program sources : Expr) : MetaM Expr := do

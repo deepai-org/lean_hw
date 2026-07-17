@@ -29,16 +29,42 @@ structure DesignWF (d : Design) : Prop where
 
 /-- Structural declaration/width check for one action. It avoids materializing
 the potentially large `regWrites` and `memWrites` lists. -/
+def registerDeclOk (d : Design) (width : Nat) (name : String) : Bool :=
+  d.regs.any fun reg => reg.name == name && reg.width == width
+
+/-- Structural declaration and width check for one memory write. -/
+def memoryDeclOk (d : Design) (addrWidth dataWidth : Nat)
+    (name : String) : Bool :=
+  d.mems.any (fun mem => mem.name == name) &&
+  d.mems.all (fun mem => mem.name != name ||
+    (mem.addrWidth == addrWidth && mem.dataWidth == dataWidth))
+
 def actionDeclsOk (d : Design) : Act → Bool
   | .skip => true
   | .seq left right => actionDeclsOk d left && actionDeclsOk d right
   | .ite _ thenAct elseAct => actionDeclsOk d thenAct && actionDeclsOk d elseAct
-  | .write width name _ =>
-      d.regs.any fun reg => reg.name == name && reg.width == width
-  | .memWrite aw dw name _ _ _ =>
-      d.mems.any (fun mem => mem.name == name) &&
-      d.mems.all (fun mem => mem.name != name ||
-        (mem.addrWidth == aw && mem.dataWidth == dw))
+  | .write width name _ => registerDeclOk d width name
+  | .memWrite aw dw name _ _ _ => memoryDeclOk d aw dw name
+
+/-- A compositional action-declaration certificate over a rule list. -/
+def RulesDeclsOk (d : Design) : List Rule → Prop
+  | [] => True
+  | rule :: rest =>
+      actionDeclsOk d rule.body = true ∧ RulesDeclsOk d rest
+
+/-- A compositional rule-list certificate supplies the pointwise premise used
+by `designWF_of_components`. -/
+theorem RulesDeclsOk.all {d : Design} {rules : List Rule}
+    (valid : RulesDeclsOk d rules) :
+    ∀ rule ∈ rules, actionDeclsOk d rule.body = true := by
+  induction rules with
+  | nil => simp
+  | cons head tail ih =>
+      intro rule member
+      simp only [List.mem_cons] at member
+      cases member with
+      | inl equal => simpa [equal] using valid.1
+      | inr member => exact ih valid.2 rule member
 
 /-- Executable whole-design well-formedness check. This is deliberately
 separate from compiler execution and has a generic soundness theorem. -/
@@ -55,7 +81,7 @@ private theorem actionDeclsOk_regWrites (d : Design) : ∀ (action : Act),
         ∃ reg ∈ d.regs, reg.name = name ∧ reg.width = width := by
   intro action
   induction action <;> intro h name width hwrite <;>
-    simp only [actionDeclsOk, Act.regWrites] at h hwrite
+    simp only [actionDeclsOk, registerDeclOk, Act.regWrites] at h hwrite
   · contradiction
   · rename_i left right ihLeft ihRight
     simp only [actionDeclsOk, Bool.and_eq_true] at h
@@ -80,7 +106,7 @@ private theorem actionDeclsOk_memWrites (d : Design) : ∀ (action : Act),
       ∃ mem ∈ d.mems, mem.name = name := by
   intro action
   induction action <;> intro h name hwrite <;>
-    simp only [actionDeclsOk, Act.memWrites] at h hwrite
+    simp only [actionDeclsOk, memoryDeclOk, Act.memWrites] at h hwrite
   · contradiction
   · rename_i left right ihLeft ihRight
     simp only [Bool.and_eq_true] at h
@@ -120,7 +146,7 @@ private theorem actionDeclsOk_widths (d : Design) (mem : MemDecl)
   | write => intro _; rfl
   | memWrite aw dw name port address value =>
     intro h
-    simp only [actionDeclsOk, Bool.and_eq_true] at h
+    simp only [actionDeclsOk, memoryDeclOk, Bool.and_eq_true] at h
     by_cases hname : name = mem.name
     · have hall := List.all_eq_true.mp h.2 mem
       specialize hall hmem
