@@ -1856,4 +1856,114 @@ theorem MemoryInitBehaviorRopeFrom.getD
         rw [addressEq] at rightExact
         exact rightExact
 
+/-! ## Complete concrete memory behavior -/
+
+/-- One ordered concrete write-port root in a generated memory witness. -/
+structure MemoryPortRoot where
+  index : Nat
+  refs : PortRefs
+  deriving Repr, DecidableEq
+
+/-- Exact binding of one concrete SSA write entry to the corresponding
+verified `Compile.compilePort` behavior. -/
+def MemoryPortBehaviorAt (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) (memoryIndex portIndex : Nat) (refs : PortRefs) : Prop :=
+  match design.mems[memoryIndex]?, program.mems[memoryIndex]? with
+  | some source, some concrete =>
+      match concrete.writes[portIndex]? with
+      | some write =>
+          source.name = concrete.name ∧
+          source.addrWidth = concrete.addrWidth ∧
+          source.dataWidth = concrete.dataWidth ∧
+          write.en = refs.en.render ∧ write.addr = refs.addr.render ∧
+          write.data = refs.data.render ∧
+          MemoryPortBehavior design program table source.name source.addrWidth
+            source.dataWidth portIndex refs
+      | none => False
+  | _, _ => False
+
+theorem memoryPortBehaviorAt_of_checks
+    (design : Loom.Hw.Design) (program : Program) (table : WireTable)
+    (memoryIndex portIndex : Nat) (source : Loom.Hw.MemDecl)
+    (concrete : Loom.Release.SSA.Mem) (write : Loom.Release.SSA.Write)
+    (refs : PortRefs)
+    (sourceFound : design.mems[memoryIndex]? = some source)
+    (concreteFound : program.mems[memoryIndex]? = some concrete)
+    (writeFound : concrete.writes[portIndex]? = some write)
+    (nameEq : source.name = concrete.name)
+    (addressWidthEq : source.addrWidth = concrete.addrWidth)
+    (dataWidthEq : source.dataWidth = concrete.dataWidth)
+    (enEq : write.en = refs.en.render) (addrEq : write.addr = refs.addr.render)
+    (dataEq : write.data = refs.data.render)
+    (behavior : MemoryPortBehavior design program table source.name
+      source.addrWidth source.dataWidth portIndex refs) :
+    MemoryPortBehaviorAt design program table memoryIndex portIndex refs := by
+  simp only [MemoryPortBehaviorAt, sourceFound, concreteFound, writeFound]
+  exact ⟨nameEq, addressWidthEq, dataWidthEq, enEq, addrEq, dataEq, behavior⟩
+
+/-- Ordered, gap-free behavioral coverage of a concrete memory's ports. -/
+inductive MemoryPortBehaviorsFrom (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) (memoryIndex : Nat) : Nat → List MemoryPortRoot → Prop
+  | nil (start : Nat) :
+      MemoryPortBehaviorsFrom design program table memoryIndex start []
+  | cons {start : Nat} {entry : MemoryPortRoot} {entries : List MemoryPortRoot} :
+      entry.index = start →
+      MemoryPortBehaviorAt design program table memoryIndex entry.index
+        entry.refs →
+      MemoryPortBehaviorsFrom design program table memoryIndex (start + 1)
+        entries →
+      MemoryPortBehaviorsFrom design program table memoryIndex start
+        (entry :: entries)
+
+/-- Source-indexed initialization behavior whose source declaration remains
+behind a small match. This lets generated leaves compose without embedding a
+large or machine-specific `MemDecl.init` function in their theorem types. -/
+inductive MemoryInitBehaviorAtRope (design : Loom.Hw.Design)
+    (memoryIndex : Nat) : Nat → Rope (List Nat) → Prop
+  | leaf {start : Nat} {values : List Nat} :
+      (match design.mems[memoryIndex]? with
+       | some source => MemoryInitBlockBehavior source start values
+       | none => False) →
+      MemoryInitBehaviorAtRope design memoryIndex start (.leaf values)
+  | node {start : Nat} {left right : Rope (List Nat)} :
+      MemoryInitBehaviorAtRope design memoryIndex start left →
+      MemoryInitBehaviorAtRope design memoryIndex
+        (start + left.listLength) right →
+      MemoryInitBehaviorAtRope design memoryIndex start (.node left right)
+
+/-- Complete certificate-free meaning of one concrete SSA memory: exact
+metadata, exact initialization tree, and ordered coverage of every write
+entry by the verified compiler fold. -/
+def MemoryBehaviorAt (design : Loom.Hw.Design) (program : Program)
+    (table : WireTable) (memoryIndex : Nat) (init : Rope (List Nat))
+    (ports : List MemoryPortRoot) : Prop :=
+  match design.mems[memoryIndex]?, program.mems[memoryIndex]? with
+  | some source, some concrete =>
+      source.name = concrete.name ∧
+      source.addrWidth = concrete.addrWidth ∧
+      source.dataWidth = concrete.dataWidth ∧
+      concrete.init = init ∧ concrete.writes.length = ports.length ∧
+      MemoryInitBehaviorAtRope design memoryIndex 0 init ∧
+      MemoryPortBehaviorsFrom design program table memoryIndex 0 ports
+  | _, _ => False
+
+theorem memoryBehaviorAt_of_checks
+    (design : Loom.Hw.Design) (program : Program) (table : WireTable)
+    (memoryIndex : Nat) (source : Loom.Hw.MemDecl)
+    (concrete : Loom.Release.SSA.Mem) (init : Rope (List Nat))
+    (ports : List MemoryPortRoot)
+    (sourceFound : design.mems[memoryIndex]? = some source)
+    (concreteFound : program.mems[memoryIndex]? = some concrete)
+    (nameEq : source.name = concrete.name)
+    (addressWidthEq : source.addrWidth = concrete.addrWidth)
+    (dataWidthEq : source.dataWidth = concrete.dataWidth)
+    (initEq : concrete.init = init) (portCount : concrete.writes.length = ports.length)
+    (initBehavior : MemoryInitBehaviorAtRope design memoryIndex 0 init)
+    (portBehavior : MemoryPortBehaviorsFrom design program table memoryIndex 0
+      ports) :
+    MemoryBehaviorAt design program table memoryIndex init ports := by
+  simp only [MemoryBehaviorAt, sourceFound, concreteFound]
+  exact ⟨nameEq, addressWidthEq, dataWidthEq, initEq, portCount,
+    initBehavior, portBehavior⟩
+
 end Loom.Release.Symbolic
