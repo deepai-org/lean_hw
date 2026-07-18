@@ -103,22 +103,23 @@ private theorem nextReg_eq_of_no_write (rn : String) (w : Nat) :
   | seq left right ihLeft ihRight =>
       intro cur h
       have hn : (rn, w) ∉ (left.seq right).regWrites := by
-        simpa [Compile.writesRegB] using h
+        exact (Compile.writesRegB_eq_false_iff rn w _).1 h
       simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at hn
       rw [Compile.nextReg,
-        ihRight _ (by simpa [Compile.writesRegB] using hn.2),
-        ihLeft _ (by simpa [Compile.writesRegB] using hn.1)]
+        ihRight _ ((Compile.writesRegB_eq_false_iff rn w _).2 hn.2),
+        ihLeft _ ((Compile.writesRegB_eq_false_iff rn w _).2 hn.1)]
   | ite guard thenAct elseAct ihThen ihElse =>
       intro cur h
       have hn : (rn, w) ∉ (Loom.Hw.Act.ite guard thenAct elseAct).regWrites := by
-        simpa [Compile.writesRegB] using h
+        exact (Compile.writesRegB_eq_false_iff rn w _).1 h
       simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at hn
       rw [Compile.nextReg, if_neg]
-      simp [Compile.writesRegB, hn]
+      · simp [(Compile.writesRegB_eq_false_iff rn w _).2 hn.1,
+          (Compile.writesRegB_eq_false_iff rn w _).2 hn.2]
   | write actualWidth name value =>
       intro cur h
       have hn : (rn, w) ∉ (Loom.Hw.Act.write actualWidth name value).regWrites := by
-        simpa [Compile.writesRegB] using h
+        exact (Compile.writesRegB_eq_false_iff rn w _).1 h
       simp only [Compile.nextReg]
       by_cases hname : name = rn
       · rw [if_pos hname]

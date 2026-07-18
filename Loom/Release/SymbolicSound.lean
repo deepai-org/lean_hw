@@ -1216,24 +1216,32 @@ private theorem nextReg_eq_of_no_write (register : String) (width : Nat) :
   | seq left right leftIH rightIH =>
       intro cur accepted
       have notMem : (register, width) ∉ (left.seq right).regWrites := by
-        simpa [Loom.Hw.Compile.writesRegB] using accepted
+        exact (Loom.Hw.Compile.writesRegB_eq_false_iff register width _).1
+          accepted
       simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at notMem
       rw [Loom.Hw.Compile.nextReg,
-        rightIH _ (by simpa [Loom.Hw.Compile.writesRegB] using notMem.2),
-        leftIH _ (by simpa [Loom.Hw.Compile.writesRegB] using notMem.1)]
+        rightIH _ ((Loom.Hw.Compile.writesRegB_eq_false_iff register width _).2
+          notMem.2),
+        leftIH _ ((Loom.Hw.Compile.writesRegB_eq_false_iff register width _).2
+          notMem.1)]
   | ite guard thenAction elseAction thenIH elseIH =>
       intro cur accepted
       have notMem :
           (register, width) ∉ (Loom.Hw.Act.ite guard thenAction elseAction).regWrites := by
-        simpa [Loom.Hw.Compile.writesRegB] using accepted
+        exact (Loom.Hw.Compile.writesRegB_eq_false_iff register width _).1
+          accepted
       simp only [Loom.Hw.Act.regWrites, List.mem_append, not_or] at notMem
       rw [Loom.Hw.Compile.nextReg, if_neg]
-      simp [Loom.Hw.Compile.writesRegB, notMem]
+      · simp [(Loom.Hw.Compile.writesRegB_eq_false_iff register width _).2
+            notMem.1,
+          (Loom.Hw.Compile.writesRegB_eq_false_iff register width _).2
+            notMem.2]
   | write actualWidth name value =>
       intro cur accepted
       have notMem :
           (register, width) ∉ (Loom.Hw.Act.write actualWidth name value).regWrites := by
-        simpa [Loom.Hw.Compile.writesRegB] using accepted
+        exact (Loom.Hw.Compile.writesRegB_eq_false_iff register width _).1
+          accepted
       simp only [Loom.Hw.Compile.nextReg]
       by_cases sameName : name = register
       · rw [if_pos sameName]

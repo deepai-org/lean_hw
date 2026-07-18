@@ -109,9 +109,38 @@ def _root_.Loom.Hw.Act.regWrites : Act → List (String × Nat)
   | .memWrite .. => []
 
 /-- Decidable "may write register `(rn, w)`" — the compiler's mux-tree
-pruning test. -/
-def writesRegB (rn : String) (w : Nat) (a : Act) : Bool :=
-  decide ((rn, w) ∈ a.regWrites)
+pruning test.
+
+This is deliberately a direct structural recursion rather than membership in
+`a.regWrites`.  The two views are proved equivalent below, while the direct
+form avoids first materializing a large append-heavy footprint during kernel
+reduction of release certificates. -/
+def writesRegB (rn : String) (w : Nat) : Act → Bool
+  | .skip => false
+  | .seq left right => writesRegB rn w left || writesRegB rn w right
+  | .ite _ thenAction elseAction =>
+      writesRegB rn w thenAction || writesRegB rn w elseAction
+  | .write actualWidth name _ => name == rn && actualWidth == w
+  | .memWrite .. => false
+
+theorem writesRegB_eq_true_iff (rn : String) (w : Nat) (action : Act) :
+    writesRegB rn w action = true ↔ (rn, w) ∈ action.regWrites := by
+  induction action with
+  | skip | memWrite => simp [writesRegB, Act.regWrites]
+  | seq left right leftIH rightIH | ite _ left right leftIH rightIH =>
+      simp [writesRegB, Act.regWrites, leftIH, rightIH]
+  | write actualWidth name value =>
+      simp only [writesRegB, Bool.and_eq_true, beq_iff_eq, Act.regWrites,
+        List.mem_singleton, Prod.mk.injEq]
+      constructor
+      · rintro ⟨widthEq, nameEq⟩
+        exact ⟨widthEq.symm, nameEq.symm⟩
+      · rintro ⟨widthEq, nameEq⟩
+        exact ⟨widthEq.symm, nameEq.symm⟩
+
+theorem writesRegB_eq_false_iff (rn : String) (w : Nat) (action : Act) :
+    writesRegB rn w action = false ↔ (rn, w) ∉ action.regWrites := by
+  rw [← Bool.not_eq_true, writesRegB_eq_true_iff]
 
 /-- Running an action that never writes register `rn` at width `w` leaves
 that entry untouched. -/
@@ -452,10 +481,13 @@ theorem nextReg_correct : ∀ (a : Act) (σ acc : Loom.Hw.St) (rn : String) (w :
         have hlhs : nextReg rn w (.ite c t e) cur = cur := by
           simp only [nextReg, if_neg hp]
         rw [hlhs, hcur]
-        simp only [Bool.or_eq_true, not_or, writesRegB, decide_eq_true_eq] at hp
+        simp only [Bool.or_eq_true, not_or] at hp
         refine (run_regs_notin rn w (.ite c t e) ?_ σ acc).symm
         simp only [Act.regWrites, List.mem_append, not_or]
-        exact hp
+        exact ⟨(writesRegB_eq_false_iff rn w t).mp (by
+            cases value : writesRegB rn w t <;> simp_all),
+          (writesRegB_eq_false_iff rn w e).mp (by
+            cases value : writesRegB rn w e <;> simp_all)⟩
   | write w' r' v =>
       intro σ acc rn w cur hcur
       by_cases hr : r' = rn

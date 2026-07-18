@@ -934,10 +934,12 @@ private partial def proveNextReg (wires table register width action current out 
     unless currentName == ``Option.some do
       throwError "symbolic_kernel_decide: `.same` requires a known current reference"
     let currentRef := currentArgs[currentArgs.size - 1]!
-    let noWriteType ← mkAppM ``NoRegWrite #[register, width, action]
+    let noWriteCheck ← mkAppM ``Loom.Hw.Compile.writesRegB
+      #[register, width, action]
+    let noWriteType ← mkEq noWriteCheck (mkConst ``Bool.false)
     let noWriteProof ← cacheClosedProof noWriteType
-      (← proveNoRegWrite register width action)
-    return ← mkAppM ``nextRegMatches_same_of_noWrite
+      (← mkDecideProof noWriteType)
+    return ← mkAppM ``nextRegMatches_same_of_writesRegB_false
       #[wires, table, register, width, action, currentRef, noWriteProof]
   if actionName == ``Loom.Hw.Act.seq && certName == ``NextRegCert.seq then
     let left := actionArgs[actionArgs.size - 2]!
