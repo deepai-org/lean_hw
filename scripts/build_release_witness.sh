@@ -9,6 +9,12 @@ ulimit -s unlimited
 
 target=${1:-}
 jobs=${2:-8}
+mode=${3:-full}
+
+if [[ "$mode" != full && "$mode" != sample ]]; then
+  echo "mode must be 'full' or 'sample'" >&2
+  exit 2
+fi
 
 case "$target" in
   acc8)
@@ -62,6 +68,19 @@ lake env lean "$(realpath "$src/Root.lean")" -o "$lib/Root.olean"
 lake build Tools.ReleaseCertGen
 lake env lean --run "$(realpath "$src/CertGen.lean")"
 
+# Generated correctness is kernel-checked below; this repeated generation is
+# solely the clean-clone reproducibility gate. Hashes detect drift between the
+# two runs and are not used to bind or certify the RTL bytes.
+generated_digest=$(python3 scripts/generated_tree_digest.py "$src")
+python3 scripts/gen_release_witness.py "${generator_args[@]}"
+lake env lean --run "$(realpath "$src/CertGen.lean")"
+regenerated_digest=$(python3 scripts/generated_tree_digest.py "$src")
+if [[ "$generated_digest" != "$regenerated_digest" ]]; then
+  echo "$artifact release source generation is nondeterministic" >&2
+  exit 1
+fi
+echo "$artifact generated release sources are deterministic"
+
 find "$src" -maxdepth 1 -name 'IndexedCertBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 find "$src" -maxdepth 1 -name 'IndexedPortCertBatch*.lean' -print0 | sort -z | \
@@ -70,6 +89,22 @@ find "$src" -maxdepth 1 -name 'IndexedPortCertBatch*.lean' -print0 | sort -z | \
 find "$src" -maxdepth 1 -name 'SemanticWireBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 lake env lean "$(realpath "$src/SemanticWires.lean")" -o "$lib/SemanticWires.olean"
+
+if [[ "$mode" == sample ]]; then
+  if [[ "$target" != lnp64u ]]; then
+    echo "sample mode is defined only for the large LNP64-u artifact" >&2
+    exit 2
+  fi
+  sample_sources=()
+  for index in 0 206 412 618 824; do
+    sample_sources+=("$src/SemanticRegBatch$index.lean")
+  done
+  printf '%s\0' "${sample_sources[@]}" | \
+    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+  echo "Lnp64u REVIEW SAMPLE passed: exact bytes, all wire certificates, and register leaves 0,206,412,618,824"
+  echo "This is not the full LNP64-u release theorem; use scripts/build_verified_release.sh for Tier A"
+  exit 0
+fi
 
 find "$src" -maxdepth 1 -name 'SemanticRegBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _

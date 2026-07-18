@@ -1,5 +1,22 @@
 # STATUS — LNP64-µ / Loom
 
+## ★★★ 2026-07-18: EXACT TWO-ARTIFACT RELEASE THEOREM ACCEPTED ★★★
+
+`scripts/build_verified_release.sh 8` completed successfully on the pinned
+Lean 4.28.0 toolchain. The single publication theorem
+`Loom.Release.Theorems.verifiedReleases` binds the exact Acc8 and LNP64-µ RTL
+bytes to concrete SSA renderings, proves their complete declarative denotation,
+composes processor refinement and invariant transport, and names LNP64-µ
+authority confinement, machine-wide W^X, ledger conservation, and budget
+boundedness. Exact `cmp` binding, deterministic generation, X-free RTL,
+repository audit, and the final axiom gate all passed. The theorem's closure is
+exactly `propext`, `Classical.choice`, and `Quot.sound`.
+
+The remaining boundary is explicit rather than a proof hole: the documented
+concrete-SSA/Yosys adequacy assumption, Yosys/downstream physical flow when
+making hardware claims, and the platform/reset/side-channel scope listed in
+`TCB.md` and `TRUST.md`.
+
 ## ★★★ 2026-07-16: R-MC COMPLETE — UNBOUNDED ISS↔EDSL LOCKSTEP PROVED ★★★
 
 The LNP64-µ machine-code refinement is now complete. `RMC.square` proves
@@ -217,8 +234,10 @@ passed** (Phase 2 claim below is now verified), and `lake exe emit lnp64u` was f
 with the emitted RTL passing the 2000-cycle iverilog ISS-golden sim and yosys synth clean
 (1.57M cells — 1.43M mux, 7,849 FFs ≈ the 633 registers' state bits, RAM kept as `$mem_v2`;
 emit now 11 s / <1 GB; `rtl/` stays untracked, regenerate via `scripts/lockstep_lnp64u.sh`).
-R-MC (transport of T2–T9 onto the emitted core) is stated and in progress in
-`Theorems/RMC*.lean`.
+R-MC is now complete in `Theorems/RMC*.lean`: the unbounded ISS-to-EDSL
+simulation and invariant transport are proved. The separate exact-artifact
+release acceptance described at the top of `TRUST.md` completed on
+2026-07-18.
 
 ---
 

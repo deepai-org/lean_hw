@@ -654,7 +654,29 @@ private partial def proveNoPortWrite (memory port action : Expr) : MetaM Expr :=
         pure <| mkAppN (mkConst ``NoPortWrite.memWriteName)
           #[memory, port, addressWidth, dataWidth, name, actualPort, address,
             value, different]
-  | _ => throwError "symbolic_kernel_decide: action did not reduce for NoPortWrite"
+  | some ``List.foldr =>
+      let function := args[args.size - 3]!
+      let initial := args[args.size - 2]!
+      let values := args[args.size - 1]!
+      let simpContext ← Simp.Context.mkDefault
+      let (result, _) ← simp values simpContext
+      let expanded ← expandListFoldr function initial result.expr
+      let proof ← proveNoPortWrite memory port expanded
+      match result.proof? with
+      | none => pure proof
+      | some valuesEq =>
+          let valuesType ← inferType values
+          let foldMotive ← withLocalDeclD `values valuesType fun xs =>
+            mkLambdaFVars #[xs] <| mkAppN reduced.getAppFn (args.pop.push xs)
+          let actionEq ← mkCongrArg foldMotive valuesEq
+          let equalityType ← inferType actionEq
+          let actionType := equalityType.getAppArgs[0]!
+          let motive ← withLocalDeclD `action actionType fun act => do
+            let body ← mkAppM ``NoPortWrite #[memory, port, act]
+            mkLambdaFVars #[act] body
+          let propositionEq ← mkCongrArg motive actionEq
+          mkAppM ``Eq.mpr #[propositionEq, proof]
+  | _ => throwError "symbolic_kernel_decide: action did not reduce for NoPortWrite: {reduced}"
 
 private def transportHasPortWrite (memory port actionEq proof : Expr) : MetaM Expr := do
   let equalityType ← inferType actionEq
@@ -790,6 +812,93 @@ private def cacheAccepted (type proof : Expr) : MetaM Expr :=
 private def decideAccepted (type : Expr) : MetaM Expr := do
   cacheClosedProof type (← mkDecideProof type)
 
+private def transportWritesRegAction (register width actionEq proof : Expr) :
+    MetaM Expr := do
+  let equalityType ← inferType actionEq
+  let actionType := equalityType.getAppArgs[0]!
+  let motive ← withLocalDeclD `action actionType fun act => do
+    let check ← mkAppM ``Loom.Hw.Compile.writesRegB
+      #[register, width, act]
+    mkLambdaFVars #[act] (← mkEq check trueExpr)
+  let propositionEq ← mkCongrArg motive actionEq
+  mkAppM ``Eq.mpr #[propositionEq, proof]
+
+/-- Prove that one concrete action writes the requested register without
+normalizing the complete action's `regWrites` list. Only the matching write
+leaf is discharged by `decide`; `seq`/`ite` parents use `Bool.or_eq_true`. -/
+private partial def proveWritesRegTrue (register width action : Expr) : MetaM Expr := do
+  let reduced ← exposeAction action
+  let args := reduced.getAppArgs
+  match reduced.getAppFn.constName? with
+  | some ``Loom.Hw.Act.seq | some ``Loom.Hw.Act.ite =>
+      let left := args[args.size - 2]!
+      let right := args[args.size - 1]!
+      let leftCheck ← mkAppM ``Loom.Hw.Compile.writesRegB
+        #[register, width, left]
+      let rightCheck ← mkAppM ``Loom.Hw.Compile.writesRegB
+        #[register, width, right]
+      let leftAccepted ← mkEq leftCheck trueExpr
+      let rightAccepted ← mkEq rightCheck trueExpr
+      let disjunction ← try
+        let proof ← proveWritesRegTrue register width left
+        pure <| mkAppN (mkConst ``Or.inl)
+          #[leftAccepted, rightAccepted, proof]
+      catch _ =>
+        let proof ← proveWritesRegTrue register width right
+        pure <| mkAppN (mkConst ``Or.inr)
+          #[leftAccepted, rightAccepted, proof]
+      let decomposition ← mkAppM ``Bool.or_eq_true #[leftCheck, rightCheck]
+      mkAppM ``Eq.mpr #[decomposition, disjunction]
+  | some ``Loom.Hw.Act.write =>
+      let actualWidth := args[args.size - 3]!
+      let name := args[args.size - 2]!
+      unless ← isDefEq name register do
+        throwError "symbolic_kernel_decide: register write has a different name"
+      unless ← isDefEq actualWidth width do
+        throwError "symbolic_kernel_decide: register write has a different width"
+      let check ← mkAppM ``Loom.Hw.Compile.writesRegB
+        #[register, width, reduced]
+      mkDecideProof (← mkEq check trueExpr)
+  | some ``List.foldr =>
+      let function := args[args.size - 3]!
+      let initial := args[args.size - 2]!
+      let values := args[args.size - 1]!
+      let simpContext ← Simp.Context.mkDefault
+      let (result, _) ← simp values simpContext
+      let expanded ← expandListFoldr function initial result.expr
+      let proof ← proveWritesRegTrue register width expanded
+      match result.proof? with
+      | none => pure proof
+      | some valuesEq =>
+          let valuesType ← inferType values
+          let foldMotive ← withLocalDeclD `values valuesType fun xs =>
+            mkLambdaFVars #[xs] <| mkAppN reduced.getAppFn (args.pop.push xs)
+          transportWritesRegAction register width
+            (← mkCongrArg foldMotive valuesEq) proof
+  | _ =>
+      throwError "symbolic_kernel_decide: no write to requested register in {reduced}"
+
+private def proveRegWritesOr (register width left right : Expr) : MetaM Expr := do
+  let leftCheck ← mkAppM ``Loom.Hw.Compile.writesRegB
+    #[register, width, left]
+  let rightCheck ← mkAppM ``Loom.Hw.Compile.writesRegB
+    #[register, width, right]
+  let leftAccepted ← mkEq leftCheck trueExpr
+  let rightAccepted ← mkEq rightCheck trueExpr
+  let disjunction ← try
+    let proof ← proveWritesRegTrue register width left
+    pure <| mkAppN (mkConst ``Or.inl)
+      #[leftAccepted, rightAccepted, proof]
+  catch leftError =>
+    let proof ← try
+      proveWritesRegTrue register width right
+    catch rightError =>
+      throwError "symbolic_kernel_decide: neither conditional branch writes the register; left: {leftError.toMessageData}; right: {rightError.toMessageData}"
+    pure <| mkAppN (mkConst ``Or.inr)
+      #[leftAccepted, rightAccepted, proof]
+  let decomposition ← mkAppM ``Bool.or_eq_true #[leftCheck, rightCheck]
+  mkAppM ``Eq.mpr #[decomposition, disjunction]
+
 private def expose (value : Expr) : MetaM (Name × Array Expr) := do
   let reduced ← withTransparency .all <| whnf value
   let some name := reduced.getAppFn.constName?
@@ -892,11 +1001,7 @@ private partial def proveNextReg (wires table register width action current out 
     let guardRef := rhsArgs[rhsArgs.size - 3]!
     let thenRef := rhsArgs[rhsArgs.size - 2]!
     let elseRef := rhsArgs[rhsArgs.size - 1]!
-    let writesValue ← mkAppM ``Bool.or #[
-      ← mkAppM ``Loom.Hw.Compile.writesRegB #[register, width, thenAction],
-      ← mkAppM ``Loom.Hw.Compile.writesRegB #[register, width, elseAction]]
-    let writesType ← mkBoolAccepted writesValue
-    let writesProof ← decideAccepted writesType
+    let writesProof ← proveRegWritesOr register width thenAction elseAction
     let lookupExpected ← mkAppM ``Option.some #[indexedWire]
     let lookupType ← mkEq lookup lookupExpected
     let lookupProof ← cacheClosedProof lookupType (← mkEqRefl lookup)
@@ -1001,7 +1106,8 @@ private partial def proveNextPort (wires table memory addressWidth dataWidth por
         return ← mkAppM ``nextPortMatches_same_of_noWrite
           #[wires, table, memory, addressWidth, dataWidth, port, action, current,
             noWriteProof]
-      catch _ => pure ()
+      catch error =>
+        throwError "symbolic_kernel_decide: `.same` structural no-write proof failed: {error.toMessageData}"
   if actionName == ``Loom.Hw.Act.seq && certName == ``NextPortCert.seq then
     let left := actionArgs[actionArgs.size - 2]!
     let right := actionArgs[actionArgs.size - 1]!

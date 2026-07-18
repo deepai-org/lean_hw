@@ -1,10 +1,13 @@
 # TRUST — an honest bird's-eye audit of what the LNP64-µ theorems rest on
 
-Audited 2026-07-04 and refreshed 2026-07-16 after R-MC completion, against
+Audited 2026-07-04 and refreshed 2026-07-18 after final release-certificate
+acceptance, against
 the bar: peer-review-grade, seL4-trustworthiness or better. This document is
 deliberately adversarial to the project's own claims; it is the seed of the
 paper's trust section. Facts marked current were rechecked against the repo
-at the refresh date.
+at the refresh date. The concise publication-facing theorem and TCB inventory
+are in [`TCB.md`](TCB.md); clean-clone verification tiers are in
+[`REPRODUCING.md`](REPRODUCING.md).
 
 ## A. Is it the right question? (property adequacy)
 
@@ -92,16 +95,21 @@ at the refresh date.
   have had zero external readers. External statement review is not
   optional for the target bar.
 
-## C. Does the proof stack have bugs? (Lean-side TCB, best to worst)
+## C. Does the proof stack have bugs? (Lean-side proof and audit surface)
 
 1. **Lean 4 kernel + 3 standard axioms** — shared with Mathlib.
-2. **The µVerilog tool-boundary assumption** — one assumption exposed as
-   two whitelisted axiom declarations: `ImplementsStandard` and
-   `implements_standard_spec`. Its scope is now documented as concrete
-   reset/cycle agreement for a concrete emitted module and tool realization,
-   not a claim about full Verilog or physical implementation effects.
-3. **`Tools/Audit.lean` is a small trusted compiled tool.** It computes
-   real axiom closures (and caught the T5 `system_preserves` near-miss).
+2. **The µVerilog/Yosys tool boundary** — for the deliberately small concrete
+   SSA syntax, the structural text renderer is assumed to mean under Yosys
+   what the proved declarative denotation assigns to it. This is not a claim
+   about full Verilog or physical implementation effects. The older generic
+   module boundary remains exposed as the two whitelisted declarations
+   `ImplementsStandard` and `implements_standard_spec`, but the exact release
+   theorem itself does not depend on either axiom.
+3. **`Tools/Audit.lean` is a hard reporting gate, not a theorem axiom.** It
+   computes real axiom closures (and caught the T5 `system_preserves`
+   near-miss). A bug could misreport the inventory, so the release also exposes
+   the one final declaration and its raw closure for independent inspection;
+   the audit cannot cause the kernel to accept a declaration.
    Since 2026-07-04, `lake exe audit` prints each ledger theorem's axiom
    closure, so readers can inspect the raw closure behind each CLEAN/STATED
    verdict instead of trusting only the summary labels. Since 2026-07-16 it
@@ -119,13 +127,13 @@ at the refresh date.
 
 ## D. Does the generated Verilog comply with the proofs? (the chain)
 
-| Link | Status (refreshed 2026-07-16) |
+| Link | Status (refreshed 2026-07-18) |
 |---|---|
 | ISS (`machine m`) — where T1–T9 live | proved |
 | ISS ↔ EDSL core (R-MC) | **proved** (unbounded exact whole-state lockstep from reset; all 25 retirement opcodes) |
 | EDSL core → Module IR (`compile`) | proved generically, sorry-free |
-| Module → supplied artifact AST | **generic kernel-checked translation validator proved; release witnesses pending** |
-| Concrete SSA witness → exact emitted text | **feasibility established only for hierarchical chunk equality; renderer/elaborator pending** |
+| Module → concrete SSA witness denotation | **proved and accepted for Acc8 and LNP64-µ** |
+| Concrete SSA witness → exact emitted text | **proved and exact-`cmp` bound for both shipped artifacts** |
 | text → simulator/synthesizer | µVerilog boundary assumption + iverilog/yosys corroboration; CI X-free/reset/init lint over freshly emitted Acc8 + LNP64-µ RTL |
 | verified CPU netlist → SoC fabric / board | out of scope (DMA, interrupts, bus arbitration/backpressure, debug, MMU/IOMMU, coherency) |
 | netlist → silicon → physics | out of scope (reset sequencing, timing closure, glitches, metastability, power side channels) |
@@ -135,13 +143,17 @@ at the refresh date.
   `cap_revoke` convergence. This closes the ISS↔EDSL link. Claims about
   emitted text and physical/tool realizations remain limited by Findings
   2–7 below.
-- **Finding 2 — the generic AST translation validator is proved; concrete
-  release witnesses remain.** `Loom.Hw.ArtifactCert` checks arbitrary proof
-  data locally and proves that any accepted supplied module matches the
-  reference `Compile.compile` result. This removes `compileImpl` from the
-  eventual release theorem without proving the optimizer. The checker and
-  its soundness theorems are complete; generated, kernel-accepted Acc8 and
-  LNP64-µ witnesses are not yet committed.
+- **Finding 2 — the arbitrary-witness validator and release packaging are
+  proved.** `Symbolic.ModuleBehavior` is the certificate-free declarative
+  denotation relation: it requires exact metadata, indexed wire semantics,
+  structural validity, register folds, memory initialization/write-port
+  behavior, and outputs against the reference `Compile.compile` result.
+  `VerifiedSymbolicArtifact` packages that denotation with exact rendered
+  bytes, ISS refinement, and invariant transport. The untrusted generator
+  appears nowhere in these statements or proof terms. Acc8 is accepted with
+  an axiom closure of exactly `propext`, `Classical.choice`, and `Quot.sound`;
+  the full LNP64-µ kernel acceptance build and combined theorem now pass the
+  advertised release command.
 - **Finding 3 — exact-text certification must remain hierarchical.** The
   proposed parser canonicity theorem was refuted by kernel-checked
   counterexamples (`Tests.ParserBoundary`): SSA names are not canonical and
@@ -171,21 +183,28 @@ at the refresh date.
   placeholder — and depend only on `propext`. The 128-line module's 2,937
   named proof declarations and 284 MB `.olean` were also fed to the memoized
   audit: all checks passed in 12.18 s (8.21 GB peak RSS while loading the full
-  enlarged environment). Therefore 512 lines is the current release default;
-  128 is a viable diagnostic fallback; 32 is rejected. The concrete
-  renderer/elaborator and both release witnesses remain open.
+  enlarged environment). The production implementation uses 128-item bounded
+  leaves (grouped four at a time in generated batch modules), balanced
+  ropes, and separate named theorem declarations. The arbitrary-witness
+  declarative denotation and structural renderer are complete, as are the
+  Acc8 and LNP64-µ release theorems. The full LNP64-µ kernel build and final
+  combined-theorem audit passed on 2026-07-18.
 
-- **Finding 3a — file binding is an explicit trusted build step.** Generated
-  proof modules will be produced during the build, not checked in. The fixed
-  rule is: split the exact release byte stream at LF boundaries, retain the
-  final empty segment when the file ends in LF, group 512 logical lines per
-  leaf, and preserve leaf order in a balanced rope. Lean checks every embedded
-  leaf literal against the witness renderer and composes the named equalities;
-  CI independently reconstructs those leaves, concatenates them with LF, and
-  uses exact `cmp` against `rtl/acc8.v` / `rtl/lnp64u.v`. The generator is
-  untrusted for correctness but must be deterministic: CI runs it twice and
-  compares generated sources byte-for-byte. This file read plus `cmp` is named
-  in the TCB; SHA-256 may identify releases but is not used as proof.
+- **Finding 3a — file binding is one explicit trusted exact-comparison
+  step.** Generated proof modules are produced during the release build, not
+  checked in. The fixed rule splits at LF boundaries, groups large wire and
+  memory-initialization sequences into 128-item leaves, keeps the fixed
+  prefix/suffix framing as named leaves, and preserves theorem-defined order
+  in a balanced rope.
+  Lean checks every embedded leaf literal against the structural renderer and
+  composes the equality without normalizing a monolithic string. The small
+  `check_release_binding.py` tool independently reconstructs those certified
+  leaves and invokes standard `cmp -s` against `rtl/acc8.v` or
+  `rtl/lnp64u.v`; it uses no hash or collision assumption. This exact byte
+  comparison is the named file-binding TCB step. The release command generates
+  the complete source tree twice and rejects content drift; SHA-256 is used
+  for that reproducibility check and release identification, not as proof
+  evidence or byte binding.
 - **Finding 4 — reset realization is below the proof boundary.** The R-MC
   reset obligations can show that the EDSL reset state abstracts to
   `Manifest.initState`; they do not show that an electrical or SoC-level
@@ -247,11 +266,11 @@ at the refresh date.
   a completed chain trusts the Lean kernel plus one narrowly documented
   µVerilog tool-boundary assumption — smaller and cleaner than seL4's TCB
   statement.
-- **Behind today:** (1) `implemented_by` + eval-level guards are unproved
-  executable-TCB residue; (2) reset, X-free RTL, platform I/O,
+- **Behind today:** (1) reset realization, platform I/O,
   budget-event accounting, fault
   routing, and global progress are integration assumptions, not proved
-  properties; (3) zero external scrutiny of spec and statements — most of
+  properties; (2) the X-free check is a release gate but not yet a Lean
+  semantic theorem; (3) zero external scrutiny of spec and statements — most of
   what "seL4-trustworthy" socially means.
 
 ## Ranked punch list
@@ -262,12 +281,12 @@ at the refresh date.
 2. DONE 2026-07-04: D11 scheduler fix landed; serving underfunding raises
    a `.budget` fault, non-serving underfunding burns residual budget, and
    `StallFree` is deleted from T6.
-3. ● Complete witnessed release validation: define the minimal concrete SSA
-   syntax, prove arbitrary-witness renderer/elaborator soundness, generate
-   Acc8 and LNP64-µ witnesses, and kernel-check 512-line render leaves composed
-   by a balanced proof tree. The full-scale dummy prototype and audit are
-   complete; the remaining work is the concrete syntax/elaborator and release
-   witnesses, not proof-composition research.
+3. DONE 2026-07-18: complete witnessed release validation: the concrete SSA syntax,
+   structural renderer, arbitrary-witness declarative denotation, Acc8
+   acceptance, generated LNP64-µ witness, per-artifact release packaging, and
+   combined security-bearing theorem are complete. The full LNP64-µ kernel
+   build, exact file binding, combined axiom audit, and clean invocation of
+   `scripts/build_verified_release.sh 8` all passed.
 4. DONE 2026-07-04: `Tests.Lnp64uWitnesses` gives kernel-checked witnesses
    for finite manifest-side hypotheses, and D11 deleted T6's semantic
    `StallFree` side condition.
@@ -275,9 +294,10 @@ at the refresh date.
    `Module.reset`, including clock/reset sequencing and proof-visible hidden
    state; decide whether it is a trusted integration assumption or a future
    checked artifact.
-6. PARTIAL 2026-07-04: `scripts/check_xfree_rtl.py` runs in CI after fresh
-   Acc8 + LNP64-µ emission and rejects X/Z/don't-care literals or
-   constructs, missing register resets, and partial memory initialization.
+6. PARTIAL 2026-07-17: `scripts/check_xfree_rtl.py` runs in CI and in the
+   full release command after fresh Acc8 + LNP64-µ emission, rejecting
+   X/Z/don't-care literals or constructs, missing register resets, and
+   partial memory initialization.
    Remaining: promote this from text-level lint to a Lean parser/AST
    2-state-safety theorem, and cover synthesis undefined-read/don't-care
    adequacy explicitly.

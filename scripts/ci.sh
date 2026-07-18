@@ -13,6 +13,7 @@ lake exe bookgen >/dev/null
 lake exe emit acc8 >/dev/null
 lake exe emit lnp64u >/dev/null
 scripts/check_xfree_rtl.py rtl/acc8.v rtl/lnp64u.v
+scripts/test_release_binding.py
 # Independent-checker cross-validation (self-SKIPs if cadical/python3 absent,
 # so CI does not depend on a SAT solver being installed).
 scripts/crosscheck_lrat.sh
