@@ -60,12 +60,17 @@ compile_batch() {
 }
 export -f compile_batch
 
+# Generated modules are compiled directly with `lean`, outside Lake's module
+# graph. Build every import supplied to the generator, plus its shared
+# certificate engines, so a clean checkout cannot rely on stale `.olean`s.
+lake build Loom.Release.SymbolicCertificate Loom.Release.SymbolicDecide \
+  Tools.ReleaseCertGen "${design_imports[@]}"
+
 find "$src" -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 
 lake env lean "$(realpath "$src/Root.lean")" -o "$lib/Root.olean"
 
-lake build Tools.ReleaseCertGen
 lake env lean --run "$(realpath "$src/CertGen.lean")"
 
 # Generated correctness is kernel-checked below; this repeated generation is
