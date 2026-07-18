@@ -4,6 +4,41 @@ The release certificate is intentionally kernel-checked rather than accepted
 through `native_decide` or an optimized evaluator. This page records what that
 independence costs so artifact reviewers can plan rather than guess.
 
+## 2026-07-18 performance investigation
+
+The original LNP64-µ release checker validated the complete source action
+tree independently for every one of 825 registers.  A profiled full-size leaf
+(`SemanticRegBatch0`) established that this, rather than imports or disk I/O,
+was the dominant cost:
+
+| configuration | wall time | meta interpretation | kernel checking | peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| explicit `NoRegWrite` proof trees | 10m 47.8s | 290s | 344s | 3.28 GiB |
+| structural Boolean footprint check | 5m 09.6s | 215s | 91.4s | 3.15 GiB |
+
+Imports took about 1.1 seconds in both runs.  The compact check also reduced
+the leaf `.olean` from about 11 MiB to under 1 MiB.  This optimization is
+kernel-checked and preserves the public characterization of `writesRegB` as
+membership in `Act.regWrites`; it changes only the reducible implementation
+and the shape of generated proof terms.
+
+The remaining 215-second interpretation cost shows that per-register checking
+is still the wrong asymptotic architecture.  The next release-checker revision
+must validate a shared whole-action register-update index once, then reduce
+each register theorem to an indexed lookup plus its expression-root check.
+The target complexity is one action traversal plus one lookup per register,
+not one action traversal per register.
+
+The same rebuild exposed a separate edit-loop problem in the R-MC proof graph.
+After the foundational compiler module changed, individual modules including
+`RMCRetireRev`, `RMCRetireGateCall`, and `RMCRetireGateCallSuccess` each took
+roughly five to six minutes.  These are ordinary theorem-elaboration and
+module-boundary hotspots, distinct from release byte certification; they need
+targeted `lean --profile` passes and narrower import boundaries.
+
+The timings below describe the earlier accepted implementation and remain a
+baseline, not a performance claim for the in-progress optimized checker.
+
 ## Final acceptance environment
 
 - Toolchain: `leanprover/lean4:v4.28.0`

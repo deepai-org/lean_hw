@@ -413,7 +413,8 @@ theorem NoRegWrite.of_not_mem (register : String) (width : Nat) :
 theorem NoRegWrite.writesRegB_eq_false {register : String} {width : Nat}
     {action : Loom.Hw.Act} (h : NoRegWrite register width action) :
     Loom.Hw.Compile.writesRegB register width action = false := by
-  simp [Loom.Hw.Compile.writesRegB, h.not_mem]
+  exact (Loom.Hw.Compile.writesRegB_eq_false_iff register width action).2
+    h.not_mem
 
 /-- Structural evidence that an action cannot write one concrete memory port.
 This is the memory analogue of `NoRegWrite`; its tree-shaped proofs let the
@@ -678,6 +679,21 @@ theorem nextRegMatches_same_of_noWrite
   | writeWidth value different =>
       simp [nextRegMatches, different]
   | memWrite => simp [nextRegMatches]
+
+/-- Compact Boolean-facing form of `nextRegMatches_same_of_noWrite`.
+Release elaboration can kernel-reduce the direct structural write test and
+reuse this generic theorem instead of materializing a `NoRegWrite` proof tree
+for every register/action pair. -/
+theorem nextRegMatches_same_of_writesRegB_false
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (action : Loom.Hw.Act)
+    (current : Ref)
+    (h : Loom.Hw.Compile.writesRegB register width action = false) :
+    nextRegMatches wires table register width action (some current) current
+      .same = true := by
+  apply nextRegMatches_same_of_noWrite
+  exact NoRegWrite.of_not_mem register width action
+    ((Loom.Hw.Compile.writesRegB_eq_false_iff register width action).1 h)
 
 theorem nextRegMatches_seq_named
     (wires : Rope (List IndexedWire)) (table : WireTable)
