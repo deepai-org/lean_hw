@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -54,19 +56,73 @@ def declarations(directory: Path) -> dict[str, list[str]]:
     return result
 
 
-def ordered_names(values: dict[str, list[str]]) -> list[str]:
+def rope_definition(root: str, name: str) -> str:
+    match = re.search(
+        rf"^def {re.escape(name)} : Rope \(List String\) :=\n(.*?)(?=\n\n)",
+        root, re.MULTILINE | re.DOTALL)
+    if not match:
+        raise ValueError(f"missing rope definition {name}")
+    expression = match[1].strip()
+    if not re.fullmatch(r"[.()A-Za-z0-9_\s]+", expression):
+        raise ValueError(f"unexpected syntax in rope definition {name}")
+    return expression
+
+
+def rope_references(expression: str, allowed: re.Pattern[str]) -> list[str]:
+    identifiers = re.findall(r"[A-Za-z_]\w*", expression)
+    references = [name for name in identifiers if name not in ("node", "leaf")]
+    unexpected = [name for name in references if not allowed.fullmatch(name)]
+    if unexpected:
+        raise ValueError(f"unexpected rope references: {', '.join(unexpected)}")
+    return references
+
+
+def ordered_names(directory: Path, values: dict[str, list[str]]) -> list[str]:
+    """Derive the byte order from the exact rope used by Lean's theorem."""
+    root = (directory / "Root.lean").read_text()
+    top = " ".join(rope_definition(root, "diskTree").split())
+    expected_top = (".node (.leaf diskPrefix) "
+                    "(.node diskMemTrees (.node diskWireTree (.leaf diskSuffix)))")
+    if top != expected_top:
+        raise ValueError("diskTree is not the fixed release framing")
+
+    memory_trees = rope_references(
+        rope_definition(root, "diskMemTrees"), re.compile(r"diskMem\d+Tree"))
+    memory_numbers = [int(re.fullmatch(r"diskMem(\d+)Tree", name)[1])
+                      for name in memory_trees]
+    if memory_numbers != list(range(len(memory_numbers))):
+        raise ValueError("memory trees are not in contiguous source order")
+
     names = ["diskPrefix"]
-    memory = 0
-    while f"diskMem{memory}Start" in values:
-        names.append(f"diskMem{memory}Start")
-        names += sorted(name for name in values
-                        if re.fullmatch(rf"diskMem{memory}Init\d{{4}}", name))
-        names.append(f"diskMem{memory}End")
-        memory += 1
-    names += sorted(name for name in values
-                    if re.fullmatch(r"diskWireBlock\d{4}", name))
-    names.append("diskSuffix")
-    return names
+    for number in memory_numbers:
+        tree_name = f"diskMem{number}Tree"
+        tree_refs = rope_references(
+            rope_definition(root, tree_name),
+            re.compile(rf"diskMem{number}(?:Start|InitTree|End)"))
+        expected_tree = [f"diskMem{number}Start",
+                         f"diskMem{number}InitTree",
+                         f"diskMem{number}End"]
+        if tree_refs != expected_tree:
+            raise ValueError(f"{tree_name} is not start/init/end in order")
+        init_refs = rope_references(
+            rope_definition(root, f"diskMem{number}InitTree"),
+            re.compile(rf"diskMem{number}Init\d{{4}}"))
+        expected_init = sorted(
+            name for name in values
+            if re.fullmatch(rf"diskMem{number}Init\d{{4}}", name))
+        if init_refs != expected_init:
+            raise ValueError(f"memory {number} init leaves are not in order")
+        names += [f"diskMem{number}Start", *init_refs,
+                  f"diskMem{number}End"]
+
+    wire_refs = rope_references(
+        rope_definition(root, "diskWireTree"),
+        re.compile(r"diskWireBlock\d{4}"))
+    expected_wires = sorted(
+        name for name in values if re.fullmatch(r"diskWireBlock\d{4}", name))
+    if wire_refs != expected_wires:
+        raise ValueError("wire leaves are not in source order")
+    return names + wire_refs + ["diskSuffix"]
 
 
 def main() -> None:
@@ -75,7 +131,7 @@ def main() -> None:
     parser.add_argument("generated", type=Path)
     args = parser.parse_args()
     values = declarations(args.generated)
-    names = ordered_names(values)
+    names = ordered_names(args.generated, values)
     missing = [name for name in names if name not in values]
     if missing:
         raise SystemExit(f"missing disk declarations: {', '.join(missing)}")
@@ -84,14 +140,21 @@ def main() -> None:
     if unexpected:
         raise SystemExit(f"unbound disk declarations: {', '.join(unexpected)}")
     certified = "\n".join(line for name in names for line in values[name]).encode()
-    actual = args.rtl.read_bytes()
-    if certified != actual:
+    with tempfile.NamedTemporaryFile() as reconstructed:
+        reconstructed.write(certified)
+        reconstructed.flush()
+        comparison = subprocess.run(
+            ["cmp", "-s", reconstructed.name, str(args.rtl)], check=False)
+    if comparison.returncode != 0:
+        if comparison.returncode > 1:
+            raise SystemExit(f"cmp failed with status {comparison.returncode}")
+        actual = args.rtl.read_bytes()
         mismatch = next((i for i, pair in enumerate(zip(certified, actual))
                          if pair[0] != pair[1]), min(len(certified), len(actual)))
         raise SystemExit(
             f"byte mismatch at offset {mismatch}: certified={len(certified)} "
             f"actual={len(actual)}")
-    print(f"exact byte binding passed: {args.rtl} ({len(actual)} bytes)")
+    print(f"exact cmp binding passed: {args.rtl} ({len(certified)} bytes)")
 
 
 if __name__ == "__main__":
