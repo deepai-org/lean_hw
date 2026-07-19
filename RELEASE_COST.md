@@ -46,6 +46,27 @@ forced the multi-gigabyte SSA root to rebuild (roughly four minutes and a
 module, and the generated data layer should ultimately import only stable
 symbolic data definitions, not checker implementations.
 
+A subsequent whole-state prototype identified the missing asymptotic
+abstraction.  `Compile.nextReg` presents compilation as one complete action
+traversal per register, and the original release checker copied that
+presentation.  `Loom.Hw.WholeRegisterPlan` instead traverses an action once
+and constructs all declaration-aligned register projections together.  Its
+generic theorems prove that each projected plan denotes exactly the existing
+`nextReg`; the reference compiler and its correctness proof do not change.
+
+On the complete LNP64-µ design, compiled evaluation constructed the four
+rule-plan families below the millisecond clock resolution.  The result has
+180,254 relevant plan nodes across 825 registers, close to the unavoidable
+concrete SSA size rather than 825 copies of the complete source action.  A
+single kernel decision reduction of the full plan-node count reached its
+reduced `true = true` form in 37 seconds with a 6.94 GiB peak before exposing
+an auxiliary-lemma limitation in the custom `kernel_decide` wrapper.  A
+monolithic direct-`rfl` variant was stopped after 99 seconds.  The production
+design should therefore compose separately named bounded plan blocks, not one
+180,254-node equality.  This measurement changes the target from a finer
+absence index to a shared source-derived update plan plus cheap bounded SSA
+root checks.
+
 The same rebuild exposed a separate edit-loop problem in the R-MC proof graph.
 After the foundational compiler module changed, individual modules including
 `RMCRetireRev`, `RMCRetireGateCall`, and `RMCRetireGateCallSuccess` each took
