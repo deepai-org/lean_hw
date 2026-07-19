@@ -36,6 +36,19 @@ roughly five to six minutes.  These are ordinary theorem-elaboration and
 module-boundary hotspots, distinct from release byte certification; they need
 targeted `lean --profile` passes and narrower import boundaries.
 
+The first dependency repair now keeps `Act.memWrites`, `Act.regWrites`, and
+their generic frame theorems in `Loom.Hw.Footprint`, below the compiler.
+The R-MC development imports that stable footprint layer directly.  A change
+to `Loom.Hw.Compile` therefore no longer invalidates the multi-minute R-MC
+chain merely because its proofs use action frame facts.  This does not make a
+clean R-MC build cheap: the observed hotspots still include `RMCHalt` (208s,
+about 8.2 GiB RSS), `RMCZero` (277s), and `RMCIssue` (233s, about 5.6 GiB RSS).
+It does, however, remove those costs from the normal compiler and release
+certificate edit loop.  An explicit content change to `Loom.Hw.Compile`
+followed by `lake build Machines.Lnp64u.Theorems.RMCRetireGateCall` completed
+from cache in 0.80s; before the split, that edit invalidated the chain ending
+in the 363-second `RMCRetireGateCall` module.
+
 The timings below describe the earlier accepted implementation and remain a
 baseline, not a performance claim for the in-progress optimized checker.
 

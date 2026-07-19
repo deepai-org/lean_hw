@@ -1,7 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Hw.Core
-import Loom.Hw.Compile
+import Loom.Hw.Footprint
 import Mathlib.Tactic.FinCases
 import Mathlib.Data.Fintype.Basic
 import Mathlib.Tactic.IntervalCases
@@ -57,11 +57,11 @@ theorem core_cycle_unfold (m : Manifest) (σ : Loom.Hw.St) :
 
 /-! ## Frame plumbing -/
 
-/-- Wrapper naming `Compile.run_regs_notin` for rewrite chains. -/
+/-- Wrapper naming the generic action frame lemma for rewrite chains. -/
 theorem frame {rn : String} {w : Nat} {a : Act}
     (h : (rn, w) ∉ a.regWrites) (σ acc : Loom.Hw.St) :
     (a.run σ acc).regs rn w = acc.regs rn w :=
-  Loom.Hw.Compile.run_regs_notin rn w a h σ acc
+  Loom.Hw.Act.run_regs_notin rn w a h σ acc
 
 /-- The issue fold (over *any* domain order — `schedOrder m` is
 manifest-dependent) writes only what some `issueFor` writes. -/

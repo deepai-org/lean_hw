@@ -101,7 +101,7 @@ theorem countdown_mems (m : Manifest) (σ acc : Loom.Hw.St)
     (mn : String) (ad w : Nat) :
     ((Hw.coreAct m).run σ acc).mems mn ad w = acc.mems mn ad w := by
   rw [coreAct_run_countdown_eq m σ acc hifv hcl2]
-  rw [Loom.Hw.Compile.run_mems_notin mn _ (by
+  rw [Loom.Hw.Act.run_mems_notin mn _ (by
     show mn ∉ (Act.ite (Hw.isMn "cap_revoke") _ Act.skip).memWrites
     exact of_decide_eq_true rfl) σ _]
   rfl
@@ -198,7 +198,7 @@ theorem square_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       = σ.mems "mem" ad 32 := by
     intro ad
     rw [countdown_mems m σ σ1 hifv hcl2, hσ1]
-    exact Loom.Hw.Compile.run_mems_notin "mem" _
+    exact Loom.Hw.Act.run_mems_notin "mem" _
       (by rw [refillAct_memWrites]; simp) σ σ ad 32
   have hτm : ∀ b : Addr, (corePhase m τ1).mem b
       = σ.mems "mem" b.toNat 32 := by
@@ -237,7 +237,7 @@ theorem square_countdown (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     funext a
     show ((Hw.core m).cycle σ).mems "mem" a.toNat 32 = _
     rw [core_cycle_unfold]
-    rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
+    rw [Loom.Hw.Act.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
     exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
       hjob (fun d sc => andAll_retiring_quiescent σ hnr _)

@@ -1004,7 +1004,7 @@ theorem square_retire_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
             (List.mem_cons_self ..)))))))))
     (fun ad => by
       rw [coreAct_mems_benign m σ _ hifv hcl hben]
-      exact Loom.Hw.Compile.run_mems_notin "mem" _
+      exact Loom.Hw.Act.run_mems_notin "mem" _
         (by rw [refillAct_memWrites]; simp) σ σ ad 32)
     E hE f hcoreF hspecF
 
