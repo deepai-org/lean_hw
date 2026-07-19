@@ -399,11 +399,11 @@ def registersMatch (design : Loom.Hw.Design) (program : Program)
   | some refs => finalMetadataMatches program design.regs refs 0
   | none => false
 
-def checkedJoinMerge (registers : Array Loom.Hw.RegDecl)
+private def checkedJoinUpdates (registers : Array Loom.Hw.RegDecl)
     (condition : Ref) (thenResult elseResult : Result) :
-    List Nat → List Join → Array Ref → Option (Array Ref)
-  | [], [], output => some output
-  | index :: indices, join :: joins, output => do
+    List Nat → List Join → Option (List (Nat × Ref))
+  | [], [] => some []
+  | index :: indices, join :: joins => do
       let source ← registers[index]?
       let thenRef ← thenResult.refs[index]?
       let elseRef ← elseResult.refs[index]?
@@ -412,10 +412,32 @@ def checkedJoinMerge (registers : Array Loom.Hw.RegDecl)
         join.elseInput == elseRef)
       match join.output with
       | .wire _ =>
-          checkedJoinMerge registers condition thenResult elseResult indices
-            joins (output.set! index join.output)
+          let updates ← checkedJoinUpdates registers condition thenResult
+            elseResult indices joins
+          some ((index, join.output) :: updates)
       | .reg _ => none
-  | _, _, _ => none
+  | _, _ => none
+
+private def applySortedJoinUpdates :
+    Nat → List Ref → List (Nat × Ref) → List Ref
+  | _, [], _ => []
+  | index, ref :: refs, [] =>
+      ref :: applySortedJoinUpdates (index + 1) refs []
+  | index, ref :: refs, remaining@((updateIndex, updated) :: updates) =>
+      if index == updateIndex then
+        updated :: applySortedJoinUpdates (index + 1) refs updates
+      else
+        ref :: applySortedJoinUpdates (index + 1) refs remaining
+
+/-- Validate conditional joins, then apply their sorted updates in one linear
+pass over the register array. -/
+def checkedJoinMerge (registers : Array Loom.Hw.RegDecl)
+    (condition : Ref) (thenResult elseResult : Result)
+    (indices : List Nat) (joins : List Join) (output : Array Ref) :
+    Option (Array Ref) := do
+  let updates ← checkedJoinUpdates registers condition thenResult elseResult
+    indices joins
+  some (applySortedJoinUpdates 0 output.toList updates).toArray
 
 /-- Source-action traversal after concrete mux leaves have been checked
 independently.  It validates control flow, writes, guards, summaries, and the
