@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.NamedCertificate
 import Loom.Release.SymbolicCertificate
+import Loom.Hw.WholeRegisterPlan
 import Std.Data.HashMap
 
 /-!
@@ -344,6 +345,93 @@ unsafe def synthesize (design : Design) (program : SSA.Program) :
   -- disjoint memo tables; reusing addresses across them would be unsound.
   (action.run {}).map (·.1)
 
+/-! ## Compact shared-plan certificate synthesis -/
+
+private def nameRef (name : String) : Symbolic.Ref :=
+  if name.startsWith "n" then
+    match (name.drop 1).toNat? with
+    | some number => .wire number
+    | none => .reg name
+  else .reg name
+
+private def planRulesDependOnCurrent {width : Nat} :
+    List (Compile.RegPlan width) → Bool
+  | [] => true
+  | plan :: plans =>
+      plan.dependsOnCurrent && planRulesDependOnCurrent plans
+
+private unsafe def synthPlan (index : ExprIndex) {width : Nat} :
+    Compile.RegPlan width → Loom.Emit.MicroVerilog.Expr width → Bool →
+      GenM (Bool × Loom.Emit.MicroVerilog.Expr width × Symbolic.NextRegCert)
+  | .same, current, _ => pure (false, current, .same)
+  | .write value, _, _ =>
+      pure (true, Compile.compileExprFast value, .write)
+  | .seq left right, current, outputNeeded => do
+      let midNeeded := outputNeeded && right.dependsOnCurrent
+      let (leftWrites, mid, leftCert) ← synthPlan index left current midNeeded
+      let (rightWrites, out, rightCert) ← synthPlan index right mid outputNeeded
+      let midName ← if midNeeded then findIntermediate? index mid else pure none
+      pure (leftWrites || rightWrites, out,
+        .seq (midName.map nameRef) leftCert rightCert)
+  | .ite guard thenPlan elsePlan, current, outputNeeded => do
+      let (thenWrites, thenOut, thenCert) ←
+        synthPlan index thenPlan current outputNeeded
+      let (elseWrites, elseOut, elseCert) ←
+        synthPlan index elsePlan current outputNeeded
+      pure (thenWrites || elseWrites,
+        .mux (Compile.compileExprFast guard) thenOut elseOut,
+        .ite thenCert elseCert)
+
+private unsafe def synthPlanRules (index : ExprIndex) {width : Nat} :
+    List (Compile.RegPlan width) → String →
+      Loom.Emit.MicroVerilog.Expr width → Option String →
+      GenM (Loom.Emit.MicroVerilog.Expr width × Symbolic.NextRulesCert)
+  | [], _, current, _ => pure (current, .nil)
+  | plan :: plans, finalName, current, currentName => do
+      let midNeeded := planRulesDependOnCurrent plans
+      let (_, mid, head) ← synthPlan index plan current midNeeded
+      let midName ← if midNeeded then
+          if plans.isEmpty then pure (some finalName)
+          else match plan with
+            | .same => pure currentName
+            | _ => findIntermediate? index mid
+        else pure none
+      let (out, tail) ← synthPlanRules index plans finalName mid midName
+      pure (out, .cons (midName.map nameRef) head tail)
+
+private unsafe def synthPlanRegisters (index : ExprIndex)
+    (finalNames : Std.HashMap (String × Nat) String) :
+    Nat → {registers : List RegDecl} → Compile.RulePlans registers →
+      GenM (List Symbolic.NextRulesCert)
+  | 0, _, _ => pure []
+  | _ + 1, [], .nil => pure []
+  | remaining + 1, register :: _, .cons plans rest => do
+      modify fun state => { state with hashMemo := {} }
+      let some finalName := finalNames[(register.name, register.width)]? | failure
+      let (_, cert) ← synthPlanRules index plans finalName
+        (.reg register.width register.name) (some register.name)
+      modify fun state => { state with hashMemo := {} }
+      pure (cert :: (← synthPlanRegisters index finalNames remaining rest))
+
+/-- Generate one compact plan certificate per declared register.  This
+executable is untrusted; the plan checker validates every emitted term. -/
+unsafe def synthesizePlanRegisterCerts (design : Design) (program : SSA.Program) :
+    Option (List Symbolic.NextRulesCert) := do
+  let env ← program.elaborateEnv
+  let (index, _) := buildIndex program env
+  let names := finalRegNames program
+  let plans := Compile.RulePlans.ofRules design.regs design.rules
+  (synthPlanRegisters index names design.regs.length plans).run {} |>.map (·.1)
+
+/-- Prefix form used for bounded generation and performance probes. -/
+unsafe def synthesizePlanRegisterCertPrefix (count : Nat) (design : Design)
+    (program : SSA.Program) : Option (List Symbolic.NextRulesCert) := do
+  let env ← program.elaborateEnv
+  let (index, _) := buildIndex program env
+  let names := finalRegNames program
+  let plans := Compile.RulePlans.ofRules design.regs design.rules
+  (synthPlanRegisters index names count plans).run {} |>.map (·.1)
+
 private def quote (value : String) : String := reprStr value
 
 private def optionStringToLean : Option String → String
@@ -400,6 +488,44 @@ private def indexedNextRulesToLean {w : Nat} : Named.NextRulesCert w → String
   | .cons mid head tail =>
       s!".cons ({optionalRefToLean mid}) ({indexedNextRegToLean head}) " ++
         s!"({indexedNextRulesToLean tail})"
+
+private def symbolicRefToLean : Symbolic.Ref → String
+  | .reg name => s!".reg {quote name}"
+  | .wire number => s!".wire {number}"
+
+private def symbolicOptionalRefToLean : Option Symbolic.Ref → String
+  | none => "none"
+  | some reference => s!"some ({symbolicRefToLean reference})"
+
+private def symbolicNextRegToLean : Symbolic.NextRegCert → String
+  | .same => ".same"
+  | .write => ".write"
+  | .seq mid left right =>
+      s!".seq ({symbolicOptionalRefToLean mid}) ({symbolicNextRegToLean left}) " ++
+        s!"({symbolicNextRegToLean right})"
+  | .ite thenCert elseCert =>
+      s!".ite ({symbolicNextRegToLean thenCert}) ({symbolicNextRegToLean elseCert})"
+
+private def symbolicNextRulesToLean : Symbolic.NextRulesCert → String
+  | .nil => ".nil"
+  | .cons mid head tail =>
+      s!".cons ({symbolicOptionalRefToLean mid}) ({symbolicNextRegToLean head}) " ++
+        s!"({symbolicNextRulesToLean tail})"
+
+private def planRegDeclarationList : List Symbolic.NextRulesCert → Nat →
+    List String
+  | [], _ => []
+  | cert :: certs, index =>
+      (s!"def wholePlanReleaseRegCert{index} : Symbolic.NextRulesCert := " ++
+        symbolicNextRulesToLean cert) ::
+      planRegDeclarationList certs (index + 1)
+
+/-- Serialize shared-plan register certificates into bounded declaration
+batches. -/
+def planDeclarationBatchesToLean (certs : List Symbolic.NextRulesCert)
+    (batchSize : Nat := 16) : List String :=
+  (planRegDeclarationList certs 0).toChunks batchSize |>.map fun declarations =>
+    String.intercalate "\n" declarations ++ "\n"
 
 private def indexedPortRefsToLean (names : Named.PortNames) : String :=
   "{ en := " ++ refToLean names.en ++ ", addr := " ++ refToLean names.addr ++

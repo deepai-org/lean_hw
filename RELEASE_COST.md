@@ -160,3 +160,40 @@ The expensive pass is embarrassingly parallel but memory-bound. A cached
 cache is not independent verification. Tier A in `REPRODUCING.md` checks all
 825 leaves; Tier B checks a fixed five-leaf sample and labels itself as such;
 Tier C only identifies published bytes.
+
+## Whole-plan diagnosis (2026-07-19)
+
+The whole-register transpose proved that the source algorithm itself is not
+intrinsically an hours-long computation.  Compiled evaluation constructs all
+four LNP rule-plan families below the timer's millisecond resolution.  The
+pathology occurs when generated semantic theorems repeatedly ask elaboration
+and kernel reduction to reconstruct that closed data from reducible design
+functions.
+
+Two full-scale probes made the boundary precise:
+
+- constructing and counting the 180,254 compact plan nodes reached the
+  reduced `true = true` goal in 37 seconds (6.94 GiB RSS), after which the
+  monolithic decision-proof wrapper failed to package the dependent result;
+- a 16-register theorem that directly exposes
+  `RulePlans.ofRules sources design.rules` still exceeded 90 seconds.  The
+  structural proof producer had not yet reached its first register check: it
+  was normalizing the shared plan argument itself.
+
+Consequently, neither more workers, smaller register batches, nor another
+leaf-size search addresses the remaining cost.  The release path needs a
+materialized plan snapshot and one generic, kernel-checked bridge from that
+snapshot to the mathematical `RulePlans.ofRules` specification.  All SSA
+root checks must consume the already-materialized snapshot, never recompute
+it.  The same rule applies to register-slice alignment: repeated
+`design.regs[index]? = ...` reductions must be replaced by one certified
+snapshot/slice relation.
+
+The target cost model is therefore:
+
+1. one source-design-to-plan snapshot certificate;
+2. linear structural checking of the compact snapshot against SSA;
+3. bounded composition and the existing exact artifact binding.
+
+Only step 1 may normalize the source design, and it must do so once for the
+release, not once per register or per 16-register batch.

@@ -53,6 +53,14 @@ def active {width : Nat} : RegPlan width → Bool
   | .same => false
   | _ => true
 
+/-- Whether the plan's result can depend on its incoming register root. -/
+def dependsOnCurrent {width : Nat} : RegPlan width → Bool
+  | .same => true
+  | .write _ => false
+  | .seq left right => left.dependsOnCurrent && right.dependsOnCurrent
+  | .ite _ thenPlan elsePlan =>
+      thenPlan.dependsOnCurrent || elsePlan.dependsOnCurrent
+
 /-- The conventional single-register projection, used only to state and prove
 the correspondence theorem.  Release computation uses `Plans.ofAction`. -/
 def ofAction (name : String) (width : Nat) : Act → RegPlan width
@@ -124,6 +132,20 @@ theorem apply_ofAction (action : Act) (name : String) (width : Nat)
         · simp [ofAction, nextReg, apply, widthEq]
       · simp [ofAction, nextReg, apply, nameEq]
   | memWrite => rfl
+
+/-- Folding projected rule plans is exactly the established ordered
+`nextReg` fold. -/
+theorem fold_rulePlans (rules : List Rule) (name : String) (width : Nat)
+    (current : MV.Expr width) :
+    (rules.map fun rule => ofAction name width rule.body).foldl
+      (fun value plan => plan.apply value) current =
+    rules.foldl
+      (fun value rule => nextReg name width rule.body value) current := by
+  induction rules generalizing current with
+  | nil => rfl
+  | cons rule rules ih =>
+      simp only [List.map_cons, List.foldl_cons]
+      rw [ih, apply_ofAction]
 
 end RegPlan
 
@@ -257,5 +279,75 @@ theorem ofAction_projects (registers : List RegDecl) (action : Act) :
       exact projects_memWrite aw dw memory port address value registers
 
 end Plans
+
+/-- Ordered rule plans for every declaration.  The outer structure is aligned
+with registers; each head list is the compact plan sequence for one register. -/
+inductive RulePlans : List RegDecl → Type where
+  | nil : RulePlans []
+  | cons {register : RegDecl} {registers : List RegDecl}
+      (head : List (RegPlan register.width)) (tail : RulePlans registers) :
+      RulePlans (register :: registers)
+
+namespace RulePlans
+
+def empty : (registers : List RegDecl) → RulePlans registers
+  | [] => .nil
+  | _ :: registers => .cons [] (empty registers)
+
+def prepend : {registers : List RegDecl} →
+    Plans registers → RulePlans registers → RulePlans registers
+  | [], .nil, .nil => .nil
+  | _ :: _, .cons plan plans, .cons rulePlans rest =>
+      .cons (plan :: rulePlans) (prepend plans rest)
+
+/-- Construct all register projections for all rules.  Recursion is over rules
+first, so every source action is traversed once for the whole declaration
+block. -/
+def ofRules (registers : List RegDecl) : List Rule → RulePlans registers
+  | [] => empty registers
+  | rule :: rules =>
+      prepend (Plans.ofAction registers rule.body) (ofRules registers rules)
+
+/-- Pointwise specification of the shared rule-plan matrix. -/
+def Projects (rules : List Rule) :
+    {registers : List RegDecl} → RulePlans registers → Prop
+  | [], .nil => True
+  | register :: _, .cons head tail =>
+      head = rules.map (fun rule =>
+        RegPlan.ofAction register.name register.width rule.body) ∧
+      Projects rules tail
+
+private theorem projects_empty (registers : List RegDecl) :
+    Projects [] (empty registers) := by
+  induction registers with
+  | nil => trivial
+  | cons register registers ih => exact ⟨rfl, ih⟩
+
+private theorem projects_prepend (rule : Rule) (rules : List Rule)
+    {registers : List RegDecl} {plans : Plans registers}
+    {rest : RulePlans registers}
+    (headProjects : Plans.Projects rule.body plans)
+    (tailProjects : Projects rules rest) :
+    Projects (rule :: rules) (prepend plans rest) := by
+  induction registers with
+  | nil => cases plans; cases rest; trivial
+  | cons register registers ih =>
+      cases plans with
+      | cons plan plans =>
+        cases rest with
+        | cons rulePlans rest =>
+          rw [headProjects.1, tailProjects.1]
+          exact ⟨rfl, ih headProjects.2 tailProjects.2⟩
+
+/-- The rule-major construction has the claimed register-major projections. -/
+theorem ofRules_projects (registers : List RegDecl) (rules : List Rule) :
+    Projects rules (ofRules registers rules) := by
+  induction rules with
+  | nil => exact projects_empty registers
+  | cons rule rules ih =>
+      exact projects_prepend rule rules
+        (Plans.ofAction_projects registers rule.body) ih
+
+end RulePlans
 
 end Loom.Hw.Compile

@@ -53,7 +53,19 @@ compile_batch() {
   local source=$1
   local stem=${source%.lean}
   local output=".lake/build/lib/lean/$stem.olean"
-  if [[ -f "$output" && ! "$source" -nt "$output" ]]; then
+  local rebuild=0
+  if [[ ! -f "$output" || "$source" -nt "$output" ]]; then
+    rebuild=1
+  else
+    while read -r _ module _; do
+      local dependency=".lake/build/lib/lean/${module//./\/}.olean"
+      if [[ -f "$dependency" && "$dependency" -nt "$output" ]]; then
+        rebuild=1
+        break
+      fi
+    done < <(grep '^import ' "$source")
+  fi
+  if [[ "$rebuild" == 0 ]]; then
     return
   fi
   lake env lean "$(realpath "$source")" -o "$output"
@@ -64,12 +76,13 @@ export -f compile_batch
 # graph. Build every import supplied to the generator, plus its shared
 # certificate engines, so a clean checkout cannot rely on stale `.olean`s.
 lake build Loom.Release.SymbolicCertificate Loom.Release.SymbolicDecide \
+  Loom.Release.WholeRegisterPlan \
   Tools.ReleaseCertGen "${design_imports[@]}"
 
 find "$src" -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 
-lake env lean "$(realpath "$src/Root.lean")" -o "$lib/Root.olean"
+compile_batch "$src/Root.lean"
 
 lake env lean --run "$(realpath "$src/CertGen.lean")"
 
@@ -88,6 +101,8 @@ echo "$artifact generated release sources are deterministic"
 
 find "$src" -maxdepth 1 -name 'IndexedCertBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+find "$src" -maxdepth 1 -name 'PlanCertBatch*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 find "$src" -maxdepth 1 -name 'IndexedPortCertBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 
@@ -102,7 +117,8 @@ if [[ "$mode" == sample ]]; then
   fi
   sample_sources=()
   for index in 0 206 412 618 824; do
-    sample_sources+=("$src/SemanticRegBatch$index.lean")
+    batch=$((index / 16))
+    sample_sources+=("$src/SemanticRegBatch$batch.lean")
   done
   printf '%s\0' "${sample_sources[@]}" | \
     xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
