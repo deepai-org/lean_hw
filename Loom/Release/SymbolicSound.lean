@@ -1420,6 +1420,89 @@ theorem nextRulesMatches_raw
                 rulesIH (some mid) out tail accepted.2
                   (Loom.Hw.Compile.nextReg register width rule.body cur) headMatches
 
+/-- Soundness of the fast path that consults a shared action-write
+over-approximation instead of traversing an unchanged action per register. -/
+theorem nextRegMatchesCovered_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (covered : List (String × Nat))
+    (register : String) (width : Nat) (action : Loom.Hw.Act)
+    (coverage : action.regWritesCoveredB covered = true)
+    (current : Option Ref) (out : Ref) (cert : NextRegCert)
+    (accepted : nextRegMatchesCovered indexeds table covered register width
+      action current out cert = true) :
+    ∀ cur : Loom.Emit.MicroVerilog.Expr width,
+      RawCurrentMatches program table cur current →
+      RawExprMatches program table
+        (Loom.Hw.Compile.nextReg register width action cur) out := by
+  intro cur currentMatches
+  by_cases present : (register, width) ∈ covered
+  · simp [nextRegMatchesCovered, present] at accepted
+    exact nextRegMatches_raw program hmatches table register width action
+      current out cert accepted cur currentMatches
+  · have noWrite :
+        Loom.Hw.Compile.writesRegB register width action = false := by
+      rw [Loom.Hw.Compile.writesRegB_eq_false_iff]
+      exact Loom.Hw.Act.not_mem_regWrites_of_covered coverage present
+    simp [nextRegMatchesCovered, present] at accepted
+    cases current with
+    | none => cases cert <;> simp at accepted
+    | some current =>
+        cases cert <;> simp at accepted
+        subst out
+        rw [nextReg_eq_of_no_write register width action cur noWrite]
+        exact currentMatches
+
+/-- Soundness of ordered register-rule checking with one shared footprint
+coverage theorem for the whole rule list. -/
+theorem nextRulesMatchesCovered_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (register : String) (width : Nat) :
+    ∀ (rules : List Loom.Hw.Rule) (footprints : RuleRegFootprints)
+      (current : Option Ref) (out : Ref) (cert : NextRulesCert),
+      ruleRegFootprintsCoverB rules footprints = true →
+      nextRulesMatchesCovered indexeds table register width rules footprints
+        current out cert = true →
+      ∀ cur : Loom.Emit.MicroVerilog.Expr width,
+        RawCurrentMatches program table cur current →
+        RawExprMatches program table
+          (rules.foldl (fun acc rule =>
+            Loom.Hw.Compile.nextReg register width rule.body acc) cur) out := by
+  intro rules
+  induction rules with
+  | nil =>
+      intro footprints current out cert coverage accepted cur currentMatches
+      cases footprints <;> cases current <;> cases cert <;>
+        simp [ruleRegFootprintsCoverB, nextRulesMatchesCovered] at coverage accepted
+      subst out
+      exact currentMatches
+  | cons rule rules rulesIH =>
+      intro footprints current out cert coverage accepted cur currentMatches
+      cases footprints with
+      | nil => simp [ruleRegFootprintsCoverB] at coverage
+      | cons covered rest =>
+          simp only [ruleRegFootprintsCoverB, Bool.and_eq_true] at coverage
+          cases cert with
+          | nil => simp [nextRulesMatchesCovered] at accepted
+          | cons mid head tail =>
+              cases mid with
+              | none =>
+                  simp only [nextRulesMatchesCovered] at accepted
+                  simpa only [List.foldl_cons] using
+                    rulesIH rest none out tail coverage.2 accepted
+                      (Loom.Hw.Compile.nextReg register width rule.body cur)
+                      trivial
+              | some mid =>
+                  simp only [nextRulesMatchesCovered, Bool.and_eq_true] at accepted
+                  have headMatches := nextRegMatchesCovered_raw program hmatches
+                    table covered register width rule.body coverage.1 current mid
+                    head accepted.1 cur currentMatches
+                  simpa only [List.foldl_cons] using
+                    rulesIH rest (some mid) out tail coverage.2 accepted.2
+                      (Loom.Hw.Compile.nextReg register width rule.body cur)
+                      headMatches
+
 /-! ## Memory-port checker soundness -/
 
 /-- Declarative meaning of three concrete SSA roots as one typed compiler
@@ -1753,6 +1836,36 @@ theorem registerBehaviorAt_of_checks
         nextRulesMatches_raw program hmatches table source.name source.width
           design.rules (some (.reg source.name)) root cert rules
           (.reg source.width source.name) (.reg source.width source.name)⟩
+
+/-- Shared-footprint variant of `registerBehaviorAt_of_checks`.  The coverage
+proof is intended to be one named declaration reused by every generated
+register leaf. -/
+theorem registerBehaviorAt_of_covered_checks
+    (design : Loom.Hw.Design) (program : Program)
+    {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) (footprints : RuleRegFootprints)
+    (coverage : ruleRegFootprintsCoverB design.rules footprints = true)
+    (index : Nat) (source : Loom.Hw.RegDecl) (root : Ref)
+    (cert : NextRulesCert)
+    (sourceFound : design.regs[index]? = some source)
+    (metadata : indexedRegisterMetadataMatchesAt design program index root = true)
+    (rules : nextRulesMatchesCovered indexeds table source.name source.width
+      design.rules footprints (some (.reg source.name)) root cert = true) :
+    RegisterBehaviorAt design program table index root := by
+  cases concreteFound : program.regs[index]? with
+  | none =>
+      simp [indexedRegisterMetadataMatchesAt, sourceFound, concreteFound]
+        at metadata
+  | some concrete =>
+      simp only [indexedRegisterMetadataMatchesAt, sourceFound, concreteFound,
+        Bool.and_eq_true, beq_iff_eq] at metadata
+      simp only [RegisterBehaviorAt, sourceFound, concreteFound]
+      exact ⟨metadata.1.1.1, metadata.1.1.2, metadata.1.2, metadata.2,
+        nextRulesMatchesCovered_raw program hmatches table source.name
+          source.width design.rules footprints (some (.reg source.name)) root
+          cert coverage rules (.reg source.width source.name)
+          (.reg source.width source.name)⟩
 
 /-- Ordered certificate-free register behavior for one bounded list.  The
 explicit starting index makes completeness and source-order alignment part of

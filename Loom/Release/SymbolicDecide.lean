@@ -1074,6 +1074,82 @@ private partial def proveNextRules (wires table register width rules current out
           headCert, tailCert, tailProof]
   throwError "symbolic_kernel_decide: rule/certificate shape mismatch"
 
+private def proveNextRegCovered (wires table covered register width action
+    current out cert : Expr) : MetaM Expr := do
+  let key ← mkAppM ``Prod.mk #[register, width]
+  let presentValue ← instantiateMVars (← mkAppM ``List.elem #[key, covered])
+  let reduced ← Lean.Meta.reduce presentValue
+  let value ← mkAppM ``nextRegMatchesCovered
+    #[wires, table, covered, register, width, action, current, out, cert]
+  let expected ← mkBoolAccepted value
+  if reduced.isConstOf ``Bool.true then
+    let presentType ← mkEq presentValue (mkConst ``Bool.true)
+    let presentProof ← cacheClosedProof presentType (← mkDecideProof presentType)
+    let rawValue ← mkAppM ``nextRegMatches
+      #[wires, table, register, width, action, current, out, cert]
+    let rawType ← mkBoolAccepted rawValue
+    let rawProof ← cacheAccepted rawType
+      (← proveNextReg wires table register width action current out cert)
+    return ← mkAppM ``nextRegMatchesCovered_of_present
+      #[wires, table, covered, register, width, action, current, out, cert,
+        presentProof, rawProof]
+  if reduced.isConstOf ``Bool.false then
+    return ← decideAccepted expected
+  throwError "symbolic_kernel_decide: footprint membership did not reduce: {reduced}"
+
+private partial def proveNextRulesCovered (wires table register width rules
+    footprints current out cert : Expr) : MetaM Expr := do
+  let (rulesName, rulesArgs) ← expose rules
+  let (footprintsName, footprintsArgs) ← expose footprints
+  let (certName, certArgs) ← expose cert
+  if rulesName == ``List.nil && footprintsName == ``List.nil &&
+      certName == ``NextRulesCert.nil then
+    let value ← mkAppM ``nextRulesMatchesCovered
+      #[wires, table, register, width, rules, footprints, current, out, cert]
+    return ← decideAccepted (← mkBoolAccepted value)
+  if rulesName == ``List.cons && footprintsName == ``List.cons &&
+      certName == ``NextRulesCert.cons then
+    let rule := rulesArgs[rulesArgs.size - 2]!
+    let tailRules := rulesArgs[rulesArgs.size - 1]!
+    let covered := footprintsArgs[footprintsArgs.size - 2]!
+    let rest := footprintsArgs[footprintsArgs.size - 1]!
+    let mid := certArgs[certArgs.size - 3]!
+    let headCert := certArgs[certArgs.size - 2]!
+    let tailCert := certArgs[certArgs.size - 1]!
+    let ruleBody ← mkAppM ``Loom.Hw.Rule.body #[rule]
+    let (midName, midArgs) ← expose mid
+    if midName == ``Option.some then
+      let midRef := midArgs[midArgs.size - 1]!
+      let headValue ← mkAppM ``nextRegMatchesCovered
+        #[wires, table, covered, register, width, ruleBody, current, midRef,
+          headCert]
+      let headType ← mkBoolAccepted headValue
+      let headProof ← cacheAccepted headType
+        (← proveNextRegCovered wires table covered register width ruleBody
+          current midRef headCert)
+      let someMid ← mkAppM ``Option.some #[midRef]
+      let tailValue ← mkAppM ``nextRulesMatchesCovered
+        #[wires, table, register, width, tailRules, rest, someMid, out, tailCert]
+      let tailType ← mkBoolAccepted tailValue
+      let tailProof ← cacheAccepted tailType
+        (← proveNextRulesCovered wires table register width tailRules rest
+          someMid out tailCert)
+      return ← mkAppM ``nextRulesMatchesCovered_cons_named
+        #[wires, table, register, width, rule, tailRules, covered, rest,
+          current, midRef, out, headCert, tailCert, headProof, tailProof]
+    else if midName == ``Option.none then
+      let noneRef := mkApp (mkConst ``Option.none [Level.zero]) (mkConst ``Ref)
+      let tailValue ← mkAppM ``nextRulesMatchesCovered
+        #[wires, table, register, width, tailRules, rest, noneRef, out, tailCert]
+      let tailType ← mkBoolAccepted tailValue
+      let tailProof ← cacheAccepted tailType
+        (← proveNextRulesCovered wires table register width tailRules rest
+          noneRef out tailCert)
+      return ← mkAppM ``nextRulesMatchesCovered_cons_discard
+        #[wires, table, register, width, rule, tailRules, covered, rest,
+          current, out, headCert, tailCert, tailProof]
+  throwError "symbolic_kernel_decide: covered rule/certificate shape mismatch"
+
 private def transportNextPortAction (wires table memory addressWidth dataWidth
     port current out cert actionEq proof : Expr) : MetaM Expr := do
   let equalityType ← inferType actionEq
@@ -1239,6 +1315,11 @@ def elabSymbolicKernelDecide : TermElab := fun _ expected? => do
         throwError "symbolic_kernel_decide: malformed nextRulesMatches application"
       proveNextRules lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
         lhsArgs[4]! lhsArgs[5]! lhsArgs[6]! lhsArgs[7]!
+  | some ``nextRulesMatchesCovered =>
+      unless lhsArgs.size == 9 do
+        throwError "symbolic_kernel_decide: malformed nextRulesMatchesCovered application"
+      proveNextRulesCovered lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
+        lhsArgs[4]! lhsArgs[5]! lhsArgs[6]! lhsArgs[7]! lhsArgs[8]!
   | some ``nextPortMatches =>
       unless lhsArgs.size == 10 do
         throwError "symbolic_kernel_decide: malformed nextPortMatches application"

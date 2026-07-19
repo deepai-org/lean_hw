@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.SSA
 import Loom.Hw.Compile
+import Loom.Hw.FootprintCover
 
 /-!
 # Symbolic SSA release certificates
@@ -552,6 +553,108 @@ def nextRulesMatches (wires : Rope (List IndexedWire)) (table : WireTable)
       | none =>
           nextRulesMatches wires table register width rules none out tail
   | _, _, _, _ => false
+
+/-! ## Shared register-write footprints
+
+The baseline checker asks `writesRegB` while checking every register.  On a
+large shared action DAG that repeats the same source traversal hundreds of
+times.  The definitions below separate one shared coverage check per rule
+from the cheap per-register lookup. -/
+
+/-- One over-approximating list of register keys per source rule. -/
+abbrev RuleRegFootprints := List (List (String × Nat))
+
+/-- Check all rule footprints once.  This function is deliberately separate
+from `nextRulesMatchesCovered`, so a generated named theorem can be reused by
+every register certificate without reopening its proof. -/
+def ruleRegFootprintsCoverB : List Loom.Hw.Rule → RuleRegFootprints → Bool
+  | [], [] => true
+  | rule :: rules, covered :: rest =>
+      rule.body.regWritesCoveredB covered &&
+        ruleRegFootprintsCoverB rules rest
+  | _, _ => false
+
+/-- Validate one action using a previously checked write over-approximation.
+When the register is absent, only the small literal footprint and the `.same`
+certificate are inspected; the source action is not traversed. -/
+def nextRegMatchesCovered (wires : Rope (List IndexedWire))
+    (table : WireTable) (covered : List (String × Nat))
+    (register : String) (width : Nat) (action : Loom.Hw.Act)
+    (current : Option Ref) (out : Ref) (cert : NextRegCert) : Bool :=
+  if covered.elem (register, width) then
+    nextRegMatches wires table register width action current out cert
+  else
+    match current, cert with
+    | some current, .same => current == out
+    | _, _ => false
+
+theorem nextRegMatchesCovered_of_present
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (covered : List (String × Nat)) (register : String) (width : Nat)
+    (action : Loom.Hw.Act) (current : Option Ref) (out : Ref)
+    (cert : NextRegCert)
+    (present : covered.elem (register, width) = true)
+    (accepted : nextRegMatches wires table register width action current out
+      cert = true) :
+    nextRegMatchesCovered wires table covered register width action current
+      out cert = true := by
+  have member : (register, width) ∈ covered :=
+    List.mem_of_elem_eq_true present
+  simp [nextRegMatchesCovered, member, accepted]
+
+/-- Register-rule validation using shared, prechecked rule footprints. -/
+def nextRulesMatchesCovered (wires : Rope (List IndexedWire))
+    (table : WireTable) (register : String) (width : Nat) :
+    List Loom.Hw.Rule → RuleRegFootprints → Option Ref → Ref →
+      NextRulesCert → Bool
+  | [], [], some current, out, .nil => current == out
+  | rule :: rules, covered :: rest, current, out,
+      .cons mid head tail =>
+      match mid with
+      | some mid =>
+          nextRegMatchesCovered wires table covered register width rule.body
+              current mid head &&
+            nextRulesMatchesCovered wires table register width rules rest
+              (some mid) out tail
+      | none =>
+          nextRulesMatchesCovered wires table register width rules rest none
+            out tail
+  | _, _, _, _, _ => false
+
+theorem nextRulesMatchesCovered_nil
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (current out : Ref)
+    (same : current = out) :
+    nextRulesMatchesCovered wires table register width [] []
+      (some current) out .nil = true := by
+  simp [nextRulesMatchesCovered, same]
+
+theorem nextRulesMatchesCovered_cons_named
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (rule : Loom.Hw.Rule)
+    (rules : List Loom.Hw.Rule) (covered : List (String × Nat))
+    (rest : RuleRegFootprints) (current : Option Ref) (mid out : Ref)
+    (head : NextRegCert) (tail : NextRulesCert)
+    (headAccepted : nextRegMatchesCovered wires table covered register width
+      rule.body current mid head = true)
+    (tailAccepted : nextRulesMatchesCovered wires table register width rules
+      rest (some mid) out tail = true) :
+    nextRulesMatchesCovered wires table register width (rule :: rules)
+      (covered :: rest) current out (.cons (some mid) head tail) = true := by
+  simp only [nextRulesMatchesCovered, headAccepted, tailAccepted,
+    Bool.true_and]
+
+theorem nextRulesMatchesCovered_cons_discard
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (register : String) (width : Nat) (rule : Loom.Hw.Rule)
+    (rules : List Loom.Hw.Rule) (covered : List (String × Nat))
+    (rest : RuleRegFootprints) (current : Option Ref) (out : Ref)
+    (head : NextRegCert) (tail : NextRulesCert)
+    (tailAccepted : nextRulesMatchesCovered wires table register width rules
+      rest none out tail = true) :
+    nextRulesMatchesCovered wires table register width (rule :: rules)
+      (covered :: rest) current out (.cons none head tail) = true := by
+  simpa only [nextRulesMatchesCovered] using tailAccepted
 
 /-! ## Structural memory-port certificates -/
 

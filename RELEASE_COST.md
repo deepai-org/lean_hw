@@ -29,6 +29,23 @@ each register theorem to an indexed lookup plus its expression-root check.
 The target complexity is one action traversal plus one lookup per register,
 not one action traversal per register.
 
+A full-scale rule-level over-approximation spike ruled out a tempting but
+insufficient shortcut.  The four LNP64-µ rules write 8, 800, 8, and 1 distinct
+register keys respectively.  Because the large core rule writes 800 of the
+825 registers, a single footprint per rule prunes almost none of the expensive
+core traversal.  Its monolithic kernel coverage theorem was stopped after
+168 seconds when RSS had already reached about 38 GiB.  The production path
+was restored rather than accepting that memory profile.  The next index must
+therefore be subtree/DAG-granular and its coverage proof must be composed from
+separately named bounded leaves; a rule-level Boolean theorem is not enough.
+
+The same spike exposed another invalidation edge: generated `Root.lean` data
+imports `Loom.Release.SymbolicCertificate`, so changing checker algorithms
+forced the multi-gigabyte SSA root to rebuild (roughly four minutes and a
+13 GiB peak in this run).  New index experiments should live in a separate
+module, and the generated data layer should ultimately import only stable
+symbolic data definitions, not checker implementations.
+
 The same rebuild exposed a separate edit-loop problem in the R-MC proof graph.
 After the foundational compiler module changed, individual modules including
 `RMCRetireRev`, `RMCRetireGateCall`, and `RMCRetireGateCallSuccess` each took
