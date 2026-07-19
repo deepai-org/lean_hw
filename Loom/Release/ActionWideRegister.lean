@@ -690,6 +690,25 @@ def checkedSparseJoins (registers : Array Loom.Hw.RegDecl) (condition : Ref)
       | _, _, _ => false
   | _, _ => false
 
+/-- Validate exactly the joins named by a register bitmap. Each accepted join
+clears its bit, so duplicates reject and the final zero check rejects missing
+joins. Join order is irrelevant because distinct register writes commute. -/
+def checkedBitJoins (registers : Array Loom.Hw.RegDecl) (condition : Ref)
+    (thenRefs elseRefs : SparseRefs) : Nat → List Join → Bool
+  | changed, [] => changed == 0
+  | changed, join :: joins =>
+      let index := join.index
+      changed.testBit index &&
+        match registers[index]?, thenRefs.lookup registers index,
+            elseRefs.lookup registers index with
+        | some source, some thenRef, some elseRef =>
+            join.width == source.width && join.guard == condition &&
+              join.thenInput == thenRef && join.elseInput == elseRef &&
+              (match join.output with | .wire _ => true | .reg _ => false) &&
+              checkedBitJoins registers condition thenRefs elseRefs
+                (changed ^^^ (1 <<< index)) joins
+        | _, _, _ => false
+
 def applySparseJoins (refs : SparseRefs) (joins : List Join) : SparseRefs :=
   joins.foldl (fun result join => result.write join.index join.output) refs
 
@@ -867,6 +886,80 @@ theorem SparseEvidence.accepted
       subst summaryAccepted
       simp [runSparseAction, conditionAccepted, thenIH, elseIH, joinsAccepted,
         guard]
+
+/-! ### Bitmap-indexed sparse evidence
+
+The large release checker carries needed-register sets as bitmaps.  The older
+list-indexed evidence above repeatedly scans lists of hundreds of register
+indices at every source write.  This equivalent certificate shape keeps the
+same `Summary` representation throughout the action traversal; conversion to
+ordered index lists is isolated at the compatibility boundary. -/
+
+/-- Remove registers definitely overwritten by an action. -/
+def neededBitsBefore (summary : Summary) (needed : Nat) : Nat :=
+  needed ^^^ (needed &&& summary.definite)
+
+/-- Registers both needed by the continuation and possibly changed here. -/
+def changedBitsAt (summary : Summary) (needed : Nat) : Nat :=
+  needed &&& summary.possible
+
+/-- Deterministic ascending list view used only by the existing join checker. -/
+def bitIndices (count bits : Nat) : List Nat :=
+  (List.range count).filter (bits.testBit ·)
+
+structure BitSparseResult where
+  refs : SparseRefs
+  changed : Nat
+
+/-- Sparse action evidence indexed by a register bitmap rather than a list. -/
+inductive BitSparseEvidence (wires : Rope (List IndexedWire)) (table : WireTable)
+    (registers : Array Loom.Hw.RegDecl) :
+    Loom.Hw.Act → SparseRefs → Nat → ActionCert → BitSparseResult → Prop where
+  | skip {refs needed} :
+      BitSparseEvidence wires table registers .skip refs needed .skip
+        { refs, changed := 0 }
+  | memWrite {aw dw mem port address data refs needed} :
+      BitSparseEvidence wires table registers
+        (.memWrite aw dw mem port address data) refs needed .memWrite
+        { refs, changed := 0 }
+  | writeUnused {width name value refs needed index valueRef}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (unused : needed.testBit index = false) :
+      BitSparseEvidence wires table registers (.write width name value) refs needed
+        (.write index valueRef) { refs, changed := 0 }
+  | writeNeeded {width name value refs needed index valueRef}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (used : needed.testBit index = true)
+      (valueAccepted : indexedExprMatches wires table
+        (Loom.Hw.Compile.compileExpr value) valueRef = true) :
+      BitSparseEvidence wires table registers (.write width name value) refs needed
+        (.write index valueRef)
+        { refs := refs.write index valueRef, changed := 1 <<< index }
+  | seq {left right refs needed summary leftCert rightCert leftResult rightResult}
+      (summaryAccepted : summary = seqSummary leftCert.summary rightCert.summary)
+      (leftAccepted : BitSparseEvidence wires table registers left refs
+        (neededBitsBefore rightCert.summary needed) leftCert leftResult)
+      (rightAccepted : BitSparseEvidence wires table registers right
+        leftResult.refs needed rightCert rightResult) :
+      BitSparseEvidence wires table registers (.seq left right) refs needed
+        (.seq summary leftCert rightCert)
+        { refs := rightResult.refs, changed := changedBitsAt summary needed }
+  | ite {condition thenAction elseAction refs needed summary conditionRef joins
+      thenCert elseCert thenResult elseResult}
+      (summaryAccepted : summary = iteSummary thenCert.summary elseCert.summary)
+      (conditionAccepted : indexedExprMatches wires table
+        (Loom.Hw.Compile.compileExpr condition) conditionRef = true)
+      (thenAccepted : BitSparseEvidence wires table registers thenAction refs
+        (changedBitsAt summary needed) thenCert thenResult)
+      (elseAccepted : BitSparseEvidence wires table registers elseAction refs
+        (changedBitsAt summary needed) elseCert elseResult)
+      (joinsAccepted : checkedBitJoins registers conditionRef
+        thenResult.refs elseResult.refs (changedBitsAt summary needed)
+        joins = true) :
+      BitSparseEvidence wires table registers (.ite condition thenAction elseAction)
+        refs needed (.ite summary conditionRef joins thenCert elseCert)
+        { refs := applySparseJoins refs joins
+          changed := changedBitsAt summary needed }
 
 def runSparseRules (wires : Rope (List IndexedWire)) (table : WireTable)
     (registers : Array Loom.Hw.RegDecl) :

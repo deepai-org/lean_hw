@@ -3,6 +3,7 @@
 import Loom.Release.SymbolicCertificate
 import Loom.Release.SymbolicElaborate
 import Loom.Release.WholeRegisterPlan
+import Loom.Release.ActionWideRegister
 import Loom.Hw.CompileCorrect
 import Lean.Elab.Term
 import Lean.Meta.Tactic.AuxLemma
@@ -819,9 +820,23 @@ private def inlineDecideAccepted (type : Expr) : MetaM Expr := do
   let proof ← mkEqRefl decision
   pure <| mkAppN (mkConst ``of_decide_eq_true) #[type, inst, proof]
 
+private def trueDecisionProof (decision : Expr) : MetaM Expr := do
+  let reduced ← withTransparency .all <| whnf decision
+  if reduced.getAppFn.constName? == some ``Decidable.isTrue then
+    return reduced.getAppArgs.back!
+  throwError "indexed expression arithmetic side condition is false"
+
+private def proveNatLt (left right : Expr) : MetaM Expr :=
+  trueDecisionProof (mkApp2 (mkConst ``Nat.decLt) left right)
+
+private def proveNatLe (left right : Expr) : MetaM Expr :=
+  trueDecisionProof (mkApp2 (mkConst ``Nat.decLe) left right)
+
 private abbrev IndexedExprCache := IO.Ref (Std.HashMap Nat Expr)
 
 private initialize indexedExprModuleCache : IndexedExprCache ← IO.mkRef {}
+private initialize indexedLookupMs : IO.Ref Nat ← IO.mkRef 0
+private initialize indexedExposeMs : IO.Ref Nat ← IO.mkRef 0
 
 private partial def exposeMvExpr (expression : Expr) : MetaM Expr := do
   let reduced ← withTransparency .all <| whnf expression
@@ -859,8 +874,8 @@ private partial def exposeSymbolicRef (reference : Expr) : MetaM Expr := do
   | none => throwError "indexed_expr_decide: reference did not expose: {reduced}"
 
 private def cacheIndexedExprEvidence (cache : IndexedExprCache)
-    (number : Option Nat) (type proof : Expr) : MetaM Expr := do
-  let cached ← cacheClosedProof type proof
+    (number : Option Nat) (_type proof : Expr) : MetaM Expr := do
+  let cached := proof
   if let some number := number then
     cache.modify fun entries => entries.insert number cached
   let size := (← cache.get).size
@@ -879,13 +894,17 @@ private def pad4 (number : Nat) : String :=
 resolver is checked once per 128-wire leaf; this function only normalizes the
 bounded lookup within that leaf. -/
 private def proveIndexedLookup (wires table number : Expr) : MetaM (Expr × Expr) := do
+  let started ← IO.monoMsNow
   let reducedNumber ← withTransparency .all <| whnf number
   let some numberValue ← getNatValue? reducedNumber
     | throwError "indexed_expr_decide: wire number is not concrete: {number}"
   let some wiresName := wires.getAppFn.constName?
     | throwError "indexed_expr_decide: indexed wire tree is not a named constant"
+  let fastLookup :=
+    wiresName == wiresName.getPrefix.str "fastIndexedWireTree"
   let resolverName := wiresName.getPrefix.str
-    ("indexedWireResolveBlock" ++ pad4 (numberValue / 128))
+    ((if fastLookup then "fastIndexedWireResolveBlock"
+      else "indexedWireResolveBlock") ++ pad4 (numberValue / 128))
   unless (← getEnv).contains resolverName do
     throwError "indexed_expr_decide: missing leaf resolver {resolverName}"
   let offset := mkNatLit (numberValue % 128)
@@ -894,8 +913,25 @@ private def proveIndexedLookup (wires table number : Expr) : MetaM (Expr × Expr
   let resolverArgs := resolverType.getAppArgs
   unless resolverType.getAppFn.constName? == some ``Eq && resolverArgs.size == 3 do
     throwError "indexed_expr_decide: malformed leaf resolver {resolverName}"
-  let resolvedLookup := resolverArgs[2]!
-  let reducedLookup ← withTransparency .all <| whnf resolvedLookup
+  let (reducedLookup, resolved) ← if fastLookup then do
+    let blockSuffix := pad4 (numberValue / 128)
+    let lookupBlockName := wiresName.getPrefix.str
+      ("fastIndexedWireLookupBlock" ++ blockSuffix)
+    let lookupWellFormedName := wiresName.getPrefix.str
+      ("fastIndexedWireLookupBlock" ++ blockSuffix ++ "WellFormed")
+    unless (← getEnv).contains lookupBlockName &&
+        (← getEnv).contains lookupWellFormedName do
+      throwError "indexed_expr_decide: missing balanced lookup block {lookupBlockName}"
+    let lookupBlock := Lean.mkConst lookupBlockName
+    let blockLookup ← mkAppM ``LookupTree.get? #[lookupBlock, offset]
+    let reducedLookup ← withTransparency .all <| whnf blockLookup
+    let lookupBridge ← mkAppM ``LookupTree.get?_eq_getElem?_toList
+      #[Lean.mkConst lookupWellFormedName, offset]
+    let resolved ← mkAppM ``Eq.trans
+      #[resolver, ← mkAppM ``Eq.symm #[lookupBridge]]
+    pure (reducedLookup, resolved)
+  else
+    pure (← withTransparency .all <| whnf resolverArgs[2]!, resolver)
   unless reducedLookup.getAppFn.constName? == some ``Option.some do
     throwError "indexed_expr_decide: leaf lookup failed for {numberValue}"
   let indexed := reducedLookup.getAppArgs.back!
@@ -932,8 +968,10 @@ private def proveIndexedLookup (wires table number : Expr) : MetaM (Expr × Expr
   let numberEqType ← mkEq indexedArgs[indexedArgs.size - 3]! reducedNumber
   let found := mkAppN (mkConst ``lookupIndexed_of_resolve)
     #[wires, table, reducedNumber, path, indexed, positiveProof,
-      ← inlineDecideAccepted pathType, resolver,
+      ← inlineDecideAccepted pathType, resolved,
       ← inlineDecideAccepted numberEqType]
+  let finished ← IO.monoMsNow
+  indexedLookupMs.modify (· + (finished - started))
   pure (indexed, found)
 
 private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
@@ -951,7 +989,10 @@ private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
     if let some cached := (← cache.get).get? number then
       return cached
   let type ← mkAppM ``IndexedExprEvidence #[wires, table, expression, reference]
+  let exposeStarted ← IO.monoMsNow
   let expression ← exposeMvExpr expression
+  let exposeFinished ← IO.monoMsNow
+  indexedExposeMs.modify (· + (exposeFinished - exposeStarted))
   let expressionName := expression.getAppFn.constName?.getD Name.anonymous
   let expressionArgs := expression.getAppArgs
   if expressionName == ``Loom.Emit.MicroVerilog.Expr.reg &&
@@ -1001,22 +1042,19 @@ private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
       let source := expressionArgs[expressionArgs.size - 2]!
       let width := expressionArgs[expressionArgs.size - 3]!
       let outputWidth := expressionArgs.back!
-      let widthType ← mkAppM ``Nat.le #[width, outputWidth]
       pure <| mkAppN (mkConst ``IndexedExprEvidence.zext)
         #[wires, table, width, outputWidth, source, rhsArgs.back!, number,
-          found, ← inlineDecideAccepted widthType,
+          found, ← proveNatLe width outputWidth,
           ← child source rhsArgs.back!]
     else if expressionName == ``Loom.Emit.MicroVerilog.Expr.sext then
       let source := expressionArgs[expressionArgs.size - 2]!
       let inputWidth := expressionArgs[expressionArgs.size - 3]!
       let outputWidth := expressionArgs.back!
-      let positiveType ← mkAppM ``Nat.lt #[mkNatLit 0, inputWidth]
-      let widthType ← mkAppM ``Nat.lt #[inputWidth, outputWidth]
       pure <| mkAppN (mkConst ``IndexedExprEvidence.sext)
         #[wires, table, inputWidth, outputWidth, source,
           rhsArgs[rhsArgs.size - 2]!, number, found,
-          ← inlineDecideAccepted positiveType,
-          ← inlineDecideAccepted widthType,
+          ← proveNatLt (mkNatLit 0) inputWidth,
+          ← proveNatLt inputWidth outputWidth,
           ← child source rhsArgs[rhsArgs.size - 2]!]
     else if expressionName == ``Loom.Emit.MicroVerilog.Expr.mux then
       pure <| mkAppN (mkConst ``IndexedExprEvidence.mux)
@@ -1201,6 +1239,329 @@ private partial def expose (value : Expr) : MetaM (Name × Array Expr) := do
         expose (mkAppN unfoldedFn reduced.getAppArgs)
       catch _ =>
         throwError "symbolic_kernel_decide: expected constructor, got {reduced}"
+
+private structure SparseProofBuild where
+  result : Expr
+  proof : Expr
+  size : Nat
+
+private initialize sparseNodeCount : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseActionExposeMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseCertExposeMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseBoundMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseExpressionMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseDecisionMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseMembershipMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseHeaderMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseBitMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseSummaryMs : IO.Ref Nat ← IO.mkRef 0
+private initialize sparseJoinMs : IO.Ref Nat ← IO.mkRef 0
+
+private def sparseResult (refs changed : Expr) : MetaM Expr :=
+  mkAppM ``Loom.Release.Symbolic.ActionWide.BitSparseResult.mk #[refs, changed]
+
+private def sparseRefs (result : Expr) : MetaM Expr :=
+  mkAppM ``Loom.Release.Symbolic.ActionWide.BitSparseResult.refs #[result]
+
+private def noChangedBits : Expr := mkNatLit 0
+
+private def singletonChangedBit (value : Expr) : Expr :=
+  mkApp2 (mkConst ``Nat.shiftLeft) (mkNatLit 1) value
+
+private def decidePropositionIsTrue (type : Expr) : MetaM Bool := do
+  let inst ← synthInstance (mkApp (mkConst ``Decidable) type)
+  let decision := mkApp2 (mkConst ``decide) type inst
+  let reduced ← withTransparency .all <| whnf decision
+  pure (reduced.isConstOf ``Bool.true)
+
+private partial def proveNatMembershipAux (index values : Expr) :
+    MetaM (Bool × Expr) := do
+  let reduced ← withTransparency .all <| whnf values
+  let args := reduced.getAppArgs
+  if reduced.getAppFn.constName? == some ``List.nil then
+    return (false, mkAppN (mkConst ``List.not_mem_nil [Level.zero])
+      #[mkConst ``Nat, index])
+  unless reduced.getAppFn.constName? == some ``List.cons do
+    throwError "sparse_evidence_decide: needed set did not expose as a list"
+  let head := args[args.size - 2]!
+  let tail := args.back!
+  if ← isDefEq index head then
+    return (true, mkAppN (mkConst ``List.mem_cons_self [Level.zero])
+      #[mkConst ``Nat, index, tail])
+  let (found, tailProof) ← proveNatMembershipAux index tail
+  if found then
+    return (true, mkAppN (mkConst ``List.mem_cons_of_mem [Level.zero])
+      #[mkConst ``Nat, head, index, tail, tailProof])
+  let inequalityDecision ← withTransparency .all <|
+    whnf (mkApp2 (mkConst ``Nat.decEq) index head)
+  unless inequalityDecision.getAppFn.constName? == some ``Decidable.isFalse do
+    throwError "sparse_evidence_decide: unequal indices did not decide"
+  let inequality := inequalityDecision.getAppArgs.back!
+  return (false,
+    mkAppN (mkConst ``List.not_mem_cons_of_ne_of_not_mem [Level.zero])
+      #[mkConst ``Nat, index, head, tail, inequality, tailProof])
+
+private def decideNatMembership (index needed : Expr) : MetaM (Bool × Expr) := do
+  let started ← IO.monoMsNow
+  let result ← proveNatMembershipAux index needed
+  let finished ← IO.monoMsNow
+  sparseMembershipMs.modify (· + (finished - started))
+  pure result
+
+private def boundSparseProof (build : SparseProofBuild) : MetaM SparseProofBuild := do
+  if build.size < 4096 then return build
+  let started ← IO.monoMsNow
+  let type ← inferType build.proof
+  let proof ← cacheClosedProof type build.proof
+  let finished ← IO.monoMsNow
+  sparseBoundMs.modify (· + (finished - started))
+  pure { build with proof, size := 1 }
+
+private def sparseDecide (type : Expr) : MetaM Expr := do
+  let started ← IO.monoMsNow
+  let proof ← inlineDecideAccepted type
+  let finished ← IO.monoMsNow
+  sparseDecisionMs.modify (· + (finished - started))
+  pure proof
+
+private def sparseTimedDecide (counter : IO.Ref Nat) (type : Expr) : MetaM Expr := do
+  let started ← IO.monoMsNow
+  let proof ← sparseDecide type
+  let finished ← IO.monoMsNow
+  counter.modify (· + (finished - started))
+  pure proof
+
+private def sparseExpressionEvidence (wires table expression reference : Expr) :
+    MetaM Expr := do
+  let started ← IO.monoMsNow
+  let proof ← proveIndexedExprEvidence indexedExprModuleCache wires table
+    expression reference
+  let finished ← IO.monoMsNow
+  sparseExpressionMs.modify (· + (finished - started))
+  pure proof
+
+/-- Construct sparse action evidence in one top-down traversal.  Unlike the
+generated selector path, recursive calls receive the already exposed source
+and certificate subterms, so no child walks back through the processor root. -/
+private partial def proveSparseEvidence (wires table registers action refs needed cert :
+    Expr) : MetaM SparseProofBuild := do
+  let count ← sparseNodeCount.modifyGet fun count => (count + 1, count + 1)
+  let actionStarted ← IO.monoMsNow
+  let actionReduced ← exposeAction action
+  let actionFinished ← IO.monoMsNow
+  sparseActionExposeMs.modify (· + (actionFinished - actionStarted))
+  let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
+  let actionArgs := actionReduced.getAppArgs
+  let certStarted ← IO.monoMsNow
+  let (certName, certArgs) ← expose cert
+  let certFinished ← IO.monoMsNow
+  sparseCertExposeMs.modify (· + (certFinished - certStarted))
+  if count % 5000 == 0 then
+    let actionMs ← sparseActionExposeMs.get
+    let certMs ← sparseCertExposeMs.get
+    let boundMs ← sparseBoundMs.get
+    let expressionMs ← sparseExpressionMs.get
+    let decisionMs ← sparseDecisionMs.get
+    let membershipMs ← sparseMembershipMs.get
+    let headerMs ← sparseHeaderMs.get
+    let bitMs ← sparseBitMs.get
+    let summaryMs ← sparseSummaryMs.get
+    let joinMs ← sparseJoinMs.get
+    let expressionNodes := (← indexedExprModuleCache.get).size
+    let lookupMs ← indexedLookupMs.get
+    let exprExposeMs ← indexedExposeMs.get
+    IO.eprintln (s!"{count} nodes: action-expose={actionMs}ms " ++
+      s!"cert-expose={certMs}ms bound={boundMs}ms " ++
+      s!"expression={expressionMs}ms decision={decisionMs}ms " ++
+      s!"membership={membershipMs}ms expression-nodes={expressionNodes} " ++
+      s!"lookup={lookupMs}ms expr-expose={exprExposeMs}ms " ++
+      s!"header={headerMs}ms bit={bitMs}ms summary={summaryMs}ms join={joinMs}ms")
+  if actionName == ``Loom.Hw.Act.skip && certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.skip then
+    let result ← sparseResult refs noChangedBits
+    let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.skip)
+      #[wires, table, registers, refs, needed]
+    return { result, proof, size := 1 }
+  if actionName == ``Loom.Hw.Act.memWrite &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.memWrite then
+    let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.memWrite)
+      #[wires, table, registers,
+        actionArgs[actionArgs.size - 6]!, actionArgs[actionArgs.size - 5]!,
+        actionArgs[actionArgs.size - 4]!, actionArgs[actionArgs.size - 3]!,
+        actionArgs[actionArgs.size - 2]!, actionArgs.back!, refs, needed]
+    return { result := ← sparseResult refs noChangedBits, proof, size := 1 }
+  if actionName == ``Loom.Hw.Act.write &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.write then
+    let width := actionArgs[actionArgs.size - 3]!
+    let name := actionArgs[actionArgs.size - 2]!
+    let value := actionArgs.back!
+    let index := certArgs[certArgs.size - 2]!
+    let valueRef := certArgs.back!
+    let header ← mkAppM ``Loom.Release.Symbolic.ActionWide.checkedWriteHeader
+      #[registers, index, width, name]
+    let headerProof ← sparseTimedDecide sparseHeaderMs (← mkEq header trueExpr)
+    let usedCheck ← mkAppM ``Nat.testBit #[needed, index]
+    let usedReduced ← withTransparency .all <| whnf usedCheck
+    let used := usedReduced.isConstOf ``Bool.true
+    if used then
+      let usedProof ← sparseTimedDecide sparseBitMs (← mkEq usedCheck trueExpr)
+      let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[value]
+      let expressionEvidence ← sparseExpressionEvidence wires table compiled
+        valueRef
+      let expressionProof ← mkAppM ``IndexedExprEvidence.accepted
+        #[expressionEvidence]
+      let resultRefs ← mkAppM ``Loom.Release.Symbolic.ActionWide.SparseRefs.write
+        #[refs, index, valueRef]
+      let result ← sparseResult resultRefs (singletonChangedBit index)
+      let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.writeNeeded)
+        #[wires, table, registers, width, name, value, refs, needed, index,
+          valueRef, headerProof, usedProof, expressionProof]
+      return { result, proof, size := 1 }
+    else
+      let unusedProof ← sparseTimedDecide sparseBitMs
+        (← mkEq usedCheck (mkConst ``Bool.false))
+      let result ← sparseResult refs noChangedBits
+      let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.writeUnused)
+        #[wires, table, registers, width, name, value, refs, needed, index,
+          valueRef, headerProof, unusedProof]
+      return { result, proof, size := 1 }
+  if actionName == ``Loom.Hw.Act.seq && certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.seq then
+    let left := actionArgs[actionArgs.size - 2]!
+    let right := actionArgs.back!
+    let summary := certArgs[certArgs.size - 3]!
+    let leftCert := certArgs[certArgs.size - 2]!
+    let rightCert := certArgs.back!
+    let rightSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[rightCert]
+    let leftNeeded ← mkAppM ``Loom.Release.Symbolic.ActionWide.neededBitsBefore
+      #[rightSummary, needed]
+    let leftBuild ← proveSparseEvidence wires table registers left refs
+      leftNeeded leftCert >>= boundSparseProof
+    let leftRefs ← sparseRefs leftBuild.result
+    let rightBuild ← proveSparseEvidence wires table registers right leftRefs
+      needed rightCert >>= boundSparseProof
+    let expectedSummary ← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[cert]
+    let summaryProof ← sparseTimedDecide sparseSummaryMs
+      (← mkEq summary expectedSummary)
+    let changed ← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
+      #[summary, needed]
+    let result ← sparseResult (← sparseRefs rightBuild.result) changed
+    let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.seq)
+      #[wires, table, registers, left, right, refs, needed, summary, leftCert,
+        rightCert, leftBuild.result, rightBuild.result, summaryProof,
+        leftBuild.proof, rightBuild.proof]
+    return ← boundSparseProof
+      { result, proof, size := leftBuild.size + rightBuild.size + 1 }
+  if actionName == ``Loom.Hw.Act.ite && certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.ite then
+    let condition := actionArgs[actionArgs.size - 3]!
+    let thenAction := actionArgs[actionArgs.size - 2]!
+    let elseAction := actionArgs.back!
+    let summary := certArgs[certArgs.size - 5]!
+    let conditionRef := certArgs[certArgs.size - 4]!
+    let joins := certArgs[certArgs.size - 3]!
+    let thenCert := certArgs[certArgs.size - 2]!
+    let elseCert := certArgs.back!
+    let changed ← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
+      #[summary, needed]
+    let thenBuild ← proveSparseEvidence wires table registers thenAction refs
+      changed thenCert >>= boundSparseProof
+    let elseBuild ← proveSparseEvidence wires table registers elseAction refs
+      changed elseCert >>= boundSparseProof
+    let expectedSummary ← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[cert]
+    let summaryProof ← sparseTimedDecide sparseSummaryMs
+      (← mkEq summary expectedSummary)
+    let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[condition]
+    let conditionEvidence ← sparseExpressionEvidence wires table compiled
+      conditionRef
+    let conditionProof ← mkAppM ``IndexedExprEvidence.accepted
+      #[conditionEvidence]
+    let joinsCheck ← mkAppM ``Loom.Release.Symbolic.ActionWide.checkedBitJoins
+      #[registers, conditionRef, ← sparseRefs thenBuild.result,
+        ← sparseRefs elseBuild.result, changed, joins]
+    let joinsProof ← sparseTimedDecide sparseJoinMs (← mkEq joinsCheck trueExpr)
+    let resultRefs ← mkAppM ``Loom.Release.Symbolic.ActionWide.applySparseJoins #[refs, joins]
+    let result ← sparseResult resultRefs changed
+    let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.ite)
+      #[wires, table, registers, condition, thenAction, elseAction, refs, needed,
+        summary, conditionRef, joins, thenCert, elseCert, thenBuild.result,
+        elseBuild.result, summaryProof, conditionProof, thenBuild.proof,
+        elseBuild.proof, joinsProof]
+    return ← boundSparseProof
+      { result, proof, size := thenBuild.size + elseBuild.size + 1 }
+  throwError "sparse_evidence_decide: source/certificate shape mismatch"
+
+/-- Prove a complete sparse action certificate by a single source traversal. -/
+syntax (name := sparseEvidenceDecide) "sparse_evidence_decide" : term
+
+@[term_elab sparseEvidenceDecide]
+unsafe def elabSparseEvidenceDecide : TermElab := fun _ expected? => do
+  -- Auxiliary lemmas created while elaborating one declaration are committed
+  -- with that declaration. Do not leak their temporary names into the next
+  -- top-level sparse proof; sharing is needed across this traversal only.
+  indexedExprModuleCache.set {}
+  indexedLookupMs.set 0
+  indexedExposeMs.set 0
+  sparseNodeCount.set 0
+  sparseActionExposeMs.set 0
+  sparseCertExposeMs.set 0
+  sparseBoundMs.set 0
+  sparseExpressionMs.set 0
+  sparseDecisionMs.set 0
+  sparseMembershipMs.set 0
+  sparseHeaderMs.set 0
+  sparseBitMs.set 0
+  sparseSummaryMs.set 0
+  sparseJoinMs.set 0
+  let some expected := expected?
+    | throwError "sparse_evidence_decide requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence &&
+      args.size == 8 do
+    throwError "sparse_evidence_decide expected BitSparseEvidence"
+  let build ← proveSparseEvidence args[0]! args[1]! args[2]! args[3]!
+    args[4]! args[5]! args[6]!
+  unless ← isDefEq build.result args[7]! do
+    throwError "sparse_evidence_decide result does not match the expected result"
+  pure build.proof
+
+/-- Infer the sparse result while producing evidence. This keeps the theorem
+statement compact; a later constant-time projection obtains checker
+acceptance from the existential witness. -/
+syntax (name := sparseEvidenceExists) "sparse_evidence_exists" : term
+
+@[term_elab sparseEvidenceExists]
+unsafe def elabSparseEvidenceExists : TermElab := fun _ expected? => do
+  indexedExprModuleCache.set {}
+  indexedLookupMs.set 0
+  indexedExposeMs.set 0
+  sparseNodeCount.set 0
+  sparseActionExposeMs.set 0
+  sparseCertExposeMs.set 0
+  sparseBoundMs.set 0
+  sparseExpressionMs.set 0
+  sparseDecisionMs.set 0
+  sparseMembershipMs.set 0
+  sparseHeaderMs.set 0
+  sparseBitMs.set 0
+  sparseSummaryMs.set 0
+  sparseJoinMs.set 0
+  let some expected := expected?
+    | throwError "sparse_evidence_exists requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let existsArgs := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``Exists && existsArgs.size == 2 do
+    throwError "sparse_evidence_exists expected an existential"
+  let witness ← mkFreshExprMVar existsArgs[0]!
+  let body ← whnf (mkApp existsArgs[1]! witness)
+  let args := body.getAppArgs
+  unless body.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence &&
+      args.size == 8 do
+    throwError "sparse_evidence_exists expected existential BitSparseEvidence"
+  let build ← proveSparseEvidence args[0]! args[1]! args[2]! args[3]!
+    args[4]! args[5]! args[6]!
+  mkAppM ``Exists.intro #[build.result, build.proof]
 
 private def transportNextRegAction (wires table register width current out cert
     actionEq proof : Expr) : MetaM Expr := do
