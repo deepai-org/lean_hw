@@ -221,7 +221,8 @@ theorem lookupIndexed_wellFormed
   unfold lookupIndexed? at found
   by_cases size : table.leafSize > 0
   · simp only [size, Option.bind_eq_bind] at found
-    cases pathEq : table.paths[number / table.leafSize]? with
+    cases pathEq : balancedPath? table.leafCount
+        (number / table.leafSize) with
     | none => simp [pathEq] at found
     | some path =>
         simp only [pathEq, Option.bind_some] at found
@@ -246,13 +247,14 @@ theorem lookupIndexed_resolvesRaw
     (table : WireTable) (number : Nat) (indexed : IndexedWire)
     (found : lookupIndexed? indexeds table number = some indexed) :
     ∃ path raw,
-      table.paths[number / table.leafSize]? = some path ∧
+      balancedPath? table.leafCount (number / table.leafSize) = some path ∧
       raws.resolve? ⟨path, number % table.leafSize⟩ = some raw ∧
       indexed.matchesRaw number raw = true := by
   unfold lookupIndexed? at found
   by_cases size : table.leafSize > 0
   · simp only [size, Option.bind_eq_bind] at found
-    cases pathEq : table.paths[number / table.leafSize]? with
+    cases pathEq : balancedPath? table.leafCount
+        (number / table.leafSize) with
     | none => simp [pathEq] at found
     | some path =>
       simp only [pathEq, Option.bind_some] at found
@@ -277,7 +279,7 @@ number and bears the canonical numbered identifier. -/
 def RawWireAt (program : Program) (table : WireTable)
     (number : Nat) (raw : Wire) : Prop :=
   ∃ path,
-    table.paths[number / table.leafSize]? = some path ∧
+    balancedPath? table.leafCount (number / table.leafSize) = some path ∧
     program.wires.resolve? ⟨path, number % table.leafSize⟩ = some raw ∧
     raw.name = (Ref.wire number).render
 

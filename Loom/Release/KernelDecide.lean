@@ -19,6 +19,7 @@ open Lean Elab Term Meta
 /-- Close a decidable, variable-free proposition by kernel reduction, without
 emitting tactic metadata. -/
 syntax (name := kernelDecide) "kernel_decide" : term
+syntax (name := kernelDecideInline) "kernel_decide_inline" : term
 
 private partial def zetaLocalLets (expression : Expr) : TermElabM Expr := do
   let some fvar := expression.find? (·.isFVar) | return expression
@@ -42,3 +43,15 @@ def elabKernelDecide : TermElab := fun _ expected? => do
   let lemma ← withOptions (Elab.async.set · false) do
     mkAuxLemma levels expected proof (kind? := `_kernelDecide)
   pure (.const lemma (levels.map .param))
+
+/-- Close a small decidable proposition directly in its surrounding proof.
+Unlike `kernel_decide`, this does not allocate a named auxiliary declaration;
+it is intended for thousands of bounded leaf checks. -/
+@[term_elab kernelDecideInline]
+def elabKernelDecideInline : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "kernel_decide_inline requires an expected proposition"
+  let expected ← instantiateMVars expected >>= zetaLocalLets
+  if expected.hasFVar || expected.hasMVar then
+    throwError "kernel_decide_inline requires a closed proposition"
+  mkDecideProof expected

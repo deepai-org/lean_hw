@@ -201,7 +201,8 @@ private theorem lookupIndexed_number_lt
   unfold lookupIndexed? at found
   by_cases size : table.leafSize > 0
   · simp only [size, Option.bind_eq_bind] at found
-    cases pathEq : table.paths[number / table.leafSize]? with
+    cases pathEq : balancedPath? table.leafCount
+        (number / table.leafSize) with
     | none => simp [pathEq] at found
     | some path =>
         simp only [pathEq, Option.bind_some] at found
