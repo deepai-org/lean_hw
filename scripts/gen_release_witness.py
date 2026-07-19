@@ -538,6 +538,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
     disk_names = [f"diskWireBlock{i:04d}" for i in range(len(blocks))]
     proofs = [f"renderWireBlock{i:04d}" for i in range(len(blocks))]
     indexed_proofs = [f"indexedWireLeafMatches{i:04d}" for i in range(len(blocks))]
+    indexed_paths = balanced_paths(len(blocks))
     # Keep the indexed semantic graph in a lightweight module.  Semantic
     # certificates should not pay to elaborate the disk-byte and complete
     # program data merely to resolve a wire index.
@@ -549,6 +550,13 @@ def emit_batched(data: dict, output: Path, block_size: int,
             "def indexedWireTree : Rope (List Symbolic.IndexedWire) :=",
             "  " + balanced(indexed_names, ".leaf []").replace(
                 "indexedWireBlock", ".leaf indexedWireBlock"), "",
+            *[
+                f"theorem indexedWireResolveBlock{index:04d} (offset : Nat) :\n"
+                "    indexedWireTree.resolve? "
+                f"⟨[{', '.join('true' if step else 'false' for step in path)}], "
+                f"offset⟩ = indexedWireBlock{index:04d}[offset]? := rfl\n"
+                for index, path in enumerate(indexed_paths)
+            ],
             "theorem indexedWiresMatch :",
             "    Symbolic.IndexedRopeMatches 0 wireTree indexedWireTree := by",
             "  unfold wireTree indexedWireTree",

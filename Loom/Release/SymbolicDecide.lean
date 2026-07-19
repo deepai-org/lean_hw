@@ -813,6 +813,285 @@ private def cacheAccepted (type proof : Expr) : MetaM Expr :=
 private def decideAccepted (type : Expr) : MetaM Expr := do
   cacheClosedProof type (← mkDecideProof type)
 
+private def inlineDecideAccepted (type : Expr) : MetaM Expr := do
+  let inst ← synthInstance (mkApp (mkConst ``Decidable) type)
+  let decision := mkApp2 (mkConst ``decide) type inst
+  let proof ← mkEqRefl decision
+  pure <| mkAppN (mkConst ``of_decide_eq_true) #[type, inst, proof]
+
+private abbrev IndexedExprCache := IO.Ref (Std.HashMap Nat Expr)
+
+private initialize indexedExprModuleCache : IndexedExprCache ← IO.mkRef {}
+
+private partial def exposeMvExpr (expression : Expr) : MetaM Expr := do
+  let reduced ← withTransparency .all <| whnf expression
+  if let some name := reduced.getAppFn.constName? then
+    if name == ``Loom.Emit.MicroVerilog.Expr.lit ||
+        name == ``Loom.Emit.MicroVerilog.Expr.reg ||
+        name == ``Loom.Emit.MicroVerilog.Expr.memRead ||
+        name == ``Loom.Emit.MicroVerilog.Expr.and ||
+        name == ``Loom.Emit.MicroVerilog.Expr.or ||
+        name == ``Loom.Emit.MicroVerilog.Expr.xor ||
+        name == ``Loom.Emit.MicroVerilog.Expr.not ||
+        name == ``Loom.Emit.MicroVerilog.Expr.add ||
+        name == ``Loom.Emit.MicroVerilog.Expr.sub ||
+        name == ``Loom.Emit.MicroVerilog.Expr.shl ||
+        name == ``Loom.Emit.MicroVerilog.Expr.shr ||
+        name == ``Loom.Emit.MicroVerilog.Expr.eq ||
+        name == ``Loom.Emit.MicroVerilog.Expr.ult ||
+        name == ``Loom.Emit.MicroVerilog.Expr.slt ||
+        name == ``Loom.Emit.MicroVerilog.Expr.mux ||
+        name == ``Loom.Emit.MicroVerilog.Expr.slice ||
+        name == ``Loom.Emit.MicroVerilog.Expr.zext ||
+        name == ``Loom.Emit.MicroVerilog.Expr.sext then
+      return reduced
+  match ← unfoldDefinition? reduced (ignoreTransparency := true) with
+  | some unfolded => exposeMvExpr unfolded
+  | none => throwError "indexed_expr_decide: expression did not expose: {reduced}"
+
+private partial def exposeSymbolicRef (reference : Expr) : MetaM Expr := do
+  let reduced ← withTransparency .all <| whnf reference
+  if reduced.getAppFn.constName? == some ``Ref.reg ||
+      reduced.getAppFn.constName? == some ``Ref.wire then
+    return reduced
+  match ← unfoldDefinition? reduced (ignoreTransparency := true) with
+  | some unfolded => exposeSymbolicRef unfolded
+  | none => throwError "indexed_expr_decide: reference did not expose: {reduced}"
+
+private def cacheIndexedExprEvidence (cache : IndexedExprCache)
+    (number : Option Nat) (type proof : Expr) : MetaM Expr := do
+  let cached ← cacheClosedProof type proof
+  if let some number := number then
+    cache.modify fun entries => entries.insert number cached
+  let size := (← cache.get).size
+  if size % 1000 == 0 then
+    logInfo m!"indexed expression evidence nodes: {size}"
+  pure cached
+
+private def pad4 (number : Nat) : String :=
+  let value := toString number
+  if number < 10 then "000" ++ value
+  else if number < 100 then "00" ++ value
+  else if number < 1000 then "0" ++ value
+  else value
+
+/-- Build a global lookup fact from a named leaf-resolution theorem.  The
+resolver is checked once per 128-wire leaf; this function only normalizes the
+bounded lookup within that leaf. -/
+private def proveIndexedLookup (wires table number : Expr) : MetaM (Expr × Expr) := do
+  let reducedNumber ← withTransparency .all <| whnf number
+  let some numberValue ← getNatValue? reducedNumber
+    | throwError "indexed_expr_decide: wire number is not concrete: {number}"
+  let some wiresName := wires.getAppFn.constName?
+    | throwError "indexed_expr_decide: indexed wire tree is not a named constant"
+  let resolverName := wiresName.getPrefix.str
+    ("indexedWireResolveBlock" ++ pad4 (numberValue / 128))
+  unless (← getEnv).contains resolverName do
+    throwError "indexed_expr_decide: missing leaf resolver {resolverName}"
+  let offset := mkNatLit (numberValue % 128)
+  let resolver ← mkAppM resolverName #[offset]
+  let resolverType ← inferType resolver
+  let resolverArgs := resolverType.getAppArgs
+  unless resolverType.getAppFn.constName? == some ``Eq && resolverArgs.size == 3 do
+    throwError "indexed_expr_decide: malformed leaf resolver {resolverName}"
+  let resolvedLookup := resolverArgs[2]!
+  let reducedLookup ← withTransparency .all <| whnf resolvedLookup
+  unless reducedLookup.getAppFn.constName? == some ``Option.some do
+    throwError "indexed_expr_decide: leaf lookup failed for {numberValue}"
+  let indexed := reducedLookup.getAppArgs.back!
+  let resolveLhs := resolverArgs[1]!
+  let resolveArgs := resolveLhs.getAppArgs
+  unless resolveLhs.getAppFn.constName? == some ``Rope.resolve? &&
+      resolveArgs.size >= 2 do
+    throwError "indexed_expr_decide: malformed resolver lookup {resolverName}"
+  let reference ← withTransparency .all <| whnf resolveArgs.back!
+  let referenceArgs := reference.getAppArgs
+  unless reference.getAppFn.constName? == some ``Rope.Ref.mk &&
+      referenceArgs.size >= 2 do
+    throwError "indexed_expr_decide: malformed resolver reference {resolverName}"
+  let path := referenceArgs[referenceArgs.size - 2]!
+  let tableReduced ← withTransparency .all <| whnf table
+  let tableArgs := tableReduced.getAppArgs
+  unless tableReduced.getAppFn.constName? == some ``WireTable.mk &&
+      tableArgs.size >= 2 do
+    throwError "indexed_expr_decide: wire table did not expose"
+  let leafSize := tableArgs[tableArgs.size - 2]!
+  let leafCount := tableArgs.back!
+  let some leafSizeValue ← getNatValue? leafSize
+    | throwError "indexed_expr_decide: leaf size is not concrete"
+  if leafSizeValue == 0 then
+    throwError "indexed_expr_decide: leaf size is zero"
+  let positiveProof ← mkAppM ``Nat.zero_lt_succ
+    #[mkNatLit (leafSizeValue - 1)]
+  let pathLookup ← mkAppM ``balancedPath?
+    #[leafCount, mkApp2 (mkConst ``Nat.div) reducedNumber leafSize]
+  let somePath ← mkAppM ``Option.some #[path]
+  let pathType ← mkEq pathLookup somePath
+  let indexedReduced ← withTransparency .all <| whnf indexed
+  let indexedArgs := indexedReduced.getAppArgs
+  let numberEqType ← mkEq indexedArgs[indexedArgs.size - 3]! reducedNumber
+  let found := mkAppN (mkConst ``lookupIndexed_of_resolve)
+    #[wires, table, reducedNumber, path, indexed, positiveProof,
+      ← inlineDecideAccepted pathType, resolver,
+      ← inlineDecideAccepted numberEqType]
+  pure (indexed, found)
+
+private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
+    (wires table expression reference : Expr) : MetaM Expr := do
+  let reference ← exposeSymbolicRef reference
+  let referenceName := reference.getAppFn.constName?.getD Name.anonymous
+  let referenceArgs := reference.getAppArgs
+  let wireNumber ← if referenceName == ``Ref.wire then do
+      let reduced ← withTransparency .all <| whnf referenceArgs.back!
+      let some value ← getNatValue? reduced
+        | throwError "indexed_expr_decide: non-concrete wire reference"
+      pure (some value)
+    else pure none
+  if let some number := wireNumber then
+    if let some cached := (← cache.get).get? number then
+      return cached
+  let type ← mkAppM ``IndexedExprEvidence #[wires, table, expression, reference]
+  let expression ← exposeMvExpr expression
+  let expressionName := expression.getAppFn.constName?.getD Name.anonymous
+  let expressionArgs := expression.getAppArgs
+  if expressionName == ``Loom.Emit.MicroVerilog.Expr.reg &&
+      referenceName == ``Ref.reg then
+    let proof := mkAppN (mkConst ``IndexedExprEvidence.reg)
+      #[wires, table, expressionArgs[expressionArgs.size - 2]!,
+        expressionArgs.back!]
+    return proof
+  unless referenceName == ``Ref.wire do
+    throwError "indexed_expr_decide: non-register expression has register reference"
+  let number := referenceArgs[referenceArgs.size - 1]!
+  let (indexed, found) ← proveIndexedLookup wires table number
+  let indexedReduced ← withTransparency .all <| whnf indexed
+  unless indexedReduced.getAppFn.constName? == some ``IndexedWire.mk do
+    throwError "indexed_expr_decide: lookup did not return an indexed wire"
+  let indexedArgs := indexedReduced.getAppArgs
+  let rhs ← withTransparency .all <| whnf indexedArgs.back!
+  let rhsArgs := rhs.getAppArgs
+  let child (source actual : Expr) :=
+    proveIndexedExprEvidence cache wires table source actual
+  let proof ←
+    if expressionName == ``Loom.Emit.MicroVerilog.Expr.lit then
+      pure <| mkAppN (mkConst ``IndexedExprEvidence.lit)
+        #[wires, table, expressionArgs[expressionArgs.size - 2]!,
+          expressionArgs.back!, number, found]
+    else if expressionName == ``Loom.Emit.MicroVerilog.Expr.memRead then
+      pure <| mkAppN (mkConst ``IndexedExprEvidence.memRead)
+        #[wires, table, expressionArgs[expressionArgs.size - 2]!,
+          expressionArgs[expressionArgs.size - 4]!,
+          expressionArgs[expressionArgs.size - 3]!, expressionArgs.back!,
+          rhsArgs.back!, number, found,
+          ← child expressionArgs.back! rhsArgs.back!]
+    else if expressionName == ``Loom.Emit.MicroVerilog.Expr.not then
+      pure <| mkAppN (mkConst ``IndexedExprEvidence.not)
+        #[wires, table, expressionArgs[expressionArgs.size - 2]!,
+          expressionArgs.back!, rhsArgs.back!, number, found,
+          ← child expressionArgs.back! rhsArgs.back!]
+    else if expressionName == ``Loom.Emit.MicroVerilog.Expr.slice then
+      pure <| mkAppN (mkConst ``IndexedExprEvidence.slice)
+        #[wires, table, expressionArgs[expressionArgs.size - 4]!,
+          expressionArgs.back!, expressionArgs[expressionArgs.size - 2]!,
+          expressionArgs[expressionArgs.size - 3]!,
+          rhsArgs[rhsArgs.size - 3]!, number, found,
+          ← child expressionArgs[expressionArgs.size - 3]!
+            rhsArgs[rhsArgs.size - 3]!]
+    else if expressionName == ``Loom.Emit.MicroVerilog.Expr.zext then
+      let source := expressionArgs[expressionArgs.size - 2]!
+      let width := expressionArgs[expressionArgs.size - 3]!
+      let outputWidth := expressionArgs.back!
+      let widthType ← mkAppM ``Nat.le #[width, outputWidth]
+      pure <| mkAppN (mkConst ``IndexedExprEvidence.zext)
+        #[wires, table, width, outputWidth, source, rhsArgs.back!, number,
+          found, ← inlineDecideAccepted widthType,
+          ← child source rhsArgs.back!]
+    else if expressionName == ``Loom.Emit.MicroVerilog.Expr.sext then
+      let source := expressionArgs[expressionArgs.size - 2]!
+      let inputWidth := expressionArgs[expressionArgs.size - 3]!
+      let outputWidth := expressionArgs.back!
+      let positiveType ← mkAppM ``Nat.lt #[mkNatLit 0, inputWidth]
+      let widthType ← mkAppM ``Nat.lt #[inputWidth, outputWidth]
+      pure <| mkAppN (mkConst ``IndexedExprEvidence.sext)
+        #[wires, table, inputWidth, outputWidth, source,
+          rhsArgs[rhsArgs.size - 2]!, number, found,
+          ← inlineDecideAccepted positiveType,
+          ← inlineDecideAccepted widthType,
+          ← child source rhsArgs[rhsArgs.size - 2]!]
+    else if expressionName == ``Loom.Emit.MicroVerilog.Expr.mux then
+      pure <| mkAppN (mkConst ``IndexedExprEvidence.mux)
+        #[wires, table, expressionArgs[expressionArgs.size - 4]!,
+          expressionArgs[expressionArgs.size - 3]!,
+          expressionArgs[expressionArgs.size - 2]!, expressionArgs.back!,
+          rhsArgs[rhsArgs.size - 3]!, rhsArgs[rhsArgs.size - 2]!,
+          rhsArgs.back!, number, found,
+          ← child expressionArgs[expressionArgs.size - 3]!
+            rhsArgs[rhsArgs.size - 3]!,
+          ← child expressionArgs[expressionArgs.size - 2]!
+            rhsArgs[rhsArgs.size - 2]!,
+          ← child expressionArgs.back! rhsArgs.back!]
+    else
+      let constructor ←
+        if expressionName == ``Loom.Emit.MicroVerilog.Expr.and then
+          pure ``IndexedExprEvidence.and
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.or then
+          pure ``IndexedExprEvidence.or
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.xor then
+          pure ``IndexedExprEvidence.xor
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.add then
+          pure ``IndexedExprEvidence.add
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.sub then
+          pure ``IndexedExprEvidence.sub
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.shl then
+          pure ``IndexedExprEvidence.shl
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.shr then
+          pure ``IndexedExprEvidence.shr
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.eq then
+          pure ``IndexedExprEvidence.eq
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.ult then
+          pure ``IndexedExprEvidence.ult
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.slt then
+          pure ``IndexedExprEvidence.slt
+        else throwError "indexed_expr_decide: unsupported expression {expression}"
+      pure <| mkAppN (mkConst constructor)
+        #[wires, table, expressionArgs[expressionArgs.size - 3]!,
+          expressionArgs[expressionArgs.size - 2]!, expressionArgs.back!,
+          rhsArgs[rhsArgs.size - 2]!, rhsArgs.back!, number, found,
+          ← child expressionArgs[expressionArgs.size - 2]!
+            rhsArgs[rhsArgs.size - 2]!,
+          ← child expressionArgs.back! rhsArgs.back!]
+  cacheIndexedExprEvidence cache wireNumber type proof
+
+/-- Prove an indexed expression check by a memoized DAG of named kernel
+theorems instead of reducing the shared expression as a tree. -/
+syntax (name := indexedExprDecide) "indexed_expr_decide" : term
+
+private partial def zetaIndexedExprLets (expression : Expr) : TermElabM Expr := do
+  let some fvar := expression.find? (·.isFVar) | return expression
+  let some declaration := (← getLCtx).find? fvar.fvarId!
+    | return expression
+  let some value := declaration.value? (allowNondep := true)
+    | return expression
+  zetaIndexedExprLets (expression.replaceFVar fvar value)
+
+@[term_elab indexedExprDecide]
+unsafe def elabIndexedExprDecide : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "indexed_expr_decide requires an expected proposition"
+  let expected ← instantiateMVars expected >>= zetaIndexedExprLets
+  if expected.hasFVar || expected.hasMVar then
+    throwError "indexed_expr_decide requires a closed proposition"
+  let equalityArgs := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``Eq && equalityArgs.size == 3 do
+    throwError "indexed_expr_decide expected a Boolean equality"
+  let lhs := equalityArgs[1]!
+  let args := lhs.getAppArgs
+  unless lhs.getAppFn.constName? == some ``indexedExprMatches && args.size == 5 do
+    throwError "indexed_expr_decide expected indexedExprMatches = true"
+  let evidence ← proveIndexedExprEvidence indexedExprModuleCache args[0]!
+    args[1]! args[3]! args[4]!
+  mkAppM ``IndexedExprEvidence.accepted #[evidence]
+
 private def transportWritesRegAction (register width actionEq proof : Expr) :
     MetaM Expr := do
   let equalityType ← inferType actionEq

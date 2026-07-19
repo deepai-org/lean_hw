@@ -133,6 +133,21 @@ def lookupIndexed? (wires : Rope (List IndexedWire)) (table : WireTable)
   guard (wire.number == number)
   pure wire
 
+/-- Resolve a numbered wire from separately checked path and leaf facts.
+This is the constant-time proof interface used by large generated
+certificates: the global rope path is checked once per leaf, while individual
+wire uses only reduce a bounded leaf lookup. -/
+theorem lookupIndexed_of_resolve
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {number : Nat} {path : List Bool} {wire : IndexedWire}
+    (positive : table.leafSize > 0)
+    (pathFound : balancedPath? table.leafCount
+      (number / table.leafSize) = some path)
+    (resolved : wires.resolve? ⟨path, number % table.leafSize⟩ = some wire)
+    (numberEq : wire.number = number) :
+    lookupIndexed? wires table number = some wire := by
+  simp [lookupIndexed?, positive, pathFound, resolved, numberEq, guard]
+
 /-- Resolve the declared width of an operand while checking one numbered SSA
 wire. Wire operands must point strictly backward, which simultaneously makes
 the graph acyclic and matches the sequential concrete elaborator. -/
@@ -342,6 +357,147 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
             signBit + 1 == inputWidth &&
             indexedExprMatches wires table value actual
       | _ => false
+
+/-- A proof DAG for one expression check.  Every constructor checks only the
+outer SSA wire and refers to child evidence as theorem constants.  This is
+extensionally the same check as `indexedExprMatches`, but it preserves sharing
+in large generated source expressions instead of repeatedly normalizing them
+as trees. -/
+inductive IndexedExprEvidence (wires : Rope (List IndexedWire))
+    (table : WireTable) :
+    {width : Nat} → Loom.Emit.MicroVerilog.Expr width → Ref → Prop where
+  | reg (width : Nat) (name : String) :
+      IndexedExprEvidence wires table (.reg width name) (.reg name)
+  | lit {width : Nat} {value : BitVec width} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .lit width value.toNat⟩) :
+      IndexedExprEvidence wires table (.lit value) (.wire number)
+  | memRead {addressWidth dataWidth : Nat} {memory : String}
+      {address : Loom.Emit.MicroVerilog.Expr addressWidth}
+      {addressRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, dataWidth, .memRead memory addressRef⟩)
+      (addressEvidence : IndexedExprEvidence wires table address addressRef) :
+      IndexedExprEvidence wires table (.memRead dataWidth memory address)
+        (.wire number)
+  | and {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .and leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.and left right) (.wire number)
+  | or {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .or leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.or left right) (.wire number)
+  | xor {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .xor leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.xor left right) (.wire number)
+  | not {width : Nat} {value : Loom.Emit.MicroVerilog.Expr width}
+      {valueRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .not valueRef⟩)
+      (valueEvidence : IndexedExprEvidence wires table value valueRef) :
+      IndexedExprEvidence wires table (.not value) (.wire number)
+  | add {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .add leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.add left right) (.wire number)
+  | sub {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .sub leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.sub left right) (.wire number)
+  | shl {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .shl leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.shl left right) (.wire number)
+  | shr {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .shr leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.shr left right) (.wire number)
+  | eq {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, 1, .bin .eq leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.eq left right) (.wire number)
+  | ult {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, 1, .bin .ult leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.ult left right) (.wire number)
+  | slt {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, 1, .slt leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.slt left right) (.wire number)
+  | mux {width : Nat} {condition : Loom.Emit.MicroVerilog.Expr 1}
+      {yes no : Loom.Emit.MicroVerilog.Expr width}
+      {conditionRef yesRef noRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .mux conditionRef yesRef noRef⟩)
+      (conditionEvidence : IndexedExprEvidence wires table condition conditionRef)
+      (yesEvidence : IndexedExprEvidence wires table yes yesRef)
+      (noEvidence : IndexedExprEvidence wires table no noRef) :
+      IndexedExprEvidence wires table (.mux condition yes no) (.wire number)
+  | slice {inputWidth width lo : Nat}
+      {value : Loom.Emit.MicroVerilog.Expr inputWidth} {valueRef : Ref}
+      {number : Nat}
+      (found : lookupIndexed? wires table number = some
+        ⟨number, width, .slice valueRef (lo + width - 1) lo⟩)
+      (valueEvidence : IndexedExprEvidence wires table value valueRef) :
+      IndexedExprEvidence wires table (.slice value lo width) (.wire number)
+  | zext {inputWidth width : Nat}
+      {value : Loom.Emit.MicroVerilog.Expr inputWidth} {valueRef : Ref}
+      {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .ident valueRef⟩)
+      (widthAccepted : inputWidth ≤ width)
+      (valueEvidence : IndexedExprEvidence wires table value valueRef) :
+      IndexedExprEvidence wires table (.zext value width) (.wire number)
+  | sext {inputWidth width : Nat}
+      {value : Loom.Emit.MicroVerilog.Expr inputWidth} {valueRef : Ref}
+      {number : Nat}
+      (found : lookupIndexed? wires table number = some
+        ⟨number, width, .sext (width - inputWidth) valueRef
+          (inputWidth - 1)⟩)
+      (inputPositive : 0 < inputWidth)
+      (widthAccepted : inputWidth < width)
+      (valueEvidence : IndexedExprEvidence wires table value valueRef) :
+      IndexedExprEvidence wires table (.sext value width) (.wire number)
+
+theorem IndexedExprEvidence.accepted
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {width : Nat} {expression : Loom.Emit.MicroVerilog.Expr width} {reference : Ref}
+    (evidence : IndexedExprEvidence wires table expression reference) :
+    indexedExprMatches wires table expression reference = true := by
+  induction evidence <;> simp_all [indexedExprMatches]
+  omega
 
 /-- Three structural SSA references denoting one memory write-port value. -/
 structure PortRefs where
