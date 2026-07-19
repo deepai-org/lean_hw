@@ -1,7 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Hw.BaseOps
-import Loom.Hw.Compile
+import Loom.Hw.Footprint
 import Mathlib.Tactic.FinCases
 import Mathlib.Data.Fintype.Basic
 

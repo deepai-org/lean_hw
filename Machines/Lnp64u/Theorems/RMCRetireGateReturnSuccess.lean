@@ -693,13 +693,13 @@ private theorem gateReturnSuccessA_frame_mem (σ acc : Loom.Hw.St)
     ((gateReturnSuccessA d).run σ acc).mems mn a w =
       ((gateReturnTransferA d).run σ acc).mems mn a w := by
   rw [gateReturnSuccessA_run]
-  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnReplyA d)
+  rw [Loom.Hw.Act.run_mems_notin mn (gateReturnReplyA d)
     (of_decide_eq_true rfl)]
-  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnResumeA d)
+  rw [Loom.Hw.Act.run_mems_notin mn (gateReturnResumeA d)
     (of_decide_eq_true rfl)]
-  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnRestoreA d)
+  rw [Loom.Hw.Act.run_mems_notin mn (gateReturnRestoreA d)
     (of_decide_eq_true rfl)]
-  rw [Loom.Hw.Compile.run_mems_notin mn (gateReturnClearA d)
+  rw [Loom.Hw.Act.run_mems_notin mn (gateReturnClearA d)
     (of_decide_eq_true rfl)]
 
 /-- Domain-map face of the complete successful return payload. -/

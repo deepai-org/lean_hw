@@ -1531,9 +1531,9 @@ private theorem callSuccessA_frame_quiet (σ acc : Loom.Hw.St)
     ((callSuccessA d).run σ acc).regs q.1 q.2 =
       ((callTransferA d).run σ acc).regs q.1 q.2 := by
   rw [callSuccessA_run]
-  rw [Loom.Hw.Compile.run_regs_notin q.1 q.2 (callCallerA d)]
-  rw [Loom.Hw.Compile.run_regs_notin q.1 q.2 (callCalleeA d)]
-  rw [Loom.Hw.Compile.run_regs_notin q.1 q.2 (callActivateA d)]
+  rw [Loom.Hw.Act.run_regs_notin q.1 q.2 (callCallerA d)]
+  rw [Loom.Hw.Act.run_regs_notin q.1 q.2 (callCalleeA d)]
+  rw [Loom.Hw.Act.run_regs_notin q.1 q.2 (callActivateA d)]
   all_goals
     exact (show ∀ p ∈ callQuietNames, p ∉ _ from by
       fin_cases d <;> decide +kernel) q hq
@@ -1620,11 +1620,11 @@ private theorem callSuccessA_frame_mem (σ acc : Loom.Hw.St)
     ((callSuccessA d).run σ acc).mems mn a w =
       ((callTransferA d).run σ acc).mems mn a w := by
   rw [callSuccessA_run]
-  rw [Loom.Hw.Compile.run_mems_notin mn (callCallerA d)
+  rw [Loom.Hw.Act.run_mems_notin mn (callCallerA d)
     (of_decide_eq_true rfl)]
-  rw [Loom.Hw.Compile.run_mems_notin mn (callCalleeA d)
+  rw [Loom.Hw.Act.run_mems_notin mn (callCalleeA d)
     (of_decide_eq_true rfl)]
-  rw [Loom.Hw.Compile.run_mems_notin mn (callActivateA d)
+  rw [Loom.Hw.Act.run_mems_notin mn (callActivateA d)
     (of_decide_eq_true rfl)]
 
 /-- Whole-machine abstraction of a successful call, relative only to the

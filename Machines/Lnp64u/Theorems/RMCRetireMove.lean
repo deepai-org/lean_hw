@@ -356,7 +356,7 @@ theorem square_retire_movejob (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     funext a
     show ((Hw.core m).cycle σ).mems "mem" a.toNat 32 = _
     rw [core_cycle_unfold]
-    rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
+    rw [Loom.Hw.Act.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
     rw [show (moverPhase (corePhase m τ1)).mem = (moverPhase τ2).mem from by
       rw [hspec]]

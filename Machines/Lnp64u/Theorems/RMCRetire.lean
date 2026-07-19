@@ -127,7 +127,7 @@ theorem retireAct_run_mems (σ acc : Loom.Hw.St) (ad' w' : Nat) :
         ((Act.write 1 "if_v" (.lit 0)).run σ acc)).mems "mem" ad w
       = acc.mems "mem" ad w := by
     intro ad w
-    rw [Loom.Hw.Compile.run_mems_notin "mem" _ (of_decide_eq_true rfl) σ _
+    rw [Loom.Hw.Act.run_mems_notin "mem" _ (of_decide_eq_true rfl) σ _
       ad w]
     rfl
   rw [retireAct_shape]

@@ -1,7 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Std.Data.HashMap
-import Loom.Hw.Semantics
+import Loom.Hw.Footprint
 import Loom.Emit.MicroVerilog.Semantics
 
 /-!
@@ -84,29 +84,11 @@ theorem compileExpr_eval : ∀ {w : Nat} (e : Expr w) (σ : Loom.Hw.St),
   | zext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
   | sext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
 
-/-! ## Write-footprint syntax
+/-! ## Write-footprint compilation
 
-Syntactic write footprints of actions, and the frame lemmas that go with
-them: registers and memories an action never writes are left untouched by
-`Act.run` (and by the rule fold). Used to discharge the "undeclared name"
-cases of end-to-end emission proofs, and — via `writesRegB` — to prune the
-compiled mux trees down to each register's own write sites. -/
-
-/-- Names of the memories an action may write (with multiplicity). -/
-def _root_.Loom.Hw.Act.memWrites : Act → List String
-  | .skip => []
-  | .seq a b => a.memWrites ++ b.memWrites
-  | .ite _ t e => t.memWrites ++ e.memWrites
-  | .write .. => []
-  | .memWrite _ _ m _ _ _ => [m]
-
-/-- `(name, width)` pairs of the registers an action may write. -/
-def _root_.Loom.Hw.Act.regWrites : Act → List (String × Nat)
-  | .skip => []
-  | .seq a b => a.regWrites ++ b.regWrites
-  | .ite _ t e => t.regWrites ++ e.regWrites
-  | .write w r _ => [(r, w)]
-  | .memWrite .. => []
+The stable footprint syntax and semantic frame lemma live in
+`Loom.Hw.Footprint`.  This module adds compiler-facing Boolean queries used to
+prune generated mux trees. -/
 
 /-- Decidable "may write register `(rn, w)`" — the compiler's mux-tree
 pruning test.
@@ -141,40 +123,6 @@ theorem writesRegB_eq_true_iff (rn : String) (w : Nat) (action : Act) :
 theorem writesRegB_eq_false_iff (rn : String) (w : Nat) (action : Act) :
     writesRegB rn w action = false ↔ (rn, w) ∉ action.regWrites := by
   rw [← Bool.not_eq_true, writesRegB_eq_true_iff]
-
-/-- Running an action that never writes register `rn` at width `w` leaves
-that entry untouched. -/
-theorem run_regs_notin (rn : String) (w : Nat) : ∀ (a : Act),
-    (rn, w) ∉ a.regWrites →
-    ∀ (σ acc : Loom.Hw.St), (a.run σ acc).regs rn w = acc.regs rn w := by
-  intro a
-  induction a with
-  | skip => intro _ σ acc; rfl
-  | seq x y ihx ihy =>
-      intro h σ acc
-      simp only [Act.regWrites, List.mem_append, not_or] at h
-      show (y.run σ (x.run σ acc)).regs rn w = _
-      rw [ihy h.2, ihx h.1]
-  | ite c t e iht ihe =>
-      intro h σ acc
-      simp only [Act.regWrites, List.mem_append, not_or] at h
-      show (if c.eval σ = 1#1 then t.run σ acc else e.run σ acc).regs rn w = _
-      by_cases hc : c.eval σ = 1#1
-      · rw [if_pos hc]; exact iht h.1 σ acc
-      · rw [if_neg hc]; exact ihe h.2 σ acc
-  | write w' r' v =>
-      intro h σ acc
-      have hp : ¬(r' = rn ∧ w' = w) := by
-        intro ⟨h1, h2⟩
-        exact h (by simp [Act.regWrites, h1, h2])
-      show (acc.regs.set r' (v.eval σ)) rn w = _
-      unfold Loom.Hw.RegEnv.set
-      by_cases hr : rn = r'
-      · rw [if_pos hr]
-        have hw : w' ≠ w := fun hw => hp ⟨hr.symm, hw⟩
-        rw [dif_neg hw]
-      · rw [if_neg hr]
-  | memWrite => intro _ σ acc; rfl
 
 /-- Fold an action into a register's next-value expression: `cur` is the
 value the register takes if this action does not write it. An `ite` neither
@@ -482,7 +430,7 @@ theorem nextReg_correct : ∀ (a : Act) (σ acc : Loom.Hw.St) (rn : String) (w :
           simp only [nextReg, if_neg hp]
         rw [hlhs, hcur]
         simp only [Bool.or_eq_true, not_or] at hp
-        refine (run_regs_notin rn w (.ite c t e) ?_ σ acc).symm
+        refine (Act.run_regs_notin rn w (.ite c t e) ?_ σ acc).symm
         simp only [Act.regWrites, List.mem_append, not_or]
         exact ⟨(writesRegB_eq_false_iff rn w t).mp (by
             cases value : writesRegB rn w t <;> simp_all),
@@ -596,38 +544,7 @@ theorem compile_cycle_regs (d : Design) (σ : Loom.Hw.St) (r : RegDecl) (hr : r 
     rules_nextReg d.rules σ r.name r.width σ (.reg r.width r.name) rfl]
   rfl
 
-/-! ## Memory-footprint frame lemmas -/
-
-/-- Running an action that never writes memory `mn` leaves `mn`'s contents
-(at every address and width) untouched. -/
-theorem run_mems_notin (mn : String) : ∀ (a : Act), mn ∉ a.memWrites →
-    ∀ (σ acc : Loom.Hw.St) (ad w : Nat),
-      (a.run σ acc).mems mn ad w = acc.mems mn ad w := by
-  intro a
-  induction a with
-  | skip => intro _ σ acc ad w; rfl
-  | seq x y ihx ihy =>
-      intro h σ acc ad w
-      simp only [Act.memWrites, List.mem_append, not_or] at h
-      show (y.run σ (x.run σ acc)).mems mn ad w = _
-      rw [ihy h.2, ihx h.1]
-  | ite c t e iht ihe =>
-      intro h σ acc ad w
-      simp only [Act.memWrites, List.mem_append, not_or] at h
-      show (if c.eval σ = 1#1 then t.run σ acc else e.run σ acc).mems mn ad w = _
-      by_cases hc : c.eval σ = 1#1
-      · rw [if_pos hc]; exact iht h.1 σ acc ad w
-      · rw [if_neg hc]; exact ihe h.2 σ acc ad w
-  | write => intro _ σ acc ad w; rfl
-  | memWrite aw' dw' m' p' addr v =>
-      intro h σ acc ad w
-      have hm : mn ≠ m' := by
-        simpa [Act.memWrites] using h
-      show (acc.mems.set m' (addr.eval σ).toNat (v.eval σ)) mn ad w = _
-      unfold Loom.Hw.MemEnv.set
-      rw [if_neg (fun hc => hm hc.1)]
-
-/-- Fold form of `run_mems_notin` over a rule list. -/
+/-- Fold form of `Act.run_mems_notin` over a rule list. -/
 theorem rules_run_mems_notin (mn : String) (rules : List Rule)
     (h : ∀ rl ∈ rules, mn ∉ rl.body.memWrites) (σ : Loom.Hw.St) :
     ∀ (acc : Loom.Hw.St) (ad w : Nat),
@@ -639,9 +556,9 @@ theorem rules_run_mems_notin (mn : String) (rules : List Rule)
       intro acc ad w
       rw [List.foldl_cons,
         ih (fun x hx => h x (List.mem_cons_of_mem _ hx)) _ ad w,
-        run_mems_notin mn rl.body (h rl (List.mem_cons_self ..)) σ acc ad w]
+        Act.run_mems_notin mn rl.body (h rl (List.mem_cons_self ..)) σ acc ad w]
 
-/-- Fold form of `run_regs_notin` over a rule list. -/
+/-- Fold form of `Act.run_regs_notin` over a rule list. -/
 theorem rules_run_regs_notin (rn : String) (w : Nat) (rules : List Rule)
     (h : ∀ rl ∈ rules, (rn, w) ∉ rl.body.regWrites) (σ : Loom.Hw.St) :
     ∀ (acc : Loom.Hw.St),
@@ -653,7 +570,7 @@ theorem rules_run_regs_notin (rn : String) (w : Nat) (rules : List Rule)
       intro acc
       rw [List.foldl_cons,
         ih (fun x hx => h x (List.mem_cons_of_mem _ hx)),
-        run_regs_notin rn w rl.body (h rl (List.mem_cons_self ..)) σ acc]
+        Act.run_regs_notin rn w rl.body (h rl (List.mem_cons_self ..)) σ acc]
 
 /-- Width-aware register-fold preservation: entries whose `(name, width)`
 matches no declared register are left untouched by the module's register

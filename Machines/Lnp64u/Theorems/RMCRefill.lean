@@ -48,7 +48,7 @@ theorem refillAct_memWrites (m : Manifest) :
 theorem refill_pres_mem (m : Manifest) (σ : Loom.Hw.St) (mn : String)
     (a w : Nat) :
     ((Hw.refillAct m).run σ σ).mems mn a w = σ.mems mn a w :=
-  Loom.Hw.Compile.run_mems_notin mn (Hw.refillAct m)
+  Loom.Hw.Act.run_mems_notin mn (Hw.refillAct m)
     (by rw [refillAct_memWrites]; simp) σ σ a w
 
 /-- The budget register after refill: quota at a period boundary

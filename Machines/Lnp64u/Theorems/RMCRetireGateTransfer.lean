@@ -959,7 +959,7 @@ theorem abs_transferChosenA_frame_acc (σ acc : Loom.Hw.St)
   · exact transferChosenA_frame_quiet σ acc D T acs ("cycle", 32)
       (by simp [transferQuietNames])
   · funext a
-    exact Loom.Hw.Compile.run_mems_notin "mem" (transferChosenA D T acs)
+    exact Loom.Hw.Act.run_mems_notin "mem" (transferChosenA D T acs)
       (of_decide_eq_true rfl) σ acc a.toNat 32
   · rfl
   · funext g

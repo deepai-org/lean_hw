@@ -174,10 +174,10 @@ theorem reparentA_run_new_eval (σ acc : Loom.Hw.St) (oldE : Expr 14)
     · rw [reparentA_frame_width σ acc oldE newE q w hw,
         reparentA_frame_width σ acc oldE newE' q w hw]
   · funext mn ad w
-    rw [Loom.Hw.Compile.run_mems_notin mn (Hw.reparentA oldE newE)
+    rw [Loom.Hw.Act.run_mems_notin mn (Hw.reparentA oldE newE)
         (by rw [show (Hw.reparentA oldE newE).memWrites = [] from rfl]; simp)
         σ acc ad w,
-      Loom.Hw.Compile.run_mems_notin mn (Hw.reparentA oldE newE')
+      Loom.Hw.Act.run_mems_notin mn (Hw.reparentA oldE newE')
         (by rw [show (Hw.reparentA oldE newE').memWrites = [] from rfl]; simp)
         σ acc ad w]
 

@@ -81,7 +81,7 @@ theorem square_idle_stall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       = σ.mems "mem" ad 32 := by
     intro ad
     rw [hcore, hσ1]
-    exact Loom.Hw.Compile.run_mems_notin "mem" _
+    exact Loom.Hw.Act.run_mems_notin "mem" _
       (by rw [refillAct_memWrites]; simp) σ σ ad 32
   have hτm : ∀ b : Addr, (corePhase m τ1).mem b
       = σ.mems "mem" b.toNat 32 := by
@@ -114,7 +114,7 @@ theorem square_idle_stall (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   · funext a
     show ((Hw.core m).cycle σ).mems "mem" a.toNat 32 = _
     rw [core_cycle_unfold]
-    rw [Loom.Hw.Compile.run_mems_notin "mem" Hw.tickAct
+    rw [Loom.Hw.Act.run_mems_notin "mem" Hw.tickAct
       (by simp [Hw.tickAct, Act.memWrites]) σ _ a.toNat 32]
     exact moverAct_mem_quiescent σ _ (corePhase m τ1) (Inert.of_nonretiring σ hnr) hcaps hgen hrgn
       hjob (fun d sc => andAll_retiring_quiescent σ hnr _)
