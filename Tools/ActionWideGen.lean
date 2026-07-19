@@ -260,6 +260,11 @@ private def actionCertNodeCount :
   | .seq _ left right | .ite _ _ _ left right =>
       actionCertNodeCount left + actionCertNodeCount right + 1
 
+private def sourceActionNodeCount : Loom.Hw.Act → Nat
+  | .skip | .memWrite .. | .write .. => 1
+  | .seq left right | .ite _ left right =>
+      sourceActionNodeCount left + sourceActionNodeCount right + 1
+
 private def sourceExprNodeCount : {width : Nat} → Loom.Hw.Expr width → Nat
   | _, .lit _ | _, .reg _ _ => 1
   | _, .memRead _ _ address | _, .not address | _, .slice address _ _
@@ -334,6 +339,199 @@ private unsafe def reportCoreStats (runtime : System.FilePath) : IO UInt32 := do
   IO.println s!"expression-checks={stats.checks}"
   IO.println s!"expression-nodes={stats.nodes}"
   IO.println s!"maximum-expression-nodes={stats.maximum}"
+  let core := Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest
+  IO.println s!"core-source-actions={sourceActionNodeCount core}"
+  match core with
+  | .ite _ countdown issue =>
+      IO.println s!"core-countdown-actions={sourceActionNodeCount countdown}"
+      IO.println s!"core-issue-actions={sourceActionNodeCount issue}"
+  | _ => pure ()
+  IO.println s!"retire-actions={sourceActionNodeCount Machines.Lnp64u.Hw.retireAct}"
+  IO.println s!"rv-init-actions={sourceActionNodeCount Machines.Lnp64u.Hw.rvInit}"
+  IO.println s!"rv-step-actions={sourceActionNodeCount Machines.Lnp64u.Hw.rvStep}"
+  for domain in List.finRange Machines.Lnp64u.numDomains do
+    IO.println s!"issue-{domain.val}-actions={sourceActionNodeCount
+      (Machines.Lnp64u.Hw.issueFor Machines.Lnp64u.Demo.sysManifest domain)}"
+    IO.println s!"retire-{domain.val}-actions={sourceActionNodeCount
+      (Machines.Lnp64u.Hw.retireFor domain)}"
+  return 0
+
+private structure CoreCut where
+  name : String
+  source : String
+  cert : String
+  input : Array Loom.Release.Symbolic.Ref
+  needed : List Nat
+  size : Nat
+
+private structure CoreCutState where
+  retireNext : Nat := 0
+  issueNext : Nat := 0
+  revokeNext : Nat := 0
+  cuts : Array CoreCut := #[]
+
+private abbrev CoreCutM := StateT CoreCutState Option
+
+private partial def collectCoreCuts (registers : Array RegDecl)
+    (issueOrder : Array Machines.Lnp64u.DomainId)
+    (source : Act) (cert : Loom.Release.Symbolic.ActionWide.ActionCert)
+    (input : Array Loom.Release.Symbolic.Ref) (needed : List Nat)
+    (certExpr : String) : CoreCutM (Nat × Loom.Release.Symbolic.ActionWide.Result) := do
+  let size := sourceActionNodeCount source
+  let state ← get
+  let selected : Option (String × String × CoreCutState) :=
+    if size == 15389 && state.retireNext < Machines.Lnp64u.numDomains then
+      let domain := state.retireNext
+      some ("retire" ++ toString domain,
+        "Machines.Lnp64u.Hw.retireFor ⟨" ++ toString domain ++
+          ", by decide⟩",
+        { state with retireNext := state.retireNext + 1 })
+    else if size == 2967 && state.issueNext < issueOrder.size then
+      let domain := (issueOrder[state.issueNext]!).val
+      some ("issue" ++ toString domain,
+        "Machines.Lnp64u.Hw.issueFor Machines.Lnp64u.Demo.sysManifest ⟨" ++
+          toString domain ++ ", by decide⟩",
+        { state with issueNext := state.issueNext + 1 })
+    else if size == 513 && state.revokeNext < 2 then
+      let suffix := if state.revokeNext == 0 then "Init" else "Step"
+      some ("rv" ++ suffix, "Machines.Lnp64u.Hw.rv" ++ suffix,
+        { state with revokeNext := state.revokeNext + 1 })
+    else none
+  if let some (name, sourceExpr, nextState) := selected then
+    let some result := evaluateCert registers input needed cert | failure
+    let cut : CoreCut :=
+      { name, source := sourceExpr, cert := certExpr, input, needed, size }
+    set { nextState with cuts := nextState.cuts.push cut }
+    return (size, result)
+  match source, cert with
+  | .seq left right, .seq _ leftCert rightCert =>
+      let leftNeeded := Loom.Release.Symbolic.ActionWide.neededInputs
+        rightCert.summary needed
+      let leftCertExpr := "Symbolic.ActionWide.ActionCert.seqLeft (" ++
+        certExpr ++ ")"
+      let rightCertExpr := "Symbolic.ActionWide.ActionCert.seqRight (" ++
+        certExpr ++ ")"
+      let (_, leftResult) ← collectCoreCuts registers issueOrder left leftCert input
+        leftNeeded leftCertExpr
+      let _ ← collectCoreCuts registers issueOrder right rightCert leftResult.refs
+        needed rightCertExpr
+      let some result := evaluateCert registers input needed cert | failure
+      return (size, result)
+
+  | .ite _ thenAction elseAction, .ite summary _ _ thenCert elseCert =>
+      let changed := Loom.Release.Symbolic.ActionWide.changedOutputs summary needed
+      let thenCertExpr := "Symbolic.ActionWide.ActionCert.iteThen (" ++
+        certExpr ++ ")"
+      let elseCertExpr := "Symbolic.ActionWide.ActionCert.iteElse (" ++
+        certExpr ++ ")"
+      let _ ← collectCoreCuts registers issueOrder thenAction thenCert input changed
+        thenCertExpr
+      let _ ← collectCoreCuts registers issueOrder elseAction elseCert input changed
+        elseCertExpr
+      let some result := evaluateCert registers input needed cert | failure
+      return (size, result)
+  | _, _ =>
+      let some result := evaluateCert registers input needed cert | failure
+      return (size, result)
+
+private def cutRegistersToLean (registers : Array RegDecl) : String :=
+  "#[" ++ String.intercalate ", " (registers.toList.map fun register =>
+    "{ name := " ++ reprStr register.name ++ ", width := " ++
+      toString register.width ++ ", init := BitVec.ofNat " ++
+      toString register.width ++ " " ++ toString register.init.toNat ++ " }") ++
+    "]"
+
+private def cutSparseDeltaToLean
+    (before after : Array Loom.Release.Symbolic.Ref) : String := Id.run do
+  let mut expression := "Symbolic.ActionWide.SparseRefs.empty"
+  for index in List.range (min before.size after.size) do
+    if before[index]? != after[index]? then
+      if let some afterRef := after[index]? then
+        expression := "(" ++ expression ++ ").write " ++ toString index ++
+          " (" ++ Tools.ReleaseCertGen.actionWideRefToLean afterRef ++ ")"
+  pure expression
+
+private def cutIndicesToBits (indices : List Nat) : Nat :=
+  indices.foldl (fun bits index => bits ||| (1 <<< index)) 0
+
+private def runtimeCheckpoints (program : Tools.RuntimeSsa.Program)
+    (threshold : Nat := 64) : List Nat := Id.run do
+  let mut counts := Array.replicate program.wires.size 0
+  for wire in program.wires do
+    for operand in wire.rhs.strings do
+      if let some number := Loom.Release.Symbolic.wireNumber? operand then
+        if number < counts.size then
+          counts := counts.set! number (counts[number]! + 1)
+  for register in program.regs do
+    if let some number := Loom.Release.Symbolic.wireNumber? register.next then
+      if number < counts.size then
+        counts := counts.set! number (counts[number]! + 1)
+  pure <| (List.range counts.size).filter fun number =>
+    decide (counts[number]! >= threshold)
+
+private unsafe def generateCoreCuts (runtime outputDir : System.FilePath) :
+    IO UInt32 := do
+  let program ← Tools.RuntimeSsa.load runtime
+  let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
+  let some certs := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
+      design program | return 1
+  let registers := design.regs.toArray
+  let checkpoints := runtimeCheckpoints program
+  let initial := registers.map fun register =>
+    Loom.Release.Symbolic.Ref.reg register.name
+  let some refillCert := certs[0]? | return 1
+  let needed := List.range registers.size
+  let refillNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    certs.tail needed
+  let some refillResult := evaluateCert registers initial refillNeeded refillCert
+    | return 1
+  let some coreCert := certs[1]? | return 1
+  let coreNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    (certs.drop 2) needed
+  let issueOrder := (Machines.Lnp64u.Hw.schedOrder
+    Machines.Lnp64u.Demo.sysManifest).toArray
+  let some (_, state) := (collectCoreCuts registers issueOrder
+      (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) coreCert
+      refillResult.refs coreNeeded "actionCertNode15158").run {}
+    | return 1
+  unless state.retireNext == 4 && state.issueNext == 4 &&
+      state.revokeNext == 2 && state.cuts.size == 10 do
+    IO.eprintln (s!"unexpected cut coverage: retire={state.retireNext} " ++
+      s!"issue={state.issueNext} revoke={state.revokeNext} total={state.cuts.size}")
+    return 1
+  IO.FS.createDirAll outputDir
+  for index in [:state.cuts.size] do
+    let some cut := state.cuts[index]? | return 1
+    let suffix := pad3 index
+    let source := "-- Generated independent core-action certificate; DO NOT EDIT.\n" ++
+      "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
+      "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+      "import Loom.Release.SymbolicDecide\n" ++
+      "import Machines.Lnp64u.Hw.Core\n" ++
+      "import Machines.Lnp64u.Hw.Demo\n\n" ++
+      "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
+      "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+      "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+      "indexed_expr_checkpoints " ++
+        String.intercalate " " (checkpoints.map toString) ++ "\n\n" ++
+      "def cutRegisters" ++ suffix ++ " : Array RegDecl := " ++
+        cutRegistersToLean registers ++ "\n" ++
+      "noncomputable def cutInput" ++ suffix ++
+        " : Symbolic.ActionWide.SparseRefs := " ++
+        cutSparseDeltaToLean initial cut.input ++
+        "\n" ++
+      "def cutCert" ++ suffix ++ " : Symbolic.ActionWide.ActionCert := " ++
+        cut.cert ++ "\n\n" ++
+      "theorem " ++ cut.name ++ "Evidence :\n" ++
+      "    ∃ result, Symbolic.ActionWide.BitSparseEvidence fastIndexedWireTree " ++
+        "fastWireTable cutRegisters" ++ suffix ++ " (" ++ cut.source ++ ") " ++
+        "cutInput" ++ suffix ++ " " ++ toString (cutIndicesToBits cut.needed) ++
+        " cutCert" ++ suffix ++ " result :=\n" ++
+      "  sparse_evidence_exists\n\n" ++
+      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (outputDir / ("CoreCut" ++ suffix ++ ".lean")) source
+    IO.println s!"cut {suffix} {cut.name}: {cut.size} actions"
   return 0
 
 private def resultToLean (result : Loom.Release.Symbolic.ActionWide.Result) :
@@ -673,6 +871,7 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath)
     (split : Bool := false) :
     IO UInt32 := do
   let program ← Tools.RuntimeSsa.load runtime
+  let checkpoints := runtimeCheckpoints program
   let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
   let some cert := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
       design program | return 1
@@ -777,8 +976,11 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath)
       "import GeneratedRelease.Lnp64u.ActionCert\n" ++
       "import Loom.Release.SymbolicDecide\n" ++
       "import Machines.Lnp64u.Hw.Core\n" ++
-      "import Machines.Lnp64u.Hw.Demo\n\n" ++ namespaceHeader ++
-      localOptions ++ initialData ++
+      "import Machines.Lnp64u.Hw.Demo\n" ++
+      "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++ namespaceHeader ++
+      localOptions ++ "indexed_expr_checkpoints " ++
+        String.intercalate " " (checkpoints.map toString) ++ "\n\n" ++
+      initialData ++
       "theorem coreActionEvidence :\n" ++
       "    ∃ result, Symbolic.ActionWide.BitSparseEvidence fastIndexedWireTree fastWireTable " ++
         "actionRegisters\n" ++
@@ -913,6 +1115,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       generateCoreEvidence runtime outputDir true
   | ["lnp64u-core-stats", runtime] =>
       reportCoreStats runtime
+  | ["lnp64u-core-cuts", runtime, outputDir] =>
+      generateCoreCuts runtime outputDir
   | _ =>
       IO.eprintln "usage: actionwidegen {acc8|lnp64u} RUNTIME.json OUTPUT.lean"
       return 2

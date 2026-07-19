@@ -6,6 +6,7 @@ import Loom.Release.WholeRegisterPlan
 import Loom.Release.ActionWideRegister
 import Loom.Hw.CompileCorrect
 import Lean.Elab.Term
+import Lean.Elab.Command
 import Lean.Meta.Tactic.AuxLemma
 import Lean.Meta.Tactic.Simp
 import Lean.Meta.Reduce
@@ -835,8 +836,61 @@ private def proveNatLe (left right : Expr) : MetaM Expr :=
 private abbrev IndexedExprCache := IO.Ref (Std.HashMap Nat Expr)
 
 private initialize indexedExprModuleCache : IndexedExprCache ← IO.mkRef {}
+private initialize indexedExprCheckpoints : IO.Ref (Std.HashSet Nat) ← IO.mkRef {}
+private initialize indexedExprPendingNodes : IO.Ref Nat ← IO.mkRef 0
 private initialize indexedLookupMs : IO.Ref Nat ← IO.mkRef 0
 private initialize indexedExposeMs : IO.Ref Nat ← IO.mkRef 0
+
+private structure LocalProofBinding where
+  placeholder : Expr
+  type : Expr
+  value : Expr
+
+private initialize localProofBindings : IO.Ref (Array LocalProofBinding) ←
+  IO.mkRef #[]
+private initialize useLocalProofBindings : IO.Ref Bool ← IO.mkRef false
+
+private def checkpointLocalProof (type value : Expr) : MetaM Expr := do
+  unless ← useLocalProofBindings.get do
+    return ← cacheClosedProof type value
+  let placeholder ← mkFreshExprMVar type
+  localProofBindings.modify (·.push { placeholder, type, value })
+  pure placeholder
+
+private partial def wrapLocalProofBindingsFrom
+    (bindings : Array LocalProofBinding) (index : Nat)
+    (replacements : Std.HashMap Expr Expr) (locals : Array Expr)
+    (body : Expr) : MetaM Expr := do
+  if index == bindings.size then
+    let body := body.replace fun expression => replacements[expression]?
+    return ← mkLetFVars locals body (usedLetOnly := false)
+      (generalizeNondepLet := false)
+  let some binding := bindings[index]?
+    | throwError "release proof binding index is out of bounds"
+  let type := binding.type.replace fun expression => replacements[expression]?
+  let value := binding.value.replace fun expression => replacements[expression]?
+  withLetDecl (Name.mkSimple s!"releaseProof{index}") type value fun localExpr => do
+    wrapLocalProofBindingsFrom bindings (index + 1)
+      (replacements.insert binding.placeholder localExpr)
+      (locals.push localExpr) body
+
+private def wrapLocalProofBindings (body : Expr) : MetaM Expr := do
+  wrapLocalProofBindingsFrom (← localProofBindings.get) 0 {} #[] body
+
+/-- Select SSA hubs whose evidence should be installed as named auxiliary
+theorems. This is elaboration-only performance guidance; every selected proof
+is independently checked by the kernel. -/
+syntax (name := indexedExprCheckpointCmd)
+  "indexed_expr_checkpoints" num* : command
+
+@[command_elab indexedExprCheckpointCmd]
+unsafe def elabIndexedExprCheckpoints : Lean.Elab.Command.CommandElab := fun stx => do
+  let mut checkpoints : Std.HashSet Nat := {}
+  for argument in stx[1].getArgs do
+    let some value := argument.isNatLit?
+      | throwErrorAt argument "indexed_expr_checkpoints expects natural literals"
+    checkpoints := checkpoints.insert value
+  indexedExprCheckpoints.set checkpoints
 
 private partial def exposeMvExpr (expression : Expr) : MetaM Expr := do
   let reduced ← withTransparency .all <| whnf expression
@@ -874,8 +928,19 @@ private partial def exposeSymbolicRef (reference : Expr) : MetaM Expr := do
   | none => throwError "indexed_expr_decide: reference did not expose: {reduced}"
 
 private def cacheIndexedExprEvidence (cache : IndexedExprCache)
-    (number : Option Nat) (_type proof : Expr) : MetaM Expr := do
-  let cached := proof
+    (number : Option Nat) (type proof : Expr) : MetaM Expr := do
+  let pending ← indexedExprPendingNodes.modifyGet fun count =>
+    (count + 1, count + 1)
+  let checkpoints ← indexedExprCheckpoints.get
+  let hub := match number with
+    | some value => checkpoints.contains value
+    | none => false
+  let shouldCheckpoint := hub || pending >= 128
+  let cached ← match number with
+    | some _ =>
+        if shouldCheckpoint then checkpointLocalProof type proof else pure proof
+    | none => pure proof
+  if shouldCheckpoint then indexedExprPendingNodes.set 0
   if let some number := number then
     cache.modify fun entries => entries.insert number cached
   let size := (← cache.get).size
@@ -1268,6 +1333,15 @@ private def noChangedBits : Expr := mkNatLit 0
 private def singletonChangedBit (value : Expr) : Expr :=
   mkApp2 (mkConst ``Nat.shiftLeft) (mkNatLit 1) value
 
+/-- Collapse a computed bitmap at a recursive boundary. Without this, every
+descendant re-evaluates the complete `neededBitsBefore`/`changedBitsAt` chain
+when proving a single `testBit` fact. -/
+private def normalizeNatLiteral (value : Expr) : MetaM Expr := do
+  let reduced ← withTransparency .all <| whnf value
+  let some number ← getNatValue? reduced
+    | throwError "sparse_evidence_decide: bitmap did not reduce to a natural"
+  pure (mkNatLit number)
+
 private def decidePropositionIsTrue (type : Expr) : MetaM Bool := do
   let inst ← synthInstance (mkApp (mkConst ``Decidable) type)
   let decision := mkApp2 (mkConst ``decide) type inst
@@ -1312,7 +1386,7 @@ private def boundSparseProof (build : SparseProofBuild) : MetaM SparseProofBuild
   if build.size < 4096 then return build
   let started ← IO.monoMsNow
   let type ← inferType build.proof
-  let proof ← cacheClosedProof type build.proof
+  let proof ← checkpointLocalProof type build.proof
   let finished ← IO.monoMsNow
   sparseBoundMs.modify (· + (finished - started))
   pure { build with proof, size := 1 }
@@ -1352,6 +1426,30 @@ private partial def proveSparseEvidence (wires table registers action refs neede
   sparseActionExposeMs.modify (· + (actionFinished - actionStarted))
   let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
   let actionArgs := actionReduced.getAppArgs
+  if actionName == ``List.foldr then
+    let function := actionArgs[actionArgs.size - 3]!
+    let initial := actionArgs[actionArgs.size - 2]!
+    let values := actionArgs.back!
+    let simpContext ← Simp.Context.mkDefault
+    let (valuesResult, _) ← simp values simpContext
+    let expanded ← expandListFoldr function initial valuesResult.expr
+    let build ← proveSparseEvidence wires table registers expanded refs needed cert
+    let some valuesEq := valuesResult.proof? | return build
+    let valuesType ← inferType values
+    let foldMotive ← withLocalDeclD `values valuesType fun xs =>
+      mkLambdaFVars #[xs] (mkAppN actionReduced.getAppFn
+        (actionArgs.pop.push xs))
+    let actionEq ← mkCongrArg foldMotive valuesEq
+    let equalityType ← inferType actionEq
+    let actionType := equalityType.getAppArgs[0]!
+    let evidenceMotive ← withLocalDeclD `action actionType fun concreteAction => do
+      let proposition := mkAppN
+        (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence)
+        #[wires, table, registers, concreteAction, refs, needed, cert, build.result]
+      mkLambdaFVars #[concreteAction] proposition
+    let propositionEq ← mkCongrArg evidenceMotive actionEq
+    let proof ← mkAppM ``Eq.mpr #[propositionEq, build.proof]
+    return { build with proof }
   let certStarted ← IO.monoMsNow
   let (certName, certArgs) ← expose cert
   let certFinished ← IO.monoMsNow
@@ -1431,8 +1529,10 @@ private partial def proveSparseEvidence (wires table registers action refs neede
     let leftCert := certArgs[certArgs.size - 2]!
     let rightCert := certArgs.back!
     let rightSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[rightCert]
-    let leftNeeded ← mkAppM ``Loom.Release.Symbolic.ActionWide.neededBitsBefore
+    let leftNeededComputed ← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.neededBitsBefore
       #[rightSummary, needed]
+    let leftNeeded ← normalizeNatLiteral leftNeededComputed
     let leftBuild ← proveSparseEvidence wires table registers left refs
       leftNeeded leftCert >>= boundSparseProof
     let leftRefs ← sparseRefs leftBuild.result
@@ -1442,8 +1542,9 @@ private partial def proveSparseEvidence (wires table registers action refs neede
       ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[cert]
     let summaryProof ← sparseTimedDecide sparseSummaryMs
       (← mkEq summary expectedSummary)
-    let changed ← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
-      #[summary, needed]
+    let changedComputed ← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.changedBitsAt #[summary, needed]
+    let changed ← normalizeNatLiteral changedComputed
     let result ← sparseResult (← sparseRefs rightBuild.result) changed
     let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.seq)
       #[wires, table, registers, left, right, refs, needed, summary, leftCert,
@@ -1460,8 +1561,9 @@ private partial def proveSparseEvidence (wires table registers action refs neede
     let joins := certArgs[certArgs.size - 3]!
     let thenCert := certArgs[certArgs.size - 2]!
     let elseCert := certArgs.back!
-    let changed ← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
-      #[summary, needed]
+    let changedComputed ← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.changedBitsAt #[summary, needed]
+    let changed ← normalizeNatLiteral changedComputed
     let thenBuild ← proveSparseEvidence wires table registers thenAction refs
       changed thenCert >>= boundSparseProof
     let elseBuild ← proveSparseEvidence wires table registers elseAction refs
@@ -1488,7 +1590,7 @@ private partial def proveSparseEvidence (wires table registers action refs neede
         elseBuild.proof, joinsProof]
     return ← boundSparseProof
       { result, proof, size := thenBuild.size + elseBuild.size + 1 }
-  throwError "sparse_evidence_decide: source/certificate shape mismatch"
+  throwError "sparse_evidence_decide: source/certificate shape mismatch at node {count}: source={actionName}, certificate={certName}"
 
 /-- Prove a complete sparse action certificate by a single source traversal. -/
 syntax (name := sparseEvidenceDecide) "sparse_evidence_decide" : term
@@ -1499,6 +1601,7 @@ unsafe def elabSparseEvidenceDecide : TermElab := fun _ expected? => do
   -- with that declaration. Do not leak their temporary names into the next
   -- top-level sparse proof; sharing is needed across this traversal only.
   indexedExprModuleCache.set {}
+  indexedExprPendingNodes.set 0
   indexedLookupMs.set 0
   indexedExposeMs.set 0
   sparseNodeCount.set 0
@@ -1512,6 +1615,8 @@ unsafe def elabSparseEvidenceDecide : TermElab := fun _ expected? => do
   sparseBitMs.set 0
   sparseSummaryMs.set 0
   sparseJoinMs.set 0
+  localProofBindings.set #[]
+  useLocalProofBindings.set true
   let some expected := expected?
     | throwError "sparse_evidence_decide requires an expected proposition"
   let expected ← instantiateMVars expected
@@ -1523,7 +1628,9 @@ unsafe def elabSparseEvidenceDecide : TermElab := fun _ expected? => do
     args[4]! args[5]! args[6]!
   unless ← isDefEq build.result args[7]! do
     throwError "sparse_evidence_decide result does not match the expected result"
-  pure build.proof
+  let proof ← wrapLocalProofBindings build.proof
+  useLocalProofBindings.set false
+  pure proof
 
 /-- Infer the sparse result while producing evidence. This keeps the theorem
 statement compact; a later constant-time projection obtains checker
@@ -1533,6 +1640,7 @@ syntax (name := sparseEvidenceExists) "sparse_evidence_exists" : term
 @[term_elab sparseEvidenceExists]
 unsafe def elabSparseEvidenceExists : TermElab := fun _ expected? => do
   indexedExprModuleCache.set {}
+  indexedExprPendingNodes.set 0
   indexedLookupMs.set 0
   indexedExposeMs.set 0
   sparseNodeCount.set 0
@@ -1546,6 +1654,8 @@ unsafe def elabSparseEvidenceExists : TermElab := fun _ expected? => do
   sparseBitMs.set 0
   sparseSummaryMs.set 0
   sparseJoinMs.set 0
+  localProofBindings.set #[]
+  useLocalProofBindings.set true
   let some expected := expected?
     | throwError "sparse_evidence_exists requires an expected proposition"
   let expected ← instantiateMVars expected
@@ -1561,7 +1671,10 @@ unsafe def elabSparseEvidenceExists : TermElab := fun _ expected? => do
     throwError "sparse_evidence_exists expected existential BitSparseEvidence"
   let build ← proveSparseEvidence args[0]! args[1]! args[2]! args[3]!
     args[4]! args[5]! args[6]!
-  mkAppM ``Exists.intro #[build.result, build.proof]
+  let proof ← mkAppM ``Exists.intro #[build.result, build.proof]
+  let proof ← wrapLocalProofBindings proof
+  useLocalProofBindings.set false
+  pure proof
 
 private def transportNextRegAction (wires table register width current out cert
     actionEq proof : Expr) : MetaM Expr := do
