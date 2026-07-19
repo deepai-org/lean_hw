@@ -359,11 +359,21 @@ private def emitEvidenceContext (source cert input needed : String)
   pure (name ++ ".source", name ++ ".cert", name ++ ".input",
     name ++ ".needed")
 
-private def emitEvidenceBoundary (build : EvidenceBuild) : EvidenceGenM EvidenceBuild := do
+private def emitEvidenceBoundary (build : EvidenceBuild) (direct := false) :
+    EvidenceGenM EvidenceBuild := do
   let state ← get
   let suffix := toString state.next
   let dataName := "segmentData" ++ suffix
   let theoremName := "segmentEvidence" ++ suffix
+  let proof := if direct then
+      " := (.direct (kernel_decide))\n"
+    else
+      " := by\n" ++
+      "  unfold " ++ dataName ++ "\n" ++
+      String.join build.locals.toList ++
+      "  change " ++ evidenceType build.source build.input build.needed
+        build.cert build.result ++ "\n" ++
+      "  exact " ++ build.evidence ++ "\n"
   let declaration :=
     "noncomputable def " ++ dataName ++ " : ActionEvidenceData :=\n" ++
     String.join build.locals.toList ++
@@ -373,12 +383,7 @@ private def emitEvidenceBoundary (build : EvidenceBuild) : EvidenceGenM Evidence
     "theorem " ++ theoremName ++ " :\n    " ++
       evidenceType (dataName ++ ".source") (dataName ++ ".input")
         (dataName ++ ".needed") (dataName ++ ".cert")
-        (dataName ++ ".result") ++ " := by\n" ++
-    "  unfold " ++ dataName ++ "\n" ++
-    String.join build.locals.toList ++
-    "  change " ++ evidenceType build.source build.input build.needed
-      build.cert build.result ++ "\n" ++
-    "  exact " ++ build.evidence ++ "\n"
+        (dataName ++ ".result") ++ proof
   set ({ next := state.next + 1, resultNext := state.resultNext
          aliasNext := state.aliasNext, neededNext := state.neededNext
          declarations := state.declarations.push declaration } : EvidenceGenState)
@@ -504,7 +509,8 @@ private partial def buildEvidence (registers : Array RegDecl)
       if build.size ≥ 32 then emitEvidenceBoundary build else pure build
   | _, _ => failure
 
-private unsafe def generateCoreEvidence (runtime output : System.FilePath) :
+private unsafe def generateCoreEvidence (runtime output : System.FilePath)
+    (split : Bool := false) :
     IO UInt32 := do
   let program ← Tools.RuntimeSsa.load runtime
   let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
@@ -529,18 +535,20 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath) :
       "actionCertNode15158"
       "coreEvidenceInput" "coreEvidenceNeeded" #[] 0).run
         initialState | return 1
-  let some (rootBuild, state) := (emitEvidenceBoundary rootBuild).run state
+  let some (rootBuild, state) := (emitEvidenceBoundary rootBuild false).run state
     | return 1
   IO.eprintln s!"generated {state.next} bounded evidence segments"
-  let source := "-- Generated bounded core evidence; DO NOT EDIT.\n" ++
+  let imports := "-- Generated bounded core evidence; DO NOT EDIT.\n" ++
     "import GeneratedRelease.Lnp64u.ActionCert\n" ++
     "import GeneratedRelease.Lnp64u.SemanticRoot\n" ++
     "import Loom.Release.KernelDecide\n" ++
     "import Machines.Lnp64u.Hw.Core\n" ++
-    "import Machines.Lnp64u.Hw.Demo\n\n" ++
+    "import Machines.Lnp64u.Hw.Demo\n\n"
+  let namespaceHeader :=
     "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
     "open Loom.Hw Loom.Release\n\n" ++
-    "noncomputable section\n\n" ++
+    "noncomputable section\n\n"
+  let dataStructures :=
     "structure ActionEvidenceData where\n" ++
     "  source : Act\n" ++
     "  cert : Symbolic.ActionWide.ActionCert\n" ++
@@ -552,17 +560,62 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath) :
     "  cert : Symbolic.ActionWide.ActionCert\n" ++
     "  input : Array Symbolic.Ref\n" ++
     "  needed : List Nat\n\n" ++
+    ""
+  let localOptions :=
     "private abbrev design := Machines.Lnp64u.Hw.core " ++
       "Machines.Lnp64u.Demo.sysManifest\n" ++
-    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+    "set_option maxRecDepth 1000000\n" ++
+    "set_option maxHeartbeats 0\n" ++
+    "set_option linter.unusedVariables false\n\n"
+  let initialData :=
     "noncomputable def coreEvidenceInput : Array Symbolic.Ref := " ++
       Tools.ReleaseCertGen.actionWideRefsToLean refillResult.refs ++ "\n" ++
     "noncomputable def coreEvidenceNeeded : List Nat := [" ++
-      String.intercalate ", " (coreNeeded.map toString) ++ "]\n\n" ++
-    String.intercalate "\n" state.declarations.toList ++ "\n" ++
-    "theorem coreActionAccepted := " ++ rootBuild.evidence ++ ".accepted\n\n" ++
-    "end Loom.GeneratedRelease.Lnp64u\n"
-  writeIfChanged output source
+      String.intercalate ", " (coreNeeded.map toString) ++ "]\n\n"
+  if split then
+    IO.FS.createDirAll output
+    let prelude := imports ++ namespaceHeader ++ dataStructures ++ localOptions ++
+      initialData ++ "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (output / "ActionEvidencePrelude.lean") prelude
+    let mut batches : Array (Array String) := #[]
+    let mut batch : Array String := #[]
+    let mut batchBytes := 0
+    for declaration in state.declarations do
+      if batchBytes > 0 && batchBytes + declaration.length > 4 * 1024 * 1024 then
+        batches := batches.push batch
+        batch := #[]
+        batchBytes := 0
+      batch := batch.push declaration
+      batchBytes := batchBytes + declaration.length
+    if !batch.isEmpty then batches := batches.push batch
+    IO.eprintln s!"generated {batches.size} evidence modules"
+    for index in List.range batches.size do
+      let some declarations := batches[index]? | return 1
+      let imported := if index = 0 then
+          "GeneratedRelease.Lnp64u.ActionEvidencePrelude"
+        else
+          "GeneratedRelease.Lnp64u.ActionEvidenceBatch" ++ pad3 (index - 1)
+      let source := "-- Generated bounded evidence batch; DO NOT EDIT.\n" ++
+        "import " ++ imported ++ "\n\n" ++ namespaceHeader ++ localOptions ++
+        String.intercalate "\n" declarations.toList ++ "\n" ++
+        "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+      writeIfChanged (output / ("ActionEvidenceBatch" ++ pad3 index ++ ".lean"))
+        source
+    let lastImport := if batches.isEmpty then
+        "GeneratedRelease.Lnp64u.ActionEvidencePrelude"
+      else "GeneratedRelease.Lnp64u.ActionEvidenceBatch" ++
+        pad3 (batches.size - 1)
+    let root := "-- Generated action evidence root; DO NOT EDIT.\n" ++
+      "import " ++ lastImport ++ "\n\n" ++ namespaceHeader ++
+      "theorem coreActionAccepted := " ++ rootBuild.evidence ++
+        ".accepted\n\nend\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (output / "ActionEvidenceRoot.lean") root
+  else
+    let source := imports ++ namespaceHeader ++ dataStructures ++ localOptions ++
+      initialData ++ String.intercalate "\n" state.declarations.toList ++
+      "\ntheorem coreActionAccepted := " ++ rootBuild.evidence ++
+      ".accepted\n\nend\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged output source
   return 0
 
 private unsafe def generateCoreBranchProbe (runtime output : System.FilePath) :
@@ -678,6 +731,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       generateCoreBranchProbe runtime output
   | ["lnp64u-core-evidence", runtime, output] =>
       generateCoreEvidence runtime output
+  | ["lnp64u-core-evidence-batches", runtime, outputDir] =>
+      generateCoreEvidence runtime outputDir true
   | _ =>
       IO.eprintln "usage: actionwidegen {acc8|lnp64u} RUNTIME.json OUTPUT.lean"
       return 2
