@@ -431,9 +431,16 @@ private def sparseDeltaToLean (base : String)
             " (" ++ Tools.ReleaseCertGen.actionWideRefToLean afterRef ++ ")"
   pure expression
 
+private def registersToLean (registers : Array RegDecl) : String :=
+  "#[" ++ String.intercalate ", " (registers.toList.map fun register =>
+    "{ name := " ++ reprStr register.name ++ ", width := " ++
+      toString register.width ++ ", init := BitVec.ofNat " ++
+      toString register.width ++ " " ++ toString register.init.toNat ++ " }") ++
+    "]"
+
 private def evidenceType (source input needed cert result : String) : String :=
   "Symbolic.ActionWide.SparseEvidence indexedWireTree wireTable " ++
-    "design.regs.toArray (" ++ source ++ ") (" ++ input ++ ") (" ++
+    "actionRegisters (" ++ source ++ ") (" ++ input ++ ") (" ++
     needed ++ ") (" ++ cert ++ ") (" ++ result ++ ")"
 
 private def mergeLocals (left right : Array String) : Array String :=
@@ -447,7 +454,7 @@ private def emitEvidenceContext (source cert input needed : String)
   let suffix := toString state.aliasNext
   let name := "actionContext" ++ suffix
   let declaration :=
-    "noncomputable abbrev " ++ name ++ " : ActionEvidenceContext :=\n" ++
+    "noncomputable def " ++ name ++ " : ActionEvidenceContext :=\n" ++
     String.join locals.toList ++
     "  { source := " ++ source ++ ", cert := " ++ cert ++
       ", input := " ++ input ++ ", needed := " ++ needed ++ " }\n"
@@ -553,12 +560,12 @@ private partial def buildEvidence (registers : Array RegDecl)
       let evidence := if used then
           "(Symbolic.ActionWide.SparseEvidence.writeNeeded " ++
             "(wires := indexedWireTree) (table := wireTable) " ++
-            "(registers := design.regs.toArray) " ++
+            "(registers := actionRegisters) " ++
             "(kernel_decide_inline) (kernel_decide_inline) " ++
-            "(kernel_decide_inline))"
+            "(indexed_expr_decide))"
         else "(Symbolic.ActionWide.SparseEvidence.writeUnused " ++
           "(wires := indexedWireTree) (table := wireTable) " ++
-          "(registers := design.regs.toArray) " ++
+          "(registers := actionRegisters) " ++
           "(kernel_decide_inline) (kernel_decide_inline))"
       let build : EvidenceBuild :=
         { source := sourceExpr, cert := certExpr, input := inputExpr
@@ -597,7 +604,7 @@ private partial def buildEvidence (registers : Array RegDecl)
       let proof :=
         "(Symbolic.ActionWide.SparseEvidence.seqProjected " ++
           "(wires := indexedWireTree) (table := wireTable) " ++
-          "(registers := design.regs.toArray) " ++
+          "(registers := actionRegisters) " ++
           "(action := " ++ sourceExpr ++ ") (cert := " ++ certExpr ++ ") " ++
           "(leftResult := " ++ leftBuild.result ++ ") " ++
           "(rightResult := " ++ rightBuild.result ++ ") " ++
@@ -642,12 +649,12 @@ private partial def buildEvidence (registers : Array RegDecl)
       let proof :=
         "(Symbolic.ActionWide.SparseEvidence.iteProjected " ++
           "(wires := indexedWireTree) (table := wireTable) " ++
-          "(registers := design.regs.toArray) " ++
+          "(registers := actionRegisters) " ++
           "(action := " ++ sourceExpr ++ ") (cert := " ++ certExpr ++ ") " ++
           "(thenResult := " ++ thenBuild.result ++ ") " ++
           "(elseResult := " ++ elseBuild.result ++ ") " ++
           "(kernel_decide_inline) (kernel_decide_inline) " ++
-          "(kernel_decide_inline) (kernel_decide_inline) (" ++
+          "(kernel_decide_inline) (indexed_expr_decide) (" ++
           thenEvidence ++ ") (" ++ elseEvidence ++
           ") (kernel_decide_inline))"
       let build : EvidenceBuild :=
@@ -692,6 +699,7 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath)
     "import GeneratedRelease.Lnp64u.ActionCert\n" ++
     "import GeneratedRelease.Lnp64u.SemanticRoot\n" ++
     "import Loom.Release.KernelDecide\n" ++
+    "import Loom.Release.SymbolicDecide\n" ++
     "import Machines.Lnp64u.Hw.Core\n" ++
     "import Machines.Lnp64u.Hw.Demo\n\n"
   let namespaceHeader :=
@@ -712,12 +720,12 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath)
     "  needed : List Nat\n\n" ++
     ""
   let localOptions :=
-    "private abbrev design := Machines.Lnp64u.Hw.core " ++
-      "Machines.Lnp64u.Demo.sysManifest\n" ++
     "set_option maxRecDepth 1000000\n" ++
     "set_option maxHeartbeats 0\n" ++
     "set_option linter.unusedVariables false\n\n"
   let initialData :=
+    "def actionRegisters : Array RegDecl := " ++ registersToLean registers ++
+      "\n" ++
     "noncomputable def coreEvidenceInput : Symbolic.ActionWide.SparseRefs := " ++
       sparseDeltaToLean "Symbolic.ActionWide.SparseRefs.empty" initial
         refillResult.refs ++ "\n" ++
