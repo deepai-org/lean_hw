@@ -183,6 +183,65 @@ structure Result where
   changed : List Nat
   deriving Repr, DecidableEq
 
+/-! ### Kernel-friendly sparse register state
+
+The release checker must update hundreds of register roots across tens of
+thousands of action nodes. Persistent `Array.set!` makes that quadratic in the
+register count under kernel reduction. A fixed-depth binary trie rebuilds only
+sixteen constructors per update and has a canonical shape independent of
+insertion order. Missing entries denote the corresponding source register.
+-/
+
+inductive SparseRefs where
+  | empty
+  | leaf (value : Ref)
+  | branch (zero one : SparseRefs)
+  deriving Repr, DecidableEq
+
+private def sparseDepth : Nat := 16
+
+def SparseRefs.get? : Nat → SparseRefs → Nat → Option Ref
+  | 0, .leaf value, _ => some value
+  | 0, _, _ => none
+  | depth + 1, .branch zero one, index =>
+      if index.testBit depth then
+        SparseRefs.get? depth one index
+      else SparseRefs.get? depth zero index
+  | _ + 1, _, _ => none
+
+def SparseRefs.set : Nat → SparseRefs → Nat → Ref → SparseRefs
+  | 0, _, _, value => .leaf value
+  | depth + 1, .branch zero one, index, value =>
+      if index.testBit depth then
+        .branch zero (SparseRefs.set depth one index value)
+      else .branch (SparseRefs.set depth zero index value) one
+  | depth + 1, _, index, value =>
+      if index.testBit depth then
+        .branch .empty (SparseRefs.set depth .empty index value)
+      else .branch (SparseRefs.set depth .empty index value) .empty
+
+def SparseRefs.lookup (registers : Array Loom.Hw.RegDecl)
+    (refs : SparseRefs) (index : Nat) : Option Ref :=
+  match refs.get? sparseDepth index with
+  | some value => some value
+  | none => do
+      let register ← registers[index]?
+      some (.reg register.name)
+
+def SparseRefs.write (refs : SparseRefs) (index : Nat) (value : Ref) :
+    SparseRefs :=
+  refs.set sparseDepth index value
+
+def SparseRefs.materialize (registers : Array Loom.Hw.RegDecl)
+    (refs : SparseRefs) : Array Ref :=
+  registers.mapIdx fun index register =>
+    (refs.get? sparseDepth index).getD (.reg register.name)
+
+structure SparseResult where
+  refs : SparseRefs
+  changed : List Nat
+  deriving Repr, DecidableEq
+
 private def singletonIndex (index : Nat) : Nat := 1 <<< index
 
 def ActionCert.summary : ActionCert → Summary
@@ -600,6 +659,234 @@ def checkedRegistersMatch (design : Loom.Hw.Design) (program : Program)
   match runCheckedRules wires table registers design.rules
       (initialRefs registers) needed cert with
   | some refs => finalMetadataMatches program design.regs refs 0
+  | none => false
+
+/-! ### Sparse compositional checker
+
+This is the release path used by generated action evidence. Every constructor
+determines its output state, so artifact proofs check only local headers,
+expressions, summaries, and join associations—not equality of whole states.
+-/
+
+def checkedWriteHeader (registers : Array Loom.Hw.RegDecl) (index width : Nat)
+    (name : String) : Bool :=
+  match registers[index]? with
+  | some source => source.name == name && source.width == width
+  | none => false
+
+def checkedSparseJoins (registers : Array Loom.Hw.RegDecl) (condition : Ref)
+    (thenResult elseResult : SparseResult) : List Nat → List Join → Bool
+  | [], [] => true
+  | index :: indices, join :: joins =>
+      match registers[index]?, thenResult.refs.lookup registers index,
+          elseResult.refs.lookup registers index with
+      | some source, some thenRef, some elseRef =>
+          join.index == index && join.width == source.width &&
+            join.guard == condition && join.thenInput == thenRef &&
+            join.elseInput == elseRef &&
+            (match join.output with | .wire _ => true | .reg _ => false) &&
+            checkedSparseJoins registers condition thenResult elseResult
+              indices joins
+      | _, _, _ => false
+  | _, _ => false
+
+def applySparseJoins (refs : SparseRefs) (joins : List Join) : SparseRefs :=
+  joins.foldl (fun result join => result.write join.index join.output) refs
+
+def runSparseAction (wires : Rope (List IndexedWire)) (table : WireTable)
+    (registers : Array Loom.Hw.RegDecl) :
+    Loom.Hw.Act → SparseRefs → List Nat → ActionCert → Option SparseResult
+  | .skip, refs, _, .skip => some { refs, changed := [] }
+  | .memWrite .., refs, _, .memWrite => some { refs, changed := [] }
+  | .write width name value, refs, needed, .write index valueRef =>
+      if !checkedWriteHeader registers index width name then none
+      else if index ∉ needed then some { refs, changed := [] }
+      else if indexedExprMatches wires table
+          (Loom.Hw.Compile.compileExpr value) valueRef then
+        some { refs := refs.write index valueRef, changed := [index] }
+      else none
+  | .seq left right, refs, needed, .seq summary leftCert rightCert => do
+      guard (summary == seqSummary leftCert.summary rightCert.summary)
+      let leftNeeded := neededInputs rightCert.summary needed
+      let leftResult ← runSparseAction wires table registers left refs leftNeeded
+        leftCert
+      let rightResult ← runSparseAction wires table registers right
+        leftResult.refs needed rightCert
+      some { refs := rightResult.refs, changed := changedOutputs summary needed }
+  | .ite condition thenAction elseAction, refs, needed,
+      .ite summary conditionRef joins thenCert elseCert => do
+      guard (summary == iteSummary thenCert.summary elseCert.summary)
+      guard (indexedExprMatches wires table
+        (Loom.Hw.Compile.compileExpr condition) conditionRef)
+      let changed := changedOutputs summary needed
+      let thenResult ← runSparseAction wires table registers thenAction refs
+        changed thenCert
+      let elseResult ← runSparseAction wires table registers elseAction refs
+        changed elseCert
+      guard (checkedSparseJoins registers conditionRef thenResult elseResult
+        changed joins)
+      some { refs := applySparseJoins refs joins, changed }
+  | _, _, _, _ => none
+
+inductive SparseEvidence (wires : Rope (List IndexedWire)) (table : WireTable)
+    (registers : Array Loom.Hw.RegDecl) :
+    Loom.Hw.Act → SparseRefs → List Nat → ActionCert → SparseResult → Prop where
+  | skip {refs needed} :
+      SparseEvidence wires table registers .skip refs needed .skip
+        { refs, changed := [] }
+  | memWrite {aw dw mem port address data refs needed} :
+      SparseEvidence wires table registers
+        (.memWrite aw dw mem port address data) refs needed .memWrite
+        { refs, changed := [] }
+  | writeUnused {width name value refs needed index valueRef}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (unused : index ∉ needed) :
+      SparseEvidence wires table registers (.write width name value) refs needed
+        (.write index valueRef) { refs, changed := [] }
+  | writeNeeded {width name value refs needed index valueRef}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (used : index ∈ needed)
+      (valueAccepted : indexedExprMatches wires table
+        (Loom.Hw.Compile.compileExpr value) valueRef = true) :
+      SparseEvidence wires table registers (.write width name value) refs needed
+        (.write index valueRef)
+        { refs := refs.write index valueRef, changed := [index] }
+  | seq {left right refs needed summary leftCert rightCert leftResult rightResult}
+      (summaryAccepted : summary =
+        seqSummary leftCert.summary rightCert.summary)
+      (leftAccepted : SparseEvidence wires table registers left refs
+        (neededInputs rightCert.summary needed) leftCert leftResult)
+      (rightAccepted : SparseEvidence wires table registers right
+        leftResult.refs needed rightCert rightResult) :
+      SparseEvidence wires table registers (.seq left right) refs needed
+        (.seq summary leftCert rightCert)
+        { refs := rightResult.refs, changed := changedOutputs summary needed }
+  | ite {condition thenAction elseAction refs needed summary conditionRef joins
+      thenCert elseCert thenResult elseResult}
+      (summaryAccepted : summary =
+        iteSummary thenCert.summary elseCert.summary)
+      (conditionAccepted : indexedExprMatches wires table
+        (Loom.Hw.Compile.compileExpr condition) conditionRef = true)
+      (thenAccepted : SparseEvidence wires table registers thenAction refs
+        (changedOutputs summary needed) thenCert thenResult)
+      (elseAccepted : SparseEvidence wires table registers elseAction refs
+        (changedOutputs summary needed) elseCert elseResult)
+      (joinsAccepted : checkedSparseJoins registers conditionRef thenResult
+        elseResult (changedOutputs summary needed) joins = true) :
+      SparseEvidence wires table registers (.ite condition thenAction elseAction)
+        refs needed (.ite summary conditionRef joins thenCert elseCert)
+        { refs := applySparseJoins refs joins
+          changed := changedOutputs summary needed }
+
+theorem SparseEvidence.seqProjected
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {registers : Array Loom.Hw.RegDecl} {action : Loom.Hw.Act}
+    {refs : SparseRefs} {needed : List Nat} {cert : ActionCert}
+    {leftResult rightResult : SparseResult}
+    (actionAccepted : isSeqAction action = true)
+    (certAccepted : cert.isSeq = true)
+    (summaryAccepted : cert.claimedSummary =
+      seqSummary cert.seqLeft.summary cert.seqRight.summary)
+    (leftAccepted : SparseEvidence wires table registers
+      (seqLeftAction action) refs (neededInputs cert.seqRight.summary needed)
+      cert.seqLeft leftResult)
+    (rightAccepted : SparseEvidence wires table registers
+      (seqRightAction action) leftResult.refs needed cert.seqRight rightResult) :
+    SparseEvidence wires table registers action refs needed cert
+      { refs := rightResult.refs
+        changed := changedOutputs cert.claimedSummary needed } := by
+  rw [action_eq_seq_projections actionAccepted]
+  rw [ActionCert.eq_seq_projections certAccepted]
+  exact .seq summaryAccepted leftAccepted rightAccepted
+
+theorem SparseEvidence.iteProjected
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {registers : Array Loom.Hw.RegDecl} {action : Loom.Hw.Act}
+    {refs : SparseRefs} {needed : List Nat} {cert : ActionCert}
+    {thenResult elseResult : SparseResult}
+    (actionAccepted : isIteAction action = true)
+    (certAccepted : cert.isIte = true)
+    (summaryAccepted : cert.claimedSummary =
+      iteSummary cert.iteThen.summary cert.iteElse.summary)
+    (conditionAccepted : indexedExprMatches wires table
+      (Loom.Hw.Compile.compileExpr (iteConditionAction action))
+      cert.iteGuardRef = true)
+    (thenAccepted : SparseEvidence wires table registers
+      (iteThenAction action) refs (changedOutputs cert.claimedSummary needed)
+      cert.iteThen thenResult)
+    (elseAccepted : SparseEvidence wires table registers
+      (iteElseAction action) refs (changedOutputs cert.claimedSummary needed)
+      cert.iteElse elseResult)
+    (joinsAccepted : checkedSparseJoins registers cert.iteGuardRef thenResult
+      elseResult (changedOutputs cert.claimedSummary needed) cert.iteJoins = true) :
+    SparseEvidence wires table registers action refs needed cert
+      { refs := applySparseJoins refs cert.iteJoins
+        changed := changedOutputs cert.claimedSummary needed } := by
+  rw [action_eq_ite_projections actionAccepted]
+  rw [ActionCert.eq_ite_projections certAccepted]
+  exact .ite summaryAccepted conditionAccepted thenAccepted elseAccepted
+    joinsAccepted
+
+theorem SparseEvidence.transport
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {registers : Array Loom.Hw.RegDecl}
+    {action action' : Loom.Hw.Act} {refs refs' : SparseRefs}
+    {needed needed' : List Nat} {cert cert' : ActionCert}
+    {result result' : SparseResult}
+    (actionEq : action = action') (refsEq : refs = refs')
+    (neededEq : needed = needed') (certEq : cert = cert')
+    (resultEq : result = result')
+    (evidence : SparseEvidence wires table registers action refs needed cert
+      result) :
+    SparseEvidence wires table registers action' refs' needed' cert' result' := by
+  subst action'
+  subst refs'
+  subst needed'
+  subst cert'
+  subst result'
+  exact evidence
+
+theorem SparseEvidence.accepted
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {registers : Array Loom.Hw.RegDecl} {action refs needed cert result}
+    (evidence : SparseEvidence wires table registers action refs needed cert
+      result) :
+    runSparseAction wires table registers action refs needed cert =
+      some result := by
+  induction evidence with
+  | skip => rfl
+  | memWrite => rfl
+  | writeUnused headerAccepted unused =>
+      simp [runSparseAction, headerAccepted, unused]
+  | writeNeeded headerAccepted used valueAccepted =>
+      simp [runSparseAction, headerAccepted, used, valueAccepted]
+  | seq summaryAccepted _ _ leftIH rightIH =>
+      subst summaryAccepted
+      simp [runSparseAction, leftIH, rightIH, guard]
+  | ite summaryAccepted conditionAccepted _ _ joinsAccepted thenIH elseIH =>
+      subst summaryAccepted
+      simp [runSparseAction, conditionAccepted, thenIH, elseIH, joinsAccepted,
+        guard]
+
+def runSparseRules (wires : Rope (List IndexedWire)) (table : WireTable)
+    (registers : Array Loom.Hw.RegDecl) :
+    List Loom.Hw.Rule → SparseRefs → List Nat → RulesCert → Option SparseRefs
+  | [], refs, _, [] => some refs
+  | rule :: rules, refs, needed, cert :: certs => do
+      let headNeeded := neededRuleInputs certs needed
+      let result ← runSparseAction wires table registers rule.body refs
+        headNeeded cert
+      runSparseRules wires table registers rules result.refs needed certs
+  | _, _, _, _ => none
+
+def sparseRegistersMatch (design : Loom.Hw.Design) (program : Program)
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    (cert : RulesCert) : Bool :=
+  let registers := design.regs.toArray
+  let needed := List.range registers.size
+  match runSparseRules wires table registers design.rules .empty needed cert with
+  | some refs => finalMetadataMatches program design.regs
+      (refs.materialize registers) 0
   | none => false
 
 private def takeMaskIndices (limit : Nat) : Nat → Nat → DecodeM Nat

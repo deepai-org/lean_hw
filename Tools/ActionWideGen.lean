@@ -260,6 +260,82 @@ private def actionCertNodeCount :
   | .seq _ left right | .ite _ _ _ left right =>
       actionCertNodeCount left + actionCertNodeCount right + 1
 
+private def sourceExprNodeCount : {width : Nat} → Loom.Hw.Expr width → Nat
+  | _, .lit _ | _, .reg _ _ => 1
+  | _, .memRead _ _ address | _, .not address | _, .slice address _ _
+  | _, .zext address _ | _, .sext address _ =>
+      sourceExprNodeCount address + 1
+  | _, .and left right | _, .or left right | _, .xor left right
+  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .shr left right | _, .eq left right | _, .ult left right
+  | _, .slt left right =>
+      sourceExprNodeCount left + sourceExprNodeCount right + 1
+  | _, .mux condition yes no =>
+      sourceExprNodeCount condition + sourceExprNodeCount yes +
+        sourceExprNodeCount no + 1
+
+private structure ExprStats where
+  checks : Nat := 0
+  nodes : Nat := 0
+  maximum : Nat := 0
+
+private def ExprStats.add (stats : ExprStats) (nodes : Nat) : ExprStats :=
+  { checks := stats.checks + 1
+    nodes := stats.nodes + nodes
+    maximum := max stats.maximum nodes }
+
+private def actionExprStats : Loom.Hw.Act → List Nat →
+    Loom.Release.Symbolic.ActionWide.ActionCert → ExprStats
+  | .skip, _, _ | .memWrite .., _, _ => {}
+  | .write _ _ value, needed, .write index _ =>
+      if index ∈ needed then
+        ({} : ExprStats).add (sourceExprNodeCount value)
+      else {}
+  | .seq left right, needed, .seq _ leftCert rightCert =>
+      let leftNeeded := Loom.Release.Symbolic.ActionWide.neededInputs
+        rightCert.summary needed
+      let leftStats := actionExprStats left leftNeeded leftCert
+      let rightStats := actionExprStats right needed rightCert
+      { checks := leftStats.checks + rightStats.checks
+        nodes := leftStats.nodes + rightStats.nodes
+        maximum := max leftStats.maximum rightStats.maximum }
+  | .ite condition thenAction elseAction, needed,
+      .ite summary _ _ thenCert elseCert =>
+      let changed := Loom.Release.Symbolic.ActionWide.changedOutputs summary needed
+      let conditionNodes := sourceExprNodeCount condition
+      let thenStats := actionExprStats thenAction changed thenCert
+      let elseStats := actionExprStats elseAction changed elseCert
+      { checks := thenStats.checks + elseStats.checks + 1
+        nodes := thenStats.nodes + elseStats.nodes + conditionNodes
+        maximum := max conditionNodes (max thenStats.maximum elseStats.maximum) }
+  | _, _, _ => {}
+
+private def rulesExprStats : List Loom.Hw.Rule → List Nat →
+    Loom.Release.Symbolic.ActionWide.RulesCert → ExprStats
+  | [], _, _ => {}
+  | rule :: rules, needed, cert :: certs =>
+      let headNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+        certs needed
+      let head := actionExprStats rule.body headNeeded cert
+      let tail := rulesExprStats rules needed certs
+      { checks := head.checks + tail.checks
+        nodes := head.nodes + tail.nodes
+        maximum := max head.maximum tail.maximum }
+  | _, _, _ => {}
+
+private unsafe def reportCoreStats (runtime : System.FilePath) : IO UInt32 := do
+  let program ← Tools.RuntimeSsa.load runtime
+  let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
+  let some cert := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
+      design program
+    | IO.eprintln "action-wide certificate synthesis failed"; return 1
+  let stats := rulesExprStats design.rules (List.range design.regs.length) cert
+  IO.println s!"actions={cert.foldl (fun n c => n + actionCertNodeCount c) 0}"
+  IO.println s!"expression-checks={stats.checks}"
+  IO.println s!"expression-nodes={stats.nodes}"
+  IO.println s!"maximum-expression-nodes={stats.maximum}"
+  return 0
+
 private def resultToLean (result : Loom.Release.Symbolic.ActionWide.Result) :
     String :=
   "{ refs := " ++ Tools.ReleaseCertGen.actionWideRefsToLean result.refs ++
@@ -276,6 +352,17 @@ private structure EvidenceBuild where
   locals : Array String := #[]
   size : Nat
 
+private def transportEvidence (build : EvidenceBuild) (source input needed cert :
+    String) : String :=
+  "(Symbolic.ActionWide.SparseEvidence.transport " ++
+    "(action := " ++ build.source ++ ") (action' := " ++ source ++ ") " ++
+    "(refs := " ++ build.input ++ ") (refs' := " ++ input ++ ") " ++
+    "(needed := " ++ build.needed ++ ") (needed' := " ++ needed ++ ") " ++
+    "(cert := " ++ build.cert ++ ") (cert' := " ++ cert ++ ") " ++
+    "(result := " ++ build.result ++ ") (result' := " ++ build.result ++ ") " ++
+    "rfl rfl (kernel_decide) (kernel_decide) rfl (" ++
+    build.evidence ++ "))"
+
 private structure EvidenceGenState where
   next : Nat := 0
   resultNext : Nat := 0
@@ -290,7 +377,7 @@ private def emitEvidenceResult (expression : String) :
   let state ← get
   let name := "actionResult" ++ toString state.resultNext
   let declaration := "  let " ++ name ++
-    " : Symbolic.ActionWide.Result := " ++ expression ++ "\n"
+    " : Symbolic.ActionWide.SparseResult := " ++ expression ++ "\n"
   set ({ next := state.next, resultNext := state.resultNext + 1
          aliasNext := state.aliasNext, neededNext := state.neededNext
          declarations := state.declarations } : EvidenceGenState)
@@ -333,8 +420,19 @@ private def refsDeltaToLean (base : String)
             " (" ++ Tools.ReleaseCertGen.actionWideRefToLean afterRef ++ ")"
   pure expression
 
+private def sparseDeltaToLean (base : String)
+    (before after : Array Loom.Release.Symbolic.Ref) : String := Id.run do
+  let mut expression := base
+  for index in List.range (min before.size after.size) do
+    if let some beforeRef := before[index]? then
+      if let some afterRef := after[index]? then
+        if beforeRef != afterRef then
+          expression := "(" ++ expression ++ ").write " ++ toString index ++
+            " (" ++ Tools.ReleaseCertGen.actionWideRefToLean afterRef ++ ")"
+  pure expression
+
 private def evidenceType (source input needed cert result : String) : String :=
-  "Symbolic.ActionWide.CheckedEvidence indexedWireTree wireTable " ++
+  "Symbolic.ActionWide.SparseEvidence indexedWireTree wireTable " ++
     "design.regs.toArray (" ++ source ++ ") (" ++ input ++ ") (" ++
     needed ++ ") (" ++ cert ++ ") (" ++ result ++ ")"
 
@@ -349,7 +447,7 @@ private def emitEvidenceContext (source cert input needed : String)
   let suffix := toString state.aliasNext
   let name := "actionContext" ++ suffix
   let declaration :=
-    "noncomputable def " ++ name ++ " : ActionEvidenceContext :=\n" ++
+    "noncomputable abbrev " ++ name ++ " : ActionEvidenceContext :=\n" ++
     String.join locals.toList ++
     "  { source := " ++ source ++ ", cert := " ++ cert ++
       ", input := " ++ input ++ ", needed := " ++ needed ++ " }\n"
@@ -369,11 +467,20 @@ private def emitEvidenceBoundary (build : EvidenceBuild) (direct := false) :
       " := (.direct (kernel_decide))\n"
     else
       " := by\n" ++
-      "  unfold " ++ dataName ++ "\n" ++
       String.join build.locals.toList ++
-      "  change " ++ evidenceType build.source build.input build.needed
-        build.cert build.result ++ "\n" ++
-      "  exact " ++ build.evidence ++ "\n"
+      "  exact Symbolic.ActionWide.SparseEvidence.transport " ++
+        "(action := " ++ build.source ++ ") " ++
+        "(action' := " ++ dataName ++ ".source) " ++
+        "(refs := " ++ build.input ++ ") " ++
+        "(refs' := " ++ dataName ++ ".input) " ++
+        "(needed := " ++ build.needed ++ ") " ++
+        "(needed' := " ++ dataName ++ ".needed) " ++
+        "(cert := " ++ build.cert ++ ") " ++
+        "(cert' := " ++ dataName ++ ".cert) " ++
+        "(result := " ++ build.result ++ ") " ++
+        "(result' := " ++ dataName ++ ".result) " ++
+        "rfl rfl (kernel_decide) (kernel_decide) rfl (" ++
+        build.evidence ++ ")\n"
   let declaration :=
     "noncomputable def " ++ dataName ++ " : ActionEvidenceData :=\n" ++
     String.join build.locals.toList ++
@@ -412,19 +519,50 @@ private partial def buildEvidence (registers : Array RegDecl)
     else pure (sourceExpr, certExpr, #[], pathDepth)
   let (neededExpr, neededLocal) ← emitEvidenceNeeded neededExpr
   let prefixLocals := (mergeLocals inheritedLocals aliasLocals).push neededLocal
-  let some result := evaluateCert registers inputRefs neededValues cert | failure
+  let some _result := evaluateCert registers inputRefs neededValues cert | failure
   let changedExpr := "Symbolic.ActionWide.changedOutputs (" ++ certExpr ++
-    ").summary (" ++ neededExpr ++ ")"
+    ").claimedSummary (" ++ neededExpr ++ ")"
   match source, cert with
-  | .skip, .skip | .memWrite .., .memWrite | .write .., .write .. =>
-      let refsExpr := refsDeltaToLean inputExpr inputRefs result.refs
-      let (resultExpr, resultLocal) ← emitEvidenceResult ("{ refs := " ++ refsExpr ++
-        ", changed := " ++ changedExpr ++ " }"
-        )
+  | .skip, .skip =>
+      let (resultExpr, resultLocal) ← emitEvidenceResult
+        ("{ refs := " ++ inputExpr ++ ", changed := [] }")
       let build : EvidenceBuild :=
         { source := sourceExpr, cert := certExpr, input := inputExpr
           needed := neededExpr, result := resultExpr
-          evidence := "(.direct (kernel_decide))"
+          evidence := "(.skip)"
+          locals := prefixLocals.push resultLocal, size := 1 }
+      pure build
+  | .memWrite .., .memWrite =>
+      let (resultExpr, resultLocal) ← emitEvidenceResult
+        ("{ refs := " ++ inputExpr ++ ", changed := [] }")
+      let build : EvidenceBuild :=
+        { source := sourceExpr, cert := certExpr, input := inputExpr
+          needed := neededExpr, result := resultExpr
+          evidence := "(.memWrite)"
+          locals := prefixLocals.push resultLocal, size := 1 }
+      pure build
+  | .write .., .write index valueRef =>
+      let used := index ∈ neededValues
+      let refsExpr := if used then
+          "(" ++ inputExpr ++ ").write " ++ toString index ++ " (" ++
+            Tools.ReleaseCertGen.actionWideRefToLean valueRef ++ ")"
+        else inputExpr
+      let changed := if used then "[" ++ toString index ++ "]" else "[]"
+      let (resultExpr, resultLocal) ← emitEvidenceResult
+        ("{ refs := " ++ refsExpr ++ ", changed := " ++ changed ++ " }")
+      let evidence := if used then
+          "(Symbolic.ActionWide.SparseEvidence.writeNeeded " ++
+            "(wires := indexedWireTree) (table := wireTable) " ++
+            "(registers := design.regs.toArray) " ++
+            "(kernel_decide_inline) (kernel_decide_inline) " ++
+            "(kernel_decide_inline))"
+        else "(Symbolic.ActionWide.SparseEvidence.writeUnused " ++
+          "(wires := indexedWireTree) (table := wireTable) " ++
+          "(registers := design.regs.toArray) " ++
+          "(kernel_decide_inline) (kernel_decide_inline))"
+      let build : EvidenceBuild :=
+        { source := sourceExpr, cert := certExpr, input := inputExpr
+          needed := neededExpr, result := resultExpr, evidence
           locals := prefixLocals.push resultLocal, size := 1 }
       pure build
   | .seq left right, .seq _ leftCert rightCert =>
@@ -452,14 +590,20 @@ private partial def buildEvidence (registers : Array RegDecl)
         (pathDepth + 1)
       let (resultExpr, resultLocal) ← emitEvidenceResult ("{ refs := (" ++ rightBuild.result ++
         ").refs, changed := " ++ changedExpr ++ " }")
-      let proof := "(by\n" ++
-        "  rw [Symbolic.ActionWide.action_eq_seq_projections " ++
-          "(action := " ++ sourceExpr ++ ") (kernel_decide)]\n" ++
-        "  rw [Symbolic.ActionWide.ActionCert.eq_seq_projections " ++
-          "(cert := " ++ certExpr ++ ") (kernel_decide)]\n" ++
-        "  exact .seq (leftResult := " ++ leftBuild.result ++ ") " ++
-          "(rightResult := " ++ rightBuild.result ++ ") rfl (" ++
-          leftBuild.evidence ++ ") (" ++ rightBuild.evidence ++ "))"
+      let leftEvidence := transportEvidence leftBuild leftSourceExpr inputExpr
+        leftNeededExpr leftCertExpr
+      let rightEvidence := transportEvidence rightBuild rightSourceExpr
+        rightInputExpr neededExpr rightCertExpr
+      let proof :=
+        "(Symbolic.ActionWide.SparseEvidence.seqProjected " ++
+          "(wires := indexedWireTree) (table := wireTable) " ++
+          "(registers := design.regs.toArray) " ++
+          "(action := " ++ sourceExpr ++ ") (cert := " ++ certExpr ++ ") " ++
+          "(leftResult := " ++ leftBuild.result ++ ") " ++
+          "(rightResult := " ++ rightBuild.result ++ ") " ++
+          "(kernel_decide_inline) (kernel_decide_inline) " ++
+          "(kernel_decide_inline) (" ++
+          leftEvidence ++ ") (" ++ rightEvidence ++ "))"
       let build : EvidenceBuild :=
         { source := sourceExpr, cert := certExpr, input := inputExpr
           needed := neededExpr, result := resultExpr, evidence := proof
@@ -487,19 +631,25 @@ private partial def buildEvidence (registers : Array RegDecl)
       let elseBuild ← buildEvidence registers elseAction elseCert inputRefs changed
         elseSourceExpr elseCertExpr inputExpr changedNeededExpr prefixLocals
         (pathDepth + 1)
-      let refsExpr := refsDeltaToLean inputExpr inputRefs result.refs
+      let refsExpr := "Symbolic.ActionWide.applySparseJoins (" ++ inputExpr ++
+        ") (" ++ certExpr ++ ").iteJoins"
       let (resultExpr, resultLocal) ← emitEvidenceResult ("{ refs := " ++ refsExpr ++
         ", changed := " ++ changedExpr ++ " }")
-      let proof := "(by\n" ++
-        "  rw [Symbolic.ActionWide.action_eq_ite_projections " ++
-          "(action := " ++ sourceExpr ++ ") (kernel_decide)]\n" ++
-        "  rw [Symbolic.ActionWide.ActionCert.eq_ite_projections " ++
-          "(cert := " ++ certExpr ++ ") (kernel_decide)]\n" ++
-        "  exact .ite (thenResult := " ++ thenBuild.result ++ ") " ++
+      let thenEvidence := transportEvidence thenBuild thenSourceExpr inputExpr
+        changedNeededExpr thenCertExpr
+      let elseEvidence := transportEvidence elseBuild elseSourceExpr inputExpr
+        changedNeededExpr elseCertExpr
+      let proof :=
+        "(Symbolic.ActionWide.SparseEvidence.iteProjected " ++
+          "(wires := indexedWireTree) (table := wireTable) " ++
+          "(registers := design.regs.toArray) " ++
+          "(action := " ++ sourceExpr ++ ") (cert := " ++ certExpr ++ ") " ++
+          "(thenResult := " ++ thenBuild.result ++ ") " ++
           "(elseResult := " ++ elseBuild.result ++ ") " ++
-          "(merged := " ++ refsExpr ++ ") rfl (kernel_decide) (" ++
-          thenBuild.evidence ++ ") (" ++ elseBuild.evidence ++
-          ") (kernel_decide))"
+          "(kernel_decide_inline) (kernel_decide_inline) " ++
+          "(kernel_decide_inline) (kernel_decide_inline) (" ++
+          thenEvidence ++ ") (" ++ elseEvidence ++
+          ") (kernel_decide_inline))"
       let build : EvidenceBuild :=
         { source := sourceExpr, cert := certExpr, input := inputExpr
           needed := neededExpr, result := resultExpr, evidence := proof
@@ -552,13 +702,13 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath)
     "structure ActionEvidenceData where\n" ++
     "  source : Act\n" ++
     "  cert : Symbolic.ActionWide.ActionCert\n" ++
-    "  input : Array Symbolic.Ref\n" ++
+    "  input : Symbolic.ActionWide.SparseRefs\n" ++
     "  needed : List Nat\n" ++
-    "  result : Symbolic.ActionWide.Result\n\n" ++
+    "  result : Symbolic.ActionWide.SparseResult\n\n" ++
     "structure ActionEvidenceContext where\n" ++
     "  source : Act\n" ++
     "  cert : Symbolic.ActionWide.ActionCert\n" ++
-    "  input : Array Symbolic.Ref\n" ++
+    "  input : Symbolic.ActionWide.SparseRefs\n" ++
     "  needed : List Nat\n\n" ++
     ""
   let localOptions :=
@@ -568,8 +718,9 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath)
     "set_option maxHeartbeats 0\n" ++
     "set_option linter.unusedVariables false\n\n"
   let initialData :=
-    "noncomputable def coreEvidenceInput : Array Symbolic.Ref := " ++
-      Tools.ReleaseCertGen.actionWideRefsToLean refillResult.refs ++ "\n" ++
+    "noncomputable def coreEvidenceInput : Symbolic.ActionWide.SparseRefs := " ++
+      sparseDeltaToLean "Symbolic.ActionWide.SparseRefs.empty" initial
+        refillResult.refs ++ "\n" ++
     "noncomputable def coreEvidenceNeeded : List Nat := [" ++
       String.intercalate ", " (coreNeeded.map toString) ++ "]\n\n"
   if split then
@@ -733,6 +884,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       generateCoreEvidence runtime output
   | ["lnp64u-core-evidence-batches", runtime, outputDir] =>
       generateCoreEvidence runtime outputDir true
+  | ["lnp64u-core-stats", runtime] =>
+      reportCoreStats runtime
   | _ =>
       IO.eprintln "usage: actionwidegen {acc8|lnp64u} RUNTIME.json OUTPUT.lean"
       return 2
