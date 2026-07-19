@@ -44,5 +44,8 @@ lean_exe emit where
 lean_exe bookgen where
   root := `Tools.BookGen
 
+lean_exe actionwidegen where
+  root := `Tools.ActionWideGen
+
 require mathlib from git
   "https://github.com/leanprover-community/mathlib4" @ "v4.28.0"

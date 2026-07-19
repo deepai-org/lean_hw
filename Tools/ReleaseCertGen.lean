@@ -2,7 +2,9 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.NamedCertificate
 import Loom.Release.SymbolicCertificate
+import Loom.Release.ActionWideRegister
 import Loom.Hw.WholeRegisterPlan
+import Tools.RuntimeSsa
 import Std.Data.HashMap
 
 /-!
@@ -24,9 +26,13 @@ structure ExprIndex where
   hashed : Std.HashMap UInt64 String
   values : List (String × Sigma Loom.Emit.MicroVerilog.Expr)
   rhsNames : Std.HashMap String String
+  nameHashes : Std.HashMap String UInt64
+  muxAliases : Std.HashMap (Nat × UInt64 × UInt64 × UInt64)
+    String
 structure GenState where
   nextLookup : Nat := 0
   hashMemo : HashMemo := {}
+  actionSummaries : Std.HashMap USize Symbolic.ActionWide.Summary := {}
 
 abbrev GenM := StateT GenState Option
 
@@ -62,6 +68,24 @@ private def findRhs (index : ExprIndex) (width : Nat) (rhs : SSA.Rhs) :
 
 private def tagged (tag width : Nat) : UInt64 :=
   mixHash (hash tag) (hash width)
+
+private def addMuxAliases (nameHashes : Std.HashMap String UInt64) :
+    Loom.Release.Rope (List SSA.Wire) →
+      Std.HashMap (Nat × UInt64 × UInt64 × UInt64)
+        String →
+      Std.HashMap (Nat × UInt64 × UInt64 × UInt64)
+        String
+  | .leaf wires, aliases => wires.foldl (fun aliases wire =>
+      match wire.rhs with
+      | .mux guard yes no =>
+          match nameHashes[guard]?, nameHashes[yes]?, nameHashes[no]? with
+          | some guardHash, some yesHash, some noHash =>
+              aliases.insert (wire.width, guardHash, yesHash, noHash)
+                wire.name
+          | _, _, _ => aliases
+      | _ => aliases) aliases
+  | .node left right, aliases =>
+      addMuxAliases nameHashes right (addMuxAliases nameHashes left aliases)
 
 private unsafe def exprHash : {w : Nat} →
     Loom.Emit.MicroVerilog.Expr w → StateM HashMemo UInt64
@@ -101,12 +125,21 @@ private unsafe def buildIndex (program : SSA.Program) (env : SSA.Env) :
     ExprIndex × HashMemo := Id.run do
   let values := env.toList
   let mut hashed : Std.HashMap UInt64 String := {}
+  let mut nameHashes : Std.HashMap String UInt64 := {}
   let mut memo : HashMemo := {}
   for (name, ⟨_, value⟩) in values do
     let (key, nextMemo) := (exprHash value).run memo
     memo := nextMemo
+    nameHashes := nameHashes.insert name key
     hashed := hashed.insert key name
-  return (⟨hashed, values, addWireNames program.wires {}⟩, memo)
+  for register in program.regs do
+    let key := mixHash (mixHash (tagged 1 register.width)
+      (hash register.width)) (hash register.name)
+    nameHashes := nameHashes.insert register.name key
+    unless hashed.contains key do
+      hashed := hashed.insert key register.name
+  return (⟨hashed, values, addWireNames program.wires {}, nameHashes,
+    addMuxAliases nameHashes program.wires {}⟩, memo)
 
 private def findExprLinear {w : Nat}
     (target : Loom.Emit.MicroVerilog.Expr w) :
@@ -432,7 +465,527 @@ unsafe def synthesizePlanRegisterCertPrefix (count : Nat) (design : Design)
   let plans := Compile.RulePlans.ofRules design.regs design.rules
   (synthPlanRegisters index names count plans).run {} |>.map (·.1)
 
+/-! ## Action-wide sparse register certificate synthesis -/
+
+private structure ActionWideIndex where
+  hashed : Std.HashMap UInt64 String
+  nameHashes : Std.HashMap String UInt64
+  wireHashes : Array UInt64 := #[]
+  muxAliases : Std.HashMap (Nat × UInt64 × UInt64 × UInt64)
+    String
+
+private def ExprIndex.toActionWideIndex (index : ExprIndex) : ActionWideIndex :=
+  { hashed := index.hashed
+    nameHashes := index.nameHashes
+    wireHashes := #[]
+    muxAliases := index.muxAliases }
+
+private def ActionWideIndex.refHash? (index : ActionWideIndex)
+    (reference : Symbolic.Ref) : Option UInt64 :=
+  match reference with
+  | .wire number => index.wireHashes[number]? <|> index.nameHashes[reference.render]?
+  | .reg name => index.nameHashes[name]?
+
+private unsafe def findActionWideExpr (index : ActionWideIndex) {width : Nat}
+    (target : Loom.Emit.MicroVerilog.Expr width) : GenM String := do
+  match target with
+  | .reg _ name => pure name
+  | _ =>
+      let (key, _) := (exprHash target).run {}
+      modify fun state => { state with nextLookup := state.nextLookup + 1 }
+      match index.hashed[key]? with
+      | some name => pure name
+      | none => failure
+
+private structure ActionWideResult where
+  refs : Array Symbolic.Ref
+  changed : List Nat
+
+private def registerIndices (registers : List RegDecl) :
+    Std.HashMap (String × Nat) Nat := Id.run do
+  let mut result := {}
+  for h : index in [:registers.length] do
+    let register := registers[index]
+    result := result.insert (register.name, register.width) index
+  return result
+
+private unsafe def actionSummary
+    (registerIndex : Std.HashMap (String × Nat) Nat) (action : Act) :
+    GenM Symbolic.ActionWide.Summary := do
+  let pointer := ptrAddrUnsafe action
+  if let some cached := (← get).actionSummaries[pointer]? then return cached
+  let summary ← match action with
+    | .skip | .memWrite .. => pure { possible := 0, definite := 0 }
+    | .write width name _ =>
+        let some index := registerIndex[(name, width)]? | failure
+        let mask : Nat := 1 <<< index
+        pure { possible := mask, definite := mask }
+    | .seq left right =>
+        let leftSummary ← actionSummary registerIndex left
+        let rightSummary ← actionSummary registerIndex right
+        pure { possible := leftSummary.possible ||| rightSummary.possible
+               definite := leftSummary.definite ||| rightSummary.definite }
+    | .ite _ thenAction elseAction =>
+        let thenSummary ← actionSummary registerIndex thenAction
+        let elseSummary ← actionSummary registerIndex elseAction
+        pure { possible := thenSummary.possible ||| elseSummary.possible
+               definite := thenSummary.definite &&& elseSummary.definite }
+  modify fun state => { state with
+    actionSummaries := state.actionSummaries.insert pointer summary }
+  pure summary
+
+private unsafe def neededSourceRuleInputs
+    (registerIndex : Std.HashMap (String × Nat) Nat) :
+    List Rule → List Nat → GenM (List Nat)
+  | [], needed => pure needed
+  | rule :: rules, needed => do
+      let tailNeeded ← neededSourceRuleInputs registerIndex rules needed
+      let summary ← actionSummary registerIndex rule.body
+      pure (Symbolic.ActionWide.neededInputs summary tailNeeded)
+
+private unsafe def synthActionWideJoins (index : ActionWideIndex)
+    (registers : Array RegDecl) (guard : Symbolic.Ref)
+    (thenResult elseResult : ActionWideResult) :
+    List Nat → GenM (List Symbolic.ActionWide.Join)
+  | [] => pure []
+  | changedIndex :: changed => do
+      let some source := registers[changedIndex]? |
+        dbg_trace s!"action-wide: missing register {changedIndex}"; failure
+      let some thenRef := thenResult.refs[changedIndex]? |
+        dbg_trace s!"action-wide: missing then ref {changedIndex}"; failure
+      let some elseRef := elseResult.refs[changedIndex]? |
+        dbg_trace s!"action-wide: missing else ref {changedIndex}"; failure
+      let some guardHash := index.refHash? guard | failure
+      let some thenHash := index.refHash? thenRef | failure
+      let some elseHash := index.refHash? elseRef | failure
+      let some outputName :=
+          index.muxAliases[(source.width, guardHash, thenHash, elseHash)]? |
+        dbg_trace s!"action-wide: missing semantic mux for " ++
+          s!"{source.name}:{source.width}"
+        failure
+      pure ({ index := changedIndex
+              width := source.width
+              guard := guard
+              thenInput := thenRef
+              elseInput := elseRef
+              output := nameRef outputName } ::
+        (← synthActionWideJoins index registers guard thenResult elseResult
+          changed))
+
+private unsafe def synthActionWide (index : ActionWideIndex)
+    (registers : Array RegDecl)
+    (registerIndex : Std.HashMap (String × Nat) Nat) :
+    Act → Array Symbolic.Ref → List Nat →
+      GenM (ActionWideResult × Symbolic.ActionWide.ActionCert)
+  | .skip, refs, _ => pure (⟨refs, []⟩, .skip)
+  | .memWrite .., refs, _ => pure (⟨refs, []⟩, .memWrite)
+  | .write width name value, refs, needed => do
+      let some target := registerIndex[(name, width)]? |
+        dbg_trace s!"action-wide: undeclared write {name}:{width}"; failure
+      let valueName ← if target ∈ needed then
+        findActionWideExpr index (Compile.compileExprFast value)
+      else pure name
+      let valueRef := nameRef valueName
+      if target ∉ needed then
+        pure (⟨refs, []⟩, .write target valueRef)
+      else if target < refs.size then
+        pure (⟨refs.set! target valueRef, [target]⟩,
+          .write target valueRef)
+      else failure
+  | .seq left right, refs, needed => do
+      let rightSummary ← actionSummary registerIndex right
+      let leftNeeded := Symbolic.ActionWide.neededInputs rightSummary needed
+      let (leftResult, leftCert) ←
+        synthActionWide index registers registerIndex left refs leftNeeded
+      let (rightResult, rightCert) ←
+        synthActionWide index registers registerIndex right leftResult.refs needed
+      let summary ← actionSummary registerIndex (.seq left right)
+      pure (⟨rightResult.refs,
+        Symbolic.ActionWide.changedOutputs summary needed⟩,
+        .seq summary leftCert rightCert)
+  | action@(.ite guard thenAction elseAction), refs, needed => do
+      let guardName ← findActionWideExpr index (Compile.compileExprFast guard)
+      let guardRef := nameRef guardName
+      let summary ← actionSummary registerIndex action
+      let changed := Symbolic.ActionWide.changedOutputs summary needed
+      let (thenResult, thenCert) ←
+        synthActionWide index registers registerIndex thenAction refs changed
+      let (elseResult, elseCert) ←
+        synthActionWide index registers registerIndex elseAction refs changed
+      let joins ← synthActionWideJoins index registers guardRef thenResult
+        elseResult changed
+      let output := joins.foldl (fun output join =>
+        output.set! join.index join.output) refs
+      pure (⟨output, changed⟩,
+        .ite summary guardRef joins thenCert elseCert)
+
+private unsafe def synthActionWideRules (index : ActionWideIndex)
+    (registers : Array RegDecl)
+    (registerIndex : Std.HashMap (String × Nat) Nat) :
+    List Rule → Array Symbolic.Ref → List Nat →
+      GenM (Array Symbolic.Ref × Symbolic.ActionWide.RulesCert)
+  | [], refs, _ => pure (refs, [])
+  | rule :: rules, refs, needed => do
+      let headNeeded ← neededSourceRuleInputs registerIndex rules needed
+      let (result, cert) ← synthActionWide index registers registerIndex
+        rule.body refs headNeeded
+      let (finalRefs, certs) ← synthActionWideRules index registers
+        registerIndex rules result.refs needed
+      pure (finalRefs, cert :: certs)
+
+private structure RuntimeIndexState where
+  registerHashes : Std.HashMap String UInt64 := {}
+  registerWidths : Std.HashMap String Nat := {}
+  wireHashes : Array UInt64 := #[]
+  wireWidths : Array Nat := #[]
+
+private def binaryTag : Loom.Release.SSA.BinOp → Nat
+  | .and => 3 | .or => 4 | .xor => 5 | .add => 7 | .sub => 8
+  | .shl => 9 | .shr => 10 | .eq => 11 | .ult => 12
+
+private def runtimeRefData (state : RuntimeIndexState)
+    (reference : Symbolic.Ref) : Option (UInt64 × Nat) := do
+  match reference with
+  | .wire number =>
+      pure (← state.wireHashes[number]?, ← state.wireWidths[number]?)
+  | .reg name =>
+      pure (← state.registerHashes[name]?, ← state.registerWidths[name]?)
+
+private def runtimeRhsHash (state : RuntimeIndexState) (width : Nat) :
+    Symbolic.IndexedRhs → Option UInt64
+  | .lit _ value => pure (mixHash (tagged 0 width) (hash value))
+  | .ident value => do
+      let (valueHash, valueWidth) ← runtimeRefData state value
+      if valueWidth == width then pure valueHash
+      else if valueWidth < width then
+        pure (mixHash (mixHash (tagged 16 width) (hash width)) valueHash)
+      else none
+  | .memRead memory address => do
+      let (addressHash, _) ← runtimeRefData state address
+      pure (mixHash (mixHash (mixHash (tagged 2 width) (hash width))
+        (hash memory)) addressHash)
+  | .slice value _hi lo => do
+      let (valueHash, _) ← runtimeRefData state value
+      pure (mixHash (mixHash (mixHash (tagged 15 width) (hash lo))
+        (hash width)) valueHash)
+  | .not value => do
+      let (valueHash, _) ← runtimeRefData state value
+      pure (mixHash (tagged 6 width) valueHash)
+  | .bin op left right => do
+      let (leftHash, _) ← runtimeRefData state left
+      let (rightHash, _) ← runtimeRefData state right
+      pure (mixHash (mixHash (tagged (binaryTag op) width) leftHash)
+        rightHash)
+  | .slt left right => do
+      let (leftHash, _) ← runtimeRefData state left
+      let (rightHash, _) ← runtimeRefData state right
+      pure (mixHash (mixHash (tagged 13 width) leftHash) rightHash)
+  | .mux guard yes no => do
+      let (guardHash, _) ← runtimeRefData state guard
+      let (yesHash, _) ← runtimeRefData state yes
+      let (noHash, _) ← runtimeRefData state no
+      pure (mixHash (mixHash (mixHash (tagged 14 width) guardHash)
+        yesHash) noHash)
+  | .sext _ value _ => do
+      let (valueHash, _) ← runtimeRefData state value
+      pure (mixHash (mixHash (tagged 17 width) (hash width)) valueHash)
+
+private def buildRuntimeIndex (program : Tools.RuntimeSsa.Program) :
+    Option ActionWideIndex := Id.run do
+  let mut hashed : Std.HashMap UInt64 String := {}
+  let mut registerHashes : Std.HashMap String UInt64 := {}
+  let mut registerWidths : Std.HashMap String Nat := {}
+  for register in program.regs do
+    let key := mixHash (mixHash (tagged 1 register.width)
+      (hash register.width)) (hash register.name)
+    hashed := hashed.insert key register.name
+    registerHashes := registerHashes.insert register.name key
+    registerWidths := registerWidths.insert register.name register.width
+  let mut wireHashes : Array UInt64 := #[]
+  let mut wireWidths : Array Nat := #[]
+  let mut muxAliases : Std.HashMap (Nat × UInt64 × UInt64 × UInt64)
+      String := {}
+  let mut valid := true
+  let mut number := 0
+  while valid && number < program.wires.size do
+    if number % 10000 == 0 then
+      dbg_trace s!"action-wide runtime: indexed {number}/{program.wires.size} wires"
+    let wire := program.wires[number]!
+    let state : RuntimeIndexState :=
+      { registerHashes, registerWidths, wireHashes, wireWidths }
+    match wire.rhs.toIndexed? with
+    | none => valid := false
+    | some indexed =>
+        match runtimeRhsHash state wire.width indexed with
+        | none => valid := false
+        | some key =>
+            let expectedName := (Symbolic.Ref.wire number).render
+            if wire.name != expectedName then valid := false
+            else
+              hashed := hashed.insert key wire.name
+              match indexed with
+              | .mux guard yes no =>
+                  match runtimeRefData state guard, runtimeRefData state yes,
+                      runtimeRefData state no with
+                  | some (guardHash, _), some (yesHash, _), some (noHash, _) =>
+                      muxAliases := muxAliases.insert
+                        (wire.width, guardHash, yesHash, noHash)
+                        wire.name
+                  | _, _, _ => valid := false
+              | _ => pure ()
+              wireHashes := wireHashes.push key
+              wireWidths := wireWidths.push wire.width
+    number := number + 1
+  if valid then
+    some {
+      hashed := hashed
+      nameHashes := registerHashes
+      wireHashes := wireHashes
+      muxAliases := muxAliases
+    }
+  else none
+
+/-- Synthesize one sparse certificate which checks all register roots in one
+source-action traversal.  The returned data is untrusted until accepted by
+`ActionWide.registersMatch`. -/
+unsafe def synthesizeActionWideRegisterCert (design : Design)
+    (program : SSA.Program) : Option Symbolic.ActionWide.RulesCert := do
+  let env ← program.elaborateEnv
+  let (index, _) := buildIndex program env
+  let index := index.toActionWideIndex
+  let registers := design.regs.toArray
+  let initial := registers.map fun register => Symbolic.Ref.reg register.name
+  let indices := registerIndices design.regs
+  let needed := List.range registers.size
+  let action := synthActionWideRules index registers indices design.rules initial
+    needed
+  ((action.run {}).map (·.1.2))
+
+/-- Runtime-data variant used by the fast native generator.  It never imports
+or compiles the large kernel-facing generated root. -/
+unsafe def synthesizeActionWideRegisterCertRuntime (design : Design)
+    (program : Tools.RuntimeSsa.Program) :
+    Option Symbolic.ActionWide.RulesCert := do
+  dbg_trace "action-wide runtime: indexing SSA"
+  let index ← buildRuntimeIndex program
+  dbg_trace "action-wide runtime: forcing design registers"
+  let registers := design.regs.toArray
+  guard (program.regs.size == registers.size)
+  let initial := registers.map fun register => Symbolic.Ref.reg register.name
+  let indices := registerIndices design.regs
+  let needed := List.range registers.size
+  dbg_trace "action-wide runtime: traversing source actions"
+  let action := synthActionWideRules index registers indices design.rules initial
+    needed
+  let result := (action.run {}).map (·.1.2)
+  dbg_trace "action-wide runtime: traversal complete"
+  result
+
 private def quote (value : String) : String := reprStr value
+
+private def actionRefToLean : Symbolic.Ref → String
+  | .reg name => s!".reg {quote name}"
+  | .wire number => s!".wire {number}"
+
+/-- Render a bounded reference array for generated action-segment states. -/
+def actionWideRefsToLean (refs : Array Symbolic.Ref) : String :=
+  "#[" ++ String.intercalate ", " (refs.toList.map actionRefToLean) ++ "]"
+
+private def collectActionWideJoins : Symbolic.ActionWide.ActionCert →
+    List Symbolic.ActionWide.Join → List Symbolic.ActionWide.Join
+  | .skip | .memWrite | .write .. => fun tail => tail
+  | .seq _ left right => fun tail =>
+      collectActionWideJoins left (collectActionWideJoins right tail)
+  | .ite _ _ joins thenCert elseCert => fun tail =>
+      joins.foldr (· :: ·) (collectActionWideJoins thenCert
+        (collectActionWideJoins elseCert tail))
+
+/-- All concrete mux joins mentioned by an action-wide certificate. -/
+def actionWideJoins (cert : Symbolic.ActionWide.RulesCert) :
+    List Symbolic.ActionWide.Join :=
+  cert.foldr collectActionWideJoins []
+
+private def actionWideJoinToLean (join : Symbolic.ActionWide.Join) : String :=
+  "{ index := " ++ toString join.index ++
+    ", width := " ++ toString join.width ++
+    ", guard := " ++ actionRefToLean join.guard ++
+    ", thenInput := " ++ actionRefToLean join.thenInput ++
+    ", elseInput := " ++ actionRefToLean join.elseInput ++
+    ", output := " ++ actionRefToLean join.output ++ " }"
+
+private def actionWideJoinName (join : Symbolic.ActionWide.Join) : String :=
+  match join.output with
+  | .wire number => "actionJoin" ++ toString number ++ "_" ++
+      toString join.index
+  | .reg name => "invalidActionJoin_" ++ name
+
+/-- Render named join constants followed by their shared list. -/
+def actionWideNamedJoinBlockToLean (blockName : String)
+    (joins : List Symbolic.ActionWide.Join) : String :=
+  let declarations := Id.run do
+    let mut seen : Std.HashSet String := {}
+    let mut result : List String := []
+    for join in joins do
+      let name := actionWideJoinName join
+      if !seen.contains name then
+        seen := seen.insert name
+        result := ("noncomputable def " ++ name ++
+          " : Symbolic.ActionWide.Join :=\n  " ++ actionWideJoinToLean join) :: result
+    pure result.reverse
+  String.intercalate "\n\n" declarations ++ "\n\n" ++
+    "noncomputable def " ++ blockName ++ " : List Symbolic.ActionWide.Join := [" ++
+    String.intercalate ", " (joins.map actionWideJoinName) ++ "]"
+
+/-- Render a bounded join block as typed Lean data. -/
+def actionWideJoinBlockToLean (joins : List Symbolic.ActionWide.Join) : String :=
+  "[\n  " ++ String.intercalate ",\n  " (joins.map actionWideJoinToLean) ++
+    "\n]"
+
+private def actionWideSummaryToLean (summary : Symbolic.ActionWide.Summary) :
+    String :=
+  "{ possible := " ++ toString summary.possible ++
+    ", definite := " ++ toString summary.definite ++ " }"
+
+private structure NamedActionState where
+  next : Nat := 0
+  declarations : Array String := #[]
+
+private abbrev NamedActionM := StateM NamedActionState
+
+private def namedActionName (index : Nat) : String :=
+  "actionCertNode" ++ toString index
+
+private def emitNamedAction (expression : String) : NamedActionM String := do
+  let state ← get
+  let name := namedActionName state.next
+  let declarations := state.declarations.push
+    ("noncomputable def " ++ name ++ " : Symbolic.ActionWide.ActionCert :=\n  " ++
+      expression ++ "\n")
+  set ({ next := state.next + 1, declarations } : NamedActionState)
+  pure name
+
+/-- Render a certificate as bounded named subtrees.  The generator remains
+untrusted; naming only controls elaboration sharing and the kernel checks the
+resulting constant graph. -/
+private def actionWideActionNamed : Symbolic.ActionWide.ActionCert →
+    NamedActionM (String × Nat)
+  | .skip => pure (".skip", 1)
+  | .memWrite => pure (".memWrite", 1)
+  | .write index value =>
+      pure (".write " ++ toString index ++ " (" ++ actionRefToLean value ++
+        ")", 1)
+  | .seq summary left right => do
+      let (leftExpr, leftSize) ← actionWideActionNamed left
+      let (rightExpr, rightSize) ← actionWideActionNamed right
+      let expression := ".seq " ++ actionWideSummaryToLean summary ++
+        " (" ++ leftExpr ++ ") (" ++ rightExpr ++ ")"
+      let size := leftSize + rightSize + 1
+      if size ≥ 64 then pure (← emitNamedAction expression, 1)
+      else pure (expression, size)
+  | .ite summary guard joins thenCert elseCert => do
+      let (thenExpr, _) ← actionWideActionNamed thenCert
+      let (elseExpr, _) ← actionWideActionNamed elseCert
+      let expression := ".ite " ++ actionWideSummaryToLean summary ++
+        " (" ++ actionRefToLean guard ++ ") (" ++
+        "[" ++ String.intercalate ", " (joins.map actionWideJoinName) ++
+        "]) (" ++ thenExpr ++ ") (" ++
+        elseExpr ++ ")"
+      pure (← emitNamedAction expression, 1)
+
+/-- Complete Lean source fragment for a bounded, named typed certificate. -/
+def actionWideNamedCertificateToLean
+    (cert : Symbolic.ActionWide.RulesCert) : String :=
+  let ((roots, state) : List String × NamedActionState) := Id.run do
+    let mut state : NamedActionState := {}
+    let mut roots : List String := []
+    for action in cert do
+      let ((expression, _), nextState) := (actionWideActionNamed action).run state
+      state := nextState
+      let (name, nextState) := (emitNamedAction expression).run state
+      state := nextState
+      roots := name :: roots
+    pure (roots.reverse, state)
+  String.intercalate "\n" state.declarations.toList ++ "\n" ++
+    "noncomputable def actionWideCert : Symbolic.ActionWide.RulesCert := [" ++
+    String.intercalate ", " roots ++ "]\n"
+
+structure ActionWideLeanSource where
+  data : String
+
+private abbrev WordM := StateT (Array Nat) Option
+
+private def pushWord (word : Nat) : WordM Unit :=
+  modify (·.push word)
+
+private def encodeActionRef (registers : Std.HashMap String Nat) :
+    Symbolic.Ref → Option Nat
+  | .wire number => some (2 * number)
+  | .reg name => do pure (2 * (← registers[name]?) + 1)
+
+private def encodeMask (registerCount mask : Nat) : WordM Unit := do
+  let indices := (List.range registerCount).filter mask.testBit
+  pushWord indices.length
+  for index in indices do pushWord index
+
+private def encodeSummary (registerCount : Nat)
+    (summary : Symbolic.ActionWide.Summary) : WordM Unit := do
+  encodeMask registerCount summary.possible
+  encodeMask registerCount summary.definite
+
+private def encodeAction (registers : Std.HashMap String Nat)
+    (registerCount : Nat) :
+    Symbolic.ActionWide.ActionCert → WordM Unit
+  | .skip => pushWord 0
+  | .memWrite => pushWord 1
+  | .write index value => do
+      pushWord 2
+      pushWord index
+      pushWord (← encodeActionRef registers value)
+  | .seq summary left right => do
+      pushWord 3
+      encodeSummary registerCount summary
+      encodeSummary registerCount right.summary
+      encodeAction registers registerCount left
+      encodeAction registers registerCount right
+  | cert@(.ite _ guard joins thenCert elseCert) => do
+      pushWord 4
+      encodeSummary registerCount cert.summary
+      pushWord (← encodeActionRef registers guard)
+      pushWord joins.length
+      encodeAction registers registerCount thenCert
+      encodeAction registers registerCount elseCert
+      for join in joins do
+        pushWord join.index
+        match join.output with
+        | .wire number => pushWord number
+        | .reg _ => failure
+
+private def encodeRules (sourceRegisters : List RegDecl)
+    (cert : Symbolic.ActionWide.RulesCert) : Option (Array Nat) := do
+  let mut indices : Std.HashMap String Nat := {}
+  for h : index in [:sourceRegisters.length] do
+    indices := indices.insert sourceRegisters[index].name index
+  let (_, words) ← (do
+    pushWord cert.length
+    for action in cert do encodeSummary sourceRegisters.length action.summary
+    for action in cert do
+      encodeAction indices sourceRegisters.length action).run #[]
+  pure words
+
+/-- Encode compact certificate words as four printable base-64 bytes each.
+The generated data is untrusted; `decodeRules` reconstructs and validates all
+summaries in the kernel. -/
+def actionWideRulesToLean (sourceRegisters : List RegDecl)
+    (cert : Symbolic.ActionWide.RulesCert) : Option ActionWideLeanSource := do
+  let words ← encodeRules sourceRegisters cert
+  let mut data := ""
+  for word in words do
+    guard (word < 16777216)
+    data := data.push (Char.ofNat (33 + (word / 262144) % 64))
+    data := data.push (Char.ofNat (33 + (word / 4096) % 64))
+    data := data.push (Char.ofNat (33 + (word / 64) % 64))
+    data := data.push (Char.ofNat (33 + word % 64))
+  pure { data }
 
 private def optionStringToLean : Option String → String
   | none => "none"

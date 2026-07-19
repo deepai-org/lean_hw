@@ -21,6 +21,7 @@ def write_if_changed(path: Path, text: str) -> None:
     """Preserve mtimes so checked generated modules support incremental builds."""
     if path.exists() and path.read_text() == text:
         return
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
 
 
@@ -93,6 +94,39 @@ def indexed_rhs(text: str) -> str:
         if match:
             return build(match)
     raise ValueError(f"unsupported indexed RHS: {text}")
+
+
+def runtime_rhs(text: str) -> dict:
+    """Compact JSON form consumed by the native untrusted cert generator."""
+    if match := re.fullmatch(r"(\d+)'d(\d+)", text):
+        return {"op": "lit", "strings": [],
+                "nums": [int(match[1]), int(match[2])]}
+    if match := re.fullmatch(r"~([A-Za-z_]\w*)", text):
+        return {"op": "not", "strings": [match[1]], "nums": []}
+    if match := re.fullmatch(r"\$signed\((\w+)\) < \$signed\((\w+)\)", text):
+        return {"op": "slt", "strings": [match[1], match[2]], "nums": []}
+    if match := re.fullmatch(r"\{\{(\d+)\{(\w+)\[(\d+)\]\}\}, (\w+)\}", text):
+        if match[2] != match[4]:
+            raise ValueError("mismatched sext operand")
+        return {"op": "sext", "strings": [match[2]],
+                "nums": [int(match[1]), int(match[3])]}
+    if match := re.fullmatch(r"(\w+)\[(\d+):(\d+)\]", text):
+        return {"op": "slice", "strings": [match[1]],
+                "nums": [int(match[2]), int(match[3])]}
+    if match := re.fullmatch(r"(\w+)\[(\w+)\]", text):
+        return {"op": "memRead", "strings": [match[1], match[2]], "nums": []}
+    if match := re.fullmatch(r"(\w+) \? (\w+) : (\w+)", text):
+        return {"op": "mux", "strings": list(match.groups()), "nums": []}
+    operators = {"&": "and", "|": "or", "^": "xor", "+": "add",
+                 "-": "sub", "<<": "shl", ">>": "shr", "==": "eq",
+                 "<": "ult"}
+    for token in ("<<", ">>", "==", "&", "|", "^", "+", "-", "<"):
+        if match := re.fullmatch(rf"(\w+) {re.escape(token)} (\w+)", text):
+            return {"op": operators[token], "strings": list(match.groups()),
+                    "nums": []}
+    if match := re.fullmatch(r"([A-Za-z_]\w*)", text):
+        return {"op": "ident", "strings": [match[1]], "nums": []}
+    raise ValueError(f"unsupported runtime RHS: {text}")
 
 
 def balanced(names: list[str], empty: str) -> str:
@@ -234,7 +268,8 @@ def parse(path: Path) -> dict:
             r"  wire \[(\d+):0\] (\w+) = (.*);", lines[i])):
         wires.append({"width": int(match[1]) + 1, "name": match[2],
                       "rhs": rhs(match[3]),
-                      "indexedRhs": indexed_rhs(match[3]), "line": lines[i]})
+                      "indexedRhs": indexed_rhs(match[3]),
+                      "runtimeRhs": runtime_rhs(match[3]), "line": lines[i]})
         i += 1
     suffix_start = i
     assert lines[i] == "  always @(posedge clk) begin"; i += 1
@@ -429,6 +464,41 @@ def emit_program_tail(out: list[str], data: dict, block_size: int,
             f"end {namespace}", ""]
 
 
+def emit_semantic_program(data: dict, output: Path, block_size: int,
+                          indexed_root_module: str, namespace: str) -> None:
+    """Emit program metadata without any disk-text/render declarations."""
+    out = prelude(["Loom.Release.Certificate", indexed_root_module], namespace)
+    out += ["namespace Semantic", ""]
+    mem_names = []
+    for mi, mem in enumerate(data["mems"]):
+        init_names = []
+        for bi, block in enumerate(chunks(mem["init"], block_size)):
+            name = f"mem{mi}Init{bi:04d}"
+            init_names.append(name)
+            out += [f"def {name} : List Nat := [{', '.join(map(str, block))}]", ""]
+        tree = balanced(init_names, ".leaf []").replace("mem", ".leaf mem")
+        writes = ", ".join(
+            f"{{ en := {q(w['en'])}, addr := {q(w['addr'])}, data := {q(w['data'])} }}"
+            for w in mem["writes"])
+        name = f"mem{mi}"
+        mem_names.append(name)
+        out += [f"def {name} : Mem where", f"  name := {q(mem['name'])}",
+                f"  addrWidth := {mem['addrWidth']}",
+                f"  dataWidth := {mem['dataWidth']}", f"  init := {tree}",
+                f"  writes := [{writes}]", ""]
+    regs = ",\n".join(
+        f"  {{ name := {q(r['name'])}, width := {r['width']}, init := {r['init']}, next := {q(r['next'])} }}"
+        for r in data["regs"])
+    outs = ",\n".join(
+        f"  {{ name := {q(o['name'])}, width := {o['width']}, value := {q(o['value'])} }}"
+        for o in data["outs"])
+    out += ["def program : Program where", f"  name := {q(data['name'])}",
+            "  regs := [", regs, "  ]", f"  mems := [{', '.join(mem_names)}]",
+            "  wires := wireTree", "  outs := [", outs, "  ]", "",
+            "end Semantic", "", f"end {namespace}", ""]
+    write_if_changed(output, "\n".join(out))
+
+
 def emit_batched(data: dict, output: Path, block_size: int,
                  batch_blocks: int, design_expr: str | None = None,
                  design_imports: list[str] | None = None) -> None:
@@ -439,6 +509,10 @@ def emit_batched(data: dict, output: Path, block_size: int,
         raise ValueError("batched output must be beneath the current directory") from error
     root_module = ".".join(relative.with_suffix("").parts)
     cert_module_prefix = ".".join(relative.parent.parts)
+    indexed_root_module = f"{cert_module_prefix}.IndexedRoot"
+    indexed_root_path = output.parent / "IndexedRoot.lean"
+    semantic_root_module = f"{cert_module_prefix}.SemanticRoot"
+    semantic_root_path = output.parent / "SemanticRoot.lean"
     artifact = re.sub(r"\W", "", output.parent.name)
     namespace = f"Loom.GeneratedRelease.{artifact}"
     blocks = chunks(data["wires"], block_size)
@@ -464,10 +538,12 @@ def emit_batched(data: dict, output: Path, block_size: int,
     disk_names = [f"diskWireBlock{i:04d}" for i in range(len(blocks))]
     proofs = [f"renderWireBlock{i:04d}" for i in range(len(blocks))]
     indexed_proofs = [f"indexedWireLeafMatches{i:04d}" for i in range(len(blocks))]
-    out = prelude(["Loom.Release.Certificate",
-                   "Loom.Release.SymbolicCertificate"] + batch_modules,
-                  namespace)
-    out += ["def wireTree : Rope (List Wire) :=",
+    # Keep the indexed semantic graph in a lightweight module.  Semantic
+    # certificates should not pay to elaborate the disk-byte and complete
+    # program data merely to resolve a wire index.
+    indexed_out = prelude(["Loom.Release.SymbolicCertificate"] + batch_modules,
+                          namespace)
+    indexed_out += ["def wireTree : Rope (List Wire) :=",
             "  " + balanced(names, ".leaf []").replace(
                 "wireBlock", ".leaf wireBlock"), "",
             "def indexedWireTree : Rope (List Symbolic.IndexedWire) :=",
@@ -480,9 +556,14 @@ def emit_batched(data: dict, output: Path, block_size: int,
                 ".node", ".node"), "",
             "def wireTable : Symbolic.WireTable where",
             f"  leafSize := {block_size}",
-            "  paths := [" + ", ".join(
-                "[" + ", ".join("true" if step else "false" for step in path) + "]"
-                for path in balanced_paths(len(blocks))) + "]", "",
+            f"  leafCount := {len(blocks)}", "",
+            f"end {namespace}", ""]
+    write_if_changed(indexed_root_path, "\n".join(indexed_out))
+    emit_semantic_program(data, semantic_root_path, block_size,
+                          indexed_root_module, namespace)
+
+    out = prelude(["Loom.Release.Certificate", indexed_root_module], namespace)
+    out += [
             "def diskWireTree : Rope (List String) :=",
             "  " + balanced(disk_names, ".leaf []").replace(
                 "diskWireBlock", ".leaf diskWireBlock"), "",
@@ -493,7 +574,9 @@ def emit_batched(data: dict, output: Path, block_size: int,
     emit_program_tail(out, data, block_size, namespace)
     write_if_changed(output, "\n".join(out))
     manifest = output.parent / "modules.txt"
-    write_if_changed(manifest, "\n".join(batch_modules + [root_module]) + "\n")
+    write_if_changed(manifest, "\n".join(
+        batch_modules + [indexed_root_module, semantic_root_module,
+                         root_module]) + "\n")
 
     if design_expr is not None:
         imports = design_imports or []
@@ -1135,6 +1218,20 @@ def main() -> None:
                         help="module imported by the generated certificate driver")
     args = parser.parse_args()
     data = parse(args.input)
+    runtime_lines = [f"LOOM_SSA_V1\t{data['name']}"]
+    runtime_lines += ["\t".join(("R", reg["name"], str(reg["width"]),
+                                 str(reg["init"]), reg["next"]))
+                      for reg in data["regs"]]
+    runtime_wires = []
+    for wire in data["wires"]:
+        compact = wire["runtimeRhs"]
+        runtime_wires.append("\t".join((
+            "W", wire["name"], str(wire["width"]), compact["op"],
+            ",".join(compact["strings"]),
+            ",".join(str(value) for value in compact["nums"]))))
+    runtime_lines += [";".join(block) for block in chunks(runtime_wires, 32)]
+    write_if_changed(args.output.parent / "Runtime.tsv",
+                     "\n".join(runtime_lines) + "\n")
     if args.batch_blocks:
         emit_batched(data, args.output, args.block_size, args.batch_blocks,
                      args.design_expr, args.design_import)

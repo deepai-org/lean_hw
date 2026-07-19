@@ -106,13 +106,29 @@ leaf is stored; the numeric SSA suffix determines the leaf and offset.
 The last leaf may be shorter. -/
 structure WireTable where
   leafSize : Nat
-  paths : List (List Bool)
+  leafCount : Nat
   deriving Repr, DecidableEq
+
+private def balancedPathAux : Nat → Nat → Nat → Option (List Bool)
+  | 0, _, _ => none
+  | _ + 1, 0, _ => none
+  | _ + 1, 1, 0 => some []
+  | _ + 1, 1, _ => none
+  | fuel + 1, count, index => do
+      let parent ← balancedPathAux fuel ((count + 1) / 2) (index / 2)
+      if count % 2 == 1 && index + 1 == count then pure parent
+      else pure (parent ++ [index % 2 == 1])
+
+/-- Compute the root-to-leaf path induced by the pairwise balanced rope
+constructor used by release generation. -/
+def balancedPath? (count index : Nat) : Option (List Bool) := do
+  guard (index < count)
+  balancedPathAux (count + 1) count index
 
 def lookupIndexed? (wires : Rope (List IndexedWire)) (table : WireTable)
     (number : Nat) : Option IndexedWire := do
   guard (table.leafSize > 0)
-  let path ← table.paths[number / table.leafSize]?
+  let path ← balancedPath? table.leafCount (number / table.leafSize)
   let wire ← wires.resolve? ⟨path, number % table.leafSize⟩
   guard (wire.number == number)
   pure wire
@@ -956,7 +972,7 @@ def lookupWire? (program : Program) (table : WireTable)
     (name : String) : Option Wire := do
   let number ← wireNumber? name
   guard (table.leafSize > 0)
-  let path ← table.paths[number / table.leafSize]?
+  let path ← balancedPath? table.leafCount (number / table.leafSize)
   let reference : Rope.Ref := ⟨path, number % table.leafSize⟩
   let wire ← program.wires.resolve? reference
   guard (wire.name == name)
@@ -1057,7 +1073,8 @@ theorem lookupWire_name (program : Program) (table : WireTable)
   | none => simp [hnumber] at h
   | some number =>
     by_cases hsize : table.leafSize > 0
-    · cases hpath : table.paths[number / table.leafSize]? with
+    · cases hpath : balancedPath? table.leafCount
+          (number / table.leafSize) with
       | none => simp [hnumber, hsize, hpath] at h
       | some path =>
         cases hwire : program.wires.resolve?
