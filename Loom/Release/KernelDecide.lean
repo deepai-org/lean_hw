@@ -20,11 +20,21 @@ open Lean Elab Term Meta
 emitting tactic metadata. -/
 syntax (name := kernelDecide) "kernel_decide" : term
 
+private partial def zetaLocalLets (expression : Expr) : TermElabM Expr := do
+  let some fvar := expression.find? (·.isFVar) | return expression
+  let localContext ← getLCtx
+  let some declaration := localContext.find? fvar.fvarId!
+    | return expression
+  let some value := declaration.value? (allowNondep := true)
+    | return expression
+  zetaLocalLets (expression.replaceFVar fvar value)
+
 @[term_elab kernelDecide]
 def elabKernelDecide : TermElab := fun _ expected? => do
   let some expected := expected?
     | throwError "kernel_decide requires an expected proposition"
   let expected ← instantiateMVars expected
+  let expected ← zetaLocalLets expected
   if expected.hasFVar || expected.hasMVar then
     throwError "kernel_decide requires a closed proposition"
   let proof ← mkDecideProof expected

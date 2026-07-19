@@ -254,11 +254,316 @@ private def evaluateCert (registers : Array RegDecl) :
         output := output.set! index join.output
       pure { refs := output, changed }
 
+private def actionCertNodeCount :
+    Loom.Release.Symbolic.ActionWide.ActionCert → Nat
+  | .skip | .memWrite | .write .. => 1
+  | .seq _ left right | .ite _ _ _ left right =>
+      actionCertNodeCount left + actionCertNodeCount right + 1
+
 private def resultToLean (result : Loom.Release.Symbolic.ActionWide.Result) :
     String :=
   "{ refs := " ++ Tools.ReleaseCertGen.actionWideRefsToLean result.refs ++
     ", changed := [" ++ String.intercalate ", "
       (result.changed.map toString) ++ "] }"
+
+private structure EvidenceBuild where
+  source : String
+  cert : String
+  input : String
+  needed : String
+  result : String
+  evidence : String
+  locals : Array String := #[]
+  size : Nat
+
+private structure EvidenceGenState where
+  next : Nat := 0
+  resultNext : Nat := 0
+  aliasNext : Nat := 0
+  neededNext : Nat := 0
+  declarations : Array String := #[]
+
+private abbrev EvidenceGenM := StateT EvidenceGenState Option
+
+private def emitEvidenceResult (expression : String) :
+    EvidenceGenM (String × String) := do
+  let state ← get
+  let name := "actionResult" ++ toString state.resultNext
+  let declaration := "  let " ++ name ++
+    " : Symbolic.ActionWide.Result := " ++ expression ++ "\n"
+  set ({ next := state.next, resultNext := state.resultNext + 1
+         aliasNext := state.aliasNext, neededNext := state.neededNext
+         declarations := state.declarations } : EvidenceGenState)
+  pure (name, declaration)
+
+private def emitEvidenceAliases (source cert : String) :
+    EvidenceGenM (String × String × String) := do
+  let state ← get
+  let suffix := toString state.aliasNext
+  let sourceName := "actionSourceAlias" ++ suffix
+  let certName := "actionCertAlias" ++ suffix
+  let declaration :=
+    "  let " ++ sourceName ++ " : Act := " ++ source ++ "\n" ++
+    "  let " ++ certName ++
+      " : Symbolic.ActionWide.ActionCert := " ++ cert ++ "\n"
+  set ({ next := state.next, resultNext := state.resultNext
+         aliasNext := state.aliasNext + 1, neededNext := state.neededNext
+         declarations := state.declarations } : EvidenceGenState)
+  pure (sourceName, certName, declaration)
+
+private def emitEvidenceNeeded (expression : String) :
+    EvidenceGenM (String × String) := do
+  let state ← get
+  let name := "actionNeeded" ++ toString state.neededNext
+  let declaration := "  let " ++ name ++
+    " : List Nat := " ++ expression ++ "\n"
+  set ({ next := state.next, resultNext := state.resultNext
+         aliasNext := state.aliasNext, neededNext := state.neededNext + 1
+         declarations := state.declarations } : EvidenceGenState)
+  pure (name, declaration)
+
+private def refsDeltaToLean (base : String)
+    (before after : Array Loom.Release.Symbolic.Ref) : String := Id.run do
+  let mut expression := base
+  for index in List.range (min before.size after.size) do
+    if let some beforeRef := before[index]? then
+      if let some afterRef := after[index]? then
+        if beforeRef != afterRef then
+          expression := "(" ++ expression ++ ").set! " ++ toString index ++
+            " (" ++ Tools.ReleaseCertGen.actionWideRefToLean afterRef ++ ")"
+  pure expression
+
+private def evidenceType (source input needed cert result : String) : String :=
+  "Symbolic.ActionWide.CheckedEvidence indexedWireTree wireTable " ++
+    "design.regs.toArray (" ++ source ++ ") (" ++ input ++ ") (" ++
+    needed ++ ") (" ++ cert ++ ") (" ++ result ++ ")"
+
+private def mergeLocals (left right : Array String) : Array String :=
+  right.foldl (fun merged declaration =>
+    if merged.contains declaration then merged else merged.push declaration) left
+
+private def emitEvidenceContext (source cert input needed : String)
+    (locals : Array String) :
+    EvidenceGenM (String × String × String × String) := do
+  let state ← get
+  let suffix := toString state.aliasNext
+  let name := "actionContext" ++ suffix
+  let declaration :=
+    "noncomputable def " ++ name ++ " : ActionEvidenceContext :=\n" ++
+    String.join locals.toList ++
+    "  { source := " ++ source ++ ", cert := " ++ cert ++
+      ", input := " ++ input ++ ", needed := " ++ needed ++ " }\n"
+  set ({ next := state.next, resultNext := state.resultNext
+         aliasNext := state.aliasNext + 1, neededNext := state.neededNext
+         declarations := state.declarations.push declaration } : EvidenceGenState)
+  pure (name ++ ".source", name ++ ".cert", name ++ ".input",
+    name ++ ".needed")
+
+private def emitEvidenceBoundary (build : EvidenceBuild) : EvidenceGenM EvidenceBuild := do
+  let state ← get
+  let suffix := toString state.next
+  let dataName := "segmentData" ++ suffix
+  let theoremName := "segmentEvidence" ++ suffix
+  let declaration :=
+    "noncomputable def " ++ dataName ++ " : ActionEvidenceData :=\n" ++
+    String.join build.locals.toList ++
+    "  { source := " ++ build.source ++ ", cert := " ++ build.cert ++
+      ", input := " ++ build.input ++ ", needed := " ++ build.needed ++
+      ", result := " ++ build.result ++ " }\n" ++
+    "theorem " ++ theoremName ++ " :\n    " ++
+      evidenceType (dataName ++ ".source") (dataName ++ ".input")
+        (dataName ++ ".needed") (dataName ++ ".cert")
+        (dataName ++ ".result") ++ " := by\n" ++
+    "  unfold " ++ dataName ++ "\n" ++
+    String.join build.locals.toList ++
+    "  change " ++ evidenceType build.source build.input build.needed
+      build.cert build.result ++ "\n" ++
+    "  exact " ++ build.evidence ++ "\n"
+  set ({ next := state.next + 1, resultNext := state.resultNext
+         aliasNext := state.aliasNext, neededNext := state.neededNext
+         declarations := state.declarations.push declaration } : EvidenceGenState)
+  pure { source := dataName ++ ".source", cert := dataName ++ ".cert"
+         input := dataName ++ ".input", needed := dataName ++ ".needed"
+         result := dataName ++ ".result", evidence := theoremName
+         locals := #[], size := 1 }
+
+private partial def buildEvidence (registers : Array RegDecl)
+    (source : Act) (cert : Loom.Release.Symbolic.ActionWide.ActionCert)
+    (inputRefs : Array Loom.Release.Symbolic.Ref) (neededValues : List Nat)
+    (sourceExpr certExpr inputExpr neededExpr : String)
+    (inheritedLocals : Array String) (pathDepth : Nat) :
+    EvidenceGenM EvidenceBuild := do
+  let (sourceExpr, certExpr, inputExpr, neededExpr, inheritedLocals) ←
+    if inheritedLocals.size ≥ 32 then do
+      let (source, cert, input, needed) ← emitEvidenceContext sourceExpr certExpr
+        inputExpr neededExpr inheritedLocals
+      pure (source, cert, input, needed, #[])
+    else pure (sourceExpr, certExpr, inputExpr, neededExpr, inheritedLocals)
+  let (sourceExpr, certExpr, aliasLocals, pathDepth) ←
+    if pathDepth ≥ 8 then do
+      let (sourceName, certName, declaration) ←
+        emitEvidenceAliases sourceExpr certExpr
+      pure (sourceName, certName, #[declaration], 0)
+    else pure (sourceExpr, certExpr, #[], pathDepth)
+  let (neededExpr, neededLocal) ← emitEvidenceNeeded neededExpr
+  let prefixLocals := (mergeLocals inheritedLocals aliasLocals).push neededLocal
+  let some result := evaluateCert registers inputRefs neededValues cert | failure
+  let changedExpr := "Symbolic.ActionWide.changedOutputs (" ++ certExpr ++
+    ").summary (" ++ neededExpr ++ ")"
+  match source, cert with
+  | .skip, .skip | .memWrite .., .memWrite | .write .., .write .. =>
+      let refsExpr := refsDeltaToLean inputExpr inputRefs result.refs
+      let (resultExpr, resultLocal) ← emitEvidenceResult ("{ refs := " ++ refsExpr ++
+        ", changed := " ++ changedExpr ++ " }"
+        )
+      let build : EvidenceBuild :=
+        { source := sourceExpr, cert := certExpr, input := inputExpr
+          needed := neededExpr, result := resultExpr
+          evidence := "(.direct (kernel_decide))"
+          locals := prefixLocals.push resultLocal, size := 1 }
+      pure build
+  | .seq left right, .seq _ leftCert rightCert =>
+      let leftNeeded := Loom.Release.Symbolic.ActionWide.neededInputs
+        rightCert.summary neededValues
+      let leftSourceExpr := "Symbolic.ActionWide.seqLeftAction (" ++
+        sourceExpr ++ ")"
+      let rightSourceExpr := "Symbolic.ActionWide.seqRightAction (" ++
+        sourceExpr ++ ")"
+      let leftCertExpr := "Symbolic.ActionWide.ActionCert.seqLeft (" ++
+        certExpr ++ ")"
+      let rightCertExpr := "Symbolic.ActionWide.ActionCert.seqRight (" ++
+        certExpr ++ ")"
+      let leftNeededExpr := "Symbolic.ActionWide.neededInputs (" ++
+        rightCertExpr ++ ").summary (" ++ neededExpr ++ ")"
+      let leftBuild ← buildEvidence registers left leftCert inputRefs leftNeeded
+        leftSourceExpr leftCertExpr inputExpr leftNeededExpr prefixLocals
+        (pathDepth + 1)
+      let some leftResult := evaluateCert registers inputRefs leftNeeded leftCert
+        | failure
+      let rightInputExpr := "(" ++ leftBuild.result ++ ").refs"
+      let rightBuild ← buildEvidence registers right rightCert leftResult.refs
+        neededValues rightSourceExpr rightCertExpr rightInputExpr neededExpr
+        (mergeLocals prefixLocals leftBuild.locals)
+        (pathDepth + 1)
+      let (resultExpr, resultLocal) ← emitEvidenceResult ("{ refs := (" ++ rightBuild.result ++
+        ").refs, changed := " ++ changedExpr ++ " }")
+      let proof := "(by\n" ++
+        "  rw [Symbolic.ActionWide.action_eq_seq_projections " ++
+          "(action := " ++ sourceExpr ++ ") (kernel_decide)]\n" ++
+        "  rw [Symbolic.ActionWide.ActionCert.eq_seq_projections " ++
+          "(cert := " ++ certExpr ++ ") (kernel_decide)]\n" ++
+        "  exact .seq (leftResult := " ++ leftBuild.result ++ ") " ++
+          "(rightResult := " ++ rightBuild.result ++ ") rfl (" ++
+          leftBuild.evidence ++ ") (" ++ rightBuild.evidence ++ "))"
+      let build : EvidenceBuild :=
+        { source := sourceExpr, cert := certExpr, input := inputExpr
+          needed := neededExpr, result := resultExpr, evidence := proof
+          locals := (mergeLocals (mergeLocals prefixLocals leftBuild.locals)
+            rightBuild.locals).push resultLocal
+          size := leftBuild.size + rightBuild.size + 1 }
+      if build.size ≥ 32 then emitEvidenceBoundary build else pure build
+  | .ite _condition thenAction elseAction,
+      .ite _ _ _joins thenCert elseCert =>
+      let changed := Loom.Release.Symbolic.ActionWide.changedOutputs
+        cert.claimedSummary neededValues
+      let thenSourceExpr := "Symbolic.ActionWide.iteThenAction (" ++
+        sourceExpr ++ ")"
+      let elseSourceExpr := "Symbolic.ActionWide.iteElseAction (" ++
+        sourceExpr ++ ")"
+      let thenCertExpr := "Symbolic.ActionWide.ActionCert.iteThen (" ++
+        certExpr ++ ")"
+      let elseCertExpr := "Symbolic.ActionWide.ActionCert.iteElse (" ++
+        certExpr ++ ")"
+      let changedNeededExpr := "Symbolic.ActionWide.changedOutputs (" ++
+        certExpr ++ ").claimedSummary (" ++ neededExpr ++ ")"
+      let thenBuild ← buildEvidence registers thenAction thenCert inputRefs changed
+        thenSourceExpr thenCertExpr inputExpr changedNeededExpr prefixLocals
+        (pathDepth + 1)
+      let elseBuild ← buildEvidence registers elseAction elseCert inputRefs changed
+        elseSourceExpr elseCertExpr inputExpr changedNeededExpr prefixLocals
+        (pathDepth + 1)
+      let refsExpr := refsDeltaToLean inputExpr inputRefs result.refs
+      let (resultExpr, resultLocal) ← emitEvidenceResult ("{ refs := " ++ refsExpr ++
+        ", changed := " ++ changedExpr ++ " }")
+      let proof := "(by\n" ++
+        "  rw [Symbolic.ActionWide.action_eq_ite_projections " ++
+          "(action := " ++ sourceExpr ++ ") (kernel_decide)]\n" ++
+        "  rw [Symbolic.ActionWide.ActionCert.eq_ite_projections " ++
+          "(cert := " ++ certExpr ++ ") (kernel_decide)]\n" ++
+        "  exact .ite (thenResult := " ++ thenBuild.result ++ ") " ++
+          "(elseResult := " ++ elseBuild.result ++ ") " ++
+          "(merged := " ++ refsExpr ++ ") rfl (kernel_decide) (" ++
+          thenBuild.evidence ++ ") (" ++ elseBuild.evidence ++
+          ") (kernel_decide))"
+      let build : EvidenceBuild :=
+        { source := sourceExpr, cert := certExpr, input := inputExpr
+          needed := neededExpr, result := resultExpr, evidence := proof
+          locals := (mergeLocals (mergeLocals prefixLocals thenBuild.locals)
+            elseBuild.locals).push resultLocal
+          size := thenBuild.size + elseBuild.size + 1 }
+      if build.size ≥ 32 then emitEvidenceBoundary build else pure build
+  | _, _ => failure
+
+private unsafe def generateCoreEvidence (runtime output : System.FilePath) :
+    IO UInt32 := do
+  let program ← Tools.RuntimeSsa.load runtime
+  let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
+  let some cert := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
+      design program | return 1
+  let registers := design.regs.toArray
+  let needed := List.range registers.size
+  let initial := registers.map fun register =>
+    Loom.Release.Symbolic.Ref.reg register.name
+  let some refillCert := cert[0]? | return 1
+  let refillNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs cert.tail needed
+  let some refillResult := evaluateCert registers initial refillNeeded refillCert
+    | return 1
+  let some coreCert := cert[1]? | return 1
+  let coreNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    (cert.drop 2) needed
+  let initialState : EvidenceGenState := {}
+  let some (rootBuild, state) := (buildEvidence registers
+      (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) coreCert
+      refillResult.refs coreNeeded
+      "Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest"
+      "actionCertNode15158"
+      "coreEvidenceInput" "coreEvidenceNeeded" #[] 0).run
+        initialState | return 1
+  let some (rootBuild, state) := (emitEvidenceBoundary rootBuild).run state
+    | return 1
+  IO.eprintln s!"generated {state.next} bounded evidence segments"
+  let source := "-- Generated bounded core evidence; DO NOT EDIT.\n" ++
+    "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+    "import GeneratedRelease.Lnp64u.SemanticRoot\n" ++
+    "import Loom.Release.KernelDecide\n" ++
+    "import Machines.Lnp64u.Hw.Core\n" ++
+    "import Machines.Lnp64u.Hw.Demo\n\n" ++
+    "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+    "open Loom.Hw Loom.Release\n\n" ++
+    "noncomputable section\n\n" ++
+    "structure ActionEvidenceData where\n" ++
+    "  source : Act\n" ++
+    "  cert : Symbolic.ActionWide.ActionCert\n" ++
+    "  input : Array Symbolic.Ref\n" ++
+    "  needed : List Nat\n" ++
+    "  result : Symbolic.ActionWide.Result\n\n" ++
+    "structure ActionEvidenceContext where\n" ++
+    "  source : Act\n" ++
+    "  cert : Symbolic.ActionWide.ActionCert\n" ++
+    "  input : Array Symbolic.Ref\n" ++
+    "  needed : List Nat\n\n" ++
+    "private abbrev design := Machines.Lnp64u.Hw.core " ++
+      "Machines.Lnp64u.Demo.sysManifest\n" ++
+    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+    "noncomputable def coreEvidenceInput : Array Symbolic.Ref := " ++
+      Tools.ReleaseCertGen.actionWideRefsToLean refillResult.refs ++ "\n" ++
+    "noncomputable def coreEvidenceNeeded : List Nat := [" ++
+      String.intercalate ", " (coreNeeded.map toString) ++ "]\n\n" ++
+    String.intercalate "\n" state.declarations.toList ++ "\n" ++
+    "theorem coreActionAccepted := " ++ rootBuild.evidence ++ ".accepted\n\n" ++
+    "end Loom.GeneratedRelease.Lnp64u\n"
+  writeIfChanged output source
+  return 0
 
 private unsafe def generateCoreBranchProbe (runtime output : System.FilePath) :
     IO UInt32 := do
@@ -276,14 +581,18 @@ private unsafe def generateCoreBranchProbe (runtime output : System.FilePath) :
   let some refillResult := evaluateCert registers initial refillNeeded refillCert
     | return 1
   let some coreCert := cert[1]? | return 1
+  IO.eprintln s!"core action certificate nodes={actionCertNodeCount coreCert}"
   let coreNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
     (cert.drop 2) needed
-  let (.ite summary _ _ thenCert elseCert) := coreCert | return 1
+  let (.ite summary _ _ thenCert _elseCert) := coreCert | return 1
   let changed := Loom.Release.Symbolic.ActionWide.changedOutputs summary coreNeeded
-  let some thenResult := evaluateCert registers refillResult.refs changed thenCert
-    | return 1
-  let some elseResult := evaluateCert registers refillResult.refs changed elseCert
-    | return 1
+  let (.ite thenSummary _ _ retirementCert countdownCert) := thenCert | return 1
+  let thenChanged := Loom.Release.Symbolic.ActionWide.changedOutputs
+    thenSummary changed
+  let some retirementResult := evaluateCert registers refillResult.refs
+      thenChanged retirementCert | return 1
+  let some countdownResult := evaluateCert registers refillResult.refs
+      thenChanged countdownCert | return 1
   let source := "-- Generated core-branch segmentation probe; DO NOT EDIT.\n" ++
     "import GeneratedRelease.Lnp64u.ActionCert\n" ++
     "import GeneratedRelease.Lnp64u.SemanticRoot\n" ++
@@ -300,25 +609,33 @@ private unsafe def generateCoreBranchProbe (runtime output : System.FilePath) :
       String.intercalate ", " (coreNeeded.map toString) ++ "]\n" ++
     "def coreChanged : List Nat := [" ++
       String.intercalate ", " (changed.map toString) ++ "]\n" ++
+    "def coreThenChanged : List Nat := [" ++
+      String.intercalate ", " (thenChanged.map toString) ++ "]\n" ++
     "noncomputable def coreThenCert := " ++
       "Symbolic.ActionWide.ActionCert.iteThen actionCertNode15158\n" ++
     "noncomputable def coreElseCert := " ++
-      "Symbolic.ActionWide.ActionCert.iteElse actionCertNode15158\n\n" ++
+      "Symbolic.ActionWide.ActionCert.iteElse actionCertNode15158\n" ++
+    "noncomputable def retirementCert := " ++
+      "Symbolic.ActionWide.ActionCert.iteThen coreThenCert\n" ++
+    "noncomputable def countdownCert := " ++
+      "Symbolic.ActionWide.ActionCert.iteElse coreThenCert\n\n" ++
     "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
-    "theorem coreThenAccepted :\n" ++
+    "theorem retirementAccepted :\n" ++
     "    Symbolic.ActionWide.runCheckedAction indexedWireTree wireTable " ++
       "design.regs.toArray\n" ++
     "      (Symbolic.ActionWide.iteThenAction " ++
-      "(Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest))\n" ++
-    "      coreInput coreChanged coreThenCert = some " ++
-      resultToLean thenResult ++ " := kernel_decide\n\n" ++
-    "theorem coreElseAccepted :\n" ++
+      "(Symbolic.ActionWide.iteThenAction " ++
+      "(Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest)))\n" ++
+    "      coreInput coreThenChanged retirementCert = some " ++
+      resultToLean retirementResult ++ " := kernel_decide\n\n" ++
+    "theorem countdownAccepted :\n" ++
     "    Symbolic.ActionWide.runCheckedAction indexedWireTree wireTable " ++
       "design.regs.toArray\n" ++
     "      (Symbolic.ActionWide.iteElseAction " ++
-      "(Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest))\n" ++
-    "      coreInput coreChanged coreElseCert = some " ++
-      resultToLean elseResult ++ " := kernel_decide\n\n" ++
+      "(Symbolic.ActionWide.iteThenAction " ++
+      "(Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest)))\n" ++
+    "      coreInput coreThenChanged countdownCert = some " ++
+      resultToLean countdownResult ++ " := kernel_decide\n\n" ++
     "end Loom.GeneratedRelease.Lnp64u\n"
   writeIfChanged output source
   return 0
@@ -359,6 +676,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       generateNamedCertificate runtime output
   | ["lnp64u-core-branch-probe", runtime, output] =>
       generateCoreBranchProbe runtime output
+  | ["lnp64u-core-evidence", runtime, output] =>
+      generateCoreEvidence runtime output
   | _ =>
       IO.eprintln "usage: actionwidegen {acc8|lnp64u} RUNTIME.json OUTPUT.lean"
       return 2
