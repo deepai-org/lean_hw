@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.SymbolicCertificate
 import Loom.Release.SymbolicElaborate
+import Loom.Release.WholeRegisterPlan
 import Loom.Hw.CompileCorrect
 import Lean.Elab.Term
 import Lean.Meta.Tactic.AuxLemma
@@ -899,11 +900,28 @@ private def proveRegWritesOr (register width left right : Expr) : MetaM Expr := 
   let decomposition ← mkAppM ``Bool.or_eq_true #[leftCheck, rightCheck]
   mkAppM ``Eq.mpr #[decomposition, disjunction]
 
-private def expose (value : Expr) : MetaM (Name × Array Expr) := do
+private partial def expose (value : Expr) : MetaM (Name × Array Expr) := do
   let reduced ← withTransparency .all <| whnf value
-  let some name := reduced.getAppFn.constName?
-    | throwError "symbolic_kernel_decide: expected constructor, got {reduced}"
-  pure (name, reduced.getAppArgs)
+  if let some name := reduced.getAppFn.constName? then
+    if (← getEnv).isConstructor name then
+      return (name, reduced.getAppArgs)
+  match ← unfoldDefinition? reduced (ignoreTransparency := true) with
+  | some unfolded => expose unfolded
+  | none =>
+      let fn := reduced.getAppFn
+      let args := reduced.getAppArgs
+      for index in [:args.size] do
+        if let some unfolded ← unfoldDefinition? args[index]!
+            (ignoreTransparency := true) then
+          let candidate := mkAppN fn (args.set! index unfolded)
+          let candidateReduced ← withTransparency .all <| whnf candidate
+          unless candidateReduced == reduced do
+            return ← expose candidateReduced
+      try
+        let unfoldedFn ← unfoldDefinition reduced.getAppFn
+        expose (mkAppN unfoldedFn reduced.getAppArgs)
+      catch _ =>
+        throwError "symbolic_kernel_decide: expected constructor, got {reduced}"
 
 private def transportNextRegAction (wires table register width current out cert
     actionEq proof : Expr) : MetaM Expr := do
@@ -1073,6 +1091,191 @@ private partial def proveNextRules (wires table register width rules current out
         #[wires, table, register, width, rule, tailRules, current, out,
           headCert, tailCert, tailProof]
   throwError "symbolic_kernel_decide: rule/certificate shape mismatch"
+
+private partial def proveWholePlan (wires table width plan current out cert : Expr) :
+    MetaM Expr := do
+  let (planName, planArgs) ← expose plan
+  let (certName, certArgs) ← expose cert
+  if planName == ``Loom.Hw.Compile.RegPlan.same &&
+      certName == ``NextRegCert.same then
+    let (currentName, currentArgs) ← expose current
+    unless currentName == ``Option.some do
+      throwError "symbolic_kernel_decide: plan `.same` requires a current root"
+    let currentRef := currentArgs[currentArgs.size - 1]!
+    unless ← isDefEq currentRef out do
+      throwError "symbolic_kernel_decide: plan `.same` roots differ"
+    return ← mkAppM ``WholePlan.planMatches_same
+      #[wires, table, width, currentRef]
+  if planName == ``Loom.Hw.Compile.RegPlan.write &&
+      certName == ``NextRegCert.write then
+    let value := planArgs[planArgs.size - 1]!
+    let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[value]
+    let expressionCheck ← mkAppM ``indexedExprMatches
+      #[wires, table, compiled, out]
+    let expressionProof ← decideAccepted (← mkBoolAccepted expressionCheck)
+    let (currentName, currentArgs) ← expose current
+    if currentName == ``Option.none then
+      return ← mkAppM ``WholePlan.planMatches_write
+        #[wires, table, width, value, out, expressionProof]
+    else if currentName == ``Option.some then
+      let currentRef := currentArgs[currentArgs.size - 1]!
+      return ← mkAppM ``WholePlan.planMatches_write_current
+        #[wires, table, width, value, currentRef, out, expressionProof]
+  if planName == ``Loom.Hw.Compile.RegPlan.seq &&
+      certName == ``NextRegCert.seq then
+    let left := planArgs[planArgs.size - 2]!
+    let right := planArgs[planArgs.size - 1]!
+    let mid := certArgs[certArgs.size - 3]!
+    let leftCert := certArgs[certArgs.size - 2]!
+    let rightCert := certArgs[certArgs.size - 1]!
+    let (midName, midArgs) ← expose mid
+    if midName == ``Option.some then
+      let midRef := midArgs[midArgs.size - 1]!
+      let leftProof ← proveWholePlan wires table width left current midRef
+        leftCert
+      let someMid ← mkAppM ``Option.some #[midRef]
+      let rightProof ← proveWholePlan wires table width right someMid out
+        rightCert
+      return ← mkAppM ``WholePlan.planMatches_seq_named
+        #[wires, table, width, left, right, current, midRef, out, leftCert,
+          rightCert, leftProof, rightProof]
+    else if midName == ``Option.none then
+      let noneRef := mkApp (mkConst ``Option.none [Level.zero]) (mkConst ``Ref)
+      let rightProof ← proveWholePlan wires table width right noneRef out
+        rightCert
+      return ← mkAppM ``WholePlan.planMatches_seq_discard
+        #[wires, table, width, left, right, current, out, leftCert, rightCert,
+          rightProof]
+  if planName == ``Loom.Hw.Compile.RegPlan.ite &&
+      certName == ``NextRegCert.ite then
+    let guard := planArgs[planArgs.size - 3]!
+    let thenPlan := planArgs[planArgs.size - 2]!
+    let elsePlan := planArgs[planArgs.size - 1]!
+    let thenCert := certArgs[certArgs.size - 2]!
+    let elseCert := certArgs[certArgs.size - 1]!
+    let (outName, outArgs) ← expose out
+    unless outName == ``Ref.wire do
+      throwError "symbolic_kernel_decide: plan ite output is not a wire"
+    let number := outArgs[outArgs.size - 1]!
+    let lookup ← mkAppM ``lookupIndexed? #[wires, table, number]
+    let lookupReduced ← withTransparency .all <| whnf lookup
+    let (lookupName, lookupArgs) ← expose lookupReduced
+    unless lookupName == ``Option.some do
+      throwError "symbolic_kernel_decide: plan ite output lookup failed"
+    let indexedWire := lookupArgs[lookupArgs.size - 1]!
+    let (wireName, wireArgs) ← expose indexedWire
+    unless wireName == ``IndexedWire.mk do
+      throwError "symbolic_kernel_decide: malformed indexed wire for plan ite"
+    let actualWidth := wireArgs[wireArgs.size - 2]!
+    unless ← isDefEq actualWidth width do
+      throwError "symbolic_kernel_decide: plan ite output width mismatch"
+    let rhs := wireArgs[wireArgs.size - 1]!
+    let (rhsName, rhsArgs) ← expose rhs
+    unless rhsName == ``IndexedRhs.mux do
+      throwError "symbolic_kernel_decide: plan ite output is not a mux"
+    let guardRef := rhsArgs[rhsArgs.size - 3]!
+    let thenRef := rhsArgs[rhsArgs.size - 2]!
+    let elseRef := rhsArgs[rhsArgs.size - 1]!
+    let lookupExpected ← mkAppM ``Option.some #[indexedWire]
+    let lookupProof ← cacheClosedProof (← mkEq lookup lookupExpected)
+      (← mkEqRefl lookup)
+    let compiledGuard ← mkAppM ``Loom.Hw.Compile.compileExpr #[guard]
+    let guardValue ← mkAppM ``indexedExprMatches
+      #[wires, table, compiledGuard, guardRef]
+    let guardProof ← decideAccepted (← mkBoolAccepted guardValue)
+    let thenProof ← proveWholePlan wires table width thenPlan current thenRef
+      thenCert
+    let elseProof ← proveWholePlan wires table width elsePlan current elseRef
+      elseCert
+    return ← mkAppM ``WholePlan.planMatches_ite
+      #[wires, table, width, guard, thenPlan, elsePlan, current, number,
+        guardRef, thenRef, elseRef, thenCert, elseCert, lookupProof, guardProof,
+        thenProof, elseProof]
+  throwError "symbolic_kernel_decide: plan/certificate shape mismatch"
+
+private partial def proveWholeRules (wires table width plans current out cert : Expr) :
+    MetaM Expr := do
+  let (plansName, plansArgs) ← expose plans
+  let (certName, certArgs) ← expose cert
+  if plansName == ``List.nil && certName == ``NextRulesCert.nil then
+    let (currentName, currentArgs) ← expose current
+    unless currentName == ``Option.some do
+      throwError "symbolic_kernel_decide: empty plan rules require a current root"
+    let currentRef := currentArgs[currentArgs.size - 1]!
+    unless ← isDefEq currentRef out do
+      throwError "symbolic_kernel_decide: terminal plan rule roots differ"
+    return ← mkAppM ``WholePlan.rulesMatch_nil
+      #[wires, table, width, currentRef]
+  if plansName == ``List.cons && certName == ``NextRulesCert.cons then
+    let plan := plansArgs[plansArgs.size - 2]!
+    let tailPlans := plansArgs[plansArgs.size - 1]!
+    let mid := certArgs[certArgs.size - 3]!
+    let headCert := certArgs[certArgs.size - 2]!
+    let tailCert := certArgs[certArgs.size - 1]!
+    let (midName, midArgs) ← expose mid
+    if midName == ``Option.some then
+      let midRef := midArgs[midArgs.size - 1]!
+      let headProof ← proveWholePlan wires table width plan current midRef
+        headCert
+      let someMid ← mkAppM ``Option.some #[midRef]
+      let tailProof ← proveWholeRules wires table width tailPlans someMid out
+        tailCert
+      return ← mkAppM ``WholePlan.rulesMatch_cons_named
+        #[wires, table, width, plan, tailPlans, current, midRef, out, headCert,
+          tailCert, headProof, tailProof]
+    else if midName == ``Option.none then
+      let noneRef := mkApp (mkConst ``Option.none [Level.zero]) (mkConst ``Ref)
+      let tailProof ← proveWholeRules wires table width tailPlans noneRef out
+        tailCert
+      return ← mkAppM ``WholePlan.rulesMatch_cons_discard
+        #[wires, table, width, plan, tailPlans, current, out, headCert,
+          tailCert, tailProof]
+  throwError "symbolic_kernel_decide: plan rules/certificate shape mismatch"
+
+private partial def proveWholeBlock (design program wires table start plans entries : Expr) :
+    MetaM Expr := do
+  let simpContext ← Simp.Context.mkDefault
+  let (plansResult, _) ← simp plans simpContext
+  let (entriesResult, _) ← simp entries simpContext
+  let (plansName, plansArgs) ← expose plansResult.expr
+  let (entriesName, entriesArgs) ← expose entriesResult.expr
+  if plansName == ``Loom.Hw.Compile.RulePlans.nil &&
+      entriesName == ``List.nil then
+    return ← mkAppM ``WholePlan.blockMatches_nil
+      #[design, program, wires, table, start]
+  if plansName == ``Loom.Hw.Compile.RulePlans.cons &&
+      entriesName == ``List.cons then
+    let source := plansArgs[plansArgs.size - 4]!
+    let sources := plansArgs[plansArgs.size - 3]!
+    let headPlans := plansArgs[plansArgs.size - 2]!
+    let restPlans := plansArgs[plansArgs.size - 1]!
+    let entry := entriesArgs[entriesArgs.size - 2]!
+    let restEntries := entriesArgs[entriesArgs.size - 1]!
+    let root ← mkAppM ``WholePlan.RegisterPlanRoot.root #[entry]
+    let cert ← mkAppM ``WholePlan.RegisterPlanRoot.cert #[entry]
+    let sourceName ← mkAppM ``Loom.Hw.RegDecl.name #[source]
+    let sourceWidth ← mkAppM ``Loom.Hw.RegDecl.width #[source]
+    let metadataValue ← mkAppM ``indexedRegisterMetadataMatchesAt
+      #[design, program, start, root]
+    let metadataProof ← decideAccepted (← mkBoolAccepted metadataValue)
+    let currentRef ← mkAppM ``Ref.reg #[sourceName]
+    let someCurrent ← mkAppM ``Option.some #[currentRef]
+    let rulesValue ← mkAppM ``WholePlan.rulesMatch
+      #[wires, table, headPlans, someCurrent, root, cert]
+    let rulesType ← mkBoolAccepted rulesValue
+    let rulesProof ← cacheAccepted rulesType
+      (← proveWholeRules wires table sourceWidth headPlans someCurrent root cert)
+    let nextStart ← mkAppM ``HAdd.hAdd #[start, toExpr (1 : Nat)]
+    let restValue ← mkAppM ``WholePlan.blockMatches
+      #[design, program, wires, table, nextStart, restPlans, restEntries]
+    let restType ← mkBoolAccepted restValue
+    let restProof ← cacheAccepted restType
+      (← proveWholeBlock design program wires table nextStart restPlans
+        restEntries)
+    return ← mkAppM ``WholePlan.blockMatches_cons
+      #[design, program, wires, table, start, source, sources, headPlans,
+        restPlans, entry, restEntries, metadataProof, rulesProof, restProof]
+  throwError "symbolic_kernel_decide: plan block shape mismatch"
 
 private def proveNextRegCovered (wires table covered register width action
     current out cert : Expr) : MetaM Expr := do
@@ -1315,6 +1518,21 @@ def elabSymbolicKernelDecide : TermElab := fun _ expected? => do
         throwError "symbolic_kernel_decide: malformed nextRulesMatches application"
       proveNextRules lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
         lhsArgs[4]! lhsArgs[5]! lhsArgs[6]! lhsArgs[7]!
+  | some ``WholePlan.planMatches =>
+      unless lhsArgs.size == 7 do
+        throwError "symbolic_kernel_decide: malformed planMatches application"
+      proveWholePlan lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
+        lhsArgs[4]! lhsArgs[5]! lhsArgs[6]!
+  | some ``WholePlan.rulesMatch =>
+      unless lhsArgs.size == 7 do
+        throwError "symbolic_kernel_decide: malformed rulesMatch application"
+      proveWholeRules lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
+        lhsArgs[4]! lhsArgs[5]! lhsArgs[6]!
+  | some ``WholePlan.blockMatches =>
+      unless lhsArgs.size == 8 do
+        throwError "symbolic_kernel_decide: malformed blockMatches application"
+      proveWholeBlock lhsArgs[0]! lhsArgs[1]! lhsArgs[2]! lhsArgs[3]!
+        lhsArgs[4]! lhsArgs[6]! lhsArgs[7]!
   | some ``nextRulesMatchesCovered =>
       unless lhsArgs.size == 9 do
         throwError "symbolic_kernel_decide: malformed nextRulesMatchesCovered application"

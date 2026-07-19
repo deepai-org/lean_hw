@@ -20,6 +20,7 @@ import Loom.Hw.Semantics
 import Loom.Hw.Compile
 import Loom.Hw.CompileWhole
 import Loom.Hw.WholeRegisterPlan
+import Loom.Release.WholeRegisterPlan
 import Loom.Hw.CompileCorrect
 import Loom.Hw.ArtifactCert
 import Loom.Release.Rope
