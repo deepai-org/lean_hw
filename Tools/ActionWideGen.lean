@@ -438,6 +438,9 @@ private def registersToLean (registers : Array RegDecl) : String :=
       toString register.width ++ " " ++ toString register.init.toNat ++ " }") ++
     "]"
 
+private def indicesToBits (indices : List Nat) : Nat :=
+  indices.foldl (fun bits index => bits ||| (1 <<< index)) 0
+
 private def evidenceType (source input needed cert result : String) : String :=
   "Symbolic.ActionWide.SparseEvidence indexedWireTree wireTable " ++
     "actionRegisters (" ++ source ++ ") (" ++ input ++ ") (" ++
@@ -769,6 +772,22 @@ private unsafe def generateCoreEvidence (runtime output : System.FilePath)
       "theorem coreActionAccepted := " ++ rootBuild.evidence ++
         ".accepted\n\nend\n\nend Loom.GeneratedRelease.Lnp64u\n"
     writeIfChanged (output / "ActionEvidenceRoot.lean") root
+    let topDown := "-- Generated top-down action evidence spike; DO NOT EDIT.\n" ++
+      "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
+      "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+      "import Loom.Release.SymbolicDecide\n" ++
+      "import Machines.Lnp64u.Hw.Core\n" ++
+      "import Machines.Lnp64u.Hw.Demo\n\n" ++ namespaceHeader ++
+      localOptions ++ initialData ++
+      "theorem coreActionEvidence :\n" ++
+      "    ∃ result, Symbolic.ActionWide.BitSparseEvidence fastIndexedWireTree fastWireTable " ++
+        "actionRegisters\n" ++
+      "      (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest)\n" ++
+      "      coreEvidenceInput " ++ toString (indicesToBits coreNeeded) ++
+        " actionCertNode15158 result :=\n" ++
+      "  sparse_evidence_exists\n\n" ++
+      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (output / "ActionTopDown.lean") topDown
   else
     let source := imports ++ namespaceHeader ++ dataStructures ++ localOptions ++
       initialData ++ String.intercalate "\n" state.declarations.toList ++

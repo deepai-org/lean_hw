@@ -156,6 +156,17 @@ def balanced_proof(names: list[str]) -> str:
     return level[0]
 
 
+def lookup_tree(entries: list[str]) -> tuple[str, str]:
+    """A balanced random-access tree and its cached-size proof."""
+    if len(entries) == 1:
+        return f".leaf ({entries[0].strip()})", ".leaf"
+    midpoint = len(entries) // 2
+    left, left_ok = lookup_tree(entries[:midpoint])
+    right, right_ok = lookup_tree(entries[midpoint:])
+    return (f".node {midpoint} ({left}) ({right})",
+            f".node rfl ({left_ok}) ({right_ok})")
+
+
 def balanced_paths(count: int) -> list[list[bool]]:
     """Paths induced by `balanced`, indexed by the original leaf number."""
     level = [{index: []} for index in range(count)]
@@ -217,6 +228,29 @@ def wire_block_declarations(blocks: list[list[dict]], block_size: int,
         out += [f"def {disk_name} : List String := [", disk_entries, "]", "",
                 f"theorem {proof_name} :",
                 f"    {name}.map Wire.render = {disk_name} := rfl", ""]
+    return out
+
+
+def fast_indexed_block_declarations(blocks: list[list[dict]], block_size: int,
+                                    first: int = 0) -> list[str]:
+    """String-free balanced wire data for action-certificate lookup only."""
+    out: list[str] = []
+    for offset, block in enumerate(blocks):
+        index = first + offset
+        entries = [
+            f"  {{ number := {index * block_size + item}, "
+            f"width := {wire['width']}, rhs := {wire['indexedRhs']} }}"
+            for item, wire in enumerate(block)]
+        tree, tree_ok = lookup_tree(entries)
+        tree_name = f"fastIndexedWireLookupBlock{index:04d}"
+        list_name = f"fastIndexedWireBlock{index:04d}"
+        out += [
+            f"def {tree_name} : Symbolic.LookupTree Symbolic.IndexedWire :=",
+            f"  {tree}", "",
+            f"def {list_name} : List Symbolic.IndexedWire :=",
+            f"  {tree_name}.toList", "",
+            f"theorem {tree_name}WellFormed : {tree_name}.WellFormed :=",
+            f"  {tree_ok}", ""]
     return out
 
 
@@ -533,12 +567,84 @@ def emit_batched(data: dict, output: Path, block_size: int,
         if stale.name not in expected_batches:
             stale.unlink()
 
+    fast_batch_modules = []
+    for batch_index, start in enumerate(range(0, len(blocks), batch_blocks)):
+        module = ".".join(relative.parent.parts +
+                          (f"FastIndexedBatch{batch_index:03d}",))
+        fast_batch_modules.append(module)
+        batch_path = output.parent / f"FastIndexedBatch{batch_index:03d}.lean"
+        batch = prelude(["Loom.Release.SymbolicCertificate"], namespace)
+        batch += fast_indexed_block_declarations(
+            blocks[start:start + batch_blocks], block_size, first=start)
+        batch += [f"end {namespace}", ""]
+        write_if_changed(batch_path, "\n".join(batch))
+
+    expected_fast_batches = {
+        f"FastIndexedBatch{i:03d}.lean" for i in range(len(fast_batch_modules))}
+    for stale in output.parent.glob("FastIndexedBatch*.lean"):
+        if stale.name not in expected_fast_batches:
+            stale.unlink()
+
     names = [f"wireBlock{i:04d}" for i in range(len(blocks))]
     indexed_names = [f"indexedWireBlock{i:04d}" for i in range(len(blocks))]
     disk_names = [f"diskWireBlock{i:04d}" for i in range(len(blocks))]
     proofs = [f"renderWireBlock{i:04d}" for i in range(len(blocks))]
     indexed_proofs = [f"indexedWireLeafMatches{i:04d}" for i in range(len(blocks))]
     indexed_paths = balanced_paths(len(blocks))
+    fast_names = [f"fastIndexedWireBlock{i:04d}"
+                  for i in range(len(blocks))]
+    fast_root = prelude(["Loom.Release.SymbolicCertificate"] +
+                        fast_batch_modules, namespace)
+    fast_root += [
+        "def fastIndexedWireTree : Rope (List Symbolic.IndexedWire) :=",
+        "  " + balanced(fast_names, ".leaf []").replace(
+            "fastIndexedWireBlock", ".leaf fastIndexedWireBlock"), "",
+        *[
+            f"theorem fastIndexedWireResolveBlock{index:04d} (offset : Nat) :\n"
+            "    fastIndexedWireTree.resolve? "
+            f"⟨[{', '.join('true' if step else 'false' for step in path)}], "
+            f"offset⟩ = fastIndexedWireBlock{index:04d}[offset]? := rfl\n"
+            for index, path in enumerate(indexed_paths)
+        ],
+        "def fastWireTable : Symbolic.WireTable where",
+        f"  leafSize := {block_size}",
+        f"  leafCount := {len(blocks)}", "",
+        f"end {namespace}", ""]
+    write_if_changed(output.parent / "FastIndexedRoot.lean",
+                     "\n".join(fast_root))
+
+    bridge_modules = []
+    bridge_names = []
+    for batch_index, start in enumerate(range(0, len(blocks), batch_blocks)):
+        module = ".".join(relative.parent.parts +
+                          (f"FastIndexedBridgeBatch{batch_index:03d}",))
+        bridge_modules.append(module)
+        batch_path = output.parent / f"FastIndexedBridgeBatch{batch_index:03d}.lean"
+        batch = prelude([
+            ".".join(relative.parent.parts + (f"Batch{batch_index:03d}",)),
+            ".".join(relative.parent.parts +
+                     (f"FastIndexedBatch{batch_index:03d}",))], namespace)
+        for index in range(start, min(start + batch_blocks, len(blocks))):
+            proof = f"fastIndexedWireBlockEq{index:04d}"
+            bridge_names.append(proof)
+            batch += [f"theorem {proof} :",
+                      f"    fastIndexedWireBlock{index:04d} = "
+                      f"indexedWireBlock{index:04d} := rfl", ""]
+        batch += [f"end {namespace}", ""]
+        write_if_changed(batch_path, "\n".join(batch))
+
+    bridge_root = prelude([
+        f"{cert_module_prefix}.IndexedRoot",
+        f"{cert_module_prefix}.FastIndexedRoot",
+        *bridge_modules], namespace)
+    bridge_root += [
+        "theorem fastIndexedWireTree_eq_indexedWireTree :",
+        "    fastIndexedWireTree = indexedWireTree := by",
+        "  unfold fastIndexedWireTree indexedWireTree",
+        "  exact " + balanced_proof(bridge_names), "",
+        f"end {namespace}", ""]
+    write_if_changed(output.parent / "FastIndexedBridge.lean",
+                     "\n".join(bridge_root))
     # Keep the indexed semantic graph in a lightweight module.  Semantic
     # certificates should not pay to elaborate the disk-byte and complete
     # program data merely to resolve a wire index.

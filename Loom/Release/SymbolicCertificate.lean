@@ -56,6 +56,46 @@ structure IndexedWire where
   rhs : IndexedRhs
   deriving Repr, DecidableEq
 
+/-- A small balanced random-access view of one generated wire block.  The
+cached left size makes lookup logarithmic; `WellFormed` proves that the cache
+agrees with the canonical list view used by the existing soundness theorems. -/
+inductive LookupTree (α : Type) where
+  | leaf (value : α)
+  | node (leftSize : Nat) (left right : LookupTree α)
+
+def LookupTree.toList {α : Type} : LookupTree α → List α
+  | .leaf value => [value]
+  | .node _ left right => left.toList ++ right.toList
+
+def LookupTree.get? {α : Type} : LookupTree α → Nat → Option α
+  | .leaf value, 0 => some value
+  | .leaf _, _ + 1 => none
+  | .node leftSize left right, index =>
+      if index < leftSize then left.get? index
+      else right.get? (index - leftSize)
+
+inductive LookupTree.WellFormed {α : Type} : LookupTree α → Prop where
+  | leaf {value : α} : WellFormed (.leaf value)
+  | node {leftSize : Nat} {left right : LookupTree α}
+      (size : leftSize = left.toList.length)
+      (leftOk : WellFormed left) (rightOk : WellFormed right) :
+      WellFormed (.node leftSize left right)
+
+theorem LookupTree.get?_eq_getElem?_toList
+    {α : Type} {tree : LookupTree α}
+    (wellFormed : tree.WellFormed) (index : Nat) :
+    tree.get? index = tree.toList[index]? := by
+  induction wellFormed generalizing index with
+  | leaf => cases index <;> rfl
+  | node size leftOk rightOk leftIH rightIH =>
+      cases size
+      simp only [get?, toList]
+      split
+      · rename_i inLeft
+        rw [leftIH, List.getElem?_append_left inLeft]
+      · rename_i notInLeft
+        rw [rightIH, List.getElem?_append_right (Nat.le_of_not_gt notInLeft)]
+
 /-- Check the indexed view against the exact raw witness node. This is run
 once per bounded wire leaf; later semantic checks never parse identifiers. -/
 def IndexedWire.matchesRaw (number : Nat) (raw : Wire)
