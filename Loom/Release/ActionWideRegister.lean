@@ -100,6 +100,40 @@ def ActionCert.seqRight : ActionCert → ActionCert
   | .seq _ _ right => right
   | _ => .skip
 
+def ActionCert.claimedSummary : ActionCert → Summary
+  | .seq summary .. | .ite summary .. => summary
+  | .skip | .memWrite | .write .. => { possible := 0, definite := 0 }
+
+def ActionCert.iteGuardRef : ActionCert → Ref
+  | .ite _ guard _ _ _ => guard
+  | _ => .reg ""
+
+def ActionCert.iteJoins : ActionCert → List Join
+  | .ite _ _ joins _ _ => joins
+  | _ => []
+
+def ActionCert.isIte : ActionCert → Bool
+  | .ite .. => true
+  | _ => false
+
+def ActionCert.isSeq : ActionCert → Bool
+  | .seq .. => true
+  | _ => false
+
+theorem ActionCert.eq_ite_projections {cert : ActionCert}
+    (accepted : cert.isIte = true) :
+    cert = .ite cert.claimedSummary cert.iteGuardRef cert.iteJoins
+      cert.iteThen cert.iteElse := by
+  cases cert <;> simp [ActionCert.isIte, ActionCert.claimedSummary,
+    ActionCert.iteGuardRef, ActionCert.iteJoins, ActionCert.iteThen,
+    ActionCert.iteElse] at accepted ⊢
+
+theorem ActionCert.eq_seq_projections {cert : ActionCert}
+    (accepted : cert.isSeq = true) :
+    cert = .seq cert.claimedSummary cert.seqLeft cert.seqRight := by
+  cases cert <;> simp [ActionCert.isSeq, ActionCert.claimedSummary,
+    ActionCert.seqLeft, ActionCert.seqRight] at accepted ⊢
+
 /-! ### Compact untrusted transport
 
 Release certificates contain tens of thousands of action nodes.  Spelling the
@@ -467,6 +501,61 @@ theorem runCheckedAction_ite_of_checks
   subst summary
   simp [runCheckedAction, conditionAccepted, thenAccepted, elseAccepted,
     mergeAccepted]
+
+/-- Compositional evidence for the action-wide checker.  Generated artifacts
+use `direct` only for bounded segments and use `seq`/`ite` to connect already
+named child evidence, so checking a parent never normalizes a child again. -/
+inductive CheckedEvidence (wires : Rope (List IndexedWire)) (table : WireTable)
+    (registers : Array Loom.Hw.RegDecl) :
+    Loom.Hw.Act → Array Ref → List Nat → ActionCert → Result → Prop where
+  | direct {action refs needed cert result}
+      (accepted : runCheckedAction wires table registers action refs needed cert =
+        some result) :
+      CheckedEvidence wires table registers action refs needed cert result
+  | seq {left right refs needed summary leftCert rightCert leftResult rightResult}
+      (summaryAccepted : summary =
+        seqSummary leftCert.summary rightCert.summary)
+      (leftAccepted : CheckedEvidence wires table registers left refs
+        (neededInputs rightCert.summary needed) leftCert leftResult)
+      (rightAccepted : CheckedEvidence wires table registers right
+        leftResult.refs needed rightCert rightResult) :
+      CheckedEvidence wires table registers (.seq left right) refs needed
+        (.seq summary leftCert rightCert)
+        { refs := rightResult.refs, changed := changedOutputs summary needed }
+  | ite {condition thenAction elseAction refs needed summary conditionRef joins
+      thenCert elseCert thenResult elseResult merged}
+      (summaryAccepted : summary =
+        iteSummary thenCert.summary elseCert.summary)
+      (conditionAccepted : indexedExprMatches wires table
+        (Loom.Hw.Compile.compileExpr condition) conditionRef = true)
+      (thenAccepted : CheckedEvidence wires table registers thenAction refs
+        (changedOutputs summary needed) thenCert thenResult)
+      (elseAccepted : CheckedEvidence wires table registers elseAction refs
+        (changedOutputs summary needed) elseCert elseResult)
+      (mergeAccepted : checkedJoinMerge registers conditionRef thenResult
+        elseResult (changedOutputs summary needed) joins refs = some merged) :
+      CheckedEvidence wires table registers
+        (.ite condition thenAction elseAction) refs needed
+        (.ite summary conditionRef joins thenCert elseCert)
+        { refs := merged, changed := changedOutputs summary needed }
+
+/-- Compositional evidence is sound for the original action-wide checker. -/
+theorem CheckedEvidence.accepted
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {registers : Array Loom.Hw.RegDecl} {action refs needed cert result}
+    (evidence : CheckedEvidence wires table registers action refs needed cert
+      result) :
+    runCheckedAction wires table registers action refs needed cert =
+      some result := by
+  induction evidence with
+  | direct accepted => exact accepted
+  | seq summaryAccepted _ _ leftIH rightIH =>
+      exact runCheckedAction_seq_of_checks wires table registers _ _ _ _ _ _ _
+        _ _ summaryAccepted leftIH rightIH
+  | ite summaryAccepted conditionAccepted _ _ mergeAccepted thenIH elseIH =>
+      exact runCheckedAction_ite_of_checks wires table registers _ _ _ _ _ _ _
+        _ _ _ _ _ _ summaryAccepted conditionAccepted thenIH elseIH
+        mergeAccepted
 
 def runCheckedRules (wires : Rope (List IndexedWire)) (table : WireTable)
     (registers : Array Loom.Hw.RegDecl) :

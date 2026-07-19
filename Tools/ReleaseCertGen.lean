@@ -783,13 +783,15 @@ unsafe def synthesizeActionWideRegisterCertRuntime (design : Design)
 
 private def quote (value : String) : String := reprStr value
 
-private def actionRefToLean : Symbolic.Ref → String
+def actionWideRefToLean : Symbolic.Ref → String
   | .reg name => s!".reg {quote name}"
   | .wire number => s!".wire {number}"
 
 /-- Render a bounded reference array for generated action-segment states. -/
 def actionWideRefsToLean (refs : Array Symbolic.Ref) : String :=
-  "#[" ++ String.intercalate ", " (refs.toList.map actionRefToLean) ++ "]"
+  "#[" ++ String.intercalate ", " (refs.toList.map actionWideRefToLean) ++ "]"
+
+private abbrev actionRefToLean := actionWideRefToLean
 
 private def collectActionWideJoins : Symbolic.ActionWide.ActionCert →
     List Symbolic.ActionWide.Join → List Symbolic.ActionWide.Join
