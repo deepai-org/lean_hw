@@ -93,13 +93,17 @@ compile_resolver_shards() {
 compile_parallel_proofs() {
   find "$src" -maxdepth 1 \
     \( -name "DagCut${suffix}Leaf*.lean" -o \
-       -name "DagCut${suffix}ConnectorCheck*.lean" -o \
-       -name "DagCut${suffix}Lookup*.lean" \) \
+       -name "DagCut${suffix}ConnectorCheck*.lean" \) \
     -print0 | sort -z | compile_parallel
 }
 
 compile_join_lookups() {
   find "$src" -maxdepth 1 -name "DagCut${suffix}JoinLookup*.lean" -print0 | \
+    sort -z | compile_parallel
+}
+
+compile_query_shards() {
+  find "$src" -maxdepth 1 -name "DagCut${suffix}Query*.lean" -print0 | \
     sort -z | compile_parallel
 }
 
@@ -122,11 +126,7 @@ run_phase "action DAG prerequisites" lake build actionwidegen \
 run_phase "generate action cut $suffix" lake exe actionwidegen lnp64u-dag-cut \
   "$runtime" "$root" "$cut_index"
 
-# The state shards are independent. Resolvers depend on them, and the balanced
-# data root depends on both sets, so keep these three stages explicit.
-run_phase "state node shards" compile_node_shards
-run_phase "state resolver shards" compile_resolver_shards
-run_phase "state DAG root" compile_generated "$src/DagCut${suffix}Data.lean"
+run_phase "action cut metadata" compile_generated "$src/DagCut${suffix}Meta.lean"
 
 # Connector checks import these named mux facts. Check each global wire lookup
 # once in a small shard instead of reopening the indexed-wire rope at every
@@ -143,5 +143,6 @@ while IFS= read -r -d '' connector; do
 done < <(find "$src" -maxdepth 1 -name "DagCut${suffix}Connector*.lean" \
   ! -name '*ConnectorCheck*' -print0 | sort -z)
 run_phase "action cut root" compile_generated "$root"
+run_phase "compact register queries" compile_query_shards
 
 echo "LNP64-u action cut $suffix kernel-checked"

@@ -103,17 +103,13 @@ while IFS= read -r -d '' compiled; do
   fi
 done < <(find "$lib" -maxdepth 1 -name 'DagCut*.olean' -print0)
 
-run_phase "state node shards" bash -c \
-  "find '$src' -maxdepth 1 -name 'DagCut???Nodes*.lean' -print0 | sort -z | compile_stream"
-run_phase "state DAG roots" bash -c \
-  "find '$src' -maxdepth 1 -name 'DagCut???Data.lean' -print0 | sort -z | compile_stream"
-run_phase "state resolver shards" bash -c \
-  "find '$src' -maxdepth 1 -name 'DagCut???Resolvers*.lean' -print0 | sort -z | compile_stream"
+run_phase "action cut metadata" bash -c \
+  "find '$src' -maxdepth 1 -name 'DagCut???Meta.lean' -print0 | sort -z | compile_stream"
 run_phase "named join lookups" bash -c \
   "find '$src' -maxdepth 1 -name 'DagCut???JoinLookup*.lean' -print0 | sort -z | compile_stream"
 run_phase "action leaves and join checks" bash -c \
   "find '$src' -maxdepth 1 \\
-    \( -name 'DagCut???Leaf*.lean' -o -name 'DagCut???ConnectorCheck*.lean' -o -name 'DagCut???Lookup*.lean' \) \\
+    \( -name 'DagCut???Leaf*.lean' -o -name 'DagCut???ConnectorCheck*.lean' \) \\
     -print0 | sort -z | compile_stream"
 
 # Connector batches are ordered within a cut. Compile equal batch numbers
@@ -131,5 +127,7 @@ done
 
 run_phase "action cut roots" bash -c \
   "find '$src' -maxdepth 1 -name 'DagCut???.lean' -print0 | sort -z | compile_stream"
+run_phase "compact register queries" bash -c \
+  "find '$src' -maxdepth 1 -name 'DagCut???Query*.lean' -print0 | sort -z | compile_stream"
 
 echo "all LNP64-u action cuts kernel-checked"
