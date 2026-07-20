@@ -4,6 +4,7 @@ import Loom.Release.SymbolicCertificate
 import Loom.Release.SymbolicElaborate
 import Loom.Release.WholeRegisterPlan
 import Loom.Release.ActionWideRegister
+import Loom.Release.ActionStateDag
 import Loom.Hw.CompileCorrect
 import Lean.Elab.Term
 import Lean.Elab.Command
@@ -1763,6 +1764,508 @@ unsafe def elabSparseEvidenceExists : TermElab := fun _ expected? => do
   let proof ← mkAppM ``Exists.intro #[build.result, build.proof]
   let proof ← wrapLocalProofBindings proof
   reportSparseStats
+  useLocalProofBindings.set false
+  pure proof
+
+/-! ### Hash-consed state-DAG evidence
+
+This path threads numeric trie roots rather than expanded `SparseRefs` terms.
+The generator supplies traversal traces, but every referenced state update and
+lookup is checked against the balanced node table by the kernel. -/
+
+private initialize dagActionRoots : IO.Ref (Array Nat) ← IO.mkRef #[]
+private initialize dagWriteRoots : IO.Ref (Array Nat) ← IO.mkRef #[]
+private initialize dagActionCursor : IO.Ref Nat ← IO.mkRef 0
+private initialize dagWriteCursor : IO.Ref Nat ← IO.mkRef 0
+private initialize dagNodeCount : IO.Ref Nat ← IO.mkRef 0
+private initialize dagBoundMs : IO.Ref Nat ← IO.mkRef 0
+private initialize dagDecisionMs : IO.Ref Nat ← IO.mkRef 0
+
+syntax (name := dagActionRootsCmd) "dag_action_roots" num* : command
+syntax (name := dagWriteRootsCmd) "dag_write_roots" num* : command
+
+private def readDagRoots (arguments : Array Syntax) : Command.CommandElabM
+    (Array Nat) := do
+  let mut roots := #[]
+  for argument in arguments do
+    let some value := argument.isNatLit?
+      | throwErrorAt argument "DAG roots must be natural literals"
+    roots := roots.push value
+  pure roots
+
+@[command_elab dagActionRootsCmd]
+unsafe def elabDagActionRoots : Command.CommandElab := fun stx => do
+  dagActionRoots.set (← readDagRoots stx[1].getArgs)
+
+@[command_elab dagWriteRootsCmd]
+unsafe def elabDagWriteRoots : Command.CommandElab := fun stx => do
+  dagWriteRoots.set (← readDagRoots stx[1].getArgs)
+
+private structure DagProofBuild where
+  root : Expr
+  proof : Expr
+  size : Nat
+
+private def takeDagRoot (values : IO.Ref (Array Nat))
+    (cursor : IO.Ref Nat) (kind : String) : MetaM Expr := do
+  let index ← cursor.get
+  let roots ← values.get
+  let some root := roots[index]?
+    | throwError "dag_sparse_evidence_exists: exhausted {kind} roots at {index}"
+  cursor.set (index + 1)
+  pure (mkNatLit root)
+
+private def checkDagActionRoot (actual : Expr) : MetaM Unit := do
+  let expected ← takeDagRoot dagActionRoots dagActionCursor "action"
+  unless ← isDefEq actual expected do
+    throwError "dag_sparse_evidence_exists: action-root trace mismatch"
+
+private def dagDecide (type : Expr) : MetaM Expr := do
+  let started ← IO.monoMsNow
+  let proof ← inlineDecideAccepted type
+  let finished ← IO.monoMsNow
+  dagDecisionMs.modify (· + (finished - started))
+  pure proof
+
+private def boundDagProof (build : DagProofBuild) : MetaM DagProofBuild := do
+  if build.size < 8 then return build
+  let started ← IO.monoMsNow
+  let type ← inferType build.proof
+  let proof ← cacheClosedProof type (← wrapLocalProofBindings build.proof)
+  let finished ← IO.monoMsNow
+  dagBoundMs.modify (· + (finished - started))
+  pure { build with proof, size := 1 }
+
+private def proveStateNodeLookup (nodes stateTable number : Expr) :
+    MetaM (Expr × Expr) := do
+  let reducedNumber ← withTransparency .all <| whnf number
+  let some numberValue ← getNatValue? reducedNumber
+    | throwError "dag_sparse_evidence_exists: state node is not concrete"
+  let some nodesName := nodes.getAppFn.constName?
+    | throwError "dag_sparse_evidence_exists: state nodes are not named"
+  let tableReduced ← withTransparency .all <| whnf stateTable
+  let tableArgs := tableReduced.getAppArgs
+  unless tableReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.RefStateTable.mk &&
+      tableArgs.size >= 3 do
+    throwError "dag_sparse_evidence_exists: state table did not expose"
+  let leafSize := tableArgs[tableArgs.size - 3]!
+  let leafCount := tableArgs[tableArgs.size - 2]!
+  let some leafSizeValue ← getNatValue? leafSize
+    | throwError "dag_sparse_evidence_exists: state leaf size is not concrete"
+  if leafSizeValue == 0 then
+    throwError "dag_sparse_evidence_exists: state leaf size is zero"
+  let leafIndex := numberValue / leafSizeValue
+  let resolverName := nodesName.getPrefix.str
+    ("dagStateResolveLeaf" ++ pad4 leafIndex)
+  unless (← getEnv).contains resolverName do
+    throwError "dag_sparse_evidence_exists: missing state resolver {resolverName}"
+  let offset := mkNatLit (numberValue % leafSizeValue)
+  let resolver ← mkAppM resolverName #[offset]
+  let resolverType ← inferType resolver
+  let resolverArgs := resolverType.getAppArgs
+  unless resolverType.getAppFn.constName? == some ``Eq &&
+      resolverArgs.size == 3 do
+    throwError "dag_sparse_evidence_exists: malformed state resolver"
+  let reducedRight ← withTransparency .all <| whnf resolverArgs[2]!
+  unless reducedRight.getAppFn.constName? == some ``Option.some do
+    throwError "dag_sparse_evidence_exists: state node lookup failed"
+  let node := reducedRight.getAppArgs.back!
+  let resolveLeft := resolverArgs[1]!
+  let resolveArgs := resolveLeft.getAppArgs
+  let reference ← withTransparency .all <| whnf resolveArgs.back!
+  let referenceArgs := reference.getAppArgs
+  let path := referenceArgs[referenceArgs.size - 2]!
+  let positiveProof ← mkAppM ``Nat.zero_lt_succ
+    #[mkNatLit (leafSizeValue - 1)]
+  let pathCheck ← mkAppM ``balancedPath?
+    #[leafCount, mkNatLit leafIndex]
+  let pathProof ← dagDecide
+    (← mkEq pathCheck (← mkAppM ``Option.some #[path]))
+  let proof := mkAppN (mkConst
+    ``Loom.Release.Symbolic.ActionWide.lookupStateNode_of_resolve)
+    #[nodes, stateTable, reducedNumber, path, node, positiveProof, pathProof,
+      resolver]
+  pure (node, proof)
+
+private partial def proveDagWriteAt (nodes stateTable : Expr) (depth : Nat)
+    (input index value output : Expr) : MetaM Expr := do
+  let (outputNode, outputProof) ← proveStateNodeLookup nodes stateTable output
+  if depth == 0 then
+    let outputReduced ← withTransparency .all <| whnf outputNode
+    unless outputReduced.getAppFn.constName? ==
+        some ``Loom.Release.Symbolic.ActionWide.RefStateNode.leaf do
+      throwError "dag_sparse_evidence_exists: write leaf is malformed"
+    unless ← isDefEq outputReduced.getAppArgs.back! value do
+      throwError "dag_sparse_evidence_exists: write leaf value mismatch"
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.StateWriteEvidence.leaf)
+      #[nodes, stateTable, input, index, value, output, outputProof]
+  let childDepth := depth - 1
+  let bitCheck ← mkAppM ``Nat.testBit #[index, mkNatLit childDepth]
+  let bitReduced ← withTransparency .all <| whnf bitCheck
+  let bit := bitReduced.isConstOf ``Bool.true
+  let bitExpected := Lean.mkConst
+    (if bit then ``Bool.true else ``Bool.false)
+  let bitProof ← dagDecide (← mkEq bitCheck bitExpected)
+  let (inputNode, inputProof) ← proveStateNodeLookup nodes stateTable input
+  let inputReduced ← withTransparency .all <| whnf inputNode
+  let outputReduced ← withTransparency .all <| whnf outputNode
+  unless outputReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.RefStateNode.branch do
+    throwError "dag_sparse_evidence_exists: write output is not a branch"
+  let outputArgs := outputReduced.getAppArgs
+  let newZero := outputArgs[outputArgs.size - 2]!
+  let newOne := outputArgs.back!
+  let emptyRoot ← mkAppM
+    ``Loom.Release.Symbolic.ActionWide.RefStateTable.emptyRoot #[stateTable]
+  if inputReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.RefStateNode.empty then
+    if bit then
+      unless ← isDefEq newZero emptyRoot do
+        throwError "dag_sparse_evidence_exists: empty write changed zero child"
+      let childProof ← proveDagWriteAt nodes stateTable childDepth emptyRoot
+        index value newOne
+      return mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.StateWriteEvidence.emptyOne)
+        #[nodes, stateTable, mkNatLit childDepth, input, index, value, output,
+          newOne, bitProof, inputProof, outputProof, childProof]
+    else
+      unless ← isDefEq newOne emptyRoot do
+        throwError "dag_sparse_evidence_exists: empty write changed one child"
+      let childProof ← proveDagWriteAt nodes stateTable childDepth emptyRoot
+        index value newZero
+      return mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.StateWriteEvidence.emptyZero)
+        #[nodes, stateTable, mkNatLit childDepth, input, index, value, output,
+          newZero, bitProof, inputProof, outputProof, childProof]
+  unless inputReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.RefStateNode.branch do
+    throwError "dag_sparse_evidence_exists: write input is malformed"
+  let inputArgs := inputReduced.getAppArgs
+  let oldZero := inputArgs[inputArgs.size - 2]!
+  let oldOne := inputArgs.back!
+  if bit then
+    unless ← isDefEq newZero oldZero do
+      throwError "dag_sparse_evidence_exists: write changed zero child"
+    let childProof ← proveDagWriteAt nodes stateTable childDepth oldOne index
+      value newOne
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.StateWriteEvidence.branchOne)
+      #[nodes, stateTable, mkNatLit childDepth, input, index, value, output,
+        oldZero, oldOne, newOne, bitProof, inputProof, outputProof, childProof]
+  else
+    unless ← isDefEq newOne oldOne do
+      throwError "dag_sparse_evidence_exists: write changed one child"
+    let childProof ← proveDagWriteAt nodes stateTable childDepth oldZero index
+      value newZero
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.StateWriteEvidence.branchZero)
+      #[nodes, stateTable, mkNatLit childDepth, input, index, value, output,
+        oldZero, oldOne, newZero, bitProof, inputProof, outputProof, childProof]
+
+private def proveDagWrite (nodes stateTable input index value output : Expr) :
+    MetaM Expr :=
+  proveDagWriteAt nodes stateTable 10 input index value output
+
+private partial def proveDagLookup (nodes stateTable registers : Expr)
+    (depth : Nat) (root index value : Expr) : MetaM Expr := do
+  let (node, nodeProof) ← proveStateNodeLookup nodes stateTable root
+  let reduced ← withTransparency .all <| whnf node
+  if reduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.RefStateNode.empty then
+    let registerCheck ← mkAppM ``getElem? #[registers, index]
+    let registerReduced ← withTransparency .all <| whnf registerCheck
+    unless registerReduced.getAppFn.constName? == some ``Option.some do
+      throwError "dag_sparse_evidence_exists: register lookup failed"
+    let register := registerReduced.getAppArgs.back!
+    let name ← mkAppM ``Loom.Hw.RegDecl.name #[register]
+    let expected ← mkAppM ``Loom.Release.Symbolic.Ref.reg #[name]
+    unless ← isDefEq expected value do
+      throwError "dag_sparse_evidence_exists: fallback register mismatch"
+    let registerProof ← mkEqRefl registerCheck
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.StateLookupEvidence.empty)
+      #[nodes, stateTable, registers, mkNatLit depth, root, index, register,
+        nodeProof, registerProof]
+  if depth == 0 then
+    unless reduced.getAppFn.constName? ==
+        some ``Loom.Release.Symbolic.ActionWide.RefStateNode.leaf do
+      throwError "dag_sparse_evidence_exists: lookup leaf is malformed"
+    unless ← isDefEq reduced.getAppArgs.back! value do
+      throwError "dag_sparse_evidence_exists: lookup leaf value mismatch"
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.StateLookupEvidence.leaf)
+      #[nodes, stateTable, registers, root, index, value, nodeProof]
+  unless reduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.RefStateNode.branch do
+    throwError "dag_sparse_evidence_exists: lookup node is malformed"
+  let nodeArgs := reduced.getAppArgs
+  let zeroChild := nodeArgs[nodeArgs.size - 2]!
+  let oneChild := nodeArgs.back!
+  let childDepth := depth - 1
+  let bitCheck ← mkAppM ``Nat.testBit #[index, mkNatLit childDepth]
+  let bitReduced ← withTransparency .all <| whnf bitCheck
+  let bit := bitReduced.isConstOf ``Bool.true
+  let bitProof ← dagDecide (← mkEq bitCheck
+    (mkConst (if bit then ``Bool.true else ``Bool.false)))
+  let childProof ← proveDagLookup nodes stateTable registers childDepth
+    (if bit then oneChild else zeroChild) index value
+  pure <| mkAppN (mkConst (if bit then
+      ``Loom.Release.Symbolic.ActionWide.StateLookupEvidence.branchOne
+    else ``Loom.Release.Symbolic.ActionWide.StateLookupEvidence.branchZero))
+    #[nodes, stateTable, registers, mkNatLit childDepth, root, index, value,
+      zeroChild, oneChild, bitProof, nodeProof, childProof]
+
+private partial def proveDagJoins (nodes stateTable registers condition input
+    thenRoot elseRoot changed joins : Expr) : MetaM (Expr × Expr) := do
+  let reduced ← withTransparency .all <| whnf joins
+  let args := reduced.getAppArgs
+  if reduced.getAppFn.constName? == some ``List.nil then
+    let changed ← normalizeNatLiteral changed
+    unless (← getNatValue? changed) == some 0 do
+      throwError "dag_sparse_evidence_exists: nonzero join bitmap at list end"
+    let proof := mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.StateJoinsEvidence.nil)
+      #[nodes, stateTable, registers, condition, input, thenRoot, elseRoot]
+    return (input, proof)
+  unless reduced.getAppFn.constName? == some ``List.cons do
+    throwError "dag_sparse_evidence_exists: joins did not expose as a list"
+  let join := args[args.size - 2]!
+  let tail := args.back!
+  let index ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.index #[join]
+  let width ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.width #[join]
+  let guard ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.guard #[join]
+  let thenInput ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.thenInput #[join]
+  let elseInput ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.elseInput #[join]
+  let output ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.output #[join]
+  let bitCheck ← mkAppM ``Nat.testBit #[changed, index]
+  let bitProof ← dagDecide (← mkEq bitCheck trueExpr)
+  let register ← mkAppM ``getElem? #[registers, index]
+  let widthProjection ← withLocalDeclD `register (mkConst ``Loom.Hw.RegDecl)
+    fun source => mkLambdaFVars #[source]
+      (mkApp (mkConst ``Loom.Hw.RegDecl.width) source)
+  let widthCheck ← mkAppM ``Option.map #[widthProjection, register]
+  let widthProof ← dagDecide
+    (← mkEq widthCheck (← mkAppM ``Option.some #[width]))
+  let thenProof ← proveDagLookup nodes stateTable registers 10 thenRoot index
+    thenInput
+  let elseProof ← proveDagLookup nodes stateTable registers 10 elseRoot index
+    elseInput
+  let guardProof ← dagDecide (← mkEq guard condition)
+  let outputReduced ← withTransparency .all <| whnf output
+  unless outputReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.Ref.wire do
+    throwError "dag_sparse_evidence_exists: join output is not a wire"
+  let number := outputReduced.getAppArgs.back!
+  let wireValue ← mkAppM ``Loom.Release.Symbolic.Ref.wire #[number]
+  let wireEq ← dagDecide (← mkEq output wireValue)
+  let wirePredicate ← withLocalDeclD `number (mkConst ``Nat) fun candidate => do
+    let candidateWire ← mkAppM ``Loom.Release.Symbolic.Ref.wire #[candidate]
+    mkLambdaFVars #[candidate] (← mkEq output candidateWire)
+  let wireProof := mkAppN
+    (mkConst ``Exists.intro [Level.succ Level.zero])
+    #[mkConst ``Nat, wirePredicate, number, wireEq]
+  let nextRoot ← takeDagRoot dagWriteRoots dagWriteCursor "write"
+  let writeProof ← proveDagWrite nodes stateTable input index output nextRoot
+  let nextChangedComputed := mkApp2 (mkConst ``Nat.xor) changed
+    (singletonChangedBit index)
+  let nextChanged ← normalizeNatLiteral nextChangedComputed
+  let (outputRoot, tailProof) ← proveDagJoins nodes stateTable registers condition
+    nextRoot thenRoot elseRoot nextChanged tail
+  let proof := mkAppN (mkConst
+    ``Loom.Release.Symbolic.ActionWide.StateJoinsEvidence.cons)
+    #[nodes, stateTable, registers, condition, input, thenRoot, elseRoot,
+      changed, join, tail, nextRoot, outputRoot, bitProof, widthProof,
+      thenProof, elseProof, guardProof, wireProof, writeProof, tailProof]
+  pure (outputRoot, proof)
+
+private partial def proveDagEvidence (wires wireTable nodes stateTable registers
+    action root needed cert : Expr) : MetaM DagProofBuild := do
+  let count ← dagNodeCount.modifyGet fun count => (count + 1, count + 1)
+  if count % 100 == 0 then
+    IO.eprintln (s!"dag evidence {count} nodes: bound={← dagBoundMs.get}ms " ++
+      s!"decision={← dagDecisionMs.get}ms")
+  let actionReduced ← exposeAction action
+  let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
+  let actionArgs := actionReduced.getAppArgs
+  if actionName == ``List.foldr then
+    let function := actionArgs[actionArgs.size - 3]!
+    let initial := actionArgs[actionArgs.size - 2]!
+    let values := actionArgs.back!
+    let simpContext ← Simp.Context.mkDefault
+    let (valuesResult, _) ← simp values simpContext
+    let expanded ← expandListFoldr function initial valuesResult.expr
+    return ← proveDagEvidence wires wireTable nodes stateTable registers expanded
+      root needed cert
+  let (certName, certArgs) ← expose cert
+  if actionName == ``Loom.Hw.Act.skip &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.skip then
+    let proof := mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence.skip)
+      #[wires, wireTable, nodes, stateTable, registers, root, needed]
+    checkDagActionRoot root
+    return { root, proof, size := 1 }
+  if actionName == ``Loom.Hw.Act.memWrite &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.memWrite then
+    let proof := mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence.memWrite)
+      #[wires, wireTable, nodes, stateTable, registers,
+        actionArgs[actionArgs.size - 6]!, actionArgs[actionArgs.size - 5]!,
+        actionArgs[actionArgs.size - 4]!, actionArgs[actionArgs.size - 3]!,
+        actionArgs[actionArgs.size - 2]!, actionArgs.back!, root, needed]
+    checkDagActionRoot root
+    return { root, proof, size := 1 }
+  if actionName == ``Loom.Hw.Act.write &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.write then
+    let width := actionArgs[actionArgs.size - 3]!
+    let name := actionArgs[actionArgs.size - 2]!
+    let value := actionArgs.back!
+    let index := certArgs[certArgs.size - 2]!
+    let valueRef := certArgs.back!
+    let header ← mkAppM ``Loom.Release.Symbolic.ActionWide.checkedWriteHeader
+      #[registers, index, width, name]
+    let headerProof ← dagDecide (← mkEq header trueExpr)
+    let usedCheck ← mkAppM ``Nat.testBit #[needed, index]
+    let usedReduced ← withTransparency .all <| whnf usedCheck
+    if usedReduced.isConstOf ``Bool.true then
+      let usedProof ← dagDecide (← mkEq usedCheck trueExpr)
+      let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[value]
+      let expressionEvidence ← sparseExpressionEvidence wires wireTable compiled
+        valueRef
+      let expressionProof ← mkAppM ``IndexedExprEvidence.accepted
+        #[expressionEvidence]
+      let outputRoot ← takeDagRoot dagWriteRoots dagWriteCursor "write"
+      let writeProof ← proveDagWrite nodes stateTable root index valueRef outputRoot
+      let proof := mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence.writeNeeded)
+        #[wires, wireTable, nodes, stateTable, registers, width, name, value,
+          root, needed, index, valueRef, outputRoot, headerProof, usedProof,
+          expressionProof, writeProof]
+      checkDagActionRoot outputRoot
+      return { root := outputRoot, proof, size := 1 }
+    else
+      let unusedProof ← dagDecide
+        (← mkEq usedCheck (mkConst ``Bool.false))
+      let proof := mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence.writeUnused)
+        #[wires, wireTable, nodes, stateTable, registers, width, name, value,
+          root, needed, index, valueRef, headerProof, unusedProof]
+      checkDagActionRoot root
+      return { root, proof, size := 1 }
+  if actionName == ``Loom.Hw.Act.seq &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.seq then
+    let left := actionArgs[actionArgs.size - 2]!
+    let right := actionArgs.back!
+    let summary := certArgs[certArgs.size - 3]!
+    let leftCert := certArgs[certArgs.size - 2]!
+    let rightCert := certArgs.back!
+    let rightSummary ← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[rightCert]
+    let leftNeeded ← normalizeNatLiteral
+      (← mkAppM ``Loom.Release.Symbolic.ActionWide.neededBitsBefore
+        #[rightSummary, needed])
+    let leftBuild ← proveDagEvidence wires wireTable nodes stateTable registers
+      left root leftNeeded leftCert >>= boundDagProof
+    let rightBuild ← proveDagEvidence wires wireTable nodes stateTable registers
+      right leftBuild.root needed rightCert >>= boundDagProof
+    let expectedSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.seqSummary
+      #[← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[leftCert],
+        rightSummary]
+    let summaryProof ← dagDecide (← mkEq summary expectedSummary)
+    let proof := mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence.seq)
+      #[wires, wireTable, nodes, stateTable, registers, left, right, root,
+        needed, summary, leftCert, rightCert, leftBuild.root, rightBuild.root,
+        summaryProof, leftBuild.proof, rightBuild.proof]
+    checkDagActionRoot rightBuild.root
+    return ← boundDagProof
+      { root := rightBuild.root, proof,
+        size := leftBuild.size + rightBuild.size + 1 }
+  if actionName == ``Loom.Hw.Act.ite &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.ite then
+    let condition := actionArgs[actionArgs.size - 3]!
+    let thenAction := actionArgs[actionArgs.size - 2]!
+    let elseAction := actionArgs.back!
+    let summary := certArgs[certArgs.size - 5]!
+    let conditionRef := certArgs[certArgs.size - 4]!
+    let joins := certArgs[certArgs.size - 3]!
+    let thenCert := certArgs[certArgs.size - 2]!
+    let elseCert := certArgs.back!
+    let changed ← normalizeNatLiteral
+      (← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
+        #[summary, needed])
+    let thenBuild ← proveDagEvidence wires wireTable nodes stateTable registers
+      thenAction root changed thenCert >>= boundDagProof
+    let elseBuild ← proveDagEvidence wires wireTable nodes stateTable registers
+      elseAction root changed elseCert >>= boundDagProof
+    let expectedSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.iteSummary
+      #[← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[thenCert],
+        ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[elseCert]]
+    let summaryProof ← dagDecide (← mkEq summary expectedSummary)
+    let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[condition]
+    let conditionEvidence ← sparseExpressionEvidence wires wireTable compiled
+      conditionRef
+    let conditionProof ← mkAppM ``IndexedExprEvidence.accepted
+      #[conditionEvidence]
+    let (outputRoot, joinsProof) ← proveDagJoins nodes stateTable registers
+      conditionRef root thenBuild.root elseBuild.root changed joins
+    let proof := mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence.ite)
+      #[wires, wireTable, nodes, stateTable, registers, condition, thenAction,
+        elseAction, root, needed, summary, conditionRef, joins, thenCert,
+        elseCert, thenBuild.root, elseBuild.root, outputRoot, summaryProof,
+        conditionProof, thenBuild.proof, elseBuild.proof, joinsProof]
+    checkDagActionRoot outputRoot
+    return ← boundDagProof
+      { root := outputRoot, proof,
+        size := thenBuild.size + elseBuild.size + 1 }
+  throwError "dag_sparse_evidence_exists: source/certificate shape mismatch"
+
+syntax (name := dagSparseEvidenceExists) "dag_sparse_evidence_exists" : term
+
+@[term_elab dagSparseEvidenceExists]
+unsafe def elabDagSparseEvidenceExists : TermElab := fun stx expected? => do
+  IO.eprintln "dag evidence: elaborator start"
+  let `(dag_sparse_evidence_exists) := stx
+    | throwError "invalid dag_sparse_evidence_exists syntax"
+  if (← dagActionRoots.get).isEmpty then
+    throwError "dag_sparse_evidence_exists has no action-root trace"
+  IO.eprintln "dag evidence: traces available"
+  dagActionCursor.set 0
+  dagWriteCursor.set 0
+  dagNodeCount.set 0
+  dagBoundMs.set 0
+  dagDecisionMs.set 0
+  indexedExprModuleCache.set {}
+  localProofBindings.set #[]
+  useLocalProofBindings.set true
+  let some expected := expected?
+    | throwError "dag_sparse_evidence_exists requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let existsArgs := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``Exists && existsArgs.size == 2 do
+    throwError "dag_sparse_evidence_exists expected an existential"
+  let witness ← mkFreshExprMVar existsArgs[0]!
+  let body ← whnf (mkApp existsArgs[1]! witness)
+  let args := body.getAppArgs
+  unless body.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence &&
+      args.size == 10 do
+    throwError "dag_sparse_evidence_exists expected DagBitSparseEvidence"
+  let build ← proveDagEvidence args[0]! args[1]! args[2]! args[3]! args[4]!
+    args[5]! args[6]! args[7]! args[8]!
+  IO.eprintln "dag evidence: traversal finished"
+  unless ← isDefEq build.root witness do
+    throwError "dag_sparse_evidence_exists result mismatch"
+  unless (← dagActionCursor.get) == (← dagActionRoots.get).size do
+    throwError "dag_sparse_evidence_exists left unused action roots"
+  unless (← dagWriteCursor.get) == (← dagWriteRoots.get).size do
+    throwError "dag_sparse_evidence_exists left unused write roots"
+  let proof ← mkAppM ``Exists.intro #[build.root, build.proof]
+  let proof ← wrapLocalProofBindings proof
+  IO.eprintln (s!"dag evidence complete: nodes={← dagNodeCount.get} " ++
+    s!"bound={← dagBoundMs.get}ms decision={← dagDecisionMs.get}ms")
   useLocalProofBindings.set false
   pure proof
 
