@@ -603,6 +603,7 @@ private def dagInitialRoot (registers : Array RegDecl)
 private structure DagLeafSpec where
   source : String
   cert : String
+  trace : String
   input : Nat
   needed : Nat
   output : Nat
@@ -610,6 +611,47 @@ private structure DagLeafSpec where
   writeRoots : Array Nat
   size : Nat
   deriving Inhabited
+
+/-- Render the compact write-root witness for one bounded action leaf. The
+result is untrusted source data; `checkDagAction_sound` validates it. -/
+private partial def dagTraceToLean (source : Act)
+    (cert : Loom.Release.Symbolic.ActionWide.ActionCert) (needed : Nat)
+    (writeRoots : Array Nat) (cursor : Nat := 0) : Option (String × Nat) := do
+  match source, cert with
+  | .skip, .skip | .memWrite .., .memWrite =>
+      pure ("Symbolic.ActionWide.DagActionTrace.atom none", cursor)
+  | .write _ _ _, .write index _ =>
+      if needed.testBit index then
+        let root ← writeRoots[cursor]?
+        pure ("Symbolic.ActionWide.DagActionTrace.atom (some " ++
+          toString root ++ ")", cursor + 1)
+      else
+        pure ("Symbolic.ActionWide.DagActionTrace.atom none", cursor)
+  | .seq left right, .seq _ leftCert rightCert =>
+      let leftNeeded := Loom.Release.Symbolic.ActionWide.neededBitsBefore
+        rightCert.summary needed
+      let (leftTrace, afterLeft) ← dagTraceToLean left leftCert leftNeeded
+        writeRoots cursor
+      let (rightTrace, afterRight) ← dagTraceToLean right rightCert needed
+        writeRoots afterLeft
+      pure ("Symbolic.ActionWide.DagActionTrace.seq (" ++ leftTrace ++
+        ") (" ++ rightTrace ++ ")", afterRight)
+  | .ite _ thenAction elseAction,
+      .ite summary _ joins thenCert elseCert =>
+      let changed := Loom.Release.Symbolic.ActionWide.changedBitsAt summary needed
+      let (thenTrace, afterThen) ← dagTraceToLean thenAction thenCert changed
+        writeRoots cursor
+      let (elseTrace, afterElse) ← dagTraceToLean elseAction elseCert changed
+        writeRoots afterThen
+      let joinRoots := (writeRoots.extract afterElse
+        (afterElse + joins.length)).toList
+      guard (joinRoots.length == joins.length)
+      let rootsText := "[" ++
+        String.intercalate ", " (joinRoots.map toString) ++ "]"
+      pure ("Symbolic.ActionWide.DagActionTrace.ite (" ++ thenTrace ++
+        ") (" ++ elseTrace ++ ") " ++ rootsText,
+        afterElse + joins.length)
+  | _, _ => none
 
 private partial def collectDagLeaves (spans : Array DagSpan)
     (allActionRoots allWriteRoots : Array Nat) (source : Act)
@@ -619,11 +661,14 @@ private partial def collectDagLeaves (spans : Array DagSpan)
   let span ← spans[cursor]?
   let size := sourceActionNodeCount source
   if size ≤ limit then
+    let writeRoots := allWriteRoots.extract span.writeStart span.writeEnd
+    let (trace, afterTrace) ← dagTraceToLean source cert needed writeRoots
+    guard (afterTrace == writeRoots.size)
     let leaf : DagLeafSpec :=
-      { source := sourceExpr, cert := certExpr, input, needed,
+      { source := sourceExpr, cert := certExpr, trace, input, needed,
         output := span.output,
         actionRoots := allActionRoots.extract span.actionStart span.actionEnd,
-        writeRoots := allWriteRoots.extract span.writeStart span.writeEnd,
+        writeRoots,
         size }
     return (cursor + size, span.output, #[leaf])
   match source, cert with
@@ -774,6 +819,8 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       cutSparseDeltaToLean initial cut.input ++ "\n\n" ++
     "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
   let dataModule := modulePrefix ++ "Data"
+  -- Compact checks are ordinary independent declarations, so Lean can verify
+  -- a sizeable batch asynchronously while sharing the imported SSA tables.
   let proofLeafBatchSize := 8
   let proofLeafBatches := leaves.toList.toChunks proofLeafBatchSize
   let leafImports := String.intercalate "\n" <|
@@ -788,6 +835,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   let proofText :=
     "-- Generated hash-consed action-state proof; DO NOT EDIT.\n" ++
     "import " ++ dataModule ++ "\n" ++
+    resolverImports ++ "\n" ++
     leafImports ++ "\n" ++
     "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
     "import GeneratedRelease.Lnp64u.ActionCert\n" ++
@@ -845,36 +893,38 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     let mut theoremTexts : Array String := #[]
     for (localIndex, leaf) in (List.range batch.length).zip batch do
       let index := batchIndex * proofLeafBatchSize + localIndex
+      let traceName := "dagCutLeaf" ++ pad3 index ++ "Trace"
+      let checkName := "dagCutLeaf" ++ pad3 index ++ "Check"
       theoremTexts := theoremTexts.push <|
-        "dag_action_roots " ++ String.intercalate " "
-          (leaf.actionRoots.toList.map toString) ++ "\n" ++
-        "dag_write_roots " ++ String.intercalate " "
-          (leaf.writeRoots.toList.map toString) ++ "\n\n" ++
+        "def " ++ traceName ++
+          " : Symbolic.ActionWide.DagActionTrace :=\n  " ++ leaf.trace ++
+          "\n\n" ++
+        "theorem " ++ checkName ++ " :\n" ++
+        "    Symbolic.ActionWide.checkDagAction fastIndexedWireTree " ++
+          "fastWireTable dagStateNodes dagStateTable dagCutRegisters (" ++
+          leaf.source ++ ") " ++ toString leaf.input ++ " " ++
+          toString leaf.needed ++ " (" ++ leaf.cert ++ ") " ++ traceName ++
+          " = some " ++ toString leaf.output ++ " := by\n" ++
+        "  rfl\n\n" ++
         "theorem dagCutLeaf" ++ pad3 index ++ "Evidence :\n" ++
         "    Symbolic.ActionWide.DagBitSparseEvidence fastIndexedWireTree " ++
           "fastWireTable dagStateNodes dagStateTable dagCutRegisters (" ++
           leaf.source ++ ") " ++ toString leaf.input ++ " " ++
           toString leaf.needed ++ " (" ++ leaf.cert ++ ") " ++
           toString leaf.output ++ " :=\n" ++
-        "  dag_sparse_evidence_decide\n"
+        "  Symbolic.ActionWide.checkDagAction_sound " ++ checkName ++ "\n"
     let leafText :=
       "-- Generated independent DAG action leaves; DO NOT EDIT.\n" ++
       "import " ++ dataModule ++ "\n" ++
-      resolverImports ++ "\n" ++
-      (if batchIndex == 0 then "" else
-        "import " ++ modulePrefix ++ "Leaf000\n") ++
       "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
       "import GeneratedRelease.Lnp64u.ActionCert\n" ++
-      "import Loom.Release.SymbolicDecide\n" ++
       "import Machines.Lnp64u.Hw.Core\n" ++
       "import Machines.Lnp64u.Hw.Demo\n" ++
       "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
       "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
       "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" ++
-      "set_option Elab.async false\n\n" ++
-      "indexed_expr_checkpoints " ++ String.intercalate " "
-        (runtimeCheckpoints program |>.map toString) ++ "\n" ++
+      "\n" ++
       String.intercalate "\n" theoremTexts.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
     let leafPath := System.FilePath.mk ((output.toString.dropEnd 5).toString ++
