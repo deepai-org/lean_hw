@@ -270,6 +270,155 @@ theorem StateWriteEvidence.outputLookup
   | branchOne bitAccepted _ outputAccepted _ childIH =>
       exact .branchOne bitAccepted outputAccepted childIH
 
+/-- The distinguished empty root denotes the register fallback at every trie
+depth. This invariant is deliberately supplied by the release witness rather
+than trusted as part of `RefStateTable` metadata. -/
+theorem lookupStateRef?_emptyRoot
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl}
+    (emptyValid : lookupStateNode? nodes table table.emptyRoot = some .empty)
+    (depth index : Nat) :
+    lookupStateRef? nodes table registers depth table.emptyRoot index =
+      registers[index]?.map (Ref.reg ·.name) := by
+  cases depth <;> simp [lookupStateRef?, emptyValid]
+
+/-- Distinct indices below the capacity of a trie differ in a represented
+bit. -/
+theorem exists_testBit_ne_of_ne_of_lt_pow
+    {left right depth : Nat} (distinct : left ≠ right)
+    (leftBound : left < 2 ^ depth) (rightBound : right < 2 ^ depth) :
+    ∃ bit, bit < depth ∧ left.testBit bit ≠ right.testBit bit := by
+  apply Classical.byContradiction
+  intro noDifference
+  apply distinct
+  apply Nat.eq_of_testBit_eq
+  intro bit
+  by_cases represented : bit < depth
+  · by_cases bitEq : left.testBit bit = right.testBit bit
+    · exact bitEq
+    · exact False.elim (noDifference ⟨bit, represented, bitEq⟩)
+  · have depthLe : depth ≤ bit := Nat.le_of_not_gt represented
+    have powerLe : 2 ^ depth ≤ 2 ^ bit :=
+      Nat.pow_le_pow_right Nat.zero_lt_two depthLe
+    rw [Nat.testBit_lt_two_pow (Nat.lt_of_lt_of_le leftBound powerLe),
+      Nat.testBit_lt_two_pow (Nat.lt_of_lt_of_le rightBound powerLe)]
+
+/-- A persistent trie write preserves every path which differs from the
+written path in one of the represented low bits. At release depth ten,
+distinct in-range register indices satisfy this premise. -/
+theorem StateWriteEvidence.lookup_other
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl} {depth input index output : Nat} {value : Ref}
+    (evidence : StateWriteEvidence nodes table depth input index value output)
+    (emptyValid : lookupStateNode? nodes table table.emptyRoot = some .empty)
+    (other : Nat)
+    (differs : ∃ bit, bit < depth ∧
+      index.testBit bit ≠ other.testBit bit) :
+    lookupStateRef? nodes table registers depth output other =
+      lookupStateRef? nodes table registers depth input other := by
+  induction evidence with
+  | leaf outputAccepted =>
+      obtain ⟨bit, bitLt, _⟩ := differs
+      omega
+  | @emptyZero childDepth input index value output newZero bitAccepted
+      inputAccepted outputAccepted childAccepted childIH =>
+      obtain ⟨bit, bitLt, bitDiff⟩ := differs
+      cases otherBit : other.testBit childDepth with
+      | false =>
+          have bitNe : bit ≠ childDepth := by
+            intro bitEq
+            subst bit
+            simp [bitAccepted, otherBit] at bitDiff
+          have lowerDiff : ∃ bit, bit < childDepth ∧
+              index.testBit bit ≠ other.testBit bit := by
+            exact ⟨bit, by omega, bitDiff⟩
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit]
+          rw [childIH lowerDiff, lookupStateRef?_emptyRoot emptyValid]
+      | true =>
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit,
+            lookupStateRef?_emptyRoot emptyValid]
+  | @emptyOne childDepth input index value output newOne bitAccepted
+      inputAccepted outputAccepted childAccepted childIH =>
+      obtain ⟨bit, bitLt, bitDiff⟩ := differs
+      cases otherBit : other.testBit childDepth with
+      | false =>
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit,
+            lookupStateRef?_emptyRoot emptyValid]
+      | true =>
+          have bitNe : bit ≠ childDepth := by
+            intro bitEq
+            subst bit
+            simp [bitAccepted, otherBit] at bitDiff
+          have lowerDiff : ∃ bit, bit < childDepth ∧
+              index.testBit bit ≠ other.testBit bit := by
+            exact ⟨bit, by omega, bitDiff⟩
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit]
+          rw [childIH lowerDiff, lookupStateRef?_emptyRoot emptyValid]
+  | @branchZero childDepth input index value output oldZero oldOne newZero
+      bitAccepted inputAccepted outputAccepted childAccepted childIH =>
+      obtain ⟨bit, bitLt, bitDiff⟩ := differs
+      cases otherBit : other.testBit childDepth with
+      | false =>
+          have bitNe : bit ≠ childDepth := by
+            intro bitEq
+            subst bit
+            simp [bitAccepted, otherBit] at bitDiff
+          have lowerDiff : ∃ bit, bit < childDepth ∧
+              index.testBit bit ≠ other.testBit bit := by
+            exact ⟨bit, by omega, bitDiff⟩
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit,
+            childIH lowerDiff]
+      | true =>
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit]
+  | @branchOne childDepth input index value output oldZero oldOne newOne
+      bitAccepted inputAccepted outputAccepted childAccepted childIH =>
+      obtain ⟨bit, bitLt, bitDiff⟩ := differs
+      cases otherBit : other.testBit childDepth with
+      | false =>
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit]
+      | true =>
+          have bitNe : bit ≠ childDepth := by
+            intro bitEq
+            subst bit
+            simp [bitAccepted, otherBit] at bitDiff
+          have lowerDiff : ∃ bit, bit < childDepth ∧
+              index.testBit bit ≠ other.testBit bit := by
+            exact ⟨bit, by omega, bitDiff⟩
+          simp [lookupStateRef?, inputAccepted, outputAccepted, otherBit,
+            childIH lowerDiff]
+
+/-- Structural lookup evidence is functional. -/
+theorem StateLookupEvidence.unique
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl} {depth root index : Nat} {left right : Ref}
+    (leftEvidence : StateLookupEvidence nodes table registers depth root index left)
+    (rightEvidence : StateLookupEvidence nodes table registers depth root index right) :
+    left = right := by
+  have leftAccepted := leftEvidence.accepted
+  rw [rightEvidence.accepted] at leftAccepted
+  exact (Option.some.inj leftAccepted).symm
+
+/-- Lookup evidence before and after a write agrees at every distinct,
+in-range register index. -/
+theorem StateWriteEvidence.lookup_other_eq
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl} {depth input index output other : Nat}
+    {value before after : Ref}
+    (writeEvidence : StateWriteEvidence nodes table depth input index value output)
+    (emptyValid : lookupStateNode? nodes table table.emptyRoot = some .empty)
+    (distinct : index ≠ other)
+    (indexBound : index < 2 ^ depth) (otherBound : other < 2 ^ depth)
+    (beforeEvidence : StateLookupEvidence nodes table registers depth input other before)
+    (afterEvidence : StateLookupEvidence nodes table registers depth output other after) :
+    after = before := by
+  have preserved := writeEvidence.lookup_other (registers := registers)
+    emptyValid other
+    (exists_testBit_ne_of_ne_of_lt_pow distinct indexBound otherBound)
+  have beforeAccepted := beforeEvidence.accepted
+  have afterAccepted := afterEvidence.accepted
+  rw [afterAccepted, beforeAccepted] at preserved
+  exact Option.some.inj preserved
+
 /-- Successful executable lookup yields structural lookup evidence. -/
 theorem lookupStateRef?_sound {nodes : Rope (List RefStateNode)}
     {table : RefStateTable} {registers : Array RegDecl}

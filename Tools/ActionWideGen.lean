@@ -1072,6 +1072,13 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   for (batchIndex, indices) in
       (List.range lookupBatches.length).zip lookupBatches do
     let mut declarations : Array String := #[]
+    if batchIndex == 0 then
+      declarations := declarations.push <|
+        "theorem dagEmptyRootValid :\n" ++
+        "    Symbolic.ActionWide.lookupStateNode? dagStateNodes dagStateTable\n" ++
+        "      dagStateTable.emptyRoot = some .empty := by\n" ++
+        "  exact Symbolic.ActionWide.lookupStateNode_of_resolve (by decide) rfl\n" ++
+        "    (dagStateResolveLeaf0000 0)\n"
     for index in indices do
       let some inputRef := dagLookupRef finalState.nodes registers 10 inputRoot index
         | return 1
