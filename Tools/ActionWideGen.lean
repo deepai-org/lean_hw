@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Tools.ReleaseCertGen
 import Tools.RuntimeSsa
+import Loom.Release.ActionStateDag
 import Machines.Acc8.Core
 import Machines.Acc8.Iss
 import Machines.Lnp64u.Hw.Core
@@ -359,7 +360,9 @@ private unsafe def reportCoreStats (runtime : System.FilePath) : IO UInt32 := do
 private structure CoreCut where
   name : String
   source : String
+  sourceValue : Act
   cert : String
+  certValue : Loom.Release.Symbolic.ActionWide.ActionCert
   input : Array Loom.Release.Symbolic.Ref
   needed : List Nat
   size : Nat
@@ -400,7 +403,8 @@ private partial def collectCoreCuts (registers : Array RegDecl)
   if let some (name, sourceExpr, nextState) := selected then
     let some result := evaluateCert registers input needed cert | failure
     let cut : CoreCut :=
-      { name, source := sourceExpr, cert := certExpr, input, needed, size }
+      { name, source := sourceExpr, sourceValue := source, cert := certExpr,
+        certValue := cert, input, needed, size }
     set { nextState with cuts := nextState.cuts.push cut }
     return (size, result)
   match source, cert with
@@ -468,6 +472,213 @@ private def runtimeCheckpoints (program : Tools.RuntimeSsa.Program)
         counts := counts.set! number (counts[number]! + 1)
   pure <| (List.range counts.size).filter fun number =>
     decide (counts[number]! >= threshold)
+
+/-! ### Hash-consed state-DAG prototype
+
+The generator chooses node numbers and traversal traces, but all of this data
+is an untrusted witness. `ActionStateDag` checks the numbered trie transitions
+inside the kernel. -/
+
+private structure DagBuild where
+  nodes : Array Loom.Release.Symbolic.ActionWide.RefStateNode :=
+    #[.empty]
+  actionRoots : Array Nat := #[]
+  writeRoots : Array Nat := #[]
+
+private abbrev DagM := StateT DagBuild Option
+
+private def appendDagNode
+    (node : Loom.Release.Symbolic.ActionWide.RefStateNode) : DagM Nat := do
+  let state ← get
+  let number := state.nodes.size
+  set { state with nodes := state.nodes.push node }
+  pure number
+
+private partial def dagWrite (depth input index : Nat)
+    (value : Loom.Release.Symbolic.Ref) : DagM Nat := do
+  if depth == 0 then
+    return ← appendDagNode (.leaf value)
+  let state ← get
+  let some node := state.nodes[input]? | failure
+  let (oldZero, oldOne) := match node with
+    | .empty => (0, 0)
+    | .branch zeroChild oneChild => (zeroChild, oneChild)
+    | .leaf _ => (0, 0)
+  let bit := index.testBit (depth - 1)
+  if bit then
+    let newOne ← dagWrite (depth - 1) oldOne index value
+    appendDagNode (.branch oldZero newOne)
+  else
+    let newZero ← dagWrite (depth - 1) oldZero index value
+    appendDagNode (.branch newZero oldOne)
+
+private def recordDagWrite (root : Nat) : DagM Unit :=
+  modify fun state => { state with writeRoots := state.writeRoots.push root }
+
+private def recordDagAction (root : Nat) : DagM Unit :=
+  modify fun state => { state with actionRoots := state.actionRoots.push root }
+
+private partial def evaluateDag (source : Act) (input needed : Nat)
+    (cert : Loom.Release.Symbolic.ActionWide.ActionCert) : DagM Nat := do
+  let output ← match source, cert with
+    | .skip, .skip | .memWrite .., .memWrite => pure input
+    | .write _ _ _, .write index value =>
+        if needed.testBit index then
+          let root ← dagWrite 10 input index value
+          recordDagWrite root
+          pure root
+        else pure input
+    | .seq left right, .seq _ leftCert rightCert => do
+        let leftNeeded := Loom.Release.Symbolic.ActionWide.neededBitsBefore
+          rightCert.summary needed
+        let middle ← evaluateDag left input leftNeeded leftCert
+        evaluateDag right middle needed rightCert
+    | .ite _ thenAction elseAction,
+        .ite summary _ joins thenCert elseCert => do
+        let changed := Loom.Release.Symbolic.ActionWide.changedBitsAt summary needed
+        let _ ← evaluateDag thenAction input changed thenCert
+        let _ ← evaluateDag elseAction input changed elseCert
+        let mut root := input
+        let mut remaining := changed
+        for join in joins do
+          guard (remaining.testBit join.index)
+          root ← dagWrite 10 root join.index join.output
+          recordDagWrite root
+          remaining := remaining ^^^ (1 <<< join.index)
+        guard (remaining == 0)
+        pure root
+    | _, _ => failure
+  recordDagAction output
+  pure output
+
+private def dagInitialRoot (registers : Array RegDecl)
+    (input : Array Loom.Release.Symbolic.Ref) : DagM Nat := do
+  let mut root := 0
+  for index in [:min registers.size input.size] do
+    let some register := registers[index]? | failure
+    let some value := input[index]? | failure
+    if value != .reg register.name then
+      root ← dagWrite 10 root index value
+  pure root
+
+private def dagRefToLean : Loom.Release.Symbolic.Ref → String
+  | .wire number => "Symbolic.Ref.wire " ++ toString number
+  | .reg name => "Symbolic.Ref.reg " ++ reprStr name
+
+private def dagNodeToLean :
+    Loom.Release.Symbolic.ActionWide.RefStateNode → String
+  | .empty => "Symbolic.ActionWide.RefStateNode.empty"
+  | .leaf value => "Symbolic.ActionWide.RefStateNode.leaf (" ++
+      dagRefToLean value ++ ")"
+  | .branch zeroChild oneChild =>
+      "Symbolic.ActionWide.RefStateNode.branch " ++ toString zeroChild ++ " " ++
+        toString oneChild
+
+private partial def balancedDagRopeExpr : List String → String
+  | [] => "Symbolic.ActionWide.RefStateNode.empty |> List.singleton |> Rope.leaf"
+  | [name] => name
+  | names =>
+      let rec pair : List String → List String
+        | left :: right :: rest =>
+            ("(Rope.node " ++ left ++ " " ++ right ++ ")") :: pair rest
+        | [last] => [last]
+        | [] => []
+      balancedDagRopeExpr (pair names)
+
+private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
+    (cutIndex : Nat) : IO UInt32 := do
+  let program ← Tools.RuntimeSsa.load runtime
+  let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
+  let some certs := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
+      design program | return 1
+  let registers := design.regs.toArray
+  let initial := registers.map fun register =>
+    Loom.Release.Symbolic.Ref.reg register.name
+  let some refillCert := certs[0]? | return 1
+  let needed := List.range registers.size
+  let refillNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    certs.tail needed
+  let some refillResult := evaluateCert registers initial refillNeeded refillCert
+    | return 1
+  let some coreCert := certs[1]? | return 1
+  let coreNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    (certs.drop 2) needed
+  let issueOrder := (Machines.Lnp64u.Hw.schedOrder
+    Machines.Lnp64u.Demo.sysManifest).toArray
+  let some (_, cutsState) := (collectCoreCuts registers issueOrder
+      (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) coreCert
+      refillResult.refs coreNeeded "actionCertNode15158").run {}
+    | return 1
+  let some cut := cutsState.cuts[cutIndex]? | return 1
+  let neededBits := cutIndicesToBits cut.needed
+  let some (inputRoot, initialState) :=
+      (dagInitialRoot registers cut.input).run {} | return 1
+  let some (outputRoot, finalState) :=
+      (evaluateDag cut.sourceValue inputRoot neededBits cut.certValue).run
+        initialState | return 1
+  let leafSize := 64
+  let chunks := finalState.nodes.toList.toChunks leafSize
+  let leafNames := (List.range chunks.length).map fun index =>
+    "dagStateLeaf" ++ pad4 index
+  let mut declarations := ""
+  for (index, chunk) in (List.range chunks.length).zip chunks do
+    declarations := declarations ++ "def dagStateLeaf" ++ pad4 index ++
+      " : Rope (List Symbolic.ActionWide.RefStateNode) := Rope.leaf [" ++
+      String.intercalate ", " (chunk.map dagNodeToLean) ++ "]\n"
+  let mut resolverDeclarations := ""
+  for index in List.range chunks.length do
+    let some path := Loom.Release.Symbolic.balancedPath? chunks.length index
+      | return 1
+    let pathText := "[" ++ String.intercalate ", "
+      (path.map fun bit => if bit then "true" else "false") ++ "]"
+    resolverDeclarations := resolverDeclarations ++
+      "theorem dagStateResolveLeaf" ++ pad4 index ++ " (offset : Nat) :\n" ++
+      "    dagStateNodes.resolve? ⟨" ++ pathText ++ ", offset⟩ =\n" ++
+      "      (dagStateLeaf" ++ pad4 index ++
+      ").resolve? ⟨[], offset⟩ := rfl\n"
+  let sourceText :=
+    "-- Generated hash-consed action-state witness; DO NOT EDIT.\n" ++
+    "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
+    "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+    "import Loom.Release.SymbolicDecide\n" ++
+    "import Machines.Lnp64u.Hw.Core\n" ++
+    "import Machines.Lnp64u.Hw.Demo\n" ++
+    "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
+    "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+    "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+    "indexed_expr_checkpoints " ++
+      String.intercalate " " (runtimeCheckpoints program |>.map toString) ++
+      "\n\n" ++
+    declarations ++ "\n" ++
+    "def dagStateNodes := " ++ balancedDagRopeExpr leafNames ++ "\n\n" ++
+    resolverDeclarations ++ "\n" ++
+    "def dagStateTable : Symbolic.ActionWide.RefStateTable := " ++
+      "{ leafSize := " ++ toString leafSize ++ ", leafCount := " ++
+      toString chunks.length ++ ", emptyRoot := 0 }\n" ++
+    "dag_action_roots " ++
+      String.intercalate " " (finalState.actionRoots.toList.map toString) ++
+      "\n" ++
+    "dag_write_roots " ++
+      String.intercalate " " (finalState.writeRoots.toList.map toString) ++
+      "\n" ++
+    "def dagInputRoot : Nat := " ++ toString inputRoot ++ "\n" ++
+    "def dagOutputRoot : Nat := " ++ toString outputRoot ++ "\n\n" ++
+    "def dagCutRegisters : Array RegDecl := " ++
+      cutRegistersToLean registers ++ "\n" ++
+    "noncomputable def dagCutInput : Symbolic.ActionWide.SparseRefs := " ++
+      cutSparseDeltaToLean initial cut.input ++ "\n\n" ++
+    "theorem dagCutEvidence :\n" ++
+    "    ∃ outputRoot, Symbolic.ActionWide.DagBitSparseEvidence " ++
+      "fastIndexedWireTree fastWireTable dagStateNodes dagStateTable " ++
+      "dagCutRegisters (" ++ cut.source ++ ") dagInputRoot " ++
+      toString neededBits ++ " (" ++ cut.cert ++ ") outputRoot :=\n" ++
+    "  dag_sparse_evidence_exists\n\n" ++
+    "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+  writeIfChanged output sourceText
+  IO.eprintln (s!"dag cut {cutIndex}: actions={finalState.actionRoots.size} " ++
+    s!"writes={finalState.writeRoots.size} nodes={finalState.nodes.size}")
+  return 0
 
 private unsafe def generateCoreCuts (runtime outputDir : System.FilePath) :
     IO UInt32 := do
@@ -1117,6 +1328,10 @@ unsafe def main (args : List String) : IO UInt32 := do
       reportCoreStats runtime
   | ["lnp64u-core-cuts", runtime, outputDir] =>
       generateCoreCuts runtime outputDir
+  | ["lnp64u-dag-cut", runtime, output, cutIndex] =>
+      let some cutIndex := cutIndex.toNat?
+        | IO.eprintln "cut index must be a natural number"; return 2
+      generateCoreDagProbe runtime output cutIndex
   | _ =>
       IO.eprintln "usage: actionwidegen {acc8|lnp64u} RUNTIME.json OUTPUT.lean"
       return 2

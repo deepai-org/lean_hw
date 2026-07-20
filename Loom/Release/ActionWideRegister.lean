@@ -250,11 +250,11 @@ def ActionCert.summary : ActionCert → Summary
       { possible := singletonIndex index, definite := singletonIndex index }
   | .seq summary _ _ | .ite summary _ _ _ _ => summary
 
-private def seqSummary (left right : Summary) : Summary :=
+def seqSummary (left right : Summary) : Summary :=
   { possible := left.possible ||| right.possible
     definite := left.definite ||| right.definite }
 
-private def iteSummary (thenSummary elseSummary : Summary) : Summary :=
+def iteSummary (thenSummary elseSummary : Summary) : Summary :=
   { possible := thenSummary.possible ||| elseSummary.possible
     definite := thenSummary.definite &&& elseSummary.definite }
 
