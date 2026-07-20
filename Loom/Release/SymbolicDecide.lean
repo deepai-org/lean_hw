@@ -1361,6 +1361,15 @@ private initialize sparseBitMs : IO.Ref Nat ← IO.mkRef 0
 private initialize sparseSummaryMs : IO.Ref Nat ← IO.mkRef 0
 private initialize sparseJoinMs : IO.Ref Nat ← IO.mkRef 0
 
+private def reportSparseStats : MetaM Unit := do
+  IO.eprintln (s!"sparse evidence complete: nodes={← sparseNodeCount.get} " ++
+    s!"action-expose={← sparseActionExposeMs.get}ms " ++
+    s!"cert-expose={← sparseCertExposeMs.get}ms " ++
+    s!"bound={← sparseBoundMs.get}ms expression={← sparseExpressionMs.get}ms " ++
+    s!"decision={← sparseDecisionMs.get}ms membership={← sparseMembershipMs.get}ms " ++
+    s!"header={← sparseHeaderMs.get}ms bit={← sparseBitMs.get}ms " ++
+    s!"summary={← sparseSummaryMs.get}ms join={← sparseJoinMs.get}ms")
+
 private def sparseResult (refs changed : Expr) : MetaM Expr :=
   mkAppM ``Loom.Release.Symbolic.ActionWide.BitSparseResult.mk #[refs, changed]
 
@@ -1452,6 +1461,43 @@ private def sparseExpressionEvidence (wires table expression reference : Expr) :
   let finished ← IO.monoMsNow
   sparseExpressionMs.modify (· + (finished - started))
   pure proof
+
+/-- Build join-checker evidence one bounded lookup at a time. The tail is an
+evidence term rather than a recursive Boolean reduction, so the kernel does
+not repeatedly normalize the complete join list and sparse branch states. -/
+private partial def proveBitJoinsEvidence (registers condition thenRefs elseRefs
+    changed joins : Expr) : MetaM Expr := do
+  let reduced ← withTransparency .all <| whnf joins
+  let args := reduced.getAppArgs
+  if reduced.getAppFn.constName? == some ``List.nil then
+    let changedReduced ← normalizeNatLiteral changed
+    unless (← getNatValue? changedReduced) == some 0 do
+      throwError "sparse_evidence_decide: join bitmap is nonzero at list end"
+    return mkAppN
+      (mkConst ``Loom.Release.Symbolic.ActionWide.BitJoinsEvidence.nil)
+      #[registers, condition, thenRefs, elseRefs]
+  unless reduced.getAppFn.constName? == some ``List.cons do
+    throwError "sparse_evidence_decide: joins did not expose as a list"
+  let join := args[args.size - 2]!
+  let tail := args.back!
+  let headCheck ← mkAppM ``Loom.Release.Symbolic.ActionWide.checkedBitJoin
+    #[registers, condition, thenRefs, elseRefs, changed, join]
+  let headProof ← sparseTimedDecide sparseJoinMs (← mkEq headCheck trueExpr)
+  let joinReduced ← withTransparency .all <| whnf join
+  let joinArgs := joinReduced.getAppArgs
+  unless joinReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.Join.mk do
+    throwError "sparse_evidence_decide: join did not expose as a constructor"
+  let index := joinArgs[joinArgs.size - 6]!
+  let nextChangedComputed := mkApp2 (mkConst ``Nat.xor) changed
+    (singletonChangedBit index)
+  let nextChanged ← normalizeNatLiteral nextChangedComputed
+  let tailProof ← proveBitJoinsEvidence registers condition thenRefs elseRefs
+    nextChanged tail
+  return mkAppN
+    (mkConst ``Loom.Release.Symbolic.ActionWide.BitJoinsEvidence.cons)
+    #[registers, condition, thenRefs, elseRefs, changed, join, tail,
+      headProof, tailProof]
 
 /-- Construct sparse action evidence in one top-down traversal.  Unlike the
 generated selector path, recursive calls receive the already exposed source
@@ -1616,10 +1662,13 @@ private partial def proveSparseEvidence (wires table registers action refs neede
       conditionRef
     let conditionProof ← mkAppM ``IndexedExprEvidence.accepted
       #[conditionEvidence]
-    let joinsCheck ← mkAppM ``Loom.Release.Symbolic.ActionWide.checkedBitJoins
-      #[registers, conditionRef, ← sparseRefs thenBuild.result,
-        ← sparseRefs elseBuild.result, changed, joins]
-    let joinsProof ← sparseTimedDecide sparseJoinMs (← mkEq joinsCheck trueExpr)
+    let thenRefs ← sparseRefs thenBuild.result
+    let elseRefs ← sparseRefs elseBuild.result
+    let joinsEvidence ← proveBitJoinsEvidence registers conditionRef thenRefs
+      elseRefs changed joins
+    let joinsProof ← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.BitJoinsEvidence.accepted
+      #[joinsEvidence]
     let resultRefs ← mkAppM ``Loom.Release.Symbolic.ActionWide.applySparseJoins #[refs, joins]
     let result ← sparseResult resultRefs changed
     let proof := mkAppN (mkConst ``Loom.Release.Symbolic.ActionWide.BitSparseEvidence.ite)
@@ -1668,6 +1717,7 @@ unsafe def elabSparseEvidenceDecide : TermElab := fun _ expected? => do
   unless ← isDefEq build.result args[7]! do
     throwError "sparse_evidence_decide result does not match the expected result"
   let proof ← wrapLocalProofBindings build.proof
+  reportSparseStats
   useLocalProofBindings.set false
   pure proof
 
@@ -1712,6 +1762,7 @@ unsafe def elabSparseEvidenceExists : TermElab := fun _ expected? => do
     args[4]! args[5]! args[6]!
   let proof ← mkAppM ``Exists.intro #[build.result, build.proof]
   let proof ← wrapLocalProofBindings proof
+  reportSparseStats
   useLocalProofBindings.set false
   pure proof
 

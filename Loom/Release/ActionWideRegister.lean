@@ -690,6 +690,20 @@ def checkedSparseJoins (registers : Array Loom.Hw.RegDecl) (condition : Ref)
       | _, _, _ => false
   | _, _ => false
 
+/-- Validate one bitmap-indexed join. Keeping this check separate from the
+recursive spine lets release certificates prove each bounded lookup once. -/
+def checkedBitJoin (registers : Array Loom.Hw.RegDecl) (condition : Ref)
+    (thenRefs elseRefs : SparseRefs) (changed : Nat) (join : Join) : Bool :=
+  let index := join.index
+  changed.testBit index &&
+    match registers[index]?, thenRefs.lookup registers index,
+        elseRefs.lookup registers index with
+    | some source, some thenRef, some elseRef =>
+        join.width == source.width && join.guard == condition &&
+          join.thenInput == thenRef && join.elseInput == elseRef &&
+          (match join.output with | .wire _ => true | .reg _ => false)
+    | _, _, _ => false
+
 /-- Validate exactly the joins named by a register bitmap. Each accepted join
 clears its bit, so duplicates reject and the final zero check rejects missing
 joins. Join order is irrelevant because distinct register writes commute. -/
@@ -697,17 +711,34 @@ def checkedBitJoins (registers : Array Loom.Hw.RegDecl) (condition : Ref)
     (thenRefs elseRefs : SparseRefs) : Nat → List Join → Bool
   | changed, [] => changed == 0
   | changed, join :: joins =>
-      let index := join.index
-      changed.testBit index &&
-        match registers[index]?, thenRefs.lookup registers index,
-            elseRefs.lookup registers index with
-        | some source, some thenRef, some elseRef =>
-            join.width == source.width && join.guard == condition &&
-              join.thenInput == thenRef && join.elseInput == elseRef &&
-              (match join.output with | .wire _ => true | .reg _ => false) &&
-              checkedBitJoins registers condition thenRefs elseRefs
-                (changed ^^^ (1 <<< index)) joins
-        | _, _, _ => false
+      checkedBitJoin registers condition thenRefs elseRefs changed join &&
+        checkedBitJoins registers condition thenRefs elseRefs
+          (changed ^^^ (1 <<< join.index)) joins
+
+/-- Structural evidence for the recursive bitmap join checker. Each `cons`
+premise is bounded to one register lookup, so checking a parent never unfolds
+the already-validated tail. -/
+inductive BitJoinsEvidence (registers : Array Loom.Hw.RegDecl) (condition : Ref)
+    (thenRefs elseRefs : SparseRefs) : Nat → List Join → Prop where
+  | nil : BitJoinsEvidence registers condition thenRefs elseRefs 0 []
+  | cons {changed join joins}
+      (headAccepted : checkedBitJoin registers condition thenRefs elseRefs
+        changed join = true)
+      (tailAccepted : BitJoinsEvidence registers condition thenRefs elseRefs
+        (changed ^^^ (1 <<< join.index)) joins) :
+      BitJoinsEvidence registers condition thenRefs elseRefs changed
+        (join :: joins)
+
+theorem BitJoinsEvidence.accepted
+    {registers : Array Loom.Hw.RegDecl} {condition : Ref}
+    {thenRefs elseRefs : SparseRefs} {changed : Nat} {joins : List Join}
+    (evidence : BitJoinsEvidence registers condition thenRefs elseRefs changed
+      joins) :
+    checkedBitJoins registers condition thenRefs elseRefs changed joins = true := by
+  induction evidence with
+  | nil => rfl
+  | cons headAccepted _ tailIH =>
+      simp only [checkedBitJoins, headAccepted, tailIH, Bool.and_self]
 
 def applySparseJoins (refs : SparseRefs) (joins : List Join) : SparseRefs :=
   joins.foldl (fun result join => result.write join.index join.output) refs
