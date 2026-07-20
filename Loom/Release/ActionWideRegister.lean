@@ -277,6 +277,23 @@ def ActionCert.definitelyWritesIndex (query : Nat) : ActionCert → Bool
   | .ite _ _ _ thenCert elseCert =>
       thenCert.definitelyWritesIndex query && elseCert.definitelyWritesIndex query
 
+theorem ActionCert.possiblyWritesIndex_of_definitelyWritesIndex
+    (cert : ActionCert) (query : Nat)
+    (definite : cert.definitelyWritesIndex query = true) :
+    cert.possiblyWritesIndex query = true := by
+  induction cert with
+  | skip | memWrite => simp [ActionCert.definitelyWritesIndex] at definite
+  | write => simpa [ActionCert.definitelyWritesIndex,
+      ActionCert.possiblyWritesIndex] using definite
+  | seq summary left right leftIH rightIH =>
+      simp only [ActionCert.definitelyWritesIndex, Bool.or_eq_true] at definite
+      simp only [ActionCert.possiblyWritesIndex, Bool.or_eq_true]
+      exact definite.elim (Or.inl ∘ leftIH) (Or.inr ∘ rightIH)
+  | ite summary guard joins thenCert elseCert thenIH elseIH =>
+      simp only [ActionCert.definitelyWritesIndex, Bool.and_eq_true] at definite
+      simp only [ActionCert.possiblyWritesIndex, Bool.or_eq_true]
+      exact Or.inl (thenIH definite.1)
+
 def seqSummary (left right : Summary) : Summary :=
   { possible := left.possible ||| right.possible
     definite := left.definite ||| right.definite }

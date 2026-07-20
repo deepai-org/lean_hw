@@ -82,6 +82,11 @@ compile_parallel_proofs() {
     -print0 | sort -z | compile_parallel
 }
 
+compile_join_lookups() {
+  find "$src" -maxdepth 1 -name "DagCut${suffix}JoinLookup*.lean" -print0 | \
+    sort -z | compile_parallel
+}
+
 mkdir -p "$lib"
 run_phase "action DAG prerequisites" lake build actionwidegen \
   Loom.Release.SymbolicDecide Machines.Lnp64u.Theorems.ReleaseOrder
@@ -93,6 +98,11 @@ run_phase "generate action cut $suffix" lake exe actionwidegen lnp64u-dag-cut \
 run_phase "state node shards" compile_node_shards
 run_phase "state resolver shards" compile_resolver_shards
 run_phase "state DAG root" compile_generated "$src/DagCut${suffix}Data.lean"
+
+# Connector checks import these named mux facts. Check each global wire lookup
+# once in a small shard instead of reopening the indexed-wire rope at every
+# action node.
+run_phase "named join lookups" compile_join_lookups
 
 # Leaves and outer conditional checks share only the immutable data roots, so
 # run them in one worker pool. This overlaps the two dominant proof workloads.

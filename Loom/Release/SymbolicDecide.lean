@@ -2097,8 +2097,9 @@ unsafe def elabDagStateLookup : TermElab := fun _ expected? => do
     throwError "dag_state_lookup produced an open proof"
   pure proof
 
-private partial def proveDagJoins (nodes stateTable registers condition input
-    thenRoot elseRoot changed joins : Expr) : MetaM (Expr × Expr) := do
+private partial def proveDagJoins (wires wireTable nodes stateTable registers
+    condition input thenRoot elseRoot changed joins : Expr) :
+    MetaM (Expr × Expr × Nat) := do
   let reduced ← withTransparency .all <| whnf joins
   let args := reduced.getAppArgs
   if reduced.getAppFn.constName? == some ``List.nil then
@@ -2107,8 +2108,9 @@ private partial def proveDagJoins (nodes stateTable registers condition input
       throwError "dag_sparse_evidence_exists: nonzero join bitmap at list end"
     let proof := mkAppN (mkConst
       ``Loom.Release.Symbolic.ActionWide.StateJoinsEvidence.nil)
-      #[nodes, stateTable, registers, condition, input, thenRoot, elseRoot]
-    return (input, proof)
+      #[wires, wireTable, nodes, stateTable, registers, condition, input,
+        thenRoot, elseRoot]
+    return (input, proof, 0)
   unless reduced.getAppFn.constName? == some ``List.cons do
     throwError "dag_sparse_evidence_exists: joins did not expose as a list"
   let join := args[args.size - 2]!
@@ -2140,25 +2142,36 @@ private partial def proveDagJoins (nodes stateTable registers condition input
   let number := outputReduced.getAppArgs.back!
   let wireValue ← mkAppM ``Loom.Release.Symbolic.Ref.wire #[number]
   let wireEq ← dagDecide (← mkEq output wireValue)
-  let wirePredicate ← withLocalDeclD `number (mkConst ``Nat) fun candidate => do
-    let candidateWire ← mkAppM ``Loom.Release.Symbolic.Ref.wire #[candidate]
-    mkLambdaFVars #[candidate] (← mkEq output candidateWire)
-  let wireProof := mkAppN
-    (mkConst ``Exists.intro [Level.succ Level.zero])
-    #[mkConst ``Nat, wirePredicate, number, wireEq]
+  let some numberValue ← getNatValue? (← withTransparency .all <| whnf number)
+    | throwError "dag_sparse_evidence_exists: join wire number is not concrete"
+  let some wiresName := wires.getAppFn.constName?
+    | throwError "dag_sparse_evidence_exists: wire tree is not named"
+  let namedLookup := wiresName.getPrefix.str ("dagJoinLookup" ++
+    toString numberValue)
+  let lookupProof ← if (← getEnv).contains namedLookup then
+      pure (Lean.mkConst namedLookup)
+    else
+      pure (← proveIndexedLookup wires wireTable number).2
+  let outputProof := mkAppN (mkConst
+    ``Loom.Release.Symbolic.ActionWide.JoinOutputEvidence.wire)
+    #[wires, wireTable, join, number, wireEq, lookupProof]
   let nextRoot ← takeDagRoot dagWriteRoots dagWriteCursor "write"
   let writeProof ← proveDagWrite nodes stateTable input index output nextRoot
   let nextChangedComputed := mkApp2 (mkConst ``Nat.xor) changed
     (singletonChangedBit index)
   let nextChanged ← normalizeNatLiteral nextChangedComputed
-  let (outputRoot, tailProof) ← proveDagJoins nodes stateTable registers condition
-    nextRoot thenRoot elseRoot nextChanged tail
+  let (outputRoot, tailProof, tailSize) ← proveDagJoins wires wireTable nodes stateTable
+    registers condition nextRoot thenRoot elseRoot nextChanged tail
+  let tailProof ← if tailSize > 0 && tailSize % 128 == 0 then
+      checkpointLocalProof (← inferType tailProof) tailProof
+    else pure tailProof
   let proof := mkAppN (mkConst
     ``Loom.Release.Symbolic.ActionWide.StateJoinsEvidence.cons)
-    #[nodes, stateTable, registers, condition, input, thenRoot, elseRoot,
-      changed, join, tail, nextRoot, outputRoot, bitProof, widthProof,
-      thenProof, elseProof, guardProof, wireProof, writeProof, tailProof]
-  pure (outputRoot, proof)
+    #[wires, wireTable, nodes, stateTable, registers, condition, input,
+      thenRoot, elseRoot, changed, join, tail, nextRoot, outputRoot, bitProof,
+      widthProof, thenProof, elseProof, guardProof, outputProof, writeProof,
+      tailProof]
+  pure (outputRoot, proof, tailSize + 1)
 
 /-- Build conditional-join evidence from named state-node resolver theorems.
 Unlike reducing `checkedStateJoins`, this performs no repeated normalization of
@@ -2172,23 +2185,25 @@ unsafe def elabDagStateJoins : TermElab := fun _ expected? => do
   dagBoundMs.set 0
   dagDecisionMs.set 0
   localProofBindings.set #[]
-  useLocalProofBindings.set false
+  useLocalProofBindings.set true
   let some expected := expected?
     | throwError "dag_state_joins requires an expected proposition"
   let expected ← instantiateMVars expected
   let args := expected.getAppArgs
   unless expected.getAppFn.constName? ==
       some ``Loom.Release.Symbolic.ActionWide.StateJoinsEvidence &&
-      args.size == 10 do
+      args.size == 12 do
     throwError "dag_state_joins expected StateJoinsEvidence"
-  let (output, proof) ← proveDagJoins args[0]! args[1]! args[2]! args[3]!
-    args[4]! args[5]! args[6]! args[7]! args[8]!
-  unless ← isDefEq output args[9]! do
+  let (output, proof, _) ← proveDagJoins args[0]! args[1]! args[2]! args[3]!
+    args[4]! args[5]! args[6]! args[7]! args[8]! args[9]! args[10]!
+  unless ← isDefEq output args[11]! do
     throwError "dag_state_joins output-root mismatch"
   unless (← dagWriteCursor.get) == (← dagWriteRoots.get).size do
     throwError "dag_state_joins left unused write roots"
+  let proof ← wrapLocalProofBindings proof
   unless !proof.hasFVar && !proof.hasMVar do
     throwError "dag_state_joins produced an open proof"
+  useLocalProofBindings.set false
   pure proof
 
 private partial def proveDagEvidence (wires wireTable nodes stateTable registers
@@ -2347,8 +2362,8 @@ private partial def proveDagEvidence (wires wireTable nodes stateTable registers
       conditionRef
     let conditionProof ← mkAppM ``IndexedExprEvidence.accepted
       #[conditionEvidence]
-    let (outputRoot, joinsProof) ← proveDagJoins nodes stateTable registers
-      conditionRef root thenBuild.root elseBuild.root changed joins
+    let (outputRoot, joinsProof, _) ← proveDagJoins wires wireTable nodes stateTable
+      registers conditionRef root thenBuild.root elseBuild.root changed joins
     let proof := mkAppN (mkConst
       ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence.ite)
       #[wires, wireTable, nodes, stateTable, registers, condition, thenAction,
