@@ -2020,8 +2020,13 @@ private partial def proveDagWriteAt (nodes stateTable : Expr) (depth : Nat)
         oldZero, oldOne, newZero, bitProof, inputProof, outputProof, childProof]
 
 private def proveDagWrite (nodes stateTable input index value output : Expr) :
-    MetaM Expr :=
-  proveDagWriteAt nodes stateTable 10 input index value output
+    MetaM Expr := do
+  let depthExpr ← mkAppM
+    ``Loom.Release.Symbolic.ActionWide.RefStateTable.depth #[stateTable]
+  let depthExpr ← withTransparency .all <| whnf depthExpr
+  let some depth ← getNatValue? depthExpr
+    | throwError "dag_sparse_evidence_exists: state depth is not concrete"
+  proveDagWriteAt nodes stateTable depth input index value output
 
 private partial def proveDagLookup (nodes stateTable registers : Expr)
     (depth : Nat) (root index value : Expr) : MetaM Expr := do
@@ -2152,9 +2157,14 @@ private partial def proveDagJoins (wires wireTable nodes stateTable registers
   let widthCheck ← mkAppM ``Option.map #[widthProjection, register]
   let widthProof ← dagDecide
     (← mkEq widthCheck (← mkAppM ``Option.some #[width]))
-  let thenProof ← proveDagLookup nodes stateTable registers 10 thenRoot index
+  let depthExpr ← mkAppM
+    ``Loom.Release.Symbolic.ActionWide.RefStateTable.depth #[stateTable]
+  let depthExpr ← withTransparency .all <| whnf depthExpr
+  let some depth ← getNatValue? depthExpr
+    | throwError "dag_sparse_evidence_exists: state depth is not concrete"
+  let thenProof ← proveDagLookup nodes stateTable registers depth thenRoot index
     thenInput
-  let elseProof ← proveDagLookup nodes stateTable registers 10 elseRoot index
+  let elseProof ← proveDagLookup nodes stateTable registers depth elseRoot index
     elseInput
   let guardProof ← dagDecide (← mkEq guard condition)
   let outputReduced ← withTransparency .all <| whnf output
