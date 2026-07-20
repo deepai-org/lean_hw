@@ -244,6 +244,11 @@ structure SparseResult where
 
 def singletonIndex (index : Nat) : Nat := 1 <<< index
 
+theorem singletonIndex_testBit (index query : Nat) :
+    (singletonIndex index).testBit query = (index == query) := by
+  by_cases equal : index = query <;>
+    simp [singletonIndex, Nat.shiftLeft_eq, equal]
+
 def ActionCert.summary : ActionCert → Summary
   | .skip | .memWrite => { possible := 0, definite := 0 }
   | .write index _ =>
