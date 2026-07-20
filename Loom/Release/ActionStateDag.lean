@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.ActionWideRegister
+import Loom.Release.SymbolicSound
 
 /-!
 # Hash-consed register states for release certificates
@@ -467,11 +468,43 @@ theorem lookupStateRef?_sound {nodes : Rope (List RefStateNode)}
               exact .branchZero bit' nodeFound
                 (ih (by simpa [lookupStateRef?, nodeFound, bit'] using accepted))
 
+/-- Check that one join output is the claimed mux in the indexed SSA graph. -/
+def checkedJoinOutput (wires : Rope (List IndexedWire)) (table : WireTable)
+    (join : Join) : Bool :=
+  match join.output with
+  | .wire number =>
+      lookupIndexed? wires table number == some
+        { number := number, width := join.width,
+          rhs := .mux join.guard join.thenInput join.elseInput }
+  | .reg _ => false
+
+/-- Structural form of `checkedJoinOutput`, retaining the exact indexed-wire
+lookup needed by semantic soundness. -/
+inductive JoinOutputEvidence (wires : Rope (List IndexedWire))
+    (table : WireTable) (join : Join) : Prop where
+  | wire {number : Nat}
+      (outputAccepted : join.output = .wire number)
+      (lookupAccepted : lookupIndexed? wires table number = some
+        { number := number, width := join.width,
+          rhs := .mux join.guard join.thenInput join.elseInput }) :
+      JoinOutputEvidence wires table join
+
+theorem checkedJoinOutput_sound {wires : Rope (List IndexedWire)}
+    {table : WireTable} {join : Join}
+    (accepted : checkedJoinOutput wires table join = true) :
+    JoinOutputEvidence wires table join := by
+  cases outputEq : join.output with
+  | reg name => simp [checkedJoinOutput, outputEq] at accepted
+  | wire number =>
+      simp [checkedJoinOutput, outputEq] at accepted
+      exact .wire outputEq accepted
+
 /-- Check the sequence of state updates introduced by an `ite` join block.
 The list contains the root after each write, so the checker never constructs
 or compares an expanded persistent state. -/
-def checkedStateJoins (nodes : Rope (List RefStateNode))
-    (table : RefStateTable) (registers : Array RegDecl) (condition : Ref)
+def checkedStateJoins (wires : Rope (List IndexedWire)) (wireTable : WireTable)
+    (nodes : Rope (List RefStateNode)) (table : RefStateTable)
+    (registers : Array RegDecl) (condition : Ref)
     (thenRoot elseRoot : Nat) :
     Nat → Nat → List Join → List Nat → Nat → Bool
   | input, changed, [], [], output =>
@@ -484,19 +517,21 @@ def checkedStateJoins (nodes : Rope (List RefStateNode))
         lookupStateRef? nodes table registers 10 elseRoot join.index ==
           some join.elseInput &&
         join.guard == condition &&
-        (match join.output with | .wire _ => true | _ => false) &&
+        checkedJoinOutput wires wireTable join &&
         checkedStateWrite nodes table 10 input join.index join.output nextRoot &&
-        checkedStateJoins nodes table registers condition thenRoot elseRoot
+        checkedStateJoins wires wireTable nodes table registers condition
+          thenRoot elseRoot
           nextRoot (changed ^^^ (1 <<< join.index)) joins roots output
   | _, _, _, _, _ => false
 
 /-- Kernel-checked conditional joins over hash-consed state roots. -/
-inductive StateJoinsEvidence (nodes : Rope (List RefStateNode))
+inductive StateJoinsEvidence (wires : Rope (List IndexedWire))
+    (wireTable : WireTable) (nodes : Rope (List RefStateNode))
     (table : RefStateTable) (registers : Array RegDecl) (condition : Ref) :
     Nat → Nat → Nat → Nat → List Join → Nat → Prop where
   | nil {input thenRoot elseRoot} :
-      StateJoinsEvidence nodes table registers condition input thenRoot elseRoot
-        0 [] input
+      StateJoinsEvidence wires wireTable nodes table registers condition input
+        thenRoot elseRoot 0 [] input
   | cons {input thenRoot elseRoot changed join joins nextRoot outputRoot}
       (bitAccepted : changed.testBit join.index = true)
       (widthAccepted : registers[join.index]?.map (·.width) = some join.width)
@@ -505,25 +540,26 @@ inductive StateJoinsEvidence (nodes : Rope (List RefStateNode))
       (elseAccepted : StateLookupEvidence nodes table registers 10 elseRoot
         join.index join.elseInput)
       (guardAccepted : join.guard = condition)
-      (wireAccepted : ∃ number, join.output = .wire number)
+      (outputAccepted : JoinOutputEvidence wires wireTable join)
       (writeAccepted : StateWriteEvidence nodes table 10 input join.index
         join.output nextRoot)
-      (tailAccepted : StateJoinsEvidence nodes table registers condition
-        nextRoot thenRoot elseRoot (changed ^^^ (1 <<< join.index)) joins
-        outputRoot) :
-      StateJoinsEvidence nodes table registers condition input thenRoot elseRoot
-        changed (join :: joins) outputRoot
+      (tailAccepted : StateJoinsEvidence wires wireTable nodes table registers
+        condition nextRoot thenRoot elseRoot
+        (changed ^^^ (1 <<< join.index)) joins outputRoot) :
+      StateJoinsEvidence wires wireTable nodes table registers condition input
+        thenRoot elseRoot changed (join :: joins) outputRoot
 
 /-- The compact join checker implies the structural join evidence used by the
 action soundness proof. -/
-theorem checkedStateJoins_sound {nodes : Rope (List RefStateNode)}
+theorem checkedStateJoins_sound {wires : Rope (List IndexedWire)}
+    {wireTable : WireTable} {nodes : Rope (List RefStateNode)}
     {table : RefStateTable} {registers : Array RegDecl} {condition : Ref}
     {thenRoot elseRoot input changed output : Nat} {joins : List Join}
     {roots : List Nat}
-    (accepted : checkedStateJoins nodes table registers condition thenRoot
-      elseRoot input changed joins roots output = true) :
-    StateJoinsEvidence nodes table registers condition input thenRoot elseRoot
-      changed joins output := by
+    (accepted : checkedStateJoins wires wireTable nodes table registers condition
+      thenRoot elseRoot input changed joins roots output = true) :
+    StateJoinsEvidence wires wireTable nodes table registers condition input
+      thenRoot elseRoot changed joins output := by
   induction joins generalizing input changed roots with
   | nil =>
       cases roots with
@@ -546,9 +582,112 @@ theorem checkedStateJoins_sound {nodes : Rope (List RefStateNode)}
             (lookupStateRef?_sound (beq_iff_eq.mp elseAccepted)) ?_ ?_
             (checkedStateWrite_sound writeAccepted) (ih tailAccepted)
           · exact of_decide_eq_true guardAccepted
-          · cases outputKind : join.output with
-            | reg name => simp [outputKind] at wireAccepted
-            | wire number => exact ⟨number, rfl⟩
+          · exact checkedJoinOutput_sound wireAccepted
+
+private theorem registerIndex_lt_pow_of_width
+    {registers : Array RegDecl} {index width depth : Nat}
+    (sizeBound : registers.size ≤ 2 ^ depth)
+    (widthFound : registers[index]?.map (·.width) = some width) :
+    index < 2 ^ depth := by
+  cases found : registers[index]? with
+  | none => simp [found] at widthFound
+  | some register =>
+      exact Nat.lt_of_lt_of_le (getElem?_eq_some_iff.mp found).1 sizeBound
+
+/-- If a conditional join bitmap does not contain an index, the complete join
+spine preserves that index's state lookup. -/
+theorem StateJoinsEvidence.lookup_unchanged
+    {wires : Rope (List IndexedWire)} {wireTable : WireTable}
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl} {condition : Ref}
+    {input thenRoot elseRoot changed outputRoot query : Nat}
+    {joins : List Join} {value : Ref}
+    (evidence : StateJoinsEvidence wires wireTable nodes table registers
+      condition input thenRoot elseRoot changed joins outputRoot)
+    (emptyValid : lookupStateNode? nodes table table.emptyRoot = some .empty)
+    (sizeBound : registers.size ≤ 2 ^ 10)
+    (queryBound : query < 2 ^ 10)
+    (unchanged : changed.testBit query = false)
+    (inputLookup : StateLookupEvidence nodes table registers 10 input query value) :
+    StateLookupEvidence nodes table registers 10 outputRoot query value := by
+  induction evidence with
+  | nil => exact inputLookup
+  | @cons input thenRoot elseRoot changed join joins nextRoot outputRoot
+      bitAccepted widthAccepted thenAccepted elseAccepted guardAccepted
+      outputAccepted writeAccepted tailAccepted tailIH =>
+      have indexBound : join.index < 2 ^ 10 :=
+        registerIndex_lt_pow_of_width sizeBound widthAccepted
+      have distinct : join.index ≠ query := by
+        intro equal
+        subst query
+        rw [bitAccepted] at unchanged
+        contradiction
+      have nextAccepted : lookupStateRef? nodes table registers 10 nextRoot query =
+          some value := by
+        rw [writeAccepted.lookup_other (registers := registers) emptyValid query
+          (exists_testBit_ne_of_ne_of_lt_pow distinct indexBound queryBound)]
+        exact inputLookup.accepted
+      have nextLookup := lookupStateRef?_sound nextAccepted
+      apply tailIH
+      · have shiftedBit : (1 <<< join.index).testBit query = false := by
+          have beqFalse : (join.index == query) = false :=
+            beq_eq_false_iff_ne.mpr distinct
+          simpa [singletonIndex, beqFalse] using
+            singletonIndex_testBit join.index query
+        rw [Nat.testBit_xor, unchanged, shiftedBit]
+        rfl
+      · exact nextLookup
+
+/-- A set bit in the conditional join bitmap has one corresponding mux join,
+and the final state root observes that mux output. -/
+theorem StateJoinsEvidence.lookup_changed
+    {wires : Rope (List IndexedWire)} {wireTable : WireTable}
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl} {condition : Ref}
+    {input thenRoot elseRoot changed outputRoot query : Nat}
+    {joins : List Join}
+    (evidence : StateJoinsEvidence wires wireTable nodes table registers
+      condition input thenRoot elseRoot changed joins outputRoot)
+    (emptyValid : lookupStateNode? nodes table table.emptyRoot = some .empty)
+    (sizeBound : registers.size ≤ 2 ^ 10)
+    (queryBound : query < 2 ^ 10)
+    (changedAt : changed.testBit query = true) :
+    ∃ join : Join,
+      join.index = query ∧ join.guard = condition ∧
+      JoinOutputEvidence wires wireTable join ∧
+      StateLookupEvidence nodes table registers 10 thenRoot query join.thenInput ∧
+      StateLookupEvidence nodes table registers 10 elseRoot query join.elseInput ∧
+      StateLookupEvidence nodes table registers 10 outputRoot query join.output := by
+  induction evidence with
+  | nil => simp at changedAt
+  | @cons input thenRoot elseRoot changed join joins nextRoot outputRoot
+      bitAccepted widthAccepted thenAccepted elseAccepted guardAccepted
+      outputAccepted writeAccepted tailAccepted tailIH =>
+      have indexBound : join.index < 2 ^ 10 :=
+        registerIndex_lt_pow_of_width sizeBound widthAccepted
+      by_cases equal : join.index = query
+      · subst query
+        have nextLookup := writeAccepted.outputLookup (registers := registers)
+        have shiftedBit : (1 <<< join.index).testBit join.index = true := by
+          simp
+        have tailUnchanged :
+            (changed ^^^ (1 <<< join.index)).testBit join.index = false := by
+          rw [Nat.testBit_xor, bitAccepted, shiftedBit]
+          rfl
+        exact ⟨join, rfl, guardAccepted, outputAccepted, thenAccepted,
+          elseAccepted,
+          tailAccepted.lookup_unchanged emptyValid sizeBound indexBound
+            tailUnchanged nextLookup⟩
+      · have tailChanged :
+            (changed ^^^ (1 <<< join.index)).testBit query = true := by
+          have shiftedBit : (1 <<< join.index).testBit query = false := by
+            have beqFalse : (join.index == query) = false :=
+              beq_eq_false_iff_ne.mpr equal
+            simpa [singletonIndex, beqFalse] using
+              singletonIndex_testBit join.index query
+          rw [Nat.testBit_xor, changedAt, shiftedBit]
+          rfl
+        exact tailIH tailChanged
 
 /-- Compact, untrusted control-flow witness. Only state-write roots are stored;
 all logical evidence is reconstructed by `checkDagAction`. -/
@@ -605,8 +744,9 @@ def checkDagAction (wires : Rope (List IndexedWire))
           let elseRoot ← checkDagAction wires wireTable nodes stateTable registers
             elseAction root changed elseCert elseTrace
           let output := joinedRoot root joinRoots
-          if checkedStateJoins nodes stateTable registers conditionRef thenRoot
-              elseRoot root changed joins joinRoots output then some output
+          if checkedStateJoins wires wireTable nodes stateTable registers
+              conditionRef thenRoot elseRoot root changed joins joinRoots output
+              then some output
           else none
         else none
       else none
@@ -657,8 +797,9 @@ inductive DagBitSparseEvidence (wires : Rope (List IndexedWire))
       (elseAccepted : DagBitSparseEvidence wires wireTable nodes stateTable
         registers elseAction root (changedBitsAt summary needed) elseCert
         elseRoot)
-      (joinsAccepted : StateJoinsEvidence nodes stateTable registers conditionRef
-        root thenRoot elseRoot (changedBitsAt summary needed) joins outputRoot) :
+      (joinsAccepted : StateJoinsEvidence wires wireTable nodes stateTable
+        registers conditionRef root thenRoot elseRoot
+        (changedBitsAt summary needed) joins outputRoot) :
       DagBitSparseEvidence wires wireTable nodes stateTable registers
         (.ite condition thenAction elseAction) root needed
         (.ite summary conditionRef joins thenCert elseCert) outputRoot
@@ -715,6 +856,26 @@ theorem DagBitSparseEvidence.summary_valid
             elseCert.definitelyWritesIndex query)
         simp only [iteSummary, Nat.testBit_and]
         rw [thenIH.2, elseIH.2]
+
+theorem DagBitSparseEvidence.summary_definite_false_of_possible_false
+    {wires : Rope (List IndexedWire)} {wireTable : WireTable}
+    {nodes : Rope (List RefStateNode)} {stateTable : RefStateTable}
+    {registers : Array RegDecl} {action : Act} {root needed output query : Nat}
+    {cert : ActionCert}
+    (evidence : DagBitSparseEvidence wires wireTable nodes stateTable registers
+      action root needed cert output)
+    (possibleFalse : cert.summary.possible.testBit query = false) :
+    cert.summary.definite.testBit query = false := by
+  have valid := evidence.summary_valid query
+  cases definiteEq : cert.summary.definite.testBit query with
+  | false => rfl
+  | true =>
+      have structuralDefinite : cert.definitelyWritesIndex query = true :=
+        valid.2.symm.trans definiteEq
+      have structuralPossible :=
+        cert.possiblyWritesIndex_of_definitelyWritesIndex query structuralDefinite
+      rw [← valid.1, possibleFalse] at structuralPossible
+      contradiction
 
 /-- Register-name uniqueness stated directly over the array representation
 used by action certificates. -/
@@ -813,6 +974,355 @@ theorem DagBitSparseEvidence.summary_possible_eq_writesRegB
   (evidence.summary_valid query).1.trans
     (evidence.possiblyWritesIndex_eq_writesRegB unique query source sourceFound)
 
+/-- An action certificate never changes a register whose needed bit is clear.
+This is the central pruning invariant behind the action-wide speedup. -/
+theorem DagBitSparseEvidence.lookup_unused
+    {wires : Rope (List IndexedWire)} {wireTable : WireTable}
+    {nodes : Rope (List RefStateNode)} {stateTable : RefStateTable}
+    {registers : Array RegDecl} {action : Act} {root needed output query : Nat}
+    {cert : ActionCert} {value : Ref}
+    (evidence : DagBitSparseEvidence wires wireTable nodes stateTable registers
+      action root needed cert output)
+    (emptyValid : lookupStateNode? nodes stateTable stateTable.emptyRoot =
+      some .empty)
+    (sizeBound : registers.size ≤ 2 ^ 10) (queryBound : query < 2 ^ 10)
+    (unused : needed.testBit query = false)
+    (inputLookup : StateLookupEvidence nodes stateTable registers 10 root query
+      value) :
+    StateLookupEvidence nodes stateTable registers 10 output query value := by
+  induction evidence with
+  | skip | memWrite | writeUnused => exact inputLookup
+  | @writeNeeded width name expression root needed index valueRef outputRoot
+      headerAccepted used valueAccepted writeAccepted =>
+      have distinct : index ≠ query := by
+        intro equal
+        subst query
+        rw [used] at unused
+        contradiction
+      have indexBound : index < 2 ^ 10 := by
+        cases found : registers[index]? with
+        | none => simp [checkedWriteHeader, found] at headerAccepted
+        | some register =>
+            exact Nat.lt_of_lt_of_le (getElem?_eq_some_iff.mp found).1 sizeBound
+      have outputAccepted :
+          lookupStateRef? nodes stateTable registers 10 outputRoot query =
+            some value := by
+        rw [writeAccepted.lookup_other (registers := registers) emptyValid query
+          (exists_testBit_ne_of_ne_of_lt_pow distinct indexBound queryBound)]
+        exact inputLookup.accepted
+      exact lookupStateRef?_sound outputAccepted
+  | @seq left right root needed summary leftCert rightCert middleRoot outputRoot
+      summaryAccepted leftAccepted rightAccepted leftIH rightIH =>
+      have leftUnused :
+          (neededBitsBefore rightCert.summary needed).testBit query = false := by
+        simp [neededBitsBefore, Nat.testBit_xor, Nat.testBit_and, unused]
+      exact rightIH unused (leftIH leftUnused inputLookup)
+  | @ite condition thenAction elseAction root needed summary conditionRef joins
+      thenCert elseCert thenRoot elseRoot outputRoot summaryAccepted
+      conditionAccepted thenAccepted elseAccepted joinsAccepted thenIH elseIH =>
+      have changedUnused : (changedBitsAt summary needed).testBit query = false := by
+        simp [changedBitsAt, Nat.testBit_and, unused]
+      exact joinsAccepted.lookup_unchanged emptyValid sizeBound queryBound
+        changedUnused inputLookup
+
+/-- Optional current-reference premise for one register projection. A
+definitely-written action is independent of its incoming value. -/
+def ActionCert.semanticCurrentRef (cert : ActionCert) (query : Nat)
+    (input : Ref) : Option Ref :=
+  if cert.summary.definite.testBit query then none else some input
+
+theorem ActionCert.semanticCurrentRef_eq_none {cert : ActionCert}
+    {query : Nat} {input : Ref}
+    (definite : cert.summary.definite.testBit query = true) :
+    cert.semanticCurrentRef query input = none := by
+  simp [ActionCert.semanticCurrentRef, definite]
+
+theorem ActionCert.semanticCurrentRef_eq_some {cert : ActionCert}
+    {query : Nat} {input : Ref}
+    (notDefinite : cert.summary.definite.testBit query = false) :
+    cert.semanticCurrentRef query input = some input := by
+  simp [ActionCert.semanticCurrentRef, notDefinite]
+
+/-- One shared action-DAG certificate semantically validates every requested
+register projection. Applying this theorem to a named certificate does not
+re-traverse the source action: the kernel consumes the certificate as an
+opaque constant and specializes only this generic proof. -/
+theorem DagBitSparseEvidence.nextReg_raw
+    (program : Program) {wires : Rope (List IndexedWire)}
+    (wiresMatch : IndexedRopeMatches 0 program.wires wires)
+    (wireTable : WireTable) {nodes : Rope (List RefStateNode)}
+    {stateTable : RefStateTable} {registers : Array RegDecl}
+    {action : Act} {root needed output query : Nat} {cert : ActionCert}
+    (evidence : DagBitSparseEvidence wires wireTable nodes stateTable registers
+      action root needed cert output)
+    (emptyValid : lookupStateNode? nodes stateTable stateTable.emptyRoot =
+      some .empty)
+    (sizeBound : registers.size ≤ 2 ^ 10)
+    (unique : RegisterNamesUnique registers)
+    (source : RegDecl) (sourceFound : registers[query]? = some source)
+    (queryBound : query < 2 ^ 10) (used : needed.testBit query = true)
+    (inputRef : Ref)
+    (inputLookup : StateLookupEvidence nodes stateTable registers 10 root query
+      inputRef) :
+    ∀ current : Loom.Emit.MicroVerilog.Expr source.width,
+      RawCurrentMatches program wireTable current
+        (cert.semanticCurrentRef query inputRef) →
+      ∃ outputRef,
+        StateLookupEvidence nodes stateTable registers 10 output query outputRef ∧
+        RawExprMatches program wireTable
+          (Loom.Hw.Compile.nextReg source.name source.width action current)
+          outputRef := by
+  induction evidence generalizing inputRef with
+  | skip | memWrite =>
+      intro current currentMatches
+      exact ⟨inputRef, inputLookup, by
+        simpa [ActionCert.semanticCurrentRef, ActionCert.summary,
+          Loom.Hw.Compile.nextReg] using currentMatches⟩
+  | @writeUnused width name expression root needed index valueRef
+      headerAccepted unusedWrite =>
+      intro current currentMatches
+      have distinct : index ≠ query := by
+        intro equal
+        subst query
+        rw [used] at unusedWrite
+        contradiction
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          have nameNe : name ≠ source.name := by
+            intro nameEq
+            apply distinct
+            exact unique actualFound sourceFound
+              (headerAccepted.1.trans nameEq)
+          have definiteFalse :
+              (ActionCert.write index valueRef).summary.definite.testBit query =
+                false := by
+            rw [ActionCert.summary]
+            exact (singletonIndex_testBit index query).trans
+              (beq_eq_false_iff_ne.mpr distinct)
+          refine ⟨inputRef, inputLookup, ?_⟩
+          simpa [ActionCert.semanticCurrentRef, definiteFalse,
+            Loom.Hw.Compile.nextReg, nameNe] using currentMatches
+  | @writeNeeded width name expression root needed index valueRef outputRoot
+      headerAccepted writeUsed valueAccepted writeAccepted =>
+      intro current currentMatches
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          by_cases equal : index = query
+          · subst query
+            have regEq : actual = source :=
+              Option.some.inj (actualFound.symm.trans sourceFound)
+            subst source
+            rcases headerAccepted with ⟨rfl, rfl⟩
+            refine ⟨valueRef,
+              writeAccepted.outputLookup (registers := registers), ?_⟩
+            simpa [Loom.Hw.Compile.nextReg] using
+              indexedExprMatches_raw program wiresMatch wireTable _ _
+                valueAccepted
+          · have nameNe : name ≠ source.name := by
+              intro nameEq
+              apply equal
+              exact unique actualFound sourceFound
+                (headerAccepted.1.trans nameEq)
+            have indexBound : index < 2 ^ 10 :=
+              Nat.lt_of_lt_of_le (getElem?_eq_some_iff.mp actualFound).1 sizeBound
+            have outputAccepted :
+                lookupStateRef? nodes stateTable registers 10 outputRoot query =
+                  some inputRef := by
+              rw [writeAccepted.lookup_other (registers := registers) emptyValid
+                query (exists_testBit_ne_of_ne_of_lt_pow equal indexBound
+                  queryBound)]
+              exact inputLookup.accepted
+            have outputLookup := lookupStateRef?_sound outputAccepted
+            have definiteFalse :
+                (ActionCert.write index valueRef).summary.definite.testBit query =
+                  false := by
+              rw [ActionCert.summary]
+              exact (singletonIndex_testBit index query).trans
+                (beq_eq_false_iff_ne.mpr equal)
+            refine ⟨inputRef, outputLookup, ?_⟩
+            simpa [ActionCert.semanticCurrentRef, definiteFalse,
+              Loom.Hw.Compile.nextReg, nameNe] using currentMatches
+  | @seq left right root needed summary leftCert rightCert middleRoot outputRoot
+      summaryAccepted leftAccepted rightAccepted leftIH rightIH =>
+      subst summary
+      intro current currentMatches
+      cases rightDef : rightCert.summary.definite.testBit query with
+      | false =>
+          have leftUsed :
+              (neededBitsBefore rightCert.summary needed).testBit query = true := by
+            simp [neededBitsBefore, Nat.testBit_xor, Nat.testBit_and, used,
+              rightDef]
+          have leftCurrent : RawCurrentMatches program wireTable current
+              (leftCert.semanticCurrentRef query inputRef) := by
+            cases leftDef : leftCert.summary.definite.testBit query with
+            | false =>
+                have wholeDefFalse :
+                    (ActionCert.seq (seqSummary leftCert.summary
+                      rightCert.summary) leftCert rightCert).summary.definite.testBit
+                        query = false := by
+                  change (seqSummary leftCert.summary rightCert.summary).definite.testBit
+                    query = false
+                  simp [seqSummary, leftDef, rightDef]
+                rw [ActionCert.semanticCurrentRef_eq_some wholeDefFalse] at currentMatches
+                rw [ActionCert.semanticCurrentRef_eq_some leftDef]
+                exact currentMatches
+            | true =>
+                rw [ActionCert.semanticCurrentRef_eq_none leftDef]
+                trivial
+          obtain ⟨middleRef, middleLookup, middleMatches⟩ :=
+            leftIH leftUsed inputRef inputLookup current leftCurrent
+          have rightCurrent : RawCurrentMatches program wireTable
+              (Loom.Hw.Compile.nextReg source.name source.width left current)
+              (rightCert.semanticCurrentRef query middleRef) := by
+            simpa [ActionCert.semanticCurrentRef, rightDef] using middleMatches
+          obtain ⟨outputRef, outputLookup, outputMatches⟩ :=
+            rightIH used middleRef middleLookup _ rightCurrent
+          exact ⟨outputRef, outputLookup, outputMatches⟩
+      | true =>
+          have leftUnused :
+              (neededBitsBefore rightCert.summary needed).testBit query = false := by
+            simp [neededBitsBefore, Nat.testBit_xor, Nat.testBit_and, used,
+              rightDef]
+          have middleLookup := leftAccepted.lookup_unused emptyValid sizeBound
+            queryBound leftUnused inputLookup
+          have rightCurrent : RawCurrentMatches program wireTable
+              (Loom.Hw.Compile.nextReg source.name source.width left current)
+              (rightCert.semanticCurrentRef query inputRef) := by
+            rw [ActionCert.semanticCurrentRef_eq_none rightDef]
+            trivial
+          obtain ⟨outputRef, outputLookup, outputMatches⟩ :=
+            rightIH used inputRef middleLookup _ rightCurrent
+          exact ⟨outputRef, outputLookup, outputMatches⟩
+  | @ite condition thenAction elseAction root needed summary conditionRef joins
+      thenCert elseCert thenRoot elseRoot outputRoot summaryAccepted
+      conditionAccepted thenAccepted elseAccepted joinsAccepted thenIH elseIH =>
+      subst summary
+      intro current currentMatches
+      let wholeCert : ActionCert := .ite
+        (iteSummary thenCert.summary elseCert.summary) conditionRef joins
+        thenCert elseCert
+      cases possible : wholeCert.summary.possible.testBit query with
+      | false =>
+          have changedFalse :
+              (changedBitsAt wholeCert.summary needed).testBit query = false := by
+            simp [changedBitsAt, Nat.testBit_and, possible]
+          have outputLookup := joinsAccepted.lookup_unchanged emptyValid sizeBound
+            queryBound changedFalse inputLookup
+          have wholeEvidence : DagBitSparseEvidence wires wireTable nodes
+              stateTable registers (.ite condition thenAction elseAction) root
+              needed wholeCert outputRoot :=
+            .ite rfl conditionAccepted thenAccepted elseAccepted joinsAccepted
+          have definiteFalse :=
+            wholeEvidence.summary_definite_false_of_possible_false possible
+          have noWrite :=
+            (wholeEvidence.summary_possible_eq_writesRegB unique query source
+              sourceFound).symm.trans possible
+          have branchNoWrite :
+              (Loom.Hw.Compile.writesRegB source.name source.width thenAction ||
+                Loom.Hw.Compile.writesRegB source.name source.width elseAction) =
+                false := by
+            simpa [Loom.Hw.Compile.writesRegB] using noWrite
+          have currentRaw : RawExprMatches program wireTable current inputRef := by
+            rw [ActionCert.semanticCurrentRef_eq_some definiteFalse] at currentMatches
+            exact currentMatches
+          refine ⟨inputRef, outputLookup, ?_⟩
+          simpa [Loom.Hw.Compile.nextReg, branchNoWrite] using currentRaw
+      | true =>
+          have changedTrue :
+              (changedBitsAt wholeCert.summary needed).testBit query = true := by
+            simp [changedBitsAt, Nat.testBit_and, possible, used]
+          obtain ⟨join, joinIndex, joinGuard, joinOutput, thenLookup,
+              elseLookup, outputLookup⟩ :=
+            joinsAccepted.lookup_changed emptyValid sizeBound queryBound
+              changedTrue
+          subst query
+          have thenCurrent : RawCurrentMatches program wireTable current
+              (thenCert.semanticCurrentRef join.index inputRef) := by
+            cases thenDef : thenCert.summary.definite.testBit join.index with
+            | true =>
+                rw [ActionCert.semanticCurrentRef_eq_none thenDef]
+                trivial
+            | false =>
+                have wholeDefFalse : wholeCert.summary.definite.testBit
+                    join.index = false := by
+                  change (iteSummary thenCert.summary elseCert.summary).definite.testBit
+                    join.index = false
+                  simp [iteSummary, thenDef]
+                have currentRaw : RawExprMatches program wireTable current
+                    inputRef := by
+                  rw [ActionCert.semanticCurrentRef_eq_some wholeDefFalse] at currentMatches
+                  exact currentMatches
+                rw [ActionCert.semanticCurrentRef_eq_some thenDef]
+                exact currentRaw
+          have elseCurrent : RawCurrentMatches program wireTable current
+              (elseCert.semanticCurrentRef join.index inputRef) := by
+            cases elseDef : elseCert.summary.definite.testBit join.index with
+            | true =>
+                rw [ActionCert.semanticCurrentRef_eq_none elseDef]
+                trivial
+            | false =>
+                have wholeDefFalse : wholeCert.summary.definite.testBit
+                    join.index = false := by
+                  change (iteSummary thenCert.summary elseCert.summary).definite.testBit
+                    join.index = false
+                  simp [iteSummary, elseDef]
+                have currentRaw : RawExprMatches program wireTable current
+                    inputRef := by
+                  rw [ActionCert.semanticCurrentRef_eq_some wholeDefFalse] at currentMatches
+                  exact currentMatches
+                rw [ActionCert.semanticCurrentRef_eq_some elseDef]
+                exact currentRaw
+          obtain ⟨thenRef, thenOutputLookup, thenMatches⟩ :=
+            thenIH changedTrue inputRef inputLookup current thenCurrent
+          obtain ⟨elseRef, elseOutputLookup, elseMatches⟩ :=
+            elseIH changedTrue inputRef inputLookup current elseCurrent
+          have thenEq := thenOutputLookup.unique thenLookup
+          have elseEq := elseOutputLookup.unique elseLookup
+          subst thenRef
+          subst elseRef
+          have guardMatches := indexedExprMatches_raw program wiresMatch
+            wireTable _ _ conditionAccepted
+          have guardMatches' : RawExprMatches program wireTable
+              (Loom.Hw.Compile.compileExpr condition) join.guard := by
+            simpa [joinGuard] using guardMatches
+          cases joinOutput with
+          | @wire number outputEq lookupAccepted =>
+              rw [outputEq] at outputLookup
+              obtain ⟨raw, rawAt, rawMatch⟩ :=
+                lookupIndexed_rawWireAt program wiresMatch wireTable number _
+                  lookupAccepted
+              obtain ⟨widthEq, rhsEq⟩ :=
+                IndexedWire.matchesRaw_width_rhs rawMatch
+              have muxMatches : RawExprMatches program wireTable
+                  (.mux (Loom.Hw.Compile.compileExpr condition)
+                    (Loom.Hw.Compile.nextReg source.name source.width
+                      thenAction current)
+                    (Loom.Hw.Compile.nextReg source.name source.width
+                      elseAction current)) (.wire number) :=
+                .mux rawAt widthEq rhsEq guardMatches' thenMatches elseMatches
+              have wholeEvidence : DagBitSparseEvidence wires wireTable nodes
+                  stateTable registers (.ite condition thenAction elseAction)
+                  root needed wholeCert outputRoot :=
+                .ite rfl conditionAccepted thenAccepted elseAccepted joinsAccepted
+              have writeTrue :=
+                (wholeEvidence.summary_possible_eq_writesRegB unique join.index
+                  source sourceFound).symm.trans possible
+              have branchWriteTrue :
+                  (Loom.Hw.Compile.writesRegB source.name source.width
+                      thenAction ||
+                    Loom.Hw.Compile.writesRegB source.name source.width
+                      elseAction) = true := by
+                simpa [Loom.Hw.Compile.writesRegB] using writeTrue
+              exact ⟨.wire number, outputLookup,
+                by simpa [Loom.Hw.Compile.nextReg, branchWriteTrue] using
+                  muxMatches⟩
+
 /-- Acceptance by the compact checker reconstructs the full structural action
 evidence. The generated trace is therefore untrusted data, not proof code. -/
 theorem checkDagAction_sound {wires : Rope (List IndexedWire)}
@@ -894,8 +1404,8 @@ theorem checkDagAction_sound {wires : Rope (List IndexedWire)}
               | none => simp [elseAccepted] at accepted
               | some elseRoot =>
                   simp [elseAccepted] at accepted
-                  cases joinsAccepted : checkedStateJoins nodes stateTable
-                      registers conditionRef thenRoot elseRoot root
+                  cases joinsAccepted : checkedStateJoins wires wireTable nodes
+                      stateTable registers conditionRef thenRoot elseRoot root
                       (changedBitsAt
                         (iteSummary thenCert.summary elseCert.summary) needed)
                       joins joinRoots

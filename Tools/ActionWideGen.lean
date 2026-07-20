@@ -643,6 +643,7 @@ private structure DagLeafSpec where
   output : Nat
   actionRoots : Array Nat
   writeRoots : Array Nat
+  joins : List Loom.Release.Symbolic.ActionWide.Join
   size : Nat
   deriving Inhabited
 
@@ -746,7 +747,7 @@ private partial def collectDagProofs (spans : Array DagSpan)
       { source := sourceExpr, cert := certExpr, trace, input, needed,
         output := span.output,
         actionRoots := allActionRoots.extract span.actionStart span.actionEnd,
-        writeRoots, size }
+        writeRoots, joins := Tools.ReleaseCertGen.actionWideJoins [cert], size }
     set { state with leaves := state.leaves.push leaf }
     return (cursor + size, span.output, .leaf index)
   let (after, children, localWrites, kind, summary, condition, conditionRef,
@@ -817,7 +818,7 @@ private partial def collectDagLeaves (spans : Array DagSpan)
       { source := sourceExpr, cert := certExpr, trace, input, needed,
         output := span.output,
         actionRoots := allActionRoots.extract span.actionStart span.actionEnd,
-        writeRoots,
+        writeRoots, joins := Tools.ReleaseCertGen.actionWideJoins [cert],
         size }
     return (cursor + size, span.output, #[leaf])
   match source, cert with
@@ -993,7 +994,11 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   -- from a handful of joins to hundreds, so fixed-count batches created a long
   -- serial tail even though all check modules are independent.
   let connectorCheckBatches := Id.run do
-    let targetWeight := 1024
+    -- Keep proof-term construction bounded as well as lookup reduction.
+    -- Around 1,024 joins caused superlinear elaboration growth (3--8 GiB per
+    -- worker); 128 aligns connector evidence with the independently checked
+    -- lookup shards and keeps each declaration small.
+    let targetWeight := 128
     let mut batches : Array (List Nat) := #[]
     let mut current : List Nat := []
     let mut currentWeight := 0
@@ -1010,6 +1015,28 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   let connectorCheckImports := String.intercalate "\n" <|
     (List.range connectorCheckBatches.length).map fun index =>
       "import " ++ modulePrefix ++ "ConnectorCheck" ++ pad3 index
+  -- Join-output lookups are certified once in small independent shards. The
+  -- action elaborator then refers to these named constants instead of making
+  -- every connector proof normalize the global indexed-wire rope again.
+  let joinLookupBatchSize := 128
+  let allJoins := Id.run do
+    let candidates := leaves.toList.flatMap (·.joins) ++
+      connectorCheckIndices.flatMap fun index => connectors[index]!.joins
+    let mut seen : Std.HashSet Nat := {}
+    let mut unique : Array Loom.Release.Symbolic.ActionWide.Join := #[]
+    for join in candidates do
+      if let .wire number := join.output then
+        if !seen.contains number then
+          seen := seen.insert number
+          unique := unique.push join
+    return unique.toList
+  let joinLookupBatches := allJoins.toChunks joinLookupBatchSize
+  let mut joinLookupShard : Std.HashMap Nat Nat := {}
+  for (batchIndex, batch) in
+      (List.range joinLookupBatches.length).zip joinLookupBatches do
+    for join in batch do
+      if let .wire number := join.output then
+        joinLookupShard := joinLookupShard.insert number batchIndex
   let proofRefName : DagProofRef → String
     | .leaf index => "dagCutLeaf" ++ pad3 index ++ "Evidence"
     | .connector index => "dagCutConnector" ++ pad3 index ++ "Evidence"
@@ -1105,48 +1132,88 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     writeIfChanged (System.FilePath.mk <| basePath ++ "Lookup" ++
       pad3 batchIndex ++ ".lean") lookupText
   pruneIndexedShards output "Lookup" lookupBatches.length
+  let wireLeafCount := (program.wires.size + 127) / 128
+  for (batchIndex, batch) in
+      (List.range joinLookupBatches.length).zip joinLookupBatches do
+    let mut declarations : Array String := #[]
+    for join in batch do
+      let .wire number := join.output | return 1
+      let blockIndex := number / 128
+      let some path := Loom.Release.Symbolic.balancedPath? wireLeafCount blockIndex
+        | return 1
+      let pathText := "[" ++ String.intercalate ", "
+        (path.map fun bit => if bit then "true" else "false") ++ "]"
+      declarations := declarations.push <|
+        "theorem dagJoinLookup" ++ toString number ++ " :\n" ++
+        "    Symbolic.lookupIndexed? fastIndexedWireTree fastWireTable " ++
+          toString number ++ " = some\n" ++
+        "      { number := " ++ toString number ++ ", width := " ++
+          toString join.width ++ ", rhs := .mux (" ++ dagRefToLean join.guard ++
+          ") (" ++ dagRefToLean join.thenInput ++ ") (" ++
+          dagRefToLean join.elseInput ++ ") } := by\n" ++
+        "  apply Symbolic.lookupIndexed_of_resolve (path := " ++ pathText ++
+          ")\n" ++
+        "  · decide\n  · decide\n" ++
+        "  · rw [fastIndexedWireResolveBlock" ++ pad4 blockIndex ++ "]\n" ++
+        "    rfl\n  · rfl\n"
+    let joinLookupText :=
+      "-- Generated named mux lookups; DO NOT EDIT.\n" ++
+      "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
+      "import Loom.Release.ActionStateDag\n\n" ++
+      "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+      "open Loom.Hw Loom.Release Loom.Release.SSA\n\n" ++
+      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+      String.intercalate "\n" declarations.toList ++ "\n" ++
+      "end Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (System.FilePath.mk <| basePath ++ "JoinLookup" ++
+      pad3 batchIndex ++ ".lean") joinLookupText
+  pruneIndexedShards output "JoinLookup" joinLookupBatches.length
   for (batchIndex, batch) in
       (List.range proofLeafBatches.length).zip proofLeafBatches do
     let mut theoremTexts : Array String := #[]
+    let mut lookupImports : Std.HashSet Nat := {}
     for (localIndex, leaf) in (List.range batch.length).zip batch do
+      for join in leaf.joins do
+        if let .wire number := join.output then
+          if let some shard := joinLookupShard.get? number then
+            lookupImports := lookupImports.insert shard
       let index := batchIndex * proofLeafBatchSize + localIndex
-      let traceName := "dagCutLeaf" ++ pad3 index ++ "Trace"
-      let checkName := "dagCutLeaf" ++ pad3 index ++ "Check"
       let actionName := "dagCutLeaf" ++ pad3 index ++ "Action"
       let certName := "dagCutLeaf" ++ pad3 index ++ "Cert"
+      let actionRootsText := String.intercalate " " <|
+        leaf.actionRoots.toList.map toString
+      let writeRootsText := String.intercalate " " <|
+        leaf.writeRoots.toList.map toString
       theoremTexts := theoremTexts.push <|
         "noncomputable def " ++ actionName ++ " : Act := " ++ leaf.source ++
           "\n" ++
         "noncomputable def " ++ certName ++
           " : Symbolic.ActionWide.ActionCert := " ++ leaf.cert ++ "\n\n" ++
-        "def " ++ traceName ++
-          " : Symbolic.ActionWide.DagActionTrace :=\n  " ++ leaf.trace ++
-          "\n\n" ++
-        "theorem " ++ checkName ++ " :\n" ++
-        "    Symbolic.ActionWide.checkDagAction fastIndexedWireTree " ++
-          "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++
-          actionName ++ " " ++ toString leaf.input ++ " " ++
-          toString leaf.needed ++ " " ++ certName ++ " " ++ traceName ++
-          " = some " ++ toString leaf.output ++ " := by\n" ++
-        "  rfl\n\n" ++
+        "dag_action_roots " ++ actionRootsText ++ "\n" ++
+        "dag_write_roots " ++ writeRootsText ++ "\n\n" ++
         "theorem dagCutLeaf" ++ pad3 index ++ "Evidence :\n" ++
         "    Symbolic.ActionWide.DagBitSparseEvidence fastIndexedWireTree " ++
           "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++
           actionName ++ " " ++ toString leaf.input ++ " " ++
           toString leaf.needed ++ " " ++ certName ++ " " ++
-          toString leaf.output ++ " :=\n" ++
-        "  Symbolic.ActionWide.checkDagAction_sound " ++ checkName ++ "\n"
+          toString leaf.output ++ " :=\n  dag_sparse_evidence_decide\n"
     let leafText :=
       "-- Generated independent DAG action leaves; DO NOT EDIT.\n" ++
       "import " ++ dataModule ++ "\n" ++
+      resolverImports ++ "\n" ++
+      String.intercalate "\n" ((List.range joinLookupBatches.length |>.filter
+        lookupImports.contains).map fun index =>
+          "import " ++ modulePrefix ++ "JoinLookup" ++ pad3 index) ++ "\n" ++
       "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
       "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+      "import Loom.Release.SymbolicDecide\n" ++
       "import Machines.Lnp64u.Hw.Core\n" ++
       "import Machines.Lnp64u.Hw.Demo\n" ++
       "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
       "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
       "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" ++
+      "set_option Elab.async false\n" ++
       "\n" ++
       String.intercalate "\n" theoremTexts.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
@@ -1157,8 +1224,13 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   for (batchIndex, indices) in
       (List.range connectorCheckBatches.length).zip connectorCheckBatches do
     let mut checks : Array String := #[]
+    let mut lookupImports : Std.HashSet Nat := {}
     for index in indices do
       let connector := connectors[index]!
+      for join in connector.joins do
+        if let .wire number := join.output then
+          if let some shard := joinLookupShard.get? number then
+            lookupImports := lookupImports.insert shard
       let stem := "dagCutConnector" ++ pad3 index
       let condition := stem ++ "Condition"
       let conditionValue := connector.condition.getD
@@ -1189,8 +1261,9 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
           " : List Symbolic.ActionWide.Join := " ++ joinsText ++ "\n\n" ++
         "dag_write_roots " ++ rootsText ++ "\n\n" ++
         "theorem " ++ stem ++ "JoinsEvidence :\n" ++
-        "    Symbolic.ActionWide.StateJoinsEvidence dagStateNodes " ++
-          "dagStateTable dagCutRegisters " ++ conditionRefText ++ " " ++
+        "    Symbolic.ActionWide.StateJoinsEvidence fastIndexedWireTree " ++
+          "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++
+          conditionRefText ++ " " ++
           toString connector.input ++ " " ++ toString thenRoot ++ " " ++
           toString elseRoot ++
           " (Symbolic.ActionWide.changedBitsAt (" ++ summaryText ++ ") " ++
@@ -1208,6 +1281,9 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "-- Generated parallel outer-guard certificates; DO NOT EDIT.\n" ++
       "import " ++ dataModule ++ "\n" ++
       resolverImports ++ "\n" ++
+      String.intercalate "\n" ((List.range joinLookupBatches.length |>.filter
+        lookupImports.contains).map fun index =>
+          "import " ++ modulePrefix ++ "JoinLookup" ++ pad3 index) ++ "\n" ++
       "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
       "import GeneratedRelease.Lnp64u.ActionCert\n" ++
       "import Loom.Release.SymbolicDecide\n" ++
