@@ -19,6 +19,22 @@ private def writeIfChanged (path : System.FilePath) (contents : String) : IO Uni
   if let some parent := path.parent then IO.FS.createDirAll parent
   IO.FS.writeFile path contents
 
+/-- Remove obsolete numbered shards left by an earlier generator layout. Such
+files are unreachable from the generated root but glob-based build scripts
+would otherwise continue compiling them. -/
+private def pruneIndexedShards (output : System.FilePath) (kind : String)
+    (count : Nat) : IO Unit := do
+  let some parent := output.parent | return
+  let some outputName := output.fileName | return
+  let base := (outputName.dropEnd 5).toString
+  let shardPrefix := base ++ kind
+  for entry in ← parent.readDir do
+    let name := entry.fileName
+    if name.startsWith shardPrefix && name.endsWith ".lean" then
+      let indexText := ((name.drop shardPrefix.length).toString.dropEnd 5).toString
+      if let some index := indexText.toNat? then
+        if count ≤ index then IO.FS.removeFile entry.path
+
 private def source (namespaceName : String) (registers : List RegDecl) (cert :
     Loom.Release.Symbolic.ActionWide.RulesCert) : Option (String × String) := do
   let rendered ← Tools.ReleaseCertGen.actionWideRulesToLean registers cert
@@ -876,6 +892,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
     writeIfChanged (System.FilePath.mk <| basePath ++ "Nodes" ++
       pad3 index ++ ".lean") nodeText
+  pruneIndexedShards output "Nodes" nodeBatches.length
   writeIfChanged dataPath dataText
   for (index, batch) in (List.range resolverBatches.length).zip resolverBatches do
     let resolverText :=
@@ -888,6 +905,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
     writeIfChanged (System.FilePath.mk <| basePath ++ "Resolvers" ++
       pad3 index ++ ".lean") resolverText
+  pruneIndexedShards output "Resolvers" resolverBatches.length
   for (batchIndex, batch) in
       (List.range proofLeafBatches.length).zip proofLeafBatches do
     let mut theoremTexts : Array String := #[]
@@ -930,6 +948,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     let leafPath := System.FilePath.mk ((output.toString.dropEnd 5).toString ++
       "Leaf" ++ pad3 batchIndex ++ ".lean")
     writeIfChanged leafPath leafText
+  pruneIndexedShards output "Leaf" proofLeafBatches.length
   writeIfChanged output proofText
   IO.eprintln (s!"dag cut {cutIndex}: actions={finalState.actionRoots.size} " ++
     s!"writes={finalState.writeRoots.size} nodes={finalState.nodes.size} " ++
