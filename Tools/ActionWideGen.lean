@@ -861,6 +861,8 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "-- Generated independent DAG action leaves; DO NOT EDIT.\n" ++
       "import " ++ dataModule ++ "\n" ++
       resolverImports ++ "\n" ++
+      (if batchIndex == 0 then "" else
+        "import " ++ modulePrefix ++ "Leaf000\n") ++
       "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
       "import GeneratedRelease.Lnp64u.ActionCert\n" ++
       "import Loom.Release.SymbolicDecide\n" ++

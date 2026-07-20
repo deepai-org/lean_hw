@@ -38,6 +38,13 @@ initialize releaseDeclLeafAttr : TagAttribute ←
   registerTagAttribute `release_decl_leaf
     "source declaration leaf available to compositional release certificates"
 
+/-- Named indexed-expression checkpoints reusable across generated proof
+modules. Sharing these kernel-checked declarations avoids serializing the
+same SSA evidence into every action leaf. -/
+initialize releaseIndexedExprAttr : TagAttribute ←
+  registerTagAttribute `release_indexed_expr
+    "indexed expression evidence available to release certificates"
+
 private def cacheClosedProof (type proof : Expr) : MetaM Expr := do
   let lemma ← withOptions (Elab.async.set · false) do
     mkAuxLemma [] type proof (kind? := `_symbolicNoWrite)
@@ -835,8 +842,10 @@ private def proveNatLe (left right : Expr) : MetaM Expr :=
   trueDecisionProof (mkApp2 (mkConst ``Nat.decLe) left right)
 
 private abbrev IndexedExprCache := IO.Ref (Std.HashMap Nat Expr)
+private abbrev IndexedExprTypeCache := IO.Ref (Std.HashMap Expr Expr)
 
 private initialize indexedExprModuleCache : IndexedExprCache ← IO.mkRef {}
+private initialize indexedExprTypeCache : IndexedExprTypeCache ← IO.mkRef {}
 private initialize indexedExprCheckpoints : IO.Ref (Std.HashSet Nat) ← IO.mkRef {}
 private initialize indexedExprPendingNodes : IO.Ref Nat ← IO.mkRef 0
 private initialize indexedLookupMs : IO.Ref Nat ← IO.mkRef 0
@@ -853,7 +862,10 @@ private initialize useLocalProofBindings : IO.Ref Bool ← IO.mkRef false
 
 private def checkpointLocalProof (type value : Expr) : MetaM Expr := do
   unless ← useLocalProofBindings.get do
-    return ← cacheClosedProof type value
+    let proof ← cacheClosedProof type value
+    if let some declaration := proof.constName? then
+      releaseIndexedExprAttr.setTag declaration
+    return proof
   let placeholder ← mkFreshExprMVar type
   localProofBindings.modify (·.push { placeholder, type, value })
   pure placeholder
@@ -931,6 +943,13 @@ unsafe def elabIndexedExprCheckpoints : Lean.Elab.Command.CommandElab := fun stx
       | throwErrorAt argument "indexed_expr_checkpoints expects natural literals"
     checkpoints := checkpoints.insert value
   indexedExprCheckpoints.set checkpoints
+  let env ← getEnv
+  let mut proofs ← indexedExprTypeCache.get
+  for declaration in releaseIndexedExprAttr.getDecls env do
+    let info ← getConstInfo declaration
+    if info.type.getAppFn.constName? == some ``IndexedExprEvidence then
+      proofs := proofs.insert info.type (.const declaration [])
+  indexedExprTypeCache.set proofs
 
 private partial def exposeMvExpr (expression : Expr) : MetaM Expr := do
   let reduced ← withTransparency .all <| whnf expression
@@ -983,6 +1002,7 @@ private def cacheIndexedExprEvidence (cache : IndexedExprCache)
   if shouldCheckpoint then indexedExprPendingNodes.set 0
   if let some number := number then
     cache.modify fun entries => entries.insert number cached
+  indexedExprTypeCache.modify fun entries => entries.insert type cached
   let size := (← cache.get).size
   if size % 1000 == 0 then
     logInfo m!"indexed expression evidence nodes: {size}"
@@ -1094,6 +1114,8 @@ private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
     if let some cached := (← cache.get).get? number then
       return cached
   let type ← mkAppM ``IndexedExprEvidence #[wires, table, expression, reference]
+  if let some cached := (← indexedExprTypeCache.get).get? type then
+    return cached
   let exposeStarted ← IO.monoMsNow
   let expression ← exposeMvExpr expression
   let exposeFinished ← IO.monoMsNow
@@ -2347,9 +2369,8 @@ unsafe def elabDagSparseEvidenceDecide : TermElab := fun _ expected? => do
   dagDecisionMs.set 0
   dagLeafCursor.set 0
   dagDisableBounds.set true
-  indexedExprModuleCache.set {}
   localProofBindings.set #[]
-  useLocalProofBindings.set true
+  useLocalProofBindings.set false
   let some expected := expected?
     | throwError "dag_sparse_evidence_decide requires an expected proposition"
   let expected ← instantiateMVars expected
@@ -2368,10 +2389,10 @@ unsafe def elabDagSparseEvidenceDecide : TermElab := fun _ expected? => do
     throwError "dag_sparse_evidence_decide left unused write roots"
   unless (← dagLeafCursor.get) == (← dagLeafEntries.get).size do
     throwError "dag_sparse_evidence_decide left unused cached leaves"
-  let proof ← wrapLocalProofBindings build.proof
-  useLocalProofBindings.set false
+  if build.proof.hasMVar then
+    throwError "dag_sparse_evidence_decide produced an open proof"
   dagDisableBounds.set false
-  pure proof
+  pure build.proof
 
 private def transportNextRegAction (wires table register width current out cert
     actionEq proof : Expr) : MetaM Expr := do
