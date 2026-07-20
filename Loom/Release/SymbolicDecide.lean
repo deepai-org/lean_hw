@@ -857,25 +857,64 @@ private def checkpointLocalProof (type value : Expr) : MetaM Expr := do
   localProofBindings.modify (·.push { placeholder, type, value })
   pure placeholder
 
-private partial def wrapLocalProofBindingsFrom
-    (bindings : Array LocalProofBinding) (index : Nat)
-    (replacements : Std.HashMap Expr Expr) (locals : Array Expr)
-    (body : Expr) : MetaM Expr := do
-  if index == bindings.size then
-    let body := body.replace fun expression => replacements[expression]?
-    return ← mkLetFVars locals body (usedLetOnly := false)
-      (generalizeNondepLet := false)
-  let some binding := bindings[index]?
-    | throwError "release proof binding index is out of bounds"
-  let type := binding.type.replace fun expression => replacements[expression]?
-  let value := binding.value.replace fun expression => replacements[expression]?
-  withLetDecl (Name.mkSimple s!"releaseProof{index}") type value fun localExpr => do
-    wrapLocalProofBindingsFrom bindings (index + 1)
-      (replacements.insert binding.placeholder localExpr)
-      (locals.push localExpr) body
-
 private def wrapLocalProofBindings (body : Expr) : MetaM Expr := do
-  wrapLocalProofBindingsFrom (← localProofBindings.get) 0 {} #[] body
+  let bindings ← localProofBindings.get
+  let mut allIndices : Std.HashMap MVarId Nat := {}
+  for index in [:bindings.size] do
+    if let some binding := bindings[index]? then
+      allIndices := allIndices.insert binding.placeholder.mvarId! index
+  -- Select only checkpoints reachable from this proof. This lets an opaque
+  -- action chunk consume its own telescope without invalidating live sibling
+  -- proofs, while the final theorem omits checkpoints already hidden behind
+  -- chunk constants.
+  let body ← instantiateMVars body
+  let mut selected : Std.HashSet Nat := {}
+  let mut pending : Array Nat := #[]
+  for id in ← getMVars body do
+    if let some index := allIndices[id]? then
+      unless selected.contains index do
+        selected := selected.insert index
+        pending := pending.push index
+  let mut cursor := 0
+  while cursor < pending.size do
+    let index := pending[cursor]!
+    cursor := cursor + 1
+    let some binding := bindings[index]?
+      | throwError "release proof binding index is out of bounds"
+    for expression in #[binding.type, binding.value] do
+      for id in ← getMVars (← instantiateMVars expression) do
+        if let some dependency := allIndices[id]? then
+          unless selected.contains dependency do
+            selected := selected.insert dependency
+            pending := pending.push dependency
+  let selectedIndices := (List.range bindings.size).filter selected.contains
+  let mut positions : Std.HashMap MVarId Nat := {}
+  for compact in [:selectedIndices.length] do
+    let original := selectedIndices[compact]!
+    let some binding := bindings[original]?
+      | throwError "release proof binding index is out of bounds"
+    positions := positions.insert binding.placeholder.mvarId! compact
+  let replaceAt (depth : Nat) (expression : Expr) : Expr :=
+    expression.replace fun subterm => match subterm with
+      | .mvar id => do
+          let index ← positions[id]?
+          if index < depth then some (.bvar (depth - 1 - index)) else none
+      | _ => none
+  let mut result := replaceAt selectedIndices.length body
+  for compact in (List.range selectedIndices.length).reverse do
+    let original := selectedIndices[compact]!
+    let some binding := bindings[original]?
+      | throwError "release proof binding index is out of bounds"
+    let type := replaceAt compact (← instantiateMVars binding.type)
+    let value := replaceAt compact (← instantiateMVars binding.value)
+    result := .letE (Name.mkSimple s!"releaseProof{original}") type value result false
+  if result.hasMVar then
+    let mvars ← getMVars result
+    for id in mvars do
+      let declaration ← id.getDecl
+      logInfo m!"unresolved release proof metavariable {id.name}; checkpoint index: {allIndices[id]?}; type: {declaration.type}"
+    throwError "release proof telescope contains unresolved metavariables: {mvars.map (·.name)}"
+  pure result
 
 /-- Select SSA hubs whose evidence should be installed as named auxiliary
 theorems. This is elaboration-only performance guidance; every selected proof
@@ -1383,10 +1422,10 @@ private def decideNatMembership (index needed : Expr) : MetaM (Bool × Expr) := 
   pure result
 
 private def boundSparseProof (build : SparseProofBuild) : MetaM SparseProofBuild := do
-  if build.size < 4096 then return build
+  if build.size < 1024 then return build
   let started ← IO.monoMsNow
   let type ← inferType build.proof
-  let proof ← checkpointLocalProof type build.proof
+  let proof ← cacheClosedProof type (← wrapLocalProofBindings build.proof)
   let finished ← IO.monoMsNow
   sparseBoundMs.modify (· + (finished - started))
   pure { build with proof, size := 1 }
