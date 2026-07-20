@@ -105,6 +105,7 @@ inductive StateWriteEvidence (nodes : Rope (List RefStateNode))
       (childAccepted : StateWriteEvidence nodes table depth table.emptyRoot
         index value newZero) :
       StateWriteEvidence nodes table (depth + 1) input index value output
+
   | emptyOne {depth input index value output newOne}
       (bitAccepted : index.testBit depth = true)
       (inputAccepted : lookupStateNode? nodes table input = some .empty)
@@ -132,6 +133,78 @@ inductive StateWriteEvidence (nodes : Rope (List RefStateNode))
         newOne) :
       StateWriteEvidence nodes table (depth + 1) input index value output
 
+/-- The executable persistent-write checker produces kernel evidence. This is
+the first translation-validation bridge: generated artifacts need only prove
+the small Boolean check, while this theorem supplies the reusable structural
+proof. -/
+theorem checkedStateWrite_sound {nodes : Rope (List RefStateNode)}
+    {table : RefStateTable} {depth input index output : Nat} {value : Ref}
+    (accepted : checkedStateWrite nodes table depth input index value output =
+      true) :
+    StateWriteEvidence nodes table depth input index value output := by
+  induction depth generalizing input output with
+  | zero =>
+      exact .leaf (by simpa [checkedStateWrite] using accepted)
+  | succ depth ih =>
+      cases hInput : lookupStateNode? nodes table input with
+      | none => simp [checkedStateWrite, hInput] at accepted
+      | some inputNode =>
+        cases inputNode with
+        | leaf inputValue => simp [checkedStateWrite, hInput] at accepted
+        | empty =>
+          cases hOutput : lookupStateNode? nodes table output with
+          | none => simp [checkedStateWrite, hInput, hOutput] at accepted
+          | some outputNode =>
+            cases outputNode with
+            | empty =>
+                simp [checkedStateWrite, hInput, hOutput] at accepted
+            | leaf outputValue =>
+                simp [checkedStateWrite, hInput, hOutput] at accepted
+            | branch newZero newOne =>
+                by_cases bit : index.testBit depth = true
+                · have parts : newZero = table.emptyRoot ∧
+                      checkedStateWrite nodes table depth table.emptyRoot index
+                        value newOne = true := by
+                    simpa [checkedStateWrite, hInput, hOutput, bit] using
+                      accepted
+                  exact .emptyOne bit hInput
+                    (by simpa [parts.1] using hOutput) (ih parts.2)
+                · have bit' : index.testBit depth = false := by
+                    cases value : index.testBit depth <;> simp_all
+                  have parts : newOne = table.emptyRoot ∧
+                      checkedStateWrite nodes table depth table.emptyRoot index
+                        value newZero = true := by
+                    simpa [checkedStateWrite, hInput, hOutput, bit'] using
+                      accepted
+                  exact .emptyZero bit' hInput
+                    (by simpa [parts.1] using hOutput) (ih parts.2)
+        | branch oldZero oldOne =>
+          cases hOutput : lookupStateNode? nodes table output with
+          | none => simp [checkedStateWrite, hInput, hOutput] at accepted
+          | some outputNode =>
+            cases outputNode with
+            | empty =>
+                simp [checkedStateWrite, hInput, hOutput] at accepted
+            | leaf outputValue =>
+                simp [checkedStateWrite, hInput, hOutput] at accepted
+            | branch newZero newOne =>
+                by_cases bit : index.testBit depth = true
+                · have parts : newZero = oldZero ∧
+                      checkedStateWrite nodes table depth oldOne index value
+                        newOne = true := by
+                    simpa [checkedStateWrite, hInput, hOutput, bit] using
+                      accepted
+                  exact .branchOne bit hInput
+                    (by simpa [parts.1] using hOutput) (ih parts.2)
+                · have bit' : index.testBit depth = false := by
+                    cases value : index.testBit depth <;> simp_all
+                  have parts : newOne = oldOne ∧
+                      checkedStateWrite nodes table depth oldZero index value
+                        newZero = true := by
+                    simpa [checkedStateWrite, hInput, hOutput, bit'] using
+                      accepted
+                  exact .branchZero bit' hInput
+                    (by simpa [parts.1] using hOutput) (ih parts.2)
 /-- Structural lookup evidence for one register reference. -/
 inductive StateLookupEvidence (nodes : Rope (List RefStateNode))
     (table : RefStateTable) (registers : Array RegDecl) :
@@ -159,6 +232,77 @@ inductive StateLookupEvidence (nodes : Rope (List RefStateNode))
         index value) :
       StateLookupEvidence nodes table registers (depth + 1) root index value
 
+/-- Successful executable lookup yields structural lookup evidence. -/
+theorem lookupStateRef?_sound {nodes : Rope (List RefStateNode)}
+    {table : RefStateTable} {registers : Array RegDecl}
+    {depth root index : Nat} {value : Ref}
+    (accepted : lookupStateRef? nodes table registers depth root index =
+      some value) :
+    StateLookupEvidence nodes table registers depth root index value := by
+  induction depth generalizing root with
+  | zero =>
+      cases nodeFound : lookupStateNode? nodes table root with
+      | none => simp [lookupStateRef?, nodeFound] at accepted
+      | some node =>
+        cases node with
+        | empty =>
+            cases registerFound : registers[index]? with
+            | none => simp [lookupStateRef?, nodeFound, registerFound] at accepted
+            | some register =>
+                simp [lookupStateRef?, nodeFound, registerFound] at accepted
+                subst value
+                exact .empty nodeFound registerFound
+        | leaf found =>
+            simp [lookupStateRef?, nodeFound] at accepted
+            subst value
+            exact .leaf nodeFound
+        | branch zeroChild oneChild =>
+            simp [lookupStateRef?, nodeFound] at accepted
+  | succ depth ih =>
+      cases nodeFound : lookupStateNode? nodes table root with
+      | none => simp [lookupStateRef?, nodeFound] at accepted
+      | some node =>
+        cases node with
+        | empty =>
+            cases registerFound : registers[index]? with
+            | none => simp [lookupStateRef?, nodeFound, registerFound] at accepted
+            | some register =>
+                simp [lookupStateRef?, nodeFound, registerFound] at accepted
+                subst value
+                exact .empty nodeFound registerFound
+        | leaf found => simp [lookupStateRef?, nodeFound] at accepted
+        | branch zeroChild oneChild =>
+            by_cases bit : index.testBit depth = true
+            · exact .branchOne bit nodeFound
+                (ih (by simpa [lookupStateRef?, nodeFound, bit] using accepted))
+            · have bit' : index.testBit depth = false := by
+                cases value : index.testBit depth <;> simp_all
+              exact .branchZero bit' nodeFound
+                (ih (by simpa [lookupStateRef?, nodeFound, bit'] using accepted))
+
+/-- Check the sequence of state updates introduced by an `ite` join block.
+The list contains the root after each write, so the checker never constructs
+or compares an expanded persistent state. -/
+def checkedStateJoins (nodes : Rope (List RefStateNode))
+    (table : RefStateTable) (registers : Array RegDecl) (condition : Ref)
+    (thenRoot elseRoot : Nat) :
+    Nat → Nat → List Join → List Nat → Nat → Bool
+  | input, changed, [], [], output =>
+      changed == 0 && input == output
+  | input, changed, join :: joins, nextRoot :: roots, output =>
+      changed.testBit join.index &&
+        registers[join.index]?.map (·.width) == some join.width &&
+        lookupStateRef? nodes table registers 10 thenRoot join.index ==
+          some join.thenInput &&
+        lookupStateRef? nodes table registers 10 elseRoot join.index ==
+          some join.elseInput &&
+        join.guard == condition &&
+        (match join.output with | .wire _ => true | _ => false) &&
+        checkedStateWrite nodes table 10 input join.index join.output nextRoot &&
+        checkedStateJoins nodes table registers condition thenRoot elseRoot
+          nextRoot (changed ^^^ (1 <<< join.index)) joins roots output
+  | _, _, _, _, _ => false
+
 /-- Kernel-checked conditional joins over hash-consed state roots. -/
 inductive StateJoinsEvidence (nodes : Rope (List RefStateNode))
     (table : RefStateTable) (registers : Array RegDecl) (condition : Ref) :
@@ -182,6 +326,104 @@ inductive StateJoinsEvidence (nodes : Rope (List RefStateNode))
         outputRoot) :
       StateJoinsEvidence nodes table registers condition input thenRoot elseRoot
         changed (join :: joins) outputRoot
+
+/-- The compact join checker implies the structural join evidence used by the
+action soundness proof. -/
+theorem checkedStateJoins_sound {nodes : Rope (List RefStateNode)}
+    {table : RefStateTable} {registers : Array RegDecl} {condition : Ref}
+    {thenRoot elseRoot input changed output : Nat} {joins : List Join}
+    {roots : List Nat}
+    (accepted : checkedStateJoins nodes table registers condition thenRoot
+      elseRoot input changed joins roots output = true) :
+    StateJoinsEvidence nodes table registers condition input thenRoot elseRoot
+      changed joins output := by
+  induction joins generalizing input changed roots with
+  | nil =>
+      cases roots with
+      | nil =>
+          simp [checkedStateJoins] at accepted
+          rcases accepted with ⟨rfl, rfl⟩
+          exact .nil
+      | cons root roots => simp [checkedStateJoins] at accepted
+  | cons join joins ih =>
+      cases roots with
+      | nil => simp [checkedStateJoins] at accepted
+      | cons nextRoot roots =>
+          simp only [checkedStateJoins, Bool.and_eq_true] at accepted
+          rcases accepted with
+            ⟨⟨⟨⟨⟨⟨⟨bitAccepted, widthAccepted⟩, thenAccepted⟩,
+              elseAccepted⟩, guardAccepted⟩, wireAccepted⟩,
+              writeAccepted⟩, tailAccepted⟩
+          refine .cons bitAccepted (beq_iff_eq.mp widthAccepted)
+            (lookupStateRef?_sound (beq_iff_eq.mp thenAccepted))
+            (lookupStateRef?_sound (beq_iff_eq.mp elseAccepted)) ?_ ?_
+            (checkedStateWrite_sound writeAccepted) (ih tailAccepted)
+          · exact of_decide_eq_true guardAccepted
+          · cases outputKind : join.output with
+            | reg name => simp [outputKind] at wireAccepted
+            | wire number => exact ⟨number, rfl⟩
+
+/-- Compact, untrusted control-flow witness. Only state-write roots are stored;
+all logical evidence is reconstructed by `checkDagAction`. -/
+inductive DagActionTrace where
+  | atom (writeRoot : Option Nat)
+  | seq (left right : DagActionTrace)
+  | ite (thenTrace elseTrace : DagActionTrace) (joinRoots : List Nat)
+  deriving Repr, DecidableEq
+
+/-- The final root of a conditional join trace. -/
+def joinedRoot (input : Nat) (roots : List Nat) : Nat :=
+  roots.getLast?.getD input
+
+/-- Execute the compact action witness. This checker follows at most one
+bounded generated leaf at a time; it returns only a numeric state root and
+does not construct a proof tree. -/
+def checkDagAction (wires : Rope (List IndexedWire))
+    (wireTable : WireTable) (nodes : Rope (List RefStateNode))
+    (stateTable : RefStateTable) (registers : Array RegDecl) :
+    Act → Nat → Nat → ActionCert → DagActionTrace → Option Nat
+  | .skip, root, _, .skip, .atom none => some root
+  | .memWrite .., root, _, .memWrite, .atom none => some root
+  | .write width name value, root, needed, .write index valueRef,
+      .atom writeRoot =>
+      if checkedWriteHeader registers index width name then
+        if needed.testBit index then
+          if indexedExprMatches wires wireTable
+              (Loom.Hw.Compile.compileExpr value) valueRef then
+            match writeRoot with
+            | some output =>
+                if checkedStateWrite nodes stateTable 10 root index valueRef
+                    output then some output else none
+            | none => none
+          else none
+        else if writeRoot.isNone then some root else none
+      else none
+  | .seq left right, root, needed, .seq summary leftCert rightCert,
+      .seq leftTrace rightTrace =>
+      if summary == seqSummary leftCert.summary rightCert.summary then do
+        let middle ← checkDagAction wires wireTable nodes stateTable registers
+          left root (neededBitsBefore rightCert.summary needed) leftCert leftTrace
+        checkDagAction wires wireTable nodes stateTable registers right middle
+          needed rightCert rightTrace
+      else none
+  | .ite condition thenAction elseAction, root, needed,
+      .ite summary conditionRef joins thenCert elseCert,
+      .ite thenTrace elseTrace joinRoots =>
+      if summary == iteSummary thenCert.summary elseCert.summary then
+        if indexedExprMatches wires wireTable
+            (Loom.Hw.Compile.compileExpr condition) conditionRef then do
+          let changed := changedBitsAt summary needed
+          let thenRoot ← checkDagAction wires wireTable nodes stateTable registers
+            thenAction root changed thenCert thenTrace
+          let elseRoot ← checkDagAction wires wireTable nodes stateTable registers
+            elseAction root changed elseCert elseTrace
+          let output := joinedRoot root joinRoots
+          if checkedStateJoins nodes stateTable registers conditionRef thenRoot
+              elseRoot root changed joins joinRoots output then some output
+          else none
+        else none
+      else none
+  | _, _, _, _, _ => none
 
 /-- Action evidence whose state indices are constant-size numeric roots. -/
 inductive DagBitSparseEvidence (wires : Rope (List IndexedWire))
@@ -233,5 +475,99 @@ inductive DagBitSparseEvidence (wires : Rope (List IndexedWire))
       DagBitSparseEvidence wires wireTable nodes stateTable registers
         (.ite condition thenAction elseAction) root needed
         (.ite summary conditionRef joins thenCert elseCert) outputRoot
+
+/-- Acceptance by the compact checker reconstructs the full structural action
+evidence. The generated trace is therefore untrusted data, not proof code. -/
+theorem checkDagAction_sound {wires : Rope (List IndexedWire)}
+    {wireTable : WireTable} {nodes : Rope (List RefStateNode)}
+    {stateTable : RefStateTable} {registers : Array RegDecl}
+    {action : Act} {root needed : Nat} {cert : ActionCert}
+    {trace : DagActionTrace} {output : Nat}
+    (accepted : checkDagAction wires wireTable nodes stateTable registers
+      action root needed cert trace = some output) :
+    DagBitSparseEvidence wires wireTable nodes stateTable registers action root
+      needed cert output := by
+  induction trace generalizing action root needed cert output with
+  | atom writeRoot =>
+      cases action <;> cases cert <;> cases writeRoot <;>
+        simp [checkDagAction] at accepted
+      case skip.skip.none =>
+        subst output
+        exact .skip
+      case memWrite.memWrite.none =>
+        subst output
+        exact .memWrite
+      case write.write.none width name value index valueRef =>
+        cases headerAccepted : checkedWriteHeader registers index width name <;>
+          simp [headerAccepted] at accepted
+        cases unused : needed.testBit index <;> simp [unused] at accepted
+        subst output
+        exact .writeUnused headerAccepted unused
+      case write.write.some width name value index valueRef outputRoot =>
+        cases headerAccepted : checkedWriteHeader registers index width name <;>
+          simp [headerAccepted] at accepted
+        cases used : needed.testBit index <;> simp [used] at accepted
+        cases valueAccepted : indexedExprMatches wires wireTable
+            (Loom.Hw.Compile.compileExpr value) valueRef <;>
+          simp [valueAccepted] at accepted
+        cases writeAccepted : checkedStateWrite nodes stateTable 10 root index
+            valueRef outputRoot <;> simp [writeAccepted] at accepted
+        subst output
+        exact .writeNeeded headerAccepted used valueAccepted
+          (checkedStateWrite_sound writeAccepted)
+  | seq leftTrace rightTrace leftIH rightIH =>
+      cases action <;> cases cert <;>
+        simp [checkDagAction] at accepted
+      case seq.seq left right summary leftCert rightCert =>
+        by_cases summaryAccepted :
+            summary = seqSummary leftCert.summary rightCert.summary
+        · simp [summaryAccepted] at accepted
+          cases leftAccepted : checkDagAction wires wireTable nodes stateTable
+              registers left root (neededBitsBefore rightCert.summary needed)
+              leftCert leftTrace with
+          | none => simp [leftAccepted] at accepted
+          | some middle =>
+              simp [leftAccepted] at accepted
+              exact .seq summaryAccepted (leftIH leftAccepted)
+                (rightIH accepted)
+        · simp [summaryAccepted] at accepted
+  | ite thenTrace elseTrace joinRoots thenIH elseIH =>
+      cases action <;> cases cert <;>
+        simp [checkDagAction] at accepted
+      case ite.ite condition thenAction elseAction summary conditionRef joins
+          thenCert elseCert =>
+        by_cases summaryAccepted :
+            summary = iteSummary thenCert.summary elseCert.summary
+        · subst summary
+          simp at accepted
+          cases conditionAccepted : indexedExprMatches wires wireTable
+              (Loom.Hw.Compile.compileExpr condition) conditionRef <;>
+            simp [conditionAccepted] at accepted
+          cases thenAccepted : checkDagAction wires wireTable nodes stateTable
+              registers thenAction root
+              (changedBitsAt (iteSummary thenCert.summary elseCert.summary)
+                needed) thenCert thenTrace with
+          | none => simp [thenAccepted] at accepted
+          | some thenRoot =>
+              simp [thenAccepted] at accepted
+              cases elseAccepted : checkDagAction wires wireTable nodes
+                  stateTable registers elseAction root
+                  (changedBitsAt (iteSummary thenCert.summary elseCert.summary)
+                    needed) elseCert elseTrace with
+              | none => simp [elseAccepted] at accepted
+              | some elseRoot =>
+                  simp [elseAccepted] at accepted
+                  cases joinsAccepted : checkedStateJoins nodes stateTable
+                      registers conditionRef thenRoot elseRoot root
+                      (changedBitsAt
+                        (iteSummary thenCert.summary elseCert.summary) needed)
+                      joins joinRoots
+                      (joinedRoot root joinRoots) <;>
+                    simp [joinsAccepted] at accepted
+                  subst output
+                  exact .ite rfl conditionAccepted
+                    (thenIH thenAccepted) (elseIH elseAccepted)
+                    (checkedStateJoins_sound joinsAccepted)
+        · simp [summaryAccepted] at accepted
 
 end Loom.Release.Symbolic.ActionWide
