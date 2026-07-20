@@ -716,6 +716,103 @@ theorem DagBitSparseEvidence.summary_valid
         simp only [iteSummary, Nat.testBit_and]
         rw [thenIH.2, elseIH.2]
 
+/-- Register-name uniqueness stated directly over the array representation
+used by action certificates. -/
+def RegisterNamesUnique (registers : Array RegDecl) : Prop :=
+  ∀ {left right : Nat} {leftReg rightReg : RegDecl},
+    registers[left]? = some leftReg → registers[right]? = some rightReg →
+      leftReg.name = rightReg.name → left = right
+
+/-- The structural `possible` write bit of a checked action certificate is
+exactly the source compiler's `writesRegB` query for the declaration at that
+index. -/
+theorem DagBitSparseEvidence.possiblyWritesIndex_eq_writesRegB
+    {wires : Rope (List IndexedWire)} {wireTable : WireTable}
+    {nodes : Rope (List RefStateNode)} {stateTable : RefStateTable}
+    {registers : Array RegDecl} {action : Act} {root needed output : Nat}
+    {cert : ActionCert}
+    (evidence : DagBitSparseEvidence wires wireTable nodes stateTable registers
+      action root needed cert output)
+    (unique : RegisterNamesUnique registers) (query : Nat) (source : RegDecl)
+    (sourceFound : registers[query]? = some source) :
+    cert.possiblyWritesIndex query =
+      Loom.Hw.Compile.writesRegB source.name source.width action := by
+  induction evidence with
+  | skip | memWrite => simp [ActionCert.possiblyWritesIndex,
+      Loom.Hw.Compile.writesRegB]
+  | @writeUnused width name value root needed index valueRef headerAccepted
+      unused =>
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          by_cases indexEq : index = query
+          · subst query
+            have regEq : actual = source :=
+              Option.some.inj (actualFound.symm.trans sourceFound)
+            subst source
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, headerAccepted]
+          · have nameNe : name ≠ source.name := by
+              intro nameEq
+              apply indexEq
+              exact unique actualFound sourceFound
+                (headerAccepted.1.trans nameEq)
+            have indexFalse : (index == query) = false :=
+              beq_eq_false_iff_ne.mpr indexEq
+            have nameFalse : (name == source.name) = false :=
+              beq_eq_false_iff_ne.mpr nameNe
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, indexFalse, nameFalse]
+  | @writeNeeded width name value root needed index valueRef outputRoot
+      headerAccepted used valueAccepted writeAccepted =>
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          by_cases indexEq : index = query
+          · subst query
+            have regEq : actual = source :=
+              Option.some.inj (actualFound.symm.trans sourceFound)
+            subst source
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, headerAccepted]
+          · have nameNe : name ≠ source.name := by
+              intro nameEq
+              apply indexEq
+              exact unique actualFound sourceFound
+                (headerAccepted.1.trans nameEq)
+            have indexFalse : (index == query) = false :=
+              beq_eq_false_iff_ne.mpr indexEq
+            have nameFalse : (name == source.name) = false :=
+              beq_eq_false_iff_ne.mpr nameNe
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, indexFalse, nameFalse]
+  | seq summaryAccepted leftAccepted rightAccepted leftIH rightIH =>
+      simp [ActionCert.possiblyWritesIndex, Loom.Hw.Compile.writesRegB,
+        leftIH, rightIH]
+  | ite summaryAccepted conditionAccepted thenAccepted elseAccepted
+      joinsAccepted thenIH elseIH =>
+      simp [ActionCert.possiblyWritesIndex, Loom.Hw.Compile.writesRegB,
+        thenIH, elseIH]
+
+/-- Cached-summary form of `possiblyWritesIndex_eq_writesRegB`. -/
+theorem DagBitSparseEvidence.summary_possible_eq_writesRegB
+    {wires : Rope (List IndexedWire)} {wireTable : WireTable}
+    {nodes : Rope (List RefStateNode)} {stateTable : RefStateTable}
+    {registers : Array RegDecl} {action : Act} {root needed output : Nat}
+    {cert : ActionCert}
+    (evidence : DagBitSparseEvidence wires wireTable nodes stateTable registers
+      action root needed cert output)
+    (unique : RegisterNamesUnique registers) (query : Nat) (source : RegDecl)
+    (sourceFound : registers[query]? = some source) :
+    cert.summary.possible.testBit query =
+      Loom.Hw.Compile.writesRegB source.name source.width action :=
+  (evidence.summary_valid query).1.trans
+    (evidence.possiblyWritesIndex_eq_writesRegB unique query source sourceFound)
+
 /-- Acceptance by the compact checker reconstructs the full structural action
 evidence. The generated trace is therefore untrusted data, not proof code. -/
 theorem checkDagAction_sound {wires : Rope (List IndexedWire)}
