@@ -77,7 +77,8 @@ compile_resolver_shards() {
 compile_parallel_proofs() {
   find "$src" -maxdepth 1 \
     \( -name "DagCut${suffix}Leaf*.lean" -o \
-       -name "DagCut${suffix}ConnectorCheck*.lean" \) \
+       -name "DagCut${suffix}ConnectorCheck*.lean" -o \
+       -name "DagCut${suffix}Lookup*.lean" \) \
     -print0 | sort -z | compile_parallel
 }
 

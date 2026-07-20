@@ -232,6 +232,44 @@ inductive StateLookupEvidence (nodes : Rope (List RefStateNode))
         index value) :
       StateLookupEvidence nodes table registers (depth + 1) root index value
 
+/-- Structural lookup evidence computes the corresponding executable lookup.
+This direction lets later semantic projection theorems consume named evidence
+without reducing the balanced state-node table again. -/
+theorem StateLookupEvidence.accepted
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl} {depth root index : Nat} {value : Ref}
+    (evidence : StateLookupEvidence nodes table registers depth root index value) :
+    lookupStateRef? nodes table registers depth root index = some value := by
+  induction evidence with
+  | @empty depth root index register nodeAccepted registerAccepted =>
+      cases depth <;> unfold lookupStateRef? <;>
+        rw [nodeAccepted, registerAccepted] <;> rfl
+  | leaf nodeAccepted =>
+      simp [lookupStateRef?, nodeAccepted]
+  | branchZero bitAccepted nodeAccepted _ childIH =>
+      simp [lookupStateRef?, nodeAccepted, bitAccepted, childIH]
+  | branchOne bitAccepted nodeAccepted _ childIH =>
+      simp [lookupStateRef?, nodeAccepted, bitAccepted, childIH]
+
+/-- A certified trie write makes the written value observable at its output
+root. This is the local state-to-register bridge used by shared action
+projections. -/
+theorem StateWriteEvidence.outputLookup
+    {nodes : Rope (List RefStateNode)} {table : RefStateTable}
+    {registers : Array RegDecl} {depth input index output : Nat} {value : Ref}
+    (evidence : StateWriteEvidence nodes table depth input index value output) :
+    StateLookupEvidence nodes table registers depth output index value := by
+  induction evidence with
+  | leaf outputAccepted => exact .leaf outputAccepted
+  | emptyZero bitAccepted _ outputAccepted _ childIH =>
+      exact .branchZero bitAccepted outputAccepted childIH
+  | emptyOne bitAccepted _ outputAccepted _ childIH =>
+      exact .branchOne bitAccepted outputAccepted childIH
+  | branchZero bitAccepted _ outputAccepted _ childIH =>
+      exact .branchZero bitAccepted outputAccepted childIH
+  | branchOne bitAccepted _ outputAccepted _ childIH =>
+      exact .branchOne bitAccepted outputAccepted childIH
+
 /-- Successful executable lookup yields structural lookup evidence. -/
 theorem lookupStateRef?_sound {nodes : Rope (List RefStateNode)}
     {table : RefStateTable} {registers : Array RegDecl}

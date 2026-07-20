@@ -616,6 +616,24 @@ private def dagInitialRoot (registers : Array RegDecl)
       root ← dagWrite 10 root index value
   pure root
 
+/-- Interpret a concrete generator-side state root. The emitted lookup theorem
+is checked independently against the Lean-side balanced table. -/
+private partial def dagLookupRef
+    (nodes : Array Loom.Release.Symbolic.ActionWide.RefStateNode)
+    (registers : Array RegDecl) : Nat → Nat → Nat → Option Loom.Release.Symbolic.Ref
+  | 0, root, index => do
+      match ← nodes[root]? with
+      | .leaf value => pure value
+      | .empty => (← registers[index]?).name |> Loom.Release.Symbolic.Ref.reg |> pure
+      | .branch .. => failure
+  | depth + 1, root, index => do
+      match ← nodes[root]? with
+      | .empty => (← registers[index]?).name |> Loom.Release.Symbolic.Ref.reg |> pure
+      | .branch zeroChild oneChild =>
+          dagLookupRef nodes registers depth
+            (if index.testBit depth then oneChild else zeroChild) index
+      | .leaf _ => failure
+
 private structure DagLeafSpec where
   source : String
   cert : String
@@ -935,6 +953,8 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   let resolverImports := String.intercalate "\n" <|
     (List.range resolverBatches.length).map fun index =>
       "import " ++ modulePrefix ++ "Resolvers" ++ pad3 index
+  let lookupBatchSize := 32
+  let lookupBatches := cut.needed.toChunks lookupBatchSize
   let dataText :=
     "-- Generated hash-consed action-state witness; DO NOT EDIT.\n" ++
     nodeImports ++ "\n\n" ++
@@ -1049,6 +1069,35 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     writeIfChanged (System.FilePath.mk <| basePath ++ "Resolvers" ++
       pad3 index ++ ".lean") resolverText
   pruneIndexedShards output "Resolvers" resolverBatches.length
+  for (batchIndex, indices) in
+      (List.range lookupBatches.length).zip lookupBatches do
+    let mut declarations : Array String := #[]
+    for index in indices do
+      let some inputRef := dagLookupRef finalState.nodes registers 10 inputRoot index
+        | return 1
+      let some outputRef := dagLookupRef finalState.nodes registers 10 outputRoot index
+        | return 1
+      declarations := declarations.push <|
+        "theorem dagCutInputLookup" ++ pad4 index ++ " :\n" ++
+        "    Symbolic.ActionWide.StateLookupEvidence dagStateNodes " ++
+          "dagStateTable dagCutRegisters 10 dagInputRoot " ++ toString index ++
+          " (" ++ dagRefToLean inputRef ++ ") :=\n  dag_state_lookup\n\n" ++
+        "theorem dagCutOutputLookup" ++ pad4 index ++ " :\n" ++
+        "    Symbolic.ActionWide.StateLookupEvidence dagStateNodes " ++
+          "dagStateTable dagCutRegisters 10 dagOutputRoot " ++ toString index ++
+          " (" ++ dagRefToLean outputRef ++ ") :=\n  dag_state_lookup\n"
+    let lookupText :=
+      "-- Generated state observations for semantic projections; DO NOT EDIT.\n" ++
+      "import " ++ dataModule ++ "\n" ++ resolverImports ++ "\n" ++
+      "import Loom.Release.SymbolicDecide\n\n" ++
+      "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+      "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+      String.intercalate "\n" declarations.toList ++ "\n" ++
+      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (System.FilePath.mk <| basePath ++ "Lookup" ++
+      pad3 batchIndex ++ ".lean") lookupText
+  pruneIndexedShards output "Lookup" lookupBatches.length
   for (batchIndex, batch) in
       (List.range proofLeafBatches.length).zip proofLeafBatches do
     let mut theoremTexts : Array String := #[]
@@ -1253,7 +1302,8 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     s!"nodeShards={nodeBatches.length} resolverShards={resolverBatches.length} " ++
     s!"leaves={leaves.size} leafModules={proofLeafBatches.length} " ++
     s!"connectors={connectors.size} connectorModules={connectorBatches.length} " ++
-    s!"connectorCheckModules={connectorCheckBatches.length}")
+    s!"connectorCheckModules={connectorCheckBatches.length} " ++
+    s!"lookupModules={lookupBatches.length}")
   return 0
 
 private unsafe def generateCoreCuts (runtime outputDir : System.FilePath) :

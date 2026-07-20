@@ -2072,6 +2072,31 @@ private partial def proveDagLookup (nodes stateTable registers : Expr)
     #[nodes, stateTable, registers, mkNatLit childDepth, root, index, value,
       zeroChild, oneChild, bitProof, nodeProof, childProof]
 
+/-- Build one state-root lookup from named resolver theorems. This is used by
+semantic projection shards to expose only the register references they need;
+the generated proof term is checked by the kernel. -/
+syntax (name := dagStateLookup) "dag_state_lookup" : term
+
+@[term_elab dagStateLookup]
+unsafe def elabDagStateLookup : TermElab := fun _ expected? => do
+  dagDecisionMs.set 0
+  let some expected := expected?
+    | throwError "dag_state_lookup requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.StateLookupEvidence &&
+      args.size == 7 do
+    throwError "dag_state_lookup expected StateLookupEvidence"
+  let depth ← withTransparency .all <| whnf args[3]!
+  let some depth ← getNatValue? depth
+    | throwError "dag_state_lookup depth is not concrete"
+  let proof ← proveDagLookup args[0]! args[1]! args[2]! depth args[4]! args[5]!
+    args[6]!
+  unless !proof.hasFVar && !proof.hasMVar do
+    throwError "dag_state_lookup produced an open proof"
+  pure proof
+
 private partial def proveDagJoins (nodes stateTable registers condition input
     thenRoot elseRoot changed joins : Expr) : MetaM (Expr × Expr) := do
   let reduced ← withTransparency .all <| whnf joins
