@@ -46,9 +46,9 @@ initialize releaseIndexedExprAttr : TagAttribute ←
     "indexed expression evidence available to release certificates"
 
 private def cacheClosedProof (type proof : Expr) : MetaM Expr := do
-  let lemma ← withOptions (Elab.async.set · false) do
+  let lemmaName ← withOptions (Elab.async.set · false) do
     mkAuxLemma [] type proof (kind? := `_symbolicNoWrite)
-  pure (.const lemma [])
+  pure (.const lemmaName [])
 
 private def cachePropProof (type : Expr) (proof : MetaM Expr) : MetaM Expr := do
   cacheClosedProof type (← proof)
@@ -2097,9 +2097,31 @@ unsafe def elabDagStateLookup : TermElab := fun _ expected? => do
     throwError "dag_state_lookup produced an open proof"
   pure proof
 
+private def matchDagJoinsContinuation (wires wireTable nodes stateTable registers
+    condition input thenRoot elseRoot changed joins continuation : Expr) :
+    MetaM (Option (Expr × Expr × Nat)) := do
+  let continuationType ← inferType continuation
+  let args := continuationType.getAppArgs
+  unless continuationType.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.StateJoinsEvidence &&
+      args.size == 12 do
+    throwError "dag_state_joins_using expected a StateJoinsEvidence theorem"
+  let expected := #[wires, wireTable, nodes, stateTable, registers, condition,
+    input, thenRoot, elseRoot, changed, joins]
+  for index in List.range expected.size do
+    unless ← isDefEq args[index]! expected[index]! do
+      return none
+  return some (args[11]!, continuation, 0)
+
 private partial def proveDagJoins (wires wireTable nodes stateTable registers
-    condition input thenRoot elseRoot changed joins : Expr) :
+    condition input thenRoot elseRoot changed joins : Expr)
+    (continuation? : Option Expr := none) :
     MetaM (Expr × Expr × Nat) := do
+  if let some continuation := continuation? then
+    if let some result ← matchDagJoinsContinuation wires wireTable nodes
+        stateTable registers condition input thenRoot elseRoot changed joins
+        continuation then
+      return result
   let reduced ← withTransparency .all <| whnf joins
   let args := reduced.getAppArgs
   if reduced.getAppFn.constName? == some ``List.nil then
@@ -2161,7 +2183,7 @@ private partial def proveDagJoins (wires wireTable nodes stateTable registers
     (singletonChangedBit index)
   let nextChanged ← normalizeNatLiteral nextChangedComputed
   let (outputRoot, tailProof, tailSize) ← proveDagJoins wires wireTable nodes stateTable
-    registers condition nextRoot thenRoot elseRoot nextChanged tail
+    registers condition nextRoot thenRoot elseRoot nextChanged tail continuation?
   let tailProof ← if tailSize > 0 && tailSize % 128 == 0 then
       checkpointLocalProof (← inferType tailProof) tailProof
     else pure tailProof
@@ -2178,9 +2200,12 @@ Unlike reducing `checkedStateJoins`, this performs no repeated normalization of
 the full balanced node rope. The elaborator is untrusted: Lean's kernel checks
 the resulting structural evidence term. -/
 syntax (name := dagStateJoins) "dag_state_joins" : term
+syntax (name := dagStateJoinsUsing) "dag_state_joins_using" ident : term
 
-@[term_elab dagStateJoins]
-unsafe def elabDagStateJoins : TermElab := fun _ expected? => do
+private def elaborateDagStateJoins (expected? : Option Expr)
+    (continuation? : Option Name) : TermElabM Expr := do
+  let continuation? ← continuation?.mapM fun name =>
+    Term.elabTerm (mkIdent name) none
   dagWriteCursor.set 0
   dagBoundMs.set 0
   dagDecisionMs.set 0
@@ -2196,6 +2221,7 @@ unsafe def elabDagStateJoins : TermElab := fun _ expected? => do
     throwError "dag_state_joins expected StateJoinsEvidence"
   let (output, proof, _) ← proveDagJoins args[0]! args[1]! args[2]! args[3]!
     args[4]! args[5]! args[6]! args[7]! args[8]! args[9]! args[10]!
+    continuation?
   unless ← isDefEq output args[11]! do
     throwError "dag_state_joins output-root mismatch"
   unless (← dagWriteCursor.get) == (← dagWriteRoots.get).size do
@@ -2205,6 +2231,15 @@ unsafe def elabDagStateJoins : TermElab := fun _ expected? => do
     throwError "dag_state_joins produced an open proof"
   useLocalProofBindings.set false
   pure proof
+
+@[term_elab dagStateJoins]
+unsafe def elabDagStateJoins : TermElab := fun _ expected? => do
+  elaborateDagStateJoins expected? none
+
+@[term_elab dagStateJoinsUsing]
+unsafe def elabDagStateJoinsUsing : TermElab := fun stx expected? => do
+  let name := stx[1].getId
+  elaborateDagStateJoins expected? (some name)
 
 private partial def proveDagEvidence (wires wireTable nodes stateTable registers
     action root needed cert : Expr) : MetaM DagProofBuild := do

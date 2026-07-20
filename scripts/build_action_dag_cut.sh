@@ -5,9 +5,25 @@
 set -euo pipefail
 
 cut_index=${1:-0}
-# Twelve workers keep the measured peak below the 123 GiB publication host's
-# memory ceiling even when large leaves and join modules overlap.
-jobs=${2:-12}
+jobs=${2:-}
+
+# Generated checkers are memory-bound. Pick concurrency from currently
+# available memory rather than leaving most of a large verification host idle
+# or overcommitting a laptop. A suffix-check worker now peaks around 3.2 GiB;
+# reserve 4 GiB per worker and cap at 32 to leave room for the OS and Lake.
+if [[ -z "$jobs" ]]; then
+  cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+  if [[ -r /proc/meminfo ]]; then
+    available_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+    memory_jobs=$((available_kb / 4000000))
+  else
+    memory_jobs=1
+  fi
+  ((memory_jobs < 1)) && memory_jobs=1
+  jobs=$cores
+  ((jobs > memory_jobs)) && jobs=$memory_jobs
+  ((jobs > 32)) && jobs=32
+fi
 
 if [[ ! "$cut_index" =~ ^[0-9]+$ || "$cut_index" -gt 999 ]]; then
   echo "cut index must be an integer from 0 through 999" >&2
@@ -88,6 +104,19 @@ compile_join_lookups() {
 }
 
 mkdir -p "$lib"
+
+# The generator prunes obsolete source shards. Mirror that operation in Lake's
+# output tree so old proof objects do not accumulate indefinitely (the previous
+# workflow left more than 600 stale cut-0 objects and a 15 GiB cache).
+while IFS= read -r -d '' compiled; do
+  relative=${compiled#".lake/build/lib/lean/"}
+  source=${relative%.olean}.lean
+  if [[ ! -f "$source" ]]; then
+    rm -f "$compiled" "${compiled%.olean}.ilean"
+  fi
+done < <(find "$lib" -maxdepth 1 -name "DagCut${suffix}*.olean" -print0)
+
+echo "action cut $suffix: using $jobs checker workers"
 run_phase "action DAG prerequisites" lake build actionwidegen \
   Loom.Release.SymbolicDecide Machines.Lnp64u.Theorems.ReleaseOrder
 run_phase "generate action cut $suffix" lake exe actionwidegen lnp64u-dag-cut \
