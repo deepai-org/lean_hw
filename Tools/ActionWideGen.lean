@@ -628,6 +628,45 @@ private structure DagLeafSpec where
   size : Nat
   deriving Inhabited
 
+private inductive DagProofRef where
+  | leaf (index : Nat)
+  | connector (index : Nat)
+  deriving Inhabited, Repr
+
+private inductive DagConnectorKind where
+  | seq
+  | ite
+  deriving Inhabited
+
+private structure DagConnectorSpec where
+  source : String
+  cert : String
+  input : Nat
+  needed : Nat
+  output : Nat
+  actionRoot : Nat
+  writeRoots : Array Nat
+  children : Array DagProofRef
+  level : Nat
+  kind : DagConnectorKind
+  summary : Loom.Release.Symbolic.ActionWide.Summary
+  condition : Option String
+  conditionRef : Loom.Release.Symbolic.Ref
+  joins : List Loom.Release.Symbolic.ActionWide.Join
+
+private instance : Inhabited DagConnectorSpec where
+  default :=
+    { source := "", cert := "", input := 0, needed := 0, output := 0,
+      actionRoot := 0, writeRoots := #[], children := #[], level := 0,
+      kind := .seq, summary := { possible := 0, definite := 0 },
+      condition := none, conditionRef := .reg "", joins := [] }
+
+private structure DagProofCollection where
+  leaves : Array DagLeafSpec := #[]
+  connectors : Array DagConnectorSpec := #[]
+
+private abbrev DagCollectM := StateT DagProofCollection Option
+
 /-- Render the compact write-root witness for one bounded action leaf. The
 result is untrusted source data; `checkDagAction_sound` validates it. -/
 private partial def dagTraceToLean (source : Act)
@@ -668,6 +707,82 @@ private partial def dagTraceToLean (source : Act)
         ") (" ++ elseTrace ++ ") " ++ rootsText,
         afterElse + joins.length)
   | _, _ => none
+
+/-- Partition an action into compact checker leaves and a postorder DAG of
+small connector proofs. Each connector trusts only its already-named child
+theorems and checks its own sequence/conditional node. -/
+private partial def collectDagProofs (spans : Array DagSpan)
+    (allActionRoots allWriteRoots : Array Nat) (source : Act)
+    (cert : Loom.Release.Symbolic.ActionWide.ActionCert) (input needed : Nat)
+    (sourceExpr certExpr : String) (limit cursor : Nat) :
+    DagCollectM (Nat × Nat × DagProofRef) := do
+  let span ← spans[cursor]?
+  let size := sourceActionNodeCount source
+  if size ≤ limit then
+    let writeRoots := allWriteRoots.extract span.writeStart span.writeEnd
+    let (trace, afterTrace) ← dagTraceToLean source cert needed writeRoots
+    guard (afterTrace == writeRoots.size)
+    let state ← get
+    let index := state.leaves.size
+    let leaf : DagLeafSpec :=
+      { source := sourceExpr, cert := certExpr, trace, input, needed,
+        output := span.output,
+        actionRoots := allActionRoots.extract span.actionStart span.actionEnd,
+        writeRoots, size }
+    set { state with leaves := state.leaves.push leaf }
+    return (cursor + size, span.output, .leaf index)
+  let (after, children, localWrites, kind, summary, condition, conditionRef,
+      joins) ← match source, cert with
+    | .seq left right, .seq summary leftCert rightCert => do
+        let leftNeeded := Loom.Release.Symbolic.ActionWide.neededBitsBefore
+          rightCert.summary needed
+        let (afterLeft, middle, leftRef) ← collectDagProofs spans
+          allActionRoots allWriteRoots left leftCert input leftNeeded
+          ("Symbolic.ActionWide.seqLeftAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.seqLeft (" ++ certExpr ++ ")")
+          limit (cursor + 1)
+        let (afterRight, output, rightRef) ← collectDagProofs spans
+          allActionRoots allWriteRoots right rightCert middle needed
+          ("Symbolic.ActionWide.seqRightAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.seqRight (" ++ certExpr ++ ")")
+          limit afterLeft
+        guard (output == span.output)
+        pure (afterRight, #[leftRef, rightRef], #[], .seq, summary, none,
+          .reg "", [])
+    | .ite _ thenAction elseAction,
+        .ite summary conditionRef joins thenCert elseCert => do
+        let changed := Loom.Release.Symbolic.ActionWide.changedBitsAt summary needed
+        let (afterThen, _, thenRef) ← collectDagProofs spans allActionRoots
+          allWriteRoots thenAction thenCert input changed
+          ("Symbolic.ActionWide.iteThenAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.iteThen (" ++ certExpr ++ ")")
+          limit (cursor + 1)
+        let (afterElse, _, elseRef) ← collectDagProofs spans allActionRoots
+          allWriteRoots elseAction elseCert input changed
+          ("Symbolic.ActionWide.iteElseAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.iteElse (" ++ certExpr ++ ")")
+          limit afterThen
+        let writeStart := span.writeEnd - joins.length
+        let writes := allWriteRoots.extract writeStart span.writeEnd
+        guard (writes.size == joins.length)
+        pure (afterElse, #[thenRef, elseRef], writes, .ite, summary,
+          some ("Symbolic.ActionWide.iteConditionAction (" ++ sourceExpr ++ ")"),
+          conditionRef, joins)
+    | _, _ => failure
+  guard (after == cursor + size)
+  let state ← get
+  let childLevel := children.foldl (init := 0) fun level child =>
+    match child with
+    | .leaf _ => level
+    | .connector index => max level (state.connectors[index]!.level + 1)
+  let index := state.connectors.size
+  let connector : DagConnectorSpec :=
+    { source := sourceExpr, cert := certExpr, input, needed,
+      output := span.output, actionRoot := span.output, writeRoots := localWrites,
+      children, level := childLevel, kind, summary, condition, conditionRef,
+      joins }
+  set { state with connectors := state.connectors.push connector }
+  pure (after, span.output, .connector index)
 
 private partial def collectDagLeaves (spans : Array DagSpan)
     (allActionRoots allWriteRoots : Array Nat) (source : Act)
@@ -783,10 +898,13 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       (evaluateDag cut.sourceValue inputRoot neededBits cut.certValue).run
         initialState | return 1
   let leafLimit := 128
-  let some (afterLeaves, leafOutput, leaves) := collectDagLeaves finalState.spans
-      finalState.actionRoots finalState.writeRoots cut.sourceValue cut.certValue
-      inputRoot neededBits cut.source cut.cert leafLimit 0 | return 1
-  unless afterLeaves == cut.size && leafOutput == outputRoot do return 1
+  let some ((afterProofs, proofOutput, rootProof), proofCollection) :=
+      (collectDagProofs finalState.spans finalState.actionRoots
+        finalState.writeRoots cut.sourceValue cut.certValue inputRoot neededBits
+        cut.source cut.cert leafLimit 0).run {} | return 1
+  unless afterProofs == cut.size && proofOutput == outputRoot do return 1
+  let leaves := proofCollection.leaves
+  let connectors := proofCollection.connectors
   let leafSize := 64
   let chunks := finalState.nodes.toList.toChunks leafSize
   let leafNames := (List.range chunks.length).map fun index =>
@@ -843,40 +961,65 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     (List.range proofLeafBatches.length).map fun index =>
       "import GeneratedRelease.Lnp64u.DagCut" ++ pad3 cutIndex ++
         "Leaf" ++ pad3 index
-  let leafRegistrations := String.intercalate "\n" <|
-    (List.range leaves.size).map fun index =>
-      let leaf := leaves[index]!
-      "dag_action_leaf dagCutLeaf" ++ pad3 index ++ "Evidence " ++
-        toString leaf.size ++ " " ++ toString leaf.writeRoots.size
+  -- Connector proofs are tiny and may depend on earlier named connectors, but
+  -- theorem bodies can still be checked asynchronously once their statements
+  -- are declared. One shared module exposes the full outer tree to Lean's
+  -- scheduler and avoids serial batch barriers and repeated 3 GiB imports.
+  let connectorBatchSize := 1024
+  let connectorBatches := connectors.toList.toChunks connectorBatchSize
+  let connectorCheckIndices := (List.range connectors.size).filter fun index =>
+    match connectors[index]!.kind with | .ite => true | .seq => false
+  -- Balance by actual join work, not connector count. Conditional nodes range
+  -- from a handful of joins to hundreds, so fixed-count batches created a long
+  -- serial tail even though all check modules are independent.
+  let connectorCheckBatches := Id.run do
+    let targetWeight := 1024
+    let mut batches : Array (List Nat) := #[]
+    let mut current : List Nat := []
+    let mut currentWeight := 0
+    for index in connectorCheckIndices do
+      let weight := connectors[index]!.joins.length
+      if !current.isEmpty && targetWeight < currentWeight + weight then
+        batches := batches.push current.reverse
+        current := []
+        currentWeight := 0
+      current := index :: current
+      currentWeight := currentWeight + weight
+    if !current.isEmpty then batches := batches.push current.reverse
+    return batches.toList
+  let connectorCheckImports := String.intercalate "\n" <|
+    (List.range connectorCheckBatches.length).map fun index =>
+      "import " ++ modulePrefix ++ "ConnectorCheck" ++ pad3 index
+  let proofRefName : DagProofRef → String
+    | .leaf index => "dagCutLeaf" ++ pad3 index ++ "Evidence"
+    | .connector index => "dagCutConnector" ++ pad3 index ++ "Evidence"
+  let proofRefActionName : DagProofRef → String
+    | .leaf index => "dagCutLeaf" ++ pad3 index ++ "Action"
+    | .connector index => "dagCutConnector" ++ pad3 index ++ "Action"
+  let proofRefCertName : DagProofRef → String
+    | .leaf index => "dagCutLeaf" ++ pad3 index ++ "Cert"
+    | .connector index => "dagCutConnector" ++ pad3 index ++ "Cert"
+  let proofRefModule : DagProofRef → String
+    | .leaf index => modulePrefix ++ "Leaf" ++ pad3 (index / proofLeafBatchSize)
+    | .connector index =>
+        modulePrefix ++ "Connector" ++ pad3 (index / connectorBatchSize)
+  let proofRefOutput : DagProofRef → Nat
+    | .leaf index => leaves[index]!.output
+    | .connector index => connectors[index]!.output
+  let rootProofImport := "import " ++ proofRefModule rootProof
   let proofText :=
     "-- Generated hash-consed action-state proof; DO NOT EDIT.\n" ++
     "import " ++ dataModule ++ "\n" ++
-    resolverImports ++ "\n" ++
-    leafImports ++ "\n" ++
-    "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
-    "import GeneratedRelease.Lnp64u.ActionCert\n" ++
-    "import Loom.Release.SymbolicDecide\n" ++
-    "import Machines.Lnp64u.Hw.Core\n" ++
-    "import Machines.Lnp64u.Hw.Demo\n" ++
-    "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
+    rootProofImport ++ "\n\n" ++
     "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
     "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
     "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
-    "indexed_expr_checkpoints " ++
-      String.intercalate " " (runtimeCheckpoints program |>.map toString) ++
-      "\n" ++
-    "dag_action_roots " ++
-      String.intercalate " " (finalState.actionRoots.toList.map toString) ++
-      "\n" ++
-    "dag_write_roots " ++
-      String.intercalate " " (finalState.writeRoots.toList.map toString) ++
-      "\n" ++ leafRegistrations ++ "\n\n" ++
     "theorem dagCutEvidence :\n" ++
     "    Symbolic.ActionWide.DagBitSparseEvidence " ++
       "fastIndexedWireTree fastWireTable dagStateNodes dagStateTable " ++
       "dagCutRegisters (" ++ cut.source ++ ") dagInputRoot " ++
       toString neededBits ++ " (" ++ cut.cert ++ ") dagOutputRoot :=\n" ++
-    "  dag_sparse_evidence_decide\n\n" ++
+    "  " ++ proofRefName rootProof ++ "\n\n" ++
     "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
   let dataPath := System.FilePath.mk
     ((output.toString.dropEnd 5).toString ++ "Data.lean")
@@ -913,22 +1056,28 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       let index := batchIndex * proofLeafBatchSize + localIndex
       let traceName := "dagCutLeaf" ++ pad3 index ++ "Trace"
       let checkName := "dagCutLeaf" ++ pad3 index ++ "Check"
+      let actionName := "dagCutLeaf" ++ pad3 index ++ "Action"
+      let certName := "dagCutLeaf" ++ pad3 index ++ "Cert"
       theoremTexts := theoremTexts.push <|
+        "noncomputable def " ++ actionName ++ " : Act := " ++ leaf.source ++
+          "\n" ++
+        "noncomputable def " ++ certName ++
+          " : Symbolic.ActionWide.ActionCert := " ++ leaf.cert ++ "\n\n" ++
         "def " ++ traceName ++
           " : Symbolic.ActionWide.DagActionTrace :=\n  " ++ leaf.trace ++
           "\n\n" ++
         "theorem " ++ checkName ++ " :\n" ++
         "    Symbolic.ActionWide.checkDagAction fastIndexedWireTree " ++
-          "fastWireTable dagStateNodes dagStateTable dagCutRegisters (" ++
-          leaf.source ++ ") " ++ toString leaf.input ++ " " ++
-          toString leaf.needed ++ " (" ++ leaf.cert ++ ") " ++ traceName ++
+          "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++
+          actionName ++ " " ++ toString leaf.input ++ " " ++
+          toString leaf.needed ++ " " ++ certName ++ " " ++ traceName ++
           " = some " ++ toString leaf.output ++ " := by\n" ++
         "  rfl\n\n" ++
         "theorem dagCutLeaf" ++ pad3 index ++ "Evidence :\n" ++
         "    Symbolic.ActionWide.DagBitSparseEvidence fastIndexedWireTree " ++
-          "fastWireTable dagStateNodes dagStateTable dagCutRegisters (" ++
-          leaf.source ++ ") " ++ toString leaf.input ++ " " ++
-          toString leaf.needed ++ " (" ++ leaf.cert ++ ") " ++
+          "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++
+          actionName ++ " " ++ toString leaf.input ++ " " ++
+          toString leaf.needed ++ " " ++ certName ++ " " ++
           toString leaf.output ++ " :=\n" ++
         "  Symbolic.ActionWide.checkDagAction_sound " ++ checkName ++ "\n"
     let leafText :=
@@ -949,11 +1098,162 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "Leaf" ++ pad3 batchIndex ++ ".lean")
     writeIfChanged leafPath leafText
   pruneIndexedShards output "Leaf" proofLeafBatches.length
+  for (batchIndex, indices) in
+      (List.range connectorCheckBatches.length).zip connectorCheckBatches do
+    let mut checks : Array String := #[]
+    for index in indices do
+      let connector := connectors[index]!
+      let stem := "dagCutConnector" ++ pad3 index
+      let condition := stem ++ "Condition"
+      let conditionValue := connector.condition.getD
+        "Loom.Hw.Expr.lit (BitVec.ofNat 1 0)"
+      let conditionRefText := "(" ++
+        Tools.ReleaseCertGen.actionWideRefToLean connector.conditionRef ++ ")"
+      let summaryText := "{ possible := " ++
+        toString connector.summary.possible ++ ", definite := " ++
+        toString connector.summary.definite ++ " }"
+      let joinsText := "(" ++
+        Tools.ReleaseCertGen.actionWideJoinBlockToLean connector.joins ++ ")"
+      let thenRoot := proofRefOutput connector.children[0]!
+      let elseRoot := proofRefOutput connector.children[1]!
+      unless connector.joins.length == connector.writeRoots.size do return 1
+      let mut joinInput := connector.input
+      let mut joinChanged :=
+        Loom.Release.Symbolic.ActionWide.changedBitsAt connector.summary
+          connector.needed
+      for (join, nextRoot) in connector.joins.zip connector.writeRoots.toList do
+        joinInput := nextRoot
+        joinChanged := joinChanged ^^^ (1 <<< join.index)
+      unless joinInput == connector.output && joinChanged == 0 do return 1
+      let connectorJoins := stem ++ "Joins"
+      let rootsText := String.intercalate " " <|
+        connector.writeRoots.toList.map toString
+      let joinProofs :=
+        "noncomputable def " ++ connectorJoins ++
+          " : List Symbolic.ActionWide.Join := " ++ joinsText ++ "\n\n" ++
+        "dag_write_roots " ++ rootsText ++ "\n\n" ++
+        "theorem " ++ stem ++ "JoinsEvidence :\n" ++
+        "    Symbolic.ActionWide.StateJoinsEvidence dagStateNodes " ++
+          "dagStateTable dagCutRegisters " ++ conditionRefText ++ " " ++
+          toString connector.input ++ " " ++ toString thenRoot ++ " " ++
+          toString elseRoot ++
+          " (Symbolic.ActionWide.changedBitsAt (" ++ summaryText ++ ") " ++
+          toString connector.needed ++ ") " ++ connectorJoins ++ " " ++
+          toString connector.output ++ " :=\n  dag_state_joins\n"
+      checks := checks.push <|
+        "noncomputable def " ++ condition ++ " : Expr 1 := " ++
+          conditionValue ++ "\n\n" ++
+        "theorem " ++ stem ++ "ConditionCheck :\n" ++
+        "    Symbolic.indexedExprMatches fastIndexedWireTree fastWireTable " ++
+          "(Loom.Hw.Compile.compileExpr " ++ condition ++ ") " ++
+          conditionRefText ++ " = true :=\n  indexed_expr_decide\n\n" ++
+        joinProofs
+    let checkText :=
+      "-- Generated parallel outer-guard certificates; DO NOT EDIT.\n" ++
+      "import " ++ dataModule ++ "\n" ++
+      resolverImports ++ "\n" ++
+      "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
+      "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+      "import Loom.Release.SymbolicDecide\n" ++
+      "import Machines.Lnp64u.Hw.Core\n" ++
+      "import Machines.Lnp64u.Hw.Demo\n" ++
+      "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
+      "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+      "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" ++
+      "set_option Elab.async false\n\n" ++
+      "indexed_expr_checkpoints " ++ String.intercalate " "
+        (runtimeCheckpoints program |>.map toString) ++ "\n\n" ++
+      String.intercalate "\n" checks.toList ++ "\n" ++
+      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (System.FilePath.mk <| basePath ++ "ConnectorCheck" ++
+      pad3 batchIndex ++ ".lean") checkText
+  pruneIndexedShards output "ConnectorCheck" connectorCheckBatches.length
+  for (batchIndex, batch) in
+      (List.range connectorBatches.length).zip connectorBatches do
+    let mut theoremTexts : Array String := #[]
+    for (localIndex, connector) in (List.range batch.length).zip batch do
+      let index := batchIndex * connectorBatchSize + localIndex
+      let stem := "dagCutConnector" ++ pad3 index
+      let source := stem ++ "Action"
+      let cert := stem ++ "Cert"
+      let leftRef := connector.children[0]!
+      let rightRef := connector.children[1]!
+      let leftName := proofRefName leftRef
+      let rightName := proofRefName rightRef
+      let leftAction := proofRefActionName leftRef
+      let rightAction := proofRefActionName rightRef
+      let leftCert := proofRefCertName leftRef
+      let rightCert := proofRefCertName rightRef
+      let summaryText := "{ possible := " ++ toString connector.summary.possible ++
+        ", definite := " ++ toString connector.summary.definite ++ " }"
+      let conditionRefText := "(" ++
+        Tools.ReleaseCertGen.actionWideRefToLean connector.conditionRef ++ ")"
+      let evidenceType :=
+        "    Symbolic.ActionWide.DagBitSparseEvidence fastIndexedWireTree " ++
+        "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++ source ++
+        " " ++ toString connector.input ++ " " ++ toString connector.needed ++
+        " " ++ cert ++ " " ++ toString connector.output
+      let checks := match connector.kind with
+        | .seq =>
+          "noncomputable def " ++ source ++ " : Act := .seq " ++ leftAction ++
+            " " ++ rightAction ++ "\n" ++
+          "noncomputable def " ++ cert ++
+            " : Symbolic.ActionWide.ActionCert := .seq (" ++ summaryText ++ ") " ++
+            leftCert ++ " " ++ rightCert ++ "\n\n" ++
+          "theorem " ++ stem ++ "SummaryCheck :\n" ++
+          "    (" ++ summaryText ++ ") = Symbolic.ActionWide.seqSummary " ++
+            "(Symbolic.ActionWide.ActionCert.summary " ++ leftCert ++ ") " ++
+            "(Symbolic.ActionWide.ActionCert.summary " ++ rightCert ++
+            ") := by\n  rfl\n\n" ++
+          "theorem " ++ stem ++ "Evidence :\n" ++ evidenceType ++ " :=\n" ++
+          "  .seq " ++ stem ++ "SummaryCheck " ++ leftName ++ " " ++
+            rightName ++ "\n"
+        | .ite =>
+          let condition := stem ++ "Condition"
+          "noncomputable def " ++ source ++ " : Act := .ite " ++ condition ++
+            " " ++ leftAction ++ " " ++ rightAction ++ "\n" ++
+          "noncomputable def " ++ cert ++
+            " : Symbolic.ActionWide.ActionCert := .ite (" ++ summaryText ++ ") " ++
+            conditionRefText ++ " " ++ stem ++ "Joins" ++
+            " " ++ leftCert ++ " " ++ rightCert ++ "\n\n" ++
+          "theorem " ++ stem ++ "SummaryCheck :\n" ++
+          "    (" ++ summaryText ++ ") = Symbolic.ActionWide.iteSummary " ++
+            "(Symbolic.ActionWide.ActionCert.summary " ++ leftCert ++ ") " ++
+            "(Symbolic.ActionWide.ActionCert.summary " ++ rightCert ++
+            ") := by\n  rfl\n\n" ++
+          "theorem " ++ stem ++ "Evidence :\n" ++ evidenceType ++ " :=\n" ++
+          "  .ite " ++ stem ++ "SummaryCheck " ++ stem ++
+            "ConditionCheck " ++ leftName ++ " " ++ rightName ++ "\n" ++
+          "    " ++ stem ++ "JoinsEvidence\n"
+      theoremTexts := theoremTexts.push checks
+    let dependencyImports := if batchIndex == 0 then leafImports else
+      "import " ++ modulePrefix ++ "Connector" ++ pad3 (batchIndex - 1)
+    let connectorText :=
+      "-- Generated parallel DAG action connectors; DO NOT EDIT.\n" ++
+      dependencyImports ++ "\n" ++
+      connectorCheckImports ++ "\n" ++
+      "import " ++ dataModule ++ "\n" ++
+      "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
+      "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+      "import Machines.Lnp64u.Hw.Core\n" ++
+      "import Machines.Lnp64u.Hw.Demo\n" ++
+      "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
+      "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+      "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+      String.intercalate "\n" theoremTexts.toList ++ "\n" ++
+      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (System.FilePath.mk <| basePath ++ "Connector" ++
+      pad3 batchIndex ++ ".lean") connectorText
+  pruneIndexedShards output "Connector" connectorBatches.length
   writeIfChanged output proofText
   IO.eprintln (s!"dag cut {cutIndex}: actions={finalState.actionRoots.size} " ++
     s!"writes={finalState.writeRoots.size} nodes={finalState.nodes.size} " ++
     s!"nodeShards={nodeBatches.length} resolverShards={resolverBatches.length} " ++
-    s!"leaves={leaves.size} leafModules={proofLeafBatches.length}")
+    s!"leaves={leaves.size} leafModules={proofLeafBatches.length} " ++
+    s!"connectors={connectors.size} connectorModules={connectorBatches.length} " ++
+    s!"connectorCheckModules={connectorCheckBatches.length}")
   return 0
 
 private unsafe def generateCoreCuts (runtime outputDir : System.FilePath) :

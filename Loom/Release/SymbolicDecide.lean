@@ -2135,6 +2135,37 @@ private partial def proveDagJoins (nodes stateTable registers condition input
       thenProof, elseProof, guardProof, wireProof, writeProof, tailProof]
   pure (outputRoot, proof)
 
+/-- Build conditional-join evidence from named state-node resolver theorems.
+Unlike reducing `checkedStateJoins`, this performs no repeated normalization of
+the full balanced node rope. The elaborator is untrusted: Lean's kernel checks
+the resulting structural evidence term. -/
+syntax (name := dagStateJoins) "dag_state_joins" : term
+
+@[term_elab dagStateJoins]
+unsafe def elabDagStateJoins : TermElab := fun _ expected? => do
+  dagWriteCursor.set 0
+  dagBoundMs.set 0
+  dagDecisionMs.set 0
+  localProofBindings.set #[]
+  useLocalProofBindings.set false
+  let some expected := expected?
+    | throwError "dag_state_joins requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.StateJoinsEvidence &&
+      args.size == 10 do
+    throwError "dag_state_joins expected StateJoinsEvidence"
+  let (output, proof) ← proveDagJoins args[0]! args[1]! args[2]! args[3]!
+    args[4]! args[5]! args[6]! args[7]! args[8]!
+  unless ← isDefEq output args[9]! do
+    throwError "dag_state_joins output-root mismatch"
+  unless (← dagWriteCursor.get) == (← dagWriteRoots.get).size do
+    throwError "dag_state_joins left unused write roots"
+  unless !proof.hasFVar && !proof.hasMVar do
+    throwError "dag_state_joins produced an open proof"
+  pure proof
+
 private partial def proveDagEvidence (wires wireTable nodes stateTable registers
     action root needed cert : Expr) : MetaM DagProofBuild := do
   let actionReduced ← exposeAction action
