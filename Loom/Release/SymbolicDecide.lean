@@ -5,6 +5,7 @@ import Loom.Release.SymbolicElaborate
 import Loom.Release.WholeRegisterPlan
 import Loom.Release.ActionWideRegister
 import Loom.Release.ActionStateDag
+import Loom.Release.ActionShape
 import Loom.Hw.CompileCorrect
 import Lean.Elab.Term
 import Lean.Elab.Command
@@ -1408,9 +1409,15 @@ private def singletonChangedBit (value : Expr) : Expr :=
 descendant re-evaluates the complete `neededBitsBefore`/`changedBitsAt` chain
 when proving a single `testBit` fact. -/
 private def normalizeNatLiteral (value : Expr) : MetaM Expr := do
+  let value ← match ← unfoldDefinition? value (ignoreTransparency := true) with
+    | some unfolded => pure unfolded
+    | none =>
+      try
+        pure <| mkAppN (← unfoldDefinition value.getAppFn) value.getAppArgs
+      catch _ => pure value
   let reduced ← withTransparency .all <| whnf value
   let some number ← getNatValue? reduced
-    | throwError "sparse_evidence_decide: bitmap did not reduce to a natural"
+    | throwError "sparse_evidence_decide: bitmap did not reduce to a natural: {reduced}"
   pure (mkNatLit number)
 
 private def decidePropositionIsTrue (type : Expr) : MetaM Bool := do
@@ -2420,6 +2427,428 @@ private partial def proveDagEvidence (wires wireTable nodes stateTable registers
       { root := outputRoot, proof,
         size := thenBuild.size + elseBuild.size + 1 }
   throwError "dag_sparse_evidence_exists: source/certificate shape mismatch"
+
+/-! ### State-free action-shape evidence -/
+
+private def matchJoinOutputsContinuation (wires wireTable joins continuation : Expr) :
+    MetaM (Option Expr) := do
+  let continuationType ← inferType continuation
+  let args := continuationType.getAppArgs
+  unless continuationType.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.JoinOutputsEvidence &&
+      args.size == 3 do
+    throwError "join_outputs_decide_using expected JoinOutputsEvidence"
+  if ← isDefEq args[0]! wires then
+    if ← isDefEq args[1]! wireTable then
+      if ← isDefEq args[2]! joins then return some continuation
+  return none
+
+private partial def proveJoinOutputs (wires wireTable joins : Expr)
+    (continuation? : Option Expr := none) :
+    MetaM (Expr × Nat) := do
+  if let some continuation := continuation? then
+    if let some proof ← matchJoinOutputsContinuation wires wireTable joins
+        continuation then
+      return (proof, 0)
+  let reduced ← withTransparency .all <| whnf joins
+  let args := reduced.getAppArgs
+  if reduced.getAppFn.constName? == some ``List.nil then
+    return (mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.JoinOutputsEvidence.nil)
+      #[wires, wireTable], 0)
+  unless reduced.getAppFn.constName? == some ``List.cons do
+    throwError "action_shape_decide: joins did not expose as a list"
+  let join := args[args.size - 2]!
+  let tail := args.back!
+  let output ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.output #[join]
+  let outputReduced ← withTransparency .all <| whnf output
+  unless outputReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.Ref.wire do
+    throwError "action_shape_decide: join output is not a wire"
+  let number := outputReduced.getAppArgs.back!
+  let wireValue ← mkAppM ``Loom.Release.Symbolic.Ref.wire #[number]
+  let outputEq ← dagDecide (← mkEq output wireValue)
+  let some numberValue ← getNatValue? (← withTransparency .all <| whnf number)
+    | throwError "action_shape_decide: join wire number is not concrete"
+  let some wiresName := wires.getAppFn.constName?
+    | throwError "action_shape_decide: wire tree is not named"
+  let namedLookup := wiresName.getPrefix.str ("dagJoinLookup" ++
+    toString numberValue)
+  let lookupProof ← if (← getEnv).contains namedLookup then
+      pure (Lean.mkConst namedLookup)
+    else
+      pure (← proveIndexedLookup wires wireTable number).2
+  let headProof := mkAppN (mkConst
+    ``Loom.Release.Symbolic.ActionWide.JoinOutputEvidence.wire)
+    #[wires, wireTable, join, number, outputEq, lookupProof]
+  let (tailProof, tailSize) ← proveJoinOutputs wires wireTable tail continuation?
+  let tailProof ← if tailSize > 0 && tailSize % 16 == 0 then
+      cacheClosedProof (← inferType tailProof) tailProof
+    else pure tailProof
+  return (mkAppN (mkConst
+    ``Loom.Release.Symbolic.ActionWide.JoinOutputsEvidence.cons)
+    #[wires, wireTable, join, tail, headProof, tailProof], tailSize + 1)
+
+private partial def proveActionShape (wires wireTable registers action needed cert : Expr) :
+    MetaM Expr := do
+  let actionReduced ← exposeAction action
+  let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
+  let actionArgs := actionReduced.getAppArgs
+  if actionName == ``List.foldr then
+    let function := actionArgs[actionArgs.size - 3]!
+    let initial := actionArgs[actionArgs.size - 2]!
+    let values := actionArgs.back!
+    let simpContext ← Simp.Context.mkDefault
+    let (valuesResult, _) ← simp values simpContext
+    let expanded ← expandListFoldr function initial valuesResult.expr
+    return ← proveActionShape wires wireTable registers expanded needed cert
+  let (certName, certArgs) ← expose cert
+  if actionName == ``Loom.Hw.Act.skip &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.skip then
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.skip)
+      #[wires, wireTable, registers, needed]
+  if actionName == ``Loom.Hw.Act.memWrite &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.memWrite then
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.memWrite)
+      #[wires, wireTable, registers,
+        actionArgs[actionArgs.size - 6]!, actionArgs[actionArgs.size - 5]!,
+        actionArgs[actionArgs.size - 4]!, actionArgs[actionArgs.size - 3]!,
+        actionArgs[actionArgs.size - 2]!, actionArgs.back!, needed]
+  if actionName == ``Loom.Hw.Act.write &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.write then
+    let width := actionArgs[actionArgs.size - 3]!
+    let name := actionArgs[actionArgs.size - 2]!
+    let value := actionArgs.back!
+    let index := certArgs[certArgs.size - 2]!
+    let valueRef := certArgs.back!
+    let header ← mkAppM ``Loom.Release.Symbolic.ActionWide.checkedWriteHeader
+      #[registers, index, width, name]
+    let headerProof ← dagDecide (← mkEq header trueExpr)
+    let liveCheck ← mkAppM ``Nat.testBit #[needed, index]
+    let liveReduced ← withTransparency .all <| whnf liveCheck
+    if liveReduced.isConstOf ``Bool.true then
+      let liveProof ← dagDecide (← mkEq liveCheck trueExpr)
+      let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[value]
+      let expressionEvidence ← sparseExpressionEvidence wires wireTable compiled
+        valueRef
+      let expressionProof ← mkAppM ``IndexedExprEvidence.accepted
+        #[expressionEvidence]
+      return mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.writeLive)
+        #[wires, wireTable, registers, width, name, value, index, valueRef,
+          needed, headerProof, liveProof, expressionProof]
+    let deadProof ← dagDecide (← mkEq liveCheck (mkConst ``Bool.false))
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.writeDead)
+      #[wires, wireTable, registers, width, name, value, index, valueRef,
+        needed, headerProof, deadProof]
+  if actionName == ``Loom.Hw.Act.seq &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.seq then
+    let left := actionArgs[actionArgs.size - 2]!
+    let right := actionArgs.back!
+    let summary := certArgs[certArgs.size - 3]!
+    let leftCert := certArgs[certArgs.size - 2]!
+    let rightCert := certArgs.back!
+    let rightSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary
+      #[rightCert]
+    let leftNeeded ← normalizeNatLiteral (← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.neededBitsBefore #[rightSummary, needed])
+    let leftProof ← proveActionShape wires wireTable registers left leftNeeded leftCert
+    let rightProof ← proveActionShape wires wireTable registers right needed rightCert
+    let expectedSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.seqSummary
+      #[← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[leftCert],
+        ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[rightCert]]
+    let summaryProof ← dagDecide (← mkEq summary expectedSummary)
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.seq)
+      #[wires, wireTable, registers, left, right, needed, summary, leftCert, rightCert,
+        summaryProof, leftProof, rightProof]
+  if actionName == ``Loom.Hw.Act.ite &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.ite then
+    let condition := actionArgs[actionArgs.size - 3]!
+    let thenAction := actionArgs[actionArgs.size - 2]!
+    let elseAction := actionArgs.back!
+    let summary := certArgs[certArgs.size - 5]!
+    let conditionRef := certArgs[certArgs.size - 4]!
+    let joins := certArgs[certArgs.size - 3]!
+    let thenCert := certArgs[certArgs.size - 2]!
+    let elseCert := certArgs.back!
+    let changed ← normalizeNatLiteral (← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.changedBitsAt #[summary, needed])
+    let thenProof ← proveActionShape wires wireTable registers thenAction changed thenCert
+    let elseProof ← proveActionShape wires wireTable registers elseAction changed elseCert
+    let expectedSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.iteSummary
+      #[← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[thenCert],
+        ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[elseCert]]
+    let summaryProof ← dagDecide (← mkEq summary expectedSummary)
+    let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[condition]
+    let conditionEvidence ← sparseExpressionEvidence wires wireTable compiled
+      conditionRef
+    let conditionProof ← mkAppM ``IndexedExprEvidence.accepted #[conditionEvidence]
+    let (outputsProof, _) ← proveJoinOutputs wires wireTable joins
+    return mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.ite)
+      #[wires, wireTable, registers, condition, thenAction, elseAction, needed, summary,
+        conditionRef, joins, thenCert, elseCert, summaryProof, conditionProof,
+        thenProof, elseProof, outputsProof]
+  throwError "action_shape_decide: source/certificate shape mismatch"
+
+private def proveJoinOutput (wires wireTable join : Expr) : MetaM Expr := do
+  let output ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.output #[join]
+  let outputReduced ← withTransparency .all <| whnf output
+  unless outputReduced.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.Ref.wire do
+    throwError "reg_query_decide: join output is not a wire"
+  let number := outputReduced.getAppArgs.back!
+  let wireValue ← mkAppM ``Loom.Release.Symbolic.Ref.wire #[number]
+  let outputEq ← dagDecide (← mkEq output wireValue)
+  let some numberValue ← getNatValue? (← withTransparency .all <| whnf number)
+    | throwError "reg_query_decide: join wire number is not concrete"
+  let some wiresName := wires.getAppFn.constName?
+    | throwError "reg_query_decide: wire tree is not named"
+  let namedLookup := wiresName.getPrefix.str ("dagJoinLookup" ++
+    toString numberValue)
+  let lookupProof ← if (← getEnv).contains namedLookup then
+      pure (Lean.mkConst namedLookup)
+    else
+      pure (← proveIndexedLookup wires wireTable number).2
+  pure <| mkAppN (mkConst
+    ``Loom.Release.Symbolic.ActionWide.JoinOutputEvidence.wire)
+    #[wires, wireTable, join, number, outputEq, lookupProof]
+
+private partial def proveJoinAt (wires wireTable condition query width thenRef
+    elseRef joins : Expr) : MetaM (Expr × Expr) := do
+  let reduced ← withTransparency .all <| whnf joins
+  let args := reduced.getAppArgs
+  unless reduced.getAppFn.constName? == some ``List.cons do
+    throwError "reg_query_decide: matching conditional join was not found"
+  let join := args[args.size - 2]!
+  let tail := args.back!
+  let index ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.index #[join]
+  if ← isDefEq index query then
+    let actualThen ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.thenInput #[join]
+    let actualElse ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.elseInput #[join]
+    unless ← isDefEq actualThen thenRef do
+      throwError "reg_query_decide: matching join has unexpected then reference"
+    unless ← isDefEq actualElse elseRef do
+      throwError "reg_query_decide: matching join has unexpected else reference"
+    let actualWidth ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.width #[join]
+    let guard ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.guard #[join]
+    let output ← mkAppM ``Loom.Release.Symbolic.ActionWide.Join.output #[join]
+    let indexProof ← dagDecide (← mkEq index query)
+    let widthProof ← dagDecide (← mkEq actualWidth width)
+    let guardProof ← dagDecide (← mkEq guard condition)
+    let thenProof ← dagDecide (← mkEq actualThen thenRef)
+    let elseProof ← dagDecide (← mkEq actualElse elseRef)
+    let outputProof ← proveJoinOutput wires wireTable join
+    return (output, mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.JoinAtEvidence.here)
+      #[wires, wireTable, condition, query, width, thenRef, elseRef, join, tail,
+        indexProof, widthProof, guardProof, thenProof, elseProof, outputProof])
+  let (output, tailProof) ← proveJoinAt wires wireTable condition query width
+    thenRef elseRef tail
+  pure (output, mkAppN (mkConst
+    ``Loom.Release.Symbolic.ActionWide.JoinAtEvidence.there)
+    #[wires, wireTable, condition, query, width, thenRef, elseRef, join, tail,
+      output, tailProof])
+
+/-- Construct a demand-driven action certificate for one register. Subtrees
+whose cached write bitmap excludes the query are never traversed. -/
+private partial def proveRegQuery (wires wireTable registers query width action
+    input needed cert : Expr) : MetaM (Expr × Expr) := do
+  -- Generated roots name the top-level bitmap. Collapse that name before any
+  -- bitwise operation; reducing `Nat.xor` over an opaque numeral constant
+  -- expands the generic division implementation instead of the numeral VM
+  -- primitive and is catastrophically slower.
+  let needed ← normalizeNatLiteral needed
+  let actionReduced ← exposeAction action
+  let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
+  let actionArgs := actionReduced.getAppArgs
+  if actionName == ``List.foldr then
+    let function := actionArgs[actionArgs.size - 3]!
+    let initial := actionArgs[actionArgs.size - 2]!
+    let values := actionArgs.back!
+    let simpContext ← Simp.Context.mkDefault
+    let (valuesResult, _) ← simp values simpContext
+    let expanded ← expandListFoldr function initial valuesResult.expr
+    return ← proveRegQuery wires wireTable registers query width expanded input
+      needed cert
+  let (certName, certArgs) ← expose cert
+  if actionName == ``Loom.Hw.Act.skip &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.skip then
+    return (input, mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.skip)
+      #[wires, wireTable, registers, query, width, input, needed])
+  if actionName == ``Loom.Hw.Act.memWrite &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.memWrite then
+    return (input, mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.memWrite)
+      #[wires, wireTable, registers, query, width,
+        actionArgs[actionArgs.size - 6]!, actionArgs[actionArgs.size - 5]!,
+        actionArgs[actionArgs.size - 4]!, actionArgs[actionArgs.size - 3]!,
+        actionArgs[actionArgs.size - 2]!, actionArgs.back!, input, needed])
+  if actionName == ``Loom.Hw.Act.write &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.write then
+    let writeWidth := actionArgs[actionArgs.size - 3]!
+    let name := actionArgs[actionArgs.size - 2]!
+    let value := actionArgs.back!
+    let index := certArgs[certArgs.size - 2]!
+    let valueRef := certArgs.back!
+    if !(← isDefEq index query) then
+      let different ← dagDecide (← mkAppM ``Ne #[index, query])
+      return (input, mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.writeOther)
+        #[wires, wireTable, registers, query, width, writeWidth, name, value,
+          input, needed, index, valueRef, different])
+    let usedCheck ← mkAppM ``Nat.testBit #[needed, query]
+    let usedReduced ← withTransparency .all <| whnf usedCheck
+    if usedReduced.isConstOf ``Bool.true then
+      let live ← dagDecide (← mkEq usedCheck trueExpr)
+      let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[value]
+      let expressionEvidence ← sparseExpressionEvidence wires wireTable compiled
+        valueRef
+      let expressionProof ← mkAppM ``IndexedExprEvidence.accepted
+        #[expressionEvidence]
+      return (valueRef, mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.writeLive)
+        #[wires, wireTable, registers, query, width, writeWidth, name, value,
+          input, needed, valueRef, live, expressionProof])
+    let dead ← dagDecide (← mkEq usedCheck (mkConst ``Bool.false))
+    return (input, mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.writeDead)
+      #[wires, wireTable, registers, query, width, writeWidth, name, value,
+        input, needed, valueRef, dead])
+  if actionName == ``Loom.Hw.Act.seq &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.seq then
+    let left := actionArgs[actionArgs.size - 2]!
+    let right := actionArgs.back!
+    let summary := certArgs[certArgs.size - 3]!
+    let leftCert := certArgs[certArgs.size - 2]!
+    let rightCert := certArgs.back!
+    let rightSummary ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary
+      #[rightCert]
+    let leftNeeded ← normalizeNatLiteral (← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.neededBitsBefore #[rightSummary, needed])
+    let (middle, leftProof) ← proveRegQuery wires wireTable registers query width
+      left input leftNeeded leftCert
+    let (output, rightProof) ← proveRegQuery wires wireTable registers query width
+      right middle needed rightCert
+    return (output, mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.seq)
+      #[wires, wireTable, registers, query, width, left, right, input, needed,
+        summary, leftCert, rightCert, middle, output, leftProof, rightProof])
+  if actionName == ``Loom.Hw.Act.ite &&
+      certName == ``Loom.Release.Symbolic.ActionWide.ActionCert.ite then
+    let condition := actionArgs[actionArgs.size - 3]!
+    let thenAction := actionArgs[actionArgs.size - 2]!
+    let elseAction := actionArgs.back!
+    let summary := certArgs[certArgs.size - 5]!
+    let conditionRef := certArgs[certArgs.size - 4]!
+    let joins := certArgs[certArgs.size - 3]!
+    let thenCert := certArgs[certArgs.size - 2]!
+    let elseCert := certArgs.back!
+    let changed ← normalizeNatLiteral (← mkAppM
+      ``Loom.Release.Symbolic.ActionWide.changedBitsAt #[summary, needed])
+    let changedCheck ← mkAppM ``Nat.testBit #[changed, query]
+    let changedReduced ← withTransparency .all <| whnf changedCheck
+    if !changedReduced.isConstOf ``Bool.true then
+      let unchanged ← dagDecide (← mkEq (← mkAppM ``Nat.testBit
+        #[← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
+          #[summary, needed], query]) (mkConst ``Bool.false))
+      return (input, mkAppN (mkConst
+        ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.iteUnchanged)
+        #[wires, wireTable, registers, query, width, condition, thenAction,
+          elseAction, input, needed, summary, conditionRef, joins, thenCert,
+          elseCert, unchanged])
+    let changedProof ← dagDecide (← mkEq (← mkAppM ``Nat.testBit
+      #[← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
+        #[summary, needed], query]) trueExpr)
+    let (thenRef, thenProof) ← proveRegQuery wires wireTable registers query width
+      thenAction input changed thenCert
+    let (elseRef, elseProof) ← proveRegQuery wires wireTable registers query width
+      elseAction input changed elseCert
+    let (output, joinProof) ← proveJoinAt wires wireTable conditionRef query width
+      thenRef elseRef joins
+    return (output, mkAppN (mkConst
+      ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.iteChanged)
+      #[wires, wireTable, registers, query, width, condition, thenAction,
+        elseAction, input, needed, summary, conditionRef, joins, thenCert,
+        elseCert, thenRef, elseRef, output, changedProof, thenProof, elseProof,
+        joinProof])
+  throwError "reg_query_decide: source/certificate shape mismatch"
+
+syntax (name := actionShapeDecide) "action_shape_decide" : term
+syntax (name := joinOutputsDecide) "join_outputs_decide" : term
+syntax (name := joinOutputsDecideUsing) "join_outputs_decide_using" ident : term
+syntax (name := regQueryDecide) "reg_query_decide" : term
+
+@[term_elab joinOutputsDecide]
+unsafe def elabJoinOutputsDecide : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "join_outputs_decide requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.JoinOutputsEvidence &&
+      args.size == 3 do
+    throwError "join_outputs_decide expected JoinOutputsEvidence"
+  let (proof, _) ← proveJoinOutputs args[0]! args[1]! args[2]!
+  unless !proof.hasFVar && !proof.hasMVar do
+    throwError "join_outputs_decide produced an open proof"
+  pure proof
+
+@[term_elab joinOutputsDecideUsing]
+unsafe def elabJoinOutputsDecideUsing : TermElab := fun stx expected? => do
+  let some expected := expected?
+    | throwError "join_outputs_decide_using requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.JoinOutputsEvidence &&
+      args.size == 3 do
+    throwError "join_outputs_decide_using expected JoinOutputsEvidence"
+  let continuation ← Term.elabTerm (mkIdent stx[1].getId) none
+  let (proof, _) ← proveJoinOutputs args[0]! args[1]! args[2]!
+    (some continuation)
+  unless !proof.hasFVar && !proof.hasMVar do
+    throwError "join_outputs_decide_using produced an open proof"
+  pure proof
+
+@[term_elab actionShapeDecide]
+unsafe def elabActionShapeDecide : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "action_shape_decide requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence &&
+      args.size == 6 do
+    throwError "action_shape_decide expected ActionShapeEvidence"
+  let proof ← proveActionShape args[0]! args[1]! args[2]! args[3]! args[4]!
+    args[5]!
+  unless !proof.hasFVar && !proof.hasMVar do
+    throwError "action_shape_decide produced an open proof"
+  pure proof
+
+@[term_elab regQueryDecide]
+unsafe def elabRegQueryDecide : TermElab := fun _ expected? => do
+  let some expected := expected?
+    | throwError "reg_query_decide requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence &&
+      args.size == 10 do
+    throwError "reg_query_decide expected RegQueryEvidence"
+  let (output, proof) ← proveRegQuery args[0]! args[1]! args[2]! args[3]!
+    args[4]! args[5]! args[6]! args[7]! args[8]!
+  unless ← isDefEq output args[9]! do
+    throwError "reg_query_decide produced a different output reference"
+  unless !proof.hasFVar && !proof.hasMVar do
+    throwError "reg_query_decide produced an open proof"
+  pure proof
 
 syntax (name := dagSparseEvidenceExists) "dag_sparse_evidence_exists" : term
 
