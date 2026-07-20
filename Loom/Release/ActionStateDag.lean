@@ -31,6 +31,7 @@ structure RefStateTable where
   leafSize : Nat
   leafCount : Nat
   emptyRoot : Nat
+  depth : Nat
   deriving Repr, DecidableEq
 
 /-- Resolve a state-node number without flattening the global table. -/
@@ -512,13 +513,13 @@ def checkedStateJoins (wires : Rope (List IndexedWire)) (wireTable : WireTable)
   | input, changed, join :: joins, nextRoot :: roots, output =>
       changed.testBit join.index &&
         registers[join.index]?.map (·.width) == some join.width &&
-        lookupStateRef? nodes table registers 10 thenRoot join.index ==
+        lookupStateRef? nodes table registers table.depth thenRoot join.index ==
           some join.thenInput &&
-        lookupStateRef? nodes table registers 10 elseRoot join.index ==
+        lookupStateRef? nodes table registers table.depth elseRoot join.index ==
           some join.elseInput &&
         join.guard == condition &&
         checkedJoinOutput wires wireTable join &&
-        checkedStateWrite nodes table 10 input join.index join.output nextRoot &&
+        checkedStateWrite nodes table table.depth input join.index join.output nextRoot &&
         checkedStateJoins wires wireTable nodes table registers condition
           thenRoot elseRoot
           nextRoot (changed ^^^ (1 <<< join.index)) joins roots output
@@ -535,13 +536,13 @@ inductive StateJoinsEvidence (wires : Rope (List IndexedWire))
   | cons {input thenRoot elseRoot changed join joins nextRoot outputRoot}
       (bitAccepted : changed.testBit join.index = true)
       (widthAccepted : registers[join.index]?.map (·.width) = some join.width)
-      (thenAccepted : StateLookupEvidence nodes table registers 10 thenRoot
+      (thenAccepted : StateLookupEvidence nodes table registers table.depth thenRoot
         join.index join.thenInput)
-      (elseAccepted : StateLookupEvidence nodes table registers 10 elseRoot
+      (elseAccepted : StateLookupEvidence nodes table registers table.depth elseRoot
         join.index join.elseInput)
       (guardAccepted : join.guard = condition)
       (outputAccepted : JoinOutputEvidence wires wireTable join)
-      (writeAccepted : StateWriteEvidence nodes table 10 input join.index
+      (writeAccepted : StateWriteEvidence nodes table table.depth input join.index
         join.output nextRoot)
       (tailAccepted : StateJoinsEvidence wires wireTable nodes table registers
         condition nextRoot thenRoot elseRoot
@@ -605,24 +606,24 @@ theorem StateJoinsEvidence.lookup_unchanged
     (evidence : StateJoinsEvidence wires wireTable nodes table registers
       condition input thenRoot elseRoot changed joins outputRoot)
     (emptyValid : lookupStateNode? nodes table table.emptyRoot = some .empty)
-    (sizeBound : registers.size ≤ 2 ^ 10)
-    (queryBound : query < 2 ^ 10)
+    (sizeBound : registers.size ≤ 2 ^ table.depth)
+    (queryBound : query < 2 ^ table.depth)
     (unchanged : changed.testBit query = false)
-    (inputLookup : StateLookupEvidence nodes table registers 10 input query value) :
-    StateLookupEvidence nodes table registers 10 outputRoot query value := by
+    (inputLookup : StateLookupEvidence nodes table registers table.depth input query value) :
+    StateLookupEvidence nodes table registers table.depth outputRoot query value := by
   induction evidence with
   | nil => exact inputLookup
   | @cons input thenRoot elseRoot changed join joins nextRoot outputRoot
       bitAccepted widthAccepted thenAccepted elseAccepted guardAccepted
       outputAccepted writeAccepted tailAccepted tailIH =>
-      have indexBound : join.index < 2 ^ 10 :=
+      have indexBound : join.index < 2 ^ table.depth :=
         registerIndex_lt_pow_of_width sizeBound widthAccepted
       have distinct : join.index ≠ query := by
         intro equal
         subst query
         rw [bitAccepted] at unchanged
         contradiction
-      have nextAccepted : lookupStateRef? nodes table registers 10 nextRoot query =
+      have nextAccepted : lookupStateRef? nodes table registers table.depth nextRoot query =
           some value := by
         rw [writeAccepted.lookup_other (registers := registers) emptyValid query
           (exists_testBit_ne_of_ne_of_lt_pow distinct indexBound queryBound)]
@@ -649,21 +650,21 @@ theorem StateJoinsEvidence.lookup_changed
     (evidence : StateJoinsEvidence wires wireTable nodes table registers
       condition input thenRoot elseRoot changed joins outputRoot)
     (emptyValid : lookupStateNode? nodes table table.emptyRoot = some .empty)
-    (sizeBound : registers.size ≤ 2 ^ 10)
-    (queryBound : query < 2 ^ 10)
+    (sizeBound : registers.size ≤ 2 ^ table.depth)
+    (queryBound : query < 2 ^ table.depth)
     (changedAt : changed.testBit query = true) :
     ∃ join : Join,
       join.index = query ∧ join.guard = condition ∧
       JoinOutputEvidence wires wireTable join ∧
-      StateLookupEvidence nodes table registers 10 thenRoot query join.thenInput ∧
-      StateLookupEvidence nodes table registers 10 elseRoot query join.elseInput ∧
-      StateLookupEvidence nodes table registers 10 outputRoot query join.output := by
+      StateLookupEvidence nodes table registers table.depth thenRoot query join.thenInput ∧
+      StateLookupEvidence nodes table registers table.depth elseRoot query join.elseInput ∧
+      StateLookupEvidence nodes table registers table.depth outputRoot query join.output := by
   induction evidence with
   | nil => simp at changedAt
   | @cons input thenRoot elseRoot changed join joins nextRoot outputRoot
       bitAccepted widthAccepted thenAccepted elseAccepted guardAccepted
       outputAccepted writeAccepted tailAccepted tailIH =>
-      have indexBound : join.index < 2 ^ 10 :=
+      have indexBound : join.index < 2 ^ table.depth :=
         registerIndex_lt_pow_of_width sizeBound widthAccepted
       by_cases equal : join.index = query
       · subst query
@@ -718,7 +719,7 @@ def checkDagAction (wires : Rope (List IndexedWire))
               (Loom.Hw.Compile.compileExpr value) valueRef then
             match writeRoot with
             | some output =>
-                if checkedStateWrite nodes stateTable 10 root index valueRef
+                if checkedStateWrite nodes stateTable stateTable.depth root index valueRef
                     output then some output else none
             | none => none
           else none
@@ -773,7 +774,7 @@ inductive DagBitSparseEvidence (wires : Rope (List IndexedWire))
       (used : needed.testBit index = true)
       (valueAccepted : indexedExprMatches wires wireTable
         (Loom.Hw.Compile.compileExpr value) valueRef = true)
-      (writeAccepted : StateWriteEvidence nodes stateTable 10 root index valueRef
+      (writeAccepted : StateWriteEvidence nodes stateTable stateTable.depth root index valueRef
         outputRoot) :
       DagBitSparseEvidence wires wireTable nodes stateTable registers
         (.write width name value) root needed (.write index valueRef) outputRoot
@@ -985,11 +986,12 @@ theorem DagBitSparseEvidence.lookup_unused
       action root needed cert output)
     (emptyValid : lookupStateNode? nodes stateTable stateTable.emptyRoot =
       some .empty)
-    (sizeBound : registers.size ≤ 2 ^ 10) (queryBound : query < 2 ^ 10)
+    (sizeBound : registers.size ≤ 2 ^ stateTable.depth)
+    (queryBound : query < 2 ^ stateTable.depth)
     (unused : needed.testBit query = false)
-    (inputLookup : StateLookupEvidence nodes stateTable registers 10 root query
+    (inputLookup : StateLookupEvidence nodes stateTable registers stateTable.depth root query
       value) :
-    StateLookupEvidence nodes stateTable registers 10 output query value := by
+    StateLookupEvidence nodes stateTable registers stateTable.depth output query value := by
   induction evidence with
   | skip | memWrite | writeUnused => exact inputLookup
   | @writeNeeded width name expression root needed index valueRef outputRoot
@@ -999,13 +1001,13 @@ theorem DagBitSparseEvidence.lookup_unused
         subst query
         rw [used] at unused
         contradiction
-      have indexBound : index < 2 ^ 10 := by
+      have indexBound : index < 2 ^ stateTable.depth := by
         cases found : registers[index]? with
         | none => simp [checkedWriteHeader, found] at headerAccepted
         | some register =>
             exact Nat.lt_of_lt_of_le (getElem?_eq_some_iff.mp found).1 sizeBound
       have outputAccepted :
-          lookupStateRef? nodes stateTable registers 10 outputRoot query =
+          lookupStateRef? nodes stateTable registers stateTable.depth outputRoot query =
             some value := by
         rw [writeAccepted.lookup_other (registers := registers) emptyValid query
           (exists_testBit_ne_of_ne_of_lt_pow distinct indexBound queryBound)]
@@ -1057,18 +1059,18 @@ theorem DagBitSparseEvidence.nextReg_raw
       action root needed cert output)
     (emptyValid : lookupStateNode? nodes stateTable stateTable.emptyRoot =
       some .empty)
-    (sizeBound : registers.size ≤ 2 ^ 10)
+    (sizeBound : registers.size ≤ 2 ^ stateTable.depth)
     (unique : RegisterNamesUnique registers)
     (source : RegDecl) (sourceFound : registers[query]? = some source)
-    (queryBound : query < 2 ^ 10) (used : needed.testBit query = true)
+    (queryBound : query < 2 ^ stateTable.depth) (used : needed.testBit query = true)
     (inputRef : Ref)
-    (inputLookup : StateLookupEvidence nodes stateTable registers 10 root query
+    (inputLookup : StateLookupEvidence nodes stateTable registers stateTable.depth root query
       inputRef) :
     ∀ current : Loom.Emit.MicroVerilog.Expr source.width,
       RawCurrentMatches program wireTable current
         (cert.semanticCurrentRef query inputRef) →
       ∃ outputRef,
-        StateLookupEvidence nodes stateTable registers 10 output query outputRef ∧
+        StateLookupEvidence nodes stateTable registers stateTable.depth output query outputRef ∧
         RawExprMatches program wireTable
           (Loom.Hw.Compile.nextReg source.name source.width action current)
           outputRef := by
@@ -1129,10 +1131,10 @@ theorem DagBitSparseEvidence.nextReg_raw
               apply equal
               exact unique actualFound sourceFound
                 (headerAccepted.1.trans nameEq)
-            have indexBound : index < 2 ^ 10 :=
+            have indexBound : index < 2 ^ stateTable.depth :=
               Nat.lt_of_lt_of_le (getElem?_eq_some_iff.mp actualFound).1 sizeBound
             have outputAccepted :
-                lookupStateRef? nodes stateTable registers 10 outputRoot query =
+                lookupStateRef? nodes stateTable registers stateTable.depth outputRoot query =
                   some inputRef := by
               rw [writeAccepted.lookup_other (registers := registers) emptyValid
                 query (exists_testBit_ne_of_ne_of_lt_pow equal indexBound
@@ -1336,14 +1338,14 @@ theorem DagBitSparseEvidence.nextReg_raw_of_lookups
       action root needed cert output)
     (emptyValid : lookupStateNode? nodes stateTable stateTable.emptyRoot =
       some .empty)
-    (sizeBound : registers.size ≤ 2 ^ 10)
+    (sizeBound : registers.size ≤ 2 ^ stateTable.depth)
     (unique : RegisterNamesUnique registers)
     (source : RegDecl) (sourceFound : registers[query]? = some source)
-    (queryBound : query < 2 ^ 10) (used : needed.testBit query = true)
+    (queryBound : query < 2 ^ stateTable.depth) (used : needed.testBit query = true)
     (inputRef outputRef : Ref)
-    (inputLookup : StateLookupEvidence nodes stateTable registers 10 root query
+    (inputLookup : StateLookupEvidence nodes stateTable registers stateTable.depth root query
       inputRef)
-    (outputLookup : StateLookupEvidence nodes stateTable registers 10 output
+    (outputLookup : StateLookupEvidence nodes stateTable registers stateTable.depth output
       query outputRef)
     (current : Loom.Emit.MicroVerilog.Expr source.width)
     (currentMatches : RawCurrentMatches program wireTable current
@@ -1393,7 +1395,7 @@ theorem checkDagAction_sound {wires : Rope (List IndexedWire)}
         cases valueAccepted : indexedExprMatches wires wireTable
             (Loom.Hw.Compile.compileExpr value) valueRef <;>
           simp [valueAccepted] at accepted
-        cases writeAccepted : checkedStateWrite nodes stateTable 10 root index
+        cases writeAccepted : checkedStateWrite nodes stateTable stateTable.depth root index
             valueRef outputRoot <;> simp [writeAccepted] at accepted
         subst output
         exact .writeNeeded headerAccepted used valueAccepted

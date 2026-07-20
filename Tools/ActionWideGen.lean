@@ -563,7 +563,7 @@ private def recordDagWrite (root : Nat) : DagM Unit :=
 private def recordDagAction (root : Nat) : DagM Unit :=
   modify fun state => { state with actionRoots := state.actionRoots.push root }
 
-private partial def evaluateDag (source : Act) (input needed : Nat)
+private partial def evaluateDag (stateDepth : Nat) (source : Act) (input needed : Nat)
     (cert : Loom.Release.Symbolic.ActionWide.ActionCert) : DagM Nat := do
   let initialState ← get
   let spanIndex := initialState.spans.size
@@ -574,25 +574,25 @@ private partial def evaluateDag (source : Act) (input needed : Nat)
     | .skip, .skip | .memWrite .., .memWrite => pure input
     | .write _ _ _, .write index value =>
         if needed.testBit index then
-          let root ← dagWrite 10 input index value
+          let root ← dagWrite stateDepth input index value
           recordDagWrite root
           pure root
         else pure input
     | .seq left right, .seq _ leftCert rightCert => do
         let leftNeeded := Loom.Release.Symbolic.ActionWide.neededBitsBefore
           rightCert.summary needed
-        let middle ← evaluateDag left input leftNeeded leftCert
-        evaluateDag right middle needed rightCert
+        let middle ← evaluateDag stateDepth left input leftNeeded leftCert
+        evaluateDag stateDepth right middle needed rightCert
     | .ite _ thenAction elseAction,
         .ite summary _ joins thenCert elseCert => do
         let changed := Loom.Release.Symbolic.ActionWide.changedBitsAt summary needed
-        let _ ← evaluateDag thenAction input changed thenCert
-        let _ ← evaluateDag elseAction input changed elseCert
+        let _ ← evaluateDag stateDepth thenAction input changed thenCert
+        let _ ← evaluateDag stateDepth elseAction input changed elseCert
         let mut root := input
         let mut remaining := changed
         for join in joins do
           guard (remaining.testBit join.index)
-          root ← dagWrite 10 root join.index join.output
+          root ← dagWrite stateDepth root join.index join.output
           recordDagWrite root
           remaining := remaining ^^^ (1 <<< join.index)
         guard (remaining == 0)
@@ -606,14 +606,14 @@ private partial def evaluateDag (source : Act) (input needed : Nat)
   set { finalState with spans := finalState.spans.set! spanIndex span }
   pure output
 
-private def dagInitialRoot (registers : Array RegDecl)
+private def dagInitialRoot (stateDepth : Nat) (registers : Array RegDecl)
     (input : Array Loom.Release.Symbolic.Ref) : DagM Nat := do
   let mut root := 0
   for index in [:min registers.size input.size] do
     let some register := registers[index]? | failure
     let some value := input[index]? | failure
     if value != .reg register.name then
-      root ← dagWrite 10 root index value
+      root ← dagWrite stateDepth root index value
   pure root
 
 /-- Interpret a concrete generator-side state root. The emitted lookup theorem
@@ -910,11 +910,12 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       refillResult.refs coreNeeded "actionCertNode15158").run {}
     | return 1
   let some cut := cutsState.cuts[cutIndex]? | return 1
+  let stateDepth := 10
   let neededBits := cutIndicesToBits cut.needed
   let some (inputRoot, initialState) :=
-      (dagInitialRoot registers cut.input).run {} | return 1
+      (dagInitialRoot stateDepth registers cut.input).run {} | return 1
   let some (outputRoot, finalState) :=
-      (evaluateDag cut.sourceValue inputRoot neededBits cut.certValue).run
+      (evaluateDag stateDepth cut.sourceValue inputRoot neededBits cut.certValue).run
         initialState | return 1
   let leafLimit := 128
   let some ((afterProofs, proofOutput, rootProof), proofCollection) :=
@@ -965,7 +966,8 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     "def dagStateNodes := " ++ balancedDagRopeExpr leafNames ++ "\n\n" ++
     "def dagStateTable : Symbolic.ActionWide.RefStateTable := " ++
       "{ leafSize := " ++ toString leafSize ++ ", leafCount := " ++
-      toString chunks.length ++ ", emptyRoot := 0 }\n" ++
+      toString chunks.length ++ ", emptyRoot := 0, depth := " ++
+      toString stateDepth ++ " }\n" ++
     "def dagInputRoot : Nat := " ++ toString inputRoot ++ "\n" ++
     "def dagOutputRoot : Nat := " ++ toString outputRoot ++ "\n\n" ++
     "def dagCutRegisters : Array RegDecl := " ++
@@ -1107,18 +1109,18 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
         "  exact Symbolic.ActionWide.lookupStateNode_of_resolve (by decide) rfl\n" ++
         "    (dagStateResolveLeaf0000 0)\n"
     for index in indices do
-      let some inputRef := dagLookupRef finalState.nodes registers 10 inputRoot index
+      let some inputRef := dagLookupRef finalState.nodes registers stateDepth inputRoot index
         | return 1
-      let some outputRef := dagLookupRef finalState.nodes registers 10 outputRoot index
+      let some outputRef := dagLookupRef finalState.nodes registers stateDepth outputRoot index
         | return 1
       declarations := declarations.push <|
         "theorem dagCutInputLookup" ++ pad4 index ++ " :\n" ++
         "    Symbolic.ActionWide.StateLookupEvidence dagStateNodes " ++
-          "dagStateTable dagCutRegisters 10 dagInputRoot " ++ toString index ++
+          "dagStateTable dagCutRegisters dagStateTable.depth dagInputRoot " ++ toString index ++
           " (" ++ dagRefToLean inputRef ++ ") :=\n  dag_state_lookup\n\n" ++
         "theorem dagCutOutputLookup" ++ pad4 index ++ " :\n" ++
         "    Symbolic.ActionWide.StateLookupEvidence dagStateNodes " ++
-          "dagStateTable dagCutRegisters 10 dagOutputRoot " ++ toString index ++
+          "dagStateTable dagCutRegisters dagStateTable.depth dagOutputRoot " ++ toString index ++
           " (" ++ dagRefToLean outputRef ++ ") :=\n  dag_state_lookup\n"
     let lookupText :=
       "-- Generated state observations for semantic projections; DO NOT EDIT.\n" ++
