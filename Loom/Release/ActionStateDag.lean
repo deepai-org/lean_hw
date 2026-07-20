@@ -1323,6 +1323,42 @@ theorem DagBitSparseEvidence.nextReg_raw
                 by simpa [Loom.Hw.Compile.nextReg, branchWriteTrue] using
                   muxMatches⟩
 
+/-- Specialize a shared action-DAG certificate to one exact input/output state
+observation. The large certificate remains an opaque premise; only the generic
+semantic induction above is reused for each register. -/
+theorem DagBitSparseEvidence.nextReg_raw_of_lookups
+    (program : Program) {wires : Rope (List IndexedWire)}
+    (wiresMatch : IndexedRopeMatches 0 program.wires wires)
+    (wireTable : WireTable) {nodes : Rope (List RefStateNode)}
+    {stateTable : RefStateTable} {registers : Array RegDecl}
+    {action : Act} {root needed output query : Nat} {cert : ActionCert}
+    (evidence : DagBitSparseEvidence wires wireTable nodes stateTable registers
+      action root needed cert output)
+    (emptyValid : lookupStateNode? nodes stateTable stateTable.emptyRoot =
+      some .empty)
+    (sizeBound : registers.size ≤ 2 ^ 10)
+    (unique : RegisterNamesUnique registers)
+    (source : RegDecl) (sourceFound : registers[query]? = some source)
+    (queryBound : query < 2 ^ 10) (used : needed.testBit query = true)
+    (inputRef outputRef : Ref)
+    (inputLookup : StateLookupEvidence nodes stateTable registers 10 root query
+      inputRef)
+    (outputLookup : StateLookupEvidence nodes stateTable registers 10 output
+      query outputRef)
+    (current : Loom.Emit.MicroVerilog.Expr source.width)
+    (currentMatches : RawCurrentMatches program wireTable current
+      (cert.semanticCurrentRef query inputRef)) :
+    RawExprMatches program wireTable
+      (Loom.Hw.Compile.nextReg source.name source.width action current)
+      outputRef := by
+  obtain ⟨actualRef, actualLookup, actualMatches⟩ :=
+    evidence.nextReg_raw program wiresMatch wireTable emptyValid sizeBound unique
+      source sourceFound queryBound used inputRef inputLookup current
+      currentMatches
+  have equal := actualLookup.unique outputLookup
+  subst actualRef
+  exact actualMatches
+
 /-- Acceptance by the compact checker reconstructs the full structural action
 evidence. The generated trace is therefore untrusted data, not proof code. -/
 theorem checkDagAction_sound {wires : Rope (List IndexedWire)}

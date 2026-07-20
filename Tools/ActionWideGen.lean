@@ -1237,9 +1237,6 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
         "Loom.Hw.Expr.lit (BitVec.ofNat 1 0)"
       let conditionRefText := "(" ++
         Tools.ReleaseCertGen.actionWideRefToLean connector.conditionRef ++ ")"
-      let summaryText := "{ possible := " ++
-        toString connector.summary.possible ++ ", definite := " ++
-        toString connector.summary.definite ++ " }"
       let joinsText := "(" ++
         Tools.ReleaseCertGen.actionWideJoinBlockToLean connector.joins ++ ")"
       let thenRoot := proofRefOutput connector.children[0]!
@@ -1249,26 +1246,58 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       let mut joinChanged :=
         Loom.Release.Symbolic.ActionWide.changedBitsAt connector.summary
           connector.needed
+      let mut joinInputs : Array Nat := #[joinInput]
+      let mut joinChangeds : Array Nat := #[joinChanged]
       for (join, nextRoot) in connector.joins.zip connector.writeRoots.toList do
         joinInput := nextRoot
         joinChanged := joinChanged ^^^ (1 <<< join.index)
+        joinInputs := joinInputs.push joinInput
+        joinChangeds := joinChangeds.push joinChanged
       unless joinInput == connector.output && joinChanged == 0 do return 1
       let connectorJoins := stem ++ "Joins"
-      let rootsText := String.intercalate " " <|
-        connector.writeRoots.toList.map toString
+      -- A large conditional can have hundreds of register joins. Building one
+      -- recursive proof term makes elaboration and kernel checking superlinear.
+      -- Check bounded suffixes as separate named theorems, so each predecessor
+      -- refers to its already-checked continuation as a constant.
+      let joinProofChunkSize := 16
+      let chunkCount := (connector.joins.length + joinProofChunkSize - 1) /
+        joinProofChunkSize
+      let starts := (List.range chunkCount).map (· * joinProofChunkSize)
+      let suffixName (start : Nat) :=
+        if start == 0 then connectorJoins
+        else stem ++ "JoinsTail" ++ pad3 start
+      let suffixEvidenceName (start : Nat) :=
+        if start == 0 then stem ++ "JoinsEvidence"
+        else stem ++ "JoinsTail" ++ pad3 start ++ "Evidence"
+      let suffixDefinitions := String.intercalate "\n" <|
+        starts.drop 1 |>.map fun start =>
+          "noncomputable def " ++ suffixName start ++
+            " : List Symbolic.ActionWide.Join := (" ++
+            suffixName (start - joinProofChunkSize) ++ ").drop " ++
+            toString joinProofChunkSize ++ "\n"
+      let mut suffixProofs : Array String := #[]
+      for start in starts.reverse do
+        let stop := min connector.joins.length (start + joinProofChunkSize)
+        let rootsText := String.intercalate " " <|
+          connector.writeRoots.toList.drop start |>.take (stop - start) |>.map toString
+        let tactic := if stop == connector.joins.length then
+            "dag_state_joins"
+          else
+            "dag_state_joins_using " ++ suffixEvidenceName stop
+        suffixProofs := suffixProofs.push <|
+          "dag_write_roots " ++ rootsText ++ "\n\n" ++
+          "theorem " ++ suffixEvidenceName start ++ " :\n" ++
+          "    Symbolic.ActionWide.StateJoinsEvidence fastIndexedWireTree " ++
+            "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++
+            conditionRefText ++ " " ++ toString joinInputs[start]! ++ " " ++
+            toString thenRoot ++ " " ++ toString elseRoot ++ " " ++
+            toString joinChangeds[start]! ++ " " ++ suffixName start ++ " " ++
+            toString connector.output ++ " :=\n  " ++ tactic ++ "\n"
       let joinProofs :=
         "noncomputable def " ++ connectorJoins ++
           " : List Symbolic.ActionWide.Join := " ++ joinsText ++ "\n\n" ++
-        "dag_write_roots " ++ rootsText ++ "\n\n" ++
-        "theorem " ++ stem ++ "JoinsEvidence :\n" ++
-        "    Symbolic.ActionWide.StateJoinsEvidence fastIndexedWireTree " ++
-          "fastWireTable dagStateNodes dagStateTable dagCutRegisters " ++
-          conditionRefText ++ " " ++
-          toString connector.input ++ " " ++ toString thenRoot ++ " " ++
-          toString elseRoot ++
-          " (Symbolic.ActionWide.changedBitsAt (" ++ summaryText ++ ") " ++
-          toString connector.needed ++ ") " ++ connectorJoins ++ " " ++
-          toString connector.output ++ " :=\n  dag_state_joins\n"
+        suffixDefinitions ++ "\n" ++
+        String.intercalate "\n" suffixProofs.toList
       checks := checks.push <|
         "noncomputable def " ++ condition ++ " : Expr 1 := " ++
           conditionValue ++ "\n\n" ++
