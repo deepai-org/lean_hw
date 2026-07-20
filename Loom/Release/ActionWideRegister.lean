@@ -242,13 +242,35 @@ structure SparseResult where
   changed : List Nat
   deriving Repr, DecidableEq
 
-private def singletonIndex (index : Nat) : Nat := 1 <<< index
+def singletonIndex (index : Nat) : Nat := 1 <<< index
 
 def ActionCert.summary : ActionCert → Summary
   | .skip | .memWrite => { possible := 0, definite := 0 }
   | .write index _ =>
       { possible := singletonIndex index, definite := singletonIndex index }
   | .seq summary _ _ | .ite summary _ _ _ _ => summary
+
+/-- Whether a concrete certificate contains a write to an index on some
+control-flow path. Unlike the cached summary, this definition structurally
+recomputes the claim and is used only in generic soundness proofs. -/
+def ActionCert.possiblyWritesIndex (query : Nat) : ActionCert → Bool
+  | .skip | .memWrite => false
+  | .write index _ => (singletonIndex index).testBit query
+  | .seq _ left right =>
+      left.possiblyWritesIndex query || right.possiblyWritesIndex query
+  | .ite _ _ _ thenCert elseCert =>
+      thenCert.possiblyWritesIndex query || elseCert.possiblyWritesIndex query
+
+/-- Whether every control-flow path through a concrete certificate writes an
+index. Sequential composition needs either side to write; a conditional needs
+both branches. -/
+def ActionCert.definitelyWritesIndex (query : Nat) : ActionCert → Bool
+  | .skip | .memWrite => false
+  | .write index _ => (singletonIndex index).testBit query
+  | .seq _ left right =>
+      left.definitelyWritesIndex query || right.definitelyWritesIndex query
+  | .ite _ _ _ thenCert elseCert =>
+      thenCert.definitelyWritesIndex query && elseCert.definitelyWritesIndex query
 
 def seqSummary (left right : Summary) : Summary :=
   { possible := left.possible ||| right.possible

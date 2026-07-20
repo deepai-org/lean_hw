@@ -663,6 +663,59 @@ inductive DagBitSparseEvidence (wires : Rope (List IndexedWire))
         (.ite condition thenAction elseAction) root needed
         (.ite summary conditionRef joins thenCert elseCert) outputRoot
 
+/-- The cached possible/definite bitmaps in a DAG certificate agree with a
+structural traversal of its write leaves. This theorem is checked once over
+the shared action evidence and then reused opaquely by every register
+projection. -/
+theorem DagBitSparseEvidence.summary_valid
+    {wires : Rope (List IndexedWire)} {wireTable : WireTable}
+    {nodes : Rope (List RefStateNode)} {stateTable : RefStateTable}
+    {registers : Array RegDecl} {action : Act} {root needed output : Nat}
+    {cert : ActionCert}
+    (evidence : DagBitSparseEvidence wires wireTable nodes stateTable registers
+      action root needed cert output) (query : Nat) :
+    cert.summary.possible.testBit query = cert.possiblyWritesIndex query ∧
+      cert.summary.definite.testBit query = cert.definitelyWritesIndex query := by
+  induction evidence with
+  | skip | memWrite => simp [ActionCert.summary,
+      ActionCert.possiblyWritesIndex, ActionCert.definitelyWritesIndex]
+  | writeUnused | writeNeeded =>
+      simp [ActionCert.summary, singletonIndex,
+        ActionCert.possiblyWritesIndex, ActionCert.definitelyWritesIndex]
+  | @seq left right root needed summary leftCert rightCert middleRoot outputRoot
+      summaryAccepted leftAccepted rightAccepted leftIH rightIH =>
+      subst summaryAccepted
+      constructor
+      · change (seqSummary leftCert.summary rightCert.summary).possible.testBit
+            query =
+          (leftCert.possiblyWritesIndex query ||
+            rightCert.possiblyWritesIndex query)
+        simp only [seqSummary, Nat.testBit_or]
+        rw [leftIH.1, rightIH.1]
+      · change (seqSummary leftCert.summary rightCert.summary).definite.testBit
+            query =
+          (leftCert.definitelyWritesIndex query ||
+            rightCert.definitelyWritesIndex query)
+        simp only [seqSummary, Nat.testBit_or]
+        rw [leftIH.2, rightIH.2]
+  | @ite condition thenAction elseAction root needed summary conditionRef joins
+      thenCert elseCert thenRoot elseRoot outputRoot summaryAccepted
+      conditionAccepted thenAccepted elseAccepted joinsAccepted thenIH elseIH =>
+      subst summaryAccepted
+      constructor
+      · change (iteSummary thenCert.summary elseCert.summary).possible.testBit
+            query =
+          (thenCert.possiblyWritesIndex query ||
+            elseCert.possiblyWritesIndex query)
+        simp only [iteSummary, Nat.testBit_or]
+        rw [thenIH.1, elseIH.1]
+      · change (iteSummary thenCert.summary elseCert.summary).definite.testBit
+            query =
+          (thenCert.definitelyWritesIndex query &&
+            elseCert.definitelyWritesIndex query)
+        simp only [iteSummary, Nat.testBit_and]
+        rw [thenIH.2, elseIH.2]
+
 /-- Acceptance by the compact checker reconstructs the full structural action
 evidence. The generated trace is therefore untrusted data, not proof code. -/
 theorem checkDagAction_sound {wires : Rope (List IndexedWire)}
