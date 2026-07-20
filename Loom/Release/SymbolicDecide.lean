@@ -1780,9 +1780,23 @@ private initialize dagWriteCursor : IO.Ref Nat ← IO.mkRef 0
 private initialize dagNodeCount : IO.Ref Nat ← IO.mkRef 0
 private initialize dagBoundMs : IO.Ref Nat ← IO.mkRef 0
 private initialize dagDecisionMs : IO.Ref Nat ← IO.mkRef 0
+private initialize dagDisableBounds : IO.Ref Bool ← IO.mkRef false
+
+private structure DagLeafEntry where
+  action : Expr
+  root : Expr
+  proof : Expr
+  actionCount : Nat
+  writeCount : Nat
+
+private initialize dagLeafEntries : IO.Ref (Array DagLeafEntry) ← IO.mkRef #[]
+private initialize dagLeafReducedActions : IO.Ref (Array (Option Expr)) ←
+  IO.mkRef #[]
+private initialize dagLeafCursor : IO.Ref Nat ← IO.mkRef 0
 
 syntax (name := dagActionRootsCmd) "dag_action_roots" num* : command
 syntax (name := dagWriteRootsCmd) "dag_write_roots" num* : command
+syntax (name := dagActionLeafCmd) "dag_action_leaf" ident num num : command
 
 private def readDagRoots (arguments : Array Syntax) : Command.CommandElabM
     (Array Nat) := do
@@ -1800,6 +1814,24 @@ unsafe def elabDagActionRoots : Command.CommandElab := fun stx => do
 @[command_elab dagWriteRootsCmd]
 unsafe def elabDagWriteRoots : Command.CommandElab := fun stx => do
   dagWriteRoots.set (← readDagRoots stx[1].getArgs)
+
+@[command_elab dagActionLeafCmd]
+unsafe def elabDagActionLeaf : Command.CommandElab := fun stx => do
+  let name ← resolveGlobalConstNoOverload stx[1]
+  let some actionCount := stx[2].isNatLit?
+    | throwErrorAt stx[2] "action count must be a natural literal"
+  let some writeCount := stx[3].isNatLit?
+    | throwErrorAt stx[3] "write count must be a natural literal"
+  let proof := Lean.mkConst name
+  let type := (← getConstInfo name).type
+  let args := type.getAppArgs
+  unless type.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence &&
+      args.size == 10 do
+    throwErrorAt stx[1] "DAG action leaf has the wrong theorem type"
+  dagLeafEntries.modify fun entries => entries.push
+    { action := args[5]!, root := args[9]!, proof, actionCount, writeCount }
+  dagLeafReducedActions.modify fun actions => actions.push none
 
 private structure DagProofBuild where
   root : Expr
@@ -1828,6 +1860,7 @@ private def dagDecide (type : Expr) : MetaM Expr := do
   pure proof
 
 private def boundDagProof (build : DagProofBuild) : MetaM DagProofBuild := do
+  if ← dagDisableBounds.get then return build
   if build.size < 8 then return build
   let started ← IO.monoMsNow
   let type ← inferType build.proof
@@ -2082,11 +2115,39 @@ private partial def proveDagJoins (nodes stateTable registers condition input
 
 private partial def proveDagEvidence (wires wireTable nodes stateTable registers
     action root needed cert : Expr) : MetaM DagProofBuild := do
+  let actionReduced ← exposeAction action
+  let leafCursor ← dagLeafCursor.get
+  let found := (← dagLeafEntries.get)[leafCursor]?
+  let found ← match found with
+    | some leaf => do
+        let reducedActions ← dagLeafReducedActions.get
+        let reducedAction ← match reducedActions[leafCursor]? with
+          | some (some reduced) => pure reduced
+          | _ =>
+              let reduced ← exposeAction leaf.action
+              dagLeafReducedActions.set <|
+                reducedActions.set! leafCursor (some reduced)
+              pure reduced
+        if ← isDefEq actionReduced reducedAction then
+          pure (some leaf)
+        else pure none
+    | none => pure none
+  if let some leaf := found then
+    let actionCursor ← dagActionCursor.get
+    let writeCursor ← dagWriteCursor.get
+    let actionEnd := actionCursor + leaf.actionCount
+    let writeEnd := writeCursor + leaf.writeCount
+    unless actionEnd ≤ (← dagActionRoots.get).size &&
+        writeEnd ≤ (← dagWriteRoots.get).size do
+      throwError "dag_sparse_evidence_exists: cached leaf exceeds trace"
+    dagActionCursor.set actionEnd
+    dagWriteCursor.set writeEnd
+    dagLeafCursor.set (leafCursor + 1)
+    return { root := leaf.root, proof := leaf.proof, size := 1 }
   let count ← dagNodeCount.modifyGet fun count => (count + 1, count + 1)
   if count % 100 == 0 then
     IO.eprintln (s!"dag evidence {count} nodes: bound={← dagBoundMs.get}ms " ++
       s!"decision={← dagDecisionMs.get}ms")
-  let actionReduced ← exposeAction action
   let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
   let actionArgs := actionReduced.getAppArgs
   if actionName == ``List.foldr then
@@ -2237,6 +2298,8 @@ unsafe def elabDagSparseEvidenceExists : TermElab := fun stx expected? => do
   dagNodeCount.set 0
   dagBoundMs.set 0
   dagDecisionMs.set 0
+  dagLeafCursor.set 0
+  dagDisableBounds.set false
   indexedExprModuleCache.set {}
   localProofBindings.set #[]
   useLocalProofBindings.set true
@@ -2262,11 +2325,52 @@ unsafe def elabDagSparseEvidenceExists : TermElab := fun stx expected? => do
     throwError "dag_sparse_evidence_exists left unused action roots"
   unless (← dagWriteCursor.get) == (← dagWriteRoots.get).size do
     throwError "dag_sparse_evidence_exists left unused write roots"
+  unless (← dagLeafCursor.get) == (← dagLeafEntries.get).size do
+    throwError "dag_sparse_evidence_exists left unused cached leaves"
   let proof ← mkAppM ``Exists.intro #[build.root, build.proof]
   let proof ← wrapLocalProofBindings proof
   IO.eprintln (s!"dag evidence complete: nodes={← dagNodeCount.get} " ++
     s!"bound={← dagBoundMs.get}ms decision={← dagDecisionMs.get}ms")
   useLocalProofBindings.set false
+  pure proof
+
+syntax (name := dagSparseEvidenceDecide) "dag_sparse_evidence_decide" : term
+
+@[term_elab dagSparseEvidenceDecide]
+unsafe def elabDagSparseEvidenceDecide : TermElab := fun _ expected? => do
+  if (← dagActionRoots.get).isEmpty then
+    throwError "dag_sparse_evidence_decide has no action-root trace"
+  dagActionCursor.set 0
+  dagWriteCursor.set 0
+  dagNodeCount.set 0
+  dagBoundMs.set 0
+  dagDecisionMs.set 0
+  dagLeafCursor.set 0
+  dagDisableBounds.set true
+  indexedExprModuleCache.set {}
+  localProofBindings.set #[]
+  useLocalProofBindings.set true
+  let some expected := expected?
+    | throwError "dag_sparse_evidence_decide requires an expected proposition"
+  let expected ← instantiateMVars expected
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? ==
+      some ``Loom.Release.Symbolic.ActionWide.DagBitSparseEvidence &&
+      args.size == 10 do
+    throwError "dag_sparse_evidence_decide expected DagBitSparseEvidence"
+  let build ← proveDagEvidence args[0]! args[1]! args[2]! args[3]! args[4]!
+    args[5]! args[6]! args[7]! args[8]!
+  unless ← isDefEq build.root args[9]! do
+    throwError "dag_sparse_evidence_decide result mismatch"
+  unless (← dagActionCursor.get) == (← dagActionRoots.get).size do
+    throwError "dag_sparse_evidence_decide left unused action roots"
+  unless (← dagWriteCursor.get) == (← dagWriteRoots.get).size do
+    throwError "dag_sparse_evidence_decide left unused write roots"
+  unless (← dagLeafCursor.get) == (← dagLeafEntries.get).size do
+    throwError "dag_sparse_evidence_decide left unused cached leaves"
+  let proof ← wrapLocalProofBindings build.proof
+  useLocalProofBindings.set false
+  dagDisableBounds.set false
   pure proof
 
 private def transportNextRegAction (wires table register width current out cert
