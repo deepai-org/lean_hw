@@ -35,6 +35,19 @@ steps. Binary digit count is a valid upper bound for decimal digit count. -/
 def wireName (number : Nat) : String :=
   "n" ++ String.ofList (Nat.toDigitsCore 10 (number.log2 + 1) number [])
 
+/-- The canonical spelling of a reference.
+
+`Ref.namedWire n (wireName n)` and `Ref.wire n` denote the same SSA wire, but
+they are distinct constructors and therefore distinct type indices of the
+generated evidence, and `ActionStateDag.checkedJoinOutput` accepts only the
+numbered form. Generators must emit references through this function so that
+independently generated statements compose. A wire whose name is not its
+canonical spelling is preserved. -/
+def Ref.canonical : Ref → Ref
+  | .namedWire number name =>
+      if name == wireName number then .wire number else .namedWire number name
+  | reference => reference
+
 def Ref.render : Ref → String
   | .reg name => name
   | .wire number => wireName number

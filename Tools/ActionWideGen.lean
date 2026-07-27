@@ -497,7 +497,8 @@ private structure CoreRegQueryState where
 
 private abbrev CoreRegQueryM := StateT CoreRegQueryState Option
 
-private def coreRefToLean : Loom.Release.Symbolic.Ref → String
+private def coreRefToLean (reference : Loom.Release.Symbolic.Ref) : String :=
+  match reference.canonical with
   | .wire number => "Symbolic.Ref.wire " ++ toString number
   | .namedWire number name =>
       "Symbolic.Ref.namedWire " ++ toString number ++ " " ++ reprStr name
