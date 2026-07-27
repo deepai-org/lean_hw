@@ -1,25 +1,176 @@
-# NEXT STEPS — active plan as of 2026-07-16
+# NEXT STEPS — active plan as of 2026-07-27
 
-Current state: T1–T9 are CLEAN, the generic emission theorem is proved,
-RTL is externally corroborated, and R-MC is complete. The LNP64-µ core now
-has sorry-free unbounded whole-state lockstep from reset (`square`,
-`abs_run`, `refines`, `invariant_transport`), including all 25 retirement
-opcodes and bounded `cap_revoke` convergence. The final R-MC build completed
-1,005 jobs; `lake exe audit` passed; the four headline R-MC declarations
-depend only on Lean's standard `propext`, `Classical.choice`, and
-`Quot.sound` axioms.
+Current state: T1–T9 are CLEAN, the generic emission theorem is proved, RTL
+is externally corroborated, and R-MC is complete (sorry-free unbounded
+whole-state lockstep from reset; all 25 retirement opcodes; closure is
+exactly `propext`, `Classical.choice`, `Quot.sound`). The proof layer is not
+the constraint. **Reproduction cost is**, and the active track is making a
+clean checkout build the full end-to-end proof in a bounded, measured time.
 
-The active priority is now the release/trust-hardening track:
+## The reframe that drives this plan
 
-1. reconcile `STATUS.md`, `TRUST.md`, and package-facing claims with the
-   completed R-MC proof;
-2. reduce the executable TCB around `compileImpl`/printer replacements and
-   strengthen full-size emitted-text round-trip evidence;
-3. finish package/CI/documentation gates in §P1–§P6;
-4. state the physical reset, 2-state RTL, and SoC integration contracts
-   precisely enough that downstream users cannot overread the theorem.
+The project already owns a CompCert-shaped compiler correctness theorem.
+`Loom/Hw/CompileCorrect.lean` proves
 
-Section 1 below is retained as the completed proof-engineering record. See
+```lean
+theorem compile_cycle (d : Design) (wf : DesignWF d) (state : Loom.Hw.St) :
+    forgetSt ((compile d).cycle (convSt state)) = d.cycle state
+```
+
+universally quantified over every design and state, sorry-free, with
+`simulation_of_tsys_eq` lifting it to trace simulation and
+`designWFCheck_sound` reducing the side condition to a Boolean check.
+
+Yet every release run still pays a large per-design proof cost. The reason
+is not that the compiler is unverified. It is that **the shipped artifact is
+not literally `compile d`**: it is a concrete, hash-consed, rendered SSA
+program, and the release certificate re-establishes node by node that this
+concrete object agrees with the design. It is not literally `compile d`
+because the kernel would have to normalize that application, which is the
+expensive operation the whole architecture exists to avoid.
+
+So the honest description of the status quo is: *this project performs
+translation validation on top of an already-verified compiler.* It pays the
+per-run cost of an unverified-compiler architecture while already holding the
+verified-compiler theorem. That is the most expensive available position, and
+it is a gap in an existing proof rather than a missing research result.
+
+Everything below follows from closing that gap and from decoupling *compiling*
+(milliseconds) from *auditing* (offline, incremental).
+
+## A. Establish whether the budget is feasible — do this first
+
+Compute `W`: total CPU-seconds of actual kernel checking, with per-process
+overhead removed. `scripts/measure_check_cost.py` does this from a run's
+phase CSV by compiling, for each module family, a probe with that family's
+exact import block and no declarations; the probe's CPU time is that family's
+toll, and `W_family = observed_cpu - count * toll`.
+
+- `W` comfortably under budget → the wall-clock target is engineering, and
+  sections B–D are the work.
+- `W` above budget → no batching or scheduling change reaches the target.
+  Either the budget or the trust posture has to move; decide deliberately
+  rather than after months of sharding.
+
+`W` measures the cost of the *translation validation*, not of the trust
+posture. Section B is what reduces it.
+
+## B. Close the compiler proof through the rendering stage
+
+The main event. Replace per-node re-derivation with one certified bridge from
+the materialized program to `compile d`, so per-run work becomes a single
+reflective equality over compact data.
+
+1. one source-design-to-plan snapshot certificate — the only step permitted
+   to normalize the source design, once per release, never per register or
+   per batch;
+2. linear structural checking of the compact snapshot against SSA;
+3. bounded composition plus the existing exact artifact binding.
+
+Make every obligation reflective (`check cert = true` by kernel reduction) so
+the stored proof term is constant-size and cost moves from term construction
+and serialization into reduction. Encode certificate data as compact literals
+with a verified decoder rather than as constructor applications.
+
+Precedent, in-repo: switching from explicit `NoRegWrite` proof trees to a
+structural Boolean footprint check cut a full-size leaf from 10m48s to
+5m10s and its `.olean` from ~11 MiB to under 1 MiB. Counter-precedent, also
+in-repo: the whole-plan probe reduced to `true = true` in 37 s but at
+6.94 GiB RSS, and a monolithic `rfl` variant was killed at 99 s. **Profile
+the decoder's reduction behaviour before committing**, or serialization cost
+is merely traded for kernel-reduction cost.
+
+## C. Stop using the module system as the scheduler
+
+Measured on the 2026-07-27 clean run: leaf checking parallelizes at 25–30x
+on 32 cores, so the batch phases are healthy. The cost has concentrated in
+per-process overhead and in serial singletons.
+
+1. **Batch obligations into memory-sized modules.** Thousands of tiny
+   modules, each `lean -j 1` with `set_option Elab.async false`, buy across
+   processes the parallelism Lean would give for free within one. At ~1.3 s
+   toll per process, 16k modules is ~21,000 CPU-s of pure overhead — more
+   than a 10-minute/32-core budget before any obligation is checked.
+   Batching to ~300 modules would cut that to ~400 CPU-s.
+   **Constraint that shapes the whole design:** async declarations share a
+   process, and R-MC modules already peak at 8–16 GiB alone. Batch size must
+   be set per family by memory profile, not globally. Note also that
+   `KernelDecide.lean` and `SymbolicDecide.lean` set `Elab.async false`
+   internally around auxiliary-lemma creation — establish whether the custom
+   elaborators depend on it before re-enabling anything.
+
+2. **Make every composition point a log-depth tree.** No single declaration
+   may do work proportional to the whole design. Current violations, from the
+   2026-07-27 run: `ActionCert` at 161 s on one core with 31 idle; the render
+   and indexed roots at ~39 s and ~37 s each; R-MC modules at 200–360 s. Each
+   combiner should merge exactly two children so the critical path is
+   `log2(n) * max-node`, not `n * node`. Where a join must genuinely traverse
+   everything, restructure the *statement* into an associative fold whose
+   intermediate lemmas are the tree nodes.
+
+3. **Schedule and track the critical path.** Once joins are trees, wall-clock
+   is set by the longest chain, not average parallelism. Emit the dependency
+   DAG with per-node costs from the previous run and schedule longest-path
+   first. Report **critical-path seconds** as the headline metric.
+
+## D. Tier by who is waiting
+
+None of the existing kernel-checked work is wasted; it stops being *the tool*
+and becomes *the tool's audit trail*.
+
+- **Dev loop (seconds).** Compile only, plus cheap structural checks. No
+  proofs. `lake exe emit` already does this — 11 s on a clean tree. Ship
+  `compile` and `certify` as separate commands; this is packaging, not
+  architecture. Determinism is what makes tiering honest: the RTL from this
+  mode must be byte-identical to the proved mode's.
+- **CI (minutes).** Incremental certificate checking against a
+  content-addressed proof cache. The DAG-cut structure already delineates
+  dependencies; `compile_batch` is already a staleness checker keyed on
+  mtime. Re-keying it on input content hashes is a smaller change than it
+  sounds and also removes the "clean run silently depended on stale objects"
+  class of bug.
+- **Release/audit (offline).** The full kernel-checked run, asynchronous to
+  use: ship the Verilog with a certificate hash and let the proof publish
+  behind it, like a reproducible-build attestation.
+
+## E. Decide the TCB question per tier, in writing
+
+Rule 1 bans `native_decide` repo-wide and `Tools/Audit.lean` enforces it
+mechanically (any closure containing `Lean.ofReduceBool` or
+`Lean.trustCompiler` fails the build). That is an all-or-nothing policy.
+Tiering makes the question newly answerable per tier — is Lean's compiler
+acceptable in the trust base for the dev tier, for CI, never? Write the
+answer as an amendment to `TRUST.md` so the ban and its scope stay in one
+place. If the answer is "never, at any tier", then accept that verification
+is an offline audit product and say so plainly in `REPRODUCING.md`.
+
+## F. Accounting that survives relocation
+
+Every optimization so far has moved cost across a layer boundary where it
+stopped resembling the same problem: per-register traversal became
+per-consumer deserialization; an elaboration-sharing refactor in `SysOps`
+became broken R-MC proofs. Per commit, record **total CPU-seconds**, **total
+bytes serialized**, and **critical-path seconds**. A change that improves
+wall-clock while increasing total CPU or bytes is relocating cost, and CI
+should say so out loud.
+
+`scripts/phase_timing.sh` supplies the first and third today: every phase
+appends `started_utc,scope,label,wall_seconds,cpu_seconds,parallelism`, and
+`parallelism = cpu/wall` separates genuinely serial phases from badly
+scheduled ones.
+
+## G. Standing hygiene
+
+Reproducibility defects hide in warm trees. Four surfaced in one clean run on
+2026-07-27 — an undocumented `ripgrep` dependency, a self-test fixture that
+had drifted from its checker, an unnamed lake prerequisite, and R-MC proofs
+broken by a semantics refactor. `scripts/ci.sh` does build R-MC transitively
+(`Machines.lean` → `Ledger`/`DemoWitness` → `RMC`), so running it before
+committing would have caught the last one. Run a wiped-tree build on a
+schedule, not only before a release.
+
+The remaining publication gates in §P1–§P6 below are unchanged and still
+apply. Section 1 is retained as the completed proof-engineering record. See
 `STATUS.md` for the audited current state and chronological history.
 
 ## Historical stopping point — 2026-07-04
@@ -480,8 +631,17 @@ items marked ★ are the ones reviewers/AEC members check first.
       `lake exe audit`, the BMC/LRAT checks, emission + RTL hygiene, and both
       lockstep scripts. *(LANDED 2026-07-14: `scripts/reproduce.sh` = ci.sh +
       lockstep, with pinned tool versions documented in its header. Missing:
-      golden `.v` diff (blocked on the rtl/ tracked-vs-regenerated decision),
-      never timed from a truly cold clone.)*
+      golden `.v` diff (blocked on the rtl/ tracked-vs-regenerated decision).)*
+      *(2026-07-27: first wiped-tree run of `build_verified_release.sh`
+      exposed four defects invisible from a warm tree — an undocumented
+      `ripgrep` dependency in `quality.sh`, a `test_release_binding.py`
+      fixture that had drifted from its checker, `SymbolicVerified` missing
+      from the lake prerequisites, and R-MC proofs broken by the `SysOps`
+      opacity refactor. All fixed. Run wiped-tree builds on a schedule.)*
+- [ ] **Audit host dependencies.** Every external binary a build script
+      assumes must be either pinned and documented in `REPRODUCING.md` or
+      replaced by something POSIX. `ripgrep` was neither, and it failed in
+      the *first* phase of the release build.
 - [x] ★ **Pin everything.** *(DONE 2026-07-14: `lean-toolchain` (v4.28.0) and
       the lake manifest are committed; `scripts/reproduce.sh` documents the
       external tool pins — iverilog 12.0, yosys 0.33, cadical 1.7.3 with
@@ -515,6 +675,11 @@ items marked ★ are the ones reviewers/AEC members check first.
 - [ ] ★ **Proof-effort table.** Lines of Lean per component (EDSL, compiler, emission
       theorem, parser, per-machine specs/proofs), build time, proof-checking time.
       Standard table in every ITP/CPP paper; script it so it regenerates.
+      *(TOOLING IN HAND 2026-07-27: `scripts/phase_timing.sh` records
+      per-phase wall/CPU/parallelism for every run, and
+      `scripts/measure_check_cost.py` separates kernel-checking CPU from
+      per-process import toll. Report checking cost, not wall clock — wall
+      clock measures the scheduler, not the proof.)*
 - [ ] ★ **Lockstep campaign statistics.** How many cycles, how many programs
       (random? directed?), full-state vs. sampled comparison, for both machines.
       "Corroborated by lockstep" needs numbers to survive review.
@@ -534,6 +699,12 @@ items marked ★ are the ones reviewers/AEC members check first.
       Kôika, Bluespec, Cava/Silver Oak, and translation-validation flows: what is
       proved, what is trusted, where the TCB boundary sits. This is the related-work
       section's spine and the most common "reject: doesn't situate itself" fix.
+      *(Situate this work precisely: it holds a CompCert-shaped generic
+      compiler theorem (`compile_cycle`) AND performs per-artifact
+      translation validation on top of it, because the shipped bytes are a
+      materialized rendering rather than a literal `compile d`. Reviewers
+      familiar with either tradition will ask why both; the answer is the
+      exact-byte binding, and it should be stated rather than discovered.)*
 - [ ] **Trusted computing base inventory.** Explicit list: Lean kernel, `lake exe
       audit` implementation(?), the `#guard` byte-check path, `ImplementsStandard`,
       simulator binary. State what is *not* trusted (printer, compiler, parser impl).
