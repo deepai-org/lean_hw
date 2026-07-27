@@ -105,6 +105,23 @@ run_phase "lake prerequisites (includes R-MC closure)" \
   Loom.Release.WholeRegisterPlan \
   Tools.ReleaseCertGen "${design_imports[@]}" "${release_imports[@]}"
 
+# Generated modules are compiled outside Lake's module graph, so any Loom or
+# Machines module they import must be built explicitly. Enumerating those by
+# hand is whack-a-mole -- a clean checkout fails on whichever one was missed,
+# and a warm tree hides it. Scan the generated sources instead. Lake no-ops
+# when the targets are already up to date, so calling this repeatedly as more
+# sources are generated is cheap.
+build_external_imports() {
+  local -a targets
+  mapfile -t targets < <(
+    grep -h '^import \(Loom\|Machines\)\.' "$src"/*.lean 2>/dev/null |
+      awk '{print $2}' | sort -u)
+  if ((${#targets[@]} == 0)); then
+    return 0
+  fi
+  lake build "${targets[@]}"
+}
+
 compile_wire_owner() {
   local source=$1
   compile_batch "$source"
@@ -121,6 +138,8 @@ compile_glob() {
   find "$src" -maxdepth 1 -name "$1" -print0 | sort -z | \
     xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 }
+
+run_phase "generated external imports" build_external_imports
 
 run_phase "wire batches" bash -c \
   "find '$src' -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
@@ -149,6 +168,7 @@ if [[ "$target" == lnp64u ]]; then
   run_phase "fast indexed bridge" compile_batch "$src/FastIndexedBridge.lean"
   run_phase "generate hybrid rules" \
     lake exe actionwidegen lnp64u-hybrid-rules "$src/Runtime.tsv" "$src"
+  run_phase "hybrid external imports" build_external_imports
   run_phase "hybrid base" compile_batch "$src/HybridBase.lean"
   run_phase "hybrid core shape" compile_batch "$src/HybridCoreShape.lean"
   for index in 000 001 002 003; do
