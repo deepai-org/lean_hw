@@ -46,6 +46,16 @@ initialize releaseIndexedExprAttr : TagAttribute ←
   registerTagAttribute `release_indexed_expr
     "indexed expression evidence available to release certificates"
 
+/-- Opaque action-shape subtrees available to a larger hybrid certificate. -/
+initialize releaseActionShapeCutAttr : TagAttribute ←
+  registerTagAttribute `release_action_shape_cut
+    "prechecked action-shape subtree available to hybrid release certificates"
+
+/-- Opaque register-query subtrees available to a larger hybrid certificate. -/
+initialize releaseRegQueryCutAttr : TagAttribute ←
+  registerTagAttribute `release_reg_query_cut
+    "prechecked register-query subtree available to hybrid release certificates"
+
 private def cacheClosedProof (type proof : Expr) : MetaM Expr := do
   let lemmaName ← withOptions (Elab.async.set · false) do
     mkAuxLemma [] type proof (kind? := `_symbolicNoWrite)
@@ -844,9 +854,15 @@ private def proveNatLe (left right : Expr) : MetaM Expr :=
 
 private abbrev IndexedExprCache := IO.Ref (Std.HashMap Nat Expr)
 private abbrev IndexedExprTypeCache := IO.Ref (Std.HashMap Expr Expr)
+private abbrev IndexedExprRefCache := IO.Ref (Std.HashMap Expr Expr)
 
 private initialize indexedExprModuleCache : IndexedExprCache ← IO.mkRef {}
 private initialize indexedExprTypeCache : IndexedExprTypeCache ← IO.mkRef {}
+private initialize indexedExprRefCache : IndexedExprRefCache ← IO.mkRef {}
+private initialize indexedExprAliasCache : IO.Ref (Std.HashMap Expr Expr) ←
+  IO.mkRef {}
+private initialize indexedExprAliasNext : IO.Ref Nat ← IO.mkRef 0
+private initialize indexedExprAliasPrefix : IO.Ref Name ← IO.mkRef Name.anonymous
 private initialize indexedExprCheckpoints : IO.Ref (Std.HashSet Nat) ← IO.mkRef {}
 private initialize indexedExprPendingNodes : IO.Ref Nat ← IO.mkRef 0
 private initialize indexedLookupMs : IO.Ref Nat ← IO.mkRef 0
@@ -863,7 +879,32 @@ private initialize useLocalProofBindings : IO.Ref Bool ← IO.mkRef false
 
 private def checkpointLocalProof (type value : Expr) : MetaM Expr := do
   unless ← useLocalProofBindings.get do
-    let proof ← cacheClosedProof type value
+    let args := type.getAppArgs
+    let proof ← if type.getAppFn.constName? == some ``IndexedExprEvidence &&
+        args.size == 5 then do
+      let expression := args[3]!
+      let aliases ← indexedExprAliasCache.get
+      -- `expression` is commonly still `Compile.compileExpr sourceSubtree`.
+      -- Naming that opaque application merely gives the expanded tree a new
+      -- name: a parent cannot see, and therefore cannot reuse, the child
+      -- checkpoints.  Expose only the outer compiler constructor first.  Its
+      -- arguments are the still-unfolded child compiler calls, which are exact
+      -- keys in `aliases`; replacing those keys makes the auxiliary
+      -- definitions a genuine bottom-up DAG.
+      let exposed ← withTransparency .all <| whnf expression
+      let rewritten := exposed.replace fun subterm => aliases.get? subterm
+      let aliasIndex ← indexedExprAliasNext.modifyGet fun index =>
+        (index, index + 1)
+      let aliasName := (← indexedExprAliasPrefix.get).str
+        s!"_releaseExpr{aliasIndex}"
+      let alias ← mkAuxDefinitionFor aliasName rewritten (compile := false)
+      indexedExprAliasCache.modify fun entries =>
+        (entries.insert expression alias).insert exposed alias
+      let aliasType := type.replace fun subterm =>
+        if subterm == expression then some alias else none
+      cacheClosedProof aliasType value
+    else
+      cacheClosedProof type value
     if let some declaration := proof.constName? then
       releaseIndexedExprAttr.setTag declaration
     return proof
@@ -946,11 +987,16 @@ unsafe def elabIndexedExprCheckpoints : Lean.Elab.Command.CommandElab := fun stx
   indexedExprCheckpoints.set checkpoints
   let env ← getEnv
   let mut proofs ← indexedExprTypeCache.get
+  let mut refProofs ← indexedExprRefCache.get
   for declaration in releaseIndexedExprAttr.getDecls env do
     let info ← getConstInfo declaration
     if info.type.getAppFn.constName? == some ``IndexedExprEvidence then
       proofs := proofs.insert info.type (.const declaration [])
+      let args := info.type.getAppArgs
+      if args.size == 5 then
+        refProofs := refProofs.insert args[4]! (.const declaration [])
   indexedExprTypeCache.set proofs
+  indexedExprRefCache.set refProofs
 
 private partial def exposeMvExpr (expression : Expr) : MetaM Expr := do
   let reduced ← withTransparency .all <| whnf expression
@@ -981,7 +1027,8 @@ private partial def exposeMvExpr (expression : Expr) : MetaM Expr := do
 private partial def exposeSymbolicRef (reference : Expr) : MetaM Expr := do
   let reduced ← withTransparency .all <| whnf reference
   if reduced.getAppFn.constName? == some ``Ref.reg ||
-      reduced.getAppFn.constName? == some ``Ref.wire then
+      reduced.getAppFn.constName? == some ``Ref.wire ||
+      reduced.getAppFn.constName? == some ``Ref.namedWire then
     return reduced
   match ← unfoldDefinition? reduced (ignoreTransparency := true) with
   | some unfolded => exposeSymbolicRef unfolded
@@ -1004,9 +1051,6 @@ private def cacheIndexedExprEvidence (cache : IndexedExprCache)
   if let some number := number then
     cache.modify fun entries => entries.insert number cached
   indexedExprTypeCache.modify fun entries => entries.insert type cached
-  let size := (← cache.get).size
-  if size % 1000 == 0 then
-    logInfo m!"indexed expression evidence nodes: {size}"
   pure cached
 
 private def pad4 (number : Nat) : String :=
@@ -1028,6 +1072,61 @@ private def proveIndexedLookup (wires table number : Expr) : MetaM (Expr × Expr
     | throwError "indexed_expr_decide: indexed wire tree is not a named constant"
   let fastLookup :=
     wiresName == wiresName.getPrefix.str "fastIndexedWireTree"
+  let lookupEvidenceName := wiresName.getPrefix.str
+    ("fastIndexedWireLookupEvidence" ++ pad4 (numberValue / 128))
+  if fastLookup && (← getEnv).contains lookupEvidenceName then
+    let blockName := wiresName.getPrefix.str
+      ("fastIndexedWireBlock" ++ pad4 (numberValue / 128))
+    unless (← getEnv).contains blockName do
+      throwError "indexed_expr_decide: missing fast wire block {blockName}"
+    let block := Lean.mkConst blockName
+    let offset := mkNatLit (numberValue % 128)
+    let blockLookup ← mkAppM ``getElem? #[block, offset]
+    let reducedLookup ← withTransparency .all <| whnf blockLookup
+    unless reducedLookup.getAppFn.constName? == some ``Option.some do
+      throwError "indexed_expr_decide: fast block lookup failed for {numberValue}"
+    let indexed := reducedLookup.getAppArgs.back!
+    let leafSize ← mkAppM ``WireTable.leafSize #[table]
+    let offsetBoundType ← mkAppM ``LT.lt #[offset, leafSize]
+    let offsetBound ← inlineDecideAccepted offsetBoundType
+    let found ← mkAppM ``Eq.refl #[blockLookup]
+    let indexedNumber ← mkAppM ``IndexedWire.number #[indexed]
+    let numberEqType ← mkEq indexedNumber reducedNumber
+    let numberEq ← inlineDecideAccepted numberEqType
+    let lookupProof ← mkAppM lookupEvidenceName
+      #[offset, indexed, offsetBound, found, numberEq]
+    let finished ← IO.monoMsNow
+    indexedLookupMs.modify (· + (finished - started))
+    return (indexed, lookupProof)
+  -- The release witness already checks every indexed-wire block once.  Reuse
+  -- that opaque theorem for action joins instead of re-running balanced-rope
+  -- lookup (formerly ~123k duplicate global navigations for LNP64-u).
+  let semanticBlockName := wiresName.getPrefix.str
+    ("indexedWireSemanticBlock" ++ pad4 (numberValue / 128))
+  if (← getEnv).contains semanticBlockName then
+    let accepted := Lean.mkConst semanticBlockName
+    let acceptedType ← inferType accepted
+    let equalityArgs := acceptedType.getAppArgs
+    unless acceptedType.getAppFn.constName? == some ``Eq &&
+        equalityArgs.size == 3 do
+      throwError "indexed_expr_decide: malformed semantic block {semanticBlockName}"
+    let check := equalityArgs[1]!
+    let checkArgs := check.getAppArgs
+    unless check.getAppFn.constName? ==
+        some ``indexedSemanticBlockMatches && checkArgs.size >= 5 do
+      throwError "indexed_expr_decide: malformed semantic block check {semanticBlockName}"
+    let block := checkArgs.back!
+    let offset := mkNatLit (numberValue % 128)
+    let blockLookup ← mkAppM ``getElem? #[block, offset]
+    let reducedLookup ← withTransparency .all <| whnf blockLookup
+    unless reducedLookup.getAppFn.constName? == some ``Option.some do
+      throwError "indexed_expr_decide: semantic block lookup failed for {numberValue}"
+    let indexed := reducedLookup.getAppArgs.back!
+    let found ← mkAppM ``Eq.refl #[blockLookup]
+    let lookupProof ← mkAppM ``indexedSemanticBlock_lookup #[accepted, found]
+    let finished ← IO.monoMsNow
+    indexedLookupMs.modify (· + (finished - started))
+    return (indexed, lookupProof)
   let resolverName := wiresName.getPrefix.str
     ((if fastLookup then "fastIndexedWireResolveBlock"
       else "indexedWireResolveBlock") ++ pad4 (numberValue / 128))
@@ -1103,8 +1202,20 @@ private def proveIndexedLookup (wires table number : Expr) : MetaM (Expr × Expr
 private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
     (wires table expression reference : Expr) : MetaM Expr := do
   let reference ← exposeSymbolicRef reference
+  if let some cached := (← indexedExprRefCache.get).get? reference then
+    return cached
   let referenceName := reference.getAppFn.constName?.getD Name.anonymous
   let referenceArgs := reference.getAppArgs
+  if referenceName == ``Ref.namedWire then
+    let number := referenceArgs[referenceArgs.size - 2]!
+    let name := referenceArgs.back!
+    let wireReference ← mkAppM ``Ref.wire #[number]
+    let evidence ← proveIndexedExprEvidence cache wires table expression
+      wireReference
+    let expressionType ← inferType expression
+    let width := expressionType.getAppArgs.back!
+    return mkAppN (mkConst ``IndexedExprEvidence.named)
+      #[wires, table, width, number, name, expression, evidence]
   let wireNumber ← if referenceName == ``Ref.wire then do
       let reduced ← withTransparency .all <| whnf referenceArgs.back!
       let some value ← getNatValue? reduced
@@ -1112,15 +1223,20 @@ private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
       pure (some value)
     else pure none
   if let some number := wireNumber then
+    for cut in [:12] do
+      let cutSuffix := if cut < 10 then "00" ++ toString cut
+        else "0" ++ toString cut
+      let declaration :=
+        (`Loom.GeneratedRelease.Lnp64u).str ("DagCut" ++ cutSuffix) |>.str
+          ("dagCutExprWire" ++ toString number)
+      if (← getEnv).contains declaration then
+        return .const declaration []
     if let some cached := (← cache.get).get? number then
       return cached
   let type ← mkAppM ``IndexedExprEvidence #[wires, table, expression, reference]
   if let some cached := (← indexedExprTypeCache.get).get? type then
     return cached
-  let exposeStarted ← IO.monoMsNow
   let expression ← exposeMvExpr expression
-  let exposeFinished ← IO.monoMsNow
-  indexedExposeMs.modify (· + (exposeFinished - exposeStarted))
   let expressionName := expression.getAppFn.constName?.getD Name.anonymous
   let expressionArgs := expression.getAppArgs
   if expressionName == ``Loom.Emit.MicroVerilog.Expr.reg &&
@@ -1231,6 +1347,7 @@ private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
 /-- Prove an indexed expression check by a memoized DAG of named kernel
 theorems instead of reducing the shared expression as a tree. -/
 syntax (name := indexedExprDecide) "indexed_expr_decide" : term
+syntax (name := indexedExprEvidence) "indexed_expr_evidence" : term
 
 private partial def zetaIndexedExprLets (expression : Expr) : TermElabM Expr := do
   let some fvar := expression.find? (·.isFVar) | return expression
@@ -1240,8 +1357,31 @@ private partial def zetaIndexedExprLets (expression : Expr) : TermElabM Expr := 
     | return expression
   zetaIndexedExprLets (expression.replaceFVar fvar value)
 
+@[term_elab indexedExprEvidence]
+unsafe def elabIndexedExprEvidence : TermElab := fun _ expected? => do
+  indexedExprAliasCache.set {}
+  indexedExprAliasNext.set 0
+  indexedExprAliasPrefix.set ((← getDeclName?).getD `_releaseExpr)
+  let some expected := expected?
+    | throwError "indexed_expr_evidence requires an expected proposition"
+  let expected ← instantiateMVars expected >>= zetaIndexedExprLets
+  let args := expected.getAppArgs
+  unless expected.getAppFn.constName? == some ``IndexedExprEvidence &&
+      args.size == 5 do
+    throwError "indexed_expr_evidence expected IndexedExprEvidence"
+  let proof ← proveIndexedExprEvidence indexedExprModuleCache args[0]!
+    args[1]! args[3]! args[4]!
+  unless !proof.hasFVar && !proof.hasMVar do
+    throwError "indexed_expr_evidence produced an open proof"
+  pure proof
+
 @[term_elab indexedExprDecide]
 unsafe def elabIndexedExprDecide : TermElab := fun _ expected? => do
+  -- Check modules are later imported side by side.  Anonymous auxiliary names
+  -- such as `_releaseExpr0` collide across those environments, so anchor every
+  -- generated checkpoint below the theorem currently being elaborated.
+  indexedExprAliasPrefix.set ((← getDeclName?).getD `_releaseExpr)
+  indexedExprAliasNext.set 0
   let some expected := expected?
     | throwError "indexed_expr_decide requires an expected proposition"
   let expected ← instantiateMVars expected >>= zetaIndexedExprLets
@@ -2489,8 +2629,29 @@ private partial def proveJoinOutputs (wires wireTable joins : Expr)
     ``Loom.Release.Symbolic.ActionWide.JoinOutputsEvidence.cons)
     #[wires, wireTable, join, tail, headProof, tailProof], tailSize + 1)
 
+private def matchingActionShapeCut? (wires wireTable registers action needed cert :
+    Expr) : MetaM (Option Expr) := do
+  let env ← getEnv
+  for declaration in releaseActionShapeCutAttr.getDecls env do
+    let info ← getConstInfo declaration
+    let args := info.type.getAppArgs
+    if info.type.getAppFn.constName? ==
+        some ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence &&
+        args.size == 6 then
+      if ← isDefEq args[0]! wires then
+        if ← isDefEq args[1]! wireTable then
+          if ← isDefEq args[2]! registers then
+            if ← isDefEq args[3]! action then
+              if ← isDefEq args[4]! needed then
+                if ← isDefEq args[5]! cert then
+                  return some (.const declaration [])
+  return none
+
 private partial def proveActionShape (wires wireTable registers action needed cert : Expr) :
     MetaM Expr := do
+  if let some proof ← matchingActionShapeCut? wires wireTable registers action
+      needed cert then
+    return proof
   let actionReduced ← exposeAction action
   let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
   let actionArgs := actionReduced.getAppArgs
@@ -2530,15 +2691,10 @@ private partial def proveActionShape (wires wireTable registers action needed ce
     let liveReduced ← withTransparency .all <| whnf liveCheck
     if liveReduced.isConstOf ``Bool.true then
       let liveProof ← dagDecide (← mkEq liveCheck trueExpr)
-      let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[value]
-      let expressionEvidence ← sparseExpressionEvidence wires wireTable compiled
-        valueRef
-      let expressionProof ← mkAppM ``IndexedExprEvidence.accepted
-        #[expressionEvidence]
       return mkAppN (mkConst
         ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.writeLive)
         #[wires, wireTable, registers, width, name, value, index, valueRef,
-          needed, headerProof, liveProof, expressionProof]
+          needed, headerProof, liveProof]
     let deadProof ← dagDecide (← mkEq liveCheck (mkConst ``Bool.false))
     return mkAppN (mkConst
       ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.writeDead)
@@ -2583,16 +2739,10 @@ private partial def proveActionShape (wires wireTable registers action needed ce
       #[← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[thenCert],
         ← mkAppM ``Loom.Release.Symbolic.ActionWide.ActionCert.summary #[elseCert]]
     let summaryProof ← dagDecide (← mkEq summary expectedSummary)
-    let compiled ← mkAppM ``Loom.Hw.Compile.compileExpr #[condition]
-    let conditionEvidence ← sparseExpressionEvidence wires wireTable compiled
-      conditionRef
-    let conditionProof ← mkAppM ``IndexedExprEvidence.accepted #[conditionEvidence]
-    let (outputsProof, _) ← proveJoinOutputs wires wireTable joins
     return mkAppN (mkConst
       ``Loom.Release.Symbolic.ActionWide.ActionShapeEvidence.ite)
       #[wires, wireTable, registers, condition, thenAction, elseAction, needed, summary,
-        conditionRef, joins, thenCert, elseCert, summaryProof, conditionProof,
-        thenProof, elseProof, outputsProof]
+        conditionRef, joins, thenCert, elseCert, summaryProof, thenProof, elseProof]
   throwError "action_shape_decide: source/certificate shape mismatch"
 
 private def proveJoinOutput (wires wireTable join : Expr) : MetaM Expr := do
@@ -2656,6 +2806,33 @@ private partial def proveJoinAt (wires wireTable condition query width thenRef
 
 /-- Construct a demand-driven action certificate for one register. Subtrees
 whose cached write bitmap excludes the query are never traversed. -/
+private def matchingRegQueryCut? (wires wireTable registers query width action
+    input needed cert : Expr) : MetaM (Option (Expr × Expr)) := do
+  let env ← getEnv
+  -- Composition shells declare children immediately before their parents.
+  -- Search newest-first so the common match is one of the first two entries,
+  -- rather than rescanning the complete generated proof prefix at every node.
+  for declaration in (releaseRegQueryCutAttr.getDecls env).reverse do
+    let info ← getConstInfo declaration
+    let args := info.type.getAppArgs
+    if info.type.getAppFn.constName? ==
+        some ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence &&
+        args.size == 10 then
+      -- Certificate expressions are the stable identity of generated cuts.
+      -- Reject non-matches syntactically before asking unification to compare
+      -- their enormous source actions. The old action-first ordering unfolded
+      -- the core once per candidate at every recursive query node.
+      if args[3]! == query && args[4]! == width then
+        if args[8]! == cert || (← isDefEq args[8]! cert) then
+          if ← isDefEq args[7]! needed then
+            if ← isDefEq args[6]! input then
+              if ← isDefEq args[0]! wires then
+                if ← isDefEq args[1]! wireTable then
+                  if ← isDefEq args[2]! registers then
+                    if ← isDefEq args[5]! action then
+                      return some (args[9]!, .const declaration [])
+  return none
+
 private partial def proveRegQuery (wires wireTable registers query width action
     input needed cert : Expr) : MetaM (Expr × Expr) := do
   -- Generated roots name the top-level bitmap. Collapse that name before any
@@ -2663,6 +2840,9 @@ private partial def proveRegQuery (wires wireTable registers query width action
   -- expands the generic division implementation instead of the numeral VM
   -- primitive and is catastrophically slower.
   let needed ← normalizeNatLiteral needed
+  if let some result ← matchingRegQueryCut? wires wireTable registers query width
+      action input needed cert then
+    return result
   let actionReduced ← exposeAction action
   let actionName := actionReduced.getAppFn.constName?.getD Name.anonymous
   let actionArgs := actionReduced.getAppArgs
@@ -2765,6 +2945,11 @@ private partial def proveRegQuery (wires wireTable registers query width action
     let changedProof ← dagDecide (← mkEq (← mkAppM ``Nat.testBit
       #[← mkAppM ``Loom.Release.Symbolic.ActionWide.changedBitsAt
         #[summary, needed], query]) trueExpr)
+    let compiledCondition ← mkAppM ``Loom.Hw.Compile.compileExpr #[condition]
+    let conditionEvidence ← sparseExpressionEvidence wires wireTable
+      compiledCondition conditionRef
+    let conditionProof ← mkAppM ``IndexedExprEvidence.accepted
+      #[conditionEvidence]
     let (thenRef, thenProof) ← proveRegQuery wires wireTable registers query width
       thenAction input changed thenCert
     let (elseRef, elseProof) ← proveRegQuery wires wireTable registers query width
@@ -2775,8 +2960,8 @@ private partial def proveRegQuery (wires wireTable registers query width action
       ``Loom.Release.Symbolic.ActionWide.RegQueryEvidence.iteChanged)
       #[wires, wireTable, registers, query, width, condition, thenAction,
         elseAction, input, needed, summary, conditionRef, joins, thenCert,
-        elseCert, thenRef, elseRef, output, changedProof, thenProof, elseProof,
-        joinProof])
+        elseCert, thenRef, elseRef, output, changedProof, conditionProof,
+        thenProof, elseProof, joinProof])
   throwError "reg_query_decide: source/certificate shape mismatch"
 
 syntax (name := actionShapeDecide) "action_shape_decide" : term
@@ -3170,9 +3355,11 @@ private partial def proveWholePlan (wires table width plan current out cert : Ex
     let thenCert := certArgs[certArgs.size - 2]!
     let elseCert := certArgs[certArgs.size - 1]!
     let (outName, outArgs) ← expose out
-    unless outName == ``Ref.wire do
+    unless outName == ``Ref.wire || outName == ``Ref.namedWire do
       throwError "symbolic_kernel_decide: plan ite output is not a wire"
-    let number := outArgs[outArgs.size - 1]!
+    let number := if outName == ``Ref.namedWire then
+        outArgs[outArgs.size - 2]!
+      else outArgs[outArgs.size - 1]!
     let lookup ← mkAppM ``lookupIndexed? #[wires, table, number]
     let lookupReduced ← withTransparency .all <| whnf lookup
     let (lookupName, lookupArgs) ← expose lookupReduced
@@ -3203,10 +3390,17 @@ private partial def proveWholePlan (wires table width plan current out cert : Ex
       thenCert
     let elseProof ← proveWholePlan wires table width elsePlan current elseRef
       elseCert
-    return ← mkAppM ``WholePlan.planMatches_ite
-      #[wires, table, width, guard, thenPlan, elsePlan, current, number,
-        guardRef, thenRef, elseRef, thenCert, elseCert, lookupProof, guardProof,
-        thenProof, elseProof]
+    if outName == ``Ref.namedWire then
+      let name := outArgs[outArgs.size - 1]!
+      return ← mkAppM ``WholePlan.planMatches_ite_named
+        #[wires, table, width, guard, thenPlan, elsePlan, current, number, name,
+          guardRef, thenRef, elseRef, thenCert, elseCert, lookupProof,
+          guardProof, thenProof, elseProof]
+    else
+      return ← mkAppM ``WholePlan.planMatches_ite
+        #[wires, table, width, guard, thenPlan, elsePlan, current, number,
+          guardRef, thenRef, elseRef, thenCert, elseCert, lookupProof,
+          guardProof, thenProof, elseProof]
   throwError "symbolic_kernel_decide: plan/certificate shape mismatch"
 
 private partial def proveWholeRules (wires table width plans current out cert : Expr) :

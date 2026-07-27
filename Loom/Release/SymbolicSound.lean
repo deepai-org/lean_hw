@@ -44,7 +44,7 @@ theorem indexedBlockMatches_get
             have numberEq : indexedHead.number = start := by
               have numberTrue := parts.1
               simp only [IndexedWire.matchesRaw, Bool.and_eq_true] at numberTrue
-              exact beq_iff_eq.mp numberTrue.1.1.1
+              exact beq_iff_eq.mp numberTrue.1.1
             refine ⟨raw, rfl, ?_⟩
             simpa only [numberEq] using parts.1
         | succ index =>
@@ -111,7 +111,7 @@ theorem indexedBlockMatches_getRaw
               have numberEq : indexedHead.number = start := by
                 have numberTrue := parts.1
                 simp only [IndexedWire.matchesRaw, Bool.and_eq_true] at numberTrue
-                exact beq_iff_eq.mp numberTrue.1.1.1
+                exact beq_iff_eq.mp numberTrue.1.1
               exact ⟨indexedHead, rfl, by simpa only [numberEq] using parts.1⟩
           | succ index =>
               simp only [List.getElem?_cons_succ] at found
@@ -178,6 +178,22 @@ theorem indexedSemanticBlock_get
       | succ index =>
           simp only [List.getElem?_cons_succ] at found
           exact ih parts.2 index wire found
+
+/-- Extract an exact global lookup from an already checked 128-wire semantic
+block.  Release action certificates use this lemma to reuse the one full-wire
+validation pass instead of navigating the global rope again for every mux
+join. -/
+theorem indexedSemanticBlock_lookup
+    {program : Program} {allWires : Rope (List IndexedWire)}
+    {table : WireTable} {start offset : Nat} {wires : List IndexedWire}
+    {wire : IndexedWire}
+    (accepted : indexedSemanticBlockMatches program allWires table start wires =
+      true)
+    (found : wires[offset]? = some wire) :
+    lookupIndexed? allWires table wire.number = some wire := by
+  have wellFormed := indexedSemanticBlock_get accepted offset wire found
+  simp only [indexedWireWellFormedAt, Bool.and_eq_true, beq_iff_eq] at wellFormed
+  exact wellFormed.1.2
 
 theorem IndexedRopeWellFormed.resolve
     {program : Program} {allWires : Rope (List IndexedWire)}
@@ -275,13 +291,20 @@ theorem lookupIndexed_resolvesRaw
     simp [guard, optionFailure, size] at found
 
 /-- A raw witness wire is physically present at the table address for its
-number and bears the canonical numbered identifier. -/
+numeric position. Textual-name consistency is checked separately for each
+operand, so the proof does not depend on a particular naming convention. -/
 def RawWireAt (program : Program) (table : WireTable)
     (number : Nat) (raw : Wire) : Prop :=
   ∃ path,
     balancedPath? table.leafCount (number / table.leafSize) = some path ∧
-    program.wires.resolve? ⟨path, number % table.leafSize⟩ = some raw ∧
-    raw.name = (Ref.wire number).render
+    program.wires.resolve? ⟨path, number % table.leafSize⟩ = some raw
+
+theorem RawWireAt.lookupRaw {program : Program} {table : WireTable}
+    {number : Nat} {raw : Wire} (located : RawWireAt program table number raw)
+    (positive : table.leafSize > 0) :
+    lookupRaw? program.wires table number = some raw := by
+  rcases located with ⟨path, pathEq, rawEq⟩
+  simp [lookupRaw?, positive, pathEq, rawEq, guard]
 
 theorem lookupIndexed_rawWireAt
     (program : Program) {indexeds : Rope (List IndexedWire)}
@@ -292,11 +315,7 @@ theorem lookupIndexed_rawWireAt
       indexed.matchesRaw number raw = true := by
   obtain ⟨path, raw, pathEq, rawEq, rawMatch⟩ :=
     lookupIndexed_resolvesRaw hmatches table number indexed found
-  have nameEq : raw.name = (Ref.wire number).render := by
-    have parts := rawMatch
-    simp only [IndexedWire.matchesRaw, Bool.and_eq_true] at parts
-    exact beq_iff_eq.mp parts.1.1.2
-  exact ⟨raw, ⟨path, pathEq, rawEq, nameEq⟩, rawMatch⟩
+  exact ⟨raw, ⟨path, pathEq, rawEq⟩, rawMatch⟩
 
 def IndexedRhs.toRaw : IndexedRhs → Rhs
   | .lit width value => .lit width value
@@ -329,8 +348,13 @@ inductive RawRefWidth (program : Program) (table : WireTable)
       (found : program.regs.find? (fun reg => reg.name == name) = some concrete) :
       RawRefWidth program table current (.reg name) concrete.width
   | wire {number raw}
-      (earlier : number < current) (located : RawWireAt program table number raw) :
+      (earlier : number < current) (located : RawWireAt program table number raw)
+      (nameEq : raw.name = (Ref.wire number).render) :
       RawRefWidth program table current (.wire number) raw.width
+  | namedWire {number name raw}
+      (earlier : number < current) (located : RawWireAt program table number raw)
+      (nameEq : raw.name = name) :
+      RawRefWidth program table current (.namedWire number name) raw.width
 
 theorem refWidthBefore_raw
     (program : Program) {indexeds : Rope (List IndexedWire)}
@@ -364,16 +388,71 @@ theorem refWidthBefore_raw
         cases found : lookupIndexed? indexeds table number with
         | none => simp [found] at accepted
         | some indexed =>
-            simp [found] at accepted
-            subst width
-            obtain ⟨raw, rawAt, rawMatch⟩ :=
-              lookupIndexed_rawWireAt program hmatches table number indexed found
-            obtain ⟨widthEq, _⟩ := IndexedWire.matchesRaw_width_rhs rawMatch
-            rw [← widthEq]
-            exact .wire earlier rawAt
+            simp only [found, Option.bind_some] at accepted
+            cases rawFound : lookupRaw? program.wires table number with
+            | none => simp [rawFound] at accepted
+            | some checkedRaw =>
+              simp only [rawFound, Option.bind_some] at accepted
+              have nameEq : checkedRaw.name = (Ref.wire number).render := by
+                by_cases equal : checkedRaw.name = (Ref.wire number).render
+                · exact equal
+                · exfalso
+                  simp [guard, equal, optionFailure] at accepted
+              have widthEq : indexed.width = width := by
+                simpa [guard, nameEq] using accepted
+              have positive : table.leafSize > 0 := by
+                by_cases positive : table.leafSize > 0
+                · exact positive
+                · exfalso
+                  simp [lookupRaw?, guard, positive, optionFailure] at rawFound
+              obtain ⟨raw, rawAt, rawMatch⟩ :=
+                lookupIndexed_rawWireAt program hmatches table number indexed found
+              have sameRaw : raw = checkedRaw := by
+                rw [rawAt.lookupRaw positive] at rawFound
+                exact Option.some.inj rawFound
+              subst checkedRaw
+              obtain ⟨rawWidthEq, _⟩ := IndexedWire.matchesRaw_width_rhs rawMatch
+              rw [← widthEq, ← rawWidthEq]
+              exact .wire earlier rawAt nameEq
       · simp only [earlier, guard] at accepted
-        rw [optionFailure] at accepted
-        simp at accepted
+        exfalso
+        simp [guard, earlier, optionFailure] at accepted
+  | namedWire number name =>
+      unfold refWidthBefore? at accepted
+      by_cases earlier : number < current
+      · simp only [earlier, guard, Option.bind_eq_bind] at accepted
+        cases found : lookupIndexed? indexeds table number with
+        | none => simp [found] at accepted
+        | some indexed =>
+            simp only [found, Option.bind_some] at accepted
+            cases rawFound : lookupRaw? program.wires table number with
+            | none => simp [rawFound] at accepted
+            | some checkedRaw =>
+              simp only [rawFound, Option.bind_some] at accepted
+              have nameEq : checkedRaw.name = name := by
+                by_cases equal : checkedRaw.name = name
+                · exact equal
+                · exfalso
+                  simp [guard, equal, optionFailure] at accepted
+              have widthEq : indexed.width = width := by
+                simpa [guard, nameEq] using accepted
+              have positive : table.leafSize > 0 := by
+                by_cases positive : table.leafSize > 0
+                · exact positive
+                · exfalso
+                  simp [lookupRaw?, guard, positive, optionFailure] at rawFound
+              obtain ⟨raw, rawAt, rawMatch⟩ :=
+                lookupIndexed_rawWireAt program hmatches table number indexed found
+              have sameRaw : raw = checkedRaw := by
+                rw [rawAt.lookupRaw positive] at rawFound
+                exact Option.some.inj rawFound
+              subst checkedRaw
+              obtain ⟨rawWidthEq, _⟩ := IndexedWire.matchesRaw_width_rhs rawMatch
+              rw [← widthEq, ← rawWidthEq]
+              exact .namedWire earlier rawAt nameEq
+      · simp only [earlier, guard] at accepted
+        exfalso
+        simp [guard, earlier, optionFailure] at accepted
 
 /-- Raw, generator-independent typing judgment corresponding to
 `SSA.Rhs.elaborate`. -/
@@ -729,6 +808,10 @@ inductive RawExprMatches (program : Program) (table : WireTable) :
     {width : Nat} → Loom.Emit.MicroVerilog.Expr width → Ref → Prop
   | reg (width : Nat) (name : String) :
       RawExprMatches program table (.reg width name) (.reg name)
+  | named {width : Nat} {expr : Loom.Emit.MicroVerilog.Expr width}
+      {number : Nat} {name : String} :
+      RawExprMatches program table expr (.wire number) →
+      RawExprMatches program table expr (.namedWire number name)
   | lit {width value number raw} :
       RawWireAt program table number raw → raw.width = width →
       raw.rhs = .lit width value.toNat →
@@ -847,10 +930,29 @@ theorem indexedExprMatches_raw
           subst actual
           exact .reg width name
       | wire number => simp [indexedExprMatches] at accepted
+      | namedWire number name => simp [indexedExprMatches] at accepted
   | lit value =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case lit literalWidth actualValue =>
+                obtain ⟨raw, rawAt, rawMatch⟩ :=
+                  lookupIndexed_rawWireAt program hmatches table number
+                    ⟨indexedNumber, actualWidth, .lit literalWidth actualValue⟩ found
+                obtain ⟨widthEq, rhsEq⟩ :=
+                  IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .lit literalWidth actualValue⟩) rawMatch
+                exact .lit rawAt (widthEq.trans accepted.1.1)
+                  (rhsEq.trans (by simp [IndexedRhs.toRaw, accepted.1.2,
+                    accepted.2]))
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -887,10 +989,48 @@ theorem indexedExprMatches_raw
                 exact .memRead rawAt (widthEq.trans accepted.1.1)
                   (rhsEq.trans (by simp [IndexedRhs.toRaw, accepted.1.2]))
                   (addressIH actualAddress accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case memRead actualMem actualAddress =>
+                obtain ⟨raw, rawAt, rawMatch⟩ :=
+                  lookupIndexed_rawWireAt program hmatches table number
+                    ⟨indexedNumber, actualWidth, .memRead actualMem actualAddress⟩ found
+                obtain ⟨widthEq, rhsEq⟩ :=
+                  IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .memRead actualMem actualAddress⟩) rawMatch
+                exact .memRead rawAt (widthEq.trans accepted.1.1)
+                  (rhsEq.trans (by simp [IndexedRhs.toRaw, accepted.1.2]))
+                  (addressIH actualAddress accepted.2)
   | and left right leftIH rightIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case and =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .and actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ :=
+                    IndexedWire.matchesRaw_width_rhs
+                      (indexed := ⟨indexedNumber, actualWidth,
+                        .bin .and actualLeft actualRight⟩) rawMatch
+                  exact .and rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2)
+                    (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -931,10 +1071,50 @@ theorem indexedExprMatches_raw
                   exact .or rawAt (widthEq.trans accepted.1.1) rhsEq
                     (leftIH actualLeft accepted.1.2)
                     (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case or =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .or actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ :=
+                    IndexedWire.matchesRaw_width_rhs
+                      (indexed := ⟨indexedNumber, actualWidth,
+                        .bin .or actualLeft actualRight⟩) rawMatch
+                  exact .or rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2)
+                    (rightIH actualRight accepted.2)
   | xor left right leftIH rightIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case xor =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .xor actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ :=
+                    IndexedWire.matchesRaw_width_rhs
+                      (indexed := ⟨indexedNumber, actualWidth,
+                        .bin .xor actualLeft actualRight⟩) rawMatch
+                  exact .xor rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2)
+                    (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -971,10 +1151,44 @@ theorem indexedExprMatches_raw
                     (indexed := ⟨indexedNumber, actualWidth, .not actual⟩) rawMatch
                 exact .not rawAt (widthEq.trans accepted.1) rhsEq
                   (valueIH actual accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case not actual =>
+                obtain ⟨raw, rawAt, rawMatch⟩ :=
+                  lookupIndexed_rawWireAt program hmatches table number
+                    ⟨indexedNumber, actualWidth, .not actual⟩ found
+                obtain ⟨widthEq, rhsEq⟩ :=
+                  IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth, .not actual⟩) rawMatch
+                exact .not rawAt (widthEq.trans accepted.1) rhsEq
+                  (valueIH actual accepted.2)
   | add left right leftIH rightIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case add =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .add actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .add actualLeft actualRight⟩) rawMatch
+                  exact .add rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -1011,10 +1225,46 @@ theorem indexedExprMatches_raw
                       .bin .sub actualLeft actualRight⟩) rawMatch
                   exact .sub rawAt (widthEq.trans accepted.1.1) rhsEq
                     (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case sub =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .sub actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .sub actualLeft actualRight⟩) rawMatch
+                  exact .sub rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
   | shl left right leftIH rightIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case shl =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .shl actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .shl actualLeft actualRight⟩) rawMatch
+                  exact .shl rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -1051,10 +1301,49 @@ theorem indexedExprMatches_raw
                       .bin .shr actualLeft actualRight⟩) rawMatch
                   exact .shr rawAt (widthEq.trans accepted.1.1) rhsEq
                     (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case shr =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .shr actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .shr actualLeft actualRight⟩) rawMatch
+                  exact .shr rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
   | eq left right leftIH rightIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                split at accepted
+                next matchEq =>
+                  cases matchEq
+                  simp only [Bool.and_eq_true] at accepted
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, 1, .bin .eq actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, 1,
+                      .bin .eq actualLeft actualRight⟩) rawMatch
+                  exact .eq rawAt widthEq rhsEq
+                    (leftIH actualLeft accepted.1) (rightIH actualRight accepted.2)
+                next mismatch => simp at accepted
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -1097,10 +1386,52 @@ theorem indexedExprMatches_raw
                   exact .ult rawAt widthEq rhsEq
                     (leftIH actualLeft accepted.1) (rightIH actualRight accepted.2)
                 next mismatch => simp at accepted
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                split at accepted
+                next matchEq =>
+                  cases matchEq
+                  simp only [Bool.and_eq_true] at accepted
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, 1, .bin .ult actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, 1,
+                      .bin .ult actualLeft actualRight⟩) rawMatch
+                  exact .ult rawAt widthEq rhsEq
+                    (leftIH actualLeft accepted.1) (rightIH actualRight accepted.2)
+                next mismatch => simp at accepted
   | slt left right leftIH rightIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case slt actualLeft actualRight =>
+                split at accepted
+                next matchEq =>
+                  cases matchEq
+                  simp only [Bool.and_eq_true] at accepted
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, 1, .slt actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, 1,
+                      .slt actualLeft actualRight⟩) rawMatch
+                  exact .slt rawAt widthEq rhsEq
+                    (leftIH actualLeft accepted.1) (rightIH actualRight accepted.2)
+                next mismatch => simp at accepted
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -1140,10 +1471,47 @@ theorem indexedExprMatches_raw
                 exact .mux rawAt (widthEq.trans accepted.1.1.1) rhsEq
                   (conditionIH actualCondition accepted.1.1.2)
                   (yesIH actualYes accepted.1.2) (noIH actualNo accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case mux actualCondition actualYes actualNo =>
+                obtain ⟨raw, rawAt, rawMatch⟩ :=
+                  lookupIndexed_rawWireAt program hmatches table number
+                    ⟨indexedNumber, actualWidth,
+                      .mux actualCondition actualYes actualNo⟩ found
+                obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                  (indexed := ⟨indexedNumber, actualWidth,
+                    .mux actualCondition actualYes actualNo⟩) rawMatch
+                exact .mux rawAt (widthEq.trans accepted.1.1.1) rhsEq
+                  (conditionIH actualCondition accepted.1.1.2)
+                  (yesIH actualYes accepted.1.2) (noIH actualNo accepted.2)
   | slice value lo width valueIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case slice actualValue hi actualLo =>
+                obtain ⟨raw, rawAt, rawMatch⟩ :=
+                  lookupIndexed_rawWireAt program hmatches table number
+                    ⟨indexedNumber, actualWidth,
+                      .slice actualValue hi actualLo⟩ found
+                obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                  (indexed := ⟨indexedNumber, actualWidth,
+                    .slice actualValue hi actualLo⟩) rawMatch
+                exact .slice rawAt (widthEq.trans accepted.1.1.1)
+                  (rhsEq.trans (by simp [IndexedRhs.toRaw, accepted.1.1.2,
+                    accepted.1.2]))
+                  (valueIH actualValue accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -1178,10 +1546,44 @@ theorem indexedExprMatches_raw
                   (indexed := ⟨indexedNumber, actualWidth, .ident actual⟩) rawMatch
                 exact .zext rawAt (widthEq.trans accepted.1.1) rhsEq
                   accepted.1.2 (valueIH actual accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case ident actual =>
+                obtain ⟨raw, rawAt, rawMatch⟩ :=
+                  lookupIndexed_rawWireAt program hmatches table number
+                    ⟨indexedNumber, actualWidth, .ident actual⟩ found
+                obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                  (indexed := ⟨indexedNumber, actualWidth, .ident actual⟩) rawMatch
+                exact .zext rawAt (widthEq.trans accepted.1.1) rhsEq
+                  accepted.1.2 (valueIH actual accepted.2)
   | @sext inputWidth value width valueIH =>
       cases reference with
       | reg name => simp [indexedExprMatches] at accepted
       | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case sext amount actual signBit =>
+                obtain ⟨raw, rawAt, rawMatch⟩ :=
+                  lookupIndexed_rawWireAt program hmatches table number
+                    ⟨indexedNumber, actualWidth, .sext amount actual signBit⟩ found
+                obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                  (indexed := ⟨indexedNumber, actualWidth,
+                    .sext amount actual signBit⟩) rawMatch
+                have signEq : signBit = inputWidth - 1 := by omega
+                exact .sext rawAt (widthEq.trans accepted.1.1.1.1)
+                  (by simpa [IndexedRhs.toRaw, accepted.1.1.2, signEq]
+                    using rhsEq)
+                  accepted.1.1.1.2 (valueIH actual accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
           cases found : lookupIndexed? indexeds table number with
           | none => simp [indexedExprMatches, found] at accepted
           | some indexed =>
@@ -1327,6 +1729,8 @@ theorem nextRegMatches_raw
                         accepted.1.1.2)
                       (thenIH current thenRef thenCert accepted.1.2 cur currentMatches)
                       (elseIH current elseRef elseCert accepted.2 cur currentMatches)
+          | namedWire number name =>
+              simp [nextRegMatches] at accepted
       | same => cases current <;> simp [nextRegMatches, writes] at accepted
       | write => simp [nextRegMatches] at accepted
       | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
@@ -1534,6 +1938,29 @@ theorem indexedMuxRootMatches_raw
   cases out with
   | reg name => simp [indexedMuxRootMatches] at accepted
   | wire number =>
+      cases found : lookupIndexed? indexeds table number with
+      | none => simp [indexedMuxRootMatches, found] at accepted
+      | some indexed =>
+          obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+          cases rhs <;> simp [indexedMuxRootMatches, found] at accepted
+          case mux actualCondition actualYes actualNo =>
+            obtain ⟨raw, rawAt, rawMatch⟩ :=
+              lookupIndexed_rawWireAt program hmatches table number
+                ⟨indexedNumber, actualWidth,
+                  .mux actualCondition actualYes actualNo⟩ found
+            obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+              (indexed := ⟨indexedNumber, actualWidth,
+                .mux actualCondition actualYes actualNo⟩) rawMatch
+            rcases accepted with ⟨actualWidthEq, rhsMatches⟩
+            have rhsRefs :
+                (actualCondition, actualYes, actualNo) =
+                  (conditionRef, yesRef, noRef) := by
+              simpa using rhsMatches
+            cases rhsRefs
+            exact .mux rawAt (widthEq.trans actualWidthEq) rhsEq
+              conditionMatches yesMatches noMatches
+  | namedWire number name =>
+      apply RawExprMatches.named
       cases found : lookupIndexed? indexeds table number with
       | none => simp [indexedMuxRootMatches, found] at accepted
       | some indexed =>

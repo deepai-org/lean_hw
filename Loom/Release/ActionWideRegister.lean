@@ -55,6 +55,14 @@ def iteConditionAction : Loom.Hw.Act → Loom.Hw.Expr 1
   | .ite condition _ _ => condition
   | _ => .lit 0
 
+/-- Width-indexed projection used by generated expression certificates. The
+fallback branch is unreachable for a certificate paired with its source
+action, but keeps the projection total and easy for the kernel to reduce. -/
+def writeValueAction (width : Nat) : Loom.Hw.Act → Loom.Hw.Expr width
+  | .write actualWidth _ value =>
+      if h : actualWidth = width then h ▸ value else .lit 0
+  | _ => .lit 0
+
 def isIteAction : Loom.Hw.Act → Bool
   | .ite .. => true
   | _ => false
@@ -326,6 +334,10 @@ def refsEquivalent (wires : Rope (List IndexedWire))
   | fuel + 1, left, right =>
       if left == right then true else
       match left, right with
+      | .namedWire number _, right =>
+          refsEquivalent wires table fuel (.wire number) right
+      | left, .namedWire number _ =>
+          refsEquivalent wires table fuel left (.wire number)
       | .reg _, .reg _ => false
       | .wire number, .reg _ =>
           match lookupIndexed? wires table number with
@@ -417,7 +429,7 @@ private def mergeJoins (wires : Rope (List IndexedWire)) (table : WireTable)
       if join.index != index || join.width != source.width then none else
       match join.output with
       | .reg _ => none
-      | .wire number =>
+      | .wire number | .namedWire number _ =>
           match lookupIndexed? wires table number with
           | some ⟨_, actualWidth, .mux actualGuard actualThen actualElse⟩ =>
               if actualWidth == source.width &&
@@ -514,7 +526,7 @@ private def checkedJoinUpdates (registers : Array Loom.Hw.RegDecl)
       guard (join.guard == condition && join.thenInput == thenRef &&
         join.elseInput == elseRef)
       match join.output with
-      | .wire _ =>
+      | .wire _ | .namedWire _ _ =>
           let updates ← checkedJoinUpdates registers condition thenResult
             elseResult indices joins
           some ((index, join.output) :: updates)
@@ -728,7 +740,9 @@ def checkedSparseJoins (registers : Array Loom.Hw.RegDecl) (condition : Ref)
           join.index == index && join.width == source.width &&
             join.guard == condition && join.thenInput == thenRef &&
             join.elseInput == elseRef &&
-            (match join.output with | .wire _ => true | .reg _ => false) &&
+            (match join.output with
+              | .wire _ | .namedWire _ _ => true
+              | .reg _ => false) &&
             checkedSparseJoins registers condition thenResult elseResult
               indices joins
       | _, _, _ => false
@@ -745,7 +759,9 @@ def checkedBitJoin (registers : Array Loom.Hw.RegDecl) (condition : Ref)
     | some source, some thenRef, some elseRef =>
         join.width == source.width && join.guard == condition &&
           join.thenInput == thenRef && join.elseInput == elseRef &&
-          (match join.output with | .wire _ => true | .reg _ => false)
+          (match join.output with
+            | .wire _ | .namedWire _ _ => true
+            | .reg _ => false)
     | _, _, _ => false
 
 /-- Validate exactly the joins named by a register bitmap. Each accepted join

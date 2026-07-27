@@ -828,64 +828,111 @@ def rgnCoversVal (rv : Expr 42) (a : Expr 12) (need : Perms) : Expr 1 :=
     ++ (if need.w then [field rv 1 1] else [])
     ++ (if need.x then [field rv 2 1] else [])
 
+/-- A live Mover job killed by the just-completed core phase.  These named
+intermediates are intentional sharing boundaries: keeping the old definitions
+as one large `let` chain caused kernel elaboration to substitute and duplicate
+the complete circuit before release checking began. -/
+def moverClearedE : Expr 1 :=
+  .and (.reg 1 "mov_v")
+    (.or (killedByCoreE movSrcDom movSrcSlot)
+         (killedByCoreE movDstDom movDstSlot))
+
+/-- Some retiring domain installed a new Mover job this cycle. -/
+def moverNewAnyE : Expr 1 :=
+  orAll ((List.finRange numDomains).map newJobSet)
+
+/-- Post-core validity of the Mover job. -/
+def moverJobVE : Expr 1 :=
+  .or moverNewAnyE (.and (.reg 1 "mov_v") (.not moverClearedE))
+
+def moverSrcE : Expr 14 :=
+  postJ (fun d => (moveJob d).srcEnc) (.reg 14 "mov_src")
+
+def moverDstE : Expr 14 :=
+  postJ (fun d => (moveJob d).dstEnc) (.reg 14 "mov_dst")
+
+def moverOwnerE : Expr 2 :=
+  postJ (fun d => dLit d) (.reg 2 "mov_owner")
+
+def moverSrcCurE : Expr 12 :=
+  postJ (fun d => (moveJob d).srcCur) (.reg 12 "mov_srccur")
+
+def moverDstCurE : Expr 12 :=
+  postJ (fun d => (moveJob d).dstCur) (.reg 12 "mov_dstcur")
+
+def moverRemE : Expr 13 :=
+  postJ (fun d => (moveJob d).rem) (.reg 13 "mov_rem")
+
+def moverStatusE : Expr 12 :=
+  postJ (fun d => (moveJob d).sa) (.reg 12 "mov_status")
+
+/-- Per-word liveness after the core phase (entries never mutate in place). -/
+def moverLivePostE (e : Expr 14) : Expr 1 :=
+  .and (liveRefE (field e 12 2) (field e 8 4) (field e 0 8))
+    (.not (killedByCoreE (field e 12 2) (field e 8 4)))
+
+def moverCheckOkE : Expr 1 :=
+  andAll
+    [ moverLivePostE moverSrcE,
+      kCovers (kindWAt (field moverSrcE 8 6)) moverSrcCurE
+        ⟨true, false, false⟩,
+      moverLivePostE moverDstE,
+      kCovers (kindWAt (field moverDstE 8 6)) moverDstCurE
+        ⟨false, true, false⟩ ]
+
+/-- Source word with same-cycle core-store forwarding. -/
+def moverSrcWordE : Expr 32 :=
+  (List.finRange numDomains).foldr
+    (fun d acc =>
+      let eaddr : Expr 12 := field (.add (readReg d rs1E) immX) 0 12
+      let hit := andAll [retiringE, ifDomIs d, isMn "sw",
+                         domCoversE d eaddr ⟨false, true, false⟩,
+                         .eq eaddr moverSrcCurE]
+      .mux hit (readReg d rs2E) acc)
+    (.memRead 32 "mem" moverSrcCurE)
+
+/-- Status-write authority through the post-core regions of the owner. -/
+def moverStatusAuthE : Expr 1 :=
+  orAll ((List.finRange numDomains).flatMap fun c =>
+    (List.finRange numRegions).map fun r =>
+      andAll [.eq moverOwnerE (dLit c), rgnVPostE c r,
+              rgnCoversVal (rgnValPostE c r) moverStatusE
+                ⟨false, true, false⟩])
+
+def moverMoveWordE : Expr 1 :=
+  .and (neqE moverRemE (.lit 0)) moverCheckOkE
+
+def moverStatusEnE : Expr 1 :=
+  .and moverStatusAuthE
+    (.or (.eq moverRemE (.lit 0))
+      (.or (.not moverCheckOkE) (.eq moverRemE (.lit 1))))
+
+def moverStatusDataE : Expr 32 :=
+  .mux (.and (neqE moverRemE (.lit 0)) (.not moverCheckOkE))
+    (.lit Errno.staleHandle.toWord) (.lit 1)
+
+def moverContinueE : Expr 1 :=
+  .and moverMoveWordE (neqE moverRemE (.lit 1))
+
 /-- Rule 3: the Mover phase (`Step.moverPhase`) on the post-core state.
 Owns all `mov_*` registers (the core's `move`-install and sweep-clears are
 folded in here); memory port 1 carries the data word, port 2 the status
 word — ascending port order = spec write order. -/
 def moverAct : Act :=
-  let cleared := .and (.reg 1 "mov_v")
-    (.or (killedByCoreE movSrcDom movSrcSlot)
-         (killedByCoreE movDstDom movDstSlot))
-  let newAny := orAll ((List.finRange numDomains).map newJobSet)
-  let jobV := .or newAny (.and (.reg 1 "mov_v") (.not cleared))
-  let srcE := postJ (fun d => (moveJob d).srcEnc) (.reg 14 "mov_src")
-  let dstE := postJ (fun d => (moveJob d).dstEnc) (.reg 14 "mov_dst")
-  let ownerE := postJ (fun d => dLit d) (.reg 2 "mov_owner")
-  let srcCur := postJ (fun d => (moveJob d).srcCur) (.reg 12 "mov_srccur")
-  let dstCur := postJ (fun d => (moveJob d).dstCur) (.reg 12 "mov_dstcur")
-  let rem := postJ (fun d => (moveJob d).rem) (.reg 13 "mov_rem")
-  let sa := postJ (fun d => (moveJob d).sa) (.reg 12 "mov_status")
-  -- per-word re-check on the post-core capability tables (live-pre ∧ not
-  -- killed this cycle; entries never mutate in place)
-  let liveP (e : Expr 14) : Expr 1 :=
-    .and (liveRefE (field e 12 2) (field e 8 4) (field e 0 8))
-         (.not (killedByCoreE (field e 12 2) (field e 8 4)))
-  let checkOk := andAll
-    [ liveP srcE, kCovers (kindWAt (field srcE 8 6)) srcCur ⟨true, false, false⟩,
-      liveP dstE, kCovers (kindWAt (field dstE 8 6)) dstCur ⟨false, true, false⟩ ]
-  -- source word with same-cycle core-store forwarding
-  let srcWord := (List.finRange numDomains).foldr
-    (fun d acc =>
-      let eaddr : Expr 12 := field (.add (readReg d rs1E) immX) 0 12
-      let hit := andAll [retiringE, ifDomIs d, isMn "sw",
-                         domCoversE d eaddr ⟨false, true, false⟩,
-                         .eq eaddr srcCur]
-      .mux hit (readReg d rs2E) acc)
-    (.memRead 32 "mem" srcCur)
-  -- status-write authority through the post-core regions of the owner
-  let sAuth := orAll ((List.finRange numDomains).flatMap fun c =>
-    (List.finRange numRegions).map fun r =>
-      andAll [.eq ownerE (dLit c), rgnVPostE c r,
-              rgnCoversVal (rgnValPostE c r) sa ⟨false, true, false⟩])
-  let moveWord := .and (neqE rem (.lit 0)) checkOk
-  let statusEn := .and sAuth
-    (.or (.eq rem (.lit 0)) (.or (.not checkOk) (.eq rem (.lit 1))))
-  let statusData : Expr 32 :=
-    .mux (.and (neqE rem (.lit 0)) (.not checkOk))
-      (.lit Errno.staleHandle.toWord) (.lit 1)
-  let contE := .and moveWord (neqE rem (.lit 1))
-  .ite jobV
+  .ite moverJobVE
     (seqAll
-      [ .ite moveWord (.memWrite 12 32 "mem" 1 dstCur srcWord) .skip,
-        .ite statusEn (.memWrite 12 32 "mem" 2 sa statusData) .skip,
-        .write 1 "mov_v" contE,
-        .write 14 "mov_src" srcE,
-        .write 14 "mov_dst" dstE,
-        .write 2 "mov_owner" ownerE,
-        .write 12 "mov_status" sa,
-        .write 12 "mov_srccur" (.add srcCur (.lit 1)),
-        .write 12 "mov_dstcur" (.add dstCur (.lit 1)),
-        .write 13 "mov_rem" (.sub rem (.lit 1)) ])
+      [ .ite moverMoveWordE
+          (.memWrite 12 32 "mem" 1 moverDstCurE moverSrcWordE) .skip,
+        .ite moverStatusEnE
+          (.memWrite 12 32 "mem" 2 moverStatusE moverStatusDataE) .skip,
+        .write 1 "mov_v" moverContinueE,
+        .write 14 "mov_src" moverSrcE,
+        .write 14 "mov_dst" moverDstE,
+        .write 2 "mov_owner" moverOwnerE,
+        .write 12 "mov_status" moverStatusE,
+        .write 12 "mov_srccur" (.add moverSrcCurE (.lit 1)),
+        .write 12 "mov_dstcur" (.add moverDstCurE (.lit 1)),
+        .write 13 "mov_rem" (.sub moverRemE (.lit 1)) ])
     (.write 1 "mov_v" (.lit 0))
 
 end Machines.Lnp64u.Hw

@@ -90,6 +90,16 @@ structure Program where
 
 /-! ## Structural renderer -/
 
+/-- One logical output line represented by already-separated canonical
+fragments.  Keeping concatenation out of leaf certificate statements avoids
+quadratic kernel reduction on large artifacts; byte flattening happens only
+under congruence at the release theorem root. -/
+structure Line where
+  fragments : List String
+  deriving Repr, DecidableEq
+
+def Line.render (line : Line) : String := String.join line.fragments
+
 def BinOp.token : BinOp → String
   | .and => "&"
   | .or => "|"
@@ -115,9 +125,35 @@ def Rhs.render : Rhs → String
       "{{" ++ toString amount ++ "{" ++ value ++ "[" ++
         toString signBit ++ "]}}, " ++ value ++ "};"
 
+def Rhs.renderLine : Rhs → List String
+  | .lit width value => [toString width, "'d", toString value, ";"]
+  | .ident name => [name, ";"]
+  | .memRead mem addr => [mem, "[", addr, "];" ]
+  | .slice value hi lo => [value, "[", toString hi, ":", toString lo, "];" ]
+  | .not value => ["~", value, ";"]
+  | .bin op left right => [left, " ", op.token, " ", right, ";"]
+  | .slt left right => ["$signed(", left, ") < $signed(", right, ");"]
+  | .mux cond yes no => [cond, " ? ", yes, " : ", no, ";"]
+  | .sext amount value signBit =>
+      ["{{", toString amount, "{", value, "[", toString signBit,
+        "]}}, ", value, "};"]
+
+def Wire.renderLine (wire : Wire) : Line :=
+  ⟨["  wire [", toString (wire.width - 1), ":0] ", wire.name, " = "] ++
+    wire.rhs.renderLine⟩
+
 /-- Render one wire declaration. -/
 def Wire.render (wire : Wire) : String :=
-  s!"  wire [{wire.width - 1}:0] {wire.name} = {wire.rhs.render}"
+  wire.renderLine.render
+
+theorem wireRenderTree_factor (tree : Loom.Release.Rope (List Wire)) :
+    (tree.map (fun wires => wires.map Wire.renderLine)).map
+        (fun lines => lines.map Line.render) =
+      tree.map (fun wires => wires.map Wire.render) := by
+  rw [Loom.Release.Rope.map_map]
+  congr 1
+  funext wires
+  simp [Function.comp_def, List.map_map, Wire.render]
 
 private def outHeaderLines : List Out → List String
   | [] => []
@@ -126,14 +162,14 @@ private def outHeaderLines : List Out → List String
       s!"  output wire [{out.width - 1}:0] {out.name}," ::
         outHeaderLines outs
 
-private def headerLines (program : Program) : List String :=
+def headerLines (program : Program) : List String :=
   [s!"module {program.name}(", "  input wire clk,"] ++
   match program.outs with
   | [] => ["  input wire rst", ");"]
   | outs =>
       ["  input wire rst,"] ++ outHeaderLines outs ++ [");"]
 
-private def declLines (program : Program) : List String :=
+def declLines (program : Program) : List String :=
   program.regs.map (fun reg =>
     s!"  reg [{reg.width - 1}:0] {reg.name};") ++
   program.mems.map (fun mem =>
@@ -147,7 +183,7 @@ def Mem.renderInitLines (mem : Mem) (start : Nat) (values : List Nat) :
   ((List.range values.length).zip values).map fun ⟨offset, value⟩ =>
     s!"    {mem.name}[{start + offset}] = {mem.dataWidth}'d{value};"
 
-private def alwaysLines (program : Program) : List String :=
+def alwaysLines (program : Program) : List String :=
   ["  always @(posedge clk) begin", "    if (rst) begin"] ++
   program.regs.map (fun reg =>
     s!"      {reg.name} <= {reg.width}'d{reg.init};") ++

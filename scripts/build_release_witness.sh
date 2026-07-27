@@ -40,7 +40,9 @@ lake exe emit "$target"
 
 src="GeneratedRelease/$artifact"
 lib=".lake/build/lib/lean/GeneratedRelease/$artifact"
-generator_args=("$rtl" "$src/Root.lean" --block-size 128 --batch-blocks 4
+block_size=128
+batch_blocks=4
+generator_args=("$rtl" "$src/Root.lean" --block-size "$block_size" --batch-blocks "$batch_blocks"
   --design-expr "$design_expr")
 for module in "${design_imports[@]}"; do
   generator_args+=(--design-import "$module")
@@ -68,7 +70,10 @@ compile_batch() {
   if [[ "$rebuild" == 0 ]]; then
     return
   fi
-  lake env lean "$(realpath "$source")" -o "$output"
+  # Outer xargs already provides file-level parallelism.  Without this cap,
+  # every Lean process also starts an internal worker pool and 30 nominal
+  # jobs create roughly 60 runnable kernel threads on a 32-core machine.
+  lake env lean -j 1 "$(realpath "$source")" -o "$output"
 }
 export -f compile_batch
 
@@ -79,19 +84,69 @@ lake build Loom.Release.SymbolicCertificate Loom.Release.SymbolicDecide \
   Loom.Release.WholeRegisterPlan \
   Tools.ReleaseCertGen "${design_imports[@]}"
 
-find "$src" -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+compile_wire_owner() {
+  local source=$1
+  compile_batch "$source"
+  local base=${source##*/}
+  local owner=$((10#${base:5:3}))
+  local child
+  printf -v child '%s/IndexedBatch%04d.lean' "${source%/*}" "$owner"
+  [[ -f "$child" ]] && compile_batch "$child"
+  return 0
+}
+export -f compile_wire_owner
 
+find "$src" -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_wire_owner "$1"' _
+
+# `Root` imports the balanced composition of all wire batches.  This module is
+# generated outside Lake's static graph, so compile it explicitly on a clean
+# checkout instead of accidentally relying on a stale object.
+find "$src" -maxdepth 1 -name 'TreeChunkBatch*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+compile_batch "$src/IndexedRoot.lean"
+find "$src" -maxdepth 1 -name 'MemData*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+find "$src" -maxdepth 1 -name 'MemRender*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+find "$src" -maxdepth 1 -name 'MemRoot*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+compile_batch "$src/ProgramData.lean"
+compile_batch "$src/FramingFixed.lean"
+find "$src" -maxdepth 1 -name 'FramingReg*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+find "$src" -maxdepth 1 -name 'FramingOut*.lean' -print0 | sort -z | \
+  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 compile_batch "$src/Root.lean"
 
-lake env lean --run "$(realpath "$src/CertGen.lean")"
+if [[ "$target" == lnp64u ]]; then
+  # The large core uses one action-wide synthesis pass and compact per-register
+  # projections.  The former CertGen path traversed the complete action tree
+  # once for each of 825 registers and was the source of the multi-hour build.
+  scripts/build_all_action_dag_cuts.sh "$jobs"
+  find "$src" -maxdepth 1 -name 'FastIndexedBridgeBatch*.lean' -print0 | sort -z | \
+    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+  compile_batch "$src/FastIndexedBridge.lean"
+  lake exe actionwidegen lnp64u-hybrid-rules "$src/Runtime.tsv" "$src"
+  compile_batch "$src/HybridBase.lean"
+  compile_batch "$src/HybridCoreShape.lean"
+  for index in 000 001 002 003; do
+    compile_batch "$src/HybridRule${index}.lean"
+  done
+  compile_batch "$src/HybridPrelude.lean"
+  find "$src" -maxdepth 1 -name 'HybridReg*.lean' -print0 | sort -z | \
+    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+  compile_batch "$src/HybridRoot.lean"
+else
+  lake env lean --run "$(realpath "$src/CertGen.lean")"
+fi
 
-# Generated correctness is kernel-checked below; this repeated generation is
-# solely the clean-clone reproducibility gate. Hashes detect drift between the
-# two runs and are not used to bind or certify the RTL bytes.
+# Generated correctness is kernel-checked below. Re-run the fast structural
+# source generator for the reproducibility gate, but do not repeat expensive
+# certificate synthesis: certificate-generator determinism is irrelevant to
+# soundness because every emitted certificate is checked by the kernel.
 generated_digest=$(python3 scripts/generated_tree_digest.py "$src")
 python3 scripts/gen_release_witness.py "${generator_args[@]}"
-lake env lean --run "$(realpath "$src/CertGen.lean")"
 regenerated_digest=$(python3 scripts/generated_tree_digest.py "$src")
 if [[ "$generated_digest" != "$regenerated_digest" ]]; then
   echo "$artifact release source generation is nondeterministic" >&2
@@ -99,12 +154,14 @@ if [[ "$generated_digest" != "$regenerated_digest" ]]; then
 fi
 echo "$artifact generated release sources are deterministic"
 
-find "$src" -maxdepth 1 -name 'IndexedCertBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-find "$src" -maxdepth 1 -name 'PlanCertBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-find "$src" -maxdepth 1 -name 'IndexedPortCertBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+if [[ "$target" != lnp64u ]]; then
+  find "$src" -maxdepth 1 -name 'IndexedCertBatch*.lean' -print0 | sort -z | \
+    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+  find "$src" -maxdepth 1 -name 'PlanCertBatch*.lean' -print0 | sort -z | \
+    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+  find "$src" -maxdepth 1 -name 'IndexedPortCertBatch*.lean' -print0 | sort -z | \
+    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+fi
 
 find "$src" -maxdepth 1 -name 'SemanticWireBatch*.lean' -print0 | sort -z | \
   xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _

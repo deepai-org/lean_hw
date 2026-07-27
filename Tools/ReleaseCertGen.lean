@@ -27,6 +27,7 @@ structure ExprIndex where
   values : List (String × Sigma Loom.Emit.MicroVerilog.Expr)
   rhsNames : Std.HashMap String String
   nameHashes : Std.HashMap String UInt64
+  wireHashes : Array UInt64 := #[]
   muxAliases : Std.HashMap (Nat × UInt64 × UInt64 × UInt64)
     String
 structure GenState where
@@ -138,8 +139,10 @@ private unsafe def buildIndex (program : SSA.Program) (env : SSA.Env) :
     nameHashes := nameHashes.insert register.name key
     unless hashed.contains key do
       hashed := hashed.insert key register.name
-  return (⟨hashed, values, addWireNames program.wires {}, nameHashes,
-    addMuxAliases nameHashes program.wires {}⟩, memo)
+  return ({ hashed, values
+            rhsNames := addWireNames program.wires {}
+            nameHashes
+            muxAliases := addMuxAliases nameHashes program.wires {} }, memo)
 
 private def findExprLinear {w : Nat}
     (target : Loom.Emit.MicroVerilog.Expr w) :
@@ -289,13 +292,24 @@ private unsafe def findPort? (index : ExprIndex) {aw dw : Nat}
     | _, _, _ => none
 
 private def findLiteral (index : ExprIndex) (width value : Nat) : Option String :=
-  findRhs index width (.lit width value)
+  index.hashed[(mixHash (tagged 0 width) (hash value))]?
+
+private def findMuxName (index : ExprIndex) (width : Nat) (guard yes no : String) :
+    Option String := do
+  let hashName := fun name =>
+    match Symbolic.wireNumber? name with
+    | some number => index.wireHashes[number]? <|> index.nameHashes[name]?
+    | none => index.nameHashes[name]?
+  let guardHash ← hashName guard
+  let yesHash ← hashName yes
+  let noHash ← hashName no
+  index.muxAliases[(width, guardHash, yesHash, noHash)]?
 
 private def muxNames (index : ExprIndex) (aw dw : Nat) (guard : String)
     (yes no : Named.PortNames) : Option Named.PortNames := do
-  pure { en := ← findRhs index 1 (.mux guard yes.en no.en)
-         addr := ← findRhs index aw (.mux guard yes.addr no.addr)
-         data := ← findRhs index dw (.mux guard yes.data no.data) }
+  pure { en := ← findMuxName index 1 guard yes.en no.en
+         addr := ← findMuxName index aw guard yes.addr no.addr
+         data := ← findMuxName index dw guard yes.data no.data }
 
 private unsafe def synthNextPort (index : ExprIndex) (mn : String) (aw dw p : Nat) :
     Act → Named.PortNames →
@@ -383,7 +397,7 @@ unsafe def synthesize (design : Design) (program : SSA.Program) :
 private def nameRef (name : String) : Symbolic.Ref :=
   if name.startsWith "n" then
     match (name.drop 1).toNat? with
-    | some number => .wire number
+    | some number => .namedWire number name
     | none => .reg name
   else .reg name
 
@@ -456,6 +470,26 @@ unsafe def synthesizePlanRegisterCerts (design : Design) (program : SSA.Program)
   let plans := Compile.RulePlans.ofRules design.regs design.rules
   (synthPlanRegisters index names design.regs.length plans).run {} |>.map (·.1)
 
+/-- Generate both certificate families from one elaborated SSA environment and
+one expression index. Their kernel checkers remain independent; only duplicated
+work in this untrusted generator is shared. -/
+unsafe def synthesizeWithPlanRegisterCerts (design : Design)
+    (program : SSA.Program) :
+    Option (Named.ModuleCert design × List Symbolic.NextRulesCert) := do
+  let env ← program.elaborateEnv
+  let (index, _) := buildIndex program env
+  let names := finalRegNames program
+  let ruleSummaries := summarizes design.rules
+  let namedAction : GenM (Named.ModuleCert design) := do
+    pure { regs := ← synthRegs index ruleSummaries names design.regs
+           mems := ← synthMems index design design.mems }
+  let named ← (namedAction.run {}).map (·.1)
+  let plans := Compile.RulePlans.ofRules design.regs design.rules
+  let planCerts ←
+    (synthPlanRegisters index names design.regs.length plans).run {}
+      |>.map (·.1)
+  pure (named, planCerts)
+
 /-- Prefix form used for bounded generation and performance probes. -/
 unsafe def synthesizePlanRegisterCertPrefix (count : Nat) (design : Design)
     (program : SSA.Program) : Option (List Symbolic.NextRulesCert) := do
@@ -484,6 +518,8 @@ private def ActionWideIndex.refHash? (index : ActionWideIndex)
     (reference : Symbolic.Ref) : Option UInt64 :=
   match reference with
   | .wire number => index.wireHashes[number]? <|> index.nameHashes[reference.render]?
+  | .namedWire number name =>
+      index.wireHashes[number]? <|> index.nameHashes[name]?
   | .reg name => index.nameHashes[name]?
 
 private unsafe def findActionWideExpr (index : ActionWideIndex) {width : Nat}
@@ -648,6 +684,8 @@ private def runtimeRefData (state : RuntimeIndexState)
   match reference with
   | .wire number =>
       pure (← state.wireHashes[number]?, ← state.wireWidths[number]?)
+  | .namedWire number _ =>
+      pure (← state.wireHashes[number]?, ← state.wireWidths[number]?)
   | .reg name =>
       pure (← state.registerHashes[name]?, ← state.registerWidths[name]?)
 
@@ -745,6 +783,40 @@ private def buildRuntimeIndex (program : Tools.RuntimeSsa.Program) :
     }
   else none
 
+private def runtimeFinalRegNames (program : Tools.RuntimeSsa.Program) :
+    Std.HashMap (String × Nat) String := Id.run do
+  let mut result := {}
+  for register in program.regs do
+    result := result.insert (register.name, register.width) register.next
+  return result
+
+/-- Fast compact-input variant of the legacy named/plan generator. It avoids
+elaborating the very large kernel-facing SSA program; generated certificates
+are still accepted by the unchanged kernel checkers. -/
+unsafe def synthesizeWithPlanRegisterCertsRuntime (design : Design)
+    (program : Tools.RuntimeSsa.Program) :
+    Option (Named.ModuleCert design × List Symbolic.NextRulesCert) := do
+  let runtimeIndex ← buildRuntimeIndex program
+  guard (program.regs.size == design.regs.length)
+  let index : ExprIndex :=
+    { hashed := runtimeIndex.hashed
+      values := []
+      rhsNames := {}
+      nameHashes := runtimeIndex.nameHashes
+      wireHashes := runtimeIndex.wireHashes
+      muxAliases := runtimeIndex.muxAliases }
+  let names := runtimeFinalRegNames program
+  let ruleSummaries := summarizes design.rules
+  let namedAction : GenM (Named.ModuleCert design) := do
+    pure { regs := ← synthRegs index ruleSummaries names design.regs
+           mems := ← synthMems index design design.mems }
+  let named ← (namedAction.run {}).map (·.1)
+  let plans := Compile.RulePlans.ofRules design.regs design.rules
+  let planCerts ←
+    (synthPlanRegisters index names design.regs.length plans).run {}
+      |>.map (·.1)
+  pure (named, planCerts)
+
 /-- Synthesize one sparse certificate which checks all register roots in one
 source-action traversal.  The returned data is untrusted until accepted by
 `ActionWide.registersMatch`. -/
@@ -786,6 +858,7 @@ private def quote (value : String) : String := reprStr value
 def actionWideRefToLean : Symbolic.Ref → String
   | .reg name => s!".reg {quote name}"
   | .wire number => s!".wire {number}"
+  | .namedWire number name => s!".namedWire {number} {quote name}"
 
 /-- Render a bounded reference array for generated action-segment states. -/
 def actionWideRefsToLean (refs : Array Symbolic.Ref) : String :=
@@ -820,6 +893,8 @@ private def actionWideJoinName (join : Symbolic.ActionWide.Join) : String :=
   | .wire number => "actionJoin" ++ toString number ++ "_" ++
       toString join.index
   | .reg name => "invalidActionJoin_" ++ name
+  | .namedWire number _ => "actionJoin" ++ toString number ++ "_" ++
+      toString join.index
 
 /-- Render named join constants followed by their shared list. -/
 def actionWideNamedJoinBlockToLean (blockName : String)
@@ -831,11 +906,11 @@ def actionWideNamedJoinBlockToLean (blockName : String)
       let name := actionWideJoinName join
       if !seen.contains name then
         seen := seen.insert name
-        result := ("noncomputable def " ++ name ++
+        result := ("def " ++ name ++
           " : Symbolic.ActionWide.Join :=\n  " ++ actionWideJoinToLean join) :: result
     pure result.reverse
   String.intercalate "\n\n" declarations ++ "\n\n" ++
-    "noncomputable def " ++ blockName ++ " : List Symbolic.ActionWide.Join := [" ++
+    "def " ++ blockName ++ " : List Symbolic.ActionWide.Join := [" ++
     String.intercalate ", " (joins.map actionWideJoinName) ++ "]"
 
 /-- Render a bounded join block as typed Lean data. -/
@@ -861,7 +936,7 @@ private def emitNamedAction (expression : String) : NamedActionM String := do
   let state ← get
   let name := namedActionName state.next
   let declarations := state.declarations.push
-    ("noncomputable def " ++ name ++ " : Symbolic.ActionWide.ActionCert :=\n  " ++
+    ("def " ++ name ++ " : Symbolic.ActionWide.ActionCert :=\n  " ++
       expression ++ "\n")
   set ({ next := state.next + 1, declarations } : NamedActionState)
   pure name
@@ -908,7 +983,7 @@ def actionWideNamedCertificateToLean
       roots := name :: roots
     pure (roots.reverse, state)
   String.intercalate "\n" state.declarations.toList ++ "\n" ++
-    "noncomputable def actionWideCert : Symbolic.ActionWide.RulesCert := [" ++
+    "def actionWideCert : Symbolic.ActionWide.RulesCert := [" ++
     String.intercalate ", " roots ++ "]\n"
 
 structure ActionWideLeanSource where
@@ -922,6 +997,7 @@ private def pushWord (word : Nat) : WordM Unit :=
 private def encodeActionRef (registers : Std.HashMap String Nat) :
     Symbolic.Ref → Option Nat
   | .wire number => some (2 * number)
+  | .namedWire number _ => some (2 * number)
   | .reg name => do pure (2 * (← registers[name]?) + 1)
 
 private def encodeMask (registerCount mask : Nat) : WordM Unit := do
@@ -960,6 +1036,7 @@ private def encodeAction (registers : Std.HashMap String Nat)
         pushWord join.index
         match join.output with
         | .wire number => pushWord number
+        | .namedWire number _ => pushWord number
         | .reg _ => failure
 
 private def encodeRules (sourceRegisters : List RegDecl)
@@ -1020,7 +1097,7 @@ private def indexedRegCertName (index : Nat) : String :=
 private def refToLean (name : String) : String :=
   if name.startsWith "n" then
     match (name.drop 1).toNat? with
-    | some number => s!".wire {number}"
+    | some number => s!".namedWire {number} {quote name}"
     | none => s!".reg {quote name}"
   else s!".reg {quote name}"
 
@@ -1046,7 +1123,9 @@ private def indexedNextRulesToLean {w : Nat} : Named.NextRulesCert w → String
 
 private def symbolicRefToLean : Symbolic.Ref → String
   | .reg name => s!".reg {quote name}"
-  | .wire number => s!".wire {number}"
+  | .wire number =>
+      s!".namedWire {number} {quote (Symbolic.Ref.wire number).render}"
+  | .namedWire number name => s!".namedWire {number} {quote name}"
 
 private def symbolicOptionalRefToLean : Option Symbolic.Ref → String
   | none => "none"

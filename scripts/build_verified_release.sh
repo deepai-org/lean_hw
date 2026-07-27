@@ -4,7 +4,24 @@
 # Build, byte-bind, and audit both publication release artifacts.
 set -euo pipefail
 
-jobs=${1:-8}
+jobs=${1:-}
+if [[ -z "$jobs" ]]; then
+  cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+  if [[ -r /proc/meminfo ]]; then
+    available_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+    memory_jobs=$((available_kb / 4000000))
+  else
+    memory_jobs=1
+  fi
+  ((memory_jobs < 1)) && memory_jobs=1
+  jobs=$cores
+  ((jobs > memory_jobs)) && jobs=$memory_jobs
+  ((jobs > 32)) && jobs=32
+fi
+if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "jobs must be a positive integer" >&2
+  exit 2
+fi
 monitor_pid=
 
 run_phase() {

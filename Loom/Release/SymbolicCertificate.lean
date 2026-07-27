@@ -26,11 +26,19 @@ open Loom.Release.SSA
 inductive Ref where
   | reg (name : String)
   | wire (number : Nat)
+  | namedWire (number : Nat) (name : String)
   deriving Repr, DecidableEq
+
+/-- Kernel-friendly decimal wire naming. `Nat.repr` uses `n + 1` as
+recursion fuel even though decimal conversion needs only logarithmically many
+steps. Binary digit count is a valid upper bound for decimal digit count. -/
+def wireName (number : Nat) : String :=
+  "n" ++ String.ofList (Nat.toDigitsCore 10 (number.log2 + 1) number [])
 
 def Ref.render : Ref → String
   | .reg name => name
-  | .wire number => s!"n{number}"
+  | .wire number => wireName number
+  | .namedWire _ name => name
 
 /-- Decode the deliberately tiny release-witness naming convention. -/
 def wireNumber? (name : String) : Option Nat := do
@@ -100,8 +108,7 @@ theorem LookupTree.get?_eq_getElem?_toList
 once per bounded wire leaf; later semantic checks never parse identifiers. -/
 def IndexedWire.matchesRaw (number : Nat) (raw : Wire)
     (indexed : IndexedWire) : Bool :=
-  indexed.number == number &&
-  raw.name == (Ref.wire number).render && raw.width == indexed.width &&
+  indexed.number == number && raw.width == indexed.width &&
   match raw.rhs, indexed.rhs with
   | .lit w v, .lit w' v' => w == w' && v == v'
   | .ident value, .ident value' => value == value'.render
@@ -126,6 +133,34 @@ def indexedBlockMatches : Nat → List Wire → List IndexedWire → Bool
       indexed.matchesRaw number raw &&
         indexedBlockMatches (number + 1) raws indexeds
   | _, _, _ => false
+
+/-- Compose independently checked adjacent pieces of one indexed wire block.
+This lets generated release certificates keep the public 128-wire lookup
+layout while kernel-checking smaller pieces in separate declarations. -/
+theorem indexedBlockMatches_append {start : Nat}
+    {rawLeft rawRight : List Wire}
+    {indexedLeft indexedRight : List IndexedWire}
+    (lengthEq : rawLeft.length = indexedLeft.length)
+    (left : indexedBlockMatches start rawLeft indexedLeft = true)
+    (right : indexedBlockMatches (start + rawLeft.length)
+      rawRight indexedRight = true) :
+    indexedBlockMatches start (rawLeft ++ rawRight)
+      (indexedLeft ++ indexedRight) = true := by
+  induction rawLeft generalizing start indexedLeft with
+  | nil =>
+      cases indexedLeft with
+      | nil => simpa [indexedBlockMatches] using right
+      | cons _ _ => simp at lengthEq
+  | cons raw raws ih =>
+      cases indexedLeft with
+      | nil => simp at lengthEq
+      | cons indexed indexeds =>
+          simp only [List.length_cons] at lengthEq
+          simp only [indexedBlockMatches, List.cons_append,
+            Bool.and_eq_true] at left ⊢
+          refine ⟨left.1, ih (Nat.add_right_cancel lengthEq) left.2 ?_⟩
+          simpa [List.length_cons, Nat.add_assoc, Nat.add_comm,
+            Nat.add_left_comm] using right
 
 /-- Balanced proof that the indexed graph is exactly the string-free view of
 the raw rendered wire rope, with globally correct wire numbering. -/
@@ -173,6 +208,15 @@ def lookupIndexed? (wires : Rope (List IndexedWire)) (table : WireTable)
   guard (wire.number == number)
   pure wire
 
+/-- Resolve the raw textual wire at the same numeric table position. Unlike
+the indexed lookup, the position itself supplies the number; this lookup is
+used to validate cached operand names without re-rendering large naturals. -/
+def lookupRaw? (wires : Rope (List Wire)) (table : WireTable)
+    (number : Nat) : Option Wire := do
+  guard (table.leafSize > 0)
+  let path ← balancedPath? table.leafCount (number / table.leafSize)
+  wires.resolve? ⟨path, number % table.leafSize⟩
+
 /-- Resolve a numbered wire from separately checked path and leaf facts.
 This is the constant-time proof interface used by large generated
 certificates: the global rope path is checked once per leaf, while individual
@@ -188,6 +232,178 @@ theorem lookupIndexed_of_resolve
     lookupIndexed? wires table number = some wire := by
   simp [lookupIndexed?, positive, pathFound, resolved, numberEq, guard]
 
+/-- One checked rope path serves every numbered wire in a fixed-size leaf.
+This is the scalable interface for large generated artifacts: the expensive
+balanced-path fact is stored once per 128-wire block, then individual lookups
+only check a bounded block offset and the wire's numeric label. -/
+def IndexedLookupBlockEvidence (wires : Rope (List IndexedWire))
+    (table : WireTable) (start : Nat) (block : List IndexedWire) : Prop :=
+  ∀ offset wire, offset < table.leafSize → block[offset]? = some wire →
+    wire.number = start + offset →
+    lookupIndexed? wires table wire.number = some wire
+
+theorem indexedLookupBlockEvidence_of_resolve
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {blockIndex start : Nat} {block : List IndexedWire} {path : List Bool}
+    (positive : table.leafSize > 0)
+    (startEq : start = table.leafSize * blockIndex)
+    (pathFound : balancedPath? table.leafCount blockIndex = some path)
+    (resolved : ∀ offset,
+      wires.resolve? ⟨path, offset⟩ =
+        (Rope.leaf block).resolve? ⟨[], offset⟩) :
+    IndexedLookupBlockEvidence wires table start block := by
+  intro offset wire offsetBound found numberEq
+  apply lookupIndexed_of_resolve (path := path)
+  · exact positive
+  · rw [numberEq, startEq, Nat.mul_add_div positive,
+      Nat.div_eq_of_lt offsetBound, Nat.add_zero]
+    exact pathFound
+  · rw [numberEq, startEq, Nat.mul_add_mod, Nat.mod_eq_of_lt offsetBound]
+    simpa only [Rope.resolve_leaf] using (resolved offset).trans found
+  · rfl
+
+/-- A computational wire block paired with the kernel proof that every entry
+resolves to the semantic rope. Arrays of these blocks give release checkers
+O(1) block selection without adding the array implementation to the TCB. -/
+structure CheckedIndexedBlock (wires : Rope (List IndexedWire))
+    (table : WireTable) where
+  start : Nat
+  block : List IndexedWire
+  evidence : IndexedLookupBlockEvidence wires table start block
+
+/-- Fast two-level lookup used only by certificate computation. Successful
+lookups are transported back to `lookupIndexed?` by `checkedLookup?_sound`. -/
+def checkedLookup? {wires : Rope (List IndexedWire)} {table : WireTable}
+    (blocks : LookupTree (CheckedIndexedBlock wires table))
+    (number : Nat) : Option IndexedWire := do
+  guard (table.leafSize > 0)
+  let blockIndex := number / table.leafSize
+  let entry ← blocks.get? blockIndex
+  guard (entry.start == table.leafSize * blockIndex)
+  let offset := number % table.leafSize
+  let wire ← entry.block[offset]?
+  guard (wire.number == number)
+  pure wire
+
+private theorem guard_some {proposition : Prop} [Decidable proposition]
+    {witness : Unit} (accepted : guard proposition = some witness) : proposition := by
+  simp only [guard] at accepted
+  split at accepted
+  · assumption
+  · contradiction
+
+theorem checkedLookup?_sound
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {blocks : LookupTree (CheckedIndexedBlock wires table)}
+    {number : Nat} {wire : IndexedWire}
+    (found : checkedLookup? blocks number = some wire) :
+    lookupIndexed? wires table number = some wire := by
+  simp [checkedLookup?, Option.bind_eq_some_iff] at found
+  rcases found with ⟨⟨_, positive⟩, entry, entryFound,
+    ⟨_, startAccepted⟩, blockFound, ⟨_, numberAccepted⟩⟩
+  have positive := guard_some positive
+  have startAccepted := guard_some startAccepted
+  have numberAccepted := guard_some numberAccepted
+  have numberEq : wire.number = entry.start + number % table.leafSize := by
+    rw [numberAccepted, startAccepted]
+    simpa only [Nat.add_comm, Nat.mul_comm] using
+      (Nat.mod_add_div number table.leafSize).symm
+  have resolved := entry.evidence (number % table.leafSize) wire
+    (Nat.mod_lt number positive) blockFound numberEq
+  simpa only [numberAccepted] using resolved
+
+/-- Sparse checked lookup for expression certificates.  Generated shards list
+only the wire blocks reachable from their roots, so kernel reduction does not
+traverse the complete release artifact for every local expression. -/
+def checkedListLookup? {wires : Rope (List IndexedWire)} {table : WireTable} :
+    List (CheckedIndexedBlock wires table) → Nat → Option IndexedWire
+  | [], _ => none
+  | entry :: rest, number =>
+      if entry.start == table.leafSize * (number / table.leafSize) then do
+        guard (table.leafSize > 0)
+        let wire ← entry.block[number % table.leafSize]?
+        guard (wire.number == number)
+        pure wire
+      else
+        checkedListLookup? rest number
+
+theorem checkedListLookup?_sound
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {entries : List (CheckedIndexedBlock wires table)}
+    {number : Nat} {wire : IndexedWire}
+    (found : checkedListLookup? entries number = some wire) :
+    lookupIndexed? wires table number = some wire := by
+  induction entries with
+  | nil => simp [checkedListLookup?] at found
+  | cons entry rest ih =>
+      simp only [checkedListLookup?] at found
+      split at found
+      · rename_i startAccepted
+        simp [Option.bind_eq_some_iff] at found
+        rcases found with ⟨⟨_, positive⟩, blockFound,
+          ⟨_, numberAccepted⟩⟩
+        have startAccepted :
+            entry.start = table.leafSize * (number / table.leafSize) := by
+          simpa using startAccepted
+        have numberAccepted : wire.number = number := by
+          exact guard_some numberAccepted
+        have positive := guard_some positive
+        have numberEq :
+            wire.number = entry.start + number % table.leafSize := by
+          rw [numberAccepted, startAccepted]
+          simpa only [Nat.add_comm, Nat.mul_comm] using
+            (Nat.mod_add_div number table.leafSize).symm
+        have resolved := entry.evidence (number % table.leafSize) wire
+          (Nat.mod_lt number positive) blockFound numberEq
+        simpa only [numberAccepted] using resolved
+      · exact ih found
+
+/-- Balanced map used by generated sparse expression certificates. -/
+inductive KeyedLookupTree (valueType : Type) where
+  | empty
+  | node (key : Nat) (entry : valueType)
+      (left right : KeyedLookupTree valueType)
+
+def KeyedLookupTree.get? {valueType : Type} :
+    KeyedLookupTree valueType → Nat → Option valueType
+  | .empty, _ => none
+  | .node key entry left right, target =>
+      if target < key then left.get? target
+      else if key < target then right.get? target
+      else some entry
+
+def checkedKeyedLookup? {wires : Rope (List IndexedWire)} {table : WireTable}
+    (entries : KeyedLookupTree (CheckedIndexedBlock wires table))
+    (number : Nat) : Option IndexedWire := do
+  guard (table.leafSize > 0)
+  let blockIndex := number / table.leafSize
+  let entry ← entries.get? blockIndex
+  guard (entry.start == table.leafSize * blockIndex)
+  let offset := number % table.leafSize
+  let wire ← entry.block[offset]?
+  guard (wire.number == number)
+  pure wire
+
+theorem checkedKeyedLookup?_sound
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {entries : KeyedLookupTree (CheckedIndexedBlock wires table)}
+    {number : Nat} {wire : IndexedWire}
+    (found : checkedKeyedLookup? entries number = some wire) :
+    lookupIndexed? wires table number = some wire := by
+  simp [checkedKeyedLookup?, Option.bind_eq_some_iff] at found
+  rcases found with ⟨⟨_, positive⟩, entry, entryFound,
+    ⟨_, startAccepted⟩, blockFound, ⟨_, numberAccepted⟩⟩
+  have positive := guard_some positive
+  have startAccepted := guard_some startAccepted
+  have numberAccepted := guard_some numberAccepted
+  have numberEq : wire.number = entry.start + number % table.leafSize := by
+    rw [numberAccepted, startAccepted]
+    simpa only [Nat.add_comm, Nat.mul_comm] using
+      (Nat.mod_add_div number table.leafSize).symm
+  have resolved := entry.evidence (number % table.leafSize) wire
+    (Nat.mod_lt number positive) blockFound numberEq
+  simpa only [numberAccepted] using resolved
+
 /-- Resolve the declared width of an operand while checking one numbered SSA
 wire. Wire operands must point strictly backward, which simultaneously makes
 the graph acyclic and matches the sequential concrete elaborator. -/
@@ -200,7 +416,16 @@ def refWidthBefore? (program : Program)
         pure (← program.regs.find? fun reg => reg.name == name).width
   | .wire number => do
       guard (number < current)
-      pure (← lookupIndexed? wires table number).width
+      let indexed ← lookupIndexed? wires table number
+      let raw ← lookupRaw? program.wires table number
+      guard (raw.name == (Ref.wire number).render)
+      pure indexed.width
+  | .namedWire number name => do
+      guard (number < current)
+      let indexed ← lookupIndexed? wires table number
+      let raw ← lookupRaw? program.wires table number
+      guard (raw.name == name)
+      pure indexed.width
 
 /-- Whole-node type check for the concrete SSA subset. This mirrors
 `SSA.Rhs.elaborate`, but retains only widths and bounded numeric lookups, so it
@@ -285,9 +510,14 @@ navigation and constructor/Nat comparisons. -/
 def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
     {w : Nat} → Loom.Emit.MicroVerilog.Expr w → Ref → Bool
   | _, .reg _ sourceName, .reg actualName => sourceName == actualName
-  | _, .reg .., .wire _ => false
+  | _, .reg .., .wire _ | _, .reg .., .namedWire _ _ => false
   | _, .lit _, .reg _ => false
   | w, .lit value, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .lit literalWidth actualValue⟩ =>
+          actualWidth == w && literalWidth == w && actualValue == value.toNat
+      | _ => false
+  | w, .lit value, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .lit literalWidth actualValue⟩ =>
           actualWidth == w && literalWidth == w && actualValue == value.toNat
@@ -295,6 +525,12 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
 
   | _, .memRead .., .reg _ => false
   | w, .memRead _ mem address, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .memRead actualMem actualAddress⟩ =>
+          actualWidth == w && actualMem == mem &&
+            indexedExprMatches wires table address actualAddress
+      | _ => false
+  | w, .memRead _ mem address, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .memRead actualMem actualAddress⟩ =>
           actualWidth == w && actualMem == mem &&
@@ -311,7 +547,19 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
+  | w, .and left right, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .and actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
   | w, .or left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .or actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .or left right, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .bin .or actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
@@ -323,12 +571,29 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
+  | w, .xor left right, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .xor actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
   | w, .not value, .wire number =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .not actual⟩ =>
           actualWidth == w && indexedExprMatches wires table value actual
       | _ => false
+  | w, .not value, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .not actual⟩ =>
+          actualWidth == w && indexedExprMatches wires table value actual
+      | _ => false
   | w, .add left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .add actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .add left right, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .bin .add actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
@@ -340,7 +605,19 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
+  | w, .sub left right, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .sub actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
   | w, .shl left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .shl actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .shl left right, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .bin .shl actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
@@ -352,7 +629,19 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
+  | w, .shr left right, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .shr actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
   | _, .eq left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, 1, .bin .eq actualLeft actualRight⟩ =>
+          indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | _, .eq left right, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, 1, .bin .eq actualLeft actualRight⟩ =>
           indexedExprMatches wires table left actualLeft &&
@@ -364,7 +653,19 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
           indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
+  | _, .ult left right, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, 1, .bin .ult actualLeft actualRight⟩ =>
+          indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
   | _, .slt left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, 1, .slt actualLeft actualRight⟩ =>
+          indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | _, .slt left right, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, 1, .slt actualLeft actualRight⟩ =>
           indexedExprMatches wires table left actualLeft &&
@@ -378,13 +679,34 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
             indexedExprMatches wires table yes actualYes &&
             indexedExprMatches wires table no actualNo
       | _ => false
+  | w, .mux condition yes no, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .mux actualCondition actualYes actualNo⟩ =>
+          actualWidth == w &&
+            indexedExprMatches wires table condition actualCondition &&
+            indexedExprMatches wires table yes actualYes &&
+            indexedExprMatches wires table no actualNo
+      | _ => false
   | w, .slice value lo _, .wire number =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .slice actualValue hi actualLo⟩ =>
           actualWidth == w && actualLo == lo && hi == lo + w - 1 &&
             indexedExprMatches wires table value actualValue
       | _ => false
+  | w, .slice value lo _, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .slice actualValue hi actualLo⟩ =>
+          actualWidth == w && actualLo == lo && hi == lo + w - 1 &&
+            indexedExprMatches wires table value actualValue
+      | _ => false
   | w, @Loom.Emit.MicroVerilog.Expr.zext inputWidth value _, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .ident actual⟩ =>
+          actualWidth == w && inputWidth ≤ w &&
+            indexedExprMatches wires table value actual
+      | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.zext inputWidth value _,
+      .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .ident actual⟩ =>
           actualWidth == w && inputWidth ≤ w &&
@@ -397,6 +719,459 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
             signBit + 1 == inputWidth &&
             indexedExprMatches wires table value actual
       | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.sext inputWidth value _,
+      .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .sext amount actual signBit⟩ =>
+          actualWidth == w && inputWidth < w && amount == w - inputWidth &&
+            signBit + 1 == inputWidth &&
+            indexedExprMatches wires table value actual
+      | _ => false
+
+/-- O(1)-block variant of `indexedExprMatches` used by generated kernel
+certificates. Every successful block lookup carries its semantic-rope proof. -/
+def exprMatchesWith (lookup : Nat → Option IndexedWire) :
+    {w : Nat} → Loom.Emit.MicroVerilog.Expr w → Ref → Bool
+  | _, .reg _ sourceName, .reg actualName => sourceName == actualName
+  | _, .reg .., .wire _ | _, .reg .., .namedWire _ _ => false
+  | _, .lit _, .reg _ => false
+  | w, .lit value, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .lit literalWidth actualValue⟩ =>
+          actualWidth == w && literalWidth == w && actualValue == value.toNat
+      | _ => false
+  | w, .lit value, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .lit literalWidth actualValue⟩ =>
+          actualWidth == w && literalWidth == w && actualValue == value.toNat
+      | _ => false
+
+  | _, .memRead .., .reg _ => false
+  | w, .memRead _ mem address, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .memRead actualMem actualAddress⟩ =>
+          actualWidth == w && actualMem == mem &&
+            exprMatchesWith lookup address actualAddress
+      | _ => false
+  | w, .memRead _ mem address, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .memRead actualMem actualAddress⟩ =>
+          actualWidth == w && actualMem == mem &&
+            exprMatchesWith lookup address actualAddress
+      | _ => false
+  | _, .and .., .reg _ | _, .or .., .reg _ | _, .xor .., .reg _
+  | _, .not _, .reg _ | _, .add .., .reg _ | _, .sub .., .reg _
+  | _, .shl .., .reg _ | _, .shr .., .reg _ | _, .eq .., .reg _
+  | _, .ult .., .reg _ | _, .slt .., .reg _ | _, .mux .., .reg _
+  | _, .slice .., .reg _ | _, .zext .., .reg _ | _, .sext .., .reg _ => false
+  | w, .and left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .and actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .and left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .and actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .or left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .or actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .or left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .or actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .xor left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .xor actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .xor left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .xor actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .not value, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .not actual⟩ =>
+          actualWidth == w && exprMatchesWith lookup value actual
+      | _ => false
+  | w, .not value, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .not actual⟩ =>
+          actualWidth == w && exprMatchesWith lookup value actual
+      | _ => false
+  | w, .add left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .add actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .add left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .add actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .sub left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .sub actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .sub left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .sub actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .shl left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .shl actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .shl left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .shl actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .shr left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .shr actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .shr left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .shr actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | _, .eq left right, .wire number =>
+      match lookup number with
+      | some ⟨_, 1, .bin .eq actualLeft actualRight⟩ =>
+          exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | _, .eq left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, 1, .bin .eq actualLeft actualRight⟩ =>
+          exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | _, .ult left right, .wire number =>
+      match lookup number with
+      | some ⟨_, 1, .bin .ult actualLeft actualRight⟩ =>
+          exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | _, .ult left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, 1, .bin .ult actualLeft actualRight⟩ =>
+          exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | _, .slt left right, .wire number =>
+      match lookup number with
+      | some ⟨_, 1, .slt actualLeft actualRight⟩ =>
+          exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | _, .slt left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, 1, .slt actualLeft actualRight⟩ =>
+          exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .mux condition yes no, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .mux actualCondition actualYes actualNo⟩ =>
+          actualWidth == w &&
+            exprMatchesWith lookup condition actualCondition &&
+            exprMatchesWith lookup yes actualYes &&
+            exprMatchesWith lookup no actualNo
+      | _ => false
+  | w, .mux condition yes no, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .mux actualCondition actualYes actualNo⟩ =>
+          actualWidth == w &&
+            exprMatchesWith lookup condition actualCondition &&
+            exprMatchesWith lookup yes actualYes &&
+            exprMatchesWith lookup no actualNo
+      | _ => false
+  | w, .slice value lo _, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .slice actualValue hi actualLo⟩ =>
+          actualWidth == w && actualLo == lo && hi == lo + w - 1 &&
+            exprMatchesWith lookup value actualValue
+      | _ => false
+  | w, .slice value lo _, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .slice actualValue hi actualLo⟩ =>
+          actualWidth == w && actualLo == lo && hi == lo + w - 1 &&
+            exprMatchesWith lookup value actualValue
+      | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.zext inputWidth value _, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .ident actual⟩ =>
+          actualWidth == w && inputWidth ≤ w &&
+            exprMatchesWith lookup value actual
+      | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.zext inputWidth value _,
+      .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .ident actual⟩ =>
+          actualWidth == w && inputWidth ≤ w &&
+            exprMatchesWith lookup value actual
+      | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.sext inputWidth value _, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .sext amount actual signBit⟩ =>
+          actualWidth == w && inputWidth < w && amount == w - inputWidth &&
+            signBit + 1 == inputWidth &&
+            exprMatchesWith lookup value actual
+      | _ => false
+  | w, @Loom.Emit.MicroVerilog.Expr.sext inputWidth value _,
+      .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .sext amount actual signBit⟩ =>
+          actualWidth == w && inputWidth < w && amount == w - inputWidth &&
+            signBit + 1 == inputWidth &&
+            exprMatchesWith lookup value actual
+      | _ => false
+
+
+/-- Expression checker over the complete balanced block index. -/
+def checkedExprMatches {wires : Rope (List IndexedWire)} {table : WireTable}
+    (blocks : LookupTree (CheckedIndexedBlock wires table)) :
+    {w : Nat} → Loom.Emit.MicroVerilog.Expr w → Ref → Bool :=
+  exprMatchesWith (checkedLookup? blocks)
+
+/-- Expression checker over a generated sparse list of reachable blocks. -/
+def checkedListExprMatches {wires : Rope (List IndexedWire)} {table : WireTable}
+    (entries : List (CheckedIndexedBlock wires table)) :
+    {w : Nat} → Loom.Emit.MicroVerilog.Expr w → Ref → Bool :=
+  exprMatchesWith (checkedListLookup? entries)
+
+/-- Expression checker over a sparse balanced map of reachable blocks. -/
+def checkedKeyedExprMatches {wires : Rope (List IndexedWire)}
+    {table : WireTable}
+    (entries : KeyedLookupTree (CheckedIndexedBlock wires table)) :
+    {w : Nat} → Loom.Emit.MicroVerilog.Expr w → Ref → Bool :=
+  exprMatchesWith (checkedKeyedLookup? entries)
+
+theorem exprMatchesWith_sound
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {lookup : Nat → Option IndexedWire}
+    {width : Nat} {expression : Loom.Emit.MicroVerilog.Expr width}
+    {reference : Ref}
+    (lookupSound : ∀ {number wire}, lookup number = some wire →
+      lookupIndexed? wires table number = some wire)
+    (accepted : exprMatchesWith lookup expression reference = true) :
+    indexedExprMatches wires table expression reference = true := by
+  induction expression generalizing reference <;> cases reference <;>
+    simp only [exprMatchesWith, indexedExprMatches] at accepted ⊢
+  all_goals
+    first
+    | contradiction
+    | assumption
+    | rename_i number name
+      cases fastFound : lookup number with
+      | none => simp [fastFound] at accepted
+      | some wire =>
+          have slowFound := lookupSound fastFound
+          rw [fastFound] at accepted
+          rw [slowFound]
+          split at accepted <;> simp_all
+    | rename_i number
+      cases fastFound : lookup number with
+      | none => simp [fastFound] at accepted
+      | some wire =>
+          have slowFound := lookupSound fastFound
+          rw [fastFound] at accepted
+          rw [slowFound]
+          split at accepted <;> simp_all
+
+theorem checkedExprMatches_sound
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {blocks : LookupTree (CheckedIndexedBlock wires table)}
+    {width : Nat} {expression : Loom.Emit.MicroVerilog.Expr width}
+    {reference : Ref}
+    (accepted : checkedExprMatches blocks expression reference = true) :
+    indexedExprMatches wires table expression reference = true :=
+  exprMatchesWith_sound (fun found => checkedLookup?_sound found) accepted
+
+theorem checkedListExprMatches_sound
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {entries : List (CheckedIndexedBlock wires table)}
+    {width : Nat} {expression : Loom.Emit.MicroVerilog.Expr width}
+    {reference : Ref}
+    (accepted : checkedListExprMatches entries expression reference = true) :
+    indexedExprMatches wires table expression reference = true :=
+  exprMatchesWith_sound (fun found => checkedListLookup?_sound found) accepted
+
+theorem checkedKeyedExprMatches_sound
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {entries : KeyedLookupTree (CheckedIndexedBlock wires table)}
+    {width : Nat} {expression : Loom.Emit.MicroVerilog.Expr width}
+    {reference : Ref}
+    (accepted : checkedKeyedExprMatches entries expression reference = true) :
+    indexedExprMatches wires table expression reference = true :=
+  exprMatchesWith_sound (fun found => checkedKeyedLookup?_sound found) accepted
+
+/-- Existentially width-packed source expression used by generated
+bottom-up projections. -/
+structure PackedHwExpr where
+  width : Nat
+  expression : Loom.Hw.Expr width
+
+private def hwExprChild? : {width : Nat} → Loom.Hw.Expr width → Nat →
+    Option PackedHwExpr
+  | _, .lit _, _ | _, .reg .., _ => none
+  | _, .memRead _ _ address, index | _, .not address, index
+  | _, .slice address .., index | _, .zext address _, index
+  | _, .sext address _, index =>
+      if index == 0 then some ⟨_, address⟩ else none
+  | _, .and left right, index | _, .or left right, index
+  | _, .xor left right, index | _, .add left right, index
+  | _, .sub left right, index | _, .shl left right, index
+  | _, .shr left right, index =>
+      if index == 0 then some ⟨_, left⟩
+      else if index == 1 then some ⟨_, right⟩ else none
+  | _, @Loom.Hw.Expr.eq operandWidth left right, index
+  | _, @Loom.Hw.Expr.ult operandWidth left right, index
+  | _, @Loom.Hw.Expr.slt operandWidth left right, index =>
+      if index == 0 then some ⟨operandWidth, left⟩
+      else if index == 1 then some ⟨operandWidth, right⟩ else none
+  | _, .mux condition yes no, index =>
+      if index == 0 then some ⟨1, condition⟩
+      else if index == 1 then some ⟨_, yes⟩
+      else if index == 2 then some ⟨_, no⟩ else none
+
+def PackedHwExpr.child? (packed : PackedHwExpr) (index : Nat) :
+    Option PackedHwExpr :=
+  hwExprChild? packed.expression index
+
+/-- Typed projection from a generated packed parent. The fallback makes this
+total; an incorrect generator path later fails constructor unification. -/
+def PackedHwExpr.childAs (width index : Nat) (packed : PackedHwExpr) :
+    Loom.Hw.Expr width :=
+  match packed.child? index with
+  | some ⟨actualWidth, expression⟩ =>
+      if accepted : actualWidth = width then accepted ▸ expression
+      else .lit (BitVec.ofNat width 0)
+  | none => .lit (BitVec.ofNat width 0)
+
+/-- Structural proof that a supplied µVerilog expression is exactly the
+reference translation of a source EDSL expression. Constructors expose one
+node only, so generated child declarations act as kernel sharing boundaries. -/
+inductive CompiledExprEvidence :
+    {width : Nat} → Loom.Hw.Expr width →
+      Loom.Emit.MicroVerilog.Expr width → Prop where
+  | lit {width : Nat} (value : BitVec width) :
+      CompiledExprEvidence (.lit value) (.lit value)
+  | reg (width : Nat) (name : String) :
+      CompiledExprEvidence (.reg width name) (.reg width name)
+  | memRead {addressWidth dataWidth : Nat} (memory : String)
+      {address : Loom.Hw.Expr addressWidth}
+      {compiledAddress : Loom.Emit.MicroVerilog.Expr addressWidth}
+      (addressEvidence : CompiledExprEvidence address compiledAddress) :
+      CompiledExprEvidence (.memRead dataWidth memory address)
+        (.memRead dataWidth memory compiledAddress)
+  | and {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.and left right) (.and compiledLeft compiledRight)
+  | or {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.or left right) (.or compiledLeft compiledRight)
+  | xor {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.xor left right) (.xor compiledLeft compiledRight)
+  | not {width : Nat} {value : Loom.Hw.Expr width}
+      {compiled : Loom.Emit.MicroVerilog.Expr width}
+      (evidence : CompiledExprEvidence value compiled) :
+      CompiledExprEvidence (.not value) (.not compiled)
+  | add {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.add left right) (.add compiledLeft compiledRight)
+  | sub {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.sub left right) (.sub compiledLeft compiledRight)
+  | shl {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.shl left right) (.shl compiledLeft compiledRight)
+  | shr {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.shr left right) (.shr compiledLeft compiledRight)
+  | eq {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.eq left right) (.eq compiledLeft compiledRight)
+  | ult {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.ult left right) (.ult compiledLeft compiledRight)
+  | slt {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.slt left right) (.slt compiledLeft compiledRight)
+  | mux {width : Nat} {condition : Loom.Hw.Expr 1}
+      {yes no : Loom.Hw.Expr width}
+      {compiledCondition : Loom.Emit.MicroVerilog.Expr 1}
+      {compiledYes compiledNo : Loom.Emit.MicroVerilog.Expr width}
+      (conditionEvidence : CompiledExprEvidence condition compiledCondition)
+      (yesEvidence : CompiledExprEvidence yes compiledYes)
+      (noEvidence : CompiledExprEvidence no compiledNo) :
+      CompiledExprEvidence (.mux condition yes no)
+        (.mux compiledCondition compiledYes compiledNo)
+  | slice {inputWidth lo width : Nat} {value : Loom.Hw.Expr inputWidth}
+      {compiled : Loom.Emit.MicroVerilog.Expr inputWidth}
+      (evidence : CompiledExprEvidence value compiled) :
+      CompiledExprEvidence (.slice value lo width) (.slice compiled lo width)
+  | zext {inputWidth width : Nat} {value : Loom.Hw.Expr inputWidth}
+      {compiled : Loom.Emit.MicroVerilog.Expr inputWidth}
+      (evidence : CompiledExprEvidence value compiled) :
+      CompiledExprEvidence (.zext value width) (.zext compiled width)
+  | sext {inputWidth width : Nat} {value : Loom.Hw.Expr inputWidth}
+      {compiled : Loom.Emit.MicroVerilog.Expr inputWidth}
+      (evidence : CompiledExprEvidence value compiled) :
+      CompiledExprEvidence (.sext value width) (.sext compiled width)
+
+theorem CompiledExprEvidence.eq_compile
+    {width : Nat} {source : Loom.Hw.Expr width}
+    {compiled : Loom.Emit.MicroVerilog.Expr width}
+    (evidence : CompiledExprEvidence source compiled) :
+    compiled = Loom.Hw.Compile.compileExpr source := by
+  induction evidence <;> simp_all [Loom.Hw.Compile.compileExpr]
+
 
 /-- A proof DAG for one expression check.  Every constructor checks only the
 outer SSA wire and refers to child evidence as theorem constants.  This is
@@ -408,6 +1183,10 @@ inductive IndexedExprEvidence (wires : Rope (List IndexedWire))
     {width : Nat} → Loom.Emit.MicroVerilog.Expr width → Ref → Prop where
   | reg (width : Nat) (name : String) :
       IndexedExprEvidence wires table (.reg width name) (.reg name)
+  | named {width number : Nat} {name : String}
+      {expression : Loom.Emit.MicroVerilog.Expr width}
+      (evidence : IndexedExprEvidence wires table expression (.wire number)) :
+      IndexedExprEvidence wires table expression (.namedWire number name)
   | lit {width : Nat} {value : BitVec width} {number : Nat}
       (found : lookupIndexed? wires table number =
         some ⟨number, width, .lit width value.toNat⟩) :
@@ -530,14 +1309,38 @@ inductive IndexedExprEvidence (wires : Rope (List IndexedWire))
       (widthAccepted : inputWidth < width)
       (valueEvidence : IndexedExprEvidence wires table value valueRef) :
       IndexedExprEvidence wires table (.sext value width) (.wire number)
+  | checked {width : Nat}
+      {expression : Loom.Emit.MicroVerilog.Expr width} {reference : Ref}
+      (accepted : indexedExprMatches wires table expression reference = true) :
+      IndexedExprEvidence wires table expression reference
+
+theorem indexedExprMatches_namedWire
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {width number : Nat} (expression : Loom.Emit.MicroVerilog.Expr width)
+    (name : String) :
+    indexedExprMatches wires table expression (.namedWire number name) =
+      indexedExprMatches wires table expression (.wire number) := by
+  cases expression <;> rfl
 
 theorem IndexedExprEvidence.accepted
     {wires : Rope (List IndexedWire)} {table : WireTable}
     {width : Nat} {expression : Loom.Emit.MicroVerilog.Expr width} {reference : Ref}
     (evidence : IndexedExprEvidence wires table expression reference) :
     indexedExprMatches wires table expression reference = true := by
-  induction evidence <;> simp_all [indexedExprMatches]
+  induction evidence <;>
+    simp_all [indexedExprMatches, indexedExprMatches_namedWire]
   omega
+
+theorem IndexedExprEvidence.ofCompiled
+    {wires : Rope (List IndexedWire)} {table : WireTable}
+    {width : Nat} {source : Loom.Hw.Expr width}
+    {compiled : Loom.Emit.MicroVerilog.Expr width} {reference : Ref}
+    (sourceEvidence : CompiledExprEvidence source compiled)
+    (indexedEvidence : IndexedExprEvidence wires table compiled reference) :
+    IndexedExprEvidence wires table
+      (Loom.Hw.Compile.compileExpr source) reference := by
+  rw [← sourceEvidence.eq_compile]
+  exact indexedEvidence
 
 /-- Three structural SSA references denoting one memory write-port value. -/
 structure PortRefs where
@@ -895,6 +1698,11 @@ def indexedMuxRootMatches (wires : Rope (List IndexedWire))
       | some indexed =>
           indexed.width == width &&
             indexed.rhs == .mux condition yes no
+      | none => false
+  | .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some indexed =>
+          indexed.width == width && indexed.rhs == .mux condition yes no
       | none => false
   | .reg _ => false
 
@@ -1425,6 +2233,8 @@ def indexedRegisterMatchesAt (design : Loom.Hw.Design) (program : Program)
   | some source, some concrete =>
       source.name == concrete.name && source.width == concrete.width &&
       source.init.toNat == concrete.init && concrete.next == root.render &&
+      refWidthBefore? program wires table wires.listLength root ==
+        some source.width &&
       indexedExprMatches wires table
         (design.rules.foldl
           (fun current rule => Loom.Hw.Compile.nextReg source.name
@@ -1489,6 +2299,11 @@ def indexedMemoryPortMatchesAt (design : Loom.Hw.Design) (program : Program)
           source.dataWidth == concrete.dataWidth &&
           write.en == refs.en.render && write.addr == refs.addr.render &&
           write.data == refs.data.render &&
+          refWidthBefore? program wires table wires.listLength refs.en == some 1 &&
+          refWidthBefore? program wires table wires.listLength refs.addr ==
+            some source.addrWidth &&
+          refWidthBefore? program wires table wires.listLength refs.data ==
+            some source.dataWidth &&
           indexedExprMatches wires table compiled.en refs.en &&
           indexedExprMatches wires table compiled.addr refs.addr &&
           indexedExprMatches wires table compiled.data refs.data

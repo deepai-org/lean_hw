@@ -20,10 +20,15 @@ open Loom.Emit.MicroVerilog
 /-- A typed semantic environment for source registers and numbered SSA wires. -/
 abbrev SemanticEnv := Ref → Option (Sigma Expr)
 
+/-- Forget a cached concrete spelling when looking up semantic wire identity. -/
+def SemanticEnv.get (env : SemanticEnv) : Ref → Option (Sigma Expr)
+  | .namedWire number _ => env (.wire number)
+  | reference => env reference
+
 /-- Resolve a structural reference at an expected width. -/
 def SemanticEnv.resolveAt (env : SemanticEnv) (reference : Ref)
     (width : Nat) : Option (Expr width) := do
-  let ⟨actualWidth, value⟩ ← env reference
+  let ⟨actualWidth, value⟩ ← env.get reference
   if h : actualWidth = width then pure (h ▸ value) else none
 
 /-- Initial environment containing source-register expressions only. -/
@@ -33,6 +38,7 @@ def SemanticEnv.initial (program : Program) : SemanticEnv
       | some reg => some ⟨reg.width, .reg reg.width name⟩
       | none => none
   | .wire _ => none
+  | .namedWire _ _ => none
 
 /-- Add one numbered SSA value without affecting the disjoint register
 namespace or any other wire number. -/
@@ -50,7 +56,7 @@ private def semanticComparison (env : SemanticEnv) (resultWidth : Nat)
     (left right : Ref) (make : {width : Nat} → Expr width → Expr width → Expr 1) :
     Option (Expr resultWidth) := do
   guard (resultWidth == 1)
-  let ⟨operandWidth, leftValue⟩ ← env left
+  let ⟨operandWidth, leftValue⟩ ← env.get left
   let rightValue ← env.resolveAt right operandWidth
   if h : (1 : Nat) = resultWidth then
     pure (h ▸ make leftValue rightValue)
@@ -63,7 +69,7 @@ def IndexedRhs.elaborate (program : Program) (env : SemanticEnv)
       guard (literalWidth == resultWidth)
       pure (.lit (BitVec.ofNat resultWidth value))
   | .ident reference => do
-      let ⟨_, value⟩ ← env reference
+      let ⟨_, value⟩ ← env.get reference
       pure (.zext value resultWidth)
   | .memRead mem address => do
       let header ← program.mems.find? (fun candidate => candidate.name == mem)
@@ -73,7 +79,7 @@ def IndexedRhs.elaborate (program : Program) (env : SemanticEnv)
       else none
   | .slice value hi lo => do
       guard (lo ≤ hi && hi + 1 - lo == resultWidth)
-      let ⟨_, input⟩ ← env value
+      let ⟨_, input⟩ ← env.get value
       pure (.slice input lo resultWidth)
   | .not value => do
       pure (.not (← env.resolveAt value resultWidth))
@@ -94,7 +100,7 @@ def IndexedRhs.elaborate (program : Program) (env : SemanticEnv)
       pure (.mux (← env.resolveAt condition 1)
         (← env.resolveAt yes resultWidth) (← env.resolveAt no resultWidth))
   | .sext amount value signBit => do
-      let ⟨inputWidth, input⟩ ← env value
+      let ⟨inputWidth, input⟩ ← env.get value
       guard (signBit + 1 == inputWidth && inputWidth + amount == resultWidth &&
         inputWidth < resultWidth)
       pure (.sext input resultWidth)
@@ -234,6 +240,13 @@ private theorem indexedExprMatches_lookup
       cases expr <;> simp only [indexedExprMatches, lookup] at matchOk
       all_goals try simp at matchOk
       all_goals split at matchOk <;> simp_all
+
+private theorem indexedExprMatches_named_eq_wire
+    (wires : Rope (List IndexedWire)) (table : WireTable)
+    {width : Nat} (expr : Expr width) (number : Nat) (name : String) :
+    indexedExprMatches wires table expr (.namedWire number name) =
+      indexedExprMatches wires table expr (.wire number) := by
+  cases expr <;> rfl
 
 /-- The semantic environment resolves exactly the widths accepted by the
 bounded whole-graph checker before wire `current`. -/
@@ -651,9 +664,9 @@ private theorem indexedModels_current_eq
 private theorem semanticEntry_of_resolveAt
     (env : SemanticEnv) (reference : Ref) (width : Nat) (value : Expr width)
     (accepted : env.resolveAt reference width = some value) :
-    env reference = some ⟨width, value⟩ := by
+    env.get reference = some ⟨width, value⟩ := by
   unfold SemanticEnv.resolveAt at accepted
-  cases found : env reference with
+  cases found : env.get reference with
   | none => simp [found] at accepted
   | some entry =>
       obtain ⟨actual, raw⟩ := entry
@@ -676,7 +689,7 @@ private theorem semanticComparison_of_resolveAt
     (env : SemanticEnv) (leftRef rightRef : Ref) (width : Nat)
     (make : {w : Nat} → Expr w → Expr w → Expr 1)
     (left right : Expr width)
-    (leftEntry : env leftRef = some ⟨width, left⟩)
+    (leftEntry : env.get leftRef = some ⟨width, left⟩)
     (rightEq : env.resolveAt rightRef width = some right) :
     semanticComparison env 1 leftRef rightRef make = some (make left right) := by
   simp [semanticComparison, guard, leftEntry, rightEq]
@@ -821,8 +834,15 @@ theorem semanticInitial_resolvesBefore
                 simpa [notWire, found, guard] using accepted
               subst width
               exact ⟨.reg reg.width name, by
-                simp [SemanticEnv.resolveAt, SemanticEnv.initial, found]⟩
+                simp [SemanticEnv.resolveAt, SemanticEnv.get,
+                  SemanticEnv.initial, found]⟩
   | wire number =>
+      unfold refWidthBefore? at accepted
+      have notEarlier : ¬number < 0 := Nat.not_lt_zero number
+      simp only [notEarlier, guard] at accepted
+      rw [semanticOptionFailure] at accepted
+      simp at accepted
+  | namedWire number name =>
       unfold refWidthBefore? at accepted
       have notEarlier : ¬number < 0 := Nat.not_lt_zero number
       simp only [notEarlier, guard] at accepted
@@ -836,6 +856,12 @@ theorem semanticInitial_modelsBefore
   intro width expr reference valid matchOk inScope
   cases reference with
   | wire number =>
+      unfold refWidthBefore? at inScope
+      have notEarlier : ¬number < 0 := Nat.not_lt_zero number
+      simp only [notEarlier, guard] at inScope
+      rw [semanticOptionFailure] at inScope
+      simp at inScope
+  | namedWire number name =>
       unfold refWidthBefore? at inScope
       have notEarlier : ¬number < 0 := Nat.not_lt_zero number
       simp only [notEarlier, guard] at inScope
@@ -856,7 +882,8 @@ theorem semanticInitial_modelsBefore
             have sourceEq : source = reg := by
               simpa [found] using sourceFound.symm
             subst source
-            simp [SemanticEnv.resolveAt, SemanticEnv.initial, found]
+            simp [SemanticEnv.resolveAt, SemanticEnv.get,
+              SemanticEnv.initial, found]
 
 private theorem refWidthBefore_wire_previous
     (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
@@ -876,6 +903,57 @@ private theorem refWidthBefore_wire_previous
   unfold refWidthBefore? at accepted ⊢
   simp only [earlierSucc, earlier, guard] at accepted ⊢
   exact accepted
+
+private theorem refWidthBefore_wire_lookup_width
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current number width : Nat) (wire : IndexedWire)
+    (lookup : lookupIndexed? wires table number = some wire)
+    (accepted : refWidthBefore? program wires table current (.wire number) =
+      some width) : wire.width = width := by
+  unfold refWidthBefore? at accepted
+  by_cases earlier : number < current
+  · cases rawFound : lookupRaw? program.wires table number with
+    | none => simp [earlier, lookup, rawFound, guard] at accepted
+    | some raw =>
+        by_cases nameEq : raw.name = (Ref.wire number).render
+        · simpa [earlier, lookup, rawFound, nameEq, guard] using accepted
+        · simp [earlier, lookup, rawFound, nameEq, guard,
+            semanticOptionFailure] at accepted
+  · simp [earlier, guard, semanticOptionFailure] at accepted
+
+private theorem refWidthBefore_named_previous
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current number width : Nat) (name : String) (different : number ≠ current)
+    (accepted : refWidthBefore? program wires table (current + 1)
+      (.namedWire number name) = some width) :
+    refWidthBefore? program wires table current (.namedWire number name) =
+      some width := by
+  have earlierSucc : number < current + 1 := by
+    by_cases earlier : number < current + 1
+    · exact earlier
+    · simp [refWidthBefore?, earlier, guard, semanticOptionFailure] at accepted
+  have earlier : number < current :=
+    Nat.lt_of_le_of_ne (Nat.le_of_lt_succ earlierSucc) different
+  unfold refWidthBefore? at accepted ⊢
+  simp only [earlierSucc, earlier, guard] at accepted ⊢
+  exact accepted
+
+private theorem refWidthBefore_named_lookup_width
+    (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
+    (current number width : Nat) (name : String) (wire : IndexedWire)
+    (lookup : lookupIndexed? wires table number = some wire)
+    (accepted : refWidthBefore? program wires table current
+      (.namedWire number name) = some width) : wire.width = width := by
+  unfold refWidthBefore? at accepted
+  by_cases earlier : number < current
+  · cases rawFound : lookupRaw? program.wires table number with
+    | none => simp [earlier, lookup, rawFound, guard] at accepted
+    | some raw =>
+        by_cases nameEq : raw.name = name
+        · simpa [earlier, lookup, rawFound, nameEq, guard] using accepted
+        · simp [earlier, lookup, rawFound, nameEq, guard,
+            semanticOptionFailure] at accepted
+  · simp [earlier, guard, semanticOptionFailure] at accepted
 
 private theorem indexedModels_insertWire_previous
     (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
@@ -903,7 +981,20 @@ private theorem indexedModels_insertWire_previous
         cases same
         exact different rfl
       unfold SemanticEnv.resolveAt at resolved ⊢
-      simpa [SemanticEnv.insertWire, refNe] using resolved
+      simpa [SemanticEnv.get, SemanticEnv.insertWire, refNe] using resolved
+  | namedWire number name =>
+      have different : number ≠ current := by
+        intro same
+        subst number
+        unfold refWidthBefore? at inScope
+        have notEarlier : ¬current < current := Nat.lt_irrefl current
+        simp only [notEarlier, guard] at inScope
+        rw [semanticOptionFailure] at inScope
+        simp at inScope
+      have resolved := hmodels expr (.namedWire number name) valid matchOk inScope
+      unfold SemanticEnv.resolveAt at resolved ⊢
+      simp only [SemanticEnv.get]
+      simpa [SemanticEnv.get, SemanticEnv.insertWire, different] using resolved
 
 private theorem indexedExprMatches_refWidth
     (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
@@ -923,20 +1014,39 @@ private theorem indexedExprMatches_refWidth
         simp [regNotWire, regFound, guard] at found
         exact found.symm.trans regWidth
   | wire number =>
-      simp only [refWidthBefore?] at found
+      obtain ⟨wire, lookup, wireWidth⟩ :=
+        indexedExprMatches_lookup wires table expr number matchOk
+      unfold refWidthBefore? at found
       by_cases earlier : number < current
-      · simp only [earlier, guard] at found
-        cases lookup : lookupIndexed? wires table number with
-        | none => simp [lookup] at found
-        | some wire =>
-            have wireWidthEq : wire.width = actualWidth := by
-              simpa [lookup] using found
-            cases expr <;> simp only [indexedExprMatches, lookup] at matchOk
-            all_goals try simp at matchOk
-            all_goals split at matchOk <;> simp_all
-      · simp only [earlier, guard] at found
-        rw [semanticOptionFailure] at found
-        simp at found
+      · cases rawFound : lookupRaw? program.wires table number with
+        | none => simp [earlier, lookup, rawFound, guard] at found
+        | some raw =>
+            by_cases nameEq : raw.name = (Ref.wire number).render
+            · have actualEq : wire.width = actualWidth := by
+                simpa [earlier, lookup, rawFound, nameEq, guard] using found
+              exact actualEq.symm.trans wireWidth
+            · simp [earlier, lookup, rawFound, nameEq, guard,
+                semanticOptionFailure] at found
+      · simp [earlier, guard, semanticOptionFailure] at found
+  | namedWire number name =>
+      have wireMatch : indexedExprMatches wires table expr (.wire number) =
+          true := by
+        rw [indexedExprMatches_named_eq_wire] at matchOk
+        exact matchOk
+      obtain ⟨wire, lookup, wireWidth⟩ :=
+        indexedExprMatches_lookup wires table expr number wireMatch
+      unfold refWidthBefore? at found
+      by_cases earlier : number < current
+      · cases rawFound : lookupRaw? program.wires table number with
+        | none => simp [earlier, lookup, rawFound, guard] at found
+        | some raw =>
+            by_cases nameEq : raw.name = name
+            · have actualEq : wire.width = actualWidth := by
+                simpa [earlier, lookup, rawFound, nameEq, guard] using found
+              exact actualEq.symm.trans wireWidth
+            · simp [earlier, lookup, rawFound, nameEq, guard,
+                semanticOptionFailure] at found
+      · simp [earlier, guard, semanticOptionFailure] at found
 
 private theorem indexedModels_resolve
     (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
@@ -1258,11 +1368,12 @@ theorem elaborateIndexedWire_preserves
       by_cases same : number = current
       · subst number
         have widthEq : wire.width = width := by
-          unfold refWidthBefore? at found
-          simpa [guard, lookupEq] using found
+          exact refWidthBefore_wire_lookup_width program wires table
+            (current + 1) current width wire lookupEq found
         subst width
         exact ⟨value, by
-          simp [SemanticEnv.insertWire, SemanticEnv.resolveAt]⟩
+          simp [SemanticEnv.get, SemanticEnv.insertWire,
+            SemanticEnv.resolveAt]⟩
       · have previous := refWidthBefore_wire_previous program wires table
           current number width same found
         obtain ⟨resolved, resolvedEq⟩ := henv (.wire number) width previous
@@ -1272,7 +1383,26 @@ theorem elaborateIndexedWire_preserves
           exact same rfl
         exact ⟨resolved, by
           unfold SemanticEnv.resolveAt at resolvedEq ⊢
-          simpa [SemanticEnv.insertWire, refNe] using resolvedEq⟩
+          simpa [SemanticEnv.get, SemanticEnv.insertWire, refNe]
+            using resolvedEq⟩
+  | namedWire number name =>
+      by_cases same : number = current
+      · subst number
+        have widthEq : wire.width = width :=
+          refWidthBefore_named_lookup_width program wires table
+            (current + 1) current width name wire lookupEq found
+        subst width
+        exact ⟨value, by
+          simp [SemanticEnv.get, SemanticEnv.insertWire,
+            SemanticEnv.resolveAt]⟩
+      · have previous := refWidthBefore_named_previous program wires table
+          current number width name same found
+        obtain ⟨resolved, resolvedEq⟩ :=
+          henv (.namedWire number name) width previous
+        exact ⟨resolved, by
+          unfold SemanticEnv.resolveAt at resolvedEq ⊢
+          simpa [SemanticEnv.get, SemanticEnv.insertWire, same]
+            using resolvedEq⟩
 
 /-- One accepted assignment preserves both type resolution and exact
 compiler-expression correspondence. -/
@@ -1321,7 +1451,8 @@ theorem elaborateIndexedWire_preservesModels
           exact Option.some.inj exactEq'
         subst value
         rw [numberEq]
-        simp [SemanticEnv.insertWire, SemanticEnv.resolveAt]
+        simp [SemanticEnv.get, SemanticEnv.insertWire,
+          SemanticEnv.resolveAt]
       · have previous := refWidthBefore_wire_previous program wires table
           current number width same inScope
         have resolved := hmodels expr (.wire number) valid matchOk previous
@@ -1331,7 +1462,33 @@ theorem elaborateIndexedWire_preservesModels
           cases equal
           exact same rfl
         unfold SemanticEnv.resolveAt at resolved ⊢
-        simpa [SemanticEnv.insertWire, refNe] using resolved
+        simpa [SemanticEnv.get, SemanticEnv.insertWire, refNe] using resolved
+  | namedWire number name =>
+      by_cases same : number = current
+      · subst number
+        have wireMatch : indexedExprMatches wires table expr (.wire current) =
+            true := by
+          rw [indexedExprMatches_named_eq_wire] at matchOk
+          exact matchOk
+        obtain ⟨widthEq, exactEq⟩ := indexedExprMatches_current_elaborate
+          program wires table current env hmodels expr wire valid accepted wireMatch
+        cases widthEq
+        have exactEq' : wire.rhs.elaborate program env wire.width =
+            some expr := by simpa using exactEq
+        have valueIsExpr : value = expr := by
+          rw [valueEq] at exactEq'
+          exact Option.some.inj exactEq'
+        subst value
+        rw [numberEq]
+        simp [SemanticEnv.get, SemanticEnv.insertWire,
+          SemanticEnv.resolveAt]
+      · have previous := refWidthBefore_named_previous program wires table
+          current number width name same inScope
+        have resolved := hmodels expr (.namedWire number name) valid matchOk previous
+        have differentWire : number ≠ wire.number := by simpa [numberEq] using same
+        unfold SemanticEnv.resolveAt at resolved ⊢
+        simpa [SemanticEnv.get, SemanticEnv.insertWire, differentWire]
+          using resolved
 
 /-- Elaborating an accepted sequential leaf preserves the lookup invariant
 through every numbered assignment in the leaf. -/
@@ -1492,21 +1649,11 @@ theorem indexedExprMatches_inScope
     (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
     {width : Nat} (expr : Expr width) (reference : Ref)
     (valid : ExprRegistersValid program expr)
-    (matchOk : indexedExprMatches wires table expr reference = true) :
+    (matchOk : indexedExprMatches wires table expr reference = true)
+    (scope : refWidthBefore? program wires table wires.listLength reference =
+      some width) :
     refWidthBefore? program wires table wires.listLength reference =
-      some width := by
-  cases reference with
-  | reg actualName =>
-      cases expr <;> simp [indexedExprMatches] at matchOk
-      case reg sourceName =>
-        subst actualName
-        rcases valid with ⟨reg, regFound, regWidth, regNotWire⟩
-        simp [refWidthBefore?, regNotWire, regFound, guard, regWidth]
-  | wire number =>
-      obtain ⟨wire, lookup, wireWidth⟩ :=
-        indexedExprMatches_lookup wires table expr number matchOk
-      have numberLt := lookupIndexed_number_lt hwellFormed number wire lookup
-      simp [refWidthBefore?, numberLt, guard, lookup, wireWidth]
+      some width := scope
 
 /-- The whole-graph certificate turns an accepted, well-typed symbolic root
 into exact equality with the corresponding reference-compiler expression. -/
@@ -1515,14 +1662,16 @@ theorem elaborateIndexedEnv_resolves
     (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
     {width : Nat} (expr : Expr width) (reference : Ref)
     (valid : ExprRegistersValid program expr)
-    (matchOk : indexedExprMatches wires table expr reference = true) :
+    (matchOk : indexedExprMatches wires table expr reference = true)
+    (scope : refWidthBefore? program wires table wires.listLength reference =
+      some width) :
     ∃ env,
       elaborateIndexedEnv program wires = some env ∧
       env.resolveAt reference width = some expr := by
   obtain ⟨env, envEq, _, hmodels⟩ := elaborateIndexedEnv_models
     program wires table hwellFormed
   have inScope := indexedExprMatches_inScope program wires table hwellFormed
-    expr reference valid matchOk
+    expr reference valid matchOk scope
   exact ⟨env, envEq, hmodels expr reference valid matchOk inScope⟩
 
 /-- An accepted concrete register root resolves exactly to the reference
@@ -1555,7 +1704,7 @@ theorem indexedRegisterMatchesAt_resolves
         exact List.getElem_mem inBounds
       have valid := registerNext_registersValid readsValid source sourceMem
       exact elaborateIndexedEnv_resolves program wires table hwellFormed _ root
-        valid accepted.2
+        valid accepted.2 accepted.1.2
 
 /-- Accepted concrete memory-port roots resolve exactly to all three
 expressions of the reference compiler port. -/
@@ -1595,10 +1744,13 @@ theorem indexedMemoryPortMatchesAt_resolves
             program wires table hwellFormed
           have enScope := indexedExprMatches_inScope program wires table
             hwellFormed compiled.en refs.en valid.1 accepted.1.1.2
+              accepted.1.1.1.1.1.2
           have addrScope := indexedExprMatches_inScope program wires table
             hwellFormed compiled.addr refs.addr valid.2.1 accepted.1.2
+              accepted.1.1.1.1.2
           have dataScope := indexedExprMatches_inScope program wires table
             hwellFormed compiled.data refs.data valid.2.2 accepted.2
+              accepted.1.1.1.2
           exact ⟨env, envEq,
             hmodels compiled.en refs.en valid.1 accepted.1.1.2 enScope,
             hmodels compiled.addr refs.addr valid.2.1 accepted.1.2 addrScope,

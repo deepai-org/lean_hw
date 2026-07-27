@@ -19,6 +19,35 @@ from pathlib import Path
 
 START = re.compile(r"^def (disk\w+) : List String := \[$")
 INLINE = re.compile(r"^def (disk\w+) : List String := \[(.*)\]$")
+FRAGMENT_START = re.compile(r"^def (diskWireBlock\d+) : List Line := \[$")
+FRAGMENT_ENTRY = re.compile(r"^\{ fragments := \[(.*)\] \},?$")
+ROPE_DEF = re.compile(
+    r"^def (\w+) : Rope \(List (?:String|Line)\) :=\n(.*?)(?=\n\n)",
+    re.MULTILINE | re.DOTALL)
+LIST_DEF = re.compile(
+    r"^def (\w+) : List String :=\n(.*?)(?=\n\n)",
+    re.MULTILINE | re.DOTALL)
+_DEFINITION_CACHE: dict[Path, tuple[dict[str, str], dict[str, str]]] = {}
+
+
+def definition_index(directory: Path) -> tuple[dict[str, str], dict[str, str]]:
+    key = directory.resolve()
+    if key in _DEFINITION_CACHE:
+        return _DEFINITION_CACHE[key]
+    ropes: dict[str, str] = {}
+    lists: dict[str, str] = {}
+    for source in sorted(directory.glob("*.lean")):
+        text = source.read_text()
+        for match in ROPE_DEF.finditer(text):
+            if match[1] in ropes:
+                raise ValueError(f"duplicate rope definition {match[1]}")
+            ropes[match[1]] = match[2].strip()
+        for match in LIST_DEF.finditer(text):
+            if match[1] in lists:
+                raise ValueError(f"duplicate list definition {match[1]}")
+            lists[match[1]] = match[2].strip()
+    _DEFINITION_CACHE[key] = (ropes, lists)
+    return ropes, lists
 
 
 def declarations(directory: Path) -> dict[str, list[str]]:
@@ -27,6 +56,22 @@ def declarations(directory: Path) -> dict[str, list[str]]:
         lines = source.read_text().splitlines()
         i = 0
         while i < len(lines):
+            fragment_start = FRAGMENT_START.fullmatch(lines[i])
+            if fragment_start:
+                values: list[str] = []
+                i += 1
+                while i < len(lines) and lines[i] != "]":
+                    entry = FRAGMENT_ENTRY.fullmatch(lines[i].strip())
+                    if not entry:
+                        raise ValueError(f"bad fragment line: {lines[i]}")
+                    fragments = json.loads("[" + entry[1] + "]")
+                    values.append("".join(fragments))
+                    i += 1
+                if i == len(lines):
+                    raise ValueError(f"unterminated disk declaration {fragment_start[1]}")
+                result[fragment_start[1]] = values
+                i += 1
+                continue
             inline = INLINE.fullmatch(lines[i])
             if inline:
                 values = [] if not inline[2] else [json.loads(inline[2])]
@@ -56,13 +101,11 @@ def declarations(directory: Path) -> dict[str, list[str]]:
     return result
 
 
-def rope_definition(root: str, name: str) -> str:
-    match = re.search(
-        rf"^def {re.escape(name)} : Rope \(List String\) :=\n(.*?)(?=\n\n)",
-        root, re.MULTILINE | re.DOTALL)
-    if not match:
+def rope_definition(directory: Path, name: str) -> str:
+    ropes, _ = definition_index(directory)
+    if name not in ropes:
         raise ValueError(f"missing rope definition {name}")
-    expression = match[1].strip()
+    expression = ropes[name]
     if not re.fullmatch(r"[.()A-Za-z0-9_\s]+", expression):
         raise ValueError(f"unexpected syntax in rope definition {name}")
     return expression
@@ -77,27 +120,54 @@ def rope_references(expression: str, allowed: re.Pattern[str]) -> list[str]:
     return references
 
 
+def list_concat_references(directory: Path, name: str,
+                           allowed: re.Pattern[str]) -> list[str]:
+    _, lists = definition_index(directory)
+    if name not in lists:
+        raise ValueError(f"expected one concatenated list definition {name}")
+    expression = lists[name]
+    # Parentheses are permitted so generated append trees can be balanced;
+    # references are still recovered and checked in exact lexical/source order.
+    if not re.fullmatch(r"[+()A-Za-z0-9_\s]+", expression):
+        raise ValueError(f"unexpected syntax in list definition {name}")
+    references = re.findall(r"[A-Za-z_]\w*", expression)
+    unexpected = [reference for reference in references
+                  if not allowed.fullmatch(reference)]
+    if unexpected:
+        raise ValueError(f"unexpected list references: {', '.join(unexpected)}")
+    return references
+
+
 def ordered_names(directory: Path, values: dict[str, list[str]]) -> list[str]:
     """Derive the byte order from the exact rope used by Lean's theorem."""
     root = (directory / "Root.lean").read_text()
-    top = " ".join(rope_definition(root, "diskTree").split())
+    top = " ".join(rope_definition(directory, "diskTree").split())
     expected_top = (".node (.leaf diskPrefix) "
                     "(.node diskMemTrees (.node diskWireTree (.leaf diskSuffix)))")
     if top != expected_top:
         raise ValueError("diskTree is not the fixed release framing")
 
     memory_trees = rope_references(
-        rope_definition(root, "diskMemTrees"), re.compile(r"diskMem\d+Tree"))
+        rope_definition(directory, "diskMemTrees"),
+        re.compile(r"diskMem\d+Tree"))
     memory_numbers = [int(re.fullmatch(r"diskMem(\d+)Tree", name)[1])
                       for name in memory_trees]
     if memory_numbers != list(range(len(memory_numbers))):
         raise ValueError("memory trees are not in contiguous source order")
 
-    names = ["diskPrefix"]
+    prefix_refs = list_concat_references(
+        directory, "diskPrefix",
+        re.compile(r"disk(?:Header|RegDeclBlock\d{4}|MemDecls)"))
+    expected_prefix = (["diskHeader"] + sorted(
+        name for name in values if re.fullmatch(r"diskRegDeclBlock\d{4}", name)) +
+        ["diskMemDecls"])
+    if prefix_refs != expected_prefix:
+        raise ValueError("prefix leaves are not in source order")
+    names = prefix_refs
     for number in memory_numbers:
         tree_name = f"diskMem{number}Tree"
         tree_refs = rope_references(
-            rope_definition(root, tree_name),
+            rope_definition(directory, tree_name),
             re.compile(rf"diskMem{number}(?:Start|InitTree|End)"))
         expected_tree = [f"diskMem{number}Start",
                          f"diskMem{number}InitTree",
@@ -105,7 +175,7 @@ def ordered_names(directory: Path, values: dict[str, list[str]]) -> list[str]:
         if tree_refs != expected_tree:
             raise ValueError(f"{tree_name} is not start/init/end in order")
         init_refs = rope_references(
-            rope_definition(root, f"diskMem{number}InitTree"),
+            rope_definition(directory, f"diskMem{number}InitTree"),
             re.compile(rf"diskMem{number}Init\d{{4}}"))
         expected_init = sorted(
             name for name in values
@@ -115,14 +185,29 @@ def ordered_names(directory: Path, values: dict[str, list[str]]) -> list[str]:
         names += [f"diskMem{number}Start", *init_refs,
                   f"diskMem{number}End"]
 
-    wire_refs = rope_references(
-        rope_definition(root, "diskWireTree"),
-        re.compile(r"diskWireBlock\d{4}"))
+    wire_tree_name = ("diskWireLineTree" if "def diskWireLineTree" in root
+                      else "diskWireTree")
+    wire_top_refs = rope_references(
+        rope_definition(directory, wire_tree_name),
+        re.compile(r"diskWire(?:Block|TreeChunk)\d{4}"))
+    wire_refs = []
+    for reference in wire_top_refs:
+        if re.fullmatch(r"diskWireTreeChunk\d{4}", reference):
+            wire_refs += rope_references(
+                rope_definition(directory, reference),
+                re.compile(r"diskWireBlock\d{4}"))
+        else:
+            wire_refs.append(reference)
     expected_wires = sorted(
         name for name in values if re.fullmatch(r"diskWireBlock\d{4}", name))
     if wire_refs != expected_wires:
         raise ValueError("wire leaves are not in source order")
-    return names + wire_refs + ["diskSuffix"]
+    suffix_refs = list_concat_references(
+        directory, "diskSuffix",
+        re.compile(r"disk(?:AlwaysStart|RegResetBlock\d{4}|AlwaysMiddle|"
+                   r"RegNextBlock\d{4}|MemWrites|AlwaysEnd|OutBlock\d{4}|"
+                   r"ModuleEnd)"))
+    return names + wire_refs + suffix_refs
 
 
 def main() -> None:
