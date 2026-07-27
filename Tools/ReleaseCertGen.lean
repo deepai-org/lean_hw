@@ -860,7 +860,8 @@ unsafe def synthesizeActionWideRegisterCertRuntime (design : Design)
 
 private def quote (value : String) : String := reprStr value
 
-def actionWideRefToLean : Symbolic.Ref → String
+def actionWideRefToLean (reference : Symbolic.Ref) : String :=
+  match reference.canonical with
   | .reg name => s!".reg {quote name}"
   | .wire number => s!".wire {number}"
   | .namedWire number name => s!".namedWire {number} {quote name}"
@@ -1102,7 +1103,9 @@ private def indexedRegCertName (index : Nat) : String :=
 private def refToLean (name : String) : String :=
   if name.startsWith "n" then
     match (name.drop 1).toNat? with
-    | some number => s!".namedWire {number} {quote name}"
+    | some number =>
+        if name == Symbolic.wireName number then s!".wire {number}"
+        else s!".namedWire {number} {quote name}"
     | none => s!".reg {quote name}"
   else s!".reg {quote name}"
 
