@@ -855,7 +855,17 @@ unsafe def synthesizeActionWideRegisterCertRuntime (design : Design)
 
 private def quote (value : String) : String := reprStr value
 
-def actionWideRefToLean : Symbolic.Ref → String
+/-- Action-wide data (joins, connectors, segment states) must spell a
+canonically named wire as `.wire n`: `proveJoinOutput` reduces `Join.output`
+and rejects anything but that constructor.
+
+This is deliberately *not* applied to the whole-plan emitters below
+(`symbolicRefToLean`, `refToLean`, `nameRef`), whose roots are compared with
+`isDefEq` against `namedWire` data emitted by `gen_release_witness.py`.
+The two paths genuinely require different spellings; canonicalizing both
+breaks the whole-plan comparison. -/
+def actionWideRefToLean (reference : Symbolic.Ref) : String :=
+  match reference.canonical with
   | .reg name => s!".reg {quote name}"
   | .wire number => s!".wire {number}"
   | .namedWire number name => s!".namedWire {number} {quote name}"
