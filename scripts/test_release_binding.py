@@ -31,18 +31,44 @@ def diskTree : Rope (List String) :=
 
 """
 
+# `diskPrefix` and `diskSuffix` mirror the blocked generator: both are append
+# trees over separately named leaves, not single literals. The checker recovers
+# byte order from those appends, so the fixture must exercise that shape.
 LEAVES = """\
-def diskPrefix : List String := ["prefix"]
+def diskPrefix : List String :=
+  diskHeader ++ (diskRegDeclBlock0000 ++ diskMemDecls)
+
+def diskSuffix : List String :=
+  diskAlwaysStart ++ (diskRegResetBlock0000 ++ (diskAlwaysMiddle ++
+    (diskRegNextBlock0000 ++ (diskMemWrites ++ (diskAlwaysEnd ++
+    (diskOutBlock0000 ++ diskModuleEnd))))))
+
+def diskHeader : List String := ["header"]
+def diskRegDeclBlock0000 : List String := ["reg-decl"]
+def diskMemDecls : List String := ["mem-decls"]
 def diskMem0Start : List String := ["mem-start"]
 def diskMem0Init0000 : List String := ["mem-0"]
 def diskMem0Init0001 : List String := ["mem-1"]
 def diskMem0End : List String := ["mem-end"]
 def diskWireBlock0000 : List String := ["wire-0"]
 def diskWireBlock0001 : List String := ["wire-1"]
-def diskSuffix : List String := ["suffix"]
+def diskAlwaysStart : List String := ["always-start"]
+def diskRegResetBlock0000 : List String := ["reg-reset"]
+def diskAlwaysMiddle : List String := ["always-middle"]
+def diskRegNextBlock0000 : List String := ["reg-next"]
+def diskMemWrites : List String := ["mem-writes"]
+def diskAlwaysEnd : List String := ["always-end"]
+def diskOutBlock0000 : List String := ["out"]
+def diskModuleEnd : List String := ["module-end"]
 """
 
-BYTES = b"prefix\nmem-start\nmem-0\nmem-1\nmem-end\nwire-0\nwire-1\nsuffix"
+BYTES = b"\n".join([
+    b"header", b"reg-decl", b"mem-decls",
+    b"mem-start", b"mem-0", b"mem-1", b"mem-end",
+    b"wire-0", b"wire-1",
+    b"always-start", b"reg-reset", b"always-middle", b"reg-next",
+    b"mem-writes", b"always-end", b"out", b"module-end",
+])
 
 
 def check(checker: Path, rtl: Path, generated: Path, succeeds: bool) -> None:

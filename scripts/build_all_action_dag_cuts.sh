@@ -34,14 +34,9 @@ if [[ ! -f "$runtime" ]]; then
   exit 1
 fi
 
-run_phase() {
-  local label=$1
-  shift
-  local started=$SECONDS
-  echo "==> $label"
-  "$@"
-  echo "<== $label: $((SECONDS - started))s"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/phase_timing.sh"
+LOOM_PHASE_SCOPE=dag-cuts
+loom_phase_log_init
 
 compile_generated() {
   local source=$1

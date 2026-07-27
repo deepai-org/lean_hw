@@ -24,14 +24,7 @@ if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
 fi
 monitor_pid=
 
-run_phase() {
-  local label=$1
-  shift
-  local started=$SECONDS
-  echo "==> $label"
-  "$@"
-  echo "<== $label: $((SECONDS - started))s"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/phase_timing.sh"
 
 stop_monitor() {
   if [[ -n "${monitor_pid:-}" ]]; then
@@ -43,6 +36,14 @@ trap stop_monitor EXIT
 
 metrics_dir=".lake/release-metrics/lnp64u-$(date -u +%Y%m%dT%H%M%SZ)"
 done_file="$metrics_dir/full-release-complete"
+
+# Per-phase wall/CPU timings for the whole run, including the child witness and
+# action-cut scripts, land in one CSV. Exported so those children append to the
+# same file instead of each inventing its own.
+export LOOM_PHASE_LOG="$PWD/$metrics_dir/phases.csv"
+export LOOM_PHASE_SCOPE=release
+loom_phase_log_init
+echo "release phase timings: $LOOM_PHASE_LOG"
 if [[ -r /proc/uptime && -r /proc/meminfo ]]; then
   python3 scripts/monitor_release_build.py Lnp64u --output "$metrics_dir" \
     --done-file "$done_file" &
