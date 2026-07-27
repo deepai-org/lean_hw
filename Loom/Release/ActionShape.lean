@@ -46,9 +46,7 @@ inductive ActionShapeEvidence (wires : Rope (List IndexedWire))
         (.write index valueRef)
   | writeLive {width name value index valueRef needed}
       (header : checkedWriteHeader registers index width name = true)
-      (live : needed.testBit index = true)
-      (valueAccepted : indexedExprMatches wires table
-        (Loom.Hw.Compile.compileExpr value) valueRef = true) :
+      (live : needed.testBit index = true) :
       ActionShapeEvidence wires table registers (.write width name value) needed
         (.write index valueRef)
   | seq {left right needed summary leftCert rightCert}
@@ -63,15 +61,12 @@ inductive ActionShapeEvidence (wires : Rope (List IndexedWire))
       thenCert elseCert}
       (summaryAccepted :
         summary = iteSummary thenCert.summary elseCert.summary)
-      (conditionAccepted : indexedExprMatches wires table
-        (Loom.Hw.Compile.compileExpr condition) conditionRef = true)
       (thenAccepted :
         ActionShapeEvidence wires table registers thenAction
           (changedBitsAt summary needed) thenCert)
       (elseAccepted :
         ActionShapeEvidence wires table registers elseAction
-          (changedBitsAt summary needed) elseCert)
-      (outputsAccepted : JoinOutputsEvidence wires table joins) :
+          (changedBitsAt summary needed) elseCert) :
       ActionShapeEvidence wires table registers
         (.ite condition thenAction elseAction) needed
         (.ite summary conditionRef joins thenCert elseCert)
@@ -138,6 +133,8 @@ inductive RegQueryEvidence (wires : Rope (List IndexedWire))
   | iteChanged {condition thenAction elseAction input needed summary conditionRef
       joins thenCert elseCert thenRef elseRef output}
       (changed : (changedBitsAt summary needed).testBit query = true)
+      (conditionAccepted : indexedExprMatches wires table
+        (Loom.Hw.Compile.compileExpr condition) conditionRef = true)
       (thenAccepted : RegQueryEvidence wires table registers query width thenAction input
         (changedBitsAt summary needed) thenCert thenRef)
       (elseAccepted : RegQueryEvidence wires table registers query width elseAction input
@@ -179,6 +176,36 @@ def queryRef (query width : Nat) :
         some join.output
       else some input
   | _, _, _, _ => none
+
+/-- Reassociate an ordered rule list into one action.  This is a proof-facing
+view only: `nextReg` on the result is exactly the source compiler's ordered
+rule fold, while a single action certificate can share cached subactions. -/
+def rulesAction : List Rule → Act
+  | [] => .skip
+  | rule :: rules => .seq rule.body (rulesAction rules)
+
+/-- Reassociate one certificate per ordered rule in the same shape as
+`rulesAction`.  The summary at every new sequence node is derived from its
+children, so the original backwards liveness sets remain definitionally
+visible to the compact checker. -/
+def rulesActionCert : RulesCert → ActionCert
+  | [] => .skip
+  | cert :: certs =>
+      let tail := rulesActionCert certs
+      .seq (seqSummary cert.summary tail.summary) cert tail
+
+/-- The proof-facing reassociation does not change register compilation. -/
+theorem nextReg_rulesAction (name : String) (width : Nat) (rules : List Rule)
+    (current : Loom.Emit.MicroVerilog.Expr width) :
+    Loom.Hw.Compile.nextReg name width (rulesAction rules) current =
+      rules.foldl
+        (fun value rule => Loom.Hw.Compile.nextReg name width rule.body value)
+        current := by
+  induction rules generalizing current with
+  | nil => rfl
+  | cons rule rules ih =>
+      simp only [rulesAction, Loom.Hw.Compile.nextReg, List.foldl_cons]
+      exact ih _
 
 /-- Apply the mux joins of one conditional to a concrete reference array,
 checking that each join consumes exactly the references computed by its two
@@ -405,91 +432,6 @@ theorem JoinAtEvidence.raw_mux
           exact .mux rawAt widthEq rhsEq guardMatches thenMatches elseMatches
   | there tail ih => exact ih
 
-/-- The compact checker is a proof-producing validator once paired with the
-shared action-shape certificate. This theorem is generic; generated artifacts
-contain only constant-size `queryRef = some ...` equalities. -/
-theorem ActionShapeEvidence.query_evidence
-    {wires : Rope (List IndexedWire)} {table : WireTable}
-    {registers : Array RegDecl} {action : Act} {needed : Nat} {cert : ActionCert}
-    (shape : ActionShapeEvidence wires table registers action needed cert) :
-    ∀ {query width input output},
-      queryRef query width action input needed cert = some output →
-      RegQueryEvidence wires table registers query width action input needed cert
-        output := by
-  induction shape with
-  | skip =>
-      intro query width input output accepted
-      simp [queryRef] at accepted
-      subst output
-      exact .skip
-  | memWrite =>
-      intro query width input output accepted
-      simp [queryRef] at accepted
-      subst output
-      exact .memWrite
-  | @writeDead writeWidth name value index valueRef needed header dead =>
-      intro query width input output accepted
-      by_cases indexEq : index = query
-      · subst index
-        simp [queryRef, dead] at accepted
-        subst output
-        exact .writeDead dead
-      · have indexFalse : (index == query) = false := beq_eq_false_iff_ne.mpr indexEq
-        simp [queryRef, indexFalse] at accepted
-        subst output
-        exact .writeOther indexEq
-  | @writeLive writeWidth name value index valueRef needed header live valueAccepted =>
-      intro query width input output accepted
-      by_cases indexEq : index = query
-      · subst index
-        simp [queryRef, live] at accepted
-        subst output
-        exact .writeLive live valueAccepted
-      · have indexFalse : (index == query) = false := beq_eq_false_iff_ne.mpr indexEq
-        simp [queryRef, indexFalse] at accepted
-        subst output
-        exact .writeOther indexEq
-  | @seq left right needed summary leftCert rightCert summaryAccepted leftAccepted
-      rightAccepted leftIH rightIH =>
-      intro query width input output accepted
-      cases middleEq : queryRef query width left input
-          (neededBitsBefore rightCert.summary needed) leftCert with
-      | none => simp [queryRef, middleEq] at accepted
-      | some middle =>
-          have rightEq : queryRef query width right middle needed rightCert =
-              some output := by
-            simpa [queryRef, middleEq] using accepted
-          exact .seq (leftIH middleEq) (rightIH rightEq)
-  | @ite condition thenAction elseAction needed summary conditionRef joins thenCert
-      elseCert summaryAccepted conditionAccepted thenAccepted elseAccepted
-      outputsAccepted thenIH elseIH =>
-      intro query width input output accepted
-      cases changedEq : (changedBitsAt summary needed).testBit query with
-      | false =>
-          simp [queryRef, changedEq] at accepted
-          subst output
-          exact .iteUnchanged changedEq
-      | true =>
-          cases thenEq : queryRef query width thenAction input
-              (changedBitsAt summary needed) thenCert with
-          | none => simp [queryRef, changedEq, thenEq] at accepted
-          | some thenRef =>
-            cases elseEq : queryRef query width elseAction input
-                (changedBitsAt summary needed) elseCert with
-            | none => simp [queryRef, changedEq, thenEq, elseEq] at accepted
-            | some elseRef =>
-              cases joinEq : joins.find?
-                  (queryJoinMatches conditionRef query width thenRef elseRef) with
-              | none =>
-                  simp [queryRef, changedEq, thenEq, elseEq, joinEq] at accepted
-              | some join =>
-                  have outputEq : join.output = output := by
-                    simpa [queryRef, changedEq, thenEq, elseEq, joinEq] using
-                      accepted
-                  subst output
-                  exact .iteChanged changedEq (thenIH thenEq) (elseIH elseEq)
-                    (outputsAccepted.find_query joinEq)
-
 /-- A checked write header identifies the source register represented by its
 certificate index. -/
 private theorem checkedWriteHeader_summary_valid
@@ -545,7 +487,7 @@ theorem ActionShapeEvidence.summary_valid
         Loom.Hw.Compile.writesRegB]
   | writeDead header dead =>
       exact checkedWriteHeader_summary_valid header unique source sourceFound
-  | writeLive header live valueAccepted =>
+  | writeLive header live =>
       exact checkedWriteHeader_summary_valid header unique source sourceFound
   | @seq left right needed summary leftCert rightCert summaryAccepted leftAccepted
       rightAccepted leftIH rightIH =>
@@ -560,8 +502,8 @@ theorem ActionShapeEvidence.summary_valid
           ActionCert.definitelyWritesIndex]
         rw [leftIH.2, rightIH.2]
   | @ite condition thenAction elseAction needed summary conditionRef joins thenCert
-      elseCert summaryAccepted conditionAccepted thenAccepted elseAccepted
-      outputsAccepted thenIH elseIH =>
+      elseCert summaryAccepted thenAccepted elseAccepted
+      thenIH elseIH =>
       subst summaryAccepted
       constructor
       · change (iteSummary _ _).possible.testBit query = _
@@ -592,8 +534,8 @@ theorem ActionShapeEvidence.summary_definite_false_of_possible_false
       simp only [seqSummary, Nat.testBit_or, Bool.or_eq_false_iff] at possibleFalse ⊢
       exact ⟨leftIH possibleFalse.1, rightIH possibleFalse.2⟩
   | @ite condition thenAction elseAction needed summary conditionRef joins thenCert
-      elseCert summaryAccepted conditionAccepted thenAccepted elseAccepted
-      outputsAccepted thenIH elseIH =>
+      elseCert summaryAccepted thenAccepted elseAccepted
+      thenIH elseIH =>
       subst summary
       change (iteSummary thenCert.summary elseCert.summary).possible.testBit query =
         false at possibleFalse
@@ -660,7 +602,7 @@ theorem RegQueryEvidence.nextReg_raw
             Loom.Hw.Compile.nextReg, nameNe] using currentMatches
       cases shape with
       | writeDead header dead => exact finish header
-      | writeLive header live valueAccepted => exact finish header
+      | writeLive header live => exact finish header
   | writeDead dead =>
       rw [used] at dead
       contradiction
@@ -669,7 +611,7 @@ theorem RegQueryEvidence.nextReg_raw
       | writeDead header dead =>
         rw [live] at dead
         contradiction
-      | writeLive header shapeLive shapeValueAccepted =>
+      | writeLive header shapeLive =>
         cases actualFound : registers[query]? with
         | none => simp [checkedWriteHeader, actualFound] at header
         | some actual =>
@@ -724,13 +666,13 @@ theorem RegQueryEvidence.nextReg_raw
   | @iteUnchanged condition thenAction elseAction input needed summary conditionRef
       joins thenCert elseCert unchanged =>
       cases shape with
-      | ite summaryAccepted conditionAccepted thenShape elseShape outputsAccepted =>
+      | ite summaryAccepted thenShape elseShape =>
         subst summary
         let wholeShape : ActionShapeEvidence wires wireTable registers
             (.ite condition thenAction elseAction) needed
             (.ite (iteSummary thenCert.summary elseCert.summary) conditionRef joins
               thenCert elseCert) :=
-          .ite rfl conditionAccepted thenShape elseShape outputsAccepted
+          .ite rfl thenShape elseShape
         have possibleFalse :
             (iteSummary thenCert.summary elseCert.summary).possible.testBit query =
               false := by
@@ -754,10 +696,10 @@ theorem RegQueryEvidence.nextReg_raw
           exact currentMatches
         simpa [Loom.Hw.Compile.nextReg, branchNoWrite] using currentRaw
   | @iteChanged condition thenAction elseAction input needed summary conditionRef
-      joins thenCert elseCert thenRef elseRef output changed thenAccepted
+      joins thenCert elseCert thenRef elseRef output changed conditionAccepted thenAccepted
       elseAccepted joinAccepted thenIH elseIH =>
       cases shape with
-      | ite summaryAccepted conditionAccepted thenShape elseShape outputsAccepted =>
+      | ite summaryAccepted thenShape elseShape =>
         subst summary
         let wholeCert : ActionCert := .ite
           (iteSummary thenCert.summary elseCert.summary) conditionRef joins
@@ -796,7 +738,7 @@ theorem RegQueryEvidence.nextReg_raw
           guardMatches thenMatches elseMatches
         let wholeShape : ActionShapeEvidence wires wireTable registers
             (.ite condition thenAction elseAction) needed wholeCert :=
-          .ite rfl conditionAccepted thenShape elseShape outputsAccepted
+          .ite rfl thenShape elseShape
         have writeTrue :=
           (wholeShape.summary_valid unique query source sourceFound).1.symm.trans
             possibleTrue
@@ -807,17 +749,45 @@ theorem RegQueryEvidence.nextReg_raw
           simpa [Loom.Hw.Compile.writesRegB] using writeTrue
         simpa [Loom.Hw.Compile.nextReg, branchWriteTrue] using muxMatches
 
-/-- Publication-facing compact-checker rule: one shared action-shape theorem
-plus a constant-size kernel reduction equality certifies a semantic register
-projection. No generated inductive proof tree is trusted or retained. -/
-theorem ActionShapeEvidence.queryRef_nextReg_raw
+/-- Chaining form of `nextReg_raw`.  A caller that knows the incoming raw
+expression matches the incoming reference need not inspect the certificate's
+definite-write bit: a definite write discards that premise, while every other
+action consumes it directly. -/
+theorem RegQueryEvidence.nextReg_raw_of_input
+    (program : Program) {wires : Rope (List IndexedWire)}
+    (wiresMatch : IndexedRopeMatches 0 program.wires wires)
+    (wireTable : WireTable) {registers : Array RegDecl}
+    {query width : Nat} {action : Act} {input : Ref} {needed : Nat}
+    {cert : ActionCert} {output : Ref}
+    (evidence : RegQueryEvidence wires wireTable registers query width action
+      input needed cert output)
+    (shape : ActionShapeEvidence wires wireTable registers action needed cert)
+    (unique : RegisterNamesUnique registers)
+    (source : RegDecl) (sourceFound : registers[query]? = some source)
+    (sourceWidth : source.width = width)
+    (used : needed.testBit query = true)
+    (current : Loom.Emit.MicroVerilog.Expr source.width)
+    (currentMatches : RawExprMatches program wireTable current input) :
+    RawExprMatches program wireTable
+      (Loom.Hw.Compile.nextReg source.name source.width action current) output := by
+  apply evidence.nextReg_raw program wiresMatch wireTable shape unique source
+    sourceFound sourceWidth used current
+  cases definite : cert.summary.definite.testBit query <;>
+    simp [ActionCert.semanticCurrentRef, definite, RawCurrentMatches,
+      currentMatches]
+
+/-- Publication-facing compact-checker rule: a shared lightweight action-shape
+theorem and a query-local certificate together establish one semantic register
+projection. -/
+theorem ActionShapeEvidence.queryEvidence_nextReg_raw
     (program : Program) {wires : Rope (List IndexedWire)}
     (wiresMatch : IndexedRopeMatches 0 program.wires wires)
     (wireTable : WireTable) {registers : Array RegDecl}
     {query width : Nat} {action : Act} {input : Ref} {needed : Nat}
     {cert : ActionCert} {output : Ref}
     (shape : ActionShapeEvidence wires wireTable registers action needed cert)
-    (accepted : queryRef query width action input needed cert = some output)
+    (evidence : RegQueryEvidence wires wireTable registers query width action
+      input needed cert output)
     (unique : RegisterNamesUnique registers)
     (source : RegDecl) (sourceFound : registers[query]? = some source)
     (sourceWidth : source.width = width)
@@ -827,7 +797,43 @@ theorem ActionShapeEvidence.queryRef_nextReg_raw
       (cert.semanticCurrentRef query input)) :
     RawExprMatches program wireTable
       (Loom.Hw.Compile.nextReg source.name source.width action current) output :=
-  (shape.query_evidence accepted).nextReg_raw program wiresMatch wireTable shape
+  evidence.nextReg_raw program wiresMatch wireTable shape
     unique source sourceFound sourceWidth used current currentMatches
+
+/-- End-to-end register rule for the hybrid release checker.  The generated
+artifact supplies only a structural shape constant, one query-local evidence
+constant, and bounded metadata equalities; this generic theorem removes all
+certificate data from the resulting `RegisterBehaviorAt` proposition. -/
+theorem RegQueryEvidence.registerBehaviorAt
+    (design : Loom.Hw.Design) (program : Program)
+    {wires : Rope (List IndexedWire)}
+    (wiresMatch : IndexedRopeMatches 0 program.wires wires)
+    (wireTable : WireTable) {registers : Array RegDecl}
+    (index : Nat) (source : RegDecl) (root : Ref)
+    (needed : Nat) (cert : ActionCert)
+    (shape : ActionShapeEvidence wires wireTable registers
+      (rulesAction design.rules) needed cert)
+    (evidence : RegQueryEvidence wires wireTable registers index
+      source.width (rulesAction design.rules) (.reg source.name) needed cert root)
+    (unique : RegisterNamesUnique registers)
+    (registersEq : registers = design.regs.toArray)
+    (sourceArrayFound : registers[index]? = some source)
+    (sourceFound : design.regs[index]? = some source)
+    (used : needed.testBit index = true)
+    (metadata : indexedRegisterMetadataMatchesAt design program index root = true) :
+    RegisterBehaviorAt design program wireTable index root := by
+  subst registers
+  have raw := evidence.nextReg_raw_of_input program wiresMatch wireTable shape
+    unique source sourceArrayFound rfl used (.reg source.width source.name)
+    (.reg source.width source.name)
+  rw [nextReg_rulesAction] at raw
+  cases concreteFound : program.regs[index]? with
+  | none =>
+      simp [indexedRegisterMetadataMatchesAt, sourceFound, concreteFound] at metadata
+  | some concrete =>
+      simp only [indexedRegisterMetadataMatchesAt, sourceFound, concreteFound,
+        Bool.and_eq_true, beq_iff_eq] at metadata
+      simp only [RegisterBehaviorAt, sourceFound, concreteFound]
+      exact ⟨metadata.1.1.1, metadata.1.1.2, metadata.1.2, metadata.2, raw⟩
 
 end Loom.Release.Symbolic.ActionWide

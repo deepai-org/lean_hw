@@ -58,7 +58,13 @@ def rhs(text: str) -> str:
 
 def indexed_ref(name: str) -> str:
     match = re.fullmatch(r"n(\d+)", name)
-    return f".wire {match[1]}" if match else f".reg {q(name)}"
+    return (f".namedWire {match[1]} {q(name)}" if match
+            else f".reg {q(name)}")
+
+
+def root_ref(name: str) -> str:
+    """Bind a semantic/output root to its exact concrete wire spelling."""
+    return indexed_ref(name)
 
 
 def indexed_rhs(text: str) -> str:
@@ -129,6 +135,33 @@ def runtime_rhs(text: str) -> dict:
     raise ValueError(f"unsupported runtime RHS: {text}")
 
 
+def rhs_fragments(text: str) -> list[str]:
+    if match := re.fullmatch(r"(\d+)'d(\d+)", text):
+        return [match[1], "'d", match[2], ";"]
+    if match := re.fullmatch(r"~([A-Za-z_]\w*)", text):
+        return ["~", match[1], ";"]
+    if match := re.fullmatch(r"\$signed\((\w+)\) < \$signed\((\w+)\)", text):
+        return ["$signed(", match[1], ") < $signed(", match[2], ");"]
+    if match := re.fullmatch(r"\{\{(\d+)\{(\w+)\[(\d+)\]\}\}, (\w+)\}", text):
+        if match[2] != match[4]:
+            raise ValueError("mismatched sext operand")
+        return ["{{", match[1], "{", match[2], "[", match[3],
+                "]}}, ", match[4], "};"]
+    if match := re.fullmatch(r"(\w+)\[(\d+):(\d+)\]", text):
+        return [match[1], "[", match[2], ":", match[3], "];" ]
+    if match := re.fullmatch(r"(\w+)\[(\w+)\]", text):
+        return [match[1], "[", match[2], "];" ]
+    if match := re.fullmatch(r"(\w+) \? (\w+) : (\w+)", text):
+        return [match[1], " ? ", match[2], " : ", match[3], ";"]
+    operators = ("<<", ">>", "==", "&", "|", "^", "+", "-", "<")
+    for token in operators:
+        if match := re.fullmatch(rf"(\w+) {re.escape(token)} (\w+)", text):
+            return [match[1], " ", token, " ", match[2], ";"]
+    if match := re.fullmatch(r"([A-Za-z_]\w*)", text):
+        return [match[1], ";"]
+    raise ValueError(f"unsupported RHS fragments: {text}")
+
+
 def balanced(names: list[str], empty: str) -> str:
     if not names:
         return empty
@@ -142,9 +175,43 @@ def balanced(names: list[str], empty: str) -> str:
     return level[0]
 
 
+def balanced_append(names: list[str], empty: str = "[]") -> str:
+    """Build a logarithmic-depth List.append expression.
+
+    Large generated programs used to put every register/output block on one
+    append spine.  Rewriting through that spine made the final renderer proof
+    take minutes and several GiB even though every block theorem was already
+    checked.  Keep the same source order while balancing the expression tree.
+    """
+    if not names:
+        return empty
+    level = list(names)
+    while len(level) > 1:
+        nxt = []
+        for i in range(0, len(level), 2):
+            nxt.append(level[i] if i + 1 == len(level)
+                       else f"({level[i]} ++ {level[i + 1]})")
+        level = nxt
+    return level[0]
+
+
 def balanced_proof(names: list[str]) -> str:
     """Compose already named leaf equalities without reopening their proofs."""
     level = [f"congrArg Rope.leaf {name}" for name in names]
+    if not level:
+        return "rfl"
+    while len(level) > 1:
+        nxt = []
+        for i in range(0, len(level), 2):
+            nxt.append(level[i] if i + 1 == len(level)
+                       else f"Rope.node_congr ({level[i]}) ({level[i + 1]})")
+        level = nxt
+    return level[0]
+
+
+def balanced_node_proof(names: list[str]) -> str:
+    """Compose named rope equalities whose statements already denote subtrees."""
+    level = list(names)
     if not level:
         return "rfl"
     while len(level) > 1:
@@ -210,24 +277,79 @@ def wire_block_declarations(blocks: list[list[dict]], block_size: int,
         entries = [f"  {{ width := {w['width']}, name := {q(w['name'])}, rhs := {w['rhs']} }}"
                    for w in block]
         out += [f"def {name} : List Wire := [", ",\n".join(entries), "]", ""]
+        fragment_entries = []
+        for wire in block:
+            fragments = (["  wire [", str(wire["width"] - 1), ":0] ",
+                          wire["name"], " = "] +
+                         rhs_fragments(wire["rhsText"]))
+            fragment_entries.append(
+                "  { fragments := [" + ", ".join(map(q, fragments)) + "] }")
+        out += [f"def {disk_name} : List Line := [",
+                ",\n".join(fragment_entries), "]", "",
+                f"theorem {proof_name} :",
+                f"    {name}.map Wire.renderLine = {disk_name} := rfl", ""]
+    return out
+
+
+def indexed_wire_block_declarations(blocks: list[list[dict]], block_size: int,
+                                    first: int = 0) -> list[str]:
+    out: list[str] = []
+    for offset, block in enumerate(blocks):
+        index = first + offset
+        name = f"wireBlock{index:04d}"
         indexed_name = f"indexedWireBlock{index:04d}"
-        indexed_entries = [
-            f"  {{ number := {index * block_size + offset}, "
-            f"width := {w['width']}, rhs := {w['indexedRhs']} }}"
-            for offset, w in enumerate(block)]
-        out += [f"def {indexed_name} : List Symbolic.IndexedWire := [",
-                ",\n".join(indexed_entries), "]", "",
-                f"theorem indexedWireBlockMatches{index:04d} :",
-                f"    Symbolic.indexedBlockMatches {index * block_size} " +
-                  f"{name} {indexed_name} = true := rfl", ""]
-        out += [f"theorem indexedWireLeafMatches{index:04d} :",
+        # Preserve the public 128-wire lookup leaves used by action proofs,
+        # but make the kernel check bounded 64-wire declarations. Internal
+        # nodes compose opaque checked constants, so no parent re-reduces its
+        # children and the public rope shape remains unchanged.
+        check_size = 64
+
+        def emit_checked_node(part: list[dict], raw_expr: str, base: int,
+                              node_name: str, proof_name: str) -> None:
+            if len(part) > check_size:
+                split = len(part) // 2
+                left_name = node_name + "L"
+                right_name = node_name + "R"
+                left_proof = proof_name + "L"
+                right_proof = proof_name + "R"
+                emit_checked_node(part[:split],
+                                  f"(List.take {split} {raw_expr})", base,
+                                  left_name, left_proof)
+                emit_checked_node(part[split:],
+                                  f"(List.drop {split} {raw_expr})", base + split,
+                                  right_name, right_proof)
+                out.extend([
+                    f"def {node_name} := {left_name} ++ {right_name}", "",
+                    f"theorem {proof_name} :",
+                    f"    Symbolic.indexedBlockMatches "
+                    f"{index * block_size + base} {raw_expr} {node_name} "
+                    "= true := by",
+                    f"  unfold {node_name}",
+                    f"  rw [← List.take_append_drop {split} {raw_expr}]",
+                    "  apply Symbolic.indexedBlockMatches_append",
+                    "  · rfl",
+                    f"  · exact {left_proof}",
+                    f"  · exact {right_proof}", ""])
+                return
+
+            indexed_entries = [
+                f"  {{ number := {index * block_size + base + item}, "
+                f"width := {wire['width']}, rhs := {wire['indexedRhs']} }}"
+                for item, wire in enumerate(part)]
+            out.extend([f"def {node_name} : List Symbolic.IndexedWire := [",
+                    ",\n".join(indexed_entries), "]", "",
+                    f"theorem {proof_name} :",
+                    f"    Symbolic.indexedBlockMatches "
+                    f"{index * block_size + base} {raw_expr} {node_name} "
+                    "= true := rfl", ""])
+
+        block_proof = f"indexedWireBlockMatches{index:04d}"
+        emit_checked_node(block, name, 0, indexed_name, block_proof)
+        out += [
+                f"theorem indexedWireLeafMatches{index:04d} :",
                 f"    Symbolic.IndexedRopeMatches {index * block_size} " +
                   f"(.leaf {name}) (.leaf {indexed_name}) :=",
                 f"  .leaf indexedWireBlockMatches{index:04d}", ""]
-        disk_entries = ",\n".join(f"  {q(w['line'])}" for w in block)
-        out += [f"def {disk_name} : List String := [", disk_entries, "]", "",
-                f"theorem {proof_name} :",
-                f"    {name}.map Wire.render = {disk_name} := rfl", ""]
     return out
 
 
@@ -302,6 +424,7 @@ def parse(path: Path) -> dict:
             r"  wire \[(\d+):0\] (\w+) = (.*);", lines[i])):
         wires.append({"width": int(match[1]) + 1, "name": match[2],
                       "rhs": rhs(match[3]),
+                      "rhsText": match[3],
                       "indexedRhs": indexed_rhs(match[3]),
                       "runtimeRhs": runtime_rhs(match[3]), "line": lines[i]})
         i += 1
@@ -533,6 +656,289 @@ def emit_semantic_program(data: dict, output: Path, block_size: int,
     write_if_changed(output, "\n".join(out))
 
 
+def emit_batched_program(data: dict, output: Path, block_size: int,
+                         namespace: str, indexed_root_module: str,
+                         names: list[str], disk_names: list[str],
+                         proofs: list[str], disk_chunk_names: list[str],
+                         render_chunk_names: list[str]) -> list[str]:
+    """Emit bounded memory/render modules and a lightweight release root."""
+    prefix = ".".join(output.parent.parts)
+    mem_data_modules: list[str] = []
+    mem_root_modules: list[str] = []
+    mem_names: list[str] = []
+    disk_mem_names: list[str] = []
+    render_mem_proofs: list[str] = []
+    generated_modules: list[str] = []
+
+    for mi, mem in enumerate(data["mems"]):
+        data_module = f"{prefix}.MemData{mi}"
+        mem_data_modules.append(data_module)
+        generated_modules.append(data_module)
+        init_blocks = chunks(mem["init"], block_size)
+        line_blocks = chunks(mem["initLines"], block_size)
+        init_names = [f"mem{mi}Init{bi:04d}" for bi in range(len(init_blocks))]
+        data_out = prelude(["Loom.Release.Certificate"], namespace)
+        for bi, block in enumerate(init_blocks):
+            data_out += [
+                f"def {init_names[bi]} : List Nat := "
+                f"[{', '.join(map(str, block))}]", ""]
+        tree = balanced(init_names, ".leaf []").replace("mem", ".leaf mem")
+        writes = ", ".join(
+            f"{{ en := {q(w['en'])}, addr := {q(w['addr'])}, "
+            f"data := {q(w['data'])} }}" for w in mem["writes"])
+        mem_name = f"mem{mi}"
+        mem_names.append(mem_name)
+        data_out += [f"def {mem_name} : Mem where",
+                     f"  name := {q(mem['name'])}",
+                     f"  addrWidth := {mem['addrWidth']}",
+                     f"  dataWidth := {mem['dataWidth']}",
+                     f"  init := {tree}", f"  writes := [{writes}]", "",
+                     f"end {namespace}", ""]
+        write_if_changed(output.parent / f"MemData{mi}.lean",
+                         "\n".join(data_out))
+
+        render_modules: list[str] = []
+        disk_init_names: list[str] = []
+        render_init_proofs: list[str] = []
+        for bi, line_block in enumerate(line_blocks):
+            render_module = f"{prefix}.MemRender{mi}_{bi:04d}"
+            render_modules.append(render_module)
+            generated_modules.append(render_module)
+            disk_name = f"diskMem{mi}Init{bi:04d}"
+            proof_name = f"renderMem{mi}Init{bi:04d}"
+            disk_init_names.append(disk_name)
+            render_init_proofs.append(proof_name)
+            disk_entries = ",\n".join(f"  {q(line)}" for line in line_block)
+            render_out = prelude([data_module], namespace)
+            render_out += [f"def {disk_name} : List String := [",
+                           disk_entries, "]", "", f"theorem {proof_name} :",
+                           f"    {mem_name}.renderInitLines {bi * block_size} "
+                           f"{init_names[bi]} = {disk_name} := rfl", "",
+                           f"end {namespace}", ""]
+            write_if_changed(output.parent / f"MemRender{mi}_{bi:04d}.lean",
+                             "\n".join(render_out))
+
+        mem_root_module = f"{prefix}.MemRoot{mi}"
+        mem_root_modules.append(mem_root_module)
+        generated_modules.append(mem_root_module)
+        disk_init_tree = f"diskMem{mi}InitTree"
+        disk_mem = f"diskMem{mi}Tree"
+        disk_mem_names.append(disk_mem)
+        render_mem_proofs.append(f"renderMem{mi}Tree")
+        mem_root = prelude([data_module] + render_modules, namespace)
+        mem_root += [f"def {disk_init_tree} : Rope (List String) :=",
+                     "  " + balanced(disk_init_names, ".leaf []").replace(
+                         "diskMem", ".leaf diskMem"), "",
+                     f"theorem renderMem{mi}InitTree :",
+                     f"    {mem_name}.init.mapWithOffset "
+                     f"{mem_name}.renderInitLines 0 = {disk_init_tree} := by",
+                     f"  unfold {mem_name} {disk_init_tree}",
+                     "  exact " + balanced_proof(render_init_proofs), "",
+                     f"def diskMem{mi}Start : List String := [\"  initial begin\"]",
+                     f"def diskMem{mi}End : List String := [\"  end\"]", "",
+                     f"def {disk_mem} : Rope (List String) :=",
+                     f"  .node (.leaf diskMem{mi}Start)",
+                     f"    (.node {disk_init_tree} (.leaf diskMem{mi}End))", "",
+                     f"theorem renderMem{mi}Tree : {mem_name}.renderTree = "
+                     f"{disk_mem} := by",
+                     f"  unfold SSA.Mem.renderTree {disk_mem} "
+                     f"diskMem{mi}Start diskMem{mi}End",
+                     f"  exact Rope.node_congr rfl (Rope.node_congr "
+                     f"renderMem{mi}InitTree rfl)", "", f"end {namespace}", ""]
+        write_if_changed(output.parent / f"MemRoot{mi}.lean",
+                         "\n".join(mem_root))
+
+    program_module = f"{prefix}.ProgramData"
+    generated_modules.append(program_module)
+    program_out = prelude([indexed_root_module] + mem_data_modules, namespace)
+    program_reg_blocks = []
+    for bi, block in enumerate(chunks(data["regs"], 16)):
+        block_name = f"programRegBlock{bi:04d}"
+        program_reg_blocks.append(block_name)
+        entries = ",\n".join(
+            f"  {{ name := {q(r['name'])}, width := {r['width']}, "
+            f"init := {r['init']}, next := {q(r['next'])} }}" for r in block)
+        program_out += [f"def {block_name} : List Reg := [", entries, "]", ""]
+    program_out += ["def programRegs : List Reg :=",
+                    "  " + balanced_append(program_reg_blocks), ""]
+    program_out_blocks = []
+    for bi, block in enumerate(chunks(data["outs"], 16)):
+        block_name = f"programOutBlock{bi:04d}"
+        program_out_blocks.append(block_name)
+        entries = ",\n".join(
+            f"  {{ name := {q(o['name'])}, width := {o['width']}, "
+            f"value := {q(o['value'])} }}" for o in block)
+        program_out += [f"def {block_name} : List Out := [", entries, "]", ""]
+    program_out += ["def programOuts : List Out :=",
+                    "  " + balanced_append(program_out_blocks), ""]
+    program_out += ["def program : Program where",
+                    f"  name := {q(data['name'])}", "  regs := programRegs",
+                    f"  mems := [{', '.join(mem_names)}]",
+                    "  wires := wireTree", "  outs := programOuts", "",
+                    f"end {namespace}", ""]
+    write_if_changed(output.parent / "ProgramData.lean", "\n".join(program_out))
+
+    framing_reg_modules = [
+        f"{prefix}.FramingReg{bi:04d}"
+        for bi in range(len(program_reg_blocks))]
+    framing_out_modules = [
+        f"{prefix}.FramingOut{bi:04d}"
+        for bi in range(len(program_out_blocks))]
+    framing_fixed_module = f"{prefix}.FramingFixed"
+    generated_modules += (framing_reg_modules + framing_out_modules +
+                          [framing_fixed_module])
+    root = prelude([program_module, indexed_root_module, framing_fixed_module] +
+                   framing_reg_modules + framing_out_modules + mem_root_modules,
+                   namespace)
+    root += ["def diskWireLineTree : Rope (List Line) :=",
+             "  " + balanced(disk_chunk_names, ".leaf []"), "",
+             "theorem renderWireLineTree :",
+             "    wireTree.map (fun wires => wires.map Wire.renderLine) = "
+             "diskWireLineTree := by",
+             "  unfold wireTree diskWireLineTree",
+             "  exact " + balanced_node_proof(render_chunk_names), "",
+             "def diskWireTree : Rope (List String) :=",
+             "  diskWireLineTree.map (fun lines => lines.map Line.render)", "",
+             "theorem renderWireTree :",
+             "    wireTree.map (fun wires => wires.map Wire.render) = "
+             "diskWireTree := by", "  rw [← wireRenderTree_factor]",
+             "  exact congrArg (Rope.map (fun lines => lines.map Line.render)) "
+             "renderWireLineTree", ""]
+
+    def emit_disk_list(target: list[str], name: str, lines: list[str]) -> None:
+        entries = ",\n".join(f"  {q(line)}" for line in lines)
+        target.extend([f"def {name} : List String := [", entries, "]", ""])
+
+    header_count = len(data["prefix"]) - len(data["regs"]) - len(data["mems"])
+    fixed_out = prelude([program_module], namespace)
+    emit_disk_list(fixed_out, "diskHeader", data["prefix"][:header_count])
+    disk_reg_decls: list[str] = []
+    disk_reg_resets: list[str] = []
+    disk_reg_nexts: list[str] = []
+    reg_decl_lines = data["prefix"][header_count:header_count + len(data["regs"])]
+    suffix = data["suffix"]
+    reset_start = 2
+    next_start = reset_start + len(data["regs"]) + 1
+    for bi, _ in enumerate(program_reg_blocks):
+        start = bi * 16
+        end = min(start + 16, len(data["regs"]))
+        decl_name = f"diskRegDeclBlock{bi:04d}"
+        reset_name = f"diskRegResetBlock{bi:04d}"
+        next_name = f"diskRegNextBlock{bi:04d}"
+        disk_reg_decls.append(decl_name)
+        disk_reg_resets.append(reset_name)
+        disk_reg_nexts.append(next_name)
+        block_out = prelude([program_module], namespace)
+        emit_disk_list(block_out, decl_name, reg_decl_lines[start:end])
+        emit_disk_list(block_out, reset_name,
+                       suffix[reset_start + start:reset_start + end])
+        emit_disk_list(block_out, next_name,
+                       suffix[next_start + start:next_start + end])
+        block_out += [f"theorem renderRegDeclBlock{bi:04d} :",
+                      f"    programRegBlock{bi:04d}.map (fun reg =>",
+                      "      s!\"  reg [{reg.width - 1}:0] {reg.name};\") = "
+                      f"{decl_name} := rfl", "",
+                      f"theorem renderRegResetBlock{bi:04d} :",
+                      f"    programRegBlock{bi:04d}.map (fun reg =>",
+                      "      s!\"      {reg.name} <= {reg.width}'d{reg.init};\") = "
+                      f"{reset_name} := rfl", "",
+                      f"theorem renderRegNextBlock{bi:04d} :",
+                      f"    programRegBlock{bi:04d}.map (fun reg =>",
+                      "      s!\"      {reg.name} <= {reg.next};\") = "
+                      f"{next_name} := rfl", "", f"end {namespace}", ""]
+        write_if_changed(output.parent / f"FramingReg{bi:04d}.lean",
+                         "\n".join(block_out))
+    emit_disk_list(fixed_out, "diskMemDecls",
+                   data["prefix"][header_count + len(data["regs"]):])
+
+    writes_count = sum(len(mem["writes"]) for mem in data["mems"])
+    writes_start = next_start + len(data["regs"])
+    outs_start = writes_start + writes_count + 2
+    emit_disk_list(fixed_out, "diskAlwaysStart", suffix[:reset_start])
+    emit_disk_list(fixed_out, "diskAlwaysMiddle",
+                   suffix[reset_start + len(data["regs"]):next_start])
+    emit_disk_list(fixed_out, "diskMemWrites",
+                   suffix[writes_start:writes_start + writes_count])
+    emit_disk_list(fixed_out, "diskAlwaysEnd",
+                   suffix[writes_start + writes_count:outs_start])
+    disk_out_blocks: list[str] = []
+    for bi, _ in enumerate(program_out_blocks):
+        start = bi * 16
+        end = min(start + 16, len(data["outs"]))
+        name = f"diskOutBlock{bi:04d}"
+        disk_out_blocks.append(name)
+        out_block = prelude([program_module], namespace)
+        emit_disk_list(out_block, name,
+                       suffix[outs_start + start:outs_start + end])
+        out_block += [f"theorem renderOutBlock{bi:04d} :",
+                      f"    programOutBlock{bi:04d}.map (fun out =>",
+                      "      s!\"  assign {out.name} = {out.value};\") = "
+                      f"{name} := rfl", "", f"end {namespace}", ""]
+        write_if_changed(output.parent / f"FramingOut{bi:04d}.lean",
+                         "\n".join(out_block))
+    emit_disk_list(fixed_out, "diskModuleEnd", suffix[-1:])
+    fixed_out += [f"end {namespace}", ""]
+    write_if_changed(output.parent / "FramingFixed.lean", "\n".join(fixed_out))
+    if not disk_mem_names:
+        disk_mems, mem_proof = ".leaf []", "rfl"
+    elif len(disk_mem_names) == 1:
+        disk_mems, mem_proof = disk_mem_names[0], render_mem_proofs[0]
+    else:
+        disk_mems, mem_proof = disk_mem_names[-1], render_mem_proofs[-1]
+        for disk_name, proof_name in reversed(list(zip(
+                disk_mem_names[:-1], render_mem_proofs[:-1]))):
+            disk_mems = f".node {disk_name} ({disk_mems})"
+            mem_proof = f"Rope.node_congr {proof_name} ({mem_proof})"
+    # Mirror the renderer's outer append structure, but keep each generated
+    # collection balanced.  This lets simp/rw operate at logarithmic depth.
+    disk_reg_decl_tree = balanced_append(disk_reg_decls)
+    disk_reg_reset_tree = balanced_append(disk_reg_resets)
+    disk_reg_next_tree = balanced_append(disk_reg_nexts)
+    disk_out_tree = balanced_append(disk_out_blocks)
+    root += ["def diskPrefix : List String :=",
+             f"  diskHeader ++ ({disk_reg_decl_tree} ++ diskMemDecls)", "",
+             "def diskSuffix : List String :=",
+             f"  diskAlwaysStart ++ ({disk_reg_reset_tree} ++ "
+             f"(diskAlwaysMiddle ++ ({disk_reg_next_tree} ++ "
+             "(diskMemWrites ++ (diskAlwaysEnd ++ "
+             f"({disk_out_tree} ++ diskModuleEnd))))))", "",
+             "def diskMemTrees : Rope (List String) :=", f"  {disk_mems}", "",
+             "theorem renderMemTrees : SSA.renderMemTrees program.mems = "
+             "diskMemTrees := by", "  unfold program SSA.renderMemTrees "
+             "diskMemTrees", f"  exact {mem_proof}", "",
+             "theorem renderPrefix : program.renderPrefix = diskPrefix := by",
+             "  unfold Program.renderPrefix headerLines declLines program "
+             "programRegs diskPrefix",
+             "  simp only [List.map_append]",
+             *[f"  rw [renderRegDeclBlock{bi:04d}]"
+               for bi in range(len(program_reg_blocks))],
+             "  rfl", "",
+             "theorem renderSuffix : program.renderSuffix = diskSuffix := by",
+             "  unfold Program.renderSuffix alwaysLines program programRegs "
+             "programOuts diskSuffix",
+             "  simp only [List.map_append]",
+             *[f"  rw [renderRegResetBlock{bi:04d}]"
+               for bi in range(len(program_reg_blocks))],
+             *[f"  rw [renderRegNextBlock{bi:04d}]"
+               for bi in range(len(program_reg_blocks))],
+             *[f"  rw [renderOutBlock{bi:04d}]"
+               for bi in range(len(program_out_blocks))],
+             "  rfl", "",
+             "def diskTree : Rope (List String) :=",
+             "  .node (.leaf diskPrefix)",
+             "    (.node diskMemTrees (.node diskWireTree (.leaf diskSuffix)))", "",
+             "theorem renderTree : program.renderTree = diskTree := by",
+             "  unfold SSA.Program.renderTree diskTree",
+             "  exact Rope.node_congr (congrArg Rope.leaf renderPrefix) "
+             "(Rope.node_congr renderMemTrees (Rope.node_congr renderWireTree "
+             "(congrArg Rope.leaf renderSuffix)))", "",
+             "theorem exactBytes : program.renderTree.flattenBytes = "
+             "diskTree.flattenBytes := Rope.flattenBytes_congr renderTree", "",
+             f"end {namespace}", ""]
+    write_if_changed(output, "\n".join(root))
+    return generated_modules
+
+
 def emit_batched(data: dict, output: Path, block_size: int,
                  batch_blocks: int, design_expr: str | None = None,
                  design_imports: list[str] | None = None) -> None:
@@ -565,6 +971,27 @@ def emit_batched(data: dict, output: Path, block_size: int,
     expected_batches = {f"Batch{i:03d}.lean" for i in range(len(batch_modules))}
     for stale in output.parent.glob("Batch*.lean"):
         if stale.name not in expected_batches:
+            stale.unlink()
+
+    indexed_batch_modules = []
+    indexed_batch_blocks = batch_blocks
+    for batch_index, start in enumerate(
+            range(0, len(blocks), indexed_batch_blocks)):
+        module = ".".join(relative.parent.parts +
+                          (f"IndexedBatch{batch_index:04d}",))
+        indexed_batch_modules.append(module)
+        batch_path = output.parent / f"IndexedBatch{batch_index:04d}.lean"
+        owner = start // batch_blocks
+        batch = prelude([batch_modules[owner]], namespace)
+        batch += indexed_wire_block_declarations(
+            blocks[start:start + indexed_batch_blocks], block_size, first=start)
+        batch += [f"end {namespace}", ""]
+        write_if_changed(batch_path, "\n".join(batch))
+
+    expected_indexed_batches = {
+        f"IndexedBatch{i:04d}.lean" for i in range(len(indexed_batch_modules))}
+    for stale in output.parent.glob("IndexedBatch*.lean"):
+        if stale.name not in expected_indexed_batches:
             stale.unlink()
 
     fast_batch_modules = []
@@ -613,6 +1040,71 @@ def emit_batched(data: dict, output: Path, block_size: int,
     write_if_changed(output.parent / "FastIndexedRoot.lean",
                      "\n".join(fast_root))
 
+    # One balanced-path proof per wire leaf.  Action certificates later
+    # specialize these opaque constants for individual mux outputs instead of
+    # rechecking the global rope path for every use (over 120k uses on LNP64-u).
+    lookup_evidence_batch_size = 16
+    lookup_evidence_modules = []
+    for batch_index, start in enumerate(
+            range(0, len(blocks), lookup_evidence_batch_size)):
+        module = ".".join(relative.parent.parts +
+                          (f"FastLookupEvidenceBatch{batch_index:03d}",))
+        lookup_evidence_modules.append(module)
+        batch_path = output.parent / f"FastLookupEvidenceBatch{batch_index:03d}.lean"
+        batch = prelude([f"{cert_module_prefix}.FastIndexedRoot"], namespace)
+        for index in range(start, min(start + lookup_evidence_batch_size,
+                                      len(blocks))):
+            path = indexed_paths[index]
+            path_text = ", ".join("true" if step else "false" for step in path)
+            batch += [
+                f"theorem fastIndexedWireLookupEvidence{index:04d} :",
+                "    Symbolic.IndexedLookupBlockEvidence fastIndexedWireTree",
+                f"      fastWireTable {index * block_size} "
+                f"fastIndexedWireBlock{index:04d} := by",
+                "  apply Symbolic.indexedLookupBlockEvidence_of_resolve",
+                "      (blockIndex := " + str(index) + ")",
+                f"      (path := [{path_text}])",
+                "  · decide",
+                "  · rfl",
+                "  · decide",
+                f"  · exact fastIndexedWireResolveBlock{index:04d}", ""]
+        batch += [f"end {namespace}", ""]
+        write_if_changed(batch_path, "\n".join(batch))
+
+    expected_lookup_evidence = {
+        f"FastLookupEvidenceBatch{i:03d}.lean"
+        for i in range(len(lookup_evidence_modules))}
+    for stale in output.parent.glob("FastLookupEvidenceBatch*.lean"):
+        if stale.name not in expected_lookup_evidence:
+            stale.unlink()
+    lookup_evidence_root = prelude(lookup_evidence_modules, namespace)
+    lookup_evidence_root += [f"end {namespace}", ""]
+    write_if_changed(output.parent / "FastLookupEvidenceRoot.lean",
+                     "\n".join(lookup_evidence_root))
+
+    # Proof-carrying logarithmic lookup tree for kernel expression checks. The
+    # computational fields are the same bounded wire blocks; each entry also
+    # carries the already checked theorem connecting it to the semantic rope.
+    checked_blocks = prelude(
+        [f"{cert_module_prefix}.FastLookupEvidenceRoot"], namespace)
+    checked_entry_names = [
+        f"fastCheckedIndexedBlock{index:04d}" for index in range(len(blocks))]
+    checked_tree, _ = lookup_tree(checked_entry_names)
+    checked_blocks += [
+        *[
+            f"def {checked_entry_names[index]} : Symbolic.CheckedIndexedBlock " +
+            "fastIndexedWireTree fastWireTable :=\n" +
+            "  { start := " + str(index * block_size) +
+            f", block := fastIndexedWireBlock{index:04d}, " +
+            f"evidence := fastIndexedWireLookupEvidence{index:04d} }}\n"
+            for index in range(len(blocks))
+        ],
+        "def fastCheckedIndexedBlocks : Symbolic.LookupTree " +
+        "(Symbolic.CheckedIndexedBlock fastIndexedWireTree fastWireTable) :=",
+        "  " + checked_tree, "", f"end {namespace}", ""]
+    write_if_changed(output.parent / "FastCheckedIndexedBlocks.lean",
+                     "\n".join(checked_blocks))
+
     bridge_modules = []
     bridge_names = []
     for batch_index, start in enumerate(range(0, len(blocks), batch_blocks)):
@@ -621,17 +1113,35 @@ def emit_batched(data: dict, output: Path, block_size: int,
         bridge_modules.append(module)
         batch_path = output.parent / f"FastIndexedBridgeBatch{batch_index:03d}.lean"
         batch = prelude([
-            ".".join(relative.parent.parts + (f"Batch{batch_index:03d}",)),
+            ".".join(relative.parent.parts +
+                     (f"IndexedBatch{batch_index:04d}",)),
             ".".join(relative.parent.parts +
                      (f"FastIndexedBatch{batch_index:03d}",))], namespace)
         for index in range(start, min(start + batch_blocks, len(blocks))):
             proof = f"fastIndexedWireBlockEq{index:04d}"
             bridge_names.append(proof)
+            indexed_defs = [f"indexedWireBlock{index:04d}"]
+            if len(blocks[index]) > 64:
+                indexed_defs += [f"indexedWireBlock{index:04d}L",
+                                 f"indexedWireBlock{index:04d}R"]
             batch += [f"theorem {proof} :",
                       f"    fastIndexedWireBlock{index:04d} = "
-                      f"indexedWireBlock{index:04d} := rfl", ""]
+                      f"indexedWireBlock{index:04d} := by",
+                      "  simp [" +
+                      f"fastIndexedWireBlock{index:04d}, " +
+                      f"fastIndexedWireLookupBlock{index:04d}, " +
+                      ", ".join(indexed_defs) +
+                      ", Symbolic.LookupTree.toList]", ""]
         batch += [f"end {namespace}", ""]
         write_if_changed(batch_path, "\n".join(batch))
+
+    expected_bridge_batches = {
+        f"FastIndexedBridgeBatch{i:03d}.lean"
+        for i in range(len(bridge_modules))
+    }
+    for stale in output.parent.glob("FastIndexedBridgeBatch*.lean"):
+        if stale.name not in expected_bridge_batches:
+            stale.unlink()
 
     bridge_root = prelude([
         f"{cert_module_prefix}.IndexedRoot",
@@ -645,17 +1155,90 @@ def emit_batched(data: dict, output: Path, block_size: int,
         f"end {namespace}", ""]
     write_if_changed(output.parent / "FastIndexedBridge.lean",
                      "\n".join(bridge_root))
+
+    tree_chunk_modules: list[str] = []
+    wire_chunk_names: list[str] = []
+    indexed_chunk_names: list[str] = []
+    disk_chunk_names: list[str] = []
+    indexed_chunk_proofs: list[str] = []
+    render_chunk_proofs: list[str] = []
+    wire_chunks = chunks(list(range(len(blocks))), 16)
+    for batch_index, chunk_group in enumerate(chunks(wire_chunks, 16)):
+        module = f"{cert_module_prefix}.TreeChunkBatch{batch_index:03d}"
+        tree_chunk_modules.append(module)
+        imported = []
+        for indices in chunk_group:
+            for index in indices:
+                owner = index // indexed_batch_blocks
+                candidate = indexed_batch_modules[owner]
+                if candidate not in imported:
+                    imported.append(candidate)
+        chunk_out = prelude(imported, namespace)
+        for local_index, indices in enumerate(chunk_group):
+            chunk_index = batch_index * 16 + local_index
+            wire_name = f"wireTreeChunk{chunk_index:04d}"
+            indexed_name = f"indexedWireTreeChunk{chunk_index:04d}"
+            disk_name = f"diskWireTreeChunk{chunk_index:04d}"
+            indexed_proof = f"indexedWireTreeChunkMatches{chunk_index:04d}"
+            render_proof = f"renderWireTreeChunk{chunk_index:04d}"
+            wire_chunk_names.append(wire_name)
+            indexed_chunk_names.append(indexed_name)
+            disk_chunk_names.append(disk_name)
+            indexed_chunk_proofs.append(indexed_proof)
+            render_chunk_proofs.append(render_proof)
+            raw_tree = balanced(
+                [f".leaf wireBlock{index:04d}" for index in indices],
+                ".leaf []")
+            indexed_tree = balanced(
+                [f".leaf indexedWireBlock{index:04d}" for index in indices],
+                ".leaf []")
+            disk_tree = balanced(
+                [f".leaf diskWireBlock{index:04d}" for index in indices],
+                ".leaf []")
+            chunk_out += [f"def {wire_name} : Rope (List Wire) :=",
+                          f"  {raw_tree}", "",
+                          f"def {indexed_name} : Rope "
+                          "(List Symbolic.IndexedWire) :=",
+                          f"  {indexed_tree}", "",
+                          f"def {disk_name} : Rope (List Line) :=",
+                          f"  {disk_tree}", "",
+                          f"theorem {indexed_proof} :",
+                          f"    Symbolic.IndexedRopeMatches "
+                          f"{indices[0] * block_size} {wire_name} "
+                          f"{indexed_name} := by",
+                          f"  unfold {wire_name} {indexed_name}",
+                          "  exact " + balanced(
+                              [f"indexedWireLeafMatches{index:04d}"
+                               for index in indices], ".leaf rfl"), "",
+                          f"theorem {render_proof} :",
+                          f"    {wire_name}.map "
+                          "(fun wires => wires.map Wire.renderLine) = "
+                          f"{disk_name} := by",
+                          f"  unfold {wire_name} {disk_name}",
+                          "  exact " + balanced_proof(
+                              [f"renderWireBlock{index:04d}"
+                               for index in indices]), ""]
+        chunk_out += [f"end {namespace}", ""]
+        write_if_changed(output.parent / f"TreeChunkBatch{batch_index:03d}.lean",
+                         "\n".join(chunk_out))
+    expected_tree_chunks = {
+        f"TreeChunkBatch{i:03d}.lean" for i in range(len(tree_chunk_modules))}
+    for stale in output.parent.glob("TreeChunkBatch*.lean"):
+        if stale.name not in expected_tree_chunks:
+            stale.unlink()
+    for stale in output.parent.glob("RenderProof*.lean"):
+        stale.unlink()
+
     # Keep the indexed semantic graph in a lightweight module.  Semantic
     # certificates should not pay to elaborate the disk-byte and complete
     # program data merely to resolve a wire index.
-    indexed_out = prelude(["Loom.Release.SymbolicCertificate"] + batch_modules,
+    indexed_out = prelude(["Loom.Release.SymbolicCertificate"] +
+                          tree_chunk_modules,
                           namespace)
     indexed_out += ["def wireTree : Rope (List Wire) :=",
-            "  " + balanced(names, ".leaf []").replace(
-                "wireBlock", ".leaf wireBlock"), "",
+            "  " + balanced(wire_chunk_names, ".leaf []"), "",
             "def indexedWireTree : Rope (List Symbolic.IndexedWire) :=",
-            "  " + balanced(indexed_names, ".leaf []").replace(
-                "indexedWireBlock", ".leaf indexedWireBlock"), "",
+            "  " + balanced(indexed_chunk_names, ".leaf []"), "",
             *[
                 f"theorem indexedWireResolveBlock{index:04d} (offset : Nat) :\n"
                 "    indexedWireTree.resolve? "
@@ -666,8 +1249,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
             "theorem indexedWiresMatch :",
             "    Symbolic.IndexedRopeMatches 0 wireTree indexedWireTree := by",
             "  unfold wireTree indexedWireTree",
-            "  exact " + balanced(indexed_proofs, ".leaf rfl").replace(
-                ".node", ".node"), "",
+            "  exact " + balanced(indexed_chunk_proofs, ".leaf rfl"), "",
             "def wireTable : Symbolic.WireTable where",
             f"  leafSize := {block_size}",
             f"  leafCount := {len(blocks)}", "",
@@ -676,20 +1258,15 @@ def emit_batched(data: dict, output: Path, block_size: int,
     emit_semantic_program(data, semantic_root_path, block_size,
                           indexed_root_module, namespace)
 
-    out = prelude(["Loom.Release.Certificate", indexed_root_module], namespace)
-    out += [
-            "def diskWireTree : Rope (List String) :=",
-            "  " + balanced(disk_names, ".leaf []").replace(
-                "diskWireBlock", ".leaf diskWireBlock"), "",
-            "theorem renderWireTree :",
-            "    wireTree.map (fun wires => wires.map Wire.render) = diskWireTree := by",
-            "  unfold wireTree diskWireTree",
-            "  exact " + balanced_proof(proofs), ""]
-    emit_program_tail(out, data, block_size, namespace)
-    write_if_changed(output, "\n".join(out))
+    program_modules = emit_batched_program(
+        data, output, block_size, namespace, indexed_root_module,
+        names, disk_names, proofs, disk_chunk_names, render_chunk_proofs)
     manifest = output.parent / "modules.txt"
     write_if_changed(manifest, "\n".join(
-        batch_modules + [indexed_root_module, semantic_root_module,
+        batch_modules + indexed_batch_modules + tree_chunk_modules +
+                        [indexed_root_module, semantic_root_module] +
+                        program_modules +
+                        [
                          root_module]) + "\n")
 
     if design_expr is not None:
@@ -758,6 +1335,24 @@ def emit_batched(data: dict, output: Path, block_size: int,
             reg_batch_modules.append(module)
             indexed_batch_index = start // 16
             block = data["regs"][start:start + semantic_batch_size]
+            if artifact == "Lnp64u":
+                # The large release uses independently kernel-checked hybrid
+                # action certificates.  Preserve the established batch-module
+                # API as lightweight import wrappers so the downstream release
+                # theorem does not need to change.
+                declarations = [
+                    "-- Generated by scripts/gen_release_witness.py; DO NOT EDIT.",
+                    *[
+                        f"import {cert_module_prefix}.HybridReg{index:04d}"
+                        for index in range(start, start + len(block))
+                    ],
+                    "",
+                ]
+                write_if_changed(
+                    output.parent / f"SemanticRegBatch{batch_index}.lean",
+                    "\n".join(declarations),
+                )
+                continue
             declarations = [
                 "-- Generated by scripts/gen_release_witness.py; DO NOT EDIT.",
                 f"import {root_module}",
@@ -781,7 +1376,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
                 f"{reg['width']} {reg['init']} }}"
                 for reg in block]
             plan_entries = [
-                "  { root := " + indexed_ref(reg["next"]) +
+                "  { root := " + root_ref(reg["next"]) +
                 f", cert := wholePlanReleaseRegCert{index} }}"
                 for index, reg in enumerate(block, start)]
             alignment = f".nil {start + len(block)}"
@@ -813,7 +1408,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
                 f"    {accepted_name}", ""]
             tail_expr = behaviors_name
             for index in range(start, start + len(block)):
-                root = indexed_ref(data["regs"][index]["next"])
+                root = root_ref(data["regs"][index]["next"])
                 reg = data["regs"][index]
                 declarations += [f"theorem semanticOutputBehavior{index} :",
                     f"    Symbolic.OutputBehaviorAt ({design_expr}) program {index} := by",
@@ -838,7 +1433,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
                 stale.unlink()
 
         root_entries = [
-            f"{{ index := {index}, root := {indexed_ref(reg['next'])} }}"
+            f"{{ index := {index}, root := {root_ref(reg['next'])} }}"
             for index, reg in enumerate(data["regs"])]
         root_block_decls = []
         root_block_names = []
@@ -857,7 +1452,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
             output_block_names.append(f".leaf {output_block_name}")
             output_behavior_leaf_names.append(output_leaf_name)
             entries = [
-                f"  {{ index := {index}, root := {indexed_ref(reg['next'])} }}"
+                f"  {{ index := {index}, root := {root_ref(reg['next'])} }}"
                 for index, reg in block]
             start_index = block[0][0] if block else 0
             proof = f".nil {start_index + len(block)}"
@@ -1025,7 +1620,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
                 raise ValueError(f"missing literal {width}'d{value} in SSA witness")
             # ReleaseCertGen's expression index overwrites equal RHS keys, so
             # its chosen reference is the last occurrence in source order.
-            return indexed_ref(matches[-1])
+            return root_ref(matches[-1])
 
         semantic_mems = (["-- Generated by scripts/gen_release_witness.py; DO NOT EDIT.",
                           f"import {root_module}",
@@ -1084,9 +1679,9 @@ def emit_batched(data: dict, output: Path, block_size: int,
             port_at_names = []
             port_entries = []
             for port_index, write in enumerate(memory["writes"]):
-                refs = ("{ en := " + indexed_ref(write["en"]) +
-                        ", addr := " + indexed_ref(write["addr"]) +
-                        ", data := " + indexed_ref(write["data"]) + " }")
+                refs = ("{ en := " + root_ref(write["en"]) +
+                        ", addr := " + root_ref(write["addr"]) +
+                        ", data := " + root_ref(write["data"]) + " }")
                 initial = ("{ en := " + literal_ref(1, 0) +
                            ", addr := " + literal_ref(memory["addrWidth"], 0) +
                            ", data := " + literal_ref(memory["dataWidth"], 0) + " }")
@@ -1277,7 +1872,7 @@ def emit_batched(data: dict, output: Path, block_size: int,
                        f"end {namespace}\n")
         cert_gen = (["-- Generated by scripts/gen_release_witness.py; DO NOT EDIT."] +
                     [f"import {module}" for module in
-                     [root_module, "Tools.ReleaseCertGen"] + imports] +
+                     ["Tools.ReleaseCertGen"] + imports] +
                     ["", "private def writeIfChanged (path contents : String) : IO Unit := do",
                      "  try",
                      "    if (← IO.FS.readFile path) == contents then return",
@@ -1285,12 +1880,12 @@ def emit_batched(data: dict, output: Path, block_size: int,
                      "  IO.FS.writeFile path contents",
                      "", "unsafe def main : IO Unit := do",
                      f"  let design := {design_expr}",
-                     "  let some cert := Tools.ReleaseCertGen.synthesize design " +
-                       f"{namespace}.program",
+                     f"  let program ← Tools.RuntimeSsa.load "
+                       f"{q(str(output.parent / 'Runtime.tsv'))}",
+                     "  let some (cert, planCerts) := " +
+                       "Tools.ReleaseCertGen."
+                       "synthesizeWithPlanRegisterCertsRuntime design program",
                      "    | throw (IO.userError \"certificate synthesis failed\")",
-                     "  let some planCerts := Tools.ReleaseCertGen.synthesizePlanRegisterCerts design " +
-                       f"{namespace}.program",
-                     "    | throw (IO.userError \"plan certificate synthesis failed\")",
                      "  let batches := Tools.ReleaseCertGen.declarationBatchesToLean cert 16",
                      "  for (body, index) in batches.zipIdx do",
                      f"    writeIfChanged (s!\"{output.parent}/CertBatch{{index}}.lean\") <|",

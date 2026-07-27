@@ -35,6 +35,37 @@ private def pruneIndexedShards (output : System.FilePath) (kind : String)
       if let some index := indexText.toNat? then
         if count ≤ index then IO.FS.removeFile entry.path
 
+/-- Remove auxiliary files whose first three digits select a retired batch.
+Unlike plain numbered shards, expression batches also own `SourceDefs` and
+`Block` descendants. -/
+private def pruneBatchDescendants (output : System.FilePath) (kind : String)
+    (count : Nat) : IO Unit := do
+  let some parent := output.parent | return
+  let some outputName := output.fileName | return
+  let batchPrefix := (outputName.dropEnd 5).toString ++ kind
+  for entry in ← parent.readDir do
+    let name := entry.fileName
+    if name.startsWith batchPrefix && name.endsWith ".lean" then
+      let suffix := (name.drop batchPrefix.length).toString
+      if let some index := (suffix.take 3).toNat? then
+        if count ≤ index then IO.FS.removeFile entry.path
+
+private def pruneExpressionBlocks (output : System.FilePath) (batchIndex : Nat)
+    (live : List Nat) : IO Unit := do
+  let some parent := output.parent | return
+  let some outputName := output.fileName | return
+  let batchText := if batchIndex < 10 then "00" ++ toString batchIndex
+    else if batchIndex < 100 then "0" ++ toString batchIndex
+    else toString batchIndex
+  let blockPrefix := (outputName.dropEnd 5).toString ++ "Expr" ++
+    batchText ++ "Block"
+  for entry in ← parent.readDir do
+    let name := entry.fileName
+    if name.startsWith blockPrefix && name.endsWith ".lean" then
+      let indexText := ((name.drop blockPrefix.length).toString.dropEnd 5).toString
+      if let some index := indexText.toNat? then
+        unless live.contains index do IO.FS.removeFile entry.path
+
 private def source (namespaceName : String) (registers : List RegDecl) (cert :
     Loom.Release.Symbolic.ActionWide.RulesCert) : Option (String × String) := do
   let rendered ← Tools.ReleaseCertGen.actionWideRulesToLean registers cert
@@ -115,7 +146,7 @@ private unsafe def generateJoinBlock (makeDesign : Unit → Design)
   let mut previous : Option Nat := none
   for join in joins do
     match join.output with
-    | .wire number =>
+    | .wire number | .namedWire number _ =>
         if previous.all (· < number) then ordered := ordered + 1
         previous := some number
         if let some wire := program.wires[number]? then
@@ -144,27 +175,46 @@ private def pad4 (number : Nat) : String :=
   else if number < 1000 then "0" ++ value
   else value
 
+private def localJoinBlockBody (blockIndex : Nat)
+    (joins : List Loom.Release.Symbolic.ActionWide.Join) : String :=
+  let suffix := pad4 blockIndex
+  Tools.ReleaseCertGen.actionWideNamedJoinBlockToLean
+    ("actionJoinBlock" ++ suffix) joins ++ "\n\n" ++
+  "theorem actionJoinBlockAccepted" ++ suffix ++ " :\n" ++
+  "    Symbolic.ActionWide.localJoinBlockMatches " ++
+    toString (blockIndex * 128) ++ " indexedWireBlock" ++
+    suffix ++ " actionJoinBlock" ++ suffix ++
+    " = true := by decide\n\n"
+
+private def localJoinDataBody (blockIndex : Nat)
+    (joins : List Loom.Release.Symbolic.ActionWide.Join) : String :=
+  Tools.ReleaseCertGen.actionWideNamedJoinBlockToLean
+    ("actionJoinBlock" ++ pad4 blockIndex) joins ++ "\n\n"
+
 private def localJoinBlockSource (blockIndex : Nat)
     (joins : List Loom.Release.Symbolic.ActionWide.Join) : String :=
   let batchIndex := blockIndex / 4
-  let suffix := pad4 blockIndex
   "-- Generated local join-block feasibility probe; DO NOT EDIT.\n" ++
-  "import GeneratedRelease.Lnp64u.Batch" ++ pad3 batchIndex ++ "\n" ++
+  "import GeneratedRelease.Lnp64u.IndexedBatch" ++ pad4 batchIndex ++ "\n" ++
   "import Loom.Release.ActionWideJoin\n" ++
   "import Loom.Release.KernelDecide\n" ++
   "\n" ++
   "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
   "open Loom.Release\n\n" ++
   "set_option maxRecDepth 1000000\n\n" ++
-  Tools.ReleaseCertGen.actionWideNamedJoinBlockToLean
-    ("actionJoinBlock" ++ suffix) joins ++ "\n\n" ++
+  "set_option maxHeartbeats 0\n\n" ++
+  localJoinBlockBody blockIndex joins ++
+  "end Loom.GeneratedRelease.Lnp64u\n"
+
+private def localJoinBatchSource
+    (blocks : List (Nat × List Loom.Release.Symbolic.ActionWide.Join)) : String :=
+  "-- Generated bounded action-join data; DO NOT EDIT.\n" ++
+  "import Loom.Release.ActionWideJoin\n\n" ++
+  "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+  "open Loom.Release\n\n" ++
   "set_option maxRecDepth 1000000\n" ++
   "set_option maxHeartbeats 0\n\n" ++
-  "theorem actionJoinBlockAccepted" ++ suffix ++ " :\n" ++
-  "    Symbolic.ActionWide.localJoinBlockMatches " ++
-    toString (blockIndex * 128) ++ " indexedWireBlock" ++
-    suffix ++ " actionJoinBlock" ++ suffix ++
-    " = true := kernel_decide\n\n" ++
+  String.join (blocks.map fun block => localJoinDataBody block.1 block.2) ++
   "end Loom.GeneratedRelease.Lnp64u\n"
 
 private unsafe def generateLocalJoinBlock (runtime output : System.FilePath)
@@ -176,7 +226,7 @@ private unsafe def generateLocalJoinBlock (runtime output : System.FilePath)
     | IO.eprintln "action-wide certificate synthesis failed"; return 1
   let joins := (Tools.ReleaseCertGen.actionWideJoins cert).filter fun join =>
     match join.output with
-    | .wire number => number / 128 == blockIndex
+    | .wire number | .namedWire number _ => number / 128 == blockIndex
     | .reg _ => false
   IO.eprintln s!"local join block {blockIndex}: {joins.length} joins"
   writeIfChanged output (localJoinBlockSource blockIndex joins)
@@ -193,25 +243,51 @@ private unsafe def generateLocalJoinBlocks (runtime outputDir : System.FilePath)
   let mut groups : Array (List Loom.Release.Symbolic.ActionWide.Join) :=
     Array.replicate blockCount []
   for join in Tools.ReleaseCertGen.actionWideJoins cert do
-    if let .wire number := join.output then
+    if let some number := match join.output with
+        | .wire number | .namedWire number _ => some number
+        | .reg _ => none then
       let blockIndex := number / 128
       if blockIndex < groups.size then
         groups := groups.modify blockIndex (join :: ·)
   IO.FS.createDirAll outputDir
-  let mut emitted := 0
+  let joinBatchSize := 16
+  let joinBatchCount := (groups.size + joinBatchSize - 1) / joinBatchSize
+  let mut emittedBlocks := 0
   let mut modules : List String := []
-  for blockIndex in List.range groups.size do
-    let joins := groups[blockIndex]!.reverse
-    if !joins.isEmpty then
-      let suffix := pad4 blockIndex
-      let path := outputDir / s!"ActionJoinBlock{suffix}.lean"
-      writeIfChanged path (localJoinBlockSource blockIndex joins)
-      modules := s!"GeneratedRelease.Lnp64u.ActionJoinBlock{suffix}" :: modules
-      emitted := emitted + 1
+  let mut liveBatches : Std.HashSet String := {}
+  for batchIndex in List.range joinBatchCount do
+    let start := batchIndex * joinBatchSize
+    let blocks := (List.range joinBatchSize).filterMap fun offset =>
+      let blockIndex := start + offset
+      if h : blockIndex < groups.size then
+        let joins := groups[blockIndex].reverse
+        if joins.isEmpty then none else some (blockIndex, joins)
+      else none
+    if !blocks.isEmpty then
+      let fileName := "ActionJoinBatch" ++ pad3 batchIndex ++ ".lean"
+      writeIfChanged (outputDir / fileName)
+        (localJoinBatchSource blocks)
+      liveBatches := liveBatches.insert fileName
+      modules := ("GeneratedRelease.Lnp64u.ActionJoinBatch" ++
+        pad3 batchIndex) :: modules
+      emittedBlocks := emittedBlocks + blocks.length
+  for entry in ← outputDir.readDir do
+    let name := entry.fileName
+    if (name.startsWith "ActionJoinBlock" && name.endsWith ".lean") ||
+        (name.startsWith "ActionJoinBatch" && name.endsWith ".lean" &&
+          !liveBatches.contains name) then
+      IO.FS.removeFile entry.path
   writeIfChanged (outputDir / "action-join-modules.txt")
     (String.intercalate "\n" modules.reverse ++ "\n")
-  IO.eprintln s!"emitted {emitted} nonempty local join blocks"
+  IO.eprintln s!"emitted {emittedBlocks} join blocks in {modules.length} batches"
   return 0
+
+private def cutRegistersToLean (registers : Array RegDecl) : String :=
+  "#[" ++ String.intercalate ", " (registers.toList.map fun register =>
+    "{ name := " ++ reprStr register.name ++ ", width := " ++
+      toString register.width ++ ", init := BitVec.ofNat " ++
+      toString register.width ++ " " ++ toString register.init.toNat ++ " }") ++
+    "]"
 
 private unsafe def generateNamedCertificate (runtime output : System.FilePath) :
     IO UInt32 := do
@@ -220,13 +296,16 @@ private unsafe def generateNamedCertificate (runtime output : System.FilePath) :
   let some cert := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
       design program
     | IO.eprintln "action-wide certificate synthesis failed"; return 1
-  let mut importedBlocks : Std.HashSet Nat := {}
+  let mut importedBatches : Std.HashSet Nat := {}
   for join in Tools.ReleaseCertGen.actionWideJoins cert do
-    if let .wire number := join.output then
-      importedBlocks := importedBlocks.insert (number / 128)
-  let imports := (List.range ((program.wires.size + 127) / 128)).filterMap
-    fun blockIndex => if importedBlocks.contains blockIndex then
-      some ("import GeneratedRelease.Lnp64u.ActionJoinBlock" ++ pad4 blockIndex)
+    if let some number := match join.output with
+        | .wire number | .namedWire number _ => some number
+        | .reg _ => none then
+      importedBatches := importedBatches.insert ((number / 128) / 16)
+  let batchCount := (program.wires.size + 2047) / 2048
+  let imports := (List.range batchCount).filterMap
+    fun batchIndex => if importedBatches.contains batchIndex then
+      some ("import GeneratedRelease.Lnp64u.ActionJoinBatch" ++ pad3 batchIndex)
     else none
   let source := "-- Generated bounded typed action certificate; DO NOT EDIT.\n" ++
     String.intercalate "\n" imports ++
@@ -234,6 +313,8 @@ private unsafe def generateNamedCertificate (runtime output : System.FilePath) :
     "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
     "open Loom.Release\n\n" ++
     "set_option maxRecDepth 1000000\n\n" ++
+    "def actionWideRegisters : Array Loom.Hw.RegDecl := " ++
+      cutRegistersToLean design.regs.toArray ++ "\n\n" ++
     Tools.ReleaseCertGen.actionWideNamedCertificateToLean cert ++ "\n" ++
     "end Loom.GeneratedRelease.Lnp64u\n"
   writeIfChanged output source
@@ -270,6 +351,9 @@ private def evaluateCert (registers : Array RegDecl) :
         guard (thenResult.refs[index]?.isSome && elseResult.refs[index]?.isSome)
         output := output.set! index join.output
       pure { refs := output, changed }
+
+private def indicesToBits (indices : List Nat) : Nat :=
+  indices.foldl (fun bits index => bits ||| (1 <<< index)) 0
 
 private def actionCertNodeCount :
     Loom.Release.Symbolic.ActionWide.ActionCert → Nat
@@ -391,6 +475,630 @@ private structure CoreCutState where
 
 private abbrev CoreCutM := StateT CoreCutState Option
 
+private structure CoreShapeState where
+  retireNext : Nat := 0
+  issueNext : Nat := 0
+  revokeNext : Nat := 0
+  cutNext : Nat := 0
+  nodeNext : Nat := 0
+  conditionNext : Nat := 0
+  declarations : Array String := #[]
+
+private abbrev CoreShapeM := StateT CoreShapeState Option
+
+private structure CoreRegQueryState where
+  retireNext : Nat := 0
+  issueNext : Nat := 0
+  revokeNext : Nat := 0
+  cutNext : Nat := 0
+  nodeNext : Nat := 0
+  declarations : Array String := #[]
+  resultCache : Std.HashMap String Loom.Release.Symbolic.ActionWide.Result := {}
+
+private abbrev CoreRegQueryM := StateT CoreRegQueryState Option
+
+private def coreRefToLean : Loom.Release.Symbolic.Ref → String
+  | .wire number => "Symbolic.Ref.wire " ++ toString number
+  | .namedWire number name =>
+      "Symbolic.Ref.namedWire " ++ toString number ++ " " ++ reprStr name
+  | .reg name => "Symbolic.Ref.reg " ++ reprStr name
+
+private structure ActionExprSpec where
+  expression : String
+  sourceValue : Loom.Release.Symbolic.PackedHwExpr
+  reference : Loom.Release.Symbolic.Ref
+
+private def expressionEvidenceBlockSize : Nat := 128
+
+/-- Wire blocks reachable from a batch of expression roots.  This is
+untrusted generation guidance only: every generated block entry carries the
+existing kernel theorem connecting it to the complete semantic wire rope. -/
+private def reachableExpressionWires (program : Tools.RuntimeSsa.Program)
+    (specs : List ActionExprSpec) : List Nat := Id.run do
+  let mut pending : Array Nat := #[]
+  for spec in specs do
+    if let some number := match spec.reference with
+        | .wire number | .namedWire number _ => some number
+        | .reg _ => none then
+      pending := pending.push number
+  let mut visited : Std.HashSet Nat := {}
+  let mut cursor := 0
+  while cursor < pending.size do
+    let number := pending[cursor]!
+    cursor := cursor + 1
+    unless visited.contains number do
+      visited := visited.insert number
+      if let some wire := program.wires[number]? then
+        for operand in wire.rhs.strings do
+          if let some child := Loom.Release.Symbolic.wireNumber? operand then
+            pending := pending.push child
+  visited.toList.mergeSort
+
+private def reachableExpressionBlocks (wires : List Nat) : List Nat :=
+  (wires.map (· / expressionEvidenceBlockSize)).eraseDups
+
+private def expressionBlockDependencies (program : Tools.RuntimeSsa.Program)
+    (blockIndex : Nat) (wires : List Nat) : List Nat := Id.run do
+  let mut dependencies : Std.HashSet Nat := {}
+  for number in wires do
+    if let some wire := program.wires[number]? then
+      for operand in wire.rhs.strings do
+        if let some child := Loom.Release.Symbolic.wireNumber? operand then
+          let childBlock := child / expressionEvidenceBlockSize
+          if childBlock != blockIndex then
+            dependencies := dependencies.insert childBlock
+  dependencies.toList.mergeSort
+
+private def expressionNodeName (batchIndex number : Nat) : String :=
+  "dagCutExpr" ++ pad3 batchIndex ++ "Node" ++ toString number
+
+private def expressionEvidenceName (batchIndex number : Nat) : String :=
+  expressionNodeName batchIndex number ++ "Evidence"
+
+private def runtimeRegisterWidth? (program : Tools.RuntimeSsa.Program)
+    (name : String) : Option Nat := do
+  return (← program.regs.find? fun register => register.name == name).width
+
+private def runtimeRefExprToLean (program : Tools.RuntimeSsa.Program)
+    (batchIndex : Nat) : Loom.Release.Symbolic.Ref → Option String
+  | .wire number | .namedWire number _ =>
+      pure (expressionNodeName batchIndex number)
+  | .reg name => do
+      let width ← runtimeRegisterWidth? program name
+      pure <| "(Loom.Emit.MicroVerilog.Expr.reg " ++ toString width ++ " " ++
+        reprStr name ++ ")"
+
+private def runtimeRefEvidenceToLean (program : Tools.RuntimeSsa.Program)
+    (batchIndex : Nat) : Loom.Release.Symbolic.Ref → Option String
+  | .wire number | .namedWire number _ =>
+      pure (expressionEvidenceName batchIndex number)
+  | .reg name => do
+      let width ← runtimeRegisterWidth? program name
+      pure <| "(Symbolic.IndexedExprEvidence.reg " ++ toString width ++ " " ++
+        reprStr name ++ ")"
+
+private def runtimeBinCtor : Loom.Release.SSA.BinOp → String
+  | .and => "and" | .or => "or" | .xor => "xor"
+  | .add => "add" | .sub => "sub" | .shl => "shl" | .shr => "shr"
+  | .eq => "eq" | .ult => "ult"
+
+/-- Emit one independently kernel-checked node of the reconstructed compiler
+expression DAG.  The generator is untrusted: constructor unification and the
+prechecked block lookup theorem reject any incorrect RHS, width, or operand. -/
+private def runtimeExpressionNodeToLean (program : Tools.RuntimeSsa.Program)
+    (batchIndex number : Nat) : Option String := do
+  let wire ← program.wires[number]?
+  let rhs ← wire.rhs.toIndexed?
+  let nodeName := expressionNodeName batchIndex number
+  let evidenceName := expressionEvidenceName batchIndex number
+  let blockIndex := number / 128
+  let offset := number % 128
+  let lookupProof :=
+    "  · exact fastIndexedWireLookupEvidence" ++ pad4 blockIndex ++ " " ++
+      toString offset ++ " _ (by decide) rfl (by decide)\n"
+  let (expression, constructor, children, sideProofs) ← match rhs with
+    | .lit literalWidth value => do
+        guard (literalWidth == wire.width)
+        pure ("(Loom.Emit.MicroVerilog.Expr.lit (BitVec.ofNat " ++
+          toString wire.width ++ " " ++ toString value ++ "))",
+          "lit", [], [])
+    | .ident value => do
+        let child ← runtimeRefExprToLean program batchIndex value
+        let evidence ← runtimeRefEvidenceToLean program batchIndex value
+        pure ("(Loom.Emit.MicroVerilog.Expr.zext " ++ child ++ " " ++
+          toString wire.width ++ ")", "zext", [evidence], ["decide"])
+    | .memRead memory address => do
+        let child ← runtimeRefExprToLean program batchIndex address
+        let evidence ← runtimeRefEvidenceToLean program batchIndex address
+        pure ("(Loom.Emit.MicroVerilog.Expr.memRead " ++ toString wire.width ++
+          " " ++ reprStr memory ++ " " ++ child ++ ")",
+          "memRead", [evidence], [])
+    | .slice value _ lo => do
+        let child ← runtimeRefExprToLean program batchIndex value
+        let evidence ← runtimeRefEvidenceToLean program batchIndex value
+        pure ("(Loom.Emit.MicroVerilog.Expr.slice " ++ child ++ " " ++
+          toString lo ++ " " ++ toString wire.width ++ ")",
+          "slice", [evidence], [])
+    | .not value => do
+        let child ← runtimeRefExprToLean program batchIndex value
+        let evidence ← runtimeRefEvidenceToLean program batchIndex value
+        pure ("(Loom.Emit.MicroVerilog.Expr.not " ++ child ++ ")",
+          "not", [evidence], [])
+    | .bin op left right => do
+        let leftExpr ← runtimeRefExprToLean program batchIndex left
+        let rightExpr ← runtimeRefExprToLean program batchIndex right
+        let leftEvidence ← runtimeRefEvidenceToLean program batchIndex left
+        let rightEvidence ← runtimeRefEvidenceToLean program batchIndex right
+        let ctor := runtimeBinCtor op
+        pure ("(Loom.Emit.MicroVerilog.Expr." ++ ctor ++ " " ++ leftExpr ++
+          " " ++ rightExpr ++ ")", ctor, [leftEvidence, rightEvidence], [])
+    | .slt left right => do
+        let leftExpr ← runtimeRefExprToLean program batchIndex left
+        let rightExpr ← runtimeRefExprToLean program batchIndex right
+        let leftEvidence ← runtimeRefEvidenceToLean program batchIndex left
+        let rightEvidence ← runtimeRefEvidenceToLean program batchIndex right
+        pure ("(Loom.Emit.MicroVerilog.Expr.slt " ++ leftExpr ++ " " ++
+          rightExpr ++ ")", "slt", [leftEvidence, rightEvidence], [])
+    | .mux condition yes no => do
+        let conditionExpr ← runtimeRefExprToLean program batchIndex condition
+        let yesExpr ← runtimeRefExprToLean program batchIndex yes
+        let noExpr ← runtimeRefExprToLean program batchIndex no
+        let conditionEvidence ←
+          runtimeRefEvidenceToLean program batchIndex condition
+        let yesEvidence ← runtimeRefEvidenceToLean program batchIndex yes
+        let noEvidence ← runtimeRefEvidenceToLean program batchIndex no
+        pure ("(Loom.Emit.MicroVerilog.Expr.mux " ++ conditionExpr ++ " " ++
+          yesExpr ++ " " ++ noExpr ++ ")", "mux",
+          [conditionEvidence, yesEvidence, noEvidence], [])
+    | .sext _ value _ => do
+        let child ← runtimeRefExprToLean program batchIndex value
+        let evidence ← runtimeRefEvidenceToLean program batchIndex value
+        pure ("(Loom.Emit.MicroVerilog.Expr.sext " ++ child ++ " " ++
+          toString wire.width ++ ")", "sext", [evidence],
+          ["decide", "decide"])
+  let sideText := String.join <| sideProofs.map (fun proof => "  · " ++ proof ++ "\n")
+  let childText := String.join <| children.map (fun proof =>
+    "  · exact " ++ proof ++ "\n")
+  pure <| "def " ++ nodeName ++ " : Loom.Emit.MicroVerilog.Expr " ++
+    toString wire.width ++ " :=\n  " ++ expression ++ "\n\n" ++
+    "theorem " ++ evidenceName ++ " :\n" ++
+    "    Symbolic.IndexedExprEvidence fastIndexedWireTree fastWireTable " ++
+      nodeName ++ " (.wire " ++ toString number ++ ") := by\n" ++
+    "  apply Symbolic.IndexedExprEvidence." ++ constructor ++ "\n" ++
+    lookupProof ++ sideText ++ childText ++ "\n"
+
+private structure SourceExprResult where
+  sourceName : String
+  evidence : String
+
+private structure SourceExprGenState where
+  next : Nat := 0
+  definitions : Array String := #[]
+  evidenceByBlock : Std.HashMap Nat (Array String) := {}
+  resultByWire : Std.HashMap Nat SourceExprResult := {}
+
+private abbrev SourceExprGenM := StateT SourceExprGenState Option
+
+private def pushSourceEvidence (blockIndex : Nat) (text : String) :
+    SourceExprGenM Unit := do
+  modify fun state =>
+    let existing := state.evidenceByBlock.getD blockIndex #[]
+    { state with evidenceByBlock :=
+        state.evidenceByBlock.insert blockIndex (existing.push text) }
+
+/-- Build the source side of the compiler correspondence one constructor at a
+time. Child source definitions project from their named parent; compiled
+evidence is emitted bottom-up into the same SSA block DAG as indexed evidence. -/
+private partial def buildSourceExprEvidence
+    (program : Tools.RuntimeSsa.Program) (batchIndex : Nat)
+    (source : Loom.Release.Symbolic.PackedHwExpr)
+    (reference : Loom.Release.Symbolic.Ref) (body : String) :
+    SourceExprGenM SourceExprResult := do
+  let state ← get
+  if let some number := match reference with
+      | .wire number | .namedWire number _ => some number
+      | .reg _ => none then
+    if let some result := state.resultByWire[number]? then
+      return result
+  let id := state.next
+  let sourceName := "dagCutExpr" ++ pad3 batchIndex ++ "Source" ++ toString id
+  let definition :=
+    "def " ++ sourceName ++ " : Loom.Hw.Expr " ++ toString source.width ++
+      " :=\n  " ++ body ++ "\n\n"
+  let updatedState : SourceExprGenState :=
+    { next := id + 1
+      definitions := state.definitions.push definition
+      evidenceByBlock := state.evidenceByBlock
+      resultByWire := state.resultByWire }
+  set updatedState
+  let childBody (width index : Nat) :=
+    "(Symbolic.PackedHwExpr.childAs " ++ toString width ++ " " ++
+      toString index ++ " ⟨" ++ toString source.width ++ ", " ++ sourceName ++ "⟩)"
+  let buildChild (index : Nat)
+      (childSource : Loom.Release.Symbolic.PackedHwExpr)
+      (childRef : Loom.Release.Symbolic.Ref) :=
+    buildSourceExprEvidence program batchIndex childSource childRef
+      (childBody childSource.width index)
+  match source.expression, reference with
+  | .reg width name, .reg actualName => do
+      guard (name == actualName)
+      pure { sourceName, evidence :=
+        "(by exact Symbolic.CompiledExprEvidence.reg " ++ toString width ++
+          " " ++ reprStr name ++ ")" }
+  | expression, .wire number | expression, .namedWire number _ => do
+      let wire ← program.wires[number]?
+      guard (wire.width == source.width)
+      let rhs ← wire.rhs.toIndexed?
+      let targetName := expressionNodeName batchIndex number
+      let evidenceName := sourceName ++ "Compiled"
+      let (constructor, children) ← match expression, rhs with
+        | .lit value, .lit literalWidth actualValue => do
+            guard (literalWidth == source.width && actualValue == value.toNat)
+            pure ("lit", [])
+        | .memRead dataWidth memory address, .memRead actualMemory addressRef => do
+            guard (dataWidth == source.width && memory == actualMemory)
+            let child ← buildChild 0 ⟨_, address⟩ addressRef
+            pure ("memRead", [child.evidence])
+        | .and left right, .bin .and leftRef rightRef
+        | .or left right, .bin .or leftRef rightRef
+        | .xor left right, .bin .xor leftRef rightRef
+        | .add left right, .bin .add leftRef rightRef
+        | .sub left right, .bin .sub leftRef rightRef
+        | .shl left right, .bin .shl leftRef rightRef
+        | .shr left right, .bin .shr leftRef rightRef => do
+            let leftChild ← buildChild 0 ⟨_, left⟩ leftRef
+            let rightChild ← buildChild 1 ⟨_, right⟩ rightRef
+            let ctor := match expression with
+              | .and .. => "and" | .or .. => "or" | .xor .. => "xor"
+              | .add .. => "add" | .sub .. => "sub" | .shl .. => "shl"
+              | .shr .. => "shr" | _ => ""
+            pure (ctor, [leftChild.evidence, rightChild.evidence])
+        | @Loom.Hw.Expr.eq operandWidth left right,
+            .bin .eq leftRef rightRef
+        | @Loom.Hw.Expr.ult operandWidth left right,
+            .bin .ult leftRef rightRef => do
+            let leftChild ← buildChild 0 ⟨operandWidth, left⟩ leftRef
+            let rightChild ← buildChild 1 ⟨operandWidth, right⟩ rightRef
+            let ctor := match expression with | .eq .. => "eq" | _ => "ult"
+            pure (ctor, [leftChild.evidence, rightChild.evidence])
+        | @Loom.Hw.Expr.slt operandWidth left right, .slt leftRef rightRef => do
+            let leftChild ← buildChild 0 ⟨operandWidth, left⟩ leftRef
+            let rightChild ← buildChild 1 ⟨operandWidth, right⟩ rightRef
+            pure ("slt", [leftChild.evidence, rightChild.evidence])
+        | .not value, .not valueRef => do
+            let child ← buildChild 0 ⟨_, value⟩ valueRef
+            pure ("not", [child.evidence])
+        | .mux condition yes no, .mux conditionRef yesRef noRef => do
+            let conditionChild ← buildChild 0 ⟨1, condition⟩ conditionRef
+            let yesChild ← buildChild 1 ⟨_, yes⟩ yesRef
+            let noChild ← buildChild 2 ⟨_, no⟩ noRef
+            pure ("mux", [conditionChild.evidence, yesChild.evidence,
+              noChild.evidence])
+        | .slice value lo width, .slice valueRef _ actualLo => do
+            guard (width == source.width && lo == actualLo)
+            let child ← buildChild 0 ⟨_, value⟩ valueRef
+            pure ("slice", [child.evidence])
+        | .zext value width, .ident valueRef => do
+            guard (width == source.width)
+            let child ← buildChild 0 ⟨_, value⟩ valueRef
+            pure ("zext", [child.evidence])
+        | .sext value width, .sext _ valueRef _ => do
+            guard (width == source.width)
+            let child ← buildChild 0 ⟨_, value⟩ valueRef
+            pure ("sext", [child.evidence])
+        | _, _ => failure
+      let childProofs := String.join <| children.map fun child =>
+        "  · exact " ++ child ++ "\n"
+      let theoremText :=
+        "theorem " ++ evidenceName ++ " :\n" ++
+        "    Symbolic.CompiledExprEvidence " ++ sourceName ++ " " ++
+          targetName ++ " := by\n" ++
+        "  apply Symbolic.CompiledExprEvidence." ++ constructor ++ "\n" ++
+        childProofs ++ "\n"
+      pushSourceEvidence (number / expressionEvidenceBlockSize) theoremText
+      let result := { sourceName, evidence := evidenceName }
+      modify fun state =>
+        { state with resultByWire := state.resultByWire.insert number result }
+      pure result
+  | _, .reg _ => failure
+
+private def checkedBlockEntryToLean (index : Nat) : String :=
+  "{ start := " ++ toString (index * 128) ++
+    ", block := fastIndexedWireBlock" ++ pad4 index ++
+    ", evidence := fastIndexedWireLookupEvidence" ++ pad4 index ++ " }"
+
+private partial def balancedCheckedBlockTree : List Nat → String
+  | [] => ".empty"
+  | indices =>
+      let midpoint := indices.length / 2
+      match indices.drop midpoint with
+      | [] => ".empty"
+      | index :: right =>
+          ".node " ++ toString index ++ " " ++ checkedBlockEntryToLean index ++
+            " (" ++ balancedCheckedBlockTree (indices.take midpoint) ++ ") (" ++
+            balancedCheckedBlockTree right ++ ")"
+
+/-- Enumerate exactly the condition and live write-value expressions checked
+by a bounded action certificate. The resulting declarations are untrusted
+generation output; every one is independently kernel checked. -/
+private partial def collectActionExprSpecs (source : Act)
+    (cert : Loom.Release.Symbolic.ActionWide.ActionCert) (needed : List Nat)
+    (sourceExpr certExpr : String) : Option (Array ActionExprSpec) := do
+  match source, cert with
+  | .skip, .skip | .memWrite .., .memWrite => pure #[]
+  | .write width _ value, .write index reference =>
+      if needed.contains index then
+        let expression := "Symbolic.ActionWide.writeValueAction " ++
+          toString width ++ " (" ++ sourceExpr ++ ")"
+        pure #[{ expression, sourceValue := ⟨width, value⟩, reference }]
+      else pure #[]
+  | .seq _ _, .seq _ _ rightCert =>
+      let leftNeeded := Loom.Release.Symbolic.ActionWide.neededInputs
+        rightCert.summary needed
+      let left ← collectActionExprSpecs
+        (Loom.Release.Symbolic.ActionWide.seqLeftAction source)
+        (Loom.Release.Symbolic.ActionWide.ActionCert.seqLeft cert) leftNeeded
+        ("Symbolic.ActionWide.seqLeftAction (" ++ sourceExpr ++ ")")
+        ("Symbolic.ActionWide.ActionCert.seqLeft (" ++ certExpr ++ ")")
+      let right ← collectActionExprSpecs
+        (Loom.Release.Symbolic.ActionWide.seqRightAction source)
+        (Loom.Release.Symbolic.ActionWide.ActionCert.seqRight cert) needed
+        ("Symbolic.ActionWide.seqRightAction (" ++ sourceExpr ++ ")")
+        ("Symbolic.ActionWide.ActionCert.seqRight (" ++ certExpr ++ ")")
+      pure (left ++ right)
+  | .ite condition _ _, .ite summary conditionRef _ _ _ =>
+      let changed := Loom.Release.Symbolic.ActionWide.changedOutputs summary needed
+      if changed.isEmpty then pure #[] else
+        let thenSpecs ← collectActionExprSpecs
+          (Loom.Release.Symbolic.ActionWide.iteThenAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.iteThen cert) changed
+          ("Symbolic.ActionWide.iteThenAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.iteThen (" ++ certExpr ++ ")")
+        let elseSpecs ← collectActionExprSpecs
+          (Loom.Release.Symbolic.ActionWide.iteElseAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.iteElse cert) changed
+          ("Symbolic.ActionWide.iteElseAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.iteElse (" ++ certExpr ++ ")")
+        let conditionExpression :=
+          "Symbolic.ActionWide.iteConditionAction (" ++ sourceExpr ++ ")"
+        let conditionSpec : ActionExprSpec :=
+          { expression := conditionExpression,
+            sourceValue := ⟨1, condition⟩,
+            reference := conditionRef }
+        pure (#[conditionSpec] ++ thenSpecs ++ elseSpecs)
+  | _, _ => failure
+
+/-- Cache a complete outer condition as a named theorem. Register projections
+then refer to the theorem's statement instead of reconstructing the same large
+expression proof hundreds of times. -/
+private def recordCoreCondition (conditionExpr : String)
+    (conditionRef : Loom.Release.Symbolic.Ref) : CoreShapeM Unit := do
+  let state ← get
+  let name := "hybridCoreCondition" ++ pad4 state.conditionNext
+  let declaration :=
+    "@[release_indexed_expr] theorem " ++ name ++ " :\n" ++
+    "    Symbolic.IndexedExprEvidence fastIndexedWireTree fastWireTable\n" ++
+    "      (Loom.Hw.Compile.compileExpr (" ++ conditionExpr ++ ")) (" ++
+      coreRefToLean conditionRef ++ ") :=\n" ++
+    "  indexed_expr_evidence\n\n"
+  let withCondition := { state with conditionNext := state.conditionNext + 1 }
+  set { withCondition with declarations := state.declarations.push declaration }
+
+/-- Generate a named, bottom-up register-query shell around the bounded core
+cuts. Each generated theorem sees only its immediate children as constants;
+the elaborator never traverses the full core action for a register query. -/
+private partial def collectCoreRegQuery
+    (registers : Array RegDecl) (issueOrder : Array Machines.Lnp64u.DomainId)
+    (query width : Nat) (suffix : String) (source : Act)
+    (cert : Loom.Release.Symbolic.ActionWide.ActionCert)
+    (input : Array Loom.Release.Symbolic.Ref) (needed : List Nat)
+    (sourceExpr certExpr : String) :
+    CoreRegQueryM (Array Loom.Release.Symbolic.Ref × String) := do
+  let initialState ← get
+  let result ← match initialState.resultCache.get? certExpr with
+    | some cached => pure cached
+    | none =>
+        let some computed := evaluateCert registers input needed cert | failure
+        modify fun state =>
+          { state with resultCache := state.resultCache.insert certExpr computed }
+        pure computed
+  let size := sourceActionNodeCount source
+  let state ← get
+  let selected :=
+    (size == 15389 && state.retireNext < Machines.Lnp64u.numDomains) ||
+    (size == 2967 && state.issueNext < issueOrder.size) ||
+    (size == 513 && state.revokeNext < 2)
+  if selected then
+    let bumped :=
+      if size == 15389 then { state with retireNext := state.retireNext + 1 }
+      else if size == 2967 then { state with issueNext := state.issueNext + 1 }
+      else { state with revokeNext := state.revokeNext + 1 }
+    let cutIndex := state.cutNext
+    set { bumped with cutNext := cutIndex + 1 }
+    if needed.contains query then
+      return (result.refs, "hybridCut" ++ pad3 cutIndex ++ "Reg" ++ suffix)
+  let issueAction :=
+    (Machines.Lnp64u.Hw.schedOrder Machines.Lnp64u.Demo.sysManifest).foldr
+      (fun d acc => .ite
+        (Machines.Lnp64u.Hw.eligE Machines.Lnp64u.Demo.sysManifest d)
+        (Machines.Lnp64u.Hw.issueFor Machines.Lnp64u.Demo.sysManifest d) acc)
+      .skip
+  let specialIssue :=
+    size == sourceActionNodeCount issueAction && state.issueNext == 0
+  if specialIssue then
+    let withIssues := { state with issueNext := issueOrder.size }
+    set { withIssues with cutNext := state.cutNext + issueOrder.size }
+  else if !selected then
+    match source, cert with
+    | .seq _ _, .seq _ _ rightCert =>
+        let leftNeeded := Loom.Release.Symbolic.ActionWide.neededInputs
+          rightCert.summary needed
+        let (middle, _) ← collectCoreRegQuery registers issueOrder query width suffix
+          (Loom.Release.Symbolic.ActionWide.seqLeftAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.seqLeft cert) input leftNeeded
+          ("Symbolic.ActionWide.seqLeftAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.seqLeft (" ++ certExpr ++ ")")
+        let _ ← collectCoreRegQuery registers issueOrder query width suffix
+          (Loom.Release.Symbolic.ActionWide.seqRightAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.seqRight cert) middle needed
+          ("Symbolic.ActionWide.seqRightAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.seqRight (" ++ certExpr ++ ")")
+    | .ite _ _ _, .ite summary _ _ _ _ =>
+        if (Loom.Release.Symbolic.ActionWide.changedOutputs summary needed).contains query
+        then
+          let changed := Loom.Release.Symbolic.ActionWide.changedOutputs summary needed
+          let _ ← collectCoreRegQuery registers issueOrder query width suffix
+            (Loom.Release.Symbolic.ActionWide.iteThenAction source)
+            (Loom.Release.Symbolic.ActionWide.ActionCert.iteThen cert) input changed
+            ("Symbolic.ActionWide.iteThenAction (" ++ sourceExpr ++ ")")
+            ("Symbolic.ActionWide.ActionCert.iteThen (" ++ certExpr ++ ")")
+          let _ ← collectCoreRegQuery registers issueOrder query width suffix
+            (Loom.Release.Symbolic.ActionWide.iteElseAction source)
+            (Loom.Release.Symbolic.ActionWide.ActionCert.iteElse cert) input changed
+            ("Symbolic.ActionWide.iteElseAction (" ++ sourceExpr ++ ")")
+            ("Symbolic.ActionWide.ActionCert.iteElse (" ++ certExpr ++ ")")
+    | _, _ => pure ()
+  let after ← get
+  let name := "hybridCoreReg" ++ suffix ++ "Node" ++ pad4 after.nodeNext
+  let some inputRef := input[query]? | failure
+  let some outputRef := result.refs[query]? | failure
+  let proof := if specialIssue then
+      "by\n  change Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters " ++ toString query ++ " " ++
+        toString width ++ " ((Machines.Lnp64u.Hw.schedOrder " ++
+        "Machines.Lnp64u.Demo.sysManifest).foldr (fun d acc => .ite " ++
+        "(Machines.Lnp64u.Hw.eligE Machines.Lnp64u.Demo.sysManifest d) " ++
+        "(Machines.Lnp64u.Hw.issueFor Machines.Lnp64u.Demo.sysManifest d) " ++
+        "acc) .skip) (" ++ coreRefToLean inputRef ++ ") " ++
+        toString (indicesToBits needed) ++ " (" ++ certExpr ++ ") (" ++
+        coreRefToLean outputRef ++ ")\n" ++
+        "  rw [Machines.Lnp64u.Theorems.ReleaseOrder.schedOrderRelease]\n" ++
+        "  exact reg_query_decide"
+    else "reg_query_decide"
+  let declaration :=
+    "@[release_reg_query_cut] theorem " ++ name ++ " :\n" ++
+    "    Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
+      "fastWireTable hybridRegisters " ++ toString query ++ " " ++
+      toString width ++ " (" ++ sourceExpr ++ ") (" ++
+      coreRefToLean inputRef ++ ") " ++ toString (indicesToBits needed) ++
+      " (" ++ certExpr ++ ") (" ++ coreRefToLean outputRef ++ ") :=\n  " ++
+      proof ++ "\n\n"
+  let withNode := { after with nodeNext := after.nodeNext + 1 }
+  set { withNode with declarations := after.declarations.push declaration }
+  return (result.refs, name)
+
+/-- Build only the small structural shell around the ten named core cuts.
+Each shell node becomes a separate theorem, so the kernel checks composition
+against child statements without reopening their proofs. -/
+private partial def collectCoreShape
+    (issueOrder : Array Machines.Lnp64u.DomainId) (source : Act)
+    (cert : Loom.Release.Symbolic.ActionWide.ActionCert) (needed : Nat)
+    (sourceExpr certExpr : String) : CoreShapeM String := do
+  let size := sourceActionNodeCount source
+  let state ← get
+  let selected :=
+    (size == 15389 && state.retireNext < Machines.Lnp64u.numDomains) ||
+    (size == 2967 && state.issueNext < issueOrder.size) ||
+    (size == 513 && state.revokeNext < 2)
+  if selected then
+    let bumped :=
+      if size == 15389 then { state with retireNext := state.retireNext + 1 }
+      else if size == 2967 then { state with issueNext := state.issueNext + 1 }
+      else { state with revokeNext := state.revokeNext + 1 }
+    let nextState := { bumped with cutNext := state.cutNext + 1 }
+    set nextState
+    return "hybridCoreCut" ++ pad3 state.cutNext
+  let issueAction :=
+    (Machines.Lnp64u.Hw.schedOrder Machines.Lnp64u.Demo.sysManifest).foldr
+      (fun d acc => .ite
+        (Machines.Lnp64u.Hw.eligE Machines.Lnp64u.Demo.sysManifest d)
+        (Machines.Lnp64u.Hw.issueFor Machines.Lnp64u.Demo.sysManifest d) acc)
+      .skip
+  if size == sourceActionNodeCount issueAction && state.issueNext == 0 then
+    let name := "hybridCoreIssueShape"
+    let issueExpr :=
+      "((Machines.Lnp64u.Hw.schedOrder " ++
+      "Machines.Lnp64u.Demo.sysManifest).foldr " ++
+      "(fun d acc => .ite (Machines.Lnp64u.Hw.eligE " ++
+      "Machines.Lnp64u.Demo.sysManifest d) " ++
+      "(Machines.Lnp64u.Hw.issueFor " ++
+      "Machines.Lnp64u.Demo.sysManifest d) acc) .skip)"
+    let declaration :=
+      "@[release_action_shape_cut] theorem " ++ name ++ " :\n" ++
+      "    Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters (" ++ sourceExpr ++ ") " ++
+        toString needed ++ " (" ++ certExpr ++ ") := by\n" ++
+      "  change Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters " ++ issueExpr ++ " " ++
+        toString needed ++ " (" ++ certExpr ++ ")\n" ++
+      "  rw [Machines.Lnp64u.Theorems.ReleaseOrder.schedOrderRelease]\n" ++
+      "  exact action_shape_decide\n\n"
+    let mut issueCert := cert
+    for domain in issueOrder do
+      match issueCert with
+      | .ite _ conditionRef _ _ elseCert =>
+          recordCoreCondition
+            ("Machines.Lnp64u.Hw.eligE Machines.Lnp64u.Demo.sysManifest ⟨" ++
+              toString domain.val ++ ", by decide⟩") conditionRef
+          issueCert := elseCert
+      | _ => failure
+    let afterConditions ← get
+    let withCuts := { afterConditions with issueNext := issueOrder.size }
+    let withNext :=
+      { withCuts with cutNext := afterConditions.cutNext + issueOrder.size }
+    set { withNext with
+      declarations := afterConditions.declarations.push declaration }
+    return name
+  let (proof, kind) ← match source, cert with
+    | .skip, .skip => pure (".skip", none)
+    | .memWrite _ _ _ _ _ _, .memWrite => pure (".memWrite", none)
+    | .seq _ _, .seq _ _ rightCert => do
+        let leftNeeded := Loom.Release.Symbolic.ActionWide.neededBitsBefore
+          rightCert.summary needed
+        let left ← collectCoreShape issueOrder
+          (Loom.Release.Symbolic.ActionWide.seqLeftAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.seqLeft cert) leftNeeded
+          ("Symbolic.ActionWide.seqLeftAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.seqLeft (" ++ certExpr ++ ")")
+        let right ← collectCoreShape issueOrder
+          (Loom.Release.Symbolic.ActionWide.seqRightAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.seqRight cert) needed
+          ("Symbolic.ActionWide.seqRightAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.seqRight (" ++ certExpr ++ ")")
+        let _ := left
+        let _ := right
+        pure ("action_shape_decide", some "seq")
+    | .ite _ _ _, .ite summary conditionRef _ _ _ => do
+        recordCoreCondition
+          ("Symbolic.ActionWide.iteConditionAction (" ++ sourceExpr ++ ")")
+          conditionRef
+        let changed := Loom.Release.Symbolic.ActionWide.changedBitsAt summary needed
+        let thenProof ← collectCoreShape issueOrder
+          (Loom.Release.Symbolic.ActionWide.iteThenAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.iteThen cert) changed
+          ("Symbolic.ActionWide.iteThenAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.iteThen (" ++ certExpr ++ ")")
+        let elseProof ← collectCoreShape issueOrder
+          (Loom.Release.Symbolic.ActionWide.iteElseAction source)
+          (Loom.Release.Symbolic.ActionWide.ActionCert.iteElse cert) changed
+          ("Symbolic.ActionWide.iteElseAction (" ++ sourceExpr ++ ")")
+          ("Symbolic.ActionWide.ActionCert.iteElse (" ++ certExpr ++ ")")
+        let _ := thenProof
+        let _ := elseProof
+        pure ("action_shape_decide", some "ite")
+    | _, _ => pure ("action_shape_decide", some "atom")
+  if kind.isNone then return proof
+  let after ← get
+  let name := "hybridCoreNode" ++ pad4 after.nodeNext
+  let declaration :=
+    "@[release_action_shape_cut] theorem " ++ name ++ " :\n" ++
+    "    Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
+      "fastWireTable hybridRegisters (" ++ sourceExpr ++ ") " ++
+      toString needed ++ " (" ++ certExpr ++ ") :=\n  " ++ proof ++ "\n\n"
+  let withNode := { after with nodeNext := after.nodeNext + 1 }
+  set { withNode with declarations := after.declarations.push declaration }
+  return name
+
 private partial def collectCoreCuts (registers : Array RegDecl)
     (issueOrder : Array Machines.Lnp64u.DomainId)
     (source : Act) (cert : Loom.Release.Symbolic.ActionWide.ActionCert)
@@ -453,13 +1161,6 @@ private partial def collectCoreCuts (registers : Array RegDecl)
   | _, _ =>
       let some result := evaluateCert registers input needed cert | failure
       return (size, result)
-
-private def cutRegistersToLean (registers : Array RegDecl) : String :=
-  "#[" ++ String.intercalate ", " (registers.toList.map fun register =>
-    "{ name := " ++ reprStr register.name ++ ", width := " ++
-      toString register.width ++ ", init := BitVec.ofNat " ++
-      toString register.width ++ " " ++ toString register.init.toNat ++ " }") ++
-    "]"
 
 private def cutSparseDeltaToLean
     (before after : Array Loom.Release.Symbolic.Ref) : String := Id.run do
@@ -636,7 +1337,9 @@ private partial def dagLookupRef
 
 private structure DagLeafSpec where
   source : String
+  sourceValue : Act
   cert : String
+  certValue : Loom.Release.Symbolic.ActionWide.ActionCert
   trace : String
   input : Nat
   needed : Nat
@@ -645,7 +1348,12 @@ private structure DagLeafSpec where
   writeRoots : Array Nat
   joins : List Loom.Release.Symbolic.ActionWide.Join
   size : Nat
-  deriving Inhabited
+
+private instance : Inhabited DagLeafSpec where
+  default :=
+    { source := "", sourceValue := .skip, cert := "", certValue := .skip,
+      trace := "", input := 0, needed := 0, output := 0,
+      actionRoots := #[], writeRoots := #[], joins := [], size := 0 }
 
 private inductive DagProofRef where
   | leaf (index : Nat)
@@ -745,7 +1453,8 @@ private partial def collectDagProofs (spans : Array DagSpan)
     let state ← get
     let index := state.leaves.size
     let leaf : DagLeafSpec :=
-      { source := sourceExpr, cert := certExpr, trace, input, needed,
+      { source := sourceExpr, sourceValue := source, cert := certExpr,
+        certValue := cert, trace, input, needed,
         output := span.output,
         actionRoots := allActionRoots.extract span.actionStart span.actionEnd,
         writeRoots, joins := Tools.ReleaseCertGen.actionWideJoins [cert], size }
@@ -816,7 +1525,8 @@ private partial def collectDagLeaves (spans : Array DagSpan)
     let (trace, afterTrace) ← dagTraceToLean source cert needed writeRoots
     guard (afterTrace == writeRoots.size)
     let leaf : DagLeafSpec :=
-      { source := sourceExpr, cert := certExpr, trace, input, needed,
+      { source := sourceExpr, sourceValue := source, cert := certExpr,
+        certValue := cert, trace, input, needed,
         output := span.output,
         actionRoots := allActionRoots.extract span.actionStart span.actionEnd,
         writeRoots, joins := Tools.ReleaseCertGen.actionWideJoins [cert],
@@ -864,6 +1574,8 @@ private partial def collectDagLeaves (spans : Array DagSpan)
 
 private def dagRefToLean : Loom.Release.Symbolic.Ref → String
   | .wire number => "Symbolic.Ref.wire " ++ toString number
+  | .namedWire number name =>
+      "Symbolic.Ref.namedWire " ++ toString number ++ " " ++ reprStr name
   | .reg name => "Symbolic.Ref.reg " ++ reprStr name
 
 private def dagNodeToLean :
@@ -886,6 +1598,7 @@ private partial def balancedDagRopeExpr : List String → String
         | [] => []
       balancedDagRopeExpr (pair names)
 
+set_option maxRecDepth 100000 in
 private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     (cutIndex : Nat) : IO UInt32 := do
   let program ← Tools.RuntimeSsa.load runtime
@@ -910,7 +1623,27 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) coreCert
       refillResult.refs coreNeeded "actionCertNode15158").run {}
     | return 1
-  let some cut := cutsState.cuts[cutIndex]? | return 1
+  let some coreResult := evaluateCert registers refillResult.refs coreNeeded coreCert
+    | return 1
+  let some moverCert := certs[2]? | return 1
+  let moverNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    (certs.drop 3) needed
+  let topCuts : Array CoreCut := #[
+    { name := "refill", source :=
+        "Machines.Lnp64u.Hw.refillAct Machines.Lnp64u.Demo.sysManifest",
+      sourceValue := Machines.Lnp64u.Hw.refillAct Machines.Lnp64u.Demo.sysManifest,
+      cert := "actionCertNode4", certValue := refillCert, input := initial,
+      needed := refillNeeded,
+      size := sourceActionNodeCount
+        (Machines.Lnp64u.Hw.refillAct Machines.Lnp64u.Demo.sysManifest) },
+    { name := "mover", source := "Machines.Lnp64u.Hw.moverAct",
+      sourceValue := Machines.Lnp64u.Hw.moverAct,
+      cert := "actionCertNode15162", certValue := moverCert,
+      input := coreResult.refs, needed := moverNeeded,
+      size := sourceActionNodeCount Machines.Lnp64u.Hw.moverAct }]
+  let cut? := if cutIndex < cutsState.cuts.size then cutsState.cuts[cutIndex]?
+    else topCuts[cutIndex - cutsState.cuts.size]?
+  let some cut := cut? | return 1
   let stateDepth := 10
   let neededBits := cutIndicesToBits cut.needed
   let some (inputRoot, initialState) :=
@@ -971,12 +1704,13 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     outputRefTexts := outputRefTexts.push (dagRefToLean outputRef)
   let metaText :=
     "-- Generated lightweight action-cut metadata; DO NOT EDIT.\n" ++
-    "import Loom.Release.ActionShape\n\n" ++
+    "import Loom.Release.ActionShape\n" ++
+    "import GeneratedRelease.Lnp64u.ActionCert\n\n" ++
     "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
     "open Loom.Hw Loom.Release\n\n" ++
     "def dagNeededBits : Nat := " ++ toString neededBits ++ "\n\n" ++
-    "def dagCutRegisters : Array RegDecl := " ++
-      cutRegistersToLean registers ++ "\n\n" ++
+    "abbrev dagCutRegisters : Array RegDecl := " ++
+      "Loom.GeneratedRelease.Lnp64u.actionWideRegisters\n\n" ++
     "def dagCutInputRefs : Array Symbolic.Ref := #[" ++
       String.intercalate ", " inputRefTexts.toList ++ "]\n\n" ++
     "def dagCutOutputRefs : Array Symbolic.Ref := #[" ++
@@ -1041,28 +1775,6 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   let connectorCheckImports := String.intercalate "\n" <|
     (List.range connectorCheckBatches.length).map fun index =>
       "import " ++ modulePrefix ++ "ConnectorCheck" ++ pad3 index
-  -- Join-output lookups are certified once in small independent shards. The
-  -- action elaborator then refers to these named constants instead of making
-  -- every connector proof normalize the global indexed-wire rope again.
-  let joinLookupBatchSize := 128
-  let allJoins := Id.run do
-    let candidates := leaves.toList.flatMap (·.joins) ++
-      connectorCheckIndices.flatMap fun index => connectors[index]!.joins
-    let mut seen : Std.HashSet Nat := {}
-    let mut unique : Array Loom.Release.Symbolic.ActionWide.Join := #[]
-    for join in candidates do
-      if let .wire number := join.output then
-        if !seen.contains number then
-          seen := seen.insert number
-          unique := unique.push join
-    return unique.toList
-  let joinLookupBatches := allJoins.toChunks joinLookupBatchSize
-  let mut joinLookupShard : Std.HashMap Nat Nat := {}
-  for (batchIndex, batch) in
-      (List.range joinLookupBatches.length).zip joinLookupBatches do
-    for join in batch do
-      if let .wire number := join.output then
-        joinLookupShard := joinLookupShard.insert number batchIndex
   let proofRefName : DagProofRef → String
     | .leaf index => "dagCutLeaf" ++ pad3 index ++ "Evidence"
     | .connector index => "dagCutConnector" ++ pad3 index ++ "Evidence"
@@ -1095,7 +1807,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
     "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
     "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
-    "theorem dagCutShapeEvidence :\n" ++
+    "@[release_action_shape_cut] theorem dagCutShapeEvidence :\n" ++
     "    Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
       "fastWireTable dagCutRegisters (" ++ cut.source ++ ") " ++
       toString neededBits ++ " (" ++ cut.cert ++
@@ -1112,7 +1824,13 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
   let dataPath := System.FilePath.mk
     ((output.toString.dropEnd 5).toString ++ "Data.lean")
   let basePath := (output.toString.dropEnd 5).toString
-  writeIfChanged (System.FilePath.mk <| basePath ++ "Meta.lean") metaText
+  let cutNamespace := "Loom.GeneratedRelease.Lnp64u.DagCut" ++ pad3 cutIndex
+  let writeDag (path : System.FilePath) (source : String) : IO Unit :=
+    writeIfChanged path <|
+      (source.replace "namespace Loom.GeneratedRelease.Lnp64u\n"
+        ("namespace " ++ cutNamespace ++ "\n")).replace
+      "end Loom.GeneratedRelease.Lnp64u\n" ("end " ++ cutNamespace ++ "\n")
+  writeDag (System.FilePath.mk <| basePath ++ "Meta.lean") metaText
   for (index, batch) in (List.range nodeBatches.length).zip nodeBatches do
     let nodeText :=
       "-- Generated hash-consed action-state node shard; DO NOT EDIT.\n" ++
@@ -1122,10 +1840,10 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
       String.intercalate "\n" batch ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "Nodes" ++
+    writeDag (System.FilePath.mk <| basePath ++ "Nodes" ++
       pad3 index ++ ".lean") nodeText
   pruneIndexedShards output "Nodes" nodeBatches.length
-  writeIfChanged dataPath dataText
+  writeDag dataPath dataText
   for (index, batch) in (List.range resolverBatches.length).zip resolverBatches do
     let resolverText :=
       "-- Generated hash-consed action-state resolver shard; DO NOT EDIT.\n" ++
@@ -1135,7 +1853,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
       String.intercalate "\n" batch ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "Resolvers" ++
+    writeDag (System.FilePath.mk <| basePath ++ "Resolvers" ++
       pad3 index ++ ".lean") resolverText
   pruneIndexedShards output "Resolvers" resolverBatches.length
   for (batchIndex, indices) in
@@ -1171,54 +1889,26 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
       String.intercalate "\n" declarations.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "Lookup" ++
+    writeDag (System.FilePath.mk <| basePath ++ "Lookup" ++
       pad3 batchIndex ++ ".lean") lookupText
   pruneIndexedShards output "Lookup" lookupBatches.length
-  let wireLeafCount := (program.wires.size + 127) / 128
-  for (batchIndex, batch) in
-      (List.range joinLookupBatches.length).zip joinLookupBatches do
-    let mut declarations : Array String := #[]
-    for join in batch do
-      let .wire number := join.output | return 1
-      let blockIndex := number / 128
-      let some path := Loom.Release.Symbolic.balancedPath? wireLeafCount blockIndex
-        | return 1
-      let pathText := "[" ++ String.intercalate ", "
-        (path.map fun bit => if bit then "true" else "false") ++ "]"
-      declarations := declarations.push <|
-        "theorem dagJoinLookup" ++ toString number ++ " :\n" ++
-        "    Symbolic.lookupIndexed? fastIndexedWireTree fastWireTable " ++
-          toString number ++ " = some\n" ++
-        "      { number := " ++ toString number ++ ", width := " ++
-          toString join.width ++ ", rhs := .mux (" ++ dagRefToLean join.guard ++
-          ") (" ++ dagRefToLean join.thenInput ++ ") (" ++
-          dagRefToLean join.elseInput ++ ") } := by\n" ++
-        "  apply Symbolic.lookupIndexed_of_resolve (path := " ++ pathText ++
-          ")\n" ++
-        "  · decide\n  · decide\n" ++
-        "  · rw [fastIndexedWireResolveBlock" ++ pad4 blockIndex ++ "]\n" ++
-        "    rfl\n  · rfl\n"
-    let joinLookupText :=
-      "-- Generated named mux lookups; DO NOT EDIT.\n" ++
-      "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
-      "import Loom.Release.ActionStateDag\n\n" ++
-      "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
-      "open Loom.Hw Loom.Release Loom.Release.SSA\n\n" ++
-      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
-      String.intercalate "\n" declarations.toList ++ "\n" ++
-      "end Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "JoinLookup" ++
-      pad3 batchIndex ++ ".lean") joinLookupText
-  pruneIndexedShards output "JoinLookup" joinLookupBatches.length
+  -- Join lookups are derived from the already checked semantic wire blocks.
+  -- No per-cut lookup theorem family is generated: LNP64-u previously
+  -- rechecked roughly 123,000 global rope navigations here.
+  pruneIndexedShards output "JoinLookup" 0
+  let mut allExpressionSpecs : Array ActionExprSpec := #[]
+  let mut expressionRefs : Std.HashSet String := {}
   for (batchIndex, batch) in
       (List.range proofLeafBatches.length).zip proofLeafBatches do
     let mut theoremTexts : Array String := #[]
     let mut lookupImports : Std.HashSet Nat := {}
     for (localIndex, leaf) in (List.range batch.length).zip batch do
       for join in leaf.joins do
-        if let .wire number := join.output then
-          if let some shard := joinLookupShard.get? number then
-            lookupImports := lookupImports.insert shard
+        if emitStateEvidence then
+          if let some number := match join.output with
+              | .wire number | .namedWire number _ => some number
+              | .reg _ => none then
+            lookupImports := lookupImports.insert ((number / 128) / 16)
       let index := batchIndex * proofLeafBatchSize + localIndex
       let actionName := "dagCutLeaf" ++ pad3 index ++ "Action"
       let certName := "dagCutLeaf" ++ pad3 index ++ "Cert"
@@ -1246,13 +1936,23 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
             toString leaf.needed ++ " " ++ certName ++ " " ++
             toString leaf.output ++ " :=\n  dag_sparse_evidence_decide\n"
         else "")
+      let neededIndices := (List.range registers.size).filter
+        (fun registerIndex => leaf.needed.testBit registerIndex)
+      let some expressionSpecs := collectActionExprSpecs leaf.sourceValue
+          leaf.certValue neededIndices leaf.source leaf.cert
+        | return 1
+      for spec in expressionSpecs do
+        let key := reprStr spec.reference
+        if !expressionRefs.contains key then
+          expressionRefs := expressionRefs.insert key
+          allExpressionSpecs := allExpressionSpecs.push spec
     let leafText :=
       "-- Generated independent DAG action leaves; DO NOT EDIT.\n" ++
       "import " ++ evidenceBaseModule ++ "\n" ++
       (if emitStateEvidence then resolverImports ++ "\n" else "") ++
-      String.intercalate "\n" ((List.range joinLookupBatches.length |>.filter
-        lookupImports.contains).map fun index =>
-          "import " ++ modulePrefix ++ "JoinLookup" ++ pad3 index) ++ "\n" ++
+      String.intercalate "\n" (lookupImports.toList.mergeSort.map fun index =>
+          "import GeneratedRelease.Lnp64u.FastLookupEvidenceBatch" ++
+            pad3 index) ++ "\n" ++
       "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
       "import GeneratedRelease.Lnp64u.ActionCert\n" ++
       "import Loom.Release.SymbolicDecide\n" ++
@@ -1268,8 +1968,120 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
     let leafPath := System.FilePath.mk ((output.toString.dropEnd 5).toString ++
       "Leaf" ++ pad3 batchIndex ++ ".lean")
-    writeIfChanged leafPath leafText
+    writeDag leafPath leafText
   pruneIndexedShards output "Leaf" proofLeafBatches.length
+  -- Every root in a cut is compiled through the same SSA program.  Splitting
+  -- roots into independent batches rebuilt their heavily overlapping reachable
+  -- DAGs several times.  One shared batch lets named wire theorems serve every
+  -- root; the final root statements only compose those constants.
+  let expressionBatchSize := max 1 allExpressionSpecs.size
+  let expressionBatches := allExpressionSpecs.toList.toChunks expressionBatchSize
+  for (batchIndex, batch) in
+      (List.range expressionBatches.length).zip expressionBatches do
+    let wireIndices := reachableExpressionWires program batch
+    let blockIndices := reachableExpressionBlocks wireIndices
+    let expressionModulePrefix := modulePrefix ++ "Expr" ++ pad3 batchIndex
+    let expressionNamespace :=
+      "Loom.GeneratedRelease.Lnp64u.DagCut" ++ pad3 cutIndex
+    let mut sourceState : SourceExprGenState := {}
+    let mut sourceRoots : Array SourceExprResult := #[]
+    for spec in batch do
+      let some (root, nextState) :=
+          (buildSourceExprEvidence program batchIndex spec.sourceValue
+            spec.reference spec.expression).run sourceState
+        | IO.eprintln s!"failed to reconstruct source expression batch {batchIndex}"
+          return 1
+      sourceState := nextState
+      sourceRoots := sourceRoots.push root
+    let sourceDefsModule := expressionModulePrefix ++ "SourceDefs"
+    let sourceDefsText :=
+      "-- Generated top-down source-expression aliases; DO NOT EDIT.\n" ++
+      "import Loom.Release.SymbolicCertificate\n" ++
+      "import Loom.Release.ActionWideRegister\n" ++
+      "import Machines.Lnp64u.Hw.Core\n" ++
+      "import Machines.Lnp64u.Hw.Demo\n" ++
+      "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
+      "namespace " ++ expressionNamespace ++ "\n\n" ++
+      "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+      String.join sourceState.definitions.toList ++
+      "end\n\nend " ++ expressionNamespace ++ "\n"
+    writeDag (System.FilePath.mk <| basePath ++ "Expr" ++ pad3 batchIndex ++
+      "SourceDefs.lean") sourceDefsText
+    for blockIndex in blockIndices do
+      let blockWires := wireIndices.filter fun number =>
+        number / expressionEvidenceBlockSize == blockIndex
+      let nodeDeclarations := blockWires.filterMap
+        (runtimeExpressionNodeToLean program batchIndex)
+      if nodeDeclarations.length != blockWires.length then
+        IO.eprintln s!"failed to reconstruct expression DAG batch {batchIndex}, block {blockIndex}"
+        return 1
+      let dependencyImports := String.intercalate "\n" <|
+        (expressionBlockDependencies program blockIndex blockWires).map fun dependency =>
+          "import " ++ expressionModulePrefix ++ "Block" ++ pad4 dependency
+      let blockText :=
+        "-- Generated bottom-up expression evidence block; DO NOT EDIT.\n" ++
+        "import " ++ sourceDefsModule ++ "\n" ++
+        "import GeneratedRelease.Lnp64u.FastLookupEvidenceBatch" ++
+          pad3 ((blockIndex * expressionEvidenceBlockSize) / 2048) ++ "\n" ++
+          dependencyImports ++ "\n\n" ++
+        "namespace " ++ expressionNamespace ++ "\n\n" ++
+        "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+        "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
+        String.join nodeDeclarations ++
+        String.join (sourceState.evidenceByBlock.getD blockIndex #[]).toList ++
+        "end\n\nend " ++ expressionNamespace ++ "\n"
+      writeDag (System.FilePath.mk <| basePath ++ "Expr" ++ pad3 batchIndex ++
+        "Block" ++ pad4 blockIndex ++ ".lean") blockText
+    pruneExpressionBlocks output batchIndex blockIndices
+    let rootBlockImports := String.intercalate "\n" <|
+      (batch.filterMap fun spec => match spec.reference with
+        | .wire number => some (number / expressionEvidenceBlockSize)
+        | .namedWire number _ => some (number / expressionEvidenceBlockSize)
+        | .reg _ => none).eraseDups.map fun blockIndex =>
+          "import " ++ expressionModulePrefix ++ "Block" ++ pad4 blockIndex
+    let mut theoremTexts : Array String := #[]
+    for (localIndex, spec) in (List.range batch.length).zip batch do
+      let index := batchIndex * expressionBatchSize + localIndex
+      let referenceSuffix := match spec.reference with
+        | .wire number => "Wire" ++ toString number
+        | .namedWire number _ => "Wire" ++ toString number
+        | .reg _ => "Reg" ++ pad4 index
+      let some targetEvidence :=
+          runtimeRefEvidenceToLean program batchIndex spec.reference
+        | return 1
+      let some sourceRoot := sourceRoots[localIndex]?
+        | return 1
+      theoremTexts := theoremTexts.push <|
+        "@[release_indexed_expr] theorem dagCutExpr" ++ referenceSuffix ++ " :\n" ++
+        "    Symbolic.IndexedExprEvidence fastIndexedWireTree fastWireTable\n" ++
+        "      (Loom.Hw.Compile.compileExpr (" ++ spec.expression ++ ")) (" ++
+          coreRefToLean spec.reference ++ ") :=\n" ++
+        "  by\n" ++
+        "    apply Symbolic.IndexedExprEvidence.ofCompiled " ++
+          "(source := " ++ sourceRoot.sourceName ++ ")\n" ++
+        "    · exact " ++ sourceRoot.evidence ++ "\n" ++
+        "    · exact " ++ targetEvidence ++ "\n\n"
+    let expressionText :=
+      "-- Generated shared expression certificates; DO NOT EDIT.\n" ++
+      "import " ++ evidenceBaseModule ++ "\n" ++
+      "import " ++ sourceDefsModule ++ "\n" ++
+      rootBlockImports ++ "\n" ++
+      "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+      "import Loom.Release.SymbolicDecide\n" ++
+      "import Machines.Lnp64u.Hw.Core\n" ++
+      "import Machines.Lnp64u.Hw.Demo\n" ++
+      "import Machines.Lnp64u.Theorems.ReleaseOrder\n\n" ++
+      "namespace " ++ expressionNamespace ++ "\n\n" ++
+      "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" ++
+      "set_option Elab.async false\n\n" ++
+      String.join theoremTexts.toList ++
+      "end\n\nend " ++ expressionNamespace ++ "\n"
+    writeDag (System.FilePath.mk <| basePath ++ "Expr" ++ pad3 batchIndex ++
+      ".lean") expressionText
+  pruneIndexedShards output "Expr" expressionBatches.length
+  pruneBatchDescendants output "Expr" expressionBatches.length
   let stateLeaves := if emitStateEvidence then leaves else #[]
   let stateConnectors := if emitStateEvidence then connectors else #[]
   -- Materialize every concrete state boundary exactly once.  Repeating a
@@ -1317,7 +2129,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "open Loom.Release\n\n" ++
       String.intercalate "\n\n" declarations.toList ++ "\n\n" ++
       "end Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "StateRoot" ++
+    writeDag (System.FilePath.mk <| basePath ++ "StateRoot" ++
       pad3 batchIndex ++ ".lean") text
   pruneIndexedShards output "StateRoot" stateRootBatches.length
   let stateRootName (root : Nat) := "dagCutStateRoot" ++ toString root
@@ -1366,9 +2178,10 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" ++
       "set_option Elab.async false\n\n" ++
+      "indexed_expr_checkpoints\n\n" ++
       String.intercalate "\n" declarations.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "StateLeaf" ++
+    writeDag (System.FilePath.mk <| basePath ++ "StateLeaf" ++
       pad3 batchIndex ++ ".lean") stateLeafText
   pruneIndexedShards output "StateLeaf" stateLeafBatches.length
   let stateStem : DagProofRef → String
@@ -1507,7 +2320,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
                 toString nextChanged ++ ", " ++ chunkStem ++
                 "Output) := by\n  rfl\n\n" ++
               "end Loom.GeneratedRelease.Lnp64u\n"
-            writeIfChanged (System.FilePath.mk <| basePath ++ joinModuleStem ++
+            writeDag (System.FilePath.mk <| basePath ++ joinModuleStem ++
               ".lean") joinText
             currentChanged := nextChanged
             currentRoot := nextRoot
@@ -1554,13 +2367,13 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
       String.intercalate "\n" declarations.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "StateConnector" ++
+    writeDag (System.FilePath.mk <| basePath ++ "StateConnector" ++
       pad3 batchIndex ++ ".lean") stateConnectorText
   pruneIndexedShards output "StateConnector" stateConnectorBatches.length
   let connectorLevels := "# connector-index<TAB>dependency-level\n" ++
     String.intercalate "\n" (stateConnectors.toList.zipIdx.map fun (connector, index) =>
       toString index ++ "\t" ++ toString connector.level) ++ "\n"
-  writeIfChanged (System.FilePath.mk <| basePath ++ "StateConnectorLevels.tsv")
+  writeDag (System.FilePath.mk <| basePath ++ "StateConnectorLevels.tsv")
     connectorLevels
   -- Emit the largest conditional join as an explicit feasibility sentinel for
   -- the full-state checker composition path.
@@ -1604,7 +2417,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
           "dagStateJoinSpikeInput = some (" ++ toString spikeChanged ++
           ", dagStateJoinSpikeOutput) := by\n  rfl\n\n" ++
         "end Loom.GeneratedRelease.Lnp64u\n"
-      writeIfChanged (System.FilePath.mk <| basePath ++ "StateJoinSpike.lean")
+      writeDag (System.FilePath.mk <| basePath ++ "StateJoinSpike.lean")
         spikeText
   for (batchIndex, indices) in
       (List.range connectorCheckBatches.length).zip connectorCheckBatches do
@@ -1613,9 +2426,11 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
     for index in indices do
       let connector := connectors[index]!
       for join in connector.joins do
-        if let .wire number := join.output then
-          if let some shard := joinLookupShard.get? number then
-            lookupImports := lookupImports.insert shard
+        if emitStateEvidence then
+          if let some number := match join.output with
+              | .wire number | .namedWire number _ => some number
+              | .reg _ => none then
+            lookupImports := lookupImports.insert ((number / 128) / 16)
       let stem := "dagCutConnector" ++ pad3 index
       let condition := stem ++ "Condition"
       let conditionValue := connector.condition.getD
@@ -1700,25 +2515,27 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       let joinProofs :=
         "noncomputable def " ++ connectorJoins ++
           " : List Symbolic.ActionWide.Join := " ++ joinsText ++ "\n\n" ++
-        suffixDefinitions ++ "\n" ++ outputProofText ++ "\n" ++
         (if emitStateEvidence then
-          String.intercalate "\n" suffixProofs.toList
+          suffixDefinitions ++ "\n" ++ outputProofText ++ "\n" ++
+            String.intercalate "\n" suffixProofs.toList
         else "")
       checks := checks.push <|
         "noncomputable def " ++ condition ++ " : Expr 1 := " ++
           conditionValue ++ "\n\n" ++
-        "theorem " ++ stem ++ "ConditionCheck :\n" ++
-        "    Symbolic.indexedExprMatches fastIndexedWireTree fastWireTable " ++
-          "(Loom.Hw.Compile.compileExpr " ++ condition ++ ") " ++
-          conditionRefText ++ " = true :=\n  indexed_expr_decide\n\n" ++
-        joinProofs
+        (if emitStateEvidence then
+          "theorem " ++ stem ++ "ConditionCheck :\n" ++
+          "    Symbolic.indexedExprMatches fastIndexedWireTree fastWireTable " ++
+            "(Loom.Hw.Compile.compileExpr " ++ condition ++ ") " ++
+            conditionRefText ++ " = true :=\n  indexed_expr_decide\n\n"
+        else "") ++
+          joinProofs
     let checkText :=
       "-- Generated parallel outer-guard certificates; DO NOT EDIT.\n" ++
       "import " ++ evidenceBaseModule ++ "\n" ++
       (if emitStateEvidence then resolverImports ++ "\n" else "") ++
-      String.intercalate "\n" ((List.range joinLookupBatches.length |>.filter
-        lookupImports.contains).map fun index =>
-          "import " ++ modulePrefix ++ "JoinLookup" ++ pad3 index) ++ "\n" ++
+      String.intercalate "\n" (lookupImports.toList.mergeSort.map fun index =>
+          "import GeneratedRelease.Lnp64u.FastLookupEvidenceBatch" ++
+            pad3 index) ++ "\n" ++
       "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
       "import GeneratedRelease.Lnp64u.ActionCert\n" ++
       "import Loom.Release.SymbolicDecide\n" ++
@@ -1733,7 +2550,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
         (runtimeCheckpoints program |>.map toString) ++ "\n\n" ++
       String.intercalate "\n" checks.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "ConnectorCheck" ++
+    writeDag (System.FilePath.mk <| basePath ++ "ConnectorCheck" ++
       pad3 batchIndex ++ ".lean") checkText
   pruneIndexedShards output "ConnectorCheck" connectorCheckBatches.length
   for (batchIndex, batch) in
@@ -1803,9 +2620,8 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
           "    Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
             "fastWireTable dagCutRegisters " ++ source ++ " " ++
             toString connector.needed ++ " " ++ cert ++
-            " :=\n  .ite " ++ stem ++ "SummaryCheck " ++ stem ++
-            "ConditionCheck " ++ leftShape ++ " " ++ rightShape ++ " " ++
-            stem ++ "OutputsEvidence\n\n" ++
+            " :=\n  .ite " ++ stem ++ "SummaryCheck " ++ leftShape ++ " " ++
+            rightShape ++ "\n\n" ++
           (if emitStateEvidence then
             "theorem " ++ stem ++ "Evidence :\n" ++ evidenceType ++ " :=\n" ++
             "  .ite " ++ stem ++ "SummaryCheck " ++ stem ++
@@ -1830,10 +2646,10 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n\n" ++
       String.intercalate "\n" theoremTexts.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "Connector" ++
+    writeDag (System.FilePath.mk <| basePath ++ "Connector" ++
       pad3 batchIndex ++ ".lean") connectorText
   pruneIndexedShards output "Connector" connectorBatches.length
-  writeIfChanged output proofText
+  writeDag output proofText
   -- Demand-driven semantic projections replace the enormous persistent-state
   -- proof. Each declaration follows one required register only; the kernel
   -- checks the generator-selected input and output references exactly.
@@ -1858,10 +2674,19 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
           toString register.width ++ " " ++ rootActionName ++ " (" ++
           dagRefToLean inputRef ++ ") " ++ toString neededBits ++ " " ++
           rootCertName ++ " = some (" ++ dagRefToLean outputRef ++ ") := by\n" ++
-        "  rfl\n"
+        "  rfl\n\n" ++
+        "@[release_reg_query_cut] theorem dagCutRegEvidence" ++ pad4 index ++
+          " :\n" ++
+        "    Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
+          "fastWireTable dagCutRegisters " ++ toString index ++ " " ++
+          toString register.width ++ " " ++ rootActionName ++ " (" ++
+          dagRefToLean inputRef ++ ") " ++ toString neededBits ++ " " ++
+          rootCertName ++ " (" ++ dagRefToLean outputRef ++ ") :=\n" ++
+        "  reg_query_decide\n"
     let queryText :=
       "-- Generated demand-driven register certificates; DO NOT EDIT.\n" ++
       "import " ++ modulePrefix ++ "\n" ++
+      "import GeneratedRelease.Lnp64u.FastLookupEvidenceRoot\n" ++
       "import Loom.Release.SymbolicDecide\n\n" ++
       "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
       "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
@@ -1869,7 +2694,7 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       "set_option Elab.async false\n\n" ++
       String.intercalate "\n" declarations.toList ++ "\n" ++
       "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeIfChanged (System.FilePath.mk <| basePath ++ "Query" ++
+    writeDag (System.FilePath.mk <| basePath ++ "Query" ++
       pad3 batchIndex ++ ".lean") queryText
   pruneIndexedShards output "Query" queryBatches.length
   IO.eprintln (s!"dag cut {cutIndex}: actions={finalState.actionRoots.size} " ++
@@ -2047,9 +2872,6 @@ private def registersToLean (registers : Array RegDecl) : String :=
       toString register.width ++ ", init := BitVec.ofNat " ++
       toString register.width ++ " " ++ toString register.init.toNat ++ " }") ++
     "]"
-
-private def indicesToBits (indices : List Nat) : Nat :=
-  indices.foldl (fun bits index => bits ||| (1 <<< index)) 0
 
 private def evidenceType (source input needed cert result : String) : String :=
   "Symbolic.ActionWide.SparseEvidence indexedWireTree wireTable " ++
@@ -2485,6 +3307,292 @@ private unsafe def generateCoreBranchProbe (runtime output : System.FilePath) :
   writeIfChanged output source
   return 0
 
+/-- Generate the small composition layer that turns independently checked
+core-action cuts into one query-local certificate per architectural register.
+The generator chooses imports and expected roots, but every choice is checked
+again by `action_shape_decide` or `reg_query_decide` in the kernel. -/
+private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
+    IO UInt32 := do
+  let program ← Tools.RuntimeSsa.load runtime
+  let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
+  let some certs := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
+      design program | return 1
+  let registers := design.regs.toArray
+  unless registers.size == program.regs.size do return 1
+  let initial := registers.map fun register =>
+    Loom.Release.Symbolic.Ref.reg register.name
+  let needed := List.range registers.size
+  let some refillCert := certs[0]? | return 1
+  let refillNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    certs.tail needed
+  let some refillResult := evaluateCert registers initial refillNeeded refillCert
+    | return 1
+  let some coreCert := certs[1]? | return 1
+  let coreNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    (certs.drop 2) needed
+  let issueOrder := (Machines.Lnp64u.Hw.schedOrder
+    Machines.Lnp64u.Demo.sysManifest).toArray
+  let some (_, cutsState) := (collectCoreCuts registers issueOrder
+      (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) coreCert
+      refillResult.refs coreNeeded "actionCertNode15158").run {}
+    | return 1
+  unless cutsState.cuts.size == 10 do return 1
+  IO.FS.createDirAll outputDir
+  let neededBits := indicesToBits needed
+  let rootImports := String.intercalate "\n" <|
+    (List.range 12).map fun index =>
+      "import GeneratedRelease.Lnp64u.DagCut" ++ pad3 index
+  let ruleSources : Array String := #[
+    "Machines.Lnp64u.Hw.refillAct Machines.Lnp64u.Demo.sysManifest",
+    "Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest",
+    "Machines.Lnp64u.Hw.moverAct",
+    "Machines.Lnp64u.Hw.tickAct"]
+  let ruleCertNames : Array String := #["actionCertNode4", "actionCertNode15158",
+    "actionCertNode15162", "actionCertNode15163"]
+  unless certs.length == ruleSources.size do return 1
+  let header :=
+    "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
+    "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
+    "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" ++
+    "set_option Elab.async false\n\n"
+  let base :=
+    "-- Generated hybrid ordered-rule certificate base; DO NOT EDIT.\n" ++
+    "import GeneratedRelease.Lnp64u.FastIndexedRoot\n" ++
+    "import GeneratedRelease.Lnp64u.FastLookupEvidenceRoot\n" ++
+    "import GeneratedRelease.Lnp64u.ActionCert\n" ++
+    "import Loom.Release.SymbolicDecide\n" ++
+    "import Machines.Lnp64u.Hw.Core\n" ++
+    "import Machines.Lnp64u.Hw.Demo\n" ++
+    "import Machines.Lnp64u.Theorems.ReleaseOrder\n" ++ rootImports ++ "\n\n" ++
+    header ++
+    "abbrev hybridDesign := Machines.Lnp64u.Hw.core " ++
+      "Machines.Lnp64u.Demo.sysManifest\n" ++
+    "def hybridRegisters : Array RegDecl := actionWideRegisters\n" ++
+    "theorem hybridRegistersEq : hybridRegisters = hybridDesign.regs.toArray := by\n" ++
+    "  rfl\n" ++
+    "noncomputable def hybridAction : Act :=\n" ++
+    "  Symbolic.ActionWide.rulesAction hybridDesign.rules\n" ++
+    "noncomputable def hybridCert : Symbolic.ActionWide.ActionCert :=\n" ++
+    "  Symbolic.ActionWide.rulesActionCert " ++
+      "Loom.GeneratedRelease.Lnp64u.actionWideCert\n" ++
+    "def hybridNeeded : Nat := " ++ toString neededBits ++ "\n\n" ++
+    "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+  writeIfChanged (outputDir / "HybridBase.lean") base
+  let some (coreRoot, coreShapeState) := (collectCoreShape issueOrder
+      (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) coreCert
+      (indicesToBits coreNeeded)
+      "Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest"
+      "actionCertNode15158").run {}
+    | return 1
+  unless coreShapeState.cutNext == 10 do return 1
+  let mut coreCutBridges : Array String := #[]
+  for index in List.range cutsState.cuts.size do
+    let some cut := cutsState.cuts[index]? | return 1
+    let cutNamespace := "Loom.GeneratedRelease.Lnp64u.DagCut" ++ pad3 index
+    coreCutBridges := coreCutBridges.push <|
+      "@[release_action_shape_cut] theorem hybridCoreCut" ++ pad3 index ++ " :\n" ++
+      "    Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters (" ++ cut.source ++ ") " ++
+        toString (indicesToBits cut.needed) ++ " (" ++ cut.cert ++ ") := by\n" ++
+      "  exact " ++ cutNamespace ++ ".dagCutShapeEvidence\n\n"
+  let coreShapeModule :=
+    "-- Generated named composition shell for the LNP64-u core; DO NOT EDIT.\n" ++
+    "import GeneratedRelease.Lnp64u.HybridBase\n\n" ++ header ++
+    String.join coreCutBridges.toList ++
+    String.join coreShapeState.declarations.toList ++
+    "theorem hybridCoreShape :\n" ++
+    "    Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
+      "fastWireTable hybridRegisters\n" ++
+    "      (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) " ++
+      toString (indicesToBits coreNeeded) ++ " actionCertNode15158 :=\n" ++
+    "  " ++ coreRoot ++ "\n\n" ++
+    "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+  writeIfChanged (outputDir / "HybridCoreShape.lean") coreShapeModule
+  for index in List.range ruleSources.size do
+    let some sourceName := ruleSources[index]? | return 1
+    let some certName := ruleCertNames[index]? | return 1
+    let ruleNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+      (certs.drop (index + 1)) needed
+    let ruleModule :=
+      "-- Generated hybrid top-level rule shape; DO NOT EDIT.\n" ++
+      (if index == 1 then
+        "import GeneratedRelease.Lnp64u.HybridCoreShape\n\n"
+       else "import GeneratedRelease.Lnp64u.HybridBase\n\n") ++ header ++
+      "theorem hybridRule" ++ pad3 index ++ "Shape :\n" ++
+      "    Symbolic.ActionWide.ActionShapeEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters (" ++ sourceName ++ ") " ++
+        toString (indicesToBits ruleNeeded) ++ " " ++ certName ++ " :=\n" ++
+      (if index == 1 then "  hybridCoreShape\n\n"
+       else "  action_shape_decide\n\n") ++
+      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (outputDir / ("HybridRule" ++ pad3 index ++ ".lean")) ruleModule
+  let prelude :=
+    "-- Generated hybrid ordered-rule certificate; DO NOT EDIT.\n" ++
+    "import GeneratedRelease.Lnp64u.Root\n" ++
+    "import GeneratedRelease.Lnp64u.IndexedRoot\n" ++
+    "import GeneratedRelease.Lnp64u.FastIndexedBridge\n" ++
+    "import GeneratedRelease.Lnp64u.HybridRule000\n" ++
+    "import GeneratedRelease.Lnp64u.HybridRule001\n" ++
+    "import GeneratedRelease.Lnp64u.HybridRule002\n" ++
+    "import GeneratedRelease.Lnp64u.HybridRule003\n" ++
+    "import Loom.Release.ActionStateDagNames\n" ++
+    "import Loom.Release.KernelDecide\n" ++
+    "import Machines.Lnp64u.Theorems.RMCReset\n\n" ++
+    header ++
+    "theorem hybridShape :\n" ++
+    "    Symbolic.ActionWide.ActionShapeEvidence\n" ++
+    "      Loom.GeneratedRelease.Lnp64u.fastIndexedWireTree\n" ++
+    "      Loom.GeneratedRelease.Lnp64u.fastWireTable hybridRegisters\n" ++
+    "      hybridAction hybridNeeded hybridCert :=\n" ++
+    "  .seq rfl hybridRule000Shape\n" ++
+    "    (.seq rfl hybridRule001Shape\n" ++
+    "      (.seq rfl hybridRule002Shape\n" ++
+    "        (.seq rfl hybridRule003Shape .skip)))\n\n" ++
+    "theorem hybridIndexedWiresMatch :\n" ++
+    "    Symbolic.IndexedRopeMatches 0 program.wires fastIndexedWireTree := by\n" ++
+    "  rw [fastIndexedWireTree_eq_indexedWireTree]\n" ++
+    "  exact indexedWiresMatch\n\n" ++
+    "theorem hybridNamesUnique :\n" ++
+    "    Symbolic.ActionWide.RegisterNamesUnique hybridRegisters := by\n" ++
+    "  rw [hybridRegistersEq]\n" ++
+    "  unfold hybridDesign\n" ++
+    "  exact Symbolic.ActionWide.registerNamesUnique_toArray _\n" ++
+    "    (Machines.Lnp64u.Theorems.RMC.names_nodup _)\n\n" ++
+    "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+  writeIfChanged (outputDir / "HybridPrelude.lean") prelude
+  let mut cutResults : Array Loom.Release.Symbolic.ActionWide.Result := #[]
+  for cutIndex in List.range cutsState.cuts.size do
+    let some cut := cutsState.cuts[cutIndex]? | return 1
+    let some result := evaluateCert registers cut.input cut.needed cut.certValue
+      | return 1
+    cutResults := cutResults.push result
+  let some coreResult := evaluateCert registers refillResult.refs coreNeeded coreCert
+    | return 1
+  let some moverCert := certs[2]? | return 1
+  let moverNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
+    (certs.drop 3) needed
+  let some moverResult := evaluateCert registers coreResult.refs moverNeeded moverCert
+    | return 1
+  let some tickCert := certs[3]? | return 1
+  let tickNeeded := needed
+  let some tickResult := evaluateCert registers moverResult.refs tickNeeded tickCert
+    | return 1
+  for index in List.range registers.size do
+    let some register := registers[index]? | return 1
+    let some concrete := program.regs[index]? | return 1
+    unless register.name == concrete.name && register.width == concrete.width do
+      return 1
+    let some outputRef := Tools.RuntimeSsa.ref? concrete.next | return 1
+    let suffix := pad4 index
+    let some refillOutput := refillResult.refs[index]? | return 1
+    let some coreOutput := coreResult.refs[index]? | return 1
+    let some moverOutput := moverResult.refs[index]? | return 1
+    let some tickOutput := tickResult.refs[index]? | return 1
+    unless tickOutput == outputRef do return 1
+    let mut cutDeclarations : Array String := #[]
+    for cutIndex in List.range cutsState.cuts.size do
+      let some cut := cutsState.cuts[cutIndex]? | return 1
+      if cut.needed.contains index then
+        let some result := cutResults[cutIndex]? | return 1
+        let some inputRef := cut.input[index]? | return 1
+        let some cutOutputRef := result.refs[index]? | return 1
+        cutDeclarations := cutDeclarations.push <|
+          "@[release_reg_query_cut] theorem hybridCut" ++ pad3 cutIndex ++
+            "Reg" ++ suffix ++ " :\n" ++
+          "    Symbolic.ActionWide.RegQueryEvidence\n" ++
+          "      Loom.GeneratedRelease.Lnp64u.fastIndexedWireTree\n" ++
+          "      Loom.GeneratedRelease.Lnp64u.fastWireTable hybridRegisters " ++
+            toString index ++ " " ++ toString register.width ++ " (" ++
+            cut.source ++ ") (" ++ dagRefToLean inputRef ++ ") " ++
+            toString (indicesToBits cut.needed) ++ " (" ++ cut.cert ++ ") (" ++
+            dagRefToLean cutOutputRef ++ ") :=\n" ++
+          "  reg_query_decide\n"
+    let ruleDeclarations :=
+      "theorem hybridRule000Reg" ++ suffix ++ " :\n" ++
+      "    Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters " ++ toString index ++ " " ++
+        toString register.width ++ "\n" ++
+      "      (Machines.Lnp64u.Hw.refillAct " ++
+        "Machines.Lnp64u.Demo.sysManifest) (.reg " ++
+        reprStr register.name ++ ") " ++ toString (indicesToBits refillNeeded) ++
+        " actionCertNode4 (" ++ dagRefToLean refillOutput ++ ") :=\n" ++
+      "  reg_query_decide\n\n" ++
+      "theorem hybridRule001Reg" ++ suffix ++ " :\n" ++
+      "    Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters " ++ toString index ++ " " ++
+        toString register.width ++ "\n" ++
+      "      (Machines.Lnp64u.Hw.coreAct " ++
+        "Machines.Lnp64u.Demo.sysManifest) (" ++ dagRefToLean refillOutput ++
+        ") " ++ toString (indicesToBits coreNeeded) ++
+        " actionCertNode15158 (" ++ dagRefToLean coreOutput ++ ") := by\n" ++
+      "  unfold Machines.Lnp64u.Hw.coreAct\n" ++
+      "  rw [Machines.Lnp64u.Theorems.ReleaseOrder.schedOrderRelease]\n" ++
+      "  exact reg_query_decide\n\n" ++
+      "theorem hybridRule002Reg" ++ suffix ++ " :\n" ++
+      "    Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters " ++ toString index ++ " " ++
+        toString register.width ++ " Machines.Lnp64u.Hw.moverAct (" ++
+        dagRefToLean coreOutput ++ ") " ++ toString (indicesToBits moverNeeded) ++
+        " actionCertNode15162 (" ++ dagRefToLean moverOutput ++ ") :=\n" ++
+      "  reg_query_decide\n\n" ++
+      "theorem hybridRule003Reg" ++ suffix ++ " :\n" ++
+      "    Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
+        "fastWireTable hybridRegisters " ++ toString index ++ " " ++
+        toString register.width ++ " Machines.Lnp64u.Hw.tickAct (" ++
+        dagRefToLean moverOutput ++ ") " ++ toString (indicesToBits tickNeeded) ++
+        " actionCertNode15163 (" ++ dagRefToLean tickOutput ++ ") :=\n" ++
+      "  reg_query_decide\n"
+    let source :=
+      "-- Generated hybrid register projection; DO NOT EDIT.\n" ++
+      "import GeneratedRelease.Lnp64u.HybridPrelude\n\n" ++ header ++
+      String.intercalate "\n" cutDeclarations.toList ++ "\n\n" ++
+      ruleDeclarations ++ "\n\n" ++
+      "theorem hybridRegEvidence" ++ suffix ++ " :\n" ++
+      "    Symbolic.ActionWide.RegQueryEvidence\n" ++
+      "      Loom.GeneratedRelease.Lnp64u.fastIndexedWireTree\n" ++
+      "      Loom.GeneratedRelease.Lnp64u.fastWireTable hybridRegisters " ++
+        toString index ++ " " ++ toString register.width ++ " hybridAction\n" ++
+      "      (.reg " ++ reprStr register.name ++ ") hybridNeeded hybridCert (" ++
+        dagRefToLean outputRef ++ ") :=\n" ++
+      "  .seq hybridRule000Reg" ++ suffix ++ "\n" ++
+      "    (.seq hybridRule001Reg" ++ suffix ++ "\n" ++
+      "      (.seq hybridRule002Reg" ++ suffix ++ "\n" ++
+      "        (.seq hybridRule003Reg" ++ suffix ++ " .skip)))\n\n" ++
+      "def hybridSource" ++ suffix ++ " : RegDecl :=\n" ++
+      "  { name := " ++ reprStr register.name ++ ", width := " ++
+        toString register.width ++ ", init := BitVec.ofNat " ++
+        toString register.width ++ " " ++ toString register.init.toNat ++ " }\n\n" ++
+      "theorem hybridSourceArray" ++ suffix ++ " :\n" ++
+      "    hybridRegisters[" ++ toString index ++ "]? = some " ++
+        "hybridSource" ++ suffix ++ " := by rfl\n\n" ++
+      "theorem hybridSourceList" ++ suffix ++ " :\n" ++
+      "    hybridDesign.regs[" ++ toString index ++ "]? = some hybridSource" ++
+        suffix ++ " := by rfl\n\n" ++
+      "theorem hybridMetadata" ++ suffix ++ " :\n" ++
+      "    Symbolic.indexedRegisterMetadataMatchesAt hybridDesign program " ++
+        toString index ++ " (" ++ dagRefToLean outputRef ++ ") = true :=\n" ++
+      "  kernel_decide\n\n" ++
+      "theorem semanticRegisterBehavior" ++ toString index ++ " :\n" ++
+      "    Symbolic.RegisterBehaviorAt hybridDesign program wireTable " ++
+        toString index ++ " (" ++ dagRefToLean outputRef ++ ") := by\n" ++
+      "  simpa [fastWireTable, wireTable] using\n" ++
+      "    (hybridRegEvidence" ++ suffix ++ ".registerBehaviorAt hybridDesign " ++
+        "program hybridIndexedWiresMatch fastWireTable " ++ toString index ++
+        " hybridSource" ++ suffix ++ " (" ++ dagRefToLean outputRef ++ ")\n" ++
+      "      hybridNeeded hybridCert hybridShape hybridNamesUnique\n" ++
+      "      hybridRegistersEq hybridSourceArray" ++ suffix ++
+        " hybridSourceList" ++ suffix ++
+        " (by decide) hybridMetadata" ++ suffix ++ ")\n\n" ++
+      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
+    writeIfChanged (outputDir / ("HybridReg" ++ suffix ++ ".lean")) source
+  let root :=
+    "-- Generated hybrid register projection root; DO NOT EDIT.\n" ++
+    String.intercalate "\n" ((List.range registers.size).map fun index =>
+      "import GeneratedRelease.Lnp64u.HybridReg" ++ pad4 index) ++ "\n"
+  writeIfChanged (outputDir / "HybridRoot.lean") root
+  IO.eprintln s!"generated hybrid shape and {registers.size} register projections"
+  return 0
+
 set_option compiler.extract_closed false in
 unsafe def main (args : List String) : IO UInt32 := do
   IO.eprintln "actionwidegen-start"
@@ -2533,6 +3641,8 @@ unsafe def main (args : List String) : IO UInt32 := do
       let some cutIndex := cutIndex.toNat?
         | IO.eprintln "cut index must be a natural number"; return 2
       generateCoreDagProbe runtime output cutIndex
+  | ["lnp64u-hybrid-rules", runtime, outputDir] =>
+      generateHybridRules runtime outputDir
   | _ =>
       IO.eprintln "usage: actionwidegen {acc8|lnp64u} RUNTIME.json OUTPUT.lean"
       return 2

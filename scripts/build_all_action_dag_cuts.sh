@@ -27,7 +27,7 @@ fi
 src=GeneratedRelease/Lnp64u
 lib=.lake/build/lib/lean/GeneratedRelease/Lnp64u
 runtime="$src/Runtime.tsv"
-cut_count=10
+cut_count=12
 
 if [[ ! -f "$runtime" ]]; then
   echo "missing $runtime; generate the LNP64-u release witness first" >&2
@@ -61,7 +61,7 @@ compile_generated() {
   fi
   if [[ "$rebuild" == 1 ]]; then
     mkdir -p "$(dirname "$output")"
-    lake env lean "$(realpath "$source")" -o "$output"
+    lake env lean -j 1 "$(realpath "$source")" -o "$output"
   fi
 }
 export -f compile_generated
@@ -88,10 +88,52 @@ echo "all action cuts: using one pool of $jobs checker workers"
 run_phase "action DAG prerequisites" lake build actionwidegen \
   Loom.Release.SymbolicDecide Machines.Lnp64u.Theorems.ReleaseOrder
 
+# These compact wire views are emitted by gen_release_witness.py and are the
+# only wire objects used by the action checker.  Build their dependency layers
+# explicitly so this script works after deleting the entire generated olean
+# tree; previously a clean run silently depended on stale objects.
+run_phase "fast indexed wire blocks" bash -c \
+  "find '$src' -maxdepth 1 -name 'FastIndexedBatch*.lean' -print0 | sort -z | compile_stream"
+run_phase "fast indexed wire root" compile_generated "$src/FastIndexedRoot.lean"
+run_phase "fast lookup evidence" bash -c \
+  "find '$src' -maxdepth 1 -name 'FastLookupEvidenceBatch*.lean' -print0 | sort -z | compile_stream"
+run_phase "fast lookup root" compile_generated "$src/FastLookupEvidenceRoot.lean"
+
+# Generate one action certificate in O(actions), not one traversal per
+# register.  Join payloads are grouped into data-only modules; their local
+# acceptance theorems were unused because every join is checked again by the
+# action/cut evidence below.
+run_phase "generate shared join data" lake exe actionwidegen \
+  lnp64u-local-joins "$runtime" "$src"
+run_phase "shared join data" bash -c \
+  "find '$src' -maxdepth 1 -name 'ActionJoinBatch*.lean' -print0 | sort -z | compile_stream"
+run_phase "generate shared action certificate" lake exe actionwidegen \
+  lnp64u-named-cert "$runtime" "$src/ActionCert.lean"
+run_phase "shared action certificate" compile_generated "$src/ActionCert.lean"
+
 generation_jobs=$jobs
 ((generation_jobs > 8)) && generation_jobs=8
 run_phase "generate all action cuts" bash -c \
   "seq 0 $((cut_count - 1)) | xargs -n1 -P $generation_jobs bash -c 'generate_cut \"\$1\"' _"
+
+# Remove shards from older cut layouts so broad phase globs cannot compile a
+# retired experiment (notably the former monolithic whole-core cut).
+for generated in "$src"/DagCut[0-9][0-9][0-9]*.lean; do
+  base=${generated##*/}
+  index=${base:6:3}
+  if ((10#$index >= cut_count)); then
+    rm -f "$generated"
+  fi
+done
+for generated in "$lib"/DagCut[0-9][0-9][0-9]*.olean \
+    "$lib"/DagCut[0-9][0-9][0-9]*.ilean; do
+  [[ -e "$generated" ]] || continue
+  base=${generated##*/}
+  index=${base:6:3}
+  if ((10#$index >= cut_count)); then
+    rm -f "$generated"
+  fi
+done
 
 # Source pruning is performed by the generator. Remove compiled objects whose
 # source disappeared so retries cannot silently consume an ever-growing cache.
@@ -127,7 +169,5 @@ done
 
 run_phase "action cut roots" bash -c \
   "find '$src' -maxdepth 1 -name 'DagCut???.lean' -print0 | sort -z | compile_stream"
-run_phase "compact register queries" bash -c \
-  "find '$src' -maxdepth 1 -name 'DagCut???Query*.lean' -print0 | sort -z | compile_stream"
 
 echo "all LNP64-u action cuts kernel-checked"

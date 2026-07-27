@@ -38,6 +38,15 @@ def planMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
             planMatches wires table thenPlan current thenRef thenCert &&
             planMatches wires table elsePlan current elseRef elseCert
       | _ => false
+  | width, .ite guard thenPlan elsePlan, current, .namedWire number _,
+      .ite thenCert elseCert =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .mux guardRef thenRef elseRef⟩ =>
+          actualWidth == width &&
+            indexedExprMatches wires table (compileExpr guard) guardRef &&
+            planMatches wires table thenPlan current thenRef thenCert &&
+            planMatches wires table elsePlan current elseRef elseCert
+      | _ => false
   | _, _, _, _, _ => false
 
 /-- Validate an ordered list of compact rule plans. -/
@@ -118,6 +127,24 @@ theorem planMatches_ite
       (.wire number) (.ite thenCert elseCert) = true := by
   simp [planMatches, lookupAccepted, guardAccepted, thenAccepted, elseAccepted]
 
+theorem planMatches_ite_named
+    (wires : Rope (List IndexedWire)) (table : WireTable) (width : Nat)
+    (guard : Loom.Hw.Expr 1) (thenPlan elsePlan : RegPlan width)
+    (current : Option Ref) (number : Nat) (name : String)
+    (guardRef thenRef elseRef : Ref) (thenCert elseCert : NextRegCert)
+    (lookupAccepted : lookupIndexed? wires table number = some
+      { number := number, width := width,
+        rhs := .mux guardRef thenRef elseRef })
+    (guardAccepted : indexedExprMatches wires table (compileExpr guard)
+      guardRef = true)
+    (thenAccepted : planMatches wires table thenPlan current thenRef
+      thenCert = true)
+    (elseAccepted : planMatches wires table elsePlan current elseRef
+      elseCert = true) :
+    planMatches wires table (.ite guard thenPlan elsePlan) current
+      (.namedWire number name) (.ite thenCert elseCert) = true := by
+  simp [planMatches, lookupAccepted, guardAccepted, thenAccepted, elseAccepted]
+
 theorem rulesMatch_nil
     (wires : Rope (List IndexedWire)) (table : WireTable) (width : Nat)
     (current : Ref) :
@@ -189,6 +216,29 @@ theorem planMatches_raw
     | ite thenCert elseCert =>
         cases out with
         | reg name => simp [planMatches] at accepted
+        | namedWire number name =>
+            apply RawExprMatches.named
+            simp only [planMatches] at accepted
+            cases found : lookupIndexed? indexeds table number with
+            | none => simp [found] at accepted
+            | some indexed =>
+                obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+                cases rhs <;> simp [found] at accepted
+                case mux guardRef thenRef elseRef =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth,
+                        .mux guardRef thenRef elseRef⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .mux guardRef thenRef elseRef⟩) rawMatch
+                  exact .mux rawAt (widthEq.trans accepted.1.1.1) rhsEq
+                    (indexedExprMatches_raw program hmatches table _ _
+                      accepted.1.1.2)
+                    (thenIH current thenRef thenCert accepted.1.2 cur
+                      currentMatches)
+                    (elseIH current elseRef elseCert accepted.2 cur
+                      currentMatches)
         | wire number =>
             simp only [planMatches] at accepted
             cases found : lookupIndexed? indexeds table number with

@@ -17,7 +17,7 @@ on disk using exact `cmp`.
 
 namespace Loom.Release
 
-universe u v
+universe u v w
 
 /-- A nonempty balanced binary tree. Release artifacts use bounded lists of
 logical lines at leaves. -/
@@ -38,6 +38,11 @@ def Rope.map {α : Type u} {β : Type v} (f : α → β) : Rope α → Rope β
 @[simp] theorem Rope.map_node {α : Type u} {β : Type v}
     (f : α → β) (left right : Rope α) :
     (Rope.node left right).map f = .node (left.map f) (right.map f) := rfl
+
+theorem Rope.map_map {α : Type u} {β : Type v} {γ : Type w}
+    (rope : Rope α) (f : α → β) (g : β → γ) :
+    (rope.map f).map g = rope.map (g ∘ f) := by
+  induction rope <;> simp_all [Rope.map]
 
 /-- Concatenate list-valued leaves in left-to-right order. This function is
 used in theorem statements; full release proofs do not normalize it. -/

@@ -478,6 +478,7 @@ def checkedJoinOutput (wires : Rope (List IndexedWire)) (table : WireTable)
         { number := number, width := join.width,
           rhs := .mux join.guard join.thenInput join.elseInput }
   | .reg _ => false
+  | .namedWire _ _ => false
 
 /-- Structural form of `checkedJoinOutput`, retaining the exact indexed-wire
 lookup needed by semantic soundness. -/
@@ -496,6 +497,7 @@ theorem checkedJoinOutput_sound {wires : Rope (List IndexedWire)}
     JoinOutputEvidence wires table join := by
   cases outputEq : join.output with
   | reg name => simp [checkedJoinOutput, outputEq] at accepted
+  | namedWire number name => simp [checkedJoinOutput, outputEq] at accepted
   | wire number =>
       simp [checkedJoinOutput, outputEq] at accepted
       exact .wire outputEq accepted

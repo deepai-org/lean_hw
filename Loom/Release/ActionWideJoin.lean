@@ -20,8 +20,7 @@ structure Join where
 
 private def localJoinMatches (base : Nat) (block : List IndexedWire)
     (join : Join) : Bool :=
-  match join.output with
-  | .wire number =>
+  let check (number : Nat) :=
       if number < base then false else
       match block[number - base]? with
       | some ⟨actualNumber, actualWidth,
@@ -30,6 +29,9 @@ private def localJoinMatches (base : Nat) (block : List IndexedWire)
             join.guard == actualGuard && join.thenInput == actualThen &&
             join.elseInput == actualElse
       | _ => false
+  match join.output with
+  | .wire number => check number
+  | .namedWire number _ => check number
   | .reg _ => false
 
 /-- Check joins against one bounded indexed-wire leaf. -/
