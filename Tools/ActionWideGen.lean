@@ -3268,6 +3268,13 @@ private unsafe def generateCoreBranchProbe (runtime output : System.FilePath) :
   writeIfChanged output source
   return 0
 
+/-- Report which precondition failed instead of exiting silently.
+A bare `return 1` from a fifteen-minute generator gives an operator
+nothing to act on; every bailout below names its source line. -/
+private def bail (context : String) : IO UInt32 := do
+  IO.eprintln s!"actionwidegen: bailed at {context}"
+  return 1
+
 /-- Generate the small composition layer that turns independently checked
 core-action cuts into one query-local certificate per architectural register.
 The generator chooses imports and expected roots, but every choice is checked
@@ -3277,18 +3284,18 @@ private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
   let program ← Tools.RuntimeSsa.load runtime
   let design := Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest
   let some certs := Tools.ReleaseCertGen.synthesizeActionWideRegisterCertRuntime
-      design program | return 1
+      design program | return (← bail "L3280")
   let registers := design.regs.toArray
-  unless registers.size == program.regs.size do return 1
+  unless registers.size == program.regs.size do return (← bail "L3282")
   let initial := registers.map fun register =>
     Loom.Release.Symbolic.Ref.reg register.name
   let needed := List.range registers.size
-  let some refillCert := certs[0]? | return 1
+  let some refillCert := certs[0]? | return (← bail "L3286")
   let refillNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
     certs.tail needed
   let some refillResult := evaluateCert registers initial refillNeeded refillCert
-    | return 1
-  let some coreCert := certs[1]? | return 1
+    | return (← bail "L3290")
+  let some coreCert := certs[1]? | return (← bail "L3291")
   let coreNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
     (certs.drop 2) needed
   let issueOrder := (Machines.Lnp64u.Hw.schedOrder
@@ -3296,8 +3303,8 @@ private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
   let some (_, cutsState) := (collectCoreCuts registers issueOrder
       (Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest) coreCert
       refillResult.refs coreNeeded "actionCertNode15158").run {}
-    | return 1
-  unless cutsState.cuts.size == 10 do return 1
+    | return (← bail "L3299")
+  unless cutsState.cuts.size == 10 do return (← bail "L3300")
   IO.FS.createDirAll outputDir
   let neededBits := indicesToBits needed
   let rootImports := String.intercalate "\n" <|
@@ -3310,7 +3317,7 @@ private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
     "Machines.Lnp64u.Hw.tickAct"]
   let ruleCertNames : Array String := #["actionCertNode4", "actionCertNode15158",
     "actionCertNode15162", "actionCertNode15163"]
-  unless certs.length == ruleSources.size do return 1
+  unless certs.length == ruleSources.size do return (← bail "L3313")
   let header :=
     "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
     "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
@@ -3344,11 +3351,11 @@ private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
       (indicesToBits coreNeeded)
       "Machines.Lnp64u.Hw.coreAct Machines.Lnp64u.Demo.sysManifest"
       "actionCertNode15158").run {}
-    | return 1
-  unless coreShapeState.cutNext == 10 do return 1
+    | return (← bail "L3347")
+  unless coreShapeState.cutNext == 10 do return (← bail "L3348")
   let mut coreCutBridges : Array String := #[]
   for index in List.range cutsState.cuts.size do
-    let some cut := cutsState.cuts[index]? | return 1
+    let some cut := cutsState.cuts[index]? | return (← bail "L3351")
     let cutNamespace := "Loom.GeneratedRelease.Lnp64u.DagCut" ++ pad3 index
     coreCutBridges := coreCutBridges.push <|
       "@[release_action_shape_cut] theorem hybridCoreCut" ++ pad3 index ++ " :\n" ++
@@ -3370,8 +3377,8 @@ private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
     "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
   writeIfChanged (outputDir / "HybridCoreShape.lean") coreShapeModule
   for index in List.range ruleSources.size do
-    let some sourceName := ruleSources[index]? | return 1
-    let some certName := ruleCertNames[index]? | return 1
+    let some sourceName := ruleSources[index]? | return (← bail "L3373")
+    let some certName := ruleCertNames[index]? | return (← bail "L3374")
     let ruleNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
       (certs.drop (index + 1)) needed
     let ruleModule :=
@@ -3423,40 +3430,52 @@ private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
   writeIfChanged (outputDir / "HybridPrelude.lean") prelude
   let mut cutResults : Array Loom.Release.Symbolic.ActionWide.Result := #[]
   for cutIndex in List.range cutsState.cuts.size do
-    let some cut := cutsState.cuts[cutIndex]? | return 1
+    let some cut := cutsState.cuts[cutIndex]? | return (← bail "L3426")
     let some result := evaluateCert registers cut.input cut.needed cut.certValue
-      | return 1
+      | return (← bail "L3428")
     cutResults := cutResults.push result
   let some coreResult := evaluateCert registers refillResult.refs coreNeeded coreCert
-    | return 1
-  let some moverCert := certs[2]? | return 1
+    | return (← bail "L3431")
+  let some moverCert := certs[2]? | return (← bail "L3432")
   let moverNeeded := Loom.Release.Symbolic.ActionWide.neededRuleInputs
     (certs.drop 3) needed
   let some moverResult := evaluateCert registers coreResult.refs moverNeeded moverCert
-    | return 1
-  let some tickCert := certs[3]? | return 1
+    | return (← bail "L3436")
+  let some tickCert := certs[3]? | return (← bail "L3437")
   let tickNeeded := needed
   let some tickResult := evaluateCert registers moverResult.refs tickNeeded tickCert
-    | return 1
+    | return (← bail "L3440")
   for index in List.range registers.size do
-    let some register := registers[index]? | return 1
-    let some concrete := program.regs[index]? | return 1
+    let some register := registers[index]? | return (← bail "L3442")
+    let some concrete := program.regs[index]? | return (← bail "L3443")
     unless register.name == concrete.name && register.width == concrete.width do
-      return 1
-    let some outputRef := Tools.RuntimeSsa.ref? concrete.next | return 1
+      return (← bail "L3445")
+    let some outputRef := Tools.RuntimeSsa.ref? concrete.next | return (← bail "L3446")
     let suffix := pad4 index
-    let some refillOutput := refillResult.refs[index]? | return 1
-    let some coreOutput := coreResult.refs[index]? | return 1
-    let some moverOutput := moverResult.refs[index]? | return 1
-    let some tickOutput := tickResult.refs[index]? | return 1
-    unless tickOutput == outputRef do return 1
+    let some refillOutput := refillResult.refs[index]? | return (← bail "L3448")
+    let some coreOutput := coreResult.refs[index]? | return (← bail "L3449")
+    let some moverOutput := moverResult.refs[index]? | return (← bail "L3450")
+    let some tickOutput := tickResult.refs[index]? | return (← bail "L3451")
+    -- Compare what the references *name*, not how they are represented.
+    -- `Ref.wire n` and `Ref.namedWire n (wireName n)` denote the same SSA
+    -- wire; the rule chain produces the named form while `RuntimeSsa.ref?`
+    -- produces the numbered one. Structural equality rejected that pairing
+    -- and aborted the generator with no diagnostic. This comparison is a
+    -- generator-side sanity check only: every emitted `RegQueryEvidence` is
+    -- re-checked by `reg_query_decide` in the kernel, so a wrong match here
+    -- fails the build later rather than weakening the release theorem.
+    unless tickOutput.render == outputRef.render do
+      return (← bail s!"L3452: register {index} {register.name}:{register.width} \
+        -- rule chain ends at {repr tickOutput} but the concrete program's \
+        next reference is {repr outputRef} (refill {repr refillOutput}, \
+        core {repr coreOutput}, mover {repr moverOutput})")
     let mut cutDeclarations : Array String := #[]
     for cutIndex in List.range cutsState.cuts.size do
-      let some cut := cutsState.cuts[cutIndex]? | return 1
+      let some cut := cutsState.cuts[cutIndex]? | return (← bail "L3455")
       if cut.needed.contains index then
-        let some result := cutResults[cutIndex]? | return 1
-        let some inputRef := cut.input[index]? | return 1
-        let some cutOutputRef := result.refs[index]? | return 1
+        let some result := cutResults[cutIndex]? | return (← bail "L3457")
+        let some inputRef := cut.input[index]? | return (← bail "L3458")
+        let some cutOutputRef := result.refs[index]? | return (← bail "L3459")
         cutDeclarations := cutDeclarations.push <|
           "@[release_reg_query_cut] theorem hybridCut" ++ pad3 cutIndex ++
             "Reg" ++ suffix ++ " :\n" ++
