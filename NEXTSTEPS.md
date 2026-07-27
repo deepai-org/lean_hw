@@ -7,6 +7,113 @@ exactly `propext`, `Classical.choice`, `Quot.sound`). The proof layer is not
 the constraint. **Reproduction cost is**, and the active track is making a
 clean checkout build the full end-to-end proof in a bounded, measured time.
 
+## 0. The target statement — write this before anything else
+
+Everything below is scoped by one sentence, so the sentence goes first. What
+`verifiedReleases` proves today, per artifact, is `VerifiedSymbolicArtifact`
+(`Loom/Release/SymbolicVerified.lean:24`), which bundles exactly four fields:
+
+```lean
+exactBytes  : program.renderTree.flattenBytes = disk.flattenBytes
+denotation  : Symbolic.ModuleBehavior design program indexeds table
+                registers memories outputs
+refinement  : Simulation spec (Compile.compile design).toTSys.reachablePart
+invariants  : ∀ {P}, spec.Invariant P →
+                (Compile.compile design).toTSys.Invariant (P ∘ refinement.abs)
+```
+
+Read those four fields carefully and the architecture becomes legible.
+**There are two independent routes out of `design`, and they never meet.**
+
+- `refinement` and `invariants` go through `Compile.compile design`, the
+  *verified* compiler, discharged generically by `compile_cycle` and
+  `simulation_of_tsys_eq`.
+- `denotation` relates the concrete `program` to `design` **directly**. Not
+  to `Compile.compile design`. It is a second, independent semantic account
+  of the shipped artifact.
+
+The two routes share only the word `design`. Consequently there is today
+**no theorem anywhere in the repo of the form `program = render (compile
+design)`**, and no function to state it with: `Loom/Release/SSA.lean` has
+`Program.elaborate : Program → Option Module` — which runs the *opposite*
+direction — and no `Design → SSA.Program` exists at all. The concrete
+`Program` is produced outside Lean by `scripts/gen_release_witness.py` and
+then validated after the fact.
+
+So the honest answer to "if the compiler is verified, why do the certificates
+exist?" is neither pure historical accident nor a gap in the compiler proof.
+It is: **the shipped artifact is not defined as the compiler's output, so its
+semantics must be re-established from scratch.** That re-establishment is the
+per-node `ModuleBehavior` obligation, and it is the expensive thing.
+
+### The target
+
+```lean
+-- does not exist yet; writing it is task 0
+def Design.toProgram (d : Design) : SSA.Program
+
+theorem toProgram_denotes (d : Design) (wf : DesignWF d) :
+    Symbolic.ModuleBehavior d (d.toProgram) (indexedsOf d) (tableOf d)
+      (registersOf d) (memoriesOf d) (outputsOf d)
+```
+
+With that, per-design work collapses from a per-node re-derivation to a
+single data equality `program = d.toProgram`, checkable reflectively, plus
+the existing `exactBytes`. **Every section below should name which field of
+`VerifiedSymbolicArtifact` it discharges.**
+
+### What this statement deliberately does not say
+
+It says nothing about Verilog. There is no `⟦_⟧_verilog` in this repo and
+there should be no pretence of one: `CONCRETE_SSA_BOUNDARY.md` states the
+Yosys adequacy assumption explicitly, and the Lean theorem ends at exact
+bytes plus the formal denotation. Any "end-to-end" statement that quantifies
+over Verilog semantics would be claiming a theorem the project does not have.
+
+### Which obligations survive B
+
+| field | expensive today | retired by B? |
+| --- | --- | --- |
+| `denotation` | **yes** — the per-node certificate pipeline | **retired**: becomes `program = d.toProgram` |
+| `exactBytes` | no — a rope/byte equality | survives, already cheap |
+| `refinement` | **yes** — R-MC, 200–360 s modules | **survives**: per-machine proof, untouched by B |
+| `invariants` | no — generic transport | survives, already generic |
+
+This table is the B-versus-C decision. B retires the certificate pipeline;
+it does not touch R-MC. So C's batching and log-depth work is optimization of
+infrastructure headed for deletion *except* where it applies to R-MC, which
+survives B regardless.
+
+## Sequencing: B and C are alternatives, not siblings
+
+1. **Task 0** — write `Design.toProgram` and the `toProgram_denotes`
+   statement, and identify the hard lemma. If nobody can write that
+   signature, nothing below is well-posed.
+2. **A** (an afternoon) and a **timeboxed B feasibility spike** (two weeks:
+   a rendering-correctness skeleton with the hard lemma isolated and its
+   difficulty assessed) run together.
+3. **C proceeds only if** B stalls, B's timeline exceeds a release deadline,
+   or for the obligation families the table above marks as surviving B. The
+   R-MC half of C is unconditional — those costs exist either way.
+
+### B's fallback ladder
+
+B needs a kill condition and a degraded mode, not just a target.
+
+- **Best** — generic rendering correctness (`toProgram_denotes` above). Zero
+  per-design denotation cost, forever.
+- **Fallback** — per-design reflective equality: ship `program`, check
+  `program = d.toProgram` by kernel reduction over compact data. Still
+  per-design, but constant-size proof terms and one reduction instead of a
+  per-node tree. The in-repo footprint-check precedent (10m48s → 5m10s,
+  ~11 MiB → <1 MiB) suggests this is tractable; the whole-plan
+  counter-example (37 s but 6.94 GiB RSS; monolithic `rfl` killed at 99 s)
+  says profile the decoder's reduction behaviour before committing.
+- **Floor** — today's certificate pipeline, made survivable by C.
+
+Descending the ladder is a legitimate outcome, and each rung is strictly
+cheaper than the one below it.
+
 ## The reframe that drives this plan
 
 The project already owns a CompCert-shaped compiler correctness theorem.
@@ -21,22 +128,22 @@ universally quantified over every design and state, sorry-free, with
 `simulation_of_tsys_eq` lifting it to trace simulation and
 `designWFCheck_sound` reducing the side condition to a Boolean check.
 
-Yet every release run still pays a large per-design proof cost. The reason
-is not that the compiler is unverified. It is that **the shipped artifact is
-not literally `compile d`**: it is a concrete, hash-consed, rendered SSA
-program, and the release certificate re-establishes node by node that this
-concrete object agrees with the design. It is not literally `compile d`
-because the kernel would have to normalize that application, which is the
-expensive operation the whole architecture exists to avoid.
+Yet every release run still pays a large per-design proof cost, because — as
+§0 establishes from the four fields of `VerifiedSymbolicArtifact` — the
+shipped artifact is not defined as that compiler's output. The design is
+compiled by a verified function *and*, separately, a concrete program is
+produced outside Lean and validated against the same design. Two routes, one
+verified and one validated, meeting only at `design`.
 
-So the honest description of the status quo is: *this project performs
-translation validation on top of an already-verified compiler.* It pays the
-per-run cost of an unverified-compiler architecture while already holding the
-verified-compiler theorem. That is the most expensive available position, and
-it is a gap in an existing proof rather than a missing research result.
+So the status quo is *translation validation running alongside an
+already-verified compiler* — paying the per-run cost of an unverified-compiler
+architecture while holding the verified-compiler theorem. That is the most
+expensive available position, and closing it needs a definition
+(`Design.toProgram`) that does not exist yet rather than a new research
+result.
 
-Everything below follows from closing that gap and from decoupling *compiling*
-(milliseconds) from *auditing* (offline, incremental).
+Everything below follows from joining those two routes and from decoupling
+*compiling* (milliseconds) from *auditing* (offline, incremental).
 
 ## A. Establish whether the budget is feasible — do this first
 
@@ -54,6 +161,15 @@ toll, and `W_family = observed_cpu - count * toll`.
 
 `W` measures the cost of the *translation validation*, not of the trust
 posture. Section B is what reduces it.
+
+**Interpret `W` per tier.** `W` is defined over today's pipeline, so it is
+the feasibility number for *the pipeline as it stands*. If B succeeds, the
+`denotation` obligations that dominate `W` are retired outright, and the
+residual `W` describes only the audit tier (§D) plus the R-MC cost that
+survives B. Measure it anyway — it is an afternoon, and it is the only way to
+know whether the floor is already above budget — but do not read a
+`W`-exceeds-budget verdict as "the target is impossible". Read it as "the
+target is impossible *without B*".
 
 ## B. Close the compiler proof through the rendering stage
 
