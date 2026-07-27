@@ -86,10 +86,24 @@ export -f compile_batch
 # Generated modules are compiled directly with `lean`, outside Lake's module
 # graph. Build every import supplied to the generator, plus its shared
 # certificate engines, so a clean checkout cannot rely on stale `.olean`s.
+# `release_imports` are imported by generated modules but are not design
+# imports, so a clean checkout has no object for them unless they are named
+# here. `SemanticRelease` in particular imports the refinement closure.
+case "$target" in
+  acc8)
+    release_imports=(Loom.Release.SymbolicVerified
+      Machines.Acc8.Theorems.AR Machines.Acc8.Theorems.AEV)
+    ;;
+  lnp64u)
+    release_imports=(Loom.Release.SymbolicVerified
+      Machines.Lnp64u.Theorems.DemoWitness Machines.Lnp64u.Theorems.RMC)
+    ;;
+esac
+
 run_phase "lake prerequisites (includes R-MC closure)" \
   lake build Loom.Release.SymbolicCertificate Loom.Release.SymbolicDecide \
   Loom.Release.WholeRegisterPlan \
-  Tools.ReleaseCertGen "${design_imports[@]}"
+  Tools.ReleaseCertGen "${design_imports[@]}" "${release_imports[@]}"
 
 compile_wire_owner() {
   local source=$1
