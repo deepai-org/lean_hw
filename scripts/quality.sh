@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 fail=0
 
-if [[ ! -f lean-toolchain ]] || rg -q '(nightly|:latest$)' lean-toolchain; then
+if [[ ! -f lean-toolchain ]] || grep -qE '(nightly|:latest$)' lean-toolchain; then
   echo "quality: lean-toolchain must pin a stable release" >&2
   fail=1
 fi
@@ -22,7 +22,7 @@ for required in lakefile.lean lake-manifest.json README.md LICENSE NOTICE \
 done
 
 while IFS= read -r file; do
-  if ! rg -q 'SPDX-License-Identifier:' "$file"; then
+  if ! grep -q 'SPDX-License-Identifier:' "$file"; then
     echo "quality: missing SPDX header: $file" >&2
     fail=1
   fi
@@ -34,7 +34,7 @@ if git grep -nI -E '[[:blank:]]+$' -- '*.lean' '*.md' '*.sh'; then
 fi
 
 junk_re='(^|/)(__pycache__/|[^/]*\.py[co]$|scratch[^/]*\.lean$|[^/]*(draft|wip)[^/]*\.txt$)'
-if junk=$(git ls-files | rg "$junk_re"); then
+if junk=$(git ls-files | grep -E "$junk_re"); then
   echo "quality: generated or scratch files are tracked:" >&2
   echo "$junk" >&2
   fail=1

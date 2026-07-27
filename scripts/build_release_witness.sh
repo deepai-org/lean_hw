@@ -36,7 +36,11 @@ case "$target" in
     ;;
 esac
 
-lake exe emit "$target"
+source "$(dirname "${BASH_SOURCE[0]}")/phase_timing.sh"
+LOOM_PHASE_SCOPE="$target"
+loom_phase_log_init
+
+run_phase "emit RTL" lake exe emit "$target"
 
 src="GeneratedRelease/$artifact"
 lib=".lake/build/lib/lean/GeneratedRelease/$artifact"
@@ -47,8 +51,10 @@ generator_args=("$rtl" "$src/Root.lean" --block-size "$block_size" --batch-block
 for module in "${design_imports[@]}"; do
   generator_args+=(--design-import "$module")
 done
-python3 scripts/gen_release_witness.py "${generator_args[@]}"
-python3 scripts/check_release_binding.py "$rtl" "$src"
+run_phase "generate witness sources" \
+  python3 scripts/gen_release_witness.py "${generator_args[@]}"
+run_phase "check release binding" \
+  python3 scripts/check_release_binding.py "$rtl" "$src"
 mkdir -p "$lib"
 
 compile_batch() {
@@ -80,7 +86,8 @@ export -f compile_batch
 # Generated modules are compiled directly with `lean`, outside Lake's module
 # graph. Build every import supplied to the generator, plus its shared
 # certificate engines, so a clean checkout cannot rely on stale `.olean`s.
-lake build Loom.Release.SymbolicCertificate Loom.Release.SymbolicDecide \
+run_phase "lake prerequisites (includes R-MC closure)" \
+  lake build Loom.Release.SymbolicCertificate Loom.Release.SymbolicDecide \
   Loom.Release.WholeRegisterPlan \
   Tools.ReleaseCertGen "${design_imports[@]}"
 
@@ -96,49 +103,49 @@ compile_wire_owner() {
 }
 export -f compile_wire_owner
 
-find "$src" -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_wire_owner "$1"' _
+compile_glob() {
+  find "$src" -maxdepth 1 -name "$1" -print0 | sort -z | \
+    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+}
+
+run_phase "wire batches" bash -c \
+  "find '$src' -maxdepth 1 -name 'Batch*.lean' -print0 | sort -z | \
+   xargs -0 -r -n1 -P $jobs bash -c 'compile_wire_owner \"\$1\"' _"
 
 # `Root` imports the balanced composition of all wire batches.  This module is
 # generated outside Lake's static graph, so compile it explicitly on a clean
 # checkout instead of accidentally relying on a stale object.
-find "$src" -maxdepth 1 -name 'TreeChunkBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-compile_batch "$src/IndexedRoot.lean"
-find "$src" -maxdepth 1 -name 'MemData*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-find "$src" -maxdepth 1 -name 'MemRender*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-find "$src" -maxdepth 1 -name 'MemRoot*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-compile_batch "$src/ProgramData.lean"
-compile_batch "$src/FramingFixed.lean"
-find "$src" -maxdepth 1 -name 'FramingReg*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-find "$src" -maxdepth 1 -name 'FramingOut*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-compile_batch "$src/Root.lean"
+run_phase "tree chunk batches" compile_glob 'TreeChunkBatch*.lean'
+run_phase "indexed root" compile_batch "$src/IndexedRoot.lean"
+run_phase "memory data" compile_glob 'MemData*.lean'
+run_phase "memory renders" compile_glob 'MemRender*.lean'
+run_phase "memory roots" compile_glob 'MemRoot*.lean'
+run_phase "program data" compile_batch "$src/ProgramData.lean"
+run_phase "framing fixed" compile_batch "$src/FramingFixed.lean"
+run_phase "framing registers" compile_glob 'FramingReg*.lean'
+run_phase "framing outputs" compile_glob 'FramingOut*.lean'
+run_phase "render root" compile_batch "$src/Root.lean"
 
 if [[ "$target" == lnp64u ]]; then
   # The large core uses one action-wide synthesis pass and compact per-register
   # projections.  The former CertGen path traversed the complete action tree
   # once for each of 825 registers and was the source of the multi-hour build.
   scripts/build_all_action_dag_cuts.sh "$jobs"
-  find "$src" -maxdepth 1 -name 'FastIndexedBridgeBatch*.lean' -print0 | sort -z | \
-    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-  compile_batch "$src/FastIndexedBridge.lean"
-  lake exe actionwidegen lnp64u-hybrid-rules "$src/Runtime.tsv" "$src"
-  compile_batch "$src/HybridBase.lean"
-  compile_batch "$src/HybridCoreShape.lean"
+  run_phase "fast indexed bridge batches" compile_glob 'FastIndexedBridgeBatch*.lean'
+  run_phase "fast indexed bridge" compile_batch "$src/FastIndexedBridge.lean"
+  run_phase "generate hybrid rules" \
+    lake exe actionwidegen lnp64u-hybrid-rules "$src/Runtime.tsv" "$src"
+  run_phase "hybrid base" compile_batch "$src/HybridBase.lean"
+  run_phase "hybrid core shape" compile_batch "$src/HybridCoreShape.lean"
   for index in 000 001 002 003; do
-    compile_batch "$src/HybridRule${index}.lean"
+    run_phase "hybrid rule $index" compile_batch "$src/HybridRule${index}.lean"
   done
-  compile_batch "$src/HybridPrelude.lean"
-  find "$src" -maxdepth 1 -name 'HybridReg*.lean' -print0 | sort -z | \
-    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-  compile_batch "$src/HybridRoot.lean"
+  run_phase "hybrid prelude" compile_batch "$src/HybridPrelude.lean"
+  run_phase "hybrid registers" compile_glob 'HybridReg*.lean'
+  run_phase "hybrid root" compile_batch "$src/HybridRoot.lean"
 else
-  lake env lean --run "$(realpath "$src/CertGen.lean")"
+  run_phase "certificate generation" \
+    lake env lean --run "$(realpath "$src/CertGen.lean")"
 fi
 
 # Generated correctness is kernel-checked below. Re-run the fast structural
@@ -146,7 +153,8 @@ fi
 # certificate synthesis: certificate-generator determinism is irrelevant to
 # soundness because every emitted certificate is checked by the kernel.
 generated_digest=$(python3 scripts/generated_tree_digest.py "$src")
-python3 scripts/gen_release_witness.py "${generator_args[@]}"
+run_phase "regenerate for determinism gate" \
+  python3 scripts/gen_release_witness.py "${generator_args[@]}"
 regenerated_digest=$(python3 scripts/generated_tree_digest.py "$src")
 if [[ "$generated_digest" != "$regenerated_digest" ]]; then
   echo "$artifact release source generation is nondeterministic" >&2
@@ -155,17 +163,14 @@ fi
 echo "$artifact generated release sources are deterministic"
 
 if [[ "$target" != lnp64u ]]; then
-  find "$src" -maxdepth 1 -name 'IndexedCertBatch*.lean' -print0 | sort -z | \
-    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-  find "$src" -maxdepth 1 -name 'PlanCertBatch*.lean' -print0 | sort -z | \
-    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-  find "$src" -maxdepth 1 -name 'IndexedPortCertBatch*.lean' -print0 | sort -z | \
-    xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
+  run_phase "indexed cert batches" compile_glob 'IndexedCertBatch*.lean'
+  run_phase "plan cert batches" compile_glob 'PlanCertBatch*.lean'
+  run_phase "indexed port cert batches" compile_glob 'IndexedPortCertBatch*.lean'
 fi
 
-find "$src" -maxdepth 1 -name 'SemanticWireBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-lake env lean "$(realpath "$src/SemanticWires.lean")" -o "$lib/SemanticWires.olean"
+run_phase "semantic wire batches" compile_glob 'SemanticWireBatch*.lean'
+run_phase "semantic wires" lake env lean \
+  "$(realpath "$src/SemanticWires.lean")" -o "$lib/SemanticWires.olean"
 
 if [[ "$mode" == sample ]]; then
   if [[ "$target" != lnp64u ]]; then
@@ -184,25 +189,29 @@ if [[ "$mode" == sample ]]; then
   exit 0
 fi
 
-find "$src" -maxdepth 1 -name 'SemanticRegBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-lake env lean "$(realpath "$src/SemanticRegs.lean")" -o "$lib/SemanticRegs.olean"
-find "$src" -maxdepth 1 -name 'ReadRegBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-lake env lean "$(realpath "$src/ReadRegs.lean")" -o "$lib/ReadRegs.olean"
-find "$src" -maxdepth 1 -name 'DeclMemBatch*.lean' -print0 | sort -z | \
-  xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
-lake env lean "$(realpath "$src/DeclMems.lean")" -o "$lib/DeclMems.olean"
-lake env lean "$(realpath "$src/SemanticActions.lean")" -o "$lib/SemanticActions.olean"
+run_phase "semantic register batches" compile_glob 'SemanticRegBatch*.lean'
+run_phase "semantic registers" lake env lean \
+  "$(realpath "$src/SemanticRegs.lean")" -o "$lib/SemanticRegs.olean"
+run_phase "read register batches" compile_glob 'ReadRegBatch*.lean'
+run_phase "read registers" lake env lean \
+  "$(realpath "$src/ReadRegs.lean")" -o "$lib/ReadRegs.olean"
+run_phase "declared memory batches" compile_glob 'DeclMemBatch*.lean'
+run_phase "declared memories" lake env lean \
+  "$(realpath "$src/DeclMems.lean")" -o "$lib/DeclMems.olean"
+run_phase "semantic actions" lake env lean \
+  "$(realpath "$src/SemanticActions.lean")" -o "$lib/SemanticActions.olean"
 if [[ -f "$src/SemanticDesignWF.lean" ]]; then
-  lake env lean "$(realpath "$src/SemanticDesignWF.lean")" \
-    -o "$lib/SemanticDesignWF.olean"
+  run_phase "semantic design wf" lake env lean \
+    "$(realpath "$src/SemanticDesignWF.lean")" -o "$lib/SemanticDesignWF.olean"
 fi
-lake env lean "$(realpath "$src/SemanticReads.lean")" -o "$lib/SemanticReads.olean"
-lake env lean "$(realpath "$src/SemanticMems.lean")" -o "$lib/SemanticMems.olean"
-lake env lean "$(realpath "$src/SemanticModule.lean")" -o "$lib/SemanticModule.olean"
+run_phase "semantic reads" lake env lean \
+  "$(realpath "$src/SemanticReads.lean")" -o "$lib/SemanticReads.olean"
+run_phase "semantic memories" lake env lean \
+  "$(realpath "$src/SemanticMems.lean")" -o "$lib/SemanticMems.olean"
+run_phase "semantic module" lake env lean \
+  "$(realpath "$src/SemanticModule.lean")" -o "$lib/SemanticModule.olean"
 if [[ -f "$src/SemanticRelease.lean" ]]; then
-  lake env lean "$(realpath "$src/SemanticRelease.lean")" \
-    -o "$lib/SemanticRelease.olean"
+  run_phase "semantic release (imports R-MC)" lake env lean \
+    "$(realpath "$src/SemanticRelease.lean")" -o "$lib/SemanticRelease.olean"
 fi
 echo "$artifact render and semantic certificate modules kernel-checked"
