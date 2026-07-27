@@ -3775,7 +3775,10 @@ theorem absMover_moverAct_nojob (σ acc : Loom.Hw.St)
   have hnewAny := newJobAny_zero σ hnew
   apply absMover_none
   show ¬(Hw.moverAct.run σ acc).regs "mov_v" 1 = 1#1
-  simp only [Hw.moverAct, Act.run]
+  -- Expose only the job-validity condition. The data-path signals stay behind
+  -- their named definitions so this proof does not rebuild the whole circuit.
+  simp only [Hw.moverAct, Hw.moverJobVE, Hw.moverNewAnyE, Hw.moverClearedE,
+    Act.run]
   rw [if_neg (by
     show (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval σ |||
       (σ.regs "mov_v" 1 &&& _) ≠ 1#1
@@ -3793,7 +3796,10 @@ theorem moverAct_mem_nojob (σ acc : Loom.Hw.St)
       acc.mems "mem" a.toNat 32 := by
   have hnewAny := newJobAny_zero σ hnew
   show (Act.run σ Hw.moverAct acc).mems "mem" a.toNat 32 = _
-  simp only [Hw.moverAct, Act.run]
+  -- Expose only the job-validity condition. The data-path signals stay behind
+  -- their named definitions so this proof does not rebuild the whole circuit.
+  simp only [Hw.moverAct, Hw.moverJobVE, Hw.moverNewAnyE, Hw.moverClearedE,
+    Act.run]
   rw [if_neg (by
     show (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval σ |||
       (σ.regs "mov_v" 1 &&& _) ≠ 1#1
@@ -3832,7 +3838,10 @@ theorem absMover_moverAct_killed (σ acc : Loom.Hw.St)
     decide
   apply absMover_none
   show ¬(Hw.moverAct.run σ acc).regs "mov_v" 1 = 1#1
-  simp only [Hw.moverAct, Act.run]
+  -- Expose only the job-validity condition. The data-path signals stay behind
+  -- their named definitions so this proof does not rebuild the whole circuit.
+  simp only [Hw.moverAct, Hw.moverJobVE, Hw.moverNewAnyE, Hw.moverClearedE,
+    Act.run]
   rw [if_neg (by rw [hjob0]; decide)]
   simp [RegEnv.set, Expr.eval]
 
@@ -3868,7 +3877,10 @@ theorem moverAct_mem_killed (σ acc : Loom.Hw.St)
     revert b
     decide
   show (Act.run σ Hw.moverAct acc).mems "mem" a.toNat 32 = _
-  simp only [Hw.moverAct, Act.run]
+  -- Expose only the job-validity condition. The data-path signals stay behind
+  -- their named definitions so this proof does not rebuild the whole circuit.
+  simp only [Hw.moverAct, Hw.moverJobVE, Hw.moverNewAnyE, Hw.moverClearedE,
+    Act.run]
   rw [if_neg (by rw [hjob0]; decide)]
 
 /-- Kill-aware Mover-field bridge for an operation that transfers or clears
