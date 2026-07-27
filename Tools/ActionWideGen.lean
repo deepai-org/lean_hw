@@ -2650,60 +2650,21 @@ private unsafe def generateCoreDagProbe (runtime output : System.FilePath)
       pad3 batchIndex ++ ".lean") connectorText
   pruneIndexedShards output "Connector" connectorBatches.length
   writeDag output proofText
-  -- Demand-driven semantic projections replace the enormous persistent-state
-  -- proof. Each declaration follows one required register only; the kernel
-  -- checks the generator-selected input and output references exactly.
-  -- Checker equalities have constant-size `rfl` proofs, so batching them no
-  -- longer grows the environment with duplicated inductive evidence trees.
-  let queryBatchSize := 1
-  let queryBatches := cut.needed.toChunks queryBatchSize
-  let rootActionName := proofRefActionName rootProof
-  let rootCertName := proofRefCertName rootProof
-  for (batchIndex, indices) in
-      (List.range queryBatches.length).zip queryBatches do
-    let mut declarations : Array String := #[]
-    for index in indices do
-      let some register := registers[index]? | return 1
-      let some inputRef := dagLookupRef finalState.nodes registers stateDepth
-          inputRoot index | return 1
-      let some outputRef := dagLookupRef finalState.nodes registers stateDepth
-          outputRoot index | return 1
-      declarations := declarations.push <|
-        "theorem dagCutRegQuery" ++ pad4 index ++ " :\n" ++
-        "    Symbolic.ActionWide.queryRef " ++ toString index ++ " " ++
-          toString register.width ++ " " ++ rootActionName ++ " (" ++
-          dagRefToLean inputRef ++ ") " ++ toString neededBits ++ " " ++
-          rootCertName ++ " = some (" ++ dagRefToLean outputRef ++ ") := by\n" ++
-        "  rfl\n\n" ++
-        "@[release_reg_query_cut] theorem dagCutRegEvidence" ++ pad4 index ++
-          " :\n" ++
-        "    Symbolic.ActionWide.RegQueryEvidence fastIndexedWireTree " ++
-          "fastWireTable dagCutRegisters " ++ toString index ++ " " ++
-          toString register.width ++ " " ++ rootActionName ++ " (" ++
-          dagRefToLean inputRef ++ ") " ++ toString neededBits ++ " " ++
-          rootCertName ++ " (" ++ dagRefToLean outputRef ++ ") :=\n" ++
-        "  reg_query_decide\n"
-    let queryText :=
-      "-- Generated demand-driven register certificates; DO NOT EDIT.\n" ++
-      "import " ++ modulePrefix ++ "\n" ++
-      "import GeneratedRelease.Lnp64u.FastLookupEvidenceRoot\n" ++
-      "import Loom.Release.SymbolicDecide\n\n" ++
-      "namespace Loom.GeneratedRelease.Lnp64u\n\n" ++
-      "open Loom.Hw Loom.Release\n\nnoncomputable section\n\n" ++
-      "set_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" ++
-      "set_option Elab.async false\n\n" ++
-      String.intercalate "\n" declarations.toList ++ "\n" ++
-      "end\n\nend Loom.GeneratedRelease.Lnp64u\n"
-    writeDag (System.FilePath.mk <| basePath ++ "Query" ++
-      pad3 batchIndex ++ ".lean") queryText
-  pruneIndexedShards output "Query" queryBatches.length
+  -- The former one-module-per-register `Query` shards are superseded by the
+  -- hybrid cut evidence (`hybridCut*`, tagged with the same
+  -- `release_reg_query_cut` attribute), which is what the release path
+  -- actually imports and checks. Emitting them anyway cost one generated
+  -- module per needed register -- 4,575 modules on LNP64-u -- that nothing
+  -- imported and no build phase compiled. Pruning with count 0 deletes any
+  -- shard left over from an earlier layout.
+  pruneIndexedShards output "Query" 0
   IO.eprintln (s!"dag cut {cutIndex}: actions={finalState.actionRoots.size} " ++
     s!"writes={finalState.writeRoots.size} nodes={finalState.nodes.size} " ++
     s!"nodeShards={nodeBatches.length} resolverShards={resolverBatches.length} " ++
     s!"leaves={leaves.size} leafModules={proofLeafBatches.length} " ++
     s!"connectors={connectors.size} connectorModules={connectorBatches.length} " ++
     s!"connectorCheckModules={connectorCheckBatches.length} " ++
-    s!"lookupModules={lookupBatches.length} queryModules={queryBatches.length}")
+    s!"lookupModules={lookupBatches.length}")
   return 0
 
 private unsafe def generateCoreCuts (runtime outputDir : System.FilePath) :

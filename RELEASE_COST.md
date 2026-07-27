@@ -197,3 +197,73 @@ The target cost model is therefore:
 
 Only step 1 may normalize the source design, and it must do so once for the
 release, not once per register or per 16-register batch.
+
+## Why the release checker uses the module graph (2026-07-27)
+
+This is a deliberate choice, not an accident, and it is worth stating because
+it constrains every optimization below.
+
+Rule 1 bans `native_decide` repo-wide (`TRUST.md`), and the ban is mechanically
+enforced: `Tools/Audit.lean` fails the build if any declaration's axiom closure
+contains `Lean.ofReduceBool` or `Lean.trustCompiler`.  So the tempting
+alternative -- one verified `checkAll : Cert -> Bool`, proved sound once and
+evaluated by compiled code -- is unavailable.  It would add the Lean compiler
+to the TCB and break the headline claim that the closure is exactly `propext`,
+`Classical.choice`, and `Quot.sound`.  Kernel reduction is the only admissible
+evaluator, so certificate checking is decomposed into many named declarations
+and parallelism is bought by splitting them across modules and processes.
+
+The premise underneath that choice is only half true, and the half that is
+false is expensive.  Lean elaborates and kernel-checks *independent
+declarations within a single module* in parallel.  The generated tree
+currently disables exactly that: `set_option Elab.async false` appears in
+8,610 generated modules, and every generated module is compiled with
+`lean -j 1`.  The design therefore pays a per-obligation import cost to buy
+parallelism that it has switched off inside each process.  Note that
+`Loom/Release/KernelDecide.lean` and `Loom/Release/SymbolicDecide.lean` both
+set `Elab.async false` internally around auxiliary-lemma creation, so this is
+not a free flag flip -- the custom elaborators may depend on it.  Establishing
+whether they do is a prerequisite for any batching work.
+
+### The import floor
+
+Measured on the 2026-07-21 tree with empty modules that import the stated set
+and prove nothing:
+
+| module contents | wall | peak RSS |
+| --- | ---: | ---: |
+| `import Loom.Release.SymbolicDecide` | 1.28 s | 785 MiB |
+| the above `+ ActionCert` | 2.67 s | 795 MiB |
+| the `DagCut*Query*` import set | 5.55 s | 1.42 GiB |
+
+That tree had 16,372 generated modules, 732 MiB of generated sources, and a
+20 GiB `.olean` output.  `ActionCert.olean` alone was 209 MiB and was imported,
+directly or transitively, by about 1,106 modules.  Total certificate size is
+therefore multiplied by consumer count -- the same `O(consumers x artifact)`
+shape that the whole-register transpose removed at the algorithm level,
+reappearing in the transport layer where it does not look like an algorithm.
+
+The Acc8 artifact shows the same floor without any large certificate to blame.
+Its complete witness pipeline runs in 22 s, and *every* phase reports
+parallelism near 1.0 on a 32-core host: roughly fifteen sequential Lean process
+startups at about 1.6 s each.
+
+### Budget arithmetic
+
+A 10-minute wall target on 32 cores is 19,200 CPU-seconds.  At the ~1.3 s
+fixed cost per module measured above, 16,372 modules is about 21,300
+CPU-seconds of process and import overhead before any obligation is checked.
+Batching is therefore a hard requirement rather than a tuning knob, and the
+module count -- not the leaf size -- is the quantity to solve for.  Landing
+near 2,000-4,000 modules leaves roughly 4-6 s of budget per module.
+
+### Measuring it
+
+`scripts/phase_timing.sh` gives every build script a shared `run_phase` that
+appends `started_utc,scope,label,wall_seconds,cpu_seconds,parallelism` to one
+CSV per run under `.lake/release-metrics/`.  `cpu_seconds` is reaped-children
+CPU, so `parallelism = cpu/wall` separates phases that are genuinely serial
+from phases that are merely badly scheduled.  A phase near 1.0 on this host
+will not improve with more workers no matter how the leaves are sized; those
+phases, not the aggregate CPU total, determine whether a wall-clock target is
+reachable at all.

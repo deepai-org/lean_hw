@@ -444,15 +444,15 @@ theorem newAny_quiescent (σ : Loom.Hw.St)
   rw [newJobSet_quiescent σ hnr d] at he
   exact absurd he (by decide)
 
-/-- `jobV` collapses to the job-valid register on a non-retiring cycle. -/
+/-- `jobV` collapses to the job-valid register on a non-retiring cycle.
+
+Stated against `Hw.moverJobVE` rather than its expansion: `moverJobVE` is an
+opacity boundary for release checking, so call sites must not have to unfold
+the whole circuit just to discharge quiescence. -/
 theorem jobV_quiescent (σ : Loom.Hw.St)
     (hnr : Inert σ) :
-    ((Expr.or (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet))
-      (.and (.reg 1 "mov_v")
-        (.not (.and (.reg 1 "mov_v")
-          (.or (Hw.killedByCoreE Hw.movSrcDom Hw.movSrcSlot)
-               (Hw.killedByCoreE Hw.movDstDom Hw.movDstSlot)))))).eval σ)
-      = σ.regs "mov_v" 1 := by
+    Hw.moverJobVE.eval σ = σ.regs "mov_v" 1 := by
+  unfold Hw.moverJobVE Hw.moverNewAnyE Hw.moverClearedE
   show (Hw.orAll ((List.finRange numDomains).map Hw.newJobSet)).eval σ |||
       (σ.regs "mov_v" 1 &&&
         ~~~(σ.regs "mov_v" 1 &&&
@@ -538,7 +538,17 @@ theorem absMover_moverAct_run (σ acc : Loom.Hw.St) (τ : MachineState)
     Hw.absMover (Hw.moverAct.run σ acc) = (moverPhase τ).mover := by
   -- reduce the circuit side to the written registers
   show Hw.absMover (Act.run σ Hw.moverAct acc) = _
-  simp only [Hw.moverAct]
+  -- `moverAct`'s derived signals are now separate top-level definitions so
+  -- release checking does not duplicate the whole circuit. The refinement
+  -- proofs below still reason about the inlined shape, so unfold them here;
+  -- this restores the pre-refactor goal and does not affect the opaque form
+  -- used on the release path.
+  simp only [Hw.moverAct, Hw.moverJobVE, Hw.moverNewAnyE,
+    Hw.moverClearedE, Hw.moverSrcE, Hw.moverDstE, Hw.moverOwnerE,
+    Hw.moverSrcCurE, Hw.moverDstCurE, Hw.moverRemE, Hw.moverStatusE,
+    Hw.moverLivePostE, Hw.moverCheckOkE, Hw.moverSrcWordE,
+    Hw.moverStatusAuthE, Hw.moverMoveWordE, Hw.moverStatusEnE,
+    Hw.moverStatusDataE, Hw.moverContinueE]
   simp only [Act.run]
   rw [if_pos hjobV]
   simp only [Hw.seqAll, List.foldr, Act.run]
@@ -947,7 +957,17 @@ theorem moverAct_mem_run (σ acc : Loom.Hw.St) (τ : MachineState)
     (a : Addr) :
     (Hw.moverAct.run σ acc).mems "mem" a.toNat 32 = (moverPhase τ).mem a := by
   show (Act.run σ Hw.moverAct acc).mems "mem" a.toNat 32 = _
-  simp only [Hw.moverAct]
+  -- `moverAct`'s derived signals are now separate top-level definitions so
+  -- release checking does not duplicate the whole circuit. The refinement
+  -- proofs below still reason about the inlined shape, so unfold them here;
+  -- this restores the pre-refactor goal and does not affect the opaque form
+  -- used on the release path.
+  simp only [Hw.moverAct, Hw.moverJobVE, Hw.moverNewAnyE,
+    Hw.moverClearedE, Hw.moverSrcE, Hw.moverDstE, Hw.moverOwnerE,
+    Hw.moverSrcCurE, Hw.moverDstCurE, Hw.moverRemE, Hw.moverStatusE,
+    Hw.moverLivePostE, Hw.moverCheckOkE, Hw.moverSrcWordE,
+    Hw.moverStatusAuthE, Hw.moverMoveWordE, Hw.moverStatusEnE,
+    Hw.moverStatusDataE, Hw.moverContinueE]
   simp only [Act.run]
   rw [if_pos hjobV]
   simp only [Hw.seqAll, List.foldr, Act.run]
