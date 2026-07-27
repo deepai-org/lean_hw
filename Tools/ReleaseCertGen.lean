@@ -394,15 +394,10 @@ unsafe def synthesize (design : Design) (program : SSA.Program) :
 
 /-! ## Compact shared-plan certificate synthesis -/
 
-/-- Parse a witness identifier into a reference in canonical form: a wire
-whose name is its canonical `nN` spelling becomes `.wire n`, matching what
-the join checker and both Lean emitters expect. -/
 private def nameRef (name : String) : Symbolic.Ref :=
   if name.startsWith "n" then
     match (name.drop 1).toNat? with
-    | some number =>
-        if name == Symbolic.wireName number then .wire number
-        else .namedWire number name
+    | some number => .namedWire number name
     | none => .reg name
   else .reg name
 
@@ -860,8 +855,7 @@ unsafe def synthesizeActionWideRegisterCertRuntime (design : Design)
 
 private def quote (value : String) : String := reprStr value
 
-def actionWideRefToLean (reference : Symbolic.Ref) : String :=
-  match reference.canonical with
+def actionWideRefToLean : Symbolic.Ref → String
   | .reg name => s!".reg {quote name}"
   | .wire number => s!".wire {number}"
   | .namedWire number name => s!".namedWire {number} {quote name}"
@@ -1103,9 +1097,7 @@ private def indexedRegCertName (index : Nat) : String :=
 private def refToLean (name : String) : String :=
   if name.startsWith "n" then
     match (name.drop 1).toNat? with
-    | some number =>
-        if name == Symbolic.wireName number then s!".wire {number}"
-        else s!".namedWire {number} {quote name}"
+    | some number => s!".namedWire {number} {quote name}"
     | none => s!".reg {quote name}"
   else s!".reg {quote name}"
 
@@ -1129,19 +1121,11 @@ private def indexedNextRulesToLean {w : Nat} : Named.NextRulesCert w → String
       s!".cons ({optionalRefToLean mid}) ({indexedNextRegToLean head}) " ++
         s!"({indexedNextRulesToLean tail})"
 
-/-- Emit `.wire` as the canonical spelling of a canonically named wire.
-
-This previously expanded `.wire n` into `.namedWire n "nN"`, the exact
-opposite of `ActionWideGen.dagRefToLean`. Two emitters with opposite
-canonical forms produce statements that cannot be composed: `ActionStateDag`
-rejects `namedWire` as a join output (`checkedJoinOutput` is `false` on that
-constructor), so `.wire` is the form the checker requires. -/
 private def symbolicRefToLean : Symbolic.Ref → String
   | .reg name => s!".reg {quote name}"
-  | .wire number => s!".wire {number}"
-  | .namedWire number name =>
-      if name == Symbolic.wireName number then s!".wire {number}"
-      else s!".namedWire {number} {quote name}"
+  | .wire number =>
+      s!".namedWire {number} {quote (Symbolic.Ref.wire number).render}"
+  | .namedWire number name => s!".namedWire {number} {quote name}"
 
 private def symbolicOptionalRefToLean : Option Symbolic.Ref → String
   | none => "none"
