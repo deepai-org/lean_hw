@@ -102,7 +102,7 @@ esac
 
 run_phase "lake prerequisites (includes R-MC closure)" \
   lake build Loom.Release.SymbolicCertificate Loom.Release.SymbolicDecide \
-  Loom.Release.WholeRegisterPlan \
+  Loom.Release.WholeRegisterPlan Loom.Release.ToProgram \
   Tools.ReleaseCertGen "${design_imports[@]}" "${release_imports[@]}"
 
 # Generated modules are compiled outside Lake's module graph, so any Loom or
@@ -171,6 +171,16 @@ run_phase "memory data" compile_glob 'MemData*.lean'
 run_phase "memory renders" compile_glob 'MemRender*.lean'
 run_phase "memory roots" compile_glob 'MemRoot*.lean'
 run_phase "program data" compile_batch "$src/ProgramData.lean"
+# The parsed witness must be the verified compiler's own output. This gate
+# compares it against `Design.toProgram` -- the in-Lean reconstruction of the
+# printer's flattening -- so a generator or printer drift fails the release
+# here rather than surviving as a semantically-checked-but-different program.
+case "$target" in
+  acc8) parity_script=scripts/check_toprogram_acc8.lean ;;
+  lnp64u) parity_script=scripts/check_toprogram_lnp64u.lean ;;
+esac
+run_phase "toProgram parity gate" \
+  lake env lean --run "$(realpath "$parity_script")"
 run_phase "framing fixed" compile_batch "$src/FramingFixed.lean"
 run_phase "framing registers" compile_glob 'FramingReg*.lean'
 run_phase "framing outputs" compile_glob 'FramingOut*.lean'

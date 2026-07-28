@@ -113,12 +113,21 @@ are in [`TCB.md`](TCB.md); clean-clone verification tiers are in
    Since 2026-07-04, `lake exe audit` prints each ledger theorem's axiom
    closure, so readers can inspect the raw closure behind each CLEAN/STATED
    verdict instead of trusting only the summary labels. Since 2026-07-16 it
-   also enforces and prints the executable trust inventory: ten private
-   unsafe helpers plus the public generator-only `compileExprFast`, exactly
-   two `implemented_by` replacements (`compile` and `print`), and no project
-   `partial` or `extern` declarations. `compileExprFast` is used only to
-   synthesize untrusted release-certificate data; it is not reachable from
-   certificate acceptance or release theorems.
+   also enforces and prints the executable trust inventory: the reviewed
+   private unsafe helpers plus the public generator-only `compileExprFast`,
+   the reviewed `implemented_by` replacements, and no project `partial` or
+   `extern` declarations. `compileExprFast` is used only to synthesize
+   untrusted release-certificate data; it is not reachable from certificate
+   acceptance or release theorems.
+   The reviewed replacements are `compile`, `print`, and (since 2026-07-28)
+   `Design.toProgram` / `Design.toIndexedWires`. The latter pair follows the
+   `print`/`printImpl` shape exactly: the unsafe twin adds a pointer-identity
+   memo whose only effect is to skip re-walks that would rebuild identical
+   `(width, rendered RHS)` CSE keys, so its compiled output equals the
+   reference `flatten`. Nothing kernel-facing depends on the replacement:
+   the reference definition is what appears in `toProgram_denotes` and any
+   future reflective `program = d.toProgram` check, and the compiled twin is
+   used only to *produce* candidate data whose acceptance is kernel-checked.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
 5. Superseded `SystemOpsWf` sorries were deleted 2026-07-04. As of
    2026-07-16 the R-MC dependency cone is also sorry-free: `square`,
