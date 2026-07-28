@@ -463,7 +463,24 @@ budget attached to the *audit* tier was never the right instrument -- that
 tier is bounded by the trust posture and runs offline. Attached to the *CI*
 tier, where an incremental content-addressed re-check only revisits what an
 edit touched, ten minutes is a meaningful and probably reachable target.
-**Decide which tier owns the budget before spending more on optimization.**
+
+**Resolved 2026-07-28: the CI tier owns the 600 s budget**, under the gate
+
+    max over single-edit classes of (recheck cost from a warm cache) <= 600 s
+
+and the audit tier is tracked against a soft <= 4 h wall practicality bound
+rather than left unmeasured. The rebinding, its two honesty conditions, and
+the work list it implies are recorded at the top of `NEXTSTEPS.md`, where the
+old target was stated. Two consequences for the numbers on this page:
+
+- the per-phase table above is now **audit-tier** accounting. It is still the
+  number an auditor pays and still gets reported per release; it is no longer
+  the number a 600 s budget is measured against;
+- phases pinned at parallelism 1.0 change status. Under the old target they
+  were a ~2,400 s rounding error against a 6.5x floor. Under the CI gate,
+  `semantic memories` at 832 s **violates the budget by itself**, because a
+  single edit reaching it pays the whole phase. Same measurement, different
+  and much sharper consequence.
 
 ### What was taken anyway
 

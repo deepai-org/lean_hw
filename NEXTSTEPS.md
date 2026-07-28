@@ -1,11 +1,70 @@
-# NEXT STEPS — active plan as of 2026-07-27
+# NEXT STEPS — active plan as of 2026-07-28
 
 Current state: T1–T9 are CLEAN, the generic emission theorem is proved, RTL
 is externally corroborated, and R-MC is complete (sorry-free unbounded
 whole-state lockstep from reset; all 25 retirement opcodes; closure is
 exactly `propext`, `Classical.choice`, `Quot.sound`). The proof layer is not
-the constraint. **Reproduction cost is**, and the active track is making a
-clean checkout build the full end-to-end proof in a bounded, measured time.
+the constraint. **Reproduction cost is**, and the active track is bounding it
+per tier.
+
+## The target, rebound 2026-07-28
+
+The previous target was "a clean checkout builds the full end-to-end proof in
+under 10 minutes on 32 cores". **That target was proved infeasible and has
+been deliberately rebound.** It is recorded here rather than deleted so the
+history reads as what it was.
+
+The infeasibility argument is one line. Total CPU for a clean run is 125,683
+CPU-s; at *perfect* 32x parallelism that is 3,928 s (65.5 min), still 6.5x a
+600 s target, with every scheduling question assumed away. Retiring the whole
+`hybrid registers` phase via section B leaves 1,814 s (30 min), still 3.0x
+over, before R-MC's 200-360 s modules are counted. It is a statement about
+total work, not about how work is arranged, so no batching, sharding, worker
+count, or scheduler can cross it. Full derivation in `RELEASE_COST.md`.
+
+The replacement target:
+
+> From a warm cache, any single-edit re-verification completes in under 10
+> minutes; a clean-checkout audit run completes overnight with kernel-only
+> checking and its full cost recorded per release; and the end-to-end theorem
+> is stated verbatim with its hard lemma as a named `sorry`.
+
+This is not a lowered bar; it is the bar attached to the thing it was always
+measuring. A wall-clock budget is a promise about *someone waiting*, and
+nobody waits on the audit tier -- it is bounded by the trust posture
+(kernel-only reduction is the point, not an inefficiency) and runs offline.
+The 10-minute number was always implicitly a promise about the edit-verify
+loop, and section D's CI tier is where that loop lives.
+
+Two conditions keep the rebinding honest rather than convenient:
+
+1. **The audit tier gets a tracked cost, not no cost.** Report total
+   CPU-seconds and wall per release under `.lake/release-metrics/`, against a
+   soft practicality bound of **<= 4 h wall on a 32-core host**. An auditor
+   re-running the certificate on their own hardware is still a user, just a
+   patient one. Unbounded is not the same as untargeted.
+2. **The redefinition lives where the old target was** -- this section --
+   with the floor argument beside it.
+
+### The CI-tier gate, stated precisely
+
+    max over single-edit classes of (recheck cost from a warm cache) <= 600 s
+
+That is the worst-case cost of one leaf plus its join path to the root. It is
+a *max*, not a mean: a single edit class that busts it busts the gate. Running
+today's measured numbers against that definition produces the work list
+below mechanically.
+
+| item | measured | verdict against the gate |
+| --- | ---: | --- |
+| `SemanticMems` | 832 s, parallelism 1.0 | **violates on its own** |
+| R-MC modules | 200-360 s each | any chain of two busts it |
+| `hybrid registers` leaf | ~3 s/leaf at 29.4x | passes; joins are the risk |
+
+Note what the rebinding does *not* license. Pipeline-wide batching is still
+dead -- the floor analysis killed it and rebinding does not revive it. What
+comes back into scope is decomposition **along worst-case single-edit paths
+only**, which is a much smaller and better-targeted programme.
 
 ## 0. The target statement — write this before anything else
 
@@ -209,23 +268,23 @@ at *perfect* parallelism, and that ignores the R-MC critical path, whose
 2,308 s of wall clock is by itself 3.8x the ten-minute target. **No
 combination of B and C reaches ten minutes for the whole pipeline.**
 
-### So restate what the budget attaches to
+### Which tier owns the budget — DECIDED 2026-07-28
 
-The tiered model in section D already answers this; it just has not been
-applied to the number. After B succeeds:
+The CI tier does. The tiered model in section D always answered this; the
+floor analysis removed the last excuse not to apply it.
 
 - **tool path** (compile, inherit correctness from the once-proved theorem):
   seconds. `lake exe emit` is already 11-15 s. Needs no budget.
-- **CI tier** (incremental checking against a content-addressed cache): this
-  is where a ten-minute budget is meaningful, because steady state re-checks
-  only what an edit touched.
-- **audit tier** (full cold re-derivation): the residual ~28,700 CPU-s plus
-  R-MC. Bounded by the trust posture, run offline, quoted honestly.
+- **CI tier** (incremental checking against a content-addressed cache):
+  **owns the 600 s budget**, under the max-over-single-edit-classes gate
+  stated at the top of this file.
+- **audit tier** (full cold re-derivation): the residual CPU plus R-MC.
+  Bounded by the trust posture, run offline, and tracked against a soft
+  <= 4 h wall practicality bound rather than left unmeasured.
 
-A "17.4x miss" is only a miss if the budget is attached to the audit tier,
-which is the one tier where a wall-clock target was never the right
-instrument. **Decide which tier owns the ten minutes before doing more
-optimization work**; that decision changes what counts as success.
+A "17.4x miss" was only ever a miss because the budget was attached to the
+audit tier, which is the one tier where a wall-clock target was never the
+right instrument.
 
 Two cheap wins are available now and independent of B:
 
