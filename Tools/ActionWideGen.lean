@@ -1572,7 +1572,16 @@ private partial def collectDagLeaves (spans : Array DagSpan)
       pure (afterElse, span.output, thenLeaves ++ elseLeaves)
   | _, _ => failure
 
-private def dagRefToLean : Loom.Release.Symbolic.Ref → String
+/-- Chain and cut statements spell wires the way the *program* does, `.wire n`.
+
+`RegQueryEvidence.registerBehaviorAt` relates the accumulated evidence to
+`program`, whose next-references come from `RuntimeSsa.ref?` in numbered
+form, so the chain must end there; and `RegQueryEvidence.skip` requires the
+chain's input and output to agree. Join *inputs* are the exception and are
+emitted elsewhere (`actionWideJoinToLean`), because those are matched against
+the indexed wire table's mux operands, which carry the named form. -/
+private def dagRefToLean (reference : Loom.Release.Symbolic.Ref) : String :=
+  match reference.canonical with
   | .wire number => "Symbolic.Ref.wire " ++ toString number
   | .namedWire number name =>
       "Symbolic.Ref.namedWire " ++ toString number ++ " " ++ reprStr name
