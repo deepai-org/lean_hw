@@ -268,6 +268,26 @@ will not improve with more workers no matter how the leaves are sized; those
 phases, not the aggregate CPU total, determine whether a wall-clock target is
 reachable at all.
 
+## Standing nightly gates (2026-07-28)
+
+`scripts/nightly_gates.sh` (crontab: 02:00 UTC daily on the 32-core build
+host) enforces the four standing bounds and appends one CSV row per gate to
+`.lake/release-metrics/nightly-<stamp>/gates.csv`:
+
+| gate | bound | measures |
+| --- | --- | --- |
+| `audit-clean-release` | 14,400 s | wiped-tree `build_verified_release.sh 32`, kernel-only |
+| (internal) `toProgram parity gate` | build fails on drift | shipped witness = `Design.toProgram` |
+| `tutorial-path` | 600 s | documented user path builds; axiom closure exactly the three |
+| `edit-*` classes | 600 s each | warm-cache recheck of the module a single edit touches |
+
+The `edit-*` rows are the CI-tier gate's first measured instances. The
+recheck cost of an edit class is v1-approximated as recompiling the touched
+module from the warm cache the audit run just produced; downstream join
+paths are not yet included. A failing row is a regression by definition —
+`edit-semantic-mems` fails until the SemanticMems split lands, and that
+failure appearing in the nightly CSV is the intended behavior.
+
 ## Measured W, and a correction (2026-07-28)
 
 The release pipeline now completes end-to-end from clean sources. Getting
