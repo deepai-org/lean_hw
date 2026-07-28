@@ -855,17 +855,7 @@ unsafe def synthesizeActionWideRegisterCertRuntime (design : Design)
 
 private def quote (value : String) : String := reprStr value
 
-/-- Action-wide data (joins, connectors, segment states) must spell a
-canonically named wire as `.wire n`: `proveJoinOutput` reduces `Join.output`
-and rejects anything but that constructor.
-
-This is deliberately *not* applied to the whole-plan emitters below
-(`symbolicRefToLean`, `refToLean`, `nameRef`), whose roots are compared with
-`isDefEq` against `namedWire` data emitted by `gen_release_witness.py`.
-The two paths genuinely require different spellings; canonicalizing both
-breaks the whole-plan comparison. -/
-def actionWideRefToLean (reference : Symbolic.Ref) : String :=
-  match reference.canonical with
+def actionWideRefToLean : Symbolic.Ref → String
   | .reg name => s!".reg {quote name}"
   | .wire number => s!".wire {number}"
   | .namedWire number name => s!".namedWire {number} {quote name}"
@@ -890,13 +880,20 @@ def actionWideJoins (cert : Symbolic.ActionWide.RulesCert) :
     List Symbolic.ActionWide.Join :=
   cert.foldr collectActionWideJoins []
 
+/-- A join's inputs must be spelled exactly as the indexed wire table spells
+them, because `proveJoinAt` matches them against that table's mux operands --
+and the table is emitted by `gen_release_witness.py`, which writes the
+`namedWire` form. Its *output*, by contrast, is reduced by `proveJoinOutput`,
+which accepts only `Ref.wire`. The two fields therefore take different
+spellings of the same wire; canonicalizing all of them breaks input matching,
+and canonicalizing none of them breaks the output check. -/
 private def actionWideJoinToLean (join : Symbolic.ActionWide.Join) : String :=
   "{ index := " ++ toString join.index ++
     ", width := " ++ toString join.width ++
     ", guard := " ++ actionRefToLean join.guard ++
     ", thenInput := " ++ actionRefToLean join.thenInput ++
     ", elseInput := " ++ actionRefToLean join.elseInput ++
-    ", output := " ++ actionRefToLean join.output ++ " }"
+    ", output := " ++ actionRefToLean join.output.canonical ++ " }"
 
 private def actionWideJoinName (join : Symbolic.ActionWide.Join) : String :=
   match join.output with
