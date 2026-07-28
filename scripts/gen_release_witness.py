@@ -57,9 +57,14 @@ def rhs(text: str) -> str:
 
 
 def indexed_ref(name: str) -> str:
+    # `nN` is the canonical spelling of wire N, so emit the numbered
+    # constructor. This is the root data source for the indexed wire table,
+    # and every consumer -- join input matching, chain statements, whole-plan
+    # roots -- compares against it structurally. Emitting the named form here
+    # forced each consumer to agree on a spelling separately, which they did
+    # not: `proveJoinOutput` and `registerBehaviorAt` require `.wire`.
     match = re.fullmatch(r"n(\d+)", name)
-    return (f".namedWire {match[1]} {q(name)}" if match
-            else f".reg {q(name)}")
+    return f".wire {match[1]}" if match else f".reg {q(name)}"
 
 
 def root_ref(name: str) -> str:
