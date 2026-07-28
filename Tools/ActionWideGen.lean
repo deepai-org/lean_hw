@@ -497,8 +497,7 @@ private structure CoreRegQueryState where
 
 private abbrev CoreRegQueryM := StateT CoreRegQueryState Option
 
-private def coreRefToLean (reference : Loom.Release.Symbolic.Ref) : String :=
-  match reference.canonical with
+private def coreRefToLean : Loom.Release.Symbolic.Ref → String
   | .wire number => "Symbolic.Ref.wire " ++ toString number
   | .namedWire number name =>
       "Symbolic.Ref.namedWire " ++ toString number ++ " " ++ reprStr name
@@ -1573,26 +1572,10 @@ private partial def collectDagLeaves (spans : Array DagSpan)
       pure (afterElse, span.output, thenLeaves ++ elseLeaves)
   | _, _ => failure
 
-/-- Emit references in one canonical form.
-
-`Ref.namedWire n (wireName n)` and `Ref.wire n` denote the same SSA wire --
-`refEnv` resolves the named form to `env (.wire n)` -- but they are distinct
-constructors, so they are distinct *type indices* of `RegQueryEvidence`. A
-statement mixing the two cannot be closed by `RegQueryEvidence.skip`, which
-demands a syntactically equal input and output.
-
-The rule chain produces the named form while the concrete program produces
-the numbered one, so emitting both verbatim made every register statement
-ill-typed. Collapse the redundant naming here, and only here: a genuinely
-named wire (one whose name is not its canonical `nN` spelling) is preserved.
-Every emitted statement is still re-checked by `reg_query_decide`. -/
 private def dagRefToLean : Loom.Release.Symbolic.Ref → String
   | .wire number => "Symbolic.Ref.wire " ++ toString number
   | .namedWire number name =>
-      if name == Loom.Release.Symbolic.wireName number then
-        "Symbolic.Ref.wire " ++ toString number
-      else
-        "Symbolic.Ref.namedWire " ++ toString number ++ " " ++ reprStr name
+      "Symbolic.Ref.namedWire " ++ toString number ++ " " ++ reprStr name
   | .reg name => "Symbolic.Ref.reg " ++ reprStr name
 
 private def dagNodeToLean :
