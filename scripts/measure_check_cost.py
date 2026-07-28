@@ -126,24 +126,36 @@ def probe_toll(repo: Path, source: Path, probe_dir: Path,
     return toll
 
 
-def read_phase_cpu(csv_path: Path) -> dict[str, float]:
-    """Sum CPU seconds per phase label (a label may repeat across scopes)."""
+def read_phase_cpu(csv_paths: list[Path]) -> dict[str, float]:
+    """Maximum CPU seconds per phase label across the supplied runs.
+
+    An incremental run skips work whose objects are current and reports
+    almost no CPU for it. Summing across runs would double-count, and reading
+    a single cached run understates every phase -- enough to drive the
+    estimate negative. The largest observation is the one where the phase
+    actually did its work.
+    """
     totals: dict[str, float] = {}
-    with csv_path.open() as handle:
-        for row in csv.DictReader(handle):
-            if not row.get("label"):
-                continue
-            try:
-                cpu = float(row["cpu_seconds"])
-            except (TypeError, ValueError):
-                continue
-            totals[row["label"]] = totals.get(row["label"], 0.0) + cpu
+    for csv_path in csv_paths:
+        with csv_path.open() as handle:
+            for row in csv.DictReader(handle):
+                if not row.get("label"):
+                    continue
+                try:
+                    cpu = float(row["cpu_seconds"])
+                except (TypeError, ValueError):
+                    continue
+                label = row["label"]
+                totals[label] = max(totals.get(label, 0.0), cpu)
     return totals
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("phases", type=Path, help="phases.csv from a run")
+    parser.add_argument("phases", type=Path, nargs="+",
+                        help="phases.csv files; a phase's cost is taken as its "
+                             "maximum across runs, since a cached run reports "
+                             "~0 CPU for work it skipped")
     parser.add_argument("--generated", type=Path,
                         default=Path("GeneratedRelease/Lnp64u"))
     parser.add_argument("--budget", type=float, default=19200.0,
@@ -155,6 +167,8 @@ def main() -> None:
     if not generated.is_dir():
         raise SystemExit(f"missing generated tree {generated}")
     phase_cpu = read_phase_cpu(args.phases)
+    if not phase_cpu:
+        raise SystemExit('no phase rows found')
     probe_dir = repo / "scratch" / "cost-probes"
     cache: dict[str, float] = {}
 
@@ -202,7 +216,11 @@ def main() -> None:
     print(f"W, irreducible kernel checking      : {total_check:9.0f} s")
     print(f"budget                              : {args.budget:9.0f} s")
     print()
-    if total_check <= 0.75 * args.budget:
+    if total_check < 0:
+        print("VERDICT: estimate is negative, which means the observed CPU came")
+        print("from cached runs that skipped the work. Re-run against a phase")
+        print("CSV from a build that actually compiled these families.")
+    elif total_check <= 0.75 * args.budget:
         print("VERDICT: W is comfortably under budget. The wall-clock target is")
         print("an engineering problem -- batching and join restructuring.")
     elif total_check <= args.budget:
