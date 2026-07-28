@@ -84,14 +84,28 @@ def permittedUnsafeDecls : List String :=
    "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.compileImpl",
    "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.pExprMGo",
    "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.pExprM",
-   "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.printImpl"]
+   "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.printImpl",
+   -- `Design.toProgram`'s pointer-memoized executable twin. Same trust shape
+   -- as `printImpl`: the memo only skips re-walks whose CSE keys would hit
+   -- the same table entries, so compiled output equals the reference
+   -- `flatten`; nothing kernel-facing depends on the replacement.
+   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.flattenMGo",
+   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.flattenM",
+   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.flattenModuleImpl.build",
+   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.flattenModuleImpl",
+   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toProgramImpl",
+   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl"]
 
 /-- The reference definitions whose compiled execution is replaced. -/
 def permittedImplementedBy : List (String × String) :=
   [("Loom.Hw.Compile.compile",
     "_private.Loom.Hw.Compile.0.Loom.Hw.Compile.compileImpl"),
    ("Loom.Emit.MicroVerilog.Print.print",
-    "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.printImpl")]
+    "_private.Loom.Emit.MicroVerilog.Print.0.Loom.Emit.MicroVerilog.Print.printImpl"),
+   ("Loom.Hw.Design.toProgram",
+    "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toProgramImpl"),
+   ("Loom.Hw.Design.toIndexedWires",
+    "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl")]
 
 /-- Lean generates partial `_unsafe_rec` helpers while elaborating some
 ordinary structural definitions. They are compiler artifacts, not uses of

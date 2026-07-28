@@ -32,6 +32,8 @@ import Loom.Release.SymbolicElaborate
 import Loom.Release.Verified
 import Loom.Release.SymbolicSound
 import Loom.Release.SymbolicVerified
+import Loom.Release.ToProgram
+import Loom.Release.ToProgramDenotes
 import Loom.Emit.MicroVerilog.MatchesSemantics
 import Loom.Emit.MicroVerilog.Print
 import Loom.Emit.MicroVerilog.Axiom
