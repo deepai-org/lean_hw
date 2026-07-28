@@ -124,15 +124,16 @@ RSS; and `summary.json` records wall time, percentiles, observed CPU-hours,
 parallelism, and memory peaks. Measurements do not participate in proof
 acceptance.
 
-### Scheduled enforcement
+### The standing gate bundle
 
-On the publication host the four standing bounds are enforced nightly by
-`scripts/nightly_gates.sh` (crontab, 02:00 UTC): the wiped-tree Tier A run
-inside a 4-hour bound, the `toProgram` parity gates inside it, the
-documented tutorial path (`TUTORIAL.md`) with its exact three-axiom
-closure, and warm-cache single-edit recheck classes against the 600-second
-CI-tier gate. Each night appends one CSV row per gate under
-`.lake/release-metrics/nightly-<stamp>/gates.csv`.
+`scripts/nightly_gates.sh` runs the four standing bounds as one command:
+the wiped-tree Tier A run inside a 4-hour bound, the `toProgram` parity
+gates inside it, the documented tutorial path (`TUTORIAL.md`) with its
+exact three-axiom closure, and warm-cache single-edit recheck classes
+against the 600-second CI-tier gate. Each run appends one CSV row per gate
+under `.lake/release-metrics/nightly-<stamp>/gates.csv`. It is invoked
+manually (typically overnight or before a release); no scheduler is
+installed on the build host.
 
 ## Tier B: reviewer-scale substantive check
 
