@@ -63,6 +63,23 @@ run_phase "Acc8 release witness" scripts/build_release_witness.sh acc8 "$jobs"
 run_phase "LNP64-u release witness" scripts/build_release_witness.sh lnp64u "$jobs"
 run_phase "RTL X/Z hygiene" scripts/check_xfree_rtl.py rtl/acc8.v rtl/lnp64u.v
 mkdir -p .lake/build/lib/lean/Tools
+
+# VerifiedRelease.lean and ReleaseAudit.lean are compiled directly with
+# `lean`, outside Lake's module graph, so their Loom/Machines imports have no
+# objects on a clean checkout unless built explicitly. Derive the set by
+# scanning rather than naming it: the hand-maintained list in
+# build_release_witness.sh named 7 of 18 and failed once per missing entry.
+build_theorem_prerequisites() {
+  local -a targets
+  mapfile -t targets < <(
+    grep -h '^import \(Loom\|Machines\)\.' \
+      Tools/VerifiedRelease.lean Tools/ReleaseAudit.lean 2>/dev/null |
+      awk '{print $2}' | sort -u)
+  ((${#targets[@]} == 0)) && return 0
+  lake build "${targets[@]}"
+}
+run_phase "release theorem prerequisites" build_theorem_prerequisites
+
 run_phase "combined release theorem" lake env lean \
   "$(realpath Tools/VerifiedRelease.lean)" \
   -o "$(realpath .lake/build/lib/lean/Tools)/VerifiedRelease.olean"
