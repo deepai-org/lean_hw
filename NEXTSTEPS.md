@@ -247,6 +247,21 @@ survives B regardless.
    the `n<k>` wire numbering — with no pointer identity or IO involved. The
    two-week box now bounds the *proof statement* risk, not representation
    risk. Landing it also fires the goal-fork trigger above.
+
+   **DONE 2026-07-28, same day (commit `82e0081`).** All three criteria met
+   and exceeded: `Design.toProgram` exists (`Loom/Release/ToProgram.lean`)
+   and does not merely typecheck — `d.toProgram == program` was *measured
+   true on both artifacts*, every field, including all 179,711 LNP64-µ
+   wires, and the comparison is now a release phase (`toProgram parity
+   gate`) so drift fails the build. `toProgram_denotes` typechecks with
+   `sorry` (`Loom/Release/ToProgramDenotes.lean`), and the hard lemma is
+   the named, fully-typed `toProgram_registerBehavior`: every register root
+   of the constructed witness denotes the verified compilation — the
+   once-for-all form of the 825 generated register theorems. The underlying
+   induction (a flatten-soundness invariant over the CSE environment) is
+   described in that file's header. **The goal-fork trigger has fired**:
+   user-facing work (tutorial + user test) is now co-priority with proving
+   the stated lemmas.
 2. **A** (an afternoon) and a **timeboxed B feasibility spike** (two weeks:
    a rendering-correctness skeleton with the hard lemma isolated and its
    difficulty assessed) run together.
