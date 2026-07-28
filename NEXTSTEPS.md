@@ -184,6 +184,20 @@ Three consequences, in order of how much they change the plan:
    That alone exceeds ten minutes. Section C's log-depth-tree work applies
    here and is worth doing even after B, because these survive it.
 
+### The floor calculation (2026-07-28) — read this one first
+
+Total CPU for the authoritative clean run is 125,683 CPU-s. At *perfect* 32x
+parallelism — no serial phases, no process toll, optimal scheduler — that is
+**3,928 s (65.5 min), still 6.5x the 600 s target**. Retiring the whole
+`hybrid registers` phase via B leaves 58,037 CPU-s, i.e. **1,814 s (30 min),
+still 3.0x over**, before R-MC's 200-360 s modules are considered.
+
+This subsumes the `W` argument below and is harder to argue with, because it
+assumes away every scheduling question. The target is unreachable for the
+audit tier **with B as well as without it**. See `RELEASE_COST.md`, "The
+perfect-parallelism floor settles the 10-minute question". Attach the budget
+to the CI tier (§D) or it is measuring the wrong thing.
+
 ### B is necessary but arithmetically insufficient
 
 Run the residual before starting, so this is not rediscovered afterwards.
@@ -215,10 +229,12 @@ optimization work**; that decision changes what counts as success.
 
 Two cheap wins are available now and independent of B:
 
-- `port certificate generation` spends 504 s to produce one imported batch,
-  because the LNP64-u path runs all of `CertGen` for its memory-port family
-  while the other three families it synthesises have no importers. A narrow
-  entry point removes almost all of that.
+- **DONE 2026-07-28.** `port certificate generation` spent 504 s to produce
+  one imported batch, because the LNP64-u path ran all of `CertGen` for its
+  memory-port family while the other three families it synthesises have no
+  importers. `synthesizeMemsCertRuntime` +
+  `indexedPortDeclarationBatchesOfMems` synthesize `cert.mems` alone:
+  **506 s -> 18.1 s**, with a byte-identical compiled batch.
 - The R-MC prerequisite phase runs 2,317 s at parallelism 2.7. That is a
   critical-path problem inside the proof modules, it is untouched by B, and
   it is the reason a sub-10-minute target would still be hard even if every

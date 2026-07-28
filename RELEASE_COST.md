@@ -416,3 +416,71 @@ touch it. Roughly 2,900 s of the run is phases pinned at parallelism 1.0.
 The `release theorem axiom closure` walk is 649 s here, not the ~24 minutes
 recorded for the 2026-07-18 acceptance. That earlier figure predates the
 current certificate architecture and should not be quoted going forward.
+
+## The perfect-parallelism floor settles the 10-minute question (2026-07-28)
+
+Earlier sections argue the 10-minute/32-core target is unreachable by pointing
+at `W` and at the serial inventory. Both are sound, but neither is the
+shortest argument, because both invite the reply "so schedule it better".
+The shortest argument needs no assumption about scheduling at all.
+
+Total CPU for the authoritative clean run is **125,683 CPU-s** (measured
+@ 2026-07-28, `lnp64u-20260728T095018Z/phases.csv`, summed over the eight
+top-level `release`-scope rows; summing every row double-counts, because the
+`acc8`, `lnp64u` and `dag-cuts` rows are nested inside them). Divide by 32:
+
+| bound | value | vs 600 s target |
+| --- | ---: | ---: |
+| measured clean run | 10,459 s | 17.4x |
+| **floor at perfect 32x parallelism** | **3,928 s (65.5 min)** | **6.5x** |
+| floor after section B retires `hybrid registers` | 1,814 s (30.2 min) | 3.0x |
+
+The middle row is the one that settles it. It assumes every phase scales
+perfectly to 32 cores, no serial phase exists, no process toll is paid, and
+the scheduler is optimal. **The pipeline is still 6.5x over budget.** No
+batching, sharding, worker count, or critical-path scheduling can cross that,
+because it is a statement about total work, not about how the work is
+arranged. Section C cannot reach the target; neither can section C plus any
+scheduler.
+
+The bottom row assumes section B additionally succeeds and retires the whole
+`hybrid registers` phase (68,028 CPU-s, the per-node `denotation`
+re-derivation). That is the single largest item in the run and the one B is
+designed to remove. The result is still 3.0x over, and it still ignores R-MC,
+whose individual modules run 200-360 s each -- one module chain is over half
+the entire 600 s budget on its own, and B does not touch it.
+
+So the honest statement is stronger than "unreachable without B". It is:
+**the target is unreachable with B as well**, for the audit tier. Reaching ten
+minutes needs B *and* roughly a further 3x on the residual *and* a
+restructured R-MC critical path. This is the arithmetic NEXTSTEPS section A
+anticipated ("No combination of B and C reaches ten minutes for the whole
+pipeline"); the floor calculation is just the version of it that cannot be
+argued with.
+
+The constructive reading is the tiering in NEXTSTEPS section D. A wall-clock
+budget attached to the *audit* tier was never the right instrument -- that
+tier is bounded by the trust posture and runs offline. Attached to the *CI*
+tier, where an incremental content-addressed re-check only revisits what an
+edit touched, ten minutes is a meaningful and probably reachable target.
+**Decide which tier owns the budget before spending more on optimization.**
+
+### What was taken anyway
+
+`port certificate generation` was 506 s at parallelism 1.0 to emit a single
+imported batch. The LNP64-u path takes its register certificates from the
+hybrid action cuts, so `indexedPortDeclarationBatchesOfMems` reads only
+`cert.mems`; running all of `CertGen` there also built 825 register
+certificates and a whole-plan `RulePlans.ofRules` synthesis that nothing on
+this path imports. `synthesizeMemsCertRuntime` builds the shared wire index
+and `synthMems` alone:
+
+| | wall | parallelism |
+| --- | ---: | ---: |
+| full `CertGen` (old) | 506 s | 1.00 |
+| `CertGenPorts` (new) | **18.1 s** | 1.00 |
+
+The compiled `IndexedPortCertBatch0.olean` is byte-identical to the one the
+old path produced (`sha256 3810250c...`), so this is dead work removed, not a
+weakened check. It is worth having and it does not change any row of the table
+above by enough to matter -- which is the point of recording the floor.
