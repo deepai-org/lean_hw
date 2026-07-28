@@ -58,14 +58,18 @@ in `lake-manifest.json`. The command:
 1. builds the checked-in Lean project;
 2. freshly emits `rtl/acc8.v` and `rtl/lnp64u.v`;
 3. generates untrusted concrete SSA witnesses and bounded proof modules;
-4. repeats source generation and rejects any content drift;
-5. checks the exact byte binding for both files;
-6. rejects four-state/X/Z syntax, missing register resets, and incomplete
+4. rejects the release unless each parsed witness equals `Design.toProgram`
+   — the in-Lean reconstruction of the compiler's own output — so the
+   shipped program cannot drift from the verified compilation
+   (`toProgram parity gate`, since 2026-07-28);
+5. repeats source generation and rejects any content drift;
+6. checks the exact byte binding for both files;
+7. rejects four-state/X/Z syntax, missing register resets, and incomplete
    memory images in the freshly emitted files;
-7. kernel-checks every generated declaration and the single combined theorem;
-8. runs the repository trust audit; and
-9. rejects the release unless the combined theorem's axiom closure is exactly
-   `propext`, `Classical.choice`, and `Quot.sound`.
+8. kernel-checks every generated declaration and the single combined theorem;
+9. runs the repository trust audit; and
+10. rejects the release unless the combined theorem's axiom closure is
+    exactly `propext`, `Classical.choice`, and `Quot.sound`.
 
 On success the material outputs are `rtl/acc8.v`, `rtl/lnp64u.v`, and
 `.lake/build/lib/lean/Tools/VerifiedRelease.olean`; the checked declaration's
@@ -119,6 +123,16 @@ core count, start time, and the number of leaves already cached;
 RSS; and `summary.json` records wall time, percentiles, observed CPU-hours,
 parallelism, and memory peaks. Measurements do not participate in proof
 acceptance.
+
+### Scheduled enforcement
+
+On the publication host the four standing bounds are enforced nightly by
+`scripts/nightly_gates.sh` (crontab, 02:00 UTC): the wiped-tree Tier A run
+inside a 4-hour bound, the `toProgram` parity gates inside it, the
+documented tutorial path (`TUTORIAL.md`) with its exact three-axiom
+closure, and warm-cache single-edit recheck classes against the 600-second
+CI-tier gate. Each night appends one CSV row per gate under
+`.lake/release-metrics/nightly-<stamp>/gates.csv`.
 
 ## Tier B: reviewer-scale substantive check
 
