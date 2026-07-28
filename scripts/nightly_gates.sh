@@ -67,19 +67,15 @@ fi
 tutorial_gate() {
   lake build Machines.Tutorial.SatCounter || return 1
   lake env lean --run Machines/Tutorial/SatCounter.lean || return 1
-  local axioms
-  axioms=$(mktemp)
+  local axioms report
+  axioms=$(mktemp --suffix=.lean)
   cat > "$axioms" <<'EOF'
 import Machines.Tutorial.SatCounter
-open Machines.Tutorial.SatCounter in
-run_cmd do
-  let closure ← Lean.collectAxioms `Machines.Tutorial.SatCounter.satOk_rtl
-  let expected := #[`propext, `Classical.choice, `Quot.sound]
-  unless closure.toList.toArray.qsort (·.toString < ·.toString) ==
-      expected.qsort (·.toString < ·.toString) do
-    throwError "unexpected axiom closure: {closure}"
+#print axioms Machines.Tutorial.SatCounter.satOk_rtl
 EOF
-  lake env lean "$axioms"
+  report=$(lake env lean "$axioms") || return 1
+  echo "$report"
+  [[ "$report" == *"depends on axioms: [propext, Classical.choice, Quot.sound]"* ]]
 }
 measure "tutorial-path" 600 tutorial_gate
 
@@ -92,6 +88,12 @@ measure "edit-user-design" 600 \
 measure "edit-hybrid-leaf" 600 \
   lake env lean -j 1 "$(realpath GeneratedRelease/Lnp64u/HybridReg0000.lean)" \
     -o "$outdir/HybridReg0000.olean"
+measure "edit-mem-init-block" 600 \
+  lake env lean -j 1 "$(realpath GeneratedRelease/Lnp64u/SemanticMemInit0_0000.lean)" \
+    -o "$outdir/SemanticMemInit0_0000.olean"
+measure "edit-mem-port" 600 \
+  lake env lean -j 1 "$(realpath GeneratedRelease/Lnp64u/SemanticMemPort0_0.lean)" \
+    -o "$outdir/SemanticMemPort0_0.olean"
 measure "edit-semantic-mems" 600 \
   lake env lean "$(realpath GeneratedRelease/Lnp64u/SemanticMems.lean)" \
     -o "$outdir/SemanticMems.olean"
