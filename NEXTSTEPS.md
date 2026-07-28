@@ -89,6 +89,18 @@ survives B regardless.
 1. **Task 0** — write `Design.toProgram` and the `toProgram_denotes`
    statement, and identify the hard lemma. If nobody can write that
    signature, nothing below is well-posed.
+
+   *Done* means all three of these, not a prose account of any of them:
+
+   1. the `Design.toProgram` signature typechecks;
+   2. the end-to-end theorem statement typechecks with `sorry`;
+   3. the hard lemma is a **named, stated `sorry`** in the file — a
+      declaration with a full type, not a comment describing one.
+
+   Timebox it to two weeks. The failure mode is an open-ended formalisation
+   wander, and "the statement could not be written inside the box" is itself
+   a finding worth having: it would mean the artifact/compiler gap is not
+   expressible without first changing one of the two representations.
 2. **A** (an afternoon) and a **timeboxed B feasibility spike** (two weeks:
    a rendering-correctness skeleton with the hard lemma isolated and its
    difficulty assessed) run together.
@@ -171,6 +183,35 @@ Three consequences, in order of how much they change the plan:
    semantic actions and hybrid core shape 201 s each, ActionCert 161 s).
    That alone exceeds ten minutes. Section C's log-depth-tree work applies
    here and is worth doing even after B, because these survive it.
+
+### B is necessary but arithmetically insufficient
+
+Run the residual before starting, so this is not rediscovered afterwards.
+B retires about 70% of W, so what remains is
+
+    0.30 x 95,786 = 28,700 CPU-s  ~ 1.5x the 19,200 CPU-s budget
+
+at *perfect* parallelism, and that ignores the R-MC critical path, whose
+2,308 s of wall clock is by itself 3.8x the ten-minute target. **No
+combination of B and C reaches ten minutes for the whole pipeline.**
+
+### So restate what the budget attaches to
+
+The tiered model in section D already answers this; it just has not been
+applied to the number. After B succeeds:
+
+- **tool path** (compile, inherit correctness from the once-proved theorem):
+  seconds. `lake exe emit` is already 11-15 s. Needs no budget.
+- **CI tier** (incremental checking against a content-addressed cache): this
+  is where a ten-minute budget is meaningful, because steady state re-checks
+  only what an edit touched.
+- **audit tier** (full cold re-derivation): the residual ~28,700 CPU-s plus
+  R-MC. Bounded by the trust posture, run offline, quoted honestly.
+
+A "17.4x miss" is only a miss if the budget is attached to the audit tier,
+which is the one tier where a wall-clock target was never the right
+instrument. **Decide which tier owns the ten minutes before doing more
+optimization work**; that decision changes what counts as success.
 
 Two cheap wins are available now and independent of B:
 
@@ -267,6 +308,34 @@ per-process overhead and in serial singletons.
    DAG with per-node costs from the previous run and schedule longest-path
    first. Report **critical-path seconds** as the headline metric.
 
+## C2. R-MC — independent of B, and it busts any budget on its own
+
+Measured cold: **2,308 s wall at parallelism 2.7** on 32 cores, with
+individual modules at 200-360 s. That is 3.8x the ten-minute target from one
+phase, and section B does not touch it: B retires `denotation`, while R-MC
+discharges `refinement`.
+
+**Classification (proposed, confirm before spending on it).** R-MC is
+*audit-tier and development-tier, not tool-path*. The tool path is
+`lake exe emit` plus the generic `compile_cycle`; it never needs R-MC.
+`verifiedReleases` does, because the bundle asserts refinement of the
+shipped artifact, so a release re-derivation pays it. It is also a
+development cost: any edit under `Machines/` re-triggers the chain, which is
+what makes 2,308 s at 2.7x painful day to day rather than merely offline.
+
+The remedy is the section C prescriptions applied *here*, where they are
+alive even though they are a 9% item for the certificate pipeline:
+
+1. split the 200-360 s declarations into independently checkable lemmas;
+2. make the composition points log-depth rather than linear folds;
+3. establish whether `Elab.async` can be enabled for these modules --
+   `KernelDecide.lean` and `SymbolicDecide.lean` disable it around
+   auxiliary-lemma creation, so this needs checking before it is assumed.
+
+Parallelism 2.7 on a 32-core host means roughly 90% of the machine is idle
+through the longest phase of the build. That is the largest purely
+structural inefficiency measured anywhere in this project.
+
 ## D. Tier by who is waiting
 
 None of the existing kernel-checked work is wasted; it stops being *the tool*
@@ -312,6 +381,32 @@ should say so out loud.
 appends `started_utc,scope,label,wall_seconds,cpu_seconds,parallelism`, and
 `parallelism = cpu/wall` separates genuinely serial phases from badly
 scheduled ones.
+
+### Working rules earned the hard way on 2026-07-28
+
+Each of these is a guard against a failure that actually happened, with its
+cost attached. They are cheap to follow and were expensive to omit.
+
+- **Trace to the data source on the second occurrence.** The first time a
+  symptom appears, fixing it locally is reasonable. The *second* time the
+  same symptom appears, stop and find the source that generates the
+  disagreeing values before committing anything further. The
+  `namedWire`/`wire` spelling took eight commits, two of which were
+  self-inflicted regressions, because each fix addressed the consumer in
+  front of it; the actual fault was one line in `gen_release_witness.py`
+  emitting the root wire table in the other spelling.
+- **Liveness means artifact progress, never process names.** A `pgrep -f`
+  pattern matched the monitoring command's own arguments and reported a
+  build that had been dead for five hours as running. Check log growth,
+  `.olean` mtimes, or a recorded PID with `kill -0` -- never a name match
+  that can find itself.
+- **Every number in a planning document carries provenance.** Tag figures
+  `measured @ <date/commit>` or `estimated`. Two numbers in these documents
+  were quoted as evidence for architectural decisions and were both wrong
+  when finally measured: the import toll (~21,000 CPU-s claimed, 8,920
+  measured) and the axiom-closure walk (~24 min recorded, 649 s measured).
+  Provenance tagging catches that at citation time rather than after a
+  conclusion has been built on it.
 
 ## G. Standing hygiene
 
