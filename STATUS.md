@@ -1,5 +1,40 @@
 # STATUS — LNP64-µ / Loom
 
+## ★★ 2026-07-28: THE WITNESS IS THE COMPILER'S OUTPUT — TASK 0 LANDS ★★
+
+`Design.toProgram` (`Loom/Release/ToProgram.lean`) reconstructs the release
+SSA witness inside Lean from `Compile.compile d`, reproducing the printer's
+flattening (names, CSE, traversal order) and the generator's rope shapes.
+Measured, not asserted: `d.toProgram == program` on both artifacts — every
+field, all 179,711 LNP64-µ wires — and the comparison is now a release
+phase (`toProgram parity gate`), so generator/printer drift fails the
+build. The end-to-end statement `toProgram_denotes` typechecks with its
+hard lemma isolated as the named sorry `toProgram_registerBehavior` (`Wip`
+namespace, audit-legal): the once-for-all form of the 825 per-register
+generated theorems it will retire.
+
+Same day, in order:
+
+- **The perfect-parallelism floor**: 125,683 CPU-s clean-run total means
+  3,928 s wall at ideal 32x — the old 10-minute clean-build target is 6.5x
+  over *before any scheduling question*, and 3.0x over even with the
+  hybrid-registers phase retired. Recorded in `RELEASE_COST.md`.
+- **Budget rebound to the CI tier** (max single-edit warm-cache recheck
+  <= 600 s); audit tier gets a tracked <= 4 h bound instead of no bound.
+- `port certificate generation`: 506 s → 18.1 s (`CertGenPorts`,
+  byte-identical output batch).
+- `SemanticMems` (832 s, parallelism 1.0 — a single-edit gate violation by
+  itself) split into per-init-block and per-port modules.
+- **The goal fork decided as sequenced** (`NEXTSTEPS.md`): artifact-first
+  with a written trigger — which Task 0's landing fired, so user-facing
+  work is now co-priority. `TUTORIAL.md` (the scoped v1 promise: invariant
+  transport, not refinement) plus its executed example
+  `Machines/Tutorial/SatCounter.lean` and the falsification-protocol log
+  `Machines/Tutorial/DEFECTS.md` (run 1: 5 defects, 0 blockers).
+- **Nightly gates** (`scripts/nightly_gates.sh`, cron on the build host):
+  wiped-tree release build in <= 4 h, parity gates, tutorial path with
+  exact three-axiom closure, and single-edit warm-cache classes vs 600 s.
+
 ## ★★★ 2026-07-18: EXACT TWO-ARTIFACT RELEASE THEOREM ACCEPTED ★★★
 
 `scripts/build_verified_release.sh 8` completed successfully on the pinned
