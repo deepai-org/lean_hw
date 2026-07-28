@@ -66,6 +66,86 @@ dead -- the floor analysis killed it and rebinding does not revive it. What
 comes back into scope is decomposition **along worst-case single-edit paths
 only**, which is a much smaller and better-targeted programme.
 
+## The goal fork — decided as sequenced, 2026-07-28
+
+The project's stated goal is a Lean language/library that makes it easy to
+describe hardware, compile it to Verilog, and write your own proofs about
+your own designs. A 2026-07-28 assessment found the center of gravity has
+drifted from that library goal toward one deeply-verified artifact (LNP64-µ
+and its publication path). **That drift is a fork, not a footnote: it is a
+strategic decision being made by default, and the two goals order the work
+differently.**
+
+- **Artifact-first** (LNP64-µ, publication): Task 0 dominates everything;
+  the tutorial is marketing; R-MC recipe promotion is optional; the
+  credibility of one deeply-verified core is the product.
+- **Library-first**: the tutorial and a second user are upstream of further
+  investment, because they test whether the foundation is right before more
+  is built on it.
+
+**Decision: sequenced, with a written trigger.** LNP64-µ is what makes
+anyone believe the library matters — no one adopts a hardware verification
+framework on the strength of Acc8. So artifact-first now, *and*:
+
+> **Trigger: when Task 0's end-to-end statement lands (all three done
+> criteria in §Sequencing below), or at publication submission, whichever
+> comes first, the next quarter's priority flips to user-facing work** —
+> tutorial, docs, and the user test below — before further artifact
+> optimization is taken up.
+
+The trigger is the load-bearing part. Sequencing without a trigger is how
+the artifact absorbs everything forever, which is what gravity does.
+
+### Leg 3 scoped: two promises, not one
+
+"Relatively easy to write your own proofs" currently covers two products
+with a ~100x difficulty gap. Scope the claim instead of treating the gap as
+a deficiency to close:
+
+- **v1 promise — invariant transport.** "State a spec invariant, get it on
+  every reachable RTL state for free." This is real, generic, already
+  proved (`VerifiedSymbolicArtifact.invariants`), and is the 80% case.
+  Deliverable *now*; the tutorial and README should promise exactly this.
+- **v2 goal, gated on the fork — refinement to an ISS.** The R-MC
+  development proves it is *possible*; nothing yet makes it *easy*. Document
+  it as expert territory, with the R-MC recipes (§1) as the evidence base.
+  **Recipe promotion into library abstractions is expensive and only worth
+  it if refinement enters the promise** — that call is exactly the fork
+  decision above, so recipe promotion waits on the post-trigger review
+  rather than being open-ended debt.
+
+### "Easy" gets a falsification protocol, not just a tutorial
+
+A tutorial written by the author is still n=1 — it tests whether the author
+can explain, not whether a stranger can succeed. The experiment is cheap and
+is specified like one:
+
+> One person who has never seen the repo, given the tutorial and a clean
+> checkout, builds a two-register machine with one invariant, down to
+> emitted Verilog with the invariant transported — recording wall-time and
+> every point at which they needed help.
+
+Run it two or three times, different people. **Every intervention is a bug
+report against the library or the docs.** Until this has run once, every
+"easy" in the goal statement is an unfalsified hypothesis. Cost: about a
+day of someone else's time; highest information-per-hour item on the list.
+
+### Adjusted ordering
+
+1. **Task 0 — unchanged, the main event**, now upgraded from *planned* to
+   **confirmed feasible**: the 2026-07-28 architecture mapping established
+   that the printer's SSA flattening is deterministic hash-consing on pure
+   data — `n<k>` names are allocation-order indices, CSE keys on
+   `(width, rendered RHS)`, traversal order is fixed (all `reg.next`, then
+   memory ports in order, then outputs) — so the Python witness layer is
+   reproducible, and therefore replaceable, inside Lean.
+2. **Tutorial + user test run in parallel with Task 0, not after it.** They
+   compete for neither the same skills nor the same part of the codebase,
+   and the user test may surface EDSL problems that are cheaper to fix
+   before the compiler-through-rendering proof calcifies interfaces.
+3. **CI-tier cache** stays where the ratified CI-tier target put it (above).
+4. **Recipe promotion waits on the fork's post-trigger scope decision.**
+
 ## 0. The target statement — write this before anything else
 
 Everything below is scoped by one sentence, so the sentence goes first. What
@@ -160,6 +240,13 @@ survives B regardless.
    wander, and "the statement could not be written inside the box" is itself
    a finding worth having: it would mean the artifact/compiler gap is not
    expressible without first changing one of the two representations.
+
+   *Feasibility confirmed 2026-07-28* (see "Adjusted ordering" above): the
+   printer's SSA flattening is deterministic hash-consing on pure data, so
+   `Design.toProgram` can reproduce the shipped program exactly — including
+   the `n<k>` wire numbering — with no pointer identity or IO involved. The
+   two-week box now bounds the *proof statement* risk, not representation
+   risk. Landing it also fires the goal-fork trigger above.
 2. **A** (an afternoon) and a **timeboxed B feasibility spike** (two weeks:
    a rendering-correctness skeleton with the hard lemma isolated and its
    difficulty assessed) run together.
@@ -1058,6 +1145,11 @@ items marked ★ are the ones reviewers/AEC members check first.
       a 2-register machine with one proved invariant and emitted Verilog. This is the
       single highest-leverage adoption artifact and reviewers love citing it as
       evidence of usability.
+      *(Scoped 2026-07-28 by the goal-fork section: the tutorial promises the
+      v1 claim only — invariant transport, not ISS refinement. It runs in
+      parallel with Task 0, not after it, and it is not complete until the
+      stranger-user falsification protocol in that section has been run at
+      least once and its interventions filed as bugs.)*
 
 ## P5. The paper itself
 
