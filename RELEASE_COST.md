@@ -373,3 +373,46 @@ second: a contract asserted in a comment that nothing enforced. Both are
 arguments for the content-addressed, derived-dependency infrastructure in
 `NEXTSTEPS.md` section D, which should be read as correctness work rather
 than as an optimization.
+
+## Authoritative clean-checkout run (2026-07-28)
+
+`GeneratedRelease/`, `.lake/build/` and `rtl/` were deleted, then
+`scripts/build_verified_release.sh 32` was run start to finish. Pinned
+upstream packages in `.lake/packages` were kept, so this measures the
+project from cold, not mathlib.
+
+- **10,459 s wall (2 h 54 min)**, **125,683 CPU-s (34.9 CPU-h)**
+- 09:50:18Z to 12:33:48Z; metrics in
+  `.lake/release-metrics/lnp64u-20260728T095018Z/phases.csv`
+- Result: `VERIFIED`, exact byte binding for both artifacts, and the audit
+  gate reports the closure is exactly `propext`, `Classical.choice` and
+  `Quot.sound`.
+
+Against a 10-minute, 32-core target that is **17.4x over on wall clock** and
+6.5x over on CPU. Unlike the 88-minute figure recorded earlier in this file,
+this run began from no generated sources and no objects, so it can be quoted
+as the clean-clone cost.
+
+| phase | wall | CPU | parallelism |
+| --- | ---: | ---: | ---: |
+| hybrid registers | 2,314 s | 68,028 s | 29.4 |
+| lake prerequisites (R-MC closure) | 2,308 s | 6,226 s | 2.7 |
+| semantic wire batches | 1,369 s | 22,797 s | 16.7 |
+| semantic memories | 835 s | 845 s | 1.0 |
+| release theorem axiom closure | 649 s | 515 s | 0.8 |
+| port certificate generation | 506 s | 506 s | 1.0 |
+| wire batches | 481 s | 13,904 s | 28.9 |
+| semantic reads | 382 s | 383 s | 1.0 |
+| semantic actions | 195 s | 195 s | 1.0 |
+| hybrid core shape | 198 s | 198 s | 1.0 |
+| shared action certificate | 161 s | 162 s | 1.0 |
+
+Two phases dominate the wall clock for opposite reasons. `hybrid registers`
+spends 68,028 CPU-s at 29.4x -- it is genuinely large work, efficiently
+scheduled, and only section B removes it. The R-MC prerequisite phase spends
+2,308 s at 2.7x -- it is small work, badly scheduled, and section B does not
+touch it. Roughly 2,900 s of the run is phases pinned at parallelism 1.0.
+
+The `release theorem axiom closure` walk is 649 s here, not the ~24 minutes
+recorded for the 2026-07-18 acceptance. That earlier figure predates the
+current certificate architecture and should not be quoted going forward.
