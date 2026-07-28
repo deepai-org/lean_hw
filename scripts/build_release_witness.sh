@@ -139,6 +139,23 @@ compile_glob() {
     xargs -0 -r -n1 -P "$jobs" bash -c 'compile_batch "$1"' _
 }
 
+# Some generated families need several GiB per module. Running $jobs of them
+# at once exhausts memory and the kernel kills the build -- SemanticWireBatch
+# peaks at about 6.6 GiB per module, so 32 workers demand ~213 GiB. Cap the
+# pool by measured per-module footprint instead of by core count.
+compile_glob_capped() {
+  local pattern=$1
+  local per_job_kb=$2
+  local available_kb cap
+  available_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+  cap=$((available_kb / per_job_kb))
+  ((cap < 1)) && cap=1
+  ((cap > jobs)) && cap=$jobs
+  echo "    ($pattern: $cap workers, ~$((per_job_kb / 1024 / 1024)) GiB each)"
+  find "$src" -maxdepth 1 -name "$pattern" -print0 | sort -z | \
+    xargs -0 -r -n1 -P "$cap" bash -c 'compile_batch "$1"' _
+}
+
 run_phase "generated external imports" build_external_imports
 
 run_phase "wire batches" bash -c \
@@ -202,7 +219,7 @@ if [[ "$target" != lnp64u ]]; then
   run_phase "indexed port cert batches" compile_glob 'IndexedPortCertBatch*.lean'
 fi
 
-run_phase "semantic wire batches" compile_glob 'SemanticWireBatch*.lean'
+run_phase "semantic wire batches" compile_glob_capped 'SemanticWireBatch*.lean' 7000000
 run_phase "semantic wires" lake env lean \
   "$(realpath "$src/SemanticWires.lean")" -o "$lib/SemanticWires.olean"
 
@@ -223,7 +240,7 @@ if [[ "$mode" == sample ]]; then
   exit 0
 fi
 
-run_phase "semantic register batches" compile_glob 'SemanticRegBatch*.lean'
+run_phase "semantic register batches" compile_glob_capped 'SemanticRegBatch*.lean' 4500000
 run_phase "semantic registers" lake env lean \
   "$(realpath "$src/SemanticRegs.lean")" -o "$lib/SemanticRegs.olean"
 run_phase "read register batches" compile_glob 'ReadRegBatch*.lean'

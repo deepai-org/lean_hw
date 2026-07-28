@@ -38,8 +38,18 @@ run_phase() {
   _loom_read_cpu
   local cpu_before=$_loom_cpu_ticks
   echo "==> $label"
-  "$@"
-  local status=$?
+  # `set -e` in the calling script aborts on failure *before* anything is
+  # printed, so a phase killed by the OOM killer looks like a clean stop with
+  # no message. Capture the status and say so.
+  local status=0
+  "$@" || status=$?
+  if ((status != 0)); then
+    echo "!!! phase FAILED: $label (exit $status after $((SECONDS - started))s)" >&2
+    if ((status >= 128)); then
+      echo "!!! exit >= 128 means a signal; $((status - 128)) is likely SIGKILL (9) from the OOM killer" >&2
+    fi
+    return $status
+  fi
   local wall=$(( SECONDS - started ))
   _loom_read_cpu
   local cpu_ticks=$(( _loom_cpu_ticks - cpu_before ))
