@@ -267,3 +267,109 @@ from phases that are merely badly scheduled.  A phase near 1.0 on this host
 will not improve with more workers no matter how the leaves are sized; those
 phases, not the aggregate CPU total, determine whether a wall-clock target is
 reachable at all.
+
+## Measured W, and a correction (2026-07-28)
+
+The release pipeline now completes end-to-end from clean sources. Getting
+there took thirteen defects, every one of them in the build and generation
+layer and none in the proof architecture; they are listed under "Why clean
+runs matter" below.
+
+`scripts/measure_check_cost.py` separates the cost that restructuring can
+remove from the cost that it cannot. For each family of generated modules it
+compiles a probe carrying that family's exact import block and no
+declarations; the probe's CPU time is the family's per-process toll, and
+
+    W_family = observed_family_cpu - module_count * toll_family
+
+Measured across the runs in `.lake/release-metrics/`:
+
+| quantity | value |
+| --- | ---: |
+| W, irreducible kernel checking | **95,786 CPU-s (26.6 CPU-h)** |
+| per-process toll, removable by batching | 8,920 CPU-s (**9%**) |
+| budget at 10 min x 32 cores | 19,200 CPU-s |
+| clean-run estimate | 160 min wall, 31.3 CPU-h |
+
+**This corrects an earlier analysis recorded in this file.** The section above
+argues that per-process import cost is the dominant pathology, extrapolating
+about 21,000 CPU-s of overhead from 16,372 modules at roughly 1.3 s each --
+more than the entire budget. That extrapolation was wrong twice over: the
+4,575 dead `DagCut*Query*` modules are gone, and the surviving families'
+tolls are well below the single-module figure it was based on. The toll is
+real but it is 9% of the total. Batching is worth having; it is not the
+lever.
+
+The cost is concentrated in checking, and the checking already parallelizes
+close to perfectly:
+
+| phase | wall | CPU | parallelism |
+| --- | ---: | ---: | ---: |
+| hybrid registers | 2,271 s | 67,646 s | 29.8 |
+| semantic wire batches | 743 s | 12,181 s | 16.4 |
+| wire batches | 379 s | 11,588 s | 30.6 |
+| lake prerequisites (R-MC closure) | 2,317 s | 6,253 s | 2.7 |
+| read register batches | 235 s | 3,819 s | 16.2 |
+| action leaves and join checks | 112 s | 3,350 s | 29.9 |
+
+`hybrid registers` alone is 70% of W at 29.8x on 32 cores. No scheduler
+improves that. Against it sits a separate set of phases that use one core:
+
+| serial phase | wall | parallelism |
+| --- | ---: | ---: |
+| semantic memories | 846 s | 1.00 |
+| release theorem axiom closure | 698 s | 0.76 |
+| port certificate generation | 504 s | 1.00 |
+| semantic reads | 396 s | 1.00 |
+| semantic actions | 201 s | 1.00 |
+| hybrid core shape | 201 s | 1.00 |
+| shared action certificate | 161 s | 1.01 |
+
+Those exceed ten minutes of wall clock between them before any parallel work
+is scheduled at all.
+
+### What this settles
+
+A 10-minute, 32-core target is not reachable by restructuring this pipeline:
+W is 5.9x the budget and the dominant phase is already using the machine.
+The number is not, however, a measurement of the trust posture's price. It is
+the price of *translation validation* -- re-deriving the shipped artifact's
+semantics per node -- which is what `NEXTSTEPS.md` section B retires by
+relating the artifact to `compile d` once. Read the verdict as "unreachable
+without B", not "unreachable".
+
+Two smaller items are worth taking regardless. `port certificate generation`
+spends 504 s synthesizing a single imported batch, because the LNP64-u path
+runs all of `CertGen` for its memory-port family while its other three
+families have no importers. And the R-MC prerequisite phase runs 2,317 s at
+parallelism 2.7, which is a critical-path problem inside the proof modules
+themselves and survives section B untouched.
+
+### Why clean runs matter
+
+The pipeline had never completed on these sources. Thirteen defects surfaced
+in one clean-checkout sequence, none visible from a warm tree:
+
+1. `quality.sh` required `ripgrep`, an undocumented host dependency.
+2. `test_release_binding.py`'s fixture had drifted from its checker.
+3. `Loom.Release.SymbolicVerified` was not a named lake prerequisite.
+4. The `SysOps` opacity refactor broke three R-MC proof modules.
+5. 4,575 generated `DagCut*Query*` modules were dead.
+6. The prerequisite list named 7 of 18 external imports.
+7. `generateHybridRules` had 33 bailouts that exited 1 with no message.
+8. Six reference emitters across two languages disagreed on spelling.
+9. Three of five certificate elaborators never anchored their alias names,
+   so 825 modules each defined `_releaseExpr9`.
+10. 32-way parallelism on a 6.65 GiB-per-module family exhausted memory and
+    the kernel killed the build silently.
+11. The hybrid batch modules never defined `semanticOutputBehavior`.
+12. Memory-port certificates were never re-provided after the migration.
+13. `VerifiedRelease.lean`'s own imports were not built.
+
+Items 3, 6, 12 and 13 are one root cause: **anything compiled outside Lake's
+module graph carries a hand-maintained dependency list, and every such list
+in this repository was incomplete when written.** Items 8, 9 and 11 are a
+second: a contract asserted in a comment that nothing enforced. Both are
+arguments for the content-addressed, derived-dependency infrastructure in
+`NEXTSTEPS.md` section D, which should be read as correctness work rather
+than as an optimization.
