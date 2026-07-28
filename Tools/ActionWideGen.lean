@@ -3532,8 +3532,14 @@ private unsafe def generateHybridRules (runtime outputDir : System.FilePath) :
       "      Loom.GeneratedRelease.Lnp64u.fastIndexedWireTree\n" ++
       "      Loom.GeneratedRelease.Lnp64u.fastWireTable hybridRegisters " ++
         toString index ++ " " ++ toString register.width ++ " hybridAction\n" ++
+      -- Spell the result with the chain's own reference, not the program's.
+      -- The final `.skip` demands a syntactically equal input and output, and
+      -- the rule chain ends at `tickOutput`; `outputRef` is the same wire as
+      -- spelled by `RuntimeSsa.ref?`, which the check above confirmed by
+      -- name. Using the program's spelling here made every one of the 825
+      -- statements ill-typed.
       "      (.reg " ++ reprStr register.name ++ ") hybridNeeded hybridCert (" ++
-        dagRefToLean outputRef ++ ") :=\n" ++
+        dagRefToLean tickOutput ++ ") :=\n" ++
       "  .seq hybridRule000Reg" ++ suffix ++ "\n" ++
       "    (.seq hybridRule001Reg" ++ suffix ++ "\n" ++
       "      (.seq hybridRule002Reg" ++ suffix ++ "\n" ++
