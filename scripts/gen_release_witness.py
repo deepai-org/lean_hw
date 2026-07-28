@@ -1357,6 +1357,8 @@ def emit_batched(data: dict, output: Path, block_size: int,
                         for index in range(start, start + len(block))
                     ],
                     "", f"namespace {namespace}", "", "open Loom.Release", "",
+                    "set_option maxRecDepth 1000000",
+                    "set_option maxHeartbeats 0", "",
                 ]
                 for index in range(start, start + len(block)):
                     declarations += [
