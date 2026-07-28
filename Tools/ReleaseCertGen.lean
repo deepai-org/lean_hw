@@ -397,7 +397,7 @@ unsafe def synthesize (design : Design) (program : SSA.Program) :
 private def nameRef (name : String) : Symbolic.Ref :=
   if name.startsWith "n" then
     match (name.drop 1).toNat? with
-    | some number => .namedWire number name
+    | some number => (Symbolic.Ref.namedWire number name).canonical
     | none => .reg name
   else .reg name
 
@@ -855,7 +855,11 @@ unsafe def synthesizeActionWideRegisterCertRuntime (design : Design)
 
 private def quote (value : String) : String := reprStr value
 
-def actionWideRefToLean : Symbolic.Ref → String
+/-- The indexed wire table (emitted by `gen_release_witness.py`) spells a
+canonically named wire `.wire n`, and every consumer compares against it
+structurally, so all action-wide data uses that spelling too. -/
+def actionWideRefToLean (reference : Symbolic.Ref) : String :=
+  match reference.canonical with
   | .reg name => s!".reg {quote name}"
   | .wire number => s!".wire {number}"
   | .namedWire number name => s!".namedWire {number} {quote name}"
@@ -1104,7 +1108,9 @@ private def indexedRegCertName (index : Nat) : String :=
 private def refToLean (name : String) : String :=
   if name.startsWith "n" then
     match (name.drop 1).toNat? with
-    | some number => s!".namedWire {number} {quote name}"
+    | some number =>
+        if name == Symbolic.wireName number then s!".wire {number}"
+        else s!".namedWire {number} {quote name}"
     | none => s!".reg {quote name}"
   else s!".reg {quote name}"
 
@@ -1130,9 +1136,10 @@ private def indexedNextRulesToLean {w : Nat} : Named.NextRulesCert w → String
 
 private def symbolicRefToLean : Symbolic.Ref → String
   | .reg name => s!".reg {quote name}"
-  | .wire number =>
-      s!".namedWire {number} {quote (Symbolic.Ref.wire number).render}"
-  | .namedWire number name => s!".namedWire {number} {quote name}"
+  | .wire number => s!".wire {number}"
+  | .namedWire number name =>
+      if name == Symbolic.wireName number then s!".wire {number}"
+      else s!".namedWire {number} {quote name}"
 
 private def symbolicOptionalRefToLean : Option Symbolic.Ref → String
   | none => "none"
