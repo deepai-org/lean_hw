@@ -278,6 +278,14 @@ if [[ -f "$src/SemanticDesignWF.lean" ]]; then
 fi
 run_phase "semantic reads" lake env lean \
   "$(realpath "$src/SemanticReads.lean")" -o "$lib/SemanticReads.olean"
+# Memory init blocks and write ports are independent kernel checks; the
+# monolithic SemanticMems ran them serially for 832 s on one core. Each is
+# now its own module so this parallelizes, and a single edit re-checks one
+# block instead of the whole family (the CI-tier gate needs the worst
+# single-edit class under 600 s).
+run_phase "semantic memory base" compile_batch "$src/SemanticMemBase.lean"
+run_phase "semantic memory init batches" compile_glob 'SemanticMemInit*.lean'
+run_phase "semantic memory port batches" compile_glob 'SemanticMemPort*.lean'
 run_phase "semantic memories" lake env lean \
   "$(realpath "$src/SemanticMems.lean")" -o "$lib/SemanticMems.olean"
 run_phase "semantic module" lake env lean \
