@@ -145,7 +145,45 @@ result.
 Everything below follows from joining those two routes and from decoupling
 *compiling* (milliseconds) from *auditing* (offline, incremental).
 
-## A. Establish whether the budget is feasible — do this first
+## A. Feasibility — MEASURED 2026-07-28
+
+**W = 95,786 CPU-s (26.6 CPU-h) against a 19,200 CPU-s budget: 5.9x over.**
+A clean run is about 160 minutes wall on 32 cores. The pipeline completes;
+the target is not reachable by restructuring it. Full numbers, the serial
+inventory, and the defect list are in `RELEASE_COST.md`.
+
+Three consequences, in order of how much they change the plan:
+
+1. **Section C's batching is a 9% item, not the lever.** Measured
+   per-process toll is 8,920 CPU-s of 104,706 observed. The earlier estimate
+   in this file and in `RELEASE_COST.md` -- roughly 21,000 CPU-s, more than
+   the whole budget -- was wrong: it extrapolated from a single module's
+   import cost and counted 4,575 modules that are now deleted. Batch where
+   it is cheap; do not build a programme around it.
+2. **Section B is the only route.** 70% of W is `hybrid registers`
+   (67,646 CPU-s), which is exactly the per-node `denotation` re-derivation
+   that `Design.toProgram` + `toProgram_denotes` replaces with one data
+   equality. This is the "unreachable *without B*" case the footnote below
+   anticipated, not "unreachable".
+3. **The serial phases are a separate, smaller problem.** About 3,000 s of
+   wall clock runs at parallelism ~1.0 (semantic memories 846 s, axiom
+   closure 698 s, port certificate generation 504 s, semantic reads 396 s,
+   semantic actions and hybrid core shape 201 s each, ActionCert 161 s).
+   That alone exceeds ten minutes. Section C's log-depth-tree work applies
+   here and is worth doing even after B, because these survive it.
+
+Two cheap wins are available now and independent of B:
+
+- `port certificate generation` spends 504 s to produce one imported batch,
+  because the LNP64-u path runs all of `CertGen` for its memory-port family
+  while the other three families it synthesises have no importers. A narrow
+  entry point removes almost all of that.
+- The R-MC prerequisite phase runs 2,317 s at parallelism 2.7. That is a
+  critical-path problem inside the proof modules, it is untouched by B, and
+  it is the reason a sub-10-minute target would still be hard even if every
+  certificate obligation vanished.
+
+### Method, retained for the next measurement
 
 Compute `W`: total CPU-seconds of actual kernel checking, with per-process
 overhead removed. `scripts/measure_check_cost.py` does this from a run's
