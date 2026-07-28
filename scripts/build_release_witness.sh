@@ -196,11 +196,13 @@ if [[ "$target" == lnp64u ]]; then
   run_phase "hybrid root" compile_batch "$src/HybridRoot.lean"
   # The hybrid path replaced CertGen's register certificates but not its
   # memory-port ones, and SemanticMems still imports IndexedPortCertBatch.
-  # Run the synthesizer for those. It costs about 8.5 minutes to produce a
-  # single port batch here (its other three families have no importers on
-  # this path), so a narrower entry point is worth building later.
+  # `CertGenPorts` synthesizes only `cert.mems`, which is all
+  # `indexedPortDeclarationBatchesOfMems` reads. Running full `CertGen` here
+  # cost 506 s to emit one imported batch, because it also built 825 register
+  # certificates and a whole-plan synthesis that nothing on this path imports;
+  # the narrow entry point emits a byte-identical batch in 18 s.
   run_phase "port certificate generation" \
-    lake env lean --run "$(realpath "$src/CertGen.lean")"
+    lake env lean --run "$(realpath "$src/CertGenPorts.lean")"
 else
   run_phase "certificate generation" \
     lake env lean --run "$(realpath "$src/CertGen.lean")"

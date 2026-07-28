@@ -817,6 +817,28 @@ unsafe def synthesizeWithPlanRegisterCertsRuntime (design : Design)
       |>.map (·.1)
   pure (named, planCerts)
 
+/-- Synthesize only the memory-port certificates.
+
+`indexedPortDeclarationBatchesToLean` reads `cert.mems` alone, so the LNP64-u
+path -- which takes its register certificates from the hybrid action cuts --
+needs nothing from `synthRegs`, `RulePlans.ofRules`, or `synthPlanRegisters`.
+Those are the whole cost of `synthesizeWithPlanRegisterCertsRuntime` beyond the
+shared wire index; the memory-port family was paying a full plan synthesis plus
+825 register syntheses to produce one imported batch. -/
+unsafe def synthesizeMemsCertRuntime (design : Design)
+    (program : Tools.RuntimeSsa.Program) :
+    Option (Named.MemsCert design design.mems) := do
+  let runtimeIndex ← buildRuntimeIndex program
+  guard (program.regs.size == design.regs.length)
+  let index : ExprIndex :=
+    { hashed := runtimeIndex.hashed
+      values := []
+      rhsNames := {}
+      nameHashes := runtimeIndex.nameHashes
+      wireHashes := runtimeIndex.wireHashes
+      muxAliases := runtimeIndex.muxAliases }
+  (synthMems index design design.mems |>.run {}).map (·.1)
+
 /-- Synthesize one sparse certificate which checks all register roots in one
 source-action traversal.  The returned data is untrusted until accepted by
 `ActionWide.registersMatch`. -/
@@ -1304,9 +1326,15 @@ def indexedDeclarationBatchesToLean {design : Design}
 
 /-- String-free memory-port fold certificates, emitted separately so adding
 ports never perturbs the stable register batch numbering. -/
+def indexedPortDeclarationBatchesOfMems (design : Design)
+    (mems : Named.MemsCert design design.mems) (batchSize : Nat := 16) :
+    List String :=
+  (indexedMemoryPortDeclarationList design mems 0).toChunks batchSize |>.map
+    fun declarations => String.intercalate "\n" declarations ++ "\n"
+
+/-- The same batches from a whole module certificate. -/
 def indexedPortDeclarationBatchesToLean {design : Design}
     (cert : Named.ModuleCert design) (batchSize : Nat := 16) : List String :=
-  (indexedMemoryPortDeclarationList design cert.mems 0).toChunks batchSize |>.map
-    fun declarations => String.intercalate "\n" declarations ++ "\n"
+  indexedPortDeclarationBatchesOfMems design cert.mems batchSize
 
 end Tools.ReleaseCertGen
