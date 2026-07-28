@@ -2,7 +2,10 @@
 # Copyright (c) 2026 Kevin Baragona
 # SPDX-License-Identifier: Apache-2.0
 #
-# The four standing gates, run on a schedule (see crontab: nightly):
+# The four standing gates, in one on-demand command. Run it whole (it wipes
+# the tree; never `source` it), from an idle machine — typically overnight
+# or before a release. No scheduler is installed for it by design; scope it
+# to whatever cadence the operator wants.
 #
 #   1. audit tier   — a clean-checkout kernel-only release build completes
 #                     and stays inside the overnight bound (<= 4 h wall);

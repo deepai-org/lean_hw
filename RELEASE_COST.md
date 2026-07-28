@@ -268,10 +268,11 @@ will not improve with more workers no matter how the leaves are sized; those
 phases, not the aggregate CPU total, determine whether a wall-clock target is
 reachable at all.
 
-## Standing nightly gates (2026-07-28)
+## Standing gates (2026-07-28)
 
-`scripts/nightly_gates.sh` (crontab: 02:00 UTC daily on the 32-core build
-host) enforces the four standing bounds and appends one CSV row per gate to
+`scripts/nightly_gates.sh` bundles the four standing bounds into one
+on-demand command (no scheduler is installed — run it manually overnight or
+before a release) and appends one CSV row per gate to
 `.lake/release-metrics/nightly-<stamp>/gates.csv`:
 
 | gate | bound | measures |

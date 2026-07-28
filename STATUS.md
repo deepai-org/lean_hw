@@ -31,9 +31,10 @@ Same day, in order:
   transport, not refinement) plus its executed example
   `Machines/Tutorial/SatCounter.lean` and the falsification-protocol log
   `Machines/Tutorial/DEFECTS.md` (run 1: 5 defects, 0 blockers).
-- **Nightly gates** (`scripts/nightly_gates.sh`, cron on the build host):
-  wiped-tree release build in <= 4 h, parity gates, tutorial path with
-  exact three-axiom closure, and single-edit warm-cache classes vs 600 s.
+- **The standing gate bundle** (`scripts/nightly_gates.sh`, run on demand —
+  no scheduler installed): wiped-tree release build in <= 4 h, parity
+  gates, tutorial path with exact three-axiom closure, and single-edit
+  warm-cache classes vs 600 s.
 
 ## ★★★ 2026-07-18: EXACT TWO-ARTIFACT RELEASE THEOREM ACCEPTED ★★★
 
