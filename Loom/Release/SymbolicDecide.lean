@@ -3003,6 +3003,12 @@ unsafe def elabJoinOutputsDecideUsing : TermElab := fun stx expected? => do
 
 @[term_elab actionShapeDecide]
 unsafe def elabActionShapeDecide : TermElab := fun _ expected? => do
+  -- Anchor generated `_releaseExpr` checkpoints below the declaration being
+  -- elaborated. These modules are later imported side by side, so bare
+  -- alias names collide -- 825 hybrid register modules each defined
+  -- `_releaseExpr9`, and importing the second one failed.
+  indexedExprAliasPrefix.set ((← getDeclName?).getD `_releaseExpr)
+  indexedExprAliasNext.set 0
   let some expected := expected?
     | throwError "action_shape_decide requires an expected proposition"
   let expected ← instantiateMVars expected
@@ -3019,6 +3025,12 @@ unsafe def elabActionShapeDecide : TermElab := fun _ expected? => do
 
 @[term_elab regQueryDecide]
 unsafe def elabRegQueryDecide : TermElab := fun _ expected? => do
+  -- Anchor generated `_releaseExpr` checkpoints below the declaration being
+  -- elaborated. These modules are later imported side by side, so bare
+  -- alias names collide -- 825 hybrid register modules each defined
+  -- `_releaseExpr9`, and importing the second one failed.
+  indexedExprAliasPrefix.set ((← getDeclName?).getD `_releaseExpr)
+  indexedExprAliasNext.set 0
   let some expected := expected?
     | throwError "reg_query_decide requires an expected proposition"
   let expected ← instantiateMVars expected
@@ -3040,6 +3052,10 @@ syntax (name := dagSparseEvidenceExists) "dag_sparse_evidence_exists" : term
 @[term_elab dagSparseEvidenceExists]
 unsafe def elabDagSparseEvidenceExists : TermElab := fun stx expected? => do
   IO.eprintln "dag evidence: elaborator start"
+  -- Same anchoring as the sibling elaborators above: these modules are
+  -- imported side by side, so bare alias names collide.
+  indexedExprAliasPrefix.set ((← getDeclName?).getD `_releaseExpr)
+  indexedExprAliasNext.set 0
   let `(dag_sparse_evidence_exists) := stx
     | throwError "invalid dag_sparse_evidence_exists syntax"
   if (← dagActionRoots.get).isEmpty then
