@@ -957,6 +957,13 @@ theorem absGate_callActivateA (σ acc : Loom.Hw.St)
   · rw [if_neg hh]
     exact absGate_callActivateChosen_other σ acc d g h hh
 
+/-- Gate activation writes never touch a domain-read register.  Stated
+closed over both domains so one kernel evaluation serves every frame. -/
+private theorem callActivateA_quiet_dom :
+    ∀ (d x : DomainId), ∀ q ∈ domReadNames x,
+      q ∉ (callActivateA d).regWrites := by
+  decide +kernel
+
 /-- Gate activation writes do not change any abstract domain. -/
 theorem absDom_callActivateA_frame (σ acc : Loom.Hw.St)
     (d : DomainId) (x : DomainId) :
@@ -964,9 +971,7 @@ theorem absDom_callActivateA_frame (σ acc : Loom.Hw.St)
   apply absDom_congr
   intro q hq
   apply frame
-  have hquiet : ∀ q ∈ domReadNames x, q ∉ (callActivateA d).regWrites := by
-    fin_cases x <;> exact of_decide_eq_true rfl
-  exact hquiet q hq
+  exact callActivateA_quiet_dom d x q hq
 
 /-! ## Callee scrub and entry writer -/
 

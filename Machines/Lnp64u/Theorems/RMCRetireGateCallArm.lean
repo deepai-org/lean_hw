@@ -1296,7 +1296,7 @@ theorem square_retire_gateCall_argStale (m : Manifest) (hwf : m.WF)
     have : (Hw.argSel E).live.eval σ = 1#1 := by
       simpa [Hw.argSel] using hsel
     rw [hargLogic.2] at this
-    contradiction
+    exact absurd this (by decide)
   have hnone : (τ0.doms E).liveCap
       (Handle.decode ((Hw.argW E).eval σ)).slot
       (Handle.decode ((Hw.argW E).eval σ)).gen = none := by
@@ -1501,7 +1501,7 @@ theorem square_retire_gateCall_argBadClass (m : Manifest) (hwf : m.WF)
     have hzero : (Hw.capSel E (Hw.argW E)).clsOk.eval σ = 0#1 := by
       simpa [Hw.argSel] using hargLogic.2
     rw [hzero] at hone
-    contradiction
+    exact absurd hone (by decide)
   have htransfer : Machines.Lnp64u.Isa.transferByHandle c.d cal
       ((τ0.doms c.d).reg c.op.rs2) τ0 = .err .badCap τ0 := by
     rw [hword2]
@@ -1733,7 +1733,7 @@ theorem square_retire_gateCall_argBlocked (m : Manifest) (hwf : m.WF)
           have heq : ae' = ae := Option.some.inj alive
           rw [← heq]
         · rw [if_neg hg] at alive
-          contradiction
+          exact nomatch alive
   have hlineage : ∀ L : LineageId,
       (τ0.doms E).lineage L = ((Hw.abs σ).doms E).lineage L := by
     intro L
