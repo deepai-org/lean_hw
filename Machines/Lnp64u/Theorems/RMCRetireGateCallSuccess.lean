@@ -1080,7 +1080,7 @@ theorem square_retire_gateCall_success_nonzero (m : Manifest) (hwf : m.WF)
           have heq : ae' = ae := Option.some.inj alive
           rw [← heq]
         · rw [if_neg hg] at alive
-          contradiction
+          exact nomatch alive
   have hgenSource : (τ0.doms E).slotGen AS = AG := by
     have h := alive
     change (τ0.doms E).liveCap AS AG = some ae at h
@@ -1093,7 +1093,7 @@ theorem square_retire_gateCall_success_nonzero (m : Manifest) (hwf : m.WF)
         simpa using hg
       exact hp.1
     · rw [if_neg hg] at h
-      contradiction
+      exact nomatch h
   have hgenSourceAbs : ((Hw.abs σ).doms E).slotGen AS = AG := by
     simpa [τ0, base, MachineState.setDom, Loom.Fun.update] using hgenSource
   have hkw : (Hw.argSel E).kindW.eval σ = Hw.encKind ae.kind :=
