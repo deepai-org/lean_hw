@@ -114,18 +114,23 @@ theorem toProgram_wireWellFormed (d : Loom.Hw.Design) :
       d.indexedsOf := by
   sorry
 
-/-- Source read discipline against the constructed witness. Not derivable
-from `Compile.DesignWF` alone: it additionally needs (a) that no source
-register is named like a numbered wire (`wireNumber? name = none`) and
-(b) that every register *read* in a rule body is declared at its intrinsic
-width — `DesignWF` constrains only writes. Either strengthen the
-hypothesis to a read-discipline assumption (e.g. `designReadsValidB`) or
-thread those side conditions through `toProgram_denotes`. The
-`program.regs.find?` obligation itself follows from `flattenRegs`
-preserving names/widths (`flattenRegs_meta`) and `regNames` nodup. -/
-theorem toProgram_readsValid (d : Loom.Hw.Design) (wf : Compile.DesignWF d) :
-    Symbolic.DesignReadsValid d d.toProgram := by
-  sorry
+/-- Source read discipline against the constructed witness, discharged by
+the existing decidable check (decision D12, `Loom/Hw/DESIGN.md`).
+
+Not derivable from `Compile.DesignWF` alone: read validity additionally
+needs (a) that no source register is named like a numbered wire
+(`wireNumber? name = none`) and (b) that every register *read* in a rule
+body is declared at its intrinsic width — `DesignWF` constrains only
+writes. The obligation is deliberately carried as one kernel-reducible
+Boolean (`Symbolic.designReadsValidB`), so a concrete design pays a single
+`by decide`-style hypothesis rather than a hand proof; the check is
+load-bearing, not stylistic — the Lean semantics gives an undeclared or
+wrong-width read the environment default, while the printed Verilog would
+reference an undriven implicit net. -/
+theorem toProgram_readsValid (d : Loom.Hw.Design)
+    (hreads : Symbolic.designReadsValidB d d.toProgram = true) :
+    Symbolic.DesignReadsValid d d.toProgram :=
+  Symbolic.designReadsValidB_sound hreads
 
 /-- **The end-to-end statement (Task 0).** The witness constructed from the
 verified compiler's output denotes that compilation at every wire, register,
@@ -136,7 +141,8 @@ With this proved, `VerifiedSymbolicArtifact.denotation` for a shipped
 by reflection — and the per-design certificate pipeline is retired. The
 `refinement` and `invariants` fields are untouched: they already flow
 through `Compile.compile` and R-MC. -/
-theorem toProgram_denotes (d : Loom.Hw.Design) (wf : Compile.DesignWF d) :
+theorem toProgram_denotes (d : Loom.Hw.Design) (wf : Compile.DesignWF d)
+    (hreads : Symbolic.designReadsValidB d d.toProgram = true) :
     Symbolic.ModuleBehavior d d.toProgram d.indexedsOf d.tableOf
       d.registersOf d.memoriesOf d.outputsOf :=
   Symbolic.moduleBehavior_of_checks d d.toProgram d.indexedsOf d.tableOf
@@ -144,7 +150,7 @@ theorem toProgram_denotes (d : Loom.Hw.Design) (wf : Compile.DesignWF d) :
     (toProgram_name d 128 16).symm
     (toProgram_wireMatches d)
     (toProgram_wireWellFormed d)
-    (toProgram_readsValid d wf)
+    (toProgram_readsValid d hreads)
     (registersOf_listLength d 128).symm
     ((toProgram_regs_length d 128 16).trans (registersOf_listLength d 128).symm)
     ((toProgram_mems_length d 128 16).symm.trans (memoriesOf_length d 128).symm)
