@@ -909,4 +909,164 @@ theorem indexedRopeMatches_shaped (k leafSize : Nat) (hs : 0 < leafSize)
   rw [List.length_map, List.length_map, listChunks_length _ hs,
     listChunks_length _ hs, hlen]
 
+/-! ### A generic cumulative-start introduction engine
+
+The E-style development specialized twice above is captured once and for
+all: any rope predicate closed under the `.node`/`listLength` composition
+rule, whose leaves are introduced from a pointwise element predicate at
+cumulative indices, holds for the chunked-and-balanced rope. -/
+
+/-- Every rope piece in the list satisfies `P` at its cumulative start. -/
+def ropesSatisfyFrom {β : Type} (P : Nat → Rope (List β) → Prop) :
+    Nat → List (Rope (List β)) → Prop
+  | _, [] => True
+  | start, rope :: rest =>
+      P start rope ∧ ropesSatisfyFrom P (start + rope.listLength) rest
+
+theorem ropesSatisfyFrom_pairStep {β : Type} {P : Nat → Rope (List β) → Prop}
+    (hnode : ∀ (start : Nat) (left right : Rope (List β)), P start left →
+      P (start + left.listLength) right → P start (.node left right)) :
+    ∀ (start : Nat) (ropes : List (Rope (List β))),
+      ropesSatisfyFrom P start ropes →
+      ropesSatisfyFrom P start (pairStep ropes)
+  | _, [], h => h
+  | _, [_], h => h
+  | start, one :: two :: rest, h => by
+      obtain ⟨h1, h2, hrest⟩ := h
+      rw [pairStep_cons_cons]
+      refine ⟨hnode start one two h1 h2, ?_⟩
+      have := ropesSatisfyFrom_pairStep hnode
+        (start + one.listLength + two.listLength) rest hrest
+      simpa [Rope.listLength, Nat.add_assoc] using this
+
+theorem ropesSatisfyFrom_balancedGo {β : Type}
+    {P : Nat → Rope (List β) → Prop}
+    (hnode : ∀ (start : Nat) (left right : Rope (List β)), P start left →
+      P (start + left.listLength) right → P start (.node left right)) :
+    ∀ (fuel start : Nat) (ropes : List (Rope (List β))),
+      ropes.length ≤ fuel → ropes ≠ [] →
+      ropesSatisfyFrom P start ropes → P start (balancedGo fuel ropes)
+  | _, _, [], _, hne, _ => absurd rfl hne
+  | fuel, start, [r], _, _, h => by
+      have single : balancedGo fuel [r] = r := by cases fuel <;> rfl
+      rw [single]
+      exact h.1
+  | 0, _, _ :: _ :: _, hf, _, _ => by simp at hf
+  | fuel + 1, start, x :: y :: t, hf, _, h => by
+      show P start (balancedGo fuel (pairStep (x :: y :: t)))
+      refine ropesSatisfyFrom_balancedGo hnode fuel start _ ?_ ?_
+        (ropesSatisfyFrom_pairStep hnode start _ h)
+      · rw [pairStep_length]
+        simp only [List.length_cons] at hf ⊢
+        omega
+      · rw [pairStep_cons_cons]
+        exact List.cons_ne_nil _ _
+
+theorem ropesSatisfyFrom_chunks {β : Type} {P : Nat → Rope (List β) → Prop}
+    {Q : Nat → β → Prop}
+    (hleaf : ∀ (start : Nat) (block : List β),
+      (∀ (off : Nat) (b : β), block[off]? = some b → Q (start + off) b) →
+      P start (.leaf block))
+    {size : Nat} (positive : 0 < size) :
+    ∀ (fuel : Nat) (xs : List β), xs.length ≤ fuel → ∀ (start : Nat),
+      (∀ (off : Nat) (b : β), xs[off]? = some b → Q (start + off) b) →
+      ropesSatisfyFrom P start ((listChunks size xs).map Rope.leaf)
+  | _, [], _, _, _ => by
+      rw [listChunks_nil positive, List.map_nil]
+      trivial
+  | 0, _ :: _, hf, _, _ => by simp at hf
+  | fuel + 1, x :: t, hf, start, h => by
+      rw [listChunks_cons positive, List.map_cons]
+      refine ⟨hleaf start _ ?_, ?_⟩
+      · intro off b hb
+        have hlt : off < ((x :: t).take size).length :=
+          lt_of_getElem?_eq_some hb
+        rw [List.length_take] at hlt
+        refine h off b ?_
+        rw [← List.getElem?_take_of_lt (show off < size by omega)]
+        exact hb
+      · simp only [Rope.listLength]
+        refine ropesSatisfyFrom_chunks hleaf positive fuel
+          ((x :: t).drop size) ?_ (start + ((x :: t).take size).length) ?_
+        · simp only [List.length_drop, List.length_cons]
+          simp only [List.length_cons] at hf
+          omega
+        · intro off b hb
+          have hx : (x :: t)[size + off]? = some b := by
+            rw [← List.getElem?_drop]
+            exact hb
+          have hlt : size + off < (x :: t).length := lt_of_getElem?_eq_some hx
+          have htake : ((x :: t).take size).length = size := by
+            rw [List.length_take]
+            omega
+          rw [htake, show start + size + off = start + (size + off) by omega]
+          exact h (size + off) b hx
+
+/-! ### Register behavior (`RegisterBehaviorRopeFrom`) -/
+
+theorem registerBehaviorsFrom_of_forall (design : Loom.Hw.Design)
+    (program : Program) (table : WireTable) :
+    ∀ (block : List RegisterRoot) (start : Nat),
+      (∀ (off : Nat) (entry : RegisterRoot), block[off]? = some entry →
+        entry.index = start + off ∧
+          RegisterBehaviorAt design program table (start + off) entry.root) →
+      RegisterBehaviorsFrom design program table start block
+  | [], start, _ => .nil start
+  | entry :: rest, start, h => by
+      obtain ⟨hidx0, hbeh0⟩ := h 0 entry rfl
+      rw [Nat.add_zero] at hidx0 hbeh0
+      refine .cons hidx0 (by rw [hidx0]; exact hbeh0) ?_
+      refine registerBehaviorsFrom_of_forall design program table rest
+        (start + 1) ?_
+      intro off e he
+      have := h (off + 1) e (by simpa using he)
+      rwa [show start + (off + 1) = start + 1 + off by omega] at this
+
+/-- Flat per-entry index and behavior facts lift to the chunked-and-balanced
+register rope at any cumulative start. -/
+theorem registerBehaviorRopeFrom_balanced (design : Loom.Hw.Design)
+    (program : Program) (table : WireTable)
+    {blockSize : Nat} (positive : 0 < blockSize)
+    (entries : List RegisterRoot) (start : Nat)
+    (h : ∀ (off : Nat) (entry : RegisterRoot), entries[off]? = some entry →
+      entry.index = start + off ∧
+        RegisterBehaviorAt design program table (start + off) entry.root) :
+    RegisterBehaviorRopeFrom design program table start
+      (balancedRope ((listChunks blockSize entries).map Rope.leaf)) := by
+  cases entries with
+  | nil =>
+      rw [listChunks_nil positive, List.map_nil]
+      exact .leaf (.nil start)
+  | cons x t =>
+      refine ropesSatisfyFrom_balancedGo
+        (fun _ _ _ hl hr => .node hl hr) _ start _ (Nat.le_refl _) ?_
+        (ropesSatisfyFrom_chunks
+          (Q := fun i entry => entry.index = i ∧
+            RegisterBehaviorAt design program table i entry.root)
+          (fun s block hb =>
+            .leaf (registerBehaviorsFrom_of_forall design program table
+              block s hb))
+          positive (x :: t).length (x :: t) (Nat.le_refl _) start h)
+      rw [listChunks_cons positive, List.map_cons]
+      exact List.cons_ne_nil _ _
+
+/-- **Register-behavior introduction for the two-level witness shape** used
+by `Design.registersOf`: `blockSize`-sized leaves balanced directly. -/
+theorem registerBehaviorRopeFrom_shaped (design : Loom.Hw.Design)
+    (program : Loom.Release.SSA.Program)
+    (table : Loom.Release.Symbolic.WireTable)
+    (blockSize : Nat) (hs : 0 < blockSize)
+    (entries : List Loom.Release.Symbolic.RegisterRoot)
+    (hidx : ∀ (i : Nat) (entry : Loom.Release.Symbolic.RegisterRoot),
+      entries[i]? = some entry → entry.index = i)
+    (hbeh : ∀ (i : Nat) (entry : Loom.Release.Symbolic.RegisterRoot),
+      entries[i]? = some entry →
+      Loom.Release.Symbolic.RegisterBehaviorAt design program table
+        i entry.root) :
+    Loom.Release.Symbolic.RegisterBehaviorRopeFrom design program table 0
+      (balancedRope ((listChunks blockSize entries).map Rope.leaf)) :=
+  registerBehaviorRopeFrom_balanced design program table hs entries 0
+    (fun off entry h =>
+      ⟨by simpa using hidx off entry h, by simpa using hbeh off entry h⟩)
+
 end Loom.Release.SSA
