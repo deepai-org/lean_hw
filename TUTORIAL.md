@@ -174,6 +174,17 @@ In the file (or any file importing it):
 
 should report exactly `propext`, `Classical.choice`, `Quot.sound`.
 
+### Optional: the symbolic-witness denotation
+
+Since 2026-07-29 the printing gap can also be closed per design, without
+any generated certificates: `Machines/Tutorial/SatCounterArtifact.lean`
+proves `satcounter_denotes` — the emitted SSA witness denotes the
+verified compilation at every wire, register, and output — as one
+application of the generic theorem `toProgram_denotes` plus four
+`by decide` facts (about 18 s of kernel reduction; see the file's
+header for the two `set_option` bumps it needs). For a new design of
+tutorial scale, copy that file and substitute your design name.
+
 ## What is and is not claimed
 
 - **Claimed**: the invariant holds of every reachable state of the compiled

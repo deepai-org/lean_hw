@@ -153,7 +153,13 @@ DAG-shaped design like every reference walk does, extrapolating to
 the release-path swap: **two tiers.** (i) Small designs (tutorial/Acc8
 scale): `toProgram_denotes` + four `decide`s replaces the entire
 certificate pipeline TODAY (seconds); this should become the documented
-artifact path for new designs. (ii) LNP64-µ: direct kernel discharge is
+artifact path for new designs. **DONE 2026-07-29 (commit 8502557):**
+`designReadsOkB` (kernel-reducible D12 form, `ReadsValidKernel.lean`)
+became `toProgram_denotes`'s read hypothesis, and
+`Machines/Tutorial/SatCounterArtifact.lean` proves the tutorial
+design's full `ModuleBehavior` in 18 s by four `decide`s — closure
+exactly the classical trio, zero certificates; TUTORIAL.md §6 points at
+it as the copyable path. (ii) LNP64-µ: direct kernel discharge is
 possible via the `coreR_eq` transport but at ~2 h × 23 GB per Boolean
 it does not clearly beat the existing per-node pipeline (bounded
 per-node kernel work exists precisely to avoid whole-design tree
