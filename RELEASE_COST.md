@@ -285,9 +285,29 @@ before a release) and appends one CSV row per gate to
 The `edit-*` rows are the CI-tier gate's first measured instances. The
 recheck cost of an edit class is v1-approximated as recompiling the touched
 module from the warm cache the audit run just produced; downstream join
-paths are not yet included. A failing row is a regression by definition —
-`edit-semantic-mems` fails until the SemanticMems split lands, and that
-failure appearing in the nightly CSV is the intended behavior.
+paths are not yet included. A failing row is a regression by definition.
+
+### First full run — all gates PASS (measured @ 2026-07-28/29, `nightly-20260728T230948Z`)
+
+| gate | wall | limit |
+| --- | ---: | ---: |
+| `audit-clean-release` | 9,580 s (2 h 40 m) | 14,400 s |
+| `tutorial-path` (incl. exact axiom closure) | 3 s | 600 s |
+| `edit-user-design` | 1 s | 600 s |
+| `edit-hybrid-leaf` | 59 s | 600 s |
+| `edit-mem-init-block` | 3 s | 600 s |
+| `edit-mem-port` | 253 s | 600 s |
+| `edit-semantic-mems` (aggregator) | 3 s | 600 s |
+
+The clean run finished `VERIFIED` with both `toProgram parity gate` phases
+passing (acc8 1 s; lnp64u 262 s), and at 9,580 s it is 879 s faster than
+the 10,459 s authoritative baseline: `port certificate generation` fell
+506 s → 18 s, and `semantic memories` (835 s at parallelism 1.0) became
+base 2 s + init batches 4 s at 24.9x + port batches 343 s at 2.4x +
+aggregation 3 s. The worst measured single-edit class is now
+`edit-mem-port` at 253 s — the `nextPortRulesMatches` kernel walk for one
+port — which fits the 600 s gate with headroom but is the family to watch
+if ports get more complex.
 
 ## Measured W, and a correction (2026-07-28)
 
