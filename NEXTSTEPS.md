@@ -112,12 +112,21 @@ signature: four kernel-reducible Booleans (`moduleEmitOkB`,
 turned out unneeded and was dropped. D14 recorded in
 `Loom/Hw/DESIGN.md`. Acc8 passes all four Booleans by `#eval` in
 seconds. What remains to *use* the theorem on LNP64-µ and retire the
-68,028 CPU-s hybrid-registers phase: (1) pointer-memoized
-`implemented_by` twins (or kernel-reduction profiling) for the four
-tree-walking checkers on shared-DAG designs; (2) a release-path phase
-that replaces the per-node certificates with the data equality
-`program = d.toProgram` + the four Boolean facts, then re-measure the
-audit tier. The executed work plan, kept for the record:
+68,028 CPU-s hybrid-registers phase (task #10): (1) kernel-reducible
+checkers — measured 2026-07-29: `Symbolic.wireNumber?` does NOT
+kernel-reduce (byte-String `drop`/`toNat?` get stuck under `decide`),
+which blocks `moduleEmitOkB` AND quietly breaks D12's stated plan of
+kernel-discharging `designReadsValidB`; `identTokenB`
+(`String.toList`-recursive) DOES reduce, as do `designWFCheck`,
+`moduleNamesOkB`, and `Compile.compile` itself on Acc8 (~1 s). Fix in
+flight: `isWireLikeB` (toList-based) + one-direction soundness swapped
+into `exprEmitOkB`'s reg arm; the same fix inside `SymbolicElaborate`
+(for designReadsValidB) is deferred to an audit-tier rebuild window
+since that file is imported by every generated certificate. (2) Measure
+kernel discharge on LNP64-µ (DAG-blowup risk — kernel reduction may not
+share let-bound subterm reductions; measure, don't assume). (3) The
+release-path phase swapping per-node certificates for parity + the four
+Boolean facts, then re-measure the audit tier. The executed work plan, kept for the record:
 (a) `keyOf` + `identOkB`/D14 + single-node injectivity (String-heavy,
     self-contained);
 (b) shaped-evidence introducers for `RegisterBehaviorRopeFrom` (2-level
