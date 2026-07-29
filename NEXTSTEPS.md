@@ -545,6 +545,16 @@ dependencies) is why these files elaborate serially, the campaign is
 unrecoverable is it "split into files" (expensive). Measure
 wall-vs-CPU on `RMCRetireGateCall` before touching anything.
 
+*Probe result (measured 2026-07-29):* `RMCRetireGateCall` compiles at
+**146% parallelism** (370 s wall, 536 s CPU). Async elaboration is already
+active; the file is bound by its internal proof-dependency chain, not by a
+disabled flag. Consequence: declaration-level or file-level splitting alone
+cannot beat the chain — the campaign must reduce the chain itself, i.e.
+profile per-declaration, then either cheapen the heavy proofs or
+restructure their statements into log-depth intermediate lemmas (§C.2).
+The same conclusion presumably applies to `GateCallSuccess` and
+`RMCIssue`/`RMCHalt`; verify per module before working on it.
+
 The remedy is the section C prescriptions applied *here*, where they are
 alive even though they are a 9% item for the certificate pipeline:
 
