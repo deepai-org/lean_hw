@@ -75,12 +75,50 @@ shaped lookups, find? metadata transfer, the `indexedRhsWellFormed` and
 
 **`toProgram_denotes` now has two open conjuncts, both semantic:**
 `toProgram_registerBehavior` (the hard lemma) and
-`toProgram_memoryBehavior`. Next increment: the semantic half of the
-flatten invariant — extend `FlattenSt.WF` with environment consistency
-(every emitted wire's `IndexedRhs.elaborate` under the elaborated
-environment is extensionally equal to the flattened subexpression), then
-`RegisterBehaviorRopeFrom` follows the same shaped-evidence route the
-wire graph used.
+`toProgram_memoryBehavior`.
+
+### Semantic-half design (worked out 2026-07-29, before proof text)
+
+The conjuncts are *structural*, not evaluative: `RegisterBehaviorAt`'s
+heart is `RawExprMatches program table (rules.foldl nextReg (.reg w
+name)) root`, and `Compile.compile` builds each register's `next` as
+exactly that fold — so the needed spec is `flatten_matches`: flatten
+returns a name with `indexedExprMatches allWires table e (operandRef
+name) = true` (the Boolean structural matcher), transported to
+`RawExprMatches` by the already-proved `indexedExprMatches_raw` +
+`toProgram_wireMatches`. Metadata conjuncts come from
+`flattenRegs_meta`; `concrete.next = root.render` from operand
+canonicality.
+
+**The one real obstacle: CSE-hit soundness = single-node key
+injectivity.** On a hit, the stored node must have the rhs the current
+expression would have emitted; equal rendered keys must imply equal
+structural `Rhs`. False for adversarial register names (`.ident "a + b"`
+collides with `.bin .add "a" "b"`). Resolution, per the D12/D13 rule: a
+**D14 identifier-discipline decidable check** (names used in `.reg`
+leaves and memory names match `[A-Za-z_][A-Za-z0-9_]*`); under it,
+`keyOf : Rhs → String` (the mirror of flatten's key construction) is
+injective per node — canonical `n<k>` operand names are already
+ident-shaped, so injectivity is over atomic tokens vs the 9 rendering
+shapes (`x + y`, `m[a]`, `~x`, `$signed(x) < $signed(y)`, `x ? t : f`,
+`x[hi:lo]`, `{{k{x[b]}}, x}`, `w'd v`, bare ident).
+
+Work plan (delegable chunks):
+(a) `keyOf` + `identOkB`/D14 + single-node injectivity (String-heavy,
+    self-contained);
+(b) shaped-evidence introducers for `RegisterBehaviorRopeFrom` (2-level
+    shape: `balancedRope ((listChunks 128 entries).map .leaf)`) and the
+    `MemoryBehaviorsFrom` analog — same pairStep machinery as E/F in
+    RopeLayout.lean;
+(c) `flatten_matches` — a KeyWF side invariant (cse entry ↦ stored rhs
+    renders to that key; separate structure, do NOT extend
+    `FlattenSt.WF` and break its finished proofs) + induction like
+    `flatten_spec`, parameterized by lookup-faithfulness of the FINAL
+    rope (intermediate wires persist by Extends);
+(d) assembly: registerBehavior (fold facts + RopeFrom introducer) and
+    memoryBehavior (ports analogous via compile's mems; init images are
+    pure data — `MemoryInitBlockBehavior` by construction + rope
+    layout). Statements gain `hemit` + the D14 Boolean.
 
 ## The target, rebound 2026-07-28
 
