@@ -17,6 +17,9 @@ with `for` loops that discard results, and its final state is exactly
 projection of the same flat array the program's raw rope is shaped from.
 -/
 
+open private String.Slice.Pattern.Internal.memcmpStr.go from
+  Init.Data.String.Pattern.Basic
+
 namespace Loom.Release.SSA
 
 open Loom.Hw Loom.Emit.MicroVerilog
@@ -222,6 +225,309 @@ theorem flattenMems_find?_meta (mems : List MemDef) (blockSize : Nat)
       · simp only [List.find?_cons, hname]
         exact ih ((flattenWrites mm.wrPorts).run s).2
 
+/-! ## A kernel-reducible stand-in for `wireNumber?`
+
+The emission checker must reject register names that collide with the
+release witness's canonical wire spelling (`wireNumber? name = none`).
+`Symbolic.wireNumber?` itself works through byte-based `String.drop` and
+`Slice.toNat?`, which the kernel cannot reduce; `isWireLikeB` re-decides a
+superset of "`wireNumber?` answers `some`" by structural recursion over
+`String.toList`, which the kernel reduces fine. The soundness bridge below
+(`wireNumber?_eq_none_of_not_isWireLike`) needs only one direction: a name
+the character-level test rejects is one `wireNumber?` cannot decode. -/
+
+section WireLike
+
+open String Std
+
+/-- A character `Slice.toNat?` can consume: a decimal digit or an
+underscore separator. -/
+def natCharB (c : Char) : Bool := c.isDigit || c == '_'
+
+/-- Kernel-reducible over-approximation of "`Symbolic.wireNumber?` answers
+`some`": the name is `'n'` followed by a nonempty run of digit-or-underscore
+characters. (`toNat?` additionally rejects misplaced underscores, so this is
+a strict superset — the sound direction for the checker.) -/
+def isWireLikeB (s : String) : Bool :=
+  match s.toList with
+  | 'n' :: rest => !rest.isEmpty && rest.all natCharB
+  | _ => false
+
+example : isWireLikeB "acc" = false := by decide
+example : isWireLikeB "n17" = true := by decide
+example : isWireLikeB "n" = false := by decide
+example : isWireLikeB "n0_7" = true := by decide
+example : isWireLikeB "" = false := by decide
+
+/-! ### Slice folds as list folds
+
+Replicated from `FlattenWF.lean`'s private `WireName` helpers: the slice
+iterator visits exactly the characters of the copied string, so
+`Slice.foldl` is a `List.foldl` over `copy.toList`. -/
+
+private theorem posIter_toList {s : String.Slice} (l : List Char) :
+    ∀ (p : s.Pos) (t₁ t₂ : String), p.Splits t₁ t₂ → t₂.toList = l →
+    (({ internalState := { currPos := p } } : Iter (α := String.Slice.PosIterator s)
+        { q : s.Pos // q ≠ s.endPos }).toList).map (fun x => x.1.get x.2) = l := by
+  induction l with
+  | nil =>
+    intro p t₁ t₂ hsp hl
+    rw [Iter.toList_eq_match_step]
+    have hp := (({ internalState := { currPos := p } } : Iter (α := String.Slice.PosIterator s)
+        { q : s.Pos // q ≠ s.endPos }).step).property
+    cases hs : (({ internalState := { currPos := p } } : Iter (α := String.Slice.PosIterator s)
+        { q : s.Pos // q ≠ s.endPos }).step).val with
+    | yield it' out =>
+      rw [hs] at hp
+      obtain ⟨hne, _, _⟩ := hp
+      have ht2 : t₂ = "" := by rwa [← String.toList_eq_nil_iff]
+      exact absurd (hsp.eq_endPos_iff.mpr ht2) hne
+    | skip it' =>
+      rw [hs] at hp
+      exact hp.elim
+    | done => simp
+  | cons c cs ih =>
+    intro p t₁ t₂ hsp hl
+    rw [Iter.toList_eq_match_step]
+    have hp := (({ internalState := { currPos := p } } : Iter (α := String.Slice.PosIterator s)
+        { q : s.Pos // q ≠ s.endPos }).step).property
+    cases hs : (({ internalState := { currPos := p } } : Iter (α := String.Slice.PosIterator s)
+        { q : s.Pos // q ≠ s.endPos }).step).val with
+    | yield it' out =>
+      rw [hs] at hp
+      obtain ⟨hne, hnext, hout⟩ := hp
+      subst hout
+      obtain ⟨t₂', ht₂'⟩ := hsp.exists_eq_singleton_append hne
+      have htl := congrArg String.toList ht₂'
+      rw [hl, String.toList_append, String.toList_singleton] at htl
+      have hget : out.val.get hne = c := (List.cons.injEq _ _ _ _ ▸ htl).1.symm
+      have ht₂'l : t₂'.toList = cs := (List.cons.injEq _ _ _ _ ▸ htl).2.symm
+      have hnexts : (out.val.next hne).Splits (t₁ ++ String.singleton (out.val.get hne)) t₂' :=
+        (ht₂' ▸ hsp).next
+      obtain ⟨⟨cp⟩⟩ := it'
+      have hcp : cp = out.val.next hne := hnext
+      subst hcp
+      rw [List.map_cons]
+      congr 1
+      exact ih _ _ t₂' hnexts ht₂'l
+    | skip it' =>
+      rw [hs] at hp
+      exact hp.elim
+    | done =>
+      rw [hs] at hp
+      have := hsp.eq_endPos_iff.mp hp
+      rw [this] at hl
+      simp at hl
+
+private theorem chars_toList (sl : String.Slice) : sl.chars.toList = sl.copy.toList := by
+  show (Std.Iter.map _ sl.positions).toList = sl.copy.toList
+  rw [Iter.toList_map]
+  exact posIter_toList _ sl.startPos "" sl.copy sl.splits_startPos rfl
+
+private theorem slice_foldl_eq {α : Type} (f : α → Char → α) (init : α) (sl : String.Slice) :
+    sl.foldl f init = sl.copy.toList.foldl f init := by
+  show Std.Iter.fold f init sl.chars = _
+  rw [← Iter.foldl_toList, chars_toList]
+
+/-! ### `toNat?` success forces nonempty digit-or-underscore content -/
+
+private theorem foldl_valid_of_valid
+    (F : Bool × Bool × Bool × Bool → Char → Bool × Bool × Bool × Bool)
+    (hF : ∀ a c, (F a c).2.2.2 = true → a.2.2.2 = true ∧ natCharB c = true) :
+    ∀ (l : List Char) (a : Bool × Bool × Bool × Bool),
+      (List.foldl F a l).2.2.2 = true → a.2.2.2 = true := by
+  intro l
+  induction l with
+  | nil => intro a h; exact h
+  | cons c cs ih =>
+    intro a h
+    rw [List.foldl_cons] at h
+    exact (hF a c (ih (F a c) h)).1
+
+private theorem foldl_valid_chars
+    (F : Bool × Bool × Bool × Bool → Char → Bool × Bool × Bool × Bool)
+    (hF : ∀ a c, (F a c).2.2.2 = true → a.2.2.2 = true ∧ natCharB c = true) :
+    ∀ (l : List Char) (a : Bool × Bool × Bool × Bool),
+      (List.foldl F a l).2.2.2 = true → ∀ c ∈ l, natCharB c = true := by
+  intro l
+  induction l with
+  | nil => intro a _ c hc; exact absurd hc (List.not_mem_nil)
+  | cons c cs ih =>
+    intro a h c' hc'
+    rw [List.foldl_cons] at h
+    rcases List.mem_cons.mp hc' with hc' | hc'
+    · subst hc'
+      exact (hF a c' (foldl_valid_of_valid F hF cs (F a c') h)).2
+    · exact ih (F a c) h c' hc'
+
+/-- `Slice.toNat?` succeeds only on nonempty content made of digits and
+underscores. -/
+private theorem toNat?_chars {sl : String.Slice} {k : Nat}
+    (h : sl.toNat? = some k) :
+    sl.copy.toList ≠ [] ∧ ∀ c ∈ sl.copy.toList, natCharB c = true := by
+  rw [String.Slice.toNat?.eq_def] at h
+  split at h
+  case isFalse => exact absurd h (by simp)
+  case isTrue hnat =>
+    rw [String.Slice.isNat.eq_def] at hnat
+    split at hnat
+    case isTrue => exact absurd hnat (by simp)
+    case isFalse =>
+      rw [slice_foldl_eq] at hnat
+      simp only [Bool.and_eq_true] at hnat
+      refine ⟨?_, foldl_valid_chars _ ?hF _ _ hnat.1⟩
+      case hF =>
+        intro a c hv
+        simp only [Bool.and_eq_true] at hv
+        refine ⟨hv.1.1.1, ?_⟩
+        simp only [natCharB, Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at hv ⊢
+        exact hv.1.1.2
+      intro hnil
+      rw [hnil] at hnat
+      exact absurd hnat.2 (by simp)
+
+/-! ### First-byte extraction from `startsWith "n"` -/
+
+private theorem go_one_rev (lhs rhs : String) (lstart rstart : Pos.Raw)
+    (h1 : (⟨1⟩ : Pos.Raw).offsetBy lstart ≤ lhs.rawEndPos)
+    (h2 : (⟨1⟩ : Pos.Raw).offsetBy rstart ≤ rhs.rawEndPos)
+    (hgo : String.Slice.Pattern.Internal.memcmpStr.go lhs rhs lstart rstart
+      ⟨1⟩ h1 h2 0 = true)
+    (hpl : Pos.Raw.offsetBy 0 lstart < lhs.rawEndPos)
+    (hpr : Pos.Raw.offsetBy 0 rstart < rhs.rawEndPos) :
+    lhs.getUTF8Byte (Pos.Raw.offsetBy 0 lstart) hpl =
+      rhs.getUTF8Byte (Pos.Raw.offsetBy 0 rstart) hpr := by
+  rw [String.Slice.Pattern.Internal.memcmpStr.go.eq_def] at hgo
+  rw [dif_pos (show (0 : Pos.Raw) < (⟨1⟩ : Pos.Raw) by decide)] at hgo
+  replace hgo :
+      (if (lhs.getUTF8Byte (Pos.Raw.offsetBy 0 lstart) hpl ==
+            rhs.getUTF8Byte (Pos.Raw.offsetBy 0 rstart) hpr) = true then
+        String.Slice.Pattern.Internal.memcmpStr.go lhs rhs lstart rstart
+          ⟨1⟩ h1 h2 (Pos.Raw.inc 0)
+      else false) = true := hgo
+  by_cases hb : (lhs.getUTF8Byte (Pos.Raw.offsetBy 0 lstart) hpl ==
+      rhs.getUTF8Byte (Pos.Raw.offsetBy 0 rstart) hpr) = true
+  · exact eq_of_beq hb
+  · rw [if_neg hb] at hgo
+    exact absurd hgo (by simp)
+
+private theorem firstByte_of_startsWith {s : String}
+    (h : s.startsWith "n" = true) :
+    ∃ (hlt : (0 : Pos.Raw) < s.rawEndPos),
+      s.getUTF8Byte 0 hlt = 110 := by
+  replace h : String.Slice.Pattern.ForwardSliceSearcher.startsWith
+      "n".toSlice s.toSlice = true := h
+  rw [String.Slice.Pattern.ForwardSliceSearcher.startsWith.eq_def] at h
+  split at h
+  case isFalse => exact absurd h (by simp)
+  case isTrue hle =>
+    rw [String.Slice.Pattern.Internal.memcmpSlice] at h
+    rw [String.Slice.Pattern.Internal.memcmpStr.eq_def] at h
+    have hsize : (0 : Pos.Raw) < s.rawEndPos := by
+      rw [String.utf8ByteSize_toSlice, String.utf8ByteSize_toSlice] at hle
+      have h1 : "n".utf8ByteSize = 1 := rfl
+      simp only [Pos.Raw.lt_iff]
+      show 0 < s.utf8ByteSize
+      omega
+    exact ⟨hsize, go_one_rev _ _ _ _ _ _ h hsize (by decide)⟩
+
+/-! ### First byte `0x6E` forces first character `'n'` -/
+
+private theorem eq_n_of_utf8EncodeChar_head {c : Char}
+    (h : (String.utf8EncodeChar c).head? = some 110) : c = 'n' := by
+  revert h
+  fun_cases String.utf8EncodeChar c
+  all_goals
+    intro h
+    simp only [List.head?_cons, Option.some.injEq] at h
+    replace h := congrArg UInt8.toNat h
+    simp only [UInt8.toNat_ofNat', UInt8.toNat_ofNat] at h
+    try (exfalso; omega)
+  apply Char.ext
+  apply UInt32.toNat_inj.mp
+  have h110 : ('n'.val).toNat = 110 := rfl
+  omega
+
+private theorem first_char_eq_n {s : String} {c : Char} {cs : List Char}
+    (hlt : (0 : Pos.Raw) < s.rawEndPos) (hb : s.getUTF8Byte 0 hlt = 110)
+    (hl : s.toList = c :: cs) : c = 'n' := by
+  apply eq_n_of_utf8EncodeChar_head
+  have henc : s.toByteArray = (s.toList.flatMap String.utf8EncodeChar).toByteArray :=
+    String.utf8Encode_toList.symm
+  rw [String.getUTF8Byte] at hb
+  simp only [henc, List.getElem_toByteArray] at hb
+  have hlen : 0 < (String.utf8EncodeChar c).length := by
+    cases henc' : String.utf8EncodeChar c with
+    | nil => exact absurd henc' String.utf8EncodeChar_ne_nil
+    | cons _ _ => simp
+  simp only [String.Pos.Raw.byteIdx_zero, hl, List.flatMap_cons] at hb
+  rw [List.getElem_append_left hlen] at hb
+  rw [List.head?_eq_getElem?, List.getElem?_eq_getElem hlen, hb]
+
+/-! ### `startsWith "n"` forces the `'n' ::` decomposition -/
+
+private theorem nextn_one {sl : String.Slice} (p : sl.Pos) (h : p ≠ sl.endPos) :
+    p.nextn 1 = p.next h := by
+  simp [String.Slice.Pos.nextn, h]
+
+private theorem toList_drop_one {s : String}
+    (hne : s.toSlice.startPos ≠ s.toSlice.endPos) :
+    s.toList = s.toSlice.startPos.get hne :: ((s.drop 1).copy).toList := by
+  have hcopy : s.toSlice.copy = s := String.copy_toSlice
+  have hsplit := s.toSlice.startPos.splits_next_right hne
+  have hstart := s.toSlice.splits_startPos
+  have heq := hstart.eq hsplit
+  rw [hcopy] at heq
+  have h2 := congrArg String.toList heq.2
+  rw [String.toList_append, String.toList_singleton] at h2
+  have hdrop : (s.drop 1).copy =
+      (s.toSlice.sliceFrom (s.toSlice.startPos.next hne)).copy := by
+    show (s.toSlice.sliceFrom (s.toSlice.startPos.nextn 1)).copy = _
+    rw [nextn_one _ hne]
+  rw [hdrop]
+  exact h2
+
+/-! ### The soundness bridge -/
+
+theorem isWireLikeB_of_wireNumber?_some {s : String} {k : Nat}
+    (h : Symbolic.wireNumber? s = some k) : isWireLikeB s = true := by
+  rw [Loom.Release.Symbolic.wireNumber?] at h
+  by_cases hsw : s.startsWith "n" = true
+  · simp only [guard, hsw, if_pos, Option.pure_def] at h
+    obtain ⟨hnil, hall⟩ := toNat?_chars h
+    obtain ⟨hlt, hbyte⟩ := firstByte_of_startsWith hsw
+    have hs0 : s ≠ "" := by
+      intro h0
+      subst h0
+      exact absurd hlt (by decide)
+    have hne : s.toSlice.startPos ≠ s.toSlice.endPos := by
+      intro h0
+      have h1 := (String.Slice.splits_startPos s.toSlice).eq_endPos_iff.mp h0
+      rw [String.copy_toSlice] at h1
+      exact hs0 h1
+    have hl := toList_drop_one hne
+    have hc := first_char_eq_n hlt hbyte hl
+    rw [hc] at hl
+    simp only [isWireLikeB, hl, Bool.and_eq_true, Bool.not_eq_eq_eq_not,
+      Bool.not_true, List.all_eq_true]
+    refine ⟨?_, hall⟩
+    simpa using hnil
+  · simp [guard, hsw] at h
+    rw [show (failure : Option Unit) = none from rfl] at h
+    exact absurd h (by simp)
+
+/-- The checker direction: a name the kernel-reducible test rejects is one
+`Symbolic.wireNumber?` cannot decode. -/
+theorem wireNumber?_eq_none_of_not_isWireLike (s : String)
+    (h : isWireLikeB s = false) : Symbolic.wireNumber? s = none := by
+  cases hw : Symbolic.wireNumber? s with
+  | none => rfl
+  | some k =>
+      rw [isWireLikeB_of_wireNumber?_some hw] at h
+      exact absurd h (by simp)
+
+end WireLike
+
 /-! ## The decidable emission check
 
 `flattenModule_wf` consumes `ModuleEmitOk`; a concrete design should pay one
@@ -234,7 +540,7 @@ def exprEmitOkB (regs : List RegDef) (mems : List MemDef) :
     {w : Nat} → Emit.MicroVerilog.Expr w → Bool
   | w, .reg _ name =>
       match regs.find? (fun c => c.name == name) with
-      | some r => r.width == w && (Symbolic.wireNumber? name).isNone
+      | some r => r.width == w && !(isWireLikeB name)
       | none => false
   | _, .lit _ => true
   | dw, @Emit.MicroVerilog.Expr.memRead _ mem aw addr =>
@@ -268,8 +574,9 @@ theorem exprEmitOkB_sound {regs : List RegDef} {mems : List MemDef}
       | none => simp [found] at accepted
       | some r =>
           simp only [found, Bool.and_eq_true, beq_iff_eq,
-            Option.isNone_iff_eq_none] at accepted
-          exact ⟨accepted.2, r, found, accepted.1⟩
+            Bool.not_eq_eq_eq_not, Bool.not_true] at accepted
+          exact ⟨wireNumber?_eq_none_of_not_isWireLike name accepted.2,
+            r, found, accepted.1⟩
   | memRead dw mem addr ih =>
       intro accepted
       simp only [exprEmitOkB, Bool.and_eq_true] at accepted
@@ -354,6 +661,11 @@ theorem moduleEmitOkB_sound (m : Module) (accepted : moduleEmitOkB m = true) :
   have hport := hmems mm hmm p hp
   exact ⟨exprEmitOkB_sound p.en hport.1.1, exprEmitOkB_sound p.addr hport.1.2,
     exprEmitOkB_sound p.data hport.2⟩
+
+-- Kernel-reducibility smoke test: the whole per-design Boolean discharges
+-- with `decide` now that the `.reg` arm avoids `wireNumber?`.
+example :
+    moduleEmitOkB ⟨"t", [⟨"a", 4, 0, .reg 4 "a"⟩], [], []⟩ = true := by decide
 
 /-! ## Default-shape projections
 
