@@ -17,4 +17,19 @@ scripts/test_release_binding.py
 # Independent-checker cross-validation (self-SKIPs if cadical/python3 absent,
 # so CI does not depend on a SAT solver being installed).
 scripts/crosscheck_lrat.sh
+# Standing-gate visibility (no scheduler on this host by design; the gates
+# run inline in every release build, and on demand via nightly_gates.sh).
+# This reports the last bundle run's verdict and age so staleness is seen at
+# the natural checkpoint instead of silently accumulating.
+latest_gates=$(ls -dt .lake/release-metrics/nightly-*/gates.csv 2>/dev/null | head -1)
+if [[ -n "$latest_gates" ]]; then
+  age_days=$(( ($(date +%s) - $(stat -c %Y "$latest_gates")) / 86400 ))
+  if grep -q FAIL "$latest_gates"; then
+    echo "ci: WARNING last gate bundle ($latest_gates, ${age_days}d old) has FAILING rows"
+  else
+    echo "ci: last gate bundle all-PASS ($latest_gates, ${age_days}d old)"
+  fi
+else
+  echo "ci: NOTE no gate-bundle run recorded (scripts/nightly_gates.sh)"
+fi
 echo "ci: OK"
