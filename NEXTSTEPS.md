@@ -549,11 +549,22 @@ wall-vs-CPU on `RMCRetireGateCall` before touching anything.
 **146% parallelism** (370 s wall, 536 s CPU). Async elaboration is already
 active; the file is bound by its internal proof-dependency chain, not by a
 disabled flag. Consequence: declaration-level or file-level splitting alone
-cannot beat the chain — the campaign must reduce the chain itself, i.e.
-profile per-declaration, then either cheapen the heavy proofs or
-restructure their statements into log-depth intermediate lemmas (§C.2).
-The same conclusion presumably applies to `GateCallSuccess` and
-`RMCIssue`/`RMCHalt`; verify per module before working on it.
+cannot beat the chain — the campaign must reduce the chain itself.
+
+*Profile result (same day, `lean --profile`):* the cost is **not** kernel
+checking. Of 536 CPU-s: **375 s is `exact` tactic elaboration across 45
+uses**, 49.5 s type checking, 37.9 s `change` (defeq conversion on large
+goals), everything else noise. This is the RELEASE_COST "elaboration
+re-reduces large concrete terms" pathology inside tactic blocks:
+instantiating shared datapath lemmas at concrete domains forces whnf of
+design-sized implicit arguments. The campaign's first step is therefore
+**name attribution** (which declarations own the heavy `exact`s — the
+category profile does not say), then per-site treatment: hoist the
+repeated concrete instantiations into named intermediate lemmas (stated
+once, elaborated once) or replace `exact`-with-huge-unification by `refine`
+with explicit arguments. Expect the same shape in `GateCallSuccess`
+(338 s), `RMCIssue` (256 s), `RMCHalt` (230 s); re-profile each before
+working on it.
 
 The remedy is the section C prescriptions applied *here*, where they are
 alive even though they are a 9% item for the certificate pipeline:
