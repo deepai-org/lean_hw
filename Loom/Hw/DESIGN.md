@@ -97,7 +97,32 @@ hypothesis joins a release path, either give the check a compiled entry
 point or profile its kernel-reduction behaviour — the §B rule about
 profiling decoders before committing applies to it verbatim.
 
-## Order of construction
+## D13 — emission well-formedness is a decidable module check (decided 2026-07-29)
+
+Proving the generic wire-graph conjuncts of `toProgram_denotes`
+(`toProgram_wireWellFormed`, `toProgram_wireMatches`) exposed obligations
+on the *compiler's output expressions* that no existing hypothesis
+implies: every register read resolves in the module's declarations at its
+intrinsic width under a name outside the `n<k>` wire namespace
+(`designReadsValidB` checks this at the design level, but the theorem
+needs it on `Compile.compile d`'s trees); every memory read resolves at
+both its address and data widths (checked nowhere — `designReadsValidB`
+covers registers only); and every `slice`/`sext` site has the positive
+widths the release checker's arithmetic guards assume (zero-width slices
+would flunk `lo ≤ hi`).
+
+Per the D12 rule — strengthen the decidable check, not the theorem's
+proof burden — the obligation is one Boolean, `SSA.moduleEmitOkB
+(Compile.compile d)`, whose soundness (`moduleEmitOkB_sound` →
+`ModuleEmitOk` → `flattenModule_wf`) feeds the flatten-soundness
+invariant `FlattenSt.WF`. Both wire-graph theorems carry it as their
+single hypothesis; a concrete design discharges it by kernel reduction
+once. Measured: Acc8 evaluates to `true` in under a second. LNP64-µ has
+*not* been evaluated interpreted — `exprEmitOkB` walks expression trees
+without pointer memoization, so the shared-DAG blowup that forced
+`flatten`'s `implemented_by` twin applies verbatim; before this
+hypothesis joins a release path for LNP64-µ it needs a memoized twin or
+kernel-reduction profiling, exactly like the D12 cost caveat.
 
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)
 2. Acc8 core as the first user; lockstep vs Acc8 ISS (task 1.11)

@@ -55,6 +55,33 @@ Proof order: layout lemmas (delegated, `Loom/Release/RopeLayout.lean`) →
 `FlattenSt` consistency invariant → `wireWellFormed` → `wireMatches` →
 `registerBehavior`/`memoryBehavior` (invariant + semantic layer).
 
+### Task #9 progress, same day: wire graph DONE (commits 92e4827…93d9c1a)
+
+`toProgram_wireMatches` and `toProgram_wireWellFormed` are **proved** —
+out of `Wip`, sorry-free, closure exactly
+propext/Classical.choice/Quot.sound — each under one kernel-reducible
+Boolean hypothesis `moduleEmitOkB (Compile.compile d) = true` (decision
+**D13**, `Loom/Hw/DESIGN.md`: the register/memory-read and
+positive-width obligations no prior hypothesis implied). Acc8 passes the
+Boolean by `#eval` in under a second; LNP64-µ needs a pointer-memoized
+twin first (tree-walk DAG blowup, D12/D13 caveat). The proof stack:
+`RopeLayout.lean` (balancedPath?/balancedRope correctness + the 2^k
+collapse + evidence introducers), `FlattenWF.lean` (`FlattenSt.WF`
+invariant, `flatten_spec`, `flattenModule_wf`, and a from-scratch
+byte-level String bridge for `wireNumber? (wireName m) = some m`),
+`ToProgramWellFormed.lean` (state equality with `toIndexedWires`,
+shaped lookups, find? metadata transfer, the `indexedRhsWellFormed` and
+`matchesRaw` bridges, final assembly).
+
+**`toProgram_denotes` now has two open conjuncts, both semantic:**
+`toProgram_registerBehavior` (the hard lemma) and
+`toProgram_memoryBehavior`. Next increment: the semantic half of the
+flatten invariant — extend `FlattenSt.WF` with environment consistency
+(every emitted wire's `IndexedRhs.elaborate` under the elaborated
+environment is extensionally equal to the flattened subexpression), then
+`RegisterBehaviorRopeFrom` follows the same shaped-evidence route the
+wire graph used.
+
 ## The target, rebound 2026-07-28
 
 The previous target was "a clean checkout builds the full end-to-end proof in
