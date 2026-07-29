@@ -500,6 +500,22 @@ shipped artifact, so a release re-derivation pays it. It is also a
 development cost: any edit under `Machines/` re-triggers the chain, which is
 what makes 2,308 s at 2.7x painful day to day rather than merely offline.
 
+**First measured cut (2026-07-29).** The phase's wall clock IS its critical
+path: 2,267 s of the 2,308 s, computed from clean-run module times over the
+import DAG (`scripts/`-free one-off; method: longest path with per-module
+weights from the `audit-clean-release` log). One decoupling landed:
+`RMCRetireGateReturn` imported `RMCRetireGateCallSuccess` while using
+nothing from the call side, serializing the 180 s return chain behind the
+880 s call chain — re-pointed to its real dependency, path 2,267 → 2,152 s.
+Next named target: `retireBase_regions` and the `transferStructural_retire_*`
+family are defined in `RMCRetireGateCallSuccess` but are shared glue;
+hoisting them to a shared module frees the return tail
+(`RMCRetireGateReturnSuccessArm`) from the call chain entirely. After that,
+the path is dominated by the intra-module cost of the 300 s modules
+(`RMCRetireGateCall` 363 s, `RMCRetireGateCallSuccess` 332 s, `RMCRetireRev`
+358 s, `RMCAbs` 316 s), which is where the splitting prescriptions below
+take over.
+
 The remedy is the section C prescriptions applied *here*, where they are
 alive even though they are a 9% item for the certificate pipeline:
 
