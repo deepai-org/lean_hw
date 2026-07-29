@@ -737,6 +737,18 @@ the remaining 1,764 — plus `RMCIssue` 256 s and `RMCHalt` 230 s on the
 trunk. Those are intra-module costs, which is where the splitting
 prescriptions below take over; the cheap import-graph cuts are exhausted.
 
+**RESOLVED 2026-07-29 (commit 3de6a76): done-condition EXCEEDED —
+chain 838 s → 135 s (−84%).** The category profile's "45 heavy exact
+sites" resolved, under named `trace.profiler` attribution, to a handful
+of pathological tactics: `contradiction` in design-sized hypothesis
+contexts (pairwise defeq scans, single failing isDefEq calls of 39 s;
+six sites at 104–188 s each) and one `fin_cases <;> decide`-style site
+at 303 s. Fixes: `exact nomatch h` / `exact absurd h (by decide)` in
+place of `contradiction`, one closed `decide +kernel` frame lemma; 13
+insertions/8 deletions, zero statement changes. Follow-up (not done):
+the same pathology likely sits in RMCIssue (256 s), RMCHalt (230 s),
+and the remaining GateCall warm spots (30–80 s each) — profile first.
+
 **GateCall campaign done-condition (set 2026-07-29, before starting):**
 the worst single-edit warm-cache path through the GateCall sub-chain must
 come under the 600 s CI-tier gate, which given the rest of its path means
