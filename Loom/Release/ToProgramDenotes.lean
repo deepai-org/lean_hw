@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.ToProgram
 import Loom.Release.ToProgramLemmas
+import Loom.Release.ToProgramWellFormed
 import Loom.Release.SymbolicSound
 import Loom.Hw.CompileCorrect
 
@@ -11,19 +12,25 @@ import Loom.Hw.CompileCorrect
 `Design.toProgram` makes the shipped release witness the verified compiler's
 own output: the constructor reproduces the generated program exactly
 (validated by `Scratch/ToProgramParity*.lean` on both Acc8 and LNP64-µ). The
-theorem stated here — with its proof deliberately left as audit-visible
-`sorry`s in the `Wip` namespace — is what retires the per-node certificate
-pipeline: once `toProgram_denotes` is proved, the `denotation` field of
-`VerifiedSymbolicArtifact` for any design follows from the single data
-equality `program = d.toProgram` plus this generic theorem, instead of from
-one re-derivation per wire, register, and port.
+theorem stated here — with the remaining hard conjuncts deliberately left as
+audit-visible `sorry`s in the `Wip` namespace — is what retires the per-node
+certificate pipeline: once `toProgram_denotes` is proved, the `denotation`
+field of `VerifiedSymbolicArtifact` for any design follows from the single
+data equality `program = d.toProgram` plus this generic theorem, instead of
+from one re-derivation per wire, register, and port.
 
 ## The hard lemma
 
-Of `ModuleBehavior`'s twelve conjuncts, eleven are bookkeeping (name and
-count agreement, structural index/table well-formedness, read validity,
-output naming — each fixed by construction of `toProgram`). The load-bearing
-conjunct is `RegisterBehaviorRopeFrom`: every register root reference in
+Of `ModuleBehavior`'s twelve conjuncts, ten are bookkeeping or now proved:
+name and count agreement, output naming (fixed by construction of
+`toProgram`), and the two wire-graph conjuncts — `IndexedRopeMatches` and
+`IndexedRopeWellFormed` — which are theorems
+(`toProgram_wireMatches`/`toProgram_wireWellFormed` below, assembled in
+`Loom/Release/ToProgramWellFormed.lean` from the flatten-soundness invariant
+of `Loom/Release/FlattenWF.lean`) conditional on one kernel-reducible
+Boolean per design, `moduleEmitOkB` (the same D12 shape as
+`designReadsValidB`). Two open conjuncts remain. The load-bearing one is
+`RegisterBehaviorRopeFrom`: every register root reference in
 `d.registersOf` must *semantically denote* `Compile.nextReg` folded over the
 design's rules — that is, elaborating the flattened SSA wires and resolving
 register `i`'s root must evaluate, in every state, to the verified
@@ -67,6 +74,31 @@ theorem memoriesOf_length (d : Loom.Hw.Design) (blockSize : Nat) :
   unfold Loom.Hw.Design.memoriesOf
   simp
 
+/-- The indexed wires are the string-free view of the rendered wires with
+correct global numbering: both ropes chunk the same underlying flat list
+(`toIndexedWires_eq_flattenModule`), so this is per-wire `matchesRaw` —
+operand canonicality from the flatten-soundness invariant — lifted through
+the shared shape by `indexedRopeMatches_shaped`. Conditional on the design's
+one kernel-reducible emission Boolean (decision D12 shape), which supplies
+`FlattenSt.WF` through `flattenModule_wf`. -/
+theorem toProgram_wireMatches (d : Loom.Hw.Design)
+    (hemit : moduleEmitOkB (Compile.compile d) = true) :
+    Symbolic.IndexedRopeMatches 0 (d.toProgram).wires d.indexedsOf :=
+  toProgram_wireMatches_of_check d hemit
+
+/-- Well-formedness of the indexed wire graph: every wire is found by
+`lookupIndexed?` at its own number and references only registers or strictly
+earlier wires at consistent widths. The flatten-soundness invariant
+(`FlattenSt.WF`, from `flattenModule_wf` via the same emission Boolean)
+supplies the per-wire `RhsOk` facts; `lookupIndexed?_shaped` and the
+`RhsOk → indexedRhsWellFormed` bridge assemble them over the witness
+layout. -/
+theorem toProgram_wireWellFormed (d : Loom.Hw.Design)
+    (hemit : moduleEmitOkB (Compile.compile d) = true) :
+    Symbolic.IndexedRopeWellFormed d.toProgram d.indexedsOf d.tableOf 0
+      d.indexedsOf :=
+  toProgram_wireWellFormed_of_check d hemit
+
 namespace Wip
 
 /-- **The hard lemma** (stated, unproved). Every register root of the
@@ -86,32 +118,6 @@ flatten-soundness argument as `toProgram_registerBehavior` at the three port
 faces, plus a direct image correspondence. -/
 theorem toProgram_memoryBehavior (d : Loom.Hw.Design) (wf : Compile.DesignWF d) :
     Symbolic.MemoryBehaviorsFrom d d.toProgram d.tableOf 0 d.memoriesOf := by
-  sorry
-
-/-- The indexed wires are the string-free view of the rendered wires with
-correct global numbering. Proof shape: both ropes chunk the same underlying
-flat list (`st.wires.toList` from the same traversal, since
-`d.toIndexedWires` reruns `flatten` on the same expressions in the same
-order and `indexedRhsOf`/`operandRef` are the per-wire translation), so
-after a chunking-alignment lemma this reduces to
-`indexedBlockMatches`-per-leaf, which follows from `wireNumber?`-roundtrip
-facts about the canonical `n<i>` names produced by `freshWire` and
-`Ref.render ∘ operandRef = id` on operand strings. -/
-theorem toProgram_wireMatches (d : Loom.Hw.Design) :
-    Symbolic.IndexedRopeMatches 0 (d.toProgram).wires d.indexedsOf := by
-  sorry
-
-/-- Well-formedness of the indexed wire graph: every wire is found by
-`lookupIndexed?` at its own number and references only registers or
-strictly earlier wires at consistent widths. Proof shape: a `FlattenSt`
-invariant — every CSE-table entry maps to an already-emitted wire whose
-name is `n<i>` for `i < st.next`, and `flatten` returns either a register
-name or such an earlier wire at the expression's width — plus a
-`balancedPath?`/`lookupIndexed?` correctness lemma for the
-`shapeWireRope`/`tableOf` layout. -/
-theorem toProgram_wireWellFormed (d : Loom.Hw.Design) :
-    Symbolic.IndexedRopeWellFormed d.toProgram d.indexedsOf d.tableOf 0
-      d.indexedsOf := by
   sorry
 
 /-- Source read discipline against the constructed witness, discharged by
@@ -136,20 +142,28 @@ theorem toProgram_readsValid (d : Loom.Hw.Design)
 verified compiler's output denotes that compilation at every wire, register,
 write port, initialization cell, and output.
 
-With this proved, `VerifiedSymbolicArtifact.denotation` for a shipped
+Of the four conjuncts formerly open, the two wire-graph facts are now
+theorems (`toProgram_wireMatches`/`toProgram_wireWellFormed`), each
+conditional on the single kernel-reducible Boolean `moduleEmitOkB` — one
+`by decide`-style hypothesis per concrete design, the same D12 shape as
+`hreads`. The two remaining `sorry`s are the semantic conjuncts
+`toProgram_registerBehavior` and `toProgram_memoryBehavior` above.
+
+With those proved, `VerifiedSymbolicArtifact.denotation` for a shipped
 `program` reduces to the data equality `program = d.toProgram` — checkable
 by reflection — and the per-design certificate pipeline is retired. The
 `refinement` and `invariants` fields are untouched: they already flow
 through `Compile.compile` and R-MC. -/
 theorem toProgram_denotes (d : Loom.Hw.Design) (wf : Compile.DesignWF d)
+    (hemit : moduleEmitOkB (Compile.compile d) = true)
     (hreads : Symbolic.designReadsValidB d d.toProgram = true) :
     Symbolic.ModuleBehavior d d.toProgram d.indexedsOf d.tableOf
       d.registersOf d.memoriesOf d.outputsOf :=
   Symbolic.moduleBehavior_of_checks d d.toProgram d.indexedsOf d.tableOf
     d.registersOf d.memoriesOf d.outputsOf
     (toProgram_name d 128 16).symm
-    (toProgram_wireMatches d)
-    (toProgram_wireWellFormed d)
+    (toProgram_wireMatches d hemit)
+    (toProgram_wireWellFormed d hemit)
     (toProgram_readsValid d hreads)
     (registersOf_listLength d 128).symm
     ((toProgram_regs_length d 128 16).trans (registersOf_listLength d 128).symm)
