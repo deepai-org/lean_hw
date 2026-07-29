@@ -129,7 +129,21 @@ MEASURED 2026-07-29: with `maxRecDepth 4000000`, **`moduleNamesOkB`
 kernel-discharges on LNP64-µ** (within a 45 s file — no exponential
 wall); `moduleEmitOkB` hit the default 200k-heartbeat elaboration
 budget and `moduleMatchOkB` reported stuck — re-running isolated with
-`maxHeartbeats 0` under a wall-clock cap to get true costs. Also
+`maxHeartbeats 0` under a wall-clock cap to get true costs.
+DIAGNOSED 2026-07-29 (bisection): the stuck constant is
+`List.mergeSort` inside `Machines.Lnp64u.Hw.schedOrder`
+(Core.lean:100) — well-founded recursion, kernel cannot whnf
+`WellFounded.fix`/`Acc.rec` (minimal repro:
+`[2,1,3].mergeSort (· ≤ ·) = [1,2,3]` fails `by decide`). Every
+rule-body traversal sticks (`nextReg` folds, even
+`numPorts → designTrace → portTrace`); names/outs pass since they
+avoid rule bodies. VERIFIED discharge route: transport along the
+existing `schedOrderRelease` — define `coreActR` with the concrete
+schedule `[0,1,2,3]` inlined, prove `core Demo.sysManifest = coreR` by
+`rw`, then `decide`; the previously-stuck mems section discharges in
+31 s this way. Do NOT swap mergeSort for a structural sort design-side:
+`RMCSched.lean` depends on `List.pairwise_mergeSort`/`mergeSort_perm`
+at the general-manifest level. Full-module timings pending. Also
 measured: all three Booleans discharge on Acc8 in 1.5 s total.
 Hardware-side: new repeatable gate `scripts/corroborate_yosys.sh`
 (wired into reproduce.sh) — all three shipped designs synthesize under
