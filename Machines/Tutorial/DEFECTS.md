@@ -15,7 +15,10 @@ from below. The protocol still requires a genuinely fresh human executor; a
 maintainer-adjacent run finding N defects means a stranger would find at
 least N.
 
-1. **No generic emit entry point.** `lake exe emit` accepts only
+1. **No generic emit entry point.** [ADDRESSED 2026-07-29:
+   `Loom.Hw.Design.emit` (`Loom/Hw/EmitIO.lean`) — one call, compiles and
+   prints via the verified functions; tutorial §5 and this repo's
+   SatCounter now use it.] `lake exe emit` accepts only
    `acc8|lnp64u` (`Tools/Emit.lean:143`); a new design cannot be emitted by
    the shipped CLI at all. Excursion: read `Tools/Emit.lean` to learn the
    printing API, then wrote a per-design `main`. The tutorial now documents

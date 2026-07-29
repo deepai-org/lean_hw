@@ -3,6 +3,7 @@
 import Loom.Hw.Semantics
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
+import Loom.Hw.EmitIO
 
 /-!
 # Tutorial design: a saturating counter
@@ -78,9 +79,5 @@ theorem satOk_rtl :
 end Machines.Tutorial.SatCounter
 
 /-- Emit the Verilog (`lake env lean --run` needs a root-level `main`). -/
-def main : IO Unit := do
-  IO.FS.createDirAll "rtl"
-  IO.FS.writeFile "rtl/satcounter.v"
-    (Loom.Emit.MicroVerilog.Print.print
-      (Loom.Hw.Compile.compile Machines.Tutorial.SatCounter.design))
-  IO.println "rtl/satcounter.v written"
+def main : IO Unit :=
+  Machines.Tutorial.SatCounter.design.emit "rtl/satcounter.v"
