@@ -1,7 +1,8 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireRevState
-import Machines.Lnp64u.Theorems.RMCRetireGateCallSuccess
+import Machines.Lnp64u.Theorems.RMCRetireGateShared
+import Machines.Lnp64u.Theorems.RMCRetireGateSquare
 
 /-!
 # R-MC retirement: full cap_revoke arm
