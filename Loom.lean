@@ -36,6 +36,7 @@ import Loom.Release.ToProgram
 import Loom.Release.ToProgramLemmas
 import Loom.Release.RopeLayout
 import Loom.Release.FlattenWF
+import Loom.Release.KeyInjective
 import Loom.Release.ToProgramWellFormed
 import Loom.Release.ToProgramDenotes
 import Loom.Emit.MicroVerilog.MatchesSemantics
