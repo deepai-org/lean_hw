@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireGateReturnSuccess
 import Machines.Lnp64u.Theorems.RMCRetireGateSquare
+import Machines.Lnp64u.Theorems.RMCRetireGateCallSuccess
 
 /-!
 # R-MC retirement: successful gate_return arms
