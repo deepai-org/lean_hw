@@ -521,14 +521,18 @@ weights from the `audit-clean-release` log). One decoupling landed:
 `RMCRetireGateReturn` imported `RMCRetireGateCallSuccess` while using
 nothing from the call side, serializing the 180 s return chain behind the
 880 s call chain — re-pointed to its real dependency, path 2,267 → 2,152 s.
-Next named target: `retireBase_regions` and the `transferStructural_retire_*`
-family are defined in `RMCRetireGateCallSuccess` but are shared glue;
-hoisting them to a shared module frees the return tail
-(`RMCRetireGateReturnSuccessArm`) from the call chain entirely. After that,
-the path is dominated by the intra-module cost of the 300 s modules
-(`RMCRetireGateCall` 363 s, `RMCRetireGateCallSuccess` 332 s, `RMCRetireRev`
-358 s, `RMCAbs` 316 s), which is where the splitting prescriptions below
-take over.
+Two further hoists landed the same day: `RMCRetireGateShared` (the
+retirement-base transfer glue out of `RMCRetireGateCallSuccess`, freeing
+the gate-return chain and the revoke arm) and `RMCRetireCapShared` (the
+capability-install datapath out of `RMCRetireDup`/`Move`/`Map`, taking all
+three off the spine). **Measured path: 2,267 → 1,764 s (−22%)**, with the
+audit-tier phase wall expected to follow at the next clean run. The spine
+is now `...Alu→Branch→Sw→Rgn→CapShared→Drop→gate chain`, and the remaining
+concentration is the GateCall sub-chain — `RMCRetireGateCall` 371 s +
+`RMCRetireGateCallSuccess` 338 s + `RMCRetireGateCallArm` 147 s = 856 s of
+the remaining 1,764 — plus `RMCIssue` 256 s and `RMCHalt` 230 s on the
+trunk. Those are intra-module costs, which is where the splitting
+prescriptions below take over; the cheap import-graph cuts are exhausted.
 
 The remedy is the section C prescriptions applied *here*, where they are
 alive even though they are a 9% item for the certificate pipeline:
