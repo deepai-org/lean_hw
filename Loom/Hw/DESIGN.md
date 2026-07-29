@@ -87,6 +87,16 @@ it as the hypothesis `designReadsValidB d d.toProgram = true`. This is the
 same shape as D9 (last-write-wins): a semantic contract pinned by a
 decision rather than left implicit in a total evaluator.
 
+Empirical acceptance (measured 2026-07-29): `designReadsValidB` returns
+`true` for both shipped designs — Acc8 and LNP64-µ against their
+`toProgram` witnesses — consistent with the kernel-checked
+`DesignReadsValid` conjunct in each release. Cost caveat: the direct
+`#eval` took 187 minutes on LNP64-µ under the interpreter (the check does
+a linear `find?` over 825 registers at every read leaf). Before the
+hypothesis joins a release path, either give the check a compiled entry
+point or profile its kernel-reduction behaviour — the §B rule about
+profiling decoders before committing applies to it verbatim.
+
 ## Order of construction
 
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)
