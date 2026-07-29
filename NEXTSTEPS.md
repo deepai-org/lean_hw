@@ -248,6 +248,20 @@ survives B regardless.
    two-week box now bounds the *proof statement* risk, not representation
    risk. Landing it also fires the goal-fork trigger above.
 
+   *Proof progress 2026-07-29 (commit `2724308`):* 7 of the 12
+   `ModuleBehavior` conjuncts are proved outright (name, all five counts,
+   and the complete output conjunct, on sorry-free rope/flattener
+   infrastructure in `ToProgramLemmas.lean`). Five named `Wip` sorries
+   remain: the two hard ones (register/memory behavior — the actual
+   Section B content), the wire-table pair (needs a `FlattenSt`
+   numbering/CSE invariant), and `toProgram_readsValid`, which the work
+   revealed is **not derivable from `Compile.DesignWF`** — `DesignWF`
+   constrains writes only, while `DesignReadsValid` needs read-side
+   declaration discipline plus `wireNumber?`-freeness of register names.
+   The theorem hypothesis must be strengthened (a decidable
+   `designReadsValidB` alongside `designWFCheck`); decide this before
+   attacking the hard pair, because it changes their statements too.
+
    **DONE 2026-07-28, same day (commit `82e0081`).** All three criteria met
    and exceeded: `Design.toProgram` exists (`Loom/Release/ToProgram.lean`)
    and does not merely typecheck — `d.toProgram == program` was *measured
