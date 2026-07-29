@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Release.ToProgram
+import Loom.Release.ToProgramLemmas
 import Loom.Release.SymbolicSound
 import Loom.Hw.CompileCorrect
 
@@ -58,6 +59,14 @@ def _root_.Loom.Hw.Design.memoriesOf (d : Loom.Hw.Design)
           refs := { en := operandRef write.en, addr := operandRef write.addr,
                     data := operandRef write.data } } }
 
+/-- The memory-count agreement: one `MemoryRoot` per concrete memory, by
+construction of `d.memoriesOf` as a map over `(d.toProgram).mems`. -/
+theorem memoriesOf_length (d : Loom.Hw.Design) (blockSize : Nat) :
+    (d.memoriesOf blockSize).length =
+      (d.toProgram (blockSize := blockSize)).mems.length := by
+  unfold Loom.Hw.Design.memoriesOf
+  simp
+
 namespace Wip
 
 /-- **The hard lemma** (stated, unproved). Every register root of the
@@ -79,6 +88,45 @@ theorem toProgram_memoryBehavior (d : Loom.Hw.Design) (wf : Compile.DesignWF d) 
     Symbolic.MemoryBehaviorsFrom d d.toProgram d.tableOf 0 d.memoriesOf := by
   sorry
 
+/-- The indexed wires are the string-free view of the rendered wires with
+correct global numbering. Proof shape: both ropes chunk the same underlying
+flat list (`st.wires.toList` from the same traversal, since
+`d.toIndexedWires` reruns `flatten` on the same expressions in the same
+order and `indexedRhsOf`/`operandRef` are the per-wire translation), so
+after a chunking-alignment lemma this reduces to
+`indexedBlockMatches`-per-leaf, which follows from `wireNumber?`-roundtrip
+facts about the canonical `n<i>` names produced by `freshWire` and
+`Ref.render ∘ operandRef = id` on operand strings. -/
+theorem toProgram_wireMatches (d : Loom.Hw.Design) :
+    Symbolic.IndexedRopeMatches 0 (d.toProgram).wires d.indexedsOf := by
+  sorry
+
+/-- Well-formedness of the indexed wire graph: every wire is found by
+`lookupIndexed?` at its own number and references only registers or
+strictly earlier wires at consistent widths. Proof shape: a `FlattenSt`
+invariant — every CSE-table entry maps to an already-emitted wire whose
+name is `n<i>` for `i < st.next`, and `flatten` returns either a register
+name or such an earlier wire at the expression's width — plus a
+`balancedPath?`/`lookupIndexed?` correctness lemma for the
+`shapeWireRope`/`tableOf` layout. -/
+theorem toProgram_wireWellFormed (d : Loom.Hw.Design) :
+    Symbolic.IndexedRopeWellFormed d.toProgram d.indexedsOf d.tableOf 0
+      d.indexedsOf := by
+  sorry
+
+/-- Source read discipline against the constructed witness. Not derivable
+from `Compile.DesignWF` alone: it additionally needs (a) that no source
+register is named like a numbered wire (`wireNumber? name = none`) and
+(b) that every register *read* in a rule body is declared at its intrinsic
+width — `DesignWF` constrains only writes. Either strengthen the
+hypothesis to a read-discipline assumption (e.g. `designReadsValidB`) or
+thread those side conditions through `toProgram_denotes`. The
+`program.regs.find?` obligation itself follows from `flattenRegs`
+preserving names/widths (`flattenRegs_meta`) and `regNames` nodup. -/
+theorem toProgram_readsValid (d : Loom.Hw.Design) (wf : Compile.DesignWF d) :
+    Symbolic.DesignReadsValid d d.toProgram := by
+  sorry
+
 /-- **The end-to-end statement (Task 0).** The witness constructed from the
 verified compiler's output denotes that compilation at every wire, register,
 write port, initialization cell, and output.
@@ -90,8 +138,21 @@ by reflection — and the per-design certificate pipeline is retired. The
 through `Compile.compile` and R-MC. -/
 theorem toProgram_denotes (d : Loom.Hw.Design) (wf : Compile.DesignWF d) :
     Symbolic.ModuleBehavior d d.toProgram d.indexedsOf d.tableOf
-      d.registersOf d.memoriesOf d.outputsOf := by
-  sorry
+      d.registersOf d.memoriesOf d.outputsOf :=
+  Symbolic.moduleBehavior_of_checks d d.toProgram d.indexedsOf d.tableOf
+    d.registersOf d.memoriesOf d.outputsOf
+    (toProgram_name d 128 16).symm
+    (toProgram_wireMatches d)
+    (toProgram_wireWellFormed d)
+    (toProgram_readsValid d wf)
+    (registersOf_listLength d 128).symm
+    ((toProgram_regs_length d 128 16).trans (registersOf_listLength d 128).symm)
+    ((toProgram_mems_length d 128 16).symm.trans (memoriesOf_length d 128).symm)
+    (memoriesOf_length d 128).symm
+    (outputsOf_listLength d 128).symm
+    (toProgram_registerBehavior d wf)
+    (toProgram_memoryBehavior d wf)
+    (toProgram_outputBehavior d)
 
 end Wip
 
