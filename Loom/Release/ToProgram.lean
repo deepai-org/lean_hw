@@ -134,7 +134,7 @@ by the same pairing; memory images chunked at `blockSize` and balanced.
 repeatedly pair adjacent elements left to right, promoting an odd trailing
 element unchanged. -/
 
-private def listChunksGo {α : Type} (size : Nat) : Nat → List α → List (List α)
+def listChunksGo {α : Type} (size : Nat) : Nat → List α → List (List α)
   | 0, _ => []
   | _, [] => []
   | fuel + 1, items@(_ :: _) =>
@@ -145,11 +145,11 @@ list length is sufficient fuel: every round consumes at least one element. -/
 def listChunks {α : Type} (size : Nat) (items : List α) : List (List α) :=
   if size = 0 then [items] else listChunksGo size items.length items
 
-private def pairStep {α : Type} : List (Rope α) → List (Rope α)
+def pairStep {α : Type} : List (Rope α) → List (Rope α)
   | one :: two :: rest => .node one two :: pairStep rest
   | short => short
 
-private def balancedGo {α : Type} [Inhabited α] : Nat → List (Rope α) → Rope α
+def balancedGo {α : Type} [Inhabited α] : Nat → List (Rope α) → Rope α
   | _, [] => .leaf default
   | _, [single] => single
   | 0, one :: _ :: _ => one
@@ -169,7 +169,63 @@ def shapeWireRope (blockSize chunkLeaves : Nat) (wires : List Wire) :
   let leaves := (listChunks blockSize wires).map Rope.leaf
   balancedRope ((listChunks chunkLeaves leaves).map balancedRope)
 
-/-! ## The constructor -/
+/-! ## The constructor
+
+The printer-order traversal is written as explicit structural recursions
+(rather than `for` loops over a `mut` array) so that its components admit
+direct inductive specifications. The effect order is unchanged: each
+register's `next` is flattened before the following register, each port's
+`en`, `addr`, `data` in order, and outputs last. -/
+
+/-- Flatten every register's next expression in order. -/
+def flattenRegs : List RegDef → StateM FlattenSt (List Reg)
+  | [] => pure []
+  | r :: rest => do
+      let nw ← flatten r.next
+      let more ← flattenRegs rest
+      pure ({ name := r.name, width := r.width, init := r.init.toNat,
+              next := nw } :: more)
+
+/-- Flatten one memory's write ports in order (`en`, `addr`, `data`). -/
+def flattenWrites {aw dw : Nat} :
+    List (WritePort aw dw) → StateM FlattenSt (List Write)
+  | [] => pure []
+  | p :: rest => do
+      let en ← flatten p.en
+      let addr ← flatten p.addr
+      let data ← flatten p.data
+      let more ← flattenWrites rest
+      pure ({ en, addr, data } :: more)
+
+/-- Flatten every memory in order, chunking its initialization image. -/
+def flattenMems (blockSize : Nat) : List MemDef → StateM FlattenSt (List Mem)
+  | [] => pure []
+  | mm :: rest => do
+      let writes ← flattenWrites mm.wrPorts
+      let more ← flattenMems blockSize rest
+      let image := (List.range (2 ^ mm.addrWidth)).map fun a =>
+        (mm.init a).toNat
+      pure ({ name := mm.name, addrWidth := mm.addrWidth,
+              dataWidth := mm.dataWidth,
+              init := balancedRope ((listChunks blockSize image).map .leaf),
+              writes } :: more)
+
+/-- Flatten every output's value in order. -/
+def flattenOuts : List OutDef → StateM FlattenSt (List Out)
+  | [] => pure []
+  | o :: rest => do
+      let v ← flatten o.val
+      let more ← flattenOuts rest
+      pure ({ name := o.name, width := o.width, value := v } :: more)
+
+/-- The complete printer-order traversal: registers, then memories, then
+outputs. -/
+def flattenModule (m : Module) (blockSize : Nat) :
+    StateM FlattenSt (List Reg × List Mem × List Out) := do
+  let regs ← flattenRegs m.regs
+  let mems ← flattenMems blockSize m.mems
+  let outs ← flattenOuts m.outs
+  pure (regs, mems, outs)
 
 /-- The release witness as the verified compiler's own output.
 
@@ -181,38 +237,12 @@ of anything's trust story. -/
 def _root_.Loom.Hw.Design.toProgram (d : Loom.Hw.Design)
     (blockSize : Nat := 128) (chunkLeaves : Nat := 16) : Program :=
   let m := Compile.compile d
-  let build : StateM FlattenSt (List Reg × List Mem × List Out) := do
-    let mut regs : Array Reg := #[]
-    for r in m.regs do
-      let nw ← flatten r.next
-      regs := regs.push
-        { name := r.name, width := r.width, init := r.init.toNat, next := nw }
-    let mut mems : Array Mem := #[]
-    for mm in m.mems do
-      let mut writes : Array Write := #[]
-      for p in mm.wrPorts do
-        let en ← flatten p.en
-        let addr ← flatten p.addr
-        let data ← flatten p.data
-        writes := writes.push { en, addr, data }
-      let image := (List.range (2 ^ mm.addrWidth)).map fun a =>
-        (mm.init a).toNat
-      mems := mems.push
-        { name := mm.name, addrWidth := mm.addrWidth,
-          dataWidth := mm.dataWidth,
-          init := balancedRope ((listChunks blockSize image).map .leaf),
-          writes := writes.toList }
-    let mut outs : Array Out := #[]
-    for o in m.outs do
-      let v ← flatten o.val
-      outs := outs.push { name := o.name, width := o.width, value := v }
-    pure (regs.toList, mems.toList, outs.toList)
-  let ((regs, mems, outs), st) := build.run {}
+  let result := (flattenModule m blockSize).run {}
   { name := m.name
-    regs
-    mems
-    wires := shapeWireRope blockSize chunkLeaves st.wires.toList
-    outs }
+    regs := result.1.1
+    mems := result.1.2.1
+    wires := shapeWireRope blockSize chunkLeaves result.2.wires.toList
+    outs := result.1.2.2 }
 
 /-! ## Fast execution (pointer-memoized; same output)
 
