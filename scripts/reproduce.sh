@@ -38,4 +38,8 @@ else
   echo "reproduce: SKIP lockstep (iverilog not installed)"
 fi
 
+# Independent-synthesizer corroboration: every shipped design elaborates
+# and synthesizes under yosys (skips itself if yosys is absent).
+scripts/corroborate_yosys.sh
+
 echo "reproduce: OK"

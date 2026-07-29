@@ -124,7 +124,17 @@ into `exprEmitOkB`'s reg arm; the same fix inside `SymbolicElaborate`
 (for designReadsValidB) is deferred to an audit-tier rebuild window
 since that file is imported by every generated certificate. (2) Measure
 kernel discharge on LNP64-µ (DAG-blowup risk — kernel reduction may not
-share let-bound subterm reductions; measure, don't assume). (3) The
+share let-bound subterm reductions; measure, don't assume).
+MEASURED 2026-07-29: with `maxRecDepth 4000000`, **`moduleNamesOkB`
+kernel-discharges on LNP64-µ** (within a 45 s file — no exponential
+wall); `moduleEmitOkB` hit the default 200k-heartbeat elaboration
+budget and `moduleMatchOkB` reported stuck — re-running isolated with
+`maxHeartbeats 0` under a wall-clock cap to get true costs. Also
+measured: all three Booleans discharge on Acc8 in 1.5 s total.
+Hardware-side: new repeatable gate `scripts/corroborate_yosys.sh`
+(wired into reproduce.sh) — all three shipped designs synthesize under
+yosys 0.33: acc8 584 cells, lnp64u 181,055 cells, satcounter 4 cells,
+2m45 total. (3) The
 release-path phase swapping per-node certificates for parity + the four
 Boolean facts, then re-measure the audit tier. The executed work plan, kept for the record:
 (a) `keyOf` + `identOkB`/D14 + single-node injectivity (String-heavy,
