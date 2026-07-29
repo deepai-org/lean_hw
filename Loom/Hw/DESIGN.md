@@ -124,6 +124,35 @@ without pointer memoization, so the shared-DAG blowup that forced
 hypothesis joins a release path for LNP64-µ it needs a memoized twin or
 kernel-reduction profiling, exactly like the D12 cost caveat.
 
+## D14 — CSE soundness needs identifier discipline (decided 2026-07-29)
+
+`flatten` (and the printer it mirrors) hash-conses SSA nodes on rendered
+strings. Equal keys must imply equal structural nodes, or a CSE hit
+could alias two semantically different expressions — and that
+implication is FALSE for adversarial names: a register literally named
+`"a + b"` renders identically to the addition of registers `a` and `b`.
+The semantic half of `toProgram_denotes` therefore carries
+`moduleNamesOkB`: every register and memory name is an identifier token
+(`[A-Za-z_][A-Za-z0-9_]*`). Under it, `keyOf_injective`
+(`Loom/Release/KeyInjective.lean`) recovers the node from its key by
+leftmost-separator classification. The discipline is what the printed
+Verilog's lexical rules already assume, so it constrains nothing a
+synthesizable design could do. Companion check `moduleMatchOkB`:
+`sext` strictly widening and `zext` non-narrowing — the release matcher
+recognizes only those forms, and `flatten`'s degenerate-sext
+normalizations (`.ident`/`.slice`) have no matcher case by design.
+
+With D12–D14, `toProgram_denotes` is a proved theorem (2026-07-29, zero
+sorries, closure exactly propext/Classical.choice/Quot.sound)
+conditional on exactly four kernel-reducible Booleans: `moduleEmitOkB`,
+`moduleMatchOkB`, `moduleNamesOkB` on `Compile.compile d`, and
+`designReadsValidB d d.toProgram`. Acc8 passes all four by `#eval` in
+seconds; LNP64-µ discharge awaits pointer-memoized twins for the
+tree-walking checkers (the D12/D13 cost caveat applies to all four
+verbatim).
+
+## Order of construction
+
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)
 2. Acc8 core as the first user; lockstep vs Acc8 ISS (task 1.11)
 3. LNP64-µ multicycle core (task 1.11)
