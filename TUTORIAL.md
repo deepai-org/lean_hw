@@ -147,13 +147,13 @@ up unqualified), then run it:
 ```lean
 end Machines.Tutorial.SatCounter
 
-def main : IO Unit := do
-  IO.FS.createDirAll "rtl"
-  IO.FS.writeFile "rtl/satcounter.v"
-    (Loom.Emit.MicroVerilog.Print.print
-      (Loom.Hw.Compile.compile Machines.Tutorial.SatCounter.design))
-  IO.println "rtl/satcounter.v written"
+def main : IO Unit :=
+  Machines.Tutorial.SatCounter.design.emit "rtl/satcounter.v"
 ```
+
+(`Design.emit` — import `Loom.Hw.EmitIO` — compiles with the verified
+compiler, prints with the verified printer, and writes the file; it was
+added to close defect #1 of the first tutorial run.)
 
 ```console
 lake env lean --run Machines/Tutorial/SatCounter.lean
