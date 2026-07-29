@@ -4,6 +4,7 @@ import Loom.Release.ToProgram
 import Loom.Release.ToProgramLemmas
 import Loom.Release.ToProgramWellFormed
 import Loom.Release.ToProgramBehavior
+import Loom.Release.ReadsValidKernel
 import Loom.Release.SymbolicSound
 
 /-!
@@ -72,15 +73,17 @@ needs (a) that no source register is named like a numbered wire
 (`wireNumber? name = none`) and (b) that every register *read* in a rule
 body is declared at its intrinsic width — `DesignWF` constrains only
 writes. The obligation is deliberately carried as one kernel-reducible
-Boolean (`Symbolic.designReadsValidB`), so a concrete design pays a single
+Boolean (`designReadsOkB`, the kernel-reducible form of
+`Symbolic.designReadsValidB` — decision D12; the original's
+`wireNumber?` arms do not kernel-reduce), so a concrete design pays a single
 `by decide`-style hypothesis rather than a hand proof; the check is
 load-bearing, not stylistic — the Lean semantics gives an undeclared or
 wrong-width read the environment default, while the printed Verilog would
 reference an undriven implicit net. -/
 theorem toProgram_readsValid (d : Loom.Hw.Design)
-    (hreads : Symbolic.designReadsValidB d d.toProgram = true) :
+    (hreads : designReadsOkB d d.toProgram = true) :
     Symbolic.DesignReadsValid d d.toProgram :=
-  Symbolic.designReadsValidB_sound hreads
+  designReadsOkB_sound hreads
 
 /-- **The end-to-end statement (Task 0), proved.** The witness constructed
 from the verified compiler's output denotes that compilation at every wire,
@@ -97,7 +100,7 @@ theorem toProgram_denotes (d : Loom.Hw.Design)
     (hemit : moduleEmitOkB (Compile.compile d) = true)
     (hmw : moduleMatchOkB (Compile.compile d) = true)
     (hnames : moduleNamesOkB (Compile.compile d) = true)
-    (hreads : Symbolic.designReadsValidB d d.toProgram = true) :
+    (hreads : designReadsOkB d d.toProgram = true) :
     Symbolic.ModuleBehavior d d.toProgram d.indexedsOf d.tableOf
       d.registersOf d.memoriesOf d.outputsOf :=
   Symbolic.moduleBehavior_of_checks d d.toProgram d.indexedsOf d.tableOf
