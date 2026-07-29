@@ -38,6 +38,7 @@ import Loom.Release.RopeLayout
 import Loom.Release.FlattenWF
 import Loom.Release.KeyInjective
 import Loom.Release.ToProgramWellFormed
+import Loom.Release.ToProgramBehavior
 import Loom.Release.ToProgramDenotes
 import Loom.Emit.MicroVerilog.MatchesSemantics
 import Loom.Emit.MicroVerilog.Print
