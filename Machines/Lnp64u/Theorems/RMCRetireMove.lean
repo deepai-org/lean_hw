@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Lnp64u.Theorems.RMCRetireMap
+import Machines.Lnp64u.Theorems.RMCRetireCapShared
 
 /-!
 # R-MC retirement: the `move` arm (NEXTSTEPS §1, tier 1)
@@ -203,42 +204,6 @@ theorem postJ_install {w : Nat} (σ : Loom.Hw.St) (E : DomainId)
   subst hE3
   rw [if_pos h1]
 
-/-- The selector's packed backing ref is `encRef` of the handle fields. -/
-theorem encRefE_sel_eval (σ : Loom.Hw.St) (E : DomainId) (hwE : Expr 32) :
-    (Hw.encRefE (Hw.dLit E) (Hw.capSel E hwE).slot
-      (Hw.capSel E hwE).gen).eval σ
-    = Hw.encRef ⟨E, finOfBv (by decide) ((hwE.eval σ).extractLsb' 0 4),
-        (hwE.eval σ).extractLsb' 4 8⟩ := by
-  show (((hwE.eval σ).extractLsb' 4 8).setWidth 14 |||
-    ((((hwE.eval σ).extractLsb' 0 4).setWidth 14 <<< (8#14).toNat) |||
-      (((BitVec.ofNat 2 E.val).setWidth 14) <<< (12#14).toNat))) = _
-  have hSv : BitVec.ofNat 14 (finOfBv (by decide : 2 ^ 4 = numSlots)
-      ((hwE.eval σ).extractLsb' 0 4)).val
-      = ((hwE.eval σ).extractLsb' 0 4).setWidth 14 := by
-    apply BitVec.eq_of_toNat_eq
-    rw [BitVec.toNat_ofNat, BitVec.toNat_setWidth]
-    rfl
-  have hEv : BitVec.ofNat 14 E.val
-      = (BitVec.ofNat 2 E.val).setWidth 14 := by
-    apply BitVec.eq_of_toNat_eq
-    rw [BitVec.toNat_ofNat, BitVec.toNat_setWidth, BitVec.toNat_ofNat]
-    have := E.isLt
-    rw [Nat.mod_eq_of_lt (by omega : E.val < 2 ^ 2)]
-  show _ = ((hwE.eval σ).extractLsb' 4 8).setWidth 14 |||
-    (BitVec.ofNat 14 (finOfBv (by decide : 2 ^ 4 = numSlots)
-      ((hwE.eval σ).extractLsb' 0 4)).val <<< 8) |||
-    (BitVec.ofNat 14 E.val <<< 12)
-  rw [hSv, hEv, BitVec.or_assoc]
-  rfl
-
-/-- `dLit` round-trips through `finOfBv`. -/
-theorem finOfBv_dLit (E : DomainId) :
-    finOfBv (by decide : 2 ^ 2 = numDomains) (BitVec.ofNat 2 E.val)
-      = E := by
-  apply Fin.ext
-  show (BitVec.ofNat 2 E.val).toNat = E.val
-  rw [BitVec.toNat_ofNat]
-  exact Nat.mod_eq_of_lt (by have := E.isLt; omega)
 
 /-- Low extract of a wide word is `setWidth`. -/
 theorem extract0_eq_setWidth (x : BitVec 32) (k : Nat) :
@@ -2719,3 +2684,4 @@ theorem square_retire_move (m : Manifest) (hwf : m.WF) (hfit : Fits m)
   · show (refillPhase m (Hw.abs σ)).cycle = _
     rfl
   · rfl
+
