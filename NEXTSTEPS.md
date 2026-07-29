@@ -103,7 +103,21 @@ ident-shaped, so injectivity is over atomic tokens vs the 9 rendering
 shapes (`x + y`, `m[a]`, `~x`, `$signed(x) < $signed(y)`, `x ? t : f`,
 `x[hi:lo]`, `{{k{x[b]}}, x}`, `w'd v`, bare ident).
 
-Work plan (delegable chunks):
+**RESOLVED 2026-07-29, same day (commits 903d740…67c75a2):
+`toProgram_denotes` is PROVED — zero sorries in the Loom library, the
+`Wip` namespace is gone, closure exactly
+propext/Classical.choice/Quot.sound, `lake build Loom` clean.** Final
+signature: four kernel-reducible Booleans (`moduleEmitOkB`,
+`moduleMatchOkB`, `moduleNamesOkB`, `designReadsValidB`); `DesignWF`
+turned out unneeded and was dropped. D14 recorded in
+`Loom/Hw/DESIGN.md`. Acc8 passes all four Booleans by `#eval` in
+seconds. What remains to *use* the theorem on LNP64-µ and retire the
+68,028 CPU-s hybrid-registers phase: (1) pointer-memoized
+`implemented_by` twins (or kernel-reduction profiling) for the four
+tree-walking checkers on shared-DAG designs; (2) a release-path phase
+that replaces the per-node certificates with the data equality
+`program = d.toProgram` + the four Boolean facts, then re-measure the
+audit tier. The executed work plan, kept for the record:
 (a) `keyOf` + `identOkB`/D14 + single-node injectivity (String-heavy,
     self-contained);
 (b) shaped-evidence introducers for `RegisterBehaviorRopeFrom` (2-level
