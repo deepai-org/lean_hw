@@ -7,6 +7,54 @@ exactly `propext`, `Classical.choice`, `Quot.sound`). The proof layer is not
 the constraint. **Reproduction cost is**, and the active track is bounding it
 per tier.
 
+## The goal, re-set 2026-07-29 — dual-community acceptance
+
+The session goal is now: **get the project to an overall shape that would be
+simultaneously accepted by the Lean mathematical community and the hardware
+community.** This is the Publication Readiness TODO (P1–P6, end of this
+file) promoted from appendix to driver. The two communities' non-negotiables
+are different and both are already itemized there:
+
+- **Lean side (P1):** a sorry-free flagship theorem, an axiom closure of
+  exactly `propext`/`Classical.choice`/`Quot.sound`, and an honest written
+  trust story for the `implemented_by` twins and the release checkers. The
+  single biggest gap is the four `Wip` sorries under `toProgram_denotes`
+  (task #9). Everything else on the Lean side is hygiene, not mathematics.
+- **Hardware side (P2/P3):** tool-validated output (iverilog + yosys already
+  corroborate the three-port commit order), a credible second design through
+  the documented path (tutorial run 1 done; stranger test pending), and
+  honest cost/benchmark reporting (RELEASE_COST.md already is this).
+
+Consequence: task #9 is the critical path and is active. The GateCall
+campaign (#3) and serial-phase work (#4) improve the loop but block nobody's
+acceptance; they proceed opportunistically.
+
+### Task #9 findings, 2026-07-29 (before any proof text)
+
+Empirical facts established by exhaustive testing (scratchpad scripts):
+
+1. `balancedRope ((listChunks c leaves).map balancedRope) = balancedRope
+   leaves` — **literal tree equality** — holds exactly when `c` is a power
+   of two (tested c ∈ {1,2,4,8,16,32}, hundreds of lengths) and fails
+   otherwise (c ∈ {3,5} fail from the second chunk on). The shipped
+   `chunkLeaves = 16` qualifies, so the layout half of
+   `toProgram_wireWellFormed` decomposes into: collapse lemma (needs the
+   2^k hypothesis) + `balancedPath?`-vs-`balancedRope` path correctness
+   (no restriction) + chunk-index arithmetic.
+2. `toProgram_wireWellFormed` as stated is likely **unprovable without the
+   `hreads` hypothesis**: `indexedRhsWellFormed`'s register branch requires
+   every `.reg` operand to resolve in `program.regs` at the operand's
+   intrinsic width — exactly `designReadsValidB`'s content, and not implied
+   by `Compile.DesignWF` (which constrains writes only). Adding `hreads` to
+   the statement is harmless; `toProgram_denotes` already carries it.
+3. Wire numbering is free: `toIndexedWires` sets `number := index` via
+   `zipIdx`, so the numbering premise of the layout lemma is by
+   construction.
+
+Proof order: layout lemmas (delegated, `Loom/Release/RopeLayout.lean`) →
+`FlattenSt` consistency invariant → `wireWellFormed` → `wireMatches` →
+`registerBehavior`/`memoryBehavior` (invariant + semantic layer).
+
 ## The target, rebound 2026-07-28
 
 The previous target was "a clean checkout builds the full end-to-end proof in
