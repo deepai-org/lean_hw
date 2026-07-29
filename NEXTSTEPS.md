@@ -143,7 +143,24 @@ schedule `[0,1,2,3]` inlined, prove `core Demo.sysManifest = coreR` by
 `rw`, then `decide`; the previously-stuck mems section discharges in
 31 s this way. Do NOT swap mergeSort for a structural sort design-side:
 `RMCSched.lean` depends on `List.pairwise_mergeSort`/`mergeSort_perm`
-at the general-manifest level. Full-module timings pending. Also
+at the general-manifest level.
+
+Full-module measurement (post-transport): the checks are genuinely
+compute-bound, not stuck — every sampled register chunk (0–4, 200–202,
+500–502, 820–825) discharges; the full-module runs tree-walk the
+DAG-shaped design like every reference walk does, extrapolating to
+≈2 h wall and ~23 GB per Boolean on LNP64-µ. Strategic conclusion for
+the release-path swap: **two tiers.** (i) Small designs (tutorial/Acc8
+scale): `toProgram_denotes` + four `decide`s replaces the entire
+certificate pipeline TODAY (seconds); this should become the documented
+artifact path for new designs. (ii) LNP64-µ: direct kernel discharge is
+possible via the `coreR_eq` transport but at ~2 h × 23 GB per Boolean
+it does not clearly beat the existing per-node pipeline (bounded
+per-node kernel work exists precisely to avoid whole-design tree
+walks); keep the pipeline for LNP64-µ until witness-based checking of
+the Booleans (emit the flatten state as data, check per node — the
+generic theorem's hypotheses restated as bounded certificates) is
+built. Record final wall-clock totals when the armed monitor reports. Also
 measured: all three Booleans discharge on Acc8 in 1.5 s total.
 Hardware-side: new repeatable gate `scripts/corroborate_yosys.sh`
 (wired into reproduce.sh) — all three shipped designs synthesize under
