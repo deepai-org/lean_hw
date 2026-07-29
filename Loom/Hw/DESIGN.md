@@ -62,6 +62,31 @@ Toolchain support:
 - The Lnp64u core assigns core-store → port 0, mover data → port 1, mover status →
   port 2, satisfying the WF syntactically.
 
+## D12 — read validity is a decidable design-time check (decided 2026-07-29)
+
+`Expr.eval` is total: reading an undeclared register, or a declared one at
+the wrong width, denotes the environment's default entry (zero at reset,
+never written, therefore constant zero) rather than being an error. The
+printed Verilog for the same read references an identifier with no matching
+declaration — an implicitly declared, undriven net, i.e. X. The gap between
+"denotes zero" and "is X in the artifact" is semantic, not cosmetic, so
+read discipline is load-bearing for any claim connecting the denotation to
+the artifact.
+
+The obligation deliberately does **not** live inside `Compile.DesignWF`
+(which constrains writes and is the precondition of `compile_cycle`), and
+it does **not** become a per-design proof burden. It is the existing
+decidable check `Symbolic.designReadsValidB design program` — every
+register read in every rule body resolves in the program at its intrinsic
+width, every source register is found by name at its declared width, and no
+register name collides with the canonical `n<k>` wire namespace — whose
+acceptance yields `Symbolic.DesignReadsValid` via
+`designReadsValidB_sound`. A concrete design discharges it by kernel
+reduction once, exactly like `designWFCheck`; `toProgram_denotes` carries
+it as the hypothesis `designReadsValidB d d.toProgram = true`. This is the
+same shape as D9 (last-write-wins): a semantic contract pinned by a
+decision rather than left implicit in a total evaluator.
+
 ## Order of construction
 
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)

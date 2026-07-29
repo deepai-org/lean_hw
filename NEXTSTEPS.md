@@ -534,6 +534,17 @@ the remaining 1,764 — plus `RMCIssue` 256 s and `RMCHalt` 230 s on the
 trunk. Those are intra-module costs, which is where the splitting
 prescriptions below take over; the cheap import-graph cuts are exhausted.
 
+**GateCall campaign done-condition (set 2026-07-29, before starting):**
+the worst single-edit warm-cache path through the GateCall sub-chain must
+come under the 600 s CI-tier gate, which given the rest of its path means
+**the GateCall+GateCallArm+GateCallSuccess chain lands at ~300–400 s**
+(from 856 s). Sequencing: run the `Elab.async` probe on the real modules
+*first* — if `kernel_decide`'s async-disable (or a chain of intra-file
+dependencies) is why these files elaborate serially, the campaign is
+"split into declarations" (cheap); only if parallel elaboration is
+unrecoverable is it "split into files" (expensive). Measure
+wall-vs-CPU on `RMCRetireGateCall` before touching anything.
+
 The remedy is the section C prescriptions applied *here*, where they are
 alive even though they are a 9% item for the certificate pipeline:
 
