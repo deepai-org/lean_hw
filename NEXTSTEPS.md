@@ -166,7 +166,20 @@ per-node kernel work exists precisely to avoid whole-design tree
 walks); keep the pipeline for LNP64-µ until witness-based checking of
 the Booleans (emit the flatten state as data, check per node — the
 generic theorem's hypotheses restated as bounded certificates) is
-built. Record final wall-clock totals when the armed monitor reports. Also
+built. FINAL MEASUREMENT 2026-07-29: full-module `by decide` on LNP64-µ is
+**impractical even once unstuck** — under the `coreR_eq` transport,
+`moduleMatchOkB` and `moduleEmitOkB` each ran 3 h 24 m CPU without
+finishing (match ~80 GB RSS, emit ~36 GB; terminated before OOM). The
+reference `compile` tree-walks the DAG-shaped design and the
+issue-chain duplication (`payerE`/`eligE`) makes the trees enormous —
+the same blowup that forced every `implemented_by` twin. Verdict
+confirmed and hardened: LNP64-µ keeps the per-node certificate
+pipeline; the future witness-based route should discharge the Boolean
+hypotheses against the flattened-wire representation (which the release
+machinery already rechecks per node) rather than kernel-normalizing
+`compile`'s tree. The `coreR_eq` transport (rw [schedOrderRelease])
+remains the necessary unsticking prefix for ANY lnp64u kernel goal that
+touches rule bodies — record it wherever such a goal is first stated. Also
 measured: all three Booleans discharge on Acc8 in 1.5 s total.
 Hardware-side: new repeatable gate `scripts/corroborate_yosys.sh`
 (wired into reproduce.sh) — all three shipped designs synthesize under
