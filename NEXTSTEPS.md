@@ -111,10 +111,17 @@ Work plan (delegable chunks):
     `MemoryBehaviorsFrom` analog — same pairStep machinery as E/F in
     RopeLayout.lean;
 (c) `flatten_matches` — a KeyWF side invariant (cse entry ↦ stored rhs
-    renders to that key; separate structure, do NOT extend
-    `FlattenSt.WF` and break its finished proofs) + induction like
-    `flatten_spec`, parameterized by lookup-faithfulness of the FINAL
-    rope (intermediate wires persist by Extends);
+    renders to that key AND is token-disciplined; separate structure, do
+    NOT extend `FlattenSt.WF` and break its finished proofs) + induction
+    like `flatten_spec`, parameterized by lookup-faithfulness of the
+    FINAL rope (intermediate wires persist by Extends). ADDITIONAL
+    hypothesis discovered 2026-07-29: `indexedExprMatches` accepts ONLY
+    strictly-widening `sext` (stored `.sext` node, `inputWidth < w`) and
+    non-narrowing `zext` — flatten's `.ident`/`.slice` normalizations
+    for degenerate sext have no matcher case — so (c) carries a
+    width-discipline Boolean (all sext strictly widening, all zext
+    non-narrowing in the compiled module); both shipped machines
+    evidently satisfy it (their per-node certificates use this matcher).
 (d) assembly: registerBehavior (fold facts + RopeFrom introducer) and
     memoryBehavior (ports analogous via compile's mems; init images are
     pure data — `MemoryInitBlockBehavior` by construction + rope
