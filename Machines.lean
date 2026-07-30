@@ -21,6 +21,8 @@ import Machines.Lnp64u.Logic.SystemOpsWf
 import Machines.Lnp64u.Logic.Sep.Resource
 import Machines.Tutorial.SatCounter
 import Machines.Tutorial.SatCounterArtifact
+import Machines.Substrate.S0Blinky
+import Machines.Substrate.S13Soak
 
 /-!
 # Machines
