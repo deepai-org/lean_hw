@@ -3,6 +3,7 @@
 -- Release gate: the parsed LNP64-u witness equals the verified compiler's
 -- own output, `Design.toProgram`. Run via `lake env lean --run` after
 -- GeneratedRelease/Lnp64u/ProgramData is compiled.
+-- The release path is the compiled `lake exe parityGateLnp64u` (Tools/ParityGateLnp64u.lean).
 import Loom.Release.ToProgram
 import GeneratedRelease.Lnp64u.ProgramData
 import Machines.Lnp64u.Hw.Core
