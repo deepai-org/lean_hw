@@ -19,6 +19,8 @@ import Loom.Emit.MicroVerilog.Semantics
 import Loom.Hw.Semantics
 import Loom.Hw.Compile
 import Loom.Hw.EmitIO
+import Loom.Hw.Rename
+import Loom.Hw.Compose
 import Loom.Hw.CompileWhole
 import Loom.Hw.WholeRegisterPlan
 import Loom.Release.WholeRegisterPlan
