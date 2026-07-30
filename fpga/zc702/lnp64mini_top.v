@@ -28,10 +28,14 @@ module lnp64mini_top (
     always @(posedge clk_bufg) divc <= divc + 3'b001;
     BUFG   u_bufgd  (.I(divc[2]), .O(sysclk));    // ~25 MHz
 
-    // power-on reset for the Loom core + PS7 slave-port reset ramp
+    // PS7 slave-port reset ramp (mini3 topology: separate nets per port)
     reg [7:0] arstc = 0; always @(posedge sysclk) if (~&arstc) arstc <= arstc + 1;
-    wire aresetn = &arstc;
-    wire rst = ~aresetn;
+    wire hp_aresetn = &arstc;
+    wire gp_aresetn = &arstc;
+    // local reset for the Loom core + AXI masters (mini3's rstc counter)
+    reg [7:0] rstc = 0; always @(posedge sysclk) if (~&rstc) rstc <= rstc + 1;
+    wire local_rstn = &rstc;
+    wire rst = ~local_rstn;
 
     reg [31:0] heartbeat = 0; always @(posedge sysclk) heartbeat <= heartbeat + 1;
 
@@ -123,7 +127,7 @@ module lnp64mini_top (
     wire hp_awvalid,hp_awready,hp_wvalid,hp_wready,hp_wlast,hp_bvalid,hp_bready;
     wire hp_arvalid,hp_arready,hp_rvalid,hp_rready;
     axi_hp_master u_hp (
-        .clk(sysclk), .rstn(aresetn), .start_wr(hp_start_wr), .start_rd(hp_start_rd),
+        .clk(sysclk), .rstn(local_rstn), .start_wr(hp_start_wr), .start_rd(hp_start_rd),
         .addr(hp_addr), .wdata(hp_wd), .rdata(m_rdata), .busy(m_busy), .done(m_done), .err(m_err),
         .dbg_state(m_state),
         .m_awaddr(hp_awaddr), .m_awlen(hp_awlen), .m_awsize(hp_awsize), .m_awburst(hp_awburst),
@@ -144,7 +148,7 @@ module lnp64mini_top (
     wire gpm_awvalid,gpm_awready,gpm_wvalid,gpm_wready,gpm_wlast,gpm_bvalid,gpm_bready;
     wire gpm_arvalid,gpm_arready,gpm_rvalid,gpm_rready;
     axi_gp_master u_gp (
-        .clk(sysclk), .rstn(aresetn), .start_wr(o_gp_wr), .start_rd(o_gp_rd),
+        .clk(sysclk), .rstn(local_rstn), .start_wr(o_gp_wr), .start_rd(o_gp_rd),
         .addr(o_gp_addr_r), .wdata(o_gp_wdata_r), .rdata(gp_rdata_w),
         .busy(gp_busy), .done(gp_done), .err(gp_err), .dbg_state(gp_dbg),
         .m_awaddr(gpm_awaddr), .m_awlen(gpm_awlen), .m_awsize(gpm_awsize), .m_awburst(gpm_awburst),
@@ -212,7 +216,7 @@ module lnp64mini_top (
     // ---- PS7 (S_AXI_HP1 + S_AXI_GP0, as mini3) ----
     PS7 u_ps7 (
         .FCLKCLK(fclk),
-        .SAXIHP1ACLK(sysclk), .SAXIHP1ARESETN(aresetn),
+        .SAXIHP1ACLK(sysclk), .SAXIHP1ARESETN(hp_aresetn),
         .SAXIHP1AWADDR(hp_awaddr), .SAXIHP1AWLEN(hp_awlen), .SAXIHP1AWSIZE(hp_awsize),
         .SAXIHP1AWBURST(hp_awburst), .SAXIHP1AWID(hp_awid), .SAXIHP1AWVALID(hp_awvalid),
         .SAXIHP1AWREADY(hp_awready), .SAXIHP1AWLOCK(2'b0), .SAXIHP1AWCACHE(4'b0),
@@ -227,7 +231,7 @@ module lnp64mini_top (
         .SAXIHP1RDATA(hp_rdata), .SAXIHP1RRESP(hp_rresp), .SAXIHP1RVALID(hp_rvalid),
         .SAXIHP1RREADY(hp_rready),
         .SAXIHP1RDISSUECAP1EN(1'b0), .SAXIHP1WRISSUECAP1EN(1'b0),
-        .SAXIGP0ACLK(sysclk), .SAXIGP0ARESETN(aresetn),
+        .SAXIGP0ACLK(sysclk), .SAXIGP0ARESETN(gp_aresetn),
         .SAXIGP0AWADDR(gpm_awaddr), .SAXIGP0AWLEN(gpm_awlen), .SAXIGP0AWSIZE(gpm_awsize),
         .SAXIGP0AWBURST(gpm_awburst), .SAXIGP0AWID(gpm_awid), .SAXIGP0AWVALID(gpm_awvalid),
         .SAXIGP0AWREADY(gpm_awready), .SAXIGP0AWLOCK(2'b0), .SAXIGP0AWCACHE(4'b0),
