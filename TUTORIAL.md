@@ -95,14 +95,14 @@ theorem satOk_invariant : design.toTSys.Invariant SatOk := by
   constructor
   · -- reset: the flag starts at zero
     intro s hinit
-    have : s = design.reset := hinit
-    subst this
+    simp only [Design.toTSys_init_iff] at hinit
+    subst hinit
     intro hsat
     simp [Design.reset, design, RegEnv.set] at hsat
   · -- step: one cycle preserves the property
     intro s s' hP hstep
-    have hcycle : design.cycle s = s' := hstep
-    subst hcycle
+    simp only [Design.toTSys_step_iff] at hstep
+    subst hstep
     by_cases hc : s.regs "count" 8 = 255#8
     · -- saturated: the rule writes `sat`, leaves `count` unchanged
       intro _
@@ -115,6 +115,11 @@ theorem satOk_invariant : design.toTSys.Invariant SatOk := by
           RegEnv.set, hc] using hsat
       exact absurd (hP hsat') hc
 ```
+
+The opening two lines of each branch are boilerplate:
+`Design.toTSys_init_iff` and `Design.toTSys_step_iff` turn the abstract
+init/step hypotheses into concrete equalities (`s = design.reset`,
+`design.cycle s = s'`) that `subst` can consume.
 
 The one recipe that matters: **put your own definitions in the simp set**
 (`design`, your rule, your `Expr` shorthands). `Design.cycle` folds the rule

@@ -92,4 +92,15 @@ and the object C-HW preserves. -/
 def Design.toTSys (d : Design) : Loom.TSys :=
   Loom.TSys.ofFun St (fun σ => σ = d.reset) d.cycle
 
+/-- The init predicate of a design's transition system is exactly "the state
+is the reset state". Tagged `@[simp]` so invariant proofs can `simp at hinit`
+instead of the `have : s = d.reset := hinit; subst this` two-step
+(tutorial defect #4). -/
+@[simp] theorem Design.toTSys_init_iff (d : Design) (σ : St) :
+    d.toTSys.init σ ↔ σ = d.reset := Iff.rfl
+
+/-- One step of a design's transition system is one `cycle`. -/
+@[simp] theorem Design.toTSys_step_iff (d : Design) (σ σ' : St) :
+    d.toTSys.step σ σ' ↔ d.cycle σ = σ' := Iff.rfl
+
 end Loom.Hw

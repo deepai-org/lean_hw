@@ -84,7 +84,7 @@ private theorem actionDeclsOk_regWrites (d : Design) : ∀ (action : Act),
     simp only [actionDeclsOk, registerDeclOk, Act.regWrites] at h hwrite
   · contradiction
   · rename_i left right ihLeft ihRight
-    simp only [actionDeclsOk, Bool.and_eq_true] at h
+    simp only [Bool.and_eq_true] at h
     rcases List.mem_append.mp hwrite with hwrite | hwrite
     · exact ihLeft h.1 name width hwrite
     · exact ihRight h.2 name width hwrite
