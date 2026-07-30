@@ -40,10 +40,14 @@ least N.
    lemmas for `Design.cycle` over literal rule lists, or a small
    `cycle_simp` simp-set/tactic shipped by the library and named in the
    tutorial.
-4. **Init-hypothesis shape is unobvious.** `design.toTSys.init s` unfolds
-   to `s = design.reset` only after `TSys.ofFun` is understood; the working
-   proof needs the `have : s = design.reset := hinit; subst this` two-step.
-   Minor, but a `Design.toTSys_init_iff` simp lemma would remove it.
+4. **Init-hypothesis shape is unobvious.** [ADDRESSED 2026-07-30:
+   `Design.toTSys_init_iff` and `Design.toTSys_step_iff` (`@[simp]`,
+   `Loom/Hw/Semantics.lean`) — both branches now open with
+   `simp only [...] at h; subst h`; tutorial §3, `SatCounter.lean`, and
+   `Machines/PingPong/PingPong.lean` use them.] `design.toTSys.init s`
+   unfolds to `s = design.reset` only after `TSys.ofFun` is understood; the
+   working proof needed the `have : s = design.reset := hinit; subst this`
+   two-step.
 5. **Lint churn during iteration.** `linter.unusedSimpArgs` and
    `linter.unnecessarySimpa` fire on intermediate proof states, adding
    noise while the proof is still converging. Not a correctness issue;
@@ -53,7 +57,35 @@ Total: 5 defects, 0 blockers — the path completes without touching any
 file outside the user's own, and the final artifact checks with the
 three-axiom closure.
 
-## Run 2 — pending
+## Run 2 — 2026-07-30, fresh-context agent executor (Claude, no prior
+knowledge of the library APIs in context), building a *new* design
+`Machines/PingPong/PingPong.lean` from `TUTORIAL.md` alone
+
+A one-hot token-passing design (two 1-bit registers swapped each cycle by
+one rule, a saturating handoff counter written by a second rule), invariant
+`OneHot : σ.regs "a" 1 ≠ σ.regs "b" 1`, transported to the compiled RTL,
+Verilog emitted. Exercises two things the tutorial design does not: a
+two-write `seq` rule whose correctness depends on reads-see-pre-state, and
+a two-rule design.
+
+Result: the documented path was sufficient end to end — design, `decide`
+well-formedness, invariant, transport, exact three-axiom closure, emission
+— with **zero excursions into library source**. Wall path: one proof
+attempt failed (executor error: a redundant `decide` after `simp` had
+already closed the reset goal), second attempt succeeded. New defects:
+
+6. **Library lint warning leaks into every downstream build.** [ADDRESSED
+   2026-07-30: dropped the unused simp arg at
+   `Loom/Hw/CompileCorrect.lean:87`.] Every `lake build` of a user design
+   replayed the `linter.unusedSimpArgs` warning from
+   `Loom.Hw.CompileCorrect` — harmless, but it is the first thing a new
+   user sees and it looks like their problem.
+
+Also confirmed defect #3 (the simp-set recipe) is fully mitigated by the
+tutorial text: the step-case proof worked first try by following the
+recipe, including for the unfamiliar `seq`/two-rule shape.
+
+## Run 3 — pending
 
 The protocol's real test: a person who has never seen this repository,
 given only `TUTORIAL.md` and a clean checkout. Record wall-time and every

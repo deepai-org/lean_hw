@@ -50,14 +50,14 @@ theorem satOk_invariant : design.toTSys.Invariant SatOk := by
   constructor
   · -- reset: the flag starts at zero
     intro s hinit
-    have : s = design.reset := hinit
-    subst this
+    simp only [Design.toTSys_init_iff] at hinit
+    subst hinit
     intro hsat
     simp [Design.reset, design, RegEnv.set] at hsat
   · -- step: one cycle preserves the property
     intro s s' hP hstep
-    have hcycle : design.cycle s = s' := hstep
-    subst hcycle
+    simp only [Design.toTSys_step_iff] at hstep
+    subst hstep
     by_cases hc : s.regs "count" 8 = 255#8
     · -- saturated: the rule writes `sat`, leaves `count` unchanged
       intro _
