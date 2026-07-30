@@ -83,8 +83,10 @@ run_phase "release theorem prerequisites" build_theorem_prerequisites
 run_phase "combined release theorem" lake env lean \
   "$(realpath Tools/VerifiedRelease.lean)" \
   -o "$(realpath .lake/build/lib/lean/Tools)/VerifiedRelease.olean"
-run_phase "release theorem axiom closure" lake env lean --run \
-  "$(realpath Tools/ReleaseAudit.lean)"
+# Compiled walker (builds in <1 s from cold; only imports Lean). Measured
+# 698 s interpreted -> 607 s compiled: the phase is dominated by olean
+# deserialization of the release closure, not interpretation.
+run_phase "release theorem axiom closure" lake exe releaseAudit
 if [[ -n "${monitor_pid:-}" ]]; then
   touch "$done_file"
   wait "$monitor_pid"
