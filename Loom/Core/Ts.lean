@@ -184,6 +184,16 @@ structure StutterSimulation (A C : TSys) where
   /-- Each concrete step either stutters (same abstract state) or commutes. -/
   square : ∀ s s', C.step s s' → abs s' = abs s ∨ A.step (abs s) (abs s')
 
+/-- Every forward simulation is a stuttering one: a genuine commuting square
+is the right disjunct of the stutter square. Lets a cycle-for-cycle
+refinement feed any consumer written against the timing-insensitive
+stuttering interface (the retime combinator lands there). -/
+def Simulation.toStutter {A C : TSys} (σ : Simulation A C) :
+    StutterSimulation A C where
+  abs := σ.abs
+  init_ok := σ.init_ok
+  square := fun s s' h => Or.inr (σ.square s s' h)
+
 namespace StutterSimulation
 
 theorem reachable {A C : TSys} (σ : StutterSimulation A C) :

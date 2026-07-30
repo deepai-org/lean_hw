@@ -24,6 +24,7 @@ import Machines.Tutorial.SatCounterArtifact
 import Machines.Substrate.S0Blinky
 import Machines.Substrate.S13Soak
 import Machines.Substrate.S0BscanRegs
+import Machines.Substrate.RetimeDemo
 import Machines.Lnp64mini.Core
 import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness
