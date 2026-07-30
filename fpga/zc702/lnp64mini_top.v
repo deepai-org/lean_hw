@@ -24,9 +24,9 @@ module lnp64mini_top (
     wire clk_ibuf, clk_bufg, sysclk;
     IBUFDS u_ibufds (.I(sys_clk_p), .IB(sys_clk_n), .O(clk_ibuf));
     BUFG   u_bufg   (.I(clk_ibuf), .O(clk_bufg));
-    reg [2:0] divc = 3'b000;
-    always @(posedge clk_bufg) divc <= divc + 3'b001;
-    BUFG   u_bufgd  (.I(divc[2]), .O(sysclk));    // ~25 MHz
+    reg [3:0] divc = 4'b0000;
+    always @(posedge clk_bufg) divc <= divc + 4'b0001;
+    BUFG   u_bufgd  (.I(divc[3]), .O(sysclk));    // 12.5 MHz (emitted core: max 13.4)
 
     // PS7 slave-port reset ramp (mini3 topology: separate nets per port)
     reg [7:0] arstc = 0; always @(posedge sysclk) if (~&arstc) arstc <= arstc + 1;
