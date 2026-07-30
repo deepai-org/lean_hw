@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Semantics
+import Loom.Hw.FastEval
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
@@ -40,6 +41,10 @@ def design : Design where
 
 theorem design_wf : Compile.DesignWF design :=
   Compile.designWFCheck_sound design (by decide)
+
+/-- The FastEval side condition (`Loom/Hw/FastEval.lean`), discharged in the
+kernel: `Loom.Hw.FastEval.fastRun_eq` applies to this design. -/
+theorem design_fastWF : design.fastWFB = true := by rfl
 
 /-- Emission entry (root `main` lives in `Machines/Substrate/Emit.lean` so
 this module can sit in the `Machines` umbrella next to the tutorial's). -/

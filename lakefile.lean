@@ -56,6 +56,10 @@ lean_exe releaseAudit where
   root := `Tools.ReleaseAudit
   supportInterpreter := true
 
+/-- FastEval benchmark / lockstep runner (compiled; the perf target). -/
+lean_exe fastbench where
+  root := `Tools.FastEvalBench
+
 lean_exe parityGateAcc8 where
   root := `Tools.ParityGateAcc8
 
