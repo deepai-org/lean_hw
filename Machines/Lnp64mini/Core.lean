@@ -166,6 +166,98 @@ def L7  (n : Nat) : Expr 7  := .lit (BitVec.ofNat 7 n)
 def L8  (n : Nat) : Expr 8  := .lit (BitVec.ofNat 8 n)
 def L64 (n : Nat) : Expr 64 := .lit (BitVec.ofNat 64 n)
 
+/-! ## Balanced-tree builders (timing; semantics-preserving)
+
+The Verilog emitter turns a `foldr`/`foldl` over a list of guarded values
+into a *linear* mux chain, so a 64-entry fold becomes a 64-level
+combinational cone. The builders below produce the SAME function of the
+same inputs with `O(log n)` depth. None of them needs the guards to be
+mutually exclusive — see `priTree`. -/
+
+/-- One balanced-reduction pass: fuse adjacent elements with `f`. -/
+def pairFold {w : Nat} (f : Expr w → Expr w → Expr w) : List (Expr w) → List (Expr w)
+  | a :: b :: t => f a b :: pairFold f t
+  | l => l
+
+def reduceTreeAux {w : Nat} (f : Expr w → Expr w → Expr w) (d : Expr w) :
+    Nat → List (Expr w) → Expr w
+  | _,   []  => d
+  | _,   [x] => x
+  | 0,   xs  => xs.foldr f d          -- fuel guard; never taken (fuel = length)
+  | n+1, xs  => reduceTreeAux f d n (pairFold f xs)
+
+/-- Balanced `f`-reduction of `xs` (`d` when empty). Equal to the linear
+fold whenever `f` is associative and `d` is a right unit — used here only
+with `.or` (associative, unit `0`) and `.add` on disjoint/bounded lanes. -/
+def reduceTree {w : Nat} (f : Expr w → Expr w → Expr w) (d : Expr w)
+    (xs : List (Expr w)) : Expr w :=
+  reduceTreeAux f d xs.length xs
+
+/-- Balanced OR-reduction (replaces linear `.or` chains). -/
+def orTree (xs : List (Expr 1)) : Expr 1 := reduceTree .or (L1 0) xs
+
+/-- Balanced OR-reduction at width `w` (for disjoint-lane merges). -/
+def orTreeW {w : Nat} (xs : List (Expr w)) : Expr w :=
+  reduceTree .or (.lit (BitVec.ofNat w 0)) xs
+
+/-- Balanced ADD-reduction (for popcount-style sums). -/
+def addTree {w : Nat} (xs : List (Expr w)) : Expr w :=
+  reduceTree .add (.lit (BitVec.ofNat w 0)) xs
+
+/-- Fuse two guarded groups into one, keeping *earliest-guard-wins*:
+`(gl,vl) ⊕ (gr,vr) = (gl ∨ gr, if gl then vl else vr)`.
+If `gl` the pair yields `vl`; if `¬gl ∧ gr` it yields `vr`; if neither, the
+pair's guard is false so the parent never selects its value. Hence the
+fusion is associative *as a priority chain* and needs **no** mutual
+exclusivity between the guards. -/
+def priPair {w : Nat} : (Expr 1 × Expr w) → (Expr 1 × Expr w) → (Expr 1 × Expr w)
+  | (gl, vl), (gr, vr) => (.or gl gr, .mux gl vl vr)
+
+def priPairFold {w : Nat} : List (Expr 1 × Expr w) → List (Expr 1 × Expr w)
+  | a :: b :: t => priPair a b :: priPairFold t
+  | l => l
+
+def priTreeAux {w : Nat} : Nat → List (Expr 1 × Expr w) → Expr w → Expr w
+  | _,   [],      d => d
+  | _,   [(g,v)], d => .mux g v d
+  | 0,   xs,      d => xs.foldr (fun gv acc => .mux gv.1 gv.2 acc) d
+  | n+1, xs,      d => priTreeAux n (priPairFold xs) d
+
+/-- Balanced priority select: exactly
+`xs.foldr (fun (g,v) acc => .mux g v acc) d` (first matching guard wins),
+at `O(log n)` depth. -/
+def priTree {w : Nat} (xs : List (Expr 1 × Expr w)) (d : Expr w) : Expr w :=
+  priTreeAux xs.length xs d
+
+/-- Last-match-wins variant (mirrors a `foldl` funnel). -/
+def priTreeLast {w : Nat} (xs : List (Expr 1 × Expr w)) (d : Expr w) : Expr w :=
+  priTree xs.reverse d
+
+/-! ### The same trick for `Act` if/else-if chains
+
+`.ite (gl ∨ gr) (.ite gl al ar) rest` runs `al` if `gl`, else `ar` if `gr`,
+else `rest` — bit-for-bit the linear `if gl … else if gr … else rest`.
+Since all reads are pre-cycle (D9) and only one branch of an `.ite` ever
+runs, fusing branches pairwise is a pure re-association of the priority
+chain: no mutual exclusivity needed, no write order changed. -/
+def actPriPair : (Expr 1 × Act) → (Expr 1 × Act) → (Expr 1 × Act)
+  | (gl, al), (gr, ar) => (.or gl gr, .ite gl al ar)
+
+def actPriPairFold : List (Expr 1 × Act) → List (Expr 1 × Act)
+  | a :: b :: t => actPriPair a b :: actPriPairFold t
+  | l => l
+
+def actPriTreeAux : Nat → List (Expr 1 × Act) → Act → Act
+  | _,   [],      d => d
+  | _,   [(g,a)], d => .ite g a d
+  | 0,   xs,      d => xs.foldr (fun ga acc => .ite ga.1 ga.2 acc) d
+  | n+1, xs,      d => actPriTreeAux n (actPriPairFold xs) d
+
+/-- Balanced else-if chain: exactly
+`xs.foldr (fun (g,a) acc => .ite g a acc) d`, at `O(log n)` depth. -/
+def actPriTree (xs : List (Expr 1 × Act)) (d : Act) : Act :=
+  actPriTreeAux xs.length xs d
+
 /-! ## Decode (combinational wires) -/
 
 def op   : Expr 8 := .slice ir 56 8
@@ -210,35 +302,25 @@ def s_is_gp : Expr 1 :=
 
 def opIs (n : Nat) : Expr 1 := .eq op (L8 n)
 
-def is_alu : Expr 1 :=
-  [0x04,0x02,0x10,0x11,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,
-   0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0x1d,0x1e,0xd0,
-   0xad,0xae,0xaf,0xb0,0xb1,0xb2,0xb8,0xb9,0xba,0xb6,0xb7,0xb4].foldr
-    (fun n acc => .or (opIs n) acc) (L1 0)
+/-- `orTree` over a list of opcode matches (was a linear `.or` fold). -/
+def opAny (ns : List Nat) : Expr 1 := orTree (ns.map opIs)
 
-def is_load : Expr 1 :=
-  [0x30,0x31,0x05,0x36,0x09,0x32,0x08].foldr
-    (fun n acc => .or (opIs n) acc) (L1 0)
-def is_store : Expr 1 :=
-  [0x33,0x34,0x37,0x35].foldr (fun n acc => .or (opIs n) acc) (L1 0)
+def is_alu : Expr 1 :=
+  opAny [0x04,0x02,0x10,0x11,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,
+   0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0x1d,0x1e,0xd0,
+   0xad,0xae,0xaf,0xb0,0xb1,0xb2,0xb8,0xb9,0xba,0xb6,0xb7,0xb4]
+
+def is_load : Expr 1 := opAny [0x30,0x31,0x05,0x36,0x09,0x32,0x08]
+def is_store : Expr 1 := opAny [0x33,0x34,0x37,0x35]
 /-- is_branch: op in [0x21,0x26]. -/
-def is_branch : Expr 1 :=
-  [0x21,0x22,0x23,0x24,0x25,0x26].foldr
-    (fun n acc => .or (opIs n) acc) (L1 0)
-def is_lr : Expr 1 :=
-  .or (opIs 0xc5) (.or (opIs 0xc7) (opIs 0xc9))
-def is_sc : Expr 1 :=
-  .or (opIs 0xc6) (.or (opIs 0xc8) (opIs 0xca))
+def is_branch : Expr 1 := opAny [0x21,0x22,0x23,0x24,0x25,0x26]
+def is_lr : Expr 1 := opAny [0xc5,0xc7,0xc9]
+def is_sc : Expr 1 := opAny [0xc6,0xc8,0xca]
 /-- is_fence: op==0xcd || (0xd1<=op<=0xd4). -/
-def is_fence : Expr 1 :=
-  .or (opIs 0xcd) ([0xd1,0xd2,0xd3,0xd4].foldr
-    (fun n acc => .or (opIs n) acc) (L1 0))
+def is_fence : Expr 1 := opAny [0xcd,0xd1,0xd2,0xd3,0xd4]
 /-- is_sel: 0x40<=op<=0x45. -/
-def is_sel : Expr 1 :=
-  [0x40,0x41,0x42,0x43,0x44,0x45].foldr
-    (fun n acc => .or (opIs n) acc) (L1 0)
-def is_div : Expr 1 :=
-  .or (opIs 0x13) (.or (opIs 0xa7) (.or (opIs 0xa8) (opIs 0xa9)))
+def is_sel : Expr 1 := opAny [0x40,0x41,0x42,0x43,0x44,0x45]
+def is_div : Expr 1 := opAny [0x13,0xa7,0xa8,0xa9]
 def is_mulh : Expr 1 := .or (opIs 0xaa) (opIs 0xab)
 def div_sgn : Expr 1 := .or (opIs 0x13) (opIs 0xa8)
 
@@ -255,49 +337,53 @@ def asr (x : Expr 64) (sh : Expr 6) : Expr 64 :=
 /-- ROL/ROR helper: `6'd0 - amt` (6-bit wrap). -/
 def negShamt (amt : Expr 6) : Expr 6 := .sub (.lit (BitVec.ofNat 6 0)) amt
 
-/-- CTZ: lowest set bit index (64 if a==0). Downward scan, index 0 outermost. -/
+/-- CTZ: lowest set bit index (64 if a==0). Downward scan, index 0 outermost
+— built as a balanced `priTree` (first-match-wins ⇒ lowest set bit still
+wins), depth 64 → ~2·log₂64. -/
 def ctzE : Expr 64 :=
-  (List.range 64).foldr
-    (fun i acc => .mux (.eq (.slice a i 1) (L1 1)) (L64 i) acc)
-    (L64 64)
+  priTree ((List.range 64).map (fun i => (.eq (.slice a i 1) (L1 1), L64 i))) (L64 64)
 
+/-- The ALU mux chain, balanced. `opIs` guards are mutually exclusive, but
+`priTree` preserves first-match-wins regardless, so this is exactly the old
+35-deep chain. -/
 def aluE : Expr 64 :=
-  .mux (opIs 0x02) a <|
-  .mux (opIs 0x10) (.add a b) <|
-  .mux (opIs 0x11) (.sub a b) <|
-  .mux (opIs 0x04) (.or (.zext (.slice a 0 32) 64) (.shl (.zext (.slice imm_i 0 32) 64) (L64 32))) <|
-  .mux (opIs 0x14) (.and a b) <|
-  .mux (opIs 0x15) (.or a b) <|
-  .mux (opIs 0x16) (.xor a b) <|
-  .mux (opIs 0x17) (.not a) <|
-  .mux (opIs 0x18) (.shl a (.zext shamt_r 64)) <|
-  .mux (opIs 0x19) (.shr a (.zext shamt_r 64)) <|
-  .mux (opIs 0x1a) (asr a shamt_r) <|
-  .mux (opIs 0x1b) (.mux (.slt a b) (L64 1) (L64 0)) <|
-  .mux (opIs 0x1c) (.mux (.ult a b) (L64 1) (L64 0)) <|
-  .mux (opIs 0xa0) (.add a imm_i) <|
-  .mux (opIs 0xa1) (.and a imm_i) <|
-  .mux (opIs 0xa2) (.or a imm_i) <|
-  .mux (opIs 0xa3) (.xor a imm_i) <|
-  .mux (opIs 0xa4) (.shl a (.zext shamt_i 64)) <|
-  .mux (opIs 0xa5) (.shr a (.zext shamt_i 64)) <|
-  .mux (opIs 0xa6) (asr a shamt_i) <|
-  .mux (opIs 0x1d) (.mux (.slt a imm_i) (L64 1) (L64 0)) <|
-  .mux (opIs 0x1e) (.mux (.ult a imm_i) (L64 1) (L64 0)) <|
-  .mux (opIs 0xd0) (.add pc imm_j) <|
-  .mux (opIs 0xad) (.sext (.slice a 0 8) 64) <|
-  .mux (opIs 0xae) (.sext (.slice a 0 16) 64) <|
-  .mux (opIs 0xaf) (.sext (.slice a 0 32) 64) <|
-  .mux (opIs 0xb0) (.zext (.slice a 0 8) 64) <|
-  .mux (opIs 0xb1) (.zext (.slice a 0 16) 64) <|
-  .mux (opIs 0xb2) (.zext (.slice a 0 32) 64) <|
-  .mux (opIs 0xb8) bswap16 <|
-  .mux (opIs 0xb9) bswap32 <|
-  .mux (opIs 0xba) bswap64 <|
-  .mux (opIs 0xb4) ctzE <|
-  .mux (opIs 0xb6) (.or (.shl a (.zext shamt_r 64)) (.shr a (.zext (negShamt shamt_r) 64))) <|
-  .mux (opIs 0xb7) (.or (.shr a (.zext shamt_r 64)) (.shl a (.zext (negShamt shamt_r) 64)))
-  (L64 0)
+  priTree
+  [ (opIs 0x02, a)
+  , (opIs 0x10, .add a b)
+  , (opIs 0x11, .sub a b)
+  , (opIs 0x04, .or (.zext (.slice a 0 32) 64) (.shl (.zext (.slice imm_i 0 32) 64) (L64 32)))
+  , (opIs 0x14, .and a b)
+  , (opIs 0x15, .or a b)
+  , (opIs 0x16, .xor a b)
+  , (opIs 0x17, .not a)
+  , (opIs 0x18, .shl a (.zext shamt_r 64))
+  , (opIs 0x19, .shr a (.zext shamt_r 64))
+  , (opIs 0x1a, asr a shamt_r)
+  , (opIs 0x1b, .mux (.slt a b) (L64 1) (L64 0))
+  , (opIs 0x1c, .mux (.ult a b) (L64 1) (L64 0))
+  , (opIs 0xa0, .add a imm_i)
+  , (opIs 0xa1, .and a imm_i)
+  , (opIs 0xa2, .or a imm_i)
+  , (opIs 0xa3, .xor a imm_i)
+  , (opIs 0xa4, .shl a (.zext shamt_i 64))
+  , (opIs 0xa5, .shr a (.zext shamt_i 64))
+  , (opIs 0xa6, asr a shamt_i)
+  , (opIs 0x1d, .mux (.slt a imm_i) (L64 1) (L64 0))
+  , (opIs 0x1e, .mux (.ult a imm_i) (L64 1) (L64 0))
+  , (opIs 0xd0, .add pc imm_j)
+  , (opIs 0xad, .sext (.slice a 0 8) 64)
+  , (opIs 0xae, .sext (.slice a 0 16) 64)
+  , (opIs 0xaf, .sext (.slice a 0 32) 64)
+  , (opIs 0xb0, .zext (.slice a 0 8) 64)
+  , (opIs 0xb1, .zext (.slice a 0 16) 64)
+  , (opIs 0xb2, .zext (.slice a 0 32) 64)
+  , (opIs 0xb8, bswap16)
+  , (opIs 0xb9, bswap32)
+  , (opIs 0xba, bswap64)
+  , (opIs 0xb4, ctzE)
+  , (opIs 0xb6, .or (.shl a (.zext shamt_r 64)) (.shr a (.zext (negShamt shamt_r) 64)))
+  , (opIs 0xb7, .or (.shr a (.zext shamt_r 64)) (.shl a (.zext (negShamt shamt_r) 64)))
+  ] (L64 0)
 where
   -- 0xb8: {48'd0, a[7:0], a[15:8]} = bytes swapped in low 16
   bswap16 : Expr 64 :=
@@ -311,29 +397,31 @@ where
     (.or (.shl (.zext (.slice x 8 8) 32) (.lit (BitVec.ofNat 32 16)))
     (.or (.shl (.zext (.slice x 16 8) 32) (.lit (BitVec.ofNat 32 8)))
          (.zext (.slice x 24 8) 32)))
+  -- the 8 lanes are disjoint, so the linear OR fold re-associates freely
   byteRev8 (x : Expr 64) : Expr 64 :=
-    (List.range 8).foldl
-      (fun acc i => .or acc (.shl (.zext (.slice x (i*8) 8) 64) (L64 ((7-i)*8))))
-      (L64 0)
+    orTreeW ((List.range 8).map
+      (fun i => .shl (.zext (.slice x (i*8) 8) 64) (L64 ((7-i)*8))))
 
 /-! ### branch / sel conditions -/
 
 def br_take : Expr 1 :=
-  .mux (opIs 0x21) (.eq a b) <|
-  .mux (opIs 0x22) (.not (.eq a b)) <|
-  .mux (opIs 0x23) (.slt a b) <|
-  .mux (opIs 0x24) (.not (.slt a b)) <|
-  .mux (opIs 0x25) (.ult a b) <|
-  .mux (opIs 0x26) (.not (.ult a b)) (L1 0)
+  priTree
+  [ (opIs 0x21, .eq a b)
+  , (opIs 0x22, .not (.eq a b))
+  , (opIs 0x23, .slt a b)
+  , (opIs 0x24, .not (.slt a b))
+  , (opIs 0x25, .ult a b)
+  , (opIs 0x26, .not (.ult a b)) ] (L1 0)
 
 /-- sel_cond keys on op[2:0] (0x40-0x45). -/
 def sel_cond : Expr 1 :=
   let o3 := (.slice op 0 3 : Expr 3)
-  .mux (.eq o3 (.lit (BitVec.ofNat 3 0))) (.eq a b) <|
-  .mux (.eq o3 (.lit (BitVec.ofNat 3 1))) (.not (.eq a b)) <|
-  .mux (.eq o3 (.lit (BitVec.ofNat 3 2))) (.slt a b) <|
-  .mux (.eq o3 (.lit (BitVec.ofNat 3 3))) (.not (.slt a b)) <|
-  .mux (.eq o3 (.lit (BitVec.ofNat 3 4))) (.ult a b) (.not (.ult a b))
+  priTree
+  [ (.eq o3 (.lit (BitVec.ofNat 3 0)), .eq a b)
+  , (.eq o3 (.lit (BitVec.ofNat 3 1)), .not (.eq a b))
+  , (.eq o3 (.lit (BitVec.ofNat 3 2)), .slt a b)
+  , (.eq o3 (.lit (BitVec.ofNat 3 3)), .not (.slt a b))
+  , (.eq o3 (.lit (BitVec.ofNat 3 4)), .ult a b) ] (.not (.ult a b))
 
 /-! ### load writeback / store merge -/
 
@@ -341,23 +429,32 @@ def mem_src : Expr 64 := .mux (.eq st (L5 S_L1)) dmem_rd ddr_q
 def lw_shift : Expr 64 := .shr mem_src (.shl (.zext ld_boff_q 64) (L64 3))
 
 def ld_wb : Expr 64 :=
-  .mux (.eq ld_op_q (L8 0x30)) mem_src <|
-  .mux (.eq ld_op_q (L8 0x31)) (.zext (.slice lw_shift 0 32) 64) <|
-  .mux (.eq ld_op_q (L8 0x05)) (.sext (.slice lw_shift 0 32) 64) <|
-  .mux (.eq ld_op_q (L8 0x36)) (.zext (.slice lw_shift 0 16) 64) <|
-  .mux (.eq ld_op_q (L8 0x09)) (.sext (.slice lw_shift 0 16) 64) <|
-  .mux (.eq ld_op_q (L8 0x32)) (.zext (.slice lw_shift 0 8) 64) <|
-  .mux (.eq ld_op_q (L8 0x08)) (.sext (.slice lw_shift 0 8) 64) mem_src
+  priTree
+  [ (.eq ld_op_q (L8 0x30), mem_src)
+  , (.eq ld_op_q (L8 0x31), .zext (.slice lw_shift 0 32) 64)
+  , (.eq ld_op_q (L8 0x05), .sext (.slice lw_shift 0 32) 64)
+  , (.eq ld_op_q (L8 0x36), .zext (.slice lw_shift 0 16) 64)
+  , (.eq ld_op_q (L8 0x09), .sext (.slice lw_shift 0 16) 64)
+  , (.eq ld_op_q (L8 0x32), .zext (.slice lw_shift 0 8) 64)
+  , (.eq ld_op_q (L8 0x08), .sext (.slice lw_shift 0 8) 64) ] mem_src
 
 def st_width : Expr 4 :=
-  .mux (opIs 0x35) (.lit (BitVec.ofNat 4 1)) <|
-  .mux (opIs 0x37) (.lit (BitVec.ofNat 4 2)) <|
-  .mux (opIs 0x34) (.lit (BitVec.ofNat 4 4)) (.lit (BitVec.ofNat 4 8))
+  priTree
+  [ (opIs 0x35, .lit (BitVec.ofNat 4 1))
+  , (opIs 0x37, .lit (BitVec.ofNat 4 2))
+  , (opIs 0x34, .lit (BitVec.ofNat 4 4)) ] (.lit (BitVec.ofNat 4 8))
 
-/-- st_merge: overlay b bytes into mem_src by byte lane. Build byte-by-byte:
-lane bi takes b[(bi-st_boff)] if st_boff <= bi < st_boff+st_width. -/
+/-- st_merge: overlay b bytes into mem_src by byte lane. Lane `bi` takes
+`b[(bi-st_boff)]` if `st_boff <= bi < st_boff+st_width`, else `mem_src`'s
+own byte `bi`.
+
+Timing: the old `foldl` threaded an 8-deep and/or/mux chain through `acc`,
+but **each step rewrites a distinct byte lane** (`laneMask` are pairwise
+disjoint and cover the word), so `acc`'s lane `bi` at step `bi` is still
+`mem_src`'s lane `bi`. The chain is therefore exactly the disjoint OR of
+eight independent 1-level lane muxes — depth 8 → 1 (+ the OR tree). -/
 def st_merge : Expr 64 :=
-  (List.range 8).foldl (fun acc bi =>
+  orTreeW ((List.range 8).map (fun bi =>
     let boffN := (.zext st_boff 32 : Expr 32)
     let inRange : Expr 1 :=
       .and (.not (.ult (.lit (BitVec.ofNat 32 bi)) boffN))
@@ -366,8 +463,7 @@ def st_merge : Expr 64 :=
     let srcByte : Expr 64 := .shr b (.shl (.sub (.lit (BitVec.ofNat 64 bi)) (.zext st_boff 64)) (L64 3))
     let laneVal : Expr 64 := .shl (.zext (.slice srcByte 0 8) 64) (L64 (bi*8))
     let laneMask : Expr 64 := .lit (BitVec.ofNat 64 (0xFF <<< (bi*8)))
-    .mux inRange (.or (.and acc (.not laneMask)) laneVal) acc)
-    mem_src
+    .mux inRange laneVal (.and mem_src laneMask)))
 
 /-! ### div abs helpers -/
 
@@ -378,34 +474,31 @@ def div_b_abs : Expr 64 :=
 
 /-! ### scheduler bitmaps / priority encoders -/
 
-/-- ready bitmap as a 32-bit Expr (bit i = tstate_i == 1). -/
+/-- ready bitmap as a 32-bit Expr (bit i = tstate_i == 1). Disjoint bit
+lanes ⇒ the OR fold re-associates into a tree. -/
 def readyBm : Expr 32 :=
-  (List.finRange NT).foldl
-    (fun acc i => .or acc (.shl (.zext (.eq (tstate i) (L2 1)) 32) (.lit (BitVec.ofNat 32 i.val))))
-    (.lit 0)
+  orTreeW ((List.finRange NT).map
+    (fun i => .shl (.zext (.eq (tstate i) (L2 1)) 32) (.lit (BitVec.ofNat 32 i.val))))
 def freeBm : Expr 32 :=
-  (List.finRange NT).foldl
-    (fun acc i => .or acc (.shl (.zext (.eq (tstate i) (L2 0)) 32) (.lit (BitVec.ofNat 32 i.val))))
-    (.lit 0)
+  orTreeW ((List.finRange NT).map
+    (fun i => .shl (.zext (.eq (tstate i) (L2 0)) 32) (.lit (BitVec.ofNat 32 i.val))))
 
 /-- rbm2 = ({ready,ready} >> (cur+1))[63:0]. -/
 def rbm2 : Expr 64 :=
   .shr (.or (.zext readyBm 64) (.shl (.zext readyBm 64) (L64 32)))
        (.zext (.add cur (L5 1)) 64)
 
-/-- Downward scan over rbm2[31:0]: lowest set bit index wins (0 outermost). -/
+/-- Downward scan over rbm2[31:0]: lowest set bit index wins (0 outermost).
+Balanced priority tree — first-match-wins is preserved by `priTree`, so
+"lowest set bit wins" is unchanged. -/
 def nr_off : Expr 5 :=
-  (List.range NT).foldr
-    (fun i acc => .mux (.eq (.slice rbm2 i 1) (L1 1)) (L5 i) acc) (L5 0)
+  priTree ((List.range NT).map (fun i => (.eq (.slice rbm2 i 1) (L1 1), L5 i))) (L5 0)
 def nr_any : Expr 1 :=
-  (List.range NT).foldr
-    (fun i acc => .or (.slice rbm2 i 1) acc) (L1 0)
+  orTree ((List.range NT).map (fun i => (.slice rbm2 i 1 : Expr 1)))
 def fs_off : Expr 5 :=
-  (List.range NT).foldr
-    (fun i acc => .mux (.eq (.slice freeBm i 1) (L1 1)) (L5 i) acc) (L5 0)
+  priTree ((List.range NT).map (fun i => (.eq (.slice freeBm i 1) (L1 1), L5 i))) (L5 0)
 def hf_c : Expr 1 :=
-  (List.range NT).foldr
-    (fun i acc => .or (.slice freeBm i 1) acc) (L1 0)
+  orTree ((List.range NT).map (fun i => (.slice freeBm i 1 : Expr 1)))
 
 /-! ## Ownership expr -/
 
@@ -498,19 +591,21 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   ]
 where
   mulDoneWd : Expr 64 :=
-    .mux (.eq mul_kind (L2 0)) (.slice mul_acc 0 64) <|
-    .mux (.eq mul_kind (L2 1))
-      (.sub (.sub (.slice mul_acc 64 64) (.mux (.eq (.slice a 63 1) (L1 1)) b (L64 0)))
-            (.mux (.eq (.slice b 63 1) (L1 1)) a (L64 0)))
+    priTree
+    [ (.eq mul_kind (L2 0), .slice mul_acc 0 64)
+    , (.eq mul_kind (L2 1),
+        .sub (.sub (.slice mul_acc 64 64) (.mux (.eq (.slice a 63 1) (L1 1)) b (L64 0)))
+             (.mux (.eq (.slice b 63 1) (L1 1)) a (L64 0))) ]
       (.slice mul_acc 64 64)
   divDoneWd : Expr 64 :=
     .mux div_isrem (.mux div_negr (.add (.not div_rem) (L64 1)) div_rem)
                    (.mux div_negq (.add (.not div_quo) (L64 1)) div_quo)
 
-/-- Fold the triples: last matching guard wins. -/
-def rfWeE : Expr 1 := rfTriples.foldl (fun acc (g,_,_) => .or acc g) (L1 0)
-def rfWaE : Expr 10 := rfTriples.foldl (fun acc (g,wa,_) => .mux g wa acc) (.lit 0)
-def rfWdE : Expr 64 := rfTriples.foldl (fun acc (g,_,wd) => .mux g wd acc) (L64 0)
+/-- Fold the triples: last matching guard wins. Balanced (`priTreeLast` =
+`priTree` on the reversed list = the old `foldl` chain, 19 levels → ~5). -/
+def rfWeE : Expr 1 := orTree (rfTriples.map (fun t => t.1))
+def rfWaE : Expr 10 := priTreeLast (rfTriples.map (fun t => (t.1, t.2.1))) (.lit 0)
+def rfWdE : Expr 64 := priTreeLast (rfTriples.map (fun t => (t.1, t.2.2))) (L64 0)
 
 /-! ## Rules -/
 
@@ -619,8 +714,10 @@ def ddrRdLRule : Rule :=
 
 /-! ### FSM rules (rf writes live in the funnel) -/
 
-/-- guard: fsmEn ∧ st==X. -/
-def stG (x : Nat) (a : Act) : Act := .ite (.and fsmEn (.eq st (L5 x))) a .skip
+/-- One FSM arm as `(st == x, body)` data, so the whole state dispatch can
+be emitted as one balanced tree (see `fsmRule`). The `fsmEn` half of the
+old per-rule guard `fsmEn ∧ st==x` is hoisted into `fsmRule`. -/
+def stArm (x : Nat) (a : Act) : Expr 1 × Act := (.eq st (L5 x), a)
 
 /-- DATA_BASE + (word-aligned) ea, as a 32-bit core_addr. -/
 def ddrEa (ea : Expr 64) : Expr 32 :=
@@ -631,17 +728,23 @@ def retireInc : Act := .write 32 "retire" (.add retire (.lit (BitVec.ofNat 32 1)
 def goF0 : Act := .write 5 "st" (L5 S_F0)
 def stepPc : Act := .write 64 "pc" pc8
 
-/-- if/else-if chain link: `gchain g a rest` = if g then a else rest. -/
-def gchain (g : Expr 1) (a rest : Act) : Act := .ite g a rest
+/-- Cons for an if/else-if chain kept as *data*, so `actPriTree` can
+re-associate it into a balanced dispatch instead of a linear one. -/
+def gcons (g : Expr 1) (a : Act) (rest : List (Expr 1 × Act)) : List (Expr 1 × Act) :=
+  (g, a) :: rest
 
 /-- Right-nested sequence of a list of actions. -/
 def actSeq (as : List Act) : Act := as.foldr (fun x acc => .seq x acc) .skip
 
 /-! ### S_EX helpers (dynamic per-thread writes; scheduler switches) -/
 
+/-- `pc <= tpc[idx]`. Was a 32-deep `.ite` chain (⇒ a 32-deep 64-bit mux
+cone on `pc`); `idx : Expr 5` ranges over exactly the 32 cases, so the
+chain always writes and the `.skip` tail is unreachable — an unconditional
+write of the balanced 32-way select is the same function. -/
 def setPcFromTpc (idx : Expr 5) : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .ite (.eq idx (L5 i.val)) (.write 64 "pc" (tpc i)) acc) .skip
+  .write 64 "pc"
+    (priTree ((List.finRange NT).map (fun i => (.eq idx (L5 i.val), tpc i))) (L64 0))
 def tpcDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
   (List.finRange NT).foldr (fun i acc =>
     .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"tpc{i.val}" v) .skip) acc) .skip
@@ -660,75 +763,87 @@ def tp_arrDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
 def sigmaskDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
   (List.finRange NT).foldr (fun i acc =>
     .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"sigmask_arr{i.val}" v) .skip) acc) .skip
-/-- dynamic tstate[idx]==v test as a mux chain. -/
+/-- dynamic tstate[idx]==v test as a (balanced) mux chain. -/
 def tstateEq (idx : Expr 5) (v : Expr 2) : Expr 1 :=
-  (List.finRange NT).foldr (fun i acc =>
-    .mux (.eq idx (L5 i.val)) (.eq (tstate i) v) acc) (L1 0)
+  priTree ((List.finRange NT).map (fun i => (.eq idx (L5 i.val), .eq (tstate i) v))) (L1 0)
 /-- any thread not FREE. -/
 def anyLive : Expr 1 :=
-  (List.finRange NT).foldr (fun i acc => .or (.not (.eq (tstate i) (L2 0))) acc) (L1 0)
+  orTree ((List.finRange NT).map (fun i => .not (.eq (tstate i) (L2 0))))
 
 /-- FUTEX_WAKE: wake lowest-indexed matching FUTEX threads, up to count a.
 per-element guard: tstate_i==3 ∧ tfutex_i==rdval ∧ (matches-before-i < a). -/
 def futexWakeBody : Act :=
   (List.finRange NT).foldr (fun i acc =>
-    let matchesBefore : Expr 64 :=
-      (List.range i.val).foldl (fun s j =>
-        .add s (.zext (.and (.eq (.reg 2 s!"tstate{j}") (L2 3))
-                            (.eq (.reg 64 s!"tfutex{j}") rdval)) 64)) (L64 0)
     .seq (.ite (.and (.eq (tstate i) (L2 3))
-                 (.and (.eq (tfutex i) rdval) (.ult matchesBefore a)))
+                 (.and (.eq (tfutex i) rdval) (.ult (matchesBefore i.val) a)))
             (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc) .skip
+where
+  /-- `tstate_j == FUTEX ∧ tfutex_j == rdval`. -/
+  fmatch (j : Nat) : Expr 1 :=
+    .and (.eq (.reg 2 s!"tstate{j}") (L2 3)) (.eq (.reg 64 s!"tfutex{j}") rdval)
+  /-- popcount of `fmatch j` for `j < i`, zero-extended to 64 for the
+  `< a` test. Was a linear chain of up to 31 **64-bit** adds; the count is
+  bounded by NT = 32, so a 6-bit balanced adder tree carries the exact same
+  value (no truncation) at depth ~log₂32 with 6-bit — not 64-bit — carry
+  chains. -/
+  matchesBefore (i : Nat) : Expr 64 :=
+    .zext (addTree ((List.range i).map (fun j => (.zext (fmatch j) 6 : Expr 6)))) 64
 
-def s_f0 : Rule := ⟨"S_F0", stG S_F0
+def s_f0 : Expr 1 × Act := stArm S_F0
   (.ite bus_req (.write 5 "st" (L5 S_PAUSE))
-    (.seq (.write 32 "core_addr" ddrPc) (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))⟩
+    (.seq (.write 32 "core_addr" ddrPc) (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))
 
-def s_pause : Rule := ⟨"S_PAUSE", stG S_PAUSE (.ite (.not bus_req) goF0 .skip)⟩
+def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 
-def s_fw : Rule := ⟨"S_FW", stG S_FW
-  (.ite mDone (.seq (.write 64 "ir" mRdata) (.write 5 "st" (L5 S_RD))) .skip)⟩
+def s_fw : Expr 1 × Act := stArm S_FW
+  (.ite mDone (.seq (.write 64 "ir" mRdata) (.write 5 "st" (L5 S_RD))) .skip)
 
-def s_rd : Rule := ⟨"S_RD", stG S_RD
+def s_rd : Expr 1 × Act := stArm S_RD
   (.seq (.write 64 "a" (.mux (.eq rs1f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r1a))))
     (.seq (.write 64 "b" (.mux (.eq rs2f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r2a))))
       (.seq (.write 64 "rdval" (.mux (.eq rdf (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur rdf))))
-            (.write 5 "st" (.mux is_sel (L5 S_RD2) (L5 S_EX))))))⟩
+            (.write 5 "st" (.mux is_sel (L5 S_RD2) (L5 S_EX))))))
 
-def s_rd2 : Rule := ⟨"S_RD2", stG S_RD2
+def s_rd2 : Expr 1 × Act := stArm S_RD2
   (.seq (.write 64 "sel_t" (.mux (.eq rs3f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r1a))))
     (.seq (.write 64 "sel_f" (.mux (.eq rs4f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r2a))))
-          (.write 5 "st" (L5 S_EX))))⟩
+          (.write 5 "st" (L5 S_EX))))
 
-/-- S_EX: nested if-else priority tree mirroring the Verilog (rf writes in
-funnel; here: pc/retire/st/scheduler-array/master-handshake side effects). -/
-def s_ex_body : Act :=
+-- S_EX: if-else priority tree mirroring the Verilog (rf writes in the
+-- funnel; here: pc/retire/st/scheduler-array/master-handshake side effects).
+
+/-- The S_EX opcode dispatch, kept as an explicit (guard, action) list in
+the Verilog's textual if/else-if order. `actPriTree` re-associates it into
+a balanced else-if tree: identical first-match-wins behaviour (see
+`actPriPair`), but the mux cone every register sees shrinks from ~29
+levels to ~5. -/
+def s_ex_branches : List (Expr 1 × Act) :=
   -- 0x3a EXIT
-  gchain (opIs 0x3a) (.seq (.write 1 "halted" (L1 1)) (.seq (.write 1 "running" (L1 0)) retireInc)) <|
+  gcons (opIs 0x3a) (.seq (.write 1 "halted" (L1 1)) (.seq (.write 1 "running" (L1 0)) retireInc)) <|
   -- 0x3b THREAD_EXIT
-  gchain (opIs 0x3b)
+  gcons (opIs 0x3b)
     (.seq (tstateDynWrite (L2 0) cur)
       (.seq (.ite (.not (.eq next_ready cur))
               (.seq (.write 5 "cur" next_ready) (.seq (setPcFromTpc next_ready) goF0))
               (.write 5 "st" (L5 S_WAIT)))
             retireInc)) <|
   -- 0x00 NOP
-  gchain (opIs 0x00) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs 0x00) (.seq stepPc (.seq retireInc goF0)) <|
   -- fence
-  gchain is_fence (.seq stepPc (.seq retireInc goF0)) <|
+  gcons is_fence (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x12 MUL
-  gchain (opIs 0x12)
+  gcons (opIs 0x12)
     (.seq (.write 128 "mul_acc" (.lit (BitVec.ofNat 128 0)))
       (.seq (.write 128 "mul_aw" (.zext a 128))
         (.seq (.write 64 "mul_b" b) (.seq (.write 2 "mul_kind" (L2 0)) (.write 5 "st" (L5 S_MUL)))))) <|
   -- mulh
-  gchain is_mulh
+  gcons is_mulh
     (.seq (.write 128 "mul_acc" (.lit (BitVec.ofNat 128 0)))
       (.seq (.write 128 "mul_aw" (.zext a 128))
         (.seq (.write 64 "mul_b" b)
           (.seq (.write 2 "mul_kind" (.mux (opIs 0xaa) (L2 1) (L2 2))) (.write 5 "st" (L5 S_MUL)))))) <|
   -- div
-  gchain is_div
+  gcons is_div
     (.ite (.eq b (L64 0))
       (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))
       (.seq (.write 64 "div_rem" (L64 0))
@@ -739,28 +854,28 @@ def s_ex_body : Act :=
                 (.seq (.write 1 "div_negq" (.and div_sgn (.xor (.slice a 63 1) (.slice b 63 1))))
                   (.seq (.write 1 "div_negr" (.and div_sgn (.slice a 63 1))) (.write 5 "st" (L5 S_DIV)))))))))) <|
   -- sel
-  gchain is_sel (.seq stepPc (.seq retireInc goF0)) <|
+  gcons is_sel (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x54 GET_PCR
-  gchain (opIs 0x54)
+  gcons (opIs 0x54)
     (.ite (.eq rs1f (L5 2)) (.seq stepPc (.seq retireInc goF0))
       (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
   -- alu
-  gchain is_alu (.seq stepPc (.seq retireInc goF0)) <|
+  gcons is_alu (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x20 J
-  gchain (opIs 0x20) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs 0x20) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
   -- 0x27 JAL
-  gchain (opIs 0x27) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs 0x27) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
   -- 0x28 JALR
-  gchain (opIs 0x28) (.seq (.write 64 "pc" (.add a imm_i)) (.seq retireInc goF0)) <|
+  gcons (opIs 0x28) (.seq (.write 64 "pc" (.add a imm_i)) (.seq retireInc goF0)) <|
   -- branch
-  gchain is_branch (.seq (.write 64 "pc" (.mux br_take (.add pc (.shl imm_s (L64 3))) pc8)) (.seq retireInc goF0)) <|
+  gcons is_branch (.seq (.write 64 "pc" (.mux br_take (.add pc (.shl imm_s (L64 3))) pc8)) (.seq retireInc goF0)) <|
   -- 0x06 YIELD
-  gchain (opIs 0x06)
+  gcons (opIs 0x06)
     (.seq (.ite (.eq next_ready cur) stepPc
             (.seq (tpcDynWrite cur pc8) (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready))))
           (.seq retireInc goF0)) <|
   -- 0x07 SLEEP
-  gchain (opIs 0x07)
+  gcons (opIs 0x07)
     (.seq (tpcDynWrite cur pc8)
       (.seq (tstateDynWrite (L2 2) cur)
         (.seq (tsleepDynWrite cur (.mux (.eq a (L64 0)) (L64 1) a))
@@ -769,21 +884,21 @@ def s_ex_body : Act :=
                   (.write 5 "st" (L5 S_WAIT)))
                 retireInc)))) <|
   -- 0xcb FUTEX_WAIT
-  gchain (opIs 0xcb)
+  gcons (opIs 0xcb)
     (.seq (.write 32 "core_addr" (.add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.zext (.slice rdval 3 29) 32) (.lit (BitVec.ofNat 32 3)))))
       (.seq (.write 1 "core_rd" (L1 1))
         (.seq (.write 64 "futex_addr_q" rdval) (.seq (.write 64 "futex_exp" a) (.write 5 "st" (L5 S_FTX1)))))) <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
-  gchain (opIs 0xcc) (.seq futexWakeBody (.seq stepPc (.seq retireInc goF0))) <|
+  gcons (opIs 0xcc) (.seq futexWakeBody (.seq stepPc (.seq retireInc goF0))) <|
   -- 0x59 CLONE
-  gchain (opIs 0x59)
+  gcons (opIs 0x59)
     (.ite has_free
       (.seq (tpcDynWrite free_slot a)
         (.seq (tstateDynWrite (L2 1) free_slot)
           (.seq (.write 5 "clone_dst" rdf) (.seq (.write 5 "clone_tid" free_slot) (.write 5 "st" (L5 S_CLONE2))))))
       (.seq stepPc (.seq retireInc goF0))) <|
   -- LR
-  gchain is_lr
+  gcons is_lr
     (actSeq [.write 64 "lr_addr" a, .write 1 "lr_valid" (L1 1),
       .write 3 "ld_boff_q" (.lit (BitVec.ofNat 3 0)), .write 8 "ld_op_q" (L8 0x30),
       .write 5 "ld_rd_q" rdf, .write 1 "mem_is_store" (L1 0),
@@ -791,7 +906,7 @@ def s_ex_body : Act :=
         (actSeq [.write 9 "dmem_a" (.slice a 3 9), .write 5 "st" (L5 S_L0)])
         (actSeq [.write 32 "core_addr" (ddrEa a), .write 1 "core_rd" (L1 1), .write 5 "st" (L5 S_DL)])]) <|
   -- SC
-  gchain is_sc
+  gcons is_sc
     (.seq (.ite (.and lr_valid (.eq lr_addr a))
             (.ite (.ult a (L64 0x1000))
               (.seq (.write 1 "dmem_we" (L1 1)) (.seq (.write 9 "dmem_a" (.slice a 3 9)) (.seq (.write 64 "dmem_wd" b) (.seq stepPc (.seq retireInc goF0)))))
@@ -799,74 +914,79 @@ def s_ex_body : Act :=
             (.seq stepPc (.seq retireInc goF0)))
           (.write 1 "lr_valid" (L1 0))) <|
   -- UART_RX load
-  gchain (.and is_load (.eq mem_ea_l (L64 UART_RX_ADDR)))
+  gcons (.and is_load (.eq mem_ea_l (L64 UART_RX_ADDR)))
     (.seq (.ite (.not (.eq rx_rptr rx_wptr)) (.write 9 "rx_rptr" (.add rx_rptr (.lit (BitVec.ofNat 9 1)))) .skip)
           (.seq stepPc (.seq retireInc goF0))) <|
   -- GP load
-  gchain (.and is_load l_is_gp)
+  gcons (.and is_load l_is_gp)
     (.ite (opIs 0x31)
       (.seq (.write 32 "gp_addr_r" (.and (.slice mem_ea_l 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
         (.seq (.write 1 "gp_rd" (L1 1)) (.seq (.write 5 "ld_rd_q" rdf) (.write 5 "st" (L5 S_GPL)))))
       (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
   -- zp load
-  gchain (.and is_load l_is_zp)
+  gcons (.and is_load l_is_zp)
     (.seq (.write 9 "dmem_a" ld_widx) (.seq (.write 3 "ld_boff_q" ld_boff)
       (.seq (.write 8 "ld_op_q" op) (.seq (.write 5 "ld_rd_q" rdf) (.seq (.write 1 "mem_is_store" (L1 0)) (.write 5 "st" (L5 S_L0))))))) <|
   -- DDR load
-  gchain is_load
+  gcons is_load
     (.seq (.write 32 "core_addr" (ddrEa mem_ea_l)) (.seq (.write 1 "core_rd" (L1 1))
       (.seq (.write 3 "ld_boff_q" ld_boff) (.seq (.write 8 "ld_op_q" op) (.seq (.write 5 "ld_rd_q" rdf) (.seq (.write 1 "mem_is_store" (L1 0)) (.write 5 "st" (L5 S_DL)))))))) <|
   -- UART store
-  gchain (.and is_store (.eq mem_ea_s (L64 UART_ADDR)))
+  gcons (.and is_store (.eq mem_ea_s (L64 UART_ADDR)))
     (.seq (.memWrite 8 8 "uart_mem" 0 (.slice uart_wptr 0 8) (.slice b 0 8))
       (.seq (.write 9 "uart_wptr" (.add uart_wptr (.lit (BitVec.ofNat 9 1)))) (.seq stepPc (.seq retireInc goF0)))) <|
   -- GP store
-  gchain (.and is_store s_is_gp)
+  gcons (.and is_store s_is_gp)
     (.ite (opIs 0x34)
       (.seq (.write 32 "gp_addr_r" (.and (.slice mem_ea_s 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
         (.seq (.write 32 "gp_wdata_r" (.slice b 0 32)) (.seq (.write 1 "gp_wr" (L1 1)) (.write 5 "st" (L5 S_GPS)))))
       (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
   -- zp store
-  gchain (.and is_store s_is_zp)
+  gcons (.and is_store s_is_zp)
     (.seq (.write 9 "dmem_a" st_widx) (.seq (.write 1 "mem_is_store" (L1 1)) (.write 5 "st" (L5 S_L0)))) <|
   -- DDR store
-  gchain is_store
+  gcons is_store
     (.seq (.write 32 "core_addr" (ddrEa mem_ea_s)) (.seq (.write 1 "core_rd" (L1 1)) (.seq (.write 1 "mem_is_store" (L1 1)) (.write 5 "st" (L5 S_DL))))) <|
-  -- default trap
-  (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))
+  []
 
-def s_ex : Rule := ⟨"S_EX", stG S_EX s_ex_body⟩
+/-- default: trap on an unknown opcode. -/
+def s_ex_trap : Act :=
+  .seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP)))
 
-def s_l0 : Rule := ⟨"S_L0", stG S_L0 (.write 5 "st" (L5 S_L1))⟩
+def s_ex_body : Act := actPriTree s_ex_branches s_ex_trap
+
+def s_ex : Expr 1 × Act := stArm S_EX  s_ex_body
+
+def s_l0 : Expr 1 × Act := stArm S_L0  (.write 5 "st" (L5 S_L1))
 
 /-- S_L1: load-wb (rf in funnel) or store commit; then advance. -/
-def s_l1 : Rule := ⟨"S_L1", stG S_L1
+def s_l1 : Expr 1 × Act := stArm S_L1
   (actSeq [.ite (.not mem_is_store) .skip
             (actSeq [.write 1 "dmem_we" (L1 1), .write 9 "dmem_a" st_widx, .write 64 "dmem_wd" st_merge]),
-           stepPc, retireInc, goF0])⟩
+           stepPc, retireInc, goF0])
 
-def s_dl : Rule := ⟨"S_DL", stG S_DL
-  (.ite mDone (.seq (.write 64 "ddr_q" mRdata) (.write 5 "st" (L5 S_DST))) .skip)⟩
+def s_dl : Expr 1 × Act := stArm S_DL
+  (.ite mDone (.seq (.write 64 "ddr_q" mRdata) (.write 5 "st" (L5 S_DST))) .skip)
 
 /-- S_DST: load-wb (rf in funnel) + advance, or issue the DDR store. -/
-def s_dst : Rule := ⟨"S_DST", stG S_DST
+def s_dst : Expr 1 × Act := stArm S_DST
   (.ite (.not mem_is_store)
     (actSeq [stepPc, retireInc, goF0])
     (actSeq [.write 32 "core_addr" (ddrEa mem_ea_s), .write 64 "core_wdata" st_merge,
-             .write 1 "core_wr" (L1 1), .write 5 "st" (L5 S_DSW)]))⟩
+             .write 1 "core_wr" (L1 1), .write 5 "st" (L5 S_DSW)]))
 
-def s_dsw : Rule := ⟨"S_DSW", stG S_DSW
-  (.ite mDone (actSeq [stepPc, retireInc, goF0]) .skip)⟩
+def s_dsw : Expr 1 × Act := stArm S_DSW
+  (.ite mDone (actSeq [stepPc, retireInc, goF0]) .skip)
 
 /-- S_CLONE2: child sp (rf in funnel) + fresh tp/sigmask + advance. -/
-def s_clone2 : Rule := ⟨"S_CLONE2", stG S_CLONE2
+def s_clone2 : Expr 1 × Act := stArm S_CLONE2
   (actSeq [tp_arrDynWrite clone_tid (L64 0), sigmaskDynWrite clone_tid (L64 0),
-           .write 5 "st" (L5 S_CLONE3)])⟩
+           .write 5 "st" (L5 S_CLONE3)])
 
-def s_clone3 : Rule := ⟨"S_CLONE3", stG S_CLONE3 (actSeq [stepPc, retireInc, goF0])⟩
+def s_clone3 : Expr 1 × Act := stArm S_CLONE3  (actSeq [stepPc, retireInc, goF0])
 
 /-- S_FTX1: FUTEX_WAIT DDR-compare. -/
-def s_ftx1 : Rule := ⟨"S_FTX1", stG S_FTX1
+def s_ftx1 : Expr 1 × Act := stArm S_FTX1
   (.ite mDone
     (actSeq [.ite (.eq mRdata futex_exp)
               (actSeq [tpcDynWrite cur pc8, tstateDynWrite (L2 3) cur, tfutexDynWrite cur futex_addr_q,
@@ -875,24 +995,24 @@ def s_ftx1 : Rule := ⟨"S_FTX1", stG S_FTX1
                          (.write 5 "st" (L5 S_WAIT))])
               (actSeq [stepPc, goF0]),
              retireInc])
-    .skip)⟩
+    .skip)
 
 /-- S_WAIT: pick next ready or halt if all free. -/
-def s_wait : Rule := ⟨"S_WAIT", stG S_WAIT
+def s_wait : Expr 1 × Act := stArm S_WAIT
   (.ite (tstateEq next_ready (L2 1))
     (actSeq [.write 5 "cur" next_ready, setPcFromTpc next_ready, goF0])
-    (.ite (.not anyLive) (.seq (.write 1 "halted" (L1 1)) (.write 1 "running" (L1 0))) .skip))⟩
+    (.ite (.not anyLive) (.seq (.write 1 "halted" (L1 1)) (.write 1 "running" (L1 0))) .skip))
 
 /-- S_MUL: shift-add step or done (rf in funnel). -/
-def s_mul : Rule := ⟨"S_MUL", stG S_MUL
+def s_mul : Expr 1 × Act := stArm S_MUL
   (.ite (.eq mul_b (L64 0))
     (actSeq [stepPc, retireInc, goF0])
     (actSeq [.ite (.eq (.slice mul_b 0 1) (L1 1)) (.write 128 "mul_acc" (.add mul_acc mul_aw)) .skip,
              .write 128 "mul_aw" (.shl mul_aw (.lit (BitVec.ofNat 128 1))),
-             .write 64 "mul_b" (.shr mul_b (L64 1))]))⟩
+             .write 64 "mul_b" (.shr mul_b (L64 1))]))
 
 /-- S_DIV: restoring divide step or done (rf in funnel). 65-bit partial. -/
-def s_div : Rule := ⟨"S_DIV", stG S_DIV
+def s_div : Expr 1 × Act := stArm S_DIV
   (.ite (.eq div_cnt (.lit (BitVec.ofNat 7 64)))
     (actSeq [stepPc, retireInc, goF0])
     (let prem : Expr 65 := .or (.shl (.zext div_rem 65) (.lit (BitVec.ofNat 65 1))) (.zext (.slice div_quo 63 1) 65)
@@ -903,15 +1023,35 @@ def s_div : Rule := ⟨"S_DIV", stG S_DIV
                   .write 64 "div_quo" (.or (.shl div_quo (L64 1)) (L64 1))])
          (actSeq [.write 64 "div_rem" (.slice prem 0 64),
                   .write 64 "div_quo" (.shl div_quo (L64 1))]),
-       .write 7 "div_cnt" (.add div_cnt (.lit (BitVec.ofNat 7 1)))]))⟩
+       .write 7 "div_cnt" (.add div_cnt (.lit (BitVec.ofNat 7 1)))]))
 
-def s_gpl : Rule := ⟨"S_GPL", stG S_GPL
-  (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)⟩
-def s_gps : Rule := ⟨"S_GPS", stG S_GPS
-  (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)⟩
+def s_gpl : Expr 1 × Act := stArm S_GPL
+  (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)
+def s_gps : Expr 1 × Act := stArm S_GPS
+  (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)
 
 /-- S_TRAP: hold. default state: go F0. -/
-def s_default : Rule := ⟨"S_default", .ite (.and fsmEn (.ult (L5 S_GPS) st)) goF0 .skip⟩
+def s_default : Expr 1 × Act := (.ult (L5 S_GPS) st, goF0)
+
+/-- (8) the whole `st` dispatch as ONE rule.
+
+Previously these were 20 sibling rules in `design.rules`; the compiler
+chains rules linearly, so every register they touch (`st`, `pc`, `retire`,
+…) grew a ~20-level mux chain *on top of* its intra-rule cone. The arm
+guards `st == S_F0 … st == S_GPS` and the default arm `S_GPS < st` are
+pairwise disjoint, so at most one arm ever fires: running them as a single
+balanced first-match dispatch commits exactly the same writes as the
+ordered rule list (last-write-wins never had two writers to disambiguate).
+`fsmEn` is hoisted out of the arms — it was ANDed into every `stG` guard.
+The only memory write below `fsmEn` is `uart_mem` (S_EX UART store), so no
+`memWrite` port ordering changes. -/
+def fsmRule : Rule :=
+  ⟨"fsm", .ite fsmEn
+    (actPriTree
+      [s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
+       s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps, s_default]
+      .skip)
+    .skip⟩
 
 /-- (9) the single regfile write port. -/
 def rfFunnelRule : Rule :=
@@ -958,9 +1098,7 @@ def design : Design where
      ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
-     s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
-     s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps, s_default,
-     rfFunnelRule]
+     fsmRule, rfFunnelRule]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,

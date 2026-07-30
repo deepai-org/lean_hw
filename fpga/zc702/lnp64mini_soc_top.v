@@ -3,7 +3,7 @@
 // Thin wrapper over the Loom-emitted rtl/lnp64mini_soc.v (core + HP master +
 // GP master + the HP ownership mux, ALL now inside the composed Lean design).
 // The wrapper keeps ONLY the irreducibly-non-single-clock plumbing:
-//   * clock buffers + /8 divider + POR/reset ramps,
+//   * clock buffers + /8 (200 -> 25 MHz) divider + POR/reset ramps,
 //   * BSCANE2 USER1 + 41-bit DR shift + UPDATE/DRCK clock-domain crossing,
 //   * the mini3-compatible BSCAN read register map (DRCK-domain 2FF-sampled
 //     from the soc's o_* observability ports -- port names adjusted),
@@ -25,9 +25,14 @@ module lnp64mini_soc_top (
     wire clk_ibuf, clk_bufg, sysclk;
     IBUFDS u_ibufds (.I(sys_clk_p), .IB(sys_clk_n), .O(clk_ibuf));
     BUFG   u_bufg   (.I(clk_ibuf), .O(clk_bufg));
+    // 200 MHz / 8 = 25 MHz core clock.  divc[2] toggles every 4 clk_bufg
+    // edges -> a 25 MHz square wave.  (Was divc[3] = 200/16 = 12.5 MHz, set
+    // when the emitted soc routed at 13.1 MHz; after the balanced-tree
+    // restructuring of Machines/Lnp64mini/Core.lean nextpnr-xilinx reports
+    // 31.69 MHz for sysclk, so 25 MHz has ~27% margin.)
     reg [3:0] divc = 4'b0000;
     always @(posedge clk_bufg) divc <= divc + 4'b0001;
-    BUFG   u_bufgd  (.I(divc[3]), .O(sysclk));
+    BUFG   u_bufgd  (.I(divc[2]), .O(sysclk));
 
     reg [7:0] arstc = 0; always @(posedge sysclk) if (~&arstc) arstc <= arstc + 1;
     wire hp_aresetn = &arstc;
