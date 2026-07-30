@@ -916,6 +916,13 @@ theorem absGate_callActivateChosen_selected (σ acc : Loom.Hw.St)
   simp only [hsaves]
   simp [Hw.abs, Hw.absDom]
 
+/-- A chosen activation writer never touches another gate's reads.
+Stated closed so one kernel evaluation serves every frame. -/
+private theorem activateChosen_quiet_other :
+    ∀ (d : DomainId) (g h : GateId), h ≠ g →
+      ∀ q ∈ gateReadNames h, q ∉ (callActivateChosenA d g).regWrites := by
+  decide +kernel
+
 /-- A chosen activation writer leaves every other abstract gate unchanged. -/
 theorem absGate_callActivateChosen_other (σ acc : Loom.Hw.St)
     (d : DomainId) (g h : GateId) (hne : h ≠ g) :
@@ -924,11 +931,7 @@ theorem absGate_callActivateChosen_other (σ acc : Loom.Hw.St)
   apply absGate_congr
   intro q hq
   apply frame
-  have hquiet : ∀ q ∈ gateReadNames h,
-      q ∉ (callActivateChosenA d g).regWrites := by
-    fin_cases g <;> fin_cases h <;>
-      first | exact absurd rfl hne | decide +kernel +revert
-  exact hquiet q hq
+  exact activateChosen_quiet_other d g h hne q hq
 
 /-- The gate-indexed activation fold updates exactly its decoded gate. -/
 theorem absGate_callActivateA (σ acc : Loom.Hw.St)
@@ -1048,6 +1051,54 @@ theorem callCalleeA_run_selected (σ acc : Loom.Hw.St) (d cal : DomainId)
     (fun c => callCalleeChosenA d c) cal hsel hexcl
     (List.finRange numDomains) (List.mem_finRange cal) (List.nodup_finRange _)
 
+/-- Callee-chosen frame facts, evaluated once in the kernel: the slot,
+lineage, region, and status faces of the callee are outside the writer's
+footprint. -/
+private theorem calleeChosen_quiet_slot : ∀ (d cal : DomainId) (s : Slot),
+    (Hw.dcapV cal s, 1) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dcapKind cal s, 32) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dcapLinV cal s, 1) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dcapLin cal s, 4) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dgen cal s, 8) ∉ (callCalleeChosenA d cal).regWrites := by
+  decide +kernel
+
+private theorem calleeChosen_quiet_lin : ∀ (d cal : DomainId) (l : LineageId),
+    (Hw.dcellV cal l, 1) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dcellPar cal l, 14) ∉ (callCalleeChosenA d cal).regWrites := by
+  decide +kernel
+
+private theorem calleeChosen_quiet_rgn : ∀ (d cal : DomainId) (r : RegionId),
+    (Hw.drgnV cal r, 1) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.drgn cal r, 42) ∉ (callCalleeChosenA d cal).regWrites := by
+  decide +kernel
+
+private theorem calleeChosen_quiet_scalar : ∀ (d cal : DomainId),
+    (Hw.drun cal, 2) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.drunG cal, 2) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dcause cal, 32) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dbudget cal, 32) ∉ (callCalleeChosenA d cal).regWrites ∧
+    (Hw.dmaxdon cal, 32) ∉ (callCalleeChosenA d cal).regWrites := by
+  decide +kernel
+
+/-- A callee file read is outside the writer's non-file tail. -/
+private theorem calleeTail_quiet_dreg : ∀ (d cal : DomainId) (r : RegId),
+    (Hw.dreg cal r, 32) ∉ (Hw.seqAll
+      [ Act.write 12 (Hw.dpc cal)
+          (Hw.muxFin (fun g => .reg 12 (Hw.gentry g)) (Hw.callGid d)),
+        Act.write 1 (Hw.dsrvV cal) (.lit 1),
+        Act.write 2 (Hw.dsrv cal) (Hw.callGid d) ]).regWrites := by
+  decide +kernel
+
+/-- File-register names are injective per domain. -/
+private theorem dregName_inj : ∀ (cal : DomainId) (x y : RegId),
+    Hw.dreg cal x = Hw.dreg cal y → x = y := by
+  decide +kernel
+
+/-- The chosen callee writer never touches another domain's reads. -/
+private theorem calleeChosen_quiet_other : ∀ (d cal x : DomainId), x ≠ cal →
+    ∀ q ∈ domReadNames x, q ∉ (callCalleeChosenA d cal).regWrites := by
+  decide +kernel
+
 /-- The chosen callee writer scrubs the register file, enters the gate, and
 marks the domain as serving that gate, preserving all other domain fields. -/
 theorem absDom_callCalleeChosen_selected (σ acc : Loom.Hw.St)
@@ -1084,15 +1135,12 @@ theorem absDom_callCalleeChosen_selected (σ acc : Loom.Hw.St)
     rw [show ((Hw.seqAll tail).run σ mid).regs (Hw.dreg cal r) 32 =
         mid.regs (Hw.dreg cal r) 32 from frame (by
           unfold tail
-          fin_cases cal <;> fin_cases r <;> exact of_decide_eq_true rfl) σ mid]
+          exact calleeTail_quiet_dreg d cal r) σ mid]
     unfold mid writes
     rw [seqAll_write_at σ acc (fun r => Hw.dreg cal r)
       (fun r => if r.val = 1 then callArgHandle d else .lit 0)
       (List.finRange numRegs) r (List.mem_finRange r) (List.nodup_finRange _)
-      (by
-        intro x _ y _ heq
-        fin_cases cal <;> fin_cases x <;> fin_cases y <;>
-          first | rfl | exact absurd heq (by decide +kernel))]
+      (fun x _ y _ heq => dregName_inj cal x y heq)]
     split <;> rfl
   have hpc : ((callCalleeChosenA d cal).run σ acc).regs
       (Hw.dpc cal) 12 = ((Hw.abs σ).gates g).config.entry := by
@@ -1112,69 +1160,60 @@ theorem absDom_callCalleeChosen_selected (σ acc : Loom.Hw.St)
     exact hgid
   have hcapV (s : Slot) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapV cal s) 1 =
-        acc.regs (Hw.dcapV cal s) 1 := hframe (by
-    fin_cases cal <;> fin_cases s <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.dcapV cal s) 1 :=
+    hframe (calleeChosen_quiet_slot d cal s).1
   have hcapK (s : Slot) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapKind cal s) 32 =
-        acc.regs (Hw.dcapKind cal s) 32 := hframe (by
-    fin_cases cal <;> fin_cases s <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.dcapKind cal s) 32 :=
+    hframe (calleeChosen_quiet_slot d cal s).2.1
   have hcapLV (s : Slot) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapLinV cal s) 1 =
-        acc.regs (Hw.dcapLinV cal s) 1 := hframe (by
-    fin_cases cal <;> fin_cases s <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.dcapLinV cal s) 1 :=
+    hframe (calleeChosen_quiet_slot d cal s).2.2.1
   have hcapL (s : Slot) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcapLin cal s) 4 =
-        acc.regs (Hw.dcapLin cal s) 4 := hframe (by
-    fin_cases cal <;> fin_cases s <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.dcapLin cal s) 4 :=
+    hframe (calleeChosen_quiet_slot d cal s).2.2.2.1
   have hgen (s : Slot) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dgen cal s) 8 =
-        acc.regs (Hw.dgen cal s) 8 := hframe (by
-    fin_cases cal <;> fin_cases s <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.dgen cal s) 8 :=
+    hframe (calleeChosen_quiet_slot d cal s).2.2.2.2
   have hcellV (l : LineageId) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcellV cal l) 1 =
-        acc.regs (Hw.dcellV cal l) 1 := hframe (by
-    fin_cases cal <;> fin_cases l <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.dcellV cal l) 1 :=
+    hframe (calleeChosen_quiet_lin d cal l).1
   have hcellP (l : LineageId) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcellPar cal l) 14 =
-        acc.regs (Hw.dcellPar cal l) 14 := hframe (by
-    fin_cases cal <;> fin_cases l <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.dcellPar cal l) 14 :=
+    hframe (calleeChosen_quiet_lin d cal l).2
   have hrgnV (r : RegionId) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.drgnV cal r) 1 =
-        acc.regs (Hw.drgnV cal r) 1 := hframe (by
-    fin_cases cal <;> fin_cases r <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.drgnV cal r) 1 :=
+    hframe (calleeChosen_quiet_rgn d cal r).1
   have hrgn (r : RegionId) :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.drgn cal r) 42 =
-        acc.regs (Hw.drgn cal r) 42 := hframe (by
-    fin_cases cal <;> fin_cases r <;>
-      exact of_decide_eq_true rfl)
+        acc.regs (Hw.drgn cal r) 42 :=
+    hframe (calleeChosen_quiet_rgn d cal r).2
   have hrunV :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.drun cal) 2 =
-        acc.regs (Hw.drun cal) 2 := hframe (by
-    fin_cases cal <;> exact of_decide_eq_true rfl)
+        acc.regs (Hw.drun cal) 2 :=
+    hframe (calleeChosen_quiet_scalar d cal).1
   have hrunG :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.drunG cal) 2 =
-        acc.regs (Hw.drunG cal) 2 := hframe (by
-    fin_cases cal <;> exact of_decide_eq_true rfl)
+        acc.regs (Hw.drunG cal) 2 :=
+    hframe (calleeChosen_quiet_scalar d cal).2.1
   have hcause :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dcause cal) 32 =
-        acc.regs (Hw.dcause cal) 32 := hframe (by
-    fin_cases cal <;> exact of_decide_eq_true rfl)
+        acc.regs (Hw.dcause cal) 32 :=
+    hframe (calleeChosen_quiet_scalar d cal).2.2.1
   have hbudget :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dbudget cal) 32 =
-        acc.regs (Hw.dbudget cal) 32 := hframe (by
-    fin_cases cal <;> exact of_decide_eq_true rfl)
+        acc.regs (Hw.dbudget cal) 32 :=
+    hframe (calleeChosen_quiet_scalar d cal).2.2.2.1
   have hmaxdon :
       ((callCalleeChosenA d cal).run σ acc).regs (Hw.dmaxdon cal) 32 =
-        acc.regs (Hw.dmaxdon cal) 32 := hframe (by
-    fin_cases cal <;> exact of_decide_eq_true rfl)
+        acc.regs (Hw.dmaxdon cal) 32 :=
+    hframe (calleeChosen_quiet_scalar d cal).2.2.2.2
   apply domainState_ext'
   · funext r
     exact hregs r
@@ -1217,11 +1256,7 @@ theorem absDom_callCalleeChosen_other (σ acc : Loom.Hw.St)
   apply absDom_congr
   intro q hq
   apply frame
-  have hquiet : ∀ q ∈ domReadNames x,
-      q ∉ (callCalleeChosenA d cal).regWrites := by
-    fin_cases cal <;> fin_cases x <;>
-      first | exact absurd rfl hne | exact of_decide_eq_true rfl
-  exact hquiet q hq
+  exact calleeChosen_quiet_other d cal x hne q hq
 
 /-- The domain-indexed callee fold updates exactly its decoded callee. -/
 theorem absDom_callCalleeA (σ acc : Loom.Hw.St)
@@ -1245,6 +1280,12 @@ theorem absDom_callCalleeA (σ acc : Loom.Hw.St)
   · rw [if_neg hx]
     exact absDom_callCalleeChosen_other σ acc d cal x hx
 
+/-- The callee fold never touches a gate read.  Stated closed so one
+kernel evaluation serves every frame. -/
+private theorem calleeA_quiet_gate : ∀ (d : DomainId) (h : GateId),
+    ∀ q ∈ gateReadNames h, q ∉ (callCalleeA d).regWrites := by
+  decide +kernel
+
 /-- Callee scrub and entry writes do not change any abstract gate. -/
 theorem absGate_callCalleeA_frame (σ acc : Loom.Hw.St)
     (d : DomainId) (h : GateId) :
@@ -1252,9 +1293,7 @@ theorem absGate_callCalleeA_frame (σ acc : Loom.Hw.St)
   apply absGate_congr
   intro q hq
   apply frame
-  have hquiet : ∀ q ∈ gateReadNames h, q ∉ (callCalleeA d).regWrites := by
-    fin_cases h <;> exact of_decide_eq_true rfl
-  exact hquiet q hq
+  exact calleeA_quiet_gate d h q hq
 
 /-! ## Caller block writer -/
 
@@ -1273,6 +1312,53 @@ private theorem callCaller_read (σ acc : Loom.Hw.St) (d : DomainId)
     ((callCallerA d).run σ acc).regs rn w = acc.regs rn w := by
   simp [callCallerA, Hw.pcAdvA, Hw.seqAll, Act.run, RegEnv.set,
     hpc, hrunG, hrun]
+
+/-- Caller-quiet name facts, evaluated once in the kernel: each preserved
+face of the caller differs from the three written names. -/
+private theorem callerQuiet_reg : ∀ (d : DomainId) (r : RegId),
+    Hw.dreg d r ≠ Hw.dpc d ∧ Hw.dreg d r ≠ Hw.drunG d ∧
+      Hw.dreg d r ≠ Hw.drun d := by
+  decide +kernel
+
+private theorem callerQuiet_slot : ∀ (d : DomainId) (s : Slot),
+    (Hw.dcapV d s ≠ Hw.dpc d ∧ Hw.dcapV d s ≠ Hw.drunG d ∧
+      Hw.dcapV d s ≠ Hw.drun d) ∧
+    (Hw.dcapKind d s ≠ Hw.dpc d ∧ Hw.dcapKind d s ≠ Hw.drunG d ∧
+      Hw.dcapKind d s ≠ Hw.drun d) ∧
+    (Hw.dcapLinV d s ≠ Hw.dpc d ∧ Hw.dcapLinV d s ≠ Hw.drunG d ∧
+      Hw.dcapLinV d s ≠ Hw.drun d) ∧
+    (Hw.dcapLin d s ≠ Hw.dpc d ∧ Hw.dcapLin d s ≠ Hw.drunG d ∧
+      Hw.dcapLin d s ≠ Hw.drun d) ∧
+    (Hw.dgen d s ≠ Hw.dpc d ∧ Hw.dgen d s ≠ Hw.drunG d ∧
+      Hw.dgen d s ≠ Hw.drun d) := by
+  decide +kernel
+
+private theorem callerQuiet_lin : ∀ (d : DomainId) (l : LineageId),
+    (Hw.dcellV d l ≠ Hw.dpc d ∧ Hw.dcellV d l ≠ Hw.drunG d ∧
+      Hw.dcellV d l ≠ Hw.drun d) ∧
+    (Hw.dcellPar d l ≠ Hw.dpc d ∧ Hw.dcellPar d l ≠ Hw.drunG d ∧
+      Hw.dcellPar d l ≠ Hw.drun d) := by
+  decide +kernel
+
+private theorem callerQuiet_rgn : ∀ (d : DomainId) (r : RegionId),
+    (Hw.drgnV d r ≠ Hw.dpc d ∧ Hw.drgnV d r ≠ Hw.drunG d ∧
+      Hw.drgnV d r ≠ Hw.drun d) ∧
+    (Hw.drgn d r ≠ Hw.dpc d ∧ Hw.drgn d r ≠ Hw.drunG d ∧
+      Hw.drgn d r ≠ Hw.drun d) := by
+  decide +kernel
+
+private theorem callerQuiet_scalar : ∀ (d : DomainId),
+    (Hw.dsrvV d ≠ Hw.dpc d ∧ Hw.dsrvV d ≠ Hw.drunG d ∧
+      Hw.dsrvV d ≠ Hw.drun d) ∧
+    (Hw.dsrv d ≠ Hw.dpc d ∧ Hw.dsrv d ≠ Hw.drunG d ∧
+      Hw.dsrv d ≠ Hw.drun d) ∧
+    (Hw.dcause d ≠ Hw.dpc d ∧ Hw.dcause d ≠ Hw.drunG d ∧
+      Hw.dcause d ≠ Hw.drun d) ∧
+    (Hw.dbudget d ≠ Hw.dpc d ∧ Hw.dbudget d ≠ Hw.drunG d ∧
+      Hw.dbudget d ≠ Hw.drun d) ∧
+    (Hw.dmaxdon d ≠ Hw.dpc d ∧ Hw.dmaxdon d ≠ Hw.drunG d ∧
+      Hw.dmaxdon d ≠ Hw.drun d) := by
+  decide +kernel
 
 /-- The caller writer advances the sampled PC and blocks on the selected
 gate, preserving the rest of the caller's abstract domain state. -/
@@ -1300,83 +1386,83 @@ theorem absDom_callCaller_selected (σ acc : Loom.Hw.St)
   apply domainState_ext'
   · funext r
     exact callCaller_read σ acc d _ _
-      (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
+      (callerQuiet_reg d r).1
+      (callerQuiet_reg d r).2.1
+      (callerQuiet_reg d r).2.2
   · exact hpc
   · funext s
     change (if _ = 1#1 then some _ else none) = _
     rw [callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl),
+          (callerQuiet_slot d s).1.1
+          (callerQuiet_slot d s).1.2.1
+          (callerQuiet_slot d s).1.2.2,
       callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl),
+          (callerQuiet_slot d s).2.1.1
+          (callerQuiet_slot d s).2.1.2.1
+          (callerQuiet_slot d s).2.1.2.2,
       callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl),
+          (callerQuiet_slot d s).2.2.1.1
+          (callerQuiet_slot d s).2.2.1.2.1
+          (callerQuiet_slot d s).2.2.1.2.2,
       callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+          (callerQuiet_slot d s).2.2.2.1.1
+          (callerQuiet_slot d s).2.2.2.1.2.1
+          (callerQuiet_slot d s).2.2.2.1.2.2]
     rfl
   · funext s
     exact callCaller_read σ acc d _ _
-      (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> fin_cases s <;> exact of_decide_eq_true rfl)
+      (callerQuiet_slot d s).2.2.2.2.1
+      (callerQuiet_slot d s).2.2.2.2.2.1
+      (callerQuiet_slot d s).2.2.2.2.2.2
   · funext l
     change (if _ = 1#1 then some _ else none) = _
     rw [callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl),
+          (callerQuiet_lin d l).1.1
+          (callerQuiet_lin d l).1.2.1
+          (callerQuiet_lin d l).1.2.2,
       callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases l <;> exact of_decide_eq_true rfl)]
+          (callerQuiet_lin d l).2.1
+          (callerQuiet_lin d l).2.2.1
+          (callerQuiet_lin d l).2.2.2]
     rfl
   · funext r
     change (if _ = 1#1 then some _ else none) = _
     rw [callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl),
+          (callerQuiet_rgn d r).1.1
+          (callerQuiet_rgn d r).1.2.1
+          (callerQuiet_rgn d r).1.2.2,
       callCaller_read σ acc d _ _
-          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+          (callerQuiet_rgn d r).2.1
+          (callerQuiet_rgn d r).2.2.1
+          (callerQuiet_rgn d r).2.2.2]
     rfl
   · exact hrun
   · change (if _ = 1#1 then some _ else none) = _
     rw [callCaller_read σ acc d _ _
-          (by fin_cases d <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> exact of_decide_eq_true rfl),
+          (callerQuiet_scalar d).1.1
+          (callerQuiet_scalar d).1.2.1
+          (callerQuiet_scalar d).1.2.2,
       callCaller_read σ acc d _ _
-          (by fin_cases d <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> exact of_decide_eq_true rfl)
-          (by fin_cases d <;> exact of_decide_eq_true rfl)]
+          (callerQuiet_scalar d).2.1.1
+          (callerQuiet_scalar d).2.1.2.1
+          (callerQuiet_scalar d).2.1.2.2]
     rfl
   · exact callCaller_read σ acc d _ _
-      (by fin_cases d <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> exact of_decide_eq_true rfl)
+      (callerQuiet_scalar d).2.2.1.1
+      (callerQuiet_scalar d).2.2.1.2.1
+      (callerQuiet_scalar d).2.2.1.2.2
   · change (((callCallerA d).run σ acc).regs (Hw.dbudget d) 32).toNat =
       (acc.regs (Hw.dbudget d) 32).toNat
     rw [callCaller_read σ acc d _ _
-      (by fin_cases d <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> exact of_decide_eq_true rfl)]
+      (callerQuiet_scalar d).2.2.2.1.1
+      (callerQuiet_scalar d).2.2.2.1.2.1
+      (callerQuiet_scalar d).2.2.2.1.2.2]
   · change (((callCallerA d).run σ acc).regs (Hw.dmaxdon d) 32).toNat =
       (acc.regs (Hw.dmaxdon d) 32).toNat
     rw [callCaller_read σ acc d _ _
-      (by fin_cases d <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> exact of_decide_eq_true rfl)
-      (by fin_cases d <;> exact of_decide_eq_true rfl)]
+      (callerQuiet_scalar d).2.2.2.2.1
+      (callerQuiet_scalar d).2.2.2.2.2.1
+      (callerQuiet_scalar d).2.2.2.2.2.2]
 
 /-- Blocking the caller leaves every other abstract domain unchanged. -/
 theorem absDom_callCaller_other (σ acc : Loom.Hw.St)
@@ -1483,6 +1569,15 @@ theorem callCirc_act_eq (d : DomainId) :
     (Hw.callCirc d).act = Hw.ladder d (Hw.callChecks d) (callSuccessA d) := by
   rfl
 
+/-- The gate-call opcode, evaluated once in the kernel. -/
+private theorem gateCall_opcodeOf : Hw.opcodeOf "gate_call" = 22#6 := by
+  decide +kernel
+
+/-- Opcode 22 selects no other mnemonic, evaluated once in the kernel. -/
+private theorem gateCall_opcode_excl : ∀ mn' ∈ allMns, mn' ≠ "gate_call" →
+    (22#6 : BitVec 6) ≠ Hw.opcodeOf mn' := by
+  decide +kernel
+
 /-- Retirement dispatch selects the gate-call circuit on opcode 22. -/
 theorem retireFor_gateCall_run (σ acc : Loom.Hw.St) (d : DomainId)
     (hopc : (σ.regs "if_word" 32).extractLsb' 0 6 = 22#6) :
@@ -1490,8 +1585,8 @@ theorem retireFor_gateCall_run (σ acc : Loom.Hw.St) (d : DomainId)
       (Hw.ladder d (Hw.callChecks d) (callSuccessA d)).run σ acc := by
   rw [← callCirc_act_eq]
   exact retireFor_sel_of_opc σ d "gate_call" 22#6 hopc
-    (by decide +kernel)
-    (by decide +kernel)
+    gateCall_opcodeOf
+    gateCall_opcode_excl
     (Hw.callCirc d)
     (List.mem_append_right _ (by simp)) acc
 
@@ -1529,6 +1624,13 @@ theorem callSuccessA_run (σ acc : Loom.Hw.St) (d : DomainId) :
           ((callActivateA d).run σ ((callTransferA d).run σ acc))) := by
   rfl
 
+/-- The quiet faces are outside every stage of the call tail.  Stated
+closed so one kernel evaluation serves every frame. -/
+private theorem callQuietNames_notin : ∀ d : DomainId, ∀ p ∈ callQuietNames,
+    p ∉ (callCallerA d).regWrites ∧ p ∉ (callCalleeA d).regWrites ∧
+      p ∉ (callActivateA d).regWrites := by
+  decide +kernel
+
 /-- After the optional transfer, the remainder of the call payload frames
 the cycle, Mover, and in-flight encodings. -/
 private theorem callSuccessA_frame_quiet (σ acc : Loom.Hw.St)
@@ -1539,9 +1641,10 @@ private theorem callSuccessA_frame_quiet (σ acc : Loom.Hw.St)
   rw [Loom.Hw.Act.run_regs_notin q.1 q.2 (callCallerA d)]
   rw [Loom.Hw.Act.run_regs_notin q.1 q.2 (callCalleeA d)]
   rw [Loom.Hw.Act.run_regs_notin q.1 q.2 (callActivateA d)]
-  all_goals
-    exact (show ∀ p ∈ callQuietNames, p ∉ _ from by
-      fin_cases d <;> decide +kernel) q hq
+  all_goals first
+    | exact (callQuietNames_notin d q hq).1
+    | exact (callQuietNames_notin d q hq).2.1
+    | exact (callQuietNames_notin d q hq).2.2
 
 /-- Domain-map abstraction of the complete successful payload, relative to
 the state produced by its optional structural transfer. -/
