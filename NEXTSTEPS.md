@@ -756,6 +756,17 @@ GateCall costs: `abs_callSuccessA` 54 s (design-sized whnf inside a
 necessary `exact`), `callActivateA_quiet_dom` 36 s (genuine kernel
 string-membership evaluation).
 
+**Serial-phase progress 2026-07-30 (commit f247e88):** the toProgram
+parity gate is compiled — per-target `lake exe parityGate{Acc8,Lnp64u}`
+(GeneratedRelease registered as a non-default `lean_lib`), lnp64u
+262 s → 10 s warm, acc8 1.4 → 0.75 s. The release script probes
+`lake build --no-build` and falls back to the interpreter from a cold
+tree, because a cold `lake exe` would re-elaborate the 711-module
+generated closure (+347 CPU-min) the earlier phases compile
+out-of-band — warm reruns and single-edit classes get the 27× win, the
+clean audit run keeps its old cost. Remaining serial items: axiom
+closure 645 s @ 0.74, Acc8 witness 313 s @ 1.49.
+
 **GateCall campaign done-condition (set 2026-07-29, before starting):**
 the worst single-edit warm-cache path through the GateCall sub-chain must
 come under the 600 s CI-tier gate, which given the rest of its path means
