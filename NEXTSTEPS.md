@@ -745,9 +745,16 @@ contexts (pairwise defeq scans, single failing isDefEq calls of 39 s;
 six sites at 104–188 s each) and one `fin_cases <;> decide`-style site
 at 303 s. Fixes: `exact nomatch h` / `exact absurd h (by decide)` in
 place of `contradiction`, one closed `decide +kernel` frame lemma; 13
-insertions/8 deletions, zero statement changes. Follow-up (not done):
-the same pathology likely sits in RMCIssue (256 s), RMCHalt (230 s),
-and the remaining GateCall warm spots (30–80 s each) — profile first.
+insertions/8 deletions, zero statement changes. Follow-up DONE 2026-07-30 (commit f56c4d9): RMCIssue 269 → 17 s
+(−94%), RMCHalt 254 → 27 s (−89%), GateCall 121 → 96 s. The trunk
+pathology was String-heavy decidable propositions evaluated per site
+(`fin_cases <;> decide` sweeps, single kernel certificates up to
+116 s); 64 closed private `decide +kernel` lemmas replaced ~470 inline
+blocks. General rule now in force: never evaluate a decidable
+design-fact inline more than once. Remaining (legitimate, documented)
+GateCall costs: `abs_callSuccessA` 54 s (design-sized whnf inside a
+necessary `exact`), `callActivateA_quiet_dom` 36 s (genuine kernel
+string-membership evaluation).
 
 **GateCall campaign done-condition (set 2026-07-29, before starting):**
 the worst single-edit warm-cache path through the GateCall sub-chain must
