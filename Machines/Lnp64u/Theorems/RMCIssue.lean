@@ -667,6 +667,205 @@ theorem haltDom_mem' (τ : MachineState) (d : DomainId)
 
 /-! ## The shared fault-arm assembly -/
 
+/-- Closed name-discrimination facts, evaluated once in the kernel: no
+domain read is a Mover register or the cycle counter. -/
+private theorem domReadNames_movfree : ∀ x : DomainId,
+    ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
+  decide +kernel
+
+private theorem gateReadNames_movfree : ∀ g : GateId,
+    ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
+  decide +kernel
+
+private theorem domReadNames_cycfree : ∀ x : DomainId,
+    ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+  decide +kernel
+
+private theorem gateReadNames_cycfree : ∀ g : GateId,
+    ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
+  decide +kernel
+
+/-- Per-family quiet facts for the fault/issue frame arguments: each
+domain-read name is Mover-free, is not the cycle counter, differs from
+the payer budget, and differs from the in-flight latch faces.  Evaluated
+once in the kernel. -/
+private theorem dreg_qfacts : ∀ (x : DomainId) (r : RegId),
+    (Hw.dreg x r).startsWith "mov_" = false ∧ Hw.dreg x r ≠ "cycle" ∧
+    Hw.dreg x r ≠ Hw.dbudget x ∧ Hw.dreg x r ≠ "if_v" ∧
+    Hw.dreg x r ≠ "if_dom" ∧ Hw.dreg x r ≠ "if_word" ∧
+    Hw.dreg x r ≠ "if_cl" := by
+  decide +kernel
+
+private theorem slot_qfacts : ∀ (x : DomainId) (s : Slot),
+    ((Hw.dcapV x s).startsWith "mov_" = false ∧ Hw.dcapV x s ≠ "cycle" ∧
+     Hw.dcapV x s ≠ Hw.dbudget x ∧ Hw.dcapV x s ≠ "if_v" ∧
+     Hw.dcapV x s ≠ "if_dom" ∧ Hw.dcapV x s ≠ "if_word" ∧
+     Hw.dcapV x s ≠ "if_cl") ∧
+    ((Hw.dcapKind x s).startsWith "mov_" = false ∧
+     Hw.dcapKind x s ≠ "cycle" ∧
+     Hw.dcapKind x s ≠ Hw.dbudget x ∧ Hw.dcapKind x s ≠ "if_v" ∧
+     Hw.dcapKind x s ≠ "if_dom" ∧ Hw.dcapKind x s ≠ "if_word" ∧
+     Hw.dcapKind x s ≠ "if_cl") ∧
+    ((Hw.dcapLinV x s).startsWith "mov_" = false ∧
+     Hw.dcapLinV x s ≠ "cycle" ∧
+     Hw.dcapLinV x s ≠ Hw.dbudget x ∧ Hw.dcapLinV x s ≠ "if_v" ∧
+     Hw.dcapLinV x s ≠ "if_dom" ∧ Hw.dcapLinV x s ≠ "if_word" ∧
+     Hw.dcapLinV x s ≠ "if_cl") ∧
+    ((Hw.dcapLin x s).startsWith "mov_" = false ∧
+     Hw.dcapLin x s ≠ "cycle" ∧
+     Hw.dcapLin x s ≠ Hw.dbudget x ∧ Hw.dcapLin x s ≠ "if_v" ∧
+     Hw.dcapLin x s ≠ "if_dom" ∧ Hw.dcapLin x s ≠ "if_word" ∧
+     Hw.dcapLin x s ≠ "if_cl") ∧
+    ((Hw.dgen x s).startsWith "mov_" = false ∧ Hw.dgen x s ≠ "cycle" ∧
+     Hw.dgen x s ≠ Hw.dbudget x ∧ Hw.dgen x s ≠ "if_v" ∧
+     Hw.dgen x s ≠ "if_dom" ∧ Hw.dgen x s ≠ "if_word" ∧
+     Hw.dgen x s ≠ "if_cl") := by
+  decide +kernel
+
+private theorem lin_qfacts : ∀ (x : DomainId) (l : LineageId),
+    ((Hw.dcellV x l).startsWith "mov_" = false ∧ Hw.dcellV x l ≠ "cycle" ∧
+     Hw.dcellV x l ≠ Hw.dbudget x ∧ Hw.dcellV x l ≠ "if_v" ∧
+     Hw.dcellV x l ≠ "if_dom" ∧ Hw.dcellV x l ≠ "if_word" ∧
+     Hw.dcellV x l ≠ "if_cl") ∧
+    ((Hw.dcellPar x l).startsWith "mov_" = false ∧
+     Hw.dcellPar x l ≠ "cycle" ∧
+     Hw.dcellPar x l ≠ Hw.dbudget x ∧ Hw.dcellPar x l ≠ "if_v" ∧
+     Hw.dcellPar x l ≠ "if_dom" ∧ Hw.dcellPar x l ≠ "if_word" ∧
+     Hw.dcellPar x l ≠ "if_cl") := by
+  decide +kernel
+
+private theorem rgn_qfacts : ∀ (x : DomainId) (r : RegionId),
+    ((Hw.drgnV x r).startsWith "mov_" = false ∧ Hw.drgnV x r ≠ "cycle" ∧
+     Hw.drgnV x r ≠ Hw.dbudget x ∧ Hw.drgnV x r ≠ "if_v" ∧
+     Hw.drgnV x r ≠ "if_dom" ∧ Hw.drgnV x r ≠ "if_word" ∧
+     Hw.drgnV x r ≠ "if_cl") ∧
+    ((Hw.drgn x r).startsWith "mov_" = false ∧ Hw.drgn x r ≠ "cycle" ∧
+     Hw.drgn x r ≠ Hw.dbudget x ∧ Hw.drgn x r ≠ "if_v" ∧
+     Hw.drgn x r ≠ "if_dom" ∧ Hw.drgn x r ≠ "if_word" ∧
+     Hw.drgn x r ≠ "if_cl") := by
+  decide +kernel
+
+set_option synthInstance.maxSize 2048 in
+private theorem scalar_qfacts : ∀ (x : DomainId),
+    ((Hw.dpc x).startsWith "mov_" = false ∧ Hw.dpc x ≠ "cycle" ∧
+     Hw.dpc x ≠ Hw.dbudget x ∧ Hw.dpc x ≠ "if_v" ∧
+     Hw.dpc x ≠ "if_dom" ∧ Hw.dpc x ≠ "if_word" ∧ Hw.dpc x ≠ "if_cl") ∧
+    ((Hw.drun x).startsWith "mov_" = false ∧ Hw.drun x ≠ "cycle" ∧
+     Hw.drun x ≠ Hw.dbudget x ∧ Hw.drun x ≠ "if_v" ∧
+     Hw.drun x ≠ "if_dom" ∧ Hw.drun x ≠ "if_word" ∧ Hw.drun x ≠ "if_cl") ∧
+    ((Hw.drunG x).startsWith "mov_" = false ∧ Hw.drunG x ≠ "cycle" ∧
+     Hw.drunG x ≠ Hw.dbudget x ∧ Hw.drunG x ≠ "if_v" ∧
+     Hw.drunG x ≠ "if_dom" ∧ Hw.drunG x ≠ "if_word" ∧
+     Hw.drunG x ≠ "if_cl") ∧
+    ((Hw.dsrvV x).startsWith "mov_" = false ∧ Hw.dsrvV x ≠ "cycle" ∧
+     Hw.dsrvV x ≠ Hw.dbudget x ∧ Hw.dsrvV x ≠ "if_v" ∧
+     Hw.dsrvV x ≠ "if_dom" ∧ Hw.dsrvV x ≠ "if_word" ∧
+     Hw.dsrvV x ≠ "if_cl") ∧
+    ((Hw.dsrv x).startsWith "mov_" = false ∧ Hw.dsrv x ≠ "cycle" ∧
+     Hw.dsrv x ≠ Hw.dbudget x ∧ Hw.dsrv x ≠ "if_v" ∧
+     Hw.dsrv x ≠ "if_dom" ∧ Hw.dsrv x ≠ "if_word" ∧ Hw.dsrv x ≠ "if_cl") ∧
+    ((Hw.dcause x).startsWith "mov_" = false ∧ Hw.dcause x ≠ "cycle" ∧
+     Hw.dcause x ≠ Hw.dbudget x ∧ Hw.dcause x ≠ "if_v" ∧
+     Hw.dcause x ≠ "if_dom" ∧ Hw.dcause x ≠ "if_word" ∧
+     Hw.dcause x ≠ "if_cl") ∧
+    ((Hw.dmaxdon x).startsWith "mov_" = false ∧ Hw.dmaxdon x ≠ "cycle" ∧
+     Hw.dmaxdon x ≠ Hw.dbudget x ∧ Hw.dmaxdon x ≠ "if_v" ∧
+     Hw.dmaxdon x ≠ "if_dom" ∧ Hw.dmaxdon x ≠ "if_word" ∧
+     Hw.dmaxdon x ≠ "if_cl") := by
+  decide +kernel
+
+private theorem dbudget_qfacts : ∀ (x : DomainId),
+    (Hw.dbudget x).startsWith "mov_" = false ∧ Hw.dbudget x ≠ "cycle" := by
+  decide +kernel
+
+/-- No domain-read name is a gate donation counter. -/
+private theorem dreg_ne_gdon : ∀ (x : DomainId) (g : GateId) (r : RegId),
+    Hw.dreg x r ≠ Hw.gdon g := by
+  decide +kernel
+
+private theorem slot_ne_gdon : ∀ (x : DomainId) (g : GateId) (s : Slot),
+    Hw.dcapV x s ≠ Hw.gdon g ∧ Hw.dcapKind x s ≠ Hw.gdon g ∧
+    Hw.dcapLinV x s ≠ Hw.gdon g ∧ Hw.dcapLin x s ≠ Hw.gdon g ∧
+    Hw.dgen x s ≠ Hw.gdon g := by
+  decide +kernel
+
+private theorem lin_ne_gdon : ∀ (x : DomainId) (g : GateId) (l : LineageId),
+    Hw.dcellV x l ≠ Hw.gdon g ∧ Hw.dcellPar x l ≠ Hw.gdon g := by
+  decide +kernel
+
+private theorem rgn_ne_gdon : ∀ (x : DomainId) (g : GateId) (r : RegionId),
+    Hw.drgnV x r ≠ Hw.gdon g ∧ Hw.drgn x r ≠ Hw.gdon g := by
+  decide +kernel
+
+private theorem scalar_ne_gdon : ∀ (x : DomainId) (g : GateId),
+    Hw.dpc x ≠ Hw.gdon g ∧ Hw.drun x ≠ Hw.gdon g ∧
+    Hw.drunG x ≠ Hw.gdon g ∧ Hw.dsrvV x ≠ Hw.gdon g ∧
+    Hw.dsrv x ≠ Hw.gdon g ∧ Hw.dcause x ≠ Hw.gdon g ∧
+    Hw.dmaxdon x ≠ Hw.gdon g := by
+  decide +kernel
+
+/-- Blanket read-set discriminations for the other-domain and gate frames. -/
+private theorem domRead_ne_dbudget : ∀ (x p : DomainId), x ≠ p →
+    ∀ q ∈ domReadNames x, q.1 ≠ Hw.dbudget p := by
+  decide +kernel
+
+private theorem gateRead_ne_dbudget : ∀ (g : GateId) (p : DomainId),
+    ∀ q ∈ gateReadNames g, q.1 ≠ Hw.dbudget p := by
+  decide +kernel
+
+private theorem domRead_ne_ifs : ∀ (x : DomainId),
+    ∀ q ∈ domReadNames x, q.1 ≠ "if_v" ∧ q.1 ≠ "if_dom" ∧
+      q.1 ≠ "if_word" ∧ q.1 ≠ "if_cl" := by
+  decide +kernel
+
+private theorem gateRead_ne_ifs : ∀ (g : GateId),
+    ∀ q ∈ gateReadNames g, q.1 ≠ "if_v" ∧ q.1 ≠ "if_dom" ∧
+      q.1 ≠ "if_word" ∧ q.1 ≠ "if_cl" := by
+  decide +kernel
+
+private theorem domRead_ne_gdon : ∀ (x : DomainId) (g : GateId),
+    ∀ q ∈ domReadNames x, q.1 ≠ Hw.gdon g := by
+  decide +kernel
+
+private theorem gateRead_ne_gdon : ∀ (h g : GateId), h ≠ g →
+    ∀ q ∈ gateReadNames h, q.1 ≠ Hw.gdon g := by
+  decide +kernel
+
+/-- The donation counter and gate faces of the served gate. -/
+private theorem gdon_qfacts : ∀ (h : GateId),
+    (Hw.gdon h).startsWith "mov_" = false ∧ Hw.gdon h ≠ "cycle" := by
+  decide +kernel
+
+private theorem gateCfg_ne_gdon : ∀ (h : GateId),
+    Hw.gcallee h ≠ Hw.gdon h ∧ Hw.gentry h ≠ Hw.gdon h ∧
+    Hw.gactV h ≠ Hw.gdon h ∧ Hw.gcaller h ≠ Hw.gdon h ∧
+    Hw.gcallerRd h ≠ Hw.gdon h ∧ Hw.gspc h ≠ Hw.gdon h ∧
+    Hw.gssrvV h ≠ Hw.gdon h ∧ Hw.gssrv h ≠ Hw.gdon h ∧
+    Hw.gdepth h ≠ Hw.gdon h := by
+  decide +kernel
+
+private theorem gsreg_ne_gdon : ∀ (h : GateId) (r : RegId),
+    Hw.gsreg h r ≠ Hw.gdon h := by
+  decide +kernel
+
+private theorem ifv_ne_dbudget : ∀ p : DomainId,
+    ("if_v" : String) ≠ Hw.dbudget p := by
+  decide +kernel
+
+private theorem dbudget_ne_ifs : ∀ x : DomainId,
+    Hw.dbudget x ≠ "if_v" ∧ Hw.dbudget x ≠ "if_dom" ∧
+    Hw.dbudget x ≠ "if_word" ∧ Hw.dbudget x ≠ "if_cl" := by
+  decide +kernel
+
+private theorem dbudget_ne_gdon : ∀ (x : DomainId) (g : GateId),
+    Hw.dbudget x ≠ Hw.gdon g := by
+  decide +kernel
+
+private theorem gdon_ne_ifs : ∀ g : GateId,
+    Hw.gdon g ≠ "if_v" ∧ Hw.gdon g ≠ "if_dom" ∧
+    Hw.gdon g ≠ "if_word" ∧ Hw.gdon g ≠ "if_cl" := by
+  decide +kernel
+
 /-- **Any idle-cycle fault outcome squares**: when the core rule reduces
 to `haltFault e f` and the spec's core phase to `haltWith τ1 e f`, the
 whole cycle squares — the halt bridge carries domains and gates, and
@@ -780,10 +979,10 @@ theorem square_issue_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       rfl
     show Hw.absDom ((Hw.core m).cycle σ) x = _
     rw [hRHS, ← hHD x]
-    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
-      fin_cases x <;> decide +kernel
-    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases x <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false :=
+      domReadNames_movfree x
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      domReadNames_cycfree x
     apply absDom_congr
     intro p hp'
     rw [show Act.run σ (Hw.haltAct e (BitVec.ofNat 32 f.code)) σ1
@@ -796,10 +995,10 @@ theorem square_issue_fault (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       rfl
     show Hw.absGate ((Hw.core m).cycle σ) g = _
     rw [hRHS, ← hHG g]
-    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
-      fin_cases g <;> decide +kernel
-    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases g <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false :=
+      gateReadNames_movfree g
+    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      gateReadNames_cycfree g
     apply absGate_congr
     intro p hp'
     rw [show Act.run σ (Hw.haltAct e (BitVec.ofNat 32 f.code)) σ1
@@ -1000,151 +1199,129 @@ theorem square_issue_burn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         = (corePhase m τ1).doms x := congrFun (moverPhase_doms _) x
     show Hw.absDom ((Hw.core m).cycle σ) x = _
     rw [hRHS, hspecdoms x]
-    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
-      fin_cases x <;> decide +kernel
-    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases x <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false :=
+      domReadNames_movfree x
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      domReadNames_cycfree x
     by_cases hxp : x = p
     · rw [if_pos hxp, ← hxp, ← hdoms1 x]
       apply domainState_ext'
       · funext r
         show ((Hw.core m).cycle σ).regs (Hw.dreg x r) 32 = _
-        rw [hp _ _ (by fin_cases x <;> fin_cases r <;> decide +kernel)
-          (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((dreg_qfacts x r).1)
+          (fun hc => (dreg_qfacts x r).2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (dreg_qfacts x r).2.2.1)]
         rfl
       · show ((Hw.core m).cycle σ).regs (Hw.dpc x) 12 = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((scalar_qfacts x).1.1)
+          (fun hc => (scalar_qfacts x).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).1.2.2.1)]
         rfl
       · funext s
         show (if ((Hw.core m).cycle σ).regs (Hw.dcapV x s) 1 = 1
           then _ else _) = _
         rw [hp (Hw.dcapV x s) 1
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).1.1)
+            (fun hc => (slot_qfacts x s).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).1.2.2.1),
           hp (Hw.dcapKind x s) 32
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).2.1.1)
+            (fun hc => (slot_qfacts x s).2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.1.2.2.1),
           hp (Hw.dcapLinV x s) 1
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).2.2.1.1)
+            (fun hc => (slot_qfacts x s).2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.1.2.2.1),
           hp (Hw.dcapLin x s) 4
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)]
+            ((slot_qfacts x s).2.2.2.1.1)
+            (fun hc => (slot_qfacts x s).2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.2.1.2.2.1)]
         rfl
       · funext s
         show ((Hw.core m).cycle σ).regs (Hw.dgen x s) 8 = _
-        rw [hp _ _ (by fin_cases x <;> fin_cases s <;> decide +kernel)
-          (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((slot_qfacts x s).2.2.2.2.1)
+          (fun hc => (slot_qfacts x s).2.2.2.2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.2.2.2.2.1)]
         rfl
       · funext l
         show (if ((Hw.core m).cycle σ).regs (Hw.dcellV x l) 1 = 1
           then _ else _) = _
         rw [hp (Hw.dcellV x l) 1
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
-            exact of_decide_eq_true rfl),
+            ((lin_qfacts x l).1.1)
+            (fun hc => (lin_qfacts x l).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (lin_qfacts x l).1.2.2.1),
           hp (Hw.dcellPar x l) 14
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
-            exact of_decide_eq_true rfl)]
+            ((lin_qfacts x l).2.1)
+            (fun hc => (lin_qfacts x l).2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (lin_qfacts x l).2.2.2.1)]
         rfl
       · funext r
         show (if ((Hw.core m).cycle σ).regs (Hw.drgnV x r) 1 = 1
           then _ else _) = _
         rw [hp (Hw.drgnV x r) 1
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl),
+            ((rgn_qfacts x r).1.1)
+            (fun hc => (rgn_qfacts x r).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (rgn_qfacts x r).1.2.2.1),
           hp (Hw.drgn x r) 42
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)]
+            ((rgn_qfacts x r).2.1)
+            (fun hc => (rgn_qfacts x r).2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (rgn_qfacts x r).2.2.2.1)]
         rfl
       · show Hw.decRun _ _ = _
-        rw [hp (Hw.drun x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl),
-          hp (Hw.drunG x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)]
+        rw [hp (Hw.drun x) 2 ((scalar_qfacts x).2.1.1)
+            (fun hc => (scalar_qfacts x).2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.1.2.2.1),
+          hp (Hw.drunG x) 2 ((scalar_qfacts x).2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.1.2.2.1)]
         rfl
       · show (if ((Hw.core m).cycle σ).regs (Hw.dsrvV x) 1 = 1
           then _ else _) = _
-        rw [hp (Hw.dsrvV x) 1 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl),
-          hp (Hw.dsrv x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)]
+        rw [hp (Hw.dsrvV x) 1 ((scalar_qfacts x).2.2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.1.2.2.1),
+          hp (Hw.dsrv x) 2 ((scalar_qfacts x).2.2.2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.1.2.2.1)]
         rfl
       · show ((Hw.core m).cycle σ).regs (Hw.dcause x) 32 = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((scalar_qfacts x).2.2.2.2.2.1.1)
+          (fun hc => (scalar_qfacts x).2.2.2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.2.1.2.2.1)]
         rfl
       · show (((Hw.core m).cycle σ).regs (Hw.dbudget x) 32).toNat = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
+        rw [hp _ _ ((dbudget_qfacts x).1)
+          (fun hc => (dbudget_qfacts x).2 hc.1),
           hburn, hxp]
         show ((σ1.regs.set (Hw.dbudget p)
           ((Expr.lit (0:BitVec 32)).eval σ)) (Hw.dbudget p) 32).toNat = _
         simp [RegEnv.set, Expr.eval]
       · show (((Hw.core m).cycle σ).regs (Hw.dmaxdon x) 32).toNat = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((scalar_qfacts x).2.2.2.2.2.2.1)
+          (fun hc => (scalar_qfacts x).2.2.2.2.2.2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.2.2.2.2.1)]
         rfl
     · rw [if_neg hxp, ← hdoms1 x]
       apply absDom_congr
       intro q hq
       rw [hp q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
       apply hread
-      exact (show ∀ r ∈ domReadNames x, r.1 ≠ Hw.dbudget p from by
-        fin_cases x <;> fin_cases p <;>
-          first
-            | exact absurd rfl hxp
-            | exact of_decide_eq_true rfl) q hq
+      exact domRead_ne_dbudget x p hxp q hq
   · funext g
     have hRHS : (moverPhase (corePhase m τ1)).gates g = τ1.gates g := by
       rw [moverPhase_gates, hspec]
       rfl
     show Hw.absGate ((Hw.core m).cycle σ) g = _
     rw [hRHS, ← hgates1 g]
-    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
-      fin_cases g <;> decide +kernel
-    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases g <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false :=
+      gateReadNames_movfree g
+    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      gateReadNames_cycfree g
     apply absGate_congr
     intro q hq
     rw [hp q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
     apply hread
-    exact (show ∀ r ∈ gateReadNames g, r.1 ≠ Hw.dbudget p from by
-      fin_cases g <;> fin_cases p <;> exact of_decide_eq_true rfl) q hq
+    exact gateRead_ne_dbudget g p q hq
   · show Hw.absMover ((Hw.core m).cycle σ)
       = (moverPhase (corePhase m τ1)).mover
     rw [core_cycle_unfold]
@@ -1175,7 +1352,7 @@ theorem square_issue_burn (m : Manifest) (hwf : m.WF) (hfit : Fits m)
     rw [hRHS]
     unfold Hw.absInflight
     rw [hp "if_v" 1 (by decide +kernel) (by decide),
-      hread "if_v" 1 (by fin_cases p <;> exact of_decide_eq_true rfl),
+      hread "if_v" 1 (ifv_ne_dbudget p),
       hσ1, refill_pres m σ (by decide)]
     rw [if_neg (show ¬(σ.regs "if_v" 1 = 1) from hifv0)]
 
@@ -1328,180 +1505,164 @@ theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         = (corePhase m τ1).doms x := congrFun (moverPhase_doms _) x
     show Hw.absDom ((Hw.core m).cycle σ) x = _
     rw [hRHS, hspecdoms x]
-    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
-      fin_cases x <;> decide +kernel
-    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases x <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false :=
+      domReadNames_movfree x
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      domReadNames_cycfree x
     by_cases hxp : x = p
     · rw [if_pos hxp, ← hxp, ← hdoms1 x]
       apply domainState_ext'
       · funext r
         show ((Hw.core m).cycle σ).regs (Hw.dreg x r) 32 = _
-        rw [hp _ _ (by fin_cases x <;> fin_cases r <;> decide +kernel)
-          (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((dreg_qfacts x r).1)
+          (fun hc => (dreg_qfacts x r).2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (dreg_qfacts x r).2.2.1)
+            ((dreg_qfacts x r).2.2.2.1)
+            ((dreg_qfacts x r).2.2.2.2.1)
+            ((dreg_qfacts x r).2.2.2.2.2.1)
+            ((dreg_qfacts x r).2.2.2.2.2.2)]
         rfl
       · show ((Hw.core m).cycle σ).regs (Hw.dpc x) 12 = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((scalar_qfacts x).1.1)
+          (fun hc => (scalar_qfacts x).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).1.2.2.1)
+            ((scalar_qfacts x).1.2.2.2.1)
+            ((scalar_qfacts x).1.2.2.2.2.1)
+            ((scalar_qfacts x).1.2.2.2.2.2.1)
+            ((scalar_qfacts x).1.2.2.2.2.2.2)]
         rfl
       · funext s
         show (if ((Hw.core m).cycle σ).regs (Hw.dcapV x s) 1 = 1
           then _ else _) = _
         rw [hp (Hw.dcapV x s) 1
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).1.1)
+            (fun hc => (slot_qfacts x s).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).1.2.2.1)
+            ((slot_qfacts x s).1.2.2.2.1)
+            ((slot_qfacts x s).1.2.2.2.2.1)
+            ((slot_qfacts x s).1.2.2.2.2.2.1)
+            ((slot_qfacts x s).1.2.2.2.2.2.2),
           hp (Hw.dcapKind x s) 32
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).2.1.1)
+            (fun hc => (slot_qfacts x s).2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.1.2.2.1)
+            ((slot_qfacts x s).2.1.2.2.2.1)
+            ((slot_qfacts x s).2.1.2.2.2.2.1)
+            ((slot_qfacts x s).2.1.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.1.2.2.2.2.2.2),
           hp (Hw.dcapLinV x s) 1
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).2.2.1.1)
+            (fun hc => (slot_qfacts x s).2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.1.2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.2.2.2),
           hp (Hw.dcapLin x s) 4
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+            ((slot_qfacts x s).2.2.2.1.1)
+            (fun hc => (slot_qfacts x s).2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.2.1.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.2.2.2)]
         rfl
       · funext s
         show ((Hw.core m).cycle σ).regs (Hw.dgen x s) 8 = _
-        rw [hp _ _ (by fin_cases x <;> fin_cases s <;> decide +kernel)
-          (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((slot_qfacts x s).2.2.2.2.1)
+          (fun hc => (slot_qfacts x s).2.2.2.2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.2.2.2)]
         rfl
       · funext l
         show (if ((Hw.core m).cycle σ).regs (Hw.dcellV x l) 1 = 1
           then _ else _) = _
         rw [hp (Hw.dcellV x l) 1
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl),
+            ((lin_qfacts x l).1.1)
+            (fun hc => (lin_qfacts x l).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (lin_qfacts x l).1.2.2.1)
+            ((lin_qfacts x l).1.2.2.2.1)
+            ((lin_qfacts x l).1.2.2.2.2.1)
+            ((lin_qfacts x l).1.2.2.2.2.2.1)
+            ((lin_qfacts x l).1.2.2.2.2.2.2),
           hp (Hw.dcellPar x l) 14
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)]
+            ((lin_qfacts x l).2.1)
+            (fun hc => (lin_qfacts x l).2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (lin_qfacts x l).2.2.2.1)
+            ((lin_qfacts x l).2.2.2.2.1)
+            ((lin_qfacts x l).2.2.2.2.2.1)
+            ((lin_qfacts x l).2.2.2.2.2.2.1)
+            ((lin_qfacts x l).2.2.2.2.2.2.2)]
         rfl
       · funext r
         show (if ((Hw.core m).cycle σ).regs (Hw.drgnV x r) 1 = 1
           then _ else _) = _
         rw [hp (Hw.drgnV x r) 1
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl),
+            ((rgn_qfacts x r).1.1)
+            (fun hc => (rgn_qfacts x r).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (rgn_qfacts x r).1.2.2.1)
+            ((rgn_qfacts x r).1.2.2.2.1)
+            ((rgn_qfacts x r).1.2.2.2.2.1)
+            ((rgn_qfacts x r).1.2.2.2.2.2.1)
+            ((rgn_qfacts x r).1.2.2.2.2.2.2),
           hp (Hw.drgn x r) 42
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+            ((rgn_qfacts x r).2.1)
+            (fun hc => (rgn_qfacts x r).2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (rgn_qfacts x r).2.2.2.1)
+            ((rgn_qfacts x r).2.2.2.2.1)
+            ((rgn_qfacts x r).2.2.2.2.2.1)
+            ((rgn_qfacts x r).2.2.2.2.2.2.1)
+            ((rgn_qfacts x r).2.2.2.2.2.2.2)]
         rfl
       · show Hw.decRun _ _ = _
-        rw [hp (Hw.drun x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl),
-          hp (Hw.drunG x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp (Hw.drun x) 2 ((scalar_qfacts x).2.1.1)
+            (fun hc => (scalar_qfacts x).2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.1.2.2.1)
+            ((scalar_qfacts x).2.1.2.2.2.1)
+            ((scalar_qfacts x).2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.1.2.2.2.2.2.2),
+          hp (Hw.drunG x) 2 ((scalar_qfacts x).2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.1.2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.2.2.2)]
         rfl
       · show (if ((Hw.core m).cycle σ).regs (Hw.dsrvV x) 1 = 1
           then _ else _) = _
-        rw [hp (Hw.dsrvV x) 1 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl),
-          hp (Hw.dsrv x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp (Hw.dsrvV x) 1 ((scalar_qfacts x).2.2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.1.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.2.2.2),
+          hp (Hw.dsrv x) 2 ((scalar_qfacts x).2.2.2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.1.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.2.2.2)]
         rfl
       · show ((Hw.core m).cycle σ).regs (Hw.dcause x) 32 = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((scalar_qfacts x).2.2.2.2.2.1.1)
+          (fun hc => (scalar_qfacts x).2.2.2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.2.1.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.2.2.2)]
         rfl
       · -- the charged budget
         show (((Hw.core m).cycle σ).regs (Hw.dbudget x) 32).toNat = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
+        rw [hp _ _ ((dbudget_qfacts x).1)
+          (fun hc => (dbudget_qfacts x).2 hc.1),
           hchain]
         rw [show ((latchA e).run σ
             ((Act.write 32 (Hw.dbudget p)
@@ -1512,14 +1673,10 @@ theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
             (Hw.dbudget x) 32 from by
           show ((((((σ1.regs.set (Hw.dbudget p) ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set "if_v" ((Expr.lit (1 : BitVec 1)).eval σ)).set "if_dom" ((Expr.lit (BitVec.ofNat 2 e.val)).eval σ)).set "if_word" ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ)) : _root_.Loom.Hw.RegEnv) (Hw.dbudget x) 32 = _
           simp only [RegEnv.set]
-          rw [if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_cl"),
-            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_word"),
-            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_dom"),
-            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_v")]
+          rw [if_neg ((dbudget_ne_ifs x).2.2.2 : Hw.dbudget x ≠ "if_cl"),
+            if_neg ((dbudget_ne_ifs x).2.2.1 : Hw.dbudget x ≠ "if_word"),
+            if_neg ((dbudget_ne_ifs x).2.1 : Hw.dbudget x ≠ "if_dom"),
+            if_neg ((dbudget_ne_ifs x).1 : Hw.dbudget x ≠ "if_v")]
           rfl]
         rw [hxp]
         show ((σ1.regs.set (Hw.dbudget p)
@@ -1536,57 +1693,43 @@ theorem square_issue_plain (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         rw [toNat_sub_of_le32 _ _ (by rw [hEb, hC32]; exact hble)]
         rw [hEb, hC32, hdoms1 p]
       · show (((Hw.core m).cycle σ).regs (Hw.dmaxdon x) 32).toNat = _
-        rw [hp _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp _ _ ((scalar_qfacts x).2.2.2.2.2.2.1)
+          (fun hc => (scalar_qfacts x).2.2.2.2.2.2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.2.2.2)]
         rfl
     · rw [if_neg hxp, ← hdoms1 x]
       apply absDom_congr
       intro q hq
       rw [hp q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
       apply hread
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ Hw.dbudget p from by
-          fin_cases x <;> fin_cases p <;>
-            first
-              | exact absurd rfl hxp
-              | exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_v" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_dom" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_word" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_cl" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
+      · exact domRead_ne_dbudget x p hxp q hq
+      · exact (domRead_ne_ifs x q hq).1
+      · exact (domRead_ne_ifs x q hq).2.1
+      · exact (domRead_ne_ifs x q hq).2.2.1
+      · exact (domRead_ne_ifs x q hq).2.2.2
   · funext g
     have hRHS : (moverPhase (corePhase m τ1)).gates g = τ1.gates g := by
       rw [moverPhase_gates, hspec]
       rfl
     show Hw.absGate ((Hw.core m).cycle σ) g = _
     rw [hRHS, ← hgates1 g]
-    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false := by
-      fin_cases g <;> decide +kernel
-    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases g <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ gateReadNames g, q.1.startsWith "mov_" = false :=
+      gateReadNames_movfree g
+    have hcycfree : ∀ q ∈ gateReadNames g, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      gateReadNames_cycfree g
     apply absGate_congr
     intro q hq
     rw [hp q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
     apply hread
-    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ Hw.dbudget p from by
-        fin_cases g <;> fin_cases p <;> exact of_decide_eq_true rfl) q hq
-    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_v" from by
-        fin_cases g <;> exact of_decide_eq_true rfl) q hq
-    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_dom" from by
-        fin_cases g <;> exact of_decide_eq_true rfl) q hq
-    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_word" from by
-        fin_cases g <;> exact of_decide_eq_true rfl) q hq
-    · exact (show ∀ r ∈ gateReadNames g, r.1 ≠ "if_cl" from by
-        fin_cases g <;> exact of_decide_eq_true rfl) q hq
+    · exact gateRead_ne_dbudget g p q hq
+    · exact (gateRead_ne_ifs g q hq).1
+    · exact (gateRead_ne_ifs g q hq).2.1
+    · exact (gateRead_ne_ifs g q hq).2.2.1
+    · exact (gateRead_ne_ifs g q hq).2.2.2
   · show Hw.absMover ((Hw.core m).cycle σ)
       = (moverPhase (corePhase m τ1)).mover
     rw [core_cycle_unfold]
@@ -1828,205 +1971,179 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         = (corePhase m τ1).doms x := congrFun (moverPhase_doms _) x
     show Hw.absDom ((Hw.core m).cycle σ) x = _
     rw [hRHS, hspecdoms x]
-    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false := by
-      fin_cases x <;> decide +kernel
-    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases x <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ domReadNames x, q.1.startsWith "mov_" = false :=
+      domReadNames_movfree x
+    have hcycfree : ∀ q ∈ domReadNames x, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      domReadNames_cycfree x
     by_cases hxp : x = p
     · rw [if_pos hxp, ← hxp, ← hdoms1 x]
       apply domainState_ext'
       · funext r
         show ((Hw.core m).cycle σ).regs (Hw.dreg x r) 32 = _
-        rw [hp' _ _ (by fin_cases x <;> fin_cases r <;> decide +kernel)
-          (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+        rw [hp' _ _ ((dreg_qfacts x r).1)
+          (fun hc => (dreg_qfacts x r).2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (dreg_qfacts x r).2.2.1)
+            ((dreg_ne_gdon x g r))
+            ((dreg_qfacts x r).2.2.2.1)
+            ((dreg_qfacts x r).2.2.2.2.1)
+            ((dreg_qfacts x r).2.2.2.2.2.1)
+            ((dreg_qfacts x r).2.2.2.2.2.2)]
         rfl
       · show ((Hw.core m).cycle σ).regs (Hw.dpc x) 12 = _
-        rw [hp' _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp' _ _ ((scalar_qfacts x).1.1)
+          (fun hc => (scalar_qfacts x).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).1.2.2.1)
+            ((scalar_ne_gdon x g).1)
+            ((scalar_qfacts x).1.2.2.2.1)
+            ((scalar_qfacts x).1.2.2.2.2.1)
+            ((scalar_qfacts x).1.2.2.2.2.2.1)
+            ((scalar_qfacts x).1.2.2.2.2.2.2)]
         rfl
       · funext s
         show (if ((Hw.core m).cycle σ).regs (Hw.dcapV x s) 1 = 1
           then _ else _) = _
         rw [hp' (Hw.dcapV x s) 1
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).1.1)
+            (fun hc => (slot_qfacts x s).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).1.2.2.1)
+            ((slot_ne_gdon x g s).1)
+            ((slot_qfacts x s).1.2.2.2.1)
+            ((slot_qfacts x s).1.2.2.2.2.1)
+            ((slot_qfacts x s).1.2.2.2.2.2.1)
+            ((slot_qfacts x s).1.2.2.2.2.2.2),
           hp' (Hw.dcapKind x s) 32
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).2.1.1)
+            (fun hc => (slot_qfacts x s).2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.1.2.2.1)
+            ((slot_ne_gdon x g s).2.1)
+            ((slot_qfacts x s).2.1.2.2.2.1)
+            ((slot_qfacts x s).2.1.2.2.2.2.1)
+            ((slot_qfacts x s).2.1.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.1.2.2.2.2.2.2),
           hp' (Hw.dcapLinV x s) 1
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+            ((slot_qfacts x s).2.2.1.1)
+            (fun hc => (slot_qfacts x s).2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.1.2.2.1)
+            ((slot_ne_gdon x g s).2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.1.2.2.2.2.2.2),
           hp' (Hw.dcapLin x s) 4
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+            ((slot_qfacts x s).2.2.2.1.1)
+            (fun hc => (slot_qfacts x s).2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.2.1.2.2.1)
+            ((slot_ne_gdon x g s).2.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.1.2.2.2.2.2.2)]
         rfl
       · funext s
         show ((Hw.core m).cycle σ).regs (Hw.dgen x s) 8 = _
-        rw [hp' _ _ (by fin_cases x <;> fin_cases s <;> decide +kernel)
-          (by fin_cases x <;> fin_cases s <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases s <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+        rw [hp' _ _ ((slot_qfacts x s).2.2.2.2.1)
+          (fun hc => (slot_qfacts x s).2.2.2.2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (slot_qfacts x s).2.2.2.2.2.2.1)
+            ((slot_ne_gdon x g s).2.2.2.2)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.2.2.1)
+            ((slot_qfacts x s).2.2.2.2.2.2.2.2.2.2)]
         rfl
       · funext l
         show (if ((Hw.core m).cycle σ).regs (Hw.dcellV x l) 1 = 1
           then _ else _) = _
         rw [hp' (Hw.dcellV x l) 1
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases l <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl),
+            ((lin_qfacts x l).1.1)
+            (fun hc => (lin_qfacts x l).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (lin_qfacts x l).1.2.2.1)
+            ((lin_ne_gdon x g l).1)
+            ((lin_qfacts x l).1.2.2.2.1)
+            ((lin_qfacts x l).1.2.2.2.2.1)
+            ((lin_qfacts x l).1.2.2.2.2.2.1)
+            ((lin_qfacts x l).1.2.2.2.2.2.2),
           hp' (Hw.dcellPar x l) 14
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases l <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases l <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)]
+            ((lin_qfacts x l).2.1)
+            (fun hc => (lin_qfacts x l).2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (lin_qfacts x l).2.2.2.1)
+            ((lin_ne_gdon x g l).2)
+            ((lin_qfacts x l).2.2.2.2.1)
+            ((lin_qfacts x l).2.2.2.2.2.1)
+            ((lin_qfacts x l).2.2.2.2.2.2.1)
+            ((lin_qfacts x l).2.2.2.2.2.2.2)]
         rfl
       · funext r
         show (if ((Hw.core m).cycle σ).regs (Hw.drgnV x r) 1 = 1
           then _ else _) = _
         rw [hp' (Hw.drgnV x r) 1
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl),
+            ((rgn_qfacts x r).1.1)
+            (fun hc => (rgn_qfacts x r).1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (rgn_qfacts x r).1.2.2.1)
+            ((rgn_ne_gdon x g r).1)
+            ((rgn_qfacts x r).1.2.2.2.1)
+            ((rgn_qfacts x r).1.2.2.2.2.1)
+            ((rgn_qfacts x r).1.2.2.2.2.2.1)
+            ((rgn_qfacts x r).1.2.2.2.2.2.2),
           hp' (Hw.drgn x r) 42
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;> fin_cases r <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+            ((rgn_qfacts x r).2.1)
+            (fun hc => (rgn_qfacts x r).2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (rgn_qfacts x r).2.2.2.1)
+            ((rgn_ne_gdon x g r).2)
+            ((rgn_qfacts x r).2.2.2.2.1)
+            ((rgn_qfacts x r).2.2.2.2.2.1)
+            ((rgn_qfacts x r).2.2.2.2.2.2.1)
+            ((rgn_qfacts x r).2.2.2.2.2.2.2)]
         rfl
       · show Hw.decRun _ _ = _
-        rw [hp' (Hw.drun x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl),
-          hp' (Hw.drunG x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp' (Hw.drun x) 2 ((scalar_qfacts x).2.1.1)
+            (fun hc => (scalar_qfacts x).2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.1.2.2.1)
+            ((scalar_ne_gdon x g).2.1)
+            ((scalar_qfacts x).2.1.2.2.2.1)
+            ((scalar_qfacts x).2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.1.2.2.2.2.2.2),
+          hp' (Hw.drunG x) 2 ((scalar_qfacts x).2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.1.2.2.1)
+            ((scalar_ne_gdon x g).2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.1.2.2.2.2.2.2)]
         rfl
       · show (if ((Hw.core m).cycle σ).regs (Hw.dsrvV x) 1 = 1
           then _ else _) = _
-        rw [hp' (Hw.dsrvV x) 1 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl),
-          hp' (Hw.dsrv x) 2 (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp' (Hw.dsrvV x) 1 ((scalar_qfacts x).2.2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.1.2.2.1)
+            ((scalar_ne_gdon x g).2.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.1.2.2.2.2.2.2),
+          hp' (Hw.dsrv x) 2 ((scalar_qfacts x).2.2.2.2.1.1)
+            (fun hc => (scalar_qfacts x).2.2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.1.2.2.1)
+            ((scalar_ne_gdon x g).2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.1.2.2.2.2.2.2)]
         rfl
       · show ((Hw.core m).cycle σ).regs (Hw.dcause x) 32 = _
-        rw [hp' _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp' _ _ ((scalar_qfacts x).2.2.2.2.2.1.1)
+          (fun hc => (scalar_qfacts x).2.2.2.2.2.1.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.2.1.2.2.1)
+            ((scalar_ne_gdon x g).2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.1.2.2.2.2.2.2)]
         rfl
       · show (((Hw.core m).cycle σ).regs (Hw.dbudget x) 32).toNat = _
-        rw [hp' _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
+        rw [hp' _ _ ((dbudget_qfacts x).1)
+          (fun hc => (dbudget_qfacts x).2 hc.1),
           hchain]
         rw [show ((latchA e).run σ
             ((Act.write 32 (Hw.gdon g) (.sub (donE e) (cost32E e))).run σ
@@ -2044,16 +2161,11 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
             ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ) :
             _root_.Loom.Hw.RegEnv) (Hw.dbudget x) 32 = _
           simp only [RegEnv.set]
-          rw [if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_cl"),
-            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_word"),
-            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_dom"),
-            if_neg (by fin_cases x <;> exact of_decide_eq_true rfl :
-              Hw.dbudget x ≠ "if_v"),
-            if_neg (by fin_cases x <;> fin_cases g <;>
-              exact of_decide_eq_true rfl : Hw.dbudget x ≠ Hw.gdon g)]
+          rw [if_neg ((dbudget_ne_ifs x).2.2.2 : Hw.dbudget x ≠ "if_cl"),
+            if_neg ((dbudget_ne_ifs x).2.2.1 : Hw.dbudget x ≠ "if_word"),
+            if_neg ((dbudget_ne_ifs x).2.1 : Hw.dbudget x ≠ "if_dom"),
+            if_neg ((dbudget_ne_ifs x).1 : Hw.dbudget x ≠ "if_v"),
+            if_neg (dbudget_ne_gdon x g : Hw.dbudget x ≠ Hw.gdon g)]
           rfl]
         rw [hxp]
         show ((σ1.regs.set (Hw.dbudget p)
@@ -2066,45 +2178,35 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
         rw [toNat_sub_of_le32 _ _ (by rw [hEb, hC32]; exact hble)]
         rw [hEb, hC32, hdoms1 p]
       · show (((Hw.core m).cycle σ).regs (Hw.dmaxdon x) 32).toNat = _
-        rw [hp' _ _ (by fin_cases x <;> decide +kernel)
-          (by fin_cases x <;> decide +kernel),
-          hread _ _ (by rw [← hxp]; fin_cases x <;>
-            exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+        rw [hp' _ _ ((scalar_qfacts x).2.2.2.2.2.2.1)
+          (fun hc => (scalar_qfacts x).2.2.2.2.2.2.2.1 hc.1),
+          hread _ _ (by rw [← hxp]; exact (scalar_qfacts x).2.2.2.2.2.2.2.2.1)
+            ((scalar_ne_gdon x g).2.2.2.2.2.2)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.2.2.1)
+            ((scalar_qfacts x).2.2.2.2.2.2.2.2.2.2.2.2)]
         rfl
     · rw [if_neg hxp, ← hdoms1 x]
       apply absDom_congr
       intro q hq
       rw [hp' q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
       apply hread
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ Hw.dbudget p from by
-          fin_cases x <;> fin_cases p <;>
-            first
-              | exact absurd rfl hxp
-              | exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ Hw.gdon g from by
-          fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_v" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_dom" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_word" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ domReadNames x, r.1 ≠ "if_cl" from by
-          fin_cases x <;> exact of_decide_eq_true rfl) q hq
+      · exact domRead_ne_dbudget x p hxp q hq
+      · exact domRead_ne_gdon x g q hq
+      · exact (domRead_ne_ifs x q hq).1
+      · exact (domRead_ne_ifs x q hq).2.1
+      · exact (domRead_ne_ifs x q hq).2.2.1
+      · exact (domRead_ne_ifs x q hq).2.2.2
   · funext h
     have hRHS : (moverPhase (corePhase m τ1)).gates h
         = (corePhase m τ1).gates h := congrFun (moverPhase_gates _) h
     show Hw.absGate ((Hw.core m).cycle σ) h = _
     rw [hRHS, hspecgates h]
-    have hmovfree : ∀ q ∈ gateReadNames h, q.1.startsWith "mov_" = false := by
-      fin_cases h <;> decide +kernel
-    have hcycfree : ∀ q ∈ gateReadNames h, ¬(q.1 = "cycle" ∧ q.2 = 32) := by
-      fin_cases h <;> exact of_decide_eq_true rfl
+    have hmovfree : ∀ q ∈ gateReadNames h, q.1.startsWith "mov_" = false :=
+      gateReadNames_movfree h
+    have hcycfree : ∀ q ∈ gateReadNames h, ¬(q.1 = "cycle" ∧ q.2 = 32) :=
+      gateReadNames_cycfree h
     by_cases hhg : h = g
     · -- the served gate: donation drawn down
       rw [if_pos hhg, ← hhg]
@@ -2142,29 +2244,20 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
           ((Hw.core m).cycle σ).regs rn w' = σ1.regs rn w' := by
         intro rn w' hnd hmem
         rw [hp' rn w'
-          ((show ∀ q ∈ gateReadNames h, q.1.startsWith "mov_" = false from by
-            fin_cases h <;> decide +kernel) (rn, w') hmem)
-          (fun hc => ((show ∀ q ∈ gateReadNames h, ¬(q.1 = "cycle" ∧
-              q.2 = 32) from by
-            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem) hc)]
+          (gateReadNames_movfree h (rn, w') hmem)
+          (fun hc => gateReadNames_cycfree h (rn, w') hmem hc)]
         apply hread
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.dbudget p from by
-            fin_cases h <;> fin_cases p <;>
-              exact of_decide_eq_true rfl) (rn, w') hmem
+        · exact gateRead_ne_dbudget h p (rn, w') hmem
         · rw [hhg] at hnd
           exact hnd
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_v" from by
-            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_dom" from by
-            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_word" from by
-            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ "if_cl" from by
-            fin_cases h <;> exact of_decide_eq_true rfl) (rn, w') hmem
+        · exact (gateRead_ne_ifs h (rn, w') hmem).1
+        · exact (gateRead_ne_ifs h (rn, w') hmem).2.1
+        · exact (gateRead_ne_ifs h (rn, w') hmem).2.2.1
+        · exact (gateRead_ne_ifs h (rn, w') hmem).2.2.2
       have hgdonr : ((Hw.core m).cycle σ).regs (Hw.gdon h) 32
           = (donE e).eval σ - (cost32E e).eval σ := by
-        rw [hp' (Hw.gdon h) 32 (by fin_cases h <;> decide +kernel)
-          (by fin_cases h <;> decide +kernel), hchain, hhg]
+        rw [hp' (Hw.gdon h) 32 ((gdon_qfacts h).1)
+          (fun hc => (gdon_qfacts h).2 hc.1), hchain, hhg]
         show ((((((σ1.regs.set (Hw.dbudget p)
           ((Expr.sub (Hw.effBudgetE m p) (cost32E e)).eval σ)).set
           (Hw.gdon g) ((Expr.sub (donE e) (cost32E e)).eval σ)).set
@@ -2173,39 +2266,35 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
           ((wE e).eval σ)).set "if_cl" ((Hw.costE (opcEx e)).eval σ) :
           _root_.Loom.Hw.RegEnv) (Hw.gdon g) 32 = _
         simp only [RegEnv.set]
-        rw [if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
-            Hw.gdon g ≠ "if_cl"),
-          if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
-            Hw.gdon g ≠ "if_word"),
-          if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
-            Hw.gdon g ≠ "if_dom"),
-          if_neg (by fin_cases g <;> exact of_decide_eq_true rfl :
-            Hw.gdon g ≠ "if_v")]
+        rw [if_neg ((gdon_ne_ifs g).2.2.2 : Hw.gdon g ≠ "if_cl"),
+          if_neg ((gdon_ne_ifs g).2.2.1 : Hw.gdon g ≠ "if_word"),
+          if_neg ((gdon_ne_ifs g).2.1 : Hw.gdon g ≠ "if_dom"),
+          if_neg ((gdon_ne_ifs g).1 : Hw.gdon g ≠ "if_v")]
         simp [Expr.eval]
       unfold Hw.absGate
       rw [hgread (Hw.gcallee h) 2
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).1) (by simp [gateReadNames]),
         hgread (Hw.gentry h) 12
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.1) (by simp [gateReadNames]),
         hgread (Hw.gactV h) 1
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.2.1) (by simp [gateReadNames]),
         hgread (Hw.gcaller h) 2
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.2.2.1) (by simp [gateReadNames]),
         hgread (Hw.gcallerRd h) 3
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.2.2.2.1) (by simp [gateReadNames]),
         hgread (Hw.gspc h) 12
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.2.2.2.2.1) (by simp [gateReadNames]),
         hgread (Hw.gssrvV h) 1
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.2.2.2.2.2.1) (by simp [gateReadNames]),
         hgread (Hw.gssrv h) 2
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.2.2.2.2.2.2.1) (by simp [gateReadNames]),
         hgread (Hw.gdepth h) 3
-          (by fin_cases h <;> exact of_decide_eq_true rfl) (by simp [gateReadNames]),
+          ((gateCfg_ne_gdon h).2.2.2.2.2.2.2.2) (by simp [gateReadNames]),
         hgdonr]
       have hsreg : ∀ r : RegId, ((Hw.core m).cycle σ).regs (Hw.gsreg h r) 32
           = σ1.regs (Hw.gsreg h r) 32 := fun r =>
         hgread (Hw.gsreg h r) 32
-          (by fin_cases h <;> fin_cases r <;> exact of_decide_eq_true rfl)
+          (gsreg_ne_gdon h r)
           (by simp [gateReadNames])
       simp only [hsreg]
       -- assemble: config from the decode, activation record fieldwise
@@ -2227,21 +2316,12 @@ theorem square_issue_serve (m : Manifest) (hwf : m.WF) (hfit : Fits m)
       intro q hq
       rw [hp' q.1 q.2 (hmovfree q hq) (hcycfree q hq)]
       apply hread
-      · exact (show ∀ r ∈ gateReadNames h, r.1 ≠ Hw.dbudget p from by
-          fin_cases h <;> fin_cases p <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ gateReadNames h, r.1 ≠ Hw.gdon g from by
-          fin_cases h <;> fin_cases g <;>
-            first
-              | exact absurd rfl hhg
-              | exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ gateReadNames h, r.1 ≠ "if_v" from by
-          fin_cases h <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ gateReadNames h, r.1 ≠ "if_dom" from by
-          fin_cases h <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ gateReadNames h, r.1 ≠ "if_word" from by
-          fin_cases h <;> exact of_decide_eq_true rfl) q hq
-      · exact (show ∀ r ∈ gateReadNames h, r.1 ≠ "if_cl" from by
-          fin_cases h <;> exact of_decide_eq_true rfl) q hq
+      · exact gateRead_ne_dbudget h p q hq
+      · exact gateRead_ne_gdon h g hhg q hq
+      · exact (gateRead_ne_ifs h q hq).1
+      · exact (gateRead_ne_ifs h q hq).2.1
+      · exact (gateRead_ne_ifs h q hq).2.2.1
+      · exact (gateRead_ne_ifs h q hq).2.2.2
   · show Hw.absMover ((Hw.core m).cycle σ)
       = (moverPhase (corePhase m τ1)).mover
     rw [core_cycle_unfold]

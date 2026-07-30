@@ -253,6 +253,143 @@ private theorem gactV_inj (x y : GateId) : Hw.gactV x = Hw.gactV y ↔ x = y := 
     fin_cases x <;> fin_cases y <;> first | rfl | (exact absurd h (by decide +kernel))
   · intro h; rw [h]
 
+/-! ## Closed name-discrimination facts
+
+Evaluated once in the kernel; the bridge proofs below reference these
+instead of sweeping `fin_cases` per site. -/
+
+private theorem base3_quiet_other : ∀ (x d : DomainId), x ≠ d →
+    ∀ q ∈ domReadNames x,
+      q.1 ≠ Hw.drun d ∧ q.1 ≠ Hw.dcause d ∧ q.1 ≠ Hw.dsrvV d := by
+  decide +kernel
+
+private theorem base3_quiet_gate : ∀ (g : GateId) (d : DomainId),
+    ∀ q ∈ gateReadNames g,
+      q.1 ≠ Hw.drun d ∧ q.1 ≠ Hw.dcause d ∧ q.1 ≠ Hw.dsrvV d := by
+  decide +kernel
+
+private theorem b3_reg : ∀ (x : DomainId) (r : RegId),
+    Hw.dreg x r ≠ Hw.drun x ∧ Hw.dreg x r ≠ Hw.dcause x ∧
+      Hw.dreg x r ≠ Hw.dsrvV x := by
+  decide +kernel
+
+private theorem b3_scalar : ∀ (x : DomainId),
+    (Hw.dpc x ≠ Hw.drun x ∧ Hw.dpc x ≠ Hw.dcause x ∧
+      Hw.dpc x ≠ Hw.dsrvV x) ∧
+    (Hw.dbudget x ≠ Hw.drun x ∧ Hw.dbudget x ≠ Hw.dcause x ∧
+      Hw.dbudget x ≠ Hw.dsrvV x) ∧
+    (Hw.dmaxdon x ≠ Hw.drun x ∧ Hw.dmaxdon x ≠ Hw.dcause x ∧
+      Hw.dmaxdon x ≠ Hw.dsrvV x) := by
+  decide +kernel
+
+private theorem b3_slot : ∀ (x : DomainId) (s : Slot),
+    (Hw.dcapV x s ≠ Hw.drun x ∧ Hw.dcapV x s ≠ Hw.dcause x ∧
+      Hw.dcapV x s ≠ Hw.dsrvV x) ∧
+    (Hw.dcapKind x s ≠ Hw.drun x ∧ Hw.dcapKind x s ≠ Hw.dcause x ∧
+      Hw.dcapKind x s ≠ Hw.dsrvV x) ∧
+    (Hw.dcapLinV x s ≠ Hw.drun x ∧ Hw.dcapLinV x s ≠ Hw.dcause x ∧
+      Hw.dcapLinV x s ≠ Hw.dsrvV x) ∧
+    (Hw.dcapLin x s ≠ Hw.drun x ∧ Hw.dcapLin x s ≠ Hw.dcause x ∧
+      Hw.dcapLin x s ≠ Hw.dsrvV x) ∧
+    (Hw.dgen x s ≠ Hw.drun x ∧ Hw.dgen x s ≠ Hw.dcause x ∧
+      Hw.dgen x s ≠ Hw.dsrvV x) := by
+  decide +kernel
+
+private theorem b3_lin : ∀ (x : DomainId) (l : LineageId),
+    (Hw.dcellV x l ≠ Hw.drun x ∧ Hw.dcellV x l ≠ Hw.dcause x ∧
+      Hw.dcellV x l ≠ Hw.dsrvV x) ∧
+    (Hw.dcellPar x l ≠ Hw.drun x ∧ Hw.dcellPar x l ≠ Hw.dcause x ∧
+      Hw.dcellPar x l ≠ Hw.dsrvV x) := by
+  decide +kernel
+
+private theorem b3_rgn : ∀ (x : DomainId) (r : RegionId),
+    (Hw.drgnV x r ≠ Hw.drun x ∧ Hw.drgnV x r ≠ Hw.dcause x ∧
+      Hw.drgnV x r ≠ Hw.dsrvV x) ∧
+    (Hw.drgn x r ≠ Hw.drun x ∧ Hw.drgn x r ≠ Hw.dcause x ∧
+      Hw.drgn x r ≠ Hw.dsrvV x) := by
+  decide +kernel
+
+private theorem domRead_ne_gactV : ∀ (x : DomainId) (g : GateId),
+    ∀ q ∈ domReadNames x, q.1 ≠ Hw.gactV g := by
+  decide +kernel
+
+private theorem u_dreg_other : ∀ (x cl : DomainId), x ≠ cl →
+    ∀ (rd : RegId), ∀ q ∈ domReadNames x, q.1 ≠ Hw.dreg cl rd := by
+  decide +kernel
+
+private theorem gate_ne_gactV : ∀ (h g : GateId), h ≠ g →
+    ∀ q ∈ gateReadNames h, q.1 ≠ Hw.gactV g := by
+  decide +kernel
+
+private theorem gate_ne_dreg : ∀ (h : GateId) (cl : DomainId) (rd : RegId),
+    ∀ q ∈ gateReadNames h, q.1 ≠ Hw.dreg cl rd := by
+  decide +kernel
+
+private theorem u_reg : ∀ (x : DomainId) (g : GateId) (r : RegId),
+    Hw.dreg x r ≠ Hw.gactV g ∧ Hw.dreg x r ≠ Hw.drun x := by
+  decide +kernel
+
+private theorem u_dreg_ne : ∀ (x : DomainId) (r rd : RegId), r ≠ rd →
+    Hw.dreg x r ≠ Hw.dreg x rd := by
+  decide +kernel
+
+private theorem u_slot : ∀ (x : DomainId) (g : GateId) (s : Slot)
+    (rd : RegId),
+    (Hw.dcapV x s ≠ Hw.gactV g ∧ Hw.dcapV x s ≠ Hw.drun x ∧
+      Hw.dcapV x s ≠ Hw.dreg x rd) ∧
+    (Hw.dcapKind x s ≠ Hw.gactV g ∧ Hw.dcapKind x s ≠ Hw.drun x ∧
+      Hw.dcapKind x s ≠ Hw.dreg x rd) ∧
+    (Hw.dcapLinV x s ≠ Hw.gactV g ∧ Hw.dcapLinV x s ≠ Hw.drun x ∧
+      Hw.dcapLinV x s ≠ Hw.dreg x rd) ∧
+    (Hw.dcapLin x s ≠ Hw.gactV g ∧ Hw.dcapLin x s ≠ Hw.drun x ∧
+      Hw.dcapLin x s ≠ Hw.dreg x rd) ∧
+    (Hw.dgen x s ≠ Hw.gactV g ∧ Hw.dgen x s ≠ Hw.drun x ∧
+      Hw.dgen x s ≠ Hw.dreg x rd) := by
+  decide +kernel
+
+private theorem u_lin : ∀ (x : DomainId) (g : GateId) (l : LineageId)
+    (rd : RegId),
+    (Hw.dcellV x l ≠ Hw.gactV g ∧ Hw.dcellV x l ≠ Hw.drun x ∧
+      Hw.dcellV x l ≠ Hw.dreg x rd) ∧
+    (Hw.dcellPar x l ≠ Hw.gactV g ∧ Hw.dcellPar x l ≠ Hw.drun x ∧
+      Hw.dcellPar x l ≠ Hw.dreg x rd) := by
+  decide +kernel
+
+private theorem u_rgn : ∀ (x : DomainId) (g : GateId) (r : RegionId)
+    (rd : RegId),
+    (Hw.drgnV x r ≠ Hw.gactV g ∧ Hw.drgnV x r ≠ Hw.drun x ∧
+      Hw.drgnV x r ≠ Hw.dreg x rd) ∧
+    (Hw.drgn x r ≠ Hw.gactV g ∧ Hw.drgn x r ≠ Hw.drun x ∧
+      Hw.drgn x r ≠ Hw.dreg x rd) := by
+  decide +kernel
+
+private theorem u_scalar : ∀ (x : DomainId) (g : GateId) (rd : RegId),
+    (Hw.dpc x ≠ Hw.gactV g ∧ Hw.dpc x ≠ Hw.drun x ∧
+      Hw.dpc x ≠ Hw.dreg x rd) ∧
+    (Hw.dsrvV x ≠ Hw.gactV g ∧ Hw.dsrvV x ≠ Hw.drun x ∧
+      Hw.dsrvV x ≠ Hw.dreg x rd) ∧
+    (Hw.dsrv x ≠ Hw.gactV g ∧ Hw.dsrv x ≠ Hw.drun x ∧
+      Hw.dsrv x ≠ Hw.dreg x rd) ∧
+    (Hw.dcause x ≠ Hw.gactV g ∧ Hw.dcause x ≠ Hw.drun x ∧
+      Hw.dcause x ≠ Hw.dreg x rd) ∧
+    (Hw.dbudget x ≠ Hw.gactV g ∧ Hw.dbudget x ≠ Hw.drun x ∧
+      Hw.dbudget x ≠ Hw.dreg x rd) ∧
+    (Hw.dmaxdon x ≠ Hw.gactV g ∧ Hw.dmaxdon x ≠ Hw.drun x ∧
+      Hw.dmaxdon x ≠ Hw.dreg x rd) := by
+  decide +kernel
+
+private theorem gcfg_quiet : ∀ (h : GateId) (cl : DomainId) (rd : RegId),
+    (Hw.gcallee h ≠ Hw.gactV h ∧ Hw.gcallee h ≠ Hw.drun cl ∧
+      Hw.gcallee h ≠ Hw.dreg cl rd) ∧
+    (Hw.gentry h ≠ Hw.gactV h ∧ Hw.gentry h ≠ Hw.drun cl ∧
+      Hw.gentry h ≠ Hw.dreg cl rd) ∧
+    (Hw.gactV h ≠ Hw.drun cl ∧ Hw.gactV h ≠ Hw.dreg cl rd) := by
+  decide +kernel
+
+private theorem drun_ne_dreg : ∀ (x : DomainId) (rd : RegId),
+    Hw.drun x ≠ Hw.dreg x rd := by
+  decide +kernel
+
 /-! ## The abs-level bridge, base-only case -/
 
 /-- Register reads through the three base writes. -/
@@ -316,67 +453,67 @@ theorem abs_haltBase3 (σ acc : Loom.Hw.St) (τ : MachineState) (d : DomainId)
         rw [show (Hw.absDom ((haltBase3 x cause).run σ acc) x).regs r
             = ((haltBase3 x cause).run σ acc).regs (Hw.dreg x r) 32 from rfl,
           base3_read σ acc x cause _ _
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)]
+            ((b3_reg x r).1)
+            ((b3_reg x r).2.1)
+            ((b3_reg x r).2.2)]
         exact congrFun (congrArg DomainState.regs (hdoms x)) r
       · rw [show (Hw.absDom ((haltBase3 x cause).run σ acc) x).pc
             = ((haltBase3 x cause).run σ acc).regs (Hw.dpc x) 12 from rfl,
           base3_read σ acc x cause _ _
-            (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel)]
+            ((b3_scalar x).1.1)
+            ((b3_scalar x).1.2.1)
+            ((b3_scalar x).1.2.2)]
         exact congrArg DomainState.pc (hdoms x)
       · funext s
         show (if ((haltBase3 x cause).run σ acc).regs (Hw.dcapV x s) 1 = 1
           then _ else _) = _
         rw [base3_read σ acc x cause _ _
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
+            ((b3_slot x s).1.1)
+            ((b3_slot x s).1.2.1)
+            ((b3_slot x s).1.2.2),
           base3_read σ acc x cause (Hw.dcapKind x s) 32
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
+            ((b3_slot x s).2.1.1)
+            ((b3_slot x s).2.1.2.1)
+            ((b3_slot x s).2.1.2.2),
           base3_read σ acc x cause (Hw.dcapLinV x s) 1
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel),
+            ((b3_slot x s).2.2.1.1)
+            ((b3_slot x s).2.2.1.2.1)
+            ((b3_slot x s).2.2.1.2.2),
           base3_read σ acc x cause (Hw.dcapLin x s) 4
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)]
+            ((b3_slot x s).2.2.2.1.1)
+            ((b3_slot x s).2.2.2.1.2.1)
+            ((b3_slot x s).2.2.2.1.2.2)]
         exact congrFun (congrArg DomainState.caps (hdoms x)) s
       · funext s
         show ((haltBase3 x cause).run σ acc).regs (Hw.dgen x s) 8 = _
         rw [base3_read σ acc x cause _ _
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)
-            (by fin_cases x <;> fin_cases s <;> decide +kernel)]
+            ((b3_slot x s).2.2.2.2.1)
+            ((b3_slot x s).2.2.2.2.2.1)
+            ((b3_slot x s).2.2.2.2.2.2)]
         exact congrFun (congrArg DomainState.slotGen (hdoms x)) s
       · funext l
         show (if ((haltBase3 x cause).run σ acc).regs (Hw.dcellV x l) 1 = 1
           then _ else _) = _
         rw [base3_read σ acc x cause _ _
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel),
+            ((b3_lin x l).1.1)
+            ((b3_lin x l).1.2.1)
+            ((b3_lin x l).1.2.2),
           base3_read σ acc x cause (Hw.dcellPar x l) 14
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)
-            (by fin_cases x <;> fin_cases l <;> decide +kernel)]
+            ((b3_lin x l).2.1)
+            ((b3_lin x l).2.2.1)
+            ((b3_lin x l).2.2.2)]
         exact congrFun (congrArg DomainState.lineage (hdoms x)) l
       · funext r
         show (if ((haltBase3 x cause).run σ acc).regs (Hw.drgnV x r) 1 = 1
           then _ else _) = _
         rw [base3_read σ acc x cause _ _
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel),
+            ((b3_rgn x r).1.1)
+            ((b3_rgn x r).1.2.1)
+            ((b3_rgn x r).1.2.2),
           base3_read σ acc x cause (Hw.drgn x r) 42
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)
-            (by fin_cases x <;> fin_cases r <;> decide +kernel)]
+            ((b3_rgn x r).2.1)
+            ((b3_rgn x r).2.2.1)
+            ((b3_rgn x r).2.2.2)]
         exact congrFun (congrArg DomainState.regions (hdoms x)) r
       · show Hw.decRun (((haltBase3 x cause).run σ acc).regs (Hw.drun x) 2)
           _ = RunState.halted
@@ -390,47 +527,32 @@ theorem abs_haltBase3 (σ acc : Loom.Hw.St) (τ : MachineState) (d : DomainId)
         rw [base3_read_dcause]
       · show (((haltBase3 x cause).run σ acc).regs (Hw.dbudget x) 32).toNat = _
         rw [base3_read σ acc x cause _ _
-            (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel)]
+            ((b3_scalar x).2.1.1)
+            ((b3_scalar x).2.1.2.1)
+            ((b3_scalar x).2.1.2.2)]
         exact congrArg DomainState.budget (hdoms x)
       · show (((haltBase3 x cause).run σ acc).regs (Hw.dmaxdon x) 32).toNat = _
         rw [base3_read σ acc x cause _ _
-            (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel)
-            (by fin_cases x <;> decide +kernel)]
+            ((b3_scalar x).2.2.1)
+            ((b3_scalar x).2.2.2.1)
+            ((b3_scalar x).2.2.2.2)]
         exact congrArg DomainState.maxDonation (hdoms x)
     · rw [Loom.Fun.update_ne _ _ _ _ hxd, ← hdoms x]
       apply absDom_congr
       intro p hp
       apply base3_read
-      · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.drun d from by
-          fin_cases x <;> fin_cases d <;>
-            first
-              | exact absurd rfl hxd
-              | exact of_decide_eq_true rfl) p hp
-      · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.dcause d from by
-          fin_cases x <;> fin_cases d <;>
-            first
-              | exact absurd rfl hxd
-              | exact of_decide_eq_true rfl) p hp
-      · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.dsrvV d from by
-          fin_cases x <;> fin_cases d <;>
-            first
-              | exact absurd rfl hxd
-              | exact of_decide_eq_true rfl) p hp
+      · exact (base3_quiet_other x d hxd p hp).1
+      · exact (base3_quiet_other x d hxd p hp).2.1
+      · exact (base3_quiet_other x d hxd p hp).2.2
   · intro g
     show Hw.absGate _ g = τ.gates g
     rw [← hgates g]
     apply absGate_congr
     intro p hp
     apply base3_read
-    · exact (show ∀ q ∈ gateReadNames g, q.1 ≠ Hw.drun d from by
-        fin_cases g <;> fin_cases d <;> exact of_decide_eq_true rfl) p hp
-    · exact (show ∀ q ∈ gateReadNames g, q.1 ≠ Hw.dcause d from by
-        fin_cases g <;> fin_cases d <;> exact of_decide_eq_true rfl) p hp
-    · exact (show ∀ q ∈ gateReadNames g, q.1 ≠ Hw.dsrvV d from by
-        fin_cases g <;> fin_cases d <;> exact of_decide_eq_true rfl) p hp
+    · exact (base3_quiet_gate g d p hp).1
+    · exact (base3_quiet_gate g d p hp).2.1
+    · exact (base3_quiet_gate g d p hp).2.2
 
 
 /-! ## The unwind face -/
@@ -481,57 +603,47 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
         apply domainState_ext'
         · funext r
           exact unwind2_read σ acc' g x _ _
-            (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
+            ((u_reg x g r).1)
+            ((u_reg x g r).2)
         · exact unwind2_read σ acc' g x _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            ((u_scalar x g rd).1.1)
+            ((u_scalar x g rd).1.2.1)
         · funext s
           show (if A2.regs (Hw.dcapV x s) 1 = 1 then _ else _) = _
           rw [unwind2_read σ acc' g x (Hw.dcapV x s) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+              ((u_slot x g s rd).1.1)
+              ((u_slot x g s rd).1.2.1),
             unwind2_read σ acc' g x (Hw.dcapKind x s) 32
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+              ((u_slot x g s rd).2.1.1)
+              ((u_slot x g s rd).2.1.2.1),
             unwind2_read σ acc' g x (Hw.dcapLinV x s) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl),
+              ((u_slot x g s rd).2.2.1.1)
+              ((u_slot x g s rd).2.2.1.2.1),
             unwind2_read σ acc' g x (Hw.dcapLin x s) 4
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)]
+              ((u_slot x g s rd).2.2.2.1.1)
+              ((u_slot x g s rd).2.2.2.1.2.1)]
           rfl
         · funext s
           exact unwind2_read σ acc' g x _ _
-            (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
+            ((u_slot x g s rd).2.2.2.2.1)
+            ((u_slot x g s rd).2.2.2.2.2.1)
         · funext l
           show (if A2.regs (Hw.dcellV x l) 1 = 1 then _ else _) = _
           rw [unwind2_read σ acc' g x (Hw.dcellV x l) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases l <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl),
+              ((u_lin x g l rd).1.1)
+              ((u_lin x g l rd).1.2.1),
             unwind2_read σ acc' g x (Hw.dcellPar x l) 14
-              (by fin_cases x <;> fin_cases g <;> fin_cases l <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)]
+              ((u_lin x g l rd).2.1)
+              ((u_lin x g l rd).2.2.1)]
           rfl
         · funext r
           show (if A2.regs (Hw.drgnV x r) 1 = 1 then _ else _) = _
           rw [unwind2_read σ acc' g x (Hw.drgnV x r) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl),
+              ((u_rgn x g r rd).1.1)
+              ((u_rgn x g r rd).1.2.1),
             unwind2_read σ acc' g x (Hw.drgn x r) 42
-              (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)]
+              ((u_rgn x g r rd).2.1)
+              ((u_rgn x g r rd).2.2.1)]
           rfl
         · show Hw.decRun (A2.regs (Hw.drun x) 2) (A2.regs (Hw.drunG x) 2)
             = .running
@@ -543,36 +655,31 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
           rfl
         · show (if A2.regs (Hw.dsrvV x) 1 = 1 then _ else _) = _
           rw [unwind2_read σ acc' g x (Hw.dsrvV x) 1
-              (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> exact of_decide_eq_true rfl),
+              ((u_scalar x g rd).2.1.1)
+              ((u_scalar x g rd).2.1.2.1),
             unwind2_read σ acc' g x (Hw.dsrv x) 2
-              (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> exact of_decide_eq_true rfl)]
+              ((u_scalar x g rd).2.2.1.1)
+              ((u_scalar x g rd).2.2.1.2.1)]
           rfl
         · exact unwind2_read σ acc' g x _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
+            ((u_scalar x g rd).2.2.2.1.1)
+            ((u_scalar x g rd).2.2.2.1.2.1)
         · show (A2.regs (Hw.dbudget x) 32).toNat = _
           rw [unwind2_read σ acc' g x _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+            ((u_scalar x g rd).2.2.2.2.1.1)
+            ((u_scalar x g rd).2.2.2.2.1.2.1)]
           rfl
         · show (A2.regs (Hw.dmaxdon x) 32).toNat = _
           rw [unwind2_read σ acc' g x _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)]
+            ((u_scalar x g rd).2.2.2.2.2.1)
+            ((u_scalar x g rd).2.2.2.2.2.2.1)]
           rfl
       · rw [Loom.Fun.update_ne _ _ _ _ hxc, ← hdoms x]
         apply absDom_congr
         intro p hp
         apply unwind2_read
-        · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.gactV g from by
-            fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl) p hp
-        · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.drun cl from by
-            fin_cases x <;> fin_cases cl <;>
-              first
-                | exact absurd rfl hxc
-                | exact of_decide_eq_true rfl) p hp
+        · exact domRead_ne_gactV x g p hp
+        · exact (base3_quiet_other x cl hxc p hp).1
     · intro h
       show Hw.absGate A2 h = (Loom.Fun.update _ g _) h
       by_cases hhg : h = g
@@ -586,27 +693,19 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
           show (((_root_.Loom.Hw.RegEnv.set acc'.regs (Hw.gactV h)
             (0:BitVec 1))).set (Hw.drun cl) (0:BitVec 2)) (Hw.gactV h) 1 = 0#1
           simp only [RegEnv.set]
-          rw [if_neg (by fin_cases h <;> fin_cases cl <;>
-            exact of_decide_eq_true rfl : Hw.gactV h ≠ Hw.drun cl)]
+          rw [if_neg ((gcfg_quiet h cl rd).2.2.1 : Hw.gactV h ≠ Hw.drun cl)]
           simp]
         rw [unwind2_read σ acc' h cl (Hw.gcallee h) 2
-            (by fin_cases h <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> fin_cases cl <;> exact of_decide_eq_true rfl),
+            (gcfg_quiet h cl rd).1.1 (gcfg_quiet h cl rd).1.2.1,
           unwind2_read σ acc' h cl (Hw.gentry h) 12
-            (by fin_cases h <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> fin_cases cl <;> exact of_decide_eq_true rfl)]
+            (gcfg_quiet h cl rd).2.1.1 (gcfg_quiet h cl rd).2.1.2.1]
         rfl
       · rw [Loom.Fun.update_ne _ _ _ _ hhg, ← hgates h]
         apply absGate_congr
         intro p hp
         apply unwind2_read
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.gactV g from by
-            fin_cases h <;> fin_cases g <;>
-              first
-                | exact absurd rfl hhg
-                | exact of_decide_eq_true rfl) p hp
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.drun cl from by
-            fin_cases h <;> fin_cases cl <;> exact of_decide_eq_true rfl) p hp
+        · exact gate_ne_gactV h g hhg p hp
+        · exact (base3_quiet_gate h cl p hp).1
   · -- live reply register
     rw [writeReg_run_of_nz σ A2 cl _ _ rd
       (show rd.val = ((Expr.reg 3 (Hw.gcallerRd g)).eval σ).toNat from hrd)
@@ -643,81 +742,59 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
             simp [RegEnv.set, Expr.eval]
           · rw [Loom.Fun.update_ne _ _ _ _ hr]
             rw [hread3 _ _
-              (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> fin_cases rd <;>
-                first
-                  | exact absurd rfl hr
-                  | exact of_decide_eq_true rfl)]
+              ((u_reg x g r).1)
+              ((u_reg x g r).2)
+              (u_dreg_ne x r rd hr)]
             rfl
         · exact hread3 _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases rd <;> exact of_decide_eq_true rfl)
+            ((u_scalar x g rd).1.1)
+            ((u_scalar x g rd).1.2.1)
+            ((u_scalar x g rd).1.2.2)
         · funext s
           show (if S3.regs (Hw.dcapV x s) 1 = 1 then _ else _) = _
           rw [hread3 (Hw.dcapV x s) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl),
+              ((u_slot x g s rd).1.1)
+              ((u_slot x g s rd).1.2.1)
+              ((u_slot x g s rd).1.2.2),
             hread3 (Hw.dcapKind x s) 32
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl),
+              ((u_slot x g s rd).2.1.1)
+              ((u_slot x g s rd).2.1.2.1)
+              ((u_slot x g s rd).2.1.2.2),
             hread3 (Hw.dcapLinV x s) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl),
+              ((u_slot x g s rd).2.2.1.1)
+              ((u_slot x g s rd).2.2.1.2.1)
+              ((u_slot x g s rd).2.2.1.2.2),
             hread3 (Hw.dcapLin x s) 4
-              (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases s <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl)]
+              ((u_slot x g s rd).2.2.2.1.1)
+              ((u_slot x g s rd).2.2.2.1.2.1)
+              ((u_slot x g s rd).2.2.2.1.2.2)]
           rfl
         · funext s
           exact hread3 _ _
-            (by fin_cases x <;> fin_cases g <;> fin_cases s <;>
-              exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases s <;> fin_cases rd <;>
-              exact of_decide_eq_true rfl)
+            ((u_slot x g s rd).2.2.2.2.1)
+            ((u_slot x g s rd).2.2.2.2.2.1)
+            ((u_slot x g s rd).2.2.2.2.2.2)
         · funext l
           show (if S3.regs (Hw.dcellV x l) 1 = 1 then _ else _) = _
           rw [hread3 (Hw.dcellV x l) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases l <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases l <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl),
+              ((u_lin x g l rd).1.1)
+              ((u_lin x g l rd).1.2.1)
+              ((u_lin x g l rd).1.2.2),
             hread3 (Hw.dcellPar x l) 14
-              (by fin_cases x <;> fin_cases g <;> fin_cases l <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases l <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases l <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl)]
+              ((u_lin x g l rd).2.1)
+              ((u_lin x g l rd).2.2.1)
+              ((u_lin x g l rd).2.2.2)]
           rfl
         · funext r
           show (if S3.regs (Hw.drgnV x r) 1 = 1 then _ else _) = _
           rw [hread3 (Hw.drgnV x r) 1
-              (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl),
+              ((u_rgn x g r rd).1.1)
+              ((u_rgn x g r rd).1.2.1)
+              ((u_rgn x g r rd).1.2.2),
             hread3 (Hw.drgn x r) 42
-              (by fin_cases x <;> fin_cases g <;> fin_cases r <;>
-                exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases r <;> fin_cases rd <;>
-                exact of_decide_eq_true rfl)]
+              ((u_rgn x g r rd).2.1)
+              ((u_rgn x g r rd).2.2.1)
+              ((u_rgn x g r rd).2.2.2)]
           rfl
         · show Hw.decRun (S3.regs (Hw.drun x) 2) (S3.regs (Hw.drunG x) 2)
             = .running
@@ -726,8 +803,7 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
             show (_root_.Loom.Hw.RegEnv.set A2.regs (Hw.dreg x rd) _)
               (Hw.drun x) 2 = 0#2
             simp only [RegEnv.set]
-            rw [if_neg (by fin_cases x <;> fin_cases rd <;>
-              exact of_decide_eq_true rfl : Hw.drun x ≠ Hw.dreg x rd)]
+            rw [if_neg (drun_ne_dreg x rd : Hw.drun x ≠ Hw.dreg x rd)]
             rw [hA2]
             show ((_root_.Loom.Hw.RegEnv.set _ (Hw.drun x) (0:BitVec 2)))
               (Hw.drun x) 2 = 0#2
@@ -735,46 +811,37 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
           rfl
         · show (if S3.regs (Hw.dsrvV x) 1 = 1 then _ else _) = _
           rw [hread3 (Hw.dsrvV x) 1
-              (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases rd <;> exact of_decide_eq_true rfl),
+              ((u_scalar x g rd).2.1.1)
+              ((u_scalar x g rd).2.1.2.1)
+              ((u_scalar x g rd).2.1.2.2),
             hread3 (Hw.dsrv x) 2
-              (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> exact of_decide_eq_true rfl)
-              (by fin_cases x <;> fin_cases rd <;> exact of_decide_eq_true rfl)]
+              ((u_scalar x g rd).2.2.1.1)
+              ((u_scalar x g rd).2.2.1.2.1)
+              ((u_scalar x g rd).2.2.1.2.2)]
           rfl
         · exact hread3 _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases rd <;> exact of_decide_eq_true rfl)
+            ((u_scalar x g rd).2.2.2.1.1)
+            ((u_scalar x g rd).2.2.2.1.2.1)
+            ((u_scalar x g rd).2.2.2.1.2.2)
         · show (S3.regs (Hw.dbudget x) 32).toNat = _
           rw [hread3 _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases rd <;> exact of_decide_eq_true rfl)]
+            ((u_scalar x g rd).2.2.2.2.1.1)
+            ((u_scalar x g rd).2.2.2.2.1.2.1)
+            ((u_scalar x g rd).2.2.2.2.1.2.2)]
           rfl
         · show (S3.regs (Hw.dmaxdon x) 32).toNat = _
           rw [hread3 _ _
-            (by fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> exact of_decide_eq_true rfl)
-            (by fin_cases x <;> fin_cases rd <;> exact of_decide_eq_true rfl)]
+            ((u_scalar x g rd).2.2.2.2.2.1)
+            ((u_scalar x g rd).2.2.2.2.2.2.1)
+            ((u_scalar x g rd).2.2.2.2.2.2.2)]
           rfl
       · rw [Loom.Fun.update_ne _ _ _ _ hxc, ← hdoms x]
         apply absDom_congr
         intro p hp
         apply hread3
-        · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.gactV g from by
-            fin_cases x <;> fin_cases g <;> exact of_decide_eq_true rfl) p hp
-        · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.drun cl from by
-            fin_cases x <;> fin_cases cl <;>
-              first
-                | exact absurd rfl hxc
-                | exact of_decide_eq_true rfl) p hp
-        · exact (show ∀ q ∈ domReadNames x, q.1 ≠ Hw.dreg cl rd from by
-            fin_cases x <;> fin_cases cl <;>
-              first
-                | exact absurd rfl hxc
-                | (fin_cases rd <;> exact of_decide_eq_true rfl)) p hp
+        · exact domRead_ne_gactV x g p hp
+        · exact (base3_quiet_other x cl hxc p hp).1
+        · exact u_dreg_other x cl hxc rd p hp
     · intro h
       show Hw.absGate S3 h = (Loom.Fun.update _ g _) h
       by_cases hhg : h = g
@@ -789,40 +856,27 @@ theorem abs_gateBody (σ acc' : Loom.Hw.St) (τ' : MachineState)
             ((Expr.lit Errno.calleeFault.toWord).eval σ))
             (Hw.gactV h) 1 = 0#1
           simp only [RegEnv.set]
-          rw [if_neg (by fin_cases h <;> fin_cases cl <;> fin_cases rd <;>
-            exact of_decide_eq_true rfl : Hw.gactV h ≠ Hw.dreg cl rd)]
+          rw [if_neg ((gcfg_quiet h cl rd).2.2.2 : Hw.gactV h ≠ Hw.dreg cl rd)]
           rw [hA2]
           show (((_root_.Loom.Hw.RegEnv.set acc'.regs (Hw.gactV h)
             (0:BitVec 1))).set (Hw.drun cl) (0:BitVec 2)) (Hw.gactV h) 1 = 0#1
           simp only [RegEnv.set]
-          rw [if_neg (by fin_cases h <;> fin_cases cl <;>
-            exact of_decide_eq_true rfl : Hw.gactV h ≠ Hw.drun cl)]
+          rw [if_neg ((gcfg_quiet h cl rd).2.2.1 : Hw.gactV h ≠ Hw.drun cl)]
           simp]
         rw [hread3 (Hw.gcallee h) 2
-            (by fin_cases h <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> fin_cases cl <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> fin_cases cl <;> fin_cases rd <;>
-              exact of_decide_eq_true rfl),
+            (gcfg_quiet h cl rd).1.1 (gcfg_quiet h cl rd).1.2.1
+            (gcfg_quiet h cl rd).1.2.2,
           hread3 (Hw.gentry h) 12
-            (by fin_cases h <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> fin_cases cl <;> exact of_decide_eq_true rfl)
-            (by fin_cases h <;> fin_cases cl <;> fin_cases rd <;>
-              exact of_decide_eq_true rfl)]
+            (gcfg_quiet h cl rd).2.1.1 (gcfg_quiet h cl rd).2.1.2.1
+            (gcfg_quiet h cl rd).2.1.2.2]
         rfl
       · rw [Loom.Fun.update_ne _ _ _ _ hhg, ← hgates h]
         apply absGate_congr
         intro p hp
         apply hread3
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.gactV g from by
-            fin_cases h <;> fin_cases g <;>
-              first
-                | exact absurd rfl hhg
-                | exact of_decide_eq_true rfl) p hp
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.drun cl from by
-            fin_cases h <;> fin_cases cl <;> exact of_decide_eq_true rfl) p hp
-        · exact (show ∀ q ∈ gateReadNames h, q.1 ≠ Hw.dreg cl rd from by
-            fin_cases h <;> fin_cases cl <;> fin_cases rd <;>
-              exact of_decide_eq_true rfl) p hp
+        · exact gate_ne_gactV h g hhg p hp
+        · exact (base3_quiet_gate h cl p hp).1
+        · exact gate_ne_dreg h cl rd p hp
 
 
 /-! ## The halt bridge -/
