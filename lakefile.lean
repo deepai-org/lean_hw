@@ -52,6 +52,10 @@ lean_exe bookgen where
 lean_exe actionwidegen where
   root := `Tools.ActionWideGen
 
+lean_exe releaseAudit where
+  root := `Tools.ReleaseAudit
+  supportInterpreter := true
+
 lean_exe parityGateAcc8 where
   root := `Tools.ParityGateAcc8
 
