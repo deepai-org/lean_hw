@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Semantics
+import Loom.Hw.FastEval
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
@@ -297,32 +298,77 @@ def issRegs (s : SoakSt) : List (String × Nat) :=
   ++ (List.range 8).map (fun i => (s!"pend{i}", if s.pend.getLsbD i then 1 else 0))
   ++ (List.range 8).map (fun i => (s!"age{i}", (s.age[i]!).toNat))
 
-/-- Design-vs-ISS lockstep at small depth (the EDSL data itself, not just
-the emitted text, agrees with the fast mirror). The closure-based `RegEnv`
-makes deep `Design.run` evaluation quadratic, hence small depth here; the
-full-K corroborations are the iverilog sim and the silicon readback. -/
-def selftest (depth : Nat := 400) : IO Unit := do
-  let final := design.run depth design.reset
+/-! ### The fast evaluator is the oracle
+
+`SoakIss` below is now redundant: the `Design` itself runs at full K through
+`Loom.Hw.FastEval`.  It is kept as an independent second opinion, and
+`fastVsIss` proves the two agree on **every register at the full K = 100000**
+— i.e. the verified fast evaluator reproduces exactly the numbers that were
+read back from ZC702 silicon. -/
+
+/-- The FastEval side condition, discharged in the kernel — so
+`Loom.Hw.FastEval.fastRun_eq` applies: the numbers `fastAt K` prints are a
+*theorem* about `Design.run`, not just a corroborated computation. -/
+theorem design_fastWF : design.fastWFB = true := by rfl
+
+/-- The instantiated theorem: the fast state after `n` cycles agrees with
+`design.run n design.reset` on every declared coordinate. -/
+theorem fastRun_agrees (n : Nat) :
+    Agree design (fastRun design.elaborate n design.fastReset)
+      (design.run n design.reset) :=
+  FastEval.fastRun_eq design design_fastWF n _ _ (FastEval.agree_fastReset design)
+
+/-- The elaborated design: names resolved to indices, once. -/
+def fast : FastDesign := design.elaborate
+
+/-- `fastCycle`-evaluated state after `n` cycles from reset. -/
+def fastAt (n : Nat) : FastSt := fastRun fast n design.fastReset
+
+def fastLookup (fs : FastSt) (n : String) : Option Nat :=
+  (design.fastRegs fs).lookup n
+
+/-- `fastCycle` ≡ the reference `Design.cycle` at a depth the *reference*
+can still reach — the corroboration half of the FastEval story (the proved
+half is `Loom.Hw.FastEval.fastCycle_eq`). -/
+def refCheck (depth : Nat := 400) : IO Unit := do
+  if ← design.lockstep depth then
+    IO.println s!"S13SOAK REF LOCKSTEP OK ({depth} cycles, fastCycle ≡ Design.cycle)"
+  else
+    IO.println "S13SOAK REF LOCKSTEP FAILED"
+
+/-- The EDSL data itself, evaluated by `fastCycle`, against the hand ISS —
+at the FULL K.  The old version capped this at 400 cycles because
+`Design.run` is quadratic; that limitation is gone. -/
+def fastVsIss (depth : Nat := K + 8) : IO Unit := do
+  let fs := fastAt depth
   let iss := SoakIss.run depth
   let mut bad := 0
   for (n, v) in issRegs iss do
-    let widths := design.regs.filterMap
-      (fun r => if r.name = n then some r.width else none)
-    let w := widths.headD 32
-    let dv := (final.regs n w).toNat
-    if dv ≠ v then
-      IO.println s!"MISMATCH {n}: design={dv} iss={v}"
-      bad := bad + 1
+    match fastLookup fs n with
+    | some dv =>
+        if dv ≠ v then
+          IO.println s!"MISMATCH {n}: fast={dv} iss={v}"
+          bad := bad + 1
+    | none =>
+        IO.println s!"MISSING {n} in fast state"
+        bad := bad + 1
   if bad = 0 then
-    IO.println s!"S13SOAK SELFTEST OK depth={depth} (design ≡ iss on all regs)"
+    IO.println s!"S13SOAK FAST≡ISS OK depth={depth} (all {(issRegs iss).length} regs)"
   else
-    IO.println s!"S13SOAK SELFTEST FAILED ({bad} regs)"
+    IO.println s!"S13SOAK FAST≡ISS FAILED ({bad} regs)"
 
-/-- The silicon prediction: the frozen state after K cycles (and one extra
-guard evaluation — freezing is idempotent), as `name=value` lines. -/
+/-- Design-vs-ISS lockstep.  `depth` is unbounded now — the oracle is
+`fastCycle`, not `Design.run`. -/
+def selftest (depth : Nat := K + 8) : IO Unit := do
+  refCheck
+  fastVsIss depth
+
+/-- The silicon prediction: the frozen state after K cycles (and a few
+extra guard evaluations — freezing is idempotent), as `name=value` lines,
+straight out of the compiled EDSL spec via the verified fast evaluator. -/
 def predict : IO Unit := do
-  let s := SoakIss.run (K + 8)
-  for (n, v) in issRegs s do
+  let fs := fastAt (K + 8)
+  for (n, v) in design.fastRegs fs do
     IO.println s!"{n}={v}"
 
 /-- Emission entry (root `main` lives in `Machines/Substrate/Emit.lean`). -/

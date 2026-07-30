@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Semantics
+import Loom.Hw.FastEval
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
@@ -122,6 +123,22 @@ def design : Design where
 theorem design_wf : Compile.DesignWF design :=
   Compile.designWFCheck_sound design (by decide)
 
+/-- The FastEval side condition, discharged in the kernel — so the open
+(D15) correctness theorem `Loom.Hw.FastEval.fastRunOpen_eq` applies to this
+design, and `fastCycleOpen` below is a *proved* stand-in for
+`Design.cycleOpen`, not merely a corroborated one. -/
+theorem design_fastWF : design.fastWFB = true := by rfl
+
+/-- The instantiated open-design theorem: replaying any input trace through
+`fastCycleOpen` agrees with the reference semantics on every declared
+coordinate. -/
+theorem fastRunOpen_agrees (n : Nat) (ιs : Nat → InEnv) :
+    Agree design
+      (fastRunOpen design.elaborate ιs n design.fastReset)
+      (design.runOpen ιs n design.reset) :=
+  FastEval.fastRunOpen_eq design design_fastWF n ιs _ _
+    (FastEval.agree_fastReset design)
+
 /-! ## The fast executable mirror (ISS) -/
 
 structure Cmd where
@@ -212,40 +229,79 @@ def issRegs (s : S0St) : List (String × Nat) :=
   [("scratch", s.scratch.toNat), ("led", s.led.toNat),
    ("con_idx", s.conIdx.toNat), ("rd_reg", s.rdReg.toNat), ("hb", s.hb.toNat)]
 
-/-- EDSL-vs-ISS lockstep over the acceptance trace, checking the full
-register state after every command. -/
-def selftest : IO Unit := do
-  let mut σ := design.reset
+/-! ### The fast evaluator as the oracle (open design) -/
+
+def fast : FastDesign := design.elaborate
+
+/-- Replay the acceptance trace through `fastCycleOpen`, comparing every
+register *and* every BRAM word against the hand ISS after each command.
+The open-design analogue of `S13Soak.fastVsIss`. -/
+def fastVsIss : IO Unit := do
+  let mut fs := design.fastReset
   let mut iss : S0St := {}
   let mut step := 0
   let mut bad := 0
   for c in acceptanceTrace do
-    σ := design.cycleOpen c.toEnv σ
+    fs := fastCycleOpen fast c.toEnv fs
     iss := Iss.step iss c
     for (n, v) in issRegs iss do
-      let w := (design.regs.filterMap
-        (fun r => if r.name = n then some r.width else none)).headD 32
-      if (σ.regs n w).toNat ≠ v then
-        IO.println s!"MISMATCH step {step} {n}: design={(σ.regs n w).toNat} iss={v}"
-        bad := bad + 1
+      match (design.fastRegs fs).lookup n with
+      | some dv =>
+          if dv ≠ v then
+            IO.println s!"MISMATCH step {step} {n}: fast={dv} iss={v}"
+            bad := bad + 1
+      | none =>
+          IO.println s!"MISSING {n}"
+          bad := bad + 1
+    let bram := design.fastMem fs "bram"
     for a in List.range 8 do
-      if (σ.mems "bram" a 32).toNat ≠ (iss.bram[a]!).toNat then
+      if bram.getD a 0 ≠ (iss.bram[a]!).toNat then
         IO.println s!"MISMATCH step {step} bram[{a}]"
         bad := bad + 1
     step := step + 1
   if bad = 0 then
-    IO.println s!"S0BSCAN SELFTEST OK ({acceptanceTrace.length} cmds, open-design lockstep)"
+    IO.println s!"S0BSCAN FAST≡ISS OK ({acceptanceTrace.length} cmds, regs + BRAM)"
   else
-    IO.println s!"S0BSCAN SELFTEST FAILED ({bad})"
+    IO.println s!"S0BSCAN FAST≡ISS FAILED ({bad})"
+
+/-- `fastCycleOpen` ≡ the reference `Design.cycleOpen` over the acceptance
+trace, checking the full register state and BRAM after every command. -/
+def refCheck : IO Unit := do
+  let mut fs := design.fastReset
+  let mut σ := design.reset
+  let mut bad := 0
+  let mut step := 0
+  for c in acceptanceTrace do
+    fs := fastCycleOpen fast c.toEnv fs
+    σ := design.cycleOpen c.toEnv σ
+    for (e, i) in design.regList.zipIdx do
+      if fs.regs.getD i 0 ≠ (σ.regs e.1 e.2).toNat then
+        IO.println s!"REF MISMATCH step {step} {e.1}"
+        bad := bad + 1
+    for a in List.range 8 do
+      if (design.fastMem fs "bram").getD a 0 ≠ (σ.mems "bram" a 32).toNat then
+        IO.println s!"REF MISMATCH step {step} bram[{a}]"
+        bad := bad + 1
+    step := step + 1
+  if bad = 0 then
+    IO.println "S0BSCAN REF LOCKSTEP OK (fastCycleOpen ≡ Design.cycleOpen)"
+  else
+    IO.println s!"S0BSCAN REF LOCKSTEP FAILED ({bad})"
+
+/-- The full acceptance cross-check. -/
+def selftest : IO Unit := do
+  refCheck
+  fastVsIss
 
 /-- Expected `rd_reg` after each command of the acceptance trace — the
-oracle for the iverilog testbench and the on-silicon JTAG run. -/
+oracle for the iverilog testbench and the on-silicon JTAG run, produced by
+the verified fast evaluator running the `Design` itself. -/
 def predict : IO Unit := do
-  let mut iss : S0St := {}
+  let mut fs := design.fastReset
   let mut k := 0
   for c in acceptanceTrace do
-    iss := Iss.step iss c
-    IO.println s!"{k} rd_reg={iss.rdReg.toNat}"
+    fs := fastCycleOpen fast c.toEnv fs
+    IO.println s!"{k} rd_reg={((design.fastRegs fs).lookup "rd_reg").getD 0}"
     k := k + 1
 
 def emit : IO Unit := design.emit "rtl/s0bscan.v"

@@ -22,6 +22,9 @@ import Loom.Hw.EmitIO
 import Loom.Hw.Rename
 import Loom.Hw.Compose
 import Loom.Hw.Retime
+import Loom.Hw.FastEval
+import Loom.Hw.Trees
+import Loom.Hw.Notation
 import Loom.Hw.CompileWhole
 import Loom.Hw.WholeRegisterPlan
 import Loom.Release.WholeRegisterPlan

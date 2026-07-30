@@ -4,6 +4,7 @@ import Machines.Substrate.S0Blinky
 import Machines.Substrate.S13Soak
 import Machines.Substrate.S0BscanRegs
 import Machines.Substrate.RetimeDemo
+import Machines.Substrate.S1Counters
 
 /-!
 # Substrate runner
@@ -25,8 +26,11 @@ def main (args : List String) : IO Unit := do
   | ["selftest"] => do
       S13Soak.selftest
       S0BscanRegs.selftest
+      S1Counters.check
   | ["predict"]         => S13Soak.predict
   | ["predict-s0bscan"] => S0BscanRegs.predict
+  | ["s1check"]   => S1Counters.check
+  | ["s1predict"] => S1Counters.predict
   | ["retime"] => do
       RetimeDemo.check
       RetimeDemo.emit
@@ -34,3 +38,4 @@ def main (args : List String) : IO Unit := do
       S0Blinky.emit
       S13Soak.emit
       S0BscanRegs.emit
+      S1Counters.emit

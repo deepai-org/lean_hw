@@ -25,6 +25,7 @@ import Machines.Substrate.S0Blinky
 import Machines.Substrate.S13Soak
 import Machines.Substrate.S0BscanRegs
 import Machines.Substrate.RetimeDemo
+import Machines.Substrate.S1Counters
 import Machines.Lnp64mini.Core
 import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness
