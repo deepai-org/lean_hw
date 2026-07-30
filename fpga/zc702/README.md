@@ -117,3 +117,32 @@ BRAM write/readback) matches the Lean ISS at all three points —
 ticking; the banner text "SUBSTRATE-0 M0 OK\r\n" served byte-by-byte from
 a Loom ROM on real silicon). The emission theorem extends to open designs
 as `Compile.compile_cycleOpen` — a corollary, not a re-proof.
+
+## Lnp64mini: NetBSD on the Loom-emitted core (2026-07-30)
+
+`Machines/Lnp64mini/` is the full port of the lnp64mini3 soft-core (the
+processor that runs NetBSD in the remote-fpga project): all 21 FSM states,
+the complete opcode set, MUL/DIV, the 32-thread hardware scheduler,
+LR/SC/futex, UART, GP MMIO, traps, and the BSCAN command surface — an open
+design over D15 ports, with the AXI masters/PS7/JTAG plumbing in the
+untrusted wrapper (`lnp64mini_top.v`, a drop-in mini3_top replacement with
+the identical BSCAN register map).
+
+The verification ladder, every rung bit-exact:
+1. `Design.cycleOpen` ≡ cycle-accurate Lean ISS (7 directed scripts, all
+   registers, every cycle).
+2. Emitted RTL in iverilog ≡ ISS ≡ **Rust lnp64 emulator** on a real
+   assembled program (`loomcheck.s`: r1..r9 = 6,7,42,255,36,14,42,56,14).
+3. **ZC702 silicon** ≡ all of the above: same program loaded through the
+   core's own JTAG DDR window, run from PS DDR over the AXI HP master,
+   identical rf/retire/pc readback (core at 12.5 MHz; emitted netlist
+   routes at 13.4 MHz max).
+4. **The NetBSD demo**: the §61 zero-BSCAN rump/NetBSD GEM image booted
+   on the Loom core by the unmodified remote-fpga flow (power_cycle →
+   fastload → trap servicer). The core walked the exact mini3 trap
+   trajectory (first trap ERRNO_SET@0x4000b8; total inventory = the same
+   4 one-shot boot traps at the same pcs), brought up native GEM0
+   Ethernet, answered ping (5/5) and served a telnet shell — and after
+   stopping the trap server (BSCAN quiet, xsdb dead): **ping 10/10, 0%
+   loss**. NetBSD + native Ethernet, indefinitely, on a processor that is
+   a Lean value.
