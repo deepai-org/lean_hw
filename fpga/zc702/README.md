@@ -157,3 +157,13 @@ ping 8/8 at 0% loss after servicer stop with BSCAN quiet — behind a thin
 wrapper holding only clock buffers, POR, BSCANE2+DR+CDC, and the PS7.
 Every single-clock sysclk LUT in the bitstream is Lean-emitted
 (13.11 MHz max route, 12.5 MHz clock).
+
+## Fmax: 13.11 -> 31.69 MHz, core clock 12.5 -> 25 MHz (2026-07-30)
+
+Semantics-preserving restructuring of `Machines/Lnp64mini/Core.lean` only
+(the ISS is untouched, selftest and the iverilog soc tb are bit-identical):
+every linear `foldr`/`foldl` mux/or/add chain became a balanced tree
+(`priTree`/`orTree`/`addTree`/`actPriTree`), and the 20 `st`-dispatched FSM
+rules were merged into one balanced dispatch rule. nextpnr-xilinx post-route:
+`Max frequency for clock 'sysclk': 13.11 MHz` -> `31.69 MHz`, so
+`lnp64mini_soc_top.v` now divides 200/8 = 25 MHz (`divc[2]`).
