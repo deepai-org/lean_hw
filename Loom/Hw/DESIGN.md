@@ -151,6 +151,45 @@ seconds; LNP64-µ discharge awaits pointer-memoized twins for the
 tree-walking checkers (the D12/D13 cost caveat applies to all four
 verbatim).
 
+## D15 — input ports are environment-owned state coordinates (decided 2026-07-30)
+
+Real FPGA bring-up (the `Machines/Substrate` ports; next, the lnp64mini
+core) needs open designs: modules with input pins driven by the outside
+world. The chosen mechanism adds **no expression constructor and no
+evaluation parameter**: `Design.inputs : List InputDecl := []` declares
+names that expressions read with the ordinary `Expr.reg`, that no rule may
+write (`DesignWF.regWrites` already confines writes to declared
+registers), and that the *environment* drives between clock edges. The
+open-cycle semantics is one definition: `cycleOpen ι σ = cycle
+(σ.setInputs inputs ι)` — poke the input coordinates, then run the
+ordinary closed cycle. D9's discipline extends verbatim: every read
+observes the pre-cycle state *and the input pins as of the clock edge*.
+
+Consequences, in exchange for one field and four small definitions:
+
+- The compiler maps `inputs` to µVerilog `input wire` ports (`Module.ins`)
+  and emits no register for them; the printers change only in the header.
+  Since neither `Module.cycle` nor `Design.cycle` writes undeclared
+  coordinates, both sides preserve input coordinates identically and the
+  emission theorem extends to open designs as a corollary
+  (`compile_cycleOpen`), not a re-proof. The whole 2026-07-30 inventory of
+  the alternative (an `Expr.input` constructor + evaluation parameter):
+  24 exhaustive match sites, 15+ inductive proofs, 40+ theorem files —
+  all untouched under this design.
+- A theorem about an open design quantifies over input valuations, so it
+  is agnostic to *who* drives the pins — external world, testbench, or
+  another design. This is the seed of the reusable-module story:
+  composition is a future flatten-and-substitute operator (wire B's input
+  reads to expressions over A's registers) plus an assume-guarantee
+  transport lemma over `runOpen`; nothing in the core needs to change for
+  it.
+- Name hygiene (inputs disjoint from registers/memories, no duplicates)
+  is checked at emission time (`Design.emit` errors out), not carried in
+  `DesignWF` — extending that structure would ripple into the generated
+  release certificates for designs that cannot have inputs anyway.
+- The release/SSA witness path is unaffected: release designs are closed
+  (`ins = []` default), and no Expr/Act syntax changed.
+
 ## Order of construction
 
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)

@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Machines.Substrate.S0Blinky
 import Machines.Substrate.S13Soak
+import Machines.Substrate.S0BscanRegs
 
 /-!
 # Substrate runner
@@ -19,8 +20,12 @@ lake env lean --run Machines/Substrate/Emit.lean predict    # ISS state at K (si
 open Machines.Substrate in
 def main (args : List String) : IO Unit := do
   match args with
-  | ["selftest"] => S13Soak.selftest
-  | ["predict"]  => S13Soak.predict
+  | ["selftest"] => do
+      S13Soak.selftest
+      S0BscanRegs.selftest
+  | ["predict"]         => S13Soak.predict
+  | ["predict-s0bscan"] => S0BscanRegs.predict
   | _ => do
       S0Blinky.emit
       S13Soak.emit
+      S0BscanRegs.emit

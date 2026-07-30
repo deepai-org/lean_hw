@@ -91,4 +91,18 @@ emission theorem (E-V / A-EV). -/
 def Module.toTSys (m : Module) : Loom.TSys :=
   Loom.TSys.ofFun St (fun σ => σ = m.reset) m.cycle
 
+/-! ## Open modules (D15): inputs are environment-owned coordinates. -/
+
+/-- Overwrite the input coordinates of a module state from a valuation. -/
+def St.setInputs (σ : St) (ins : List InDef)
+    (ι : String → (w : Nat) → BitVec w) : St :=
+  { σ with regs := ins.foldl (fun ρ i => ρ.set i.name (ι i.name i.width)) σ.regs }
+
+/-- One open cycle: the environment drives the input pins (their value at
+the clock edge), then the module cycles. For a closed module this is
+`cycle`. -/
+def Module.cycleOpen (m : Module) (ι : String → (w : Nat) → BitVec w)
+    (σ : St) : St :=
+  m.cycle (σ.setInputs m.ins ι)
+
 end Loom.Emit.MicroVerilog

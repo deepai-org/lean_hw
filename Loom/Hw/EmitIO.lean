@@ -24,6 +24,16 @@ run with `lake env lean --run MyDesign.lean` (the `main` must be at root
 level — tutorial defect #2). -/
 def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
     IO Unit := do
+  -- D15 sanity: input names must be fresh (they print as `input wire`
+  -- identifiers next to the register declarations).
+  let taken := d.regs.map (·.name) ++ d.mems.map (·.name)
+  for i in d.inputs do
+    if taken.contains i.name then
+      throw <| IO.userError
+        s!"Design.emit: input '{i.name}' collides with a register/memory name"
+  let inNames := d.inputs.map (·.name)
+  if inNames.length ≠ inNames.eraseDups.length then
+    throw <| IO.userError "Design.emit: duplicate input names"
   if let some dir := path.parent then
     IO.FS.createDirAll dir
   IO.FS.writeFile path

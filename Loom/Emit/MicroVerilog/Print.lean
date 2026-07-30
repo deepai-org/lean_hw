@@ -159,6 +159,8 @@ end
 private unsafe def printImpl (m : Module) : String := Id.run do
   let header :=
     s!"module {m.name}(\n  input wire clk,\n  input wire rst" ++
+    String.join (m.ins.map fun i =>
+      s!",\n  input wire [{i.width-1}:0] {i.name}") ++
     String.join (m.outs.map fun o =>
       s!",\n  output wire [{o.width-1}:0] {o.name}") ++
     "\n);"
@@ -211,6 +213,8 @@ private unsafe def printImpl (m : Module) : String := Id.run do
 def print (m : Module) : String := Id.run do
   let header :=
     s!"module {m.name}(\n  input wire clk,\n  input wire rst" ++
+    String.join (m.ins.map fun i =>
+      s!",\n  input wire [{i.width-1}:0] {i.name}") ++
     String.join (m.outs.map fun o =>
       s!",\n  output wire [{o.width-1}:0] {o.name}") ++
     "\n);"

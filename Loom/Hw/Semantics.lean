@@ -103,4 +103,29 @@ instead of the `have : s = d.reset := hinit; subst this` two-step
 @[simp] theorem Design.toTSys_step_iff (d : Design) (σ σ' : St) :
     d.toTSys.step σ σ' ↔ d.cycle σ = σ' := Iff.rfl
 
+/-! ## Open designs (D15)
+
+Inputs are environment-owned register coordinates: between clock edges the
+environment drives the input pins, and at the edge the design's rules read
+them like any pre-cycle state (the pin value at the moment of the edge).
+Nothing in `Expr`/`Act`/`cycle` changes — an open cycle is the closed
+cycle of the input-poked state. -/
+
+/-- Input valuation: what the environment drives on the input ports. -/
+def InEnv := String → (w : Nat) → BitVec w
+
+/-- Overwrite the input coordinates of a state from a valuation. -/
+def St.setInputs (σ : St) (ins : List InputDecl) (ι : InEnv) : St :=
+  { σ with regs := ins.foldl (fun ρ i => ρ.set i.name (ι i.name i.width)) σ.regs }
+
+/-- One cycle of an open design: the environment drives the inputs, the
+design cycles. For a closed design this is `cycle`. -/
+def Design.cycleOpen (d : Design) (ι : InEnv) (σ : St) : St :=
+  d.cycle (σ.setInputs d.inputs ι)
+
+/-- Run under an input trace (`ιs k` drives cycle `k`). -/
+def Design.runOpen (d : Design) (ιs : Nat → InEnv) : Nat → St → St
+  | 0, σ => σ
+  | n + 1, σ => d.runOpen (fun k => ιs (k + 1)) n (d.cycleOpen (ιs 0) σ)
+
 end Loom.Hw

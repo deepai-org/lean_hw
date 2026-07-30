@@ -23,6 +23,7 @@ import Machines.Tutorial.SatCounter
 import Machines.Tutorial.SatCounterArtifact
 import Machines.Substrate.S0Blinky
 import Machines.Substrate.S13Soak
+import Machines.Substrate.S0BscanRegs
 
 /-!
 # Machines
