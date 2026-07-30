@@ -27,6 +27,9 @@ import Machines.Substrate.S0BscanRegs
 import Machines.Lnp64mini.Core
 import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness
+import Machines.Lnp64mini.HpMaster
+import Machines.Lnp64mini.GpMaster
+import Machines.Lnp64mini.Soc
 
 /-!
 # Machines
