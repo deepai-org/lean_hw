@@ -176,11 +176,21 @@ run_phase "program data" compile_batch "$src/ProgramData.lean"
 # printer's flattening -- so a generator or printer drift fails the release
 # here rather than surviving as a semantically-checked-but-different program.
 case "$target" in
-  acc8) parity_script=scripts/check_toprogram_acc8.lean ;;
-  lnp64u) parity_script=scripts/check_toprogram_lnp64u.lean ;;
+  acc8) parity_exe=parityGateAcc8; parity_script=scripts/check_toprogram_acc8.lean ;;
+  lnp64u) parity_exe=parityGateLnp64u; parity_script=scripts/check_toprogram_lnp64u.lean ;;
 esac
-run_phase "toProgram parity gate" \
-  lake env lean --run "$(realpath "$parity_script")"
+# Adaptive execution: the compiled gate is ~27x faster when its build is
+# warm (lnp64u 262 s -> 10 s), but from a cold tree `lake exe` would
+# re-elaborate the whole generated import closure (+347 CPU-min) that the
+# phases above already compiled out-of-band. Probe with --no-build and
+# fall back to the interpreter when cold.
+if lake build "$parity_exe" --no-build >/dev/null 2>&1; then
+  run_phase "toProgram parity gate" \
+    lake exe "$parity_exe"
+else
+  run_phase "toProgram parity gate" \
+    lake env lean --run "$parity_script"
+fi
 run_phase "framing fixed" compile_batch "$src/FramingFixed.lean"
 run_phase "framing registers" compile_glob 'FramingReg*.lean'
 run_phase "framing outputs" compile_glob 'FramingOut*.lean'

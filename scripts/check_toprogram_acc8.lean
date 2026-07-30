@@ -3,6 +3,7 @@
 -- Release gate: the parsed Acc8 witness equals the verified compiler's own
 -- output, `Design.toProgram`. Run via `lake env lean --run` after
 -- GeneratedRelease/Acc8/ProgramData is compiled.
+-- The release path is the compiled `lake exe parityGateAcc8` (Tools/ParityGateAcc8.lean).
 import Loom.Release.ToProgram
 import GeneratedRelease.Acc8.ProgramData
 import Machines.Acc8.Core
