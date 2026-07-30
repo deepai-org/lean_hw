@@ -146,3 +146,14 @@ The verification ladder, every rung bit-exact:
    stopping the trap server (BSCAN quiet, xsdb dead): **ping 10/10, 0%
    loss**. NetBSD + native Ethernet, indefinitely, on a processor that is
    a Lean value.
+
+## All-Lean SoC on silicon (2026-07-30)
+
+The composed `lnp64mini_soc` (core ∥ HP master ∥ GP master via
+`Design.prefixed/par/connect`, HP ownership mux in Lean wiring) is
+silicon-proven: loomcheck rf bit-exact on the ZC702, and the full NetBSD
+demo — boot with the same 4 one-shot traps, native GEM0, telnet, and
+ping 8/8 at 0% loss after servicer stop with BSCAN quiet — behind a thin
+wrapper holding only clock buffers, POR, BSCANE2+DR+CDC, and the PS7.
+Every single-clock sysclk LUT in the bitstream is Lean-emitted
+(13.11 MHz max route, 12.5 MHz clock).
