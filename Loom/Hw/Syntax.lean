@@ -77,12 +77,25 @@ structure Rule where
   name : String
   body : Act
 
-/-- A closed synchronous design. -/
+/-- An input-port declaration (D15). Inputs are *environment-owned state
+coordinates*: expressions read them with the ordinary `Expr.reg`, no rule
+may write them (`DesignWF.regWrites` already forbids writes to undeclared
+registers, and input names must not be declared as registers), and the
+open-system semantics lets the environment drive them each cycle
+(`Design.cycleOpen`). A design with `inputs = []` is closed and behaves
+exactly as before. -/
+structure InputDecl where
+  name  : String
+  width : Nat
+
+/-- A synchronous design. Closed when `inputs = []` (the default). -/
 structure Design where
   name  : String
   regs  : List RegDecl
   mems  : List MemDecl
   /-- Rules run in order each cycle; later writes win (D9). -/
   rules : List Rule
+  /-- Input ports (D15): environment-owned coordinates, read via `Expr.reg`. -/
+  inputs : List InputDecl := []
 
 end Loom.Hw

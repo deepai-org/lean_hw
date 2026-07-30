@@ -264,4 +264,35 @@ theorem simulation_of_tsys_eq (d : Design) (wf : DesignWF d)
   rw [h]
   exact ⟨simulation d wf⟩
 
+/-! ## Open designs (D15)
+
+Inputs are environment-owned register coordinates that no rule writes
+(`DesignWF.regWrites` forbids writes outside `d.regs`), so both cycles
+preserve them and the emission theorem extends to open designs: poke the
+same input valuation on both sides, and one compiled open cycle is exactly
+one source open cycle. -/
+
+private theorem convSt_setInputs (σ : Loom.Hw.St) (ins : List InputDecl)
+    (ι : InEnv) :
+    Loom.Emit.MicroVerilog.St.setInputs (convSt σ)
+      (ins.map fun i => { name := i.name, width := i.width }) ι =
+    convSt (σ.setInputs ins ι) := by
+  induction ins generalizing σ with
+  | nil => rfl
+  | cons head tail ih =>
+      simpa [Loom.Emit.MicroVerilog.St.setInputs, St.setInputs,
+        List.foldl_cons] using
+        ih { σ with regs := σ.regs.set head.name (ι head.name head.width) }
+
+/-- The emission theorem for open designs: one compiled open cycle under an
+input valuation is exactly one source open cycle under the same valuation. -/
+theorem compile_cycleOpen (d : Design) (wf : DesignWF d) (ι : InEnv)
+    (state : Loom.Hw.St) :
+    forgetSt ((compile d).cycleOpen ι (convSt state)) = d.cycleOpen ι state := by
+  unfold Loom.Emit.MicroVerilog.Module.cycleOpen Design.cycleOpen
+  rw [show (compile d).ins =
+        d.inputs.map (fun i => { name := i.name, width := i.width }) from rfl,
+      convSt_setInputs]
+  exact compile_cycle d wf (state.setInputs d.inputs ι)
+
 end Loom.Hw.Compile

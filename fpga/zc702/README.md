@@ -97,3 +97,23 @@ the BSCAN bridge speaks the `jtag_lib.tcl` 41-bit USER1 protocol (the
 library shifts 42 bits per scan — the Zynq PS TAP sits in BYPASS in the
 same chain and eats one bit; a 42-bit DR is the classic first-build bug).
 See `remote-fpga/fpga_dev.md` §62 for the full bring-up log of this port.
+
+## Open designs: S0BscanRegs (D15 ports, first silicon proof — 2026-07-30)
+
+`Machines/Substrate/S0BscanRegs.lean` ports the substrate-0 M0 register
+file — the design the closed discipline could not express (JTAG *writes*
+into it). It is the first user of the D15 input-port extension
+(`Loom/Hw/DESIGN.md` §D15): inputs are environment-owned state
+coordinates; the BSCAN DR shift + UPDATE→sysclk toggle-sync CDC live in
+the untrusted wrapper (`s0bscan_top.v`) and deliver one command per JTAG
+transaction as a one-cycle `cmd_valid` pulse on the module's ports.
+
+Evidence: the 33-command acceptance trace (ID, scratch write/readback,
+heartbeat, LED write, full 19-char banner drain + exhaustion + re-arm,
+BRAM write/readback) matches the Lean ISS at all three points —
+`Design.cycleOpen` lockstep (`selftest`), iverilog on the emitted module
+(all 33 responses), and the ZC702 over `jtag_lib.tcl`
+(`loom_s0bscan_accept.tcl`: all 31 static responses equal, heartbeat
+ticking; the banner text "SUBSTRATE-0 M0 OK\r\n" served byte-by-byte from
+a Loom ROM on real silicon). The emission theorem extends to open designs
+as `Compile.compile_cycleOpen` — a corollary, not a re-proof.

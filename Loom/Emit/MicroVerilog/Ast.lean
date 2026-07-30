@@ -76,11 +76,19 @@ structure OutDef where
   width : Nat
   val   : Expr width
 
-/-- A flat µVerilog module: ports are `clk`, `rst`, and the outputs. -/
+/-- An input port (D15): `input wire [w-1:0] name`. Expressions reference
+it by name (`Expr.reg`); the module declares no register for it. -/
+structure InDef where
+  name  : String
+  width : Nat
+
+/-- A flat µVerilog module: ports are `clk`, `rst`, the inputs, and the
+outputs. Closed when `ins = []` (the default). -/
 structure Module where
   name : String
   regs : List RegDef
   mems : List MemDef
   outs : List OutDef
+  ins  : List InDef := []
 
 end Loom.Emit.MicroVerilog

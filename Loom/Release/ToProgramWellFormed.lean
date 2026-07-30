@@ -665,7 +665,7 @@ theorem moduleEmitOkB_sound (m : Module) (accepted : moduleEmitOkB m = true) :
 -- Kernel-reducibility smoke test: the whole per-design Boolean discharges
 -- with `decide` now that the `.reg` arm avoids `wireNumber?`.
 example :
-    moduleEmitOkB ⟨"t", [⟨"a", 4, 0, .reg 4 "a"⟩], [], []⟩ = true := by decide
+    moduleEmitOkB ⟨"t", [⟨"a", 4, 0, .reg 4 "a"⟩], [], [], []⟩ = true := by decide
 
 /-! ## Default-shape projections
 

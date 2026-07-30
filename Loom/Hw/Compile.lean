@@ -24,7 +24,7 @@ namespace Loom.Hw.Compile
 
 open Loom.Hw
 namespace MV
-export Loom.Emit.MicroVerilog (Expr RegDef MemDef OutDef Module St)
+export Loom.Emit.MicroVerilog (Expr RegDef MemDef OutDef InDef Module St)
 end MV
 
 /-- µVerilog expression evaluation, re-exposed for lemma statements. -/
@@ -362,7 +362,10 @@ private unsafe def compileImpl (d : Design) : MV.Module := unsafeBaseIO do
                         wrPorts := ports.toList }
   let outs : List MV.OutDef := d.regs.map fun r =>
     { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
-  return { name := d.name, regs := regs.toList, mems := mems.toList, outs := outs }
+  let ins : List MV.InDef := d.inputs.map fun i =>
+    { name := i.name, width := i.width }
+  return { name := d.name, regs := regs.toList, mems := mems.toList
+           outs := outs, ins := ins }
 
 /-- Compile a design. Registers become `RegDef`s whose next expression
 folds all rules in order; memories get one guarded write port per used
@@ -382,6 +385,7 @@ def compile (d : Design) : MV.Module where
         compilePort d m.name m.addrWidth m.dataWidth p }
   outs := d.regs.map fun r =>
     { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
+  ins := d.inputs.map fun i => { name := i.name, width := i.width }
 
 
 /-! ## Register-fold correctness
