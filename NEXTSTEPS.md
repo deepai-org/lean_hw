@@ -764,8 +764,12 @@ parity gate is compiled — per-target `lake exe parityGate{Acc8,Lnp64u}`
 tree, because a cold `lake exe` would re-elaborate the 711-module
 generated closure (+347 CPU-min) the earlier phases compile
 out-of-band — warm reruns and single-edit classes get the 27× win, the
-clean audit run keeps its old cost. Remaining serial items: axiom
-closure 645 s @ 0.74, Acc8 witness 313 s @ 1.49.
+clean audit run keeps its old cost. Axiom closure (commit 3e01908): compiled `releaseAudit` exe, 698 →
+607 s — measured to be olean-deserialization-bound, not
+interpretation-bound; further gains need a smaller import closure for
+`Tools.VerifiedRelease` or an incremental closure cache, not a faster
+walker. Remaining serial items: Acc8 witness 313 s @ 1.49, port-cert
+generation 504 s, semantic reads 396 s (all @ ~1.0).
 
 **GateCall campaign done-condition (set 2026-07-29, before starting):**
 the worst single-edit warm-cache path through the GateCall sub-chain must
