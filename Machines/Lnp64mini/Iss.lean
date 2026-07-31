@@ -28,6 +28,11 @@ structure MiniIn where
   cmdValid : Bool := false
   cmdIdx   : Nat  := 0
   cmdData  : BitVec 32 := 0
+  -- SMP extensions (DUAL_SPEC.md): all inert at `false`.
+  resKill  : Bool := false
+  doorbell : Bool := false
+  hold     : Bool := false
+  scFail   : Bool := false
   deriving Repr
 
 /-! ## State -/
@@ -105,6 +110,10 @@ structure MiniSt where
   dmem_addr_j : BitVec 32 := 0
   dmem_lo_j   : BitVec 32 := 0
   reg_rd    : BitVec 64 := 0
+  wake_out  : Bool := false
+  lr_req    : Bool := false
+  sc_req    : Bool := false
+  sc_pending: Bool := false
   -- arrays
   rf     : Array (BitVec 64) := Array.replicate 1024 0
   dmem   : Array (BitVec 64) := Array.replicate 512 0
@@ -314,7 +323,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   let mut rfWd : BitVec 64 := 0
   -- pulse defaults (nonblocking): dmem_we/core_rd/core_wr/jtag_wr/jtag_rd/gp_rd/gp_wr <= 0
   s' := { s' with dmem_we := false, core_rd := false, core_wr := false,
-                  jtag_wr := false, jtag_rd := false, gp_rd := false, gp_wr := false }
+                  jtag_wr := false, jtag_rd := false, gp_rd := false, gp_wr := false,
+                  lr_req := false, sc_req := false }
   let localRstn := true   -- wrapper POR handled by reset values; always run.
 
   -- (1) registered priority encoders (separate always block; pre-state)
@@ -369,8 +379,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   -- registered rdata latch for JTAG DDR reads
   if inp.mDone ∧ ¬ hp_core_owns s then s' := { s' with ddr_rd_l := inp.mRdata }
 
-  -- serialized sleep scan
-  if s.running ∧ ¬ s.halted then
+  -- effective hold: only bites at the instruction boundary S_F0
+  let holdEff := inp.hold ∧ s.st = BitVec.ofNat 5 S_F0
+  -- serialized sleep scan (paused while the core is held)
+  if s.running ∧ ¬ s.halted ∧ ¬ holdEff then
     s' := { s' with sleep_scan := s.sleep_scan + 1 }
     let ssi := s.sleep_scan.toNat
     if s.tstate[ssi]! = 2 then
@@ -379,8 +391,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else
         s' := { s' with tsleep := s'.tsleep.set! ssi ((s.tsleep[ssi]!) - 1) }
 
-  -- FSM
-  if s.running ∧ ¬ s.halted ∧ ¬ s.zeroing then
+  -- FSM (frozen while the core is held)
+  if s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff then
     let curV := s.cur
     let stN := s.st.toNat
     if stN = S_F0 then
@@ -488,14 +500,14 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         if s.a.ult (BitVec.ofNat 64 0x1000) then
           s' := { s' with dmem_a := s.a.extractLsb' 3 9, st := BitVec.ofNat 5 S_L0 }
         else
-          s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.a.extractLsb' 3 29).setWidth 32 <<< 3), core_rd := true, st := BitVec.ofNat 5 S_DL }
+          s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.a.extractLsb' 3 29).setWidth 32 <<< 3), core_rd := true, lr_req := true, st := BitVec.ofNat 5 S_DL }
       else if is_sc s then
         if s.lr_valid ∧ s.lr_addr = s.a then
           if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := 0
           if s.a.ult (BitVec.ofNat 64 0x1000) then
             s' := { s' with dmem_we := true, dmem_a := s.a.extractLsb' 3 9, dmem_wd := s.b, pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
           else
-            s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.a.extractLsb' 3 29).setWidth 32 <<< 3), core_wdata := s.b, core_wr := true, st := BitVec.ofNat 5 S_DSW }
+            s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.a.extractLsb' 3 29).setWidth 32 <<< 3), core_wdata := s.b, core_wr := true, sc_req := true, sc_pending := true, st := BitVec.ofNat 5 S_DSW }
         else
           if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := 1
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
@@ -525,7 +537,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_store s ∧ s_is_zp s then
         s' := { s' with dmem_a := st_widx s, mem_is_store := true, st := BitVec.ofNat 5 S_L0 }
       else if is_store s then
-        s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((mem_ea_s s).extractLsb' 3 29).setWidth 32 <<< 3, core_rd := true, mem_is_store := true, st := BitVec.ofNat 5 S_DL }
+        s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((mem_ea_s s).extractLsb' 3 29).setWidth 32 <<< 3, core_rd := true, mem_is_store := true, sc_pending := false, st := BitVec.ofNat 5 S_DL }
       else
         s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
     else if stN = S_L0 then
@@ -545,7 +557,11 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else
         s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((mem_ea_s s).extractLsb' 3 29).setWidth 32 <<< 3, core_wdata := st_merge s, core_wr := true, st := BitVec.ofNat 5 S_DSW }
     else if stN = S_DSW then
-      if inp.mDone then s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+      if inp.mDone then
+        -- a GLOBAL SC the arbiter refused: overwrite the optimistic rd=0
+        if s.sc_pending ∧ inp.scFail ∧ rdf s ≠ 0 then
+          rfWe := true; rfWa := (curV ++ rdf s); rfWd := 1
+        s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
     else if stN = S_CLONE2 then
       rfWe := true; rfWa := (s.clone_tid ++ (31 : BitVec 5))
       rfWd := (BitVec.ofNat 64 0x1800000) + ((s.clone_tid.setWidth 64 + 1) <<< 18)
@@ -604,6 +620,15 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       if inp.gpDone then s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
     else if stN = S_TRAP then pure ()
     else s' := { s' with st := BitVec.ofNat 5 S_F0 }
+
+  -- SMP cross-core block (mirrors `smpRule`, which runs AFTER the FSM)
+  s' := { s' with wake_out :=
+            s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
+            ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0xcc }
+  if inp.doorbell then
+    for ti in List.range NT do
+      if s.tstate[ti]! = 3 then s' := { s' with tstate := s'.tstate.set! ti 1 }
+  if inp.resKill then s' := { s' with lr_valid := false }
 
   -- dmem sync block: `if (dmem_we) dmem[dmem_a]<=dmem_wd; dmem_rd<=dmem[dmem_a]`
   -- both use the PRE-cycle (registered) dmem_we/dmem_a/dmem_wd.

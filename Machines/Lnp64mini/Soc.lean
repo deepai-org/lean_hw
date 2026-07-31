@@ -88,6 +88,13 @@ def wire (n : String) (w : Nat) : Option (Expr w) :=
   | "gpm_start_rd", 1  => some (.reg 1  "gp_rd")
   | "gpm_addr",     32 => some (.reg 32 "gp_addr_r")
   | "gpm_wdata",    32 => some (.reg 32 "gp_wdata_r")
+  -- SMP extension inputs are tied off in the SINGLE-core soc, so the
+  -- emitted module keeps exactly its pre-SMP port list (the §63 wrapper and
+  -- the whole NetBSD flow are unchanged).
+  | "res_kill",     1  => some (.lit 0)
+  | "doorbell",     1  => some (.lit 0)
+  | "hold",         1  => some (.lit 0)
+  | "sc_fail",      1  => some (.lit 0)
   | _, _ => none
 
 /-- `soc = (core ∥ hp ∥ gp).connect wire`. -/

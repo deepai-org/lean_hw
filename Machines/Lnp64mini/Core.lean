@@ -73,6 +73,43 @@ def cmdValid : Expr 1  := .reg 1  "cmd_valid"
 def cmdIdx   : Expr 7  := .reg 7  "cmd_idx"
 def cmdData  : Expr 32 := .reg 32 "cmd_data"
 
+/-! ### SMP extensions (DUAL_SPEC.md "Core extensions")
+
+Four new D15 inputs (`res_kill`, `doorbell`, `hold`, `sc_fail`) and four
+new registers (`wake_out`, `lr_req`, `sc_req`, `sc_pending`) turn the
+single-core design into an SMP-capable node. Every input is inert at 0 and
+`Soc.lean` ties all four off, so the single-core `lnp64mini_soc` behaves
+exactly as before (silicon regression: `tb_lnp64mini_soc.v` on
+`loomcheck.hex` is bit-identical to §63).
+
+* `res_kill` — pulse clears `lr_valid` (the arbiter's global-LR/SC hook).
+* `doorbell` — pulse moves every FUTEX-blocked thread (tstate=3) to READY.
+  Spurious wakes are safe: a woken `FUTEX_WAIT` re-executes its DDR compare
+  and re-blocks if the word is unchanged.
+* `hold`     — while high the FSM is frozen **at the instruction boundary
+  `S_F0`** (`fsmEn` gains `¬holdEn`) and the sleep scan pauses; CORE1_HOLD
+  in the dual wrapper drives it. Freezing only in `S_F0` is what makes the
+  hold safe: no DDR transaction is in flight there, so no `m_done` pulse can
+  be missed while the core is stopped (a hold that froze `S_FW`/`S_DL`/
+  `S_DSW` would drop the completion and wedge the core forever). -/
+def resKill  : Expr 1  := .reg 1  "res_kill"
+def doorbell : Expr 1  := .reg 1  "doorbell"
+def hold     : Expr 1  := .reg 1  "hold"
+
+/-- `sc_fail` — the arbiter's verdict on a *global* `SC`, valid on the cycle
+it completes the store-conditional (`m_done` while `sc_pending`). See
+`HpArbiter` and DUAL_SPEC "Deviations": the reservation has to be validated
+at the serialization point, not two cycles earlier in `S_EX`. The tag
+registers `lr_req`/`sc_req` (pulses beside `core_rd`/`core_wr`) tell the
+arbiter which read takes a reservation and which write is conditional. -/
+def scFail   : Expr 1  := .reg 1  "sc_fail"
+
+/-- `wake_out` pulses for one cycle when `FUTEX_WAKE` (S_EX, op 0xcc)
+executes, regardless of local matches. In the dual SoC it is wired straight
+into the *other* core's `doorbell` input — a register-to-input connection,
+i.e. already a full register stage, no combinational cross-core path. -/
+def wake_out : Expr 1  := .reg 1  "wake_out"
+
 /-! ## Scalar register shorthands -/
 
 def cur       : Expr 5  := .reg 5  "cur"
@@ -120,6 +157,8 @@ def ld_op_q   : Expr 8  := .reg 8  "ld_op_q"
 def ld_rd_q   : Expr 5  := .reg 5  "ld_rd_q"
 def lr_addr   : Expr 64 := .reg 64 "lr_addr"
 def lr_valid  : Expr 1  := .reg 1  "lr_valid"
+/-- A global (DDR) `SC` is outstanding: `S_DSW` must consume `sc_fail`. -/
+def sc_pending : Expr 1 := .reg 1 "sc_pending"
 def futex_exp : Expr 64 := .reg 64 "futex_exp"
 def futex_addr_q : Expr 64 := .reg 64 "futex_addr_q"
 def sleep_scan: Expr 5  := .reg 5  "sleep_scan"
@@ -523,8 +562,15 @@ FSM writes are guarded additionally by (running ∧ ¬halted ∧ ¬zeroing ∧
 st==X ∧ the branch predicate).  We name the S_EX predicate cascade to
 reproduce the if-else priority exactly. -/
 
-/-- running ∧ ¬halted ∧ ¬zeroing — the FSM enable. -/
-def fsmEn : Expr 1 := .and running (.and (.not halted) (.not zeroing))
+/-- The *effective* hold: `hold` only bites at the instruction boundary
+`S_F0`, so the core stops with no bus transaction outstanding. -/
+def holdEn : Expr 1 := .and hold (.eq st (L5 S_F0))
+
+/-- running ∧ ¬halted ∧ ¬zeroing ∧ ¬holdEn — the FSM enable. `hold` (D15
+input, DUAL_SPEC extension 4) freezes the FSM: with `hold` tied 0 this is
+the original `running ∧ ¬halted ∧ ¬zeroing`. -/
+def fsmEn : Expr 1 :=
+  .and (.not holdEn) (.and running (.and (.not halted) (.not zeroing)))
 
 /-- S_EX branch reached iff earlier branches all missed. We inline each
 branch's own predicate ANDed with fsmEn ∧ st==S_EX; mutual exclusion holds
@@ -588,6 +634,13 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- S_GPL done
   , (.and fsmEn (.and (.eq st (L5 S_GPL)) (.and gpDone (.not (.eq ld_rd_q (L5 0))))),
        cat55 cur ld_rd_q, .zext gpRdata 64)
+  -- S_DSW: a GLOBAL SC the arbiter refused. `ir` still holds the SC, so
+  -- `rdf`/`cur` are the ones `S_EX` optimistically wrote 0 to; overwrite
+  -- with 1 (= failed) on the completion cycle. Guard is disjoint from every
+  -- triple above (they all key on a different `st`).
+  , (.and fsmEn (.and (.eq st (L5 S_DSW))
+       (.and sc_pending (.and mDone (.and scFail (.not (.eq rdf (L5 0))))))),
+       cat55 cur rdf, L64 1)
   ]
 where
   mulDoneWd : Expr 64 :=
@@ -616,7 +669,7 @@ def encRule : Rule :=
 
 /-- (2) serialized sleep scan (per-element). -/
 def sleepScanRule : Rule :=
-  ⟨"sleepdec", .ite (.and running (.not halted))
+  ⟨"sleepdec", .ite (.and (.not holdEn) (.and running (.not halted)))
     (.seq (.write 5 "sleep_scan" (.add sleep_scan (L5 1)))
       ((List.finRange NT).foldr (fun i acc =>
         .seq (.ite (.and (.eq sleep_scan (L5 i.val)) (.eq (tstate i) (L2 2)))
@@ -638,7 +691,8 @@ def latchRule : Rule :=
 /-- (4) pulse defaults. -/
 def pulseDefaultsRule : Rule :=
   ⟨"pulse_defaults",
-    [("dmem_we",1),("core_rd",1),("core_wr",1),("jtag_wr",1),("jtag_rd",1),("gp_rd",1),("gp_wr",1)].foldr
+    [("dmem_we",1),("core_rd",1),("core_wr",1),("jtag_wr",1),("jtag_rd",1),("gp_rd",1),("gp_wr",1),
+      ("lr_req",1),("sc_req",1)].foldr
       (fun (nm,_) acc => .seq (.write 1 nm (L1 0)) acc) .skip⟩
 
 /-- (5) zeroing engine (rf write is in the funnel; here dmem + counters). -/
@@ -904,13 +958,19 @@ def s_ex_branches : List (Expr 1 × Act) :=
       .write 5 "ld_rd_q" rdf, .write 1 "mem_is_store" (L1 0),
       .ite (.ult a (L64 0x1000))
         (actSeq [.write 9 "dmem_a" (.slice a 3 9), .write 5 "st" (L5 S_L0)])
-        (actSeq [.write 32 "core_addr" (ddrEa a), .write 1 "core_rd" (L1 1), .write 5 "st" (L5 S_DL)])]) <|
+        (actSeq [.write 32 "core_addr" (ddrEa a), .write 1 "core_rd" (L1 1),
+                 .write 1 "lr_req" (L1 1),          -- tag: this read takes a reservation
+                 .write 5 "st" (L5 S_DL)])]) <|
   -- SC
   gcons is_sc
     (.seq (.ite (.and lr_valid (.eq lr_addr a))
             (.ite (.ult a (L64 0x1000))
               (.seq (.write 1 "dmem_we" (L1 1)) (.seq (.write 9 "dmem_a" (.slice a 3 9)) (.seq (.write 64 "dmem_wd" b) (.seq stepPc (.seq retireInc goF0)))))
-              (.seq (.write 32 "core_addr" (ddrEa a)) (.seq (.write 64 "core_wdata" b) (.seq (.write 1 "core_wr" (L1 1)) (.write 5 "st" (L5 S_DSW))))))
+              (actSeq [.write 32 "core_addr" (ddrEa a), .write 64 "core_wdata" b,
+                       .write 1 "core_wr" (L1 1),
+                       .write 1 "sc_req" (L1 1),      -- tag: conditional store
+                       .write 1 "sc_pending" (L1 1),  -- the verdict is due at S_DSW
+                       .write 5 "st" (L5 S_DSW)]))
             (.seq stepPc (.seq retireInc goF0)))
           (.write 1 "lr_valid" (L1 0))) <|
   -- UART_RX load
@@ -946,7 +1006,9 @@ def s_ex_branches : List (Expr 1 × Act) :=
     (.seq (.write 9 "dmem_a" st_widx) (.seq (.write 1 "mem_is_store" (L1 1)) (.write 5 "st" (L5 S_L0)))) <|
   -- DDR store
   gcons is_store
-    (.seq (.write 32 "core_addr" (ddrEa mem_ea_s)) (.seq (.write 1 "core_rd" (L1 1)) (.seq (.write 1 "mem_is_store" (L1 1)) (.write 5 "st" (L5 S_DL))))) <|
+    (actSeq [.write 32 "core_addr" (ddrEa mem_ea_s), .write 1 "core_rd" (L1 1),
+             .write 1 "mem_is_store" (L1 1), .write 1 "sc_pending" (L1 0),
+             .write 5 "st" (L5 S_DL)]) <|
   []
 
 /-- default: trap on an unknown opcode. -/
@@ -1053,6 +1115,31 @@ def fsmRule : Rule :=
       .skip)
     .skip⟩
 
+/-- (8b) the SMP cross-core rule (DUAL_SPEC extensions 1–3).
+
+Runs **after** `fsmRule` so both overrides are deterministic:
+
+* `wake_out` is written unconditionally, so it is a true one-cycle pulse:
+  1 exactly on the cycle `FUTEX_WAKE` retires (`fsmEn ∧ st=S_EX ∧ op=0xcc`;
+  op 0xcc is disjoint from every earlier S_EX guard, so that predicate
+  characterises the branch exactly).
+* `doorbell` promotes every thread whose **pre-cycle** state is FUTEX(3) to
+  READY(1). A thread the FSM blocks *this* cycle had pre-cycle state 1, so
+  its guard is false — the doorbell never cancels a fresh block, it only
+  ever wakes threads that were already parked.
+* `res_kill` clears `lr_valid` last, so it also cancels an `LR` issued the
+  same cycle (a spurious kill only makes the matching `SC` fail → retry). -/
+def smpRule : Rule :=
+  ⟨"smp",
+    .seq (.write 1 "wake_out" (.and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0xcc))))
+      (.seq
+        (.ite doorbell
+          ((List.finRange NT).foldr (fun i acc =>
+            .seq (.ite (.eq (tstate i) (L2 3)) (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc)
+            .skip)
+          .skip)
+        (.ite resKill (.write 1 "lr_valid" (L1 0)) .skip))⟩
+
 /-- (9) the single regfile write port. -/
 def rfFunnelRule : Rule :=
   ⟨"rf_funnel", .ite rfWeE (.memWrite 10 64 "rf" 0 rfWaE rfWdE) .skip⟩
@@ -1080,7 +1167,8 @@ def scalarRegs : List RegDecl :=
    ⟨"div_isrem",1,0⟩, ⟨"div_negq",1,0⟩, ⟨"div_negr",1,0⟩,
    ⟨"zeroing",1,0⟩, ⟨"zctr",10,0⟩,
    ⟨"reg_sel",5,0⟩, ⟨"reg_wsel",5,0⟩, ⟨"reg_wlo",32,0⟩,
-   ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩]
+   ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
+   ⟨"wake_out",1,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩]
 
 def arrRegs : List RegDecl :=
   (List.finRange NT).map (fun i => ⟨s!"tpc{i.val}", 64, BitVec.ofNat 64 TEXT_BASE⟩)
@@ -1098,10 +1186,11 @@ def design : Design where
      ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
-     fsmRule, rfFunnelRule]
+     fsmRule, smpRule, rfFunnelRule]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,
-     ⟨"cmd_valid",1⟩, ⟨"cmd_idx",7⟩, ⟨"cmd_data",32⟩]
+     ⟨"cmd_valid",1⟩, ⟨"cmd_idx",7⟩, ⟨"cmd_data",32⟩,
+     ⟨"res_kill",1⟩, ⟨"doorbell",1⟩, ⟨"hold",1⟩, ⟨"sc_fail",1⟩]
 
 end Machines.Lnp64mini

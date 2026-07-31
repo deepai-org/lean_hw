@@ -133,6 +133,10 @@ def MiniIn.toEnv (c : MiniIn) : InEnv := fun n w =>
   | "cmd_valid" => (BitVec.ofBool c.cmdValid).setWidth w
   | "cmd_idx"   => (BitVec.ofNat 7 c.cmdIdx).setWidth w
   | "cmd_data"  => c.cmdData.setWidth w
+  | "res_kill"  => (BitVec.ofBool c.resKill).setWidth w
+  | "doorbell"  => (BitVec.ofBool c.doorbell).setWidth w
+  | "hold"      => (BitVec.ofBool c.hold).setWidth w
+  | "sc_fail"   => (BitVec.ofBool c.scFail).setWidth w
   | _ => 0#w
 
 /-! ## Reading the ISS state as (name, value) pairs (for lockstep vs EDSL) -/
@@ -171,7 +175,9 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("zeroing",1,if s.zeroing then 1 else 0), ("zctr",10,s.zctr.toNat),
    ("reg_sel",5,s.reg_sel.toNat), ("reg_wsel",5,s.reg_wsel.toNat), ("reg_wlo",32,s.reg_wlo.toNat),
    ("dmem_addr_j",32,s.dmem_addr_j.toNat), ("dmem_lo_j",32,s.dmem_lo_j.toNat),
-   ("reg_rd",64,s.reg_rd.toNat)]
+   ("reg_rd",64,s.reg_rd.toNat), ("wake_out",1,if s.wake_out then 1 else 0),
+   ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
+   ("sc_pending",1,if s.sc_pending then 1 else 0)]
   ++ (List.range NT).map (fun i => (s!"tpc{i}",64,s.tpc[i]!.toNat))
   ++ (List.range NT).map (fun i => (s!"tstate{i}",2,s.tstate[i]!.toNat))
   ++ (List.range NT).map (fun i => (s!"tsleep{i}",64,s.tsleep[i]!.toNat))
@@ -444,5 +450,114 @@ def progtest : IO Unit := do
   let ok2 := st.halted ∧ (st.rf[1]!).toNat = 55 ∧ st.trap_active = false
 
   IO.println (if ok1 ∧ ok2 then "PROGTEST OK" else "PROGTEST FAILED")
+
+/-! ## SMP-extension programs + selftest (DUAL_SPEC ladder step 1)
+
+Six directed scripts for the `res_kill` / `sc_fail` / `doorbell` / `hold`
+D15 inputs and the `wake_out` register. Each is lockstepped EDSL≡ISS on
+every register (including `wake_out`/`lr_req`/`sc_req`/`sc_pending`) and
+additionally checked for the *architectural* outcome on the ISS. -/
+
+/-- FUTEX_WAIT on the DDR word at 0x2000 (image value 0 = the expected
+value, so the thread blocks), then — after an external `doorbell` — r9=5
+and EXIT. With one thread the core parks in S_WAIT until the doorbell. -/
+def progDoorbell : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 0x2000,   -- r1 = futex word address (DDR)
+    encImmI 0xa0 2 0 0,        -- r2 = expected value (0)
+    enc 0xcb 1 2 0,            -- FUTEX_WAIT(addr=r1, expected=r2) -> blocks
+    encImmI 0xa0 9 0 5,        -- r9 = 5 (only reached after the doorbell)
+    enc 0x3a 0 0 0 ]           -- EXIT
+
+/-- A GLOBAL (DDR) LR/SC pair: `S_DSW` consumes the arbiter's `sc_fail`
+verdict and rewrites `rd`. r6 = 0 when the arbiter accepts, 1 when it
+refuses. -/
+def progScDDR : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 0x2000,   -- r1 = DDR address
+    encImmI 0xa0 3 0 77,       -- r3 = 77
+    enc 0xc5 5 1 0,            -- LR.D  r5 = [r1]  (global reservation)
+    enc 0xc6 6 1 3,            -- SC.D  [r1] = r3 ; r6 = verdict
+    enc 0x3a 0 0 0 ]           -- EXIT
+
+/-- FUTEX_WAKE: the `wake_out` pulse source (no local waiter matches). -/
+def progWake : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 0x2000,   -- r1 = futex word address
+    encImmI 0xa0 7 0 1,        -- r7 = wake count
+    enc 0xcc 1 7 0,            -- FUTEX_WAKE(addr=r1, count=r7)
+    encImmI 0xa0 9 0 9,        -- r9 = 9
+    enc 0x3a 0 0 0 ]           -- EXIT
+
+/-- Count the `wake_out` pulses over an ISS run (must be exactly one for
+`progWake`). -/
+def countWake (image : List (Nat × BitVec 64)) (maxCyc : Nat) : Nat × Bool := Id.run do
+  let mut s : MiniSt := {}
+  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := 1 }
+  let mut g : GpModel := {}
+  let mut n := 0
+  for i in List.range maxCyc do
+    if s.halted then return (n, true)
+    let cmd : MiniIn := if i = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
+    let (s', d', g', _) := sysStep s d g cmd 0
+    s := s'; d := d'; g := g'
+    if s.wake_out then n := n + 1
+  return (n, s.halted)
+
+/-- The SMP-extension selftest: EDSL≡ISS lockstep on the six scripts, plus
+the architectural assertions. -/
+def smpSelftest : IO Unit := do
+  let start : Nat → MiniIn := fun k =>
+    if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
+  -- (1) res_kill held high: every LR's reservation dies the same cycle, so
+  --     the SC must FAIL (rd=1) and leave dmem[0] untouched.
+  let rk : Nat → MiniIn := fun k => { start k with resKill := true }
+  -- (2) doorbell at cycle 30: the FUTEX-blocked thread wakes and finishes.
+  let db : Nat → MiniIn := fun k => { start k with doorbell := k = 26 }
+  -- (3) hold over cycles 10..30: the FSM freezes at the next S_F0, then resumes.
+  let hd : Nat → MiniIn := fun k => { start k with hold := 10 ≤ k ∧ k ≤ 30 }
+  -- (4) sc_fail: the arbiter refuses the global SC at the serialization point.
+  let sf : Nat → MiniIn := fun k => { start k with scFail := true }
+  let scripts : List (String × List (BitVec 64) × (Nat → MiniIn) × Nat) :=
+    [("RESKILL (res_kill clears lr_valid -> SC fails)", progLRSC, rk, 24),
+     ("SCFAIL  (global SC refused -> rd=1 at S_DSW)",   progScDDR, sf, 40),
+     ("SCOK    (global SC accepted -> rd=0)",           progScDDR, start, 40),
+     ("DOORBELL(FUTEX_WAIT parks; doorbell wakes it)",  progDoorbell, db, 34),
+     ("WAKEOUT (FUTEX_WAKE pulses wake_out)",           progWake, start, 26),
+     ("HOLD    (FSM frozen at S_F0, then resumes)",     progLRSC, hd, 38)]
+  let mut total := 0
+  for (nm, p, c, nc) in scripts do
+    let img := imageFrom TEXT_BASE p
+    let bad ← lockstep img 1 c (fun _ => 0) nc
+    if bad = 0 then IO.println s!"  OK  {nm}  ({nc} cyc)"
+    else IO.println s!"  FAIL {nm} ({bad} mismatches)"
+    total := total + bad
+  -- architectural outcomes on the ISS
+  let (sfs, _, _) := runIss (imageFrom TEXT_BASE progScDDR) 1 sf (fun _ => 0) 200
+  let (sos, _, _) := runIss (imageFrom TEXT_BASE progScDDR) 1 start (fun _ => 0) 200
+  let okSc := sfs.halted && sos.halted && (sfs.rf[6]!).toNat == 1 && (sos.rf[6]!).toNat == 0
+  IO.println s!"  sc_fail: refused r6={(sfs.rf[6]!).toNat} (want 1)  accepted r6={(sos.rf[6]!).toNat} (want 0)"
+  let (sk, _, _) := runIss (imageFrom TEXT_BASE progLRSC) 1 rk (fun _ => 0) 200
+  let okRk := sk.halted && (sk.rf[6]!).toNat == 1 && (sk.dmem[0]!).toNat == 0
+                        && (sk.rf[8]!).toNat == 0
+  IO.println s!"  res_kill: halted={sk.halted} r6(SC result)={(sk.rf[6]!).toNat} (want 1=fail) dmem[0]={(sk.dmem[0]!).toNat} (want 0)"
+  let (sd, _, kd) := runIss (imageFrom TEXT_BASE progDoorbell) 1 db (fun _ => 0) 300
+  let okDb := sd.halted && (sd.rf[9]!).toNat == 5
+  IO.println s!"  doorbell: halted={sd.halted} cycles={kd} r9={(sd.rf[9]!).toNat} (want 5) tstate0={(sd.tstate[0]!).toNat}"
+  -- doorbell-less control: the thread must STAY parked (no spurious wake)
+  let (sn, _, _) := runIss (imageFrom TEXT_BASE progDoorbell) 1 start (fun _ => 0) 300
+  let okNo := (!sn.halted) && (sn.tstate[0]!).toNat == 3 && (sn.rf[9]!).toNat == 0
+  IO.println s!"  no-doorbell control: halted={sn.halted} (want false) tstate0={(sn.tstate[0]!).toNat} (want 3)"
+  let (nw, hw) := countWake (imageFrom TEXT_BASE progWake) 300
+  IO.println s!"  wake_out pulses={nw} (want 1) halted={hw}"
+  let okWk := nw == 1 && hw
+  -- hold: the held run must reach the SAME architectural state as the free run
+  let (sh, _, kh) := runIss (imageFrom TEXT_BASE progLRSC) 1 hd (fun _ => 0) 300
+  let (sf, _, kf) := runIss (imageFrom TEXT_BASE progLRSC) 1 start (fun _ => 0) 300
+  let rfEq := sh.rf == sf.rf
+  let okHd := sh.halted && sf.halted && rfEq && sh.retire == sf.retire && kf < kh
+  IO.println s!"  hold: cycles held={kh} free={kf} (want held>free) rf equal={rfEq} retire={(sh.retire).toNat}"
+  if total == 0 && okRk && okSc && okDb && okNo && okWk && okHd then
+    IO.println "LNP64MINI SMP SELFTEST OK — EDSL≡ISS on res_kill/sc_fail/doorbell/wake_out/hold + outcomes"
+  else
+    IO.println s!"LNP64MINI SMP SELFTEST FAILED ({total} mismatches; rk={okRk} sc={okSc} db={okDb} no={okNo} wk={okWk} hd={okHd})"
+
 
 end Machines.Lnp64mini
