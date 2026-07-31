@@ -100,7 +100,16 @@ def runSignal (dir : System.FilePath) (kind name : String) (width : Nat)
 def check (vPath jsonPath : String) : IO UInt32 := do
   let vText ← IO.FS.readFile vPath
   let some m := Parse.parse vText
-    | IO.eprintln s!"eqcheck: {vPath} is not µVerilog printer output (parse failed)"
+    | IO.eprintln s!"eqcheck: {vPath}: the µVerilog round-trip parser \
+        (Loom.Emit.MicroVerilog.Parse) does not accept this text"
+      let lines := vText.splitOn "\n"
+      if lines.any (fun l => l.startsWith "  input wire [") then
+        IO.eprintln "  reason: the module declares D15 input ports; the \
+          round-trip parser predates D15 and reads only `clk`/`rst` plus \
+          output ports (EQCHECK_SPEC.md §Deviations)"
+      if lines.any (fun l => l.startsWith "  reg [" && l.endsWith "];") then
+        IO.eprintln "  note: the module also declares memory arrays, which \
+          are outside the v1 register-only scope"
       return 1
   let jText ← IO.FS.readFile jsonPath
   let nl ←
