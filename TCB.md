@@ -58,6 +58,20 @@ as synthesized hardware, trust is limited to:
    statement is [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md).
 4. **Yosys and the downstream physical flow**, only when extending the claim
    from the exact Verilog bytes to a netlist or physical implementation.
+5. **The single-flop resolution (MTBF) assumption**, only when extending the
+   claim from the emitted single-clock core to a board wrapper that drives it
+   across a clock boundary (`fpga/zc702/lnp64mini_soc_top.v`,
+   `lnp64mini_dual_top.v`). Stated once: *a flop whose input changes inside
+   its sampling aperture may resolve to either Boolean value, but it resolves
+   to one of them before the next clock edge.* Nothing about resolution
+   probability, aperture width, or timing margin is assumed, and no physics is
+   verified. `Loom/Hw/CdcContract.lean` encodes exactly this assumption
+   structurally — the first synchronizer flop's sample on an event cycle is
+   supplied by an adversarial oracle — and proves the wrapper's toggle/2FF/XOR
+   command path correct for *all* oracles; `Loom/Hw/DESIGN.md` §D21 enumerates
+   the four crossings and the read-back capture classes this assumption is
+   applied to. The release theorem itself does not need item 5: release
+   designs are closed and single-clock.
 
 The generated Verilog syntax is intentionally structural: one statement per
 line, named width-indexed SSA wires, explicit registers and memory ports, and
