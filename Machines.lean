@@ -31,7 +31,9 @@ import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness
 import Machines.Lnp64mini.HpMaster
 import Machines.Lnp64mini.GpMaster
+import Machines.Lnp64mini.HpArbiter
 import Machines.Lnp64mini.Soc
+import Machines.Lnp64mini.DualSoc
 
 /-!
 # Machines

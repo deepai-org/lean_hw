@@ -167,3 +167,57 @@ every linear `foldr`/`foldl` mux/or/add chain became a balanced tree
 rules were merged into one balanced dispatch rule. nextpnr-xilinx post-route:
 `Max frequency for clock 'sysclk': 13.11 MHz` -> `31.69 MHz`, so
 `lnp64mini_soc_top.v` now divides 200/8 = 25 MHz (`divc[2]`).
+
+## Dual-core SMP: `lnp64mini_dual` (2026-07-30)
+
+`Machines/Lnp64mini/DualSoc.lean` composes **two** cores onto one HP
+master through a new Loom design, `HpArbiter`:
+
+```
+dual = (core.prefixed "c0_") ∥ (core.prefixed "c1_")
+     ∥ (HpArbiter.prefixed "arb_") ∥ (HpMaster.prefixed "hp_")
+     ∥ (GpMaster.prefixed "gpm_")
+```
+
+emitted with `lake env lean --run Machines/Lnp64mini/Emit.lean dual`
+(`rtl/lnp64mini_dual.v`, 22,363 lines). The single arbiter is the memory
+serialization point, so uncached shared DDR is sequentially consistent;
+`rf`, the zero-page `dmem`, the UART rings and the 32 thread slots are all
+core-private, and every shared datum lives in DDR.
+
+Core extensions (all inert at 0, so `lnp64mini_soc` is byte-for-byte the
+old machine): `res_kill`, `doorbell`, `hold`, `sc_fail` (D15 inputs) and
+`wake_out`, `lr_req`, `sc_req`, `sc_pending` (registers). See
+`Machines/Lnp64mini/DUAL_SPEC.md` for the design record and the deviations
+— in particular why the LR/SC reservation had to move into the arbiter.
+
+Wrapper (`lnp64mini_dual_top.v`): the mini BSCAN DR gains a core-select
+region bit `dr[39]` (which is exactly `jtag_lib.tcl`'s `wr [expr 0x80|idx]`),
+latched at UPDATE for both the cmd path and the readback mux, plus
+wrapper register idx 56 = `CORE1_HOLD` (reset 1). ID = 0x53301018.
+
+`tb_lnp64mini_dual.v` runs the three ladder-step-2 tests against a single
+behavioral AXI3 slave (iverilog):
+
+| test | evidence |
+|---|---|
+| shared-nothing dual `loomcheck` (core 1's copy at 0x4000) | both HALTED, retire 25/25, both `r1..r9 = 6,7,42,255,36,14,42,56,14`, private `dmem32=42` each |
+| `smpcount.s` ×2, LR/SC on one shared DDR word, N=100 | `shared[0x10000]=200` = 2N, `r9=100` per core, 1 reservation kill |
+| `smpcount.s` vs `smpcount_skew.s` (anti-phase, N=100 each) | `shared[0x10000]=200`, `r9=100` per core, **40** reservation kills — heavy contention, no livelock |
+| `pingpong0.s`/`pingpong1.s` futex ping-pong over the doorbell | both HALTED, `r9=8` turns each, `wake_out` 8/8, 210/240 cycles genuinely parked in `S_WAIT` |
+| `-DONLY_C0` (CORE1_HOLD asserted) | core 0 runs `loomcheck` to a correct EXIT; core 1 started but `retire=0`, `pc=0x1000`, `rf` all zero |
+
+Ladder step 3 (Rust emulator, single core): `smpcount.hex` /
+`smpcount_skew.hex` reach `r9 = r10 = N = 100` — the shared word is the
+first `.data` symbol (0x10000), which is both ≥ 0x1000 (shared DDR on the
+fabric) and backed by the emulator's flat-exec data image.
+
+**Silicon: not yet.** openXC7 with the stock recipe
+(`synth_xilinx -flatten -nowidelut`) gives `SLICE_LUTX 99072/106400 (93%)`,
+`SLICE_FFX 18912 (17%)`, `RAMB36E1 2/140` — 2.22× the single-core soc's
+44,567 LUTs — and nextpnr-xilinx reports *"Unable to find legal placement
+for all cells, design is probably at utilisation limit"*. There is no Fmax
+number for the dual yet. Allowing widelut is *worse* (100% / hard placement
+error — nextpnr counts a fractured LUT6_2 as two SLICE_LUTX). See
+`DUAL_SPEC.md` "Synthesis datapoint" for the remaining options (smaller
+`NT`, `rf`/`dmem` into BRAM, a bigger part).
