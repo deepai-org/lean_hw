@@ -212,12 +212,22 @@ Ladder step 3 (Rust emulator, single core): `smpcount.hex` /
 first `.data` symbol (0x10000), which is both ≥ 0x1000 (shared DDR on the
 fabric) and backed by the emulator's flat-exec data image.
 
-**Silicon: not yet.** openXC7 with the stock recipe
-(`synth_xilinx -flatten -nowidelut`) gives `SLICE_LUTX 99072/106400 (93%)`,
-`SLICE_FFX 18912 (17%)`, `RAMB36E1 2/140` — 2.22× the single-core soc's
-44,567 LUTs — and nextpnr-xilinx reports *"Unable to find legal placement
-for all cells, design is probably at utilisation limit"*. There is no Fmax
-number for the dual yet. Allowing widelut is *worse* (100% / hard placement
-error — nextpnr counts a fractured LUT6_2 as two SLICE_LUTX). See
-`DUAL_SPEC.md` "Synthesis datapoint" for the remaining options (smaller
-`NT`, `rf`/`dmem` into BRAM, a bigger part).
+**Silicon: not yet; D19 (2026-07-30) got the dual from 93% to 78% but it still does not place.** With the
+stock recipe (`synth_xilinx -flatten -nowidelut`) the dual originally came
+out at `SLICE_LUTX 99072/106400 (93%)` and nextpnr-xilinx reported
+*"Unable to find legal placement for all cells"*, because µVerilog's only
+memory kind has asynchronous reads and the 1024×64 `rf` synthesized to
+distributed LUTRAM while 138/140 block RAMs sat idle. `Loom/Hw/D19_SPEC.md`
+fixes the *shape* of the `rf` read path (no Loom syntax/semantics change —
+a decidable `Design.syncReadOkB` check plus two value-preserving edits in
+`Core.lean`), and the regfiles land in block RAM.
+
+Result: the dual drops to `SLICE_LUTX 83926/106400 (78%)`, `SLICE_FFX
+18144 (17%)`, `RAMB36E1 26/140 (18%)` — but `nextpnr-xilinx` **still**
+reports *"Unable to find legal placement for all cells"*, so D19 was
+necessary and is not sufficient; there is still no Fmax number for the
+dual. The single core does route: `SLICE_LUTX 44567 (41%) -> 37606 (35%)`,
+`RAMB36E1 1 -> 13`, `sysclk 31.69 -> 32.53 MHz`.
+
+The whole ladder is unchanged and bit-exact — all six iverilog testbenches
+produce byte-identical output. See `DUAL_SPEC.md` "Synthesis datapoint".

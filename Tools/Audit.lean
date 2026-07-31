@@ -94,7 +94,16 @@ def permittedUnsafeDecls : List String :=
    "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.flattenModuleImpl.build",
    "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.flattenModuleImpl",
    "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toProgramImpl",
-   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl"]
+   "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl",
+   -- D19 `Expr.readsMem`'s pointer-memoized executable twin. Same trust
+   -- shape as `printImpl`: the memo is keyed on pointer identity, so a hit
+   -- means the *same* term, and the twin returns the reference definition's
+   -- Boolean. Nothing kernel-facing depends on it — `syncReadOkB` is an
+   -- emission-shape diagnostic (Loom/Hw/D19_SPEC.md), not a hypothesis of
+   -- any theorem; the twin exists only so the check does not re-walk the
+   -- compiler's shared expression DAGs exponentially (the D13 cost caveat).
+   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl.go",
+   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"]
 
 /-- The reference definitions whose compiled execution is replaced. -/
 def permittedImplementedBy : List (String × String) :=
@@ -105,7 +114,9 @@ def permittedImplementedBy : List (String × String) :=
    ("Loom.Hw.Design.toProgram",
     "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toProgramImpl"),
    ("Loom.Hw.Design.toIndexedWires",
-    "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl")]
+    "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl"),
+   ("Loom.Hw.Expr.readsMem",
+    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl")]
 
 /-- Lean generates partial `_unsafe_rec` helpers while elaborating some
 ordinary structural definitions. They are compiler artifacts, not uses of

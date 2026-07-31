@@ -4,6 +4,7 @@ import Loom.Hw.Semantics
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
+import Loom.Hw.SyncRead
 
 /-!
 # Lnp64mini — the DDR-backed MINI LNP64 soft-core, ported to Loom (open design)
@@ -317,9 +318,12 @@ def shamt_r : Expr 6 := .slice b 0 6
 def shamt_i : Expr 6 := .slice imm_i 0 6
 def pc8 : Expr 64 := .add pc (L64 8)
 
-/-- Shared read-port addresses: S_RD2 → rs3/rs4, else rs1/rs2. -/
-def r1a : Expr 5 := .mux (.eq st (L5 S_RD2)) rs3f rs1f
-def r2a : Expr 5 := .mux (.eq st (L5 S_RD2)) rs4f rs2f
+/-! `r1a`/`r2a` — the state-muxed shared read-port addresses
+(`(st == S_RD2) ? rs3f : rs1f`) — are **gone** (D19). The `S_RD` and
+`S_RD2` latch sites already key on `st`, so the mux was redundant there,
+and one shared address net gave `a`/`sel_t` a single `rf[...]` expression
+with fan-out two — which no downstream tool can merge into a block-RAM
+read port. Each site now names its own field directly. -/
 
 def mem_ea_l : Expr 64 := .add a imm_i
 def mem_ea_s : Expr 64 := .add a imm_s
@@ -852,15 +856,29 @@ def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 def s_fw : Expr 1 × Act := stArm S_FW
   (.ite mDone (.seq (.write 64 "ir" mRdata) (.write 5 "st" (L5 S_RD))) .skip)
 
+/-- `S_RD`: latch the three source operands. **D19 sync-read sites** —
+each written value is a bare `memRead` of `rf` (no zero-mux, no shared
+address net), so `Design.syncReadOkB "rf"` holds and the compiled
+`a <= n_k` / `wire n_k = rf[n_a];` pair is block-RAM shaped.
+
+The `(rsNf == 0) ? 0 : ...` zero-muxes the Verilog original carried are
+deleted, not moved: by invariant Z (`Loom/Hw/D19_SPEC.md` — every triple
+of `rfTriples` either writes a low-index that is guarded nonzero, or is
+the zeroing sweep writing 0) `rf[{t,0}]` is 0 in every reachable state,
+so the mux was the identity. Every register keeps its exact cycle-by-cycle
+value and the ISS is untouched. -/
 def s_rd : Expr 1 × Act := stArm S_RD
-  (.seq (.write 64 "a" (.mux (.eq rs1f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r1a))))
-    (.seq (.write 64 "b" (.mux (.eq rs2f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r2a))))
-      (.seq (.write 64 "rdval" (.mux (.eq rdf (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur rdf))))
+  (.seq (.write 64 "a" (.memRead 64 "rf" (cat55 cur rs1f)))
+    (.seq (.write 64 "b" (.memRead 64 "rf" (cat55 cur rs2f)))
+      (.seq (.write 64 "rdval" (.memRead 64 "rf" (cat55 cur rdf)))
             (.write 5 "st" (.mux is_sel (L5 S_RD2) (L5 S_EX))))))
 
+/-- `S_RD2`: the two extra operands of a SELECT. Same D19 shape; the
+addresses name `rs3f`/`rs4f` directly (they are what `r1a`/`r2a` reduced
+to in this state). -/
 def s_rd2 : Expr 1 × Act := stArm S_RD2
-  (.seq (.write 64 "sel_t" (.mux (.eq rs3f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r1a))))
-    (.seq (.write 64 "sel_f" (.mux (.eq rs4f (L5 0)) (L64 0) (.memRead 64 "rf" (cat55 cur r2a))))
+  (.seq (.write 64 "sel_t" (.memRead 64 "rf" (cat55 cur rs3f)))
+    (.seq (.write 64 "sel_f" (.memRead 64 "rf" (cat55 cur rs4f)))
           (.write 5 "st" (L5 S_EX))))
 
 -- S_EX: if-else priority tree mirroring the Verilog (rf writes in the
@@ -1192,5 +1210,25 @@ def design : Design where
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,
      ⟨"cmd_valid",1⟩, ⟨"cmd_idx",7⟩, ⟨"cmd_data",32⟩,
      ⟨"res_kill",1⟩, ⟨"doorbell",1⟩, ⟨"hold",1⟩, ⟨"sc_fail",1⟩]
+
+/-! ## D19 — the sync-read (block RAM) obligation
+
+`rf`, `dmem` and `uart_mem` must be read *only* through a register-latch
+site, or `yosys` demotes them to distributed LUTRAM and the dual core does
+not fit an XC7Z020 (`Loom/Hw/D19_SPEC.md`). The obligation is one
+kernel-reducible Boolean per memory, discharged here and re-checked by
+every emit path in `Emit.lean` (the D12/D13/D14 pattern).
+
+`rx_mem` is deliberately *not* in the list: the UART_RX load reads it
+combinationally inside the `rf` write data, so it stays LUTRAM — 256x8,
+which is the right implementation for it anyway. -/
+def syncReadMems : List String := ["rf", "dmem", "uart_mem"]
+
+/-- The D19 check over `syncReadMems`. -/
+def syncReadOk : Bool := syncReadMems.all (fun m => design.syncReadOkB m)
+
+/-- Human-readable D19 report (one line per declared memory). -/
+def syncReadReport : String :=
+  String.intercalate "\n" (design.mems.map (fun md => design.syncReadReport md.name))
 
 end Machines.Lnp64mini

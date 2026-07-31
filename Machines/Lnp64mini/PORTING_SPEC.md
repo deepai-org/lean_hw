@@ -281,3 +281,47 @@ MUL, DIV, EXIT halt). Use `Design.cycleOpen` on the EDSL side.
    for completeness but never affect core state (mini3 only surfaces them
    in BSCAN status reads, which live in the wrapper). Kept as inputs so the
    port's port list matches the intended wrapper contract.
+
+5. **D19 sync-read shape: the `rf` read path is restructured (2026-07-30).**
+   Two deviations from mini3's `always` block, both value-preserving, made
+   so `rf` lands in block RAM instead of LUTRAM
+   (`Loom/Hw/D19_SPEC.md`; `Design.syncReadOkB "rf"` now checks it):
+
+   * mini3's *shared, state-muxed* read addresses `r1a = (st==S_RD2) ?
+     rs3f : rs1f` and `r2a` are **gone**. `S_RD` reads `rf[{cur,rs1f}]` /
+     `rf[{cur,rs2f}]` and `S_RD2` reads `rf[{cur,rs3f}]` / `rf[{cur,rs4f}]`
+     directly. In each state the mux was already determined by that state,
+     so the latched values are identical; but one shared address net gave
+     `a`/`sel_t` a single `rf[...]` expression with fan-out two, which no
+     downstream tool can merge into a read port.
+   * the `(rsNf == 0) ? 0 : ...` **x0 zero-muxes are deleted**, because
+     invariant Z — `rf[{t,0}] = 0` in every reachable state — makes them
+     the identity. Z is inductive: `rf.init` is zero, and every one of the
+     20 `rfTriples` either writes a low index guarded `≠ 0` (`rdf`,
+     `ld_rd_q`, `clone_dst`, `reg_wsel`) or a nonzero literal (`L5 2`,
+     `L5 31`), or is the zeroing sweep writing `0`. mini3's own `reg_rd`
+     JTAG readback already relied on Z (it never had a zero-mux).
+
+   The **ISS is untouched** and the whole ladder is bit-exact — `selftest`
+   compares every register plus `rf[0..64)`/`dmem[0..64)` against the ISS,
+   and all six iverilog system testbenches produce byte-identical output
+   (same cycle counts, same reservation-kill counts) before and after.
+
+   **Residual hardware obligation (D19's standing caveat).** A block-RAM
+   read port and the write port are different physical ports, and Xilinx
+   7-series TDP RAM leaves read data indeterminate on a same-address,
+   same-cycle collision, where `Design.cycle` says "old data". Per memory:
+   * `dmem` — read and write share the *same* address net (`dmem_a`), so
+     yosys uses one port in READ_FIRST mode: well defined, no obligation.
+   * `rf`, ports `a`/`b`/`rdval`/`sel_t`/`sel_f` — enabled only in `S_RD`
+     and `S_RD2`, and no `rfTriples` guard can fire in those states
+     (`cmd 52` and the zeroing sweep only run with the core stopped), so
+     these ports never collide.
+   * `rf`, port `reg_rd`, and `uart_mem` port `uart_byte` — free-running
+     latches that *can* collide with a write. Both are read back only over
+     BSCAN, both re-latch every cycle, and the readback protocol samples
+     them across many cycles (`reg_rd` with the core stopped; `uart_byte`
+     only at indices `ridx != wptr`), so a single indeterminate cycle is
+     unobservable. This argument is *not* machine-checked and has not yet
+     been confirmed on silicon — the board was deliberately not programmed
+     in the pass that introduced D19.

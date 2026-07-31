@@ -22,12 +22,27 @@ lake env lean --run Machines/Lnp64mini/Emit.lean gpselftest # GP master EDSL ≡
 lake env lean --run Machines/Lnp64mini/Emit.lean arbselftest # HP arbiter EDSL ≡ ISS
 lake env lean --run Machines/Lnp64mini/Emit.lean smpselftest # res_kill/doorbell/hold/wake_out
 lake env lean --run Machines/Lnp64mini/Emit.lean progtest   # ISS runs a program to EXIT
+lake env lean --run Machines/Lnp64mini/Emit.lean d19        # D19 sync-read (BRAM) report
 ```
+
+Every emit path first discharges the D19 obligation (`syncReadOk`): `rf`,
+`dmem` and `uart_mem` must be read only through register-latch sites, or
+the emitted RTL silently becomes LUTRAM and the dual core stops fitting
+(`Loom/Hw/D19_SPEC.md`).
 -/
+
+open Machines.Lnp64mini in
+/-- Refuse to emit unless the D19 sync-read shape still holds. -/
+private def checkD19 : IO Unit := do
+  if ! Machines.Lnp64mini.syncReadOk then
+    IO.println Machines.Lnp64mini.syncReadReport
+    throw <| IO.userError
+      "D19: syncReadOkB failed \u2014 a memory in syncReadMems is read outside a register-latch site (it would emit as LUTRAM); see Loom/Hw/D19_SPEC.md"
 
 open Machines.Lnp64mini in
 def main (args : List String) : IO Unit := do
   match args with
+  | ["d19"]        => IO.println Machines.Lnp64mini.syncReadReport
   | ["selftest"]   => selftest
   | ["hpselftest"] => Machines.Lnp64mini.HpMaster.selftest
   | ["gpselftest"] => Machines.Lnp64mini.GpMaster.selftest
@@ -35,11 +50,13 @@ def main (args : List String) : IO Unit := do
   | ["smpselftest"] => smpSelftest
   | ["progtest"]   => progtest
   | ["soc"]        =>
+      checkD19
       if ! Machines.Lnp64mini.Soc.parOk then
         throw <| IO.userError "soc: parOkB failed — instance names not disjoint"
       Machines.Lnp64mini.Soc.soc.emit "rtl/lnp64mini_soc.v"
   | ["dual"]       =>
+      checkD19
       if ! Machines.Lnp64mini.DualSoc.parOk then
         throw <| IO.userError "dual: parOkB failed — instance names not disjoint"
       Machines.Lnp64mini.DualSoc.dual.emit "rtl/lnp64mini_dual.v"
-  | _ => design.emit "rtl/lnp64mini.v"
+  | _ => checkD19; design.emit "rtl/lnp64mini.v"

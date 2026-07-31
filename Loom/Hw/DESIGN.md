@@ -190,6 +190,49 @@ Consequences, in exchange for one field and four small definitions:
 - The release/SSA witness path is unaffected: release designs are closed
   (`ins = []` default), and no Expr/Act syntax changed.
 
+## D19 — sync-read memories are a decidable shape discipline (decided 2026-07-30)
+
+Full record: `Loom/Hw/D19_SPEC.md`.
+
+µVerilog memories have synchronous write ports and *asynchronous*
+in-expression reads, which on an FPGA means distributed LUTRAM: the
+lnp64mini dual core sat at 93–100 % of an XC7Z020's LUT sites with 138/140
+block RAMs idle. Block RAM needs a *registered* read.
+
+The EDSL could already express one — a rule writing a register whose whole
+value expression is a bare `memRead` compiles to `rdreg <= n_k;` beside
+`wire n_k = mem[n_a];`, which is exactly yosys's `memory_dff` merge
+pattern. Three isolated yosys probes showed the emitted form already
+merges; what was missing was a *check* that a memory is read **only** that
+way, since one combinational operator in the path, or two read sites whose
+address expressions the printer's hash-consing fuses into one wire, demotes
+the whole memory back to LUTRAM silently.
+
+So D19 adds **no `Expr` constructor, no AST field, no printer statement and
+no emission path** — it adds `Design.syncReadOkB d m` (`Loom/Hw/SyncRead.lean`),
+one kernel-reducible Boolean per memory checking (S1) every `memRead` of `m`
+is the entire value of an `Act.write`, (S2) one destination register per
+site with exactly one write site each, (S3) pairwise distinct address
+expressions (`Expr.key` renders as the printer does, so "distinct keys" is
+"distinct printer wires"), (S4) declared widths. This is the D12/D13/D14
+pattern: strengthen the decidable check, do not grow the framework.
+
+Because no semantic function reads the flag, the emitted text of a passing
+design is byte-identical to what it was before, so `compile_cycle`,
+`compile_cycle_mems`, `compile_cycleOpen`, `toProgram_denotes` and the
+round-trip theorem hold **verbatim and unrestated** — the strongest form of
+"emission theorem unaffected". A `syncReadOkB` on `MemDecl`/`MemDef` as a
+*field* was rejected on the D15 rip criterion: `MemDecl` is built by
+anonymous constructor inside a theorem statement (`Acc8/Theorems/AEV.lean`)
+and `MemDef` is destructured across `RoundTrip`, `MatchesSemantics`,
+`Release/SSA`, `Release/ToProgram*`, `ArtifactCert` and `ReleaseCertGen`.
+
+Standing caveat the check does *not* discharge: a block-RAM read port and
+the write port are different physical ports, and Xilinx 7-series TDP RAM
+leaves read data indeterminate on a same-address same-cycle collision,
+where `Design.cycle` says "old data". Machines with independent read/write
+addresses must argue their colliding cycles are unobservable.
+
 ## Order of construction
 
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)
