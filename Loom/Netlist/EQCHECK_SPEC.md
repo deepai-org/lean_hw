@@ -151,8 +151,11 @@ reset branch is inside the claim.
    SSA wires as expression *trees*, so a wire referenced *k* times is
    blasted *k* times and the CNF grows with the expanded tree rather than
    the DAG. On `s13soak` this is visible in one register (`err`:
-   5 962 614 clauses, 10 990 349 LRAT lines, 148 s of the design's 154 s,
-   9.4 GB peak RSS); every other signal is under 200 k clauses. The fix is
+   5 962 614 clauses, ~11.0 M LRAT lines, ~148 s of the design's ~151 s,
+   9.4 GB peak RSS); every other signal is under 200 k clauses. (Proof
+   sizes vary a little run to run — cadical is not bit-reproducible here —
+   so the LRAT totals below move by a fraction of a percent; the clause
+   counts, which the encoder determines, do not.) The fix is
    pointer-identity memoization of the blaster (the pattern
    `Print.printImpl` uses), which needs an `unsafe` twin and an audit
    whitelist entry — deliberately not taken in v1.
@@ -170,7 +173,7 @@ Verbatim summary lines from `scripts/eqcheck.sh`:
 EQCHECK OK (2 signals, 741 clauses, LRAT-verified)          s0blinky   (0.03 s)
 EQCHECK OK (4 signals, 367 clauses, LRAT-verified)          satcounter (0.03 s)
 EQCHECK OK (6 signals, 331 clauses, LRAT-verified)          pingpong   (0.03 s)
-EQCHECK OK (58 signals, 6216966 clauses, LRAT-verified)     s13soak    (154 s)
+EQCHECK OK (58 signals, 6216966 clauses, LRAT-verified)     s13soak    (158 s)
 ```
 
 Negative control (`scripts/eqcheck.sh --negative-control satcounter`): one
