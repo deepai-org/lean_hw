@@ -248,3 +248,16 @@ computed — so every register keeps its exact cycle-by-cycle value.
 The whole ladder is unchanged and bit-exact through both passes — all six
 iverilog testbenches produce byte-identical output, cycle counts included
 (273 / 372 / 12540 / 14933 / 2014 / 346). See `DUAL_SPEC.md` §D20.
+
+## Dual-core SMP on silicon (2026-07-31)
+
+The dual (two composed core instances, arbiter-resident global LR/SC,
+cross-core futex doorbell) passed all seven silicon ladder steps on the
+ZC702: bit-exact dual loomcheck; LR/SC shared counter = 2N on hardware
+(both phase variants); futex ping-pong 8/8; CORE1_HOLD live
+(held: retire=0 → released: completes); the NetBSD demo unchanged on the
+dual bitstream (same 4 one-shot traps, ping 8/8 BSCAN-quiet, telnet);
+and coexistence — NetBSD serving native GEM0 on core 0 (~883k retires/s)
+while core 1 ran an 8M-instruction workload to completion, ping 8/8
+after, arbiter share cost ~31% with RTT unaffected. Numbers: 48% LUTs,
+26 RAMB36, 29.46 MHz post-route at a 25 MHz clock.
