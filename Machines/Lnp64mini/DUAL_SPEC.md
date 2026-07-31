@@ -234,12 +234,14 @@ Step 4 (board) is **not** done: this pass stops at a synthesis datapoint.
 
 ## Synthesis datapoint (openXC7, xc7z020clg484-1)
 
+### Before D19 — the dual did not fit
+
 Reference — the single-core `lnp64mini_soc_top` on the same flow:
-`SLICE_LUTX 44567/106400 (41%)`, `SLICE_FFX 9659 (9%)`,
+`SLICE_LUTX 44567/106400 (41%)`, `SLICE_FFX 9659 (9%)`, `RAMB36E1 1/140`,
 `Max frequency for clock 'sysclk': 31.69 MHz` post-route.
 
 The dual, with the repository's stock recipe
-(`yosys synth_xilinx -flatten -nowidelut` → `nextpnr-xilinx`):
+(`yosys synth_xilinx -flatten -nowidelut` -> `nextpnr-xilinx`):
 
 ```
 Info: Device utilisation:
@@ -251,22 +253,96 @@ ERROR: Unable to find legal placement for all cells, design is probably
        at utilisation limit.
 ```
 
-So the two cores cost **2.22×** the single-core LUTs (99,072 vs 44,567 —
-slightly super-linear because the arbiter and the doubled BSCAN readback
-mux are new), and at 93% `nextpnr-xilinx` cannot legalize the placement:
-the spec's "≈80%, tight but routable" estimate was optimistic and **the
-dual does not fit an XC7Z020 with this recipe**. No Fmax number exists
-for it yet; the design is functionally complete and simulation-clean, but
-board bring-up (ladder step 4) needs one of:
+Two cores cost **2.22x** the single-core LUTs and `nextpnr-xilinx` could
+not legalize the placement. Allowing widelut was *worse*: `synth_xilinx
+-flatten` gives `SLICE_LUTX 107229/106400 (100%)` and `ERROR: Failed to
+expand region (0,0) |_> (186,156)`, because nextpnr-xilinx accounts each
+fractured `LUT6_2` as two `SLICE_LUTX` bels.
 
-* ~~dropping `-nowidelut`~~ — **tried, worse**: `synth_xilinx -flatten`
-  (widelut allowed) gives `SLICE_LUTX 107229/106400 (100%)` and
-  `ERROR: Failed to expand region (0,0) |_> (186,156) of 107229
-  SLICE_LUTXs`, because nextpnr-xilinx accounts each fractured `LUT6_2` as
-  two `SLICE_LUTX` bels;
-* shrinking the per-core thread table `NT` (32 → 8) — the 32-way
+The cause: µVerilog's only memory kind has *asynchronous* in-expression
+reads, so the 1024x64 `rf` — with six read sites per core — synthesized to
+distributed LUTRAM (`RAM64M`) while 138/140 block RAMs sat idle.
+
+### After D19 — same recipe, same testbench outputs, block RAM
+
+`Loom/Hw/D19_SPEC.md` (the decision) and `PORTING_SPEC.md` deviation 5
+(the two value-preserving shape fixes to `Core.lean`: drop the state-muxed
+shared read address, drop the redundant `x0` zero-mux). Nothing in Loom's
+syntax, semantics, compiler or printer changed; the D19 contribution is a
+decidable check, `Design.syncReadOkB`, that every emit path discharges:
+
+```
+$ lake env lean --run Machines/Lnp64mini/Emit.lean d19
+  rf: syncReadOk=true sites=6 [reg_rd,a,b,rdval,sel_t,sel_f]
+  dmem: syncReadOk=true sites=1 [dmem_rd]
+  uart_mem: syncReadOk=true sites=1 [uart_byte]
+  rx_mem: syncReadOk=false sites=0 []  (STRAY combinational read)
+```
+
+Single-core `lnp64mini_soc_top`, same flow:
+
+| | before | after |
+|---|---|---|
+| `SLICE_LUTX` | 44567 (41%) | **37606 (35%)** |
+| `SLICE_FFX` | 9659 (9%) | 9275 (8%) |
+| `RAMB36E1` | 1/140 | **13/140 (9%)** |
+| `sysclk` post-route | 31.69 MHz | **32.53 MHz** |
+
+(yosys `stat` on the bare `lnp64mini_soc` module shows where it went:
+`RAM64M` 1432 -> 24, `RAMB36E1` 1 -> 13.)
+
+Dual `lnp64mini_dual_top`, same flow:
+
+```
+Info:     Created 83734 SLICE_LUTX cells from: ...
+Info: Device utilisation:
+Info: 	          SLICE_LUTX: 83926/106400    78%
+Info: 	           SLICE_FFX: 18144/106400    17%
+Info: 	            RAMB18E1:     0/  280     0%
+Info: 	            RAMB36E1:    26/  140    18%
+Info: 	            BUFGCTRL:     5/   32    15%
+...
+Info: Creating initial analytic placement for 73771 cells
+Info: Running main analytical placer.
+ERROR: Unable to find legal placement for all cells, design is probably
+       at utilisation limit.
+```
+
+**93% -> 78% (-15,146 SLICE_LUTX, -15.3%), 2 -> 26 RAMB36E1 — and
+`nextpnr-xilinx` still cannot legalize the placement.** D19 did what it was
+designed to do (the regfiles are in block RAM; the LUTRAM `RAM64M` cells
+are gone), and it was necessary, but it is **not sufficient**: the HeAP
+placer fails at the same step it failed at 93%, so the binding constraint
+is not raw LUT headroom alone. No post-route Fmax number exists for the
+dual yet.
+
+The failure is reproducible, not seed luck: re-running `nextpnr-xilinx`
+on the cached synthesis JSON with `--seed 7` (and a `--seed 1` attempt)
+fails at the same step with the same message.
+
+Remaining options, updated:
+
+* ~~`rf`/`dmem` into BRAM~~ — **done (D19)**, 15% of the LUT budget
+  recovered, still short;
+* ~~dropping `-nowidelut`~~ — tried pre-D19, worse (`SLICE_LUTX
+  107229/106400`, nextpnr counts a fractured `LUT6_2` as two bels);
+* shrinking the per-core thread table `NT` (32 -> 8) — the 32-way
   `tpc`/`tstate`/`tsleep`/`tfutex`/`tp_arr`/`sigmask_arr` dynamic
-  read/write trees are the single biggest LUT consumer in the core;
-* putting `rf` and `dmem` in BRAM (only 2/140 RAMB36E1 are used today —
-  the 1024×64 `rf` is currently LUT-RAM/flops);
+  read/write trees are now, by elimination, the biggest LUT consumer left
+  in the core. `tpc`/`tsleep`/`tfutex`/`tp_arr`/`sigmask_arr` are also
+  32x64 arrays with one dynamic write index — i.e. plausible **D19
+  candidates in their own right** if their reads are restaged through
+  latch registers;
 * a bigger part.
+
+Ladder evidence that the meaning did not move: `selftest`, `smpselftest`,
+`arbselftest`, `hpselftest`, `gpselftest`, `progtest` all OK (EDSL == ISS
+bit-exact, ISS untouched), and all **six** iverilog system testbenches
+(soc `loomcheck`; dual shared-nothing / LR-SC / LR-SC-skew / futex
+ping-pong / `-DONLY_C0`) produce **byte-identical** output before and
+after — same cycle counts (372 / 12540 / 14933 / 2014 / 346), same
+reservation-kill counts (39/1), same `wake_out` 8/8, same `S_WAIT` 210/240.
+
+Ladder step 4 (board) is still **not** done: this pass deliberately stops
+at the fit, and the D19 cross-port collision obligation
+(`PORTING_SPEC.md` deviation 5) has not been confirmed on silicon.

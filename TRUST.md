@@ -119,8 +119,9 @@ are in [`TCB.md`](TCB.md); clean-clone verification tiers are in
    `extern` declarations. `compileExprFast` is used only to synthesize
    untrusted release-certificate data; it is not reachable from certificate
    acceptance or release theorems.
-   The reviewed replacements are `compile`, `print`, and (since 2026-07-28)
-   `Design.toProgram` / `Design.toIndexedWires`. The latter pair follows the
+   The reviewed replacements are `compile`, `print`, (since 2026-07-28)
+   `Design.toProgram` / `Design.toIndexedWires`, and (since 2026-07-30)
+   `Expr.readsMem` (D19). `Design.toProgram`/`toIndexedWires` follow the
    `print`/`printImpl` shape exactly: the unsafe twin adds a pointer-identity
    memo whose only effect is to skip re-walks that would rebuild identical
    `(width, rendered RHS)` CSE keys, so its compiled output equals the
@@ -128,6 +129,13 @@ are in [`TCB.md`](TCB.md); clean-clone verification tiers are in
    the reference definition is what appears in `toProgram_denotes` and any
    future reflective `program = d.toProgram` check, and the compiled twin is
    used only to *produce* candidate data whose acceptance is kernel-checked.
+   `readsMem`'s twin is the smallest instance of the same pattern — a
+   pointer-identity memo over a `Bool`-valued expression walk, so a memo hit
+   is literally the same term and the twin returns the reference
+   definition's value — and the least load-bearing: `readsMem` feeds only
+   `Design.syncReadOkB`, an *emission-shape diagnostic*
+   (`Loom/Hw/D19_SPEC.md`) that no theorem takes as a hypothesis and no
+   semantic function reads.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
 5. Superseded `SystemOpsWf` sorries were deleted 2026-07-04. As of
    2026-07-16 the R-MC dependency cone is also sorry-free: `square`,
