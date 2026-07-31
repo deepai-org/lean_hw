@@ -178,12 +178,16 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("reg_rd",64,s.reg_rd.toNat), ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
-  ++ (List.range NT).map (fun i => (s!"tpc{i}",64,s.tpc[i]!.toNat))
   ++ (List.range NT).map (fun i => (s!"tstate{i}",2,s.tstate[i]!.toNat))
-  ++ (List.range NT).map (fun i => (s!"tsleep{i}",64,s.tsleep[i]!.toNat))
   ++ (List.range NT).map (fun i => (s!"tfutex{i}",64,s.tfutex[i]!.toNat))
-  ++ (List.range NT).map (fun i => (s!"tp_arr{i}",64,s.tp_arr[i]!.toNat))
-  ++ (List.range NT).map (fun i => (s!"sigmask_arr{i}",64,s.sigmask_arr[i]!.toNat))
+
+/-- D20: the four thread-table arrays that became Loom **memories**
+(`tpc`, `tsleep`, `tp_arr`, `sigmask_arr`). The lockstep compares them
+entry by entry the way it already compares `rf`/`dmem`, so the EDSL≡ISS
+gate still covers every bit of the thread table. -/
+def issTArrays (s : MiniSt) : List (String × Array (BitVec 64)) :=
+  [("tpc", s.tpc), ("tsleep", s.tsleep), ("tp_arr", s.tp_arr),
+   ("sigmask_arr", s.sigmask_arr)]
 
 /-! ## EDSL ≡ ISS lockstep -/
 
@@ -204,6 +208,13 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
     if (σ.mems "dmem" a 64).toNat ≠ (s.dmem[a]!).toNat then
       if bad < 12 then IO.println s!"  MISMATCH step {step} dmem[{a}]: edsl={(σ.mems "dmem" a 64).toNat} iss={(s.dmem[a]!).toNat}"
       bad := bad + 1
+  -- D20: the thread-table memories, all 32 entries of each
+  for (mn, arr) in issTArrays s do
+    for i in List.range NT do
+      if (σ.mems mn i 64).toNat ≠ (arr[i]!).toNat then
+        if bad < 12 then
+          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i 64).toNat} iss={(arr[i]!).toNat}"
+        bad := bad + 1
   return bad
 
 /-- Run the ISS+DDR system for `nCyc` cycles under a cmd script (indexed by
@@ -392,7 +403,7 @@ def selftest : IO Unit := do
     else IO.println s!"  FAIL {nm} ({bad} mismatches)"
     total := total + bad
   if total = 0 then
-    IO.println s!"LNP64MINI SELFTEST OK — EDSL≡ISS bit-exact on {scripts.length} scripts (all regs + rf[0..64) + dmem[0..64))"
+    IO.println s!"LNP64MINI SELFTEST OK — EDSL≡ISS bit-exact on {scripts.length} scripts (all regs + rf[0..64) + dmem[0..64) + tpc/tsleep/tp_arr/sigmask_arr[0..32))"
   else
     IO.println s!"LNP64MINI SELFTEST FAILED ({total} total mismatches)"
 

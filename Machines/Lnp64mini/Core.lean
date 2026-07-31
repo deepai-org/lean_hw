@@ -188,14 +188,33 @@ def dmem_addr_j : Expr 32 := .reg 32 "dmem_addr_j"
 def dmem_lo_j   : Expr 32 := .reg 32 "dmem_lo_j"
 def reg_rd    : Expr 64 := .reg 64 "reg_rd"
 
-/-! ## Per-element register arrays (Fin 32 builders) -/
+/-! ## The thread table (D20)
 
-def tpc     (i : Fin NT) : Expr 64 := .reg 64 s!"tpc{i.val}"
+`tstate` and `tfutex` stay **per-element registers**; `tpc`, `tsleep`,
+`tp_arr` and `sigmask_arr` are **Loom memories** (32x64, one dynamic index).
+See `DUAL_SPEC.md` §D20 for the per-array decision table and the cost
+measurements. In one line: an array whose reads are *all* at one dynamic
+index is a memory (the 32:1 read mux and — far more expensive — the 32
+copies of the write data path collapse to one LUTRAM), while an array read
+*at every index at once* (`tfutex`'s FUTEX_WAKE comparator bank, `tstate`'s
+priority encoders) has to stay a register file of flops.
+
+All reads of the four converted arrays are plain **asynchronous**
+`memRead`s — D9 says they evaluate against the pre-cycle state at the
+pre-cycle address, which is exactly what the 32-way mux over pre-cycle
+registers computed. Nothing is restaged, so every register keeps its
+cycle-by-cycle value and the ISS is unchanged except for the `cmd 13` reset
+sweep (D20.3). µVerilog's async read is distributed RAM, which has no
+cross-port collision hazard: the write lands on the clock edge, the read
+sees the old contents, exactly as `Design.cycle` says. -/
+
 def tstate  (i : Fin NT) : Expr 2  := .reg 2  s!"tstate{i.val}"
-def tsleep  (i : Fin NT) : Expr 64 := .reg 64 s!"tsleep{i.val}"
 def tfutex  (i : Fin NT) : Expr 64 := .reg 64 s!"tfutex{i.val}"
-def tp_arr  (i : Fin NT) : Expr 64 := .reg 64 s!"tp_arr{i.val}"
-def sigmask_arr (i : Fin NT) : Expr 64 := .reg 64 s!"sigmask_arr{i.val}"
+
+/-- `tpc[idx]` — async read of the thread-PC memory. -/
+def tpcRd (idx : Expr 5) : Expr 64 := .memRead 64 "tpc" idx
+/-- `tsleep[idx]` — async read of the sleep-countdown memory. -/
+def tsleepRd (idx : Expr 5) : Expr 64 := .memRead 64 "tsleep" idx
 
 /-! ## Literal helpers -/
 
@@ -671,16 +690,32 @@ def encRule : Rule :=
   ⟨"enc", .seq (.write 5 "next_ready" (.mux nr_any (.add (.add cur (L5 1)) nr_off) cur))
     (.seq (.write 5 "free_slot" fs_off) (.write 1 "has_free" hf_c))⟩
 
-/-- (2) serialized sleep scan (per-element). -/
+/-- (2) serialized sleep scan.
+
+**D20.** `tsleep` is a memory, so the scan reads it once, at the scanned
+index, instead of instantiating 32 comparators and 32 64-bit decrementers.
+`tsl_s = tsleep[sleep_scan]` (async, pre-cycle) is *by definition* the
+`tsleep i` the per-element chain used, because that chain only ever ran the
+arm with `sleep_scan == i`. The `tstate` write stays per-element (`tstate`
+is a register file); the countdown becomes one guarded `memWrite` on write
+port **0** — the design's first syntactic `tsleep` write, so
+`MemWriteWF`'s ascending-port condition is met by the `S_EX SLEEP` write
+taking port 1 in `tarrFunnelRule` (a later rule). -/
 def sleepScanRule : Rule :=
   ⟨"sleepdec", .ite (.and (.not holdEn) (.and running (.not halted)))
-    (.seq (.write 5 "sleep_scan" (.add sleep_scan (L5 1)))
-      ((List.finRange NT).foldr (fun i acc =>
-        .seq (.ite (.and (.eq sleep_scan (L5 i.val)) (.eq (tstate i) (L2 2)))
-          (.ite (.not (.ult (L64 1) (tsleep i)))   -- tsleep <= 1
-            (.write 2 s!"tstate{i.val}" (L2 1))
-            (.write 64 s!"tsleep{i.val}" (.sub (tsleep i) (L64 1))))
-          .skip) acc) .skip))
+    (let tsl_s : Expr 64 := tsleepRd sleep_scan
+     let scanHit : Expr 1 :=
+       priTree ((List.finRange NT).map
+         (fun i => (.eq sleep_scan (L5 i.val), .eq (tstate i) (L2 2)))) (L1 0)
+     .seq (.write 5 "sleep_scan" (.add sleep_scan (L5 1)))
+      (.seq
+        ((List.finRange NT).foldr (fun i acc =>
+          .seq (.ite (.and (.eq sleep_scan (L5 i.val)) (.eq (tstate i) (L2 2)))
+            (.ite (.not (.ult (L64 1) tsl_s))       -- tsleep[sleep_scan] <= 1
+              (.write 2 s!"tstate{i.val}" (L2 1)) .skip)
+            .skip) acc) .skip)
+        (.ite (.and scanHit (.ult (L64 1) tsl_s))
+          (.memWrite 5 64 "tsleep" 0 sleep_scan (.sub tsl_s (L64 1))) .skip)))
     .skip⟩
 
 /-- (3) latches: dmem_rd/reg_rd/uart_byte from pre-cycle state, plus the
@@ -730,10 +765,15 @@ where
     .seq (.write 5 "cur" (L5 0)) <|
     .seq (.write 1 "lr_valid" (L1 0)) <|
     .seq (.write 1 "zeroing" (L1 1)) <|
+    -- D20: `tpc` is a memory, so its 32-entry reset is *swept* by the
+    -- zeroing engine (`tpcTriples` entry 1) over the first 32 of the 1024
+    -- zeroing cycles instead of being written all at once here. Nothing
+    -- reads `tpc` while `zeroing` is high (every read sits under `fsmEn`,
+    -- which contains `¬zeroing`), so the transient is unobservable and the
+    -- post-sweep contents are identical.
     .seq (.write 10 "zctr" (.lit (BitVec.ofNat 10 0)))
       ((List.finRange NT).foldr (fun i acc =>
-        .seq (.write 2 s!"tstate{i.val}" (if i.val = 0 then L2 1 else L2 0))
-          (.seq (.write 64 s!"tpc{i.val}" (L64 TEXT_BASE)) acc)) .skip)
+        .seq (.write 2 s!"tstate{i.val}" (if i.val = 0 then L2 1 else L2 0)) acc) .skip)
   cmdBody : Act :=
     .seq (.ite (ci 14) (.write 5 "reg_sel" (.slice cmdData 0 5)) .skip) <|
     .seq (.ite (ci 15) (.write 32 "dmem_addr_j" cmdData) .skip) <|
@@ -796,31 +836,16 @@ def actSeq (as : List Act) : Act := as.foldr (fun x acc => .seq x acc) .skip
 
 /-! ### S_EX helpers (dynamic per-thread writes; scheduler switches) -/
 
-/-- `pc <= tpc[idx]`. Was a 32-deep `.ite` chain (⇒ a 32-deep 64-bit mux
-cone on `pc`); `idx : Expr 5` ranges over exactly the 32 cases, so the
-chain always writes and the `.skip` tail is unreachable — an unconditional
-write of the balanced 32-way select is the same function. -/
-def setPcFromTpc (idx : Expr 5) : Act :=
-  .write 64 "pc"
-    (priTree ((List.finRange NT).map (fun i => (.eq idx (L5 i.val), tpc i))) (L64 0))
-def tpcDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"tpc{i.val}" v) .skip) acc) .skip
+/-- `pc <= tpc[idx]`. **D20**: one async memory read instead of a balanced
+32-way select over 32 registers. Same function of the same pre-cycle state
+(D9: `memRead` evaluates against `σ`). -/
+def setPcFromTpc (idx : Expr 5) : Act := .write 64 "pc" (tpcRd idx)
 def tstateDynWrite (v : Expr 2) (idx : Expr 5) : Act :=
   (List.finRange NT).foldr (fun i acc =>
     .seq (.ite (.eq idx (L5 i.val)) (.write 2 s!"tstate{i.val}" v) .skip) acc) .skip
-def tsleepDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"tsleep{i.val}" v) .skip) acc) .skip
 def tfutexDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
   (List.finRange NT).foldr (fun i acc =>
     .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"tfutex{i.val}" v) .skip) acc) .skip
-def tp_arrDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"tp_arr{i.val}" v) .skip) acc) .skip
-def sigmaskDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"sigmask_arr{i.val}" v) .skip) acc) .skip
 /-- dynamic tstate[idx]==v test as a (balanced) mux chain. -/
 def tstateEq (idx : Expr 5) (v : Expr 2) : Expr 1 :=
   priTree ((List.finRange NT).map (fun i => (.eq idx (L5 i.val), .eq (tstate i) v))) (L1 0)
@@ -944,17 +969,15 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- 0x06 YIELD
   gcons (opIs 0x06)
     (.seq (.ite (.eq next_ready cur) stepPc
-            (.seq (tpcDynWrite cur pc8) (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready))))
+            (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready)))
           (.seq retireInc goF0)) <|
   -- 0x07 SLEEP
   gcons (opIs 0x07)
-    (.seq (tpcDynWrite cur pc8)
-      (.seq (tstateDynWrite (L2 2) cur)
-        (.seq (tsleepDynWrite cur (.mux (.eq a (L64 0)) (L64 1) a))
-          (.seq (.ite (.not (.eq next_ready cur))
-                  (.seq (.write 5 "cur" next_ready) (.seq (setPcFromTpc next_ready) goF0))
-                  (.write 5 "st" (L5 S_WAIT)))
-                retireInc)))) <|
+    (.seq (tstateDynWrite (L2 2) cur)
+      (.seq (.ite (.not (.eq next_ready cur))
+              (.seq (.write 5 "cur" next_ready) (.seq (setPcFromTpc next_ready) goF0))
+              (.write 5 "st" (L5 S_WAIT)))
+            retireInc)) <|
   -- 0xcb FUTEX_WAIT
   gcons (opIs 0xcb)
     (.seq (.write 32 "core_addr" (.add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.zext (.slice rdval 3 29) 32) (.lit (BitVec.ofNat 32 3)))))
@@ -965,9 +988,8 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- 0x59 CLONE
   gcons (opIs 0x59)
     (.ite has_free
-      (.seq (tpcDynWrite free_slot a)
-        (.seq (tstateDynWrite (L2 1) free_slot)
-          (.seq (.write 5 "clone_dst" rdf) (.seq (.write 5 "clone_tid" free_slot) (.write 5 "st" (L5 S_CLONE2))))))
+      (.seq (tstateDynWrite (L2 1) free_slot)
+        (.seq (.write 5 "clone_dst" rdf) (.seq (.write 5 "clone_tid" free_slot) (.write 5 "st" (L5 S_CLONE2)))))
       (.seq stepPc (.seq retireInc goF0))) <|
   -- LR
   gcons is_lr
@@ -1058,10 +1080,9 @@ def s_dst : Expr 1 × Act := stArm S_DST
 def s_dsw : Expr 1 × Act := stArm S_DSW
   (.ite mDone (actSeq [stepPc, retireInc, goF0]) .skip)
 
-/-- S_CLONE2: child sp (rf in funnel) + fresh tp/sigmask + advance. -/
-def s_clone2 : Expr 1 × Act := stArm S_CLONE2
-  (actSeq [tp_arrDynWrite clone_tid (L64 0), sigmaskDynWrite clone_tid (L64 0),
-           .write 5 "st" (L5 S_CLONE3)])
+/-- S_CLONE2: child sp (rf in funnel) + fresh tp/sigmask (both in
+`tarrFunnelRule`, D20) + advance. -/
+def s_clone2 : Expr 1 × Act := stArm S_CLONE2 (.write 5 "st" (L5 S_CLONE3))
 
 def s_clone3 : Expr 1 × Act := stArm S_CLONE3  (actSeq [stepPc, retireInc, goF0])
 
@@ -1069,7 +1090,7 @@ def s_clone3 : Expr 1 × Act := stArm S_CLONE3  (actSeq [stepPc, retireInc, goF0
 def s_ftx1 : Expr 1 × Act := stArm S_FTX1
   (.ite mDone
     (actSeq [.ite (.eq mRdata futex_exp)
-              (actSeq [tpcDynWrite cur pc8, tstateDynWrite (L2 3) cur, tfutexDynWrite cur futex_addr_q,
+              (actSeq [tstateDynWrite (L2 3) cur, tfutexDynWrite cur futex_addr_q,
                        .ite (.not (.eq next_ready cur))
                          (actSeq [.write 5 "cur" next_ready, setPcFromTpc next_ready, goF0])
                          (.write 5 "st" (L5 S_WAIT))])
@@ -1158,6 +1179,50 @@ def smpRule : Rule :=
           .skip)
         (.ite resKill (.write 1 "lr_valid" (L1 0)) .skip))⟩
 
+/-! ### (9a) The thread-table write funnels (D20)
+
+The four converted arrays (`tpc`, `tsleep`, `tp_arr`, `sigmask_arr`) get
+their writes hoisted out of the FSM into one funnel rule, exactly the way
+`rfTriples`/`rfFunnelRule` hoists the regfile's — so each array has **one**
+syntactic `memWrite` site here (`tsleep` has a second, earlier one in
+`sleepScanRule`), which keeps `Compile.MemWriteWF`'s "port indices strictly
+increase along the syntactic write order" trivially true.
+
+The guards reproduce each FSM branch's reachability condition. As with
+`rfTriples`, the `S_EX` opcode guards need no negation chain: the opcodes
+`0x06`/`0x07`/`0x59` appear in no earlier branch predicate of
+`s_ex_branches`, so `exG (opIs …)` characterises the branch exactly.
+
+`tpc` entry 1 is the `cmd 13` reset, re-expressed as a 32-cycle sweep off
+the zeroing counter (see `cmd13reset`). `zeroing` forces `fsmEn` low, so it
+is disjoint from entries 2–5 and the funnel's priority is immaterial. -/
+def tpcTriples : List (Expr 1 × Expr 5 × Expr 64) :=
+  -- 1. cmd-13 reset sweep (rides the zeroing engine's counter)
+  [ (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))), .slice zctr 0 5, L64 TEXT_BASE)
+  -- 2. S_EX YIELD (0x06), only when actually switching away
+  , (exG (.and (opIs 0x06) (.not (.eq next_ready cur))), cur, pc8)
+  -- 3. S_EX SLEEP (0x07)
+  , (exG (opIs 0x07), cur, pc8)
+  -- 4. S_EX CLONE (0x59) with a free slot: the child's entry PC
+  , (exG (.and (opIs 0x59) has_free), free_slot, a)
+  -- 5. S_FTX1, FUTEX_WAIT that blocks (DDR word still equals the expected)
+  , (.and fsmEn (.and (.eq st (L5 S_FTX1)) (.and mDone (.eq mRdata futex_exp))), cur, pc8) ]
+
+def tpcWeE : Expr 1 := orTree (tpcTriples.map (fun t => t.1))
+def tpcWaE : Expr 5 := priTree (tpcTriples.map (fun t => (t.1, t.2.1))) (L5 0)
+def tpcWdE : Expr 64 := priTree (tpcTriples.map (fun t => (t.1, t.2.2))) (L64 0)
+
+/-- `S_CLONE2` — the only writer of `tp_arr`/`sigmask_arr`. -/
+def cloneFresh : Expr 1 := .and fsmEn (.eq st (L5 S_CLONE2))
+
+def tarrFunnelRule : Rule :=
+  ⟨"tarr_funnel",
+    .seq (.ite tpcWeE (.memWrite 5 64 "tpc" 0 tpcWaE tpcWdE) .skip)
+      (.seq (.ite (exG (opIs 0x07))
+              (.memWrite 5 64 "tsleep" 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
+        (.seq (.ite cloneFresh (.memWrite 5 64 "tp_arr" 0 clone_tid (L64 0)) .skip)
+              (.ite cloneFresh (.memWrite 5 64 "sigmask_arr" 0 clone_tid (L64 0)) .skip)))⟩
+
 /-- (9) the single regfile write port. -/
 def rfFunnelRule : Rule :=
   ⟨"rf_funnel", .ite rfWeE (.memWrite 10 64 "rf" 0 rfWaE rfWdE) .skip⟩
@@ -1188,23 +1253,27 @@ def scalarRegs : List RegDecl :=
    ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
    ⟨"wake_out",1,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩]
 
+/-- The two thread-table arrays that stay per-element registers (D20):
+`tstate` (2-bit, multi-writer, read at every index by the ready/free
+priority encoders) and `tfutex` (read at every index by `FUTEX_WAKE`'s
+comparator bank). -/
 def arrRegs : List RegDecl :=
-  (List.finRange NT).map (fun i => ⟨s!"tpc{i.val}", 64, BitVec.ofNat 64 TEXT_BASE⟩)
-  ++ (List.finRange NT).map (fun i => ⟨s!"tstate{i.val}", 2, if i.val = 0 then 1 else 0⟩)
-  ++ (List.finRange NT).map (fun i => ⟨s!"tsleep{i.val}", 64, 0⟩)
+  (List.finRange NT).map (fun i => ⟨s!"tstate{i.val}", 2, if i.val = 0 then 1 else 0⟩)
   ++ (List.finRange NT).map (fun i => ⟨s!"tfutex{i.val}", 64, 0⟩)
-  ++ (List.finRange NT).map (fun i => ⟨s!"tp_arr{i.val}", 64, 0⟩)
-  ++ (List.finRange NT).map (fun i => ⟨s!"sigmask_arr{i.val}", 64, 0⟩)
 
 def design : Design where
   name := "lnp64mini"
   regs := scalarRegs ++ arrRegs
   mems :=
     [⟨"rf", 10, 64, fun _ => 0⟩, ⟨"dmem", 9, 64, fun _ => 0⟩,
-     ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩]
+     ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩,
+     -- D20: the thread table's single-dynamic-index arrays
+     ⟨"tpc", 5, 64, fun _ => BitVec.ofNat 64 TEXT_BASE⟩,
+     ⟨"tsleep", 5, 64, fun _ => 0⟩,
+     ⟨"tp_arr", 5, 64, fun _ => 0⟩, ⟨"sigmask_arr", 5, 64, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
-     fsmRule, smpRule, rfFunnelRule]
+     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,

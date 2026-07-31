@@ -334,6 +334,11 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   -- zeroing engine
   if s.zeroing then
     rfWe := true; rfWa := s.zctr.setWidth 10; rfWd := 0
+    -- D20: `tpc` is a memory now, so `cmd 13`'s 32-entry reset rides the
+    -- zeroing counter (one slot per cycle, done long before the 1024-cycle
+    -- sweep ends). Nothing reads `tpc` while `zeroing` is high.
+    if s.zctr.toNat < NT then
+      s' := { s' with tpc := s'.tpc.set! s.zctr.toNat (BitVec.ofNat 64 TEXT_BASE) }
     if s.zctr.toNat < 512 then
       s' := { s' with dmem_we := true, dmem_a := s.zctr.setWidth 9, dmem_wd := 0 }
     if s.zctr.toNat = 32*NT - 1 then s' := { s' with zeroing := false }
@@ -371,8 +376,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           running := false, st := BitVec.ofNat 5 S_IDLE, uart_wptr := 0,
                           rx_rptr := 0, rx_wptr := 0, trap_active := false, cur := 0,
                           lr_valid := false, zeroing := true, zctr := 0,
-                          tstate := (Array.replicate NT 0).set! 0 1,
-                          tpc := Array.replicate NT (BitVec.ofNat 64 TEXT_BASE) }
+                          tstate := (Array.replicate NT 0).set! 0 1 }
         if bit d 1 then s' := { s' with running := true, st := BitVec.ofNat 5 S_F0 }
     | _ => pure ()
 

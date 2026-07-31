@@ -63,6 +63,12 @@ multiple ports; use `Fin 32` builders, names `tpc0..tpc31` etc.):
 - `tpc` 64, `tstate` 2, `tsleep` 64, `tfutex` 64, `tp_arr` 64,
   `sigmask_arr` 64.
 
+**Superseded for four of the six by D20 (2026-07-31) — see deviation 6 and
+`DUAL_SPEC.md` §D20.** `tpc`, `tsleep`, `tp_arr` and `sigmask_arr` are now
+32x64 Loom **memories** (async `memRead`s, LUTRAM); only `tstate` and
+`tfutex` remain per-element, because those two are read at *every* index at
+once (priority encoders / the `FUTEX_WAKE` comparator bank).
+
 Scalar registers (width, init) — port ALL of these verbatim:
 cur 5/0, pc 64/0x1000, retire 32/0, running 1/0, halted 1/0, st 5/0,
 ir 64/0, a 64/0, b 64/0, rdval 64/0, sel_t 64/0, sel_f 64/0,
@@ -325,3 +331,30 @@ MUL, DIV, EXIT halt). Use `Design.cycleOpen` on the EDSL side.
      unobservable. This argument is *not* machine-checked and has not yet
      been confirmed on silicon — the board was deliberately not programmed
      in the pass that introduced D19.
+
+6. **D20 — four of the six thread-table arrays are memories (2026-07-31).**
+   `tpc`, `tsleep`, `tp_arr` and `sigmask_arr` moved from `Fin 32` register
+   banks to 32x64 Loom `MemDecl`s; `tstate` and `tfutex` stayed per-element.
+   Rationale, per-array decision table, the `MemWriteWF` port assignment and
+   the measured cost are in `DUAL_SPEC.md` §D20. Three points matter here:
+
+   * **Reads are plain asynchronous `memRead`s, not D19 sync-read sites.**
+     `memRead` evaluates against the pre-cycle state at the pre-cycle
+     address (D9), which is *definitionally* what the 32-way `priTree` over
+     32 pre-cycle registers computed. Nothing is restaged, so every
+     register keeps its exact cycle-by-cycle value, the ISS needed no
+     change on the read side, and the whole ladder — including all six
+     iverilog cycle counts — is byte-identical. `syncReadOkB` is `false`
+     for all four, deliberately: distributed RAM is the right (and
+     collision-free) implementation at 32x64.
+   * **The FSM's writes are funnelled** into one new rule `tarr_funnel`
+     (`tpcTriples` + three single-site writes), mirroring `rfTriples`, so
+     each array has one syntactic `memWrite` and `Compile.MemWriteWF`'s
+     ascending-port condition is trivial. `tsleep` is the exception: the
+     sleep scan (port 0, rule `sleepdec`) and `S_EX SLEEP` (port 1,
+     `tarr_funnel`) can write different indices in the same cycle.
+   * **The one real behavioural deviation:** `cmd 13`'s 32-entry `tpc`
+     reset became a 32-cycle sweep off the zeroing counter, because a
+     memory cannot take 32 writes in one cycle. It is unobservable — every
+     `tpc` read is under `fsmEn`, and `fsmEn` contains `¬zeroing` — and the
+     ISS mirrors the sweep bit-for-bit.

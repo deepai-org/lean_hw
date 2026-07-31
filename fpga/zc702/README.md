@@ -222,12 +222,29 @@ fixes the *shape* of the `rf` read path (no Loom syntax/semantics change —
 a decidable `Design.syncReadOkB` check plus two value-preserving edits in
 `Core.lean`), and the regfiles land in block RAM.
 
-Result: the dual drops to `SLICE_LUTX 83926/106400 (78%)`, `SLICE_FFX
-18144 (17%)`, `RAMB36E1 26/140 (18%)` — but `nextpnr-xilinx` **still**
-reports *"Unable to find legal placement for all cells"*, so D19 was
-necessary and is not sufficient; there is still no Fmax number for the
-dual. The single core does route: `SLICE_LUTX 44567 (41%) -> 37606 (35%)`,
-`RAMB36E1 1 -> 13`, `sysclk 31.69 -> 32.53 MHz`.
+Result: the dual drops to `SLICE_LUTX 83926/106400 (78%)` — but
+`nextpnr-xilinx` **still** reports *"Unable to find legal placement"*, so
+D19 was necessary and not sufficient.
 
-The whole ladder is unchanged and bit-exact — all six iverilog testbenches
-produce byte-identical output. See `DUAL_SPEC.md` "Synthesis datapoint".
+**D20 (2026-07-31) closes it: the dual fits, routes and produces a
+bitstream.** `DUAL_SPEC.md` §D20 — four of the six per-core thread-table
+arrays (`tpc`, `tsleep`, `tp_arr`, `sigmask_arr`) become 32×64 Loom
+memories with plain **asynchronous** reads (LUTRAM). `tstate` and `tfutex`
+stay per-element, because those two are read at *every* index at once (the
+priority encoders and the `FUTEX_WAKE` comparator bank). Nothing is
+restaged: `memRead` is pre-cycle-state at a pre-cycle address (D9), which
+is definitionally what the 32-way mux over 32 pre-cycle registers
+computed — so every register keeps its exact cycle-by-cycle value.
+
+| | pre-D19 | post-D19 | **post-D20** |
+|---|---|---|---|
+| soc `SLICE_LUTX` | 44567 (41%) | 37606 (35%) | **21524 (20%)** |
+| soc `sysclk` post-route | 31.69 MHz | 32.53 MHz | **35.11 MHz** |
+| dual `SLICE_LUTX` | 99072 (93%) | 83926 (78%) | **52134 (48%)** |
+| dual `RAMB36E1` | 2/140 | 26/140 | 26/140 |
+| dual placement | ERROR | ERROR | **legal — `OXC7_BUILD_DONE`** |
+| dual `sysclk` post-route | — | — | **29.46 MHz** |
+
+The whole ladder is unchanged and bit-exact through both passes — all six
+iverilog testbenches produce byte-identical output, cycle counts included
+(273 / 372 / 12540 / 14933 / 2014 / 346). See `DUAL_SPEC.md` §D20.

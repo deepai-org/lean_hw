@@ -326,14 +326,9 @@ Remaining options, updated:
   recovered, still short;
 * ~~dropping `-nowidelut`~~ — tried pre-D19, worse (`SLICE_LUTX
   107229/106400`, nextpnr counts a fractured `LUT6_2` as two bels);
-* shrinking the per-core thread table `NT` (32 -> 8) — the 32-way
-  `tpc`/`tstate`/`tsleep`/`tfutex`/`tp_arr`/`sigmask_arr` dynamic
-  read/write trees are now, by elimination, the biggest LUT consumer left
-  in the core. `tpc`/`tsleep`/`tfutex`/`tp_arr`/`sigmask_arr` are also
-  32x64 arrays with one dynamic write index — i.e. plausible **D19
-  candidates in their own right** if their reads are restaged through
-  latch registers;
-* a bigger part.
+* ~~the per-core 32-entry thread table~~ — **done (D20, below): the dual
+  fits at 48 %.**
+* a bigger part — not needed.
 
 Ladder evidence that the meaning did not move: `selftest`, `smpselftest`,
 `arbselftest`, `hpselftest`, `gpselftest`, `progtest` all OK (EDSL == ISS
@@ -346,3 +341,237 @@ reservation-kill counts (39/1), same `wake_out` 8/8, same `S_WAIT` 210/240.
 Ladder step 4 (board) is still **not** done: this pass deliberately stops
 at the fit, and the D19 cross-port collision obligation
 (`PORTING_SPEC.md` deviation 5) has not been confirmed on silicon.
+
+---
+
+# D20 — the thread table: four arrays become memories (2026-07-31)
+
+**The dual fits.** D19 took the dual from 93 % to 78 % `SLICE_LUTX` and
+still could not be placed; D20 takes it to **48 %**, `nextpnr-xilinx`
+legalizes it, and the single-core SoC drops from 35 % to **20 %** while
+getting *faster* (32.53 -> 35.11 MHz). Numbers in full below.
+
+## The measurement that decided it
+
+`yosys synth_xilinx -flatten -nowidelut -top lnp64mini` on the **bare
+core** module, before/after:
+
+| cell | before D20 | after D20 |
+|---|---|---|
+| `LUT2/3/4/5/6` (sum) | 26672 | **13456** |
+| `INV` | 2687 | 423 |
+| `CARRY4` | 1111 | 522 |
+| `FDRE` | 7774 | 5763 |
+| `OBUF` | 12354 | 4162 |
+| `RAM32M` | 0 | 11 |
+| `RAM64M` | 24 | 24 |
+| `RAMB36E1` | 13 | 13 |
+| total cells | 50816 | 24523 |
+
+Half the core's LUTs were the 32-entry thread table. Not, as the D19 note
+guessed, mainly its *read* muxes: the dominant cost is the **write** side,
+because a per-element array replicates the whole write data path 32 times.
+`tsleep`'s sleep scan was the worst single offender — the per-element form
+instantiated **32 separate 64-bit decrementers and 32 comparators** to
+decrement exactly one slot per cycle.
+
+## Per-array decision table
+
+| array | w | reads | writes | decision | why |
+|---|---|---|---|---|---|
+| `tpc` | 64 | 5 sites, **all** `tpc[next_ready]` | 4 FSM sites (`YIELD`/`SLEEP`/`CLONE`/`S_FTX1`) + the `cmd 13` reset | **memory**, 1 write port | one dynamic read index, one dynamic write index — the textbook memory |
+| `tsleep` | 64 | 1 site, `tsleep[sleep_scan]` | scan decrement + `S_EX SLEEP` | **memory**, 2 write ports (0 = scan, 1 = `SLEEP`) | as above; kills 31 of the 32 decrementers |
+| `tp_arr` | 64 | **none** | `S_CLONE2` only | **memory**, 1 write port | write-only in the core; as flops it was 2048 `o_*` port bits that only survived because they were ports |
+| `sigmask_arr` | 64 | **none** | `S_CLONE2` only | **memory**, 1 write port | ditto |
+| `tfutex` | 64 | `FUTEX_WAKE` reads **all 32** into a comparator bank | `S_FTX1` only | **stays per-element** | the read pattern *is* the feature — 32 simultaneous 64-bit compares against `rdval`. Its write side is cheap: one site, one shared data value, so each flop gets a clock enable, not a data mux |
+| `tstate` | 2 | all 32, by the ready/free priority encoders, `anyLive`, the scan and `FUTEX_WAKE` | many (scan, `cmd 13`, 4 FSM sites, `FUTEX_WAKE`'s 32, `doorbell`'s 32) | **stays per-element** | multi-writer *and* read-at-every-index; 64 flops total, so there is nothing to win |
+
+Neither `tp_arr` nor `sigmask_arr` was actually costing LUTs — yosys already
+proved them constant-0 (they are only ever written `0` from an init of `0`),
+which is why the *before* `FDRE` count is 7774 and not 11870. They were
+converted anyway because it is the same three lines, it removes 4096 dead
+output-port bits per core from the emitted module, and it makes the thread
+table's story uniform. **The measured win is entirely `tpc` + `tsleep`.**
+
+## Read semantics: async `memRead`, nothing restaged
+
+The brief allowed restaging reads into D19-style read registers. **That was
+not needed and is not what shipped.** µVerilog's memory read is
+*asynchronous* and D9 evaluates it against the **pre-cycle** state at the
+**pre-cycle** address — which is exactly what a 32-way mux over 32
+pre-cycle registers computed. So
+
+```
+priTree [(idx == 0, tpc0), …, (idx == 31, tpc31)]   ==   tpc[idx]
+```
+
+pointwise, in every state, with no timing question to answer. Every read
+site is a plain `memRead`:
+
+* `setPcFromTpc idx  ==>  pc <= tpc[idx]` (all five call sites pass
+  `next_ready`, so there is one read port);
+* the sleep scan's `tsleep i` becomes `tsl_s = tsleep[sleep_scan]`, used in
+  both the `tstate` wake guard and the decrement.
+
+**Consequence: no race analysis was required, and none of the hazards the
+brief warned about exist.** In particular the `tpc[next_ready]` hazard
+("does a write to `tpc[next_ready]` land in the restaging window?") is
+vacuous: nothing is staged, so the value read in `S_EX`/`S_WAIT`/`S_FTX1`
+is the same pre-cycle `tpc[next_ready]` it always was, on the same cycle.
+Writes issued the same cycle (`CLONE` to `free_slot`, `SLEEP`/`YIELD`/
+`FUTEX_WAIT` to `cur`) land after the read regardless of whether they
+alias, because `Act.run` reads `σ` and writes `acc` — D9, unchanged.
+
+The hardware side is equally free. Distributed RAM (`RAM32M`) reads
+combinationally out of the array while the write commits on the clock edge,
+so a same-address read/write in one cycle yields **old data**, which is what
+`Design.cycle` says. Unlike D19's block-RAM ports, there is **no cross-port
+collision obligation** to discharge for these four memories, and none is
+claimed. They are deliberately *not* in `syncReadMems`:
+
+```
+$ lake env lean --run Machines/Lnp64mini/Emit.lean d19
+  rf: syncReadOk=true sites=6 [reg_rd,a,b,rdval,sel_t,sel_f]
+  dmem: syncReadOk=true sites=1 [dmem_rd]
+  uart_mem: syncReadOk=true sites=1 [uart_byte]
+  rx_mem: syncReadOk=false sites=0 []  (STRAY combinational read)
+  tpc: syncReadOk=false sites=5 [pc,pc,pc,pc,pc]
+  tsleep: syncReadOk=false sites=0 []  (STRAY combinational read)
+  tp_arr: syncReadOk=false sites=0 []
+  sigmask_arr: syncReadOk=false sites=0 []
+```
+
+A 32x64 LUTRAM is ~8 `RAM32M` (11 for both live arrays after constant
+folding). Forcing it into a 1024x36 block RAM would waste a RAMB36 to save
+nothing; LUTRAM is the right answer here and BRAM is the right answer for
+`rf`/`dmem`. D19 and D20 are the same idea applied to opposite ends of the
+size range.
+
+## Write ports and `MemWriteWF`
+
+`Compile.MemWriteWF` needs port indices to *strictly increase* along the
+design's syntactic write order. The FSM's writes are therefore hoisted into
+a new rule `tarr_funnel` (placed between `smp` and `rf_funnel`), exactly
+mirroring `rfTriples`/`rf_funnel`: one syntactic `memWrite` per array, with
+the branch reachability conditions as guards. `designTrace` is then
+
+```
+tpc [0]   tp_arr [0]   sigmask_arr [0]   tsleep [0, 1]
+```
+
+`tsleep` is the only two-port array: the sleep scan (rule 2) and `S_EX
+SLEEP` (rule 10) can fire in the same cycle at *different* indices, so they
+cannot be funnelled. Port 0 = scan, port 1 = `SLEEP`; the printer emits the
+ports in ascending order inside the one `always` block, so on a colliding
+index `SLEEP` wins — which is what the old rule order (rule 2 before rule 8,
+last-write-wins) already did.
+
+The `S_EX` guards need no negation chain, for the reason `rfTriples`
+already relies on: opcodes `0x06`/`0x07`/`0x59` appear in no earlier branch
+predicate of `s_ex_branches`, so `exG (opIs …)` characterises the branch.
+
+## Deviation D20.3 — the `cmd 13` reset of `tpc` becomes a sweep
+
+The one place where a memory genuinely could not express the old shape:
+`cmd 13` (soft reset) wrote **all 32** `tpc` entries to `TEXT_BASE` in one
+cycle. A memory cannot take 32 writes in a cycle, so the reset now rides the
+zeroing engine's counter — `tpcTriples` entry 1 is
+`zeroing ∧ zctr < 32  ==>  tpc[zctr[4:0]] := TEXT_BASE` — finishing in the
+first 32 of the 1024 zeroing cycles.
+
+This is **unobservable**: `cmd 13` always sets `zeroing := 1, zctr := 0`,
+every read of `tpc` sits under `fsmEn`, and `fsmEn` contains `¬zeroing`, so
+no reader can see the array between the reset and the end of the sweep. The
+post-sweep contents are identical entry for entry. The ISS mirrors the sweep
+bit-for-bit (`Iss.lean`, zeroing engine), so `selftest` still compares the
+whole table every cycle.
+
+Secondary, and shared with `rf`/`dmem` since the port began: memory contents
+are emitted in an `initial` block, not in the `if (rst)` arm, so a hardware
+`rst` pulse no longer restores `tpc` to `TEXT_BASE`. `rst` is the wrapper
+POR (`PORTING_SPEC.md` rule 9); the soft reset is `cmd 13`, which sweeps.
+
+## Ladder — all green, and bit-exact where it must be
+
+* `selftest` — 7 EDSL≡ISS scripts, **all registers plus `rf[0..64)`,
+  `dmem[0..64)` and all 32 entries of each of `tpc`/`tsleep`/`tp_arr`/
+  `sigmask_arr`** (`Harness.issTArrays`; the four arrays moved from the
+  register comparison to the memory comparison, so coverage is unchanged).
+* `smpselftest` (6 scripts + outcomes), `arbselftest` (4 scripts +
+  routing/kill assertions), `progtest` — OK.
+* `lake build` (8232 jobs) and `lake exe audit` — green (no sorry, no new
+  axioms, 19 unsafe / 5 `implemented_by`, unchanged).
+* **All six iverilog system testbenches are byte-identical to the D19
+  record**, cycle counts included: soc `loomcheck` 273 cycles
+  `retire=25 pc=4192 r1..r9=6,7,42,255,36,14,42,56,14 dmem32=42`; dual
+  shared-nothing **372**; LR/SC **12540** (`shared=200`, kills 0/1);
+  LR/SC-skew **14933** (`shared=200`, kills **39/1**); futex ping-pong
+  **2014** (`wake_out` **8/8**, `S_WAIT` **210/240**, `r9=8` each);
+  `-DONLY_C0` **346** (core 1 `retire=0`, `pc=0x1000`, `rf` zero).
+
+Byte-identical cycle counts are the strong form of the gate: nothing was
+restaged, so not even the timing moved.
+
+## Synthesis datapoint (openXC7, xc7z020clg484-1, same stock recipe)
+
+Single-core `lnp64mini_soc_top`:
+
+```
+Info: Device utilisation:
+Info: 	          SLICE_LUTX: 21524/106400    20%
+Info: 	           SLICE_FFX:  7232/106400     6%
+Info: 	              CARRY4:   590/13300     4%
+Info: 	            RAMB18E1:     0/  280     0%
+Info: 	            RAMB36E1:    13/  140     9%
+...
+Info: Max frequency for clock     'sysclk': 35.11 MHz (PASS at 12.00 MHz)
+OXC7_BUILD_DONE bit=/home/kevin/substrate0/oxc7/out/lnp64mini_soc_top.bit
+```
+
+| soc | pre-D19 | post-D19 | **post-D20** |
+|---|---|---|---|
+| `SLICE_LUTX` | 44567 (41%) | 37606 (35%) | **21524 (20%)** |
+| `SLICE_FFX` | 9659 (9%) | 9275 (8%) | **7232 (6%)** |
+| `RAMB36E1` | 1/140 | 13/140 | 13/140 |
+| `sysclk` post-route | 31.69 MHz | 32.53 MHz | **35.11 MHz** |
+
+Dual `lnp64mini_dual_top` — **it places, it routes, it produces a
+bitstream**:
+
+```
+Info: Device utilisation:
+Info: 	          SLICE_LUTX: 52134/106400    48%
+Info: 	           SLICE_FFX: 14058/106400    13%
+Info: 	              CARRY4:  1147/13300     8%
+Info: 	            RAMB18E1:     0/  280     0%
+Info: 	            RAMB36E1:    26/  140    18%
+Info: 	             DSP48E1:     0/  220     0%
+...
+Info: Max frequency for clock     'sysclk': 29.46 MHz (PASS at 12.00 MHz)
+Info: Max frequency for clock       'drck': 414.25 MHz (PASS at 12.00 MHz)
+Info: Max frequency for clock     'update': 274.20 MHz (PASS at 12.00 MHz)
+Info: Max frequency for clock 'fclk0_bufg': 214.32 MHz (PASS at 12.00 MHz)
+Info: Max frequency for clock   'clk_bufg': 514.67 MHz (PASS at 12.00 MHz)
+OXC7_BUILD_DONE bit=/home/kevin/substrate0/oxc7/out/lnp64mini_dual_top.bit
+```
+
+(29.46 MHz is the post-route number — line 1671, after `Routing complete.`;
+the post-placement estimate was 25.18 MHz. Same convention for the soc:
+27.20 MHz post-place, **35.11 MHz** post-route.)
+
+| dual | pre-D19 | post-D19 | **post-D20** |
+|---|---|---|---|
+| `SLICE_LUTX` | 99072 (93%) | 83926 (78%) | **52134 (48%)** |
+| `SLICE_FFX` | 18912 (17%) | 18144 (17%) | **14058 (13%)** |
+| `RAMB36E1` | 2/140 | 26/140 | 26/140 |
+| placement | ERROR | ERROR | **legal** |
+| `sysclk` post-route | — | — | **29.46 MHz** |
+
+29.46 MHz clears this spec's own acceptance bar ("accept >= 25 MHz") with
+margin, on a part that could not legalize the placement at all two passes
+ago. The dual is now *less* than a single pre-D19 core's LUT footprint
+relative to the part (48 % vs 41 % for one core, i.e. two cores for barely
+more than one used to cost) and 88 of 140 block RAMs are still free.
+
+The board was **not** programmed in this pass (per the brief) and nothing
+was committed.

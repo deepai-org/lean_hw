@@ -247,3 +247,19 @@ sufficient*; the remaining consumer is the per-core 32-entry thread table
 (`tpc`/`tstate`/`tsleep`/`tfutex`/`tp_arr`/`sigmask_arr` dynamic
 read/write trees), several of whose arrays are themselves D19 candidates
 if their reads are restaged through latch registers.
+
+**Follow-up, 2026-07-31 (D20 in `Machines/Lnp64mini/DUAL_SPEC.md`): that
+diagnosis was right about *where* and wrong about *why*.** `tpc`,
+`tsleep`, `tp_arr` and `sigmask_arr` did become memories and the dual now
+fits (78 % -> **48 %**, placement legal, `sysclk` 29.46 MHz post-route,
+soc 35 % -> **20 %** at 35.11 MHz) — but no restaging was needed. The
+dominant cost was the *write* side (a per-element array replicates the
+whole write data path 32 times; the sleep scan alone instantiated 32
+64-bit decrementers), and plain **asynchronous** `memRead` — LUTRAM, not
+block RAM — is both the correct implementation at 32x64 and exactly
+value-preserving, because `memRead` is pre-cycle state at a pre-cycle
+address, which is what the 32-way mux over 32 pre-cycle registers already
+was. So D19 (sync reads, BRAM, big arrays with registered readers) and
+D20 (async reads, LUTRAM, small arrays with one dynamic index) are the
+two ends of the same idea, and `syncReadOkB` is deliberately `false` for
+all four D20 memories.
