@@ -105,8 +105,9 @@ def blastE (syms : List (String × Nat)) : {w : Nat} → Expr w → M (Array Bit
             throw s!"expression reads '{n}' at width {w}, declared {dw}"
           pure (Array.ofFn (n := w) fun i => stateBit n dw i.val)
   | _, .memRead _ m _ =>
-      throw s!"memory read of '{m}': designs with memories are outside the \
-        v1 register-only scope (EQCHECK_SPEC.md §Scope)"
+      throw s!"memory read of '{m}': the checker compares the *cut* reading \
+        of the text (Parse.parseCut), in which every memory read is a free \
+        symbol; this node should not exist"
   | _, .and a b => do
       let x ← blastE syms a; let y ← blastE syms b
       (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
@@ -160,6 +161,103 @@ def blastE (syms : List (String × Nat)) : {w : Nat} → Expr w → M (Array Bit
         if i.val < wa then x[i.val]?.getD (.const false)
         else x[wa - 1]?.getD (.const false))
 
+/-! ### Sharing-preserving blasting (compiled twin)
+
+`blastE` walks the expression as a *tree*. The parsed module's expressions
+are DAGs — `Parse` rebuilds the printer's SSA wires by environment lookup,
+so a wire referenced *k* times is the *same* node *k* times — and blasting
+it as a tree re-encodes each occurrence, which is what made `s13soak`'s
+`err` register cost 6 M clauses (EQCHECK_SPEC.md §Deviations) and what
+makes `lnp64mini_soc` infeasible. The twin below gives each
+pointer-distinct node one encoding and reuses its bits on every further
+occurrence; it computes exactly what the reference definition computes
+(a memo hit means the *same* term, and the encoding of a term is a pure
+function of the term and the clause state before it), and only compiled
+evaluation uses it. Same trust shape as `Print.printImpl`; nothing
+kernel-facing depends on either. -/
+
+mutual
+
+private unsafe def blastEGo (syms : List (String × Nat)) :
+    {w : Nat} → Expr w → M (Array Bit)
+  | w, .lit v => pure (Array.ofFn (n := w) fun i => .const (v.getLsbD i.val))
+  | w, .reg _ n => do
+      match syms.find? (fun kv => kv.1 == n) with
+      | none => throw s!"expression reads unknown signal '{n}'"
+      | some (_, dw) =>
+          if dw != w then
+            throw s!"expression reads '{n}' at width {w}, declared {dw}"
+          pure (Array.ofFn (n := w) fun i => stateBit n dw i.val)
+  | _, .memRead _ m _ =>
+      throw s!"memory read of '{m}': the checker compares the *cut* reading \
+        of the text (Parse.parseCut), in which every memory read is a free \
+        symbol; this node should not exist"
+  | _, .and a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
+        (fun p => mkAnd p.1 p.2)
+  | _, .or a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
+        (fun p => mkOr p.1 p.2)
+  | _, .xor a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
+        (fun p => mkXor p.1 p.2)
+  | _, .not a => do
+      let x ← blastEM syms a
+      pure (x.map (·.not))
+  | _, .add a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      pure (← addBits x y (.const false)).1
+  | _, .sub a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      pure (← addBits x (y.map (·.not)) (.const true)).1
+  | _, .shl a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      shiftBits true x y
+  | _, .shr a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      shiftBits false x y
+  | _, .eq a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      pure #[← eqBits x y]
+  | _, .ult a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      pure #[← ultBits x y]
+  | _, .slt a b => do
+      let x ← blastEM syms a; let y ← blastEM syms b
+      pure #[← sltBits x y]
+  | _, .mux c t f => do
+      let cb ← blastEM syms c
+      let x ← blastEM syms t; let y ← blastEM syms f
+      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
+        (fun p => mkIte cb[0]! p.1 p.2)
+  | _, .slice a lo width => do
+      let x ← blastEM syms a
+      pure (Array.ofFn (n := width) fun i => x[lo + i.val]?.getD (.const false))
+  | _, .zext a w' => do
+      let x ← blastEM syms a
+      pure (Array.ofFn (n := w') fun i => x[i.val]?.getD (.const false))
+  | _, @Expr.sext wa a w' => do
+      let x ← blastEM syms a
+      pure (Array.ofFn (n := w') fun i =>
+        if i.val < wa then x[i.val]?.getD (.const false)
+        else x[wa - 1]?.getD (.const false))
+
+private unsafe def blastEM (syms : List (String × Nat)) {w : Nat}
+    (e : Expr w) : M (Array Bit) := do
+  let k := ptrAddrUnsafe e
+  if let some bs := (← get).amemo[k]? then
+    return bs
+  let bs ← blastEGo syms e
+  modify fun s => { s with amemo := s.amemo.insert k bs }
+  return bs
+
+end
+
+attribute [implemented_by blastEM] blastE
+
 /-! ## Miters -/
 
 /-- Assert that the two bit vectors differ (the miter output). -/
@@ -176,6 +274,9 @@ def netlistNext (env : NetlistEnv) (mt : Matching) (fuel : Nat)
     (name : String) (w i : Nat) (src : RegSrc) : M Bit := do
   match src with
   | .folded b => pure (.const b)
+  | .mem cn ty =>
+      throw s!"MEMCUT: register '{name}[{i}]' is driven by {ty} '{cn}' — the \
+        read register was absorbed into the memory's read port"
   | .ff n =>
       match mt.ffOf[n]? with
       | none => throw s!"internal: no flip-flop for net {n}"
@@ -212,15 +313,24 @@ def regMiter (env : NetlistEnv) (mt : Matching) (fuel : Nat)
     sideB := sideB.push (← netlistNext env mt fuel rd.name rd.width i srcs[i])
   assertDiffer sideA sideB
 
+/-- One combinational cone's miter: a µVerilog expression against the
+netlist's cone at a named signal. Output ports use it with the port's
+bits; a memory port's enable/address/data cone uses it with the bits of
+the netlist net that still carries the printed wire's name. -/
+def coneMiter (env : NetlistEnv) (mt : Matching) (fuel : Nat)
+    (syms : List (String × Nat)) {w : Nat} (e : Expr w)
+    (bits : Array SigBit) : M Unit := do
+  for a in mt.assumptions do assert a
+  let sideA ← blastE syms e
+  let sideB ← evalBits env fuel bits
+  assertDiffer sideA sideB
+
 /-- One output port's miter: the module's combinational view vs the
 netlist's cone for that port. -/
 def outMiter (env : NetlistEnv) (mt : Matching) (fuel : Nat)
     (syms : List (String × Nat)) (od : OutDef) (bits : Array SigBit) :
-    M Unit := do
-  for a in mt.assumptions do assert a
-  let sideA ← blastE syms od.val
-  let sideB ← evalBits env fuel bits
-  assertDiffer sideA sideB
+    M Unit :=
+  coneMiter env mt fuel syms od.val bits
 
 /-! ## DIMACS export and countermodel decoding -/
 

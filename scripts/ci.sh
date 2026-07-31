@@ -4,7 +4,7 @@
 # CI = build everything + the audit gate (PLAN §10).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-lake build Loom Machines Tests iss audit emit bookgen
+lake build Loom Machines Tests iss audit emit bookgen rtlroundtrip
 lake build Tests.Acc8Bmc
 lake build Tests.Lnp64uWitnesses
 scripts/downstream_smoke.sh
@@ -13,6 +13,9 @@ lake exe bookgen >/dev/null
 lake exe emit acc8 >/dev/null
 lake exe emit lnp64u >/dev/null
 scripts/check_xfree_rtl.py rtl/acc8.v rtl/lnp64u.v
+# The round trip on the emitted *files*: every rtl/*.v parses and reprints
+# byte-identically (skips are printed with their reason).
+lake exe rtlroundtrip rtl/*.v
 scripts/test_release_binding.py
 # Independent-checker cross-validation (self-SKIPs if cadical/python3 absent,
 # so CI does not depend on a SAT solver being installed).
