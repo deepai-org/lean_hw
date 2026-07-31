@@ -100,6 +100,48 @@ assumption is empirically corroborated by running the emitted RTL in per-cycle
 full-state lockstep against the ISS
 (`scripts/lockstep_acc8.sh`, `scripts/lockstep_lnp64u.sh`).
 
+## Target hardware and the three doors
+
+The pipeline this project is building — design in Loom, prove theorems,
+run on FPGA, eventually real ASIC — has to coexist with target hardware
+that is not made of ideal synchronous logic: block RAMs, DSP slices,
+clock managers, JTAG taps, hard processor systems, SRAM macros. Every
+such block enters the stack through exactly one of three doors, and the
+door determines what the theorems mean there:
+
+**Door 1 — inference from a semantically pure idiom.** Blocks whose soul
+is synchronous (block RAM, DSP multipliers, carry chains) are never
+instantiated; the `Design` states what it means in target-agnostic terms,
+and the emitter prints the one idiom every serious tool maps onto the
+hard block — a registered read port for RAM, `*` with register stages for
+DSP. The semantics and the theorems are untouched; the tool merely
+chooses the efficient physical form of the same transition system. This
+is also precisely the ASIC story: memory compilers and multiplier
+generators consume the same idioms. Where a fast physical form wants
+pipeline stages, the stuttering-simulation layer (`retime`, D17) supplies
+the refinement relating it to the unpipelined spec.
+
+**Door 2 — wrapper primitives outside the model.** Blocks with no meaning
+in a single-clock synchronous semantics (PLLs/clock buffers, IO buffers,
+the BSCAN tap, SERDES) live in the untrusted board wrapper, in the same
+trust role as a testbench. The discipline is that they never creep
+inward: no clock-domain or analog construct enters the EDSL, and the
+trust statement names exactly what the wrapper contains.
+
+**Door 3 — environment across ports.** Whole external subsystems (a hard
+processor system, an Ethernet MAC, a DDR controller) are modeled as the
+environment driving and consuming the design's declared ports (D15).
+Correctness statements about the composed system take the assume-guarantee
+form over the port contract; the block itself is never trusted as code.
+
+The failure modes are door-confusions: giving a Door-2 block semantics
+corrupts the model; hand-instantiating a Door-1 block as a black box
+needlessly moves provable logic outside the theorems. A block with a
+synchronous soul and clock-domain features (a FIFO macro, say) is split:
+model the soul through Door 1, amputate the CDC into Door 2. Theorems
+live entirely on the Door-1 side of the line; the line itself is what the
+trust documents describe.
+
 ## Orientation
 
 - `Loom/` — the generic toolchain: hardware EDSL (`Hw/`), decision
