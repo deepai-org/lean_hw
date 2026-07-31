@@ -46,6 +46,11 @@ lean_exe emit where
   supportInterpreter := true
   root := `Tools.Emit
 
+/-- Post-synthesis equivalence checker (D22): µVerilog module vs the
+yosys-synthesized netlist, LRAT-certified. -/
+lean_exe eqcheck where
+  root := `Tools.EqCheck
+
 lean_exe bookgen where
   root := `Tools.BookGen
 
