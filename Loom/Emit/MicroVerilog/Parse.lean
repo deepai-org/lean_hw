@@ -268,27 +268,56 @@ def pRhs (regs : List RegHdr) (mems : List MemHdr) (env : Env)
 
 /-! ## Module frame -/
 
-/-- Output port lines: `  output wire [hi:0] name,` … last one without the
-comma, then the closing `);` line. -/
-def pOutPorts : List (List Char) → Option (List (String × Nat) × List (List Char))
+/-- One declared port line, after `clk`/`rst`: either
+`  input wire [hi:0] name[,]` (D15 input port) or
+`  output wire [hi:0] name[,]`. Returns whether it is an input, its name
+and width, and whether the line ended with a comma (i.e. more follow). -/
+def pPortLine (l : List Char) : Option (Bool × String × Nat × Bool) := do
+  let (isIn, cs) ←
+    match eatS "  input wire [" l with
+    | some cs => some (true, cs)
+    | none => (eatS "  output wire [" l).map (fun cs => (false, cs))
+  let (hi, cs) ← pNat cs
+  let cs ← eatS ":0] " cs
+  let (nm, cs) ← pIdent cs
+  match cs with
+  | [','] => pure (isIn, nm, hi + 1, true)
+  | []    => pure (isIn, nm, hi + 1, false)
+  | _     => none
+
+/-- The port list following `  input wire rst,`: input ports first, then
+output ports (the printer's order), the last one without a comma, then the
+closing `);` line. -/
+def pPortLines : List (List Char) →
+    Option (List (Bool × String × Nat) × List (List Char))
   | [] => none
   | l :: ls => do
-    let cs ← eatS "  output wire [" l
-    let (hi, cs) ← pNat cs
-    let cs ← eatS ":0] " cs
-    let (nm, cs) ← pIdent cs
-    match cs with
-    | [','] => do
-      let (rest, ls) ← pOutPorts ls
-      pure ((nm, hi + 1) :: rest, ls)
-    | [] => do
+    let (isIn, nm, w, more) ← pPortLine l
+    if more then do
+      let (rest, ls) ← pPortLines ls
+      pure ((isIn, nm, w) :: rest, ls)
+    else do
       let ls ← expectLine ");" ls
-      pure ([(nm, hi + 1)], ls)
-    | _ => none
+      pure ([(isIn, nm, w)], ls)
 
-/-- `module name(` / `  input wire clk,` / `  input wire rst[,]` / ports. -/
+/-- Split a port list into inputs and outputs, requiring the printer's
+order (all inputs before all outputs). -/
+def splitPorts : List (Bool × String × Nat) →
+    Option (List (String × Nat) × List (String × Nat))
+  | [] => some ([], [])
+  | (true, nm, w) :: ps => do
+    let (ins, outs) ← splitPorts ps
+    pure ((nm, w) :: ins, outs)
+  | (false, nm, w) :: ps => do
+    let (ins, outs) ← splitPorts ps
+    guard ins.isEmpty
+    pure ([], (nm, w) :: outs)
+
+/-- `module name(` / `  input wire clk,` / `  input wire rst[,]` / the
+D15 input ports / the output ports. -/
 def pHeader : List (List Char) →
-    Option (String × List (String × Nat) × List (List Char))
+    Option (String × List (String × Nat) × List (String × Nat) ×
+      List (List Char))
   | l1 :: l2 :: l3 :: ls => do
     let cs ← eatS "module " l1
     let (nm, cs) ← pIdent cs
@@ -296,11 +325,12 @@ def pHeader : List (List Char) →
     guard (l2 == "  input wire clk,".toList)
     if l3 == "  input wire rst".toList then do
       let ls ← expectLine ");" ls
-      pure (nm, [], ls)
+      pure (nm, [], [], ls)
     else do
       guard (l3 == "  input wire rst,".toList)
-      let (outs, ls) ← pOutPorts ls
-      pure (nm, outs, ls)
+      let (ps, ls) ← pPortLines ls
+      let (ins, outs) ← splitPorts ps
+      pure (nm, ins, outs, ls)
   | _ => none
 
 /-- Register and memory declarations (`  reg [hi:0] r;` and
@@ -492,28 +522,50 @@ def pAssigns (regs : List RegHdr) (env : Env) : List (String × Nat) →
     let (rest, ls) ← pAssigns regs env os ls
     pure ({ name := o, width := w, val := e } :: rest, ls)
 
+/-- Everything the parser recovers: the module, plus the printer's SSA
+wire environment (generated wire name ↦ rebuilt expression). Tools that
+need to talk about the *printed* intermediate signals — the post-synthesis
+equivalence checker, whose netlist retains those wire names — use `env`;
+the round-trip theorem only looks at `module`. -/
+structure Parsed where
+  module : Module
+  env    : Env
+
 /-- Parse a whole printed module from its line list. -/
-def parseLines (ls : List (List Char)) : Option Module := do
-  let (nm, outs, ls) ← pHeader ls
+def parseLinesFull (ls : List (List Char)) : Option Parsed := do
+  let (nm, ins, outs, ls) ← pHeader ls
   let (rhdrs, mhdrs, ls) ← pDecls [] [] ls
+  -- D15 input ports resolve exactly like registers (`Expr.reg`), so they
+  -- join the symbol table used for operand resolution; only `rhdrs` gets a
+  -- reset/next line in the always block.
+  let syms := rhdrs ++ ins.map (fun p => ⟨p.1, p.2⟩)
   let (minits, ls) ← pInits mhdrs ls
-  let (env, ls) ← pWires rhdrs mhdrs [] ls
+  let (env, ls) ← pWires syms mhdrs [] ls
   let ls ← expectLine "  always @(posedge clk) begin" ls
   let ls ← expectLine "    if (rst) begin" ls
   let (rinits, ls) ← pRegResets rhdrs ls
   let ls ← expectLine "    end else begin" ls
-  let (regs, ls) ← pRegNexts rhdrs env rinits ls
-  let (mems, ls) ← pMemWrites rhdrs env minits ls
+  let (regs, ls) ← pRegNexts syms env rinits ls
+  let (mems, ls) ← pMemWrites syms env minits ls
   let ls ← expectLine "    end" ls
   let ls ← expectLine "  end" ls
-  let (outDefs, ls) ← pAssigns rhdrs env outs ls
+  let (outDefs, ls) ← pAssigns syms env outs ls
   let ls ← expectLine "endmodule" ls
   guard ls.isEmpty
-  pure { name := nm, regs := regs, mems := mems, outs := outDefs }
+  pure { module := { name := nm, regs := regs, mems := mems, outs := outDefs,
+                     ins := ins.map (fun p => ⟨p.1, p.2⟩) }
+         env := env }
+
+/-- Parse a whole printed module from its line list. -/
+def parseLines (ls : List (List Char)) : Option Module :=
+  (parseLinesFull ls).map (·.module)
 
 /-- The µVerilog parser: total inverse (on printer output) of
 `Print.print`. Accepts exactly the printed SSA subset; anything else is
 `none`. -/
 def parse (s : String) : Option Module := parseLines (splitLines s)
+
+/-- The parser, keeping the SSA wire environment (see `Parsed`). -/
+def parseFull (s : String) : Option Parsed := parseLinesFull (splitLines s)
 
 end Loom.Emit.MicroVerilog.Parse

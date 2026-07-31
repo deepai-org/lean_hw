@@ -41,6 +41,7 @@ namespace Loom.Emit.MicroVerilog
 deriving instance DecidableEq for Expr
 deriving instance DecidableEq for RegDef
 deriving instance DecidableEq for OutDef
+deriving instance DecidableEq for InDef
 deriving instance DecidableEq for WritePort
 
 /-- Pointwise conjunction of a Boolean test over two lists (false on a
@@ -97,19 +98,23 @@ structure Module.Matches (a b : Module) : Prop where
   regs : a.regs = b.regs
   outs : a.outs = b.outs
   mems : List.Forall₂ MemDef.Matches a.mems b.mems
+  /-- D15 input ports: the header pins them down exactly (name and width),
+  so this is plain equality. -/
+  ins : a.ins = b.ins
 
 /-- Decidable form of `Module.Matches`. -/
 def Module.matchesb (a b : Module) : Bool :=
   decide (a.name = b.name) &&
   decide (a.regs = b.regs) &&
   decide (a.outs = b.outs) &&
+  decide (a.ins = b.ins) &&
   listAll2 MemDef.matchesb a.mems b.mems
 
 theorem Module.matchesb_sound {a b : Module} (h : a.matchesb b = true) :
     a.Matches b := by
   simp only [matchesb, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨hn, hr⟩, ho⟩, hm⟩ := h
-  exact ⟨hn, hr, ho, listAll2_sound _ (fun _ _ => MemDef.matchesb_sound) hm⟩
+  obtain ⟨⟨⟨⟨hn, hr⟩, ho⟩, hi⟩, hm⟩ := h
+  exact ⟨hn, hr, ho, listAll2_sound _ (fun _ _ => MemDef.matchesb_sound) hm, hi⟩
 
 /-- The round-trip checker: print the module, parse the text back, and
 compare. `true` means the emitted TEXT determines the module (up to
@@ -179,5 +184,37 @@ private def demo : Module where
 
 set_option maxRecDepth 10000 in
 example : demo.parseCheck = true := by decide +kernel
+
+/-! ### An *open* module (D15 input ports)
+
+The printer emits input-port declarations between `rst` and the outputs;
+the parser reads them back into `Module.ins` and resolves references to
+them exactly like registers. This instance pins that down at kernel level
+too: inputs of several widths, read from a register's next expression, a
+memory write port's enable/address/data, a memory read address, and an
+output assignment. -/
+
+private def demoOpenMem : MemDef where
+  name      := "q"
+  addrWidth := 2
+  dataWidth := 8
+  init      := fun a => BitVec.ofNat 8 (5 * a + 2)
+  wrPorts   :=
+    [{ en   := .and (.reg 1 "we") (.eq (.reg 4 "t") (.lit 3#4))
+       addr := .slice (.reg 4 "t") 0 2
+       data := .add (.reg 8 "din") (.zext (.reg 4 "t") 8) }]
+
+private def demoOpen : Module where
+  name := "demoOpen"
+  ins  := [⟨"we", 1⟩, ⟨"sel", 2⟩, ⟨"din", 8⟩]
+  regs := [⟨"t", 4, 1#4,
+            .mux (.reg 1 "we") (.add (.reg 4 "t") (.lit 1#4))
+                 (.slice (.reg 8 "din") 0 4)⟩]
+  mems := [demoOpenMem]
+  outs := [⟨"o", 8, .memRead 8 "q" (.reg 2 "sel")⟩,
+           ⟨"p", 4, .reg 4 "t"⟩]
+
+set_option maxRecDepth 10000 in
+example : demoOpen.parseCheck = true := by decide +kernel
 
 end Loom.Emit.MicroVerilog

@@ -740,7 +740,9 @@ def moduleMatches (d : Loom.Hw.Design)
   decide (out.name = d.name) &&
   regsMatch d.rules out.regs cert.regs &&
   memsMatch d out.mems cert.mems &&
-  outsMatch d.regs out.outs
+  outsMatch d.regs out.outs &&
+  decide (out.ins = d.inputs.map fun i =>
+    ({ name := i.name, width := i.width } : Loom.Emit.MicroVerilog.InDef))
 
 /-- The whole-module checker is sound: acceptance proves the supplied module
 matches `Compile.compile d` on every Verilog-observable field. -/
@@ -749,14 +751,15 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
     (h : moduleMatches d out cert = true) :
     out.Matches (Compile.compile d) := by
   simp only [moduleMatches, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨hn, hrcheck⟩, hmcheck⟩, hocheck⟩ := h
+  obtain ⟨⟨⟨⟨hn, hrcheck⟩, hmcheck⟩, hocheck⟩, hicheck⟩ := h
   have hr := regsMatch_sound d.rules out.regs cert.regs hrcheck
   have hm := memsMatch_sound d out.mems cert.mems hmcheck
   have ho := outsMatch_sound d.regs out.outs hocheck
-  refine ⟨hn, ?_, ?_, ?_⟩
+  refine ⟨hn, ?_, ?_, ?_, ?_⟩
   · simpa only [Compile.compile] using hr
   · simpa only [Compile.compile] using ho
   · simpa only [Compile.compile, compiledMem, Compile.compilePort] using hm
+  · simpa only [Compile.compile] using hicheck
 
 /-! ## Exact-text release certificates -/
 
