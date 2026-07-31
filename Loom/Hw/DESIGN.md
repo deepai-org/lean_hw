@@ -233,6 +233,109 @@ leaves read data indeterminate on a same-address same-cycle collision,
 where `Design.cycle` says "old data". Machines with independent read/write
 addresses must argue their colliding cycles are unobservable.
 
+## D21 — the clock-domain crossing is a stated contract plus one verified protocol (decided 2026-07-31)
+
+Full record: `Loom/Hw/CDC_SPEC.md`; model and proofs: `Loom/Hw/CdcContract.lean`.
+
+Everything Loom emits is single-clock, and every theorem in the stack is
+about that one clock. The board wrappers
+(`fpga/zc702/lnp64mini_soc_top.v`, `lnp64mini_dual_top.v`) are where the
+other domains live, and until now they were prose. D21 makes them an
+**enumerated contract** plus **one theorem**: the wrapper's
+toggle/2FF/XOR command path is proved correct against an adversarial
+model of first-flop metastability, so the `cmd_valid` pulse a D15 open
+design consumes is no longer an article of faith but the conclusion of
+`toggleSync_sound`.
+
+**The inventory (four crossings, nothing else).**
+
+1. **UPDATE → sysclk, the command path.** At the JTAG `UPDATE` edge the
+   wrapper latches `lat_idx`/`lat_dat` from the 41-bit DR and flips
+   `cmd_tog`; three sysclk flops (`t0 → t1 → t2`) synchronize the toggle
+   and `cmd_valid = t1 ^ t2` is the edge detector. `cmd_valid`,
+   `cmd_idx`, `cmd_data` (1/7/32) are the design's D15 input ports.
+   Wrapper-local commands never cross: `idx 1` (`scratch`) and, in the
+   dual, `idx 56` (`CORE1_HOLD`) stay in the UPDATE domain, and
+   `CORE1_HOLD` reaches sysclk as a *level* through its own 2FF
+   (`h0`/`h1`) — levels need no edge detector, so no theorem applies to
+   them beyond the same MTBF assumption. Assumptions: (i) `UPDATE`
+   events are ≥ *k* sysclk cycles apart — a 41-bit scan plus an xsdb
+   round trip is microseconds against a 40 ns sysclk, a margin of ~10²–10³,
+   while the proofs need only *k* ≥ 4; (ii) the latched fields are stable
+   from the latch until the pulse arrives, which (i) implies.
+2. **sysclk → DRCK, the read-back captures.** Every `o_*` observability
+   port is sampled by a DRCK-domain 2FF (`x0 → x1`) and `x1` is read into
+   `rd_reg` at `UPDATE`. These are *multi-bit and not gray-coded*, so the
+   2FF buys metastability immunity and nothing else; correctness splits
+   by class and the split is the contract:
+   - **Class Q (quasi-static at capture)** — `reg_rd`, `dmem_rd`,
+     `ddr_rd_l`, `ir`, `trap_active`/`trapped_op`, `uart_byte`, the
+     status bundle `ss`, `cst`, `gps`/`gpf`: each is a latched read-back
+     register or a value the core holds still (halted, or answering a
+     command issued cycles earlier). A capture of an unchanging vector
+     cannot tear, so the sample is exact. The obligation "the value is
+     not changing while the host scans" is *stated*, not proved; it is
+     the reason the debug protocol issues a read command and then scans.
+   - **Class L (tear-tolerant liveness)** — `heartbeat`, `fclk_cnt_r`
+     (an FCLK0-domain counter, itself a third domain), `retire`,
+     `pc[31:0]`: free-running, so a capture can mix bits from two
+     adjacent values. They are read as *progress* evidence ("is it
+     advancing"), never as exact values, and every consumer is written
+     that way.
+   - `uart_wptr` is class Q only *between* the core's UART writes; a
+     capture concurrent with an increment can tear. That is a standing,
+     stated obligation on the host drain protocol — D21 does not
+     discharge it.
+3. **POR / reset release.** `divc` (200 MHz → 25 MHz via BUFG),
+   `arstc`, `rstc` are all sysclk-domain counters clocked from the
+   divided BUFG output, so reset *release* is synchronous by
+   construction — there is no asynchronous reset network to synchronize.
+   The assumption underneath is the FPGA's own: configuration leaves
+   every flop at its bitstream init value and GSR releases before the
+   first user clock edge.
+4. **The MTBF assumption** (below) is the D21 trust boundary, recorded
+   once in `TCB.md`.
+
+**The theorem.** `Loom/Hw/CdcContract.lean` is a plain Lean model — Bool
+streams and a step function, deliberately *not* a `Design`, because
+nondeterminism is the point. An event stream `E : Nat → Bool` marks the
+sysclk cycles in which the source toggle flips; the settled toggle is
+`tog`; the first synchronizer flop `s0` samples `tog` deterministically
+on quiet cycles and, on an event cycle — the flip is inside the aperture
+— takes its value from an **adversarial oracle** `res : Nat → Bool`,
+which is the entire physical content of the model: a metastable flop may
+resolve either way, but it resolves before the next edge, so `s1`/`s2`
+are clean delays. `pulse = xor s1 s2` is `t1 ^ t2`. Under
+`Spaced 4 E`, for *every* `E` and *every* oracle:
+
+- **exactly one pulse per event, at `n+2` or `n+3`** — and the sharp form
+  `pulse_at_event` says the adversary picks only the *latency*:
+  `pulse (n+2) = res n` and `pulse (n+3) = !res n`;
+- **pulses are one cycle wide** (`pulse_oneWide`);
+- **no pulse without an event** (`pulse_cause`) — no spurious wakeups,
+  and this one needs no spacing hypothesis at all.
+
+**The interface.** `CmdPulseTrace k ιs` is the trace class the wrapper
+delivers to an open design: over `ιs : Nat → InEnv` (D15), `cmd_valid` is
+quiet for two cycles, one-wide, ≥ `k`-spaced, and `cmd_idx`/`cmd_data`
+already carry their final value in the pulse's setup cycle.
+`toggleSync_cmdPulseTrace` proves the wrapper's environment is in that
+class, given `FieldsLatched` (the fields change only across an event
+cycle). A design-level theorem over `Design.runOpen d ιs` may *assume*
+`CmdPulseTrace k ιs` instead of quantifying over arbitrary input traces:
+that hypothesis is the precise seam between wrapper physics and Lean
+proofs. Nothing to its right is CDC reasoning; nothing to its left is
+unexamined.
+
+Two recorded departures from the spec, both in `CDC_SPEC.md §Deviations`:
+the field-stability window is **one** pre-pulse cycle, not two (the
+earliest pulse is at `n+2` while the fields are only guaranteed settled
+from `n+1`, so two is not deliverable by any resolution-agnostic
+argument), and the delivered pulse spacing is `k-1`, *stronger* than the
+`k-3` the spec asked for (`toggleSync_cmdPulseTrace'` is the spec-shaped
+corollary via `CmdPulseTrace.mono`). No sorry, no axiom: both theorems
+close over `[propext, Quot.sound]`.
+
 ## Order of construction
 
 1. `Action`/`Rule`/ORAAT semantics + `TSys` instance (task 1.10)
