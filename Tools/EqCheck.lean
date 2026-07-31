@@ -36,7 +36,7 @@ structure SigResult where
   clauses : Nat
   lrat    : Nat
   ms      : Nat
-  verdict : String            -- "PASS" | "FAIL"
+  verdict : String            -- "PASS" | "FAIL" | "SKIP"
   detail  : String := ""
 
 /-- Run cadical on a DIMACS file and, on UNSAT, re-check the LRAT proof
@@ -83,8 +83,13 @@ def runSignal (dir : System.FilePath) (kind name : String) (width : Nat)
   match r with
   | .error e =>
       let t1 ← IO.monoMsNow
+      -- A cone that crosses the memory boundary is *excluded*, by name, with
+      -- the reason printed — never silently dropped (EQCHECK_SPEC.md §Scope).
+      let skip := e.startsWith "MEMCUT:"
       pure { kind := kind, name := name, width := width, vars := 0, clauses := 0,
-             lrat := 0, ms := t1 - t0, verdict := "FAIL", detail := e }
+             lrat := 0, ms := t1 - t0,
+             verdict := if skip then "SKIP" else "FAIL",
+             detail := if skip then (e.drop 8).toString else e }
   | .ok () =>
       let d := toDimacs st.clauses
       let (verdict, lrat, detail) ←
@@ -97,46 +102,52 @@ def runSignal (dir : System.FilePath) (kind name : String) (width : Nat)
              clauses := d.nClauses, lrat := lrat, ms := t1 - t0,
              verdict := verdict, detail := detail }
 
+/-- A signal excluded before any miter ran. -/
+def skipped (kind name : String) (width : Nat) (why : String) : SigResult :=
+  { kind := kind, name := name, width := width, vars := 0, clauses := 0,
+    lrat := 0, ms := 0, verdict := "SKIP", detail := why }
+
+def failed (kind name : String) (width : Nat) (why : String) : SigResult :=
+  { kind := kind, name := name, width := width, vars := 0, clauses := 0,
+    lrat := 0, ms := 0, verdict := "FAIL", detail := why }
+
 def check (vPath jsonPath : String) : IO UInt32 := do
   let vText ← IO.FS.readFile vPath
-  let some m := Parse.parse vText
+  let some cp := Parse.parseCut vText
     | IO.eprintln s!"eqcheck: {vPath}: the µVerilog round-trip parser \
         (Loom.Emit.MicroVerilog.Parse) does not accept this text"
-      let lines := vText.splitOn "\n"
-      if lines.any (fun l => l.startsWith "  input wire [") then
-        IO.eprintln "  reason: the module declares D15 input ports; the \
-          round-trip parser predates D15 and reads only `clk`/`rst` plus \
-          output ports (EQCHECK_SPEC.md §Deviations)"
-      if lines.any (fun l => l.startsWith "  reg [" && l.endsWith "];") then
-        IO.eprintln "  note: the module also declares memory arrays, which \
-          are outside the v1 register-only scope"
       return 1
+  let m := cp.module
   let jText ← IO.FS.readFile jsonPath
   let nl ←
     match parseNetlistTop jText m.name with
     | .error e => IO.eprintln s!"eqcheck: {jsonPath}: {e}"; return 1
     | .ok nl => pure nl
   IO.println s!"eqcheck: {m.name}  ({vPath} vs {jsonPath})"
-  unless m.mems.isEmpty do
-    IO.eprintln s!"eqcheck: {m.name} declares {m.mems.length} memory array(s) — \
-      outside the v1 register-only scope (EQCHECK_SPEC.md §Scope)"
-    return 1
   let clk ←
     match clockNets nl with
     | .error e => IO.eprintln s!"eqcheck: {e}"; return 1
     | .ok c => pure c
   let regs := m.regs.map (fun r => (r.name, r.width))
   let ins := m.ins.map (fun i => (i.name, i.width))
+  let reads := cp.reads.map (fun r => (r.wire, r.width))
   let mt ←
-    match matchModule nl regs ins with
+    match matchModule nl regs ins reads (strictFFs := m.mems.isEmpty) with
     | .error e => IO.eprintln s!"eqcheck: MATCHING FAILURE: {e}"; return 1
     | .ok mt => pure mt
   let env ←
-    match buildEnv nl mt.seed clk with
+    match buildEnv nl mt.seed clk mt.memFF with
     | .error e => IO.eprintln s!"eqcheck: {e}"; return 1
     | .ok e => pure e
   let fuel := env.cells.size + 2
-  let syms := regs ++ ins
+  let syms := regs ++ ins ++ reads
+  -- The µVerilog expression a printed identifier stands for: a generated
+  -- wire (in the parser's SSA environment) or a declared symbol.
+  let symExpr : String → Option (Σ w, Expr w) := fun nm =>
+    match cp.env.find? (fun p => p.1 == nm) with
+    | some p => some p.2
+    | none => (syms.find? (fun kv => kv.1 == nm)).map
+        (fun kv => ⟨kv.2, Expr.reg kv.2 nm⟩)
   -- Output ports: bijection with the module's outputs.
   let outPorts := nl.ports.filter (fun p => p.dir == "output")
   for p in outPorts do
@@ -151,33 +162,88 @@ def check (vPath jsonPath : String) : IO UInt32 := do
   IO.println s!"  matched: {m.regs.length} registers ({regBits} bits, \
     {mt.folded} constant-folded), {m.outs.length} output ports ({outBits} bits), \
     {m.ins.length} inputs"
+  unless m.mems.isEmpty do
+    IO.println s!"  memories: {m.mems.length} array(s), {cp.reads.length} read \
+      site(s) ({mt.cutReads.length} cut at the printed wire, \
+      {mt.absorbedReads.length} absorbed into a read port), \
+      {cp.writes.length} write port(s); {mt.memRegs.length} read register(s) \
+      inside a hard block, {mt.cutFFs} flip-flop(s) retimed inside a cut \
+      read, {mt.foldedReads} read bit(s) folded to a constant from the array \
+      contents (assumed)"
+    unless mt.memFF.isEmpty do
+      IO.println s!"  {mt.memFF.size} flip-flop(s) match no µVerilog register \
+        bit — memory array storage realized in fabric, or registers retimed \
+        into a memory read path (e.g. \
+        {String.intercalate ", " mt.memFFNames}). Excluded, not ignored: a \
+        checked cone that reaches one is reported as an exclusion."
+    IO.println "  (array storage is carried by cell identity: what is checked \
+      is every cone that feeds or leaves a memory port, not the array — see \
+      EQCHECK_SPEC.md §Scope)"
   let dir ← IO.FS.createTempDir
   let mut results : Array SigResult := #[]
+  -- Registers.
   for r in m.regs do
     let some (_, _, srcs) := mt.regs.find? (fun t => t.1 == r.name)
       | IO.eprintln s!"eqcheck: internal: register '{r.name}' unmatched"; return 1
-    results := results.push
-      (← runSignal dir "reg" r.name r.width (regMiter env mt fuel syms r srcs))
+    match mt.memRegs.find? (fun t => t.1 == r.name) with
+    | some (_, cn, ty) =>
+        results := results.push (skipped "reg" r.name r.width
+          s!"EXCLUDED: absorbed into {ty} '{cn}' (D19 sync-read register); its \
+            next-state function is inside the hard block")
+    | none =>
+        results := results.push
+          (← runSignal dir "reg" r.name r.width (regMiter env mt fuel syms r srcs))
+  -- Output ports.
   for o in m.outs do
     match nl.port? o.name with
     | none =>
         results := results.push
-          { kind := "out", name := o.name, width := o.width, vars := 0,
-            clauses := 0, lrat := 0, ms := 0, verdict := "FAIL",
-            detail := "no netlist port of that name" }
+          (failed "out" o.name o.width "no netlist port of that name")
     | some p =>
         if p.bits.size != o.width then
-          results := results.push
-            { kind := "out", name := o.name, width := o.width, vars := 0,
-              clauses := 0, lrat := 0, ms := 0, verdict := "FAIL",
-              detail := s!"netlist port width {p.bits.size} ≠ {o.width}" }
+          results := results.push (failed "out" o.name o.width
+            s!"netlist port width {p.bits.size} ≠ {o.width}")
         else
           results := results.push
             (← runSignal dir "out" o.name o.width (outMiter env mt fuel syms o p.bits))
+  -- Memory read ports: the address cone of every read site.
+  for rs in cp.reads do
+    let nm := s!"{rs.mem}[{rs.addr}]"
+    match symExpr rs.addr with
+    | none =>
+        results := results.push
+          (failed "rdaddr" nm 0 s!"unknown address signal '{rs.addr}'")
+    | some ⟨aw, ae⟩ =>
+        match namedBits nl rs.addr aw with
+        | none => results := results.push (skipped "rdaddr" nm aw
+            s!"EXCLUDED: synthesis did not keep a net named '{rs.addr}' — the \
+              read address cone has no netlist signal to compare against")
+        | some bits =>
+            results := results.push
+              (← runSignal dir "rdaddr" nm aw (coneMiter env mt fuel syms ae bits))
+  -- Memory write ports: the enable, address and data cones of every port.
+  for mm in m.mems do
+    let sites := cp.writes.filter (fun w => w.mem == mm.name)
+    if sites.length != mm.wrPorts.length then
+      IO.eprintln s!"eqcheck: internal: memory '{mm.name}' has \
+        {mm.wrPorts.length} write ports but {sites.length} printed write lines"
+      return 1
+    for (site, port) in sites.zip mm.wrPorts do
+      let cone (tag wire : String) (w : Nat) (e : Expr w) : IO SigResult := do
+        let nm := s!"{mm.name}.{tag}"
+        match namedBits nl wire w with
+        | none => pure (skipped s!"wr{tag}" nm w
+            s!"EXCLUDED: synthesis did not keep a net named '{wire}' (it was \
+              absorbed into the memory's port logic)")
+        | some bits => runSignal dir s!"wr{tag}" nm w (coneMiter env mt fuel syms e bits)
+      results := results.push (← cone "en" site.en 1 port.en)
+      results := results.push (← cone "addr" site.addr mm.addrWidth port.addr)
+      results := results.push (← cone "data" site.data mm.dataWidth port.data)
   let mut clauses := 0
   let mut lrat := 0
   let mut ms := 0
   let mut bad := 0
+  let mut skip := 0
   for r in results do
     let pad := String.ofList (List.replicate (max 1 (18 - r.name.length)) ' ')
     IO.println s!"  [{r.verdict}] {r.kind} {r.name}{pad}w={r.width} \
@@ -186,17 +252,23 @@ def check (vPath jsonPath : String) : IO UInt32 := do
     clauses := clauses + r.clauses
     lrat := lrat + r.lrat
     ms := ms + r.ms
-    if r.verdict != "PASS" then bad := bad + 1
-  IO.println s!"  totals: {results.size} signals, {clauses} clauses, \
-    {lrat} LRAT lines, {ms}ms solver+checker wall time"
+    if r.verdict == "FAIL" then bad := bad + 1
+    if r.verdict == "SKIP" then skip := skip + 1
+  let checked := results.size - skip
+  IO.println s!"  totals: {checked} signals checked, {skip} excluded, \
+    {clauses} clauses, {lrat} LRAT lines, {ms}ms solver+checker wall time"
   IO.println "  (the CNF encoder is untrusted in v1: the claim is \"if the \
     encoding is faithful, netlist ≡ module\"; every UNSAT is LRAT-certified \
     and re-checked by Loom.Dp.Cert.checkLrat, the proved checker)"
+  if skip > 0 then
+    IO.println s!"  NOT COVERED ({skip} signal(s), each named [SKIP] above): \
+      memory array storage, plus every cone that crosses a memory boundary."
   if bad == 0 then
-    IO.println s!"EQCHECK OK ({results.size} signals, {clauses} clauses, LRAT-verified)"
+    IO.println s!"EQCHECK OK ({checked} signals, {skip} excluded, {clauses} \
+      clauses, LRAT-verified)"
     return 0
   else
-    IO.println s!"EQCHECK FAILED ({bad} of {results.size} signals differ)"
+    IO.println s!"EQCHECK FAILED ({bad} of {checked} checked signals differ)"
     return 1
 
 def main (args : List String) : IO UInt32 := do

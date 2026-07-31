@@ -51,6 +51,11 @@ yosys-synthesized netlist, LRAT-certified. -/
 lean_exe eqcheck where
   root := `Tools.EqCheck
 
+/-- The µVerilog round trip applied to emitted *files*: parse `rtl/X.v`
+and require reprinting it to reproduce the bytes. -/
+lean_exe rtlroundtrip where
+  root := `Tools.RtlRoundTrip
+
 lean_exe bookgen where
   root := `Tools.BookGen
 

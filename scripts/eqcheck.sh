@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Post-synthesis equivalence check (D22, Loom/Netlist/EQCHECK_SPEC.md).
 #
-# For each register-only emitted design: synthesize `rtl/X.v` to a
+# For each emitted design: synthesize `rtl/X.v` to a
 # LUT/FF-mapped netlist with yosys and check, signal by signal, that the
 # netlist's one-cycle transition function equals the µVerilog module's —
 # every UNSAT LRAT-certified and re-checked by `Loom.Dp.Cert.checkLrat`.
@@ -11,7 +11,11 @@
 # The generated netlists go to a scratch (gitignored) directory; nothing
 # here writes into the repository.
 #
-#   scripts/eqcheck.sh                  # the v1 acceptance list
+# Designs with memories are checked at the memory boundary: the array is
+# carried by cell identity and every excluded signal is named (EQCHECK_SPEC.md
+# §Scope, §Deviations).
+#
+#   scripts/eqcheck.sh                  # the acceptance list
 #   scripts/eqcheck.sh s0blinky         # one design
 #   scripts/eqcheck.sh --negative-control
 #
@@ -77,7 +81,12 @@ EOF
   fi
 fi
 
-designs=${*:-"s0blinky satcounter pingpong s13soak"}
+designs=${*:-"s0blinky satcounter pingpong s13soak s0bscan lnp64mini_soc"}
+
+# lnp64mini_soc is emitted, not checked in; regenerate it if it is missing.
+if [ ! -f rtl/lnp64mini_soc.v ]; then
+  lake env lean --run Machines/Lnp64mini/Emit.lean soc
+fi
 status=0
 for d in $designs; do
   synth "$d"

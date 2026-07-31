@@ -120,8 +120,9 @@ are in [`TCB.md`](TCB.md); clean-clone verification tiers are in
    untrusted release-certificate data; it is not reachable from certificate
    acceptance or release theorems.
    The reviewed replacements are `compile`, `print`, (since 2026-07-28)
-   `Design.toProgram` / `Design.toIndexedWires`, and (since 2026-07-30)
-   `Expr.readsMem` (D19). `Design.toProgram`/`toIndexedWires` follow the
+   `Design.toProgram` / `Design.toIndexedWires`, (since 2026-07-30)
+   `Expr.readsMem` (D19), and (since 2026-07-31) `Loom.Netlist.blastE`
+   (D22). `Design.toProgram`/`toIndexedWires` follow the
    `print`/`printImpl` shape exactly: the unsafe twin adds a pointer-identity
    memo whose only effect is to skip re-walks that would rebuild identical
    `(width, rendered RHS)` CSE keys, so its compiled output equals the
@@ -135,7 +136,12 @@ are in [`TCB.md`](TCB.md); clean-clone verification tiers are in
    definition's value — and the least load-bearing: `readsMem` feeds only
    `Design.syncReadOkB`, an *emission-shape diagnostic*
    (`Loom/Hw/D19_SPEC.md`) that no theorem takes as a hypothesis and no
-   semantic function reads.
+   semantic function reads. `blastE`'s twin is the same pattern once more —
+   a pointer-identity memo over the equivalence checker's bit blaster, so a
+   hit is the same term and the twin emits the reference definition's bits —
+   and it is outside the proof surface entirely: `lake exe eqcheck` is an
+   untrusted tool (`Loom/Netlist/EQCHECK_SPEC.md`) whose UNSAT verdicts are
+   re-checked by the *proved* LRAT checker, and no theorem mentions it.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
 5. Superseded `SystemOpsWf` sorries were deleted 2026-07-04. As of
    2026-07-16 the R-MC dependency cone is also sorry-free: `square`,

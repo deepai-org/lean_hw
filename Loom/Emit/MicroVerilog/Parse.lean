@@ -402,9 +402,18 @@ def pInits : List MemHdr → List (List Char) →
     let (rest, ls) ← pInits ms ls
     pure ((m, tbl) :: rest, ls)
 
+/-- Replace a top-level memory read by a free symbol named after the wire
+that carries it (`cut = true`; see `parseCut`). Any other expression is
+returned unchanged. -/
+def cutRead (nm : String) : Sigma Expr → Sigma Expr
+  | ⟨w, .memRead _ _ _⟩ => ⟨w, .reg w nm⟩
+  | e => e
+
 /-- SSA wire definitions `  wire [hi:0] n = RHS;`, extending the
-environment; stops at the first non-wire line. -/
-def pWires (regs : List RegHdr) (mems : List MemHdr) (env : Env) :
+environment; stops at the first non-wire line. With `cut`, a wire whose
+whole right-hand side is a memory read becomes a free symbol of that
+wire's name (`parseCut`). -/
+def pWires (cut : Bool) (regs : List RegHdr) (mems : List MemHdr) (env : Env) :
     List (List Char) → Option (Env × List (List Char))
   | [] => none
   | l :: ls =>
@@ -419,7 +428,8 @@ def pWires (regs : List RegHdr) (mems : List MemHdr) (env : Env) :
         let e ← pRhs regs mems env (hi + 1) cs
         pure (nm, ⟨hi + 1, e⟩) : Option (String × Sigma Expr)) with
       | none => none
-      | some ⟨nm, we⟩ => pWires regs mems ((nm, we) :: env) ls
+      | some ⟨nm, we⟩ =>
+        pWires cut regs mems ((nm, if cut then cutRead nm we else we) :: env) ls
 
 /-- Reset branch: `      r <= w'dV;` per declared register, in order. -/
 def pRegResets : List RegHdr → List (List Char) →
@@ -531,8 +541,10 @@ structure Parsed where
   module : Module
   env    : Env
 
-/-- Parse a whole printed module from its line list. -/
-def parseLinesFull (ls : List (List Char)) : Option Parsed := do
+/-- Parse a whole printed module from its line list. With `cut`, every
+wire whose right-hand side is a memory read becomes a free symbol of that
+wire's name — see `parseCut`. -/
+def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed := do
   let (nm, ins, outs, ls) ← pHeader ls
   let (rhdrs, mhdrs, ls) ← pDecls [] [] ls
   -- D15 input ports resolve exactly like registers (`Expr.reg`), so they
@@ -540,7 +552,7 @@ def parseLinesFull (ls : List (List Char)) : Option Parsed := do
   -- reset/next line in the always block.
   let syms := rhdrs ++ ins.map (fun p => ⟨p.1, p.2⟩)
   let (minits, ls) ← pInits mhdrs ls
-  let (env, ls) ← pWires syms mhdrs [] ls
+  let (env, ls) ← pWires cut syms mhdrs [] ls
   let ls ← expectLine "  always @(posedge clk) begin" ls
   let ls ← expectLine "    if (rst) begin" ls
   let (rinits, ls) ← pRegResets rhdrs ls
@@ -557,6 +569,10 @@ def parseLinesFull (ls : List (List Char)) : Option Parsed := do
          env := env }
 
 /-- Parse a whole printed module from its line list. -/
+def parseLinesFull (ls : List (List Char)) : Option Parsed :=
+  parseLinesFullC false ls
+
+/-- Parse a whole printed module from its line list. -/
 def parseLines (ls : List (List Char)) : Option Module :=
   (parseLinesFull ls).map (·.module)
 
@@ -567,5 +583,83 @@ def parse (s : String) : Option Module := parseLines (splitLines s)
 
 /-- The parser, keeping the SSA wire environment (see `Parsed`). -/
 def parseFull (s : String) : Option Parsed := parseLinesFull (splitLines s)
+
+/-! ## The *cut* reading (tool-side; not part of the round trip)
+
+`parseCut` is the same parser with one substitution: a wire whose whole
+right-hand side is a memory read, `wire [dw-1:0] nk = m[a];`, becomes a
+free symbol `Expr.reg dw "nk"` instead of `Expr.memRead dw m a`. The
+result is therefore a *register-only* module whose extra free symbols
+stand for "whatever this memory returned this cycle" — the cut at which
+the post-synthesis equivalence checker compares the two sides, since the
+netlist's array storage lives inside a hard block it does not model
+(`Loom/Netlist/EQCHECK_SPEC.md` §Scope).
+
+`ReadSiteInfo`/`WriteSiteInfo` name the printed wires of each memory port,
+so the checker can find the matching netlist nets. Both are scanned
+straight off the printed lines, in printed order; nothing in the
+round-trip theorem depends on any of this. -/
+
+/-- One printed memory read: `  wire [w-1:0] wire = mem[addr];`. -/
+structure ReadSiteInfo where
+  wire  : String
+  width : Nat
+  mem   : String
+  addr  : String
+  deriving Repr, DecidableEq
+
+/-- One printed memory write port: `      if (en) mem[addr] <= data;`. -/
+structure WriteSiteInfo where
+  mem  : String
+  en   : String
+  addr : String
+  data : String
+  deriving Repr, DecidableEq
+
+/-- Scan one line for a memory read. A `[` followed by a digit is a slice
+(`x[hi:lo]`), by an identifier start a memory read (`m[a]`) — the same
+discrimination `pRhs` makes. -/
+def scanReadSite (l : List Char) : Option ReadSiteInfo := do
+  let cs ← eatS "  wire [" l
+  let (hi, cs) ← pNat cs
+  let cs ← eatS ":0] " cs
+  let (nm, cs) ← pIdent cs
+  let cs ← eatS " = " cs
+  let (mem, cs) ← pIdent cs
+  let cs ← eatS "[" cs
+  let (adr, cs) ← pIdent cs
+  let cs ← eatS "];" cs
+  guard cs.isEmpty
+  pure { wire := nm, width := hi + 1, mem := mem, addr := adr }
+
+/-- Scan one line for a memory write port. -/
+def scanWriteSite (l : List Char) : Option WriteSiteInfo := do
+  let cs ← eatS "      if (" l
+  let (en, cs) ← pIdent cs
+  let cs ← eatS ") " cs
+  let (mem, cs) ← pIdent cs
+  let cs ← eatS "[" cs
+  let (adr, cs) ← pIdent cs
+  let cs ← eatS "] <= " cs
+  let (dt, cs) ← pIdent cs
+  let cs ← eatS ";" cs
+  guard cs.isEmpty
+  pure { mem := mem, en := en, addr := adr, data := dt }
+
+/-- Everything the checker reads off the printed text. -/
+structure CutParsed where
+  module : Module
+  env    : Env
+  reads  : List ReadSiteInfo
+  writes : List WriteSiteInfo
+
+/-- The cut reading of printed µVerilog text (see the section header).
+`none` exactly when `parse` returns `none`. -/
+def parseCut (s : String) : Option CutParsed := do
+  let ls := splitLines s
+  let p ← parseLinesFullC true ls
+  pure { module := p.module, env := p.env,
+         reads := ls.filterMap scanReadSite,
+         writes := ls.filterMap scanWriteSite }
 
 end Loom.Emit.MicroVerilog.Parse

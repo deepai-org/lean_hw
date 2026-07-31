@@ -103,7 +103,18 @@ def permittedUnsafeDecls : List String :=
    -- any theorem; the twin exists only so the check does not re-walk the
    -- compiler's shared expression DAGs exponentially (the D13 cost caveat).
    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl.go",
-   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"]
+   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl",
+   -- D22 `Loom.Netlist.blastE`'s pointer-memoized executable twin. Same
+   -- trust shape as `printImpl`: the memo is keyed on pointer identity, so
+   -- a hit means the *same* term, and the encoding of a term is a function
+   -- of the term and the clause state, so the twin emits the reference
+   -- definition's bits. It exists because `Parse` rebuilds the printer's
+   -- SSA wires as a shared DAG and the tree walk re-encodes every
+   -- occurrence (EQCHECK_SPEC.md §Deviations 8). Nothing kernel-facing
+   -- depends on it: the equivalence checker is an untrusted tool whose
+   -- UNSAT verdicts are re-checked by the proved LRAT checker.
+   "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEGo",
+   "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEM"]
 
 /-- The reference definitions whose compiled execution is replaced. -/
 def permittedImplementedBy : List (String × String) :=
@@ -116,7 +127,9 @@ def permittedImplementedBy : List (String × String) :=
    ("Loom.Hw.Design.toIndexedWires",
     "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl"),
    ("Loom.Hw.Expr.readsMem",
-    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl")]
+    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"),
+   ("Loom.Netlist.blastE",
+    "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEM")]
 
 /-- Lean generates partial `_unsafe_rec` helpers while elaborating some
 ordinary structural definitions. They are compiler artifacts, not uses of

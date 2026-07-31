@@ -42,6 +42,10 @@ structure St where
   next    : Nat := 0
   clauses : Array BClause := #[]
   memo    : Std.HashMap Nat Bit := {}
+  /-- Pointer-identity memo for the µVerilog side's bit blaster: node
+  address ↦ its encoded bits. Used only by `blastE`'s compiled twin
+  (`Loom/Netlist/Miter.lean`); the reference definition ignores it. -/
+  amemo   : Std.HashMap USize (Array Bit) := {}
 deriving Inhabited
 
 /-- The encoder monad: clause accumulation with hard errors. -/
@@ -152,6 +156,48 @@ def cellPorts (ty : String) : Option (List String × List String) :=
   else if ty == "FDCE" then some (["C", "CE", "D", "CLR"], ["Q"])
   else if ty == "FDPE" then some (["C", "CE", "D", "PRE"], ["Q"])
   else none
+
+/-! ## Memory hard blocks
+
+Distributed and block RAM are **cut points**, never evaluated: the checker
+seeds each memory's read-data nets with free variables shared by both
+sides, and checks the cones that *feed* the memory's ports instead (the
+v1 boundary of `EQCHECK_SPEC.md` §Scope — array storage is carried by cell
+identity). So only two things matter here: the output pin list, which the
+driver map needs in order to know that a net comes out of a memory, and
+the type name itself. Input pins are listed for documentation and are not
+required to be present (yosys omits unused ports). An unknown cell type is
+still a hard error — a memory the table does not name will be reported as
+an unsupported cell, never silently skipped. -/
+
+/-- `(inputs, outputs)` of a supported memory hard block. -/
+def memCellPorts (ty : String) : Option (List String × List String) :=
+  if ty == "RAM32M" || ty == "RAM64M" || ty == "RAM32M16" || ty == "RAM64M8" then
+    some (["ADDRA", "ADDRB", "ADDRC", "ADDRD", "DIA", "DIB", "DIC", "DID",
+           "WCLK", "WE"], ["DOA", "DOB", "DOC", "DOD"])
+  else if ty == "RAM32X1D" || ty == "RAM64X1D" || ty == "RAM128X1D" then
+    some (["A0", "A1", "A2", "A3", "A4", "A5", "A6", "A", "D", "DPRA0",
+           "DPRA1", "DPRA2", "DPRA3", "DPRA4", "DPRA5", "DPRA6", "DPRA",
+           "WCLK", "WE"], ["SPO", "DPO"])
+  else if ty == "RAM32X1S" || ty == "RAM64X1S" || ty == "RAM128X1S" ||
+          ty == "RAM256X1S" then
+    some (["A0", "A1", "A2", "A3", "A4", "A5", "A6", "A", "D", "WCLK", "WE"],
+          ["O"])
+  else if ty == "RAMD32" || ty == "RAMD64E" || ty == "RAMS32" ||
+          ty == "RAMS64E" then
+    some (["RADR0", "RADR1", "RADR2", "RADR3", "RADR4", "RADR5",
+           "WADR0", "WADR1", "WADR2", "WADR3", "WADR4", "WADR5",
+           "I", "CLK", "WE"], ["O"])
+  else if ty == "RAMB18E1" || ty == "RAMB36E1" then
+    some (["ADDRARDADDR", "ADDRBWRADDR", "CLKARDCLK", "CLKBWRCLK",
+           "DIADI", "DIBDI", "DIPADIP", "DIPBDIP", "ENARDEN", "ENBWREN",
+           "REGCEAREGCE", "REGCEB", "RSTRAMARSTRAM", "RSTRAMB",
+           "RSTREGARSTREG", "RSTREGB", "WEA", "WEBWE"],
+          ["DOADO", "DOBDO", "DOPADOP", "DOPBDOP"])
+  else none
+
+/-- Is this cell a memory hard block (a cut point)? -/
+def isMemCell (ty : String) : Bool := (memCellPorts ty).isSome
 
 /-- Is this cell a flip-flop (state, not combinational logic)? -/
 def isFF (ty : String) : Bool :=
