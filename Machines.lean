@@ -35,6 +35,8 @@ import Machines.Epoch.Bounded
 import Machines.Epoch.Refines
 import Machines.CapWalk.Protocol
 import Machines.CapWalk.ProtocolLib
+import Machines.CapWalk.Engine
+import Machines.CapWalk.CapSoc
 import Machines.Lnp64mini.Core
 import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness

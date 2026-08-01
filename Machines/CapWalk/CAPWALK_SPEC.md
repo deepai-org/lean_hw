@@ -244,3 +244,269 @@ so `demo_dup_then_revoke` is a concrete run of `sys 3 2 1`: a root capability
 mints a narrowed descendant into an empty slot, the descendant's handle
 returns `ok`, and one `cap_revoke` on the shared lineage cell turns the same
 use into `-STALE`. Same role as §3's T-E7 — it keeps the model honest.
+
+## Layer 2 artifacts
+
+| file | what it is |
+|---|---|
+| `Machines/CapWalk/Engine.lean` | the open Loom `Design` `capwalk`: entry cache, walker/fill sequencer, authenticated fill, D18 selftest, the DDR image the testbench loads |
+| `Machines/CapWalk/CapSoc.lean` | `capmmio` + `lnp64mini_cap` = the epoch SoC ∥ the capability engine ∥ its own HP master |
+| `Machines/CapWalk/Emit.lean` | the runner (`selftest` / `d19` / `predict` / `ddr` / `engine` / `soc`) |
+| `fpga/zc702/tb_capwalk.v` | the iverilog testbench with the hostile behavioural DDR |
+| `fpga/zc702/capwalk_ddr{,_remint}.hex` | the DDR images, generated from `Engine.ddrImage` so the Lean and RTL legs cannot drift |
+| `scripts/capwalk_ladder.sh` | the whole ladder, including the byte-identity regression |
+
+## Deviations (Layer 2, recorded against §"Layers" item 2)
+
+Every item below is a departure from, or a refinement of, this file's
+§"Layers" item 2 as built in `Machines/CapWalk/Engine.lean` and composed in
+`Machines/CapWalk/CapSoc.lean`. `Machines/CapWalk/Protocol.lean` (Layer 1)
+is **frozen and unedited**, as are `Machines/Epoch/*`, `Loom/*` and
+`Tools/*`. Nothing here is a `sorry`, a `native_decide` or a new axiom;
+`lake exe audit` is green.
+
+**Where T-C6 stands after this layer.** §Deviations C5 says T-C6 is "a
+contract on the store" until authentication establishes it. Layer 2
+*establishes it in hardware*: the fill path installs an entry **only** when
+a tag bound to `{payload, slot, embedded epoch}` verifies, so a corrupted,
+substituted or replayed entry cannot become resident. Two honest
+qualifications: (i) the strength of that establishment rests on CE4's
+stated assumption about the keyed compression function, not on a proof; and
+(ii) **the Layer-3 refinement (`Refines.lean`) is not part of this
+delivery**, so what exists today is a design plus an exhaustive-at-the-
+scenario-level demonstration (D18 FastEval ladder + RTL co-simulation), not
+a mechanized simulation to `Protocol.stepEv`. That is the next obligation,
+and it is stated here rather than implied.
+
+**CE1 — 32-bit epochs.** §2.2's embedded cell is 39 bits; the engine ships
+`ew = 32`, exactly as §3's engine does (Epoch E1). Every Layer-1 theorem is
+generic in `W`, so nothing narrows; the RTL is the narrow instance.
+
+**CE2 — `sw = 10`: the on-chip cell table is 1024 slots, not 2^24.** The
+handle's slot field stays 24 bits at the port (`req_slot : 24`); a slot
+index `≥ 2^sw` is rejected structurally as `-BADREF`, which is Layer-1 C13
+("`decode` rejects a slot index `≥ N`") realized in hardware as
+`oobE`. This is the *architectural* honesty §2.2 demands: 2^24 slots are
+nameable, 2^10 exist, and naming a non-existent one is a defined failure,
+not undefined behaviour.
+
+**CE3 — a fifth outcome code: `OUT_FAULT = 4`.** §2.2's condition mapping
+is total over `{ok, badref, stale, denied}` because Layer 1 has **no
+corruption event** (C5). Layer 2 has one, and Appendix F's fail-stop
+disposition has to be *observable*: an operator cannot distinguish "your
+handle is malformed" from "your backing store is lying" if both are
+`-BADREF`. So the engine emits code 4, sets the slot's sticky `F_FAULT`
+bit, and raises `fault_valid`/`fault_slot`.
+
+What this costs, stated plainly: `Engine.codeE` is **not** literally
+`Protocol.outcome`; it is `Protocol.outcome` with one extra clause between
+the structural clause and step 1. Layer 3 must therefore either widen
+`Protocol.Outcome` with a `fault` constructor (the honest move, mirroring
+C6's note about `-POISONED`) or prove the collapse `fault ↦ badref`. The
+safety-relevant half is already true by construction and is what the ladder
+checks: **`FAULT` is never `ok`, and it is permanent** — nothing in the
+design clears `F_FAULT`, including `OP_MINT`.
+
+**CE4 — the authenticator, and exactly what is assumed.** The tag is a
+5-round keyed `xorshift32` chain over `P0[31:0] ‖ P0[63:32] ‖ P1 ‖ slot ‖
+E(slot)`, where `E(slot)` is the **on-chip** embedded epoch (`macOf` /
+`xsE`; see `Engine.lean` §Authentication for the definition).
+
+* **Architectural, and delivered.** All three §41 adversaries change an
+  input of the tag computation — corruption changes `P0`/`P1`,
+  substitution changes `slot`, replay changes `E(slot)` — and `mix` is
+  injective in its message word for fixed `(h, k)`, so each is detected
+  *with certainty* under a single-word change, not with high probability.
+  And detection is fail-stop by construction: `Engine.lean` has exactly one
+  code path that writes `c_tag`/`c_p0`/`c_p1`, and it is guarded by
+  `mac_h == w_tag`. There is no best-effort arm.
+* **Assumed, and NOT claimed.** `xorshift32` is a bijection, not a PRF.
+  Against an adversary who can choose many messages and observe tags, the
+  round keys are recoverable and forgery is feasible. The assumption this
+  layer asks for is precisely *"the keyed compression function is
+  unforgeable under the engine-held key"*, and it is confined to the
+  twelve lines of `xsE`/`macRound`: replacing them with SipHash-2-4 or
+  AES-CMAC changes the `W_MAC` round count and nothing else — not the
+  cache, not the check order, not a disposition. **Do not read the
+  selftest's "all three attacks detected" as a cryptographic claim.**
+
+**CE5 — the key is a bitstream constant, not a register.** `MAC_IV` and
+`macK 0..4` appear as literals inside the mixing cone. They are
+deliberately *not* registers: in this emission path a register that is
+never written becomes an `o_*` output port (that is how `HpMaster`'s AXI
+qualifiers are emitted), so a key held in a register would be **published
+at the module boundary**. A v2 that wants per-boot keying must add a
+configuration-time key-load path from a PUF/TRNG — engine-owned, with no
+core-writable and no readable coordinate — and that is additive.
+
+**CE6 — `OP_MINT` is a new, software-requestable op.** §2.2 names the
+embedded bump only on drop, and Layer 1's `cap_dup` mints *from an
+authorizing capability*. Layer 2 has no `cap_dup` (CE8), so it exposes a
+bare re-incarnation: bump the embedded cell and clear `F_VACANT`.
+
+Why this is not a hole: minting installs **no authority**. The rights an
+occupied slot confers come from the DDR entry, and that entry has to
+authenticate under the **new** embedded epoch, which requires a tag
+computed with the key — which software does not have (CE5). So an
+adversarial core that mints slots at will produces slots that fail-stop on
+first use, never slots that grant rights. `OP_MINT` also does not clear
+`F_FAULT`. The ladder exercises exactly this: A3's control re-incarnates
+slot 8 against a store that re-issued the entry, and it succeeds; A3 itself
+re-incarnates slot 5 against a store that did not, and it fail-stops.
+
+**CE7 — the capability engine is an extra §3 referent volume, outside the
+acked span.** `CAPWALK_SPEC.md` says "engine #2 lands on engine #1", and
+`Machines/Epoch/*` may not be edited, so the seam is the epoch engine's
+existing broadcast: `cw_inval_valid/cell/epoch ← ep_inval_valid/cell/epoch`,
+and `lin_repl` is written by that and by nothing else. `cap_revoke` is a §3
+bump requested through the *existing* `epochmmio` word.
+
+The deviation, stated rather than hidden: the epoch engine's `B_ACK`
+sequencer collects acks from its **two** replica banks only, so the
+capability engine's adoption is **not inside the acked span**, and §3's
+return guarantee does not formally cover it. What is true instead:
+`inval_valid` is asserted on entry to `B_ACK` and held until `B_RET`, and
+`B_ACK` takes at least two cycles, so the capability replica has adopted
+before the bump returns. That is an argument about the composition, not a
+theorem, and Layer 3 must either prove it or extend the epoch engine's ack
+span (an edit to `Machines/Epoch/Engine.lean`, out of scope here). Layer 1
+already flags the shape of this gap in C9 (T-C4 does not exhibit §3's
+in-flight liberty).
+
+**CE8 — the backing store is read-only at Layer 2.** `cap_dup`, install and
+`dreplace.commit` are staged out (§Scope), so there is no authenticated
+*write* path and no dirty-line write-back: eviction is silent, and the
+cache is a clean read cache over an authenticated table. Consequently the
+"dirty-line forwarding invariant" `EPOCH_SPEC.md` §SUPERSEDING DOCTRINE
+point 3 mentions is not needed yet — and when the installer lands, it is
+the *installer* that owes MAC generation, which is the natural place for it.
+
+**CE9 — `cw = 8` (256 cache lines) is a fit decision, measured.** A 32-line
+cache is below `yosys`'s block-RAM threshold, so `c_tag`/`c_p0`/`c_p1`
+landed in flops with a 32:1 read mux. At 256 lines the payload banks are
+block RAM. Together with CE10 this is a 14× LUT difference on the same
+logic; the before/after numbers are in §FIT below.
+
+**CE10 — one write port per shared bank, and the interlock that makes it
+sound.** `c_tag` has two writers (walker install, drop/mint invalidate) and
+`cell_flags` has two (walker fail-stop, drop/mint bump). Two syntactic
+write sites become two `Compile` write *ports*, and a Xilinx block RAM has
+two ports **total** — so `cell_flags` (three read sites + two writes) fell
+out of block RAM entirely. `yosys`'s own words on the naive shape, for
+`cell_flags` alone: *"created 1024 $dff cells ... read interface: 3 $dff
+and 3069 $mux cells, write interface: 2048 write mux blocks"* — on an
+engine with about 700 architectural flops. Together with CE9 the two
+mistakes measured **9 523 LUTs / 3 982 FFs**; the shipped engine is
+**671 LUTs / 442 FFs** (§FIT).
+
+Fixed by giving each bank exactly one muxed write site (`ctagWrRule`,
+`flagWrRule`) *plus* an interlock: `opRule` accepts a drop/mint only while
+`w_st = W_IDLE`, and `chkRule` starts a fill only while `d_st = D_IDLE`, so
+`D_DO` and `W_CHK` are mutually exclusive and the mux priority is a
+don't-care rather than a policy. `Engine.memPortsOkB` is the standing
+decidable guard (`Compile.MemWriteWF`'s port condition), checked before
+every emit.
+
+Residual, named: a drop/mint request that arrives while a fill is in flight
+is **dropped**, not queued. The MMIO adapter's op word is fire-and-forget,
+so software must poll (`fill_count`, or re-read the slot). A v2 wants a
+one-deep request queue.
+
+**CE11 — one check unit, and the check costs 4 cycles.** §3's engine has
+one check unit *per referent volume* (Epoch E3); §2.2's capability check is
+per-domain and has one client here, so there is one unit. It is
+`K_IDLE` (accept, drive the addresses) → `K_RD` (the cell and cache banks'
+registered read) → `K_LIN` (the lineage replica's read, whose **address is
+the cached payload's lineage field** and therefore cannot issue a cycle
+earlier) → `K_EV` (one compare, emit). It is still one compare against
+on-chip state with no fabric transaction, which is what §2.2's checking
+interface claims; the extra cycles are the price of block RAM (Epoch E4's
+argument, one stage deeper because of the lineage indirection).
+
+Steps 1–2 of §2.2 (occupancy, embedded epoch) are answered from the cell
+banks alone, so a stale or dropped handle **never causes a DDR
+transaction** — the ladder checks that as a counter assertion, not as
+folklore.
+
+**CE12 — the walker is a three-beat sequencer, not a multi-level walk and
+not a Merkle tree.** Appendix F row 2's "page-walker-class sequencer" is
+honoured as a sequencer over the HP-master handshake (`W_A0/D0 → A1/D1 →
+A2/D2 → MAC → CHK`), with a flat, directly-indexed table at
+`tbl_base + slot·32`. §Scope already stages the Merkle *tree* out ("v1
+authenticates entries individually; the tree is a scaling optimization, not
+a safety change"), and a multi-level table is the same kind of additive
+change.
+
+**CE13 — the composed SoC gives the engine its own HP master.** `HpArbiter`
+has exactly two requester ports and both cores hold them, and
+`Machines/Lnp64mini/*` may not be edited, so `lnp64mini_cap` instantiates a
+second `axi_hp_master` (`cwhp_`) for the walker. The ZC702 has four HP
+ports, so this is a wiring fact, not a compromise; `cwhp_start_wr` and
+`cwhp_wdata` are tied off (CE8), and the master's write path constant-folds
+away.
+
+**CE14 — reset images stay all-zero except the two epoch banks.**
+`cell_flags` encodes occupancy as `F_VACANT` (**empty**, not occupied) and
+`c_tag`'s valid bit resets clear, so both reset to all zero — Epoch E13's
+lesson (an all-zero image is the only one every configuration path
+delivers) applied at design time rather than after a silicon surprise. The
+non-zero images are `cell_epoch` and `lin_repl`, both epoch 1, both mapped
+to block RAM whose `INIT` the flow does deliver.
+
+**CE15 — `tbl_base` is an input port, not an MMIO register.** The table's
+DDR base is an integration-time constant driven by the composition
+(`CAP_TBL_BASE`), so no core can retarget the walker. It would in fact be
+harmless if one could — every entry's tag binds its slot and its on-chip
+epoch, so a table at a different address authenticates only if it holds the
+*same current* entries — but "harmless because of the MAC" is a weaker
+statement than "unreachable", and the doctrine prefers the latter.
+
+## FIT (measured, `yosys 0.33 synth_xilinx`, XC7Z020: 53 200 LUTs, 106 400 FFs, 140 RAMB36)
+
+| design | LUTs | % LUT | FFs | RAMB36 | RAMB18 |
+|---|---|---|---|---|---|
+| `epochengine` alone | 351 | 0.7 % | 204 | 0 | 3 |
+| **`capwalk` alone** | **671** | **1.3 %** | **442** | **4** | **6** |
+| `lnp64mini_dual` (baseline) | 29 032 | 54.6 % | 12 389 | 26 | 0 |
+| `lnp64mini_epoch` (+ §3 engine) | 29 480 | 55.4 % | 12 805 | 26 | 3 |
+| **`lnp64mini_cap` (+ §2.2 engine)** | **29 997** | **56.4 %** | **13 519** | **30** | **9** |
+
+**Does it fit? Yes, and cheaply.** The capability engine, its second HP
+master and its MMIO adapter cost **+517 LUTs (+1.8 % relative, +1.0
+percentage point of the device), +714 FFs, +4 RAMB36 and +6 RAMB18** on top
+of the dual+epoch SoC. Block RAM goes from 26 to ~34.5 RAMB36-equivalents,
+about 25 % of the 140 available — the ZC702 has BRAM to spare and this
+design spends it deliberately (CE9/CE10) to keep LUTs.
+
+**What it would have cost done naively — the number worth remembering.**
+The first build (32-line cache, two write ports on the two shared banks)
+measured `capwalk` alone at **9 523 LUTs / 3 982 FFs**, i.e. **14× the LUTs
+and 9× the flops** of the shipped engine, for the same logic. `yosys` put
+`cell_flags` and `c_tag` in flip-flops with 1024:1 and 32:1 read muxes,
+because a bank with more than two ports (three reads + two writes) has no
+block RAM to go to, and a 32-deep bank is below the block-RAM threshold.
+Added to the cores' 29 k that is 38 k LUTs, 72 % of the device, and it
+would have been read as "the capability engine is expensive" rather than as
+"two banks fell out of BRAM". D19 is a *shape* discipline about reads;
+CE10 records that write-port count is the matching discipline for writes,
+and `Engine.memPortsOkB` is now a standing decidable guard on it.
+
+Reproduce with `scripts/capwalk_ladder.sh` plus
+
+```console
+yosys -p "read_verilog rtl/lnp64mini_cap.v; hierarchy -check -top lnp64mini_cap; \
+          synth_xilinx -top lnp64mini_cap; stat"
+```
+
+(`lnp64mini_dual`'s baseline moved by ~115 LUTs from an earlier measurement
+in this session because a concurrent workstream edited
+`Machines/Lnp64mini/Core.lean`; all five rows above are from one batch, on
+one tree, so the deltas are comparable.)
+
+**Not measured here:** place-and-route timing. The MAC's mixing cone is
+three XOR-shift stages of 32 bits inside one cycle (`W_MAC`), which is the
+longest new combinational path in the engine; if it does not close at the
+SoC clock, the fix is to spread `xsE` over two `W_MAC` sub-states, which
+costs one cycle per MAC round and nothing else. Recorded so that a timing
+failure is a known knob, not a surprise. **No board work was done in this
+campaign.**
