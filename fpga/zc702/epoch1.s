@@ -26,4 +26,9 @@ w2:
   LD.W r10, [r1, 16]         ; expect 0x103 = valid | -STALE
   ADDI r6, r0, 3
   ST   [r2, 0], r6           ; release core 0 for the poison bump
+  ; ---- GEM0 is still core-0-only: this GP access is NOT on the engine
+  ;      page, so DUAL_SPEC D5's tie-off still answers it (done, reads 0)
+  ;      and core 1 neither reaches GEM0 nor wedges.
+  LI   r12, 0xE000B000
+  LD.W r11, [r12, 0]         ; expect 0
   EXIT r0

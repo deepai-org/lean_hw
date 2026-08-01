@@ -331,3 +331,243 @@ the epoch model — the k-induction queries at the same design are 856 and
    The two legs are independent in the intended sense: the kernel proofs
    never mention the netlist, and the model checker never mentions
    `Protocol.St`. Layer 3 (`Refines.lean`) is what will join them.
+
+## Deviations (Layer 2 — `Engine.lean`, `EpochSoc.lean`, recorded 2026-08-01)
+
+Every item is a departure from, or a refinement of, this file's
+§"Engine design (Layer 2)" / §"Core integration + demo" as built in
+`Machines/Epoch/Engine.lean` + `Machines/Epoch/EpochSoc.lean`. Nothing was
+silently narrowed. Layer-1 deviations keep their `D` numbers; Layer 2's
+are `E`.
+
+**E1 — epoch width 32, cell table 512 entries.** §"Engine design" says
+"dw=39 per §3's capability-slot width; use 32 for v1 and record it" — 32 it
+is. `Cfg` is a parameter, so the 39-bit and 64-bit instances are one line
+away and every Layer-1 theorem already holds for all `W` (D9). A second
+instance `epochengine_tiny` (`ew = 3`, 4 cells) ships alongside, because
+saturation at `allOnes 32` is not reachable in a testbench and §3's
+"saturation is permanent death" therefore has to be exercised at a width
+where it *is* — see E7.
+
+**E2 — there are no `ack_core0`/`ack_core1` INPUTS.** The Layer-2 port
+sketch above predates this file's own §"SUPERSEDING DOCTRINE" and its
+§"Consequence bound NOW". The doctrine wins: the engine owns the replica
+banks and generates the acks itself, one referent volume per cycle, in
+`B_ACK`. Cores drive only `req{k}_{valid,op,cell,epoch,policy,flags}` —
+§3's `Req` and the op — and there is no path by which any core write
+reaches a replica, the home epoch, or the poison/dead bits. Layer 3's
+safety statement is therefore unconditional over all core behaviour, as
+§"Consequence bound NOW" requires. `inval_valid`/`inval_cell`/
+`inval_epoch` survive as *observability outputs* (the broadcast is
+visible), not as a handshake.
+
+**E3 — one check unit per volume, not one shared CHECK state.** The
+sketch has a single FSM with a `CHECK` arm. Built as two independent
+per-volume units plus one bump sequencer, because (i) §3's class-0 rule is
+that the check is local and tile-bounded — a shared unit would serialize
+two volumes' checks through one resource; and (ii) a check must not be
+blocked by an in-flight bump, or §3's in-flight liberty (T-E7) would be
+physically unrealizable. Unit `k` reads replica bank `k` and cannot name
+any other bank.
+
+**E4 — a check costs 3 cycles, not 1; there is no install/alloc op.**
+The sketch says "CHECK: one-cycle local compare". With D19/D20
+block-RAM-shaped memories the compare needs a read stage:
+`C_IDLE` (accept, drive the address) → `C_RD` (the bank's registered read)
+→ `C_DO` (compare, emit the outcome). It is still one compare against one
+local replica with no fabric transaction, which is what §3's class-0
+claim is about; the extra two cycles are the price of BRAM, and the LUTRAM
+alternative is what stopped the dual core from fitting (D19). Relatedly,
+v1 has **no core-visible install op**: the cell table resets to
+epoch 1 / occupied / unpoisoned with both replicas in step, which is
+exactly `Protocol.Init`, and is the only way freshness state is ever
+established. An install op is where §3's *reuse point* lives, and this
+file's §Scope already stages that out (Layer-1 D5).
+
+**E5 — the response surface is wider than `resp_valid/resp_code(2b)/
+resp_busy`.** `resp_code` is **3** bits, because `Protocol.Outcome` has
+five constructors and the encoding is required to be identical to it
+(`ok=0, badref=1, poisoned=2, stale=3, denied=4`). Busy is split into
+`c{k}_busy` (per-volume check unit) and `bump_busy` (the one in-flight
+bump), and the bump return is its own pulse `bump_done{k}` beside
+`bump_cycles`, because the two paths are independent by E3. `rc`
+(`referent_count`) and the `acquire`/`release` ops (Layer-1 D6) are **not
+in the engine**: §"Engine design" lists only `cell_epoch`/`cell_flags`/
+the replica banks, `rc` carries no safety obligation, and adding a
+core-writable counter would be a new core-writable coordinate for no gain.
+
+**E6 — the two cores share one MMIO base; what is "distinct" is the
+word.** §"Core integration + demo" asks for "distinct addresses". Both
+cores use `0x0A0E_0000` (one 4 KiB page carved out of the GP aperture's
+existing `ea[31:20] == 0x0A0` scratch window), with distinct *words* for
+cell / epoch / flags / fire-check / result / fire-bump / latency / ID.
+A core's referent volume is **wired, not addressed**: core `k` reaches
+request port `k` and check unit `k`. If the volume were selected by
+address, an adversarial core could ask for a check against the other
+volume's replica — exactly the class of thing E2's doctrine exists to
+make impossible. Per-core address bases would be strictly weaker.
+
+**E7 — what the FastEval selftest and the iverilog leg actually cover.**
+`Machines.Epoch.Engine.selftest` runs the `Design` through the *verified*
+fast evaluator (`fastRunOpen_agrees`, instantiated from
+`Loom.Hw.FastEval.fastRunOpen_eq`), so there is no hand-written ISS to
+drift (D18). Covered: check-hit; the four failure classes in §3's
+precedence order (T-E4); bump → broadcast → per-volume ack (`b_acked`
+0→1→3) → return, exactly one return pulse (T-E1/T-E5); poison permanence
+including *current*-epoch references, 20 cycles later (T-E3); saturation
+on `epochengine_tiny` — six bumps to `allOnes 3`, then `-STALE` at both
+volumes and no bump revives it (T-E2); and a use concurrent with an
+in-flight bump returning `ok`, then `-STALE` after the return (T-E7).
+`fpga/zc702/tb_epochengine.v` replays the same two traces and prints the
+same event lines, and the two outputs are byte-identical.
+**Not** covered at Layer 2, by construction: anything quantified over all
+runs — those are Layer 3's obligation, and the selftest is corroboration,
+not proof.
+
+**E8 — the `repl{k}` cross-port collision is architecturally free.**
+Check unit `k` may read `repl{k}` in the same cycle the ack sequencer
+writes it. D9 gives read-first semantics; Xilinx leaves a cross-port
+same-address collision indeterminate. Every such cycle is inside an
+in-flight bump (replica writes happen only in `B_ACK`, with `bump_busy`
+high), and §3 explicitly permits a use concurrent with a bump to observe
+either epoch (T-E7). After the return no replica write is outstanding, so
+nothing observable after §3's linearization point is affected. This is the
+D19 collision obligation discharged by *architecture* rather than by
+timing luck — contrast `Machines/Lnp64mini/PORTING_SPEC.md` deviation 5,
+which is still owed a silicon confirmation.
+
+**E9 — `EpochSoc.lean` is additive; `DualSoc.lean` was not edited.**
+`Machines/Epoch/EpochSoc.lean` reuses `DualSoc`'s five instances and its
+`wire` function (falling through to it for everything it does not
+override), so `rtl/lnp64mini.v`, `rtl/lnp64mini_soc.v` and
+`rtl/lnp64mini_dual.v` re-emit **byte-identically** (md5 unchanged), and
+all six existing iverilog system testbenches reproduce their recorded
+numbers exactly: soc `loomcheck` 273 cycles; dual 372 / 12540 / 14933 /
+2014 / 346 cycles, `res_kill` 39/1, `wake_out` 8/8, `shared[0x10000]=200`.
+
+**E10 — the demo is the testbench, not the board.** §"Core integration +
+demo" asks for the acceptance under live NetBSD on core 0. This pass
+delivers the same *protocol* event on the same fabric in iverilog
+(`fpga/zc702/tb_lnp64mini_epoch.v`, programs `epoch0.s`/`epoch1.s`): core 1
+checks a live handle (`ok`), core 0 bumps through the GP aperture and its
+latency read blocks until the bump returns, core 1 re-checks the SAME
+handle and gets `-STALE`, and a poison bump then makes even the current
+epoch fail `-POISONED`. Board and NetBSD are out of scope for this pass by
+instruction. The measured bump latency is **5 cycles**
+(`B_RD → B_UP → B_ACK×3 → B_RET`, i.e. issue → both volumes acked →
+return), lazy and poison alike.
+
+**E11 — FIT: LUT/BRAM measured, Fmax NOT measured.** `yosys 0.33`,
+`synth_xilinx -flatten -nowidelut`, bare module (not the board wrapper):
+
+| cell | `lnp64mini_dual` | `lnp64mini_epoch` | Δ |
+|---|---|---|---|
+| LUT2+3+4+5+6 | 27,409 | 28,210 | **+801 (+2.9 %)** |
+| `CARRY4` | 1,049 | 1,061 | +12 |
+| `FDRE`/`FDSE` | 12,389 | 12,805 | +416 |
+| `RAMB36E1` | 26 | 26 | 0 |
+| `RAMB18E1` | 0 | **3** | +3 |
+| `RAM64M` (LUTRAM) | 48 | 72 | +24 |
+| total cells | 51,262 | 53,065 | +1,803 |
+
+`epochengine` alone: 327 LUTs, 204 FDRE, 12 CARRY4, **3 RAMB18E1**
+(`cell_epoch`, `repl0`, `repl1` — 512×32 each, block RAM as D19 intends)
+and 24 `RAM64M` (the 512×3 `cell_flags`, too narrow to be worth a BRAM).
+The remaining +474 LUTs of the composed delta are the two `epochmmio`
+adapters and the GP response muxing.
+
+Post-route `Fmax` is **not reported**: it comes from `nextpnr-xilinx`
+(openXC7) in `remote-fpga fpga/substrate0/oxc7/build_oxc7.sh`, which is
+not installed on this host (`snap install openxc7` → "not found"), and
+the board is out of scope by instruction. Reference points for whoever
+runs it: the dual placed at 48 % `SLICE_LUTX` after D20, and the
+single-core SoC ran at 35.11 MHz post-route. A +2.9 % LUT delta with the
+three new banks landing in otherwise-idle RAMB18 sites is not expected to
+move either materially, but that is a prediction, not a measurement, and
+it is recorded as one.
+
+**E12 — core 1 reaches the engine, and still cannot reach GEM0.**
+`Machines/Lnp64mini/DUAL_SPEC.md` deviation D5 ties core 1's GP-aperture
+responses to "instantly done, reads 0" (GEM0 belongs to core 0), which on
+its own leaves core 1 with no MMIO at all — and the demo requires core 1 to
+*hold* a reference and watch it go `-STALE`. Of the three ways out
+(a separate non-GP decode window; lifting D5 for one address range; a
+dedicated request port per core) this build takes the **third, plus a
+sub-window of the GP aperture that is not GEM's**:
+
+* the engine has one request port per referent volume
+  (`req0_*` / `req1_*`), which is the doctrine's own abstraction — the
+  engine already owns per-volume state, so a per-volume request port is
+  the matching seam, and no address a core can name reaches the other
+  volume's port (E6);
+* each core gets its own `epochmmio` adapter, selected by
+  `gp_addr_r[31:12] == 0x0A0E0` — inside the core's *existing*
+  `ea[31:20] == 0x0A0` scratch window, and disjoint from GEM0's
+  `0xE000_B000`, which lives in the other half of the decode
+  (`ea[31:16] == 0xE000`). The core's decode is therefore **unchanged**,
+  which is what keeps `lnp64mini.v` byte-identical (E9);
+* D5's tie-off survives verbatim for everything else: core 1's
+  `gp_done`/`gp_rdata` are `epSel1 ? mm1_* : (1, 0)`. A core-1 access to
+  any non-engine GP address still completes instantly reading 0.
+
+Structural proof in the emitted netlist: `c1_gp_rd`/`c1_gp_wr` fan out
+**only** into the `mm1_` adapter cone; the AXI GP master's
+`gpm_start_rd`/`gpm_start_wr`/`gpm_addr`/`gpm_wdata` are driven from
+`c0_*` alone (and gated with `¬epSel0`). Behavioural proof in
+`tb_lnp64mini_epoch.v`: core 1 probes `0xE000_B000` after its epoch work
+and reads `0` without wedging (`c1.r11 = 0`, `C1 HALTED=1`).
+
+### Guest-visible register map (Layer 2, as built)
+
+Base **`0x0A0E_0000`**, identical for both cores; 32-bit accesses only
+(`ST.W` / `LD.W`, opcodes 0x34 / 0x31 — the GP aperture traps other
+widths). This differs from the provisional guest header
+(`lnp64/toolchain/include/lnp64/epoch_mmio.h`, base `0xE010_0000`,
+`ID/CELL/REF/CHECK/BUMP/STATUS/LAT/HOME`); `0xE010_0000` is **not**
+decodable by this core at all (`l_is_gp` matches `ea[31:16] == 0xE000`,
+not `0xE010`), so adopting it would require changing the core's decode and
+forfeiting the byte-identical guarantee.
+
+| off | write | read |
+|-----|-------|------|
+| `+0x00` `EP_CELL`   | cell index (9 bits) | cell index |
+| `+0x04` `EP_REF`    | the presented reference epoch (§3's `ref.epoch`) | same |
+| `+0x08` `EP_FLAGS`  | `{rights<<2, classOk<<1, wellFormed}`, resets to 7 | same |
+| `+0x0C` `EP_CHECK`  | **fire a check** (data ignored) | `{chk_pend<<1, chk_busy}` |
+| `+0x10` `EP_RESULT` | — | `valid<<8 \| Outcome`; **the load blocks** until the check answers, then clears `valid` |
+| `+0x14` `EP_BUMP`   | **fire a bump**, `bit0` = poison policy | `{bmp_pend<<1, bump_busy}` |
+| `+0x18` `EP_LAT`    | — | last bump's issue→all-acked→return latency in cycles; **the load blocks until the bump returns** (§3's linearization point) |
+| `+0x1C` `EP_ID`     | — | `0xE90C0001` |
+
+Outcome codes are `Protocol.Outcome`'s constructor order and match the
+provisional header: `0 = OK, 1 = BADREF, 2 = POISONED, 3 = STALE,
+4 = DENIED`.
+
+Two intentional differences from the provisional map, beyond the base:
+
+* **`EP_FLAGS` exists.** Layer-1 deviation D4 makes the structural and
+  rights facts request-level booleans; without them §3's precedence
+  (`-BADREF` / `-DENIED`) is unreachable from software. It resets to 7, so
+  a guest that only ever does plain checks never has to write it.
+* **There is no `HOME` register.** Exposing the home epoch would let
+  software compute freshness itself, which is exactly what §3's safe-reuse
+  corollary forbids ("established by the engine, never asserted by
+  software"). `EP_RESULT` is the only architected answer to "is this
+  reference fresh".
+
+A blocking-read map means the usual sequence has **no polling**:
+
+```
+ST.W [base,  0], cell        ; stage the handle …
+ST.W [base,  4], ref_epoch   ; … (both cores may do this concurrently)
+ST.W [base,  8], 7
+ST.W [base, 12], r0          ; fire CHECK
+LD.W rd,  [base, 16]         ; blocks; rd = 0x100 | outcome
+
+ST.W [base,  0], cell
+ST.W [base, 20], policy      ; fire BUMP (0 = lazy, 1 = poison)
+LD.W rd,  [base, 24]         ; blocks until the bump has RETURNED
+```
+
+`fpga/zc702/epoch0.s` (bumper) and `fpga/zc702/epoch1.s` (holder) are the
+worked examples.
