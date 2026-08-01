@@ -9,7 +9,45 @@ import Loom.Core.Bounded
 /-!
 # Layer 3 — `epochengine` refines the mechanized §3 protocol
 
-The Appendix-F refinement obligation for machine 1, discharged.
+Appendix F makes the mechanized protocol spec the normative behavioral
+definition and requires each generation's RTL to discharge a *refinement
+obligation* against it. This file is that obligation, for machine 1
+("epoch coherence — bump, broadcast, ack reduction"):
+`Machines/Epoch/Engine.lean`'s Loom `Design` refines
+`Machines/Epoch/Protocol.lean`'s frozen §3 protocol, and §3's safety
+theorems become theorems about the hardware.
+
+What is here, in the order it is built:
+
+1. **Frame lemmas + a cycle-level case analysis.** One cycle is the six read
+   latches, the two check units, then the bump sequencer (D9: all reads are
+   pre-cycle). `cyc_idle`/`cyc_rd`/`cyc_up`/`cyc_ack_*`/`cyc_ret`/`cyc_junk`
+   evaluate `Design.cycleOpen` in each state of the sequencer's encoding —
+   including the states outside it, where the engine must (and does) sit
+   still.
+2. **The abstraction function** `abs`: cells and replicas read straight out
+   of the four BRAM banks, `pending` reconstructed from the sequencer.
+3. **The stuttering simulation** `sim` (D17), whose square is
+   `square_cycle`: every clock cycle, from every state, under **every** input
+   valuation, is either a stutter or exactly one §3 event — `bump` at
+   `B_UP → B_ACK`, `ack k` at each `B_ACK`, `bumpReturn` at `B_RET`.
+4. **Transport** (`invariant_pullback`): `Protocol.Inv` and the T-E1/T-E2/
+   T-E3/T-E6 analogues, as statements about every reachable state of the
+   design, quantified over all input traces — i.e. over all core behaviour,
+   adversarial included. The check units' answer is tied to `Protocol.
+   useLocal` by `chk_resp_0`/`chk_resp_1` (§3's precedence in the RTL's own
+   mux cone), and `emitted_cycleOpen` carries the whole thing to the emitted
+   µVerilog.
+5. **D28**: the spec bound of `Machines/Epoch/Bounded.lean` expressed in
+   CLOCK CYCLES, both as the free transported bound (15) and as the exact one
+   (4), with `EPOCH_SPEC.md` deviation F8 explaining how each relates to
+   Layer 2's measured 5.
+
+`EPOCH_SPEC.md` §"Deviations (Layer 3)" records every departure; F1 and F4
+are the ones to read first — there is no hypothesis about core behaviour
+anywhere in this file, which is what §"Consequence bound NOW" demands.
+
+No `sorry`, no `native_decide`, no new axioms.
 -/
 
 namespace Machines.Epoch.Refines
@@ -1255,6 +1293,119 @@ theorem bump_returns_within_4_cycles (σ : Hw.St)
     (ackPhase cfg).MustReach (fun τ => (abs cfg τ).pending = none) 4 σ :=
   (tight_ranking cfg).mustReach 4 σ hr (mu_le σ)
 
+/-! ## The check units compute `useLocal` exactly (design-level T-E4)
+
+The transported theorems above are about the engine's freshness *state*. This
+one is about what a core is actually told: the 3-bit `resp{k}_code` the check
+unit emits is `Protocol.useLocal` — §3's failure precedence, in the RTL's own
+mux cone — applied to the latched request and the volume-local replica. -/
+
+theorem slice1_iff {w : Nat} (x : BitVec w) (i : Nat) :
+    (x.extractLsb' i 1 = 1#1) ↔ x.getLsbD i = true := by
+  constructor
+  · intro h
+    have := congrArg (fun y => BitVec.getLsbD y 0) h
+    simpa using this
+  · intro h
+    apply BitVec.eq_of_getLsbD_eq
+    intro j hj
+    have hj0 : j = 0 := by omega
+    subst hj0
+    simpa using h
+
+theorem slice1_iff0 {w : Nat} (x : BitVec w) (i : Nat) :
+    (~~~(x.extractLsb' i 1) = 1#1) ↔ x.getLsbD i = false := by
+  constructor
+  · intro h
+    have := congrArg (fun y => BitVec.getLsbD y 0) h
+    simpa using this
+  · intro h
+    apply BitVec.eq_of_getLsbD_eq
+    intro j hj
+    have hj0 : j = 0 := by omega
+    subst hj0
+    simpa using h
+
+/-- `Protocol.Outcome` in the engine's encoding (`Engine.OUT_*`). -/
+def outcomeCode : Protocol.Outcome → BitVec 3
+  | .ok => 0#3
+  | .badref => 1#3
+  | .poisoned => 2#3
+  | .stale => 3#3
+  | .denied => 4#3
+
+/-- The home cell as check unit `k` latched it. `epoch` is unused by
+`useLocal` (deviation D2: only the replica carries freshness). -/
+def chkCell (σ : Hw.St) (k : Nat) : Protocol.Cell cfg.ew where
+  epoch := σ.regs (Engine.vn k "repl_q") cfg.ew
+  rc := 0
+  poison := (σ.regs (Engine.vn k "flags_q") 3).getLsbD 0
+  dead := (σ.regs (Engine.vn k "flags_q") 3).getLsbD 1
+  occupied := (σ.regs (Engine.vn k "flags_q") 3).getLsbD 2
+
+/-- §3's `Req` as check unit `k` latched it (Layer-1 deviation D4 for the
+structural/rights booleans). -/
+def chkReq (σ : Hw.St) (k : Nat) : Protocol.Req cfg.ew where
+  cellIx := (σ.regs (Engine.vn k "a") cfg.aw).toNat
+  epoch := σ.regs (Engine.vn k "e") cfg.ew
+  wellFormed := (σ.regs (Engine.vn k "f") 3).getLsbD 0
+  classOk := (σ.regs (Engine.vn k "f") 3).getLsbD 1
+  rights := (σ.regs (Engine.vn k "f") 3).getLsbD 2
+
+set_option maxHeartbeats 1000000 in
+/-- **The check cone is `useLocal`.** All 128 combinations of the six
+structural/disposition bits and the epoch compare. -/
+theorem outcome_eval (σ : Hw.St) (k : Nat) :
+    Expr.eval σ (Engine.outcome cfg k)
+      = outcomeCode (Protocol.useLocal (chkCell cfg σ k)
+          (σ.regs (Engine.vn k "repl_q") cfg.ew) (chkReq cfg σ k)) := by
+  by_cases hwf : (σ.regs (Engine.vn k "f") 3).getLsbD 0 = true <;>
+  by_cases hocc : (σ.regs (Engine.vn k "flags_q") 3).getLsbD 2 = true <;>
+  by_cases hcls : (σ.regs (Engine.vn k "f") 3).getLsbD 1 = true <;>
+  by_cases hpoi : (σ.regs (Engine.vn k "flags_q") 3).getLsbD 0 = true <;>
+  by_cases hdea : (σ.regs (Engine.vn k "flags_q") 3).getLsbD 1 = true <;>
+  by_cases hrts : (σ.regs (Engine.vn k "f") 3).getLsbD 2 = true <;>
+  by_cases hhit : σ.regs (Engine.vn k "repl_q") cfg.ew = σ.regs (Engine.vn k "e") cfg.ew <;>
+  simp_all [Engine.outcome, Engine.bit3, Protocol.useLocal, outcomeCode, chkCell, chkReq,
+    slice1_iff, slice1_iff0, Engine.OUT_OK, Engine.OUT_BADREF, Engine.OUT_POISONED,
+    Engine.OUT_STALE, Engine.OUT_DENIED]
+
+/-- Check unit 0 in `C_DO` answers on the next clock edge, and its answer
+is `useLocal` against volume 0's replica — never any other volume's (E6). -/
+theorem chk_resp_0 (σ : Hw.St) (h : σ.regs "c0_st" 2 = 2#2) :
+    ((Engine.mkDesign cfg).cycle σ).regs "resp0_valid" 1 = 1#1 ∧
+    ((Engine.mkDesign cfg).cycle σ).regs "resp0_code" 3 =
+      outcomeCode (Protocol.useLocal (chkCell cfg σ 0)
+        (σ.regs "c0_repl_q" cfg.ew) (chkReq cfg σ 0)) := by
+  have hcode : ((Engine.mkDesign cfg).cycle σ).regs "resp0_code" 3
+      = Expr.eval σ (Engine.outcome cfg 0) := by
+    rw [cycle_eq, Act.run_regs_notin _ _ _ (by simp [Act.regWrites]) σ (pre cfg σ), pre_eq,
+      Act.run_regs_notin _ _ _ (by simp [Engine.chkRule, Act.regWrites]) σ _]
+    simp [Engine.chkRule, h, Engine.C_IDLE, Engine.C_RD, Engine.C_DO]
+  refine ⟨?_, ?_⟩
+  · rw [cycle_eq, Act.run_regs_notin _ _ _ (by simp [Act.regWrites]) σ (pre cfg σ), pre_eq,
+      Act.run_regs_notin _ _ _ (by simp [Engine.chkRule, Act.regWrites]) σ _]
+    simp [Engine.chkRule, h, Engine.C_IDLE, Engine.C_RD, Engine.C_DO]
+  · rw [hcode, outcome_eval]
+    simp
+
+/-- Check unit 1 in `C_DO` answers on the next clock edge, and its answer
+is `useLocal` against volume 1's replica — never any other volume's (E6). -/
+theorem chk_resp_1 (σ : Hw.St) (h : σ.regs "c1_st" 2 = 2#2) :
+    ((Engine.mkDesign cfg).cycle σ).regs "resp1_valid" 1 = 1#1 ∧
+    ((Engine.mkDesign cfg).cycle σ).regs "resp1_code" 3 =
+      outcomeCode (Protocol.useLocal (chkCell cfg σ 1)
+        (σ.regs "c1_repl_q" cfg.ew) (chkReq cfg σ 1)) := by
+  have hcode : ((Engine.mkDesign cfg).cycle σ).regs "resp1_code" 3
+      = Expr.eval σ (Engine.outcome cfg 1) := by
+    rw [cycle_eq, Act.run_regs_notin _ _ _ (by simp [Act.regWrites]) σ (pre cfg σ), pre_eq]
+    simp [Engine.chkRule, h, Engine.C_IDLE, Engine.C_RD, Engine.C_DO]
+  refine ⟨?_, ?_⟩
+  · rw [cycle_eq, Act.run_regs_notin _ _ _ (by simp [Act.regWrites]) σ (pre cfg σ), pre_eq]
+    simp [Engine.chkRule, h, Engine.C_IDLE, Engine.C_RD, Engine.C_DO]
+  · rw [hcode, outcome_eval]
+    simp
+
 end
 
 /-! ## The shipped instances
@@ -1308,6 +1459,26 @@ theorem epochtiny_death_permanent (ιs js : Nat → InEnv) (m n : Nat) (i : Fin 
   (T_E2_design Engine.cfgTiny cfgTiny_hw _
     (reachable_from_reset Engine.cfgTiny ιs m) js n i hd).2.2
 
+/-! ### …and the emitted RTL
+
+Every theorem above is stated about `Design.cycleOpen`. The D-series emission
+theorem carries it, cycle for cycle, to the µVerilog that `lake exe emit`
+writes out — so "every reachable state of the compiled RTL" is literal. -/
+
+theorem design_wf : Loom.Hw.Compile.DesignWF Engine.design :=
+  Loom.Hw.Compile.designWFCheck_sound _ (by decide)
+
+theorem tiny_wf : Loom.Hw.Compile.DesignWF Engine.tiny :=
+  Loom.Hw.Compile.designWFCheck_sound _ (by decide)
+
+/-- One cycle of the emitted module is one cycle of the `Design` these
+theorems are about, under the same input valuation. -/
+theorem emitted_cycleOpen (ι : InEnv) (σ : Hw.St) :
+    Loom.Hw.Compile.forgetSt
+        ((Loom.Hw.Compile.compile Engine.design).cycleOpen ι (Loom.Hw.Compile.convSt σ))
+      = Engine.design.cycleOpen ι σ :=
+  Loom.Hw.Compile.compile_cycleOpen Engine.design design_wf ι σ
+
 /-! ## Axiom closures — the 3-axiom kernel closure on every headline. -/
 
 #print axioms sim
@@ -1327,6 +1498,10 @@ theorem epochtiny_death_permanent (ιs js : Nat → InEnv) (m n : Nat) (i : Fin 
 #print axioms epochengine_inv
 #print axioms epochengine_stale_never_ok
 #print axioms epochtiny_death_permanent
+#print axioms chk_resp_0
+#print axioms chk_resp_1
+#print axioms outcome_eval
+#print axioms emitted_cycleOpen
 
 
 end Machines.Epoch.Refines
