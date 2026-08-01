@@ -329,8 +329,29 @@ constant propagation during packing, routing that connects the wrong things.
    correspondence instead of a netname bijection. Settle this on `s0blinky`
    before committing to the SoC.
 
-**Still uncovered after D33**: FASM emission and bitgen (`routed → FASM →
-frames → .bit`), which need the prjxray database — the charter's "verified
-down-to-the-bitstream module for one open FPGA family". Thinkable, much
-larger. And equivalence is never timing: the clock constraint stays discharged
-by STA, by design.
+**Below the routed netlist: corroborate, do not prove (decided 2026-08-01).**
+`routed → FASM → frames → .bit` is deliberately NOT a verification target.
+The reason is epistemic, not effort: the prjxray database is a reverse
+-engineering of undocumented configuration bits, not a specification, so
+checking `fasm2frames` against it would prove *consistency with an inference*
+— the only link in the chain whose ceiling is not a proof or a checked
+certificate, sitting exactly where over-claiming is easiest. It also does not
+transfer: the ASIC path's analogue of D33 is LEC against the post-layout
+netlist (same shape, same machinery), and there is no bitstream in it at all.
+And it is the wrong end of the risk curve — synthesis is where *meaning*
+changes (D30 lived there), P&R still has semantic content (packing), while
+FASM/bitgen is mechanical transcription whose failures are usually
+catastrophic rather than silent.
+
+The right instrument for this layer is the one that already found D30:
+**run the real bitstream on the real part and compare against the model.**
+So the effort that might have gone to a bitstream checker belongs in the
+generated conformance suite + hardware-in-the-loop CI (per-opcode, emulator ≡
+ISS ≡ iverilog ≡ silicon, on every change), which corroborates bitgen,
+placement AND timing marginality on the actual artifact without pretending
+any of it is proved. The charter's optional "verified down-to-the-bitstream
+module" stays optional; if it is ever built it is a flagship-target
+curiosity, not a link this stack's claims rest on.
+
+Equivalence is never timing, at any level: the clock constraint stays
+discharged by STA, by design.
