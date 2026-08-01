@@ -139,9 +139,15 @@ are in [`TCB.md`](TCB.md); clean-clone verification tiers are in
    semantic function reads. `blastE`'s twin is the same pattern once more —
    a pointer-identity memo over the equivalence checker's bit blaster, so a
    hit is the same term and the twin emits the reference definition's bits —
-   and it is outside the proof surface entirely: `lake exe eqcheck` is an
-   untrusted tool (`Loom/Netlist/EQCHECK_SPEC.md`) whose UNSAT verdicts are
-   re-checked by the *proved* LRAT checker, and no theorem mentions it.
+   — and since 2026-08-01 its *reference definition* is proved faithful:
+   `Loom.Netlist.encode_sound` (D32) says the CNF `blastE` hands to the solver
+   is unsatisfiable iff the two sides agree on every valuation, over a named
+   operator fragment (`shl`, `shr`, `slt` excluded and reported by the tool).
+   `lake exe eqcheck` as a *driver* remains untrusted
+   (`Loom/Netlist/EQCHECK_SPEC.md`) and its UNSAT verdicts are re-checked by
+   the *proved* LRAT checker; what is no longer true is the older statement
+   that no theorem mentions it. The netlist-side cone walk and cell library
+   stay trusted, as a named hypothesis of `encode_sound`.
 4. `decide` = kernel reduction (fine); `native_decide` banned repo-wide.
 5. Superseded `SystemOpsWf` sorries were deleted 2026-07-04. As of
    2026-07-16 the R-MC dependency cone is also sorry-free: `square`,
