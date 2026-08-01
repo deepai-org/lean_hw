@@ -260,3 +260,36 @@ None of these needs asynchronous *logic* in the sense D29's note rejects: every
 item is either foundry/library IP we instantiate, or a small standard structure
 whose protocol we prove over adversarial resolution. The FPGA's hard blocks and
 the ASIC's library cells occupy the same slot in the trust story.
+
+## D30 — memory reset images must be verified into the netlist (CLOSED 2026-08-01)
+
+Discovered by the epoch engine's first silicon run, and the sharpest
+tool-boundary finding so far. Loom emits a `MemDecl`'s reset image as a Verilog
+`initial` block. On the openXC7 path that image survives **only for banks yosys
+maps to block RAM**: the three 512×32 epoch banks became `RAMB18E1` with
+faithful `INIT_xx`, while the 512×3 `cell_flags` bank became distributed LUT
+RAM (`RAM64M`), **whose mapping silently discards a non-zero init** — no
+warning, at any stage. The design was correct, the proofs were correct, the
+simulation was correct, and the fabric still disagreed.
+
+Diagnosis by symptom is the part worth remembering: with flags zeroed the
+occupancy bit was clear, so a check took §3's empty-slot clause; the *replica*
+bank had initialized correctly, so the presented epoch matched, giving the
+matching-epoch-empty case — `-BADREF`. The board answering `-BADREF` rather
+than `-STALE` was itself the evidence that BRAM init survived and LUTRAM init
+did not.
+
+Closed by `scripts/check_mem_init.py`: re-derive every memory's reset image
+from the emitted RTL and check it against the yosys netlist, per bank. It
+reproduces the defect on the pre-fix netlist with no board and no simulation,
+and it immediately found a second, latent instance (lnp64mini's `c0_tpc`/
+`c1_tpc` trap-PC tables, reset `64'd4096`, losing their init the same way —
+harmless only because the guest installs vectors before it traps). Acknowledged
+losses are printed as `ACK` lines rather than suppressed.
+
+Design consequence, now a standing rule (see also the ASIC section, rule 1):
+**a design must not depend on a memory reset image the target flow cannot
+deliver.** The epoch engine took occupancy out of memory entirely rather than
+adding a reset sweep (which would have broken `abs(reset) = Protocol.Init` and
+every theorem stated over `runOpen`-from-reset) — the fix that kept Layer 3 an
+equality instead of a weakening.
