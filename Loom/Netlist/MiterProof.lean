@@ -86,12 +86,12 @@ def encVerified : {w : Nat} → Expr w → Bool
   | _, .or a b => encVerified a && encVerified b
   | _, .xor a b => encVerified a && encVerified b
   | _, .not a => encVerified a
-  | _, .add _ _ => false
-  | _, .sub _ _ => false
+  | _, .add a b => encVerified a && encVerified b
+  | _, .sub a b => encVerified a && encVerified b
   | _, .shl _ _ => false
   | _, .shr _ _ => false
-  | _, .eq _ _ => false
-  | _, .ult _ _ => false
+  | _, .eq a b => encVerified a && encVerified b
+  | _, .ult a b => encVerified a && encVerified b
   | _, .slt _ _ => false
   | _, .mux c t f => encVerified c && encVerified t && encVerified f
   | _, .slice a _ _ => encVerified a
@@ -164,10 +164,609 @@ theorem denote_getD (x : Array Bit) (f : Var → Bool) (j : Nat) :
   rw [Array.getElem?_map]
   cases hx : x[j]? <;> simp
 
+/-! ## Arithmetic: the ripple-carry adder and the comparators -/
+
+/-- The carry into position `k` of the ripple-carry adder, as a value. -/
+def carryB (xv yv : Array Bool) (cin : Bool) : Nat → Bool
+  | 0 => cin
+  | k + 1 => (xv[k]!).atLeastTwo (yv[k]!) (carryB xv yv cin k)
+
+/-- The low `k` sum bits, as a value. -/
+def sumB (xv yv : Array Bool) (cin : Bool) : Nat → Array Bool
+  | 0 => #[]
+  | k + 1 => (sumB xv yv cin k).push ((xv[k]!) ^^ ((yv[k]!) ^^ carryB xv yv cin k))
+
+theorem sumB_size (xv yv : Array Bool) (cin : Bool) : ∀ k : Nat, (sumB xv yv cin k).size = k
+  | 0 => rfl
+  | k + 1 => by rw [sumB, Array.size_push, sumB_size xv yv cin k]
+
+theorem carryB_eq {w : Nat} (x y : BitVec w) (cin : Bool) :
+    ∀ k : Nat, k ≤ w → carryB (bitsOf x) (bitsOf y) cin k = BitVec.carry k x y cin
+  | 0, _ => by rw [carryB, BitVec.carry_zero]
+  | k + 1, h => by
+    rw [carryB, BitVec.carry_succ, carryB_eq x y cin k (by omega),
+      bitsOf_getElem_bang x k (by omega), bitsOf_getElem_bang y k (by omega)]
+
+theorem sumB_eq {w : Nat} (x y : BitVec w) (cin : Bool) :
+    ∀ k : Nat, k ≤ w → ∀ i, i < k →
+      (sumB (bitsOf x) (bitsOf y) cin k)[i]! =
+        (x + y + BitVec.setWidth w (BitVec.ofBool cin)).getLsbD i
+  | 0, _, i, hi => absurd hi (by omega)
+  | k + 1, h, i, hi => by
+    rw [sumB]
+    have hsz : ∀ m : Nat, (sumB (bitsOf x) (bitsOf y) cin m).size = m :=
+      fun m => sumB_size _ _ _ m
+    rcases Nat.lt_or_ge i k with hik | hik
+    · rw [getElem_bang _ i (by rw [Array.size_push, hsz]; omega),
+        Array.getElem_push_lt (by rw [hsz]; omega), ← getElem_bang _ i (by rw [hsz]; omega)]
+      exact sumB_eq x y cin k (by omega) i hik
+    · have : i = k := by omega
+      subst this
+      rw [getElem_bang _ i (by rw [Array.size_push, hsz]; omega)]
+      rw [Array.getElem_push]
+      simp only [hsz, Nat.lt_irrefl, dif_neg, reduceDIte]
+      rw [BitVec.getLsbD_add_add_bool (by omega), carryB_eq x y cin i (by omega),
+        bitsOf_getElem_bang x i (by omega), bitsOf_getElem_bang y i (by omega)]
+
+theorem Enc_addBitsGo {n₀ : Nat} (a b : Array Bit) (cin : Bit)
+    (hwa : ∀ i : Nat, BitWF n₀ (a[i]!)) (hwb : ∀ i : Nat, BitWF n₀ (b[i]!))
+    (hwc : BitWF n₀ cin) :
+    ∀ k : Nat, Enc n₀ (addBitsGo a b cin k)
+      (fun f => (sumB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k,
+                 carryB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k))
+  | 0 => by
+    rw [addBitsGo]
+    refine Enc.pure ⟨fun c hc => absurd hc (by simp), hwc⟩ (fun f => ?_)
+    show ((#[] : Array Bit).map (·.denote f), cin.denote f) = _
+    rw [sumB, carryB]
+    simp
+  | k + 1 => by
+    rw [addBitsGo]
+    have hmap : ∀ (arr : Array Bit) (f : Var → Bool) (i : Nat),
+        (arr.map (·.denote f))[i]! = (arr[i]!).denote f := by
+      intro arr f i
+      rcases Nat.lt_or_ge i arr.size with h | h
+      · exact getElem_bang_map arr f i h
+      · rw [getElem!_neg _ _ (by simpa using h), getElem!_neg _ _ (by omega)]
+        rfl
+    refine Enc.congr (α := Array Bit × Bit) (β := Array Bool × Bool)
+      (val := fun f => ((sumB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k).push
+            (((a[k]!).denote f ^^ (b[k]!).denote f) ^^
+              carryB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k),
+          ((a[k]!).denote f && (b[k]!).denote f) ||
+            (((a[k]!).denote f ^^ (b[k]!).denote f) &&
+              carryB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k)))
+      (fun f => ?_) ?_
+    · simp only []
+      rw [sumB, carryB, hmap a f k, hmap b f k]
+      refine Prod.ext ?_ ?_ <;> simp only [] <;>
+        cases hx : (a[k]!).denote f <;> cases hy : (b[k]!).denote f <;>
+        cases hc : carryB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k <;> simp
+    refine Enc.bind (α := Array Bit × Bit) (α' := Array Bit × Bit)
+      (valA := fun f => (sumB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k,
+        carryB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k))
+      (valB := fun pv f => (pv.1.push (((a[k]!).denote f ^^ (b[k]!).denote f) ^^ pv.2),
+        ((a[k]!).denote f && (b[k]!).denote f) ||
+          (((a[k]!).denote f ^^ (b[k]!).denote f) && pv.2)))
+      ?_ (Enc_addBitsGo a b cin hwa hwb hwc k) ?_
+    · -- stability of the recursive value
+      intro f g ha
+      have hb : ∀ (arr : Array Bit) (i : Nat), BitWF n₀ (arr[i]!) →
+          (arr.map (·.denote f))[i]! = (arr.map (·.denote g))[i]! := by
+        intro arr i hw
+        rw [hmap arr f i, hmap arr g i, hw.denote_congr ha]
+      have hc : ∀ m : Nat,
+          carryB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) m
+            = carryB (a.map (·.denote g)) (b.map (·.denote g)) (cin.denote g) m := by
+        intro m
+        induction m with
+        | zero => exact hwc.denote_congr ha
+        | succ n ih => rw [carryB, carryB, hb a n (hwa n), hb b n (hwb n), ih]
+      have hs : ∀ m : Nat,
+          sumB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) m
+            = sumB (a.map (·.denote g)) (b.map (·.denote g)) (cin.denote g) m := by
+        intro m
+        induction m with
+        | zero => rfl
+        | succ n ih => rw [sumB, sumB, hb a n (hwa n), hb b n (hwb n), hc n, ih]
+      rw [Prod.ext_iff]
+      exact ⟨hs k, hc k⟩
+    -- the tail: five gates and a `pure`
+    rintro ⟨out, cb⟩ n hn ⟨hwout, hwc2⟩
+    simp only [den_prod, den_bit, den_bits]
+    have hwx : BitWF n (a[k]!) := BitWF.mono hn (hwa k)
+    have hwy : BitWF n (b[k]!) := BitWF.mono hn (hwb k)
+    refine Enc.bind (α := Bit) (α' := Array Bit × Bit)
+      (valA := fun f => (a[k]!).denote f ^^ (b[k]!).denote f)
+      (valB := fun tv f => (((out.map (·.denote f))).push (tv ^^ (cb.denote f)),
+        ((a[k]!).denote f && (b[k]!).denote f) || (tv && (cb.denote f))))
+      (Stable.bop (Nat.le_refl n) (fun _ _ => Stable.const _) hwx hwy)
+      (Enc_mkXor hwx hwy) ?_
+    intro t n1 hn1 hwt
+    refine Enc.bind (α := Bit) (α' := Array Bit × Bit)
+      (valA := fun f => t.denote f ^^ (cb.denote f))
+      (valB := fun sv f => (((out.map (·.denote f))).push sv,
+        ((a[k]!).denote f && (b[k]!).denote f) || (t.denote f && (cb.denote f))))
+      (Stable.bop (Nat.le_refl n1) (fun _ _ => Stable.const _) hwt (BitWF.mono hn1 hwc2))
+      (Enc_mkXor hwt (BitWF.mono hn1 hwc2)) ?_
+    intro sum n2 hn2 hwsum
+    refine Enc.bind (α := Bit) (α' := Array Bit × Bit)
+      (valA := fun f => (a[k]!).denote f && (b[k]!).denote f)
+      (valB := fun abv f => (((out.map (·.denote f))).push (sum.denote f),
+        abv || (t.denote f && (cb.denote f))))
+      (Stable.bop (Nat.le_refl n2) (fun _ _ => Stable.const _)
+        (BitWF.mono (Nat.le_trans hn1 hn2) hwx) (BitWF.mono (Nat.le_trans hn1 hn2) hwy))
+      (Enc_mkAnd (BitWF.mono (Nat.le_trans hn1 hn2) hwx)
+        (BitWF.mono (Nat.le_trans hn1 hn2) hwy)) ?_
+    intro ab n3 hn3 hwab
+    refine Enc.bind (α := Bit) (α' := Array Bit × Bit)
+      (valA := fun f => t.denote f && (cb.denote f))
+      (valB := fun tcv f => (((out.map (·.denote f))).push (sum.denote f),
+        ab.denote f || tcv))
+      (Stable.bop (Nat.le_refl n3) (fun _ _ => Stable.const _)
+        (BitWF.mono hn3 (BitWF.mono hn2 hwt))
+        (BitWF.mono hn3 (BitWF.mono hn2 (BitWF.mono hn1 hwc2))))
+      (Enc_mkAnd (BitWF.mono hn3 (BitWF.mono hn2 hwt))
+        (BitWF.mono hn3 (BitWF.mono hn2 (BitWF.mono hn1 hwc2)))) ?_
+    intro tc n4 hn4 hwtc
+    refine Enc.bind (α := Bit) (α' := Array Bit × Bit)
+      (valA := fun f => ab.denote f || tc.denote f)
+      (valB := fun cv f => (((out.map (·.denote f))).push (sum.denote f), cv))
+      (Stable.bop (Nat.le_refl n4) (fun _ _ => Stable.const _) (BitWF.mono hn4 hwab) hwtc)
+      (Enc_mkOr (BitWF.mono hn4 hwab) hwtc) ?_
+    intro c' n5 hn5 hwc'
+    refine Enc.pure ⟨fun z hz => ?_, hwc'⟩ (fun f => ?_)
+    · rcases Array.mem_push.mp hz with h | h
+      · exact BitWF.mono (Nat.le_trans hn2 (Nat.le_trans hn3 (Nat.le_trans hn4 hn5)))
+          (BitWF.mono hn1 (hwout z h))
+      · exact h ▸ BitWF.mono (Nat.le_trans hn3 (Nat.le_trans hn4 hn5)) hwsum
+    · show ((out.push sum).map (·.denote f), c'.denote f) = _
+      simp
+
+theorem bitsOf_not {w : Nat} (v : BitVec w) : (bitsOf v).map (!·) = bitsOf (~~~v) := by
+  apply Array.ext
+  · simp
+  · intro i h₁ h₂
+    simp only [Array.size_map, bitsOf_size] at h₁
+    rw [Array.getElem_map, bitsOf_getElem, bitsOf_getElem, BitVec.getLsbD_not]
+    simp [h₁]
+
+theorem addBitsGo_size {a b : Array Bit} {cin : Bit} :
+    ∀ (k : Nat) (s : St) (p : Array Bit × Bit) (s' : St),
+      M.run (addBitsGo a b cin k) s = (.ok p, s') → p.1.size = k
+  | 0, s, p, s', hrun => by rw [addBitsGo, run_pure] at hrun; cases hrun; simp
+  | k + 1, s, p, s', hrun => by
+    rw [addBitsGo, run_bind] at hrun
+    revert hrun
+    cases hr : M.run (addBitsGo a b cin k) s with
+    | mk r s₁ =>
+      cases r with
+      | error e => intro hh; simp at hh
+      | ok q =>
+        obtain ⟨out, c⟩ := q
+        simp only []
+        intro hh
+        have hout : out.size = k := addBitsGo_size k s (out, c) s₁ hr
+        -- walk the five gates: each is a bind, and the final `pure` pushes one bit
+        revert hh
+        rw [run_bind]
+        cases h1 : M.run (mkXor a[k]! b[k]!) s₁ with
+        | mk r1 s2 => cases r1 with
+          | error e => intro hh; simp at hh
+          | ok t =>
+            simp only []
+            rw [run_bind]
+            cases h2 : M.run (mkXor t c) s2 with
+            | mk r2 s3 => cases r2 with
+              | error e => intro hh; simp at hh
+              | ok sum =>
+                simp only []
+                rw [run_bind]
+                cases h3 : M.run (mkAnd a[k]! b[k]!) s3 with
+                | mk r3 s4 => cases r3 with
+                  | error e => intro hh; simp at hh
+                  | ok ab =>
+                    simp only []
+                    rw [run_bind]
+                    cases h4 : M.run (mkAnd t c) s4 with
+                    | mk r4 s5 => cases r4 with
+                      | error e => intro hh; simp at hh
+                      | ok tc =>
+                        simp only []
+                        rw [run_bind]
+                        cases h5 : M.run (mkOr ab tc) s5 with
+                        | mk r5 s6 => cases r5 with
+                          | error e => intro hh; simp at hh
+                          | ok c' =>
+                            simp only [run_pure]
+                            intro hh
+                            cases hh
+                            simp [hout]
+
+/-- The ripple-carry shape: `add` and `sub`, the latter as `a + ~b + 1`. -/
+theorem EncA_addLike {n₀ w : Nat} {ea eb : M (Array Bit)} {va vb val : (Var → Bool) → BitVec w}
+    (cin : Bit) (cinv : Bool) (hcinden : ∀ f, cin.denote f = cinv) (hwcin : BitWF n₀ cin)
+    (mod : Array Bit → Array Bit) (φ : Array Bool → Array Bool) (modv : BitVec w → BitVec w)
+    (hmodsz : ∀ y : Array Bit, y.size = w → (mod y).size = w)
+    (hmodwf : ∀ (n : Nat) (y : Array Bit), (∀ b ∈ y, BitWF n b) → ∀ b ∈ mod y, BitWF n b)
+    (hmodden : ∀ (f : Var → Bool) (y : Array Bit), (mod y).map (·.denote f) = φ (y.map (·.denote f)))
+    (hφ : ∀ v : BitVec w, φ (bitsOf v) = bitsOf (modv v))
+    (ha : EncA n₀ w ea va) (hb : EncA n₀ w eb vb)
+    (hval : ∀ f, val f = va f + modv (vb f) + BitVec.setWidth w (BitVec.ofBool cinv)) :
+    EncA n₀ w (ea >>= fun x => eb >>= fun y =>
+      addBits x (mod y) cin >>= fun p => Pure.pure p.1) val := by
+  obtain ⟨hsza, hsta, henca⟩ := ha
+  obtain ⟨hszb, hstb, hencb⟩ := hb
+  have hstval : Stable n₀ val := by
+    intro f g hag
+    rw [hval f, hval g, hsta f g hag, hstb f g hag]
+  refine ⟨?_, hstval, ?_⟩
+  · -- width
+    intro s bits s' hrun
+    rw [run_bind] at hrun
+    revert hrun
+    cases hr : M.run ea s with
+    | mk r s₁ =>
+      cases r with
+      | error e => intro hh; simp at hh
+      | ok x =>
+        simp only []
+        rw [run_bind]
+        cases hr2 : M.run eb s₁ with
+        | mk r2 s₂ =>
+          cases r2 with
+          | error e => intro hh; simp at hh
+          | ok y =>
+            simp only []
+            rw [run_bind]
+            cases hr3 : M.run (addBits x (mod y) cin) s₂ with
+            | mk r3 s₃ =>
+              cases r3 with
+              | error e => intro hh; simp at hh
+              | ok p =>
+                simp only [run_pure]
+                intro hh
+                cases hh
+                rw [← hsza s x s₁ hr]
+                exact addBitsGo_size x.size s₂ p _ hr3
+  · refine Enc.congr (α := Array Bit) (β := Array Bool)
+      (val := fun f => sumB (bitsOf (va f)) (φ (bitsOf (vb f))) cinv w) (fun f => ?_) ?_
+    · show sumB (bitsOf (va f)) (φ (bitsOf (vb f))) cinv w = bitsOf (val f)
+      rw [hφ (vb f)]
+      apply Array.ext
+      · rw [bitsOf_size, sumB_size]
+      · intro i h₁ h₂
+        simp only [bitsOf_size] at h₂
+        rw [← getElem_bang _ i h₁, sumB_eq (va f) (modv (vb f)) cinv w (Nat.le_refl _) i h₂,
+          bitsOf_getElem, hval f]
+    refine Enc.bind' (α := Array Bit) (α' := Array Bit) (P := fun x => x.size = w)
+      (valA := fun f => bitsOf (va f))
+      (valB := fun xv f => sumB xv (φ (bitsOf (vb f))) cinv w)
+      hsta.bits hsza henca ?_
+    intro x n hn hwx hxw
+    refine Enc.bind' (α := Array Bit) (α' := Array Bit) (P := fun y => y.size = w)
+      (valA := fun f => bitsOf (vb f))
+      (valB := fun yv f => sumB (x.map (·.denote f)) (φ yv) cinv w)
+      (Stable.mono hn hstb.bits) hszb (Enc.mono hn hencb) ?_
+    intro y n' hn' hwy hyw
+    refine Enc.congr (α := Array Bit) (β := Array Bool)
+      (val := fun f => sumB (x.map (·.denote f)) ((mod y).map (·.denote f)) (cin.denote f) x.size)
+      (fun f => by
+        show sumB (x.map (·.denote f)) ((mod y).map (·.denote f)) (cin.denote f) x.size = _
+        rw [hmodden f y, hcinden f, hxw]
+        rfl) ?_
+    refine Enc.bind (α := Array Bit × Bit) (α' := Array Bit)
+      (valA := fun f => (sumB (x.map (·.denote f)) ((mod y).map (·.denote f)) (cin.denote f) x.size,
+        carryB (x.map (·.denote f)) ((mod y).map (·.denote f)) (cin.denote f) x.size))
+      (valB := fun pv _ => pv.1) ?_ ?_ ?_
+    · -- stability of the pair value
+      intro f g hag
+      have hwxb : ∀ i : Nat, BitWF n' (x[i]!) := by
+        intro i
+        rcases Nat.lt_or_ge i x.size with h | h
+        · rw [getElem_bang x i h]; exact BitWF.mono hn' (hwx _ (Array.getElem_mem h))
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+      have hwyb : ∀ i : Nat, BitWF n' ((mod y)[i]!) := by
+        intro i
+        rcases Nat.lt_or_ge i (mod y).size with h | h
+        · rw [getElem_bang (mod y) i h]
+          exact hmodwf n' y hwy _ (Array.getElem_mem h)
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+      have hmap : ∀ (arr : Array Bit) (i : Nat), BitWF n' (arr[i]!) →
+          (arr.map (·.denote f))[i]! = (arr.map (·.denote g))[i]! := by
+        intro arr i hw
+        rcases Nat.lt_or_ge i arr.size with h | h
+        · rw [getElem_bang_map arr f i h, getElem_bang_map arr g i h, hw.denote_congr hag]
+        · rw [getElem!_neg _ _ (by simpa using h), getElem!_neg _ _ (by simpa using h)]
+      have hc : ∀ m : Nat, carryB (x.map (·.denote f)) ((mod y).map (·.denote f)) (cin.denote f) m
+          = carryB (x.map (·.denote g)) ((mod y).map (·.denote g)) (cin.denote g) m := by
+        intro m
+        induction m with
+        | zero => exact (BitWF.mono (Nat.le_trans hn hn') hwcin).denote_congr hag
+        | succ q ih => rw [carryB, carryB, hmap x q (hwxb q), hmap (mod y) q (hwyb q), ih]
+      have hs : ∀ m : Nat, sumB (x.map (·.denote f)) ((mod y).map (·.denote f)) (cin.denote f) m
+          = sumB (x.map (·.denote g)) ((mod y).map (·.denote g)) (cin.denote g) m := by
+        intro m
+        induction m with
+        | zero => rfl
+        | succ q ih => rw [sumB, sumB, hmap x q (hwxb q), hmap (mod y) q (hwyb q), hc q, ih]
+      rw [Prod.ext_iff]
+      exact ⟨hs x.size, hc x.size⟩
+    · refine Enc_addBitsGo x (mod y) cin ?_ ?_ (BitWF.mono (Nat.le_trans hn hn') hwcin) x.size
+      · intro i
+        rcases Nat.lt_or_ge i x.size with h | h
+        · rw [getElem_bang x i h]; exact BitWF.mono hn' (hwx _ (Array.getElem_mem h))
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+      · intro i
+        rcases Nat.lt_or_ge i (mod y).size with h | h
+        · rw [getElem_bang (mod y) i h]; exact hmodwf n' y hwy _ (Array.getElem_mem h)
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+    · rintro ⟨out, c⟩ n2 hn2 ⟨hwout, hwc⟩
+      exact Enc.pure hwout (fun f => rfl)
+
+instance : Deno (List Bit) (List Bool) where
+  wf := fun n l => ∀ b ∈ l, BitWF n b
+  den := fun f l => l.map (·.denote f)
+  den_congr := by
+    intro n f g l hwf ha
+    induction l with
+    | nil => rfl
+    | cons b bs ih =>
+      simp only [List.map_cons]
+      rw [(hwf b (by simp)).denote_congr ha, ih (fun x hx => hwf x (by simp [hx]))]
+  wf_mono := fun h hwf b hb => BitWF.mono h (hwf b hb)
+
+@[simp] theorem den_list (f : Var → Bool) (l : List Bit) :
+    (Deno.den f l : List Bool) = l.map (·.denote f) := rfl
+
+/-! ### Comparators -/
+
+/-- One bit of result, as a width-1 vector. -/
+theorem EncA_of_bit {n₀ : Nat} {act : M Bit} {vb : (Var → Bool) → Bool}
+    {val : (Var → Bool) → BitVec 1} (h : Enc n₀ act vb) (hst : Stable n₀ val)
+    (hval : ∀ f, (val f).getLsbD 0 = vb f) :
+    EncA n₀ 1 (act >>= fun b => Pure.pure #[b]) val := by
+  have hstvb : Stable n₀ vb := by
+    intro f g ha; rw [← hval f, ← hval g, hst f g ha]
+  refine ⟨?_, hst, ?_⟩
+  · intro s bits s' hrun
+    rw [run_bind] at hrun
+    revert hrun
+    cases hr : M.run act s with
+    | mk r s₁ =>
+      cases r with
+      | error e => intro hh; simp at hh
+      | ok b => intro hh; simp only [run_pure] at hh; cases hh; simp
+  · refine Enc.congr (α := Array Bit) (β := Array Bool) (val := fun f => #[vb f])
+      (fun f => ?_) ?_
+    · apply Array.ext
+      · simp
+      · intro i h₁ h₂
+        have hi : i = 0 := by simp at h₁; omega
+        subst hi
+        rw [bitsOf_getElem, hval f]
+        rfl
+    refine Enc.bind (α := Bit) (α' := Array Bit) (valA := vb)
+      (valB := fun bv _ => #[bv]) hstvb h ?_
+    intro b n hn hwb
+    refine Enc.pure (fun c hc => ?_) (fun f => by simp [den_bits])
+    have : c = b := by simpa using hc
+    exact this ▸ hwb
+
+/-- The per-bit equalities, as a value. -/
+def eqValB (xv yv : Array Bool) : Nat → List Bool
+  | 0 => []
+  | k + 1 => (!(xv[k]! ^^ yv[k]!)) :: eqValB xv yv k
+
+theorem Enc_eqAcc {n₀ : Nat} (a b : Array Bit)
+    (hwa : ∀ i : Nat, BitWF n₀ (a[i]!)) (hwb : ∀ i : Nat, BitWF n₀ (b[i]!)) :
+    ∀ k : Nat, Enc n₀ (eqAcc a b k)
+      (fun f => eqValB (a.map (·.denote f)) (b.map (·.denote f)) k)
+  | 0 => Enc.pure (fun c hc => absurd hc (by simp)) (fun f => rfl)
+  | k + 1 => by
+    rw [eqAcc]
+    have hmap : ∀ (arr : Array Bit) (f : Var → Bool) (i : Nat),
+        (arr.map (·.denote f))[i]! = (arr[i]!).denote f := by
+      intro arr f i
+      rcases Nat.lt_or_ge i arr.size with h | h
+      · exact getElem_bang_map arr f i h
+      · rw [getElem!_neg _ _ (by simpa using h), getElem!_neg _ _ (by omega)]
+        rfl
+    refine Enc.congr (α := List Bit) (β := List Bool)
+      (val := fun f => (!((a[k]!).denote f ^^ (b[k]!).denote f)) ::
+        eqValB (a.map (·.denote f)) (b.map (·.denote f)) k) (fun f => ?_) ?_
+    · show _ = eqValB (a.map (·.denote f)) (b.map (·.denote f)) (k + 1)
+      rw [show eqValB (a.map (·.denote f)) (b.map (·.denote f)) (k + 1)
+            = (!((a.map (·.denote f))[k]! ^^ (b.map (·.denote f))[k]!)) ::
+              eqValB (a.map (·.denote f)) (b.map (·.denote f)) k from rfl,
+        hmap a f k, hmap b f k]
+    refine Enc.bind (α := List Bit) (α' := List Bit)
+      (valA := fun f => eqValB (a.map (·.denote f)) (b.map (·.denote f)) k)
+      (valB := fun lv f => (!((a[k]!).denote f ^^ (b[k]!).denote f)) :: lv) ?_
+      (Enc_eqAcc a b hwa hwb k) ?_
+    · intro f g ha
+      induction k with
+      | zero => rfl
+      | succ m ih =>
+        show (!((a.map (·.denote f))[m]! ^^ (b.map (·.denote f))[m]!)) :: _
+          = (!((a.map (·.denote g))[m]! ^^ (b.map (·.denote g))[m]!)) :: _
+        rw [hmap a f m, hmap b f m, hmap a g m, hmap b g m,
+          (hwa m).denote_congr ha, (hwb m).denote_congr ha]
+        exact congrArg _ ih
+    · intro l n hn hwl
+      refine Enc.bind (α := Bit) (α' := List Bit)
+        (valA := fun f => (a[k]!).denote f ^^ (b[k]!).denote f)
+        (valB := fun tv f => (!tv) :: (l.map (·.denote f)))
+        (Stable.bop (n₀ := n₀) hn (fun _ _ => Stable.const _)
+          (BitWF.mono hn (hwa k)) (BitWF.mono hn (hwb k)))
+        (Enc.mono hn (Enc_mkXor (hwa k) (hwb k))) ?_
+      intro t n' hn' hwt
+      refine Enc.pure (fun c hc => ?_) (fun f => by simp [den_list])
+      rcases List.mem_cons.mp hc with h' | h'
+      · exact h' ▸ hwt.not
+      · exact BitWF.mono hn' (hwl c h')
+
+theorem eqValB_all {w : Nat} (x y : BitVec w) :
+    ∀ k : Nat, k ≤ w → ((eqValB (bitsOf x) (bitsOf y) k).all id = true ↔
+      ∀ i, i < k → x.getLsbD i = y.getLsbD i)
+  | 0, _ => by simp [eqValB]
+  | k + 1, h => by
+    rw [eqValB]
+    simp only [List.all_cons, Bool.and_eq_true, id, Bool.not_eq_true',
+      eqValB_all x y k (by omega), bitsOf_getElem_bang x k (by omega),
+      bitsOf_getElem_bang y k (by omega)]
+    constructor
+    · rintro ⟨h1, h2⟩ i hi
+      rcases Nat.lt_or_ge i k with h' | h'
+      · exact h2 i h'
+      · have : i = k := by omega
+        subst this
+        cases hx : x.getLsbD i <;> cases hy : y.getLsbD i <;> simp_all
+    · intro hall
+      refine ⟨?_, fun i hi => hall i (by omega)⟩
+      have := hall k (by omega)
+      rw [this]
+      cases y.getLsbD k <;> rfl
+
+/-- Stability of the accumulated values, once and for all. -/
+theorem Stable_eqValB {n₀ : Nat} {a b : Array Bit}
+    (hwa : ∀ i : Nat, BitWF n₀ (a[i]!)) (hwb : ∀ i : Nat, BitWF n₀ (b[i]!)) (k : Nat) :
+    Stable n₀ (fun f => eqValB (a.map (·.denote f)) (b.map (·.denote f)) k) := by
+  intro f g ha
+  have hmap : ∀ (arr : Array Bit) (i : Nat), BitWF n₀ (arr[i]!) →
+      (arr.map (·.denote f))[i]! = (arr.map (·.denote g))[i]! := by
+    intro arr i hw
+    rcases Nat.lt_or_ge i arr.size with h | h
+    · rw [getElem_bang_map arr f i h, getElem_bang_map arr g i h, hw.denote_congr ha]
+    · rw [getElem!_neg _ _ (by simpa using h), getElem!_neg _ _ (by simpa using h)]
+  induction k with
+  | zero => rfl
+  | succ m ih =>
+    show (!((a.map (·.denote f))[m]! ^^ (b.map (·.denote f))[m]!)) :: _
+      = (!((a.map (·.denote g))[m]! ^^ (b.map (·.denote g))[m]!)) :: _
+    rw [hmap a m (hwa m), hmap b m (hwb m)]
+    exact congrArg _ ih
+
+theorem Stable_carryB {n₀ : Nat} {a b : Array Bit} {cin : Bit}
+    (hwa : ∀ i : Nat, BitWF n₀ (a[i]!)) (hwb : ∀ i : Nat, BitWF n₀ (b[i]!))
+    (hwc : BitWF n₀ cin) (k : Nat) :
+    Stable n₀ (fun f =>
+      carryB (a.map (·.denote f)) (b.map (·.denote f)) (cin.denote f) k) := by
+  intro f g ha
+  have hmap : ∀ (arr : Array Bit) (i : Nat), BitWF n₀ (arr[i]!) →
+      (arr.map (·.denote f))[i]! = (arr.map (·.denote g))[i]! := by
+    intro arr i hw
+    rcases Nat.lt_or_ge i arr.size with h | h
+    · rw [getElem_bang_map arr f i h, getElem_bang_map arr g i h, hw.denote_congr ha]
+    · rw [getElem!_neg _ _ (by simpa using h), getElem!_neg _ _ (by simpa using h)]
+  induction k with
+  | zero => exact hwc.denote_congr ha
+  | succ m ih =>
+    show (Bool.atLeastTwo ((a.map (·.denote f))[m]!) ((b.map (·.denote f))[m]!) _) = _
+    rw [hmap a m (hwa m), hmap b m (hwb m)]
+    exact congrArg _ ih
+
+theorem Enc_eqBits {n₀ : Nat} (a b : Array Bit)
+    (hwa : ∀ i : Nat, BitWF n₀ (a[i]!)) (hwb : ∀ i : Nat, BitWF n₀ (b[i]!)) :
+    Enc n₀ (eqBits a b)
+      (fun f => (eqValB (a.map (·.denote f)) (b.map (·.denote f)) a.size).all id) := by
+  refine Enc.bind (α := List Bit) (α' := Bit)
+    (valA := fun f => eqValB (a.map (·.denote f)) (b.map (·.denote f)) a.size)
+    (valB := fun lv _ => lv.all id) (Stable_eqValB hwa hwb a.size)
+    (Enc_eqAcc a b hwa hwb a.size) ?_
+  intro l n hn hwl
+  refine Enc.congr (α := Bit) (β := Bool) (val := fun f => l.all (fun x => x.denote f))
+    (fun f => by simp) (Enc_mkAndList l hwl)
+
+theorem map_not_wf {n₀ : Nat} {b : Array Bit} (hwb : ∀ i : Nat, BitWF n₀ (b[i]!)) :
+    ∀ i : Nat, BitWF n₀ ((b.map (·.not))[i]!) := by
+  intro i
+  rcases Nat.lt_or_ge i (b.map (·.not)).size with h | h
+  · rw [getElem_bang _ i h, Array.getElem_map]
+    have hb : b[i]'(by simpa using h) = b[i]! := (getElem_bang b i (by simpa using h)).symm
+    rw [hb]
+    exact (hwb i).not
+  · rw [getElem!_neg _ _ (by omega)]; trivial
+
+theorem Enc_ultBits {n₀ : Nat} (a b : Array Bit)
+    (hwa : ∀ i : Nat, BitWF n₀ (a[i]!)) (hwb : ∀ i : Nat, BitWF n₀ (b[i]!)) :
+    Enc n₀ (ultBits a b)
+      (fun f => !(carryB (a.map (·.denote f)) ((b.map (·.not)).map (·.denote f))
+        true a.size)) := by
+  refine Enc.congr (α := Bit) (β := Bool)
+    (val := fun f => !(carryB (a.map (·.denote f)) ((b.map (·.not)).map (·.denote f))
+      ((Bit.const true).denote f) a.size)) (fun f => rfl) ?_
+  refine Enc.bind (α := Array Bit × Bit) (α' := Bit)
+    (valA := fun f => (sumB (a.map (·.denote f)) ((b.map (·.not)).map (·.denote f))
+        ((Bit.const true).denote f) a.size,
+      carryB (a.map (·.denote f)) ((b.map (·.not)).map (·.denote f))
+        ((Bit.const true).denote f) a.size))
+    (valB := fun pv _ => !pv.2) ?_
+    (Enc_addBitsGo a (b.map (·.not)) (.const true) hwa (map_not_wf hwb) (by trivial) a.size) ?_
+  · intro f g ha
+    have h2 := Stable_carryB (cin := Bit.const true) hwa (map_not_wf hwb) (by trivial) a.size f g ha
+    have h1 : sumB (a.map (·.denote f)) ((b.map (·.not)).map (·.denote f))
+          ((Bit.const true).denote f) a.size
+        = sumB (a.map (·.denote g)) ((b.map (·.not)).map (·.denote g))
+          ((Bit.const true).denote g) a.size := by
+      have hmap : ∀ (arr : Array Bit) (i : Nat), BitWF n₀ (arr[i]!) →
+          (arr.map (·.denote f))[i]! = (arr.map (·.denote g))[i]! := by
+        intro arr i hw
+        rcases Nat.lt_or_ge i arr.size with h | h
+        · rw [getElem_bang_map arr f i h, getElem_bang_map arr g i h, hw.denote_congr ha]
+        · rw [getElem!_neg _ _ (by simpa using h), getElem!_neg _ _ (by simpa using h)]
+      induction a.size with
+      | zero => rfl
+      | succ m ih =>
+        show (sumB _ _ _ m).push _ = (sumB _ _ _ m).push _
+        rw [hmap a m (hwa m), hmap (b.map (·.not)) m (map_not_wf hwb m),
+          show carryB (a.map (·.denote f)) ((b.map (·.not)).map (·.denote f))
+              ((Bit.const true).denote f) m
+            = carryB (a.map (·.denote g)) ((b.map (·.not)).map (·.denote g))
+              ((Bit.const true).denote g) m from
+            Stable_carryB (cin := Bit.const true) hwa (map_not_wf hwb) (by trivial) m f g ha, ih]
+    rw [Prod.ext_iff]
+    exact ⟨h1, h2⟩
+  · rintro ⟨out, c⟩ n hn ⟨hwout, hwc⟩
+    exact Enc.pure hwc.not (fun f => by simp [den_bit, den_prod])
+
+/-- The comparator shape: blast both operands, then one bit of result. -/
+theorem EncA_cmp {n₀ w : Nat} {ea eb : M (Array Bit)} {va vb : (Var → Bool) → BitVec w}
+    {val : (Var → Bool) → BitVec 1} {op : Array Bit → Array Bit → M Bit}
+    {bop : Array Bool → Array Bool → Bool}
+    (hop : ∀ (n : Nat) (x y : Array Bit), n₀ ≤ n → (∀ b ∈ x, BitWF n b) → (∀ b ∈ y, BitWF n b) →
+        x.size = w → y.size = w →
+        Enc n (op x y) (fun f => bop (x.map (·.denote f)) (y.map (·.denote f))))
+    (ha : EncA n₀ w ea va) (hb : EncA n₀ w eb vb)
+    (hstval : Stable n₀ val)
+    (hval : ∀ f, (val f).getLsbD 0 = bop (bitsOf (va f)) (bitsOf (vb f))) :
+    EncA n₀ 1 (ea >>= fun x => eb >>= fun y => op x y >>= fun z => Pure.pure #[z]) val := by
+  obtain ⟨hsza, hsta, henca⟩ := ha
+  obtain ⟨hszb, hstb, hencb⟩ := hb
+  have hact : Enc n₀ (ea >>= fun x => eb >>= fun y => op x y)
+      (fun f => bop (bitsOf (va f)) (bitsOf (vb f))) := by
+    refine Enc.bind' (α := Array Bit) (α' := Bit) (P := fun x => x.size = w)
+      (valA := fun f => bitsOf (va f)) (valB := fun xv f => bop xv (bitsOf (vb f)))
+      hsta.bits hsza henca ?_
+    intro x n hn hwx hxw
+    refine Enc.bind' (α := Array Bit) (α' := Bit) (P := fun y => y.size = w)
+      (valA := fun f => bitsOf (vb f))
+      (valB := fun yv f => bop (x.map (·.denote f)) yv)
+      (Stable.mono hn hstb.bits) hszb (Enc.mono hn hencb) ?_
+    intro y n' hn' hwy hyw
+    exact hop n' x y (Nat.le_trans hn hn') (fun b hb => BitWF.mono hn' (hwx b hb)) hwy hxw hyw
+  have hconv : (ea >>= fun x => eb >>= fun y => op x y >>= fun z => Pure.pure #[z])
+      = ((ea >>= fun x => eb >>= fun y => op x y) >>= fun z => Pure.pure #[z]) := by
+    rw [bind_assoc]
+    exact congrArg _ (funext fun x => (bind_assoc _ _ _).symm)
+  rw [hconv]
+  exact EncA_of_bit hact hstval hval
+
 /-! ## The main theorem
 
 `blastE` encodes exactly `Expr.eval`, for every expression in the verified
 fragment, in both directions. -/
+set_option maxHeartbeats 1000000 in
 theorem Enc_blastE (syms : List (String × Nat)) :
     ∀ {w : Nat} (e : Expr w), encVerified e = true →
       EncA 0 w (blastE syms e) (fun f => e.eval (stOf f))
@@ -192,7 +791,7 @@ theorem Enc_blastE (syms : List (String × Nat)) :
         refine EncA_ofFn _ _ (fun _ => by trivial) (fun f i => ?_)
         rw [show ((Expr.reg dw n).eval (stOf f)) = (stOf f).regs n dw from rfl,
           stOf_regs f n dw i.val i.isLt]
-  | _, .memRead _ _ _, h => by simp [encVerified] at h
+  | _, .memRead _ _ _, h => by simp only [encVerified] at h; exact Bool.noConfusion h
   | _, .and a b, h => by
     simp only [encVerified, Bool.and_eq_true] at h
     rw [blastE]
@@ -235,13 +834,112 @@ theorem Enc_blastE (syms : List (String × Nat)) :
         simp only [Array.size_map, bitsOf_size] at h₁
         rw [Array.getElem_map, bitsOf_getElem, bitsOf_getElem, BitVec.getLsbD_not]
         simp [h₁]
-  | _, .add _ _, h => by simp [encVerified] at h
-  | _, .sub _ _, h => by simp [encVerified] at h
-  | _, .shl _ _, h => by simp [encVerified] at h
-  | _, .shr _ _, h => by simp [encVerified] at h
-  | _, .eq _ _, h => by simp [encVerified] at h
-  | _, .ult _ _, h => by simp [encVerified] at h
-  | _, .slt _ _, h => by simp [encVerified] at h
+  | _, .add a b, h => by
+    simp only [encVerified, Bool.and_eq_true] at h
+    rw [blastE]
+    refine EncA_addLike (.const false) false (fun _ => rfl) (by trivial)
+      (fun y => y) (fun ys => ys) (fun v => v) (fun y hy => hy) (fun n y hy => hy)
+      (fun f y => rfl) (fun v => rfl)
+      (Enc_blastE syms a h.1) (Enc_blastE syms b h.2) ?_
+    intro f
+    show (Expr.add a b).eval (stOf f) = _
+    simp [Expr.eval]
+  | _, .sub a b, h => by
+    simp only [encVerified, Bool.and_eq_true] at h
+    rw [blastE]
+    refine EncA_addLike (.const true) true (fun _ => rfl) (by trivial)
+      (fun y => y.map (·.not)) (fun ys => ys.map (!·)) (fun v => ~~~v)
+      ?_ ?_ ?_ ?_ (Enc_blastE syms a h.1) (Enc_blastE syms b h.2) ?_
+    · intro y hy; simpa using hy
+    · intro n y hy c hc
+      obtain ⟨z, hz, rfl⟩ := Array.mem_map.mp hc
+      exact (hy z hz).not
+    · intro f y
+      apply Array.ext
+      · simp
+      · intro i h₁ h₂
+        simp only [Array.size_map] at h₁ h₂
+        simp
+    · intro v; exact bitsOf_not v
+    · intro f
+      show (Expr.sub a b).eval (stOf f) = _
+      show a.eval (stOf f) - b.eval (stOf f) = _
+      rw [BitVec.sub_eq_add_neg, BitVec.neg_eq_not_add, ← BitVec.add_assoc]
+      congr 1
+      apply BitVec.eq_of_toNat_eq
+      simp [BitVec.ofBool, BitVec.toNat_setWidth]
+  | _, .shl _ _, h => by simp only [encVerified] at h; exact Bool.noConfusion h
+  | _, .shr _ _, h => by simp only [encVerified] at h; exact Bool.noConfusion h
+  | _, @Expr.eq wq a b, h => by
+    simp only [encVerified, Bool.and_eq_true] at h
+    rw [blastE]
+    refine EncA_cmp (w := wq) (bop := fun xv yv => (eqValB xv yv wq).all id) ?_
+      (Enc_blastE syms a h.1) (Enc_blastE syms b h.2) (Stable.eval _) ?_
+    · intro n x y hn hwx hwy hxw hyw
+      have hwx' : ∀ i : Nat, BitWF n (x[i]!) := by
+        intro i
+        rcases Nat.lt_or_ge i x.size with hh | hh
+        · rw [getElem_bang x i hh]; exact hwx _ (Array.getElem_mem hh)
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+      have hwy' : ∀ i : Nat, BitWF n (y[i]!) := by
+        intro i
+        rcases Nat.lt_or_ge i y.size with hh | hh
+        · rw [getElem_bang y i hh]; exact hwy _ (Array.getElem_mem hh)
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+      have := Enc_eqBits (n₀ := n) x y hwx' hwy'
+      rw [hxw] at this
+      exact this
+    · intro f
+      show ((Expr.eq a b).eval (stOf f)).getLsbD 0 = _
+      show (if a.eval (stOf f) = b.eval (stOf f) then 1#1 else 0#1).getLsbD 0 = _
+      show _ = (eqValB (bitsOf (a.eval (stOf f))) (bitsOf (b.eval (stOf f))) wq).all id
+      by_cases hq : a.eval (stOf f) = b.eval (stOf f)
+      · rw [if_pos hq]
+        have : (eqValB (bitsOf (a.eval (stOf f))) (bitsOf (b.eval (stOf f))) wq).all id = true :=
+          (eqValB_all _ _ _ (Nat.le_refl _)).mpr (fun i hi => by rw [hq])
+        rw [this]
+        rfl
+      · rw [if_neg hq]
+        have : ¬ ((eqValB (bitsOf (a.eval (stOf f))) (bitsOf (b.eval (stOf f))) wq).all id
+            = true) := by
+          intro hc
+          exact hq (BitVec.eq_of_getLsbD_eq ((eqValB_all _ _ _ (Nat.le_refl _)).mp hc))
+        rw [Bool.eq_false_iff.mpr this]
+        rfl
+  | _, @Expr.ult wq a b, h => by
+    simp only [encVerified, Bool.and_eq_true] at h
+    rw [blastE]
+    refine EncA_cmp (w := wq) (bop := fun xv yv => !(carryB xv (yv.map (!·)) true wq)) ?_
+      (Enc_blastE syms a h.1) (Enc_blastE syms b h.2) (Stable.eval _) ?_
+    · intro n x y hn hwx hwy hxw hyw
+      have hwx' : ∀ i : Nat, BitWF n (x[i]!) := by
+        intro i
+        rcases Nat.lt_or_ge i x.size with hh | hh
+        · rw [getElem_bang x i hh]; exact hwx _ (Array.getElem_mem hh)
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+      have hwy' : ∀ i : Nat, BitWF n (y[i]!) := by
+        intro i
+        rcases Nat.lt_or_ge i y.size with hh | hh
+        · rw [getElem_bang y i hh]; exact hwy _ (Array.getElem_mem hh)
+        · rw [getElem!_neg _ _ (by omega)]; trivial
+      have hmapnot : ∀ f : Var → Bool,
+          (y.map (·.not)).map (·.denote f) = (y.map (·.denote f)).map (!·) := by
+        intro f
+        apply Array.ext
+        · simp
+        · intro i h₁ h₂
+          simp only [Array.size_map] at h₁ h₂
+          simp
+      have := Enc_ultBits (n₀ := n) x y hwx' hwy'
+      rw [hxw] at this
+      refine Enc.congr (α := Bit) (β := Bool) (fun f => by rw [hmapnot f]) this
+    · intro f
+      show ((Expr.ult a b).eval (stOf f)).getLsbD 0 = _
+      show (if (a.eval (stOf f)).ult (b.eval (stOf f)) then 1#1 else 0#1).getLsbD 0
+        = !(carryB (bitsOf (a.eval (stOf f))) ((bitsOf (b.eval (stOf f))).map (!·)) true wq)
+      rw [bitsOf_not, carryB_eq _ _ _ _ (Nat.le_refl _), ← BitVec.ult_eq_not_carry]
+      cases hu : (a.eval (stOf f)).ult (b.eval (stOf f)) <;> simp
+  | _, .slt _ _, h => by simp only [encVerified] at h; exact Bool.noConfusion h
   | w, .mux c t e, h => by
     simp only [encVerified, Bool.and_eq_true] at h
     rw [blastE]
@@ -749,21 +1447,6 @@ Everything above is assembled here. `sigMiter` is what `coneMiter` (and,
 bit for bit, `outMiter`) runs: the constant-folding assumptions, side A
 blasted from the µVerilog expression, side B from whatever encoder the
 caller supplies, and the assertion that the two differ. -/
-
-instance : Deno (List Bit) (List Bool) where
-  wf := fun n l => ∀ b ∈ l, BitWF n b
-  den := fun f l => l.map (·.denote f)
-  den_congr := by
-    intro n f g l hwf ha
-    induction l with
-    | nil => rfl
-    | cons b bs ih =>
-      simp only [List.map_cons]
-      rw [(hwf b (by simp)).denote_congr ha, ih (fun x hx => hwf x (by simp [hx]))]
-  wf_mono := fun h hwf b hb => BitWF.mono h (hwf b hb)
-
-@[simp] theorem den_list (f : Var → Bool) (l : List Bit) :
-    (Deno.den f l : List Bool) = l.map (·.denote f) := rfl
 
 /-- The per-bit differences, as a value. -/
 def diffVal (a b : Array Bit) (f : Var → Bool) : Nat → List Bool
