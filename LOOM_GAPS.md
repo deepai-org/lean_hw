@@ -293,3 +293,44 @@ deliver.** The epoch engine took occupancy out of memory entirely rather than
 adding a reset sweep (which would have broken `abs(reset) = Protocol.Init` and
 every theorem stated over `runOpen`-from-reset) — the fix that kept Layer 3 an
 equality instead of a weakening.
+
+## D33 — equivalence against the POST-PLACE-AND-ROUTE netlist (planned)
+
+`eqcheck` covers `emitted module ≡ post-synthesis netlist`. The span
+`synthesis → placement/routing → FASM → frames → bitstream` is unchecked, and
+D30 is the standing proof that "the tool surely preserved it" is not a safe
+assumption anywhere in that span.
+
+**Feasibility is better than it looks: the artifact already exists.**
+`build_oxc7.sh` runs nextpnr-xilinx with `--write $O.routed.json`, so every
+bitstream we have ever built already has its post-P&R netlist saved, in the
+same JSON family `Loom/Netlist/Json.lean` parses.
+
+**Decomposition (do it this way, not as one miter):**
+
+    module ≡ synth-netlist          -- eqcheck today (D22, hardened by D31/D32)
+    synth-netlist ≡ routed-netlist  -- D33: netlist-to-netlist
+    ⟹ module ≡ routed-netlist       -- by transitivity
+
+Netlist-to-netlist is the easier half: both sides are the same kind of object,
+so cone construction is shared and only *matching* differs. A single
+module-vs-routed miter would force the naming problem and the semantic gap to
+be solved at once.
+
+**What it catches**: packing (LUT/FF merging into SLICEs, carry chains),
+constant propagation during packing, routing that connects the wrong things.
+
+**The two risks, to be de-risked on a small design first:**
+1. *Cell coverage after packing* — nextpnr emits BEL-level primitives
+   (packed SLICE contents, `LUT6_2`, site pins) that `Cells.lean` does not
+   model. Work, not doubt.
+2. *Name matching* — synthesis already reorders and renames bits (`wreduce`,
+   Deviation 1); P&R is worse. May require structural/functional
+   correspondence instead of a netname bijection. Settle this on `s0blinky`
+   before committing to the SoC.
+
+**Still uncovered after D33**: FASM emission and bitgen (`routed → FASM →
+frames → .bit`), which need the prjxray database — the charter's "verified
+down-to-the-bitstream module for one open FPGA family". Thinkable, much
+larger. And equivalence is never timing: the clock constraint stays discharged
+by STA, by design.
