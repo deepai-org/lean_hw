@@ -205,7 +205,9 @@ def absCells (σ : Hw.St) (i : Fin (2 ^ cfg.aw)) : Protocol.Cell cfg.ew where
   rc := 0
   poison := (σ.mems "cell_flags" i.val 3).getLsbD 0
   dead := (σ.mems "cell_flags" i.val 3).getLsbD 1
-  occupied := (σ.mems "cell_flags" i.val 3).getLsbD 2
+  -- E13: occupancy is not stored. v1 has no install/free op, so every
+  -- slot is occupied for all time and the check unit uses the constant.
+  occupied := true
 
 /-- Volume `k`'s replica bank. -/
 def replName : Fin 2 → String := fun k => if k = 0 then "repl0" else "repl1"
@@ -645,13 +647,13 @@ theorem square_up (τ : Hw.St) (hd : DInv cfg τ) (h : τ.regs "b_st" 3 = 2#3) :
       rw [if_pos rfl]
       have hcls : (abs cfg ((Engine.mkDesign cfg).cycle τ)).cells (bcell cfg τ) =
           { epoch := satI cfg τ, rc := 0, poison := (bflags cfg τ).getLsbD 0,
-            dead := (bflags cfg τ).getLsbD 1, occupied := (bflags cfg τ).getLsbD 2 } := by
+            dead := (bflags cfg τ).getLsbD 1, occupied := true } := by
         simp [abs, absCells, hce, hcf, hba]
       have hcell : (abs cfg τ).cells (bcell cfg τ) =
           { epoch := τ.regs "b_epoch_q" cfg.ew, rc := 0,
             poison := (τ.regs "b_flags_q" 3).getLsbD 0,
             dead := (τ.regs "b_flags_q" 3).getLsbD 1,
-            occupied := (τ.regs "b_flags_q" 3).getLsbD 2 } := by
+            occupied := true } := by
         simp [abs, absCells, hba, ← he, ← hf]
       rw [hcls, hcell]
       by_cases hpol : τ.regs "b_pol" 1 = 1#1 <;>
@@ -842,8 +844,8 @@ theorem reset_mem_epoch (x : Nat) (hx : x < 2 ^ cfg.aw) :
   simp [Design.reset, Engine.mkDesign, Engine.mems, hx]
 
 theorem reset_mem_flags (x : Nat) (hx : x < 2 ^ cfg.aw) :
-    ((Engine.mkDesign cfg).reset).mems "cell_flags" x 3 = 4#3 := by
-  simp [Design.reset, Engine.mkDesign, Engine.mems, hx, Engine.FLAG_OCC]
+    ((Engine.mkDesign cfg).reset).mems "cell_flags" x 3 = 0#3 := by
+  simp [Design.reset, Engine.mkDesign, Engine.mems, hx]
 
 theorem reset_mem_repl (k : Fin 2) (x : Nat) (hx : x < 2 ^ cfg.aw) :
     ((Engine.mkDesign cfg).reset).mems (Refines.replName k) x cfg.ew = 1#cfg.ew := by
@@ -1341,7 +1343,7 @@ def chkCell (σ : Hw.St) (k : Nat) : Protocol.Cell cfg.ew where
   rc := 0
   poison := (σ.regs (Engine.vn k "flags_q") 3).getLsbD 0
   dead := (σ.regs (Engine.vn k "flags_q") 3).getLsbD 1
-  occupied := (σ.regs (Engine.vn k "flags_q") 3).getLsbD 2
+  occupied := true
 
 /-- §3's `Req` as check unit `k` latched it (Layer-1 deviation D4 for the
 structural/rights booleans). -/
@@ -1360,7 +1362,6 @@ theorem outcome_eval (σ : Hw.St) (k : Nat) :
       = outcomeCode (Protocol.useLocal (chkCell cfg σ k)
           (σ.regs (Engine.vn k "repl_q") cfg.ew) (chkReq cfg σ k)) := by
   by_cases hwf : (σ.regs (Engine.vn k "f") 3).getLsbD 0 = true <;>
-  by_cases hocc : (σ.regs (Engine.vn k "flags_q") 3).getLsbD 2 = true <;>
   by_cases hcls : (σ.regs (Engine.vn k "f") 3).getLsbD 1 = true <;>
   by_cases hpoi : (σ.regs (Engine.vn k "flags_q") 3).getLsbD 0 = true <;>
   by_cases hdea : (σ.regs (Engine.vn k "flags_q") 3).getLsbD 1 = true <;>

@@ -685,3 +685,111 @@ numbers, kept apart on purpose:
 the kernel and `emitted_cycleOpen` instantiates the D-series emission theorem,
 so one cycle of the emitted µVerilog module is one cycle of the `Design` these
 theorems quantify over. Post-synthesis is D22's job (eqcheck), unchanged.
+
+## Deviation E13 — the reset image the target flow will not deliver (recorded 2026-08-01, found on silicon)
+
+**The defect.** On the ZC702, under live NetBSD, the guest's `epoch` command
+reported
+
+```
+epoch engine present; reference(cell 0, epoch 1) -> -BADREF
+```
+
+for a *live* cell — the same reference that the iverilog cross-core testbench
+answers `ok`. The ID register read back `0xE90C0001`, so the MMIO path, the
+address decode and the whole register file were sound; only the freshness
+answer was wrong.
+
+**Root cause.** `cell_flags`' reset image was not on the fabric. Loom expresses
+a `MemDecl`'s reset image as a Verilog `initial` block, which iverilog honours
+exactly. On the openXC7 path (yosys → nextpnr-xilinx → fasm2frames →
+xc7frames2bit) that image survives **only for memories yosys maps to block
+RAM**. yosys 0.38 mapped the three 512×32 epoch banks to `RAMB18E1` and carried
+their `INIT_xx` faithfully (each 32-bit word = 1), but mapped the 512×3
+`cell_flags` bank to *distributed* LUT RAM (`RAM64M`) — and the distributed-RAM
+mapping **silently discards a non-zero init**, emitting `INIT_A..INIT_D = 0`.
+No warning is issued at any stage of the flow.
+
+With `cell_flags = 0` the occupancy bit (`FLAG_OCC`, bit 2) was clear, so
+`Protocol.useLocal` entered the empty-slot clause; and because the *replica*
+bank **had** initialized correctly to epoch 1, the presented epoch 1 matched,
+which is precisely §3's matching-epoch-empty case — `-BADREF`. The board's
+choice of `-BADREF` over `-STALE` is itself the proof that the BRAM init
+survived and the LUTRAM init did not.
+
+**The evidence that settled it**, in three independent forms:
+
+1. *Netlist.* In `oxc7/out/lnp64mini_epoch_top.json`,
+   `u_dual.ep_cell_epoch`/`ep_repl0`/`ep_repl1` are `RAMB18E1` with
+   `INIT_00 = …0000001…` per 32-bit word, while `u_dual.ep_cell_flags.0.*`
+   are 24 `RAM64M` cells with `INIT_A = INIT_B = INIT_C = INIT_D = 0` —
+   against a source image of `3'd4`.
+2. *Simulation.* Zeroing **only** `ep_cell_flags`' `initial` block in the
+   emitted RTL and re-running the unmodified cross-core testbench turns
+   `EPOCH DEMO OK` into `EPOCH DEMO FAILED` with
+   `c1.r9(live check) = 257`, i.e. `-BADREF` — the board's symptom, exactly,
+   and with the other four checks degrading exactly as the fabric's did.
+3. *Board.* `scripts/board/epoch_demo.tcl` reads core 1's independently held
+   reference out of DDR and reports `-BADREF` from lap 1 — a second,
+   separate path to the engine reaching the same wrong answer.
+
+**The fix, and why this one.** The engine must not depend on a memory reset
+image the target flow cannot deliver. Two structural options were on the table
+— a reset sweep that writes the reset cell state after `rst` (lnp64mini's
+zeroing-engine shape), or a core-visible install/provision op — and both were
+rejected: a sweep makes `abs(reset)` no longer `Protocol.Init`, which
+invalidates `init_ok`, `dinv_reset` and every top-level theorem stated over
+`runOpen ιs n design.reset`; an install op is a Layer-1 change (it contradicts
+E4) for state that v1 never varies.
+
+The chosen fix is narrower and removes the dependence rather than working
+around it: **occupancy is not stored.** v1 has no install/free op (E4), so no
+rule ever writes `cell_flags` bit 2 — `bumpedFlags` ORs into the read value and
+leaves it alone — which makes the bit a memory-resident *constant* whose only
+source is the reset image. The check unit now sources §3's empty-slot clause
+from the constant `1` instead of from `flags_q[2]`, `cell_flags`' reset image
+becomes **all-zero**, and bit 2 is renamed `FLAG_RESERVED` and held for the v2
+install/free op. An all-zero image is one every configuration path delivers,
+LUTRAM included.
+
+After the fix the only banks carrying a non-zero reset image are the three
+epoch banks, which are exactly the banks the flow maps to block RAM and whose
+`INIT` it demonstrably does deliver.
+
+**Layer 3 is unchanged in substance.** `Refines.abs` was edited in one place —
+`absCells.occupied := true` (and `chkCell.occupied := true`, its check-unit
+twin) — so the abstraction still mirrors the hardware exactly and the
+refinement stays an equality, not a weakening. `reset_mem_flags` now states
+`= 0#3`. `outcome_eval` loses one of its seven `by_cases` splits (64 cases
+instead of 128). `Protocol.Init` does not constrain `occupied`, so `init_ok`
+is unaffected; `T_E1_design` / `T_E3_design` keep their `occupied = true`
+hypotheses, now discharged by `rfl`. No theorem statement about the protocol
+was weakened, no `sorry` and no new axiom was introduced, `lake build` and
+`lake exe audit` are green, and `scripts/epoch_ladder.sh` passes end to end
+(the iverilog engine ladder is still byte-identical to the FastEval oracle).
+The one observable change is the flag word the demo prints after a poison
+bump: `flags[5] = 5` becomes `flags[5] = 1`, occupancy no longer being stored.
+
+**The standing guard: `scripts/check_mem_init.py`.** The real hazard here is
+not the one bank; it is that the flow drops a reset image *without saying so*,
+so no amount of proof about the `Design` can catch it. The guard re-derives
+every memory's reset image from the emitted RTL and checks it against the yosys
+netlist: a non-zero image must be mapped to BRAM **and** that primitive must
+carry a non-zero `INIT_xx`; an all-zero image must be matched by all-zero
+`INIT`s. Run against the *pre-fix* netlist it reproduces the defect from the
+netlist alone, with no board and no simulation:
+
+```
+FAIL ep_cell_flags: reset image is NON-ZERO but yosys mapped it to distributed
+     RAM (RAM64M, e.g. u_dual.ep_cell_flags.0.0); that path discards the init
+     and the bank comes up all-zero on silicon
+```
+
+**A second finding, recorded and not fixed here.** The same guard shows that
+`c0_tpc` and `c1_tpc` — lnp64mini's 32×64 trap-PC tables, reset image
+`64'd4096` — are mapped to `RAM32M` and lose their init on this flow too. It
+is latent rather than live: the guest installs its trap vectors before it takes
+a trap, so NetBSD's four-trap boot never reads an uninitialized entry. It is
+outside this campaign's scope, it is now visible to a script instead of to a
+board, and it should be closed the same way — by giving the table an all-zero
+reset image and biasing the vector, or by forcing the bank to block RAM.
