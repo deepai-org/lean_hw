@@ -24,19 +24,57 @@ that is a Loom defect — record it here before working around it.
 | D19/D20 | sync-read + thread-table memories (BRAM inference) | the dual core did not fit |
 | D21 | CDC contract: verified toggle-sync + `CmdPulseTrace` | the wrapper boundary |
 | D22 | post-synthesis equivalence checking (LRAT-certified) | the yosys-adequacy assumption |
+| D23 | bounded response (`MustReach`), ranking rule, transport across `Simulation`/`StutterSimulation` | the epoch demo's acceptance criterion: bump-return within the ack bound |
+
+### D23, in detail (closed 2026-08-01)
+
+**Shipped** — `Loom/Core/Bounded.lean` (capability) and
+`Machines/Epoch/Bounded.lean` (the artifact that needed it):
+
+* `MayReach Q n s` (`EF≤n`), `MustReachOrBlock Q n s` (`AF≤n`, deadlock
+  tolerated) and `MustReach Q n s` (`AF≤n` **plus** an enabledness witness at
+  every pre-response state). `BoundedResponse P Q K` = "from every reachable
+  `P`-state, `MustReach Q K`". The all-paths reading is not left to the
+  definition's shape: `MustReachOrBlock.on_path` proves that every explicit
+  path of length `n` out of `s` contains a `Q`-state.
+* The **enabledness decision, made explicit**: over a relation that may block,
+  `AF≤K` is vacuously true at a stuck non-`Q` state, which is not a hardware
+  bound. So `MustReach` carries the "can step" obligation, `MustReachOrBlock`
+  does not, and every theorem that produces the former takes the concrete
+  enabledness hypothesis as an argument rather than assuming totality.
+* The **workhorse**: `TSys.Ranking Q Dom μ` (progress off `Q`, `Dom` closed,
+  `μ` strictly decreasing) with `Ranking.mustReach : μ s ≤ n → MustReach Q n s`
+  and `boundedResponse_of_ranking`.
+* **Transport**: `Simulation.mustReachOrBlock_pullback` (no side conditions),
+  `Simulation.mustReach_pullback` / `boundedResponse_pullback` (same bound `K`,
+  given implementation enabledness), and
+  `StutterSimulation.mustReach_pullback`: with a stutter rank `≤ b` that
+  strictly decreases on every stuttering step, a spec bound `K` becomes an
+  implementation bound `K*(b+1) + rank s`, hence `K*(b+1) + b`.
+* **The artifact**: `Machines/Epoch/Bounded.lean` proves the epoch protocol's
+  ack bound without touching the frozen `Protocol.lean` — under the ack-phase
+  schedule `ackSys` (each step is a *fresh* ack or the return, and each step is
+  a genuine `Protocol.Step`), `bumpReturn` is enabled within `K` steps and the
+  bump has returned within `K + 1`, on all paths, with no deadlock. The
+  fairness hypothesis is shown to be load-bearing rather than decorative:
+  `unbounded_without_fairness` proves that in the *unrestricted* protocol a
+  bound of any size implies the bump had already returned (`use` is an
+  always-enabled self-loop).
+
+**Not covered.** Unbounded liveness and fairness proper (`◇`, `□◇`, weak/strong
+fairness) remain out of scope — there is no fairness algebra here, and a
+property with no nameable `K` gets no support. The bound is over *steps of the
+transition system*, not cycles: converting a proved `K` into a silicon number
+requires a steps-per-cycle argument at the refinement that introduces the clock
+(D23's "link to measured silicon cycles" is therefore deferred to the engine
+refinement, which is where the cycle-accurate system exists). Nested/until
+temporal formulae, past-time operators, and any automaton-based specification
+language are absent; the response predicate is a plain state predicate.
+Transport is forward-simulation-shaped, so a refinement needing prophecy (D25)
+must be repaired there first — a bound cannot be pulled through a simulation
+that does not exist.
 
 ## Predicted, for engine verification (the epoch campaign and beyond)
-
-**D23 — bounded response / temporal properties. REQUIRED BY THE CURRENT GOAL.**
-`Loom/Core/Ts.lean` has `Invariant` (safety) and nothing else. The epoch demo's
-acceptance is "bump-return-to-fail-closed within the ack bound"; §3's
-acknowledgement bound, Law 5's bounded instruction, and all of Appendix C are
-the same shape. Needed: a `WithinK` / bounded-until form over `TSys` runs, its
-induction principle, transport across `Simulation`/`StutterSimulation` (a lag-k
-simulation must compose with a K-bound), and the link to measured silicon
-cycles so a proved bound and a board number are the same quantity. Bounded
-liveness is also the honest hardware substitute for unbounded liveness — it is
-WCET-shaped, and the ISA prices everything in named bounds anyway.
 
 **D24 — rely-guarantee as first-class.** `CmdPulseTrace` (D21) is a hand-rolled
 instance: a Prop on input traces that a design's theorems may assume. The
