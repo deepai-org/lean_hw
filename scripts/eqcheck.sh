@@ -92,17 +92,18 @@ designs=${*:-"s0blinky satcounter pingpong s13soak s0bscan epochengine lnp64mini
 # full, as an [ACK] line -- the flag stops it failing the gate, it does not
 # stop it being seen. Mirrors `check_mem_init.py --allow`.
 #
-#   tpc   lnp64mini's 32x64 trap-PC tables, reset image 64'"'"'d4096, mapped to
-#         RAM32M: the same D30 loss as the epoch bank. Latent (the guest
-#         installs its vectors before it traps) and recorded in
-#         Machines/Epoch/EPOCH_SPEC.md E13.
+#   (tpc was here until 2026-08-01: lnp64mini's 32x64 thread-PC tables held
+#   reset image 64'"'"'d4096 on a RAM32M-mapped bank -- the same D30 loss as the
+#   epoch bank. D37 FIXED it rather than acknowledging it: the image is now
+#   all-zero and the cmd-13 sweep establishes TEXT_BASE, so there is nothing
+#   left to ack. See LOOM_GAPS.md D37 / EPOCH_SPEC.md E13.)
 #   dmem  yosys 0.33 wires RAMB36E1 SDP-72 `DIPBDIP` to `DIPADIP`'"'"'s nets, so
 #         data bits 44/53/62 are never written while `DOPBDOP` reads them --
 #         a self-inconsistent netlist, and a synthesizer defect rather than an
 #         emission one. See EQCHECK_SPEC.md §Deviations 13.
 ack_for() {
   case "$1" in
-    lnp64mini_soc) echo "--ack tpc,dmem" ;;
+    lnp64mini_soc) echo "--ack dmem" ;;
     *) echo "" ;;
   esac
 }

@@ -119,7 +119,11 @@ structure MiniSt where
   dmem   : Array (BitVec 64) := Array.replicate 512 0
   uartMem: Array (BitVec 8)  := Array.replicate 256 0
   rxMem  : Array (BitVec 8)  := Array.replicate 256 0
-  tpc    : Array (BitVec 64) := Array.replicate NT (BitVec.ofNat 64 TEXT_BASE)
+  -- D37: all-zero at power-on, mirroring the design's `tpc` reset image
+  -- (Core.lean). `cmd 13`'s sweep writes TEXT_BASE into every entry before
+  -- any read, so this is the same machine; it is now also the machine the
+  -- fabric builds (D30 dropped a non-zero distributed-RAM image silently).
+  tpc    : Array (BitVec 64) := Array.replicate NT 0
   tstate : Array (BitVec 2)  := (Array.replicate NT 0).set! 0 1
   tsleep : Array (BitVec 64) := Array.replicate NT 0
   tfutex : Array (BitVec 64) := Array.replicate NT 0
