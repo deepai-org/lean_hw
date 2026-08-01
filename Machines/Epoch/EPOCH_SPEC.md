@@ -793,3 +793,90 @@ a trap, so NetBSD's four-trap boot never reads an uninitialized entry. It is
 outside this campaign's scope, it is now visible to a script instead of to a
 board, and it should be closed the same way — by giving the table an all-zero
 reset image and biasing the vector, or by forcing the bank to block RAM.
+
+## E13 acceptance — the demo on silicon (2026-08-01, verbatim)
+
+Bitstream `lnp64mini_epoch_top.bit` rebuilt from the post-E13 RTL (openXC7,
+50% SLICE_LUTX, `sysclk` fmax 25.89 MHz against the 12 MHz constraint);
+`netbsd-fabric.service` restarted; `PASS 20260801-163134`, NetBSD serving
+native GEM0 dual-core with BSCAN quiet. The guest image is **unchanged** —
+E13 is a fabric-side fix only, and the guest's `LNP64_EPOCH_FLAGS` is the
+*request* word (wf/class/rights), unrelated to `cell_flags`.
+
+**1. A current reference reads `ok`** (telnet into the on-core shell) —
+the check that returned `-BADREF` before the fix:
+
+```
+core$ epoch engine present; reference(cell 0, epoch 1) -> OK  (try: epoch bump | epoch poison | epoch check <e>)
+```
+
+**2. Core 1's independently held reference agrees** (`scripts/board/
+epoch_demo.tcl`, reading the SMP gate out of DDR over BSCAN — the engine's
+second volume, reached by a path that shares nothing with the shell's):
+
+```
+== epoch demo observer ==
+BEFORE laps=4921 held_epoch=1 checks=4921 last=OK first_fail_lap=none
++5s    laps=4960 held_epoch=1 checks=4960 last=OK first_fail_lap=none
+checks in 5s: 39
+STATE: reference still current (no bump has returned yet)
+EPOCH_DEMO_DONE
+```
+
+**3. `epoch bump` returns, and prints the measured issue→all-acked cycles.**
+The old reference is stale the moment the bump returns:
+
+```
+core$ bump returned (all volumes acked) ack_cycles=5
+core$ epoch engine present; reference(cell 0, epoch 1) -> -STALE  (try: epoch bump | epoch poison | epoch check <e>)
+```
+
+`ack_cycles=5` is E10/F8's measured interval, on silicon, equal to the number
+Layer 2 measured in simulation — consistent with the proved exact bound of 4
+for the sub-interval `B_UP → return` and with the transported bound of 15.
+
+**4. Core 1's held reference goes `-STALE` and STAYS `-STALE`** across
+samples — §3's return guarantee and T-E1, observed on the fabric. Note
+`first_fail_lap=5016`: core 1 was re-presenting the same handle every lap and
+flipped exactly once, at the lap the bump returned.
+
+```
+== epoch demo observer ==
+BEFORE laps=5131 held_epoch=1 checks=5131 last=-STALE first_fail_lap=5016
++5s    laps=5172 held_epoch=1 checks=5172 last=-STALE first_fail_lap=5016
+checks in 5s: 41
+STATE: reference is -STALE since lap 5016
++10s   laps=5213 held_epoch=1 checks=5213 last=-STALE first_fail_lap=5016
+HOLDS: still -STALE -- stale/poison fails forever
+EPOCH_DEMO_DONE
+```
+
+**5. `epoch poison` fails closed permanently** — and, per §3's precedence,
+*even for the current epoch*: after `poison` the home epoch is 3, and
+presenting 3 still returns `-POISONED`, because poison is inspected before the
+freshness compare (T-E3):
+
+```
+core$ poison bump returned (all volumes acked) ack_cycles=5
+core$ check epoch=2 -> -POISONED
+core$ check epoch=3 -> -POISONED
+```
+
+```
+== epoch demo observer ==
+BEFORE laps=5437 held_epoch=1 checks=5437 last=-POISONED first_fail_lap=5016
++5s    laps=5476 held_epoch=1 checks=5476 last=-POISONED first_fail_lap=5016
+checks in 5s: 39
+STATE: reference is -POISONED since lap 5016
++10s   laps=5516 held_epoch=1 checks=5516 last=-POISONED first_fail_lap=5016
+HOLDS: still -POISONED -- stale/poison fails forever
+EPOCH_DEMO_DONE
+```
+
+The guest was healthy throughout and after: `5 packets transmitted, 5
+received, 0% packet loss` on GEM0, and `uname` over telnet still answers
+`NetBSD lnp64mini3 (rump) on ZC702 PL fabric`.
+
+Post-fix, `scripts/check_mem_init.py` against the rebuilt netlist reports
+`ep_cell_flags: all-zero reset image, ['lutram'] with zero INIT` and
+`check_mem_init: OK -- 14 memories checked, 2 acknowledged`.
