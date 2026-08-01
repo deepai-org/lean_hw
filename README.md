@@ -3,13 +3,22 @@
 Loom is a generic toolchain for defining processors in Lean, proving
 theorems about them (isolation, revocation, scheduling, noninterference —
 see `STATUS.md` for the ledger), and emitting Verilog whose correspondence
-to the proved model is itself checked. The machines form a ladder:
-**Acc8**, a tiny accumulator core used as the pathfinder for the whole proof
-chain; **LNP64-µ**, the release machine (4 domains, capabilities, gates, a DMA
-Mover, 25 opcodes); **LNP64mini**, a full soft-core that runs NetBSD with
-native Ethernet on an FPGA; the **Substrate** bring-up designs; and the
-**Epoch engine**, the first mechanized-and-refined LNP64 protocol machine.
-See [`fpga/zc702/README.md`](fpga/zc702/README.md) for what has run on real
+to the proved model is itself checked. The machines here are deliberately
+small demonstrators — each isolates one property so the whole chain can be
+exercised end to end, and none of them is the architecture itself:
+
+| machine | the property it demonstrates |
+|---|---|
+| **Acc8** | the pathfinder: the smallest core that exercises spec → proof → compile → emit |
+| **LNP64-µ** | *theorems were actually proved about it* — the T1–T9 ledger, kernel-checked to a Verilog artifact (4 domains, capabilities, gates, a Mover, 25 opcodes) |
+| **LNP64mini** | *it runs real NetBSD code on a real FPGA* — a soft-core carrying an OS and native Ethernet on silicon |
+| **Substrate** | board bring-up: the first Loom designs to run on hardware at all |
+| **Epoch engine** | the first piece of the *definitive* LNP64 ISA (§3 freshness) mechanized, implemented, and refined |
+
+The definitive architecture (`lnp64_isa.md` in the companion repo) is a much
+larger design than any of these; the demonstrators exist to prove out the
+toolchain and the method that will build it. See
+[`fpga/zc702/README.md`](fpga/zc702/README.md) for what has run on real
 silicon.
 
 ## Quick start
