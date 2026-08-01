@@ -18,6 +18,9 @@ signal — that the netlist's one-cycle transition function equals the
 module's. Every UNSAT verdict is certified by an LRAT proof re-checked with
 the proved checker `Loom.Dp.Cert.checkLrat`.
 
+Memories are inside the comparison as of D31 (`Loom/Netlist/Mem.lean`):
+reset images, write-port pins and both read shapes, bank by bank.
+
 Trust: the CNF encoder (`Loom/Netlist/*`) is **untrusted** in v1. What the
 tool establishes is "*if* the encoding is faithful, netlist ≡ module"; the
 solver's UNSAT claims themselves are never taken on faith. See
@@ -216,9 +219,9 @@ def check (vPath jsonPath : String) (ack : List String := []) : IO UInt32 := do
         into a memory read path (e.g. \
         {String.intercalate ", " mt.memFFNames}). Excluded, not ignored: a \
         checked cone that reaches one is reported as an exclusion."
-    IO.println "  (array storage is carried by cell identity: what is checked \
-      is every cone that feeds or leaves a memory port, not the array — see \
-      EQCHECK_SPEC.md §Scope)"
+    IO.println "  (memories are checked bank by bank: reset image, write clock \
+      / enable / address / data against the primitives' own pins, and each \
+      read port's shape and data path — see EQCHECK_SPEC.md §Memories)"
   let dir ← IO.FS.createTempDir
   let mut results : Array SigResult := #[]
   -- Registers.
@@ -536,8 +539,9 @@ def check (vPath jsonPath : String) (ack : List String := []) : IO UInt32 := do
     encoding is faithful, netlist ≡ module\"; every UNSAT is LRAT-certified \
     and re-checked by Loom.Dp.Cert.checkLrat, the proved checker)"
   if skip > 0 then
-    IO.println s!"  NOT COVERED ({skip} signal(s), each named [SKIP] above): \
-      memory array storage, plus every cone that crosses a memory boundary."
+    IO.println s!"  NOT COVERED ({skip} signal(s), each named [SKIP] above), \
+      each with its own reason: cones crossing a memory boundary, arrays with \
+      no memory primitive, and depth-split read data."
   if acked > 0 then
     IO.println s!"  ACKNOWLEDGED ({acked} signal(s) marked [ACK] above): a \
       failure recorded elsewhere and deliberately not fixed here. Named on \
