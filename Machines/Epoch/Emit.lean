@@ -38,18 +38,8 @@ def main (args : List String) : IO Unit := do
       IO.println s!"composed syncReadOk = {EpochSoc.syncReadOk}"
       IO.println s!"composed parOk      = {EpochSoc.parOk}"
   | ["predict"] => do
-      Engine.predict "check-hit" Engine.design (Engine.chkSeq 0 5 1)
-      Engine.predict "check-stale" Engine.design (Engine.chkSeq 0 5 9)
-      Engine.predict "bump-then-check" Engine.design
-        (Engine.bmpSeq 0 5 ++ Engine.chkSeq 0 5 1 ++ Engine.chkSeq 1 5 1
-          ++ Engine.chkSeq 0 5 2)
-      Engine.predict "poison" Engine.design
-        (Engine.bmpSeq 0 7 true ++ Engine.chkSeq 0 7 2)
-      Engine.predict "inflight" Engine.design
-        ([{ r0 := (Engine.bmp 0 3).r0, r1 := (Engine.chk 1 3 1).r1 }]
-          ++ Engine.gap 12 ++ Engine.chkSeq 1 3 1)
-      Engine.predict "saturate(tiny)" Engine.tiny
-        ((List.replicate 6 (Engine.bmpSeq 0 1)).flatten ++ Engine.chkSeq 0 1 7)
+      Engine.predict "epochengine" Engine.design Engine.tbTrace
+      Engine.predict "epochengine_tiny" Engine.tiny Engine.tbTraceTiny
   | ["engine"] => do
       checkD19
       Engine.design.emit "rtl/epochengine.v"
