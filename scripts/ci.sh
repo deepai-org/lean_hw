@@ -29,12 +29,21 @@ scripts/test_release_binding.py
 # Scope note: eqcheck runs the small designs inline (seconds). The SoC-scale
 # run (~18 s + synthesis) belongs to scripts/nightly_gates.sh, not to every CI
 # invocation; that split is deliberate and is why this loop names its designs.
+# D31 regression: the checked-in pre-fix epoch netlist must be REJECTED, with
+# the bank named. Needs only cadical (the netlist is a fixture).
+scripts/eqcheck_memfixture.sh
 if command -v yosys >/dev/null 2>&1 && command -v cadical >/dev/null 2>&1; then
-  for d in s0blinky satcounter pingpong s13soak; do
+  # s0bscan joins the inline list now that memories are inside the check
+  # (it is a second of synthesis and 0.2 s of checking).
+  for d in s0blinky satcounter pingpong s13soak s0bscan; do
     scripts/eqcheck.sh "$d"
   done
   scripts/eqcheck.sh --negative-control satcounter   # the checker must still bite
-  scripts/check_mem_init.py
+  # check_mem_init.py is now REDUNDANT with eqcheck'"'"'s reset-image check and is
+  # kept deliberately as an *independent* second implementation: two readers of
+  # the same netlist disagreeing is itself a signal. It needs its arguments
+  # (netlist + the RTL it came from), which the loop above has just produced.
+  scripts/check_mem_init.py "${EQCHECK_OUT:-scratch/eqcheck}/s0bscan.json" rtl/s0bscan.v
 else
   echo "ci: SKIP eqcheck + mem-init gates (yosys and/or cadical not installed)"
 fi

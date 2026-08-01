@@ -26,6 +26,7 @@ that is a Loom defect — record it here before working around it.
 | D22 | post-synthesis equivalence checking (LRAT-certified) | the yosys-adequacy assumption |
 | D23 | bounded response (`MustReach`), ranking rule, transport across `Simulation`/`StutterSimulation` | the epoch demo's acceptance criterion: bump-return within the ack bound |
 | D25 | **closed as not needed** — plain `StutterSimulation` carried the engine refinement; see below | the epoch Layer-3 refinement |
+| D31 | memories inside the post-synthesis equivalence check: reset images, write-port pins, both read shapes | D30 — the epoch engine's first silicon `-BADREF`, i.e. a bank whose reset image the flow dropped where the checker could not look |
 | D28 | steps-to-cycles: a spec bound transported through a design with stutter budget `b` is a number of CLOCK CYCLES | the epoch Layer-3 refinement |
 
 ### D23, in detail (closed 2026-08-01)
@@ -355,3 +356,50 @@ curiosity, not a link this stack's claims rest on.
 
 Equivalence is never timing, at any level: the clock constraint stays
 discharged by STA, by design.
+
+## D31 — memories inside the equivalence checker (CLOSED 2026-08-01)
+
+**Discovered by D30**, which is to say by the epoch engine's first silicon
+run. D22's checker had a hole exactly where the tool lied: array storage,
+port wiring and configuration images were "carried by cell identity", i.e.
+trusted, and the one class of defect that had actually reached silicon lived
+inside it. The stop-gap was `scripts/check_mem_init.py`, a guard *outside*
+the certified path — a certificate plus untrusted glue.
+
+Closed by `Loom/Netlist/Mem.lean` and the memory legs of `Tools/EqCheck.lean`.
+Per bank, now checked and LRAT-certified where a solver is involved:
+
+* **reset images** — the primitives' `INIT*` parameters decoded per address
+  and per bit and compared against `MemDef.init`, *plus* the separate
+  deliverability rule that a non-zero image on distributed LUT RAM is a
+  failure even when the netlist's `INIT` is faithful, because the
+  configuration path does not carry it. That second rule is D30;
+* **storage and write ports** — write clock, enable (against
+  `en ∧ ¬rst ∧ bank-select`, with the depth-group index *proved* rather than
+  assumed), address and per-lane data, all against the primitives' own pins,
+  through a model of how `memory_libmap` splits an array by width and depth;
+* **read paths** — each netlist read port matched to a printed read site by
+  proving the address cones equal, then the async (LUT RAM) versus D19
+  synchronous (block RAM, one cycle, `DOx_REG` clear, `READ_FIRST`) shape
+  checked against what the design declares, including that the primitive's
+  data pins *are* the module's read value — which is what ties the read ports
+  to the cells the write ports write.
+
+**Evidence it bites.** `Tests/fixtures/eqcheck/epochengine_prefix.{v,json.gz}`
+is the pre-`b510caf` engine plus its netlist; `scripts/eqcheck_memfixture.sh`
+requires eqcheck to reject it, naming `cell_flags`, with exactly one signal
+differing — D30 reproduced from the netlist alone, no board and no
+simulation. The post-fix engine passes the same 124 signals.
+
+**Two findings it made on the way.** (1) `lnp64mini_soc`'s `tpc` loses its
+`64'd4096` image the same way — already recorded in `EPOCH_SPEC.md` E13, and
+now found independently from the certified path. (2) yosys 0.33 wires
+`RAMB36E1` `SDP`-72 `DIPBDIP` to `DIPADIP`'s nets, so `dmem` bits 44/53/62
+are never written while `DOPBDOP` reads them: a self-inconsistent netlist,
+and a synthesizer defect rather than an emission one (the board's bitstream
+is built with 0.38, which does not have it). Both are carried as `--ack`
+lines, printed in full on every run.
+
+`check_mem_init.py` is now redundant and is deliberately **kept** as an
+independent second implementation — two readers of the same netlist
+disagreeing is itself a signal. See `Loom/Netlist/EQCHECK_SPEC.md` §Memories.

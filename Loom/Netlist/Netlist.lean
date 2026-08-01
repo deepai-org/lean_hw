@@ -212,6 +212,8 @@ def evalBits (env : NetlistEnv) (fuel : Nat) (bits : Array SigBit) :
 
 /-! ## Matching -/
 
+
+
 /-- The result of matching the µVerilog module against the netlist. -/
 structure Matching where
   /-- Per IR register: name, width, and the netlist source of each bit. -/
@@ -222,6 +224,14 @@ structure Matching where
   seed : Std.HashMap Nat Bit
   /-- Unit assumptions: constant-folded register bits (see the header). -/
   assumptions : Array Bit
+  /-- Equality assumptions: pairs of µVerilog register bits that yosys's
+  `opt_merge` proved equal and realized with ONE flip-flop. Same shape of
+  justification as a constant-folded bit — the two transition functions
+  differ only on unreachable states — and discharged the same way: with
+  `rst` free, the `rst = 1` branch of each register's own miter compares the
+  two *reset* values (constants, independent of the assumption) and the
+  `rst = 0` branch is the induction step. -/
+  eqs : Array (Bit × Bit) := #[]
   /-- Number of constant-folded register bits. -/
   folded : Nat
   /-- Registers whose bits come out of a memory hard block (D19 sync-read
@@ -318,6 +328,7 @@ def matchModule (m : NlModule) (regs ins reads : List (String × Nat))
   let mut cutReads : List String := []
   let mut absorbedReads : List String := []
   let mut assumptions : Array Bit := #[]
+  let mut eqs : Array (Bit × Bit) := #[]
   let mut foldedReads := 0
   for (nm, w) in reads do
     match namedBits m nm w with
@@ -369,9 +380,15 @@ def matchModule (m : NlModule) (regs ins reads : List (String × Nat))
             unless ffByQ.contains n do
               throw s!"'{name}[{i}]' (net {n}) is not driven by a flip-flop"
             if used.contains n then
-              throw s!"net {n} is claimed by two µVerilog register bits"
-            used := used.insert n
-            seed := seed.insert n (stateBit name w i)
+              -- One flip-flop, two µVerilog register bits: `opt_merge` proved
+              -- the two next-state cones identical. Both bits keep their own
+              -- free variable and the equality becomes an assumption.
+              match seed[n]? with
+              | some b => eqs := eqs.push (stateBit name w i, b)
+              | none => throw s!"internal: net {n} claimed but unseeded"
+            else
+              used := used.insert n
+              seed := seed.insert n (stateBit name w i)
             srcs := srcs.push (.ff n)
       | b => throw s!"'{name}[{i}]' is the constant {b}"
     if srcs.any (fun s => match s with | .mem _ _ => true | _ => false) then
@@ -422,9 +439,16 @@ def matchModule (m : NlModule) (regs ins reads : List (String × Nat))
   unless (m.ports.any (fun p => p.name == "rst" && p.dir == "input")) do
     throw "netlist module has no 'rst' input port"
   pure { regs := out.reverse, ffOf := ffByQ, seed := seed,
-         assumptions := assumptions, folded := folded,
+         assumptions := assumptions, eqs := eqs, folded := folded,
          memRegs := memRegs.reverse, cutReads := cutReads.reverse,
          absorbedReads := absorbedReads.reverse, cutFFs := cutFFs,
          foldedReads := foldedReads, memFF := memFF, memFFNames := memFFNames }
+
+/-- Assert the matching's equality assumptions (merged register bits). The
+unit assumptions are asserted by the miters themselves; this is the pair
+half, kept here so `Miter.lean` needs no change. -/
+def assertEqs (eqs : Array (Bit × Bit)) : M Unit := do
+  for (a, b) in eqs do
+    assert (← mkXor a b).not
 
 end Loom.Netlist
