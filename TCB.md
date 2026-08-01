@@ -56,8 +56,19 @@ as synthesized hardware, trust is limited to:
    Verilog text the transition behavior specified by the proved
    `Symbolic.ModuleBehavior` relation. Its complete construct-by-construct
    statement is [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md).
-4. **Yosys and the downstream physical flow**, only when extending the claim
-   from the exact Verilog bytes to a netlist or physical implementation.
+4. **The downstream physical flow**, only when extending the claim from the
+   exact Verilog bytes to a netlist or physical implementation — and now a
+   *smaller* item than it was. `lake exe eqcheck` checks emitted-module ≡
+   post-synthesis netlist per build, registers and memories alike, every UNSAT
+   LRAT-certified and re-checked by the proved checker, with the encoder's
+   expression side proved (`Loom.Netlist.encode_sound`) over a named operator
+   fragment. What remains trusted here: the netlist-side cone walk and cell
+   library (a named hypothesis of that theorem), the three unproved operators
+   `shl`/`shr`/`slt`, the excluded signals each run names, and everything
+   below the synthesized netlist — placement, routing, FASM and bitstream
+   generation, which are corroborated by running the artifact on hardware
+   rather than proved (`LOOM_GAPS.md` D33 records why that boundary is drawn
+   where it is).
 5. **The single-flop resolution (MTBF) assumption**, only when extending the
    claim from the emitted single-clock core to a board wrapper that drives it
    across a clock boundary (`fpga/zc702/lnp64mini_soc_top.v`,

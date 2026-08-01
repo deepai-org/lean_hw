@@ -107,11 +107,32 @@ assumed. `lake exe eqcheck` (`scripts/eqcheck.sh`) compares the synthesized
 netlist's one-cycle transition function against the emitted module's, signal by
 signal, with every UNSAT certified by an LRAT proof re-checked by the proved
 checker — so "the synthesis tool preserved the meaning" is an artifact, not a
-hope. (Its CNF encoder is untrusted in v1, and memory-boundary signals are
-excluded and named individually.) And `Loom/Hw/CdcContract.lean` proves the
-board wrapper's clock-domain-crossing protocol over *every* adversarial
-metastability resolution, leaving one stated physical assumption in
-[`TCB.md`](TCB.md).
+hope. What that verdict rests on is stated precisely, per run, by the tool
+itself:
+
+- **Memories are inside the claim** (D31): write-port storage, read paths
+  (async LUT RAM and D19 sync BRAM), and reset images — checked both for
+  *fidelity* (the netlist image is the declared one) and for
+  **deliverability** (the mapping's image can actually reach the fabric; a
+  non-zero image on distributed RAM fails even when the netlist's `INIT` is
+  faithful, because the configuration path does not carry it). A checked-in
+  fixture holds a netlist with that exact defect and CI requires eqcheck to
+  reject it.
+- **The encoder's expression side is proved** (D32,
+  `Loom.Netlist.encode_sound`): the CNF handed to the solver is unsatisfiable
+  *iff* the two sides agree on every valuation — both directions, with clause
+  normalization inside the theorem. The proved fragment is
+  `lit reg and or xor not add sub eq ult mux slice zext sext`; `shl`, `shr`
+  and `slt` are **not** proved and stay on the unverified path, and the tool
+  names them and reports per design whether that design stays inside the
+  fragment.
+- **Not proved**: the netlist-side cone walk and its cell library, which enter
+  `encode_sound` as one named hypothesis; and any signal the run lists as
+  excluded, each with its individual reason.
+
+And `Loom/Hw/CdcContract.lean` proves the board wrapper's
+clock-domain-crossing protocol over *every* adversarial metastability
+resolution, leaving one stated physical assumption in [`TCB.md`](TCB.md).
 
 The remaining logic-to-tool link is the µVerilog tool-boundary assumption:
 for the deliberately small concrete SSA syntax, Yosys interprets the text
