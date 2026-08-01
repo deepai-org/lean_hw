@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Netlist.Encode
 import Loom.Netlist.Netlist
 import Loom.Emit.MicroVerilog.Ast
 import Loom.Dp.Cert.Lrat
@@ -29,19 +30,26 @@ open Loom.Emit.MicroVerilog
 
 /-! ## Bit-blasting the µVerilog side -/
 
+/-- Ripple-carry adder over the low `k` bit positions; returns the sum bits
+and the carry out. (Structural recursion rather than a `for` loop: same
+gates in the same order, but the shape `Loom/Netlist/Encode.lean` can
+induct over.) -/
+def addBitsGo (a b : Array Bit) (cin : Bit) : Nat → M (Array Bit × Bit)
+  | 0 => Pure.pure (#[], cin)
+  | k + 1 => do
+      let (out, c) ← addBitsGo a b cin k
+      let x := a[k]!
+      let y := b[k]!
+      let t ← mkXor x y
+      let sum ← mkXor t c
+      let ab ← mkAnd x y
+      let tc ← mkAnd t c
+      let c' ← mkOr ab tc
+      Pure.pure (out.push sum, c')
+
 /-- Ripple-carry adder; returns the sum bits and the carry out. -/
-def addBits (a b : Array Bit) (cin : Bit) : M (Array Bit × Bit) := do
-  let mut c := cin
-  let mut out : Array Bit := #[]
-  for h : i in [0:a.size] do
-    let x := a[i]
-    let y := b[i]!
-    let t ← mkXor x y
-    out := out.push (← mkXor t c)
-    let ab ← mkAnd x y
-    let tc ← mkAnd t c
-    c ← mkOr ab tc
-  pure (out, c)
+def addBits (a b : Array Bit) (cin : Bit) : M (Array Bit × Bit) :=
+  addBitsGo a b cin a.size
 
 /-- Unsigned `a < b` via the borrow out of `a + ~b + 1`. -/
 def ultBits (a b : Array Bit) : M Bit := do
@@ -58,12 +66,18 @@ def sltBits (a b : Array Bit) : M Bit := do
     let diff ← mkXor sa sb
     mkIte diff sa u
 
+/-- The per-bit equalities of `a` and `b`, high bit first (the order the
+accumulating loop this replaces produced). -/
+def eqAcc (a b : Array Bit) : Nat → M (List Bit)
+  | 0 => Pure.pure []
+  | k + 1 => do
+      let acc ← eqAcc a b k
+      let t ← mkXor a[k]! b[k]!
+      Pure.pure (t.not :: acc)
+
 /-- Bitwise equality. -/
 def eqBits (a b : Array Bit) : M Bit := do
-  let mut acc : List Bit := []
-  for h : i in [0:a.size] do
-    acc := (← mkXor a[i] b[i]!).not :: acc
-  mkAndList acc
+  mkAndList (← eqAcc a b a.size)
 
 /-- Rigid shift of `a` by the constant `k` (zero fill). -/
 private def shiftConst (left : Bool) (a : Array Bit) (k : Nat) : Array Bit :=
@@ -110,16 +124,13 @@ def blastE (syms : List (String × Nat)) : {w : Nat} → Expr w → M (Array Bit
         symbol; this node should not exist"
   | _, .and a b => do
       let x ← blastE syms a; let y ← blastE syms b
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkAnd p.1 p.2)
+      buildM (fun i => mkAnd x[i]! y[i]!) x.size
   | _, .or a b => do
       let x ← blastE syms a; let y ← blastE syms b
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkOr p.1 p.2)
+      buildM (fun i => mkOr x[i]! y[i]!) x.size
   | _, .xor a b => do
       let x ← blastE syms a; let y ← blastE syms b
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkXor p.1 p.2)
+      buildM (fun i => mkXor x[i]! y[i]!) x.size
   | _, .not a => do
       let x ← blastE syms a
       pure (x.map (·.not))
@@ -147,8 +158,7 @@ def blastE (syms : List (String × Nat)) : {w : Nat} → Expr w → M (Array Bit
   | _, .mux c t f => do
       let cb ← blastE syms c
       let x ← blastE syms t; let y ← blastE syms f
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkIte cb[0]! p.1 p.2)
+      buildM (fun i => mkIte cb[0]! x[i]! y[i]!) x.size
   | _, .slice a lo width => do
       let x ← blastE syms a
       pure (Array.ofFn (n := width) fun i => x[lo + i.val]?.getD (.const false))
@@ -194,16 +204,13 @@ private unsafe def blastEGo (syms : List (String × Nat)) :
         symbol; this node should not exist"
   | _, .and a b => do
       let x ← blastEM syms a; let y ← blastEM syms b
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkAnd p.1 p.2)
+      buildM (fun i => mkAnd x[i]! y[i]!) x.size
   | _, .or a b => do
       let x ← blastEM syms a; let y ← blastEM syms b
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkOr p.1 p.2)
+      buildM (fun i => mkOr x[i]! y[i]!) x.size
   | _, .xor a b => do
       let x ← blastEM syms a; let y ← blastEM syms b
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkXor p.1 p.2)
+      buildM (fun i => mkXor x[i]! y[i]!) x.size
   | _, .not a => do
       let x ← blastEM syms a
       pure (x.map (·.not))
@@ -231,8 +238,7 @@ private unsafe def blastEGo (syms : List (String × Nat)) :
   | _, .mux c t f => do
       let cb ← blastEM syms c
       let x ← blastEM syms t; let y ← blastEM syms f
-      (Array.ofFn (n := x.size) fun i => (x[i.val]!, y[i.val]!)).mapM
-        (fun p => mkIte cb[0]! p.1 p.2)
+      buildM (fun i => mkIte cb[0]! x[i]! y[i]!) x.size
   | _, .slice a lo width => do
       let x ← blastEM syms a
       pure (Array.ofFn (n := width) fun i => x[lo + i.val]?.getD (.const false))
@@ -260,14 +266,19 @@ attribute [implemented_by blastEM] blastE
 
 /-! ## Miters -/
 
+/-- The per-bit differences of `a` and `b`, high bit first. -/
+def differAcc (a b : Array Bit) : Nat → M (List Bit)
+  | 0 => Pure.pure []
+  | k + 1 => do
+      let xs ← differAcc a b k
+      let t ← mkXor a[k]! b[k]!
+      Pure.pure (t :: xs)
+
 /-- Assert that the two bit vectors differ (the miter output). -/
 def assertDiffer (a b : Array Bit) : M Unit := do
   if a.size != b.size then
     throw s!"width mismatch in miter: {a.size} vs {b.size}"
-  let mut xs : List Bit := []
-  for h : i in [0:a.size] do
-    xs := (← mkXor a[i] b[i]!) :: xs
-  assert (← mkOrList xs)
+  assert (← mkOrList (← differAcc a b a.size))
 
 /-- The netlist-side next value of one register bit. -/
 def netlistNext (env : NetlistEnv) (mt : Matching) (fuel : Nat)
