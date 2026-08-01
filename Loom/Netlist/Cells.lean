@@ -65,6 +65,21 @@ def fresh : M Bit := do
   set { s with next := s.next + 1 }
   pure (.lit (.aux s.next) true)
 
+/-- Add a list of clauses, in order. -/
+def addCls : List BClause → M Unit
+  | [] => pure ()
+  | c :: cs => do addCl c; addCls cs
+
+/-- The one shape every gate has: allocate a fresh output variable and add
+the clauses that *define* it (both implications, so the clauses force the
+output rather than merely permit it — which is what makes a countermodel
+meaningful). Proved correct once, in `Loom/Netlist/Encode.lean`
+(`Enc_mkGate`), for every gate below. -/
+def mkGate (cls : Bit → List BClause) : M Bit := do
+  let o ← fresh
+  addCls (cls o)
+  pure o
+
 /-- Assert `b`. -/
 def assert (b : Bit) : M Unit := addCl [b]
 
@@ -77,10 +92,7 @@ def mkAnd (x y : Bit) : M Bit :=
   | a, b =>
       if a == b then pure a
       else if a == b.not then pure (.const false)
-      else do
-        let o ← fresh
-        addCl [o.not, a]; addCl [o.not, b]; addCl [o, a.not, b.not]
-        pure o
+      else mkGate (fun o => [[o.not, a], [o.not, b], [o, a.not, b.not]])
 
 def mkOr (x y : Bit) : M Bit := do
   let r ← mkAnd x.not y.not
@@ -94,11 +106,8 @@ def mkXor (x y : Bit) : M Bit :=
   | a, b =>
       if a == b then pure (.const false)
       else if a == b.not then pure (.const true)
-      else do
-        let o ← fresh
-        addCl [o.not, a, b]; addCl [o.not, a.not, b.not]
-        addCl [o, a.not, b]; addCl [o, a, b.not]
-        pure o
+      else mkGate (fun o =>
+        [[o.not, a, b], [o.not, a.not, b.not], [o, a.not, b], [o, a, b.not]])
 
 /-- `if c then t else e`. -/
 def mkIte (c t e : Bit) : M Bit :=
@@ -109,11 +118,8 @@ def mkIte (c t e : Bit) : M Bit :=
       if t == e then pure t
       else if t == (Bit.const true) && e == (Bit.const false) then pure c
       else if t == (Bit.const false) && e == (Bit.const true) then pure c.not
-      else do
-        let o ← fresh
-        addCl [o.not, c.not, t]; addCl [o, c.not, t.not]
-        addCl [o.not, c, e];     addCl [o, c, e.not]
-        pure o
+      else mkGate (fun o =>
+        [[o.not, c.not, t], [o, c.not, t.not], [o.not, c, e], [o, c, e.not]])
 
 /-- OR-reduce a list (balanced enough: left fold; the lists are short). -/
 def mkOrList : List Bit → M Bit
