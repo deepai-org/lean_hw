@@ -17,6 +17,27 @@ scripts/check_xfree_rtl.py rtl/acc8.v rtl/lnp64u.v
 # byte-identically (skips are printed with their reason).
 lake exe rtlroundtrip rtl/*.v
 scripts/test_release_binding.py
+# --- the two silicon-boundary gates -------------------------------------
+# These were standalone scripts until 2026-08-01, i.e. they only protected
+# anyone who remembered to run them: D30 (yosys silently dropping a memory's
+# reset image for LUTRAM-mapped banks) was caught by HARDWARE, not by its own
+# guard. Both self-SKIP when their tools are absent, so CI still runs on a
+# host without yosys/cadical -- but on a host that HAS them, a change that
+# breaks synthesis equivalence or a memory reset image now fails here rather
+# than on a board weeks later.
+#
+# Scope note: eqcheck runs the small designs inline (seconds). The SoC-scale
+# run (~18 s + synthesis) belongs to scripts/nightly_gates.sh, not to every CI
+# invocation; that split is deliberate and is why this loop names its designs.
+if command -v yosys >/dev/null 2>&1 && command -v cadical >/dev/null 2>&1; then
+  for d in s0blinky satcounter pingpong s13soak; do
+    scripts/eqcheck.sh "$d"
+  done
+  scripts/eqcheck.sh --negative-control satcounter   # the checker must still bite
+  scripts/check_mem_init.py
+else
+  echo "ci: SKIP eqcheck + mem-init gates (yosys and/or cadical not installed)"
+fi
 # Independent-checker cross-validation (self-SKIPs if cadical/python3 absent,
 # so CI does not depend on a SAT solver being installed).
 scripts/crosscheck_lrat.sh
