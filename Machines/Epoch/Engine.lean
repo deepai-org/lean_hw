@@ -639,4 +639,32 @@ def predict (nm : String) (d : Design) (ss : List Stim) : IO Unit := do
     if o.r0v = 1 || o.r1v = 1 || o.bd0 = 1 || o.bd1 = 1 then
       IO.println s!"{o.k} r0v={o.r0v} r0c={o.r0c} r1v={o.r1v} r1c={o.r1c} bd0={o.bd0} bd1={o.bd1} bcyc={o.bcyc}"
 
+/-! ### The iverilog testbench's stimulus, as one continuous run
+
+`rtl/tb_epochengine.v` replays *exactly* these two traces (memories are
+not reset by `rst`, so the scenarios are chained on distinct cells rather
+than restarted) and prints the same event lines, which makes the RTL leg a
+literal `diff` against the verified fast evaluator. -/
+
+/-- The 32-bit engine's acceptance trace. -/
+def tbTrace : List Stim :=
+  chkSeq 0 5 1                                     -- (a) check-hit        → ok
+  ++ chkSeq 0 5 9                                  -- (b) epoch mismatch   → stale
+  ++ chkSeq 0 5 1 6                                -- (c) ¬wellFormed      → badref
+  ++ chkSeq 0 5 1 3                                -- (d) ¬rights          → denied
+  ++ [{ r0 := (bmp 0 5).r0, r1 := (chk 1 5 1).r1 }] ++ gap 3
+                                                   -- (e) in-flight use    → ok (T-E7)
+  ++ gap 9
+  ++ chkSeq 0 5 1 ++ chkSeq 1 5 1                  -- (f) post-return stale at BOTH volumes
+  ++ chkSeq 0 5 2 ++ chkSeq 1 5 2                  -- (g) the new epoch validates
+  ++ bmpSeq 0 7 true                               -- (h) poison bump
+  ++ chkSeq 0 7 2 ++ chkSeq 1 7 2                  -- (i) poisoned at the *current* epoch
+  ++ gap 20 ++ chkSeq 0 7 2                        -- (j) …forever
+
+/-- The narrow-epoch twin's saturation trace. -/
+def tbTraceTiny : List Stim :=
+  (List.replicate 6 (bmpSeq 0 1)).flatten          -- epoch 1 → 7 = allOnes
+  ++ chkSeq 0 1 7 ++ chkSeq 1 1 7                  -- dead ⇒ -STALE at both volumes
+  ++ bmpSeq 0 1 ++ chkSeq 0 1 7                    -- no bump revives it
+
 end Machines.Epoch.Engine
