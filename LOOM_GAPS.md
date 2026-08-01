@@ -154,3 +154,36 @@ return). Layer 2's measured `bump_cycles = 5` is a *different interval*
 (request acceptance → return, less the counter's start offset) and
 `EPOCH_SPEC.md` deviation F8 spells out exactly how the three numbers line up,
 so that a proved bound and a measured number are never quietly conflated.
+
+## Deliberately out of scope (do not propose these as gaps)
+
+Recorded 2026-08-01 so the boundary is not re-litigated. Loom's semantics (D9)
+is single-clock synchronous: one implicit clock, reads pre-cycle, writes commit
+at cycle end. µVerilog then excludes latches, tri-states, combinational loops,
+async set/reset, multiple drivers, and every inference-sensitive construct —
+per the charter's rule that *where the standard leaves latitude, the subset
+excludes the construct*. The value proposition is that all serious tools agree
+on the emitted text; async and multi-clock are exactly where they stop agreeing.
+
+* **Asynchronous / self-timed logic** (C-elements, bundled-data, handshake
+  pipelines): NOT a future entry. Its correctness arguments are about
+  delay-insensitivity, hazards and isochronic forks — a different formalism
+  (STG/Petri-net class) and a different backend. A sibling tool if ever, never
+  a subset extension.
+* **Multiple clock domains inside one `Design`**: not as a semantics change.
+  Making `Design` multi-domain turns the step function into an interleaving
+  model and invalidates D9, the emission theorem, FastEval and eqcheck at once.
+  IF the need arrives, the tractable form is **composition**: keep single-clock
+  designs, add a domain-composition operator plus a reusable verified CDC
+  component (generalize D21's toggle-sync, parameterized by a clock-ratio
+  rely). File it then, with the artifact that needs it.
+* **Hard blocks** (PLL/MMCM, SerDes, DDR PHY, XADC) and **bidirectional IO**:
+  wrapper only, by the three-doors doctrine.
+* **Timing constructs** (multicycle/false paths, clock gating as a construct):
+  outside the semantics by design — timing closure is a per-target vendor-side
+  activity and the theorems are stated conditional on a clock constraint.
+
+**Where this project would actually hit the multi-clock wall**: bringing the
+GEM MAC itself into Loom means owning the 125 MHz RGMII domain. Every crossing
+so far (JTAG DRCK, PS FCLK, the 200 MHz board clock) has stayed in the wrapper
+under D21, which is why the question has not yet been forced.
