@@ -324,6 +324,10 @@ blow-up is a toolchain observation worth its own issue, not a property of
 the epoch model — the k-induction queries at the same design are 856 and
 2436 clauses and build in seconds.
 
+   Cost, recorded so nobody is surprised: a cold build of
+   `Machines/Epoch/Bmc.lean` is ≈ 10 min, ≈ 9 of which is the kernel
+   `decide` re-check of the depth-2 BMC certificate.
+
    The two legs are independent in the intended sense: the kernel proofs
    never mention the netlist, and the model checker never mentions
    `Protocol.St`. Layer 3 (`Refines.lean`) is what will join them.

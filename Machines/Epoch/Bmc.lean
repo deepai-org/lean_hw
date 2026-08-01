@@ -46,6 +46,10 @@ reset; `kinduction_sound` lifts it to *every* step, and its step
 certificate (`kind_step_sound`) is discharged over an unconstrained start
 state, i.e. over the whole `2³⁹`-state space of the netlist, reachable or
 not.
+
+**Build cost.** The two k-induction certificates re-check in ≈ 90 s; the
+depth-2 BMC certificate (4092 clauses, 1130 RUP steps) dominates at ≈ 9 min,
+so a *cold* build of this module is ≈ 10 min. It is incremental thereafter.
 -/
 
 namespace Machines.Epoch.Mc
