@@ -863,6 +863,31 @@ theorem bitsOf_getElem_bang {w : Nat} (v : BitVec w) (i : Nat) (h : i < w) :
     (bitsOf v)[i]! = v.getLsbD i := by
   rw [getElem_bang _ i (by simpa using h), bitsOf_getElem]
 
+/-- The elementwise binary shape returns as many bits as its first operand. -/
+theorem binop_size {w : Nat} {ea eb : M (Array Bit)} {op : Bit → Bit → M Bit}
+    (hsza : ∀ s bits s', M.run ea s = (.ok bits, s') → bits.size = w) :
+    ∀ s bits s',
+      M.run (ea >>= fun x => eb >>= fun y => buildM (fun i => op x[i]! y[i]!) x.size) s
+        = (.ok bits, s') → bits.size = w := by
+  intro s bits s' hrun
+  rw [run_bind] at hrun
+  revert hrun
+  cases hr : M.run ea s with
+  | mk r s₁ =>
+    cases r with
+    | error e => intro hh; simp at hh
+    | ok x =>
+      simp only []
+      rw [run_bind]
+      cases hr2 : M.run eb s₁ with
+      | mk r2 s₂ =>
+        cases r2 with
+        | error e => intro hh; simp at hh
+        | ok y =>
+          intro hh
+          rw [← hsza s x s₁ hr]
+          exact buildM_size _ _ _ _ hh
+
 /-- The elementwise binary shape: blast both operands, then one gate per bit
 position. Covers `and`, `or`, `xor` and `mux`. -/
 theorem EncA_binop {n₀ w : Nat} {ea eb : M (Array Bit)} {va vb val : (Var → Bool) → BitVec w}
@@ -880,26 +905,7 @@ theorem EncA_binop {n₀ w : Nat} {ea eb : M (Array Bit)} {va vb val : (Var → 
     refine Stable.bv (fun f g hag i hi => ?_)
     rw [hval f i hi, hval g i hi, hsta f g hag, hstb f g hag]
     exact hbst _ _ f g hag
-  refine ⟨?_, hstval, ?_⟩
-  · -- width
-    intro s bits s' hrun
-    rw [run_bind] at hrun
-    revert hrun
-    cases hr : M.run ea s with
-    | mk r s₁ =>
-      cases r with
-      | error e => intro hh; simp at hh
-      | ok x =>
-        simp only []
-        rw [run_bind]
-        cases hr2 : M.run eb s₁ with
-        | mk r2 s₂ =>
-          cases r2 with
-          | error e => intro hh; simp at hh
-          | ok y =>
-            intro hh
-            rw [← hsza s x s₁ hr]
-            exact buildM_size _ _ _ _ hh
+  refine ⟨binop_size hsza, hstval, ?_⟩
   · refine Enc.congr (α := Array Bit) (β := Array Bool)
       (val := fun f => Array.ofFn (n := w) fun i : Fin w =>
         bop f ((bitsOf (va f))[i.val]!) ((vb f).getLsbD i.val)) (fun f => ?_) ?_
