@@ -595,12 +595,21 @@ realized as LUT ROM, so its contents live inside the cut read wire.
 cones reaching `cell_flags`' uncut `RAM64M` outputs, and `cell_flags`' three
 depth-split read ports.
 
-**Two acknowledged failures on `lnp64mini_soc`** (`--ack tpc,dmem`, printed
-in full as `[ACK]` lines): `tpc`, the D30 loss on lnp64mini's trap-PC tables
-already recorded in `EPOCH_SPEC.md` E13 — found here independently, from the
-certified path, which is the point; and `dmem`, the yosys 0.33 `RAMB36E1`
-`SDP` parity mis-wiring of Deviation 13. Neither is suppressed and both are
-counted in the verdict line.
+**One acknowledged failure on `lnp64mini_soc`** (`--ack dmem`, printed in
+full as an `[ACK]` line): the yosys 0.33 `RAMB36E1` `SDP` parity mis-wiring
+of Deviation 13. It is not suppressed and it is counted in the verdict line.
+
+There were **two** until 2026-08-01: `tpc`, the D30 loss on lnp64mini's
+thread-PC tables recorded in `EPOCH_SPEC.md` E13, was found here
+independently from the certified path — which was the point — and is now
+*fixed* rather than acknowledged (D37: the declared image is all-zero and
+the `cmd 13` sweep establishes `TEXT_BASE`). D37 also made the same question
+decidable at the design, before synthesis: `Loom.Hw.Design.memInitOkB`
+predicts the mapping class from the declared shape and asks
+`Loom.Hw.imageDelivered` — *this* module's rule, shared verbatim, so a
+design-time prediction and a netlist-time measurement cannot disagree about
+what "undeliverable" means. The two remain complementary: the prediction can
+be wrong about which family yosys picks, and only the netlist knows.
 
 **What the pin-level checks bought.** The 17 "memory port cones whose wire
 name synthesis did not keep" and the 1 on `s0bscan` (`bram.en`) are gone as a
