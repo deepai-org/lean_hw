@@ -5,10 +5,11 @@ artifact. For each emitted module `rtl/X.v`, run yosys's synthesis to a
 LUT/FF-mapped netlist and check, bit by bit, that the netlist's one-cycle
 transition function equals the µVerilog `Module`'s — every UNSAT verdict
 certified by an LRAT proof checked with the PROVED checker
-(`Loom.Dp.Cert.checkLrat`). TCB delta: zero new axioms. The CNF encoder is
-untrusted in v1 (claim: "if the encoding is faithful, netlist ≡ module";
-encoder verification is future work — state this precisely in the tool
-output and the spec).
+(`Loom.Dp.Cert.checkLrat`). TCB delta: zero new axioms. The CNF encoder was
+untrusted in v1 (claim: "if the encoding is faithful, netlist ≡ module");
+**D32 (2026-08-01) removed that conditional on side A** — see
+§"The encoder, proved (D32)" below for exactly which half of the encoder is
+proved and which is not.
 
 ## Scope and comparison object
 
@@ -267,6 +268,99 @@ Its `--allow` mechanism has a counterpart in `eqcheck --ack`, with the same
 discipline: an acknowledged defect prints in full and is counted; the flag
 stops it failing a gate, not being seen.
 
+## The encoder, proved (D32, 2026-08-01)
+
+The v1 verdict read "*if* the encoding is faithful, netlist ≡ module". That
+conditional is now discharged for the µVerilog side of the miter, and the
+partition is stated by the tool on every run rather than left to this file.
+
+**The theorem** (`Loom/Netlist/MiterProof.lean`):
+
+```lean
+theorem encode_sound {w : Nat} (assumps : List Bit) (syms : List (String × Nat))
+    (e : Expr w) (hfrag : encVerified e = true)
+    (actB : M (Array Bit)) (valB : (Var → Bool) → BitVec w) (hB : EncA 0 w actB valB)
+    (hwfA : ∀ b ∈ assumps, BitWF 0 b) {s : St}
+    (hrun : M.run (sigMiter assumps syms e actB) {} = (.ok (), s)) :
+    CNF.Unsat (toDimacs s.clauses).cnf ↔
+      ∀ f : Var → Bool, (∀ b ∈ assumps, b.denote f = true) → e.eval (stOf f) = valB f
+```
+
+`sigMiter` is the shape every miter has: the folding assumptions, side A,
+side B, and the assertion that the two differ. Both `coneMiter` (output
+ports, memory port cones, read-address cones) and `regMiter` are *instances*
+of it — `regMiter`'s side A is now written as the µVerilog expression
+`mux (reg 1 "rst") (lit init) next` and blasted by the one blaster, which
+emits exactly the clauses the old hand-built reset mux did (`reg` and `lit`
+blast to nothing), so register miters are inside the theorem too. What is
+outside it: the `assertEqs` prefix the tool adds when the matching has
+merged register bits (D31's `Matching.eqs`, non-empty only on
+`epochengine`), which allocates gate variables of its own before the miter
+starts. Both directions are proved:
+left to right makes an UNSAT verdict *mean* the two transition functions
+agree; right to left makes a SAT verdict *mean* they differ, i.e. it is what
+makes the printed countermodel a real disagreement. `stOf f` is the µVerilog
+state an assignment describes, and every state is of that form
+(`stOf_surj`), so "∀ f" is "∀ state".
+
+**Verified / unverified, the honest partition.**
+
+* **Side A — proved.** `blastE` (`Loom/Netlist/Miter.lean`) is proved to
+  encode exactly `Expr.eval`, in both directions, for
+  `lit reg and or xor not add sub eq ult mux slice zext sext`
+  (`Enc_blastE`). The gate layer under it (`mkAnd`/`mkOr`/`mkXor`/`mkIte`
+  and the two list reductions) is proved once in `Loom/Netlist/Encode.lean`:
+  each gate's clauses *force* its output (the direction that makes UNSAT
+  meaningful) and every partial model extends to satisfy them (the direction
+  that makes SAT meaningful).
+* **Side A — NOT proved: `shl`, `shr`, `slt`.** The barrel shifter's
+  variable-shift structure and the signed comparator resisted proof in the
+  time available; they are left on the existing unverified path rather than
+  weakening the theorem to admit them. `encVerified` is the decidable
+  predicate that selects the proved fragment, and `unverifiedOps` is the
+  same information as a list of names; `encVerified_iff` proves the two
+  agree, so the tool's report and the theorem's hypothesis are the same
+  predicate. `eqcheck` evaluates it over every side-A expression it blasts
+  and prints which operators a design uses.
+* **Side B — NOT proved.** The netlist cone walk (`Netlist.evalSig` /
+  `evalBits`: a fuelled, memoised traversal of the driver map) enters
+  `encode_sound` as the hypothesis `EncA 0 w actB valB` — "side B's encoder
+  is faithful to *some* semantics". Proving that hypothesis (which needs a
+  reference semantics for the netlist and a memo-table invariant) is the
+  remaining half of D32. The cell library (`Cells.lean`: LUT `INIT` tables,
+  CARRY4, MUXF7/8, the FDRE family) is inside that unproved half.
+* **The clause normalization is inside, not beside.** See Deviation 5.
+
+**Cost.** Zero: the proofs are not executed. The encoder's *definitions*
+changed shape — `addBits`/`eqBits`/`assertDiffer` became structural
+recursions and the elementwise cases use `buildM` — but emit the same
+clauses in the same order, and the clause counts are unchanged
+(`s0blinky` 741, `satcounter` 367, `pingpong` 331, `s13soak` 45 611). The
+memoised compiled twin `blastEM` (`@[implemented_by]`, its audit-whitelist
+entry and its `TRUST.md` paragraph) is untouched and still carries the
+tool's speed; the reference `blastE` it stands in for is now the *proved*
+one, which strengthens that whitelist entry rather than adding to it.
+
+**Verdict lines, verbatim** (`satcounter`, a design entirely inside the
+fragment):
+
+```
+  encoder side A (the µVerilog expression, Loom.Netlist.blastE): PROVED faithful — Loom.Netlist.encode_sound: the CNF handed to cadical is UNSAT iff the two sides agree on every valuation (clause normalization inside the theorem). Proved operators: lit reg and or xor not add sub eq ult mux slice zext sext. NOT proved: shl shr slt.
+  encoder side A: every expression in this design is inside the proved fragment.
+  encoder side B (the netlist cone walk, Loom.Netlist.evalSig): NOT proved — it enters encode_sound as the hypothesis `EncA 0 w actB valB`. Every UNSAT is LRAT-certified and re-checked by Loom.Dp.Cert.checkLrat, the proved checker.
+EQCHECK OK (4 signals, 0 excluded, 0 acknowledged, 367 clauses, LRAT-verified; encoder side A proved, side B unproved)
+```
+
+and on a design that leaves the fragment (`s13soak`, which shifts):
+
+```
+  encoder side A: this design uses shl — OUTSIDE the proved fragment, so for the signals whose cones contain them the old conditional claim ("if the encoding is faithful") still applies.
+EQCHECK OK (58 signals, 0 excluded, 0 acknowledged, 45611 clauses, LRAT-verified; encoder side A proved except shl, side B unproved)
+```
+
+`lnp64mini_soc` reports `shl, slt, shr`; `s0blinky`, `satcounter`,
+`pingpong` and `s0bscan` are entirely inside the fragment.
+
 ## Deviations
 
 1. **Netlist recipe.** The spec's line is
@@ -318,6 +412,13 @@ stops it failing a gate, not being seen.
    was added — and reproduced independently with
    `scripts/loom_check_lrat.sh`'s harness on the same files, so it is a
    property of the encoding, not of the driver.
+   **(D32, 2026-08-01: this normalization is now INSIDE the theorem.)**
+   `Loom.Netlist.toDimacs_unsat_iff` proves that normalizing *and* numbering
+   the clauses preserves satisfiability in both directions — dropping a
+   tautology is sound because the clause is true under every assignment, and
+   dropping a repeated literal changes nothing — so `encode_sound` is stated
+   about the DIMACS the solver actually reads, not about the pre-normalized
+   clause array beside it.
 6. **FF `INIT` is ignored**: the comparison drives `D`/`CE`/`R`/`S`
    explicitly, and the power-up value is modelled by the checked `rst`
    branch. Any other flip-flop parameter (`IS_*_INVERTED`) is a hard error.
@@ -535,6 +636,8 @@ a model of how
 exclusion class 4 entirely. It did *not* retire class 5: an array
 `memory_libmap` leaves in fabric flip-flops (`tsleep`) still has no primitive
 to compare against, and that is now a printed exclusion of its own.
-(2) Verify the CNF encoder itself, which is the standing v1 caveat (D32).
+~~(2) Verify the CNF encoder itself, which is the standing v1 caveat~~
+**— done for side A, D32, 2026-08-01; side B (the netlist cone walk) is the
+remaining half.**
 (3) Depth-split read data and multi-port write ordering, the two shapes D31
 leaves excluded.

@@ -27,6 +27,7 @@ that is a Loom defect — record it here before working around it.
 | D23 | bounded response (`MustReach`), ranking rule, transport across `Simulation`/`StutterSimulation` | the epoch demo's acceptance criterion: bump-return within the ack bound |
 | D25 | **closed as not needed** — plain `StutterSimulation` carried the engine refinement; see below | the epoch Layer-3 refinement |
 | D31 | memories inside the post-synthesis equivalence check: reset images, write-port pins, both read shapes | D30 — the epoch engine's first silicon `-BADREF`, i.e. a bank whose reset image the flow dropped where the checker could not look |
+| D32 | the eqcheck CNF encoder proved (side A: UNSAT ⟺ the two transition functions agree, normalization included) | D22 itself — the checker's verdict carried an "*if* the encoding is faithful" that no other link in the chain has |
 | D28 | steps-to-cycles: a spec bound transported through a design with stutter budget `b` is a number of CLOCK CYCLES | the epoch Layer-3 refinement |
 
 ### D23, in detail (closed 2026-08-01)
@@ -403,3 +404,43 @@ lines, printed in full on every run.
 `check_mem_init.py` is now redundant and is deliberately **kept** as an
 independent second implementation — two readers of the same netlist
 disagreeing is itself a signal. See `Loom/Netlist/EQCHECK_SPEC.md` §Memories.
+
+## D32 — the equivalence checker's encoder, proved (CLOSED 2026-08-01, in part)
+
+**Discovered by D22 itself.** Every other link in the emission chain is a
+theorem; the strongest link — the per-build netlist check — ended in a
+conditional the tool printed on every run: "*if* the encoding is faithful,
+netlist ≡ module". The encoder is a small pure function, so the conditional
+was a gap of effort, not of principle.
+
+Closed for the µVerilog side of the miter by `Loom/Netlist/Encode.lean` (the
+gate layer) and `Loom/Netlist/MiterProof.lean` (the blaster, the DIMACS
+normalization, and the miter):
+
+    encode_sound : CNF.Unsat (toDimacs s.clauses).cnf ↔
+                     ∀ f, (assumptions hold at f) → e.eval (stOf f) = valB f
+
+`sigMiter` is the shape every miter has, and both `coneMiter` and `regMiter`
+are instances of it (the register miter's `rst ? init : next` is now written
+as a µVerilog `mux` and blasted by the one blaster, emitting the same
+clauses). Both directions — the forward one is what makes an UNSAT verdict mean
+something, the backward one is what makes the countermodel the tool prints a
+real disagreement. `toDimacs`' clause normalization (repeated literals and
+tautologies dropped, forced on us by cadical's parser) is *inside* that
+statement: `toDimacs_unsat_iff`.
+
+**What is NOT proved, stated by the tool on every run.**
+
+* Side A operators `shl`, `shr`, `slt` — the barrel shifter and the signed
+  comparator. Left on the unverified path rather than weakening the theorem;
+  `encVerified` selects the proved fragment and `eqcheck` prints which
+  operators each design actually uses (`s13soak`: `shl`; `lnp64mini_soc`:
+  `shl slt shr`; the other four designs: none).
+* Side B — the netlist cone walk `Netlist.evalSig`/`evalBits` and the cell
+  library under it. It enters `encode_sound` as the hypothesis
+  `EncA 0 w actB valB`, so the remaining gap is one named obligation rather
+  than an unstated assumption.
+
+Reopen (or rather, continue) on: (a) `shl`/`shr`/`slt`; (b) side B, which
+needs a reference semantics for the netlist and a memo-table invariant for
+the traversal.
