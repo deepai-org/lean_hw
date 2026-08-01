@@ -223,3 +223,107 @@ visibly one principle.
 Ledger line: **DDR holds bits; the design holds truth. Safety assumes nothing
 of the outside world; liveness assumes exactly one thing, and a proof-carrying
 monitor watches even that.**
+
+## Deviations (Layer 1, recorded against the plan above)
+
+Every item below is a departure from, or a refinement of, this file's
+"Protocol model (Layer 1)" section as mechanized in
+`Machines/Epoch/Protocol.lean`. Nothing was silently narrowed.
+
+**D1 — `Cell` carries an `occupied` bit.** The state shape above lists
+`{epoch, rc, poison, dead}`. §3's failure-precedence paragraph also rules on
+*empty* slots ("an empty slot is `-STALE` when its embedded epoch mismatches
+and `-BADREF` only for a matching-epoch empty reference"), which is
+unstatable without occupancy. `Cell.occupied` is additive and no v1
+transition writes it (`step_occupied`).
+
+**D2 — poison/death are home-cell facts; only the epoch is replicated.**
+The state shape replicates exactly `repl_epoch` per volume, so `use` reads
+the *freshness* value from `repl k i` (§3's class-0, tile-bounded compare)
+and the *dispositions* from the home cell. Consequence, stated rather than
+hidden: T-E3 (poison) is immediate everywhere, not ack-gated, which is
+strictly stronger than §3 requires; the ack-gated content of §3's return
+guarantee lives entirely in T-E1/T-E5, which are about the replicated
+epoch. A v2 that replicates the poison bit must re-prove T-E3 as an
+ack-gated theorem.
+
+**D3 — saturated death is a freshness-class failure (`-STALE`).** §3 gives
+death no error value of its own; it files saturation under "stale fails
+forever". `useLocal` therefore returns `-STALE` for a dead cell, after
+poison and before the epoch compare.
+
+**D4 — structural and rights facts are request-level booleans.** `Req`
+carries `wellFormed`, `classOk` and `rights` rather than deriving them from
+a modelled capability table. v1 exercises capability-slot validity
+abstractly (as scoped above); the precedence theorems T-E4 are therefore
+about the *order* of the checks, which is what §3 freezes.
+
+**D5 — slot reuse is not a v1 transition.** §3's "slot reuse installs a new
+entry with no inherited poison" appears in the model only as the empty-slot
+clause of the outcome function, not as a step. T-E3's "forever" is
+consequently relative to the v1 op set. Re-install belongs with the *reuse
+point*, which this scope note already stages out.
+
+**D6 — two extra ops: `acquire` / `release`.** The op list above names
+`use`/`bump`/`ack`/`bumpReturn`. Without a referent-count mutator the `rc`
+field would be vestigial, so the model adds the two minimal ops. They are
+carried through every invariant.
+
+**D7 — `use` is an enabled stutter step.** §3's check is a pure read. It is
+modelled as a state-preserving transition so that "a use concurrent with the
+bump" (T-E7) is a genuine interleaving inside a run rather than an
+extra-logical notion.
+
+**D8 — "forever" is `Relation.ReflTransGen Step`.** T-E1/T-E2/T-E3/T-E5 are
+stated over every state reachable from the state in question, rather than
+over an explicit trace type. `Loom.TSys.Reachable` is used for the
+init-relative invariant (`inv_invariant`).
+
+**D9 — epoch width stays a parameter.** `epoch : BitVec W` with saturation
+at `allOnes W`; every theorem is proved for all `W`, so the 39-bit
+capability-slot cell and the 64-bit shared cell are both instances. The
+exhaustive-`decide` restatement of the precedence order (`T_E4_exhaustive`)
+is at `W = 2`, which is the "decidable statement over all inputs at the
+model's bounds" this file asks for.
+
+**D10 — the referent span is all `K` volumes.** The model does not carry a
+tracked-subset span; `bumpReturn` waits for every volume. With `K = 2` this
+is exactly the plan's "the bound is O(log span); with span=2 the tree is one
+level" — stated, not pretended away.
+
+**D11 — what the model-checking leg actually covers.**
+`Machines/Epoch/Bmc.lean` is a *bit-level netlist* instance (`W = 3`,
+`N = 2`, `K = 2`) checked with `Loom/Dp/Bmc.lean` + `Loom/Dp/KInduction.lean`
+and kernel-re-checked LRAT certificates. Two honest limits:
+
+1. `Loom.Dp.Cnf.blast` over-approximates `add`/`eq`/`ult` as *free*
+   variables, so no epoch-arithmetic statement is checkable there. The
+   properties checked are the Boolean-structural twins of the theorems —
+   dead/poison stickiness, a dead cell's frozen counter, return-implies-all-
+   acks, ack-implies-in-flight, and ok-implies-live — i.e. T-E2/T-E3/T-E4's
+   and T-E5's netlist shadows. T-E1's replica-monotonicity and T-E6 are
+   *not* reachable by this engine, and T-E7 is a liveness-flavoured
+   existential that BMC does not address.
+2. `bmc_sound`/`kinduction_sound` conclude about `Module.run … reset`, the
+   *closed* run. The design is therefore self-driving (an LFSR generates the
+   op/cell/volume/policy/epoch stream) so that run is a real interleaving.
+   The k-induction *step* certificate (`kind_step_sound`) is nevertheless
+   discharged over an unconstrained start state, so the property is proved
+   1-inductive over the netlist's whole state space.
+
+**D12 — the BMC depth actually reached is 2, not ~12.** The plan asks for
+depth ~12. `Loom.Dp.Bmc.bmcCnf`'s offline construction (the `Var → Bool`
+assignment threaded through `buildSteps`) blows up sharply with depth in
+the *interpreter*: on this design, depth 0 → 0.5 s, depth 1 → 0.5 s,
+depth 2 → 8 s, depth 3 → 3 m 48 s, depth 4 → no result in 15 min. The
+bounded leg therefore
+lands at depth 2 (`safeP_bmc2`, 4092 clauses / 1130 RUP steps). This costs
+nothing in strength: `safeP_invariant` (1-induction, base + step) already
+gives the property at *every* cycle, which subsumes any finite depth. The
+blow-up is a toolchain observation worth its own issue, not a property of
+the epoch model — the k-induction queries at the same design are 856 and
+2436 clauses and build in seconds.
+
+   The two legs are independent in the intended sense: the kernel proofs
+   never mention the netlist, and the model checker never mentions
+   `Protocol.St`. Layer 3 (`Refines.lean`) is what will join them.
