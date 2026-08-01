@@ -29,10 +29,14 @@ namespace Loom.Netlist
 open Loom.Dp.Cnf
 
 instance : BEq Var := ⟨fun a b => decide (a = b)⟩
+instance : LawfulBEq Var where
+  eq_of_beq h := of_decide_eq_true h
+  rfl := decide_eq_true rfl
 instance : Hashable Var where
   hash
     | .reg t n w b => mixHash (hash t) (mixHash (hash n) (mixHash (hash w) (hash b)))
     | .aux i => mixHash 7 (hash i)
+instance : Inhabited Var := ⟨.aux 0⟩
 instance : BEq Bit := ⟨fun a b => decide (a = b)⟩
 instance : Inhabited Bit := ⟨.const false⟩
 
