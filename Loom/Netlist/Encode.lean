@@ -198,12 +198,16 @@ theorem Enc.pure {α β : Type} [Deno α β] {n₀ : Nat} {a : α} {val : (Var �
     fun f _ => hval f, fun f hf => ⟨f, Agree.refl _ _, hf, hval f⟩⟩
 
 /-- Sequential composition. `valB` may depend on the value the first action
-denotes — which is how a gate is specified in terms of its inputs. -/
-theorem Enc.bind {α β α' β' : Type} [Deno α β] [Deno α' β'] {n₀ : Nat}
+denotes — which is how a gate is specified in terms of its inputs. `P` is
+any *functional* property of the first action's result (e.g. its width),
+available to the continuation. -/
+theorem Enc.bind' {α β α' β' : Type} [Deno α β] [Deno α' β'] {n₀ : Nat}
     {m : M α} {k : α → M α'} {valA : (Var → Bool) → β} {valB : β → (Var → Bool) → β'}
+    {P : α → Prop}
     (hA : Stable n₀ valA)
+    (hP : ∀ s a s', M.run m s = (.ok a, s') → P a)
     (hm : Enc n₀ m valA)
-    (hk : ∀ (a : α) (n : Nat), n₀ ≤ n → Deno.wf n a →
+    (hk : ∀ (a : α) (n : Nat), n₀ ≤ n → Deno.wf n a → P a →
       Enc n (k a) (fun f => valB (Deno.den f a) f)) :
     Enc n₀ (m >>= k) (fun f => valB (valA f) f) := by
   intro s c s' hs hn hrun
@@ -218,7 +222,7 @@ theorem Enc.bind {α β α' β' : Type} [Deno α β] [Deno α' β'] {n₀ : Nat}
       simp only at hrun
       obtain ⟨hs₁, hn₁, hwa, hpre₁, hback₁, hfwd₁⟩ := hm s a s₁ hs hn hm'
       obtain ⟨hs₂, hn₂, hwc, hpre₂, hback₂, hfwd₂⟩ :=
-        hk a s₁.next (Nat.le_trans hn hn₁) hwa s₁ c s' hs₁ (Nat.le_refl _) hrun
+        hk a s₁.next (Nat.le_trans hn hn₁) hwa (hP s a s₁ hm') s₁ c s' hs₁ (Nat.le_refl _) hrun
       refine ⟨hs₂, Nat.le_trans hn₁ hn₂, hwc, ?_, ?_, ?_⟩
       · obtain ⟨n1, h1⟩ := hpre₁; obtain ⟨n2, h2⟩ := hpre₂
         exact ⟨n1 ++ n2, by rw [h2, h1, List.append_assoc]⟩
@@ -320,6 +324,16 @@ theorem Enc_mkGate {n₀ : Nat} (val : (Var → Bool) → Bool) (cls : Bit → L
 @[simp] theorem wf_bits (n : Nat) (a : Array Bit) :
     (Deno.wf n a : Prop) = ∀ b ∈ a, BitWF n b := rfl
 
+theorem Enc.bind {α β α' β' : Type} [Deno α β] [Deno α' β'] {n₀ : Nat}
+    {m : M α} {k : α → M α'} {valA : (Var → Bool) → β} {valB : β → (Var → Bool) → β'}
+    (hA : Stable n₀ valA)
+    (hm : Enc n₀ m valA)
+    (hk : ∀ (a : α) (n : Nat), n₀ ≤ n → Deno.wf n a →
+      Enc n (k a) (fun f => valB (Deno.den f a) f)) :
+    Enc n₀ (m >>= k) (fun f => valB (valA f) f) :=
+  Enc.bind' (P := fun _ => True) hA (fun _ _ _ _ => trivial) hm
+    (fun a n hn hwa _ => hk a n hn hwa)
+
 /-! ## The gates of `Cells.lean` -/
 
 theorem Stable.and {n₀ : Nat} {x y : Bit} (hx : BitWF n₀ x) (hy : BitWF n₀ y) :
@@ -395,6 +409,10 @@ theorem Enc_mkAnd {n₀ : Nat} {x y : Bit} (hx : BitWF n₀ x) (hy : BitWF n₀ 
           cases hb : Bit.denote f (Bit.lit vy py) <;> simp [Bit.denote_not, hb]
         · exact hgate
 
+
+theorem Enc.mono {α β : Type} [Deno α β] {m n : Nat} {act : M α} {val : (Var → Bool) → β}
+    (h : m ≤ n) (he : Enc m act val) : Enc n act val :=
+  fun s a s' hs hn hrun => he s a s' hs (Nat.le_trans h hn) hrun
 
 theorem Enc.congr {α β : Type} [Deno α β] {n₀ : Nat} {act : M α} {val val' : (Var → Bool) → β}
     (h : ∀ f, val f = val' f) (he : Enc n₀ act val) : Enc n₀ act val' := by
@@ -615,5 +633,330 @@ theorem Enc_mkOrList {n₀ : Nat} : ∀ (l : List Bit), (∀ b ∈ l, BitWF n₀
       (valB := fun a f => b.denote f || a) (Stable.anyList bs hbs) (Enc_mkOrList bs hbs) ?_
     · intro a n hn hwa
       exact Enc_mkOr (BitWF.mono hn hb) hwa
+
+/-! ## Bit vectors: the array combinator
+
+`buildM g k` is the shape every width-`k` blast has: encode bit `0`, then
+bit `1`, … , in that order (the order the encoder's `for` loops used, hence
+the same clauses in the same order). -/
+
+instance {α β α' β' : Type} [Deno α β] [Deno α' β'] : Deno (α × α') (β × β') where
+  wf := fun n p => Deno.wf n p.1 ∧ Deno.wf n p.2
+  den := fun f p => (Deno.den f p.1, Deno.den f p.2)
+  den_congr := fun h ha => by
+    rw [Deno.den_congr h.1 ha, Deno.den_congr h.2 ha]
+  wf_mono := fun h hw => ⟨Deno.wf_mono h hw.1, Deno.wf_mono h hw.2⟩
+
+@[simp] theorem den_prod {α β α' β' : Type} [Deno α β] [Deno α' β'] (f : Var → Bool)
+    (p : α × α') : (Deno.den f p : β × β') = (Deno.den f p.1, Deno.den f p.2) := rfl
+
+@[simp] theorem wf_prod {α β α' β' : Type} [Deno α β] [Deno α' β'] (n : Nat) (p : α × α') :
+    (Deno.wf n p : Prop) = (Deno.wf n p.1 ∧ Deno.wf n p.2) := rfl
+
+/-- `#[← g 0, …, ← g (k-1)]`, evaluated left to right. -/
+def buildM (g : Nat → M Bit) : Nat → M (Array Bit)
+  | 0 => Pure.pure #[]
+  | k + 1 => do
+      let a ← buildM g k
+      let b ← g k
+      Pure.pure (a.push b)
+
+theorem ofFn_succ {β : Type} {k : Nat} (v : Fin (k + 1) → β) :
+    Array.ofFn v = (Array.ofFn (n := k) (fun i : Fin k => v i.castSucc)).push (v (Fin.last k)) := by
+  apply Array.ext
+  · simp
+  · intro i h₁ h₂
+    simp only [Array.size_ofFn] at h₁
+    rcases Nat.lt_or_ge i k with h | h
+    · rw [Array.getElem_ofFn, Array.getElem_push_lt (by simpa using h), Array.getElem_ofFn]
+      rfl
+    · have hik : i = k := by omega
+      subst hik
+      have hsz : (Array.ofFn (n := i) (fun j : Fin i => v j.castSucc)).size = i := by simp
+      rw [Array.getElem_ofFn, Array.getElem_push]
+      simp [hsz, Fin.last]
+
+theorem Stable.ofFn {n₀ k : Nat} {val : Nat → (Var → Bool) → Bool}
+    (hs : ∀ i, i < k → Stable n₀ (val i)) :
+    Stable n₀ (fun f => Array.ofFn (n := k) fun i : Fin k => val i.val f) := by
+  intro f g ha
+  apply Array.ext
+  · simp
+  · intro i h₁ h₂
+    simp only [Array.size_ofFn] at h₁
+    rw [Array.getElem_ofFn, Array.getElem_ofFn]
+    exact hs i h₁ f g ha
+
+theorem Enc_buildM {n₀ : Nat} {g : Nat → M Bit} {val : Nat → (Var → Bool) → Bool} :
+    ∀ (k : Nat), (∀ i, i < k → Enc n₀ (g i) (val i)) → (∀ i, i < k → Stable n₀ (val i)) →
+      Enc n₀ (buildM g k) (fun f => Array.ofFn (n := k) fun i : Fin k => val i.val f)
+  | 0, _, _ => Enc.pure (by simp) (fun f => by simp)
+  | k + 1, hg, hs => by
+    refine Enc.congr (α := Array Bit) (β := Array Bool)
+      (val := fun f => (Array.ofFn (n := k) fun i : Fin k => val i.val f).push (val k f))
+      (fun f => by rw [ofFn_succ]; rfl) ?_
+    refine Enc.bind (α := Array Bit) (α' := Array Bit)
+      (valA := fun f => Array.ofFn (n := k) fun i : Fin k => val i.val f)
+      (valB := fun av f => av.push (val k f))
+      (Stable.ofFn (fun i hi => hs i (by omega)))
+      (Enc_buildM k (fun i hi => hg i (by omega)) (fun i hi => hs i (by omega))) ?_
+    intro a n hn hwa
+    refine Enc.bind (α := Bit) (α' := Array Bit) (valA := val k)
+      (valB := fun b f => (a.map (·.denote f)).push b)
+      (Stable.mono hn (hs k (by omega)))
+      (Enc.mono hn (hg k (by omega))) ?_
+    intro b n' hn' hwb
+    refine Enc.pure ?_ (fun f => ?_)
+    · intro c hc
+      rcases Array.mem_push.mp hc with h | h
+      · exact BitWF.mono hn' (hwa c h)
+      · exact h ▸ hwb
+    · simp
+
+/-! ## Bit-vector encoders
+
+`EncA n₀ w act val` = "`act` encodes the `w`-bit vector `val`": `Enc`, plus
+the (purely functional) fact that it returns `w` bits, plus stability of the
+value under the assignments that agree below `n₀`. -/
+
+/-- The bits of a bit vector, LSB first — the shape a blaster returns. -/
+def bitsOf {w : Nat} (v : BitVec w) : Array Bool :=
+  Array.ofFn (n := w) fun i : Fin w => v.getLsbD i.val
+
+@[simp] theorem bitsOf_size {w : Nat} (v : BitVec w) : (bitsOf v).size = w := by simp [bitsOf]
+
+theorem bitsOf_getElem {w : Nat} (v : BitVec w) (i : Nat) (h : i < (bitsOf v).size) :
+    (bitsOf v)[i] = v.getLsbD i := by
+  simp only [bitsOf, Array.getElem_ofFn]
+
+theorem getElem_bang {α : Type} [Inhabited α] (a : Array α) (i : Nat) (h : i < a.size) :
+    a[i]! = a[i] := by simp [getElem!_pos, h]
+
+/-- `act` encodes the `w`-bit vector `val` (faithfully, both directions). -/
+def EncA (n₀ w : Nat) (act : M (Array Bit)) (val : (Var → Bool) → BitVec w) : Prop :=
+  (∀ s bits s', M.run act s = (.ok bits, s') → bits.size = w) ∧
+  Stable n₀ val ∧
+  Enc n₀ act (fun f => bitsOf (val f))
+
+theorem Stable.bits {n₀ w : Nat} {val : (Var → Bool) → BitVec w} (h : Stable n₀ val) :
+    Stable n₀ (fun f => bitsOf (val f)) := fun f g ha => congrArg bitsOf (h f g ha)
+
+theorem EncA.congr {n₀ w : Nat} {act : M (Array Bit)} {val val' : (Var → Bool) → BitVec w}
+    (h : ∀ f, val f = val' f) (he : EncA n₀ w act val) : EncA n₀ w act val' :=
+  ⟨he.1, fun f g ha => by rw [← h, ← h]; exact he.2.1 f g ha,
+    Enc.congr (fun f => by rw [h f]) he.2.2⟩
+
+theorem EncA.mono {m n w : Nat} {act : M (Array Bit)} {val : (Var → Bool) → BitVec w}
+    (h : m ≤ n) (he : EncA m w act val) : EncA n w act val :=
+  ⟨he.1, Stable.mono h he.2.1, Enc.mono h he.2.2⟩
+
+/-- Pointwise form of the denotation equation. -/
+theorem den_pointwise {w : Nat} {x : Array Bit} {f : Var → Bool} {v : BitVec w}
+    (hsz : x.size = w) (h : (Deno.den f x : Array Bool) = bitsOf v) (i : Nat) (hi : i < w) :
+    (x[i]!).denote f = v.getLsbD i := by
+  have hx : i < x.size := by omega
+  have h2 : (x.map (·.denote f))[i]'(by simpa using hx) = (bitsOf v)[i]'(by simp; omega) := by
+    simp only [← h]; rfl
+  rw [Array.getElem_map] at h2
+  rw [getElem_bang x i hx, h2, bitsOf_getElem]
+
+theorem Stable.bv {n₀ w : Nat} {val : (Var → Bool) → BitVec w}
+    (h : ∀ f g, Agree n₀ f g → ∀ i, i < w → (val f).getLsbD i = (val g).getLsbD i) :
+    Stable n₀ val := by
+  intro f g ha
+  apply BitVec.eq_of_getLsbD_eq
+  intro i hi
+  exact h f g ha i hi
+
+/-- The `pure (Array.ofFn …)` shape: `lit` and `reg`. -/
+theorem EncA_ofFn {n₀ w : Nat} (g : Fin w → Bit) (val : (Var → Bool) → BitVec w)
+    (hwf : ∀ i, BitWF n₀ (g i))
+    (hval : ∀ f i, (g i).denote f = (val f).getLsbD i.val) :
+    EncA n₀ w (Pure.pure (Array.ofFn g)) val := by
+  have hst : Stable n₀ val := by
+    refine Stable.bv (fun f h ha i hi => ?_)
+    rw [← hval f ⟨i, hi⟩, ← hval h ⟨i, hi⟩]
+    exact (hwf ⟨i, hi⟩).denote_congr ha
+  refine ⟨fun s bits s' hrun => ?_, hst, Enc.pure ?_ ?_⟩
+  · rw [run_pure] at hrun; cases hrun; simp
+  · intro b hb
+    obtain ⟨i, hi⟩ := (Array.mem_ofFn ..).mp hb
+    exact hi ▸ hwf i
+  · intro f
+    apply Array.ext
+    · simp [bitsOf]
+    · intro i h₁ h₂
+      simp only [den_bits, Array.size_map, Array.size_ofFn] at h₁
+      simp only [den_bits, Array.getElem_map, Array.getElem_ofFn, bitsOf]
+      exact hval f ⟨i, h₁⟩
+
+/-- A purely functional continuation `do let x ← ea; pure (k x)` whose
+effect on denotations is the function `φ` — the shape of `not`, `slice`,
+`zext` and `sext`. -/
+theorem EncA.bindPure {n₀ w w' : Nat} {ea : M (Array Bit)} {va : (Var → Bool) → BitVec w}
+    (h : EncA n₀ w ea va) (k : Array Bit → Array Bit) (φ : Array Bool → Array Bool)
+    (val : BitVec w → BitVec w')
+    (hsize : ∀ x : Array Bit, x.size = w → (k x).size = w')
+    (hwf : ∀ (n : Nat) (x : Array Bit), (∀ b ∈ x, BitWF n b) → ∀ b ∈ k x, BitWF n b)
+    (hφ : ∀ (f : Var → Bool) (x : Array Bit), (k x).map (·.denote f) = φ (x.map (·.denote f)))
+    (hval : ∀ v : BitVec w, φ (bitsOf v) = bitsOf (val v)) :
+    EncA n₀ w' (do let x ← ea; Pure.pure (k x)) (fun f => val (va f)) := by
+  obtain ⟨hsz, hstv, henc⟩ := h
+  refine ⟨?_, ?_, ?_⟩
+  · intro s bits s' hrun
+    rw [run_bind] at hrun
+    revert hrun
+    cases hr : M.run ea s with
+    | mk r s₁ =>
+      cases r with
+      | error e => intro hh; simp at hh
+      | ok x =>
+        intro hh
+        simp only [run_pure] at hh
+        cases hh
+        exact hsize x (hsz s x _ hr)
+  · exact fun f g ha => congrArg val (hstv f g ha)
+  · refine Enc.congr (α := Array Bit) (β := Array Bool) (val := fun f => φ (bitsOf (va f)))
+      (fun f => hval (va f)) ?_
+    refine Enc.bind (α := Array Bit) (α' := Array Bit) (valA := fun f => bitsOf (va f))
+      (valB := fun xv _ => φ xv) hstv.bits henc ?_
+    intro x n hn hwx
+    exact Enc.pure (hwf n x hwx) (fun f => hφ f x)
+
+theorem buildM_size {g : Nat → M Bit} : ∀ (k : Nat) (s : St) (bits : Array Bit) (s' : St),
+    M.run (buildM g k) s = (.ok bits, s') → bits.size = k
+  | 0, s, bits, s', hrun => by rw [buildM, run_pure] at hrun; cases hrun; simp
+  | k + 1, s, bits, s', hrun => by
+    rw [buildM, run_bind] at hrun
+    revert hrun
+    cases hr : M.run (buildM g k) s with
+    | mk r s₁ =>
+      cases r with
+      | error e => intro hh; simp at hh
+      | ok a =>
+        simp only []
+        rw [run_bind]
+        cases hr2 : M.run (g k) s₁ with
+        | mk r2 s₂ =>
+          cases r2 with
+          | error e => intro hh; simp at hh
+          | ok b =>
+            simp only [run_pure]
+            intro hh
+            cases hh
+            simp [buildM_size k s a s₁ hr]
+
+theorem Stable.bop {n₀ n : Nat} {x y : Bit} {bop : (Var → Bool) → Bool → Bool → Bool}
+    (hn : n₀ ≤ n) (hb : ∀ a b : Bool, Stable n₀ (fun f => bop f a b))
+    (hx : BitWF n x) (hy : BitWF n y) :
+    Stable n (fun f => bop f (x.denote f) (y.denote f)) := by
+  intro f g ha
+  show bop f (Bit.denote f x) (Bit.denote f y) = bop g (Bit.denote g x) (Bit.denote g y)
+  rw [hx.denote_congr ha, hy.denote_congr ha]
+  exact hb _ _ f g (ha.antitone hn)
+
+theorem getElem_bang_map (a : Array Bit) (f : Var → Bool) (i : Nat) (h : i < a.size) :
+    (a.map (·.denote f))[i]! = (a[i]!).denote f := by
+  rw [getElem_bang _ i (by simpa using h), getElem_bang a i h, Array.getElem_map]
+
+theorem bitsOf_getElem_bang {w : Nat} (v : BitVec w) (i : Nat) (h : i < w) :
+    (bitsOf v)[i]! = v.getLsbD i := by
+  rw [getElem_bang _ i (by simpa using h), bitsOf_getElem]
+
+/-- The elementwise binary shape: blast both operands, then one gate per bit
+position. Covers `and`, `or`, `xor` and `mux`. -/
+theorem EncA_binop {n₀ w : Nat} {ea eb : M (Array Bit)} {va vb val : (Var → Bool) → BitVec w}
+    {op : Bit → Bit → M Bit} {bop : (Var → Bool) → Bool → Bool → Bool}
+    (hop : ∀ (n : Nat) (x y : Bit), n₀ ≤ n → BitWF n x → BitWF n y →
+        Enc n (op x y) (fun f => bop f (x.denote f) (y.denote f)))
+    (hbst : ∀ a b : Bool, Stable n₀ (fun f => bop f a b))
+    (ha : EncA n₀ w ea va) (hb : EncA n₀ w eb vb)
+    (hval : ∀ (f : Var → Bool) (i : Nat), i < w →
+        (val f).getLsbD i = bop f ((va f).getLsbD i) ((vb f).getLsbD i)) :
+    EncA n₀ w (do let x ← ea; let y ← eb; buildM (fun i => op x[i]! y[i]!) x.size) val := by
+  obtain ⟨hsza, hsta, henca⟩ := ha
+  obtain ⟨hszb, hstb, hencb⟩ := hb
+  have hstval : Stable n₀ val := by
+    refine Stable.bv (fun f g hag i hi => ?_)
+    rw [hval f i hi, hval g i hi, hsta f g hag, hstb f g hag]
+    exact hbst _ _ f g hag
+  refine ⟨?_, hstval, ?_⟩
+  · -- width
+    intro s bits s' hrun
+    rw [run_bind] at hrun
+    revert hrun
+    cases hr : M.run ea s with
+    | mk r s₁ =>
+      cases r with
+      | error e => intro hh; simp at hh
+      | ok x =>
+        simp only []
+        rw [run_bind]
+        cases hr2 : M.run eb s₁ with
+        | mk r2 s₂ =>
+          cases r2 with
+          | error e => intro hh; simp at hh
+          | ok y =>
+            intro hh
+            rw [← hsza s x s₁ hr]
+            exact buildM_size _ _ _ _ hh
+  · refine Enc.congr (α := Array Bit) (β := Array Bool)
+      (val := fun f => Array.ofFn (n := w) fun i : Fin w =>
+        bop f ((bitsOf (va f))[i.val]!) ((vb f).getLsbD i.val)) (fun f => ?_) ?_
+    · apply Array.ext
+      · simp
+      · intro i h₁ h₂
+        simp only [Array.size_ofFn] at h₁
+        rw [Array.getElem_ofFn, bitsOf_getElem, hval f i h₁,
+          bitsOf_getElem_bang (va f) i h₁]
+    refine Enc.bind' (α := Array Bit) (α' := Array Bit) (P := fun x => x.size = w)
+      (valA := fun f => bitsOf (va f))
+      (valB := fun xv f => Array.ofFn (n := w) fun i : Fin w =>
+        bop f (xv[i.val]!) ((vb f).getLsbD i.val))
+      hsta.bits hsza henca ?_
+    intro x n hn hwx hxw
+    refine Enc.congr (α := Array Bit) (β := Array Bool)
+      (val := fun f => Array.ofFn (n := w) fun i : Fin w =>
+        bop f ((x[i.val]!).denote f) ((bitsOf (vb f))[i.val]!)) (fun f => ?_) ?_
+    · show (Array.ofFn (n := w) fun i : Fin w =>
+              bop f ((x[i.val]!).denote f) ((bitsOf (vb f))[i.val]!))
+          = Array.ofFn (n := w) fun i : Fin w =>
+              bop f ((x.map (·.denote f))[i.val]!) ((vb f).getLsbD i.val)
+      apply Array.ext
+      · simp
+      · intro i h₁ h₂
+        simp only [Array.size_ofFn] at h₁
+        rw [Array.getElem_ofFn, Array.getElem_ofFn, getElem_bang_map x f i (by omega),
+          bitsOf_getElem_bang (vb f) i h₁]
+    refine Enc.bind' (α := Array Bit) (α' := Array Bit) (P := fun y => y.size = w)
+      (valA := fun f => bitsOf (vb f))
+      (valB := fun yv f => Array.ofFn (n := w) fun i : Fin w =>
+        bop f ((x[i.val]!).denote f) (yv[i.val]!))
+      (Stable.mono hn hstb.bits) hszb (Enc.mono hn hencb) ?_
+    · intro y n' hn' hwy hyw
+      have hxb : ∀ i, i < w → BitWF n' (x[i]!) := fun i hi => by
+        rw [getElem_bang x i (by omega)]
+        exact BitWF.mono hn' (hwx _ (Array.getElem_mem (by omega)))
+      have hyb : ∀ i, i < w → BitWF n' (y[i]!) := fun i hi => by
+        rw [getElem_bang y i (by omega)]
+        exact hwy _ (Array.getElem_mem (by omega))
+      refine Enc.congr (α := Array Bit) (β := Array Bool)
+        (val := fun f => Array.ofFn (n := x.size) fun i : Fin x.size =>
+          bop f ((x[i.val]!).denote f) ((y[i.val]!).denote f)) (fun f => ?_) ?_
+      · show (Array.ofFn (n := x.size) fun i : Fin x.size =>
+              bop f ((x[i.val]!).denote f) ((y[i.val]!).denote f))
+            = Array.ofFn (n := w) fun i : Fin w =>
+                bop f ((x[i.val]!).denote f) ((y.map (·.denote f))[i.val]!)
+        apply Array.ext
+        · simp [hxw]
+        · intro i h₁ h₂
+          simp only [Array.size_ofFn, hxw] at h₁
+          rw [Array.getElem_ofFn, Array.getElem_ofFn, getElem_bang_map y f i (by omega)]
+      · refine Enc_buildM (n₀ := n')
+          (val := fun i f => bop f ((x[i]!).denote f) ((y[i]!).denote f)) x.size
+          (fun i hi => hop n' (x[i]!) (y[i]!) (Nat.le_trans hn hn')
+            (hxb i (by omega)) (hyb i (by omega)))
+          (fun i hi => Stable.bop (Nat.le_trans hn hn') hbst
+            (hxb i (by omega)) (hyb i (by omega)))
 
 end Loom.Netlist
