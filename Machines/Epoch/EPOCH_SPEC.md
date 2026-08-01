@@ -571,3 +571,117 @@ LD.W rd,  [base, 24]         ; blocks until the bump has RETURNED
 
 `fpga/zc702/epoch0.s` (bumper) and `fpga/zc702/epoch1.s` (holder) are the
 worked examples.
+
+## Deviations (Layer 3 — `Refines.lean`, recorded 2026-08-01)
+
+Layer 3 discharges this file's `Machines/Epoch/Refines.lean` obligation: the
+Loom `Design` of Layer 2 refines the mechanized §3 protocol of Layer 1, and
+§3's safety theorems are transported onto the hardware. Layer-1 deviations
+keep their `D` numbers, Layer 2's their `E`; Layer 3's are `F`.
+
+**F1 — the concrete system is the OPEN design, quantified over all input
+valuations.** `Refines.sysOpen d` has `init σ = (σ = d.reset)` and
+`step σ σ' = ∃ ι, d.cycleOpen ι σ = σ'`. The existential over the input
+valuation is the mechanized form of §"Consequence bound NOW": the two request
+ports are the cores' only reach into the engine, and the step relation admits
+*every* value they could ever present, on every cycle. `abs_setInputs` then
+proves that no input name is a coordinate the abstraction reads. **There is
+no hypothesis about core behaviour anywhere in Layer 3** — the safety
+statement is unconditional over all input traces, adversarial cores included,
+as this file requires.
+
+**F2 — the abstraction's `rc` is `0`, and every address is a cell.**
+`abs σ` reads `cells` out of `cell_epoch`/`cell_flags` (poison/dead/occupied
+= bits 0/1/2), `repl k` out of `repl{k}`, and `pending` out of the bump
+sequencer. `Protocol.Cell.rc` is `0` at every cell because the engine has no
+referent counter (E5) and `rc` appears in no invariant or safety theorem. The
+cell count is `N = 2 ^ aw`: every address in the bank is a cell, so `use`'s
+out-of-range `-BADREF` arm (Layer-1 D4) is unreachable at the design level —
+range checking lives in the MMIO adapter, not the engine.
+
+**F3 — `pending` is `some` exactly in `B_ACK`/`B_RET`, not "everything but
+`B_IDLE`".** The natural reading of the sequencer would make any non-idle
+state a bump in flight. That is not a refinement: in `B_RD`/`B_UP` the home
+epoch has not yet been incremented, and `Protocol.stepEv (.bump …)` increments
+the home *and* creates `pending` in one event. The abstract `bump` is
+therefore the `B_UP → B_ACK` cycle, where the memory write, `b_target` and
+the broadcast commit together; `B_IDLE → B_RD` (accepting a request) and
+`B_RD → B_UP` (the D19 read stage) are stutters at `pending = none`. Anything
+else would need a protocol step that moves the epoch without a bump.
+
+**F4 — one design invariant, and it is about the sequencer, not the cores.**
+The simulation is stated on `(sysOpen d).reachablePart` and needs
+`Refines.DInv`, two facts:
+(i) `b_st = B_UP → b_epoch_q = cell_epoch[b_a] ∧ b_flags_q = cell_flags[b_a]`
+— the D19 read-stage discipline, without which the increment the engine
+commits need not be `satInc` of the *current* home epoch; and
+(ii) `b_st = B_RET → both ack bits set` — without which the return would not
+be `bumpReturn`-enabled. Both are proved by `dinv_cycle`, which shows they
+hold after **every** cycle from **every** state, so `DInv` is inductive with
+reset as its only base case. Restricting to reachable states is not
+conditionality: the delivered theorems are `(sysOpen d).Invariant`-shaped,
+i.e. statements about every reachable state of the design.
+
+**F5 — the one side condition is `2 ≤ ew`, a geometry fact.** At `ew = 1` the
+reset epoch `1` *is* `allOnes`, so the reset image would not satisfy
+`Protocol.Init` (`deadIffMax`) and the engine would boot dead. Both shipped
+instances satisfy it (`cfg32.ew = 32`, `cfgTiny.ew = 3`); it is a constraint
+on the parameterization, not an assumption about the environment.
+
+**F6 — D25 (prophecy/history variables) was NOT needed; the entry is
+closed.** `LOOM_GAPS.md` predicted that a commit point depending on "which
+volume acks last" would defeat forward simulation. It does not, and the
+reason is architectural rather than lucky: because the engine owns the
+replicas and generates the acks itself (E2), the per-volume ack vector is
+*architectural state* (`b_acked`), not a fact about the future, and the
+"whole span has acked" precondition of the return is an inductive invariant
+of the sequencer (F4-ii). A plain `StutterSimulation` suffices. Had the acks
+come from cores — the design this file's doctrine forbids — the ack vector
+would have been an environment observation and D25 would have bitten.
+
+**F7 — what the transported theorems say, and what they do not.**
+Delivered, each `∀` over reachable states, input traces and cycle counts:
+`design_inv` (`Protocol.Inv`), `T_E1_design` / `T_E1_design_never_ok`,
+`T_E2_design`, `T_E3_design`, `T_E6_design`, plus `chk_resp_0` / `chk_resp_1`
+— the check unit's 3-bit `resp{k}_code` is exactly `Protocol.useLocal`
+(§3's precedence: the design-level T-E4) applied to the latched request and
+volume `k`'s replica, and to *no other volume's* (E6).
+**Not proved, and stated rather than hidden**: that the values a check unit
+latched still equal the memory contents at that address when it answers. That
+is *false in general* during an in-flight bump — it is exactly E8's
+cross-port collision, which §3 licenses as in-flight liberty (T-E7). Tying a
+check's answer to a *specific* memory snapshot therefore needs a history
+variable and belongs with a future v2 that also replicates the poison bit
+(D2). The freshness state itself is fully covered: T-E1's "forever" is over
+`Protocol.Run`, which `run_abs` proves is what running the fabric does.
+
+**F8 — the cycle bound, and its relation to the measured 5 (D28).** Three
+numbers, kept apart on purpose:
+* **15 cycles — the transported bound.** `bump_returns_within_15_cycles` /
+  `bump_bounded_response`: the spec bound `K + 1 = 3` steps
+  (`Machines/Epoch/Bounded.lean`) through `StutterSimulation.
+  boundedResponse_pullback` with stutter budget `b = 3` gives
+  `3 * (3+1) + 3 = 15` **clock cycles**. This is the number that comes for
+  free from the spec, and it is a *sound over-approximation*: the pullback
+  charges `b+1` cycles for every protocol step whether the design spends them
+  or not.
+* **4 cycles — the exact bound.** `bump_returns_within_4_cycles`, by a direct
+  ranking on the same cycle-accurate system: two acks (one volume per cycle),
+  the move to `B_RET`, and the return. This is the number to hold silicon to.
+* **5 cycles — Layer 2's measurement** (E10, `bump_cycles`). It is a
+  *different interval*: the counter is zeroed when the request is accepted
+  (`B_IDLE → B_RD`) and read at the return, so it spans `B_RD`, `B_UP` and
+  the four cycles the proof bounds, minus one for the counter's start offset
+  — issue at cycle 0, return at cycle 6, counter reads 5. The proved 4 covers
+  the sub-interval from §3's `bump` event (the home increment and broadcast,
+  `B_UP → B_ACK`) to §3's linearization point (the return), which is the
+  interval the *protocol* bound is about. So: 4 is exact and proved, 15 is
+  proved and loose, and the measured 5 is consistent with both — it is not
+  the same quantity as either, and this paragraph exists so that nobody
+  reports it as if it were.
+
+**F9 — the theorems reach the emitted RTL.** Everything is stated about
+`Design.cycleOpen`; `design_wf` / `tiny_wf` discharge `Compile.DesignWF` in
+the kernel and `emitted_cycleOpen` instantiates the D-series emission theorem,
+so one cycle of the emitted µVerilog module is one cycle of the `Design` these
+theorems quantify over. Post-synthesis is D22's job (eqcheck), unchanged.

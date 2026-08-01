@@ -25,6 +25,8 @@ that is a Loom defect — record it here before working around it.
 | D21 | CDC contract: verified toggle-sync + `CmdPulseTrace` | the wrapper boundary |
 | D22 | post-synthesis equivalence checking (LRAT-certified) | the yosys-adequacy assumption |
 | D23 | bounded response (`MustReach`), ranking rule, transport across `Simulation`/`StutterSimulation` | the epoch demo's acceptance criterion: bump-return within the ack bound |
+| D25 | **closed as not needed** — plain `StutterSimulation` carried the engine refinement; see below | the epoch Layer-3 refinement |
+| D28 | steps-to-cycles: a spec bound transported through a design with stutter budget `b` is a number of CLOCK CYCLES | the epoch Layer-3 refinement |
 
 ### D23, in detail (closed 2026-08-01)
 
@@ -84,12 +86,26 @@ satisfying `Φ`, satisfiability witnesses so a rely is provably non-vacuous, and
 composition lemmas (rely of the whole from relies of the parts) that agree with
 D16's `connect`.
 
-**D25 — refinement toolkit beyond stutter.** A hardware engine commits over
-several cycles what a protocol spec commits atomically; when the commit point
-depends on the future (which volume acks last), plain forward simulation fails.
-Needed: auxiliary/prophecy variables, or a backward/history-indexed simulation,
-with the same `invariant_pullback` ergonomics. Expected to bite in the epoch
-refinement (Layer 3) — if it does not, say so and close the entry.
+**D25 — refinement toolkit beyond stutter. CLOSED 2026-08-01, as *not
+needed*.** The prediction was that a hardware engine committing over several
+cycles what the spec commits atomically would need prophecy or a
+backward/history-indexed simulation, "when the commit point depends on the
+future (which volume acks last)". It did not bite in `Machines/Epoch/
+Refines.lean`, and the reason is worth recording because it is architectural,
+not accidental: the engine **owns** the replicas and generates the acks itself
+(EPOCH_SPEC deviation E2), so the ack vector is architectural state
+(`b_acked`), not an observation of the environment's future, and
+"the whole referent span has acked" — the enabling condition of §3's return —
+is an ordinary inductive invariant of the sequencer. A plain
+`StutterSimulation` (D17) plus one two-clause design invariant discharged the
+whole obligation. Had the acks been *inputs*, as the pre-doctrine port sketch
+had them, the ack vector would have been an environment observation and this
+entry would have been paid in full. The doctrine that made the safety theorem
+unconditional is the same one that made the refinement elementary.
+
+Re-open if a future engine's commit point genuinely depends on an input the
+design does not latch: the shape needed is still auxiliary/prophecy variables
+with `invariant_pullback` ergonomics.
 
 **D26 — spec-to-design synthesis with soundness.** The proof-derived bus
 monitor (`monitor_sound : monitor flags trace ↔ ¬ trace ⊨ Φ`) is a new
@@ -112,7 +128,8 @@ a cost, not an asset.
 
 ## D28 — steps-to-cycles: a proved bound and a measured number must be one quantity
 
-Discovered closing D23 (2026-08-01). Bounded response is stated in
+**CLOSED 2026-08-01** by `Machines/Epoch/Refines.lean` — see the end of this
+entry for what was shipped. Discovered closing D23 (2026-08-01). Bounded response is stated in
 *transition-system steps*; the goal's acceptance is in *fabric cycles*. Those
 are only the same quantity once a refinement fixes the steps-per-cycle
 correspondence — which is exactly what the Engine→Protocol refinement (Layer 3)
@@ -123,3 +140,17 @@ CLOCK CYCLES a silicon measurement may be compared against, and make the epoch
 demo cite that theorem when it prints its latency. Without it, "proved bound"
 and "measured cycles" are two numbers that merely look alike — which is exactly
 the sloppiness this project exists to refuse.
+
+**Shipped.** `Refines.bump_returns_within_15_cycles` and
+`Refines.bump_bounded_response` are the spec bound `K + 1 = 3` steps
+(`Machines/Epoch/Bounded.lean`) transported through the engine refinement with
+stutter budget `b = 3`, i.e. `3 * (3+1) + 3 = 15` **clock cycles** of the
+emitted RTL, over all input traces, with no stall. Because the generic
+pullback charges `b+1` cycles per protocol step, the transported number is a
+sound over-approximation; the exact one is proved beside it by a direct
+ranking on the same cycle-accurate system —
+`Refines.bump_returns_within_4_cycles` (`K = 2` acks, the move to `B_RET`, the
+return). Layer 2's measured `bump_cycles = 5` is a *different interval*
+(request acceptance → return, less the counter's start offset) and
+`EPOCH_SPEC.md` deviation F8 spells out exactly how the three numbers line up,
+so that a proved bound and a measured number are never quietly conflated.
