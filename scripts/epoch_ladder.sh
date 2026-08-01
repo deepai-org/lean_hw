@@ -51,4 +51,12 @@ lake env lean --run Machines/Lnp64mini/Emit.lean dual     >/dev/null
 for f in rtl/lnp64mini.v rtl/lnp64mini_soc.v rtl/lnp64mini_dual.v; do
   cmp "$f" "$T/$(basename "$f").before"
 done
+# 7. E13 guard: does the synthesis flow actually deliver the reset images?
+#    Needs a yosys netlist, which only the board host builds, so this leg runs
+#    when one is pointed at (EPOCH_SYNTH_JSON=.../lnp64mini_epoch_top.json).
+if [ -n "${EPOCH_SYNTH_JSON:-}" ]; then
+  echo "### 7. E13 guard: memory reset images survive synthesis"
+  python3 scripts/check_mem_init.py "$EPOCH_SYNTH_JSON" rtl/lnp64mini_epoch.v
+fi
+
 echo "epoch_ladder: OK"

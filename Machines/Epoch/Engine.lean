@@ -140,8 +140,18 @@ def B_RET : Nat := 4
 def FLAG_POISON : Nat := 1
 /-- `cell_flags` bit 1 (saturated death). -/
 def FLAG_DEAD : Nat := 2
-/-- `cell_flags` bit 2 (§3's empty-slot clause). -/
-def FLAG_OCC : Nat := 4
+/-- `cell_flags` bit 2 is **reserved and always zero** (deviation E13).
+
+v1 has no install/free op (deviation E4), so §3's slot-occupancy bit can
+never change after reset: it would be a memory-resident constant whose only
+source is the configuration-time reset image. Making it a stored constant
+made the engine's correctness depend on a *non-zero* memory reset image,
+which the openXC7 target flow silently fails to deliver for any bank it
+maps to distributed LUT RAM (see `EPOCH_SPEC.md` §E13). The check unit now
+sources occupancy from the constant `1` instead, and the bank's reset image
+is all-zero — an image every configuration path delivers. Bit 2 stays
+reserved for the v2 install/free op. -/
+def FLAG_RESERVED : Nat := 4
 
 /-! ## EDSL helpers -/
 
@@ -197,11 +207,12 @@ def outcome (k : Nat) : Expr 3 :=
   let rts := bit3 rq 2
   let poi := bit3 fq 0
   let dea := bit3 fq 1
-  let occ := bit3 fq 2
   let hit : Expr 1 := .eq re pe
-  -- structural
+  -- structural. §3's empty-slot clause is *not* a cone input: v1 has no
+  -- install/free op (E4), so every slot is occupied for all time and the
+  -- clause is unreachable. Sourcing it from the constant is what keeps the
+  -- engine's reset image all-zero in `cell_flags` (E13).
   .mux (.not wf) (L3 OUT_BADREF) <|
-  .mux (.not occ) (.mux hit (L3 OUT_BADREF) (L3 OUT_STALE)) <|
   .mux (.not cls) (L3 OUT_BADREF) <|
   -- poison
   .mux poi (L3 OUT_POISONED) <|
@@ -366,10 +377,16 @@ def volInputs (k : Nat) : List InputDecl :=
 unpoisoned, and both replicas in step with their home — exactly
 `Protocol.Init`. There is no core-visible *install* op in v1 (deviation
 E4), so the reset image is the only way freshness state is ever
-established, and `Protocol.Init` holds by construction. -/
+established, and `Protocol.Init` holds by construction.
+
+`cell_flags` resets to **all zero** (E13): occupancy is not stored (see
+`FLAG_RESERVED`), poison and death both reset clear, so the only banks
+carrying a non-zero reset image are the three epoch banks — and those are
+exactly the banks the target flow maps to block RAM, whose INIT it does
+deliver. `scripts/check_mem_init.py` is the standing guard on that. -/
 def mems : List MemDecl :=
   [ ⟨"cell_epoch", cfg.aw, cfg.ew, fun _ => 1⟩,
-    ⟨"cell_flags", cfg.aw, 3, fun _ => BitVec.ofNat 3 FLAG_OCC⟩,
+    ⟨"cell_flags", cfg.aw, 3, fun _ => 0⟩,
     ⟨replMem 0, cfg.aw, cfg.ew, fun _ => 1⟩,
     ⟨replMem 1, cfg.aw, cfg.ew, fun _ => 1⟩ ]
 
