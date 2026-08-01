@@ -23,8 +23,10 @@ output and the spec).
   cones and each read-port address cone; the array storage itself is
   carried by cell identity (RAMB/RAM*M) — documented v1 boundary. If that
   is awkward, ship register-only designs first and record the memory plan.
-  **(2026-07-31: memory designs are in. See §Memories below for exactly
-  what is and is not covered.)**
+  **(2026-07-31: memory designs are in. 2026-08-01, D31: the "carried by
+  cell identity" boundary is GONE — reset images, write-port pins and both
+  read shapes are checked per bank. See §Memories for exactly what is and
+  is not covered now.)**
 
 ## Architecture (new dir Loom/Netlist/, new exe Tools/EqCheck.lean)
 
