@@ -224,3 +224,39 @@ power, DPA-resistant dual-rail, ring-oscillator TRNGs — are not this project's
 and on FPGA fabric async is actively counterproductive (no delay control, no
 C-element primitive, tools fight it). The genuinely useful part of "async" is
 the GALS boundary, and D29 delivers exactly that.
+
+## ASIC portability: what the FPGA gives for free (design rules, 2026-08-01)
+
+The charter targets "any FPGA vendor and the ASIC flow" from one module. The
+boundary does not move on an ASIC — the untrusted wrapper simply holds
+different occupants (POR, reset synchronizer, PLL, ICG cells, pads, memory
+macros instead of IBUFDS/BUFG/BSCANE2/PS7). What DOES change is that several
+things the FPGA supplied invisibly become explicit. Design rules, to apply now:
+
+1. **Never rely on memory initial contents.** SRAM has none; bitstream BRAM
+   INIT is an FPGA affordance and may not even survive an open synthesis flow
+   (suspected root cause of the epoch engine's first silicon `-BADREF`). A
+   design whose reset state lives in `initial` contents is not portable. Put
+   reset state in an explicit reset sequence (a sweep, like lnp64mini's
+   zeroing engine) or a ROM, and keep the `Init` predicate the proofs use
+   true by construction either way.
+2. **Reset is a protocol, not a wire.** ASICs need async-assert /
+   sync-deassert reset synchronizers (FPGA GSR hid this). That primitive is
+   inherently async and is OURS — it gets the D21 treatment: a theorem that
+   release is synchronous, proved over adversarial metastability resolution,
+   in the shape of `toggleSync_sound`.
+3. **MTBF becomes quantitative.** D21 states the single-flop resolution
+   assumption qualitatively. On ASIC it acquires a number (library flop
+   parameters × clock rates × transition rate), and CDC paths acquire
+   `set_false_path`/`set_max_delay` constraints discharged by STA.
+4. **Clock generation and gating are instantiated, not designed.** PLL/DLL are
+   foundry IP; ICG cells contain a latch and are therefore outside µVerilog by
+   construction — synthesis inserts them, LEC verifies them, they sit below the
+   boundary. A declared clock RATIO from the PLL is a D29 rely.
+5. **Async FIFOs arrive with GALS.** The moment D29 goes to silicon, gray-
+   pointer async FIFOs join the verified CDC component library (rule 2's shape).
+
+None of these needs asynchronous *logic* in the sense D29's note rejects: every
+item is either foundry/library IP we instantiate, or a small standard structure
+whose protocol we prove over adversarial resolution. The FPGA's hard blocks and
+the ASIC's library cells occupy the same slot in the trust story.
