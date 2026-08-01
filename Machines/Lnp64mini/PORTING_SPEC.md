@@ -358,3 +358,34 @@ MUL, DIV, EXIT halt). Use `Design.cycleOpen` on the EDSL side.
      memory cannot take 32 writes in one cycle. It is unobservable — every
      `tpc` read is under `fsmEn`, and `fsmEn` contains `¬zeroing` — and the
      ISS mirrors the sweep bit-for-bit.
+
+## Fidelity gap: the scheduler is COOPERATIVE, Law 5 requires preemptive
+
+Recorded 2026-08-01. Every write to `cur` (the current-thread register) in
+`Core.lean` is at an explicit yield point — `YIELD` (0x06), `SLEEP` (0x07),
+`THREAD_EXIT` (0x3b), the `FUTEX_WAIT` block in `S_FTX1`, and `S_WAIT`'s pick
+when the core is otherwise idle — plus `cur := 0` on the cmd-13 reset. There is
+**no timer, no quantum, no preemption tick**: a thread runs until it
+voluntarily blocks or exits. The serialized sleep scan and the cross-core
+doorbell only move threads to READY; neither takes the CPU from the runner.
+
+This is faithful to mini3 (the port's job) but **not** to the architecture:
+`lnp64_isa.md` Law 5 says "Every instruction boundary is a preemption point.
+Unconditionally. The machine contains no non-preemptible region."
+
+Measured consequence, not hypothetical: in the §64 dual-core work core 1's
+worker first paced itself with a spin loop, and because nothing preempts a
+spinning thread its instruction fetches took enough arbiter share to starve
+core 0's GEM pump to **100 % packet loss**. The fix was software discipline
+(one long `SLEEP`, which parks in the scheduler and fetches nothing) because
+the hardware has no way to intervene. Cooperative scheduling's failure mode,
+observed on silicon.
+
+Why it is adequate today: the rump guest yields constantly (futex waits,
+condvar sleeps, the pump's 30 ms nap). It would not be adequate for a hostile
+or compute-bound thread — which is exactly what Law 5 exists to rule out.
+
+Closing it looks contained: the per-cycle sleep scan is already a timebase and
+`S_F0` is precisely the instruction boundary Law 5 names, so a decrementing
+quantum that forces the `S_WAIT`-style switch at `S_F0` would be the shape.
+Not attempted here; named so it is not mistaken for architectural fidelity.
