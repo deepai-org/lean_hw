@@ -1000,6 +1000,333 @@ theorem reachable_from_reset (ιs : Nat → InEnv) (n : Nat) :
       ((Engine.mkDesign cfg).runOpen ιs n (Engine.mkDesign cfg).reset) :=
   reachable_runOpen_reset _ ιs n
 
+/-! ## D28 — steps to cycles (Layer 3 (d))
+
+`Machines/Epoch/Bounded.lean` proves the spec bound: under the ack-phase
+schedule the bump has returned within `K + 1 = 3` *transition-system steps*.
+Here that number becomes a number of **clock cycles**, which is the only form
+in which a silicon measurement may be compared with it. The bridge is the
+stutter budget `b` of `StutterSimulation.boundedResponse_pullback`. -/
+
+/-- The concrete trigger: a bump is in flight (the sequencer is in `B_ACK` or
+`B_RET`). -/
+def inFlight (σ : Hw.St) : Prop := bst σ = 3#3 ∨ bst σ = 4#3
+
+theorem inFlight_iff (σ : Hw.St) : inFlight σ ↔ (abs cfg σ).pending ≠ none := by
+  unfold inFlight
+  by_cases h : bst σ = 3#3 ∨ bst σ = 4#3 <;> simp [abs, absPending, h]
+
+/-- The engine during a bump: one clock cycle per step, from a reachable
+state with a bump in flight. Restricting the *source* of a step this way is
+not a weakening — it is the window the bound is about, and the response
+(`pending = none`) is exactly its exit. -/
+def ackPhase : Loom.TSys where
+  S := Hw.St
+  init := fun σ => (sysOpen (Engine.mkDesign cfg)).Reachable σ ∧ inFlight σ
+  step := fun σ σ' => (sysOpen (Engine.mkDesign cfg)).Reachable σ ∧ inFlight σ ∧
+    ∃ ι, (Engine.mkDesign cfg).cycleOpen ι σ = σ'
+
+theorem ackPhase_reachable (σ : Hw.St) (h : (ackPhase cfg).Reachable σ) :
+    (sysOpen (Engine.mkDesign cfg)).Reachable σ :=
+  Loom.TSys.Inductive.invariant (M := ackPhase cfg)
+    (P := fun σ => (sysOpen (Engine.mkDesign cfg)).Reachable σ)
+    { init := fun _ h0 => h0.1
+      step := fun _ σ' _ hs => by
+        obtain ⟨hr, _, ι, hc⟩ := hs; exact hc ▸ .step hr ⟨ι, rfl⟩ } σ h
+
+/-- **Every cycle of an in-flight bump is an ack-phase step of the protocol**
+(or a stutter). The acks are the engine's own — deviation E2 — so this is a
+theorem, not a scheduling assumption imported from software. -/
+theorem ackPhase_square (σ σ' : Hw.St) (hstep : (ackPhase cfg).step σ σ') :
+    abs cfg σ' = abs cfg σ ∨ Bounded.AckStep (abs cfg σ) (abs cfg σ') := by
+  obtain ⟨hr, hf, ι, hc⟩ := hstep
+  subst hc
+  have hd : DInv cfg σ := dinv_reachable cfg σ hr
+  have hd' : DInv cfg (σ.setInputs (Engine.mkDesign cfg).inputs ι) :=
+    dinv_setInputs cfg σ ι hd
+  have habs : abs cfg (σ.setInputs (Engine.mkDesign cfg).inputs ι) = abs cfg σ :=
+    abs_setInputs cfg σ ι
+  have hf' : inFlight (σ.setInputs (Engine.mkDesign cfg).inputs ι) := by
+    rw [inFlight_iff, habs]; exact (inFlight_iff cfg σ).1 hf
+  have hcyc : (Engine.mkDesign cfg).cycleOpen ι σ
+      = (Engine.mkDesign cfg).cycle (σ.setInputs (Engine.mkDesign cfg).inputs ι) := rfl
+  rw [hcyc, ← habs]
+  set τ := σ.setInputs (Engine.mkDesign cfg).inputs ι with hτ
+  clear_value τ
+  rcases hf' with h | h
+  · have h3 : τ.regs "b_st" 3 = 3#3 := h
+    rcases acked_cases (τ.regs "b_acked" 2) with ha | ha | ha | ha
+    · obtain ⟨hst, hba, hpo, htg, hak, hbw, hoth, hce, hcf⟩ := cyc_ack_0 cfg τ h ha
+      refine Or.inr (Or.inl ⟨0,
+        { cell := bcell cfg τ, target := τ.regs "b_target" cfg.ew,
+          policy := bpol τ, acked := fun k' => (τ.regs "b_acked" 2).getLsbD k'.val },
+        by simp [abs, absPending, bst, h3], by simp [ha], ?_⟩)
+      exact square_ack cfg τ 0 h "repl0" rfl hst hba hpo htg
+        (by intro k'; fin_cases k' <;> simp [hak, ha, Function.update]) hbw
+        (by intro k' hk' x; fin_cases k' <;> simp_all) hce hcf
+    · obtain ⟨hst, hba, hpo, htg, hak, hbw, hoth, hce, hcf⟩ := cyc_ack_1 cfg τ h ha
+      refine Or.inr (Or.inl ⟨1,
+        { cell := bcell cfg τ, target := τ.regs "b_target" cfg.ew,
+          policy := bpol τ, acked := fun k' => (τ.regs "b_acked" 2).getLsbD k'.val },
+        by simp [abs, absPending, bst, h3], by simp [ha], ?_⟩)
+      exact square_ack cfg τ 1 h "repl1" rfl hst hba hpo htg
+        (by intro k'; fin_cases k' <;> simp [hak, ha, Function.update]) hbw
+        (by intro k' hk' x; fin_cases k' <;> simp_all) hce hcf
+    · obtain ⟨hst, hba, hpo, htg, hak, hbw, hoth, hce, hcf⟩ := cyc_ack_2 cfg τ h ha
+      refine Or.inr (Or.inl ⟨0,
+        { cell := bcell cfg τ, target := τ.regs "b_target" cfg.ew,
+          policy := bpol τ, acked := fun k' => (τ.regs "b_acked" 2).getLsbD k'.val },
+        by simp [abs, absPending, bst, h3], by simp [ha], ?_⟩)
+      exact square_ack cfg τ 0 h "repl0" rfl hst hba hpo htg
+        (by intro k'; fin_cases k' <;> simp [hak, ha, Function.update]) hbw
+        (by intro k' hk' x; fin_cases k' <;> simp_all) hce hcf
+    · obtain ⟨hst, hba, hpo, htg, hak, hm⟩ := cyc_ack_done cfg τ h ha
+      exact Or.inl (abs_stutter_pend cfg τ _ hm (by rw [hst]; exact Or.inr rfl)
+        (Or.inl h3) hba htg hpo (by rw [hak, ha]))
+  · exact Or.inr (Or.inr (square_ret cfg τ hd' h))
+
+/-- The ack-phase refinement: the schedule `Machines/Epoch/Bounded.lean`
+assumes is the schedule the engine implements. -/
+def simAck : StutterSimulation (Bounded.ackSys cfg.ew (2 ^ cfg.aw) 2) (ackPhase cfg) where
+  abs := abs cfg
+  init_ok := fun σ h => (inFlight_iff cfg σ).1 h.2
+  square := fun σ σ' h => ackPhase_square cfg σ σ' h
+
+/-! ### The stutter budget
+
+`rank` counts what is left of the ack reduction: one per volume that has not
+acknowledged, plus one for the `B_ACK → B_RET` transition, which is the
+engine's only cycle that maps to no protocol event. It is bounded by
+`b = 3 = K + 1`. -/
+
+def rank (σ : Hw.St) : Nat :=
+  (if (σ.regs "b_acked" 2).getLsbD 0 then 0 else 1) +
+  (if (σ.regs "b_acked" 2).getLsbD 1 then 0 else 1) +
+  (if bst σ = 3#3 then 1 else 0)
+
+theorem rank_le (σ : Hw.St) : rank σ ≤ 3 := by
+  unfold rank; split_ifs <;> omega
+
+/-- Every cycle of an in-flight bump strictly decreases `rank`, except the
+returning one — and that one changes the abstract state, so the stuttering
+hypothesis is discharged either way. -/
+theorem rank_stutter_cycle (τ : Hw.St) (hf : inFlight τ)
+    (heq : abs cfg ((Engine.mkDesign cfg).cycle τ) = abs cfg τ) :
+    rank ((Engine.mkDesign cfg).cycle τ) < rank τ := by
+  rcases hf with h | h
+  · have h3 : τ.regs "b_st" 3 = 3#3 := h
+    rcases acked_cases (τ.regs "b_acked" 2) with ha | ha | ha | ha
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_0 cfg τ h ha
+      simp [rank, bst, hst, hak, ha, h3]
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_1 cfg τ h ha
+      simp [rank, bst, hst, hak, ha, h3]
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_2 cfg τ h ha
+      simp [rank, bst, hst, hak, ha, h3]
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_done cfg τ h ha
+      simp [rank, bst, hst, hak, ha, h3]
+  · -- the returning cycle: the abstract state does change, so `heq` is absurd
+    exfalso
+    obtain ⟨hst, _⟩ := cyc_ret cfg τ h
+    have h1 : (abs cfg ((Engine.mkDesign cfg).cycle τ)).pending = none := by
+      simp [abs, absPending, bst, hst]
+    exact ((inFlight_iff cfg τ).1 (Or.inr h)) (by rw [← heq]; exact h1)
+
+theorem rank_stutter (σ σ' : Hw.St) (hstep : (ackPhase cfg).step σ σ')
+    (heq : abs cfg σ' = abs cfg σ) : rank σ' < rank σ := by
+  obtain ⟨hr, hf, ι, hc⟩ := hstep
+  subst hc
+  have habs : abs cfg (σ.setInputs (Engine.mkDesign cfg).inputs ι) = abs cfg σ :=
+    abs_setInputs cfg σ ι
+  have hrank : rank (σ.setInputs (Engine.mkDesign cfg).inputs ι) = rank σ := by
+    have h1 : (σ.setInputs (Engine.mkDesign cfg).inputs ι).regs "b_acked" 2
+        = σ.regs "b_acked" 2 := setInputs_regs cfg σ ι _ _ (by decide)
+    have h2 : (σ.setInputs (Engine.mkDesign cfg).inputs ι).regs "b_st" 3
+        = σ.regs "b_st" 3 := setInputs_regs cfg σ ι _ _ (by decide)
+    simp [rank, bst, h1, h2]
+  have h := rank_stutter_cycle cfg (σ.setInputs (Engine.mkDesign cfg).inputs ι)
+    (by rw [inFlight_iff, habs]; exact (inFlight_iff cfg σ).1 hf)
+    (by rw [habs]; exact heq)
+  rw [hrank] at h
+  exact h
+
+/-- The engine is never stuck while a bump is in flight. -/
+theorem ackPhase_enabled (σ : Hw.St) (hr : (sysOpen (Engine.mkDesign cfg)).Reachable σ)
+    (hq : ¬ (abs cfg σ).pending = none) : ∃ t, (ackPhase cfg).step σ t :=
+  ⟨_, hr, (inFlight_iff cfg σ).2 hq, fun _ w => 0#w, rfl⟩
+
+theorem ackPhase_closed (σ σ' : Hw.St)
+    (hd : (sysOpen (Engine.mkDesign cfg)).Reachable σ) (hstep : (ackPhase cfg).step σ σ') :
+    (sysOpen (Engine.mkDesign cfg)).Reachable σ' := by
+  obtain ⟨hr, _, ι, hc⟩ := hstep
+  exact hc ▸ .step hr ⟨ι, rfl⟩
+
+/-- **D28, the transported bound.** The spec bound of
+`Machines/Epoch/Bounded.lean` — `bumpReturn` within `K + 1 = 3` protocol
+steps — becomes, through this refinement with stutter budget `b = 3`, a bound
+of `3 * (3 + 1) + 3 = 15` **clock cycles** of the emitted RTL: from any
+reachable state with a bump in flight, on every path, under every input
+trace, the bump has returned within 15 cycles and the engine never stalls
+before it does. This is the number a silicon measurement may be compared
+against. -/
+theorem bump_returns_within_15_cycles (σ : Hw.St)
+    (hr : (sysOpen (Engine.mkDesign cfg)).Reachable σ) :
+    (ackPhase cfg).MustReach (fun τ => (abs cfg τ).pending = none) 15 σ :=
+  StutterSimulation.mustReach_pullback_budget (simAck cfg)
+    (rank := rank) (b := 3)
+    (fun s t hd hstep => ackPhase_closed cfg s t hd hstep)
+    (fun s _ => rank_le s)
+    (fun s t _ hstep heq => rank_stutter cfg s t hstep heq)
+    (fun s hd hq => ackPhase_enabled cfg s hd hq)
+    (K := 3) hr
+    (Bounded.Theorems.T_E8_bumpReturn_within (K := 2) (abs cfg σ)).toOrBlock
+
+/-- The same bound as a `BoundedResponse` of the cycle-accurate system: the
+trigger is "a bump is in flight", the response is "it has returned", the
+bound is 15 cycles. -/
+theorem bump_bounded_response :
+    (ackPhase cfg).BoundedResponse (fun τ => (abs cfg τ).pending ≠ none)
+      (fun τ => (abs cfg τ).pending = none) 15 :=
+  StutterSimulation.boundedResponse_pullback (simAck cfg) (rank := rank) (b := 3)
+    (fun s _ => rank_le s)
+    (fun s t _ hstep heq => rank_stutter cfg s t hstep heq)
+    (fun s hrs hq => ackPhase_enabled cfg s (ackPhase_reachable cfg s hrs) hq)
+    (Bounded.Theorems.T_E8_bounded_response (K := 2))
+
+/-! ### The exact bound, for comparison with silicon
+
+The transported bound is a sound over-approximation: `(b+1)` cycles are
+charged for every protocol step, whether or not the design spends them. The
+engine's ack reduction is in fact one volume per cycle, so the exact bound is
+`K + 2 = 4` cycles. Both are proved; the 15 is the one that comes for free
+from the spec, the 4 is the one to hold silicon to. -/
+
+/-- Cycles left before the bump has returned. -/
+def mu (σ : Hw.St) : Nat := if bst σ = 3#3 ∨ bst σ = 4#3 then rank σ + 1 else 0
+
+theorem mu_le (σ : Hw.St) : mu σ ≤ 4 := by
+  unfold mu; have := rank_le σ; split_ifs <;> omega
+
+theorem mu_decrease_cycle (τ : Hw.St) (hf : inFlight τ) :
+    mu ((Engine.mkDesign cfg).cycle τ) < mu τ := by
+  rcases hf with h | h
+  · have h3 : τ.regs "b_st" 3 = 3#3 := h
+    rcases acked_cases (τ.regs "b_acked" 2) with ha | ha | ha | ha
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_0 cfg τ h ha
+      simp [mu, rank, inFlight, bst, hst, hak, ha, h3]
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_1 cfg τ h ha
+      simp [mu, rank, inFlight, bst, hst, hak, ha, h3]
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_2 cfg τ h ha
+      simp [mu, rank, inFlight, bst, hst, hak, ha, h3]
+    · obtain ⟨hst, _, _, _, hak, _⟩ := cyc_ack_done cfg τ h ha
+      simp [mu, rank, inFlight, bst, hst, hak, ha, h3]
+  · have h4 : τ.regs "b_st" 3 = 4#3 := h
+    obtain ⟨hst, _⟩ := cyc_ret cfg τ h
+    simp [mu, rank, bst, hst, h4]
+
+theorem mu_decrease (σ σ' : Hw.St) (hstep : (ackPhase cfg).step σ σ') : mu σ' < mu σ := by
+  obtain ⟨hr, hf, ι, hc⟩ := hstep
+  subst hc
+  have h1 : (σ.setInputs (Engine.mkDesign cfg).inputs ι).regs "b_acked" 2
+      = σ.regs "b_acked" 2 := setInputs_regs cfg σ ι _ _ (by decide)
+  have h2 : (σ.setInputs (Engine.mkDesign cfg).inputs ι).regs "b_st" 3
+      = σ.regs "b_st" 3 := setInputs_regs cfg σ ι _ _ (by decide)
+  have hmu : mu (σ.setInputs (Engine.mkDesign cfg).inputs ι) = mu σ := by
+    simp [mu, rank, inFlight, bst, h1, h2]
+  have hf' : inFlight (σ.setInputs (Engine.mkDesign cfg).inputs ι) := by
+    unfold inFlight bst; rw [h2]; exact hf
+  have h := mu_decrease_cycle cfg (σ.setInputs (Engine.mkDesign cfg).inputs ι) hf'
+  rw [hmu] at h
+  exact h
+
+/-- The exact ranking: one cycle per outstanding ack, one for the move to
+`B_RET`, one for the return itself. -/
+theorem tight_ranking :
+    (ackPhase cfg).Ranking (fun τ => (abs cfg τ).pending = none)
+      (fun τ => (sysOpen (Engine.mkDesign cfg)).Reachable τ) mu where
+  progress := fun s hd hq => ackPhase_enabled cfg s hd hq
+  closed := fun s t hd _ hstep => ackPhase_closed cfg s t hd hstep
+  decrease := fun s t _ _ hstep => mu_decrease cfg s t hstep
+
+/-- **The exact cycle bound.** From any reachable state, the bump has
+returned within `4` clock cycles of the abstract bump event, on every path,
+with no stall — `K = 2` acks, the move to `B_RET`, and the return. -/
+theorem bump_returns_within_4_cycles (σ : Hw.St)
+    (hr : (sysOpen (Engine.mkDesign cfg)).Reachable σ) :
+    (ackPhase cfg).MustReach (fun τ => (abs cfg τ).pending = none) 4 σ :=
+  (tight_ranking cfg).mustReach 4 σ hr (mu_le σ)
+
 end
+
+/-! ## The shipped instances
+
+Both engine geometries satisfy `2 ≤ ew`, so every theorem above applies to
+the emitted RTL of `epochengine` (32-bit epochs, 512 cells) and of
+`epochengine_tiny` (3-bit epochs, 4 cells — the width at which §3's
+saturation is reachable). -/
+
+theorem cfg32_hw : 2 ≤ Engine.cfg32.ew := by decide
+theorem cfgTiny_hw : 2 ≤ Engine.cfgTiny.ew := by decide
+
+/-- `Engine.design` is `mkDesign cfg32`. -/
+theorem design_eq : Engine.design = Engine.mkDesign Engine.cfg32 := rfl
+
+/-- **The refinement, at the shipped geometry.** -/
+def sim32 : StutterSimulation (Protocol.sys 32 (2 ^ 9) 2)
+    ((sysOpen Engine.design).reachablePart) := sim Engine.cfg32 cfg32_hw
+
+/-- **`epochengine`'s freshness state satisfies §3's protocol invariant at
+every cycle**, from power-on, under every input trace — i.e. whatever the two
+cores do. -/
+theorem epochengine_inv (ιs : Nat → InEnv) (n : Nat) :
+    Protocol.Inv (abs Engine.cfg32 (Engine.design.runOpen ιs n Engine.design.reset)) :=
+  design_inv Engine.cfg32 cfg32_hw _ (reachable_from_reset Engine.cfg32 ιs n)
+
+/-- **T-E1 on `epochengine`.** Run the fabric `m` cycles from power-on under
+any input trace; if no bump is in flight there (§3's post-return condition),
+then for any further `n` cycles under any input trace, a reference carrying
+an epoch below cell `i`'s home epoch never validates — at either volume,
+however the cores behave. -/
+theorem epochengine_stale_never_ok (ιs js : Nat → InEnv) (m n : Nat)
+    (hq : (abs Engine.cfg32 (Engine.design.runOpen ιs m Engine.design.reset)).pending = none)
+    (i : Fin (2 ^ 9)) (e₀ : BitVec 32)
+    (hstale : e₀.toNat <
+      ((abs Engine.cfg32 (Engine.design.runOpen ιs m Engine.design.reset)).cells i).epoch.toNat)
+    (k : Fin 2) (r : Protocol.Req 32) (hri : r.cellIx = i.val) (hre : r.epoch = e₀) :
+    Protocol.use (abs Engine.cfg32
+      (Engine.design.runOpen js n (Engine.design.runOpen ιs m Engine.design.reset))) k r ≠ .ok :=
+  T_E1_design_never_ok Engine.cfg32 cfg32_hw _
+    (reachable_from_reset Engine.cfg32 ιs m) js n hq i e₀ hstale k r hri hre
+
+/-- **T-E2 on `epochengine_tiny`.** Saturation is permanent death, at the
+width where saturation is reachable (Layer-2 deviation E7). -/
+theorem epochtiny_death_permanent (ιs js : Nat → InEnv) (m n : Nat) (i : Fin (2 ^ 2))
+    (hd : ((abs Engine.cfgTiny (Engine.tiny.runOpen ιs m Engine.tiny.reset)).cells i).dead
+      = true) :
+    ∀ (k : Fin 2) (r : Protocol.Req 3), r.cellIx = i.val →
+      Protocol.use (abs Engine.cfgTiny
+        (Engine.tiny.runOpen js n (Engine.tiny.runOpen ιs m Engine.tiny.reset))) k r ≠ .ok :=
+  (T_E2_design Engine.cfgTiny cfgTiny_hw _
+    (reachable_from_reset Engine.cfgTiny ιs m) js n i hd).2.2
+
+/-! ## Axiom closures — the 3-axiom kernel closure on every headline. -/
+
+#print axioms sim
+#print axioms design_inv
+#print axioms T_E1_design
+#print axioms T_E1_design_never_ok
+#print axioms T_E2_design
+#print axioms T_E3_design
+#print axioms T_E6_design
+#print axioms run_abs
+#print axioms square_cycle
+#print axioms init_ok
+#print axioms simAck
+#print axioms bump_returns_within_15_cycles
+#print axioms bump_bounded_response
+#print axioms bump_returns_within_4_cycles
+#print axioms epochengine_inv
+#print axioms epochengine_stale_never_ok
+#print axioms epochtiny_death_permanent
+
 
 end Machines.Epoch.Refines
