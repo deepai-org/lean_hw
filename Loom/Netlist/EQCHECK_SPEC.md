@@ -90,87 +90,180 @@ per input-port bit, and one for `rst`. Registers are compared as
 `rst ? init : next` against the flip-flops' realized next state, so the
 reset branch is inside the claim.
 
-## Memories (2026-07-31): what is and is not covered
+## Memories (D31, 2026-08-01): what is and is not covered
 
-**The cut.** `Parse.parseCut` reads the emitted text with one
-substitution: a wire whose whole right-hand side is a memory read,
-`wire [dw-1:0] nk = m[a];`, becomes a free symbol `Expr.reg dw "nk"`. The
-netlist side is cut at the *same* place — synthesis keeps the wire name,
-so the nets called `nk[i]` are seeded with the same free variables. Both
-sides therefore read "whatever the array returned this cycle" from one
-shared symbol, and everything around the memory is compared exactly.
-Identification of the two cut points is by the printer's wire name; no
-structural or pointer matching is involved.
+Until 2026-08-01 a memory was a *cut point* and nothing else: the array's
+contents, the wiring of its ports and its configuration image were "carried
+by cell identity", i.e. trusted. D30 is what that cost — yosys mapped the
+epoch engine's 512×3 `cell_flags` to distributed LUT RAM, the configuration
+path silently dropped its non-zero reset image, no stage warned, and the
+defect surfaced as `-BADREF` on silicon. D31 brings memories inside the
+miter. `Loom/Netlist/Mem.lean` is the model; `Tools/EqCheck.lean` drives it.
 
-**Covered** (checked, LRAT-certified, on every design with memories):
+### The cut (unchanged, and still the frame)
 
-* every register whose cone does not cross a memory boundary — including
-  all the logic that *consumes* memory read data, since the read value is
-  a shared free variable;
-* every module output port;
-* every memory **read port's address cone** — side A is the µVerilog
-  address expression, side B is the netlist cone at the address wire;
-* every memory **write port's enable, address and data cone**, where
-  synthesis kept the printed wire's name.
+`Parse.parseCut` reads the emitted text with one substitution: a wire whose
+whole right-hand side is a memory read, `wire [dw-1:0] nk = m[a];`, becomes
+a free symbol `Expr.reg dw "nk"`. The netlist side is cut at the *same*
+place, so both sides read "whatever the array returned this cycle" from one
+shared symbol and everything around the memory is compared exactly. What
+D31 adds is a second, *structural* comparison of the array itself, so that
+the shared symbol is no longer the end of the story.
 
-**Not covered**, and reported per signal as `[SKIP] … EXCLUDED: …` with
-the reason, counted in the verdict line (`N excluded`) and summarized by a
-`NOT COVERED` line:
+### Banks
 
-1. **The array itself.** No claim is made that the RAMB36E1/RAM32M/RAM64M
-   (or fabric flip-flops, or LUT ROM) holds the µVerilog array's contents,
-   nor that the write ports are wired to the cells the read ports read.
-   That is the "carried by cell identity" boundary of §Scope.
-2. **Read registers absorbed into a read port** (D19 sync read). yosys's
-   `memory_dff` folds `rdreg <= m[a]` into the block RAM's output
-   register, so `rdreg`'s bits come out of a RAMB36E1 and it has no
-   flip-flop of its own: its *own* transition function is inside the hard
-   block. Its *value* is still a shared free variable, so every consumer
-   of `rdreg` is checked normally. On `lnp64mini_soc`: 7 registers
-   (`a`, `b`, `rdval`, `sel_t`, `sel_f`, `dmem_rd`, `reg_rd`).
-3. **Cones that reach an uncut memory read.** When the read register is
-   absorbed, the printed read wire's *name* is gone too, so any other
-   signal whose cone reaches that memory output is excluded — reported by
-   `evalSig` as a `MEMCUT` exclusion, never silently dropped. On the SoC:
-   34 signals (`uart_byte`, `wrdata rf.data`, and the 32 `tstateK`, whose
-   cones reach `tsleep`'s fabric storage / the retimed bank-select
-   flip-flops of the depth-split `RAM64M` reads).
-4. **Memory port cones whose wire name synthesis did not keep.** A write
-   enable usually gets merged into the RAM's `WE` logic and its `nK` net
-   disappears; there is then no netlist signal to compare the cone
-   against. 17 such cones on the SoC (1 on `s0bscan`: `bram.en`). This is
-   the one class where more coverage is available in principle — comparing
-   against the cell's own `WE`/`ADDR`/`DI` pins — at the cost of modelling
-   how `memory_libmap` splits an array across cells by width *and* depth
-   (`rx_mem` is 4 banks × 3 `RAM64M`), which v2 does not do.
-5. **Flip-flops that match no µVerilog register bit.** In a design with
-   memories these are array storage realized in fabric (`tsleep` on the
-   SoC: 2 048 FDREs — 32 × 64 bits, two write ports and an async read, so
-   `memory_libmap` left it in flops) and registers synthesis retimed into
-   a memory read path (5 on the SoC: the bank-select address bits of the
-   depth-split `RAM64M` reads). They are *tolerated and tracked*: the
-   bijection check is still a hard failure on memory-free designs, and any
-   *checked* cone that reaches one becomes a reported `MEMCUT` exclusion.
-   The same mechanism covers a flip-flop yosys retimes *through* an array
-   (`s0bscan`'s `banner` ROM: 7 FDREs driving the cut read wire `n41`,
-   yosys having pushed `con_idx`'s register into the ROM read).
-6. **Read-wire bits folded to a constant from the array contents.** yosys
-   may prove a read-data bit constant *because of what is in the array*
-   (`s0bscan`'s `banner[…][7]`, always 0). Such a bit becomes a unit
-   assumption, like a constant-folded register bit — but unlike one it has
-   no reset branch to discharge it: it is an assumption *about the array*,
-   which is exactly what cell identity carries. Counted and printed
-   (`N read bit(s) folded to a constant from the array contents
-   (assumed)`).
-7. **Write-only memories** need no special case: `tp_arr` and
-   `sigmask_arr` have write ports and no reads, so their storage is
-   unobservable and yosys deletes it; their write cones are checked like
-   any other (both are `trivially equal` here).
+Each netlist memory primitive is resolved into a width/depth-explicit
+interface (`Mem.CellIface`): its write address / enable / clock / data pins,
+its read ports, whether its reads are synchronous, and the configuration
+image its `INIT*` parameters encode — for `RAM32M`/`RAM64M` in either of the
+two shapes yosys uses (three *data lanes* `DIA/DIB/DIC` over one shared read
+address, or *replicated* content with one read port per port letter,
+discriminated by whether the `DI` pins are the same nets), and for
+`RAMB18E1`/`RAMB36E1` in `SDP` and in `TDP`, where the configured word is
+`w/9` groups of nine (eight data bits, one parity bit) split across
+`DIADI`/`DIBDI` and `DIPADIP`/`DIPBDIP`.
 
-Unknown cell types remain a hard error naming the cell, memory hard blocks
-included: `Cells.memCellPorts` lists RAM32M/RAM64M/RAM32X1D…/RAMB18E1/
-RAMB36E1 and friends, and a memory the table does not name is reported as
-an unsupported cell, never skipped.
+The primitives named for one µVerilog `MemDef` are then assembled into a
+**bank**: an `nRepl × nDepth × nLane` grid covering the declared address ×
+data space, with the arrangement taken from yosys's `<mem>.<group>.<index>`
+naming. That naming is only a *hint*: every position it predicts is then
+checked by a miter, so a wrong hint is a loud failure, never a silent pass.
+A memory primitive that belongs to no declared µVerilog memory is a matching
+failure; a primitive *shape* the model does not cover is an error naming the
+cell.
+
+### 1. Reset images (`meminit`)
+
+Two different claims, both checked per bank:
+
+* **fidelity** — the primitives' `INIT_xx`/`INITP_xx`/`INIT_A..D` parameters
+  are decoded to a per-address, per-bit image and compared against
+  `MemDef.init` over the whole declared address space. A mismatch names the
+  word and the bit. (`x`, an uninitialized location, reads as the `0` the
+  fabric delivers.)
+* **deliverability** — a bank whose image is non-zero and whose primitives
+  are distributed RAM is a **failure even when the netlist's `INIT` is
+  faithful**, because the configuration path does not carry a distributed-RAM
+  image to the fabric. This is D30, and it is the one that fires on the
+  pre-fix epoch netlist under yosys 0.33: 0.33 writes the `RAM64M` image
+  faithfully into the JSON *and the bank still comes up all-zero on the
+  board*. (yosys 0.38, the openXC7 version, writes `INIT_A..D = 0` outright,
+  so there the fidelity check fires too.) The verdict names the bank, the
+  primitive type and an instance.
+
+An array with **no** memory primitive is classified rather than assumed:
+write-only arrays (`tp_arr`, `sigmask_arr`) are deleted by synthesis because
+their storage is unobservable; a written array `memory_libmap` left in fabric
+flip-flops (`tsleep`), and a never-written one realized as LUT ROM
+(`s0bscan`'s `banner`), keep their image inside the bitstream — flip-flop
+`INIT` and LUT truth tables are both delivered. All three are printed
+exclusions with that reason: they are not D30 hazards, and the checker says
+why rather than staying quiet.
+
+### 2. Storage and write ports (`wrclk`, `wren`, `wraddr`, `wrdata`)
+
+Per bank, per write port, per replica and per depth group:
+
+* the write **clock** pin must be the clock net;
+* the write **enable** pins must all be one net, and its cone is mitered
+  against `en ∧ ¬rst ∧ (addr[hi:] = g)` — the printed write line lives in the
+  `else` arm of `if (rst)`, so no write commits during reset, and a
+  depth-split bank must enable exactly its own group. `g` comes from the
+  arrangement hint and is *proved* here; a mis-assigned group is a failure;
+* the write **address** pins are mitered against `addr[0:k]`, the low bits;
+* the write **data** pins are mitered lane by lane against
+  `data[l*cellWidth …]`, through the primitive's own word map — which is
+  where a mis-wired parity lane shows up (see Deviation 13).
+
+Address and data are compared **under the enable** (`coneMiterUnder`):
+`WritePort.commit` consults them only when the port is enabled, and yosys is
+entitled to — and does — simplify a memory's `ADDR`/`DI` logic using the
+write enable as a don't-care condition.
+
+The one write-port shape not covered is **several µVerilog write ports
+sharing one bank**: `Module.cycle`'s per-port fold is last-write-wins in list
+order, and the checker models one committing port per primitive rather than
+that fold. It is a printed exclusion naming the memory; no shipped design
+with a mapped bank has two ports (`tsleep`, which does, is fabric-resident).
+
+### 3. Read paths (`rdaddr`, `rdshape`)
+
+Each netlist read port is matched to a printed read site by *proving* the
+address cones equal — the site is discovered, not assumed — and the match is
+reported by name. A read port matching no site, or a site matching no port,
+is reported.
+
+The read *shape* is then checked against what the design declares (D19,
+`Loom/Hw/SyncRead.lean`):
+
+* an **asynchronous** read (LUT RAM, combinational output) is what µVerilog
+  means literally; it passes when the primitive's data pins *are* the printed
+  read wire's nets, or drive a read register directly;
+* a **synchronous** read (block RAM, one cycle) is sound only if the module's
+  read feeds a register that `memory_dff` absorbed into the read port — so
+  the check is that the primitive's data pins are exactly that register's
+  nets. A synchronous primitive whose output is a *combinational* printed
+  wire is a failure: the netlist would be a cycle behind the module;
+* `DOx_REG` set (a second output pipeline register, two cycles) is a failure,
+  and so is a `WRITE_MODE` other than `READ_FIRST` — the µVerilog read
+  evaluates against the pre-cycle contents (`syncReadSite_run`).
+
+Matching the data pins to a named µVerilog value is also what ties the read
+ports to the cells the write ports write, which the pre-D31 spec explicitly
+disclaimed.
+
+### Still excluded, and why
+
+Reported per signal as `[SKIP] … EXCLUDED: …`, counted in the verdict line
+and summarized by a `NOT COVERED` line. There is no aggregate class left
+that hides a design's own logic:
+
+1. **Depth-split read data.** When a bank is split `n` ways in depth, the
+   read value is muxed across groups by logic *outside* the array, so the
+   primitives' data pins are not the module's read value. The address cone
+   and every write cone are still checked. (`lnp64mini_soc`: `rx_mem`,
+   `uart_mem`, 4 groups each; `epochengine`: `cell_flags`, 8 groups.)
+2. **Arrays with no memory primitive.** Fabric flip-flops, LUT ROM, or
+   deleted write-only storage — see §1. Their transition function is inside
+   the cut read wire (ROM) or inside unmatched flip-flops (fabric).
+3. **Printed port cones of such arrays**, where synthesis did not keep the
+   wire's name; there is no bank to compare against instead.
+4. **Read registers absorbed into a read port.** `rdreg`'s own next-state
+   function is inside the hard block. Its *value* is a shared free variable,
+   so every consumer is checked normally, and D31 now checks that the block
+   it comes out of is the bank the module writes.
+5. **Cones that reach an uncut memory read.** When a read register is
+   absorbed, the printed read wire's name is gone, so any *other* signal
+   whose cone reaches that output is excluded — reported by `evalSig` as
+   `MEMCUT`, never silently dropped.
+6. **Flip-flops that match no µVerilog register bit** (array storage in
+   fabric, registers retimed into a read path). Tolerated and tracked: the
+   bijection is still a hard failure on memory-free designs, and any
+   *checked* cone reaching one becomes a reported `MEMCUT` exclusion.
+7. **Read-wire bits folded to a constant from the array contents.** A unit
+   assumption about the array with no reset branch to discharge it. Counted
+   and printed.
+8. **Several write ports on one mapped bank** — see §2.
+
+Unknown cell types remain a hard error naming the cell, memory primitives
+included.
+
+### `check_mem_init.py` is now redundant — and kept anyway
+
+`scripts/check_mem_init.py` was the outside-the-path guard that closed D30.
+Its rule (a non-zero image must be block RAM with a non-zero `INIT`; an
+all-zero image must be matched by all-zero `INIT`s) is now a *strict subset*
+of the `meminit` check above, which additionally compares the image word by
+word and is inside the certified artifact rather than beside it.
+
+It is **kept deliberately, not deleted**, as an independent second
+implementation: a Python reader and a Lean reader of the same netlist
+disagreeing is itself a signal, and the two share no code. `scripts/ci.sh`
+runs it with its arguments (it was previously invoked with none, which made
+it exit 2 — fixed here). `scripts/epoch_ladder.sh` keeps using it as before.
+Its `--allow` mechanism has a counterpart in `eqcheck --ack`, with the same
+discipline: an acknowledged defect prints in full and is counted; the flag
+stops it failing a gate, not being seen.
 
 ## Deviations
 
@@ -251,6 +344,8 @@ an unsupported cell, never skipped.
    round-trip theorem extended and a kernel-checked open-module instance),
    and memories are handled at the boundary described in §Memories. The
    verdict is `EQCHECK OK (362 signals, 58 excluded, …)` — see §Results.
+   (Superseded by D31: with memories inside the miter the SoC's verdict is
+   `441 signals checked, 61 excluded, 2 acknowledged`.)
 10. **Unmatched flip-flops are a hard failure only without memories.** §5
    asks for a bijection, "any unmatched FF is a FAILURE, not a skip". That
    still holds for memory-free designs. With memories, array storage in
@@ -267,6 +362,33 @@ an unsupported cell, never skipped.
    exhausts the default 8 MB stack in the parser's non-tail line recursion
    — a scale limit of the parser, not of what it accepts, and unrelated to
    input ports (`lnp64u` declares none).
+12. **Merged register bits are an equality assumption, not a failure.**
+   yosys's `opt_merge` proves two µVerilog register bits' next-state cones
+   identical and keeps ONE flip-flop, so two IR bits claim one net. That was
+   a hard matching failure (it is what blocked `epochengine`:
+   `b_target[0]` and `inval_epoch[0]`). It is now an assumption of the same
+   shape as a constant-folded bit — the two transition functions differ only
+   on unreachable states — and discharged the same way: with `rst` free, each
+   register's own miter compares the two *reset* values in its `rst = 1`
+   branch (constants, independent of the assumption: the base case) and its
+   `rst = 0` branch is the induction step. `Matching.eqs` carries the pairs;
+   `assertEqs` asserts them; `Miter.lean` is unchanged.
+13. **A yosys 0.33 defect the write-data check found (`lnp64mini_soc`,
+   `dmem`).** In `RAMB36E1` `SDP` at width 72 the netlist wires `DIPBDIP` to
+   `DIPADIP`'s nets, so write-data bits 44/53/62 reach no pin while
+   `DOPBDOP` *reads* those word positions. The netlist is self-inconsistent
+   — whatever layout convention one assumes, the bits written and the bits
+   read must be the same — so `dmem` bits 44/53/62 would hold their `INIT`
+   forever. It is a synthesizer defect, not an emission one; the ZC702
+   bitstream is built with yosys 0.38 through openXC7 and the design runs, so
+   0.38 does not have it. Carried as an `--ack` in `scripts/eqcheck.sh` with
+   this note, printed in full on every run.
+14. **Write address and data are compared under the enable.**
+   `WritePort.commit` consults `addr`/`data` only when `en` is set, and yosys
+   simplifies a memory's `ADDR`/`DI` logic using the enable as a don't-care
+   condition. Comparing them unconditionally reports differences that are not
+   differences (it did, on all six `rf` replicas). `coneMiterUnder` asserts
+   the guard.
 
 ## Results (2026-07-31, yosys 0.33, cadical 1.5.3, one x86-64 core)
 
@@ -310,6 +432,80 @@ port cones whose printed wire name synthesis did not keep, 7 read
 registers absorbed into a RAMB36E1, 2 cones reaching an uncut memory data
 output (`uart_byte`, `wrdata rf.data`).
 
+### v3 (2026-08-01): memories inside the miter (D31)
+
+`scripts/eqcheck.sh`, verbatim summary lines (yosys 0.33, cadical 1.5.3,
+one x86-64 core):
+
+```
+EQCHECK OK (2 signals, 0 excluded, 0 acknowledged, 741 clauses, LRAT-verified)
+EQCHECK OK (4 signals, 0 excluded, 0 acknowledged, 367 clauses, LRAT-verified)
+EQCHECK OK (6 signals, 0 excluded, 0 acknowledged, 331 clauses, LRAT-verified)
+EQCHECK OK (58 signals, 0 excluded, 0 acknowledged, 45611 clauses, LRAT-verified)
+EQCHECK OK (24 signals, 1 excluded, 0 acknowledged, 7241 clauses, LRAT-verified)
+EQCHECK OK (124 signals, 9 excluded, 0 acknowledged, 57987 clauses, LRAT-verified)
+EQCHECK OK (441 signals, 61 excluded, 2 acknowledged, 1726821 clauses, LRAT-verified)
+```
+
+in order: `s0blinky`, `satcounter`, `pingpong`, `s13soak`, `s0bscan`,
+`epochengine` (new: the design D30 was found on), `lnp64mini_soc`. The whole
+list, synthesis included, is ~4 min; `lnp64mini_soc` alone is ~90 s of
+synthesis and ~55 s of checking.
+
+**The regression fixture.** `Tests/fixtures/eqcheck/epochengine_prefix.{v,
+json.gz}` is the epoch engine as it was before `b510caf` — `cell_flags`
+still carrying occupancy as a non-zero reset image — with the netlist yosys
+0.33 builds from exactly that text. `scripts/eqcheck_memfixture.sh` (wired
+into `scripts/ci.sh`, needs only cadical) requires eqcheck to REJECT it, for
+the right reason, naming the bank. Verbatim:
+
+```
+[FAIL] meminit cell_flags        w=3 vars=0 clauses=0 lrat=0 0ms
+       RESET IMAGE NOT DELIVERED for bank 'cell_flags': the image is NON-ZERO
+       but synthesis mapped the bank to distributed LUT RAM (RAM64M, e.g.
+       'cell_flags.0.0'). The configuration path carries a block-RAM image and
+       does NOT carry a distributed-RAM one, so this bank comes up all-zero on
+       silicon while simulation says otherwise (D30). 24 × RAM64M (1
+       replica(s) × 8 depth group(s) × 3 lane(s)), 512 INIT bit(s) set
+EQCHECK FAILED (1 of 124 checked signals differ)
+```
+
+Exactly one signal differs — the defect — and the post-fix `epochengine`
+passes the same 124 signals. D30 is now reproducible from the certified path
+with no board and no simulation.
+
+**The 61 `lnp64mini_soc` exclusions**, each printed per signal, in six
+classes with nothing aggregated:
+
+| n | signals | why |
+|---|---------|-----|
+| 7 | `a`, `b`, `rdval`, `sel_t`, `sel_f`, `dmem_rd`, `reg_rd` | read registers `memory_dff` absorbed into a `RAMB36E1` read port: the next-state function is inside the hard block. D31 now *does* check that the block is the bank the module writes. |
+| 32 | `tstate0…31` | cones reaching FDREs that match no µVerilog register bit (`tsleep`'s fabric storage / retimed bank-select flops) — `MEMCUT`. |
+| 6 | `rf[r0g0].0 … rf[r5g0].0` | the rf write-data lane-0 cone reaches `rx_mem`'s uncut `RAM64M` output — `MEMCUT`. |
+| 1 | `uart_byte` | same, on `uart_mem`'s output. |
+| 2 | `uart_mem[r0p0]`, `rx_mem[r0p0]` | depth-split read data (4 groups): the read value is muxed outside the array. Their address cones and every write cone are checked. |
+| 13 | `tsleep` + its 6 port cones, `tp_arr`/`sigmask_arr` + their 4 port cones | arrays with no memory primitive: `tsleep` left in fabric flip-flops, the other two write-only and deleted. Their printed port wire names did not survive, so there is nothing to compare a cone against. |
+
+`s0bscan`'s single exclusion is `banner` — a never-written array yosys
+realized as LUT ROM, so its contents live inside the cut read wire.
+`epochengine`'s nine are three absorbed `RAMB18E1` read registers, three
+cones reaching `cell_flags`' uncut `RAM64M` outputs, and `cell_flags`' three
+depth-split read ports.
+
+**Two acknowledged failures on `lnp64mini_soc`** (`--ack tpc,dmem`, printed
+in full as `[ACK]` lines): `tpc`, the D30 loss on lnp64mini's trap-PC tables
+already recorded in `EPOCH_SPEC.md` E13 — found here independently, from the
+certified path, which is the point; and `dmem`, the yosys 0.33 `RAMB36E1`
+`SDP` parity mis-wiring of Deviation 13. Neither is suppressed and both are
+counted in the verdict line.
+
+**What the pin-level checks bought.** The 17 "memory port cones whose wire
+name synthesis did not keep" and the 1 on `s0bscan` (`bram.en`) are gone as a
+class: those cones are now compared against the primitives' own
+`WE`/`ADDR`/`DI` pins, which is exactly the follow-up item (1) the v2 spec
+named. What replaced them in the count are the printed cones of the three
+arrays that have *no* primitive to compare against.
+
 The negative control is unchanged (`scripts/eqcheck.sh
 --negative-control`): one flipped `LUT6` `INIT` bit ⇒ `EQCHECK FAILED
 (1 of 4 checked signals differ)` with a countermodel.
@@ -324,13 +520,19 @@ Negative control (`scripts/eqcheck.sh --negative-control satcounter`): one
 EQCHECK FAILED (1 of 4 signals differ)
 ```
 
-`lnp64mini_soc` synthesis is unchanged: `synth_xilinx` completes in ~90 s
+(v2 figures, kept for comparison.) `lnp64mini_soc` synthesis is unchanged:
+`synth_xilinx` completes in ~90 s
 (25 301 cells: 6 595 LUT6, 6 121 FDRE, 527 CARRY4, 13 RAMB36E1, 24 RAM64M,
 11 RAM32M; 26 MB of JSON). `eqcheck` then takes ~18 s. The whole
 acceptance list — six designs, synthesis included — is ~2 min.
 
-Follow-up work, in order: (1) compare memory *port* cones against the
-cells' own `WE`/`ADDR`/`DI` pins, which needs a model of how
-`memory_libmap` splits an array by width and depth, and would retire
-exclusion class 4 (and, for fabric-resident arrays like `tsleep`, class 5);
-(2) verify the CNF encoder itself, which is the standing v1 caveat.
+Follow-up work, in order: ~~(1) compare memory *port* cones against the
+cells' own `WE`/`ADDR`/`DI` pins~~ **— done, D31, 2026-08-01**, which needed
+a model of how
+`memory_libmap` splits an array by width and depth, and retired the old
+exclusion class 4 entirely. It did *not* retire class 5: an array
+`memory_libmap` leaves in fabric flip-flops (`tsleep`) still has no primitive
+to compare against, and that is now a printed exclusion of its own.
+(2) Verify the CNF encoder itself, which is the standing v1 caveat (D32).
+(3) Depth-split read data and multi-port write ordering, the two shapes D31
+leaves excluded.

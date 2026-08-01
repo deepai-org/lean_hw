@@ -17,6 +17,7 @@ import Loom.Dp.KInduction
 import Loom.Netlist.Json
 import Loom.Netlist.Cells
 import Loom.Netlist.Netlist
+import Loom.Netlist.Mem
 import Loom.Netlist.Miter
 import Loom.Book.Extract
 import Loom.Book.Render.Html

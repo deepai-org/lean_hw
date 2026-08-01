@@ -297,3 +297,14 @@ investigation is that BRAM initial contents do not survive the openXC7 flow,
 which would make it an instance of the portability rule "never rely on memory
 initial contents" (`LOOM_GAPS.md`). **The live demo is therefore not yet
 demonstrated on silicon, and nothing here should be read as claiming it is.**
+
+**Update 2026-08-01 (D30, then D31).** The hypothesis was right and sharper
+than stated: BRAM initial contents *do* survive openXC7 — the three 512x32
+epoch banks came up correct — and the bank that came up zero was `cell_flags`,
+512x3, which yosys maps to distributed LUT RAM, whose image the configuration
+path does not carry. Occupancy left memory (`b510caf`), the demo then ran on
+silicon end to end (`EPOCH_SPEC.md` E13 acceptance, `47b2a4f`), and the defect
+is now caught **inside the certified path**: `lake exe eqcheck` checks every
+bank's reset image against the netlist, and `scripts/eqcheck_memfixture.sh`
+keeps the pre-fix netlist as a regression fixture that eqcheck must reject,
+naming the bank, with no board and no simulation (D31).

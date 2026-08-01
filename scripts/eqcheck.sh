@@ -11,9 +11,9 @@
 # The generated netlists go to a scratch (gitignored) directory; nothing
 # here writes into the repository.
 #
-# Designs with memories are checked at the memory boundary: the array is
-# carried by cell identity and every excluded signal is named (EQCHECK_SPEC.md
-# §Scope, §Deviations).
+# Designs with memories are checked bank by bank (D31): reset images, write
+# ports against the primitives' own pins, and both read shapes. Every excluded
+# signal is still named with its reason (EQCHECK_SPEC.md §Memories).
 #
 #   scripts/eqcheck.sh                  # the acceptance list
 #   scripts/eqcheck.sh s0blinky         # one design
@@ -81,15 +81,36 @@ EOF
   fi
 fi
 
-designs=${*:-"s0blinky satcounter pingpong s13soak s0bscan lnp64mini_soc"}
+designs=${*:-"s0blinky satcounter pingpong s13soak s0bscan epochengine lnp64mini_soc"}
 
-# lnp64mini_soc is emitted, not checked in; regenerate it if it is missing.
-if [ ! -f rtl/lnp64mini_soc.v ]; then
-  lake env lean --run Machines/Lnp64mini/Emit.lean soc
-fi
+# Emitted, not checked in (rtl/ is gitignored); regenerate what is missing.
+[ -f rtl/lnp64mini_soc.v ] || lake env lean --run Machines/Lnp64mini/Emit.lean soc
+[ -f rtl/epochengine.v ]   || lake env lean --run Machines/Epoch/Emit.lean engine
+
+# Acknowledged failures, per design: a defect that IS real, is recorded
+# elsewhere, and is deliberately not fixed by this run. It still prints in
+# full, as an [ACK] line -- the flag stops it failing the gate, it does not
+# stop it being seen. Mirrors `check_mem_init.py --allow`.
+#
+#   tpc   lnp64mini's 32x64 trap-PC tables, reset image 64'"'"'d4096, mapped to
+#         RAM32M: the same D30 loss as the epoch bank. Latent (the guest
+#         installs its vectors before it traps) and recorded in
+#         Machines/Epoch/EPOCH_SPEC.md E13.
+#   dmem  yosys 0.33 wires RAMB36E1 SDP-72 `DIPBDIP` to `DIPADIP`'"'"'s nets, so
+#         data bits 44/53/62 are never written while `DOPBDOP` reads them --
+#         a self-inconsistent netlist, and a synthesizer defect rather than an
+#         emission one. See EQCHECK_SPEC.md §Deviations 13.
+ack_for() {
+  case "$1" in
+    lnp64mini_soc) echo "--ack tpc,dmem" ;;
+    *) echo "" ;;
+  esac
+}
+
 status=0
 for d in $designs; do
   synth "$d"
-  "$EQ" "rtl/$d.v" "$OUT/$d.json" || status=1
+  # shellcheck disable=SC2046
+  "$EQ" $(ack_for "$d") "rtl/$d.v" "$OUT/$d.json" || status=1
 done
 exit $status
