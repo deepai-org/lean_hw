@@ -444,3 +444,41 @@ statement: `toDimacs_unsat_iff`.
 Reopen (or rather, continue) on: (a) `shl`/`shr`/`slt`; (b) side B, which
 needs a reference semantics for the netlist and a memo-table invariant for
 the traversal.
+
+## Predicted, from building the engine roster (recorded 2026-08-01)
+
+Two engines (Epoch §3, CapWalk §2.2) are enough to see the duplication; six
+more are planned, so these are due now rather than later.
+
+**D34 — a protocol-machine library.** Both engines hand-rolled the same
+skeleton: state structure, `Ev` inductive, `stepEv : St → Ev → Option St`,
+`Step := ∃ e, stepEv s e = some s'`, the `TSys` instance, a multi-field `Inv`
+structure with its `inv_inductive`/`inv_invariant` pair, and
+`Run := Relation.ReflTransGen Step`. None of that is engine-specific. A
+`ProtocolSpec` abstraction (state, event alphabet, partial step, invariant
+bundle) with generic derivations — `toTSys`, reachability, `Run`, the
+inductive-invariant lemma, and the "disabled events stutter" glue — would make
+the next engine start at its actual content. Validate it by *expressing* both
+existing engines through it without editing the frozen files.
+
+**D35 — refinement by cases.** `Machines/Epoch/Refines.lean` is ~1450 lines for
+one engine, and its spine is generic: an abstraction function, then a commuting
+square discharged by exhaustive case analysis over the design's FSM state ×
+control flags, with a design invariant carrying the sequencer's staging. That
+wants a combinator (or tactic) parameterised by the state encoding, so each
+engine writes its abstraction and its cases and nothing else.
+
+**D36 — the outcome/priority pattern.** T-E4 (2^10 views) and T-C2 (2048 views)
+both prove "this total outcome function is exactly this priority order" against
+an independently-written spec function, by kernel `decide` at a small width,
+plus per-clause lemmas at arbitrary width. Same proof, twice, by hand. Make it
+one combinator: given a priority list of (guard, outcome), derive both the
+exhaustive check and the per-clause ordering lemmas.
+
+**D37 — prevention, not just detection, for non-deliverable reset images.**
+D30 is now caught by eqcheck (and by `check_mem_init.py`), but Loom still
+permits a design whose correctness depends on a memory reset image the target
+flow cannot deliver. The EDSL knows the memory's shape and the intended
+mapping; well-formedness could refuse a non-zero image on a bank that will map
+to distributed RAM, turning a downstream catch into a compile-time error.
+Detection is a guard; prevention is a property.
