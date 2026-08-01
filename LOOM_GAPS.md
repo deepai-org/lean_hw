@@ -109,3 +109,17 @@ A campaign closes an entry by shipping the capability AND the artifact that
 needed it — never the capability alone. An entry that survives two campaigns
 without being needed is deleted: Loom grows by demand, and unused generality is
 a cost, not an asset.
+
+## D28 — steps-to-cycles: a proved bound and a measured number must be one quantity
+
+Discovered closing D23 (2026-08-01). Bounded response is stated in
+*transition-system steps*; the goal's acceptance is in *fabric cycles*. Those
+are only the same quantity once a refinement fixes the steps-per-cycle
+correspondence — which is exactly what the Engine→Protocol refinement (Layer 3)
+introduces, via the stutter budget `b` that `StutterSimulation.boundedResponse_pullback`
+already takes. So the entry is small but load-bearing: state, in one place, that
+the spec bound `K` transported through a design with budget `b` is the number of
+CLOCK CYCLES a silicon measurement may be compared against, and make the epoch
+demo cite that theorem when it prints its latency. Without it, "proved bound"
+and "measured cycles" are two numbers that merely look alike — which is exactly
+the sloppiness this project exists to refuse.
