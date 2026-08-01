@@ -785,14 +785,37 @@ FAIL ep_cell_flags: reset image is NON-ZERO but yosys mapped it to distributed
      and the bank comes up all-zero on silicon
 ```
 
-**A second finding, recorded and not fixed here.** The same guard shows that
-`c0_tpc` and `c1_tpc` — lnp64mini's 32×64 trap-PC tables, reset image
-`64'd4096` — are mapped to `RAM32M` and lose their init on this flow too. It
-is latent rather than live: the guest installs its trap vectors before it takes
-a trap, so NetBSD's four-trap boot never reads an uninitialized entry. It is
-outside this campaign's scope, it is now visible to a script instead of to a
-board, and it should be closed the same way — by giving the table an all-zero
-reset image and biasing the vector, or by forcing the bank to block RAM.
+**A second finding — recorded here 2026-08-01, FIXED later the same day.**
+The same guard showed that `c0_tpc` and `c1_tpc` — lnp64mini's 32×64
+thread-PC tables, reset image `64'd4096` — are mapped to `RAM32M` and lost
+their init on this flow too. It was latent rather than live: the guest
+installs its trap vectors before it takes a trap, so NetBSD's four-trap boot
+never read an uninitialized entry.
+
+D37 (`LOOM_GAPS.md`) closed it, by the route this section recommended and
+the route the epoch engine itself took — **take the constant out of
+memory.** `tpc`'s declared image is now all-zero, and the `cmd 13` reset
+sweep that D20.3 already introduced (`tpcTriples` entry 1, 32 cycles off
+the zeroing counter, all under `¬zeroing` so no reader can observe the
+transient) is what establishes `TEXT_BASE`. The image was redundant with
+the sweep; deleting it made the models agree with the fabric instead of the
+other way round. Nothing else changed: the emitted RTL differs only in the
+32 `tpc[i] = 64'd0;` lines of the `initial` block, per core. `eqcheck.sh`
+and `epoch_ladder.sh` no longer carry `tpc` on their acknowledgement lists.
+
+**A third finding, from D37's design-level check, acknowledged not fixed.**
+`epochengine_tiny` (`cfgTiny`: 4 cells, 3-bit epochs) maps its three epoch
+banks to `RAM32M` — 4×3 is far too small for a `RAMB18E1` — so *their* reset
+image `1` is dropped by the same path. `cfg32`'s banks are block RAM and are
+delivered (re-confirmed against yosys 0.33), so no board artifact is
+affected: `cfgTiny` exists only so the iverilog ladder can reach §3's
+saturation case. It cannot be fixed the `tpc` way, because here the reset
+image *is* `Protocol.Init` (E4: there is no install op) and a sweep would
+break `abs(reset) = Protocol.Init`. It is therefore written down with that
+argument at the emission site, `Machines/Epoch/Emit.lean`'s `tinyEmit`
+(`ackMemInit`) — not on `Engine.tiny`, whose frozen Layer-3 theorems are
+stated over `mkDesign cfgTiny` and would stop unifying with a design
+carrying a different field.
 
 ## E13 acceptance — the demo on silicon (2026-08-01, verbatim)
 

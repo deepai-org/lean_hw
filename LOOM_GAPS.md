@@ -30,6 +30,7 @@ that is a Loom defect — record it here before working around it.
 | D32 | the eqcheck CNF encoder proved (side A: UNSAT ⟺ the two transition functions agree, normalization included) | D22 itself — the checker's verdict carried an "*if* the encoding is faithful" that no other link in the chain has |
 | D28 | steps-to-cycles: a spec bound transported through a design with stutter budget `b` is a number of CLOCK CYCLES | the epoch Layer-3 refinement |
 | D34 | the protocol-machine library: `ProtocolSpec` (state, event alphabet, partial step) + `InvSpec`, with the `TSys`/`Step`/`Run`/reachability derivations, the disabled-event and stutter glue, the event-list runner, and the four run-level closures | the engine roster — Epoch §3 and CapWalk §2.2 hand-rolled the same skeleton |
+| D37 | design-level refusal of a memory reset image the flow cannot deliver (`Design.memInitOkB`, hard error in `Design.emit`), sharing its deliverability rule verbatim with the netlist-level check | D30 itself — the epoch engine's `cell_flags` was *detected* after synthesis, and only after a silicon debug cycle; the same shape was still declarable |
 | D36 | priority orders as data: one `(guard, outcome)` clause list yields both the per-clause `X_before_Y` lemmas at arbitrary width and the exhaustive small-width check | the same roster — T-E4 and T-C2 are one proof, written twice |
 
 ### D23, in detail (closed 2026-08-01)
@@ -470,13 +471,100 @@ plus per-clause lemmas at arbitrary width. Same proof, twice, by hand. Make it
 one combinator: given a priority list of (guard, outcome), derive both the
 exhaustive check and the per-clause ordering lemmas.
 
-**D37 — prevention, not just detection, for non-deliverable reset images.**
-D30 is now caught by eqcheck (and by `check_mem_init.py`), but Loom still
-permits a design whose correctness depends on a memory reset image the target
-flow cannot deliver. The EDSL knows the memory's shape and the intended
-mapping; well-formedness could refuse a non-zero image on a bank that will map
-to distributed RAM, turning a downstream catch into a compile-time error.
-Detection is a guard; prevention is a property.
+**D37 — prevention for non-deliverable reset images. CLOSED 2026-08-01**,
+see below.
+
+## D37 — undeliverable reset images are refused at emit (CLOSED 2026-08-01)
+
+**Discovered by D30**, i.e. by the epoch engine's first silicon run — a
+`-BADREF` from a 512×3 bank that yosys mapped to distributed LUT RAM, whose
+non-zero reset image the configuration path silently drops. D31 and
+`scripts/check_mem_init.py` made that *detectable* after synthesis. It was
+still *declarable*: nothing stopped the next design from depending on an
+image the flow cannot deliver, and the cost of finding out was a silicon
+debug cycle. Detection is a guard; prevention is a property.
+
+**Shipped** — `Loom/Hw/MemInitOk.lean` (capability), wired as a hard error
+in `Design.emit` (`Loom/Hw/EmitIO.lean`, beside the D15 input/register name
+clash it already refuses):
+
+* `Design.memInitOkB : Design → Bool`, in the shape of D19's
+  `Design.syncReadOkB` and `Compile.designWFCheck` — `false` exactly when
+  some memory is written, declares a non-zero reset image, and has a shape
+  that maps to distributed RAM;
+* `Design.ackMemInit : List String` — a *named* opt-out on the design, so an
+  accepted loss is written down next to the memory rather than tolerated
+  silently or hidden in a checker's command line. `Design.prefixed` maps it
+  through the prefix, so an instance's acknowledgement travels with it;
+* `Tests/MemInitOk.lean` — the offending design is refused, the
+  acknowledged one emits, and the shipped `lnp64mini` needs neither.
+
+**The rule is shared, not re-invented.** `MemFamily` and
+`Loom.Hw.imageDelivered` (`¬nonZero ∨ family = bram`) live in the design
+layer and `Loom/Netlist/Mem.lean` re-exports them; `checkImage` calls
+`imageDelivered` with the family it *observed* in the netlist and
+`memInitOkFor` calls it with the family *predicted* from `MemDecl`'s
+declared shape. The two checks therefore cannot disagree about what
+"undeliverable" means — only about which family a bank lands in, which is
+precisely the difference between a prediction and a measurement.
+
+**The prediction** (`predictedFamily`), conservative by construction — it
+errs toward `lutram`, i.e. toward refusing: a ROM (no rule writes it) is not
+a hazard at all, since LUT truth tables and flip-flop `INIT` are both
+carried by the bitstream; a bank the design reads combinationally cannot be
+block RAM (D19); and a written bank that does not fill one `RAMB18E1`'s
+16384 data bits is predicted distributed. Both halves were re-confirmed
+against yosys 0.33 while closing this entry: `epochengine`'s 512×32 banks
+are `RAMB18E1` with delivered `INIT_xx`, and `epochengine_tiny`'s 4×3 banks
+are `RAM32M`.
+
+**What it does NOT prevent — this is why D31 stays.** The check predicts a
+mapping; it does not control one. A synthesis tool is free to choose
+differently in either direction, and only the netlist knows what it chose:
+
+* a bank predicted `bram` that the tool puts in distributed RAM anyway is a
+  live D30 defect this check will pass. Nothing at design time can rule it
+  out; `eqcheck`'s `meminit` verdict and `check_mem_init.py` are what catch
+  it, and they read the artifact;
+* it says nothing about *fidelity* — that the `INIT_xx` parameters encode
+  the declared image — which is the other half of the downstream check;
+* it is a claim about the openXC7/yosys path this repo builds on. Another
+  flow (or a `RAM*` primitive whose init a future bitstream generator does
+  carry) would need the rule re-measured, in one place. That single place is
+  `predictedFamily`; `Loom/Hw/MEMTARGET_SPEC.md` (D38) is the recorded
+  decision to turn it into a declared target profile, of which this is the
+  `xc7` instance.
+
+Prevention and detection are complementary here, not redundant: the
+design-level check makes the *common* case a compile error instead of a
+board symptom, and the netlist-level check remains the ground truth.
+
+**Two findings while closing it, and the second is the interesting one.**
+
+1. `lnp64mini`'s `c0_tpc`/`c1_tpc` — the standing acknowledged instance from
+   D30 (E13) — is **fixed, not acknowledged.** Its `64'd4096` image was
+   already redundant with D20.3's `cmd 13` sweep, which writes `TEXT_BASE`
+   into all 32 entries off the zeroing counter before any read can see them
+   (`fsmEn` contains `¬zeroing`). Declaring the image all-zero makes the
+   EDSL, the ISS and iverilog agree with what the fabric was doing all
+   along. Same shape as the epoch fix: take the constant out of memory
+   rather than add machinery to deliver it. `eqcheck.sh` and
+   `epoch_ladder.sh` dropped `tpc` from their acknowledgement lists.
+2. `epochengine_tiny` was a **new** instance, never before looked at —
+   `epochengine_tiny` is not in eqcheck's design list, so no downstream
+   check had ever been pointed at it. Its three 4×3 epoch banks map to
+   `RAM32M` and lose their reset image `1`. It cannot be fixed the `tpc`
+   way, because there the reset image *is* `Protocol.Init` (E4: no install
+   op) and a sweep would break `abs(reset) = Protocol.Init`; and `cfgTiny`
+   is a simulation-scale configuration that never reaches a fabric (the
+   board artifacts are `cfg32`, whose banks are block RAM). So it is the
+   repo's one acknowledged exception, recorded in `Machines/Epoch/Emit.lean`
+   (`tinyEmit.ackMemInit`) with that argument — at the emission site rather
+   than on `Engine.tiny`, because `ackMemInit` is a fact about emitting the
+   artifact and the frozen Layer-3 theorems are stated over
+   `mkDesign cfgTiny`, which a differing field would stop unifying with.
+   That is exactly the job the opt-out exists to do: a known loss stays
+   visible instead of becoming invisible.
 
 ## D34 — the protocol-machine library (CLOSED 2026-08-01)
 
