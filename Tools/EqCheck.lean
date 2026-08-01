@@ -167,6 +167,16 @@ def check (vPath jsonPath : String) (ack : List String := []) : IO UInt32 := do
     match clockNets nl with
     | .error e => IO.eprintln s!"eqcheck: {e}"; return 1
     | .ok c => pure c
+  -- Which side-A expressions fall outside the encoder's *proved* fragment
+  -- (D32: `Loom.Netlist.encode_sound`). Reported in the verdict, never
+  -- silently assumed.
+  let mut unver : List String := []
+  for r in m.regs do unver := unver ++ unverifiedOps r.next
+  for o in m.outs do unver := unver ++ unverifiedOps o.val
+  for mm in m.mems do
+    for wp in mm.wrPorts do
+      unver := unver ++ unverifiedOps wp.en ++ unverifiedOps wp.addr ++ unverifiedOps wp.data
+  let unverOps := unver.eraseDups
   let regs := m.regs.map (fun r => (r.name, r.width))
   let ins := m.ins.map (fun i => (i.name, i.width))
   let reads := cp.reads.map (fun r => (r.wire, r.width))
@@ -535,9 +545,25 @@ def check (vPath jsonPath : String) (ack : List String := []) : IO UInt32 := do
   let checked := results.size - skip
   IO.println s!"  totals: {checked} signals checked, {skip} excluded, \
     {clauses} clauses, {lrat} LRAT lines, {ms}ms solver+checker wall time"
-  IO.println "  (the CNF encoder is untrusted in v1: the claim is \"if the \
-    encoding is faithful, netlist ≡ module\"; every UNSAT is LRAT-certified \
-    and re-checked by Loom.Dp.Cert.checkLrat, the proved checker)"
+  -- The encoder's own status (D32). Verified and unverified parts, named.
+  IO.println s!"  encoder side A (the µVerilog expression, Loom.Netlist.blastE): \
+    PROVED faithful — Loom.Netlist.encode_sound: the CNF handed to cadical is \
+    UNSAT iff the two sides agree on every valuation (clause normalization \
+    inside the theorem). Proved operators: \
+    {String.intercalate " " verifiedOpNames}. NOT proved: \
+    {String.intercalate " " unverifiedOpNames}."
+  if unverOps.isEmpty then
+    IO.println "  encoder side A: every expression in this design is inside the \
+      proved fragment."
+  else
+    IO.println s!"  encoder side A: this design uses \
+      {String.intercalate ", " unverOps} — OUTSIDE the proved fragment, so for \
+      the signals whose cones contain them the old conditional claim (\"if the \
+      encoding is faithful\") still applies."
+  IO.println "  encoder side B (the netlist cone walk, Loom.Netlist.evalSig): NOT \
+    proved — it enters encode_sound as the hypothesis `EncA 0 w actB valB`. \
+    Every UNSAT is LRAT-certified and re-checked by Loom.Dp.Cert.checkLrat, \
+    the proved checker."
   if skip > 0 then
     IO.println s!"  NOT COVERED ({skip} signal(s), each named [SKIP] above), \
       each with its own reason: cones crossing a memory boundary, arrays with \
@@ -548,7 +574,9 @@ def check (vPath jsonPath : String) (ack : List String := []) : IO UInt32 := do
       the command line with --ack, never suppressed."
   if bad == 0 then
     IO.println s!"EQCHECK OK ({checked} signals, {skip} excluded, \
-      {acked} acknowledged, {clauses} clauses, LRAT-verified)"
+      {acked} acknowledged, {clauses} clauses, LRAT-verified; encoder side A \
+      {if unverOps.isEmpty then "proved" else s!"proved except {String.intercalate "/" unverOps}"}, \
+      side B unproved)"
     return 0
   else
     IO.println s!"EQCHECK FAILED ({bad} of {checked} checked signals differ)"

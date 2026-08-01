@@ -67,36 +67,52 @@ theorem stOf_congr {n₀ : Nat} {f g : Var → Bool} (ha : Agree n₀ f g) : stO
   cases hg : stOf g
   simp_all [stOf]
 
+/-- Every register environment is described by some assignment: quantifying
+over assignments in `encode_sound` is quantifying over states. -/
+theorem stOf_surj (ρ : RegEnv) : ∃ f : Var → Bool, (stOf f).regs = ρ := by
+  refine ⟨fun v => match v with
+    | .reg _ n w i => (ρ n w).getLsbD i
+    | .aux _ => false, ?_⟩
+  funext n w
+  apply BitVec.eq_of_getLsbD_eq
+  intro i hi
+  rw [stOf_regs _ n w i hi]
+  simp [stateBit, Bit.denote]
+
 theorem Stable.eval {n₀ w : Nat} (e : Expr w) : Stable n₀ (fun f => e.eval (stOf f)) := by
   intro f g ha
   show e.eval (stOf f) = e.eval (stOf g)
   rw [stOf_congr ha]
 
-/-! ## The verified fragment -/
-
-/-- The operators whose encoding D32 proves. `shl`/`shr` are excluded: the
-barrel shifter in `Miter.shiftBits` is on the unverified path, and the tool
-says so per design. `memRead` is excluded because `blastE` refuses it (the
-comparison is made on the cut reading of the text). -/
-def encVerified : {w : Nat} → Expr w → Bool
-  | _, .lit _ => true
-  | _, .reg _ _ => true
-  | _, .memRead _ _ _ => false
-  | _, .and a b => encVerified a && encVerified b
-  | _, .or a b => encVerified a && encVerified b
-  | _, .xor a b => encVerified a && encVerified b
-  | _, .not a => encVerified a
-  | _, .add a b => encVerified a && encVerified b
-  | _, .sub a b => encVerified a && encVerified b
-  | _, .shl _ _ => false
-  | _, .shr _ _ => false
-  | _, .eq a b => encVerified a && encVerified b
-  | _, .ult a b => encVerified a && encVerified b
-  | _, .slt _ _ => false
-  | _, .mux c t f => encVerified c && encVerified t && encVerified f
-  | _, .slice a _ _ => encVerified a
-  | _, .zext a _ => encVerified a
-  | _, .sext a _ => encVerified a
+/-- The tool's report and the theorem's hypothesis are the same predicate. -/
+theorem encVerified_iff : ∀ {w : Nat} (e : Expr w), encVerified e = true ↔ unverifiedOps e = []
+  | _, .lit _ => by simp [encVerified, unverifiedOps]
+  | _, .reg _ _ => by simp [encVerified, unverifiedOps]
+  | _, .memRead _ _ a => by simp [encVerified, unverifiedOps]
+  | _, .and a b => by
+    simp [encVerified, unverifiedOps, encVerified_iff a, encVerified_iff b]
+  | _, .or a b => by
+    simp [encVerified, unverifiedOps, encVerified_iff a, encVerified_iff b]
+  | _, .xor a b => by
+    simp [encVerified, unverifiedOps, encVerified_iff a, encVerified_iff b]
+  | _, .not a => by simp [encVerified, unverifiedOps, encVerified_iff a]
+  | _, .add a b => by
+    simp [encVerified, unverifiedOps, encVerified_iff a, encVerified_iff b]
+  | _, .sub a b => by
+    simp [encVerified, unverifiedOps, encVerified_iff a, encVerified_iff b]
+  | _, .shl a b => by simp [encVerified, unverifiedOps]
+  | _, .shr a b => by simp [encVerified, unverifiedOps]
+  | _, .eq a b => by
+    simp [encVerified, unverifiedOps, encVerified_iff a, encVerified_iff b]
+  | _, .ult a b => by
+    simp [encVerified, unverifiedOps, encVerified_iff a, encVerified_iff b]
+  | _, .slt a b => by simp [encVerified, unverifiedOps]
+  | _, .mux c t f => by
+    simp [encVerified, unverifiedOps, encVerified_iff c, encVerified_iff t, encVerified_iff f,
+      and_assoc]
+  | _, .slice a _ _ => by simp [encVerified, unverifiedOps, encVerified_iff a]
+  | _, .zext a _ => by simp [encVerified, unverifiedOps, encVerified_iff a]
+  | _, .sext a _ => by simp [encVerified, unverifiedOps, encVerified_iff a]
 
 /-! ## `blastE` is faithful -/
 

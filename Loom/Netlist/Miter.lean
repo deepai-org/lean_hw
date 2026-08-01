@@ -264,6 +264,67 @@ end
 
 attribute [implemented_by blastEM] blastE
 
+/-! ## The proved fragment (D32)
+
+Which operators' encodings are *proved* faithful (`Loom/Netlist/MiterProof.lean`,
+`encode_sound`) and which are not. `eqcheck` evaluates these over every side-A
+expression it blasts and says so in its verdict. -/
+
+/-- The operators whose encoding D32 proves. `shl`/`shr` are excluded: the
+barrel shifter in `Miter.shiftBits` is on the unverified path, and the tool
+says so per design. `memRead` is excluded because `blastE` refuses it (the
+comparison is made on the cut reading of the text). -/
+def encVerified : {w : Nat} → Expr w → Bool
+  | _, .lit _ => true
+  | _, .reg _ _ => true
+  | _, .memRead _ _ _ => false
+  | _, .and a b => encVerified a && encVerified b
+  | _, .or a b => encVerified a && encVerified b
+  | _, .xor a b => encVerified a && encVerified b
+  | _, .not a => encVerified a
+  | _, .add a b => encVerified a && encVerified b
+  | _, .sub a b => encVerified a && encVerified b
+  | _, .shl _ _ => false
+  | _, .shr _ _ => false
+  | _, .eq a b => encVerified a && encVerified b
+  | _, .ult a b => encVerified a && encVerified b
+  | _, .slt _ _ => false
+  | _, .mux c t f => encVerified c && encVerified t && encVerified f
+  | _, .slice a _ _ => encVerified a
+  | _, .zext a _ => encVerified a
+  | _, .sext a _ => encVerified a
+
+/-- The operators outside the proved fragment that occur in an expression,
+by name (deduplicated by the caller). Kept in step with `encVerified` by
+`encVerified_iff` (`Loom/Netlist/MiterProof.lean`). -/
+def unverifiedOps : {w : Nat} → Expr w → List String
+  | _, .lit _ => []
+  | _, .reg _ _ => []
+  | _, .memRead _ _ a => "memRead" :: unverifiedOps a
+  | _, .and a b => unverifiedOps a ++ unverifiedOps b
+  | _, .or a b => unverifiedOps a ++ unverifiedOps b
+  | _, .xor a b => unverifiedOps a ++ unverifiedOps b
+  | _, .not a => unverifiedOps a
+  | _, .add a b => unverifiedOps a ++ unverifiedOps b
+  | _, .sub a b => unverifiedOps a ++ unverifiedOps b
+  | _, .shl a b => "shl" :: (unverifiedOps a ++ unverifiedOps b)
+  | _, .shr a b => "shr" :: (unverifiedOps a ++ unverifiedOps b)
+  | _, .eq a b => unverifiedOps a ++ unverifiedOps b
+  | _, .ult a b => unverifiedOps a ++ unverifiedOps b
+  | _, .slt a b => "slt" :: (unverifiedOps a ++ unverifiedOps b)
+  | _, .mux c t f => unverifiedOps c ++ unverifiedOps t ++ unverifiedOps f
+  | _, .slice a _ _ => unverifiedOps a
+  | _, .zext a _ => unverifiedOps a
+  | _, .sext a _ => unverifiedOps a
+
+/-- The operators the encoder is proved faithful for, for the report. -/
+def verifiedOpNames : List String :=
+  ["lit", "reg", "and", "or", "xor", "not", "add", "sub", "eq", "ult", "mux",
+   "slice", "zext", "sext"]
+
+/-- The operators the encoder is NOT proved faithful for, for the report. -/
+def unverifiedOpNames : List String := ["shl", "shr", "slt"]
+
 /-! ## Miters -/
 
 /-- The per-bit differences of `a` and `b`, high bit first. -/
@@ -328,20 +389,29 @@ def sigMiter (assumps : List Bit) (syms : List (String × Nat)) {w : Nat} (e : E
   let b ← actB
   assertDiffer a b
 
-/-- One register's miter: `rst ? init : next` (module) vs the flip-flops'
-next state (netlist), under the constant-folding assumptions. -/
-def regMiter (env : NetlistEnv) (mt : Matching) (fuel : Nat)
-    (syms : List (String × Nat)) (rd : RegDef) (srcs : Array RegSrc) :
-    M Unit := do
-  assertAll mt.assumptions.toList
-  let nextBits ← blastE syms rd.next
-  let mut sideA : Array Bit := #[]
-  for h : i in [0:rd.width] do
-    sideA := sideA.push (← mkIte rstBit (.const (rd.init.getLsbD i)) nextBits[i]!)
+/-- The netlist's next-state bits of one register. -/
+def netlistNextBits (env : NetlistEnv) (mt : Matching) (fuel : Nat)
+    (name : String) (w : Nat) (srcs : Array RegSrc) : M (Array Bit) := do
   let mut sideB : Array Bit := #[]
   for h : i in [0:srcs.size] do
-    sideB := sideB.push (← netlistNext env mt fuel rd.name rd.width i srcs[i])
-  assertDiffer sideA sideB
+    sideB := sideB.push (← netlistNext env mt fuel name w i srcs[i])
+  pure sideB
+
+/-- One register's miter: `rst ? init : next` (module) vs the flip-flops'
+next state (netlist), under the constant-folding assumptions.
+
+Side A is written *as a µVerilog expression* — `mux (reg 1 "rst") (lit init)
+next` — and blasted by the one blaster, so a register miter is literally an
+instance of `sigMiter` and is covered by `encode_sound`
+(`Loom/Netlist/MiterProof.lean`). The emitted clauses are unchanged: `reg`
+and `lit` blast to no clauses, so the gate sequence is still "blast `next`,
+then one `mkIte` per bit". -/
+def regMiter (env : NetlistEnv) (mt : Matching) (fuel : Nat)
+    (syms : List (String × Nat)) (rd : RegDef) (srcs : Array RegSrc) :
+    M Unit :=
+  sigMiter mt.assumptions.toList (("rst", 1) :: syms)
+    (Expr.mux (Expr.reg 1 "rst") (Expr.lit rd.init) rd.next)
+    (netlistNextBits env mt fuel rd.name rd.width srcs)
 
 /-- One combinational cone's miter: a µVerilog expression against the
 netlist's cone at a named signal. Output ports use it with the port's

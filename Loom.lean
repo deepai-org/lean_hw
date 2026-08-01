@@ -16,9 +16,11 @@ import Loom.Dp.Solver
 import Loom.Dp.KInduction
 import Loom.Netlist.Json
 import Loom.Netlist.Cells
+import Loom.Netlist.Encode
 import Loom.Netlist.Netlist
 import Loom.Netlist.Mem
 import Loom.Netlist.Miter
+import Loom.Netlist.MiterProof
 import Loom.Book.Extract
 import Loom.Book.Render.Html
 import Loom.Emit.MicroVerilog.Semantics

@@ -111,8 +111,14 @@ def permittedUnsafeDecls : List String :=
    -- definition's bits. It exists because `Parse` rebuilds the printer's
    -- SSA wires as a shared DAG and the tree walk re-encodes every
    -- occurrence (EQCHECK_SPEC.md §Deviations 8). Nothing kernel-facing
-   -- depends on it: the equivalence checker is an untrusted tool whose
-   -- UNSAT verdicts are re-checked by the proved LRAT checker.
+   -- depends on it: the equivalence checker is a tool whose UNSAT verdicts
+   -- are re-checked by the proved LRAT checker.
+   -- D32 (2026-08-01) strengthened this entry rather than adding to it: the
+   -- reference `blastE` the twin stands in for is now PROVED faithful on the
+   -- fragment `encVerified` selects (`Loom.Netlist.encode_sound`), so what
+   -- the twin is trusted to reproduce is a proved definition, not an
+   -- unexamined one. The twin itself is still the untrusted half, and no
+   -- theorem depends on it.
    "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEGo",
    "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEM"]
 
