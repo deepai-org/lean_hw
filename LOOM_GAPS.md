@@ -170,13 +170,11 @@ on the emitted text; async and multi-clock are exactly where they stop agreeing.
   delay-insensitivity, hazards and isochronic forks — a different formalism
   (STG/Petri-net class) and a different backend. A sibling tool if ever, never
   a subset extension.
-* **Multiple clock domains inside one `Design`**: not as a semantics change.
-  Making `Design` multi-domain turns the step function into an interleaving
-  model and invalidates D9, the emission theorem, FastEval and eqcheck at once.
-  IF the need arrives, the tractable form is **composition**: keep single-clock
-  designs, add a domain-composition operator plus a reusable verified CDC
-  component (generalize D21's toggle-sync, parameterized by a clock-ratio
-  rely). File it then, with the artifact that needs it.
+* **Multiple clock domains inside one `Design`**: still excluded as a
+  *semantics change* — making `Design` multi-domain turns the step function
+  into an interleaving model and invalidates D9, the emission theorem,
+  FastEval and eqcheck at once. But multi-domain SUPPORT is now planned as
+  **D29 (below)**, by composition rather than by changing the core.
 * **Hard blocks** (PLL/MMCM, SerDes, DDR PHY, XADC) and **bidirectional IO**:
   wrapper only, by the three-doors doctrine.
 * **Timing constructs** (multicycle/false paths, clock gating as a construct):
@@ -187,3 +185,42 @@ on the emitted text; async and multi-clock are exactly where they stop agreeing.
 GEM MAC itself into Loom means owning the 125 MHz RGMII domain. Every crossing
 so far (JTAG DRCK, PS FCLK, the 200 MHz board clock) has stayed in the wrapper
 under D21, which is why the question has not yet been forced.
+
+## D29 — multi-clock, by composition (PLANNED, 2026-08-01)
+
+Decision: support multiple clock domains *without touching D9*. Single-clock
+`Design`s stay the unit of semantics, compilation, emission and equivalence
+checking; domains meet through proved components, not through a new step model.
+
+Pieces:
+1. **A domain-composition operator** pairing designs with a *declared* clock
+   relationship (ratio or "unrelated"), emitting one module per domain plus a
+   wrapper instantiation; eqcheck runs per domain, unchanged.
+2. **A verified CDC component library**, generalizing D21's toggle synchronizer:
+   pulse-sync, 2FF level-sync, four-phase handshake, and a gray-pointer async
+   FIFO — each with an adversarial-resolution soundness theorem (the D21 shape:
+   quantify over every way a metastable flop may resolve) and an explicit rely
+   on the clock relationship.
+3. **Trace-level relies (D24 shape)** so a slow-domain design's theorems compose
+   with a fast-domain one's: what one domain guarantees is what the other may
+   assume, with the CDC component's theorem as the bridge.
+4. **Bounds across domains (D23/D28)**: a K-step bound in one domain becomes a
+   cycle bound in the other only through the declared ratio — state it once,
+   there, rather than per design.
+
+Driving artifact (the rule: ship the capability WITH the artifact that needs
+it): the **GEM MAC's 125 MHz RGMII domain** — bringing the MAC itself into Loom
+is the first thing that genuinely cannot stay in the wrapper. It also unlocks
+GALS-shaped machines at LNP64 scale, where §16.7 volumes with per-volume clocks
+and a spanning-tree ack reduction are exactly a multi-domain composition.
+
+Explicitly NOT part of D29: asynchronous logic. Its correctness rests on local
+delay assumptions (isochronic forks, bounded delays) that are strictly harder to
+discharge than the synchronous alternative, which collapses all timing
+correctness into ONE checkable predicate (the clock constraint, verified by STA,
+with theorems stated conditional on it). For a proof-carrying stack that is the
+reason the chain closes. The real-world niches for true async — near-threshold
+power, DPA-resistant dual-rail, ring-oscillator TRNGs — are not this project's,
+and on FPGA fabric async is actively counterproductive (no delay control, no
+C-element primitive, tools fight it). The genuinely useful part of "async" is
+the GALS boundary, and D29 delivers exactly that.
