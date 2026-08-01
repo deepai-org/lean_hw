@@ -136,3 +136,90 @@ v1 consequence: the epoch cell table fits entirely on-chip on the XC7Z020
 (~114 free RAMB36 after the dual core), so v1 needs no DDR-resident state.
 The composable memory model (rule 3) is built alongside, because the NEXT
 engine (capability table walk/fill, Appendix F machine 2) genuinely spills.
+
+## SUPERSEDING DOCTRINE: external state is adversarial (binding, 2026-08-01)
+
+The four rules above are the ROAD; this is the DESTINATION, and every
+intermediate theorem must survive as a lemma of the final one. The reason
+"engine keeps its table in DDR" is unprovable today is that theorems quantify
+over all `m_rdata`/`m_done`. The move is NOT to condition that quantifier down
+(a `DdrFaithful` predicate) nor to close it with one model — it is to build
+engines for which the UNCONDITIONAL theorem is true. Then the very fact that
+made DDR unprovable makes the result maximally strong: the D15 boundary stops
+being a limitation on proofs and becomes the formal statement that the outside
+world is untrusted.
+
+The end state, four theorems:
+
+1. **Zero-assumption safety — DDR as adversary.**
+   `theorem engine_safe : ∀ ιs, SafetyInvariant (run engine ιs)`
+   No side condition. Memory may return garbage, replay stale lines, or lie
+   about completion; every value crossing back in is re-validated (MAC/tag for
+   integrity, epoch for freshness — which §3 gives by construction) and every
+   failure lands in fail-stop/poison/CORE_CHECK. Authenticated memory
+   (Merkle/MAC over the spilled table, epoch-bound against cross-epoch replay)
+   is the completion of §3's own observation that staleness already fails the
+   check: extend it until EVERY memory misbehavior is harmless or detected.
+2. **Rely-guarantee liveness — quantify over all compliant memories.**
+   `theorem engine_live : ∀ env, env ⊨ Φ_axi → Liveness (run engine (env ⊗ …))`
+   Liveness cannot be assumption-free (a memory that never answers denies
+   service; no tag check fixes that). `Φ_axi` is the mechanized frozen
+   AXI-subset spec used as a RELY, not a discharged obligation — strictly
+   stronger than proving against one model. The behavioral slave is demoted to
+   its proper role: a Lean-proved WITNESS that `Φ_axi` is satisfiable (so the
+   rely is not vacuous), and the same artifact drives iverilog co-simulation so
+   proof and testbench cannot drift.
+3. **Abstraction — ISA-level theorems never mention DDR.**
+   Engine specs are stated against an abstract machine whose table is one
+   mathematical map. ONE refinement (abstraction = on-chip cache ∪
+   authenticated backing store, with the dirty-line forwarding invariant)
+   quarantines the whole memory hierarchy; everything above it (Appendix F
+   validator theorems, class-0 locality) is proved against the abstract map and
+   is PORTABLE — move the backing store to HBM, a second channel, or a network,
+   and only that one proof changes.
+4. **The residual axiom, guarded by a proof-derived artifact.**
+   "The PS7 eventually responds" is a claim about someone else's silicon and
+   will never be a Lean theorem. So generate a bus monitor FROM `Φ_axi`, as a
+   Loom design through the same trusted pipeline, with
+   `theorem monitor_sound : monitor flags trace ↔ ¬ (trace ⊨ Φ_axi)` (up to
+   bounded history), routing violations to poison/CORE_CHECK. The deployment
+   assumption becomes "PS7 satisfies Φ_axi OR we fail-stop" — protocol
+   compliance converts into an architected detected violation. What stays
+   axiomatic is one ledger line: EXTERNAL MEMORY EVENTUALLY RESPONDS. It gates
+   liveness only, never safety.
+
+Why this is the ideal and not merely the maximal option: the safety/liveness
+asymmetry is fundamental and this design saturates both sides — safety with
+zero environmental assumptions, liveness with exactly one, runtime-monitored.
+It is self-hosting (cache, MAC engine, epoch check and bus monitor are all Loom
+designs with their own proofs, emitted through the same checked pipeline: the
+guardian of the one axiom is itself proof-carrying). And it composes outward:
+`Φ_axi`-as-rely is a template for every future external dependency (second bus,
+NoC, eventually the CDC boundary).
+
+### Consequence bound NOW, for the v1 engine (boundary: cores, not DDR)
+
+Same doctrine one boundary in. §3's return guarantee depends on acks being
+truthful. If a CORE holds its own replica and asserts its ack, a lying core
+breaks safety and T-E1..T-E6 must be conditioned on core cooperation. So:
+**the ENGINE owns the per-volume replicas (one BRAM bank per volume) and the
+ack is engine-internal; cores may only REQUEST checks and bumps, never write
+freshness state.** Then the epoch safety theorems are unconditional over all
+core behavior and all input traces — adversarial cores included. This is not a
+new requirement: §3's safe-reuse corollary already says the reuse point is
+"established by the engine, never asserted by software". Layer 2 (Engine.lean)
+is bound to this shape; Layer 3's refinement must therefore deliver an
+UNCONDITIONAL safety statement, and any conditionality is a defect to report,
+not a scope decision to take.
+
+### Proposed contribution back to the ISA doc (not applied here)
+
+Appendix F's asymmetry — checkers owe safety, producing engines owe
+completeness and liveness — is the same theorem as the safety/liveness
+asymmetry above, at a different scale. Worth stating explicitly in Appendix F
+so the validator-concentration doctrine and the external-state doctrine are
+visibly one principle.
+
+Ledger line: **DDR holds bits; the design holds truth. Safety assumes nothing
+of the outside world; liveness assumes exactly one thing, and a proof-carrying
+monitor watches even that.**
