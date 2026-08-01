@@ -204,12 +204,13 @@ module tb;
     $display("EPOCH c0.r12(old epoch)   =%0d (want 259 = -STALE)", dut.c0_rf[12]);
     $display("EPOCH c0.r13(new epoch)   =%0d (want 256 = ok)", dut.c0_rf[13]);
     $display("EPOCH c0.r15(after poison)=%0d (want 258 = -POISONED)", dut.c0_rf[15]);
+    $display("EPOCH c1.r11(GEM0 probe)  =%0d (want 0 = GEM0 unreachable from core 1, D5 tie-off intact)", dut.c1_rf[11]);
     $display("EPOCH bump latency: lazy=%0d poison=%0d cycles (issue->all-acked->return)",
              dut.c0_rf[11], dut.c0_rf[14]);
     $display("EPOCH engine: cell_epoch[5]=%0d repl0[5]=%0d repl1[5]=%0d flags[5]=%0d",
              dut.ep_cell_epoch[5], dut.ep_repl0[5], dut.ep_repl1[5], dut.ep_cell_flags[5]);
     if (dut.c1_rf[9] == 256 && dut.c1_rf[10] == 259 && dut.c0_rf[12] == 259
-        && dut.c0_rf[13] == 256 && dut.c0_rf[15] == 258)
+        && dut.c0_rf[13] == 256 && dut.c0_rf[15] == 258 && dut.c1_rf[11] == 0 && o_c1_halted)
       $display("EPOCH DEMO OK -- core 0 bumped, core 1 observed -STALE, poison fails closed");
     else
       $display("EPOCH DEMO FAILED");
