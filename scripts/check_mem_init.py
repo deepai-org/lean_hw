@@ -21,8 +21,12 @@ against the yosys netlist:
     reset image (which the flow does deliver), and the primitive's INIT_x
     parameters must be zero to match.
 
-Usage:  check_mem_init.py <synth.json> <emitted.v> [<emitted2.v> ...]
+Usage:  check_mem_init.py [--allow mem,mem] <synth.json> <emitted.v> [<v> ...]
 Exit 0 = the flow delivers every reset image; exit 1 = it does not.
+
+`--allow` names memories whose loss is *known and recorded* (E13 lists them
+with the reason); they are still reported, as ACK lines, so that an
+acknowledged defect stays visible instead of becoming invisible.
 """
 
 from __future__ import annotations
@@ -84,7 +88,15 @@ def main(argv: list[str]) -> int:
     if len(argv) < 3:
         sys.stderr.write(__doc__)
         return 2
-    netlist_path, rtl_paths = argv[1], argv[2:]
+    allow: set[str] = set()
+    argv = argv[1:]
+    while argv and argv[0] == "--allow":
+        allow |= {m for m in argv[1].split(",") if m}
+        argv = argv[2:]
+    if len(argv) < 2:
+        sys.stderr.write(__doc__)
+        return 2
+    netlist_path, rtl_paths = argv[0], argv[1:]
 
     images = parse_reset_images(rtl_paths)
     nonzero = {n for n, img in images.items() if any(v != 0 for v in img.values())}
@@ -105,6 +117,7 @@ def main(argv: list[str]) -> int:
             mapped.setdefault(mem, {}).setdefault(kind, []).append((cname, cell))
 
     failures: list[str] = []
+    acked: list[str] = []
     checked = 0
     for mem, bykind in sorted(mapped.items()):
         if mem not in images:
@@ -112,16 +125,17 @@ def main(argv: list[str]) -> int:
         checked += 1
         want_nonzero = mem in nonzero
         kinds = sorted(bykind)
+        sink = acked if mem in allow else failures
         if want_nonzero and "lutram" in bykind:
             cname = bykind["lutram"][0][0]
-            failures.append(
+            sink.append(
                 f"{mem}: reset image is NON-ZERO but yosys mapped it to distributed "
                 f"RAM ({bykind['lutram'][0][1]['type']}, e.g. {cname}); that path "
                 f"discards the init and the bank comes up all-zero on silicon")
             continue
         if want_nonzero:
             if not any(init_is_nonzero(c["parameters"]) for _n, c in bykind["bram"]):
-                failures.append(
+                sink.append(
                     f"{mem}: reset image is NON-ZERO but every mapped BRAM "
                     f"primitive has an all-zero INIT")
                 continue
@@ -130,12 +144,14 @@ def main(argv: list[str]) -> int:
             bad = [n for kind in bykind for n, c in bykind[kind]
                    if init_is_nonzero(c["parameters"])]
             if bad:
-                failures.append(
+                sink.append(
                     f"{mem}: reset image is all-zero but {bad[0]} carries a "
                     f"non-zero INIT")
                 continue
             print(f"ok   {mem}: all-zero reset image, {kinds} with zero INIT")
 
+    for f in acked:
+        print(f"ACK  {f}")
     for f in failures:
         print(f"FAIL {f}")
     if failures:
@@ -143,7 +159,9 @@ def main(argv: list[str]) -> int:
               f"{'y' if len(failures) == 1 else 'ies'} of {checked} are NOT "
               f"initialized by this flow")
         return 1
-    print(f"check_mem_init: OK -- {checked} memories, every reset image delivered")
+    print(f"check_mem_init: OK -- {checked} memories checked, "
+          f"{len(acked)} acknowledged (see EPOCH_SPEC.md E13), "
+          f"every other reset image delivered")
     return 0
 
 
