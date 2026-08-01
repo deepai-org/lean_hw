@@ -6,6 +6,8 @@ import Loom.Core.Word
 import Loom.Core.Ts
 import Loom.Core.Trace
 import Loom.Core.Bounded
+import Loom.Protocol.Machine
+import Loom.Protocol.Priority
 import Loom.Isa.Decode
 import Loom.Isa.Dsl
 import Loom.Dp.Cert.Lrat
