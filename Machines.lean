@@ -27,12 +27,14 @@ import Machines.Substrate.S0BscanRegs
 import Machines.Substrate.RetimeDemo
 import Machines.Substrate.S1Counters
 import Machines.Epoch.Protocol
+import Machines.Epoch.ProtocolLib
 import Machines.Epoch.Bmc
 import Machines.Epoch.Engine
 import Machines.Epoch.EpochSoc
 import Machines.Epoch.Bounded
 import Machines.Epoch.Refines
 import Machines.CapWalk.Protocol
+import Machines.CapWalk.ProtocolLib
 import Machines.Lnp64mini.Core
 import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness

@@ -29,6 +29,8 @@ that is a Loom defect — record it here before working around it.
 | D31 | memories inside the post-synthesis equivalence check: reset images, write-port pins, both read shapes | D30 — the epoch engine's first silicon `-BADREF`, i.e. a bank whose reset image the flow dropped where the checker could not look |
 | D32 | the eqcheck CNF encoder proved (side A: UNSAT ⟺ the two transition functions agree, normalization included) | D22 itself — the checker's verdict carried an "*if* the encoding is faithful" that no other link in the chain has |
 | D28 | steps-to-cycles: a spec bound transported through a design with stutter budget `b` is a number of CLOCK CYCLES | the epoch Layer-3 refinement |
+| D34 | the protocol-machine library: `ProtocolSpec` (state, event alphabet, partial step) + `InvSpec`, with the `TSys`/`Step`/`Run`/reachability derivations, the disabled-event and stutter glue, the event-list runner, and the four run-level closures | the engine roster — Epoch §3 and CapWalk §2.2 hand-rolled the same skeleton |
+| D36 | priority orders as data: one `(guard, outcome)` clause list yields both the per-clause `X_before_Y` lemmas at arbitrary width and the exhaustive small-width check | the same roster — T-E4 and T-C2 are one proof, written twice |
 
 ### D23, in detail (closed 2026-08-01)
 
@@ -450,16 +452,9 @@ the traversal.
 Two engines (Epoch §3, CapWalk §2.2) are enough to see the duplication; six
 more are planned, so these are due now rather than later.
 
-**D34 — a protocol-machine library.** Both engines hand-rolled the same
-skeleton: state structure, `Ev` inductive, `stepEv : St → Ev → Option St`,
-`Step := ∃ e, stepEv s e = some s'`, the `TSys` instance, a multi-field `Inv`
-structure with its `inv_inductive`/`inv_invariant` pair, and
-`Run := Relation.ReflTransGen Step`. None of that is engine-specific. A
-`ProtocolSpec` abstraction (state, event alphabet, partial step, invariant
-bundle) with generic derivations — `toTSys`, reachability, `Run`, the
-inductive-invariant lemma, and the "disabled events stutter" glue — would make
-the next engine start at its actual content. Validate it by *expressing* both
-existing engines through it without editing the frozen files.
+**D34 — a protocol-machine library. CLOSED 2026-08-01**, see below.
+
+**D36 — the outcome/priority pattern. CLOSED 2026-08-01**, see below.
 
 **D35 — refinement by cases.** `Machines/Epoch/Refines.lean` is ~1450 lines for
 one engine, and its spine is generic: an abstraction function, then a commuting
@@ -482,3 +477,113 @@ flow cannot deliver. The EDSL knows the memory's shape and the intended
 mapping; well-formedness could refuse a non-zero image on a bank that will map
 to distributed RAM, turning a downstream catch into a compile-time error.
 Detection is a guard; prevention is a property.
+
+## D34 — the protocol-machine library (CLOSED 2026-08-01)
+
+**Discovered by the engine roster.** Two mechanized engines, and both had
+hand-rolled the same skeleton around their actual content.
+
+**Shipped** — `Loom/Protocol/Machine.lean` (capability) with
+`Machines/Epoch/ProtocolLib.lean` and `Machines/CapWalk/ProtocolLib.lean`
+(the artifacts that needed it — both frozen engines *expressed through* the
+library, with the frozen files untouched):
+
+* `ProtocolSpec` — state type, event alphabet, initial states, and a
+  **partial** step `stepEv : S → E → Option S` (`none` = disabled);
+* derivations: `Step`, `toTSys`, `Run` (`Relation.ReflTransGen`),
+  `Reachable`;
+* the disabled/stutter glue: `not_stepEv_of_disabled`,
+  `no_step_of_all_disabled` (deadlock, the side condition D23's `MustReach`
+  refuses to leave implicit), `stutter` (the pure-read observation both
+  engines model as an always-enabled self-loop);
+* `runEvents` + `run_of_runEvents`: an explicit event sequence becomes a
+  `Run` without hand-chaining `ReflTransGen`;
+* `InvSpec` — the invariant bundle — with `inductive_`, `invariant`,
+  `step_rel`, `run`, and the invariant-dependent monotone measure
+  `InvSpec.run_mono`;
+* the three invariant-free run closures `run_closure` (sticky bits),
+  `run_mono` (monotone counters), `run_const` (quantities no step changes).
+
+Nothing else is offered: every lemma above is instantiated by at least one
+of the two engines, per the standing rule that unused generality is a cost.
+
+**The validation.** `sys`, `Step`, `Run` and `Reachable` are recovered
+**definitionally** (`toTSys_eq … := rfl`) for both engines, so nothing
+already stated over the frozen `sys` — the epoch Layer-3 refinement, the
+D23/D28 bounds — needs re-proving or re-stating. Both engines' complete
+`RunLemmas` sections and `inv_inductive`/`inv_invariant` pairs are
+re-derived from the combinators, and each reconstruction is checked to have
+*exactly* the frozen theorem's type (`example : @run_repl_mono =
+@run_repl_mono' := rfl`, and so on for all nine).
+
+**What it does NOT cover** (named, not hidden):
+
+* the per-event case analysis — `inv_step`, `step_cells_shape`,
+  `step_repl_mono` — is the engine's real content and stays hand-written.
+  D34 is the skeleton around the work, not the work;
+* **schedules**: `Machines/Epoch/Bounded.lean`'s `ackSys` is a restricted
+  transition system (a fairness schedule over `Step`) and is a `TSys`, not a
+  `ProtocolSpec` — its step relation is not "some event of the alphabet is
+  enabled". Bounded response therefore still attaches at the `TSys` layer;
+* **guard languages**: `dupOk` is a Boolean side condition inside `stepEv`.
+  D34 knows only that a step may be disabled, not why;
+* **protocol morphisms**: CapWalk embeds the epoch machine and lifts T-E1
+  through `absLin`. That route stays open (the `Run`s are definitionally the
+  frozen ones, and `revoke_absLin` is reconstructed through `runEvents`), but
+  no `ProtocolSpec`-level morphism combinator is built — one engine pair is
+  not enough evidence for its shape;
+* nothing about refinement, emission, or the design layer: a `ProtocolSpec`
+  is a Layer-1 object.
+
+## D36 — the outcome/priority pattern (CLOSED 2026-08-01)
+
+**Discovered by the same roster**: T-E4 (2^10 views) and T-C2 (2048 views)
+are the same proof twice — a nest of `if`s, an independently written second
+nest, a kernel `decide` between them, and six or seven `X_before_Y` lemmas
+at arbitrary width.
+
+**Shipped** — `Loom/Protocol/Priority.lean`: a priority order is *data*.
+`Clause` = `(guard : V → Bool, out : V → O)` (view-dependent outcomes
+included, because §2.2's empty-slot clause needs one), `Priority` = clauses
+plus fallback, `Priority.eval` = first-match evaluation. From one clause
+list:
+
+* `Priority.eval_of_first` / `Agrees.fires` — **the per-clause lemma
+  generator**. Its hypotheses are "the higher-precedence guards are false
+  and this one fires"; its conclusion mentions no later clause at all, which
+  *is* the `X_before_Y` claim. `Agrees.falls` is the fall-through half;
+* `Agrees f P` (`∀ v, f v = P.eval v`) — the obligation that a hand-written
+  total outcome function *is* the order. Proved once at arbitrary width, it
+  yields every ordering lemma; `decide`d at the model's bounds, it is the
+  exhaustive cross-check T-E4/T-C2 buy.
+
+**The validation.** Both engines' clause lists are written once
+(`epochPriority`, `capPriority`), and **all twelve** frozen ordering
+theorems fall out of `Agrees.fires` with the frozen statements reproduced
+verbatim — `example : @Theorems.T_E4_rights_last = @T_E4_rights_last' :=
+rfl`, and likewise for the other five T-E4 and all six T-C2 lemmas. The
+exhaustive checks are reconstructed as `Agrees … (epochPriority 2)` and
+`Agrees … (capPriority 2)` by kernel `decide`, at the same widths as the
+originals.
+
+**What it does NOT cover**:
+
+* **`decide` ergonomics**: Mathlib's derived `Fintype` instance for a view
+  record does not reduce in the kernel (it is built with `Eq.mpr`), so the
+  enumeration is still done the frozen way — destructure the view, `revert`
+  its fields, `decide` the curried `∀` over `BitVec`/`Bool` with core's
+  instances. No `Decidable (Agrees f P)` instance is offered, because the
+  one Mathlib supplies would not reduce;
+* **line count is not the win.** Per engine the D36 instantiation is about
+  as long as the by-hand version: each `fires` application must still
+  exhibit its split of the clause list and discharge the prefix guards. What
+  changes is that the order is stated **once**, as data, instead of twice as
+  prose-in-`if`s — so the two artifacts can no longer drift apart, and the
+  eighth engine writes a list rather than a proof pattern;
+* it does not *derive* the engine's outcome function: `useLocal` and
+  `outcome` stay hand-written and are proved equal to the order. Generating
+  the check from the clause list is deliberately not done, because the
+  frozen functions are the normative text;
+* guards are pure functions of a finite view. A check whose precedence
+  depends on protocol state, or whose clauses are not mutually exclusive by
+  construction, is outside this combinator.
