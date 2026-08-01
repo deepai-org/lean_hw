@@ -45,6 +45,9 @@ def Design.prefixed (p : String) (d : Design) : Design where
   rules := d.rules.map fun r =>
     { name := p ++ r.name, body := r.body.mapSignals (p ++ ·) }
   inputs := d.inputs.map fun i => { i with name := p ++ i.name }
+  -- D37: an acknowledged undeliverable reset image is acknowledged for the
+  -- *instance* too, so the names travel with the prefix.
+  ackMemInit := d.ackMemInit.map (p ++ ·)
 
 /-! ## `Design.par` -/
 
@@ -59,6 +62,7 @@ def Design.par (a b : Design) : Design where
   mems := a.mems ++ b.mems
   rules := a.rules ++ b.rules
   inputs := a.inputs ++ b.inputs
+  ackMemInit := a.ackMemInit ++ b.ackMemInit   -- D37, carried by both parts
 
 /-- All state/input names a design owns (registers, memories, inputs). The
 disjointness a valid `par` needs. -/
@@ -96,6 +100,7 @@ def Design.connect (d : Design)
   mems := d.mems
   -- keep only inputs left unwired
   inputs := d.inputs.filter fun i => (wire i.name i.width).isNone
+  ackMemInit := d.ackMemInit                   -- D37, unchanged by wiring
   rules := d.rules.map fun r =>
     { r with body :=
         d.inputs.foldl (fun body i =>
