@@ -491,6 +491,16 @@ are emitted in an `initial` block, not in the `if (rst)` arm, so a hardware
 `rst` pulse no longer restores `tpc` to `TEXT_BASE`. `rst` is the wrapper
 POR (`PORTING_SPEC.md` rule 9); the soft reset is `cmd 13`, which sweeps.
 
+**2026-08-01 (D37): the declared image is now all-zero, and the sweep is the
+only writer of `TEXT_BASE`.** A 32×64 bank maps to `RAM32M`, and the openXC7
+configuration path does not carry a distributed-RAM image — so on silicon
+`tpc` came up all-zero while the EDSL, the ISS and iverilog all showed
+`64'd4096` (`LOOM_GAPS.md` D30/D37, `EPOCH_SPEC.md` E13). Since D20.3's
+sweep already writes `TEXT_BASE` into all 32 entries before any read, the
+image was redundant: deleting it makes the models agree with the fabric.
+`Iss.lean`'s `tpc` starts at 0 to match, and the emitted RTL changes only in
+the 32 `tpc[i] = 64'd0;` lines per core.
+
 ## Ladder — all green, and bit-exact where it must be
 
 * `selftest` — 7 EDSL≡ISS scripts, **all registers plus `rf[0..64)`,

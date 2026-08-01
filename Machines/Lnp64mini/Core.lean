@@ -1267,8 +1267,20 @@ def design : Design where
   mems :=
     [⟨"rf", 10, 64, fun _ => 0⟩, ⟨"dmem", 9, 64, fun _ => 0⟩,
      ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩,
-     -- D20: the thread table's single-dynamic-index arrays
-     ⟨"tpc", 5, 64, fun _ => BitVec.ofNat 64 TEXT_BASE⟩,
+     -- D20: the thread table's single-dynamic-index arrays.
+     -- **D37 (2026-08-01): `tpc`'s reset image is ALL-ZERO, not TEXT_BASE.**
+     -- A non-zero image on a 32×64 bank is exactly the D30 defect: yosys
+     -- maps it to distributed RAM and the configuration path does not carry
+     -- the init, so the bank came up all-zero on the ZC702 while every
+     -- model said `TEXT_BASE` (EPOCH_SPEC E13). The image was already
+     -- redundant: D20.3 re-expressed `cmd 13`'s 32-entry reset as a sweep
+     -- off the zeroing counter (`tpcTriples` entry 1), which writes
+     -- TEXT_BASE into all 32 entries before anything can read them
+     -- (`fsmEn` contains `¬zeroing`). Declaring zero makes the model agree
+     -- with the silicon instead of the other way round — the epoch fix's
+     -- shape: take the constant out of memory rather than add machinery to
+     -- deliver it.
+     ⟨"tpc", 5, 64, fun _ => 0⟩,
      ⟨"tsleep", 5, 64, fun _ => 0⟩,
      ⟨"tp_arr", 5, 64, fun _ => 0⟩, ⟨"sigmask_arr", 5, 64, fun _ => 0⟩]
   rules :=
