@@ -3,10 +3,14 @@
 Loom is a generic toolchain for defining processors in Lean, proving
 theorems about them (isolation, revocation, scheduling, noninterference —
 see `STATUS.md` for the ledger), and emitting Verilog whose correspondence
-to the proved model is itself checked. Two machines live here: **Acc8**, a
-tiny accumulator core used as the pathfinder for the whole proof chain, and
-**LNP64-µ**, the first real machine (4 domains, capabilities, gates, a DMA
-Mover, 25 opcodes).
+to the proved model is itself checked. The machines form a ladder:
+**Acc8**, a tiny accumulator core used as the pathfinder for the whole proof
+chain; **LNP64-µ**, the release machine (4 domains, capabilities, gates, a DMA
+Mover, 25 opcodes); **LNP64mini**, a full soft-core that runs NetBSD with
+native Ethernet on an FPGA; the **Substrate** bring-up designs; and the
+**Epoch engine**, the first mechanized-and-refined LNP64 protocol machine.
+See [`fpga/zc702/README.md`](fpga/zc702/README.md) for what has run on real
+silicon.
 
 ## Quick start
 
@@ -89,6 +93,17 @@ commit order reproduces the run order).
   `Tools/ReleaseAudit.lean` requires that theorem to depend on exactly
   `propext`, `Classical.choice`, and `Quot.sound`.
 
+Two links below the emission theorem are now *checked per build* rather than
+assumed. `lake exe eqcheck` (`scripts/eqcheck.sh`) compares the synthesized
+netlist's one-cycle transition function against the emitted module's, signal by
+signal, with every UNSAT certified by an LRAT proof re-checked by the proved
+checker — so "the synthesis tool preserved the meaning" is an artifact, not a
+hope. (Its CNF encoder is untrusted in v1, and memory-boundary signals are
+excluded and named individually.) And `Loom/Hw/CdcContract.lean` proves the
+board wrapper's clock-domain-crossing protocol over *every* adversarial
+metastability resolution, leaving one stated physical assumption in
+[`TCB.md`](TCB.md).
+
 The remaining logic-to-tool link is the µVerilog tool-boundary assumption:
 for the deliberately small concrete SSA syntax, Yosys interprets the text
 produced by the structural renderer with the behavior assigned by its proved
@@ -144,14 +159,23 @@ trust documents describe.
 
 ## Orientation
 
-- `Loom/` — the generic toolchain: hardware EDSL (`Hw/`), decision
-  procedures (`Dp/` — LRAT-checked SAT, BMC, k-induction), separation
-  logic seed (`Logic/`).
-- `Machines/Acc8/`, `Machines/Lnp64u/` — the two machines: ISA spec, ISS,
-  EDSL core (`Hw/`), invariants (`Logic/`), ledger theorems (`Theorems/`).
+- `Loom/` — the generic toolchain: transition-system spine (`Core/`, incl.
+  bounded-response properties), hardware EDSL (`Hw/`), µVerilog emission
+  (`Emit/`), decision procedures (`Dp/` — LRAT-checked SAT, BMC, k-induction),
+  post-synthesis equivalence checking (`Netlist/`), the release-witness path
+  (`Release/`), separation logic seed (`Logic/`).
+- `Machines/` — the machines, each with ISA spec, ISS or verified fast
+  evaluator, EDSL core (`Hw/`), invariants (`Logic/`) and ledger theorems
+  (`Theorems/`) as applicable: `Acc8/`, `Lnp64u/`, `Lnp64mini/`, `Epoch/`,
+  `Substrate/`, plus `Tutorial/` and `PingPong/` as worked examples.
+- `fpga/zc702/` — the board half: untrusted wrappers, constraints and the
+  evidence log for everything that has run on hardware.
+- `LOOM_GAPS.md` — the capability ledger: how Loom grows (by demand, from
+  campaigns), what is planned, and what is deliberately out of scope.
 - `lake exe audit` — the gate: sorries only in `Theorems/`/`Wip`,
-  `native_decide` banned, only the two µVerilog boundary declarations
-  whitelisted. `scripts/ci.sh` runs the full check.
+  `native_decide` banned, every `unsafe`/`implemented_by` pair enumerated with
+  its rationale, and the µVerilog boundary declarations whitelisted.
+  `scripts/ci.sh` runs the full check (audit, emission, round-trip).
 
 Documents: [`CHARTER.md`](CHARTER.md) (the program — what and why) →
 [`PLAN.md`](PLAN.md) (the task plan — how) → [`STATUS.md`](STATUS.md)

@@ -212,7 +212,11 @@ Ladder step 3 (Rust emulator, single core): `smpcount.hex` /
 first `.data` symbol (0x10000), which is both ≥ 0x1000 (shared DDR on the
 fabric) and backed by the emulator's flat-exec data image.
 
-**Silicon: not yet; D19 (2026-07-30) got the dual from 93% to 78% but it still does not place.** With the
+**[SUPERSEDED 2026-07-31 — D20 got the dual to 48 % and it placed; see
+"Dual-core SMP on silicon" below. The paragraph is kept because the failure
+and the two fixes are the useful record.]**
+
+**Silicon: not yet at the time of writing; D19 (2026-07-30) got the dual from 93% to 78% but it still did not place.** With the
 stock recipe (`synth_xilinx -flatten -nowidelut`) the dual originally came
 out at `SLICE_LUTX 99072/106400 (93%)` and nextpnr-xilinx reported
 *"Unable to find legal placement for all cells"*, because µVerilog's only
@@ -261,3 +265,35 @@ and coexistence — NetBSD serving native GEM0 on core 0 (~883k retires/s)
 while core 1 ran an 8M-instruction workload to completion, ping 8/8
 after, arbiter share cost ~31% with RTT unaffected. Numbers: 48% LUTs,
 26 RAMB36, 29.46 MHz post-route at a 25 MHz clock.
+
+## Epoch engine (LNP64 §3) — IN PROGRESS (2026-08-01)
+
+`Machines/Epoch/` mechanizes the ISA's freshness primitive and refines a Loom
+design to it. Status, stated exactly:
+
+**Done and green.** Layer 1 `Protocol.lean`: the §3 protocol as a `TSys` with
+T-E1…T-E6 proved and T-E7 (a use concurrent with a bump *may* succeed —
+§3 permits it) exhibited as a run, plus an independent netlist
+model-checking leg (`Bmc.lean`, 1-induction + BMC depth 2, LRAT certificates
+re-checked in-kernel). Layer 2 `Engine.lean`/`EpochSoc.lean`: the engine as an
+open Loom design composed with the dual core, one request port per referent
+volume (volume identity wired, not addressed), engine-internal acks. Layer 3
+`Refines.lean`: a `StutterSimulation` from the design to the protocol, with
+T-E1/T-E2/T-E3/T-E4/T-E6 transported to every reachable state of the compiled
+RTL **unconditionally over all input traces** — adversarial cores included —
+and a cycle bound (D28): 15 cycles via the transported spec bound, 4 by a
+direct ranking on the cycle-accurate system.
+
+**Simulation.** `scripts/epoch_ladder.sh` passes: engine ladder byte-identical
+to the FastEval oracle, and the cross-core demo (`tb_lnp64mini_epoch.v`) shows
+core 0 bumping, core 1 reading `-STALE`, poison failing closed, GEM0 still
+unreachable from core 1, bump latency 5 cycles.
+
+**Silicon.** `lnp64mini_epoch_top.bit` builds (49 % LUTs, 33.63 MHz post-route)
+and NetBSD boots dual-core on it. The engine answers over MMIO (its ID register
+reads correctly and checks execute), but a check that returns `ok` in
+simulation returns `-BADREF` on hardware; the leading hypothesis under
+investigation is that BRAM initial contents do not survive the openXC7 flow,
+which would make it an instance of the portability rule "never rely on memory
+initial contents" (`LOOM_GAPS.md`). **The live demo is therefore not yet
+demonstrated on silicon, and nothing here should be read as claiming it is.**
