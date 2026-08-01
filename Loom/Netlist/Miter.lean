@@ -275,10 +275,13 @@ def differAcc (a b : Array Bit) : Nat → M (List Bit)
       Pure.pure (t :: xs)
 
 /-- Assert that the two bit vectors differ (the miter output). -/
-def assertDiffer (a b : Array Bit) : M Unit := do
+def assertDiffer (a b : Array Bit) : M Unit :=
   if a.size != b.size then
     throw s!"width mismatch in miter: {a.size} vs {b.size}"
-  assert (← mkOrList (← differAcc a b a.size))
+  else do
+    let xs ← differAcc a b a.size
+    let o ← mkOrList xs
+    assert o
 
 /-- The netlist-side next value of one register bit. -/
 def netlistNext (env : NetlistEnv) (mt : Matching) (fuel : Nat)
@@ -309,12 +312,28 @@ def netlistNext (env : NetlistEnv) (mt : Matching) (fuel : Nat)
           let pin := fun p => ((pins.find? (fun kv => kv.1 == p)).map (·.2)).getD #[]
           ffNext c pin (stateBit name w i)
 
+/-- Assert every bit of a list (the constant-folding assumptions). -/
+def assertAll : List Bit → M Unit
+  | [] => Pure.pure ()
+  | b :: bs => do assert b; assertAll bs
+
+/-- One signal's miter, as one term: the assumptions, side A (a µVerilog
+expression, blasted by `blastE`), side B (whatever encoder the caller
+supplies — the netlist cone), and the assertion that the two differ. This
+is the shape `Loom/Netlist/MiterProof.lean` proves sound and complete. -/
+def sigMiter (assumps : List Bit) (syms : List (String × Nat)) {w : Nat} (e : Expr w)
+    (actB : M (Array Bit)) : M Unit := do
+  assertAll assumps
+  let a ← blastE syms e
+  let b ← actB
+  assertDiffer a b
+
 /-- One register's miter: `rst ? init : next` (module) vs the flip-flops'
 next state (netlist), under the constant-folding assumptions. -/
 def regMiter (env : NetlistEnv) (mt : Matching) (fuel : Nat)
     (syms : List (String × Nat)) (rd : RegDef) (srcs : Array RegSrc) :
     M Unit := do
-  for a in mt.assumptions do assert a
+  assertAll mt.assumptions.toList
   let nextBits ← blastE syms rd.next
   let mut sideA : Array Bit := #[]
   for h : i in [0:rd.width] do
@@ -330,11 +349,8 @@ bits; a memory port's enable/address/data cone uses it with the bits of
 the netlist net that still carries the printed wire's name. -/
 def coneMiter (env : NetlistEnv) (mt : Matching) (fuel : Nat)
     (syms : List (String × Nat)) {w : Nat} (e : Expr w)
-    (bits : Array SigBit) : M Unit := do
-  for a in mt.assumptions do assert a
-  let sideA ← blastE syms e
-  let sideB ← evalBits env fuel bits
-  assertDiffer sideA sideB
+    (bits : Array SigBit) : M Unit :=
+  sigMiter mt.assumptions.toList syms e (evalBits env fuel bits)
 
 /-- One output port's miter: the module's combinational view vs the
 netlist's cone for that port. -/
@@ -359,43 +375,61 @@ structure Dimacs where
   search is needed. -/
   trivial  : Bool
 
+/-- The variable numbering built while normalizing: DIMACS ids are
+`1 … vars.size`, and `idx` is the reverse lookup. -/
+structure Numbering where
+  idx  : Std.HashMap Var Nat := {}
+  vars : Array Var := #[]
+
+/-- The DIMACS id of `v`, allocating one on its first occurrence. -/
+def Numbering.get (nb : Numbering) (v : Var) : Nat × Numbering :=
+  match nb.idx[v]? with
+  | some i => (i, nb)
+  | none =>
+      (nb.vars.size + 1,
+       { idx := nb.idx.insert v (nb.vars.size + 1), vars := nb.vars.push v })
+
+/-- Normalize one clause's literals: constant-`false` literals are dropped,
+repeated literals are dropped, and a clause containing a constant-`true`
+literal or a complementary pair is reported satisfied (and then dropped).
+Both normalizations are *required* for the LRAT leg, not cosmetic: cadical
+discards tautologies while parsing, which would desynchronize LRAT clause
+ids from the formula handed to the proved checker (EQCHECK_SPEC.md
+§Deviations). Variable ids are allocated for every literal, satisfied
+clause or not — exactly as the accumulating loop this replaces did. -/
+def normLits (nb : Numbering) (sat : Bool) (lits : Array (Nat × Bool)) :
+    List Bit → Bool × Array (Nat × Bool) × Numbering
+  | [] => (sat, lits, nb)
+  | .const true :: bs => normLits nb true lits bs
+  | .const false :: bs => normLits nb sat lits bs
+  | .lit v pol :: bs =>
+      let (id, nb') := nb.get v
+      if lits.contains (id, !pol) then normLits nb' true lits bs
+      else if lits.contains (id, pol) then normLits nb' sat lits bs
+      else normLits nb' sat (lits.push (id, pol)) bs
+
+/-- One DIMACS line. -/
+def litsLine (lits : Array (Nat × Bool)) : String :=
+  (lits.foldl (fun s p => s ++ (if p.2 then "" else "-") ++ toString p.1 ++ " ") "") ++ "0"
+
+/-- Normalize and number a list of clauses. -/
+def normClauses (nb : Numbering) (lines : Array String) (cnf : Array (List (Nat × Bool))) :
+    List BClause → Numbering × Array String × Array (List (Nat × Bool))
+  | [] => (nb, lines, cnf)
+  | cl :: cls =>
+      let (sat, lits, nb') := normLits nb false #[] cl
+      if sat then normClauses nb' lines cnf cls
+      else normClauses nb' (lines.push (litsLine lits))
+        (cnf.push (lits.toList.map (fun p => (p.1 - 1, p.2)))) cls
+
 /-- Normalize and number the clauses. Clauses containing a constant-true
 literal are dropped; constant-false literals are removed. -/
-def toDimacs (clauses : Array BClause) : Dimacs := Id.run do
-  let mut idx : Std.HashMap Var Nat := {}
-  let mut vars : Array Var := #[]
-  let mut lines : Array String := #[]
-  let mut cnf : Array (List (Nat × Bool)) := #[]
-  for cl in clauses do
-    let mut lits : Array (Nat × Bool) := #[]
-    let mut sat := false
-    for b in cl do
-      match b with
-      | .const true => sat := true
-      | .const false => pure ()
-      | .lit v pol =>
-          let id ←
-            match idx[v]? with
-            | some i => pure i
-            | none => do
-                vars := vars.push v
-                idx := idx.insert v vars.size
-                pure vars.size
-          -- Normalize: drop repeated literals, drop tautological clauses.
-          -- (Both are legal DIMACS but confuse the LRAT clause-id alignment,
-          -- since solvers may discard a tautology at parse time.)
-          if lits.contains (id, !pol) then sat := true
-          else unless lits.contains (id, pol) do lits := lits.push (id, pol)
-    unless sat do
-      let mut s := ""
-      for (id, pol) in lits do
-        s := s ++ (if pol then "" else "-") ++ toString id ++ " "
-      lines := lines.push (s ++ "0")
-      cnf := cnf.push (lits.toList.map (fun (id, pol) => (id - 1, pol)))
-  let header := s!"p cnf {vars.size} {lines.size}"
-  let text := String.intercalate "\n" (header :: lines.toList) ++ "\n"
-  return { text := text, cnf := cnf.toList, vars := vars, nClauses := lines.size,
-           trivial := cnf.any (fun c => c.isEmpty) }
+def toDimacs (clauses : Array BClause) : Dimacs :=
+  let (nb, lines, cnf) := normClauses {} #[] #[] clauses.toList
+  let header := s!"p cnf {nb.vars.size} {lines.size}"
+  { text := String.intercalate "\n" (header :: lines.toList) ++ "\n",
+    cnf := cnf.toList, vars := nb.vars, nClauses := lines.size,
+    trivial := cnf.any (fun c => c.isEmpty) }
 
 /-- Decode a DIMACS model (list of signed literals) into the assignment of
 the *named* variables — register/input bits and `rst`. -/
