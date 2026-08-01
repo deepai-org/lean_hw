@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Netlist.Netlist
 import Loom.Emit.MicroVerilog.Ast
+import Loom.Hw.MemInitOk
 
 /-!
 # Memory banks inside the equivalence check (D31)
@@ -58,21 +59,22 @@ def paramOnes (s : String) : Nat :=
 
 /-! ## Primitive families -/
 
-/-- Which primitive family holds a bank, and hence whether the
-configuration path delivers its reset image.
+/-! Which primitive family holds a bank, and hence whether the
+configuration path delivers its reset image — **defined in
+`Loom/Hw/MemInitOk.lean`** and re-exported here.
 
 The distinction is the whole of D30: a `RAMB*` image is part of the
 bitstream and arrives; a distributed-RAM (`RAM*`) image is *not* delivered
 by the openXC7 path — the bank powers up all-zero, with no diagnostic at
-any stage (`LOOM_GAPS.md` D30, `Machines/Epoch/EPOCH_SPEC.md` E13). -/
-inductive MemFamily where
-  | bram
-  | lutram
-deriving BEq, Repr, Inhabited
+any stage (`LOOM_GAPS.md` D30, `Machines/Epoch/EPOCH_SPEC.md` E13).
 
-def MemFamily.name : MemFamily → String
-  | .bram => "block RAM"
-  | .lutram => "distributed LUT RAM"
+It lives at the design layer because D37 turned that distinction into a
+*design-level* refusal: `Loom.Hw.Design.memInitOkB` predicts the family
+from a `MemDecl`'s declared shape and asks the very same question of it —
+`Loom.Hw.imageDelivered` — that `checkImage` below asks of the family it
+observes in the netlist. One type, one rule, two sources of the family. -/
+
+export Loom.Hw (MemFamily imageDelivered)
 
 def memFamily (ty : String) : Option MemFamily :=
   if ty == "RAMB18E1" || ty == "RAMB36E1" || ty == "RAMB18" || ty == "RAMB36" then
@@ -391,7 +393,10 @@ def checkImage (b : Bank) (m : MemDef) : ImageVerdict := Id.run do
   match bad with
   | some (a, j, d, r) => return .mismatch a j d r
   | none =>
-      if nonZero && b.family == .lutram then
+      -- The deliverability rule is `Loom.Hw.imageDelivered`, shared
+      -- verbatim with the design-level D37 check; only the *source* of the
+      -- family differs (observed here, predicted there).
+      if !imageDelivered b.family nonZero then
         let c := b.cells[0]!
         return .undelivered b.family c.ty c.name
       return .ok nonZero

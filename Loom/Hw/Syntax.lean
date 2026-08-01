@@ -97,5 +97,13 @@ structure Design where
   rules : List Rule
   /-- Input ports (D15): environment-owned coordinates, read via `Expr.reg`. -/
   inputs : List InputDecl := []
+  /-- **D37**: memories whose non-zero reset image the target flow provably
+  does *not* deliver, and whose loss is a known, recorded exception. Naming
+  a memory here is the design saying "this bank comes up all-zero on
+  silicon and I have argued that is harmless"; `Design.emit` refuses any
+  such memory that is *not* named (see `Loom/Hw/MemInitOk.lean`). The
+  acknowledgement lives at the design, next to the memory, rather than in
+  a downstream checker's command line. -/
+  ackMemInit : List String := []
 
 end Loom.Hw

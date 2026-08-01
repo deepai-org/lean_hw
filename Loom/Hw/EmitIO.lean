@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Compile
+import Loom.Hw.MemInitOk
 import Loom.Emit.MicroVerilog.Print
 
 /-!
@@ -34,6 +35,13 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
   let inNames := d.inputs.map (·.name)
   if inNames.length ≠ inNames.eraseDups.length then
     throw <| IO.userError "Design.emit: duplicate input names"
+  -- D37: refuse a design whose correctness depends on a memory reset image
+  -- the target flow cannot deliver (D30 — the epoch engine's `cell_flags`,
+  -- found on silicon). Offenders the design has written down in
+  -- `ackMemInit` pass; everything else is an error here rather than a
+  -- `-BADREF` on a board (`Loom/Hw/MemInitOk.lean`).
+  for md in d.memInitUnacked do
+    throw <| IO.userError (d.memInitError md)
   if let some dir := path.parent then
     IO.FS.createDirAll dir
   IO.FS.writeFile path
