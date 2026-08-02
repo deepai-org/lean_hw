@@ -6,6 +6,7 @@ import Machines.Acc8.Core
 import Machines.Acc8.Iss
 import Machines.Lnp64u.Hw.Core
 import Machines.Lnp64u.Hw.Demo
+import Loom.Hw.EmitIO   -- Design.emit: the checked emission path (D15/D37/D38/D39)
 
 /-!
 # `lake exe emit` — emit µVerilog (tasks 2.5 / 1.11)
@@ -45,8 +46,12 @@ endmodule
 set_option compiler.extract_closed false in
 def emitAcc8 : IO Unit := do
   let img := Machines.Acc8.loadProg Machines.Acc8.golden
-  let m := Loom.Hw.Compile.compile (Machines.Acc8.Core.design img)
-  IO.FS.writeFile "rtl/acc8.v" (Print.print m)
+  -- Emit through `Design.emit`, NOT raw compile+print: this exe used to
+  -- bypass every check the emission path performs (D15 name clashes, D37/D38
+  -- reset images and target realizability, D39 exports). That bypass is why
+  -- `lnp64u` shipped an undeliverable memory image unnoticed -- the *emission
+  -- path*, not the design, was deciding whether the checks ran.
+  (Machines.Acc8.Core.design img).emit "rtl/acc8.v"
   IO.FS.writeFile "rtl/tb_acc8.v" tbAcc8
   IO.println "rtl/acc8.v + rtl/tb_acc8.v written"
 
@@ -129,10 +134,21 @@ machine's elaboration at startup. -/
 set_option compiler.extract_closed false in
 def emit : IO Unit := do
   IO.println "compiling lnp64u (system-op demo manifest) ..."
-  let m := Loom.Hw.Compile.compile (core sysManifest)
+  -- D38 finding: `mem` carries a non-zero image AND takes three write ports
+  -- (core store / mover data / mover status, see Loom/Hw/DESIGN.md), so no
+  -- target realizes it as an initialised macro -- the image would NOT reach
+  -- the fabric. lnp64u has never been synthesised or run on hardware, so
+  -- nothing had caught it; this exe bypassed `Design.emit` entirely, which is
+  -- how. The acknowledgement lives HERE, at the emission site, and NOT on the
+  -- release `core` value, which release certificates and theorems are stated
+  -- over (the same precedent as `epochengine_tiny`, EPOCH_SPEC E13). Emitting
+  -- lnp64u for simulation stays legal; emitting it for silicon is the thing
+  -- this records as unsound-until-fixed.
+  let d := { core sysManifest with ackMemInit := ["mem"] }
+  let m := Loom.Hw.Compile.compile d
   IO.println s!"module built: {m.regs.length} regs"
   IO.println "printing rtl/lnp64u.v ..."
-  IO.FS.writeFile "rtl/lnp64u.v" (Print.print m)
+  d.emit "rtl/lnp64u.v"
   IO.println s!"generating rtl/tb_lnp64u.v (ISS goldens, {simCycles} cycles) ..."
   IO.FS.writeFile "rtl/tb_lnp64u.v" (tbLnp64u ())
   let sz ← (System.FilePath.mk "rtl/lnp64u.v").metadata
