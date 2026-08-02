@@ -177,6 +177,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("dmem_addr_j",32,s.dmem_addr_j.toNat), ("dmem_lo_j",32,s.dmem_lo_j.toNat),
    ("reg_rd",64,s.reg_rd.toNat),
    ("quantum",32,s.quantum.toNat), ("qctr",32,s.qctr.toNat),
+   -- EXT-2: the domain observation mirror
+   ("cur_dom",8,s.cur_dom.toNat),
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
@@ -209,6 +211,15 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
   for a in mdmem do
     if (σ.mems "dmem" a 64).toNat ≠ (s.dmem[a]!).toNat then
       if bad < 12 then IO.println s!"  MISMATCH step {step} dmem[{a}]: edsl={(σ.mems "dmem" a 64).toNat} iss={(s.dmem[a]!).toNat}"
+      bad := bad + 1
+  -- EXT-2: the per-thread domain tag (8-bit, so not in `issTArrays`,
+  -- which is the 64-bit thread-table family). Compared at every slot --
+  -- the inheritance rule is a claim about slots the program never reads,
+  -- so a spot check at `cur` would not see a violation.
+  for i in List.range NT do
+    if (σ.mems "tdom" i 8).toNat ≠ (s.tdom[i]!).toNat then
+      if bad < 12 then
+        IO.println s!"  MISMATCH step {step} tdom[{i}]: edsl={(σ.mems "tdom" i 8).toNat} iss={(s.tdom[i]!).toNat}"
       bad := bad + 1
   -- D20: the thread-table memories, all 32 entries of each
   for (mn, arr) in issTArrays s do
@@ -691,6 +702,55 @@ def preemptPredict (q : Nat) (maxCyc : Nat := 20000) : IO Unit := do
 trap={if s.trap_active then 1 else 0} pc={if s.halted then s.pc.toNat else 0} \
 r5={(s.rf[5]!).toNat} r9={(s.rf[9]!).toNat} dmem0={(s.dmem[0]!).toNat} \
 t1state={(s.tstate[1]!).toNat} preempted={if fires ≠ 0 then 1 else 0}"
+
+/-! ## EXT-2 — the domain selftest
+
+Two claims, and the second is the one that matters:
+
+1. **EDSL ≡ ISS on the domain state**, via the ordinary `lockstep` — which
+   now compares `cur_dom` and all 32 `tdom` slots on every cycle. Slot-wise
+   comparison is deliberate: inheritance is a claim about a slot the running
+   program never reads, so a spot check at `cur` could not observe a
+   violation.
+2. **A thread cannot leave its domain by spawning.** Put the parent in a
+   non-zero domain with `cmd 58`, let it `CLONE`, and the child's tag must
+   equal the parent's. The domain is non-zero on purpose: with everything at
+   0 the test passes even if inheritance is deleted outright, which is
+   exactly the vacuous test EXT-2 is most at risk of shipping.
+
+`cmd 13` with `data = 2` sets the *start* bit without the *reset* bit, so
+it does not launch the 1024-cycle zeroing sweep — the tags come from the
+(all-zero) reset image instead, and `cmd 58` can be issued at cycle 0 and
+stick. That is what keeps this test 60 cycles rather than 1400; the sweep
+path is covered by the same `tdomTriples` entry the `cmd 13` reset uses. -/
+def DOM_TEST : Nat := 7
+
+/-- cmd stream: quantum, start, then (past the zeroing sweep) put thread 0
+in domain `DOM_TEST`. -/
+def cmdDomain : Nat → MiniIn := fun k =>
+  if k = 0 then
+    { cmdValid := true, cmdIdx := CMD_SETDOM, cmdData := BitVec.ofNat 32 (DOM_TEST <<< 8) }
+  else if k = 1 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+def domSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progPreempt
+  -- (1) EDSL ≡ ISS, including `cur_dom` and every `tdom` slot, every cycle.
+  let bad ← lockstep img 1 cmdDomain (fun _ => 0) 60
+  if bad = 0 then IO.println "  OK  DOMAIN (EDSL≡ISS on cur_dom + all 32 tdom slots, 60 cyc)"
+  else IO.println s!"  FAIL DOMAIN ({bad} mismatches)"
+  -- (2) the architectural claim: CLONE inherits, and the tag is non-zero.
+  let (sd, _, _) := runIss img 1 cmdDomain (fun _ => 0) 200
+  let parent := (sd.tdom[0]!).toNat
+  let child  := (sd.tdom[1]!).toNat
+  let others := (List.range NT).drop 2 |>.filter (fun i => (sd.tdom[i]!).toNat ≠ 0)
+  IO.println s!"  domain: parent tdom[0]={parent} (want {DOM_TEST}) child tdom[1]={child} (want {DOM_TEST}) other non-zero slots={others.length} (want 0) cur_dom={sd.cur_dom.toNat}"
+  let okInherit := parent = DOM_TEST && child = DOM_TEST && others.isEmpty
+  if bad = 0 && okInherit then
+    IO.println "LNP64MINI DOMAIN SELFTEST OK — EDSL≡ISS on the tag + CLONE cannot leave its domain"
+  else
+    IO.println s!"LNP64MINI DOMAIN SELFTEST FAILED ({bad} mismatches; inherit={okInherit})"
+    throw <| IO.userError "domain selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt

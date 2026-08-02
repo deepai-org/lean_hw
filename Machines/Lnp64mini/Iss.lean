@@ -114,6 +114,10 @@ structure MiniSt where
   -- (= preemption disabled = the cooperative machine) at power-on.
   quantum   : BitVec 32 := 0
   qctr      : BitVec 32 := 0
+  -- EXT-2 (protection domains): the per-thread tag and its observation
+  -- mirror. All-zero at power-on = every thread in domain 0.
+  tdom      : Array (BitVec 8) := Array.replicate NT 0
+  cur_dom   : BitVec 8 := 0
   wake_out  : Bool := false
   lr_req    : Bool := false
   sc_req    : Bool := false
@@ -347,6 +351,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     -- sweep ends). Nothing reads `tpc` while `zeroing` is high.
     if s.zctr.toNat < NT then
       s' := { s' with tpc := s'.tpc.set! s.zctr.toNat (BitVec.ofNat 64 TEXT_BASE) }
+      -- EXT-2: the same sweep puts every thread in domain 0 (`tdomTriples`
+      -- entry 1), which is what makes "the guest is domain 0" hold by
+      -- construction rather than by a reset image the flow may not deliver.
+      s' := { s' with tdom := s'.tdom.set! s.zctr.toNat 0 }
     if s.zctr.toNat < 512 then
       s' := { s' with dmem_we := true, dmem_a := s.zctr.setWidth 9, dmem_wd := 0 }
     if s.zctr.toNat = 32*NT - 1 then s' := { s' with zeroing := false }
@@ -382,6 +390,9 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     -- never reaches a core). `qctr` is armed from the same word in the
     -- quantum block below, the only writer of that register.
     | 57 => s' := { s' with quantum := d }
+    -- EXT-2: `CMD_SETDOM` = 58. data[4:0] = thread slot, data[15:8] = domain.
+    | 58 => s' := { s' with tdom := s'.tdom.set! (d.toNat % NT)
+                              (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
     | 13 =>
         if bit d 0 then
           s' := { s' with pc := BitVec.ofNat 64 TEXT_BASE, retire := 0, halted := false,
@@ -522,6 +533,9 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if o = 0x59 then
         if s.has_free then
           s' := { s' with tpc := s'.tpc.set! s.free_slot.toNat s.a, tstate := s'.tstate.set! s.free_slot.toNat 1 }
+          -- EXT-2: the child inherits the parent's domain. A thread cannot
+          -- leave its domain by spawning (`tdomTriples` entry 2).
+          s' := { s' with tdom := s'.tdom.set! s.free_slot.toNat s.tdom[curV.toNat]! }
           rfWe := true; rfWa := (s.free_slot ++ (2 : BitVec 5)); rfWd := s.b
           s' := { s' with clone_dst := rdf s, clone_tid := s.free_slot, st := BitVec.ofNat 5 S_CLONE2 }
         else
@@ -675,6 +689,11 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
             else if preemptAtF0 then s.quantum
             else if qTick then s.qctr - 1
             else s.qctr }
+
+  -- EXT-2: `cur_dom` mirrors `tdom[cur]` one cycle late (`domainRule`).
+  -- Both operands are PRE-cycle, so this is order-independent like the
+  -- quantum block above. Nothing reads it; it exists for the BSCAN path.
+  s' := { s' with cur_dom := s.tdom[s.cur.toNat]! }
 
   -- dmem sync block: `if (dmem_we) dmem[dmem_a]<=dmem_wd; dmem_rd<=dmem[dmem_a]`
   -- both use the PRE-cycle (registered) dmem_we/dmem_a/dmem_wd.

@@ -412,3 +412,77 @@ the shipping demo is *preemptively scheduled* with traps=0, zero-BSCAN steady
 state, and unattended power-on boot, and the cooperative machine survives only
 as a debugging switch. Hardware: post-route **Fmax 34.58 MHz** (up from 25.89
 — EXT-1 improved timing), **46 % SLICE_LUTX**.
+
+---
+
+## EXT-2 — protection domains. 2026-08-02
+
+The unit every later increment is scoped by: gates cross *between* domains,
+capability transfer re-keys *across* them, and a VMA root is a property *of*
+one. Nothing below EXT-2 can be stated without it.
+
+### What it is
+
+| | |
+|---|---|
+| `tdom` | 32x8 memory — the per-thread domain tag |
+| `domCur` | `tdom[cur]`, read **combinationally** — the domain the core is executing in |
+| `cur_dom` | 8-bit register, observation mirror for the BSCAN path only |
+| `cmd 58` | set one thread's domain: `data[4:0]` = slot, `data[15:8]` = domain |
+
+Two decisions carry the increment.
+
+**The tag is per thread, and the core's domain is derived — not a register.**
+Threads are what the scheduler moves, so a core's domain is whatever its
+current thread's is. A `dom` register updated at each switch would lag `cur`
+by a cycle, and the cycle after a context switch is precisely when a stale
+tag is a privilege hole: the incoming thread's first instruction would run
+under the outgoing thread's authority. An async `memRead` at `cur` is always
+right, costs one LUTRAM read port, and — the practical part — has no write
+sites to keep in sync with the **eight** places that assign `cur`.
+
+**A thread cannot leave its domain by spawning.** `CLONE` writes the
+parent's `domCur` into the child's slot, in the same cycle and the same
+guarded branch that allocates `free_slot` and writes the child's entry PC,
+so the two cannot disagree. Without this, one instruction escapes a domain.
+No instruction moves a thread between domains; `cmd 58` is a host/debug
+operation.
+
+### Deviations
+
+* **No per-domain root table (`droot`) yet.** A domain's capability/VMA root
+  is real state, but nothing in EXT-2 *reads* it. A write-only memory is
+  dead silicon: yosys deletes it, and the emitted netlist then no longer
+  matches the design the proofs are about. It lands with its first consumer
+  (EXT-6/EXT-7). This is the D30/D37 lesson applied early — do not put state
+  in the design that the flow will quietly not carry.
+* **The tag is installed, not yet enforced.** Every comparison EXT-2 adds is
+  against a constant, because every thread is in domain 0. Enforcement
+  arrives with gates (EXT-5) and the MMU (EXT-7). Said plainly here so it is
+  not later mistaken for a working boundary.
+
+### Toolchain
+
+**No emulator change was needed, and that is a finding, not a shortcut.**
+`src/emulator.rs` already models domains: `Thread` carries `domain_id`, and
+the thread-spawn path (`CloneProfile::SpawnEntry`) builds the child with
+`self.thread()?.clone()` — so the child inherits the parent's domain, which
+is exactly the rule the hardware now enforces. `smp_start_core` likewise
+takes `boot.domain_id`. The oracle already agreed with the design; EXT-2
+brought the hardware up to the model rather than the other way round.
+EXT-2 adds no opcode, so the assembler and ISA tables are untouched.
+
+The **Lean ISS** did need the work, and this is where the campaign rule bit:
+the ladder passed *before* the ISS modelled anything, because the state the
+increment added was not in the comparison — a green test that proved
+nothing. `Iss.lean` now carries `tdom`/`cur_dom` (reset sweep, `cmd 58`,
+`CLONE` inheritance, mirror) and `cmpStates` compares `cur_dom` plus **all
+32 `tdom` slots every cycle**. Slot-wise is the point: inheritance is a claim
+about a slot the running program never reads, so a spot check at `cur` cannot
+see a violation.
+
+### Evidence
+
+`domselftest` makes both claims, and the second is deliberately non-vacuous
+— the parent is put in domain **7**, not 0, because with everything at zero
+the test passes even if inheritance is deleted outright.
