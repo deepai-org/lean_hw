@@ -322,3 +322,36 @@ pump, an LR/SC window, or a rump_schedule() vCPU-holder assumption).
   non-preemptible region, so the answer cannot be "disable preemption").
 * The hardware claim stands and is unchanged: preemption fires only at `S_F0`,
   saves `pc` not `pc8`, is silicon-verified, and the Law-5 spinner test passes.
+
+### Guest preemption-safety: the architecture already answers it (do NOT add a preempt-off)
+
+The reflex after EXT-1's wedge is "give the guest a way to disable preemption".
+The ISA forbids it (Law 5: no non-preemptible region) and — more usefully —
+already ships a replacement for every reason `cli`/`sti` sections exist. The
+next increment must be scoped as *mapping each unsafe site to its architected
+mechanism*, not as adding a carve-out.
+
+| why a conventional kernel disables preemption | LNP64's mechanism | verdict |
+|---|---|---|
+| atomicity vs. same-CPU interrupt handlers | there are no such handlers — an interrupt is an InterruptWaitable consumed by a thread, or a machine call at an instruction boundary, governed by the per-thread **`EVENTMASK`** PCR (§8 table row 3: "atomic vs delivery") | equivalent power, and per-*thread* rather than a CPU-global mode: composable, serializable, visible in `EVENTPENDING` |
+| atomicity vs. other CPUs | `cli` never provided this. amo / `casq` / futex / serialized gate | strictly better |
+| **per-CPU fast paths (`preempt_disable`)** | **`thread.rseq`** (§6, quoted verbatim at isa line 1257): `{start, end, abort_ip, cpu_id_ptr}`, any resumption into `[start,end)` resumes at `abort_ip`; `cpu_id_ptr` kept current with the view-tile ID at every resume, pinned so it cannot fault | **the one genuine loss, and the spec architects the endpoint** — common case pays zero, only actual preemption restarts |
+| bounded-latency RT sections | Law 5 makes the longest non-preemptible interval **one bounded instruction**, so preemption latency is a named constant; the RT critical section is the serialized gate, which priority-*inherits* (§9.2) | better: `cli` never inherited, and RT Linux's decade of pain is exactly hunting unbounded preempt-off regions — here they are unconstructible |
+| "write these three device registers uninterrupted" | dissolves: the device cannot see preemption. What the idiom needs is *ordering* (fill, `fence.rel`, doorbell — preemption between those stores is harmless) or *mutual exclusion vs other threads* (a lock, row 2) | folklore was one of the other two wearing a trench coat |
+| multi-object atomic update | unpublished builders + atomic publication; seqlocks (§6 blesses the torn read); 16 B `casq` | equivalent coverage (§1.1's HTM-replacement row) |
+| "don't migrate me" | `rseq`'s `cpu_id_ptr` + restart-on-migration; `dplace` pinning for the strong form | equivalent |
+
+**Applied to our wedge — the leading hypothesis is row 3.** Our runtime keeps
+per-*core* state that assumes run-until-block: `LNP64_ZP_COREID` lives in the
+core-private zero page, the §64 work put `curlwp` slot lookup on a fast path,
+and the shmif ring codec and GEM pump do multi-word updates that cooperative
+scheduling made atomic for free. Those are exactly the per-CPU-fast-path and
+cross-thread-atomicity patterns, so the fix is `rseq` for the former and real
+atomics/locks for the latter — NOT a preempt-off.
+
+**Consequence for scope:** if the guest is to run preempted, `thread.rseq`
+becomes a hardware dependency of this campaign (a per-thread descriptor and a
+resume-PC edit — small, and it is §9.3's machinery minus the payload), and
+`EVENTMASK` becomes one as soon as machine-call delivery exists. Both are
+cheap engine-side; neither is in the seven items as originally listed. Bisect
+the wedge FIRST, then add only what the sites actually require.
