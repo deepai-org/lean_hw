@@ -84,8 +84,7 @@ exactly as before (silicon regression: `tb_lnp64mini_soc.v` on
 `loomcheck.hex` is bit-identical to §63).
 
 * `res_kill` — pulse clears `lr_valid` (the arbiter's global-LR/SC hook).
-* `doorbell` — pulse moves the FUTEX-blocked threads (tstate=3) parked on
-  `doorbell_key` to READY (EXT-4; it was an unkeyed broadcast before).
+* `doorbell` — pulse moves every FUTEX-blocked thread (tstate=3) to READY.
   Spurious wakes are safe: a woken `FUTEX_WAIT` re-executes its DDR compare
   and re-blocks if the word is unchanged.
 * `hold`     — while high the FSM is frozen **at the instruction boundary
@@ -96,29 +95,6 @@ exactly as before (silicon regression: `tb_lnp64mini_soc.v` on
   `S_DSW` would drop the completion and wedge the core forever). -/
 def resKill  : Expr 1  := .reg 1  "res_kill"
 def doorbell : Expr 1  := .reg 1  "doorbell"
-
-/-! ### EXT-4 — the park/wake directory (`EXTEND_SPEC.md` increment 4)
-
-Appendix F #6; §3 calls it "the epoch machine's client annex". Mini already
-had the two halves — `tfutex[i]` records *what* a parked thread is waiting
-on, and the cross-core `doorbell` is the wake path — but they were not
-connected: the doorbell woke **every** thread with `tstate = FUTEX`,
-whatever key it was parked on. That is a thundering herd, and worse, it is
-architecturally wrong: a thread parked on key A must not be observable to a
-wake on key B, or "parked on" means nothing.
-
-EXT-4 makes the wake **keyed**. `doorbell_key` carries the address the
-waking core woke on, and the local wake requires `tfutex[i] = doorbell_key`
-as well as `tstate[i] = FUTEX`. The comparator bank that already exists for
-the *local* `FUTEX_WAKE` (`futexWakeBody`) is exactly the directory lookup
-the remote wake needed — so this increment is one `and` per slot plus a
-64-bit cross-core wire, not a new structure. That is what "grow it from the
-existing futex + doorbell rather than building fresh" meant.
-
-`wake_key` is the outgoing half: it captures `rdval` (the futex address
-`FUTEX_WAKE` is publishing) on the cycle `wake_out` pulses, and holds it
-otherwise, so the host can read which key a core last woke on. -/
-def doorbell_key : Expr 64 := .reg 64 "doorbell_key"
 def hold     : Expr 1  := .reg 1  "hold"
 
 /-- `sc_fail` — the arbiter's verdict on a *global* `SC`, valid on the cycle
@@ -134,11 +110,6 @@ executes, regardless of local matches. In the dual SoC it is wired straight
 into the *other* core's `doorbell` input — a register-to-input connection,
 i.e. already a full register stage, no combinational cross-core path. -/
 def wake_out : Expr 1  := .reg 1  "wake_out"
-
-/-- EXT-4. The key `wake_out` is pulsing for: captured on the pulse cycle,
-held otherwise. Wired to the other core's `doorbell_key` in the dual SoC —
-again a register-to-input connection, so no combinational cross-core path. -/
-def wake_key : Expr 64 := .reg 64 "wake_key"
 
 /-! ## Scalar register shorthands -/
 
@@ -1384,10 +1355,6 @@ def fsmRule : Rule :=
       .skip)
     .skip⟩
 
-/-- The one-cycle `FUTEX_WAKE` pulse predicate, shared by `wake_out` and
-EXT-4's `wake_key` capture so they cannot drift apart. -/
-def wakeFire : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0xcc))
-
 /-- (8b) the SMP cross-core rule (DUAL_SPEC extensions 1–3).
 
 Runs **after** `fsmRule` so both overrides are deterministic:
@@ -1396,31 +1363,22 @@ Runs **after** `fsmRule` so both overrides are deterministic:
   1 exactly on the cycle `FUTEX_WAKE` retires (`fsmEn ∧ st=S_EX ∧ op=0xcc`;
   op 0xcc is disjoint from every earlier S_EX guard, so that predicate
   characterises the branch exactly).
-* `doorbell` promotes a thread whose **pre-cycle** state is FUTEX(3) **and
-  whose `tfutex` matches `doorbell_key`** to READY(1) — EXT-4 made the
-  remote wake keyed; before that it woke every parked thread whatever it
-  was waiting on. A thread the FSM blocks *this* cycle had pre-cycle state
-  1, so its guard is false — the doorbell never cancels a fresh block, it
-  only ever wakes threads that were already parked.
+* `doorbell` promotes every thread whose **pre-cycle** state is FUTEX(3) to
+  READY(1). A thread the FSM blocks *this* cycle had pre-cycle state 1, so
+  its guard is false — the doorbell never cancels a fresh block, it only
+  ever wakes threads that were already parked.
 * `res_kill` clears `lr_valid` last, so it also cancels an `LR` issued the
   same cycle (a spurious kill only makes the matching `SC` fail → retry). -/
 def smpRule : Rule :=
-  ⟨"smp", actSeq
-    [ .write 1 "wake_out" wakeFire
-      -- EXT-4: capture the key this core is waking on (hold otherwise), so
-      -- the host can read which key a core last woke on.
-    , .ite wakeFire (.write 64 "wake_key" rdval) .skip
-      -- EXT-4: the remote wake is KEYED. `tstate = FUTEX` is no longer
-      -- enough -- the slot must be parked on the key the doorbell carries.
-      -- Same comparator shape as the local `FUTEX_WAKE` bank.
-    , .ite doorbell
-        ((List.finRange NT).foldr (fun i acc =>
-          .seq (.ite (.and (.eq (tstate i) (L2 3))
-                           (.eq (.reg 64 s!"tfutex{i.val}") doorbell_key))
-                 (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc)
+  ⟨"smp",
+    .seq (.write 1 "wake_out" (.and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0xcc))))
+      (.seq
+        (.ite doorbell
+          ((List.finRange NT).foldr (fun i acc =>
+            .seq (.ite (.eq (tstate i) (L2 3)) (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc)
+            .skip)
           .skip)
-        .skip
-    , .ite resKill (.write 1 "lr_valid" (L1 0)) .skip ]⟩
+        (.ite resKill (.write 1 "lr_valid" (L1 0)) .skip))⟩
 
 /-! ### (9a) The thread-table write funnels (D20)
 
@@ -1546,7 +1504,7 @@ def scalarRegs : List RegDecl :=
    ⟨"zeroing",1,0⟩, ⟨"zctr",10,0⟩,
    ⟨"reg_sel",5,0⟩, ⟨"reg_wsel",5,0⟩, ⟨"reg_wlo",32,0⟩,
    ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
-   ⟨"wake_out",1,0⟩, ⟨"wake_key",64,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
+   ⟨"wake_out",1,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
    -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
    ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩,
    -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
@@ -1601,7 +1559,7 @@ def design : Design where
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,
      ⟨"cmd_valid",1⟩, ⟨"cmd_idx",7⟩, ⟨"cmd_data",32⟩,
-     ⟨"res_kill",1⟩, ⟨"doorbell",1⟩, ⟨"doorbell_key",64⟩, ⟨"hold",1⟩, ⟨"sc_fail",1⟩]
+     ⟨"res_kill",1⟩, ⟨"doorbell",1⟩, ⟨"hold",1⟩, ⟨"sc_fail",1⟩]
 
 /-! ## D19 — the sync-read (block RAM) obligation
 

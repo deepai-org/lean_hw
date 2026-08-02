@@ -31,8 +31,6 @@ structure MiniIn where
   -- SMP extensions (DUAL_SPEC.md): all inert at `false`.
   resKill  : Bool := false
   doorbell : Bool := false
-  -- EXT-4: the key the doorbell is waking on (park/wake directory).
-  doorbellKey : BitVec 64 := 0
   hold     : Bool := false
   scFail   : Bool := false
   deriving Repr
@@ -123,8 +121,6 @@ structure MiniSt where
   -- EXT-3 (fail-stop): one bit per thread slot; 0 = nothing poisoned.
   poison    : BitVec 32 := 0
   wake_out  : Bool := false
-  -- EXT-4: the key this core last woke on (captured on the pulse).
-  wake_key  : BitVec 64 := 0
   lr_req    : Bool := false
   sc_req    : Bool := false
   sc_pending: Bool := false
@@ -681,17 +677,12 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     else s' := { s' with st := BitVec.ofNat 5 S_F0 }
 
   -- SMP cross-core block (mirrors `smpRule`, which runs AFTER the FSM)
-  let wakeFire := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
-                  ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0xcc
-  s' := { s' with wake_out := wakeFire }
-  -- EXT-4: capture the key we are waking on; hold otherwise.
-  if wakeFire then s' := { s' with wake_key := s.rdval }
-  -- EXT-4: the remote wake is KEYED -- parked on `doorbellKey`, not merely
-  -- parked. Before this it woke every FUTEX-blocked thread whatever its key.
+  s' := { s' with wake_out :=
+            s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
+            ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0xcc }
   if inp.doorbell then
     for ti in List.range NT do
-      if s.tstate[ti]! = 3 ∧ s.tfutex[ti]! = inp.doorbellKey then
-        s' := { s' with tstate := s'.tstate.set! ti 1 }
+      if s.tstate[ti]! = 3 then s' := { s' with tstate := s'.tstate.set! ti 1 }
   if inp.resKill then s' := { s' with lr_valid := false }
 
   -- EXT-1: the quantum counter (mirrors `quantumRule`, the sole writer of
