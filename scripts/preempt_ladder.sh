@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Kevin Baragona
 # SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 #
+# EXT-1/EXT-2 — the lnp64mini extension ladder (preemption tick, domains)
 # EXT-1 — the preemption tick (`Machines/Lnp64mini/EXTEND_SPEC.md` increment 1):
 #
 #   1. FastEval acceptance selftest (EDSL ≡ ISS on the quantum, + the four
@@ -20,6 +21,10 @@ Z=fpga/zc702
 T=${TMPDIR:-/tmp}/preempt_ladder.$$
 mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT
+
+echo "### 0. EXT-2 domain selftest (EDSL == ISS on cur_dom + all 32 tdom slots,"
+echo "        and the architectural claim: CLONE cannot leave its domain)"
+lake env lean --run Machines/Lnp64mini/Emit.lean domselftest
 
 echo "### 1. FastEval selftest (EXT-1)"
 lake env lean --run Machines/Lnp64mini/Emit.lean preemptselftest | tee "$T/self.txt"

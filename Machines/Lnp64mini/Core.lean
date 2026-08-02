@@ -173,6 +173,57 @@ of §63. -/
 def quantum   : Expr 32 := .reg 32 "quantum"
 def qctr      : Expr 32 := .reg 32 "qctr"
 
+/-! ### EXT-2 — protection domains (`EXTEND_SPEC.md` increment 2)
+
+A **domain** is the unit every later increment is scoped by: gates cross
+between domains, capability transfer re-keys across them, and a VMA root is
+a property of one. The tag itself is per *thread*, not per core, because
+threads are what the scheduler moves — a core's domain is whatever its
+current thread's is.
+
+`tdom` (32x8) holds it. Two consequences make this a real mechanism rather
+than a label:
+
+* **The current domain is `tdom[cur]`, read combinationally — not a
+  register.** A register would lag `cur` by a cycle, and the cycle after a
+  context switch is exactly when a stale domain tag would be a privilege
+  hole: the incoming thread's first instruction would execute under the
+  outgoing thread's authority. An async `memRead` at `cur` is *always*
+  right, costs one LUTRAM read port, and has no write sites to keep in sync
+  with the eight places that assign `cur`.
+* **A thread cannot leave its domain by spawning.** `CLONE` writes the
+  parent's `tdom[cur]` into the child's slot (`tdomTriples` entry 2), so
+  domain membership is inherited, never chosen. Without this a domain could
+  escape itself with one instruction.
+
+`droot` (16x64) is the per-domain root pointer — the capability-table root
+today, the VMA root once EXT-7 lands. Sixteen domains is the width the
+demo needs and keeps the table a single small LUTRAM.
+
+**The guest does not notice.** Both memories reset to zero and `cmd 13`
+sweeps every thread to domain 0, so NetBSD runs as domain 0 and every
+comparison this increment adds is against a constant. That is
+deliberate: EXT-2 installs the tag and its inheritance rule, and the
+enforcement that consumes it arrives with gates (EXT-5) and the MMU
+(EXT-7). -/
+def tdomRd (idx : Expr 5) : Expr 8 := .memRead 8 "tdom" idx
+
+/-- The domain the core is executing in **right now**: the current thread's
+tag, combinationally. See the note above on why this is not a register. -/
+def domCur : Expr 8 := tdomRd cur
+
+/-! **Deliberately not here: the per-domain root table (`droot`).** A
+domain's capability/VMA root is real state, but nothing in EXT-2 *reads*
+it, and a write-only memory is dead silicon — yosys deletes it, and then
+the emitted netlist no longer matches the design the proofs are about. It
+lands with its first consumer (EXT-6/EXT-7), not before. -/
+
+/-- Observation only: `cur_dom` mirrors `domCur` one cycle late so the BSCAN
+debug path (which reads registers, not memories) can see the executing
+domain. Nothing in the datapath reads it — the datapath uses `domCur`, which
+does not lag. -/
+def cur_dom : Expr 8 := .reg 8 "cur_dom"
+
 def sleep_scan: Expr 5  := .reg 5  "sleep_scan"
 def next_ready: Expr 5  := .reg 5  "next_ready"
 def free_slot : Expr 5  := .reg 5  "free_slot"
@@ -669,6 +720,11 @@ bitstreams the demo runs on, and (worse) would have made a future wrapper
 that forwarded it silently retime the guest. 57 is free in every wrapper's
 write decode and in every readback mux. -/
 def CMD_QUANTUM : Nat := 57
+
+/-- EXT-2. `cmd 58` sets one thread's domain: `cmd_data[4:0]` is the thread
+slot, `cmd_data[15:8]` the domain id. 56 is the dual wrapper's `CORE1_HOLD`
+and 57 is EXT-1's quantum, so 58 is the next free index. -/
+def CMD_SETDOM : Nat := 58
 
 /-- Funnel triples. -/
 def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
@@ -1312,8 +1368,33 @@ def tpcWdE : Expr 64 := priTree (tpcTriples.map (fun t => (t.1, t.2.2))) (L64 0)
 /-- `S_CLONE2` — the only writer of `tp_arr`/`sigmask_arr`. -/
 def cloneFresh : Expr 1 := .and fsmEn (.eq st (L5 S_CLONE2))
 
+/-! ### EXT-2 — the `tdom` write funnel
+
+Three writers, one syntactic `memWrite` site, same discipline as `tpc`:
+
+1. **`cmd 13` reset** rides the zeroing sweep and puts every thread in
+   domain 0. This is what makes "the guest is domain 0" true by
+   construction rather than by the reset image (D37: the constant lives in
+   the sweep, not in the bank).
+2. **`CLONE` inheritance** — the child gets `domCur`, the parent's domain.
+   The guard is the same `has_free` branch that allocates `free_slot` and
+   writes the child's `tpc`, so the child's domain and entry PC are written
+   in the same cycle and cannot disagree.
+3. **`cmd 58`** is the only way a domain tag changes to something new, and
+   it is a debug/host operation — no instruction moves a thread between
+   domains. Entry 1 is disjoint from 2–3 (`zeroing` forces `fsmEn` low). -/
+def tdomTriples : List (Expr 1 × Expr 5 × Expr 8) :=
+  [ (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))), .slice zctr 0 5, L8 0)
+  , (exG (.and (opIs 0x59) has_free), free_slot, domCur)
+  , (.and cmdValid (.eq cmdIdx (L7 CMD_SETDOM)), .slice cmdData 0 5, .slice cmdData 8 8) ]
+
+def tdomWeE : Expr 1 := orTree (tdomTriples.map (fun t => t.1))
+def tdomWaE : Expr 5 := priTree (tdomTriples.map (fun t => (t.1, t.2.1))) (L5 0)
+def tdomWdE : Expr 8 := priTree (tdomTriples.map (fun t => (t.1, t.2.2))) (L8 0)
+
 def tarrFunnelRule : Rule :=
   ⟨"tarr_funnel",
+    .seq (.ite tdomWeE (.memWrite 5 8 "tdom" 0 tdomWaE tdomWdE) .skip) <|
     .seq (.ite tpcWeE (.memWrite 5 64 "tpc" 0 tpcWaE tpcWdE) .skip)
       (.seq (.ite (exG (opIs 0x07))
               (.memWrite 5 64 "tsleep" 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
@@ -1372,7 +1453,9 @@ def scalarRegs : List RegDecl :=
    ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
    ⟨"wake_out",1,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
    -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
-   ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩]
+   ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩,
+   -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
+   ⟨"cur_dom",8,0⟩]
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
@@ -1381,6 +1464,12 @@ comparator bank). -/
 def arrRegs : List RegDecl :=
   (List.finRange NT).map (fun i => ⟨s!"tstate{i.val}", 2, if i.val = 0 then 1 else 0⟩)
   ++ (List.finRange NT).map (fun i => ⟨s!"tfutex{i.val}", 64, 0⟩)
+
+/-- (12) EXT-2 — the observation mirror. Unconditional: `cur_dom` is
+`tdom[cur]` as of the previous cycle. It is the *only* writer of `cur_dom`
+and `cur_dom` has no readers inside the design, so it cannot influence
+behaviour — which is what makes it safe to let it lag. -/
+def domainRule : Rule := ⟨"domain", .write 8 "cur_dom" domCur⟩
 
 def design : Design where
   name := "lnp64mini"
@@ -1403,10 +1492,14 @@ def design : Design where
      -- deliver it.
      ⟨"tpc", 5, 64, fun _ => 0⟩,
      ⟨"tsleep", 5, 64, fun _ => 0⟩,
-     ⟨"tp_arr", 5, 64, fun _ => 0⟩, ⟨"sigmask_arr", 5, 64, fun _ => 0⟩]
+     ⟨"tp_arr", 5, 64, fun _ => 0⟩, ⟨"sigmask_arr", 5, 64, fun _ => 0⟩,
+     -- EXT-2: the per-thread domain tag. Zero image = every thread in
+     -- domain 0; `cmd 13`'s sweep re-establishes that on every reset, so
+     -- the constant does not have to survive the configuration path (D37).
+     ⟨"tdom", 5, 8, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
-     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule]
+     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,
