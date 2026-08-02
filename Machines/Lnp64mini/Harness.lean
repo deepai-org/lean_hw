@@ -179,6 +179,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("quantum",32,s.quantum.toNat), ("qctr",32,s.qctr.toNat),
    -- EXT-2: the domain observation mirror
    ("cur_dom",8,s.cur_dom.toNat),
+   -- EXT-3: the fail-stop bitmap
+   ("poison",32,s.poison.toNat),
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
@@ -751,6 +753,58 @@ def domSelftest : IO Unit := do
   else
     IO.println s!"LNP64MINI DOMAIN SELFTEST FAILED ({bad} mismatches; inherit={okInherit})"
     throw <| IO.userError "domain selftest failed"
+
+/-! ## EXT-3 — the fail-stop selftest
+
+Poison has two enforcement points and they fail differently, so both are
+claimed separately:
+
+1. **The running thread.** Poisoning `cur` must stop the core at the next
+   instruction boundary — `running` goes false and `retire` freezes. Masking
+   the scheduler alone would NOT do this: the running thread is not re-picked,
+   so it would keep executing until it happened to yield. This claim is what
+   distinguishes fail-stop from "descheduled".
+2. **A ready-but-not-running thread.** The child is poisoned at cycle 2 —
+   *before* `CLONE` has admitted it — so when it is admitted READY it can
+   never be picked, and the parent runs to `EXIT` alone. This is the
+   `readyBm` mask, and the parent's progress is the control: a bug that
+   stopped *everything* would pass claim 1 alone.
+
+   Poisoning it mid-run instead tests nothing, and finding that out was the
+   useful part of writing this. At cycle 24 the *child* is the thread on the
+   core, so poisoning it takes the claim-1 path and stops the machine — the
+   parent then never runs again and the test fails for a reason that has
+   nothing to do with descheduling. "Deschedule" and "fail-stop" are only
+   distinguishable when the poisoned slot is provably not `cur`. -/
+def cmdPoison (q : Nat) (at_ : Nat) (bm : Nat) : Nat → MiniIn := fun k =>
+  if k = 0 then { cmdValid := true, cmdIdx := CMD_QUANTUM, cmdData := BitVec.ofNat 32 q }
+  else if k = 1 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else if k = at_ then
+    { cmdValid := true, cmdIdx := CMD_POISON, cmdData := BitVec.ofNat 32 bm }
+  else {}
+
+def failstopSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progPreempt
+  -- (0) EDSL ≡ ISS with poison live, every register + all thread arrays.
+  let bad ← lockstep img 1 (cmdPoison 8 24 0xFFFFFFFF) (fun _ => 0) 60
+  if bad = 0 then IO.println "  OK  FAILSTOP (EDSL≡ISS with poison live, 60 cyc)"
+  else IO.println s!"  FAIL FAILSTOP ({bad} mismatches)"
+  -- (1) poisoning the running thread stops the core, and it stays stopped.
+  let (sp, _, _) := runIss img 1 (cmdPoison 8 24 0xFFFFFFFF) (fun _ => 0) 4000
+  let (sc, _, _) := runIss img 1 (cmdQuantum 8) (fun _ => 0) 4000
+  IO.println s!"  running-thread: poisoned running={sp.running} (want false) retire={sp.retire.toNat} vs unpoisoned retire={sc.retire.toNat} halted={sc.halted} (want strictly less, control halts)"
+  let ok1 := (¬ sp.running) && sp.retire.toNat < sc.retire.toNat && sc.halted
+  -- (2) poisoning ONLY the child (slot 1) descheduules it; the parent runs on.
+  --     The parent reaches EXIT, so `halted` is the evidence it was undisturbed.
+  let (sk, _, _) := runIss img 1 (cmdPoison 8 2 0x2) (fun _ => 0) 4000
+  let childPc := (sk.tpc[1]!).toNat
+  IO.println s!"  ready-thread:   parent halted={sk.halted} (want true) r9={(sk.rf[9]!).toNat} (want 2) child tstate={(sk.tstate[1]!).toNat} child tpc=0x{String.ofList (Nat.toDigits 16 childPc)}"
+  let ok2 := sk.halted && (sk.rf[9]!).toNat == 2
+  if bad = 0 && ok1 && ok2 then
+    IO.println "LNP64MINI FAILSTOP SELFTEST OK — poison stops the runner AND deschedules the ready"
+  else
+    IO.println s!"LNP64MINI FAILSTOP SELFTEST FAILED ({bad} mismatches; runner={ok1} ready={ok2})"
+    throw <| IO.userError "failstop selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt

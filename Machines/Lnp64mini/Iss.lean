@@ -118,6 +118,8 @@ structure MiniSt where
   -- mirror. All-zero at power-on = every thread in domain 0.
   tdom      : Array (BitVec 8) := Array.replicate NT 0
   cur_dom   : BitVec 8 := 0
+  -- EXT-3 (fail-stop): one bit per thread slot; 0 = nothing poisoned.
+  poison    : BitVec 32 := 0
   wake_out  : Bool := false
   lr_req    : Bool := false
   sc_req    : Bool := false
@@ -303,9 +305,12 @@ def div_b_abs (s : MiniSt) : BitVec 64 :=
 
 /-- next_ready priority encoder (registered value for next cycle). -/
 def compute_next_ready (s : MiniSt) : BitVec 5 :=
+  -- EXT-3: fail-stop -- a poisoned slot is not READY, so it is never
+  -- picked. Same single masking point as `readyBm` in the EDSL.
   let readyBm : BitVec 32 :=
-    (List.range NT).foldl (fun acc i =>
-      acc ||| (if s.tstate[i]! = (1 : BitVec 2) then (1#32 <<< i) else 0)) 0
+    (~~~ s.poison) &&&
+      ((List.range NT).foldl (fun acc i =>
+        acc ||| (if s.tstate[i]! = (1 : BitVec 2) then (1#32 <<< i) else 0)) 0)
   let rbm2 : BitVec 64 :=
     (((readyBm.setWidth 64) ||| (readyBm.setWidth 64 <<< 32)) >>> (s.cur + 1).toNat)
   let nr_off : BitVec 5 :=
@@ -390,6 +395,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     -- never reaches a core). `qctr` is armed from the same word in the
     -- quantum block below, the only writer of that register.
     | 57 => s' := { s' with quantum := d }
+    -- EXT-3: `CMD_POISON` = 60, whole-word (the raise is atomic across slots)
+    | 60 => s' := { s' with poison := d }
     -- EXT-2: `CMD_SETDOM` = 58. data[4:0] = thread slot, data[15:8] = domain.
     | 58 => s' := { s' with tdom := s'.tdom.set! (d.toNat % NT)
                               (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
@@ -434,6 +441,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     let stN := s.st.toNat
     if stN = S_F0 then
       if s.bus_req then s' := { s' with st := BitVec.ofNat 5 S_PAUSE }
+      -- EXT-3: fail-stop, before the preemption point and before the fetch.
+      else if s.poison.getLsbD curV.toNat then s' := { s' with running := false }
       -- EXT-1: the preemption. Exactly `YIELD`'s switch, but the saved pc is
       -- `pc` (nothing consumed yet at S_F0), not `pc8`; `st` stays S_F0, so
       -- the new thread's fetch is issued on the next cycle.
