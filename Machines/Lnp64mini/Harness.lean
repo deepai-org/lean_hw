@@ -175,7 +175,9 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("zeroing",1,if s.zeroing then 1 else 0), ("zctr",10,s.zctr.toNat),
    ("reg_sel",5,s.reg_sel.toNat), ("reg_wsel",5,s.reg_wsel.toNat), ("reg_wlo",32,s.reg_wlo.toNat),
    ("dmem_addr_j",32,s.dmem_addr_j.toNat), ("dmem_lo_j",32,s.dmem_lo_j.toNat),
-   ("reg_rd",64,s.reg_rd.toNat), ("wake_out",1,if s.wake_out then 1 else 0),
+   ("reg_rd",64,s.reg_rd.toNat),
+   ("quantum",32,s.quantum.toNat), ("qctr",32,s.qctr.toNat),
+   ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
   ++ (List.range NT).map (fun i => (s!"tstate{i}",2,s.tstate[i]!.toNat))
@@ -570,5 +572,175 @@ def smpSelftest : IO Unit := do
   else
     IO.println s!"LNP64MINI SMP SELFTEST FAILED ({total} mismatches; rk={okRk} sc={okSc} db={okDb} no={okNo} wk={okWk} hd={okHd})"
 
+
+/-! ## EXT-1 — the preemption tick (selftest)
+
+Four claims, each with a control:
+
+1. **Expiry switches threads.** With two runnable threads and a quantum,
+   `cur` changes at `S_F0` although neither thread ever yields.
+2. **Expiry with nobody else READY continues.** A single-threaded program
+   with a quantum runs in exactly the same number of cycles as without one
+   — preempting to yourself is a no-op, not a stall.
+3. **`quantum = 0` is cooperative.** Bit-identical to a run that never
+   touches `CMD_QUANTUM`: same `rf`, same `retire`, same cycle count, and
+   the child of the preemption program never runs at all.
+4. **A preempted thread resumes correctly.** `preemptAudit` checks, at
+   every fire, that `tpc[cur]` received the pc that was *about to be
+   fetched* (not `pc+8`), that the switch landed on `next_ready` with
+   `pc = tpc[next_ready]`, and that the core stayed at `S_F0`. The program
+   also carries a poison opcode one word past the child's loop, so a
+   one-instruction resume slip traps instead of passing silently. -/
+
+/-- Two threads that never yield. Parent (thread 0): CLONE a child, then
+`r9 += 1` twice, then EXIT. Child (thread 1): `r10 += 1` in a
+two-instruction loop, forever. Word 7 is unreachable in a correct machine
+and traps in a broken one. -/
+def progPreempt : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 0x1028,   -- w0  r1 = child entry (word 5)
+    enc 0x59 4 1 2,            -- w1  CLONE r4 = tid, entry = r1, arg = r2
+    encImmI 0xa0 9 9 1,        -- w2  r9 += 1                 (parent)
+    encImmI 0xa0 9 9 1,        -- w3  r9 += 1
+    enc 0x3a 0 0 0,            -- w4  EXIT (halts the core)
+    encImmI 0xa0 10 10 1,      -- w5  r10 += 1  (child entry, 0x1028)
+    encImmJ 0x20 0 (-1),       -- w6  J -1 -> back to w5
+    enc 0x7f 0 0 0 ]           -- w7  poison: only a bad resume gets here
+
+/-- cmd stream: load the quantum (cycle 0), then start (cycle 1). -/
+def cmdQuantum (q : Nat) : Nat → MiniIn := fun k =>
+  if k = 0 then { cmdValid := true, cmdIdx := CMD_QUANTUM, cmdData := BitVec.ofNat 32 q }
+  else if k = 1 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+/-- The same start with no `CMD_QUANTUM` write at all (the control for the
+`quantum = 0` byte-identity claim). -/
+def cmdNoQuantum : Nat → MiniIn := fun k =>
+  if k = 1 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
+
+/-- Run the ISS and audit **every** preemption. Returns
+`(fires, allChecksPassed, finalState, cycles)`. -/
+def preemptAudit (image : List (Nat × BitVec 64)) (q : Nat) (maxCyc : Nat) :
+    Nat × Bool × MiniSt × Nat := Id.run do
+  let cmds := cmdQuantum q
+  let mut s : MiniSt := {}
+  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := 1 }
+  let mut g : GpModel := {}
+  let mut fires := 0
+  let mut ok := true
+  let mut k := 0
+  for i in List.range maxCyc do
+    if s.halted then return (fires, ok, s, k)
+    -- the fire predicate, read off the pre-state exactly as the design does
+    let fire := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ s.st = BitVec.ofNat 5 S_F0
+                ∧ ¬ s.bus_req ∧ ¬ s.trap_active ∧ s.quantum ≠ 0 ∧ s.qctr = 0
+                ∧ s.next_ready ≠ s.cur
+    let savedPc := s.pc
+    let outgoing := s.cur.toNat
+    let incoming := s.next_ready.toNat
+    let target := s.tpc[incoming]!
+    let (s', d', g', _) := sysStep s d g (cmds i) 0
+    if fire then
+      fires := fires + 1
+      if s'.tpc[outgoing]! ≠ savedPc then ok := false   -- saved pc, NOT pc+8
+      if s'.cur.toNat ≠ incoming then ok := false
+      if s'.pc ≠ target then ok := false
+      if s'.st ≠ BitVec.ofNat 5 S_F0 then ok := false   -- costs one cycle, no fetch
+    s := s'; d := d'; g := g'
+    k := i + 1
+  return (fires, ok, s, k)
+
+/-! ### The Law-5 program: a spinner that cannot be dislodged cooperatively
+
+Nine words. Thread 0 CLONEs a child and then spins on a zero-page flag it
+never sets itself; the child sets the flag and exits; thread 0 then stores
+42 and EXITs. **Cooperatively the spinner owns the core forever** — which
+is the failure `PORTING_SPEC.md` records from silicon, where a spinning
+core-1 thread starved core 0's GEM pump to 100 % packet loss. With a
+quantum the child gets the CPU and the program terminates.
+
+Every architectural field of the final state is timing-INDEPENDENT (the
+number of spin iterations is not, so `retire` and the cycle count are not
+compared), which is what lets the iverilog leg be diffed byte-for-byte
+against this ISS. -/
+def progSpin : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 0x1030,   -- w0  r1 = child entry (word 6)
+    enc 0x59 4 1 2,            -- w1  CLONE r4 = tid, entry = r1
+    encImmI 0x30 5 0 0,        -- w2  spin head (0x1010): r5 = [0]
+    encImmS 0x21 5 0 (-1),     -- w3  BEQ r5, r0 -> back to w2
+    encImmI 0xa0 9 0 42,       -- w4  r9 = 42   (only after the flag is set)
+    enc 0x3a 0 0 0,            -- w5  EXIT
+    encImmI 0xa0 6 0 1,        -- w6  child entry (0x1030): r6 = 1
+    encImmS 0x33 0 6 0,        -- w7  SD [0] = r6   (sets the flag)
+    enc 0x3b 0 0 0 ]           -- w8  THREAD_EXIT
+
+/-- 16 lowercase hex digits, `$readmemh` shaped. -/
+def hex16 (v : BitVec 64) : String :=
+  String.ofList ((List.range 16).map (fun i =>
+    (Nat.toDigits 16 ((v.toNat >>> ((15 - i) * 4)) % 16)).head!))
+
+/-- Write `progSpin` as a `$readmemh` image (the RTL leg's program). -/
+def writePreemptHex (path : String) : IO Unit := do
+  IO.FS.writeFile path (String.intercalate "\n" (progSpin.map hex16) ++ "\n")
+  IO.println s!"{path} written ({progSpin.length} words)"
+
+/-- The oracle line for `fpga/zc702/tb_lnp64mini_preempt.v`, printed from
+the ISS. Format and field order are identical to the tb's `$display`. -/
+def preemptPredict (q : Nat) (maxCyc : Nat := 20000) : IO Unit := do
+  let (fires, _, s, _) := preemptAudit (imageFrom TEXT_BASE progSpin) q maxCyc
+  IO.println s!"PREEMPT halted={if s.halted then 1 else 0} \
+trap={if s.trap_active then 1 else 0} pc={if s.halted then s.pc.toNat else 0} \
+r5={(s.rf[5]!).toNat} r9={(s.rf[9]!).toNat} dmem0={(s.dmem[0]!).toNat} \
+t1state={(s.tstate[1]!).toNat} preempted={if fires ≠ 0 then 1 else 0}"
+
+def preemptSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progPreempt
+  let imgLS := imageFrom TEXT_BASE progLS
+  -- ---- EDSL ≡ ISS lockstep, every register (incl. quantum/qctr) ----
+  let scripts : List (String × List (BitVec 64) × (Nat → MiniIn) × Nat) :=
+    [("PREEMPT (quantum=8, two runnable threads interleave)", progPreempt, cmdQuantum 8, 46),
+     ("QZERO   (quantum=0, the cooperative machine)",         progPreempt, cmdQuantum 0, 46),
+     ("SOLO    (quantum=4, one thread: expiry is a no-op)",   progLS,      cmdQuantum 4, 46)]
+  let mut total := 0
+  for (nm, p, c, nc) in scripts do
+    let bad ← lockstep (imageFrom TEXT_BASE p) 1 c (fun _ => 0) nc
+    if bad = 0 then IO.println s!"  OK  {nm}  ({nc} cyc)"
+    else IO.println s!"  FAIL {nm} ({bad} mismatches)"
+    total := total + bad
+  -- ---- (1)+(4) expiry switches threads; every switch resumes correctly ----
+  let (fires, resumeOk, sp, kp) := preemptAudit img 8 4000
+  let childR10 := (sp.rf[32 + 10]!).toNat
+  IO.println s!"  preempt: fires={fires} resume-audit={resumeOk} cycles={kp} halted={sp.halted} \
+parent r9={(sp.rf[9]!).toNat} (want 2) child r10={childR10} (want >0) trap={sp.trap_active}"
+  let ok1 := fires > 0 && resumeOk && sp.halted && !sp.trap_active
+             && (sp.rf[9]!).toNat == 2 && childR10 > 0
+  -- ---- (3) quantum = 0 is the cooperative machine, bit for bit ----
+  let (f0, _, s0, k0) := preemptAudit img 0 4000
+  let (sn, _, kn) := runIss img 1 cmdNoQuantum (fun _ => 0) 4000
+  let coopIdentical := s0.rf == sn.rf && s0.retire == sn.retire && k0 == kn
+                       && s0.tpc == sn.tpc && s0.tstate == sn.tstate
+  IO.println s!"  quantum=0: fires={f0} (want 0) cycles={k0} vs no-cmd control {kn} \
+child r10={(s0.rf[32+10]!).toNat} (want 0) state-identical={coopIdentical}"
+  let ok3 := f0 == 0 && s0.halted && (s0.rf[9]!).toNat == 2
+             && (s0.rf[32 + 10]!).toNat == 0 && coopIdentical
+  -- ---- (2) expiry with nobody else READY: same result, SAME cycle count ----
+  let (sq, _, kq) := runIss imgLS 1 (cmdQuantum 4) (fun _ => 0) 4000
+  let (sz, _, kz) := runIss imgLS 1 cmdNoQuantum (fun _ => 0) 4000
+  let ok2 := sq.halted && sz.halted && sq.rf == sz.rf && sq.retire == sz.retire && kq == kz
+  IO.println s!"  solo: quantum=4 cycles={kq} vs quantum=0 cycles={kz} (want equal) \
+rf equal={sq.rf == sz.rf} retire={(sq.retire).toNat}"
+  -- ---- Law 5: the spinner. Cooperatively it owns the core forever ----
+  let imgSpin := imageFrom TEXT_BASE progSpin
+  let (fq, _, sq2, kq2) := preemptAudit imgSpin 64 20000
+  let (_fc, _, sc2, _) := preemptAudit imgSpin 0 20000
+  IO.println s!"  spinner: quantum=64 halted={sq2.halted} cycles={kq2} r9={(sq2.rf[9]!).toNat} \
+(want 42) flag={(sq2.dmem[0]!).toNat} fires={fq} | cooperative halted={sc2.halted} (want false) \
+r9={(sc2.rf[9]!).toNat} (want 0) child tstate={(sc2.tstate[1]!).toNat} (want 1 = READY, never run)"
+  let ok4 := sq2.halted && (sq2.rf[9]!).toNat == 42 && (sq2.dmem[0]!).toNat == 1
+             && fq > 0 && !sc2.halted && (sc2.rf[9]!).toNat == 0
+             && (sc2.dmem[0]!).toNat == 0 && (sc2.tstate[1]!).toNat == 1
+  if total == 0 && ok1 && ok2 && ok3 && ok4 then
+    IO.println "LNP64MINI PREEMPT SELFTEST OK — EDSL≡ISS on 3 scripts + switch/no-stall/cooperative/resume/Law-5 spinner"
+  else
+    IO.println s!"LNP64MINI PREEMPT SELFTEST FAILED ({total} mismatches; switch={ok1} nostall={ok2} coop={ok3} spin={ok4})"
 
 end Machines.Lnp64mini

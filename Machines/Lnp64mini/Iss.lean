@@ -110,6 +110,10 @@ structure MiniSt where
   dmem_addr_j : BitVec 32 := 0
   dmem_lo_j   : BitVec 32 := 0
   reg_rd    : BitVec 64 := 0
+  -- EXT-1 (the preemption tick): reload value and running counter, both 0
+  -- (= preemption disabled = the cooperative machine) at power-on.
+  quantum   : BitVec 32 := 0
+  qctr      : BitVec 32 := 0
   wake_out  : Bool := false
   lr_req    : Bool := false
   sc_req    : Bool := false
@@ -374,6 +378,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     | 53 => s' := { s' with pc := d.setWidth 64 }
     | 54 => if bit d 0 then s' := { s' with trap_active := false, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
     | 55 => s' := { s' with bus_req := bit d 0 }
+    -- EXT-1: `CMD_QUANTUM` = 57 (56 is the dual wrapper's CORE1_HOLD, which
+    -- never reaches a core). `qctr` is armed from the same word in the
+    -- quantum block below, the only writer of that register.
+    | 57 => s' := { s' with quantum := d }
     | 13 =>
         if bit d 0 then
           s' := { s' with pc := BitVec.ofNat 64 TEXT_BASE, retire := 0, halted := false,
@@ -389,6 +397,16 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
 
   -- effective hold: only bites at the instruction boundary S_F0
   let holdEff := inp.hold ∧ s.st = BitVec.ofNat 5 S_F0
+  -- EXT-1 (the preemption tick): the three predicates of `Core.lean`, over
+  -- the pre-state. `preemptAtF0` is true only at the instruction boundary
+  -- (never mid-instruction, never while zeroing/held/trapped/paused, and
+  -- S_WAIT/S_PAUSE/S_TRAP are excluded because they are not S_F0).
+  let fsmEnB := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
+  let qOn := s.quantum ≠ 0
+  let qExpired := qOn ∧ s.qctr = 0
+  let preemptAtF0 :=
+    fsmEnB ∧ s.st = BitVec.ofNat 5 S_F0 ∧ ¬ s.bus_req ∧ ¬ s.trap_active ∧ qExpired
+  let preemptFire := preemptAtF0 ∧ s.next_ready ≠ s.cur
   -- serialized sleep scan (paused while the core is held)
   if s.running ∧ ¬ s.halted ∧ ¬ holdEff then
     s' := { s' with sleep_scan := s.sleep_scan + 1 }
@@ -405,6 +423,12 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     let stN := s.st.toNat
     if stN = S_F0 then
       if s.bus_req then s' := { s' with st := BitVec.ofNat 5 S_PAUSE }
+      -- EXT-1: the preemption. Exactly `YIELD`'s switch, but the saved pc is
+      -- `pc` (nothing consumed yet at S_F0), not `pc8`; `st` stays S_F0, so
+      -- the new thread's fetch is issued on the next cycle.
+      else if preemptFire then
+        s' := { s' with tpc := s'.tpc.set! curV.toNat s.pc, cur := s.next_ready,
+                        pc := s.tpc[s.next_ready.toNat]! }
       else s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + s.pc.setWidth 32,
                            core_rd := true, st := BitVec.ofNat 5 S_FW }
     else if stN = S_PAUSE then
@@ -637,6 +661,20 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     for ti in List.range NT do
       if s.tstate[ti]! = 3 then s' := { s' with tstate := s'.tstate.set! ti 1 }
   if inp.resKill then s' := { s' with lr_valid := false }
+
+  -- EXT-1: the quantum counter (mirrors `quantumRule`, the sole writer of
+  -- `qctr`, in the same priority order: cmd load, cmd-13 re-arm, boundary
+  -- reload, countdown). Every input is pre-state, so the position of this
+  -- block relative to the FSM is immaterial.
+  let cmdQ   := inp.cmdValid ∧ inp.cmdIdx = CMD_QUANTUM
+  let cmdR13 := inp.cmdValid ∧ inp.cmdIdx = 13 ∧ bit inp.cmdData 0
+  let qTick  := fsmEnB ∧ hp_core_owns s ∧ ¬ s.trap_active ∧ qOn ∧ s.qctr ≠ 0
+  s' := { s' with qctr :=
+            if cmdQ then inp.cmdData
+            else if cmdR13 then s.quantum
+            else if preemptAtF0 then s.quantum
+            else if qTick then s.qctr - 1
+            else s.qctr }
 
   -- dmem sync block: `if (dmem_we) dmem[dmem_a]<=dmem_wd; dmem_rd<=dmem[dmem_a]`
   -- both use the PRE-cycle (registered) dmem_we/dmem_a/dmem_wd.

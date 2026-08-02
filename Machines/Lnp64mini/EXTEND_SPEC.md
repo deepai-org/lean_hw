@@ -138,3 +138,149 @@ trap-server's op manifest (each new op partitioned HW-native vs trap-to-host).
 is not done — it has silently dropped the strongest leg of the ladder. If a
 feature genuinely cannot be modelled in the emulator, say so explicitly in
 that increment's deviations and state what replaces the oracle for it.
+
+---
+
+# Increment log
+
+## EXT-1 — the preemption tick (Law 5). 2026-08-02
+
+Closes the fidelity gap `PORTING_SPEC.md` records: every write of `cur` was
+a voluntary yield, so a spinning thread owned the core forever. Law 5 says
+*"Every instruction boundary is a preemption point. Unconditionally. The
+machine contains no non-preemptible region."*
+
+### What it is
+
+Two per-core registers and one BSCAN index:
+
+| | | |
+|---|---|---|
+| `quantum` (32 b, reset 0) | the reload value, in **core cycles** | `Core.lean` |
+| `qctr` (32 b, reset 0) | the running thread's remaining quantum | `Core.lean` |
+| **cmd 57** (`CMD_QUANTUM`) | writes `quantum` **and** arms `qctr` with the same word | `cmdRule` + `quantumRule` |
+
+`quantum = 0` is **disabled**: `quantumOn` is false, so nothing decrements,
+nothing reloads, nothing preempts, and the core is the cooperative machine
+of §63 bit for bit. That is the safety valve, the byte-identity story, and
+the reason the wrapper and the NetBSD loader need no change at all to keep
+today's behaviour.
+
+**Where it fires:** `s_f0`, and nowhere else. `preemptAtF0 = fsmEn ∧
+st = S_F0 ∧ ¬bus_req ∧ ¬trap_active ∧ qExpired`. `fsmEn` already excludes
+`zeroing`, `hold` and a stopped core; `st = S_F0` excludes every
+mid-instruction state including `S_WAIT`, `S_PAUSE` and `S_TRAP`; `S_F0` is
+also the state in which no bus transaction is in flight, which is exactly
+the argument that makes the D15 `hold` input safe.
+
+**What it saves:** exactly what `YIELD` saves — `tpc[cur]` (through the one
+`tpc` write funnel, `tpcTriples` entry 6), then `cur <= next_ready`,
+`pc <= tpc[next_ready]`. `st` is not written, so the core stays at `S_F0`
+and fetches the new thread's instruction next cycle.
+
+**When nobody else is READY** (`next_ready = cur`) it reloads `qctr` and
+issues the fetch in the same cycle: preempting to yourself is a no-op, not
+a stall — measured, not asserted (a one-thread program runs in the *same
+cycle count* with and without a quantum).
+
+### Deviations
+
+1. **The saved pc is `pc`, not `pc8`.** The instruction to build this
+   increment said "`tpc[cur] <= pc8`, as `YIELD` does". At `S_EX` a `YIELD`
+   has already consumed the instruction at `pc`, so its resume point is
+   `pc+8`. At `S_F0` **nothing has been consumed** — `pc` is the instruction
+   about to be fetched — so the resume point is `pc`. Writing `pc8` here
+   would silently skip one instruction of the preempted thread per tick,
+   i.e. precisely the "guest corrupts silently" failure the instruction
+   warned about. The *mechanism* is `YIELD`'s; the datum is the boundary's.
+   `preemptAudit` checks this at every fire, and `progSpin`'s poison word
+   turns a resume slip into a trap rather than a wrong answer.
+2. **The quantum counts cycles, not instructions.** The spec sketched "the
+   serialized sleep scan is already a per-cycle timebase"; a cycle counter
+   is what that timebase is, it needs no new comparator per thread, and it
+   is the quantity a scheduler actually wants to bound (an instruction
+   counter would let one 68-cycle divide outlast a hundred ALU ops). It
+   ticks only under `hp_core_owns`, so a thread is not charged for cycles
+   the core spent parked in `S_WAIT`/`S_PAUSE` or trapped.
+3. **`cmd 13` (soft reset) re-arms `qctr := quantum`** so a run never
+   inherits a half-spent counter, but it does **not** clear `quantum`: the
+   quantum is host configuration and survives a soft reset, like `reg_sel`
+   and the JTAG address registers.
+4. **No emulator leg.** The toolchain table above asks the Rust emulator to
+   model the quantum. This pass was explicitly scoped to leave
+   `/home/ubuntu/lnp64` untouched, so that leg is **not** done. It costs
+   less than it would for an opcode: preemption adds **no instruction**, so
+   every existing emulator trace remains a valid oracle for `quantum = 0`
+   (and the six system testbenches confirm the RTL still matches them). For
+   `quantum > 0` the oracle is the Lean ISS, and the iverilog leg is diffed
+   against it byte for byte. Owed: emulator quantum + forced switch.
+5. **Post-route Fmax was NOT measured on this host.** `nextpnr-xilinx` is
+   not installed here (it lives on the board host, via the openXC7 snap), so
+   only yosys numbers are reported below. **This is an open item against the
+   second hard constraint, not a claim that timing is fine** — the board
+   host must run `oxc7/build_oxc7.sh` on `lnp64mini_dual_top` /
+   `lnp64mini_soc_top` before EXT-1 is called done.
+6. **The index is 57, not the "next free" 56.** 56 is the first index the
+   *core* does not use, and it was the first choice — but
+   `lnp64mini_dual_top.v` and `lnp64mini_epoch_top.v` already own 56 as a
+   **wrapper** register (`CORE1_HOLD`) and consume the write before it is
+   forwarded to either core. Had that gone unnoticed the quantum would have
+   been unreachable on exactly the two bitstreams the demo runs on, and a
+   later wrapper that did forward it would have retimed the guest by
+   accident. Free-index arithmetic has to be done against the *wrapper*
+   decode, not just the core's. 57 is free in every wrapper write decode and
+   every readback mux.
+7. **The NetBSD acceptance run is not in this pass** (the board is driven by
+   the operator). What is owed there: boot with `quantum = 0` (must be
+   indistinguishable from §63 — the safety valve), then boot with a quantum
+   set and confirm the rump guest still serves telnet + ping.
+
+### Evidence
+
+* `lake env lean --run Machines/Lnp64mini/Emit.lean preemptselftest` — three
+  EDSL≡ISS lockstep scripts over **every** register (`quantum`/`qctr`
+  included) plus `rf[0..64)`, `dmem[0..64)` and the four thread-table
+  memories, and five architectural claims: expiry switches threads
+  (4 fires); every fire passes the resume audit; `quantum = 0` is
+  state-identical to a run that never touches cmd 57; a single-threaded
+  program takes the same 75 cycles with and without a quantum; and the
+  **Law-5 spinner** — thread 0 spins on a flag only its child can set —
+  terminates with `r9 = 42` under a quantum and *never* terminates without
+  one (child left `tstate = READY`, having never run).
+* `scripts/preempt_ladder.sh` — the ladder: selftest, D19, emit,
+  `iverilog == ISS oracle` byte for byte on the spinner in **both** modes
+  (`fpga/zc702/tb_lnp64mini_preempt.v` against `Emit.lean preemptpredict`),
+  then all six pre-existing system testbenches reproducing DUAL_SPEC's
+  numbers (273 / 372 / 12540 / 14933 / 2014 / 346) with the quantum **off
+  and on**. Those six programs are single-threaded, so a quantum that only
+  ever switches to a *different* READY thread cannot move them — and does
+  not, byte for byte.
+* `epoch_ladder.sh`, `capwalk_ladder.sh`, `scripts/ci.sh`, `eqcheck.sh`,
+  `lake exe audit` — green; no `sorry`, no `native_decide`, no new axioms.
+
+### Cost (yosys `synth_xilinx -flatten -nowidelut`, `lnp64mini_dual`)
+
+| | before | **after (shipped, cmd 57)** | Δ | *(same design at cmd 56)* |
+|---|---|---|---|---|
+| LUT cells (LUT2..6) | 27501 | **28223** | +722 (+2.6 %) | *27580 (+79)* |
+| FDRE/FDSE | 12389 | **12517** | **+128** = 2 cores × 64 b, exactly the two registers | *12517* |
+| CARRY4 | 1049 | **1065** | +16 (the two 32-bit decrementers) | *1065* |
+| RAMB36E1 | 26 | **26** | — | *26* |
+| est. LCs | 21738 | **22239** | +501 (+2.3 %) | *21908 (+170)* |
+
+**Read that last column before believing the LUT delta.** The two "after"
+netlists differ in **exactly one character** — the constant `7'd56` vs
+`7'd57` in the cmd decode, one wire, everything else byte-identical — and
+yosys/ABC mapped them 643 cells apart. So the *structural* cost is the part
+that is stable and countable: **+128 flops** (the two registers, exactly),
+**+16 CARRY4** (the two 32-bit decrementers), and a small comparator; the
+LUT figure carries roughly ±650 cells of mapper noise at this scale and
+should be quoted as a band (+0.3 % … +2.6 %), not a point. Either way it is
+inside the budget's "preemption ~0.3k LUT" line and it is a counter, not
+datapath.
+
+Placed utilisation and post-route Fmax are **not** in this table: see
+deviation 5 — `nextpnr-xilinx` is not on this host, and yosys cell counts do
+not convert to `SLICE_LUTX` (the recorded dual is 52134 SLICE_LUTX = 48 %
+placed at 27501 yosys LUT cells). The board host must produce the real
+numbers.

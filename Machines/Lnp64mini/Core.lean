@@ -162,6 +162,17 @@ def lr_valid  : Expr 1  := .reg 1  "lr_valid"
 def sc_pending : Expr 1 := .reg 1 "sc_pending"
 def futex_exp : Expr 64 := .reg 64 "futex_exp"
 def futex_addr_q : Expr 64 := .reg 64 "futex_addr_q"
+/-! ### EXT-1 — the preemption tick (`EXTEND_SPEC.md` increment 1)
+
+`quantum` is the per-core reload value in **core cycles** and `qctr` the
+running thread's remaining quantum. Both are 32 bits (the width of the
+BSCAN `cmd_data` that loads them). `quantum = 0` — the reset value — means
+**disabled**: `quantumOn` is false, so nothing decrements, nothing reloads
+and nothing preempts, and the core is bit-for-bit the cooperative machine
+of §63. -/
+def quantum   : Expr 32 := .reg 32 "quantum"
+def qctr      : Expr 32 := .reg 32 "qctr"
+
 def sleep_scan: Expr 5  := .reg 5  "sleep_scan"
 def next_ready: Expr 5  := .reg 5  "next_ready"
 def free_slot : Expr 5  := .reg 5  "free_slot"
@@ -223,6 +234,7 @@ def L2  (n : Nat) : Expr 2  := .lit (BitVec.ofNat 2 n)
 def L5  (n : Nat) : Expr 5  := .lit (BitVec.ofNat 5 n)
 def L7  (n : Nat) : Expr 7  := .lit (BitVec.ofNat 7 n)
 def L8  (n : Nat) : Expr 8  := .lit (BitVec.ofNat 8 n)
+def L32 (n : Nat) : Expr 32 := .lit (BitVec.ofNat 32 n)
 def L64 (n : Nat) : Expr 64 := .lit (BitVec.ofNat 64 n)
 
 /-! ## Balanced-tree builders (timing; semantics-preserving)
@@ -601,6 +613,63 @@ because the ISA opcodes are disjoint, so we do not need the full negation
 chain for the rf funnel (order among FSM writes is free per spec). -/
 def exG (p : Expr 1) : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) p)
 
+/-! ## EXT-1 — the preemption tick (Law 5)
+
+`lnp64_isa.md` Law 5: *"Every instruction boundary is a preemption point.
+Unconditionally. The machine contains no non-preemptible region."* The
+ported core was **cooperative** — every write of `cur` sat at a voluntary
+yield (`YIELD`/`SLEEP`/`THREAD_EXIT`/`FUTEX_WAIT`/`S_WAIT`) — which
+`PORTING_SPEC.md` records as a fidelity gap. This closes it.
+
+Three predicates, and every one of them is only ever true at `S_F0`:
+
+* `qExpired` — the quantum is enabled and has run out.
+* `preemptAtF0` — the **preemption point**: `fsmEn` (so never while
+  `zeroing`, never while `hold`, never when stopped), `st = S_F0` (so never
+  mid-instruction: no fetch, load, store, multiply, divide or DDR
+  transaction is in flight there — the same argument that makes `hold` safe,
+  D15/DUAL_SPEC extension 4), not `bus_req` (the host owns the DDR window;
+  that arm goes to `S_PAUSE` and the expiry is simply still pending when the
+  core comes back), and not `trap_active`. `S_WAIT`/`S_PAUSE`/`S_TRAP` are
+  excluded because they are not `S_F0`.
+* `preemptFire` — `preemptAtF0` **and there is somewhere else to go**
+  (`next_ready ≠ cur`). Preempting to yourself is a no-op, not a stall: the
+  `¬preemptFire` path reloads `qctr` and issues the fetch in the very same
+  cycle, so a single-threaded core with a quantum runs cycle-for-cycle like
+  a core without one.
+
+`qTick` is the timebase. It counts down only while the core is *running the
+current thread's instructions* (`hp_core_owns` excludes `S_TRAP`, `S_WAIT`
+and `S_PAUSE`), so a thread is not charged for time the core spent parked
+or handing the bus to the host. It stops at 0 and waits for the reload,
+which keeps the counter from wrapping past a missed boundary. -/
+def quantumOn : Expr 1 := .not (.eq quantum (L32 0))
+def qExpired  : Expr 1 := .and quantumOn (.eq qctr (L32 0))
+
+def preemptAtF0 : Expr 1 :=
+  .and fsmEn (.and (.eq st (L5 S_F0))
+    (.and (.not bus_req) (.and (.not trap_active) qExpired)))
+
+def preemptFire : Expr 1 := .and preemptAtF0 (.not (.eq next_ready cur))
+
+def qTick : Expr 1 :=
+  .and fsmEn (.and hp_core_owns
+    (.and (.not trap_active) (.and quantumOn (.not (.eq qctr (L32 0))))))
+
+/-- The BSCAN command index that loads `quantum` (and arms `qctr` with the
+same value). Writing 0 disables preemption and restores the cooperative
+machine exactly.
+
+**Why 57 and not 56.** The core's own surface uses 13–19, 40–43 and 50–55,
+so 56 is the first free *core* index — but `fpga/zc702/lnp64mini_dual_top.v`
+and `lnp64mini_epoch_top.v` already claim **56 as a WRAPPER register**
+(`CORE1_HOLD`) and swallow it before the cmd pulse ever reaches a core.
+Taking 56 would have made the quantum unreachable on exactly the two
+bitstreams the demo runs on, and (worse) would have made a future wrapper
+that forwarded it silently retime the guest. 57 is free in every wrapper's
+write decode and in every readback mux. -/
+def CMD_QUANTUM : Nat := 57
+
 /-- Funnel triples. -/
 def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- 1. zeroing
@@ -801,6 +870,9 @@ where
         (.seq (.write 32 "retire" (.add retire (L32 1)))
               (.write 5 "st" (L5 S_F0)))) .skip) <|
     .seq (.ite (ci 55) (.write 1 "bus_req" (.slice cmdData 0 1)) .skip) <|
+    -- EXT-1: the quantum reload value (0 = preemption disabled). `qctr` is
+    -- armed from the same word in `quantumRule`, which owns that register.
+    .seq (.ite (ci CMD_QUANTUM) (.write 32 "quantum" cmdData) .skip) <|
       (.ite (ci 13)
         (.seq (.ite (.eq (.slice cmdData 0 1) (L1 1)) cmd13reset .skip)
               (.ite (.eq (.slice cmdData 1 1) (L1 1))
@@ -872,9 +944,29 @@ where
   matchesBefore (i : Nat) : Expr 64 :=
     .zext (addTree ((List.range i).map (fun j => (.zext (fmatch j) 6 : Expr 6)))) 64
 
+/-- `S_F0` — the instruction boundary, and (EXT-1) the preemption point.
+
+The new middle arm is exactly the switch `YIELD` performs, moved to the
+boundary: save the outgoing thread's resume pc into `tpc[cur]` (in
+`tpcTriples`, the single `tpc` write funnel), `cur <= next_ready`,
+`pc <= tpc[next_ready]`.
+
+**The saved pc is `pc`, not `pc8`.** At `S_EX` a `YIELD` has already
+consumed the instruction at `pc`, so its resume point is `pc+8`. At `S_F0`
+*nothing has been consumed* — `pc` is the instruction about to be fetched —
+so `pc` is the resume point. Writing `pc8` here would silently skip one
+instruction of the preempted thread on every tick (see `EXTEND_SPEC.md`
+deviations).
+
+`st` is **not** written, so the core stays in `S_F0` and fetches the new
+thread's instruction on the next cycle: a preemption costs exactly one
+cycle and issues no bus transaction from the old context. -/
 def s_f0 : Expr 1 × Act := stArm S_F0
   (.ite bus_req (.write 5 "st" (L5 S_PAUSE))
-    (.seq (.write 32 "core_addr" ddrPc) (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))
+    (.ite preemptFire
+      (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready))
+      (.seq (.write 32 "core_addr" ddrPc)
+        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW))))))
 
 def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 
@@ -1206,7 +1298,12 @@ def tpcTriples : List (Expr 1 × Expr 5 × Expr 64) :=
   -- 4. S_EX CLONE (0x59) with a free slot: the child's entry PC
   , (exG (.and (opIs 0x59) has_free), free_slot, a)
   -- 5. S_FTX1, FUTEX_WAIT that blocks (DDR word still equals the expected)
-  , (.and fsmEn (.and (.eq st (L5 S_FTX1)) (.and mDone (.eq mRdata futex_exp))), cur, pc8) ]
+  , (.and fsmEn (.and (.eq st (L5 S_FTX1)) (.and mDone (.eq mRdata futex_exp))), cur, pc8)
+  -- 6. EXT-1 preemption at the instruction boundary. Guard is disjoint from
+  -- 2–5 (they are all `st = S_EX` or `st = S_FTX1`) and from 1 (`zeroing`
+  -- forces `fsmEn` low). The datum is `pc`, NOT `pc8`: at `S_F0` the
+  -- instruction at `pc` has not been fetched yet (see `s_f0`).
+  , (preemptFire, cur, pc) ]
 
 def tpcWeE : Expr 1 := orTree (tpcTriples.map (fun t => t.1))
 def tpcWaE : Expr 5 := priTree (tpcTriples.map (fun t => (t.1, t.2.1))) (L5 0)
@@ -1226,6 +1323,28 @@ def tarrFunnelRule : Rule :=
 /-- (9) the single regfile write port. -/
 def rfFunnelRule : Rule :=
   ⟨"rf_funnel", .ite rfWeE (.memWrite 10 64 "rf" 0 rfWaE rfWdE) .skip⟩
+
+/-- (10) EXT-1 — the quantum counter, the design's **only** writer of
+`qctr`, in strict priority:
+
+1. `cmd CMD_QUANTUM` arms the counter with the word it just loaded into
+   `quantum`, so a host that sets a quantum gets one immediately (and
+   setting 0 disarms without waiting for anything);
+2. the `cmd 13` **soft reset** re-arms a full quantum for the fresh thread
+   0, so a run never inherits a half-spent counter from the previous one;
+3. `preemptAtF0` — the boundary reload, taken on both the switching and the
+   non-switching (nobody else is READY) case;
+4. `qTick` — the countdown, which stops at 0 rather than wrapping.
+
+Every read is pre-cycle (D9), so this rule's position in `rules` is
+immaterial to its value; it sits last because it is the newest. -/
+def quantumRule : Rule :=
+  ⟨"quantum",
+    .ite (.and cmdValid (.eq cmdIdx (L7 CMD_QUANTUM))) (.write 32 "qctr" cmdData)
+      (.ite (.and cmdValid (.and (.eq cmdIdx (L7 13)) (.eq (.slice cmdData 0 1) (L1 1))))
+        (.write 32 "qctr" quantum)
+        (.ite preemptAtF0 (.write 32 "qctr" quantum)
+          (.ite qTick (.write 32 "qctr" (.sub qctr (L32 1))) .skip)))⟩
 
 /-! ## Register / memory / input declarations -/
 
@@ -1251,7 +1370,9 @@ def scalarRegs : List RegDecl :=
    ⟨"zeroing",1,0⟩, ⟨"zctr",10,0⟩,
    ⟨"reg_sel",5,0⟩, ⟨"reg_wsel",5,0⟩, ⟨"reg_wlo",32,0⟩,
    ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
-   ⟨"wake_out",1,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩]
+   ⟨"wake_out",1,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
+   -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
+   ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩]
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
@@ -1285,7 +1406,7 @@ def design : Design where
      ⟨"tp_arr", 5, 64, fun _ => 0⟩, ⟨"sigmask_arr", 5, 64, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
-     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule]
+     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,

@@ -21,6 +21,9 @@ lake env lean --run Machines/Lnp64mini/Emit.lean hpselftest # HP master EDSL ≡
 lake env lean --run Machines/Lnp64mini/Emit.lean gpselftest # GP master EDSL ≡ ISS
 lake env lean --run Machines/Lnp64mini/Emit.lean arbselftest # HP arbiter EDSL ≡ ISS
 lake env lean --run Machines/Lnp64mini/Emit.lean smpselftest # res_kill/doorbell/hold/wake_out
+lake env lean --run Machines/Lnp64mini/Emit.lean preemptselftest # EXT-1 quantum / preemption tick
+lake env lean --run Machines/Lnp64mini/Emit.lean preempthex   # write fpga/zc702/preempt.hex
+lake env lean --run Machines/Lnp64mini/Emit.lean preemptpredict 64  # the EXT-1 iverilog oracle
 lake env lean --run Machines/Lnp64mini/Emit.lean progtest   # ISS runs a program to EXIT
 lake env lean --run Machines/Lnp64mini/Emit.lean d19        # D19 sync-read (BRAM) report
 ```
@@ -48,6 +51,9 @@ def main (args : List String) : IO Unit := do
   | ["gpselftest"] => Machines.Lnp64mini.GpMaster.selftest
   | ["arbselftest"] => Machines.Lnp64mini.HpArbiter.selftest
   | ["smpselftest"] => smpSelftest
+  | ["preemptselftest"] => preemptSelftest
+  | ["preempthex"]  => writePreemptHex "fpga/zc702/preempt.hex"
+  | ["preemptpredict", q] => preemptPredict ((q.toNat?).getD 0)
   | ["progtest"]   => progtest
   | ["soc"]        =>
       checkD19

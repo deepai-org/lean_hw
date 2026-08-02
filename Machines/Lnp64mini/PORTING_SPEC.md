@@ -389,3 +389,13 @@ Closing it looks contained: the per-cycle sleep scan is already a timebase and
 `S_F0` is precisely the instruction boundary Law 5 names, so a decrementing
 quantum that forces the `S_WAIT`-style switch at `S_F0` would be the shape.
 Not attempted here; named so it is not mistaken for architectural fidelity.
+
+**CLOSED 2026-08-02 by EXT-1** (`EXTEND_SPEC.md`, increment log), in exactly
+that shape: per-core `quantum`/`qctr` registers loaded over BSCAN **cmd 57**,
+the switch forced at `S_F0`, saving `pc` (not `pc8` — at `S_F0` the
+instruction has not been consumed). `quantum = 0` is the default and
+reproduces everything described above bit for bit, so this section still
+describes the machine as shipped until a host writes cmd 57. The spinning
+thread that starved the GEM pump is now dislodgeable: `progSpin` in
+`Harness.lean` is that failure in nine words, and it terminates only with a
+quantum — on the ISS and on the emitted RTL alike.

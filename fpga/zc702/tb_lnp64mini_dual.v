@@ -177,6 +177,10 @@ module tb;
 `ifndef ONLY_C0
     c1_hold = 0;                                  // release CORE1_HOLD
 `endif
+`ifdef QUANTUM
+    cmd(1'b0, 7'd57, `QUANTUM);                   // EXT-1: preemption quantum
+    cmd(1'b1, 7'd57, `QUANTUM);                   // (cmd 57; 0 = disabled)
+`endif
     cmd(1'b0, 7'd13, 32'd2);                      // core0 start
     cmd(1'b1, 7'd13, 32'd2);                      // core1 start (HELD if ONLY_C0)
     cyc = 0;
