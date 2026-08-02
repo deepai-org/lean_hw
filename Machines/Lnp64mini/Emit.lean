@@ -29,19 +29,13 @@ lake env lean --run Machines/Lnp64mini/Emit.lean progtest   # ISS runs a program
 lake env lean --run Machines/Lnp64mini/Emit.lean d19        # D19 sync-read (BRAM) report
 ```
 
-Every emit path first discharges the D19 obligation (`syncReadOk`): `rf`,
-`dmem` and `uart_mem` must be read only through register-latch sites, or
-the emitted RTL silently becomes LUTRAM and the dual core stops fitting
-(`Loom/Hw/D19_SPEC.md`).
+D19 and instance-name disjointness are no longer discharged here. The
+design declares `syncReadMems := ["rf","dmem","uart_mem"]` and `Design.emit`
+enforces it, along with duplicate register/memory names (which is how a
+`par`/`prefixed` with non-disjoint prefixes shows up). That is the point:
+these were per-machine helpers each emit site had to remember to call, and
+an obligation a caller can skip is not an obligation.
 -/
-
-open Machines.Lnp64mini in
-/-- Refuse to emit unless the D19 sync-read shape still holds. -/
-private def checkD19 : IO Unit := do
-  if ! Machines.Lnp64mini.syncReadOk then
-    IO.println Machines.Lnp64mini.syncReadReport
-    throw <| IO.userError
-      "D19: syncReadOkB failed \u2014 a memory in syncReadMems is read outside a register-latch site (it would emit as LUTRAM); see Loom/Hw/D19_SPEC.md"
 
 open Machines.Lnp64mini in
 def main (args : List String) : IO Unit := do
@@ -59,13 +53,7 @@ def main (args : List String) : IO Unit := do
   | ["preemptpredict", q] => preemptPredict ((q.toNat?).getD 0)
   | ["progtest"]   => progtest
   | ["soc"]        =>
-      checkD19
-      if ! Machines.Lnp64mini.Soc.parOk then
-        throw <| IO.userError "soc: parOkB failed — instance names not disjoint"
       Machines.Lnp64mini.Soc.soc.emit "rtl/lnp64mini_soc.v"
   | ["dual"]       =>
-      checkD19
-      if ! Machines.Lnp64mini.DualSoc.parOk then
-        throw <| IO.userError "dual: parOkB failed — instance names not disjoint"
       Machines.Lnp64mini.DualSoc.dual.emit "rtl/lnp64mini_dual.v"
-  | _ => checkD19; design.emit "rtl/lnp64mini.v"
+  | _ => design.emit "rtl/lnp64mini.v"

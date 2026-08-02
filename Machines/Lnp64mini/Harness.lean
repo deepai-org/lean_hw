@@ -135,6 +135,7 @@ def MiniIn.toEnv (c : MiniIn) : InEnv := fun n w =>
   | "cmd_data"  => c.cmdData.setWidth w
   | "res_kill"  => (BitVec.ofBool c.resKill).setWidth w
   | "doorbell"  => (BitVec.ofBool c.doorbell).setWidth w
+  | "doorbell_key" => c.doorbellKey.setWidth w
   | "hold"      => (BitVec.ofBool c.hold).setWidth w
   | "sc_fail"   => (BitVec.ofBool c.scFail).setWidth w
   | _ => 0#w
@@ -181,6 +182,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("cur_dom",8,s.cur_dom.toNat),
    -- EXT-3: the fail-stop bitmap
    ("poison",32,s.poison.toNat),
+   -- EXT-4: the outgoing park/wake key
+   ("wake_key",64,s.wake_key.toNat), ("wake_bm",32,s.wake_bm.toNat),
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
@@ -536,7 +539,13 @@ def smpSelftest : IO Unit := do
   --     the SC must FAIL (rd=1) and leave dmem[0] untouched.
   let rk : Nat → MiniIn := fun k => { start k with resKill := true }
   -- (2) doorbell at cycle 30: the FUTEX-blocked thread wakes and finishes.
-  let db : Nat → MiniIn := fun k => { start k with doorbell := k = 26 }
+  -- EXT-4: the doorbell is KEYED, so it must carry the address the thread
+  -- parked on (`progDoorbell` waits on 0x2000). `dbWrong` carries another
+  -- key and must NOT wake it -- that is the whole increment.
+  let db : Nat → MiniIn :=
+    fun k => { start k with doorbell := k = 26, doorbellKey := 0x2000 }
+  let dbWrong : Nat → MiniIn :=
+    fun k => { start k with doorbell := k = 26, doorbellKey := 0x3000 }
   -- (3) hold over cycles 10..30: the FSM freezes at the next S_F0, then resumes.
   let hd : Nat → MiniIn := fun k => { start k with hold := 10 ≤ k ∧ k ≤ 30 }
   -- (4) sc_fail: the arbiter refuses the global SC at the serialization point.
@@ -545,7 +554,8 @@ def smpSelftest : IO Unit := do
     [("RESKILL (res_kill clears lr_valid -> SC fails)", progLRSC, rk, 24),
      ("SCFAIL  (global SC refused -> rd=1 at S_DSW)",   progScDDR, sf, 40),
      ("SCOK    (global SC accepted -> rd=0)",           progScDDR, start, 40),
-     ("DOORBELL(FUTEX_WAIT parks; doorbell wakes it)",  progDoorbell, db, 34),
+     ("DOORBELL(FUTEX_WAIT parks; keyed doorbell wakes it)", progDoorbell, db, 34),
+     ("DBWRONG (doorbell on a DIFFERENT key: stays parked)", progDoorbell, dbWrong, 34),
      ("WAKEOUT (FUTEX_WAKE pulses wake_out)",           progWake, start, 26),
      ("HOLD    (FSM frozen at S_F0, then resumes)",     progLRSC, hd, 38)]
   let mut total := 0
@@ -571,6 +581,13 @@ def smpSelftest : IO Unit := do
   let (sn, _, _) := runIss (imageFrom TEXT_BASE progDoorbell) 1 start (fun _ => 0) 300
   let okNo := (!sn.halted) && (sn.tstate[0]!).toNat == 3 && (sn.rf[9]!).toNat == 0
   IO.println s!"  no-doorbell control: halted={sn.halted} (want false) tstate0={(sn.tstate[0]!).toNat} (want 3)"
+  -- EXT-4: a doorbell on the WRONG key must leave it parked. This is the
+  -- claim the unkeyed broadcast could not make -- before EXT-4 this run woke
+  -- the thread and halted, identically to the right-key run.
+  let (sx, _, _) := runIss (imageFrom TEXT_BASE progDoorbell) 1 dbWrong (fun _ => 0) 300
+  let okKey := (!sx.halted) && (sx.tstate[0]!).toNat == 3 && (sx.rf[9]!).toNat == 0
+  IO.println s!"  wrong-key doorbell: halted={sx.halted} (want false) tstate0={(sx.tstate[0]!).toNat} \
+(want 3 = still parked) r9={(sx.rf[9]!).toNat} (want 0) | right-key woke it: halted={sd.halted}"
   let (nw, hw) := countWake (imageFrom TEXT_BASE progWake) 300
   IO.println s!"  wake_out pulses={nw} (want 1) halted={hw}"
   let okWk := nw == 1 && hw
@@ -580,10 +597,10 @@ def smpSelftest : IO Unit := do
   let rfEq := sh.rf == sf.rf
   let okHd := sh.halted && sf.halted && rfEq && sh.retire == sf.retire && kf < kh
   IO.println s!"  hold: cycles held={kh} free={kf} (want held>free) rf equal={rfEq} retire={(sh.retire).toNat}"
-  if total == 0 && okRk && okSc && okDb && okNo && okWk && okHd then
+  if total == 0 && okRk && okSc && okDb && okNo && okKey && okWk && okHd then
     IO.println "LNP64MINI SMP SELFTEST OK — EDSL≡ISS on res_kill/sc_fail/doorbell/wake_out/hold + outcomes"
   else
-    IO.println s!"LNP64MINI SMP SELFTEST FAILED ({total} mismatches; rk={okRk} sc={okSc} db={okDb} no={okNo} wk={okWk} hd={okHd})"
+    IO.println s!"LNP64MINI SMP SELFTEST FAILED ({total} mismatches; rk={okRk} sc={okSc} db={okDb} no={okNo} key={okKey} wk={okWk} hd={okHd})"
 
 
 /-! ## EXT-1 — the preemption tick (selftest)

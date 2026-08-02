@@ -105,6 +105,24 @@ structure Design where
   acknowledgement lives at the design, next to the memory, rather than in
   a downstream checker's command line. -/
   ackMemInit : List String := []
+  /-- **D19 — declared block-RAM memories.** Memories this design requires
+  to be read *only* through a register-latch site, so the flow maps them to
+  block RAM rather than distributed LUTRAM.
+
+  This is a *policy* the design owns, not something Loom can infer: whether
+  a 512x64 bank must be BRAM depends on how much of the part the rest of
+  the design is using. `lnp64mini` names `rf`, `dmem` and `uart_mem`, and
+  deliberately omits `rx_mem` (256x8, read combinationally inside a write
+  data path — LUTRAM is the right implementation for it).
+
+  The declaration lives here, next to the memories, for the same reason
+  `ackMemInit` and `outputs` do: `Design.emit` can then enforce it, and a
+  design cannot *forget* to be checked. Before D19 moved into Loom the
+  check was a `checkD19` helper each machine's `Emit.lean` had to remember
+  to call at every emit site — three machines had copies, and adding an
+  emit target without the call silently produced LUTRAM that did not fit.
+  An obligation a caller can skip is not an obligation. -/
+  syncReadMems : List String := []
   /-- **D39 — declared observability.** Which registers this design exports
   as `o_<name>` output ports.
 

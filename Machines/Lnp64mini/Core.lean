@@ -95,6 +95,37 @@ exactly as before (silicon regression: `tb_lnp64mini_soc.v` on
   `S_DSW` would drop the completion and wedge the core forever). -/
 def resKill  : Expr 1  := .reg 1  "res_kill"
 def doorbell : Expr 1  := .reg 1  "doorbell"
+
+/-! ### EXT-4 — the park/wake directory (`EXTEND_SPEC.md` increment 4)
+
+Appendix F #6; §3 calls it "the epoch machine's client annex". Mini had both
+halves and they were not connected: `tfutex[i]` records *what* a parked
+thread waits on, but the cross-core `doorbell` woke **every** thread with
+`tstate = FUTEX` whatever key it was parked on. If a thread parked on key A
+is observable to a wake on key B, "parked on" means nothing.
+
+**The whole increment is: the comparator bank is SHARED, not duplicated.**
+The first attempt gave the doorbell its own 32-slot bank beside the one
+`FUTEX_WAKE` already has, and it cost 8 073 LUTs and would not route (58 %
+utilisation, `sysclk` below the board clock). The added *state* was 32 flops;
+every one of those LUTs was a second copy of a comparison the design already
+computes. Narrowing that copy from 64 to 16 bits recovered 6 800 LUTs and
+0.22 MHz — i.e. width was never the problem, **duplication** was.
+
+So there is exactly one bank, in `smpRule`, and its operand is muxed:
+
+* `wakeKey` = `rdval` for a local `FUTEX_WAKE`, `doorbell_key` for a remote
+  one — one 64-bit 2:1 mux, not 32 more comparators.
+* `wakeEn`  = local pulse ∨ doorbell.
+* the `matchesBefore < a` count limit applies to the **local** wake only; a
+  remote doorbell wakes every thread parked on that key, which is the
+  ordinary futex broadcast-on-key.
+
+The bank moved out of the `S_EX` branch into `smpRule`, which already ran
+*after* `fsmRule` — so the commit order is unchanged (D9, last write wins)
+and `sleepScanRule`, which is the only other `tstate` writer that could
+collide, still runs before both. -/
+def doorbell_key : Expr 64 := .reg 64 "doorbell_key"
 def hold     : Expr 1  := .reg 1  "hold"
 
 /-- `sc_fail` — the arbiter's verdict on a *global* `SC`, valid on the cycle
@@ -110,6 +141,11 @@ executes, regardless of local matches. In the dual SoC it is wired straight
 into the *other* core's `doorbell` input — a register-to-input connection,
 i.e. already a full register stage, no combinational cross-core path. -/
 def wake_out : Expr 1  := .reg 1  "wake_out"
+
+/-- EXT-4. The key `wake_out` is pulsing for, captured on the pulse cycle and
+held otherwise; wired to the other core's `doorbell_key` in the dual SoC —
+register output to input, so still no combinational cross-core path. -/
+def wake_key : Expr 64 := .reg 64 "wake_key"
 
 /-! ## Scalar register shorthands -/
 
@@ -1029,17 +1065,35 @@ def tstateEq (idx : Expr 5) (v : Expr 2) : Expr 1 :=
 def anyLive : Expr 1 :=
   orTree ((List.finRange NT).map (fun i => .not (.eq (tstate i) (L2 0))))
 
-/-- FUTEX_WAKE: wake lowest-indexed matching FUTEX threads, up to count a.
-per-element guard: tstate_i==3 ∧ tfutex_i==rdval ∧ (matches-before-i < a). -/
-def futexWakeBody : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.and (.eq (tstate i) (L2 3))
-                 (.and (.eq (tfutex i) rdval) (.ult (matchesBefore i.val) a)))
-            (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc) .skip
+/-! ### EXT-4 — the shared wake bank's operands
+
+`wakeLocal` is the one-cycle `FUTEX_WAKE` pulse; `doorbell` is the remote
+request. `wakeKey` selects which address the single comparator bank compares
+against, and `wakeEn` says whether it does anything at all. Local wins a tie
+— a doorbell arriving on the same cycle as a local `FUTEX_WAKE` is dropped
+rather than merged, which is safe because a futex waiter must re-check its
+condition after waking and the waker retries; merging two keys into one bank
+pass is the thing that cannot be done with one comparator. -/
+def wakeLocal : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0xcc))
+def wakeEn    : Expr 1 := .or wakeLocal doorbell
+def wakeKey   : Expr 64 := .mux wakeLocal rdval doorbell_key
+
+/-- FUTEX_WAKE: wake matching FUTEX threads. EXT-4 made this the design's
+ONE wake comparator bank, shared by the local `FUTEX_WAKE` and the remote
+doorbell via `wakeKey`/`wakeEn`; the count limit `a` applies to the local
+wake only. Per-element guard: `wakeEn ∧ tstate_i==3 ∧ tfutex_i==wakeKey
+∧ (¬local ∨ matches-before-i < a)`. -/
+def wakeMatch (i : Fin NT) : Expr 1 :=
+  .and wakeEn
+    (.and (.eq (tstate i) (L2 3))
+      (.and (.eq (tfutex i) wakeKey)
+        -- EXT-4: the count limit is the LOCAL wake's; a remote doorbell
+        -- wakes everything parked on the key.
+        (.or (.not wakeLocal) (.ult (matchesBefore i.val) a))))
 where
-  /-- `tstate_j == FUTEX ∧ tfutex_j == rdval`. -/
+  /-- `tstate_j == FUTEX ∧ tfutex_j == wakeKey`. -/
   fmatch (j : Nat) : Expr 1 :=
-    .and (.eq (.reg 2 s!"tstate{j}") (L2 3)) (.eq (.reg 64 s!"tfutex{j}") rdval)
+    .and (.eq (.reg 2 s!"tstate{j}") (L2 3)) (.eq (.reg 64 s!"tfutex{j}") wakeKey)
   /-- popcount of `fmatch j` for `j < i`, zero-extended to 64 for the
   `< a` test. Was a linear chain of up to 31 **64-bit** adds; the count is
   bounded by NT = 32, so a 6-bit balanced adder tree carries the exact same
@@ -1047,6 +1101,46 @@ where
   chains. -/
   matchesBefore (i : Nat) : Expr 64 :=
     .zext (addTree ((List.range i).map (fun j => (.zext (fmatch j) 6 : Expr 6)))) 64
+
+/-! ### EXT-4 — the wake is REGISTERED, to keep the bank off the critical path
+
+The shared bank cut area hard (53 888 → 44 809 LUTs) but moved `sysclk` from
+33.96 MHz to 25.25 MHz against a 25 MHz clock — 1 % margin, thinner than the
+~4 % this file already calls dangerous. The reason is placement, not size:
+in EXT-3 the bank sat inside the `S_EX` arm of the FSM's guarded chain, so
+the comparators were behind the FSM decode; sharing it moved it into
+`smpRule`, which runs *last*, putting `tfutex → 64-bit eq → popcount tree →
+tstate mux` in one combinational path every cycle.
+
+So the decision is registered: `wake_bm` holds the per-slot match computed
+this cycle and the promotion to READY happens next cycle. The long path now
+ends at a flop (`… → popcount → wake_bm`) and the path that survives into
+`tstate` is a single bit test.
+
+**A one-cycle-late wake is sound, and by the increment's own argument.** A
+futex wake may be *spurious* but never *missed*: every waiter re-checks its
+condition after waking. A slot that re-parks in the intervening cycle can be
+woken on a stale match — that is a spurious wake, which is legal — while a
+slot parked on the woken key at match time is still parked at apply time
+unless something else already woke it. This is the same over-approximation
+licence that lets the directory exist at all. -/
+def wake_bm : Expr 32 := .reg 32 "wake_bm"
+
+/-- The per-slot match as a bitmap (disjoint lanes, so the OR folds to a
+tree). This is the combinational half; `wake_bm` registers it. -/
+def wakeBmE : Expr 32 :=
+  orTreeW ((List.finRange NT).map
+    (fun i => .shl (.zext (wakeMatch i) 32) (.lit (BitVec.ofNat 32 i.val))))
+
+/-- The registered half: promote every slot whose bit survived, guarded on
+still being parked so a slot that was woken and re-parked on another key in
+the intervening cycle is not silently re-stated. -/
+def wakeApply : Act :=
+  (List.finRange NT).foldr (fun i acc =>
+    .seq (.ite (.and (.eq (.slice (.shr wake_bm (.lit (BitVec.ofNat 32 i.val))) 0 1)
+                          (.lit (BitVec.ofNat 1 1)))
+                     (.eq (tstate i) (L2 3)))
+           (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc) .skip
 
 /-- `S_F0` — the instruction boundary, and (EXT-1) the preemption point.
 
@@ -1185,7 +1279,9 @@ def s_ex_branches : List (Expr 1 × Act) :=
       (.seq (.write 1 "core_rd" (L1 1))
         (.seq (.write 64 "futex_addr_q" rdval) (.seq (.write 64 "futex_exp" a) (.write 5 "st" (L5 S_FTX1)))))) <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
-  gcons (opIs 0xcc) (.seq futexWakeBody (.seq stepPc (.seq retireInc goF0))) <|
+  -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
+  -- only the sequencing half of FUTEX_WAKE.
+  gcons (opIs 0xcc) (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x59 CLONE
   gcons (opIs 0x59)
     (.ite has_free
@@ -1370,15 +1466,18 @@ Runs **after** `fsmRule` so both overrides are deterministic:
 * `res_kill` clears `lr_valid` last, so it also cancels an `LR` issued the
   same cycle (a spurious kill only makes the matching `SC` fail → retry). -/
 def smpRule : Rule :=
-  ⟨"smp",
-    .seq (.write 1 "wake_out" (.and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0xcc))))
-      (.seq
-        (.ite doorbell
-          ((List.finRange NT).foldr (fun i acc =>
-            .seq (.ite (.eq (tstate i) (L2 3)) (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc)
-            .skip)
-          .skip)
-        (.ite resKill (.write 1 "lr_valid" (L1 0)) .skip))⟩
+  ⟨"smp", actSeq
+    [ .write 1 "wake_out" wakeLocal
+      -- EXT-4: publish the key we woke on (hold otherwise).
+    , .ite wakeLocal (.write 64 "wake_key" rdval) .skip
+      -- EXT-4: THE one comparator bank. Local FUTEX_WAKE and the remote
+      -- doorbell share it via `wakeKey`/`wakeEn`; previously the local wake
+      -- had a bank here in S_EX and the doorbell woke every parked thread
+      -- unkeyed.
+      -- EXT-4: compute the match this cycle, promote next cycle (see above).
+    , .write 32 "wake_bm" wakeBmE
+    , wakeApply
+    , .ite resKill (.write 1 "lr_valid" (L1 0)) .skip ]⟩
 
 /-! ### (9a) The thread-table write funnels (D20)
 
@@ -1504,7 +1603,7 @@ def scalarRegs : List RegDecl :=
    ⟨"zeroing",1,0⟩, ⟨"zctr",10,0⟩,
    ⟨"reg_sel",5,0⟩, ⟨"reg_wsel",5,0⟩, ⟨"reg_wlo",32,0⟩,
    ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
-   ⟨"wake_out",1,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
+   ⟨"wake_out",1,0⟩, ⟨"wake_key",64,0⟩, ⟨"wake_bm",32,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
    -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
    ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩,
    -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
@@ -1555,11 +1654,16 @@ def design : Design where
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]
+  -- D19 (now a Loom obligation): `Design.emit` refuses to emit if any of
+  -- these is read outside a register-latch site. `rx_mem` is deliberately
+  -- absent — it is read combinationally inside the `rf` write data, so
+  -- LUTRAM is the right implementation for it.
+  syncReadMems := ["rf", "dmem", "uart_mem"]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,
      ⟨"cmd_valid",1⟩, ⟨"cmd_idx",7⟩, ⟨"cmd_data",32⟩,
-     ⟨"res_kill",1⟩, ⟨"doorbell",1⟩, ⟨"hold",1⟩, ⟨"sc_fail",1⟩]
+     ⟨"res_kill",1⟩, ⟨"doorbell",1⟩, ⟨"doorbell_key",64⟩, ⟨"hold",1⟩, ⟨"sc_fail",1⟩]
 
 /-! ## D19 — the sync-read (block RAM) obligation
 
@@ -1572,7 +1676,7 @@ every emit path in `Emit.lean` (the D12/D13/D14 pattern).
 `rx_mem` is deliberately *not* in the list: the UART_RX load reads it
 combinationally inside the `rf` write data, so it stays LUTRAM — 256x8,
 which is the right implementation for it anyway. -/
-def syncReadMems : List String := ["rf", "dmem", "uart_mem"]
+def syncReadMems : List String := design.syncReadMems
 
 /-- The D19 check over `syncReadMems`. -/
 def syncReadOk : Bool := syncReadMems.all (fun m => design.syncReadOkB m)

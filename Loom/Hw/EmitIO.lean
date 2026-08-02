@@ -4,6 +4,7 @@ import Loom.Hw.Compile
 import Loom.Hw.MemInitOk
 import Loom.Hw.MemTarget
 import Loom.Hw.Outputs
+import Loom.Hw.SyncRead
 import Loom.Emit.MicroVerilog.Print
 
 /-!
@@ -54,6 +55,32 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
   -- prone to (`Loom/Hw/Outputs.lean`, `Loom/Hw/OUTPUTS_SPEC.md` §2).
   for n in d.outputsUndeclared do
     throw <| IO.userError (d.outputsError n)
+  -- **Well-formedness that no composition may violate.** Duplicate
+  -- register or memory names are always a bug however they arose, and the
+  -- way they arise in practice is a `par`/`prefixed` whose instance
+  -- prefixes are not disjoint (D16). That used to be checked by each
+  -- machine calling `parOk` before emitting its composed SoC; checking the
+  -- *result* here instead catches it whoever built the design and however.
+  let rns := d.regs.map (·.name)
+  if rns.length ≠ rns.eraseDups.length then
+    throw <| IO.userError
+      s!"Design.emit: duplicate register names in '{d.name}' — if this design came from `par`/`prefixed`, the instance prefixes are not disjoint (D16)"
+  let mns := d.mems.map (·.name)
+  if mns.length ≠ mns.eraseDups.length then
+    throw <| IO.userError
+      s!"Design.emit: duplicate memory names in '{d.name}' — if this design came from `par`/`prefixed`, the instance prefixes are not disjoint (D16)"
+  -- D19: memories the design declares as block-RAM-shaped must be read only
+  -- through a register-latch site, or they emit as distributed LUTRAM and
+  -- the design stops fitting (`Loom/Hw/D19_SPEC.md`). Declared on the
+  -- design (`syncReadMems`) so this cannot be skipped by an emit path that
+  -- forgets to ask.
+  for m in d.syncReadMems do
+    if ! d.mems.any (fun md => md.name = m) then
+      throw <| IO.userError
+        s!"Design.emit: syncReadMems names '{m}', which is not a declared memory of '{d.name}'"
+    if ! d.syncReadOkB m then
+      throw <| IO.userError
+        s!"Design.emit: D19 — memory '{m}' of '{d.name}' is read outside a register-latch site, so it would emit as LUTRAM:\n{d.syncReadReport m}"
   if let some dir := path.parent then
     IO.FS.createDirAll dir
   IO.FS.writeFile path
