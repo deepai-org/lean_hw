@@ -576,3 +576,26 @@ LNP64MINI FAILSTOP SELFTEST OK — poison stops the runner AND deschedules the r
 
 `child tstate=1` is the point of claim 2: the child is **READY** and still
 never ran.
+
+Full ladder green (`scripts/preempt_ladder.sh`): iverilog still matches the
+Lean ISS oracle byte for byte and the six system testbenches still reproduce
+DUAL_SPEC's numbers with the quantum off **and** on.
+
+**Silicon (`lnp64mini_epoch_top`, openXC7):**
+
+| | EXT-1 | EXT-2 | EXT-3 |
+|---|---|---|---|
+| post-route Fmax (`sysclk`) | 34.58 MHz | 31.74 MHz | **33.96 MHz** |
+| SLICE_LUTX | 49 251 (46 %) | 52 753 (49 %) | **53 888 (50 %)** |
+
+NetBSD acceptance on the EXT-3 bitstream
+(`/home/kevin/autonomy/20260802-185748`): `PASS`, ping **10/10, 0 % loss,
+579 ms** — the best of the three extension bitstreams and squarely inside
+the 483–633 ms band every previous run sits in — **traps=0**, BSCAN quiet,
+unattended from power-off.
+
+Fail-stop cost ~1 100 LUTs (1 %) and *recovered* 2.2 MHz of the Fmax EXT-2
+spent. Both are inside the noise of a fresh nextpnr seed, so the honest
+reading is that neither increment moved timing much and EXT-2's 31.74 MHz
+was on the unlucky side of the same distribution — not a 3 MHz regression
+attributable to domains. Margin against the 25 MHz clock is 36 %.
