@@ -599,3 +599,62 @@ spent. Both are inside the noise of a fresh nextpnr seed, so the honest
 reading is that neither increment moved timing much and EXT-2's 31.74 MHz
 was on the unlucky side of the same distribution — not a 3 MHz regression
 attributable to domains. Margin against the 25 MHz clock is 36 %.
+
+---
+
+## EXT-4 — the park/wake directory. 2026-08-02
+
+Appendix F #6; §3 calls it "the epoch machine's client annex".
+
+Mini already had both halves and they were **not connected**. `tfutex[i]`
+records *what* a parked thread is waiting on, and the cross-core `doorbell`
+is the wake path — but the doorbell woke **every** thread with
+`tstate = FUTEX`, whatever key it was parked on. A thundering herd, and
+architecturally wrong: if a thread parked on key A is observable to a wake
+on key B, "parked on" means nothing.
+
+### What it is
+
+The wake is **keyed**. `doorbell_key` (a 64-bit D15 input) carries the
+address the waking core woke on, and the local promotion now requires
+`tfutex[i] = doorbell_key` as well as `tstate[i] = FUTEX`. `wake_key` is the
+outgoing half: it captures `rdval` — the address `FUTEX_WAKE` is publishing
+— on the cycle `wake_out` pulses, holds otherwise, and the dual SoC wires
+each core's `wake_key` to the other's `doorbell_key` (register output to
+input, the same registered stage as the pulse, so still no combinational
+cross-core path).
+
+**This is one `and` per slot plus a 64-bit wire, not a new structure.** The
+comparator bank that already existed for the *local* `FUTEX_WAKE`
+(`futexWakeBody`) is exactly the directory lookup the remote wake needed.
+That is what "grow it from the existing futex + doorbell rather than
+building fresh" meant in the build order, and it is why park/wake was
+scheduled after fail-stop rather than before: the structure was already
+there to be corrected.
+
+`wakeFire` was factored out so `wake_out` and the `wake_key` capture cannot
+drift apart — one predicate, two consumers.
+
+### Deviations
+
+* **This changes existing behaviour, deliberately.** Every prior bitstream
+  woke parked threads on an unkeyed broadcast. The `DOORBELL` script in the
+  SMP selftest had to be updated to carry `0x2000` (the key `progDoorbell`
+  waits on) or it no longer wakes — and that update *is* the evidence the
+  wake is keyed. Anything relying on the herd is now correct-by-key or
+  broken, which is why the NetBSD acceptance matters more here than for
+  EXT-2/EXT-3: the rump guest does cross-core futex wakes.
+
+### Evidence
+
+```
+  OK  DOORBELL(FUTEX_WAIT parks; keyed doorbell wakes it)  (34 cyc)
+  OK  DBWRONG (doorbell on a DIFFERENT key: stays parked)  (34 cyc)
+  doorbell: halted=true cycles=40 r9=5 (want 5) tstate0=1
+  wrong-key doorbell: halted=false tstate0=3 (want 3 = still parked) r9=0 (want 0)
+                      | right-key woke it: halted=true
+LNP64MINI SMP SELFTEST OK — EDSL≡ISS on res_kill/sc_fail/doorbell/wake_out/hold + outcomes
+```
+
+The wrong-key run is the claim the unkeyed broadcast could not make: before
+EXT-4 it woke the thread and halted, identically to the right-key run.
