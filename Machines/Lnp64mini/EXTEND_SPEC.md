@@ -284,3 +284,41 @@ deviation 5 — `nextpnr-xilinx` is not on this host, and yosys cell counts do
 not convert to `SLICE_LUTX` (the recorded dual is 52134 SLICE_LUTX = 48 %
 placed at 27501 yosys LUT cells). The board host must produce the real
 numbers.
+
+### EXT-1 board finding: the HARDWARE is fine, the GUEST is not preemption-safe
+
+Measured 2026-08-02 on the ZC702, and it is the reason the demo is the
+regression bar rather than a formality.
+
+**What passed.** Post-route **Fmax 34.58 MHz** (up from 25.89 on the previous
+epoch build — the tick cost no timing margin) at **46 % SLICE_LUTX**. NetBSD
+at **quantum = 0**: `PASS`, ping 10/10, **traps = 0**, both cores retiring —
+indistinguishable from §63, so the cooperative default is intact on silicon.
+Arming a 1 ms quantum (25 000 cycles @ 25 MHz) on a *live* guest did not crash
+it: ping stayed 8/8 with zero loss, which is the first time this guest has ever
+been involuntarily interrupted.
+
+**What failed.** Throughput collapsed 4x under that quantum (RTT ~565 ms →
+~2350 ms), and a subsequent sweep found the guest **wedged**: retire delta 0
+over 2 s at every quantum *including 0*, ping dead. Setting the quantum back to
+zero did not revive it — the damage was already done. Recovered by the
+autonomy service.
+
+**Reading it honestly.** The slowdown is *policy*, not switch cost: a switch is
+one cycle against a 25 000-cycle quantum (~0.004 %). Cooperative scheduling was
+implicitly prioritising the thread that had work; round-robining ~21 rump
+threads starves the GEM pump. The wedge is the sharper finding — **the rump
+guest is not preemption-safe.** Our runtime was written against a machine where
+a thread runs until it blocks, so somewhere it depends on that (candidates, not
+yet bisected: multi-word non-atomic updates in the shmif ring codec or the GEM
+pump, an LR/SC window, or a rump_schedule() vCPU-holder assumption).
+
+**Consequences.**
+* `quantum = 0` stays the shipping default; the demo is unaffected.
+* Law 5 compliance for the *guest* is its own increment, not a side effect of
+  EXT-1. It needs the guest audited for preemption-unsafe sequences, and
+  probably a way for a thread to mark a bounded critical region — which is
+  itself an architectural question (§6 says the machine contains no
+  non-preemptible region, so the answer cannot be "disable preemption").
+* The hardware claim stands and is unchanged: preemption fires only at `S_F0`,
+  saves `pc` not `pc8`, is silicon-verified, and the Law-5 spinner test passes.
