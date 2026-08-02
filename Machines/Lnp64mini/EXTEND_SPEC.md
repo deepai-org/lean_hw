@@ -602,81 +602,65 @@ attributable to domains. Margin against the 25 MHz clock is 36 %.
 
 ---
 
-## EXT-4 — the park/wake directory. 2026-08-02 — **REVERTED, and why**
+## EXT-4 — the park/wake directory. 2026-08-02
 
-Appendix F #6; §3 calls it "the epoch machine's client annex".
+Appendix F #6; §3 calls it "the epoch machine's client annex". Mini had both
+halves and they were not connected: `tfutex[i]` records *what* a parked
+thread waits on, but the cross-core `doorbell` woke **every** thread with
+`tstate = FUTEX` whatever key it parked on. If a thread parked on key A is
+observable to a wake on key B, "parked on" means nothing.
 
-### The defect it was fixing (still real, still open)
+### What it is
 
-Mini has both halves and they are **not connected**. `tfutex[i]` records
-*what* a parked thread is waiting on, and the cross-core `doorbell` is the
-wake path — but the doorbell wakes **every** thread with `tstate = FUTEX`,
-whatever key it was parked on. A thundering herd, and architecturally
-wrong: if a thread parked on key A is observable to a wake on key B,
-"parked on" means nothing. **This defect is unfixed on `main`.**
+`doorbell_key` carries the address the waking core woke on; `wake_key` is
+the outgoing half, captured on the `wake_out` pulse and wired to the other
+core's `doorbell_key` (register output to input, so still no combinational
+cross-core path).
 
-### What was built, and that it was correct
+**The increment is that the comparator bank is SHARED, not duplicated.**
+There is exactly one wake bank, in `smpRule`, with a muxed operand:
+`wakeKey` = `rdval` for a local `FUTEX_WAKE` and `doorbell_key` for a remote
+one; `wakeEn` = local pulse ∨ doorbell; the `matchesBefore < a` count limit
+applies to the local wake only, since a doorbell wakes everything parked on
+that key. And the decision is **registered** — `wake_bm` holds the per-slot
+match computed this cycle and the promotion happens next cycle — so the long
+`tfutex → 64-bit eq → popcount → tstate` path ends at a flop.
 
-`doorbell_key` (a D15 input) carrying the address the waking core woke on;
-the local promotion requiring the parked slot's `tfutex` to match as well as
-`tstate[i] = FUTEX`; `wake_key` as the outgoing half, captured on the
-`wake_out` pulse and wired to the other core's `doorbell_key` (register
-output to input, so no combinational cross-core path); `wakeFire` factored
-out so the pulse and the capture cannot drift.
+A one-cycle-late wake is sound by the increment's own argument: a futex wake
+may be *spurious* but never *missed*. A slot that re-parks in the
+intervening cycle can be woken on a stale match (legal), while a slot parked
+on the woken key at match time is still parked when the bitmap is applied.
 
-It **worked, at both widths**, on every leg below silicon:
+### Two wrong turns, both instructive
 
-```
-  OK  DOORBELL(FUTEX_WAIT parks; keyed doorbell wakes it)  (34 cyc)
-  OK  DBWRONG (doorbell on a DIFFERENT key: stays parked)  (34 cyc)
-  wrong-key doorbell: halted=false tstate0=3 (still parked) r9=0 | right-key woke it: halted=true
-LNP64MINI SMP SELFTEST OK — EDSL≡ISS on res_kill/sc_fail/doorbell/wake_out/hold + outcomes
-```
+1. **A second bank.** Giving the doorbell its own 32-slot bank cost **8 073
+   LUTs** and would not route (64 % utilisation, `sysclk` 23.56 MHz against
+   a 25 MHz clock, router thrashing at 3 200 overused wires). Narrowing the
+   copy from 64 to 16 bits recovered 6 800 LUTs and **0.22 MHz** — width was
+   never the problem, duplication was. The cell-origin diff is what settled
+   it: the failed design added **32 flops and 8 073 LUTs**, so the cost was
+   entirely recomputed combinational trees, not state.
+2. **Sharing, but combinationally.** One bank fixed the area (44 809 LUTs)
+   but moving it out of the FSM-gated `S_EX` arm into `smpRule` — which runs
+   last — put the whole bank in the final path into `tstate` and dropped
+   `sysclk` to 25.25 MHz, a 1 % margin. Registering the decision fixed it.
 
-The full `preempt_ladder` was green too — the six system testbenches still
-reproduced DUAL_SPEC's numbers. The wrong-key run is the claim the unkeyed
-broadcast cannot make: before EXT-4 it woke the thread and halted,
-identically to the right-key run.
+### Cost and evidence
 
-### Why it was reverted: it does not fit the part
+| | EXT-3 (`main` before) | EXT-4 |
+|---|---|---|
+| SLICE_LUTX | 53 888 (50 %) | **46 399 (43 %)** |
+| routed `sysclk` | 33.96 MHz | **31.23 MHz** (25 % margin) |
 
-| | LUTs | placed Fmax (`sysclk`) | P&R |
-|---|---|---|---|
-| EXT-3 (`main`) | 53 888 (50 %) | 33.96 MHz routed | OK |
-| EXT-4, 64-bit key | 68 714 (**64 %**) | **23.56 MHz** | router thrashing, 3 200 overused wires |
-| EXT-4, 16-bit tag | 61 961 (**58 %**) | **23.78 MHz** | stalled ~1 170 overused, iter 11→14 |
+**EXT-4 costs ~7 500 LUTs LESS than not having it** — moving the bank out of
+the FSM's guarded chain removed more logic than the directory added.
 
-Both are **below the 25 MHz clock the board drives**, and neither produced a
-bitstream. Hard constraint #1 says a change that breaks the demo is
-reverted, not deferred, and a design that cannot be routed cannot face the
-regression bar at all.
-
-**The narrowing was a real design idea, not a saving, and it did not
-rescue it.** A futex wake may be *spurious* — every futex user re-checks its
-condition after waking — but must never be *missed*, so the directory is
-allowed to over-approximate and forbidden to under-approximate. Comparing a
-16-bit tag has exactly that shape: aliasing keys both wake (harmless), a
-thread parked on the woken key always matches. The pre-EXT-4 broadcast is
-the degenerate zero-bit tag. Cutting the comparator 4x recovered 6 800 LUTs
-and **0.22 MHz** — which is the finding: **the cost is not the comparator
-width.** 32 sixteen-bit comparators are ~500 LUTs, and the measured delta
-was 8 073. Something structural in how the extra `tfutex` read fans out
-through the composed dual SoC dominates, and I did not isolate it.
-
-### What the next attempt should do differently
-
-Diagnose before redesigning. The 4x comparator cut was a reasonable guess
-that bought almost nothing, which means the next change should start from a
-yosys cell-level diff of the two netlists (EXT-3 vs EXT-4) rather than from
-another guess about what is expensive. Candidates worth ruling out first:
-whether `tfutex` is being duplicated because it is now read by two guarded
-banks, and whether the composed SoC is inlining the cross-core key at all
-32 comparison sites instead of sharing one wire.
-
-The keyed wake is the right architecture and the defect above is real; this
-records that the obvious implementation does not fit an XC7Z020 alongside
-the dual core, the epoch engine and CapWalk, and that the reason is not the
-one I assumed.
+NetBSD acceptance (`/home/kevin/autonomy/20260802-234320`): `PASS`, ping
+**10/10, 0 % loss, RTT 134 ms** — against **552–633 ms on every previous
+bitstream in this campaign**. That ~4x is the thundering herd disappearing:
+a doorbell used to wake all ~21 parked rump threads and the scheduler churned
+through every one of them. It is the strongest evidence the directory does
+what it claims, and it was not a predicted result.
 
 ### Post-revert state (verified, not assumed)
 
