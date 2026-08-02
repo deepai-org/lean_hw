@@ -740,7 +740,8 @@ def moduleMatches (d : Loom.Hw.Design)
   decide (out.name = d.name) &&
   regsMatch d.rules out.regs cert.regs &&
   memsMatch d out.mems cert.mems &&
-  outsMatch d.regs out.outs &&
+  -- D39: the port list is the design's *exported* registers (`none` = all).
+  outsMatch d.exportedRegs out.outs &&
   decide (out.ins = d.inputs.map fun i =>
     ({ name := i.name, width := i.width } : Loom.Emit.MicroVerilog.InDef))
 
@@ -754,7 +755,7 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
   obtain ⟨⟨⟨⟨hn, hrcheck⟩, hmcheck⟩, hocheck⟩, hicheck⟩ := h
   have hr := regsMatch_sound d.rules out.regs cert.regs hrcheck
   have hm := memsMatch_sound d out.mems cert.mems hmcheck
-  have ho := outsMatch_sound d.regs out.outs hocheck
+  have ho := outsMatch_sound d.exportedRegs out.outs hocheck
   refine ⟨hn, ?_, ?_, ?_, ?_⟩
   · simpa only [Compile.compile] using hr
   · simpa only [Compile.compile] using ho

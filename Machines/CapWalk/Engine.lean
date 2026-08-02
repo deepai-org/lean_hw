@@ -75,8 +75,14 @@ The tag over slot `s` is
 ```
 
 `E(s)` is the **on-chip** embedded epoch of slot `s` at fill time; `K0..K4`
-and `IV` are bitstream constants (deviation CE5), so they are neither a port
-nor memory-resident and no core can read or write them.
+and `IV` are engine-owned **registers** (`keyRegs`) that no rule writes and
+that the design's D39 `outputs` selection keeps off the interface — they are
+at no port and in no memory, so no core can read or write them. They were
+bitstream *literals* until D39 landed, because every register used to emit an
+`o_*` port; that was deviation CE5, now retired. The reset image of those
+registers is still a compiled-in constant, so the secrecy claim remains
+architectural (no interface exposure), never physical (a bitstream readback
+still recovers it).
 
 **Stated assumption (this is the honest part).** `xorshift32` is a
 bijection, not a PRF. What is claimed here is *architectural*, not
@@ -462,13 +468,16 @@ def macWordE : Expr 32 :=
     -- round 4 binds the ON-CHIP embedded epoch: this is the replay check
     (.zext (.reg cfg.ew "ce_wq") 32)
 
-/-- The round key for MAC round `mac_cnt` (bitstream constants — CE5). -/
+/-- The round key for MAC round `mac_cnt`. **D39**: these are engine-owned
+*registers* (`keyRegs`), held off the module interface by the design's
+`outputs` selection — they were literals while every register published a
+port (the retired deviation CE5). -/
 def macKeyE : Expr 32 :=
   let c : Expr 3 := .reg 3 "mac_cnt"
-  .mux (.eq c (L3 0)) (L32 (macK 0)) <|
-  .mux (.eq c (L3 1)) (L32 (macK 1)) <|
-  .mux (.eq c (L3 2)) (L32 (macK 2)) <|
-  .mux (.eq c (L3 3)) (L32 (macK 3)) (L32 (macK 4))
+  .mux (.eq c (L3 0)) (.reg 32 "mac_k0") <|
+  .mux (.eq c (L3 1)) (.reg 32 "mac_k1") <|
+  .mux (.eq c (L3 2)) (.reg 32 "mac_k2") <|
+  .mux (.eq c (L3 3)) (.reg 32 "mac_k3") (.reg 32 "mac_k4")
 
 /-- The address of word `j` of slot `w_slot`'s backing entry. -/
 def entAddrE (j : Nat) : Expr 32 :=
@@ -513,7 +522,7 @@ def walkRule : Rule :=
         (.ite (.reg 1 "m_done")
           (actSeq [
             .write 32 "w_tag" (.slice (.reg 64 "m_rdata") 0 32),
-            .write 32 "mac_h" (L32 MAC_IV),
+            .write 32 "mac_h" (.reg 32 "mac_iv"),   -- D39: the IV is a register
             .write 3 "mac_cnt" (L3 0),
             .write 4 "w_st" (L4 W_MAC) ])
           .skip) <|
@@ -692,6 +701,26 @@ def opRegs : List RegDecl :=
   [ ⟨"d_st", 2, 0⟩, ⟨"d_a", cfg.sw, 0⟩, ⟨"d_ix", cfg.cw, 0⟩, ⟨"d_op", 2, 0⟩,
     ⟨"ce_dq", cfg.ew, 0⟩, ⟨"cf_dq", 3, 0⟩, ⟨"op_done", 1, 0⟩ ]
 
+/-- **The key, as engine-owned state (D39 — this retires deviation CE5).**
+The IV and the five round keys are ordinary registers: no rule writes them,
+no core-visible path reaches them, and — the part that used to be
+impossible — they are **excluded from `Design.outputs`**, so they appear at
+no module port. Before D39 every register emitted as an `o_<name>` output,
+which is exactly why these six values had to be literals in the mixing cone.
+
+Their reset image is still the compiled-in constant, so this is an
+*architectural* secret, not a physical one: the values remain recoverable
+from a bitstream readback. What has changed is that the key is now a
+*coordinate* — a v2 that loads it from a PUF/TRNG at configuration time is
+an added rule, not an EDSL change. -/
+def keyRegs : List RegDecl :=
+  [ ⟨"mac_iv", 32, BitVec.ofNat 32 MAC_IV⟩,
+    ⟨"mac_k0", 32, BitVec.ofNat 32 (macK 0)⟩,
+    ⟨"mac_k1", 32, BitVec.ofNat 32 (macK 1)⟩,
+    ⟨"mac_k2", 32, BitVec.ofNat 32 (macK 2)⟩,
+    ⟨"mac_k3", 32, BitVec.ofNat 32 (macK 3)⟩,
+    ⟨"mac_k4", 32, BitVec.ofNat 32 (macK 4)⟩ ]
+
 /-- The request port (D15 inputs). Cores present a **decoded handle** and
 what the operation demands, and nothing else: there is no path by which a
 core write reaches the cache, a tag, a cell epoch, the fault bits, the
@@ -737,7 +766,12 @@ syntactic order (`Compile.MemWriteWF`), and the latches first so every read
 is the pre-cycle content (D9). -/
 def mkDesign : Design where
   name := cfg.name
-  regs := chkRegs cfg ++ walkRegs cfg ++ opRegs cfg
+  regs := chkRegs cfg ++ walkRegs cfg ++ opRegs cfg ++ keyRegs
+  -- **D39 (retires CE5).** Everything the engine's users read is exported;
+  -- the six key registers are not, so the key sits at no module port. The
+  -- exported list is exactly the pre-D39 port list, so `capwalk`'s interface
+  -- is unchanged by the key becoming state.
+  outputs := some ((chkRegs cfg ++ walkRegs cfg ++ opRegs cfg).map (·.name))
   mems := mems cfg
   rules := latchRules cfg ++
     [opRule cfg, chkRule cfg, walkRule cfg, ctagWrRule cfg, flagWrRule cfg,

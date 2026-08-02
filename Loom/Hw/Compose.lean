@@ -16,6 +16,15 @@ register `u0_out`):
   (fun n w => if n = "u1_cmd_in" then some (.reg w "u0_out") else none)
 ```
 
+## D39 (declared observability) under composition
+
+`prefixed` renames the selection with the registers, `par` concatenates the
+two parts' *exported* name lists (normalizing a `none`, which means "all of
+that part"), and `connect` leaves the selection alone — wiring an input
+cannot resurrect a dropped output. The lemmas are in `Loom/Hw/Outputs.lean`
+(`prefixed_exportedRegs`, `par_exportedRegs`, `connect_exportedRegs`), which
+is downstream of this file because they are stated against `compile`.
+
 ## Intended lemma shapes (deferred — see COMPOSE_SPEC.md §Theorems)
 
 * `prefixed`  — bisimulation: `(d.prefixed p)` simulates `d` under the
@@ -48,6 +57,11 @@ def Design.prefixed (p : String) (d : Design) : Design where
   -- D37: an acknowledged undeliverable reset image is acknowledged for the
   -- *instance* too, so the names travel with the prefix.
   ackMemInit := d.ackMemInit.map (p ++ ·)
+  -- D39: **the selection renames with the registers.** Instantiating a
+  -- design under a namespace must not change what it exports — an internal
+  -- register of `d` stays internal in `p ++ d` (`Loom/Hw/Outputs.lean`,
+  -- `prefixed_exportedRegs`). `none` (export all) stays `none`.
+  outputs := d.outputs.map (·.map (p ++ ·))
 
 /-! ## `Design.par` -/
 
@@ -63,6 +77,16 @@ def Design.par (a b : Design) : Design where
   rules := a.rules ++ b.rules
   inputs := a.inputs ++ b.inputs
   ackMemInit := a.ackMemInit ++ b.ackMemInit   -- D37, carried by both parts
+  -- D39: **the selections concatenate.** The composite exports exactly what
+  -- the two parts exported, so composition can neither publish an internal
+  -- register nor drop an exported one. `none` means "all of *that* part's
+  -- registers", so a mixed pair is normalized to the explicit union of the
+  -- two exported name lists; `none`/`none` stays `none`, which is why an
+  -- SoC built from D39-free designs emits byte-identically.
+  outputs :=
+    match a.outputs, b.outputs with
+    | none, none => none
+    | _, _ => some (a.exportedNames ++ b.exportedNames)
 
 /-- All state/input names a design owns (registers, memories, inputs). The
 disjointness a valid `par` needs. -/
@@ -101,6 +125,11 @@ def Design.connect (d : Design)
   -- keep only inputs left unwired
   inputs := d.inputs.filter fun i => (wire i.name i.width).isNone
   ackMemInit := d.ackMemInit                   -- D37, unchanged by wiring
+  -- D39: **wiring cannot resurrect a dropped output.** `connect` only
+  -- consumes inputs and substitutes into rule bodies; the register list and
+  -- the selection are untouched, so an internal register is still internal
+  -- after wiring (`Loom/Hw/Outputs.lean`, `connect_exportedRegs`).
+  outputs := d.outputs
   rules := d.rules.map fun r =>
     { r with body :=
         d.inputs.foldl (fun body i =>

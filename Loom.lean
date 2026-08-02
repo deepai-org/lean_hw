@@ -36,6 +36,7 @@ import Loom.Hw.FastEval
 import Loom.Hw.Trees
 import Loom.Hw.SyncRead
 import Loom.Hw.MemInitOk
+import Loom.Hw.Outputs
 import Loom.Hw.CdcContract
 import Loom.Hw.Notation
 import Loom.Hw.CompileWhole

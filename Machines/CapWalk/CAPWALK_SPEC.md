@@ -330,14 +330,35 @@ E(slot)`, where `E(slot)` is the **on-chip** embedded epoch (`macOf` /
   cache, not the check order, not a disposition. **Do not read the
   selftest's "all three attacks detected" as a cryptographic claim.**
 
-**CE5 — the key is a bitstream constant, not a register.** `MAC_IV` and
-`macK 0..4` appear as literals inside the mixing cone. They are
-deliberately *not* registers: in this emission path a register that is
-never written becomes an `o_*` output port (that is how `HpMaster`'s AXI
-qualifiers are emitted), so a key held in a register would be **published
-at the module boundary**. A v2 that wants per-boot keying must add a
-configuration-time key-load path from a PUF/TRNG — engine-owned, with no
-core-writable and no readable coordinate — and that is additive.
+**CE5 — RETIRED 2026-08-01 by Loom D39 (declared observability).** The
+deviation, as it stood: `MAC_IV` and `macK 0..4` had to appear as *literals*
+inside the mixing cone, because in this emission path every register became
+an `o_*` output port (that is how `HpMaster`'s AXI qualifiers are emitted),
+so a key held in a register would have been **published at the module
+boundary**. An EDSL that structurally cannot keep a secret is a Loom defect,
+not a machine-level inconvenience, so it was written into the ledger as
+`LOOM_GAPS.md` D39 rather than worked around further.
+
+D39 added `Design.outputs : Option (List String)` (`Loom/Hw/OUTPUTS_SPEC.md`,
+`Loom/Hw/Outputs.lean`) — a design declares which registers it exports;
+`none`, the default, is the old "all of them". `Engine.keyRegs` is now six
+ordinary registers (`mac_iv`, `mac_k0..4`), no rule writes them, and
+`Engine.mkDesign`'s selection omits them, so they sit at **no port**. Loom
+proves the general fact (`Loom.Hw.compile_not_exported`: for
+`outputs = some ns`, a name outside `ns` is neither a port name nor read by
+any port's driver) and the same statement over the emitted *text*
+(`printed_not_exported`, via the independent parser). `capwalk`'s port list
+is unchanged: the selection is exactly the pre-D39 register list.
+
+**What this does and does not claim.** The key is now *architecturally*
+secret — no module port carries it, so nothing above the design boundary,
+including either core, can read it. It is **not** physically secret: the
+registers' reset image is still a compiled-in constant and an FPGA bitstream
+can be read back on this part. The v2 that wants a genuinely device-held key
+still needs a configuration-time key-load path from a PUF/TRNG; what changed
+is that such a path is now an added *rule over an existing coordinate*
+rather than an EDSL feature request, and per-boot or per-domain re-keying is
+expressible today.
 
 **CE6 — `OP_MINT` is a new, software-requestable op.** §2.2 names the
 embedded bump only on drop, and Layer 1's `cap_dup` mints *from an
@@ -347,7 +368,8 @@ bare re-incarnation: bump the embedded cell and clear `F_VACANT`.
 Why this is not a hole: minting installs **no authority**. The rights an
 occupied slot confers come from the DDR entry, and that entry has to
 authenticate under the **new** embedded epoch, which requires a tag
-computed with the key — which software does not have (CE5). So an
+computed with the key — which software does not have (CE5: the key is
+engine-owned state that reaches no port and no address). So an
 adversarial core that mints slots at will produces slots that fail-stop on
 first use, never slots that grant rights. `OP_MINT` also does not clear
 `F_FAULT`. The ladder exercises exactly this: A3's control re-incarnates

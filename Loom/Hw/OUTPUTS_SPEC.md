@@ -63,3 +63,52 @@ scope here and should be named as such.
   makes the board wrappers legible (~450 ports on `lnp64mini_epoch` today).
 * The eqcheck output-port leg gets smaller and more meaningful: it checks the
   exports a design *intends*, not every register it happens to have.
+
+## Status: SHIPPED 2026-08-01
+
+`Loom/Hw/Syntax.lean` (`Design.outputs`, `Design.exportedRegs`),
+`Loom/Hw/Compile.lean` (both `compile` and its `implemented_by` twin read
+`exportedRegs`), `Loom/Hw/Outputs.lean` (the check, the theorem, the
+composition lemmas), `Loom/Hw/EmitIO.lean` (the refusal),
+`Loom/Hw/Compose.lean` (§4), `Tests/Outputs.lean`, ledger entry
+`LOOM_GAPS.md` D39.
+
+What was proved, in the three levels §3 asked for:
+
+* `compile_not_exported` — for `outputs = some ns`, a name outside `ns` is
+  neither the name of an output port of `compile d` nor read by any output
+  port's driver expression. Stated for an arbitrary name, not merely a
+  declared register.
+* `compile_portNames_not_exported` — the same over the module's whole port
+  list (D15 inputs included), given that no input is named `o_<n>`.
+* `printed_not_exported` — **the stronger statement §3 invited**: over the
+  emitted *text*. Given the artifact's round-trip verdict
+  (`Module.parseCheck`, which `lake exe rtlroundtrip` runs over every
+  `rtl/*.v` in CI), the module recovered from the file by the independent
+  parser exports no unselected name either.
+
+Composition, per §4: `prefixed_exportedRegs` (the selection renames with the
+registers), `par_exportedRegs` (concatenation, under the disjointness
+`parOkB` already provides) with `par_exportedNames_subset` as the
+hypothesis-free safety half (`par` cannot publish what neither part
+exported), and `connect_exportedRegs` (wiring cannot resurrect a dropped
+output; `rfl`).
+
+The artifact: `Machines/CapWalk/Engine.lean`'s MAC key is now six ordinary
+registers held off the interface, and deviation CE5 is retired. The board
+artifacts were deliberately **not** re-cut with selections — `rtl/*.v` other
+than the two capability-engine files are byte-identical, which was the
+acceptance test.
+
+**Correction to the "payoffs" section above, from measurement.** "Port lists
+collapse, which helps synthesis" is not demonstrated. Emitting
+`lnp64mini_epoch` with a selection equal to the 76 ports its ZC702 wrapper
+reads (down from 427) drops `OBUF` 9820 → 1121 and leaves the flop count
+alone, but *raises* total cells 52979 → 63456 under `synth_xilinx -flatten
+-nowidelut` on a standalone top, because the de-ported cones re-optimize
+differently. Likewise, `capwalk` synthesizes to a byte-identical cell census
+before and after the key became six unexported registers — yosys folds a
+never-written register back into the constants it came from. Declared
+observability is an **architectural** statement; any resource claim about it
+must be measured in the wrapper the design is instantiated in.
+`LOOM_GAPS.md` D39 carries the table.

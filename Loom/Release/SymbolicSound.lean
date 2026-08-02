@@ -2533,10 +2533,13 @@ inductive MemoryBehaviorsFrom (design : Loom.Hw.Design) (program : Program)
       MemoryBehaviorsFrom design program table (start + 1) entries →
       MemoryBehaviorsFrom design program table start (entry :: entries)
 
-/-- Exact concrete observability-output binding for one source register. -/
+/-- Exact concrete observability-output binding for one **exported** source
+register (D39 `Design.outputs`: `exportedRegs` is every register unless the
+design declares a selection, so this is the pre-D39 statement for every
+design that does not use the feature). -/
 def OutputBehaviorAt (design : Loom.Hw.Design) (program : Program)
     (index : Nat) : Prop :=
-  match design.regs[index]?, program.outs[index]? with
+  match design.exportedRegs[index]?, program.outs[index]? with
   | some source, some concrete =>
       concrete.name = s!"o_{source.name}" ∧ concrete.width = source.width ∧
       concrete.value = source.name
