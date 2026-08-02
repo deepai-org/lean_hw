@@ -387,3 +387,28 @@ error in my own test, not a property of the system. Cause of the one wedge:
 point is a long quantum, and the guest needs no rseq/atomics work to satisfy
 Law 5 today. The row-2/row-3 analysis above remains the right map IF a future
 workload needs a short quantum; it is not a prerequisite now.
+
+### EXT-1 CLOSED — the demo is Law-5 compliant by default
+
+`lnp64_rump_run_dual.tcl` now arms a 2 500 000-cycle (100 ms @ 25 MHz) quantum
+on **both** cores immediately after start; `LNP64_QUANTUM=0` restores the
+cooperative machine for bisecting. Full unattended acceptance from power-off
+(`/home/kevin/autonomy/20260802-164008`):
+
+```
+PREEMPT: core0 quantum=2500000 cycles
+PREEMPT: core1 quantum=2500000 cycles
+[16:41:50] GEM up after ~60s
+== lnp64 micro-shell on the ZC702 fabric (NetBSD stack on the core) ==
+10 packets transmitted, 10 received, 0% packet loss
+rtt min/avg/max/mdev = 408.324/619.968/966.594/183.847 ms
+RETIRE core0=30362005 core1=2074676  status0=0x5 status1=0x5
+traps=0
+== PASS: NetBSD serving native GEM0, dual-core, BSCAN quiet ==
+```
+
+620 ms RTT against 598–608 ms cooperative baselines — no measurable cost. So
+the shipping demo is *preemptively scheduled* with traps=0, zero-BSCAN steady
+state, and unattended power-on boot, and the cooperative machine survives only
+as a debugging switch. Hardware: post-route **Fmax 34.58 MHz** (up from 25.89
+— EXT-1 improved timing), **46 % SLICE_LUTX**.
