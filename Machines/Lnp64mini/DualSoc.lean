@@ -101,6 +101,11 @@ def wire (n : String) (w : Nat) : Option (Expr w) :=
   -- cross doorbells: register output -> input = a registered stage
   | "c0_doorbell", 1  => some (.reg 1 "c1_wake_out")
   | "c1_doorbell", 1  => some (.reg 1 "c0_wake_out")
+  -- EXT-4: the key travels with the doorbell, so the remote wake can be
+  -- keyed instead of a broadcast. Register output -> input, same registered
+  -- stage as the pulse itself, so still no combinational cross-core path.
+  | "c0_doorbell_key", 64 => some (.reg 64 "c1_wake_key")
+  | "c1_doorbell_key", 64 => some (.reg 64 "c0_wake_key")
   | "c0_hold",     1  => some (.lit 0)          -- core 0 always runs
   -- "c1_hold" stays a SoC input (CORE1_HOLD)
   -- ---- arbiter requester port 0 ← core 0 (with the JTAG ownership mux) ----
