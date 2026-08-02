@@ -486,3 +486,93 @@ see a violation.
 `domselftest` makes both claims, and the second is deliberately non-vacuous
 — the parent is put in domain **7**, not 0, because with everything at zero
 the test passes even if inheritance is deleted outright.
+
+`lake env lean --run Machines/Lnp64mini/Emit.lean domselftest`:
+
+```
+  OK  DOMAIN (EDSL≡ISS on cur_dom + all 32 tdom slots, 60 cyc)
+  domain: parent tdom[0]=7 (want 7) child tdom[1]=7 (want 7) other non-zero slots=0 (want 0) cur_dom=7
+LNP64MINI DOMAIN SELFTEST OK — EDSL≡ISS on the tag + CLONE cannot leave its domain
+```
+
+Full ladder (`scripts/preempt_ladder.sh`) green: the iverilog leg still
+matches the Lean ISS oracle byte for byte, and the six system testbenches
+still reproduce DUAL_SPEC's numbers with the quantum off **and** on.
+
+**Silicon (`lnp64mini_epoch_top`, openXC7):**
+
+| | EXT-1 | EXT-2 | |
+|---|---|---|---|
+| post-route Fmax (`sysclk`) | 34.58 MHz | **31.74 MHz** | vs a 25 MHz clock — 27 % margin |
+| SLICE_LUTX | 49 251 (46 %) | **52 753 (49 %)** | +3 502 cells |
+
+NetBSD acceptance on the EXT-2 bitstream (`/home/kevin/autonomy/20260802-180005`):
+`PASS`, ping **10/10, 0 % loss, 633 ms** (vs 620 ms at EXT-1 and 598–608 ms
+cooperative), **traps=0**, BSCAN quiet, unattended from power-off.
+
+**The +3 502 LUTs is over the ~1.5k budget estimate and is recorded as a
+miss, not rounded away.** At 49 % against an 85 % target it does not
+threaten the campaign, but the estimate was wrong by ~2.3x and the later
+per-increment estimates in the budget table should be treated as optimistic
+until measured. Fmax fell 8 % for a tag that is not yet read by anything on
+the critical path — worth revisiting if EXT-7 (the one increment with real
+Fmax risk) arrives with less than the current 27 % margin.
+
+---
+
+## EXT-3 — fail-stop / poison. 2026-08-02
+
+The architected disposition every later engine feeds. §3's epoch machine and
+Appendix F's fail-stop rule both need one answer to "this thread's authority
+is gone" that is not "raise a fault and hope the handler is correct" — the
+machine must stop the thread, not trust software to.
+
+### What it is
+
+`poison`, a 32-bit bitmap, one bit per thread slot, plus `cmd 60` to load it
+whole-word. Two enforcement points, and they are **not** the same rule:
+
+1. **A poisoned thread is never scheduled.** The mask lands on `readyBm` —
+   the scheduler's single ready bitmap — so `next_ready`, `nr_any` and every
+   picker downstream inherit it from one `and`. This is why poison is a
+   *bitmap* and not a per-thread memory: the picker reads every slot at once
+   (D20's rule), so the mask must be readable at every index at once too.
+2. **A poisoned thread executes no further instruction.** Masking the picker
+   alone is *not* fail-stop — the running thread is not re-picked, so a
+   thread poisoned mid-run would continue until it happened to yield. `S_F0`
+   therefore stops the core outright (`running := 0`) when `curPoisoned`, at
+   the instruction boundary with nothing fetched and `bus_req` already
+   excluded — the same property that makes EXT-1's preemption point safe.
+
+Stopping the core rather than switching threads is the fail-*stop* reading
+of Appendix F: the disposition is "this machine has lost the right to
+proceed", and quietly running someone else would hide it. The host sees
+`running = 0` and the bitmap says which slot.
+
+`cmd 60` is whole-word because the raise is meant to be **atomic across
+slots**: a domain losing authority poisons every thread it owns in one
+cycle, and a host read-modify-write could interleave with a `CLONE` that
+adds one.
+
+### What writing the test taught (kept, because it is the real content)
+
+The first version poisoned the child mid-run, at cycle 24, and failed — the
+parent never ran again. That was not a bug: at cycle 24 the *child* is the
+thread on the core, so poisoning it took the claim-1 path and stopped the
+machine. **"Descheduled" and "fail-stopped" are only distinguishable when
+the poisoned slot is provably not `cur`**, so the test now poisons the child
+at cycle 2, before `CLONE` has even admitted it. A single-claim test would
+have hidden this: a bug that stopped *everything* passes claim 1 alone,
+which is why the parent's progress to `EXIT` is the control.
+
+### Evidence
+
+```
+  OK  FAILSTOP (EDSL≡ISS with poison live, 60 cyc)
+  running-thread: poisoned running=false retire=4 vs unpoisoned retire=9 halted=true
+  ready-thread:   parent halted=true (want true) r9=2 (want 2) child tstate=1 child tpc=0x1028
+LNP64MINI FAILSTOP SELFTEST OK — poison stops the runner AND deschedules the ready
+```
+
+`child tstate=1` is the point of claim 2: the child is **READY** and still
+never ran.

@@ -26,6 +26,10 @@ echo "### 0. EXT-2 domain selftest (EDSL == ISS on cur_dom + all 32 tdom slots,"
 echo "        and the architectural claim: CLONE cannot leave its domain)"
 lake env lean --run Machines/Lnp64mini/Emit.lean domselftest
 
+echo "### 0b. EXT-3 fail-stop selftest (poison stops the RUNNER and"
+echo "         deschedules the READY -- two distinct enforcement points)"
+lake env lean --run Machines/Lnp64mini/Emit.lean failstopselftest
+
 echo "### 1. FastEval selftest (EXT-1)"
 lake env lean --run Machines/Lnp64mini/Emit.lean preemptselftest | tee "$T/self.txt"
 grep -q 'PREEMPT SELFTEST OK' "$T/self.txt"

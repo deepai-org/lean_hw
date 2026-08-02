@@ -54,6 +54,7 @@ def main (args : List String) : IO Unit := do
   | ["smpselftest"] => smpSelftest
   | ["preemptselftest"] => preemptSelftest
   | ["domselftest"] => domSelftest
+  | ["failstopselftest"] => failstopSelftest
   | ["preempthex"]  => writePreemptHex "fpga/zc702/preempt.hex"
   | ["preemptpredict", q] => preemptPredict ((q.toNat?).getD 0)
   | ["progtest"]   => progtest

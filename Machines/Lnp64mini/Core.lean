@@ -224,6 +224,48 @@ domain. Nothing in the datapath reads it — the datapath uses `domCur`, which
 does not lag. -/
 def cur_dom : Expr 8 := .reg 8 "cur_dom"
 
+/-! ### EXT-3 — fail-stop / poison (`EXTEND_SPEC.md` increment 3)
+
+The architected disposition every later engine feeds. §3's epoch machine
+and Appendix F's fail-stop rule both need one answer to "this thread's
+authority is gone" that is not "raise a fault and hope the handler is
+correct" — the machine must *stop the thread*, not trust software to.
+
+`poison` is a 32-bit bitmap, one bit per thread slot. It buys two things,
+and the first is why the bitmap shape was chosen:
+
+* **A poisoned thread is never scheduled.** The mask lands on `readyBm`,
+  the scheduler's single ready bitmap — so `next_ready`, `nr_any` and every
+  picker downstream inherit it from one `and`. That is the whole reason
+  poison is a *bitmap* and not a per-thread memory: the picker reads every
+  slot at once (D20's rule), so the mask has to be readable at every index
+  at once too.
+* **A poisoned thread does not execute another instruction.** Masking the
+  picker alone is not fail-stop: the *running* thread is not re-picked, so
+  a thread poisoned mid-run would keep going until it happened to yield.
+  `S_F0` therefore stops the core outright when `curPoisoned` — at the
+  instruction boundary, with nothing fetched and no bus transaction
+  outstanding, which is the same property that makes EXT-1's preemption
+  point safe.
+
+Stopping the core (rather than switching to another thread) is the
+fail-*stop* reading of Appendix F: the disposition is "this machine has
+lost the right to proceed", and quietly running someone else would hide it.
+The host sees `running = 0` and the `poison` bitmap says which slot. -/
+def poison : Expr 32 := .reg 32 "poison"
+
+/-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
+def curPoisoned : Expr 1 :=
+  -- (the `L*` literal helpers are declared below this block)
+  .eq (.slice (.shr poison (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
+
+/-- EXT-3. `cmd 60` loads the whole 32-bit poison bitmap. Whole-word rather
+than set/clear-one-bit because the raise is meant to be *atomic across
+slots*: a domain losing authority poisons every thread it owns in one
+cycle, and a read-modify-write from the host could interleave with a
+`CLONE` that adds one. -/
+def CMD_POISON : Nat := 60
+
 def sleep_scan: Expr 5  := .reg 5  "sleep_scan"
 def next_ready: Expr 5  := .reg 5  "next_ready"
 def free_slot : Expr 5  := .reg 5  "free_slot"
@@ -602,8 +644,12 @@ def div_b_abs : Expr 64 :=
 /-- ready bitmap as a 32-bit Expr (bit i = tstate_i == 1). Disjoint bit
 lanes ⇒ the OR fold re-associates into a tree. -/
 def readyBm : Expr 32 :=
-  orTreeW ((List.finRange NT).map
-    (fun i => .shl (.zext (.eq (tstate i) (L2 1)) 32) (.lit (BitVec.ofNat 32 i.val))))
+  -- EXT-3: fail-stop. A poisoned slot is not READY, so it is never picked
+  -- -- by `next_ready`, by `nr_any`, or by anything downstream of them.
+  -- One `and` at the one place the scheduler asks "who can run".
+  .and (.not poison)
+    (orTreeW ((List.finRange NT).map
+      (fun i => .shl (.zext (.eq (tstate i) (L2 1)) 32) (.lit (BitVec.ofNat 32 i.val)))))
 def freeBm : Expr 32 :=
   orTreeW ((List.finRange NT).map
     (fun i => .shl (.zext (.eq (tstate i) (L2 0)) 32) (.lit (BitVec.ofNat 32 i.val))))
@@ -929,6 +975,8 @@ where
     -- EXT-1: the quantum reload value (0 = preemption disabled). `qctr` is
     -- armed from the same word in `quantumRule`, which owns that register.
     .seq (.ite (ci CMD_QUANTUM) (.write 32 "quantum" cmdData) .skip) <|
+    -- EXT-3: the poison bitmap, whole-word (see `CMD_POISON`).
+    .seq (.ite (ci CMD_POISON) (.write 32 "poison" cmdData) .skip) <|
       (.ite (ci 13)
         (.seq (.ite (.eq (.slice cmdData 0 1) (L1 1)) cmd13reset .skip)
               (.ite (.eq (.slice cmdData 1 1) (L1 1))
@@ -1019,10 +1067,15 @@ thread's instruction on the next cycle: a preemption costs exactly one
 cycle and issues no bus transaction from the old context. -/
 def s_f0 : Expr 1 × Act := stArm S_F0
   (.ite bus_req (.write 5 "st" (L5 S_PAUSE))
+    -- EXT-3: fail-stop, checked BEFORE the preemption point and before the
+    -- fetch. Nothing has been fetched at `S_F0` and `bus_req` is already
+    -- excluded above, so the core stops with no transaction outstanding
+    -- and `pc` still addressing the un-executed instruction.
+    (.ite curPoisoned (.write 1 "running" (L1 0))
     (.ite preemptFire
       (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready))
       (.seq (.write 32 "core_addr" ddrPc)
-        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW))))))
+        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))))
 
 def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 
@@ -1455,7 +1508,9 @@ def scalarRegs : List RegDecl :=
    -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
    ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩,
    -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
-   ⟨"cur_dom",8,0⟩]
+   ⟨"cur_dom",8,0⟩,
+   -- EXT-3: fail-stop bitmap; 0 = nothing poisoned = the pre-EXT-3 machine
+   ⟨"poison",32,0⟩]
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
