@@ -538,3 +538,39 @@ SoC clock, the fix is to spread `xsE` over two `W_MAC` sub-states, which
 costs one cycle per MAC round and nothing else. Recorded so that a timing
 failure is a known knob, not a surprise. **No board work was done in this
 campaign.**
+
+## Theorem priority for Layer 3 (scoping note, 2026-08-02)
+
+Adversarial-memory safety is **not** the headline theorem for a real
+processor, and Layer 3 should not be organised around it. It is
+threat-model-specific: it matters when memory is genuinely outside the trust
+boundary (confidential computing — SEV-SNP/TDX/CCA authenticate memory because
+the hypervisor is untrusted; and *our* board, where DDR belongs to the PS and
+is shared with A9s we do not control). On a part with an on-die memory
+controller, DRAM is usually inside the boundary, and an attacker who can
+rewrite it arbitrarily likely had a cheaper path. CHERI does not MAC its
+capability tables.
+
+Ranked by what actually carries the security claim:
+
+1. **Mediation / no-bypass** — every access is checked; no path reaches memory
+   or authority around the check. If this is false nothing else matters, and
+   it is currently the LEAST explicit thing we have. Layer 3 should state it.
+2. **The refinement itself** — the RTL implements the architecture. Wrong here
+   and every security theorem is about a different machine.
+3. **Revocation complete within a bound** — the capstone, and the claim nobody
+   else can demonstrate on silicon.
+4. **Isolation including timing** — no influence across domains except through
+   named channels.
+5. **Fail-stop containment** — a detected violation is contained.
+
+T-C6/authentication is one clause among these, not the organising principle.
+
+**Keep the authenticated fill regardless.** It is built, cheap at this scale,
+and honest about its assumption (CE4). And the doctrine that produced it
+earned its keep for a reason other than its threat model: requiring
+zero-assumption safety forced the safety-critical state on-chip at the
+checking interface, which is what made the *epoch* refinement come out
+unconditional over adversarial cores and why prophecy variables (D25) proved
+unnecessary — `b_acked` is architectural state, not a fact about the future.
+The design discipline bought more than the theorem will.
