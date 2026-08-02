@@ -807,14 +807,16 @@ def syncReadReport (d : Design) : String :=
 
 theorem design_syncReadOk : syncReadOkB design = true := by rfl
 
-/-- `Compile.MemWriteWF`'s port condition, as a decidable Boolean: the write
-ports of every bank strictly increase along the design's syntactic write
-order. `cell_flags` and `c_tag` are the two banks with two writers. -/
-def memPortsOkB (d : Design) : Bool :=
-  d.mems.all fun m =>
-    decide ((Loom.Hw.Compile.designTrace d m.name).Pairwise (· < ·))
-
-theorem design_memPortsOk : memPortsOkB design = true := by rfl
+/-- The write-port discipline is **no longer a local check** (D38): this
+engine's `memPortsOkB` — `Compile.MemWriteWF`'s port condition, written by
+hand here because `cell_flags` and `c_tag` are the two banks with two
+writers — was promoted to Loom as `Design.memPortTraceOkB`, one conjunct of
+`Design.realizableOnB`, and `Design.emit` enforces it for every design
+against a declared `MemTarget` (`Loom/Hw/MemTarget.lean`). CE10's 14× LUT
+finding is what motivated the promotion. What remains here is the
+obligation, discharged in the kernel, that this engine meets it. -/
+theorem design_memPortTraceOk :
+    design.mems.all (fun m => design.memPortTraceOkB m.name) = true := by rfl
 
 set_option maxRecDepth 100000 in
 /-- The FastEval side condition, discharged in the kernel, so `fastCycleOpen`

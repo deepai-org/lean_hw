@@ -425,9 +425,11 @@ Fixed by giving each bank exactly one muxed write site (`ctagWrRule`,
 `flagWrRule`) *plus* an interlock: `opRule` accepts a drop/mint only while
 `w_st = W_IDLE`, and `chkRule` starts a fill only while `d_st = D_IDLE`, so
 `D_DO` and `W_CHK` are mutually exclusive and the mux priority is a
-don't-care rather than a policy. `Engine.memPortsOkB` is the standing
-decidable guard (`Compile.MemWriteWF`'s port condition), checked before
-every emit.
+don't-care rather than a policy. `Design.memPortTraceOkB` is the standing decidable
+guard (`Compile.MemWriteWF`'s port condition), checked before every emit —
+Loom-level since D38, having started life here as `Engine.memPortsOkB`
+(`Loom/Hw/MemTarget.lean`; the engine keeps only the discharged obligation,
+`Engine.design_memPortTraceOk`).
 
 Residual, named: a drop/mint request that arrives while a fill is in flight
 is **dropped**, not queued. The MMIO adapter's op word is fire-and-forget,
@@ -510,8 +512,12 @@ block RAM to go to, and a 32-deep bank is below the block-RAM threshold.
 Added to the cores' 29 k that is 38 k LUTs, 72 % of the device, and it
 would have been read as "the capability engine is expensive" rather than as
 "two banks fell out of BRAM". D19 is a *shape* discipline about reads;
-CE10 records that write-port count is the matching discipline for writes,
-and `Engine.memPortsOkB` is now a standing decidable guard on it.
+CE10 records that write-port count is the matching discipline for writes.
+It is a Loom capability now, not a local guard: D38 made the write-port
+budget a field of a declared `MemTarget` profile, so `Design.realizableOnB`
+predicts that a bank over budget falls out of the macro — and, when such a
+bank carries a reset image, `Design.emit` refuses it
+(`Loom/Hw/MemTarget.lean`, `LOOM_GAPS.md` D38).
 
 Reproduce with `scripts/capwalk_ladder.sh` plus
 

@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Compile
 import Loom.Hw.MemInitOk
+import Loom.Hw.MemTarget
 import Loom.Hw.Outputs
 import Loom.Emit.MicroVerilog.Print
 
@@ -36,13 +37,17 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
   let inNames := d.inputs.map (·.name)
   if inNames.length ≠ inNames.eraseDups.length then
     throw <| IO.userError "Design.emit: duplicate input names"
-  -- D37: refuse a design whose correctness depends on a memory reset image
-  -- the target flow cannot deliver (D30 — the epoch engine's `cell_flags`,
-  -- found on silicon). Offenders the design has written down in
-  -- `ackMemInit` pass; everything else is an error here rather than a
-  -- `-BADREF` on a board (`Loom/Hw/MemInitOk.lean`).
-  for md in d.memInitUnacked do
-    throw <| IO.userError (d.memInitError md)
+  -- D38 (subsuming D37): refuse a design some memory of which the target
+  -- memory technology cannot realize — a reset image the flow does not
+  -- deliver (D30 — the epoch engine's `cell_flags`, found on silicon), or
+  -- a write-port assignment the compiler's memory theorem does not admit
+  -- (CAPWALK CE10, where the same shape cost 14× the LUTs). The target is
+  -- the one this repo builds for; a design can be checked against another
+  -- with `Design.realizableOnB` (`Loom/Hw/MemTarget.lean`). Image
+  -- offenders the design has written down in `ackMemInit` pass; everything
+  -- else is an error here rather than a `-BADREF` on a board.
+  for md in d.unrealizableUnackedOn Loom.Hw.MemTarget.default do
+    throw <| IO.userError (d.realizableError Loom.Hw.MemTarget.default md)
   -- D39: an observability selection (`Design.outputs`) may only name
   -- declared registers. An unrecognized name would otherwise silently
   -- export nothing at all, which is the failure mode a *selection* is most
