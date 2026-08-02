@@ -15,11 +15,13 @@ lake env lean --run Machines/CapWalk/Emit.lean engine    # rtl/capwalk.v
 lake env lean --run Machines/CapWalk/Emit.lean soc       # rtl/lnp64mini_cap.v
 ```
 
-Every emit path first discharges the D19 obligation and the
-`Compile.MemWriteWF` port obligation: `cell_flags` and `c_tag` each have two
-writers (the drop/mint unit and the walker), so a rule reorder that broke
-the strictly-increasing port order would silently invalidate the emission
-theorem. Emission refuses rather than regressing.
+Every emit path first discharges the D19 obligation and D38's
+realizability check against the declared memory target: `cell_flags` and
+`c_tag` each have two writers (the drop/mint unit and the walker), so a
+rule reorder that broke the strictly-increasing port order would silently
+invalidate the emission theorem, and a bank pushed out of block RAM by a
+second write port loses its reset image (CE10; `Loom/Hw/MemTarget.lean`).
+Emission refuses rather than regressing.
 -/
 
 open Machines.CapWalk
@@ -28,8 +30,14 @@ private def checkShape : IO Unit := do
   if ! Engine.syncReadOkB Engine.design then
     IO.println (Engine.syncReadReport Engine.design)
     throw <| IO.userError "D19: the capwalk banks are not sync-read shaped"
-  if ! Engine.memPortsOkB Engine.design then
-    throw <| IO.userError "MemWriteWF: capwalk write-port indices are not increasing"
+  -- D38: the write-port discipline is Loom's now (`Design.memPortTraceOkB`
+  -- and the `MemTarget` image rule, both enforced inside `Design.emit`);
+  -- checking it here as well keeps the failure at the top of the ladder,
+  -- where it names the engine.
+  if ! Engine.design.realizableOnB Loom.Hw.MemTarget.default then
+    IO.println Engine.design.targetReport
+    throw <| IO.userError
+      "D38: capwalk is not realizable on the default memory target"
 
 /-- Write the behavioural DDR image the iverilog testbench loads. One
 64-bit word per line; the Lean selftest and the RTL testbench therefore
@@ -55,7 +63,7 @@ def main (args : List String) : IO Unit := do
   | ["d19"] => do
       IO.println (Engine.syncReadReport Engine.design)
       IO.println CapSoc.syncReadReport
-      IO.println s!"capwalk memPortsOk  = {Engine.memPortsOkB Engine.design}"
+      IO.println Engine.design.targetReport
       IO.println s!"composed syncReadOk = {CapSoc.syncReadOk}"
       IO.println s!"composed parOk      = {CapSoc.parOk}"
   | ["predict"] => Engine.predict

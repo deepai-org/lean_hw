@@ -46,6 +46,12 @@ lean_exe emit where
   supportInterpreter := true
   root := `Tools.Emit
 
+/-- The D38 portability table: which declared memory targets can realize
+each shipped design's memories (`Loom/Hw/MemTarget.lean`). -/
+lean_exe memtargets where
+  supportInterpreter := true
+  root := `Tools.MemTargets
+
 /-- Post-synthesis equivalence checker (D22): µVerilog module vs the
 yosys-synthesized netlist, LRAT-certified. -/
 lean_exe eqcheck where

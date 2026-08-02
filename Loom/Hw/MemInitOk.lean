@@ -128,11 +128,48 @@ counted). The prediction's size threshold — see the module docstring for
 the measurements that place it here. -/
 def bramDataBits : Nat := 16384
 
+/-- **The mapping rule, stated once, with the technology's numbers as
+parameters** (D38). A *written* bank of `2 ^ aw` words of `dw` bits, with
+`writePorts` compiled write ports, whose reads are (`syncRead = true`) or
+are not the registered D19 shape, lands in the target's dedicated macro iff
+
+* the reads are registered — an asynchronous read port is not a macro port
+  on any technology (D19), and
+* the bank does not ask for more write ports than a macro has
+  (`maxMacroWritePorts`; D38 — CapWalk deviation CE10 measured what happens
+  when it does), and
+* it is big enough and deep enough to be worth a macro
+  (`macroMinDataBits`, `macroMinDepth`).
+
+Conservative in the same direction D37 always was: anything not clearly
+macro-shaped is `.lutram`, i.e. the "soft" realization the target falls back
+to (distributed LUT RAM on an FPGA, a flop array on an ASIC).
+
+`Loom/Hw/MemTarget.lean` supplies the three numbers from a declared
+`MemTarget`; `predictedFamily` below is the `xc7` instance at one write
+port, kept so D37's entry points read exactly as they did. There is one
+rule, not two — see `Loom/Hw/MEMTARGET_SPEC.md`. -/
+def predictedFamilyWith (macroMinDataBits macroMinDepth maxMacroWritePorts : Nat)
+    (aw dw writePorts : Nat) (syncRead : Bool) : MemFamily :=
+  if syncRead && writePorts ≤ maxMacroWritePorts
+      && macroMinDepth ≤ 2 ^ aw && macroMinDataBits ≤ 2 ^ aw * dw then
+    .bram
+  else .lutram
+
 /-- The mapping class predicted for a *written* bank of `2 ^ aw` words of
 `dw` bits whose reads are (`syncRead = true`) or are not the registered D19
-shape. Conservative: anything not clearly block-RAM-shaped is `.lutram`. -/
+shape. Conservative: anything not clearly block-RAM-shaped is `.lutram`.
+
+The `xc7` instance of `predictedFamilyWith` at one write port; the equation
+below records that it is definitionally D37's original rule. -/
 def predictedFamily (aw dw : Nat) (syncRead : Bool) : MemFamily :=
-  if syncRead && bramDataBits ≤ 2 ^ aw * dw then .bram else .lutram
+  predictedFamilyWith bramDataBits 0 1 aw dw 1 syncRead
+
+/-- D37's rule, unchanged by D38's parameterization. -/
+theorem predictedFamily_eq (aw dw : Nat) (syncRead : Bool) :
+    predictedFamily aw dw syncRead =
+      if syncRead && bramDataBits ≤ 2 ^ aw * dw then .bram else .lutram := by
+  simp [predictedFamily, predictedFamilyWith]
 
 /-! ## The design-level check -/
 

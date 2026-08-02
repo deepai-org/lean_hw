@@ -423,6 +423,11 @@ gate/serving/run updates — with every supporting lemma in place. — exactly p
   0 problems. `scripts/lockstep_acc8.sh` re-checks this.
 - **`lake exe bookgen`** → `book-out/{lnp64u,acc8}.html` — both ISA books as
   projections of the `isa` arrays.
+- **`lake exe memtargets`** — the D38 portability table: for every shipped
+  design, which declared memory technologies (`xc7`, `ecp5`, `asicSram`)
+  can realize its memories, and which banks are the offenders
+  (`Loom/Hw/MemTarget.lean`, `LOOM_GAPS.md` D38). `-v` adds a line per
+  memory per target.
 - **`lake exe audit`** — the CI gate: walks the ledger, enforces the sorry
   policy, the µVerilog-boundary axiom whitelist, the `native_decide` ban
   (Rule 1), and the `Loom`-never-imports-`Machines` DAG (P0). It also prints

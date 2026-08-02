@@ -32,6 +32,7 @@ that is a Loom defect — record it here before working around it.
 | D34 | the protocol-machine library: `ProtocolSpec` (state, event alphabet, partial step) + `InvSpec`, with the `TSys`/`Step`/`Run`/reachability derivations, the disabled-event and stutter glue, the event-list runner, and the four run-level closures | the engine roster — Epoch §3 and CapWalk §2.2 hand-rolled the same skeleton |
 | D37 | design-level refusal of a memory reset image the flow cannot deliver (`Design.memInitOkB`, hard error in `Design.emit`), sharing its deliverability rule verbatim with the netlist-level check | D30 itself — the epoch engine's `cell_flags` was *detected* after synthesis, and only after a silicon debug cycle; the same shape was still declarable |
 | D36 | priority orders as data: one `(guard, outcome)` clause list yields both the per-clause `X_before_Y` lemmas at arbitrary width and the exhaustive small-width check | the same roster — T-E4 and T-C2 are one proof, written twice |
+| D38 | memory shape checks stated against a **declared memory target** (`MemTarget` profiles `xc7`/`ecp5`/`asicSram`, `Design.realizableOnB`, enforced in `Design.emit` for the target this repo builds for) | the capability engine: a write-port count invisible in the source decided a 14× area swing (CAPWALK CE9/CE10), and the guard it grew was per-machine and Xilinx-shaped |
 | D39 | **declared observability** (`Design.outputs`): a design says which registers it exports, so a value can live in a register and reach no port — with the non-export theorem, at the compiler and at the printed text | the capability engine: every register emitted an `o_*` port, so the MAC key had to be a bitstream constant (CAPWALK deviation CE5, now retired) |
 
 ### D23, in detail (closed 2026-08-01)
@@ -568,6 +569,127 @@ board symptom, and the netlist-level check remains the ground truth.
    `mkDesign cfgTiny`, which a differing field would stop unifying with.
    That is exactly the job the opt-out exists to do: a known loss stays
    visible instead of becoming invisible.
+
+## D38 — shape checks are stated against a declared memory target (CLOSED 2026-08-02)
+
+**Discovered by the capability engine, twice over.** CAPWALK deviations
+CE9/CE10: the naive engine measured **9 523 LUT / 3 982 FF**, the
+disciplined one **671 LUT / 442 FF** — a 14× swing on *identical logic*,
+because two banks asked for two write ports each and a 7-series block RAM
+has two ports **total**, so they fell out of block RAM into flops and
+1024:1 read muxes. Nothing in the source says "this bank is now a thousand
+flops". The engine grew a local guard, `Engine.memPortsOkB`, which was both
+in the wrong place (one machine, not the toolchain) and the wrong shape:
+D37's `predictedFamily` and any port-count rule beside it hardcode *Xilinx*
+7-series block RAM, and a shape discipline that encodes one vendor makes
+every future design FPGA-shaped forever. That is the risk
+`Loom/Hw/MEMTARGET_SPEC.md` was written to head off, before the code.
+
+**Shipped** — `Loom/Hw/MemTarget.lean` (capability), wired into
+`Design.emit` in place of D37's loop, plus `Tests/MemTarget.lean` and
+`lake exe memtargets`:
+
+* `MemTarget` — a memory technology as ordinary Lean data: `name`,
+  `macroName`/`softName` (so a diagnosis names the technology's own part),
+  `maxMacroWritePorts` (D38's subject), `macroMinDataBits` /
+  `macroMinDepth` (when a bank stops being worth a macro),
+  `macroInitDeliverable` / `softInitDeliverable`. There is deliberately no
+  `syncReadOnly` field and no *hard* write-port limit: sync read is
+  universal (D19 — SRAM macros are synchronous-read too), and every
+  technology can build N write ports out of flops and muxes. What a
+  technology limits is how many write ports a bank may have **and still be
+  a macro**.
+* Profiles `xc7` (validated against yosys 0.33 + ZC702 silicon), `ecp5` and
+  `asicSram` (datasheet characteristics; the unsourced numbers are marked
+  TODO **in the profile's docstring**, not silently guessed — see below).
+* `Design.realizableOnB : Design → MemTarget → Bool`, `true` iff every
+  memory is realizable on that target: the write-port trace is well formed
+  (`Design.memPortTraceOkB` — `Compile.MemWriteWF`'s port condition, which
+  is where `Engine.memPortsOkB` went), and a written bank's non-zero reset
+  image lands in a realization this target initializes. So
+  `d.realizableOnB .xc7 && d.realizableOnB .asicSram` is the portability
+  claim as a Boolean anyone can run — which is the whole point.
+
+**D37 was folded in, not forked.** The mapping rule stays in one place:
+`predictedFamilyWith` in `Loom/Hw/MemInitOk.lean` takes the technology's
+three numbers as parameters, `predictedFamily` is its `xc7` instance at one
+write port (`predictedFamily_eq` records that it is D37's original rule
+verbatim), and `MemTarget.familyOf` applies the same rule with a profile's
+numbers and the design's *actual* write-port count. `imageDelivered` is
+untouched, so `Loom/Netlist/Mem.lean` — which calls it with the family it
+**observed** in a netlist — still shares one rule with the design-time
+check. `xc7_imageDelivered`, `xc7_familyOf` and `xc7_memImageOk` are the
+standing proofs that the `xc7` profile *is* D37 rather than a copy of it.
+
+**Strictly stronger than D37 on the flow we build for.** D37's prediction
+was port-blind, so a 512×32 bank with a non-zero image and **two** write
+ports passed it while yosys would have put the bank in flops and dropped
+the image — D30's exact defect, one CE10 away. D38 refuses it
+(`Tests/MemTarget.lean` pins both verdicts side by side). No shipped design
+changes verdict: every bank with a non-zero image has one write port, so
+every emitted `rtl/*.v` is byte-identical.
+
+**The portability table** (`lake exe memtargets`), and it is the finding:
+
+| design | xc7 | ecp5 | asicSram | offenders |
+|---|---|---|---|---|
+| acc8, s0bscan, s0blinky, s13soak, s1counters, retime_{base,retimed}, pingpong, satcounter | yes | yes | yes | — |
+| lnp64mini, lnp64mini_soc, lnp64mini_dual | yes | yes | **yes** | — |
+| epochengine, lnp64mini_epoch | yes | yes | NO | `cell_epoch`, `repl0`, `repl1` |
+| capwalk, lnp64mini_cap | yes | yes | NO | `cell_epoch`, `lin_repl` |
+| epochengine_tiny | NO † | NO | NO | `cell_epoch`, `repl0`, `repl1` |
+| lnp64u | NO | NO | NO | `mem` |
+
+* **`lnp64mini_soc` is realizable on all three** — the mini core depends on
+  no reset image at all (D37 took `tpc`'s constant out of memory), so the
+  NetBSD-carrying artifact is not secretly FPGA-shaped. That is worth
+  knowing and was not knowable before.
+* **The epoch/capability engines are not**, and the reason is architectural
+  rather than accidental: their epoch banks' reset image *is*
+  `Protocol.Init` (deviation E4 — there is no install op), so on a
+  technology with no initial contents they need the reset sweep D37 already
+  prescribes. A named, checked non-portability instead of an assumed one.
+* † `epochengine_tiny` is D37's standing acknowledged exception, and the
+  acknowledgement lives on the *emitted* variant in
+  `Machines/Epoch/Emit.lean` rather than on `Engine.tiny` (so the frozen
+  Layer-3 theorems keep unifying), which is why the table — which reads the
+  design objects — shows a bare `NO`. It emits normally.
+* **`lnp64u` is a pre-existing finding this table surfaced.** Its 4096×32
+  `mem` carries the program image, is read asynchronously and uses three
+  write ports, so on every profile the image is undeliverable. It has never
+  been caught because `lnp64u` is emitted by `lake exe emit` (raw
+  `Compile.compile` + `Print.print`), which bypasses `Design.emit` and
+  therefore every design-level check — D15's, D37's, D39's and now D38's.
+  It is an iverilog/lockstep artifact and has never been near a fabric, so
+  nothing is broken today; the gap is that the emission path, not the
+  design, decides whether the checks run.
+
+**What the profiles do NOT capture** (the honest list):
+
+* **They predict a mapping; they do not control one.** Unchanged from D37,
+  and the reason D31 / `eqcheck`'s `meminit` verdict / `check_mem_init.py`
+  stay: prevention and detection are complementary. A tool may put a bank
+  predicted `macro` into soft logic anyway, and only the netlist knows.
+* **Only `xc7` is validated.** `ecp5` is datasheet-derived and has never
+  been through nextpnr here; its `macroMinDataBits` reuses the xc7
+  "must fill one macro" heuristic, which is a guess about nextpnr's
+  preferences, and its `softInitDeliverable := false` is **TODO/unverified**
+  — ECP5 distributed RAM is LUT-INIT-based and the bitstream may well carry
+  it, so this may be conservatively wrong. `asicSram`'s `macroMinDepth :=
+  64` is **TODO/unsourced** (a plausible compiler floor, not a datasheet
+  number); it is low-stakes there because neither realization on that
+  profile delivers an image at all.
+* **Nothing about cost.** A design can be "realizable" on `xc7` and still be
+  the 9 523-LUT version: the check moves the 14× swing from invisible to
+  *predicted* (the report says which banks miss the macro) but it is not an
+  area model, and `yosys ... stat` remains the measurement.
+* **No byte enables, no banking/replication model, no timing, no power**,
+  and no notion of initialization by an explicit reset sequence — a design
+  that zeroes a bank at reset still declares an all-zero image, which is
+  what the check reads.
+* **`Design.emit` checks one target**, `MemTarget.default = xc7`. The other
+  profiles are a question you ask (`realizableOnB`, `lake exe memtargets`),
+  not a gate, because the repo has no ASIC flow to be honest about yet.
 
 ## D39 — declared observability: a design may keep a secret (CLOSED 2026-08-01)
 
