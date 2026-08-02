@@ -31,19 +31,47 @@ because it touches the datapath, not just a table. Estimates: domains ~1.5k,
 gates ~1.5k, park/wake ~1k, preemption ~0.3k, fail-stop ~0.3k, transfer ~1k,
 **MMU/TLB ~3k and the only one with Fmax risk**. Target ≤ 85 % placed.
 
-## The MMU and the demo — the decisive design decision
+## The MMU and the demo — the guest is TRANSLATED, not faked
 
-The NetBSD guest is **flat-addressed** and must stay that way. So translation
-is added as a mechanism the guest does not traverse:
+Rejected: giving the NetBSD domain an identity VMA so translation is present
+but does nothing. That proves the hardware exists and the architecture does
+not. It also leaves dark one of §3's eight epoch-cell referents — *cached
+translation*, whose cell `map.protect`/`munmap` bumps — because with an
+identity map there is nothing to shoot down.
 
-* the NetBSD domain runs under an **identity VMA** (translation present,
-  mapping is the identity), so its behaviour and timing are unchanged;
-* a **second, non-NetBSD domain** carries a real non-identity mapping and is
-  what demonstrates translation, protection faults, and shootdown;
-* per §15 and Appendix F's "datapath residue": the access path gets a
-  fill-time-cached decision compared at access time — **a TLB hit is one
-  compare, never a walk**. Any design where a hit costs more than a compare is
-  wrong and will not time.
+**The guest runs under a real, non-identity mapping.** Consequences, all of
+which are work and none of which are optional:
+
+* **Layout.** The rump image is linked flat (text 0x400000, data ~0x8db000,
+  stacks 0x1700000–0x2000000, shmif ring 0x20e000, GEM slab 0x2000000, native
+  heap 0x4000000+192 MB). Under translation these become *virtual* addresses
+  and the loader must place each region at whatever physical frames the
+  mapping assigns. `fastload.tcl` and the servicer write PHYSICAL DDR, so the
+  page table and the loader must agree; build the table as part of the load,
+  not in the guest.
+* **Pages must be genuinely non-contiguous** for at least part of the image,
+  or the "mapping" is an offset in disguise and we are back to faking it.
+* **DMA is the one named physical window.** GEM0 is a bus master: the NIC
+  reads descriptors and frames at PHYSICAL addresses, so `gem_core.c`'s
+  `PHYS(g) = 0x10000000 + g` cannot survive translation unchanged. This is not
+  a cheat if it is *named*: §15 has device windows with IOVA metadata, so the
+  DMA region is an explicitly declared mapping the domain was granted, and the
+  guest asks for a buffer's physical address instead of computing it. Write it
+  down as a grant, never as an assumption.
+* **The payoff, and the reason to do it this way:** with real mappings we can
+  **revoke one out from under running NetBSD** — bump the VMA's epoch cell,
+  the cached translation dies, the next access fails closed — which is §15 and
+  §3 meeting on silicon, and is a demo nobody can run today.
+
+**Staging (each stage keeps the demo alive):**
+* **A — hardware first.** TLB + walker + VMA tables, MMU bypassed for the
+  running guest. Proves the mechanism, risks nothing, gives Fmax data early.
+* **B — move the guest in.** Real page table built at load time, image placed
+  per the mapping, `gem_core` using the granted DMA window. This is the risky
+  stage; it is where the demo can break and where the regression bar bites.
+* **C — the payoff.** Shoot down a live mapping under the running guest and
+  show the fail-closed, with the latency measured against the D23 bound the
+  way the epoch demo already does.
 
 ## Build order (dependencies are real; do not reorder casually)
 
