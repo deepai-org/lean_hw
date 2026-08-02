@@ -355,3 +355,35 @@ resume-PC edit — small, and it is §9.3's machinery minus the payload), and
 `EVENTMASK` becomes one as soon as machine-call delivery exists. Both are
 cheap engine-side; neither is in the seven items as originally listed. Bisect
 the wedge FIRST, then add only what the sites actually require.
+
+### CORRECTION to the EXT-1 board finding (2026-08-02, later the same day)
+
+The finding above says "the rump guest is not preemption-safe". **That is not
+supported by the evidence and is withdrawn.** Controlled re-testing:
+
+| test | result |
+|---|---|
+| core 1 only, 1 ms, 2 s | retire 538K → 543K per 2 s, ping 5/5 — unaffected |
+| core 0 only, 1 ms, **21 s** | retire +16 M, healthy throughout, **no wedge** |
+| **both cores**, 1 ms, **17 s** | both retiring (c0 386→400 M, c1 145.7→149.1 M), **no wedge** |
+| both cores, 1 ms, RTT measured **while armed** | 608 ms → **1999 ms (3.3x)**, **0 % loss**; 590 ms after disarm — fully reversible |
+| both cores, 100 ms quantum | retire unchanged (1.317 M → 1.313 M per 2 s), no measurable cost |
+
+**What is true.** Preemption works on the live guest: it survives, keeps
+serving with zero packet loss, on either core or both, and the cost is
+*throughput*, not correctness. The cost is policy — a switch is one cycle in
+25 000 (0.004 %); cooperative scheduling had implicitly prioritised the thread
+with work, and round-robining ~21 rump threads starves the GEM pump.
+
+**What was wrong.** The single wedge that produced the original finding did not
+reproduce in ~40 s of subsequent testing across three configurations, and the
+"4x slowdown" measurement in that session was taken *after disarming* — an
+error in my own test, not a property of the system. Cause of the one wedge:
+**unknown and unreproduced**; recorded as such rather than attributed.
+
+**The useful conclusion.** Law 5 requires preemption to be *bounded*, not
+*frequent* — any finite quantum makes preemption latency a named constant. At
+100 ms the cost is unmeasurable and the bound still exists. So the operating
+point is a long quantum, and the guest needs no rseq/atomics work to satisfy
+Law 5 today. The row-2/row-3 analysis above remains the right map IF a future
+workload needs a short quantum; it is not a prerequisite now.
