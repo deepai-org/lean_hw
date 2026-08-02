@@ -677,3 +677,11 @@ The keyed wake is the right architecture and the defect above is real; this
 records that the obvious implementation does not fit an XC7Z020 alongside
 the dual core, the epoch engine and CapWalk, and that the reason is not the
 one I assumed.
+
+### Post-revert state (verified, not assumed)
+
+The EXT-3 bitstream rebuilt from the reverted tree reproduces its numbers
+exactly — **53 888 LUTs (50 %), `sysclk` 33.96 MHz routed** — and NetBSD
+passes unattended from power-off (`/home/kevin/autonomy/20260802-220520`):
+`PASS`, ping **10/10, 0 % loss, 552 ms**, BSCAN quiet. The revert is clean
+and the demo is where EXT-3 left it.
