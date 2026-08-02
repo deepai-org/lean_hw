@@ -31,6 +31,8 @@ structure MiniIn where
   -- SMP extensions (DUAL_SPEC.md): all inert at `false`.
   resKill  : Bool := false
   doorbell : Bool := false
+  -- EXT-4: the key the doorbell wakes on (park/wake directory).
+  doorbellKey : BitVec 64 := 0
   hold     : Bool := false
   scFail   : Bool := false
   deriving Repr
@@ -121,6 +123,11 @@ structure MiniSt where
   -- EXT-3 (fail-stop): one bit per thread slot; 0 = nothing poisoned.
   poison    : BitVec 32 := 0
   wake_out  : Bool := false
+  -- EXT-4: the key this core last woke on (captured on the pulse).
+  wake_key  : BitVec 64 := 0
+  -- EXT-4: the per-slot wake decision, applied one cycle later so the
+  -- comparator bank stays off the critical path (see `wake_bm` in Core).
+  wake_bm   : BitVec 32 := 0
   lr_req    : Bool := false
   sc_req    : Bool := false
   sc_pending: Bool := false
@@ -534,10 +541,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.rdval.extractLsb' 3 29).setWidth 32 <<< 3),
                         core_rd := true, futex_addr_q := s.rdval, futex_exp := s.a, st := BitVec.ofNat 5 S_FTX1 }
       else if o = 0xcc then
-        let mut wk := s.a
-        for ti in List.range NT do
-          if s.tstate[ti]! = 3 ∧ s.tfutex[ti]! = s.rdval ∧ wk > 0 then
-            s' := { s' with tstate := s'.tstate.set! ti 1 }; wk := wk - 1
+        -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
+        -- `smpRule`); S_EX keeps only FUTEX_WAKE's sequencing half.
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if o = 0x59 then
         if s.has_free then
@@ -677,12 +682,30 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     else s' := { s' with st := BitVec.ofNat 5 S_F0 }
 
   -- SMP cross-core block (mirrors `smpRule`, which runs AFTER the FSM)
-  s' := { s' with wake_out :=
-            s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
-            ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0xcc }
-  if inp.doorbell then
+  let wakeLocal := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
+                   ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0xcc
+  s' := { s' with wake_out := wakeLocal }
+  -- EXT-4: publish the key we woke on; hold otherwise.
+  if wakeLocal then s' := { s' with wake_key := s.rdval }
+  -- EXT-4: THE one wake comparator bank, shared by the local FUTEX_WAKE and
+  -- the remote doorbell via wakeKey/wakeEn. The count limit is the local
+  -- wake's; a doorbell wakes everything parked on the key. Local wins a tie.
+  let wakeEn  := wakeLocal ∨ inp.doorbell
+  let wakeKey := if wakeLocal then s.rdval else inp.doorbellKey
+  -- EXT-4: compute the match bitmap this cycle...
+  let mut bm : BitVec 32 := 0
+  if wakeEn then
+    let mut wk := s.a
     for ti in List.range NT do
-      if s.tstate[ti]! = 3 then s' := { s' with tstate := s'.tstate.set! ti 1 }
+      if s.tstate[ti]! = 3 ∧ s.tfutex[ti]! = wakeKey ∧ (¬ wakeLocal ∨ wk > 0) then
+        bm := bm ||| (1#32 <<< ti)
+        if wakeLocal then wk := wk - 1
+  s' := { s' with wake_bm := bm }
+  -- ...and promote on the PRE-cycle bitmap, i.e. the one computed last
+  -- cycle. Guarded on still being parked, mirroring `wakeApply`.
+  for ti in List.range NT do
+    if s.wake_bm.getLsbD ti ∧ s.tstate[ti]! = 3 then
+      s' := { s' with tstate := s'.tstate.set! ti 1 }
   if inp.resKill then s' := { s' with lr_valid := false }
 
   -- EXT-1: the quantum counter (mirrors `quantumRule`, the sole writer of
