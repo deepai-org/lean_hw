@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Compile
 import Loom.Hw.MemInitOk
+import Loom.Hw.Outputs
 import Loom.Emit.MicroVerilog.Print
 
 /-!
@@ -42,6 +43,12 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
   -- `-BADREF` on a board (`Loom/Hw/MemInitOk.lean`).
   for md in d.memInitUnacked do
     throw <| IO.userError (d.memInitError md)
+  -- D39: an observability selection (`Design.outputs`) may only name
+  -- declared registers. An unrecognized name would otherwise silently
+  -- export nothing at all, which is the failure mode a *selection* is most
+  -- prone to (`Loom/Hw/Outputs.lean`, `Loom/Hw/OUTPUTS_SPEC.md` §2).
+  for n in d.outputsUndeclared do
+    throw <| IO.userError (d.outputsError n)
   if let some dir := path.parent then
     IO.FS.createDirAll dir
   IO.FS.writeFile path

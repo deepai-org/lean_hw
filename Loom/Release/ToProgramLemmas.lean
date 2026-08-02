@@ -206,21 +206,23 @@ theorem toProgram_mems_length (d : Loom.Hw.Design)
   simp [Compile.compile]
 
 /-- The witness's outputs are exactly the compiler's observability views:
-one `o_<reg>` per source register, driven by the register name itself. -/
+one `o_<reg>` per **exported** source register (D39 `Design.outputs`;
+`d.exportedRegs` is `d.regs` for every design that declares no selection),
+driven by the register name itself. -/
 theorem toProgram_outs (d : Loom.Hw.Design) (blockSize chunkLeaves : Nat) :
     (d.toProgram blockSize chunkLeaves).outs =
-      d.regs.map fun r =>
+      d.exportedRegs.map fun r =>
         ({ name := s!"o_{r.name}", width := r.width,
            value := r.name } : Out) := by
   show ((flattenOuts (Compile.compile d).outs).run _).1 = _
-  have : (Compile.compile d).outs = d.regs.map fun r =>
+  have : (Compile.compile d).outs = d.exportedRegs.map fun r =>
       ({ name := s!"o_{r.name}", width := r.width,
          val := .reg r.width r.name } : OutDef) := rfl
   rw [this, flattenOuts_regOuts]
 
 theorem toProgram_outs_length (d : Loom.Hw.Design)
     (blockSize chunkLeaves : Nat) :
-    (d.toProgram blockSize chunkLeaves).outs.length = d.regs.length := by
+    (d.toProgram blockSize chunkLeaves).outs.length = d.exportedRegs.length := by
   rw [toProgram_outs, List.length_map]
 
 /-! ## Count conjuncts of `ModuleBehavior` -/
@@ -284,11 +286,12 @@ theorem outputBehaviorRopeFrom_of_consecutive (design : Loom.Hw.Design)
 
 open Loom.Release.Symbolic in
 theorem toProgram_outputBehaviorAt (d : Loom.Hw.Design) (i : Nat)
-    (bound : i < d.regs.length) :
+    (bound : i < d.exportedRegs.length) :
     OutputBehaviorAt d (d.toProgram) i := by
   unfold OutputBehaviorAt
   rw [toProgram_outs]
-  have found : d.regs[i]? = some d.regs[i] := List.getElem?_eq_getElem bound
+  have found : d.exportedRegs[i]? = some d.exportedRegs[i] :=
+    List.getElem?_eq_getElem bound
   simp [found]
 
 open Loom.Release.Symbolic in

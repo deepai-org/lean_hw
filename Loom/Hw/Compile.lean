@@ -360,7 +360,8 @@ private unsafe def compileImpl (d : Design) : MV.Module := unsafeBaseIO do
     mems := mems.push { name := m.name, addrWidth := m.addrWidth
                         dataWidth := m.dataWidth, init := m.init
                         wrPorts := ports.toList }
-  let outs : List MV.OutDef := d.regs.map fun r =>
+  -- D39: only the *exported* registers reach a port (`none` = all of them).
+  let outs : List MV.OutDef := d.exportedRegs.map fun r =>
     { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
   let ins : List MV.InDef := d.inputs.map fun i =>
     { name := i.name, width := i.width }
@@ -369,8 +370,9 @@ private unsafe def compileImpl (d : Design) : MV.Module := unsafeBaseIO do
 
 /-- Compile a design. Registers become `RegDef`s whose next expression
 folds all rules in order; memories get one guarded write port per used
-port index, in ascending order (the µVerilog commit order); every register
-is exposed as an observability output. -/
+port index, in ascending order (the µVerilog commit order); every
+**exported** register (D39 `Design.outputs`; `none` = all of them, the
+pre-D39 behaviour) is exposed as an observability output. -/
 @[implemented_by compileImpl]
 def compile (d : Design) : MV.Module where
   name := d.name
@@ -383,7 +385,7 @@ def compile (d : Design) : MV.Module where
       init := m.init
       wrPorts := (List.range (numPorts d m.name)).map fun p =>
         compilePort d m.name m.addrWidth m.dataWidth p }
-  outs := d.regs.map fun r =>
+  outs := d.exportedRegs.map fun r =>
     { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
   ins := d.inputs.map fun i => { name := i.name, width := i.width }
 

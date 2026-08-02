@@ -7,6 +7,15 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Declared observability** (Loom D39): `Design.outputs : Option (List
+  String)` selects which registers a design exports as `o_<name>` ports;
+  `none` (the default) keeps the previous behaviour, so every existing
+  emitted module is byte-identical. An undeclared selection entry is a hard
+  error at `Design.emit`. Proved: for `outputs = some ns`, a name outside
+  `ns` appears at no output port — at the compiler (`compile_not_exported`)
+  and over the emitted text (`printed_not_exported`). This lets a design
+  hold a key in a register; `Machines/CapWalk`'s MAC key is now six
+  unexported registers and its deviation CE5 is retired.
 - Unbounded, sorry-free LNP64-µ ISS↔EDSL refinement (`RMC.square`,
   `abs_run`, `refines`, and `invariant_transport`) across all 25 opcodes.
 - Bounded `cap_revoke` pointer-doubling convergence and synchronized

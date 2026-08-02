@@ -7,6 +7,7 @@ import Tests.Lnp64u
 import Tests.Lnp64uCore
 import Tests.MultiPort
 import Tests.MemInitOk
+import Tests.Outputs
 import Tests.LratBench
 import Tests.CheckBench
 import Tests.Acc8Bmc

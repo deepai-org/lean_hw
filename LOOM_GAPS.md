@@ -32,6 +32,7 @@ that is a Loom defect — record it here before working around it.
 | D34 | the protocol-machine library: `ProtocolSpec` (state, event alphabet, partial step) + `InvSpec`, with the `TSys`/`Step`/`Run`/reachability derivations, the disabled-event and stutter glue, the event-list runner, and the four run-level closures | the engine roster — Epoch §3 and CapWalk §2.2 hand-rolled the same skeleton |
 | D37 | design-level refusal of a memory reset image the flow cannot deliver (`Design.memInitOkB`, hard error in `Design.emit`), sharing its deliverability rule verbatim with the netlist-level check | D30 itself — the epoch engine's `cell_flags` was *detected* after synthesis, and only after a silicon debug cycle; the same shape was still declarable |
 | D36 | priority orders as data: one `(guard, outcome)` clause list yields both the per-clause `X_before_Y` lemmas at arbitrary width and the exhaustive small-width check | the same roster — T-E4 and T-C2 are one proof, written twice |
+| D39 | **declared observability** (`Design.outputs`): a design says which registers it exports, so a value can live in a register and reach no port — with the non-export theorem, at the compiler and at the printed text | the capability engine: every register emitted an `o_*` port, so the MAC key had to be a bitstream constant (CAPWALK deviation CE5, now retired) |
 
 ### D23, in detail (closed 2026-08-01)
 
@@ -474,6 +475,8 @@ exhaustive check and the per-clause ordering lemmas.
 **D37 — prevention for non-deliverable reset images. CLOSED 2026-08-01**,
 see below.
 
+**D39 — declared observability. CLOSED 2026-08-01**, see below.
+
 ## D37 — undeliverable reset images are refused at emit (CLOSED 2026-08-01)
 
 **Discovered by D30**, i.e. by the epoch engine's first silicon run — a
@@ -565,6 +568,127 @@ board symptom, and the netlist-level check remains the ground truth.
    `mkDesign cfgTiny`, which a differing field would stop unifying with.
    That is exactly the job the opt-out exists to do: a known loss stays
    visible instead of becoming invisible.
+
+## D39 — declared observability: a design may keep a secret (CLOSED 2026-08-01)
+
+**Discovered by the capability engine.** Loom emitted *every* register as an
+`o_<name>` output port, so a Loom design structurally could not hold a
+secret. `Machines/CapWalk/Engine.lean`'s MAC key had to be five literals and
+an IV inside the mixing cone rather than state, recorded as deviation CE5
+with the note that "a never-written register would emit as an `o_*` port and
+publish the key". For a machine whose premise is capability enforcement that
+is a Loom defect, not a machine-level inconvenience — so it went in the
+ledger instead of being worked around a second time. Secondary cost: port
+lists were unconditional, which is why `lnp64mini_epoch` carries 427 output
+ports.
+
+**Shipped** — `Loom/Hw/Outputs.lean` (capability, spec in
+`Loom/Hw/OUTPUTS_SPEC.md`), one additive field on `Design`:
+
+* `outputs : Option (List String) := none`. `none` = every register — the
+  pre-D39 behaviour, *definitionally* (`Design.exportedRegs` reduces to
+  `d.regs`), which is why every emitted `rtl/*.v` outside the capability
+  engine is byte-identical. `some ns` = exactly the named registers; a
+  register outside the selection is **internal**: declared in the module
+  body, driven as usual, at no port.
+* The selection lives on the design, not on `RegDecl`: observability is a
+  property of the *interface*, it composes with D16 (a `par`/`connect` can
+  rewrite what a composite exports without touching a declaration), it
+  mirrors µVerilog's own `Module.outs`, and it survives `Fin n`-generated
+  register lists.
+* **Well-formedness**: a selected name that is not a declared register is a
+  hard error at `Design.emit`, naming it (`Loom/Hw/EmitIO.lean`, beside the
+  D15 name-clash and the D37 image check). A typo in a selection must
+  announce itself, not silently delete a port.
+* **The theorem**, which is the point of the feature and not a side effect:
+
+      theorem compile_not_exported {d : Design} {ns : List String}
+          (hsel : d.outputs = some ns) {n : String} (hn : n ∉ ns) :
+          ∀ o ∈ (Compile.compile d).outs,
+            o.name ≠ s!"o_{n}" ∧ n ∉ o.val.regReads
+
+  — an unselected name is neither a port name nor read by any port's driver
+  expression, and it is quantified over arbitrary names, not merely declared
+  registers. `compile_portNames_not_exported` lifts it to the whole port
+  list (inputs included), and **`printed_not_exported` states it over the
+  emitted TEXT**: given the per-artifact round-trip verdict
+  (`Module.parseCheck`, run over every `rtl/*.v` by `lake exe rtlroundtrip`
+  in `scripts/ci.sh`), the module an *independent parser* recovers from the
+  file exports no unselected name either. That is the strongest of the three
+  and the one that is about the artifact rather than the data structure.
+* **Composition** (`prefixed_exportedRegs`, `par_exportedRegs`,
+  `par_exportedNames_subset`, `connect_exportedRegs`): `prefixed` renames the
+  selection with the registers, so an internal register of `d` is internal in
+  every instance of `d`; `par` concatenates the two parts' exported name
+  lists (normalizing a `none`, which means "all of that part"), and
+  `par_exportedNames_subset` — which needs **no** hypotheses — says
+  composition can never publish a register neither part exported; `connect`
+  leaves the selection alone, so wiring an input cannot resurrect a dropped
+  output.
+* `Tests/Outputs.lean` — the default's identity, a selection's effect on the
+  emitted text, the emit-time refusal, the three composition behaviours, and
+  the artifact below.
+
+**The artifact that needed it: CAPWALK CE5 is retired.** `Engine.keyRegs` is
+now six ordinary registers (`mac_iv`, `mac_k0..4`); no rule writes them, the
+mixing cone reads them, and the design's selection omits them, so they sit at
+no port. `capwalk`'s port list is unchanged (the selection is exactly the
+pre-D39 register list), and the engine selftest, the hostile-DDR iverilog
+ladder and `scripts/capwalk_ladder.sh` pass as before. Per-boot or
+per-domain re-keying is now *expressible* — it is a rule over an existing
+coordinate rather than an EDSL feature request.
+
+**What this does NOT do — the physical-readback boundary.** Declared
+observability prevents **architectural** disclosure: the value is at no
+module port, so nothing above the design boundary can read it. It does
+**not** prevent physical extraction. An FPGA bitstream can be read back on
+most parts, and a register's reset image — which is where `capwalk`'s key
+still comes from — is recoverable from it, as is any constant. The claim is
+"not exported at the interface", never "unrecoverable from the device". A
+threat model that needs the latter wants key derivation from a device secret
+(PUF/TRNG); that is out of scope here and is named as such in
+`CAPWALK_SPEC.md` CE5. Two smaller limits, also named:
+
+* **synthesis is free to fold an unexported register back into constants,
+  and it does** — measured while closing this entry: `rtl/capwalk.v` before
+  and after the key became six registers synthesizes to the *identical*
+  netlist (yosys 0.33, `synth_xilinx -flatten -nowidelut`: 2158 cells, 442
+  `FDRE`, 6 `RAMB18E1`, 4 `RAMB36E1` both ways), because the registers are
+  never written and constant-propagate away. That is the honest shape of the
+  claim: D39 constrains the **architecture** — what a design *may* observe
+  through a module boundary — and says nothing about what the fabric holds.
+  It is also why the retirement is real anyway: the key is now a coordinate,
+  so a rule that loads it from a PUF/TRNG is expressible and would not fold;
+* it does not touch memories, whose contents were never ported in the first
+  place.
+
+**Deliberately not applied to the board artifacts — and the measurement says
+that was right.** `lnp64mini_epoch` exports 427 output ports, of which
+`fpga/zc702/lnp64mini_epoch_top.v` actually reads **76**; `lnp64mini_cap`
+exports 516. The selection was *measured* rather than applied (emitted to
+`scratch/`, never to `rtl/`), because these are silicon-proven artifacts and
+the acceptance test for this entry was that every `rtl/*.v` except the two
+capability-engine files stays byte-identical.
+
+The measurement, yosys 0.33 `synth_xilinx -flatten -nowidelut -top
+lnp64mini_epoch`, 427-port original vs 76-port selection:
+
+| | ports | OBUF | LUTs | FDRE | cells | synth CPU |
+|---|---|---|---|---|---|---|
+| all registers exported | 427 | 9820 | 28124 | 12792 | 52979 | 164 s |
+| wrapper's 76 | 76 | 1121 | 47388 | 12721 | 63456 | 610 s |
+
+The pad count collapses as expected (−89 % OBUF) and the flop count is
+essentially unchanged, but **total logic went up 20 %**, not down: in a
+standalone top-level synthesis the removed ports stop being outputs and their
+cones are re-optimized (and re-shared) differently, and here that came out
+worse. Two conclusions, both worth keeping: the "port lists collapse, which
+helps synthesis" payoff in `OUTPUTS_SPEC.md` is **not** demonstrated — a
+selection is an architectural statement, and any resource claim has to be
+measured *in the wrapper it is instantiated in*, not on a synthetic top; and
+that is a second, independent reason a board artifact should not be re-cut
+for tidiness. The one-line change is available whenever a campaign wants it,
+with these numbers as the standing baseline.
 
 ## D34 — the protocol-machine library (CLOSED 2026-08-01)
 

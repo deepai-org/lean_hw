@@ -105,5 +105,45 @@ structure Design where
   acknowledgement lives at the design, next to the memory, rather than in
   a downstream checker's command line. -/
   ackMemInit : List String := []
+  /-- **D39 — declared observability.** Which registers this design exports
+  as `o_<name>` output ports.
+
+  * `none` (the default) = **every** register, i.e. exactly the behaviour
+    before D39, so every existing design emits byte-identically.
+  * `some ns` = exactly the declared registers named in `ns`. A register
+    absent from the selection is **internal**: it is declared in the module
+    body and driven as usual, but it appears at no port, so nothing above
+    the design boundary can read it. That is what lets a design hold a key
+    in a register (`Machines/CapWalk/Engine.lean`).
+
+  Observability is a property of the design's *interface*, so the selection
+  lives here rather than as a flag on `RegDecl`: it composes with D16 (a
+  `par`/`connect` may rewrite what the composite exports without touching a
+  register declaration), it mirrors µVerilog's own `Module.outs`, and it
+  survives `Fin n`-generated register lists.
+
+  **Honesty boundary.** This prevents *architectural* disclosure only — the
+  value sits at no module port. It does **not** prevent physical extraction:
+  a bitstream can be read back on most FPGAs and a reset value is
+  recoverable from it. The claim is "not exported at the interface", never
+  "unrecoverable from the device" (`Loom/Hw/OUTPUTS_SPEC.md`).
+
+  A name here that is not a declared register is refused by `Design.emit`
+  (`Loom/Hw/Outputs.lean`). -/
+  outputs : Option (List String) := none
+
+/-- **D39.** The registers `d` exports, in declaration order: all of them
+when `outputs = none` (the pre-D39 behaviour, definitionally), and exactly
+the selected ones otherwise. This is the single place the selection is
+interpreted — `Compile.compile` and its `implemented_by` twin both read it,
+so they cannot drift apart. -/
+def Design.exportedRegs (d : Design) : List RegDecl :=
+  match d.outputs with
+  | none    => d.regs
+  | some ns => d.regs.filter fun r => ns.contains r.name
+
+/-- The names of the exported registers (a sublist of the declared ones). -/
+def Design.exportedNames (d : Design) : List String :=
+  d.exportedRegs.map (·.name)
 
 end Loom.Hw
