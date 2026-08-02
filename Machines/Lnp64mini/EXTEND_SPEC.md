@@ -109,3 +109,32 @@ Deviations appended here, never silently narrowed.
 FP profile (§14), vector profile (§18), the Mover/DMA (§11), state-stream
 round-trip (§16.8), and the full 2^24-slot capability table (the cache+DDR
 design stands).
+
+## Toolchain impact — in scope, and load-bearing for the oracle
+
+Targeted edits to `/home/ubuntu/lnp64` ARE in scope for this campaign (the
+big lnp64 rewrite is not). They are not garnish: the verification story is
+emulator ≡ ISS ≡ iverilog ≡ silicon, and **a feature the emulator does not
+model has no oracle** — we would be reduced to comparing the hardware against
+itself. So each increment states its toolchain delta and pays it.
+
+| increment | assembler / ISA tables | emulator | guest runtime / loader |
+|---|---|---|---|
+| preemption | — (no new op) | quantum + forced switch, so traces still match | — |
+| domains | domain-id PCR read, if exposed | domain tag on the core model | — |
+| fail-stop | poison/fault dispositions surfaced | fault outcome + containment | trap-server op list |
+| park/wake | — (grows futex) | directory model replacing ad-hoc futex | — |
+| **gates** | **new ops** (`gate_call`/return shape, §9) | frame push/pop + continuation stack | crt/ABI if the guest calls one |
+| **cap transfer** | **new ops** (send/recv re-key, §10.2) | install-time transaction | — |
+| **VMA/MMU** | **new ops** (`map.protect`, `munmap`, §15) | translation + TLB + shootdown | **`fastload` builds the page table**; `gem_core.c`'s `PHYS()` becomes a granted DMA-window lookup |
+
+Concretely, the files that will move: `src/isa.rs` (opcode tables),
+`src/asm.rs` (mnemonics), `src/emulator.rs` (the model — the oracle),
+`src/loader.rs` + `scripts/board/*` (page-table construction at load time),
+`toolchain/gem_core.c` (DMA addresses via grant, not arithmetic), and the
+trap-server's op manifest (each new op partitioned HW-native vs trap-to-host).
+
+**Rule:** an increment that adds an opcode without adding it to the emulator
+is not done — it has silently dropped the strongest leg of the ladder. If a
+feature genuinely cannot be modelled in the emulator, say so explicitly in
+that increment's deviations and state what replaces the oracle for it.
