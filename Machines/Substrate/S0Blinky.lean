@@ -36,6 +36,10 @@ def tick : Act := .write 28 "cnt" (.add cnt (.lit 1))
 def design : Design where
   name  := "s0blinky"
   regs  := [⟨"cnt", 28, 0⟩]
+  -- D39a: outputs are mandatory and explicit, like inputs. This design's
+  -- whole register set IS its interface, so it says so rather than
+  -- relying on a default that exported everything silently.
+  outputs := ["cnt"]
   mems  := []
   rules := [⟨"tick", tick⟩]
 

@@ -33,6 +33,10 @@ def tick : Act :=
 def design : Design where
   name := "satcounter"
   regs := [⟨"count", 8, 0⟩, ⟨"sat", 1, 0⟩]
+  -- D39a: outputs are mandatory and explicit, like inputs. This design's
+  -- whole register set IS its interface, so it says so rather than
+  -- relying on a default that exported everything silently.
+  outputs := ["count", "sat"]
   mems := []
   rules := [⟨"tick", tick⟩]
 

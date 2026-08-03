@@ -771,7 +771,7 @@ def mkDesign : Design where
   -- the six key registers are not, so the key sits at no module port. The
   -- exported list is exactly the pre-D39 port list, so `capwalk`'s interface
   -- is unchanged by the key becoming state.
-  outputs := some ((chkRegs cfg ++ walkRegs cfg ++ opRegs cfg).map (·.name))
+  outputs := (chkRegs cfg ++ walkRegs cfg ++ opRegs cfg).map (·.name)
   mems := mems cfg
   rules := latchRules cfg ++
     [opRule cfg, chkRule cfg, walkRule cfg, ctagWrRule cfg, flagWrRule cfg,

@@ -112,3 +112,28 @@ never-written register back into the constants it came from. Declared
 observability is an **architectural** statement; any resource claim about it
 must be measured in the wrapper the design is instantiated in.
 `LOOM_GAPS.md` D39 carries the table.
+
+
+## D39a — `outputs` is mandatory (2026-08-03)
+
+`outputs` was `Option (List String)` defaulting to `none` = "export every
+register". That was a mistake, and the operator called it: **the default was
+maximal disclosure**, so D39's protection applied only to designs that opted
+in. It is the same shape as the `checkD19` helper each machine used to call
+by hand before D19 moved into `Design.emit` — *protection a caller can forget
+is not protection*. Inputs have always been explicit; outputs are the other
+half of the interface and are explicit now.
+
+The field is `List String` with no default. A design whose whole register set
+genuinely is its interface says so — `outputs := regs.map (·.name)`, or a
+literal name list. `exportedRegs` is a plain filter; the `none` identity
+theorems are replaced by `exportedRegs_all`, which states the same thing for
+a design that names everything, and `Design.par` concatenates its parts'
+selections with no case analysis left.
+
+**Acceptance (run 2026-08-03).** Every design in the repo declares `outputs`;
+re-emitting the shipped RTL leaves **12 of 17 files byte-identical**. The five
+that differ are accounted for and none is an observability change: the
+lnp64mini family gained `o_quantum`/`o_qctr`/`o_cur_dom`/`o_wake_key` from
+EXT-1/EXT-2/EXT-4 (their baselines predate those increments), and `capwalk.v`
+has an **identical output-port set** — its diff is an unrelated earlier edit.

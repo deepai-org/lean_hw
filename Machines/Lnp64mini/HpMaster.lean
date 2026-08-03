@@ -161,6 +161,10 @@ def dbgRule : Rule := ⟨"hp_dbg", .write 3 "dbg_state" st⟩
 def design : Design where
   name := "axi_hp_master"
   regs := regs
+  -- D39a: outputs are mandatory and explicit, like inputs. This design's
+  -- whole register set IS its interface, so it says so rather than
+  -- relying on a default that exported everything silently.
+  outputs := (regs).map (·.name)
   mems := []
   rules := [fsmRule, dbgRule]
   inputs := inputs

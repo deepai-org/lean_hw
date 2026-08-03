@@ -190,6 +190,7 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("cap_ival",16,s.cap_ival.toNat),
    -- EXT-7: the MMU enable and TLB selector
    ("mmu_en",1,if s.mmu_en then 1 else 0), ("tlb_sel",3,s.tlb_sel.toNat),
+   ("tlb_vld",8,s.tlb_vld.toNat),
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
@@ -240,7 +241,7 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
     let checks : List (String × Nat × Nat) :=
       [("tlb_vpn", 32, (s.tlb_vpn[i]!).toNat), ("tlb_ppn", 32, (s.tlb_ppn[i]!).toNat),
        ("tlb_dom", 8,  (s.tlb_dom[i]!).toNat), ("tlb_cell", 8, (s.tlb_cell[i]!).toNat),
-       ("tlb_vld", 1,  if s.tlb_vld[i]! then 1 else 0)]
+       ]
     for (mn, w, v) in checks do
       if (σ.mems mn i w).toNat ≠ v then
         if bad < 12 then

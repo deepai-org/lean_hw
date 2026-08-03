@@ -184,6 +184,10 @@ def tickAct : Act := .write 32 "cycle" (.add (.reg 32 "cycle") (.lit 1))
 def core (m : Manifest) : Design where
   name := "lnp64u"
   regs := regDecls m
+  -- D39a: outputs are mandatory and explicit, like inputs. This design's
+  -- whole register set IS its interface, so it says so rather than
+  -- relying on a default that exported everything silently.
+  outputs := (regDecls m).map (·.name)
   mems := [memDecl m]
   rules := [⟨"refill", refillAct m⟩, ⟨"core", coreAct m⟩,
             ⟨"mover", moverAct⟩, ⟨"tick", tickAct⟩]

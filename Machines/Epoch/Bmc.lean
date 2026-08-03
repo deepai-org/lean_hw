@@ -134,11 +134,9 @@ private def wr1 (n : String) (e : Expr 1) : Act := Act.write 1 n e
 private def wr8 (n : String) (e : Expr 8) : Act := Act.write 8 n e
 private def wr3 (n : String) (e : Expr 3) : Act := Act.write 3 n e
 
-/-- The design. One rule; every register's next value in one place. -/
-def design : Design where
-  name := "epochmc"
-  mems := []
-  regs :=
+/-- The register list, named so `regs` and D39a's mandatory `outputs`
+provably denote the same thing. -/
+def bmcRegs : List Loom.Hw.RegDecl :=
     [ ⟨"lfsr", 8, (0xB5 : BitVec 8)⟩,
       ⟨"e0", 3, (1 : BitVec 3)⟩, ⟨"e1", 3, (1 : BitVec 3)⟩,
       ⟨"d0", 1, (0 : BitVec 1)⟩, ⟨"d1", 1, (0 : BitVec 1)⟩,
@@ -149,6 +147,14 @@ def design : Design where
       ⟨"pt", 3, (0 : BitVec 3)⟩,
       ⟨"a0", 1, (0 : BitVec 1)⟩, ⟨"a1", 1, (0 : BitVec 1)⟩,
       ⟨"ret", 1, (0 : BitVec 1)⟩, ⟨"ok0", 1, (0 : BitVec 1)⟩ ]
+
+/-- The design. One rule; every register's next value in one place. -/
+def design : Design where
+  name := "epochmc"
+  mems := []
+  regs := bmcRegs
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs := bmcRegs.map (·.name)
   rules :=
     [ { name := "epoch"
         body :=

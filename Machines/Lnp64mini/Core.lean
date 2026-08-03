@@ -255,7 +255,15 @@ def capIboxRd (d : Expr 4) : Expr 64 := .memRead 64 "cap_ibox" d
 def tlbVpnRd  (i : Expr 3) : Expr 32 := .memRead 32 "tlb_vpn" i
 def tlbPpnRd  (i : Expr 3) : Expr 32 := .memRead 32 "tlb_ppn" i
 def tlbDomRd  (i : Expr 3) : Expr 8  := .memRead 8  "tlb_dom" i
-def tlbVldRd  (i : Expr 3) : Expr 1  := .memRead 1  "tlb_vld" i
+/-- EXT-7: the valid bits are a **bitmap register**, not a memory. The §15
+shootdown (`cmd 67`) invalidates *every* entry naming the bumped cell, i.e.
+several slots in one cycle, and one memory write port cannot do that -- which
+is exactly what `Design.emit` refused when this was a memory (D38/CE10). Same
+shape as EXT-3's `poison` and EXT-6's `cap_ival`: state written at many
+indices at once is a register bitmap. -/
+def tlb_vld : Expr 8 := .reg 8 "tlb_vld"
+def tlbVldRd  (i : Expr 3) : Expr 1  :=
+  .eq (.slice (.shr tlb_vld (.zext i 8)) 0 1) (.lit (BitVec.ofNat 1 1))
 def tlbCellRd (i : Expr 3) : Expr 8  := .memRead 8  "tlb_cell" i
 
 /-- The domain the core is executing in **right now**: the current thread's
@@ -1786,6 +1794,21 @@ def capIvalNext : Expr 16 :=
         (.and cap_ival (.not (.shl (.lit (BitVec.ofNat 16 1)) (.zext capRecvSlot 16))))
         cap_ival))
 
+/-- EXT-7: the valid bitmap after this cycle. `cmd 65` validates the selected
+slot; `cmd 67` clears every slot whose `tlb_cell` equals the bumped cell;
+`cmd 13`'s reset clears all. -/
+def tlbVldNext : Expr 8 :=
+  let clearMask : Expr 8 :=
+    orTreeW ((List.finRange TLBN).map (fun i =>
+      .mux (.and (.and cmdValid (.eq cmdIdx (L7 CMD_MAP_PROTECT)))
+                 (.eq (tlbCellRd (.lit (BitVec.ofNat 3 i.val))) (.slice cmdData 0 8)))
+        (.shl (.lit (BitVec.ofNat 8 1)) (.lit (BitVec.ofNat 8 i.val)))
+        (.lit (BitVec.ofNat 8 0))))
+  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (.lit (BitVec.ofNat 8 0))
+    (.mux (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
+      (.or tlb_vld (.shl (.lit (BitVec.ofNat 8 1)) (.zext tlb_sel 8)))
+      (.and tlb_vld (.not clearMask)))
+
 def tarrFunnelRule : Rule :=
   ⟨"tarr_funnel",
     .seq (.ite tdomWeE (.memWrite 5 8 "tdom" 0 tdomWaE tdomWdE) .skip) <|
@@ -1810,15 +1833,10 @@ def tarrFunnelRule : Rule :=
             (.memWrite 3 32 "tlb_ppn" 0 tlb_sel (.zext (.slice cmdData 0 24) 32)) .skip) <|
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
             (.memWrite 3 8 "tlb_cell" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
-    .seq ((List.finRange TLBN).foldr (fun i acc =>
-            .seq (.ite (.or (.and cmdValid (.and (.eq cmdIdx (L7 CMD_MAP_PROTECT))
-                                (.eq (tlbCellRd (.lit (BitVec.ofNat 3 i.val)))
-                                     (.slice cmdData 0 8))))
-                            (.and cmdValid (.and (.eq cmdIdx (L7 CMD_TLB_VPN))
-                                (.eq tlb_sel (.lit (BitVec.ofNat 3 i.val))))))
-                   (.memWrite 3 1 "tlb_vld" 0
-                      (.lit (BitVec.ofNat 3 i.val))
-                      (.eq cmdIdx (L7 CMD_TLB_VPN))) .skip) acc) .skip) <|
+    -- EXT-7: the valid bitmap. Fill sets the selected slot; the §15
+    -- shootdown clears every slot whose recorded cell was bumped -- several
+    -- at once, which is why this is a register and not a memory.
+    .seq (.write 8 "tlb_vld" tlbVldNext) <|
     -- EXT-5: the host-loaded gate table.
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_ENT)))
             (.memWrite 4 64 "gate_ent" 0 gate_sel (.zext cmdData 64)) .skip) <|
@@ -1892,7 +1910,7 @@ def scalarRegs : List RegDecl :=
    -- EXT-6: per-domain capability inbox occupancy
    ⟨"cap_ival",16,0⟩,
    -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
-   ⟨"mmu_en",1,0⟩, ⟨"tlb_sel",3,0⟩]
+   ⟨"mmu_en",1,0⟩, ⟨"tlb_sel",3,0⟩, ⟨"tlb_vld",8,0⟩]
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
@@ -1911,6 +1929,10 @@ def domainRule : Rule := ⟨"domain", .write 8 "cur_dom" domCur⟩
 def design : Design where
   name := "lnp64mini"
   regs := scalarRegs ++ arrRegs
+  -- D39a: outputs are mandatory and explicit, like inputs. This design's
+  -- whole register set IS its interface, so it says so rather than
+  -- relying on a default that exported everything silently.
+  outputs := (scalarRegs ++ arrRegs).map (·.name)
   mems :=
     [⟨"rf", 10, 64, fun _ => 0⟩, ⟨"dmem", 9, 64, fun _ => 0⟩,
      ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩,
@@ -1941,7 +1963,7 @@ def design : Design where
      ⟨"cap_ibox", 4, 64, fun _ => 0⟩,
      -- EXT-7: the domain-tagged TLB (§15 line 160)
      ⟨"tlb_vpn", 3, 32, fun _ => 0⟩, ⟨"tlb_ppn", 3, 32, fun _ => 0⟩,
-     ⟨"tlb_dom", 3, 8, fun _ => 0⟩,  ⟨"tlb_vld", 3, 1, fun _ => 0⟩,
+     ⟨"tlb_dom", 3, 8, fun _ => 0⟩,
      ⟨"tlb_cell", 3, 8, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,

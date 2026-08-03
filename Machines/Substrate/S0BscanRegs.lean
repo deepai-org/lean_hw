@@ -108,11 +108,17 @@ def conAdvRule : Rule :=
     (.write 5 "con_idx" (.add conIdx (.lit 1)))
     .skip⟩
 
-def design : Design where
-  name := "s0bscan"
-  regs :=
+/-- The register list, named so `regs` and D39a's mandatory `outputs`
+provably denote the same thing. -/
+def s0bRegs : List Loom.Hw.RegDecl :=
     [⟨"scratch", 32, 0⟩, ⟨"led", 4, 0⟩, ⟨"con_idx", 5, 0⟩,
      ⟨"rd_reg", 32, 0⟩, ⟨"hb", 32, 0⟩]
+
+def design : Design where
+  name := "s0bscan"
+  regs := s0bRegs
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs := s0bRegs.map (·.name)
   mems :=
     [⟨"banner", 5, 8, bannerInit⟩, ⟨"bram", 3, 32, fun _ => 0⟩]
   rules := [hbRule, writeRule, readRule, conAdvRule]

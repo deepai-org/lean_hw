@@ -61,7 +61,7 @@ def Design.prefixed (p : String) (d : Design) : Design where
   -- design under a namespace must not change what it exports — an internal
   -- register of `d` stays internal in `p ++ d` (`Loom/Hw/Outputs.lean`,
   -- `prefixed_exportedRegs`). `none` (export all) stays `none`.
-  outputs := d.outputs.map (·.map (p ++ ·))
+  outputs := d.outputs.map (p ++ ·)
 
 /-! ## `Design.par` -/
 
@@ -81,12 +81,10 @@ def Design.par (a b : Design) : Design where
   -- the two parts exported, so composition can neither publish an internal
   -- register nor drop an exported one. `none` means "all of *that* part's
   -- registers", so a mixed pair is normalized to the explicit union of the
-  -- two exported name lists; `none`/`none` stays `none`, which is why an
-  -- SoC built from D39-free designs emits byte-identically.
-  outputs :=
-    match a.outputs, b.outputs with
-    | none, none => none
-    | _, _ => some (a.exportedNames ++ b.exportedNames)
+  -- D39a: both sides name their exports, so the composite's is their
+  -- concatenation. No `none` case to reason about any more -- a composite
+  -- exports exactly what its parts said they export.
+  outputs := a.exportedNames ++ b.exportedNames
 
 /-- All state/input names a design owns (registers, memories, inputs). The
 disjointness a valid `par` needs. -/
