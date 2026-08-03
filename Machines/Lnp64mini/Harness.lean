@@ -320,7 +320,7 @@ def prog1 : List (BitVec 64) :=
     enc OP_SUB 4 1 2,            -- SUB  r4 = 2
     enc OP_MUL 5 1 2,            -- MUL  r5 = 35
     enc OP_DIV 6 5 2,            -- DIV  r6 = 35/5 = 7
-    encImmS 0x33 0 3 0,        -- SD [r0+0] = r3 (zp store, 8-byte)  (rs1=0,rs2=3,imm_s=0)
+    encImmS OP_ST 0 3 0,        -- SD [r0+0] = r3 (zp store, 8-byte)  (rs1=0,rs2=3,imm_s=0)
     encImmI OP_LD 8 0 0,        -- LD r8 = [r0+0] = 12 (zp load)
     enc OP_EXIT 0 0 0 ]           -- EXIT
 
@@ -337,9 +337,9 @@ def progLS : List (BitVec 64) :=
     enc OP_MUL 5 1 3,            --       w4  MUL  r5 = 7*1 = 7 (fast: mul_b=1)
     enc OP_SEL 7 1 1 2,          --       w5  SEL(EQ) r7: r1==r1 -> sel_t=rf[rs3=2]=5
     encImmI OP_GET_PCR 10 2 0,       --       w6  GET_PCR r10 = Tid = cur+1 = 1
-    encImmS 0x33 0 4 0,        --       w7  SD [0] = r4 (zp store)
+    encImmS OP_ST 0 4 0,        --       w7  SD [0] = r4 (zp store)
     encImmI OP_LD 11 0 0,       --       w8  LD r11 = [0] = 12 (zp load)
-    encImmS 0x21 1 1 2,        --       w9  BEQ r1,r1 taken (skip next)
+    encImmS OP_BEQ 1 1 2,        --       w9  BEQ r1,r1 taken (skip next)
     encImmI OP_ADDI 9 0 99,       --       w10 (skipped) ADDI r9 = 99
     enc OP_EXIT 0 0 0 ]           --       w11 EXIT
 
@@ -348,7 +348,7 @@ back. ea = 0x2000. Covers S_DL/S_DST/S_DSW (RMW store) + DDR load. -/
 def progDDR : List (BitVec 64) :=
   [ encImmI OP_ADDI 1 0 0x2000,   -- r1 = 0x2000 (DDR ea)
     encImmI OP_ADDI 3 0 42,       -- r3 = 42
-    encImmS 0x33 1 3 0,        -- SD [r1+0] = r3 (DDR store, RMW)
+    encImmS OP_ST 1 3 0,        -- SD [r1+0] = r3 (DDR store, RMW)
     encImmI OP_LD 8 1 0,        -- LD r8 = [r1+0] = 42 (DDR load)
     enc OP_EXIT 0 0 0 ]
 
@@ -364,7 +364,7 @@ def progLRSC : List (BitVec 64) :=
 def progUART : List (BitVec 64) :=
   [ encImmI OP_ADDI 1 0 UART_ADDR,     -- r1 = 0x8000
     encImmI OP_ADDI 3 0 0x41,          -- r3 = 'A'
-    encImmS 0x33 1 3 0,             -- SD [UART_ADDR] = r3 (UART TX)
+    encImmS OP_ST 1 3 0,             -- SD [UART_ADDR] = r3 (UART TX)
     encImmI OP_ADDI 2 0 UART_RX_ADDR,  -- r2 = 0x8008
     enc OP_LD 8 2 0,                 -- LD r8 = [UART_RX] (RX empty -> 0)
     enc OP_EXIT 0 0 0 ]
@@ -402,7 +402,7 @@ ea[31:16]==0xE000). -/
 def progGP : List (BitVec 64) :=
   [ encImmI OP_ADDI 1 0 (-0x20000000),  -- r1 low32 = 0xE0000000
     encImmI OP_ADDI 3 0 0x99,           -- r3 = 0x99 (SW data)
-    encImmS 0x34 1 3 0,              -- SW [r1] = r3 (GP store)
+    encImmS OP_ST_34 1 3 0,              -- SW [r1] = r3 (GP store)
     enc OP_LD_31 8 1 0,                  -- LWU r8 = [r1] (GP load -> model value)
     enc OP_EXIT 0 0 0 ]
 
@@ -717,11 +717,11 @@ def progSpin : List (BitVec 64) :=
   [ encImmI OP_ADDI 1 0 0x1030,   -- w0  r1 = child entry (word 6)
     enc OP_CLONE_SPAWN 4 1 2,            -- w1  CLONE r4 = tid, entry = r1
     encImmI OP_LD 5 0 0,        -- w2  spin head (0x1010): r5 = [0]
-    encImmS 0x21 5 0 (-1),     -- w3  BEQ r5, r0 -> back to w2
+    encImmS OP_BEQ 5 0 (-1),     -- w3  BEQ r5, r0 -> back to w2
     encImmI OP_ADDI 9 0 42,       -- w4  r9 = 42   (only after the flag is set)
     enc OP_EXIT 0 0 0,            -- w5  EXIT
     encImmI OP_ADDI 6 0 1,        -- w6  child entry (0x1030): r6 = 1
-    encImmS 0x33 0 6 0,        -- w7  SD [0] = r6   (sets the flag)
+    encImmS OP_ST 0 6 0,        -- w7  SD [0] = r6   (sets the flag)
     enc OP_THREAD_EXIT 0 0 0 ]           -- w8  THREAD_EXIT
 
 /-- 16 lowercase hex digits, `$readmemh` shaped. -/
