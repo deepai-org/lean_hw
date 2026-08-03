@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.Builders
 import Loom.Hw.Semantics
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
@@ -616,89 +617,13 @@ combinational cone. The builders below produce the SAME function of the
 same inputs with `O(log n)` depth. None of them needs the guards to be
 mutually exclusive — see `priTree`. -/
 
-/-- One balanced-reduction pass: fuse adjacent elements with `f`. -/
-def pairFold {w : Nat} (f : Expr w → Expr w → Expr w) : List (Expr w) → List (Expr w)
-  | a :: b :: t => f a b :: pairFold f t
-  | l => l
+/-! ### Balanced-tree builders — now `Loom/Hw/Builders.lean` (W3.1)
 
-def reduceTreeAux {w : Nat} (f : Expr w → Expr w → Expr w) (d : Expr w) :
-    Nat → List (Expr w) → Expr w
-  | _,   []  => d
-  | _,   [x] => x
-  | 0,   xs  => xs.foldr f d          -- fuel guard; never taken (fuel = length)
-  | n+1, xs  => reduceTreeAux f d n (pairFold f xs)
+`priTree`, `reduceTree`, `orTree`, `orTreeW`, `addTree` and `actPriTree` used
+to be defined here with their correctness in a comment. They are Loom's now,
+and their eval-equality with the linear forms is proved (`priTree_eval`,
+`reduceTree_eval`, `orTreeW_eval`). Mini just uses them. -/
 
-/-- Balanced `f`-reduction of `xs` (`d` when empty). Equal to the linear
-fold whenever `f` is associative and `d` is a right unit — used here only
-with `.or` (associative, unit `0`) and `.add` on disjoint/bounded lanes. -/
-def reduceTree {w : Nat} (f : Expr w → Expr w → Expr w) (d : Expr w)
-    (xs : List (Expr w)) : Expr w :=
-  reduceTreeAux f d xs.length xs
-
-/-- Balanced OR-reduction (replaces linear `.or` chains). -/
-def orTree (xs : List (Expr 1)) : Expr 1 := reduceTree .or (L1 0) xs
-
-/-- Balanced OR-reduction at width `w` (for disjoint-lane merges). -/
-def orTreeW {w : Nat} (xs : List (Expr w)) : Expr w :=
-  reduceTree .or (.lit (BitVec.ofNat w 0)) xs
-
-/-- Balanced ADD-reduction (for popcount-style sums). -/
-def addTree {w : Nat} (xs : List (Expr w)) : Expr w :=
-  reduceTree .add (.lit (BitVec.ofNat w 0)) xs
-
-/-- Fuse two guarded groups into one, keeping *earliest-guard-wins*:
-`(gl,vl) ⊕ (gr,vr) = (gl ∨ gr, if gl then vl else vr)`.
-If `gl` the pair yields `vl`; if `¬gl ∧ gr` it yields `vr`; if neither, the
-pair's guard is false so the parent never selects its value. Hence the
-fusion is associative *as a priority chain* and needs **no** mutual
-exclusivity between the guards. -/
-def priPair {w : Nat} : (Expr 1 × Expr w) → (Expr 1 × Expr w) → (Expr 1 × Expr w)
-  | (gl, vl), (gr, vr) => (.or gl gr, .mux gl vl vr)
-
-def priPairFold {w : Nat} : List (Expr 1 × Expr w) → List (Expr 1 × Expr w)
-  | a :: b :: t => priPair a b :: priPairFold t
-  | l => l
-
-def priTreeAux {w : Nat} : Nat → List (Expr 1 × Expr w) → Expr w → Expr w
-  | _,   [],      d => d
-  | _,   [(g,v)], d => .mux g v d
-  | 0,   xs,      d => xs.foldr (fun gv acc => .mux gv.1 gv.2 acc) d
-  | n+1, xs,      d => priTreeAux n (priPairFold xs) d
-
-/-- Balanced priority select: exactly
-`xs.foldr (fun (g,v) acc => .mux g v acc) d` (first matching guard wins),
-at `O(log n)` depth. -/
-def priTree {w : Nat} (xs : List (Expr 1 × Expr w)) (d : Expr w) : Expr w :=
-  priTreeAux xs.length xs d
-
-/-- Last-match-wins variant (mirrors a `foldl` funnel). -/
-def priTreeLast {w : Nat} (xs : List (Expr 1 × Expr w)) (d : Expr w) : Expr w :=
-  priTree xs.reverse d
-
-/-! ### The same trick for `Act` if/else-if chains
-
-`.ite (gl ∨ gr) (.ite gl al ar) rest` runs `al` if `gl`, else `ar` if `gr`,
-else `rest` — bit-for-bit the linear `if gl … else if gr … else rest`.
-Since all reads are pre-cycle (D9) and only one branch of an `.ite` ever
-runs, fusing branches pairwise is a pure re-association of the priority
-chain: no mutual exclusivity needed, no write order changed. -/
-def actPriPair : (Expr 1 × Act) → (Expr 1 × Act) → (Expr 1 × Act)
-  | (gl, al), (gr, ar) => (.or gl gr, .ite gl al ar)
-
-def actPriPairFold : List (Expr 1 × Act) → List (Expr 1 × Act)
-  | a :: b :: t => actPriPair a b :: actPriPairFold t
-  | l => l
-
-def actPriTreeAux : Nat → List (Expr 1 × Act) → Act → Act
-  | _,   [],      d => d
-  | _,   [(g,a)], d => .ite g a d
-  | 0,   xs,      d => xs.foldr (fun ga acc => .ite ga.1 ga.2 acc) d
-  | n+1, xs,      d => actPriTreeAux n (actPriPairFold xs) d
-
-/-- Balanced else-if chain: exactly
-`xs.foldr (fun (g,a) acc => .ite g a acc) d`, at `O(log n)` depth. -/
-def actPriTree (xs : List (Expr 1 × Act)) (d : Act) : Act :=
-  actPriTreeAux xs.length xs d
 
 /-! ## Decode (combinational wires) -/
 
