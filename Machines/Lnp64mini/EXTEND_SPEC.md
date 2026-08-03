@@ -812,7 +812,7 @@ under `lean --run`; otherwise the ladder stops being runnable.
 
 ---
 
-## EXT-7 — VMA / translation. 2026-08-03 — **HARDWARE IN, ORACLE DISAGREES, NOT DONE**
+## EXT-7 — VMA / translation. 2026-08-03 — **HARDWARE IN, EDSL≡ISS, MEDIATION UNTESTED**
 
 Stage A per §15, and the honest status is: the hardware is implemented and
 builds, `mmu_en = 0` bypass is verified, and **the translated path fails its
@@ -872,3 +872,39 @@ the TLB is wrong; it says the comparison is not yet meaningful.
 the shape EXT-5 established), routed `sysclk` **27.21 MHz** against the
 25 MHz clock — a **9 % margin**, the thinnest of the campaign, which is what
 the budget predicted for the one increment that touches the load/store path.
+
+
+### Update, same day: the oracle now agrees; the mediation test is measuring the wrong wire
+
+Routing the three real data-address sites in `Iss.lean` (`mem_ea_l`/`mem_ea_s`
+— the `0x31` load path was the one missed) through `ddrEaOf` fixed the
+disagreement:
+
+```
+  OK  MMU-BYPASS (mmu_en=0: EDSL≡ISS, the pre-EXT-7 machine, 60 cyc)
+  OK  MMU-XLAT   (mmu_en=1: EDSL≡ISS through the TLB, 60 cyc)
+```
+
+**So the design and its oracle now agree with translation live.** That is
+the leg that was actually broken, and it is closed.
+
+The two mediation claims still report `false`, and the reason is a **defect
+in the test, not in the hardware**: all three runs print
+`core_addr = 0x10001010` — identical whether the access is from the entry's
+domain, from another domain, or after the shootdown. `0x10001010` is
+`DATA_BASE + 0x1010`, which is the **last instruction fetch**, not the load.
+Fetches are deliberately untranslated (`ddrPc` is separate from `ddrEa`, and
+must be — mini fetches before it can consult a TLB), so sampling `core_addr`
+*at halt* observes the fetch that followed the load and can never
+distinguish a hit from a fail-closed.
+
+**Owed, and it is small:** sample the loaded value `r5` instead of
+`core_addr` (fail-closed reads `DATA_BASE`, a hit reads the mapped page, so
+`r5` separates them), or latch `core_addr` on the cycle `core_rd` rises
+during the load. Then re-judge `tag` and `shootdown`. Nothing about the TLB
+itself is implicated by this run.
+
+**Cost, final for stage A:** 50 531 LUTs (**47 %**), routed `sysclk`
+**27.21 MHz** against the 25 MHz clock — a **9 % margin**, the thinnest of
+the campaign and exactly what the budget predicted for the one increment
+that touches the load/store path. Bitstream built.

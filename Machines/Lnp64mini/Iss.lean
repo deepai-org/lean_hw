@@ -690,7 +690,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_load s ∧ l_is_zp s then
         s' := { s' with dmem_a := ld_widx s, ld_boff_q := ld_boff s, ld_op_q := op s, ld_rd_q := rdf s, mem_is_store := false, st := BitVec.ofNat 5 S_L0 }
       else if is_load s then
-        s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((mem_ea_l s).extractLsb' 3 29).setWidth 32 <<< 3, core_rd := true,
+        s' := { s' with core_addr := ddrEaOf s (mem_ea_l s), core_rd := true,
                         ld_boff_q := ld_boff s, ld_op_q := op s, ld_rd_q := rdf s, mem_is_store := false, st := BitVec.ofNat 5 S_DL }
       else if is_store s ∧ mem_ea_s s = BitVec.ofNat 64 UART_ADDR then
         s' := { s' with uartMem := s'.uartMem.set! (s.uart_wptr.setWidth 8).toNat (s.b.setWidth 8), uart_wptr := s.uart_wptr + 1, pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
@@ -701,7 +701,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_store s ∧ s_is_zp s then
         s' := { s' with dmem_a := st_widx s, mem_is_store := true, st := BitVec.ofNat 5 S_L0 }
       else if is_store s then
-        s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((mem_ea_s s).extractLsb' 3 29).setWidth 32 <<< 3, core_rd := true, mem_is_store := true, sc_pending := false, st := BitVec.ofNat 5 S_DL }
+        s' := { s' with core_addr := ddrEaOf s (mem_ea_s s), core_rd := true, mem_is_store := true, sc_pending := false, st := BitVec.ofNat 5 S_DL }
       else
         s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
     else if stN = S_L0 then
@@ -719,7 +719,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         if s.ld_rd_q ≠ 0 then rfWe := true; rfWa := (curV ++ s.ld_rd_q); rfWd := ld_wb s
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else
-        s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((mem_ea_s s).extractLsb' 3 29).setWidth 32 <<< 3, core_wdata := st_merge s, core_wr := true, st := BitVec.ofNat 5 S_DSW }
+        s' := { s' with core_addr := ddrEaOf s (mem_ea_s s), core_wdata := st_merge s, core_wr := true, st := BitVec.ofNat 5 S_DSW }
     else if stN = S_DSW then
       if inp.mDone then
         -- a GLOBAL SC the arbiter refused: overwrite the optimistic rd=0
