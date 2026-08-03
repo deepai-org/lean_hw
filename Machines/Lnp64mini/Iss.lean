@@ -447,11 +447,13 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     -- EXT-7: MMU enable, TLB select/fill, and the §15 shootdown.
     | 63 => s' := { s' with mmu_en := bit d 0 }
     | 64 => s' := { s' with tlb_sel := BitVec.ofNat 3 (d.toNat % 8) }
-    | 65 => s' := { s' with tlb_vpn := s'.tlb_vpn.set! s.tlb_sel.toNat d,
+    | 65 => s' := { s' with tlb_vpn := s'.tlb_vpn.set! s.tlb_sel.toNat
+                              (BitVec.ofNat 32 (d.toNat % 0x1000000)),
                             tlb_dom := s'.tlb_dom.set! s.tlb_sel.toNat
                                          (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)),
                             tlb_vld := s'.tlb_vld.set! s.tlb_sel.toNat true }
-    | 66 => s' := { s' with tlb_ppn := s'.tlb_ppn.set! s.tlb_sel.toNat d,
+    | 66 => s' := { s' with tlb_ppn := s'.tlb_ppn.set! s.tlb_sel.toNat
+                              (BitVec.ofNat 32 (d.toNat % 0x1000000)),
                             tlb_cell := s'.tlb_cell.set! s.tlb_sel.toNat
                                           (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)) }
     | 67 =>
