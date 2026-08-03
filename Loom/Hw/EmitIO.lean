@@ -5,6 +5,8 @@ import Loom.Hw.MemInitOk
 import Loom.Hw.MemTarget
 import Loom.Hw.Outputs
 import Loom.Hw.SyncRead
+import Loom.Hw.ReadsOk
+import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 
 /-!
@@ -81,6 +83,25 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
     if ! d.syncReadOkB m then
       throw <| IO.userError
         s!"Design.emit: D19 — memory '{m}' of '{d.name}' is read outside a register-latch site, so it would emit as LUTRAM:\n{d.syncReadReport m}"
+  -- **W1.1 — declaration checking, both directions.** `designWFCheck`
+  -- constrains WRITES (a rule may not write an undeclared signal) and was
+  -- previously only exercised on the proof path, so a corroborate-only design
+  -- never ran it. `readsOkB` constrains READS, whose failure mode is worse
+  -- because it is silent: an undeclared or wrong-width read evaluates to 0
+  -- forever, so the design simulates, emits, and is simply wrong. Both are
+  -- emit-time refusals here for the D19/D38/D39 reason — an obligation a
+  -- caller can skip is not an obligation.
+  for (n, w) in d.badRegReads do
+    throw <| IO.userError (d.badRegReadError n w)
+  for (m, dw) in d.badMemReads do
+    throw <| IO.userError (d.badMemReadError m dw)
+  if ! Loom.Hw.Compile.designWFCheck d then
+    throw <| IO.userError
+      s!"Design.emit: design '{d.name}' fails `Compile.designWFCheck` — a rule \
+writes a signal the design does not declare, two register or memory names \
+collide, or a memory's write-port indices do not strictly increase along the \
+design's write order. This was previously checked only on the proof path, so \
+a corroborate-only design could emit without it (W1.1)."
   if let some dir := path.parent then
     IO.FS.createDirAll dir
   IO.FS.writeFile path
