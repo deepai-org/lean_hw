@@ -414,8 +414,8 @@ def CMD_TLB_PPN  : Nat := 66
 /-- `cmd 67` = the §15 `map.protect`/`munmap` shootdown: invalidate every
 TLB entry whose recorded cell equals `cmd_data[7:0]`. -/
 def CMD_MAP_PROTECT : Nat := 67
-def CAP_SEND_OP : Nat := 0x3e
-def CAP_RECV_OP : Nat := 0x3f
+def OP_CAP_SEND : Nat := 0xa2
+def OP_CAP_RECV : Nat := 0xa3
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
 def curPoisoned : Expr 1 :=
@@ -505,98 +505,98 @@ turned the trap test into a valid instruction. 0x8c is in the ISA's reserved
 "memory growth" range and is unoccupied before and after. -/
 def OP_INVALID : Nat := 0x8c
 
-def OP_NOP : Nat := 0x00
+def OP_NOP : Nat := 0x01
 def OP_MOV : Nat := 0x02
-def OP_LIU : Nat := 0x04
-def OP_SLEEP : Nat := 0x07
-def OP_LD_S : Nat := 0x09
+def OP_LIU : Nat := 0x52
+def OP_SLEEP : Nat := 0xa8
+def OP_LD_S : Nat := 0x72
 def OP_ADD : Nat := 0x10
 def OP_SUB : Nat := 0x11
 def OP_MUL : Nat := 0x12
-def OP_DIV : Nat := 0x13
-def OP_AND : Nat := 0x14
-def OP_OR : Nat := 0x15
-def OP_XOR : Nat := 0x16
+def OP_DIV : Nat := 0x15
+def OP_AND : Nat := 0x19
+def OP_OR : Nat := 0x1a
+def OP_XOR : Nat := 0x1b
 def OP_SREM : Nat := 0x17
-def OP_LSL : Nat := 0x18
-def OP_LSR : Nat := 0x19
-def OP_ASR : Nat := 0x1a
-def OP_SLT : Nat := 0x1b
-def OP_SLTI : Nat := 0x1d
+def OP_LSL : Nat := 0x20
+def OP_LSR : Nat := 0x21
+def OP_ASR : Nat := 0x22
+def OP_SLT : Nat := 0x25
+def OP_SLTI : Nat := 0x50
 def OP_NOT : Nat := 0x1f
-def OP_JMP : Nat := 0x20
-def OP_BEQ : Nat := 0x21
-def OP_BNE : Nat := 0x22
-def OP_BLT : Nat := 0x23
-def OP_BGE : Nat := 0x24
-def OP_BLTU : Nat := 0x25
+def OP_JMP : Nat := 0x60
+def OP_BEQ : Nat := 0x63
+def OP_BNE : Nat := 0x64
+def OP_BLT : Nat := 0x65
+def OP_BGE : Nat := 0x66
+def OP_BLTU : Nat := 0x67
 def OP_SLTU : Nat := 0x26
-def OP_JAL : Nat := 0x27
-def OP_JALR : Nat := 0x28
-def OP_LD : Nat := 0x30
-def OP_LD_31 : Nat := 0x31
-def OP_LD_32 : Nat := 0x32
-def OP_ST : Nat := 0x33
-def OP_ST_34 : Nat := 0x34
-def OP_ST_35 : Nat := 0x35
-def OP_LD_36 : Nat := 0x36
-def OP_ST_37 : Nat := 0x37
-def OP_EXIT : Nat := 0x3a
-def OP_THREAD_EXIT : Nat := 0x3b
-def OP_MINI_GATE_CALL : Nat := 0x3c
-def OP_MINI_GATE_RETURN : Nat := 0x3d
-def OP_MINI_CAP_SEND : Nat := 0x3e
-def OP_MINI_CAP_RECV : Nat := 0x3f
-def OP_SEL : Nat := 0x40
-def OP_SEL_41 : Nat := 0x41
-def OP_SEL_42 : Nat := 0x42
-def OP_SEL_43 : Nat := 0x43
-def OP_SEL_44 : Nat := 0x44
-def OP_SEL_45 : Nat := 0x45
+def OP_JAL : Nat := 0x61
+def OP_JALR : Nat := 0x62
+def OP_LD : Nat := 0x76
+def OP_LD_31 : Nat := 0x75
+def OP_LD_32 : Nat := 0x71
+def OP_ST : Nat := 0x7a
+def OP_ST_34 : Nat := 0x79
+def OP_ST_35 : Nat := 0x77
+def OP_LD_36 : Nat := 0x73
+def OP_ST_37 : Nat := 0x78
+def OP_EXIT : Nat := 0xce
+def OP_THREAD_EXIT : Nat := 0x03
+def OP_MINI_GATE_CALL : Nat := 0x04
+def OP_MINI_GATE_RETURN : Nat := 0xa1
+def OP_MINI_CAP_SEND : Nat := 0xa2
+def OP_MINI_CAP_RECV : Nat := 0xa3
+def OP_SEL : Nat := 0x27
+def OP_SEL_41 : Nat := 0x05
+def OP_SEL_42 : Nat := 0x06
+def OP_SEL_43 : Nat := 0x07
+def OP_SEL_44 : Nat := 0x08
+def OP_SEL_45 : Nat := 0x09
 def OP_LSRI : Nat := 0x4d
 def OP_ASRI : Nat := 0x4e
 def OP_SLTIU : Nat := 0x51
-def OP_GET_PCR : Nat := 0x54
-def OP_CLONE_SPAWN : Nat := 0x59
+def OP_GET_PCR : Nat := 0x0f
+def OP_CLONE_SPAWN : Nat := 0xab
 def OP_BGEU : Nat := 0x68
-def OP_LD_S_70 : Nat := 0x70
-def OP_LD_S_72 : Nat := 0x72
+def OP_LD_S_70 : Nat := 0x74
+def OP_LD_S_72 : Nat := 0x70
 def OP_YIELD : Nat := 0x98
 def OP_FUTEX_WAIT : Nat := 0x99
 def OP_FUTEX_WAKE : Nat := 0x9a
-def OP_ADDI : Nat := 0xa0
-def OP_ANDI : Nat := 0xa1
-def OP_ORI : Nat := 0xa2
-def OP_XORI : Nat := 0xa3
-def OP_LSLI : Nat := 0xa4
-def OP_UDIV : Nat := 0xa7
-def OP_UREM : Nat := 0xa9
-def OP_MULH : Nat := 0xaa
-def OP_MULHU : Nat := 0xab
-def OP_SEXT_B : Nat := 0xad
-def OP_SEXT_H : Nat := 0xae
-def OP_SEXT_W : Nat := 0xaf
-def OP_ZEXT_B : Nat := 0xb0
-def OP_ZEXT_H : Nat := 0xb1
-def OP_ZEXT_W : Nat := 0xb2
-def OP_CTZ : Nat := 0xb4
-def OP_ROL : Nat := 0xb6
-def OP_ROR : Nat := 0xb7
-def OP_BSWAP16 : Nat := 0xb8
-def OP_BSWAP32 : Nat := 0xb9
-def OP_BSWAP64 : Nat := 0xba
-def OP_LR_D : Nat := 0xc5
-def OP_SC_D : Nat := 0xc6
-def OP_LR_D_ACQ : Nat := 0xc7
-def OP_SC_D_REL : Nat := 0xc8
-def OP_LR_D_ACQ_REL : Nat := 0xc9
-def OP_SC_D_ACQ_REL : Nat := 0xca
-def OP_FENCE : Nat := 0xcd
-def OP_AUIPC : Nat := 0xd0
-def OP_FENCE_D1 : Nat := 0xd1
-def OP_FENCE_D2 : Nat := 0xd2
-def OP_FENCE_D3 : Nat := 0xd3
-def OP_FENCE_D4 : Nat := 0xd4
+def OP_ADDI : Nat := 0x48
+def OP_ANDI : Nat := 0x49
+def OP_ORI : Nat := 0x4a
+def OP_XORI : Nat := 0x4b
+def OP_LSLI : Nat := 0x4c
+def OP_UDIV : Nat := 0x16
+def OP_UREM : Nat := 0x18
+def OP_MULH : Nat := 0x13
+def OP_MULHU : Nat := 0x14
+def OP_SEXT_B : Nat := 0x38
+def OP_SEXT_H : Nat := 0x39
+def OP_SEXT_W : Nat := 0x3a
+def OP_ZEXT_B : Nat := 0x3b
+def OP_ZEXT_H : Nat := 0x3c
+def OP_ZEXT_W : Nat := 0x3d
+def OP_CTZ : Nat := 0x3f
+def OP_ROL : Nat := 0x23
+def OP_ROR : Nat := 0x24
+def OP_BSWAP16 : Nat := 0x41
+def OP_BSWAP32 : Nat := 0x42
+def OP_BSWAP64 : Nat := 0x43
+def OP_LR_D : Nat := 0x90
+def OP_SC_D : Nat := 0x9d
+def OP_LR_D_ACQ : Nat := 0x91
+def OP_SC_D_REL : Nat := 0x9e
+def OP_LR_D_ACQ_REL : Nat := 0x9c
+def OP_SC_D_ACQ_REL : Nat := 0x9f
+def OP_FENCE : Nat := 0x92
+def OP_AUIPC : Nat := 0x53
+def OP_FENCE_D1 : Nat := 0x7c
+def OP_FENCE_D2 : Nat := 0x7e
+def OP_FENCE_D3 : Nat := 0x80
+def OP_FENCE_D4 : Nat := 0x81
 
 /-! ## Literal helpers -/
 
@@ -877,11 +877,11 @@ def ld_wb : Expr 64 :=
   priTree
   [ (.eq ld_op_q (L8 0x30), mem_src)
   , (.eq ld_op_q (L8 0x31), .zext (.slice lw_shift 0 32) 64)
-  , (.eq ld_op_q (L8 0x05), .sext (.slice lw_shift 0 32) 64)
+  , (.eq ld_op_q (L8 OP_SEL_41), .sext (.slice lw_shift 0 32) 64)
   , (.eq ld_op_q (L8 0x36), .zext (.slice lw_shift 0 16) 64)
-  , (.eq ld_op_q (L8 0x09), .sext (.slice lw_shift 0 16) 64)
+  , (.eq ld_op_q (L8 OP_SEL_45), .sext (.slice lw_shift 0 16) 64)
   , (.eq ld_op_q (L8 0x32), .zext (.slice lw_shift 0 8) 64)
-  , (.eq ld_op_q (L8 0x08), .sext (.slice lw_shift 0 8) 64) ] mem_src
+  , (.eq ld_op_q (L8 OP_SEL_44), .sext (.slice lw_shift 0 8) 64) ] mem_src
 
 def st_width : Expr 4 :=
   priTree
@@ -1060,9 +1060,9 @@ def capSendSlot : Expr 4 := .slice b 0 4
 def capOcc (d : Expr 4) : Expr 1 :=
   .eq (.slice (.shr cap_ival (.zext d 16)) 0 1) (.lit (BitVec.ofNat 1 1))
 /-- A send lands only if the target inbox is free. -/
-def capSendFire : Expr 1 := exG (.and (opIs CAP_SEND_OP) (.not (capOcc capSendSlot)))
+def capSendFire : Expr 1 := exG (.and (opIs OP_CAP_SEND) (.not (capOcc capSendSlot)))
 /-- A receive lands only if this domain's inbox is occupied. -/
-def capRecvFire : Expr 1 := exG (.and (opIs CAP_RECV_OP) (capOcc capRecvSlot))
+def capRecvFire : Expr 1 := exG (.and (opIs OP_CAP_RECV) (capOcc capRecvSlot))
 
 /-- Funnel triples. -/
 def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
@@ -1075,12 +1075,12 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- S_EX is_sel
   , (exG (.and is_sel (.not (.eq rdf (L5 0)))), cat55 cur rdf, .mux sel_cond sel_t sel_f)
   -- EXT-6: CAP_SEND result -- 0 on success, all-ones on a full inbox.
-  , (exG (.and (opIs CAP_SEND_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
+  , (exG (.and (opIs OP_CAP_SEND) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
        .mux (capOcc capSendSlot) (L64 0xFFFFFFFFFFFFFFFF) (L64 0))
   -- EXT-6: CAP_RECV result -- the handle addressed to THIS domain, or
   -- all-ones when this domain's inbox is empty. The index is `domCur`, not
   -- an operand, so no encoding reaches another domain's inbox.
-  , (exG (.and (opIs CAP_RECV_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
+  , (exG (.and (opIs OP_CAP_RECV) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
        .mux (capOcc capRecvSlot) (capIboxRd capRecvSlot) (L64 0xFFFFFFFFFFFFFFFF))
   -- S_EX GET_PCR Tid (op 0x54, rs1f==2)
   , (exG (.and (opIs OP_GET_PCR) (.and (.eq rs1f (L5 2)) (.not (.eq rdf (L5 0))))),
@@ -1591,8 +1591,8 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- EXT-6: 0x62 CAP_SEND (a = handle, b = target domain) and 0x63 CAP_RECV.
   -- Both just sequence here; the inbox, the occupancy bitmap and `rd` are
   -- written in their funnels.
-  gcons (opIs CAP_SEND_OP) (.seq stepPc (.seq retireInc goF0)) <|
-  gcons (opIs CAP_RECV_OP) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs OP_CAP_SEND) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs OP_CAP_RECV) (.seq stepPc (.seq retireInc goF0)) <|
   -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
   -- change) if this thread is already inside a gate -- the continuation is
   -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
