@@ -406,8 +406,8 @@ def CMD_TLB_PPN  : Nat := 66
 /-- `cmd 67` = the §15 `map.protect`/`munmap` shootdown: invalidate every
 TLB entry whose recorded cell equals `cmd_data[7:0]`. -/
 def CMD_MAP_PROTECT : Nat := 67
-def CAP_SEND_OP : Nat := 0x62
-def CAP_RECV_OP : Nat := 0x63
+def CAP_SEND_OP : Nat := 0x3e
+def CAP_RECV_OP : Nat := 0x3f
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
 def curPoisoned : Expr 1 :=
@@ -1475,7 +1475,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
   -- the gate's entry in the gate's domain. `tdom`/`tcont`/`tcdom`/`in_gate`
   -- are written in their funnels; this arm owns pc and rd.
-  gcons (opIs 0x60)
+  gcons (opIs 0x3c)
     (.ite curInGate
       (.seq (.ite (.not (.eq rdf (L5 0))) .skip .skip)
         (.seq stepPc (.seq retireInc goF0)))
@@ -1485,7 +1485,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- in-gate bit are restored in their funnels. A return with no gate open
   -- is a no-op (it just steps), which is the fail-quiet reading: a thread
   -- cannot leave a domain it never entered.
-  gcons (opIs 0x61)
+  gcons (opIs 0x3d)
     (.ite curInGate
       (.seq (.write 64 "pc" (tcontRd cur)) (.seq retireInc goF0))
       (.seq stepPc (.seq retireInc goF0))) <|
@@ -1749,8 +1749,8 @@ def tdomTriples : List (Expr 1 × Expr 5 × Expr 8) :=
   -- EXT-5: a gate call moves the thread to the GATE's domain -- a domain
   -- the host installed, never one the instruction names. A return restores
   -- the caller's. These two are the only instruction-driven `tdom` writes.
-  , (exG (.and (opIs 0x60) (.not curInGate)), cur, gateDomRd (.slice a 0 4))
-  , (exG (.and (opIs 0x61) curInGate), cur, tcdomRd cur) ]
+  , (exG (.and (opIs 0x3c) (.not curInGate)), cur, gateDomRd (.slice a 0 4))
+  , (exG (.and (opIs 0x3d) curInGate), cur, tcdomRd cur) ]
 
 def tdomWeE : Expr 1 := orTree (tdomTriples.map (fun t => t.1))
 def tdomWaE : Expr 5 := priTree (tdomTriples.map (fun t => (t.1, t.2.1))) (L5 0)
@@ -1763,8 +1763,8 @@ def tdomWdE : Expr 8 := priTree (tdomTriples.map (fun t => (t.1, t.2.2))) (L8 0)
 EXT-3's `poison`) because nothing reads it at a dynamic index -- only at
 `cur` -- but it must be *set and cleared* per slot, and a 32-bit
 set/clear on a register is one mux where a memory would be a port. -/
-def gateCall : Expr 1 := exG (.and (opIs 0x60) (.not curInGate))
-def gateRet  : Expr 1 := exG (.and (opIs 0x61) curInGate)
+def gateCall : Expr 1 := exG (.and (opIs 0x3c) (.not curInGate))
+def gateRet  : Expr 1 := exG (.and (opIs 0x3d) curInGate)
 
 /-- `in_gate` after this cycle: set bit `cur` on a gate call, clear it on a
 gate return, plus the `cmd 13` reset. -/

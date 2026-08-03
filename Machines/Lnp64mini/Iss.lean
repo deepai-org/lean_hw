@@ -605,10 +605,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
         -- `smpRule`); S_EX keeps only FUTEX_WAKE's sequencing half.
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      -- EXT-6: 0x62 CAP_SEND (a = handle, b = target domain), 0x63 CAP_RECV.
+      -- EXT-6: 0x3e CAP_SEND (a = handle, b = target domain), 0x3f CAP_RECV.
       -- RECV indexes the receiver's OWN domain -- not an operand -- so no
       -- encoding reaches another domain's inbox.
-      else if o = 0x62 then
+      else if o = 0x3e then
         let tgt := (s.b.toNat) % 16
         let occ := s.cap_ival.getLsbD tgt
         if ¬ occ then
@@ -618,7 +618,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           rfWe := true; rfWa := (curV ++ rdf s)
           rfWd := if occ then BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF else 0
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = 0x63 then
+      else if o = 0x3f then
         let me := (s.tdom[curV.toNat]!).toNat % 16
         let occ := s.cap_ival.getLsbD me
         if occ then
@@ -627,9 +627,9 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           rfWe := true; rfWa := (curV ++ rdf s)
           rfWd := if occ then s.cap_ibox[me]! else BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      -- EXT-5: 0x60 GATE_CALL / 0x61 GATE_RETURN. A gate is the only way a
+      -- EXT-5: 0x3c GATE_CALL / 0x3d GATE_RETURN. A gate is the only way a
       -- thread changes domain, and only to a domain the host installed.
-      else if o = 0x60 then
+      else if o = 0x3c then
         let inG := s.in_gate.getLsbD curV.toNat
         if inG then
           -- depth 1: a nested call is refused, no state change
@@ -642,7 +642,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           tdom := s'.tdom.set! curV.toNat s.gate_dom[g]!,
                           pc := s.gate_ent[g]!,
                           retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = 0x61 then
+      else if o = 0x3d then
         if s.in_gate.getLsbD curV.toNat then
           s' := { s' with pc := s.tcont[curV.toNat]!,
                           tdom := s'.tdom.set! curV.toNat s.tcdom[curV.toNat]!,
