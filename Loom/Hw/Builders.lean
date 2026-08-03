@@ -97,6 +97,15 @@ theorem priTree_eval {w : Nat} (σ : St) (xs : List (Expr 1 × Expr w)) (d : Exp
     (priTree xs d).eval σ = (priLinear xs d).eval σ :=
   priTreeAux_eval σ _ xs d
 
+/-- Last-match-wins variant (mirrors a `foldl` funnel). -/
+def priTreeLast {w : Nat} (xs : List (Expr 1 × Expr w)) (d : Expr w) : Expr w :=
+  priTree xs.reverse d
+
+/-- …and its theorem, inherited from `priTree_eval`. -/
+theorem priTreeLast_eval {w : Nat} (σ : St) (xs : List (Expr 1 × Expr w)) (d : Expr w) :
+    (priTreeLast xs d).eval σ = (priLinear xs.reverse d).eval σ :=
+  priTree_eval σ _ d
+
 /-! ## Associative reduction -/
 
 def pairFold {w : Nat} (f : Expr w → Expr w → Expr w) : List (Expr w) → List (Expr w)
