@@ -908,3 +908,40 @@ itself is implicated by this run.
 **27.21 MHz** against the 25 MHz clock — a **9 % margin**, the thinnest of
 the campaign and exactly what the budget predicted for the one increment
 that touches the load/store path. Bitstream built.
+
+### Update 2: the observable is fixed, and the mediation is still unproven
+
+Sampling the **loaded value** instead of `core_addr` (a hit reads the mapped
+page, a fail-closed reads `DATA_BASE`, and the two pages are now seeded with
+different values so they are distinguishable):
+
+```
+  OK  MMU-BYPASS (mmu_en=0: EDSL≡ISS, the pre-EXT-7 machine, 60 cyc)
+  OK  MMU-XLAT   (mmu_en=1: EDSL≡ISS through the TLB, 60 cyc)
+  domain tag: from domain 3 r5=0x0BAD | from domain 5 r5=0x0BAD (mapped page holds 0xD00D)
+```
+
+The access **from the entry's own domain** also reads the fail-closed page.
+So the TLB never hits at all, and the two mediation claims are not
+distinguishing anything — a test where both arms fail closed proves nothing
+about tagging, exactly as a test where both arms hit would prove nothing.
+
+Ruled out: the immediate field is 32 bits wide (`encImmI`, `ir[45:14]`), so
+`0x4000` encodes fine. Remaining candidates, in order: the `enc 0x31 5 1 0`
+load encoding may not put the address where the LD path reads it; and the
+`tlb_vld` fill funnel passes `i.val` as the **memWrite port index** rather
+than a port number, which is a genuine defect in the design regardless of
+whether it causes this symptom.
+
+**The sharper finding: the TLB memories are not in the lockstep comparison.**
+`cmpStates` covers registers, `rf`, `dmem`, `tdom` and the 64-bit thread
+arrays — not `tlb_vpn`/`tlb_ppn`/`tlb_dom`/`tlb_vld`/`tlb_cell`. So
+`MMU-XLAT` passing means the two legs agree *on `core_addr`*, not that they
+agree on the TLB. This is the **same trap EXT-2 hit** — state the increment
+added that the comparison does not see — and it is why the green EDSL≡ISS
+line above must not be read as "the TLB is verified".
+
+**Owed, in this order:** (1) add the five TLB memories to `cmpStates`;
+(2) fix the `tlb_vld` write-port index; (3) get a hit from the entry's own
+domain, which is the precondition for either mediation claim meaning
+anything; (4) then judge `tag` and `shootdown`. Stages B and C untouched.

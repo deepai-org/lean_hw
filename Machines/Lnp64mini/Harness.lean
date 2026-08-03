@@ -1025,7 +1025,12 @@ def cmdMmu (dom : Nat) (bump : Bool) : Nat → MiniIn := fun k =>
   else {}
 
 def mmuSelftest : IO Unit := do
+  -- Seed the mapped physical page and the fail-closed page with DIFFERENT
+  -- values, or a hit and a miss are indistinguishable and the test is
+  -- vacuous whatever the TLB does.
   let img := imageFrom TEXT_BASE progLdSt
+             ++ [(ddrWord ((BitVec.ofNat 32 DATA_BASE).toNat + (MMU_PPN <<< 12)), 0xD00D),
+                 (ddrWord DATA_BASE, 0x0BAD)]
   -- (1) bypass is the pre-EXT-7 machine.
   let bad ← lockstep img 1 (cmdQuantum 0) (fun _ => 0) 60
   if bad = 0 then IO.println "  OK  MMU-BYPASS (mmu_en=0: EDSL≡ISS, the pre-EXT-7 machine, 60 cyc)"
@@ -1036,17 +1041,22 @@ def mmuSelftest : IO Unit := do
   else IO.println s!"  FAIL MMU-XLAT ({bad2} mismatches)"
   let (sh, dh, _) := runIss img 1 (cmdMmu MMU_DOM false) (fun _ => 0) 300
   let (sm, _, _)  := runIss img 1 (cmdMmu 5 false) (fun _ => 0) 300
-  let hitAddr := (BitVec.ofNat 32 DATA_BASE).toNat + (MMU_PPN <<< 12)
-  IO.println s!"  domain tag: from domain {MMU_DOM} core_addr=0x{String.ofList (Nat.toDigits 16 sh.core_addr.toNat)} \
-(want 0x{String.ofList (Nat.toDigits 16 hitAddr)}) | from domain 5 core_addr=0x{String.ofList (Nat.toDigits 16 sm.core_addr.toNat)} \
-(want 0x{String.ofList (Nat.toDigits 16 DATA_BASE)} = fail-closed)"
-  let ok2 := sh.core_addr.toNat == hitAddr && sm.core_addr.toNat == DATA_BASE
+  -- The observable is the LOADED VALUE, not `core_addr`. `core_addr` at halt
+  -- holds the instruction fetch that followed the load, and fetches are
+  -- deliberately untranslated (`ddrPc` is separate from `ddrEa`), so it
+  -- cannot distinguish a hit from a fail-closed. A hit reads the mapped
+  -- physical page; a fail-closed reads `DATA_BASE`, which the image never
+  -- wrote, so the two values differ.
+  let hitVal  := (dh.mem.getD (ddrWord ((BitVec.ofNat 32 DATA_BASE).toNat + (MMU_PPN <<< 12))) 0).toNat
+  let missVal := (dh.mem.getD (ddrWord DATA_BASE) 0).toNat
+  IO.println s!"  domain tag: from domain {MMU_DOM} r5={(sh.rf[5]!).toNat} (mapped page holds {hitVal}) \
+| from domain 5 r5={(sm.rf[5]!).toNat} (fail-closed page holds {missVal})"
+  let ok2 := (sh.rf[5]!).toNat == hitVal && (sm.rf[5]!).toNat == missVal && hitVal ≠ missVal
   -- (3) the shootdown: bumping the VMA's cell kills the translation.
   let (sb, _, _) := runIss img 1 (cmdMmu MMU_DOM true) (fun _ => 0) 300
-  IO.println s!"  shootdown:  after cmd 67 on cell {MMU_CELL}, core_addr=0x{String.ofList (Nat.toDigits 16 sb.core_addr.toNat)} \
-(want 0x{String.ofList (Nat.toDigits 16 DATA_BASE)} = fail-closed) | before the bump it was 0x{String.ofList (Nat.toDigits 16 sh.core_addr.toNat)}"
-  let ok3 := sb.core_addr.toNat == DATA_BASE && sh.core_addr.toNat ≠ DATA_BASE
-  let _ := dh
+  IO.println s!"  shootdown:  after cmd 67 on cell {MMU_CELL}, r5={(sb.rf[5]!).toNat} \
+(want {missVal} = fail-closed) | before the bump it was {(sh.rf[5]!).toNat}"
+  let ok3 := (sb.rf[5]!).toNat == missVal && (sh.rf[5]!).toNat ≠ missVal
   if bad = 0 && bad2 = 0 && ok2 && ok3 then
     IO.println "LNP64MINI MMU SELFTEST OK — translation is domain-tagged and the VMA's epoch cell shoots it down"
   else
