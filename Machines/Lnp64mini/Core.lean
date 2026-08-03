@@ -1801,11 +1801,13 @@ def tarrFunnelRule : Rule :=
     -- invalidates every entry naming the bumped cell -- the §15 line 876
     -- rule that the cached translation's cell IS the VMA's cell.
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
-            (.memWrite 3 32 "tlb_vpn" 0 tlb_sel cmdData) .skip) <|
+            -- Mask off the domain field in [31:24]: the stored tag must be
+            -- the VPN alone, or it can never equal `tlbVpnOf ea`.
+            (.memWrite 3 32 "tlb_vpn" 0 tlb_sel (.zext (.slice cmdData 0 24) 32)) .skip) <|
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
             (.memWrite 3 8 "tlb_dom" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
-            (.memWrite 3 32 "tlb_ppn" 0 tlb_sel cmdData) .skip) <|
+            (.memWrite 3 32 "tlb_ppn" 0 tlb_sel (.zext (.slice cmdData 0 24) 32)) .skip) <|
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
             (.memWrite 3 8 "tlb_cell" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
     .seq ((List.finRange TLBN).foldr (fun i acc =>
@@ -1814,7 +1816,7 @@ def tarrFunnelRule : Rule :=
                                      (.slice cmdData 0 8))))
                             (.and cmdValid (.and (.eq cmdIdx (L7 CMD_TLB_VPN))
                                 (.eq tlb_sel (.lit (BitVec.ofNat 3 i.val))))))
-                   (.memWrite 3 1 "tlb_vld" i.val
+                   (.memWrite 3 1 "tlb_vld" 0
                       (.lit (BitVec.ofNat 3 i.val))
                       (.eq cmdIdx (L7 CMD_TLB_VPN))) .skip) acc) .skip) <|
     -- EXT-5: the host-loaded gate table.

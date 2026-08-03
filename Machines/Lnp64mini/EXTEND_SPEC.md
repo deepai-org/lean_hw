@@ -945,3 +945,49 @@ line above must not be read as "the TLB is verified".
 (2) fix the `tlb_vld` write-port index; (3) get a hit from the entry's own
 domain, which is the precondition for either mediation claim meaning
 anything; (4) then judge `tag` and `shootdown`. Stages B and C untouched.
+
+### Update 3: EXT-7 stage A PASSES — the root cause was the stored tag
+
+```
+  OK  MMU-BYPASS (mmu_en=0: EDSL≡ISS, the pre-EXT-7 machine, 60 cyc)
+  OK  MMU-XLAT   (mmu_en=1: EDSL≡ISS through the TLB, 60 cyc)
+  domain tag: from domain 3 r5=53261 (mapped page) | from domain 5 r5=2989 (fail-closed)
+  shootdown:  after cmd 67 on cell 9, r5=2989 | before the bump it was 53261
+LNP64MINI MMU SELFTEST OK — translation is domain-tagged and the VMA's epoch cell shoots it down
+```
+
+**Root cause.** `cmd 65` carries the VPN in `[23:0]` and the domain in
+`[31:24]`, and the fill stored the **whole word** into `tlb_vpn`. The stored
+tag was `0x03000004` where the lookup computes `tlbVpnOf ea = 4`, so no
+address could ever match and every access fell to fail-closed — including
+from the entry's own domain. Masking the store to `[23:0]` (both legs) fixed
+it. One-line defect, and every symptom followed from it.
+
+**What found it, and what did not.** Three passes of the end-to-end test all
+said "FAILED" without localising anything; two of those failures were my own
+test defects (measuring `core_addr`, which holds the *fetch* after the load;
+then not seeding the two pages differently). What actually localised it was a
+**direct probe of `ddrEaOf`** with a hand-built filled TLB — seconds instead
+of a 25-minute machine run — which showed the translation, the domain tag and
+the invalidation were all correct in isolation. That moved the search from
+"the TLB is wrong" to "the fill is wrong", which is where the bug was.
+*Probe the unit before re-running the system* is the lesson, and it is the
+same shape as EXT-4's cell-origin diff.
+
+**Two real defects were fixed along the way**, both found by the owed-list
+rather than by the failing test: `tlb_vld`'s funnel passed `i.val` as the
+memWrite **port index** rather than a port number, and `cmpStates` did not
+compare the five TLB memories at all — so a green `MMU-XLAT` had meant "the
+legs agree on `core_addr`", not "the legs agree on the TLB". That is the same
+trap EXT-2 hit, now closed for the TLB too.
+
+**Silicon:** 50 531 LUTs (**47 %**), routed `sysclk` **27.21 MHz** — a 9 %
+margin over the 25 MHz clock, the thinnest of the campaign and exactly what
+the budget predicted for the one increment on the load/store path. NetBSD
+acceptance (`/home/kevin/autonomy/20260803-032800`): `PASS`, ping **10/10,
+0 % loss, 139 ms**, unattended from power-off.
+
+**Stage A is done. Stages B and C remain**: move the guest under real
+non-identity translation (loader builds the page table, `gem_core`'s `PHYS()`
+becomes a named DMA-window grant), then revoke a live mapping under running
+NetBSD and measure the fail-closed against the D23 bound.

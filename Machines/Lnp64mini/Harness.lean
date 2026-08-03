@@ -232,6 +232,20 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
       if bad < 12 then
         IO.println s!"  MISMATCH step {step} tdom[{i}]: edsl={(σ.mems "tdom" i 8).toNat} iss={(s.tdom[i]!).toNat}"
       bad := bad + 1
+  -- EXT-7: the TLB. These were NOT compared when the MMU landed, so a green
+  -- `MMU-XLAT` meant "the legs agree on core_addr", not "the legs agree on
+  -- the TLB" -- the same trap EXT-2 hit. Widths differ per array, so they
+  -- cannot ride `issTArrays` (which is the 64-bit family).
+  for i in List.range 8 do
+    let checks : List (String × Nat × Nat) :=
+      [("tlb_vpn", 32, (s.tlb_vpn[i]!).toNat), ("tlb_ppn", 32, (s.tlb_ppn[i]!).toNat),
+       ("tlb_dom", 8,  (s.tlb_dom[i]!).toNat), ("tlb_cell", 8, (s.tlb_cell[i]!).toNat),
+       ("tlb_vld", 1,  if s.tlb_vld[i]! then 1 else 0)]
+    for (mn, w, v) in checks do
+      if (σ.mems mn i w).toNat ≠ v then
+        if bad < 12 then
+          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
+        bad := bad + 1
   -- D20: the thread-table memories, all 32 entries of each
   for (mn, arr) in issTArrays s do
     for i in List.range NT do
