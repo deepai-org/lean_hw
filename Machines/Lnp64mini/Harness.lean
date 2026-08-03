@@ -864,17 +864,17 @@ def GATE_DOM_TEST : Nat := 3
 /-- Gate body entry is word 4 = `TEXT_BASE + 32`. -/
 def progGate : List (BitVec 64) :=
   [ encImmI 0xa0 1 0 0,        -- w0  r1 = 0 (gate id)
-    enc 0x60 0 1 0,            -- w1  GATE_CALL gate r1  -> word 4
+    enc 0x3c 0 1 0,            -- w1  GATE_CALL gate r1  -> word 4
     encImmI 0xa0 9 0 7,        -- w2  r9 = 7   (only after a correct return)
     enc 0x3a 0 0 0,            -- w3  EXIT
     encImmI 0xa0 10 0 5,       -- w4  r10 = 5  (gate body, in domain 3)
-    enc 0x61 0 0 0 ]           -- w5  GATE_RETURN -> word 2
+    enc 0x3d 0 0 0 ]           -- w5  GATE_RETURN -> word 2
 
 /-- Same, but the gate body halts instead of returning: the machine stops
 inside the gate. -/
 def progGateStay : List (BitVec 64) :=
   [ encImmI 0xa0 1 0 0,
-    enc 0x60 0 1 0,
+    enc 0x3c 0 1 0,
     encImmI 0xa0 9 0 7,
     enc 0x3a 0 0 0,
     encImmI 0xa0 10 0 5,
@@ -942,13 +942,13 @@ def CAP_HANDLE : Nat := 0xCAFE
 def progCapSendThen (retReg : Nat) : List (BitVec 64) :=
   [ encImmI 0xa0 1 0 CAP_HANDLE,   -- w0  r1 = the handle
     encImmI 0xa0 2 0 3,            -- w1  r2 = 3 (target domain)
-    enc 0x62 3 1 2,                -- w2  CAP_SEND r3 = send(r1 -> domain r2)
+    enc 0x3e 3 1 2,                -- w2  CAP_SEND r3 = send(r1 -> domain r2)
     encImmI 0xa0 4 0 0,            -- w3  r4 = 0 (gate id)
-    enc 0x60 0 4 0,                -- w4  GATE_CALL gate 0 -> word 7
+    enc 0x3c 0 4 0,                -- w4  GATE_CALL gate 0 -> word 7
     enc 0x3a 0 0 0,                -- w5  EXIT (after the gate returns)
     enc 0x00 0 0 0,                -- w6  (pad)
-    enc 0x63 retReg 0 0,           -- w7  CAP_RECV -> rretReg   (gate body)
-    enc 0x61 0 0 0 ]               -- w8  GATE_RETURN -> word 5
+    enc 0x3f retReg 0 0,           -- w7  CAP_RECV -> rretReg   (gate body)
+    enc 0x3d 0 0 0 ]               -- w8  GATE_RETURN -> word 5
 
 def progCapRight : List (BitVec 64) := progCapSendThen 9
 def progCapWrong : List (BitVec 64) := progCapSendThen 9
