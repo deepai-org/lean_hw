@@ -215,16 +215,16 @@ def is_alu (s : MiniSt) : Bool :=
    0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0x1d,0x1e,0xd0,
    0xad,0xae,0xaf,0xb0,0xb1,0xb2,0xb8,0xb9,0xba,0xb6,0xb7,0xb4].contains (opN s)
 def is_load (s : MiniSt) : Bool :=
-  [0x30,0x31,0x05,0x36,0x09,0x32,0x08].contains (opN s)
+  [0x30,0x31,0x70,0x36,0x09,0x32,0x72].contains (opN s)
 def is_store (s : MiniSt) : Bool := [0x33,0x34,0x37,0x35].contains (opN s)
 def is_branch (s : MiniSt) : Bool := let o := opN s; 0x21 ≤ o && o ≤ 0x26
 def is_lr (s : MiniSt) : Bool := [0xc5,0xc7,0xc9].contains (opN s)
 def is_sc (s : MiniSt) : Bool := [0xc6,0xc8,0xca].contains (opN s)
 def is_fence (s : MiniSt) : Bool := let o := opN s; o = 0xcd || (0xd1 ≤ o && o ≤ 0xd4)
 def is_sel (s : MiniSt) : Bool := let o := opN s; 0x40 ≤ o && o ≤ 0x45
-def is_div (s : MiniSt) : Bool := [0x13,0xa7,0xa8,0xa9].contains (opN s)
+def is_div (s : MiniSt) : Bool := [0x13,0xa7,0x17,0xa9].contains (opN s)
 def is_mulh (s : MiniSt) : Bool := [0xaa,0xab].contains (opN s)
-def div_sgn (s : MiniSt) : Bool := [0x13,0xa8].contains (opN s)
+def div_sgn (s : MiniSt) : Bool := [0x13,0x17].contains (opN s)
 
 /-- arithmetic shift right of a 64-bit value by `sh`. -/
 def asr (x : BitVec 64) (sh : Nat) : BitVec 64 := x.sshiftRight sh
@@ -239,21 +239,21 @@ def aluV (s : MiniSt) : BitVec 64 :=
   | 0x14 => av &&& bv
   | 0x15 => av ||| bv
   | 0x16 => av ^^^ bv
-  | 0x17 => ~~~ av
+  | 0x1f => ~~~ av
   | 0x18 => av <<< shamt_r s
   | 0x19 => av >>> shamt_r s
   | 0x1a => asr av (shamt_r s)
   | 0x1b => if av.slt bv then 1 else 0
-  | 0x1c => if av.ult bv then 1 else 0
+  | 0x26 => if av.ult bv then 1 else 0
   | 0xa0 => av + imm_i s
   | 0xa1 => av &&& imm_i s
   | 0xa2 => av ||| imm_i s
   | 0xa3 => av ^^^ imm_i s
   | 0xa4 => av <<< shamt_i s
-  | 0xa5 => av >>> shamt_i s
-  | 0xa6 => asr av (shamt_i s)
+  | 0x4d => av >>> shamt_i s
+  | 0x4e => asr av (shamt_i s)
   | 0x1d => if av.slt (imm_i s) then 1 else 0
-  | 0x1e => if av.ult (imm_i s) then 1 else 0
+  | 0x51 => if av.ult (imm_i s) then 1 else 0
   | 0xd0 => s.pc + imm_j s
   | 0xad => (av.extractLsb' 0 8).signExtend 64
   | 0xae => (av.extractLsb' 0 16).signExtend 64
@@ -284,7 +284,7 @@ def br_take (s : MiniSt) : Bool :=
   | 0x23 => av.slt bv
   | 0x24 => ¬ av.slt bv
   | 0x25 => av.ult bv
-  | 0x26 => ¬ av.ult bv
+  | 0x68 => ¬ av.ult bv
   | _ => false
 
 def sel_cond (s : MiniSt) : Bool :=
@@ -305,11 +305,11 @@ def ld_wb (s : MiniSt) : BitVec 64 :=
   match s.ld_op_q.toNat with
   | 0x30 => ms
   | 0x31 => (sh.extractLsb' 0 32).setWidth 64
-  | 0x05 => (sh.extractLsb' 0 32).signExtend 64
+  | 0x70 => (sh.extractLsb' 0 32).signExtend 64
   | 0x36 => (sh.extractLsb' 0 16).setWidth 64
   | 0x09 => (sh.extractLsb' 0 16).signExtend 64
   | 0x32 => (sh.extractLsb' 0 8).setWidth 64
-  | 0x08 => (sh.extractLsb' 0 8).signExtend 64
+  | 0x72 => (sh.extractLsb' 0 8).signExtend 64
   | _ => ms
 
 def st_width (s : MiniSt) : Nat :=
@@ -564,7 +564,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
         else
           s' := { s' with div_rem := 0, div_quo := div_a_abs s, div_d := div_b_abs s, div_cnt := 0,
-                          div_isrem := (o = 0xa8 ∨ o = 0xa9),
+                          div_isrem := (o = 0x17 ∨ o = 0xa9),
                           div_negq := div_sgn s ∧ (bit s.a 63 ≠ bit s.b 63),
                           div_negr := div_sgn s ∧ bit s.a 63,
                           st := BitVec.ofNat 5 S_DIV }
@@ -590,7 +590,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_branch s then
         s' := { s' with pc := if br_take s then s.pc + (imm_s s <<< 3) else pc8 s,
                         retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = 0x06 then
+      else if o = 0x98 then
         if s.next_ready = curV then s' := { s' with pc := pc8 s }
         else s' := { s' with tpc := s'.tpc.set! curV.toNat (pc8 s), cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]! }
         s' := { s' with retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
@@ -601,10 +601,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           s' := { s' with cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]!, st := BitVec.ofNat 5 S_F0 }
         else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
         s' := { s' with retire := s.retire + 1 }
-      else if o = 0xcb then
+      else if o = 0x99 then
         s' := { s' with core_addr := ddrEaOf s s.rdval,
                         core_rd := true, futex_addr_q := s.rdval, futex_exp := s.a, st := BitVec.ofNat 5 S_FTX1 }
-      else if o = 0xcc then
+      else if o = 0x9a then
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
         -- `smpRule`); S_EX keeps only FUTEX_WAKE's sequencing half.
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
@@ -792,7 +792,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
 
   -- SMP cross-core block (mirrors `smpRule`, which runs AFTER the FSM)
   let wakeLocal := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
-                   ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0xcc
+                   ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0x9a
   s' := { s' with wake_out := wakeLocal }
   -- EXT-4: publish the key we woke on; hold otherwise.
   if wakeLocal then s' := { s' with wake_key := s.rdval }
