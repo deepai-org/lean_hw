@@ -991,3 +991,50 @@ acceptance (`/home/kevin/autonomy/20260803-032800`): `PASS`, ping **10/10,
 non-identity translation (loader builds the page table, `gem_core`'s `PHYS()`
 becomes a named DMA-window grant), then revoke a live mapping under running
 NetBSD and measure the fail-closed against the D23 bound.
+
+---
+
+## EXT-7 stage B — the blocker is the TLB's *shape*, not the loader
+
+Stage B is "move the guest under real non-identity translation". Attempting
+it surfaces a fact stage A's design hid:
+
+**Stage A's TLB is 8 entries of fixed 4 KiB pages, with no walker.** The rump
+guest spans text 0x400000 through a 192 MB native heap at 0x4000000 — call it
+256 MB. At 4 KiB that is ~65 000 mappings competing for 8 slots, and a miss
+under `mmu_en` **fails closed by design**. The guest would fault on its first
+access outside whatever 8 pages were last loaded. No loader or page-table
+construction fixes that; the mapping simply does not fit.
+
+Two ways out, and the second is the right one:
+
+1. **A hardware page-table walker.** Faithful to §15's "walk one VMA tree",
+   but it is new hardware on the load/store path — precisely the Fmax risk
+   the budget flagged for EXT-7, and the current margin is 27 %.
+2. **Make the entries VMA-shaped instead of page-shaped.** §15 says loads and
+   stores "walk **one VMA tree** into a domain-tagged TLB entry" — and a
+   **VMA is a range**, not a fixed page. An entry becomes
+   `(base, limit, physBase, domain, cell)`; a hit is `base ≤ ea < limit` in
+   the running domain. The guest's regions — text, data, stacks, shmif ring,
+   GEM slab, heap — are half a dozen ranges, which is what 8 entries are for.
+
+**Decision: reshape the TLB to VMA ranges (option 2).** It is *closer* to
+§15, not a compromise: the document's unit is the VMA, and fixed 4 KiB pages
+were my simplification in stage A, not the ISA's. It keeps the walker (and
+its Fmax risk) out of the design, and it makes the stage-C demo — revoke one
+live mapping under running NetBSD — land on a range the guest actually uses.
+
+**Cost of the change:** the comparator per entry goes from an equality on a
+20-bit VPN to two magnitude comparisons on a 32-bit address. That is more
+logic per entry but only 8 entries, and it removes the `tlbIdx` direct-mapped
+index (a range TLB is fully associative by construction), so the net is not
+obviously worse. Measure before assuming.
+
+**What stage B then needs, in order:** (1) reshape the TLB entry and the hit
+test, keeping `mmu_en = 0` bypass byte-identical; (2) teach the loader to
+place the guest's regions at non-contiguous physical bases and emit the
+matching VMA set — genuinely non-contiguous, or the mapping is an offset in
+disguise; (3) convert `gem_core.c`'s `PHYS(g) = 0x10000000 + g` into a
+lookup against a named DMA-window grant, since GEM0 is a bus master reading
+descriptors at physical addresses and cannot be behind the guest's
+translation; (4) boot with `mmu_en = 1` and take the acceptance.
