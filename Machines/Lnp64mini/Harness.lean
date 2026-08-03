@@ -389,7 +389,7 @@ def progSleep : List (BitVec 64) :=
 /-- Trap + RESUME: an unknown opcode traps (S_TRAP); the host services it
 via cmd 54 (RESUME), and the program continues to EXIT. -/
 def progTrap : List (BitVec 64) :=
-  [ enc 0x7f 0 0 0,           -- unknown op -> trap
+  [ enc OP_INVALID 0 0 0,           -- unknown op -> trap
     enc OP_EXIT 0 0 0 ]          -- EXIT (after RESUME advances to here? no:
                               -- RESUME sets st=S_F0 WITHOUT advancing pc, so
                               -- it re-fetches the SAME trapping instr. Host
@@ -468,7 +468,7 @@ def runIss (image : List (Nat × BitVec 64)) (latency : Nat)
 /-- Program with a trap at word 0 (unknown op 0x7f) then real work: after
 the trap raises, the host SET_PCs past it (cmd 53) and RESUMEs (cmd 54). -/
 def progTrapReal : List (BitVec 64) :=
-  [ enc 0x7f 0 0 0,           -- w0 unknown op -> trap
+  [ enc OP_INVALID 0 0 0,           -- w0 unknown op -> trap
     encImmI OP_ADDI 1 0 55,      -- w1 ADDI r1 = 55 (after resume)
     enc OP_EXIT 0 0 0 ]          -- w2 EXIT
 
@@ -655,7 +655,7 @@ def progPreempt : List (BitVec 64) :=
     enc OP_EXIT 0 0 0,            -- w4  EXIT (halts the core)
     encImmI OP_ADDI 10 10 1,      -- w5  r10 += 1  (child entry, 0x1028)
     encImmJ OP_JMP 0 (-1),       -- w6  J -1 -> back to w5
-    enc 0x7f 0 0 0 ]           -- w7  poison: only a bad resume gets here
+    enc OP_INVALID 0 0 0 ]           -- w7  poison: only a bad resume gets here
 
 /-- cmd stream: load the quantum (cycle 0), then start (cycle 1). -/
 def cmdQuantum (q : Nat) : Nat → MiniIn := fun k =>
