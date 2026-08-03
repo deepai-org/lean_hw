@@ -243,6 +243,11 @@ deliberate: EXT-2 installs the tag and its inheritance rule, and the
 enforcement that consumes it arrives with gates (EXT-5) and the MMU
 (EXT-7). -/
 def tdomRd (idx : Expr 5) : Expr 8 := .memRead 8 "tdom" idx
+/-- EXT-5: the gate table and the per-thread depth-1 continuation. -/
+def gateEntRd (g : Expr 4) : Expr 64 := .memRead 64 "gate_ent" g
+def gateDomRd (g : Expr 4) : Expr 8  := .memRead 8  "gate_dom" g
+def tcontRd (idx : Expr 5) : Expr 64 := .memRead 64 "tcont" idx
+def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
 
 /-- The domain the core is executing in **right now**: the current thread's
 tag, combinationally. See the note above on why this is not a register. -/
@@ -289,6 +294,45 @@ fail-*stop* reading of Appendix F: the disposition is "this machine has
 lost the right to proceed", and quietly running someone else would hide it.
 The host sees `running = 0` and the `poison` bitmap says which slot. -/
 def poison : Expr 32 := .reg 32 "poison"
+
+/-! ### EXT-5 — gates (`EXTEND_SPEC.md` increment 5; ISA §9, Law 1)
+
+A gate is the *only* way a thread changes domain. That is the whole point,
+and it is what makes EXT-2's tag mean something: after EXT-5 the writers of
+`tdom` are exactly the `cmd 13` reset sweep, `CLONE` (which **inherits**, so
+it cannot choose), `cmd 58` (host/debug), and gate call/return — which move
+a thread only to a domain the host installed in the gate table. **There is
+no instruction that lets a thread name a domain and go there.**
+
+The gate table is two small memories: `gate_ent[g]` (entry PC) and
+`gate_dom[g]` (target domain), 16 gates, loaded by the host. A gate call
+saves the return point in the caller's own slot (`tcont[cur]`, `tcdom[cur]`)
+and sets `in_gate[cur]`; a gate return restores them.
+
+**Deviation — the continuation is depth 1, not a stack.** §9 has a
+continuation *stack*; `in_gate` is a bitmap and a second `gate_call` from
+inside a gate is refused (`rd = -1`, no state change) rather than nesting.
+Per-thread stacks are 32 stacks, and EXT-4 just taught this campaign what
+duplicating per-slot structure costs. Depth 1 is enough to demonstrate
+mediation — the property that matters — and the shape generalises: making
+`tcont`/`tcdom` two-deep is a width change, not a redesign.
+
+**Deviation — opcodes.** §9 assigns `gate_call`/`gate_return` to 0xa0/0xa1,
+but mini's decoder already uses 0xa0–0xba for ALU-immediate ops, so mini's
+map diverges from the ISA in that whole block *before* this increment. Gates
+take **0x60/0x61**, which are free in mini. Recorded here rather than
+pretending the encodings match. -/
+def in_gate : Expr 32 := .reg 32 "in_gate"
+def gate_sel : Expr 4 := .reg 4 "gate_sel"
+
+/-- Bit `cur` of `in_gate`: this thread is inside a gate. -/
+def curInGate : Expr 1 :=
+  .eq (.slice (.shr in_gate (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
+
+/-- `cmd 61` loads `gate_ent[gate_sel]`; `cmd 62` sets `gate_sel` and
+`gate_dom[gate_sel]` (`data[3:0]` = gate id, `data[15:8]` = domain). -/
+def CMD_GATE_ENT : Nat := 61
+def CMD_GATE_DOM : Nat := 62
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
 def curPoisoned : Expr 1 :=
@@ -1013,6 +1057,8 @@ where
     .seq (.ite (ci CMD_QUANTUM) (.write 32 "quantum" cmdData) .skip) <|
     -- EXT-3: the poison bitmap, whole-word (see `CMD_POISON`).
     .seq (.ite (ci CMD_POISON) (.write 32 "poison" cmdData) .skip) <|
+    -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
+    .seq (.ite (ci CMD_GATE_DOM) (.write 4 "gate_sel" (.slice cmdData 0 4)) .skip) <|
       (.ite (ci 13)
         (.seq (.ite (.eq (.slice cmdData 0 1) (L1 1)) cmd13reset .skip)
               (.ite (.eq (.slice cmdData 1 1) (L1 1))
@@ -1282,6 +1328,25 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
   -- only the sequencing half of FUTEX_WAKE.
   gcons (opIs 0xcc) (.seq stepPc (.seq retireInc goF0)) <|
+  -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
+  -- change) if this thread is already inside a gate -- the continuation is
+  -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
+  -- the gate's entry in the gate's domain. `tdom`/`tcont`/`tcdom`/`in_gate`
+  -- are written in their funnels; this arm owns pc and rd.
+  gcons (opIs 0x60)
+    (.ite curInGate
+      (.seq (.ite (.not (.eq rdf (L5 0))) .skip .skip)
+        (.seq stepPc (.seq retireInc goF0)))
+      (.seq (.write 64 "pc" (gateEntRd (.slice a 0 4)))
+        (.seq retireInc goF0))) <|
+  -- EXT-5: 0x61 GATE_RETURN. Restores the saved pc; the domain and the
+  -- in-gate bit are restored in their funnels. A return with no gate open
+  -- is a no-op (it just steps), which is the fail-quiet reading: a thread
+  -- cannot leave a domain it never entered.
+  gcons (opIs 0x61)
+    (.ite curInGate
+      (.seq (.write 64 "pc" (tcontRd cur)) (.seq retireInc goF0))
+      (.seq stepPc (.seq retireInc goF0))) <|
   -- 0x59 CLONE
   gcons (opIs 0x59)
     (.ite has_free
@@ -1538,15 +1603,46 @@ Three writers, one syntactic `memWrite` site, same discipline as `tpc`:
 def tdomTriples : List (Expr 1 × Expr 5 × Expr 8) :=
   [ (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))), .slice zctr 0 5, L8 0)
   , (exG (.and (opIs 0x59) has_free), free_slot, domCur)
-  , (.and cmdValid (.eq cmdIdx (L7 CMD_SETDOM)), .slice cmdData 0 5, .slice cmdData 8 8) ]
+  , (.and cmdValid (.eq cmdIdx (L7 CMD_SETDOM)), .slice cmdData 0 5, .slice cmdData 8 8)
+  -- EXT-5: a gate call moves the thread to the GATE's domain -- a domain
+  -- the host installed, never one the instruction names. A return restores
+  -- the caller's. These two are the only instruction-driven `tdom` writes.
+  , (exG (.and (opIs 0x60) (.not curInGate)), cur, gateDomRd (.slice a 0 4))
+  , (exG (.and (opIs 0x61) curInGate), cur, tcdomRd cur) ]
 
 def tdomWeE : Expr 1 := orTree (tdomTriples.map (fun t => t.1))
 def tdomWaE : Expr 5 := priTree (tdomTriples.map (fun t => (t.1, t.2.1))) (L5 0)
 def tdomWdE : Expr 8 := priTree (tdomTriples.map (fun t => (t.1, t.2.2))) (L8 0)
 
+/-! ### EXT-5 — the gate write funnels
+
+`gateCall`/`gateRet` are the two guards; each memory gets ONE syntactic
+`memWrite`, the `tpc` discipline. `in_gate` is a bitmap register (like
+EXT-3's `poison`) because nothing reads it at a dynamic index -- only at
+`cur` -- but it must be *set and cleared* per slot, and a 32-bit
+set/clear on a register is one mux where a memory would be a port. -/
+def gateCall : Expr 1 := exG (.and (opIs 0x60) (.not curInGate))
+def gateRet  : Expr 1 := exG (.and (opIs 0x61) curInGate)
+
+/-- `in_gate` after this cycle: set bit `cur` on a gate call, clear it on a
+gate return, plus the `cmd 13` reset. -/
+def inGateNext : Expr 32 :=
+  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (L32 0)
+    (.mux gateCall (.or in_gate (.shl (L32 1) (.zext cur 32)))
+      (.mux gateRet (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate))
+
 def tarrFunnelRule : Rule :=
   ⟨"tarr_funnel",
     .seq (.ite tdomWeE (.memWrite 5 8 "tdom" 0 tdomWaE tdomWdE) .skip) <|
+    -- EXT-5: the depth-1 continuation, written only by a gate call.
+    .seq (.ite gateCall (.memWrite 5 64 "tcont" 0 cur pc8) .skip) <|
+    .seq (.ite gateCall (.memWrite 5 8 "tcdom" 0 cur domCur) .skip) <|
+    .seq (.write 32 "in_gate" inGateNext) <|
+    -- EXT-5: the host-loaded gate table.
+    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_ENT)))
+            (.memWrite 4 64 "gate_ent" 0 gate_sel (.zext cmdData 64)) .skip) <|
+    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_DOM)))
+            (.memWrite 4 8 "gate_dom" 0 (.slice cmdData 0 4) (.slice cmdData 8 8)) .skip) <|
     .seq (.ite tpcWeE (.memWrite 5 64 "tpc" 0 tpcWaE tpcWdE) .skip)
       (.seq (.ite (exG (opIs 0x07))
               (.memWrite 5 64 "tsleep" 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
@@ -1609,7 +1705,9 @@ def scalarRegs : List RegDecl :=
    -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
    ⟨"cur_dom",8,0⟩,
    -- EXT-3: fail-stop bitmap; 0 = nothing poisoned = the pre-EXT-3 machine
-   ⟨"poison",32,0⟩]
+   ⟨"poison",32,0⟩,
+   -- EXT-5: gates. `in_gate` = depth-1 continuation-present bitmap.
+   ⟨"in_gate",32,0⟩, ⟨"gate_sel",4,0⟩]
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
@@ -1650,7 +1748,10 @@ def design : Design where
      -- EXT-2: the per-thread domain tag. Zero image = every thread in
      -- domain 0; `cmd 13`'s sweep re-establishes that on every reset, so
      -- the constant does not have to survive the configuration path (D37).
-     ⟨"tdom", 5, 8, fun _ => 0⟩]
+     ⟨"tdom", 5, 8, fun _ => 0⟩,
+     -- EXT-5: the gate table (host-loaded) and the depth-1 continuation.
+     ⟨"gate_ent", 4, 64, fun _ => 0⟩, ⟨"gate_dom", 4, 8, fun _ => 0⟩,
+     ⟨"tcont", 5, 64, fun _ => 0⟩, ⟨"tcdom", 5, 8, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]
