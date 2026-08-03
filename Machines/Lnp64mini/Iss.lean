@@ -231,61 +231,63 @@ def asr (x : BitVec 64) (sh : Nat) : BitVec 64 := x.sshiftRight sh
 
 def aluV (s : MiniSt) : BitVec 64 :=
   let av := s.a; let bv := s.b
-  match opN s with
-  | 0x02 => av
-  | 0x10 => av + bv
-  | 0x11 => av - bv
-  | 0x04 => (av.extractLsb' 0 32).setWidth 64 ||| (((imm_i s).extractLsb' 0 32).setWidth 64 <<< 32)
-  | 0x14 => av &&& bv
-  | 0x15 => av ||| bv
-  | 0x16 => av ^^^ bv
-  | 0x1f => ~~~ av
-  | 0x18 => av <<< shamt_r s
-  | 0x19 => av >>> shamt_r s
-  | 0x1a => asr av (shamt_r s)
-  | 0x1b => if av.slt bv then 1 else 0
-  | 0x26 => if av.ult bv then 1 else 0
-  | 0xa0 => av + imm_i s
-  | 0xa1 => av &&& imm_i s
-  | 0xa2 => av ||| imm_i s
-  | 0xa3 => av ^^^ imm_i s
-  | 0xa4 => av <<< shamt_i s
-  | 0x4d => av >>> shamt_i s
-  | 0x4e => asr av (shamt_i s)
-  | 0x1d => if av.slt (imm_i s) then 1 else 0
-  | 0x51 => if av.ult (imm_i s) then 1 else 0
-  | 0xd0 => s.pc + imm_j s
-  | 0xad => (av.extractLsb' 0 8).signExtend 64
-  | 0xae => (av.extractLsb' 0 16).signExtend 64
-  | 0xaf => (av.extractLsb' 0 32).signExtend 64
-  | 0xb0 => (av.extractLsb' 0 8).setWidth 64
-  | 0xb1 => (av.extractLsb' 0 16).setWidth 64
-  | 0xb2 => (av.extractLsb' 0 32).setWidth 64
-  | 0xb8 => ((av.extractLsb' 0 8).setWidth 64 <<< 8) ||| (av.extractLsb' 8 8).setWidth 64
-  | 0xb9 =>
+  -- W1.5c: an if-chain rather than `match opN s with`. Lean reads
+  -- `| OP_ADD =>` as a BINDER, not the constant, so it matches everything
+  -- and shadows every later arm -- which is what blocked the ISA
+  -- renumbering from moving these opcodes with the rest.
+  if opN s = OP_MOV then av
+  else if opN s = OP_ADD then av + bv
+  else if opN s = OP_SUB then av - bv
+  else if opN s = OP_LIU then (av.extractLsb' 0 32).setWidth 64 ||| (((imm_i s).extractLsb' 0 32).setWidth 64 <<< 32)
+  else if opN s = OP_AND then av &&& bv
+  else if opN s = OP_OR then av ||| bv
+  else if opN s = OP_XOR then av ^^^ bv
+  else if opN s = OP_NOT then ~~~ av
+  else if opN s = OP_LSL then av <<< shamt_r s
+  else if opN s = OP_LSR then av >>> shamt_r s
+  else if opN s = OP_ASR then asr av (shamt_r s)
+  else if opN s = OP_SLT then if av.slt bv then 1 else 0
+  else if opN s = OP_SLTU then if av.ult bv then 1 else 0
+  else if opN s = OP_ADDI then av + imm_i s
+  else if opN s = OP_ANDI then av &&& imm_i s
+  else if opN s = OP_ORI then av ||| imm_i s
+  else if opN s = OP_XORI then av ^^^ imm_i s
+  else if opN s = OP_LSLI then av <<< shamt_i s
+  else if opN s = OP_LSRI then av >>> shamt_i s
+  else if opN s = OP_ASRI then asr av (shamt_i s)
+  else if opN s = OP_SLTI then if av.slt (imm_i s) then 1 else 0
+  else if opN s = OP_SLTIU then if av.ult (imm_i s) then 1 else 0
+  else if opN s = OP_AUIPC then s.pc + imm_j s
+  else if opN s = OP_SEXT_B then (av.extractLsb' 0 8).signExtend 64
+  else if opN s = OP_SEXT_H then (av.extractLsb' 0 16).signExtend 64
+  else if opN s = OP_SEXT_W then (av.extractLsb' 0 32).signExtend 64
+  else if opN s = OP_ZEXT_B then (av.extractLsb' 0 8).setWidth 64
+  else if opN s = OP_ZEXT_H then (av.extractLsb' 0 16).setWidth 64
+  else if opN s = OP_ZEXT_W then (av.extractLsb' 0 32).setWidth 64
+  else if opN s = OP_BSWAP16 then ((av.extractLsb' 0 8).setWidth 64 <<< 8) ||| (av.extractLsb' 8 8).setWidth 64
+  else if opN s = OP_BSWAP32 then
       (List.range 4).foldl (fun acc i =>
         acc ||| ((av.extractLsb' (i*8) 8).setWidth 64 <<< ((3-i)*8))) 0
-  | 0xba =>
+  else if opN s = OP_BSWAP64 then
       (List.range 8).foldl (fun acc i =>
         acc ||| ((av.extractLsb' (i*8) 8).setWidth 64 <<< ((7-i)*8))) 0
-  | 0xb4 =>
+  else if opN s = OP_CTZ then
       -- CTZ: lowest set bit; 64 if a==0. downward scan, lowest wins.
       (List.range 64).foldr (fun i acc => if bit av i then BitVec.ofNat 64 i else acc)
         (BitVec.ofNat 64 64)
-  | 0xb6 => (av <<< shamt_r s) ||| (av >>> ((0 - (s.b.extractLsb' 0 6)).toNat))
-  | 0xb7 => (av >>> shamt_r s) ||| (av <<< ((0 - (s.b.extractLsb' 0 6)).toNat))
-  | _ => 0
+  else if opN s = OP_ROL then (av <<< shamt_r s) ||| (av >>> ((0 - (s.b.extractLsb' 0 6)).toNat))
+  else if opN s = OP_ROR then (av >>> shamt_r s) ||| (av <<< ((0 - (s.b.extractLsb' 0 6)).toNat))
+  else 0
 
 def br_take (s : MiniSt) : Bool :=
   let av := s.a; let bv := s.b
-  match opN s with
-  | 0x21 => av = bv
-  | 0x22 => av ≠ bv
-  | 0x23 => av.slt bv
-  | 0x24 => ¬ av.slt bv
-  | 0x25 => av.ult bv
-  | 0x68 => ¬ av.ult bv
-  | _ => false
+  if opN s = OP_BEQ then av = bv
+  else if opN s = OP_BNE then av ≠ bv
+  else if opN s = OP_BLT then av.slt bv
+  else if opN s = OP_BGE then ¬ av.slt bv
+  else if opN s = OP_BLTU then av.ult bv
+  else if opN s = OP_BGEU then ¬ av.ult bv
+  else false
 
 def sel_cond (s : MiniSt) : Bool :=
   let av := s.a; let bv := s.b
@@ -302,18 +304,18 @@ def lw_shift (s : MiniSt) : BitVec 64 := mem_src s >>> (s.ld_boff_q.toNat * 8)
 
 def ld_wb (s : MiniSt) : BitVec 64 :=
   let ms := mem_src s; let sh := lw_shift s
-  match s.ld_op_q.toNat with
-  | 0x30 => ms
-  | 0x31 => (sh.extractLsb' 0 32).setWidth 64
-  | 0x70 => (sh.extractLsb' 0 32).signExtend 64
-  | 0x36 => (sh.extractLsb' 0 16).setWidth 64
-  | 0x09 => (sh.extractLsb' 0 16).signExtend 64
-  | 0x32 => (sh.extractLsb' 0 8).setWidth 64
-  | 0x72 => (sh.extractLsb' 0 8).signExtend 64
-  | _ => ms
+  -- W1.5c: if-chain (named opcodes cannot be Lean patterns).
+  if s.ld_op_q.toNat = OP_LD then ms
+  else if s.ld_op_q.toNat = OP_LD_31 then (sh.extractLsb' 0 32).setWidth 64
+  else if s.ld_op_q.toNat = OP_LD_S_70 then (sh.extractLsb' 0 32).signExtend 64
+  else if s.ld_op_q.toNat = OP_LD_36 then (sh.extractLsb' 0 16).setWidth 64
+  else if s.ld_op_q.toNat = OP_LD_S then (sh.extractLsb' 0 16).signExtend 64
+  else if s.ld_op_q.toNat = OP_LD_32 then (sh.extractLsb' 0 8).setWidth 64
+  else if s.ld_op_q.toNat = OP_LD_S_72 then (sh.extractLsb' 0 8).signExtend 64
+  else ms
 
 def st_width (s : MiniSt) : Nat :=
-  match opN s with | 0x35 => 1 | 0x37 => 2 | 0x34 => 4 | _ => 8
+  if opN s = OP_ST_35 then 1 else if opN s = OP_ST_37 then 2 else if opN s = OP_ST_34 then 4 else 8
 
 def st_boff (s : MiniSt) : Nat := (mem_ea_s s).extractLsb' 0 3 |>.toNat
   where mem_ea_s (s : MiniSt) : BitVec 64 := s.a + imm_s s
