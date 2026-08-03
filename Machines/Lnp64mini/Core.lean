@@ -414,8 +414,8 @@ def CMD_TLB_PPN  : Nat := 66
 /-- `cmd 67` = the §15 `map.protect`/`munmap` shootdown: invalidate every
 TLB entry whose recorded cell equals `cmd_data[7:0]`. -/
 def CMD_MAP_PROTECT : Nat := 67
-def OP_CAP_SEND : Nat := 0xa2
-def OP_CAP_RECV : Nat := 0xa3
+def CAP_SEND_OP : Nat := 0x3e
+def CAP_RECV_OP : Nat := 0x3f
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
 def curPoisoned : Expr 1 :=
@@ -482,121 +482,6 @@ def tfutex  (i : Fin NT) : Expr 64 := .reg 64 s!"tfutex{i.val}"
 def tpcRd (idx : Expr 5) : Expr 64 := .memRead 64 "tpc" idx
 /-- `tsleep[idx]` — async read of the sleep-countdown memory. -/
 def tsleepRd (idx : Expr 5) : Expr 64 := .memRead 64 "tsleep" idx
-
-/-! ## Opcode mnemonics (PLATONIC W1.5)
-
-Mini's opcodes were bare hex literals scattered across `opIs`, `opAny`
-lists, `| 0x.. =>` arms and hand-written test programs. That made a
-renumbering impossible to do safely: a two-hex-digit literal is
-ambiguous with data, so any pattern broad enough to catch every opcode
-context also caught things that were not opcodes -- which is exactly how
-the first attempt at ISA conformance stage 2 drove the EDSL and the ISS
-apart (261 sites touched, 1162 lockstep mismatches).
-
-With names, a renumbering is one edit per constant and cannot touch a
-data literal. Names are taken from the emulator's `Instr` variant at the
-same opcode, so the two implementations are legible against each other.
--/
-
-/-- An opcode implemented in **no** numbering, for test programs that need a
-guaranteed trap. It must stay invalid across a renumbering: `0x7f` was used
-for this and is NOT free after the ISA stage-2 assignment, so renumbering
-turned the trap test into a valid instruction. 0x8c is in the ISA's reserved
-"memory growth" range and is unoccupied before and after. -/
-def OP_INVALID : Nat := 0x8c
-
-def OP_NOP : Nat := 0x01
-def OP_MOV : Nat := 0x02
-def OP_LIU : Nat := 0x52
-def OP_SLEEP : Nat := 0xa8
-def OP_LD_S : Nat := 0x72
-def OP_ADD : Nat := 0x10
-def OP_SUB : Nat := 0x11
-def OP_MUL : Nat := 0x12
-def OP_DIV : Nat := 0x15
-def OP_AND : Nat := 0x19
-def OP_OR : Nat := 0x1a
-def OP_XOR : Nat := 0x1b
-def OP_SREM : Nat := 0x17
-def OP_LSL : Nat := 0x20
-def OP_LSR : Nat := 0x21
-def OP_ASR : Nat := 0x22
-def OP_SLT : Nat := 0x25
-def OP_SLTI : Nat := 0x50
-def OP_NOT : Nat := 0x1f
-def OP_JMP : Nat := 0x60
-def OP_BEQ : Nat := 0x63
-def OP_BNE : Nat := 0x64
-def OP_BLT : Nat := 0x65
-def OP_BGE : Nat := 0x66
-def OP_BLTU : Nat := 0x67
-def OP_SLTU : Nat := 0x26
-def OP_JAL : Nat := 0x61
-def OP_JALR : Nat := 0x62
-def OP_LD : Nat := 0x76
-def OP_LD_31 : Nat := 0x75
-def OP_LD_32 : Nat := 0x71
-def OP_ST : Nat := 0x7a
-def OP_ST_34 : Nat := 0x79
-def OP_ST_35 : Nat := 0x77
-def OP_LD_36 : Nat := 0x73
-def OP_ST_37 : Nat := 0x78
-def OP_EXIT : Nat := 0xce
-def OP_THREAD_EXIT : Nat := 0x03
-def OP_MINI_GATE_CALL : Nat := 0x04
-def OP_MINI_GATE_RETURN : Nat := 0xa1
-def OP_MINI_CAP_SEND : Nat := 0xa2
-def OP_MINI_CAP_RECV : Nat := 0xa3
-def OP_SEL : Nat := 0x27
-def OP_SEL_41 : Nat := 0x05
-def OP_SEL_42 : Nat := 0x06
-def OP_SEL_43 : Nat := 0x07
-def OP_SEL_44 : Nat := 0x08
-def OP_SEL_45 : Nat := 0x09
-def OP_LSRI : Nat := 0x4d
-def OP_ASRI : Nat := 0x4e
-def OP_SLTIU : Nat := 0x51
-def OP_GET_PCR : Nat := 0x0f
-def OP_CLONE_SPAWN : Nat := 0xab
-def OP_BGEU : Nat := 0x68
-def OP_LD_S_70 : Nat := 0x74
-def OP_LD_S_72 : Nat := 0x70
-def OP_YIELD : Nat := 0x98
-def OP_FUTEX_WAIT : Nat := 0x99
-def OP_FUTEX_WAKE : Nat := 0x9a
-def OP_ADDI : Nat := 0x48
-def OP_ANDI : Nat := 0x49
-def OP_ORI : Nat := 0x4a
-def OP_XORI : Nat := 0x4b
-def OP_LSLI : Nat := 0x4c
-def OP_UDIV : Nat := 0x16
-def OP_UREM : Nat := 0x18
-def OP_MULH : Nat := 0x13
-def OP_MULHU : Nat := 0x14
-def OP_SEXT_B : Nat := 0x38
-def OP_SEXT_H : Nat := 0x39
-def OP_SEXT_W : Nat := 0x3a
-def OP_ZEXT_B : Nat := 0x3b
-def OP_ZEXT_H : Nat := 0x3c
-def OP_ZEXT_W : Nat := 0x3d
-def OP_CTZ : Nat := 0x3f
-def OP_ROL : Nat := 0x23
-def OP_ROR : Nat := 0x24
-def OP_BSWAP16 : Nat := 0x41
-def OP_BSWAP32 : Nat := 0x42
-def OP_BSWAP64 : Nat := 0x43
-def OP_LR_D : Nat := 0x90
-def OP_SC_D : Nat := 0x9d
-def OP_LR_D_ACQ : Nat := 0x91
-def OP_SC_D_REL : Nat := 0x9e
-def OP_LR_D_ACQ_REL : Nat := 0x9c
-def OP_SC_D_ACQ_REL : Nat := 0x9f
-def OP_FENCE : Nat := 0x92
-def OP_AUIPC : Nat := 0x53
-def OP_FENCE_D1 : Nat := 0x7c
-def OP_FENCE_D2 : Nat := 0x7e
-def OP_FENCE_D3 : Nat := 0x80
-def OP_FENCE_D4 : Nat := 0x81
 
 /-! ## Literal helpers -/
 
@@ -751,23 +636,23 @@ def opIs (n : Nat) : Expr 1 := .eq op (L8 n)
 def opAny (ns : List Nat) : Expr 1 := orTree (ns.map opIs)
 
 def is_alu : Expr 1 :=
-  opAny [OP_LIU,OP_MOV,OP_ADD,OP_SUB,OP_AND,OP_OR,OP_XOR,OP_NOT,OP_LSL,OP_LSR,OP_ASR,OP_SLT,OP_SLTU,
-   OP_ADDI,OP_ANDI,OP_ORI,OP_XORI,OP_LSLI,OP_LSRI,OP_ASRI,OP_SLTI,OP_SLTIU,OP_AUIPC,
-   OP_SEXT_B,OP_SEXT_H,OP_SEXT_W,OP_ZEXT_B,OP_ZEXT_H,OP_ZEXT_W,OP_BSWAP16,OP_BSWAP32,OP_BSWAP64,OP_ROL,OP_ROR,OP_CTZ]
+  opAny [0x04,0x02,0x10,0x11,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,
+   0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0x1d,0x1e,0xd0,
+   0xad,0xae,0xaf,0xb0,0xb1,0xb2,0xb8,0xb9,0xba,0xb6,0xb7,0xb4]
 
-def is_load : Expr 1 := opAny [OP_LD,OP_LD_31,OP_LD_S_70,OP_LD_36,OP_LD_S,OP_LD_32,OP_LD_S_72]
-def is_store : Expr 1 := opAny [OP_ST,OP_ST_34,OP_ST_37,OP_ST_35]
+def is_load : Expr 1 := opAny [0x30,0x31,0x05,0x36,0x09,0x32,0x08]
+def is_store : Expr 1 := opAny [0x33,0x34,0x37,0x35]
 /-- is_branch: op in [0x21,0x26]. -/
-def is_branch : Expr 1 := opAny [OP_BEQ,OP_BNE,OP_BLT,OP_BGE,OP_BLTU,OP_BGEU]
-def is_lr : Expr 1 := opAny [OP_LR_D,OP_LR_D_ACQ,OP_LR_D_ACQ_REL]
-def is_sc : Expr 1 := opAny [OP_SC_D,OP_SC_D_REL,OP_SC_D_ACQ_REL]
+def is_branch : Expr 1 := opAny [0x21,0x22,0x23,0x24,0x25,0x26]
+def is_lr : Expr 1 := opAny [0xc5,0xc7,0xc9]
+def is_sc : Expr 1 := opAny [0xc6,0xc8,0xca]
 /-- is_fence: op==0xcd || (0xd1<=op<=0xd4). -/
-def is_fence : Expr 1 := opAny [OP_FENCE,OP_FENCE_D1,OP_FENCE_D2,OP_FENCE_D3,OP_FENCE_D4]
+def is_fence : Expr 1 := opAny [0xcd,0xd1,0xd2,0xd3,0xd4]
 /-- is_sel: 0x40<=op<=0x45. -/
-def is_sel : Expr 1 := opAny [OP_SEL,OP_SEL_41,OP_SEL_42,OP_SEL_43,OP_SEL_44,OP_SEL_45]
-def is_div : Expr 1 := opAny [OP_DIV,OP_UDIV,OP_SREM,OP_UREM]
-def is_mulh : Expr 1 := .or (opIs OP_MULH) (opIs OP_MULHU)
-def div_sgn : Expr 1 := .or (opIs OP_DIV) (opIs OP_SREM)
+def is_sel : Expr 1 := opAny [0x40,0x41,0x42,0x43,0x44,0x45]
+def is_div : Expr 1 := opAny [0x13,0xa7,0xa8,0xa9]
+def is_mulh : Expr 1 := .or (opIs 0xaa) (opIs 0xab)
+def div_sgn : Expr 1 := .or (opIs 0x13) (opIs 0xa8)
 
 /-! ### ALU (combinational mux chain) -/
 
@@ -793,41 +678,41 @@ def ctzE : Expr 64 :=
 35-deep chain. -/
 def aluE : Expr 64 :=
   priTree
-  [ (opIs OP_MOV, a)
-  , (opIs OP_ADD, .add a b)
-  , (opIs OP_SUB, .sub a b)
-  , (opIs OP_LIU, .or (.zext (.slice a 0 32) 64) (.shl (.zext (.slice imm_i 0 32) 64) (L64 32)))
-  , (opIs OP_AND, .and a b)
-  , (opIs OP_OR, .or a b)
-  , (opIs OP_XOR, .xor a b)
-  , (opIs OP_NOT, .not a)
-  , (opIs OP_LSL, .shl a (.zext shamt_r 64))
-  , (opIs OP_LSR, .shr a (.zext shamt_r 64))
-  , (opIs OP_ASR, asr a shamt_r)
-  , (opIs OP_SLT, .mux (.slt a b) (L64 1) (L64 0))
-  , (opIs OP_SLTU, .mux (.ult a b) (L64 1) (L64 0))
-  , (opIs OP_ADDI, .add a imm_i)
-  , (opIs OP_ANDI, .and a imm_i)
-  , (opIs OP_ORI, .or a imm_i)
-  , (opIs OP_XORI, .xor a imm_i)
-  , (opIs OP_LSLI, .shl a (.zext shamt_i 64))
-  , (opIs OP_LSRI, .shr a (.zext shamt_i 64))
-  , (opIs OP_ASRI, asr a shamt_i)
-  , (opIs OP_SLTI, .mux (.slt a imm_i) (L64 1) (L64 0))
-  , (opIs OP_SLTIU, .mux (.ult a imm_i) (L64 1) (L64 0))
-  , (opIs OP_AUIPC, .add pc imm_j)
-  , (opIs OP_SEXT_B, .sext (.slice a 0 8) 64)
-  , (opIs OP_SEXT_H, .sext (.slice a 0 16) 64)
-  , (opIs OP_SEXT_W, .sext (.slice a 0 32) 64)
-  , (opIs OP_ZEXT_B, .zext (.slice a 0 8) 64)
-  , (opIs OP_ZEXT_H, .zext (.slice a 0 16) 64)
-  , (opIs OP_ZEXT_W, .zext (.slice a 0 32) 64)
-  , (opIs OP_BSWAP16, bswap16)
-  , (opIs OP_BSWAP32, bswap32)
-  , (opIs OP_BSWAP64, bswap64)
-  , (opIs OP_CTZ, ctzE)
-  , (opIs OP_ROL, .or (.shl a (.zext shamt_r 64)) (.shr a (.zext (negShamt shamt_r) 64)))
-  , (opIs OP_ROR, .or (.shr a (.zext shamt_r 64)) (.shl a (.zext (negShamt shamt_r) 64)))
+  [ (opIs 0x02, a)
+  , (opIs 0x10, .add a b)
+  , (opIs 0x11, .sub a b)
+  , (opIs 0x04, .or (.zext (.slice a 0 32) 64) (.shl (.zext (.slice imm_i 0 32) 64) (L64 32)))
+  , (opIs 0x14, .and a b)
+  , (opIs 0x15, .or a b)
+  , (opIs 0x16, .xor a b)
+  , (opIs 0x17, .not a)
+  , (opIs 0x18, .shl a (.zext shamt_r 64))
+  , (opIs 0x19, .shr a (.zext shamt_r 64))
+  , (opIs 0x1a, asr a shamt_r)
+  , (opIs 0x1b, .mux (.slt a b) (L64 1) (L64 0))
+  , (opIs 0x1c, .mux (.ult a b) (L64 1) (L64 0))
+  , (opIs 0xa0, .add a imm_i)
+  , (opIs 0xa1, .and a imm_i)
+  , (opIs 0xa2, .or a imm_i)
+  , (opIs 0xa3, .xor a imm_i)
+  , (opIs 0xa4, .shl a (.zext shamt_i 64))
+  , (opIs 0xa5, .shr a (.zext shamt_i 64))
+  , (opIs 0xa6, asr a shamt_i)
+  , (opIs 0x1d, .mux (.slt a imm_i) (L64 1) (L64 0))
+  , (opIs 0x1e, .mux (.ult a imm_i) (L64 1) (L64 0))
+  , (opIs 0xd0, .add pc imm_j)
+  , (opIs 0xad, .sext (.slice a 0 8) 64)
+  , (opIs 0xae, .sext (.slice a 0 16) 64)
+  , (opIs 0xaf, .sext (.slice a 0 32) 64)
+  , (opIs 0xb0, .zext (.slice a 0 8) 64)
+  , (opIs 0xb1, .zext (.slice a 0 16) 64)
+  , (opIs 0xb2, .zext (.slice a 0 32) 64)
+  , (opIs 0xb8, bswap16)
+  , (opIs 0xb9, bswap32)
+  , (opIs 0xba, bswap64)
+  , (opIs 0xb4, ctzE)
+  , (opIs 0xb6, .or (.shl a (.zext shamt_r 64)) (.shr a (.zext (negShamt shamt_r) 64)))
+  , (opIs 0xb7, .or (.shr a (.zext shamt_r 64)) (.shl a (.zext (negShamt shamt_r) 64)))
   ] (L64 0)
 where
   -- 0xb8: {48'd0, a[7:0], a[15:8]} = bytes swapped in low 16
@@ -851,12 +736,12 @@ where
 
 def br_take : Expr 1 :=
   priTree
-  [ (opIs OP_BEQ, .eq a b)
-  , (opIs OP_BNE, .not (.eq a b))
-  , (opIs OP_BLT, .slt a b)
-  , (opIs OP_BGE, .not (.slt a b))
-  , (opIs OP_BLTU, .ult a b)
-  , (opIs OP_BGEU, .not (.ult a b)) ] (L1 0)
+  [ (opIs 0x21, .eq a b)
+  , (opIs 0x22, .not (.eq a b))
+  , (opIs 0x23, .slt a b)
+  , (opIs 0x24, .not (.slt a b))
+  , (opIs 0x25, .ult a b)
+  , (opIs 0x26, .not (.ult a b)) ] (L1 0)
 
 /-- sel_cond keys on op[2:0] (0x40-0x45). -/
 def sel_cond : Expr 1 :=
@@ -877,17 +762,17 @@ def ld_wb : Expr 64 :=
   priTree
   [ (.eq ld_op_q (L8 0x30), mem_src)
   , (.eq ld_op_q (L8 0x31), .zext (.slice lw_shift 0 32) 64)
-  , (.eq ld_op_q (L8 OP_SEL_41), .sext (.slice lw_shift 0 32) 64)
+  , (.eq ld_op_q (L8 0x05), .sext (.slice lw_shift 0 32) 64)
   , (.eq ld_op_q (L8 0x36), .zext (.slice lw_shift 0 16) 64)
-  , (.eq ld_op_q (L8 OP_SEL_45), .sext (.slice lw_shift 0 16) 64)
+  , (.eq ld_op_q (L8 0x09), .sext (.slice lw_shift 0 16) 64)
   , (.eq ld_op_q (L8 0x32), .zext (.slice lw_shift 0 8) 64)
-  , (.eq ld_op_q (L8 OP_SEL_44), .sext (.slice lw_shift 0 8) 64) ] mem_src
+  , (.eq ld_op_q (L8 0x08), .sext (.slice lw_shift 0 8) 64) ] mem_src
 
 def st_width : Expr 4 :=
   priTree
-  [ (opIs OP_ST_35, .lit (BitVec.ofNat 4 1))
-  , (opIs OP_ST_37, .lit (BitVec.ofNat 4 2))
-  , (opIs OP_ST_34, .lit (BitVec.ofNat 4 4)) ] (.lit (BitVec.ofNat 4 8))
+  [ (opIs 0x35, .lit (BitVec.ofNat 4 1))
+  , (opIs 0x37, .lit (BitVec.ofNat 4 2))
+  , (opIs 0x34, .lit (BitVec.ofNat 4 4)) ] (.lit (BitVec.ofNat 4 8))
 
 /-- st_merge: overlay b bytes into mem_src by byte lane. Lane `bi` takes
 `b[(bi-st_boff)]` if `st_boff <= bi < st_boff+st_width`, else `mem_src`'s
@@ -1060,9 +945,9 @@ def capSendSlot : Expr 4 := .slice b 0 4
 def capOcc (d : Expr 4) : Expr 1 :=
   .eq (.slice (.shr cap_ival (.zext d 16)) 0 1) (.lit (BitVec.ofNat 1 1))
 /-- A send lands only if the target inbox is free. -/
-def capSendFire : Expr 1 := exG (.and (opIs OP_CAP_SEND) (.not (capOcc capSendSlot)))
+def capSendFire : Expr 1 := exG (.and (opIs CAP_SEND_OP) (.not (capOcc capSendSlot)))
 /-- A receive lands only if this domain's inbox is occupied. -/
-def capRecvFire : Expr 1 := exG (.and (opIs OP_CAP_RECV) (capOcc capRecvSlot))
+def capRecvFire : Expr 1 := exG (.and (opIs CAP_RECV_OP) (capOcc capRecvSlot))
 
 /-- Funnel triples. -/
 def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
@@ -1075,26 +960,26 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- S_EX is_sel
   , (exG (.and is_sel (.not (.eq rdf (L5 0)))), cat55 cur rdf, .mux sel_cond sel_t sel_f)
   -- EXT-6: CAP_SEND result -- 0 on success, all-ones on a full inbox.
-  , (exG (.and (opIs OP_CAP_SEND) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
+  , (exG (.and (opIs CAP_SEND_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
        .mux (capOcc capSendSlot) (L64 0xFFFFFFFFFFFFFFFF) (L64 0))
   -- EXT-6: CAP_RECV result -- the handle addressed to THIS domain, or
   -- all-ones when this domain's inbox is empty. The index is `domCur`, not
   -- an operand, so no encoding reaches another domain's inbox.
-  , (exG (.and (opIs OP_CAP_RECV) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
+  , (exG (.and (opIs CAP_RECV_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
        .mux (capOcc capRecvSlot) (capIboxRd capRecvSlot) (L64 0xFFFFFFFFFFFFFFFF))
   -- S_EX GET_PCR Tid (op 0x54, rs1f==2)
-  , (exG (.and (opIs OP_GET_PCR) (.and (.eq rs1f (L5 2)) (.not (.eq rdf (L5 0))))),
+  , (exG (.and (opIs 0x54) (.and (.eq rs1f (L5 2)) (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, .add (.zext cur 64) (L64 1))
   -- S_EX is_alu
   , (exG (.and is_alu (.not (.eq rdf (L5 0)))), cat55 cur rdf, aluE)
   -- S_EX JAL (0x27)
-  , (exG (.and (opIs OP_JAL) (.not (.eq rdf (L5 0)))), cat55 cur rdf, pc8)
+  , (exG (.and (opIs 0x27) (.not (.eq rdf (L5 0)))), cat55 cur rdf, pc8)
   -- S_EX JALR (0x28)
-  , (exG (.and (opIs OP_JALR) (.not (.eq rdf (L5 0)))), cat55 cur rdf, pc8)
+  , (exG (.and (opIs 0x28) (.not (.eq rdf (L5 0)))), cat55 cur rdf, pc8)
   -- S_EX CLONE has_free: child r2 = b
-  , (exG (.and (opIs OP_CLONE_SPAWN) has_free), cat55 free_slot (L5 2), b)
+  , (exG (.and (opIs 0x59) has_free), cat55 free_slot (L5 2), b)
   -- S_EX CLONE no-free: rd = -1
-  , (exG (.and (opIs OP_CLONE_SPAWN) (.and (.not has_free) (.not (.eq rdf (L5 0))))),
+  , (exG (.and (opIs 0x59) (.and (.not has_free) (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, L64 0xFFFFFFFFFFFFFFFF)
   -- S_EX SC ok
   , (exG (.and is_sc (.and (.and lr_valid (.eq lr_addr a)) (.not (.eq rdf (L5 0))))),
@@ -1380,7 +1265,7 @@ against, and `wakeEn` says whether it does anything at all. Local wins a tie
 rather than merged, which is safe because a futex waiter must re-check its
 condition after waking and the waker retries; merging two keys into one bank
 pass is the thing that cannot be done with one comparator. -/
-def wakeLocal : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs OP_FUTEX_WAKE))
+def wakeLocal : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0xcc))
 def wakeEn    : Expr 1 := .or wakeLocal doorbell
 def wakeKey   : Expr 64 := .mux wakeLocal rdval doorbell_key
 
@@ -1517,20 +1402,20 @@ a balanced else-if tree: identical first-match-wins behaviour (see
 levels to ~5. -/
 def s_ex_branches : List (Expr 1 × Act) :=
   -- 0x3a EXIT
-  gcons (opIs OP_EXIT) (.seq (.write 1 "halted" (L1 1)) (.seq (.write 1 "running" (L1 0)) retireInc)) <|
+  gcons (opIs 0x3a) (.seq (.write 1 "halted" (L1 1)) (.seq (.write 1 "running" (L1 0)) retireInc)) <|
   -- 0x3b THREAD_EXIT
-  gcons (opIs OP_THREAD_EXIT)
+  gcons (opIs 0x3b)
     (.seq (tstateDynWrite (L2 0) cur)
       (.seq (.ite (.not (.eq next_ready cur))
               (.seq (.write 5 "cur" next_ready) (.seq (setPcFromTpc next_ready) goF0))
               (.write 5 "st" (L5 S_WAIT)))
             retireInc)) <|
   -- 0x00 NOP
-  gcons (opIs OP_NOP) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs 0x00) (.seq stepPc (.seq retireInc goF0)) <|
   -- fence
   gcons is_fence (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x12 MUL
-  gcons (opIs OP_MUL)
+  gcons (opIs 0x12)
     (.seq (.write 128 "mul_acc" (.lit (BitVec.ofNat 128 0)))
       (.seq (.write 128 "mul_aw" (.zext a 128))
         (.seq (.write 64 "mul_b" b) (.seq (.write 2 "mul_kind" (L2 0)) (.write 5 "st" (L5 S_MUL)))))) <|
@@ -1539,7 +1424,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
     (.seq (.write 128 "mul_acc" (.lit (BitVec.ofNat 128 0)))
       (.seq (.write 128 "mul_aw" (.zext a 128))
         (.seq (.write 64 "mul_b" b)
-          (.seq (.write 2 "mul_kind" (.mux (opIs OP_MULH) (L2 1) (L2 2))) (.write 5 "st" (L5 S_MUL)))))) <|
+          (.seq (.write 2 "mul_kind" (.mux (opIs 0xaa) (L2 1) (L2 2))) (.write 5 "st" (L5 S_MUL)))))) <|
   -- div
   gcons is_div
     (.ite (.eq b (L64 0))
@@ -1548,57 +1433,57 @@ def s_ex_branches : List (Expr 1 × Act) :=
         (.seq (.write 64 "div_quo" div_a_abs)
           (.seq (.write 64 "div_d" div_b_abs)
             (.seq (.write 7 "div_cnt" (.lit (BitVec.ofNat 7 0)))
-              (.seq (.write 1 "div_isrem" (.or (opIs OP_SREM) (opIs OP_UREM)))
+              (.seq (.write 1 "div_isrem" (.or (opIs 0xa8) (opIs 0xa9)))
                 (.seq (.write 1 "div_negq" (.and div_sgn (.xor (.slice a 63 1) (.slice b 63 1))))
                   (.seq (.write 1 "div_negr" (.and div_sgn (.slice a 63 1))) (.write 5 "st" (L5 S_DIV)))))))))) <|
   -- sel
   gcons is_sel (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x54 GET_PCR
-  gcons (opIs OP_GET_PCR)
+  gcons (opIs 0x54)
     (.ite (.eq rs1f (L5 2)) (.seq stepPc (.seq retireInc goF0))
       (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
   -- alu
   gcons is_alu (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x20 J
-  gcons (opIs OP_JMP) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs 0x20) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
   -- 0x27 JAL
-  gcons (opIs OP_JAL) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs 0x27) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
   -- 0x28 JALR
-  gcons (opIs OP_JALR) (.seq (.write 64 "pc" (.add a imm_i)) (.seq retireInc goF0)) <|
+  gcons (opIs 0x28) (.seq (.write 64 "pc" (.add a imm_i)) (.seq retireInc goF0)) <|
   -- branch
   gcons is_branch (.seq (.write 64 "pc" (.mux br_take (.add pc (.shl imm_s (L64 3))) pc8)) (.seq retireInc goF0)) <|
   -- 0x06 YIELD
-  gcons (opIs OP_YIELD)
+  gcons (opIs 0x06)
     (.seq (.ite (.eq next_ready cur) stepPc
             (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready)))
           (.seq retireInc goF0)) <|
   -- 0x07 SLEEP
-  gcons (opIs OP_SLEEP)
+  gcons (opIs 0x07)
     (.seq (tstateDynWrite (L2 2) cur)
       (.seq (.ite (.not (.eq next_ready cur))
               (.seq (.write 5 "cur" next_ready) (.seq (setPcFromTpc next_ready) goF0))
               (.write 5 "st" (L5 S_WAIT)))
             retireInc)) <|
   -- 0xcb FUTEX_WAIT
-  gcons (opIs OP_FUTEX_WAIT)
+  gcons (opIs 0xcb)
     (.seq (.write 32 "core_addr" (.add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.zext (.slice rdval 3 29) 32) (.lit (BitVec.ofNat 32 3)))))
       (.seq (.write 1 "core_rd" (L1 1))
         (.seq (.write 64 "futex_addr_q" rdval) (.seq (.write 64 "futex_exp" a) (.write 5 "st" (L5 S_FTX1)))))) <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
   -- only the sequencing half of FUTEX_WAKE.
-  gcons (opIs OP_FUTEX_WAKE) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs 0xcc) (.seq stepPc (.seq retireInc goF0)) <|
   -- EXT-6: 0x62 CAP_SEND (a = handle, b = target domain) and 0x63 CAP_RECV.
   -- Both just sequence here; the inbox, the occupancy bitmap and `rd` are
   -- written in their funnels.
-  gcons (opIs OP_CAP_SEND) (.seq stepPc (.seq retireInc goF0)) <|
-  gcons (opIs OP_CAP_RECV) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs CAP_SEND_OP) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs CAP_RECV_OP) (.seq stepPc (.seq retireInc goF0)) <|
   -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
   -- change) if this thread is already inside a gate -- the continuation is
   -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
   -- the gate's entry in the gate's domain. `tdom`/`tcont`/`tcdom`/`in_gate`
   -- are written in their funnels; this arm owns pc and rd.
-  gcons (opIs OP_MINI_GATE_CALL)
+  gcons (opIs 0x3c)
     (.ite curInGate
       (.seq (.ite (.not (.eq rdf (L5 0))) .skip .skip)
         (.seq stepPc (.seq retireInc goF0)))
@@ -1608,12 +1493,12 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- in-gate bit are restored in their funnels. A return with no gate open
   -- is a no-op (it just steps), which is the fail-quiet reading: a thread
   -- cannot leave a domain it never entered.
-  gcons (opIs OP_MINI_GATE_RETURN)
+  gcons (opIs 0x3d)
     (.ite curInGate
       (.seq (.write 64 "pc" (tcontRd cur)) (.seq retireInc goF0))
       (.seq stepPc (.seq retireInc goF0))) <|
   -- 0x59 CLONE
-  gcons (opIs OP_CLONE_SPAWN)
+  gcons (opIs 0x59)
     (.ite has_free
       (.seq (tstateDynWrite (L2 1) free_slot)
         (.seq (.write 5 "clone_dst" rdf) (.seq (.write 5 "clone_tid" free_slot) (.write 5 "st" (L5 S_CLONE2)))))
@@ -1646,7 +1531,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
           (.seq stepPc (.seq retireInc goF0))) <|
   -- GP load
   gcons (.and is_load l_is_gp)
-    (.ite (opIs OP_LD_31)
+    (.ite (opIs 0x31)
       (.seq (.write 32 "gp_addr_r" (.and (.slice mem_ea_l 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
         (.seq (.write 1 "gp_rd" (L1 1)) (.seq (.write 5 "ld_rd_q" rdf) (.write 5 "st" (L5 S_GPL)))))
       (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
@@ -1664,7 +1549,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       (.seq (.write 9 "uart_wptr" (.add uart_wptr (.lit (BitVec.ofNat 9 1)))) (.seq stepPc (.seq retireInc goF0)))) <|
   -- GP store
   gcons (.and is_store s_is_gp)
-    (.ite (opIs OP_ST_34)
+    (.ite (opIs 0x34)
       (.seq (.write 32 "gp_addr_r" (.and (.slice mem_ea_s 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
         (.seq (.write 32 "gp_wdata_r" (.slice b 0 32)) (.seq (.write 1 "gp_wr" (L1 1)) (.write 5 "st" (L5 S_GPS)))))
       (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
@@ -1830,11 +1715,11 @@ def tpcTriples : List (Expr 1 × Expr 5 × Expr 64) :=
   -- 1. cmd-13 reset sweep (rides the zeroing engine's counter)
   [ (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))), .slice zctr 0 5, L64 TEXT_BASE)
   -- 2. S_EX YIELD (0x06), only when actually switching away
-  , (exG (.and (opIs OP_YIELD) (.not (.eq next_ready cur))), cur, pc8)
+  , (exG (.and (opIs 0x06) (.not (.eq next_ready cur))), cur, pc8)
   -- 3. S_EX SLEEP (0x07)
-  , (exG (opIs OP_SLEEP), cur, pc8)
+  , (exG (opIs 0x07), cur, pc8)
   -- 4. S_EX CLONE (0x59) with a free slot: the child's entry PC
-  , (exG (.and (opIs OP_CLONE_SPAWN) has_free), free_slot, a)
+  , (exG (.and (opIs 0x59) has_free), free_slot, a)
   -- 5. S_FTX1, FUTEX_WAIT that blocks (DDR word still equals the expected)
   , (.and fsmEn (.and (.eq st (L5 S_FTX1)) (.and mDone (.eq mRdata futex_exp))), cur, pc8)
   -- 6. EXT-1 preemption at the instruction boundary. Guard is disjoint from
@@ -1867,13 +1752,13 @@ Three writers, one syntactic `memWrite` site, same discipline as `tpc`:
    domains. Entry 1 is disjoint from 2–3 (`zeroing` forces `fsmEn` low). -/
 def tdomTriples : List (Expr 1 × Expr 5 × Expr 8) :=
   [ (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))), .slice zctr 0 5, L8 0)
-  , (exG (.and (opIs OP_CLONE_SPAWN) has_free), free_slot, domCur)
+  , (exG (.and (opIs 0x59) has_free), free_slot, domCur)
   , (.and cmdValid (.eq cmdIdx (L7 CMD_SETDOM)), .slice cmdData 0 5, .slice cmdData 8 8)
   -- EXT-5: a gate call moves the thread to the GATE's domain -- a domain
   -- the host installed, never one the instruction names. A return restores
   -- the caller's. These two are the only instruction-driven `tdom` writes.
-  , (exG (.and (opIs OP_MINI_GATE_CALL) (.not curInGate)), cur, gateDomRd (.slice a 0 4))
-  , (exG (.and (opIs OP_MINI_GATE_RETURN) curInGate), cur, tcdomRd cur) ]
+  , (exG (.and (opIs 0x3c) (.not curInGate)), cur, gateDomRd (.slice a 0 4))
+  , (exG (.and (opIs 0x3d) curInGate), cur, tcdomRd cur) ]
 
 def tdomWeE : Expr 1 := orTree (tdomTriples.map (fun t => t.1))
 def tdomWaE : Expr 5 := priTree (tdomTriples.map (fun t => (t.1, t.2.1))) (L5 0)
@@ -1886,8 +1771,8 @@ def tdomWdE : Expr 8 := priTree (tdomTriples.map (fun t => (t.1, t.2.2))) (L8 0)
 EXT-3's `poison`) because nothing reads it at a dynamic index -- only at
 `cur` -- but it must be *set and cleared* per slot, and a 32-bit
 set/clear on a register is one mux where a memory would be a port. -/
-def gateCall : Expr 1 := exG (.and (opIs OP_MINI_GATE_CALL) (.not curInGate))
-def gateRet  : Expr 1 := exG (.and (opIs OP_MINI_GATE_RETURN) curInGate)
+def gateCall : Expr 1 := exG (.and (opIs 0x3c) (.not curInGate))
+def gateRet  : Expr 1 := exG (.and (opIs 0x3d) curInGate)
 
 /-- `in_gate` after this cycle: set bit `cur` on a gate call, clear it on a
 gate return, plus the `cmd 13` reset. -/
@@ -1958,7 +1843,7 @@ def tarrFunnelRule : Rule :=
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_DOM)))
             (.memWrite 4 8 "gate_dom" 0 (.slice cmdData 0 4) (.slice cmdData 8 8)) .skip) <|
     .seq (.ite tpcWeE (.memWrite 5 64 "tpc" 0 tpcWaE tpcWdE) .skip)
-      (.seq (.ite (exG (opIs OP_SLEEP))
+      (.seq (.ite (exG (opIs 0x07))
               (.memWrite 5 64 "tsleep" 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
         (.seq (.ite cloneFresh (.memWrite 5 64 "tp_arr" 0 clone_tid (L64 0)) .skip)
               (.ite cloneFresh (.memWrite 5 64 "sigmask_arr" 0 clone_tid (L64 0)) .skip)))⟩
