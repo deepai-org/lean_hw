@@ -314,15 +314,15 @@ def imageFrom (base : Nat) (words : List (BitVec 64)) : List (Nat × BitVec 64) 
 
 /-- Full program (ISS progtest): reaches EXIT with mul/div/store/load. -/
 def prog1 : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 7,        -- 0x1000 ADDI r1 = 7
-    encImmI OP_ADDI 2 0 5,        -- ADDI r2 = 5
-    enc OP_ADD 3 1 2,            -- ADD  r3 = 12
-    enc OP_SUB 4 1 2,            -- SUB  r4 = 2
-    enc OP_MUL 5 1 2,            -- MUL  r5 = 35
-    enc OP_DIV 6 5 2,            -- DIV  r6 = 35/5 = 7
-    encImmS OP_ST 0 3 0,        -- SD [r0+0] = r3 (zp store, 8-byte)  (rs1=0,rs2=3,imm_s=0)
-    encImmI OP_LD 8 0 0,        -- LD r8 = [r0+0] = 12 (zp load)
-    enc OP_EXIT 0 0 0 ]           -- EXIT
+  [ encImmI 0xa0 1 0 7,        -- 0x1000 ADDI r1 = 7
+    encImmI 0xa0 2 0 5,        -- ADDI r2 = 5
+    enc 0x10 3 1 2,            -- ADD  r3 = 12
+    enc 0x11 4 1 2,            -- SUB  r4 = 2
+    enc 0x12 5 1 2,            -- MUL  r5 = 35
+    enc 0x13 6 5 2,            -- DIV  r6 = 35/5 = 7
+    encImmS 0x33 0 3 0,        -- SD [r0+0] = r3 (zp store, 8-byte)  (rs1=0,rs2=3,imm_s=0)
+    encImmI 0x30 8 0 0,        -- LD r8 = [r0+0] = 12 (zp load)
+    enc 0x3a 0 0 0 ]           -- EXIT
 
 /-- Fast lockstep program (no long mul/div; reaches EXIT quickly so the
 EDSL≡ISS lockstep stays within the closure-RegEnv budget). Covers fetch,
@@ -330,67 +330,67 @@ ALU-reg, ALU-imm, small MUL, small DIV, SEL, GET_PCR(Tid), zp store
 (1-cycle dmem pipeline), zp load, DDR-data store (RMW) + DDR-data load,
 LR/SC, UART TX, branch-taken, JAL, JALR, and EXIT. -/
 def progLS : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 7,        -- 0x1000 w0  ADDI r1 = 7
-    encImmI OP_ADDI 2 0 5,        --       w1  ADDI r2 = 5
-    encImmI OP_ADDI 3 0 1,        --       w2  ADDI r3 = 1
-    enc OP_ADD 4 1 2,            --       w3  ADD  r4 = 12
-    enc OP_MUL 5 1 3,            --       w4  MUL  r5 = 7*1 = 7 (fast: mul_b=1)
-    enc OP_SEL 7 1 1 2,          --       w5  SEL(EQ) r7: r1==r1 -> sel_t=rf[rs3=2]=5
-    encImmI OP_GET_PCR 10 2 0,       --       w6  GET_PCR r10 = Tid = cur+1 = 1
-    encImmS OP_ST 0 4 0,        --       w7  SD [0] = r4 (zp store)
-    encImmI OP_LD 11 0 0,       --       w8  LD r11 = [0] = 12 (zp load)
-    encImmS OP_BEQ 1 1 2,        --       w9  BEQ r1,r1 taken (skip next)
-    encImmI OP_ADDI 9 0 99,       --       w10 (skipped) ADDI r9 = 99
-    enc OP_EXIT 0 0 0 ]           --       w11 EXIT
+  [ encImmI 0xa0 1 0 7,        -- 0x1000 w0  ADDI r1 = 7
+    encImmI 0xa0 2 0 5,        --       w1  ADDI r2 = 5
+    encImmI 0xa0 3 0 1,        --       w2  ADDI r3 = 1
+    enc 0x10 4 1 2,            --       w3  ADD  r4 = 12
+    enc 0x12 5 1 3,            --       w4  MUL  r5 = 7*1 = 7 (fast: mul_b=1)
+    enc 0x40 7 1 1 2,          --       w5  SEL(EQ) r7: r1==r1 -> sel_t=rf[rs3=2]=5
+    encImmI 0x54 10 2 0,       --       w6  GET_PCR r10 = Tid = cur+1 = 1
+    encImmS 0x33 0 4 0,        --       w7  SD [0] = r4 (zp store)
+    encImmI 0x30 11 0 0,       --       w8  LD r11 = [0] = 12 (zp load)
+    encImmS 0x21 1 1 2,        --       w9  BEQ r1,r1 taken (skip next)
+    encImmI 0xa0 9 0 99,       --       w10 (skipped) ADDI r9 = 99
+    enc 0x3a 0 0 0 ]           --       w11 EXIT
 
 /-- DDR-data path: store r3 to a DDR address (ea ≥ 0x1000) then load it
 back. ea = 0x2000. Covers S_DL/S_DST/S_DSW (RMW store) + DDR load. -/
 def progDDR : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0x2000,   -- r1 = 0x2000 (DDR ea)
-    encImmI OP_ADDI 3 0 42,       -- r3 = 42
-    encImmS OP_ST 1 3 0,        -- SD [r1+0] = r3 (DDR store, RMW)
-    encImmI OP_LD 8 1 0,        -- LD r8 = [r1+0] = 42 (DDR load)
-    enc OP_EXIT 0 0 0 ]
+  [ encImmI 0xa0 1 0 0x2000,   -- r1 = 0x2000 (DDR ea)
+    encImmI 0xa0 3 0 42,       -- r3 = 42
+    encImmS 0x33 1 3 0,        -- SD [r1+0] = r3 (DDR store, RMW)
+    encImmI 0x30 8 1 0,        -- LD r8 = [r1+0] = 42 (DDR load)
+    enc 0x3a 0 0 0 ]
 
 /-- LR/SC: LR.D reserve, SC.D store (should succeed, rd=0). ea=0 (zp). -/
 def progLRSC : List (BitVec 64) :=
-  [ encImmI OP_ADDI 3 0 77,       -- r3 = 77
-    enc OP_LR_D 5 0 0,            -- LR.D r5 = [r0] (=0), reserve addr 0
-    enc OP_SC_D 6 0 3,            -- SC.D [r0] = r3 ; rd=r6 = 0 (ok)
-    encImmI OP_LD 8 0 0,        -- LD r8 = [0] = 77
-    enc OP_EXIT 0 0 0 ]
+  [ encImmI 0xa0 3 0 77,       -- r3 = 77
+    enc 0xc5 5 0 0,            -- LR.D r5 = [r0] (=0), reserve addr 0
+    enc 0xc6 6 0 3,            -- SC.D [r0] = r3 ; rd=r6 = 0 (ok)
+    encImmI 0x30 8 0 0,        -- LD r8 = [0] = 77
+    enc 0x3a 0 0 0 ]
 
 /-- UART TX store then UART RX load (RX empty → returns 0, no valid bit). -/
 def progUART : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 UART_ADDR,     -- r1 = 0x8000
-    encImmI OP_ADDI 3 0 0x41,          -- r3 = 'A'
-    encImmS OP_ST 1 3 0,             -- SD [UART_ADDR] = r3 (UART TX)
-    encImmI OP_ADDI 2 0 UART_RX_ADDR,  -- r2 = 0x8008
-    enc OP_LD 8 2 0,                 -- LD r8 = [UART_RX] (RX empty -> 0)
-    enc OP_EXIT 0 0 0 ]
+  [ encImmI 0xa0 1 0 UART_ADDR,     -- r1 = 0x8000
+    encImmI 0xa0 3 0 0x41,          -- r3 = 'A'
+    encImmS 0x33 1 3 0,             -- SD [UART_ADDR] = r3 (UART TX)
+    encImmI 0xa0 2 0 UART_RX_ADDR,  -- r2 = 0x8008
+    enc 0x30 8 2 0,                 -- LD r8 = [UART_RX] (RX empty -> 0)
+    enc 0x3a 0 0 0 ]
 
 /-- Scheduler: CLONE spawns thread 1 (entry=r1), YIELD switches to it, the
 child THREAD_EXITs, back to parent which EXITs. -/
 def progSched : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0x1018,   -- r1 = child entry (word 3 = 0x1000+3*8=0x1018)
-    enc OP_CLONE_SPAWN 4 1 2,            -- CLONE_SPAWN r4=childtid, entry=r1, arg=r2
-    enc OP_YIELD 0 0 0,            -- YIELD -> switch to child
+  [ encImmI 0xa0 1 0 0x1018,   -- r1 = child entry (word 3 = 0x1000+3*8=0x1018)
+    enc 0x59 4 1 2,            -- CLONE_SPAWN r4=childtid, entry=r1, arg=r2
+    enc 0x06 0 0 0,            -- YIELD -> switch to child
     -- child entry (0x1018, word 3):
-    enc OP_THREAD_EXIT 0 0 0,           -- THREAD_EXIT (child) -> back to parent
-    enc OP_EXIT 0 0 0 ]          -- EXIT (parent, word 4)
+    enc 0x3b 0 0 0,           -- THREAD_EXIT (child) -> back to parent
+    enc 0x3a 0 0 0 ]          -- EXIT (parent, word 4)
 
 /-- SLEEP then wake: thread 0 sleeps 1 tick; with only 1 thread it goes to
 S_WAIT, the sleep scan wakes it, then it EXITs. -/
 def progSleep : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 1,        -- r1 = 1 (sleep ticks)
-    enc OP_SLEEP 0 1 0,           -- SLEEP(rs1=r1=1)
-    enc OP_EXIT 0 0 0 ]          -- EXIT (after wake)
+  [ encImmI 0xa0 1 0 1,        -- r1 = 1 (sleep ticks)
+    enc 0x07 0 1 0,           -- SLEEP(rs1=r1=1)
+    enc 0x3a 0 0 0 ]          -- EXIT (after wake)
 
 /-- Trap + RESUME: an unknown opcode traps (S_TRAP); the host services it
 via cmd 54 (RESUME), and the program continues to EXIT. -/
 def progTrap : List (BitVec 64) :=
-  [ enc OP_INVALID 0 0 0,           -- unknown op -> trap
-    enc OP_EXIT 0 0 0 ]          -- EXIT (after RESUME advances to here? no:
+  [ enc 0x7f 0 0 0,           -- unknown op -> trap
+    enc 0x3a 0 0 0 ]          -- EXIT (after RESUME advances to here? no:
                               -- RESUME sets st=S_F0 WITHOUT advancing pc, so
                               -- it re-fetches the SAME trapping instr. Host
                               -- must also SET_PC past it. See cmdTrap below.)
@@ -400,11 +400,11 @@ SW (op 0x34) writes. Covers S_GPL/S_GPS. ea low32 = 0xE0000000 built via
 ADDI r0 + (-0x20000000) (low 32 bits = 0xE0000000; aperture check is
 ea[31:16]==0xE000). -/
 def progGP : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 (-0x20000000),  -- r1 low32 = 0xE0000000
-    encImmI OP_ADDI 3 0 0x99,           -- r3 = 0x99 (SW data)
-    encImmS OP_ST_34 1 3 0,              -- SW [r1] = r3 (GP store)
-    enc OP_LD_31 8 1 0,                  -- LWU r8 = [r1] (GP load -> model value)
-    enc OP_EXIT 0 0 0 ]
+  [ encImmI 0xa0 1 0 (-0x20000000),  -- r1 low32 = 0xE0000000
+    encImmI 0xa0 3 0 0x99,           -- r3 = 0x99 (SW data)
+    encImmS 0x34 1 3 0,              -- SW [r1] = r3 (GP store)
+    enc 0x31 8 1 0,                  -- LWU r8 = [r1] (GP load -> model value)
+    enc 0x3a 0 0 0 ]
 
 /-- Directed cmd stream for a program: reset at cycle 0, start after the
 zeroing sweep (32*NT=1024 cycles), then idle. -/
@@ -468,9 +468,9 @@ def runIss (image : List (Nat × BitVec 64)) (latency : Nat)
 /-- Program with a trap at word 0 (unknown op 0x7f) then real work: after
 the trap raises, the host SET_PCs past it (cmd 53) and RESUMEs (cmd 54). -/
 def progTrapReal : List (BitVec 64) :=
-  [ enc OP_INVALID 0 0 0,           -- w0 unknown op -> trap
-    encImmI OP_ADDI 1 0 55,      -- w1 ADDI r1 = 55 (after resume)
-    enc OP_EXIT 0 0 0 ]          -- w2 EXIT
+  [ enc 0x7f 0 0 0,           -- w0 unknown op -> trap
+    encImmI 0xa0 1 0 55,      -- w1 ADDI r1 = 55 (after resume)
+    enc 0x3a 0 0 0 ]          -- w2 EXIT
 
 def hexStr (n : Nat) : String := "0x" ++ String.ofList (Nat.toDigits 16 n)
 
@@ -512,29 +512,29 @@ additionally checked for the *architectural* outcome on the ISS. -/
 value, so the thread blocks), then — after an external `doorbell` — r9=5
 and EXIT. With one thread the core parks in S_WAIT until the doorbell. -/
 def progDoorbell : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0x2000,   -- r1 = futex word address (DDR)
-    encImmI OP_ADDI 2 0 0,        -- r2 = expected value (0)
-    enc OP_FUTEX_WAIT 1 2 0,            -- FUTEX_WAIT(addr=r1, expected=r2) -> blocks
-    encImmI OP_ADDI 9 0 5,        -- r9 = 5 (only reached after the doorbell)
-    enc OP_EXIT 0 0 0 ]           -- EXIT
+  [ encImmI 0xa0 1 0 0x2000,   -- r1 = futex word address (DDR)
+    encImmI 0xa0 2 0 0,        -- r2 = expected value (0)
+    enc 0xcb 1 2 0,            -- FUTEX_WAIT(addr=r1, expected=r2) -> blocks
+    encImmI 0xa0 9 0 5,        -- r9 = 5 (only reached after the doorbell)
+    enc 0x3a 0 0 0 ]           -- EXIT
 
 /-- A GLOBAL (DDR) LR/SC pair: `S_DSW` consumes the arbiter's `sc_fail`
 verdict and rewrites `rd`. r6 = 0 when the arbiter accepts, 1 when it
 refuses. -/
 def progScDDR : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0x2000,   -- r1 = DDR address
-    encImmI OP_ADDI 3 0 77,       -- r3 = 77
-    enc OP_LR_D 5 1 0,            -- LR.D  r5 = [r1]  (global reservation)
-    enc OP_SC_D 6 1 3,            -- SC.D  [r1] = r3 ; r6 = verdict
-    enc OP_EXIT 0 0 0 ]           -- EXIT
+  [ encImmI 0xa0 1 0 0x2000,   -- r1 = DDR address
+    encImmI 0xa0 3 0 77,       -- r3 = 77
+    enc 0xc5 5 1 0,            -- LR.D  r5 = [r1]  (global reservation)
+    enc 0xc6 6 1 3,            -- SC.D  [r1] = r3 ; r6 = verdict
+    enc 0x3a 0 0 0 ]           -- EXIT
 
 /-- FUTEX_WAKE: the `wake_out` pulse source (no local waiter matches). -/
 def progWake : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0x2000,   -- r1 = futex word address
-    encImmI OP_ADDI 7 0 1,        -- r7 = wake count
-    enc OP_FUTEX_WAKE 1 7 0,            -- FUTEX_WAKE(addr=r1, count=r7)
-    encImmI OP_ADDI 9 0 9,        -- r9 = 9
-    enc OP_EXIT 0 0 0 ]           -- EXIT
+  [ encImmI 0xa0 1 0 0x2000,   -- r1 = futex word address
+    encImmI 0xa0 7 0 1,        -- r7 = wake count
+    enc 0xcc 1 7 0,            -- FUTEX_WAKE(addr=r1, count=r7)
+    encImmI 0xa0 9 0 9,        -- r9 = 9
+    enc 0x3a 0 0 0 ]           -- EXIT
 
 /-- Count the `wake_out` pulses over an ISS run (must be exactly one for
 `progWake`). -/
@@ -648,14 +648,14 @@ Four claims, each with a control:
 two-instruction loop, forever. Word 7 is unreachable in a correct machine
 and traps in a broken one. -/
 def progPreempt : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0x1028,   -- w0  r1 = child entry (word 5)
-    enc OP_CLONE_SPAWN 4 1 2,            -- w1  CLONE r4 = tid, entry = r1, arg = r2
-    encImmI OP_ADDI 9 9 1,        -- w2  r9 += 1                 (parent)
-    encImmI OP_ADDI 9 9 1,        -- w3  r9 += 1
-    enc OP_EXIT 0 0 0,            -- w4  EXIT (halts the core)
-    encImmI OP_ADDI 10 10 1,      -- w5  r10 += 1  (child entry, 0x1028)
-    encImmJ OP_JMP 0 (-1),       -- w6  J -1 -> back to w5
-    enc OP_INVALID 0 0 0 ]           -- w7  poison: only a bad resume gets here
+  [ encImmI 0xa0 1 0 0x1028,   -- w0  r1 = child entry (word 5)
+    enc 0x59 4 1 2,            -- w1  CLONE r4 = tid, entry = r1, arg = r2
+    encImmI 0xa0 9 9 1,        -- w2  r9 += 1                 (parent)
+    encImmI 0xa0 9 9 1,        -- w3  r9 += 1
+    enc 0x3a 0 0 0,            -- w4  EXIT (halts the core)
+    encImmI 0xa0 10 10 1,      -- w5  r10 += 1  (child entry, 0x1028)
+    encImmJ 0x20 0 (-1),       -- w6  J -1 -> back to w5
+    enc 0x7f 0 0 0 ]           -- w7  poison: only a bad resume gets here
 
 /-- cmd stream: load the quantum (cycle 0), then start (cycle 1). -/
 def cmdQuantum (q : Nat) : Nat → MiniIn := fun k =>
@@ -714,15 +714,15 @@ number of spin iterations is not, so `retire` and the cycle count are not
 compared), which is what lets the iverilog leg be diffed byte-for-byte
 against this ISS. -/
 def progSpin : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0x1030,   -- w0  r1 = child entry (word 6)
-    enc OP_CLONE_SPAWN 4 1 2,            -- w1  CLONE r4 = tid, entry = r1
-    encImmI OP_LD 5 0 0,        -- w2  spin head (0x1010): r5 = [0]
-    encImmS OP_BEQ 5 0 (-1),     -- w3  BEQ r5, r0 -> back to w2
-    encImmI OP_ADDI 9 0 42,       -- w4  r9 = 42   (only after the flag is set)
-    enc OP_EXIT 0 0 0,            -- w5  EXIT
-    encImmI OP_ADDI 6 0 1,        -- w6  child entry (0x1030): r6 = 1
-    encImmS OP_ST 0 6 0,        -- w7  SD [0] = r6   (sets the flag)
-    enc OP_THREAD_EXIT 0 0 0 ]           -- w8  THREAD_EXIT
+  [ encImmI 0xa0 1 0 0x1030,   -- w0  r1 = child entry (word 6)
+    enc 0x59 4 1 2,            -- w1  CLONE r4 = tid, entry = r1
+    encImmI 0x30 5 0 0,        -- w2  spin head (0x1010): r5 = [0]
+    encImmS 0x21 5 0 (-1),     -- w3  BEQ r5, r0 -> back to w2
+    encImmI 0xa0 9 0 42,       -- w4  r9 = 42   (only after the flag is set)
+    enc 0x3a 0 0 0,            -- w5  EXIT
+    encImmI 0xa0 6 0 1,        -- w6  child entry (0x1030): r6 = 1
+    encImmS 0x33 0 6 0,        -- w7  SD [0] = r6   (sets the flag)
+    enc 0x3b 0 0 0 ]           -- w8  THREAD_EXIT
 
 /-- 16 lowercase hex digits, `$readmemh` shaped. -/
 def hex16 (v : BitVec 64) : String :=
@@ -864,22 +864,22 @@ def GATE_DOM_TEST : Nat := 3
 
 /-- Gate body entry is word 4 = `TEXT_BASE + 32`. -/
 def progGate : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0,        -- w0  r1 = 0 (gate id)
-    enc OP_MINI_GATE_CALL 0 1 0,            -- w1  GATE_CALL gate r1  -> word 4
-    encImmI OP_ADDI 9 0 7,        -- w2  r9 = 7   (only after a correct return)
-    enc OP_EXIT 0 0 0,            -- w3  EXIT
-    encImmI OP_ADDI 10 0 5,       -- w4  r10 = 5  (gate body, in domain 3)
-    enc OP_MINI_GATE_RETURN 0 0 0 ]           -- w5  GATE_RETURN -> word 2
+  [ encImmI 0xa0 1 0 0,        -- w0  r1 = 0 (gate id)
+    enc 0x3c 0 1 0,            -- w1  GATE_CALL gate r1  -> word 4
+    encImmI 0xa0 9 0 7,        -- w2  r9 = 7   (only after a correct return)
+    enc 0x3a 0 0 0,            -- w3  EXIT
+    encImmI 0xa0 10 0 5,       -- w4  r10 = 5  (gate body, in domain 3)
+    enc 0x3d 0 0 0 ]           -- w5  GATE_RETURN -> word 2
 
 /-- Same, but the gate body halts instead of returning: the machine stops
 inside the gate. -/
 def progGateStay : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 0,
-    enc OP_MINI_GATE_CALL 0 1 0,
-    encImmI OP_ADDI 9 0 7,
-    enc OP_EXIT 0 0 0,
-    encImmI OP_ADDI 10 0 5,
-    enc OP_EXIT 0 0 0 ]           -- w5  EXIT *inside* the gate
+  [ encImmI 0xa0 1 0 0,
+    enc 0x3c 0 1 0,
+    encImmI 0xa0 9 0 7,
+    enc 0x3a 0 0 0,
+    encImmI 0xa0 10 0 5,
+    enc 0x3a 0 0 0 ]           -- w5  EXIT *inside* the gate
 
 /-- cmd stream: install gate 0 (domain `GATE_DOM_TEST`, entry word 4), then
 start. `cmd 62` selects the gate and sets its domain; `cmd 61` loads the
@@ -941,15 +941,15 @@ the domain entirely and just popped *any* occupied inbox would pass. -/
 def CAP_HANDLE : Nat := 0xCAFE
 
 def progCapSendThen (retReg : Nat) : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 CAP_HANDLE,   -- w0  r1 = the handle
-    encImmI OP_ADDI 2 0 3,            -- w1  r2 = 3 (target domain)
-    enc OP_MINI_CAP_SEND 3 1 2,                -- w2  CAP_SEND r3 = send(r1 -> domain r2)
-    encImmI OP_ADDI 4 0 0,            -- w3  r4 = 0 (gate id)
-    enc OP_MINI_GATE_CALL 0 4 0,                -- w4  GATE_CALL gate 0 -> word 7
-    enc OP_EXIT 0 0 0,                -- w5  EXIT (after the gate returns)
-    enc OP_NOP 0 0 0,                -- w6  (pad)
-    enc OP_MINI_CAP_RECV retReg 0 0,           -- w7  CAP_RECV -> rretReg   (gate body)
-    enc OP_MINI_GATE_RETURN 0 0 0 ]               -- w8  GATE_RETURN -> word 5
+  [ encImmI 0xa0 1 0 CAP_HANDLE,   -- w0  r1 = the handle
+    encImmI 0xa0 2 0 3,            -- w1  r2 = 3 (target domain)
+    enc 0x3e 3 1 2,                -- w2  CAP_SEND r3 = send(r1 -> domain r2)
+    encImmI 0xa0 4 0 0,            -- w3  r4 = 0 (gate id)
+    enc 0x3c 0 4 0,                -- w4  GATE_CALL gate 0 -> word 7
+    enc 0x3a 0 0 0,                -- w5  EXIT (after the gate returns)
+    enc 0x00 0 0 0,                -- w6  (pad)
+    enc 0x3f retReg 0 0,           -- w7  CAP_RECV -> rretReg   (gate body)
+    enc 0x3d 0 0 0 ]               -- w8  GATE_RETURN -> word 5
 
 def progCapRight : List (BitVec 64) := progCapSendThen 9
 def progCapWrong : List (BitVec 64) := progCapSendThen 9
@@ -1014,9 +1014,9 @@ def MMU_CELL : Nat := 0x9         -- the VMA's epoch cell
 def MMU_DOM  : Nat := 3
 
 def progLdSt : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 MMU_VA,      -- w0  r1 = the virtual address
-    enc OP_LD_31 5 1 0,               -- w1  r5 = [r1]   (LD -- translated)
-    enc OP_EXIT 0 0 0 ]              -- w2  EXIT
+  [ encImmI 0xa0 1 0 MMU_VA,      -- w0  r1 = the virtual address
+    enc 0x31 5 1 0,               -- w1  r5 = [r1]   (LD -- translated)
+    enc 0x3a 0 0 0 ]              -- w2  EXIT
 
 /-- Install TLB entry 4: VPN 4, domain `dom`, PPN, cell; enable the MMU;
 put thread 0 in domain `dom`; start. `bump` optionally fires the §15

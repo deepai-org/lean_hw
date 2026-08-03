@@ -211,83 +211,81 @@ def pc8 (s : MiniSt) : BitVec 64 := s.pc + 8
 def opN (s : MiniSt) : Nat := (op s).toNat
 
 def is_alu (s : MiniSt) : Bool :=
-  [OP_LIU, OP_MOV, OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_SREM, OP_LSL, OP_LSR, OP_ASR, OP_SLT, 0x1c, OP_ADDI, OP_ANDI, OP_ORI, OP_XORI, OP_LSLI, 0xa5, 0xa6, OP_SLTI, 0x1e, OP_AUIPC, OP_SEXT_B, OP_SEXT_H, OP_SEXT_W, OP_ZEXT_B, OP_ZEXT_H, OP_ZEXT_W, OP_BSWAP16, OP_BSWAP32, OP_BSWAP64, OP_ROL, OP_ROR, OP_CTZ].contains (opN s)
+  [0x04,0x02,0x10,0x11,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,
+   0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0x1d,0x1e,0xd0,
+   0xad,0xae,0xaf,0xb0,0xb1,0xb2,0xb8,0xb9,0xba,0xb6,0xb7,0xb4].contains (opN s)
 def is_load (s : MiniSt) : Bool :=
-  [OP_LD,OP_LD_31,OP_LD_S_70,OP_LD_36,OP_LD_S,OP_LD_32,OP_LD_S_72].contains (opN s)
-def is_store (s : MiniSt) : Bool := [OP_ST,OP_ST_34,OP_ST_37,OP_ST_35].contains (opN s)
--- W1.5d: membership, not a RANGE. An opcode's number must not carry
--- semantic grouping, or the numbering cannot be changed.
-def is_branch (s : MiniSt) : Bool := [OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_SLTU].contains (opN s)
-def is_lr (s : MiniSt) : Bool := [OP_LR_D,OP_LR_D_ACQ,OP_LR_D_ACQ_REL].contains (opN s)
-def is_sc (s : MiniSt) : Bool := [OP_SC_D,OP_SC_D_REL,OP_SC_D_ACQ_REL].contains (opN s)
-def is_fence (s : MiniSt) : Bool := [OP_FENCE, OP_FENCE_D1, OP_FENCE_D2, OP_FENCE_D3, OP_FENCE_D4].contains (opN s)
-def is_sel (s : MiniSt) : Bool := [OP_SEL, OP_SEL_41, OP_SEL_42, OP_SEL_43, OP_SEL_44, OP_SEL_45].contains (opN s)
-def is_div (s : MiniSt) : Bool := [OP_DIV,OP_UDIV,OP_SREM,OP_UREM].contains (opN s)
-def is_mulh (s : MiniSt) : Bool := [OP_MULH,OP_MULHU].contains (opN s)
-def div_sgn (s : MiniSt) : Bool := [OP_DIV,OP_SREM].contains (opN s)
+  [0x30,0x31,0x05,0x36,0x09,0x32,0x08].contains (opN s)
+def is_store (s : MiniSt) : Bool := [0x33,0x34,0x37,0x35].contains (opN s)
+def is_branch (s : MiniSt) : Bool := let o := opN s; 0x21 ≤ o && o ≤ 0x26
+def is_lr (s : MiniSt) : Bool := [0xc5,0xc7,0xc9].contains (opN s)
+def is_sc (s : MiniSt) : Bool := [0xc6,0xc8,0xca].contains (opN s)
+def is_fence (s : MiniSt) : Bool := let o := opN s; o = 0xcd || (0xd1 ≤ o && o ≤ 0xd4)
+def is_sel (s : MiniSt) : Bool := let o := opN s; 0x40 ≤ o && o ≤ 0x45
+def is_div (s : MiniSt) : Bool := [0x13,0xa7,0xa8,0xa9].contains (opN s)
+def is_mulh (s : MiniSt) : Bool := [0xaa,0xab].contains (opN s)
+def div_sgn (s : MiniSt) : Bool := [0x13,0xa8].contains (opN s)
 
 /-- arithmetic shift right of a 64-bit value by `sh`. -/
 def asr (x : BitVec 64) (sh : Nat) : BitVec 64 := x.sshiftRight sh
 
 def aluV (s : MiniSt) : BitVec 64 :=
   let av := s.a; let bv := s.b
-  -- W1.5c: an if-chain rather than `match opN s with`. Lean reads
-  -- `| OP_ADD =>` as a BINDER, not the constant, so it matches everything
-  -- and shadows every later arm -- which is what blocked the ISA
-  -- renumbering from moving these opcodes with the rest.
-  if opN s = OP_MOV then av
-  else if opN s = OP_ADD then av + bv
-  else if opN s = OP_SUB then av - bv
-  else if opN s = OP_LIU then (av.extractLsb' 0 32).setWidth 64 ||| (((imm_i s).extractLsb' 0 32).setWidth 64 <<< 32)
-  else if opN s = OP_AND then av &&& bv
-  else if opN s = OP_OR then av ||| bv
-  else if opN s = OP_XOR then av ^^^ bv
-  else if opN s = OP_NOT then ~~~ av
-  else if opN s = OP_LSL then av <<< shamt_r s
-  else if opN s = OP_LSR then av >>> shamt_r s
-  else if opN s = OP_ASR then asr av (shamt_r s)
-  else if opN s = OP_SLT then if av.slt bv then 1 else 0
-  else if opN s = OP_SLTU then if av.ult bv then 1 else 0
-  else if opN s = OP_ADDI then av + imm_i s
-  else if opN s = OP_ANDI then av &&& imm_i s
-  else if opN s = OP_ORI then av ||| imm_i s
-  else if opN s = OP_XORI then av ^^^ imm_i s
-  else if opN s = OP_LSLI then av <<< shamt_i s
-  else if opN s = OP_LSRI then av >>> shamt_i s
-  else if opN s = OP_ASRI then asr av (shamt_i s)
-  else if opN s = OP_SLTI then if av.slt (imm_i s) then 1 else 0
-  else if opN s = OP_SLTIU then if av.ult (imm_i s) then 1 else 0
-  else if opN s = OP_AUIPC then s.pc + imm_j s
-  else if opN s = OP_SEXT_B then (av.extractLsb' 0 8).signExtend 64
-  else if opN s = OP_SEXT_H then (av.extractLsb' 0 16).signExtend 64
-  else if opN s = OP_SEXT_W then (av.extractLsb' 0 32).signExtend 64
-  else if opN s = OP_ZEXT_B then (av.extractLsb' 0 8).setWidth 64
-  else if opN s = OP_ZEXT_H then (av.extractLsb' 0 16).setWidth 64
-  else if opN s = OP_ZEXT_W then (av.extractLsb' 0 32).setWidth 64
-  else if opN s = OP_BSWAP16 then ((av.extractLsb' 0 8).setWidth 64 <<< 8) ||| (av.extractLsb' 8 8).setWidth 64
-  else if opN s = OP_BSWAP32 then
+  match opN s with
+  | 0x02 => av
+  | 0x10 => av + bv
+  | 0x11 => av - bv
+  | 0x04 => (av.extractLsb' 0 32).setWidth 64 ||| (((imm_i s).extractLsb' 0 32).setWidth 64 <<< 32)
+  | 0x14 => av &&& bv
+  | 0x15 => av ||| bv
+  | 0x16 => av ^^^ bv
+  | 0x17 => ~~~ av
+  | 0x18 => av <<< shamt_r s
+  | 0x19 => av >>> shamt_r s
+  | 0x1a => asr av (shamt_r s)
+  | 0x1b => if av.slt bv then 1 else 0
+  | 0x1c => if av.ult bv then 1 else 0
+  | 0xa0 => av + imm_i s
+  | 0xa1 => av &&& imm_i s
+  | 0xa2 => av ||| imm_i s
+  | 0xa3 => av ^^^ imm_i s
+  | 0xa4 => av <<< shamt_i s
+  | 0xa5 => av >>> shamt_i s
+  | 0xa6 => asr av (shamt_i s)
+  | 0x1d => if av.slt (imm_i s) then 1 else 0
+  | 0x1e => if av.ult (imm_i s) then 1 else 0
+  | 0xd0 => s.pc + imm_j s
+  | 0xad => (av.extractLsb' 0 8).signExtend 64
+  | 0xae => (av.extractLsb' 0 16).signExtend 64
+  | 0xaf => (av.extractLsb' 0 32).signExtend 64
+  | 0xb0 => (av.extractLsb' 0 8).setWidth 64
+  | 0xb1 => (av.extractLsb' 0 16).setWidth 64
+  | 0xb2 => (av.extractLsb' 0 32).setWidth 64
+  | 0xb8 => ((av.extractLsb' 0 8).setWidth 64 <<< 8) ||| (av.extractLsb' 8 8).setWidth 64
+  | 0xb9 =>
       (List.range 4).foldl (fun acc i =>
         acc ||| ((av.extractLsb' (i*8) 8).setWidth 64 <<< ((3-i)*8))) 0
-  else if opN s = OP_BSWAP64 then
+  | 0xba =>
       (List.range 8).foldl (fun acc i =>
         acc ||| ((av.extractLsb' (i*8) 8).setWidth 64 <<< ((7-i)*8))) 0
-  else if opN s = OP_CTZ then
+  | 0xb4 =>
       -- CTZ: lowest set bit; 64 if a==0. downward scan, lowest wins.
       (List.range 64).foldr (fun i acc => if bit av i then BitVec.ofNat 64 i else acc)
         (BitVec.ofNat 64 64)
-  else if opN s = OP_ROL then (av <<< shamt_r s) ||| (av >>> ((0 - (s.b.extractLsb' 0 6)).toNat))
-  else if opN s = OP_ROR then (av >>> shamt_r s) ||| (av <<< ((0 - (s.b.extractLsb' 0 6)).toNat))
-  else 0
+  | 0xb6 => (av <<< shamt_r s) ||| (av >>> ((0 - (s.b.extractLsb' 0 6)).toNat))
+  | 0xb7 => (av >>> shamt_r s) ||| (av <<< ((0 - (s.b.extractLsb' 0 6)).toNat))
+  | _ => 0
 
 def br_take (s : MiniSt) : Bool :=
   let av := s.a; let bv := s.b
-  if opN s = OP_BEQ then av = bv
-  else if opN s = OP_BNE then av ≠ bv
-  else if opN s = OP_BLT then av.slt bv
-  else if opN s = OP_BGE then ¬ av.slt bv
-  else if opN s = OP_BLTU then av.ult bv
-  else if opN s = OP_BGEU then ¬ av.ult bv
-  else false
+  match opN s with
+  | 0x21 => av = bv
+  | 0x22 => av ≠ bv
+  | 0x23 => av.slt bv
+  | 0x24 => ¬ av.slt bv
+  | 0x25 => av.ult bv
+  | 0x26 => ¬ av.ult bv
+  | _ => false
 
 def sel_cond (s : MiniSt) : Bool :=
   let av := s.a; let bv := s.b
@@ -304,18 +302,18 @@ def lw_shift (s : MiniSt) : BitVec 64 := mem_src s >>> (s.ld_boff_q.toNat * 8)
 
 def ld_wb (s : MiniSt) : BitVec 64 :=
   let ms := mem_src s; let sh := lw_shift s
-  -- W1.5c: if-chain (named opcodes cannot be Lean patterns).
-  if s.ld_op_q.toNat = OP_LD then ms
-  else if s.ld_op_q.toNat = OP_LD_31 then (sh.extractLsb' 0 32).setWidth 64
-  else if s.ld_op_q.toNat = OP_LD_S_70 then (sh.extractLsb' 0 32).signExtend 64
-  else if s.ld_op_q.toNat = OP_LD_36 then (sh.extractLsb' 0 16).setWidth 64
-  else if s.ld_op_q.toNat = OP_LD_S then (sh.extractLsb' 0 16).signExtend 64
-  else if s.ld_op_q.toNat = OP_LD_32 then (sh.extractLsb' 0 8).setWidth 64
-  else if s.ld_op_q.toNat = OP_LD_S_72 then (sh.extractLsb' 0 8).signExtend 64
-  else ms
+  match s.ld_op_q.toNat with
+  | 0x30 => ms
+  | 0x31 => (sh.extractLsb' 0 32).setWidth 64
+  | 0x05 => (sh.extractLsb' 0 32).signExtend 64
+  | 0x36 => (sh.extractLsb' 0 16).setWidth 64
+  | 0x09 => (sh.extractLsb' 0 16).signExtend 64
+  | 0x32 => (sh.extractLsb' 0 8).setWidth 64
+  | 0x08 => (sh.extractLsb' 0 8).signExtend 64
+  | _ => ms
 
 def st_width (s : MiniSt) : Nat :=
-  if opN s = OP_ST_35 then 1 else if opN s = OP_ST_37 then 2 else if opN s = OP_ST_34 then 4 else 8
+  match opN s with | 0x35 => 1 | 0x37 => 2 | 0x34 => 4 | _ => 8
 
 def st_boff (s : MiniSt) : Nat := (mem_ea_s s).extractLsb' 0 3 |>.toNat
   where mem_ea_s (s : MiniSt) : BitVec 64 := s.a + imm_s s
@@ -545,35 +543,35 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         st := BitVec.ofNat 5 S_EX }
     else if stN = S_EX then
       let o := opN s
-      if o = OP_EXIT then
+      if o = 0x3a then
         s' := { s' with halted := true, running := false, retire := s.retire + 1 }
-      else if o = OP_THREAD_EXIT then
+      else if o = 0x3b then
         s' := { s' with tstate := s'.tstate.set! curV.toNat 0, retire := s.retire + 1 }
         if s.next_ready ≠ curV then
           s' := { s' with cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]!, st := BitVec.ofNat 5 S_F0 }
         else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
-      else if o = OP_NOP then
+      else if o = 0x00 then
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if is_fence s then
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_MUL then
+      else if o = 0x12 then
         s' := { s' with mul_acc := 0, mul_aw := s.a.setWidth 128, mul_b := s.b, mul_kind := 0, st := BitVec.ofNat 5 S_MUL }
       else if is_mulh s then
         s' := { s' with mul_acc := 0, mul_aw := s.a.setWidth 128, mul_b := s.b,
-                        mul_kind := if o = OP_MULH then 1 else 2, st := BitVec.ofNat 5 S_MUL }
+                        mul_kind := if o = 0xaa then 1 else 2, st := BitVec.ofNat 5 S_MUL }
       else if is_div s then
         if s.b = 0 then
           s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
         else
           s' := { s' with div_rem := 0, div_quo := div_a_abs s, div_d := div_b_abs s, div_cnt := 0,
-                          div_isrem := (o = OP_SREM ∨ o = OP_UREM),
+                          div_isrem := (o = 0xa8 ∨ o = 0xa9),
                           div_negq := div_sgn s ∧ (bit s.a 63 ≠ bit s.b 63),
                           div_negr := div_sgn s ∧ bit s.a 63,
                           st := BitVec.ofNat 5 S_DIV }
       else if is_sel s then
         if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := if sel_cond s then s.sel_t else s.sel_f
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_GET_PCR then
+      else if o = 0x54 then
         if rs1f s = 2 then
           if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := curV.setWidth 64 + 1
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
@@ -581,39 +579,39 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_alu s then
         if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := aluV s
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_JMP then
+      else if o = 0x20 then
         s' := { s' with pc := s.pc + (imm_j s <<< 3), retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_JAL then
+      else if o = 0x27 then
         if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := pc8 s
         s' := { s' with pc := s.pc + (imm_j s <<< 3), retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_JALR then
+      else if o = 0x28 then
         if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := pc8 s
         s' := { s' with pc := s.a + imm_i s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if is_branch s then
         s' := { s' with pc := if br_take s then s.pc + (imm_s s <<< 3) else pc8 s,
                         retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_YIELD then
+      else if o = 0x06 then
         if s.next_ready = curV then s' := { s' with pc := pc8 s }
         else s' := { s' with tpc := s'.tpc.set! curV.toNat (pc8 s), cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]! }
         s' := { s' with retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_SLEEP then
+      else if o = 0x07 then
         s' := { s' with tpc := s'.tpc.set! curV.toNat (pc8 s), tstate := s'.tstate.set! curV.toNat 2,
                         tsleep := s'.tsleep.set! curV.toNat (if s.a = 0 then 1 else s.a) }
         if s.next_ready ≠ curV then
           s' := { s' with cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]!, st := BitVec.ofNat 5 S_F0 }
         else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
         s' := { s' with retire := s.retire + 1 }
-      else if o = OP_FUTEX_WAIT then
+      else if o = 0xcb then
         s' := { s' with core_addr := ddrEaOf s s.rdval,
                         core_rd := true, futex_addr_q := s.rdval, futex_exp := s.a, st := BitVec.ofNat 5 S_FTX1 }
-      else if o = OP_FUTEX_WAKE then
+      else if o = 0xcc then
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
         -- `smpRule`); S_EX keeps only FUTEX_WAKE's sequencing half.
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       -- EXT-6: 0x3e CAP_SEND (a = handle, b = target domain), 0x3f CAP_RECV.
       -- RECV indexes the receiver's OWN domain -- not an operand -- so no
       -- encoding reaches another domain's inbox.
-      else if o = OP_MINI_CAP_SEND then
+      else if o = 0x3e then
         let tgt := (s.b.toNat) % 16
         let occ := s.cap_ival.getLsbD tgt
         if ¬ occ then
@@ -623,7 +621,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           rfWe := true; rfWa := (curV ++ rdf s)
           rfWd := if occ then BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF else 0
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_MINI_CAP_RECV then
+      else if o = 0x3f then
         let me := (s.tdom[curV.toNat]!).toNat % 16
         let occ := s.cap_ival.getLsbD me
         if occ then
@@ -634,7 +632,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       -- EXT-5: 0x3c GATE_CALL / 0x3d GATE_RETURN. A gate is the only way a
       -- thread changes domain, and only to a domain the host installed.
-      else if o = OP_MINI_GATE_CALL then
+      else if o = 0x3c then
         let inG := s.in_gate.getLsbD curV.toNat
         if inG then
           -- depth 1: a nested call is refused, no state change
@@ -647,7 +645,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           tdom := s'.tdom.set! curV.toNat s.gate_dom[g]!,
                           pc := s.gate_ent[g]!,
                           retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_MINI_GATE_RETURN then
+      else if o = 0x3d then
         if s.in_gate.getLsbD curV.toNat then
           s' := { s' with pc := s.tcont[curV.toNat]!,
                           tdom := s'.tdom.set! curV.toNat s.tcdom[curV.toNat]!,
@@ -655,7 +653,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         else
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_CLONE_SPAWN then
+      else if o = 0x59 then
         if s.has_free then
           s' := { s' with tpc := s'.tpc.set! s.free_slot.toNat s.a, tstate := s'.tstate.set! s.free_slot.toNat 1 }
           -- EXT-2: the child inherits the parent's domain. A thread cannot
@@ -691,7 +689,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         if s.rx_rptr ≠ s.rx_wptr then s' := { s' with rx_rptr := s.rx_rptr + 1 }
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if is_load s ∧ l_is_gp s then
-        if o = OP_LD_31 then
+        if o = 0x31 then
           s' := { s' with gp_addr_r := (mem_ea_l s).extractLsb' 0 32 &&& BitVec.ofNat 32 0xFFFFFFFC, gp_rd := true, ld_rd_q := rdf s, st := BitVec.ofNat 5 S_GPL }
         else s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
       else if is_load s ∧ l_is_zp s then
@@ -702,7 +700,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_store s ∧ mem_ea_s s = BitVec.ofNat 64 UART_ADDR then
         s' := { s' with uartMem := s'.uartMem.set! (s.uart_wptr.setWidth 8).toNat (s.b.setWidth 8), uart_wptr := s.uart_wptr + 1, pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if is_store s ∧ s_is_gp s then
-        if o = OP_ST_34 then
+        if o = 0x34 then
           s' := { s' with gp_addr_r := (mem_ea_s s).extractLsb' 0 32 &&& BitVec.ofNat 32 0xFFFFFFFC, gp_wdata_r := s.b.setWidth 32, gp_wr := true, st := BitVec.ofNat 5 S_GPS }
         else s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
       else if is_store s ∧ s_is_zp s then
@@ -794,7 +792,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
 
   -- SMP cross-core block (mirrors `smpRule`, which runs AFTER the FSM)
   let wakeLocal := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
-                   ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = OP_FUTEX_WAKE
+                   ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = 0xcc
   s' := { s' with wake_out := wakeLocal }
   -- EXT-4: publish the key we woke on; hold otherwise.
   if wakeLocal then s' := { s' with wake_key := s.rdval }
