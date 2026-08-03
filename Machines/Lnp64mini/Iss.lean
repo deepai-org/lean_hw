@@ -211,17 +211,17 @@ def pc8 (s : MiniSt) : BitVec 64 := s.pc + 8
 def opN (s : MiniSt) : Nat := (op s).toNat
 
 def is_alu (s : MiniSt) : Bool :=
-  [0x04,0x02,0x10,0x11,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,
-   0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0x1d,0x1e,0xd0,
-   0xad,0xae,0xaf,0xb0,0xb1,0xb2,0xb8,0xb9,0xba,0xb6,0xb7,0xb4].contains (opN s)
+  [OP_LIU, OP_MOV, OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_SREM, OP_LSL, OP_LSR, OP_ASR, OP_SLT, 0x1c, OP_ADDI, OP_ANDI, OP_ORI, OP_XORI, OP_LSLI, 0xa5, 0xa6, OP_SLTI, 0x1e, OP_AUIPC, OP_SEXT_B, OP_SEXT_H, OP_SEXT_W, OP_ZEXT_B, OP_ZEXT_H, OP_ZEXT_W, OP_BSWAP16, OP_BSWAP32, OP_BSWAP64, OP_ROL, OP_ROR, OP_CTZ].contains (opN s)
 def is_load (s : MiniSt) : Bool :=
   [OP_LD,OP_LD_31,OP_LD_S_70,OP_LD_36,OP_LD_S,OP_LD_32,OP_LD_S_72].contains (opN s)
 def is_store (s : MiniSt) : Bool := [OP_ST,OP_ST_34,OP_ST_37,OP_ST_35].contains (opN s)
-def is_branch (s : MiniSt) : Bool := let o := opN s; 0x21 ≤ o && o ≤ 0x26
+-- W1.5d: membership, not a RANGE. An opcode's number must not carry
+-- semantic grouping, or the numbering cannot be changed.
+def is_branch (s : MiniSt) : Bool := [OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_SLTU].contains (opN s)
 def is_lr (s : MiniSt) : Bool := [OP_LR_D,OP_LR_D_ACQ,OP_LR_D_ACQ_REL].contains (opN s)
 def is_sc (s : MiniSt) : Bool := [OP_SC_D,OP_SC_D_REL,OP_SC_D_ACQ_REL].contains (opN s)
-def is_fence (s : MiniSt) : Bool := let o := opN s; o = OP_FENCE || (0xd1 ≤ o && o ≤ 0xd4)
-def is_sel (s : MiniSt) : Bool := let o := opN s; 0x40 ≤ o && o ≤ 0x45
+def is_fence (s : MiniSt) : Bool := [OP_FENCE, OP_FENCE_D1, OP_FENCE_D2, OP_FENCE_D3, OP_FENCE_D4].contains (opN s)
+def is_sel (s : MiniSt) : Bool := [OP_SEL, OP_SEL_41, OP_SEL_42, OP_SEL_43, OP_SEL_44, OP_SEL_45].contains (opN s)
 def is_div (s : MiniSt) : Bool := [OP_DIV,OP_UDIV,OP_SREM,OP_UREM].contains (opN s)
 def is_mulh (s : MiniSt) : Bool := [OP_MULH,OP_MULHU].contains (opN s)
 def div_sgn (s : MiniSt) : Bool := [OP_DIV,OP_SREM].contains (opN s)
