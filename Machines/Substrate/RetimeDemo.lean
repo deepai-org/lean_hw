@@ -28,6 +28,8 @@ open Loom.Hw
 def baseline : Design where
   name := "retime_base"
   regs := [⟨"cnt", 8, 0⟩, ⟨"obs", 8, 7⟩]
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs := ["cnt", "obs"]
   mems := []
   rules :=
     [ ⟨"tick", .write 8 "cnt" (.add (.reg 8 "cnt") (.lit 1))⟩

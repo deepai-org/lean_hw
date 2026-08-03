@@ -182,9 +182,9 @@ def acctRule : Rule :=
 def maxoutRule : Rule :=
   ⟨"maxout", guard (.ite (.ult maxout popc32) (.write 32 "maxout" popc32) .skip)⟩
 
-def design : Design where
-  name := "s13soak"
-  regs :=
+/-- The register list, named so `regs` and D39a's mandatory `outputs`
+provably denote the same thing. -/
+def s13Regs : List Loom.Hw.RegDecl :=
     [⟨"cyc", 32, 0⟩, ⟨"lfsr", 16, BitVec.ofNat 16 LFSR_INIT⟩, ⟨"ptr", 3, 0⟩,
      ⟨"tmr", 16, 0⟩, ⟨"dma_busy", 1, 0⟩, ⟨"dma_cd", 4, 0⟩,
      ⟨"injected", 32, 0⟩, ⟨"serviced", 32, 0⟩, ⟨"err", 32, 0⟩,
@@ -192,6 +192,12 @@ def design : Design where
      ⟨"tmr_exp", 32, 0⟩]
     ++ (List.finRange 8).map (fun i => ⟨s!"pend{i.val}", 1, 0⟩)
     ++ (List.finRange 8).map (fun i => ⟨s!"age{i.val}", 11, 0⟩)
+
+def design : Design where
+  name := "s13soak"
+  regs := s13Regs
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs := s13Regs.map (·.name)
   mems := []
   rules :=
     [tickRule, lfsrRule, ptrRule]

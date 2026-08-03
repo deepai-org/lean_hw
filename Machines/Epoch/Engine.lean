@@ -394,6 +394,10 @@ def mems : List MemDecl :=
 def mkDesign : Design where
   name := cfg.name
   regs := volRegs cfg 0 ++ volRegs cfg 1 ++ bumpRegs cfg
+  -- D39a: outputs are mandatory and explicit, like inputs. This design's
+  -- whole register set IS its interface, so it says so rather than
+  -- relying on a default that exported everything silently.
+  outputs := (volRegs cfg 0 ++ volRegs cfg 1 ++ bumpRegs cfg).map (·.name)
   mems := mems cfg
   rules := latchRules cfg ++ [chkRule cfg 0, chkRule cfg 1, bumpRule cfg]
   inputs := volInputs cfg 0 ++ volInputs cfg 1

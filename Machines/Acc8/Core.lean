@@ -50,6 +50,10 @@ private def execRule : Act :=
 def design (prog : BitVec 8 → BitVec 16) : Design where
   name := "acc8"
   regs := [⟨"acc", 8, 0⟩, ⟨"pc", 8, 0⟩, ⟨"halted", 1, 0⟩]
+  -- D39a: outputs are mandatory and explicit, like inputs. This design's
+  -- whole register set IS its interface, so it says so rather than
+  -- relying on a default that exported everything silently.
+  outputs := ["acc", "pc", "halted"]
   mems :=
     [ { name := "prog", addrWidth := 8, dataWidth := 16
         init := fun a => prog (BitVec.ofNat 8 a) }

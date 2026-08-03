@@ -225,6 +225,8 @@ def inputs : List InputDecl :=
 def design : Design where
   name := "hp_arbiter"
   regs := regs
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs := regs.map (·.name)
   mems := []
   rules := [arbRule]
   inputs := inputs

@@ -104,11 +104,17 @@ def obsRule : Rule :=
           sink ⇐ bank.dynRd sel.rd 0,
           when anyMaxE then hits ⇐ hits.rd + 1 }⟩
 
-def design : Design where
-  name := "s1counters"
-  regs :=
+/-- The register list, named so `regs` and D39a's mandatory `outputs`
+provably denote the same thing. -/
+def s1Regs : List Loom.Hw.RegDecl :=
     [cyc.decl, lfsr.decl (BitVec.ofNat 16 LFSR_INIT), total.decl,
      anyMax.decl, sel.decl, sink.decl, hits.decl] ++ bank.decls
+
+def design : Design where
+  name := "s1counters"
+  regs := s1Regs
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs := s1Regs.map (·.name)
   mems := []
   rules :=
     [tickRule, lfsrRule] ++ (List.finRange 8).map bumpRule ++

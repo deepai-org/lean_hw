@@ -140,7 +140,8 @@ structure MiniSt where
   tlb_vpn   : Array (BitVec 32) := Array.replicate 8 0
   tlb_ppn   : Array (BitVec 32) := Array.replicate 8 0
   tlb_dom   : Array (BitVec 8)  := Array.replicate 8 0
-  tlb_vld   : Array Bool        := Array.replicate 8 false
+  -- EXT-7: valid bits are a bitmap (the shootdown clears several at once).
+  tlb_vld   : BitVec 8 := 0
   tlb_cell  : Array (BitVec 8)  := Array.replicate 8 0
   wake_out  : Bool := false
   -- EXT-4: the key this core last woke on (captured on the pulse).
@@ -183,7 +184,7 @@ def ddrEaOf (s : MiniSt) (ea : BitVec 64) : BitVec 32 :=
   else
     let i   := (ea.extractLsb' 12 3).toNat
     let vpn := (ea.extractLsb' 12 20).setWidth 32
-    let hit := s.tlb_vld[i]! ∧ s.tlb_vpn[i]! = vpn ∧ s.tlb_dom[i]! = s.tdom[s.cur.toNat]!
+    let hit := s.tlb_vld.getLsbD i ∧ s.tlb_vpn[i]! = vpn ∧ s.tlb_dom[i]! = s.tdom[s.cur.toNat]!
     if hit then
       (BitVec.ofNat 32 DATA_BASE) + ((s.tlb_ppn[i]! <<< 12) ||| (ea.extractLsb' 0 12).setWidth 32)
     else BitVec.ofNat 32 DATA_BASE
@@ -404,7 +405,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- construction rather than by a reset image the flow may not deliver.
       s' := { s' with tdom := s'.tdom.set! s.zctr.toNat 0 }
     -- EXT-5: the reset also clears every open gate.
-    if s.zctr.toNat = 0 then s' := { s' with in_gate := 0, cap_ival := 0 }
+    if s.zctr.toNat = 0 then s' := { s' with in_gate := 0, cap_ival := 0, tlb_vld := 0 }
     if s.zctr.toNat < 512 then
       s' := { s' with dmem_we := true, dmem_a := s.zctr.setWidth 9, dmem_wd := 0 }
     if s.zctr.toNat = 32*NT - 1 then s' := { s' with zeroing := false }
@@ -447,11 +448,12 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     -- EXT-7: MMU enable, TLB select/fill, and the §15 shootdown.
     | 63 => s' := { s' with mmu_en := bit d 0 }
     | 64 => s' := { s' with tlb_sel := BitVec.ofNat 3 (d.toNat % 8) }
-    | 65 => s' := { s' with tlb_vpn := s'.tlb_vpn.set! s.tlb_sel.toNat
+    | 65 => s' := { s' with tlb_vld := s.tlb_vld ||| (1#8 <<< s.tlb_sel.toNat),
+                            tlb_vpn := s'.tlb_vpn.set! s.tlb_sel.toNat
                               (BitVec.ofNat 32 (d.toNat % 0x1000000)),
                             tlb_dom := s'.tlb_dom.set! s.tlb_sel.toNat
                                          (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)),
-                            tlb_vld := s'.tlb_vld.set! s.tlb_sel.toNat true }
+                            }
     | 66 => s' := { s' with tlb_ppn := s'.tlb_ppn.set! s.tlb_sel.toNat
                               (BitVec.ofNat 32 (d.toNat % 0x1000000)),
                             tlb_cell := s'.tlb_cell.set! s.tlb_sel.toNat
@@ -461,7 +463,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         -- cell (§15 line 876), so bumping it kills every entry naming it.
         let cell := BitVec.ofNat 8 (d.toNat % 256)
         for i in List.range 8 do
-          if s.tlb_cell[i]! = cell then s' := { s' with tlb_vld := s'.tlb_vld.set! i false }
+          if s.tlb_cell[i]! = cell then
+            s' := { s' with tlb_vld := s'.tlb_vld &&& ~~~(1#8 <<< i) }
     | 62 => s' := { s' with gate_sel := BitVec.ofNat 4 (d.toNat % 16),
                             gate_dom := s'.gate_dom.set! (d.toNat % 16)
                                           (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }

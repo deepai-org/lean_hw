@@ -159,6 +159,11 @@ def design : Design where
       ⟨"chk_pend", 1, 0⟩, ⟨"bmp_pend", 1, 0⟩, ⟨"cyc", 16, 0⟩,
       ⟨"q_active", 1, 0⟩, ⟨"q_idx", 3, 0⟩ ]
   mems := []
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs :=
+    [ "cell", "epoch", "flags", "req_valid", "req_op", "req_policy",
+      "rdata", "done", "res_code", "res_v", "chk_pend", "bmp_pend", "cyc",
+      "q_active", "q_idx" ]
   rules := [⟨"mmio", body cfg⟩]
   inputs :=
     [ ⟨"gp_rd", 1⟩, ⟨"gp_wr", 1⟩, ⟨"gp_addr", 32⟩, ⟨"gp_wdata", 32⟩,

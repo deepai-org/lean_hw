@@ -103,12 +103,9 @@ theorem oPort_inj {a b : String} (h : s!"o_{a}" = s!"o_{b}") : a = b :=
 
 /-! ## The well-formedness check (spec §2) -/
 
-/-- The selected names that are not declared registers of `d`. Empty when
-`outputs = none`. -/
+/-- The selected names that are not declared registers of `d`. -/
 def Design.outputsUndeclared (d : Design) : List String :=
-  match d.outputs with
-  | none    => []
-  | some ns => ns.filter fun n => !(d.regs.map (·.name)).contains n
+  d.outputs.filter fun n => !(d.regs.map (·.name)).contains n
 
 /-- **The D39 check.** `true` iff every name in the observability selection
 is a declared register of `d`. `Design.emit` refuses anything else, naming
@@ -126,34 +123,34 @@ selection (`Loom/Hw/OUTPUTS_SPEC.md` §2)."
 
 /-- A human-readable D39 report line. -/
 def Design.outputsReport (d : Design) : String :=
-  match d.outputs with
-  | none    => s!"  {d.name}: outputs=ALL ({d.regs.length} registers, pre-D39 default)"
-  | some ns =>
-      s!"  {d.name}: outputs=SELECTED {d.exportedRegs.length}/{d.regs.length} \
-exported, {d.regs.length - d.exportedRegs.length} internal, \
-selection={ns.length} names, ok={d.outputsOkB}"
+  s!"  {d.name}: outputs={d.exportedRegs.length}/{d.regs.length} exported, \
+{d.regs.length - d.exportedRegs.length} internal, selection={d.outputs.length} \
+names, ok={d.outputsOkB}"
 
-/-! ## `none` is the identity (spec §1) -/
-
-/-- The default reproduces the pre-D39 register list, definitionally. -/
-theorem exportedRegs_none {d : Design} (h : d.outputs = none) :
-    d.exportedRegs = d.regs := by
-  simp [Design.exportedRegs, h]
+/-! ## The selection is a filter (spec §1) -/
 
 /-- A selection filters the declared registers. -/
-theorem exportedRegs_some {d : Design} {ns : List String}
-    (h : d.outputs = some ns) :
-    d.exportedRegs = d.regs.filter fun r => ns.contains r.name := by
-  simp [Design.exportedRegs, h]
+theorem exportedRegs_eq {d : Design} :
+    d.exportedRegs = d.regs.filter fun r => d.outputs.contains r.name := rfl
+
+/-- **D39a.** Naming every declared register exports every declared register
+— the statement a design uses when its whole state genuinely is its
+interface. This replaces the old `outputs = none` identity: the behaviour is
+still available, but a design now has to *say* it. -/
+theorem exportedRegs_all {d : Design} (h : d.outputs = d.regs.map (·.name)) :
+    d.exportedRegs = d.regs := by
+  rw [exportedRegs_eq, h]
+  exact List.filter_eq_self.mpr fun r hr => by
+    simpa using List.mem_map_of_mem (f := RegDecl.name) hr
 
 /-- ...hence the pre-D39 port list, definitionally. This is the statement
 behind the byte-identical acceptance test: nothing downstream of `outs` can
 observe that D39 happened for a design that does not use it. -/
-theorem compile_outs_of_none {d : Design} (h : d.outputs = none) :
+theorem compile_outs_of_all {d : Design} (h : d.outputs = d.regs.map (·.name)) :
     (Compile.compile d).outs = d.regs.map fun r =>
       ({ name := s!"o_{r.name}", width := r.width,
          val := .reg r.width r.name } : OutDef) := by
-  simp [Compile.compile, exportedRegs_none h]
+  simp [Compile.compile, exportedRegs_all h]
 
 /-- The port list, in the shape every proof below uses. -/
 theorem compile_outs (d : Design) :
@@ -163,34 +160,31 @@ theorem compile_outs (d : Design) :
 
 /-- An exported register is a declared register: a selection can only ever
 *remove* ports, never invent one. -/
-theorem exportedRegs_sublist (d : Design) : d.exportedRegs.Sublist d.regs := by
-  unfold Design.exportedRegs
-  cases d.outputs with
-  | none => exact List.Sublist.refl _
-  | some ns => exact List.filter_sublist
+theorem exportedRegs_sublist (d : Design) : d.exportedRegs.Sublist d.regs :=
+  List.filter_sublist
 
 /-- Every exported name is selected. -/
 theorem mem_of_mem_exportedRegs {d : Design} {ns : List String}
-    (h : d.outputs = some ns) {r : RegDecl} (hr : r ∈ d.exportedRegs) :
+    (h : d.outputs = ns) {r : RegDecl} (hr : r ∈ d.exportedRegs) :
     r.name ∈ ns := by
-  rw [exportedRegs_some h] at hr
+  subst h
   have := (List.mem_filter.mp hr).2
   simpa using this
 
 /-! ## The theorem (spec §3)
 
-For `outputs = some ns`, a register outside `ns` is **not exported**: no
+For `outputs = ns`, a register outside `ns` is **not exported**: no
 output port is named after it and no output port's driver reads it. This is
 the architectural non-disclosure property, and it is what lets a key live in
 a register. -/
 
-/-- **D39's theorem.** With `outputs = some ns`, a name `n ∉ ns` occurs at no
+/-- **D39's theorem.** With `outputs = ns`, a name `n ∉ ns` occurs at no
 output port of the compiled module — neither as the port name `o_n` nor
 inside the port's driver expression. Note it is stated for an arbitrary `n`,
 not merely a declared register: nothing outside the selection is exported,
 whether or not it is a register. -/
 theorem compile_not_exported {d : Design} {ns : List String}
-    (hsel : d.outputs = some ns) {n : String} (hn : n ∉ ns) :
+    (hsel : d.outputs = ns) {n : String} (hn : n ∉ ns) :
     ∀ o ∈ (Compile.compile d).outs, o.name ≠ s!"o_{n}" ∧ n ∉ o.val.regReads := by
   intro o ho
   rw [compile_outs] at ho
@@ -205,7 +199,7 @@ called `o_n` either (the D15 emit check keeps input names disjoint from
 register names; `o_`-prefixed inputs are a caller's choice), an
 unselected `n` has no port at all. -/
 theorem compile_portNames_not_exported {d : Design} {ns : List String}
-    (hsel : d.outputs = some ns) {n : String} (hn : n ∉ ns)
+    (hsel : d.outputs = ns) {n : String} (hn : n ∉ ns)
     (hin : ∀ i ∈ d.inputs, i.name ≠ s!"o_{n}") :
     s!"o_{n}" ∉ (Compile.compile d).portNames := by
   intro hmem
@@ -252,45 +246,29 @@ names — an internal register of `d` is internal in every instance of `d`. -/
 theorem prefixed_exportedRegs (p : String) (d : Design) :
     (d.prefixed p).exportedRegs =
       d.exportedRegs.map fun r => ({ r with name := p ++ r.name } : RegDecl) := by
-  cases h : d.outputs with
-  | none =>
-      have hp : (d.prefixed p).outputs = none := by simp [Design.prefixed, h]
-      rw [exportedRegs_none hp, exportedRegs_none h]
-      rfl
-  | some ns =>
-      have hp : (d.prefixed p).outputs = some (ns.map (p ++ ·)) := by
-        simp [Design.prefixed, h]
-      rw [exportedRegs_some hp, exportedRegs_some h]
-      exact filter_map_prefix p ns d.regs
+  have hp : (d.prefixed p).outputs = d.outputs.map (p ++ ·) := by
+    simp [Design.prefixed]
+  rw [exportedRegs_eq, exportedRegs_eq, hp]
+  exact filter_map_prefix p d.outputs d.regs
 
 /-- Filtering a design's own registers by its *exported names* is the
-selection itself — in both the `none` and the `some` case. -/
+selection itself. -/
 theorem filter_exportedNames (d : Design) :
     d.regs.filter (fun r => d.exportedNames.contains r.name) = d.exportedRegs := by
-  cases hout : d.outputs with
-  | none =>
-      rw [exportedRegs_none hout]
-      apply List.filter_eq_self.mpr
-      intro r hr
-      have hmem : r.name ∈ d.exportedNames := by
-        simp only [Design.exportedNames, exportedRegs_none hout]
-        exact List.mem_map_of_mem hr
-      simp [hmem]
-  | some ns =>
-      rw [exportedRegs_some hout]
-      apply List.filter_congr
-      intro r hr
-      simp only [List.contains_eq_mem, decide_eq_decide]
-      constructor
-      · intro h
-        obtain ⟨r', hr', hname⟩ := List.mem_map.mp h
-        have := mem_of_mem_exportedRegs hout hr'
-        rwa [hname] at this
-      · intro h
-        have hmem : r ∈ d.exportedRegs := by
-          rw [exportedRegs_some hout]
-          exact List.mem_filter.mpr ⟨hr, by simpa using h⟩
-        simpa [Design.exportedNames] using List.mem_map_of_mem hmem
+  rw [exportedRegs_eq]
+  apply List.filter_congr
+  intro r hr
+  simp only [List.contains_eq_mem, decide_eq_decide]
+  constructor
+  · intro h
+    obtain ⟨r', hr', hname⟩ := List.mem_map.mp h
+    have := mem_of_mem_exportedRegs (rfl : d.outputs = d.outputs) hr'
+    rwa [hname] at this
+  · intro h
+    have hmem : r ∈ d.exportedRegs := by
+      rw [exportedRegs_eq]
+      exact List.mem_filter.mpr ⟨hr, by simpa using h⟩
+    simpa [Design.exportedNames] using List.mem_map_of_mem hmem
 
 /-- **`par` concatenates.** With the two parts' selections not naming each
 other's registers — which `parOkB`'s name disjointness gives, and which is
@@ -315,23 +293,8 @@ theorem par_exportedRegs (a b : Design)
       intro r hr
       simp only [List.contains_eq_mem, decide_eq_decide, List.mem_append]
       exact ⟨fun h => h.elim (hba r hr) id, fun h => Or.inr h⟩
-  cases ha : a.outputs with
-  | none =>
-      cases hb : b.outputs with
-      | none =>
-          have hp : (a.par b).outputs = none := by simp [Design.par, ha, hb]
-          rw [exportedRegs_none hp, exportedRegs_none ha, exportedRegs_none hb]
-          rfl
-      | some nb =>
-          have hp : (a.par b).outputs =
-              some (a.exportedNames ++ b.exportedNames) := by
-            simp [Design.par, ha, hb]
-          rw [exportedRegs_some hp]; exact key
-  | some na =>
-      have hp : (a.par b).outputs =
-          some (a.exportedNames ++ b.exportedNames) := by
-        cases hb : b.outputs <;> simp [Design.par, ha, hb]
-      rw [exportedRegs_some hp]; exact key
+  have hp : (a.par b).outputs = a.exportedNames ++ b.exportedNames := rfl
+  rw [exportedRegs_eq, hp]; exact key
 
 /-- The safety half of `par`, with **no** hypotheses: composition cannot
 publish a register that neither part exported. -/
@@ -339,28 +302,11 @@ theorem par_exportedNames_subset (a b : Design) :
     ∀ r ∈ (a.par b).exportedRegs,
       r.name ∈ a.exportedNames ++ b.exportedNames := by
   intro r hr
-  cases ha : a.outputs with
-  | none =>
-      cases hb : b.outputs with
-      | none =>
-          have hp : (a.par b).outputs = none := by simp [Design.par, ha, hb]
-          rw [exportedRegs_none hp] at hr
-          have : r ∈ a.regs ++ b.regs := hr
-          simp only [Design.exportedNames, exportedRegs_none ha,
-            exportedRegs_none hb, ← List.map_append]
-          exact List.mem_map_of_mem this
-      | some nb =>
-          have hp : (a.par b).outputs =
-              some (a.exportedNames ++ b.exportedNames) := by
-            simp [Design.par, ha, hb]
-          rw [exportedRegs_some hp] at hr
-          simpa using (List.mem_filter.mp hr).2
-  | some na =>
-      have hp : (a.par b).outputs =
-          some (a.exportedNames ++ b.exportedNames) := by
-        cases hb : b.outputs <;> simp [Design.par, ha, hb]
-      rw [exportedRegs_some hp] at hr
-      simpa using (List.mem_filter.mp hr).2
+  rw [exportedRegs_eq] at hr
+  have := (List.mem_filter.mp hr).2
+  have hp : (a.par b).outputs = a.exportedNames ++ b.exportedNames := rfl
+  rw [hp] at this
+  simpa using this
 
 /-- **`connect` leaves the selection alone.** Wiring an input from a
 register cannot resurrect a dropped output: `connect` touches inputs and
@@ -387,7 +333,7 @@ property is a property of the file. -/
 (`parseCheck`, the per-artifact CI gate), then the module an independent
 parser recovers from that text exports no unselected name either. -/
 theorem printed_not_exported {d : Design} {ns : List String}
-    (hsel : d.outputs = some ns) {n : String} (hn : n ∉ ns)
+    (hsel : d.outputs = ns) {n : String} (hn : n ∉ ns)
     (hrt : (Compile.compile d).parseCheck = true) :
     ∃ m, Parse.parse (Print.print (Compile.compile d)) = some m ∧
       ∀ o ∈ m.outs, o.name ≠ s!"o_{n}" ∧ n ∉ o.val.regReads := by

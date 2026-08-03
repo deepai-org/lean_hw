@@ -177,6 +177,11 @@ def design : Design where
       ⟨"res_code", 3, 0⟩, ⟨"res_v", 1, 0⟩, ⟨"chk_pend", 1, 0⟩,
       ⟨"q_active", 1, 0⟩, ⟨"q_idx", 4, 0⟩ ]
   mems := []
+  -- D39a: outputs are mandatory and explicit, like inputs.
+  outputs :=
+    [ "slot", "epoch", "need", "cls", "wf", "off", "len", "req_valid",
+      "req_op", "rdata", "done", "res_code", "res_v", "chk_pend",
+      "q_active", "q_idx" ]
   rules := [⟨"capmmio", body cfg⟩]
   inputs :=
     [ ⟨"gp_rd", 1⟩, ⟨"gp_wr", 1⟩, ⟨"gp_addr", 32⟩, ⟨"gp_wdata", 32⟩,

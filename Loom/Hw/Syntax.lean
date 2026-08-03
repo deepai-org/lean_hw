@@ -126,9 +126,16 @@ structure Design where
   /-- **D39 — declared observability.** Which registers this design exports
   as `o_<name>` output ports.
 
-  * `none` (the default) = **every** register, i.e. exactly the behaviour
-    before D39, so every existing design emits byte-identically.
-  * `some ns` = exactly the declared registers named in `ns`. A register
+  **This field is mandatory** (D39a). It was `Option`, defaulting to `none`
+  = "export every register", and that was a mistake: the default was maximal
+  disclosure, so D39's protection only applied to designs that opted in. That
+  is the same shape as the `checkD19` helper each machine used to call by
+  hand — protection a caller can forget is not protection. Inputs have always
+  been explicit; outputs are the other half of the interface and are now
+  explicit too. A design that genuinely exports everything says so with
+  `outputs := <its regs>.map (·.name)`.
+
+  * `ns` = exactly the declared registers named in `ns`. A register
     absent from the selection is **internal**: it is declared in the module
     body and driven as usual, but it appears at no port, so nothing above
     the design boundary can read it. That is what lets a design hold a key
@@ -148,17 +155,13 @@ structure Design where
 
   A name here that is not a declared register is refused by `Design.emit`
   (`Loom/Hw/Outputs.lean`). -/
-  outputs : Option (List String) := none
+  outputs : List String
 
-/-- **D39.** The registers `d` exports, in declaration order: all of them
-when `outputs = none` (the pre-D39 behaviour, definitionally), and exactly
-the selected ones otherwise. This is the single place the selection is
-interpreted — `Compile.compile` and its `implemented_by` twin both read it,
+/-- **D39.** The registers `d` exports, in declaration order: exactly the
+ones the design names. This is the single place the selection is interpreted — `Compile.compile` and its `implemented_by` twin both read it,
 so they cannot drift apart. -/
 def Design.exportedRegs (d : Design) : List RegDecl :=
-  match d.outputs with
-  | none    => d.regs
-  | some ns => d.regs.filter fun r => ns.contains r.name
+  d.regs.filter fun r => d.outputs.contains r.name
 
 /-- The names of the exported registers (a sublist of the declared ones). -/
 def Design.exportedNames (d : Design) : List String :=
