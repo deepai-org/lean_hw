@@ -38,6 +38,18 @@ lean_lib Tests
 lean_exe iss where
   root := `Tools.Iss
 
+/-- **Compiled** lnp64mini selftests. `lake env lean --run
+Machines/Lnp64mini/Emit.lean <target>` runs the same `main` under the
+*interpreter*, where the EDSL≡ISS lockstep costs ~25 minutes per run and
+`Design.reset`'s fold over the (six-increment-grown) register list overflows
+the interpreter stack outright — `capxferselftest` needed
+`ulimit -s unlimited` just to start. Compiled, the same targets run natively.
+Use `lake exe minitest <target>`; the interpreted path still works and stays
+the reference for `--run`-style one-offs. -/
+lean_exe minitest where
+  root := `Machines.Lnp64mini.Emit
+  supportInterpreter := true
+
 lean_exe audit where
   root := `Tools.Audit
   supportInterpreter := true
