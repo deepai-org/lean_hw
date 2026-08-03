@@ -184,6 +184,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("poison",32,s.poison.toNat),
    -- EXT-4: the outgoing park/wake key
    ("wake_key",64,s.wake_key.toNat), ("wake_bm",32,s.wake_bm.toNat),
+   -- EXT-5: gates
+   ("in_gate",32,s.in_gate.toNat), ("gate_sel",4,s.gate_sel.toNat),
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
@@ -822,6 +824,83 @@ def failstopSelftest : IO Unit := do
   else
     IO.println s!"LNP64MINI FAILSTOP SELFTEST FAILED ({bad} mismatches; runner={ok1} ready={ok2})"
     throw <| IO.userError "failstop selftest failed"
+
+/-! ## EXT-5 — the gate selftest
+
+The claim is **mediation**: a gate is the only way a thread changes domain,
+and it moves the thread only to a domain the *host* installed in the gate
+table — never one the instruction names. Two programs, because entry and
+exit are separate transitions and a test that only checks the round trip
+would pass if both were no-ops:
+
+* `progGate` calls gate 0, runs the gate body, returns, and exits. The
+  domain must be back to 0 and `in_gate` clear.
+* `progGateStay` is the same but the gate body `EXIT`s instead of
+  returning, so the machine halts *inside* the gate: the domain must read
+  **3**, the gate's installed domain, and the `in_gate` bit must be set.
+
+Domain 3 is non-zero on purpose — with everything at 0 both programs pass
+even if gate entry never changes the domain at all. -/
+def GATE_DOM_TEST : Nat := 3
+
+/-- Gate body entry is word 4 = `TEXT_BASE + 32`. -/
+def progGate : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 0,        -- w0  r1 = 0 (gate id)
+    enc 0x60 0 1 0,            -- w1  GATE_CALL gate r1  -> word 4
+    encImmI 0xa0 9 0 7,        -- w2  r9 = 7   (only after a correct return)
+    enc 0x3a 0 0 0,            -- w3  EXIT
+    encImmI 0xa0 10 0 5,       -- w4  r10 = 5  (gate body, in domain 3)
+    enc 0x61 0 0 0 ]           -- w5  GATE_RETURN -> word 2
+
+/-- Same, but the gate body halts instead of returning: the machine stops
+inside the gate. -/
+def progGateStay : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 0,
+    enc 0x60 0 1 0,
+    encImmI 0xa0 9 0 7,
+    enc 0x3a 0 0 0,
+    encImmI 0xa0 10 0 5,
+    enc 0x3a 0 0 0 ]           -- w5  EXIT *inside* the gate
+
+/-- cmd stream: install gate 0 (domain `GATE_DOM_TEST`, entry word 4), then
+start. `cmd 62` selects the gate and sets its domain; `cmd 61` loads the
+entry for the selected gate; `cmd 13` data=2 starts without the zeroing
+sweep, so the table survives. -/
+def cmdGate : Nat → MiniIn := fun k =>
+  if k = 0 then
+    { cmdValid := true, cmdIdx := CMD_GATE_DOM,
+      cmdData := BitVec.ofNat 32 (GATE_DOM_TEST <<< 8) }
+  else if k = 1 then
+    { cmdValid := true, cmdIdx := CMD_GATE_ENT,
+      cmdData := BitVec.ofNat 32 (TEXT_BASE + 32) }
+  else if k = 2 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+def gateSelftest : IO Unit := do
+  let img  := imageFrom TEXT_BASE progGate
+  let imgS := imageFrom TEXT_BASE progGateStay
+  -- (0) EDSL ≡ ISS across a full gate call/return.
+  let bad ← lockstep img 1 cmdGate (fun _ => 0) 80
+  if bad = 0 then IO.println "  OK  GATE (EDSL≡ISS across call+return, 80 cyc)"
+  else IO.println s!"  FAIL GATE ({bad} mismatches)"
+  -- (1) the round trip: body ran, returned to the right place, domain restored.
+  let (sg, _, _) := runIss img 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  round trip: halted={sg.halted} r10={(sg.rf[10]!).toNat} (want 5, gate body ran) \
+r9={(sg.rf[9]!).toNat} (want 7, returned to w2) tdom[0]={(sg.tdom[0]!).toNat} (want 0) \
+in_gate={sg.in_gate.toNat} (want 0)"
+  let ok1 := sg.halted && (sg.rf[10]!).toNat == 5 && (sg.rf[9]!).toNat == 7
+             && (sg.tdom[0]!).toNat == 0 && sg.in_gate.toNat == 0
+  -- (2) halting INSIDE the gate: the thread is in the gate's domain, not its own.
+  let (ss, _, _) := runIss imgS 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  inside gate: halted={ss.halted} tdom[0]={(ss.tdom[0]!).toNat} \
+(want {GATE_DOM_TEST}) in_gate={ss.in_gate.toNat} (want 1) r10={(ss.rf[10]!).toNat} (want 5)"
+  let ok2 := ss.halted && (ss.tdom[0]!).toNat == GATE_DOM_TEST
+             && ss.in_gate.toNat == 1 && (ss.rf[10]!).toNat == 5
+  if bad = 0 && ok1 && ok2 then
+    IO.println "LNP64MINI GATE SELFTEST OK — a gate is the only way to change domain, and only to the gate's"
+  else
+    IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2})"
+    throw <| IO.userError "gate selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt

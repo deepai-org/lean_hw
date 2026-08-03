@@ -669,3 +669,60 @@ exactly — **53 888 LUTs (50 %), `sysclk` 33.96 MHz routed** — and NetBSD
 passes unattended from power-off (`/home/kevin/autonomy/20260802-220520`):
 `PASS`, ping **10/10, 0 % loss, 552 ms**, BSCAN quiet. The revert is clean
 and the demo is where EXT-3 left it.
+
+---
+
+## EXT-5 — gates. 2026-08-03
+
+ISA §9, Law 1. A gate is the **only** way a thread changes domain, and it
+moves the thread only to a domain the *host* installed. This is what makes
+EXT-2's tag mean something: after EXT-5 the writers of `tdom` are exactly the
+`cmd 13` reset sweep, `CLONE` (which **inherits**, so it cannot choose),
+`cmd 58` (host/debug), and gate call/return. **No instruction lets a thread
+name a domain and go there.**
+
+### What it is
+
+| | |
+|---|---|
+| `gate_ent[g]`, `gate_dom[g]` | the host-loaded gate table, 16 gates |
+| `tcont[t]`, `tcdom[t]` | the caller's saved return PC and domain |
+| `in_gate` | 32-bit bitmap: this thread is inside a gate |
+| `0x60` / `0x61` | `GATE_CALL` (operand = gate id) / `GATE_RETURN` |
+| `cmd 62` / `cmd 61` | select a gate + set its domain / load its entry |
+
+### Deviations
+
+* **The continuation is depth 1, not a stack.** §9 has a continuation
+  *stack*; a second `GATE_CALL` from inside a gate is refused with no state
+  change. Per-thread stacks are 32 stacks, and EXT-4 had just finished
+  teaching this campaign what duplicated per-slot structure costs. Depth 1
+  demonstrates mediation — the property that matters — and generalises as a
+  width change, not a redesign.
+* **Opcodes are 0x60/0x61, not §9's 0xa0/0xa1.** Mini's decoder already uses
+  0xa0–0xba for ALU-immediate ops, so mini diverges from the ISA across that
+  whole block *before* this increment. Recorded rather than papered over.
+* **A `GATE_RETURN` with no gate open is a no-op**, not a fault: a thread
+  cannot leave a domain it never entered, and the quiet reading avoids
+  inventing a trap the ISA does not specify here.
+
+### Evidence
+
+Two programs, because entry and exit are separate transitions and a
+round-trip-only test passes if both are no-ops. Domain **3** is non-zero on
+purpose — with everything at 0 both programs pass even if gate entry never
+changes the domain:
+
+```
+  OK  GATE (EDSL≡ISS across call+return, 80 cyc)
+  round trip: halted=true r10=5 (gate body ran) r9=7 (returned to w2) tdom[0]=0 in_gate=0
+  inside gate: halted=true tdom[0]=3 (want 3) in_gate=1 (want 1) r10=5
+LNP64MINI GATE SELFTEST OK — a gate is the only way to change domain, and only to the gate's
+```
+
+**Silicon:** 46 007 LUTs (**43 %**), routed `sysclk` **28.94 MHz** (16 %
+margin). Gates cost essentially nothing against EXT-4's 46 399 — the gate
+table is two small memories, not per-slot logic, which is the shape EXT-4's
+failure argued for. NetBSD acceptance
+(`/home/kevin/autonomy/20260803-001643`): `PASS`, ping **10/10, 0 % loss,
+158 ms**, holding EXT-4's 4x improvement.

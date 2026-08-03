@@ -122,6 +122,14 @@ structure MiniSt where
   cur_dom   : BitVec 8 := 0
   -- EXT-3 (fail-stop): one bit per thread slot; 0 = nothing poisoned.
   poison    : BitVec 32 := 0
+  -- EXT-5 (gates): the host-loaded gate table, the depth-1 per-thread
+  -- continuation, and the in-gate bitmap.
+  gate_ent  : Array (BitVec 64) := Array.replicate 16 0
+  gate_dom  : Array (BitVec 8)  := Array.replicate 16 0
+  tcont     : Array (BitVec 64) := Array.replicate NT 0
+  tcdom     : Array (BitVec 8)  := Array.replicate NT 0
+  in_gate   : BitVec 32 := 0
+  gate_sel  : BitVec 4  := 0
   wake_out  : Bool := false
   -- EXT-4: the key this core last woke on (captured on the pulse).
   wake_key  : BitVec 64 := 0
@@ -367,6 +375,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- entry 1), which is what makes "the guest is domain 0" hold by
       -- construction rather than by a reset image the flow may not deliver.
       s' := { s' with tdom := s'.tdom.set! s.zctr.toNat 0 }
+    -- EXT-5: the reset also clears every open gate.
+    if s.zctr.toNat = 0 then s' := { s' with in_gate := 0 }
     if s.zctr.toNat < 512 then
       s' := { s' with dmem_we := true, dmem_a := s.zctr.setWidth 9, dmem_wd := 0 }
     if s.zctr.toNat = 32*NT - 1 then s' := { s' with zeroing := false }
@@ -405,6 +415,11 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     -- EXT-3: `CMD_POISON` = 60, whole-word (the raise is atomic across slots)
     | 60 => s' := { s' with poison := d }
     -- EXT-2: `CMD_SETDOM` = 58. data[4:0] = thread slot, data[15:8] = domain.
+    -- EXT-5: cmd 62 selects a gate and sets its domain; cmd 61 loads its entry.
+    | 62 => s' := { s' with gate_sel := BitVec.ofNat 4 (d.toNat % 16),
+                            gate_dom := s'.gate_dom.set! (d.toNat % 16)
+                                          (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
+    | 61 => s' := { s' with gate_ent := s'.gate_ent.set! s.gate_sel.toNat (d.setWidth 64) }
     | 58 => s' := { s' with tdom := s'.tdom.set! (d.toNat % NT)
                               (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
     | 13 =>
@@ -544,6 +559,29 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
         -- `smpRule`); S_EX keeps only FUTEX_WAKE's sequencing half.
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+      -- EXT-5: 0x60 GATE_CALL / 0x61 GATE_RETURN. A gate is the only way a
+      -- thread changes domain, and only to a domain the host installed.
+      else if o = 0x60 then
+        let inG := s.in_gate.getLsbD curV.toNat
+        if inG then
+          -- depth 1: a nested call is refused, no state change
+          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+        else
+          let g := (s.a.toNat) % 16
+          s' := { s' with tcont := s'.tcont.set! curV.toNat (pc8 s),
+                          tcdom := s'.tcdom.set! curV.toNat s.tdom[curV.toNat]!,
+                          in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
+                          tdom := s'.tdom.set! curV.toNat s.gate_dom[g]!,
+                          pc := s.gate_ent[g]!,
+                          retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+      else if o = 0x61 then
+        if s.in_gate.getLsbD curV.toNat then
+          s' := { s' with pc := s.tcont[curV.toNat]!,
+                          tdom := s'.tdom.set! curV.toNat s.tcdom[curV.toNat]!,
+                          in_gate := s.in_gate &&& ~~~(1#32 <<< curV.toNat),
+                          retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+        else
+          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if o = 0x59 then
         if s.has_free then
           s' := { s' with tpc := s'.tpc.set! s.free_slot.toNat s.a, tstate := s'.tstate.set! s.free_slot.toNat 1 }
