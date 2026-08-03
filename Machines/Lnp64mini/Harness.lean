@@ -374,7 +374,7 @@ child THREAD_EXITs, back to parent which EXITs. -/
 def progSched : List (BitVec 64) :=
   [ encImmI 0xa0 1 0 0x1018,   -- r1 = child entry (word 3 = 0x1000+3*8=0x1018)
     enc 0x59 4 1 2,            -- CLONE_SPAWN r4=childtid, entry=r1, arg=r2
-    enc 0x06 0 0 0,            -- YIELD -> switch to child
+    enc 0x98 0 0 0,            -- YIELD -> switch to child
     -- child entry (0x1018, word 3):
     enc 0x3b 0 0 0,           -- THREAD_EXIT (child) -> back to parent
     enc 0x3a 0 0 0 ]          -- EXIT (parent, word 4)
@@ -514,7 +514,7 @@ and EXIT. With one thread the core parks in S_WAIT until the doorbell. -/
 def progDoorbell : List (BitVec 64) :=
   [ encImmI 0xa0 1 0 0x2000,   -- r1 = futex word address (DDR)
     encImmI 0xa0 2 0 0,        -- r2 = expected value (0)
-    enc 0xcb 1 2 0,            -- FUTEX_WAIT(addr=r1, expected=r2) -> blocks
+    enc 0x99 1 2 0,            -- FUTEX_WAIT(addr=r1, expected=r2) -> blocks
     encImmI 0xa0 9 0 5,        -- r9 = 5 (only reached after the doorbell)
     enc 0x3a 0 0 0 ]           -- EXIT
 
@@ -532,7 +532,7 @@ def progScDDR : List (BitVec 64) :=
 def progWake : List (BitVec 64) :=
   [ encImmI 0xa0 1 0 0x2000,   -- r1 = futex word address
     encImmI 0xa0 7 0 1,        -- r7 = wake count
-    enc 0xcc 1 7 0,            -- FUTEX_WAKE(addr=r1, count=r7)
+    enc 0x9a 1 7 0,            -- FUTEX_WAKE(addr=r1, count=r7)
     encImmI 0xa0 9 0 9,        -- r9 = 9
     enc 0x3a 0 0 0 ]           -- EXIT
 

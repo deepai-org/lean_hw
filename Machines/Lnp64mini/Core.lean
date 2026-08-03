@@ -636,23 +636,23 @@ def opIs (n : Nat) : Expr 1 := .eq op (L8 n)
 def opAny (ns : List Nat) : Expr 1 := orTree (ns.map opIs)
 
 def is_alu : Expr 1 :=
-  opAny [0x04,0x02,0x10,0x11,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,
-   0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0xa6,0x1d,0x1e,0xd0,
+  opAny [0x04,0x02,0x10,0x11,0x14,0x15,0x16,0x1f,0x18,0x19,0x1a,0x1b,0x26,
+   0xa0,0xa1,0xa2,0xa3,0xa4,0x4d,0x4e,0x1d,0x51,0xd0,
    0xad,0xae,0xaf,0xb0,0xb1,0xb2,0xb8,0xb9,0xba,0xb6,0xb7,0xb4]
 
-def is_load : Expr 1 := opAny [0x30,0x31,0x05,0x36,0x09,0x32,0x08]
+def is_load : Expr 1 := opAny [0x30,0x31,0x70,0x36,0x09,0x32,0x72]
 def is_store : Expr 1 := opAny [0x33,0x34,0x37,0x35]
 /-- is_branch: op in [0x21,0x26]. -/
-def is_branch : Expr 1 := opAny [0x21,0x22,0x23,0x24,0x25,0x26]
+def is_branch : Expr 1 := opAny [0x21,0x22,0x23,0x24,0x25,0x68]
 def is_lr : Expr 1 := opAny [0xc5,0xc7,0xc9]
 def is_sc : Expr 1 := opAny [0xc6,0xc8,0xca]
 /-- is_fence: op==0xcd || (0xd1<=op<=0xd4). -/
 def is_fence : Expr 1 := opAny [0xcd,0xd1,0xd2,0xd3,0xd4]
 /-- is_sel: 0x40<=op<=0x45. -/
 def is_sel : Expr 1 := opAny [0x40,0x41,0x42,0x43,0x44,0x45]
-def is_div : Expr 1 := opAny [0x13,0xa7,0xa8,0xa9]
+def is_div : Expr 1 := opAny [0x13,0xa7,0x17,0xa9]
 def is_mulh : Expr 1 := .or (opIs 0xaa) (opIs 0xab)
-def div_sgn : Expr 1 := .or (opIs 0x13) (opIs 0xa8)
+def div_sgn : Expr 1 := .or (opIs 0x13) (opIs 0x17)
 
 /-! ### ALU (combinational mux chain) -/
 
@@ -685,21 +685,21 @@ def aluE : Expr 64 :=
   , (opIs 0x14, .and a b)
   , (opIs 0x15, .or a b)
   , (opIs 0x16, .xor a b)
-  , (opIs 0x17, .not a)
+  , (opIs 0x1f, .not a)
   , (opIs 0x18, .shl a (.zext shamt_r 64))
   , (opIs 0x19, .shr a (.zext shamt_r 64))
   , (opIs 0x1a, asr a shamt_r)
   , (opIs 0x1b, .mux (.slt a b) (L64 1) (L64 0))
-  , (opIs 0x1c, .mux (.ult a b) (L64 1) (L64 0))
+  , (opIs 0x26, .mux (.ult a b) (L64 1) (L64 0))
   , (opIs 0xa0, .add a imm_i)
   , (opIs 0xa1, .and a imm_i)
   , (opIs 0xa2, .or a imm_i)
   , (opIs 0xa3, .xor a imm_i)
   , (opIs 0xa4, .shl a (.zext shamt_i 64))
-  , (opIs 0xa5, .shr a (.zext shamt_i 64))
-  , (opIs 0xa6, asr a shamt_i)
+  , (opIs 0x4d, .shr a (.zext shamt_i 64))
+  , (opIs 0x4e, asr a shamt_i)
   , (opIs 0x1d, .mux (.slt a imm_i) (L64 1) (L64 0))
-  , (opIs 0x1e, .mux (.ult a imm_i) (L64 1) (L64 0))
+  , (opIs 0x51, .mux (.ult a imm_i) (L64 1) (L64 0))
   , (opIs 0xd0, .add pc imm_j)
   , (opIs 0xad, .sext (.slice a 0 8) 64)
   , (opIs 0xae, .sext (.slice a 0 16) 64)
@@ -741,7 +741,7 @@ def br_take : Expr 1 :=
   , (opIs 0x23, .slt a b)
   , (opIs 0x24, .not (.slt a b))
   , (opIs 0x25, .ult a b)
-  , (opIs 0x26, .not (.ult a b)) ] (L1 0)
+  , (opIs 0x68, .not (.ult a b)) ] (L1 0)
 
 /-- sel_cond keys on op[2:0] (0x40-0x45). -/
 def sel_cond : Expr 1 :=
@@ -1265,7 +1265,7 @@ against, and `wakeEn` says whether it does anything at all. Local wins a tie
 rather than merged, which is safe because a futex waiter must re-check its
 condition after waking and the waker retries; merging two keys into one bank
 pass is the thing that cannot be done with one comparator. -/
-def wakeLocal : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0xcc))
+def wakeLocal : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs 0x9a))
 def wakeEn    : Expr 1 := .or wakeLocal doorbell
 def wakeKey   : Expr 64 := .mux wakeLocal rdval doorbell_key
 
@@ -1433,7 +1433,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
         (.seq (.write 64 "div_quo" div_a_abs)
           (.seq (.write 64 "div_d" div_b_abs)
             (.seq (.write 7 "div_cnt" (.lit (BitVec.ofNat 7 0)))
-              (.seq (.write 1 "div_isrem" (.or (opIs 0xa8) (opIs 0xa9)))
+              (.seq (.write 1 "div_isrem" (.or (opIs 0x17) (opIs 0xa9)))
                 (.seq (.write 1 "div_negq" (.and div_sgn (.xor (.slice a 63 1) (.slice b 63 1))))
                   (.seq (.write 1 "div_negr" (.and div_sgn (.slice a 63 1))) (.write 5 "st" (L5 S_DIV)))))))))) <|
   -- sel
@@ -1453,7 +1453,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- branch
   gcons is_branch (.seq (.write 64 "pc" (.mux br_take (.add pc (.shl imm_s (L64 3))) pc8)) (.seq retireInc goF0)) <|
   -- 0x06 YIELD
-  gcons (opIs 0x06)
+  gcons (opIs 0x98)
     (.seq (.ite (.eq next_ready cur) stepPc
             (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready)))
           (.seq retireInc goF0)) <|
@@ -1465,14 +1465,14 @@ def s_ex_branches : List (Expr 1 × Act) :=
               (.write 5 "st" (L5 S_WAIT)))
             retireInc)) <|
   -- 0xcb FUTEX_WAIT
-  gcons (opIs 0xcb)
+  gcons (opIs 0x99)
     (.seq (.write 32 "core_addr" (.add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.zext (.slice rdval 3 29) 32) (.lit (BitVec.ofNat 32 3)))))
       (.seq (.write 1 "core_rd" (L1 1))
         (.seq (.write 64 "futex_addr_q" rdval) (.seq (.write 64 "futex_exp" a) (.write 5 "st" (L5 S_FTX1)))))) <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
   -- only the sequencing half of FUTEX_WAKE.
-  gcons (opIs 0xcc) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs 0x9a) (.seq stepPc (.seq retireInc goF0)) <|
   -- EXT-6: 0x62 CAP_SEND (a = handle, b = target domain) and 0x63 CAP_RECV.
   -- Both just sequence here; the inbox, the occupancy bitmap and `rd` are
   -- written in their funnels.
@@ -1715,7 +1715,7 @@ def tpcTriples : List (Expr 1 × Expr 5 × Expr 64) :=
   -- 1. cmd-13 reset sweep (rides the zeroing engine's counter)
   [ (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))), .slice zctr 0 5, L64 TEXT_BASE)
   -- 2. S_EX YIELD (0x06), only when actually switching away
-  , (exG (.and (opIs 0x06) (.not (.eq next_ready cur))), cur, pc8)
+  , (exG (.and (opIs 0x98) (.not (.eq next_ready cur))), cur, pc8)
   -- 3. S_EX SLEEP (0x07)
   , (exG (opIs 0x07), cur, pc8)
   -- 4. S_EX CLONE (0x59) with a free slot: the child's entry PC
