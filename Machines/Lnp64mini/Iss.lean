@@ -134,6 +134,14 @@ structure MiniSt where
   -- domain, plus per-domain occupancy.
   cap_ibox  : Array (BitVec 64) := Array.replicate 16 0
   cap_ival  : BitVec 16 := 0
+  -- EXT-7 (§15): the domain-tagged TLB. mmu_en = 0 is bypass.
+  mmu_en    : Bool := false
+  tlb_sel   : BitVec 3 := 0
+  tlb_vpn   : Array (BitVec 32) := Array.replicate 8 0
+  tlb_ppn   : Array (BitVec 32) := Array.replicate 8 0
+  tlb_dom   : Array (BitVec 8)  := Array.replicate 8 0
+  tlb_vld   : Array Bool        := Array.replicate 8 false
+  tlb_cell  : Array (BitVec 8)  := Array.replicate 8 0
   wake_out  : Bool := false
   -- EXT-4: the key this core last woke on (captured on the pulse).
   wake_key  : BitVec 64 := 0
@@ -163,6 +171,22 @@ structure MiniSt where
 /-! ## Combinational helpers over the pre-state -/
 
 namespace MiniIss
+
+/-- EXT-7 (§15): the same translation `Core.ddrEa` computes. A hit needs the
+entry valid, the VPN equal AND **the domain equal to `tdom[cur]`** -- the
+tag is what makes a domain-3 translation unusable by domain 5. A miss under
+`mmu_en` fails closed to `DATA_BASE`; with `mmu_en = 0` this is the identity
+computation of every earlier increment. -/
+def ddrEaOf (s : MiniSt) (ea : BitVec 64) : BitVec 32 :=
+  let raw := (BitVec.ofNat 32 DATA_BASE) + ((ea.extractLsb' 3 29).setWidth 32 <<< 3)
+  if ¬ s.mmu_en then raw
+  else
+    let i   := (ea.extractLsb' 12 3).toNat
+    let vpn := (ea.extractLsb' 12 20).setWidth 32
+    let hit := s.tlb_vld[i]! ∧ s.tlb_vpn[i]! = vpn ∧ s.tlb_dom[i]! = s.tdom[s.cur.toNat]!
+    if hit then
+      (BitVec.ofNat 32 DATA_BASE) + ((s.tlb_ppn[i]! <<< 12) ||| (ea.extractLsb' 0 12).setWidth 32)
+    else BitVec.ofNat 32 DATA_BASE
 
 def bit {n : Nat} (x : BitVec n) (i : Nat) : Bool := x.getLsbD i
 
@@ -420,6 +444,22 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     | 60 => s' := { s' with poison := d }
     -- EXT-2: `CMD_SETDOM` = 58. data[4:0] = thread slot, data[15:8] = domain.
     -- EXT-5: cmd 62 selects a gate and sets its domain; cmd 61 loads its entry.
+    -- EXT-7: MMU enable, TLB select/fill, and the §15 shootdown.
+    | 63 => s' := { s' with mmu_en := bit d 0 }
+    | 64 => s' := { s' with tlb_sel := BitVec.ofNat 3 (d.toNat % 8) }
+    | 65 => s' := { s' with tlb_vpn := s'.tlb_vpn.set! s.tlb_sel.toNat d,
+                            tlb_dom := s'.tlb_dom.set! s.tlb_sel.toNat
+                                         (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)),
+                            tlb_vld := s'.tlb_vld.set! s.tlb_sel.toNat true }
+    | 66 => s' := { s' with tlb_ppn := s'.tlb_ppn.set! s.tlb_sel.toNat d,
+                            tlb_cell := s'.tlb_cell.set! s.tlb_sel.toNat
+                                          (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)) }
+    | 67 =>
+        -- map.protect / munmap: the cached translation's cell IS the VMA's
+        -- cell (§15 line 876), so bumping it kills every entry naming it.
+        let cell := BitVec.ofNat 8 (d.toNat % 256)
+        for i in List.range 8 do
+          if s.tlb_cell[i]! = cell then s' := { s' with tlb_vld := s'.tlb_vld.set! i false }
     | 62 => s' := { s' with gate_sel := BitVec.ofNat 4 (d.toNat % 16),
                             gate_dom := s'.gate_dom.set! (d.toNat % 16)
                                           (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
@@ -557,7 +597,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
         s' := { s' with retire := s.retire + 1 }
       else if o = 0xcb then
-        s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.rdval.extractLsb' 3 29).setWidth 32 <<< 3),
+        s' := { s' with core_addr := ddrEaOf s s.rdval,
                         core_rd := true, futex_addr_q := s.rdval, futex_exp := s.a, st := BitVec.ofNat 5 S_FTX1 }
       else if o = 0xcc then
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
@@ -624,14 +664,14 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         if s.a.ult (BitVec.ofNat 64 0x1000) then
           s' := { s' with dmem_a := s.a.extractLsb' 3 9, st := BitVec.ofNat 5 S_L0 }
         else
-          s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.a.extractLsb' 3 29).setWidth 32 <<< 3), core_rd := true, lr_req := true, st := BitVec.ofNat 5 S_DL }
+          s' := { s' with core_addr := ddrEaOf s s.a, core_rd := true, lr_req := true, st := BitVec.ofNat 5 S_DL }
       else if is_sc s then
         if s.lr_valid ∧ s.lr_addr = s.a then
           if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := 0
           if s.a.ult (BitVec.ofNat 64 0x1000) then
             s' := { s' with dmem_we := true, dmem_a := s.a.extractLsb' 3 9, dmem_wd := s.b, pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
           else
-            s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + ((s.a.extractLsb' 3 29).setWidth 32 <<< 3), core_wdata := s.b, core_wr := true, sc_req := true, sc_pending := true, st := BitVec.ofNat 5 S_DSW }
+            s' := { s' with core_addr := ddrEaOf s s.a, core_wdata := s.b, core_wr := true, sc_req := true, sc_pending := true, st := BitVec.ofNat 5 S_DSW }
         else
           if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := 1
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }

@@ -250,6 +250,13 @@ def tcontRd (idx : Expr 5) : Expr 64 := .memRead 64 "tcont" idx
 def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
 /-- EXT-6: the per-domain capability inbox. -/
 def capIboxRd (d : Expr 4) : Expr 64 := .memRead 64 "cap_ibox" d
+/-! EXT-7: the TLB. Four parallel arrays indexed by the VPN's low 3 bits
+(direct-mapped), so a lookup is one read of each plus one comparison. -/
+def tlbVpnRd  (i : Expr 3) : Expr 32 := .memRead 32 "tlb_vpn" i
+def tlbPpnRd  (i : Expr 3) : Expr 32 := .memRead 32 "tlb_ppn" i
+def tlbDomRd  (i : Expr 3) : Expr 8  := .memRead 8  "tlb_dom" i
+def tlbVldRd  (i : Expr 3) : Expr 1  := .memRead 1  "tlb_vld" i
+def tlbCellRd (i : Expr 3) : Expr 8  := .memRead 8  "tlb_cell" i
 
 /-- The domain the core is executing in **right now**: the current thread's
 tag, combinationally. See the note above on why this is not a register. -/
@@ -365,6 +372,40 @@ the domain binding is the *index*. Recorded as the gap between this and
 §10.2: the mediation is real, the cryptographic re-key is not implemented.
 -/
 def cap_ival : Expr 16 := .reg 16 "cap_ival"
+
+/-! ### EXT-7 — VMA / translation (`EXTEND_SPEC.md` #7; ISA §15)
+
+§15 line 160: loads and stores walk **one** VMA tree into a **domain-tagged
+TLB entry**. Mini implements the *entry*, not the tree: an 8-entry
+direct-mapped TLB whose tag includes the domain, filled by the host (the
+walker is the deviation below). Two things follow, and they are the reason
+this increment is the one worth having:
+
+* **A translation cached by domain 3 is unusable by domain 5.** The domain
+  is part of the tag, so a hit requires `tlb_dom[i] = domCur`. Same
+  structural move as EXT-6's inbox index — `domCur` is `tdom[cur]` and EXT-5
+  made a gate the only way that changes, so the tag cannot be forged.
+* **Shootdown is the epoch cell, not a new mechanism.** §15 line 876: the
+  cached translation's cell *is the VMA's cell*, and `map.protect`/`munmap`
+  bump it. `tlb_cell[i]` records which cell an entry depends on;
+  `MAP_PROTECT` invalidates every entry naming that cell. That is the
+  bump-to-fail-closed shape already proven on silicon, pointed at a
+  translation.
+
+`mmu_en = 0` (reset) is **bypass**: `ddrEa` is the identity computation of
+every previous increment, bit for bit, so NetBSD is untouched. That is
+stage A — prove the mechanism, risk nothing. -/
+def mmu_en : Expr 1 := .reg 1 "mmu_en"
+def tlb_sel : Expr 3 := .reg 3 "tlb_sel"
+def TLBN : Nat := 8
+
+def CMD_MMU_EN   : Nat := 63
+def CMD_TLB_SEL  : Nat := 64
+def CMD_TLB_VPN  : Nat := 65
+def CMD_TLB_PPN  : Nat := 66
+/-- `cmd 67` = the §15 `map.protect`/`munmap` shootdown: invalidate every
+TLB entry whose recorded cell equals `cmd_data[7:0]`. -/
+def CMD_MAP_PROTECT : Nat := 67
 def CAP_SEND_OP : Nat := 0x62
 def CAP_RECV_OP : Nat := 0x63
 
@@ -1113,6 +1154,9 @@ where
     .seq (.ite (ci CMD_QUANTUM) (.write 32 "quantum" cmdData) .skip) <|
     -- EXT-3: the poison bitmap, whole-word (see `CMD_POISON`).
     .seq (.ite (ci CMD_POISON) (.write 32 "poison" cmdData) .skip) <|
+    -- EXT-7: MMU enable and the TLB entry selector.
+    .seq (.ite (ci CMD_MMU_EN) (.write 1 "mmu_en" (.slice cmdData 0 1)) .skip) <|
+    .seq (.ite (ci CMD_TLB_SEL) (.write 3 "tlb_sel" (.slice cmdData 0 3)) .skip) <|
     -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
     .seq (.ite (ci CMD_GATE_DOM) (.write 4 "gate_sel" (.slice cmdData 0 4)) .skip) <|
       (.ite (ci 13)
@@ -1131,9 +1175,46 @@ be emitted as one balanced tree (see `fsmRule`). The `fsmEn` half of the
 old per-rule guard `fsmEn ∧ st==x` is hoisted into `fsmRule`. -/
 def stArm (x : Nat) (a : Act) : Expr 1 × Act := (.eq st (L5 x), a)
 
-/-- DATA_BASE + (word-aligned) ea, as a 32-bit core_addr. -/
-def ddrEa (ea : Expr 64) : Expr 32 :=
+/-! ### EXT-7 — the translation itself
+
+The page is 4 KiB, so the VPN is `ea[31:12]` and the index is `ea[14:12]`
+(direct-mapped, 8 entries). A **hit** requires the entry valid, its VPN
+equal, **and its domain equal to `domCur`** — the last conjunct is the whole
+security content, and `domCur` is not an operand.
+
+A miss under `mmu_en` **fails closed**: the address becomes `DATA_BASE`,
+which carries no mapping, rather than falling through to the untranslated
+address. Failing open would make the MMU decorative — the property to
+demonstrate is that revoking a mapping *stops* an access, so a miss must not
+quietly succeed. (Mini has no page-fault trap to raise here; the fail-closed
+address is the deviation, recorded below.)
+
+With `mmu_en = 0` this is the identity computation of every increment before
+it, bit for bit — a `mux` on a register that is 0 at reset. -/
+def tlbIdx (ea : Expr 64) : Expr 3 := .slice ea 12 3
+def tlbVpnOf (ea : Expr 64) : Expr 32 := .zext (.slice ea 12 20) 32
+
+def tlbHit (ea : Expr 64) : Expr 1 :=
+  let i := tlbIdx ea
+  .and (tlbVldRd i)
+    (.and (.eq (tlbVpnRd i) (tlbVpnOf ea))
+          (.eq (tlbDomRd i) domCur))
+
+/-- Untranslated (bypass) DDR effective address — DATA_BASE + word-aligned
+ea, the pre-EXT-7 computation unchanged. -/
+def ddrEaRaw (ea : Expr 64) : Expr 32 :=
   .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.slice ea 3 29 |> fun w => .zext w 32) (.lit (BitVec.ofNat 32 3)))
+
+/-- Translated address: the entry's PPN concatenated with the page offset. -/
+def ddrEaXlat (ea : Expr 64) : Expr 32 :=
+  .add (.lit (BitVec.ofNat 32 DATA_BASE))
+    (.or (.shl (tlbPpnRd (tlbIdx ea)) (.lit (BitVec.ofNat 32 12)))
+         (.zext (.slice ea 0 12) 32))
+
+def ddrEa (ea : Expr 64) : Expr 32 :=
+  .mux mmu_en
+    (.mux (tlbHit ea) (ddrEaXlat ea) (.lit (BitVec.ofNat 32 DATA_BASE)))
+    (ddrEaRaw ea)
 def ddrPc : Expr 32 := .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.slice pc 0 32)
 
 def retireInc : Act := .write 32 "retire" (.add retire (.lit (BitVec.ofNat 32 1)))
@@ -1715,6 +1796,27 @@ def tarrFunnelRule : Rule :=
     -- EXT-6: the inbox write (one syntactic site) and the occupancy bitmap.
     .seq (.ite capSendFire (.memWrite 4 64 "cap_ibox" 0 capSendSlot a) .skip) <|
     .seq (.write 16 "cap_ival" capIvalNext) <|
+    -- EXT-7: TLB fill (cmd 65 sets vpn+domain for the selected entry and
+    -- validates it; cmd 66 sets its ppn+cell). The shootdown (cmd 67)
+    -- invalidates every entry naming the bumped cell -- the §15 line 876
+    -- rule that the cached translation's cell IS the VMA's cell.
+    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
+            (.memWrite 3 32 "tlb_vpn" 0 tlb_sel cmdData) .skip) <|
+    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
+            (.memWrite 3 8 "tlb_dom" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
+    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
+            (.memWrite 3 32 "tlb_ppn" 0 tlb_sel cmdData) .skip) <|
+    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
+            (.memWrite 3 8 "tlb_cell" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
+    .seq ((List.finRange TLBN).foldr (fun i acc =>
+            .seq (.ite (.or (.and cmdValid (.and (.eq cmdIdx (L7 CMD_MAP_PROTECT))
+                                (.eq (tlbCellRd (.lit (BitVec.ofNat 3 i.val)))
+                                     (.slice cmdData 0 8))))
+                            (.and cmdValid (.and (.eq cmdIdx (L7 CMD_TLB_VPN))
+                                (.eq tlb_sel (.lit (BitVec.ofNat 3 i.val))))))
+                   (.memWrite 3 1 "tlb_vld" i.val
+                      (.lit (BitVec.ofNat 3 i.val))
+                      (.eq cmdIdx (L7 CMD_TLB_VPN))) .skip) acc) .skip) <|
     -- EXT-5: the host-loaded gate table.
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_ENT)))
             (.memWrite 4 64 "gate_ent" 0 gate_sel (.zext cmdData 64)) .skip) <|
@@ -1786,7 +1888,9 @@ def scalarRegs : List RegDecl :=
    -- EXT-5: gates. `in_gate` = depth-1 continuation-present bitmap.
    ⟨"in_gate",32,0⟩, ⟨"gate_sel",4,0⟩,
    -- EXT-6: per-domain capability inbox occupancy
-   ⟨"cap_ival",16,0⟩]
+   ⟨"cap_ival",16,0⟩,
+   -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
+   ⟨"mmu_en",1,0⟩, ⟨"tlb_sel",3,0⟩]
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
@@ -1832,7 +1936,11 @@ def design : Design where
      ⟨"gate_ent", 4, 64, fun _ => 0⟩, ⟨"gate_dom", 4, 8, fun _ => 0⟩,
      ⟨"tcont", 5, 64, fun _ => 0⟩, ⟨"tcdom", 5, 8, fun _ => 0⟩,
      -- EXT-6: one capability handle addressed to each domain
-     ⟨"cap_ibox", 4, 64, fun _ => 0⟩]
+     ⟨"cap_ibox", 4, 64, fun _ => 0⟩,
+     -- EXT-7: the domain-tagged TLB (§15 line 160)
+     ⟨"tlb_vpn", 3, 32, fun _ => 0⟩, ⟨"tlb_ppn", 3, 32, fun _ => 0⟩,
+     ⟨"tlb_dom", 3, 8, fun _ => 0⟩,  ⟨"tlb_vld", 3, 1, fun _ => 0⟩,
+     ⟨"tlb_cell", 3, 8, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]

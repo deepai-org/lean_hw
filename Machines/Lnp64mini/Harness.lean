@@ -188,6 +188,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("in_gate",32,s.in_gate.toNat), ("gate_sel",4,s.gate_sel.toNat),
    -- EXT-6: capability inbox occupancy
    ("cap_ival",16,s.cap_ival.toNat),
+   -- EXT-7: the MMU enable and TLB selector
+   ("mmu_en",1,if s.mmu_en then 1 else 0), ("tlb_sel",3,s.tlb_sel.toNat),
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
@@ -973,6 +975,83 @@ inbox3=0x{String.ofList (Nat.toDigits 16 (sw.cap_ibox[3]!).toNat)}"
   else
     IO.println s!"LNP64MINI CAPXFER SELFTEST FAILED ({bad} mismatches; right={ok1} wrong={ok2})"
     throw <| IO.userError "capxfer selftest failed"
+
+/-! ## EXT-7 — the MMU selftest (§15)
+
+Three claims, and the second and third are the ones with content:
+
+1. **Bypass is bit-identical.** With `mmu_en = 0` the machine is the
+   pre-EXT-7 machine — this is what keeps NetBSD alive in stage A.
+2. **A translation is domain-tagged.** The same virtual address, the same
+   TLB entry, translated from the domain the entry names and from another
+   domain: the first hits, the second misses and fails closed. Without this
+   the TLB is a cache, not a protection mechanism.
+3. **The shootdown is the epoch cell.** `cmd 67` names a *cell*, not an
+   entry, and every entry depending on that cell dies — §15 line 876's rule
+   that the cached translation's cell IS the VMA's cell. An access that
+   succeeded before the bump fails after it.
+
+`progLdSt` loads from a virtual address the TLB maps; `r5` is the value it
+read, so `r5` is the observable that distinguishes hit from fail-closed. -/
+def MMU_VA   : Nat := 0x4000      -- virtual page 4, index 4
+def MMU_PPN  : Nat := 0x21        -- maps to physical page 0x21
+def MMU_CELL : Nat := 0x9         -- the VMA's epoch cell
+def MMU_DOM  : Nat := 3
+
+def progLdSt : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 MMU_VA,      -- w0  r1 = the virtual address
+    enc 0x31 5 1 0,               -- w1  r5 = [r1]   (LD -- translated)
+    enc 0x3a 0 0 0 ]              -- w2  EXIT
+
+/-- Install TLB entry 4: VPN 4, domain `dom`, PPN, cell; enable the MMU;
+put thread 0 in domain `dom`; start. `bump` optionally fires the §15
+shootdown on the cell before the program runs. -/
+def cmdMmu (dom : Nat) (bump : Bool) : Nat → MiniIn := fun k =>
+  if k = 0 then { cmdValid := true, cmdIdx := CMD_TLB_SEL, cmdData := 4 }
+  else if k = 1 then
+    -- vpn in [23:0], domain in [31:24]
+    { cmdValid := true, cmdIdx := CMD_TLB_VPN,
+      cmdData := BitVec.ofNat 32 ((MMU_DOM <<< 24) ||| (MMU_VA >>> 12)) }
+  else if k = 2 then
+    { cmdValid := true, cmdIdx := CMD_TLB_PPN,
+      cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24) ||| MMU_PPN) }
+  else if k = 3 then { cmdValid := true, cmdIdx := CMD_MMU_EN, cmdData := 1 }
+  else if k = 4 then
+    -- put thread 0 in the domain we are testing from
+    { cmdValid := true, cmdIdx := CMD_SETDOM, cmdData := BitVec.ofNat 32 (dom <<< 8) }
+  else if bump ∧ k = 5 then
+    { cmdValid := true, cmdIdx := CMD_MAP_PROTECT, cmdData := BitVec.ofNat 32 MMU_CELL }
+  else if k = 6 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+def mmuSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progLdSt
+  -- (1) bypass is the pre-EXT-7 machine.
+  let bad ← lockstep img 1 (cmdQuantum 0) (fun _ => 0) 60
+  if bad = 0 then IO.println "  OK  MMU-BYPASS (mmu_en=0: EDSL≡ISS, the pre-EXT-7 machine, 60 cyc)"
+  else IO.println s!"  FAIL MMU-BYPASS ({bad} mismatches)"
+  -- (2) domain-tagged: the entry's own domain hits, another misses.
+  let bad2 ← lockstep img 1 (cmdMmu MMU_DOM false) (fun _ => 0) 60
+  if bad2 = 0 then IO.println "  OK  MMU-XLAT (mmu_en=1: EDSL≡ISS through the TLB, 60 cyc)"
+  else IO.println s!"  FAIL MMU-XLAT ({bad2} mismatches)"
+  let (sh, dh, _) := runIss img 1 (cmdMmu MMU_DOM false) (fun _ => 0) 300
+  let (sm, _, _)  := runIss img 1 (cmdMmu 5 false) (fun _ => 0) 300
+  let hitAddr := (BitVec.ofNat 32 DATA_BASE).toNat + (MMU_PPN <<< 12)
+  IO.println s!"  domain tag: from domain {MMU_DOM} core_addr=0x{String.ofList (Nat.toDigits 16 sh.core_addr.toNat)} \
+(want 0x{String.ofList (Nat.toDigits 16 hitAddr)}) | from domain 5 core_addr=0x{String.ofList (Nat.toDigits 16 sm.core_addr.toNat)} \
+(want 0x{String.ofList (Nat.toDigits 16 DATA_BASE)} = fail-closed)"
+  let ok2 := sh.core_addr.toNat == hitAddr && sm.core_addr.toNat == DATA_BASE
+  -- (3) the shootdown: bumping the VMA's cell kills the translation.
+  let (sb, _, _) := runIss img 1 (cmdMmu MMU_DOM true) (fun _ => 0) 300
+  IO.println s!"  shootdown:  after cmd 67 on cell {MMU_CELL}, core_addr=0x{String.ofList (Nat.toDigits 16 sb.core_addr.toNat)} \
+(want 0x{String.ofList (Nat.toDigits 16 DATA_BASE)} = fail-closed) | before the bump it was 0x{String.ofList (Nat.toDigits 16 sh.core_addr.toNat)}"
+  let ok3 := sb.core_addr.toNat == DATA_BASE && sh.core_addr.toNat ≠ DATA_BASE
+  let _ := dh
+  if bad = 0 && bad2 = 0 && ok2 && ok3 then
+    IO.println "LNP64MINI MMU SELFTEST OK — translation is domain-tagged and the VMA's epoch cell shoots it down"
+  else
+    IO.println s!"LNP64MINI MMU SELFTEST FAILED (bypass={bad} xlat={bad2}; tag={ok2} shootdown={ok3})"
+    throw <| IO.userError "mmu selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt

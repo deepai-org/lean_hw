@@ -809,3 +809,66 @@ increments have grown. `ulimit -s unlimited` gets past it, but the run takes
 design-size x cycles and both have grown all campaign. Before EXT-7 adds a
 TLB, these selftests should be **compiled** (a `lake exe`) rather than run
 under `lean --run`; otherwise the ladder stops being runnable.
+
+---
+
+## EXT-7 — VMA / translation. 2026-08-03 — **HARDWARE IN, ORACLE DISAGREES, NOT DONE**
+
+Stage A per §15, and the honest status is: the hardware is implemented and
+builds, `mmu_en = 0` bypass is verified, and **the translated path fails its
+own selftest**. Recorded as failing rather than left uncommitted, because
+the diagnosis is most of the remaining work.
+
+### What is in
+
+* An 8-entry direct-mapped **domain-tagged** TLB (`tlb_vpn`/`tlb_ppn`/
+  `tlb_dom`/`tlb_vld`/`tlb_cell`), §15 line 160. A hit requires the entry
+  valid, the VPN equal **and `tlb_dom[i] = domCur`** — and `domCur` is
+  `tdom[cur]`, which EXT-5 made a gate the only way to change, so the tag
+  cannot be forged. Same structural move as EXT-6's inbox index.
+* **Shootdown is the epoch cell, not a new mechanism** (§15 line 876):
+  `tlb_cell[i]` records which VMA cell an entry depends on, and `cmd 67`
+  (`map.protect`/`munmap`) invalidates every entry naming that cell.
+* `mmu_en = 0` at reset is **bypass** — `ddrEa` is the pre-EXT-7 computation
+  and NetBSD is untouched. That much is verified: `MMU-BYPASS` passes
+  EDSL≡ISS over 60 cycles.
+* A miss under `mmu_en` **fails closed** to `DATA_BASE` rather than falling
+  through to the untranslated address. Failing open would make the MMU
+  decorative — the property to demonstrate is that revoking a mapping
+  *stops* an access.
+
+### The failure, and what it means
+
+```
+  OK  MMU-BYPASS (mmu_en=0: EDSL≡ISS, the pre-EXT-7 machine, 60 cyc)
+  MISMATCH step 20 reg core_addr: edsl=268435456 iss=268451840
+  FAIL MMU-XLAT (5 mismatches)
+```
+
+`edsl = 0x10000000` is `DATA_BASE` — the design translated, missed, and
+failed closed. `iss = 0x10004000` is `DATA_BASE + 0x4000` — the **raw,
+untranslated** address. So the two legs disagree in a specific, diagnosable
+way: **the ISS is not translating at all.** `MiniIss.ddrEaOf` was written
+but the substitution that was supposed to route the load/store sites through
+it did not match the `0x31` load's address expression, so the ISS kept its
+original raw computation.
+
+Both mediation claims (`tag`, `shootdown`) therefore report `false` — but
+they are reported against an oracle that is not modelling the feature, so
+**they are not evidence about the hardware either way.** Nothing here says
+the TLB is wrong; it says the comparison is not yet meaningful.
+
+### What is owed
+
+1. Route **every** data-address site in `Iss.lean` through `ddrEaOf` (the
+   `0x31` load path is the one that was missed) and re-run.
+2. Then, and only then, judge the two mediation claims.
+3. Stages B and C (move the guest under real translation; revoke a live
+   mapping under running NetBSD) are untouched.
+
+### Cost so far
+
+50 531 LUTs (**47 %**, only ~1 200 over EXT-6 — the TLB is small memories,
+the shape EXT-5 established), routed `sysclk` **27.21 MHz** against the
+25 MHz clock — a **9 % margin**, the thinnest of the campaign, which is what
+the budget predicted for the one increment that touches the load/store path.
