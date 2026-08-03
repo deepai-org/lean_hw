@@ -186,6 +186,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("wake_key",64,s.wake_key.toNat), ("wake_bm",32,s.wake_bm.toNat),
    -- EXT-5: gates
    ("in_gate",32,s.in_gate.toNat), ("gate_sel",4,s.gate_sel.toNat),
+   -- EXT-6: capability inbox occupancy
+   ("cap_ival",16,s.cap_ival.toNat),
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
@@ -901,6 +903,76 @@ in_gate={sg.in_gate.toNat} (want 0)"
   else
     IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2})"
     throw <| IO.userError "gate selftest failed"
+
+/-! ## EXT-6 — the cross-domain transfer selftest
+
+The claim is **mediation, structurally**: a handle addressed to domain 3 is
+reachable from domain 3 and from nowhere else, because `CAP_RECV` indexes
+the receiver's *own* domain (`domCur`) and that index is not an operand.
+
+Two programs sharing one send. Domain 0 sends handle `0xCAFE` to domain 3,
+then enters a gate and receives:
+
+* `progCapRight` — gate 0 targets domain **3**, the addressed one. The
+  receive must yield `0xCAFE`.
+* `progCapWrong` — gate 0 targets domain **5**. Same instructions, same
+  handle, same inbox contents; the receive must yield all-ones, and the
+  handle must still be sitting in inbox 3 afterwards (`cap_ival` bit 3 set).
+
+The second program is the whole test. Without it, a `CAP_RECV` that ignored
+the domain entirely and just popped *any* occupied inbox would pass. -/
+def CAP_HANDLE : Nat := 0xCAFE
+
+def progCapSendThen (retReg : Nat) : List (BitVec 64) :=
+  [ encImmI 0xa0 1 0 CAP_HANDLE,   -- w0  r1 = the handle
+    encImmI 0xa0 2 0 3,            -- w1  r2 = 3 (target domain)
+    enc 0x62 3 1 2,                -- w2  CAP_SEND r3 = send(r1 -> domain r2)
+    encImmI 0xa0 4 0 0,            -- w3  r4 = 0 (gate id)
+    enc 0x60 0 4 0,                -- w4  GATE_CALL gate 0 -> word 7
+    enc 0x3a 0 0 0,                -- w5  EXIT (after the gate returns)
+    enc 0x00 0 0 0,                -- w6  (pad)
+    enc 0x63 retReg 0 0,           -- w7  CAP_RECV -> rretReg   (gate body)
+    enc 0x61 0 0 0 ]               -- w8  GATE_RETURN -> word 5
+
+def progCapRight : List (BitVec 64) := progCapSendThen 9
+def progCapWrong : List (BitVec 64) := progCapSendThen 9
+
+/-- Install gate 0 with entry word 7 and target domain `dom`, then start. -/
+def cmdCap (dom : Nat) : Nat → MiniIn := fun k =>
+  if k = 0 then
+    { cmdValid := true, cmdIdx := CMD_GATE_DOM, cmdData := BitVec.ofNat 32 (dom <<< 8) }
+  else if k = 1 then
+    { cmdValid := true, cmdIdx := CMD_GATE_ENT, cmdData := BitVec.ofNat 32 (TEXT_BASE + 56) }
+  else if k = 2 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+def capXferSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progCapRight
+  -- (0) EDSL ≡ ISS across send + gate + receive.
+  let bad ← lockstep img 1 (cmdCap 3) (fun _ => 0) 110
+  if bad = 0 then IO.println "  OK  CAPXFER (EDSL≡ISS across send+gate+recv, 110 cyc)"
+  else IO.println s!"  FAIL CAPXFER ({bad} mismatches)"
+  -- (1) the addressed domain receives the handle.
+  let (sr, _, _) := runIss img 1 (cmdCap 3) (fun _ => 0) 400
+  let got := (sr.rf[9]!).toNat
+  IO.println s!"  addressed domain 3: halted={sr.halted} send r3={(sr.rf[3]!).toNat} (want 0) \
+recv r9=0x{String.ofList (Nat.toDigits 16 got)} (want 0x{String.ofList (Nat.toDigits 16 CAP_HANDLE)}) \
+cap_ival={sr.cap_ival.toNat} (want 0, consumed)"
+  let ok1 := sr.halted && got == CAP_HANDLE && sr.cap_ival.toNat == 0
+             && (sr.rf[3]!).toNat == 0
+  -- (2) a DIFFERENT domain gets nothing, and the handle stays put.
+  let (sw, _, _) := runIss (imageFrom TEXT_BASE progCapWrong) 1 (cmdCap 5) (fun _ => 0) 400
+  let gotW := (sw.rf[9]!).toNat
+  IO.println s!"  other domain 5:     halted={sw.halted} recv r9=0x{String.ofList (Nat.toDigits 16 gotW)} \
+(want all-ones) cap_ival={sw.cap_ival.toNat} (want 8 = bit 3 still set) \
+inbox3=0x{String.ofList (Nat.toDigits 16 (sw.cap_ibox[3]!).toNat)}"
+  let ok2 := sw.halted && gotW == 0xFFFFFFFFFFFFFFFF && sw.cap_ival.toNat == 8
+             && (sw.cap_ibox[3]!).toNat == CAP_HANDLE
+  if bad = 0 && ok1 && ok2 then
+    IO.println "LNP64MINI CAPXFER SELFTEST OK — a handle reaches its domain and no other"
+  else
+    IO.println s!"LNP64MINI CAPXFER SELFTEST FAILED ({bad} mismatches; right={ok1} wrong={ok2})"
+    throw <| IO.userError "capxfer selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt

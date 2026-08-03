@@ -130,6 +130,10 @@ structure MiniSt where
   tcdom     : Array (BitVec 8)  := Array.replicate NT 0
   in_gate   : BitVec 32 := 0
   gate_sel  : BitVec 4  := 0
+  -- EXT-6 (cross-domain transfer): one capability handle addressed to each
+  -- domain, plus per-domain occupancy.
+  cap_ibox  : Array (BitVec 64) := Array.replicate 16 0
+  cap_ival  : BitVec 16 := 0
   wake_out  : Bool := false
   -- EXT-4: the key this core last woke on (captured on the pulse).
   wake_key  : BitVec 64 := 0
@@ -376,7 +380,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- construction rather than by a reset image the flow may not deliver.
       s' := { s' with tdom := s'.tdom.set! s.zctr.toNat 0 }
     -- EXT-5: the reset also clears every open gate.
-    if s.zctr.toNat = 0 then s' := { s' with in_gate := 0 }
+    if s.zctr.toNat = 0 then s' := { s' with in_gate := 0, cap_ival := 0 }
     if s.zctr.toNat < 512 then
       s' := { s' with dmem_we := true, dmem_a := s.zctr.setWidth 9, dmem_wd := 0 }
     if s.zctr.toNat = 32*NT - 1 then s' := { s' with zeroing := false }
@@ -558,6 +562,28 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if o = 0xcc then
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
         -- `smpRule`); S_EX keeps only FUTEX_WAKE's sequencing half.
+        s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+      -- EXT-6: 0x62 CAP_SEND (a = handle, b = target domain), 0x63 CAP_RECV.
+      -- RECV indexes the receiver's OWN domain -- not an operand -- so no
+      -- encoding reaches another domain's inbox.
+      else if o = 0x62 then
+        let tgt := (s.b.toNat) % 16
+        let occ := s.cap_ival.getLsbD tgt
+        if ¬ occ then
+          s' := { s' with cap_ibox := s'.cap_ibox.set! tgt s.a,
+                          cap_ival := s.cap_ival ||| (1#16 <<< tgt) }
+        if rdf s ≠ 0 then
+          rfWe := true; rfWa := (curV ++ rdf s)
+          rfWd := if occ then BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF else 0
+        s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+      else if o = 0x63 then
+        let me := (s.tdom[curV.toNat]!).toNat % 16
+        let occ := s.cap_ival.getLsbD me
+        if occ then
+          s' := { s' with cap_ival := s.cap_ival &&& ~~~(1#16 <<< me) }
+        if rdf s ≠ 0 then
+          rfWe := true; rfWa := (curV ++ rdf s)
+          rfWd := if occ then s.cap_ibox[me]! else BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       -- EXT-5: 0x60 GATE_CALL / 0x61 GATE_RETURN. A gate is the only way a
       -- thread changes domain, and only to a domain the host installed.

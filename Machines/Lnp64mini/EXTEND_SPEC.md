@@ -726,3 +726,30 @@ table is two small memories, not per-slot logic, which is the shape EXT-4's
 failure argued for. NetBSD acceptance
 (`/home/kevin/autonomy/20260803-001643`): `PASS`, ping **10/10, 0 % loss,
 158 ms**, holding EXT-4's 4x improvement.
+
+---
+
+## EXT-7 design note — bind the MMU to §15, do not invent one
+
+Instruction from the operator (2026-08-03): *"When it comes time for VMA/MMU
+try to match the lnp64_isa.md design as much as practical here."* The
+relevant §15 facts, quoted from the ISA rather than paraphrased, and what
+each one costs us:
+
+| ISA | line | consequence for mini |
+|---|---|---|
+| "`C`'s loads and stores walk **one** VMA tree into a **domain-tagged TLB entry** — O(1)" | 160 | The TLB entry carries a domain tag. **We already have the tag** (EXT-2) and EXT-5 made it unforgeable, so a translation cached by domain 3 is structurally unusable by domain 5 — the same mediation shape as EXT-6's inbox index. |
+| "Cached translation (§15) → **the VMA's cell** → `map.protect`/`munmap`/image-replace … the epoch check is the straggler backstop" | 876 | The VMA's shootdown cell **is an epoch cell**, so the existing `Machines/Epoch` engine is the mechanism, not a new one. `map.protect`/`munmap` bump; the cached translation dies; the next access fails closed. This is exactly the bump-to-fail-closed demo already proven on silicon (#40), pointed at a translation instead of a capability. |
+| `mem_grant` 0xb2 · `mapping map.protect munmap_range map.demote` 0xb3–b6 | 526 | **Opcode collision, same as gates.** Mini's decoder uses 0xb0–0xba for ALU ops, so these encodings are not available; EXT-7 must take free ones and record the divergence the way EXT-5 did, rather than claim a match. |
+| "far memory unconstructible as a pointer (§15's locality classes)" | 141, 147 | A locality class is a property of the *handle*, not a runtime check. Out of scope for mini at this size — record as a gap, do not fake it. |
+
+**What this changes about the staged A/B/C plan.** Stage A is cheaper than
+budgeted: the TLB tag is EXT-2's `tdom` and the shootdown is the epoch
+engine, so stage A is a TLB plus a walker, not a new revocation mechanism.
+Stage C — revoking a live mapping under running NetBSD — is the §3-meets-§15
+demo, and it is the *same engine* as the epoch demo already on silicon.
+
+**Do not** give the guest an identity VMA. That was rejected earlier in this
+file for a reason that §15 line 876 makes sharper: with an identity map
+there is nothing to shoot down, so the one §3 referent this increment exists
+to light up — cached translation — stays dark.

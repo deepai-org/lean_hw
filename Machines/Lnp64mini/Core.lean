@@ -248,6 +248,8 @@ def gateEntRd (g : Expr 4) : Expr 64 := .memRead 64 "gate_ent" g
 def gateDomRd (g : Expr 4) : Expr 8  := .memRead 8  "gate_dom" g
 def tcontRd (idx : Expr 5) : Expr 64 := .memRead 64 "tcont" idx
 def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
+/-- EXT-6: the per-domain capability inbox. -/
+def capIboxRd (d : Expr 4) : Expr 64 := .memRead 64 "cap_ibox" d
 
 /-- The domain the core is executing in **right now**: the current thread's
 tag, combinationally. See the note above on why this is not a register. -/
@@ -333,6 +335,38 @@ def curInGate : Expr 1 :=
 `gate_dom[gate_sel]` (`data[3:0]` = gate id, `data[15:8]` = domain). -/
 def CMD_GATE_ENT : Nat := 61
 def CMD_GATE_DOM : Nat := 62
+
+/-! ### EXT-6 — cross-domain capability transfer (`EXTEND_SPEC.md` #6; §10.2)
+
+A capability handle moves between domains through a **per-domain inbox**:
+`cap_ibox[d]` holds one handle addressed to domain `d`, `cap_ival` says
+whether it is occupied. `CAP_SEND` writes the inbox of the domain it names;
+`CAP_RECV` reads **`cap_ibox[domCur]`** — the receiver's *own* domain, which
+it cannot name and cannot forge, because `domCur` is `tdom[cur]` and EXT-5
+made a gate the only way that changes.
+
+**The re-keying is structural, not a check.** A handle addressed to domain 3
+is not merely *flagged* for domain 3 — it is stored at an index no thread in
+another domain can address, because the receive index is not an operand. A
+domain-5 thread executing `CAP_RECV` reads inbox 5 and gets nothing; there
+is no encoding of `CAP_RECV` that reaches inbox 3. That is the same shape as
+EXT-3's fail-stop landing on `readyBm`: put the property where the datapath
+cannot route around it, rather than testing for it.
+
+**Deviation — one slot per domain, not a queue.** `CAP_SEND` to an occupied
+inbox is refused (`rd = -1`, no state change) rather than queueing. Sixteen
+queues is per-slot structure of exactly the kind EXT-4 measured the cost of;
+one slot proves the transfer and the mediation, and depth is a width change.
+
+**Deviation — no MAC re-computation.** CapWalk's engine authenticates a
+handle with an on-chip key over `E(slot)`; a full transfer would re-key the
+MAC to the receiving domain. Mini's inbox carries the handle bits only, and
+the domain binding is the *index*. Recorded as the gap between this and
+§10.2: the mediation is real, the cryptographic re-key is not implemented.
+-/
+def cap_ival : Expr 16 := .reg 16 "cap_ival"
+def CAP_SEND_OP : Nat := 0x62
+def CAP_RECV_OP : Nat := 0x63
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
 def curPoisoned : Expr 1 :=
@@ -852,6 +886,20 @@ slot, `cmd_data[15:8]` the domain id. 56 is the dual wrapper's `CORE1_HOLD`
 and 57 is EXT-1's quantum, so 58 is the next free index. -/
 def CMD_SETDOM : Nat := 58
 
+/-! ### EXT-6 — send/recv predicates.
+
+`capRecvSlot` is `domCur[3:0]` — the receiver's own domain. It is NOT an
+operand, which is the whole mediation argument. -/
+def capRecvSlot : Expr 4 := .slice domCur 0 4
+def capSendSlot : Expr 4 := .slice b 0 4
+/-- inbox occupancy bit for a slot. -/
+def capOcc (d : Expr 4) : Expr 1 :=
+  .eq (.slice (.shr cap_ival (.zext d 16)) 0 1) (.lit (BitVec.ofNat 1 1))
+/-- A send lands only if the target inbox is free. -/
+def capSendFire : Expr 1 := exG (.and (opIs CAP_SEND_OP) (.not (capOcc capSendSlot)))
+/-- A receive lands only if this domain's inbox is occupied. -/
+def capRecvFire : Expr 1 := exG (.and (opIs CAP_RECV_OP) (capOcc capRecvSlot))
+
 /-- Funnel triples. -/
 def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- 1. zeroing
@@ -862,6 +910,14 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- 3. FSM writes (mutually exclusive)
   -- S_EX is_sel
   , (exG (.and is_sel (.not (.eq rdf (L5 0)))), cat55 cur rdf, .mux sel_cond sel_t sel_f)
+  -- EXT-6: CAP_SEND result -- 0 on success, all-ones on a full inbox.
+  , (exG (.and (opIs CAP_SEND_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
+       .mux (capOcc capSendSlot) (L64 0xFFFFFFFFFFFFFFFF) (L64 0))
+  -- EXT-6: CAP_RECV result -- the handle addressed to THIS domain, or
+  -- all-ones when this domain's inbox is empty. The index is `domCur`, not
+  -- an operand, so no encoding reaches another domain's inbox.
+  , (exG (.and (opIs CAP_RECV_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
+       .mux (capOcc capRecvSlot) (capIboxRd capRecvSlot) (L64 0xFFFFFFFFFFFFFFFF))
   -- S_EX GET_PCR Tid (op 0x54, rs1f==2)
   , (exG (.and (opIs 0x54) (.and (.eq rs1f (L5 2)) (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, .add (.zext cur 64) (L64 1))
@@ -1328,6 +1384,11 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
   -- only the sequencing half of FUTEX_WAKE.
   gcons (opIs 0xcc) (.seq stepPc (.seq retireInc goF0)) <|
+  -- EXT-6: 0x62 CAP_SEND (a = handle, b = target domain) and 0x63 CAP_RECV.
+  -- Both just sequence here; the inbox, the occupancy bitmap and `rd` are
+  -- written in their funnels.
+  gcons (opIs CAP_SEND_OP) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs CAP_RECV_OP) (.seq stepPc (.seq retireInc goF0)) <|
   -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
   -- change) if this thread is already inside a gate -- the continuation is
   -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
@@ -1631,6 +1692,19 @@ def inGateNext : Expr 32 :=
     (.mux gateCall (.or in_gate (.shl (L32 1) (.zext cur 32)))
       (.mux gateRet (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate))
 
+/-- EXT-6: occupancy after this cycle — set on a landing send, cleared on a
+landing receive, zeroed by the `cmd 13` reset. Send and receive can only
+collide on the same slot if a domain sends to itself, and then the send is
+refused first (`capSendFire` requires the slot free), so the two are
+disjoint by construction. -/
+def capIvalNext : Expr 16 :=
+  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (.lit (BitVec.ofNat 16 0))
+    (.mux capSendFire
+      (.or cap_ival (.shl (.lit (BitVec.ofNat 16 1)) (.zext capSendSlot 16)))
+      (.mux capRecvFire
+        (.and cap_ival (.not (.shl (.lit (BitVec.ofNat 16 1)) (.zext capRecvSlot 16))))
+        cap_ival))
+
 def tarrFunnelRule : Rule :=
   ⟨"tarr_funnel",
     .seq (.ite tdomWeE (.memWrite 5 8 "tdom" 0 tdomWaE tdomWdE) .skip) <|
@@ -1638,6 +1712,9 @@ def tarrFunnelRule : Rule :=
     .seq (.ite gateCall (.memWrite 5 64 "tcont" 0 cur pc8) .skip) <|
     .seq (.ite gateCall (.memWrite 5 8 "tcdom" 0 cur domCur) .skip) <|
     .seq (.write 32 "in_gate" inGateNext) <|
+    -- EXT-6: the inbox write (one syntactic site) and the occupancy bitmap.
+    .seq (.ite capSendFire (.memWrite 4 64 "cap_ibox" 0 capSendSlot a) .skip) <|
+    .seq (.write 16 "cap_ival" capIvalNext) <|
     -- EXT-5: the host-loaded gate table.
     .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_ENT)))
             (.memWrite 4 64 "gate_ent" 0 gate_sel (.zext cmdData 64)) .skip) <|
@@ -1707,7 +1784,9 @@ def scalarRegs : List RegDecl :=
    -- EXT-3: fail-stop bitmap; 0 = nothing poisoned = the pre-EXT-3 machine
    ⟨"poison",32,0⟩,
    -- EXT-5: gates. `in_gate` = depth-1 continuation-present bitmap.
-   ⟨"in_gate",32,0⟩, ⟨"gate_sel",4,0⟩]
+   ⟨"in_gate",32,0⟩, ⟨"gate_sel",4,0⟩,
+   -- EXT-6: per-domain capability inbox occupancy
+   ⟨"cap_ival",16,0⟩]
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
@@ -1751,7 +1830,9 @@ def design : Design where
      ⟨"tdom", 5, 8, fun _ => 0⟩,
      -- EXT-5: the gate table (host-loaded) and the depth-1 continuation.
      ⟨"gate_ent", 4, 64, fun _ => 0⟩, ⟨"gate_dom", 4, 8, fun _ => 0⟩,
-     ⟨"tcont", 5, 64, fun _ => 0⟩, ⟨"tcdom", 5, 8, fun _ => 0⟩]
+     ⟨"tcont", 5, 64, fun _ => 0⟩, ⟨"tcdom", 5, 8, fun _ => 0⟩,
+     -- EXT-6: one capability handle addressed to each domain
+     ⟨"cap_ibox", 4, 64, fun _ => 0⟩]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]
