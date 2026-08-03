@@ -753,3 +753,59 @@ demo, and it is the *same engine* as the epoch demo already on silicon.
 file for a reason that §15 line 876 makes sharper: with an identity map
 there is nothing to shoot down, so the one §3 referent this increment exists
 to light up — cached translation — stays dark.
+
+---
+
+## EXT-6 — cross-domain capability transfer. 2026-08-03
+
+§10.2. A handle moves between domains through a **per-domain inbox**:
+`cap_ibox[d]` holds one handle addressed to domain `d`, `cap_ival` says
+whether it is occupied. `0x62 CAP_SEND` (a = handle, b = target domain)
+writes the inbox it names; `0x63 CAP_RECV` reads `cap_ibox[domCur]`.
+
+**The binding is structural, not a check.** A handle addressed to domain 3
+is not *flagged* for domain 3 — it is stored at an index no thread in
+another domain can address, because the receive index is `domCur` and is
+**not an operand**. A domain-5 thread executing `CAP_RECV` reads inbox 5 and
+gets all-ones; there is no encoding of `CAP_RECV` that reaches inbox 3. Same
+shape as EXT-3's fail-stop landing on `readyBm`: put the property where the
+datapath cannot route around it rather than testing for it. It rests on
+EXT-5 — `domCur` is `tdom[cur]`, and a gate is the only way that changes.
+
+### Deviations
+
+* **One slot per domain, not a queue.** A send to an occupied inbox is
+  refused (`rd = -1`, no state change). Sixteen queues is per-slot structure
+  of exactly the kind EXT-4 measured; depth is a width change.
+* **No MAC re-computation.** CapWalk authenticates a handle with an on-chip
+  key over `E(slot)`; a full §10.2 transfer would re-key it to the receiving
+  domain. Mini's inbox carries the handle bits and the domain binding is the
+  *index*. The mediation is real; the cryptographic re-key is not
+  implemented, and that gap is the honest distance from §10.2.
+
+### Evidence
+
+Two programs sharing one send, and the second is the whole test — a
+`CAP_RECV` that ignored the domain and popped any occupied inbox would pass
+the first alone:
+
+```
+  OK  CAPXFER (EDSL≡ISS across send+gate+recv, 110 cyc)
+  addressed domain 3: send r3=0 recv r9=0xcafe (want 0xcafe) cap_ival=0 (consumed)
+  other domain 5:     recv r9=0xffffffffffffffff (want all-ones) cap_ival=8 (bit 3 still set) inbox3=0xcafe
+LNP64MINI CAPXFER SELFTEST OK — a handle reaches its domain and no other
+```
+
+**Silicon:** 49 341 LUTs (**46 %**), routed `sysclk` **30.13 MHz** (20 %
+margin). NetBSD acceptance (`/home/kevin/autonomy/20260803-011217`): `PASS`,
+ping **10/10, 0 % loss, 139 ms**.
+
+### Harness finding: the interpreted selftests have hit a wall
+
+`capxferselftest` first died with *"deep recursion detected at
+'interpreter'"* inside `Design.reset` — a fold over a register list six
+increments have grown. `ulimit -s unlimited` gets past it, but the run takes
+**~25 minutes** for 110 cycles. The lockstep interprets the EDSL, so cost is
+design-size x cycles and both have grown all campaign. Before EXT-7 adds a
+TLB, these selftests should be **compiled** (a `lake exe`) rather than run
+under `lean --run`; otherwise the ladder stops being runnable.
