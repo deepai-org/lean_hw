@@ -498,6 +498,13 @@ data literal. Names are taken from the emulator's `Instr` variant at the
 same opcode, so the two implementations are legible against each other.
 -/
 
+/-- An opcode implemented in **no** numbering, for test programs that need a
+guaranteed trap. It must stay invalid across a renumbering: `0x7f` was used
+for this and is NOT free after the ISA stage-2 assignment, so renumbering
+turned the trap test into a valid instruction. 0x8c is in the ISA's reserved
+"memory growth" range and is unoccupied before and after. -/
+def OP_INVALID : Nat := 0x8c
+
 def OP_NOP : Nat := 0x00
 def OP_MOV : Nat := 0x02
 def OP_LIU : Nat := 0x04
