@@ -13,20 +13,20 @@ import Machines.Lnp64mini.DualSoc
 # Lnp64mini runner (root `main`, kept out of the `Machines` umbrella)
 
 ```console
-lake env lean --run Machines/Lnp64mini/Emit.lean            # emit rtl/lnp64mini.v
-lake env lean --run Machines/Lnp64mini/Emit.lean soc        # emit rtl/lnp64mini_soc.v
-lake env lean --run Machines/Lnp64mini/Emit.lean dual       # emit rtl/lnp64mini_dual.v
-lake env lean --run Machines/Lnp64mini/Emit.lean selftest   # EDSL ≡ ISS lockstep
-lake env lean --run Machines/Lnp64mini/Emit.lean hpselftest # HP master EDSL ≡ ISS
-lake env lean --run Machines/Lnp64mini/Emit.lean gpselftest # GP master EDSL ≡ ISS
-lake env lean --run Machines/Lnp64mini/Emit.lean arbselftest # HP arbiter EDSL ≡ ISS
-lake env lean --run Machines/Lnp64mini/Emit.lean smpselftest # res_kill/doorbell/hold/wake_out
-lake env lean --run Machines/Lnp64mini/Emit.lean preemptselftest # EXT-1 quantum / preemption tick
-lake env lean --run Machines/Lnp64mini/Emit.lean domselftest     # EXT-2 protection domains
-lake env lean --run Machines/Lnp64mini/Emit.lean preempthex   # write fpga/zc702/preempt.hex
-lake env lean --run Machines/Lnp64mini/Emit.lean preemptpredict 64  # the EXT-1 iverilog oracle
-lake env lean --run Machines/Lnp64mini/Emit.lean progtest   # ISS runs a program to EXIT
-lake env lean --run Machines/Lnp64mini/Emit.lean d19        # D19 sync-read (BRAM) report
+lake exe minitest            # emit rtl/lnp64mini.v
+lake exe minitest soc        # emit rtl/lnp64mini_soc.v
+lake exe minitest dual       # emit rtl/lnp64mini_dual.v
+lake exe minitest selftest   # EDSL ≡ ISS lockstep
+lake exe minitest hpselftest # HP master EDSL ≡ ISS
+lake exe minitest gpselftest # GP master EDSL ≡ ISS
+lake exe minitest arbselftest # HP arbiter EDSL ≡ ISS
+lake exe minitest smpselftest # res_kill/doorbell/hold/wake_out
+lake exe minitest preemptselftest # EXT-1 quantum / preemption tick
+lake exe minitest domselftest     # EXT-2 protection domains
+lake exe minitest preempthex   # write fpga/zc702/preempt.hex
+lake exe minitest preemptpredict 64  # the EXT-1 iverilog oracle
+lake exe minitest progtest   # ISS runs a program to EXIT
+lake exe minitest d19        # D19 sync-read (BRAM) report
 ```
 
 D19 and instance-name disjointness are no longer discharged here. The
@@ -35,6 +35,11 @@ enforces it, along with duplicate register/memory names (which is how a
 `par`/`prefixed` with non-disjoint prefixes shows up). That is the point:
 these were per-machine helpers each emit site had to remember to call, and
 an obligation a caller can skip is not an obligation.
+**Run these compiled** (`lake exe minitest <target>`). Under the interpreter
+(`lake env lean --run`) the EDSL≡ISS lockstep costs ~25 minutes a run and
+`Design.reset`'s fold over the register list overflows the interpreter stack
+outright once a design has grown -- `capxferselftest` needed
+`ulimit -s unlimited` just to start. Compiled, the MMU selftest runs in 45 s.
 -/
 
 open Machines.Lnp64mini in

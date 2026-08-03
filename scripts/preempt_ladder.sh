@@ -17,6 +17,11 @@
 #      only ever preempts to a *different* READY thread cannot move them)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Compiled selftests: the interpreted path costs ~25 min per lockstep run and
+# overflows the interpreter stack in `Design.reset`. `lake exe minitest` runs
+# the same `main` natively -- the MMU selftest goes 25 min -> 45 s.
+lake build minitest >/dev/null
+MINI=./.lake/build/bin/minitest
 Z=fpga/zc702
 T=${TMPDIR:-/tmp}/preempt_ladder.$$
 mkdir -p "$T"
@@ -24,35 +29,35 @@ trap 'rm -rf "$T"' EXIT
 
 echo "### 0. EXT-2 domain selftest (EDSL == ISS on cur_dom + all 32 tdom slots,"
 echo "        and the architectural claim: CLONE cannot leave its domain)"
-lake env lean --run Machines/Lnp64mini/Emit.lean domselftest
+$MINI domselftest
 
 echo "### 0b. EXT-3 fail-stop selftest (poison stops the RUNNER and"
 echo "         deschedules the READY -- two distinct enforcement points)"
-lake env lean --run Machines/Lnp64mini/Emit.lean failstopselftest
+$MINI failstopselftest
 
 echo "### 1. FastEval selftest (EXT-1)"
-lake env lean --run Machines/Lnp64mini/Emit.lean preemptselftest | tee "$T/self.txt"
+$MINI preemptselftest | tee "$T/self.txt"
 grep -q 'PREEMPT SELFTEST OK' "$T/self.txt"
 
 echo "### 2. D19 report"
-lake env lean --run Machines/Lnp64mini/Emit.lean d19 >/dev/null
+$MINI d19 >/dev/null
 
 echo "### 3. emit"
-lake env lean --run Machines/Lnp64mini/Emit.lean       >/dev/null
-lake env lean --run Machines/Lnp64mini/Emit.lean soc   >/dev/null
-lake env lean --run Machines/Lnp64mini/Emit.lean dual  >/dev/null
-lake env lean --run Machines/Lnp64mini/Emit.lean preempthex >/dev/null
+$MINI       >/dev/null
+$MINI soc   >/dev/null
+$MINI dual  >/dev/null
+$MINI preempthex >/dev/null
 
 echo "### 4. iverilog: the Law-5 spinner vs the Lean oracle"
 iverilog -g2012 -DPROG_HEX="\"$Z/preempt.hex\"" -DQUANTUM="32'd64" \
   -o "$T/pq.vvp" rtl/lnp64mini_soc.v $Z/tb_lnp64mini_preempt.v
 vvp "$T/pq.vvp" | grep '^PREEMPT' > "$T/rtl_q64.txt"
-lake env lean --run Machines/Lnp64mini/Emit.lean preemptpredict 64 > "$T/or_q64.txt"
+$MINI preemptpredict 64 > "$T/or_q64.txt"
 diff "$T/or_q64.txt" "$T/rtl_q64.txt"
 iverilog -g2012 -DPROG_HEX="\"$Z/preempt.hex\"" \
   -o "$T/pc.vvp" rtl/lnp64mini_soc.v $Z/tb_lnp64mini_preempt.v
 vvp "$T/pc.vvp" | grep '^PREEMPT' > "$T/rtl_q0.txt"
-lake env lean --run Machines/Lnp64mini/Emit.lean preemptpredict 0 > "$T/or_q0.txt"
+$MINI preemptpredict 0 > "$T/or_q0.txt"
 diff "$T/or_q0.txt" "$T/rtl_q0.txt"
 grep -q 'halted=1 trap=0 pc=4136 r5=1 r9=42 dmem0=1 t1state=0 preempted=1' "$T/rtl_q64.txt"
 grep -q 'halted=0 trap=0 pc=0 r5=0 r9=0 dmem0=0 t1state=1 preempted=0' "$T/rtl_q0.txt"
