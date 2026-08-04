@@ -62,6 +62,7 @@ def tick : Act :=
 def design : Design where
   name := "satcounter"
   regs := [⟨"count", 8, 0⟩, ⟨"sat", 1, 0⟩]
+  outputs := ["count", "sat"]
   mems := []
   rules := [⟨"tick", tick⟩]
 ```
@@ -156,9 +157,8 @@ def main : IO Unit :=
   Machines.Tutorial.SatCounter.design.emit "rtl/satcounter.v"
 ```
 
-(`Design.emit` — import `Loom.Hw.EmitIO` — compiles with the verified
-compiler, prints with the verified printer, and writes the file; it was
-added to close defect #1 of the first tutorial run.)
+(`Design.emit` — import `Loom.Hw.EmitIO` — runs the checked compiler/emission
+path and writes the file.)
 
 ```console
 lake env lean --run Machines/Tutorial/SatCounter.lean
@@ -181,8 +181,8 @@ should report exactly `propext`, `Classical.choice`, `Quot.sound`.
 
 ### Optional: the symbolic-witness denotation
 
-Since 2026-07-29 the printing gap can also be closed per design, without
-any generated certificates: `Machines/Tutorial/SatCounterArtifact.lean`
+The printing gap can also be narrowed per design, without generated
+certificates: `Machines/Tutorial/SatCounterArtifact.lean`
 proves `satcounter_denotes` — the emitted SSA witness denotes the
 verified compilation at every wire, register, and output — as one
 application of the generic theorem `toProgram_denotes` plus four
@@ -203,8 +203,8 @@ tutorial scale, copy that file and substitute your design name.
   theorem about the compiled module, not about the text file); anything
   about what a synthesis tool does with the `.v`
   (`CONCRETE_SSA_BOUNDARY.md` states the tool-boundary assumption); and
-  refinement against an ISS-style spec (expert territory; see
-  `NEXTSTEPS.md`, "Leg 3 scoped").
+  refinement against an ISS-style spec (expert territory; see the LNP64-µ
+  R-MC modules for a full in-repository example).
 
 ## Report what went wrong
 
