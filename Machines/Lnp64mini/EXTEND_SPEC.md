@@ -100,3 +100,57 @@ hardware side of the ladder is fully closed:
 
 `subwordselftest` stays — the coverage gap it closed was real, `sb`/`sh` had
 never been executed below silicon, and it is what made this correction cheap.
+
+### The demo blocker, reproduced off-hardware
+
+The board failure now reproduces in the emulator in about seven minutes, with
+the guest's console readable, instead of a six-minute board cycle that shows
+almost nothing. That is the main result of this pass.
+
+**The recipe.** The zero-trap gate never sets `LNP64_SMP_CORES`, so core 1
+never runs off-hardware and the gate passes on a configuration the board does
+not have. Adding it reproduces the board exactly:
+
+```
+LNP64_BOARD_DDR=1 LNP64_CON_RING_DUMP=1 LNP64_SMP_CORES=2 \
+LNP64_SMP_CORE1_ENTRY=$(awk '$NF=="lnp64_core1_entry"{print "0x"$1}' $ELF.map) \
+LNP64_SMP_GATE=$(awk '$NF=="lnp64_smp"{print "0x"$1}' $ELF.map) \
+LNP64_MAX_SECONDS=420 lnp64 run-elf --namespace-root /tmp/x $ELF
+```
+
+Result: console `IHLF`, `core1=20`, core 0 spinning — the board's signature
+(`core1=20`, `status0=0xa`) to the instruction.
+
+**Where it stops.** The markers are single characters from
+`userland/rump_shmif_telnet_probe.c`: `I` rump kernel up, `H` shmif0 created,
+`L` lwp forked, `F` address assigned, `U` interface up, `T` listener bound.
+Stopping after `F` means the hang is inside
+`rump___sysimpl_ioctl(cfg, R_SIOCSIFFLAGS, &ifr)` — bringing `shmif0` up.
+
+**Ruled out, each by experiment rather than argument.**
+
+* *The release ordering.* Core 1 is released by `lnp64_smp_release_core1()`,
+  and its position was the obvious suspect. Three placements were built and
+  run: after the NIC is up (original — stops at `F`), immediately after
+  `rump_init()` (stops at `H`, both cores burning ~310 M instructions in a
+  livelock over process 1's lwp state), and after `lwproc_rfork` (stops before
+  `F`). Every placement stalls at the next kernel call. The ordering is not the
+  variable.
+* *The vCPU count.* `LNP64_RUMP_NCPU` is **independent of `LNP64_SMP`** and
+  defaults to `1`, so every image built here — and the silicon-proven one — has
+  a single rump vCPU. Building with `LNP64_RUMP_NCPU=2` changes nothing:
+  still `IHLF`, still `core1=20`.
+
+**What is left.** The stall needs core 1 to *exist and be parked*: the
+identical image with `LNP64_SMP_CORES=1` reaches `RUMP_SHMIF_ON_CORE_OK` and
+passes the zero-trap gate. Core 1 parks in `__lnp_futex_wait` on
+`lnp64_smp.ready`, and core 0's kernel issues many `FUTEX_WAKE`s — so the
+next thing to test is whether a `FUTEX_WAKE` with a cross-core waiter parked
+stalls the waker, which would explain why the first kernel operation that
+starts a kthread is where core 0 dies. That is a question for the mini's own
+selftests, not another guest rebuild.
+
+**Also fixed.** `build_rump_shmif_image.py` printed
+`SMP: core-1 stub + kernel worker (RUMP_NCPU=2)` on one line and
+`rump vCPUs = 1` a few lines below. The first is what got believed. It now says
+where the number actually comes from.
