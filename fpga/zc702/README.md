@@ -62,7 +62,11 @@ The substrate and machine test programs provide regression assets. The
 present extended LNP64mini board head is not green.
 Opcode agreement covers 70 shared opcodes, the emulator zero-trap gate passes,
 and silicon shows zero traps, but the network is down. Current diagnostics
-show core 0 halted and core 1 remaining in futex wait after 20 retires.
+show core 0 halted and core 1 remaining in futex wait after 20 retires. The
+console ring exhibits byte-store smearing, while a fresh compiled source-level
+subword test passes exact byte/halfword merging on both modeled memory paths.
+The remaining investigation is therefore a forced-fresh artifact rebuild and
+downstream wrapper/synthesis/board comparison.
 
 There is no accepted NetBSD, ping, telnet, SMP, epoch, or capability result
 for the current head. The next accepted board result must reproduce the ladder

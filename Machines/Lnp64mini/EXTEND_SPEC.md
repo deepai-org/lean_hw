@@ -45,6 +45,12 @@ green, and the silicon trap count has been reduced to zero. The full board
 regression is still failing: network service is down, core 0 halts, and core 1
 remains in futex wait after 20 retires in the current diagnostic trace.
 
+Console-ring data shows byte-store smearing even though neighboring 32-bit
+metadata is intact. The compiled `subwordselftest` produces the exact expected
+lane merge on both on-chip and DDR paths with zero EDSL/ISS mismatches. The
+current source models therefore do not reproduce the board symptom; fresh
+executable, RTL, bitstream, and downstream-path validation is required.
+
 Accordingly, the extension set is implemented and source-level checks are
 useful, but the present combined hardware head is not release- or demo-ready.
 The immediate task is to isolate the board regression, not to add another
@@ -111,3 +117,43 @@ the library and *stops* — then section 5 ran a `minitest` binary that could
 predate the sources it had just verified. It did: a newly added selftest fell
 through the arg match into the emit fallback because the running binary still
 had the previous dispatch. The gate now names the executables explicitly.
+
+### The boundary is now sharp: everything below silicon is verified correct
+
+Reading raw hex at three addresses instead of guessing a stride settles the
+layout. Character *k* occupies bytes `[8k+1 … 8k+8]` of the ring — **stride 8,
+one character per 64-bit word**, with the byte replicated across the word:
+
+```
+13000008:  2020204E   -> 'N'
+1300000C:  20202020      ' ' x8   (bytes 1..8)
+13000010:  6C6C6C20      'l' x8   (bytes 9..16)
+13000014:  6C6C6C6C
+13000018:  6464646C      'd' x8   (bytes 17..24)
+```
+
+Every layer beneath the silicon says this should not happen:
+
+| layer | says |
+|---|---|
+| guest C | `buf[i] = c` on a `volatile unsigned char *` — packed |
+| clang | `zext.w r3,r3; add r2,r2,r3; sb r4,0(r2)` — unscaled index, real `sb` |
+| Loom design | `ddrEaRaw = DATA_BASE + (ea & ~7)`, `st_merge` overlays one lane |
+| ISS + EDSL | `subwordselftest`: `0x1122bbcc5566aa88`, both memory paths |
+| iverilog | `r8=0x1122bbcc5566aa88 r9=0xaa` — byte-exact |
+
+And in the same struct, on the same path, the 32-bit `magic` and `wptr` at
+`base+0` and `base+4` land **correctly** — they read back as `0xC0FFEE01` and a
+plausible count. So sub-word stores into the first word are right while byte
+stores into the buffer are strided, which no layer above silicon predicts.
+
+That is the whole remaining question, and it is now well-posed: **guest reads of
+host-written DDR are fine** (the image executes, 115 M instructions, `traps=0`)
+and **32-bit guest writes are fine**; it is the guest's *byte* writes whose
+placement on the HP AXI path does not match what every model says. The next
+move is to instrument that path directly — a tiny guest program that writes a
+known byte pattern to a known DDR address and halts, then read it over JTAG —
+rather than inferring from a 420 000-character console ring that has wrapped.
+
+Do not re-derive the byte-store theory from this dump: `subwordselftest` exists
+precisely so that question stays answered.
