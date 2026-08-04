@@ -33,8 +33,7 @@ TD = LNP64 / "llvm/lib/Target/LNP64/LNP64InstrInfo.td"
 # selects, fences, the gate/capability block) have no counterpart and are
 # listed in `MINI_LOCAL` so that adding one does not silently skip the check.
 MINI_LOCAL = {
-    "NOP", "MOV", "INVALID", "SLEEP", "LD_S", "LD", "LD_31", "LD_32", "LD_36",
-    "LD_S_70", "LD_S_72", "ST", "ST_34", "ST_35", "ST_37", "EXIT",
+    "NOP", "MOV", "INVALID", "SLEEP", "EXIT",
     "THREAD_EXIT", "SEL", "SEL_41", "SEL_42", "SEL_43", "SEL_44", "SEL_45",
     "CLONE_SPAWN", "LR_D_ACQ_REL", "SC_D_ACQ_REL", "FENCE_D1", "FENCE_D2",
     "FENCE_D3", "FENCE_D4", "MINI_GATE_CALL", "MINI_GATE_RETURN",
@@ -43,7 +42,19 @@ MINI_LOCAL = {
 
 # mini OP_ name -> LLVM backend `def` name, where they differ.
 TD_ALIAS = {"LSL": "SLL", "LSR": "SRL", "ASR": "SRA",
-            "LSLI": "SLLI", "LSRI": "SRLI", "ASRI": "SRAI"}
+            "LSLI": "SLLI", "LSRI": "SRLI", "ASRI": "SRAI",
+            # Loads and stores. These were wrongly declared MINI_LOCAL at first,
+            # which is exactly how the lw/lb split reached silicon: the mini
+            # implements sign-extended loads at 0x70/0x09/0x72 while the backend
+            # emitted 0x05/0x09/0x08, so every byte and word load in the guest
+            # trapped to the JTAG servicer. The known-good boot ran with
+            # traps=0; the mismatched one was still grinding at 12 832.
+            "LD": "LD", "LD_31": "LWU", "LD_32": "LBU", "LD_36": "LHU",
+            "LD_S_70": "LW", "LD_S": "LH", "LD_S_72": "LB",
+            "ST": "SD", "ST_34": "SW", "ST_35": "SB", "ST_37": "SH"}
+
+# Mini opcode -> assembler disassembler-table name, where they differ.
+ASM_ALIAS = {"LD_S_70": "LD_W_S", "LD_S": "LD_H_S", "LD_S_72": "LD_B_S"}
 
 
 def mini_ops():
@@ -92,14 +103,16 @@ def main():
     for name, byte in sorted(mini.items()):
         if name in MINI_LOCAL:
             continue
-        if name in asm and asm[name] != byte:
-            fail.append(f"{name}: mini=0x{byte:02x} assembler=0x{asm[name]:02x}")
+        aname = ASM_ALIAS.get(name, name)
+        if aname in asm and asm[aname] != byte:
+            fail.append(f"{name}: mini=0x{byte:02x} assembler({aname})=0x{asm[aname]:02x}")
         tname = TD_ALIAS.get(name, name)
         if tname in td and td[tname] != byte:
             fail.append(f"{name}: mini=0x{byte:02x} backend({tname})=0x{td[tname]:02x}")
 
     unknown = sorted(n for n in mini if n not in MINI_LOCAL
-                     and n not in asm and TD_ALIAS.get(n, n) not in td)
+                     and ASM_ALIAS.get(n, n) not in asm
+                     and TD_ALIAS.get(n, n) not in td)
     if unknown:
         fail.append("mini opcodes in neither the assembler nor the backend, and "
                     "not declared MINI_LOCAL: " + " ".join(unknown))
