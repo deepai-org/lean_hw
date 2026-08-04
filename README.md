@@ -1,25 +1,25 @@
 # Loom — a proof-carrying processor toolchain in Lean 4
 
-Loom is a generic toolchain for defining processors in Lean, proving
-theorems about them (isolation, revocation, scheduling, noninterference —
-see `STATUS.md` for the ledger), and emitting Verilog whose correspondence
-to the proved model is itself checked. The machines here are deliberately
-small demonstrators — each isolates one property so the whole chain can be
-exercised end to end, and none of them is the architecture itself:
+Loom is a hardware EDSL and processor-verification toolchain written in Lean
+4. A design is a Lean value; the repository supplies synchronous semantics, a
+verified compiler to a small µVerilog IR, structural Verilog emission,
+certificate-checked SAT workflows, and machine proofs built on the same
+definitions.
 
-| machine | the property it demonstrates |
+The repository contains several deliberately different machines:
+
+| Machine | Role and demonstrated result |
 |---|---|
-| **Acc8** | the pathfinder: the smallest core that exercises spec → proof → compile → emit |
-| **LNP64-µ** | *theorems were actually proved about it* — the T1–T9 ledger, kernel-checked to a Verilog artifact (4 domains, capabilities, gates, a Mover, 25 opcodes) |
-| **LNP64mini** | *it runs real NetBSD code on a real FPGA* — a soft-core carrying an OS and native Ethernet on silicon |
-| **Substrate** | board bring-up: the first Loom designs to run on hardware at all |
-| **Epoch engine** | the first piece of the *definitive* LNP64 ISA (§3 freshness) mechanized, implemented, and refined |
+| **Acc8** | Small end-to-end pathfinder: ISA, refinement, compilation, emission, and release certificate. |
+| **LNP64-µ** | Four-domain capability-machine model with the T1–T9 theorem ledger and a release theorem for an emitted artifact. |
+| **LNP64mini** | Larger soft core and SoC integration vehicle. The current head has a board/network regression and is not hardware-green. |
+| **Substrate** | Board bring-up designs, including bit-exact model/RTL/silicon checks on a ZC702. |
+| **Epoch** and **CapWalk** | Focused protocol machines for freshness and capability-walk properties. |
 
-The definitive architecture (`lnp64_isa.md` in the companion repo) is a much
-larger design than any of these; the demonstrators exist to prove out the
-toolchain and the method that will build it. See
-[`fpga/zc702/README.md`](fpga/zc702/README.md) for what has run on real
-silicon.
+LNP64-µ is a demonstrator, not the definitive LNP64 architecture. Detailed
+hardware evidence and current limitations are recorded in
+[`fpga/zc702/README.md`](fpga/zc702/README.md) and
+[`STATUS.md`](STATUS.md).
 
 ## Quick start
 
@@ -33,203 +33,132 @@ lake test
 lake exe audit
 ```
 
-`lean-toolchain` pins the exact Lean release and `lake-manifest.json` pins
-all package revisions. The ordinary `lake build` path needs no Verilog tools.
-The broader `scripts/ci.sh` gate additionally emits both cores and runs
-optional external corroboration when its SAT tooling is available.
+`lean-toolchain` pins Lean 4.28.0 and `lake-manifest.json` pins dependency
+revisions. `lake build` needs no Verilog tools. `lake test` and the package
+quality gate are temporarily red at the current head; see the gate table
+in [`STATUS.md`](STATUS.md) rather than treating this command list as a green
+badge.
 
-The publication release claim is built separately because the full LNP64-µ
-kernel certificate is large:
+For the broader repository workflow, including emission and optional external
+corroboration, use:
+
+```console
+scripts/reproduce.sh
+```
+
+Yosys, CaDiCaL, and Icarus Verilog checks self-skip when their tools are not
+installed. `scripts/ci.sh` is therefore a portable Lean gate plus stronger
+checks on suitably provisioned hosts, not proof that every optional external
+check ran.
+
+## Verified release
+
+The publication-facing declaration is
+`Loom.Release.Theorems.verifiedReleases` in
+`Tools/VerifiedRelease.lean`. It packages Acc8 and LNP64-µ artifacts and, for
+each one, checks:
+
+- equality between a structural renderer's bytes and theorem-bound byte
+  literals;
+- complete declarative denotation of the concrete SSA witness as the
+  reference compiler output;
+- simulation from the processor model to the compiled transition system; and
+- transport of model invariants to reachable compiled states.
+
+For LNP64-µ the bundle names authority confinement, machine-wide W^X, lineage
+ledger conservation, and budget boundedness. The final theorem's checked axiom
+closure is exactly `propext`, `Classical.choice`, and `Quot.sound`.
+
+Rebuild it separately with:
 
 ```console
 scripts/build_verified_release.sh
 ```
 
-That command freshly emits both Verilog files, checks their exact byte
-bindings, kernel-checks one combined release theorem, runs the repository
-audit, and requires the theorem's axiom closure to be exactly the three
-standard Lean axioms. The full/reviewer-scale/identification-only verification
-tiers, resource expectations, restart rules, and complete TCB are specified in
-[`REPRODUCING.md`](REPRODUCING.md); measured costs are in
+This command builds the precise theorem dependency closure, emits and binds
+both RTL files, checks generated certificates, runs RTL hygiene checks, and
+audits the final theorem's axiom closure. It intentionally does **not** replace
+the repository-wide `lake build`, `lake test`, or `lake exe audit` gates. At
+the current head it stops at the known package-quality failure recorded in
+[`STATUS.md`](STATUS.md).
+Independent-review tiers, restart rules, and resource requirements are in
+[`REPRODUCING.md`](REPRODUCING.md); measured planning costs are in
 [`RELEASE_COST.md`](RELEASE_COST.md).
 
-The project tracks stable Lean releases deliberately rather than automatically:
-a toolchain bump is tested on a branch, its manifest is regenerated, and the
-full proof/audit gate must pass before merging. See
-[`PACKAGE_QUALITY.md`](PACKAGE_QUALITY.md) for the current package-readiness
-assessment and any known red gates.
+## Semantics and compiler
 
-## From Lean to Verilog
+A `Loom.Hw.Design` contains named registers, memories, ports, and an ordered
+list of guarded actions over width-indexed expressions. Reads observe the
+pre-cycle state; writes commit at the cycle edge; later writes win. See
+[`Loom/Hw/DESIGN.md`](Loom/Hw/DESIGN.md).
 
-**1. A chip is a Lean value of type `Design`** (`Loom/Hw/Syntax.lean`): named
-registers with widths and reset values, memories (sync-write/async-read),
-and an ordered list of **rules**, each a guarded-write `Act` over a
-width-indexed expression type `Expr w` (mux, add, slice, memRead, …).
-Because a `Design` is ordinary Lean data, big cores are built with ordinary
-Lean functions — the LNP64-µ core is generated by mapping circuit builders
-over its 25 opcodes and 4 domains, which is how the release core reaches 825
-registers without anyone writing them by hand.
+`Loom.Hw.Compile.compile` lowers a design to the µVerilog module IR. The
+generic compiler-correctness results cover register updates, memory write
+ports, outputs, and open-design cycles. The printer emits explicitly sized SSA
+wires and one positive-edge sequential block.
 
-**2. The semantics is one clean discipline** (decision D9 in
-`Loom/Hw/DESIGN.md`): every read observes the *pre-cycle* state, all writes
-commit at cycle end, and across the rule list the **last write wins**.
-That is exactly Verilog nonblocking-assignment semantics, chosen so the
-mapping to hardware is 1:1 rather than clever.
+The exact release path does not trust the optimized compiler, printer, or
+witness generator. Those programs propose data; generated Lean declarations
+check the witness against reference definitions and prove its renderer equals
+the bound byte tree. Associating that tree with a host file is one explicit
+exact-comparison step. Interpreting the resulting Verilog remains the narrow
+semantic assumption stated in
+[`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md).
 
-**3. `compile : Design → Module`** (`Loom/Hw/Compile.lean`) lowers to a
-µVerilog-shaped IR: for each register it folds the rule list into a single
-next-state expression — each guarded write becomes one layer of a mux
-chain, so "last write wins" becomes "outermost mux wins" — and for each
-memory write port a similar per-port fold (`MemWriteWF` ensures the port
-commit order reproduces the run order).
+Post-synthesis equivalence checking is additional corroboration, not part of
+`verifiedReleases`. When Yosys and CaDiCaL are installed, `scripts/eqcheck.sh`
+compares supported signal cones and memory mappings against a synthesized
+netlist. UNSAT certificates are rechecked by a proved LRAT checker; the tool
+reports unsupported operators, excluded signals, acknowledged defects, and
+the unproved netlist-model assumptions. See
+[`Loom/Netlist/EQCHECK_SPEC.md`](Loom/Netlist/EQCHECK_SPEC.md).
 
-**4. The printer emits `.v` text**, one wire per DAG node plus one
-`always @(posedge clk)` block of nonblocking assigns. The printer itself is
-*untrusted* — trust comes from the surrounding proofs.
+## Hardware boundary
 
-**5. The proof story**, which is the point of the design:
+Target-specific blocks enter through three explicit interfaces:
 
-- the **emission theorem** (proved, generic — register and multi-port
-  memory folds) says the compiled `Module`'s cycle semantics equals the
-  `Design`'s `Act.run` semantics;
-- the spec-level ISS is proved to refine the `Design` (A-R for Acc8; R-MC
-  for LNP64-µ), so the ledger theorems transport onto the emitted core;
-- an untrusted fast path produces a concrete SSA witness and text; named,
-  bounded kernel proofs establish that every witness item denotes the exact
-  reference compilation and that its structural renderer equals the bound
-  disk chunks byte-for-byte;
-- `Tools/VerifiedRelease.lean` composes both artifacts into one theorem, and
-  `Tools/ReleaseAudit.lean` requires that theorem to depend on exactly
-  `propext`, `Classical.choice`, and `Quot.sound`.
+1. Semantically pure synchronous idioms may be inferred as RAMs, arithmetic
+   blocks, or other target resources.
+2. Clock, reset, CDC, scan, SERDES, and board primitives remain in untrusted
+   wrappers.
+3. External processors, buses, DMA engines, and peripherals are environments
+   across declared ports and require their own assume/guarantee contracts.
 
-Two links below the emission theorem are now *checked per build* rather than
-assumed. `lake exe eqcheck` (`scripts/eqcheck.sh`) compares the synthesized
-netlist's one-cycle transition function against the emitted module's, signal by
-signal, with every UNSAT certified by an LRAT proof re-checked by the proved
-checker — so "the synthesis tool preserved the meaning" is an artifact, not a
-hope. What that verdict rests on is stated precisely, per run, by the tool
-itself:
+The core theorems do not cover reset electronics, synthesis/P&R correctness,
+DMA, interrupts, debug, analog behavior, timing channels, or physical side
+channels. The authoritative trust inventory is [`TCB.md`](TCB.md); the longer
+claim audit is [`TRUST.md`](TRUST.md).
 
-- **Memories are inside the claim** (D31): write-port storage, read paths
-  (async LUT RAM and D19 sync BRAM), and reset images — checked both for
-  *fidelity* (the netlist image is the declared one) and for
-  **deliverability** (the mapping's image can actually reach the fabric; a
-  non-zero image on distributed RAM fails even when the netlist's `INIT` is
-  faithful, because the configuration path does not carry it). A checked-in
-  fixture holds a netlist with that exact defect and CI requires eqcheck to
-  reject it.
-- **The encoder's expression side is proved** (D32,
-  `Loom.Netlist.encode_sound`): the CNF handed to the solver is unsatisfiable
-  *iff* the two sides agree on every valuation — both directions, with clause
-  normalization inside the theorem. The proved fragment is
-  `lit reg and or xor not add sub eq ult mux slice zext sext`; `shl`, `shr`
-  and `slt` are **not** proved and stay on the unverified path, and the tool
-  names them and reports per design whether that design stays inside the
-  fragment.
-- **Not proved**: the netlist-side cone walk and its cell library, which enter
-  `encode_sound` as one named hypothesis; and any signal the run lists as
-  excluded, each with its individual reason.
+## Repository map
 
-And `Loom/Hw/CdcContract.lean` proves the board wrapper's
-clock-domain-crossing protocol over *every* adversarial metastability
-resolution, leaving one stated physical assumption in [`TCB.md`](TCB.md).
+- `Loom/` — generic semantics, hardware EDSL, compiler, emitter, decision
+  procedures, netlist checking, and release machinery.
+- `Machines/` — machine definitions, refinements, invariants, and examples.
+- `Tests/` — Lean test driver and focused regression modules.
+- `Tools/` — executables for audit, emission, release, books, simulation, and
+  equivalence checking.
+- `scripts/` — CI, reproduction, certificate generation, and external-tool
+  workflows.
+- `fpga/zc702/` — untrusted board wrappers and the hardware evidence log.
 
-The remaining logic-to-tool link is the µVerilog tool-boundary assumption:
-for the deliberately small concrete SSA syntax, Yosys interprets the text
-produced by the structural renderer with the behavior assigned by its proved
-declarative denotation.
-The older generic path exposes a whitelisted `ImplementsStandard` predicate
-plus its spec axiom; the exact release theorem stops at the declarative
-denotation and does not depend on that axiom. The external Yosys adequacy
-assumption is empirically corroborated by running the emitted RTL in per-cycle
-full-state lockstep against the ISS
-(`scripts/lockstep_acc8.sh`, `scripts/lockstep_lnp64u.sh`).
+Document roles are intentionally non-overlapping:
 
-## Target hardware and the three doors
-
-The pipeline this project is building — design in Loom, prove theorems,
-run on FPGA, eventually real ASIC — has to coexist with target hardware
-that is not made of ideal synchronous logic: block RAMs, DSP slices,
-clock managers, JTAG taps, hard processor systems, SRAM macros. Every
-such block enters the stack through exactly one of three doors, and the
-door determines what the theorems mean there:
-
-**Door 1 — inference from a semantically pure idiom.** Blocks whose soul
-is synchronous (block RAM, DSP multipliers, carry chains) are never
-instantiated; the `Design` states what it means in target-agnostic terms,
-and the emitter prints the one idiom every serious tool maps onto the
-hard block — a registered read port for RAM, `*` with register stages for
-DSP. The semantics and the theorems are untouched; the tool merely
-chooses the efficient physical form of the same transition system. This
-is also precisely the ASIC story: memory compilers and multiplier
-generators consume the same idioms. Where a fast physical form wants
-pipeline stages, the stuttering-simulation layer (`retime`, D17) supplies
-the refinement relating it to the unpipelined spec.
-
-**Door 2 — wrapper primitives outside the model.** Blocks with no meaning
-in a single-clock synchronous semantics (PLLs/clock buffers, IO buffers,
-the BSCAN tap, SERDES) live in the untrusted board wrapper, in the same
-trust role as a testbench. The discipline is that they never creep
-inward: no clock-domain or analog construct enters the EDSL, and the
-trust statement names exactly what the wrapper contains.
-
-**Door 3 — environment across ports.** Whole external subsystems (a hard
-processor system, an Ethernet MAC, a DDR controller) are modeled as the
-environment driving and consuming the design's declared ports (D15).
-Correctness statements about the composed system take the assume-guarantee
-form over the port contract; the block itself is never trusted as code.
-
-The failure modes are door-confusions: giving a Door-2 block semantics
-corrupts the model; hand-instantiating a Door-1 block as a black box
-needlessly moves provable logic outside the theorems. A block with a
-synchronous soul and clock-domain features (a FIFO macro, say) is split:
-model the soul through Door 1, amputate the CDC into Door 2. Theorems
-live entirely on the Door-1 side of the line; the line itself is what the
-trust documents describe.
-
-## Orientation
-
-- `Loom/` — the generic toolchain: transition-system spine (`Core/`, incl.
-  bounded-response properties), hardware EDSL (`Hw/`), µVerilog emission
-  (`Emit/`), decision procedures (`Dp/` — LRAT-checked SAT, BMC, k-induction),
-  post-synthesis equivalence checking (`Netlist/`), the release-witness path
-  (`Release/`), separation logic seed (`Logic/`).
-- `Machines/` — the machines, each with ISA spec, ISS or verified fast
-  evaluator, EDSL core (`Hw/`), invariants (`Logic/`) and ledger theorems
-  (`Theorems/`) as applicable: `Acc8/`, `Lnp64u/`, `Lnp64mini/`, `Epoch/`,
-  `Substrate/`, plus `Tutorial/` and `PingPong/` as worked examples.
-- `fpga/zc702/` — the board half: untrusted wrappers, constraints and the
-  evidence log for everything that has run on hardware.
-- `LOOM_GAPS.md` — the capability ledger: how Loom grows (by demand, from
-  campaigns), what is planned, and what is deliberately out of scope.
-- `lake exe audit` — the gate: sorries only in `Theorems/`/`Wip`,
-  `native_decide` banned, every `unsafe`/`implemented_by` pair enumerated with
-  its rationale, and the µVerilog boundary declarations whitelisted.
-  `scripts/ci.sh` runs the full check (audit, emission, round-trip).
-
-Documents: [`CHARTER.md`](CHARTER.md) (the program — what and why) →
-[`PLAN.md`](PLAN.md) (the task plan — how) → [`STATUS.md`](STATUS.md)
-(the honest, mechanically-audited state of every theorem) →
-[`TCB.md`](TCB.md) (the one-page release theorem and complete trusted list) →
-[`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md) (the exact
-renderer/Yosys adequacy statement) →
-[`TRUST.md`](TRUST.md) (the adversarial claim audit and limits) →
-[`NEXTSTEPS.md`](NEXTSTEPS.md) (the agreed roadmap + operational notes).
-Release history and maintainership are recorded in
-[`CHANGELOG.md`](CHANGELOG.md) and [`AUTHORS.md`](AUTHORS.md).
+- [`CHARTER.md`](CHARTER.md): mission, scope, and governance.
+- [`STATUS.md`](STATUS.md): current checked state and known red gates.
+- [`REPRODUCING.md`](REPRODUCING.md): commands and review tiers.
+- [`TCB.md`](TCB.md): authoritative release claim and trusted list.
+- [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md): exact text-semantics
+  assumption.
+- [`TRUST.md`](TRUST.md): property and platform limitations.
+- [`PLAN.md`](PLAN.md): current architecture and verification map.
+- [`NEXTSTEPS.md`](NEXTSTEPS.md): ordered active work.
+- [`PLATONIC.md`](PLATONIC.md): strategic destination.
+- [`LOOM_GAPS.md`](LOOM_GAPS.md): capability and assurance gaps.
 
 ## Licensing
 
-Copyright (c) 2026 Kevin Baragona. **Apache-2.0** across the repository
-([`LICENSE`](LICENSE)); the tapeout-bound `Machines/` subtree is
-additionally offered under **Solderpad SHL-2.1**
-([`Machines/LICENSE`](Machines/LICENSE)). Contributions via **DCO, not
-CLA** ([`CONTRIBUTING.md`](CONTRIBUTING.md)).
-
-**Output exception:** Verilog emitted by this toolchain from your own
-`Design` is yours, unencumbered — the licenses cover the toolchain and
-the designs in this repository, not your output (see [`NOTICE`](NOTICE)).
-
-**Patent pledge:** no patents are filed or planned on any technique in
-this project. This repository, its documentation, and the accompanying
-arXiv paper constitute intentional prior art.
+The repository is Apache-2.0 ([`LICENSE`](LICENSE)); `Machines/` is also
+offered under Solderpad SHL-2.1 ([`Machines/LICENSE`](Machines/LICENSE)).
+Contributions use a DCO ([`CONTRIBUTING.md`](CONTRIBUTING.md)). Emitted
+Verilog produced from a user's own design is not made a derivative work of
+the toolchain merely by generation; see [`NOTICE`](NOTICE).

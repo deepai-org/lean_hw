@@ -1,136 +1,75 @@
-# Loom package-readiness audit
+# Package readiness
 
-Audited 2026-07-15 against Lean/Lake, Reservoir, `lean-action`, and doc-gen4
-guidance; repository-state findings refreshed 2026-07-16 after R-MC
-completion. This is an acceptance checklist, not a theorem-status ledger;
-proof progress remains in `STATUS.md` and `NEXTSTEPS.md`.
+This checklist covers public Lean-package quality. It does not duplicate
+theorem status or the release TCB; see [`STATUS.md`](STATUS.md) and
+[`TCB.md`](TCB.md).
 
-## Verdict
+## Current verdict
 
-Loom has the baseline package infrastructure and its headline proof gate is
-green: the stable pinned toolchain, committed manifest, umbrella modules,
-licensing, CI, tests, contribution policy, completed R-MC theorem, and explicit
-trust document are all present. It is structurally packageable, but it is
-**not release-ready** yet.
+The repository has the necessary package structure but is **not ready for a
+public release tag at the current head**. The immediate blockers are concrete:
 
-The former proof/audit blockers are resolved. The remaining release blockers
-are the executable compiler replacement policy, a clean-checkout full release
-run, Reservoir's external inclusion threshold, and the unresolved public
-package/module name collision.
+- `lake test` fails because several test designs have not been updated for
+  mandatory `Design.outputs` and the current output-selection API;
+- `scripts/quality.sh` reports two missing SPDX headers;
+- repository CI and the release wrapper therefore do not complete; and
+- the current LNP64mini hardware integration has not recovered its network
+  acceptance result.
 
-## P0 — release blockers
+The exact current gate table lives in [`STATUS.md`](STATUS.md).
 
-- [x] **Restore the audit gate.** Remove the `native_decide`/trusted-compiler
-  dependencies from the newly imported retirement proof stack. At this audit,
-  the concentrated source hits are 141 in `RMCRetireDrop.lean`, 30 in
-  `RMCRetireGrant.lean`, two in `RMCRetireGrantFrame.lean`, and one in
-  `RMCRetireDropArm.lean`. Prefer shared finite-name injectivity/disjointness
-  lemmas over hundreds of one-off reductions; use `decide +kernel` only where
-  it remains tractable. Completed: `lake exe audit` passes.
-- [x] **Close the three R-MC leaves.** `gate_call`, `gate_return`, and bounded
-  `cap_revoke` are proved and wired; the headline R-MC dependency cone is
-  sorry-free.
-- [x] **Reconcile advertised status with machine output.** `STATUS.md`,
-  `NEXTSTEPS.md`, `TRUST.md`, and the README now reflect the green build,
-  audit, and direct headline axiom closures.
-- [ ] **Prove or explicitly gate the executable compiler replacement.** The
-  private unsafe fast path behind `@[implemented_by]` is already disclosed in
-  `TRUST.md`, but it remains part of the artifact-generation TCB. Either prove
-  `compileImpl = compile`, compare reference and optimized output in CI, or
-  narrow release claims accordingly.
-- [ ] **Run the clean-checkout release gate.** From a fresh clone: `lake build`,
-  `lake test`, `lake exe audit`, `scripts/ci.sh`, and the headline
-  `leanchecker` replay must all pass.
-- [ ] **Meet Reservoir's external inclusion threshold.** Reservoir currently
-  requires a public, non-fork GitHub repository with an OSI-approved detected
-  license, a root manifest, and at least two stars. The repository is public,
-  non-fork, licensed, and has the manifest, but currently has zero stars.
+## Ready foundations
 
-## P1 — community-facing readiness
-
-- [x] Stable release pinned in `lean-toolchain` (`v4.28.0`), with a committed
-  `lake-manifest.json`.
-- [x] `Loom`, `Machines`, `Tools`, and `Tests` Lake targets are declared;
-  `Loom.lean`, `Machines.lean`, and `Tests.lean` provide umbrella imports.
-- [x] Reservoir-facing package metadata and a standard `lake test` driver are
+- Lean is pinned to a stable release and dependency revisions are committed.
+- `Loom`, `Machines`, `Tools`, and `Tests` Lake targets exist, with root import
+  modules for the public libraries.
+- Package name, version, description, keywords, licenses, and test driver are
   declared in `lakefile.lean`.
-- [x] Apache-2.0 `LICENSE`, `NOTICE`, SPDX headers on every tracked Lean file,
-  and the additional `Machines/` license are present.
-- [x] GitHub Actions runs the repository quality check, the project CI/audit
-  gate, Reservoir eligibility checking, and the toolchain's built-in
-  `leanchecker` on the headline refinement module.
-- [x] The README now contains a clean-clone quick start and version-update
-  policy; `TRUST.md` documents the trusted computing base and claim limits.
-- [ ] **Upgrade canary.** Reservoir currently lists Lean v4.31.0 as stable, so
-  the pinned v4.28.0 toolchain is three stable releases behind.
-  Test the next toolchain on a branch after the audit cleanup, not in the middle
-  of it; regenerate the manifest and record the supported-version policy.
-- [ ] **API documentation.** Add the nested `docbuild/` project recommended by
-  doc-gen4, then publish `Loom:docs` and `Machines:docs`. Do not add doc-gen4 to
-  the runtime dependency graph.
-- [ ] **Docstring coverage.** Module headers are nearly complete, but a rough
-  source count finds 1,830 declaration docstrings for 2,526 public-looking
-  declarations. Establish the intended public API first, mark helpers private
-  or internal, then enforce documentation on the exported surface.
-- [x] **Downstream smoke test.** CI creates a fresh temporary consumer package,
-  requires Loom at the checked-out path, and imports `Loom` and `Machines`.
-- [ ] **Resolve the existing Loom collision before release.** Reservoir already
-  indexes `@verse-lab/loom`, which also exports a top-level `Loom` library and
-  namespace. Reservoir scopes disambiguate package lookup, but the shared Lean
-  module namespace prevents consumers from depending on both. Decide whether
-  this project should be renamed/re-namespaced before its public API freezes.
-- [ ] **Release mechanics.** Add `CHANGELOG.md`, choose the first release tag,
-  choose the final Reservoir scope/name, and document maintainers and the
-  supported Lean-version window.
-- [x] **Community files.** A Code of Conduct, maintainer/contributor record,
-  issue forms, and PR template are present, including explicit theorem and
-  axiom/trust-surface prompts.
+- Apache-2.0, the additional `Machines/` Solderpad license, NOTICE, DCO,
+  contributor guidance, conduct policy, issue forms, and PR template exist.
+- GitHub Actions runs package quality, the repository CI script, and a direct
+  `leanchecker` replay of the headline refinement module.
+- A downstream smoke test creates a fresh consumer package and imports
+  `Loom` and `Machines` through a path dependency.
+- The audit inventories theorem axioms, project axioms, `sorry`, unsafe code,
+  executable replacements, imports, `partial`, and `extern`.
+- The README, current status, reproduction tiers, TCB, and trust limitations
+  have distinct documented roles.
 
-## P2 — polish and maintainability
+## Required before the first public release
 
-- [x] Remove committed Python bytecode and superseded scratch/draft proof files;
-  ignore their future regeneration.
-- [x] Add a fast `scripts/quality.sh` check for the pinned toolchain, package
-  files, SPDX coverage, whitespace, and tracked scratch artifacts.
-- [ ] Minimize the broad `import Mathlib` in `Loom/Dp/Bmc.lean`; the rest of the
-  tree mostly uses focused Mathlib imports. Keep Mathlib if the proof/tactic
-  surface justifies it—dependency minimization should not duplicate libraries.
-- [x] Extend the audit with an explicit inventory for `unsafe`, `partial`,
-  `extern`, and `implemented_by`. Unsafe code is currently concentrated in the
-  compiler/printer fast paths and should be whitelisted by declaration and
-  documented, not merely found by an ad-hoc text search. The audit now rejects
-  unreviewed additions and prints the complete executable trust inventory.
-- [ ] Add a deliberate lint driver for public declaration documentation,
-  unused arguments, and exported simp lemmas. Mathlib's linters may be used
-  because Mathlib is already a dependency; avoid a second linter framework.
-- [ ] Split CI reporting into proof/audit, documentation, RTL corroboration,
-  and scheduled toolchain-canary jobs once the primary gate is green.
-- [ ] Add parser negative/edge-case tests and reviewable Verilog goldens; keep
-  simulator-dependent lockstep checks deterministic and separate from ordinary
-  package builds.
-- [ ] Mechanically generate or verify the theorem-status summary so prose
-  cannot claim a green audit when the executable gate is red.
+- [ ] Make `scripts/quality.sh`, `lake build`, `lake test`, `lake exe audit`,
+      and `scripts/ci.sh` pass from a clean checkout.
+- [ ] Complete a clean Tier A release recheck and retain its metrics and exact
+      source/tool identifiers.
+- [ ] Revalidate or explicitly exclude the current hardware integration
+      claims for the release commit.
+- [ ] Choose the public package/module name and check for namespace conflicts
+      before freezing the API.
+- [ ] State the supported Lean-version window and test at least the intended
+      next-version canary.
+- [ ] Generate browsable API documentation for the intended public surface.
+- [ ] Mark internal helpers accordingly and enforce docstrings/lints on the
+      public API rather than on every implementation declaration.
+- [ ] Review third-party notices and generated-artifact licensing for the tag.
+- [ ] Tag a version and move the relevant `Unreleased` changelog entries into
+      that version.
 
-## Corrections to generic checklist advice
+## Desirable follow-up
 
-- `lakefile.toml` is not inherently more acceptable than `lakefile.lean`.
-  Current Lake officially supports both; TOML is the declarative subset, while
-  Lean configuration is appropriate when code-level build customization is
-  needed. A format migration has no acceptance value by itself.
-- The old external `lean4checker` repository is deprecated. Lean v4.28.0 and
-  newer ship `leanchecker`; CI should use `lake env leanchecker`.
-- Moving incomplete headline theorems to a WIP library was unnecessary: the
-  three final R-MC leaves are now proved in the default `Machines` library.
-- File-wide copyright headers are already complete. The remaining legal task
-  is third-party attribution review, not mass header insertion.
+- Split CI reporting into package, proof/audit, tutorial, RTL, and optional
+  external-tool jobs so a skip cannot look like a pass.
+- Add parser negative tests and small reviewable golden Verilog fixtures.
+- Run the toolchain upgrade canary separately from the pinned release job.
+- Publish documentation and release artifacts from a reproducible tagged
+  workflow.
 
-## Authoritative ecosystem references
+## Package policy notes
 
-- Lake package configuration and metadata:
-  <https://lean-lang.org/doc/reference/latest/Build-Tools-and-Distribution/Lake/>
-- Standard Lean GitHub CI action:
-  <https://github.com/leanprover/lean-action>
-- doc-gen4's recommended nested-project setup:
-  <https://github.com/leanprover/doc-gen4>
-- Built-in `leanchecker` migration note:
-  <https://github.com/leanprover/lean4checker>
+- `lakefile.lean` is a supported Lake configuration format; changing to TOML
+  has no quality value by itself.
+- Mathlib is an ordinary checked proof dependency, not an external solver.
+- The separate `checker/` package is an LRAT cross-validator, not an
+  independent Lean kernel checker.
+- Cached `.olean` files and generated release sources are build products, not
+  distributable proof evidence.

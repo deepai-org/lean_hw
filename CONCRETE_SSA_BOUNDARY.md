@@ -1,96 +1,102 @@
-# Concrete SSA to Yosys semantic boundary
+# Concrete SSA to Verilog-tool semantic boundary
 
-This document states the one non-kernel semantic adequacy assumption between
-the exact certified Verilog bytes and Yosys. It is deliberately about the tiny
-release language in `Loom/Release/SSA.lean`, not arbitrary Verilog.
+This page states one assumption: how the exact certified release bytes are
+interpreted as Verilog. It does not describe the release proof itself (see
+[`TCB.md`](TCB.md)) or claim that Yosys/P&R is verified.
 
-The release theorem proves `Symbolic.ModuleBehavior design program ...` and
-exact bytes for `program.renderTree`. `SSA.Program.elaborate` gives the
-corresponding executable elaboration into Loom's intrinsically typed
-µVerilog AST; the production certificate uses the more scalable direct
-`ModuleBehavior` relation, whose obligations cover the same wires, registers,
-memories, ports, and outputs without trusting execution of the elaborator.
+## Formal side of the boundary
+
+For a release `program`, Lean proves:
+
+- `Symbolic.ModuleBehavior design program ...`, a declarative account of all
+  program metadata, SSA wires, registers, memories, writes, and outputs; and
+- exact equality between `program.renderTree.flattenBytes` and a
+  theorem-bound byte rope.
+
+`SSA.Program.elaborate` also reconstructs the intrinsically typed µVerilog
+AST, but the scalable release certificate proves the direct declarative
+relation rather than trusting execution of that elaborator.
 
 ## Assumption
 
-For any accepted release `program`, when Yosys reads exactly the bytes of
-`program.renderTree.flattenBytes`, its two-state synchronous transition
-behavior is the behavior assigned by `Symbolic.ModuleBehavior` and the Loom
-µVerilog module semantics:
+When a conforming Verilog tool reads exactly
+`program.renderTree.flattenBytes`, it assigns the text the same two-state,
+synchronous transition behavior as `Symbolic.ModuleBehavior` and Loom's
+µVerilog semantics:
 
-- the modeled initial/reset state contains exactly the declared register reset
-  values and complete memory initialization image;
-- a cycle reads the pre-edge state, evaluates the named acyclic SSA graph,
-  and commits register and enabled memory writes on the positive clock edge;
-- nonblocking assignments commit together, with later source-ordered writes
-  to the same memory location taking precedence; and
+- registers reset synchronously to their declared values;
+- memory starts with the complete declared image;
+- a cycle reads pre-edge register and memory state;
+- acyclic, width-checked SSA expressions have their declared bit-vector
+  meanings;
+- register assignments and enabled memory writes commit at the positive edge;
+- later source-ordered writes to the same memory location win; and
 - continuous outputs expose the named values at their declared widths.
 
-This is an explicit adequacy assumption, not a Lean axiom used by
-`verifiedReleases`. The Lean theorem ends at exact bytes plus the formal
-denotation; Yosys is trusted when interpreting those bytes as hardware.
+This is not a Lean axiom used by `verifiedReleases`. The Lean theorem ends at
+formal denotation and exact bytes. Yosys 0.33 (`2584903a060`) is the currently
+recorded corroborating implementation, not part of the kernel proof.
 
-## Entire admitted expression language
+## Complete release expression syntax
 
-Every wire is a single explicitly sized SSA assignment. Operands name a source
-register or an earlier wire and are width-checked by the accepted denotation.
+Each expression is the right-hand side of one explicitly sized SSA wire.
+Operands refer to source registers or earlier wires.
 
-| Concrete constructor | Rendered Verilog | Formal meaning |
+| SSA constructor | Rendered form | Formal meaning |
 |---|---|---|
 | `lit w n` | `w'dn` | low `w` bits of `n` |
-| `ident x` | `x` | width-checked identity/zero extension |
+| `ident x` | `x` | width-checked identity; assignment context supplies zero extension where applicable |
 | `memRead m a` | `m[a]` | asynchronous read at address `a` |
-| `slice x hi lo` | `x[hi:lo]` | inclusive bit slice |
+| `slice x hi lo` | `x[hi:lo]` | inclusive slice |
 | `not x` | `~x` | bitwise complement |
-| `and/or/xor` | `x &/|/^ y` | same-width bitwise operation |
-| `add/sub` | `x +/- y` | same-width modular arithmetic |
-| `shl/shr` | `x <</>> y` | same-width logical shift result |
-| `eq/ult` | `x == y`, `x < y` | one-bit equality/unsigned comparison |
+| `and`, `or`, `xor` | `x & y`, `x \| y`, `x ^ y` | same-width bitwise operation |
+| `add`, `sub` | `x + y`, `x - y` | same-width modular arithmetic |
+| `shl`, `shr` | `x << y`, `x >> y` | same-width logical shift result |
+| `eq`, `ult` | `x == y`, `x < y` | one-bit equality or unsigned comparison |
 | `slt` | `$signed(x) < $signed(y)` | one-bit two's-complement comparison |
-| `mux c t f` | `c ? t : f` | one-bit condition, same-width arms |
-| `sext k x s` | `{{k{x[s]}}, x}` | sign extension from the top input bit |
+| `mux c t f` | `c ? t : f` | one-bit condition and same-width arms |
+| `sext k x s` | `{{k{x[s]}}, x}` | explicit sign extension |
 
-No procedural combinational blocks, latches, delays, event controls other than
-the single positive-edge block, blocking sequential assignments, `x`/`z`
-literals, casex/casez, tri-states, force/release, DPI, `$random`, unsized
-literals, generate statements, or user-defined Verilog functions occur in the
-release subset.
+The release language contains no procedural combinational blocks, latches,
+delays, falling-edge or multi-clock event controls, blocking sequential
+assignments, `x`/`z` literals, `casex`/`casez`, tri-states, force/release, DPI,
+randomness, unsized literals, generate statements, or user functions.
+
+Do not confuse this syntax list with the smaller proved fragment of the
+optional post-synthesis CNF encoder. That checker currently excludes and
+reports `shl`, `shr`, and `slt`; the release denotation itself includes them.
 
 ## Module framing
 
-`Program.renderTree` emits, in fixed order:
+`Program.renderTree` emits, in order:
 
-1. one module header with `clk`, `rst`, and explicitly sized outputs;
+1. a module header with `clk`, `rst`, and explicitly sized outputs;
 2. explicitly sized register and memory declarations;
-3. one complete `initial` image per memory;
-4. the ordered SSA wire declarations;
-5. one `always @(posedge clk)` block containing synchronous reset, register
+3. a complete `initial` image for each memory;
+4. ordered SSA wire declarations;
+5. one `always @(posedge clk)` block with synchronous reset, register
    next-state assignments, and ordered guarded memory writes;
 6. continuous output assignments; and
 7. `endmodule`.
 
-The renderer preserves this structure as bounded LF-oriented rope leaves.
-Lean proves the leaf equalities and balanced composition; the external binding
-step validates the actual theorem rope order and uses exact `cmp` against the
-host file.
+The exact-byte proof uses bounded LF-oriented rope leaves and balanced
+composition. The separate file binder reconstructs the theorem's leaf order
+and performs exact `cmp`; it does not rely on a hash.
 
 ## Conditions and exclusions
 
-- The formal values are two-state `BitVec`s. Four-state simulation behavior is
-  not modeled. The release gate separately rejects X/Z/don't-care syntax,
-  missing register resets, and incomplete memory images.
-- Reset is synchronous and begins from the modeled reset contract. Electrical
-  reset sequencing, metastability, clock startup, scan state, and retained
-  SRAM are outside this assumption.
-- Memory inference must preserve the stated asynchronous-read,
-  synchronous-write behavior and source-order collision policy. Target RAM
-  primitives or synthesis options that change that behavior are outside it.
-- Timing, placement, routing, CDC behavior, glitches, power, analog effects,
-  and unmodeled SoC agents are downstream assumptions, not consequences of
-  `ModuleBehavior`.
+- Formal values are two-state `BitVec`s. The release gate syntactically
+  rejects major X/Z/don't-care hazards, missing register resets, and incomplete
+  memory images, but that linter is not a proof of all four-state tool behavior.
+- Reset starts from the modeled synchronous-reset contract. Power-on,
+  asynchronous reset sequencing, PLL startup, scan, and retained SRAM are
+  outside it.
+- A downstream memory mapping must preserve asynchronous-read,
+  synchronous-write behavior, initialization, and collision order. Tool or
+  target mappings that do not are outside the assumption.
+- Timing, glitches, CDC physics, P&R, configuration generation, power, and
+  unmodeled SoC agents are downstream.
 
-The final acceptance environment uses Yosys 0.33
-(`2584903a060`) and Icarus Verilog 12.0 for corroborating synthesis/simulation.
-Those tests are evidence for this boundary, not substitutes for the stated
-trust assumption. A deployment must record the Yosys version and relevant
-synthesis options it actually trusts.
+A deployment must record the actual tool version and synthesis options it
+relies on. Passing simulation or equivalence checks is valuable evidence, but
+does not replace this stated adequacy assumption.

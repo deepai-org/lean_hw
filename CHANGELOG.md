@@ -22,15 +22,12 @@ All notable user-visible changes will be recorded here. This project follows
   pushes it out of block RAM now loses its image at compile time instead
   of on a board. `lake exe memtargets` prints the per-design portability
   table.
-- **Declared observability** (Loom D39): `Design.outputs : Option (List
-  String)` selects which registers a design exports as `o_<name>` ports;
-  `none` (the default) keeps the previous behaviour, so every existing
-  emitted module is byte-identical. An undeclared selection entry is a hard
-  error at `Design.emit`. Proved: for `outputs = some ns`, a name outside
-  `ns` appears at no output port — at the compiler (`compile_not_exported`)
-  and over the emitted text (`printed_not_exported`). This lets a design
-  hold a key in a register; `Machines/CapWalk`'s MAC key is now six
-  unexported registers and its deviation CE5 is retired.
+- **Declared observability** (Loom D39): every `Design` has a mandatory
+  `outputs : List String` selecting the registers exported as `o_<name>`
+  ports. An unknown selection is a hard error at `Design.emit`. The compiler
+  and printed-artifact theorems show that an unselected name is not exported.
+  This lets the capability engine keep its MAC-key registers off the module
+  interface.
 - Unbounded, sorry-free LNP64-µ ISS↔EDSL refinement (`RMC.square`,
   `abs_run`, `refines`, and `invariant_transport`) across all 25 opcodes.
 - Bounded `cap_revoke` pointer-doubling convergence and synchronized

@@ -1,454 +1,118 @@
-# Loom + LNP64-µ Implementation Plan
+# Loom implementation map
 
-Companion to [CHARTER.md](CHARTER.md) (the program charter). The charter says *what* and *why*; this
-document says *where the code goes, in what order, and how we know where we are*. It is the living
-progress ledger: the checklists in §8 are updated as work lands, and the theorem table in §7 is
-kept in sync with `lake exe audit` (the tool that makes the table honest).
+This document describes the repository as it is organized now. The mission
+and governance rules are in [`CHARTER.md`](CHARTER.md), current health is in
+[`STATUS.md`](STATUS.md), and the ordered work queue is in
+[`NEXTSTEPS.md`](NEXTSTEPS.md).
 
-**What is being built (scope, restated).** The deliverable is **Loom**: a machine-generic Lean 4
-toolchain for modeling, verifying, and fabricating processors — spec DSL and projections, proof
-infrastructure, decision procedures, hardware EDSL and verified compiler, verified Verilog
-emission, documentation engine, independent checker. Loom is generic over the machine being
-modeled: it must serve a 64-bit design, an 8-bit 6502, or an exotic architecture as readily as its
-first use case. **LNP64-µ is that first use case** — a small capability machine whose theorems
-(T1–T9) we actually care about proving, and whose obligations drive every Loom feature (Rule 2).
-A second, deliberately tiny machine, **Acc8**, exists to keep the toolchain/machine separation
-structural: every generic Loom layer is exercised by two machines, and Acc8 — being small — reaches
-each layer first, as the pathfinder.
+## Architectural principles
 
-**Current status:** see [STATUS.md](STATUS.md) for the mechanically-checked proved-vs-stated ledger (regenerable from `lake exe audit`). Phase 0 complete; Phase 1 in progress; Phase 2 substantially prototyped (real Verilog on iverilog+yosys).
+1. **One transition-system spine.** `Loom.Core.TSys` is the common language
+   for machine models, hardware semantics, refinement, invariants, bounded
+   properties, and emitted-module semantics.
+2. **Toolchain and machines are separate.** `Loom/` is generic and never
+   imports `Machines` or `Tools`; the audit enforces this direction.
+3. **Structure before syntax.** ISA and hardware DSL notation elaborates to
+   ordinary Lean data. Proofs and tools consume those data structures, not a
+   parallel syntax tree.
+4. **Solvers propose; the kernel checks.** SAT/UNSAT workflows use checked
+   certificates. `native_decide` and trusted compiler evaluation are excluded
+   from theorem paths.
+5. **Artifact claims stop at named boundaries.** Formal module behavior,
+   exact bytes, synthesis corroboration, and physical hardware are separate
+   layers with separate assumptions.
+6. **Machine campaigns drive generic features.** New infrastructure should
+   close a demonstrated machine, proof, release, portability, or integration
+   need.
 
-**How to use this document.** To find where to work next: read §8 top-to-bottom and take the first
-unchecked box in the current phase whose dependencies (listed with each task) are checked. To check
-overall health: run `lake exe audit` and compare against §7.
+## Repository layers
 
----
+| Layer | Location | Current responsibility |
+|---|---|---|
+| Transition systems | `Loom/Core/` | `TSys`, simulations, stuttering simulations, traces, bounded-response machinery |
+| ISA framework | `Loom/Isa/` | Encoding signatures, instruction declarations, encode/decode, DSL notation |
+| Decision procedures | `Loom/Dp/` | CNF, BMC, k-induction, solver interfaces, proved LRAT checking |
+| Hardware EDSL | `Loom/Hw/` | Expressions, actions, synchronous semantics, composition, compilation, outputs, memory/CDC/target contracts |
+| µVerilog | `Loom/Emit/MicroVerilog/` | Typed AST, semantics, printer, parser, and round-trip results |
+| Release path | `Loom/Release/` | Concrete SSA, structural rendering, denotation certificates, exact release packaging |
+| Netlist checks | `Loom/Netlist/` | Yosys JSON model, cones, miters, proved encoder fragment, memory checks |
+| Documentation | `Loom/Book/` | Extraction and HTML rendering from Lean data |
+| Machines | `Machines/` | Processor/protocol definitions, refinements, invariants, examples, and integration designs |
+| Executables | `Tools/` | Audit, emission, release, simulation, book, target, and equivalence-check drivers |
+| Independent LRAT check | `checker/` | Separate unproved LRAT implementation for cross-validation; not a Lean kernel checker |
 
-## 1. Foundation principles (decisions that shape everything below)
+## Dependency direction
 
-**P0 — Toolchain and machine are separate artifacts.** `Loom/` never imports `Machines/`
-(enforced by the import linter). A Loom construct is *generic*: parameterized over machine
-signatures, never mentioning domains, capabilities, or any LNP64-µ noun. Machine-specific
-theory, state, and theorems live under `Machines/<name>/`. The Acc8 machine is the standing
-proof of genericity: any Loom feature only one machine can use is machine code in disguise and
-gets moved.
+```text
+Loom.Core
+  ├── Loom.Isa
+  ├── Loom.Dp
+  ├── Loom.Hw ── Loom.Emit
+  └── Loom.Logic
 
-**P1 — Structure first, syntax second.** The spec "DSL" is a plain Lean structure,
-`Loom.Isa.InstrDecl`, holding encoding, semantics payload, cost label, and prose as ordinary
-fields. Instructions are first written as plain terms of this structure; the macro front-end
-comes later as *sugar that produces the same terms*. Every projection — decoder, assembler, ISS
-glue, conformance suite, book — consumes `Array InstrDecl`, never syntax trees. Genericity note:
-`InstrDecl` is parameterized by an encoding signature (instruction width, opcode field) and by
-*opaque* semantics/cost payload types supplied per machine — Loom handles syntax, encoding,
-prose, and projections; operational semantics stays machine-side. Variable-length encodings
-(6502-style) are a planned framework extension that lands only with a consuming machine (Rule 2
-applied to the toolchain).
-
-**P2 — One transition-system spine.** A single `TSys` abstraction (`Loom/Core/Ts.lean`, below
-every layer) is the type through which any spec machine, the L3 hardware semantics, the µVerilog
-semantics, and every L2 engine speak to each other. Refinement (`Simulation`,
-`StutterSimulation`), invariance, BMC, k-induction, PDR, and the emission theorem are all stated
-against `TSys`.
-
-**P3 — Two levels of state, one map between them.** Theorems want `Prop`-level states; engines
-want bit-level states (`BitSys`: `BitVec` state, decidable init/step). Each machine provides both
-plus a proved correspondence (`Machines/<m>/BitLevel.lean`); engine results transport across it.
-
-**P4 — Theorem statements are a separate, stable artifact.** `Machines/Lnp64u/Theorems/`
-contains exactly the T1–T9 statements (plus refinement and emission instances), one file each,
-importing definitions but containing no infrastructure. Statements land early with `sorry`;
-proofs replace sorries without the statements moving.
-
-**P5 — The audit tool is part of the foundation.** `lake exe audit` walks every declaration in
-the theorem ledgers and reports per theorem: *stated / proved / clean* (clean = `#print axioms`
-shows nothing beyond `Classical.choice`, `propext`, `Quot.sound`, and — only where declared — the
-µVerilog-semantics axiom). It also enforces Rule 1 (`native_decide` ban on the trusted path),
-the sorry policy, and the import DAG of §6. CI fails if the ledger in §7 disagrees with reality.
-
-**P6 — The L5 checker is a separate package.** `checker/` is its own Lake package with zero
-imports from Loom or Machines, consuming only Lean kernel export files.
-
-**P7 — Deterministic, cycle-accurate spec (LNP64-µ).** The frozen machine admits a fully
-deterministic step function given the reset manifest; one spec step is one cycle; an instruction
-occupies the core for its WCET-class cost and retires atomically (the snapshot rule — retirement
-is the linearization point, mapping onto L3's atomic rules). ISS = spec by evaluation.
-
-**P8 — Dependency policy.** Mathlib is an accepted dependency (pinned to the toolchain tag).
-Rationale: it is generic mathematics, and its proofs are checked by the same kernel as ours, so
-it adds nothing to the TCB and nothing to the axiom whitelist. The charter's Rule 4 boundary is
-unchanged: *domain* code (provers-for-hardware, spec languages, HDL frameworks, doc systems) is
-never imported; generic *algorithmic* libraries (SAT solvers etc.) run untrusted behind
-kernel-checked certificates.
-
----
-
-## 2. Codebase conventions
-
-- **Namespaces:** toolchain under `Loom`; machines under `Machines.<Name>` (e.g.
-  `Machines.Lnp64u`, `Machines.Acc8`). Module path = namespace path.
-- **File size:** target ≤ 400 lines; split along concept boundaries.
-- **One concept per file**, named after the concept.
-- **`sorry` policy:** allowed only under `Machines/*/Theorems/` and `Wip/` subdirectories; audit
-  inventories them; a `sorry` anywhere else fails CI.
-- **No `axiom` anywhere** except the single µVerilog-semantics axiom in
-  `Loom/Emit/MicroVerilog/Axiom.lean`. Audit enforces.
-- **Docstrings are the book's raw material** — publishable text from day one.
-- **Theorem names follow the ladder** — `Machines.Lnp64u.Theorems.T3.no_access_after_revoke`.
-- **Design docs:** each Loom layer and each machine has a `DESIGN.md` recording Rule-5's "named
-  win" and key decisions. Machine-level design decisions (e.g. LNP64-µ's lineage-cell placement,
-  generation saturation) are recorded in the module docstrings where they bind.
-
----
-
-## 3. Repository layout
-
-```
-lean_hw/
-├── CHARTER.md                 # program charter
-├── PLAN.md                    # this file: architecture + progress ledger
-├── lean-toolchain             # pinned: leanprover/lean4:v4.28.0
-├── lakefile.lean              # libs: Loom, Machines, Tools; exes; require mathlib @ v4.28.0
-├── Loom.lean / Machines.lean  # root import files
-│
-├── Loom/                      # ═══ THE TOOLCHAIN — machine-generic, never imports Machines ═══
-│   ├── Core/
-│   │   ├── Word.lean          #   word abbrevs, BitVec field extract/insert kit
-│   │   ├── Fun.lean           #   pointwise function update (table states)
-│   │   ├── Ts.lean            #   TSys, BitSys, Simulation, StutterSimulation (P2 spine)
-│   │   └── Trace.lean         #   lockstep trace event format (shared ISS/RTL/HW)
-│   ├── Isa/                   # L0 framework — generic instruction-declaration machinery
-│   │   ├── Sig.lean           #   encoding signature: instr width, opcode field, operand fields
-│   │   ├── Instr.lean         #   InstrDecl (P1): encoding + opaque sem/cost payloads + prose
-│   │   ├── Decode.lean        #   generic decode/encode projections + totality/round-trip kit
-│   │   ├── Conformance.lean   #   generic vector generation
-│   │   └── Dsl/               #   macro front-end elaborating to InstrDecl (late, P1)
-│   ├── Dp/                    # L2 — decision procedures (generic over TSys/BitSys)
-│   │   ├── Cert/Lrat.lean     #   verified LRAT checker, kernel-reducible (trusted path)
-│   │   ├── Cnf.lean, Solver.lean, Bmc.lean, KInduction.lean, Pdr.lean
-│   │   ├── SimDiagram.lean    #   simulation-diagram tactic
-│   │   └── Dbsp.lean          #   reflective DBSP normalizer
-│   ├── Hw/                    # L3 — hardware EDSL + verified compiler (generic)
-│   │   ├── Action.lean, Rule.lean, Semantics.lean
-│   │   ├── Netlist.lean, NetlistSem.lean, Compile.lean
-│   │   └── View.lean          #   View q typed construct (DBSP obligation in constructor)
-│   ├── Emit/                  # L4 — the boundary layer (generic: netlist in, µVerilog out)
-│   │   ├── MicroVerilog/      #   Ast, Semantics, Print, Parse, RoundTrip, Axiom (THE axiom)
-│   │   └── Emitter.lean
-│   ├── Book/                  # L6 — documentation engine (generic over InstrDecl + ledgers)
-│   │   ├── Model.lean, Extract.lean, Render/Html.lean, Render/Print.lean
-│   └── Logic/                 # L1 generic parts only: BI-algebra core, step-indexing
-│       ├── Sep/Bi.lean, StepIndex.lean
-│
-├── Machines/                  # ═══ THE MACHINES ═══
-│   ├── Acc8/                  # the pathfinder: 8-bit accumulator machine, ~8 ops
-│   │   ├── Spec.lean          #   state, ISA as InstrDecl terms, step, TSys instance
-│   │   ├── Iss.lean, BitLevel.lean, Core.lean (L3 EDSL core, Phase 2)
-│   │   └── Theorems/A1.lean   #   decode totality, asm round-trip (T1-analog); later A-EV
-│   └── Lnp64u/                # the driving use case
-│       ├── Types.lean         #   frozen µ parameters, ids, Errno, Fault, WcetClass   [DONE]
-│       ├── Cap.lean           #   handle bit-shape, entries, lineage, regions        [DONE]
-│       ├── State.lean         #   full machine state incl. gates, Mover, in-flight   [DONE]
-│       ├── Manifest.lean      #   reset-ROM manifest, initial state, well-formedness
-│       ├── SpecM.lean         #   semantics monad: total, faults-as-values
-│       ├── Isa/Base.lean      #   ~15 base ops as InstrDecl terms
-│       ├── Isa/System.lean    #   11 system ops
-│       ├── Isa.lean           #   isa : Array InstrDecl — the single source
-│       ├── Step.lean          #   cycle step: scheduler ∘ core retire ∘ Mover word; TSys
-│       ├── BitLevel.lean, Iss.lean
-│       ├── Logic/Invariant/   #   Phase-1 invariants; Sep/Resource.lean shares T9 terms
-│       ├── Hw/                #   multicycle core, pipeline, Mover in the L3 EDSL
-│       └── Theorems/          #   T1..T9, Refinement, Emission, Ledger.lean
-│
-├── Tools/                     # thin mains: Audit, Iss, Asm, Emit, BookGen
-├── Tests/                     # golden tests
-├── checker/                   # L5 — separate Lake package, zero Loom/Machines imports [Ph 4]
-├── rtl/                       # emitted Verilog (build output, gitignored)
-├── fpga/                      # per-target vendor projects + lockstep harness [Ph 2]
-└── scripts/                   # CI glue, import-DAG lint
+Loom.* ──> Machines.* ──> machine theorem ledgers
+Loom.*, Machines.* ──> Tools
 ```
 
----
+Arrows show allowed use from left to right. `Loom.Hw` does not depend on a
+particular ISA; machine refinement modules see both layers. `Tools` is a leaf:
+nothing in the proof libraries imports it.
 
-## 4. The spine: key signatures
+## Main verification chain
 
-`Loom/Core/Ts.lean` (built): `TSys` (relational step), `Inductive`/`Invariant` + induction
-principle, `TSys.ofFun` for deterministic machines, `Simulation` (abstraction function,
-commuting squares, invariant pullback, composition), `StutterSimulation` (multicycle refinement),
-`BitSys` + `toTSys`.
+For LNP64-µ, the current end-to-end chain is:
 
-`Loom/Isa/Instr.lean` (next): generic instruction declarations —
+1. `Machines.Lnp64u.machine` defines the processor model on `TSys`.
+2. T1–T9 state and prove the model properties under their explicit premises.
+3. R-MC simulates that model with the reachable compiled EDSL core.
+4. `Compile.compile` is related generically to `Design` cycle semantics.
+5. A concrete SSA witness is checked to denote that reference compilation.
+6. Its structural renderer is proved equal to theorem-bound byte ropes.
+7. A small external binder associates those ropes with the two RTL files.
+8. Verilog-tool interpretation and physical implementation remain explicit
+   downstream assumptions and corroboration layers.
 
-```lean
-structure Sig where            -- per-machine encoding signature
-  wordBits : Nat               -- instruction word width (Acc8: 16, LNP64-µ: 32)
-  opcodeLo opcodeBits : Nat    -- where the opcode field lives
-  fields : List FieldSpec      -- named operand fields (positions/widths)
+The publication bundle selects four LNP64-µ invariant consequences rather
+than embedding every T1–T9 theorem. See [`TCB.md`](TCB.md).
 
-structure InstrDecl (sig : Sig) (Sem Cost : Type) where
-  mnemonic : String
-  opcode   : BitVec sig.opcodeBits
-  operands : List sig.FieldRef -- which fields this op reads
-  sem      : Sem               -- opaque to Loom; the machine's Step consumes it
-  cost     : Cost              -- opaque cost label (LNP64-µ: WcetClass)
-  prose    : ProseBlock        -- the book paragraph, structured not stringly
-```
+## Machine roles
 
-Loom provides generically: `decode`/`encode` over a `Sig`, decidable totality/determinism/
-round-trip obligations (the T1 kit), conformance-vector generation, and the book extractor.
-The machine provides: state, the semantics payload and its interpreter, and the glue theorem
-instances.
+- **Acc8:** smallest release/refinement path and fast regression target.
+- **LNP64-µ:** theorem and release-certificate driver.
+- **LNP64mini:** open-design composition, simulation, FPGA, and architecture
+  extension vehicle; not covered by the LNP64-µ theorem bundle.
+- **Substrate:** small board bring-up and long-run state comparison.
+- **Epoch and CapWalk:** protocol-machine, memory-target, and integration
+  campaigns.
+- **Tutorial and PingPong:** public examples and documentation tests.
 
----
+## Verification commands
 
-## 5. Layer notes
+| Scope | Command |
+|---|---|
+| Generic and machine libraries | `lake build` |
+| Test driver | `lake test` |
+| Trust/axiom/import inventory | `lake exe audit` |
+| Repository CI workflow | `scripts/ci.sh` |
+| Full reproduction wrapper | `scripts/reproduce.sh` |
+| Publication release theorem | `scripts/build_verified_release.sh` |
+| Reviewer-scale release sample | `scripts/review_verified_release.sh 4` |
+| Manual timing/resource gates | `scripts/nightly_gates.sh` |
 
-**Loom.Isa + machines' L0.** Order: generic `Sig`/`InstrDecl`/`Decode` → **Acc8 complete ISA +
-A1 theorems** (the framework's first user, kept deliberately trivial) → LNP64-µ base ops → T1 →
-system ops → full T1 → macro DSL last, with elaborated `isa` defeq to the structure-level one as
-its regression oracle.
+These commands are not interchangeable. Current results are recorded only in
+[`STATUS.md`](STATUS.md).
 
-**L1 µLog.** Generic BI-algebra core and step-indexing live in `Loom/Logic/`; everything that
-mentions µ's resources (memory ranges, cap slots, lineage cells, budget time) lives in
-`Machines/Lnp64u/Logic/`, with `Sep/Resource.lean` sharing T9's conserved-quantity definitions.
-Phase 1 mainline is plain invariants; the logical relation is Phase 3 and gates nothing.
+## Definition of clean
 
-**L2 Dp.** Engines search, certificates convince. `Cert/Lrat` first (trusted piece,
-kernel-reduction benchmark = go/no-go data point), then Cnf/Solver/Bmc, then KInduction, then
-Pdr. All generic over `BitSys`.
+A publicly releasable revision must satisfy all of the following:
 
-**L3 Hw.** Typed deeply enough that `View q` can demand its DBSP derivative proof as a
-constructor argument. Semantics before compiler; compiler before any core. **Acc8's core is the
-EDSL's first user and the first design through the compiler**; LNP64-µ's multicycle core follows.
-
-**L4 Emit.** µVerilog AST finalized early (its austerity is a negotiation with the outside
-world). **Acc8 is the first design emitted and the first on FPGA** — it debugs the boundary and
-the vendor flows at 1/20th the size before LNP64-µ arrives. `Axiom.lean` contains the single
-`axiom`; audit whitelists it for emission-dependent theorems only.
-
-**L5 checker/.** Phase 4; only the package boundary exists from the start (P6).
-
-**L6 Book.** Skeletal early: generic extractor walks any machine's `isa`; Acc8's two-page book
-is the smoke test; LNP64-µ's book is the product.
-
-**L7 fpga/.** Phase 2. Lockstep harness consumes `Loom/Core/Trace.lean`, frozen in Phase 0.
-
----
-
-## 6. Import DAG (enforced by `scripts/check-imports.sh` + audit)
-
-```
-Loom.Core ← Loom.{Isa, Dp, Hw, Logic}      Loom.Hw ← Loom.Emit      (all machine-free)
-Loom.*    ← Machines.Acc8, Machines.Lnp64u  (machines use the toolchain, never vice versa)
-Machines.<m>.Theorems imports that machine + Loom; nothing imports Theorems except Ledger/Book
-Loom.Book imports Loom.Isa only; machine book builds pass their isa/ledger as arguments
-Tools imports anything; nothing imports Tools
-checker/ imports NOTHING from this package (separate Lake package)
-Mathlib may be imported anywhere except checker/
-```
-
-Additional rules: `Loom.Hw` never imports `Loom.Isa` (hardware designs are not tied to the
-spec framework; refinement lives machine-side, which sees both); the µVerilog axiom is imported
-only by emission theorem files.
-
----
-
-## 7. Theorem ledger
-
-Status: `—` not stated · `S` stated (sorry) · `P` proved (sorry'd deps) · `✓` proved clean.
-
-**Acc8 (pathfinder):**
-
-| Thm | Statement (short) | Phase | Status |
-|-----|-------------------|-------|--------|
-| A1 | decode total/det; asm∘disasm = id | 0 | ✓ |
-| A-R | Acc8 EDSL core ⊑ Acc8 spec | 2 | ✓ |
-| A-EV | Acc8 core ≃ emitted µVerilog (iverilog+yosys corroborated) | 2 | ✓ |
-
-**LNP64-µ:**
-
-| Thm | Statement (short) | Form | Phase | Status |
-|-----|-------------------|------|-------|--------|
-| T1 | decode total/det; asm∘disasm = id; ABI bound; null-handle | direct | 0 | ✓ |
-| T2 | authority confinement (invariant form) | invariant | 1 | ✓ |
-| T2′ | authority confinement (adversarial log-rel) | log-rel | 3 | — |
-| T3 | temporal safety, spec level (incl. revoke_temporal_safety) | invariant | 1 | ✓ |
-| T3′ | temporal safety as RTL cycle bound K | cycle bound | 3 | — |
-| T4 | integrity / frame (4 channels + scrub equalities) | invariant | 1 | ✓ |
-| T4′ | frame, adversarial form | log-rel | 3 | — |
-| T5 | noninterference (2-safety; TopPriority + hardened Isolated) | 2-safety | 1 | P (5 Wip engine lemmas) |
-| T6 | totality / no-hostage (StrictlySchedulable + positive budgets; D11 landed) | invariant + bound | 1 | S (totality ✓; bricks proved) |
-| T7 | Σ Q/P ≤ 1 ⟹ budget delivery; WCET lemmas | conditional | 1/3 | ✓ |
-| T8 | ownership transfer (retired refs); W^X; status-word safety | invariant | 1 | ✓ |
-| T9 | conservation of slots/lineage/budget | invariant | 1 | ✓ |
-| R-MC | multicycle core ⊑ spec | StutterSimulation | 3 | — |
-| R-PL | pipeline ⊑ spec (Burch-Dill) | Simulation | 3 | — |
-| C-HW | EDSL→µVerilog compiler correct (reg + multi-port mem folds) | TSys equality | 2 | ✓ |
-| E-V | core ≃ emitted µVerilog text (parser round-trip per artifact) | TSys eq + axiom | 2 | ✓ (Acc8) |
-
----
-
-## 8. Phases and work order
-
-Take the first unchecked box whose deps are checked. `[m]` marks machine-side work, `[t]`
-toolchain work.
-
-### Phase 0 — Bootstrap  ✅ GATE MET (2026-07-03)
-*Gate: generic Isa framework proven by two machines; T1 + A1 discharged; both ISSes boot with
-the lockstep trace format; skeletal book; L3 semantics designed; µLog design doc; µVerilog
-subset + semantics drafted.*
-
-- [x] **0.1** [t] Scaffold: lakefile (Loom/Machines/Tools libs, exes), toolchain pin, Mathlib
-      pinned at v4.28.0, module tree, .gitignore. *(CI + import-linter stub → 0.12)*
-- [x] **0.2** [t] `Loom/Core/Word.lean` + `Fun.lean` — word types, field kit, table update.
-- [x] **0.3** [t] `Loom/Core/Ts.lean` — the spine (§4).
-- [x] **0.4** [m] `Machines/Lnp64u/Types.lean`, `Cap.lean` — frozen parameters, handle shape,
-      lineage cells, regions.
-- [x] **0.5a** [m] `Machines/Lnp64u/State.lean` — full machine state (gates, Mover, in-flight).
-- [x] **0.5b** [m] `Machines/Lnp64u/Manifest.lean` — manifest, initial state, well-formedness.
-      *(deps: 0.5a)*
-- [x] **0.6** [m] `Machines/Lnp64u/SpecM.lean` — semantics monad, total, faults-as-values.
-      *(deps: 0.5a)*
-- [x] **0.7** [t] `Loom/Isa/Sig.lean` + `Instr.lean` + `Decode.lean` — generic declarations,
-      decode/encode, T1 obligation kit. *(deps: 0.2)*
-- [x] **0.8** [m] **Acc8 complete**: `Machines/Acc8/Spec.lean` (state, ISA as `InstrDecl`
-      terms, step, `TSys`), `Iss.lean`; `Theorems/A1.lean` **discharged**. The framework's
-      first user. *(deps: 0.7)*
-- [x] **0.9** [m] `Machines/Lnp64u/Isa/Base.lean` (~15 base ops) over the generic framework;
-      Lnp64u decode/encode instances. *(deps: 0.6, 0.7)*
-- [x] **0.10** [t] `Loom/Dp/Cert/Lrat.lean` — verified LRAT checker + kernel-reduction
-      benchmark (go/no-go). *(deps: 0.2)*
-- [x] **0.11** [m] **T1 (base ops) stated + discharged**; `Theorems/Ledger.lean` exists.
-      *(deps: 0.9, 0.10)*
-- [x] **0.12** [t] `Tools/Audit.lean` + `scripts/check-imports.sh` — ledger walk, sorry/axiom/
-      `native_decide` policing, import DAG (incl. P0), wired into CI. *(deps: 0.11)*
-- [x] **0.13** [m] `Isa/System.lean` — the 11 system ops. *(deps: 0.9)*
-- [x] **0.14** [m] `Step.lean` — cycle step: refill → core issue/retire → Mover word; `TSys`.
-      *(deps: 0.13, 0.5b)*
-- [x] **0.15** [t+m] `Loom/Core/Trace.lean` frozen; `Iss.lean` + `Tools/Iss.lean` — **first
-      light: both machines boot under `lake exe iss`**. *(deps: 0.14, 0.8)*
-- [x] **0.16** [m] T1 extended to the full opcode set. *(deps: 0.13, 0.11)*
-- [x] **0.17** [t] `Loom/Isa/Dsl/` — macro front-end; defeq regression on both machines'
-      `isa`. *(deps: 0.16)*
-- [x] **0.18** [t] `Loom/Book/` skeleton — generic extractor + HTML; Acc8 book as smoke test,
-      Lnp64u opcode table + instruction pages. *(deps: 0.15)*
-- [x] **0.19** [t] Design docs: `Loom/Hw/DESIGN.md`, `Machines/Lnp64u/Logic/DESIGN.md`,
-      `Loom/Emit/MicroVerilog/` Ast + Semantics drafted. *(deps: 0.3; parallel)*
-
-### Phase 1 — Spec-level security (LNP64-µ) + engine bring-up (Loom)
-*Gate: T2–T9 in invariant form; k-induction + BMC online; conformance suites generating; the
-multicycle core in the EDSL lockstep against the ISS.*
-
-- [x] **1.1** — folded into 1.10/1.11 by decision D8 (netlist is the engine-facing circuit; transport via refinement).
-- [x] **1.2a** [t] `Dp/Cert/Check.lean` — in-house kernel-reducible LRAT/RUP checker
-      (structural recursion, List-based) + soundness vs `Std.Sat.CNF.Unsat`; benchmarked by
-      kernel `decide` on pigeonhole certificates (the real D2 numbers).
-- [ ] **1.2** [t] `Dp/Cnf, Solver, Bmc` — first certificate-checked BMC result (on Acc8, then
-      Lnp64u). *(deps: 1.2a)*
-- [~] **1.3** [m] T9: `init_balanced` proved; `ledger_balanced`/`budget_bounded` stated. Logic/Defs seeds the resource algebra.
-- [~] **1.4–1.8** All of T2/T4/T5/T6/T7/T8 stated precisely. Proved: `Inv.init_wf`,
-      `T2.init_confined`, `T6.totality`, `T8.wx_machine_wide`, `T3.no_resurrection`,
-      `T9.init_balanced`. `step_wf` reduced to three localized obligations via proved
-      scaffolding (`refillPhase_preserves_wf`, `moverPhase_preserves_wf`, `wf_of_skeleton`,
-      `schedule_running`, haltDom/haltBase/unwindGate, issue-path helpers). The whole
-      invariant (`wf_invariant`, `step_wf`, `wx_machine_wide`) is **proved** conditional
-      on `ExecPreservesWf`, which is itself reduced (`execPreservesWf_of_system`) to
-      `SystemOpsPreserveWf`. Of the ISA: **all 14 base opcodes proved**
-      (`BaseOpsWf.base_preserves` via the `PreservesWf` toolkit); **7 of 11 system opcodes
-      proved** (`unmap`/`yield`/`halt`/`map`/`cap_dup`/`mem_grant`/`move`). Remaining: the **4 revocation/gate opcodes'**
-      kernel-operation preservation (`clearSlot`/`destroyMarked`/`transferCap`/gate call-return;
-      `installDerived`/Mover/sweeps are proved) — the T2/T3/T8/T9 kernel core — and
-      the L2 engines.
-- [ ] **1.9** [t+m] Conformance generation (generic) + both machines' suites self-checked.
-- [x] **1.10** [t] `Hw/Action|Rule|Semantics` — EDSL + atomic semantics as TSys.
-- [~] **1.11** [m] Acc8 core in the EDSL ✓ (+ A-R proved); Lnp64u core: base half lockstep-green,
-      lockstep vs ISS on the conformance suite.
-- [ ] **1.12** [t] `Dp/Pdr.lean` as scaling demands.
-
-### Phase 2 — Silicon path
-*Gate: compiler verified; emission theorem + round-trip done; Acc8 then LNP64-µ multicycle on
-two vendors' FPGAs, chain kernel-checked to the Verilog.*
-
-- [~] **2.1/2.2** Compiler built (`Hw/Compile`, direct-to-µVerilog per D10). **Emission theorem
-      register half fully proved, sorry-free** (`compileExpr_eval`, `nextReg_correct`,
-      `rules_nextReg`, `compile_cycle_regs`). Memory-port half + A-EV/E-V assembly remain.
-- [~] **2.3** (print ✓, emit-to-Verilog ✓, iverilog+yosys corroborated; parser WIP) [t] µVerilog Print/Parse/RoundTrip; **2.4** [t] Emitter + Axiom + emission
-      theorem (E-V, instantiated as A-EV first); **2.5** [t] `lake exe emit` / `rtl` target.
-- [ ] **2.6** [t] `fpga/` lockstep harness over `Loom.Core.Trace`.
-- [ ] **2.7** Acc8 on FPGA (both vendors) — boundary/pathfinder; **2.8** Lnp64u multicycle on
-      vendor A + B; **2.9** T7 WCET corroboration per target.
-
-### Phase 3 — Refinement, pipeline, logic upgrade
-- [ ] **3.1** [t] `Dp/SimDiagram` tactic (A-R as its first client); **3.2** [m] R-MC.
-- [ ] **3.3** [t] `Hw/View` + `Dp/Dbsp`; **3.4** [m] pipeline + R-PL.
-- [ ] **3.5** [m] T3′ concrete K at RTL; T6/T7 cycle-bound forms per target.
-- [ ] **3.6** [t+m] `Loom/Logic` Sep core + StepIndex; Lnp64u LogRel; **3.7** [m] T2′/T4′.
-
-### Phase 4 — Capstone
-- [ ] **4.1** [m] Revoke demo on FPGA, K on a logic analyzer. **4.2** [t] `checker/`
-      re-verifying T2/T3′/E-V exports. **4.3** [m] LNP64-µ book v1.0. **4.4** ASIC dry run
-      (untrusted LEC). **4.5** Program review; next machines (64-bit LNP, 6502, exotic
-      targets) scoped as new `Machines/` entries with zero toolchain rework as the success
-      criterion.
-
----
-
-## 8b. Proof-forced design changes (the charter's predicted class)
-
-- **2026-07-03 — transfer sweeps cached authority.** Stating T3/T8 exposed that
-  `transferCap` cleared the source slot without sweeping region registers or the Mover,
-  leaving the giver cached authority over a range it had transferred away. Fix: transfer
-  ends with the same region/Mover sweep as drop/revoke (`Kernel.lean`).
-- **2026-07-03 — narrow no-wrap require.** Proving T2 `step_confined` produced a
-  machine-checked counterexample: `narrow`'s range check permits the degenerate
-  `nlen = 0 ∧ base + off = memWords` corner, where the 12-bit base wraps to 0 and
-  the narrowed capability's kind (`.mem 0 0 ⊥`) escapes the parent's downward
-  closure — authority minted from thin air (invisible to `Wf`, which the wrapped
-  kind still satisfies). Fix: `narrow` requires `base.toNat + off.toNat < memWords`
-  (`Isa/System.lean`); only the degenerate corner is rejected — every `nlen ≥ 1`
-  request already implied no-wrap via the parent's `Wf.bounds`.
-- **2026-07-03 — donation bound + forced unwind.** Stating T6 exposed a hostage scenario:
-  a serving callee that never returns held its caller blocked forever. Fix: each activation
-  carries a `donated` cycle budget (manifest `maxDonation`); exhaustion, fault, or voluntary
-  halt of the server *unwinds* the activation — the caller resumes with `-ECALLEEFAULT`
-  (new errno 9, `Fault.budget` cause on the server). T6's `resumeBound` is now
-  manifest-computable.
-
-- **2026-07-03 — T6 hostage refutations (three rounds).** Proving `no_hostage`
-  refuted it three times: (1) a top-priority hog with `Q = P` (legal) starves the
-  serving chain — fixed by a `StrictlySchedulable` hypothesis; (2) charges bound
-  spending, not *occupancy* (an issue of cost c occupies c+1 cycles) — fixed by an
-  occupancy factor in the utilization bound; (3) **residual-budget stall-lock**: the
-  core's stall arm (`0 < payer budget < cost`) spends nothing and re-picks the same
-  domain forever — textbook unbounded priority inversion, present in the frozen
-  scheduler. D11 landed by making serving underfunding a deterministic
-  `.budget` fault through the existing halt/unwind path, and non-serving
-  underfunding a residual-budget burn.
-
-## 9. Open decisions
-
-| # | Decision | Resolve by | Current lean |
-|---|----------|-----------|--------------|
-| D1 | LNP64-µ encoding layout | 0.9 | 32-bit word; opcode [5:0], rd [8:6], rs1 [11:9], rs2 [14:12], imm17 [31:15]; packed-word operands for cap ops |
-| D2 | LRAT via kernel reduction fast enough? | **resolved 2026-07-03** | Core's `LRAT.check` is *not kernel-reducible* (wf-recursion sticks). In-house structurally-recursive checker required → task 1.2a; core checker kept as untrusted cross-validation. Pipeline (cadical → LRAT → parse → check) validated under compiled eval. |
-| D3 | Simulation function vs relation for Burch-Dill | 3.1 | Both already on the spine (`Simulation`, `StutterSimulation`); add relation variant only if flushing demands it |
-| D4 | SAT solver + protocol | 1.2 | cadical, DIMACS in / LRAT out, subprocess, untrusted |
-| D5 | Memory representation | done | Function at Prop level (built); packed arrays at bit level; P3 bridges |
-| D6 | Book render targets | 0.18 HTML; print by 4.3 | HTML first; in-house print pass, scoped ruthlessly |
-| D7 | Variable-length / exotic encodings in Loom.Isa | with the machine that needs them | Fixed-width `Sig` now; extension lands only with a consuming machine (e.g. 6502) |
-| D8 | Engine-facing bit-level representation | **resolved 2026-07-03** | An opaque `BitSys` function can't be CNF-encoded; the L3 EDSL/netlist is the one circuit representation, and engine results transport to specs via refinement (R-MC / A-R), not per-machine BitLevel correspondences. Task 1.1 is folded into 1.10/1.11; `BitSys` stays as the spine's semantic face. |
-| D10 | Separate netlist IR vs direct µVerilog emit | **resolved 2026-07-03** | The compiler targets µVerilog directly (`Loom/Hw/Compile.lean`): register mux-tree fold + memory write-port fold, structural. A distinct netlist IR lands only when an optimization pass needs one (Rule 2). C-HW and E-V collapse into one emission theorem. |
-| D11 | DONE 2026-07-04: scheduler stall-lock (T6) | Phase 3 revisit | Underfunded serving issue raises `.budget`; underfunded non-serving issue burns residual payer budget. The invariant stack was repaired through halt/unwind and budget-burn arms, and `T6.no_hostage` no longer has a `StallFree` hypothesis. |
-| D9 | EDSL write semantics | **resolved 2026-07-03** | v1: reads see pre-cycle state, writes commit at cycle end, last-write-wins across ordered rules (nonblocking-assignment discipline, 1:1 with netlist mux trees). Kôika-style intra-cycle forwarding (read1/write0 ports) added only when a core needs it (Rule 2). |
-
----
-
-## 10. Definition of "clean" (the standing self-check)
-
-1. `lake build` succeeds warning-clean.
-2. `lake exe audit` matches §7 exactly.
-3. No `sorry` outside `Machines/*/Theorems/` + `Wip/`; no `axiom` outside
-   `Loom/Emit/MicroVerilog/Axiom.lean`; no `native_decide` reachable from any ledger.
-4. The import DAG of §6 holds — in particular `Loom` imports nothing from `Machines`.
-5. Every merged component names the obligation it discharges (Rule 2), in its `DESIGN.md`.
-6. `lake exe iss` boots both machines' golden images; traces match checked-in goldens
-   (from 0.15 onward).
+- package-quality, build, test, and audit gates pass from a clean checkout;
+- the release theorem is rebuilt without supplied generated objects;
+- its axiom closure is exactly the three documented standard axioms;
+- emitted files are freshly generated, hygienic, and exactly bound;
+- every optional external check used as evidence reports whether it ran,
+  skipped, excluded a signal, or acknowledged a defect;
+- public documentation describes the current revision, while dated evidence
+  is labeled as evidence for a specific artifact; and
+- the release tag records toolchain, manifest, resource envelope, and known
+  platform limitations.

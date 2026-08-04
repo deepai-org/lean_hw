@@ -352,6 +352,32 @@ def progDDR : List (BitVec 64) :=
     encImmI OP_LD 8 1 0,        -- LD r8 = [r1+0] = 42 (DDR load)
     enc OP_EXIT 0 0 0 ]
 
+/-- Sub-word stores. `sb` (0x35) and `sh` (0x37) had NO coverage anywhere in
+this harness -- only `sd` (0x33) and `sw` (0x34) were ever encoded -- and the
+gap showed up on silicon, not here: the guest's in-DDR console ring is written
+by `buf[i] = c`, a byte store, and read back smeared across eight bytes while
+the 32-bit `magic` and `wptr` in the same struct read back perfectly.
+
+Both memory paths are covered, because they are different hardware: ea < 0x1000
+is the 1-cycle on-chip `dmem`, ea >= 0x1000 is the DDR read-modify-write path
+(S_DST/S_DSW). A byte store must leave the other seven lanes of its word alone;
+`st_merge` is supposed to guarantee that, and this is what checks it.
+
+Layout: seed the word with 8 known bytes, then overwrite lane 1 with `sb` and
+lanes 4..5 with `sh`, and read the whole word back. -/
+def progSubWord (base : Nat) : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 base,       -- r1 = target address
+    encImmI OP_LIU 3 0 0x11223344,  -- r3 high half
+    encImmI OP_ORI 3 3 0x55667788,  -- r3 = 0x1122334455667788 (seed)
+    encImmS 0x33 1 3 0,             -- SD [r1] = seed
+    encImmI OP_ADDI 4 0 0xAA,       -- r4 = 0xAA
+    encImmS 0x35 1 4 1,             -- SB [r1+1] = 0xAA   (lane 1 only)
+    encImmI OP_ADDI 5 0 0xBBCC,     -- r5 = 0xBBCC
+    encImmS 0x37 1 5 4,             -- SH [r1+4] = 0xBBCC (lanes 4..5)
+    encImmI OP_LD 8 1 0,            -- r8 = [r1] -- the merged word
+    encImmI OP_LD_32 9 1 1,         -- r9 = LBU [r1+1] = 0xAA
+    enc OP_EXIT 0 0 0 ]
+
 /-- LR/SC: LR.D reserve, SC.D store (should succeed, rd=0). ea=0 (zp). -/
 def progLRSC : List (BitVec 64) :=
   [ encImmI OP_ADDI 3 0 77,       -- r3 = 77
@@ -1077,6 +1103,43 @@ def mmuSelftest : IO Unit := do
   else
     IO.println s!"LNP64MINI MMU SELFTEST FAILED (bypass={bad} xlat={bad2}; tag={ok2} shootdown={ok3})"
     throw <| IO.userError "mmu selftest failed"
+
+/-- Sub-word stores must not disturb neighbouring bytes, on EITHER memory path.
+
+This closes a real coverage hole. `sb` (0x35) and `sh` (0x37) were encoded
+nowhere in this harness, so nothing below silicon ever executed one, and the
+first evidence that something was wrong came from a board run: the guest's
+in-DDR console ring, written by `buf[i] = c`, read back with every character
+smeared over eight bytes, while the 32-bit `magic` and `wptr` fields of the
+same struct read back exactly right.
+
+Seed `0x1122334455667788`, then `SB` lane 1 := 0xAA and `SH` lanes 4..5 :=
+0xBBCC. Little-endian lane `i` is byte `i` from the LSB, so the result is
+0x1122BBCC5566AA88. Anything else -- and in particular the byte replicated
+across all eight lanes -- is the bug. -/
+def subwordSelftest : IO Unit := do
+  let expect : Nat := 0x1122BBCC5566AA88
+  let mut bad := 0
+  for (nm, base) in [("dmem (ea < 0x1000, 1-cycle on-chip)", 0x40),
+                     ("DDR  (ea >= 0x1000, RMW via S_DST/S_DSW)", 0x2000)] do
+    let img := imageFrom TEXT_BASE (progSubWord base)
+    -- EDSL ≡ ISS first: if the two models disagree the expected-value check
+    -- below is meaningless, because it only ever consults the ISS.
+    let mism ← lockstep img 1 (cmdQuantum 0) (fun _ => 0) 60
+    let (st, _, _) := runIss img 1 (cmdQuantum 0) (fun _ => 0) 300
+    let got := (st.rf[8]!).toNat
+    let gotB := (st.rf[9]!).toNat
+    let ok := mism == 0 && got == expect && gotB == 0xAA
+    if !ok then bad := bad + 1
+    IO.println s!"  {if ok then "OK  " else "FAIL"} SUBWORD {nm}"
+    IO.println s!"       word=0x{String.ofList (Nat.toDigits 16 got)} \
+(want 0x{String.ofList (Nat.toDigits 16 expect)}) lbu=0x{String.ofList (Nat.toDigits 16 gotB)} \
+(want 0xaa) EDSL≡ISS mismatches={mism}"
+  if bad == 0 then
+    IO.println "LNP64MINI SUBWORD SELFTEST OK — sb/sh merge into their lanes and leave the rest alone, on both paths"
+  else
+    IO.println s!"LNP64MINI SUBWORD SELFTEST FAILED ({bad} path(s))"
+    throw <| IO.userError "subword selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt

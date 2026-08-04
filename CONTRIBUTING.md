@@ -26,11 +26,21 @@ the entire process.
 
 ## The audit gate
 
-Every contribution must keep `lake exe audit` green: `sorry` only under
-`Machines/*/Theorems/` and `Wip` namespaces, no `native_decide`, no new
-axioms (the single `ImplementsStandard` axiom is whitelisted).
-`scripts/ci.sh` is the full check. Theorem statements are contracts — a
-PR that weakens a statement to make it provable will be declined; a PR
-that *refutes* a statement with a counterexample is a prized
-contribution (see the proof-forced findings in `STATUS.md` for the house
-style of recording them).
+Every contribution must keep the package, test, and trust gates green:
+
+```console
+scripts/quality.sh
+lake build
+lake test
+lake exe audit
+```
+
+Run `scripts/ci.sh` when the change reaches emitted artifacts or the broader
+tool workflow. The audit permits `sorry` only in the explicitly reported
+theorem/WIP policy, bans `native_decide` on theorem paths, and allows only the
+two named µVerilog boundary declarations plus the standard Lean axioms. It
+also inventories unsafe code and executable replacements.
+
+Theorem statements are contracts. Weakening one requires an explicit claim
+review; producing a counterexample to a false statement is a valuable
+contribution and should lead to a visible repair of the statement or design.

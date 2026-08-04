@@ -29,8 +29,15 @@ say "### 1. Lean builds from source (a stale .olean is a stale binary)"
 # FULL build, not just minitest: the first version of this gate built only
 # the test binary, so a stale .olean on the EMIT path slipped through and
 # emitted RTL for a design that no longer existed.
+# `lake build` alone does NOT build the executables in this project -- it
+# builds the library and stops. Section 4 below then runs `.lake/build/bin/
+# minitest`, which can be an OLD binary that predates the sources this gate
+# just "verified". That bit on 2026-08-04: a freshly added selftest fell
+# through the arg match into the emit fallback, because the running binary
+# still had yesterday's dispatch. Name the exes explicitly.
 lake build >/dev/null 2>&1 || { bad "lake build failed"; exit 1; }
-ok "lake build (all targets)"
+lake build minitest emit audit >/dev/null 2>&1 || { bad "lake build (exes) failed"; exit 1; }
+ok "lake build (library + minitest/emit/audit executables)"
 
 say "### 2. emitted RTL matches the designs"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -79,7 +86,8 @@ fi
 
 say "### 5. the selftests actually pass on the freshly built binary"
 for t in selftest smpselftest preemptselftest domselftest \
-         failstopselftest gateselftest capxferselftest mmuselftest; do
+         failstopselftest gateselftest capxferselftest mmuselftest \
+         subwordselftest; do
   r=$(timeout 400 ./.lake/build/bin/minitest "$t" 2>&1 | tail -1)
   case "$r" in *OK*) ok "$t";; *) bad "$t — $r";; esac
 done
