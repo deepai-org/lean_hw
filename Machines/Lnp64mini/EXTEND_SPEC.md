@@ -316,3 +316,42 @@ would catch — one program through both the emulator and the ISS with observabl
 state compared. The gate-call divergence proved numeric opcode agreement does
 not imply behavioural agreement; this is the second symptom pointing the same
 way, and it is now the highest-value thing to build.
+
+### And the console idiom itself is correct on silicon
+
+`fpga/zc702/probes/conprobe.tcl` runs `lnp64_con_put`'s exact sequence — 32-bit
+load of the write pointer, byte store into the buffer, 32-bit store of the
+incremented pointer — sixteen times, in twelve instructions, with no NetBSD
+around it:
+
+```
+PROBE: status=0xa halted=1 retire=117
+0x13200004 = 0x00000010                    wptr = 16
+0x13200008 = 0x4847464544434241            'A'..'H'  packed
+0x13200010 = 0x504F4E4D4C4B4A49            'I'..'P'  packed
+```
+
+Sixteen characters, packed, in order, with the write pointer landing at 16.
+The idiom is not the problem either.
+
+**Where that leaves it.** The hardware has now been exonerated twice by direct
+measurement on silicon, not by inference: byte stores land in their lanes
+(`bsprobe`), and the guest's own load/store/increment loop produces packed
+output (`conprobe`). So the console ring's eight-fold repetition **is what the
+guest actually wrote** — 420 000 characters of it, against 131 for the
+byte-identical image off-hardware.
+
+The remaining question is therefore entirely about *execution*: the guest takes
+a different path on the mini than in the emulator, early enough to change how
+much it prints and to halt core 0 at ~115 M retires instead of running to
+644 M. Two independent symptoms now point at the same missing tool — a
+differential test between the emulator and the ISS. The gate-call divergence
+showed numeric opcode agreement does not imply behavioural agreement; this
+shows it again from the other end.
+
+`step-op` already provides a single-instruction interface into the emulator,
+but only for the eleven-opcode trap tail (`div udiv srem urem mulh mulhu clz
+ctz popcnt rol ror`). Widening it to the mini's full implemented set, and
+driving the ISS with the same vectors, is the concrete next build — and both
+probes here are the pattern for confirming any candidate on silicon in one
+board cycle.
