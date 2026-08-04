@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
-import Loom.Hw.Builders
+import Loom.Hw.Trees
 import Loom.Hw.Semantics
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
@@ -253,9 +253,6 @@ def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
 def capIboxRd (d : Expr 4) : Expr 64 := .memRead 64 "cap_ibox" d
 /-! EXT-7: the TLB. Four parallel arrays indexed by the VPN's low 3 bits
 (direct-mapped), so a lookup is one read of each plus one comparison. -/
-/-- Sequence a list of actions. -/
-def actSeq (as : List Act) : Act := as.foldr (fun x acc => .seq x acc) .skip
-
 /-- EXT-7: TLB entries. Eight is what the guest's region count needs. -/
 def TLBN : Nat := 8
 
@@ -631,7 +628,7 @@ combinational cone. The builders below produce the SAME function of the
 same inputs with `O(log n)` depth. None of them needs the guards to be
 mutually exclusive — see `priTree`. -/
 
-/-! ### Balanced-tree builders — now `Loom/Hw/Builders.lean` (W3.1)
+/-! ### Balanced-tree builders — now `Loom/Hw/Trees.lean` (D18)
 
 `priTree`, `reduceTree`, `orTree`, `orTreeW`, `addTree` and `actPriTree` used
 to be defined here with their correctness in a comment. They are Loom's now,
@@ -1902,16 +1899,8 @@ def tarrFunnelRule : Rule :=
     -- validates it; cmd 66 sets its ppn+cell). The shootdown (cmd 67)
     -- invalidates every entry naming the bumped cell -- the §15 line 876
     -- rule that the cached translation's cell IS the VMA's cell.
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
-            -- Mask off the domain field in [31:24]: the stored tag must be
-            -- the VPN alone, or it can never equal `tlbVpnOf ea`.
-            (.memWrite 3 32 "tlb_vpn" 0 tlb_sel (.zext (.slice cmdData 0 24) 32)) .skip) <|
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
-            (.memWrite 3 8 "tlb_dom" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
-            (.memWrite 3 32 "tlb_ppn" 0 tlb_sel (.zext (.slice cmdData 0 24) 32)) .skip) <|
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
-            (.memWrite 3 8 "tlb_cell" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
+    -- (stage B: the page-shaped memory funnel is gone -- entries are
+    -- per-element registers now, written in the cmd rule.)
     -- EXT-7: the valid bitmap. Fill sets the selected slot; the §15
     -- shootdown clears every slot whose recorded cell was bumped -- several
     -- at once, which is why this is a register and not a memory.

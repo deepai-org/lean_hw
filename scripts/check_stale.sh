@@ -26,8 +26,11 @@ bad() { printf '  STALE  %s\n' "$*"; FAIL=1; }
 ok()  { printf '  ok     %s\n' "$*"; }
 
 say "### 1. Lean builds from source (a stale .olean is a stale binary)"
-lake build minitest >/dev/null 2>&1 || { bad "lake build failed"; exit 1; }
-ok "lake build minitest"
+# FULL build, not just minitest: the first version of this gate built only
+# the test binary, so a stale .olean on the EMIT path slipped through and
+# emitted RTL for a design that no longer existed.
+lake build >/dev/null 2>&1 || { bad "lake build failed"; exit 1; }
+ok "lake build (all targets)"
 
 say "### 2. emitted RTL matches the designs"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

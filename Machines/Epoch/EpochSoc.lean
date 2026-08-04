@@ -53,7 +53,9 @@ doctrine exists to make impossible. Recorded as deviation E6.
 
 namespace Machines.Epoch.EpochSoc
 
-open Loom.Hw
+-- `actSeq` also lives in `Loom.Hw` (Trees.lean), which lnp64mini now imports
+-- transitively; hide it here so the Engine's stays unambiguous.
+open Loom.Hw hiding actSeq
 open Machines.Epoch.Engine (Cfg cfg32 actSeq L1 L2 L3 L16)
 
 /-! ## `epochmmio` — the per-core GP-transaction adapter
