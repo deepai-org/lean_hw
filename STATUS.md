@@ -71,9 +71,13 @@ The current LNP64mini integration head is **not hardware-green**:
 - the guest still does not reach the network: core 0 deterministically halts
   and core 1 remains parked in a futex wait after only 20 retirements.
 
-The next diagnostic is to read the in-guest console ring immediately after a
-board run before guessing at another cause. No NetBSD, Ethernet, SMP, epoch,
-or capability board result is currently accepted for this head.
+The in-guest console ring has now localized the symptom to smeared byte-store
+data while adjacent 32-bit metadata reads correctly. A new compiled
+`subwordselftest` passes byte/halfword lane merging on both on-chip and DDR
+paths with zero EDSL/ISS mismatches. The source models therefore do not
+reproduce the smear; the next step is a forced-fresh executable/RTL/bitstream
+rebuild followed by the same board trace. No NetBSD, Ethernet, SMP, epoch, or
+capability board result is currently accepted for this head.
 
 ## Property limits that remain open
 
