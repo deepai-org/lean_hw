@@ -228,3 +228,46 @@ this: on silicon core 0 halts (`status0=0xa`) after ~115 M retires with core 1
 parked at 20. The emulator now says that is *not* an inherent dual-core
 problem, which is useful — but the board's `halted=1` is a real halt, not a
 truncation, and that is still unexplained.
+
+### The byte-store question is still open, and the two-master check did not settle it
+
+Earlier I wrote that byte stores are fine because the PS DAP and the mini's own
+HP master return identical words. **That argument is weaker than I claimed.**
+Two masters agreeing on what memory *contains* says nothing about whether the
+store *placed* the bytes correctly — both read the same memory, correct or not.
+What the design-level evidence (`subwordselftest`, iverilog) does establish is
+that the RTL merges a byte into its lane; it does not speak for the synthesised
+AXI path.
+
+The facts that still need explaining:
+
+* the same image writes **packed** console text in the emulator and
+  **one character per 64-bit word** on silicon;
+* on silicon the guest emits ~420 000 characters and core 0 halts at ~115 M
+  retires, where off-hardware it emits 131 and runs to 644 M.
+
+**A direct probe is the way to settle it, and it is half-built.**
+`fpga/zc702/probes/bsprobe.tcl` + `bsprobe_words.txt` load a 22-word program
+that seeds one 64-bit word and then stores `'A'..'H'` into its eight byte lanes,
+then read the result back through both masters:
+
+```
+packed (correct) : 0x13200000 = 0x44434241   0x13200004 = 0x48474645
+one-per-word     : the characters land 8 bytes apart
+```
+
+It does not run yet, and the reason is recorded so the next attempt does not
+rediscover it:
+
+* `loadw` (regs 10/11/12) targets an IMEM this SoC does not fetch from — the
+  core runs with `retire=0` and `pc` pinned at `TEXT_BASE`;
+* `gwrite` (regs 40/41/42) does not land either: writing `0xCAFEBABE12345678`
+  to `0x13200000` reads back unchanged. The rump servicer uses the same helper
+  successfully inside `bulk_write`, so the missing piece is that sequencing
+  (and probably a strobe), not the helper itself;
+* status bit 0 is *running*, bit 1 *halted*, and bit 3 is set throughout —
+  its meaning is still unknown and is worth pinning down, since
+  `test/ddr_st.tcl` treats it as a stop condition.
+
+Finish the write sequencing and this answers in one board cycle a question that
+has now cost several.
