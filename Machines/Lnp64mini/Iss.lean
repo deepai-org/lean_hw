@@ -188,7 +188,8 @@ def ddrEaOf (s : MiniSt) (ea : BitVec 64) : BitVec 32 :=
     match (List.range 8).find? (fun i =>
             s.tlb_vld.getLsbD i && s.tlb_dom[i]! == s.tdom[s.cur.toNat]! &&
             !(lo < s.tlb_base[i]!) && lo < s.tlb_limit[i]!) with
-    | some i => (BitVec.ofNat 32 DATA_BASE) + (s.tlb_phys[i]! + (lo - s.tlb_base[i]!))
+    -- entries store the DELTA (phys - base), so translation is one add
+    | some i => (BitVec.ofNat 32 DATA_BASE) + (lo + s.tlb_phys[i]!)
     | none   => BitVec.ofNat 32 DATA_BASE
 
 def bit {n : Nat} (x : BitVec n) (i : Nat) : Bool := x.getLsbD i

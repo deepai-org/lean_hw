@@ -1034,7 +1034,9 @@ def cmdMmu (dom : Nat) (bump : Bool) : Nat → MiniIn := fun k =>
       cmdData := BitVec.ofNat 32 ((MMU_DOM <<< 24) ||| MMU_VA) }
   else if k = 2 then
     { cmdValid := true, cmdIdx := CMD_TLB_PHYS,
-      cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24) ||| (MMU_PPN <<< 12)) }
+      -- the entry stores the DELTA phys-base, so the host does the subtract
+      cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24)
+                   ||| (((MMU_PPN <<< 12) - MMU_VA) &&& 0xffffff)) }
   else if k = 3 then
     -- limit last: it is what makes the entry live
     { cmdValid := true, cmdIdx := CMD_TLB_PPN,
