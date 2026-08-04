@@ -7,21 +7,12 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
-- **Declared memory targets** (Loom D38): `Loom/Hw/MemTarget.lean` states
-  the memory shape checks as "is this design realizable on target T"
-  instead of "is this bank block-RAM friendly". `MemTarget` is ordinary
-  data (write-port budget for the dedicated macro, capacity/depth
-  thresholds, whether each realization's reset image is delivered), with
-  profiles `xc7` (validated against yosys + ZC702 silicon), `ecp5` and
-  `asicSram` (datasheet-derived; unsourced numbers are marked TODO in
-  their docstrings). `Design.realizableOnB` is the check — the write-port
-  trace condition promoted out of `Machines/CapWalk` plus D37's image rule
-  read through the profile — and `Design.emit` enforces it for
-  `MemTarget.default = xc7`, so every emitted module is byte-identical. It
-  is strictly stronger than D37 there: a bank whose *second* write port
-  pushes it out of block RAM now loses its image at compile time instead
-  of on a board. `lake exe memtargets` prints the per-design portability
-  table.
+- **Declared memory targets** (Loom D38): `MemTarget` records macro/soft
+  memory names, write-port limits, size thresholds, and image-delivery
+  behavior. `Design.realizableOnB` checks a design against `xc7`, `ecp5`, or
+  `asicSram`; emission enforces the default XC7 profile. XC7 is the exercised
+  repository target, while ECP5 and generic ASIC SRAM retain explicit
+  provisional/TODO assumptions. `lake exe memtargets` prints the table.
 - **Declared observability** (Loom D39): every `Design` has a mandatory
   `outputs : List String` selecting the registers exported as `o_<name>`
   ports. An unknown selection is a hard error at `Design.emit`. The compiler

@@ -93,10 +93,9 @@ is `Tools/VerifiedRelease.lean`.
 
 ### Cost, interruption, and cache
 
-The LNP64-µ generated certificates are CPU- and memory-intensive. Historical
-measurements, including the distinction between a warm resumed run and a
-clean-clone run, are in [`RELEASE_COST.md`](RELEASE_COST.md). Do not quote the
-recorded 88-minute warm-cache run as a clean Tier A duration.
+The LNP64-µ generated certificates are CPU- and memory-intensive. Current
+planning measurements and the distinction between a warm resumed run and a
+clean-clone run are in [`RELEASE_COST.md`](RELEASE_COST.md).
 
 Re-running in the same worktree resumes up-to-date generated modules. Treat
 that cache only as an engineering convenience. It is invalid after changes to

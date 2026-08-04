@@ -41,15 +41,17 @@ and the PS interconnect remain outside the Lean core proof.
 ## Current state
 
 Opcode agreement covers 70 shared opcodes, the emulator zero-trap gate is
-green, and the silicon trap count has been reduced to zero. The full board
-regression is still failing: network service is down, core 0 halts, and core 1
-remains in futex wait after 20 retires in the current diagnostic trace.
+green, and silicon reports zero traps. The full board regression is still
+failing: network service is down, core 0 halts, and core 1 remains in futex
+wait after 20 retires.
 
-Console-ring data shows byte-store smearing even though neighboring 32-bit
-metadata is intact. The compiled `subwordselftest` produces the exact expected
-lane merge on both on-chip and DDR paths with zero EDSL/ISS mismatches. The
-current source models therefore do not reproduce the board symptom; fresh
-executable, RTL, bitstream, and downstream-path validation is required.
+Raw console-ring data shows each guest byte write replicated into a 64-bit
+word at stride eight, while adjacent 32-bit metadata is correct. Guest C and
+clang generate a packed byte store; the Loom design, ISS, and emitted-RTL
+simulation all produce the expected single-lane merge on both modeled memory
+paths. This localizes the unresolved mismatch to the physical HP AXI write
+path or a downstream artifact. The next diagnostic is a tiny known-pattern
+write-and-halt program followed by JTAG readback.
 
 Accordingly, the extension set is implemented and source-level checks are
 useful, but the present combined hardware head is not release- or demo-ready.
@@ -63,97 +65,38 @@ full Mover/DMA architecture, state-stream round trips, an unbounded capability
 table, or production MMU performance. Those belong in future work only after
 the current regression and repository gates are green.
 
-### Reading the guest's own console, and what it ruled out
+### Correction: byte stores are fine. The "stride 8" was a misreading.
 
-The board now dumps the in-guest console rings at `LOOPEND`, inside the
-servicer session (`test/lnp64_rump_run_dual.tcl`). Three things had to be right
-before a single byte was readable, and each was wrong first:
-
-* a **fresh `xsdb connect` leaves the DDR controller in reset** — the dump has
-  to run in the session that already has DDR up, not a separate one;
-* the servicer drives the **PL over BSCAN**, so `mrd` needs the A9 DAP selected
-  first, the same selection `fastload.tcl` makes;
-* **guest physical is not PS physical.** The guest DDR window is based at
-  `0x10000000`, so the ring at guest `0x3000000` is PS `0x13000000`. Reading the
-  guest address returns unrelated DDR and looks exactly like "the guest never
-  printed a thing" — which is how it was first misread.
-
-**What the ring says.** Core 0's ring has a valid magic and
-**`wptr = 420 305`**. The same image, off-hardware, prints **131** bytes. The
-guest is emitting roughly three thousand times its normal output and the ring
-has wrapped six times, which is why it reads as noise from the start. Core 1
-has no ring at all — consistent with it never leaving `__lnp_futex_wait`.
-
-**A theory the ladder killed.** The raw dump looked like every character was
-smeared across eight bytes while the 32-bit `magic` and `wptr` in the same
-struct read back perfectly — a textbook broken byte-store. It is not. `sb` and
-`sh` had **no coverage anywhere in this harness** (only `sd` 0x33 and `sw` 0x34
-were ever encoded), so the new `subwordselftest` was written to check exactly
-that, on both memory paths, since `ea < 0x1000` (on-chip `dmem`) and
-`ea >= 0x1000` (the DDR read-modify-write) are different hardware:
+The previous entry claimed the guest's byte writes land somewhere no model
+predicts. That is wrong, and the check that settles it is reading the same
+address through both masters — the PS DAP (`mrd`) and the mini's own HP master
+(regs 40/43/45/46, the path `test/ddr_st.tcl` uses):
 
 ```
-OK   SUBWORD dmem  word=0x1122bbcc5566aa88 lbu=0xaa  EDSL≡ISS mismatches=0
-OK   SUBWORD DDR   word=0x1122bbcc5566aa88 lbu=0xaa  EDSL≡ISS mismatches=0
-iverilog r8=0x1122bbcc5566aa88 r9=0xaa
+MINI-VIEW  0x13000008 = 0x202020202020204E
+DAP-VIEW   13000008:   2020204E   13000010:   6C6C6C20
 ```
 
-EDSL ≡ ISS ≡ iverilog, byte-exact, and `ddrEaRaw` word-aligns
-(`DATA_BASE + (ea & ~7)`) as it should. **Sub-word stores are not the bug.**
-The coverage gap was real and is now closed, but the theory it was built to
-confirm is dead — recorded here so it is not re-derived from the same dump.
+They agree exactly, so there is no address-mapping difference between masters.
+And the word itself is a **correct merge**, not a smear: byte 0 is `0x4E` (`N`)
+and bytes 1–7 are `0x20` (space) — `N` stored at offset 0, then spaces merged
+into lanes 1–7, each leaving the others alone. Precisely what `st_merge`
+specifies and what `subwordselftest` and iverilog predict.
 
-**What is actually established.** The guest boots, runs 115 M instructions at
-`traps=0`, prints ~420 000 characters, and halts; core 1 is never released.
-Off-hardware the identical image prints 131 characters and passes. The next
-question is what the guest is saying 420 000 times, and the way to get it is to
-read the ring **in `wptr` order from the write head** with the layout confirmed
-rather than assumed — dump raw hex around `wptr % 0x10000` and derive the
-stride from the bytes instead of guessing it, which cost three board cycles
-here.
+What misled me was rendering before decoding. Runs of eight identical bytes in
+a console buffer look like replication, and I read them as a hardware fault
+through three board cycles of increasingly elaborate destriding, when the
+memory was simply holding the characters the guest actually wrote.
 
-**Also fixed:** `check_stale.sh` ran `lake build`, which in this project builds
-the library and *stops* — then section 5 ran a `minitest` binary that could
-predate the sources it had just verified. It did: a newly added selftest fell
-through the arg match into the emit fallback because the running binary still
-had the previous dispatch. The gate now names the executables explicitly.
+**So the ring content is real.** The guest is printing runs of repeated
+characters — `N`, eight spaces, eight `l`, eight `d`, eight `e` — 420 000 of
+them, where the same image off-hardware prints 131. That is now a *software*
+question about what the guest is emitting, not a hardware one, and the
+hardware side of the ladder is fully closed:
 
-### The boundary is now sharp: everything below silicon is verified correct
+* every layer EDSL → ISS → iverilog agrees byte-exact on sub-word stores;
+* both bus masters agree on DDR contents;
+* guest reads of host-written DDR work (115 M instructions, `traps=0`).
 
-Reading raw hex at three addresses instead of guessing a stride settles the
-layout. Character *k* occupies bytes `[8k+1 … 8k+8]` of the ring — **stride 8,
-one character per 64-bit word**, with the byte replicated across the word:
-
-```
-13000008:  2020204E   -> 'N'
-1300000C:  20202020      ' ' x8   (bytes 1..8)
-13000010:  6C6C6C20      'l' x8   (bytes 9..16)
-13000014:  6C6C6C6C
-13000018:  6464646C      'd' x8   (bytes 17..24)
-```
-
-Every layer beneath the silicon says this should not happen:
-
-| layer | says |
-|---|---|
-| guest C | `buf[i] = c` on a `volatile unsigned char *` — packed |
-| clang | `zext.w r3,r3; add r2,r2,r3; sb r4,0(r2)` — unscaled index, real `sb` |
-| Loom design | `ddrEaRaw = DATA_BASE + (ea & ~7)`, `st_merge` overlays one lane |
-| ISS + EDSL | `subwordselftest`: `0x1122bbcc5566aa88`, both memory paths |
-| iverilog | `r8=0x1122bbcc5566aa88 r9=0xaa` — byte-exact |
-
-And in the same struct, on the same path, the 32-bit `magic` and `wptr` at
-`base+0` and `base+4` land **correctly** — they read back as `0xC0FFEE01` and a
-plausible count. So sub-word stores into the first word are right while byte
-stores into the buffer are strided, which no layer above silicon predicts.
-
-That is the whole remaining question, and it is now well-posed: **guest reads of
-host-written DDR are fine** (the image executes, 115 M instructions, `traps=0`)
-and **32-bit guest writes are fine**; it is the guest's *byte* writes whose
-placement on the HP AXI path does not match what every model says. The next
-move is to instrument that path directly — a tiny guest program that writes a
-known byte pattern to a known DDR address and halts, then read it over JTAG —
-rather than inferring from a 420 000-character console ring that has wrapped.
-
-Do not re-derive the byte-store theory from this dump: `subwordselftest` exists
-precisely so that question stays answered.
+`subwordselftest` stays — the coverage gap it closed was real, `sb`/`sh` had
+never been executed below silicon, and it is what made this correction cheap.
