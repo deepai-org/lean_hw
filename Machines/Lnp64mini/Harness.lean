@@ -413,6 +413,41 @@ def lockstepDerived (image : List (Nat × BitVec 64)) (latency : Nat)
       bad := bad + mism.length
   return (bad, unmodelled)
 
+/-- The same derived-coordinate lockstep, run against `FastEval`.
+
+`lockstepDerived` compares against the closure-based `St`, which is correct and
+gets slower every cycle because `RegEnv` is a function. This runs the design
+through `fastCycleOpen` on the flat state instead, and reads coordinates through
+a `CoordPlan` resolved once outside the loop.
+
+This is not a shortcut around the semantics: `Loom.Hw.fastCycleOpen_eq` proves
+the flat evaluator agrees with `Design.cycleOpen`, so the comparison is against
+the same design behaviour, evaluated a way that does not accumulate closures. -/
+def lockstepFast (image : List (Nat × BitVec 64)) (latency : Nat)
+    (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat)
+    (cap : Nat := 64) : IO (Nat × Nat) := do
+  let fd := design.elaborate
+  let plan := design.coordPlan cap
+  let mut fs := design.fastReset
+  let mut s : MiniSt := {}
+  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
+  let mut g : GpModel := {}
+  let mut bad := 0
+  let mut unmodelled := 0
+  for k in List.range nCyc do
+    let (s', d', g', inp) := sysStep s d g (cmds k) (gpVal k)
+    fs := fastCycleOpen fd inp.toEnv fs
+    s := s'; d := d'; g := g'
+    let regs := issRegs s
+    let (mism, unm) := diffFastAgainst plan fs (issAtWith regs s)
+    unmodelled := unm.length
+    if !mism.isEmpty then
+      if bad < 8 then
+        for (c, got, want) in mism.take 4 do
+          IO.println s!"  MISMATCH cycle {k} {c.render}: edsl={got} iss={want}"
+      bad := bad + mism.length
+  return (bad, unmodelled)
+
 /-! ## Directed selftest script
 
 Builds a program image in DDR and a cmd stream that resets, loads a few
@@ -520,20 +555,14 @@ def aluOpsIMM : List (Nat × String) :=
    (OP_LSLI,"slli"), (OP_LSRI,"srli"), (OP_ASRI,"srai"),
    (OP_SLTI,"slti"), (OP_SLTIU,"sltiu")]
 
-/-- Operand pairs chosen for edges, not coverage-by-volume.
+/-- Operand pairs chosen for edges, not coverage-by-volume: signed vs unsigned,
+all-ones, zero, and a shift amount past 64 — where decode and width bugs show.
 
-Deliberately four, not forty. The EDSL state is a *function* (`RegEnv`), so a
-cycle-level comparison walks a closure chain that grows with the cycle count —
-the cost is in the comparison, not the opcode count, and a nine-vector matrix
-over 39 opcodes did not finish in twenty minutes. Four boundary pairs still
-separate signed from unsigned, exercise all-ones and zero, and push a shift
-past 64, which is where a decode or width bug shows.
-
-The real fix is to run this against `FastEval` rather than the closure-based
-`St` — that is what it exists for — and then the matrix can grow. Noted rather
-than done. -/
+Nine of these were unaffordable against the closure-based `St` (a 39-opcode
+matrix did not finish in twenty minutes). Against `FastEval` they are, which is
+the whole reason the fast path was built. -/
 def opVectors : List (Int × Int) :=
-  [(7, 9), (-1, 1), (255, 8), (1, 65)]
+  [(7, 9), (9, 7), (0, 0), (-1, 1), (1, -1), (255, 8), (-8, 4), (1, 64), (1, 65)]
 
 /-- One instruction with its operands set up, then EXIT. `addi` builds the
 operands, which is sound because `addi` is itself in the matrix. -/
@@ -1470,7 +1499,7 @@ def opDiffSelftest : IO Unit := do
         -- covering anything. EVERY DECLARED MEMORY is still compared -- the cap
         -- bounds cells per memory, not which memories -- so the property this
         -- test enforces is unchanged.
-        let (m, _) ← lockstepDerived img 1 (cmdQuantum 0) (fun _ => 0) 24 16
+        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 24 16
         opBad := opBad + m
         ran := ran + 1
       if opBad ≠ 0 then
@@ -1478,7 +1507,7 @@ def opDiffSelftest : IO Unit := do
         IO.println s!"  FAIL {nm} (opcode 0x{String.ofList (Nat.toDigits 16 op)}): \
 {opBad} EDSL≡ISS mismatches across {opVectors.length} operand vectors"
   let total := aluOpsRRR.length + aluOpsRR.length + aluOpsIMM.length
-  let (_, unm) ← lockstepDerived (imageFrom TEXT_BASE (progOp 0 OP_ADD 1 2))
+  let (_, unm) ← lockstepFast (imageFrom TEXT_BASE (progOp 0 OP_ADD 1 2))
                    1 (cmdQuantum 0) (fun _ => 0) 8 16
   IO.println s!"  {total} ALU opcodes x {opVectors.length} operand vectors = {ran} programs"
   IO.println s!"  compared against Loom's derived coordinate set \

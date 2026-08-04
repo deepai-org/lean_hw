@@ -3,6 +3,7 @@
 import Loom.Hw.Syntax
 import Loom.Hw.Semantics
 import Loom.Hw.StateCover
+import Loom.Hw.FastEval
 
 /-!
 # Derived state comparison (PLATONIC W5)
@@ -111,5 +112,67 @@ def Design.diffReport (d : Design) (cap : Nat) (σ : St)
     (if unmodelled.isEmpty then "" else
       s!" ({unmodelled.length} not modelled by the reference)") ++ "\n" ++
     String.intercalate "\n" lines
+
+/-! ## Index-resolved comparison against `FastEval`
+
+Comparing against the closure-based `St` is correct and slow: `RegEnv` is a
+*function*, so each read walks a closure chain that grows with the cycle count.
+A 39-opcode by 9-vector matrix did not finish in twenty minutes that way.
+
+`FastEval` already flattens the state into two `Array Nat`s. What was missing
+is a way to read *coordinates* out of it without a name lookup per access —
+`peek` does `findIdx?` over the register names every call, which is fine for
+readback and quadratic inside a comparison loop.
+
+A `CoordPlan` resolves every coordinate to its flat index **once**, so a
+per-cycle comparison is a walk of array reads. The plan depends only on the
+design, so it is built outside the loop and reused for the whole run. -/
+
+/-- A coordinate with its flat index already resolved. -/
+structure CoordSlot where
+  coord : Coord
+  isReg : Bool
+  idx   : Nat
+  deriving Repr
+
+/-- Resolve every coordinate of a design to a flat `FastSt` index, once.
+
+Coordinates that do not resolve are dropped rather than silently read as zero:
+a coordinate the flat layout has no slot for is a bug in the plan, and reading
+it as zero would manufacture agreement — the exact failure mode this whole file
+exists to remove. -/
+def Design.coordPlan (d : Design) (cap : Nat) : Array CoordSlot :=
+  (d.coords cap).foldl (fun acc c =>
+    if c.kind = "reg" then
+      match d.regIdx c.name with
+      | some i => acc.push { coord := c, isReg := true, idx := i }
+      | none   => acc
+    else
+      match d.memIdx c.name with
+      | some k => acc.push { coord := c, isReg := false, idx := d.memBase k + c.addr }
+      | none   => acc) #[]
+
+/-- Read a resolved coordinate out of a flat state: two array reads, no lookup. -/
+def FastSt.atSlot (fs : FastSt) (s : CoordSlot) : Nat :=
+  if s.isReg then fs.regs.getD s.idx 0 else fs.mems.getD s.idx 0
+
+/-- Compare a flat state against a reference reader over a prepared plan.
+
+Same contract as `diffAgainst`: mismatches and unmodelled coordinates are
+returned separately, because a reference that does not model a coordinate has
+not agreed about it.
+
+
+Mismatches carry BOTH values, so a caller can report them without going back
+to the plan to re-resolve the index -- doing that by hand is easy to get wrong
+(reconstructing a slot with the wrong index prints a plausible, false value). -/
+def diffFastAgainst (plan : Array CoordSlot) (fs : FastSt)
+    (ref : Coord → Option Nat) : List (Coord × Nat × Nat) × List Coord :=
+  plan.foldl (fun (acc : List (Coord × Nat × Nat) × List Coord) s =>
+    match ref s.coord with
+    | some v =>
+        let got := fs.atSlot s
+        if got ≠ v then ((s.coord, got, v) :: acc.1, acc.2) else acc
+    | none   => (acc.1, s.coord :: acc.2)) ([], [])
 
 end Loom.Hw

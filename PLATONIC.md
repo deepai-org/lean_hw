@@ -148,10 +148,20 @@ every coordinate the design declares. That is what the six-opcode bug needed
 and did not have; it survived because EDSL≡ISS was checked with hand-written
 programs and nothing executed `not`, `sltu`, `bgeu`, `srli`, `srai` or `sltiu`.
 
-**Still open, and the reason the matrix is small:** the comparison runs against
-the closure-based `St`, whose `RegEnv` is a function, so cost grows with cycle
-count. Nine operand vectors over 39 opcodes did not finish in twenty minutes;
-four do. Running the comparison against `FastEval` is the fix and is what
-`FastEval` exists for. And the deeper half of W5 — deriving the reference model
-itself from the `Design`, so equality is a theorem rather than a test — remains
-undone.
+**The `FastEval` path closes the cost objection.** `Design.coordPlan` resolves
+every coordinate to its flat index once, and `diffFastAgainst` walks array
+reads instead of the closure chain a functional `RegEnv` accumulates. The same
+matrix went from *not finishing in twenty minutes* to **6 seconds** for 351
+programs, so the nine-vector matrix is affordable and the gate is practical.
+This is not a shortcut around the semantics: `fastCycleOpen_eq` proves the flat
+evaluator agrees with `Design.cycleOpen`.
+
+The gate was verified to **fail** on the reintroduced bug — `FAIL sltu (opcode
+0x26): 20 EDSL≡ISS mismatches`, naming the opcode and printing
+`rf[3]: edsl=1 iss=0`. A gate that has not been seen failing is not known to
+work.
+
+**Still open:** the deeper half of W5 — deriving the reference model itself from
+the `Design`, so equality is a theorem rather than a test. What exists now is
+enforcement by exhaustive generated comparison, which is strictly weaker than a
+proof and strictly stronger than hand-written programs.
