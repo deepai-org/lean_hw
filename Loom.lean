@@ -36,6 +36,7 @@ import Loom.Hw.FastEval
 import Loom.Hw.Trees
 import Loom.Hw.Frame
 import Loom.Hw.StateCover
+import Loom.Hw.Diff
 import Loom.Hw.SyncRead
 import Loom.Hw.MemInitOk
 import Loom.Hw.MemTarget

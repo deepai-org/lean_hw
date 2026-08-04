@@ -684,7 +684,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if is_lr s then
-        s' := { s' with lr_addr := s.a, lr_valid := true, ld_boff_q := 0, ld_op_q := 0x30, ld_rd_q := rdf s, mem_is_store := false }
+        s' := { s' with lr_addr := s.a, lr_valid := true, ld_boff_q := 0, ld_op_q := BitVec.ofNat 8 OP_LD, ld_rd_q := rdf s, mem_is_store := false }
         if s.a.ult (BitVec.ofNat 64 0x1000) then
           s' := { s' with dmem_a := s.a.extractLsb' 3 9, st := BitVec.ofNat 5 S_L0 }
         else

@@ -800,7 +800,7 @@ def lw_shift : Expr 64 := .shr mem_src (.shl (.zext ld_boff_q 64) (L64 3))
 
 def ld_wb : Expr 64 :=
   priTree
-  [ (.eq ld_op_q (L8 0x30), mem_src)
+  [ (.eq ld_op_q (L8 OP_LD), mem_src)
   , (.eq ld_op_q (L8 0x31), .zext (.slice lw_shift 0 32) 64)
   , (.eq ld_op_q (L8 0x05), .sext (.slice lw_shift 0 32) 64)
   , (.eq ld_op_q (L8 0x36), .zext (.slice lw_shift 0 16) 64)
@@ -1546,7 +1546,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- LR
   gcons is_lr
     (actSeq [.write 64 "lr_addr" a, .write 1 "lr_valid" (L1 1),
-      .write 3 "ld_boff_q" (.lit (BitVec.ofNat 3 0)), .write 8 "ld_op_q" (L8 0x30),
+      .write 3 "ld_boff_q" (.lit (BitVec.ofNat 3 0)), .write 8 "ld_op_q" (L8 OP_LD),
       .write 5 "ld_rd_q" rdf, .write 1 "mem_is_store" (L1 0),
       .ite (.ult a (L64 0x1000))
         (actSeq [.write 9 "dmem_a" (.slice a 3 9), .write 5 "st" (L5 S_L0)])
