@@ -253,9 +253,18 @@ def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
 def capIboxRd (d : Expr 4) : Expr 64 := .memRead 64 "cap_ibox" d
 /-! EXT-7: the TLB. Four parallel arrays indexed by the VPN's low 3 bits
 (direct-mapped), so a lookup is one read of each plus one comparison. -/
-def tlbVpnRd  (i : Expr 3) : Expr 32 := .memRead 32 "tlb_vpn" i
-def tlbPpnRd  (i : Expr 3) : Expr 32 := .memRead 32 "tlb_ppn" i
-def tlbDomRd  (i : Expr 3) : Expr 8  := .memRead 8  "tlb_dom" i
+/-- EXT-7: TLB entries. Eight is what the guest's region count needs. -/
+def TLBN : Nat := 8
+
+/-! EXT-7 stage B: the TLB holds **VMA ranges**, not fixed pages, and the
+lookup is **fully associative** — every entry is compared each cycle, so the
+arrays are per-element registers rather than memories (D20: an array read at
+every index at once is a register file, not a RAM). -/
+def tlbBase  (i : Fin TLBN) : Expr 32 := .reg 32 s!"tlb_base{i.val}"
+def tlbLimit (i : Fin TLBN) : Expr 32 := .reg 32 s!"tlb_limit{i.val}"
+def tlbPhys  (i : Fin TLBN) : Expr 32 := .reg 32 s!"tlb_phys{i.val}"
+def tlbDom   (i : Fin TLBN) : Expr 8  := .reg 8  s!"tlb_dom{i.val}"
+def tlbCell  (i : Fin TLBN) : Expr 8  := .reg 8  s!"tlb_cell{i.val}"
 /-- EXT-7: the valid bits are a **bitmap register**, not a memory. The §15
 shootdown (`cmd 67`) invalidates *every* entry naming the bumped cell, i.e.
 several slots in one cycle, and one memory write port cannot do that -- which
@@ -263,9 +272,12 @@ is exactly what `Design.emit` refused when this was a memory (D38/CE10). Same
 shape as EXT-3's `poison` and EXT-6's `cap_ival`: state written at many
 indices at once is a register bitmap. -/
 def tlb_vld : Expr 8 := .reg 8 "tlb_vld"
+/-- Valid bit of entry `i` at a *static* index (the lookup is associative). -/
+def tlbVldBit (i : Fin TLBN) : Expr 1 :=
+  .eq (.slice (.shr tlb_vld (.lit (BitVec.ofNat 8 i.val))) 0 1) (.lit (BitVec.ofNat 1 1))
+
 def tlbVldRd  (i : Expr 3) : Expr 1  :=
   .eq (.slice (.shr tlb_vld (.zext i 8)) 0 1) (.lit (BitVec.ofNat 1 1))
-def tlbCellRd (i : Expr 3) : Expr 8  := .memRead 8  "tlb_cell" i
 
 /-- The domain the core is executing in **right now**: the current thread's
 tag, combinationally. See the note above on why this is not a register. -/
@@ -406,14 +418,13 @@ every previous increment, bit for bit, so NetBSD is untouched. That is
 stage A — prove the mechanism, risk nothing. -/
 def mmu_en : Expr 1 := .reg 1 "mmu_en"
 def tlb_sel : Expr 3 := .reg 3 "tlb_sel"
-def TLBN : Nat := 8
-
 def CMD_MMU_EN   : Nat := 63
 def CMD_TLB_SEL  : Nat := 64
 def CMD_TLB_VPN  : Nat := 65
 def CMD_TLB_PPN  : Nat := 66
 /-- `cmd 67` = the §15 `map.protect`/`munmap` shootdown: invalidate every
 TLB entry whose recorded cell equals `cmd_data[7:0]`. -/
+def CMD_TLB_PHYS : Nat := 68
 def CMD_MAP_PROTECT : Nat := 67
 def CAP_SEND_OP : Nat := 0x3e
 def CAP_RECV_OP : Nat := 0x3f
@@ -617,7 +628,7 @@ combinational cone. The builders below produce the SAME function of the
 same inputs with `O(log n)` depth. None of them needs the guards to be
 mutually exclusive — see `priTree`. -/
 
-/-! ### Balanced-tree builders — now `Loom/Hw/Builders.lean` (W3.1)
+/-! ### Balanced-tree builders — now `Loom/Hw/Trees.lean` (D18)
 
 `priTree`, `reduceTree`, `orTree`, `orTreeW`, `addTree` and `actPriTree` used
 to be defined here with their correctness in a comment. They are Loom's now,
@@ -1220,6 +1231,25 @@ where
     -- EXT-7: MMU enable and the TLB entry selector.
     .seq (.ite (ci CMD_MMU_EN) (.write 1 "mmu_en" (.slice cmdData 0 1)) .skip) <|
     .seq (.ite (ci CMD_TLB_SEL) (.write 3 "tlb_sel" (.slice cmdData 0 3)) .skip) <|
+    -- EXT-7 stage B: per-entry VMA fill. `cmd 65` = base + domain,
+    -- `cmd 66` = limit (and VALIDATES, so a half-written VMA is never live),
+    -- `cmd 68` = physical base + the VMA's epoch cell.
+    .seq (actSeq ((List.finRange TLBN).map (fun i =>
+          let sel := .eq tlb_sel (.lit (BitVec.ofNat 3 i.val))
+          actSeq
+          [ .ite (.and (ci CMD_TLB_VPN) sel)
+              -- base is cmd_data[23:0]; [31:24] carries the domain, so the
+              -- stored base must be MASKED or the range compare sees the
+              -- domain byte in the high bits.
+              (.seq (.write 32 s!"tlb_base{i.val}" (.zext (.slice cmdData 0 24) 32))
+                    (.write 8 s!"tlb_dom{i.val}" (.slice cmdData 24 8))) .skip
+          , .ite (.and (ci CMD_TLB_PPN) sel)
+              (.write 32 s!"tlb_limit{i.val}" cmdData) .skip
+          , .ite (.and (ci CMD_TLB_PHYS) sel)
+              -- cmd_data[23:0] is the DELTA (phys - base), computed by the
+              -- host; [31:24] carries the VMA's epoch cell.
+              (.seq (.write 32 s!"tlb_phys{i.val}" (.zext (.slice cmdData 0 24) 32))
+                    (.write 8 s!"tlb_cell{i.val}" (.slice cmdData 24 8))) .skip ]))) <|
     -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
     .seq (.ite (ci CMD_GATE_DOM) (.write 4 "gate_sel" (.slice cmdData 0 4)) .skip) <|
       (.ite (ci 13)
@@ -1254,25 +1284,42 @@ address is the deviation, recorded below.)
 
 With `mmu_en = 0` this is the identity computation of every increment before
 it, bit for bit — a `mux` on a register that is 0 at reset. -/
-def tlbIdx (ea : Expr 64) : Expr 3 := .slice ea 12 3
-def tlbVpnOf (ea : Expr 64) : Expr 32 := .zext (.slice ea 12 20) 32
+/-- Low 32 bits of the effective address; VMA bounds are 32-bit because the
+DDR aperture is. -/
+def eaLo (ea : Expr 64) : Expr 32 := .slice ea 0 32
+
+/-- Entry `i` matches: valid, this domain, and `base ≤ ea < limit`. A
+**range**, per §15 — the unit the document translates is the VMA. -/
+def tlbMatch (i : Fin TLBN) (ea : Expr 64) : Expr 1 :=
+  .and (tlbVldBit i)
+    (.and (.eq (tlbDom i) domCur)
+      (.and (.not (.ult (eaLo ea) (tlbBase i)))
+            (.ult (eaLo ea) (tlbLimit i))))
 
 def tlbHit (ea : Expr 64) : Expr 1 :=
-  let i := tlbIdx ea
-  .and (tlbVldRd i)
-    (.and (.eq (tlbVpnRd i) (tlbVpnOf ea))
-          (.eq (tlbDomRd i) domCur))
+  orTree ((List.finRange TLBN).map (fun i => tlbMatch i ea))
 
 /-- Untranslated (bypass) DDR effective address — DATA_BASE + word-aligned
 ea, the pre-EXT-7 computation unchanged. -/
 def ddrEaRaw (ea : Expr 64) : Expr 32 :=
   .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.slice ea 3 29 |> fun w => .zext w 32) (.lit (BitVec.ofNat 32 3)))
 
-/-- Translated address: the entry's PPN concatenated with the page offset. -/
+/-- Translated address. The obvious form is `phys + (ea - base)`, which
+costs an adder **and** a subtractor per entry — 8 of each, and it measured
+60 528 LUTs (56 %), past this part's practical routing ceiling.
+
+Instead the entry stores the **delta** `phys - base`, computed once by the
+host at fill time, and translation is `ea + delta`: one adder per entry, no
+subtractors, and the select happens on the delta rather than on a sum. Same
+function, and the arithmetic that used to be per-access is now per-map.
+
+`priTree` picks the first match — W3.1 (`Loom/Hw/Trees.lean`) proves that
+equals the linear priority chain, so "first match wins" is a theorem. -/
 def ddrEaXlat (ea : Expr 64) : Expr 32 :=
   .add (.lit (BitVec.ofNat 32 DATA_BASE))
-    (.or (.shl (tlbPpnRd (tlbIdx ea)) (.lit (BitVec.ofNat 32 12)))
-         (.zext (.slice ea 0 12) 32))
+    (.add (eaLo ea)
+      (priTree ((List.finRange TLBN).map (fun i => (tlbMatch i ea, tlbPhys i)))
+        (.lit (BitVec.ofNat 32 0))))
 
 def ddrEa (ea : Expr 64) : Expr 32 :=
   .mux mmu_en
@@ -1288,9 +1335,6 @@ def stepPc : Act := .write 64 "pc" pc8
 re-associate it into a balanced dispatch instead of a linear one. -/
 def gcons (g : Expr 1) (a : Act) (rest : List (Expr 1 × Act)) : List (Expr 1 × Act) :=
   (g, a) :: rest
-
-/-- Right-nested sequence of a list of actions. -/
-def actSeq (as : List Act) : Act := as.foldr (fun x acc => .seq x acc) .skip
 
 /-! ### S_EX helpers (dynamic per-thread writes; scheduler switches) -/
 
@@ -1856,11 +1900,11 @@ def tlbVldNext : Expr 8 :=
   let clearMask : Expr 8 :=
     orTreeW ((List.finRange TLBN).map (fun i =>
       .mux (.and (.and cmdValid (.eq cmdIdx (L7 CMD_MAP_PROTECT)))
-                 (.eq (tlbCellRd (.lit (BitVec.ofNat 3 i.val))) (.slice cmdData 0 8)))
+                 (.eq (tlbCell i) (.slice cmdData 0 8)))
         (.shl (.lit (BitVec.ofNat 8 1)) (.lit (BitVec.ofNat 8 i.val)))
         (.lit (BitVec.ofNat 8 0))))
   .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (.lit (BitVec.ofNat 8 0))
-    (.mux (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
+    (.mux (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
       (.or tlb_vld (.shl (.lit (BitVec.ofNat 8 1)) (.zext tlb_sel 8)))
       (.and tlb_vld (.not clearMask)))
 
@@ -1878,16 +1922,8 @@ def tarrFunnelRule : Rule :=
     -- validates it; cmd 66 sets its ppn+cell). The shootdown (cmd 67)
     -- invalidates every entry naming the bumped cell -- the §15 line 876
     -- rule that the cached translation's cell IS the VMA's cell.
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
-            -- Mask off the domain field in [31:24]: the stored tag must be
-            -- the VPN alone, or it can never equal `tlbVpnOf ea`.
-            (.memWrite 3 32 "tlb_vpn" 0 tlb_sel (.zext (.slice cmdData 0 24) 32)) .skip) <|
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_VPN)))
-            (.memWrite 3 8 "tlb_dom" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
-            (.memWrite 3 32 "tlb_ppn" 0 tlb_sel (.zext (.slice cmdData 0 24) 32)) .skip) <|
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
-            (.memWrite 3 8 "tlb_cell" 0 tlb_sel (.slice cmdData 24 8)) .skip) <|
+    -- (stage B: the page-shaped memory funnel is gone -- entries are
+    -- per-element registers now, written in the cmd rule.)
     -- EXT-7: the valid bitmap. Fill sets the selected slot; the §15
     -- shootdown clears every slot whose recorded cell was bumped -- several
     -- at once, which is why this is a register and not a memory.
@@ -1966,6 +2002,10 @@ def scalarRegs : List RegDecl :=
    ⟨"cap_ival",16,0⟩,
    -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
    ⟨"mmu_en",1,0⟩, ⟨"tlb_sel",3,0⟩, ⟨"tlb_vld",8,0⟩]
+  ++ (List.finRange TLBN).flatMap (fun i =>
+       [(⟨s!"tlb_base{i.val}", 32, 0⟩ : RegDecl), ⟨s!"tlb_limit{i.val}", 32, 0⟩,
+        ⟨s!"tlb_phys{i.val}", 32, 0⟩, ⟨s!"tlb_dom{i.val}", 8, 0⟩,
+        ⟨s!"tlb_cell{i.val}", 8, 0⟩])
 
 /-- The two thread-table arrays that stay per-element registers (D20):
 `tstate` (2-bit, multi-writer, read at every index by the ready/free
@@ -2017,9 +2057,7 @@ def design : Design where
      -- EXT-6: one capability handle addressed to each domain
      ⟨"cap_ibox", 4, 64, fun _ => 0⟩,
      -- EXT-7: the domain-tagged TLB (§15 line 160)
-     ⟨"tlb_vpn", 3, 32, fun _ => 0⟩, ⟨"tlb_ppn", 3, 32, fun _ => 0⟩,
-     ⟨"tlb_dom", 3, 8, fun _ => 0⟩,
-     ⟨"tlb_cell", 3, 8, fun _ => 0⟩]
+     ]
   rules :=
     [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]
