@@ -182,3 +182,49 @@ the answer involves core 1's presence, not the guest logic alone.
 
 This is where the next session should start, and it now costs seven minutes an
 iteration with full thread visibility rather than a blind board cycle.
+
+### Retraction: there is no off-hardware dual-core failure. I truncated the boot.
+
+The two entries above are wrong and are withdrawn.
+
+I ran the reproduction with `LNP64_MAX_SECONDS=200`–`420`. The boot needs about
+**1100 s** of emulated time — the figure `run_zero_trap_gate.sh` has used all
+along (`secs="${LNP64_ZERO_TRAP_SECONDS:-1100}"`). Every "hang" I recorded was
+the run being cut off mid-boot. At the correct budget, with core 1 present:
+
+```
+IHLFUTX
+RUMP_SHMIF_ON_CORE_OK SHMIF_RING_BASE=0x20e000 SHMIF_RING_SIZE=0x100000
+SMP_CORE1_RELEASED
+SMP_RETIRE core0=644775110 core1=124224889
+```
+
+Core 1 runs 124 M instructions in the shared kernel. **The dual-core guest is
+fine off-hardware.** Specifically withdrawn:
+
+* "reproduces the board's signature exactly" — it does not; it reproduced a
+  stopwatch;
+* "release ordering ruled out by experiment" — the three placements were three
+  truncated boots and distinguish nothing. The original ordering (release after
+  the NIC is up) stands, and the probe is back to it;
+* "vCPU count ruled out" — likewise untested. `LNP64_RUMP_NCPU` really is
+  independent of `LNP64_SMP` and really does default to 1, but nothing here
+  shows what it does to the boot.
+
+**How this happened, and the guard.** The markers `I H L F U T X` advance over
+hundreds of millions of instructions, so a short run always stops part-way
+through them and *looks* like a hang at whichever letter it reached — and the
+letter moves when you change the budget, which reads as "the fix changed
+something". Three different placements produced three different letters and I
+took that as signal. It was elapsed time.
+
+A bounded run that does not reach its terminal marker is **inconclusive, not a
+failure**, and must be reported as such. The one number that would have caught
+this immediately is the retire count: 644 M to reach `RUMP_SHMIF_ON_CORE_OK`
+against the 150–300 M my runs were stopping at.
+
+**Where the board investigation actually stands.** Unchanged from before any of
+this: on silicon core 0 halts (`status0=0xa`) after ~115 M retires with core 1
+parked at 20. The emulator now says that is *not* an inherent dual-core
+problem, which is useful — but the board's `halted=1` is a real halt, not a
+truncation, and that is still unexplained.
