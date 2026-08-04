@@ -1091,3 +1091,52 @@ suspects are **timing** and the **bypass mux itself**:
 area-clean increment that does not boot is a timing story until proven
 otherwise, and guessing at the RTL without the measurement is how the last
 three sessions lost time.
+
+### Correction: stage B did not break the demo. A split revert did.
+
+The revert above was wrong about the cause, and the record needs fixing.
+
+The trap log localises it exactly: core 1 retrapped 10 722 times at a single
+address, `HWTRAP1 pc=8cc928 op=cb`. Reading the loaded guest image at that
+address gives the word `cb10c00000000000` — opcode `0xcb`, which was
+`FUTEX_WAIT` under the old numbering and which the mini does not implement
+(its `OP_FUTEX_WAIT` is `0x99`). Core 1's SMP entry futex-waits, the core
+faults on an unknown opcode, the servicer cannot make progress, and GEM0 never
+comes up. That is the whole failure.
+
+**Timeline.**
+
+| when | what |
+|---|---|
+| 08-01 15:43 | guest image `rump_shmif_telnet_text.bin` built, old numbering |
+| 08-03 18:08 | conformance merge — mini moves to the ISA numbering |
+| 08-03 18:43 | merge **reverted on both sides** — mini back on old numbering |
+| **08-03 21:27** | **last PASS** — mini and image agree |
+| 08-03 21:34 | **`Reapply` lands on `lean_hw` only** — mini moves to the ISA numbering; `lnp64`'s assembler, emulator and LLVM backend stay reverted, and the guest image is never rebuilt |
+| 08-04 03:37, 03:58 | "stage B" acceptance failures |
+| 08-04 04:44 | stage-A restore fails **identically** |
+
+The reapply landed six minutes after the last passing run. Every failure since
+is that split, and the stage-A restore reproducing the failure byte-for-byte is
+the proof: **stage B was reverted for a fault it did not cause.**
+
+Two beliefs from the earlier entry are withdrawn. Timing was not the cause —
+the restored stage-A build routes at **27.87 MHz**, essentially identical to
+stage B's 27.70 MHz, and it fails the same way. Nor was the bypass mux. Stage B
+remains unproven on silicon, but nothing here counts as evidence against it,
+and it should be re-landed and judged on its own run.
+
+**What let this through.** `check_stale.sh` rebuilds `.hex` files from `.s` and
+compares — and it caught the two stale `pingpong` images immediately. It does
+not cover the guest image, because that image is prebuilt and never recompiles
+through the backend. The gate's own header already names this hazard; the guest
+image is simply outside its reach. A four-implementation ISA needs the guest
+image inside the gate, or a numbering change can pass every local check and
+still brick the board.
+
+**The deeper cause is the split revert itself.** `lnp64` and `lean_hw` are
+separate repositories holding two halves of one ISA. A revert applied to one
+and a reapply applied to the other leaves each repo internally consistent and
+the system broken — no single-repo check can see it. The cross-repo agreement
+check now in `ISA_CONFORMANCE.md` (assembler ⇔ mini, by mnemonic) is what
+found it, and it belongs in the gate.
