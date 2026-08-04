@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.StateCover
 import Machines.Lnp64mini.Iss
 import Std.Data.HashMap
 
@@ -205,6 +206,32 @@ def issTArrays (s : MiniSt) : List (String × Array (BitVec 64)) :=
   [("tpc", s.tpc), ("tsleep", s.tsleep), ("tp_arr", s.tp_arr),
    ("sigmask_arr", s.sigmask_arr)]
 
+/-- What `cmpStates` actually compares, as plain name lists, so Loom's W5
+coverage check can hold them against the design's own declarations.
+
+Kept immediately beside `issRegs`/`issTArrays` and the memory loops in
+`cmpStates` — if those change and these do not, `coverageSelftest` fails and
+names the difference. That is the whole point: the previous rule was "remember
+to update `cmpStates`", and it was forgotten twice (EXT-2's `tdom`, EXT-7's
+TLB), each time leaving a green test that had never looked at the new state. -/
+def cmpCoveredRegs (s : MiniSt) : List String := (issRegs s).map (·.1)
+
+def cmpCoveredMems (s : MiniSt) : List String :=
+  ["rf", "dmem", "tdom", "tlb_vpn", "tlb_ppn", "tlb_dom", "tlb_cell",
+   "gate_ent", "gate_dom", "cap_ibox", "tcont", "tcdom"]
+    ++ (issTArrays s).map (·.1)
+
+/-- Memories the ISS deliberately does not model, so the lockstep has nothing
+to compare them against. Listed explicitly rather than omitted, so that the
+coverage check passes on a stated exemption instead of on an oversight.
+
+The ISS models the UART by its pointers (`uart_wptr`, `uart_ridx`,
+`uart_byte`, `rx_wptr`, `rx_rptr`) and not by buffer contents: the bytes are a
+host-visible side channel drained over BSCAN, not architectural state the ISS
+claims to reproduce. If the ISS ever models them, delete the entry here and
+the check will require the comparison. -/
+def cmpExemptMems : List String := ["uart_mem", "rx_mem"]
+
 /-! ## EDSL ≡ ISS lockstep -/
 
 /-- Compare the EDSL open-design state `σ` to the ISS `s`: all registers +
@@ -243,6 +270,30 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
        ("tlb_dom", 8,  (s.tlb_dom[i]!).toNat), ("tlb_cell", 8, (s.tlb_cell[i]!).toNat),
        ]
     for (mn, w, v) in checks do
+      if (σ.mems mn i w).toNat ≠ v then
+        if bad < 12 then
+          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
+        bad := bad + 1
+  -- EXT-5/EXT-6: the gate table, the gate continuation, and the capability
+  -- inbox. Found uncompared on 2026-08-04 by Loom's W5 coverage check --
+  -- `gateselftest` and `capxferselftest` were green without ever looking at
+  -- the state their own increments added, the third and fourth instance of
+  -- the trap EXT-2 (`tdom`) and EXT-7 (the TLB) hit. Compared at EVERY slot:
+  -- a gate is a claim about entries the program does not call, so a spot
+  -- check at the invoked index would not see a violation.
+  for i in List.range 16 do
+    let checks16 : List (String × Nat × Nat) :=
+      [("gate_ent", 64, (s.gate_ent[i]!).toNat), ("gate_dom", 8, (s.gate_dom[i]!).toNat),
+       ("cap_ibox", 64, (s.cap_ibox[i]!).toNat)]
+    for (mn, w, v) in checks16 do
+      if (σ.mems mn i w).toNat ≠ v then
+        if bad < 12 then
+          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
+        bad := bad + 1
+  for i in List.range NT do
+    let checksNT : List (String × Nat × Nat) :=
+      [("tcont", 64, (s.tcont[i]!).toNat), ("tcdom", 8, (s.tcdom[i]!).toNat)]
+    for (mn, w, v) in checksNT do
       if (σ.mems mn i w).toNat ≠ v then
         if bad < 12 then
           IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
@@ -1140,6 +1191,33 @@ def subwordSelftest : IO Unit := do
   else
     IO.println s!"LNP64MINI SUBWORD SELFTEST FAILED ({bad} path(s))"
     throw <| IO.userError "subword selftest failed"
+
+/-- **W5 coverage gate.** Hold `cmpStates`'s claimed coverage against the
+design's own declarations, so that adding state to `lnp64mini` breaks a test
+instead of silently widening the gap between what is simulated and what is
+compared.
+
+This is the check that replaces a rule people were supposed to remember. It
+found five uncompared memories the moment it was first run — `gate_ent`,
+`gate_dom`, `cap_ibox` (EXT-5/EXT-6's gate table and capability inbox) and
+`tcont`/`tcdom` (the gate continuation) — meaning `gateselftest` and
+`capxferselftest` had been green without ever comparing the state their own
+increments introduced. Both still pass now that they do, so the legs really did
+agree; the tests simply had not been looking. -/
+def coverageSelftest : IO Unit := do
+  let s : MiniSt := {}
+  let cr := cmpCoveredRegs s
+  let cm := cmpCoveredMems s ++ cmpExemptMems
+  IO.println s!"  design declares {design.regEntries.length} registers, \
+{design.memEntries.length} memories"
+  IO.println s!"  cmpStates compares {cr.length} registers, {(cmpCoveredMems s).length} \
+memories ({cmpExemptMems.length} exempt: {cmpExemptMems})"
+  let report := design.coverageReport cr cm
+  if report ≠ "" then
+    IO.println report
+    IO.println "LNP64MINI COVERAGE SELFTEST FAILED"
+    throw <| IO.userError "state coverage incomplete"
+  IO.println "LNP64MINI COVERAGE SELFTEST OK — every declared register and memory is compared or explicitly exempt"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt
