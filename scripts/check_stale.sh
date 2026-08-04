@@ -63,7 +63,21 @@ else
   say "  (skipped: ../lnp64 assembler not built)"
 fi
 
-say "### 4. the selftests actually pass on the freshly built binary"
+say "### 4. the two repos agree on the ISA (cross-repo, see check_isa_agreement.py)"
+# Sections 1-3 are all single-repo: they rebuild lean_hw's artifacts from
+# lean_hw's sources. On 2026-08-04 that was not enough. The conformance merge
+# was reverted in `lnp64` and reapplied in `lean_hw`, leaving each repo
+# internally consistent -- this gate green, all eight selftests green -- while
+# the guest image (compiled by lnp64's backend) and the mini (built from
+# lean_hw) no longer spoke the same ISA. The board retrapped forever on an
+# opcode the core had stopped implementing.
+if r=$(python3 scripts/check_isa_agreement.py 2>&1); then
+  ok "${r#check_isa_agreement: ok — }"
+else
+  bad "ISA agreement — $(printf '%s' "$r" | tail -n +2 | head -3 | tr '\n' ';')"
+fi
+
+say "### 5. the selftests actually pass on the freshly built binary"
 for t in selftest smpselftest preemptselftest domselftest \
          failstopselftest gateselftest capxferselftest mmuselftest; do
   r=$(timeout 400 ./.lake/build/bin/minitest "$t" 2>&1 | tail -1)
