@@ -1038,3 +1038,25 @@ disguise; (3) convert `gem_core.c`'s `PHYS(g) = 0x10000000 + g` into a
 lookup against a named DMA-window grant, since GEM0 is a bus master reading
 descriptors at physical addresses and cannot be behind the guest's
 translation; (4) boot with `mmu_en = 1` and take the acceptance.
+
+### Stage B measured: the delta form pays for the MMU
+
+| | LUTs | placed `sysclk` |
+|---|---|---|
+| before stage B | 49 589 (46 %) | 23.82 MHz |
+| VMA ranges, `phys + (ea − base)` | 60 528 (**56 %**) | 23.83 MHz |
+| VMA ranges, **delta form** | 53 625 (**50 %**) | 24.24 MHz |
+
+The naive translation costs an adder *and* a subtractor per entry, eight of
+each, and lands past the ~55 % practical routing ceiling this part has. Since
+`base` is fixed for the life of a mapping, `phys − base` can be computed
+**once, by the host, at fill time** — then translation is `ea + delta`, one
+adder, and the priority select runs on the delta rather than on a sum. The
+arithmetic moves from per-*access* to per-*map*.
+
+**That recovers 6 900 LUTs and buys the whole MMU for ~4 000** over the
+pre-stage-B design — which is the answer to "can we have the authority
+machine without giving up timing": yes, if the per-access work is moved to
+per-map wherever a field is constant between maps. The same reasoning is
+worth applying to the remaining EXT increments before assuming they need
+clock headroom.
