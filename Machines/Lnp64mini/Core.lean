@@ -1231,8 +1231,8 @@ where
           , .ite (.and (ci CMD_TLB_PPN) sel)
               (.write 32 s!"tlb_limit{i.val}" cmdData) .skip
           , .ite (.and (ci CMD_TLB_PHYS) sel)
-              -- phys is cmd_data[23:0]; [31:24] carries the VMA's epoch
-              -- cell, same packing as base/domain.
+              -- cmd_data[23:0] is the DELTA (phys - base), computed by the
+              -- host; [31:24] carries the VMA's epoch cell.
               (.seq (.write 32 s!"tlb_phys{i.val}" (.zext (.slice cmdData 0 24) 32))
                     (.write 8 s!"tlb_cell{i.val}" (.slice cmdData 24 8))) .skip ]))) <|
     -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
@@ -1289,14 +1289,22 @@ ea, the pre-EXT-7 computation unchanged. -/
 def ddrEaRaw (ea : Expr 64) : Expr 32 :=
   .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.slice ea 3 29 |> fun w => .zext w 32) (.lit (BitVec.ofNat 32 3)))
 
-/-- Translated address: the matching entry's physical base plus the offset
-into its range. `priTree` picks the first match — W3.1 proves that equals the
-linear priority chain, so "first match wins" is a theorem, not a comment. -/
+/-- Translated address. The obvious form is `phys + (ea - base)`, which
+costs an adder **and** a subtractor per entry — 8 of each, and it measured
+60 528 LUTs (56 %), past this part's practical routing ceiling.
+
+Instead the entry stores the **delta** `phys - base`, computed once by the
+host at fill time, and translation is `ea + delta`: one adder per entry, no
+subtractors, and the select happens on the delta rather than on a sum. Same
+function, and the arithmetic that used to be per-access is now per-map.
+
+`priTree` picks the first match — W3.1 (`Loom/Hw/Trees.lean`) proves that
+equals the linear priority chain, so "first match wins" is a theorem. -/
 def ddrEaXlat (ea : Expr 64) : Expr 32 :=
   .add (.lit (BitVec.ofNat 32 DATA_BASE))
-    (priTree ((List.finRange TLBN).map
-      (fun i => (tlbMatch i ea, .add (tlbPhys i) (.sub (eaLo ea) (tlbBase i)))))
-      (.lit (BitVec.ofNat 32 0)))
+    (.add (eaLo ea)
+      (priTree ((List.finRange TLBN).map (fun i => (tlbMatch i ea, tlbPhys i)))
+        (.lit (BitVec.ofNat 32 0))))
 
 def ddrEa (ea : Expr 64) : Expr 32 :=
   .mux mmu_en
