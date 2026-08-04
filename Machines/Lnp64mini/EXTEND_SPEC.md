@@ -355,3 +355,45 @@ ctz popcnt rol ror`). Widening it to the mini's full implemented set, and
 driving the ISS with the same vectors, is the concrete next build — and both
 probes here are the pattern for confirming any candidate on silicon in one
 board cycle.
+
+### The differential found six broken opcodes in the ISS on its first run
+
+`scripts/diff_emulator_iss.py` drives one instruction through both the mini's
+ISS (`minitest stepop`) and the emulator (`lnp64 step-op`) with the same 32
+register values and diffs the registers each writes. 180 vectors over 30 ALU
+opcodes, values drawn from boundary cases plus random noise.
+
+**12 mismatches, in `SLTU` and `NOT` — the ISS wrote no register at all.**
+Tracing them out gave six broken opcodes, all in `Machines/Lnp64mini/Iss.lean`:
+
+| opcode | what the ISS did |
+|---|---|
+| `not` (`0x1f`) | missing from `is_alu` → no destination write |
+| `sltu` (`0x26`) | in **`is_branch`** → branched instead of computing |
+| `bgeu` (`0x68`) | absent from `is_branch` → trapped as an unknown opcode |
+| `srli` (`0x4d`), `srai` (`0x4e`), `sltiu` (`0x51`) | not in `is_alu`; the stale raw bytes `0xa5`, `0xa6`, `0x1e` were still there instead |
+
+`is_alu` had literal `0x1c`, `0xa5`, `0xa6`, `0x1e` left over from the
+td-anchored map. `is_branch` had replaced the range `0x21 ≤ o ≤ 0x26` with a
+membership list — the right idea, W1.5d — but captured `OP_SLTU` as its sixth
+member because `0x26` *was* `BGEU` before the renumbering moved `SLTU` onto it.
+The comment warning that "an opcode's number must not carry semantic grouping"
+sits directly above the line that got it wrong, in the same edit.
+
+**`Core.lean` was correct throughout.** The EDSL's `is_alu` and `is_branch`
+both name the right opcodes, so the *design* — and therefore the RTL and the
+bitstream — never had this defect. **It was the hand-written mirror, i.e. the
+oracle, that was wrong.** So this does not explain the board hang, and it is not
+being claimed as the fix; what it does mean is that every EDSL≡ISS result over
+those six opcodes was meaningless, because both legs of the ladder were being
+compared while one of them mis-decoded.
+
+**Why nothing caught it:** no selftest program executed any of the six. The
+whole ladder stayed green over a broken oracle — the same shape as EXT-2's
+`tdom` and EXT-7's TLB, but in decode rather than in state.
+
+`alugapselftest` now executes all six and checks every value, and it was
+confirmed to **fail** on the pre-fix ISS (114 EDSL≡ISS mismatches, with
+`trapped_op: edsl=0 iss=104` — the ISS trapping on `0x68` while the EDSL
+executed it). The differential is wired into `check_stale.sh` as section 6, so
+a behavioural divergence now fails the gate the way a numeric one already does.
