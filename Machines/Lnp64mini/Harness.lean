@@ -196,6 +196,16 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("wake_out",1,if s.wake_out then 1 else 0),
    ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
+  -- EXT-7 stage B: the TLB is per-index REGISTERS, not memories (D20 -- every
+  -- entry is read at once, so it is a register file). Listed here so Loom's
+  -- derived comparator finds them; before this they were only in `cmpStates`'s
+  -- hand-written loop, which the derived path does not consult.
+  ++ (List.range 8).flatMap (fun i =>
+       [(s!"tlb_base{i}",  32, (s.tlb_base[i]!).toNat),
+        (s!"tlb_limit{i}", 32, (s.tlb_limit[i]!).toNat),
+        (s!"tlb_phys{i}",  32, (s.tlb_phys[i]!).toNat),
+        (s!"tlb_dom{i}",    8, (s.tlb_dom[i]!).toNat),
+        (s!"tlb_cell{i}",   8, (s.tlb_cell[i]!).toNat)])
   ++ (List.range NT).map (fun i => (s!"tstate{i}",2,s.tstate[i]!.toNat))
   ++ (List.range NT).map (fun i => (s!"tfutex{i}",64,s.tfutex[i]!.toNat))
 
@@ -218,8 +228,7 @@ TLB), each time leaving a green test that had never looked at the new state. -/
 def cmpCoveredRegs (s : MiniSt) : List String := (issRegs s).map (·.1)
 
 def cmpCoveredMems (s : MiniSt) : List String :=
-  ["rf", "dmem", "tdom", "tlb_vpn", "tlb_ppn", "tlb_dom", "tlb_cell",
-   "gate_ent", "gate_dom", "cap_ibox", "tcont", "tcdom"]
+  ["rf", "dmem", "tdom", "gate_ent", "gate_dom", "cap_ibox", "tcont", "tcdom"]
     ++ (issTArrays s).map (·.1)
 
 /-- Memories the ISS deliberately does not model, so the lockstep has nothing
@@ -257,10 +266,6 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     | "rf"          => some (s.rf[idx]!).toNat
     | "dmem"        => some (s.dmem[idx]!).toNat
     | "tdom"        => some (s.tdom[idx]!).toNat
-    | "tlb_vpn"     => some (s.tlb_vpn[idx]!).toNat
-    | "tlb_ppn"     => some (s.tlb_ppn[idx]!).toNat
-    | "tlb_dom"     => some (s.tlb_dom[idx]!).toNat
-    | "tlb_cell"    => some (s.tlb_cell[idx]!).toNat
     | "gate_ent"    => some (s.gate_ent[idx]!).toNat
     | "gate_dom"    => some (s.gate_dom[idx]!).toNat
     | "tcont"       => some (s.tcont[idx]!).toNat
@@ -312,13 +317,15 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
   -- cannot ride `issTArrays` (which is the 64-bit family).
   for i in List.range 8 do
     let checks : List (String × Nat × Nat) :=
-      [("tlb_vpn", 32, (s.tlb_vpn[i]!).toNat), ("tlb_ppn", 32, (s.tlb_ppn[i]!).toNat),
-       ("tlb_dom", 8,  (s.tlb_dom[i]!).toNat), ("tlb_cell", 8, (s.tlb_cell[i]!).toNat),
-       ]
-    for (mn, w, v) in checks do
-      if (σ.mems mn i w).toNat ≠ v then
+      [(s!"tlb_base{i}", 32, (s.tlb_base[i]!).toNat),
+       (s!"tlb_limit{i}", 32, (s.tlb_limit[i]!).toNat),
+       (s!"tlb_phys{i}", 32, (s.tlb_phys[i]!).toNat),
+       (s!"tlb_dom{i}", 8,  (s.tlb_dom[i]!).toNat),
+       (s!"tlb_cell{i}", 8, (s.tlb_cell[i]!).toNat)]
+    for (rn, w, v) in checks do
+      if (σ.regs rn w).toNat ≠ v then
         if bad < 12 then
-          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
+          IO.println s!"  MISMATCH step {step} {rn}: edsl={(σ.regs rn w).toNat} iss={v}"
         bad := bad + 1
   -- EXT-5/EXT-6: the gate table, the gate continuation, and the capability
   -- inbox. Found uncompared on 2026-08-04 by Loom's W5 coverage check --
@@ -1386,21 +1393,29 @@ def progLdSt : List (BitVec 64) :=
 put thread 0 in domain `dom`; start. `bump` optionally fires the §15
 shootdown on the cell before the program runs. -/
 def cmdMmu (dom : Nat) (bump : Bool) : Nat → MiniIn := fun k =>
+  -- EXT-7 stage B: install ONE VMA — base+domain, then limit (which
+  -- validates the entry, so a half-written VMA is never live), then
+  -- physical base + the VMA's epoch cell.
   if k = 0 then { cmdValid := true, cmdIdx := CMD_TLB_SEL, cmdData := 4 }
   else if k = 1 then
-    -- vpn in [23:0], domain in [31:24]
+    -- base in [23:0], domain in [31:24]
     { cmdValid := true, cmdIdx := CMD_TLB_VPN,
-      cmdData := BitVec.ofNat 32 ((MMU_DOM <<< 24) ||| (MMU_VA >>> 12)) }
+      cmdData := BitVec.ofNat 32 ((MMU_DOM <<< 24) ||| MMU_VA) }
   else if k = 2 then
+    { cmdValid := true, cmdIdx := CMD_TLB_PHYS,
+      -- the entry stores the DELTA phys-base, so the host does the subtract
+      cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24)
+                   ||| (((MMU_PPN <<< 12) - MMU_VA) &&& 0xffffff)) }
+  else if k = 3 then
+    -- limit last: it is what makes the entry live
     { cmdValid := true, cmdIdx := CMD_TLB_PPN,
-      cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24) ||| MMU_PPN) }
-  else if k = 3 then { cmdValid := true, cmdIdx := CMD_MMU_EN, cmdData := 1 }
-  else if k = 4 then
-    -- put thread 0 in the domain we are testing from
+      cmdData := BitVec.ofNat 32 (MMU_VA + 0x1000) }
+  else if k = 4 then { cmdValid := true, cmdIdx := CMD_MMU_EN, cmdData := 1 }
+  else if k = 5 then
     { cmdValid := true, cmdIdx := CMD_SETDOM, cmdData := BitVec.ofNat 32 (dom <<< 8) }
-  else if bump ∧ k = 5 then
+  else if bump ∧ k = 6 then
     { cmdValid := true, cmdIdx := CMD_MAP_PROTECT, cmdData := BitVec.ofNat 32 MMU_CELL }
-  else if k = 6 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else if k = 7 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
 def mmuSelftest : IO Unit := do
