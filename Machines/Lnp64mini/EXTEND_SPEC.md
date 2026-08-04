@@ -1060,3 +1060,34 @@ machine without giving up timing": yes, if the per-access work is moved to
 per-map wherever a field is constant between maps. The same reasoning is
 worth applying to the remaining EXT increments before assuming they need
 clock headroom.
+
+### Stage B REVERTED from main: the hardware breaks the boot, even bypassed
+
+The VMA-range TLB passes every selftest and fits (53 625 LUTs / 50 %, routed
+`sysclk` **27.70 MHz** against a 25 MHz clock), and the delta form kept it
+under the area ceiling. **It still broke the board.** Two consecutive
+unattended runs hung at "wait for native GEM0" — the guest never brought the
+NIC up — with `mmu_en = 0`, i.e. with translation bypassed and `ddrEa`
+selecting the same raw computation as before.
+
+Reverted from `main`; the page-based stage A is restored and all eight
+selftests are green there.
+
+**What this rules in and out.** It is not the translation logic (bypassed),
+not area (50 %, under the ceiling), and not a failed selftest. The two live
+suspects are **timing** and the **bypass mux itself**:
+
+* 27.70 MHz routed is an 11 % margin over the board's 25 MHz. Every
+  previously-working bitstream measured 29–34 MHz. The added mux sits on the
+  load/store address path, so even the bypassed design has a longer critical
+  path than stage A did — and a routed estimate is not a guarantee.
+* The margin question is answerable directly: build stage B against a 12.5 MHz
+  divided clock and see whether the guest boots. If it does, this is timing
+  and the fix is either the clock trade or shortening that path (e.g.
+  registering the translated address a cycle earlier, which the guest can
+  absorb since loads already take multiple cycles).
+
+**Do that experiment before touching the design again.** A selftest-green,
+area-clean increment that does not boot is a timing story until proven
+otherwise, and guessing at the RTL without the measurement is how the last
+three sessions lost time.
