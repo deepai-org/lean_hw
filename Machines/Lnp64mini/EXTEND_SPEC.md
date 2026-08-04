@@ -1140,3 +1140,47 @@ and a reapply applied to the other leaves each repo internally consistent and
 the system broken — no single-repo check can see it. The cross-repo agreement
 check now in `ISA_CONFORMANCE.md` (assembler ⇔ mini, by mnemonic) is what
 found it, and it belongs in the gate.
+
+### Where the restoration stands (2026-08-04)
+
+The outage cause is fixed and the guest software is verified. What remains is
+board-side and specific.
+
+**Fixed and proven.** All four implementations agree on 70 shared opcodes
+(`scripts/check_isa_agreement.py`, wired into `check_stale.sh` §4). The guest
+image was rebuilt through a fully refreshed toolchain, and
+`scripts/run_zero_trap_gate.sh` reports **`ZERO_TRAP_GATE_OK`** on the
+byte-identical `LNP64_SMP=1 LNP64_GEM_PUMP=1` image the board loads:
+`RUMP_SHMIF_ON_CORE_OK`, `SMP_CORE1_RELEASED`, empty trap inventory over 794 M
+retired ops.
+
+**On silicon.** Traps went **10 722 → 0** on both cores, matching the
+known-good boot exactly. Core 1 now starts at the correct entry (0x8ca300,
+recovered from the link map after the hand-pinned 0x8cc400 went stale).
+
+**Still open.** The guest does not come up on the network:
+
+| | known-good (08-03 21:27) | now |
+|---|---|---|
+| `traps` | 0 | **0** ✅ |
+| `core0` retire | 30 136 595, `status0=0x1` (running) | 114 739 726, `status0=0xa` (**halted**) |
+| `core1` retire | 1 717 838, `pc1=0x8d6728` | **20**, parked at `pc1=0x8ca828` (`__lnp_futex_wait`) |
+
+Core 1 parks in its futex wait and is never woken, and core 0 runs 3.8× the
+known-good instruction count and then halts. The retire count is bit-identical
+across runs, so this is deterministic, not a race.
+
+The discriminating fact is that the **same image releases core 1 correctly in
+the emulator** (`SMP_CORE1_RELEASED`) and does not on silicon. That points at
+the cross-core futex wake in hardware rather than at the guest: core 0's
+`FUTEX_WAKE` on `lnp64_smp.ready` has to reach a thread parked on the *other*
+core, and EXT-4's keyed park/wake bank was reverted for area.
+
+**Next step, and it is a measurement.** Read the in-guest console ring (DDR
+`0x3000000`, the `%CONRING` window) immediately after a board run, before any
+power cycle, and see whether core 0 ever printed `RUMP_SHMIF_ON_CORE_OK` /
+`SMP_CORE1_RELEASED`. That splits the remaining question cleanly in two: if it
+printed, the wake is a hardware problem; if it did not, core 0 is dying earlier
+and core 1 is a symptom. Do not guess at either before reading it — three wrong
+causes were already blamed in this episode (stage B, timing, the servicer
+binary), and each cost a full board cycle.
