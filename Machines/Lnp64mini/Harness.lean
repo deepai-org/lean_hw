@@ -239,13 +239,15 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
   -- cannot ride `issTArrays` (which is the 64-bit family).
   for i in List.range 8 do
     let checks : List (String × Nat × Nat) :=
-      [("tlb_vpn", 32, (s.tlb_vpn[i]!).toNat), ("tlb_ppn", 32, (s.tlb_ppn[i]!).toNat),
-       ("tlb_dom", 8,  (s.tlb_dom[i]!).toNat), ("tlb_cell", 8, (s.tlb_cell[i]!).toNat),
-       ]
-    for (mn, w, v) in checks do
-      if (σ.mems mn i w).toNat ≠ v then
+      [(s!"tlb_base{i}", 32, (s.tlb_base[i]!).toNat),
+       (s!"tlb_limit{i}", 32, (s.tlb_limit[i]!).toNat),
+       (s!"tlb_phys{i}", 32, (s.tlb_phys[i]!).toNat),
+       (s!"tlb_dom{i}", 8,  (s.tlb_dom[i]!).toNat),
+       (s!"tlb_cell{i}", 8, (s.tlb_cell[i]!).toNat)]
+    for (rn, w, v) in checks do
+      if (σ.regs rn w).toNat ≠ v then
         if bad < 12 then
-          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
+          IO.println s!"  MISMATCH step {step} {rn}: edsl={(σ.regs rn w).toNat} iss={v}"
         bad := bad + 1
   -- D20: the thread-table memories, all 32 entries of each
   for (mn, arr) in issTArrays s do
@@ -1022,21 +1024,27 @@ def progLdSt : List (BitVec 64) :=
 put thread 0 in domain `dom`; start. `bump` optionally fires the §15
 shootdown on the cell before the program runs. -/
 def cmdMmu (dom : Nat) (bump : Bool) : Nat → MiniIn := fun k =>
+  -- EXT-7 stage B: install ONE VMA — base+domain, then limit (which
+  -- validates the entry, so a half-written VMA is never live), then
+  -- physical base + the VMA's epoch cell.
   if k = 0 then { cmdValid := true, cmdIdx := CMD_TLB_SEL, cmdData := 4 }
   else if k = 1 then
-    -- vpn in [23:0], domain in [31:24]
+    -- base in [23:0], domain in [31:24]
     { cmdValid := true, cmdIdx := CMD_TLB_VPN,
-      cmdData := BitVec.ofNat 32 ((MMU_DOM <<< 24) ||| (MMU_VA >>> 12)) }
+      cmdData := BitVec.ofNat 32 ((MMU_DOM <<< 24) ||| MMU_VA) }
   else if k = 2 then
+    { cmdValid := true, cmdIdx := CMD_TLB_PHYS,
+      cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24) ||| (MMU_PPN <<< 12)) }
+  else if k = 3 then
+    -- limit last: it is what makes the entry live
     { cmdValid := true, cmdIdx := CMD_TLB_PPN,
-      cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24) ||| MMU_PPN) }
-  else if k = 3 then { cmdValid := true, cmdIdx := CMD_MMU_EN, cmdData := 1 }
-  else if k = 4 then
-    -- put thread 0 in the domain we are testing from
+      cmdData := BitVec.ofNat 32 (MMU_VA + 0x1000) }
+  else if k = 4 then { cmdValid := true, cmdIdx := CMD_MMU_EN, cmdData := 1 }
+  else if k = 5 then
     { cmdValid := true, cmdIdx := CMD_SETDOM, cmdData := BitVec.ofNat 32 (dom <<< 8) }
-  else if bump ∧ k = 5 then
+  else if bump ∧ k = 6 then
     { cmdValid := true, cmdIdx := CMD_MAP_PROTECT, cmdData := BitVec.ofNat 32 MMU_CELL }
-  else if k = 6 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else if k = 7 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
 def mmuSelftest : IO Unit := do

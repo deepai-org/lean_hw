@@ -137,8 +137,9 @@ structure MiniSt where
   -- EXT-7 (§15): the domain-tagged TLB. mmu_en = 0 is bypass.
   mmu_en    : Bool := false
   tlb_sel   : BitVec 3 := 0
-  tlb_vpn   : Array (BitVec 32) := Array.replicate 8 0
-  tlb_ppn   : Array (BitVec 32) := Array.replicate 8 0
+  tlb_base  : Array (BitVec 32) := Array.replicate 8 0
+  tlb_limit : Array (BitVec 32) := Array.replicate 8 0
+  tlb_phys  : Array (BitVec 32) := Array.replicate 8 0
   tlb_dom   : Array (BitVec 8)  := Array.replicate 8 0
   -- EXT-7: valid bits are a bitmap (the shootdown clears several at once).
   tlb_vld   : BitVec 8 := 0
@@ -182,12 +183,13 @@ def ddrEaOf (s : MiniSt) (ea : BitVec 64) : BitVec 32 :=
   let raw := (BitVec.ofNat 32 DATA_BASE) + ((ea.extractLsb' 3 29).setWidth 32 <<< 3)
   if ¬ s.mmu_en then raw
   else
-    let i   := (ea.extractLsb' 12 3).toNat
-    let vpn := (ea.extractLsb' 12 20).setWidth 32
-    let hit := s.tlb_vld.getLsbD i ∧ s.tlb_vpn[i]! = vpn ∧ s.tlb_dom[i]! = s.tdom[s.cur.toNat]!
-    if hit then
-      (BitVec.ofNat 32 DATA_BASE) + ((s.tlb_ppn[i]! <<< 12) ||| (ea.extractLsb' 0 12).setWidth 32)
-    else BitVec.ofNat 32 DATA_BASE
+    -- fully-associative VMA lookup, first match wins (mirrors `priTree`).
+    let lo := ea.setWidth 32
+    match (List.range 8).find? (fun i =>
+            s.tlb_vld.getLsbD i && s.tlb_dom[i]! == s.tdom[s.cur.toNat]! &&
+            !(lo < s.tlb_base[i]!) && lo < s.tlb_limit[i]!) with
+    | some i => (BitVec.ofNat 32 DATA_BASE) + (s.tlb_phys[i]! + (lo - s.tlb_base[i]!))
+    | none   => BitVec.ofNat 32 DATA_BASE
 
 def bit {n : Nat} (x : BitVec n) (i : Nat) : Bool := x.getLsbD i
 
@@ -450,13 +452,13 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     -- EXT-7: MMU enable, TLB select/fill, and the §15 shootdown.
     | 63 => s' := { s' with mmu_en := bit d 0 }
     | 64 => s' := { s' with tlb_sel := BitVec.ofNat 3 (d.toNat % 8) }
-    | 65 => s' := { s' with tlb_vld := s.tlb_vld ||| (1#8 <<< s.tlb_sel.toNat),
-                            tlb_vpn := s'.tlb_vpn.set! s.tlb_sel.toNat
+    | 65 => s' := { s' with tlb_base := s'.tlb_base.set! s.tlb_sel.toNat
                               (BitVec.ofNat 32 (d.toNat % 0x1000000)),
                             tlb_dom := s'.tlb_dom.set! s.tlb_sel.toNat
-                                         (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)),
-                            }
-    | 66 => s' := { s' with tlb_ppn := s'.tlb_ppn.set! s.tlb_sel.toNat
+                                         (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)) }
+    | 66 => s' := { s' with tlb_limit := s'.tlb_limit.set! s.tlb_sel.toNat d,
+                            tlb_vld := s.tlb_vld ||| (1#8 <<< s.tlb_sel.toNat) }
+    | 68 => s' := { s' with tlb_phys := s'.tlb_phys.set! s.tlb_sel.toNat
                               (BitVec.ofNat 32 (d.toNat % 0x1000000)),
                             tlb_cell := s'.tlb_cell.set! s.tlb_sel.toNat
                                           (BitVec.ofNat 8 ((d.toNat >>> 24) % 256)) }
