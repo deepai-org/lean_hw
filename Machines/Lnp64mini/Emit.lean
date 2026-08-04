@@ -59,6 +59,18 @@ def main (args : List String) : IO Unit := do
   | ["mmuselftest"] => mmuSelftest
   | ["subwordselftest"] => subwordSelftest
   | ["coverageselftest"] => coverageSelftest
+  | ["alugapselftest"] => aluGapSelftest
+  | ["stepop", w, rs] =>
+      -- Mini half of the emulator differential: same CLI shape and same output
+      -- format as `lnp64 step-op <hex-word> <r0,...,r31>`, so the two can be
+      -- diffed directly.
+      let hexVal : String → Nat := fun t =>
+        (t.toList.foldl (fun acc c =>
+          let d := if c.isDigit then c.toNat - 48
+                   else if c.toLower.isAlpha then c.toLower.toNat - 87 else 0
+          acc * 16 + d) 0)
+      issStepOp (BitVec.ofNat 64 (hexVal w))
+        ((rs.splitOn ",").map (fun t => (t.trim.toNat?).getD 0))
   | ["preempthex"]  => writePreemptHex "fpga/zc702/preempt.hex"
   | ["preemptpredict", q] => preemptPredict ((q.toNat?).getD 0)
   | ["progtest"]   => progtest

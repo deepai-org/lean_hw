@@ -403,6 +403,34 @@ def progDDR : List (BitVec 64) :=
     encImmI OP_LD 8 1 0,        -- LD r8 = [r1+0] = 42 (DDR load)
     enc OP_EXIT 0 0 0 ]
 
+/-- The six opcodes the renumbering broke in the ISS, executed so the
+EDSL≡ISS lockstep actually looks at them.
+
+`not`, `sltu`, `bgeu`, `srli`, `srai` and `sltiu` were all mis-decoded by the
+ISS after the move to the ISA numbering — `OP_NOT` was missing from `is_alu`,
+`is_alu` still held the old raw bytes `0x1c/0xa5/0xa6/0x1e`, and `is_branch`
+had `OP_SLTU` where `OP_BGEU` belonged. `Core.lean` was correct throughout, so
+the *design* was right and only the hand-written mirror was wrong — and no
+existing selftest executed any of the six, which is why the whole ladder stayed
+green over a broken oracle.
+
+Every value below is checked, so a silently-missing write fails rather than
+passing as "no change". -/
+def progAluGap : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 7,          -- r1 = 7
+    encImmI OP_ADDI 2 0 9,          -- r2 = 9
+    enc OP_NOT 3 1 0,               -- r3 = ~7            = 0xFFFF...F8
+    enc OP_SLTU 4 1 2,              -- r4 = (7 <u 9) = 1
+    enc OP_SLTU 5 2 1,              -- r5 = (9 <u 7) = 0
+    encImmI OP_ADDI 6 0 0x100,      -- r6 = 256
+    encImmI OP_LSRI 7 6 4,          -- r7 = 256 >> 4      = 16
+    encImmI OP_ASRI 8 3 4,          -- r8 = ~7 >>a 4      = 0xFFFF...FF
+    encImmI OP_SLTIU 9 1 9,         -- r9 = (7 <u 9) = 1
+    encImmS OP_BGEU 2 1 2,          -- if 9 >=u 7 skip the next word
+    encImmI OP_ADDI 10 0 0xBAD,     -- (skipped when BGEU works)
+    encImmI OP_ADDI 11 0 0x600D,    -- r11 = 0x600D
+    enc OP_EXIT 0 0 0 ]
+
 /-- Sub-word stores. `sb` (0x35) and `sh` (0x37) had NO coverage anywhere in
 this harness -- only `sd` (0x33) and `sw` (0x34) were ever encoded -- and the
 gap showed up on silicon, not here: the guest's in-DDR console ring is written
@@ -539,6 +567,47 @@ def runIss (image : List (Nat × BitVec 64)) (latency : Nat)
     s := s'; d := d'; g := g'
     k := i + 1
   return (s, d, k)
+
+/-! ## Differential single-step against the emulator (`lnp64 step-op`)
+
+The two implementations agree on opcode *numbers* — `check_isa_agreement.py`
+proves that and is wired into `check_stale.sh`. They have already been caught
+disagreeing on opcode *behaviour*: `MINI_GATE_CALL` wrote a destination
+register in the emulator and none on the fabric, with identical encodings on
+both sides. A numeric check cannot see that, by construction.
+
+`issStepOp` is the mini half of a differential test. It takes one encoded
+instruction and 32 register values, runs the ISS until the instruction retires,
+and prints the registers it changed in exactly the format
+`lnp64 step-op <hex-word> <r0,...,r31>` prints, so the two can be diffed
+directly. The register file is seeded at raw indices 0..31, which is thread 0's
+window (`rf` is indexed `(cur << 5) | reg` and `cur` is 0 at reset). -/
+def issStepOp (word : BitVec 64) (regs : List Nat) : IO Unit := do
+  let img := imageFrom TEXT_BASE [word, enc OP_EXIT 0 0 0]
+  -- Start ALREADY RUNNING rather than via cmd 13/2. The normal start path
+  -- runs the reset zeroing engine, which wipes the register file -- so a
+  -- seeded `rf` came back all zeros and every instruction looked like a
+  -- no-op. Here the state is placed directly in the post-reset,
+  -- pre-first-fetch configuration with `rf` seeded.
+  let mut s0 : MiniSt :=
+    { running := true, halted := false, zeroing := false,
+      pc := BitVec.ofNat 64 TEXT_BASE, st := BitVec.ofNat 5 S_F0 }
+  -- `List.zipIdx` yields (element, index), not (index, element).
+  for (v, i) in regs.zipIdx do
+    if i < 32 then s0 := { s0 with rf := s0.rf.set! i (BitVec.ofNat 64 v) }
+  let cmds : Nat → MiniIn := fun _ => {}
+  let mut s := s0
+  let mut d : DdrModel := { mem := Std.HashMap.ofList img, latency := 1 }
+  let mut g : GpModel := {}
+  for i in List.range 400 do
+    if s.halted then break
+    let (s', d', g', _) := sysStep s d g (cmds i) (0 : BitVec 32)
+    s := s'; d := d'; g := g'
+  for i in List.range 32 do
+    let before := (regs[i]?).getD 0
+    let after := (s.rf[i]!).toNat
+    if after ≠ before then IO.println s!"STEP_OP_REG {i} {after}"
+  IO.println "STEP_OP_OK"
 
 /-! ## progtest — hand-encoded program to a clean EXIT on the ISS -/
 
@@ -1218,6 +1287,30 @@ memories ({cmpExemptMems.length} exempt: {cmpExemptMems})"
     IO.println "LNP64MINI COVERAGE SELFTEST FAILED"
     throw <| IO.userError "state coverage incomplete"
   IO.println "LNP64MINI COVERAGE SELFTEST OK — every declared register and memory is compared or explicitly exempt"
+
+/-- EDSL ≡ ISS on the six opcodes the renumbering broke, plus their values. -/
+def aluGapSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progAluGap
+  let mism ← lockstep img 1 (cmdQuantum 0) (fun _ => 0) 80
+  let (st, _, _) := runIss img 1 (cmdQuantum 0) (fun _ => 0) 400
+  let g : Nat → Nat := fun i => (st.rf[i]!).toNat
+  let want : List (Nat × Nat × String) :=
+    [(3, 0xFFFFFFFFFFFFFFF8, "not r1"), (4, 1, "sltu 7<9"), (5, 0, "sltu 9<7"),
+     (7, 16, "srli 256>>4"), (8, 0xFFFFFFFFFFFFFFFF, "srai ~7>>4"),
+     (9, 1, "sltiu 7<9"), (10, 0, "bgeu skipped the poison word"),
+     (11, 0x600D, "fell through to the tail")]
+  let mut bad := 0
+  for (r, w, lbl) in want do
+    if g r ≠ w then
+      bad := bad + 1
+      IO.println s!"  FAIL r{r} = 0x{String.ofList (Nat.toDigits 16 (g r))} \
+want 0x{String.ofList (Nat.toDigits 16 w)}  ({lbl})"
+  IO.println s!"  EDSL≡ISS mismatches={mism}; value checks failed={bad}"
+  if mism = 0 && bad = 0 then
+    IO.println "LNP64MINI ALUGAP SELFTEST OK — not/sltu/bgeu/srli/srai/sltiu decode and write"
+  else
+    IO.println "LNP64MINI ALUGAP SELFTEST FAILED"
+    throw <| IO.userError "alu gap selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt

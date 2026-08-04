@@ -210,14 +210,31 @@ def pc8 (s : MiniSt) : BitVec 64 := s.pc + 8
 
 def opN (s : MiniSt) : Nat := (op s).toNat
 
+-- Mirrors Core.lean's `is_alu` exactly. It did not, and the differences were
+-- invisible because no test program executed the affected opcodes:
+--   * OP_NOT was MISSING, so `not` wrote no destination register;
+--   * raw literals 0x1c, 0xa5, 0xa6, 0x1e survived the renumbering. They were
+--     SLTU, LSRI, ASRI and SLTIU under the OLD map; after the move to the ISA
+--     numbering those four ops live at 0x26/0x4d/0x4e/0x51 and were no longer
+--     recognised as ALU at all, while the stale bytes matched other things.
+-- Found by the emulator/ISS differential (`minitest stepop` vs
+-- `lnp64 step-op`) on its first run. Keep this list and Core.lean's in step.
 def is_alu (s : MiniSt) : Bool :=
-  [OP_LIU, OP_MOV, OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_SREM, OP_LSL, OP_LSR, OP_ASR, OP_SLT, 0x1c, OP_ADDI, OP_ANDI, OP_ORI, OP_XORI, OP_LSLI, 0xa5, 0xa6, OP_SLTI, 0x1e, OP_AUIPC, OP_SEXT_B, OP_SEXT_H, OP_SEXT_W, OP_ZEXT_B, OP_ZEXT_H, OP_ZEXT_W, OP_BSWAP16, OP_BSWAP32, OP_BSWAP64, OP_ROL, OP_ROR, OP_CTZ].contains (opN s)
+  [OP_LIU, OP_MOV, OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_NOT, OP_LSL, OP_LSR, OP_ASR, OP_SLT, OP_SLTU,
+   OP_ADDI, OP_ANDI, OP_ORI, OP_XORI, OP_LSLI, OP_LSRI, OP_ASRI, OP_SLTI, OP_SLTIU, OP_AUIPC,
+   OP_SEXT_B, OP_SEXT_H, OP_SEXT_W, OP_ZEXT_B, OP_ZEXT_H, OP_ZEXT_W, OP_BSWAP16, OP_BSWAP32, OP_BSWAP64,
+   OP_ROL, OP_ROR, OP_CTZ].contains (opN s)
 def is_load (s : MiniSt) : Bool :=
   [OP_LD,OP_LD_31,OP_LD_S_70,OP_LD_36,OP_LD_S,OP_LD_32,OP_LD_S_72].contains (opN s)
 def is_store (s : MiniSt) : Bool := [OP_ST,OP_ST_34,OP_ST_37,OP_ST_35].contains (opN s)
 -- W1.5d: membership, not a RANGE. An opcode's number must not carry
 -- semantic grouping, or the numbering cannot be changed.
-def is_branch (s : MiniSt) : Bool := [OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_SLTU].contains (opN s)
+-- The sixth member was OP_SLTU, not OP_BGEU. This list replaced the range
+-- `0x21 <= o <= 0x26`, where 0x26 was BGEU; renumbering moved SLTU onto 0x26
+-- and BGEU to 0x68, so the conversion silently captured the wrong opcode --
+-- SLTU branched and BGEU did not. Exactly the failure W1.5d's comment below
+-- warns about, committed in the same edit that wrote the warning.
+def is_branch (s : MiniSt) : Bool := [OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BLTU, OP_BGEU].contains (opN s)
 def is_lr (s : MiniSt) : Bool := [OP_LR_D,OP_LR_D_ACQ,OP_LR_D_ACQ_REL].contains (opN s)
 def is_sc (s : MiniSt) : Bool := [OP_SC_D,OP_SC_D_REL,OP_SC_D_ACQ_REL].contains (opN s)
 def is_fence (s : MiniSt) : Bool := [OP_FENCE, OP_FENCE_D1, OP_FENCE_D2, OP_FENCE_D3, OP_FENCE_D4].contains (opN s)

@@ -87,10 +87,21 @@ fi
 say "### 5. the selftests actually pass on the freshly built binary"
 for t in selftest smpselftest preemptselftest domselftest \
          failstopselftest gateselftest capxferselftest mmuselftest \
-         subwordselftest coverageselftest; do
+         subwordselftest coverageselftest alugapselftest; do
   r=$(timeout 400 ./.lake/build/bin/minitest "$t" 2>&1 | tail -1)
   case "$r" in *OK*) ok "$t";; *) bad "$t — $r";; esac
 done
+
+say "### 6. the emulator and the ISS agree on BEHAVIOUR, not just numbering"
+# Section 4 compares opcode NUMBERS. It cannot see a semantic divergence, and
+# two have already shipped: MINI_GATE_CALL's destination register, and six ALU
+# opcodes the ISS mis-decoded after the renumbering. This runs the differential.
+if command -v python3 >/dev/null && [ -x ../lnp64/target/release/lnp64 ]; then
+  r=$(timeout 900 python3 scripts/diff_emulator_iss.py 2>&1 | tail -2 | tr '\n' ' ')
+  case "$r" in *"MISMATCHES: 0"*) ok "emulator ≡ ISS ($r)";; *) bad "emulator vs ISS — $r";; esac
+else
+  say "  (skipped: python3 or ../lnp64 emulator not available)"
+fi
 
 [ "$FAIL" -eq 0 ] && say "check_stale: OK — every derived artifact matches its source" \
                   || say "check_stale: FAILED — see STALE lines above"
