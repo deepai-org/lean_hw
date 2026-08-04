@@ -397,3 +397,62 @@ confirmed to **fail** on the pre-fix ISS (114 EDSL≡ISS mismatches, with
 `trapped_op: edsl=0 iss=104` — the ISS trapping on `0x68` while the EDSL
 executed it). The differential is wired into `check_stale.sh` as section 6, so
 a behavioural divergence now fails the gate the way a numeric one already does.
+
+### The demo is back. The board bug was `lw`/`lb` not sign-extending.
+
+```
+PASS 20260804-230158
+core1_entry=0x00000000008ca300
+10 packets transmitted, 10 received, 0% packet loss
+core$ NetBSD lnp64mini3 (rump) on ZC702 PL fabric
+== PASS: NetBSD serving native GEM0, dual-core, BSCAN quiet ==
+```
+
+Against the last known-good run (08-03 21:27), to the instruction:
+
+| | known-good | now |
+|---|---|---|
+| `core0` retire | 30 136 595 | 30 219 007 |
+| `core1` retire | 1 717 838 | 1 749 469 |
+| `halted` | 0 | 0 |
+| console | — | 132 bytes: `IHLFUTX`, `RUMP_SHMIF_ON_CORE_OK` |
+| traps | 0 | 0 |
+
+Core 1 runs 1.75 M instructions in the shared kernel, so **dual-core NetBSD is
+back**, not a single-core fallback.
+
+**The cause.** `Core.lean`'s `ld_wb` chose a load's extension with raw hex, and
+two arms were stale: `0x05` and `0x08` were `lw` and `lb` under the td-anchored
+map, and after the renumbering those ops live at `0x70` and `0x72`. Both fell
+through to the default and returned the **raw 64-bit word instead of
+sign-extending**. The guest image contains ~4 180 `lw` and ~599 `lb`
+instructions; every one of them produced a wrong value on silicon.
+
+That is why the guest diverged on the board and not in the emulator — the
+emulator's semantics were correct all along — why it emitted ~420 000 console
+characters instead of 131, and why core 0 halted at ~115 M retires.
+
+**How it was finally found.** Not by staring at the board. The generated
+EDSL≡ISS matrix was extended from ALU opcodes to loads, stores and branches,
+and failed on its first run:
+
+```
+FAIL lb @0x40:   rf[4] edsl=255 iss=18446744073709551615
+FAIL lb @0x2000: same
+```
+
+Store 255, load it as a signed byte: the answer is −1, and the design said 255.
+
+**What this episode actually cost, and what to keep.** Several days went to
+theories that measurement later killed — EXT-7 stage B, timing margin, the
+servicer binary, a byte-store placement fault, a dual-core deadlock that turned
+out to be a truncated emulator run. Every one of those was reasoning from a
+symptom. The bug was found in thirteen seconds by a test that enumerates
+opcodes instead of guessing which one is interesting, and the same mechanism
+had already found six mis-decoded opcodes in the ISS an hour earlier.
+
+The rule this pays for: **when an opcode numbering changes, the thing that
+finds the fallout is exhaustive generated coverage, not a hand-written program
+and not a hypothesis about the failure.** Raw opcode literals are the specific
+hazard — `is_alu`, `is_branch` and `ld_wb` each held stale ones, in two
+different files, and only `ld_wb`'s reached silicon.
