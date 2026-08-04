@@ -87,7 +87,7 @@ fi
 say "### 5. the selftests actually pass on the freshly built binary"
 for t in selftest smpselftest preemptselftest domselftest \
          failstopselftest gateselftest capxferselftest mmuselftest \
-         subwordselftest; do
+         subwordselftest coverageselftest; do
   r=$(timeout 400 ./.lake/build/bin/minitest "$t" 2>&1 | tail -1)
   case "$r" in *OK*) ok "$t";; *) bad "$t — $r";; esac
 done

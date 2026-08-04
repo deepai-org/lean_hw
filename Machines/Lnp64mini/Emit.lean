@@ -58,6 +58,7 @@ def main (args : List String) : IO Unit := do
   | ["capxferselftest"] => capXferSelftest
   | ["mmuselftest"] => mmuSelftest
   | ["subwordselftest"] => subwordSelftest
+  | ["coverageselftest"] => coverageSelftest
   | ["preempthex"]  => writePreemptHex "fpga/zc702/preempt.hex"
   | ["preemptpredict", q] => preemptPredict ((q.toNat?).getD 0)
   | ["progtest"]   => progtest
