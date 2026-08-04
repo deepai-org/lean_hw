@@ -60,6 +60,7 @@ def main (args : List String) : IO Unit := do
   | ["subwordselftest"] => subwordSelftest
   | ["coverageselftest"] => coverageSelftest
   | ["alugapselftest"] => aluGapSelftest
+  | ["opdiffselftest"] => opDiffSelftest
   | ["stepop", w, rs] =>
       -- Mini half of the emulator differential: same CLI shape and same output
       -- format as `lnp64 step-op <hex-word> <r0,...,r31>`, so the two can be

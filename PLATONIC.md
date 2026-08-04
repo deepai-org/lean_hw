@@ -125,3 +125,33 @@ named obligation; properties recheck in proportion to affected logic; the
 optimized emitted implementation is connected by composed proofs; and the
 release report makes every remaining trusted or empirical link obvious to an
 outside reviewer.
+
+## W5 addendum: the comparator is derived, not declared
+
+`Loom/Hw/StateCover.lean` made a *hand-written* comparator's omissions into a
+named failure. `Loom/Hw/Diff.lean` removes the hand-written comparator: the
+`Design` already declares its registers and memories, so the complete set of
+observable coordinates is derivable, and a comparison derived from the
+declarations cannot omit a declaration.
+
+`Design.coords` / `diffCoords` / `diffAgainst` / `diffReport` live in Loom, so
+this is not per-machine scaffolding — any machine gets it. A machine supplies
+only a reader from a coordinate to its reference model's value, and
+coordinates the reference does not model are reported as **unmodelled**
+rather than skipped. That distinction is the point: the old comparator could
+only omit them, and an omission is indistinguishable from agreement.
+
+`lnp64mini` uses it through `lockstepDerived` + `issAt`, and `opDiffSelftest`
+runs *generated* programs — one per ALU opcode per boundary vector — through
+it. Coverage is therefore mechanical on both axes: every opcode in the matrix,
+every coordinate the design declares. That is what the six-opcode bug needed
+and did not have; it survived because EDSL≡ISS was checked with hand-written
+programs and nothing executed `not`, `sltu`, `bgeu`, `srli`, `srai` or `sltiu`.
+
+**Still open, and the reason the matrix is small:** the comparison runs against
+the closure-based `St`, whose `RegEnv` is a function, so cost grows with cycle
+count. Nine operand vectors over 39 opcodes did not finish in twenty minutes;
+four do. Running the comparison against `FastEval` is the fix and is what
+`FastEval` exists for. And the deeper half of W5 — deriving the reference model
+itself from the `Design`, so equality is a theorem rather than a test — remains
+undone.

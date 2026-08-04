@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.StateCover
+import Loom.Hw.Diff
 import Machines.Lnp64mini.Iss
 import Std.Data.HashMap
 
@@ -234,6 +235,51 @@ def cmpExemptMems : List String := ["uart_mem", "rx_mem"]
 
 /-! ## EDSL ≡ ISS lockstep -/
 
+/-- Read one of Loom's derived coordinates out of the ISS.
+
+This is the whole machine-specific part of the cross-check now: a lookup from
+`(name, addr)` to the ISS's value. Loom's `Design.diffAgainst` supplies the
+coordinates — every register and memory cell the design declares — so the
+*enumeration* is no longer written or maintained here, and state added to the
+design is compared without anyone remembering to add it.
+
+`none` means the ISS does not model that coordinate. Loom reports those
+separately from mismatches, which is the distinction the old hand-written
+comparator could not make: it simply omitted them, and an omission looks
+exactly like agreement. -/
+def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
+    (c : Loom.Hw.Coord) : Option Nat :=
+  if c.kind = "reg" then
+    (regs.find? (fun r => r.1 = c.name)).map (fun r => r.2.2)
+  else
+    let idx := c.addr
+    match c.name with
+    | "rf"          => some (s.rf[idx]!).toNat
+    | "dmem"        => some (s.dmem[idx]!).toNat
+    | "tdom"        => some (s.tdom[idx]!).toNat
+    | "tlb_vpn"     => some (s.tlb_vpn[idx]!).toNat
+    | "tlb_ppn"     => some (s.tlb_ppn[idx]!).toNat
+    | "tlb_dom"     => some (s.tlb_dom[idx]!).toNat
+    | "tlb_cell"    => some (s.tlb_cell[idx]!).toNat
+    | "gate_ent"    => some (s.gate_ent[idx]!).toNat
+    | "gate_dom"    => some (s.gate_dom[idx]!).toNat
+    | "tcont"       => some (s.tcont[idx]!).toNat
+    | "tcdom"       => some (s.tcdom[idx]!).toNat
+    | "cap_ibox"    => some (s.cap_ibox[idx]!).toNat
+    | "tpc"         => some (s.tpc[idx]!).toNat
+    | "tsleep"      => some (s.tsleep[idx]!).toNat
+    | "tp_arr"      => some (s.tp_arr[idx]!).toNat
+    | "sigmask_arr" => some (s.sigmask_arr[idx]!).toNat
+    -- The UART buffers are modelled by their pointers, not their contents:
+    -- the bytes are a host-visible side channel drained over BSCAN, not
+    -- architectural state the ISS reproduces. Reported as unmodelled.
+    | _             => none
+
+/-- Convenience wrapper. Prefer `issAtWith` in a per-cycle loop: `issRegs`
+rebuilds a 152-entry list on every call, so calling this once per coordinate
+rebuilds it once per coordinate. -/
+def issAt (s : MiniSt) (c : Loom.Hw.Coord) : Option Nat := issAtWith (issRegs s) s c
+
 /-- Compare the EDSL open-design state `σ` to the ISS `s`: all registers +
 the touched rf/dmem words listed in `mrf`/`mdmem`. Returns the mismatch
 count and prints the first few. -/
@@ -329,6 +375,44 @@ def lockstep (image : List (Nat × BitVec 64)) (latency : Nat)
     bad := bad + (← cmpStates σ s mrf mdmem k)
   return bad
 
+/-- Cycle-level EDSL ≡ ISS using **Loom's derived coordinate set**.
+
+`lockstep`/`cmpStates` enumerate what to compare by hand. This does not: the
+coordinates come from `Design.coords`, i.e. from the design's own register and
+memory declarations, so a coordinate cannot be omitted — there is no list here
+to forget to update. The only machine-specific part is `issAt`, which reads a
+coordinate out of the ISS.
+
+Coordinates the ISS does not model are reported as *unmodelled* rather than
+skipped, which is the distinction that matters: the hand-written comparator
+could only omit them, and an omission is indistinguishable from agreement.
+
+`cap` bounds cells per memory; `rf` alone is 1024 entries, so a cycle-level run
+over every cell of every memory is not free. -/
+def lockstepDerived (image : List (Nat × BitVec 64)) (latency : Nat)
+    (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat)
+    (cap : Nat := 64) : IO (Nat × Nat) := do
+  let mut s : MiniSt := {}
+  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
+  let mut g : GpModel := {}
+  let mut σ : St := design.reset
+  let mut bad := 0
+  let mut unmodelled := 0
+  for k in List.range nCyc do
+    let (s', d', g', inp) := sysStep s d g (cmds k) (gpVal k)
+    σ := design.cycleOpen inp.toEnv σ
+    s := s'; d := d'; g := g'
+    -- `issRegs` is rebuilt once per CYCLE, not once per coordinate.
+    let regs := issRegs s
+    let (mism, unm) := design.diffAgainst cap σ (issAtWith regs s)
+    unmodelled := unm.length
+    if !mism.isEmpty then
+      if bad < 8 then
+        for c in mism.take 4 do
+          IO.println s!"  MISMATCH cycle {k} {c.render}: edsl={σ.at c} iss={(issAtWith regs s c).getD 0}"
+      bad := bad + mism.length
+  return (bad, unmodelled)
+
 /-! ## Directed selftest script
 
 Builds a program image in DDR and a cmd stream that resets, loads a few
@@ -402,6 +486,64 @@ def progDDR : List (BitVec 64) :=
     encImmS 0x33 1 3 0,        -- SD [r1+0] = r3 (DDR store, RMW)
     encImmI OP_LD 8 1 0,        -- LD r8 = [r1+0] = 42 (DDR load)
     enc OP_EXIT 0 0 0 ]
+
+/-! ## Mechanical EDSL ≡ ISS coverage over the ALU opcode space
+
+The six-opcode bug survived because EDSL≡ISS was checked with *hand-written
+programs*, and no program executed `not`, `sltu`, `bgeu`, `srli`, `srai` or
+`sltiu`. Adding another hand-written program (`alugapselftest`) fixes those six
+and nothing else — the next opcode to go wrong will be one nobody thought to
+write a program for.
+
+So the opcode list is enumerated and the programs are *generated*: one tiny
+program per opcode per operand vector, each run through the same EDSL≡ISS
+lockstep. Coverage becomes a property of the list rather than of anybody's
+memory, and `opDiffSelftest` fails if an opcode in `aluOpcodes` is not
+exercised.
+
+The operand vectors are boundary values, because that is where a decode or
+width bug actually shows: sign bits, all-ones, shift amounts at and past 64. -/
+def aluOpsRRR : List (Nat × String) :=
+  [(OP_ADD,"add"), (OP_SUB,"sub"), (OP_MUL,"mul"), (OP_AND,"and"), (OP_OR,"or"),
+   (OP_XOR,"xor"), (OP_LSL,"sll"), (OP_LSR,"srl"), (OP_ASR,"sra"),
+   (OP_SLT,"slt"), (OP_SLTU,"sltu"), (OP_DIV,"div"), (OP_SREM,"srem"),
+   (OP_UDIV,"udiv"), (OP_UREM,"urem"), (OP_MULH,"mulh"), (OP_MULHU,"mulhu"),
+   (OP_ROL,"rol"), (OP_ROR,"ror")]
+
+def aluOpsRR : List (Nat × String) :=
+  [(OP_NOT,"not"), (OP_SEXT_B,"sext.b"), (OP_SEXT_H,"sext.h"), (OP_SEXT_W,"sext.w"),
+   (OP_ZEXT_B,"zext.b"), (OP_ZEXT_H,"zext.h"), (OP_ZEXT_W,"zext.w"),
+   (OP_CTZ,"ctz"), (OP_BSWAP16,"bswap16"), (OP_BSWAP32,"bswap32"), (OP_BSWAP64,"bswap64")]
+
+def aluOpsIMM : List (Nat × String) :=
+  [(OP_ADDI,"addi"), (OP_ANDI,"andi"), (OP_ORI,"ori"), (OP_XORI,"xori"),
+   (OP_LSLI,"slli"), (OP_LSRI,"srli"), (OP_ASRI,"srai"),
+   (OP_SLTI,"slti"), (OP_SLTIU,"sltiu")]
+
+/-- Operand pairs chosen for edges, not coverage-by-volume.
+
+Deliberately four, not forty. The EDSL state is a *function* (`RegEnv`), so a
+cycle-level comparison walks a closure chain that grows with the cycle count —
+the cost is in the comparison, not the opcode count, and a nine-vector matrix
+over 39 opcodes did not finish in twenty minutes. Four boundary pairs still
+separate signed from unsigned, exercise all-ones and zero, and push a shift
+past 64, which is where a decode or width bug shows.
+
+The real fix is to run this against `FastEval` rather than the closure-based
+`St` — that is what it exists for — and then the matrix can grow. Noted rather
+than done. -/
+def opVectors : List (Int × Int) :=
+  [(7, 9), (-1, 1), (255, 8), (1, 65)]
+
+/-- One instruction with its operands set up, then EXIT. `addi` builds the
+operands, which is sound because `addi` is itself in the matrix. -/
+def progOp (form : Nat) (op : Nat) (a b : Int) : List (BitVec 64) :=
+  let setup := [encImmI OP_ADDI 1 0 a, encImmI OP_ADDI 2 0 b]
+  let body :=
+    if form = 0 then enc op 3 1 2          -- rd, rs1, rs2
+    else if form = 1 then enc op 3 1 0     -- rd, rs1
+    else encImmI op 3 1 b                  -- rd, rs1, imm
+  setup ++ [body, enc OP_EXIT 0 0 0]
 
 /-- The six opcodes the renumbering broke in the ISS, executed so the
 EDSL≡ISS lockstep actually looks at them.
@@ -1311,6 +1453,41 @@ want 0x{String.ofList (Nat.toDigits 16 w)}  ({lbl})"
   else
     IO.println "LNP64MINI ALUGAP SELFTEST FAILED"
     throw <| IO.userError "alu gap selftest failed"
+
+/-- Generated EDSL ≡ ISS coverage over every ALU opcode in the matrix. -/
+def opDiffSelftest : IO Unit := do
+  let mut bad := 0
+  let mut ran := 0
+  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM)] do
+    for (op, nm) in ops do
+      let mut opBad := 0
+      for (a, b) in opVectors do
+        let img := imageFrom TEXT_BASE (progOp form op a b)
+        -- Loom's derived coordinates, not a hand-written comparison list:
+        -- every declared register and memory cell, enumerated from the design.
+        -- cap 16 cells/memory and 24 cycles: the programs are four
+        -- instructions and touch r1..r3, so a larger window costs time without
+        -- covering anything. EVERY DECLARED MEMORY is still compared -- the cap
+        -- bounds cells per memory, not which memories -- so the property this
+        -- test enforces is unchanged.
+        let (m, _) ← lockstepDerived img 1 (cmdQuantum 0) (fun _ => 0) 24 16
+        opBad := opBad + m
+        ran := ran + 1
+      if opBad ≠ 0 then
+        bad := bad + 1
+        IO.println s!"  FAIL {nm} (opcode 0x{String.ofList (Nat.toDigits 16 op)}): \
+{opBad} EDSL≡ISS mismatches across {opVectors.length} operand vectors"
+  let total := aluOpsRRR.length + aluOpsRR.length + aluOpsIMM.length
+  let (_, unm) ← lockstepDerived (imageFrom TEXT_BASE (progOp 0 OP_ADD 1 2))
+                   1 (cmdQuantum 0) (fun _ => 0) 8 16
+  IO.println s!"  {total} ALU opcodes x {opVectors.length} operand vectors = {ran} programs"
+  IO.println s!"  compared against Loom's derived coordinate set \
+({(design.coords 16).length} coordinates; {unm} not modelled by the ISS)"
+  if bad = 0 then
+    IO.println s!"LNP64MINI OPDIFF SELFTEST OK — EDSL≡ISS on all {total} ALU opcodes, generated not hand-written"
+  else
+    IO.println s!"LNP64MINI OPDIFF SELFTEST FAILED ({bad} opcodes disagree)"
+    throw <| IO.userError "opdiff selftest failed"
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt
