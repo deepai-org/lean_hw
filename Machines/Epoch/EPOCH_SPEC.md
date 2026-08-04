@@ -51,9 +51,8 @@ scripts/epoch_ladder.sh
 ```
 
 This is the maintained source/model/emission/simulation ladder. The protocol
-and refinement artifacts are current. Historical board demonstrations are
-not evidence for the present hardware head; consult `STATUS.md` and the ZC702
-README for the current board regression.
+and refinement artifacts are current. There is no accepted epoch board result
+for the present hardware head; consult `STATUS.md` and the ZC702 README.
 
 The model is bounded and target-specific integration remains outside its
 theorems. It does not prove an arbitrary external memory, AXI fabric, CDC

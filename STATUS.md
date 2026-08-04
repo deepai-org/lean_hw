@@ -67,17 +67,17 @@ The current LNP64mini integration head is **not hardware-green**:
 
 - cross-repository opcode agreement is restored for 70 shared opcodes;
 - the rebuilt guest passes the zero-trap emulator gate;
-- on silicon the trap count is restored from 10,722 to zero; but
+- silicon reports zero traps; but
 - the guest still does not reach the network: core 0 deterministically halts
   and core 1 remains parked in a futex wait after only 20 retirements.
 
-The in-guest console ring has now localized the symptom to smeared byte-store
-data while adjacent 32-bit metadata reads correctly. A new compiled
-`subwordselftest` passes byte/halfword lane merging on both on-chip and DDR
-paths with zero EDSL/ISS mismatches. The source models therefore do not
-reproduce the smear; the next step is a forced-fresh executable/RTL/bitstream
-rebuild followed by the same board trace. No NetBSD, Ethernet, SMP, epoch, or
-capability board result is currently accepted for this head.
+Raw console-ring data shows each guest byte write replicated into a 64-bit
+word at stride eight while adjacent 32-bit metadata is correct. Guest C,
+clang, the Loom design, ISS, and emitted-RTL simulation all specify the
+expected packed single-lane write. The remaining mismatch is in the physical
+HP AXI path or a downstream artifact; the next diagnostic is a tiny
+known-pattern write-and-halt probe read back over JTAG. No NetBSD, Ethernet,
+SMP, epoch, or capability board result is currently accepted for this head.
 
 ## Property limits that remain open
 

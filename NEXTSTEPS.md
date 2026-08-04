@@ -19,11 +19,10 @@ queue is in [`PLATONIC.md`](PLATONIC.md).
    scripts/ci.sh
    ```
 
-3. **Resolve the LNP64mini board regression.** The console-ring symptom points
-   at byte stores, while the new compiled subword test passes both modeled
-   memory paths. Force a fresh `minitest`/emission/RTL/bitstream build, repeat
-   the board trace, and then isolate any remaining wrapper or synthesized-path
-   difference. Re-run the complete emulator, RTL, and silicon ladders.
+3. **Resolve the LNP64mini board regression.** Run a tiny guest that writes a
+   known byte pattern to a fixed DDR address and halts, then read it back over
+   JTAG. Use that result to isolate the physical HP AXI or downstream-artifact
+   mismatch, then re-run the complete emulator, RTL, and silicon ladders.
 4. **Rebuild the release from clean state.** Run Tier A only after the source,
    test, and quality gates are green; retain its metrics and exact tool
    versions with the release record.
