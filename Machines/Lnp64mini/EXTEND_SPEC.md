@@ -271,3 +271,48 @@ rediscover it:
 
 Finish the write sequencing and this answers in one board cycle a question that
 has now cost several.
+
+### Settled on silicon: byte stores are packed and correct
+
+`fpga/zc702/probes/bsprobe.tcl` now runs, and the answer is unambiguous:
+
+```
+PROBE: write-path check = 0xCAFEBABE12345678 (want 0xCAFEBABE12345678)
+PROBE: status=0xa halted=1 retire=22 pc=0x10a8
+MINI-VIEW  0x13200000 = 0x4847464544434241     bytes 0..7 = A B C D E F G H
+MINI-VIEW  0x13200008 = 0xDEADBEEF01020304     neighbour untouched
+DAP-VIEW   13200004: 48474645  13200008: 01020304  1320000C: DEADBEEF
+```
+
+Eight `sb` instructions into the eight byte lanes of one word land **packed**,
+in order, and leave the adjacent word alone. Both masters agree. The core ran
+the whole program (`retire=22`, halted at the `EXIT`). This is the silicon
+itself, with no NetBSD in the way — the question that cost several board cycles
+is closed by measurement rather than inference, and the `subwordselftest`/
+iverilog result is confirmed rather than merely assumed to extend.
+
+**What made the probe work.** `gwrite` in `jtag_lib.tcl` is not usable
+standalone. `bulk_write` does two things it does not:
+
+* register 40 takes `addr - 8`, because the auto-increment bitstream latches
+  the address *post*-increment;
+* each word needs an idle dwell, or the HP write is silently dropped.
+
+`bulk_write_v` additionally reads back and re-writes dropped words — its own
+comment notes ~30 % of raw loads corrupt without it. A standalone `gwrite`
+therefore reads back unchanged and looks exactly like a dead write path. Also:
+the program must go to **DDR** via `bulk_write_v`, not through `loadw`
+(regs 10/11/12), which targets an IMEM this SoC does not fetch from.
+
+**So the console ring's eight-fold repetition is real guest output.** The
+hardware wrote what the guest asked for. Combined with the guest emitting
+~420 000 characters on silicon against 131 off-hardware for a byte-identical
+image, the remaining question is no longer about memory at all: **some
+instruction behaves differently on the mini than in the emulator**, and the
+guest diverges onto another path early.
+
+That is exactly what the differential test noted after the gate-call finding
+would catch — one program through both the emulator and the ISS with observable
+state compared. The gate-call divergence proved numeric opcode agreement does
+not imply behavioural agreement; this is the second symptom pointing the same
+way, and it is now the highest-value thing to build.
