@@ -456,3 +456,41 @@ finds the fallout is exhaustive generated coverage, not a hand-written program
 and not a hypothesis about the failure.** Raw opcode literals are the specific
 hazard — `is_alu`, `is_branch` and `ld_wb` each held stale ones, in two
 different files, and only `ld_wb`'s reached silicon.
+
+### EXT-7 stage B passes on silicon
+
+```
+PASS 20260804-234424
+10 packets transmitted, 10 received, 0% packet loss
+== PASS: NetBSD serving native GEM0, dual-core, BSCAN quiet ==
+
+LOOPEND halted=0 traps=0 traps1=0
+RETIRE core0=30057049 core1=1724641   console: 132 bytes, IHLFUTX ... ON_CORE_OK
+SLICE_LUTX 54309/106400 (51%)   sysclk 27.36 MHz routed
+```
+
+The VMA-range TLB is on the board, under a live dual-core NetBSD, with core 1
+running 1.72 M instructions in the shared kernel and the boot at `traps=0`.
+
+**Stage B was innocent the whole time.** It was reverted on 08-04 for breaking
+the boot; the actual cause was `ld_wb`'s stale `0x05`/`0x08`, which made every
+signed byte and word load return an unextended raw word. That bug was present
+with or without stage B — which is precisely why the stage-A "restore" failed
+identically, the observation that should have exonerated stage B immediately
+and instead was read as "the board is broken generally."
+
+The measured numbers that were used to convict it were fine all along: 51 %
+LUTs against a ~55 % practical ceiling, and 27.36 MHz routed against a 25 MHz
+board clock — the same margin as the stage-A build that passes.
+
+**What the re-land had to fix, and what caught it.** Stage B moves the TLB from
+memories to per-index *registers* (D20: every entry is read at once, so it is a
+register file). The derived comparator reads registers through `issRegs`, and
+the 40 TLB registers were only in `cmpStates`' hand-written loop — so they
+would have been invisible to the generated matrix. `coverageselftest` is what
+surfaces that; the count went 152 → **192 registers**, all compared or
+explicitly exempt.
+
+That is the machinery earning its keep on the first increment after it was
+built: new state arrived, and the gate demanded it be compared instead of
+quietly not being.
