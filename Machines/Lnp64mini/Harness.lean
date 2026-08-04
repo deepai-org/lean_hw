@@ -564,6 +564,53 @@ the whole reason the fast path was built. -/
 def opVectors : List (Int × Int) :=
   [(7, 9), (9, 7), (0, 0), (-1, 1), (1, -1), (255, 8), (-8, 4), (1, 64), (1, 65)]
 
+/-- Loads, stores and branches. These need memory or control flow rather than a
+register triple, so they get their own generated shapes — and they are the
+remaining place renumbering fallout could hide, since every one of them was
+moved or re-membershipped at some point.
+
+Both memory paths are covered: `ea < 0x1000` is the on-chip `dmem`, `ea >=
+0x1000` is the DDR read-modify-write. They are different hardware. -/
+def memOpsLoad : List (Nat × String) :=
+  [(OP_LD,"ld"), (OP_LD_31,"lwu"), (OP_LD_32,"lbu"), (OP_LD_36,"lhu"),
+   (OP_LD_S,"lh"), (OP_LD_S_70,"lw"), (OP_LD_S_72,"lb")]
+
+def memOpsStore : List (Nat × String) :=
+  [(OP_ST,"sd"), (OP_ST_34,"sw"), (OP_ST_35,"sb"), (OP_ST_37,"sh")]
+
+def brOps : List (Nat × String) :=
+  [(OP_BEQ,"beq"), (OP_BNE,"bne"), (OP_BLT,"blt"), (OP_BGE,"bge"),
+   (OP_BLTU,"bltu"), (OP_BGEU,"bgeu")]
+
+/-- Seed a word, then load it back with the opcode under test. -/
+def progLoad (op : Nat) (base : Nat) (pat : Int) : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 base,
+    encImmI OP_ADDI 3 0 pat,
+    encImmS OP_ST 1 3 0,            -- sd [r1] = pattern
+    encImmI op 4 1 0,               -- the load under test
+    enc OP_EXIT 0 0 0 ]
+
+/-- Seed a word, store over it with the opcode under test, read the whole word
+back. A store that writes the wrong lanes shows up in `r4`. -/
+def progStore (op : Nat) (base : Nat) (pat : Int) : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 base,
+    encImmI OP_LIU 3 0 0x11223344,
+    encImmI OP_ORI 3 3 0x55667788,
+    encImmS OP_ST 1 3 0,            -- seed the word
+    encImmI OP_ADDI 5 0 pat,
+    encImmS op 1 5 0,               -- the store under test
+    encImmI OP_LD 4 1 0,            -- read the whole word back
+    enc OP_EXIT 0 0 0 ]
+
+/-- Both directions of a branch: the taken path skips a poison write. -/
+def progBranch (op : Nat) (a b : Int) : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 a,
+    encImmI OP_ADDI 2 0 b,
+    encImmS op 1 2 2,               -- taken -> skip the next word
+    encImmI OP_ADDI 5 0 0xBAD,
+    encImmI OP_ADDI 6 0 0x600D,
+    enc OP_EXIT 0 0 0 ]
+
 /-- One instruction with its operands set up, then EXIT. `addi` builds the
 operands, which is sound because `addi` is itself in the matrix. -/
 def progOp (form : Nat) (op : Nat) (a b : Int) : List (BitVec 64) :=
@@ -1506,14 +1553,49 @@ def opDiffSelftest : IO Unit := do
         bad := bad + 1
         IO.println s!"  FAIL {nm} (opcode 0x{String.ofList (Nat.toDigits 16 op)}): \
 {opBad} EDSL≡ISS mismatches across {opVectors.length} operand vectors"
+  -- Loads and stores, on BOTH memory paths: dmem (ea < 0x1000) and the DDR
+  -- read-modify-write (ea >= 0x1000) are different hardware.
+  for base in [0x40, 0x2000] do
+    for (op, nm) in memOpsLoad do
+      let mut opBad := 0
+      for (a, _) in opVectors do
+        let img := imageFrom TEXT_BASE (progLoad op base a)
+        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 40 16
+        opBad := opBad + m
+        ran := ran + 1
+      if opBad ≠ 0 then
+        bad := bad + 1
+        IO.println s!"  FAIL {nm} @0x{String.ofList (Nat.toDigits 16 base)}: {opBad} mismatches"
+    for (op, nm) in memOpsStore do
+      let mut opBad := 0
+      for (a, _) in opVectors do
+        let img := imageFrom TEXT_BASE (progStore op base a)
+        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 48 16
+        opBad := opBad + m
+        ran := ran + 1
+      if opBad ≠ 0 then
+        bad := bad + 1
+        IO.println s!"  FAIL {nm} @0x{String.ofList (Nat.toDigits 16 base)}: {opBad} mismatches"
+  -- Branches, both directions.
+  for (op, nm) in brOps do
+    let mut opBad := 0
+    for (a, b) in opVectors do
+      let img := imageFrom TEXT_BASE (progBranch op a b)
+      let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 40 16
+      opBad := opBad + m
+      ran := ran + 1
+    if opBad ≠ 0 then
+      bad := bad + 1
+      IO.println s!"  FAIL {nm}: {opBad} mismatches"
   let total := aluOpsRRR.length + aluOpsRR.length + aluOpsIMM.length
+             + 2 * (memOpsLoad.length + memOpsStore.length) + brOps.length
   let (_, unm) ← lockstepFast (imageFrom TEXT_BASE (progOp 0 OP_ADD 1 2))
                    1 (cmdQuantum 0) (fun _ => 0) 8 16
-  IO.println s!"  {total} ALU opcodes x {opVectors.length} operand vectors = {ran} programs"
+  IO.println s!"  {total} opcode/path combinations x {opVectors.length} vectors = {ran} programs"
   IO.println s!"  compared against Loom's derived coordinate set \
 ({(design.coords 16).length} coordinates; {unm} not modelled by the ISS)"
   if bad = 0 then
-    IO.println s!"LNP64MINI OPDIFF SELFTEST OK — EDSL≡ISS on all {total} ALU opcodes, generated not hand-written"
+    IO.println s!"LNP64MINI OPDIFF SELFTEST OK — EDSL≡ISS on {total} ALU/load/store/branch combinations, generated not hand-written"
   else
     IO.println s!"LNP64MINI OPDIFF SELFTEST FAILED ({bad} opcodes disagree)"
     throw <| IO.userError "opdiff selftest failed"

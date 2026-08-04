@@ -798,15 +798,30 @@ def sel_cond : Expr 1 :=
 def mem_src : Expr 64 := .mux (.eq st (L5 S_L1)) dmem_rd ddr_q
 def lw_shift : Expr 64 := .shr mem_src (.shl (.zext ld_boff_q 64) (L64 3))
 
+/-- Load write-back: narrow the fetched word to the load's width and extend.
+
+These arms were raw hex, and TWO of them were stale after the renumbering:
+`0x05` and `0x08` were `lw` and `lb` under the td-anchored map, and those ops
+now live at `0x70` (`OP_LD_S_70`) and `0x72` (`OP_LD_S_72`). Both therefore fell
+through to the default and returned the **raw 64-bit word instead of
+sign-extending** — every signed byte and word load in the design was wrong, in
+the EDSL, so in the RTL and in the bitstream.
+
+Found by the generated EDSL≡ISS matrix once it covered loads:
+`lb @0x40: rf[4] edsl=255 iss=18446744073709551615`. Storing 255 and loading it
+as a signed byte is −1; the design returned 255.
+
+Named constants now, so a renumbering moves them. -/
 def ld_wb : Expr 64 :=
   priTree
-  [ (.eq ld_op_q (L8 OP_LD), mem_src)
-  , (.eq ld_op_q (L8 0x31), .zext (.slice lw_shift 0 32) 64)
-  , (.eq ld_op_q (L8 0x05), .sext (.slice lw_shift 0 32) 64)
-  , (.eq ld_op_q (L8 0x36), .zext (.slice lw_shift 0 16) 64)
-  , (.eq ld_op_q (L8 0x09), .sext (.slice lw_shift 0 16) 64)
-  , (.eq ld_op_q (L8 0x32), .zext (.slice lw_shift 0 8) 64)
-  , (.eq ld_op_q (L8 0x08), .sext (.slice lw_shift 0 8) 64) ] mem_src
+  [ (.eq ld_op_q (L8 OP_LD),      mem_src)
+  , (.eq ld_op_q (L8 OP_LD_31),   .zext (.slice lw_shift 0 32) 64)   -- lwu
+  , (.eq ld_op_q (L8 OP_LD_S_70), .sext (.slice lw_shift 0 32) 64)   -- lw
+  , (.eq ld_op_q (L8 OP_LD_36),   .zext (.slice lw_shift 0 16) 64)   -- lhu
+  , (.eq ld_op_q (L8 OP_LD_S),    .sext (.slice lw_shift 0 16) 64)   -- lh
+  , (.eq ld_op_q (L8 OP_LD_32),   .zext (.slice lw_shift 0 8) 64)    -- lbu
+  , (.eq ld_op_q (L8 OP_LD_S_72), .sext (.slice lw_shift 0 8) 64) ]  -- lb
+  mem_src
 
 def st_width : Expr 4 :=
   priTree
