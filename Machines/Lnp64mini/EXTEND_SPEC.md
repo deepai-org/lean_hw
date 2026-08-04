@@ -154,3 +154,31 @@ selftests, not another guest rebuild.
 `SMP: core-1 stub + kernel worker (RUMP_NCPU=2)` on one line and
 `rump vCPUs = 1` a few lines below. The first is what got believed. It now says
 where the number actually comes from.
+
+### What the guest is actually doing while it "hangs"
+
+`LNP64_STEP_DUMP` on the reproduction gives the shape precisely. The suffix on
+each entry is the core (`c0`/`c1`):
+
+```
+ready=2  t1,t3..t31 @0x8d4630c0 (c0)   t2 @0x8ca830c1 (c1)   t5, t32 advancing
+futex 0x404b020:[14, 1, 19, 16]  ... later  [14, 1, 19, 16, 31]
+       0x940240:[2]
+```
+
+* **31 rump kthreads are parked at one address** (`0x8d4630c0`, the rumpuser
+  condvar wait), all on core 0. Only **two** threads are runnable.
+* `t2` on core 1 waits on `0x940240` — `lnp64_smp`, the SMP gate. Expected.
+* The waiter list on `0x404b020` **grows** across dumps (`…16]` → `…16, 31]`):
+  threads keep arriving at that condvar and nothing ever signals it.
+* `t5` advances a few hundred bytes of PC across 80 M steps. That is a spin,
+  not progress.
+
+So it is not a hard deadlock and not slowness: it is a condvar with an
+ever-growing waiter list and no signaller, with one thread spinning. The
+question is which thread is supposed to signal `0x404b020` and why it is not
+running — and the fact that `LNP64_SMP_CORES=1` boots the identical image means
+the answer involves core 1's presence, not the guest logic alone.
+
+This is where the next session should start, and it now costs seven minutes an
+iteration with full thread visibility rather than a blind board cycle.
