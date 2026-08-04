@@ -86,6 +86,37 @@ explicit operator/cell instances, and keep LRAT checking independent of the
 solver. Static timing/area estimators should be useful engineering predictors
 without being oversold as physics theorems.
 
+## Progress (2026-08-04)
+
+**W1.1 — emit-time gates.** `Design.emit` enforces read-validity, duplicate
+names, D19 sync-read declaration, D38 write-port shape and D39a outputs. It
+caught a live bug in EXT-7 stage B on its first run.
+
+**W2 — frame rules.** `Loom/Hw/Frame.lean`. The write side already existed;
+`Expr.eval_congr_of_agree` adds the read side, so an expression provably cannot
+see state outside its `readSites` footprint — the same footprint W1.1 gates on,
+not a second one. `Design.cycle_regs_notin`/`cycle_mems_notin` lift the write
+frame to a whole cycle. `regUnwrittenB`/`memUnwrittenB` make the side condition
+a `decide`, because a frame rule whose hypothesis costs more than the property
+it frames saves nothing.
+
+**W3.1 — verified transforms.** The balanced-tree builders were already in
+`Loom/Hw/Trees.lean` (D18); the work here was discovering that, not rewriting
+it.
+
+**W5 — derived simulation.** `FastEval` already generates the evaluator.
+`Loom/Hw/StateCover.lean` adds the complete comparator: the design enumerates
+its own state, the harness declares what it compared, and the difference is a
+named failure. It found five uncompared memories in `lnp64mini` on first run
+(EXT-5's gate table and continuation, EXT-6's capability inbox), meaning two
+selftests had been green without ever looking at the state their increments
+added. Enforced by `coverageselftest`.
+
+Still open: W1's typed declaration notation, W2's cycle tactics, W3's pass
+composition, W4's remaining eqcheck coverage, W6's timing model, and W5's
+generated *equality theorem* (the evaluator is derived; the proof that it
+agrees with `Design.cycle` is not yet stated in those terms).
+
 ## Success criteria
 
 Loom reaches this shape when a substantial processor can be changed at one
