@@ -73,7 +73,8 @@ constant-folds away.
 
 namespace Machines.CapWalk.CapSoc
 
-open Loom.Hw
+-- see EpochSoc: `actSeq` also lives in Loom.Hw (Trees.lean)
+open Loom.Hw hiding actSeq
 open Machines.CapWalk.Engine (Cfg cfg32 SLOTB actSeq L1 L2 L3 L16)
 
 /-! ## `capmmio` — the per-core GP-transaction adapter -/
