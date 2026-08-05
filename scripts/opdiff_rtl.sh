@@ -27,26 +27,51 @@ command -v iverilog >/dev/null || { echo "opdiff_rtl: iverilog not found"; exit 
 ls "$DIR"/*.hex >/dev/null 2>&1 || {
   echo "opdiff_rtl: no programs in $DIR -- run 'minitest opdiffhex $DIR'"; exit 1; }
 
-total=0; bad=0; first=""
+total=0; bad=0; noexp=0; first=""
+
+# The comparison drops `cycles=`: DDR latency is a parameter of the experiment,
+# not an architectural fact, and a core that reached the same state in a
+# different number of cycles has not misdecoded anything. Everything else the
+# testbench prints -- HALTED, pc, retire, r1..r9, the zero-page word, and any
+# TRAP line -- is compared exactly.
+norm() { grep -E '^(TRAP|HALTED|r[0-9]=|dmem32=)' "$1" | sed 's/ cycles=[0-9]*//'; }
+
 for hex in "$DIR"/*.hex; do
   name=$(basename "$hex" .hex)
+  exp="$DIR/$name.exp"
   total=$((total+1))
+  if ! [ -f "$exp" ]; then
+    echo "  NO-EXPECTATION $name — re-run 'minitest opdiffhex $DIR'"
+    noexp=$((noexp+1)); [ -z "$first" ] && first=$name
+    continue
+  fi
   if ! iverilog -g2012 -DPROG_HEX="\"$hex\"" -o "$T/a.vvp" "$SOC" "$TB" 2>/dev/null; then
     echo "  BUILD-FAIL $name"; bad=$((bad+1)); [ -z "$first" ] && first=$name
     continue
   fi
-  # r1..r9 plus HALTED/retire are the architectural observables the tb prints.
-  vvp "$T/a.vvp" 2>/dev/null | grep -E '^(HALTED|r[0-9]=)' > "$T/rtl.txt"
-  if ! [ -s "$T/rtl.txt" ]; then
+  vvp "$T/a.vvp" 2>/dev/null > "$T/raw.txt"
+  norm "$T/raw.txt" > "$DIR/$name.rtl"
+  if ! [ -s "$DIR/$name.rtl" ]; then
     echo "  NO-OUTPUT $name"; bad=$((bad+1)); [ -z "$first" ] && first=$name
     continue
   fi
-  cp "$T/rtl.txt" "$DIR/$name.rtl"
+  norm "$exp" > "$T/exp.txt"
+  if ! diff -q "$DIR/$name.rtl" "$T/exp.txt" >/dev/null; then
+    bad=$((bad+1)); [ -z "$first" ] && first=$name
+    if [ "$bad" -le 5 ]; then
+      echo "  MISMATCH $name  (RTL < , ISS > )"
+      diff "$DIR/$name.rtl" "$T/exp.txt" | head -8 | sed 's/^/    /'
+    fi
+  fi
 done
 
-echo "opdiff_rtl: simulated $total program(s) on $SOC"
-if [ "$bad" -ne 0 ]; then
-  echo "opdiff_rtl: FAILED — $bad program(s) did not simulate (first: $first)"
+echo "opdiff_rtl: ran $total program(s) on $SOC, each diffed against the ISS"
+if [ "$noexp" -ne 0 ]; then
+  echo "opdiff_rtl: FAILED — $noexp program(s) had no .exp expectation"
   exit 1
 fi
-echo "opdiff_rtl: OK — every generated program runs on the RTL; results in $DIR/*.rtl"
+if [ "$bad" -ne 0 ]; then
+  echo "opdiff_rtl: FAILED — RTL disagreed with the ISS on $bad program(s) (first: $first)"
+  exit 1
+fi
+echo "opdiff_rtl: OK — RTL ≡ ISS on all $total generated programs"

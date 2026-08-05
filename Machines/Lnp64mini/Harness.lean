@@ -1588,6 +1588,43 @@ want 0x{String.ofList (Nat.toDigits 16 w)}  ({lbl})"
     IO.println "LNP64MINI ALUGAP SELFTEST FAILED"
     throw <| IO.userError "alu gap selftest failed"
 
+/-- The testbench's own command stream, so the ISS reference runs the same
+sequence the RTL does: reset (starts the 1024-cycle zeroing sweep), a wait, then
+start. `cmdQuantum` starts immediately and is right for the in-Lean lockstep,
+where the model is placed directly in the started state; it is NOT what the
+testbench drives, and using it here would compare two different experiments. -/
+def cmdTb : Nat → MiniIn := fun k =>
+  if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 1 }
+  else if k = 1210 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+/-- Run the ISS on a program and render the architectural result in exactly the
+form `tb_lnp64mini_soc.v` prints, so the two can be compared as text.
+
+`cycles` is deliberately NOT part of the comparison: the DDR model's latency is
+a parameter of the experiment rather than an architectural fact, and a core that
+took a different number of cycles to reach the same architectural state has not
+misdecoded anything. HALTED, pc, retire, r1..r9 and the zero-page word are the
+observables that a decode disagreement actually moves. -/
+def issExpect (prog : List (BitVec 64)) (nCyc : Nat := 400000) : String := Id.run do
+  let image := imageFrom TEXT_BASE prog
+  let mut s : MiniSt := {}
+  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := 1 }
+  let mut g : GpModel := {}
+  for k in List.range nCyc do
+    if s.halted || s.trap_active then break
+    let (s', d', g', _) := sysStep s d g (cmdTb k) 0
+    s := s'; d := d'; g := g'
+  let mut out := ""
+  if s.trap_active then
+    out := out ++ s!"TRAP op={(String.ofList (Nat.toDigits 16 s.trapped_op.toNat)).leftpad 2 '0'} \
+pc={s.pc.toNat}\n"
+  out := out ++ s!"HALTED={if s.halted then 1 else 0} pc={s.pc.toNat} retire={s.retire.toNat}\n"
+  for i in List.range 9 do
+    out := out ++ s!"r{i+1}={(s.rf[i+1]!).toNat}\n"
+  out := out ++ s!"dmem32={(s.dmem[32]!).toNat}\n"
+  return out
+
 /-- Emit the generated matrix's programs as `.hex` files for the RTL leg.
 
 The 2026-08-05 renumbering passed every gate here and panicked on silicon. The
@@ -1609,12 +1646,18 @@ def writeOpDiffHex (dir : String) : IO Unit := do
     for w in prog do
       txt := txt ++ (String.ofList (Nat.toDigits 16 w.toNat)).leftpad 16 '0' ++ "\n"
     IO.FS.writeFile s!"{dir}/{nm}.hex" txt
+    -- The expectation travels WITH the program. Without it the RTL leg can only
+    -- report that a program ran, which is the weaker claim that let the
+    -- renumbering through: `liu` "ran" fine and produced the wrong constant.
+    IO.FS.writeFile s!"{dir}/{nm}.exp" (issExpect prog)
   for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM)] do
     for (op, nm) in ops do
       for (a, b) in opVectors do
         emit s!"{nm}_{a}_{b}" (progOp form op a b); n := n + 1
   for (hi, lo) in constBattery do
     emit s!"const_{hi}_{lo}" (progConst hi lo); n := n + 1
+  for (op, nm) in jumpOps do
+    emit s!"jump_{nm}" (progJump op); n := n + 1
   IO.println s!"wrote {n} matrix programs to {dir}"
 
 /-- Generated EDSL ≡ ISS coverage over every ALU opcode in the matrix. -/
