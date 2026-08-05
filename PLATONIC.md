@@ -161,7 +161,27 @@ The gate was verified to **fail** on the reintroduced bug — `FAIL sltu (opcode
 `rf[3]: edsl=1 iss=0`. A gate that has not been seen failing is not known to
 work.
 
-**Still open:** the deeper half of W5 — deriving the reference model itself from
-the `Design`, so equality is a theorem rather than a test. What exists now is
-enforcement by exhaustive generated comparison, which is strictly weaker than a
-proof and strictly stronger than hand-written programs.
+**The deeper half, first increment (2026-08-05):** matrix equality is now a
+THEOREM. `lockstepPure` is `lockstepFast` with the printing removed — a pure
+mismatch count — and `Machines/Lnp64mini/MatrixTheorem.lean` states
+
+```lean
+theorem matrix_agrees : matrixMismatches = 0 := by native_decide
+```
+
+so a build of the library in which the design and the ISS disagree on the ALU
+matrix **does not exist**. Verified to fail: reintroducing the `sltu` inversion
+makes `native_decide` refuse the build, naming the proposition false.
+
+Honesty about what this buys: `native_decide` evaluates with the compiler, so
+the trusted base is the same one the test uses. What changes is *where* the
+check lives — inside the artifact the kernel accepts, so no harness has to
+remember to run it, no output has to be read, no exit code wired into CI.
+Strictly stronger than a test someone must run; strictly weaker than a symbolic
+proof.
+
+**Still open:** the rest of the deeper half — deriving the reference model
+itself from the `Design` and proving equality symbolically, per opcode, rather
+than by evaluation over a finite vector set. The load/store/branch/jump legs
+also stay in the test gate for now: their cmd streams and dual-memory-path
+checks are where the test form earns its keep.

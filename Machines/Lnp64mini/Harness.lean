@@ -434,6 +434,38 @@ def lockstepDerived (image : List (Nat × BitVec 64)) (latency : Nat)
       bad := bad + mism.length
   return (bad, unmodelled)
 
+/-! ### W5, the deeper half: matrix equality as a THEOREM
+
+`lockstepFast` below is IO only because it prints. This is the same run with
+the printing removed: a pure mismatch count, so a whole test matrix can be a
+single `Nat` and "the design agrees with the ISS on the matrix" can be stated
+as `matrixMismatches = 0` and discharged by `native_decide` at BUILD time.
+
+Honesty about what that buys: `native_decide` evaluates with the compiler, so
+the trusted base is the same one the *test* uses. What changes is WHERE the
+check lives -- inside the artifact the kernel accepts, so it cannot be skipped,
+filtered, or forgotten by a harness; a build in which the design and the ISS
+disagree on the matrix does not exist. It is strictly stronger than a test that
+someone must run, and strictly weaker than a symbolic proof, and PLATONIC.md
+records it in exactly those terms. -/
+def lockstepPure (image : List (Nat × BitVec 64)) (latency : Nat)
+    (cmds : Nat → MiniIn) (nCyc : Nat) (cap : Nat := 16) : Nat := Id.run do
+  let fd := design.elaborate
+  let plan := design.coordPlan cap
+  let mut fs := design.fastReset
+  let mut s : MiniSt := {}
+  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
+  let mut g : GpModel := {}
+  let mut bad := 0
+  for k in List.range nCyc do
+    let (s', d', g', inp) := sysStep s d g (cmds k) 0
+    fs := fastCycleOpen fd inp.toEnv fs
+    s := s'; d := d'; g := g'
+    let (mism, _) := diffFastAgainst plan fs (issAtWith (issRegs s) s)
+    bad := bad + mism.length
+  return bad
+
+
 /-- The same derived-coordinate lockstep, run against `FastEval`.
 
 `lockstepDerived` compares against the closure-based `St`, which is correct and
@@ -1754,6 +1786,17 @@ instruction, at its own PC, in order"
   else
     IO.println "LNP64MINI TRACE SELFTEST FAILED"
     throw (IO.userError "trace ring wrong")
+
+/-- Total EDSL≡ISS mismatches over the generated ALU matrix — the same
+programs `opDiffSelftest` runs, as one number. -/
+def matrixMismatches : Nat := Id.run do
+  let mut bad := 0
+  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM)] do
+    for (op, _) in ops do
+      for (a, b) in opVectors do
+        bad := bad + lockstepPure (imageFrom TEXT_BASE (progOp form op a b)) 1
+                       (cmdQuantum 0) 24 16
+  return bad
 
 /-- Generated EDSL ≡ ISS coverage over every ALU opcode in the matrix. -/
 def opDiffSelftest : IO Unit := do
