@@ -425,6 +425,9 @@ def CMD_TLB_PPN  : Nat := 66
 /-- `cmd 67` = the §15 `map.protect`/`munmap` shootdown: invalidate every
 TLB entry whose recorded cell equals `cmd_data[7:0]`. -/
 def CMD_TLB_PHYS : Nat := 68
+/-- EXT-8: select which of the 16 commit-trace ring entries the readback
+outputs expose. Host-only; nothing in the core reads the ring. -/
+def CMD_TRACE_SEL : Nat := 69
 def CMD_MAP_PROTECT : Nat := 67
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
@@ -1110,6 +1113,61 @@ def rfWeE : Expr 1 := orTree (rfTriples.map (fun t => t.1))
 def rfWaE : Expr 10 := priTreeLast (rfTriples.map (fun t => (t.1, t.2.1))) (.lit 0)
 def rfWdE : Expr 64 := priTreeLast (rfTriples.map (fun t => (t.1, t.2.2))) (L64 0)
 
+/-! ### The commit trace ring (EXT-8)
+
+A 16-deep ring of the last committed instructions: `{op[7:0], pc[31:0]}` packed
+into one word, and the writeback value in a second. Readable over BSCAN after a
+trap or a panic.
+
+This exists because the renumbering's panic arrived 41 550 instructions into a
+rump boot, and the only evidence was the panic string. A trace turns that into
+"instruction N was `X` at PC `P` and wrote `V`", which a diff against the
+emulator's trace localises in one run.
+
+**The CAPTURE is folded into `retireInc` rather than added at the ~20 sites
+that retire.** Those sites are exactly the definition of "an instruction committed",
+so putting the ring write anywhere else would mean maintaining a second list of
+them -- which is the defect class this whole arc has been about. A new
+instruction that retires gets traced because it calls `retireInc`, not because
+someone remembered.
+
+D38 forbids the obvious implementation. `retireInc` is inlined at every commit
+site, so writing the memory there gives `trace_pc` ~35 syntactic write sites all
+on port 0 -- and a bank with more than one write port does not fit block RAM
+(CapWalk CE10 measured 14x the LUTs for exactly that). The emitter refuses it,
+and it is right to: two writes to one port in one cycle are not what the
+hardware does.
+
+So `retireInc` only CAPTURES, into ordinary scalar registers where D9's
+last-write-wins is well defined, and one rule (`traceRule`) drains them into the
+memory at a SINGLE write site. The entry lands one cycle after the retire, which
+changes nothing about its contents -- the payload was latched at the right
+moment.
+
+D9 gives the read-before-write semantics that make this correct: `pc` here reads
+the PRE-cycle value, so the entry records the PC of the instruction that just
+retired, not the one about to be fetched, even though `stepPc` writes `pc` in
+the same `.seq`. -/
+def TRACE_AW : Nat := 4
+
+def trace_wp : Expr 4 := .reg 4 "trace_wp"
+def trace_sel : Expr 4 := .reg 4 "trace_sel"
+def trace_hit : Expr 1 := .reg 1 "trace_hit"
+def trace_in_pc : Expr 64 := .reg 64 "trace_in_pc"
+def trace_in_wb : Expr 64 := .reg 64 "trace_in_wb"
+def L4 (n : Nat) : Expr 4 := .lit (BitVec.ofNat 4 n)
+
+/-- `{op[7:0], 24'b0, pc[31:0]}` -- one word, so the ring costs two memories
+rather than three and the reader gets the opcode and the PC together. -/
+def traceWord : Expr 64 :=
+  .or (.shl (.zext op 64) (L64 56)) (.zext (.slice pc 0 32) 64)
+
+def retireInc : Act :=
+  .seq (.write 32 "retire" (.add retire (.lit (BitVec.ofNat 32 1)))) <|
+  .seq (.write 1 "trace_hit" (L1 1)) <|
+  .seq (.write 64 "trace_in_pc" traceWord)
+       (.write 64 "trace_in_wb" (.mux rfWeE rfWdE (L64 0)))
+
 /-! ## Rules -/
 
 /-- (1) registered priority encoders (separate always block). -/
@@ -1152,13 +1210,35 @@ def latchRule : Rule :=
     .seq (.ite dmem_we (.memWrite 9 64 "dmem" 0 dmem_a dmem_wd) .skip)
       (.seq (.write 64 "dmem_rd" (.memRead 64 "dmem" dmem_a))
         (.seq (.write 64 "reg_rd" (.memRead 64 "rf" (cat55 cur reg_sel)))
-              (.write 8 "uart_byte" (.memRead 8 "uart_mem" uart_ridx))))⟩
+          (.seq (.write 8 "uart_byte" (.memRead 8 "uart_mem" uart_ridx))
+            -- EXT-8: the trace readback latches, alongside `reg_rd` and for
+            -- the same reason -- a registered read site, so the host sees a
+            -- stable word and the memory is not read combinationally.
+            (.seq (.write 64 "trace_rd_pc" (.memRead 64 "trace_pc" trace_sel))
+                  (.write 64 "trace_rd_wb" (.memRead 64 "trace_wb" trace_sel))))))⟩
+
+/-- EXT-8: the commit-trace ring's single write site.
+
+Reads `trace_hit`/`trace_in_*` PRE-cycle (D9), so it is independent of where
+this rule sits in the chain relative to the commit sites that set them. One
+`memWrite` per memory, which is what D38 requires and what fits block RAM. -/
+def traceRule : Rule :=
+  ⟨"trace_ring",
+    .ite trace_hit
+      (.seq (.memWrite 4 64 "trace_pc" 0 trace_wp trace_in_pc)
+        (.seq (.memWrite 4 64 "trace_wb" 0 trace_wp trace_in_wb)
+              (.write 4 "trace_wp" (.add trace_wp (L4 1)))))
+      .skip⟩
 
 /-- (4) pulse defaults. -/
 def pulseDefaultsRule : Rule :=
   ⟨"pulse_defaults",
     [("dmem_we",1),("core_rd",1),("core_wr",1),("jtag_wr",1),("jtag_rd",1),("gp_rd",1),("gp_wr",1),
-      ("lr_req",1),("sc_req",1)].foldr
+      ("lr_req",1),("sc_req",1),
+      -- EXT-8: `trace_hit` is a pulse like the rest. Without the default it
+      -- latches high on the first retire and the ring then advances every
+      -- cycle forever, overwriting the very history it exists to keep.
+      ("trace_hit",1)].foldr
       (fun (nm,_) acc => .seq (.write 1 nm (L1 0)) acc) .skip⟩
 
 /-- (5) zeroing engine (rf write is in the funnel; here dmem + counters). -/
@@ -1220,12 +1300,22 @@ where
         (.seq (.write 64 "jtag_wdata" (.or (.shl (.zext cmdData 64) (L64 32)) (.zext ddr_lo_j 64)))
               (.write 32 "ddr_addr_j" (.add ddr_addr_j (L32 8))))) .skip) <|
     .seq (.ite (ci 43) (.write 1 "jtag_rd" (L1 1)) .skip) <|
+    -- EXT-8: select a commit-trace ring entry to read back. The ring itself
+    -- is host-readable only; nothing in the core reads it, so a wrong select
+    -- cannot perturb execution -- which is what makes it safe to leave armed
+    -- during a real boot.
+    .seq (.ite (ci CMD_TRACE_SEL) (.write 4 "trace_sel" (.slice cmdData 0 4)) .skip) <|
     .seq (.ite (ci 50) (.write 5 "reg_wsel" (.slice cmdData 0 5)) .skip) <|
     .seq (.ite (ci 51) (.write 32 "reg_wlo" cmdData) .skip) <|
     .seq (.ite (ci 53) (.write 64 "pc" (.zext cmdData 64)) .skip) <|
     .seq (.ite (.and (ci 54) (.eq (.slice cmdData 0 1) (L1 1)))
       (.seq (.write 1 "trap_active" (L1 0))
-        (.seq (.write 32 "retire" (.add retire (L32 1)))
+        -- EXT-8: `retireInc`, not a bare retire bump. A host-serviced trap
+        -- IS a committed instruction, and routing it here keeps the invariant
+        -- "retire incremented <-> a trace entry was pushed" true without
+        -- exception -- which is what lets the ISS mirror the ring at ONE site
+        -- instead of at the ~25 places it counts a retire.
+        (.seq retireInc
               (.write 5 "st" (L5 S_F0)))) .skip) <|
     .seq (.ite (ci 55) (.write 1 "bus_req" (.slice cmdData 0 1)) .skip) <|
     -- EXT-1: the quantum reload value (0 = preemption disabled). `qctr` is
@@ -1332,7 +1422,6 @@ def ddrEa (ea : Expr 64) : Expr 32 :=
     (ddrEaRaw ea)
 def ddrPc : Expr 32 := .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.slice pc 0 32)
 
-def retireInc : Act := .write 32 "retire" (.add retire (.lit (BitVec.ofNat 32 1)))
 def goF0 : Act := .write 5 "st" (L5 S_F0)
 def stepPc : Act := .write 64 "pc" pc8
 
@@ -1974,6 +2063,10 @@ def quantumRule : Rule :=
 
 def scalarRegs : List RegDecl :=
   [⟨"cur",5,0⟩, ⟨"pc",64,BitVec.ofNat 64 TEXT_BASE⟩, ⟨"retire",32,0⟩,
+     -- EXT-8: the commit-trace ring write pointer (wraps at 16).
+     ⟨"trace_wp",4,0⟩, ⟨"trace_sel",4,0⟩,
+     ⟨"trace_rd_pc",64,0⟩, ⟨"trace_rd_wb",64,0⟩,
+     ⟨"trace_hit",1,0⟩, ⟨"trace_in_pc",64,0⟩, ⟨"trace_in_wb",64,0⟩,
    ⟨"running",1,0⟩, ⟨"halted",1,0⟩, ⟨"st",5,0⟩, ⟨"ir",64,0⟩,
    ⟨"a",64,0⟩, ⟨"b",64,0⟩, ⟨"rdval",64,0⟩, ⟨"sel_t",64,0⟩, ⟨"sel_f",64,0⟩,
    ⟨"mem_is_store",1,0⟩, ⟨"trap_active",1,0⟩, ⟨"trapped_op",8,0⟩,
@@ -2035,6 +2128,10 @@ def design : Design where
   outputs := (scalarRegs ++ arrRegs).map (·.name)
   mems :=
     [⟨"rf", 10, 64, fun _ => 0⟩, ⟨"dmem", 9, 64, fun _ => 0⟩,
+     -- EXT-8: the commit trace ring. Deliberately NOT in `syncReadMems`:
+     -- 16x64 is the right size for distributed LUTRAM, and the read is a
+     -- host-side BSCAN read that has no timing pressure at all.
+     ⟨"trace_pc", 4, 64, fun _ => 0⟩, ⟨"trace_wb", 4, 64, fun _ => 0⟩,
      ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩,
      -- D20: the thread table's single-dynamic-index arrays.
      -- **D37 (2026-08-01): `tpc`'s reset image is ALL-ZERO, not TEXT_BASE.**
@@ -2064,7 +2161,7 @@ def design : Design where
      -- EXT-7: the domain-tagged TLB (§15 line 160)
      ]
   rules :=
-    [encRule, sleepScanRule, latchRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
+    [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]
   -- D19 (now a Loom obligation): `Design.emit` refuses to emit if any of
   -- these is read outside a register-latch site. `rx_mem` is deliberately

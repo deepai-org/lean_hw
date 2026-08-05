@@ -61,6 +61,7 @@ def main (args : List String) : IO Unit := do
   | ["coverageselftest"] => coverageSelftest
   | ["alugapselftest"] => aluGapSelftest
   | ["opdiffselftest"] => opDiffSelftest
+  | ["traceselftest"] => traceSelftest
   | ["opdiffhex", d] => writeOpDiffHex d
   | ["issexpect", f] => issExpectHexFile f
   | ["mmuidentityselftest"] => mmuIdentitySelftest

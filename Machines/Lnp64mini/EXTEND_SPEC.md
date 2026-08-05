@@ -768,3 +768,60 @@ flagged when `mov` is simply `addi rd, rs, 0`.
 **Standing conclusion:** before the next renumber attempt, LLVM must be fully
 rebuilt and section 10 must be green *after* that rebuild. The canary is
 preserved on `canary-liu-0x57` in both repos.
+
+### EXT-8: the commit-trace ring
+
+A 16-deep ring of the last committed instructions — `{op[7:0], pc[31:0]}` packed
+into one word, the writeback value in a second — readable over BSCAN with
+`cmd 69` (`CMD_TRACE_SEL`) after a trap or a panic.
+
+The renumbering's panic arrived 41 550 instructions into a rump boot and the
+only evidence was the panic string. A trace turns that into "instruction N was
+`X` at PC `P` and wrote `V`", which a diff against the emulator localises in one
+run.
+
+**The capture is folded into `retireInc`**, the single definition every commit
+site calls, rather than added at the ~20 sites that retire. A new instruction
+gets traced because it calls `retireInc`, not because someone remembered — the
+alternative is a second list of commit sites, which is the defect class this
+whole arc has been about.
+
+Three things the implementation had to get right, each of which was wrong first:
+
+**D38 forbids the obvious version.** `retireInc` is inlined at every commit site,
+so writing the memory there gives `trace_pc` ~35 syntactic write sites on port 0,
+and a bank with more than one write port does not fit block RAM. The emitter
+refused it and named the fix. So `retireInc` only *captures*, into scalar
+registers where D9's last-write-wins is well defined, and `traceRule` drains
+them at a **single** write site. The entry lands one cycle later; the payload was
+latched at the right moment, so its contents are unaffected.
+
+**`rdval` is the wrong writeback value.** It is pre-cycle at the retire point, so
+it still holds the *previous* instruction's result: the first version recorded
+`wb=0` for an `add` that produced 16. The ring records `rfWdE`, the value the
+register-file funnel is writing this cycle, and 0 for instructions that write no
+register rather than a stale value. An authoritative-looking wrong answer is
+worse than no trace.
+
+**`trace_hit` must be a pulse.** Without a default in `pulseDefaultsRule` it
+latches high on the first retire and the ring then advances every cycle forever,
+overwriting the history it exists to keep.
+
+The ISS mirrors it at **one** site driven by the observable — `retire` went up
+by one, so an entry is pushed — rather than at the ~25 places the ISS counts a
+retire. It cannot miss a case because it does not enumerate the cases. That is
+exact only because `cmd 54` (host-serviced trap resume) was routed through
+`retireInc`, making "retire incremented" and "an entry was pushed" the same
+event with no exception.
+
+`traceselftest` checks the ring is *useful*, not merely agreed-upon: two models
+can agree on a ring that is empty, or off by one, or holding the PC of the next
+instruction. It runs a known program and reads the entries back. It also clocks
+a few cycles past the halt, because the one-cycle drain lag means stopping the
+instant `halted` goes high loses the last instruction — the one a post-mortem
+most wants. On silicon the clock does not stop.
+
+**Not yet done:** the top-level BSCAN read indices (the read map lives in
+hand-written `*_top.v`, not in the emit), and an area measurement. 16×64×2 of
+LUTRAM per core on a part already near its routing ceiling is not free, and no
+claim is made here that it fits until a build says so.
