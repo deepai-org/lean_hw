@@ -422,6 +422,20 @@ proc apply_trap_resp_sel {sel regpairs memtriples npc} {
 wr 13 1
 setreg 31 0x17f8000
 wr 53 $entry
+# EXT-7 stage B ORDER BUG, found on silicon (2026-08-05, run 15:12): the MMU
+# install used to sit AFTER `wr 13 2`. Under the identity map that gap was
+# invisible -- mmu_en=0 computes the same addresses. Under stage B the core ran
+# its first ~36k instructions UNTRANSLATED against relocated data: it read
+# zeros where .data lives, wedged in a spin at 0x8d4628, and never trapped
+# once. Core 1's path always had reset -> install -> start; core 0 now matches.
+# (`wr 13 1` zeroes tlb_vld, so the install must come after the reset.)
+if {$RELOC} {
+  install_vma_reloc 0 $RING $text_end
+  puts [format "MMU: stage-B VMAs on core 0 (ring cell 2; data +0x800000 cell 1; low pinned); mmu_en=1"]
+} elseif {[info exists ::env(LNP64_MMU)] && $::env(LNP64_MMU) == 1} {
+  wr 64 0 ; wr 65 0x00000000 ; wr 68 0x01000000 ; wr 66 0xFFFFFFFF ; wr 63 1
+  puts "MMU: identity VMA installed on core 0 (base 0, limit 0xFFFFFFFF, cell 1); mmu_en=1"
+}
 wr 13 2
 # EXT-1 (Law 5): arm a BOUNDED preemption quantum. Law 5 wants the
 # non-preemptible interval bounded, not small -- at 2.5M cycles (100 ms @
@@ -450,19 +464,6 @@ if {$QUANTUM > 0} { wr 57 $QUANTUM; puts "PREEMPT: core0 quantum=$QUANTUM cycles
 # exactly what bypass computes, at several alignments. ddrEaRaw word-aligns and
 # ddrEaXlat does not, so that equality was not obvious and was worth proving in
 # the ladder rather than discovering here.
-if {$RELOC} {
-  install_vma_reloc 0 $RING $text_end
-  puts [format "MMU: stage-B VMAs on core 0 (ring cell 2; data +0x800000 cell 1; low pinned); mmu_en=1"]
-} elseif {[info exists ::env(LNP64_MMU)] && $::env(LNP64_MMU) == 1} {
-  # `c1` ORs in the core-1 select bit; it is not a +64 offset.
-  foreach idxs {{64 65 68 66 63}} {}
-  wr 64 0 ; wr 65 0x00000000 ; wr 68 0x01000000 ; wr 66 0xFFFFFFFF ; wr 63 1
-  # Core 1's VMA is NOT installed here: `wr [c1 13] 1` below resets core 1, and
-  # cmd 13's reset zeroes tlb_vld. Installing early left core 1 with mmu_en=1
-  # and no valid entry, so every access failed closed -- it retired 20
-  # instructions and parked. It is installed after its reset instead.
-  puts "MMU: identity VMA installed on core 0 (base 0, limit 0xFFFFFFFF, cell 1); mmu_en=1"
-}
 
 # ---- start core 1 -----------------------------------------------------------
 # The image is already in DDR, so core 1 boots the SAME image at a different
