@@ -898,3 +898,19 @@ wake may be spurious but never missed" holds only while both sides see the
 same memory). **Revocation of a live-I/O window is not transparent suspend** —
 which is exactly why §15 pairs shootdown with a protocol rather than treating
 it as a switch.
+
+**The stage-B authority demo, final run (boot PASS 20260805-191959):**
+
+```
+1. baseline                          retire +473165   ADVANCING
+2. after installing dom-3 VMA        retire +481296   ADVANCING
+3. after revoking cell 3 (foreign)   retire +475067   ADVANCING
+4. after revoking cell 2 (DMA)       retire +0, status=0x5 running/untrapped
+   ping: 0% loss before → 100% loss in the revoked window
+5. after revoking cell 1 (data)      retire +0
+AUTHORITY_DEMO_OK
+```
+
+All five verdicts under the real non-identity map, on the bitstream that
+carries the trace ring and the shared-cone futex fix. Board left booting back
+to a live PASS.
