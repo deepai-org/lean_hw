@@ -868,3 +868,33 @@ the servicer aborts if the image's `data-base` ever falls below `text_end`
 
 Verification order: `mmurelocselftest` (EDSL≡ISS + physical placement) →
 `gphys` unit vectors in tclsh → silicon boot under `LNP64_MMU=1 LNP64_RELOC=1`.
+
+### EXT-7 stage B ON SILICON — and what revocation of a live DMA window really does
+
+**PASS 20260805-191408**: NetBSD, dual-core, native GEM0, BSCAN quiet, 10/10
+ping, under the real non-identity map — data/bss/stacks at physical
+`+0x800000`, ring + GEM slab + console rings pinned. GEM up in 60s. Three
+silicon bugs and one self-inflicted tcl error stood between the off-hardware
+proof and this pass; each is its own commit. The diagnosis of the third came
+from EXT-8's trace ring (its first real use) and the console ring read
+*through* the relocation map.
+
+The demo then measured, on the live guest:
+
+1. baseline advancing;
+2. a foreign domain's VMA installed — guest undisturbed;
+3. that foreign cell revoked — guest undisturbed;
+4. **the DMA cell revoked: ping went 0% → 100% loss** (host-measured, in a
+   held window), while the core stayed **running and untrapped** — and this OS
+   *quiesces to full idle*: every runnable thread eventually blocks behind the
+   dead windows, so retire stops. Fail-closed, not fail-crash.
+5. the guest's data cell revoked — nothing left.
+
+**The revival experiment** is the sharpest finding. Re-granting the VMAs
+revived core 1 immediately (2.2M retires in 3s) — the revocation destroyed
+nothing; authority was withdrawn and re-granted. Core 0 did not revive: its
+event-driven waiters lost their wakeups while the window was dead ("a futex
+wake may be spurious but never missed" holds only while both sides see the
+same memory). **Revocation of a live-I/O window is not transparent suspend** —
+which is exactly why §15 pairs shootdown with a protocol rather than treating
+it as a switch.

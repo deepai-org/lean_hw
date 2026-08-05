@@ -72,8 +72,23 @@ set d3 [advancing "3. after revoking cell 3"]
 set d4 -1
 if {$STAGEB} {
   wr 67 2
-  puts "  bumped epoch cell 2 (revokes the RING window only)"
-  set d4 [advancing "4. after revoking the ring cell"]
+  puts "  bumped epoch cell 2 (revokes the DMA windows: shmif ring + GEM slab)"
+  set d4 [advancing "4. after revoking the DMA cell"]
+  # What is TRUE here, measured on silicon 2026-08-05: ping goes to 100% loss
+  # (the host measures it in the window below), and this OS quiesces to full
+  # idle -- every runnable thread eventually blocks behind the dead windows, so
+  # retire stops. That is fail-CLOSED, not fail-crash: the property to check on
+  # the core is that it is still RUNNING and UNTRAPPED, not that it retires.
+  # (A re-grant experiment revived core 1 -- the revocation destroyed nothing --
+  # but core 0's event-driven waiters lost wakeups while the window was dead
+  # and cannot self-recover. Revocation of a live-I/O window is not transparent
+  # suspend; that is exactly why §15 pairs shootdown with a protocol.)
+  set st4 [rd 20]
+  set ok4run [expr {($st4 & 1) == 1 && (($st4 >> 1) & 1) == 0}]
+  puts [format "  core 0 after DMA revoke: status=0x%x (running, unhalted: %s)" $st4 [expr {$ok4run ? "yes" : "NO"}]]
+  puts "PING_WINDOW_OPEN"; flush stdout
+  after 15000
+  puts "PING_WINDOW_CLOSED"; flush stdout
 }
 
 # 5. Revoke the guest's OWN data cell. Every access must now fail closed.
@@ -86,13 +101,13 @@ puts "=== verdict ==="
 set ok1 [expr {$d1 > 0}]
 set ok2 [expr {$d2 > 0}]
 set ok3 [expr {$d3 > 0}]
-set ok4 [expr {!$STAGEB || $d4 > 0}]
+set ok4 [expr {!$STAGEB || $ok4run}]
 set ok5 [expr {$d5 == 0}]
 puts [format "  guest alive at baseline .................. %s" [expr {$ok1 ? "yes" : "NO"}]]
 puts [format "  unaffected by another domain's VMA ....... %s" [expr {$ok2 ? "yes" : "NO"}]]
 puts [format "  SURVIVES revocation of a foreign cell .... %s" [expr {$ok3 ? "yes" : "NO"}]]
 if {$STAGEB} {
-puts [format "  SURVIVES revocation of its DMA window .... %s" [expr {$ok4 ? "yes" : "NO"}]]
+puts [format "  fail-CLOSED on DMA revoke (runs, no trap).. %s" [expr {$ok4 ? "yes" : "NO"}]]
 }
 puts [format "  FAILS CLOSED when its own cell is bumped . %s" [expr {$ok5 ? "yes" : "NO"}]]
 if {$ok1 && $ok2 && $ok3 && $ok4 && $ok5} {
