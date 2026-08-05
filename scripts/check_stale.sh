@@ -134,6 +134,16 @@ say "### 9. the assembler and this core agree (cross-repo, from mnemonics)"
 r=$(./scripts/isa_smoke.sh 2>&1 | head -1)
 case "$r" in *OK*|*SKIP*) ok "${r#isa_smoke: }";; *) bad "ISA smoke — $r";; esac
 
+say "### 10. the BUILT COMPILER emits what the core decodes"
+# Sections 4 and 9 read SOURCES: Core.lean, the assembler's tables, the .td.
+# The guest kernel is not built from sources at test time -- it is built by the
+# clang binary, which is only as current as the last full LLVM rebuild. Editing
+# the .td without rebuilding leaves a compiler emitting the OLD numbering while
+# the mini decodes the new one, with every other section green. Confirmed by
+# deliberate experiment on the canary-liu-0x57 branch. This one disassembles a
+# compiled probe, so a source file cannot lie to it.
+if r=$(python3 scripts/check_backend_encoding.py 2>&1 | tail -1); then ok "$r"; else bad "backend encoding — $r"; fi
+
 [ "$FAIL" -eq 0 ] && say "check_stale: OK — every derived artifact matches its source" \
                   || say "check_stale: FAILED — see STALE lines above"
 exit "$FAIL"

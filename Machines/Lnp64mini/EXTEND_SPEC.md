@@ -716,3 +716,55 @@ hypothesis is *weaker* than it was: the constant battery and the jump family now
 run correctly on silicon under the shipping numbering, so whatever the
 renumbering broke, this smoke would have to be re-run under it to say anything.
 That is the canary, and it is now cheap.
+
+### The canary: what actually breaks a renumbering
+
+The `liu` canary was run — `0x04 → 0x57` across the assembler's encoder and
+disassembler, the emulator's decode, both copies of `LNP64InstrInfo.td`, and
+`Core.lean` — and it did not confirm the `liu` hypothesis. It found something
+better: **a mechanism that makes every existing gate green while the board
+panics.**
+
+Two things came out of it.
+
+**1. The `.td` exists twice, and one copy is untracked.** The first pass edited
+only `target/llvm-project-src/…`, and `check_isa_agreement` caught the
+disagreement — that check earning its keep. But `target/` is gitignored, so
+after rolling the canary back the untracked copy still held `0x57` and a branch
+switch did not revert it. The gate caught that too. A tracked file and an
+untracked file holding the same constant is a staleness hazard that no `git`
+operation can fix.
+
+**2. The gate stack read only sources.** With the `.td` updated and LLVM *not*
+rebuilt, the compiled probe still encoded `liu` as `0x04` while the mini decoded
+`0x57`, and:
+
+* every single-repo gate was green;
+* `check_isa_agreement` was green — it reads the `.td`;
+* `isa_smoke.sh` was green — it assembles through `lnp64 asm-flat-exec`, the
+  **assembler**, which is a different encoder and had moved correctly.
+
+The guest kernel is compiled by neither of those. It is compiled by the clang
+binary in `target/llvm-lnp64-build/bin/`, which is only as current as the last
+full LLVM rebuild. An image built that way loads fine and then executes an
+instruction the core does not implement, wherever that instruction first happens
+to run — which is a panic tens of thousands of instructions in, with no obvious
+relation to the ISA. That is the shape of the original failure, and it is a
+better explanation than "`liu` was uncovered", because it does not require
+`liu` to have been mis-renumbered at all.
+
+`scripts/check_backend_encoding.py` closes it by compiling a probe and
+**disassembling the object**, then comparing the opcode bytes the compiler
+actually emitted against `Core.lean`. A source file cannot lie to it. It reports
+the canary as red and the shipping numbering as green, over 31 of 31 mnemonics
+with nothing silently skipped.
+
+Its alias map was *measured*, not guessed — guessing got `sb`/`sh` backwards and
+invented spellings (`ld_b_s`) the backend does not use. A wrong alias is worse
+than a missing one: it compares the right instruction against the wrong table
+entry and reports a defect that is not there, which is how `mov` was briefly
+flagged when `mov` is simply `addi rd, rs, 0`.
+
+**Standing conclusion:** before the next renumber attempt, LLVM must be fully
+rebuilt and section 10 must be green *after* that rebuild. The canary is
+preserved on `canary-liu-0x57` in both repos.
