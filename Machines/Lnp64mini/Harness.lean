@@ -562,6 +562,49 @@ def aluOpsIMM : List (Nat × String) :=
    (OP_LSLI,"slli"), (OP_LSRI,"srli"), (OP_ASRI,"srai"),
    (OP_SLTI,"slti"), (OP_SLTIU,"sltiu")]
 
+/-- The wide-immediate constant builders, and the jump family.
+
+These five were found UNCOVERED by `scripts/check_opcode_coverage.py` on its
+first run — `liu`, `auipc`, `jmp`, `jal`, `jalr`. `liu` is how every 64-bit
+constant is built, and a wrong constant is what panicked the guest on silicon
+after the 2026-08-05 renumbering ("not lightweight enough for -1 CPUs").
+
+`liu` and `auipc` get a directed battery below as well as a matrix entry: a
+single-instruction diff can agree on one `liu` and still get the hi/lo assembly
+or the sign-extension of the ORI half wrong, which is precisely the shape of a
+`-1` appearing where a small count belongs. -/
+def wideImmOps : List (Nat × String) := [(OP_LIU, "liu"), (OP_AUIPC, "auipc")]
+
+def jumpOps : List (Nat × String) :=
+  [(OP_JMP, "jmp"), (OP_JAL, "jal"), (OP_JALR, "jalr")]
+
+/-- Materialise one exact 64-bit constant with `liu` + `ori`, the sequence the
+compiler uses. `r3` must hold `value` at EXIT. -/
+def progConst (hi lo : Int) : List (BitVec 64) :=
+  [ encImmI OP_LIU 3 0 hi,        -- r3[63:32] = hi
+    encImmI OP_ORI 3 3 lo,        -- r3 |= lo
+    enc OP_EXIT 0 0 0 ]
+
+/-- Constants chosen where hi/lo assembly and sign extension actually break:
+zero, one, all-ones, both sign boundaries, and a high-bit pattern. -/
+def constBattery : List (Int × Int) :=
+  [(0, 0), (0, 1), (0, -1), (-1, -1), (0x7fffffff, -1), (-2147483648, 0),
+   (0x12345678, 0x7ABCDEF0), (0x0000ffff, 0xffff0000)]
+
+/-- `jmp`/`jal`/`jalr`: the taken path skips a poison write; `jal` also leaves a
+link. Generated so the jump family is executed, not merely defined. -/
+def progJump (op : Nat) : List (BitVec 64) :=
+  if op = OP_JMP then
+    [ encImmJ OP_JMP 0 2, encImmI OP_ADDI 5 0 0xBAD,
+      encImmI OP_ADDI 6 0 0x600D, enc OP_EXIT 0 0 0 ]
+  else if op = OP_JAL then
+    [ encImmJ OP_JAL 1 2, encImmI OP_ADDI 5 0 0xBAD,
+      encImmI OP_ADDI 6 0 0x600D, enc OP_EXIT 0 0 0 ]
+  else
+    [ encImmI OP_ADDI 2 0 (TEXT_BASE + 24), encImmI OP_JALR 1 2 0,
+      encImmI OP_ADDI 5 0 0xBAD, encImmI OP_ADDI 6 0 0x600D,
+      enc OP_EXIT 0 0 0 ]
+
 /-- Operand pairs chosen for edges, not coverage-by-volume: signed vs unsigned,
 all-ones, zero, and a shift amount past 64 — where decode and width bugs show.
 
@@ -1545,6 +1588,35 @@ want 0x{String.ofList (Nat.toDigits 16 w)}  ({lbl})"
     IO.println "LNP64MINI ALUGAP SELFTEST FAILED"
     throw <| IO.userError "alu gap selftest failed"
 
+/-- Emit the generated matrix's programs as `.hex` files for the RTL leg.
+
+The 2026-08-05 renumbering passed every gate here and panicked on silicon. The
+reason is structural: `opDiffSelftest` compares EDSL against ISS and
+`diff_emulator_iss.py` compares emulator against ISS — **nothing compared
+against the RTL**, which is what the bitstream is built from and what the board
+actually runs. An infinitely thorough emulator-vs-ISS matrix could not have
+caught it.
+
+This writes each generated program to `fpga/zc702/opdiff/`, where
+`scripts/opdiff_rtl.sh` runs it through iverilog on the emitted SoC and diffs
+the architectural result against the ISS. 41 000 instructions is nothing in
+simulation; a kernel boot is the most expensive possible place to first learn
+about a decode disagreement. -/
+def writeOpDiffHex (dir : String) : IO Unit := do
+  let mut n := 0
+  let emit : String → List (BitVec 64) → IO Unit := fun nm prog => do
+    let mut txt := ""
+    for w in prog do
+      txt := txt ++ (String.ofList (Nat.toDigits 16 w.toNat)).leftpad 16 '0' ++ "\n"
+    IO.FS.writeFile s!"{dir}/{nm}.hex" txt
+  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM)] do
+    for (op, nm) in ops do
+      for (a, b) in opVectors do
+        emit s!"{nm}_{a}_{b}" (progOp form op a b); n := n + 1
+  for (hi, lo) in constBattery do
+    emit s!"const_{hi}_{lo}" (progConst hi lo); n := n + 1
+  IO.println s!"wrote {n} matrix programs to {dir}"
+
 /-- Generated EDSL ≡ ISS coverage over every ALU opcode in the matrix. -/
 def opDiffSelftest : IO Unit := do
   let mut bad := 0
@@ -1602,8 +1674,32 @@ def opDiffSelftest : IO Unit := do
     if opBad ≠ 0 then
       bad := bad + 1
       IO.println s!"  FAIL {nm}: {opBad} mismatches"
+  -- The wide-immediate constant builders, with a DIRECTED battery: not "does
+  -- one liu agree" but "does this exact 64-bit value come out".
+  for (hi, lo) in constBattery do
+    let img := imageFrom TEXT_BASE (progConst hi lo)
+    let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 24 16
+    ran := ran + 1
+    if m ≠ 0 then
+      bad := bad + 1
+      IO.println s!"  FAIL liu/ori constant hi=0x{String.ofList (Nat.toDigits 16 hi.toNat)}: {m} mismatches"
+  -- auipc, and the jump family.
+  for (op, nm) in wideImmOps ++ jumpOps do
+    let mut opBad := 0
+    if op = OP_LIU then pure () else
+      for (a, _) in opVectors do
+        let img := imageFrom TEXT_BASE
+          (if op = OP_AUIPC then [encImmI OP_AUIPC 3 0 a, enc OP_EXIT 0 0 0]
+           else progJump op)
+        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 32 16
+        opBad := opBad + m
+        ran := ran + 1
+    if opBad ≠ 0 then
+      bad := bad + 1
+      IO.println s!"  FAIL {nm}: {opBad} mismatches"
   let total := aluOpsRRR.length + aluOpsRR.length + aluOpsIMM.length
              + 2 * (memOpsLoad.length + memOpsStore.length) + brOps.length
+             + wideImmOps.length + jumpOps.length
   let (_, unm) ← lockstepFast (imageFrom TEXT_BASE (progOp 0 OP_ADD 1 2))
                    1 (cmdQuantum 0) (fun _ => 0) 8 16
   IO.println s!"  {total} opcode/path combinations x {opVectors.length} vectors = {ran} programs"

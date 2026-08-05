@@ -103,6 +103,14 @@ else
   say "  (skipped: python3 or ../lnp64 emulator not available)"
 fi
 
+say "### 7. opcode coverage and literal hygiene"
+# The 2026-08-05 renumbering passed every gate then panicked on silicon,
+# because `liu` -- how 64-bit constants are built -- was in no generated
+# program. The defect class was "the list was incomplete", so completeness is
+# now checked against the design's own table rather than maintained by hand.
+if r=$(python3 scripts/check_opcode_coverage.py 2>&1 | tail -1); then ok "$r"; else bad "opcode coverage — $r"; fi
+if r=$(python3 scripts/check_opcode_literals.py 2>&1 | tail -1); then ok "$r"; else bad "opcode literals — $r"; fi
+
 [ "$FAIL" -eq 0 ] && say "check_stale: OK — every derived artifact matches its source" \
                   || say "check_stale: FAILED — see STALE lines above"
 exit "$FAIL"

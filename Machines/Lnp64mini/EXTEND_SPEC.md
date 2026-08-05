@@ -616,3 +616,59 @@ The demo this buys is the right one: **the guest's data really is somewhere
 else, the DMA window really is a separate grant with its own bounds, and
 revoking either cell fails closed independently.** That is worth doing and is
 the next step here; the identity version is the floor, not the goal.
+
+### After the failed renumbering: coverage as an invariant, and the RTL surface
+
+The renumbering passed every gate and panicked on silicon. The defect class was
+not "an opcode moved wrongly" — it was **the list was incomplete**, and
+hand-appending the missing entries would reproduce the hazard for the next
+opcode added. Three things changed.
+
+**1. Coverage is checked against the design's own table.**
+`scripts/check_opcode_coverage.py` reads `Core.lean`'s `OP_` constants and
+requires every one to be executed by the generated matrix or to appear on an
+explicit exclusion list with the test that covers it instead. On its first run
+it found **five** uncovered opcodes — `liu`, `auipc`, `jmp`, `jal`, `jalr`. Two
+were the suspects; the whole jump family had not occurred to me. A new opcode
+with no coverage and no stated exclusion is now a red gate.
+
+**2. `liu`/`auipc` get a directed battery, not just a matrix entry.**
+A single-instruction diff can agree on one `liu` and still get the hi/lo
+assembly or the sign extension of the `ori` half wrong — which is exactly the
+shape of a `-1` appearing where a CPU count belongs. `constBattery`
+materialises eight exact 64-bit values (zero, one, all-ones, both sign
+boundaries, high-bit patterns) and checks the value that comes out.
+
+**3. The RTL leg — the surface that actually failed.**
+`opDiffSelftest` compares EDSL against ISS; `diff_emulator_iss.py` compares
+emulator against ISS. Both were green and the board still panicked, because
+**nothing compared against the RTL**, which is what the bitstream is built from
+and what silicon runs. An infinitely thorough emulator-vs-ISS matrix could not
+have caught it.
+
+`minitest opdiffhex` writes all 359 generated programs to `fpga/zc702/opdiff/`,
+and `scripts/opdiff_rtl.sh` runs each through iverilog on the emitted SoC:
+
+```
+opdiff_rtl: simulated 359 program(s) on rtl/lnp64mini_soc.v
+opdiff_rtl: OK
+```
+
+It earned its place immediately: on the first run it trapped at `op=a0` on the
+first instruction, because `rtl/lnp64mini_soc.v` was still the *renumbered*
+emit — a stale artifact that sections 1–3 had not caught because the revert
+touched the sources and not that file.
+
+**4. A standing literal lint.** `scripts/check_opcode_literals.py` scans for hex
+literals matching any opcode value in opcode-bearing contexts, and requires each
+to be generated or annotated as intentionally raw (as the four `.quad` sites now
+are). It also takes `--old-map` to scan for leftovers of a previous numbering
+after a renumber.
+
+Both new checks are wired into `check_stale.sh` as section 7.
+
+**What is still missing before the next attempt:** an on-hardware ISA smoke that
+runs *before* any kernel boot, and a last-N-committed-instructions ring buffer
+readable after a panic. 41 550 instructions into a rump boot is the most
+expensive possible place to first learn about a decode disagreement, and the
+panic string is a very thin clue compared with a trace.
