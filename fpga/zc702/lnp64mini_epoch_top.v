@@ -112,6 +112,9 @@ module lnp64mini_epoch_top (
     wire [31:0] o_c0_retire, o_c1_retire;
     wire [7:0]  o_c0_trapped_op, o_c0_uart_byte, o_c1_trapped_op, o_c1_uart_byte;
     wire [8:0]  o_c0_uart_wptr, o_c1_uart_wptr;
+    // EXT-8: the commit-trace ring readback (entry selected by cmd 69)
+    wire [63:0] o_c0_trace_rd_pc, o_c0_trace_rd_wb, o_c1_trace_rd_pc, o_c1_trace_rd_wb;
+    wire [3:0]  o_c0_trace_wp, o_c1_trace_wp;
     wire        o_hp_busy;
     wire [2:0]  o_gpm_dbg_state; wire o_gpm_busy, o_gpm_done, o_gpm_err;
     // HP AXI master ports (dual -> PS7)
@@ -160,6 +163,8 @@ module lnp64mini_epoch_top (
         .o_c0_bus_req(o_c0_bus_req), .o_c0_ddr_rd_l(o_c0_ddr_rd_l),
         .o_c0_reg_rd(o_c0_reg_rd), .o_c0_dmem_rd(o_c0_dmem_rd),
         .o_c0_uart_wptr(o_c0_uart_wptr), .o_c0_uart_byte(o_c0_uart_byte),
+        .o_c0_trace_rd_pc(o_c0_trace_rd_pc), .o_c0_trace_rd_wb(o_c0_trace_rd_wb),
+        .o_c0_trace_wp(o_c0_trace_wp),
         // core 1 observability
         .o_c1_running(o_c1_running), .o_c1_halted(o_c1_halted), .o_c1_st(o_c1_st),
         .o_c1_pc(o_c1_pc), .o_c1_retire(o_c1_retire), .o_c1_ir(o_c1_ir),
@@ -167,6 +172,8 @@ module lnp64mini_epoch_top (
         .o_c1_bus_req(o_c1_bus_req), .o_c1_ddr_rd_l(o_c1_ddr_rd_l),
         .o_c1_reg_rd(o_c1_reg_rd), .o_c1_dmem_rd(o_c1_dmem_rd),
         .o_c1_uart_wptr(o_c1_uart_wptr), .o_c1_uart_byte(o_c1_uart_byte),
+        .o_c1_trace_rd_pc(o_c1_trace_rd_pc), .o_c1_trace_rd_wb(o_c1_trace_rd_wb),
+        .o_c1_trace_wp(o_c1_trace_wp),
         .o_hp_busy(o_hp_busy),
         .o_gpm_dbg_state(o_gpm_dbg_state), .o_gpm_busy(o_gpm_busy),
         .o_gpm_done(o_gpm_done), .o_gpm_err(o_gpm_err),
@@ -229,6 +236,13 @@ module lnp64mini_epoch_top (
     reg [63:0] ir0b=0,ir1b=0; always @(posedge drck) begin ir0b<=o_c1_ir; ir1b<=ir0b; end
     reg [4:0]  cs0a=0,cs1a=0; always @(posedge drck) begin cs0a<=o_c0_st; cs1a<=cs0a; end
     reg [4:0]  cs0b=0,cs1b=0; always @(posedge drck) begin cs0b<=o_c1_st; cs1b<=cs0b; end
+    // EXT-8: trace-ring readback, same 2FF pattern as reg_rd
+    reg [63:0] tp0a=0,tp1a=0; always @(posedge drck) begin tp0a<=o_c0_trace_rd_pc; tp1a<=tp0a; end
+    reg [63:0] tp0b=0,tp1b=0; always @(posedge drck) begin tp0b<=o_c1_trace_rd_pc; tp1b<=tp0b; end
+    reg [63:0] tw0a=0,tw1a=0; always @(posedge drck) begin tw0a<=o_c0_trace_rd_wb; tw1a<=tw0a; end
+    reg [63:0] tw0b=0,tw1b=0; always @(posedge drck) begin tw0b<=o_c1_trace_rd_wb; tw1b<=tw0b; end
+    reg [3:0]  th0a=0,th1a=0; always @(posedge drck) begin th0a<=o_c0_trace_wp; th1a<=th0a; end
+    reg [3:0]  th0b=0,th1b=0; always @(posedge drck) begin th0b<=o_c1_trace_wp; th1b<=th0b; end
     reg [2:0]  gps0=0,gps1=0; always @(posedge drck) begin gps0<=o_gpm_dbg_state; gps1<=gps0; end
     reg [2:0]  gpf0=0,gpf1=0; always @(posedge drck) begin gpf0<={o_gpm_err,o_gpm_done,o_gpm_busy}; gpf1<=gpf0; end
 
@@ -245,6 +259,9 @@ module lnp64mini_epoch_top (
     wire [7:0]  s_tro = w_core ? tro1b    : tro1a;
     wire [63:0] s_ir  = w_core ? ir1b     : ir1a;
     wire [4:0]  s_cst = w_core ? cs1b     : cs1a;
+    wire [63:0] s_tp  = w_core ? tp1b     : tp1a;
+    wire [63:0] s_tw  = w_core ? tw1b     : tw1a;
+    wire [3:0]  s_th  = w_core ? th1b     : th1a;
 
     always @(posedge update) begin
         if (sel) begin
@@ -263,6 +280,14 @@ module lnp64mini_epoch_top (
                 7'd28: rd_reg <= {16'd0, gpf1, s_cst, gps1};
                 7'd30: rd_reg <= {23'd0, s_uw};
                 7'd31: rd_reg <= {24'd0, s_ub};
+                // EXT-8: the commit-trace ring. Select an entry with cmd 69,
+                // then: 32 = ring head (write pointer), 33/34 = {op,pc} lo/hi,
+                // 35/36 = writeback lo/hi. The newest entry is (rd32 - 1) mod 16.
+                7'd32: rd_reg <= {28'd0, s_th};
+                7'd33: rd_reg <= s_tp[31:0];
+                7'd34: rd_reg <= s_tp[63:32];
+                7'd35: rd_reg <= s_tw[31:0];
+                7'd36: rd_reg <= s_tw[63:32];
                 7'd40: rd_reg <= {16'd0, s_tro, 7'd0, s_tra};
                 7'd41: rd_reg <= s_ir[31:0];
                 7'd42: rd_reg <= s_ir[63:32];

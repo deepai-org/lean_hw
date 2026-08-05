@@ -1889,6 +1889,95 @@ def cmdIdentityVma : Nat → MiniIn := fun k =>
   else if k = 5 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
+/-! ### EXT-7 stage B: the non-identity map, off-hardware first
+
+The board plan (EXTEND_SPEC "Making the VMA non-identity") in miniature, with
+the SAME shape: a pinned DMA window, a pinned text range (fetch is untranslated,
+so text must stay put), and a catch-all that genuinely relocates. priTree makes
+lower index win, so the carve-outs override the catch-all. -/
+
+/-- entry 0: "ring"  [0x20000,0x30000) delta 0        cell 2  (the DMA grant)
+    entry 1: "text"  [ 0x1000, 0x8000) delta 0        cell 1
+    entry 2: else    [      0,0x1000000) delta +0x800000 cell 1 (relocated) -/
+def cmdRelocVma (extra : List (Nat × Nat) := []) : Nat → MiniIn := fun k =>
+  let prog : List (Nat × Nat) :=
+    [ (CMD_TLB_SEL, 0), (CMD_TLB_VPN, 0x20000), (CMD_TLB_PHYS, 0x02000000),
+      (CMD_TLB_PPN, 0x30000),
+      (CMD_TLB_SEL, 1), (CMD_TLB_VPN, 0x1000),  (CMD_TLB_PHYS, 0x01000000),
+      (CMD_TLB_PPN, 0x8000),
+      (CMD_TLB_SEL, 2), (CMD_TLB_VPN, 0),       (CMD_TLB_PHYS, 0x01800000),
+      (CMD_TLB_PPN, 0x1000000),
+      (CMD_MMU_EN, 1) ] ++ extra ++ [ (13, 2) ]
+  match prog[k]? with
+  | some (idx, dat) => { cmdValid := true, cmdIdx := idx,
+                         cmdData := BitVec.ofNat 32 dat }
+  | none => {}
+
+def mmuRelocSelftest : IO Unit := do
+  -- one tally, owned by `check` -- the first version double-booked failures in
+  -- side conditions with STALE expectations (the probe's sb/sh overlay the sd
+  -- pattern, so a full-word compare against the raw sd value is wrong) and
+  -- reported FAILED under ten green lines.
+  let badRef ← IO.mkRef 0
+  let hex : Nat → String := fun n => "0x" ++ String.ofList (Nat.toDigits 16 n)
+  let check : Bool → String → IO Unit := fun ok msg => do
+    if ok then IO.println s!"  ok   {msg}"
+    else do IO.println s!"  FAIL {msg}"; badRef.modify (· + 1)
+  -- The probe stores sd(pattern) then sb 0x5a at +3 and sh 0x1234 at +6, so
+  -- the word at the target is the OVERLAID value, byte 0 = 0x04.
+  let overlaid := 0x12340c0d5a020304
+  -- 1. the catch-all really relocates: a store at guest 0x40000 must land at
+  --    physical DB+0x840000 and leave DB+0x40000 untouched. Checking the
+  --    PHYSICAL placement is the point -- a guest-visible round-trip is
+  --    satisfied by the identity map too, so round-trips alone prove nothing
+  --    about relocation.
+  let img := imageFrom TEXT_BASE (progXlatProbe 0x40000)
+  let (st, d, _) := runIss img 1 (cmdRelocVma) (fun _ => 0) 600
+  let atP := (d.mem.get? (ddrWord (DATA_BASE + 0x840000))).getD 0
+  let atG := (d.mem.get? (ddrWord (DATA_BASE + 0x40000))).getD 0
+  check (atP.toNat == overlaid) s!"store at guest 0x40000 landed at physical +0x800000 ({hex atP.toNat})"
+  check (atG == 0) s!"...and NOT at physical 0x40000 ({hex atG.toNat})"
+  check ((st.rf[6]!).toNat == overlaid) s!"guest round-trip unchanged (r6={hex (st.rf[6]!).toNat})"
+  -- 2. the ring carve-out is pinned: same probe at guest 0x20000 lands at
+  --    physical 0x20000, where the host's DMA pump expects it.
+  let img2 := imageFrom TEXT_BASE (progXlatProbe 0x20000)
+  let (_, d2, _) := runIss img2 1 (cmdRelocVma) (fun _ => 0) 600
+  let rP := (d2.mem.get? (ddrWord (DATA_BASE + 0x20000))).getD 0
+  let rM := (d2.mem.get? (ddrWord (DATA_BASE + 0x820000))).getD 0
+  check (rP.toNat == overlaid) s!"ring store pinned at physical 0x20000 ({hex rP.toNat})"
+  check (rM == 0) "...and not relocated"
+  -- 3. text carve-out: a LOAD from guest 0x1000 (through the TLB -- only fetch
+  --    bypasses it) reads the first instruction word the loader put there.
+  let progRdText : List (BitVec 64) :=
+    [ encImmI OP_ADDI 1 0 0x1000, encImmI OP_LD 6 1 0, enc OP_EXIT 0 0 0 ]
+  let img3 := imageFrom TEXT_BASE progRdText
+  let (st3, _, _) := runIss img3 1 (cmdRelocVma) (fun _ => 0) 600
+  check (st3.rf[6]! == progRdText[0]!) "text data-read sees the loader's bytes (identity carve-out)"
+  -- 4. revocation is scoped: bumping cell 2 (the ring's) before start leaves
+  --    the catch-all alive -- the relocated store still lands -- while a ring
+  --    access now MISSES to the fail-closed sink (bare DATA_BASE), so nothing
+  --    reaches the revoked window's physical address.
+  let (st4, d4, _) := runIss img 1 (cmdRelocVma [(CMD_MAP_PROTECT, 2)]) (fun _ => 0) 600
+  check ((st4.rf[6]!).toNat == overlaid) "bump cell 2: relocated data unaffected"
+  let (_, d5, _) := runIss img2 1 (cmdRelocVma [(CMD_MAP_PROTECT, 2)]) (fun _ => 0) 600
+  let rP5 := (d5.mem.get? (ddrWord (DATA_BASE + 0x20000))).getD 0
+  check (rP5 == 0) "bump cell 2: nothing lands in the revoked window"
+  -- 5. bumping cell 1 kills the catch-all too: the store misses to the sink,
+  --    so the relocated address stays empty.
+  let (_, d6, _) := runIss img 1 (cmdRelocVma [(CMD_MAP_PROTECT, 1)]) (fun _ => 0) 600
+  let atP6 := (d6.mem.get? (ddrWord (DATA_BASE + 0x840000))).getD 0
+  check (atP6 == 0) "bump cell 1: the guest's own map fails closed"
+  -- 6. EDSL ≡ ISS under the whole thing: the design computes the same
+  --    translation, cycle for cycle, over Loom's derived coordinates.
+  let (m, _) ← lockstepFast img 1 (cmdRelocVma) (fun _ => 0) 600 16
+  check (m == 0) s!"EDSL≡ISS lockstep under the 3-entry non-identity map ({m} mismatches)"
+  let bad ← badRef.get
+  if bad == 0 then
+    IO.println "LNP64MINI MMU-RELOC SELFTEST OK — the catch-all relocates, the carve-outs pin, revocation is scoped per cell"
+  else
+    IO.println s!"LNP64MINI MMU-RELOC SELFTEST FAILED ({bad})"
+    throw <| IO.userError "mmu reloc selftest failed"
+
 def mmuIdentitySelftest : IO Unit := do
   let mut bad := 0
   for base in [0x2000, 0x4008, 0x10000] do
