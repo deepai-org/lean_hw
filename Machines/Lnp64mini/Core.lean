@@ -426,8 +426,6 @@ def CMD_TLB_PPN  : Nat := 66
 TLB entry whose recorded cell equals `cmd_data[7:0]`. -/
 def CMD_TLB_PHYS : Nat := 68
 def CMD_MAP_PROTECT : Nat := 67
-def CAP_SEND_OP : Nat := 0x3e
-def CAP_RECV_OP : Nat := 0x3f
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
 def curPoisoned : Expr 1 :=
@@ -559,6 +557,13 @@ def OP_MINI_GATE_CALL : Nat := 0x3c
 def OP_MINI_GATE_RETURN : Nat := 0x3d
 def OP_MINI_CAP_SEND : Nat := 0x3e
 def OP_MINI_CAP_RECV : Nat := 0x3f
+
+-- Aliases, not a second source of truth. These were `0x3e`/`0x3f` literals and
+-- went stale the moment the opcodes moved: the EDSL trapped on CAP_SEND
+-- (`trapped_op = 0xf8`) while the ISS executed it. A duplicated opcode number
+-- is the same hazard as `is_alu`'s stale bytes and `ld_wb`'s `0x05`/`0x08`.
+def CAP_SEND_OP : Nat := OP_MINI_CAP_SEND
+def CAP_RECV_OP : Nat := OP_MINI_CAP_RECV
 def OP_SEL : Nat := 0x40
 def OP_SEL_41 : Nat := 0x41
 def OP_SEL_42 : Nat := 0x42
