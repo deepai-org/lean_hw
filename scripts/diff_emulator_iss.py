@@ -23,17 +23,27 @@
 # Values are drawn from a boundary set (sign bits, all-ones, shift-amount
 # edges) plus random 64-bit noise, because the interesting disagreements are at
 # the edges -- signed vs unsigned compare, shift-by->=64, sign extension.
-import subprocess, random, sys
+import subprocess, random, re, sys
 random.seed(20260804)
 MINI="/home/ubuntu/lean_hw/.lake/build/bin/minitest"
 EMU="/home/ubuntu/lnp64/target/release/lnp64"
-RRR = {0x10:"ADD",0x11:"SUB",0x12:"MUL",0x14:"AND",0x15:"OR",0x16:"XOR",
-       0x18:"LSL",0x19:"LSR",0x1a:"ASR",0x1b:"SLT",0x26:"SLTU",
-       0x13:"DIV",0x17:"SREM",0xa7:"UDIV",0xa9:"UREM",0xaa:"MULH",0xab:"MULHU",
-       0xb6:"ROL",0xb7:"ROR"}
-RR  = {0x1f:"NOT",0xad:"SEXT_B",0xae:"SEXT_H",0xaf:"SEXT_W",
-       0xb0:"ZEXT_B",0xb1:"ZEXT_H",0xb2:"ZEXT_W",0xb4:"CTZ",
-       0xb8:"BSWAP16",0xb9:"BSWAP32",0xba:"BSWAP64"}
+# Opcode numbers are READ FROM THE DESIGN, never hardcoded. An earlier version
+# of this file carried its own table of literals and went stale the moment the
+# numbering changed -- reporting mismatches that were really its own encodings.
+# That is the same hazard this script exists to catch, so it must not have it.
+def _mini_ops():
+    src = open("/home/ubuntu/lean_hw/Machines/Lnp64mini/Core.lean").read()
+    return {m.group(1): int(m.group(2), 16)
+            for m in re.finditer(r"^def OP_([A-Z0-9_]+) : Nat := (0x[0-9a-f]+)", src, re.M)}
+
+_OPS = _mini_ops()
+def _op(name): return _OPS[name]
+
+RRR = {_op(n): n for n in ["ADD","SUB","MUL","AND","OR","XOR","LSL","LSR","ASR",
+                           "SLT","SLTU","DIV","SREM","UDIV","UREM","MULH","MULHU",
+                           "ROL","ROR"]}
+RR  = {_op(n): n for n in ["NOT","SEXT_B","SEXT_H","SEXT_W","ZEXT_B","ZEXT_H",
+                           "ZEXT_W","CTZ","BSWAP16","BSWAP32","BSWAP64"]}
 INTERESTING=[0,1,2,7,8,63,64,0xff,0x100,0x7fffffff,0x80000000,0xffffffff,
              0x7fffffffffffffff,0x8000000000000000,0xffffffffffffffff]
 def run(cmd):
