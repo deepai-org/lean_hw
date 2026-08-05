@@ -111,6 +111,20 @@ say "### 7. opcode coverage and literal hygiene"
 if r=$(python3 scripts/check_opcode_coverage.py 2>&1 | tail -1); then ok "$r"; else bad "opcode coverage — $r"; fi
 if r=$(python3 scripts/check_opcode_literals.py 2>&1 | tail -1); then ok "$r"; else bad "opcode literals — $r"; fi
 
+say "### 8. the RTL agrees with the ISS on the generated matrix"
+# Sections 5 and 6 compare EDSL/emulator against the ISS. Neither can see a
+# defect in the EMITTED RTL, which is what the bitstream is built from and what
+# silicon runs -- and that is the surface the 2026-08-05 renumbering broke while
+# every other section stayed green. Slow (one iverilog build per program), so
+# it is opt-in with STALE_RTL=1 and run in full before any bitstream.
+if [ "${STALE_RTL:-0}" = "1" ]; then
+  ./.lake/build/bin/minitest opdiffhex fpga/zc702/opdiff >/dev/null 2>&1
+  r=$(./scripts/opdiff_rtl.sh 2>&1 | tail -1)
+  case "$r" in *"OK"*) ok "RTL ≡ ISS ($r)";; *) bad "RTL vs ISS — $r";; esac
+else
+  say "  (skipped: set STALE_RTL=1 -- ~362 iverilog builds)"
+fi
+
 [ "$FAIL" -eq 0 ] && say "check_stale: OK — every derived artifact matches its source" \
                   || say "check_stale: FAILED — see STALE lines above"
 exit "$FAIL"

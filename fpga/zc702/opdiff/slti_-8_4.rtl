@@ -1,4 +1,4 @@
-HALTED=1 cycles=32 pc=4120 retire=4
+HALTED=1 pc=4120 retire=4
 r1=18446744073709551608
 r2=4
 r3=1
@@ -8,3 +8,4 @@ r6=0
 r7=0
 r8=0
 r9=0
+dmem32=0
