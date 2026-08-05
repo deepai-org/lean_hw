@@ -821,10 +821,20 @@ a few cycles past the halt, because the one-cycle drain lag means stopping the
 instant `halted` goes high loses the last instruction — the one a post-mortem
 most wants. On silicon the clock does not stop.
 
-**Not yet done:** the top-level BSCAN read indices (the read map lives in
-hand-written `*_top.v`, not in the emit), and an area measurement. 16×64×2 of
-LUTRAM per core on a part already near its routing ceiling is not free, and no
-claim is made here that it fits until a build says so.
+**The build said so (2026-08-05, board host, openXC7):** the dual epoch top
+with the ring in both cores **routes**. 56,967 LUTs (53%) against the shipping
+54,309 (51%) — +2,658 for two rings plus readback — and routed Fmax
+**28.53 MHz** against the baseline's 27.36, both clearing the 25 MHz board
+clock. The ring is not the critical path; the whole-design figure moved by
+noise. Scratch build in `/tmp/ext8/` on the host; the shipping `oxc7/out/`
+artifacts were not touched.
+
+The top-level BSCAN read map is wired in `lnp64mini_epoch_top.v`: `cmd 69`
+selects the entry, `rd 32` is the ring head, `rd 33/34` = `{op,pc}` lo/hi,
+`rd 35/36` = writeback lo/hi, per core via the region bit. The newest entry is
+`(rd32 − 1) mod 16`. Remaining before it is *load-bearing* on the board: build
+the bitstream from this trial's netlist path as the shipping one and read a
+real ring after a real trap.
 
 ### EXT-7 stage B, the host half: one map, one choke point
 
