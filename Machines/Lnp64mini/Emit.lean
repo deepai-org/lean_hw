@@ -77,6 +77,10 @@ def main (args : List String) : IO Unit := do
           acc * 16 + d) 0)
       issStepOp (BitVec.ofNat 64 (hexVal w))
         ((rs.splitOn ",").map (fun t => (t.trim.toNat?).getD 0))
+  | ["stepops", f] =>
+      -- Batch form: many cases in one process (7.5 s of Lean startup per
+      -- process otherwise dominates any differential; see issStepOpBatch).
+      issStepOpBatch f
   | ["preempthex"]  => writePreemptHex "fpga/zc702/preempt.hex"
   | ["preemptpredict", q] => preemptPredict ((q.toNat?).getD 0)
   | ["progtest"]   => progtest
