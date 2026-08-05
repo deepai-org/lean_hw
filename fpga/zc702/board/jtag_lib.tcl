@@ -24,6 +24,10 @@ proc wr {a d} { jtag targets -set -filter {name =~ {*SMT1*}}
 set RELOC_FROM  0xFFFFFFFF
 set RELOC_DELTA 0
 proc gphys {a} { global RELOC_FROM RELOC_DELTA
+  # Relocated region is [RELOC_FROM, 32MB): every byte of RAM the kernel uses.
+  # At/above 32MB is DMA-visible identity territory (GEM slab, console rings)
+  # -- the VMA set says the same, and the two must agree or spot-reads lie.
+  if {$a >= 0x2000000} { return $a }
   return [expr {$a >= $RELOC_FROM ? $a + $RELOC_DELTA : $a}] }
 
 proc gwrite {ga hi lo} { global DB; wr 40 [expr {$DB+[gphys $ga]}]; wr 41 $lo; wr 42 $hi }

@@ -148,12 +148,43 @@ if {[info exists ::env(LNP64_RELOC)] && $::env(LNP64_RELOC) == 1} {
 # priTree: lower index wins, so the ring carve-out overrides e2.
 # cmd 66 (limit) VALIDATES, so it is last per entry; mmu_en only after all
 # three are live.
+# The relocated region is [text_end, 32MB) -- every byte of RAM this kernel
+# uses (data/bss/stacks top at 0x17f8000, heap below 32MB). Everything at or
+# above 32MB is DMA-VISIBLE state and stays identity on the DMA cell: the GEM
+# slab at guest 0x2000000 (gem_core.c GEM_SLAB -- descriptors + frame buffers
+# whose PHYSICAL addresses the guest programs into GEM0's QBAR/BDs), and the
+# console rings at 0x3000000.
+#
+# Why this shape and not a slab carve-out: the TLB base field is 24-BIT
+# (cmd 65 data[23:0]), so a base of 0x2000000 cannot be expressed -- a masked
+# write would have silently produced base 0 and shadowed the catch-all. The
+# first stage-B boot also taught the deeper rule: a DMA engine is a second
+# reader that never heard of the TLB. Both cores ran the whole kernel happily
+# while the NIC was dead, because the core's slab stores went to +0x800000 and
+# GEM DMA'd the unrelocated window.
+#
+# ALIASING CONSTRAINT: relocated guest [0x1800000,0x2000000) lands on physical
+# [0x2000000,0x2800000) -- the slab's window. That guest range is above every
+# mapped thing in this image (stacks 0x17f8000, nothing until the slab) and is
+# unused; if the image ever grows into it, the delta or the slab must move.
 proc install_vma_reloc {p RING tend} {
   wr [expr {$p|64}] 0 ; wr [expr {$p|65}] $RING ; wr [expr {$p|68}] 0x02000000
   wr [expr {$p|66}] [expr {$RING + 0x100000}]
   wr [expr {$p|64}] 1 ; wr [expr {$p|65}] $tend ; wr [expr {$p|68}] 0x01800000
-  wr [expr {$p|66}] 0xFFFFFFFF
+  wr [expr {$p|66}] 0x2000000
   wr [expr {$p|64}] 2 ; wr [expr {$p|65}] 0     ; wr [expr {$p|68}] 0x01000000
+  wr [expr {$p|66}] $tend
+  wr [expr {$p|64}] 3 ; wr [expr {$p|65}] 0     ; wr [expr {$p|68}] 0x02000000
+  wr [expr {$p|66}] 0xFFFFFFFF
+  wr [expr {$p|63}] 1
+}{
+  wr [expr {$p|64}] 0 ; wr [expr {$p|65}] $RING ; wr [expr {$p|68}] 0x02000000
+  wr [expr {$p|66}] [expr {$RING + 0x100000}]
+  wr [expr {$p|64}] 1 ; wr [expr {$p|65}] 0x2000000 ; wr [expr {$p|68}] 0x02000000
+  wr [expr {$p|66}] 0x2100000
+  wr [expr {$p|64}] 2 ; wr [expr {$p|65}] $tend ; wr [expr {$p|68}] 0x01800000
+  wr [expr {$p|66}] 0xFFFFFFFF
+  wr [expr {$p|64}] 3 ; wr [expr {$p|65}] 0     ; wr [expr {$p|68}] 0x01000000
   wr [expr {$p|66}] $tend
   wr [expr {$p|63}] 1
 }
@@ -607,8 +638,8 @@ foreach cr {0 1} {
   # (fastload.tcl `set DB 0x10000000`), so guest 0x3000000 is PS 0x13000000.
   # Reading the guest address directly returns unrelated DDR and looks exactly
   # like "the guest never printed".
-  # Stage B: the console rings live above text_end, so they are RELOCATED
-  # guest state -- read them through the same map or see unrelated DDR.
+  # Stage B: the console rings are >= 32MB, DMA-visible identity territory --
+  # gphys agrees (it relocates only [text_end, 32MB)).
   set cb [expr {0x10000000 + [gphys [expr {0x3000000 + $cr * 0x100000}]]}]
   if {[catch {set cm [lindex [mrd -force -value $cb 1] 0]} cerr]} {
     puts "%CONRING core=$cr read failed: $cerr"; continue
