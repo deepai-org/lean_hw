@@ -672,3 +672,47 @@ runs *before* any kernel boot, and a last-N-committed-instructions ring buffer
 readable after a panic. 41 550 instructions into a rump boot is the most
 expensive possible place to first learn about a decode disagreement, and the
 panic string is a very thin clue compared with a trace.
+
+### The ISA smoke, and closing the ladder to silicon
+
+Two surfaces were still untested after the RTL leg landed.
+
+**The cross-repo surface.** `opdiffselftest` and `opdiff_rtl.sh` both generate
+their programs from lean_hw's own `OP_` constants. A renumbering therefore moves
+the design and the test program *together*, and they agree by construction. That
+is the correct property for the design and it is structurally blind to the
+question that broke the board: does the assembler — which lives in the other
+repo, and which the guest image is built by — still emit what this core decodes?
+
+`fpga/zc702/isasmoke.s` is written in **mnemonics**. Nothing about its encoding
+comes from lean_hw. It builds the eight-value constant battery through
+`LIU`+`ORI`, folds the shifts in beside it, exercises `JAL`/`JALR`/`JMP` and a
+taken and a not-taken branch, and reduces everything to an order-sensitive
+polynomial checksum in `r1` — so one wrong constant cannot be cancelled by
+another. `minitest issexpect <hex>` runs a flat `.hex` through the ISS, which is
+what makes a mnemonic-written program checkable at all.
+
+**Silicon.** The tcl is *generated* from the `.hex` by
+`scripts/gen_board_prog.py`. `loom_mini_check.tcl` used to hand-transcribe its
+program into thirteen `wr 41/42` pairs — the same hazard as every defect the
+renumbering exposed, a number written down twice where no rebuild reaches it.
+Re-assembling `loomcheck.s` would not have updated the tcl, so the board could
+have executed an instruction stream that no longer existed in any source file
+with every gate green. The generator reproduces those thirteen words exactly,
+which is how it was validated, and `loom_mini_check.tcl` is now its output.
+
+The ladder now closes end to end on one program:
+
+```
+assembler (lnp64)  ≡  ISS  ≡  RTL (iverilog)  ≡  SILICON
+  r1 = 13739135111232609602   retire=69  pc=4536  trap=0
+```
+
+58 instructions, under a second off-board. There is no longer any excuse for
+learning about a decode disagreement 41 550 instructions into a rump boot.
+
+**Still open:** the trace ring buffer, and the `liu` hypothesis itself. Note the
+hypothesis is *weaker* than it was: the constant battery and the jump family now
+run correctly on silicon under the shipping numbering, so whatever the
+renumbering broke, this smoke would have to be re-run under it to say anything.
+That is the canary, and it is now cheap.
