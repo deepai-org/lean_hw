@@ -1660,6 +1660,29 @@ def writeOpDiffHex (dir : String) : IO Unit := do
     emit s!"jump_{nm}" (progJump op); n := n + 1
   IO.println s!"wrote {n} matrix programs to {dir}"
 
+/-- Run a program read from a flat `.hex` (one 64-bit word per line, the format
+`$readmemh` and the board loader both take) and print the ISS expectation.
+
+This is what makes a program written in MNEMONICS checkable. Every other leg
+generates its test programs from lean_hw's own `OP_` constants, so a renumbering
+moves the design and the program together and they agree by construction --
+correct for the design, and blind to the question that broke the board: does the
+*assembler*, in the other repo, still emit what this core decodes? Feed it a
+`.hex` from `lnp64 asm-flat-exec` and the answer stops being an assumption. -/
+def issExpectHexFile (path : String) : IO Unit := do
+  let txt ← IO.FS.readFile path
+  let words := txt.splitOn "\n" |>.filterMap (fun l =>
+    let t := l.trim
+    if t.isEmpty then none
+    else
+      let ds := t.toList.filterMap (fun c =>
+        if c.isDigit then some (c.toNat - 48)
+        else if 'a' ≤ c && c ≤ 'f' then some (c.toNat - 87)
+        else if 'A' ≤ c && c ≤ 'F' then some (c.toNat - 55)
+        else none)
+      some (BitVec.ofNat 64 (ds.foldl (fun acc d => acc * 16 + d) 0)))
+  IO.print (issExpect words)
+
 /-- Generated EDSL ≡ ISS coverage over every ALU opcode in the matrix. -/
 def opDiffSelftest : IO Unit := do
   let mut bad := 0
