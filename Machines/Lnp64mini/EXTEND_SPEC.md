@@ -535,3 +535,45 @@ the reset, and core 1 is back to 1.72 M.
 Note the fail-closed behaviour is exactly right: a core with the MMU on and no
 mapping got nothing, rather than getting the raw address. That is the property
 working, observed by accident.
+
+### The authority-complete demo
+
+The mechanisms exercised **together**, on silicon, against a guest that was
+serving traffic — not each proven separately in its own selftest.
+
+```
+1. baseline                    retire 148094479 -> 148566996  (delta 472517)  ADVANCING
+   installed VMA#1: base 0x100000 limit 0x200000 dom 3 cell 2
+2. after installing dom-3 VMA  retire 148629997 -> 149104238  (delta 474241)  ADVANCING
+   bumped epoch cell 2 (revokes VMA#1 only)
+3. after revoking cell 2       retire 149128463 -> 149600882  (delta 472419)  ADVANCING
+   bumped epoch cell 1 (revokes the GUEST's mapping)
+4. after revoking cell 1       retire 149613504 -> 149613504  (delta 0)       STOPPED
+
+AUTHORITY_DEMO_OK
+```
+
+Four properties, each measured rather than asserted:
+
+* **domain isolation** — a VMA installed in domain 3 does not perturb a guest
+  running in domain 0. `tlbMatch` requires `dom == domCur`, and the retire rate
+  is unchanged across the install (472 517 → 474 241 per 700 ms).
+* **scoped revocation** — bumping epoch cell 2 destroys that VMA and *only*
+  that VMA. The guest, mapped on cell 1, keeps running at the same rate. This
+  is the property that makes revocation usable: it is addressed to a cell, not
+  to the machine.
+* **fail-closed** — bumping cell 1, the guest's own cell, stops it dead.
+  `delta 0`, from a core that had been retiring ~470 k instructions per 700 ms.
+* **translation is load-bearing** — which is the point of the previous line. A
+  guest that kept running after its mapping was revoked would prove the MMU was
+  decorative. This one cannot run without it.
+
+Step 4 is destructive on purpose and the script says so; the next `netbsd_up`
+rebuilds the world. `fpga/zc702/probes/authority_demo.tcl`.
+
+**What it does not cover.** Capability transfer (`cap_send`/`cap_recv`) and gate
+calls are *guest instructions*, so the host cannot drive them over BSCAN — they
+are covered by `capxferselftest` and `gateselftest` in the ladder, and by the
+generated matrix, but not by this on-silicon demo. Saying "authority-complete"
+of the revocation and domain story is fair; of the whole §9/§10.2 surface it
+would not be.
