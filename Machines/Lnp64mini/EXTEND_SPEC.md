@@ -825,3 +825,36 @@ most wants. On silicon the clock does not stop.
 hand-written `*_top.v`, not in the emit), and an area measurement. 16×64×2 of
 LUTRAM per core on a part already near its routing ceiling is not free, and no
 claim is made here that it fits until a build says so.
+
+### EXT-7 stage B, the host half: one map, one choke point
+
+The silicon needed nothing: `tlb_phys` (cmd 68) has carried a per-entry delta
+since stage A. Stage B is the *host* learning to tell the truth about where
+bytes are. Three scripts changed (mirrored in `fpga/zc702/board/`):
+
+* `jtag_lib.tcl` — `gphys`, the one definition of guest→physical
+  (`a ≥ text_end ? a + 0x800000 : a`), applied inside `gwrite`/`bulk_write`/
+  `bulk_gread`/`apply_trap_resp` so every caller inherits it. A forgotten site
+  would present as corruption twenty minutes into a boot; a choke point cannot
+  be forgotten.
+* `lnp64_rump_run_dual.tcl` — `install_vma_reloc`: ring `[0x20e000,+1MB)` delta
+  0 on **cell 2** (the DMA grant, revocable on its own), data `[text_end,∞)`
+  delta `+0x800000` on cell 1, low `[0,text_end)` pinned on cell 1. priTree
+  lower-index-wins gives the ring carve-out priority. The console rings at
+  guest `0x3000000` are relocated state — read through the same map or see
+  unrelated DDR.
+* `fastload.tcl` — the PS-DAP path writes data/bss at `+0x800000` under
+  `LNP64_RELOC=1`. Three implementations of one constant; the servicer's data
+  spot-verify reads through `gphys`, so a fastload that wrote data at the
+  identity address fails the verify and falls back loudly.
+
+**The boundary moved off the spec table.** The recorded plan's catch-all
+(`everything else +0x800000`) would relocate guest `[0x1000,0x20e000)` onto
+`0x801000+`, which overlaps the tail of text's physical range. Found by
+thinking through `mmurelocselftest`'s address plan, not on the board. The
+relocated region now starts at `text_end`, everything below is identity, and
+the servicer aborts if the image's `data-base` ever falls below `text_end`
+(the boundary must fall between segments, not through one).
+
+Verification order: `mmurelocselftest` (EDSL≡ISS + physical placement) →
+`gphys` unit vectors in tclsh → silicon boot under `LNP64_MMU=1 LNP64_RELOC=1`.
