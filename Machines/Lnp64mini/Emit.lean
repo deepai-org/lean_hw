@@ -62,6 +62,7 @@ def main (args : List String) : IO Unit := do
   | ["alugapselftest"] => aluGapSelftest
   | ["opdiffselftest"] => opDiffSelftest
   | ["opdiffhex", d] => writeOpDiffHex d
+  | ["issexpect", f] => issExpectHexFile f
   | ["mmuidentityselftest"] => mmuIdentitySelftest
   | ["stepop", w, rs] =>
       -- Mini half of the emulator differential: same CLI shape and same output

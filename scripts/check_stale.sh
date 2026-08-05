@@ -125,6 +125,15 @@ else
   say "  (skipped: set STALE_RTL=1 -- ~362 iverilog builds)"
 fi
 
+say "### 9. the assembler and this core agree (cross-repo, from mnemonics)"
+# Sections 5, 6 and 8 all generate their programs from lean_hw's own OP_
+# constants, so a renumbering moves design and program together and they agree
+# by construction. isasmoke.s is written in MNEMONICS and assembled by lnp64's
+# assembler, so nothing about its encoding comes from this repo. 58 instructions,
+# under a second -- the cheap place to learn that the two repos disagree.
+r=$(./scripts/isa_smoke.sh 2>&1 | head -1)
+case "$r" in *OK*|*SKIP*) ok "${r#isa_smoke: }";; *) bad "ISA smoke — $r";; esac
+
 [ "$FAIL" -eq 0 ] && say "check_stale: OK — every derived artifact matches its source" \
                   || say "check_stale: FAILED — see STALE lines above"
 exit "$FAIL"
