@@ -494,3 +494,44 @@ explicitly exempt.
 That is the machinery earning its keep on the first increment after it was
 built: new state arrived, and the gate demanded it be compared instead of
 quietly not being.
+
+### Stage B's software half: NetBSD runs with `mmu_en = 1`
+
+```
+MMU: identity VMA installed on core 0 (base 0, limit 0xFFFFFFFF, cell 1); mmu_en=1
+MMU: identity VMA installed on core 1 after reset; mmu_en=1
+LOOPEND halted=0 traps=0 traps1=0
+RETIRE core0=30138194 core1=1717177
+PASS 20260805-000526 — 10/10 ping, dual-core, BSCAN quiet
+```
+
+**Dual-core NetBSD now runs with translation in the path.** Every DDR access
+goes through the TLB, is checked against the running domain, and is revocable
+by bumping the VMA's epoch cell (`cmd 67`). Core 1 retires 1.72 M instructions
+in the shared kernel — the same figure as the MMU-off run, so translation costs
+nothing observable here.
+
+**Say precisely what this is.** The VMA is the *identity*: base 0, limit
+`0xFFFFFFFF`, delta 0. Nothing is relocated. What changed is that translation
+is **in the path at all** — previously `mmu_en` was 0 and `ddrEa` took the raw
+branch. Non-identity placement (the loader putting guest regions at separate
+physical bases) is the next step and is not done. Calling this "the guest under
+real translation" is fair; calling it "the guest relocated" would not be.
+
+**Checked in the ladder first.** `ddrEaRaw` word-aligns (`ea & ~7`) and
+`ddrEaXlat` does not (`DATA_BASE + eaLo + delta`), so it was not obvious that an
+identity VMA computes what bypass computes. `mmuidentityselftest` proves it
+does, at several alignments and across byte/half/word/doubleword accesses —
+seconds in the ladder instead of a six-minute board cycle guessing.
+
+**One ordering bug, and it is worth recording.** Installing core 1's VMA with
+core 0's left core 1 with `mmu_en = 1` and *no valid entry*: `wr [c1 13] 1`
+resets core 1, and cmd 13's reset zeroes `tlb_vld`. Every core-1 access then
+failed closed, and it retired 20 instructions and parked — while the demo still
+PASSed, because the GEM pump runs on core 0. A green ping is not evidence that
+both cores are alive; the retire counters are. The install now happens after
+the reset, and core 1 is back to 1.72 M.
+
+Note the fail-closed behaviour is exactly right: a core with the MMU on and no
+mapping got nothing, rather than getting the raw address. That is the property
+working, observed by accident.

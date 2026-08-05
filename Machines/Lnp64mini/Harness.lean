@@ -1615,6 +1615,67 @@ def opDiffSelftest : IO Unit := do
     IO.println s!"LNP64MINI OPDIFF SELFTEST FAILED ({bad} opcodes disagree)"
     throw <| IO.userError "opdiff selftest failed"
 
+/-- **Identity translation must equal bypass.**
+
+If a VMA maps a range onto itself (`delta = 0`), then `mmu_en = 1` and
+`mmu_en = 0` must compute the same effective address for every access — that is
+what "the mapping is the identity" means. Any difference is a translation-path
+bug that would break the guest the moment the MMU is switched on, and it would
+be found on the board rather than here.
+
+This matters because the two paths are NOT the same expression: `ddrEaRaw`
+word-aligns (`ea & ~7`) while `ddrEaXlat` is `DATA_BASE + eaLo + delta`. Whether
+that difference is observable is exactly the question, and it is cheaper to
+answer in the ladder than in a six-minute board cycle.
+
+The program touches byte, half, word and doubleword at several alignments, so
+an alignment difference in the translated path shows up as a value mismatch. -/
+def progXlatProbe (base : Nat) : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 base,
+    encImmI OP_LIU 3 0 0x0A0B0C0D,
+    encImmI OP_ORI 3 3 0x01020304,
+    encImmS OP_ST 1 3 0,              -- sd  [base]
+    encImmI OP_ADDI 4 0 0x5A,
+    encImmS OP_ST_35 1 4 3,           -- sb  [base+3]  (unaligned)
+    encImmI OP_ADDI 5 0 0x1234,
+    encImmS OP_ST_37 1 5 6,           -- sh  [base+6]  (unaligned)
+    encImmI OP_LD 6 1 0,              -- ld  [base]
+    encImmI OP_LD_32 7 1 3,           -- lbu [base+3]
+    encImmI OP_LD_36 8 1 6,           -- lhu [base+6]
+    encImmI OP_LD_31 9 1 4,           -- lwu [base+4]
+    enc OP_EXIT 0 0 0 ]
+
+/-- Install VMA 0 as the identity over the whole space, then enable the MMU. -/
+def cmdIdentityVma : Nat → MiniIn := fun k =>
+  if k = 0 then { cmdValid := true, cmdIdx := CMD_TLB_SEL,  cmdData := 0 }
+  else if k = 1 then { cmdValid := true, cmdIdx := CMD_TLB_VPN,  cmdData := 0 }          -- base 0, dom 0
+  else if k = 2 then { cmdValid := true, cmdIdx := CMD_TLB_PHYS, cmdData := 0x01000000 } -- delta 0, cell 1
+  else if k = 3 then { cmdValid := true, cmdIdx := CMD_TLB_PPN,  cmdData := 0xFFFFFFFF } -- limit + validate
+  else if k = 4 then { cmdValid := true, cmdIdx := CMD_MMU_EN,   cmdData := 1 }
+  else if k = 5 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+def mmuIdentitySelftest : IO Unit := do
+  let mut bad := 0
+  for base in [0x2000, 0x4008, 0x10000] do
+    let img := imageFrom TEXT_BASE (progXlatProbe base)
+    let (sByp, _, _) := runIss img 1 (cmdQuantum 0) (fun _ => 0) 400
+    let (sXlat, _, _) := runIss img 1 cmdIdentityVma (fun _ => 0) 400
+    let mut diffs : List String := []
+    for r in [6, 7, 8, 9] do
+      if (sByp.rf[r]!) ≠ (sXlat.rf[r]!) then
+        diffs := diffs ++ [s!"r{r}: bypass={(sByp.rf[r]!).toNat} xlat={(sXlat.rf[r]!).toNat}"]
+    if !diffs.isEmpty then
+      bad := bad + 1
+      IO.println s!"  FAIL base=0x{String.ofList (Nat.toDigits 16 base)}: {diffs}"
+    else
+      IO.println s!"  OK   base=0x{String.ofList (Nat.toDigits 16 base)} (identity xlat = bypass)"
+  if bad = 0 then
+    IO.println "LNP64MINI MMU-IDENTITY SELFTEST OK — an identity VMA computes exactly what bypass computes"
+  else
+    IO.println s!"LNP64MINI MMU-IDENTITY SELFTEST FAILED ({bad} base(s))"
+    throw <| IO.userError "mmu identity selftest failed"
+
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt
   let imgLS := imageFrom TEXT_BASE progLS
