@@ -1422,6 +1422,18 @@ def ddrEa (ea : Expr 64) : Expr 32 :=
     (ddrEaRaw ea)
 def ddrPc : Expr 32 := .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.slice pc 0 32)
 
+/-- The ONE effective address S_EX ever translates. LR and SC translate `a`;
+FUTEX_WAIT translates its aligned futex word (`rdval & ~7`). Muxing the input
+instead of instantiating ddrEa per site keeps S_EX at a single translation
+cone: the first futex fix cloned a second one (+1.1k LUTs) and routed Fmax
+fell from 27.36 to 23.98 MHz -- under the 25 MHz board clock. The ops are
+mutually exclusive in S_EX, so per-site behaviour is unchanged, and yosys
+merges the now-identical cones. -/
+def sexEa : Expr 64 :=
+  .mux (opIs OP_FUTEX_WAIT)
+    (.shl (.zext (.slice rdval 3 61) 64) (.lit (BitVec.ofNat 64 3)))
+    a
+
 def goF0 : Act := .write 5 "st" (L5 S_F0)
 def stepPc : Act := .write 64 "pc" pc8
 
@@ -1669,7 +1681,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
     -- forever, and core 0 spun in __lnp_futex_wait at half a billion retires
     -- with ZERO traps. The futex compare is a data access; it goes through
     -- ddrEa like every other data access.
-    (.seq (.write 32 "core_addr" (ddrEa (.shl (.zext (.slice rdval 3 61) 64) (.lit (BitVec.ofNat 64 3)))))
+    (.seq (.write 32 "core_addr" (ddrEa sexEa))
       (.seq (.write 1 "core_rd" (L1 1))
         (.seq (.write 64 "futex_addr_q" rdval) (.seq (.write 64 "futex_exp" a) (.write 5 "st" (L5 S_FTX1)))))) <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
@@ -1713,7 +1725,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       .write 5 "ld_rd_q" rdf, .write 1 "mem_is_store" (L1 0),
       .ite (.ult a (L64 0x1000))
         (actSeq [.write 9 "dmem_a" (.slice a 3 9), .write 5 "st" (L5 S_L0)])
-        (actSeq [.write 32 "core_addr" (ddrEa a), .write 1 "core_rd" (L1 1),
+        (actSeq [.write 32 "core_addr" (ddrEa sexEa), .write 1 "core_rd" (L1 1),
                  .write 1 "lr_req" (L1 1),          -- tag: this read takes a reservation
                  .write 5 "st" (L5 S_DL)])]) <|
   -- SC
@@ -1721,7 +1733,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
     (.seq (.ite (.and lr_valid (.eq lr_addr a))
             (.ite (.ult a (L64 0x1000))
               (.seq (.write 1 "dmem_we" (L1 1)) (.seq (.write 9 "dmem_a" (.slice a 3 9)) (.seq (.write 64 "dmem_wd" b) (.seq stepPc (.seq retireInc goF0)))))
-              (actSeq [.write 32 "core_addr" (ddrEa a), .write 64 "core_wdata" b,
+              (actSeq [.write 32 "core_addr" (ddrEa sexEa), .write 64 "core_wdata" b,
                        .write 1 "core_wr" (L1 1),
                        .write 1 "sc_req" (L1 1),      -- tag: conditional store
                        .write 1 "sc_pending" (L1 1),  -- the verdict is due at S_DSW
