@@ -177,16 +177,6 @@ proc install_vma_reloc {p RING tend} {
   wr [expr {$p|64}] 3 ; wr [expr {$p|65}] 0     ; wr [expr {$p|68}] 0x02000000
   wr [expr {$p|66}] 0xFFFFFFFF
   wr [expr {$p|63}] 1
-}{
-  wr [expr {$p|64}] 0 ; wr [expr {$p|65}] $RING ; wr [expr {$p|68}] 0x02000000
-  wr [expr {$p|66}] [expr {$RING + 0x100000}]
-  wr [expr {$p|64}] 1 ; wr [expr {$p|65}] 0x2000000 ; wr [expr {$p|68}] 0x02000000
-  wr [expr {$p|66}] 0x2100000
-  wr [expr {$p|64}] 2 ; wr [expr {$p|65}] $tend ; wr [expr {$p|68}] 0x01800000
-  wr [expr {$p|66}] 0xFFFFFFFF
-  wr [expr {$p|64}] 3 ; wr [expr {$p|65}] 0     ; wr [expr {$p|68}] 0x01000000
-  wr [expr {$p|66}] $tend
-  wr [expr {$p|63}] 1
 }
 
 # BATCH: words per jtag sequence. Measured on-board 2026-07-04: writes peak
