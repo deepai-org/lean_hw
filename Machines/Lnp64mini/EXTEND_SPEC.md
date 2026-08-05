@@ -577,3 +577,42 @@ are covered by `capxferselftest` and `gateselftest` in the ladder, and by the
 generated matrix, but not by this on-silicon demo. Saying "authority-complete"
 of the revocation and domain story is fair; of the whole §9/§10.2 surface it
 would not be.
+
+### Making the VMA non-identity: the design, and the constraint that shapes it
+
+The identity VMA proves translation is *in the path* and revocable, and that is
+worth having, but it does not relocate anything — so it does not exercise the
+part of §15 that matters most. Making it real turns on one fact that is easy to
+miss:
+
+```lean
+def ddrPc : Expr 32 := .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.slice pc 0 32)
+```
+
+**Instruction fetch is not translated.** `ddrPc` bypasses the TLB entirely;
+only `ddrEa` (data) goes through it. So the guest's *text* cannot be relocated
+by a VMA — move it and fetches follow the old address. Any non-identity plan has
+to leave text where the loader put it.
+
+That is not a defect to fix casually: translating fetch means the TLB is in the
+fetch critical path, which is exactly the timing the area/Fmax budget has been
+protecting. Data-only translation is a legitimate design point and should be
+recorded as a choice, not discovered again as a surprise.
+
+**The plan that follows from it**, with `priTree` picking the first matching
+entry, so lower index wins:
+
+| entry | range | delta | why |
+|---|---|---|---|
+| 0 | shmif ring `0x20e000–0x30e000` | 0 | the host's `ring_pump` and GEM0 DMA address this **physically**; it must not move. This is the "named DMA-window grant". |
+| 1 | text `0x400000–0x8dd000` | 0 | fetch is untranslated, so text must stay put |
+| 2 | everything else (data, bss, stack, heap) | `+0x800000` | genuinely relocated: the guest keeps its addresses, the bytes live 8 MB away |
+
+`fastload.tcl` then writes the data image at `DB + dbase + 0x800000` instead of
+`DB + dbase`. The delta field is 24-bit (`cmd_data[23:0]`), so the shift must
+stay under 16 MB — 8 MB is a comfortable choice.
+
+The demo this buys is the right one: **the guest's data really is somewhere
+else, the DMA window really is a separate grant with its own bounds, and
+revoking either cell fails closed independently.** That is worth doing and is
+the next step here; the identity version is the floor, not the goal.
