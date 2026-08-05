@@ -923,6 +923,28 @@ def issStepOp (word : BitVec 64) (regs : List Nat) : IO Unit := do
     if after ≠ before then IO.println s!"STEP_OP_REG {i} {after}"
   IO.println "STEP_OP_OK"
 
+/-- Batch form of `issStepOp`: one process, many cases. A `minitest` process
+costs ~7.5 s of module initialization before `main` runs a single line, so a
+270-case differential at one case per process is ~35 minutes of pure startup —
+which is what silently pushed section 6 of check_stale past its budget. Input
+file: one case per line, `<hex-word> <r0,...,r31>`; output per case:
+`STEP_OP_CASE <i>`, the `STEP_OP_REG` lines, `STEP_OP_OK`. -/
+def issStepOpBatch (file : String) : IO Unit := do
+  let text ← IO.FS.readFile file
+  let hexVal : String → Nat := fun t =>
+    (t.toList.foldl (fun acc c =>
+      let d := if c.isDigit then c.toNat - 48
+               else if c.toLower.isAlpha then c.toLower.toNat - 87 else 0
+      acc * 16 + d) 0)
+  let mut i := 0
+  for line in text.splitOn "\n" do
+    let parts := (line.trim.splitOn " ").filter (· ≠ "")
+    if h : parts.length = 2 then
+      IO.println s!"STEP_OP_CASE {i}"
+      issStepOp (BitVec.ofNat 64 (hexVal parts[0]))
+        (((parts[1]).splitOn ",").map (fun t => (t.trim.toNat?).getD 0))
+      i := i + 1
+
 /-! ## progtest — hand-encoded program to a clean EXIT on the ISS -/
 
 /-- Program with a trap at word 0 (unknown op 0x7f) then real work: after
