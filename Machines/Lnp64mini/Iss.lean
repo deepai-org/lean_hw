@@ -43,6 +43,17 @@ structure MiniSt where
   cur       : BitVec 5  := 0
   pc        : BitVec 64 := BitVec.ofNat 64 TEXT_BASE
   retire    : BitVec 32 := 0
+  -- EXT-8: the commit-trace ring (see Core.lean). 16 entries of
+  -- {op[7:0], 24'b0, pc[31:0]} and the writeback value.
+  trace_wp  : BitVec 4  := 0
+  trace_sel : BitVec 4  := 0
+  trace_hit : Bool := false
+  trace_in_pc : BitVec 64 := 0
+  trace_in_wb : BitVec 64 := 0
+  trace_rd_pc : BitVec 64 := 0
+  trace_rd_wb : BitVec 64 := 0
+  trace_pc  : Array (BitVec 64) := Array.replicate 16 0
+  trace_wb  : Array (BitVec 64) := Array.replicate 16 0
   running   : Bool := false
   halted    : Bool := false
   st        : BitVec 5  := 0
@@ -862,13 +873,52 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   -- both use the PRE-cycle (registered) dmem_we/dmem_a/dmem_wd.
   if s.dmem_we then s' := { s' with dmem := s'.dmem.set! s.dmem_a.toNat s.dmem_wd }
   -- latches (registered readbacks; occur every cycle, from pre-state)
-  s' := { s' with dmem_rd := s.dmem[s.dmem_a.toNat]!,
+  s' := { s' with trace_rd_pc := s.trace_pc[s.trace_sel.toNat]!,
+                  trace_rd_wb := s.trace_wb[s.trace_sel.toNat]!,
+                  dmem_rd := s.dmem[s.dmem_a.toNat]!,
                   reg_rd := s.rf[rfIdx s.cur s.reg_sel]!,
                   uart_byte := s.uartMem[s.uart_ridx.toNat]! }
   -- NOTE: dmem_rd uses PRE-cycle dmem_a per Verilog (dmem_rd<=dmem[dmem_a]).
 
   -- the one regfile write port
   if rfWe then s' := rfSetIdx s' rfWa rfWd
+
+  -- EXT-8: the commit-trace ring.
+  --
+  -- The design pushes an entry inside `retireInc`, which is ONE definition
+  -- covering every commit site. The ISS counts retires at ~25 separate places,
+  -- so mirroring it there would mean maintaining a second list of commit sites
+  -- -- the exact defect class this arc has been about, and the one that put a
+  -- stale `lw`/`lb` decode into a bitstream.
+  --
+  -- Instead the mirror is driven by the OBSERVABLE: retire went up by one, so
+  -- an instruction committed, so an entry is pushed. It cannot miss a case
+  -- because it does not enumerate the cases. This is exact only because
+  -- `cmd 54` (host-serviced trap resume) was routed through `retireInc` on the
+  -- design side, so "retire incremented" and "an entry was pushed" are the same
+  -- event with no exception.
+  --
+  -- All three operands are PRE-cycle, matching D9: the entry records the
+  -- instruction that just retired, not the one about to be fetched.
+  -- capture (mirrors `retireInc`): the payload is latched at the retire, into
+  -- scalar registers. `trace_wb` takes the value the regfile funnel writes THIS
+  -- cycle, not the `rdval` register, which is pre-cycle at the retire point and
+  -- so still holds the PREVIOUS instruction's result (see Core.lean).
+  if s'.retire = s.retire + 1 then
+    s' := { s' with
+      trace_hit := true,
+      trace_in_pc := ((BitVec.zeroExtend 64 (op s)) <<< 56)
+                       ||| (BitVec.zeroExtend 64 (s.pc.truncate 32)),
+      trace_in_wb := if rfWe then rfWd else 0 }
+  else
+    s' := { s' with trace_hit := false }
+
+  -- drain (mirrors `traceRule`): reads the PRE-cycle capture, one write site.
+  if s.trace_hit then
+    s' := { s' with
+      trace_pc := s'.trace_pc.set! s.trace_wp.toNat s.trace_in_pc,
+      trace_wb := s'.trace_wb.set! s.trace_wp.toNat s.trace_in_wb,
+      trace_wp := s.trace_wp + 1 }
 
   return s'
 

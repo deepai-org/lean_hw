@@ -147,6 +147,10 @@ def MiniIn.toEnv (c : MiniIn) : InEnv := fun n w =>
 def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
   -- (name, width, value)
   [("cur",5,s.cur.toNat), ("pc",64,s.pc.toNat), ("retire",32,s.retire.toNat),
+   ("trace_wp",4,s.trace_wp.toNat), ("trace_sel",4,s.trace_sel.toNat),
+   ("trace_rd_pc",64,s.trace_rd_pc.toNat), ("trace_rd_wb",64,s.trace_rd_wb.toNat),
+   ("trace_hit",1,if s.trace_hit then 1 else 0),
+   ("trace_in_pc",64,s.trace_in_pc.toNat), ("trace_in_wb",64,s.trace_in_wb.toNat),
    ("running",1,if s.running then 1 else 0), ("halted",1,if s.halted then 1 else 0),
    ("st",5,s.st.toNat), ("ir",64,s.ir.toNat), ("a",64,s.a.toNat), ("b",64,s.b.toNat),
    ("rdval",64,s.rdval.toNat), ("sel_t",64,s.sel_t.toNat), ("sel_f",64,s.sel_f.toNat),
@@ -228,7 +232,11 @@ TLB), each time leaving a green test that had never looked at the new state. -/
 def cmpCoveredRegs (s : MiniSt) : List String := (issRegs s).map (·.1)
 
 def cmpCoveredMems (s : MiniSt) : List String :=
-  ["rf", "dmem", "tdom", "gate_ent", "gate_dom", "cap_ibox", "tcont", "tcdom"]
+  ["rf", "dmem", "tdom", "gate_ent", "gate_dom", "cap_ibox", "tcont", "tcdom",
+   -- EXT-8: the commit-trace ring. Compared, not exempted -- the whole value
+   -- of a trace is that it says what actually happened, so a ring the models
+   -- disagree about would be worse than no ring at all.
+   "trace_pc", "trace_wb"]
     ++ (issTArrays s).map (·.1)
 
 /-- Memories the ISS deliberately does not model, so the lockstep has nothing
@@ -271,6 +279,12 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     | "tcont"       => some (s.tcont[idx]!).toNat
     | "tcdom"       => some (s.tcdom[idx]!).toNat
     | "cap_ibox"    => some (s.cap_ibox[idx]!).toNat
+    -- EXT-8: the commit-trace ring is compared like any other memory. It is
+    -- state the design declares, so D39 says it is observable and Loom's
+    -- coordinate enumeration will ask about it; answering `none` would make it
+    -- silently "unmodelled" rather than checked.
+    | "trace_pc"    => some (s.trace_pc[idx]!).toNat
+    | "trace_wb"    => some (s.trace_wb[idx]!).toNat
     | "tpc"         => some (s.tpc[idx]!).toNat
     | "tsleep"      => some (s.tsleep[idx]!).toNat
     | "tp_arr"      => some (s.tp_arr[idx]!).toNat
@@ -1682,6 +1696,64 @@ def issExpectHexFile (path : String) : IO Unit := do
         else none)
       some (BitVec.ofNat 64 (ds.foldl (fun acc d => acc * 16 + d) 0)))
   IO.print (issExpect words)
+
+/-- EXT-8: the commit trace actually records what executed.
+
+The lockstep proves the EDSL and the ISS agree about the ring. That is not the
+same as the ring being USEFUL -- two models can agree on a ring that is empty,
+or off by one, or holding the PC of the next instruction instead of the retired
+one. This runs a program whose instruction sequence is known and reads the
+entries back.
+
+The off-by-one matters more than it looks: a trace that names the instruction
+AFTER the faulting one sends you to the wrong place, which is worse than having
+no trace, because it looks authoritative. -/
+def traceSelftest : IO Unit := do
+  -- Four instructions: addi r1,7 / addi r2,9 / add r3,r1,r2 / exit.
+  let prog := progOp 0 OP_ADD 7 9
+  let image := imageFrom TEXT_BASE prog
+  let mut st : MiniSt := {}
+  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := 1 }
+  let mut g : GpModel := {}
+  -- Keep clocking for a few cycles after the halt. The ring lands an entry one
+  -- cycle after the retire that produced it (D38 forced the capture and the
+  -- memory write into different cycles), so stopping the instant `halted` goes
+  -- high loses the LAST instruction -- the one a post-mortem most wants. On
+  -- silicon the clock does not stop when the core halts, so this models the
+  -- board rather than papering over the lag.
+  let mut after := 0
+  for k in List.range 400000 do
+    if st.halted || st.trap_active then
+      after := after + 1
+      if after > 4 then break
+    let (s', d', g', _) := sysStep st d g (cmdTb k) 0
+    st := s'; d := d'; g := g'
+  let mut bad := 0
+  let n := st.retire.toNat
+  IO.println s!"  retired {n} instruction(s), write pointer at {st.trace_wp.toNat}"
+  if st.trace_wp.toNat ≠ n % 16 then
+    IO.println s!"  FAIL write pointer {st.trace_wp.toNat} ≠ retire {n} mod 16"
+    bad := bad + 1
+  -- Entry i must hold the i-th instruction of the program, at its own PC.
+  for i in List.range (min n 4) do
+    let w := st.trace_pc[i]!
+    let gotOp := (w >>> 56).toNat
+    let gotPc := (w.truncate 32).toNat
+    let wantOp := ((prog[i]!) >>> 56).toNat
+    let wantPc := TEXT_BASE + i * 8
+    if gotOp ≠ wantOp || gotPc ≠ wantPc then
+      IO.println s!"  FAIL entry {i}: op=0x{String.ofList (Nat.toDigits 16 gotOp)} \
+pc={gotPc}, want op=0x{String.ofList (Nat.toDigits 16 wantOp)} pc={wantPc}"
+      bad := bad + 1
+    else
+      IO.println s!"  ok   entry {i}: op=0x{String.ofList (Nat.toDigits 16 gotOp)} pc={gotPc} \
+wb={(st.trace_wb[i]!).toNat}"
+  if bad = 0 then
+    IO.println "LNP64MINI TRACE SELFTEST OK — the ring records the retired \
+instruction, at its own PC, in order"
+  else
+    IO.println "LNP64MINI TRACE SELFTEST FAILED"
+    throw (IO.userError "trace ring wrong")
 
 /-- Generated EDSL ≡ ISS coverage over every ALU opcode in the matrix. -/
 def opDiffSelftest : IO Unit := do
