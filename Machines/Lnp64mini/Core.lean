@@ -1659,7 +1659,17 @@ def s_ex_branches : List (Expr 1 × Act) :=
             retireInc)) <|
   -- 0xcb FUTEX_WAIT
   gcons (opIs OP_FUTEX_WAIT)
-    (.seq (.write 32 "core_addr" (.add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.zext (.slice rdval 3 29) 32) (.lit (BitVec.ofNat 32 3)))))
+    -- EXT-7 stage B bug, found on silicon (2026-08-05, both stage-B boots):
+    -- this address was computed RAW -- DATA_BASE + (rdval & ~7) -- bypassing
+    -- ddrEa entirely. Under the identity map raw == translated, so it was
+    -- invisible through stage A, every selftest, and the first shipped
+    -- bitstream. Under stage B the SMP gate word (guest 0x940240) lives in
+    -- the relocated region: stores to it went through the TLB to +0x800000,
+    -- the futex compare read the unrelocated address, the compare failed
+    -- forever, and core 0 spun in __lnp_futex_wait at half a billion retires
+    -- with ZERO traps. The futex compare is a data access; it goes through
+    -- ddrEa like every other data access.
+    (.seq (.write 32 "core_addr" (ddrEa (.shl (.zext (.slice rdval 3 61) 64) (.lit (BitVec.ofNat 64 3)))))
       (.seq (.write 1 "core_rd" (L1 1))
         (.seq (.write 64 "futex_addr_q" rdval) (.seq (.write 64 "futex_exp" a) (.write 5 "st" (L5 S_FTX1)))))) <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)

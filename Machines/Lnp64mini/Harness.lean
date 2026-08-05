@@ -2010,10 +2010,34 @@ def mmuRelocSelftest : IO Unit := do
   let (_, d6, _) := runIss img 1 (cmdRelocVma [(CMD_MAP_PROTECT, 1)]) (fun _ => 0) 600
   let atP6 := (d6.mem.get? (ddrWord (DATA_BASE + 0x840000))).getD 0
   check (atP6 == 0) "bump cell 1: the guest's own map fails closed"
-  -- 6. EDSL ≡ ISS under the whole thing: the design computes the same
-  --    translation, cycle for cycle, over Loom's derived coordinates.
+  -- 6. FUTEX_WAIT under a nonzero delta. This is the cross that spun stage B
+  --    on silicon: the design computed the futex compare address RAW while
+  --    stores went through the TLB, so the compare read the unrelocated word
+  --    and failed forever. FUTEX_WAIT was on the coverage exclusion list as
+  --    "covered by smpselftest DOORBELL" -- which runs with the MMU off. The
+  --    exclusion covered the OPCODE, not the opcode x MMU cross.
+  --    Store V at a relocated address, then FUTEX_WAIT expecting V: the thread
+  --    must PARK (tstate=3). With the raw-address bug it reads zeros, the
+  --    compare fails, and it never parks.
+  let progFutexReloc : List (BitVec 64) :=
+    [ encImmI OP_ADDI 1 0 0x40000,      -- relocated region (catch-all)
+      encImmI OP_ADDI 2 0 77,
+      encImmS OP_ST 1 2 0,              -- [0x40000] := 77, via the TLB
+      enc OP_FUTEX_WAIT 1 2 0,          -- expect 77 -> must block
+      encImmI OP_ADDI 9 0 5,            -- unreached while parked
+      enc OP_EXIT 0 0 0 ]
+  let imgF := imageFrom TEXT_BASE progFutexReloc
+  let (stF, _, _) := runIss imgF 1 (cmdRelocVma) (fun _ => 0) 600
+  check (stF.tstate[0]! == 3 && (stF.rf[9]!).toNat == 0)
+    s!"FUTEX_WAIT parks on a relocated word (tstate={(stF.tstate[0]!).toNat}, r9={(stF.rf[9]!).toNat})"
+  -- 7. EDSL ≡ ISS under the whole thing: the design computes the same
+  --    translation, cycle for cycle, over Loom's derived coordinates --
+  --    including the futex program, where the two models used to disagree
+  --    (raw+aligned vs translated+unaligned) with nothing executing the cross.
   let (m, _) ← lockstepFast img 1 (cmdRelocVma) (fun _ => 0) 600 16
   check (m == 0) s!"EDSL≡ISS lockstep under the 3-entry non-identity map ({m} mismatches)"
+  let (mF, _) ← lockstepFast imgF 1 (cmdRelocVma) (fun _ => 0) 600 16
+  check (mF == 0) s!"EDSL≡ISS lockstep on the futex-under-delta program ({mF} mismatches)"
   let bad ← badRef.get
   if bad == 0 then
     IO.println "LNP64MINI MMU-RELOC SELFTEST OK — the catch-all relocates, the carve-outs pin, revocation is scoped per cell"

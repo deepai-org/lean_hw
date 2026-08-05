@@ -635,7 +635,12 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
         s' := { s' with retire := s.retire + 1 }
       else if o = OP_FUTEX_WAIT then
-        s' := { s' with core_addr := ddrEaOf s s.rdval,
+        -- Mirrors the design: the futex word address is ALIGNED (&~7) and then
+        -- TRANSLATED through ddrEa. The two models used to disagree here --
+        -- the design was raw+aligned, this was translated+unaligned -- and no
+        -- test executed FUTEX_WAIT under a nonzero delta to see it. The
+        -- design's raw half of that split is the bug that spun stage B.
+        s' := { s' with core_addr := ddrEaOf s (s.rdval &&& (~~~(7 : BitVec 64))),
                         core_rd := true, futex_addr_q := s.rdval, futex_exp := s.a, st := BitVec.ofNat 5 S_FTX1 }
       else if o = OP_FUTEX_WAKE then
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
