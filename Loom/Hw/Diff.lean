@@ -156,6 +156,43 @@ def Design.coordPlan (d : Design) (cap : Nat) : Array CoordSlot :=
 def FastSt.atSlot (fs : FastSt) (s : CoordSlot) : Nat :=
   if s.isReg then fs.regs.getD s.idx 0 else fs.mems.getD s.idx 0
 
+/-! ## Oracles with declared coverage
+
+`diffAgainst` reports unmodelled coordinates, but reporting is not refusing:
+a machine's harness that only *counts* them lets NEW design state join the
+unmodelled set silently, and the run stays green — an omission
+indistinguishable from agreement, the exact failure mode this file exists to
+remove, one level up. (Found live on `lnp64mini`, 2026-08-06: the ISS oracle's
+fall-through answered `none` for any memory it did not know, so the unmodelled
+set was open-ended and only its count was visible.)
+
+An `Oracle` therefore carries its exclusions as a CLOSED, named list. The
+comparison then has three outcomes per coordinate, not two: agree/disagree,
+declared-unmodelled, and **undeclared-unmodelled — which is a failure**, named
+after the coordinate, not a count. -/
+
+/-- A reference model with declared coverage: the reader, plus the names of
+the design state it deliberately does not model (with the reason kept at the
+declaration site). `none` from `read` on a name outside `unmodelled` is a
+harness bug or a new design element nobody taught the oracle about — either
+way it must fail the run, not shrink it. -/
+structure Oracle where
+  read       : Coord → Option Nat
+  unmodelled : List String := []
+
+/-- Compare against an oracle with declared coverage.
+
+Returns `(mismatches, undeclared)`: `undeclared` is every coordinate the
+oracle failed to model WITHOUT declaring it, and a caller must treat a
+non-empty `undeclared` exactly like a mismatch. Declared-unmodelled
+coordinates are accounted (they are the third component) but are not
+failures — they are the oracle's honest, named scope boundary. -/
+def Design.diffAgainstOracle (d : Design) (cap : Nat) (σ : St)
+    (o : Oracle) : List Coord × List Coord × List Coord :=
+  let (mism, unm) := d.diffAgainst cap σ o.read
+  let (declared, undeclared) := unm.partition (fun c => o.unmodelled.contains c.name)
+  (mism, undeclared, declared)
+
 /-- Compare a flat state against a reference reader over a prepared plan.
 
 Same contract as `diffAgainst`: mismatches and unmodelled coordinates are
@@ -174,5 +211,17 @@ def diffFastAgainst (plan : Array CoordSlot) (fs : FastSt)
         let got := fs.atSlot s
         if got ≠ v then ((s.coord, got, v) :: acc.1, acc.2) else acc
     | none   => (acc.1, s.coord :: acc.2)) ([], [])
+
+/-- The flat-state comparison against an `Oracle` with declared coverage —
+same three-way contract as `Design.diffAgainstOracle`: mismatches,
+UNDECLARED-unmodelled (a failure), declared-unmodelled (the oracle's named
+scope boundary). Every comparison loop should go through one of these two;
+calling `diffFastAgainst` and dropping its second component re-opens the
+silent-omission hole at the call site. -/
+def diffFastAgainstOracle (plan : Array CoordSlot) (fs : FastSt)
+    (o : Oracle) : List (Coord × Nat × Nat) × List Coord × List Coord :=
+  let (mism, unm) := diffFastAgainst plan fs o.read
+  let (declared, undeclared) := unm.partition (fun c => o.unmodelled.contains c.name)
+  (mism, undeclared, declared)
 
 end Loom.Hw

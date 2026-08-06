@@ -28,6 +28,7 @@ open Loom.Hw Loom.Hw.Compile
 (ports 1/2 always collide; setting `a0 = a1` collides all three). -/
 private def design (a0 a1 : BitVec 4) (en0 : Bool) : Design where
   name := "multiport"
+  outputs := ["a0", "a1", "c0"]  -- D39: export all regs (pre-D39 ports)
   regs := [⟨"a0", 4, a0⟩, ⟨"a1", 4, a1⟩, ⟨"c0", 1, if en0 then 1 else 0⟩]
   mems := [{ name := "m", addrWidth := 4, dataWidth := 8, init := fun _ => 0 }]
   rules :=
