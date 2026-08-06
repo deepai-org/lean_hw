@@ -53,6 +53,17 @@ if ! diff -q "$T/rtl.txt" "$T/iss.txt" >/dev/null; then
   exit 1
 fi
 
+# Agreement is not enough: when the assembler emitted the OLD store byte, the
+# ISS and the RTL both faithfully TRAPPED on it, agreed bit-for-bit, and this
+# smoke stayed green while the store never executed (found 2026-08-06 by
+# divcheck.s). A smoke program that does not run to a clean halt proves
+# nothing about the bytes it never reached.
+if grep -q '^TRAP' "$T/iss.txt" || ! grep -q '^HALTED=1' "$T/iss.txt"; then
+  echo "isa_smoke: FAILED — the program did not run to a clean halt"
+  grep -E '^(TRAP|HALTED)' "$T/iss.txt" | sed 's/^/    /'
+  exit 1
+fi
+
 CK=$(grep '^r1=' "$T/iss.txt" | cut -d= -f2)
 echo "isa_smoke: OK — assembler ≡ RTL ≡ ISS on $(wc -l < "$HEX") instructions"
 echo "isa_smoke: checksum r1 = $CK  (the board must report this before any guest boots)"
