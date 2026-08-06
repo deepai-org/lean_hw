@@ -41,6 +41,7 @@ block RAM — read the registered D19 way, with a non-zero reset image.
 `twoPorts` adds a second writer on port 1, which is the CE10 shape. -/
 private def big (twoPorts : Bool) : Design where
   name := "memtarget"
+  outputs := ["a", "b", "v"]  -- D39: export all regs (pre-D39 ports)
   regs := [⟨"a", 9, 0⟩, ⟨"b", 9, 0⟩, ⟨"v", 32, 0⟩]
   mems := [{ name := "t", addrWidth := 9, dataWidth := 32, init := fun _ => 7 }]
   rules :=

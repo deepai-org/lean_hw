@@ -13,7 +13,8 @@ private def sourceReg : RegDecl :=
 
 private def design : Design :=
   { name := "named_demo", regs := [sourceReg], mems := [],
-    rules := [{ name := "step", body := .write 8 "r" (.lit 1) }] }
+    rules := [{ name := "step", body := .write 8 "r" (.lit 1) }],
+    outputs := ["r"] }
 
 private def program : Program where
   name := "named_demo"

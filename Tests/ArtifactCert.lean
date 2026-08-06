@@ -110,7 +110,7 @@ private def sourceMem : MemDecl :=
 
 private def design : Design :=
   { name := "cert_demo", regs := [sourceReg], mems := [sourceMem],
-    rules := memRules }
+    rules := memRules, outputs := ["r"] }
 
 private def suppliedReg : Loom.Emit.MicroVerilog.RegDef :=
   { name := "r", width := 8, init := 0, next := .reg 8 "r" }

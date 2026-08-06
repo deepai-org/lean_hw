@@ -7,11 +7,12 @@ import Machines.CapWalk.Engine
 # D39 regression: a design can keep a register off its interface
 
 `Loom/Hw/Outputs.lean` (spec: `Loom/Hw/OUTPUTS_SPEC.md`) adds
-`Design.outputs : Option (List String)` — the registers a design exports as
-`o_<name>` ports. Checked here:
+`Design.outputs : List String` — the registers a design exports as
+`o_<name>` ports. The field is MANDATORY (the earlier `Option`/`none`
+back-compat form is gone: an implicit full-export default let a new secret
+register leak by omission). Checked here:
 
-* **`none` is the identity.** The default selection compiles to the pre-D39
-  port list, so every existing artifact is byte-identical.
+* **The full selection reproduces the pre-D39 port list.**
 * **A selection removes ports**, and only the selected ones remain — the
   property `Loom.Hw.compile_not_exported` states in general.
 * **An undeclared selection entry is an emit-time error**, naming it: a typo
@@ -25,7 +26,7 @@ namespace Tests.Outputs
 open Loom.Hw
 
 /-- Two registers; `sel` picks the D39 selection. -/
-private def d (sel : Option (List String)) : Design where
+private def d (sel : List String) : Design where
   name := "obs"
   regs := [⟨"pub", 8, 0⟩, ⟨"secret", 8, 42⟩]
   mems := []
@@ -35,31 +36,31 @@ private def d (sel : Option (List String)) : Design where
 private def outNames (x : Design) : List String :=
   (Compile.compile x).outs.map (·.name)
 
--- `none` reproduces the pre-D39 port list exactly.
-#guard outNames (d none) == ["o_pub", "o_secret"]
-#guard (d none).exportedRegs.length == 2
-#guard (d none).outputsOkB
+-- The full selection reproduces the pre-D39 port list exactly.
+#guard outNames (d ["pub", "secret"]) == ["o_pub", "o_secret"]
+#guard (d ["pub", "secret"]).exportedRegs.length == 2
+#guard (d ["pub", "secret"]).outputsOkB
 
 -- A selection removes the unselected register from the interface, and only
 -- from the interface: the register is still declared and still driven.
-#guard outNames (d (some ["pub"])) == ["o_pub"]
-#guard (d (some ["pub"])).regs.length == 2
-#guard ((Compile.compile (d (some ["pub"]))).regs.map (·.name)) == ["pub", "secret"]
-#guard outNames (d (some [])) == []
-#guard outNames (d (some ["secret", "pub"])) == ["o_pub", "o_secret"]  -- declaration order
+#guard outNames (d ["pub"]) == ["o_pub"]
+#guard (d ["pub"]).regs.length == 2
+#guard ((Compile.compile (d ["pub"])).regs.map (·.name)) == ["pub", "secret"]
+#guard outNames (d []) == []
+#guard outNames (d ["secret", "pub"]) == ["o_pub", "o_secret"]  -- declaration order
 
 -- Well-formedness: a selection may only name declared registers.
-#guard (d (some ["pub"])).outputsOkB
-#guard !(d (some ["pub", "typo"])).outputsOkB
-#guard (d (some ["pub", "typo"])).outputsUndeclared == ["typo"]
+#guard (d ["pub"]).outputsOkB
+#guard !(d ["pub", "typo"]).outputsOkB
+#guard (d ["pub", "typo"]).outputsUndeclared == ["typo"]
 
 -- Composition (spec §4): the selection renames with the registers, `par`
 -- concatenates, `connect` leaves it alone.
-#guard ((d (some ["pub"])).prefixed "u0_").outputs == some ["u0_pub"]
-#guard outNames ((d (some ["pub"])).prefixed "u0_") == ["o_u0_pub"]
-#guard outNames (((d (some ["pub"])).prefixed "u0_").par ((d none).prefixed "u1_"))
+#guard ((d ["pub"]).prefixed "u0_").outputs == ["u0_pub"]
+#guard outNames ((d ["pub"]).prefixed "u0_") == ["o_u0_pub"]
+#guard outNames (((d ["pub"]).prefixed "u0_").par ((d ["pub", "secret"]).prefixed "u1_"))
         == ["o_u0_pub", "o_u1_pub", "o_u1_secret"]
-#guard outNames ((d (some ["pub"])).connect (fun _ _ => none)) == ["o_pub"]
+#guard outNames ((d ["pub"]).connect (fun _ _ => none)) == ["o_pub"]
 
 /-! The artifact that needed the capability (CAPWALK CE5, retired). The key
 is six ordinary registers that no rule writes and no port carries. -/
@@ -87,7 +88,7 @@ selection entry, and writes nothing. -/
   if ← path.pathExists then IO.FS.removeFile path
   let refused ←
     try
-      (d (some ["pub", "typo"])).emit path
+      (d ["pub", "typo"]).emit path
       pure ""
     catch e => pure (toString e)
   unless (refused.splitOn "'typo'").length == 2 do
@@ -96,7 +97,7 @@ selection entry, and writes nothing. -/
   if ← path.pathExists then
     throw <| IO.userError "D39: emit refused but still wrote the file"
   -- the well-formed selection emits, and the port is gone from the text
-  (d (some ["pub"])).emit path
+  (d ["pub"]).emit path
   let text ← IO.FS.readFile path
   unless (text.splitOn "o_secret").length == 1 do
     throw <| IO.userError "D39: the unexported register still has a port"

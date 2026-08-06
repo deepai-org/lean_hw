@@ -294,6 +294,18 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     -- architectural state the ISS reproduces. Reported as unmodelled.
     | _             => none
 
+/-- The CLOSED list of coordinates the ISS deliberately does not model, with
+the reason. `issAtWith`'s fall-through used to be an anonymous `none`: a NEW
+memory added to the design would have joined the unmodelled set silently,
+visible only as the per-run count drifting — an omission that looks exactly
+like agreement, the same shape as the hand-written comparator this derived
+one replaced (and as the stage-B cmpStates gap before it). Now
+`opDiffSelftest` fails on an unmodelled coordinate that is not NAMED here. -/
+def issUnmodelled : List String :=
+  [ "uart_mem"   -- host-visible side channel, drained over BSCAN; modelled
+                 -- by its pointers, not its contents
+  , "rx_mem" ]   -- same, receive direction
+
 /-- Convenience wrapper. Prefer `issAtWith` in a per-cycle loop: `issRegs`
 rebuilds a 152-entry list on every call, so calling this once per coordinate
 rebuilds it once per coordinate. -/
@@ -425,8 +437,17 @@ def lockstepDerived (image : List (Nat × BitVec 64)) (latency : Nat)
     s := s'; d := d'; g := g'
     -- `issRegs` is rebuilt once per CYCLE, not once per coordinate.
     let regs := issRegs s
-    let (mism, unm) := design.diffAgainst cap σ (issAtWith regs s)
-    unmodelled := unm.length
+    -- Loom's Oracle carries the CLOSED exclusion list; a coordinate the ISS
+    -- fails to model without declaring it is a failure named after the
+    -- coordinate, not a count drifting (Loom.Hw.Design.diffAgainstOracle).
+    let (mism, undeclared, declared) := design.diffAgainstOracle cap σ
+      { read := issAtWith regs s, unmodelled := issUnmodelled }
+    unmodelled := declared.length
+    if !undeclared.isEmpty then
+      if bad < 8 then
+        for c in undeclared.take 4 do
+          IO.println s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
+      bad := bad + undeclared.length
     if !mism.isEmpty then
       if bad < 8 then
         for c in mism.take 4 do
@@ -461,8 +482,9 @@ def lockstepPure (image : List (Nat × BitVec 64)) (latency : Nat)
     let (s', d', g', inp) := sysStep s d g (cmds k) 0
     fs := fastCycleOpen fd inp.toEnv fs
     s := s'; d := d'; g := g'
-    let (mism, _) := diffFastAgainst plan fs (issAtWith (issRegs s) s)
-    bad := bad + mism.length
+    let (mism, undeclared, _) := diffFastAgainstOracle plan fs
+      { read := issAtWith (issRegs s) s, unmodelled := issUnmodelled }
+    bad := bad + mism.length + undeclared.length
   return bad
 
 
@@ -492,8 +514,14 @@ def lockstepFast (image : List (Nat × BitVec 64)) (latency : Nat)
     fs := fastCycleOpen fd inp.toEnv fs
     s := s'; d := d'; g := g'
     let regs := issRegs s
-    let (mism, unm) := diffFastAgainst plan fs (issAtWith regs s)
-    unmodelled := unm.length
+    let (mism, undeclared, declared) := diffFastAgainstOracle plan fs
+      { read := issAtWith regs s, unmodelled := issUnmodelled }
+    unmodelled := declared.length
+    if !undeclared.isEmpty then
+      if bad < 8 then
+        for c in undeclared.take 4 do
+          IO.println s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
+      bad := bad + undeclared.length
     if !mism.isEmpty then
       if bad < 8 then
         for (c, got, want) in mism.take 4 do

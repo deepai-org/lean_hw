@@ -33,6 +33,7 @@ open Loom.Hw
 the non-zero (`TEXT_BASE`) image; `ack` names the memory in `ackMemInit`. -/
 private def d (nz ack : Bool) : Design where
   name := "meminit"
+  outputs := ["a", "v"]  -- D39: export all regs (pre-D39 ports)
   regs := [⟨"a", 5, 0⟩, ⟨"v", 64, 0⟩]
   mems := [{ name := "t", addrWidth := 5, dataWidth := 64,
              init := fun _ => if nz then 4096 else 0 }]
@@ -46,6 +47,7 @@ data banks' shape, which yosys did map to block RAM and whose init the
 bitstream did carry), read the registered D19 way. -/
 private def big : Design where
   name := "meminit_big"
+  outputs := ["a", "v"]  -- D39: export all regs (pre-D39 ports)
   regs := [⟨"a", 9, 0⟩, ⟨"v", 32, 0⟩]
   mems := [{ name := "t", addrWidth := 9, dataWidth := 32, init := fun _ => 7 }]
   rules :=
@@ -56,6 +58,7 @@ private def big : Design where
 table is carried by the bitstream, so this is not a D30 hazard. -/
 private def rom : Design where
   name := "meminit_rom"
+  outputs := ["a", "v"]  -- D39: export all regs (pre-D39 ports)
   regs := [⟨"a", 5, 0⟩, ⟨"v", 8, 0⟩]
   mems := [{ name := "t", addrWidth := 5, dataWidth := 8, init := fun _ => 65 }]
   rules := [⟨"r", .write 8 "v" (.memRead 8 "t" (.reg 5 "a"))⟩]
