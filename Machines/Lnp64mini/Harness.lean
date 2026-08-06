@@ -658,7 +658,15 @@ Nine of these were unaffordable against the closure-based `St` (a 39-opcode
 matrix did not finish in twenty minutes). Against `FastEval` they are, which is
 the whole reason the fast path was built. -/
 def opVectors : List (Int × Int) :=
-  [(7, 9), (9, 7), (0, 0), (-1, 1), (1, -1), (255, 8), (-8, 4), (1, 64), (1, 65)]
+  [(7, 9), (9, 7), (0, 0), (-1, 1), (1, -1), (255, 8), (-8, 4), (1, 64), (1, 65),
+   -- Full-width operands (2026-08-06). Every pair above produces a trivial
+   -- high half (0 or -1) from MULH/MULHU and a tiny quotient path from
+   -- DIV/UDIV, so the wide datapath was never exercised by a generated
+   -- program on RTL or silicon -- divcheck.s had to be written by hand to
+   -- clear the divider during the renumbering-panic diagnosis. These are
+   -- strtoll's exact cutoff shapes plus a mixed-carry pattern.
+   (0x7fffffffffffffff, 10), (0x7fffffffffffffff, 0x6666666666666667),
+   (-0x8000000000000000, 10), (0x123456789abcdef0, 0x0fedcba987654321)]
 
 /-- Loads, stores and branches. These need memory or control flow rather than a
 register triple, so they get their own generated shapes — and they are the
