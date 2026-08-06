@@ -6,23 +6,18 @@ queue is in [`PLATONIC.md`](PLATONIC.md).
 
 ## P0 — restore a releasable head
 
-1. **Restore repository gates.** Update stale test designs for mandatory
-   `Design.outputs` and the current output API, and add the two missing
-   PingPong SPDX headers.
-2. **Re-run the complete local gate sequence:**
-
-   ```console
-   scripts/quality.sh
-   lake build
-   lake test
-   lake exe audit
-   scripts/ci.sh
-   ```
-
-3. **Resolve the LNP64mini board regression.** Run a tiny guest that writes a
-   known byte pattern to a fixed DDR address and halts, then read it back over
-   JTAG. Use that result to isolate the physical HP AXI or downstream-artifact
-   mismatch, then re-run the complete emulator, RTL, and silicon ladders.
+1. ~~Restore repository gates~~ **done 2026-08-06**: SPDX headers added, the
+   six D39-stale test files updated (Tests/Outputs rewritten off the removed
+   `Option`/`none` API).
+2. **Re-run the complete local gate sequence** — quality/build/test/audit
+   green 2026-08-06; `scripts/ci.sh` re-run pending on the post-Oracle head.
+3. ~~Resolve the LNP64mini board regression~~ **root-caused and fixed
+   2026-08-06** (`sel_cond` keyed the SEL condition on `op[2:0]`, valid only
+   on the retired contiguous 0x40-0x45 block; the ISS carried the same `% 8`
+   keying so every same-repo differential agreed wrong together; found by
+   simulating the ACTUAL guest image in iverilog — 20 s to the panic). Fix +
+   generated SEL coverage + oracle declared-coverage enforcement are in; the
+   silicon re-run is in flight.
 4. **Rebuild the release from clean state.** Run Tier A only after the source,
    test, and quality gates are green; retain its metrics and exact tool
    versions with the release record.
@@ -33,9 +28,11 @@ queue is in [`PLATONIC.md`](PLATONIC.md).
   once.
 - Add declaration/notation support that elaborates to the existing `Design`
   representation.
-- Generate complete state comparators from declarations. Any omitted state
+- ~~Generate complete state comparators from declarations. Any omitted state
   must be an explicit, named exclusion; a lockstep test must not pass because
-  someone forgot to compare new state.
+  someone forgot to compare new state.~~ **done 2026-08-06**
+  (`Loom.Hw.Oracle` + `diffAgainstOracle`/`diffFastAgainstOracle`; consuming
+  artifact: all three lnp64mini lockstep sites; negative control proven).
 - Migrate LNP64mini without unexplained RTL drift and update the tutorial to
   the public interface.
 
