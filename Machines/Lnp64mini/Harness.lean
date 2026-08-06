@@ -715,15 +715,35 @@ def progBranch (op : Nat) (a b : Int) : List (BitVec 64) :=
     encImmI OP_ADDI 6 0 0x600D,
     enc OP_EXIT 0 0 0 ]
 
-/-- One instruction with its operands set up, then EXIT. `addi` builds the
-operands, which is sound because `addi` is itself in the matrix. -/
+/-- Materialize a full 64-bit value into a register: ADDI for the low half
+(its sign garbage in bits 63:32 is erased by LIU's zext of rs1[31:0]), LIU
+for the high half. The first version of the wide-vector extension used a bare
+ADDI, whose 32-bit immediate silently TRUNCATED the wide operands — 518
+programs "passed" without a single one delivering LLONG_MAX to an op. -/
+def matConst (rd : Nat) (v : Int) : List (BitVec 64) :=
+  let u := (BitVec.ofInt 64 v).toNat
+  let lo : Int := Int.ofNat (u % 4294967296)
+  let hi : Int := Int.ofNat (u / 4294967296)
+  [encImmI OP_ADDI rd 0 lo, encImmI OP_LIU rd rd hi]
+
 def progOp (form : Nat) (op : Nat) (a b : Int) : List (BitVec 64) :=
-  let setup := [encImmI OP_ADDI 1 0 a, encImmI OP_ADDI 2 0 b]
+  let setup := matConst 1 a ++ matConst 2 b
   let body :=
-    if form = 0 then enc op 3 1 2          -- rd, rs1, rs2
-    else if form = 1 then enc op 3 1 0     -- rd, rs1
-    else encImmI op 3 1 b                  -- rd, rs1, imm
-  setup ++ [body, enc OP_EXIT 0 0 0]
+    if form = 0 then [enc op 3 1 2]        -- rd, rs1, rs2
+    else if form = 1 then [enc op 3 1 0]   -- rd, rs1
+    else if form = 3 then
+      -- SEL: rd, cc-pair r1/r2, then distinct true/false values so a
+      -- wrong-arm selection cannot alias a right one. sel_cond used to key on
+      -- op[2:0] — correct only while the family sat on 0x40-0x45 — and no
+      -- generated program could build the 5-slot form, so both silicon
+      -- renumber attempts panicked through it (strtoll's neg?MIN:MAX).
+      matConst 3 24589 ++ matConst 4 2989 ++ [enc op 5 1 2 3 4]
+    else [encImmI op 3 1 b]                -- rd, rs1, imm
+  setup ++ body ++ [enc OP_EXIT 0 0 0]
+
+def selOps : List (Nat × String) :=
+  [(OP_SEL,"sel.eq"), (OP_SEL_41,"sel.ne"), (OP_SEL_42,"sel.lt"),
+   (OP_SEL_43,"sel.ge"), (OP_SEL_44,"sel.ltu"), (OP_SEL_45,"sel.geu")]
 
 /-- The six opcodes the renumbering broke in the ISS, executed so the
 EDSL≡ISS lockstep actually looks at them.
@@ -1726,7 +1746,7 @@ def writeOpDiffHex (dir : String) : IO Unit := do
     -- report that a program ran, which is the weaker claim that let the
     -- renumbering through: `liu` "ran" fine and produced the wrong constant.
     IO.FS.writeFile s!"{dir}/{nm}.exp" (issExpect prog)
-  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM)] do
+  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM), (3, selOps)] do
     for (op, nm) in ops do
       for (a, b) in opVectors do
         emit s!"{nm}_{a}_{b}" (progOp form op a b); n := n + 1
@@ -1821,7 +1841,7 @@ instruction, at its own PC, in order"
 programs `opDiffSelftest` runs, as one number. -/
 def matrixMismatches : Nat := Id.run do
   let mut bad := 0
-  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM)] do
+  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM), (3, selOps)] do
     for (op, _) in ops do
       for (a, b) in opVectors do
         bad := bad + lockstepPure (imageFrom TEXT_BASE (progOp form op a b)) 1
@@ -1832,7 +1852,7 @@ def matrixMismatches : Nat := Id.run do
 def opDiffSelftest : IO Unit := do
   let mut bad := 0
   let mut ran := 0
-  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM)] do
+  for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM), (3, selOps)] do
     for (op, nm) in ops do
       let mut opBad := 0
       for (a, b) in opVectors do

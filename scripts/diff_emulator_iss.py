@@ -62,6 +62,12 @@ RR = ["NOT", "SEXT_B", "SEXT_H", "SEXT_W", "ZEXT_B", "ZEXT_H", "ZEXT_W",
       "CTZ", "BSWAP16", "BSWAP32", "BSWAP64"]
 IMM = ["ADDI", "ANDI", "ORI", "XORI", "LSLI", "LSRI", "ASRI",
        "SLTI", "SLTIU", "LIU"]
+# The 5-slot compare-select family. Its condition keying (op[2:0], valid only
+# on the retired 0x40-0x45 block) panicked BOTH silicon renumber attempts
+# through strtoll's neg?MIN:MAX, and no differential could drive it: the EDSL
+# and the ISS carried the same wrong keying and agreed, the matrix could not
+# build the form, and step-op had no arms. Now all three can.
+SEL5 = ["SEL", "SEL_41", "SEL_42", "SEL_43", "SEL_44", "SEL_45"]
 
 INTERESTING = [0, 1, 2, 7, 8, 63, 64, 0xff, 0x100, 0x7fffffff, 0x80000000,
                0xffffffff, 0x7fffffffffffffff, 0x8000000000000000,
@@ -96,7 +102,7 @@ def seeded_regs():
     return rs
 
 
-missing = [n for n in RRR + RR + IMM if n not in OPS]
+missing = [n for n in RRR + RR + IMM + SEL5 if n not in OPS]
 if missing:
     print(f"REQUIRED opcodes absent from Core.lean: {missing}")
     print("MISMATCHES: unmeasurable")
@@ -115,6 +121,16 @@ for name in IMM:
     for imm in IMMS:
         w = (OPS[name] << 56) | (3 << 51) | (1 << 46) | ((imm & 0xffffffff) << 14)
         cases.append((name, w, f"rs1={{}} imm={imm}", (1,), seeded_regs()))
+for name in SEL5:
+    # rd=5, cc pair r1/r2, true/false values r3/r4; three shapes per variant:
+    # random, equal operands (the eq/ne edge), and signed-vs-unsigned edge.
+    shapes = [seeded_regs(), seeded_regs(), seeded_regs()]
+    shapes[1][2] = shapes[1][1]
+    shapes[2][1] = 0x8000000000000000
+    shapes[2][2] = 1
+    for rs in shapes:
+        w = (OPS[name] << 56) | (5 << 51) | (1 << 46) | (2 << 41) | (3 << 36) | (4 << 31)
+        cases.append((name, w, "rs1={} rs2={}", (1, 2), rs))
 
 mismatch = []
 tested = 0
@@ -171,7 +187,7 @@ if unsupported:
     print("MISMATCHES: unmeasurable (required ops skipped)")
     sys.exit(1)
 
-print(f"tested {tested} vectors across {len(RRR + RR + IMM)} required ops; 0 skipped")
+print(f"tested {tested} vectors across {len(RRR + RR + IMM + SEL5)} required ops; 0 skipped")
 print(f"MISMATCHES: {len(mismatch)}")
 for n, w, operands, em, mm in mismatch[:12]:
     print(f"  {n:8} word={w} {operands}")
