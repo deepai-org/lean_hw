@@ -321,14 +321,16 @@ def br_take (s : MiniSt) : Bool :=
   else false
 
 def sel_cond (s : MiniSt) : Bool :=
+  -- Keyed on the OP_ constants, mirroring Core.sel_cond. The old `% 8` keying
+  -- was the ISS half of the sel_cond defect: both models wrong TOGETHER under
+  -- the scattered spec bytes, so every same-repo differential stayed green.
   let av := s.a; let bv := s.b
-  match (op s).toNat % 8 with
-  | 0 => av = bv
-  | 1 => av ≠ bv
-  | 2 => av.slt bv
-  | 3 => ¬ av.slt bv
-  | 4 => av.ult bv
-  | _ => ¬ av.ult bv
+  if opN s = OP_SEL then av = bv
+  else if opN s = OP_SEL_41 then av ≠ bv
+  else if opN s = OP_SEL_42 then av.slt bv
+  else if opN s = OP_SEL_43 then ¬ av.slt bv
+  else if opN s = OP_SEL_44 then av.ult bv
+  else ¬ av.ult bv
 
 def mem_src (s : MiniSt) : BitVec 64 := if s.st = BitVec.ofNat 5 S_L1 then s.dmem_rd else s.ddr_q
 def lw_shift (s : MiniSt) : BitVec 64 := mem_src s >>> (s.ld_boff_q.toNat * 8)

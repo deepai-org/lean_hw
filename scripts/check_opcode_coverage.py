@@ -53,13 +53,6 @@ EXCLUDED = {
     "MINI_CAP_SEND":   "covered by capxferselftest (right and wrong domain)",
     "MINI_CAP_RECV":   "covered by capxferselftest (right and wrong domain)",
     "GET_PCR":    "reads a control register; covered by selftest's progLS",
-    "SEL":        "4-operand form the matrix's 3-operand shapes cannot build; "
-                  "covered by selftest's progLS",
-    "SEL_41": "SEL condition-code variant; covered with SEL by progLS",
-    "SEL_42": "SEL condition-code variant; covered with SEL by progLS",
-    "SEL_43": "SEL condition-code variant; covered with SEL by progLS",
-    "SEL_44": "SEL condition-code variant; covered with SEL by progLS",
-    "SEL_45": "SEL condition-code variant; covered with SEL by progLS",
     "FENCE":    "ordering only, no architectural result to compare",
     "FENCE_D1": "ordering only, no architectural result to compare",
     "FENCE_D2": "ordering only, no architectural result to compare",
@@ -79,7 +72,7 @@ def matrix_opcodes():
     """Names the generated matrix executes, read out of its own lists."""
     src = HARNESS.read_text()
     names = set()
-    for listname in ("aluOpsRRR", "aluOpsRR", "aluOpsIMM",
+    for listname in ("aluOpsRRR", "aluOpsRR", "aluOpsIMM", "selOps",
                      "memOpsLoad", "memOpsStore", "brOps",
                      "wideImmOps", "jumpOps"):
         m = re.search(rf"def {listname} : List \(Nat × String\) :=(.*?)(?=\n\ndef |\n/-)",

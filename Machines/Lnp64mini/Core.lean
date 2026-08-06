@@ -802,15 +802,25 @@ def br_take : Expr 1 :=
   , (opIs OP_BLTU, .ult a b)
   , (opIs OP_BGEU, .not (.ult a b)) ] (L1 0)
 
-/-- sel_cond keys on op[2:0] (0x40-0x45). -/
+/-- sel_cond, keyed on the OP_ constants like every other predicate.
+
+It used to key on `op[2:0]`, which was correct ONLY while the SEL family sat
+on the contiguous block 0x40-0x45. The spec renumbering scattered the family
+(0x27, 0xf6..0xf2), the low bits became meaningless, and every SEL collapsed
+into the default (geu) arm -- `neg ? LLONG_MIN : LLONG_MAX` in strtoll picked
+LLONG_MIN for "2", and NetBSD panicked 41,550 instructions into boot, twice,
+on two independent renumber attempts. The ISS carried the SAME `% 8` keying,
+so EDSL≡ISS≡RTL stayed green while both were wrong together; only the
+emulator (keyed per byte) knew, through an op no differential could drive.
+An opcode-derived ARITHMETIC dependency is the range-membership hazard in a
+costume check_opcode_literals cannot see: there is no literal to find. -/
 def sel_cond : Expr 1 :=
-  let o3 := (.slice op 0 3 : Expr 3)
   priTree
-  [ (.eq o3 (.lit (BitVec.ofNat 3 0)), .eq a b)
-  , (.eq o3 (.lit (BitVec.ofNat 3 1)), .not (.eq a b))
-  , (.eq o3 (.lit (BitVec.ofNat 3 2)), .slt a b)
-  , (.eq o3 (.lit (BitVec.ofNat 3 3)), .not (.slt a b))
-  , (.eq o3 (.lit (BitVec.ofNat 3 4)), .ult a b) ] (.not (.ult a b))
+  [ (opIs OP_SEL,    .eq a b)
+  , (opIs OP_SEL_41, .not (.eq a b))
+  , (opIs OP_SEL_42, .slt a b)
+  , (opIs OP_SEL_43, .not (.slt a b))
+  , (opIs OP_SEL_44, .ult a b) ] (.not (.ult a b))
 
 /-! ### load writeback / store merge -/
 
