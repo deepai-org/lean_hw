@@ -33,6 +33,7 @@
 # to it.
 
 import argparse
+import os
 import pathlib
 import re
 import shutil
@@ -41,7 +42,7 @@ import sys
 import tempfile
 
 HW = pathlib.Path(__file__).resolve().parent.parent
-LNP64 = HW.parent / "lnp64"
+LNP64 = pathlib.Path(os.environ.get("LNP64_ROOT", HW.parent / "lnp64"))
 CORE = HW / "Machines/Lnp64mini/Core.lean"
 
 # The probe. Written to make the backend reach for a wide spread of opcodes --

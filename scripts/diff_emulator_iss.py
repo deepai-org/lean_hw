@@ -36,6 +36,7 @@
 # Values are drawn from a boundary set (sign bits, all-ones, shift-amount
 # edges) plus random 64-bit noise, because the interesting disagreements are at
 # the edges -- signed vs unsigned compare, shift-by->=64, sign extension.
+import os
 import pathlib
 import re
 import subprocess
