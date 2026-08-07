@@ -149,18 +149,60 @@ claim *about actual transformations* — renaming is cost-neutral
 (`prefixed_cost`), `par` is additive (`par_cost_le`, so `Cost.add_le_add`'s
 premise is discharged by a real combinator), and the balanced tree builders
 are never more area than the linear chain and on a non-empty list are one
-operator cheaper (`reduceTree_cost_lt_foldr`). It also proves two things
+operator cheaper (`reduceTree_treeCost_lt_foldr`). It also proves two things
 FALSE, which is the more useful half:
 
-- **`priTree` is not area-neutral** (`priTree_cost_gt`): `priPair` duplicates
-  the left guard, so every fusion copies guard cones. D18 sells it as a depth
-  fix and it is one; nothing had checked the area side. **This is now an
-  actionable lead for the area work** — `priTree` is used throughout
-  `lnp64mini`, and the routing ceiling is what the 2026-08 campaign kept
-  paying for.
+- **`priTree` is not area-neutral** (`priTree_cost_gt`), but the margin is
+  `n-1` bits, not a guard cone. See the third increment below: the original
+  reading of this theorem was wrong.
 - **`par` is not `≤` on `maxFanout`** when the parts alias register names
   (`par_maxFanout_gt`) — precisely what `parOkB` refuses, so the theorem takes
   read-disjointness as an explicit hypothesis.
+
+**Third increment (2026-08-07): the cost was a tree cost applied to a DAG,
+and it got a sign wrong.** `Loom/Emit/MicroVerilog/Print.lean` gives each
+*structurally distinct* node exactly one wire (pointer memo + a
+`(width, rendered RHS)` hash-cons table), so a duplicated subexpression is
+one wire in the emitted Verilog. `Expr.cost` billed it twice. `bitOps` now
+counts distinct hash-consed nodes (`Expr.hc` interns into an `ENode` table
+transcribed from the emitter's key; per-rule scope, summed over rules so
+`par_bitOps` stays an exact sum). Scale of the old error on the shipping
+core: `lnp64mini` `bitOps` is **73 861** hash-consed against **2 162 469**
+tree — a 29× over-count. The old tree recursion survives as
+`Expr.treeCost`/`Act.treeCost` with `Expr.cost_le_treeCost` proved, and
+every tree-builder theorem was renamed onto it rather than deleted.
+
+- **The `priPair` "guard cone" explanation was wrong.** `priPair` emits
+  `(.or gl gr, .mux gl vl vr)`, so the left guard appears twice in the
+  *term* — but it is one wire, and under the hash-consed cost it costs
+  nothing extra. What is actually left is that the balanced form emits
+  `n-1` extra width-1 `or` nodes the linear chain never builds, so it is
+  dearer by `n-1` bits and by nothing else, **however expensive the guards
+  are**. `priTree_cost_gt` still holds (16 < 17 on two atomic guards);
+  `sel_cost_dag`/`sel_cost_tree` pin the shift on a 4-way select with a real
+  shared guard cone (`+3` new, `+36` old).
+- **The sign check, honestly.** A 32-way select with guard
+  `(ir[31:26] == i) & ~stall`: under `treeCost` the balanced form is
+  **+720 (+17 %)**; under the new cost it is **+31 (+0.7 %)**, i.e. exactly
+  `n-1`. So the model no longer calls the balanced priority select
+  materially worse — the measured +154 679 bitOps penalty on `s_ex_body`
+  (which was itself larger than the whole core's true node weight) collapses
+  to a tie. **It does not predict the balanced form cheaper.** The measured
+  357-LUT win comes from yosys's own mux-cone optimisation, not from node
+  count, and that is precisely `Cost.lean`'s stated honesty boundary: the
+  model predicts risk, not P&R outcomes. Treating `priTree` vs `priChain` as
+  an area lead was reading synthesis results out of a model that never
+  claimed to have them.
+- **Renaming now needs injectivity.** `Expr.cost_mapSignals` /
+  `Act.cost_mapSignals` are *false* for a merging renaming (merged names
+  merge nodes and the cost legitimately drops); `prefixed_cost` is unaffected
+  because `prefix_injective` discharges it.
+- **`reduceTree_cost_le_foldr` is false under the DAG cost**
+  (`reduceTree_cost_not_le_foldr`): a leaf can structurally *be* the chain's
+  own suffix, and then the chain's combines are free while the tree still
+  builds its own. The `treeCost` version and `cost_le_treeCost` keep it as an
+  upper bound; on non-aliasing leaves the tree is still strictly cheaper
+  (`orTree_cost_lt_example`).
 
 Still open here:
 

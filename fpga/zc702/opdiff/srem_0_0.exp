@@ -1,5 +1,4 @@
-TRAP op=17 pc=4128
-HALTED=0 pc=4128 retire=4
+HALTED=1 pc=4136 retire=6
 r1=0
 r2=0
 r3=0

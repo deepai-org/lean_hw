@@ -153,6 +153,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("ic_tag_q",42,s.ic_tag_q.toNat), ("ic_data_q",64,s.ic_data_q.toNat),
    ("ic_gen",16,s.ic_gen.toNat), ("ic_inv",1,if s.ic_inv then 1 else 0),
    ("ic_ctr",12,s.ic_ctr.toNat),
+   ("gate_tbl_base",32,s.gate_tbl_base.toNat), ("gate_ent_q",64,s.gate_ent_q.toNat),
+   ("gate_dom_q",8,s.gate_dom_q.toNat),
    ("trace_wp",4,s.trace_wp.toNat), ("trace_sel",4,s.trace_sel.toNat),
    ("trace_rd_pc",64,s.trace_rd_pc.toNat), ("trace_rd_wb",64,s.trace_rd_wb.toNat),
    ("trace_hit",1,if s.trace_hit then 1 else 0),
@@ -197,7 +199,7 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    -- EXT-4: the outgoing park/wake key
    ("wake_key",64,s.wake_key.toNat), ("wake_bm",32,s.wake_bm.toNat),
    -- EXT-5: gates
-   ("in_gate",32,s.in_gate.toNat), ("gate_sel",4,s.gate_sel.toNat),
+   ("in_gate",32,s.in_gate.toNat),
    -- EXT-6: capability inbox occupancy
    ("cap_ival",16,s.cap_ival.toNat),
    -- EXT-7: the MMU enable and TLB selector
@@ -238,7 +240,7 @@ TLB), each time leaving a green test that had never looked at the new state. -/
 def cmpCoveredRegs (s : MiniSt) : List String := (issRegs s).map (·.1)
 
 def cmpCoveredMems (s : MiniSt) : List String :=
-  ["rf", "dmem", "tdom", "gate_ent", "gate_dom", "cap_ibox", "tcont", "tcdom",
+  ["rf", "dmem", "tdom", "cap_ibox", "tcont", "tcdom",
    -- EXT-8: the commit-trace ring. Compared, not exempted -- the whole value
    -- of a trace is that it says what actually happened, so a ring the models
    -- disagree about would be worse than no ring at all.
@@ -286,8 +288,6 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     | "rf"          => some (s.rf[idx]!).toNat
     | "dmem"        => some (s.dmem[idx]!).toNat
     | "tdom"        => some (s.tdom[idx]!).toNat
-    | "gate_ent"    => some (s.gate_ent[idx]!).toNat
-    | "gate_dom"    => some (s.gate_dom[idx]!).toNat
     | "tcont"       => some (s.tcont[idx]!).toNat
     | "tcdom"       => some (s.tcdom[idx]!).toNat
     | "cap_ibox"    => some (s.cap_ibox[idx]!).toNat
@@ -382,8 +382,7 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
   -- check at the invoked index would not see a violation.
   for i in List.range 16 do
     let checks16 : List (String × Nat × Nat) :=
-      [("gate_ent", 64, (s.gate_ent[i]!).toNat), ("gate_dom", 8, (s.gate_dom[i]!).toNat),
-       ("cap_ibox", 64, (s.cap_ibox[i]!).toNat)]
+      [       ("cap_ibox", 64, (s.cap_ibox[i]!).toNat)]
     for (mn, w, v) in checks16 do
       if (σ.mems mn i w).toNat ≠ v then
         if bad < 12 then
@@ -1439,23 +1438,30 @@ def progGateStay : List (BitVec 64) :=
     encImmI OP_ADDI 10 0 5,
     enc OP_EXIT 0 0 0 ]           -- w5  EXIT *inside* the gate
 
-/-- cmd stream: install gate 0 (domain `GATE_DOM_TEST`, entry word 4), then
-start. `cmd 62` selects the gate and sets its domain; `cmd 61` loads the
-entry for the selected gate; `cmd 13` data=2 starts without the zeroing
-sweep, so the table survives. -/
+/-- §17: where these tests put the gate table. Well clear of the text at
+`TEXT_BASE`, and byte-addressed from `DATA_BASE`. -/
+def GATE_TBL : Nat := 0x2000
+
+/-- A §17 gate descriptor, in the spec's layout: `+0` entry PC, `+8` target
+domain. This is what the machine now *reads*; nothing about the activation
+comes from a host-poked bank any more. -/
+def gateDescriptor (id entry dom : Nat) : List (Nat × BitVec 64) :=
+  [ (ddrWord (DATA_BASE + GATE_TBL + id*16),     BitVec.ofNat 64 entry),
+    (ddrWord (DATA_BASE + GATE_TBL + id*16 + 8), BitVec.ofNat 64 dom) ]
+
+/-- cmd stream: point the machine at the table (`cmd 74`), then start.
+`cmd 13` data=2 starts without the zeroing sweep, so the descriptor the
+image placed in DDR survives to be walked. -/
 def cmdGate : Nat → MiniIn := fun k =>
   if k = 0 then
-    { cmdValid := true, cmdIdx := CMD_GATE_DOM,
-      cmdData := BitVec.ofNat 32 (GATE_DOM_TEST <<< 8) }
-  else if k = 1 then
-    { cmdValid := true, cmdIdx := CMD_GATE_ENT,
-      cmdData := BitVec.ofNat 32 (TEXT_BASE + 32) }
+    { cmdValid := true, cmdIdx := CMD_GATE_TBL, cmdData := BitVec.ofNat 32 GATE_TBL }
   else if k = 2 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
 def gateSelftest : IO Unit := do
-  let img  := imageFrom TEXT_BASE progGate
-  let imgS := imageFrom TEXT_BASE progGateStay
+  let tbl  := gateDescriptor 0 (TEXT_BASE + 32) GATE_DOM_TEST
+  let img  := imageFrom TEXT_BASE progGate ++ tbl
+  let imgS := imageFrom TEXT_BASE progGateStay ++ tbl
   -- (0) EDSL ≡ ISS across a full gate call/return.
   let bad ← lockstep img 1 cmdGate (fun _ => 0) 80
   if bad = 0 then IO.println "  OK  GATE (EDSL≡ISS across call+return, 80 cyc)"
@@ -1513,16 +1519,18 @@ def progCapRight : List (BitVec 64) := progCapSendThen 9
 def progCapWrong : List (BitVec 64) := progCapSendThen 9
 
 /-- Install gate 0 with entry word 7 and target domain `dom`, then start. -/
-def cmdCap (dom : Nat) : Nat → MiniIn := fun k =>
+def cmdCap (_dom : Nat) : Nat → MiniIn := fun k =>
   if k = 0 then
-    { cmdValid := true, cmdIdx := CMD_GATE_DOM, cmdData := BitVec.ofNat 32 (dom <<< 8) }
-  else if k = 1 then
-    { cmdValid := true, cmdIdx := CMD_GATE_ENT, cmdData := BitVec.ofNat 32 (TEXT_BASE + 56) }
+    { cmdValid := true, cmdIdx := CMD_GATE_TBL, cmdData := BitVec.ofNat 32 GATE_TBL }
   else if k = 2 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
+/-- The cap tests' descriptor: entry at word 7, target domain as asked. -/
+def capTable (dom : Nat) : List (Nat × BitVec 64) :=
+  gateDescriptor 0 (TEXT_BASE + 56) dom
+
 def capXferSelftest : IO Unit := do
-  let img := imageFrom TEXT_BASE progCapRight
+  let img := imageFrom TEXT_BASE progCapRight ++ capTable 3
   -- (0) EDSL ≡ ISS across send + gate + receive.
   let bad ← lockstep img 1 (cmdCap 3) (fun _ => 0) 110
   if bad = 0 then IO.println "  OK  CAPXFER (EDSL≡ISS across send+gate+recv, 110 cyc)"
@@ -1536,7 +1544,7 @@ cap_ival={sr.cap_ival.toNat} (want 0, consumed)"
   let ok1 := sr.halted && got == CAP_HANDLE && sr.cap_ival.toNat == 0
              && (sr.rf[3]!).toNat == 0
   -- (2) a DIFFERENT domain gets nothing, and the handle stays put.
-  let (sw, _, _) := runIss (imageFrom TEXT_BASE progCapWrong) 1 (cmdCap 5) (fun _ => 0) 400
+  let (sw, _, _) := runIss (imageFrom TEXT_BASE progCapWrong ++ capTable 5) 1 (cmdCap 5) (fun _ => 0) 400
   let gotW := (sw.rf[9]!).toNat
   IO.println s!"  other domain 5:     halted={sw.halted} recv r9=0x{String.ofList (Nat.toDigits 16 gotW)} \
 (want all-ones) cap_ival={sw.cap_ival.toNat} (want 8 = bit 3 still set) \
