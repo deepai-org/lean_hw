@@ -144,10 +144,30 @@ carrying provenance/tool version/design family, fitted by
 `scripts/fit_cost.py` from measured output (`scripts/cost_rows.json`).
 `lake exe costreport` prints it.
 
+**Second increment (2026-08-07):** `Loom/Hw/CostTransform.lean` proves the
+claim *about actual transformations* — renaming is cost-neutral
+(`prefixed_cost`), `par` is additive (`par_cost_le`, so `Cost.add_le_add`'s
+premise is discharged by a real combinator), and the balanced tree builders
+are never more area than the linear chain and on a non-empty list are one
+operator cheaper (`reduceTree_cost_lt_foldr`). It also proves two things
+FALSE, which is the more useful half:
+
+- **`priTree` is not area-neutral** (`priTree_cost_gt`): `priPair` duplicates
+  the left guard, so every fusion copies guard cones. D18 sells it as a depth
+  fix and it is one; nothing had checked the area side. **This is now an
+  actionable lead for the area work** — `priTree` is used throughout
+  `lnp64mini`, and the routing ceiling is what the 2026-08 campaign kept
+  paying for.
+- **`par` is not `≤` on `maxFanout`** when the parts alias register names
+  (`par_maxFanout_gt`) — precisely what `parOkB` refuses, so the theorem takes
+  read-disjointness as an explicit hypothesis.
+
 Still open here:
 
-- **proved non-increase for the transformation library** — the order and
-  its composition lemmas exist; per-transform theorems do not yet;
+- per-transform theorems for the rest of the library (`retimeReg`, `connect`,
+  the fusion passes);
+- **the `familyOf`-invariance hypothesis** that `macroBits`/`softBits` carry:
+  true, but a statement about `designTrace`/`syncReadOkB` and proved nowhere;
 - target-independent critical-path and DAG-size reports (the cost vector
   is area-shaped; timing is not modelled at all);
 - a fit with more designs than weights — the xc7z020 fit is
