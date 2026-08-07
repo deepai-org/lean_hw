@@ -253,7 +253,7 @@ def is_alu (s : MiniSt) : Bool :=
   [OP_LIU, OP_MOV, OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_NOT, OP_LSL, OP_LSR, OP_ASR, OP_SLT, OP_SLTU,
    OP_ADDI, OP_ANDI, OP_ORI, OP_XORI, OP_LSLI, OP_LSRI, OP_ASRI, OP_SLTI, OP_SLTIU, OP_AUIPC,
    OP_SEXT_B, OP_SEXT_H, OP_SEXT_W, OP_ZEXT_B, OP_ZEXT_H, OP_ZEXT_W, OP_BSWAP16, OP_BSWAP32, OP_BSWAP64,
-   OP_ROL, OP_ROR, OP_CTZ].contains (opN s)
+   OP_ROL, OP_ROR, OP_CTZ, OP_CLZ].contains (opN s)
 def is_load (s : MiniSt) : Bool :=
   [OP_LD,OP_LD_31,OP_LD_S_70,OP_LD_36,OP_LD_S,OP_LD_32,OP_LD_S_72].contains (opN s)
 def is_store (s : MiniSt) : Bool := [OP_ST,OP_ST_34,OP_ST_37,OP_ST_35].contains (opN s)
@@ -321,6 +321,10 @@ def aluV (s : MiniSt) : BitVec 64 :=
   else if opN s = OP_CTZ then
       -- CTZ: lowest set bit; 64 if a==0. downward scan, lowest wins.
       (List.range 64).foldr (fun i acc => if bit av i then BitVec.ofNat 64 i else acc)
+        (BitVec.ofNat 64 64)
+  else if opN s = OP_CLZ then
+      -- CLZ: leading zeros; 64 if a==0. Scan from the top, highest set wins.
+      (List.range 64).foldr (fun i acc => if bit av (63 - i) then BitVec.ofNat 64 i else acc)
         (BitVec.ofNat 64 64)
   else if opN s = OP_ROL then (av <<< shamt_r s) ||| (av >>> ((0 - (s.b.extractLsb' 0 6)).toNat))
   else if opN s = OP_ROR then (av >>> shamt_r s) ||| (av <<< ((0 - (s.b.extractLsb' 0 6)).toNat))
@@ -826,13 +830,19 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                         st := BitVec.ofNat 5 S_GC1 }
     else if stN = S_GC1 then
       if inp.mDone then
+        -- §17 fail-closed: bit 8 is `valid`. An absent descriptor reads as
+        -- zeros, and zeros must not activate domain 0 at PC 0.
+        let vld := inp.mRdata.getLsbD 8
         s' := { s' with gate_dom_q := inp.mRdata.setWidth 8,
-                        tcont := s'.tcont.set! curV.toNat (pc8 s),
-                        tcdom := s'.tcdom.set! curV.toNat s.tdom[curV.toNat]!,
-                        in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
-                        tdom := s'.tdom.set! curV.toNat (inp.mRdata.setWidth 8),
-                        pc := s.gate_ent_q,
                         retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+        if vld then
+          s' := { s' with tcont := s'.tcont.set! curV.toNat (pc8 s),
+                          tcdom := s'.tcdom.set! curV.toNat s.tdom[curV.toNat]!,
+                          in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
+                          tdom := s'.tdom.set! curV.toNat (inp.mRdata.setWidth 8),
+                          pc := s.gate_ent_q }
+        else
+          s' := { s' with pc := pc8 s }
     else if stN = S_DL then
       if inp.mDone then s' := { s' with ddr_q := inp.mRdata, st := BitVec.ofNat 5 S_DST }
     else if stN = S_DST then

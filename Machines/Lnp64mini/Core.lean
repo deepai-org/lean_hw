@@ -670,6 +670,13 @@ def OP_SEXT_W : Nat := 0x3a
 def OP_ZEXT_B : Nat := 0x3b
 def OP_ZEXT_H : Nat := 0x3c
 def OP_ZEXT_W : Nat := 0x3d
+/-- §4's pinned corner is `clz(0) = ctz(0) = 64`. The core implemented
+exactly half of that sentence: `ctz` was here and `clz` was not, so the
+assembler emitted `0x3e` and the core trapped on it. Found 2026-08-07 by the
+derived Appendix D suite, which is the first check that reads the spec rather
+than this file's own table -- `check_opcode_coverage.py` measures the design
+against itself and is structurally blind to an op the design never named. -/
+def OP_CLZ : Nat := 0x3e
 def OP_CTZ : Nat := 0x3f
 def OP_ROL : Nat := 0x23
 def OP_ROR : Nat := 0x24
@@ -768,7 +775,7 @@ def opAny (ns : List Nat) : Expr 1 := orTree (ns.map opIs)
 def is_alu : Expr 1 :=
   opAny [OP_LIU,OP_MOV,OP_ADD,OP_SUB,OP_AND,OP_OR,OP_XOR,OP_NOT,OP_LSL,OP_LSR,OP_ASR,OP_SLT,OP_SLTU,
    OP_ADDI,OP_ANDI,OP_ORI,OP_XORI,OP_LSLI,OP_LSRI,OP_ASRI,OP_SLTI,OP_SLTIU,OP_AUIPC,
-   OP_SEXT_B,OP_SEXT_H,OP_SEXT_W,OP_ZEXT_B,OP_ZEXT_H,OP_ZEXT_W,OP_BSWAP16,OP_BSWAP32,OP_BSWAP64,OP_ROL,OP_ROR,OP_CTZ]
+   OP_SEXT_B,OP_SEXT_H,OP_SEXT_W,OP_ZEXT_B,OP_ZEXT_H,OP_ZEXT_W,OP_BSWAP16,OP_BSWAP32,OP_BSWAP64,OP_ROL,OP_ROR,OP_CTZ,OP_CLZ]
 
 def is_load : Expr 1 := opAny [OP_LD,OP_LD_31,OP_LD_S_70,OP_LD_36,OP_LD_S,OP_LD_32,OP_LD_S_72]
 def is_store : Expr 1 := opAny [OP_ST,OP_ST_34,OP_ST_37,OP_ST_35]
@@ -802,6 +809,13 @@ def negShamt (amt : Expr 6) : Expr 6 := .sub (.lit (BitVec.ofNat 6 0)) amt
 wins), depth 64 → ~2·log₂64. -/
 def ctzE : Expr 64 :=
   priTree ((List.range 64).map (fun i => (.eq (.slice a i 1) (L1 1), L64 i))) (L64 64)
+
+/-- CLZ: leading zero count (64 if a==0). The same scan from the other end --
+index 63 outermost, so first-match-wins picks the HIGHEST set bit, and the
+result is `63 - that index`. -/
+def clzE : Expr 64 :=
+  priTree ((List.range 64).map
+    (fun i => (.eq (.slice a (63 - i) 1) (L1 1), L64 i))) (L64 64)
 
 /-- The ALU mux chain, balanced. `opIs` guards are mutually exclusive, but
 `priTree` preserves first-match-wins regardless, so this is exactly the old
@@ -841,6 +855,7 @@ def aluE : Expr 64 :=
   , (opIs OP_BSWAP32, bswap32)
   , (opIs OP_BSWAP64, bswap64)
   , (opIs OP_CTZ, ctzE)
+  , (opIs OP_CLZ, clzE)
   , (opIs OP_ROL, .or (.shl a (.zext shamt_r 64)) (.shr a (.zext (negShamt shamt_r) 64)))
   , (opIs OP_ROR, .or (.shr a (.zext shamt_r 64)) (.shl a (.zext (negShamt shamt_r) 64)))
   ] (L64 0)
@@ -1104,6 +1119,14 @@ def capSendFire : Expr 1 := exG (.and (opIs CAP_SEND_OP) (.not (capOcc capSendSl
 /-- A receive lands only if this domain's inbox is occupied. -/
 def capRecvFire : Expr 1 := exG (.and (opIs CAP_RECV_OP) (capOcc capRecvSlot))
 
+/-- **§17 fail-closed.** Bit 8 of the descriptor's second word is `valid`.
+A gate id with no descriptor reads back zeros, and zeros must not be an
+activation -- without this the machine would enter domain 0 at PC 0, which
+is the most privileged thing it can do, on the strength of memory nobody
+wrote. Revocation is therefore just zeroing the entry, and it needs no
+command and no host. -/
+def gateDescValid : Expr 1 := .slice mRdata 8 1
+
 /-- **§17: the activation commits when the WALK completes, not at S_EX.**
 The descriptor is not known until both words are back, so every funnel that
 records the activation (`in_gate`, `tdom`, `tcont`, `tcdom`) fires here --
@@ -1112,7 +1135,7 @@ early would install a domain read from a bank that no longer exists.
 `pc8` is still the right saved continuation: `pc` has not advanced, because
 the gate arm never ran `stepPc`. -/
 def gateCall : Expr 1 :=
-  .and fsmEn (.and (.eq st (L5 S_GC1)) mDone)
+  .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone gateDescValid))
 
 /-- Funnel triples. -/
 
@@ -1722,7 +1745,8 @@ activation -- `pc` to the descriptor's entry, and the funnels (`tdom`,
 def s_gc1 : Expr 1 × Act := stArm S_GC1
   (.ite mDone
     (.seq (.write 8 "gate_dom_q" (.slice mRdata 0 8))
-      (.seq (.write 64 "pc" gate_ent_q) (.seq retireInc goF0)))
+      (.seq (.ite gateDescValid (.write 64 "pc" gate_ent_q) stepPc)
+        (.seq retireInc goF0)))
     .skip)
 
 def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
