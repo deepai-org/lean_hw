@@ -14,8 +14,22 @@
 #
 # The hexes are the assembler's flat-exec output (dev_cycle/fastload artifacts;
 # leading '#' header lines are stripped here). Prints HALTED/pc/retire, the
-# register file, and the guest console ring -- a panic message in the ring is a
-# reproduction, full stop.
+# register file, and the guest console ring.
+#
+# ALWAYS RUN THE KNOWN-GOOD IMAGE ALONGSIDE. This tb models DDR and nothing
+# else, and it diverges from the board: measured 2026-08-07, both the image
+# that PASSED on silicon and a new image reach 2,207,545 cycles / 181,779
+# retires and then hit the same `subr_vmem.c` quantum assertion, which the
+# real board does not hit. So a panic here is only evidence when the baseline
+# image does NOT produce it. What the tb is good for is the first ~180k
+# retires, where it is faithful and where it caught the sel_cond defect at
+# 41,550 -- comparison against a baseline, not an absolute verdict.
+#
+# (Depth before the window guard was ~1.34M cycles: out-of-window reads -- GEM
+# MMIO at 0xE000_B000 -- indexed past the DDR array, X reached o_halted, and
+# the run ended looking like a clean halt. Guarded now; the remaining
+# divergence is unidentified and is the next thing to chase if this tool is
+# wanted deeper than a boot's first phase.)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TEXT=${1:?usage: boot_sim.sh <text.hex> <data.hex> [cycles]}
