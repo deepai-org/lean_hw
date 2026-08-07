@@ -1,4 +1,4 @@
-HALTED=1 pc=4120 retire=4
+HALTED=1 pc=4136 retire=6
 r1=1
 r2=64
 r3=0
