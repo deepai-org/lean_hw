@@ -144,13 +144,19 @@ point of the machinery is that it fires while you work:
 3. The `Oracle` closed-list check forced the oracle to learn the new banks
    (`UNDECLARED-UNMODELLED ic_tag[...]`) instead of silently comparing less.
 
-**Area, measured against the projection.** Predicted +0.5 pp for I$ control;
-measured **+3.8 pp**. Synthesizer cells went *down* 113 while placed sites
-rose ~4 000 — the cost landed entirely in packing, which the W6 model treats
-as one scalar per target. Recorded in `Loom/Hw/CostTarget.lean` as the model's
-biggest known weakness; the model was wrong about the magnitude and right
-about the decision (build on the dual top), which is what a risk signal is
-for.
+**Area, measured against the projection — with a correction.** A controlled
+A/B (same wrapper, same seed, cache present vs absent) says the I-cache costs
+**essentially nothing in LUTs**: 44 112 cells / 55 234 sites without it,
+43 999 / 55 129 with it — 105 sites *fewer*, i.e. noise — plus 20 BRAMs. The
+W6 projection (+0.5 pp) was therefore right, and the packing expansion is
+near-constant across the pair (1.252 vs 1.253).
+
+The first version of this section claimed +3.8 pp and "packing is not a
+constant". Both were artifacts of comparing the new build against a
+utilization figure recorded in the journal for a *different* build instead of
+rebuilding the baseline — the same error `boot_sim.sh`'s own header warns
+about for simulation. The correction is the lesson: **an A/B needs both legs
+built, in area exactly as in behaviour.**
 
 **Still open on this rung**: the ISS-vs-ISS transparency theorem (today the
 claim is backed by the generated matrix, not a proof over it), and the
