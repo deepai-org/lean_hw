@@ -1,0 +1,7 @@
+[Unit]
+Description=Periodic liveness check for the fabric guest
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target

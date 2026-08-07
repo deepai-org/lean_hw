@@ -20,6 +20,7 @@
 # so the gate turns it into a loud failure.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+source "$(dirname "$0")/lnp64_root.sh"
 FAIL=0
 say() { printf '%s\n' "$*"; }
 bad() { printf '  STALE  %s\n' "$*"; FAIL=1; }
@@ -56,7 +57,7 @@ for f in rtl/*.v; do
 done
 
 say "### 3. .hex artifacts match their .s sources"
-L=../lnp64/target/release/lnp64
+L=$LNP64_BIN
 if [ -x "$L" ]; then
   for s in fpga/zc702/*.s; do
     n="${s%.s}"; [ -f "$n.hex" ] || continue
@@ -67,7 +68,7 @@ if [ -x "$L" ]; then
       && ok "$(basename "$n").hex" || bad "$(basename "$n").hex — did not match a fresh assemble"
   done
 else
-  say "  (skipped: ../lnp64 assembler not built)"
+  say "  (skipped: $LNP64_ROOT assembler not built)"
 fi
 
 say "### 4. the two repos agree on the ISA (cross-repo, see check_isa_agreement.py)"
@@ -97,11 +98,11 @@ say "### 6. the emulator and the ISS agree on BEHAVIOUR, not just numbering"
 # Section 4 compares opcode NUMBERS. It cannot see a semantic divergence, and
 # two have already shipped: MINI_GATE_CALL's destination register, and six ALU
 # opcodes the ISS mis-decoded after the renumbering. This runs the differential.
-if command -v python3 >/dev/null && [ -x ../lnp64/target/release/lnp64 ]; then
+if command -v python3 >/dev/null && [ -x $LNP64_BIN ]; then
   r=$(timeout 900 python3 scripts/diff_emulator_iss.py 2>&1 | tail -2 | tr '\n' ' ')
   case "$r" in *"MISMATCHES: 0"*) ok "emulator ≡ ISS ($r)";; *) bad "emulator vs ISS — $r";; esac
 else
-  say "  (skipped: python3 or ../lnp64 emulator not available)"
+  say "  (skipped: python3 or $LNP64_ROOT emulator not available)"
 fi
 
 say "### 7. opcode coverage and literal hygiene"

@@ -22,8 +22,9 @@
 # over BSCAN.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+source "$(dirname "$0")/lnp64_root.sh"
 
-ASM=${ASM:-../lnp64/target/release/lnp64}
+ASM=${ASM:-$LNP64_BIN}
 SRC=fpga/zc702/isasmoke.s
 HEX=fpga/zc702/isasmoke.hex
 SOC=rtl/lnp64mini_soc.v

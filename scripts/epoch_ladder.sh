@@ -12,6 +12,7 @@
 #   6. regression: lnp64mini{,_soc,_dual}.v re-emit byte-identically
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source "$(dirname "$0")/lnp64_root.sh"
 Z=fpga/zc702
 T=${TMPDIR:-/tmp}/epoch_ladder.$$
 mkdir -p "$T"
@@ -53,7 +54,7 @@ for f in rtl/lnp64mini.v rtl/lnp64mini_soc.v rtl/lnp64mini_dual.v; do
 done
 # 7. E13 guard: does the synthesis flow actually deliver the reset images?
 #    Needs a yosys netlist, which only the board host builds, so this leg runs
-#    when one is pointed at (EPOCH_SYNTH_JSON=.../lnp64mini_epoch_top.json).
+#    when one is pointed at (EPOCH_SYNTH_JSON=.$LNP64_ROOTmini_epoch_top.json).
 if [ -n "${EPOCH_SYNTH_JSON:-}" ]; then
   echo "### 7. E13 guard: memory reset images survive synthesis"
   # No --allow list: c0_tpc/c1_tpc used to lose their non-zero init here, and

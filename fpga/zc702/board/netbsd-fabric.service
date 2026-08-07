@@ -1,0 +1,17 @@
+# netbsd-fabric.service -- §65 power-on autonomy for the ZC702 fabric.
+# Boot-time (host reboot) and on-demand (systemctl start netbsd-fabric)
+# bring-up of NetBSD on the dual-core Loom SoC. No DIP changes: the Zynq
+# stays in JTAG boot mode; the host is the loader, the relay is the power.
+[Unit]
+Description=NetBSD on the dual-core Loom lnp64mini (ZC702), unattended
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=kevin
+ExecStart=/home/kevin/substrate0/test/netbsd_up.sh
+TimeoutStartSec=2100
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

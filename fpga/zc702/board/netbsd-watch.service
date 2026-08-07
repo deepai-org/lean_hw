@@ -1,0 +1,6 @@
+[Unit]
+Description=Watch the fabric guest and recover it if it stops answering
+[Service]
+Type=oneshot
+User=kevin
+ExecStart=/home/kevin/substrate0/test/netbsd_watch.sh

@@ -17,12 +17,13 @@
 # with a name column has produced three wrong conclusions on this project.
 
 import json
+import os
 import pathlib
 import re
 import sys
 
 HW = pathlib.Path(__file__).resolve().parent.parent
-LNP64 = HW.parent / "lnp64"
+LNP64 = pathlib.Path(os.environ.get("LNP64_ROOT", HW.parent / "lnp64"))
 
 CORE = HW / "Machines/Lnp64mini/Core.lean"
 ASM = LNP64 / "src/main.rs"
