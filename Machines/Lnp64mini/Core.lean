@@ -1101,6 +1101,13 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
        cat55 cur rdf, .add (.zext cur 64) (L64 1))
   -- S_EX is_alu
   , (exG (.and is_alu (.not (.eq rdf (L5 0)))), cat55 cur rdf, aluE)
+  -- §4.1 divide-by-zero, pinned: `div`/`udiv` -> -1 (the same 64-bit pattern
+  -- for both), `srem`/`urem` -> the dividend. Written here in S_EX rather
+  -- than run through the 64-cycle restoring divider, because with a zero
+  -- divisor there is nothing to iterate.
+  , (exG (.and is_div (.and (.eq b (L64 0)) (.not (.eq rdf (L5 0))))),
+       cat55 cur rdf,
+       .mux (.or (opIs OP_SREM) (opIs OP_UREM)) a (L64 0xFFFFFFFFFFFFFFFF))
   -- S_EX JAL (0x27)
   , (exG (.and (opIs OP_JAL) (.not (.eq rdf (L5 0)))), cat55 cur rdf, pc8)
   -- S_EX JALR (0x28)
@@ -1748,8 +1755,16 @@ def s_ex_branches : List (Expr 1 × Act) :=
           (.seq (.write 2 "mul_kind" (.mux (opIs OP_MULH) (L2 1) (L2 2))) (.write 5 "st" (L5 S_MUL)))))) <|
   -- div
   gcons is_div
+    -- §4.1: "Division and remainder are non-trapping with defined results
+    -- (so the compiler never inserts guard branches)". This arm used to
+    -- trap, which made the parenthetical false: clang emits a bare `div`,
+    -- so a guest divide-by-zero took a fault the generated code was
+    -- promised could not happen. The derived Appendix D suite found it
+    -- (2026-08-07, its first real deviation). SIGFPE is a POSIX personality
+    -- event and belongs above the ISA (§13/Law 6: decoded semantics are
+    -- personality-neutral), not in the divider.
     (.ite (.eq b (L64 0))
-      (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))
+      (.seq stepPc (.seq retireInc goF0))
       (.seq (.write 64 "div_rem" (L64 0))
         (.seq (.write 64 "div_quo" div_a_abs)
           (.seq (.write 64 "div_d" div_b_abs)
