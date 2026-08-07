@@ -74,20 +74,19 @@ structure CostTarget where
   silent unit mismatch this repo has been bitten by, so the conversion is a
   named field with its own measurement rather than an implicit factor.
 
-  **It is not a constant, and that is the model's biggest known weakness**
-  (measured 2026-08-07). Three points on the same design family:
-  epoch top 44 646 cells → 56 290 sites (1.26×); dual top 44 112 → ~51 072
-  (1.16×); dual top **with the I-cache** 43 999 → 55 129 (1.25×). The cache
-  rung is the sharp case: yosys cells went *down* by 113 while packed sites
-  rose by ~4 000. So the abstract cost vector was very nearly blind to a
-  feature that cost 3.8 points of the part, because the cost landed entirely
-  in packing — how well logic shares slices — which this field models as one
-  scalar per target.
+  **Measured, on one design family, it is close to constant** — and the
+  first claim to the contrary in this file was WRONG, which is worth keeping
+  because of how it went wrong. A controlled A/B on the dual top (2026-08-07,
+  same wrapper, same seed, cache present vs absent) gives 44 112 cells →
+  55 234 sites (1.252×) and 43 999 → 55 129 (1.253×). The earlier reading of
+  "packing is not a constant" came from comparing a fresh build against a
+  utilization figure recorded in a journal for a DIFFERENT build — no
+  rebuilt baseline, exactly the error `scripts/boot_sim.sh`'s header warns
+  about for simulation, committed in the area domain a day later.
 
-  Treat a prediction across a structural change (adding memories, changing
-  fanout) as extrapolation. Fixing it properly means modelling packing from
-  the design's own structure, which is what `maxFanout` is a placeholder
-  for. -/
+  So: treat this as calibrated per target and re-measure it when the design
+  family changes, but do not assume it swings with structure until a
+  controlled pair says so. -/
   packExpansionMilli : Nat
   /-- **Capacity**: primary resources the part physically has. -/
   capacity : Nat

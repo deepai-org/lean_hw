@@ -351,35 +351,51 @@ calls for. Until that exists, "the cache changes no architectural result" is a
 claim backed by the generated matrix rather than by a proof over it — which is
 precisely the W5-deeper-half gap, met again from a new direction.
 
-### Addendum: the cache measured the model back
+### Addendum: the cache measured the model back — and I misread it first
 
-The I-cache rung produced the sharpest calibration datum the W6 model has,
-and it is a negative one. Synthesizer cell count went *down* by 113 while the
-placed design grew by ~4 000 sites — 3.8 points of the part. The abstract
-cost vector was very nearly blind to the feature's real cost, because that
-cost landed entirely in **packing**: how well logic shares slices, which the
-model carries as a single scalar per target (measured 1.16× on the dual top,
-1.25–1.26× with the cache or the epoch engines).
+**The correction first, because it is the more useful half.** The initial
+reading of this experiment was that the I-cache cost +3.8 points of the part
+while synthesizer cells fell, "proving" that packing is not a constant and
+calling that the cost model's biggest weakness. That was wrong, and wrong in
+a specific, avoidable way: the new build was compared against a *utilization
+figure recorded in the journal for a different build* rather than against a
+rebuilt baseline. A controlled A/B — same wrapper, same seed, cache present
+versus absent — says:
 
-Two conclusions, both worth holding onto.
+| | cells | sites | expansion | BRAM |
+|---|---|---|---|---|
+| no cache | 44 112 | 55 234 | 1.252× | 26 |
+| with I$ | 43 999 | 55 129 | 1.253× | 46 |
 
-*The dimension that mattered was the one nobody had modelled.* `stateBits`,
-`bitOps` and the macro/soft split all behaved; the error was in the unit
-bridge between synthesis and placement. That is a good argument for keeping
-the bridge an explicit, named field with its own measurement — had it been an
-implicit constant folded into the weights, this would have shown up as
-"weights drifted" and been re-fitted into invisibility instead of identified.
+The cache costs **essentially nothing in LUTs** (105 sites fewer, i.e. noise)
+and 20 BRAMs. The W6 projection of roughly zero was *correct*. Packing is
+near-constant across the pair. Both of the original conclusions evaporated
+when the baseline was actually built.
 
-*A model earns trust by being wrong legibly.* The prediction was off by ~7×
-on the increment, and it was possible to say so precisely, in one number,
-because capacity and closure and the unit bridge are separate fields rather
-than one fitted scalar. The correct response is not to re-fit until the
-residual looks good — it is to record that predictions across *structural*
-changes are extrapolation, and that modelling packing from the design's own
-structure is the open work, which is what `maxFanout` is a placeholder for.
+The lesson is not about caches or packing. Hours earlier, this same session
+wrote into `scripts/boot_sim.sh`'s header: *always run the known-good image
+alongside; a result is evidence only when the baseline does not produce it* —
+having just learned it from a simulation that "reproduced" a panic the
+passing image also produced. Then the identical error was committed in the
+area domain, against a number that merely *looked* authoritative because it
+was written down in a journal. **A recorded number is not a baseline.** The
+rule generalizes past simulation: any A/B needs both legs built, in area
+exactly as in behaviour, and a measurement inherited from a different
+configuration is a hypothesis wearing a measurement's clothes.
 
-The rung still ended where it should: the cache went onto the top the model
-told us had headroom, that top routed first try at 29.34 MHz, and all 20 cache
-banks landed in block RAM (46 RAMB36, exactly 10 per core). The model was
-wrong about the magnitude and right about the decision — which is the most a
-risk signal is supposed to do.
+What survives from the original entry, and is worth keeping:
+
+*A model earns trust by being wrong legibly* — and by being **checkable**.
+The reason this correction took twenty minutes rather than shipping as
+received wisdom is that capacity, closure, and the unit bridge are separate
+fields with their own provenance: the claim "packing is not a constant" was
+falsifiable by one controlled build, and it was falsified. Had it been folded
+into a single fitted scalar, it would have been re-fitted into invisibility
+and become a fact by repetition — which is precisely the failure the
+provenance discipline exists to prevent, arriving from the inside this time.
+
+*The rung still landed right.* The cache went onto the top the model said had
+headroom, that top routed first try at 29.34 MHz, and all 20 banks landed in
+block RAM (46 RAMB36, exactly 10 per core). The decision was right for the
+right reason; only the post-hoc story about *why* was wrong, and stayed wrong
+exactly as long as it took to build the other leg.
