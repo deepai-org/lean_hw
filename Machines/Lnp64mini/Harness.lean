@@ -648,7 +648,7 @@ def aluOpsRRR : List (Nat × String) :=
 def aluOpsRR : List (Nat × String) :=
   [(OP_NOT,"not"), (OP_SEXT_B,"sext.b"), (OP_SEXT_H,"sext.h"), (OP_SEXT_W,"sext.w"),
    (OP_ZEXT_B,"zext.b"), (OP_ZEXT_H,"zext.h"), (OP_ZEXT_W,"zext.w"),
-   (OP_CTZ,"ctz"), (OP_BSWAP16,"bswap16"), (OP_BSWAP32,"bswap32"), (OP_BSWAP64,"bswap64")]
+   (OP_CTZ,"ctz"), (OP_CLZ,"clz"), (OP_BSWAP16,"bswap16"), (OP_BSWAP32,"bswap32"), (OP_BSWAP64,"bswap64")]
 
 def aluOpsIMM : List (Nat × String) :=
   [(OP_ADDI,"addi"), (OP_ANDI,"andi"), (OP_ORI,"ori"), (OP_XORI,"xori"),
@@ -1438,6 +1438,18 @@ def progGateStay : List (BitVec 64) :=
     encImmI OP_ADDI 10 0 5,
     enc OP_EXIT 0 0 0 ]           -- w5  EXIT *inside* the gate
 
+/-- §17 fail-closed: call gate **1**, for which the image places no
+descriptor. The walk reads zeros; zeros are not an activation, so this must
+step past and reach the EXIT with `r9 = 7`, in domain 0, not in a gate. The
+old host-poked banks had the same hole (a gate id nobody installed read as
+entry 0 / domain 0) and it was unreachable only because the host filled every
+entry; moving the table into guest memory is what made it reachable. -/
+def progGateUnbacked : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 1,          -- w0  r1 = 1 (an id with no descriptor)
+    enc OP_MINI_GATE_CALL 0 1 0,    -- w1  must be REFUSED
+    encImmI OP_ADDI 9 0 7,          -- w2  r9 = 7 -- reached only if refused
+    enc OP_EXIT 0 0 0 ]
+
 /-- §17: where these tests put the gate table. Well clear of the text at
 `TEXT_BASE`, and byte-addressed from `DATA_BASE`. -/
 def GATE_TBL : Nat := 0x2000
@@ -1447,7 +1459,8 @@ domain. This is what the machine now *reads*; nothing about the activation
 comes from a host-poked bank any more. -/
 def gateDescriptor (id entry dom : Nat) : List (Nat × BitVec 64) :=
   [ (ddrWord (DATA_BASE + GATE_TBL + id*16),     BitVec.ofNat 64 entry),
-    (ddrWord (DATA_BASE + GATE_TBL + id*16 + 8), BitVec.ofNat 64 dom) ]
+    -- bit 8 is `valid`; zeros are not an activation.
+    (ddrWord (DATA_BASE + GATE_TBL + id*16 + 8), BitVec.ofNat 64 (dom ||| 0x100)) ]
 
 /-- cmd stream: point the machine at the table (`cmd 74`), then start.
 `cmd 13` data=2 starts without the zeroing sweep, so the descriptor the
@@ -1479,10 +1492,19 @@ in_gate={sg.in_gate.toNat} (want 0)"
 (want {GATE_DOM_TEST}) in_gate={ss.in_gate.toNat} (want 1) r10={(ss.rf[10]!).toNat} (want 5)"
   let ok2 := ss.halted && (ss.tdom[0]!).toNat == GATE_DOM_TEST
              && ss.in_gate.toNat == 1 && (ss.rf[10]!).toNat == 5
-  if bad = 0 && ok1 && ok2 then
+  -- (3) §17 fail-closed: an id with no descriptor must not activate.
+  let (su, _, _) := runIss (imageFrom TEXT_BASE progGateUnbacked ++ tbl) 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  unbacked gate 1: halted={su.halted} r9={(su.rf[9]!).toNat} (want 7, refused) \
+tdom[0]={(su.tdom[0]!).toNat} (want 0) in_gate={su.in_gate.toNat} (want 0)"
+  let ok3 := su.halted && (su.rf[9]!).toNat == 7 && (su.tdom[0]!).toNat == 0
+             && su.in_gate.toNat == 0
+  let badU ← lockstep (imageFrom TEXT_BASE progGateUnbacked ++ tbl) 1 cmdGate (fun _ => 0) 60
+  if badU = 0 then IO.println "  OK  GATE-UNBACKED (EDSL≡ISS, 60 cyc)"
+  else IO.println s!"  FAIL GATE-UNBACKED ({badU} mismatches)"
+  if bad = 0 && badU = 0 && ok1 && ok2 && ok3 then
     IO.println "LNP64MINI GATE SELFTEST OK — a gate is the only way to change domain, and only to the gate's"
   else
-    IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2})"
+    IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2} unbacked={ok3})"
     throw <| IO.userError "gate selftest failed"
 
 /-! ## EXT-6 — the cross-domain transfer selftest
