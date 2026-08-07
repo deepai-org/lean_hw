@@ -164,3 +164,40 @@ retire-rate delta — the number that justifies the memory-first direction.
 Note the measurement is conservative by construction: the cached build routes
 at 29.34 MHz against the uncached 30.43 MHz, so a speedup has to overcome a
 3.6 % clock disadvantage before it shows at all.
+
+## Rung 1 performance: what is established, and what is not (2026-08-07)
+
+**Established, controlled (simulation).** `tb_lnp64mini_boot` runs the real
+guest image on the emitted RTL with an identical instruction stream and an
+identical DDR model, so cache-vs-no-cache is a clean pair:
+
+| | cycles to retire 181 779 | I$ hits |
+|---|---|---|
+| no cache | 2 207 545 | — |
+| with I$ | **1 546 744** | 168 516 / 181 779 = **92 %** |
+
+30 % fewer cycles for the identical work, at a 92 % hit rate. The cache
+functions as designed.
+
+**NOT established: any board number.** Sampling retire rate on the live guest
+gave 841 647/s without the cache and 807 152/s with it — the wrong direction —
+but that comparison is **uncontrolled**: the guest is idle-ish and
+host-driven (ping traffic, ring pump), so its retire rate measures whatever it
+happened to be doing during the window, not the cache. The arithmetic says as
+much: the cache's structure can cost at most +1 cycle on a miss (8 % of
+fetches ≈ +0.08 cycles/instr), while the samples differ by +1.27 — an order of
+magnitude more than the mechanism can explain in either direction. Two stable
+samples of an uncontrolled system are still an uncontrolled comparison.
+
+**The measurement that would settle it** is a fixed workload: a known program
+with a known instruction count, run to completion on both bitstreams, timed.
+That is the next thing to build, and it is cheap — the `gen_board_prog`
+harness already loads and runs a standalone program over BSCAN; it needs a
+loop-heavy benchmark and a cycle readback.
+
+**Why the rung stands regardless.** The I-cache is not primarily a performance
+feature here: it is the prerequisite for translated fetch (goal item 4). With
+`S_IC` in place, the TLB moves onto the *miss* arm, off the fetch critical
+path, which is the thing that makes the whole address space relocatable. That
+argument does not depend on the speedup, and the speedup claim should not be
+made until a controlled board measurement exists.
