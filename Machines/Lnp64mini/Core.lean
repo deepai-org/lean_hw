@@ -71,6 +71,11 @@ entry PC), then issues the read of its second (the target domain); `S_GC1`
 waits for that and commits the activation. -/
 def S_GC0  : Nat := 22
 def S_GC1  : Nat := 23
+/-- **EXT-10 `S_DC`**: the data-cache tag check. `S_EX` latches the banks
+(D19 sync read) and lands here; a hit feeds `ddr_q` from the latched data
+word and joins the existing `S_DST` writeback, a miss asserts `core_rd` on
+the address `S_EX` already translated and joins `S_DL`. -/
+def S_DC   : Nat := 24
 
 /-! ## Input ports (D15) -/
 
@@ -229,6 +234,10 @@ def ic_gen    : Expr 16 := .reg 16 "ic_gen"
 def ic_inv    : Expr 1  := .reg 1  "ic_inv"
 def ic_ctr    : Expr 12 := .reg 12 "ic_ctr"
 def ic_data_q : Expr 64 := .reg 64 "ic_data_q"
+-- EXT-10 (the D-cache): the latched tag/data words and the allocate flag.
+def dc_tag_q  : Expr 42 := .reg 42 "dc_tag_q"
+def dc_data_q : Expr 64 := .reg 64 "dc_data_q"
+def dc_alloc  : Expr 1  := .reg 1  "dc_alloc"
 
 def sel_t     : Expr 64 := .reg 64 "sel_t"
 def sel_f     : Expr 64 := .reg 64 "sel_f"
@@ -1580,6 +1589,47 @@ def ic_tag_fill : Expr 42 :=
            (.zext ic_tag 42)))
 
 
+/-! ### EXT-10 — the data cache
+
+Same geometry and same tag word as the I-cache, for the same reasons: the
+domain is in the tag because a line means "this address *under this domain's
+map*", and the generation field lets a translation change invalidate the
+whole bank in O(1) rather than a sweep.
+
+What is different is that data is written. The rungs, in order, are: read
+hits (here), write-through with invalidate-on-store (here), and cross-core
+invalidation (NOT here -- see `DCACHE_PLAN.md`; until that rung lands the
+bank is correct only because a store invalidates the storing core's own copy
+and every other core still reads DDR).
+
+The index is computed from the TRANSLATED address, unlike the I-cache's,
+whose stage-1 index was physical-by-accident. `S_EX` already translates the
+load address once (`sexEa`/`ddrEa`), so this adds no second cone. -/
+def dc_ea : Expr 32 := ddrEa mem_ea_l
+def dc_idx : Expr 12 := .slice dc_ea 3 12
+def dc_tag : Expr 17 := .slice dc_ea 15 17
+/-- Index and tag of the address a STORE is about to write, for the
+invalidate. Separate from `dc_idx` because the store arm's effective address
+is `mem_ea_s`, not `mem_ea_l`. -/
+def dc_sidx : Expr 12 := .slice (ddrEa mem_ea_s) 3 12
+
+def dc_hit : Expr 1 :=
+  .and (.eq (.slice dc_tag_q 41 1) (L1 1))
+    (.and (.eq (.slice dc_tag_q 25 16) ic_gen)
+      (.and (.eq (.slice dc_tag_q 17 8) domCur)
+            (.eq (.slice dc_tag_q 0 17) dc_tag)))
+
+/-- The tag word written on a fill. The fill happens in `S_DL`, by which time
+`mem_ea_l` no longer holds the address, so the fields come from the latched
+`dc_tag_q`'s index-mates: `dc_fill_tag` is recomputed from `core_addr`, which
+`S_EX` wrote and nothing since has touched. -/
+def dc_fill_idx : Expr 12 := .slice core_addr 3 12
+def dc_fill_tag : Expr 42 :=
+  .or (.shl (.lit (BitVec.ofNat 42 1)) (.lit (BitVec.ofNat 42 41)))
+    (.or (.shl (.zext ic_gen 42) (.lit (BitVec.ofNat 42 25)))
+      (.or (.shl (.zext domCur 42) (.lit (BitVec.ofNat 42 17)))
+           (.zext (.slice core_addr 15 17) 42)))
+
 /-- The ONE effective address S_EX ever translates. LR and SC translate `a`;
 FUTEX_WAIT translates its aligned futex word (`rdval & ~7`). Muxing the input
 instead of instantiating ddrEa per site keeps S_EX at a single translation
@@ -1969,10 +2019,15 @@ def s_ex_branches : List (Expr 1 × Act) :=
   gcons (.and is_load l_is_zp)
     (.seq (.write 9 "dmem_a" ld_widx) (.seq (.write 3 "ld_boff_q" ld_boff)
       (.seq (.write 8 "ld_op_q" op) (.seq (.write 5 "ld_rd_q" rdf) (.seq (.write 1 "mem_is_store" (L1 0)) (.write 5 "st" (L5 S_L0))))))) <|
-  -- DDR load
+  -- DDR load. EXT-10: `core_addr` is written but `core_rd` is NOT asserted --
+  -- the D-cache banks are latched here (D19 sync read) and `S_DC` decides
+  -- next cycle whether the bus transaction is needed at all. The address is
+  -- translated exactly once, here, so the hit path costs no translation.
   gcons is_load
-    (.seq (.write 32 "core_addr" (ddrEa mem_ea_l)) (.seq (.write 1 "core_rd" (L1 1))
-      (.seq (.write 3 "ld_boff_q" ld_boff) (.seq (.write 8 "ld_op_q" op) (.seq (.write 5 "ld_rd_q" rdf) (.seq (.write 1 "mem_is_store" (L1 0)) (.write 5 "st" (L5 S_DL)))))))) <|
+    (.seq (.write 32 "core_addr" dc_ea)
+      (.seq (.write 42 "dc_tag_q" (.memRead 42 "dc_tag" dc_idx))
+        (.seq (.write 64 "dc_data_q" (.memRead 64 "dc_data" dc_idx))
+          (.seq (.write 3 "ld_boff_q" ld_boff) (.seq (.write 8 "ld_op_q" op) (.seq (.write 5 "ld_rd_q" rdf) (.seq (.write 1 "mem_is_store" (L1 0)) (.write 5 "st" (L5 S_DC))))))))) <|
   -- UART store
   gcons (.and is_store (.eq mem_ea_s (L64 UART_ADDR)))
     (.seq (.memWrite 8 8 "uart_mem" 0 (.slice uart_wptr 0 8) (.slice b 0 8))
@@ -2009,8 +2064,22 @@ def s_l1 : Expr 1 × Act := stArm S_L1
             (actSeq [.write 1 "dmem_we" (L1 1), .write 9 "dmem_a" st_widx, .write 64 "dmem_wd" st_merge]),
            stepPc, retireInc, goF0])
 
+/-- **EXT-10 `S_DC`**: the tag check. A hit feeds `ddr_q` from the latched
+data word and joins `S_DST`, so the whole sub-word/sign-extend writeback path
+is reused unchanged -- a hit is a load that never touched the bus. A miss
+asserts `core_rd` on the address `S_EX` already wrote and joins `S_DL`,
+setting `dc_alloc` so the fill funnel knows this miss is allocatable. -/
+def s_dc : Expr 1 × Act := stArm S_DC
+  (.ite dc_hit
+    (.seq (.write 64 "ddr_q" dc_data_q) (.write 5 "st" (L5 S_DST)))
+    (.seq (.write 1 "core_rd" (L1 1))
+      (.seq (.write 1 "dc_alloc" (L1 1)) (.write 5 "st" (L5 S_DL)))))
+
 def s_dl : Expr 1 × Act := stArm S_DL
-  (.ite mDone (.seq (.write 64 "ddr_q" mRdata) (.write 5 "st" (L5 S_DST))) .skip)
+  (.ite mDone
+    (.seq (.write 64 "ddr_q" mRdata)
+      (.seq (.write 1 "dc_alloc" (L1 0)) (.write 5 "st" (L5 S_DST))))
+    .skip)
 
 /-- S_DST: load-wb (rf in funnel) + advance, or issue the DDR store. -/
 def s_dst : Expr 1 × Act := stArm S_DST
@@ -2081,7 +2150,7 @@ the default arm fire *on the new state* and silently reset the fetch to
 `S_F0`, i.e. an I-cache that never hits and a core that still works. A state
 added above the bound is invisible exactly the way the renumbering's dead
 opcodes were. -/
-def s_default : Expr 1 × Act := (.ult (L5 S_GC1) st, goF0)
+def s_default : Expr 1 × Act := (.ult (L5 S_DC) st, goF0)
 
 /-- (8) the whole `st` dispatch as ONE rule.
 
@@ -2100,7 +2169,7 @@ def fsmRule : Rule :=
     (actPriTree
       [s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
        s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps,
-       s_ic, s_gc0, s_gc1, s_default]
+       s_ic, s_gc0, s_gc1, s_dc, s_default]
       .skip)
     .skip⟩
 
@@ -2316,6 +2385,40 @@ def icGenBump : Expr 1 :=
     (orTree ([CMD_MMU_EN, CMD_TLB_SEL, CMD_TLB_VPN, CMD_TLB_PPN,
               67, CMD_TLB_PHYS, 13].map (fun n => .eq cmdIdx (L7 n))))
 
+/-! ### EXT-10 funnels
+
+Two writers per bank, muxed into one syntactic site each (D38): the **fill**
+on an allocatable miss returning in `S_DL`, and the **invalidate** a store
+performs on its own line. Invalidate wins the mux, for the same reason the
+I-cache's sweep wins over its fill: a store's job is to make the old line
+unreachable, and a fill that landed on top of it would resurrect it.
+
+The generation tag is shared with the I-cache (`ic_gen`), so a translation
+change retires both caches in one cycle rather than needing a second sweep.
+
+**Not yet cross-core.** `dcStoreInv` invalidates the *storing* core's copy.
+The other core's copy is stale until rung 5 broadcasts the address; until
+then this is a single-core cache, and `DCACHE_PLAN.md` says so rather than
+the code implying otherwise. -/
+def dcFill : Expr 1 := .and (.eq st (L5 S_DL)) (.and mDone dc_alloc)
+
+/-- A store that must invalidate: a DDR store, in `S_EX`, on the cacheable
+path. The zp/UART/GP store arms never reach DDR and cannot alias a line. -/
+def dcStoreInv : Expr 1 :=
+  .and (exG is_store) (.and (.not s_is_zp) (.and (.not s_is_gp)
+    (.not (.eq mem_ea_s (L64 UART_ADDR)))))
+
+def dcDataRule : Rule :=
+  ⟨"dc_data_funnel", .ite dcFill (.memWrite 12 64 "dc_data" 0 dc_fill_idx mRdata) .skip⟩
+
+def dcTagRule : Rule :=
+  ⟨"dc_tag_funnel",
+    .ite (.or dcStoreInv dcFill)
+      (.memWrite 12 42 "dc_tag" 0
+        (.mux dcStoreInv dc_sidx dc_fill_idx)
+        (.mux dcStoreInv (.lit (BitVec.ofNat 42 0)) dc_fill_tag))
+      .skip⟩
+
 /-- The generation register, and the wrap fallback.
 
 The bump is O(1). The sweep exists only for the wrap: when `ic_gen` is about
@@ -2373,6 +2476,10 @@ def scalarRegs : List RegDecl :=
    -- EXT-9: the I-cache sync-read latches (D19). Both reset to 0, which is
    -- an invalid tag, so the cache comes up empty on every technology.
    ⟨"ic_tag_q",42,0⟩, ⟨"ic_data_q",64,0⟩, ⟨"ic_gen",16,0⟩, ⟨"gate_tbl_base",32,0⟩,
+   -- EXT-10 latches. `dc_alloc` records that the miss now in flight came from
+   -- the cacheable path, so the fill funnel cannot allocate for an atomic or
+   -- an out-of-window read that merely happened to pass through S_DL.
+   ⟨"dc_tag_q",42,0⟩, ⟨"dc_data_q",64,0⟩, ⟨"dc_alloc",1,0⟩,
    ⟨"gate_ent_q",64,0⟩, ⟨"gate_dom_q",8,0⟩,
    ⟨"ic_inv",1,0⟩, ⟨"ic_ctr",12,0⟩,
    ⟨"mem_is_store",1,0⟩, ⟨"trap_active",1,0⟩, ⟨"trapped_op",8,0⟩,
@@ -2446,6 +2553,11 @@ def design : Design where
      -- 17 of the tag word, so a zeroed bank is a fully invalid cache and
      -- D30/D37 have nothing to deliver.
      ⟨"ic_data", 12, 64, fun _ => 0⟩, ⟨"ic_tag", 12, 42, fun _ => 0⟩,
+     -- EXT-10: the D-cache, the I-cache's shape exactly (4096 x 8 B), because
+     -- that is the shape the boot-trace measurement was taken at: 95% of
+     -- 86 221 data reads, against 325 that must bypass. Same single-write-site
+     -- discipline, and the same all-zero reset image meaning "fully invalid".
+     ⟨"dc_data", 12, 64, fun _ => 0⟩, ⟨"dc_tag", 12, 42, fun _ => 0⟩,
      -- D20: the thread table's single-dynamic-index arrays.
      -- **D37 (2026-08-01): `tpc`'s reset image is ALL-ZERO, not TEXT_BASE.**
      -- A non-zero image on a 32×64 bank is exactly the D30 defect: yosys
@@ -2475,12 +2587,13 @@ def design : Design where
   rules :=
     [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule,
-     icFillRule, icTagRule, icGenRule, icInvRule]
+     icFillRule, icTagRule, icGenRule, icInvRule,
+     dcDataRule, dcTagRule]
   -- D19 (now a Loom obligation): `Design.emit` refuses to emit if any of
   -- these is read outside a register-latch site. `rx_mem` is deliberately
   -- absent — it is read combinationally inside the `rf` write data, so
   -- LUTRAM is the right implementation for it.
-  syncReadMems := ["rf", "dmem", "uart_mem", "ic_data", "ic_tag"]
+  syncReadMems := ["rf", "dmem", "uart_mem", "ic_data", "ic_tag", "dc_data", "dc_tag"]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,

@@ -82,6 +82,14 @@ structure MiniSt where
   ic_gen    : BitVec 16 := 0
   ic_inv    : Bool := false
   ic_ctr    : BitVec 12 := 0
+  -- EXT-10: the D-cache, same shape, sharing `ic_gen` so one bump retires
+  -- both. `dc_alloc` records that the miss in flight came from the cacheable
+  -- path, so an atomic passing through S_DL cannot allocate.
+  dc_data   : Array (BitVec 64) := Array.replicate 4096 0
+  dc_tag    : Array (BitVec 42) := Array.replicate 4096 0
+  dc_tag_q  : BitVec 42 := 0
+  dc_data_q : BitVec 64 := 0
+  dc_alloc  : Bool := false
   core_wdata: BitVec 64 := 0
   jtag_rd   : Bool := false
   jtag_wr   : Bool := false
@@ -428,6 +436,43 @@ def hp_core_owns (s : MiniSt) : Bool :=
 /-- rf write helper: set rf at the raw 10-bit index. -/
 def rfSetIdx (s' : MiniSt) (idx : BitVec 10) (v : BitVec 64) : MiniSt :=
   { s' with rf := s'.rf.set! idx.toNat v }
+
+/-- EXT-10: the tag check, `dc_hit`'s mirror. -/
+def dcHitOf (s : MiniSt) : Bool :=
+  s.dc_tag_q.getLsbD 41
+  ∧ ((s.dc_tag_q >>> 25).setWidth 16) = s.ic_gen
+  ∧ ((s.dc_tag_q >>> 17).setWidth 8) = s.tdom[s.cur.toNat]!
+  ∧ s.dc_tag_q.setWidth 17 = (s.core_addr >>> 15).setWidth 17
+
+/-- EXT-10: latch the banks on the load arm (D19 sync read). -/
+def dcLatchOn (s s' : MiniSt) : MiniSt :=
+  let dea := ddrEaOf s (mem_ea_l s)
+  let didx := (dea >>> 3).setWidth 12
+  { s' with core_addr := dea,
+            dc_tag_q := s.dc_tag[didx.toNat]!,
+            dc_data_q := s.dc_data[didx.toNat]! }
+
+/-- EXT-10: the store's invalidate of its own line, mirroring `dcStoreInv`.
+Without it a write-through cache serves the pre-store value forever, which is
+exactly what `dcacheselftest`'s `r10` caught the first time this ran. -/
+def dcStoreInvOn (s s' : MiniSt) : MiniSt :=
+  let sidx := ((ddrEaOf s (mem_ea_s s)) >>> 3).setWidth 12
+  { s' with dc_tag := s'.dc_tag.set! sidx.toNat 0 }
+
+/-- EXT-10 fill, mirroring `dcDataRule`/`dcTagRule`. Hoisted out of the arm
+chain: inlining it pushed the elaborator into deep recursion, which is a real
+constraint on how deep this function may nest, not a style preference. -/
+def dcFillOn (s s' : MiniSt) (rd : BitVec 64) : MiniSt :=
+  if s.dc_alloc then
+    let idx := (s.core_addr >>> 3).setWidth 12
+    let tagV := (s.core_addr >>> 15).setWidth 17
+    { s' with dc_data := s'.dc_data.set! idx.toNat rd,
+              dc_tag := s'.dc_tag.set! idx.toNat
+                          (((1 : BitVec 42) <<< 41)
+                           ||| ((s.ic_gen.setWidth 42) <<< 25)
+                           ||| (((s.tdom[s.cur.toNat]!).setWidth 42) <<< 17)
+                           ||| tagV.setWidth 42) }
+  else s'
 
 /-- One cycle. Mirrors always@(posedge sysclk) top-to-bottom. Blocking rf
 temps become `rfWe/rfWa/rfWd` locals; the single funnel write at the end. -/
@@ -801,8 +846,11 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_load s ∧ l_is_zp s then
         s' := { s' with dmem_a := ld_widx s, ld_boff_q := ld_boff s, ld_op_q := op s, ld_rd_q := rdf s, mem_is_store := false, st := BitVec.ofNat 5 S_L0 }
       else if is_load s then
-        s' := { s' with core_addr := ddrEaOf s (mem_ea_l s), core_rd := true,
-                        ld_boff_q := ld_boff s, ld_op_q := op s, ld_rd_q := rdf s, mem_is_store := false, st := BitVec.ofNat 5 S_DL }
+        -- EXT-10: latch the D-cache banks (D19) and let S_DC decide whether a
+        -- bus transaction is needed. core_rd is NOT asserted here.
+        s' := dcLatchOn s { s' with ld_boff_q := ld_boff s, ld_op_q := op s,
+                                    ld_rd_q := rdf s, mem_is_store := false,
+                                    st := BitVec.ofNat 5 S_DC }
       else if is_store s ∧ mem_ea_s s = BitVec.ofNat 64 UART_ADDR then
         s' := { s' with uartMem := s'.uartMem.set! (s.uart_wptr.setWidth 8).toNat (s.b.setWidth 8), uart_wptr := s.uart_wptr + 1, pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if is_store s ∧ s_is_gp s then
@@ -812,7 +860,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_store s ∧ s_is_zp s then
         s' := { s' with dmem_a := st_widx s, mem_is_store := true, st := BitVec.ofNat 5 S_L0 }
       else if is_store s then
-        s' := { s' with core_addr := ddrEaOf s (mem_ea_s s), core_rd := true, mem_is_store := true, sc_pending := false, st := BitVec.ofNat 5 S_DL }
+        -- EXT-10: a DDR store invalidates its own line (dcStoreInv).
+        s' := dcStoreInvOn s { s' with core_addr := ddrEaOf s (mem_ea_s s), core_rd := true, mem_is_store := true, sc_pending := false, st := BitVec.ofNat 5 S_DL }
       else
         s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
     else if stN = S_L0 then
@@ -843,8 +892,15 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           pc := s.gate_ent_q }
         else
           s' := { s' with pc := pc8 s }
+    else if stN = S_DC then
+      if dcHitOf s then
+        s' := { s' with ddr_q := s.dc_data_q, st := BitVec.ofNat 5 S_DST }
+      else
+        s' := { s' with core_rd := true, dc_alloc := true, st := BitVec.ofNat 5 S_DL }
     else if stN = S_DL then
-      if inp.mDone then s' := { s' with ddr_q := inp.mRdata, st := BitVec.ofNat 5 S_DST }
+      if inp.mDone then
+        s' := dcFillOn s { s' with ddr_q := inp.mRdata, dc_alloc := false,
+                                   st := BitVec.ofNat 5 S_DST } inp.mRdata
     else if stN = S_DST then
       if ¬ s.mem_is_store then
         if s.ld_rd_q ≠ 0 then rfWe := true; rfWa := (curV ++ s.ld_rd_q); rfWd := ld_wb s

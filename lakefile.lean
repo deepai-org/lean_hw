@@ -22,9 +22,19 @@ package loom where
 lean_lib Loom
 
 /-- The machine models: LNP64-µ (the driving use case) and Acc8 (the tiny
-pathfinder that keeps the toolchain honest about genericity). -/
+pathfinder that keeps the toolchain honest about genericity).
+
+`--tstack`: `Machines/Lnp64mini/Iss.lean` is one cycle-exact `step` whose arm
+chain is as long as the core's state machine, and adding EXT-10's `S_DC` arm
+pushed the elaborator past the default thread stack ("deep recursion was
+detected at 'interpreter'"). The ISS is deliberately a single flat mirror of
+`always @(posedge clk)` rather than a decomposed model -- that is what makes
+the lockstep meaningful -- so the honest fix is to give the compiler the
+stack the shape needs, not to abstract the model until it fits. -/
 @[default_target]
-lean_lib Machines
+lean_lib Machines where
+  moreLeanArgs := #["--tstack=131072"]
+  weakLeanArgs := #["--tstack=131072"]
 
 lean_lib Tools
 
