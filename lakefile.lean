@@ -81,6 +81,11 @@ lean_exe costreport where
   supportInterpreter := true
   root := `Tools.CostReport
 
+/-- Per-rule area attribution: which cones the `bitOps` are in. -/
+lean_exe areaattrib where
+  supportInterpreter := true
+  root := `Tools.AreaAttrib
+
 lean_exe iccheck where
   supportInterpreter := true
   root := `Tools.IcCheck

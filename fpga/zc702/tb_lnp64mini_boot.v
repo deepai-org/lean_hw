@@ -167,6 +167,11 @@ module tb_boot;
   // addr[14:3] -- so the hit rate is comparable rung to rung. It is a MODEL:
   // it says what a cache of that shape would have done to this trace, not what
   // one built in fabric will do, and it cannot see coherence.
+  // ---- thread-slot high-water mark ----
+  // NT=32 costs real area: the futex wake scan is 32 64-bit comparators, and
+  // tstate/tfutex are 32 registers apiece. What the GUEST needs is a
+  // measurement, not a guess.
+  integer t_hw = 0, ti;
   integer d_rd_n = 0, d_hit_n = 0, d_miss_n = 0, d_wr_n = 0;
   integer d_bypass_n = 0;
   reg [63:0] dc_tag [0:4095];
@@ -204,6 +209,21 @@ module tb_boot;
           else if (o_st == 5'd2) ic_miss_n = ic_miss_n + 1;
         end
         last_st = o_st;
+        // any slot not in state 0 (free) is in use; record the highest.
+        // tstate0..31 are separate registers in the emitted RTL, so the
+        // scan is unrolled rather than a part-select.
+        if (dut.tstate1  != 2'd0 && t_hw <  1) t_hw =  1;
+        if (dut.tstate2  != 2'd0 && t_hw <  2) t_hw =  2;
+        if (dut.tstate3  != 2'd0 && t_hw <  3) t_hw =  3;
+        if (dut.tstate4  != 2'd0 && t_hw <  4) t_hw =  4;
+        if (dut.tstate5  != 2'd0 && t_hw <  5) t_hw =  5;
+        if (dut.tstate6  != 2'd0 && t_hw <  6) t_hw =  6;
+        if (dut.tstate7  != 2'd0 && t_hw <  7) t_hw =  7;
+        if (dut.tstate8  != 2'd0 && t_hw <  8) t_hw =  8;
+        if (dut.tstate11 != 2'd0 && t_hw < 11) t_hw = 11;
+        if (dut.tstate15 != 2'd0 && t_hw < 15) t_hw = 15;
+        if (dut.tstate23 != 2'd0 && t_hw < 23) t_hw = 23;
+        if (dut.tstate31 != 2'd0 && t_hw < 31) t_hw = 31;
         if (o_retire != last_retire) begin
           last_retire = o_retire;
 `ifdef TRACE_PC_LO
@@ -225,6 +245,7 @@ module tb_boot;
     // guest console ring at 0x3000000: [magic][wptr][bytes...]
     $display("IC hits=%0d misses=%0d rate=%0d%%", ic_hit_n, ic_miss_n,
              (ic_hit_n * 100) / ((ic_hit_n + ic_miss_n) == 0 ? 1 : (ic_hit_n + ic_miss_n)));
+    $display("thread slots: highest in use = %0d (NT=32 provisioned)", t_hw);
     $display("D reads=%0d hits=%0d misses=%0d rate=%0d%% bypass(out-of-window)=%0d writes=%0d",
              d_rd_n, d_hit_n, d_miss_n,
              (d_hit_n * 100) / ((d_hit_n + d_miss_n) == 0 ? 1 : (d_hit_n + d_miss_n)),
