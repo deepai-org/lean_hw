@@ -155,6 +155,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("ic_ctr",12,s.ic_ctr.toNat),
    ("gate_tbl_base",32,s.gate_tbl_base.toNat), ("gate_ent_q",64,s.gate_ent_q.toNat),
    ("gate_dom_q",8,s.gate_dom_q.toNat),
+   -- EXT-6 (§17): the cap-inbox root pointer and walked-flags latch
+   ("cap_tbl_base",32,s.cap_tbl_base.toNat), ("cap_fl_q",64,s.cap_fl_q.toNat),
    -- EXT-10: the D-cache's registers.
    ("dc_tag_q",42,s.dc_tag_q.toNat), ("dc_data_q",64,s.dc_data_q.toNat),
    ("dc_alloc",1,if s.dc_alloc then 1 else 0),
@@ -203,8 +205,6 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("wake_key",64,s.wake_key.toNat), ("wake_bm",32,s.wake_bm.toNat),
    -- EXT-5: gates
    ("in_gate",32,s.in_gate.toNat),
-   -- EXT-6: capability inbox occupancy
-   ("cap_ival",16,s.cap_ival.toNat),
    -- EXT-7: the MMU enable and TLB selector
    ("mmu_en",1,if s.mmu_en then 1 else 0), ("tlb_sel",3,s.tlb_sel.toNat),
    ("tlb_vld",8,s.tlb_vld.toNat),
@@ -243,7 +243,7 @@ TLB), each time leaving a green test that had never looked at the new state. -/
 def cmpCoveredRegs (s : MiniSt) : List String := (issRegs s).map (·.1)
 
 def cmpCoveredMems (s : MiniSt) : List String :=
-  ["rf", "dmem", "tdom", "cap_ibox", "tcont", "tcdom",
+  ["rf", "dmem", "tdom", "tcont", "tcdom",
    -- EXT-8: the commit-trace ring. Compared, not exempted -- the whole value
    -- of a trace is that it says what actually happened, so a ring the models
    -- disagree about would be worse than no ring at all.
@@ -293,7 +293,6 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     | "tdom"        => some (s.tdom[idx]!).toNat
     | "tcont"       => some (s.tcont[idx]!).toNat
     | "tcdom"       => some (s.tcdom[idx]!).toNat
-    | "cap_ibox"    => some (s.cap_ibox[idx]!).toNat
     -- EXT-8: the commit-trace ring is compared like any other memory. It is
     -- state the design declares, so D39 says it is observable and Loom's
     -- coordinate enumeration will ask about it; answering `none` would make it
@@ -385,14 +384,9 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
   -- the trap EXT-2 (`tdom`) and EXT-7 (the TLB) hit. Compared at EVERY slot:
   -- a gate is a claim about entries the program does not call, so a spot
   -- check at the invoked index would not see a violation.
-  for i in List.range 16 do
-    let checks16 : List (String × Nat × Nat) :=
-      [       ("cap_ibox", 64, (s.cap_ibox[i]!).toNat)]
-    for (mn, w, v) in checks16 do
-      if (σ.mems mn i w).toNat ≠ v then
-        if bad < 12 then
-          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
-        bad := bad + 1
+  -- EXT-6 (§17): the capability inbox moved into guest memory, so its
+  -- contents are compared the way all guest memory is -- through the DDR
+  -- model both models drive -- and there is no core bank left to walk here.
   for i in List.range NT do
     let checksNT : List (String × Nat × Nat) :=
       [("tcont", 64, (s.tcont[i]!).toNat), ("tcdom", 8, (s.tcdom[i]!).toNat)]
@@ -1579,11 +1573,25 @@ then enters a gate and receives:
   receive must yield `0xCAFE`.
 * `progCapWrong` — gate 0 targets domain **5**. Same instructions, same
   handle, same inbox contents; the receive must yield all-ones, and the
-  handle must still be sitting in inbox 3 afterwards (`cap_ival` bit 3 set).
+  handle must still be sitting in inbox 3 afterwards (entry 3's flags word
+  in guest memory still has `occupied` set).
 
 The second program is the whole test. Without it, a `CAP_RECV` that ignored
-the domain entirely and just popped *any* occupied inbox would pass. -/
+the domain entirely and just popped *any* occupied inbox would pass.
+
+**§17: the inbox is guest memory now.** The table lives in the DDR image at
+`CAP_TBL`; the host supplies only the root pointer (`cmd 75`). Occupancy is
+bit 0 of each entry's flags word and validity is bit 8, so the assertions
+below read the *image* back out of the DDR model — the state the machine
+walked — not a core bank. A third program sends to a domain whose entry is
+all zeros, which must refuse: that is the fail-closed arm, and it is the
+same property the silicon negative test exercises by zeroing a descriptor. -/
 def CAP_HANDLE : Nat := 0xCAFE
+def CAP_TBL : Nat := 0x2100
+
+/-- A valid, empty inbox entry for domain `d` (flags only; handle word 0). -/
+def capInboxEmpty (d : Nat) : List (Nat × BitVec 64) :=
+  [ (ddrWord (DATA_BASE + CAP_TBL + d*16 + 8), BitVec.ofNat 64 0x100) ]
 
 def progCapSendThen (retReg : Nat) : List (BitVec 64) :=
   [ encImmI OP_ADDI 1 0 CAP_HANDLE,   -- w0  r1 = the handle
@@ -1599,43 +1607,73 @@ def progCapSendThen (retReg : Nat) : List (BitVec 64) :=
 def progCapRight : List (BitVec 64) := progCapSendThen 9
 def progCapWrong : List (BitVec 64) := progCapSendThen 9
 
-/-- Install gate 0 with entry word 7 and target domain `dom`, then start. -/
+/-- Install the gate and cap-table root pointers, then start. Two roots,
+two commands — the host says where the structures ARE and never again what
+they SAY. -/
 def cmdCap (_dom : Nat) : Nat → MiniIn := fun k =>
   if k = 0 then
     { cmdValid := true, cmdIdx := CMD_GATE_TBL, cmdData := BitVec.ofNat 32 GATE_TBL }
-  else if k = 2 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else if k = 1 then
+    { cmdValid := true, cmdIdx := CMD_CAP_TBL, cmdData := BitVec.ofNat 32 CAP_TBL }
+  else if k = 3 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
-/-- The cap tests' descriptor: entry at word 7, target domain as asked. -/
+/-- The cap tests' image tail: gate 0 into `dom` at word 7, plus valid empty
+inbox entries for domains 3 and 5. Domain 7's entry is deliberately ABSENT
+(zeros): the fail-closed arm sends there. -/
 def capTable (dom : Nat) : List (Nat × BitVec 64) :=
-  gateDescriptor 0 (TEXT_BASE + 56) dom
+  gateDescriptor 0 (TEXT_BASE + 56) dom ++ capInboxEmpty 3 ++ capInboxEmpty 5
+
+/-- Fail-closed arm: send to domain 7, whose entry is zeros. -/
+def progCapUnbacked : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 CAP_HANDLE,   -- w0  r1 = the handle
+    encImmI OP_ADDI 2 0 7,            -- w1  r2 = 7 (no entry in the image)
+    enc OP_MINI_CAP_SEND 3 1 2,       -- w2  r3 = send -> must refuse (-1)
+    enc OP_EXIT 0 0 0 ]               -- w3
 
 def capXferSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progCapRight ++ capTable 3
-  -- (0) EDSL ≡ ISS across send + gate + receive.
-  let bad ← lockstep img 1 (cmdCap 3) (fun _ => 0) 110
-  if bad = 0 then IO.println "  OK  CAPXFER (EDSL≡ISS across send+gate+recv, 110 cyc)"
+  let fl3 (d : DdrModel) : Nat :=
+    (d.mem.getD (ddrWord (DATA_BASE + CAP_TBL + 3*16 + 8)) 0).toNat
+  let h3 (d : DdrModel) : Nat :=
+    (d.mem.getD (ddrWord (DATA_BASE + CAP_TBL + 3*16)) 0).toNat
+  -- (0) EDSL ≡ ISS across send + gate + receive, now six bus transactions
+  -- longer than the bank version.
+  let bad ← lockstep img 1 (cmdCap 3) (fun _ => 0) 200
+  if bad = 0 then IO.println "  OK  CAPXFER (EDSL≡ISS across send+gate+recv, 200 cyc)"
   else IO.println s!"  FAIL CAPXFER ({bad} mismatches)"
-  -- (1) the addressed domain receives the handle.
-  let (sr, _, _) := runIss img 1 (cmdCap 3) (fun _ => 0) 400
+  -- (1) the addressed domain receives the handle, and the ENTRY IN MEMORY
+  -- is empty again afterwards (occupied cleared, valid kept).
+  let (sr, dr, _) := runIss img 1 (cmdCap 3) (fun _ => 0) 600
   let got := (sr.rf[9]!).toNat
   IO.println s!"  addressed domain 3: halted={sr.halted} send r3={(sr.rf[3]!).toNat} (want 0) \
 recv r9=0x{String.ofList (Nat.toDigits 16 got)} (want 0x{String.ofList (Nat.toDigits 16 CAP_HANDLE)}) \
-cap_ival={sr.cap_ival.toNat} (want 0, consumed)"
-  let ok1 := sr.halted && got == CAP_HANDLE && sr.cap_ival.toNat == 0
-             && (sr.rf[3]!).toNat == 0
-  -- (2) a DIFFERENT domain gets nothing, and the handle stays put.
-  let (sw, _, _) := runIss (imageFrom TEXT_BASE progCapWrong ++ capTable 5) 1 (cmdCap 5) (fun _ => 0) 400
+mem flags3=0x{String.ofList (Nat.toDigits 16 (fl3 dr))} (want 0x100, consumed)"
+  let ok1 := sr.halted && got == CAP_HANDLE && (sr.rf[3]!).toNat == 0
+             && fl3 dr == 0x100
+  -- (2) a DIFFERENT domain gets nothing, and the handle stays put IN MEMORY:
+  -- entry 3 still occupied, handle word still the sent handle.
+  let (sw, dw, _) := runIss (imageFrom TEXT_BASE progCapWrong ++ capTable 5) 1 (cmdCap 5) (fun _ => 0) 600
   let gotW := (sw.rf[9]!).toNat
   IO.println s!"  other domain 5:     halted={sw.halted} recv r9=0x{String.ofList (Nat.toDigits 16 gotW)} \
-(want all-ones) cap_ival={sw.cap_ival.toNat} (want 8 = bit 3 still set) \
-inbox3=0x{String.ofList (Nat.toDigits 16 (sw.cap_ibox[3]!).toNat)}"
-  let ok2 := sw.halted && gotW == 0xFFFFFFFFFFFFFFFF && sw.cap_ival.toNat == 8
-             && (sw.cap_ibox[3]!).toNat == CAP_HANDLE
-  if bad = 0 && ok1 && ok2 then
-    IO.println "LNP64MINI CAPXFER SELFTEST OK — a handle reaches its domain and no other"
+(want all-ones) mem flags3=0x{String.ofList (Nat.toDigits 16 (fl3 dw))} (want 0x101, still occupied) \
+mem handle3=0x{String.ofList (Nat.toDigits 16 (h3 dw))}"
+  let ok2 := sw.halted && gotW == 0xFFFFFFFFFFFFFFFF && fl3 dw == 0x101
+             && h3 dw == CAP_HANDLE
+  -- (3) §17 fail-closed: a zeroed entry refuses the send and stays zeros.
+  let imgU := imageFrom TEXT_BASE progCapUnbacked ++ capTable 3
+  let (su, du, _) := runIss imgU 1 (cmdCap 3) (fun _ => 0) 400
+  let fl7 := (du.mem.getD (ddrWord (DATA_BASE + CAP_TBL + 7*16 + 8)) 0).toNat
+  IO.println s!"  unbacked domain 7:  halted={su.halted} send r3 all-ones={((su.rf[3]!).toNat == 0xFFFFFFFFFFFFFFFF)} \
+(want true, refused) mem flags7=0x{String.ofList (Nat.toDigits 16 fl7)} (want 0)"
+  let ok3 := su.halted && (su.rf[3]!).toNat == 0xFFFFFFFFFFFFFFFF && fl7 == 0
+  let badU ← lockstep imgU 1 (cmdCap 3) (fun _ => 0) 80
+  if badU = 0 then IO.println "  OK  CAPXFER-UNBACKED (EDSL≡ISS, 80 cyc)"
+  else IO.println s!"  FAIL CAPXFER-UNBACKED ({badU} mismatches)"
+  if bad = 0 && badU = 0 && ok1 && ok2 && ok3 then
+    IO.println "LNP64MINI CAPXFER SELFTEST OK — a handle reaches its domain and no other, out of memory the machine walked"
   else
-    IO.println s!"LNP64MINI CAPXFER SELFTEST FAILED ({bad} mismatches; right={ok1} wrong={ok2})"
+    IO.println s!"LNP64MINI CAPXFER SELFTEST FAILED ({bad}/{badU} mismatches; right={ok1} wrong={ok2} unbacked={ok3})"
     throw <| IO.userError "capxfer selftest failed"
 
 /-! ## EXT-7 — the MMU selftest (§15)

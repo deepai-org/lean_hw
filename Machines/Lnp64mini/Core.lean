@@ -71,6 +71,16 @@ entry PC), then issues the read of its second (the target domain); `S_GC1`
 waits for that and commits the activation. -/
 def S_GC0  : Nat := 22
 def S_GC1  : Nat := 23
+/-- **§17 cap walk.** Send: `S_CS0` waits for the target entry's flags word
+and refuses or issues the handle write; `S_CS1` waits for that and issues
+the flags write (occupied set); the store completes through `S_DSW`.
+Receive: `S_CR0` waits for this domain's flags word and refuses or issues
+the handle read; `S_CR1` writes `rd` from the handle and issues the flags
+write (occupied cleared), completing through `S_DSW`. -/
+def S_CS0  : Nat := 25
+def S_CS1  : Nat := 26
+def S_CR0  : Nat := 27
+def S_CR1  : Nat := 28
 /-- **EXT-10 `S_DC`**: the data-cache tag check. `S_EX` latches the banks
 (D19 sync read) and lands here; a hit feeds `ddr_q` from the latched data
 word and joins the existing `S_DST` writeback, a miss asserts `core_rd` on
@@ -326,8 +336,6 @@ def tdomRd (idx : Expr 5) : Expr 8 := .memRead 8 "tdom" idx
 /-- EXT-5: the gate table and the per-thread depth-1 continuation. -/
 def tcontRd (idx : Expr 5) : Expr 64 := .memRead 64 "tcont" idx
 def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
-/-- EXT-6: the per-domain capability inbox. -/
-def capIboxRd (d : Expr 4) : Expr 64 := .memRead 64 "cap_ibox" d
 /-! EXT-7: the TLB. Four parallel arrays indexed by the VPN's low 3 bits
 (direct-mapped), so a lookup is one read of each plus one comparison. -/
 /-- EXT-7: TLB entries. Eight is what the guest's region count needs. -/
@@ -346,8 +354,9 @@ def tlbCell  (i : Fin TLBN) : Expr 8  := .reg 8  s!"tlb_cell{i.val}"
 shootdown (`cmd 67`) invalidates *every* entry naming the bumped cell, i.e.
 several slots in one cycle, and one memory write port cannot do that -- which
 is exactly what `Design.emit` refused when this was a memory (D38/CE10). Same
-shape as EXT-3's `poison` and EXT-6's `cap_ival`: state written at many
-indices at once is a register bitmap. -/
+shape as EXT-3's `poison` (and EXT-6's retired `cap_ival`, before §17 moved
+the inbox into memory): state written at many indices at once is a register
+bitmap. -/
 def tlb_vld : Expr 8 := .reg 8 "tlb_vld"
 /-- Valid bit of entry `i` at a *static* index (the lookup is associative). -/
 def tlbVldBit (i : Fin TLBN) : Expr 1 :=
@@ -443,33 +452,51 @@ def CMD_GATE_DOM : Nat := 62
 
 /-! ### EXT-6 — cross-domain capability transfer (`EXTEND_SPEC.md` #6; §10.2)
 
-A capability handle moves between domains through a **per-domain inbox**:
-`cap_ibox[d]` holds one handle addressed to domain `d`, `cap_ival` says
-whether it is occupied. `CAP_SEND` writes the inbox of the domain it names;
-`CAP_RECV` reads **`cap_ibox[domCur]`** — the receiver's *own* domain, which
-it cannot name and cannot forge, because `domCur` is `tdom[cur]` and EXT-5
-made a gate the only way that changes.
+A capability handle moves between domains through a **per-domain inbox**.
+Since §17 the inbox lives in **guest memory**, not in a core bank: entry `d`
+is 16 bytes at `cap_tbl_base + (d << 4)` —
 
-**The re-keying is structural, not a check.** A handle addressed to domain 3
-is not merely *flagged* for domain 3 — it is stored at an index no thread in
-another domain can address, because the receive index is not an operand. A
-domain-5 thread executing `CAP_RECV` reads inbox 5 and gets nothing; there
-is no encoding of `CAP_RECV` that reaches inbox 3. That is the same shape as
-EXT-3's fail-stop landing on `readyBm`: put the property where the datapath
-cannot route around it, rather than testing for it.
+    +0  handle (64)
+    +8  flags: bit 0 = occupied, bit 8 = valid (rest reserved zero)
+
+`cap_tbl_base` is a root pointer the host installs once (`cmd 75`), the
+same move as the gate table's `cmd 74`: the host says where the table is
+and thereafter the machine reads and writes the *entries* itself. The old
+`cap_ibox` bank and `cap_ival` bitmap — state only the host could audit —
+are gone; a send is a flags-read, a handle-write and a flags-write on the
+bus, a receive is a flags-read, a handle-read and a flags-write.
+
+**The re-keying is structural, not a check.** `CAP_SEND` writes the entry
+of the domain it names; `CAP_RECV` reads the entry of **`domCur`** — the
+receiver's *own* domain, which is not an operand and cannot be forged,
+because `domCur` is `tdom[cur]` and EXT-5 made a gate the only way that
+changes. A domain-5 thread executing `CAP_RECV` walks entry 5 and gets
+nothing; there is no encoding of `CAP_RECV` that reaches entry 3.
+
+**§17 fail-closed, like the gate walk.** Bit 8 of the flags word is
+`valid`. An entry that reads back zeros — absent table, revoked slot —
+refuses both send and receive (`rd = -1`, no state change). Revoking a
+domain's inbox is therefore zeroing 8 bytes of memory, no command, no host.
 
 **Deviation — one slot per domain, not a queue.** `CAP_SEND` to an occupied
-inbox is refused (`rd = -1`, no state change) rather than queueing. Sixteen
-queues is per-slot structure of exactly the kind EXT-4 measured the cost of;
-one slot proves the transfer and the mediation, and depth is a width change.
+entry is refused (`rd = -1`) rather than queueing. One slot proves the
+transfer and the mediation; depth is a layout change now, not a redesign.
 
 **Deviation — no MAC re-computation.** CapWalk's engine authenticates a
 handle with an on-chip key over `E(slot)`; a full transfer would re-key the
-MAC to the receiving domain. Mini's inbox carries the handle bits only, and
+MAC to the receiving domain. Mini's entry carries the handle bits only, and
 the domain binding is the *index*. Recorded as the gap between this and
 §10.2: the mediation is real, the cryptographic re-key is not implemented.
--/
-def cap_ival : Expr 16 := .reg 16 "cap_ival"
+
+**Deviation — the walk is not atomic across cores.** A send is three bus
+transactions; the HP arbiter interleaves per-transaction, so two cores
+racing the same entry could both observe it free. The selftests are
+single-core; the cross-core story arrives with the D-cache's rung-5
+invalidation work, and this note is here so the code does not imply
+otherwise. -/
+def cap_tbl_base : Expr 32 := .reg 32 "cap_tbl_base"
+/-- Latched flags word of the entry being walked (D19 sync-read style). -/
+def cap_fl_q : Expr 64 := .reg 64 "cap_fl_q"
 
 /-! ### EXT-7 — VMA / translation (`EXTEND_SPEC.md` #7; ISA §15)
 
@@ -508,6 +535,9 @@ def CMD_TRACE_SEL : Nat := 69
 /-- **§17**: where the gate table lives in guest memory. The host sets this
 once, like a root pointer; the machine reads the entries. -/
 def CMD_GATE_TBL : Nat := 74
+/-- **§17**: where the capability-inbox table lives in guest memory. Same
+root-pointer discipline as `cmd 74`. -/
+def CMD_CAP_TBL : Nat := 75
 def CMD_MAP_PROTECT : Nat := 67
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
@@ -1129,19 +1159,25 @@ slot, `cmd_data[15:8]` the domain id. 56 is the dual wrapper's `CORE1_HOLD`
 and 57 is EXT-1's quantum, so 58 is the next free index. -/
 def CMD_SETDOM : Nat := 58
 
-/-! ### EXT-6 — send/recv predicates.
+/-! ### EXT-6 — send/recv predicates (§17: judged on the WALKED flags word).
 
 `capRecvSlot` is `domCur[3:0]` — the receiver's own domain. It is NOT an
 operand, which is the whole mediation argument. -/
 def capRecvSlot : Expr 4 := .slice domCur 0 4
 def capSendSlot : Expr 4 := .slice b 0 4
-/-- inbox occupancy bit for a slot. -/
-def capOcc (d : Expr 4) : Expr 1 :=
-  .eq (.slice (.shr cap_ival (.zext d 16)) 0 1) (.lit (BitVec.ofNat 1 1))
-/-- A send lands only if the target inbox is free. -/
-def capSendFire : Expr 1 := exG (.and (opIs CAP_SEND_OP) (.not (capOcc capSendSlot)))
-/-- A receive lands only if this domain's inbox is occupied. -/
-def capRecvFire : Expr 1 := exG (.and (opIs CAP_RECV_OP) (capOcc capRecvSlot))
+/-- The entry address of slot `d`: `DATA_BASE + cap_tbl_base + (d << 4)`. -/
+def capEntryAddr (d : Expr 4) : Expr 32 :=
+  .add (.add (.lit (BitVec.ofNat 32 DATA_BASE)) cap_tbl_base)
+       (.shl (.zext d 32) (.lit (BitVec.ofNat 32 4)))
+/-- §17 flags-word predicates, on the word the bus returned THIS cycle
+(`mRdata`, not a latch — reads are pre-cycle, D9). Bit 8 is `valid`
+(fail-closed, like `gateDescValid`), bit 0 is `occupied`. -/
+def capFlValid : Expr 1 := .slice mRdata 8 1
+def capFlOcc   : Expr 1 := .slice mRdata 0 1
+/-- A send lands only on a valid, free entry. -/
+def capSendOk : Expr 1 := .and capFlValid (.not capFlOcc)
+/-- A receive lands only on a valid, occupied entry. -/
+def capRecvOk : Expr 1 := .and capFlValid capFlOcc
 
 /-- **§17 fail-closed.** Bit 8 of the descriptor's second word is `valid`.
 A gate id with no descriptor reads back zeros, and zeros must not be an
@@ -1172,14 +1208,21 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- 3. FSM writes (mutually exclusive)
   -- S_EX is_sel
   , (exG (.and is_sel (.not (.eq rdf (L5 0)))), cat55 cur rdf, .mux sel_cond sel_t sel_f)
-  -- EXT-6: CAP_SEND result -- 0 on success, all-ones on a full inbox.
-  , (exG (.and (opIs CAP_SEND_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
-       .mux (capOcc capSendSlot) (L64 0xFFFFFFFFFFFFFFFF) (L64 0))
-  -- EXT-6: CAP_RECV result -- the handle addressed to THIS domain, or
-  -- all-ones when this domain's inbox is empty. The index is `domCur`, not
-  -- an operand, so no encoding reaches another domain's inbox.
-  , (exG (.and (opIs CAP_RECV_OP) (.not (.eq rdf (L5 0)))), cat55 cur rdf,
-       .mux (capOcc capRecvSlot) (capIboxRd capRecvSlot) (L64 0xFFFFFFFFFFFFFFFF))
+  -- EXT-6 (§17): CAP_SEND result, judged in S_CS0 on the walked flags word
+  -- -- 0 when the entry is valid and free (the writes that follow cannot
+  -- refuse), all-ones otherwise. Fail-closed: a zeroed entry refuses.
+  , (.and fsmEn (.and (.eq st (L5 S_CS0)) (.and mDone (.not (.eq rdf (L5 0))))),
+       cat55 cur rdf, .mux capSendOk (L64 0) (L64 0xFFFFFFFFFFFFFFFF))
+  -- EXT-6 (§17): CAP_RECV refusal, judged in S_CR0 -- all-ones when this
+  -- domain's entry is invalid or empty. The entry is `domCur`'s, not an
+  -- operand's, so no encoding reaches another domain's inbox.
+  , (.and fsmEn (.and (.eq st (L5 S_CR0))
+       (.and mDone (.and (.not capRecvOk) (.not (.eq rdf (L5 0)))))),
+       cat55 cur rdf, L64 0xFFFFFFFFFFFFFFFF)
+  -- EXT-6 (§17): CAP_RECV success -- the handle word the bus returned this
+  -- cycle in S_CR1 (`mRdata` directly; the latch would be a cycle late).
+  , (.and fsmEn (.and (.eq st (L5 S_CR1)) (.and mDone (.not (.eq rdf (L5 0))))),
+       cat55 cur rdf, mRdata)
   -- S_EX GET_PCR Tid (op 0x54, rs1f==2)
   , (exG (.and (opIs OP_GET_PCR) (.and (.eq rs1f (L5 2)) (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, .add (.zext cur 64) (L64 1))
@@ -1474,6 +1517,7 @@ where
     -- EXT-7: MMU enable and the TLB entry selector.
     .seq (.ite (ci CMD_MMU_EN) (.write 1 "mmu_en" (.slice cmdData 0 1)) .skip) <|
     .seq (.ite (ci CMD_GATE_TBL) (.write 32 "gate_tbl_base" cmdData) .skip) <|
+    .seq (.ite (ci CMD_CAP_TBL) (.write 32 "cap_tbl_base" cmdData) .skip) <|
     .seq (.ite (ci CMD_TLB_SEL) (.write 3 "tlb_sel" (.slice cmdData 0 3)) .skip) <|
     -- EXT-7 stage B: per-entry VMA fill. `cmd 65` = base + domain,
     -- `cmd 66` = limit (and VALIDATES, so a half-written VMA is never live),
@@ -1816,6 +1860,55 @@ def s_gc1 : Expr 1 × Act := stArm S_GC1
         (.seq retireInc goF0)))
     .skip)
 
+/-- **§17 `S_CS0`**: the target entry's flags word has arrived. A valid,
+free entry commits the send -- latch the flags and issue the handle write
+at `+0` (the address walked here is `+8`). Anything else refuses: the rd
+funnel wrote all-ones this cycle, and the instruction just steps past. -/
+def s_cs0 : Expr 1 × Act := stArm S_CS0
+  (.ite mDone
+    (.ite capSendOk
+      (actSeq [.write 64 "cap_fl_q" mRdata,
+               .write 32 "core_addr" (.sub core_addr (.lit (BitVec.ofNat 32 8))),
+               .write 64 "core_wdata" a,
+               .write 1 "core_wr" (L1 1), .write 5 "st" (L5 S_CS1)])
+      (actSeq [stepPc, retireInc, goF0]))
+    .skip)
+
+/-- **§17 `S_CS1`**: the handle write completed; issue the flags write with
+`occupied` set. The store completes through `S_DSW` (which owns the final
+step/retire); `sc_pending` is cleared the way the ordinary DDR-store arm
+clears it, so the SC-verdict funnel cannot misread this store. -/
+def s_cs1 : Expr 1 × Act := stArm S_CS1
+  (.ite mDone
+    (actSeq [.write 32 "core_addr" (.add core_addr (.lit (BitVec.ofNat 32 8))),
+             .write 64 "core_wdata" (.or cap_fl_q (L64 1)),
+             .write 1 "core_wr" (L1 1), .write 1 "sc_pending" (L1 0),
+             .write 5 "st" (L5 S_DSW)])
+    .skip)
+
+/-- **§17 `S_CR0`**: this domain's flags word has arrived. Valid and
+occupied commits the receive -- latch the flags and issue the handle read
+at `+0`. Anything else refuses (rd funnel wrote all-ones) and steps past. -/
+def s_cr0 : Expr 1 × Act := stArm S_CR0
+  (.ite mDone
+    (.ite capRecvOk
+      (actSeq [.write 64 "cap_fl_q" mRdata,
+               .write 32 "core_addr" (.sub core_addr (.lit (BitVec.ofNat 32 8))),
+               .write 1 "core_rd" (L1 1), .write 5 "st" (L5 S_CR1)])
+      (actSeq [stepPc, retireInc, goF0]))
+    .skip)
+
+/-- **§17 `S_CR1`**: the handle word arrived (`rd` written from `mRdata` in
+the funnel this cycle); issue the flags write with `occupied` cleared and
+complete through `S_DSW`. -/
+def s_cr1 : Expr 1 × Act := stArm S_CR1
+  (.ite mDone
+    (actSeq [.write 32 "core_addr" (.add core_addr (.lit (BitVec.ofNat 32 8))),
+             .write 64 "core_wdata" (.and cap_fl_q (.not (L64 1))),
+             .write 1 "core_wr" (L1 1), .write 1 "sc_pending" (L1 0),
+             .write 5 "st" (L5 S_DSW)])
+    .skip)
+
 def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 
 def s_fw : Expr 1 × Act := stArm S_FW
@@ -1965,11 +2058,19 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
   -- only the sequencing half of FUTEX_WAKE.
   gcons (opIs OP_FUTEX_WAKE) (.seq stepPc (.seq retireInc goF0)) <|
-  -- EXT-6: 0x62 CAP_SEND (a = handle, b = target domain) and 0x63 CAP_RECV.
-  -- Both just sequence here; the inbox, the occupancy bitmap and `rd` are
-  -- written in their funnels.
-  gcons (opIs CAP_SEND_OP) (.seq stepPc (.seq retireInc goF0)) <|
-  gcons (opIs CAP_RECV_OP) (.seq stepPc (.seq retireInc goF0)) <|
+  -- EXT-6 (§17): CAP_SEND (a = handle, b = target domain) and CAP_RECV.
+  -- Both walk the in-memory entry: issue the flags-word read here, decide
+  -- in S_CS0/S_CR0 once the word is back. `rd` is written in the funnels;
+  -- pc advances at the end of the walk (S_DSW or the refusal arm), never
+  -- here.
+  gcons (opIs CAP_SEND_OP)
+    (.seq (.write 32 "core_addr"
+            (.add (capEntryAddr capSendSlot) (.lit (BitVec.ofNat 32 8))))
+      (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_CS0)))) <|
+  gcons (opIs CAP_RECV_OP)
+    (.seq (.write 32 "core_addr"
+            (.add (capEntryAddr capRecvSlot) (.lit (BitVec.ofNat 32 8))))
+      (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_CR0)))) <|
   -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
   -- change) if this thread is already inside a gate -- the continuation is
   -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
@@ -2185,6 +2286,7 @@ def fsmRule : Rule :=
   ⟨"fsm", .ite fsmEn
     (actPriTree
       [s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
+       s_cs0, s_cs1, s_cr0, s_cr1,
        s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps,
        s_ic, s_gc0, s_gc1, s_dc, s_default]
       .skip)
@@ -2307,19 +2409,6 @@ def inGateNext : Expr 32 :=
     (.mux gateCall (.or in_gate (.shl (L32 1) (.zext cur 32)))
       (.mux gateRet (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate))
 
-/-- EXT-6: occupancy after this cycle — set on a landing send, cleared on a
-landing receive, zeroed by the `cmd 13` reset. Send and receive can only
-collide on the same slot if a domain sends to itself, and then the send is
-refused first (`capSendFire` requires the slot free), so the two are
-disjoint by construction. -/
-def capIvalNext : Expr 16 :=
-  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (.lit (BitVec.ofNat 16 0))
-    (.mux capSendFire
-      (.or cap_ival (.shl (.lit (BitVec.ofNat 16 1)) (.zext capSendSlot 16)))
-      (.mux capRecvFire
-        (.and cap_ival (.not (.shl (.lit (BitVec.ofNat 16 1)) (.zext capRecvSlot 16))))
-        cap_ival))
-
 /-- EXT-7: the valid bitmap after this cycle. `cmd 65` validates the selected
 slot; `cmd 67` clears every slot whose `tlb_cell` equals the bumped cell;
 `cmd 13`'s reset clears all. -/
@@ -2342,9 +2431,9 @@ def tarrFunnelRule : Rule :=
     .seq (.ite gateCall (.memWrite 5 64 "tcont" 0 cur pc8) .skip) <|
     .seq (.ite gateCall (.memWrite 5 8 "tcdom" 0 cur domCur) .skip) <|
     .seq (.write 32 "in_gate" inGateNext) <|
-    -- EXT-6: the inbox write (one syntactic site) and the occupancy bitmap.
-    .seq (.ite capSendFire (.memWrite 4 64 "cap_ibox" 0 capSendSlot a) .skip) <|
-    .seq (.write 16 "cap_ival" capIvalNext) <|
+    -- EXT-6 (§17): the inbox is guest memory now -- its writes ride the
+    -- ordinary bus path from S_CS1/S_CR1, and there is no core-resident
+    -- occupancy state left to update here.
     -- EXT-7: TLB fill (cmd 65 sets vpn+domain for the selected entry and
     -- validates it; cmd 66 sets its ppn+cell). The shootdown (cmd 67)
     -- invalidates every entry naming the bumped cell -- the §15 line 876
@@ -2425,15 +2514,34 @@ def dcStoreInv : Expr 1 :=
   .and (exG is_store) (.and (.not s_is_zp) (.and (.not s_is_gp)
     (.not (.eq mem_ea_s (L64 UART_ADDR)))))
 
+/-- **§17: the cap walk's stores invalidate too.** The walk writes the
+handle word (issued from `S_CS0`) and the flags word (issued from
+`S_CS1`/`S_CR1`) straight onto the bus, bypassing the store arm's
+`dcStoreInv` -- so a previously cached inbox line would serve the
+pre-transfer value forever, the exact defect `dcacheselftest`'s `r10`
+caught for ordinary stores. The invalidated index is the line of the
+address each state is writing THIS cycle: `core_addr - 8` from `S_CS0`
+(the handle word), `core_addr + 8` from the flags writers. -/
+def dcCapInvS0 : Expr 1 :=
+  .and fsmEn (.and (.eq st (L5 S_CS0)) (.and mDone capSendOk))
+def dcCapInvFl : Expr 1 :=
+  .and fsmEn (.and (.or (.eq st (L5 S_CS1)) (.eq st (L5 S_CR1))) mDone)
+def dcCapInv : Expr 1 := .or dcCapInvS0 dcCapInvFl
+def dc_cap_idx : Expr 12 :=
+  .slice (.shr (.mux dcCapInvS0
+                 (.sub core_addr (.lit (BitVec.ofNat 32 8)))
+                 (.add core_addr (.lit (BitVec.ofNat 32 8))))
+               (.lit (BitVec.ofNat 32 3))) 0 12
+
 def dcDataRule : Rule :=
   ⟨"dc_data_funnel", .ite dcFill (.memWrite 12 64 "dc_data" 0 dc_fill_idx mRdata) .skip⟩
 
 def dcTagRule : Rule :=
   ⟨"dc_tag_funnel",
-    .ite (.or dcStoreInv dcFill)
+    .ite (.or dcStoreInv (.or dcCapInv dcFill))
       (.memWrite 12 42 "dc_tag" 0
-        (.mux dcStoreInv dc_sidx dc_fill_idx)
-        (.mux dcStoreInv (.lit (BitVec.ofNat 42 0)) dc_fill_tag))
+        (.mux dcStoreInv dc_sidx (.mux dcCapInv dc_cap_idx dc_fill_idx))
+        (.mux (.or dcStoreInv dcCapInv) (.lit (BitVec.ofNat 42 0)) dc_fill_tag))
       .skip⟩
 
 /-- The generation register, and the wrap fallback.
@@ -2493,6 +2601,8 @@ def scalarRegs : List RegDecl :=
    -- EXT-9: the I-cache sync-read latches (D19). Both reset to 0, which is
    -- an invalid tag, so the cache comes up empty on every technology.
    ⟨"ic_tag_q",42,0⟩, ⟨"ic_data_q",64,0⟩, ⟨"ic_gen",16,0⟩, ⟨"gate_tbl_base",32,0⟩,
+   -- §17: the cap-inbox root pointer and the walked-flags latch
+   ⟨"cap_tbl_base",32,0⟩, ⟨"cap_fl_q",64,0⟩,
    -- EXT-10 latches. `dc_alloc` records that the miss now in flight came from
    -- the cacheable path, so the fill funnel cannot allocate for an atomic or
    -- an out-of-window read that merely happened to pass through S_DL.
@@ -2526,8 +2636,6 @@ def scalarRegs : List RegDecl :=
    ⟨"poison",32,0⟩,
    -- EXT-5: gates. `in_gate` = depth-1 continuation-present bitmap.
    ⟨"in_gate",32,0⟩,
-   -- EXT-6: per-domain capability inbox occupancy
-   ⟨"cap_ival",16,0⟩,
    -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
    ⟨"mmu_en",1,0⟩, ⟨"tlb_sel",3,0⟩, ⟨"tlb_vld",8,0⟩]
   ++ (List.finRange TLBN).flatMap (fun i =>
@@ -2597,8 +2705,8 @@ def design : Design where
      ⟨"tdom", 5, 8, fun _ => 0⟩,
      -- EXT-5: the gate table (host-loaded) and the depth-1 continuation.
      ⟨"tcont", 5, 64, fun _ => 0⟩, ⟨"tcdom", 5, 8, fun _ => 0⟩,
-     -- EXT-6: one capability handle addressed to each domain
-     ⟨"cap_ibox", 4, 64, fun _ => 0⟩,
+     -- EXT-6 (§17): the capability inbox lives in guest memory now; the
+     -- `cap_ibox` bank is gone with the `cap_ival` bitmap.
      -- EXT-7: the domain-tagged TLB (§15 line 160)
      ]
   rules :=

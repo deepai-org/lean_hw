@@ -179,10 +179,11 @@ structure MiniSt where
   tcont     : Array (BitVec 64) := Array.replicate NTMEM 0
   tcdom     : Array (BitVec 8)  := Array.replicate NTMEM 0
   in_gate   : BitVec 32 := 0
-  -- EXT-6 (cross-domain transfer): one capability handle addressed to each
-  -- domain, plus per-domain occupancy.
-  cap_ibox  : Array (BitVec 64) := Array.replicate 16 0
-  cap_ival  : BitVec 16 := 0
+  -- EXT-6 (§17): the capability inbox lives in guest memory. `cap_tbl_base`
+  -- is the host-installed root pointer (`cmd 75`); `cap_fl_q` latches the
+  -- walked flags word between the walk's states.
+  cap_tbl_base : BitVec 32 := 0
+  cap_fl_q  : BitVec 64 := 0
   -- EXT-7 (§15): the domain-tagged TLB. mmu_en = 0 is bypass.
   mmu_en    : Bool := false
   tlb_sel   : BitVec 3 := 0
@@ -521,7 +522,9 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- construction rather than by a reset image the flow may not deliver.
       s' := { s' with tdom := s'.tdom.set! s.zctr.toNat 0 }
     -- EXT-5: the reset also clears every open gate.
-    if s.zctr.toNat = 0 then s' := { s' with in_gate := 0, cap_ival := 0, tlb_vld := 0 }
+    -- (§17: the cap inbox is guest memory; the reset sweep no longer owns
+    -- any inbox state, matching the RTL where `capIvalNext` is gone.)
+    if s.zctr.toNat = 0 then s' := { s' with in_gate := 0, tlb_vld := 0 }
     if s.zctr.toNat < 512 then
       s' := { s' with dmem_we := true, dmem_a := s.zctr.setWidth 9, dmem_wd := 0 }
     if s.zctr.toNat = 32*NT - 1 then s' := { s' with zeroing := false }
@@ -597,6 +600,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           if s.tlb_cell[i]! = cell then
             s' := { s' with tlb_vld := s'.tlb_vld &&& ~~~(1#8 <<< i) }
     | 74 => s' := { s' with gate_tbl_base := d.setWidth 32 }
+    | 75 => s' := { s' with cap_tbl_base := d.setWidth 32 }
     | 58 => s' := { s' with tdom := s'.tdom.set! (d.toNat % NT)
                               (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
     | 13 =>
@@ -776,28 +780,21 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         -- EXT-4: the wake bank moved to the SMP block (one shared bank, see
         -- `smpRule`); S_EX keeps only FUTEX_WAKE's sequencing half.
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      -- EXT-6: 0x3e CAP_SEND (a = handle, b = target domain), 0x3f CAP_RECV.
-      -- RECV indexes the receiver's OWN domain -- not an operand -- so no
-      -- encoding reaches another domain's inbox.
+      -- EXT-6 (§17): CAP_SEND (a = handle, b = target domain), CAP_RECV.
+      -- Both walk the in-memory entry at cap_tbl_base + (slot << 4): issue
+      -- the flags-word read here, decide in S_CS0/S_CR0. RECV's slot is the
+      -- receiver's OWN domain -- not an operand -- so no encoding reaches
+      -- another domain's inbox.
       else if o = OP_MINI_CAP_SEND then
-        let tgt := (s.b.toNat) % 16
-        let occ := s.cap_ival.getLsbD tgt
-        if ¬ occ then
-          s' := { s' with cap_ibox := s'.cap_ibox.set! tgt s.a,
-                          cap_ival := s.cap_ival ||| (1#16 <<< tgt) }
-        if rdf s ≠ 0 then
-          rfWe := true; rfWa := (curV ++ rdf s)
-          rfWd := if occ then BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF else 0
-        s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+        let tgt := BitVec.ofNat 4 ((s.b.toNat) % 16)
+        s' := { s' with core_addr := BitVec.ofNat 32 DATA_BASE + s.cap_tbl_base
+                          + (tgt.setWidth 32 <<< 4) + 8,
+                        core_rd := true, st := BitVec.ofNat 5 S_CS0 }
       else if o = OP_MINI_CAP_RECV then
-        let me := (s.tdom[curV.toNat]!).toNat % 16
-        let occ := s.cap_ival.getLsbD me
-        if occ then
-          s' := { s' with cap_ival := s.cap_ival &&& ~~~(1#16 <<< me) }
-        if rdf s ≠ 0 then
-          rfWe := true; rfWa := (curV ++ rdf s)
-          rfWd := if occ then s.cap_ibox[me]! else BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF
-        s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+        let me := BitVec.ofNat 4 ((s.tdom[curV.toNat]!).toNat % 16)
+        s' := { s' with core_addr := BitVec.ofNat 32 DATA_BASE + s.cap_tbl_base
+                          + (me.setWidth 32 <<< 4) + 8,
+                        core_rd := true, st := BitVec.ofNat 5 S_CR0 }
       -- EXT-5: 0x3c GATE_CALL / 0x3d GATE_RETURN. A gate is the only way a
       -- thread changes domain, and only to a domain the host installed.
       else if o = OP_MINI_GATE_CALL then
@@ -908,6 +905,58 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           pc := s.gate_ent_q }
         else
           s' := { s' with pc := pc8 s }
+    else if stN = S_CS0 then
+      -- §17 cap send: the flags word is back. Valid+free commits (latch the
+      -- flags, issue the handle write at +0, invalidating its D$ line the
+      -- way an ordinary store would); anything else refuses with rd=-1.
+      if inp.mDone then
+        let ok := inp.mRdata.getLsbD 8 ∧ ¬ inp.mRdata.getLsbD 0
+        if ok then
+          let wa := s.core_addr - 8
+          s' := { s' with cap_fl_q := inp.mRdata, core_addr := wa,
+                          core_wdata := s.a, core_wr := true,
+                          dc_tag := s'.dc_tag.set! ((wa >>> 3).setWidth 12).toNat 0,
+                          st := BitVec.ofNat 5 S_CS1 }
+        else
+          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+        if rdf s ≠ 0 then
+          rfWe := true; rfWa := (curV ++ rdf s)
+          rfWd := if ok then 0 else BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF
+    else if stN = S_CS1 then
+      -- the handle write completed; write the flags word back with
+      -- `occupied` set, completing through S_DSW like any DDR store.
+      if inp.mDone then
+        let wa := s.core_addr + 8
+        s' := { s' with core_addr := wa, core_wdata := s.cap_fl_q ||| 1,
+                        core_wr := true, sc_pending := false,
+                        dc_tag := s'.dc_tag.set! ((wa >>> 3).setWidth 12).toNat 0,
+                        st := BitVec.ofNat 5 S_DSW }
+    else if stN = S_CR0 then
+      -- §17 cap receive: this domain's flags word is back. Valid+occupied
+      -- commits (latch the flags, issue the handle read); anything else
+      -- refuses with rd=-1.
+      if inp.mDone then
+        let ok := inp.mRdata.getLsbD 8 ∧ inp.mRdata.getLsbD 0
+        if ok then
+          s' := { s' with cap_fl_q := inp.mRdata, core_addr := s.core_addr - 8,
+                          core_rd := true, st := BitVec.ofNat 5 S_CR1 }
+        else
+          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+          if rdf s ≠ 0 then
+            rfWe := true; rfWa := (curV ++ rdf s)
+            rfWd := BitVec.ofNat 64 0xFFFFFFFFFFFFFFFF
+    else if stN = S_CR1 then
+      -- the handle word is back: it IS rd. Clear `occupied` in the flags
+      -- word and complete the store through S_DSW.
+      if inp.mDone then
+        if rdf s ≠ 0 then
+          rfWe := true; rfWa := (curV ++ rdf s); rfWd := inp.mRdata
+        let wa := s.core_addr + 8
+        s' := { s' with core_addr := wa,
+                        core_wdata := s.cap_fl_q &&& ~~~(1 : BitVec 64),
+                        core_wr := true, sc_pending := false,
+                        dc_tag := s'.dc_tag.set! ((wa >>> 3).setWidth 12).toNat 0,
+                        st := BitVec.ofNat 5 S_DSW }
     else if stN = S_DC then
       if dcHitOf s then
         s' := { s' with ddr_q := s.dc_data_q, st := BitVec.ofNat 5 S_DST }
