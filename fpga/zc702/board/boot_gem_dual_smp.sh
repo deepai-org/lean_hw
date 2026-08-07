@@ -17,8 +17,15 @@ mkdir -p /tmp/rumpns /tmp/rumpns2
 pkill -x xsdb 2>/dev/null; pkill -f "lnp64 trap-server" 2>/dev/null
 pkill -f "[r]ing_pump" 2>/dev/null
 sleep 3
+# Which top. Default is the DUAL top: as of 2026-08-07 the epoch top no
+# longer closes timing with the caches in (23.83 MHz routed against a 25 MHz
+# board clock, 55% LUT -- the openXC7 routing ceiling), while the dual top
+# routes the same core at 25.26 MHz / 53%. The NetBSD run touches no epoch
+# MMIO, so this is a drop-in; what is lost is the epoch engine's SILICON leg,
+# which is a real subtraction and is recorded in fpga_dev.md §71d.
+# Override with LNP64_BIT to program a different bitstream.
 echo "== program dual bitstream =="
-timeout 300 xsdb -eval "connect -url tcp:127.0.0.1:3121; after 300; targets -set -filter {name =~ \"xc7z*\"}; fpga -file /home/kevin/substrate0/oxc7/out/lnp64mini_epoch_top.bit; puts PROGRAMMED" > /home/kevin/dual_fpga.log 2>&1
+timeout 300 xsdb -eval "connect -url tcp:127.0.0.1:3121; after 300; targets -set -filter {name =~ \"xc7z*\"}; fpga -file ${LNP64_BIT:-/home/kevin/substrate0/oxc7/out/lnp64mini_dual_top.bit}; puts PROGRAMMED" > /home/kevin/dual_fpga.log 2>&1
 grep -q PROGRAMMED /home/kevin/dual_fpga.log || { echo "FPGA PROGRAM FAILED"; exit 1; }
 rm -f /tmp/stop_servicer
 date +%s > /tmp/rump_start
