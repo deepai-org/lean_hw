@@ -40,6 +40,8 @@ import Loom.Hw.Diff
 import Loom.Hw.SyncRead
 import Loom.Hw.MemInitOk
 import Loom.Hw.MemTarget
+import Loom.Hw.Cost
+import Loom.Hw.CostTarget
 import Loom.Hw.Outputs
 import Loom.Hw.CdcContract
 import Loom.Hw.Notation

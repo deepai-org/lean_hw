@@ -130,13 +130,35 @@ proof cost scales with the property's dependency cone.
 
 ### Target cost models
 
-`MemTarget` checks a limited realizability predicate; it is not an area,
-timing, banking, power, or placement model. Loom still lacks:
+**Partly closed (2026-08-07, W6 first increment).** `Loom/Hw/Cost.lean`
+supplies the abstract implementation-cost vector — `stateBits`, `bitOps`,
+`macroBits`, `softBits`, `maxFanout` — computed from the `Design` with no
+target knowledge, ordered componentwise (`Cost.le`, reflexive/transitive,
+monotone under `+`). That order is what a verified transformation is meant
+to be proved against: *this pass does not make the cost vector worse* needs
+no calibration and cannot be invalidated by a tool release.
+`Loom/Hw/CostTarget.lean` maps the vector to one target's resources and to
+a closure-risk estimate, keeping **capacity** ("does it fit") and
+**closure** ("will the tools close it") as separate claims, every number
+carrying provenance/tool version/design family, fitted by
+`scripts/fit_cost.py` from measured output (`scripts/cost_rows.json`).
+`lake exe costreport` prints it.
 
-- target-independent critical-path and DAG-size reports;
-- target profiles with calibrated operator weights and error bars;
-- duplication/congestion indicators; and
-- proved cost bounds for transformation-library components.
+Still open here:
+
+- **proved non-increase for the transformation library** — the order and
+  its composition lemmas exist; per-transform theorems do not yet;
+- target-independent critical-path and DAG-size reports (the cost vector
+  is area-shaped; timing is not modelled at all);
+- a fit with more designs than weights — the xc7z020 fit is
+  **underdetermined** (three weights, two designs, ~1 % residual) and its
+  provenance says so;
+- **the honest limit found on day one**: the vector does *not* separate
+  the lnp64mini design that routed from the one that did not — they differ
+  by ~1 % in cells and both land at 52-53 %. At that margin the
+  discriminator is congestion, not capacity, so this is a risk signal, not
+  a verdict, and `maxFanout` is the dimension most likely to need real
+  congestion modelling behind it.
 
 ## Current limits of completed capabilities
 

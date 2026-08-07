@@ -64,6 +64,13 @@ lean_exe memtargets where
   supportInterpreter := true
   root := `Tools.MemTargets
 
+/-- W6 cost report: the abstract cost vector per design, plus a calibrated
+capacity/closure estimate per target. The report states provenance and
+never conflates "it fits" with "the tools will close it". -/
+lean_exe costreport where
+  supportInterpreter := true
+  root := `Tools.CostReport
+
 /-- Post-synthesis equivalence checker (D22): µVerilog module vs the
 yosys-synthesized netlist, LRAT-certified. -/
 lean_exe eqcheck where
