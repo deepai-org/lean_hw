@@ -656,7 +656,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                         mul_kind := if o = OP_MULH then 1 else 2, st := BitVec.ofNat 5 S_MUL }
       else if is_div s then
         if s.b = 0 then
-          s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
+          -- §4.1 pinned: div/udiv -> -1, srem/urem -> the dividend. Was a
+          -- trap; see the note in Core.lean's matching arm.
+          if rdf s ≠ 0 then rfWe := true; rfWa := (curV ++ rdf s); rfWd := if o = OP_SREM ∨ o = OP_UREM then s.a else 0xFFFFFFFFFFFFFFFF
+          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         else
           s' := { s' with div_rem := 0, div_quo := div_a_abs s, div_d := div_b_abs s, div_cnt := 0,
                           div_isrem := (o = OP_SREM ∨ o = OP_UREM),
