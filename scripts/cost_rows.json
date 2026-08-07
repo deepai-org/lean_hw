@@ -1,2 +1,23 @@
-[{"name":"lnp64mini_dual","stateBits":246878,"bitOps":4156949,"softBits":38144,"luts":44112},
- {"name":"lnp64mini_epoch","stateBits":298110,"bitOps":4171682,"softBits":39680,"luts":44646}]
+[
+ {
+  "name": "lnp64mini_dual",
+  "stateBits": 246878,
+  "bitOps": 4156949,
+  "softBits": 38144,
+  "luts": 44112
+ },
+ {
+  "name": "lnp64mini_epoch",
+  "stateBits": 298110,
+  "bitOps": 4171682,
+  "softBits": 39680,
+  "luts": 44646
+ },
+ {
+  "name": "lnp64mini_dual+I$",
+  "stateBits": 247044,
+  "bitOps": 4157525,
+  "softBits": 38144,
+  "luts": 43999
+ }
+]
