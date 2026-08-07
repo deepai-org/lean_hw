@@ -38,6 +38,32 @@ def main : IO Unit := do
     let pct := if total == 0 then 0 else c * 1000 / total
     let cum := if total == 0 then 0 else run * 1000 / total
     IO.println s!"  {c}\t{pct / 10}.{pct % 10}%\tcum {cum / 10}.{cum % 10}%\t{nm}"
+  -- **Design-wide hash-consing.** `Design.cost` sums per-rule costs, which
+  -- over-counts whatever the rules SHARE -- and they share a great deal: one
+  -- 19 331-node cone turned up in `cmd`, in `rf_funnel`, and twenty times over
+  -- in `fsm`, so a per-rule ranking attributed one emitted cone to three rules
+  -- and made a JTAG-speed decoder look like a quarter of the core. The
+  -- emitter interns across the whole design, so this is the number that
+  -- tracks what comes out.
+  let sharedTbl := d.rules.foldl (fun t r => r.body.hc t) []
+  let shared := nodesWeight sharedTbl
+  IO.println s!"design-wide hash-consed bitOps: {shared}  (per-rule sum: {total}, \
+so {total - shared} of the per-rule total is cross-rule sharing)"
+  IO.println ""
+  -- Marginal cost: what the design's node count DROPS by if this rule's cone
+  -- is removed. For a rule whose whole body is shared, that is near zero --
+  -- which is the actionable question ("what do I get for deleting this?")
+  -- where the per-rule total answers a different one.
+  IO.println "  marginal cost per rule (design-wide total minus the design without it):"
+  let mut marg : List (String × Nat) := []
+  for r in d.rules do
+    let others := d.rules.filter (fun x => x.name != r.name)
+    let t := others.foldl (fun t x => x.body.hc t) []
+    marg := marg ++ [(r.name, shared - nodesWeight t)]
+  for (nm, m) in (marg.toArray.qsort (fun a b => a.2 > b.2)).toList do
+    if m > 0 then
+      let pct := if shared == 0 then 0 else m * 1000 / shared
+      IO.println s!"  {m}\t{pct / 10}.{pct % 10}%\t{nm}"
   IO.println ""
   -- Break the biggest rules down their `.seq` spine. A rule body is a chain
   -- of guarded writes, and the chain element is the unit a person can act on
@@ -46,15 +72,20 @@ def main : IO Unit := do
     match d.rules.find? (fun r => r.name == target) with
     | none => pure ()
     | some r =>
+      -- Descend through the guard wrapper too: `cmdRule` is
+      -- `.ite cmdValid cmdBody .skip`, so a spine walker that only splits
+      -- `.seq` sees the whole rule as one element and reports nothing.
       let rec spine (a : Act) : List Act :=
         match a with
         | .seq x y => spine x ++ spine y
+        | .ite _ t e => spine t ++ spine e
         | other => [other]
       let parts := (spine r.body).map (fun a => a.cost)
       let sorted := parts.toArray.qsort (fun a b => a > b) |>.toList
       let tot := parts.foldl (·+·) 0
       IO.println s!"  {target}: {parts.length} chain elements, total {tot}"
-      IO.println s!"    top 12: {(sorted.take 12)}"
+      IO.println s!"    top 20: {(sorted.take 20)}"
+      IO.println s!"    sum of top 20 = {(sorted.take 20).foldl (·+·) 0} of {tot}"
   IO.println ""
   IO.println s!"state: {d.regs.length} registers, {d.mems.length} memories"
   let regBits := d.regs.foldl (fun acc r => acc + r.width) 0

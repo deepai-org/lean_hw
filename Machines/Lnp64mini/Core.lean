@@ -36,7 +36,7 @@ def PROG_BASE  : Nat := 0x20000000
 def DATA_BASE  : Nat := 0x10000000
 def UART_ADDR    : Nat := 0x8000
 def UART_RX_ADDR : Nat := 0x8008
-def NT : Nat := 32
+def NT : Nat := 8
 def CW : Nat := 5
 def AW : Nat := 10
 
@@ -996,9 +996,24 @@ def freeBm : Expr 32 :=
   orTreeW ((List.finRange NT).map
     (fun i => .shl (.zext (.eq (tstate i) (L2 0)) 32) (.lit (BitVec.ofNat 32 i.val))))
 
-/-- rbm2 = ({ready,ready} >> (cur+1))[63:0]. -/
+/-- Wrap a thread index into `[0, NT)`. `NT` is a power of two, so this is a
+mask -- but it must be *written*, because with `NT = 32` a 5-bit add wraps at
+exactly 32 and the modulo is free. That is precisely what made `NT` look like
+a parameter when it was not: at 32 the two places below are correct by
+accident of arithmetic width, and at any smaller `NT` they are silently
+wrong. Both were found by setting `NT = 8` and watching the scheduler stop
+switching with **zero** EDSL/ISS mismatches -- both models faithfully
+implementing the same wrong rotate. -/
+def tidWrap (x : Expr 5) : Expr 5 := .and x (L5 (NT - 1))
+
+/-- rbm2 = ({ready,ready} >> (cur+1))[63:0] -- the round-robin rotate, done by
+duplicating the ready bitmap and shifting.
+
+**Coupling 1.** The duplication offset is `NT`, not 32: the bitmap is live in
+bits `0..NT-1`, so a copy at bit 32 leaves `32-NT` zeros between the two and
+the scan walks into them instead of wrapping round. -/
 def rbm2 : Expr 64 :=
-  .shr (.or (.zext readyBm 64) (.shl (.zext readyBm 64) (L64 32)))
+  .shr (.or (.zext readyBm 64) (.shl (.zext readyBm 64) (L64 NT)))
        (.zext (.add cur (L5 1)) 64)
 
 /-- Downward scan over rbm2[31:0]: lowest set bit index wins (0 outermost).
@@ -1303,7 +1318,9 @@ def retireInc : Act :=
 
 /-- (1) registered priority encoders (separate always block). -/
 def encRule : Rule :=
-  ⟨"enc", .seq (.write 5 "next_ready" (.mux nr_any (.add (.add cur (L5 1)) nr_off) cur))
+  -- **Coupling 2.** `cur + 1 + nr_off` is an index into the rotated window and
+  -- must come back mod `NT`. At `NT = 32` the 5-bit add did that for free.
+  ⟨"enc", .seq (.write 5 "next_ready" (.mux nr_any (tidWrap (.add (.add cur (L5 1)) nr_off)) cur))
     (.seq (.write 5 "free_slot" fs_off) (.write 1 "has_free" hf_c))⟩
 
 /-- (2) serialized sleep scan.

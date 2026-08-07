@@ -14,6 +14,20 @@ Verilog). This is the oracle the EDSL Design is lockstepped against.
 
 namespace Machines.Lnp64mini
 
+/-- **Thread-indexed MEMORIES keep a 5-bit address space, whatever `NT` is.**
+`Core.lean` declares `tpc`/`tdom`/`tcont`/... as `⟨name, 5, w⟩` -- 32 entries --
+and Loom derives the lockstep's comparison coordinates from that declaration,
+so an ISS array sized `NT` gets read at index 8..31 and throws. That is the
+third thing `NT` was silently coupled to, after the round-robin rotate's
+duplication offset and the `cur + 1 + nr_off` wrap.
+
+The split is deliberate rather than a workaround: `NT` scales the **logic** --
+the futex wake comparator bank, the priority encoders, the per-thread
+`tstate`/`tfutex` registers -- which is where the 17.8% lived. The memories are
+block RAM addressed by a 5-bit `cur`; shrinking them would buy almost nothing
+and would force `cur` to change width everywhere it is used. -/
+def NTMEM : Nat := 32
+
 open Loom.Hw
 
 /-! ## Inputs -/
@@ -150,7 +164,7 @@ structure MiniSt where
   qctr      : BitVec 32 := 0
   -- EXT-2 (protection domains): the per-thread tag and its observation
   -- mirror. All-zero at power-on = every thread in domain 0.
-  tdom      : Array (BitVec 8) := Array.replicate NT 0
+  tdom      : Array (BitVec 8) := Array.replicate NTMEM 0
   cur_dom   : BitVec 8 := 0
   -- EXT-3 (fail-stop): one bit per thread slot; 0 = nothing poisoned.
   poison    : BitVec 32 := 0
@@ -162,8 +176,8 @@ structure MiniSt where
   gate_tbl_base : BitVec 32 := 0
   gate_ent_q : BitVec 64 := 0
   gate_dom_q : BitVec 8  := 0
-  tcont     : Array (BitVec 64) := Array.replicate NT 0
-  tcdom     : Array (BitVec 8)  := Array.replicate NT 0
+  tcont     : Array (BitVec 64) := Array.replicate NTMEM 0
+  tcdom     : Array (BitVec 8)  := Array.replicate NTMEM 0
   in_gate   : BitVec 32 := 0
   -- EXT-6 (cross-domain transfer): one capability handle addressed to each
   -- domain, plus per-domain occupancy.
@@ -197,12 +211,12 @@ structure MiniSt where
   -- (Core.lean). `cmd 13`'s sweep writes TEXT_BASE into every entry before
   -- any read, so this is the same machine; it is now also the machine the
   -- fabric builds (D30 dropped a non-zero distributed-RAM image silently).
-  tpc    : Array (BitVec 64) := Array.replicate NT 0
+  tpc    : Array (BitVec 64) := Array.replicate NTMEM 0
   tstate : Array (BitVec 2)  := (Array.replicate NT 0).set! 0 1
-  tsleep : Array (BitVec 64) := Array.replicate NT 0
+  tsleep : Array (BitVec 64) := Array.replicate NTMEM 0
   tfutex : Array (BitVec 64) := Array.replicate NT 0
-  tp_arr : Array (BitVec 64) := Array.replicate NT 0
-  sigmask_arr : Array (BitVec 64) := Array.replicate NT 0
+  tp_arr : Array (BitVec 64) := Array.replicate NTMEM 0
+  sigmask_arr : Array (BitVec 64) := Array.replicate NTMEM 0
   deriving Repr
 
 /-! ## Combinational helpers over the pre-state -/
@@ -419,11 +433,13 @@ def compute_next_ready (s : MiniSt) : BitVec 5 :=
       ((List.range NT).foldl (fun acc i =>
         acc ||| (if s.tstate[i]! = (1 : BitVec 2) then (1#32 <<< i) else 0)) 0)
   let rbm2 : BitVec 64 :=
-    (((readyBm.setWidth 64) ||| (readyBm.setWidth 64 <<< 32)) >>> (s.cur + 1).toNat)
+    -- coupling 1: duplicate at NT, not 32 (see Core.lean's `tidWrap`).
+    (((readyBm.setWidth 64) ||| (readyBm.setWidth 64 <<< NT)) >>> (s.cur + 1).toNat)
   let nr_off : BitVec 5 :=
     (List.range NT).foldr (fun i acc => if rbm2.getLsbD i then BitVec.ofNat 5 i else acc) 0
   let nr_any : Bool := (List.range NT).any (fun i => rbm2.getLsbD i)
-  if nr_any then s.cur + 1 + nr_off else s.cur
+  -- coupling 2: the rotated index comes back mod NT.
+  if nr_any then (s.cur + 1 + nr_off) &&& BitVec.ofNat 5 (NT - 1) else s.cur
 def compute_free_slot (s : MiniSt) : BitVec 5 :=
   (List.range NT).foldr (fun i acc => if s.tstate[i]! = 0 then BitVec.ofNat 5 i else acc) 0
 def compute_has_free (s : MiniSt) : Bool := (List.range NT).any (fun i => s.tstate[i]! = 0)

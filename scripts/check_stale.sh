@@ -43,13 +43,11 @@ ok "lake build (library + minitest/emit/audit executables)"
 say "### 2. emitted RTL matches the designs"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 for f in rtl/*.v; do [ -f "$f" ] && cp "$f" "$T/$(basename "$f")"; done
-lake exe emit >/dev/null 2>&1
-for t in "" soc dual; do
-  lake env lean --run Machines/Lnp64mini/Emit.lean $t >/dev/null 2>&1
-done
-lake env lean --run Machines/Epoch/Emit.lean soc    >/dev/null 2>&1
-lake env lean --run Machines/Epoch/Emit.lean engine >/dev/null 2>&1
-lake env lean --run Machines/CapWalk/Emit.lean soc  >/dev/null 2>&1
+# The producer list lives in scripts/emit_all.sh, not here. It used to live in
+# both, which meant a hand-run emit could cover a different set than the gate
+# did -- and on 2026-08-07 three measurements were taken off RTL that predated
+# the change being measured, for exactly that reason.
+./scripts/emit_all.sh >/dev/null 2>&1
 for f in rtl/*.v; do
   b="$T/$(basename "$f")"
   if [ -f "$b" ]; then cmp -s "$f" "$b" && ok "$(basename "$f")" || bad "$(basename "$f") — on disk did not match a fresh emit"
