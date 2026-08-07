@@ -123,3 +123,38 @@ So the sequencing follows the numbers rather than the wish list:
 The area-reduction work (`LOOM_GAPS.md` W6 / the hotspot analysis) is
 therefore on the critical path for the *epoch* variant, not for the caches
 themselves.
+
+## Rung 1 delivered (2026-08-07)
+
+**PASS 20260807-135454**: NetBSD dual-core, native GEM0, BSCAN quiet, on the
+I-cache build. Off-board: all 13 selftests, RTL ≡ ISS on 596 generated
+programs. Synthesis: **46 RAMB36 (+20, exactly 10 per core)** — both banks in
+block RAM on both cores, which is the D19/D38 discipline paying out rather
+than being asserted. `realizableOnB` holds on `xc7` and `asicSram`. Build:
+dual top, **first routing seed, 29.34 MHz, 51 %**.
+
+Three defects the toolchain caught during construction, recorded because the
+point of the machinery is that it fires while you work:
+
+1. W1.1's emit gate refused the design when the sync-read latches were read
+   but never declared — before any RTL existed.
+2. The EDSL/ISS lockstep found the fill writing `(tag&1) << 17` (the tag
+   shifted into the valid position), surfacing as `st: edsl=S_FW iss=S_RD` —
+   one model hitting where the other missed.
+3. The `Oracle` closed-list check forced the oracle to learn the new banks
+   (`UNDECLARED-UNMODELLED ic_tag[...]`) instead of silently comparing less.
+
+**Area, measured against the projection.** Predicted +0.5 pp for I$ control;
+measured **+3.8 pp**. Synthesizer cells went *down* 113 while placed sites
+rose ~4 000 — the cost landed entirely in packing, which the W6 model treats
+as one scalar per target. Recorded in `Loom/Hw/CostTarget.lean` as the model's
+biggest known weakness; the model was wrong about the magnitude and right
+about the decision (build on the dual top), which is what a risk signal is
+for.
+
+**Still open on this rung**: the ISS-vs-ISS transparency theorem (today the
+claim is backed by the generated matrix, not a proof over it), and the
+retire-rate delta — the number that justifies the memory-first direction.
+Note the measurement is conservative by construction: the cached build routes
+at 29.34 MHz against the uncached 30.43 MHz, so a speedup has to overcome a
+3.6 % clock disadvantage before it shows at all.
