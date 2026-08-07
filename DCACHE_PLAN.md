@@ -44,13 +44,34 @@ million retires later.
 
 ## The measurement that decides the shape
 
-Before any of it: the I-cache's hit rate on a real boot is already
-measurable, and the D-side's is not yet. `fpga/zc702/tb_lnp64mini_boot.v`
-counts hits and misses on a real guest image. Run it for the data stream
-first. If the D-side miss rate is dominated by the ring and the futex word —
-the three things that must bypass anyway — then a D-cache buys much less than
-the I-cache did, and the honest answer is to spend the fabric elsewhere. That
-is a measurement, and it has not been taken.
+**Taken, 2026-08-07.** `tb_lnp64mini_boot.v` now models a D-cache of the
+I$'s own shape (4096 x 8 B direct-mapped, index `addr[14:3]`) over the real
+guest image's read channel, classifying a read as a fetch iff its
+window-relative address is the pc — exact here, because this tb runs identity
+translation. On the boot to the `subr_vmem` divergence:
+
+```
+IC  hits=168516 misses=13263 rate=92%
+D   reads=86221 hits=82263 misses=3633 rate=95%
+    bypass(out-of-window)=325   writes=31992
+```
+
+The hedge above was wrong, and the measurement is why it is worth taking one.
+The bypass traffic is **325 reads out of 86 221** — four thousandths. The
+data stream is not dominated by the ring and the futex word at all; it is
+ordinary kernel data with 95% reuse at 32 KB, and a D-cache would remove
+**82 263 DDR reads**, roughly half again as much bus traffic as the I-cache's
+168 516 fetches. On this tb's timing that is worth about a third of the
+remaining cycles. Build it.
+
+Three honesty limits on that number. It is a **trace model**, not fabric: it
+says what a cache of that shape would have done to this sequence, not what
+one placed and routed will do. It is **single-core** — this tb runs core 0
+alone, so the 95% has never met an invalidation from the other core, and
+rung 5 below is exactly the part it cannot predict. And the tb's DDR is a
+fixed single-beat model, so the cycle share is optimistic against a board
+whose real latency is longer and burstier. What the measurement settles is
+the *direction*, which is what it was for.
 
 Two things follow from the §70 retraction and belong here in advance: the
 area cost of the D-cache must be an **A/B against a build of the same tree

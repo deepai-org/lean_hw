@@ -97,6 +97,7 @@ module tb_boot;
                  waddr <= o_hp_m_awaddr; hp_m_awready <= 1; wstate <= WS_W;
                end
       WS_W:    if (o_hp_m_wvalid) begin
+                 d_wr_n = d_wr_n + 1;
                  if (waddr >= DATA_BASE && ((waddr - DATA_BASE) >> 3) < 8388608)
                    ddr[(waddr - DATA_BASE) >> 3] <= o_hp_m_wdata;
                  hp_m_wready <= 1; wstate <= WS_B;
@@ -112,6 +113,25 @@ module tb_boot;
     case (rstate)
       RS_IDLE: if (o_hp_m_arvalid) begin
                  raddr <= o_hp_m_araddr; hp_m_arready <= 1; rstate <= RS_R;
+                 if ((o_hp_m_araddr - DATA_BASE) != o_pc) begin
+                   d_rd_n = d_rd_n + 1;
+                   // Out of the DDR window (GEM MMIO and friends): must bypass
+                   // any D$, so it is counted apart rather than credited as a
+                   // miss a cache could have removed.
+                   if (o_hp_m_araddr < DATA_BASE ||
+                       ((o_hp_m_araddr - DATA_BASE) >> 3) >= 8388608)
+                     d_bypass_n = d_bypass_n + 1;
+                   else begin
+                     d_idx = ((o_hp_m_araddr - DATA_BASE) >> 3) % 4096;
+                     d_tag = (o_hp_m_araddr - DATA_BASE) >> 15;
+                     if (dc_val[d_idx] && dc_tag[d_idx] == d_tag)
+                       d_hit_n = d_hit_n + 1;
+                     else begin
+                       d_miss_n = d_miss_n + 1;
+                       dc_val[d_idx] = 1; dc_tag[d_idx] = d_tag;
+                     end
+                   end
+                 end
                end
       RS_R:    begin
                  hp_m_rvalid <= 1; hp_m_rresp <= 2'b00;
@@ -138,10 +158,27 @@ module tb_boot;
 
   integer i, cyc;
   integer ic_hit_n = 0, ic_miss_n = 0;
+  // ---- D-side profile (DCACHE_PLAN.md: the measurement that decides the shape) ----
+  // A read is a FETCH iff its window-relative address is the pc; this tb runs
+  // identity translation, so that is exact rather than a heuristic. Everything
+  // else on the read channel is data.
+  //
+  // The model is the I$'s own shape -- 4096 x 8 B direct-mapped, index
+  // addr[14:3] -- so the hit rate is comparable rung to rung. It is a MODEL:
+  // it says what a cache of that shape would have done to this trace, not what
+  // one built in fabric will do, and it cannot see coherence.
+  integer d_rd_n = 0, d_hit_n = 0, d_miss_n = 0, d_wr_n = 0;
+  integer d_bypass_n = 0;
+  reg [63:0] dc_tag [0:4095];
+  reg        dc_val [0:4095];
+  integer dci;
+  integer d_idx;
+  reg [63:0] d_tag;
   reg [63:0] cw;
   integer ci;
   initial begin
     for (di = 0; di < 8388608; di = di + 1) ddr[di] = 64'd0;
+    for (dci = 0; dci < 4096; dci = dci + 1) begin dc_val[dci] = 0; dc_tag[dci] = 0; end
     $readmemh(`TEXT_HEX, ddr, 524288);    // 0x400000 >> 3
     $readmemh(`DATA_HEX, ddr, 1161728);   // 0x8dd000 >> 3
     repeat (4) @(negedge clk); rst = 0;
@@ -188,6 +225,10 @@ module tb_boot;
     // guest console ring at 0x3000000: [magic][wptr][bytes...]
     $display("IC hits=%0d misses=%0d rate=%0d%%", ic_hit_n, ic_miss_n,
              (ic_hit_n * 100) / ((ic_hit_n + ic_miss_n) == 0 ? 1 : (ic_hit_n + ic_miss_n)));
+    $display("D reads=%0d hits=%0d misses=%0d rate=%0d%% bypass(out-of-window)=%0d writes=%0d",
+             d_rd_n, d_hit_n, d_miss_n,
+             (d_hit_n * 100) / ((d_hit_n + d_miss_n) == 0 ? 1 : (d_hit_n + d_miss_n)),
+             d_bypass_n, d_wr_n);
     $display("CONMAGIC=%08x CONW=%0d",
              ddr[6291456][31:0], ddr[6291456][63:32]);
     begin : condump
