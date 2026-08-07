@@ -47,6 +47,7 @@ def main (args : List String) : IO Unit := do
   match args with
   | ["d19"]        => IO.println Machines.Lnp64mini.syncReadReport
   | ["selftest"]   => selftest
+  | ["dcacheselftest"] => dcacheSelftest
   | ["hpselftest"] => Machines.Lnp64mini.HpMaster.selftest
   | ["gpselftest"] => Machines.Lnp64mini.GpMaster.selftest
   | ["arbselftest"] => Machines.Lnp64mini.HpArbiter.selftest

@@ -155,6 +155,9 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("ic_ctr",12,s.ic_ctr.toNat),
    ("gate_tbl_base",32,s.gate_tbl_base.toNat), ("gate_ent_q",64,s.gate_ent_q.toNat),
    ("gate_dom_q",8,s.gate_dom_q.toNat),
+   -- EXT-10: the D-cache's registers.
+   ("dc_tag_q",42,s.dc_tag_q.toNat), ("dc_data_q",64,s.dc_data_q.toNat),
+   ("dc_alloc",1,if s.dc_alloc then 1 else 0),
    ("trace_wp",4,s.trace_wp.toNat), ("trace_sel",4,s.trace_sel.toNat),
    ("trace_rd_pc",64,s.trace_rd_pc.toNat), ("trace_rd_wb",64,s.trace_rd_wb.toNat),
    ("trace_hit",1,if s.trace_hit then 1 else 0),
@@ -250,7 +253,7 @@ def cmpCoveredMems (s : MiniSt) : List String :=
    -- instruction than the reference expects, which is the whole failure
    -- mode. (The lockstep already caught one such disagreement -- a fill
    -- that put the tag in the valid bit.)
-   "ic_data", "ic_tag"]
+   "ic_data", "ic_tag", "dc_data", "dc_tag"]
     ++ (issTArrays s).map (·.1)
 
 /-- Memories the ISS deliberately does not model, so the lockstep has nothing
@@ -303,6 +306,8 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     -- comparison.
     | "ic_data"     => some (s.ic_data[idx]!).toNat
     | "ic_tag"      => some (s.ic_tag[idx]!).toNat
+    | "dc_data"     => some (s.dc_data[idx]!).toNat
+    | "dc_tag"      => some (s.dc_tag[idx]!).toNat
     | "trace_pc"    => some (s.trace_pc[idx]!).toNat
     | "trace_wb"    => some (s.trace_wb[idx]!).toNat
     | "tpc"         => some (s.tpc[idx]!).toNat
@@ -1400,6 +1405,60 @@ def failstopSelftest : IO Unit := do
   else
     IO.println s!"LNP64MINI FAILSTOP SELFTEST FAILED ({bad} mismatches; runner={ok1} ready={ok2})"
     throw <| IO.userError "failstop selftest failed"
+
+/-! ## EXT-10 — the data cache
+
+Three claims, and the third is the one worth the program:
+
+1. a repeated load of the same address hits, and the hit returns the value
+   the miss filled -- checked by loading twice and comparing;
+2. a **store invalidates its own line**, so a load after a store to the same
+   address sees the stored value and not the filled one. This is the defect a
+   write-through cache without invalidation has, and it is invisible to any
+   program that loads an address only once;
+3. the caches are cycle-exact against the ISS throughout, which is what makes
+   1 and 2 evidence about the *design* rather than about one trace -- the
+   lockstep compares `dc_data`/`dc_tag` at every slot, so a cache that
+   returned the right value by luck through a wrong tag still fails.
+
+`progDcache` uses two addresses 32 KB apart (0x2000 and 0x8002000): the index
+is `ea[14:3]`, so they collide in the same set with different tags, which is
+what makes r9 a conflict-miss check rather than another hit. -/
+def DC_A : Nat := 0x2000
+def DC_B : Nat := 0x802000
+
+def progDcache : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 DC_A,       -- w0  r1 = A
+    encImmI OP_ADDI 3 0 42,         -- w1  r3 = 42
+    encImmS OP_ST 1 3 0,            -- w2  [A] = 42            (store; invalidates A)
+    encImmI OP_LD 8 1 0,            -- w3  r8 = [A] = 42       (miss -> fill)
+    encImmI OP_LD 9 1 0,            -- w4  r9 = [A] = 42       (HIT)
+    encImmI OP_ADDI 4 0 7,          -- w5  r4 = 7
+    encImmS OP_ST 1 4 0,            -- w6  [A] = 7             (store; must INVALIDATE)
+    encImmI OP_LD 10 1 0,           -- w7  r10 = [A] = 7       (must NOT be the stale 42)
+    encImmI OP_ADDI 2 0 DC_B,       -- w8  r2 = B (same set, other tag)
+    encImmI OP_ADDI 5 0 99,         -- w9  r5 = 99
+    encImmS OP_ST 2 5 0,            -- w10 [B] = 99
+    encImmI OP_LD 11 2 0,           -- w11 r11 = [B] = 99      (conflict miss)
+    encImmI OP_LD 12 1 0,           -- w12 r12 = [A] = 7       (evicted by B -> miss, still 7)
+    enc OP_EXIT 0 0 0 ]
+
+def dcacheSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progDcache
+  let bad ← lockstep img 1 (fun k => if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}) (fun _ => 0) 260
+  if bad = 0 then IO.println "  OK  DCACHE (EDSL≡ISS incl. dc_data/dc_tag banks, 260 cyc)"
+  else IO.println s!"  FAIL DCACHE ({bad} mismatches)"
+  let (s, _, _) := runIss img 1 (fun k => if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}) (fun _ => 0) 600
+  IO.println s!"  halted={s.halted} r8={(s.rf[8]!).toNat} (want 42, fill) r9={(s.rf[9]!).toNat} (want 42, hit) \
+r10={(s.rf[10]!).toNat} (want 7, store INVALIDATED the line) r11={(s.rf[11]!).toNat} (want 99) \
+r12={(s.rf[12]!).toNat} (want 7, refilled after conflict eviction)"
+  let ok := s.halted && (s.rf[8]!).toNat == 42 && (s.rf[9]!).toNat == 42
+            && (s.rf[10]!).toNat == 7 && (s.rf[11]!).toNat == 99 && (s.rf[12]!).toNat == 7
+  if bad = 0 && ok then
+    IO.println "LNP64MINI DCACHE SELFTEST OK — hits return the filled value, and a store invalidates its own line"
+  else
+    IO.println s!"LNP64MINI DCACHE SELFTEST FAILED ({bad} mismatches; values={ok})"
+    throw <| IO.userError "dcache selftest failed"
 
 /-! ## EXT-5 — the gate selftest
 
