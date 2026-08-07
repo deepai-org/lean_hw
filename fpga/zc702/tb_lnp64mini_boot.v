@@ -137,6 +137,7 @@ module tb_boot;
   endtask
 
   integer i, cyc;
+  integer ic_hit_n = 0, ic_miss_n = 0;
   reg [63:0] cw;
   integer ci;
   initial begin
@@ -156,9 +157,16 @@ module tb_boot;
     cyc = 0;
     begin : run
       reg [31:0] last_retire;
-      last_retire = 0;
+      reg [4:0]  last_st;
+      last_retire = 0; last_st = 0;
       while (!o_halted && !o_trap_active && cyc < 12000000) begin
         @(negedge clk); cyc = cyc + 1;
+        // EXT-9 diagnostic: S_IC(21) -> S_RD(14) is a hit, -> S_FW(2) a miss.
+        if (last_st == 5'd21 && o_st != 5'd21) begin
+          if (o_st == 5'd14) ic_hit_n = ic_hit_n + 1;
+          else if (o_st == 5'd2) ic_miss_n = ic_miss_n + 1;
+        end
+        last_st = o_st;
         if (o_retire != last_retire) begin
           last_retire = o_retire;
 `ifdef TRACE_PC_LO
@@ -178,6 +186,8 @@ module tb_boot;
     for (i = 1; i <= 31; i = i + 1)
       $display("r%0d=%016x", i, dut.rf[i]);  // thread 0 regs (cur=0)
     // guest console ring at 0x3000000: [magic][wptr][bytes...]
+    $display("IC hits=%0d misses=%0d rate=%0d%%", ic_hit_n, ic_miss_n,
+             (ic_hit_n * 100) / ((ic_hit_n + ic_miss_n) == 0 ? 1 : (ic_hit_n + ic_miss_n)));
     $display("CONMAGIC=%08x CONW=%0d",
              ddr[6291456][31:0], ddr[6291456][63:32]);
     begin : condump
