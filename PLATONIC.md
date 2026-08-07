@@ -237,3 +237,63 @@ ceiling is ~55%; one seed burned six hours flat). Area headroom is part of
 the correctness budget — a design that cannot route repeatably cannot be
 iterated on — so W6's cost model earns priority alongside the deeper half
 of W5.
+
+## W6 addendum: cost is a property transformations carry (2026-08-07)
+
+The first increment exists (`Loom/Hw/Cost.lean`, `CostTarget.lean`,
+`scripts/fit_cost.py`, `lake exe costreport`). The shape it settled into is
+worth stating, because it generalizes past area.
+
+**The division of labour is the design.** Loom proves that a transformation
+does not make the *abstract implementation-cost vector* worse. Calibration
+maps that vector to one target's resources and to a closure-risk estimate.
+Neither half is allowed to contaminate the other: the proved half needs no
+weights and cannot be invalidated by a vendor tool release; the estimated
+half is empirical metadata and says so at every use site. This is the same
+split that already worked for memories — D19's sync-read rule is universal,
+D38's port budget is a profile — generalized from one predicate to a
+quantity.
+
+**A vector, not a number.** Collapsing to a scalar requires weights, and
+weights are exactly the uncertain, target-specific part. Keeping the
+dimensions separate keeps the exact half exact. `macroBits` versus
+`softBits` is a dimension rather than a weighting for a measured reason:
+that boundary is where CapWalk's 14× (9 523 → 671 LUT, identical logic)
+lived, and a model that folded memory into an operation count would have
+been wrong by an order of magnitude at the one moment it mattered.
+
+**The interesting theorem is relative, not absolute.** Nobody can prove
+"this design is 44 000 LUTs" — synthesis shares, folds and retimes. What is
+provable, and useful, is *non-increase*: this pass does not worsen any
+dimension. That is a statement about the transformation library, it
+composes (`add_le_add`), and it makes the metric trustworthy without
+calibration. Cost thereby joins correctness as a property a verified
+transformation carries, which is the point: a pass that preserves semantics
+while quietly tripling area is not a pass anyone can afford to apply.
+
+**Capacity and closure are different claims, on both technologies.** "Does
+it fit" is physical. "Will the tools close it" is a calibrated threshold on
+one part, one tool version, one design family — never a universal constant.
+FPGA routability and ASIC placement density are the same shape; neither
+flow targets 95 % and expects to converge.
+
+**The honest result from day one, which is the most valuable output so
+far.** The vector does *not* separate the lnp64mini design that routed from
+the one that did not. They differ by ~1 % in cells and both land at 52–53 %.
+So at the margin that actually cost this project nine hours, the
+discriminator is congestion, not capacity. Three consequences: the report is
+a risk signal rather than a verdict; `maxFanout` is a placeholder for
+congestion modelling that does not exist yet; and no gate is wired into
+`Design.emit` until a fit exists with more designs than weights behind it.
+A model that would have been *wrong* about the case that motivated it should
+not be handed refusal authority.
+
+**A principle now visible three times.** Every empirical number in Loom
+carries how it was obtained: `MemTarget`'s ECP5 profile is labelled a
+datasheet reading, `Oracle` names the coordinates it does not model, and
+`CostTarget` carries tool version, design family, and an underdetermined-fit
+warning. The recurring failure this defends against is uniform — an
+unlabelled estimate becomes a fact by being repeated, and an omission looks
+exactly like agreement. The rule generalizes: *a number without provenance
+is not admissible evidence*, and the place to enforce it is the type, not
+the reviewer's memory.
