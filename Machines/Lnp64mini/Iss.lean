@@ -69,6 +69,13 @@ structure MiniSt where
   core_rd   : Bool := false
   core_wr   : Bool := false
   core_addr : BitVec 32 := 0
+  -- EXT-9: the I-cache (CACHE_PLAN.md). 4096 x 64 data + 4096 x 18 tag,
+  -- mirrored cycle-exactly because the lockstep compares every declared
+  -- coordinate: an ISS that "abstracted" the cache would simply disagree.
+  ic_data   : Array (BitVec 64) := Array.replicate 4096 0
+  ic_tag    : Array (BitVec 18) := Array.replicate 4096 0
+  ic_tag_q  : BitVec 18 := 0
+  ic_data_q : BitVec 64 := 0
   core_wdata: BitVec 64 := 0
   jtag_rd   : Bool := false
   jtag_wr   : Bool := false
@@ -555,12 +562,37 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if preemptFire then
         s' := { s' with tpc := s'.tpc.set! curV.toNat s.pc, cur := s.next_ready,
                         pc := s.tpc[s.next_ready.toNat]! }
-      else s' := { s' with core_addr := (BitVec.ofNat 32 DATA_BASE) + s.pc.setWidth 32,
-                           core_rd := true, st := BitVec.ofNat 5 S_FW }
+      else
+        -- EXT-9: latch both banks (the D19 sync-read sites) and check next
+        -- cycle in S_IC. The fetch this arm used to issue now lives on the
+        -- miss path.
+        let ddrPcV := (BitVec.ofNat 32 DATA_BASE) + s.pc.setWidth 32
+        let idx := (ddrPcV >>> 3).setWidth 12
+        s' := { s' with ic_tag_q := s.ic_tag[idx.toNat]!,
+                        ic_data_q := s.ic_data[idx.toNat]!,
+                        st := BitVec.ofNat 5 S_IC }
+    else if stN = S_IC then
+      -- hit: valid bit (17) set and tag match; miss: exactly the old fetch.
+      let ddrPcV := (BitVec.ofNat 32 DATA_BASE) + s.pc.setWidth 32
+      let tagV := (ddrPcV >>> 15).setWidth 17
+      let hit := s.ic_tag_q.getLsbD 17 ∧ s.ic_tag_q.setWidth 17 = tagV
+      if hit then
+        s' := { s' with ir := s.ic_data_q, st := BitVec.ofNat 5 S_RD }
+      else
+        s' := { s' with core_addr := ddrPcV, core_rd := true,
+                        st := BitVec.ofNat 5 S_FW }
     else if stN = S_PAUSE then
       if ¬ s.bus_req then s' := { s' with st := BitVec.ofNat 5 S_F0 }
     else if stN = S_FW then
-      if inp.mDone then s' := { s' with ir := inp.mRdata, st := BitVec.ofNat 5 S_RD }
+      if inp.mDone then
+        -- EXT-9 fill, the single write site (mirrors icFillRule/icTagRule).
+        let ddrPcV := (BitVec.ofNat 32 DATA_BASE) + s.pc.setWidth 32
+        let idx := (ddrPcV >>> 3).setWidth 12
+        let tagV := (ddrPcV >>> 15).setWidth 17
+        s' := { s' with ir := inp.mRdata, st := BitVec.ofNat 5 S_RD,
+                        ic_data := s.ic_data.set! idx.toNat inp.mRdata,
+                        ic_tag := s.ic_tag.set! idx.toNat
+                                    (((1 : BitVec 18) <<< 17) ||| tagV.setWidth 18) }
     else if stN = S_RD then
       let r1 := if s.st = BitVec.ofNat 5 S_RD2 then rs3f s else rs1f s
       let r2 := if s.st = BitVec.ofNat 5 S_RD2 then rs4f s else rs2f s

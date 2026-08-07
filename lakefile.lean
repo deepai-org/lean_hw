@@ -71,6 +71,10 @@ lean_exe costreport where
   supportInterpreter := true
   root := `Tools.CostReport
 
+lean_exe iccheck where
+  supportInterpreter := true
+  root := `Tools.IcCheck
+
 /-- Post-synthesis equivalence checker (D22): µVerilog module vs the
 yosys-synthesized netlist, LRAT-certified. -/
 lean_exe eqcheck where

@@ -62,6 +62,10 @@ def S_PAUSE : Nat := 17
 def S_CLONE3 : Nat := 18
 def S_GPL  : Nat := 19
 def S_GPS  : Nat := 20
+/-- **EXT-9**: the I-cache tag check. `S_F0` latches tag+data (the D19
+sync-read sites) and lands here; a hit writes `ir` and goes straight to
+`S_RD`, a miss issues exactly today's single-beat fetch. -/
+def S_IC   : Nat := 21
 
 /-! ## Input ports (D15) -/
 
@@ -160,6 +164,21 @@ def ir        : Expr 64 := .reg 64 "ir"
 def a         : Expr 64 := .reg 64 "a"
 def b         : Expr 64 := .reg 64 "b"
 def rdval     : Expr 64 := .reg 64 "rdval"
+/-! ### EXT-9 — the instruction cache (CACHE_PLAN.md)
+
+32 KB, direct-mapped, 1-word (8 B) lines: 4096 lines indexed by
+`ddrPc[14:3]`, tag `{valid, ddrPc[31:15]}` packed into 18 bits. Stage 1
+deliberately keeps the AXI side untouched — a miss is exactly today's
+single-beat read — so the only new hardware is a compare, a mux and two
+banks, and the fetch path gains one state.
+
+Both banks are D19 sync-read: `S_F0` writes the two latch registers below
+from a bare `memRead`, and `S_IC` consumes them the next cycle. That is
+what makes them block RAM rather than 4096-deep read muxes (the D38/CE9
+lesson, where the difference was 14x). -/
+def ic_tag_q  : Expr 18 := .reg 18 "ic_tag_q"
+def ic_data_q : Expr 64 := .reg 64 "ic_data_q"
+
 def sel_t     : Expr 64 := .reg 64 "sel_t"
 def sel_f     : Expr 64 := .reg 64 "sel_f"
 def mem_is_store : Expr 1  := .reg 1  "mem_is_store"
@@ -1432,6 +1451,30 @@ def ddrEa (ea : Expr 64) : Expr 32 :=
     (ddrEaRaw ea)
 def ddrPc : Expr 32 := .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.slice pc 0 32)
 
+/-! ### EXT-9 cache address decode
+
+`ddrPc` is the physical fetch address (still untranslated in stage 1 — the
+whole point of putting the TLB on the miss arm later is that `S_IC`'s hit
+path must not grow a translation). -/
+def ic_idx : Expr 12 := .slice ddrPc 3 12
+def ic_tag : Expr 17 := .slice ddrPc 15 17
+/-- A hit is the valid bit and a tag match, read out of the latched word. -/
+def ic_hit : Expr 1 :=
+  .and (.eq (.slice ic_tag_q 17 1) (L1 1))
+       (.eq (.slice ic_tag_q 0 17) ic_tag)
+/-- The tag word written on a fill: `valid(1) ++ tag(17)`.
+
+Written wrong the first time -- the TAG was shifted into the valid
+position, so every fill stored `(tag&1) << 17` and the cache both
+mis-validated and lost its tag. The EDSL/ISS lockstep failed on the third
+selftest script with `st: edsl=S_FW iss=S_RD`, i.e. one model hitting where
+the other missed, which is exactly the shape a cache bug has and exactly
+why the ISS models the cache rather than abstracting it. -/
+def ic_tag_fill : Expr 18 :=
+  .or (.shl (.lit (BitVec.ofNat 18 1)) (.lit (BitVec.ofNat 18 17)))
+      (.zext ic_tag 18)
+
+
 /-- The ONE effective address S_EX ever translates. LR and SC translate `a`;
 FUTEX_WAIT translates its aligned futex word (`rdval & ~7`). Muxing the input
 instead of instantiating ddrEa per site keeps S_EX at a single translation
@@ -1574,13 +1617,28 @@ def s_f0 : Expr 1 × Act := stArm S_F0
     (.ite curPoisoned (.write 1 "running" (L1 0))
     (.ite preemptFire
       (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready))
-      (.seq (.write 32 "core_addr" ddrPc)
-        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))))
+      -- EXT-9: look the line up instead of issuing a fetch. The two writes
+      -- below are the D19 sync-read sites for `ic_tag`/`ic_data`; `S_IC`
+      -- consumes them next cycle. A miss from there issues exactly the
+      -- transaction this arm used to issue, one cycle later.
+      (.seq (.write 18 "ic_tag_q" (.memRead 18 "ic_tag" ic_idx))
+        (.seq (.write 64 "ic_data_q" (.memRead 64 "ic_data" ic_idx))
+          (.write 5 "st" (L5 S_IC)))))))
 
 def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 
 def s_fw : Expr 1 × Act := stArm S_FW
   (.ite mDone (.seq (.write 64 "ir" mRdata) (.write 5 "st" (L5 S_RD))) .skip)
+
+/-- **EXT-9 `S_IC`**: the tag check, one cycle after `S_F0` latched the
+banks. Hit -> `ir` from the latched data word, straight to `S_RD` (a
+3-cycle fetch with no bus transaction at all). Miss -> the exact fetch
+`S_F0` used to issue; the fill happens in `S_FW` through the funnel. -/
+def s_ic : Expr 1 × Act := stArm S_IC
+  (.ite ic_hit
+    (.seq (.write 64 "ir" ic_data_q) (.write 5 "st" (L5 S_RD)))
+    (.seq (.write 32 "core_addr" ddrPc)
+      (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))
 
 /-- `S_RD`: latch the three source operands. **D19 sync-read sites** —
 each written value is a bare `memRead` of `rf` (no zero-mux, no shared
@@ -1868,8 +1926,15 @@ def s_gpl : Expr 1 × Act := stArm S_GPL
 def s_gps : Expr 1 × Act := stArm S_GPS
   (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)
 
-/-- S_TRAP: hold. default state: go F0. -/
-def s_default : Expr 1 × Act := (.ult (L5 S_GPS) st, goF0)
+/-- S_TRAP: hold. default state: go F0.
+
+The bound tracks the HIGHEST implemented state, not `S_GPS` -- when EXT-9
+added `S_IC` (21) above `S_GPS` (20), leaving this at `S_GPS` would have made
+the default arm fire *on the new state* and silently reset the fetch to
+`S_F0`, i.e. an I-cache that never hits and a core that still works. A state
+added above the bound is invisible exactly the way the renumbering's dead
+opcodes were. -/
+def s_default : Expr 1 × Act := (.ult (L5 S_IC) st, goF0)
 
 /-- (8) the whole `st` dispatch as ONE rule.
 
@@ -1887,7 +1952,8 @@ def fsmRule : Rule :=
   ⟨"fsm", .ite fsmEn
     (actPriTree
       [s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
-       s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps, s_default]
+       s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps,
+       s_ic, s_default]
       .skip)
     .skip⟩
 
@@ -2069,6 +2135,23 @@ def tarrFunnelRule : Rule :=
 def rfFunnelRule : Rule :=
   ⟨"rf_funnel", .ite rfWeE (.memWrite 10 64 "rf" 0 rfWaE rfWdE) .skip⟩
 
+/-! ### EXT-9 — the I-cache fill funnel
+
+Both banks get exactly ONE syntactic `memWrite` each, here. That is not
+tidiness: `MemTarget.xc7.maxMacroWritePorts` is 1, and a second write site
+drops the bank out of block RAM into flops plus a 4096:1 read mux -- the
+CE9/CE10 measurement, 9 523 vs 671 LUT for identical logic. The fill fires
+on the miss completion in `S_FW`, which is the only moment a line changes
+in stage 1 (invalidate arrives with the sweep, below, through the same
+site). -/
+def icFill : Expr 1 := .and (.eq st (L5 S_FW)) mDone
+
+def icFillRule : Rule :=
+  ⟨"ic_data_funnel", .ite icFill (.memWrite 12 64 "ic_data" 0 ic_idx mRdata) .skip⟩
+
+def icTagRule : Rule :=
+  ⟨"ic_tag_funnel", .ite icFill (.memWrite 12 18 "ic_tag" 0 ic_idx ic_tag_fill) .skip⟩
+
 /-- (10) EXT-1 — the quantum counter, the design's **only** writer of
 `qctr`, in strict priority:
 
@@ -2101,6 +2184,9 @@ def scalarRegs : List RegDecl :=
      ⟨"trace_hit",1,0⟩, ⟨"trace_in_pc",64,0⟩, ⟨"trace_in_wb",64,0⟩,
    ⟨"running",1,0⟩, ⟨"halted",1,0⟩, ⟨"st",5,0⟩, ⟨"ir",64,0⟩,
    ⟨"a",64,0⟩, ⟨"b",64,0⟩, ⟨"rdval",64,0⟩, ⟨"sel_t",64,0⟩, ⟨"sel_f",64,0⟩,
+   -- EXT-9: the I-cache sync-read latches (D19). Both reset to 0, which is
+   -- an invalid tag, so the cache comes up empty on every technology.
+   ⟨"ic_tag_q",18,0⟩, ⟨"ic_data_q",64,0⟩,
    ⟨"mem_is_store",1,0⟩, ⟨"trap_active",1,0⟩, ⟨"trapped_op",8,0⟩,
    ⟨"core_rd",1,0⟩, ⟨"core_wr",1,0⟩, ⟨"core_addr",32,0⟩, ⟨"core_wdata",64,0⟩,
    ⟨"jtag_rd",1,0⟩, ⟨"jtag_wr",1,0⟩, ⟨"jtag_wdata",64,0⟩, ⟨"ddr_addr_j",32,0⟩,
@@ -2165,6 +2251,13 @@ def design : Design where
      -- host-side BSCAN read that has no timing pressure at all.
      ⟨"trace_pc", 4, 64, fun _ => 0⟩, ⟨"trace_wb", 4, 64, fun _ => 0⟩,
      ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩,
+     -- EXT-9: the I-cache. 4096 x 64 data + 4096 x 18 tag, both sync-read
+     -- (D19) and both written at exactly ONE syntactic site (the fill
+     -- funnel below), so D38's single-write-port budget holds and yosys
+     -- keeps them in block RAM. All-zero reset image: the valid bit is bit
+     -- 17 of the tag word, so a zeroed bank is a fully invalid cache and
+     -- D30/D37 have nothing to deliver.
+     ⟨"ic_data", 12, 64, fun _ => 0⟩, ⟨"ic_tag", 12, 18, fun _ => 0⟩,
      -- D20: the thread table's single-dynamic-index arrays.
      -- **D37 (2026-08-01): `tpc`'s reset image is ALL-ZERO, not TEXT_BASE.**
      -- A non-zero image on a 32×64 bank is exactly the D30 defect: yosys
@@ -2194,12 +2287,13 @@ def design : Design where
      ]
   rules :=
     [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
-     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule]
+     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule,
+     icFillRule, icTagRule]
   -- D19 (now a Loom obligation): `Design.emit` refuses to emit if any of
   -- these is read outside a register-latch site. `rx_mem` is deliberately
   -- absent — it is read combinationally inside the `rf` write data, so
   -- LUTRAM is the right implementation for it.
-  syncReadMems := ["rf", "dmem", "uart_mem"]
+  syncReadMems := ["rf", "dmem", "uart_mem", "ic_data", "ic_tag"]
   inputs :=
     [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
      ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,

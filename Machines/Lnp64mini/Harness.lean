@@ -283,6 +283,14 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     -- state the design declares, so D39 says it is observable and Loom's
     -- coordinate enumeration will ask about it; answering `none` would make it
     -- silently "unmodelled" rather than checked.
+    -- EXT-9: the I-cache banks. The ISS models them cycle-exactly, so they
+    -- are compared like any other memory -- and the Oracle's closed-list
+    -- enforcement is what made that mandatory: adding the banks to the
+    -- design without teaching the oracle produced UNDECLARED-UNMODELLED
+    -- ic_tag[...] on the first run, instead of a silently shrinking
+    -- comparison.
+    | "ic_data"     => some (s.ic_data[idx]!).toNat
+    | "ic_tag"      => some (s.ic_tag[idx]!).toNat
     | "trace_pc"    => some (s.trace_pc[idx]!).toNat
     | "trace_wb"    => some (s.trace_wb[idx]!).toNat
     | "tpc"         => some (s.tpc[idx]!).toNat
