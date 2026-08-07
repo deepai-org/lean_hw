@@ -66,6 +66,11 @@ def S_GPS  : Nat := 20
 sync-read sites) and lands here; a hit writes `ir` and goes straight to
 `S_RD`, a miss issues exactly today's single-beat fetch. -/
 def S_IC   : Nat := 21
+/-- **§17 gate walk.** `S_GC0` waits for the descriptor's first word (the
+entry PC), then issues the read of its second (the target domain); `S_GC1`
+waits for that and commits the activation. -/
+def S_GC0  : Nat := 22
+def S_GC1  : Nat := 23
 
 /-! ## Input ports (D15) -/
 
@@ -200,6 +205,26 @@ rather than probable, and runs once per 65 536 invalidations instead of once
 per one. Saturation handled by a fallback rather than by an assumption is
 the same shape as the epoch engine's T-E2, where saturation is a defined
 terminal state instead of an unstated hope. -/
+/-! ### §17 — the gate table lives in memory, not in registers
+
+`gate_ent`/`gate_dom` were 16-entry banks the HOST wrote over BSCAN
+(`cmd 61`/`cmd 62`). That made the authority demo a demonstration that the
+mechanism exists, not that the machine reads the architecture's own
+structures. §17.1b puts the gate's facts in memory; this walks them.
+
+An entry is 16 bytes at `gate_tbl_base + (index << 4)`:
+
+    +0  entry PC   (64)
+    +8  target domain in [7:0]   (the rest reserved zero)
+
+`gate_tbl_base` is loaded once (`cmd 74`), the way a root pointer is: the
+host says where the table is, and thereafter the machine reads it. That is
+the difference the goal names -- the host stops supplying the *contents*. -/
+def gate_tbl_base : Expr 32 := .reg 32 "gate_tbl_base"
+/-- Latched descriptor words, D19 sync-read style (the bus is the source). -/
+def gate_ent_q : Expr 64 := .reg 64 "gate_ent_q"
+def gate_dom_q : Expr 8  := .reg 8  "gate_dom_q"
+
 def ic_gen    : Expr 16 := .reg 16 "ic_gen"
 def ic_inv    : Expr 1  := .reg 1  "ic_inv"
 def ic_ctr    : Expr 12 := .reg 12 "ic_ctr"
@@ -290,8 +315,6 @@ enforcement that consumes it arrives with gates (EXT-5) and the MMU
 (EXT-7). -/
 def tdomRd (idx : Expr 5) : Expr 8 := .memRead 8 "tdom" idx
 /-- EXT-5: the gate table and the per-thread depth-1 continuation. -/
-def gateEntRd (g : Expr 4) : Expr 64 := .memRead 64 "gate_ent" g
-def gateDomRd (g : Expr 4) : Expr 8  := .memRead 8  "gate_dom" g
 def tcontRd (idx : Expr 5) : Expr 64 := .memRead 64 "tcont" idx
 def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
 /-- EXT-6: the per-domain capability inbox. -/
@@ -398,14 +421,14 @@ map diverges from the ISA in that whole block *before* this increment. Gates
 take **0x60/0x61**, which are free in mini. Recorded here rather than
 pretending the encodings match. -/
 def in_gate : Expr 32 := .reg 32 "in_gate"
-def gate_sel : Expr 4 := .reg 4 "gate_sel"
 
 /-- Bit `cur` of `in_gate`: this thread is inside a gate. -/
 def curInGate : Expr 1 :=
   .eq (.slice (.shr in_gate (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
 
-/-- `cmd 61` loads `gate_ent[gate_sel]`; `cmd 62` sets `gate_sel` and
-`gate_dom[gate_sel]` (`data[3:0]` = gate id, `data[15:8]` = domain). -/
+/-- Retired at §17. `cmd 61`/`cmd 62` used to poke the gate banks the host
+owned; the descriptor now lives in guest memory and the machine walks it,
+so the numbers are reserved and the banks are gone. -/
 def CMD_GATE_ENT : Nat := 61
 def CMD_GATE_DOM : Nat := 62
 
@@ -473,6 +496,9 @@ def CMD_TLB_PHYS : Nat := 68
 /-- EXT-8: select which of the 16 commit-trace ring entries the readback
 outputs expose. Host-only; nothing in the core reads the ring. -/
 def CMD_TRACE_SEL : Nat := 69
+/-- **§17**: where the gate table lives in guest memory. The host sets this
+once, like a root pointer; the machine reads the entries. -/
+def CMD_GATE_TBL : Nat := 74
 def CMD_MAP_PROTECT : Nat := 67
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
@@ -1078,7 +1104,18 @@ def capSendFire : Expr 1 := exG (.and (opIs CAP_SEND_OP) (.not (capOcc capSendSl
 /-- A receive lands only if this domain's inbox is occupied. -/
 def capRecvFire : Expr 1 := exG (.and (opIs CAP_RECV_OP) (capOcc capRecvSlot))
 
+/-- **§17: the activation commits when the WALK completes, not at S_EX.**
+The descriptor is not known until both words are back, so every funnel that
+records the activation (`in_gate`, `tdom`, `tcont`, `tcdom`) fires here --
+in `S_GC1`, on `m_done` -- rather than in the execute cycle. Committing
+early would install a domain read from a bank that no longer exists.
+`pc8` is still the right saved continuation: `pc` has not advanced, because
+the gate arm never ran `stepPc`. -/
+def gateCall : Expr 1 :=
+  .and fsmEn (.and (.eq st (L5 S_GC1)) mDone)
+
 /-- Funnel triples. -/
+
 def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- 1. zeroing
   [ (zeroing, .zext zctr 10, L64 0)
@@ -1387,6 +1424,7 @@ where
     .seq (.ite (ci CMD_POISON) (.write 32 "poison" cmdData) .skip) <|
     -- EXT-7: MMU enable and the TLB entry selector.
     .seq (.ite (ci CMD_MMU_EN) (.write 1 "mmu_en" (.slice cmdData 0 1)) .skip) <|
+    .seq (.ite (ci CMD_GATE_TBL) (.write 32 "gate_tbl_base" cmdData) .skip) <|
     .seq (.ite (ci CMD_TLB_SEL) (.write 3 "tlb_sel" (.slice cmdData 0 3)) .skip) <|
     -- EXT-7 stage B: per-entry VMA fill. `cmd 65` = base + domain,
     -- `cmd 66` = limit (and VALIDATES, so a half-written VMA is never live),
@@ -1408,7 +1446,6 @@ where
               (.seq (.write 32 s!"tlb_phys{i.val}" (.zext (.slice cmdData 0 24) 32))
                     (.write 8 s!"tlb_cell{i.val}" (.slice cmdData 24 8))) .skip ]))) <|
     -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
-    .seq (.ite (ci CMD_GATE_DOM) (.write 4 "gate_sel" (.slice cmdData 0 4)) .skip) <|
       (.ite (ci 13)
         (.seq (.ite (.eq (.slice cmdData 0 1) (L1 1)) cmd13reset .skip)
               (.ite (.eq (.slice cmdData 1 1) (L1 1))
@@ -1670,6 +1707,24 @@ def s_f0 : Expr 1 × Act := stArm S_F0
         (.seq (.write 64 "ic_data_q" (.memRead 64 "ic_data" ic_idx))
           (.write 5 "st" (L5 S_IC)))))))
 
+/-- `S_GC0`: the entry PC has arrived; latch it and ask for the domain word
+at +8. -/
+def s_gc0 : Expr 1 × Act := stArm S_GC0
+  (.ite mDone
+    (.seq (.write 64 "gate_ent_q" mRdata)
+      (.seq (.write 32 "core_addr" (.add core_addr (.lit (BitVec.ofNat 32 8))))
+        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_GC1)))))
+    .skip)
+
+/-- `S_GC1`: the domain word has arrived. Latch it and commit the
+activation -- `pc` to the descriptor's entry, and the funnels (`tdom`,
+`tcont`, `tcdom`, `in_gate`) fire on `gateCommit` this cycle. -/
+def s_gc1 : Expr 1 × Act := stArm S_GC1
+  (.ite mDone
+    (.seq (.write 8 "gate_dom_q" (.slice mRdata 0 8))
+      (.seq (.write 64 "pc" gate_ent_q) (.seq retireInc goF0)))
+    .skip)
+
 def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 
 def s_fw : Expr 1 × Act := stArm S_FW
@@ -1833,8 +1888,13 @@ def s_ex_branches : List (Expr 1 × Act) :=
     (.ite curInGate
       (.seq (.ite (.not (.eq rdf (L5 0))) .skip .skip)
         (.seq stepPc (.seq retireInc goF0)))
-      (.seq (.write 64 "pc" (gateEntRd (.slice a 0 4)))
-        (.seq retireInc goF0))) <|
+      -- §17: walk the descriptor instead of reading a host-loaded bank.
+      -- The address is the table base plus a 16-byte-strided index; the
+      -- activation commits in S_GC1, once both words are in.
+      (.seq (.write 32 "core_addr"
+              (.add (.add (.lit (BitVec.ofNat 32 DATA_BASE)) gate_tbl_base)
+                    (.shl (.zext (.slice a 0 4) 32) (.lit (BitVec.ofNat 32 4)))))
+        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_GC0))))) <|
   -- EXT-5: 0x61 GATE_RETURN. Restores the saved pc; the domain and the
   -- in-gate bit are restored in their funnels. A return with no gate open
   -- is a no-op (it just steps), which is the fail-quiet reading: a thread
@@ -1997,7 +2057,7 @@ the default arm fire *on the new state* and silently reset the fetch to
 `S_F0`, i.e. an I-cache that never hits and a core that still works. A state
 added above the bound is invisible exactly the way the renumbering's dead
 opcodes were. -/
-def s_default : Expr 1 × Act := (.ult (L5 S_IC) st, goF0)
+def s_default : Expr 1 × Act := (.ult (L5 S_GC1) st, goF0)
 
 /-- (8) the whole `st` dispatch as ONE rule.
 
@@ -2016,7 +2076,7 @@ def fsmRule : Rule :=
     (actPriTree
       [s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
        s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps,
-       s_ic, s_default]
+       s_ic, s_gc0, s_gc1, s_default]
       .skip)
     .skip⟩
 
@@ -2111,7 +2171,10 @@ def tdomTriples : List (Expr 1 × Expr 5 × Expr 8) :=
   -- EXT-5: a gate call moves the thread to the GATE's domain -- a domain
   -- the host installed, never one the instruction names. A return restores
   -- the caller's. These two are the only instruction-driven `tdom` writes.
-  , (exG (.and (opIs OP_MINI_GATE_CALL) (.not curInGate)), cur, gateDomRd (.slice a 0 4))
+  -- D9: reads are pre-cycle, so the descriptor word must come from the bus
+  -- this cycle (`mRdata`), not from `gate_dom_q`, which does not hold it
+  -- until the next one.
+  , (gateCall, cur, .slice mRdata 0 8)
   , (exG (.and (opIs OP_MINI_GATE_RETURN) curInGate), cur, tcdomRd cur) ]
 
 def tdomWeE : Expr 1 := orTree (tdomTriples.map (fun t => t.1))
@@ -2125,7 +2188,6 @@ def tdomWdE : Expr 8 := priTree (tdomTriples.map (fun t => (t.1, t.2.2))) (L8 0)
 EXT-3's `poison`) because nothing reads it at a dynamic index -- only at
 `cur` -- but it must be *set and cleared* per slot, and a 32-bit
 set/clear on a register is one mux where a memory would be a port. -/
-def gateCall : Expr 1 := exG (.and (opIs OP_MINI_GATE_CALL) (.not curInGate))
 def gateRet  : Expr 1 := exG (.and (opIs OP_MINI_GATE_RETURN) curInGate)
 
 /-- `in_gate` after this cycle: set bit `cur` on a gate call, clear it on a
@@ -2184,10 +2246,6 @@ def tarrFunnelRule : Rule :=
     -- at once, which is why this is a register and not a memory.
     .seq (.write 8 "tlb_vld" tlbVldNext) <|
     -- EXT-5: the host-loaded gate table.
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_ENT)))
-            (.memWrite 4 64 "gate_ent" 0 gate_sel (.zext cmdData 64)) .skip) <|
-    .seq (.ite (.and cmdValid (.eq cmdIdx (L7 CMD_GATE_DOM)))
-            (.memWrite 4 8 "gate_dom" 0 (.slice cmdData 0 4) (.slice cmdData 8 8)) .skip) <|
     .seq (.ite tpcWeE (.memWrite 5 64 "tpc" 0 tpcWaE tpcWdE) .skip)
       (.seq (.ite (exG (opIs OP_SLEEP))
               (.memWrite 5 64 "tsleep" 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
@@ -2290,7 +2348,8 @@ def scalarRegs : List RegDecl :=
    ⟨"a",64,0⟩, ⟨"b",64,0⟩, ⟨"rdval",64,0⟩, ⟨"sel_t",64,0⟩, ⟨"sel_f",64,0⟩,
    -- EXT-9: the I-cache sync-read latches (D19). Both reset to 0, which is
    -- an invalid tag, so the cache comes up empty on every technology.
-   ⟨"ic_tag_q",42,0⟩, ⟨"ic_data_q",64,0⟩, ⟨"ic_gen",16,0⟩,
+   ⟨"ic_tag_q",42,0⟩, ⟨"ic_data_q",64,0⟩, ⟨"ic_gen",16,0⟩, ⟨"gate_tbl_base",32,0⟩,
+   ⟨"gate_ent_q",64,0⟩, ⟨"gate_dom_q",8,0⟩,
    ⟨"ic_inv",1,0⟩, ⟨"ic_ctr",12,0⟩,
    ⟨"mem_is_store",1,0⟩, ⟨"trap_active",1,0⟩, ⟨"trapped_op",8,0⟩,
    ⟨"core_rd",1,0⟩, ⟨"core_wr",1,0⟩, ⟨"core_addr",32,0⟩, ⟨"core_wdata",64,0⟩,
@@ -2318,7 +2377,7 @@ def scalarRegs : List RegDecl :=
    -- EXT-3: fail-stop bitmap; 0 = nothing poisoned = the pre-EXT-3 machine
    ⟨"poison",32,0⟩,
    -- EXT-5: gates. `in_gate` = depth-1 continuation-present bitmap.
-   ⟨"in_gate",32,0⟩, ⟨"gate_sel",4,0⟩,
+   ⟨"in_gate",32,0⟩,
    -- EXT-6: per-domain capability inbox occupancy
    ⟨"cap_ival",16,0⟩,
    -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
@@ -2384,7 +2443,6 @@ def design : Design where
      -- the constant does not have to survive the configuration path (D37).
      ⟨"tdom", 5, 8, fun _ => 0⟩,
      -- EXT-5: the gate table (host-loaded) and the depth-1 continuation.
-     ⟨"gate_ent", 4, 64, fun _ => 0⟩, ⟨"gate_dom", 4, 8, fun _ => 0⟩,
      ⟨"tcont", 5, 64, fun _ => 0⟩, ⟨"tcdom", 5, 8, fun _ => 0⟩,
      -- EXT-6: one capability handle addressed to each domain
      ⟨"cap_ibox", 4, 64, fun _ => 0⟩,

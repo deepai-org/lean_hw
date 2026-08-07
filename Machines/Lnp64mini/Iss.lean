@@ -148,12 +148,15 @@ structure MiniSt where
   poison    : BitVec 32 := 0
   -- EXT-5 (gates): the host-loaded gate table, the depth-1 per-thread
   -- continuation, and the in-gate bitmap.
-  gate_ent  : Array (BitVec 64) := Array.replicate 16 0
-  gate_dom  : Array (BitVec 8)  := Array.replicate 16 0
+  /-- §17: the gate table now lives in guest memory. `gate_tbl_base` is the
+  host-installed root pointer; the two `_q` latches hold the descriptor
+  words as the walk brings them back. -/
+  gate_tbl_base : BitVec 32 := 0
+  gate_ent_q : BitVec 64 := 0
+  gate_dom_q : BitVec 8  := 0
   tcont     : Array (BitVec 64) := Array.replicate NT 0
   tcdom     : Array (BitVec 8)  := Array.replicate NT 0
   in_gate   : BitVec 32 := 0
-  gate_sel  : BitVec 4  := 0
   -- EXT-6 (cross-domain transfer): one capability handle addressed to each
   -- domain, plus per-domain occupancy.
   cap_ibox  : Array (BitVec 64) := Array.replicate 16 0
@@ -528,10 +531,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         for i in List.range 8 do
           if s.tlb_cell[i]! = cell then
             s' := { s' with tlb_vld := s'.tlb_vld &&& ~~~(1#8 <<< i) }
-    | 62 => s' := { s' with gate_sel := BitVec.ofNat 4 (d.toNat % 16),
-                            gate_dom := s'.gate_dom.set! (d.toNat % 16)
-                                          (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
-    | 61 => s' := { s' with gate_ent := s'.gate_ent.set! s.gate_sel.toNat (d.setWidth 64) }
+    | 74 => s' := { s' with gate_tbl_base := d.setWidth 32 }
     | 58 => s' := { s' with tdom := s'.tdom.set! (d.toNat % NT)
                               (BitVec.ofNat 8 ((d.toNat >>> 8) % 256)) }
     | 13 =>
@@ -741,13 +741,12 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           -- depth 1: a nested call is refused, no state change
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         else
+          -- §17: walk the in-memory descriptor. Two 8-byte words at
+          -- DATA_BASE + base + 16*id; the activation commits in S_GC1.
           let g := (s.a.toNat) % 16
-          s' := { s' with tcont := s'.tcont.set! curV.toNat (pc8 s),
-                          tcdom := s'.tcdom.set! curV.toNat s.tdom[curV.toNat]!,
-                          in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
-                          tdom := s'.tdom.set! curV.toNat s.gate_dom[g]!,
-                          pc := s.gate_ent[g]!,
-                          retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+          s' := { s' with core_addr := BitVec.ofNat 32 DATA_BASE + s.gate_tbl_base
+                            + BitVec.ofNat 32 (g * 16),
+                          core_rd := true, st := BitVec.ofNat 5 S_GC0 }
       else if o = OP_MINI_GATE_RETURN then
         if s.in_gate.getLsbD curV.toNat then
           s' := { s' with pc := s.tcont[curV.toNat]!,
@@ -820,6 +819,20 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else
         s' := { s' with dmem_we := true, dmem_a := st_widx s, dmem_wd := st_merge s }
       s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+    else if stN = S_GC0 then
+      if inp.mDone then
+        s' := { s' with gate_ent_q := inp.mRdata,
+                        core_addr := s.core_addr + 8, core_rd := true,
+                        st := BitVec.ofNat 5 S_GC1 }
+    else if stN = S_GC1 then
+      if inp.mDone then
+        s' := { s' with gate_dom_q := inp.mRdata.setWidth 8,
+                        tcont := s'.tcont.set! curV.toNat (pc8 s),
+                        tcdom := s'.tcdom.set! curV.toNat s.tdom[curV.toNat]!,
+                        in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
+                        tdom := s'.tdom.set! curV.toNat (inp.mRdata.setWidth 8),
+                        pc := s.gate_ent_q,
+                        retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
     else if stN = S_DL then
       if inp.mDone then s' := { s' with ddr_q := inp.mRdata, st := BitVec.ofNat 5 S_DST }
     else if stN = S_DST then

@@ -399,3 +399,38 @@ headroom, that top routed first try at 29.34 MHz, and all 20 banks landed in
 block RAM (46 RAMB36, exactly 10 per core). The decision was right for the
 right reason; only the post-hoc story about *why* was wrong, and stayed wrong
 exactly as long as it took to build the other leg.
+
+## The host was the capability system
+
+The mini has had gates for months, and a selftest proving that a gate is the
+only way a thread changes domain. It was true, and it was not §17. The gate
+table was two 16-entry banks the host filled over BSCAN before the core
+started; `MINI_GATE_CALL` indexed them combinationally. Nothing in the
+guest's address space described a gate. If you had asked the machine "what
+authority does gate 3 confer", the honest answer was "whatever the debugger
+told me at boot, and I have no way to check".
+
+That is the shape of the failure worth naming. The selftest was not weak —
+it tested activation, restoration, depth-1 refusal, and the negative case
+where a handle addressed to one domain must be unreachable from another.
+Every one of those passed against state the host had installed. A test can
+be rigorous about the *mechanism* and completely blind to *where the
+mechanism's inputs came from*, and the second question is the whole of §17.
+"Spec-encoded" is not a property of the instruction encoding alone; a machine
+that executes the spec's opcodes over the host's private tables is running
+half a specification.
+
+The fix was small in the datapath — two states, a 16-byte descriptor, a root
+pointer — and the interesting part was elsewhere. The activation funnels
+(`tdom`, `tcont`, `tcdom`, `in_gate`) were all guarded by "in the execute
+cycle", which was the right predicate as long as the answer was a
+combinational bank read. With the descriptor two cycles away in DDR, that
+predicate quietly became "record an activation whose target domain is not
+yet known". Reading a structure instead of being handed one is not a local
+change to the read: it moves the commit point, and every piece of state that
+was implicitly timed to the old commit has to be re-timed with it. The
+deletion is the part that makes the claim checkable — the banks, the two
+commands, the selector register and both read helpers are gone, so there is
+no longer a path by which an activation's domain can come from anywhere but
+guest memory. A capability system you can still poke is one you have to be
+trusted not to poke.

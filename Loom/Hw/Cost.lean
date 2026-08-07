@@ -56,7 +56,9 @@ from a `Design`, with no target knowledge. -/
 structure Cost where
   /-- Register bits + memory bits: state, on any technology. -/
   stateBits : Nat := 0
-  /-- Combinational bit-work: the width-weighted operator count. -/
+  /-- Combinational bit-work: the width-weighted count of *distinct*
+  (hash-consed) operator nodes — what the emitter turns into wires, not
+  what the syntax tree happens to repeat. -/
   bitOps    : Nat := 0
   /-- Memory bits predicted into the target's dedicated macro. -/
   macroBits : Nat := 0
@@ -127,42 +129,261 @@ theorem add_le_add {a a' b b' : Cost} (ha : a ≤ a') (hb : b ≤ b') :
 
 end Cost
 
-/-! ## Counting the vector out of a design -/
+/-! ## Counting the vector out of a design
 
-/-- Width-weighted combinational work of an expression.
+### The tree cost, and why it was wrong
+
+The first version of this file billed combinational work by walking the
+expression as a *tree*: `(and a a)` cost twice `a`. That is not what is
+emitted. `Loom/Emit/MicroVerilog/Print.lean` gives each **structurally
+distinct** node exactly one wire — a pointer-identity memo short-circuits
+shared nodes and a `(width, rendered RHS)` table hash-conses the rest — so
+a duplicated subexpression becomes ONE wire, and the operand names inside
+an RHS are canonical by the time it is rendered, so the merging cascades
+bottom-up.
+
+Billing a DAG as a tree is not a conservative approximation, it gets
+*signs* wrong on real transformations. Measured (yosys 0.33,
+`synth_xilinx`, lnp64mini, `s_ex_body` priority select): the tree cost
+says the balanced `priTree` form is +154 679 abstract bitOps worse than
+the linear `priChain`, while synthesis says the tree is **357 LUTs
+cheaper** — post-CSE netlists of 6 620 nodes / 116 784 width-weighted bits
+(tree) against 7 685 / 145 764 (chain). The model had the sign backwards
+because it charged the duplicated guard cones that the emitter shares.
+
+`Expr.treeCost` below is kept, clearly labelled, because the tree
+recursion is what the tree-builder theorems in `Loom/Hw/CostTransform.lean`
+can state exactly, and because `Expr.cost ≤ Expr.treeCost` makes it a
+usable upper bound. It is no longer what `Design.cost` reports.
+
+### The hash-consed cost
+
+`Expr.cost` interns every subexpression into a table of **`ENode`s** — a
+flat, untyped mirror of `Expr` whose children are table *indices* — and
+sums the operator weights over the table. Two subexpressions collapse to
+one entry exactly when the emitter would give them one wire, because
+`ENode` is a transcription of the emitter's `(width, rendered RHS)` key:
+
+| emitter renders | `ENode` |
+|---|---|
+| `n` (a register/input needs no wire) | `sig n` |
+| `w'd v` | `lit w v` |
+| `m[a]` | `mem dw m a` |
+| `a & b`, `a \| b`, … | `bin op w a b` |
+| `~a` | `neg w a` |
+| `a == b`, `a < b`, `$signed(a) < $signed(b)` | `cmp op iw a b` |
+| `c ? t : f` | `sel w c t f` |
+| `x[lo+w-1:lo]` | `slice a lo w` |
+| `{x}` (a `zext`, or a `sext` to its own width) | `rewire w a` |
+| `{{k{x[w-1]}}, x}` | `sextend w' w a` |
+
+Two deliberate deviations, both stated rather than hidden:
+
+* **`cmp` keeps its input width.** The emitter's key for a comparison is
+  `(1, "a == b")` and drops the operand width; the cost key keeps it,
+  because the weight of a comparison *is* its input width. The two keys
+  differ only for comparisons whose operands render to the same wire at
+  two different widths, i.e. for a design with one name at two widths,
+  which well-formedness already refuses.
+* **Wiring is free.** `slice`/`rewire`/`sextend` get a table entry (they
+  are wires in the emitted text, and they matter as *operands* — sharing
+  cascades through them) but weight `0`, as before.
+
+Scope: an expression's cost dedups within that expression, and
+`Act.cost` dedups across a whole rule body — guards, addresses and written
+values share one table, which is where the priority-select duplication
+lives. `Design.cost` then *sums over rules*: cross-rule sharing is real in
+the emitter but is deliberately not modelled, because summing keeps
+`Design.par` exactly additive (`par_bitOps`) and keeps the whole cost
+algebra usable. The residual error therefore has a known sign —
+`bitOps` over-approximates the emitted node count, never under.
+-/
+
+/-- Binary bit-operators, as the emitter renders them. -/
+inductive EOp where
+  | and | or | xor | add | sub | shl | shr
+  deriving Repr, DecidableEq
+
+/-- Comparison operators, as the emitter renders them. -/
+inductive ECmp where
+  | eq | ult | slt
+  deriving Repr, DecidableEq
+
+/-- A node of the hash-consed expression DAG: one emitted wire.
+
+Children are *indices* into the intern table, so node equality is shallow
+and is exactly the emitter's structural sharing rule (equal operand wires
+plus equal rendered operator ⇒ one wire). -/
+inductive ENode where
+  /-- A literal of width `w` and value `v`. -/
+  | lit     (w : Nat) (v : Nat)
+  /-- A register/input read: the emitter uses the bare name, at any width. -/
+  | sig     (name : String)
+  /-- A memory read port. -/
+  | mem     (dw : Nat) (name : String) (a : Nat)
+  /-- A width-`w` binary bit-operator. -/
+  | bin     (op : EOp) (w : Nat) (a b : Nat)
+  /-- Bitwise negation at width `w`. -/
+  | neg     (w : Nat) (a : Nat)
+  /-- A comparison; `iw` is the *input* width, which is what it costs. -/
+  | cmp     (op : ECmp) (iw : Nat) (a b : Nat)
+  /-- A width-`w` mux. -/
+  | sel     (w : Nat) (c t f : Nat)
+  /-- A bit-slice `[lo + w - 1 : lo]`. -/
+  | slice   (a : Nat) (lo w : Nat)
+  /-- A bare re-assignment at width `w` (zero-extend / same-width sext). -/
+  | rewire  (w : Nat) (a : Nat)
+  /-- A sign-extension from `iw` up to `w`. -/
+  | sextend (w : Nat) (iw : Nat) (a : Nat)
+  deriving Repr, DecidableEq
+
+/-- Width-weighted work of one emitted node.
 
 Weights are deliberately crude and technology-free: one unit per output
 bit per operator, with comparisons costing their *input* width (a 64-bit
-`eq` is 64 bits of work producing 1), and `slice`/`zext`/`sext` costing
-nothing because they are wiring on every technology. Calibration is where
+`eq` is 64 bits of work producing 1), and slices/extensions costing
+nothing because they are wiring on every technology. Memory *banks* are
+counted in `Cost.macroBits`/`Cost.softBits`, not here. Calibration is where
 a target says what a unit is worth; it is not this function's business. -/
-def Expr.cost {w : Nat} : Expr w → Nat
+def ENode.weight : ENode → Nat
+  | .lit _ _        => 0
+  | .sig _          => 0
+  | .mem _ _ _      => 0
+  | .bin _ w _ _    => w
+  | .neg w _        => w
+  | .cmp _ iw _ _   => iw
+  | .sel w _ _ _    => w
+  | .slice _ _ _    => 0
+  | .rewire _ _     => 0
+  | .sextend _ _ _  => 0
+
+/-- Total weight of an intern table. -/
+def nodesWeight (tbl : List ENode) : Nat :=
+  tbl.foldl (fun acc n => acc + n.weight) 0
+
+/-- Position of `n` in `tbl`, counting from `i`. -/
+def ENode.find? (n : ENode) : List ENode → Nat → Option Nat
+  | [],     _ => none
+  | m :: t, i => if m = n then some i else n.find? t (i + 1)
+
+/-- Hash-cons `n` into `tbl`: its index, and the (possibly extended) table.
+This is `freshM`'s `cse` lookup, with the table in emission order. -/
+def ENode.intern (n : ENode) (tbl : List ENode) : Nat × List ENode :=
+  match n.find? tbl 0 with
+  | some i => (i, tbl)
+  | none   => (tbl.length, tbl ++ [n])
+
+/-- Intern every subexpression of `e` into `tbl`, returning `e`'s node
+index and the extended table. Mirrors `Print.pExprM` one constructor at a
+time. -/
+def Expr.hc : {w : Nat} → Expr w → List ENode → Nat × List ENode
+  | w, .lit v, t => ENode.intern (.lit w v.toNat) t
+  | _, .reg _ n, t => ENode.intern (.sig n) t
+  | dw, .memRead _ m a, t =>
+      let r := Expr.hc a t
+      ENode.intern (.mem dw m r.1) r.2
+  | w, .and a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .and w ra.1 rb.1) rb.2
+  | w, .or a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .or w ra.1 rb.1) rb.2
+  | w, .xor a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .xor w ra.1 rb.1) rb.2
+  | w, .not a, t =>
+      let ra := Expr.hc a t
+      ENode.intern (.neg w ra.1) ra.2
+  | w, .add a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .add w ra.1 rb.1) rb.2
+  | w, .sub a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .sub w ra.1 rb.1) rb.2
+  | w, .shl a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .shl w ra.1 rb.1) rb.2
+  | w, .shr a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .shr w ra.1 rb.1) rb.2
+  | _, @Expr.eq w' a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.cmp .eq w' ra.1 rb.1) rb.2
+  | _, @Expr.ult w' a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.cmp .ult w' ra.1 rb.1) rb.2
+  | _, @Expr.slt w' a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.cmp .slt w' ra.1 rb.1) rb.2
+  | w, .mux c x y, t =>
+      let rc := Expr.hc c t; let rx := Expr.hc x rc.2; let ry := Expr.hc y rx.2
+      ENode.intern (.sel w rc.1 rx.1 ry.1) ry.2
+  | _, @Expr.slice _ a lo w', t =>
+      let ra := Expr.hc a t
+      ENode.intern (.slice ra.1 lo w') ra.2
+  | w', .zext a _, t =>
+      let ra := Expr.hc a t
+      ENode.intern (.rewire w' ra.1) ra.2
+  | w', @Expr.sext w a _, t =>
+      let ra := Expr.hc a t
+      -- exactly the emitter's three renderings of a sign-extension
+      if w < w' then ENode.intern (.sextend w' w ra.1) ra.2
+      else if w = w' then ENode.intern (.rewire w' ra.1) ra.2
+      else ENode.intern (.slice ra.1 0 w') ra.2
+
+/-- Intern a whole rule body: guards, addresses and written values share
+one table, so a guard cone reused by several arms is billed once. -/
+def Act.hc : Act → List ENode → List ENode
+  | .skip, t => t
+  | .seq a b, t => b.hc (a.hc t)
+  | .ite c x y, t => y.hc (x.hc ((Expr.hc c t).2))
+  | .write _ _ v, t => (Expr.hc v t).2
+  | .memWrite _ _ _ _ a d, t => (Expr.hc d (Expr.hc a t).2).2
+
+/-- **Width-weighted combinational work of an expression**, counting each
+structurally distinct (hash-consed) node once — the same sharing the
+µVerilog emitter performs, so the number tracks what is emitted. -/
+def Expr.cost {w : Nat} (e : Expr w) : Nat := nodesWeight (e.hc []).2
+
+/-- Combinational work of an action, including its guards, deduplicated
+across the whole rule body. -/
+def Act.cost (a : Act) : Nat := nodesWeight (a.hc [])
+
+/-! ### The old tree recursion, kept as an upper bound
+
+`treeCost` is the pre-DAG metric: it bills a shared subexpression once per
+syntactic occurrence. `Loom/Hw/CostTransform.lean` proves
+`Expr.cost_le_treeCost`, so it remains a sound (sometimes wildly
+pessimistic) over-approximation, and the exact tree-shape arithmetic the
+balanced-builder theorems need is still available on it. Nothing in
+`Design.cost` uses it. -/
+def Expr.treeCost {w : Nat} : Expr w → Nat
   | .lit _        => 0
   | .reg _ _      => 0
-  | .memRead _ _ a => a.cost          -- the bank is counted in Cost.mem*
-  | .and a b      => w + a.cost + b.cost
-  | .or a b       => w + a.cost + b.cost
-  | .xor a b      => w + a.cost + b.cost
-  | .not a        => w + a.cost
-  | .add a b      => w + a.cost + b.cost
-  | .sub a b      => w + a.cost + b.cost
-  | .shl a b      => w + a.cost + b.cost
-  | .shr a b      => w + a.cost + b.cost
-  | @Expr.eq w' a b  => w' + a.cost + b.cost
-  | @Expr.ult w' a b => w' + a.cost + b.cost
-  | @Expr.slt w' a b => w' + a.cost + b.cost
-  | .mux c t f    => w + c.cost + t.cost + f.cost
-  | .slice a _ _  => a.cost
-  | .zext a _     => a.cost
-  | .sext a _     => a.cost
+  | .memRead _ _ a => a.treeCost      -- the bank is counted in Cost.mem*
+  | .and a b      => w + a.treeCost + b.treeCost
+  | .or a b       => w + a.treeCost + b.treeCost
+  | .xor a b      => w + a.treeCost + b.treeCost
+  | .not a        => w + a.treeCost
+  | .add a b      => w + a.treeCost + b.treeCost
+  | .sub a b      => w + a.treeCost + b.treeCost
+  | .shl a b      => w + a.treeCost + b.treeCost
+  | .shr a b      => w + a.treeCost + b.treeCost
+  | @Expr.eq w' a b  => w' + a.treeCost + b.treeCost
+  | @Expr.ult w' a b => w' + a.treeCost + b.treeCost
+  | @Expr.slt w' a b => w' + a.treeCost + b.treeCost
+  | .mux c t f    => w + c.treeCost + t.treeCost + f.treeCost
+  | .slice a _ _  => a.treeCost
+  | .zext a _     => a.treeCost
+  | .sext a _     => a.treeCost
 
-/-- Combinational work of an action, including its guards. -/
-def Act.cost : Act → Nat
+/-- Tree-recursion work of an action. -/
+def Act.treeCost : Act → Nat
   | .skip => 0
-  | .seq a b => a.cost + b.cost
-  | .ite c t e => c.cost + t.cost + e.cost
-  | .write _ _ v => v.cost
-  | .memWrite _ _ _ _ a d => a.cost + d.cost
+  | .seq a b => a.treeCost + b.treeCost
+  | .ite c t e => c.treeCost + t.treeCost + e.treeCost
+  | .write _ _ v => v.treeCost
+  | .memWrite _ _ _ _ a d => a.treeCost + d.treeCost
 
 /-- How many syntactic sites read register `n` — the fanout dimension. -/
 def Expr.regReads {w : Nat} (n : String) : Expr w → Nat
@@ -195,6 +416,9 @@ predicted one way by the area model and another way by the emit gate. -/
 def Design.cost (d : Design) (t : MemTarget) : Cost :=
   let regBits := d.regs.foldl (fun acc r => acc + r.width) 0
   let memBits := d.mems.foldl (fun acc m => acc + m.dataWidth * 2 ^ m.addrWidth) 0
+  -- per-rule hash-consed node weight, summed: sharing inside a rule body is
+  -- modelled exactly, sharing across rules is deliberately not (see above),
+  -- which keeps `Design.par` additive and makes `bitOps` an upper bound.
   let ops := d.rules.foldl (fun acc r => acc + r.body.cost) 0
   let macroB := d.mems.foldl (fun acc m =>
     if t.familyOf d m == MemFamily.bram then acc + m.dataWidth * 2 ^ m.addrWidth else acc) 0
