@@ -89,3 +89,37 @@ Core.lean +450–650; Iss.lean +200–300; Harness.lean +200–300;
 HpMaster.lean +80–150 (burst rung only); HpArbiter/DualSoc +60–100
 (snoop rung); EXTEND_SPEC.md EXT-9 section; boot/fastload scripts ~10
 lines each.
+
+## Area projection against the ceiling (W6 model, 2026-08-07)
+
+Run before writing a line of it, which is what the cost model is for:
+
+| rung | predicted sites | % of xc7z020 |
+|---|---|---|
+| epoch top today | 56 791 | 53 % |
+| + I$ stage 1 control (plan's 450 LUT upper bound) | 57 358 | 53.9 % |
+| + invalidate sweep engine | 57 547 | 54.1 % |
+| + D$ control (600 upper bound) | 58 303 | 54.8 % |
+
+BRAM: 29 macros used today; I$ 10 + D$ 10 → 49 of 140. Free, as expected.
+
+**Read this as risk, not permission.** The calibrated closure threshold is
+50 % and the epoch top is *already past it* — the seed that eventually routed
+(seed 11, 25.01 MHz against a 25 MHz board clock) took four attempts. Adding
+1.8 points of LUT on top of that is not obviously survivable, and the model
+explicitly cannot tell us: it did not separate the design that routed from the
+one that did not (§69).
+
+So the sequencing follows the numbers rather than the wish list:
+
+1. **Build the I$ rung on the DUAL top first** (48 %, routed first try at
+   30.43 MHz, ~4 points of headroom). That validates the cache against a part
+   that will actually close, and it is the rung translated fetch needs.
+2. Only then attempt it on the epoch top, and expect to pay for a seed.
+3. If the epoch top will not take I$ + D$ together, the honest split is the
+   one Appendix F already gestures at: engines and caches need not be the
+   same core.
+
+The area-reduction work (`LOOM_GAPS.md` W6 / the hotspot analysis) is
+therefore on the critical path for the *epoch* variant, not for the caches
+themselves.
