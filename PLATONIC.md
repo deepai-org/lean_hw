@@ -185,3 +185,55 @@ itself from the `Design` and proving equality symbolically, per opcode, rather
 than by evaluation over a finite vector set. The load/store/branch/jump legs
 also stay in the test gate for now: their cmd streams and dual-memory-path
 checks are where the test form earns its keep.
+
+## What sel_cond taught (2026-08-07): consistency is not correctness
+
+The renumbering campaign's killer — three identical silicon panics across
+three attempts — was `sel_cond` deriving SEL's condition from `op[2:0]`, an
+assumption about a retired opcode layout, **duplicated by hand in the ISS**.
+Design and reference were wrong *together*, so every internal gate this
+document describes was green: the matrix (which could not build the 5-slot
+form), the derived comparator (comparing against the co-wrong oracle), even
+the matrix THEOREM. The one implementation that knew — an independent
+emulator in another repo, in another language — was unreachable through
+exactly the op that mattered.
+
+Three corrections to the intended shape follow, in strength order:
+
+**1. The reference must be derived or it is a liability.** W5's deeper half —
+Loom generating the executable model from the `Design` — is no longer a
+nice-to-have; it is the structural remedy for the wrong-together failure
+mode. A hand-mirrored ISS is a second copy of the semantics, and a second
+copy can copy the mistake. Where the hand-ISS survives in the interim, every
+op family must be drivable by a differential against a genuinely independent
+implementation, and an op no differential can drive is a standing risk to be
+listed, not an exclusion to be filed.
+
+**2. Oracles carry declared coverage.** `Loom.Hw.Oracle` +
+`diffAgainstOracle`: a reference's unmodelled state is a CLOSED, named list,
+and an unmodelled coordinate outside it fails the run. The open-ended
+fall-through was the same omission-looks-like-agreement hole as the
+hand comparator, one level up. Negative-control discipline applies: the
+enforcement was watched failing (an undeclared `rx_mem`) before it was
+believed.
+
+**3. The real workload is a rung of the ladder, not just the board's.**
+`scripts/boot_sim.sh` boots the ACTUAL guest image on the emitted RTL in
+iverilog: the failure that cost three board campaigns reproduced there in
+twenty seconds, with every internal signal a `$display` away. The ladder's
+gap was between "generated programs on the RTL" and "the image on silicon";
+simulation of the shipped artifact fills it, and runs before board
+forensics, not after.
+
+A hazard-class note for the lint mindset: the bug was **arithmetic on an
+identifier** — deriving meaning from the numeric value of an opcode byte.
+No literal-lint can see it, because there is no literal. The countermeasure
+is structural (keyed dispatch off named constants, generated coverage per
+name), not lexical.
+
+And one physical-world constraint promoted to a design input: at ~52% LUT
+utilization on the xc7z020, routing seeds became coin flips (the recorded
+ceiling is ~55%; one seed burned six hours flat). Area headroom is part of
+the correctness budget — a design that cannot route repeatably cannot be
+iterated on — so W6's cost model earns priority alongside the deeper half
+of W5.
