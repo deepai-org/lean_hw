@@ -147,6 +147,12 @@ def MiniIn.toEnv (c : MiniIn) : InEnv := fun n w =>
 def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
   -- (name, width, value)
   [("cur",5,s.cur.toNat), ("pc",64,s.pc.toNat), ("retire",32,s.retire.toNat),
+   -- EXT-9/9b: the cache's own registers. The Oracle's closed list makes
+   -- adding them mandatory rather than optional -- omitting one reports
+   -- UNDECLARED-UNMODELLED instead of quietly shrinking the comparison.
+   ("ic_tag_q",42,s.ic_tag_q.toNat), ("ic_data_q",64,s.ic_data_q.toNat),
+   ("ic_gen",16,s.ic_gen.toNat), ("ic_inv",1,if s.ic_inv then 1 else 0),
+   ("ic_ctr",12,s.ic_ctr.toNat),
    ("trace_wp",4,s.trace_wp.toNat), ("trace_sel",4,s.trace_sel.toNat),
    ("trace_rd_pc",64,s.trace_rd_pc.toNat), ("trace_rd_wb",64,s.trace_rd_wb.toNat),
    ("trace_hit",1,if s.trace_hit then 1 else 0),
@@ -236,7 +242,13 @@ def cmpCoveredMems (s : MiniSt) : List String :=
    -- EXT-8: the commit-trace ring. Compared, not exempted -- the whole value
    -- of a trace is that it says what actually happened, so a ring the models
    -- disagree about would be worse than no ring at all.
-   "trace_pc", "trace_wb"]
+   "trace_pc", "trace_wb",
+   -- EXT-9: the I-cache banks. Compared, not exempted: a cache the two
+   -- models disagree about is a cache that can hand the core a different
+   -- instruction than the reference expects, which is the whole failure
+   -- mode. (The lockstep already caught one such disagreement -- a fill
+   -- that put the tag in the valid bit.)
+   "ic_data", "ic_tag"]
     ++ (issTArrays s).map (·.1)
 
 /-- Memories the ISS deliberately does not model, so the lockstep has nothing
@@ -1560,37 +1572,82 @@ def MMU_CELL : Nat := 0x9         -- the VMA's epoch cell
 def MMU_DOM  : Nat := 3
 
 def progLdSt : List (BitVec 64) :=
-  [ encImmI OP_ADDI 1 0 MMU_VA,      -- w0  r1 = the virtual address
-    enc OP_LD_31 5 1 0,               -- w1  r5 = [r1]   (LD -- translated)
-    enc OP_EXIT 0 0 0 ]              -- w2  EXIT
+  -- The leading ADDIs are a DELAY, not decoration. The core starts at cycle
+  -- 0 while the harness is still issuing the TLB/`mmu_en` command stream, so
+  -- a three-instruction program can reach its load BEFORE translation is on
+  -- and read the untranslated address -- which looks exactly like a
+  -- fail-closed miss (r5 = 0) and would make this test lie about the TLB.
+  -- EXT-9b made the stream four commands longer (a text VMA must exist
+  -- before fetch is translated), which is what exposed the race.
+  [ encImmI OP_ADDI 2 0 1,           -- w0..w3: delay past the command stream
+    encImmI OP_ADDI 2 0 2,
+    encImmI OP_ADDI 2 0 3,
+    encImmI OP_ADDI 2 0 4,
+    encImmI OP_ADDI 1 0 MMU_VA,      -- r1 = the virtual address
+    enc OP_LD_31 5 1 0,              -- r5 = [r1]   (LD -- translated)
+    enc OP_EXIT 0 0 0 ]
 
 /-- Install TLB entry 4: VPN 4, domain `dom`, PPN, cell; enable the MMU;
 put thread 0 in domain `dom`; start. `bump` optionally fires the §15
 shootdown on the cell before the program runs. -/
 def cmdMmu (dom : Nat) (bump : Bool) : Nat → MiniIn := fun k =>
-  -- EXT-7 stage B: install ONE VMA — base+domain, then limit (which
-  -- validates the entry, so a half-written VMA is never live), then
-  -- physical base + the VMA's epoch cell.
-  if k = 0 then { cmdValid := true, cmdIdx := CMD_TLB_SEL, cmdData := 4 }
+  -- EXT-7 stage B: install VMAs — base+domain, then physical delta, then
+  -- limit (which validates the entry, so a half-written VMA is never live).
+  --
+  -- **EXT-9b: the TEXT mapping is installed first, before `mmu_en`.** Fetch
+  -- is translated now, so a program whose own text is unmapped cannot run:
+  -- `ddrEa` fails closed to the poison page and the core fetches `0x0BAD`
+  -- as an instruction. That is the correct fail-closed behaviour, and it is
+  -- exactly what these tests used to rely on NOT happening — two of them
+  -- carried the comment "fetches are deliberately untranslated". Entry 0
+  -- maps text identically for the domain under test, so what they measure
+  -- is still the DATA translation they were written to measure.
+  if k = 0 then { cmdValid := true, cmdIdx := CMD_TLB_SEL, cmdData := 0 }
   else if k = 1 then
+    { cmdValid := true, cmdIdx := CMD_TLB_VPN,
+      cmdData := BitVec.ofNat 32 ((dom <<< 24) ||| 0) }
+  else if k = 2 then
+    { cmdValid := true, cmdIdx := CMD_TLB_PHYS, cmdData := BitVec.ofNat 32 0 }
+  else if k = 3 then
+    -- limit 0x2000, NOT something wide: `priTree` gives the lowest index
+    -- priority, so a broad text entry at index 0 would shadow the data VMA
+    -- under test at index 4 (MMU_VA = 0x4000 is inside any wide range) and
+    -- the test would measure identity instead of translation. Narrow to the
+    -- program's own pages.
+    { cmdValid := true, cmdIdx := CMD_TLB_PPN, cmdData := BitVec.ofNat 32 0x2000 }
+  -- the data VMA under test
+  else if k = 4 then { cmdValid := true, cmdIdx := CMD_TLB_SEL, cmdData := 4 }
+  else if k = 5 then
     -- base in [23:0], domain in [31:24]
     { cmdValid := true, cmdIdx := CMD_TLB_VPN,
       cmdData := BitVec.ofNat 32 ((MMU_DOM <<< 24) ||| MMU_VA) }
-  else if k = 2 then
+  else if k = 6 then
     { cmdValid := true, cmdIdx := CMD_TLB_PHYS,
       -- the entry stores the DELTA phys-base, so the host does the subtract
       cmdData := BitVec.ofNat 32 ((MMU_CELL <<< 24)
                    ||| (((MMU_PPN <<< 12) - MMU_VA) &&& 0xffffff)) }
-  else if k = 3 then
+  else if k = 7 then
     -- limit last: it is what makes the entry live
     { cmdValid := true, cmdIdx := CMD_TLB_PPN,
       cmdData := BitVec.ofNat 32 (MMU_VA + 0x1000) }
-  else if k = 4 then { cmdValid := true, cmdIdx := CMD_MMU_EN, cmdData := 1 }
-  else if k = 5 then
+  -- **SETDOM BEFORE MMU_EN.** The text entry is domain-tagged, so enabling
+  -- translation while the thread still carries domain 0 makes the very next
+  -- FETCH miss and fail closed -- the core then executes the poison page.
+  -- The old order (mmu_en, then setdom) was harmless only because fetch was
+  -- untranslated. Same shape as the stage-B silicon bug in fpga_dev.md §69,
+  -- where core 0 started before its map existed.
+  else if k = 8 then
     { cmdValid := true, cmdIdx := CMD_SETDOM, cmdData := BitVec.ofNat 32 (dom <<< 8) }
-  else if bump ∧ k = 6 then
+  else if k = 9 then { cmdValid := true, cmdIdx := CMD_MMU_EN, cmdData := 1 }
+  else if bump ∧ k = 10 then
     { cmdValid := true, cmdIdx := CMD_MAP_PROTECT, cmdData := BitVec.ofNat 32 MMU_CELL }
-  else if k = 7 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  -- START THE CORE, last. This line lived at k=7 before EXT-9b renumbered
+  -- the stream to fit a text VMA in front; overwriting it left the core in
+  -- S_IDLE and every value check reading 0 -- which looks exactly like a
+  -- fail-closed TLB miss. Starting last is also what makes the delay
+  -- instructions in `progLdSt` unnecessary in principle and harmless in
+  -- practice: nothing executes until the map is complete.
+  else if k = 11 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
 def mmuSelftest : IO Unit := do
