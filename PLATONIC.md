@@ -297,3 +297,56 @@ unlabelled estimate becomes a fact by being repeated, and an omission looks
 exactly like agreement. The rule generalizes: *a number without provenance
 is not admissible evidence*, and the place to enforce it is the type, not
 the reviewer's memory.
+
+## The first feature the toolchain carried (2026-08-07)
+
+EXT-9 rung 1 — a 32 KB instruction cache — is the first substantial feature
+built *after* the disciplines existed rather than before them, so it is the
+first honest test of whether they help while you work or only explain
+afterwards. Three of them fired, at three different moments:
+
+**Before any RTL existed**, W1.1's emit gate refused the design: the cache's
+sync-read latches were read but never declared. The failure named the
+register and the width. Without it, an undeclared read evaluates to zero
+forever — a design that simulates, emits, and is simply wrong.
+
+**During the first lockstep run**, the EDSL/ISS comparison found a real bug
+in the fill: the tag was shifted into the valid-bit position, so every fill
+stored `(tag&1) << 17`. It surfaced as `st: edsl=S_FW iss=S_RD` — one model
+hitting where the other missed. That is exactly the shape a cache defect
+takes, and exactly why the plan has the ISS *model* the cache instead of
+abstracting it. An "abstract, transparent cache" in the reference would have
+compared equal to a broken one.
+
+**On the first matrix run**, the `Oracle` closed-list check — added days
+earlier for a different reason — made teaching the oracle about the new banks
+mandatory, reporting `UNDECLARED-UNMODELLED ic_tag[...]` rather than quietly
+comparing less state than before. A gate written for one omission caught a
+different one, which is the sign it was aimed at the class and not the
+instance.
+
+Two observations worth generalizing.
+
+**The disciplines are load-bearing at design time, not just at review time.**
+D19 (sync-read shape) and D38 (one write port) did not *check* the cache — they
+*determined* it. "One latch site per bank, one write funnel per bank" is not
+an audit rule the design happens to satisfy; it is the reason the banks land
+in block RAM rather than becoming 4096-deep read muxes, and it is why the same
+design is `realizableOnB` on `asicSram` without a second thought. A rule that
+shapes the artifact is worth more than a rule that grades it.
+
+**The cost model changed a decision before any code was written.** Projecting
+the rungs put the epoch top at ~54.8 %, past the closure threshold it had just
+needed four routing seeds to beat, so the cache went onto the dual top (48 %,
+first-try routes) instead. That is the first time an area number moved work
+rather than merely describing it afterwards — and it is the right use of a
+model that, by its own admission, cannot tell a routable design from an
+unroutable one at this margin. Predicting *risk* is enough to sequence work;
+it is not enough to grant permission, and the distinction is the whole
+discipline.
+
+What this does not yet demonstrate: the cache is transparent by *test*
+(lockstep, 596 RTL programs), not yet by the ISS-vs-ISS theorem the plan
+calls for. Until that exists, "the cache changes no architectural result" is a
+claim backed by the generated matrix rather than by a proof over it — which is
+precisely the W5-deeper-half gap, met again from a new direction.
