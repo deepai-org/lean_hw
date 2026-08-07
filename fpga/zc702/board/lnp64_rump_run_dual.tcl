@@ -37,6 +37,18 @@ set C1STACK 0x01700000                 ;# LNP64_CORE1_STACK_TOP
 if {[info exists ::env(LNP64_CORE1_ENTRY)]} { set C1ENTRY [expr $::env(LNP64_CORE1_ENTRY)] }
 if {[info exists ::env(LNP64_CORE1_STACK)]} { set C1STACK [expr $::env(LNP64_CORE1_STACK)] }
 proc c1 {i} { global C1SEL; return [expr {$C1SEL | $i}] }
+# §17 protection domains: the root pointers the core adds to DATA_BASE to walk
+# the gate table (cmd 74) and the capability-inbox table (cmd 75). These are
+# GUEST VAs -- both the guest's own stores and the core's walk go through the
+# same DATA_BASE+ea, so gate_tbl_base = the table's link address. 0 = not
+# installed = every walk fails closed (a guest that calls a gate then just
+# steps past it). Set from the image's published mini_domains.env; the demo
+# runs the IDENTITY map (the gate walk addresses DDR untranslated, so a
+# relocated data map would desync it -- keep LNP64_RELOC=0 with domains).
+set GATE_TBL 0
+set CAP_TBL  0
+if {[info exists ::env(LNP64_MINI_GATE_TBL)]} { set GATE_TBL [expr $::env(LNP64_MINI_GATE_TBL)] }
+if {[info exists ::env(LNP64_MINI_CAP_TBL)]}  { set CAP_TBL  [expr $::env(LNP64_MINI_CAP_TBL)] }
 # PRELOADED: the text image (read-only, ~624K words, ~17 min over JTAG) is
 # skipped when DDR already holds THIS hex. Auto-detected: the md5 of the text
 # hex is recorded in TEXTMARK after a successful load; if it matches on the
@@ -457,6 +469,11 @@ if {$RELOC} {
   wr 64 0 ; wr 65 0x00000000 ; wr 68 0x01000000 ; wr 66 0xFFFFFFFF ; wr 63 1
   puts "MMU: identity VMA installed on core 0 (base 0, limit 0xFFFFFFFF, cell 1); mmu_en=1"
 }
+# §17: install the domain table roots on core 0 before it runs. gate_tbl_base
+# and cap_tbl_base are not touched by cmd-13's zeroing sweep, so setting them
+# here (after the reset, before the run) is safe.
+if {$GATE_TBL != 0} { wr 74 $GATE_TBL; puts [format "DOMAINS: core0 gate_tbl_base=0x%x" $GATE_TBL] }
+if {$CAP_TBL  != 0} { wr 75 $CAP_TBL;  puts [format "DOMAINS: core0 cap_tbl_base=0x%x" $CAP_TBL] }
 wr 13 2
 # EXT-1 (Law 5): arm a BOUNDED preemption quantum. Law 5 wants the
 # non-preemptible interval bounded, not small -- at 2.5M cycles (100 ms @
@@ -510,6 +527,9 @@ if {$C1ENTRY != 0} {
     wr [c1 66] 0xFFFFFFFF ; wr [c1 63] 1
     puts "MMU: identity VMA installed on core 1 after reset; mmu_en=1"
   }
+  # §17: core 1 shares the same DDR tables but has its own root registers.
+  if {$GATE_TBL != 0} { wr [c1 74] $GATE_TBL }
+  if {$CAP_TBL  != 0} { wr [c1 75] $CAP_TBL }
   wr [c1 13] 2                               ;# run
   if {$QUANTUM > 0} { wr [c1 57] $QUANTUM; puts "PREEMPT: core1 quantum=$QUANTUM cycles" }
   after 100

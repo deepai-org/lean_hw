@@ -25,6 +25,12 @@ export LNP64_CORE1_ENTRY="${LNP64_CORE1_ENTRY:-0x8ca100}"
 export LNP64_CORE1_STACK="${LNP64_CORE1_STACK:-0x01700000}"
 export LNP64_MMU="${LNP64_MMU:-0}"
 export LNP64_RELOC="${LNP64_RELOC:-0}"   # EXT-7 stage B: non-identity translation
+# §17 protection domains: the gate/cap table roots the servicer pokes as
+# cmd 74/75. Empty = no tables installed = every gate/cap walk fails closed
+# (a domainless image boots exactly as before). The gate walk addresses DDR
+# untranslated, so domains require the identity map (LNP64_RELOC must stay 0).
+export LNP64_MINI_GATE_TBL="${LNP64_MINI_GATE_TBL:-}"
+export LNP64_MINI_CAP_TBL="${LNP64_MINI_CAP_TBL:-}"
 
 say "== netbsd_up: power-off -> NetBSD (dual SMP, core1 entry $LNP64_CORE1_ENTRY) =="
 for attempt in 1 2; do
