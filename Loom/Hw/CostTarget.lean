@@ -70,10 +70,24 @@ structure CostTarget where
   macroBitsPerInstance : Nat
   /-- **Unit bridge.** Weights are fitted against the SYNTHESIZER's cell
   count; `capacity` is in the PLACER's site count, and packing expands one
-  into the other (measured 44 646 → 56 290 SLICE_LUTX, i.e. 1.26×, on the
-  epoch top). Two numbers both called "LUTs" is exactly the kind of silent
-  unit mismatch this repo has been bitten by, so the conversion is a named
-  field with its own measurement rather than an implicit factor. -/
+  into the other. Two numbers both called "LUTs" is exactly the kind of
+  silent unit mismatch this repo has been bitten by, so the conversion is a
+  named field with its own measurement rather than an implicit factor.
+
+  **It is not a constant, and that is the model's biggest known weakness**
+  (measured 2026-08-07). Three points on the same design family:
+  epoch top 44 646 cells → 56 290 sites (1.26×); dual top 44 112 → ~51 072
+  (1.16×); dual top **with the I-cache** 43 999 → 55 129 (1.25×). The cache
+  rung is the sharp case: yosys cells went *down* by 113 while packed sites
+  rose by ~4 000. So the abstract cost vector was very nearly blind to a
+  feature that cost 3.8 points of the part, because the cost landed entirely
+  in packing — how well logic shares slices — which this field models as one
+  scalar per target.
+
+  Treat a prediction across a structural change (adding memories, changing
+  fanout) as extrapolation. Fixing it properly means modelling packing from
+  the design's own structure, which is what `maxFanout` is a placeholder
+  for. -/
   packExpansionMilli : Nat
   /-- **Capacity**: primary resources the part physically has. -/
   capacity : Nat

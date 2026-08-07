@@ -350,3 +350,36 @@ What this does not yet demonstrate: the cache is transparent by *test*
 calls for. Until that exists, "the cache changes no architectural result" is a
 claim backed by the generated matrix rather than by a proof over it — which is
 precisely the W5-deeper-half gap, met again from a new direction.
+
+### Addendum: the cache measured the model back
+
+The I-cache rung produced the sharpest calibration datum the W6 model has,
+and it is a negative one. Synthesizer cell count went *down* by 113 while the
+placed design grew by ~4 000 sites — 3.8 points of the part. The abstract
+cost vector was very nearly blind to the feature's real cost, because that
+cost landed entirely in **packing**: how well logic shares slices, which the
+model carries as a single scalar per target (measured 1.16× on the dual top,
+1.25–1.26× with the cache or the epoch engines).
+
+Two conclusions, both worth holding onto.
+
+*The dimension that mattered was the one nobody had modelled.* `stateBits`,
+`bitOps` and the macro/soft split all behaved; the error was in the unit
+bridge between synthesis and placement. That is a good argument for keeping
+the bridge an explicit, named field with its own measurement — had it been an
+implicit constant folded into the weights, this would have shown up as
+"weights drifted" and been re-fitted into invisibility instead of identified.
+
+*A model earns trust by being wrong legibly.* The prediction was off by ~7×
+on the increment, and it was possible to say so precisely, in one number,
+because capacity and closure and the unit bridge are separate fields rather
+than one fitted scalar. The correct response is not to re-fit until the
+residual looks good — it is to record that predictions across *structural*
+changes are extrapolation, and that modelling packing from the design's own
+structure is the open work, which is what `maxFanout` is a placeholder for.
+
+The rung still ended where it should: the cache went onto the top the model
+told us had headroom, that top routed first try at 29.34 MHz, and all 20 cache
+banks landed in block RAM (46 RAMB36, exactly 10 per core). The model was
+wrong about the magnitude and right about the decision — which is the most a
+risk signal is supposed to do.
