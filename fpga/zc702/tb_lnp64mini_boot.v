@@ -97,7 +97,8 @@ module tb_boot;
                  waddr <= o_hp_m_awaddr; hp_m_awready <= 1; wstate <= WS_W;
                end
       WS_W:    if (o_hp_m_wvalid) begin
-                 ddr[(waddr - DATA_BASE) >> 3] <= o_hp_m_wdata;
+                 if (waddr >= DATA_BASE && ((waddr - DATA_BASE) >> 3) < 8388608)
+                   ddr[(waddr - DATA_BASE) >> 3] <= o_hp_m_wdata;
                  hp_m_wready <= 1; wstate <= WS_B;
                end
       WS_B:    begin
@@ -114,7 +115,14 @@ module tb_boot;
                end
       RS_R:    begin
                  hp_m_rvalid <= 1; hp_m_rresp <= 2'b00;
-                 hp_m_rdata_in <= ddr[(raddr - DATA_BASE) >> 3];
+                 // Out-of-window reads (GEM MMIO at 0xE000_B000, any stray
+                 // address) return 0 rather than indexing past the array.
+                 // Without this the array read is X, the X reaches o_halted,
+                 // and the run ends at ~1.34M cycles looking like a halt --
+                 // which is exactly how far this tb used to get.
+                 hp_m_rdata_in <= (raddr >= DATA_BASE &&
+                                   ((raddr - DATA_BASE) >> 3) < 8388608)
+                                  ? ddr[(raddr - DATA_BASE) >> 3] : 64'd0;
                  if (o_hp_m_rready) rstate <= RS_IDLE;
                end
       default: rstate <= RS_IDLE;
