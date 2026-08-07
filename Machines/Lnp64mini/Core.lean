@@ -176,7 +176,33 @@ Both banks are D19 sync-read: `S_F0` writes the two latch registers below
 from a bare `memRead`, and `S_IC` consumes them the next cycle. That is
 what makes them block RAM rather than 4096-deep read muxes (the D38/CE9
 lesson, where the difference was 14x). -/
-def ic_tag_q  : Expr 18 := .reg 18 "ic_tag_q"
+def ic_tag_q  : Expr 42 := .reg 42 "ic_tag_q"
+
+/-! ### EXT-9b — invalidation in O(1), not O(cache)
+
+A virtually-tagged cache must be emptied when the mapping that gave its
+lines meaning changes. The obvious implementation -- walk the tag bank and
+clear it -- is **the wrong algorithm**: 4096 stalled cycles per map change,
+cost proportional to the cache, paid by an OS every `mmap`/`map.protect`.
+Growing the cache would make invalidation slower, which is backwards.
+
+So lines carry a **generation** and the design keeps a global `ic_gen`. A
+line is live only if its generation is the current one, and invalidating
+everything is `ic_gen := ic_gen + 1` -- one cycle, no stall, independent of
+cache size. This is the same primitive the spec uses for exactly this
+problem (§3 epochs, "stale fails forever"), applied locally.
+
+The honest part is the wrap: a 16-bit generation returns to a value some
+line still carries after 65 536 invalidations, and that line would falsely
+hit. Rather than assert it cannot happen, the wrap **triggers the sweep** --
+so the sweep still exists, is still the thing that makes the design correct
+rather than probable, and runs once per 65 536 invalidations instead of once
+per one. Saturation handled by a fallback rather than by an assumption is
+the same shape as the epoch engine's T-E2, where saturation is a defined
+terminal state instead of an unstated hope. -/
+def ic_gen    : Expr 16 := .reg 16 "ic_gen"
+def ic_inv    : Expr 1  := .reg 1  "ic_inv"
+def ic_ctr    : Expr 12 := .reg 12 "ic_ctr"
 def ic_data_q : Expr 64 := .reg 64 "ic_data_q"
 
 def sel_t     : Expr 64 := .reg 64 "sel_t"
@@ -968,7 +994,7 @@ def holdEn : Expr 1 := .and hold (.eq st (L5 S_F0))
 input, DUAL_SPEC extension 4) freezes the FSM: with `hold` tied 0 this is
 the original `running ∧ ¬halted ∧ ¬zeroing`. -/
 def fsmEn : Expr 1 :=
-  .and (.not holdEn) (.and running (.and (.not halted) (.not zeroing)))
+  .and (.not holdEn) (.and running (.and (.not halted) (.and (.not zeroing) (.not ic_inv))))
 
 /-- S_EX branch reached iff earlier branches all missed. We inline each
 branch's own predicate ANDed with fsmEn ∧ st==S_EX; mutual exclusion holds
@@ -1458,10 +1484,20 @@ whole point of putting the TLB on the miss arm later is that `S_IC`'s hit
 path must not grow a translation). -/
 def ic_idx : Expr 12 := .slice ddrPc 3 12
 def ic_tag : Expr 17 := .slice ddrPc 15 17
-/-- A hit is the valid bit and a tag match, read out of the latched word. -/
+/-- A hit is valid ∧ domain match ∧ tag match, read out of the latched word.
+
+**The domain is in the tag** because EXT-9b translates the miss arm: a line
+now means "this virtual address, *under this domain's map*". Two domains can
+map the same virtual address to different physical text, and the fetch path
+cannot re-check that without putting a TLB lookup back on the hit path --
+which is the one thing this whole structure exists to avoid. Tagging by
+domain makes the aliasing structurally impossible instead of a rule someone
+has to remember on every domain switch. -/
 def ic_hit : Expr 1 :=
-  .and (.eq (.slice ic_tag_q 17 1) (L1 1))
-       (.eq (.slice ic_tag_q 0 17) ic_tag)
+  .and (.eq (.slice ic_tag_q 41 1) (L1 1))
+    (.and (.eq (.slice ic_tag_q 25 16) ic_gen)
+      (.and (.eq (.slice ic_tag_q 17 8) domCur)
+            (.eq (.slice ic_tag_q 0 17) ic_tag)))
 /-- The tag word written on a fill: `valid(1) ++ tag(17)`.
 
 Written wrong the first time -- the TAG was shifted into the valid
@@ -1470,9 +1506,11 @@ mis-validated and lost its tag. The EDSL/ISS lockstep failed on the third
 selftest script with `st: edsl=S_FW iss=S_RD`, i.e. one model hitting where
 the other missed, which is exactly the shape a cache bug has and exactly
 why the ISS models the cache rather than abstracting it. -/
-def ic_tag_fill : Expr 18 :=
-  .or (.shl (.lit (BitVec.ofNat 18 1)) (.lit (BitVec.ofNat 18 17)))
-      (.zext ic_tag 18)
+def ic_tag_fill : Expr 42 :=
+  .or (.shl (.lit (BitVec.ofNat 42 1)) (.lit (BitVec.ofNat 42 41)))
+    (.or (.shl (.zext ic_gen 42) (.lit (BitVec.ofNat 42 25)))
+      (.or (.shl (.zext domCur 42) (.lit (BitVec.ofNat 42 17)))
+           (.zext ic_tag 42)))
 
 
 /-- The ONE effective address S_EX ever translates. LR and SC translate `a`;
@@ -1621,7 +1659,7 @@ def s_f0 : Expr 1 × Act := stArm S_F0
       -- below are the D19 sync-read sites for `ic_tag`/`ic_data`; `S_IC`
       -- consumes them next cycle. A miss from there issues exactly the
       -- transaction this arm used to issue, one cycle later.
-      (.seq (.write 18 "ic_tag_q" (.memRead 18 "ic_tag" ic_idx))
+      (.seq (.write 42 "ic_tag_q" (.memRead 42 "ic_tag" ic_idx))
         (.seq (.write 64 "ic_data_q" (.memRead 64 "ic_data" ic_idx))
           (.write 5 "st" (L5 S_IC)))))))
 
@@ -1637,7 +1675,17 @@ banks. Hit -> `ir` from the latched data word, straight to `S_RD` (a
 def s_ic : Expr 1 × Act := stArm S_IC
   (.ite ic_hit
     (.seq (.write 64 "ir" ic_data_q) (.write 5 "st" (L5 S_RD)))
-    (.seq (.write 32 "core_addr" ddrPc)
+    -- **EXT-9b: translated fetch.** The miss arm asks the TLB, exactly as
+    -- the data path does; the HIT arm above touches no translation at all,
+    -- which is the entire reason the cache had to come first. EXTEND_SPEC
+    -- recorded the old constraint honestly -- "fetch is untranslated, so
+    -- text must stay put" -- and this removes it: with `mmu_en` the whole
+    -- address space, text included, is under the VMA.
+    --
+    -- With `mmu_en = 0`, `ddrEa pc` reduces to `ddrEaRaw pc`, which is
+    -- `ddrPc` word-aligned -- so an unmapped machine fetches exactly what it
+    -- fetched before.
+    (.seq (.write 32 "core_addr" (ddrEa pc))
       (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))
 
 /-- `S_RD`: latch the three source operands. **D19 sync-read sites** —
@@ -2150,7 +2198,48 @@ def icFillRule : Rule :=
   ⟨"ic_data_funnel", .ite icFill (.memWrite 12 64 "ic_data" 0 ic_idx mRdata) .skip⟩
 
 def icTagRule : Rule :=
-  ⟨"ic_tag_funnel", .ite icFill (.memWrite 12 18 "ic_tag" 0 ic_idx ic_tag_fill) .skip⟩
+  -- ONE syntactic write site, address and data muxed. Two sites on port 0
+  -- is what `Compile.MemWriteWF` refuses and what CE10 measured at 14x the
+  -- LUTs; the emit gate caught exactly that here before any RTL existed.
+  -- Sweep wins over fill: during a wrap the bank is being retired, and a
+  -- fill landing in the middle of it would survive the sweep.
+  ⟨"ic_tag_funnel",
+    .ite (.or ic_inv icFill)
+      (.memWrite 12 42 "ic_tag" 0
+        (.mux ic_inv ic_ctr ic_idx)
+        (.mux ic_inv (.lit (BitVec.ofNat 42 0)) ic_tag_fill))
+      .skip⟩
+
+/-- Any command that changes the mapping a cached line was filled under.
+Bumping `ic_gen` retires every line at once, in one cycle. `cmd 13`'s soft
+reset is included so a re-armed core cannot inherit lines from the previous
+run. -/
+def icGenBump : Expr 1 :=
+  .and cmdValid
+    (orTree ([CMD_MMU_EN, CMD_TLB_SEL, CMD_TLB_VPN, CMD_TLB_PPN,
+              67, CMD_TLB_PHYS, 13].map (fun n => .eq cmdIdx (L7 n))))
+
+/-- The generation register, and the wrap fallback.
+
+The bump is O(1). The sweep exists only for the wrap: when `ic_gen` is about
+to return to a value a surviving line might still carry, the tag bank is
+walked once. That keeps the design *correct* rather than merely improbable,
+at an amortized cost of 4096 cycles per 65 536 invalidations -- about 0.06
+cycles each. -/
+def icGenRule : Rule :=
+  ⟨"ic_gen", .ite icGenBump
+    (.ite (.eq ic_gen (.lit (BitVec.ofNat 16 65535)))
+      (.seq (.write 16 "ic_gen" (.lit (BitVec.ofNat 16 0)))
+        (.seq (.write 1 "ic_inv" (L1 1)) (.write 12 "ic_ctr" (.lit (BitVec.ofNat 12 0)))))
+      (.write 16 "ic_gen" (.add ic_gen (.lit (BitVec.ofNat 16 1))))) .skip⟩
+
+/-- The wrap sweep: a `zeroing` clone over the tag bank, through the same
+single write site. Ends by clearing `ic_inv`, which releases `fsmEn`. -/
+def icInvRule : Rule :=
+  ⟨"ic_inv", .ite ic_inv
+    (.ite (.eq ic_ctr (.lit (BitVec.ofNat 12 4095)))
+      (.seq (.write 1 "ic_inv" (L1 0)) (.write 12 "ic_ctr" (.lit (BitVec.ofNat 12 0))))
+      (.write 12 "ic_ctr" (.add ic_ctr (.lit (BitVec.ofNat 12 1))))) .skip⟩
 
 /-- (10) EXT-1 — the quantum counter, the design's **only** writer of
 `qctr`, in strict priority:
@@ -2186,7 +2275,8 @@ def scalarRegs : List RegDecl :=
    ⟨"a",64,0⟩, ⟨"b",64,0⟩, ⟨"rdval",64,0⟩, ⟨"sel_t",64,0⟩, ⟨"sel_f",64,0⟩,
    -- EXT-9: the I-cache sync-read latches (D19). Both reset to 0, which is
    -- an invalid tag, so the cache comes up empty on every technology.
-   ⟨"ic_tag_q",18,0⟩, ⟨"ic_data_q",64,0⟩,
+   ⟨"ic_tag_q",42,0⟩, ⟨"ic_data_q",64,0⟩, ⟨"ic_gen",16,0⟩,
+   ⟨"ic_inv",1,0⟩, ⟨"ic_ctr",12,0⟩,
    ⟨"mem_is_store",1,0⟩, ⟨"trap_active",1,0⟩, ⟨"trapped_op",8,0⟩,
    ⟨"core_rd",1,0⟩, ⟨"core_wr",1,0⟩, ⟨"core_addr",32,0⟩, ⟨"core_wdata",64,0⟩,
    ⟨"jtag_rd",1,0⟩, ⟨"jtag_wr",1,0⟩, ⟨"jtag_wdata",64,0⟩, ⟨"ddr_addr_j",32,0⟩,
@@ -2257,7 +2347,7 @@ def design : Design where
      -- keeps them in block RAM. All-zero reset image: the valid bit is bit
      -- 17 of the tag word, so a zeroed bank is a fully invalid cache and
      -- D30/D37 have nothing to deliver.
-     ⟨"ic_data", 12, 64, fun _ => 0⟩, ⟨"ic_tag", 12, 18, fun _ => 0⟩,
+     ⟨"ic_data", 12, 64, fun _ => 0⟩, ⟨"ic_tag", 12, 42, fun _ => 0⟩,
      -- D20: the thread table's single-dynamic-index arrays.
      -- **D37 (2026-08-01): `tpc`'s reset image is ALL-ZERO, not TEXT_BASE.**
      -- A non-zero image on a 32×64 bank is exactly the D30 defect: yosys
@@ -2288,7 +2378,7 @@ def design : Design where
   rules :=
     [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
      fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule,
-     icFillRule, icTagRule]
+     icFillRule, icTagRule, icGenRule, icInvRule]
   -- D19 (now a Loom obligation): `Design.emit` refuses to emit if any of
   -- these is read outside a register-latch site. `rx_mem` is deliberately
   -- absent — it is read combinationally inside the `rf` write data, so

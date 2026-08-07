@@ -73,9 +73,15 @@ structure MiniSt where
   -- mirrored cycle-exactly because the lockstep compares every declared
   -- coordinate: an ISS that "abstracted" the cache would simply disagree.
   ic_data   : Array (BitVec 64) := Array.replicate 4096 0
-  ic_tag    : Array (BitVec 18) := Array.replicate 4096 0
-  ic_tag_q  : BitVec 18 := 0
+  ic_tag    : Array (BitVec 42) := Array.replicate 4096 0
+  ic_tag_q  : BitVec 42 := 0
   ic_data_q : BitVec 64 := 0
+  -- EXT-9b: O(1) invalidation. A line is live only in the current
+  -- generation; a map change bumps the generation instead of walking the
+  -- bank. `ic_inv`/`ic_ctr` are the wrap fallback only.
+  ic_gen    : BitVec 16 := 0
+  ic_inv    : Bool := false
+  ic_ctr    : BitVec 12 := 0
   core_wdata: BitVec 64 := 0
   jtag_rd   : Bool := false
   jtag_wr   : Bool := false
@@ -453,6 +459,21 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     if s.zctr.toNat = 32*NT - 1 then s' := { s' with zeroing := false }
     else s' := { s' with zctr := s.zctr + 1 }
 
+  -- EXT-9b: the I$ generation bump (O(1) invalidate) and its wrap fallback.
+  -- Mirrors icGenRule/icInvRule. The bump fires on any command that changes
+  -- the mapping a cached line was filled under, plus the soft reset.
+  if inp.cmdValid ∧ (inp.cmdIdx = 63 ∨ inp.cmdIdx = 64 ∨ inp.cmdIdx = 65
+                     ∨ inp.cmdIdx = 66 ∨ inp.cmdIdx = 67 ∨ inp.cmdIdx = 68
+                     ∨ inp.cmdIdx = 13) then
+    if s.ic_gen = 65535 then
+      s' := { s' with ic_gen := 0, ic_inv := true, ic_ctr := 0 }
+    else
+      s' := { s' with ic_gen := s.ic_gen + 1 }
+  if s.ic_inv then
+    s' := { s' with ic_tag := s'.ic_tag.set! s.ic_ctr.toNat 0 }
+    if s.ic_ctr = 4095 then s' := { s' with ic_inv := false, ic_ctr := 0 }
+    else s' := { s' with ic_ctr := s.ic_ctr + 1 }
+
   -- cmd (wr_pulse) surface
   if inp.cmdValid then
     let d := inp.cmdData
@@ -532,7 +553,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   -- the pre-state. `preemptAtF0` is true only at the instruction boundary
   -- (never mid-instruction, never while zeroing/held/trapped/paused, and
   -- S_WAIT/S_PAUSE/S_TRAP are excluded because they are not S_F0).
-  let fsmEnB := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
+  let fsmEnB := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ s.ic_inv ∧ ¬ holdEff
   let qOn := s.quantum ≠ 0
   let qExpired := qOn ∧ s.qctr = 0
   let preemptAtF0 :=
@@ -575,11 +596,15 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- hit: valid bit (17) set and tag match; miss: exactly the old fetch.
       let ddrPcV := (BitVec.ofNat 32 DATA_BASE) + s.pc.setWidth 32
       let tagV := (ddrPcV >>> 15).setWidth 17
-      let hit := s.ic_tag_q.getLsbD 17 ∧ s.ic_tag_q.setWidth 17 = tagV
+      let hit := s.ic_tag_q.getLsbD 41
+                 ∧ ((s.ic_tag_q >>> 25).setWidth 16) = s.ic_gen
+                 ∧ ((s.ic_tag_q >>> 17).setWidth 8) = s.tdom[s.cur.toNat]!
+                 ∧ s.ic_tag_q.setWidth 17 = tagV
       if hit then
         s' := { s' with ir := s.ic_data_q, st := BitVec.ofNat 5 S_RD }
       else
-        s' := { s' with core_addr := ddrPcV, core_rd := true,
+        -- EXT-9b: the miss arm translates; the hit arm above does not.
+        s' := { s' with core_addr := ddrEaOf s s.pc, core_rd := true,
                         st := BitVec.ofNat 5 S_FW }
     else if stN = S_PAUSE then
       if ¬ s.bus_req then s' := { s' with st := BitVec.ofNat 5 S_F0 }
@@ -592,7 +617,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         s' := { s' with ir := inp.mRdata, st := BitVec.ofNat 5 S_RD,
                         ic_data := s.ic_data.set! idx.toNat inp.mRdata,
                         ic_tag := s.ic_tag.set! idx.toNat
-                                    (((1 : BitVec 18) <<< 17) ||| tagV.setWidth 18) }
+                                    (((1 : BitVec 42) <<< 41)
+                                     ||| ((s.ic_gen.setWidth 42) <<< 25)
+                                     ||| ((s.tdom[s.cur.toNat]!).setWidth 42 <<< 17)
+                                     ||| tagV.setWidth 42) }
     else if stN = S_RD then
       let r1 := if s.st = BitVec.ofNat 5 S_RD2 then rs3f s else rs1f s
       let r2 := if s.st = BitVec.ofNat 5 S_RD2 then rs4f s else rs2f s
