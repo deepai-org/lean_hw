@@ -36,7 +36,7 @@ def PROG_BASE  : Nat := 0x20000000
 def DATA_BASE  : Nat := 0x10000000
 def UART_ADDR    : Nat := 0x8000
 def UART_RX_ADDR : Nat := 0x8008
-def NT : Nat := 8
+def NT : Nat := 32
 def CW : Nat := 5
 def AW : Nat := 10
 
