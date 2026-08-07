@@ -24,12 +24,24 @@ SSH=(sshpass -p "${BOARD_PW:-deepai}" ssh -o StrictHostKeyChecking=no "$BOARD")
 SCP=(sshpass -p "${BOARD_PW:-deepai}" scp -o StrictHostKeyChecking=no)
 CHECK_ONLY=0; [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 FAIL=0
+# Most of the board layer lives in $DEST (substrate0/test). A few files belong
+# elsewhere on the host and are mapped here rather than being filed in the
+# wrong directory to suit the loop -- the build script has to sit next to the
+# chipdb it references.
+dest_for() {
+  case "$1" in
+    build_oxc7_seed.sh) echo "substrate0/oxc7" ;;
+    *)                  echo "$DEST" ;;
+  esac
+}
+
 for f in fpga/zc702/board/*; do
   b=$(basename "$f")
   [ -f "$f" ] || continue
-  if [ "$CHECK_ONLY" = 0 ]; then "${SCP[@]}" "$f" "$BOARD:$DEST/$b" >/dev/null 2>&1; fi
+  D=$(dest_for "$b")
+  if [ "$CHECK_ONLY" = 0 ]; then "${SCP[@]}" "$f" "$BOARD:$D/$b" >/dev/null 2>&1; fi
   want=$(md5sum < "$f" | cut -d' ' -f1)
-  got=$("${SSH[@]}" "md5sum < $DEST/$b 2>/dev/null" | cut -d' ' -f1)
+  got=$("${SSH[@]}" "md5sum < $D/$b 2>/dev/null" | cut -d' ' -f1)
   if [ "$want" = "$got" ]; then printf '  ok     %s\n' "$b"
   else printf '  DIFFER %s (repo %s, host %s)\n' "$b" "${want:0:8}" "${got:0:8}"; FAIL=1; fi
 done
