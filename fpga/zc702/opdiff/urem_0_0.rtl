@@ -1,5 +1,5 @@
-TRAP op=a9 pc=4112
-HALTED=0 pc=4112 retire=2
+TRAP op=18 pc=4128
+HALTED=0 pc=4128 retire=4
 r1=0
 r2=0
 r3=0
