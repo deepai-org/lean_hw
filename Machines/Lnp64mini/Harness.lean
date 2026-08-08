@@ -205,6 +205,9 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("wake_key",64,s.wake_key.toNat),
    -- EXT-5: gates
    ("in_gate",32,s.in_gate.toNat),
+   -- §9 diagnostic: the loud GATE_RETURN latch
+   ("gret_noop_pc",64,s.gret_noop_pc.toNat), ("gret_noop_cur",5,s.gret_noop_cur.toNat),
+   ("gret_noop_cnt",32,s.gret_noop_cnt.toNat),
    -- EXT-7: the MMU enable and TLB selector
    ("mmu_en",1,if s.mmu_en then 1 else 0), ("tlb_sel",3,s.tlb_sel.toNat),
    ("tlb_vld",8,s.tlb_vld.toNat),
@@ -1518,6 +1521,26 @@ def progGateClone : List (BitVec 64) :=
     enc OP_MINI_GATE_RETURN 0 0 0,    -- w7  GATE_RETURN (-> w2)
     enc OP_EXIT 0 0 0 ]               -- w8  child: EXIT
 
+/-- §9 GATE-HAMMER: the driver-spawn trigger shape, directed. A loop calls the
+gate N times; the handler CLONEs a child (as `lnp64_gate_drvspawn_impl` does)
+then returns. N=100 > MAXD and > NT, so if the gate's per-slot depth/in_gate
+accounting desyncs over repeated gate_call+CLONE-inside cycles (or hands the
+tail to the clone's slot), `gret_noop_cnt` goes non-zero — the loud no-op fires
+in software, EDSL≡ISS, no synth. `r20` (s2, callee-saved) is the loop counter;
+the gate preserves it. -/
+def progGateHammer : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 0,                            -- w0  r1 = 0 (gate id)
+    encImmI OP_ADDI 5 0 (Int.ofNat (TEXT_BASE + 10*8)), -- w1 r5 = child entry (w10)
+    encImmI OP_ADDI 20 0 20,                          -- w2  r20 = 20 (> MAXD; < NT so cooperative children don't exhaust slots. The RESCHEDULE variant -- add a quantum so the parent is preempted mid-gate and the clone runs -- is the real reproducer for the reschedule-dependent silicon desync; TODO)
+    enc OP_MINI_GATE_CALL 0 1 0,                      -- w3  [loop] GATE_CALL gate r1 -> handler(w7)
+    encImmI OP_ADDI 20 20 (-1),                       -- w4  r20 = r20 - 1
+    encImmS OP_BNE 20 0 (-2),                         -- w5  BNE r20,r0 -> w3 (PC-relative: w3-w5 = -2)
+    enc OP_EXIT 0 0 0,                                -- w6  done (r20 hit 0)
+    enc OP_CLONE_SPAWN 6 5 0,                         -- w7  [handler] clone child at r5
+    enc OP_MINI_GATE_RETURN 0 0 0,                    -- w8  [handler] GATE_RETURN -> w4
+    enc OP_NOP 0 0 0,                                 -- w9  pad
+    enc OP_EXIT 0 0 0 ]                               -- w10 [child] EXIT
+
 /-- Same, but the gate body halts instead of returning: the machine stops
 inside the gate. -/
 def progGateStay : List (BitVec 64) :=
@@ -1617,11 +1640,57 @@ r10={(sc.rf[10]!).toNat} (want 5) r6={(sc.rf[6]!).toNat} (child tid) in_gate={sc
 gdepth0={(sc.gdepth[0]!).toNat} (want 0)"
   let ok5 := sc.halted && (sc.rf[9]!).toNat == 7 && (sc.rf[10]!).toNat == 5
              && sc.in_gate.toNat == 0 && (sc.gdepth[0]!).toNat == 0
-  if bad = 0 && badU = 0 && badN = 0 && badC = 0 && ok1 && ok2 && ok3 && ok4 && ok5 then
+  if bad = 0 && badU = 0 && badN = 0 && badC = 0
+     && ok1 && ok2 && ok3 && ok4 && ok5 then
     IO.println "LNP64MINI GATE SELFTEST OK — a gate is the only way to change domain, and only to the gate's"
   else
     IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2} unbacked={ok3})"
     throw <| IO.userError "gate selftest failed"
+
+/-- §9 GATE-HAMMER: the driver-spawn trigger shape, directed and isolated (its
+own selftest so the long run doesn't bloat `gateSelftest`). 64× gate_call with a
+CLONE inside the handler; if the per-slot gate accounting desyncs, the loud
+no-op (`gret_noop_cnt`) fires — the silicon boot's stick, reproduced in software
+with full visibility (pc + SLOT), zero synth. -/
+def gateHammerSelftest : IO Unit := do
+  let tbl := gateDescriptor 0 (TEXT_BASE + 7*8) GATE_DOM_TEST
+  let img := imageFrom TEXT_BASE progGateHammer ++ tbl
+  -- ISS-only diagnostic FIRST (fast): does the loud no-op fire over the hammer?
+  let (s, _, k) := runIss img 1 cmdGate (fun _ => 0) 8000
+  -- STEP TRACE (ISS-only, fast): the first ~30 retires' pc, to see where
+  -- GATE_RETURN lands after a CLONE-inside-gate.
+  let mut ts : MiniSt := {}
+  let mut td : DdrModel := { mem := Std.HashMap.ofList img, latency := 1 }
+  let mut tg : GpModel := {}
+  let mut lastret := 0
+  for i in List.range 600 do
+    if ts.halted then break
+    let (s', d', g', _) := sysStep ts td tg (cmdGate i) (0 : BitVec 32)
+    ts := s'; td := d'; tg := g'
+    if ts.retire.toNat != lastret then
+      lastret := ts.retire.toNat
+      if lastret ≤ 30 then
+        IO.println s!"  ret={lastret} cur={ts.cur.toNat} pc=0x{String.ofList (Nat.toDigits 16 ts.pc.toNat)} \
+r20={(ts.rf[20]!).toNat} gd[cur]={(ts.gdepth[ts.cur.toNat]!).toNat} ig={ts.in_gate.toNat}"
+  -- Short EDSL≡ISS lockstep (the desync, if per-iteration, triggers early;
+  -- a mismatch here = a fabric-vs-model divergence).
+  let bad ← lockstep img 1 cmdGate (fun _ => 0) 350
+  if bad = 0 then IO.println "  OK  GATE-HAMMER lockstep (EDSL≡ISS, 350 cyc)"
+  else IO.println s!"  FAIL GATE-HAMMER lockstep ({bad} mismatches)"
+  let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+  IO.println s!"  hammer: halted={s.halted} r20={(s.rf[20]!).toNat} (want 0 = loop done) cyc={k}"
+  let occ := (List.range NT).foldl (fun a i => if (s.tstate[i]!).toNat != 0 then a+1 else a) 0
+  IO.println s!"  STUCK STATE: cur={s.cur.toNat} pc=0x{String.ofList (Nat.toDigits 16 s.pc.toNat)} \
+st={s.st.toNat} occ_slots={occ} gdepth[cur]={(s.gdepth[s.cur.toNat]!).toNat} \
+tstate[0..4]={(s.tstate[0]!).toNat},{(s.tstate[1]!).toNat},{(s.tstate[2]!).toNat},{(s.tstate[3]!).toNat} \
+tpc[cur]=0x{String.ofList (Nat.toDigits 16 (s.tpc[s.cur.toNat]!).toNat)}"
+  IO.println s!"  LOUD GATE_RETURN: gret_noop_cnt={s.gret_noop_cnt.toNat} (want 0) \
+first_noop_pc=0x{pchex} first_noop_slot={s.gret_noop_cur.toNat} in_gate={s.in_gate.toNat}"
+  if bad = 0 && s.gret_noop_cnt.toNat == 0 && s.halted then
+    IO.println "LNP64MINI GATE HAMMER OK — gate accounting stays balanced over N clone-inside cycles (cooperative; the reschedule variant is TODO)"
+  else
+    IO.println s!"LNP64MINI GATE HAMMER: DESYNC REPRODUCED — noop_cnt={s.gret_noop_cnt.toNat} \
+slot={s.gret_noop_cur.toNat} pc=0x{pchex} halted={s.halted} r20={(s.rf[20]!).toNat} (this IS the silicon stick, in software)"
 
 /-! ## EXT-6 — the cross-domain transfer selftest
 

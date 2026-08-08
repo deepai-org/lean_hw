@@ -56,6 +56,7 @@ def main (args : List String) : IO Unit := do
   | ["domselftest"] => domSelftest
   | ["failstopselftest"] => failstopSelftest
   | ["gateselftest"] => gateSelftest
+  | ["gatehammerselftest"] => gateHammerSelftest
   | ["capxferselftest"] => capXferSelftest
   | ["slotfillselftest"] => slotFillSelftest
   | ["mmuselftest"] => mmuSelftest
