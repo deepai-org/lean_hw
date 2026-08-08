@@ -1539,7 +1539,7 @@ def progGateHammer : List (BitVec 64) :=
     enc OP_CLONE_SPAWN 6 5 0,                         -- w7  [handler] clone child at r5
     enc OP_MINI_GATE_RETURN 0 0 0,                    -- w8  [handler] GATE_RETURN -> w4
     enc OP_NOP 0 0 0,                                 -- w9  pad
-    enc OP_EXIT 0 0 0 ]                               -- w10 [child] EXIT
+    enc OP_THREAD_EXIT 0 0 0 ]                        -- w10 [child] THREAD_EXIT (per-thread; frees the slot, does NOT halt the machine like OP_EXIT)
 
 /-- Same, but the gate body halts instead of returning: the machine stops
 inside the gate. -/
@@ -1581,6 +1581,17 @@ image placed in DDR survives to be walked. -/
 def cmdGate : Nat → MiniIn := fun k =>
   if k = 0 then
     { cmdValid := true, cmdIdx := CMD_GATE_TBL, cmdData := BitVec.ofNat 32 GATE_TBL }
+  else if k = 2 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+  else {}
+
+/-- `cmdGate` plus a preemption quantum `q`: the reschedule variant. A small `q`
+preempts the parent mid-gate (at instruction boundaries), so a child spawned
+inside the gate runs (and, at its EXIT entry, reclaims its slot) before the
+parent's GATE_RETURN — the reschedule the cooperative loop never does. -/
+def cmdGateQ (q : Nat) : Nat → MiniIn := fun k =>
+  if k = 0 then
+    { cmdValid := true, cmdIdx := CMD_GATE_TBL, cmdData := BitVec.ofNat 32 GATE_TBL }
+  else if k = 1 then { cmdValid := true, cmdIdx := CMD_QUANTUM, cmdData := BitVec.ofNat 32 q }
   else if k = 2 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
   else {}
 
@@ -1686,8 +1697,34 @@ tstate[0..4]={(s.tstate[0]!).toNat},{(s.tstate[1]!).toNat},{(s.tstate[2]!).toNat
 tpc[cur]=0x{String.ofList (Nat.toDigits 16 (s.tpc[s.cur.toNat]!).toNat)}"
   IO.println s!"  LOUD GATE_RETURN: gret_noop_cnt={s.gret_noop_cnt.toNat} (want 0) \
 first_noop_pc=0x{pchex} first_noop_slot={s.gret_noop_cur.toNat} in_gate={s.in_gate.toNat}"
-  if bad = 0 && s.gret_noop_cnt.toNat == 0 && s.halted then
-    IO.println "LNP64MINI GATE HAMMER OK — gate accounting stays balanced over N clone-inside cycles (cooperative; the reschedule variant is TODO)"
+  -- PHASE 2 — the RESCHEDULE variant. A small quantum preempts the parent
+  -- mid-gate; the child spawned inside the gate runs (and, at its EXIT entry,
+  -- frees its slot). If a reschedule hands the gate tail to a clone's slot, the
+  -- loud no-op fires — the reschedule-dependent silicon desync, in software.
+  IO.println "  --- PREEMPTIVE (quantum=3): reschedule mid-gate ---"
+  let mut ps : MiniSt := {}
+  let mut pd : DdrModel := { mem := Std.HashMap.ofList img, latency := 1 }
+  let mut pg : GpModel := {}
+  let mut plr := 0
+  let mut pnoop := 0
+  for i in List.range 1500 do
+    if ps.halted then break
+    let (s', d', g', _) := sysStep ps pd pg (cmdGateQ 3 i) (0 : BitVec 32)
+    ps := s'; pd := d'; pg := g'
+    if ps.gret_noop_cnt.toNat != pnoop then
+      pnoop := ps.gret_noop_cnt.toNat
+      IO.println s!"  >>> NO-OP GATE_RETURN #{pnoop} at retire={ps.retire.toNat} slot(cur)={ps.cur.toNat} \
+pc=0x{String.ofList (Nat.toDigits 16 ps.pc.toNat)} gd[cur]={(ps.gdepth[ps.cur.toNat]!).toNat} ig=0x{String.ofList (Nat.toDigits 16 ps.in_gate.toNat)}"
+    else if ps.retire.toNat != plr && plr ≤ 24 then
+      plr := ps.retire.toNat
+      IO.println s!"  Q ret={plr} cur={ps.cur.toNat} pc=0x{String.ofList (Nat.toDigits 16 ps.pc.toNat)} \
+r20={(ps.rf[20]!).toNat} gd[cur]={(ps.gdepth[ps.cur.toNat]!).toNat} ig={ps.in_gate.toNat}"
+  let (sp, _, kp) := runIss img 1 (cmdGateQ 3) (fun _ => 0) 12000
+  let pphex := String.ofList (Nat.toDigits 16 sp.gret_noop_pc.toNat)
+  IO.println s!"  PREEMPTIVE hammer: halted={sp.halted} r20={(sp.rf[20]!).toNat} cyc={kp} \
+gret_noop_cnt={sp.gret_noop_cnt.toNat} noop_slot={sp.gret_noop_cur.toNat} noop_pc=0x{pphex}"
+  if bad = 0 && s.gret_noop_cnt.toNat == 0 && s.halted && sp.gret_noop_cnt.toNat == 0 then
+    IO.println "LNP64MINI GATE HAMMER OK — gate accounting stays balanced, cooperative AND preemptive"
   else
     IO.println s!"LNP64MINI GATE HAMMER: DESYNC REPRODUCED — noop_cnt={s.gret_noop_cnt.toNat} \
 slot={s.gret_noop_cur.toNat} pc=0x{pchex} halted={s.halted} r20={(s.rf[20]!).toNat} (this IS the silicon stick, in software)"
