@@ -37,6 +37,11 @@ def DATA_BASE  : Nat := 0x10000000
 def UART_ADDR    : Nat := 0x8000
 def UART_RX_ADDR : Nat := 0x8008
 def NT : Nat := 32
+/-- §9: the gate continuation is a STACK, not depth-1. `MAXD` is the per-thread
+gate-nesting depth (a bounded stack; §9's engine frame is bounds-checked). 4 is
+enough for a gated write that itself crosses a boundary; overflow is a clean
+refuse (domain-fatal in spirit). Must be a power of two so `cur*MAXD` is a shift. -/
+def MAXD : Nat := 4
 def CW : Nat := 5
 def AW : Nat := 10
 
@@ -327,9 +332,24 @@ deliberate: EXT-2 installs the tag and its inheritance rule, and the
 enforcement that consumes it arrives with gates (EXT-5) and the MMU
 (EXT-7). -/
 def tdomRd (idx : Expr 5) : Expr 8 := .memRead 8 "tdom" idx
-/-- EXT-5: the gate table and the per-thread depth-1 continuation. -/
-def tcontRd (idx : Expr 5) : Expr 64 := .memRead 64 "tcont" idx
-def tcdomRd (idx : Expr 5) : Expr 8  := .memRead 8  "tcdom" idx
+/-- EXT-5 (§9): the gate table and the per-thread continuation STACK. `tcont`/
+`tcdom` are now `NT*MAXD` deep, indexed by `cur*MAXD + depth` — a bounded
+push-down stack so a gate call from inside a gate NESTS (§9) instead of being
+refused. The index is 7-bit (NT=32, MAXD=4). -/
+def tcontRd (idx : Expr 7) : Expr 64 := .memRead 64 "tcont" idx
+def tcdomRd (idx : Expr 7) : Expr 8  := .memRead 8  "tcdom" idx
+/-- Per-thread gate depth (0..MAXD). `gdepth[cur] > 0` ⟺ inside a gate. -/
+def gdepthRd (idx : Expr 5) : Expr 3 := .memRead 3 "gdepth" idx
+/-- Stack address `cur*MAXD + off` for `tcont`/`tcdom` (MAXD=4 ⇒ `cur<<2 | off`).
+`off` is the depth slot; the low 2 bits suffice since `off < MAXD = 4`. -/
+def gcIdx (off : Expr 3) : Expr 7 :=
+  .or (.shl (.zext cur 7) (.lit (BitVec.ofNat 7 2))) (.zext (.slice off 0 2) 7)
+/-- The stack is full: `gdepth[cur] >= MAXD`. A `gate_call` here is refused
+(§9: a clean bounds-checked overflow), not silently overwriting a frame. -/
+def gateFull : Expr 1 := .not (.ult (gdepthRd cur) (.lit (BitVec.ofNat 3 MAXD)))
+/-- Push slot (current depth) and pop slot (depth-1) as `tcont`/`tcdom` indices. -/
+def gPushIdx : Expr 7 := gcIdx (gdepthRd cur)
+def gPopIdx  : Expr 7 := gcIdx (.sub (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
 /-! EXT-7: the TLB. Four parallel arrays indexed by the VPN's low 3 bits
 (direct-mapped), so a lookup is one read of each plus one comparison. -/
 /-- EXT-7: TLB entries. Eight is what the guest's region count needs. -/
@@ -2024,7 +2044,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- the gate's entry in the gate's domain. `tdom`/`tcont`/`tcdom`/`in_gate`
   -- are written in their funnels; this arm owns pc and rd.
   gcons (opIs OP_MINI_GATE_CALL)
-    (.ite curInGate
+    (.ite gateFull
       (.seq (.ite (.not (.eq rdf (L5 0))) .skip .skip)
         (.seq stepPc (.seq retireInc goF0)))
       -- §17: walk the descriptor instead of reading a host-loaded bank.
@@ -2040,7 +2060,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- cannot leave a domain it never entered.
   gcons (opIs OP_MINI_GATE_RETURN)
     (.ite curInGate
-      (.seq (.write 64 "pc" (tcontRd cur)) (.seq retireInc goF0))
+      (.seq (.write 64 "pc" (tcontRd gPopIdx)) (.seq retireInc goF0))
       (.seq stepPc (.seq retireInc goF0))) <|
   -- 0x59 CLONE
   gcons (opIs OP_CLONE_SPAWN)
@@ -2332,7 +2352,7 @@ def tdomTriples : List (Expr 1 × Expr 5 × Expr 8) :=
   -- this cycle (`mRdata`), not from `gate_dom_q`, which does not hold it
   -- until the next one.
   , (gateCall, cur, .slice mRdata 0 8)
-  , (exG (.and (opIs OP_MINI_GATE_RETURN) curInGate), cur, tcdomRd cur) ]
+  , (exG (.and (opIs OP_MINI_GATE_RETURN) curInGate), cur, tcdomRd gPopIdx) ]
 
 def tdomWeE : Expr 1 := orTree (tdomTriples.map (fun t => t.1))
 def tdomWaE : Expr 5 := priTree (tdomTriples.map (fun t => (t.1, t.2.1))) (L5 0)
@@ -2346,13 +2366,24 @@ EXT-3's `poison`) because nothing reads it at a dynamic index -- only at
 `cur` -- but it must be *set and cleared* per slot, and a 32-bit
 set/clear on a register is one mux where a memory would be a port. -/
 def gateRet  : Expr 1 := exG (.and (opIs OP_MINI_GATE_RETURN) curInGate)
+/-- The return that EMPTIES the stack (depth 1 → 0): only then does `in_gate`'s
+`cur` bit clear. A return from a nested frame (depth ≥ 2) keeps the thread in a
+gate. -/
+def gateRetLast : Expr 1 :=
+  .and gateRet (.eq (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
 
-/-- `in_gate` after this cycle: set bit `cur` on a gate call, clear it on a
-gate return, plus the `cmd 13` reset. -/
+/-- `in_gate` after this cycle: bit `cur` = `gdepth[cur] > 0` (inside ≥1 gate).
+Set on any gate call, cleared when the LAST frame returns; a CLONE clears the
+CHILD's bit and a THREAD_EXIT clears the exiting thread's bit (so a reused slot
+carries no stale "in a gate" flag), plus the `cmd 13` reset. -/
 def inGateNext : Expr 32 :=
+  let cloneG := exG (.and (opIs OP_CLONE_SPAWN) has_free)
+  let exitG  := exG (opIs OP_THREAD_EXIT)
   .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (L32 0)
     (.mux gateCall (.or in_gate (.shl (L32 1) (.zext cur 32)))
-      (.mux gateRet (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate))
+      (.mux cloneG (.and in_gate (.not (.shl (L32 1) (.zext free_slot 32))))
+        (.mux (.or gateRetLast exitG)
+          (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate)))
 
 /-- EXT-7: the valid bitmap after this cycle. `cmd 65` validates the selected
 slot; `cmd 67` clears every slot whose `tlb_cell` equals the bumped cell;
@@ -2369,12 +2400,39 @@ def tlbVldNext : Expr 8 :=
       (.or tlb_vld (.shl (.lit (BitVec.ofNat 8 1)) (.zext tlb_sel 8)))
       (.and tlb_vld (.not clearMask)))
 
+/-- §9: the gate-depth funnel. `cmd 13` sweeps every slot to 0 (`zctr < NT`);
+a gate call increments `gdepth[cur]`, a gate return decrements it; `zeroing`
+and the S_EX/S_GC1 ops are mutually exclusive (`fsmEn` excludes `zeroing`), so
+the muxed single write port is unambiguous.
+A CLONE gives the child a CLEAN gate state (depth 0, not in a gate): a
+fresh thread has no open gates, regardless of what the reused slot held. A
+THREAD_EXIT clears the exiting thread's depth so its freed slot carries no stale
+gate state to the next CLONE. Without this, a slot reused after a thread left a
+gate open (or exited mid-gate) desyncs `gdepth`/`in_gate` — invisible to the
+ISS (fresh zero arrays) but a real silicon bug (memories retain values). -/
+def gdepthClone : Expr 1 := exG (.and (opIs OP_CLONE_SPAWN) has_free)
+def gdepthExit  : Expr 1 := exG (opIs OP_THREAD_EXIT)
+def gdepthWeE : Expr 1 :=
+  .or (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))))
+    (.or gdepthClone (.or gdepthExit (.or gateCall gateRet)))
+def gdepthWaE : Expr 5 := .mux zeroing (.slice zctr 0 5) (.mux gdepthClone free_slot cur)
+def gdepthWdE : Expr 3 :=
+  .mux (.or zeroing (.or gdepthClone gdepthExit)) (.lit (BitVec.ofNat 3 0))
+    (.mux gateCall (.add (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
+                   (.sub (gdepthRd cur) (.lit (BitVec.ofNat 3 1))))
+
 def tarrFunnelRule : Rule :=
   ⟨"tarr_funnel",
     .seq (.ite tdomWeE (.memWrite 5 8 "tdom" 0 tdomWaE tdomWdE) .skip) <|
-    -- EXT-5: the depth-1 continuation, written only by a gate call.
-    .seq (.ite gateCall (.memWrite 5 64 "tcont" 0 cur pc8) .skip) <|
-    .seq (.ite gateCall (.memWrite 5 8 "tcdom" 0 cur domCur) .skip) <|
+    -- EXT-5 (§9): the continuation STACK. A gate call PUSHES the return point
+    -- and caller domain at slot `cur*MAXD + gdepth[cur]`; a return reads the
+    -- slot below (`gPopIdx`, in the gate-return arm / tdom funnel). One write
+    -- port each, at the push slot, on a gate call.
+    .seq (.ite gateCall (.memWrite 7 64 "tcont" 0 gPushIdx pc8) .skip) <|
+    .seq (.ite gateCall (.memWrite 7 8 "tcdom" 0 gPushIdx domCur) .skip) <|
+    -- §9: the per-thread depth. Push on a gate call (++), pop on a gate return
+    -- (--); `cmd 13`'s sweep zeroes it, like the other per-thread arrays (D37).
+    .seq (.ite gdepthWeE (.memWrite 5 3 "gdepth" 0 gdepthWaE gdepthWdE) .skip) <|
     .seq (.write 32 "in_gate" inGateNext) <|
     -- EXT-6 (§17): the inbox is guest memory now -- its writes ride the
     -- ordinary bus path from S_CS1/S_CR1, and there is no core-resident
@@ -2648,7 +2706,10 @@ def design : Design where
      -- the constant does not have to survive the configuration path (D37).
      ⟨"tdom", 5, 8, fun _ => 0⟩,
      -- EXT-5: the gate table (host-loaded) and the depth-1 continuation.
-     ⟨"tcont", 5, 64, fun _ => 0⟩, ⟨"tcdom", 5, 8, fun _ => 0⟩,
+     -- §9: the gate continuation STACK, NT*MAXD deep (7-bit addr), indexed by
+     -- cur*MAXD+depth; plus the per-thread depth counter.
+     ⟨"tcont", 7, 64, fun _ => 0⟩, ⟨"tcdom", 7, 8, fun _ => 0⟩,
+     ⟨"gdepth", 5, 3, fun _ => 0⟩,
      -- EXT-6 (§17): the capability inbox lives in guest memory now; the
      -- `cap_ibox` bank is gone with the `cap_ival` bitmap.
      -- EXT-7: the domain-tagged TLB (§15 line 160)

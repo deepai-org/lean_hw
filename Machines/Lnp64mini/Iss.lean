@@ -176,8 +176,11 @@ structure MiniSt where
   gate_tbl_base : BitVec 32 := 0
   gate_ent_q : BitVec 64 := 0
   gate_dom_q : BitVec 8  := 0
-  tcont     : Array (BitVec 64) := Array.replicate NTMEM 0
-  tcdom     : Array (BitVec 8)  := Array.replicate NTMEM 0
+  -- §9: the gate continuation STACK (NTMEM*MAXD, indexed cur*MAXD+depth) +
+  -- the per-thread depth. `in_gate` bit cur ⟺ gdepth[cur] > 0.
+  tcont     : Array (BitVec 64) := Array.replicate (NTMEM*MAXD) 0
+  tcdom     : Array (BitVec 8)  := Array.replicate (NTMEM*MAXD) 0
+  gdepth    : Array (BitVec 3)  := Array.replicate NTMEM 0
   in_gate   : BitVec 32 := 0
   -- EXT-6 (§17): the capability inbox lives in guest memory. `cap_tbl_base`
   -- is the host-installed root pointer (`cmd 75`); `cap_fl_q` latches the
@@ -517,6 +520,9 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- entry 1), which is what makes "the guest is domain 0" hold by
       -- construction rather than by a reset image the flow may not deliver.
       s' := { s' with tdom := s'.tdom.set! s.zctr.toNat 0 }
+      -- §9: the same sweep zeroes every thread's gate depth (mirrors the
+      -- `gdepth` funnel's zeroing arm in Core).
+      s' := { s' with gdepth := s'.gdepth.set! s.zctr.toNat 0 }
     -- EXT-5: the reset also clears every open gate.
     -- (§17: the cap inbox is guest memory; the reset sweep no longer owns
     -- any inbox state, matching the RTL where `capIvalNext` is gone.)
@@ -706,7 +712,11 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       if o = OP_EXIT then
         s' := { s' with halted := true, running := false, retire := s.retire + 1 }
       else if o = OP_THREAD_EXIT then
-        s' := { s' with tstate := s'.tstate.set! curV.toNat 0, retire := s.retire + 1 }
+        -- §9: clear the exiting thread's gate state so its freed slot carries
+        -- no stale depth/in-gate flag to the next CLONE.
+        s' := { s' with tstate := s'.tstate.set! curV.toNat 0, retire := s.retire + 1,
+                        gdepth := s'.gdepth.set! curV.toNat 0,
+                        in_gate := s.in_gate &&& ~~~(1#32 <<< curV.toNat) }
         if s.next_ready ≠ curV then
           s' := { s' with cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]!, st := BitVec.ofNat 5 S_F0 }
         else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
@@ -794,9 +804,9 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- EXT-5: 0x3c GATE_CALL / 0x3d GATE_RETURN. A gate is the only way a
       -- thread changes domain, and only to a domain the host installed.
       else if o = OP_MINI_GATE_CALL then
-        let inG := s.in_gate.getLsbD curV.toNat
-        if inG then
-          -- depth 1: a nested call is refused, no state change
+        -- §9: nesting is ALLOWED (continuation stack); only a full stack
+        -- (gdepth == MAXD) refuses, no state change.
+        if s.gdepth[curV.toNat]!.toNat >= MAXD then
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         else
           -- §17: walk the in-memory descriptor. Two 8-byte words at
@@ -807,9 +817,15 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           core_rd := true, st := BitVec.ofNat 5 S_GC0 }
       else if o = OP_MINI_GATE_RETURN then
         if s.in_gate.getLsbD curV.toNat then
-          s' := { s' with pc := s.tcont[curV.toNat]!,
-                          tdom := s'.tdom.set! curV.toNat s.tcdom[curV.toNat]!,
-                          in_gate := s.in_gate &&& ~~~(1#32 <<< curV.toNat),
+          -- §9: pop the top frame (depth-1) and decrement; clear in_gate only
+          -- when this empties the stack.
+          let gd := s.gdepth[curV.toNat]!.toNat
+          let popIdx := curV.toNat * MAXD + (gd - 1)
+          s' := { s' with pc := s.tcont[popIdx]!,
+                          tdom := s'.tdom.set! curV.toNat s.tcdom[popIdx]!,
+                          gdepth := s'.gdepth.set! curV.toNat (BitVec.ofNat 3 (gd - 1)),
+                          in_gate := (if gd = 1 then s.in_gate &&& ~~~(1#32 <<< curV.toNat)
+                                      else s.in_gate),
                           retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         else
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
@@ -819,6 +835,10 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           -- EXT-2: the child inherits the parent's domain. A thread cannot
           -- leave its domain by spawning (`tdomTriples` entry 2).
           s' := { s' with tdom := s'.tdom.set! s.free_slot.toNat s.tdom[curV.toNat]! }
+          -- §9: the child starts with a CLEAN gate state (depth 0, not in a
+          -- gate), so a reused slot carries no stale continuation.
+          s' := { s' with gdepth := s'.gdepth.set! s.free_slot.toNat 0,
+                          in_gate := s.in_gate &&& ~~~(1#32 <<< s.free_slot.toNat) }
           rfWe := true; rfWa := (s.free_slot ++ (2 : BitVec 5)); rfWd := s.b
           s' := { s' with clone_dst := rdf s, clone_tid := s.free_slot, st := BitVec.ofNat 5 S_CLONE2 }
         else
@@ -894,8 +914,12 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         s' := { s' with gate_dom_q := inp.mRdata.setWidth 8,
                         retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         if vld then
-          s' := { s' with tcont := s'.tcont.set! curV.toNat (pc8 s),
-                          tcdom := s'.tcdom.set! curV.toNat s.tdom[curV.toNat]!,
+          -- §9: PUSH a continuation frame at cur*MAXD+gdepth, increment depth.
+          let gd := s.gdepth[curV.toNat]!.toNat
+          let pushIdx := curV.toNat * MAXD + gd
+          s' := { s' with tcont := s'.tcont.set! pushIdx (pc8 s),
+                          tcdom := s'.tcdom.set! pushIdx s.tdom[curV.toNat]!,
+                          gdepth := s'.gdepth.set! curV.toNat (BitVec.ofNat 3 (gd + 1)),
                           in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
                           tdom := s'.tdom.set! curV.toNat (inp.mRdata.setWidth 8),
                           pc := s.gate_ent_q }
