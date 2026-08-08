@@ -453,6 +453,10 @@ map diverges from the ISA in that whole block *before* this increment. Gates
 take **0x60/0x61**, which are free in mini. Recorded here rather than
 pretending the encodings match. -/
 def in_gate : Expr 32 := .reg 32 "in_gate"
+/-- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc, slot, count. -/
+def gret_noop_pc  : Expr 64 := .reg 64 "gret_noop_pc"
+def gret_noop_cur : Expr 5  := .reg 5  "gret_noop_cur"
+def gret_noop_cnt : Expr 32 := .reg 32 "gret_noop_cnt"
 
 /-- Bit `cur` of `in_gate`: this thread is inside a gate. -/
 def curInGate : Expr 1 :=
@@ -2061,7 +2065,15 @@ def s_ex_branches : List (Expr 1 × Act) :=
   gcons (opIs OP_MINI_GATE_RETURN)
     (.ite curInGate
       (.seq (.write 64 "pc" (tcontRd gPopIdx)) (.seq retireInc goF0))
-      (.seq stepPc (.seq retireInc goF0))) <|
+      -- DIAGNOSTIC (the loud no-op): a GATE_RETURN with no gate open on THIS
+      -- slot. Legal (fail-quiet), but latch the first one's pc + slot + count
+      -- so a directed hammer test can SEE a desync instead of silently
+      -- wandering. The slot field is the tell: if it names the CLONE's child
+      -- slot, the no-op is correct-for-that-slot (a hand-off), not corruption.
+      (.seq (.ite (.eq gret_noop_cnt (L32 0))
+              (.seq (.write 64 "gret_noop_pc" pc) (.write 5 "gret_noop_cur" cur)) .skip)
+        (.seq (.write 32 "gret_noop_cnt" (.add gret_noop_cnt (L32 1)))
+          (.seq stepPc (.seq retireInc goF0))))) <|
   -- 0x59 CLONE
   gcons (opIs OP_CLONE_SPAWN)
     (.ite has_free
@@ -2637,8 +2649,11 @@ def scalarRegs : List RegDecl :=
    ⟨"cur_dom",8,0⟩,
    -- EXT-3: fail-stop bitmap; 0 = nothing poisoned = the pre-EXT-3 machine
    ⟨"poison",32,0⟩,
-   -- EXT-5: gates. `in_gate` = depth-1 continuation-present bitmap.
+   -- EXT-5: gates. `in_gate` = per-slot "inside ≥1 gate" bitmap.
    ⟨"in_gate",32,0⟩,
+   -- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc + slot +
+   -- count. Zero unless a GATE_RETURN ran with no gate open on its slot.
+   ⟨"gret_noop_pc",64,0⟩, ⟨"gret_noop_cur",5,0⟩, ⟨"gret_noop_cnt",32,0⟩,
    -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
    ⟨"mmu_en",1,0⟩, ⟨"tlb_sel",3,0⟩, ⟨"tlb_vld",8,0⟩]
   ++ (List.finRange TLBN).flatMap (fun i =>

@@ -548,3 +548,56 @@ CLONE (child) and THREAD_EXIT (self), the same way `tdom` is set at CLONE — do
 here (`gdepthClone`/`gdepthExit`, `inGateNext`). The lesson mirrors "consistency
 is not correctness": EDSL≡ISS agreeing on zeros is not the same as the slot
 being clean on silicon.
+
+### What the gate-hammer taught (2026-08-08): three things Loom should do that it doesn't
+
+Chasing the driver-spawn gate desync produced a directed reproducer — the
+GATE-HAMMER: N iterations of `gate_call → CLONE-inside → gate_return`, with a
+"loud GATE_RETURN" sticky latch (first `in_gate==0` return → pc + **slot** +
+count) so a should-never-happen state becomes a value the test reads. Building
+it exposed three concrete Loom deficiencies. Each is a "Loom should" for a
+Lean-DSL→Verilog compiler that also owns the executable model.
+
+**1. The EDSL cycle evaluation is too slow to run the reproducers the design
+needs.** A 350-cycle EDSL≡ISS lockstep on `lnp64mini` at NT=32 takes ~8 minutes.
+Directed reproducers for lifecycle/scheduling bugs need *thousands* of cycles
+and hundreds of iterations (the silicon stick was iteration ~40 of a 64-retry
+loop). At current speed those tests are impractical: I had to shrink N and cycle
+budgets, which blunts the reproducer — the classic "the test that would catch it
+is the one too expensive to run." **Loom should make `Design.cycle` (or a proved
+`FastEval` peer) fast enough that a 10⁴-cycle lockstep is seconds, not minutes**
+— the W5 "derived simulation" workstream, but with a performance target set by
+"can you hammer a scheduler bug 100× in a unit test," not just "does it agree."
+Without it, the model exists but can't be *exercised* at the scale where the
+interesting bugs (slot reuse, gate accounting, wake storms) actually live.
+
+**2. A third implementation lives outside the lockstep net and silently
+diverged.** The board's committed-exec path runs the guest through the Rust
+`emulator.rs` trap-server — a THIRD implementation of the ISA, alongside the
+EDSL and the ISS. It still held the depth-1 gate model (`mini_gate_ret:
+Option`) long after the fabric became a stack, and nothing caught it because
+`diffAgainst` only relates the EDSL and the ISS. The whole PLATONIC thesis is
+"derived views of one value"; a hand-maintained Rust model that the silicon
+actually executes against is exactly the non-derived link the thesis says must
+be *named as an assumption* and ideally *checked*. **Loom should either generate
+the committed-exec/trap-server model from the same `Design`, or at minimum run a
+periodic EDSL≡emulator conformance gate** so a third implementation cannot drift
+from the first two. "One ISA, N implementations" is only safe if N−1 of them are
+derived or gated; here N=3 and only 2 were related.
+
+**3. There is no primitive for a checked-and-observable "impossible state"
+assertion.** The loud GATE_RETURN latch — "if a GATE_RETURN ever runs with no
+gate open, freeze its pc/slot/count" — had to be hand-built in three places
+(Core reg + funnel, Iss field, Harness dump) and, to see it on silicon, hand-
+wired into the top's BSCAN readback (the trace ring was likewise never wired —
+`lnp64mini_dual_top.v` exposed pc/retire but not `trace_rd_pc`). **Loom should
+offer a declared assertion/diagnostic-latch that (a) is a lockstep coordinate
+for free, (b) synthesises to a readable register, and (c) optionally halts.** A
+design's "this must never happen" invariants are its most valuable observability,
+and today each one is bespoke plumbing across three languages plus a board file
+— which is why the trace ring wasn't readable when the bug demanded it.
+
+These compound: (1) means you fall back to on-silicon reproduction, (3) means the
+on-silicon observability isn't there, and (2) means the model you'd trust to
+explain the silicon might itself be wrong. The gate desync is still open partly
+because all three bit at once.

@@ -182,6 +182,10 @@ structure MiniSt where
   tcdom     : Array (BitVec 8)  := Array.replicate (NTMEM*MAXD) 0
   gdepth    : Array (BitVec 3)  := Array.replicate NTMEM 0
   in_gate   : BitVec 32 := 0
+  -- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc + slot + count.
+  gret_noop_pc  : BitVec 64 := 0
+  gret_noop_cur : BitVec 5  := 0
+  gret_noop_cnt : BitVec 32 := 0
   -- EXT-6 (§17): the capability inbox lives in guest memory. `cap_tbl_base`
   -- is the host-installed root pointer (`cmd 75`); `cap_fl_q` latches the
   -- walked flags word between the walk's states.
@@ -828,7 +832,13 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                                       else s.in_gate),
                           retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         else
-          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+          -- DIAGNOSTIC (loud no-op): latch the first GATE_RETURN with no gate
+          -- open on this slot (pc + slot + count), mirroring Core.
+          let latch := s.gret_noop_cnt = 0
+          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0,
+                          gret_noop_pc  := if latch then s.pc else s.gret_noop_pc,
+                          gret_noop_cur := if latch then curV else s.gret_noop_cur,
+                          gret_noop_cnt := s.gret_noop_cnt + 1 }
       else if o = OP_CLONE_SPAWN then
         if s.has_free then
           s' := { s' with tpc := s'.tpc.set! s.free_slot.toNat s.a, tstate := s'.tstate.set! s.free_slot.toNat 1 }
