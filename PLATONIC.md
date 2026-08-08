@@ -513,3 +513,38 @@ keyed-wake precision (an optimisation) traded for the slot count the boot
 actually needs. `tstate` stays a register file (2-bit, cheap, read at every
 index by the ready/free encoders and the unkeyed wake); it did not need to move
 to memory. The thread CONTEXT was never the problem — it was already in BRAM.
+
+### What the gate-return stick taught (2026-08-08): the ISS's fresh-zero arrays hide stale-memory-on-slot-reuse
+
+The §9 continuation stack was implemented and lockstep-verified — including a
+GATE-NEST case (depth 0→1→2→1→0) and a GATE-CLONE case (a handler spawns a
+thread then returns). Both pass EDSL≡ISS. Yet the silicon boot still stuck in
+the driver-spawn gate: `GATE_RETURN` no-oped (`in_gate`/`gdepth`==0 at a return
+that should have popped a frame). The register dump (r1 = the drvspawn handler's
+mid-point) localised it to a thread whose gate depth had DESYNCED from its open
+gates.
+
+The cause is a class the lockstep structurally cannot see: **a Loom memory
+retains its value across a thread's lifetime on silicon, but the ISS models it
+as a `Array.replicate NTMEM 0` that is fresh per test.** A slot freed by a
+thread that left a gate open (or was torn down mid-gate) keeps a non-zero
+`gdepth`/`in_gate`; the next `CLONE` reuses that slot and the child inherits a
+phantom "I am N gates deep" — its first `GATE_RETURN` pops a frame that was
+never pushed. In the ISS every test starts from zeroed arrays, so no test that
+does not *explicitly* exit-mid-gate-then-reuse-the-slot can observe it. This is
+**exactly the D37 defect** ("a non-zero reset image the configuration path does
+not deliver") generalised from a reset image to *any* per-slot memory whose
+correctness depends on lifecycle hygiene rather than a reset sweep.
+
+**Loom deficiency + the fix in this design:** the property that would have caught
+it is "every per-thread memory a thread reads is either written by that thread
+this lifetime or reset for it at (re)allocation" — a *generated* allocation
+property, the `slotFillSelftest` idea extended from "allocation is a bijection"
+to "allocation delivers a clean slot." Loom has no such generated check today;
+`diffAgainst` compares whatever state both models hold, and both hold zeros.
+Until Loom can generate an allocation-hygiene property, the design must
+establish the invariant by construction: a thread's gate state is reset at
+CLONE (child) and THREAD_EXIT (self), the same way `tdom` is set at CLONE — done
+here (`gdepthClone`/`gdepthExit`, `inGateNext`). The lesson mirrors "consistency
+is not correctness": EDSL≡ISS agreeing on zeros is not the same as the slot
+being clean on silicon.

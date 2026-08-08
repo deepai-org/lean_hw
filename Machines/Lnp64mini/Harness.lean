@@ -242,7 +242,7 @@ TLB), each time leaving a green test that had never looked at the new state. -/
 def cmpCoveredRegs (s : MiniSt) : List String := (issRegs s).map (·.1)
 
 def cmpCoveredMems (s : MiniSt) : List String :=
-  ["rf", "dmem", "tdom", "tcont", "tcdom",
+  ["rf", "dmem", "tdom", "tcont", "tcdom", "gdepth",
    -- EXT-8: the commit-trace ring. Compared, not exempted -- the whole value
    -- of a trace is that it says what actually happened, so a ring the models
    -- disagree about would be worse than no ring at all.
@@ -292,6 +292,7 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     | "tdom"        => some (s.tdom[idx]!).toNat
     | "tcont"       => some (s.tcont[idx]!).toNat
     | "tcdom"       => some (s.tcdom[idx]!).toNat
+    | "gdepth"      => some (s.gdepth[idx]!).toNat
     -- EXT-8: the commit-trace ring is compared like any other memory. It is
     -- state the design declares, so D39 says it is observable and Loom's
     -- coordinate enumeration will ask about it; answering `none` would make it
@@ -1483,6 +1484,40 @@ def progGate : List (BitVec 64) :=
     encImmI OP_ADDI 10 0 5,       -- w4  r10 = 5  (gate body, in domain 3)
     enc OP_MINI_GATE_RETURN 0 0 0 ]           -- w5  GATE_RETURN -> word 2
 
+/-- §9 NESTING: handler A (gate 0) itself `gate_call`s gate 1 (handler B).
+The continuation stack must carry BOTH frames: B returns to A, then A returns
+to the caller. Depth 0→1→2→1→0. Under the old depth-1 bitmap the inner call
+was refused (r11 stayed 0) and A's return then fell through. -/
+def progGateNest : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 0,          -- w0  r1 = 0  (outer gate id)
+    enc OP_MINI_GATE_CALL 0 1 0,    -- w1  GATE_CALL gate 0 -> handler A (w4)
+    encImmI OP_ADDI 9 0 7,          -- w2  r9 = 7  (only after the FULL nested return)
+    enc OP_EXIT 0 0 0,              -- w3  EXIT
+    -- handler A (domain 3), depth 1:
+    encImmI OP_ADDI 2 0 1,          -- w4  r2 = 1  (inner gate id)
+    enc OP_MINI_GATE_CALL 0 2 0,    -- w5  GATE_CALL gate 1 -> handler B (w8) [depth 2]
+    encImmI OP_ADDI 10 0 5,         -- w6  r10 = 5 (only after B returns into A)
+    enc OP_MINI_GATE_RETURN 0 0 0,  -- w7  GATE_RETURN (A -> w2) [depth 1->0]
+    -- handler B (domain 4), depth 2:
+    encImmI OP_ADDI 11 0 9,         -- w8  r11 = 9
+    enc OP_MINI_GATE_RETURN 0 0 0 ] -- w9  GATE_RETURN (B -> w6) [depth 2->1]
+
+/-- §9 + CLONE: the gate handler SPAWNS a thread (like the driver-spawn gate),
+then returns. The clone must not disturb the caller's continuation, and the
+child must start with a CLEAN gate depth (0) even if it reuses a slot. This is
+the driver-in-domain path (`lnp64_gate_drvspawn_impl` → `__lnp_spawn_entry`). -/
+def progGateClone : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 0,            -- w0  r1 = 0 (gate id)
+    enc OP_MINI_GATE_CALL 0 1 0,      -- w1  GATE_CALL gate 0 -> handler (w4)
+    encImmI OP_ADDI 9 0 7,            -- w2  r9 = 7 (parent returned)
+    enc OP_EXIT 0 0 0,                -- w3  EXIT (parent)
+    -- handler (domain 3), inside the gate:
+    encImmI OP_ADDI 5 0 (Int.ofNat (TEXT_BASE + 8*8)), -- w4 r5 = child entry (w8)
+    enc OP_CLONE_SPAWN 6 5 0,         -- w5  spawn child at r5 -> r6 = tid
+    encImmI OP_ADDI 10 0 5,           -- w6  r10 = 5 (parent, still in gate)
+    enc OP_MINI_GATE_RETURN 0 0 0,    -- w7  GATE_RETURN (-> w2)
+    enc OP_EXIT 0 0 0 ]               -- w8  child: EXIT
+
 /-- Same, but the gate body halts instead of returning: the machine stops
 inside the gate. -/
 def progGateStay : List (BitVec 64) :=
@@ -1556,7 +1591,33 @@ tdom[0]={(su.tdom[0]!).toNat} (want 0) in_gate={su.in_gate.toNat} (want 0)"
   let badU ← lockstep (imageFrom TEXT_BASE progGateUnbacked ++ tbl) 1 cmdGate (fun _ => 0) 60
   if badU = 0 then IO.println "  OK  GATE-UNBACKED (EDSL≡ISS, 60 cyc)"
   else IO.println s!"  FAIL GATE-UNBACKED ({badU} mismatches)"
-  if bad = 0 && badU = 0 && ok1 && ok2 && ok3 then
+  -- (4) §9 NESTING: handler A gate_calls gate 1 (handler B). The continuation
+  -- STACK must carry both frames; depth 0→1→2→1→0.
+  let tblN := gateDescriptor 0 (TEXT_BASE + 32) GATE_DOM_TEST
+              ++ gateDescriptor 1 (TEXT_BASE + 64) 4
+  let imgN := imageFrom TEXT_BASE progGateNest ++ tblN
+  let badN ← lockstep imgN 1 cmdGate (fun _ => 0) 120
+  if badN = 0 then IO.println "  OK  GATE-NEST (EDSL≡ISS, nested gate_call, 120 cyc)"
+  else IO.println s!"  FAIL GATE-NEST ({badN} mismatches)"
+  let (sn, _, _) := runIss imgN 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  nested: halted={sn.halted} r11={(sn.rf[11]!).toNat} (want 9, inner ran) \
+r10={(sn.rf[10]!).toNat} (want 5, A resumed) r9={(sn.rf[9]!).toNat} (want 7, A returned) \
+in_gate={sn.in_gate.toNat} (want 0) gdepth0={(sn.gdepth[0]!).toNat} (want 0)"
+  let ok4 := sn.halted && (sn.rf[11]!).toNat == 9 && (sn.rf[10]!).toNat == 5
+             && (sn.rf[9]!).toNat == 7 && sn.in_gate.toNat == 0 && (sn.gdepth[0]!).toNat == 0
+  -- (5) CLONE inside a gate (the driver-spawn path): the handler spawns a
+  -- child then returns; the caller's continuation must survive.
+  let imgC := imageFrom TEXT_BASE progGateClone ++ tbl
+  let badC ← lockstep imgC 1 cmdGate (fun _ => 0) 120
+  if badC = 0 then IO.println "  OK  GATE-CLONE (EDSL≡ISS, spawn inside gate, 120 cyc)"
+  else IO.println s!"  FAIL GATE-CLONE ({badC} mismatches)"
+  let (sc, _, _) := runIss imgC 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  gate-clone: halted={sc.halted} r9={(sc.rf[9]!).toNat} (want 7, parent returned) \
+r10={(sc.rf[10]!).toNat} (want 5) r6={(sc.rf[6]!).toNat} (child tid) in_gate={sc.in_gate.toNat} (want 0) \
+gdepth0={(sc.gdepth[0]!).toNat} (want 0)"
+  let ok5 := sc.halted && (sc.rf[9]!).toNat == 7 && (sc.rf[10]!).toNat == 5
+             && sc.in_gate.toNat == 0 && (sc.gdepth[0]!).toNat == 0
+  if bad = 0 && badU = 0 && badN = 0 && badC = 0 && ok1 && ok2 && ok3 && ok4 && ok5 then
     IO.println "LNP64MINI GATE SELFTEST OK — a gate is the only way to change domain, and only to the gate's"
   else
     IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2} unbacked={ok3})"
