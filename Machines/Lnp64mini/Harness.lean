@@ -1676,6 +1676,51 @@ mem handle3=0x{String.ofList (Nat.toDigits 16 (h3 dw))}"
     IO.println s!"LNP64MINI CAPXFER SELFTEST FAILED ({bad}/{badU} mismatches; right={ok1} wrong={ok2} unbacked={ok3})"
     throw <| IO.userError "capxfer selftest failed"
 
+/-! ## Thread-slot exhaustion boundary (the NT property a real boot needs)
+
+The scheduler selftests spawn one or two threads; none fills the slot table,
+so allocation across the full `[0,NT)` range is untested. NT=8's silicon boot
+failed by exhaustion at the ~9th live thread -- invisible to every example
+test at low occupancy (PLATONIC.md, "What NT taught"). This is the missing
+boundary property, checked at whatever `NT` the design is emitted at: the
+parent CLONEs `NT-1` children, each spinning so it holds its slot, and
+
+* all `NT-1` clones must SUCCEED (slots 1..NT-1 allocate; slot 0 is the
+  parent), so every slot ends occupied; and
+* the `NT`-th clone, with the table full, must be REFUSED (`rd = -1`).
+
+Layout: `w0` loads the child entry, `w1..w(NT-1)` are the filling clones,
+`w(NT)` is the over-full clone (result in r6), `w(NT+1)` is the parent's
+self-loop, and `w(NT+2)` is the child's self-loop. -/
+def progFillSlots : List (BitVec 64) :=
+  let childWord := NT + 2
+  [ encImmI OP_ADDI 1 0 (Int.ofNat (TEXT_BASE + childWord*8)) ]
+  ++ (List.replicate (NT-1) (enc OP_CLONE_SPAWN 4 1 2))
+  ++ [ enc OP_CLONE_SPAWN 6 1 2 ]        -- over-full: r6 must be -1
+  ++ [ encImmJ OP_JMP 0 0 ]              -- parent self-loop
+  ++ [ encImmJ OP_JMP 0 0 ]             -- child self-loop
+
+def slotFillSelftest : IO Unit := do
+  let img := imageFrom TEXT_BASE progFillSlots
+  let start : Nat → MiniIn := fun k =>
+    if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
+  let cyc := NT*8 + 60
+  let bad ← lockstep img 1 start (fun _ => 0) cyc
+  if bad = 0 then IO.println s!"  OK  SLOTFILL (EDSL≡ISS, {cyc} cyc)"
+  else IO.println s!"  FAIL SLOTFILL ({bad} mismatches)"
+  let (s, _, _) := runIss img 1 start (fun _ => 0) (cyc*2)
+  let occ := (List.range NT).foldl
+    (fun n i => if (s.tstate[i]!).toNat != 0 then n+1 else n) 0
+  let overFull := (s.rf[6]!).toNat == 0xFFFFFFFFFFFFFFFF
+  let lastOk := (s.rf[4]!).toNat != 0xFFFFFFFFFFFFFFFF
+  IO.println s!"  occupied slots={occ} (want {NT}); over-full r6={(s.rf[6]!).toNat} (want -1); \
+last-clone r4={(s.rf[4]!).toNat} (valid, not -1)"
+  if bad == 0 && occ == NT && overFull && lastOk then
+    IO.println s!"LNP64MINI SLOTFILL SELFTEST OK — {NT-1} clones fill the table and the {NT}th is refused"
+  else
+    IO.println s!"LNP64MINI SLOTFILL SELFTEST FAILED (occ={occ} want {NT}; overFull={overFull}; lastOk={lastOk})"
+    throw <| IO.userError "slotfill selftest failed"
+
 /-! ## EXT-7 — the MMU selftest (§15)
 
 Three claims, and the second and third are the ones with content:

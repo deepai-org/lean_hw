@@ -85,7 +85,7 @@ fi
 
 say "### 5. the selftests actually pass on the freshly built binary"
 for t in selftest smpselftest preemptselftest domselftest \
-         failstopselftest gateselftest capxferselftest mmuselftest \
+         failstopselftest gateselftest capxferselftest slotfillselftest mmuselftest \
          subwordselftest coverageselftest alugapselftest opdiffselftest \
          traceselftest mmurelocselftest; do
   r=$(timeout 400 ./.lake/build/bin/minitest "$t" 2>&1 | tail -1)
