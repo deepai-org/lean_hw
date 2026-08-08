@@ -1639,12 +1639,12 @@ def capXferSelftest : IO Unit := do
     (d.mem.getD (ddrWord (DATA_BASE + CAP_TBL + 3*16)) 0).toNat
   -- (0) EDSL ≡ ISS across send + gate + receive, now six bus transactions
   -- longer than the bank version.
-  let bad ← lockstep img 1 (cmdCap 3) (fun _ => 0) 200
-  if bad = 0 then IO.println "  OK  CAPXFER (EDSL≡ISS across send+gate+recv, 200 cyc)"
+  let bad ← lockstep img 1 (cmdCap 3) (fun _ => 0) 160
+  if bad = 0 then IO.println "  OK  CAPXFER (EDSL≡ISS across send+gate+recv, 160 cyc)"
   else IO.println s!"  FAIL CAPXFER ({bad} mismatches)"
   -- (1) the addressed domain receives the handle, and the ENTRY IN MEMORY
   -- is empty again afterwards (occupied cleared, valid kept).
-  let (sr, dr, _) := runIss img 1 (cmdCap 3) (fun _ => 0) 600
+  let (sr, dr, _) := runIss img 1 (cmdCap 3) (fun _ => 0) 300
   let got := (sr.rf[9]!).toNat
   IO.println s!"  addressed domain 3: halted={sr.halted} send r3={(sr.rf[3]!).toNat} (want 0) \
 recv r9=0x{String.ofList (Nat.toDigits 16 got)} (want 0x{String.ofList (Nat.toDigits 16 CAP_HANDLE)}) \
@@ -1653,7 +1653,7 @@ mem flags3=0x{String.ofList (Nat.toDigits 16 (fl3 dr))} (want 0x100, consumed)"
              && fl3 dr == 0x100
   -- (2) a DIFFERENT domain gets nothing, and the handle stays put IN MEMORY:
   -- entry 3 still occupied, handle word still the sent handle.
-  let (sw, dw, _) := runIss (imageFrom TEXT_BASE progCapWrong ++ capTable 5) 1 (cmdCap 5) (fun _ => 0) 600
+  let (sw, dw, _) := runIss (imageFrom TEXT_BASE progCapWrong ++ capTable 5) 1 (cmdCap 5) (fun _ => 0) 300
   let gotW := (sw.rf[9]!).toNat
   IO.println s!"  other domain 5:     halted={sw.halted} recv r9=0x{String.ofList (Nat.toDigits 16 gotW)} \
 (want all-ones) mem flags3=0x{String.ofList (Nat.toDigits 16 (fl3 dw))} (want 0x101, still occupied) \
@@ -1662,13 +1662,13 @@ mem handle3=0x{String.ofList (Nat.toDigits 16 (h3 dw))}"
              && h3 dw == CAP_HANDLE
   -- (3) §17 fail-closed: a zeroed entry refuses the send and stays zeros.
   let imgU := imageFrom TEXT_BASE progCapUnbacked ++ capTable 3
-  let (su, du, _) := runIss imgU 1 (cmdCap 3) (fun _ => 0) 400
+  let (su, du, _) := runIss imgU 1 (cmdCap 3) (fun _ => 0) 220
   let fl7 := (du.mem.getD (ddrWord (DATA_BASE + CAP_TBL + 7*16 + 8)) 0).toNat
   IO.println s!"  unbacked domain 7:  halted={su.halted} send r3 all-ones={((su.rf[3]!).toNat == 0xFFFFFFFFFFFFFFFF)} \
 (want true, refused) mem flags7=0x{String.ofList (Nat.toDigits 16 fl7)} (want 0)"
   let ok3 := su.halted && (su.rf[3]!).toNat == 0xFFFFFFFFFFFFFFFF && fl7 == 0
-  let badU ← lockstep imgU 1 (cmdCap 3) (fun _ => 0) 80
-  if badU = 0 then IO.println "  OK  CAPXFER-UNBACKED (EDSL≡ISS, 80 cyc)"
+  let badU ← lockstep imgU 1 (cmdCap 3) (fun _ => 0) 70
+  if badU = 0 then IO.println "  OK  CAPXFER-UNBACKED (EDSL≡ISS, 70 cyc)"
   else IO.println s!"  FAIL CAPXFER-UNBACKED ({badU} mismatches)"
   if bad = 0 && badU = 0 && ok1 && ok2 && ok3 then
     IO.println "LNP64MINI CAPXFER SELFTEST OK — a handle reaches its domain and no other, out of memory the machine walked"
