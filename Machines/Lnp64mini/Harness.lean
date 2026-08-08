@@ -201,8 +201,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("cur_dom",8,s.cur_dom.toNat),
    -- EXT-3: the fail-stop bitmap
    ("poison",32,s.poison.toNat),
-   -- EXT-4: the outgoing park/wake key
-   ("wake_key",64,s.wake_key.toNat), ("wake_bm",32,s.wake_bm.toNat),
+   -- EXT-4: the outgoing wake key (informational; the wake is unkeyed now)
+   ("wake_key",64,s.wake_key.toNat),
    -- EXT-5: gates
    ("in_gate",32,s.in_gate.toNat),
    -- EXT-7: the MMU enable and TLB selector
@@ -222,7 +222,6 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
         (s!"tlb_dom{i}",    8, (s.tlb_dom[i]!).toNat),
         (s!"tlb_cell{i}",   8, (s.tlb_cell[i]!).toNat)])
   ++ (List.range NT).map (fun i => (s!"tstate{i}",2,s.tstate[i]!.toNat))
-  ++ (List.range NT).map (fun i => (s!"tfutex{i}",64,s.tfutex[i]!.toNat))
 
 /-- D20: the four thread-table arrays that became Loom **memories**
 (`tpc`, `tsleep`, `tp_arr`, `sigmask_arr`). The lockstep compares them
@@ -1115,10 +1114,12 @@ def smpSelftest : IO Unit := do
   -- (1) res_kill held high: every LR's reservation dies the same cycle, so
   --     the SC must FAIL (rd=1) and leave dmem[0] untouched.
   let rk : Nat → MiniIn := fun k => { start k with resKill := true }
-  -- (2) doorbell at cycle 30: the FUTEX-blocked thread wakes and finishes.
-  -- EXT-4: the doorbell is KEYED, so it must carry the address the thread
-  -- parked on (`progDoorbell` waits on 0x2000). `dbWrong` carries another
-  -- key and must NOT wake it -- that is the whole increment.
+  -- (2) doorbell at cycle 26: the FUTEX-blocked thread wakes and finishes.
+  -- EXT-4 REVERTED (the NT=32 fit): the wake is UNKEYED, so ANY doorbell wakes
+  -- a parked thread regardless of key (a spurious wake is legal; the waiter
+  -- re-checks). `db` and `dbWrong` carry different keys but now behave
+  -- identically; what still holds is that a wake REQUIRES a doorbell (the
+  -- no-doorbell control stays parked).
   let db : Nat → MiniIn :=
     fun k => { start k with doorbell := k = 26, doorbellKey := 0x2000 }
   let dbWrong : Nat → MiniIn :=
@@ -1131,8 +1132,8 @@ def smpSelftest : IO Unit := do
     [("RESKILL (res_kill clears lr_valid -> SC fails)", progLRSC, rk, 24),
      ("SCFAIL  (global SC refused -> rd=1 at S_DSW)",   progScDDR, sf, 40),
      ("SCOK    (global SC accepted -> rd=0)",           progScDDR, start, 40),
-     ("DOORBELL(FUTEX_WAIT parks; keyed doorbell wakes it)", progDoorbell, db, 34),
-     ("DBWRONG (doorbell on a DIFFERENT key: stays parked)", progDoorbell, dbWrong, 34),
+     ("DOORBELL(FUTEX_WAIT parks; doorbell wakes it)",        progDoorbell, db, 34),
+     ("DBANYKEY(unkeyed wake: any-key doorbell wakes it too)", progDoorbell, dbWrong, 34),
      ("WAKEOUT (FUTEX_WAKE pulses wake_out)",           progWake, start, 26),
      ("HOLD    (FSM frozen at S_F0, then resumes)",     progLRSC, hd, 38)]
   let mut total := 0
@@ -1158,13 +1159,14 @@ def smpSelftest : IO Unit := do
   let (sn, _, _) := runIss (imageFrom TEXT_BASE progDoorbell) 1 start (fun _ => 0) 300
   let okNo := (!sn.halted) && (sn.tstate[0]!).toNat == 3 && (sn.rf[9]!).toNat == 0
   IO.println s!"  no-doorbell control: halted={sn.halted} (want false) tstate0={(sn.tstate[0]!).toNat} (want 3)"
-  -- EXT-4: a doorbell on the WRONG key must leave it parked. This is the
-  -- claim the unkeyed broadcast could not make -- before EXT-4 this run woke
-  -- the thread and halted, identically to the right-key run.
+  -- EXT-4 reverted (the NT=32 fit): the wake is unkeyed, so a doorbell on ANY
+  -- key wakes a parked thread (a spurious wake is legal; the waiter re-checks).
+  -- The keyed "wrong key stays parked" claim no longer holds; what remains is
+  -- that a wake REQUIRES a doorbell (the no-doorbell control above).
   let (sx, _, _) := runIss (imageFrom TEXT_BASE progDoorbell) 1 dbWrong (fun _ => 0) 300
-  let okKey := (!sx.halted) && (sx.tstate[0]!).toNat == 3 && (sx.rf[9]!).toNat == 0
-  IO.println s!"  wrong-key doorbell: halted={sx.halted} (want false) tstate0={(sx.tstate[0]!).toNat} \
-(want 3 = still parked) r9={(sx.rf[9]!).toNat} (want 0) | right-key woke it: halted={sd.halted}"
+  let okKey := sx.halted && (sx.rf[9]!).toNat == 5
+  IO.println s!"  any-key doorbell (unkeyed): halted={sx.halted} (want true) \
+r9={(sx.rf[9]!).toNat} (want 5) | right-key also woke it: halted={sd.halted}"
   let (nw, hw) := countWake (imageFrom TEXT_BASE progWake) 300
   IO.println s!"  wake_out pulses={nw} (want 1) halted={hw}"
   let okWk := nw == 1 && hw

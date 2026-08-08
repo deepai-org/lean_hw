@@ -482,3 +482,34 @@ model-with-uncertainty decision (property 6), and the missing measurement is
 the uncertainty. NT=16 is this session's choice — a power of two (the wrap
 needs it) that gives ~16 slots for a boot that needs ~10, and routes the dual
 at ~47% instead of NT=32's barely-closing 53%.
+
+### The NT=32 fit (2026-08-08, later): the boot needs >16, so pay for it by deleting the one 64-bit-wide NT structure
+
+NT=16 turned out to need MORE than ~16 slots: the dual boots at NT=32 but at
+NT=16 it panics `pool->tp_refcnt == 0` (kern_threadpool.c:428) right after
+`entropy: ready`. This was first suspected to be the §17 domain layer, but a
+**non-domain image** (`LNP64_NO_DOMAINS=1`) hits the identical panic at NT=16 —
+so it is the scheduler, not the guest: the boot's threadpool phase needs >16
+concurrent workers, and NT=16 has no slot for them. The uncertainty the section
+above named ("NT is bounded below by the workload's peak live-thread count, a
+measured quantity the ladder cannot produce off-board") resolved on silicon:
+the lower bound is >16, i.e. NT=32.
+
+But NT=32 with the keyed futex-wake bank does not route (the wl variant hit
+100% and failed to expand). The fix is not a smaller NT (too few slots) nor a
+reseed gamble (the wrong strategy) — it is to REMOVE the one structure that
+scales with NT at 64-bit width: `tfutex` (the per-slot wait key) and the
+NT-parallel 64-bit comparator bank it feeds (the keyed EXT-4 wake). Everything
+else per slot is 2-bit (`tstate`) or already a BRAM memory (`tpc`, `tdom`,
+`tp_arr`, …), so it barely scales. Deleting `tfutex` reverts EXT-4 to an
+**unkeyed** wake — every parked (FUTEX) thread wakes on any `FUTEX_WAKE`/
+doorbell — which is spec-legal (a futex wake may be spurious but never missed;
+every waiter re-checks and re-parks). The cost is a thundering herd per wake, a
+performance trade the boot absorbs; the win is that 32 slots now cost ~like 16.
+This is the same move as every other in this file — take the expensive thing
+out of the wide/parallel part of the design — applied to the scheduler, and it
+is the feature-abort the "most realistic dual we can FIT" brief authorised:
+keyed-wake precision (an optimisation) traded for the slot count the boot
+actually needs. `tstate` stays a register file (2-bit, cheap, read at every
+index by the ready/free encoders and the unkeyed wake); it did not need to move
+to memory. The thread CONTEXT was never the problem — it was already in BRAM.

@@ -36,7 +36,7 @@ def PROG_BASE  : Nat := 0x20000000
 def DATA_BASE  : Nat := 0x10000000
 def UART_ADDR    : Nat := 0x8000
 def UART_RX_ADDR : Nat := 0x8008
-def NT : Nat := 16
+def NT : Nat := 32
 def CW : Nat := 5
 def AW : Nat := 10
 
@@ -123,33 +123,27 @@ def doorbell : Expr 1  := .reg 1  "doorbell"
 
 /-! ### EXT-4 — the park/wake directory (`EXTEND_SPEC.md` increment 4)
 
+**2026-08-08: EXT-4's keyed wake was REVERTED to fit NT=32.** The history below
+is kept for the record, but `tfutex`, the comparator bank, `wakeKey`,
+`wakeMatch`/`matchesBefore` and the registered `wake_bm` are all gone; the wake
+is now the unkeyed `wakeAllApply` (promote every `tstate==FUTEX` slot on any
+local `FUTEX_WAKE` or doorbell — spec-legal, spurious-not-missed). See
+`wakeAllApply` and PLATONIC "the NT=32 fit". `doorbell_key`/`wake_key` survive
+only as the dual SoC's cross-core wire (now informational — the wake ignores
+the key). Why the revert: the boot needs >16 thread slots (NT=16 panics
+`tp_refcnt`), NT=32 with the keyed bank does not route, and `tfutex`'s
+64-bit-wide NT-parallel comparator bank was the one structure that made 32
+slots too big. Deleting it is the feature-abort (wake precision for slot count)
+the "most realistic dual we can FIT" brief authorised.
+
+--- historical (EXT-4 as originally built) ---
 Appendix F #6; §3 calls it "the epoch machine's client annex". Mini had both
-halves and they were not connected: `tfutex[i]` records *what* a parked
+halves and they were not connected: `tfutex[i]` recorded *what* a parked
 thread waits on, but the cross-core `doorbell` woke **every** thread with
-`tstate = FUTEX` whatever key it was parked on. If a thread parked on key A
-is observable to a wake on key B, "parked on" means nothing.
-
-**The whole increment is: the comparator bank is SHARED, not duplicated.**
-The first attempt gave the doorbell its own 32-slot bank beside the one
-`FUTEX_WAKE` already has, and it cost 8 073 LUTs and would not route (58 %
-utilisation, `sysclk` below the board clock). The added *state* was 32 flops;
-every one of those LUTs was a second copy of a comparison the design already
-computes. Narrowing that copy from 64 to 16 bits recovered 6 800 LUTs and
-0.22 MHz — i.e. width was never the problem, **duplication** was.
-
-So there is exactly one bank, in `smpRule`, and its operand is muxed:
-
-* `wakeKey` = `rdval` for a local `FUTEX_WAKE`, `doorbell_key` for a remote
-  one — one 64-bit 2:1 mux, not 32 more comparators.
-* `wakeEn`  = local pulse ∨ doorbell.
-* the `matchesBefore < a` count limit applies to the **local** wake only; a
-  remote doorbell wakes every thread parked on that key, which is the
-  ordinary futex broadcast-on-key.
-
-The bank moved out of the `S_EX` branch into `smpRule`, which already ran
-*after* `fsmRule` — so the commit order is unchanged (D9, last write wins)
-and `sleepScanRule`, which is the only other `tstate` writer that could
-collide, still runs before both. -/
+`tstate = FUTEX` whatever key it was parked on. EXT-4 made the wake keyed via
+ONE shared comparator bank (in `smpRule`, operand muxed `rdval`/`doorbell_key`,
+`matchesBefore < a` count limit on the local wake). That bank is exactly what
+NT=32 could not afford, hence the revert above. -/
 def doorbell_key : Expr 64 := .reg 64 "doorbell_key"
 def hold     : Expr 1  := .reg 1  "hold"
 
@@ -599,7 +593,6 @@ cross-port collision hazard: the write lands on the clock edge, the read
 sees the old contents, exactly as `Design.cycle` says. -/
 
 def tstate  (i : Fin NT) : Expr 2  := .reg 2  s!"tstate{i.val}"
-def tfutex  (i : Fin NT) : Expr 64 := .reg 64 s!"tfutex{i.val}"
 
 /-- `tpc[idx]` — async read of the thread-PC memory. -/
 def tpcRd (idx : Expr 5) : Expr 64 := .memRead 64 "tpc" idx
@@ -1720,9 +1713,6 @@ def setPcFromTpc (idx : Expr 5) : Act := .write 64 "pc" (tpcRd idx)
 def tstateDynWrite (v : Expr 2) (idx : Expr 5) : Act :=
   (List.finRange NT).foldr (fun i acc =>
     .seq (.ite (.eq idx (L5 i.val)) (.write 2 s!"tstate{i.val}" v) .skip) acc) .skip
-def tfutexDynWrite (idx : Expr 5) (v : Expr 64) : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.eq idx (L5 i.val)) (.write 64 s!"tfutex{i.val}" v) .skip) acc) .skip
 /-- dynamic tstate[idx]==v test as a (balanced) mux chain. -/
 def tstateEq (idx : Expr 5) (v : Expr 2) : Expr 1 :=
   priTree ((List.finRange NT).map (fun i => (.eq idx (L5 i.val), .eq (tstate i) v))) (L1 0)
@@ -1741,70 +1731,27 @@ condition after waking and the waker retries; merging two keys into one bank
 pass is the thing that cannot be done with one comparator. -/
 def wakeLocal : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs OP_FUTEX_WAKE))
 def wakeEn    : Expr 1 := .or wakeLocal doorbell
-def wakeKey   : Expr 64 := .mux wakeLocal rdval doorbell_key
 
-/-- FUTEX_WAKE: wake matching FUTEX threads. EXT-4 made this the design's
-ONE wake comparator bank, shared by the local `FUTEX_WAKE` and the remote
-doorbell via `wakeKey`/`wakeEn`; the count limit `a` applies to the local
-wake only. Per-element guard: `wakeEn ∧ tstate_i==3 ∧ tfutex_i==wakeKey
-∧ (¬local ∨ matches-before-i < a)`. -/
-def wakeMatch (i : Fin NT) : Expr 1 :=
-  .and wakeEn
-    (.and (.eq (tstate i) (L2 3))
-      (.and (.eq (tfutex i) wakeKey)
-        -- EXT-4: the count limit is the LOCAL wake's; a remote doorbell
-        -- wakes everything parked on the key.
-        (.or (.not wakeLocal) (.ult (matchesBefore i.val) a))))
-where
-  /-- `tstate_j == FUTEX ∧ tfutex_j == wakeKey`. -/
-  fmatch (j : Nat) : Expr 1 :=
-    .and (.eq (.reg 2 s!"tstate{j}") (L2 3)) (.eq (.reg 64 s!"tfutex{j}") wakeKey)
-  /-- popcount of `fmatch j` for `j < i`, zero-extended to 64 for the
-  `< a` test. Was a linear chain of up to 31 **64-bit** adds; the count is
-  bounded by NT = 32, so a 6-bit balanced adder tree carries the exact same
-  value (no truncation) at depth ~log₂32 with 6-bit — not 64-bit — carry
-  chains. -/
-  matchesBefore (i : Nat) : Expr 64 :=
-    .zext (addTree ((List.range i).map (fun j => (.zext (fmatch j) 6 : Expr 6)))) 64
+/-- EXT-4 reverted to fit NT=32: the wake is now UNKEYED.
 
-/-! ### EXT-4 — the wake is REGISTERED, to keep the bank off the critical path
-
-The shared bank cut area hard (53 888 → 44 809 LUTs) but moved `sysclk` from
-33.96 MHz to 25.25 MHz against a 25 MHz clock — 1 % margin, thinner than the
-~4 % this file already calls dangerous. The reason is placement, not size:
-in EXT-3 the bank sat inside the `S_EX` arm of the FSM's guarded chain, so
-the comparators were behind the FSM decode; sharing it moved it into
-`smpRule`, which runs *last*, putting `tfutex → 64-bit eq → popcount tree →
-tstate mux` in one combinational path every cycle.
-
-So the decision is registered: `wake_bm` holds the per-slot match computed
-this cycle and the promotion to READY happens next cycle. The long path now
-ends at a flop (`… → popcount → wake_bm`) and the path that survives into
-`tstate` is a single bit test.
-
-**A one-cycle-late wake is sound, and by the increment's own argument.** A
-futex wake may be *spurious* but never *missed*: every waiter re-checks its
-condition after waking. A slot that re-parks in the intervening cycle can be
-woken on a stale match — that is a spurious wake, which is legal — while a
-slot parked on the woken key at match time is still parked at apply time
-unless something else already woke it. This is the same over-approximation
-licence that lets the directory exist at all. -/
-def wake_bm : Expr 32 := .reg 32 "wake_bm"
-
-/-- The per-slot match as a bitmap (disjoint lanes, so the OR folds to a
-tree). This is the combinational half; `wake_bm` registers it. -/
-def wakeBmE : Expr 32 :=
-  orTreeW ((List.finRange NT).map
-    (fun i => .shl (.zext (wakeMatch i) 32) (.lit (BitVec.ofNat 32 i.val))))
-
-/-- The registered half: promote every slot whose bit survived, guarded on
-still being parked so a slot that was woken and re-parked on another key in
-the intervening cycle is not silently re-stated. -/
-def wakeApply : Act :=
+`tfutex` (the per-slot 64-bit wait key) and the NT-parallel comparator bank it
+fed were the design's one 64-bit-wide NT-scaling structure — deleting them is
+what brings 32 thread slots under the xc7z020 routing ceiling (NT=16 fit at
+44% but could not boot NetBSD; keyed NT=32 did not route). A futex wake may be
+*spurious* but never *missed*: every waiter re-checks its condition after
+waking and re-parks if unsatisfied, so waking EVERY parked (FUTEX) thread on
+any wake is spec-legal. The cost is a thundering herd on each wake — a
+performance trade, not a correctness one — which the boot (not
+wake-frequency-bound) absorbs. So the wake is one combinational, tstate-only
+promote: on `wakeEn` (local `FUTEX_WAKE` retiring OR the cross-core doorbell),
+every slot with `tstate==FUTEX(3)` goes READY(1). The count limit `a` and the
+key are ignored (waking ≥a threads, or threads on a ≠key address, is a
+spurious wake = legal). The path into `tstate` is a 2-bit test, so unlike the
+old 64-bit-eq→popcount bank it needs no registering. See PLATONIC "the NT=32
+fit" and EXTEND_SPEC EXT-4. -/
+def wakeAllApply : Act :=
   (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.and (.eq (.slice (.shr wake_bm (.lit (BitVec.ofNat 32 i.val))) 0 1)
-                          (.lit (BitVec.ofNat 1 1)))
-                     (.eq (tstate i) (L2 3)))
+    .seq (.ite (.and wakeEn (.eq (tstate i) (L2 3)))
            (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc) .skip
 
 /-- `S_F0` — the instruction boundary, and (EXT-1) the preemption point.
@@ -2219,7 +2166,7 @@ def s_clone3 : Expr 1 × Act := stArm S_CLONE3  (actSeq [stepPc, retireInc, goF0
 def s_ftx1 : Expr 1 × Act := stArm S_FTX1
   (.ite mDone
     (actSeq [.ite (.eq mRdata futex_exp)
-              (actSeq [tstateDynWrite (L2 3) cur, tfutexDynWrite cur futex_addr_q,
+              (actSeq [tstateDynWrite (L2 3) cur,
                        .ite (.not (.eq next_ready cur))
                          (actSeq [.write 5 "cur" next_ready, setPcFromTpc next_ready, goF0])
                          (.write 5 "st" (L5 S_WAIT))])
@@ -2309,15 +2256,13 @@ Runs **after** `fsmRule` so both overrides are deterministic:
 def smpRule : Rule :=
   ⟨"smp", actSeq
     [ .write 1 "wake_out" wakeLocal
-      -- EXT-4: publish the key we woke on (hold otherwise).
+      -- publish the key we woke on (hold otherwise). Kept for the dual SoC
+      -- output port + the other core's `doorbell_key`; the wake is unkeyed
+      -- now, so the key is informational only.
     , .ite wakeLocal (.write 64 "wake_key" rdval) .skip
-      -- EXT-4: THE one comparator bank. Local FUTEX_WAKE and the remote
-      -- doorbell share it via `wakeKey`/`wakeEn`; previously the local wake
-      -- had a bank here in S_EX and the doorbell woke every parked thread
-      -- unkeyed.
-      -- EXT-4: compute the match this cycle, promote next cycle (see above).
-    , .write 32 "wake_bm" wakeBmE
-    , wakeApply
+      -- The wake, unkeyed: promote every parked (FUTEX) slot to READY on a
+      -- local FUTEX_WAKE or the cross-core doorbell. tstate-only, one cycle.
+    , wakeAllApply
     , .ite resKill (.write 1 "lr_valid" (L1 0)) .skip ]⟩
 
 /-! ### (9a) The thread-table write funnels (D20)
@@ -2627,7 +2572,7 @@ def scalarRegs : List RegDecl :=
    ⟨"zeroing",1,0⟩, ⟨"zctr",10,0⟩,
    ⟨"reg_sel",5,0⟩, ⟨"reg_wsel",5,0⟩, ⟨"reg_wlo",32,0⟩,
    ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
-   ⟨"wake_out",1,0⟩, ⟨"wake_key",64,0⟩, ⟨"wake_bm",32,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
+   ⟨"wake_out",1,0⟩, ⟨"wake_key",64,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
    -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
    ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩,
    -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
@@ -2643,13 +2588,12 @@ def scalarRegs : List RegDecl :=
         ⟨s!"tlb_phys{i.val}", 32, 0⟩, ⟨s!"tlb_dom{i.val}", 8, 0⟩,
         ⟨s!"tlb_cell{i.val}", 8, 0⟩])
 
-/-- The two thread-table arrays that stay per-element registers (D20):
-`tstate` (2-bit, multi-writer, read at every index by the ready/free
-priority encoders) and `tfutex` (read at every index by `FUTEX_WAKE`'s
-comparator bank). -/
+/-- The thread-table array that stays per-element registers (D20): `tstate`
+(2-bit, multi-writer, read at every index by the ready/free priority encoders
+and the unkeyed wake). `tfutex` and its 64-bit-wide NT comparator bank were
+deleted to fit NT=32 (the wake is unkeyed now — see `wakeAllApply`). -/
 def arrRegs : List RegDecl :=
   (List.finRange NT).map (fun i => ⟨s!"tstate{i.val}", 2, if i.val = 0 then 1 else 0⟩)
-  ++ (List.finRange NT).map (fun i => ⟨s!"tfutex{i.val}", 64, 0⟩)
 
 /-- (12) EXT-2 — the observation mirror. Unconditional: `cur_dom` is
 `tdom[cur]` as of the previous cycle. It is the *only* writer of `cur_dom`

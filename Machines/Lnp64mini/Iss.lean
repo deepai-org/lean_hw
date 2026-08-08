@@ -197,9 +197,6 @@ structure MiniSt where
   wake_out  : Bool := false
   -- EXT-4: the key this core last woke on (captured on the pulse).
   wake_key  : BitVec 64 := 0
-  -- EXT-4: the per-slot wake decision, applied one cycle later so the
-  -- comparator bank stays off the critical path (see `wake_bm` in Core).
-  wake_bm   : BitVec 32 := 0
   lr_req    : Bool := false
   sc_req    : Bool := false
   sc_pending: Bool := false
@@ -215,7 +212,6 @@ structure MiniSt where
   tpc    : Array (BitVec 64) := Array.replicate NTMEM 0
   tstate : Array (BitVec 2)  := (Array.replicate NT 0).set! 0 1
   tsleep : Array (BitVec 64) := Array.replicate NTMEM 0
-  tfutex : Array (BitVec 64) := Array.replicate NT 0
   tp_arr : Array (BitVec 64) := Array.replicate NTMEM 0
   sigmask_arr : Array (BitVec 64) := Array.replicate NTMEM 0
   deriving Repr
@@ -988,7 +984,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
     else if stN = S_FTX1 then
       if inp.mDone then
         if inp.mRdata = s.futex_exp then
-          s' := { s' with tpc := s'.tpc.set! curV.toNat (pc8 s), tstate := s'.tstate.set! curV.toNat 3, tfutex := s'.tfutex.set! curV.toNat s.futex_addr_q }
+          s' := { s' with tpc := s'.tpc.set! curV.toNat (pc8 s), tstate := s'.tstate.set! curV.toNat 3 }
           if s.next_ready ≠ curV then
             s' := { s' with cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]!, st := BitVec.ofNat 5 S_F0 }
           else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
@@ -1041,27 +1037,21 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   let wakeLocal := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ ¬ holdEff
                    ∧ s.st = BitVec.ofNat 5 S_EX ∧ opN s = OP_FUTEX_WAKE
   s' := { s' with wake_out := wakeLocal }
-  -- EXT-4: publish the key we woke on; hold otherwise.
+  -- publish the key we woke on (informational; the wake is unkeyed now).
   if wakeLocal then s' := { s' with wake_key := s.rdval }
-  -- EXT-4: THE one wake comparator bank, shared by the local FUTEX_WAKE and
-  -- the remote doorbell via wakeKey/wakeEn. The count limit is the local
-  -- wake's; a doorbell wakes everything parked on the key. Local wins a tie.
+  -- The wake, unkeyed (mirrors `wakeAllApply`): on a local FUTEX_WAKE or the
+  -- cross-core doorbell, promote EVERY parked (FUTEX=3) slot to READY(1), same
+  -- cycle, on the PRE-cycle tstate. `tfutex` and its keyed 64-bit comparator
+  -- bank were deleted to fit NT=32; a futex wake may be spurious (waking >a
+  -- threads, or threads on a ≠key address) but never missed — every waiter
+  -- re-checks and re-parks. Reads pre-cycle `s.tstate`, so a thread the FSM
+  -- parks THIS cycle is not woken (mirrors "doorbell never cancels a fresh
+  -- block"); the FSM only mutates `cur`/`free_slot`, never a pre-parked slot.
   let wakeEn  := wakeLocal ∨ inp.doorbell
-  let wakeKey := if wakeLocal then s.rdval else inp.doorbellKey
-  -- EXT-4: compute the match bitmap this cycle...
-  let mut bm : BitVec 32 := 0
   if wakeEn then
-    let mut wk := s.a
     for ti in List.range NT do
-      if s.tstate[ti]! = 3 ∧ s.tfutex[ti]! = wakeKey ∧ (¬ wakeLocal ∨ wk > 0) then
-        bm := bm ||| (1#32 <<< ti)
-        if wakeLocal then wk := wk - 1
-  s' := { s' with wake_bm := bm }
-  -- ...and promote on the PRE-cycle bitmap, i.e. the one computed last
-  -- cycle. Guarded on still being parked, mirroring `wakeApply`.
-  for ti in List.range NT do
-    if s.wake_bm.getLsbD ti ∧ s.tstate[ti]! = 3 then
-      s' := { s' with tstate := s'.tstate.set! ti 1 }
+      if s.tstate[ti]! = 3 then
+        s' := { s' with tstate := s'.tstate.set! ti 1 }
   if inp.resKill then s' := { s' with lr_valid := false }
 
   -- EXT-1: the quantum counter (mirrors `quantumRule`, the sole writer of
