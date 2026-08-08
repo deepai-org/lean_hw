@@ -434,3 +434,51 @@ commands, the selector register and both read helpers are gone, so there is
 no longer a path by which an activation's domain can come from anywhere but
 guest memory. A capability system you can still poke is one you have to be
 trusted not to poke.
+
+## What NT taught (2026-08-08): a parameter can be self-consistently wrong, and the real-workload rung has a hole exactly where scheduling lives
+
+`NT` (the thread-slot count) was declared a parameter in §71g and dropped to
+8 for a −17.8% area win. Every selftest passed at NT=8 — smp, preempt,
+failstop, the lockstep, all green — and then the first real NetBSD boot on an
+NT=8 bitstream panicked at the first kthread create it could not satisfy.
+Two lessons for the intended shape, both about coverage rather than
+derivation:
+
+**1. Boundary behavior needs a property, not an example.** The selftests
+spawn one or two threads; none fills the slot table to `NT-1` and checks that
+the `NT`-th allocation is refused *and that the first `NT-1` all succeed*.
+NT=8's failure (slot exhaustion — the boot needs a ~9th live thread and slot
+8 does not exist) is invisible to any test that never approaches the
+boundary, and §71g's own note that "at least one more constant is coupled"
+is the same shape one level up: a `mod NT` that a 5-bit add did for free at
+NT=32 is silently wrong at any smaller power of two, and no example test at
+low occupancy exercises the wrap. The remedy is a generated property —
+*for the design's `NT`, allocation is a bijection onto `[0,NT)` and refuses at
+`NT`* — checked at every `NT` the design is emitted at, not a hand-written
+spawn-a-thread example. A parameter whose only evidence is examples at one
+value is a parameter in name only (the §71g reversion proved it the hard way;
+this session proved the residue is a coverage hole, not a live datapath bug).
+
+**2. The actual-image rung dies before the interesting phase.**
+`boot_sim.sh` — the rung added after sel_cond to run the shipped image on the
+emitted RTL — diverges at ~181k retires on the tb's fixed-latency DDR model
+(the `subr_vmem` quantum assertion the real board does not hit). The rump
+kernel creates its softint/housekeeping threads *after* that point, so the
+one phase where an `NT`/scheduler bug manifests is unreachable in the faithful
+simulator: `t_hw` (highest slot used) reads 0 because no thread is ever born
+before the divergence. The ladder's real-workload rung is not just "shorter
+than silicon" — it is missing a specific, load-bearing region (multi-thread
+scheduling under a booting OS), and that region is exactly where this class of
+bug lives. Closing it means a tb DDR model faithful enough to cross ~180k
+retires, or a scheduling-stress workload that reaches high slot occupancy in
+the faithful window — either way, the rung has to reach the phase before it can
+witness the phase's bugs.
+
+The operational upshot, in the same spirit as the ~55% routing ceiling being
+promoted to a correctness input: `NT` is bounded below by the workload's peak
+live-thread count (a *measured* quantity the ladder currently cannot produce
+off-board) and above by the routing ceiling. Picking it is a
+model-with-uncertainty decision (property 6), and the missing measurement is
+the uncertainty. NT=16 is this session's choice — a power of two (the wrap
+needs it) that gives ~16 slots for a boot that needs ~10, and routes the dual
+at ~47% instead of NT=32's barely-closing 53%.
