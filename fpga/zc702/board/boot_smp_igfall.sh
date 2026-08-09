@@ -56,8 +56,12 @@ sleep 2
 timeout 90 xsdb -eval '
   connect -url tcp:127.0.0.1:3121; after 400; targets -set -filter {name =~ "xc7z*"};
   source test/jtag_lib.tcl; set DB 0x10000000;
-  set s {}; foreach w [bulk_gread 0x03000008 128] { for {set k 0} {$k<8} {incr k} { set c [expr {($w>>($k*8))&0xff}]; if {$c>=32 && $c<127} {append s [format %c $c]} elseif {$c==10} {append s " | "} } }
-  puts "CONSOLE: $s"
+  if {[catch {gread_health} herr]} {
+    puts "CONSOLE: <UNTRUSTED -- $herr>"
+  } else {
+    set s {}; foreach w [bulk_gread 0x03000008 128] { for {set k 0} {$k<8} {incr k} { set c [expr {($w>>($k*8))&0xff}]; if {$c>=32 && $c<127} {append s [format %c $c]} elseif {$c==10} {append s " | "} } }
+    puts "CONSOLE: $s"
+  }
   set nplo [rd 49]; set nphi [rd 50]; set ncur [rd 51]; set ncnt [rd 52]; set ntr [rd 53]
   puts [format "GRET_NOOP cnt=%d pc=0x%08x%08x cur=%d trapped=%d" $ncnt $nphi $nplo $ncur $ntr]
   set fplo [rd 55]; set fphi [rd 56]; set inf [rd 57]

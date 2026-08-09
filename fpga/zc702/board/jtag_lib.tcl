@@ -181,3 +181,34 @@ proc bulk_gread {ga nwords {dwell 64}} {
   return $out
 }
 
+
+# ---------------------------------------------------------------------------
+# gread_health -- refuse to return plausible-wrong DDR data (fpga_dev.md §73).
+#
+# The JTAG DDR-read path degrades per session into returning ONE stale word
+# for EVERY address; twice in the §73 campaign that produced convincing wrong
+# console text (a stale success replay, then repeating garbage). The degraded
+# mode's signature is address-INdependence, so the check reads four distinct
+# words at the image base (a flat-exec text start is never four identical
+# instruction words) and errors loudly if they all match. It also proves the
+# BSCAN register path first (ID_MAGIC), so a dead chain is named as itself and
+# not as "DDR degraded".
+#
+# Call it before ANY bulk_gread whose result you intend to believe:
+#     gread_health            ;# errors (loudly) if the path is lying
+# A caught error means: stop reading DDR; recover (power_cycle restores the
+# path) or use a channel that does not ride it (BSCAN regs, GEM network).
+proc gread_health {{base 0x400000}} {
+  set id [rd 0]
+  if {$id == 0 || $id == 0xFFFFFFFF} {
+    error "gread_health: BSCAN register path dead (rd0=0x[format %08x $id]) -- chain problem, not DDR"
+  }
+  set ws [bulk_gread $base 4]
+  set w0 [lindex $ws 0]
+  set same 1
+  foreach w $ws { if {$w != $w0} { set same 0; break } }
+  if {$same} {
+    error "gread_health: DDR read path DEGRADED -- 4 distinct addresses at 0x[format %x $base] all read 0x[format %016x $w0]; do NOT trust bulk_gread output (power_cycle recovers the path)"
+  }
+  return 1
+}
