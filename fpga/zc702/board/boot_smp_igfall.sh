@@ -65,4 +65,4 @@ timeout 90 xsdb -eval '
   # (lake exe debugmap) -- hand-typed indices are how rd 56 lied once.
   source test/lnp64mini_debug_map.tcl
   debug_read_all
-' 2>&1 | grep -aE "CONSOLE|GRET_NOOP|IG_FALL|valid=|RUN_AND_HALT"
+' 2>&1 | grep -aE "CONSOLE|="
