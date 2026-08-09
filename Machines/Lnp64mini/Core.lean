@@ -546,25 +546,31 @@ take **0x60/0x61**, which are free in mini. Recorded here rather than
 pretending the encodings match. -/
 def inGateReg : Reg 32 := ⟨"in_gate"⟩
 def in_gate : Expr 32 := inGateReg.rd
-/-- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc, slot, count. -/
-def gretNoopPcReg  : Reg 64 := ⟨"gret_noop_pc"⟩
-def gretNoopCurReg : Reg 5  := ⟨"gret_noop_cur"⟩
-def gretNoopCntReg : Reg 32 := ⟨"gret_noop_cnt"⟩
-def gret_noop_pc  : Expr 64 := gretNoopPcReg.rd
-def gret_noop_cur : Expr 5  := gretNoopCurReg.rd
-def gret_noop_cnt : Expr 32 := gretNoopCntReg.rd
+/-! ### The fault record (spec 1235f201 conformance)
+
+The mini has no fault vectors; its fault story is EXT-3 fail-stop. An
+architectural fault therefore poisons the offending slot IN-CORE (the same
+bitmap `CMD_POISON` writes -- the runner stops at the instruction boundary,
+`running` drops, the host reads the cause) and records what/where/who. The
+faulting instruction does not retire and `pc` stays AT it: precise.
+
+Causes: 1 = `GATE_RETURN` with no continuation frame (§9.2 step 4: a
+synchronous fault, never a fall-through -- the silent no-op cost three
+debugging campaigns before the spec made it illegal); 2 = opcode 0 (the
+spec's "illegal-instruction forever": zeroed memory faults in every
+implementation -- previously the mini non-conformantly trapped it to the
+committed-exec host). -/
+def FAULT_GRET_EMPTY : Nat := 1
+def FAULT_ILLEGAL_OP0 : Nat := 2
+def faultCauseReg : Reg 8  := ⟨"fault_cause"⟩
+def faultPcReg    : Reg 64 := ⟨"fault_pc"⟩
+def faultCurReg   : Reg 5  := ⟨"fault_cur"⟩
+def fault_cause : Expr 8  := faultCauseReg.rd
+def fault_pc    : Expr 64 := faultPcReg.rd
+def fault_cur   : Expr 5  := faultCurReg.rd
 -- Seam probe: bit i set when slot i took a HWTRAP while in a gate since its
--- last gate_call. `gret_noop_trapped` latches that bit for the failing slot at
 -- the first no-op GATE_RETURN -- answers "was the failing slot resumed from a
 -- trap mid-gate?" (the trap-server↔fabric seam hypothesis) in one readback.
-def gateHadTrapReg     : Reg 32 := ⟨"gate_had_trap"⟩
-def gretNoopTrappedReg : Reg 1  := ⟨"gret_noop_trapped"⟩
-def gate_had_trap      : Expr 32 := gateHadTrapReg.rd
-def gret_noop_trapped  : Expr 1  := gretNoopTrappedReg.rd
-/-- bit `cur` of `gate_had_trap`. -/
-def curGateHadTrap : Expr 1 :=
-  .eq (.slice (.shr gate_had_trap (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
-
 /-- Bit `cur` of `in_gate`: this thread is inside a gate. -/
 def curInGate : Expr 1 :=
   .eq (.slice (.shr in_gate (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
@@ -1340,6 +1346,18 @@ wrote. Revocation is therefore just zeroing the entry, and it needs no
 command and no host. -/
 def gateDescValid : Expr 1 := .slice mRdata 8 1
 
+/-- §17 activation validity = the flags word's valid bit AND a sane entry PC
+(landed 1235f201: the entry is validated fail-closed at construction; the
+mini has no seal step, so the walk is where construction meets the machine).
+A misaligned or zero entry never activates -- the call REFUSES and steps
+past, exactly like a zeroed descriptor. Before this check a clobbered entry
+word (the §73 hammer accident: entry=1) sent fetch to a garbage address and
+wedged the memory FSM silently. -/
+def gateActValid : Expr 1 :=
+  .and gateDescValid
+    (.and (.eq (.slice gate_ent_q 0 3) (.lit (BitVec.ofNat 3 0)))
+      (.not (.eq gate_ent_q (L64 0))))
+
 /-- **§17: the activation commits when the WALK completes, not at S_EX.**
 The descriptor is not known until both words are back, so every funnel that
 records the activation (`in_gate`, `tdom`, `tcont`, `tcdom`) fires here --
@@ -1348,7 +1366,7 @@ early would install a domain read from a bank that no longer exists.
 `pc8` is still the right saved continuation: `pc` has not advanced, because
 the gate arm never ran `stepPc`. -/
 def gateCall : Expr 1 :=
-  .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone gateDescValid))
+  .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone gateActValid))
 
 /-- Funnel triples. -/
 
@@ -1972,7 +1990,7 @@ activation -- `pc` to the descriptor's entry, and the funnels (`tdom`,
 def s_gc1 : Expr 1 × Act := stArm S_GC1
   (.ite mDone
     (.seq (gateDomQReg.set (.slice mRdata 0 8))
-      (.seq (.ite gateDescValid (pcReg.set gate_ent_q) stepPc)
+      (.seq (.ite gateActValid (pcReg.set gate_ent_q) stepPc)
         (.seq retireInc goF0)))
     .skip)
 
@@ -2204,22 +2222,20 @@ def s_ex_branches : List (Expr 1 × Act) :=
                     (.shl (.zext (.slice a 0 4) 32) (.lit (BitVec.ofNat 32 4)))))
         (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_GC0))))) <|
   -- EXT-5: 0x61 GATE_RETURN. Restores the saved pc; the domain and the
-  -- in-gate bit are restored in their funnels. A return with no gate open
-  -- is a no-op (it just steps), which is the fail-quiet reading: a thread
-  -- cannot leave a domain it never entered.
+  -- in-gate bit are restored in their funnels. A return with NO gate open is
+  -- a synchronous FAULT (spec §9.2 step 4, landed 1235f201): the slot is
+  -- poisoned in-core (EXT-3 fail-stop -- the runner halts at this boundary),
+  -- the cause/pc/slot are recorded, the instruction does NOT retire and `pc`
+  -- stays at it. The silent-no-op reading this replaces cost three debugging
+  -- campaigns (fpga_dev.md §73): the machine must be loud, at the faulting
+  -- instruction, never silent-then-weird-later.
   gcons (opIs OP_MINI_GATE_RETURN)
     (.ite curInGate
       (.seq (pcReg.set (tcontRd gPopIdx)) (.seq retireInc goF0))
-      -- DIAGNOSTIC (the loud no-op): a GATE_RETURN with no gate open on THIS
-      -- slot. Legal (fail-quiet), but latch the first one's pc + slot + count
-      -- so a directed hammer test can SEE a desync instead of silently
-      -- wandering. The slot field is the tell: if it names the CLONE's child
-      -- slot, the no-op is correct-for-that-slot (a hand-off), not corruption.
-      (.seq (.ite (.eq gret_noop_cnt (L32 0))
-              (.seq (gretNoopPcReg.set pc) (.seq (gretNoopCurReg.set cur)
-                     (gretNoopTrappedReg.set curGateHadTrap))) .skip)
-        (.seq (gretNoopCntReg.set (.add gret_noop_cnt (L32 1)))
-          (.seq stepPc (.seq retireInc goF0))))) <|
+      (actSeq [faultCauseReg.set (L8 FAULT_GRET_EMPTY),
+               faultPcReg.set pc, faultCurReg.set cur,
+               poisonReg.set (.or poison (.shl (L32 1) (.zext cur 32))),
+               goF0])) <|
   -- 0x59 CLONE
   gcons (opIs OP_CLONE_SPAWN)
     (.ite has_free
@@ -2291,11 +2307,25 @@ def s_ex_branches : List (Expr 1 × Act) :=
              stReg.set (L5 S_DL)]) <|
   []
 
+/-- Opcode 0 is illegal-instruction FOREVER (the spec: zeroed memory faults
+in every implementation, for all time). Previously the mini routed it to the
+committed-exec host trap like any unknown op -- non-conformant, and it made a
+fall-through into padding a host-dependent behavior. Same fault mechanism as
+the empty-stack return: poison + record, no retire, pc precise. -/
+def opZeroFault : Act :=
+  actSeq [faultCauseReg.set (L8 FAULT_ILLEGAL_OP0),
+          faultPcReg.set pc, faultCurReg.set cur,
+          poisonReg.set (.or poison (.shl (L32 1) (.zext cur 32))),
+          goF0]
+
 /-- default: trap on an unknown opcode. -/
 def s_ex_trap : Act :=
   .seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP)))
 
-def s_ex_body : Act := actPriTree s_ex_branches s_ex_trap
+/-- Opcode 0 outranks the host trap: it is an architectural fault, not a
+serviceable unknown (see `opZeroFault`). -/
+def s_ex_body : Act :=
+  .ite (opIs 0) opZeroFault (actPriTree s_ex_branches s_ex_trap)
 
 def s_ex : Expr 1 × Act := stArm S_EX  s_ex_body
 
@@ -2543,49 +2573,6 @@ def inGateNext : Expr 32 :=
         (.mux (.or gateRetLast exitG)
           (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate)))
 
-/-- Seam probe: `gate_had_trap[cur]` is set when a HWTRAP is active while this
-slot is in a gate (a trap taken mid-gate), cleared on a fresh gate_call for the
-slot, all cleared on `cmd 13`. Read at the loud no-op (`gret_noop_trapped`). -/
-def gateHadTrapNext : Expr 32 :=
-  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (L32 0)
-    (.mux gateCall (.and gate_had_trap (.not (.shl (L32 1) (.zext cur 32))))
-      (.mux (.and trap_active curInGate) (.or gate_had_trap (.shl (L32 1) (.zext cur 32)))
-        gate_had_trap))
-
-/-! ### The in_gate[0] fall cause-latch (silicon desync instrument, 2026-08-09)
-
-The board captured one no-op GATE_RETURN on slot 0 (drvspawn_entry+0x10,
-trapped=0) and the solo-core hammers cannot reproduce it, so the next capture
-must name the CAUSE on silicon: the first cycle `in_gate[0]` transitions 1→0
-for any reason other than slot 0's own last return or the cmd-13 sweep, with
-the active `inGateNext` arm and its operands snapshotted. One shot; the valid
-bit (info[15]) blocks re-latch until the sweep resets it. -/
-def igFallPcReg   : Reg 64 := ⟨"ig_fall_pc"⟩
-def igFallInfoReg : Reg 16 := ⟨"ig_fall_info"⟩
-def ig_fall_info  : Expr 16 := igFallInfoReg.rd
-
-/-- `in_gate[0]` falls this cycle (computed from the same `inGateNext` the
-register funnel writes — no second source of truth). -/
-def igFall0 : Expr 1 :=
-  .and (.slice in_gate 0 1) (.not (.slice inGateNext 0 1))
-
-def igFallLatch : Expr 1 :=
-  .and igFall0 <|
-    .and (.not (.and gateRetLast (.eq cur (L5 0)))) <|
-      .and (.not zeroing) (.not (.slice ig_fall_info 15 1))
-
-/-- {15:valid, 13:9 free_slot, 8:4 cur, 3:gateRetLast, 2:exitG, 1:cloneG, 0:gateCall} -/
-def igFallInfo : Expr 16 :=
-  let cloneG := exG (.and (opIs OP_CLONE_SPAWN) has_free)
-  let exitG  := exG (opIs OP_THREAD_EXIT)
-  let sh (e : Expr 16) (k : Nat) : Expr 16 := .shl e (.lit (BitVec.ofNat 16 k))
-  .or (.zext gateCall 16) <|
-  .or (sh (.zext cloneG 16) 1) <|
-  .or (sh (.zext exitG 16) 2) <|
-  .or (sh (.zext gateRetLast 16) 3) <|
-  .or (sh (.zext cur 16) 4) <|
-  .or (sh (.zext free_slot 16) 9) (sh (.lit (BitVec.ofNat 16 1)) 15)
-
 /-- EXT-7: the valid bitmap after this cycle. `cmd 65` validates the selected
 slot; `cmd 67` clears every slot whose `tlb_cell` equals the bumped cell;
 `cmd 13`'s reset clears all. -/
@@ -2635,17 +2622,10 @@ def tarrFunnelRule : Rule :=
     -- (--); `cmd 13`'s sweep zeroes it, like the other per-thread arrays (D37).
     .seq (.ite gdepthWeE (gdepthBank.write 0 gdepthWaE gdepthWdE) .skip) <|
     .seq (inGateReg.set inGateNext) <|
-    .seq (gateHadTrapReg.set gateHadTrapNext) <|
-    -- Cause-latch for the silicon desync (2026-08-09): capture the FIRST cycle
-    -- `in_gate[0]` falls for any reason other than the expected last-return of
-    -- slot 0 (`gateRetLast ∧ cur=0`) or the cmd-13 sweep. The info word snapshots
-    -- which inGateNext arm was active and its operands, so the next desync boot
-    -- names the culprit arm instead of an interleaving guess.
-    --   info = {valid, free_slot[4:0], cur[4:0], gateRetLast, exitG, cloneG, gateCall}
+    -- The fault record clears on the cmd-13 sweep head, like the other
+    -- host-visible diagnostics; pc/cur are meaningful only while cause != 0.
     .seq (.ite (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0))))
-            (igFallInfoReg.set (.lit (BitVec.ofNat 16 0)))
-            (.ite igFallLatch
-              (.seq (igFallPcReg.set pc) (igFallInfoReg.set igFallInfo)) .skip)) <|
+            (faultCauseReg.set (L8 0)) .skip) <|
     -- EXT-6 (§17): the inbox is guest memory now -- its writes ride the
     -- ordinary bus path from S_CS1/S_CR1, and there is no core-resident
     -- occupancy state left to update here.
@@ -2673,7 +2653,7 @@ def rfFunnelRule : Rule :=
 /-! ### EXT-9 — the I-cache fill funnel
 
 Both banks get exactly ONE syntactic `memWrite` each, here. That is not
-tidiness: `MemTarget.xc7.maxMacroWritePorts` is 1, and a second write site
+tidiness: the qualified board profile permits one macro write site, and a second write site
 drops the bank out of block RAM into flops plus a 4096:1 read mux -- the
 CE9/CE10 measurement, 9 523 vs 671 LUT for identical logic. The fill fires
 on the miss completion in `S_FW`, which is the only moment a line changes
@@ -2853,9 +2833,7 @@ def scalarRegs : List RegDecl :=
    inGateReg.decl,
    -- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc + slot +
    -- count. Zero unless a GATE_RETURN ran with no gate open on its slot.
-   gretNoopPcReg.decl, gretNoopCurReg.decl, gretNoopCntReg.decl,
-   gateHadTrapReg.decl, gretNoopTrappedReg.decl,
-   igFallPcReg.decl, igFallInfoReg.decl,
+   faultCauseReg.decl, faultPcReg.decl, faultCurReg.decl,
   -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
    mmuEnReg.decl, tlbSelReg.decl, tlbVldReg.decl]
   ++ (List.finRange TLBN).flatMap (fun i =>

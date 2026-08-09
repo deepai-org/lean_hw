@@ -1,11 +1,10 @@
 #!/bin/bash
 # Boot the accounted SMP image (text c4cf0f96) on the CAUSE-LATCH bitstream and
 # read the new generated debug map. Event-driven (no mid-JTAG kills).
-# NEW READ MAP (DebugMap-generated; replaces the hand map):
-#   47 trace_pc_lo  48 trace_wb_lo (wr 69 <i> selects ring entry)
-#   49/50 gret_noop_pc  51 gret_noop_cur  52 gret_noop_cnt  53 gret_noop_trapped
-#   54 running_and_halted (sticky)  55/56 ig_fall_pc  57 ig_fall_info
-#   ig_fall_info = {15:valid, 13:9 free_slot, 8:4 cur, 3:retlast, 2:exit, 1:clone, 0:gatecall}
+# The BSCAN read map is GENERATED (test/lnp64mini_debug_map.tcl, from the same
+# DebugMap tap list as the wrapper decode); this script never hand-types an
+# index. Current taps: trace ring lo words (wr 69 <i> selects), the 1235f201
+# fault record {fault_pc, fault_cause, fault_cur}, running_and_halted sticky.
 set -u
 cd /home/kevin/substrate0
 export PATH=/opt/Xilinx/2025.2/Vivado/bin:$PATH
@@ -62,12 +61,8 @@ timeout 90 xsdb -eval '
     set s {}; foreach w [bulk_gread 0x03000008 128] { for {set k 0} {$k<8} {incr k} { set c [expr {($w>>($k*8))&0xff}]; if {$c>=32 && $c<127} {append s [format %c $c]} elseif {$c==10} {append s " | "} } }
     puts "CONSOLE: $s"
   }
-  set nplo [rd 49]; set nphi [rd 50]; set ncur [rd 51]; set ncnt [rd 52]; set ntr [rd 53]
-  puts [format "GRET_NOOP cnt=%d pc=0x%08x%08x cur=%d trapped=%d" $ncnt $nphi $nplo $ncur $ntr]
-  set fplo [rd 55]; set fphi [rd 56]; set inf [rd 57]
-  puts [format "IG_FALL pc=0x%08x%08x info=0x%04x" $fphi $fplo $inf]
-  puts [format "  valid=%d free_slot=%d cur=%d retlast=%d exit=%d clone=%d gatecall=%d" \
-    [expr {($inf>>15)&1}] [expr {($inf>>9)&0x1f}] [expr {($inf>>4)&0x1f}] \
-    [expr {($inf>>3)&1}] [expr {($inf>>2)&1}] [expr {($inf>>1)&1}] [expr {$inf&1}]]
-  puts [format "RUN_AND_HALT sticky=0x%08x" [rd 54]]
+  # The reader is GENERATED from the same tap list as the wrapper decode
+  # (lake exe debugmap) -- hand-typed indices are how rd 56 lied once.
+  source test/lnp64mini_debug_map.tcl
+  debug_read_all
 ' 2>&1 | grep -aE "CONSOLE|GRET_NOOP|IG_FALL|valid=|RUN_AND_HALT"

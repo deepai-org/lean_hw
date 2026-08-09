@@ -60,6 +60,7 @@ def main (args : List String) : IO Unit := do
   | ["gateselftest"] => gateSelftest
   | ["gatehammerselftest"] => gateHammerSelftest
   | ["gatedwellselftest"] => gateDwellSelftest
+  | ["faultconformanceselftest"] => faultConformanceSelftest
   | ["capxferselftest"] => capXferSelftest
   | ["slotfillselftest"] => slotFillSelftest
   | ["mmuselftest"] => mmuSelftest
@@ -82,7 +83,7 @@ def main (args : List String) : IO Unit := do
                    else if c.toLower.isAlpha then c.toLower.toNat - 87 else 0
           acc * 16 + d) 0)
       issStepOp (BitVec.ofNat 64 (hexVal w))
-        ((rs.splitOn ",").map (fun t => (t.trim.toNat?).getD 0))
+        ((rs.splitOn ",").map (fun t => (t.trimAscii.toString.toNat?).getD 0))
   | ["stepops", f] =>
       -- Batch form: many cases in one process (7.5 s of Lean startup per
       -- process otherwise dominates any differential; see issStepOpBatch).

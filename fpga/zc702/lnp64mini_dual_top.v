@@ -262,7 +262,11 @@ module lnp64mini_dual_top (
                 7'd45: rd_reg <= s_dd[31:0];
                 7'd46: rd_reg <= s_dd[63:32];
                 // CORE1_HOLD + core-1 status (always core 1, region-independent)
-                7'd56: rd_reg <= {26'd0, core1_hold, ss1b};
+                // Read indices 47..127 belong to the GENERATED debug map
+                // (lnp64mini_debug_map.vh / .tcl -- one tap list, two views);
+                // hand cases stay below 47. This case lived at 56 and
+                // shadowed a generated tap's high word once (fpga_dev.md §73).
+                7'd43: rd_reg <= {26'd0, core1_hold, ss1b};
                 default: rd_reg <= loom_debug_read(w_idx);
             endcase
         end

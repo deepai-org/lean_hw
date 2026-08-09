@@ -10,7 +10,7 @@ set n 6
 if {[info exists ::env(SAMPLES)]} { set n $::env(SAMPLES) }
 set gap 5000
 if {[info exists ::env(GAPMS)]} { set gap $::env(GAPMS) }
-puts [format "ID=0x%08x CORE1_HOLD=%d" [rd 0] [expr {([rd 56]>>5)&1}]]
+puts [format "ID=0x%08x CORE1_HOLD=%d" [rd 0] [expr {([rd 43]>>5)&1}]]
 set p0 -1; set p1 -1
 for {set i 0} {$i < $n} {incr i} {
   set r0 [rd 21]; set r1 [rd [c1 21]]
