@@ -182,16 +182,11 @@ structure MiniSt where
   tcdom     : Array (BitVec 8)  := Array.replicate (NTMEM*MAXD) 0
   gdepth    : Array (BitVec 3)  := Array.replicate NTMEM 0
   in_gate   : BitVec 32 := 0
-  -- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc + slot + count.
-  gret_noop_pc  : BitVec 64 := 0
-  gret_noop_cur : BitVec 5  := 0
-  gret_noop_cnt : BitVec 32 := 0
-  -- seam probe: bit i set when slot i took a trap while in a gate since its
-  -- last gate_call; latched into gret_noop_trapped at the first no-op return.
-  gate_had_trap : BitVec 32 := 0
-  ig_fall_pc : BitVec 64 := 0
-  ig_fall_info : BitVec 16 := 0
-  gret_noop_trapped : BitVec 1 := 0
+  -- The fault record (spec 1235f201): cause 1 = empty-stack GATE_RETURN,
+  -- 2 = opcode 0. A fault poisons the slot (EXT-3) and does not retire.
+  fault_cause : BitVec 8  := 0
+  fault_pc    : BitVec 64 := 0
+  fault_cur   : BitVec 5  := 0
   -- EXT-6 (§17): the capability inbox lives in guest memory. `cap_tbl_base`
   -- is the host-installed root pointer (`cmd 75`); `cap_fl_q` latches the
   -- walked flags word between the walk's states.
@@ -506,9 +501,6 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   let mut s' := s
   -- blocking single-port regfile temps (default: no write)
   let mut rfWe : Bool := false
-  -- cause-latch arm marker (mirrors igFallInfo's flag bits): 1=gateCall,
-  -- 2=cloneG, 4=exitG, 8=gateRetLast; set at the in_gate-writing commit sites.
-  let mut igArm : Nat := 0
   let mut rfWa : BitVec 10 := 0
   let mut rfWd : BitVec 64 := 0
   -- pulse defaults (nonblocking): dmem_we/core_rd/core_wr/jtag_wr/jtag_rd/gp_rd/gp_wr <= 0
@@ -533,6 +525,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       -- entry 1), which is what makes "the guest is domain 0" hold by
       -- construction rather than by a reset image the flow may not deliver.
       s' := { s' with tdom := s'.tdom.set! s.zctr.toNat 0 }
+      if s.zctr = 0 then s' := { s' with fault_cause := 0 }
       -- §9: the same sweep zeroes every thread's gate depth (mirrors the
       -- `gdepth` funnel's zeroing arm in Core).
       s' := { s' with gdepth := s'.gdepth.set! s.zctr.toNat 0 }
@@ -730,7 +723,6 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         s' := { s' with tstate := s'.tstate.set! curV.toNat 0, retire := s.retire + 1,
                         gdepth := s'.gdepth.set! curV.toNat 0,
                         in_gate := s.in_gate &&& ~~~(1#32 <<< curV.toNat) }
-        igArm := igArm ||| 4
         if s.next_ready ≠ curV then
           s' := { s' with cur := s.next_ready, pc := s.tpc[s.next_ready.toNat]!, st := BitVec.ofNat 5 S_F0 }
         else s' := { s' with st := BitVec.ofNat 5 S_WAIT }
@@ -841,18 +833,14 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           in_gate := (if gd = 1 then s.in_gate &&& ~~~(1#32 <<< curV.toNat)
                                       else s.in_gate),
                           retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-          if gd = 1 then igArm := igArm ||| 8
         else
-          -- DIAGNOSTIC (loud no-op): latch the first GATE_RETURN with no gate
-          -- open on this slot (pc + slot + count), mirroring Core.
-          let latch := s.gret_noop_cnt = 0
-          s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0,
-                          gret_noop_pc  := if latch then s.pc else s.gret_noop_pc,
-                          gret_noop_cur := if latch then curV else s.gret_noop_cur,
-                          gret_noop_trapped := if latch then
-                              (if s.gate_had_trap.getLsbD curV.toNat then 1 else 0)
-                            else s.gret_noop_trapped,
-                          gret_noop_cnt := s.gret_noop_cnt + 1 }
+          -- §9.2 step 4 (1235f201): a GATE_RETURN with no continuation frame
+          -- is a synchronous FAULT -- poison the slot, record cause/pc/slot,
+          -- no retire, pc stays at the faulting instruction.
+          s' := { s' with st := BitVec.ofNat 5 S_F0,
+                          poison := s.poison ||| (1#32 <<< curV.toNat),
+                          fault_cause := BitVec.ofNat 8 1,
+                          fault_pc := s.pc, fault_cur := curV }
       else if o = OP_CLONE_SPAWN then
         if s.has_free then
           s' := { s' with tpc := s'.tpc.set! s.free_slot.toNat s.a, tstate := s'.tstate.set! s.free_slot.toNat 1 }
@@ -863,7 +851,6 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           -- gate), so a reused slot carries no stale continuation.
           s' := { s' with gdepth := s'.gdepth.set! s.free_slot.toNat 0,
                           in_gate := s.in_gate &&& ~~~(1#32 <<< s.free_slot.toNat) }
-          igArm := igArm ||| 2
           rfWe := true; rfWa := (s.free_slot ++ (2 : BitVec 5)); rfWd := s.b
           s' := { s' with clone_dst := rdf s, clone_tid := s.free_slot, st := BitVec.ofNat 5 S_CLONE2 }
         else
@@ -916,6 +903,13 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if is_store s then
         -- EXT-10: a DDR store invalidates its own line (dcStoreInv).
         s' := dcStoreInvOn s { s' with core_addr := ddrEaOf s (mem_ea_s s), core_rd := true, mem_is_store := true, sc_pending := false, st := BitVec.ofNat 5 S_DL }
+      else if op s = 0 then
+        -- opcode 0 is illegal-instruction forever (spec): fault, never a
+        -- serviceable host trap.
+        s' := { s' with st := BitVec.ofNat 5 S_F0,
+                        poison := s.poison ||| (1#32 <<< curV.toNat),
+                        fault_cause := BitVec.ofNat 8 2,
+                        fault_pc := s.pc, fault_cur := curV }
       else
         s' := { s' with trap_active := true, trapped_op := op s, st := BitVec.ofNat 5 S_TRAP }
     else if stN = S_L0 then
@@ -935,7 +929,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       if inp.mDone then
         -- §17 fail-closed: bit 8 is `valid`. An absent descriptor reads as
         -- zeros, and zeros must not activate domain 0 at PC 0.
-        let vld := inp.mRdata.getLsbD 8
+        let vld := inp.mRdata.getLsbD 8 ∧ s.gate_ent_q &&& 7 = 0 ∧ s.gate_ent_q ≠ 0
         s' := { s' with gate_dom_q := inp.mRdata.setWidth 8,
                         retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
         if vld then
@@ -945,10 +939,9 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
           s' := { s' with tcont := s'.tcont.set! pushIdx (pc8 s),
                           tcdom := s'.tcdom.set! pushIdx s.tdom[curV.toNat]!,
                           gdepth := s'.gdepth.set! curV.toNat (BitVec.ofNat 3 (gd + 1)),
-                          in_gate := s.in_gate ||| (1#32 <<< curV.toNat),  -- (igArm set below)
+                          in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
                           tdom := s'.tdom.set! curV.toNat (inp.mRdata.setWidth 8),
                           pc := s.gate_ent_q }
-          igArm := igArm ||| 1
         else
           s' := { s' with pc := pc8 s }
     else if stN = S_CS0 then
@@ -1173,28 +1166,6 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       trace_pc := s'.trace_pc.set! s.trace_wp.toNat s.trace_in_pc,
       trace_wb := s'.trace_wb.set! s.trace_wp.toNat s.trace_in_wb,
       trace_wp := s.trace_wp + 1 }
-
-  -- seam probe (mirrors `gateHadTrapNext`): set bit cur on a trap taken while
-  -- in a gate, clear it on a fresh gate_call commit, all-clear on cmd 13 reset.
-  let ghtCur := s.cur.toNat
-  if s.zeroing ∧ s.zctr = 0 then
-    s' := { s' with gate_had_trap := 0 }
-  else if fsmEnB ∧ s.st = BitVec.ofNat 5 S_GC1 ∧ inp.mDone ∧ inp.mRdata.getLsbD 8 then
-    s' := { s' with gate_had_trap := s.gate_had_trap &&& ~~~(1#32 <<< ghtCur) }
-  else if s.trap_active ∧ s.in_gate.getLsbD ghtCur then
-    s' := { s' with gate_had_trap := s.gate_had_trap ||| (1#32 <<< ghtCur) }
-
-  -- in_gate[0] fall cause-latch (mirrors igFallLatch/igFallInfo): reset on
-  -- the cmd-13 sweep head, else latch the first non-retlast-of-slot-0 fall.
-  if s.zeroing ∧ s.zctr = 0 then
-    s' := { s' with ig_fall_info := 0 }
-  else
-    let fall0 := s.in_gate.getLsbD 0 ∧ ¬ (s'.in_gate.getLsbD 0)
-    let retlast0 := (igArm.testBit 3) ∧ s.cur.toNat = 0
-    if fall0 ∧ ¬ retlast0 ∧ ¬ s.zeroing ∧ ¬ (s.ig_fall_info.getLsbD 15) then
-      s' := { s' with ig_fall_pc := s.pc,
-                      ig_fall_info := BitVec.ofNat 16
-                        (0x8000 ||| igArm ||| (s.cur.toNat <<< 4) ||| (s.free_slot.toNat <<< 9)) }
 
   return s'
 

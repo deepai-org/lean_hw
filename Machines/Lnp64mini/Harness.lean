@@ -207,10 +207,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    -- EXT-5: gates
    ("in_gate",32,s.in_gate.toNat),
    -- §9 diagnostic: the loud GATE_RETURN latch
-   ("gret_noop_pc",64,s.gret_noop_pc.toNat), ("gret_noop_cur",5,s.gret_noop_cur.toNat),
-   ("gret_noop_cnt",32,s.gret_noop_cnt.toNat),
-   ("gate_had_trap",32,s.gate_had_trap.toNat), ("gret_noop_trapped",1,s.gret_noop_trapped.toNat),
-   ("ig_fall_pc",64,s.ig_fall_pc.toNat), ("ig_fall_info",16,s.ig_fall_info.toNat),
+   ("fault_cause",8,s.fault_cause.toNat), ("fault_pc",64,s.fault_pc.toNat),
+   ("fault_cur",5,s.fault_cur.toNat),
    -- EXT-7: the MMU enable and TLB selector
    ("mmu_en",1,if s.mmu_en then 1 else 0), ("tlb_sel",3,s.tlb_sel.toNat),
    ("tlb_vld",8,s.tlb_vld.toNat),
@@ -1044,11 +1042,11 @@ def issStepOpBatch (file : String) : IO Unit := do
       acc * 16 + d) 0)
   let mut i := 0
   for line in text.splitOn "\n" do
-    let parts := (line.trim.splitOn " ").filter (· ≠ "")
+    let parts := (line.trimAscii.toString.splitOn " ").filter (· ≠ "")
     if h : parts.length = 2 then
       IO.println s!"STEP_OP_CASE {i}"
       issStepOp (BitVec.ofNat 64 (hexVal parts[0]))
-        (((parts[1]).splitOn ",").map (fun t => (t.trim.toNat?).getD 0))
+        (((parts[1]).splitOn ",").map (fun t => (t.trimAscii.toString.toNat?).getD 0))
       i := i + 1
 
 /-! ## progtest — hand-encoded program to a clean EXIT on the ISS -/
@@ -1554,7 +1552,7 @@ def progGateClone : List (BitVec 64) :=
 gate N times; the handler CLONEs a child (as `lnp64_gate_drvspawn_impl` does)
 then returns. N=100 > MAXD and > NT, so if the gate's per-slot depth/in_gate
 accounting desyncs over repeated gate_call+CLONE-inside cycles (or hands the
-tail to the clone's slot), `gret_noop_cnt` goes non-zero — the loud no-op fires
+tail to the clone's slot), `fault_cause` goes non-zero — the §9.2 fault fires
 in software, EDSL≡ISS, no synth. `r20` (s2, callee-saved) is the loop counter;
 the gate preserves it. -/
 def progGateHammer : List (BitVec 64) :=
@@ -1690,7 +1688,7 @@ gdepth0={(sc.gdepth[0]!).toNat} (want 0)"
 /-- §9 GATE-HAMMER: the driver-spawn trigger shape, directed and isolated (its
 own selftest so the long run doesn't bloat `gateSelftest`). 64× gate_call with a
 CLONE inside the handler; if the per-slot gate accounting desyncs, the loud
-no-op (`gret_noop_cnt`) fires — the silicon boot's stick, reproduced in software
+empty-stack fault (`fault_cause=1`) fires — the silicon boot's stick, reproduced in software
 with full visibility (pc + SLOT), zero synth. -/
 def gateHammerSelftest : IO Unit := do
   let tbl := gateDescriptor 0 (TEXT_BASE + 7*8) GATE_DOM_TEST
@@ -1717,15 +1715,15 @@ r20={(ts.rf[20]!).toNat} gd[cur]={(ts.gdepth[ts.cur.toNat]!).toNat} ig={ts.in_ga
   let bad ← lockstep img 1 cmdGate (fun _ => 0) 350
   if bad = 0 then IO.println "  OK  GATE-HAMMER lockstep (EDSL≡ISS, 350 cyc)"
   else IO.println s!"  FAIL GATE-HAMMER lockstep ({bad} mismatches)"
-  let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+  let pchex := String.ofList (Nat.toDigits 16 s.fault_pc.toNat)
   IO.println s!"  hammer: halted={s.halted} r20={(s.rf[20]!).toNat} (want 0 = loop done) cyc={k}"
   let occ := (List.range NT).foldl (fun a i => if (s.tstate[i]!).toNat != 0 then a+1 else a) 0
   IO.println s!"  STUCK STATE: cur={s.cur.toNat} pc=0x{String.ofList (Nat.toDigits 16 s.pc.toNat)} \
 st={s.st.toNat} occ_slots={occ} gdepth[cur]={(s.gdepth[s.cur.toNat]!).toNat} \
 tstate[0..4]={(s.tstate[0]!).toNat},{(s.tstate[1]!).toNat},{(s.tstate[2]!).toNat},{(s.tstate[3]!).toNat} \
 tpc[cur]=0x{String.ofList (Nat.toDigits 16 (s.tpc[s.cur.toNat]!).toNat)}"
-  IO.println s!"  LOUD GATE_RETURN: gret_noop_cnt={s.gret_noop_cnt.toNat} (want 0) \
-first_noop_pc=0x{pchex} first_noop_slot={s.gret_noop_cur.toNat} in_gate={s.in_gate.toNat}"
+  IO.println s!"  LOUD GATE_RETURN: fault_cause={s.fault_cause.toNat} (want 0) \
+first_fault_pc=0x{pchex} first_fault_cur={s.fault_cur.toNat} in_gate={s.in_gate.toNat}"
   -- PHASE 2 — the RESCHEDULE variant. A small quantum preempts the parent
   -- mid-gate; the child spawned inside the gate runs (and, at its EXIT entry,
   -- frees its slot). If a reschedule hands the gate tail to a clone's slot, the
@@ -1740,8 +1738,8 @@ first_noop_pc=0x{pchex} first_noop_slot={s.gret_noop_cur.toNat} in_gate={s.in_ga
     if ps.halted then break
     let (s', d', g', _) := sysStep ps pd pg (cmdGateQ 3 i) (0 : BitVec 32)
     ps := s'; pd := d'; pg := g'
-    if ps.gret_noop_cnt.toNat != pnoop then
-      pnoop := ps.gret_noop_cnt.toNat
+    if ps.fault_cause.toNat != pnoop then
+      pnoop := ps.fault_cause.toNat
       IO.println s!"  >>> NO-OP GATE_RETURN #{pnoop} at retire={ps.retire.toNat} slot(cur)={ps.cur.toNat} \
 pc=0x{String.ofList (Nat.toDigits 16 ps.pc.toNat)} gd[cur]={(ps.gdepth[ps.cur.toNat]!).toNat} ig=0x{String.ofList (Nat.toDigits 16 ps.in_gate.toNat)}"
     else if ps.retire.toNat != plr && plr ≤ 24 then
@@ -1749,19 +1747,19 @@ pc=0x{String.ofList (Nat.toDigits 16 ps.pc.toNat)} gd[cur]={(ps.gdepth[ps.cur.to
       IO.println s!"  Q ret={plr} cur={ps.cur.toNat} pc=0x{String.ofList (Nat.toDigits 16 ps.pc.toNat)} \
 r20={(ps.rf[20]!).toNat} gd[cur]={(ps.gdepth[ps.cur.toNat]!).toNat} ig={ps.in_gate.toNat}"
   let (sp, _, kp) := runIss img 1 (cmdGateQ 3) (fun _ => 0) 12000
-  let pphex := String.ofList (Nat.toDigits 16 sp.gret_noop_pc.toNat)
+  let pphex := String.ofList (Nat.toDigits 16 sp.fault_pc.toNat)
   IO.println s!"  PREEMPTIVE hammer: halted={sp.halted} r20={(sp.rf[20]!).toNat} cyc={kp} \
-gret_noop_cnt={sp.gret_noop_cnt.toNat} noop_slot={sp.gret_noop_cur.toNat} noop_pc=0x{pphex}"
-  if bad = 0 && s.gret_noop_cnt.toNat == 0 && s.halted && sp.gret_noop_cnt.toNat == 0 then
+fault_cause={sp.fault_cause.toNat} fault_cur={sp.fault_cur.toNat} fault_pc=0x{pphex}"
+  if bad = 0 && s.fault_cause.toNat == 0 && s.halted && sp.fault_cause.toNat == 0 then
     IO.println "LNP64MINI GATE HAMMER OK — gate accounting stays balanced, cooperative AND preemptive"
   else
-    IO.println s!"LNP64MINI GATE HAMMER: DESYNC REPRODUCED — noop_cnt={s.gret_noop_cnt.toNat} \
-slot={s.gret_noop_cur.toNat} pc=0x{pchex} halted={s.halted} r20={(s.rf[20]!).toNat} (this IS the silicon stick, in software)"
+    IO.println s!"LNP64MINI GATE HAMMER: DESYNC REPRODUCED — noop_cnt={s.fault_cause.toNat} \
+slot={s.fault_cur.toNat} pc=0x{pchex} halted={s.halted} r20={(s.rf[20]!).toNat} (this IS the silicon stick, in software)"
 
 /-! ## The dwell/wake hammers — the two interleavings the silicon capture named
 
 2026-08-09, board loud-latch: ONE no-op GATE_RETURN at `drvspawn_entry+0x10`,
-slot 0, `trapped=0`, `gate_had_trap=0` — pure in-core scheduling, during a
+slot 0, with no trap-in-gate involvement — pure in-core scheduling, during a
 handler that does cap_recv + CLONE + return. The surviving suspects are
 interleavings `progGateHammer` never produces:
 
@@ -1843,11 +1841,11 @@ def gateDwellSelftest : IO Unit := do
   let mut worstA := 0
   for q in [2, 3, 5] do
     let (s, _, k) := runIss imgA 1 (cmdGateQ q) (fun _ => 0) 12000
-    let n := s.gret_noop_cnt.toNat
+    let n := s.fault_cause.toNat
     worstA := max worstA n
-    let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+    let pchex := String.ofList (Nat.toDigits 16 s.fault_pc.toNat)
     IO.println s!"  DWELL q={q}: halted={s.halted} r20={(s.rf[20]!).toNat} cyc={k} \
-noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
+fault={n} fault_cur={s.fault_cur.toNat} fault_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
   let badA ← lockstep imgA 1 (cmdGateQ 3) (fun _ => 0) 500
   IO.println (if badA = 0 then "  OK  DWELL lockstep (EDSL≡ISS, 500 cyc)"
               else s!"  FAIL DWELL lockstep ({badA} mismatches)")
@@ -1857,11 +1855,11 @@ noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.of
   let mut worstB := 0
   for (nm, cmd) in [("coop", cmdGate), ("q=3", cmdGateQ 3), ("q=5", cmdGateQ 5)] do
     let (s, _, k) := runIss imgB 1 cmd (fun _ => 0) 12000
-    let n := s.gret_noop_cnt.toNat
+    let n := s.fault_cause.toNat
     worstB := max worstB n
-    let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+    let pchex := String.ofList (Nat.toDigits 16 s.fault_pc.toNat)
     IO.println s!"  PARK+WAKE {nm}: halted={s.halted} r20={(s.rf[20]!).toNat} cyc={k} \
-noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
+fault={n} fault_cur={s.fault_cur.toNat} fault_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
   let badB ← lockstep imgB 1 (cmdGateQ 3) (fun _ => 0) 500
   IO.println (if badB = 0 then "  OK  PARK+WAKE lockstep (EDSL≡ISS, 500 cyc)"
               else s!"  FAIL PARK+WAKE lockstep ({badB} mismatches)")
@@ -1881,12 +1879,12 @@ noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.of
   let mut haltC := true
   for (q, lat) in [(0,1), (3,1), (5,1), (0,8), (3,8), (5,8), (3,16)] do
     let (s, _, k) := runIss imgC lat (cmdCapQ q) (fun _ => 0) 60000
-    let n := s.gret_noop_cnt.toNat
+    let n := s.fault_cause.toNat
     worstC := max worstC n
     haltC := haltC && s.halted
-    let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+    let pchex := String.ofList (Nat.toDigits 16 s.fault_pc.toNat)
     IO.println s!"  DRVSPAWN q={q} lat={lat}: halted={s.halted} r20={(s.rf[20]!).toNat} r9=0x{String.ofList (Nat.toDigits 16 (s.rf[9]!).toNat)} \
-cyc={k} noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
+cyc={k} fault={n} fault_cur={s.fault_cur.toNat} fault_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
   let badC ← lockstep imgC 1 (cmdCapQ 3) (fun _ => 0) 500
   IO.println (if badC = 0 then "  OK  DRVSPAWN lockstep (EDSL≡ISS, 500 cyc)"
               else s!"  FAIL DRVSPAWN lockstep ({badC} mismatches)")
@@ -1919,6 +1917,77 @@ tpc2=0x{String.ofList (Nat.toDigits 16 (ts.tpc[2]!).toNat)}"
   else
     IO.println s!"LNP64MINI GATE DWELL/WAKE/DRVSPAWN: FAIL — noop A={worstA} B={worstB} C={worstC} \
 haltB={ts.halted} haltC={haltC} (a hang with noop=0 is a stall, not a desync — read the traces)"
+
+/-! ## The 1235f201 fault-conformance selftest
+
+Three directed programs for the spec's fail-closed quartet (the first three;
+no-spurious-BUSY is a separate arc). Each was a silent behavior that cost
+real debugging time before the spec made it illegal (fpga_dev.md §73):
+
+* a bare `GATE_RETURN` must FAULT (cause 1), precisely: pc at the
+  instruction, no retire of it, the following instruction never runs;
+* opcode 0 must FAULT in-core (cause 2), not trap to the host;
+* a valid-bit-set descriptor with a misaligned entry PC must REFUSE the
+  activation (step past, no gate, no fault) -- construction fails closed. -/
+
+def progBareReturn : List (BitVec 64) :=
+  [ encImmI OP_ADDI 9 0 1,             -- w0  r9 = 1 (proof the thread ran)
+    enc OP_MINI_GATE_RETURN 0 0 0,     -- w1  FAULT: no continuation frame
+    encImmI OP_ADDI 9 0 2,             -- w2  must NEVER execute
+    enc OP_EXIT 0 0 0 ]
+
+def progOpZero : List (BitVec 64) :=
+  [ encImmI OP_ADDI 9 0 1,             -- w0  r9 = 1
+    BitVec.ofNat 64 0,                 -- w1  opcode 0: FAULT, not a host trap
+    encImmI OP_ADDI 9 0 2,             -- w2  must NEVER execute
+    enc OP_EXIT 0 0 0 ]
+
+def progMisalignedGate : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 0,             -- w0  r1 = 0 (gate id)
+    enc OP_MINI_GATE_CALL 0 1 0,       -- w1  must be REFUSED (entry misaligned)
+    encImmI OP_ADDI 9 0 7,             -- w2  reached only on refusal
+    enc OP_EXIT 0 0 0 ]
+
+def faultConformanceSelftest : IO Unit := do
+  let cmdStart : Nat → MiniIn := fun k =>
+    if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
+  let mut allOk := true
+  -- (a) bare GATE_RETURN
+  let imgA := imageFrom TEXT_BASE progBareReturn
+  let badA ← lockstep imgA 1 cmdStart (fun _ => 0) 120
+  let (sa, _, _) := runIss imgA 1 cmdStart (fun _ => 0) 2000
+  let okA := sa.fault_cause.toNat == 1 && sa.fault_pc.toNat == TEXT_BASE + 8
+             && sa.fault_cur.toNat == 0 && (sa.rf[9]!).toNat == 1
+             && ¬ sa.running && ¬ sa.halted && sa.poison.toNat != 0
+  IO.println s!"  BARE-RETURN: cause={sa.fault_cause.toNat} (want 1) pc=0x{String.ofList (Nat.toDigits 16 sa.fault_pc.toNat)} \
+(want 0x{String.ofList (Nat.toDigits 16 (TEXT_BASE+8))}) r9={(sa.rf[9]!).toNat} (want 1, w2 never ran) \
+running={sa.running} (want false) poison=0x{String.ofList (Nat.toDigits 16 sa.poison.toNat)} lockstep={badA}"
+  allOk := allOk && okA && badA == 0
+  -- (b) opcode 0
+  let imgB := imageFrom TEXT_BASE progOpZero
+  let badB ← lockstep imgB 1 cmdStart (fun _ => 0) 120
+  let (sb, _, _) := runIss imgB 1 cmdStart (fun _ => 0) 2000
+  let okB := sb.fault_cause.toNat == 2 && sb.fault_pc.toNat == TEXT_BASE + 8
+             && (sb.rf[9]!).toNat == 1 && ¬ sb.running && ¬ sb.trap_active
+  IO.println s!"  OP-ZERO: cause={sb.fault_cause.toNat} (want 2) pc=0x{String.ofList (Nat.toDigits 16 sb.fault_pc.toNat)} \
+r9={(sb.rf[9]!).toNat} (want 1) running={sb.running} (want false) trap_active={sb.trap_active} (want false: NOT a host trap) lockstep={badB}"
+  allOk := allOk && okB && badB == 0
+  -- (c) misaligned entry PC: valid bit set, entry = w2+1 (unaligned)
+  let tblC := [ (ddrWord (DATA_BASE + GATE_TBL),     BitVec.ofNat 64 (TEXT_BASE + 2*8 + 1)),
+                (ddrWord (DATA_BASE + GATE_TBL + 8), BitVec.ofNat 64 (3 ||| 0x100)) ]
+  let imgC := imageFrom TEXT_BASE progMisalignedGate ++ tblC
+  let badC ← lockstep imgC 1 cmdGate (fun _ => 0) 200
+  let (sc, _, _) := runIss imgC 1 cmdGate (fun _ => 0) 2000
+  let okC := sc.halted && (sc.rf[9]!).toNat == 7 && sc.in_gate.toNat == 0
+             && sc.fault_cause.toNat == 0
+  IO.println s!"  MISALIGNED-ENTRY: halted={sc.halted} r9={(sc.rf[9]!).toNat} (want 7 = refused, stepped past) \
+in_gate={sc.in_gate.toNat} (want 0) cause={sc.fault_cause.toNat} (want 0) lockstep={badC}"
+  allOk := allOk && okC && badC == 0
+  if allOk then
+    IO.println "LNP64MINI FAULT CONFORMANCE OK — bare return faults, op 0 faults in-core, misaligned entry refuses"
+  else do
+    IO.println "LNP64MINI FAULT CONFORMANCE FAILED"
+    throw <| IO.userError "fault conformance failed"
 
 /-! ## EXT-6 — the cross-domain transfer selftest
 
@@ -2393,7 +2462,7 @@ correct for the design, and blind to the question that broke the board: does the
 def issExpectHexFile (path : String) : IO Unit := do
   let txt ← IO.FS.readFile path
   let words := txt.splitOn "\n" |>.filterMap (fun l =>
-    let t := l.trim
+    let t := l.trimAscii.toString
     if t.isEmpty then none
     else
       let ds := t.toList.filterMap (fun c =>
@@ -2678,7 +2747,7 @@ def mmuRelocSelftest : IO Unit := do
   --    the catch-all alive -- the relocated store still lands -- while a ring
   --    access now MISSES to the fail-closed sink (bare DATA_BASE), so nothing
   --    reaches the revoked window's physical address.
-  let (st4, d4, _) := runIss img 1 (cmdRelocVma [(CMD_MAP_PROTECT, 2)]) (fun _ => 0) 600
+  let (st4, _, _) := runIss img 1 (cmdRelocVma [(CMD_MAP_PROTECT, 2)]) (fun _ => 0) 600
   check ((st4.rf[6]!).toNat == overlaid) "bump cell 2: relocated data unaffected"
   let (_, d5, _) := runIss img2 1 (cmdRelocVma [(CMD_MAP_PROTECT, 2)]) (fun _ => 0) 600
   let rP5 := (d5.mem.get? (ddrWord (DATA_BASE + 0x20000))).getD 0

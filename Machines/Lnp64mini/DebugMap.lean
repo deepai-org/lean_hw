@@ -20,12 +20,9 @@ open Loom.Hw
 -- output surface.
 private def traceRdPc : Reg 64 := ⟨"trace_rd_pc"⟩
 private def traceRdWb : Reg 64 := ⟨"trace_rd_wb"⟩
-private def gretNoopPc : Reg 64 := ⟨"gret_noop_pc"⟩
-private def gretNoopCur : Reg 5 := ⟨"gret_noop_cur"⟩
-private def gretNoopCnt : Reg 32 := ⟨"gret_noop_cnt"⟩
-private def gretNoopTrapped : Reg 1 := ⟨"gret_noop_trapped"⟩
-private def igFallPc : Reg 64 := ⟨"ig_fall_pc"⟩
-private def igFallInfo : Reg 16 := ⟨"ig_fall_info"⟩
+private def faultCause : Reg 8 := ⟨"fault_cause"⟩
+private def faultPc : Reg 64 := ⟨"fault_pc"⟩
+private def faultCur : Reg 5 := ⟨"fault_cur"⟩
 private def running : Reg 1 := ⟨"running"⟩
 private def halted : Reg 1 := ⟨"halted"⟩
 
@@ -38,23 +35,22 @@ def board : Loom.Hw.DebugMap :=
     taps :=
       [ DebugTap.lowWordOfDualReg 47 traceRdPc
       , DebugTap.lowWordOfDualReg 48 traceRdWb
-      , DebugTap.ofDualReg 49 gretNoopPc
-      , DebugTap.ofDualReg 51 gretNoopCur
-      , DebugTap.ofDualReg 52 gretNoopCnt
-      , DebugTap.ofDualReg 53 gretNoopTrapped
+      -- The §9.2/op-0 fault record (1235f201): what faulted, where, who.
+      -- These replaced the gret_noop/ig_fall diagnostic latches when the
+      -- fault semantics landed in the machine -- the diagnostics' entire
+      -- job is now an architectural guarantee.
+      , DebugTap.ofDualReg 49 faultPc
+      , DebugTap.ofDualReg 51 faultCause
+      , DebugTap.ofDualReg 52 faultCur
       -- A typed protocol-violation predicate: one declaration derives the two
       -- child ports, wrapper expression, first-event latch, CDC and read. The
       -- core permits it after cmd 13 start-only; RunHaltInvariant proves it
       -- absent when that host-protocol violation is explicitly excluded.
       , DebugTap.stickyOfDualPredicate 54 "running_and_halted"
           (.and running.rd halted.rd) (haltOnTrigger := true)
-      -- The in_gate[0] fall cause-latch (2026-08-09 desync instrument): the
-      -- core latches pc + {valid, free_slot, cur, arm flags} at the first
-      -- unexpected fall; pc at 55/56, info at 57.
-      , DebugTap.ofDualReg 55 igFallPc
-      , DebugTap.ofDualReg 57 igFallInfo ] }
+      ] }
 
-def path : System.FilePath := "fpga/zc702/lnp64mini_debug_map.vh"
+def path : System.FilePath := "fpga/zc702/board/lnp64mini_debug_map.vh"
 
 def emit (outputPath : System.FilePath := path) : IO Unit :=
   -- `DebugMapCheck.board_source_checked` is the build-time certificate in a module
@@ -69,6 +65,11 @@ def check : IO Unit := do
   let actual ← IO.FS.readFile path
   if actual ≠ board.render then
     throw <| IO.userError s!"debug map stale: run `lake exe debugmap` ({path})"
+  let tclPath := path.withExtension "tcl"
+  if !(← tclPath.pathExists) then
+    throw <| IO.userError s!"debug reader missing: {tclPath} (run `lake exe debugmap`)"
+  if (← IO.FS.readFile tclPath) ≠ board.renderTcl then
+    throw <| IO.userError s!"debug reader stale: run `lake exe debugmap` ({tclPath})"
   let rtlPath : System.FilePath := "rtl/lnp64mini_dual.v"
   if !(← rtlPath.pathExists) then
     throw <| IO.userError s!"emitted dual RTL missing: {rtlPath}"

@@ -509,7 +509,7 @@ if {$QUANTUM > 0} { wr 57 $QUANTUM; puts "PREEMPT: core0 quantum=$QUANTUM cycles
 # kernel releases it, so starting it now cannot race rump_init.
 set C1LIVE 0
 if {$C1ENTRY != 0} {
-  puts [format "CORE1: hold=%d before" [expr {([rd 56]>>5)&1}]]
+  puts [format "CORE1: hold=%d before" [expr {([rd 43]>>5)&1}]]
   wr 56 0                                    ;# clear CORE1_HOLD (resets to 1)
   after 50
   wr [c1 13] 1                               ;# reset core 1 (zeroes dmem + rf)
