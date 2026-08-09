@@ -839,7 +839,12 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         -- §9: nesting is ALLOWED (continuation stack); only a full stack
         -- (gdepth == MAXD) refuses, no state change.
         if s.gdepth[curV.toNat]!.toNat >= MAXD then
+          -- ISA d3344899: no refusal reports nothing. A full continuation
+          -- stack is genuine exhaustion -> -BUSY in the status register, the
+          -- value register untouched.
           s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+          rfWe := true; rfWa := (curV ++ (3 : BitVec 5))
+          rfWd := BitVec.ofNat 64 COND_BUSY
         else
           -- §17: walk the in-memory descriptor. Two 8-byte words at
           -- DATA_BASE + base + 16*id; the activation commits in S_GC1.
@@ -978,7 +983,8 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         else
           -- Refused activation: fail-closed step-past + the §9.2 status.
           s' := { s' with pc := pc8 s }
-          rfWe := true; rfWa := (curV ++ (3 : BitVec 5)); rfWd := 0xFFFFFFFFFFFFFFFF
+          rfWe := true; rfWa := (curV ++ (3 : BitVec 5))
+          rfWd := BitVec.ofNat 64 COND_MALFORMED
     else if stN = S_CS0 then
       -- §17 cap send: the flags word is back. Valid+free commits (latch the
       -- flags, issue the handle write at +0, invalidating its D$ line the

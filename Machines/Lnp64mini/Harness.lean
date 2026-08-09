@@ -272,6 +272,13 @@ def cmpExemptMems : List String := ["uart_mem", "rx_mem"]
 
 /-! ## EDSL ≡ ISS lockstep -/
 
+/-- Print a failure observation immediately. Locksteps can run for minutes;
+without the explicit flush a real mismatch is indistinguishable from a hung
+process until normal exit flushes stdout. -/
+private def printMismatch (message : String) : IO Unit := do
+  IO.println message
+  (← IO.getStdout).flush
+
 /-- Read one of Loom's derived coordinates out of the ISS.
 
 This is the whole machine-specific part of the cross-check now: a lookup from
@@ -346,15 +353,15 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
   let mut bad := 0
   for (n, w, v) in issRegs s do
     if (σ.regs n w).toNat ≠ v then
-      if bad < 12 then IO.println s!"  MISMATCH step {step} reg {n}: edsl={(σ.regs n w).toNat} iss={v}"
+      if bad < 12 then printMismatch s!"  MISMATCH step {step} reg {n}: edsl={(σ.regs n w).toNat} iss={v}"
       bad := bad + 1
   for a in mrf do
     if (σ.mems "rf" a 64).toNat ≠ (s.rf[a]!).toNat then
-      if bad < 12 then IO.println s!"  MISMATCH step {step} rf[{a}]: edsl={(σ.mems "rf" a 64).toNat} iss={(s.rf[a]!).toNat}"
+      if bad < 12 then printMismatch s!"  MISMATCH step {step} rf[{a}]: edsl={(σ.mems "rf" a 64).toNat} iss={(s.rf[a]!).toNat}"
       bad := bad + 1
   for a in mdmem do
     if (σ.mems "dmem" a 64).toNat ≠ (s.dmem[a]!).toNat then
-      if bad < 12 then IO.println s!"  MISMATCH step {step} dmem[{a}]: edsl={(σ.mems "dmem" a 64).toNat} iss={(s.dmem[a]!).toNat}"
+      if bad < 12 then printMismatch s!"  MISMATCH step {step} dmem[{a}]: edsl={(σ.mems "dmem" a 64).toNat} iss={(s.dmem[a]!).toNat}"
       bad := bad + 1
   -- EXT-2: the per-thread domain tag (8-bit, so not in `issTArrays`,
   -- which is the 64-bit thread-table family). Compared at every slot --
@@ -363,7 +370,7 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
   for i in List.range NT do
     if (σ.mems "tdom" i 8).toNat ≠ (s.tdom[i]!).toNat then
       if bad < 12 then
-        IO.println s!"  MISMATCH step {step} tdom[{i}]: edsl={(σ.mems "tdom" i 8).toNat} iss={(s.tdom[i]!).toNat}"
+        printMismatch s!"  MISMATCH step {step} tdom[{i}]: edsl={(σ.mems "tdom" i 8).toNat} iss={(s.tdom[i]!).toNat}"
       bad := bad + 1
   -- EXT-7: the TLB. These were NOT compared when the MMU landed, so a green
   -- `MMU-XLAT` meant "the legs agree on core_addr", not "the legs agree on
@@ -379,7 +386,7 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
     for (rn, w, v) in checks do
       if (σ.regs rn w).toNat ≠ v then
         if bad < 12 then
-          IO.println s!"  MISMATCH step {step} {rn}: edsl={(σ.regs rn w).toNat} iss={v}"
+          printMismatch s!"  MISMATCH step {step} {rn}: edsl={(σ.regs rn w).toNat} iss={v}"
         bad := bad + 1
   -- EXT-5/EXT-6: the gate table, the gate continuation, and the capability
   -- inbox. Found uncompared on 2026-08-04 by Loom's W5 coverage check --
@@ -397,22 +404,22 @@ def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Na
     for (mn, w, v) in checksNT do
       if (σ.mems mn i w).toNat ≠ v then
         if bad < 12 then
-          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
+          printMismatch s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
         bad := bad + 1
   -- D20: the thread-table memories, all 32 entries of each
   for (mn, arr) in issTArrays s do
     for i in List.range NT do
       if (σ.mems mn i 64).toNat ≠ (arr[i]!).toNat then
         if bad < 12 then
-          IO.println s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i 64).toNat} iss={(arr[i]!).toNat}"
+          printMismatch s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i 64).toNat} iss={(arr[i]!).toNat}"
         bad := bad + 1
   return bad
 
-/-- Run the ISS+DDR system for `nCyc` cycles under a cmd script (indexed by
-cycle) and a gp-read-value function, lockstepping the EDSL design against
-the ISS on every cycle. Touched-memory address sets are the full rf window
-[0,64) and dmem [0,32) — small enough for the directed script. -/
-def lockstep (image : List (Nat × BitVec 64)) (latency : Nat)
+/-- Legacy closure-state lockstep with a hand-maintained comparison surface.
+Kept only as an explicit diagnostic reference; machine selftests use the
+certified DAG/derived-coordinate `lockstep` defined below. Touched-memory
+address sets are the full rf and dmem windows `[0,64)`. -/
+def lockstepLegacy (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat) : IO Nat := do
   let d0 : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
   let mut s : MiniSt := {}
@@ -468,12 +475,12 @@ def lockstepDerived (image : List (Nat × BitVec 64)) (latency : Nat)
     if !undeclared.isEmpty then
       if bad < 8 then
         for c in undeclared.take 4 do
-          IO.println s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
+          printMismatch s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
       bad := bad + undeclared.length
     if !mism.isEmpty then
       if bad < 8 then
         for c in mism.take 4 do
-          IO.println s!"  MISMATCH cycle {k} {c.render}: edsl={σ.at c} iss={(issAtWith regs s c).getD 0}"
+          printMismatch s!"  MISMATCH cycle {k} {c.render}: edsl={σ.at c} iss={(issAtWith regs s c).getD 0}"
       bad := bad + mism.length
   return (bad, unmodelled)
 
@@ -508,20 +515,78 @@ theorem fastRunOpen_agrees (n : Nat) (ιs : Nat → InEnv) :
       (design.runOpen ιs n design.reset) :=
   simulator.runOpenFromReset_eq n ιs
 
+/-! ### Design-derived system execution
+
+The behavioral DDR/GP models are environment components, not a second core
+model. Their requests are therefore driven from the generated Design state.
+The handwritten ISS consumes the resulting input stream only as an independent
+differential oracle. -/
+
+private def fastReg (fd : FastDesign) (fs : FastSt) (name : String) : Nat :=
+  (fd.peek fs name).getD 0
+
+private def fastBit (fd : FastDesign) (fs : FastSt) (name : String) : Bool :=
+  fastReg fd fs name = 1
+
+/-- The external DDR request selected from the generated core's pre-state. -/
+def derivedHpReq (fd : FastDesign) (fs : FastSt) :
+    Bool × Bool × Nat × BitVec 64 :=
+  let state := fastReg fd fs "st"
+  let owns := fastBit fd fs "running" && state ≠ S_TRAP &&
+    state ≠ S_WAIT && state ≠ S_PAUSE
+  if owns then
+    (fastBit fd fs "core_rd", fastBit fd fs "core_wr",
+      fastReg fd fs "core_addr", BitVec.ofNat 64 (fastReg fd fs "core_wdata"))
+  else
+    (fastBit fd fs "jtag_rd", fastBit fd fs "jtag_wr",
+      fastReg fd fs "ddr_addr_j", BitVec.ofNat 64 (fastReg fd fs "jtag_wdata"))
+
+/-- Complete executable system whose core is the certified generated view. -/
+structure DerivedSystem where
+  core : FastSt
+  ddr  : DdrModel
+  gp   : GpModel := {}
+
+def DerivedSystem.reset (dag : DagEval.VerifiedSimulator design)
+    (image : List (Nat × BitVec 64)) (latency : Nat) : DerivedSystem :=
+  { core := dag.reset
+    ddr := { mem := Std.HashMap.ofList image, latency := latency } }
+
+/-- One canonical system cycle. Peripheral inputs and request sampling both
+use pre-state, matching `Design.cycleOpen`'s synchronous boundary. -/
+def DerivedSystem.step (dag : DagEval.VerifiedSimulator design)
+    (system : DerivedSystem) (cmd : MiniIn) (gpRval : BitVec 32) :
+    DerivedSystem × MiniIn :=
+  let (mdone, mrd) := system.ddr.outputs
+  let (gdone, grd) := system.gp.outputs
+  let inp : MiniIn :=
+    { cmd with
+      mDone := mdone
+      mRdata := mrd
+      mBusy := DdrModel.busy system.ddr
+      gpDone := gdone
+      gpRdata := grd
+      gpBusy := system.gp.pending }
+  let fd := dag.base.fast
+  let (rd, wr, addr, wdata) := derivedHpReq fd system.core
+  let ddr := system.ddr.step rd wr addr wdata
+  let gp := system.gp.step (fastBit fd system.core "gp_rd")
+    (fastBit fd system.core "gp_wr") gpRval
+  let core := dag.cycleOpen inp.toEnv system.core
+  ({ core, ddr, gp }, inp)
+
 private def lockstepPureDag (dag : DagEval.VerifiedSimulator design)
     (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (nCyc : Nat) (cap : Nat := 16) : Nat := Id.run do
   let plan := design.coordPlan cap
-  let mut fs := dag.reset
+  let mut system := DerivedSystem.reset dag image latency
   let mut s : MiniSt := {}
-  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
-  let mut g : GpModel := {}
   let mut bad := 0
   for k in List.range nCyc do
-    let (s', d', g', inp) := sysStep s d g (cmds k) 0
-    fs := dag.cycleOpen inp.toEnv fs
-    s := s'; d := d'; g := g'
-    let (mism, undeclared, _) := diffFastAgainstOracle plan fs
+    let (system', inp) := system.step dag (cmds k) 0
+    s := MiniIss.step s inp
+    system := system'
+    let (mism, undeclared, _) := diffFastAgainstOracle plan system.core
       { read := issAtWith (issRegs s) s, unmodelled := issUnmodelled }
     bad := bad + mism.length + undeclared.length
   return bad
@@ -551,31 +616,41 @@ def lockstepFast (image : List (Nat × BitVec 64)) (latency : Nat)
     (cap : Nat := 64) : IO (Nat × Nat) := do
   let plan := design.coordPlan cap
   let dag ← DagEval.prepareSimulator simulator "LNP64mini"
-  let mut fs := dag.reset
+  let mut system := DerivedSystem.reset dag image latency
   let mut s : MiniSt := {}
-  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
-  let mut g : GpModel := {}
   let mut bad := 0
   let mut unmodelled := 0
   for k in List.range nCyc do
-    let (s', d', g', inp) := sysStep s d g (cmds k) (gpVal k)
-    fs := dag.cycleOpen inp.toEnv fs
-    s := s'; d := d'; g := g'
+    let (system', inp) := system.step dag (cmds k) (gpVal k)
+    s := MiniIss.step s inp
+    system := system'
     let regs := issRegs s
-    let (mism, undeclared, declared) := diffFastAgainstOracle plan fs
+    let (mism, undeclared, declared) := diffFastAgainstOracle plan system.core
       { read := issAtWith regs s, unmodelled := issUnmodelled }
     unmodelled := declared.length
     if !undeclared.isEmpty then
       if bad < 8 then
         for c in undeclared.take 4 do
-          IO.println s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
+          printMismatch s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
       bad := bad + undeclared.length
     if !mism.isEmpty then
       if bad < 8 then
         for (c, got, want) in mism.take 4 do
-          IO.println s!"  MISMATCH cycle {k} {c.render}: edsl={got} iss={want}"
+          printMismatch s!"  MISMATCH cycle {k} {c.render}: edsl={got} iss={want}"
       bad := bad + mism.length
   return (bad, unmodelled)
+
+/-- Primary LNP64mini lockstep.
+
+The machine is executed by the certified shared DAG evaluator, and comparison
+coverage is derived from `Design.coords`. The hand-written ISS participates
+only as an independent differential oracle. A failed DAG certificate aborts;
+there is no fallback to tree evaluation or the legacy comparator. -/
+def lockstep (image : List (Nat × BitVec 64)) (latency : Nat)
+    (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat)
+    (cap : Nat := 64) : IO Nat := do
+  let (bad, _) ← lockstepFast image latency cmds gpVal nCyc cap
+  return bad
 
 /-! ## Directed selftest script
 
@@ -1947,6 +2022,60 @@ def progMisalignedGate : List (BitVec 64) :=
     enc OP_MINI_GATE_CALL 0 1 0,       -- w1  must be REFUSED (entry misaligned)
     encImmI OP_ADDI 9 0 7,             -- w2  reached only on refusal
     enc OP_EXIT 0 0 0 ]
+
+/-- Nest MAXD+1 deep: the last call must be refused with `-BUSY` (genuine
+exhaustion) and the value register must be untouched. Handler = w6, which
+recurses; r9 counts the calls that got in. -/
+def progGateBusy : List (BitVec 64) :=
+  [ encImmI OP_ADDI 4 0 0,            -- w0  r4 = gate id
+    encImmI OP_ADDI 2 0 0x5A,         -- w1  r2 = a value the refusal MUST NOT touch
+    enc OP_MINI_GATE_CALL 0 4 0,      -- w2  outer call -> w6
+    enc OP_EXIT 0 0 0,                -- w3
+    enc OP_NOP 0 0 0,                 -- w4
+    enc OP_NOP 0 0 0,                 -- w5
+    encImmI OP_ADDI 9 9 1,            -- w6  [handler] r9++ (depth reached)
+    enc OP_MINI_GATE_CALL 0 4 0,      -- w7  recurse until the stack refuses
+    -- Capture the status STICKILY: each unwinding `ret` writes status 0 over
+    -- r3, so reading r3 at the end sees the last return, not the refusal.
+    -- OR-accumulating keeps the one non-zero condition that ever appeared.
+    enc OP_OR 10 10 3,              -- w8  r10 |= r3
+    encImmI OP_JALR 0 1 0 ]           -- w9  ordinary `ret` (unwinds each frame)
+
+/-- A gate whose descriptor is invalid: refusal must report `-MALFORMED`. -/
+def progGateMalformed : List (BitVec 64) :=
+  [ encImmI OP_ADDI 4 0 1,            -- w0  gate id 1 -- no descriptor
+    encImmI OP_ADDI 2 0 0x5A,         -- w1  r2 = value that must survive
+    enc OP_MINI_GATE_CALL 0 4 0,      -- w2  must be REFUSED
+    enc OP_EXIT 0 0 0 ]
+
+def refusalConformanceSelftest : IO Unit := do
+  let mut allOk := true
+  -- (a) full continuation stack -> -BUSY, value register unchanged
+  let tblB := gateDescriptor 0 (TEXT_BASE + 6*8) GATE_DOM_TEST
+  let imgB := imageFrom TEXT_BASE progGateBusy ++ tblB
+  let badB ← lockstep imgB 1 cmdGate (fun _ => 0) 300
+  let (sb, _, _) := runIss imgB 1 cmdGate (fun _ => 0) 4000
+  let r3b := (sb.rf[10]!).toNat
+  let okB := r3b == 0xFFFFFFFFFFFFFFF2 && (sb.rf[2]!).toNat == 0x5A
+             && (sb.rf[9]!).toNat == MAXD
+  IO.println s!"  BUSY: captured status=0x{String.ofList (Nat.toDigits 16 r3b)} (want ...fff2 = -BUSY) \
+r2=0x{String.ofList (Nat.toDigits 16 (sb.rf[2]!).toNat)} (want 5a: value register UNCHANGED) \
+depth reached r9={(sb.rf[9]!).toNat} (want {MAXD}) lockstep={badB}"
+  allOk := allOk && okB && badB == 0
+  -- (b) descriptor that does not admit -> -MALFORMED, value unchanged
+  let imgM := imageFrom TEXT_BASE progGateMalformed ++ gateDescriptor 0 (TEXT_BASE + 8) GATE_DOM_TEST
+  let badM ← lockstep imgM 1 cmdGate (fun _ => 0) 200
+  let (sm, _, _) := runIss imgM 1 cmdGate (fun _ => 0) 3000
+  let r3m := (sm.rf[3]!).toNat
+  let okM := r3m == 0xFFFFFFFFFFFFFFFC && (sm.rf[2]!).toNat == 0x5A && sm.halted
+  IO.println s!"  MALFORMED: r3=0x{String.ofList (Nat.toDigits 16 r3m)} (want ...fffc = -MALFORMED) \
+r2=0x{String.ofList (Nat.toDigits 16 (sm.rf[2]!).toNat)} (want 5a) halted={sm.halted} lockstep={badM}"
+  allOk := allOk && okM && badM == 0
+  if allOk then
+    IO.println "LNP64MINI REFUSAL CONFORMANCE OK — no refusal reports nothing, and none touches the value register"
+  else do
+    IO.println "LNP64MINI REFUSAL CONFORMANCE FAILED"
+    throw <| IO.userError "refusal conformance failed"
 
 def faultConformanceSelftest : IO Unit := do
   let cmdStart : Nat → MiniIn := fun k =>

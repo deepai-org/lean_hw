@@ -1391,6 +1391,16 @@ Recognized in `S_F0` *before* any fetch is issued, after the same
 `bus_req`/poison/preempt guards that arm takes, so the funnels below and the
 FSM arm agree cycle-for-cycle. It retires no instruction: nothing was
 fetched, and the `ret` that jumped here already retired. -/
+/-- §13.1 conditions, as the negative 64-bit values a refusal reports in the
+status register (`-COND` = two's complement of the catalog number). -/
+def COND_MALFORMED : Nat := 0xFFFFFFFFFFFFFFFC   -- -4
+def COND_BUSY      : Nat := 0xFFFFFFFFFFFFFFF2   -- -14
+
+/-- §9.2 gate return sentinel -- **architecturally pinned** (ISA d3344899,
+Appendix B 25): top-of-64-bit so it is non-canonical on every machine, and
+8-aligned so it never first trips the fetch-misalignment fault. An
+implementation may not choose its own: an `ra`-inspecting unwinder or crash
+dumper hard-codes this value. -/
 def GATE_RET_SENTINEL : Nat := 0xFFFFFFFFFFFFFFF8
 
 /-- The sentinel's own FSM state. `S_F0` recognizes the address (one 64-bit
@@ -1404,9 +1414,15 @@ def S_GRET : Nat := 29
 
 def sentinelPc : Expr 1 := .eq pc (L64 GATE_RET_SENTINEL)
 
+/-- A gate call refused because the continuation stack is FULL. This refuses
+at the instruction (it never enters the descriptor walk), so it needs its own
+status arm: ISA d3344899 -- "there is no refusal that reports nothing", and
+`-BUSY` specifically means genuine exhaustion. -/
+def gateFullRefused : Expr 1 := exG (.and (opIs OP_MINI_GATE_CALL) gateFull)
+
 /-- A gate call whose descriptor does not admit the activation (invalid bit,
 or the misaligned/zero entry PC `gateActValid` rejects). Fail-closed: the
-instruction steps past and the §9.2 status register reports it. -/
+instruction steps past and the §9.2 status register reports `-MALFORMED`. -/
 def gateRefused : Expr 1 :=
   .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone (.not gateActValid)))
 
@@ -1436,7 +1452,13 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- 0 on a real return, all-ones on a refused activation. Before the
   -- sentinel the reply rode r11 by veneer convention; that mini-lore is gone.
   , (gateRet, cat55 cur (L5 3), L64 0)
-  , (gateRefused, cat55 cur (L5 3), L64 0xFFFFFFFFFFFFFFFF)
+  -- ISA d3344899: EVERY pre-activation refusal reports its §13.1 condition in
+  -- r3, with the value register left unchanged. A descriptor that does not
+  -- admit the call (invalid bit, or an entry PC the machine will not accept)
+  -- is `-MALFORMED`; a full continuation stack is genuine exhaustion,
+  -- `-BUSY`.
+  , (gateRefused, cat55 cur (L5 3), L64 COND_MALFORMED)
+  , (gateFullRefused, cat55 cur (L5 3), L64 COND_BUSY)
   -- S_EX is_sel
   , (exG (.and is_sel (.not (.eq rdf (L5 0)))), cat55 cur rdf, .mux sel_cond sel_t sel_f)
   -- EXT-6 (§17): CAP_SEND result, judged in S_CS0 on the walked flags word
