@@ -1368,6 +1368,55 @@ the gate arm never ran `stepPc`. -/
 def gateCall : Expr 1 :=
   .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone gateActValid))
 
+/-! ### §9.2 the gate return sentinel (spec aebacd95)
+
+A crossing is a call to BOTH sides. `gate_call` installs a reserved
+non-canonical address in `ra` (the mini's `rfTriples` gate-call entry), and
+**fetching that address executes `gate_return`** -- so a handler is an
+ordinary function ending in an ordinary `ret`, with no veneer and no gate
+epilogue in the compiler. Three properties, all inherited from the spec:
+
+* **Trigger, not target.** The return still resolves through the machine's
+  own continuation stack (`tcont`/`gdepth` at `gPopIdx`) -- never from `ra`.
+  A handler that overwrites `ra` can only run more of its own code or
+  trigger the legitimate return; it cannot redirect it.
+* **Reserved non-canonical.** `0xFFFF_FFFF_FFFF_FFF8` is outside any legal
+  code address and 8-aligned, so it is recognized on the fetch path ahead of
+  both the misalignment and the ordinary fetch-fault arms.
+* **Fail-closed by composition.** With no frame open it takes the
+  empty-continuation-stack fault (`FAULT_GRET_EMPTY`) that landed in
+  1235f201 -- guarded by an existing guarantee, not by obscurity.
+
+Recognized in `S_F0` *before* any fetch is issued, after the same
+`bus_req`/poison/preempt guards that arm takes, so the funnels below and the
+FSM arm agree cycle-for-cycle. It retires no instruction: nothing was
+fetched, and the `ret` that jumped here already retired. -/
+def GATE_RET_SENTINEL : Nat := 0xFFFFFFFFFFFFFFF8
+
+/-- The sentinel's own FSM state. `S_F0` recognizes the address (one 64-bit
+compare) and hands off here; the return work and every funnel that records it
+then key on `st = S_GRET` alone. That is not a stylistic choice: folding the
+`S_F0` guards (`bus_req`/poison/**`preemptFire`**) into the funnel condition
+duplicated `preemptFire`'s NT-wide priority tree into five funnels and made
+cycle evaluation explode -- the selftests hung outright. A state IS the
+memo. -/
+def S_GRET : Nat := 29
+
+def sentinelPc : Expr 1 := .eq pc (L64 GATE_RET_SENTINEL)
+
+/-- A gate call whose descriptor does not admit the activation (invalid bit,
+or the misaligned/zero entry PC `gateActValid` rejects). Fail-closed: the
+instruction steps past and the §9.2 status register reports it. -/
+def gateRefused : Expr 1 :=
+  .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone (.not gateActValid)))
+
+def sentinelFetch : Expr 1 := .and fsmEn (.eq st (L5 S_GRET))
+
+/-- The gate-return EVENT: the explicit opcode, or a sentinel fetch. -/
+def gateRetEvent : Expr 1 := .or (exG (opIs OP_MINI_GATE_RETURN)) sentinelFetch
+/-- ...and the committing return: an event with a frame actually open. -/
+def gateRet  : Expr 1 := .and gateRetEvent curInGate
+
 /-- Funnel triples. -/
 
 def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
@@ -1377,6 +1426,17 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   , (.and cmdValid (.and (.eq cmdIdx (L7 52)) (.not (.eq reg_wsel (L5 0)))),
        cat55 cur reg_wsel, .or (.shl (.zext cmdData 64) (L64 32)) (.zext reg_wlo 64))
   -- 3. FSM writes (mutually exclusive)
+  -- §9.2: the activation installs the return sentinel in `ra` (r1). This is
+  -- what makes the handler an ordinary function -- its `ret` jumps here and
+  -- the fetch path turns that into the crossing return.
+  , (gateCall, cat55 cur (L5 1), L64 GATE_RET_SENTINEL)
+  -- §9.2 the two-result reply: the VALUE is whatever the handler left in
+  -- `call_rd` (psABI pins r2 = the ordinary C return register, so the mini
+  -- needs no write for it), and the STATUS is the architecturally fixed r3 --
+  -- 0 on a real return, all-ones on a refused activation. Before the
+  -- sentinel the reply rode r11 by veneer convention; that mini-lore is gone.
+  , (gateRet, cat55 cur (L5 3), L64 0)
+  , (gateRefused, cat55 cur (L5 3), L64 0xFFFFFFFFFFFFFFFF)
   -- S_EX is_sel
   , (exG (.and is_sel (.not (.eq rdf (L5 0)))), cat55 cur rdf, .mux sel_cond sel_t sel_f)
   -- EXT-6 (§17): CAP_SEND result, judged in S_CS0 on the walked flags word
@@ -1884,6 +1944,15 @@ def sexEa : Expr 64 :=
     a
 
 def goF0 : Act := stReg.set (L5 S_F0)
+
+/-- The §9.2 empty-continuation-stack fault, shared by the explicit opcode
+and the sentinel fetch: poison the slot (EXT-3 fail-stop), record what/where/
+who, retire nothing, leave `pc` at the faulting point. -/
+def gretEmptyFault : Act :=
+  actSeq [faultCauseReg.set (L8 FAULT_GRET_EMPTY),
+          faultPcReg.set pc, faultCurReg.set cur,
+          poisonReg.set (.or poison (.shl (L32 1) (.zext cur 32))),
+          goF0]
 def stepPc : Act := pcReg.set pc8
 
 /-- Cons for an if/else-if chain kept as *data*, so `actPriTree` can
@@ -1971,9 +2040,20 @@ def s_f0 : Expr 1 × Act := stArm S_F0
       -- below are the D19 sync-read sites for `ic_tag`/`ic_data`; `S_IC`
       -- consumes them next cycle. A miss from there issues exactly the
       -- transaction this arm used to issue, one cycle later.
+      -- §9.2 sentinel: `ra` has been fetched. No memory fetch is issued;
+      -- `S_GRET` does the return next cycle (see `S_GRET`).
+      (.ite sentinelPc (stReg.set (L5 S_GRET))
       (.seq (icTagQReg.set (icTagBank.rd ic_idx))
         (.seq (icDataQReg.set (icDataBank.rd ic_idx))
-          (stReg.set (L5 S_IC)))))))
+          (stReg.set (L5 S_IC))))))))
+
+/-- `S_GRET`: the sentinel was fetched -- execute the §9.2 gate return. The
+caller frame comes from the continuation stack (`tcont`/`tcdom` at
+`gPopIdx`), never from `ra`: the sentinel is a trigger, not a target. With no
+frame open it is the empty-stack fault. Retires nothing -- no instruction was
+fetched, and the `ret` that jumped here already retired. -/
+def s_gret : Expr 1 × Act := stArm S_GRET
+  (.ite curInGate (.seq (pcReg.set (tcontRd gPopIdx)) goF0) gretEmptyFault)
 
 /-- `S_GC0`: the entry PC has arrived; latch it and ask for the domain word
 at +8. -/
@@ -2232,10 +2312,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
   gcons (opIs OP_MINI_GATE_RETURN)
     (.ite curInGate
       (.seq (pcReg.set (tcontRd gPopIdx)) (.seq retireInc goF0))
-      (actSeq [faultCauseReg.set (L8 FAULT_GRET_EMPTY),
-               faultPcReg.set pc, faultCurReg.set cur,
-               poisonReg.set (.or poison (.shl (L32 1) (.zext cur 32))),
-               goF0])) <|
+      gretEmptyFault) <|
   -- 0x59 CLONE
   gcons (opIs OP_CLONE_SPAWN)
     (.ite has_free
@@ -2443,7 +2520,7 @@ def fsmRule : Rule :=
       [s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
        s_cs0, s_cs1, s_cr0, s_cr1,
        s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps,
-       s_ic, s_gc0, s_gc1, s_dc, s_default]
+       s_ic, s_gret, s_gc0, s_gc1, s_dc, s_default]
       .skip)
     .skip⟩
 
@@ -2540,7 +2617,7 @@ def tdomTriples : List (Expr 1 × Expr 5 × Expr 8) :=
   -- this cycle (`mRdata`), not from `gate_dom_q`, which does not hold it
   -- until the next one.
   , (gateCall, cur, .slice mRdata 0 8)
-  , (exG (.and (opIs OP_MINI_GATE_RETURN) curInGate), cur, tcdomRd gPopIdx) ]
+  , (gateRet, cur, tcdomRd gPopIdx) ]
 
 def tdomWeE : Expr 1 := orTree (tdomTriples.map (fun t => t.1))
 def tdomWaE : Expr 5 := priTree (tdomTriples.map (fun t => (t.1, t.2.1))) (L5 0)
@@ -2553,7 +2630,6 @@ def tdomWdE : Expr 8 := priTree (tdomTriples.map (fun t => (t.1, t.2.2))) (L8 0)
 EXT-3's `poison`) because nothing reads it at a dynamic index -- only at
 `cur` -- but it must be *set and cleared* per slot, and a 32-bit
 set/clear on a register is one mux where a memory would be a port. -/
-def gateRet  : Expr 1 := exG (.and (opIs OP_MINI_GATE_RETURN) curInGate)
 /-- The return that EMPTIES the stack (depth 1 → 0): only then does `in_gate`'s
 `cur` bit clear. A return from a nested frame (depth ≥ 2) keeps the thread in a
 gate. -/

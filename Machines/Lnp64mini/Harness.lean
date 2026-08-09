@@ -1989,6 +1989,95 @@ in_gate={sc.in_gate.toNat} (want 0) cause={sc.fault_cause.toNat} (want 0) lockst
     IO.println "LNP64MINI FAULT CONFORMANCE FAILED"
     throw <| IO.userError "fault conformance failed"
 
+/-! ## §9.2 the gate return sentinel (spec aebacd95)
+
+The proposal this machine's §73 campaign sent up, adopted and landed: a
+crossing is a call to both sides. `gate_call` installs a reserved
+non-canonical address in `ra`; fetching it executes `gate_return`. So a gate
+handler is an **ordinary function ending in an ordinary `ret`** -- no asm
+veneer, no gate epilogue in the compiler. The three programs below are the
+three claims:
+
+* the handler is ordinary and its `ret` crosses back (and the caller's `ra`
+  is architecturally clobbered, which is why the veneer's `jal r1` hazard
+  cannot recur: a defining instruction is native to register allocation);
+* a stray `ret` to the sentinel with no activation open FAULTS -- the
+  sentinel is guarded by the empty-stack fault, not by obscurity
+  (`addi r5, r0, -8` materialises it exactly: sign extension IS the
+  sentinel, so the test cannot be accused of knowing a magic constant);
+* nesting works -- each `ret` pops one frame, the continuation stack is the
+  only source of the return target. -/
+
+def progSentinel : List (BitVec 64) :=
+  [ encImmI OP_ADDI 4 0 0,            -- w0  r4 = gate id 0 (NOT r1: ra is clobbered)
+    enc OP_MINI_GATE_CALL 0 4 0,      -- w1  GATE_CALL -> handler w4
+    encImmI OP_ADDI 9 0 7,            -- w2  r9 = 7 (we came back to the caller)
+    enc OP_EXIT 0 0 0,                -- w3
+    encImmI OP_ADDI 10 0 5,           -- w4  [handler] ordinary function body
+    encImmI OP_JALR 0 1 0 ]           -- w5  ordinary `ret` -- IS the gate return
+
+def progSentinelStray : List (BitVec 64) :=
+  [ encImmI OP_ADDI 5 0 (-8),         -- w0  r5 = 0xFFFF_FFFF_FFFF_FFF8 (sign-extended)
+    encImmI OP_ADDI 9 0 1,            -- w1  r9 = 1
+    encImmI OP_JALR 0 5 0,            -- w2  `ret` to the sentinel, NO gate open
+    encImmI OP_ADDI 9 0 2,            -- w3  must NEVER execute
+    enc OP_EXIT 0 0 0 ]
+
+def progSentinelNest : List (BitVec 64) :=
+  [ encImmI OP_ADDI 4 0 0,            -- w0  r4 = gate id 0
+    enc OP_MINI_GATE_CALL 0 4 0,      -- w1  outer call -> w4
+    encImmI OP_ADDI 9 0 7,            -- w2  r9 = 7 after both returns
+    enc OP_EXIT 0 0 0,                -- w3
+    encImmI OP_ADDI 10 0 5,           -- w4  [handler] depth 1
+    enc OP_MINI_GATE_CALL 0 4 0,      -- w5  inner call -> w4 again (depth 2)
+    encImmI OP_ADDI 11 0 6,           -- w6  runs after the inner return
+    encImmI OP_JALR 0 1 0 ]           -- w7  `ret` (both levels take this path)
+
+def sentinelSelftest : IO Unit := do
+  let cmdStart : Nat → MiniIn := fun k =>
+    if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
+  let mut allOk := true
+  -- (1) ordinary-function handler, ordinary `ret`
+  let tbl := gateDescriptor 0 (TEXT_BASE + 4*8) GATE_DOM_TEST
+  let img := imageFrom TEXT_BASE progSentinel ++ tbl
+  let bad ← lockstep img 1 cmdGate (fun _ => 0) 200
+  let (s1, _, _) := runIss img 1 cmdGate (fun _ => 0) 3000
+  let ra := (s1.rf[1]!).toNat
+  let ok1 := s1.halted && (s1.rf[9]!).toNat == 7 && (s1.rf[10]!).toNat == 5
+             && s1.in_gate.toNat == 0 && (s1.gdepth[0]!).toNat == 0
+             && s1.fault_cause.toNat == 0 && ra == 0xFFFFFFFFFFFFFFF8
+  IO.println s!"  SENTINEL: halted={s1.halted} r9={(s1.rf[9]!).toNat} (want 7, caller resumed) \
+r10={(s1.rf[10]!).toNat} (want 5, handler ran) ra=0x{String.ofList (Nat.toDigits 16 ra)} (want ...fff8) \
+in_gate={s1.in_gate.toNat} gdepth0={(s1.gdepth[0]!).toNat} cause={s1.fault_cause.toNat} lockstep={bad}"
+  allOk := allOk && ok1 && bad == 0
+  -- (2) stray sentinel return with no activation open -> the §9.2 fault
+  let imgS := imageFrom TEXT_BASE progSentinelStray
+  let badS ← lockstep imgS 1 cmdStart (fun _ => 0) 150
+  let (s2, _, _) := runIss imgS 1 cmdStart (fun _ => 0) 3000
+  let ok2 := s2.fault_cause.toNat == 1 && (s2.rf[9]!).toNat == 1 && ¬ s2.running
+             && s2.fault_pc.toNat == 0xFFFFFFFFFFFFFFF8
+  IO.println s!"  STRAY: cause={s2.fault_cause.toNat} (want 1 = empty-stack fault) \
+fault_pc=0x{String.ofList (Nat.toDigits 16 s2.fault_pc.toNat)} r9={(s2.rf[9]!).toNat} (want 1, w3 never ran) \
+running={s2.running} (want false) lockstep={badS}"
+  allOk := allOk && ok2 && badS == 0
+  -- (3) nesting: two activations, two ordinary `ret`s
+  let tblN := gateDescriptor 0 (TEXT_BASE + 4*8) GATE_DOM_TEST
+  let imgN := imageFrom TEXT_BASE progSentinelNest ++ tblN
+  let badN ← lockstep imgN 1 cmdGate (fun _ => 0) 300
+  let (s3, _, _) := runIss imgN 1 cmdGate (fun _ => 0) 3000
+  let ok3 := s3.halted && (s3.rf[9]!).toNat == 7 && (s3.rf[11]!).toNat == 6
+             && s3.in_gate.toNat == 0 && (s3.gdepth[0]!).toNat == 0
+             && s3.fault_cause.toNat == 0
+  IO.println s!"  NEST: halted={s3.halted} r9={(s3.rf[9]!).toNat} (want 7) r11={(s3.rf[11]!).toNat} \
+(want 6, inner return landed) in_gate={s3.in_gate.toNat} gdepth0={(s3.gdepth[0]!).toNat} \
+cause={s3.fault_cause.toNat} lockstep={badN}"
+  allOk := allOk && ok3 && badN == 0
+  if allOk then
+    IO.println "LNP64MINI SENTINEL OK — a handler is an ordinary function; its `ret` IS the crossing return"
+  else do
+    IO.println "LNP64MINI SENTINEL FAILED"
+    throw <| IO.userError "sentinel selftest failed"
+
 /-! ## EXT-6 — the cross-domain transfer selftest
 
 The claim is **mediation, structurally**: a handle addressed to domain 3 is
