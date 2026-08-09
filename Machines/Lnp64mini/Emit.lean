@@ -8,6 +8,7 @@ import Machines.Lnp64mini.GpMaster
 import Machines.Lnp64mini.HpArbiter
 import Machines.Lnp64mini.Soc
 import Machines.Lnp64mini.DualSoc
+import Machines.Lnp64mini.DebugMap
 
 /-!
 # Lnp64mini runner (root `main`, kept out of the `Machines` umbrella)
@@ -16,6 +17,7 @@ import Machines.Lnp64mini.DualSoc
 lake exe minitest            # emit rtl/lnp64mini.v
 lake exe minitest soc        # emit rtl/lnp64mini_soc.v
 lake exe minitest dual       # emit rtl/lnp64mini_dual.v
+lake exe minitest debugmap   # emit the dual-board BSCAN debug include
 lake exe minitest selftest   # EDSL ≡ ISS lockstep
 lake exe minitest hpselftest # HP master EDSL ≡ ISS
 lake exe minitest gpselftest # GP master EDSL ≡ ISS
@@ -57,6 +59,7 @@ def main (args : List String) : IO Unit := do
   | ["failstopselftest"] => failstopSelftest
   | ["gateselftest"] => gateSelftest
   | ["gatehammerselftest"] => gateHammerSelftest
+  | ["gatedwellselftest"] => gateDwellSelftest
   | ["capxferselftest"] => capXferSelftest
   | ["slotfillselftest"] => slotFillSelftest
   | ["mmuselftest"] => mmuSelftest
@@ -91,4 +94,6 @@ def main (args : List String) : IO Unit := do
       Machines.Lnp64mini.Soc.soc.emit "rtl/lnp64mini_soc.v"
   | ["dual"]       =>
       Machines.Lnp64mini.DualSoc.dual.emit "rtl/lnp64mini_dual.v"
+      Machines.Lnp64mini.DebugMap.emit
+  | ["debugmap"]   => Machines.Lnp64mini.DebugMap.emit
   | _ => design.emit "rtl/lnp64mini.v"

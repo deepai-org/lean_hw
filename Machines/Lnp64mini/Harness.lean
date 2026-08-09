@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.StateCover
 import Loom.Hw.Diff
+import Loom.Hw.DagEval
 import Machines.Lnp64mini.Iss
 import Std.Data.HashMap
 
@@ -208,6 +209,8 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    -- §9 diagnostic: the loud GATE_RETURN latch
    ("gret_noop_pc",64,s.gret_noop_pc.toNat), ("gret_noop_cur",5,s.gret_noop_cur.toNat),
    ("gret_noop_cnt",32,s.gret_noop_cnt.toNat),
+   ("gate_had_trap",32,s.gate_had_trap.toNat), ("gret_noop_trapped",1,s.gret_noop_trapped.toNat),
+   ("ig_fall_pc",64,s.ig_fall_pc.toNat), ("ig_fall_info",16,s.ig_fall_info.toNat),
    -- EXT-7: the MMU enable and TLB selector
    ("mmu_en",1,if s.mmu_en then 1 else 0), ("tlb_sel",3,s.tlb_sel.toNat),
    ("tlb_vld",8,s.tlb_vld.toNat),
@@ -490,23 +493,49 @@ filtered, or forgotten by a harness; a build in which the design and the ISS
 disagree on the matrix does not exist. It is strictly stronger than a test that
 someone must run, and strictly weaker than a symbolic proof, and PLATONIC.md
 records it in exactly those terms. -/
-def lockstepPure (image : List (Nat × BitVec 64)) (latency : Nat)
+
+set_option maxRecDepth 100000 in
+/-- The generated evaluator's design-specific well-formedness obligation.
+The depth option only gives the reducer room to traverse this 182-register,
+18-memory design; the proof remains reflexivity after computation. -/
+theorem design_fastWF : design.fastWFB = true := by rfl
+
+/-- LNP64mini's public generated simulator.  The executable evaluator is
+derived from `design`; `runOpenFromReset_eq` states its semantic equality to
+`Design.runOpen` on every one of the design's declared coordinates. -/
+def simulator : FastEval.VerifiedSimulator design := ⟨design_fastWF⟩
+
+theorem fastRunOpen_agrees (n : Nat) (ιs : Nat → InEnv) :
+    Agree design (simulator.runOpen ιs n simulator.reset)
+      (design.runOpen ιs n design.reset) :=
+  simulator.runOpenFromReset_eq n ιs
+
+private def lockstepPureDag (dag : DagEval.VerifiedSimulator design)
+    (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (nCyc : Nat) (cap : Nat := 16) : Nat := Id.run do
-  let fd := design.elaborate
   let plan := design.coordPlan cap
-  let mut fs := design.fastReset
+  let mut fs := dag.reset
   let mut s : MiniSt := {}
   let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
   let mut g : GpModel := {}
   let mut bad := 0
   for k in List.range nCyc do
     let (s', d', g', inp) := sysStep s d g (cmds k) 0
-    fs := fastCycleOpen fd inp.toEnv fs
+    fs := dag.cycleOpen inp.toEnv fs
     s := s'; d := d'; g := g'
     let (mism, undeclared, _) := diffFastAgainstOracle plan fs
       { read := issAtWith (issRegs s) s, unmodelled := issUnmodelled }
     bad := bad + mism.length + undeclared.length
   return bad
+
+/-- Pure generated-simulator/ISS mismatch count. A failed DAG certificate is
+loud (`1`) so the build-time matrix theorem cannot silently fall back to a
+different evaluator. -/
+def lockstepPure (image : List (Nat × BitVec 64)) (latency : Nat)
+    (cmds : Nat → MiniIn) (nCyc : Nat) (cap : Nat := 16) : Nat :=
+  match DagEval.prepareSimulator? simulator with
+  | some dag => lockstepPureDag dag image latency cmds nCyc cap
+  | none => 1
 
 
 /-- The same derived-coordinate lockstep, run against `FastEval`.
@@ -516,15 +545,15 @@ gets slower every cycle because `RegEnv` is a function. This runs the design
 through `fastCycleOpen` on the flat state instead, and reads coordinates through
 a `CoordPlan` resolved once outside the loop.
 
-This is not a shortcut around the semantics: `Loom.Hw.fastCycleOpen_eq` proves
-the flat evaluator agrees with `Design.cycleOpen`, so the comparison is against
-the same design behaviour, evaluated a way that does not accumulate closures. -/
+This is not a shortcut around the semantics: the DAG certificate proves its
+cycle equals `fastCycleOpen`, whose theorem proves agreement with
+`Design.cycleOpen`. -/
 def lockstepFast (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat)
     (cap : Nat := 64) : IO (Nat × Nat) := do
-  let fd := design.elaborate
   let plan := design.coordPlan cap
-  let mut fs := design.fastReset
+  let dag ← DagEval.prepareSimulator simulator "LNP64mini"
+  let mut fs := dag.reset
   let mut s : MiniSt := {}
   let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
   let mut g : GpModel := {}
@@ -532,7 +561,7 @@ def lockstepFast (image : List (Nat × BitVec 64)) (latency : Nat)
   let mut unmodelled := 0
   for k in List.range nCyc do
     let (s', d', g', inp) := sysStep s d g (cmds k) (gpVal k)
-    fs := fastCycleOpen fd inp.toEnv fs
+    fs := dag.cycleOpen inp.toEnv fs
     s := s'; d := d'; g := g'
     let regs := issRegs s
     let (mism, undeclared, declared) := diffFastAgainstOracle plan fs
@@ -1729,6 +1758,168 @@ gret_noop_cnt={sp.gret_noop_cnt.toNat} noop_slot={sp.gret_noop_cur.toNat} noop_p
     IO.println s!"LNP64MINI GATE HAMMER: DESYNC REPRODUCED — noop_cnt={s.gret_noop_cnt.toNat} \
 slot={s.gret_noop_cur.toNat} pc=0x{pchex} halted={s.halted} r20={(s.rf[20]!).toNat} (this IS the silicon stick, in software)"
 
+/-! ## The dwell/wake hammers — the two interleavings the silicon capture named
+
+2026-08-09, board loud-latch: ONE no-op GATE_RETURN at `drvspawn_entry+0x10`,
+slot 0, `trapped=0`, `gate_had_trap=0` — pure in-core scheduling, during a
+handler that does cap_recv + CLONE + return. The surviving suspects are
+interleavings `progGateHammer` never produces:
+
+* **Shape A (dwell)** — the child THREAD_EXITs *while the parent still holds
+  the gate*. The old hammer's handler was CLONE;RETURN back-to-back, so the
+  child always ran after the parent had left the gate. Here the handler dwells
+  (spin > quantum) between CLONE and RETURN, so preemption runs the child —
+  and its EXIT's `in_gate`/`gdepth` cleanup — mid-gate.
+* **Shape B (park+wake)** — the parent FUTEX_WAITs *inside the gate*; the
+  child flips the word, fires the (NT=32 **unkeyed**) FUTEX_WAKE, and exits;
+  the woken parent then GATE_RETURNs. This is the block-in-gate → unkeyed-wake
+  path the drvspawn handler's C code can take. -/
+
+def progGateDwell : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 0,                              -- w0  r1 = 0 (gate id)
+    encImmI OP_ADDI 5 0 (Int.ofNat (TEXT_BASE + 12*8)), -- w1  r5 = child entry (w12)
+    encImmI OP_ADDI 20 0 12,                            -- w2  r20 = 12 iterations
+    enc OP_MINI_GATE_CALL 0 1 0,                        -- w3  [loop] GATE_CALL -> handler w7
+    encImmI OP_ADDI 20 20 (-1),                         -- w4  r20--
+    encImmS OP_BNE 20 0 (-2),                           -- w5  -> w3
+    enc OP_EXIT 0 0 0,                                  -- w6  done
+    enc OP_CLONE_SPAWN 6 5 0,                           -- w7  [handler] clone child
+    encImmI OP_ADDI 21 0 8,                             -- w8  r21 = 8 (dwell > quantum)
+    encImmI OP_ADDI 21 21 (-1),                         -- w9  [dwell] r21--
+    encImmS OP_BNE 21 0 (-1),                           -- w10 -> w9
+    enc OP_MINI_GATE_RETURN 0 0 0,                      -- w11 GATE_RETURN -> w4
+    enc OP_THREAD_EXIT 0 0 0 ]                          -- w12 [child] THREAD_EXIT (mid-parent-gate)
+
+def progGateParkWake : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 0,                              -- w0  r1 = 0 (gate id)
+    encImmI OP_ADDI 5 0 (Int.ofNat (TEXT_BASE + 13*8)), -- w1  r5 = child entry (w13)
+    encImmI OP_ADDI 20 0 8,                             -- w2  r20 = 8 iterations
+    encImmI OP_ADDI 10 0 0x3000,                        -- w3  r10 = futex word (DDR; 0x2000 is GATE_TBL!)
+    enc OP_MINI_GATE_CALL 0 1 0,                        -- w4  [loop] GATE_CALL -> handler w9
+    encImmI OP_ADDI 20 20 (-1),                         -- w5  r20--
+    encImmS OP_BNE 20 0 (-2),                           -- w6  -> w4
+    enc OP_EXIT 0 0 0,                                  -- w7  done
+    enc OP_NOP 0 0 0,                                   -- w8  pad
+    encImmS OP_ST 10 0 0,                               -- w9  [handler] [r10] = 0 (arm the wait)
+    enc OP_CLONE_SPAWN 6 5 0,                           -- w10 clone child
+    enc OP_FUTEX_WAIT 10 0 0,                           -- w11 PARK IN-GATE ([r10]==0 blocks)
+    enc OP_MINI_GATE_RETURN 0 0 0,                      -- w12 GATE_RETURN after the wake -> w5
+    encImmI OP_ADDI 7 0 1,                              -- w13 [child] r7 = 1
+    encImmI OP_ADDI 6 0 0x3000,                         -- w14 r6 = futex word
+    encImmS OP_ST 6 7 0,                                -- w15 [r6] = 1 (release the compare)
+    enc OP_FUTEX_WAKE 6 7 0,                            -- w16 UNKEYED wake -> parent READY
+    enc OP_THREAD_EXIT 0 0 0 ]                          -- w17 child exits
+
+/-- **Shape C (drvspawn replica)** — the exact board sequence the loud-latch
+fired on (2026-08-09): ONE token sent pre-loop; each iteration gates in and
+CAP_RECVs. Iteration 1 succeeds (token consumed) and CLONEs the driver;
+iterations 2+ fail the recv (all-ones ≠ expected) and take the no-spawn arm —
+the board's retry loop. The silicon no-op GATE_RETURN fired on iteration 1's
+return. Swept over quantum AND DDR latency (the ISS default latency=1 keeps
+the multi-state CAP walk narrow; real HP DDR is many cycles wide). -/
+def progGateDrvspawn : List (BitVec 64) :=
+  [ encImmI OP_ADDI 1 0 0xCAFE,                       -- w0  r1 = handle (CAP_HANDLE; defined later in the file)
+    encImmI OP_ADDI 2 0 3,                            -- w1  r2 = target domain 3
+    enc OP_MINI_CAP_SEND 3 1 2,                       -- w2  the ONE token
+    encImmI OP_ADDI 8 0 0xCAFE,                       -- w3  r8 = expected
+    encImmI OP_ADDI 4 0 0,                            -- w4  r4 = gate id
+    encImmI OP_ADDI 5 0 (Int.ofNat (TEXT_BASE + 16*8)), -- w5 r5 = child entry (w16)
+    encImmI OP_ADDI 20 0 6,                           -- w6  r20 = 6 iterations
+    enc OP_MINI_GATE_CALL 0 4 0,                      -- w7  [loop] GATE_CALL -> handler w11
+    encImmI OP_ADDI 20 20 (-1),                       -- w8  r20--
+    encImmS OP_BNE 20 0 (-2),                         -- w9  -> w7
+    enc OP_EXIT 0 0 0,                                -- w10 done
+    enc OP_MINI_CAP_RECV 9 0 0,                       -- w11 [handler] recv (iter1 ok, then fails)
+    encImmS OP_BNE 9 8 2,                             -- w12 fail -> skip clone -> w14
+    enc OP_CLONE_SPAWN 6 5 0,                         -- w13 spawn the "driver"
+    enc OP_MINI_GATE_RETURN 0 0 0,                    -- w14 GATE_RETURN -> w8
+    enc OP_NOP 0 0 0,                                 -- w15 pad
+    enc OP_THREAD_EXIT 0 0 0 ]                        -- w16 [child] THREAD_EXIT
+
+def gateDwellSelftest : IO Unit := do
+  -- ---- Shape A: child exits while the parent dwells in-gate, quantum sweep ----
+  let tblA := gateDescriptor 0 (TEXT_BASE + 7*8) GATE_DOM_TEST
+  let imgA := imageFrom TEXT_BASE progGateDwell ++ tblA
+  let mut worstA := 0
+  for q in [2, 3, 5] do
+    let (s, _, k) := runIss imgA 1 (cmdGateQ q) (fun _ => 0) 12000
+    let n := s.gret_noop_cnt.toNat
+    worstA := max worstA n
+    let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+    IO.println s!"  DWELL q={q}: halted={s.halted} r20={(s.rf[20]!).toNat} cyc={k} \
+noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
+  let badA ← lockstep imgA 1 (cmdGateQ 3) (fun _ => 0) 500
+  IO.println (if badA = 0 then "  OK  DWELL lockstep (EDSL≡ISS, 500 cyc)"
+              else s!"  FAIL DWELL lockstep ({badA} mismatches)")
+  -- ---- Shape B: park in-gate, unkeyed wake from the child ----
+  let tblB := gateDescriptor 0 (TEXT_BASE + 9*8) GATE_DOM_TEST
+  let imgB := imageFrom TEXT_BASE progGateParkWake ++ tblB
+  let mut worstB := 0
+  for (nm, cmd) in [("coop", cmdGate), ("q=3", cmdGateQ 3), ("q=5", cmdGateQ 5)] do
+    let (s, _, k) := runIss imgB 1 cmd (fun _ => 0) 12000
+    let n := s.gret_noop_cnt.toNat
+    worstB := max worstB n
+    let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+    IO.println s!"  PARK+WAKE {nm}: halted={s.halted} r20={(s.rf[20]!).toNat} cyc={k} \
+noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
+  let badB ← lockstep imgB 1 (cmdGateQ 3) (fun _ => 0) 500
+  IO.println (if badB = 0 then "  OK  PARK+WAKE lockstep (EDSL≡ISS, 500 cyc)"
+              else s!"  FAIL PARK+WAKE lockstep ({badB} mismatches)")
+  -- ---- Shape C: the drvspawn replica (recv-once + clone, then fail-retries),
+  -- swept over quantum x DDR latency ----
+  -- inbox entry for domain 3 (capInboxEmpty is defined below this point)
+  let tblC := gateDescriptor 0 (TEXT_BASE + 11*8) 3
+              ++ [(ddrWord (DATA_BASE + 0x2100 + 3*16 + 8), BitVec.ofNat 64 0x100)]
+  let imgC := imageFrom TEXT_BASE progGateDrvspawn ++ tblC
+  let cmdCapQ (q : Nat) : Nat → MiniIn := fun k =>
+    if k = 0 then { cmdValid := true, cmdIdx := CMD_GATE_TBL, cmdData := BitVec.ofNat 32 GATE_TBL }
+    else if k = 1 then { cmdValid := true, cmdIdx := CMD_CAP_TBL, cmdData := BitVec.ofNat 32 0x2100 }
+    else if k = 2 && q > 0 then { cmdValid := true, cmdIdx := CMD_QUANTUM, cmdData := BitVec.ofNat 32 q }
+    else if k = 3 then { cmdValid := true, cmdIdx := 13, cmdData := 2 }
+    else {}
+  let mut worstC := 0
+  let mut haltC := true
+  for (q, lat) in [(0,1), (3,1), (5,1), (0,8), (3,8), (5,8), (3,16)] do
+    let (s, _, k) := runIss imgC lat (cmdCapQ q) (fun _ => 0) 60000
+    let n := s.gret_noop_cnt.toNat
+    worstC := max worstC n
+    haltC := haltC && s.halted
+    let pchex := String.ofList (Nat.toDigits 16 s.gret_noop_pc.toNat)
+    IO.println s!"  DRVSPAWN q={q} lat={lat}: halted={s.halted} r20={(s.rf[20]!).toNat} r9=0x{String.ofList (Nat.toDigits 16 (s.rf[9]!).toNat)} \
+cyc={k} noop_cnt={n} noop_slot={s.gret_noop_cur.toNat} noop_pc=0x{pchex} ig=0x{String.ofList (Nat.toDigits 16 s.in_gate.toNat)}"
+  let badC ← lockstep imgC 1 (cmdCapQ 3) (fun _ => 0) 500
+  IO.println (if badC = 0 then "  OK  DRVSPAWN lockstep (EDSL≡ISS, 500 cyc)"
+              else s!"  FAIL DRVSPAWN lockstep ({badC} mismatches)")
+  -- Step trace of the cooperative run: iteration 1 completes, iteration 2
+  -- parks forever. Print every retire until the hang window (~55) plus the
+  -- final parked state, including the futex word and per-slot tstate.
+  IO.println "  --- PARK+WAKE coop step trace (iter 1 ok -> iter 2 parks) ---"
+  let mut ts : MiniSt := {}
+  let mut td : DdrModel := { mem := Std.HashMap.ofList imgB, latency := 1 }
+  let mut tg : GpModel := {}
+  let mut lastret := 0
+  for i in List.range 3000 do
+    if ts.halted then break
+    let (s', d', g', _) := sysStep ts td tg (cmdGate i) (0 : BitVec 32)
+    ts := s'; td := d'; tg := g'
+    if ts.retire.toNat != lastret then
+      lastret := ts.retire.toNat
+      if lastret ≤ 55 then
+        IO.println s!"  ret={lastret} cur={ts.cur.toNat} pc=0x{String.ofList (Nat.toDigits 16 ts.pc.toNat)} \
+r20={(ts.rf[20]!).toNat} ig={ts.in_gate.toNat} ts0={(ts.tstate[0]!).toNat} ts1={(ts.tstate[1]!).toNat} ts2={(ts.tstate[2]!).toNat}"
+  let word := (td.mem.get? (ddrWord (DATA_BASE + 0x3000))).getD 0
+  IO.println s!"  PARKED STATE: cur={ts.cur.toNat} pc=0x{String.ofList (Nat.toDigits 16 ts.pc.toNat)} \
+st={ts.st.toNat} ig={ts.in_gate.toNat} futex_word={word.toNat} \
+ts[0..3]={(ts.tstate[0]!).toNat},{(ts.tstate[1]!).toNat},{(ts.tstate[2]!).toNat},{(ts.tstate[3]!).toNat} \
+tpc0=0x{String.ofList (Nat.toDigits 16 (ts.tpc[0]!).toNat)} tpc1=0x{String.ofList (Nat.toDigits 16 (ts.tpc[1]!).toNat)} \
+tpc2=0x{String.ofList (Nat.toDigits 16 (ts.tpc[2]!).toNat)}"
+  if worstA == 0 && worstB == 0 && worstC == 0 && badA == 0 && badB == 0 && badC == 0
+     && ts.halted && haltC then
+    IO.println "LNP64MINI GATE DWELL/WAKE/DRVSPAWN OK — no interleaving desyncs the model"
+  else
+    IO.println s!"LNP64MINI GATE DWELL/WAKE/DRVSPAWN: FAIL — noop A={worstA} B={worstB} C={worstC} \
+haltB={ts.halted} haltC={haltC} (a hang with noop=0 is a stall, not a desync — read the traces)"
+
 /-! ## EXT-6 — the cross-domain transfer selftest
 
 The claim is **mediation, structurally**: a handle addressed to domain 3 is
@@ -2272,14 +2463,17 @@ instruction, at its own PC, in order"
     throw (IO.userError "trace ring wrong")
 
 /-- Total EDSL≡ISS mismatches over the generated ALU matrix — the same
-programs `opDiffSelftest` runs, as one number. -/
-def matrixMismatches : Nat := Id.run do
+programs `opDiffSelftest` runs, as one number.  The unit argument is
+intentional: without it Lean eagerly evaluates this large executable theorem
+witness whenever `Harness` is imported, including in unrelated tools. -/
+def matrixMismatches (_ : Unit) : Nat := Id.run do
   let mut bad := 0
+  let some dag := DagEval.prepareSimulator? simulator | return 1
   for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM), (3, selOps)] do
     for (op, _) in ops do
       for (a, b) in opVectors do
-        bad := bad + lockstepPure (imageFrom TEXT_BASE (progOp form op a b)) 1
-                       (cmdQuantum 0) 24 16
+        bad := bad + lockstepPureDag dag
+          (imageFrom TEXT_BASE (progOp form op a b)) 1 (cmdQuantum 0) 24 16
   return bad
 
 /-- Generated EDSL ≡ ISS coverage over every ALU opcode in the matrix. -/

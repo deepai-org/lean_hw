@@ -6,6 +6,7 @@ import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
 import Loom.Hw.SyncRead
+import Loom.Hw.DeclarationReport
 
 /-!
 # Lnp64mini — the DDR-backed MINI LNP64 soft-core, ported to Loom (open design)
@@ -44,6 +45,30 @@ refuse (domain-fatal in spirit). Must be a power of two so `cur*MAXD` is a shift
 def MAXD : Nat := 4
 def CW : Nat := 5
 def AW : Nat := 10
+
+/-! ## Typed memory handles
+
+The address/data widths and names below are the single source for memory
+declarations and every core read/write site. -/
+
+def rfBank      : Mem 10 64 := ⟨"rf"⟩
+def dmemBank    : Mem 9 64  := ⟨"dmem"⟩
+def tracePcBank : Mem 4 64  := ⟨"trace_pc"⟩
+def traceWbBank : Mem 4 64  := ⟨"trace_wb"⟩
+def uartBank    : Mem 8 8   := ⟨"uart_mem"⟩
+def rxBank      : Mem 8 8   := ⟨"rx_mem"⟩
+def icDataBank  : Mem 12 64 := ⟨"ic_data"⟩
+def icTagBank   : Mem 12 42 := ⟨"ic_tag"⟩
+def dcDataBank  : Mem 12 64 := ⟨"dc_data"⟩
+def dcTagBank   : Mem 12 42 := ⟨"dc_tag"⟩
+def tpcBank     : Mem 5 64  := ⟨"tpc"⟩
+def tsleepBank  : Mem 5 64  := ⟨"tsleep"⟩
+def tpBank      : Mem 5 64  := ⟨"tp_arr"⟩
+def sigmaskBank : Mem 5 64  := ⟨"sigmask_arr"⟩
+def tdomBank    : Mem 5 8   := ⟨"tdom"⟩
+def tcontBank   : Mem 7 64  := ⟨"tcont"⟩
+def tcdomBank   : Mem 7 8   := ⟨"tcdom"⟩
+def gdepthBank  : Mem 5 3   := ⟨"gdepth"⟩
 
 -- FSM states (localparams S_IDLE=0 .. S_GPS=20)
 def S_IDLE : Nat := 0
@@ -94,15 +119,25 @@ def S_DC   : Nat := 24
 
 /-! ## Input ports (D15) -/
 
-def mDone    : Expr 1  := .reg 1  "m_done"
-def mRdata   : Expr 64 := .reg 64 "m_rdata"
-def mBusy    : Expr 1  := .reg 1  "m_busy"
-def gpDone   : Expr 1  := .reg 1  "gp_done"
-def gpRdata  : Expr 32 := .reg 32 "gp_rdata"
-def gpBusy   : Expr 1  := .reg 1  "gp_busy"
-def cmdValid : Expr 1  := .reg 1  "cmd_valid"
-def cmdIdx   : Expr 7  := .reg 7  "cmd_idx"
-def cmdData  : Expr 32 := .reg 32 "cmd_data"
+def mDonePort    : Reg 1  := ⟨"m_done"⟩
+def mRdataPort   : Reg 64 := ⟨"m_rdata"⟩
+def mBusyPort    : Reg 1  := ⟨"m_busy"⟩
+def gpDonePort   : Reg 1  := ⟨"gp_done"⟩
+def gpRdataPort  : Reg 32 := ⟨"gp_rdata"⟩
+def gpBusyPort   : Reg 1  := ⟨"gp_busy"⟩
+def cmdValidPort : Reg 1  := ⟨"cmd_valid"⟩
+def cmdIdxPort   : Reg 7  := ⟨"cmd_idx"⟩
+def cmdDataPort  : Reg 32 := ⟨"cmd_data"⟩
+
+def mDone    : Expr 1  := mDonePort.rd
+def mRdata   : Expr 64 := mRdataPort.rd
+def mBusy    : Expr 1  := mBusyPort.rd
+def gpDone   : Expr 1  := gpDonePort.rd
+def gpRdata  : Expr 32 := gpRdataPort.rd
+def gpBusy   : Expr 1  := gpBusyPort.rd
+def cmdValid : Expr 1  := cmdValidPort.rd
+def cmdIdx   : Expr 7  := cmdIdxPort.rd
+def cmdData  : Expr 32 := cmdDataPort.rd
 
 /-! ### SMP extensions (DUAL_SPEC.md "Core extensions")
 
@@ -123,34 +158,22 @@ exactly as before (silicon regression: `tb_lnp64mini_soc.v` on
   hold safe: no DDR transaction is in flight there, so no `m_done` pulse can
   be missed while the core is stopped (a hold that froze `S_FW`/`S_DL`/
   `S_DSW` would drop the completion and wedge the core forever). -/
-def resKill  : Expr 1  := .reg 1  "res_kill"
-def doorbell : Expr 1  := .reg 1  "doorbell"
+def resKillPort  : Reg 1 := ⟨"res_kill"⟩
+def doorbellPort : Reg 1 := ⟨"doorbell"⟩
+def resKill  : Expr 1  := resKillPort.rd
+def doorbell : Expr 1  := doorbellPort.rd
 
 /-! ### EXT-4 — the park/wake directory (`EXTEND_SPEC.md` increment 4)
 
-**2026-08-08: EXT-4's keyed wake was REVERTED to fit NT=32.** The history below
-is kept for the record, but `tfutex`, the comparator bank, `wakeKey`,
-`wakeMatch`/`matchesBefore` and the registered `wake_bm` are all gone; the wake
-is now the unkeyed `wakeAllApply` (promote every `tstate==FUTEX` slot on any
-local `FUTEX_WAKE` or doorbell — spec-legal, spurious-not-missed). See
-`wakeAllApply` and PLATONIC "the NT=32 fit". `doorbell_key`/`wake_key` survive
-only as the dual SoC's cross-core wire (now informational — the wake ignores
-the key). Why the revert: the boot needs >16 thread slots (NT=16 panics
-`tp_refcnt`), NT=32 with the keyed bank does not route, and `tfutex`'s
-64-bit-wide NT-parallel comparator bank was the one structure that made 32
-slots too big. Deleting it is the feature-abort (wake precision for slot count)
-the "most realistic dual we can FIT" brief authorised.
-
---- historical (EXT-4 as originally built) ---
-Appendix F #6; §3 calls it "the epoch machine's client annex". Mini had both
-halves and they were not connected: `tfutex[i]` recorded *what* a parked
-thread waits on, but the cross-core `doorbell` woke **every** thread with
-`tstate = FUTEX` whatever key it was parked on. EXT-4 made the wake keyed via
-ONE shared comparator bank (in `smpRule`, operand muxed `rdval`/`doorbell_key`,
-`matchesBefore < a` count limit on the local wake). That bank is exactly what
-NT=32 could not afford, hence the revert above. -/
-def doorbell_key : Expr 64 := .reg 64 "doorbell_key"
-def hold     : Expr 1  := .reg 1  "hold"
+The current NT=32 implementation uses `wakeAllApply`: any local `FUTEX_WAKE`
+or doorbell promotes every `tstate == FUTEX` slot. Spurious wakeups are
+spec-legal and recheck the waited-on word. A keyed 64-bit comparator bank does
+not fit alongside 32 thread slots on the target, so `doorbell_key` and
+`wake_key` are informational cross-core wires and do not select wakees. -/
+def doorbellKeyPort : Reg 64 := ⟨"doorbell_key"⟩
+def holdPort        : Reg 1  := ⟨"hold"⟩
+def doorbell_key : Expr 64 := doorbellKeyPort.rd
+def hold     : Expr 1  := holdPort.rd
 
 /-- `sc_fail` — the arbiter's verdict on a *global* `SC`, valid on the cycle
 it completes the store-conditional (`m_done` while `sc_pending`). See
@@ -158,31 +181,44 @@ it completes the store-conditional (`m_done` while `sc_pending`). See
 at the serialization point, not two cycles earlier in `S_EX`. The tag
 registers `lr_req`/`sc_req` (pulses beside `core_rd`/`core_wr`) tell the
 arbiter which read takes a reservation and which write is conditional. -/
-def scFail   : Expr 1  := .reg 1  "sc_fail"
+def scFailPort : Reg 1 := ⟨"sc_fail"⟩
+def scFail   : Expr 1  := scFailPort.rd
 
 /-- `wake_out` pulses for one cycle when `FUTEX_WAKE` (S_EX, op 0xcc)
 executes, regardless of local matches. In the dual SoC it is wired straight
 into the *other* core's `doorbell` input — a register-to-input connection,
 i.e. already a full register stage, no combinational cross-core path. -/
-def wake_out : Expr 1  := .reg 1  "wake_out"
+def wakeOutReg : Reg 1 := ⟨"wake_out"⟩
+def wake_out : Expr 1  := wakeOutReg.rd
 
 /-- EXT-4. The key `wake_out` is pulsing for, captured on the pulse cycle and
 held otherwise; wired to the other core's `doorbell_key` in the dual SoC —
 register output to input, so still no combinational cross-core path. -/
-def wake_key : Expr 64 := .reg 64 "wake_key"
+def wakeKeyReg : Reg 64 := ⟨"wake_key"⟩
+def wake_key : Expr 64 := wakeKeyReg.rd
 
 /-! ## Scalar register shorthands -/
 
-def cur       : Expr 5  := .reg 5  "cur"
-def pc        : Expr 64 := .reg 64 "pc"
-def retire    : Expr 32 := .reg 32 "retire"
-def running   : Expr 1  := .reg 1  "running"
-def halted    : Expr 1  := .reg 1  "halted"
-def st        : Expr 5  := .reg 5  "st"
-def ir        : Expr 64 := .reg 64 "ir"
-def a         : Expr 64 := .reg 64 "a"
-def b         : Expr 64 := .reg 64 "b"
-def rdval     : Expr 64 := .reg 64 "rdval"
+def curReg : Reg 5 := ⟨"cur"⟩
+def cur : Expr 5 := curReg.rd
+def pcReg : Reg 64 := ⟨"pc"⟩
+def pc : Expr 64 := pcReg.rd
+def retireReg : Reg 32 := ⟨"retire"⟩
+def retire : Expr 32 := retireReg.rd
+def runningReg : Reg 1 := ⟨"running"⟩
+def running : Expr 1 := runningReg.rd
+def haltedReg : Reg 1 := ⟨"halted"⟩
+def halted : Expr 1 := haltedReg.rd
+def stReg : Reg 5 := ⟨"st"⟩
+def st : Expr 5 := stReg.rd
+def irReg : Reg 64 := ⟨"ir"⟩
+def ir : Expr 64 := irReg.rd
+def aReg : Reg 64 := ⟨"a"⟩
+def a : Expr 64 := aReg.rd
+def bReg : Reg 64 := ⟨"b"⟩
+def b : Expr 64 := bReg.rd
+def rdvalReg : Reg 64 := ⟨"rdval"⟩
+def rdval : Expr 64 := rdvalReg.rd
 /-! ### EXT-9 — the instruction cache (CACHE_PLAN.md)
 
 32 KB, direct-mapped, 1-word (8 B) lines: 4096 lines indexed by
@@ -195,8 +231,8 @@ Both banks are D19 sync-read: `S_F0` writes the two latch registers below
 from a bare `memRead`, and `S_IC` consumes them the next cycle. That is
 what makes them block RAM rather than 4096-deep read muxes (the D38/CE9
 lesson, where the difference was 14x). -/
-def ic_tag_q  : Expr 42 := .reg 42 "ic_tag_q"
-
+def icTagQReg : Reg 42 := ⟨"ic_tag_q"⟩
+def ic_tag_q : Expr 42 := icTagQReg.rd
 /-! ### EXT-9b — invalidation in O(1), not O(cache)
 
 A virtually-tagged cache must be emptied when the mapping that gave its
@@ -234,59 +270,107 @@ An entry is 16 bytes at `gate_tbl_base + (index << 4)`:
 `gate_tbl_base` is loaded once (`cmd 74`), the way a root pointer is: the
 host says where the table is, and thereafter the machine reads it. That is
 the difference the goal names -- the host stops supplying the *contents*. -/
-def gate_tbl_base : Expr 32 := .reg 32 "gate_tbl_base"
+def gateTblBaseReg : Reg 32 := ⟨"gate_tbl_base"⟩
+def gate_tbl_base : Expr 32 := gateTblBaseReg.rd
 /-- Latched descriptor words, D19 sync-read style (the bus is the source). -/
-def gate_ent_q : Expr 64 := .reg 64 "gate_ent_q"
-def gate_dom_q : Expr 8  := .reg 8  "gate_dom_q"
-
-def ic_gen    : Expr 16 := .reg 16 "ic_gen"
-def ic_inv    : Expr 1  := .reg 1  "ic_inv"
-def ic_ctr    : Expr 12 := .reg 12 "ic_ctr"
-def ic_data_q : Expr 64 := .reg 64 "ic_data_q"
+def gateEntQReg : Reg 64 := ⟨"gate_ent_q"⟩
+def gate_ent_q : Expr 64 := gateEntQReg.rd
+def gateDomQReg : Reg 8 := ⟨"gate_dom_q"⟩
+def gate_dom_q : Expr 8 := gateDomQReg.rd
+def icGenReg : Reg 16 := ⟨"ic_gen"⟩
+def ic_gen : Expr 16 := icGenReg.rd
+def icInvReg : Reg 1 := ⟨"ic_inv"⟩
+def ic_inv : Expr 1 := icInvReg.rd
+def icCtrReg : Reg 12 := ⟨"ic_ctr"⟩
+def ic_ctr : Expr 12 := icCtrReg.rd
+def icDataQReg : Reg 64 := ⟨"ic_data_q"⟩
+def ic_data_q : Expr 64 := icDataQReg.rd
 -- EXT-10 (the D-cache): the latched tag/data words and the allocate flag.
-def dc_tag_q  : Expr 42 := .reg 42 "dc_tag_q"
-def dc_data_q : Expr 64 := .reg 64 "dc_data_q"
-def dc_alloc  : Expr 1  := .reg 1  "dc_alloc"
-
-def sel_t     : Expr 64 := .reg 64 "sel_t"
-def sel_f     : Expr 64 := .reg 64 "sel_f"
-def mem_is_store : Expr 1  := .reg 1  "mem_is_store"
-def trap_active  : Expr 1  := .reg 1  "trap_active"
-def trapped_op   : Expr 8  := .reg 8  "trapped_op"
-def core_rd   : Expr 1  := .reg 1  "core_rd"
-def core_wr   : Expr 1  := .reg 1  "core_wr"
-def core_addr : Expr 32 := .reg 32 "core_addr"
-def core_wdata: Expr 64 := .reg 64 "core_wdata"
-def jtag_rd   : Expr 1  := .reg 1  "jtag_rd"
-def jtag_wr   : Expr 1  := .reg 1  "jtag_wr"
-def jtag_wdata: Expr 64 := .reg 64 "jtag_wdata"
-def ddr_addr_j: Expr 32 := .reg 32 "ddr_addr_j"
-def ddr_lo_j  : Expr 32 := .reg 32 "ddr_lo_j"
-def ddr_rd_l  : Expr 64 := .reg 64 "ddr_rd_l"
-def ddr_q     : Expr 64 := .reg 64 "ddr_q"
-def bus_req   : Expr 1  := .reg 1  "bus_req"
-def gp_rd     : Expr 1  := .reg 1  "gp_rd"
-def gp_wr     : Expr 1  := .reg 1  "gp_wr"
-def gp_addr_r : Expr 32 := .reg 32 "gp_addr_r"
-def gp_wdata_r: Expr 32 := .reg 32 "gp_wdata_r"
-def dmem_we   : Expr 1  := .reg 1  "dmem_we"
-def dmem_a    : Expr 9  := .reg 9  "dmem_a"
-def dmem_wd   : Expr 64 := .reg 64 "dmem_wd"
-def dmem_rd   : Expr 64 := .reg 64 "dmem_rd"
-def uart_wptr : Expr 9  := .reg 9  "uart_wptr"
-def uart_ridx : Expr 8  := .reg 8  "uart_ridx"
-def uart_byte : Expr 8  := .reg 8  "uart_byte"
-def rx_wptr   : Expr 9  := .reg 9  "rx_wptr"
-def rx_rptr   : Expr 9  := .reg 9  "rx_rptr"
-def ld_boff_q : Expr 3  := .reg 3  "ld_boff_q"
-def ld_op_q   : Expr 8  := .reg 8  "ld_op_q"
-def ld_rd_q   : Expr 5  := .reg 5  "ld_rd_q"
-def lr_addr   : Expr 64 := .reg 64 "lr_addr"
-def lr_valid  : Expr 1  := .reg 1  "lr_valid"
+def dcTagQReg : Reg 42 := ⟨"dc_tag_q"⟩
+def dc_tag_q : Expr 42 := dcTagQReg.rd
+def dcDataQReg : Reg 64 := ⟨"dc_data_q"⟩
+def dc_data_q : Expr 64 := dcDataQReg.rd
+def dcAllocReg : Reg 1 := ⟨"dc_alloc"⟩
+def dc_alloc : Expr 1 := dcAllocReg.rd
+def selTReg : Reg 64 := ⟨"sel_t"⟩
+def sel_t : Expr 64 := selTReg.rd
+def selFReg : Reg 64 := ⟨"sel_f"⟩
+def sel_f : Expr 64 := selFReg.rd
+def memIsStoreReg : Reg 1 := ⟨"mem_is_store"⟩
+def mem_is_store : Expr 1 := memIsStoreReg.rd
+def trapActiveReg : Reg 1 := ⟨"trap_active"⟩
+def trap_active : Expr 1 := trapActiveReg.rd
+def trappedOpReg : Reg 8 := ⟨"trapped_op"⟩
+def trapped_op : Expr 8 := trappedOpReg.rd
+def coreRdReg : Reg 1 := ⟨"core_rd"⟩
+def core_rd : Expr 1 := coreRdReg.rd
+def coreWrReg : Reg 1 := ⟨"core_wr"⟩
+def core_wr : Expr 1 := coreWrReg.rd
+def coreAddrReg : Reg 32 := ⟨"core_addr"⟩
+def core_addr : Expr 32 := coreAddrReg.rd
+def coreWdataReg : Reg 64 := ⟨"core_wdata"⟩
+def core_wdata : Expr 64 := coreWdataReg.rd
+def jtagRdReg : Reg 1 := ⟨"jtag_rd"⟩
+def jtag_rd : Expr 1 := jtagRdReg.rd
+def jtagWrReg : Reg 1 := ⟨"jtag_wr"⟩
+def jtag_wr : Expr 1 := jtagWrReg.rd
+def jtagWdataReg : Reg 64 := ⟨"jtag_wdata"⟩
+def jtag_wdata : Expr 64 := jtagWdataReg.rd
+def ddrAddrJReg : Reg 32 := ⟨"ddr_addr_j"⟩
+def ddr_addr_j : Expr 32 := ddrAddrJReg.rd
+def ddrLoJReg : Reg 32 := ⟨"ddr_lo_j"⟩
+def ddr_lo_j : Expr 32 := ddrLoJReg.rd
+def ddrRdLReg : Reg 64 := ⟨"ddr_rd_l"⟩
+def ddr_rd_l : Expr 64 := ddrRdLReg.rd
+def ddrQReg : Reg 64 := ⟨"ddr_q"⟩
+def ddr_q : Expr 64 := ddrQReg.rd
+def busReqReg : Reg 1 := ⟨"bus_req"⟩
+def bus_req : Expr 1 := busReqReg.rd
+def gpRdReg : Reg 1 := ⟨"gp_rd"⟩
+def gp_rd : Expr 1 := gpRdReg.rd
+def gpWrReg : Reg 1 := ⟨"gp_wr"⟩
+def gp_wr : Expr 1 := gpWrReg.rd
+def gpAddrRReg : Reg 32 := ⟨"gp_addr_r"⟩
+def gp_addr_r : Expr 32 := gpAddrRReg.rd
+def gpWdataRReg : Reg 32 := ⟨"gp_wdata_r"⟩
+def gp_wdata_r : Expr 32 := gpWdataRReg.rd
+def dmemWeReg : Reg 1 := ⟨"dmem_we"⟩
+def dmem_we : Expr 1 := dmemWeReg.rd
+def dmemAReg : Reg 9 := ⟨"dmem_a"⟩
+def dmem_a : Expr 9 := dmemAReg.rd
+def dmemWdReg : Reg 64 := ⟨"dmem_wd"⟩
+def dmem_wd : Expr 64 := dmemWdReg.rd
+def dmemRdReg : Reg 64 := ⟨"dmem_rd"⟩
+def dmem_rd : Expr 64 := dmemRdReg.rd
+def uartWptrReg : Reg 9 := ⟨"uart_wptr"⟩
+def uart_wptr : Expr 9 := uartWptrReg.rd
+def uartRidxReg : Reg 8 := ⟨"uart_ridx"⟩
+def uart_ridx : Expr 8 := uartRidxReg.rd
+def uartByteReg : Reg 8 := ⟨"uart_byte"⟩
+def uart_byte : Expr 8 := uartByteReg.rd
+def rxWptrReg : Reg 9 := ⟨"rx_wptr"⟩
+def rx_wptr : Expr 9 := rxWptrReg.rd
+def rxRptrReg : Reg 9 := ⟨"rx_rptr"⟩
+def rx_rptr : Expr 9 := rxRptrReg.rd
+def ldBoffQReg : Reg 3 := ⟨"ld_boff_q"⟩
+def ld_boff_q : Expr 3 := ldBoffQReg.rd
+def ldOpQReg : Reg 8 := ⟨"ld_op_q"⟩
+def ld_op_q : Expr 8 := ldOpQReg.rd
+def ldRdQReg : Reg 5 := ⟨"ld_rd_q"⟩
+def ld_rd_q : Expr 5 := ldRdQReg.rd
+def lrAddrReg : Reg 64 := ⟨"lr_addr"⟩
+def lr_addr : Expr 64 := lrAddrReg.rd
+def lrValidReg : Reg 1 := ⟨"lr_valid"⟩
+def lr_valid : Expr 1 := lrValidReg.rd
 /-- A global (DDR) `SC` is outstanding: `S_DSW` must consume `sc_fail`. -/
-def sc_pending : Expr 1 := .reg 1 "sc_pending"
-def futex_exp : Expr 64 := .reg 64 "futex_exp"
-def futex_addr_q : Expr 64 := .reg 64 "futex_addr_q"
+def lrReqReg      : Reg 1 := ⟨"lr_req"⟩
+def scReqReg      : Reg 1 := ⟨"sc_req"⟩
+def scPendingReg  : Reg 1 := ⟨"sc_pending"⟩
+def sc_pending : Expr 1 := scPendingReg.rd
+def futexExpReg : Reg 64 := ⟨"futex_exp"⟩
+def futex_exp : Expr 64 := futexExpReg.rd
+def futexAddrQReg : Reg 64 := ⟨"futex_addr_q"⟩
+def futex_addr_q : Expr 64 := futexAddrQReg.rd
 /-! ### EXT-1 — the preemption tick (`EXTEND_SPEC.md` increment 1)
 
 `quantum` is the per-core reload value in **core cycles** and `qctr` the
@@ -295,9 +379,10 @@ BSCAN `cmd_data` that loads them). `quantum = 0` — the reset value — means
 **disabled**: `quantumOn` is false, so nothing decrements, nothing reloads
 and nothing preempts, and the core is bit-for-bit the cooperative machine
 of §63. -/
-def quantum   : Expr 32 := .reg 32 "quantum"
-def qctr      : Expr 32 := .reg 32 "qctr"
-
+def quantumReg : Reg 32 := ⟨"quantum"⟩
+def quantum : Expr 32 := quantumReg.rd
+def qctrReg : Reg 32 := ⟨"qctr"⟩
+def qctr : Expr 32 := qctrReg.rd
 /-! ### EXT-2 — protection domains (`EXTEND_SPEC.md` increment 2)
 
 A **domain** is the unit every later increment is scoped by: gates cross
@@ -331,15 +416,15 @@ comparison this increment adds is against a constant. That is
 deliberate: EXT-2 installs the tag and its inheritance rule, and the
 enforcement that consumes it arrives with gates (EXT-5) and the MMU
 (EXT-7). -/
-def tdomRd (idx : Expr 5) : Expr 8 := .memRead 8 "tdom" idx
+def tdomRd (idx : Expr 5) : Expr 8 := tdomBank.rd idx
 /-- EXT-5 (§9): the gate table and the per-thread continuation STACK. `tcont`/
 `tcdom` are now `NT*MAXD` deep, indexed by `cur*MAXD + depth` — a bounded
 push-down stack so a gate call from inside a gate NESTS (§9) instead of being
 refused. The index is 7-bit (NT=32, MAXD=4). -/
-def tcontRd (idx : Expr 7) : Expr 64 := .memRead 64 "tcont" idx
-def tcdomRd (idx : Expr 7) : Expr 8  := .memRead 8  "tcdom" idx
+def tcontRd (idx : Expr 7) : Expr 64 := tcontBank.rd idx
+def tcdomRd (idx : Expr 7) : Expr 8  := tcdomBank.rd idx
 /-- Per-thread gate depth (0..MAXD). `gdepth[cur] > 0` ⟺ inside a gate. -/
-def gdepthRd (idx : Expr 5) : Expr 3 := .memRead 3 "gdepth" idx
+def gdepthRd (idx : Expr 5) : Expr 3 := gdepthBank.rd idx
 /-- Stack address `cur*MAXD + off` for `tcont`/`tcdom` (MAXD=4 ⇒ `cur<<2 | off`).
 `off` is the depth slot; the low 2 bits suffice since `off < MAXD = 4`. -/
 def gcIdx (off : Expr 3) : Expr 7 :=
@@ -355,15 +440,21 @@ def gPopIdx  : Expr 7 := gcIdx (.sub (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
 /-- EXT-7: TLB entries. Eight is what the guest's region count needs. -/
 def TLBN : Nat := 8
 
+def tlbBaseRegs  : RegArray 32 TLBN := ⟨"tlb_base"⟩
+def tlbLimitRegs : RegArray 32 TLBN := ⟨"tlb_limit"⟩
+def tlbPhysRegs  : RegArray 32 TLBN := ⟨"tlb_phys"⟩
+def tlbDomRegs   : RegArray 8 TLBN  := ⟨"tlb_dom"⟩
+def tlbCellRegs  : RegArray 8 TLBN  := ⟨"tlb_cell"⟩
+
 /-! EXT-7 stage B: the TLB holds **VMA ranges**, not fixed pages, and the
 lookup is **fully associative** — every entry is compared each cycle, so the
 arrays are per-element registers rather than memories (D20: an array read at
 every index at once is a register file, not a RAM). -/
-def tlbBase  (i : Fin TLBN) : Expr 32 := .reg 32 s!"tlb_base{i.val}"
-def tlbLimit (i : Fin TLBN) : Expr 32 := .reg 32 s!"tlb_limit{i.val}"
-def tlbPhys  (i : Fin TLBN) : Expr 32 := .reg 32 s!"tlb_phys{i.val}"
-def tlbDom   (i : Fin TLBN) : Expr 8  := .reg 8  s!"tlb_dom{i.val}"
-def tlbCell  (i : Fin TLBN) : Expr 8  := .reg 8  s!"tlb_cell{i.val}"
+def tlbBase  (i : Fin TLBN) : Expr 32 := tlbBaseRegs.rd i
+def tlbLimit (i : Fin TLBN) : Expr 32 := tlbLimitRegs.rd i
+def tlbPhys  (i : Fin TLBN) : Expr 32 := tlbPhysRegs.rd i
+def tlbDom   (i : Fin TLBN) : Expr 8  := tlbDomRegs.rd i
+def tlbCell  (i : Fin TLBN) : Expr 8  := tlbCellRegs.rd i
 /-- EXT-7: the valid bits are a **bitmap register**, not a memory. The §15
 shootdown (`cmd 67`) invalidates *every* entry naming the bumped cell, i.e.
 several slots in one cycle, and one memory write port cannot do that -- which
@@ -371,7 +462,8 @@ is exactly what `Design.emit` refused when this was a memory (D38/CE10). Same
 shape as EXT-3's `poison` (and EXT-6's retired `cap_ival`, before §17 moved
 the inbox into memory): state written at many indices at once is a register
 bitmap. -/
-def tlb_vld : Expr 8 := .reg 8 "tlb_vld"
+def tlbVldReg : Reg 8 := ⟨"tlb_vld"⟩
+def tlb_vld : Expr 8 := tlbVldReg.rd
 /-- Valid bit of entry `i` at a *static* index (the lookup is associative). -/
 def tlbVldBit (i : Fin TLBN) : Expr 1 :=
   .eq (.slice (.shr tlb_vld (.lit (BitVec.ofNat 8 i.val))) 0 1) (.lit (BitVec.ofNat 1 1))
@@ -393,8 +485,8 @@ lands with its first consumer (EXT-6/EXT-7), not before. -/
 debug path (which reads registers, not memories) can see the executing
 domain. Nothing in the datapath reads it — the datapath uses `domCur`, which
 does not lag. -/
-def cur_dom : Expr 8 := .reg 8 "cur_dom"
-
+def curDomReg : Reg 8 := ⟨"cur_dom"⟩
+def cur_dom : Expr 8 := curDomReg.rd
 /-! ### EXT-3 — fail-stop / poison (`EXTEND_SPEC.md` increment 3)
 
 The architected disposition every later engine feeds. §3's epoch machine
@@ -423,8 +515,8 @@ Stopping the core (rather than switching to another thread) is the
 fail-*stop* reading of Appendix F: the disposition is "this machine has
 lost the right to proceed", and quietly running someone else would hide it.
 The host sees `running = 0` and the `poison` bitmap says which slot. -/
-def poison : Expr 32 := .reg 32 "poison"
-
+def poisonReg : Reg 32 := ⟨"poison"⟩
+def poison : Expr 32 := poisonReg.rd
 /-! ### EXT-5 — gates (`EXTEND_SPEC.md` increment 5; ISA §9, Law 1)
 
 A gate is the *only* way a thread changes domain. That is the whole point,
@@ -452,11 +544,26 @@ but mini's decoder already uses 0xa0–0xba for ALU-immediate ops, so mini's
 map diverges from the ISA in that whole block *before* this increment. Gates
 take **0x60/0x61**, which are free in mini. Recorded here rather than
 pretending the encodings match. -/
-def in_gate : Expr 32 := .reg 32 "in_gate"
+def inGateReg : Reg 32 := ⟨"in_gate"⟩
+def in_gate : Expr 32 := inGateReg.rd
 /-- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc, slot, count. -/
-def gret_noop_pc  : Expr 64 := .reg 64 "gret_noop_pc"
-def gret_noop_cur : Expr 5  := .reg 5  "gret_noop_cur"
-def gret_noop_cnt : Expr 32 := .reg 32 "gret_noop_cnt"
+def gretNoopPcReg  : Reg 64 := ⟨"gret_noop_pc"⟩
+def gretNoopCurReg : Reg 5  := ⟨"gret_noop_cur"⟩
+def gretNoopCntReg : Reg 32 := ⟨"gret_noop_cnt"⟩
+def gret_noop_pc  : Expr 64 := gretNoopPcReg.rd
+def gret_noop_cur : Expr 5  := gretNoopCurReg.rd
+def gret_noop_cnt : Expr 32 := gretNoopCntReg.rd
+-- Seam probe: bit i set when slot i took a HWTRAP while in a gate since its
+-- last gate_call. `gret_noop_trapped` latches that bit for the failing slot at
+-- the first no-op GATE_RETURN -- answers "was the failing slot resumed from a
+-- trap mid-gate?" (the trap-server↔fabric seam hypothesis) in one readback.
+def gateHadTrapReg     : Reg 32 := ⟨"gate_had_trap"⟩
+def gretNoopTrappedReg : Reg 1  := ⟨"gret_noop_trapped"⟩
+def gate_had_trap      : Expr 32 := gateHadTrapReg.rd
+def gret_noop_trapped  : Expr 1  := gretNoopTrappedReg.rd
+/-- bit `cur` of `gate_had_trap`. -/
+def curGateHadTrap : Expr 1 :=
+  .eq (.slice (.shr gate_had_trap (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
 
 /-- Bit `cur` of `in_gate`: this thread is inside a gate. -/
 def curInGate : Expr 1 :=
@@ -512,10 +619,11 @@ racing the same entry could both observe it free. The selftests are
 single-core; the cross-core story arrives with the D-cache's rung-5
 invalidation work, and this note is here so the code does not imply
 otherwise. -/
-def cap_tbl_base : Expr 32 := .reg 32 "cap_tbl_base"
+def capTblBaseReg : Reg 32 := ⟨"cap_tbl_base"⟩
+def cap_tbl_base : Expr 32 := capTblBaseReg.rd
 /-- Latched flags word of the entry being walked (D19 sync-read style). -/
-def cap_fl_q : Expr 64 := .reg 64 "cap_fl_q"
-
+def capFlQReg : Reg 64 := ⟨"cap_fl_q"⟩
+def cap_fl_q : Expr 64 := capFlQReg.rd
 /-! ### EXT-7 — VMA / translation (`EXTEND_SPEC.md` #7; ISA §15)
 
 §15 line 160: loads and stores walk **one** VMA tree into a **domain-tagged
@@ -538,8 +646,10 @@ this increment is the one worth having:
 `mmu_en = 0` (reset) is **bypass**: `ddrEa` is the identity computation of
 every previous increment, bit for bit, so NetBSD is untouched. That is
 stage A — prove the mechanism, risk nothing. -/
-def mmu_en : Expr 1 := .reg 1 "mmu_en"
-def tlb_sel : Expr 3 := .reg 3 "tlb_sel"
+def mmuEnReg : Reg 1 := ⟨"mmu_en"⟩
+def mmu_en : Expr 1 := mmuEnReg.rd
+def tlbSelReg : Reg 3 := ⟨"tlb_sel"⟩
+def tlb_sel : Expr 3 := tlbSelReg.rd
 def CMD_MMU_EN   : Nat := 63
 def CMD_TLB_SEL  : Nat := 64
 def CMD_TLB_VPN  : Nat := 65
@@ -570,32 +680,56 @@ cycle, and a read-modify-write from the host could interleave with a
 `CLONE` that adds one. -/
 def CMD_POISON : Nat := 60
 
-def sleep_scan: Expr 5  := .reg 5  "sleep_scan"
-def next_ready: Expr 5  := .reg 5  "next_ready"
-def free_slot : Expr 5  := .reg 5  "free_slot"
-def has_free  : Expr 1  := .reg 1  "has_free"
-def clone_dst : Expr 5  := .reg 5  "clone_dst"
-def clone_tid : Expr 5  := .reg 5  "clone_tid"
-def mul_acc   : Expr 128:= .reg 128 "mul_acc"
-def mul_aw    : Expr 128:= .reg 128 "mul_aw"
-def mul_b     : Expr 64 := .reg 64 "mul_b"
-def mul_kind  : Expr 2  := .reg 2  "mul_kind"
-def div_rem   : Expr 64 := .reg 64 "div_rem"
-def div_quo   : Expr 64 := .reg 64 "div_quo"
-def div_d     : Expr 64 := .reg 64 "div_d"
-def div_cnt   : Expr 7  := .reg 7  "div_cnt"
-def div_isrem : Expr 1  := .reg 1  "div_isrem"
-def div_negq  : Expr 1  := .reg 1  "div_negq"
-def div_negr  : Expr 1  := .reg 1  "div_negr"
-def zeroing   : Expr 1  := .reg 1  "zeroing"
-def zctr      : Expr 10 := .reg 10 "zctr"
-def reg_sel   : Expr 5  := .reg 5  "reg_sel"
-def reg_wsel  : Expr 5  := .reg 5  "reg_wsel"
-def reg_wlo   : Expr 32 := .reg 32 "reg_wlo"
-def dmem_addr_j : Expr 32 := .reg 32 "dmem_addr_j"
-def dmem_lo_j   : Expr 32 := .reg 32 "dmem_lo_j"
-def reg_rd    : Expr 64 := .reg 64 "reg_rd"
-
+def sleepScanReg : Reg 5 := ⟨"sleep_scan"⟩
+def sleep_scan : Expr 5 := sleepScanReg.rd
+def nextReadyReg : Reg 5 := ⟨"next_ready"⟩
+def next_ready : Expr 5 := nextReadyReg.rd
+def freeSlotReg : Reg 5 := ⟨"free_slot"⟩
+def free_slot : Expr 5 := freeSlotReg.rd
+def hasFreeReg : Reg 1 := ⟨"has_free"⟩
+def has_free : Expr 1 := hasFreeReg.rd
+def cloneDstReg : Reg 5 := ⟨"clone_dst"⟩
+def clone_dst : Expr 5 := cloneDstReg.rd
+def cloneTidReg : Reg 5 := ⟨"clone_tid"⟩
+def clone_tid : Expr 5 := cloneTidReg.rd
+def mulAccReg : Reg 128 := ⟨"mul_acc"⟩
+def mul_acc : Expr 128 := mulAccReg.rd
+def mulAwReg : Reg 128 := ⟨"mul_aw"⟩
+def mul_aw : Expr 128 := mulAwReg.rd
+def mulBReg : Reg 64 := ⟨"mul_b"⟩
+def mul_b : Expr 64 := mulBReg.rd
+def mulKindReg : Reg 2 := ⟨"mul_kind"⟩
+def mul_kind : Expr 2 := mulKindReg.rd
+def divRemReg : Reg 64 := ⟨"div_rem"⟩
+def div_rem : Expr 64 := divRemReg.rd
+def divQuoReg : Reg 64 := ⟨"div_quo"⟩
+def div_quo : Expr 64 := divQuoReg.rd
+def divDReg : Reg 64 := ⟨"div_d"⟩
+def div_d : Expr 64 := divDReg.rd
+def divCntReg : Reg 7 := ⟨"div_cnt"⟩
+def div_cnt : Expr 7 := divCntReg.rd
+def divIsremReg : Reg 1 := ⟨"div_isrem"⟩
+def div_isrem : Expr 1 := divIsremReg.rd
+def divNegqReg : Reg 1 := ⟨"div_negq"⟩
+def div_negq : Expr 1 := divNegqReg.rd
+def divNegrReg : Reg 1 := ⟨"div_negr"⟩
+def div_negr : Expr 1 := divNegrReg.rd
+def zeroingReg : Reg 1 := ⟨"zeroing"⟩
+def zeroing : Expr 1 := zeroingReg.rd
+def zctrReg : Reg 10 := ⟨"zctr"⟩
+def zctr : Expr 10 := zctrReg.rd
+def regSelReg : Reg 5 := ⟨"reg_sel"⟩
+def reg_sel : Expr 5 := regSelReg.rd
+def regWselReg : Reg 5 := ⟨"reg_wsel"⟩
+def reg_wsel : Expr 5 := regWselReg.rd
+def regWloReg : Reg 32 := ⟨"reg_wlo"⟩
+def reg_wlo : Expr 32 := regWloReg.rd
+def dmemAddrJReg : Reg 32 := ⟨"dmem_addr_j"⟩
+def dmem_addr_j : Expr 32 := dmemAddrJReg.rd
+def dmemLoJReg : Reg 32 := ⟨"dmem_lo_j"⟩
+def dmem_lo_j : Expr 32 := dmemLoJReg.rd
+def regRdReg : Reg 64 := ⟨"reg_rd"⟩
+def reg_rd : Expr 64 := regRdReg.rd
 /-! ## The thread table (D20)
 
 `tstate` and `tfutex` stay **per-element registers**; `tpc`, `tsleep`,
@@ -616,12 +750,14 @@ sweep (D20.3). µVerilog's async read is distributed RAM, which has no
 cross-port collision hazard: the write lands on the clock edge, the read
 sees the old contents, exactly as `Design.cycle` says. -/
 
-def tstate  (i : Fin NT) : Expr 2  := .reg 2  s!"tstate{i.val}"
+def tstateRegs : RegArray 2 NT := ⟨"tstate"⟩
+
+def tstate  (i : Fin NT) : Expr 2  := tstateRegs.rd i
 
 /-- `tpc[idx]` — async read of the thread-PC memory. -/
-def tpcRd (idx : Expr 5) : Expr 64 := .memRead 64 "tpc" idx
+def tpcRd (idx : Expr 5) : Expr 64 := tpcBank.rd idx
 /-- `tsleep[idx]` — async read of the sleep-countdown memory. -/
-def tsleepRd (idx : Expr 5) : Expr 64 := .memRead 64 "tsleep" idx
+def tsleepRd (idx : Expr 5) : Expr 64 := tsleepBank.rd idx
 
 /-! ## Opcode mnemonics (PLATONIC W1.5)
 
@@ -1270,7 +1406,7 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- S_EX UART_RX load
   , (exG (.and is_load (.and (.eq mem_ea_l (L64 UART_RX_ADDR)) (.not (.eq rdf (L5 0))))),
        cat55 cur rdf,
-       .or (.zext (.memRead 8 "rx_mem" (.slice rx_rptr 0 8)) 64)
+       .or (.zext (rxBank.rd (.slice rx_rptr 0 8)) 64)
            (.mux (.not (.eq rx_rptr rx_wptr)) (.shl (L64 1) (L64 8)) (L64 0)))
   -- S_L1 load writeback
   , (.and fsmEn (.and (.eq st (L5 S_L1)) (.and (.not mem_is_store) (.not (.eq ld_rd_q (L5 0))))),
@@ -1356,11 +1492,18 @@ retired, not the one about to be fetched, even though `stepPc` writes `pc` in
 the same `.seq`. -/
 def TRACE_AW : Nat := 4
 
-def trace_wp : Expr 4 := .reg 4 "trace_wp"
-def trace_sel : Expr 4 := .reg 4 "trace_sel"
-def trace_hit : Expr 1 := .reg 1 "trace_hit"
-def trace_in_pc : Expr 64 := .reg 64 "trace_in_pc"
-def trace_in_wb : Expr 64 := .reg 64 "trace_in_wb"
+def traceWpReg   : Reg 4  := ⟨"trace_wp"⟩
+def traceSelReg  : Reg 4  := ⟨"trace_sel"⟩
+def traceRdPcReg : Reg 64 := ⟨"trace_rd_pc"⟩
+def traceRdWbReg : Reg 64 := ⟨"trace_rd_wb"⟩
+def traceHitReg  : Reg 1  := ⟨"trace_hit"⟩
+def traceInPcReg : Reg 64 := ⟨"trace_in_pc"⟩
+def traceInWbReg : Reg 64 := ⟨"trace_in_wb"⟩
+def trace_wp : Expr 4 := traceWpReg.rd
+def trace_sel : Expr 4 := traceSelReg.rd
+def trace_hit : Expr 1 := traceHitReg.rd
+def trace_in_pc : Expr 64 := traceInPcReg.rd
+def trace_in_wb : Expr 64 := traceInWbReg.rd
 def L4 (n : Nat) : Expr 4 := .lit (BitVec.ofNat 4 n)
 
 /-- `{op[7:0], 24'b0, pc[31:0]}` -- one word, so the ring costs two memories
@@ -1369,10 +1512,10 @@ def traceWord : Expr 64 :=
   .or (.shl (.zext op 64) (L64 56)) (.zext (.slice pc 0 32) 64)
 
 def retireInc : Act :=
-  .seq (.write 32 "retire" (.add retire (.lit (BitVec.ofNat 32 1)))) <|
-  .seq (.write 1 "trace_hit" (L1 1)) <|
-  .seq (.write 64 "trace_in_pc" traceWord)
-       (.write 64 "trace_in_wb" (.mux rfWeE rfWdE (L64 0)))
+  .seq (retireReg.set (.add retire (.lit (BitVec.ofNat 32 1)))) <|
+  .seq (traceHitReg.set (L1 1)) <|
+  .seq (traceInPcReg.set traceWord)
+       (traceInWbReg.set (.mux rfWeE rfWdE (L64 0)))
 
 /-! ## Rules -/
 
@@ -1380,8 +1523,8 @@ def retireInc : Act :=
 def encRule : Rule :=
   -- **Coupling 2.** `cur + 1 + nr_off` is an index into the rotated window and
   -- must come back mod `NT`. At `NT = 32` the 5-bit add did that for free.
-  ⟨"enc", .seq (.write 5 "next_ready" (.mux nr_any (tidWrap (.add (.add cur (L5 1)) nr_off)) cur))
-    (.seq (.write 5 "free_slot" fs_off) (.write 1 "has_free" hf_c))⟩
+  ⟨"enc", .seq (nextReadyReg.set (.mux nr_any (tidWrap (.add (.add cur (L5 1)) nr_off)) cur))
+    (.seq (freeSlotReg.set fs_off) (hasFreeReg.set hf_c))⟩
 
 /-- (2) serialized sleep scan.
 
@@ -1400,30 +1543,30 @@ def sleepScanRule : Rule :=
      let scanHit : Expr 1 :=
        priTree ((List.finRange NT).map
          (fun i => (.eq sleep_scan (L5 i.val), .eq (tstate i) (L2 2)))) (L1 0)
-     .seq (.write 5 "sleep_scan" (.add sleep_scan (L5 1)))
+     .seq (sleepScanReg.set (.add sleep_scan (L5 1)))
       (.seq
         ((List.finRange NT).foldr (fun i acc =>
           .seq (.ite (.and (.eq sleep_scan (L5 i.val)) (.eq (tstate i) (L2 2)))
             (.ite (.not (.ult (L64 1) tsl_s))       -- tsleep[sleep_scan] <= 1
-              (.write 2 s!"tstate{i.val}" (L2 1)) .skip)
+              (tstateRegs.set i (L2 1)) .skip)
             .skip) acc) .skip)
         (.ite (.and scanHit (.ult (L64 1) tsl_s))
-          (.memWrite 5 64 "tsleep" 0 sleep_scan (.sub tsl_s (L64 1))) .skip)))
+          (tsleepBank.write 0 sleep_scan (.sub tsl_s (L64 1))) .skip)))
     .skip⟩
 
 /-- (3) latches: dmem_rd/reg_rd/uart_byte from pre-cycle state, plus the
 dmem sync-write block `if (dmem_we) dmem[dmem_a]<=dmem_wd` (pre-cycle regs). -/
 def latchRule : Rule :=
   ⟨"latches",
-    .seq (.ite dmem_we (.memWrite 9 64 "dmem" 0 dmem_a dmem_wd) .skip)
-      (.seq (.write 64 "dmem_rd" (.memRead 64 "dmem" dmem_a))
-        (.seq (.write 64 "reg_rd" (.memRead 64 "rf" (cat55 cur reg_sel)))
-          (.seq (.write 8 "uart_byte" (.memRead 8 "uart_mem" uart_ridx))
+    .seq (.ite dmem_we (dmemBank.write 0 dmem_a dmem_wd) .skip)
+      (.seq (dmemRdReg.set (dmemBank.rd dmem_a))
+        (.seq (regRdReg.set (rfBank.rd (cat55 cur reg_sel)))
+          (.seq (uartByteReg.set (uartBank.rd uart_ridx))
             -- EXT-8: the trace readback latches, alongside `reg_rd` and for
             -- the same reason -- a registered read site, so the host sees a
             -- stable word and the memory is not read combinationally.
-            (.seq (.write 64 "trace_rd_pc" (.memRead 64 "trace_pc" trace_sel))
-                  (.write 64 "trace_rd_wb" (.memRead 64 "trace_wb" trace_sel))))))⟩
+            (.seq (traceRdPcReg.set (tracePcBank.rd trace_sel))
+                  (traceRdWbReg.set (traceWbBank.rd trace_sel))))))⟩
 
 /-- EXT-8: the commit-trace ring's single write site.
 
@@ -1433,31 +1576,33 @@ this rule sits in the chain relative to the commit sites that set them. One
 def traceRule : Rule :=
   ⟨"trace_ring",
     .ite trace_hit
-      (.seq (.memWrite 4 64 "trace_pc" 0 trace_wp trace_in_pc)
-        (.seq (.memWrite 4 64 "trace_wb" 0 trace_wp trace_in_wb)
-              (.write 4 "trace_wp" (.add trace_wp (L4 1)))))
+      (.seq (tracePcBank.write 0 trace_wp trace_in_pc)
+        (.seq (traceWbBank.write 0 trace_wp trace_in_wb)
+              (traceWpReg.set (.add trace_wp (L4 1)))))
       .skip⟩
 
 /-- (4) pulse defaults. -/
 def pulseDefaultsRule : Rule :=
   ⟨"pulse_defaults",
-    [("dmem_we",1),("core_rd",1),("core_wr",1),("jtag_wr",1),("jtag_rd",1),("gp_rd",1),("gp_wr",1),
-      ("lr_req",1),("sc_req",1),
-      -- EXT-8: `trace_hit` is a pulse like the rest. Without the default it
-      -- latches high on the first retire and the ring then advances every
-      -- cycle forever, overwriting the very history it exists to keep.
-      ("trace_hit",1)].foldr
-      (fun (nm,_) acc => .seq (.write 1 nm (L1 0)) acc) .skip⟩
+    actSeq
+      [ dmemWeReg.set (L1 0), coreRdReg.set (L1 0), coreWrReg.set (L1 0)
+      , jtagWrReg.set (L1 0), jtagRdReg.set (L1 0)
+      , gpRdReg.set (L1 0), gpWrReg.set (L1 0)
+      , lrReqReg.set (L1 0), scReqReg.set (L1 0)
+        -- EXT-8: `trace_hit` is a pulse like the rest. Without the default it
+        -- latches high on the first retire and the ring then advances every
+        -- cycle forever, overwriting the very history it exists to keep.
+      , traceHitReg.set (L1 0) ]⟩
 
 /-- (5) zeroing engine (rf write is in the funnel; here dmem + counters). -/
 def zeroingRule : Rule :=
   ⟨"zeroing", .ite zeroing
     (.seq (.ite (.ult zctr (.lit (BitVec.ofNat 10 512)))
-            (.seq (.write 1 "dmem_we" (L1 1))
-              (.seq (.write 9 "dmem_a" (.slice zctr 0 9)) (.write 64 "dmem_wd" (L64 0)))) .skip)
+            (.seq (dmemWeReg.set (L1 1))
+              (.seq (dmemAReg.set (.slice zctr 0 9)) (dmemWdReg.set (L64 0)))) .skip)
       (.ite (.eq zctr (.lit (BitVec.ofNat 10 (32*NT-1))))
-        (.write 1 "zeroing" (L1 0))
-        (.write 10 "zctr" (.add zctr (.lit (BitVec.ofNat 10 1))))))
+        (zeroingReg.set (L1 0))
+        (zctrReg.set (.add zctr (.lit (BitVec.ofNat 10 1))))))
     .skip⟩
 
 /-- (6) cmd (wr_pulse) surface — rf write (idx 52) is in the funnel. -/
@@ -1468,74 +1613,74 @@ where
   L9 (n : Nat) : Expr 9 := .lit (BitVec.ofNat 9 n)
   L32 (n : Nat) : Expr 32 := .lit (BitVec.ofNat 32 n)
   cmd13reset : Act :=
-    .seq (.write 64 "pc" (L64 TEXT_BASE)) <|
-    .seq (.write 32 "retire" (L32 0)) <|
-    .seq (.write 1 "halted" (L1 0)) <|
-    .seq (.write 1 "running" (L1 0)) <|
-    .seq (.write 5 "st" (L5 S_IDLE)) <|
-    .seq (.write 9 "uart_wptr" (L9 0)) <|
-    .seq (.write 9 "rx_rptr" (L9 0)) <|
-    .seq (.write 9 "rx_wptr" (L9 0)) <|
-    .seq (.write 1 "trap_active" (L1 0)) <|
-    .seq (.write 5 "cur" (L5 0)) <|
-    .seq (.write 1 "lr_valid" (L1 0)) <|
-    .seq (.write 1 "zeroing" (L1 1)) <|
+    .seq (pcReg.set (L64 TEXT_BASE)) <|
+    .seq (retireReg.set (L32 0)) <|
+    .seq (haltedReg.set (L1 0)) <|
+    .seq (runningReg.set (L1 0)) <|
+    .seq (stReg.set (L5 S_IDLE)) <|
+    .seq (uartWptrReg.set (L9 0)) <|
+    .seq (rxRptrReg.set (L9 0)) <|
+    .seq (rxWptrReg.set (L9 0)) <|
+    .seq (trapActiveReg.set (L1 0)) <|
+    .seq (curReg.set (L5 0)) <|
+    .seq (lrValidReg.set (L1 0)) <|
+    .seq (zeroingReg.set (L1 1)) <|
     -- D20: `tpc` is a memory, so its 32-entry reset is *swept* by the
     -- zeroing engine (`tpcTriples` entry 1) over the first 32 of the 1024
     -- zeroing cycles instead of being written all at once here. Nothing
     -- reads `tpc` while `zeroing` is high (every read sits under `fsmEn`,
     -- which contains `¬zeroing`), so the transient is unobservable and the
     -- post-sweep contents are identical.
-    .seq (.write 10 "zctr" (.lit (BitVec.ofNat 10 0)))
+    .seq (zctrReg.set (.lit (BitVec.ofNat 10 0)))
       ((List.finRange NT).foldr (fun i acc =>
-        .seq (.write 2 s!"tstate{i.val}" (if i.val = 0 then L2 1 else L2 0)) acc) .skip)
+        .seq (tstateRegs.set i (if i.val = 0 then L2 1 else L2 0)) acc) .skip)
   cmdBody : Act :=
-    .seq (.ite (ci 14) (.write 5 "reg_sel" (.slice cmdData 0 5)) .skip) <|
-    .seq (.ite (ci 15) (.write 32 "dmem_addr_j" cmdData) .skip) <|
-    .seq (.ite (ci 16) (.write 32 "dmem_lo_j" cmdData) .skip) <|
+    .seq (.ite (ci 14) (regSelReg.set (.slice cmdData 0 5)) .skip) <|
+    .seq (.ite (ci 15) (dmemAddrJReg.set cmdData) .skip) <|
+    .seq (.ite (ci 16) (dmemLoJReg.set cmdData) .skip) <|
     .seq (.ite (ci 17)
-      (.seq (.write 1 "dmem_we" (L1 1))
-        (.seq (.write 9 "dmem_a" (.slice dmem_addr_j 0 9))
-              (.write 64 "dmem_wd" (.or (.shl (.zext cmdData 64) (L64 32)) (.zext dmem_lo_j 64))))) .skip) <|
-    .seq (.ite (ci 18) (.write 8 "uart_ridx" (.slice cmdData 0 8)) .skip) <|
+      (.seq (dmemWeReg.set (L1 1))
+        (.seq (dmemAReg.set (.slice dmem_addr_j 0 9))
+              (dmemWdReg.set (.or (.shl (.zext cmdData 64) (L64 32)) (.zext dmem_lo_j 64))))) .skip) <|
+    .seq (.ite (ci 18) (uartRidxReg.set (.slice cmdData 0 8)) .skip) <|
     .seq (.ite (ci 19)
-      (.seq (.memWrite 8 8 "rx_mem" 0 (.slice rx_wptr 0 8) (.slice cmdData 0 8))
-            (.write 9 "rx_wptr" (.add rx_wptr (L9 1)))) .skip) <|
-    .seq (.ite (ci 40) (.write 32 "ddr_addr_j" cmdData) .skip) <|
-    .seq (.ite (ci 41) (.write 32 "ddr_lo_j" cmdData) .skip) <|
+      (.seq (rxBank.write 0 (.slice rx_wptr 0 8) (.slice cmdData 0 8))
+            (rxWptrReg.set (.add rx_wptr (L9 1)))) .skip) <|
+    .seq (.ite (ci 40) (ddrAddrJReg.set cmdData) .skip) <|
+    .seq (.ite (ci 41) (ddrLoJReg.set cmdData) .skip) <|
     .seq (.ite (ci 42)
-      (.seq (.write 1 "jtag_wr" (L1 1))
-        (.seq (.write 64 "jtag_wdata" (.or (.shl (.zext cmdData 64) (L64 32)) (.zext ddr_lo_j 64)))
-              (.write 32 "ddr_addr_j" (.add ddr_addr_j (L32 8))))) .skip) <|
-    .seq (.ite (ci 43) (.write 1 "jtag_rd" (L1 1)) .skip) <|
+      (.seq (jtagWrReg.set (L1 1))
+        (.seq (jtagWdataReg.set (.or (.shl (.zext cmdData 64) (L64 32)) (.zext ddr_lo_j 64)))
+              (ddrAddrJReg.set (.add ddr_addr_j (L32 8))))) .skip) <|
+    .seq (.ite (ci 43) (jtagRdReg.set (L1 1)) .skip) <|
     -- EXT-8: select a commit-trace ring entry to read back. The ring itself
     -- is host-readable only; nothing in the core reads it, so a wrong select
     -- cannot perturb execution -- which is what makes it safe to leave armed
     -- during a real boot.
-    .seq (.ite (ci CMD_TRACE_SEL) (.write 4 "trace_sel" (.slice cmdData 0 4)) .skip) <|
-    .seq (.ite (ci 50) (.write 5 "reg_wsel" (.slice cmdData 0 5)) .skip) <|
-    .seq (.ite (ci 51) (.write 32 "reg_wlo" cmdData) .skip) <|
-    .seq (.ite (ci 53) (.write 64 "pc" (.zext cmdData 64)) .skip) <|
+    .seq (.ite (ci CMD_TRACE_SEL) (traceSelReg.set (.slice cmdData 0 4)) .skip) <|
+    .seq (.ite (ci 50) (regWselReg.set (.slice cmdData 0 5)) .skip) <|
+    .seq (.ite (ci 51) (regWloReg.set cmdData) .skip) <|
+    .seq (.ite (ci 53) (pcReg.set (.zext cmdData 64)) .skip) <|
     .seq (.ite (.and (ci 54) (.eq (.slice cmdData 0 1) (L1 1)))
-      (.seq (.write 1 "trap_active" (L1 0))
+      (.seq (trapActiveReg.set (L1 0))
         -- EXT-8: `retireInc`, not a bare retire bump. A host-serviced trap
         -- IS a committed instruction, and routing it here keeps the invariant
         -- "retire incremented <-> a trace entry was pushed" true without
         -- exception -- which is what lets the ISS mirror the ring at ONE site
         -- instead of at the ~25 places it counts a retire.
         (.seq retireInc
-              (.write 5 "st" (L5 S_F0)))) .skip) <|
-    .seq (.ite (ci 55) (.write 1 "bus_req" (.slice cmdData 0 1)) .skip) <|
+              (stReg.set (L5 S_F0)))) .skip) <|
+    .seq (.ite (ci 55) (busReqReg.set (.slice cmdData 0 1)) .skip) <|
     -- EXT-1: the quantum reload value (0 = preemption disabled). `qctr` is
     -- armed from the same word in `quantumRule`, which owns that register.
-    .seq (.ite (ci CMD_QUANTUM) (.write 32 "quantum" cmdData) .skip) <|
+    .seq (.ite (ci CMD_QUANTUM) (quantumReg.set cmdData) .skip) <|
     -- EXT-3: the poison bitmap, whole-word (see `CMD_POISON`).
-    .seq (.ite (ci CMD_POISON) (.write 32 "poison" cmdData) .skip) <|
+    .seq (.ite (ci CMD_POISON) (poisonReg.set cmdData) .skip) <|
     -- EXT-7: MMU enable and the TLB entry selector.
-    .seq (.ite (ci CMD_MMU_EN) (.write 1 "mmu_en" (.slice cmdData 0 1)) .skip) <|
-    .seq (.ite (ci CMD_GATE_TBL) (.write 32 "gate_tbl_base" cmdData) .skip) <|
-    .seq (.ite (ci CMD_CAP_TBL) (.write 32 "cap_tbl_base" cmdData) .skip) <|
-    .seq (.ite (ci CMD_TLB_SEL) (.write 3 "tlb_sel" (.slice cmdData 0 3)) .skip) <|
+    .seq (.ite (ci CMD_MMU_EN) (mmuEnReg.set (.slice cmdData 0 1)) .skip) <|
+    .seq (.ite (ci CMD_GATE_TBL) (gateTblBaseReg.set cmdData) .skip) <|
+    .seq (.ite (ci CMD_CAP_TBL) (capTblBaseReg.set cmdData) .skip) <|
+    .seq (.ite (ci CMD_TLB_SEL) (tlbSelReg.set (.slice cmdData 0 3)) .skip) <|
     -- EXT-7 stage B: per-entry VMA fill. `cmd 65` = base + domain,
     -- `cmd 66` = limit (and VALIDATES, so a half-written VMA is never live),
     -- `cmd 68` = physical base + the VMA's epoch cell.
@@ -1546,24 +1691,24 @@ where
               -- base is cmd_data[23:0]; [31:24] carries the domain, so the
               -- stored base must be MASKED or the range compare sees the
               -- domain byte in the high bits.
-              (.seq (.write 32 s!"tlb_base{i.val}" (.zext (.slice cmdData 0 24) 32))
-                    (.write 8 s!"tlb_dom{i.val}" (.slice cmdData 24 8))) .skip
+              (.seq (tlbBaseRegs.set i (.zext (.slice cmdData 0 24) 32))
+                    (tlbDomRegs.set i (.slice cmdData 24 8))) .skip
           , .ite (.and (ci CMD_TLB_PPN) sel)
-              (.write 32 s!"tlb_limit{i.val}" cmdData) .skip
+              (tlbLimitRegs.set i cmdData) .skip
           , .ite (.and (ci CMD_TLB_PHYS) sel)
               -- cmd_data[23:0] is the DELTA (phys - base), computed by the
               -- host; [31:24] carries the VMA's epoch cell.
-              (.seq (.write 32 s!"tlb_phys{i.val}" (.zext (.slice cmdData 0 24) 32))
-                    (.write 8 s!"tlb_cell{i.val}" (.slice cmdData 24 8))) .skip ]))) <|
+              (.seq (tlbPhysRegs.set i (.zext (.slice cmdData 0 24) 32))
+                    (tlbCellRegs.set i (.slice cmdData 24 8))) .skip ]))) <|
     -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
       (.ite (ci 13)
         (.seq (.ite (.eq (.slice cmdData 0 1) (L1 1)) cmd13reset .skip)
               (.ite (.eq (.slice cmdData 1 1) (L1 1))
-                (.seq (.write 1 "running" (L1 1)) (.write 5 "st" (L5 S_F0))) .skip)) .skip)
+                (.seq (runningReg.set (L1 1)) (stReg.set (L5 S_F0))) .skip)) .skip)
 
 /-- (7) ddr_rd_l latch. -/
 def ddrRdLRule : Rule :=
-  ⟨"ddr_rd_l", .ite (.and mDone (.not hp_core_owns)) (.write 64 "ddr_rd_l" mRdata) .skip⟩
+  ⟨"ddr_rd_l", .ite (.and mDone (.not hp_core_owns)) (ddrRdLReg.set mRdata) .skip⟩
 
 /-! ### FSM rules (rf writes live in the funnel) -/
 
@@ -1720,8 +1865,8 @@ def sexEa : Expr 64 :=
     (.shl (.zext (.slice rdval 3 61) 64) (.lit (BitVec.ofNat 64 3)))
     a
 
-def goF0 : Act := .write 5 "st" (L5 S_F0)
-def stepPc : Act := .write 64 "pc" pc8
+def goF0 : Act := stReg.set (L5 S_F0)
+def stepPc : Act := pcReg.set pc8
 
 /-- Cons for an if/else-if chain kept as *data*, so `actPriTree` can
 re-associate it into a balanced dispatch instead of a linear one. -/
@@ -1733,10 +1878,10 @@ def gcons (g : Expr 1) (a : Act) (rest : List (Expr 1 × Act)) : List (Expr 1 ×
 /-- `pc <= tpc[idx]`. **D20**: one async memory read instead of a balanced
 32-way select over 32 registers. Same function of the same pre-cycle state
 (D9: `memRead` evaluates against `σ`). -/
-def setPcFromTpc (idx : Expr 5) : Act := .write 64 "pc" (tpcRd idx)
+def setPcFromTpc (idx : Expr 5) : Act := pcReg.set (tpcRd idx)
 def tstateDynWrite (v : Expr 2) (idx : Expr 5) : Act :=
   (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.eq idx (L5 i.val)) (.write 2 s!"tstate{i.val}" v) .skip) acc) .skip
+    .seq (.ite (.eq idx (L5 i.val)) (tstateRegs.set i v) .skip) acc) .skip
 /-- dynamic tstate[idx]==v test as a (balanced) mux chain. -/
 def tstateEq (idx : Expr 5) (v : Expr 2) : Expr 1 :=
   priTree ((List.finRange NT).map (fun i => (.eq idx (L5 i.val), .eq (tstate i) v))) (L1 0)
@@ -1776,7 +1921,7 @@ fit" and EXTEND_SPEC EXT-4. -/
 def wakeAllApply : Act :=
   (List.finRange NT).foldr (fun i acc =>
     .seq (.ite (.and wakeEn (.eq (tstate i) (L2 3)))
-           (.write 2 s!"tstate{i.val}" (L2 1)) .skip) acc) .skip
+           (tstateRegs.set i (L2 1)) .skip) acc) .skip
 
 /-- `S_F0` — the instruction boundary, and (EXT-1) the preemption point.
 
@@ -1796,29 +1941,29 @@ deviations).
 thread's instruction on the next cycle: a preemption costs exactly one
 cycle and issues no bus transaction from the old context. -/
 def s_f0 : Expr 1 × Act := stArm S_F0
-  (.ite bus_req (.write 5 "st" (L5 S_PAUSE))
+  (.ite bus_req (stReg.set (L5 S_PAUSE))
     -- EXT-3: fail-stop, checked BEFORE the preemption point and before the
     -- fetch. Nothing has been fetched at `S_F0` and `bus_req` is already
     -- excluded above, so the core stops with no transaction outstanding
     -- and `pc` still addressing the un-executed instruction.
-    (.ite curPoisoned (.write 1 "running" (L1 0))
+    (.ite curPoisoned (runningReg.set (L1 0))
     (.ite preemptFire
-      (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready))
+      (.seq (curReg.set next_ready) (setPcFromTpc next_ready))
       -- EXT-9: look the line up instead of issuing a fetch. The two writes
       -- below are the D19 sync-read sites for `ic_tag`/`ic_data`; `S_IC`
       -- consumes them next cycle. A miss from there issues exactly the
       -- transaction this arm used to issue, one cycle later.
-      (.seq (.write 42 "ic_tag_q" (.memRead 42 "ic_tag" ic_idx))
-        (.seq (.write 64 "ic_data_q" (.memRead 64 "ic_data" ic_idx))
-          (.write 5 "st" (L5 S_IC)))))))
+      (.seq (icTagQReg.set (icTagBank.rd ic_idx))
+        (.seq (icDataQReg.set (icDataBank.rd ic_idx))
+          (stReg.set (L5 S_IC)))))))
 
 /-- `S_GC0`: the entry PC has arrived; latch it and ask for the domain word
 at +8. -/
 def s_gc0 : Expr 1 × Act := stArm S_GC0
   (.ite mDone
-    (.seq (.write 64 "gate_ent_q" mRdata)
-      (.seq (.write 32 "core_addr" (.add core_addr (.lit (BitVec.ofNat 32 8))))
-        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_GC1)))))
+    (.seq (gateEntQReg.set mRdata)
+      (.seq (coreAddrReg.set (.add core_addr (.lit (BitVec.ofNat 32 8))))
+        (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_GC1)))))
     .skip)
 
 /-- `S_GC1`: the domain word has arrived. Latch it and commit the
@@ -1826,8 +1971,8 @@ activation -- `pc` to the descriptor's entry, and the funnels (`tdom`,
 `tcont`, `tcdom`, `in_gate`) fire on `gateCommit` this cycle. -/
 def s_gc1 : Expr 1 × Act := stArm S_GC1
   (.ite mDone
-    (.seq (.write 8 "gate_dom_q" (.slice mRdata 0 8))
-      (.seq (.ite gateDescValid (.write 64 "pc" gate_ent_q) stepPc)
+    (.seq (gateDomQReg.set (.slice mRdata 0 8))
+      (.seq (.ite gateDescValid (pcReg.set gate_ent_q) stepPc)
         (.seq retireInc goF0)))
     .skip)
 
@@ -1838,10 +1983,10 @@ funnel wrote all-ones this cycle, and the instruction just steps past. -/
 def s_cs0 : Expr 1 × Act := stArm S_CS0
   (.ite mDone
     (.ite capSendOk
-      (actSeq [.write 64 "cap_fl_q" mRdata,
-               .write 32 "core_addr" (.sub core_addr (.lit (BitVec.ofNat 32 8))),
-               .write 64 "core_wdata" a,
-               .write 1 "core_wr" (L1 1), .write 5 "st" (L5 S_CS1)])
+      (actSeq [capFlQReg.set mRdata,
+               coreAddrReg.set (.sub core_addr (.lit (BitVec.ofNat 32 8))),
+               coreWdataReg.set a,
+               coreWrReg.set (L1 1), stReg.set (L5 S_CS1)])
       (actSeq [stepPc, retireInc, goF0]))
     .skip)
 
@@ -1851,10 +1996,10 @@ step/retire); `sc_pending` is cleared the way the ordinary DDR-store arm
 clears it, so the SC-verdict funnel cannot misread this store. -/
 def s_cs1 : Expr 1 × Act := stArm S_CS1
   (.ite mDone
-    (actSeq [.write 32 "core_addr" (.add core_addr (.lit (BitVec.ofNat 32 8))),
-             .write 64 "core_wdata" (.or cap_fl_q (L64 1)),
-             .write 1 "core_wr" (L1 1), .write 1 "sc_pending" (L1 0),
-             .write 5 "st" (L5 S_DSW)])
+    (actSeq [coreAddrReg.set (.add core_addr (.lit (BitVec.ofNat 32 8))),
+             coreWdataReg.set (.or cap_fl_q (L64 1)),
+             coreWrReg.set (L1 1), scPendingReg.set (L1 0),
+             stReg.set (L5 S_DSW)])
     .skip)
 
 /-- **§17 `S_CR0`**: this domain's flags word has arrived. Valid and
@@ -1863,9 +2008,9 @@ at `+0`. Anything else refuses (rd funnel wrote all-ones) and steps past. -/
 def s_cr0 : Expr 1 × Act := stArm S_CR0
   (.ite mDone
     (.ite capRecvOk
-      (actSeq [.write 64 "cap_fl_q" mRdata,
-               .write 32 "core_addr" (.sub core_addr (.lit (BitVec.ofNat 32 8))),
-               .write 1 "core_rd" (L1 1), .write 5 "st" (L5 S_CR1)])
+      (actSeq [capFlQReg.set mRdata,
+               coreAddrReg.set (.sub core_addr (.lit (BitVec.ofNat 32 8))),
+               coreRdReg.set (L1 1), stReg.set (L5 S_CR1)])
       (actSeq [stepPc, retireInc, goF0]))
     .skip)
 
@@ -1874,16 +2019,16 @@ the funnel this cycle); issue the flags write with `occupied` cleared and
 complete through `S_DSW`. -/
 def s_cr1 : Expr 1 × Act := stArm S_CR1
   (.ite mDone
-    (actSeq [.write 32 "core_addr" (.add core_addr (.lit (BitVec.ofNat 32 8))),
-             .write 64 "core_wdata" (.and cap_fl_q (.not (L64 1))),
-             .write 1 "core_wr" (L1 1), .write 1 "sc_pending" (L1 0),
-             .write 5 "st" (L5 S_DSW)])
+    (actSeq [coreAddrReg.set (.add core_addr (.lit (BitVec.ofNat 32 8))),
+             coreWdataReg.set (.and cap_fl_q (.not (L64 1))),
+             coreWrReg.set (L1 1), scPendingReg.set (L1 0),
+             stReg.set (L5 S_DSW)])
     .skip)
 
 def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
 
 def s_fw : Expr 1 × Act := stArm S_FW
-  (.ite mDone (.seq (.write 64 "ir" mRdata) (.write 5 "st" (L5 S_RD))) .skip)
+  (.ite mDone (.seq (irReg.set mRdata) (stReg.set (L5 S_RD))) .skip)
 
 /-- **EXT-9 `S_IC`**: the tag check, one cycle after `S_F0` latched the
 banks. Hit -> `ir` from the latched data word, straight to `S_RD` (a
@@ -1891,7 +2036,7 @@ banks. Hit -> `ir` from the latched data word, straight to `S_RD` (a
 `S_F0` used to issue; the fill happens in `S_FW` through the funnel. -/
 def s_ic : Expr 1 × Act := stArm S_IC
   (.ite ic_hit
-    (.seq (.write 64 "ir" ic_data_q) (.write 5 "st" (L5 S_RD)))
+    (.seq (irReg.set ic_data_q) (stReg.set (L5 S_RD)))
     -- **EXT-9b: translated fetch.** The miss arm asks the TLB, exactly as
     -- the data path does; the HIT arm above touches no translation at all,
     -- which is the entire reason the cache had to come first. EXTEND_SPEC
@@ -1902,8 +2047,8 @@ def s_ic : Expr 1 × Act := stArm S_IC
     -- With `mmu_en = 0`, `ddrEa pc` reduces to `ddrEaRaw pc`, which is
     -- `ddrPc` word-aligned -- so an unmapped machine fetches exactly what it
     -- fetched before.
-    (.seq (.write 32 "core_addr" (ddrEa pc))
-      (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_FW)))))
+    (.seq (coreAddrReg.set (ddrEa pc))
+      (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_FW)))))
 
 /-- `S_RD`: latch the three source operands. **D19 sync-read sites** —
 each written value is a bare `memRead` of `rf` (no zero-mux, no shared
@@ -1917,18 +2062,18 @@ the zeroing sweep writing 0) `rf[{t,0}]` is 0 in every reachable state,
 so the mux was the identity. Every register keeps its exact cycle-by-cycle
 value and the ISS is untouched. -/
 def s_rd : Expr 1 × Act := stArm S_RD
-  (.seq (.write 64 "a" (.memRead 64 "rf" (cat55 cur rs1f)))
-    (.seq (.write 64 "b" (.memRead 64 "rf" (cat55 cur rs2f)))
-      (.seq (.write 64 "rdval" (.memRead 64 "rf" (cat55 cur rdf)))
-            (.write 5 "st" (.mux is_sel (L5 S_RD2) (L5 S_EX))))))
+  (.seq (aReg.set (rfBank.rd (cat55 cur rs1f)))
+    (.seq (bReg.set (rfBank.rd (cat55 cur rs2f)))
+      (.seq (rdvalReg.set (rfBank.rd (cat55 cur rdf)))
+            (stReg.set (.mux is_sel (L5 S_RD2) (L5 S_EX))))))
 
 /-- `S_RD2`: the two extra operands of a SELECT. Same D19 shape; the
 addresses name `rs3f`/`rs4f` directly (they are what `r1a`/`r2a` reduced
 to in this state). -/
 def s_rd2 : Expr 1 × Act := stArm S_RD2
-  (.seq (.write 64 "sel_t" (.memRead 64 "rf" (cat55 cur rs3f)))
-    (.seq (.write 64 "sel_f" (.memRead 64 "rf" (cat55 cur rs4f)))
-          (.write 5 "st" (L5 S_EX))))
+  (.seq (selTReg.set (rfBank.rd (cat55 cur rs3f)))
+    (.seq (selFReg.set (rfBank.rd (cat55 cur rs4f)))
+          (stReg.set (L5 S_EX))))
 
 -- S_EX: if-else priority tree mirroring the Verilog (rf writes in the
 -- funnel; here: pc/retire/st/scheduler-array/master-handshake side effects).
@@ -1940,13 +2085,13 @@ a balanced else-if tree: identical first-match-wins behaviour (see
 levels to ~5. -/
 def s_ex_branches : List (Expr 1 × Act) :=
   -- 0x3a EXIT
-  gcons (opIs OP_EXIT) (.seq (.write 1 "halted" (L1 1)) (.seq (.write 1 "running" (L1 0)) retireInc)) <|
+  gcons (opIs OP_EXIT) (.seq (haltedReg.set (L1 1)) (.seq (runningReg.set (L1 0)) retireInc)) <|
   -- 0x3b THREAD_EXIT
   gcons (opIs OP_THREAD_EXIT)
     (.seq (tstateDynWrite (L2 0) cur)
       (.seq (.ite (.not (.eq next_ready cur))
-              (.seq (.write 5 "cur" next_ready) (.seq (setPcFromTpc next_ready) goF0))
-              (.write 5 "st" (L5 S_WAIT)))
+              (.seq (curReg.set next_ready) (.seq (setPcFromTpc next_ready) goF0))
+              (stReg.set (L5 S_WAIT)))
             retireInc)) <|
   -- 0x00 NOP
   gcons (opIs OP_NOP) (.seq stepPc (.seq retireInc goF0)) <|
@@ -1954,15 +2099,15 @@ def s_ex_branches : List (Expr 1 × Act) :=
   gcons is_fence (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x12 MUL
   gcons (opIs OP_MUL)
-    (.seq (.write 128 "mul_acc" (.lit (BitVec.ofNat 128 0)))
-      (.seq (.write 128 "mul_aw" (.zext a 128))
-        (.seq (.write 64 "mul_b" b) (.seq (.write 2 "mul_kind" (L2 0)) (.write 5 "st" (L5 S_MUL)))))) <|
+    (.seq (mulAccReg.set (.lit (BitVec.ofNat 128 0)))
+      (.seq (mulAwReg.set (.zext a 128))
+        (.seq (mulBReg.set b) (.seq (mulKindReg.set (L2 0)) (stReg.set (L5 S_MUL)))))) <|
   -- mulh
   gcons is_mulh
-    (.seq (.write 128 "mul_acc" (.lit (BitVec.ofNat 128 0)))
-      (.seq (.write 128 "mul_aw" (.zext a 128))
-        (.seq (.write 64 "mul_b" b)
-          (.seq (.write 2 "mul_kind" (.mux (opIs OP_MULH) (L2 1) (L2 2))) (.write 5 "st" (L5 S_MUL)))))) <|
+    (.seq (mulAccReg.set (.lit (BitVec.ofNat 128 0)))
+      (.seq (mulAwReg.set (.zext a 128))
+        (.seq (mulBReg.set b)
+          (.seq (mulKindReg.set (.mux (opIs OP_MULH) (L2 1) (L2 2))) (stReg.set (L5 S_MUL)))))) <|
   -- div
   gcons is_div
     -- §4.1: "Division and remainder are non-trapping with defined results
@@ -1975,40 +2120,40 @@ def s_ex_branches : List (Expr 1 × Act) :=
     -- personality-neutral), not in the divider.
     (.ite (.eq b (L64 0))
       (.seq stepPc (.seq retireInc goF0))
-      (.seq (.write 64 "div_rem" (L64 0))
-        (.seq (.write 64 "div_quo" div_a_abs)
-          (.seq (.write 64 "div_d" div_b_abs)
-            (.seq (.write 7 "div_cnt" (.lit (BitVec.ofNat 7 0)))
-              (.seq (.write 1 "div_isrem" (.or (opIs OP_SREM) (opIs OP_UREM)))
-                (.seq (.write 1 "div_negq" (.and div_sgn (.xor (.slice a 63 1) (.slice b 63 1))))
-                  (.seq (.write 1 "div_negr" (.and div_sgn (.slice a 63 1))) (.write 5 "st" (L5 S_DIV)))))))))) <|
+      (.seq (divRemReg.set (L64 0))
+        (.seq (divQuoReg.set div_a_abs)
+          (.seq (divDReg.set div_b_abs)
+            (.seq (divCntReg.set (.lit (BitVec.ofNat 7 0)))
+              (.seq (divIsremReg.set (.or (opIs OP_SREM) (opIs OP_UREM)))
+                (.seq (divNegqReg.set (.and div_sgn (.xor (.slice a 63 1) (.slice b 63 1))))
+                  (.seq (divNegrReg.set (.and div_sgn (.slice a 63 1))) (stReg.set (L5 S_DIV)))))))))) <|
   -- sel
   gcons is_sel (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x54 GET_PCR
   gcons (opIs OP_GET_PCR)
     (.ite (.eq rs1f (L5 2)) (.seq stepPc (.seq retireInc goF0))
-      (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
+      (.seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP))))) <|
   -- alu
   gcons is_alu (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x20 J
-  gcons (opIs OP_JMP) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs OP_JMP) (.seq (pcReg.set (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
   -- 0x27 JAL
-  gcons (opIs OP_JAL) (.seq (.write 64 "pc" (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs OP_JAL) (.seq (pcReg.set (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
   -- 0x28 JALR
-  gcons (opIs OP_JALR) (.seq (.write 64 "pc" (.add a imm_i)) (.seq retireInc goF0)) <|
+  gcons (opIs OP_JALR) (.seq (pcReg.set (.add a imm_i)) (.seq retireInc goF0)) <|
   -- branch
-  gcons is_branch (.seq (.write 64 "pc" (.mux br_take (.add pc (.shl imm_s (L64 3))) pc8)) (.seq retireInc goF0)) <|
+  gcons is_branch (.seq (pcReg.set (.mux br_take (.add pc (.shl imm_s (L64 3))) pc8)) (.seq retireInc goF0)) <|
   -- 0x06 YIELD
   gcons (opIs OP_YIELD)
     (.seq (.ite (.eq next_ready cur) stepPc
-            (.seq (.write 5 "cur" next_ready) (setPcFromTpc next_ready)))
+            (.seq (curReg.set next_ready) (setPcFromTpc next_ready)))
           (.seq retireInc goF0)) <|
   -- 0x07 SLEEP
   gcons (opIs OP_SLEEP)
     (.seq (tstateDynWrite (L2 2) cur)
       (.seq (.ite (.not (.eq next_ready cur))
-              (.seq (.write 5 "cur" next_ready) (.seq (setPcFromTpc next_ready) goF0))
-              (.write 5 "st" (L5 S_WAIT)))
+              (.seq (curReg.set next_ready) (.seq (setPcFromTpc next_ready) goF0))
+              (stReg.set (L5 S_WAIT)))
             retireInc)) <|
   -- 0xcb FUTEX_WAIT
   gcons (opIs OP_FUTEX_WAIT)
@@ -2022,9 +2167,9 @@ def s_ex_branches : List (Expr 1 × Act) :=
     -- forever, and core 0 spun in __lnp_futex_wait at half a billion retires
     -- with ZERO traps. The futex compare is a data access; it goes through
     -- ddrEa like every other data access.
-    (.seq (.write 32 "core_addr" (ddrEa sexEa))
-      (.seq (.write 1 "core_rd" (L1 1))
-        (.seq (.write 64 "futex_addr_q" rdval) (.seq (.write 64 "futex_exp" a) (.write 5 "st" (L5 S_FTX1)))))) <|
+    (.seq (coreAddrReg.set (ddrEa sexEa))
+      (.seq (coreRdReg.set (L1 1))
+        (.seq (futexAddrQReg.set rdval) (.seq (futexExpReg.set a) (stReg.set (L5 S_FTX1)))))) <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
   -- only the sequencing half of FUTEX_WAKE.
@@ -2035,13 +2180,13 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- pc advances at the end of the walk (S_DSW or the refusal arm), never
   -- here.
   gcons (opIs CAP_SEND_OP)
-    (.seq (.write 32 "core_addr"
+    (.seq (coreAddrReg.set
             (.add (capEntryAddr capSendSlot) (.lit (BitVec.ofNat 32 8))))
-      (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_CS0)))) <|
+      (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_CS0)))) <|
   gcons (opIs CAP_RECV_OP)
-    (.seq (.write 32 "core_addr"
+    (.seq (coreAddrReg.set
             (.add (capEntryAddr capRecvSlot) (.lit (BitVec.ofNat 32 8))))
-      (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_CR0)))) <|
+      (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_CR0)))) <|
   -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
   -- change) if this thread is already inside a gate -- the continuation is
   -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
@@ -2054,111 +2199,112 @@ def s_ex_branches : List (Expr 1 × Act) :=
       -- §17: walk the descriptor instead of reading a host-loaded bank.
       -- The address is the table base plus a 16-byte-strided index; the
       -- activation commits in S_GC1, once both words are in.
-      (.seq (.write 32 "core_addr"
+      (.seq (coreAddrReg.set
               (.add (.add (.lit (BitVec.ofNat 32 DATA_BASE)) gate_tbl_base)
                     (.shl (.zext (.slice a 0 4) 32) (.lit (BitVec.ofNat 32 4)))))
-        (.seq (.write 1 "core_rd" (L1 1)) (.write 5 "st" (L5 S_GC0))))) <|
+        (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_GC0))))) <|
   -- EXT-5: 0x61 GATE_RETURN. Restores the saved pc; the domain and the
   -- in-gate bit are restored in their funnels. A return with no gate open
   -- is a no-op (it just steps), which is the fail-quiet reading: a thread
   -- cannot leave a domain it never entered.
   gcons (opIs OP_MINI_GATE_RETURN)
     (.ite curInGate
-      (.seq (.write 64 "pc" (tcontRd gPopIdx)) (.seq retireInc goF0))
+      (.seq (pcReg.set (tcontRd gPopIdx)) (.seq retireInc goF0))
       -- DIAGNOSTIC (the loud no-op): a GATE_RETURN with no gate open on THIS
       -- slot. Legal (fail-quiet), but latch the first one's pc + slot + count
       -- so a directed hammer test can SEE a desync instead of silently
       -- wandering. The slot field is the tell: if it names the CLONE's child
       -- slot, the no-op is correct-for-that-slot (a hand-off), not corruption.
       (.seq (.ite (.eq gret_noop_cnt (L32 0))
-              (.seq (.write 64 "gret_noop_pc" pc) (.write 5 "gret_noop_cur" cur)) .skip)
-        (.seq (.write 32 "gret_noop_cnt" (.add gret_noop_cnt (L32 1)))
+              (.seq (gretNoopPcReg.set pc) (.seq (gretNoopCurReg.set cur)
+                     (gretNoopTrappedReg.set curGateHadTrap))) .skip)
+        (.seq (gretNoopCntReg.set (.add gret_noop_cnt (L32 1)))
           (.seq stepPc (.seq retireInc goF0))))) <|
   -- 0x59 CLONE
   gcons (opIs OP_CLONE_SPAWN)
     (.ite has_free
       (.seq (tstateDynWrite (L2 1) free_slot)
-        (.seq (.write 5 "clone_dst" rdf) (.seq (.write 5 "clone_tid" free_slot) (.write 5 "st" (L5 S_CLONE2)))))
+        (.seq (cloneDstReg.set rdf) (.seq (cloneTidReg.set free_slot) (stReg.set (L5 S_CLONE2)))))
       (.seq stepPc (.seq retireInc goF0))) <|
   -- LR
   gcons is_lr
-    (actSeq [.write 64 "lr_addr" a, .write 1 "lr_valid" (L1 1),
-      .write 3 "ld_boff_q" (.lit (BitVec.ofNat 3 0)), .write 8 "ld_op_q" (L8 OP_LD),
-      .write 5 "ld_rd_q" rdf, .write 1 "mem_is_store" (L1 0),
+    (actSeq [lrAddrReg.set a, lrValidReg.set (L1 1),
+      ldBoffQReg.set (.lit (BitVec.ofNat 3 0)), ldOpQReg.set (L8 OP_LD),
+      ldRdQReg.set rdf, memIsStoreReg.set (L1 0),
       .ite (.ult a (L64 0x1000))
-        (actSeq [.write 9 "dmem_a" (.slice a 3 9), .write 5 "st" (L5 S_L0)])
-        (actSeq [.write 32 "core_addr" (ddrEa sexEa), .write 1 "core_rd" (L1 1),
-                 .write 1 "lr_req" (L1 1),          -- tag: this read takes a reservation
-                 .write 5 "st" (L5 S_DL)])]) <|
+        (actSeq [dmemAReg.set (.slice a 3 9), stReg.set (L5 S_L0)])
+        (actSeq [coreAddrReg.set (ddrEa sexEa), coreRdReg.set (L1 1),
+                 lrReqReg.set (L1 1),                 -- tag: this read takes a reservation
+                 stReg.set (L5 S_DL)])]) <|
   -- SC
   gcons is_sc
     (.seq (.ite (.and lr_valid (.eq lr_addr a))
             (.ite (.ult a (L64 0x1000))
-              (.seq (.write 1 "dmem_we" (L1 1)) (.seq (.write 9 "dmem_a" (.slice a 3 9)) (.seq (.write 64 "dmem_wd" b) (.seq stepPc (.seq retireInc goF0)))))
-              (actSeq [.write 32 "core_addr" (ddrEa sexEa), .write 64 "core_wdata" b,
-                       .write 1 "core_wr" (L1 1),
-                       .write 1 "sc_req" (L1 1),      -- tag: conditional store
-                       .write 1 "sc_pending" (L1 1),  -- the verdict is due at S_DSW
-                       .write 5 "st" (L5 S_DSW)]))
+              (.seq (dmemWeReg.set (L1 1)) (.seq (dmemAReg.set (.slice a 3 9)) (.seq (dmemWdReg.set b) (.seq stepPc (.seq retireInc goF0)))))
+              (actSeq [coreAddrReg.set (ddrEa sexEa), coreWdataReg.set b,
+                       coreWrReg.set (L1 1),
+                       scReqReg.set (L1 1),            -- tag: conditional store
+                       scPendingReg.set (L1 1),        -- the verdict is due at S_DSW
+                       stReg.set (L5 S_DSW)]))
             (.seq stepPc (.seq retireInc goF0)))
-          (.write 1 "lr_valid" (L1 0))) <|
+          (lrValidReg.set (L1 0))) <|
   -- UART_RX load
   gcons (.and is_load (.eq mem_ea_l (L64 UART_RX_ADDR)))
-    (.seq (.ite (.not (.eq rx_rptr rx_wptr)) (.write 9 "rx_rptr" (.add rx_rptr (.lit (BitVec.ofNat 9 1)))) .skip)
+    (.seq (.ite (.not (.eq rx_rptr rx_wptr)) (rxRptrReg.set (.add rx_rptr (.lit (BitVec.ofNat 9 1)))) .skip)
           (.seq stepPc (.seq retireInc goF0))) <|
   -- GP load
   gcons (.and is_load l_is_gp)
     (.ite (opIs OP_LD_31)
-      (.seq (.write 32 "gp_addr_r" (.and (.slice mem_ea_l 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
-        (.seq (.write 1 "gp_rd" (L1 1)) (.seq (.write 5 "ld_rd_q" rdf) (.write 5 "st" (L5 S_GPL)))))
-      (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
+      (.seq (gpAddrRReg.set (.and (.slice mem_ea_l 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
+        (.seq (gpRdReg.set (L1 1)) (.seq (ldRdQReg.set rdf) (stReg.set (L5 S_GPL)))))
+      (.seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP))))) <|
   -- zp load
   gcons (.and is_load l_is_zp)
-    (.seq (.write 9 "dmem_a" ld_widx) (.seq (.write 3 "ld_boff_q" ld_boff)
-      (.seq (.write 8 "ld_op_q" op) (.seq (.write 5 "ld_rd_q" rdf) (.seq (.write 1 "mem_is_store" (L1 0)) (.write 5 "st" (L5 S_L0))))))) <|
+    (.seq (dmemAReg.set ld_widx) (.seq (ldBoffQReg.set ld_boff)
+      (.seq (ldOpQReg.set op) (.seq (ldRdQReg.set rdf) (.seq (memIsStoreReg.set (L1 0)) (stReg.set (L5 S_L0))))))) <|
   -- DDR load. EXT-10: `core_addr` is written but `core_rd` is NOT asserted --
   -- the D-cache banks are latched here (D19 sync read) and `S_DC` decides
   -- next cycle whether the bus transaction is needed at all. The address is
   -- translated exactly once, here, so the hit path costs no translation.
   gcons is_load
-    (.seq (.write 32 "core_addr" dc_ea)
-      (.seq (.write 42 "dc_tag_q" (.memRead 42 "dc_tag" dc_idx))
-        (.seq (.write 64 "dc_data_q" (.memRead 64 "dc_data" dc_idx))
-          (.seq (.write 3 "ld_boff_q" ld_boff) (.seq (.write 8 "ld_op_q" op) (.seq (.write 5 "ld_rd_q" rdf) (.seq (.write 1 "mem_is_store" (L1 0)) (.write 5 "st" (L5 S_DC))))))))) <|
+    (.seq (coreAddrReg.set dc_ea)
+      (.seq (dcTagQReg.set (dcTagBank.rd dc_idx))
+        (.seq (dcDataQReg.set (dcDataBank.rd dc_idx))
+          (.seq (ldBoffQReg.set ld_boff) (.seq (ldOpQReg.set op) (.seq (ldRdQReg.set rdf) (.seq (memIsStoreReg.set (L1 0)) (stReg.set (L5 S_DC))))))))) <|
   -- UART store
   gcons (.and is_store (.eq mem_ea_s (L64 UART_ADDR)))
-    (.seq (.memWrite 8 8 "uart_mem" 0 (.slice uart_wptr 0 8) (.slice b 0 8))
-      (.seq (.write 9 "uart_wptr" (.add uart_wptr (.lit (BitVec.ofNat 9 1)))) (.seq stepPc (.seq retireInc goF0)))) <|
+    (.seq (uartBank.write 0 (.slice uart_wptr 0 8) (.slice b 0 8))
+      (.seq (uartWptrReg.set (.add uart_wptr (.lit (BitVec.ofNat 9 1)))) (.seq stepPc (.seq retireInc goF0)))) <|
   -- GP store
   gcons (.and is_store s_is_gp)
     (.ite (opIs OP_ST_34)
-      (.seq (.write 32 "gp_addr_r" (.and (.slice mem_ea_s 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
-        (.seq (.write 32 "gp_wdata_r" (.slice b 0 32)) (.seq (.write 1 "gp_wr" (L1 1)) (.write 5 "st" (L5 S_GPS)))))
-      (.seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP))))) <|
+      (.seq (gpAddrRReg.set (.and (.slice mem_ea_s 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
+        (.seq (gpWdataRReg.set (.slice b 0 32)) (.seq (gpWrReg.set (L1 1)) (stReg.set (L5 S_GPS)))))
+      (.seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP))))) <|
   -- zp store
   gcons (.and is_store s_is_zp)
-    (.seq (.write 9 "dmem_a" st_widx) (.seq (.write 1 "mem_is_store" (L1 1)) (.write 5 "st" (L5 S_L0)))) <|
+    (.seq (dmemAReg.set st_widx) (.seq (memIsStoreReg.set (L1 1)) (stReg.set (L5 S_L0)))) <|
   -- DDR store
   gcons is_store
-    (actSeq [.write 32 "core_addr" (ddrEa mem_ea_s), .write 1 "core_rd" (L1 1),
-             .write 1 "mem_is_store" (L1 1), .write 1 "sc_pending" (L1 0),
-             .write 5 "st" (L5 S_DL)]) <|
+    (actSeq [coreAddrReg.set (ddrEa mem_ea_s), coreRdReg.set (L1 1),
+             memIsStoreReg.set (L1 1), scPendingReg.set (L1 0),
+             stReg.set (L5 S_DL)]) <|
   []
 
 /-- default: trap on an unknown opcode. -/
 def s_ex_trap : Act :=
-  .seq (.write 1 "trap_active" (L1 1)) (.seq (.write 8 "trapped_op" op) (.write 5 "st" (L5 S_TRAP)))
+  .seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP)))
 
 def s_ex_body : Act := actPriTree s_ex_branches s_ex_trap
 
 def s_ex : Expr 1 × Act := stArm S_EX  s_ex_body
 
-def s_l0 : Expr 1 × Act := stArm S_L0  (.write 5 "st" (L5 S_L1))
+def s_l0 : Expr 1 × Act := stArm S_L0  (stReg.set (L5 S_L1))
 
 /-- S_L1: load-wb (rf in funnel) or store commit; then advance. -/
 def s_l1 : Expr 1 × Act := stArm S_L1
   (actSeq [.ite (.not mem_is_store) .skip
-            (actSeq [.write 1 "dmem_we" (L1 1), .write 9 "dmem_a" st_widx, .write 64 "dmem_wd" st_merge]),
+            (actSeq [dmemWeReg.set (L1 1), dmemAReg.set st_widx, dmemWdReg.set st_merge]),
            stepPc, retireInc, goF0])
 
 /-- **EXT-10 `S_DC`**: the tag check. A hit feeds `ddr_q` from the latched
@@ -2168,29 +2314,29 @@ asserts `core_rd` on the address `S_EX` already wrote and joins `S_DL`,
 setting `dc_alloc` so the fill funnel knows this miss is allocatable. -/
 def s_dc : Expr 1 × Act := stArm S_DC
   (.ite dc_hit
-    (.seq (.write 64 "ddr_q" dc_data_q) (.write 5 "st" (L5 S_DST)))
-    (.seq (.write 1 "core_rd" (L1 1))
-      (.seq (.write 1 "dc_alloc" (L1 1)) (.write 5 "st" (L5 S_DL)))))
+    (.seq (ddrQReg.set dc_data_q) (stReg.set (L5 S_DST)))
+    (.seq (coreRdReg.set (L1 1))
+      (.seq (dcAllocReg.set (L1 1)) (stReg.set (L5 S_DL)))))
 
 def s_dl : Expr 1 × Act := stArm S_DL
   (.ite mDone
-    (.seq (.write 64 "ddr_q" mRdata)
-      (.seq (.write 1 "dc_alloc" (L1 0)) (.write 5 "st" (L5 S_DST))))
+    (.seq (ddrQReg.set mRdata)
+      (.seq (dcAllocReg.set (L1 0)) (stReg.set (L5 S_DST))))
     .skip)
 
 /-- S_DST: load-wb (rf in funnel) + advance, or issue the DDR store. -/
 def s_dst : Expr 1 × Act := stArm S_DST
   (.ite (.not mem_is_store)
     (actSeq [stepPc, retireInc, goF0])
-    (actSeq [.write 32 "core_addr" (ddrEa mem_ea_s), .write 64 "core_wdata" st_merge,
-             .write 1 "core_wr" (L1 1), .write 5 "st" (L5 S_DSW)]))
+    (actSeq [coreAddrReg.set (ddrEa mem_ea_s), coreWdataReg.set st_merge,
+             coreWrReg.set (L1 1), stReg.set (L5 S_DSW)]))
 
 def s_dsw : Expr 1 × Act := stArm S_DSW
   (.ite mDone (actSeq [stepPc, retireInc, goF0]) .skip)
 
 /-- S_CLONE2: child sp (rf in funnel) + fresh tp/sigmask (both in
 `tarrFunnelRule`, D20) + advance. -/
-def s_clone2 : Expr 1 × Act := stArm S_CLONE2 (.write 5 "st" (L5 S_CLONE3))
+def s_clone2 : Expr 1 × Act := stArm S_CLONE2 (stReg.set (L5 S_CLONE3))
 
 def s_clone3 : Expr 1 × Act := stArm S_CLONE3  (actSeq [stepPc, retireInc, goF0])
 
@@ -2200,8 +2346,8 @@ def s_ftx1 : Expr 1 × Act := stArm S_FTX1
     (actSeq [.ite (.eq mRdata futex_exp)
               (actSeq [tstateDynWrite (L2 3) cur,
                        .ite (.not (.eq next_ready cur))
-                         (actSeq [.write 5 "cur" next_ready, setPcFromTpc next_ready, goF0])
-                         (.write 5 "st" (L5 S_WAIT))])
+                         (actSeq [curReg.set next_ready, setPcFromTpc next_ready, goF0])
+                         (stReg.set (L5 S_WAIT))])
               (actSeq [stepPc, goF0]),
              retireInc])
     .skip)
@@ -2209,16 +2355,16 @@ def s_ftx1 : Expr 1 × Act := stArm S_FTX1
 /-- S_WAIT: pick next ready or halt if all free. -/
 def s_wait : Expr 1 × Act := stArm S_WAIT
   (.ite (tstateEq next_ready (L2 1))
-    (actSeq [.write 5 "cur" next_ready, setPcFromTpc next_ready, goF0])
-    (.ite (.not anyLive) (.seq (.write 1 "halted" (L1 1)) (.write 1 "running" (L1 0))) .skip))
+    (actSeq [curReg.set next_ready, setPcFromTpc next_ready, goF0])
+    (.ite (.not anyLive) (.seq (haltedReg.set (L1 1)) (runningReg.set (L1 0))) .skip))
 
 /-- S_MUL: shift-add step or done (rf in funnel). -/
 def s_mul : Expr 1 × Act := stArm S_MUL
   (.ite (.eq mul_b (L64 0))
     (actSeq [stepPc, retireInc, goF0])
-    (actSeq [.ite (.eq (.slice mul_b 0 1) (L1 1)) (.write 128 "mul_acc" (.add mul_acc mul_aw)) .skip,
-             .write 128 "mul_aw" (.shl mul_aw (.lit (BitVec.ofNat 128 1))),
-             .write 64 "mul_b" (.shr mul_b (L64 1))]))
+    (actSeq [.ite (.eq (.slice mul_b 0 1) (L1 1)) (mulAccReg.set (.add mul_acc mul_aw)) .skip,
+             mulAwReg.set (.shl mul_aw (.lit (BitVec.ofNat 128 1))),
+             mulBReg.set (.shr mul_b (L64 1))]))
 
 /-- S_DIV: restoring divide step or done (rf in funnel). 65-bit partial. -/
 def s_div : Expr 1 × Act := stArm S_DIV
@@ -2228,11 +2374,11 @@ def s_div : Expr 1 × Act := stArm S_DIV
      let divd65 : Expr 65 := .zext div_d 65
      actSeq [
        .ite (.not (.ult prem divd65))
-         (actSeq [.write 64 "div_rem" (.slice (.sub prem divd65) 0 64),
-                  .write 64 "div_quo" (.or (.shl div_quo (L64 1)) (L64 1))])
-         (actSeq [.write 64 "div_rem" (.slice prem 0 64),
-                  .write 64 "div_quo" (.shl div_quo (L64 1))]),
-       .write 7 "div_cnt" (.add div_cnt (.lit (BitVec.ofNat 7 1)))]))
+         (actSeq [divRemReg.set (.slice (.sub prem divd65) 0 64),
+                  divQuoReg.set (.or (.shl div_quo (L64 1)) (L64 1))])
+         (actSeq [divRemReg.set (.slice prem 0 64),
+                  divQuoReg.set (.shl div_quo (L64 1))]),
+       divCntReg.set (.add div_cnt (.lit (BitVec.ofNat 7 1)))]))
 
 def s_gpl : Expr 1 × Act := stArm S_GPL
   (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)
@@ -2287,15 +2433,15 @@ Runs **after** `fsmRule` so both overrides are deterministic:
   same cycle (a spurious kill only makes the matching `SC` fail → retry). -/
 def smpRule : Rule :=
   ⟨"smp", actSeq
-    [ .write 1 "wake_out" wakeLocal
+    [ wakeOutReg.set wakeLocal
       -- publish the key we woke on (hold otherwise). Kept for the dual SoC
       -- output port + the other core's `doorbell_key`; the wake is unkeyed
       -- now, so the key is informational only.
-    , .ite wakeLocal (.write 64 "wake_key" rdval) .skip
+    , .ite wakeLocal (wakeKeyReg.set rdval) .skip
       -- The wake, unkeyed: promote every parked (FUTEX) slot to READY on a
       -- local FUTEX_WAKE or the cross-core doorbell. tstate-only, one cycle.
     , wakeAllApply
-    , .ite resKill (.write 1 "lr_valid" (L1 0)) .skip ]⟩
+    , .ite resKill (lrValidReg.set (L1 0)) .skip ]⟩
 
 /-! ### (9a) The thread-table write funnels (D20)
 
@@ -2397,6 +2543,49 @@ def inGateNext : Expr 32 :=
         (.mux (.or gateRetLast exitG)
           (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate)))
 
+/-- Seam probe: `gate_had_trap[cur]` is set when a HWTRAP is active while this
+slot is in a gate (a trap taken mid-gate), cleared on a fresh gate_call for the
+slot, all cleared on `cmd 13`. Read at the loud no-op (`gret_noop_trapped`). -/
+def gateHadTrapNext : Expr 32 :=
+  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (L32 0)
+    (.mux gateCall (.and gate_had_trap (.not (.shl (L32 1) (.zext cur 32))))
+      (.mux (.and trap_active curInGate) (.or gate_had_trap (.shl (L32 1) (.zext cur 32)))
+        gate_had_trap))
+
+/-! ### The in_gate[0] fall cause-latch (silicon desync instrument, 2026-08-09)
+
+The board captured one no-op GATE_RETURN on slot 0 (drvspawn_entry+0x10,
+trapped=0) and the solo-core hammers cannot reproduce it, so the next capture
+must name the CAUSE on silicon: the first cycle `in_gate[0]` transitions 1→0
+for any reason other than slot 0's own last return or the cmd-13 sweep, with
+the active `inGateNext` arm and its operands snapshotted. One shot; the valid
+bit (info[15]) blocks re-latch until the sweep resets it. -/
+def igFallPcReg   : Reg 64 := ⟨"ig_fall_pc"⟩
+def igFallInfoReg : Reg 16 := ⟨"ig_fall_info"⟩
+def ig_fall_info  : Expr 16 := igFallInfoReg.rd
+
+/-- `in_gate[0]` falls this cycle (computed from the same `inGateNext` the
+register funnel writes — no second source of truth). -/
+def igFall0 : Expr 1 :=
+  .and (.slice in_gate 0 1) (.not (.slice inGateNext 0 1))
+
+def igFallLatch : Expr 1 :=
+  .and igFall0 <|
+    .and (.not (.and gateRetLast (.eq cur (L5 0)))) <|
+      .and (.not zeroing) (.not (.slice ig_fall_info 15 1))
+
+/-- {15:valid, 13:9 free_slot, 8:4 cur, 3:gateRetLast, 2:exitG, 1:cloneG, 0:gateCall} -/
+def igFallInfo : Expr 16 :=
+  let cloneG := exG (.and (opIs OP_CLONE_SPAWN) has_free)
+  let exitG  := exG (opIs OP_THREAD_EXIT)
+  let sh (e : Expr 16) (k : Nat) : Expr 16 := .shl e (.lit (BitVec.ofNat 16 k))
+  .or (.zext gateCall 16) <|
+  .or (sh (.zext cloneG 16) 1) <|
+  .or (sh (.zext exitG 16) 2) <|
+  .or (sh (.zext gateRetLast 16) 3) <|
+  .or (sh (.zext cur 16) 4) <|
+  .or (sh (.zext free_slot 16) 9) (sh (.lit (BitVec.ofNat 16 1)) 15)
+
 /-- EXT-7: the valid bitmap after this cycle. `cmd 65` validates the selected
 slot; `cmd 67` clears every slot whose `tlb_cell` equals the bumped cell;
 `cmd 13`'s reset clears all. -/
@@ -2435,17 +2624,28 @@ def gdepthWdE : Expr 3 :=
 
 def tarrFunnelRule : Rule :=
   ⟨"tarr_funnel",
-    .seq (.ite tdomWeE (.memWrite 5 8 "tdom" 0 tdomWaE tdomWdE) .skip) <|
+    .seq (.ite tdomWeE (tdomBank.write 0 tdomWaE tdomWdE) .skip) <|
     -- EXT-5 (§9): the continuation STACK. A gate call PUSHES the return point
     -- and caller domain at slot `cur*MAXD + gdepth[cur]`; a return reads the
     -- slot below (`gPopIdx`, in the gate-return arm / tdom funnel). One write
     -- port each, at the push slot, on a gate call.
-    .seq (.ite gateCall (.memWrite 7 64 "tcont" 0 gPushIdx pc8) .skip) <|
-    .seq (.ite gateCall (.memWrite 7 8 "tcdom" 0 gPushIdx domCur) .skip) <|
+    .seq (.ite gateCall (tcontBank.write 0 gPushIdx pc8) .skip) <|
+    .seq (.ite gateCall (tcdomBank.write 0 gPushIdx domCur) .skip) <|
     -- §9: the per-thread depth. Push on a gate call (++), pop on a gate return
     -- (--); `cmd 13`'s sweep zeroes it, like the other per-thread arrays (D37).
-    .seq (.ite gdepthWeE (.memWrite 5 3 "gdepth" 0 gdepthWaE gdepthWdE) .skip) <|
-    .seq (.write 32 "in_gate" inGateNext) <|
+    .seq (.ite gdepthWeE (gdepthBank.write 0 gdepthWaE gdepthWdE) .skip) <|
+    .seq (inGateReg.set inGateNext) <|
+    .seq (gateHadTrapReg.set gateHadTrapNext) <|
+    -- Cause-latch for the silicon desync (2026-08-09): capture the FIRST cycle
+    -- `in_gate[0]` falls for any reason other than the expected last-return of
+    -- slot 0 (`gateRetLast ∧ cur=0`) or the cmd-13 sweep. The info word snapshots
+    -- which inGateNext arm was active and its operands, so the next desync boot
+    -- names the culprit arm instead of an interleaving guess.
+    --   info = {valid, free_slot[4:0], cur[4:0], gateRetLast, exitG, cloneG, gateCall}
+    .seq (.ite (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0))))
+            (igFallInfoReg.set (.lit (BitVec.ofNat 16 0)))
+            (.ite igFallLatch
+              (.seq (igFallPcReg.set pc) (igFallInfoReg.set igFallInfo)) .skip)) <|
     -- EXT-6 (§17): the inbox is guest memory now -- its writes ride the
     -- ordinary bus path from S_CS1/S_CR1, and there is no core-resident
     -- occupancy state left to update here.
@@ -2458,17 +2658,17 @@ def tarrFunnelRule : Rule :=
     -- EXT-7: the valid bitmap. Fill sets the selected slot; the §15
     -- shootdown clears every slot whose recorded cell was bumped -- several
     -- at once, which is why this is a register and not a memory.
-    .seq (.write 8 "tlb_vld" tlbVldNext) <|
+    .seq (tlbVldReg.set tlbVldNext) <|
     -- EXT-5: the host-loaded gate table.
-    .seq (.ite tpcWeE (.memWrite 5 64 "tpc" 0 tpcWaE tpcWdE) .skip)
+    .seq (.ite tpcWeE (tpcBank.write 0 tpcWaE tpcWdE) .skip)
       (.seq (.ite (exG (opIs OP_SLEEP))
-              (.memWrite 5 64 "tsleep" 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
-        (.seq (.ite cloneFresh (.memWrite 5 64 "tp_arr" 0 clone_tid (L64 0)) .skip)
-              (.ite cloneFresh (.memWrite 5 64 "sigmask_arr" 0 clone_tid (L64 0)) .skip)))⟩
+              (tsleepBank.write 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
+        (.seq (.ite cloneFresh (tpBank.write 0 clone_tid (L64 0)) .skip)
+              (.ite cloneFresh (sigmaskBank.write 0 clone_tid (L64 0)) .skip)))⟩
 
 /-- (9) the single regfile write port. -/
 def rfFunnelRule : Rule :=
-  ⟨"rf_funnel", .ite rfWeE (.memWrite 10 64 "rf" 0 rfWaE rfWdE) .skip⟩
+  ⟨"rf_funnel", .ite rfWeE (rfBank.write 0 rfWaE rfWdE) .skip⟩
 
 /-! ### EXT-9 — the I-cache fill funnel
 
@@ -2482,7 +2682,7 @@ site). -/
 def icFill : Expr 1 := .and (.eq st (L5 S_FW)) mDone
 
 def icFillRule : Rule :=
-  ⟨"ic_data_funnel", .ite icFill (.memWrite 12 64 "ic_data" 0 ic_idx mRdata) .skip⟩
+  ⟨"ic_data_funnel", .ite icFill (icDataBank.write 0 ic_idx mRdata) .skip⟩
 
 def icTagRule : Rule :=
   -- ONE syntactic write site, address and data muxed. Two sites on port 0
@@ -2492,7 +2692,7 @@ def icTagRule : Rule :=
   -- fill landing in the middle of it would survive the sweep.
   ⟨"ic_tag_funnel",
     .ite (.or ic_inv icFill)
-      (.memWrite 12 42 "ic_tag" 0
+      (icTagBank.write 0
         (.mux ic_inv ic_ctr ic_idx)
         (.mux ic_inv (.lit (BitVec.ofNat 42 0)) ic_tag_fill))
       .skip⟩
@@ -2549,12 +2749,12 @@ def dc_cap_idx : Expr 12 :=
                (.lit (BitVec.ofNat 32 3))) 0 12
 
 def dcDataRule : Rule :=
-  ⟨"dc_data_funnel", .ite dcFill (.memWrite 12 64 "dc_data" 0 dc_fill_idx mRdata) .skip⟩
+  ⟨"dc_data_funnel", .ite dcFill (dcDataBank.write 0 dc_fill_idx mRdata) .skip⟩
 
 def dcTagRule : Rule :=
   ⟨"dc_tag_funnel",
     .ite (.or dcStoreInv (.or dcCapInv dcFill))
-      (.memWrite 12 42 "dc_tag" 0
+      (dcTagBank.write 0
         (.mux dcStoreInv dc_sidx (.mux dcCapInv dc_cap_idx dc_fill_idx))
         (.mux (.or dcStoreInv dcCapInv) (.lit (BitVec.ofNat 42 0)) dc_fill_tag))
       .skip⟩
@@ -2569,17 +2769,17 @@ cycles each. -/
 def icGenRule : Rule :=
   ⟨"ic_gen", .ite icGenBump
     (.ite (.eq ic_gen (.lit (BitVec.ofNat 16 65535)))
-      (.seq (.write 16 "ic_gen" (.lit (BitVec.ofNat 16 0)))
-        (.seq (.write 1 "ic_inv" (L1 1)) (.write 12 "ic_ctr" (.lit (BitVec.ofNat 12 0)))))
-      (.write 16 "ic_gen" (.add ic_gen (.lit (BitVec.ofNat 16 1))))) .skip⟩
+      (.seq (icGenReg.set (.lit (BitVec.ofNat 16 0)))
+        (.seq (icInvReg.set (L1 1)) (icCtrReg.set (.lit (BitVec.ofNat 12 0)))))
+      (icGenReg.set (.add ic_gen (.lit (BitVec.ofNat 16 1))))) .skip⟩
 
 /-- The wrap sweep: a `zeroing` clone over the tag bank, through the same
 single write site. Ends by clearing `ic_inv`, which releases `fsmEn`. -/
 def icInvRule : Rule :=
   ⟨"ic_inv", .ite ic_inv
     (.ite (.eq ic_ctr (.lit (BitVec.ofNat 12 4095)))
-      (.seq (.write 1 "ic_inv" (L1 0)) (.write 12 "ic_ctr" (.lit (BitVec.ofNat 12 0))))
-      (.write 12 "ic_ctr" (.add ic_ctr (.lit (BitVec.ofNat 12 1))))) .skip⟩
+      (.seq (icInvReg.set (L1 0)) (icCtrReg.set (.lit (BitVec.ofNat 12 0))))
+      (icCtrReg.set (.add ic_ctr (.lit (BitVec.ofNat 12 1))))) .skip⟩
 
 /-- (10) EXT-1 — the quantum counter, the design's **only** writer of
 `qctr`, in strict priority:
@@ -2597,153 +2797,133 @@ Every read is pre-cycle (D9), so this rule's position in `rules` is
 immaterial to its value; it sits last because it is the newest. -/
 def quantumRule : Rule :=
   ⟨"quantum",
-    .ite (.and cmdValid (.eq cmdIdx (L7 CMD_QUANTUM))) (.write 32 "qctr" cmdData)
+    .ite (.and cmdValid (.eq cmdIdx (L7 CMD_QUANTUM))) (qctrReg.set cmdData)
       (.ite (.and cmdValid (.and (.eq cmdIdx (L7 13)) (.eq (.slice cmdData 0 1) (L1 1))))
-        (.write 32 "qctr" quantum)
-        (.ite preemptAtF0 (.write 32 "qctr" quantum)
-          (.ite qTick (.write 32 "qctr" (.sub qctr (L32 1))) .skip)))⟩
+        (qctrReg.set quantum)
+        (.ite preemptAtF0 (qctrReg.set quantum)
+          (.ite qTick (qctrReg.set (.sub qctr (L32 1))) .skip)))⟩
 
 /-! ## Register / memory / input declarations -/
 
 def scalarRegs : List RegDecl :=
-  [⟨"cur",5,0⟩, ⟨"pc",64,BitVec.ofNat 64 TEXT_BASE⟩, ⟨"retire",32,0⟩,
+  [curReg.decl, pcReg.decl (BitVec.ofNat 64 TEXT_BASE), retireReg.decl,
      -- EXT-8: the commit-trace ring write pointer (wraps at 16).
-     ⟨"trace_wp",4,0⟩, ⟨"trace_sel",4,0⟩,
-     ⟨"trace_rd_pc",64,0⟩, ⟨"trace_rd_wb",64,0⟩,
-     ⟨"trace_hit",1,0⟩, ⟨"trace_in_pc",64,0⟩, ⟨"trace_in_wb",64,0⟩,
-   ⟨"running",1,0⟩, ⟨"halted",1,0⟩, ⟨"st",5,0⟩, ⟨"ir",64,0⟩,
-   ⟨"a",64,0⟩, ⟨"b",64,0⟩, ⟨"rdval",64,0⟩, ⟨"sel_t",64,0⟩, ⟨"sel_f",64,0⟩,
+     traceWpReg.decl, traceSelReg.decl,
+     traceRdPcReg.decl, traceRdWbReg.decl,
+     traceHitReg.decl, traceInPcReg.decl, traceInWbReg.decl,
+   runningReg.decl, haltedReg.decl, stReg.decl, irReg.decl,
+   aReg.decl, bReg.decl, rdvalReg.decl, selTReg.decl, selFReg.decl,
    -- EXT-9: the I-cache sync-read latches (D19). Both reset to 0, which is
    -- an invalid tag, so the cache comes up empty on every technology.
-   ⟨"ic_tag_q",42,0⟩, ⟨"ic_data_q",64,0⟩, ⟨"ic_gen",16,0⟩, ⟨"gate_tbl_base",32,0⟩,
+   icTagQReg.decl, icDataQReg.decl, icGenReg.decl, gateTblBaseReg.decl,
    -- §17: the cap-inbox root pointer and the walked-flags latch
-   ⟨"cap_tbl_base",32,0⟩, ⟨"cap_fl_q",64,0⟩,
+   capTblBaseReg.decl, capFlQReg.decl,
    -- EXT-10 latches. `dc_alloc` records that the miss now in flight came from
    -- the cacheable path, so the fill funnel cannot allocate for an atomic or
    -- an out-of-window read that merely happened to pass through S_DL.
-   ⟨"dc_tag_q",42,0⟩, ⟨"dc_data_q",64,0⟩, ⟨"dc_alloc",1,0⟩,
-   ⟨"gate_ent_q",64,0⟩, ⟨"gate_dom_q",8,0⟩,
-   ⟨"ic_inv",1,0⟩, ⟨"ic_ctr",12,0⟩,
-   ⟨"mem_is_store",1,0⟩, ⟨"trap_active",1,0⟩, ⟨"trapped_op",8,0⟩,
-   ⟨"core_rd",1,0⟩, ⟨"core_wr",1,0⟩, ⟨"core_addr",32,0⟩, ⟨"core_wdata",64,0⟩,
-   ⟨"jtag_rd",1,0⟩, ⟨"jtag_wr",1,0⟩, ⟨"jtag_wdata",64,0⟩, ⟨"ddr_addr_j",32,0⟩,
-   ⟨"ddr_lo_j",32,0⟩, ⟨"ddr_rd_l",64,0⟩, ⟨"ddr_q",64,0⟩, ⟨"bus_req",1,0⟩,
-   ⟨"gp_rd",1,0⟩, ⟨"gp_wr",1,0⟩, ⟨"gp_addr_r",32,0⟩, ⟨"gp_wdata_r",32,0⟩,
-   ⟨"dmem_we",1,0⟩, ⟨"dmem_a",9,0⟩, ⟨"dmem_wd",64,0⟩, ⟨"dmem_rd",64,0⟩,
-   ⟨"uart_wptr",9,0⟩, ⟨"uart_ridx",8,0⟩, ⟨"uart_byte",8,0⟩,
-   ⟨"rx_wptr",9,0⟩, ⟨"rx_rptr",9,0⟩,
-   ⟨"ld_boff_q",3,0⟩, ⟨"ld_op_q",8,0⟩, ⟨"ld_rd_q",5,0⟩,
-   ⟨"lr_addr",64,0⟩, ⟨"lr_valid",1,0⟩, ⟨"futex_exp",64,0⟩, ⟨"futex_addr_q",64,0⟩,
-   ⟨"sleep_scan",5,0⟩, ⟨"next_ready",5,0⟩, ⟨"free_slot",5,0⟩, ⟨"has_free",1,0⟩,
-   ⟨"clone_dst",5,0⟩, ⟨"clone_tid",5,0⟩,
-   ⟨"mul_acc",128,0⟩, ⟨"mul_aw",128,0⟩, ⟨"mul_b",64,0⟩, ⟨"mul_kind",2,0⟩,
-   ⟨"div_rem",64,0⟩, ⟨"div_quo",64,0⟩, ⟨"div_d",64,0⟩, ⟨"div_cnt",7,0⟩,
-   ⟨"div_isrem",1,0⟩, ⟨"div_negq",1,0⟩, ⟨"div_negr",1,0⟩,
-   ⟨"zeroing",1,0⟩, ⟨"zctr",10,0⟩,
-   ⟨"reg_sel",5,0⟩, ⟨"reg_wsel",5,0⟩, ⟨"reg_wlo",32,0⟩,
-   ⟨"dmem_addr_j",32,0⟩, ⟨"dmem_lo_j",32,0⟩, ⟨"reg_rd",64,0⟩,
-   ⟨"wake_out",1,0⟩, ⟨"wake_key",64,0⟩, ⟨"lr_req",1,0⟩, ⟨"sc_req",1,0⟩, ⟨"sc_pending",1,0⟩,
+   dcTagQReg.decl, dcDataQReg.decl, dcAllocReg.decl,
+   gateEntQReg.decl, gateDomQReg.decl,
+   icInvReg.decl, icCtrReg.decl,
+   memIsStoreReg.decl, trapActiveReg.decl, trappedOpReg.decl,
+   coreRdReg.decl, coreWrReg.decl, coreAddrReg.decl, coreWdataReg.decl,
+   jtagRdReg.decl, jtagWrReg.decl, jtagWdataReg.decl, ddrAddrJReg.decl,
+   ddrLoJReg.decl, ddrRdLReg.decl, ddrQReg.decl, busReqReg.decl,
+   gpRdReg.decl, gpWrReg.decl, gpAddrRReg.decl, gpWdataRReg.decl,
+   dmemWeReg.decl, dmemAReg.decl, dmemWdReg.decl, dmemRdReg.decl,
+   uartWptrReg.decl, uartRidxReg.decl, uartByteReg.decl,
+   rxWptrReg.decl, rxRptrReg.decl,
+   ldBoffQReg.decl, ldOpQReg.decl, ldRdQReg.decl,
+   lrAddrReg.decl, lrValidReg.decl, futexExpReg.decl, futexAddrQReg.decl,
+   sleepScanReg.decl, nextReadyReg.decl, freeSlotReg.decl, hasFreeReg.decl,
+   cloneDstReg.decl, cloneTidReg.decl,
+   mulAccReg.decl, mulAwReg.decl, mulBReg.decl, mulKindReg.decl,
+   divRemReg.decl, divQuoReg.decl, divDReg.decl, divCntReg.decl,
+   divIsremReg.decl, divNegqReg.decl, divNegrReg.decl,
+   zeroingReg.decl, zctrReg.decl,
+   regSelReg.decl, regWselReg.decl, regWloReg.decl,
+   dmemAddrJReg.decl, dmemLoJReg.decl, regRdReg.decl,
+   wakeOutReg.decl, wakeKeyReg.decl, lrReqReg.decl, scReqReg.decl, scPendingReg.decl,
    -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
-   ⟨"quantum",32,0⟩, ⟨"qctr",32,0⟩,
+   quantumReg.decl, qctrReg.decl,
    -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
-   ⟨"cur_dom",8,0⟩,
+   curDomReg.decl,
    -- EXT-3: fail-stop bitmap; 0 = nothing poisoned = the pre-EXT-3 machine
-   ⟨"poison",32,0⟩,
+   poisonReg.decl,
    -- EXT-5: gates. `in_gate` = per-slot "inside ≥1 gate" bitmap.
-   ⟨"in_gate",32,0⟩,
+   inGateReg.decl,
    -- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc + slot +
    -- count. Zero unless a GATE_RETURN ran with no gate open on its slot.
-   ⟨"gret_noop_pc",64,0⟩, ⟨"gret_noop_cur",5,0⟩, ⟨"gret_noop_cnt",32,0⟩,
-   -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
-   ⟨"mmu_en",1,0⟩, ⟨"tlb_sel",3,0⟩, ⟨"tlb_vld",8,0⟩]
+   gretNoopPcReg.decl, gretNoopCurReg.decl, gretNoopCntReg.decl,
+   gateHadTrapReg.decl, gretNoopTrappedReg.decl,
+   igFallPcReg.decl, igFallInfoReg.decl,
+  -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
+   mmuEnReg.decl, tlbSelReg.decl, tlbVldReg.decl]
   ++ (List.finRange TLBN).flatMap (fun i =>
-       [(⟨s!"tlb_base{i.val}", 32, 0⟩ : RegDecl), ⟨s!"tlb_limit{i.val}", 32, 0⟩,
-        ⟨s!"tlb_phys{i.val}", 32, 0⟩, ⟨s!"tlb_dom{i.val}", 8, 0⟩,
-        ⟨s!"tlb_cell{i.val}", 8, 0⟩])
+       [(tlbBaseRegs.reg i).decl, (tlbLimitRegs.reg i).decl,
+        (tlbPhysRegs.reg i).decl, (tlbDomRegs.reg i).decl,
+        (tlbCellRegs.reg i).decl])
 
 /-- The thread-table array that stays per-element registers (D20): `tstate`
 (2-bit, multi-writer, read at every index by the ready/free priority encoders
 and the unkeyed wake). `tfutex` and its 64-bit-wide NT comparator bank were
 deleted to fit NT=32 (the wake is unkeyed now — see `wakeAllApply`). -/
 def arrRegs : List RegDecl :=
-  (List.finRange NT).map (fun i => ⟨s!"tstate{i.val}", 2, if i.val = 0 then 1 else 0⟩)
+  tstateRegs.decls (fun i => if i.val = 0 then 1 else 0)
 
 /-- (12) EXT-2 — the observation mirror. Unconditional: `cur_dom` is
 `tdom[cur]` as of the previous cycle. It is the *only* writer of `cur_dom`
 and `cur_dom` has no readers inside the design, so it cannot influence
 behaviour — which is what makes it safe to let it lag. -/
-def domainRule : Rule := ⟨"domain", .write 8 "cur_dom" domCur⟩
+def domainRule : Rule := ⟨"domain", curDomReg.set domCur⟩
 
-def design : Design where
-  name := "lnp64mini"
-  regs := scalarRegs ++ arrRegs
-  -- D39a: outputs are mandatory and explicit, like inputs. This design's
-  -- whole register set IS its interface, so it says so rather than
-  -- relying on a default that exported everything silently.
-  outputs := (scalarRegs ++ arrRegs).map (·.name)
-  mems :=
-    [⟨"rf", 10, 64, fun _ => 0⟩, ⟨"dmem", 9, 64, fun _ => 0⟩,
-     -- EXT-8: the commit trace ring. Deliberately NOT in `syncReadMems`:
-     -- 16x64 is the right size for distributed LUTRAM, and the read is a
-     -- host-side BSCAN read that has no timing pressure at all.
-     ⟨"trace_pc", 4, 64, fun _ => 0⟩, ⟨"trace_wb", 4, 64, fun _ => 0⟩,
-     ⟨"uart_mem", 8, 8, fun _ => 0⟩, ⟨"rx_mem", 8, 8, fun _ => 0⟩,
-     -- EXT-9: the I-cache. 4096 x 64 data + 4096 x 18 tag, both sync-read
-     -- (D19) and both written at exactly ONE syntactic site (the fill
-     -- funnel below), so D38's single-write-port budget holds and yosys
-     -- keeps them in block RAM. All-zero reset image: the valid bit is bit
-     -- 17 of the tag word, so a zeroed bank is a fully invalid cache and
-     -- D30/D37 have nothing to deliver.
-     ⟨"ic_data", 12, 64, fun _ => 0⟩, ⟨"ic_tag", 12, 42, fun _ => 0⟩,
-     -- EXT-10: the D-cache, the I-cache's shape exactly (4096 x 8 B), because
-     -- that is the shape the boot-trace measurement was taken at: 95% of
-     -- 86 221 data reads, against 325 that must bypass. Same single-write-site
-     -- discipline, and the same all-zero reset image meaning "fully invalid".
-     ⟨"dc_data", 12, 64, fun _ => 0⟩, ⟨"dc_tag", 12, 42, fun _ => 0⟩,
-     -- D20: the thread table's single-dynamic-index arrays.
-     -- **D37 (2026-08-01): `tpc`'s reset image is ALL-ZERO, not TEXT_BASE.**
-     -- A non-zero image on a 32×64 bank is exactly the D30 defect: yosys
-     -- maps it to distributed RAM and the configuration path does not carry
-     -- the init, so the bank came up all-zero on the ZC702 while every
-     -- model said `TEXT_BASE` (EPOCH_SPEC E13). The image was already
-     -- redundant: D20.3 re-expressed `cmd 13`'s 32-entry reset as a sweep
-     -- off the zeroing counter (`tpcTriples` entry 1), which writes
-     -- TEXT_BASE into all 32 entries before anything can read them
-     -- (`fsmEn` contains `¬zeroing`). Declaring zero makes the model agree
-     -- with the silicon instead of the other way round — the epoch fix's
-     -- shape: take the constant out of memory rather than add machinery to
-     -- deliver it.
-     ⟨"tpc", 5, 64, fun _ => 0⟩,
-     ⟨"tsleep", 5, 64, fun _ => 0⟩,
-     ⟨"tp_arr", 5, 64, fun _ => 0⟩, ⟨"sigmask_arr", 5, 64, fun _ => 0⟩,
-     -- EXT-2: the per-thread domain tag. Zero image = every thread in
-     -- domain 0; `cmd 13`'s sweep re-establishes that on every reset, so
-     -- the constant does not have to survive the configuration path (D37).
-     ⟨"tdom", 5, 8, fun _ => 0⟩,
-     -- EXT-5: the gate table (host-loaded) and the depth-1 continuation.
-     -- §9: the gate continuation STACK, NT*MAXD deep (7-bit addr), indexed by
-     -- cur*MAXD+depth; plus the per-thread depth counter.
-     ⟨"tcont", 7, 64, fun _ => 0⟩, ⟨"tcdom", 7, 8, fun _ => 0⟩,
-     ⟨"gdepth", 5, 3, fun _ => 0⟩,
-     -- EXT-6 (§17): the capability inbox lives in guest memory now; the
-     -- `cap_ibox` bank is gone with the `cap_ival` bitmap.
-     -- EXT-7: the domain-tagged TLB (§15 line 160)
-     ]
-  rules :=
-    [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
-     fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule,
-     icFillRule, icTagRule, icGenRule, icInvRule,
-     dcDataRule, dcTagRule]
-  -- D19 (now a Loom obligation): `Design.emit` refuses to emit if any of
-  -- these is read outside a register-latch site. `rx_mem` is deliberately
-  -- absent — it is read combinationally inside the `rf` write data, so
-  -- LUTRAM is the right implementation for it.
-  syncReadMems := ["rf", "dmem", "uart_mem", "ic_data", "ic_tag", "dc_data", "dc_tag"]
-  inputs :=
-    [⟨"m_done",1⟩, ⟨"m_rdata",64⟩, ⟨"m_busy",1⟩,
-     ⟨"gp_done",1⟩, ⟨"gp_rdata",32⟩, ⟨"gp_busy",1⟩,
-     ⟨"cmd_valid",1⟩, ⟨"cmd_idx",7⟩, ⟨"cmd_data",32⟩,
-     ⟨"res_kill",1⟩, ⟨"doorbell",1⟩, ⟨"doorbell_key",64⟩, ⟨"hold",1⟩, ⟨"sc_fail",1⟩]
+def declarations : Declarations :=
+  { Declarations.empty with
+      regs := scalarRegs ++ arrRegs
+      outputs := (scalarRegs ++ arrRegs).map (fun r : RegDecl => r.name) }
+    |>.addMem rfBank (syncRead := true)
+    |>.addMem dmemBank (syncRead := true)
+    -- The trace ring and RX FIFO are intentionally distributed memories.
+    |>.addMem tracePcBank
+    |>.addMem traceWbBank
+    |>.addMem uartBank (syncRead := true)
+    |>.addMem rxBank
+    -- Cache tags are 42 bits: valid, generation, and address tag.
+    |>.addMem icDataBank (syncRead := true)
+    |>.addMem icTagBank (syncRead := true)
+    |>.addMem dcDataBank (syncRead := true)
+    |>.addMem dcTagBank (syncRead := true)
+    -- Thread-table memories have all-zero physical reset images; the reset
+    -- sweep establishes live architectural contents before `fsmEn` opens.
+    |>.addMem tpcBank
+    |>.addMem tsleepBank
+    |>.addMem tpBank
+    |>.addMem sigmaskBank
+    |>.addMem tdomBank
+    |>.addMem tcontBank
+    |>.addMem tcdomBank
+    |>.addMem gdepthBank
+    |>.addInput mDonePort
+    |>.addInput mRdataPort
+    |>.addInput mBusyPort
+    |>.addInput gpDonePort
+    |>.addInput gpRdataPort
+    |>.addInput gpBusyPort
+    |>.addInput cmdValidPort
+    |>.addInput cmdIdxPort
+    |>.addInput cmdDataPort
+    |>.addInput resKillPort
+    |>.addInput doorbellPort
+    |>.addInput doorbellKeyPort
+    |>.addInput holdPort
+    |>.addInput scFailPort
+
+def coreRules : List Rule :=
+  [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
+   fsmRule, smpRule, tarrFunnelRule, rfFunnelRule, quantumRule, domainRule,
+   icFillRule, icTagRule, icGenRule, icInvRule,
+   dcDataRule, dcTagRule]
+
+def design : Design := Design.ofDecls "lnp64mini" declarations coreRules
 
 /-! ## D19 — the sync-read (block RAM) obligation
 
