@@ -124,11 +124,17 @@ module lnp64mini_dual_top (
     wire gpm_awready, gpm_wready, gpm_bvalid, gpm_arready, gpm_rvalid;
     wire [1:0] gpm_bresp, gpm_rresp; wire [31:0] gpm_rdata;
 
+    // Generated declarations, CDC samplers, and read function. The same file
+    // is included inside the instance below to generate named port bindings.
+`include "lnp64mini_debug_map.vh"
+
     lnp64mini_dual u_dual (
         .clk(sysclk), .rst(rst),
         .c0_cmd_valid(c0_cmd_valid), .c0_cmd_idx(lat_idx), .c0_cmd_data(lat_dat),
         .c1_cmd_valid(c1_cmd_valid), .c1_cmd_idx(lat_idx), .c1_cmd_data(lat_dat),
-        .c1_hold(h1),
+        // The debug halt request is a sysclk-domain sticky level. `hold` only
+        // takes effect at S_F0, where no bus transaction is outstanding.
+        .c1_hold(h1 | loom_debug_halt_request_c1),
         .hp_m_awready(hp_awready), .hp_m_wready(hp_wready),
         .hp_m_bvalid(hp_bvalid), .hp_m_bresp(hp_bresp),
         .hp_m_arready(hp_arready), .hp_m_rvalid(hp_rvalid),
@@ -170,6 +176,9 @@ module lnp64mini_dual_top (
         .o_gpm_m_araddr(gpm_araddr), .o_gpm_m_arlen(gpm_arlen), .o_gpm_m_arsize(gpm_arsize),
         .o_gpm_m_arburst(gpm_arburst), .o_gpm_m_arid(gpm_arid), .o_gpm_m_arvalid(gpm_arvalid),
         .o_gpm_m_rready(gpm_rready)
+`define LOOM_DEBUG_PORTS
+`include "lnp64mini_debug_map.vh"
+`undef LOOM_DEBUG_PORTS
     );
 
     // bus_granted for the status read: JTAG owns the DDR window when BOTH
@@ -254,7 +263,7 @@ module lnp64mini_dual_top (
                 7'd46: rd_reg <= s_dd[63:32];
                 // CORE1_HOLD + core-1 status (always core 1, region-independent)
                 7'd56: rd_reg <= {26'd0, core1_hold, ss1b};
-                default: rd_reg <= 32'hDEAD_0000;
+                default: rd_reg <= loom_debug_read(w_idx);
             endcase
         end
     end
