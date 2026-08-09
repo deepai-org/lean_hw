@@ -366,3 +366,28 @@ The central discipline is simple:
 > Loom proves designs and technology-neutral logical equivalence. External
 > tools produce the neutral checkpoint and choose implementations; physical
 > flows validate the rest.
+
+## Two shapes worth naming, from the sentinel arc (2026-08-09)
+
+**A fetch-path event's funnels should key on a STATE, not on the fetch
+guards.** Implementing the §9.2 return sentinel, the natural expression was
+"we are in `S_F0`, past `bus_req`/poison/**preemption**, and `pc` is the
+sentinel" -- and referencing that from the five funnels that record a gate
+return duplicated `preemptFire`'s NT-wide priority tree five times. Per-cycle
+evaluation exploded; the selftests looked hung. Routing the event through a
+dedicated state (`S_GRET`) made every funnel a 5-bit compare. Loom has no
+sharing at the expression level today (a `DagEval` is in flight, which is the
+general fix), so **a state is the memo** -- worth knowing before the general
+fix lands, and worth checking against it afterwards.
+
+**A derived observability coordinate can diverge while behavior agrees, and
+that is the lockstep's finest hour.** The sentinel work's only failure was
+`trace_in_wb`: both models pushed the same architectural state, but the EDSL
+derives the trace capture from the register-write FUNNEL while the ISS
+derives it from its `rfWe/rfWd` variables -- so an ISS write made directly to
+the register file was invisible to one and not the other. No architectural
+check could have caught it (every one passed); only comparing *every declared
+coordinate* did. This is the concrete argument for `lockstepDerived`'s
+"coordinates come from `Design.coords`, so a coordinate cannot be omitted"
+over hand-enumerated comparison lists: the coordinate that catches you is the
+one nobody thought to list.

@@ -660,6 +660,13 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
       else if preemptFire then
         s' := { s' with tpc := s'.tpc.set! curV.toNat s.pc, cur := s.next_ready,
                         pc := s.tpc[s.next_ready.toNat]! }
+      -- §9.2 sentinel (spec aebacd95): `ra` fetched IS the gate return.
+      -- The caller frame comes from the continuation stack, never from `ra`;
+      -- with no frame open it takes the empty-stack fault. Nothing is
+      -- fetched and nothing retires.
+      else if s.pc = BitVec.ofNat 64 GATE_RET_SENTINEL then
+        -- No fetch is issued; S_GRET does the return next cycle.
+        s' := { s' with st := BitVec.ofNat 5 S_GRET }
       else
         -- EXT-9: latch both banks (the D19 sync-read sites) and check next
         -- cycle in S_IC. The fetch this arm used to issue now lives on the
@@ -669,6 +676,25 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         s' := { s' with ic_tag_q := s.ic_tag[idx.toNat]!,
                         ic_data_q := s.ic_data[idx.toNat]!,
                         st := BitVec.ofNat 5 S_IC }
+    else if stN = S_GRET then
+      -- §9.2 sentinel return: the caller frame comes from the continuation
+      -- stack, never from `ra`; with no frame open it is the empty-stack
+      -- fault. Nothing retires.
+      if s.in_gate.getLsbD curV.toNat then
+        let gd := s.gdepth[curV.toNat]!.toNat
+        let popIdx := curV.toNat * MAXD + (gd - 1)
+        s' := { s' with pc := s.tcont[popIdx]!,
+                        tdom := s'.tdom.set! curV.toNat s.tcdom[popIdx]!,
+                        gdepth := s'.gdepth.set! curV.toNat (BitVec.ofNat 3 (gd - 1)),
+                        in_gate := (if gd = 1 then s.in_gate &&& ~~~(1#32 <<< curV.toNat)
+                                    else s.in_gate),
+                        st := BitVec.ofNat 5 S_F0 }
+        rfWe := true; rfWa := (curV ++ (3 : BitVec 5)); rfWd := 0  -- §9.2 status
+      else
+        s' := { s' with st := BitVec.ofNat 5 S_F0,
+                        poison := s.poison ||| (1#32 <<< curV.toNat),
+                        fault_cause := BitVec.ofNat 8 1,
+                        fault_pc := s.pc, fault_cur := curV }
     else if stN = S_IC then
       -- hit: valid bit (17) set and tag match; miss: exactly the old fetch.
       let ddrPcV := (BitVec.ofNat 32 DATA_BASE) + s.pc.setWidth 32
@@ -833,6 +859,7 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           in_gate := (if gd = 1 then s.in_gate &&& ~~~(1#32 <<< curV.toNat)
                                       else s.in_gate),
                           retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
+          rfWe := true; rfWa := (curV ++ (3 : BitVec 5)); rfWd := 0
         else
           -- §9.2 step 4 (1235f201): a GATE_RETURN with no continuation frame
           -- is a synchronous FAULT -- poison the slot, record cause/pc/slot,
@@ -942,8 +969,16 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
                           in_gate := s.in_gate ||| (1#32 <<< curV.toNat),
                           tdom := s'.tdom.set! curV.toNat (inp.mRdata.setWidth 8),
                           pc := s.gate_ent_q }
+          -- §9.2: the activation installs the return sentinel in `ra` (r1),
+          -- which is what lets the handler be an ordinary function. Routed
+          -- through rfWe/rfWa/rfWd, NOT a direct `rf.set!`: the trace ring's
+          -- write-back capture is derived from that path, and a direct write
+          -- diverges from the EDSL's funnel (lockstep caught exactly this).
+          rfWe := true; rfWa := (curV ++ (1 : BitVec 5)); rfWd := BitVec.ofNat 64 GATE_RET_SENTINEL
         else
+          -- Refused activation: fail-closed step-past + the §9.2 status.
           s' := { s' with pc := pc8 s }
+          rfWe := true; rfWa := (curV ++ (3 : BitVec 5)); rfWd := 0xFFFFFFFFFFFFFFFF
     else if stN = S_CS0 then
       -- §17 cap send: the flags word is back. Valid+free commits (latch the
       -- flags, issue the handle write at +0, invalidating its D$ line the
