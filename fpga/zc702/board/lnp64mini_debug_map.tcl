@@ -7,7 +7,14 @@ proc debug_fault_pc {} { return [expr {((0) | (([rd 49]) << 0)) | (([rd 50]) << 
 proc debug_fault_cause {} { return [rd 51] }
 proc debug_fault_cur {} { return [rd 52] }
 proc debug_running_and_halted {} { return [rd 54] }
+# Latch every tap coherently in the source domain, then read. Without
+# this the crossed values are live and per-bit arrival can assemble a word
+# the source never held (Loom.Hw.Cdc.torn_read_exists). With it the source
+# is stable across the read, which is what makes the reads coherent
+# (Loom.Hw.Cdc.holdStable + sample_coherent_of_stable).
+proc debug_capture {} { wr 76 0; after 1 }
 proc debug_read_all {} {
+  debug_capture
   puts [format {trace_rd_pc_lo = 0x%08x} [debug_trace_rd_pc_lo]]
   puts [format {trace_rd_wb_lo = 0x%08x} [debug_trace_rd_wb_lo]]
   puts [format {fault_pc = 0x%016x} [debug_fault_pc]]
