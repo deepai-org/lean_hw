@@ -53,13 +53,24 @@ fresher() {
 
 echo "### [1/4] yosys synth ($TOP) ###"
 rm -f "$O.json"
-# YOSYS_SYNTH_FLAGS: extra `synth_xilinx` flags for this target. The board
-# flow needs `-nodsp` while openXC7 cannot complete an inferred DSP48: a
-# native 64x64 multiply makes yosys emit a DSP macro and the flow dies with
-# "Port PCOUT46 has no connections" (2026-08-10). Measured cost of the
-# fallback on this device: 3833 LUTs per multiplier, so two cores move the
-# dual from ~46% to ~53% -- inside the reseed-lottery band, not free.
-yosys -q -p "read_verilog $SRCS; synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS:-} -top $TOP; write_json $O.json" 2>&1 | tee "$O.synth.log"
+# YOSYS_SYNTH_FLAGS defaults to `-nodsp` so this script works on a STOCK
+# openXC7 of any version -- the only custom component in this project is Loom
+# itself, and a board flow that needs a patched tool is not a flow anyone else
+# can run.
+#
+# Why the default is needed: a native 64x64 multiply makes yosys infer DSP48E1
+# macros, and openXC7 up to 0.8.2 treats an unused terminal PCOUT cascade net
+# as fatal -- "Port PCOUT46 has no connections" -- although AMD documents
+# unused cascade outputs as leave-unconnected. Upstream fixed exactly this in
+# nextpnr-xilinx d01b24f5 (error -> warning), released in openXC7 0.9.2.
+#
+# So: on a stock 0.9.2 or newer host you may set YOSYS_SYNTH_FLAGS="" to get
+# the DSP implementation, which is the better one -- roughly 20 DSP48E1 of the
+# 220 on an xc7z020 in place of 3833 LUTs per multiplier. On this host's 0.8.2
+# the LUT fallback measures 59035/106400 = 55%, routed at iteration 17,
+# 32.86 MHz: it fits, with no headroom left. Do not patch the tool to avoid
+# that cost; upgrade the tool, or accept the LUTs.
+yosys -q -p "read_verilog $SRCS; synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS--nodsp} -top $TOP; write_json $O.json" 2>&1 | tee "$O.synth.log"
 fresher "$O.json" $SRCS "$XDC"
 
 echo "### [2/4] nextpnr-xilinx P&R ###"
@@ -79,4 +90,18 @@ fresher "$O.bit" "$O.frm"
 # The routed Fmax, echoed next to the bit so a build's timing is in the same
 # place as its artifact rather than buried in the P&R log.
 grep -E "Max frequency for clock .*'sysclk'" "$O.pnr.log" | tail -1 || true
+# Record WHAT PRODUCED THIS BITSTREAM. `/snap/openxc7/current` is a moving
+# symlink and nothing else in the repo pins it, so without this a tool refresh
+# can change the silicon with no evidence but a puzzling Fmax. Same doctrine as
+# the guest image's build stamp: an artifact names its producer.
+{ echo "bit:      $(basename "$O.bit")  $(stat -c%s "$O.bit") bytes"
+  echo "built:    $(date -Is)"
+  echo "nextpnr:  $(nextpnr-xilinx --version 2>&1 | head -1)"
+  echo "yosys:    $(yosys -V 2>&1 | head -1)"
+  echo "chipdb:   $CHIPDB  $(md5sum "$CHIPDB" 2>/dev/null | cut -c1-12)"
+  echo "synth:    synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS--nodsp}"
+  echo "seed:     ${NPNR_SEED:-default}"
+  echo "sources:  $SRCS"
+} > "$O.toolchain.txt"
+cat "$O.toolchain.txt"
 ls -l "$O.bit" && echo "OXC7_BUILD_DONE bit=$O.bit"
