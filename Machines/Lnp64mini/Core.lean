@@ -1405,11 +1405,18 @@ def GATE_RET_SENTINEL : Nat := 0xFFFFFFFFFFFFFFF8
 
 /-- The sentinel's own FSM state. `S_F0` recognizes the address (one 64-bit
 compare) and hands off here; the return work and every funnel that records it
-then key on `st = S_GRET` alone. That is not a stylistic choice: folding the
-`S_F0` guards (`bus_req`/poison/**`preemptFire`**) into the funnel condition
-duplicated `preemptFire`'s NT-wide priority tree into five funnels and made
-cycle evaluation explode -- the selftests hung outright. A state IS the
-memo. -/
+then key on `st = S_GRET` alone.
+
+Historical note, kept because it explains the shape: this started as a
+workaround. Folding the `S_F0` guards (`bus_req`/poison/**`preemptFire`**)
+into the funnel condition duplicated `preemptFire`'s NT-wide priority tree
+into five funnels and made cycle evaluation explode -- the selftests appeared
+to hang. Loom's certified shared-DAG evaluation has since made that cost
+disappear (this suite went from hours to 39 s), so the state is no longer
+*required* for tractability. It stays because it is the clearer design
+anyway: the sentinel is a distinct machine event, and a funnel that says
+"we are returning through the sentinel" reads better than one that restates
+the fetch guards. -/
 def S_GRET : Nat := 29
 
 def sentinelPc : Expr 1 := .eq pc (L64 GATE_RET_SENTINEL)
