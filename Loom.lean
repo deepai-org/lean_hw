@@ -45,6 +45,7 @@ import Loom.Hw.CostTarget
 import Loom.Hw.Outputs
 import Loom.Hw.CdcContract
 import Loom.Hw.CdcSnapshot
+import Loom.Hw.System
 import Loom.Hw.Notation
 import Loom.Hw.Declarations
 import Loom.Hw.DebugTap
