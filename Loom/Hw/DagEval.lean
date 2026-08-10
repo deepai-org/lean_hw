@@ -26,7 +26,7 @@ inductive Node where
   | memRead (base a : Nat)
   | and (a b : Nat) | or (a b : Nat) | xor (a b : Nat)
   | not (mask a : Nat)
-  | add (m a b : Nat) | sub (m a b : Nat)
+  | add (m a b : Nat) | sub (m a b : Nat) | mul (m a b : Nat)
   | shl (w m a b : Nat) | shr (w a b : Nat)
   | eq (a b : Nat) | ult (a b : Nat) | slt (h a b : Nat)
   | mux (c t f : Nat)
@@ -36,7 +36,7 @@ inductive Node where
 def Node.refs : Node → List Nat
   | .lit _ | .reg _ => []
   | .memRead _ a | .not _ a | .slice _ _ a | .zext _ a | .sext _ _ _ a => [a]
-  | .and a b | .or a b | .xor a b | .add _ a b | .sub _ a b |
+  | .and a b | .or a b | .xor a b | .add _ a b | .sub _ a b | .mul _ a b |
     .shl _ _ a b | .shr _ a b | .eq a b | .ult a b | .slt _ a b => [a, b]
   | .mux c t f => [c, t, f]
 
@@ -88,6 +88,10 @@ def intern (e : FExpr) (s : Build) : Nat × Build :=
         let (ia, s) := intern a s
         let (ib, s) := intern b s
         add (.sub m ia ib) s
+    | .mul m a b =>
+        let (ia, s) := intern a s
+        let (ib, s) := intern b s
+        add (.mul m ia ib) s
     | .shl w m a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
@@ -166,7 +170,7 @@ def fexprTreeNodes : FExpr → Nat
   | .lit _ | .reg _ => 1
   | .memRead _ a | .not _ a | .slice _ _ a | .zext _ a | .sext _ _ _ a =>
       1 + fexprTreeNodes a
-  | .and a b | .or a b | .xor a b | .add _ a b | .sub _ a b |
+  | .and a b | .or a b | .xor a b | .add _ a b | .sub _ a b | .mul _ a b |
     .shl _ _ a b | .shr _ a b | .eq a b | .ult a b | .slt _ a b =>
       1 + fexprTreeNodes a + fexprTreeNodes b
   | .mux c t f => 1 + fexprTreeNodes c + fexprTreeNodes t + fexprTreeNodes f
@@ -246,6 +250,7 @@ def Node.eval (pr pm vs : Array Nat) : Node → Nat
   | .not mask a => mask - val vs a
   | .add m a b => (val vs a + val vs b) % m
   | .sub m a b => (m - val vs b + val vs a) % m
+  | .mul m a b => (val vs a * val vs b) % m
   | .shl w m a b => let s := val vs b; if s < w then (val vs a <<< s) % m else 0
   | .shr w a b => let s := val vs b; if s < w then val vs a >>> s else 0
   | .eq a b => if val vs a = val vs b then 1 else 0
@@ -372,6 +377,10 @@ inductive ExprMatch (nodes : Array Node) : Nat → FExpr → Prop where
       (node : nodes[root] = .sub m a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.sub m ea eb)
+  | mul {root m a b ea eb} (bound : root < nodes.size)
+      (node : nodes[root] = .mul m a b) (ab : a < root ∧ b < root)
+      (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
+      ExprMatch nodes root (.mul m ea eb)
   | shl {root w m a b ea eb} (bound : root < nodes.size)
       (node : nodes[root] = .shl w m a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
@@ -459,6 +468,12 @@ def checkExpr (nodes : Array Node) (root : Nat) :
       match hn : nodes[root] with
       | .sub m' a b => if hm : m' = m then by
           subst m'; exact checkBin hr hn ea eb ExprMatch.sub
+        else none
+      | _ => none else none
+  | .mul m ea eb => if hr : root < nodes.size then
+      match hn : nodes[root] with
+      | .mul m' a b => if hm : m' = m then by
+          subst m'; exact checkBin hr hn ea eb ExprMatch.mul
         else none
       | _ => none else none
   | .shl w m ea eb => if hr : root < nodes.size then

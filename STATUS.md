@@ -26,6 +26,15 @@ the bounded-model-check proof from the standing gate.
 The full reproduction and release workflows remain separate, explicitly
 unrerun gates.
 
+`Loom/Hw/System.lean` provides the low-level multiclock foundation: executable
+set-of-ticking-domain schedules, schedule-quantified `System.Invariant`,
+per-event framing, island reachability, and one-call lifting of ordinary
+Design invariants. `Machines/Multiclock/TwoCounters.lean` demonstrates two
+unconstrained clocks. Typed `Chan` handles, named assembly, endpoint laws,
+concrete CDC refinement, crossing inventories, and multi-clock emission in
+[`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md) remain planned work; existing board
+wrappers do not constitute those layers.
+
 ## Formal verification state
 
 - The LNP64-µ public ledger imports T1–T9, the machine invariant assembly, and
@@ -38,6 +47,18 @@ unrerun gates.
   retirement arms.
 - The generic compiler/emission proof covers the EDSL-to-µVerilog module
   semantics. Open-design cycle semantics and input/output support also exist.
+- The expression language, reference and optimized evaluators, compiler,
+  concrete SSA certificates, parser, and printer support same-width modular
+  multiplication. RTL uses the neutral `*` operator so downstream FPGA or
+  ASIC tools remain free to infer an appropriate implementation. Typed
+  `Expr.umulWide` and `Expr.smulWide` constructors retain all unsigned or
+  two's-complement product bits by lowering through that proved primitive;
+  abstract cost reporting preserves the operands' meaningful widths. Typed
+  concatenation is available as `Expr.concat` / `++#` and lowers to the proved
+  primitive algebra. Division and remainder remain absent pending an explicit
+  total divide-by-zero contract. LNP64mini uses direct generic multiplication
+  for ordinary low-half `MUL`; its high-half `MULH`/`MULHU` instructions remain
+  on the intentional iterative shift-add path.
 - `Tools/VerifiedRelease.lean` defines the combined Acc8/LNP64-µ release
   theorem. Its named LNP64-µ consequences are authority confinement,
   machine-wide W^X, lineage-ledger conservation, and budget boundedness.
@@ -124,21 +145,25 @@ See [`TCB.md`](TCB.md).
 
 ## Hardware integration
 
-The current LNP64mini integration head is **not hardware-green**:
+The current LNP64mini integration head is **hardware-green as external
+evidence**. One accounted dual-core bitstream and guest image complete the
+full NetBSD mission workload:
 
-- cross-repository opcode agreement is restored for 70 shared opcodes;
-- the rebuilt guest passes the zero-trap emulator gate;
-- silicon reports zero traps; but
-- the guest still does not reach the network: core 0 deterministically halts
-  and core 1 remains parked in a futex wait after only 20 retirements.
+- the direct generic 64-bit `MUL` executes correctly in the kernel;
+- the stock-openXC7 `-nodsp` implementation routes at 59,035 of 106,400 LUTs
+  (55%), iteration 17, with a reported 32.86 MHz `sysclk` maximum;
+- the sentinel gate ABI runs the write-gate handler as an ordinary C function;
+- `uname` and `echo e2e-ok-through-gate` reply through gate 1/domain 1;
+- the shmif driver runs through the domain-2 path; and
+- ping completes 4/4 while the CDC snapshot/debug changes are present.
 
-Raw console-ring data shows each guest byte write replicated into a 64-bit
-word at stride eight while adjacent 32-bit metadata is correct. Guest C,
-clang, the Loom design, ISS, and emitted-RTL simulation all specify the
-expected packed single-lane write. The remaining mismatch is in the physical
-HP AXI path or a downstream artifact; the next diagnostic is a tiny
-known-pattern write-and-halt probe read back over JTAG. No NetBSD, Ethernet,
-SMP, epoch, or capability board result is currently accepted for this head.
+The accepted image uses roots `0x913000` and core-1 entry `0x8cae00`. This is
+corroborating physical evidence, not a theorem about synthesis, place and
+route, the bitstream, PS7, DDR, Ethernet, or CDC physics. DSP48 inference is
+not part of this accepted result: the installed openXC7 0.8.2 rejects a legal
+unused terminal `PCOUT`, so the reproducible board script defaults to the
+validated LUT implementation. A DSP-enabled build remains an optional target
+flow optimization.
 
 ## Property limits that remain open
 

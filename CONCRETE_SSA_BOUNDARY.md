@@ -50,7 +50,7 @@ Operands refer to source registers or earlier wires.
 | `slice x hi lo` | `x[hi:lo]` | inclusive slice |
 | `not x` | `~x` | bitwise complement |
 | `and`, `or`, `xor` | `x & y`, `x \| y`, `x ^ y` | same-width bitwise operation |
-| `add`, `sub` | `x + y`, `x - y` | same-width modular arithmetic |
+| `add`, `sub`, `mul` | `x + y`, `x - y`, `x * y` | same-width modular arithmetic |
 | `shl`, `shr` | `x << y`, `x >> y` | same-width logical shift result |
 | `eq`, `ult` | `x == y`, `x < y` | one-bit equality or unsigned comparison |
 | `slt` | `$signed(x) < $signed(y)` | one-bit two's-complement comparison |
@@ -62,9 +62,11 @@ delays, falling-edge or multi-clock event controls, blocking sequential
 assignments, `x`/`z` literals, `casex`/`casez`, tri-states, force/release, DPI,
 randomness, unsized literals, generate statements, or user functions.
 
-The optional post-synthesis CNF encoder proves every non-memory expression
-constructor in this table. Direct `memRead` expressions remain a deliberate
-cut handled by the checker's separate memory boundary.
+The generic CNF layer has a sound UNSAT encoding for every non-memory
+expression constructor in this table. Some arithmetic operators, including
+`mul`, are currently conservative free-variable over-approximations, so they
+lose completeness rather than risking an unsound proof. Direct `memRead`
+expressions remain a deliberate cut.
 
 ## Module framing
 

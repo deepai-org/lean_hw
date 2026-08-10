@@ -103,6 +103,7 @@ def Expr.key : {w : Nat} → Expr w → String
   | w, .not a => s!"({w}:~{a.key})"
   | w, .add a b => s!"({w}:{a.key} + {b.key})"
   | w, .sub a b => s!"({w}:{a.key} - {b.key})"
+  | w, .mul a b => s!"({w}:{a.key} * {b.key})"
   | w, .shl a b => s!"({w}:{a.key} << {b.key})"
   | w, .shr a b => s!"({w}:{a.key} >> {b.key})"
   | _, .eq a b => s!"(1:{a.key} == {b.key})"
@@ -119,7 +120,7 @@ def Expr.readsMem (m : String) : {w : Nat} → Expr w → Bool
   | _, .reg _ _ => false
   | _, .memRead _ m' addr => m' == m || addr.readsMem m
   | _, .and a b | _, .or a b | _, .xor a b
-  | _, .add a b | _, .sub a b | _, .shl a b | _, .shr a b
+  | _, .add a b | _, .sub a b | _, .mul a b | _, .shl a b | _, .shr a b
   | _, .eq a b | _, .ult a b | _, .slt a b => a.readsMem m || b.readsMem m
   | _, .not a => a.readsMem m
   | _, .mux c t f => c.readsMem m || t.readsMem m || f.readsMem m
@@ -144,7 +145,7 @@ where
       | .memRead _ m' addr => do
           if m' == m then pure true else go addr
       | .and a b | .or a b | .xor a b
-      | .add a b | .sub a b | .shl a b | .shr a b
+      | .add a b | .sub a b | .mul a b | .shl a b | .shr a b
       | .eq a b | .ult a b | .slt a b => do
           if ← go a then pure true else go b
       | .not a => go a

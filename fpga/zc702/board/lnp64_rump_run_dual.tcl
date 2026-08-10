@@ -677,10 +677,8 @@ foreach cr {0 1} {
   # Render the window ending at the write head; the ring wraps at 0x10000
   # chars and this one wraps several times per run, so the start is ancient
   # history. Runs of repeated characters here are REAL -- the guest writes
-  # them. That was checked the hard way: the PS DAP and the mini's own HP
-  # master (regs 40/43/45/46) return identical words, and a word like
-  # 0x202020202020204E is a correct lane merge, not a smear. See
-  # lean_hw Machines/Lnp64mini/EXTEND_SPEC.md, "byte stores are fine".
+  # them. The PS DAP and the mini's own HP master (regs 40/43/45/46) return
+  # identical words, and `subwordselftest` checks the lane-merge semantics.
   set chead [expr {$cw % 0x10000}]
   set cwin 1200
   set cfrom [expr {$chead > $cwin ? $chead - $cwin : 0}]

@@ -32,10 +32,12 @@ comparison, emitted-RTL simulation, memory target checks, and the configured
 post-synthesis flow. The wrapper and external DDR/PS behavior are separate
 from the Loom module claim.
 
-The present board head is not green: current diagnostics show core 0 halting
-while core 1 remains in a futex-wait state after a short trace, and network
-service is down. There is no accepted SMP, ping, or telnet result for the
-current head; `STATUS.md` is the operational record.
+The present board head is green as external evidence: one accounted dual-core
+artifact boots NetBSD, completes ping 4/4, returns `uname` and echo traffic
+through gate 1/domain 1, and runs the shmif driver through the domain-2 path.
+The accepted implementation uses LUT-mapped direct multiplication. This does
+not strengthen the Loom theorem boundary; `STATUS.md` is the operational
+record.
 
 ## Boundary
 

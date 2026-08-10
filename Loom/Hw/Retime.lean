@@ -56,6 +56,7 @@ def Expr.readsReg (n : String) : {w : Nat} → Expr w → Bool
   | _, .not a          => a.readsReg n
   | _, .add a b        => a.readsReg n || b.readsReg n
   | _, .sub a b        => a.readsReg n || b.readsReg n
+  | _, .mul a b        => a.readsReg n || b.readsReg n
   | _, .shl a b        => a.readsReg n || b.readsReg n
   | _, .shr a b        => a.readsReg n || b.readsReg n
   | _, .eq a b         => a.readsReg n || b.readsReg n
@@ -78,6 +79,7 @@ def Expr.readsOf : {w : Nat} → Expr w → List String
   | _, .not a          => a.readsOf
   | _, .add a b        => a.readsOf ++ b.readsOf
   | _, .sub a b        => a.readsOf ++ b.readsOf
+  | _, .mul a b        => a.readsOf ++ b.readsOf
   | _, .shl a b        => a.readsOf ++ b.readsOf
   | _, .shr a b        => a.readsOf ++ b.readsOf
   | _, .eq a b         => a.readsOf ++ b.readsOf
@@ -238,6 +240,9 @@ theorem Expr.eval_retimeAbs (r : String) (σ : St) :
   | sub a b iha ihb =>
     intro h hp; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h hp
     show _ - _ = _ - _; rw [iha h.1 hp.1, ihb h.2 hp.2]
+  | mul a b iha ihb =>
+    intro h hp; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h hp
+    show _ * _ = _ * _; rw [iha h.1 hp.1, ihb h.2 hp.2]
   | shl a b iha ihb =>
     intro h hp; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h hp
     show a.eval (retimeAbs r σ) <<< (b.eval (retimeAbs r σ)).toNat

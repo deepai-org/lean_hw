@@ -40,6 +40,7 @@ def compileExprMatches : {w : Nat} → Loom.Hw.Expr w →
   | _, .xor aa ba, .xor ab bb
   | _, .add aa ba, .add ab bb
   | _, .sub aa ba, .sub ab bb
+  | _, .mul aa ba, .mul ab bb
   | _, .shl aa ba, .shl ab bb
   | _, .shr aa ba, .shr ab bb =>
       compileExprMatches aa ab && compileExprMatches ba bb

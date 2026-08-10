@@ -372,7 +372,8 @@ private def sourceExprNodeCount : {width : Nat} → Loom.Hw.Expr width → Nat
   | _, .zext address _ | _, .sext address _ =>
       sourceExprNodeCount address + 1
   | _, .and left right | _, .or left right | _, .xor left right
-  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .add left right | _, .sub left right | _, .mul left right
+  | _, .shl left right
   | _, .shr left right | _, .eq left right | _, .ult left right
   | _, .slt left right =>
       sourceExprNodeCount left + sourceExprNodeCount right + 1
@@ -580,7 +581,8 @@ private def runtimeRefEvidenceToLean (program : Tools.RuntimeSsa.Program)
 
 private def runtimeBinCtor : Loom.Release.SSA.BinOp → String
   | .and => "and" | .or => "or" | .xor => "xor"
-  | .add => "add" | .sub => "sub" | .shl => "shl" | .shr => "shr"
+  | .add => "add" | .sub => "sub" | .mul => "mul"
+  | .shl => "shl" | .shr => "shr"
   | .eq => "eq" | .ult => "ult"
 
 /-- Emit one independently kernel-checked node of the reconstructed compiler
@@ -745,13 +747,15 @@ private partial def buildSourceExprEvidence
         | .xor left right, .bin .xor leftRef rightRef
         | .add left right, .bin .add leftRef rightRef
         | .sub left right, .bin .sub leftRef rightRef
+        | .mul left right, .bin .mul leftRef rightRef
         | .shl left right, .bin .shl leftRef rightRef
         | .shr left right, .bin .shr leftRef rightRef => do
             let leftChild ← buildChild 0 ⟨_, left⟩ leftRef
             let rightChild ← buildChild 1 ⟨_, right⟩ rightRef
             let ctor := match expression with
               | .and .. => "and" | .or .. => "or" | .xor .. => "xor"
-              | .add .. => "add" | .sub .. => "sub" | .shl .. => "shl"
+              | .add .. => "add" | .sub .. => "sub" | .mul .. => "mul"
+              | .shl .. => "shl"
               | .shr .. => "shr" | _ => ""
             pure (ctor, [leftChild.evidence, rightChild.evidence])
         | @Loom.Hw.Expr.eq operandWidth left right,

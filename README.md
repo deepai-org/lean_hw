@@ -45,6 +45,14 @@ an ordered list of guarded actions. Reads observe pre-cycle state, writes
 commit at the cycle edge, and later writes win. The detailed semantics are in
 [`Loom/Hw/DESIGN.md`](Loom/Hw/DESIGN.md).
 
+Expressions include fixed-width modular multiplication, emitted directly as
+technology-neutral Verilog `*`; typed unsigned and signed full-width products
+(`Expr.umulWide` and `Expr.smulWide`); and a typed concatenation constructor
+(`++#`). Full-width products lower through the same proved primitive path.
+Unsigned division and remainder are not yet expressible; their total
+divide-by-zero semantics must be fixed before adding RTL operators whose raw
+Verilog behavior could introduce `X` values.
+
 The current workflow derives these views from the Design:
 
 - **Declarations and interfaces.** `Reg w`, `RegArray w n`, and `Mem aw dw`
@@ -76,7 +84,10 @@ The current workflow derives these views from the Design:
 The typed single-source migration is not finished. In particular, some
 independent machine oracles and integration adapters remain deliberately
 hand-written. The ordered remaining work is in [`ROADMAP.md`](ROADMAP.md), and
-the destination and scope test are in [`PLATONIC.md`](PLATONIC.md).
+the destination and scope test are in [`PLATONIC.md`](PLATONIC.md). The
+low-level multiclock foundation provides schedule-quantified `System`
+semantics and island-invariant lifting; the proposed typed `Chan` and assembly
+API remains future work recorded in [`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md).
 
 To exercise both LNP64mini execution paths:
 
@@ -94,7 +105,7 @@ a smaller Design.
 |---|---|
 | **Acc8** | Small end-to-end pathfinder for ISA refinement, compilation, emission, and release certificates. |
 | **LNP64-µ** | Capability-machine model with the T1–T9 theorem ledger and a theorem-bound emitted artifact. |
-| **LNP64mini** | Larger soft core and SoC integration vehicle; its primary simulator is the certified Design-derived DAG evaluator. The current board integration is not hardware-green. |
+| **LNP64mini** | Larger soft core and SoC integration vehicle; its primary simulator is the certified Design-derived DAG evaluator. The current dual-core NetBSD board workload is hardware-green as external evidence. |
 | **Substrate** | Small bring-up and transformation examples, including recorded ZC702 observations. |
 | **Epoch** and **CapWalk** | Focused protocol machines for freshness and capability-walk properties. |
 
@@ -153,6 +164,8 @@ The main documents have separate roles:
 - [`TRUST.md`](TRUST.md) — property and platform limitations.
 - [`ROADMAP.md`](ROADMAP.md) — ordered unfinished work.
 - [`PLATONIC.md`](PLATONIC.md) — strategic destination and scope boundary.
+- [`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md) — clock-domain and CDC
+  architecture, with shipped foundation and remaining phases identified.
 
 ## Licensing
 

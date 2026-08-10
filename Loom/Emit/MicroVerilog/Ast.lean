@@ -32,6 +32,7 @@ inductive Expr : Nat → Type where
   | not     {w : Nat} (a : Expr w) : Expr w
   | add     {w : Nat} (a b : Expr w) : Expr w
   | sub     {w : Nat} (a b : Expr w) : Expr w
+  | mul     {w : Nat} (a b : Expr w) : Expr w
   | shl     {w : Nat} (a b : Expr w) : Expr w
   | shr     {w : Nat} (a b : Expr w) : Expr w
   | eq      {w : Nat} (a b : Expr w) : Expr 1

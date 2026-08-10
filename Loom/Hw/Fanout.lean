@@ -34,6 +34,7 @@ def Expr.redirectRead (source replica : String) : {w : Nat} → Expr w → Expr 
   | _, .not value => .not (value.redirectRead source replica)
   | _, .add left right => .add (left.redirectRead source replica) (right.redirectRead source replica)
   | _, .sub left right => .sub (left.redirectRead source replica) (right.redirectRead source replica)
+  | _, .mul left right => .mul (left.redirectRead source replica) (right.redirectRead source replica)
   | _, .shl left right => .shl (left.redirectRead source replica) (right.redirectRead source replica)
   | _, .shr left right => .shr (left.redirectRead source replica) (right.redirectRead source replica)
   | _, .eq left right => .eq (left.redirectRead source replica) (right.redirectRead source replica)
@@ -153,6 +154,9 @@ theorem Expr.eval_fanoutAbs (replica : String) (state : St) :
   | sub left right ihLeft ihRight =>
       intro h; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h
       simp only [Expr.eval, ihLeft h.1, ihRight h.2]
+  | mul left right ihLeft ihRight =>
+      intro h; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h
+      simp only [Expr.eval, ihLeft h.1, ihRight h.2]
   | shl left right ihLeft ihRight =>
       intro h; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h
       simp only [Expr.eval, ihLeft h.1, ihRight h.2]
@@ -219,6 +223,9 @@ theorem Expr.eval_redirectRead (source replica : String) (state : St)
       intro h; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h
       simp only [Expr.redirectRead, Expr.eval, ihLeft h.1, ihRight h.2]
   | sub left right ihLeft ihRight =>
+      intro h; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h
+      simp only [Expr.redirectRead, Expr.eval, ihLeft h.1, ihRight h.2]
+  | mul left right ihLeft ihRight =>
       intro h; simp only [Expr.readsReg, Bool.or_eq_false_iff] at h
       simp only [Expr.redirectRead, Expr.eval, ihLeft h.1, ihRight h.2]
   | shl left right ihLeft ihRight =>

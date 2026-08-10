@@ -6,6 +6,8 @@ import Tests.Acc8Core
 import Tests.Acc8Declarations
 import Tests.Lnp64u
 import Tests.Lnp64uCore
+import Tests.Lnp64miniArithmetic
+import Tests.WideMul
 import Tests.MultiPort
 import Tests.MemTarget
 import Tests.Outputs

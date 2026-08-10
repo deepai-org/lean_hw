@@ -123,11 +123,14 @@ analog fact. Those are explicit physical assumptions.
 
 ## Current hardware evidence
 
-The current LNP64mini integration head has restored zero-trap execution on
-silicon but still fails to bring up the network; core 0 halts and core 1
-remains in a futex wait. Consequently there is no accepted NetBSD, Ethernet,
-SMP, epoch, or capability board claim for this head. See [`STATUS.md`](STATUS.md)
-and `Machines/Lnp64mini/EXTEND_SPEC.md`.
+The current LNP64mini integration head has an accepted dual-core NetBSD board
+run: ping completes 4/4, `uname` and an echo reply traverse gate 1/domain 1,
+and the shmif driver uses the domain-2 path. The bitstream uses the validated
+LUT-mapped direct multiplier because the installed openXC7 0.8.2 cannot pack
+the inferred DSP48 terminal cascade output. These are observations of one
+accounted artifact and workload, not proofs of the board wrapper, synthesis,
+place and route, bitstream, PS7, DDR, Ethernet, CDC, or arbitrary executions.
+See [`STATUS.md`](STATUS.md) and `Machines/Lnp64mini/EXTEND_SPEC.md`.
 
 ## Review priorities
 

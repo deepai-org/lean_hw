@@ -462,7 +462,7 @@ def indexedRhsWellFormed (program : Program)
       refWidthBefore? program wires table number value == some resultWidth
   | .bin op left right =>
       match op with
-      | .and | .or | .xor | .add | .sub | .shl | .shr =>
+      | .and | .or | .xor | .add | .sub | .mul | .shl | .shr =>
           refWidthBefore? program wires table number left == some resultWidth &&
             refWidthBefore? program wires table number right == some resultWidth
       | .eq | .ult =>
@@ -551,6 +551,7 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
       | _ => false
   | _, .and .., .reg _ | _, .or .., .reg _ | _, .xor .., .reg _
   | _, .not _, .reg _ | _, .add .., .reg _ | _, .sub .., .reg _
+  | _, .mul .., .reg _
   | _, .shl .., .reg _ | _, .shr .., .reg _ | _, .eq .., .reg _
   | _, .ult .., .reg _ | _, .slt .., .reg _ | _, .mux .., .reg _
   | _, .slice .., .reg _ | _, .zext .., .reg _ | _, .sext .., .reg _ => false
@@ -621,6 +622,18 @@ def indexedExprMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
   | w, .sub left right, .namedWire number _ =>
       match lookupIndexed? wires table number with
       | some ⟨_, actualWidth, .bin .sub actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .mul left right, .wire number =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .mul actualLeft actualRight⟩ =>
+          actualWidth == w && indexedExprMatches wires table left actualLeft &&
+            indexedExprMatches wires table right actualRight
+      | _ => false
+  | w, .mul left right, .namedWire number _ =>
+      match lookupIndexed? wires table number with
+      | some ⟨_, actualWidth, .bin .mul actualLeft actualRight⟩ =>
           actualWidth == w && indexedExprMatches wires table left actualLeft &&
             indexedExprMatches wires table right actualRight
       | _ => false
@@ -774,6 +787,7 @@ def exprMatchesWith (lookup : Nat → Option IndexedWire) :
       | _ => false
   | _, .and .., .reg _ | _, .or .., .reg _ | _, .xor .., .reg _
   | _, .not _, .reg _ | _, .add .., .reg _ | _, .sub .., .reg _
+  | _, .mul .., .reg _
   | _, .shl .., .reg _ | _, .shr .., .reg _ | _, .eq .., .reg _
   | _, .ult .., .reg _ | _, .slt .., .reg _ | _, .mux .., .reg _
   | _, .slice .., .reg _ | _, .zext .., .reg _ | _, .sext .., .reg _ => false
@@ -844,6 +858,18 @@ def exprMatchesWith (lookup : Nat → Option IndexedWire) :
   | w, .sub left right, .namedWire number _ =>
       match lookup number with
       | some ⟨_, actualWidth, .bin .sub actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .mul left right, .wire number =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .mul actualLeft actualRight⟩ =>
+          actualWidth == w && exprMatchesWith lookup left actualLeft &&
+            exprMatchesWith lookup right actualRight
+      | _ => false
+  | w, .mul left right, .namedWire number _ =>
+      match lookup number with
+      | some ⟨_, actualWidth, .bin .mul actualLeft actualRight⟩ =>
           actualWidth == w && exprMatchesWith lookup left actualLeft &&
             exprMatchesWith lookup right actualRight
       | _ => false
@@ -1058,7 +1084,7 @@ private def hwExprChild? : {width : Nat} → Loom.Hw.Expr width → Nat →
       if index == 0 then some ⟨_, address⟩ else none
   | _, .and left right, index | _, .or left right, index
   | _, .xor left right, index | _, .add left right, index
-  | _, .sub left right, index | _, .shl left right, index
+  | _, .sub left right, index | _, .mul left right, index | _, .shl left right, index
   | _, .shr left right, index =>
       if index == 0 then some ⟨_, left⟩
       else if index == 1 then some ⟨_, right⟩ else none
@@ -1131,6 +1157,11 @@ inductive CompiledExprEvidence :
       (leftEvidence : CompiledExprEvidence left compiledLeft)
       (rightEvidence : CompiledExprEvidence right compiledRight) :
       CompiledExprEvidence (.sub left right) (.sub compiledLeft compiledRight)
+  | mul {width : Nat} {left right : Loom.Hw.Expr width}
+      {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
+      (leftEvidence : CompiledExprEvidence left compiledLeft)
+      (rightEvidence : CompiledExprEvidence right compiledRight) :
+      CompiledExprEvidence (.mul left right) (.mul compiledLeft compiledRight)
   | shl {width : Nat} {left right : Loom.Hw.Expr width}
       {compiledLeft compiledRight : Loom.Emit.MicroVerilog.Expr width}
       (leftEvidence : CompiledExprEvidence left compiledLeft)
@@ -1253,6 +1284,13 @@ inductive IndexedExprEvidence (wires : Rope (List IndexedWire))
       (leftEvidence : IndexedExprEvidence wires table left leftRef)
       (rightEvidence : IndexedExprEvidence wires table right rightRef) :
       IndexedExprEvidence wires table (.sub left right) (.wire number)
+  | mul {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
+      {leftRef rightRef : Ref} {number : Nat}
+      (found : lookupIndexed? wires table number =
+        some ⟨number, width, .bin .mul leftRef rightRef⟩)
+      (leftEvidence : IndexedExprEvidence wires table left leftRef)
+      (rightEvidence : IndexedExprEvidence wires table right rightRef) :
+      IndexedExprEvidence wires table (.mul left right) (.wire number)
   | shl {width : Nat} {left right : Loom.Emit.MicroVerilog.Expr width}
       {leftRef rightRef : Ref} {number : Nat}
       (found : lookupIndexed? wires table number =
@@ -2048,6 +2086,7 @@ def evalNameFuel (program : Program) (table : WireTable)
           | .xor => pure ((← evalAt left width) ^^^ (← evalAt right width))
           | .add => pure ((← evalAt left width) + (← evalAt right width))
           | .sub => pure ((← evalAt left width) - (← evalAt right width))
+          | .mul => pure ((← evalAt left width) * (← evalAt right width))
           | .shl => pure ((← evalAt left width) <<< (← evalAt right width).toNat)
           | .shr => pure ((← evalAt left width) >>> (← evalAt right width).toNat)
           | .eq => do
@@ -2163,6 +2202,12 @@ def exprMatches (program : Program) (table : WireTable) :
   | w, .sub left right, name =>
       match wireRhs? program table name w with
       | some (.bin .sub actualLeft actualRight) =>
+          exprMatches program table left actualLeft &&
+            exprMatches program table right actualRight
+      | _ => false
+  | w, .mul left right, name =>
+      match wireRhs? program table name w with
+      | some (.bin .mul actualLeft actualRight) =>
           exprMatches program table left actualLeft &&
             exprMatches program table right actualRight
       | _ => false

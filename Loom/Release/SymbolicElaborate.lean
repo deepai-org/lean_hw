@@ -90,6 +90,7 @@ def IndexedRhs.elaborate (program : Program) (env : SemanticEnv)
       | .xor => semanticBinSame env resultWidth left right .xor
       | .add => semanticBinSame env resultWidth left right .add
       | .sub => semanticBinSame env resultWidth left right .sub
+      | .mul => semanticBinSame env resultWidth left right .mul
       | .shl => semanticBinSame env resultWidth left right .shl
       | .shr => semanticBinSame env resultWidth left right .shr
       | .eq => semanticComparison env resultWidth left right (fun a b => .eq a b)
@@ -269,7 +270,7 @@ def ExprRegistersValid (program : Program) :
   | _, .lit _ => True
   | _, .memRead _ _ address => ExprRegistersValid program address
   | _, .and left right | _, .or left right | _, .xor left right
-  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .add left right | _, .sub left right | _, .mul left right | _, .shl left right
   | _, .shr left right | _, .eq left right | _, .ult left right
   | _, .slt left right =>
       ExprRegistersValid program left ∧ ExprRegistersValid program right
@@ -288,7 +289,7 @@ def HwExprRegistersValid (program : Program) :
   | _, .lit _ => True
   | _, .memRead _ _ address => HwExprRegistersValid program address
   | _, .and left right | _, .or left right | _, .xor left right
-  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .add left right | _, .sub left right | _, .mul left right | _, .shl left right
   | _, .shr left right | _, .eq left right | _, .ult left right
   | _, .slt left right =>
       HwExprRegistersValid program left ∧ HwExprRegistersValid program right
@@ -395,7 +396,7 @@ def hwExprRegistersValidB (program : Program) :
   | _, .lit _ => true
   | _, .memRead _ _ address => hwExprRegistersValidB program address
   | _, .and left right | _, .or left right | _, .xor left right
-  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .add left right | _, .sub left right | _, .mul left right | _, .shl left right
   | _, .shr left right | _, .eq left right | _, .ult left right
   | _, .slt left right =>
       hwExprRegistersValidB program left && hwExprRegistersValidB program right
@@ -748,7 +749,7 @@ theorem indexedRhsWellFormed_elaborate_isSome
       exact ⟨.not value, by simp [IndexedRhs.elaborate, valueEq]⟩
   | bin op leftRef rightRef =>
       cases op with
-      | and | or | xor | add | sub | shl | shr =>
+      | and | or | xor | add | sub | mul | shl | shr =>
           simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at accepted
           obtain ⟨left, leftEq⟩ := henv leftRef resultWidth accepted.1
           obtain ⟨right, rightEq⟩ := henv rightRef resultWidth accepted.2
@@ -758,6 +759,7 @@ theorem indexedRhsWellFormed_elaborate_isSome
           | exact ⟨.xor left right, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
           | exact ⟨.add left right, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
           | exact ⟨.sub left right, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+          | exact ⟨.mul left right, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
           | exact ⟨.shl left right, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
           | exact ⟨.shr left right, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
       | eq | ult =>
@@ -1170,6 +1172,17 @@ private theorem indexedExprMatches_current_elaborate
   case sub.bin left right op leftRef rightRef =>
     cases op <;> simp at matchOk
     case sub =>
+      rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
+      subst wireWidth
+      simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk
+      have leftEq := indexedModels_resolve program wires table current env
+        hmodels left leftRef valid.1 leftMatch rhsOk.1
+      have rightEq := indexedModels_resolve program wires table current env
+        hmodels right rightRef valid.2 rightMatch rhsOk.2
+      exact ⟨rfl, semanticBinSame_of_resolveAt _ _ _ _ _ _ _ leftEq rightEq⟩
+  case mul.bin left right op leftRef rightRef =>
+    cases op <;> simp at matchOk
+    case mul =>
       rcases matchOk with ⟨⟨widthEq, leftMatch⟩, rightMatch⟩
       subst wireWidth
       simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq] at rhsOk

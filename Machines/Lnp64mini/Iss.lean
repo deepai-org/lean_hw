@@ -242,7 +242,7 @@ def opN (s : MiniSt) : Nat := (op s).toNat
 -- Found by the emulator/ISS differential (`minitest stepop` vs
 -- `lnp64 step-op`) on its first run. Keep this list and Core.lean's in step.
 def is_alu (s : MiniSt) : Bool :=
-  [OP_LIU, OP_MOV, OP_ADD, OP_SUB, OP_AND, OP_OR, OP_XOR, OP_NOT, OP_LSL, OP_LSR, OP_ASR, OP_SLT, OP_SLTU,
+  [OP_LIU, OP_MOV, OP_ADD, OP_SUB, OP_MUL, OP_AND, OP_OR, OP_XOR, OP_NOT, OP_LSL, OP_LSR, OP_ASR, OP_SLT, OP_SLTU,
    OP_ADDI, OP_ANDI, OP_ORI, OP_XORI, OP_LSLI, OP_LSRI, OP_ASRI, OP_SLTI, OP_SLTIU, OP_AUIPC,
    OP_SEXT_B, OP_SEXT_H, OP_SEXT_W, OP_ZEXT_B, OP_ZEXT_H, OP_ZEXT_W, OP_BSWAP16, OP_BSWAP32, OP_BSWAP64,
    OP_ROL, OP_ROR, OP_CTZ, OP_CLZ].contains (opN s)
@@ -277,6 +277,7 @@ def aluV (s : MiniSt) : BitVec 64 :=
   if opN s = OP_MOV then av
   else if opN s = OP_ADD then av + bv
   else if opN s = OP_SUB then av - bv
+  else if opN s = OP_MUL then av * bv
   else if opN s = OP_LIU then (av.extractLsb' 0 32).setWidth 64 ||| (((imm_i s).extractLsb' 0 32).setWidth 64 <<< 32)
   else if opN s = OP_AND then av &&& bv
   else if opN s = OP_OR then av ||| bv
@@ -719,8 +720,6 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
       else if is_fence s then
         s' := { s' with pc := pc8 s, retire := s.retire + 1, st := BitVec.ofNat 5 S_F0 }
-      else if o = OP_MUL then
-        s' := { s' with mul_acc := 0, mul_aw := s.a.setWidth 128, mul_b := s.b, mul_kind := 0, st := BitVec.ofNat 5 S_MUL }
       else if is_mulh s then
         s' := { s' with mul_acc := 0, mul_aw := s.a.setWidth 128, mul_b := s.b,
                         mul_kind := if o = OP_MULH then 1 else 2, st := BitVec.ofNat 5 S_MUL }

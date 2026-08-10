@@ -44,6 +44,7 @@ inductive Expr : Nat → Type where
   | not     {w : Nat} (a : Expr w) : Expr w
   | add     {w : Nat} (a b : Expr w) : Expr w
   | sub     {w : Nat} (a b : Expr w) : Expr w
+  | mul     {w : Nat} (a b : Expr w) : Expr w
   | shl     {w : Nat} (a b : Expr w) : Expr w
   | shr     {w : Nat} (a b : Expr w) : Expr w
   | eq      {w : Nat} (a b : Expr w) : Expr 1
@@ -53,6 +54,23 @@ inductive Expr : Nat → Type where
   | slice   {w : Nat} (a : Expr w) (lo width : Nat) : Expr width
   | zext    {w : Nat} (a : Expr w) (w' : Nat) : Expr w'
   | sext    {w : Nat} (a : Expr w) (w' : Nat) : Expr w'
+
+/-- Concatenate high and low bit vectors. This typed smart constructor lowers
+to the primitive algebra, so it adds no separate compiler or certificate case. -/
+def Expr.concat {hi lo : Nat} (msbs : Expr hi) (lsbs : Expr lo) : Expr (hi + lo) :=
+  .or (.shl (.zext msbs (hi + lo)) (.lit (BitVec.ofNat (hi + lo) lo)))
+    (.zext lsbs (hi + lo))
+
+/-- The complete unsigned product. The result is wide enough to retain every
+product bit. This is a smart constructor over same-width modular `mul`, so all
+existing semantics, compilation, and certification results apply directly. -/
+def Expr.umulWide {wa wb : Nat} (a : Expr wa) (b : Expr wb) : Expr (wa + wb) :=
+  .mul (.zext a (wa + wb)) (.zext b (wa + wb))
+
+/-- The complete two's-complement signed product. Both operands are
+sign-extended to the full result width before the existing modular multiply. -/
+def Expr.smulWide {wa wb : Nat} (a : Expr wa) (b : Expr wb) : Expr (wa + wb) :=
+  .mul (.sext a (wa + wb)) (.sext b (wa + wb))
 
 /-- Guarded write actions. Sequencing is syntactic only: all reads are
 pre-cycle (D9).
