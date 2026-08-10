@@ -16,3 +16,14 @@ packet was moved over the BSCAN chain by a host-side pump+bridge (~2.8s RTT):
 They are kept for debugging a guest whose GEM driver is not up, and for the
 emulator watch-seam path. They are NOT the accepted mission path. Do not add new
 work on the JTAG ring — put it on native GEM0.
+
+## Legacy fixtures (frozen to old images)
+
+- `boot_smp_igfall.sh` — from the closed §70/§74 ig_fall / fault-cause-latch
+  investigation, pinned to a specific old image (`a23acd8e`) on the CAUSE-LATCH
+  bitstream. Its gate/cap roots and core-1 entry are hardcoded to THAT image and
+  are NOT nm-derived. The live fault-record read is now `read_frozen.tcl`. Do not
+  run it against the current image.
+
+The stale board-only `smp_image.env` (a pre-`mini_domains.env` root file) has
+been removed; all maintained boots derive roots from `mini_domains.env`.

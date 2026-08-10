@@ -8,8 +8,9 @@
 # board-state directory.
 # (full log, servicer tail, camera snapshot, STATUS file).
 #
-# Image parameters come from the deployed `smp_image.env` (written at image deploy
-# time), so an image update never requires editing this script.
+# Image parameters (gate/cap roots, core-1 entry) come from the deployed
+# nm-derived `mini_domains.env` beside the hex, so an image update never
+# requires editing this script and can never use a stale hardcoded address.
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/board_env.sh"
 TS=$(date +%Y%m%d-%H%M%S)
@@ -21,19 +22,24 @@ cd "$LOOM_BOARD_ROOT"
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { say "FAIL: $*"; echo "FAIL $*" > "$EV/STATUS"; exit 1; }
 
-[ -f "$LOOM_BOARD_TEST_DIR/smp_image.env" ] && . "$LOOM_BOARD_TEST_DIR/smp_image.env"
-export LNP64_CORE1_ENTRY="${LNP64_CORE1_ENTRY:-0x8ca100}"
+# §17 gate/cap roots AND the core-1 entry are the LINKED addresses of
+# lnp64_mini_gate_table / lnp64_mini_cap_table / lnp64_core1_entry -- they SHIFT
+# every image build. Route this maintained boot through the SAME nm-derived
+# image environment the boot subprocess uses (build_rump_shmif_image.py emits
+# mini_domains.env beside the hex; boot_gem_dual_smp.sh sources it too), so the
+# STATUS evidence below records the value ACTUALLY used, never a stale fallback.
+LNP64_IMAGE_ROOTS="$LOOM_BOARD_TEST_DIR/mini_domains.env"
+[ -f "$LNP64_IMAGE_ROOTS" ] || fail "image roots missing: $LNP64_IMAGE_ROOTS (deploy mini_domains.env beside the hex)"
+# shellcheck disable=SC1090
+. "$LNP64_IMAGE_ROOTS"
+export LNP64_MINI_GATE_TBL LNP64_MINI_CAP_TBL LNP64_CORE1_ENTRY
 export LNP64_CORE1_STACK="${LNP64_CORE1_STACK:-0x01700000}"
 export LNP64_MMU="${LNP64_MMU:-0}"
-export LNP64_RELOC="${LNP64_RELOC:-0}"   # EXT-7 stage B: non-identity translation
-# §17 protection domains: the gate/cap table roots the servicer pokes as
-# cmd 74/75. Empty = no tables installed = every gate/cap walk fails closed
-# (a domainless image boots exactly as before). The gate walk addresses DDR
-# untranslated, so domains require the identity map (LNP64_RELOC must stay 0).
-export LNP64_MINI_GATE_TBL="${LNP64_MINI_GATE_TBL:-}"
-export LNP64_MINI_CAP_TBL="${LNP64_MINI_CAP_TBL:-}"
+# EXT-7 stage B: non-identity translation. The gate walk addresses DDR
+# untranslated, so §17 domains require the identity map (LNP64_RELOC stays 0).
+export LNP64_RELOC="${LNP64_RELOC:-0}"
 
-say "== netbsd_up: power-off -> NetBSD (dual SMP, core1 entry $LNP64_CORE1_ENTRY) =="
+say "== netbsd_up: power-off -> NetBSD (dual SMP) roots: gate=$LNP64_MINI_GATE_TBL cap=$LNP64_MINI_CAP_TBL core1=${LNP64_CORE1_ENTRY:-none} (nm-derived) =="
 for attempt in 1 2; do
   say "== attempt $attempt: clear JTAG stack + power cycle =="
   pkill -9 -x xsdb 2>/dev/null; pkill -9 -f "lnp64 trap-server" 2>/dev/null
@@ -83,4 +89,6 @@ echo "$PF" | grep -q " 0% packet loss" || fail "packet loss after servicer stop"
 ffmpeg -y -f v4l2 -input_format mjpeg -video_size 2592x1944 -i /dev/video0 \
   -frames:v 5 -update 1 "$EV/board.jpg" >/dev/null 2>&1 && say "camera evidence saved"
 say "== PASS: NetBSD serving native GEM0, dual-core, BSCAN quiet =="
-{ echo "PASS $TS"; echo "core1_entry=$LNP64_CORE1_ENTRY"; echo "$PF"; } > "$EV/STATUS"
+{ echo "PASS $TS"
+  echo "roots(nm-derived): gate=$LNP64_MINI_GATE_TBL cap=$LNP64_MINI_CAP_TBL core1_entry=${LNP64_CORE1_ENTRY:-none}"
+  echo "$PF"; } > "$EV/STATUS"

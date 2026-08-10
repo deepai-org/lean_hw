@@ -1,6 +1,12 @@
 #!/bin/bash
-# Boot the accounted SMP image (text c4cf0f96) on the CAUSE-LATCH bitstream and
-# read the new generated debug map. Event-driven (no mid-JTAG kills).
+# LEGACY FIXTURE (see board/LEGACY.md) -- from the CLOSED §70/§74 ig_fall /
+# fault-cause-latch investigation. Pinned to a specific old image (text
+# a23acd8e / c4cf0f96) on the CAUSE-LATCH bitstream, so its hardcoded gate/cap
+# roots and core-1 entry are frozen to THAT image and are NOT nm-derived. The
+# live fault-record read is now done by read_frozen.tcl. Do NOT run this against
+# the current image -- the maintained boots (e2e.sh / boot_gem_dual_smp.sh /
+# netbsd_up.sh) derive their roots from mini_domains.env. Kept only for
+# historical reproduction of the ig_fall trace.
 # The BSCAN read map is GENERATED (test/lnp64mini_debug_map.tcl, from the same
 # DebugMap tap list as the wrapper decode); this script never hand-types an
 # index. Current taps: trace ring lo words (wr 69 <i> selects), the 1235f201
@@ -8,6 +14,8 @@
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/board_env.sh"
 cd "$LOOM_BOARD_ROOT"
+# FROZEN to the pinned legacy image a23acd8e -- NOT nm-derived (this is a
+# historical fixture; see the LEGACY header above).
 export LNP64_MINI_GATE_TBL=0x913000 LNP64_MINI_CAP_TBL=0x913100
 export LNP64_CORE1_ENTRY=0x8cae00 LNP64_CORE1_STACK=0x1700000
 
