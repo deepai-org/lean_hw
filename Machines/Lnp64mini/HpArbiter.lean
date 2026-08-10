@@ -5,6 +5,8 @@ import Loom.Hw.Compose
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
 import Machines.Lnp64mini.Core
+import Loom.Runner
+import Loom.Hw.Declarations
 
 /-!
 # HpArbiter — the two-requester front end of the single HP master
@@ -90,42 +92,93 @@ def L64 (n : Nat) : Expr 64 := .lit (BitVec.ofNat 64 n)
 
 /-! ## Input ports -/
 
-def c0Rd    : Expr 1  := .reg 1  "c0_rd"
-def c0Wr    : Expr 1  := .reg 1  "c0_wr"
-def c0Addr  : Expr 32 := .reg 32 "c0_addr"
-def c0Wdata : Expr 64 := .reg 64 "c0_wdata"
-def c1Rd    : Expr 1  := .reg 1  "c1_rd"
-def c1Wr    : Expr 1  := .reg 1  "c1_wr"
-def c1Addr  : Expr 32 := .reg 32 "c1_addr"
-def c1Wdata : Expr 64 := .reg 64 "c1_wdata"
-def c0Lr    : Expr 1  := .reg 1  "c0_lr"
-def c0Sc    : Expr 1  := .reg 1  "c0_sc"
-def c1Lr    : Expr 1  := .reg 1  "c1_lr"
-def c1Sc    : Expr 1  := .reg 1  "c1_sc"
-def mDone   : Expr 1  := .reg 1  "m_done"
-def mRdata  : Expr 64 := .reg 64 "m_rdata"
+structure RequestPorts where
+  rd : Reg 1
+  wr : Reg 1
+  addr : Reg 32
+  wdata : Reg 64
+  lr : Reg 1
+  sc : Reg 1
+
+def c0Ports : RequestPorts :=
+  ⟨⟨"c0_rd"⟩, ⟨"c0_wr"⟩, ⟨"c0_addr"⟩, ⟨"c0_wdata"⟩, ⟨"c0_lr"⟩, ⟨"c0_sc"⟩⟩
+
+def c1Ports : RequestPorts :=
+  ⟨⟨"c1_rd"⟩, ⟨"c1_wr"⟩, ⟨"c1_addr"⟩, ⟨"c1_wdata"⟩, ⟨"c1_lr"⟩, ⟨"c1_sc"⟩⟩
+
+def mDonePort : Reg 1 := ⟨"m_done"⟩
+def mRdataPort : Reg 64 := ⟨"m_rdata"⟩
+
+def c0Rd : Expr 1 := c0Ports.rd.rd
+def c0Wr : Expr 1 := c0Ports.wr.rd
+def c0Addr : Expr 32 := c0Ports.addr.rd
+def c0Wdata : Expr 64 := c0Ports.wdata.rd
+def c0Lr : Expr 1 := c0Ports.lr.rd
+def c0Sc : Expr 1 := c0Ports.sc.rd
+def c1Rd : Expr 1 := c1Ports.rd.rd
+def c1Wr : Expr 1 := c1Ports.wr.rd
+def c1Addr : Expr 32 := c1Ports.addr.rd
+def c1Wdata : Expr 64 := c1Ports.wdata.rd
+def c1Lr : Expr 1 := c1Ports.lr.rd
+def c1Sc : Expr 1 := c1Ports.sc.rd
+def mDone : Expr 1 := mDonePort.rd
+def mRdata : Expr 64 := mRdataPort.rd
 
 /-! ## Registers -/
 
-def st      : Expr 1  := .reg 1  "st"
-def owner   : Expr 1  := .reg 1  "owner"
-def last    : Expr 1  := .reg 1  "last"
-def p0V     : Expr 1  := .reg 1  "p0_v"
-def p0Wr    : Expr 1  := .reg 1  "p0_wr"
-def p0Addr  : Expr 32 := .reg 32 "p0_addr"
-def p0Wdata : Expr 64 := .reg 64 "p0_wdata"
-def p1V     : Expr 1  := .reg 1  "p1_v"
-def p1Wr    : Expr 1  := .reg 1  "p1_wr"
-def p1Addr  : Expr 32 := .reg 32 "p1_addr"
-def p1Wdata : Expr 64 := .reg 64 "p1_wdata"
-def p0Lr    : Expr 1  := .reg 1  "p0_lr"
-def p0Sc    : Expr 1  := .reg 1  "p0_sc"
-def p1Lr    : Expr 1  := .reg 1  "p1_lr"
-def p1Sc    : Expr 1  := .reg 1  "p1_sc"
-def r0V     : Expr 1  := .reg 1  "r0_v"
-def r0A     : Expr 32 := .reg 32 "r0_a"
-def r1V     : Expr 1  := .reg 1  "r1_v"
-def r1A     : Expr 32 := .reg 32 "r1_a"
+structure LaneRegs where
+  index : Nat
+  pV : Reg 1
+  pWr : Reg 1
+  pLr : Reg 1
+  pSc : Reg 1
+  pAddr : Reg 32
+  pWdata : Reg 64
+  rV : Reg 1
+  rA : Reg 32
+  scFail : Reg 1
+  done : Reg 1
+  rdata : Reg 64
+  resKill : Reg 1
+
+def lane0 : LaneRegs :=
+  ⟨0, ⟨"p0_v"⟩, ⟨"p0_wr"⟩, ⟨"p0_lr"⟩, ⟨"p0_sc"⟩,
+    ⟨"p0_addr"⟩, ⟨"p0_wdata"⟩, ⟨"r0_v"⟩, ⟨"r0_a"⟩,
+    ⟨"c0_sc_fail"⟩, ⟨"c0_done"⟩, ⟨"c0_rdata"⟩, ⟨"res_kill0"⟩⟩
+
+def lane1 : LaneRegs :=
+  ⟨1, ⟨"p1_v"⟩, ⟨"p1_wr"⟩, ⟨"p1_lr"⟩, ⟨"p1_sc"⟩,
+    ⟨"p1_addr"⟩, ⟨"p1_wdata"⟩, ⟨"r1_v"⟩, ⟨"r1_a"⟩,
+    ⟨"c1_sc_fail"⟩, ⟨"c1_done"⟩, ⟨"c1_rdata"⟩, ⟨"res_kill1"⟩⟩
+
+def stReg : Reg 1 := ⟨"st"⟩
+def ownerReg : Reg 1 := ⟨"owner"⟩
+def lastReg : Reg 1 := ⟨"last"⟩
+def busyReg : Reg 1 := ⟨"busy"⟩
+def dStartRdReg : Reg 1 := ⟨"d_start_rd"⟩
+def dStartWrReg : Reg 1 := ⟨"d_start_wr"⟩
+def dAddrReg : Reg 32 := ⟨"d_addr"⟩
+def dWdataReg : Reg 64 := ⟨"d_wdata"⟩
+
+def st : Expr 1 := stReg.rd
+def owner : Expr 1 := ownerReg.rd
+def last : Expr 1 := lastReg.rd
+def p0V : Expr 1 := lane0.pV.rd
+def p0Wr : Expr 1 := lane0.pWr.rd
+def p0Lr : Expr 1 := lane0.pLr.rd
+def p0Sc : Expr 1 := lane0.pSc.rd
+def p0Addr : Expr 32 := lane0.pAddr.rd
+def p0Wdata : Expr 64 := lane0.pWdata.rd
+def p1V : Expr 1 := lane1.pV.rd
+def p1Wr : Expr 1 := lane1.pWr.rd
+def p1Lr : Expr 1 := lane1.pLr.rd
+def p1Sc : Expr 1 := lane1.pSc.rd
+def p1Addr : Expr 32 := lane1.pAddr.rd
+def p1Wdata : Expr 64 := lane1.pWdata.rd
+def r0V : Expr 1 := lane0.rV.rd
+def r0A : Expr 32 := lane0.rA.rd
+def r1V : Expr 1 := lane1.rV.rd
+def r1A : Expr 32 := lane1.rA.rd
 
 def actSeq (as : List Act) : Act := as.foldr (fun x acc => .seq x acc) .skip
 
@@ -137,32 +190,40 @@ def actSeq (as : List Act) : Act := as.foldr (fun x acc => .seq x acc) .skip
 whose `ok` is false is dropped: no downstream transaction, immediate
 completion with `sc_fail`. Everything else goes downstream, and a write
 kills the *other* core's matching reservation on the way. -/
-def grantBody (i : Nat) (pWr pLr pSc : Expr 1) (pAddr : Expr 32) (pWdata : Expr 64)
-    (myV : Expr 1) (myA : Expr 32) (remV : Expr 1) (remA : Expr 32) : Act :=
-  let j := 1 - i
+def grantBody (lane other : LaneRegs) : Act :=
+  let i := lane.index
+  let pWr := lane.pWr.rd
+  let pLr := lane.pLr.rd
+  let pSc := lane.pSc.rd
+  let pAddr := lane.pAddr.rd
+  let pWdata := lane.pWdata.rd
+  let myV := lane.rV.rd
+  let myA := lane.rA.rd
+  let remV := other.rV.rd
+  let remA := other.rA.rd
   let ok : Expr 1 := .and myV (.eq myA pAddr)
   let scDrop : Expr 1 := .and pSc (.not ok)
   actSeq [
-    .write 1 s!"p{i}_v" (L1 0),
-    .write 1 "owner" (L1 i),
-    .write 1 "last" (L1 i),
+    lane.pV.set (L1 0),
+    ownerReg.set (L1 i),
+    lastReg.set (L1 i),
     .ite scDrop
       -- refused store-conditional: complete it here, do not touch DDR
-      (actSeq [ .write 1 s!"c{i}_done" (L1 1), .write 1 s!"c{i}_sc_fail" (L1 1) ])
+      (actSeq [lane.done.set (L1 1), lane.scFail.set (L1 1)])
       (actSeq [
-        .write 32 "d_addr" pAddr,
-        .write 64 "d_wdata" pWdata,
-        .write 1 "d_start_rd" (.not pWr),
-        .write 1 "d_start_wr" pWr,
-        .write 1 "st" (L1 BUSY),
-        .write 1 "busy" (L1 1),
+        dAddrReg.set pAddr,
+        dWdataReg.set pWdata,
+        dStartRdReg.set (.not pWr),
+        dStartWrReg.set pWr,
+        stReg.set (L1 BUSY),
+        busyReg.set (L1 1),
         -- a load-reserved takes the reservation
-        .ite pLr (.seq (.write 1 s!"r{i}_v" (L1 1)) (.write 32 s!"r{i}_a" pAddr)) .skip,
+        .ite pLr (.seq (lane.rV.set (L1 1)) (lane.rA.set pAddr)) .skip,
         -- a successful SC consumes it
-        .ite pSc (.write 1 s!"r{i}_v" (L1 0)) .skip,
+        .ite pSc (lane.rV.set (L1 0)) .skip,
         -- ANY write kills the other core's matching reservation
         .ite (.and pWr (.and remV (.eq remA pAddr)))
-          (.seq (.write 1 s!"r{j}_v" (L1 0)) (.write 1 s!"res_kill{j}" (L1 1))) .skip ]) ]
+          (.seq (other.rV.set (L1 0)) (other.resKill.set (L1 1))) .skip ]) ]
 
 def req0 : Expr 1 := p0V
 def req1 : Expr 1 := p1V
@@ -174,64 +235,88 @@ def grant0 : Expr 1 := .and req0 (.not grant1)
 def arbRule : Rule :=
   ⟨"arb", actSeq [
     -- pulse defaults
-    .write 1 "d_start_rd" (L1 0), .write 1 "d_start_wr" (L1 0),
-    .write 1 "c0_done" (L1 0), .write 1 "c1_done" (L1 0),
-    .write 1 "c0_sc_fail" (L1 0), .write 1 "c1_sc_fail" (L1 0),
-    .write 1 "res_kill0" (L1 0), .write 1 "res_kill1" (L1 0),
-    .write 1 "busy" (.not (.eq st (L1 IDLE))),
+    dStartRdReg.set (L1 0), dStartWrReg.set (L1 0),
+    lane0.done.set (L1 0), lane1.done.set (L1 0),
+    lane0.scFail.set (L1 0), lane1.scFail.set (L1 0),
+    lane0.resKill.set (L1 0), lane1.resKill.set (L1 0),
+    busyReg.set (.not (.eq st (L1 IDLE))),
     -- completion: route done/rdata to the owner, release the master
     .ite (.and (.eq st (L1 BUSY)) mDone)
-      (actSeq [ .write 1 "st" (L1 IDLE), .write 1 "busy" (L1 0),
+      (actSeq [stReg.set (L1 IDLE), busyReg.set (L1 0),
                 .ite (.eq owner (L1 0))
-                  (.seq (.write 1 "c0_done" (L1 1)) (.write 64 "c0_rdata" mRdata))
-                  (.seq (.write 1 "c1_done" (L1 1)) (.write 64 "c1_rdata" mRdata)) ])
+                  (.seq (lane0.done.set (L1 1)) (lane0.rdata.set mRdata))
+                  (.seq (lane1.done.set (L1 1)) (lane1.rdata.set mRdata)) ])
       .skip,
     -- grant at an op boundary
     .ite (.eq st (L1 IDLE))
-      (.ite grant0 (grantBody 0 p0Wr p0Lr p0Sc p0Addr p0Wdata r0V r0A r1V r1A)
-        (.ite grant1 (grantBody 1 p1Wr p1Lr p1Sc p1Addr p1Wdata r1V r1A r0V r0A) .skip))
+      (.ite grant0 (grantBody lane0 lane1)
+        (.ite grant1 (grantBody lane1 lane0) .skip))
       .skip,
     -- latch incoming requests LAST (a fresh pulse always wins over the
     -- grant's buffer clear; the two can never collide anyway)
     .ite (.or c0Rd c0Wr)
-      (actSeq [.write 1 "p0_v" (L1 1), .write 1 "p0_wr" c0Wr,
-               .write 1 "p0_lr" c0Lr, .write 1 "p0_sc" c0Sc,
-               .write 32 "p0_addr" c0Addr, .write 64 "p0_wdata" c0Wdata]) .skip,
+      (actSeq [lane0.pV.set (L1 1), lane0.pWr.set c0Wr,
+               lane0.pLr.set c0Lr, lane0.pSc.set c0Sc,
+               lane0.pAddr.set c0Addr, lane0.pWdata.set c0Wdata]) .skip,
     .ite (.or c1Rd c1Wr)
-      (actSeq [.write 1 "p1_v" (L1 1), .write 1 "p1_wr" c1Wr,
-               .write 1 "p1_lr" c1Lr, .write 1 "p1_sc" c1Sc,
-               .write 32 "p1_addr" c1Addr, .write 64 "p1_wdata" c1Wdata]) .skip ]⟩
+      (actSeq [lane1.pV.set (L1 1), lane1.pWr.set c1Wr,
+               lane1.pLr.set c1Lr, lane1.pSc.set c1Sc,
+               lane1.pAddr.set c1Addr, lane1.pWdata.set c1Wdata]) .skip ]⟩
 
 /-! ## Declarations -/
 
-def regs : List RegDecl :=
-  [ ⟨"st",1,0⟩, ⟨"owner",1,0⟩, ⟨"last",1,1⟩, ⟨"busy",1,0⟩,
-    ⟨"p0_v",1,0⟩, ⟨"p0_wr",1,0⟩, ⟨"p0_lr",1,0⟩, ⟨"p0_sc",1,0⟩,
-    ⟨"p0_addr",32,0⟩, ⟨"p0_wdata",64,0⟩,
-    ⟨"p1_v",1,0⟩, ⟨"p1_wr",1,0⟩, ⟨"p1_lr",1,0⟩, ⟨"p1_sc",1,0⟩,
-    ⟨"p1_addr",32,0⟩, ⟨"p1_wdata",64,0⟩,
-    ⟨"r0_v",1,0⟩, ⟨"r0_a",32,0⟩, ⟨"r1_v",1,0⟩, ⟨"r1_a",32,0⟩,
-    ⟨"c0_sc_fail",1,0⟩, ⟨"c1_sc_fail",1,0⟩,
-    ⟨"d_start_rd",1,0⟩, ⟨"d_start_wr",1,0⟩, ⟨"d_addr",32,0⟩, ⟨"d_wdata",64,0⟩,
-    ⟨"c0_done",1,0⟩, ⟨"c0_rdata",64,0⟩, ⟨"c1_done",1,0⟩, ⟨"c1_rdata",64,0⟩,
-    ⟨"res_kill0",1,0⟩, ⟨"res_kill1",1,0⟩ ]
+def declarations : Declarations :=
+  Declarations.empty
+    |>.addReg stReg (exported := true)
+    |>.addReg ownerReg (exported := true)
+    |>.addReg lastReg 1 (exported := true)
+    |>.addReg busyReg (exported := true)
+    |>.addReg lane0.pV (exported := true)
+    |>.addReg lane0.pWr (exported := true)
+    |>.addReg lane0.pLr (exported := true)
+    |>.addReg lane0.pSc (exported := true)
+    |>.addReg lane0.pAddr (exported := true)
+    |>.addReg lane0.pWdata (exported := true)
+    |>.addReg lane1.pV (exported := true)
+    |>.addReg lane1.pWr (exported := true)
+    |>.addReg lane1.pLr (exported := true)
+    |>.addReg lane1.pSc (exported := true)
+    |>.addReg lane1.pAddr (exported := true)
+    |>.addReg lane1.pWdata (exported := true)
+    |>.addReg lane0.rV (exported := true)
+    |>.addReg lane0.rA (exported := true)
+    |>.addReg lane1.rV (exported := true)
+    |>.addReg lane1.rA (exported := true)
+    |>.addReg lane0.scFail (exported := true)
+    |>.addReg lane1.scFail (exported := true)
+    |>.addReg dStartRdReg (exported := true)
+    |>.addReg dStartWrReg (exported := true)
+    |>.addReg dAddrReg (exported := true)
+    |>.addReg dWdataReg (exported := true)
+    |>.addReg lane0.done (exported := true)
+    |>.addReg lane0.rdata (exported := true)
+    |>.addReg lane1.done (exported := true)
+    |>.addReg lane1.rdata (exported := true)
+    |>.addReg lane0.resKill (exported := true)
+    |>.addReg lane1.resKill (exported := true)
+    |>.addInput c0Ports.rd
+    |>.addInput c0Ports.wr
+    |>.addInput c0Ports.addr
+    |>.addInput c0Ports.wdata
+    |>.addInput c1Ports.rd
+    |>.addInput c1Ports.wr
+    |>.addInput c1Ports.addr
+    |>.addInput c1Ports.wdata
+    |>.addInput c0Ports.lr
+    |>.addInput c0Ports.sc
+    |>.addInput c1Ports.lr
+    |>.addInput c1Ports.sc
+    |>.addInput mDonePort
+    |>.addInput mRdataPort
 
-def inputs : List InputDecl :=
-  [ ⟨"c0_rd",1⟩, ⟨"c0_wr",1⟩, ⟨"c0_addr",32⟩, ⟨"c0_wdata",64⟩,
-    ⟨"c1_rd",1⟩, ⟨"c1_wr",1⟩, ⟨"c1_addr",32⟩, ⟨"c1_wdata",64⟩,
-    ⟨"c0_lr",1⟩, ⟨"c0_sc",1⟩, ⟨"c1_lr",1⟩, ⟨"c1_sc",1⟩,
-    ⟨"m_done",1⟩, ⟨"m_rdata",64⟩ ]
+def design : Design := Design.ofDecls "hp_arbiter" declarations [arbRule]
 
-def design : Design where
-  name := "hp_arbiter"
-  regs := regs
-  -- D39a: outputs are mandatory and explicit, like inputs.
-  outputs := regs.map (·.name)
-  mems := []
-  rules := [arbRule]
-  inputs := inputs
-
-/-! ## ISS mirror -/
+/-! ## Inputs and Design-derived outcome tests -/
 
 structure ArbIn where
   c0_rd : Bool := false
@@ -250,141 +335,35 @@ structure ArbIn where
   m_rdata : BitVec 64 := 0
   deriving Repr
 
-structure ArbSt where
-  st : Bool := false            -- false = IDLE, true = BUSY
-  owner : Bool := false
-  last : Bool := true
-  busy : Bool := false
-  p0_v : Bool := false
-  p0_wr : Bool := false
-  p0_lr : Bool := false
-  p0_sc : Bool := false
-  p0_addr : BitVec 32 := 0
-  p0_wdata : BitVec 64 := 0
-  p1_v : Bool := false
-  p1_wr : Bool := false
-  p1_lr : Bool := false
-  p1_sc : Bool := false
-  p1_addr : BitVec 32 := 0
-  p1_wdata : BitVec 64 := 0
-  r0_v : Bool := false
-  r0_a : BitVec 32 := 0
-  r1_v : Bool := false
-  r1_a : BitVec 32 := 0
-  c0_sc_fail : Bool := false
-  c1_sc_fail : Bool := false
-  d_start_rd : Bool := false
-  d_start_wr : Bool := false
-  d_addr : BitVec 32 := 0
-  d_wdata : BitVec 64 := 0
-  c0_done : Bool := false
-  c0_rdata : BitVec 64 := 0
-  c1_done : Bool := false
-  c1_rdata : BitVec 64 := 0
-  res_kill0 : Bool := false
-  res_kill1 : Bool := false
-  deriving Repr
+/-! ## Design-derived test plumbing -/
 
-def ArbIss.step (s : ArbSt) (inp : ArbIn) : ArbSt := Id.run do
-  let mut s' := s
-  s' := { s' with d_start_rd := false, d_start_wr := false,
-                  c0_done := false, c1_done := false,
-                  c0_sc_fail := false, c1_sc_fail := false,
-                  res_kill0 := false, res_kill1 := false,
-                  busy := s.st }
-  if s.st ∧ inp.m_done then
-    s' := { s' with st := false, busy := false }
-    if ¬ s.owner then s' := { s' with c0_done := true, c0_rdata := inp.m_rdata }
-    else s' := { s' with c1_done := true, c1_rdata := inp.m_rdata }
-  if ¬ s.st then
-    let g1 := s.p1_v ∧ (¬ s.p0_v ∨ ¬ s.last)
-    let g0 := s.p0_v ∧ ¬ g1
-    if g0 then
-      let ok := s.r0_v ∧ s.r0_a = s.p0_addr
-      s' := { s' with p0_v := false, owner := false, last := false }
-      if s.p0_sc ∧ ¬ ok then
-        s' := { s' with c0_done := true, c0_sc_fail := true }
-      else
-        s' := { s' with d_addr := s.p0_addr, d_wdata := s.p0_wdata,
-                        d_start_rd := ¬ s.p0_wr, d_start_wr := s.p0_wr,
-                        st := true, busy := true }
-        if s.p0_lr then s' := { s' with r0_v := true, r0_a := s.p0_addr }
-        if s.p0_sc then s' := { s' with r0_v := false }
-        if s.p0_wr ∧ s.r1_v ∧ s.r1_a = s.p0_addr then
-          s' := { s' with r1_v := false, res_kill1 := true }
-    else if g1 then
-      let ok := s.r1_v ∧ s.r1_a = s.p1_addr
-      s' := { s' with p1_v := false, owner := true, last := true }
-      if s.p1_sc ∧ ¬ ok then
-        s' := { s' with c1_done := true, c1_sc_fail := true }
-      else
-        s' := { s' with d_addr := s.p1_addr, d_wdata := s.p1_wdata,
-                        d_start_rd := ¬ s.p1_wr, d_start_wr := s.p1_wr,
-                        st := true, busy := true }
-        if s.p1_lr then s' := { s' with r1_v := true, r1_a := s.p1_addr }
-        if s.p1_sc then s' := { s' with r1_v := false }
-        if s.p1_wr ∧ s.r0_v ∧ s.r0_a = s.p1_addr then
-          s' := { s' with r0_v := false, res_kill0 := true }
-  if inp.c0_rd ∨ inp.c0_wr then
-    s' := { s' with p0_v := true, p0_wr := inp.c0_wr,
-                    p0_lr := inp.c0_lr, p0_sc := inp.c0_sc,
-                    p0_addr := inp.c0_addr, p0_wdata := inp.c0_wdata }
-  if inp.c1_rd ∨ inp.c1_wr then
-    s' := { s' with p1_v := true, p1_wr := inp.c1_wr,
-                    p1_lr := inp.c1_lr, p1_sc := inp.c1_sc,
-                    p1_addr := inp.c1_addr, p1_wdata := inp.c1_wdata }
-  return s'
+def ArbIn.toEnv (c : ArbIn) : InEnv := InputBinding.toEnv
+  [InputBinding.of c0Ports.rd (BitVec.ofBool c.c0_rd),
+   InputBinding.of c0Ports.wr (BitVec.ofBool c.c0_wr),
+   InputBinding.of c0Ports.addr c.c0_addr, InputBinding.of c0Ports.wdata c.c0_wdata,
+   InputBinding.of c1Ports.rd (BitVec.ofBool c.c1_rd),
+   InputBinding.of c1Ports.wr (BitVec.ofBool c.c1_wr),
+   InputBinding.of c1Ports.addr c.c1_addr, InputBinding.of c1Ports.wdata c.c1_wdata,
+   InputBinding.of c0Ports.lr (BitVec.ofBool c.c0_lr),
+   InputBinding.of c0Ports.sc (BitVec.ofBool c.c0_sc),
+   InputBinding.of c1Ports.lr (BitVec.ofBool c.c1_lr),
+   InputBinding.of c1Ports.sc (BitVec.ofBool c.c1_sc),
+   InputBinding.of mDonePort (BitVec.ofBool c.m_done),
+   InputBinding.of mRdataPort c.m_rdata]
 
-/-! ## Lockstep plumbing -/
+private def runStates (script : List ArbIn) : List St := Id.run do
+  let mut state := design.reset
+  let mut states := []
+  for input in script do
+    state := design.cycleOpen input.toEnv state
+    states := states ++ [state]
+  return states
 
-def ArbIn.toEnv (c : ArbIn) : InEnv := fun n w =>
-  match n with
-  | "c0_rd" => (BitVec.ofBool c.c0_rd).setWidth w
-  | "c0_wr" => (BitVec.ofBool c.c0_wr).setWidth w
-  | "c0_addr" => c.c0_addr.setWidth w
-  | "c0_wdata" => c.c0_wdata.setWidth w
-  | "c1_rd" => (BitVec.ofBool c.c1_rd).setWidth w
-  | "c1_wr" => (BitVec.ofBool c.c1_wr).setWidth w
-  | "c1_addr" => c.c1_addr.setWidth w
-  | "c1_wdata" => c.c1_wdata.setWidth w
-  | "c0_lr" => (BitVec.ofBool c.c0_lr).setWidth w
-  | "c0_sc" => (BitVec.ofBool c.c0_sc).setWidth w
-  | "c1_lr" => (BitVec.ofBool c.c1_lr).setWidth w
-  | "c1_sc" => (BitVec.ofBool c.c1_sc).setWidth w
-  | "m_done" => (BitVec.ofBool c.m_done).setWidth w
-  | "m_rdata" => c.m_rdata.setWidth w
-  | _ => 0#w
+private def regAt {w : Nat} (state : St) (reg : Reg w) : Nat :=
+  (state.regs reg.name w).toNat
 
-def issRegs (s : ArbSt) : List (String × Nat × Nat) :=
-  let b (x : Bool) : Nat := if x then 1 else 0
-  [("st",1,b s.st), ("owner",1,b s.owner), ("last",1,b s.last), ("busy",1,b s.busy),
-   ("p0_v",1,b s.p0_v), ("p0_wr",1,b s.p0_wr), ("p0_lr",1,b s.p0_lr), ("p0_sc",1,b s.p0_sc),
-   ("p0_addr",32,s.p0_addr.toNat), ("p0_wdata",64,s.p0_wdata.toNat),
-   ("p1_v",1,b s.p1_v), ("p1_wr",1,b s.p1_wr), ("p1_lr",1,b s.p1_lr), ("p1_sc",1,b s.p1_sc),
-   ("p1_addr",32,s.p1_addr.toNat), ("p1_wdata",64,s.p1_wdata.toNat),
-   ("r0_v",1,b s.r0_v), ("r0_a",32,s.r0_a.toNat),
-   ("r1_v",1,b s.r1_v), ("r1_a",32,s.r1_a.toNat),
-   ("c0_sc_fail",1,b s.c0_sc_fail), ("c1_sc_fail",1,b s.c1_sc_fail),
-   ("d_start_rd",1,b s.d_start_rd), ("d_start_wr",1,b s.d_start_wr),
-   ("d_addr",32,s.d_addr.toNat), ("d_wdata",64,s.d_wdata.toNat),
-   ("c0_done",1,b s.c0_done), ("c0_rdata",64,s.c0_rdata.toNat),
-   ("c1_done",1,b s.c1_done), ("c1_rdata",64,s.c1_rdata.toNat),
-   ("res_kill0",1,b s.res_kill0), ("res_kill1",1,b s.res_kill1)]
-
-def lockstep (script : List ArbIn) : IO Nat := do
-  let mut s : ArbSt := {}
-  let mut σ : St := design.reset
-  let mut bad := 0
-  let mut k := 0
-  for inp in script do
-    σ := design.cycleOpen inp.toEnv σ
-    s := ArbIss.step s inp
-    for (n, w, v) in issRegs s do
-      if (σ.regs n w).toNat ≠ v then
-        if bad < 8 then IO.println s!"  MISMATCH step {k} {n}: edsl={(σ.regs n w).toNat} iss={v}"
-        bad := bad + 1
-    k := k + 1
-  return bad
+private def pulseCount (states : List St) (reg : Reg 1) : Nat :=
+  (states.filter fun state => regAt state reg = 1).length
 
 /-! ## Selftest scripts -/
 
@@ -448,42 +427,32 @@ def scriptStream : List ArbIn :=
       {}, {}, { m_done := true, m_rdata := 0 }, {} ]))
 
 def selftest : IO Unit := do
-  let scripts : List (String × List ArbIn) :=
-    [("solo read    ", scriptSolo), ("simultaneous ", scriptCollide),
-     ("reservations ", scriptResv), ("stream x4    ", scriptStream)]
-  let mut total := 0
-  for (nm, sc) in scripts do
-    let bad ← lockstep sc
-    if bad = 0 then IO.println s!"  OK  arb {nm} ({sc.length} cyc)"
-    else IO.println s!"  FAIL arb {nm} ({bad} mismatches)"
-    total := total + bad
-  -- semantic assertions on the ISS: nothing dropped, kills are precise
-  let runs (sc : List ArbIn) : List ArbSt := Id.run do
-    let mut s : ArbSt := {}
-    let mut out : List ArbSt := []
-    for inp in sc do s := ArbIss.step s inp; out := out ++ [s]
-    return out
-  let coll := runs scriptCollide
-  let starts := (coll.filter (fun s => s.d_start_rd ∨ s.d_start_wr)).length
-  let d0 := (coll.filter (·.c0_done)).length
-  let d1 := (coll.filter (·.c1_done)).length
+  let solo := runStates scriptSolo
+  let coll := runStates scriptCollide
+  let starts := pulseCount coll dStartRdReg + pulseCount coll dStartWrReg
+  let d0 := pulseCount coll lane0.done
+  let d1 := pulseCount coll lane1.done
   IO.println s!"  simultaneous: downstream starts={starts} (want 2) c0_done={d0} c1_done={d1} (want 1,1)"
-  let rv := runs scriptResv
-  let k1 := (rv.filter (·.res_kill1)).length
-  let k0 := (rv.filter (·.res_kill0)).length
-  let f1 := (rv.filter (·.c1_sc_fail)).length
-  let f0 := (rv.filter (·.c0_sc_fail)).length
-  let wrs := (rv.filter (·.d_start_wr)).length
-  let dn1 := (rv.filter (·.c1_done)).length
+  let rv := runStates scriptResv
+  let k1 := pulseCount rv lane1.resKill
+  let k0 := pulseCount rv lane0.resKill
+  let f1 := pulseCount rv lane1.scFail
+  let f0 := pulseCount rv lane0.scFail
+  let wrs := pulseCount rv dStartWrReg
+  let dn1 := pulseCount rv lane1.done
   IO.println s!"  LR/SC: res_kill1={k1} res_kill0={k0} (want 1,0) sc_fail c1={f1} c0={f0} (want 1,0)"
   IO.println s!"  LR/SC: downstream WRITES={wrs} (want 4 — the refused SC never reaches DDR) c1_done={dn1} (want 5)"
-  let strm := runs scriptStream
-  let s0 := (strm.filter (·.c0_done)).length
-  let s1 := (strm.filter (·.c1_done)).length
+  let strm := runStates scriptStream
+  let s0 := pulseCount strm lane0.done
+  let s1 := pulseCount strm lane1.done
   IO.println s!"  stream x4: c0_done={s0} c1_done={s1} (want 4,4)"
-  let ok := total = 0 ∧ starts = 2 ∧ d0 = 1 ∧ d1 = 1 ∧ k1 = 1 ∧ k0 = 0
+  let soloOk := pulseCount solo lane0.done = 1 ∧
+    (solo.getLast?.map (regAt · lane0.rdata)) = some 0xAA
+  let ok := soloOk ∧ starts = 2 ∧ d0 = 1 ∧ d1 = 1 ∧ k1 = 1 ∧ k0 = 0
             ∧ f1 = 1 ∧ f0 = 0 ∧ wrs = 4 ∧ dn1 = 5 ∧ s0 = 4 ∧ s1 = 4
-  if ok then IO.println "HP ARBITER SELFTEST OK — EDSL≡ISS on 4 scripts + routing/kill assertions"
-  else IO.println s!"HP ARBITER SELFTEST FAILED ({total} mismatches)"
+  if ok then IO.println "HP ARBITER SELFTEST OK — Design routing/reservation outcomes pass"
+  else IO.println "HP ARBITER SELFTEST FAILED — Design outcome mismatch"
+  (Loom.Runner.Result.fromBool "HP arbiter selftest" 91
+    (decide ok) "Design routing/reservation outcome mismatch").requirePass
 
 end Machines.Lnp64mini.HpArbiter

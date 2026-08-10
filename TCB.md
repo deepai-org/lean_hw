@@ -52,14 +52,13 @@ The trusted set grows only when the claim is extended:
    [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md). The current
    corroborating tool/version is Yosys 0.33 (`2584903a060`), but the Lean
    theorem does not depend on Yosys.
-4. **A synthesized netlist or physical implementation:** additionally, all
-   unproved portions of synthesis and the downstream physical flow. The
-   optional equivalence checker narrows this risk for a reported fragment; it
-   does not erase it. Its trusted/unproved surface includes the driver, the
-   compiled replacement for the bit-blaster, netlist parsing and cell/cone
-   interpretation supplied as a hypothesis, unsupported operators, excluded
-   signals, and any acknowledged bank defects printed by the run. Placement,
-   routing, configuration generation, timing, and physics remain downstream.
+4. **A synthesized or physical implementation:** additionally, all synthesis,
+   tool-specific conversion, technology mapping, and downstream physical-flow
+   assumptions. Loom currently supplies no post-synthesis equivalence claim.
+   Profiles and calibrations under `Evidence/` are engineering inputs to this
+   layer, not premises of generic Loom theorems.
+   Placement, routing, configuration generation, timing, and physics remain
+   downstream.
 5. **Board CDC behavior:** additionally, a physical resolution assumption for
    the board wrappers that use the toggle/2FF/XOR crossings. A metastable first
    flop is modeled as resolving adversarially to either Boolean value before

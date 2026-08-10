@@ -118,6 +118,36 @@ def InEnv := String → (w : Nat) → BitVec w
 def St.setInputs (σ : St) (ins : List InputDecl) (ι : InEnv) : St :=
   { σ with regs := ins.foldl (fun ρ i => ρ.set i.name (ι i.name i.width)) σ.regs }
 
+/-- Installing inputs preserves a register coordinate absent from the input
+declaration list. Width is part of the coordinate, matching `RegEnv.set`. -/
+theorem St.setInputs_regs_notin (σ : St) (ins : List InputDecl) (ι : InEnv)
+    (name : String) (width : Nat)
+    (absent : ∀ input ∈ ins, (name, width) ≠ (input.name, input.width)) :
+    (σ.setInputs ins ι).regs name width = σ.regs name width := by
+  show (ins.foldl (fun ρ input =>
+    ρ.set input.name (ι input.name input.width)) σ.regs) name width = _
+  suffices preserve : ∀ (inputs : List InputDecl) (ρ : RegEnv),
+      (∀ input ∈ inputs, (name, width) ≠ (input.name, input.width)) →
+      (inputs.foldl (fun acc input =>
+        acc.set input.name (ι input.name input.width)) ρ) name width =
+        ρ name width by
+    exact preserve ins σ.regs absent
+  intro inputs
+  induction inputs with
+  | nil => intro ρ _; rfl
+  | cons input rest ih =>
+      intro ρ h
+      simp only [List.foldl_cons]
+      rw [ih _ (fun member present => h member (List.mem_cons_of_mem _ present))]
+      unfold RegEnv.set
+      by_cases hname : name = input.name
+      · rw [if_pos hname]
+        by_cases hwidth : input.width = width
+        · exact False.elim <| h input (List.mem_cons_self) (by
+            simp [hname, hwidth])
+        · rw [dif_neg hwidth]
+      · rw [if_neg hname]
+
 /-- One cycle of an open design: the environment drives the inputs, the
 design cycles. For a closed design this is `cycle`. -/
 def Design.cycleOpen (d : Design) (ι : InEnv) (σ : St) : St :=
@@ -127,5 +157,48 @@ def Design.cycleOpen (d : Design) (ι : InEnv) (σ : St) : St :=
 def Design.runOpen (d : Design) (ιs : Nat → InEnv) : Nat → St → St
   | 0, σ => σ
   | n + 1, σ => d.runOpen (fun k => ιs (k + 1)) n (d.cycleOpen (ιs 0) σ)
+
+/-! ## Open systems with explicit environment assumptions
+
+An open-core safety claim must say which input valuations the environment may
+supply.  Keeping that predicate in the transition relation prevents a host or
+board protocol from becoming an invisible premise of a theorem.
+-/
+
+/-- A state-dependent contract on the next environment input. -/
+abbrev InputAssumption := St → InEnv → Prop
+
+/-- Open-design transition system restricted to inputs satisfying `assume`.
+The witness remains part of every step, so the assumption is explicit at each
+cycle rather than attached as prose to an unrestricted open system. -/
+def Design.toAssumedOpenTSys (d : Design) (assume : InputAssumption) :
+    Loom.TSys where
+  S := St
+  init := fun σ => σ = d.reset
+  step := fun σ τ => ∃ ι, assume σ ι ∧ d.cycleOpen ι σ = τ
+
+@[simp] theorem Design.toAssumedOpenTSys_init_iff (d : Design)
+    (assume : InputAssumption) (σ : St) :
+    (d.toAssumedOpenTSys assume).init σ ↔ σ = d.reset := Iff.rfl
+
+@[simp] theorem Design.toAssumedOpenTSys_step_iff (d : Design)
+    (assume : InputAssumption) (σ τ : St) :
+    (d.toAssumedOpenTSys assume).step σ τ ↔
+      ∃ ι, assume σ ι ∧ d.cycleOpen ι σ = τ := Iff.rfl
+
+/-- Assume/guarantee induction for an open design. -/
+theorem Design.invariant_of_assumedCycleOpen (d : Design)
+    (assume : InputAssumption) (property : St → Prop)
+    (reset : property d.reset)
+    (step : ∀ σ ι, property σ → assume σ ι → property (d.cycleOpen ι σ)) :
+    (d.toAssumedOpenTSys assume).Invariant property := by
+  apply Loom.TSys.Inductive.invariant
+  constructor
+  · intro σ initial
+    subst σ
+    exact reset
+  · intro σ τ current transition
+    obtain ⟨ι, accepted, rfl⟩ := transition
+    exact step σ ι current accepted
 
 end Loom.Hw

@@ -3,6 +3,7 @@
 import Loom.Hw.Semantics
 import Loom.Hw.FastEval
 import Loom.Hw.Notation
+import Loom.Hw.Declarations
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
@@ -104,19 +105,22 @@ def obsRule : Rule :=
           sink ⇐ bank.dynRd sel.rd 0,
           when anyMaxE then hits ⇐ hits.rd + 1 }⟩
 
-/-- The register list, named so `regs` and D39a's mandatory `outputs`
-provably denote the same thing. -/
-def s1Regs : List Loom.Hw.RegDecl :=
-    [cyc.decl, lfsr.decl (BitVec.ofNat 16 LFSR_INIT), total.decl,
-     anyMax.decl, sel.decl, sink.decl, hits.decl] ++ bank.decls
+/-- The complete state interface, including the generated counter family. -/
+def declarations : Declarations :=
+  Declarations.empty
+    |>.addReg cyc (exported := true)
+    |>.addReg lfsr (init := BitVec.ofNat 16 LFSR_INIT) (exported := true)
+    |>.addReg total (exported := true)
+    |>.addReg anyMax (exported := true)
+    |>.addReg sel (exported := true)
+    |>.addReg sink (exported := true)
+    |>.addReg hits (exported := true)
+    |>.addRegArray bank (exported := true)
 
-def design : Design where
-  name := "s1counters"
-  regs := s1Regs
-  -- D39a: outputs are mandatory and explicit, like inputs.
-  outputs := s1Regs.map (·.name)
-  mems := []
-  rules :=
+def s1Regs : List RegDecl := declarations.regs
+
+def design : Design :=
+  Design.ofDecls "s1counters" declarations <|
     [tickRule, lfsrRule] ++ (List.finRange 8).map bumpRule ++
     [clearRule, obsRule]
 

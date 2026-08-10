@@ -23,6 +23,6 @@ form earns its keep. -/
 
 namespace Machines.Lnp64mini
 
-theorem matrix_agrees : matrixMismatches = 0 := by native_decide
+theorem matrix_agrees : matrixMismatches () = 0 := by native_decide
 
 end Machines.Lnp64mini

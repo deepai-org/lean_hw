@@ -14,6 +14,86 @@ This document describes the intended current destination. Current results are
 recorded in [`STATUS.md`](STATUS.md), and the authoritative trust boundary is
 recorded in [`TCB.md`](TCB.md).
 
+## Immediate foundation
+
+The following high-priority facilities are current requirements and are
+implemented in the tree:
+
+1. **Shared expression evaluation is the machine-simulation default.**
+   `Loom/Hw/DagEval.lean` interns resolved expressions across every action root
+   and evaluates each node once per cycle. LNP64mini's public `runDesign` and
+   default lockstep prepare the certified DAG fail-closed, with no fallback to
+   tree evaluation. The regression suite includes one nontrivial expression
+   consumed by five separate funnels and checks that it has one shared DAG
+   root with five consumers.
+
+2. **The generated `Design` is the primary simulator.** LNP64mini's
+   `runDesign` executes the certified shared-DAG core and derives peripheral
+   requests from that core's state. `progtest` obtains its architectural
+   outcomes from this path. The hand-written ISS remains an explicitly named
+   independent differential oracle and compatibility diagnostic, not the
+   implementation used by the primary runner.
+
+3. **`Design.coords` is the default comparison surface.** The primary
+   lockstep derives every compared coordinate from the Design, prepares its
+   flat lookup plan once, and refuses a plan whose resolved size differs from
+   the declared coordinate count. LNP64mini's hand-maintained comparator and
+   its duplicate coverage tables have been removed.
+
+4. **Checked properties are general over `Design`.** `ExprProperty` handles
+   state properties and `TransitionProperty` handles typed before/after
+   relations. Both infer their complete expression footprints, carry generic
+   support/frame theorems, and reduce full Design cycles to the relevant
+   writer cone. LNP64mini applies the general transition language to prove
+   that wake preserves every slot's resume PC, gate stack frame, domain,
+   depth, and in-gate state. In-gate parking is intentionally supported, so
+   the checked rule preserves its continuation rather than falsely forbidding
+   that state.
+
+5. **Differential runs share one control plane.** `Loom.Runner` owns bounded
+   stepping, mismatch and coverage events, immediate flushing, diagnostic
+   limits, early-stop policy, and structured PASS/FAIL/SKIP results. Acc8,
+   LNP64mini's core and bus components, and FastEval corroboration use it;
+   machine code supplies only its opaque state and step callback.
+
+6. **Artifact and command diagnostics are generic.** `Loom.Artifact` provides
+   exact byte identities, identity-bound observations, verification, and
+   change-only deterministic text writing. The generic shell diagnostics
+   library provides freshness checks, captured producer logs, exact failing
+   commands, and structured results. `artifact_identity.py` supplies portable
+   SHA-256 manifests for external workflows; negative freshness, silent-log,
+   and identity-mismatch cases run under `scripts/quality.sh`.
+
+## Reusable machine infrastructure
+
+The reusable control plane lives in Loom. Acc8 is the independent demonstrated
+port: it uses the same runner, derived coordinate coverage, and structured
+results as LNP64mini, and its bespoke comparator and recursive runner are gone.
+LNP64mini has one public core lockstep backed by the generic runner; its prior
+legacy, closure-derived, pure, and fast public variants and its duplicated
+comparison metadata are gone. Its component adapters reuse the same runner
+without standardizing their machine-specific inputs.
+
+The boundary remains deliberate:
+
+- Loom owns result/control policy, complete coordinate planning, closed named
+  exclusions, deterministic writes, byte identity, freshness, and command
+  diagnostics.
+- Machines own inputs, environment and peripheral policy, reference adapters,
+  programs, expected architectural outcomes, and properties.
+- Boards own transports, probes, deployment configuration, and read-path
+  health policy, while attaching Loom artifact identity to observations.
+
+Test-program shapes remain machine-side. Dwell, park/wake, replicated spawn,
+and loop-until-refused are useful patterns to name in prose, not code to
+generalize into Loom.
+
+Generic certified-DAG runner packaging, multi-design orchestration, and a
+standard open-Design environment interface remain deferred. The interface must
+be co-designed against at least two machines including a non-CPU, and must not
+encode `MiniIn`, command-index/data conventions, LNP64mini FSM widths, or its
+DDR latency model.
+
 ## Scope boundary
 
 Loom's kernel-facing architecture must be agnostic to:
@@ -366,28 +446,3 @@ The central discipline is simple:
 > Loom proves designs and technology-neutral logical equivalence. External
 > tools produce the neutral checkpoint and choose implementations; physical
 > flows validate the rest.
-
-## Two shapes worth naming, from the sentinel arc (2026-08-09)
-
-**A fetch-path event's funnels should key on a STATE, not on the fetch
-guards.** Implementing the §9.2 return sentinel, the natural expression was
-"we are in `S_F0`, past `bus_req`/poison/**preemption**, and `pc` is the
-sentinel" -- and referencing that from the five funnels that record a gate
-return duplicated `preemptFire`'s NT-wide priority tree five times. Per-cycle
-evaluation exploded; the selftests looked hung. Routing the event through a
-dedicated state (`S_GRET`) made every funnel a 5-bit compare. Loom has no
-sharing at the expression level today (a `DagEval` is in flight, which is the
-general fix), so **a state is the memo** -- worth knowing before the general
-fix lands, and worth checking against it afterwards.
-
-**A derived observability coordinate can diverge while behavior agrees, and
-that is the lockstep's finest hour.** The sentinel work's only failure was
-`trace_in_wb`: both models pushed the same architectural state, but the EDSL
-derives the trace capture from the register-write FUNNEL while the ISS
-derives it from its `rfWe/rfWd` variables -- so an ISS write made directly to
-the register file was invisible to one and not the other. No architectural
-check could have caught it (every one passed); only comparing *every declared
-coordinate* did. This is the concrete argument for `lockstepDerived`'s
-"coordinates come from `Design.coords`, so a coordinate cannot be omitted"
-over hand-enumerated comparison lists: the coordinate that catches you is the
-one nobody thought to list.

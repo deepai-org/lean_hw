@@ -3,7 +3,9 @@
 Memory portability is checked against an explicit `MemTarget`, rather than a
 single vendor's block-RAM rules.
 
-`Loom/Hw/MemTarget.lean` records, for each target:
+`Loom/Hw/MemTarget.lean` defines the generic profile schema and checks. The
+repository's concrete profiles live in `Evidence/Targets/Memory.lean` and
+record, for each target:
 
 - macro and soft-memory class names;
 - maximum macro write-port count;
@@ -21,6 +23,6 @@ the selected implementation class and therefore belong in the profile.
 
 A passing profile check means the declared memory shapes are compatible with
 the model. It does not prove that synthesis selected the predicted resource,
-that a foundry macro exists with identical electrical properties, or that the
-post-synthesis netlist preserves behavior. Synthesis reports and equivalence
-checking remain separate evidence.
+that a foundry macro exists with identical electrical properties, or that a
+synthesized implementation preserves behavior. Those are external evidence;
+Loom currently provides no post-synthesis checker.

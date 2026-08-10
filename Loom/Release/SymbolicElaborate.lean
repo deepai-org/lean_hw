@@ -1646,10 +1646,10 @@ theorem elaborateIndexedEnv_models
 has been elaborated. -/
 theorem indexedExprMatches_inScope
     (program : Program) (wires : Rope (List IndexedWire)) (table : WireTable)
-    (hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
+    (_hwellFormed : IndexedRopeWellFormed program wires table 0 wires)
     {width : Nat} (expr : Expr width) (reference : Ref)
-    (valid : ExprRegistersValid program expr)
-    (matchOk : indexedExprMatches wires table expr reference = true)
+    (_valid : ExprRegistersValid program expr)
+    (_matchOk : indexedExprMatches wires table expr reference = true)
     (scope : refWidthBefore? program wires table wires.listLength reference =
       some width) :
     refWidthBefore? program wires table wires.listLength reference =

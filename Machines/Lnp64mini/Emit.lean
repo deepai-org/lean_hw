@@ -18,10 +18,10 @@ lake exe minitest            # emit rtl/lnp64mini.v
 lake exe minitest soc        # emit rtl/lnp64mini_soc.v
 lake exe minitest dual       # emit rtl/lnp64mini_dual.v
 lake exe minitest debugmap   # emit the dual-board BSCAN debug include
-lake exe minitest selftest   # EDSL ≡ ISS lockstep
-lake exe minitest hpselftest # HP master EDSL ≡ ISS
-lake exe minitest gpselftest # GP master EDSL ≡ ISS
-lake exe minitest arbselftest # HP arbiter EDSL ≡ ISS
+lake exe minitest selftest   # core Design-derived architectural checks
+lake exe minitest hpselftest # HP master Design outcome checks
+lake exe minitest gpselftest # GP master Design outcome checks
+lake exe minitest arbselftest # HP arbiter Design outcome checks
 lake exe minitest smpselftest # res_kill/doorbell/hold/wake_out
 lake exe minitest preemptselftest # EXT-1 quantum / preemption tick
 lake exe minitest domselftest     # EXT-2 protection domains
@@ -67,7 +67,6 @@ def main (args : List String) : IO Unit := do
   | ["slotfillselftest"] => slotFillSelftest
   | ["mmuselftest"] => mmuSelftest
   | ["subwordselftest"] => subwordSelftest
-  | ["coverageselftest"] => coverageSelftest
   | ["alugapselftest"] => aluGapSelftest
   | ["opdiffselftest"] => opDiffSelftest
   | ["traceselftest"] => traceSelftest

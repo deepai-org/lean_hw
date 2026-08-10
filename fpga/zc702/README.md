@@ -35,6 +35,28 @@ testbenches in this directory exercise the emitted modules with behavioral
 AXI peers. Optional Icarus, Yosys, CaDiCaL, and openXC7 steps require those
 tools on the host.
 
+The dual wrapper's board-only BSCAN probes are generated from the single list
+in `Machines/Lnp64mini/DebugMap.lean`:
+
+```sh
+lake exe debugmap          # regenerate board/lnp64mini_debug_map.{vh,tcl}
+lake exe debugmap --check  # fail if the checked-in include is stale
+```
+
+Typed taps validate their emitted dual-core output names at build time. Raw
+level and first-event sticky taps are the deliberately unverified escape hatch
+for throwaway probes: they generate wrapper state, CDC sampling, port wiring,
+and read decode without adding ISS or lockstep state. The generated include
+and observed board values remain outside the release theorem.
+Register-only typed EDSL expressions derive their child-port dependencies and
+wrapper logic automatically. The current map uses this for a sticky
+`running ∧ halted` predicate at BSCAN index 54; it reuses the top's existing
+running/halted bindings instead of connecting either port twice. Its sticky
+valid bit generates a persistent core-1 halt request, ORed into the existing
+S_F0-safe CORE1_HOLD path and cleared by reset. `scripts/debugmap.sh` runs a
+small behavioral test of per-core triggering, persistence, and reset in
+addition to elaborating the actual emitted dual and board top.
+
 A typical openXC7 build host runs the equivalent of:
 
 ```sh

@@ -46,12 +46,9 @@ For memory `m` of design `d`, `syncReadOkB` is `true` iff
   at every other leaf — a plain clock-enabled read register.
 * **(S3) pairwise distinct address expressions.** No two read sites of `m`
   may carry structurally identical address expressions.  This condition is
-  the one that is easy to violate by accident and expensive to diagnose:
-  the printer hash-conses on rendered form, so two equal addresses share
-  **one** `wire n_k = m[n_a];`, that wire then fans out to two read
-  registers, and no downstream tool can merge either flop into a read port.
-  (yosys's `opt_merge` fuses structurally equal `$memrd` cells for exactly
-  the same reason, so keeping the *sources* distinct is what matters.)
+  the one that is easy to violate by accident: the printer hash-conses on
+  rendered form, so two equal addresses share one `wire n_k = m[n_a];` and
+  that wire fans out to two read registers.
   `Expr.key` renders an expression the way the printer does, so
   "distinct keys" is precisely "distinct printer wires".
 * **(S4) declared widths.** `m` is declared, and every site's destination
@@ -62,11 +59,7 @@ For memory `m` of design `d`, `syncReadOkB` is `true` iff
 `syncReadOkB` is read by **no semantic function**: not `Expr.eval`, not
 `Act.run`, not `Design.cycle`, not `Compile.compile`, not `Module.cycle`,
 not the printer.  It is a predicate *about* a design, not a part of one.
-Consequently every existing theorem — `compile_cycle`, `compile_cycle_mems`,
-`compile_cycleOpen`, `toProgram_denotes`, the A-EV emission theorem, the
-round-trip theorem — holds verbatim and is not even re-elaborated: **the
-emitted text of a design that passes the check is byte-identical to the
-text it had before anyone thought about block RAM.**
+Consequently the check does not change design or module semantics.
 
 What the check certifies is a property of *that unchanged text*.  Under
 (S1)–(S4), by inspection of `Compile.nextReg` and `Print.pExprM`:
@@ -80,25 +73,12 @@ What the check certifies is a property of *that unchanged text*.  Under
    memory's asynchronous read output;
 3. no other occurrence of `m[...]` exists in the module (S1).
 
-(1)–(3) are exactly yosys's `memory_dff` merge pattern: `opt_dff` folds the
-self-feedback mux into a `$dffe`, `memory_dff` absorbs the `$dffe` (enable,
-and the synchronous reset the printer emits in the `if (rst)` arm) into the
-`$memrd` port, and `memory_libmap` then has an all-synchronous memory it can
-place in block RAM.
-
 The semantic content of a passing site is unchanged D9: the value latched is
 the **pre-cycle** memory content, because `Act.run` evaluates every
 expression against `σ`, the pre-cycle state (`syncReadSite_run` below).
-That is read-first ("old data") behaviour, which is what a Xilinx BRAM read
-port gives for a same-port collision and what the emitted `always` block
-means in IEEE 1800 for a cross-port collision.  Cross-port same-address
-collisions are indeterminate on Xilinx silicon; a design that can collide
-must argue separately that the colliding cycle is unobservable (see
-`Machines/Lnp64mini`'s D19 note).
-
-Corroboration that (1)–(3) really is what the tools do lives in the ladder:
-the emitted RTL is bit-exact against the ISS in iverilog before and after a
-shape change, and `yosys synth_xilinx` reports the RAMB36E1 count.
+Whether a concrete implementation maps this shape to a memory macro, and its
+same-address collision behavior, belong to the explicitly selected target
+profile and external implementation evidence.
 -/
 
 namespace Loom.Hw

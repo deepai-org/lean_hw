@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.Declarations
 import Loom.Hw.Semantics
 import Loom.Hw.FastEval
 import Loom.Hw.CompileCorrect
@@ -44,19 +45,34 @@ def BANNER_LEN : Nat := 19
 
 /-! ## Inputs (read like any pre-cycle state, per D15) -/
 
-def cmdValid : Expr 1  := .reg 1  "cmd_valid"
-def cmdWr    : Expr 1  := .reg 1  "cmd_wr"
-def cmdBram  : Expr 1  := .reg 1  "cmd_bram"
-def cmdIdx   : Expr 7  := .reg 7  "cmd_idx"
-def cmdWdata : Expr 32 := .reg 32 "cmd_wdata"
+def cmdValidPort : Reg 1  := ⟨"cmd_valid"⟩
+def cmdWrPort    : Reg 1  := ⟨"cmd_wr"⟩
+def cmdBramPort  : Reg 1  := ⟨"cmd_bram"⟩
+def cmdIdxPort   : Reg 7  := ⟨"cmd_idx"⟩
+def cmdWdataPort : Reg 32 := ⟨"cmd_wdata"⟩
+
+def cmdValid : Expr 1  := cmdValidPort.rd
+def cmdWr    : Expr 1  := cmdWrPort.rd
+def cmdBram  : Expr 1  := cmdBramPort.rd
+def cmdIdx   : Expr 7  := cmdIdxPort.rd
+def cmdWdata : Expr 32 := cmdWdataPort.rd
 
 /-! ## State -/
 
-def scratch : Expr 32 := .reg 32 "scratch"
-def led     : Expr 4  := .reg 4  "led"
-def conIdx  : Expr 5  := .reg 5  "con_idx"
-def rdReg   : Expr 32 := .reg 32 "rd_reg"
-def hb      : Expr 32 := .reg 32 "hb"
+def scratchReg : Reg 32 := ⟨"scratch"⟩
+def ledReg     : Reg 4  := ⟨"led"⟩
+def conIdxReg  : Reg 5  := ⟨"con_idx"⟩
+def rdRegReg   : Reg 32 := ⟨"rd_reg"⟩
+def hbReg      : Reg 32 := ⟨"hb"⟩
+
+def scratch : Expr 32 := scratchReg.rd
+def led     : Expr 4  := ledReg.rd
+def conIdx  : Expr 5  := conIdxReg.rd
+def rdReg   : Expr 32 := rdRegReg.rd
+def hb      : Expr 32 := hbReg.rd
+
+def bannerMem : Mem 5 8 := ⟨"banner"⟩
+def bramMem   : Mem 3 32 := ⟨"bram"⟩
 
 def bannerInit (a : Nat) : BitVec 8 :=
   BitVec.ofNat 8 ((BANNER.toList.getD a ⟨0, by decide⟩).toNat)
@@ -67,7 +83,7 @@ def conValid : Expr 1 := .ult conIdx (.lit (BitVec.ofNat 5 BANNER_LEN))
 /-- Current banner character (with valid bit at [8]), or 0 when exhausted. -/
 def conData : Expr 32 :=
   .mux conValid
-    (.or (.zext (.memRead 8 "banner" conIdx) 32) (.lit 0x100))
+    (.or (.zext (bannerMem.rd conIdx) 32) (.lit 0x100))
     (.lit 0)
 
 /-- The region-0 read mux (indices 0..5, default 0xDEAD0000). -/
@@ -81,23 +97,23 @@ def readMux : Expr 32 :=
 
 /-! ## Rules (the original's UPDATE-block, one command per cycle) -/
 
-def hbRule : Rule := ⟨"hb", .write 32 "hb" (.add hb (.lit 1))⟩
+def hbRule : Rule := ⟨"hb", hbReg.set (.add hb (.lit 1))⟩
 
 /-- Writes: scratch (1), LED (3), console re-arm (4), BRAM region. -/
 def writeRule : Rule :=
   ⟨"write", .ite (.and cmdValid cmdWr)
     (.ite cmdBram
-      (.memWrite 3 32 "bram" 0 (.slice cmdIdx 0 3) cmdWdata)
-      (.seq (.ite (idxIs 1) (.write 32 "scratch" cmdWdata) .skip)
-        (.seq (.ite (idxIs 3) (.write 4 "led" (.slice cmdWdata 0 4)) .skip)
-              (.ite (idxIs 4) (.write 5 "con_idx" (.lit 0)) .skip))))
+      (bramMem.write 0 (.slice cmdIdx 0 3) cmdWdata)
+      (.seq (.ite (idxIs 1) (scratchReg.set cmdWdata) .skip)
+        (.seq (.ite (idxIs 3) (ledReg.set (.slice cmdWdata 0 4)) .skip)
+              (.ite (idxIs 4) (conIdxReg.set (.lit 0)) .skip))))
     .skip⟩
 
 /-- Read latch: every transaction updates `rd_reg` for the next capture. -/
 def readRule : Rule :=
   ⟨"read", .ite cmdValid
-    (.write 32 "rd_reg"
-      (.mux cmdBram (.memRead 32 "bram" (.slice cmdIdx 0 3)) readMux))
+    (rdRegReg.set
+      (.mux cmdBram (bramMem.rd (.slice cmdIdx 0 3)) readMux))
     .skip⟩
 
 /-- A CON_DATA read consumes the served character. -/
@@ -105,26 +121,33 @@ def conAdvRule : Rule :=
   ⟨"conadv", .ite
     (.and cmdValid (.and (.not cmdWr) (.and (.not cmdBram)
       (.and (idxIs 5) conValid))))
-    (.write 5 "con_idx" (.add conIdx (.lit 1)))
+    (conIdxReg.set (.add conIdx (.lit 1)))
     .skip⟩
 
-/-- The register list, named so `regs` and D39a's mandatory `outputs`
-provably denote the same thing. -/
-def s0bRegs : List Loom.Hw.RegDecl :=
-    [⟨"scratch", 32, 0⟩, ⟨"led", 4, 0⟩, ⟨"con_idx", 5, 0⟩,
-     ⟨"rd_reg", 32, 0⟩, ⟨"hb", 32, 0⟩]
+def stateDeclarations : Declarations :=
+  Declarations.empty
+    |>.addReg scratchReg (exported := true)
+    |>.addReg ledReg (exported := true)
+    |>.addReg conIdxReg (exported := true)
+    |>.addReg rdRegReg (exported := true)
+    |>.addReg hbReg (exported := true)
 
-def design : Design where
-  name := "s0bscan"
-  regs := s0bRegs
-  -- D39a: outputs are mandatory and explicit, like inputs.
-  outputs := s0bRegs.map (·.name)
-  mems :=
-    [⟨"banner", 5, 8, bannerInit⟩, ⟨"bram", 3, 32, fun _ => 0⟩]
-  rules := [hbRule, writeRule, readRule, conAdvRule]
-  inputs :=
-    [⟨"cmd_valid", 1⟩, ⟨"cmd_wr", 1⟩, ⟨"cmd_bram", 1⟩,
-     ⟨"cmd_idx", 7⟩, ⟨"cmd_wdata", 32⟩]
+/-- The complete state and open interface, derived from typed handles. -/
+def declarations : Declarations :=
+  stateDeclarations
+    |>.addMem bannerMem (init := bannerInit)
+    |>.addMem bramMem
+    |>.addInput cmdValidPort
+    |>.addInput cmdWrPort
+    |>.addInput cmdBramPort
+    |>.addInput cmdIdxPort
+    |>.addInput cmdWdataPort
+
+def s0bRegs : List RegDecl := stateDeclarations.regs
+
+def design : Design :=
+  Design.ofDecls "s0bscan" declarations
+    [hbRule, writeRule, readRule, conAdvRule]
 
 theorem design_wf : Compile.DesignWF design :=
   Compile.designWFCheck_sound design (by decide)
@@ -145,7 +168,7 @@ theorem fastRunOpen_agrees (n : Nat) (ιs : Nat → InEnv) :
   FastEval.fastRunOpen_eq design design_fastWF n ιs _ _
     (FastEval.agree_fastReset design)
 
-/-! ## The fast executable mirror (ISS) -/
+/-! ## Commands and Design-derived acceptance test -/
 
 structure Cmd where
   valid : Bool := false
@@ -155,64 +178,13 @@ structure Cmd where
   wdata : BitVec 32 := 0
   deriving Repr
 
-structure S0St where
-  scratch : BitVec 32 := 0
-  led     : BitVec 4  := 0
-  conIdx  : BitVec 5  := 0
-  rdReg   : BitVec 32 := 0
-  hb      : BitVec 32 := 0
-  bram    : Vector (BitVec 32) 8 := Vector.replicate 8 0
-  deriving Repr, DecidableEq
-
-namespace Iss
-
-def bannerByte (i : Nat) : BitVec 8 := bannerInit i
-
-/-- One cycle under command `c` — all reads pre-cycle, per D9/D15. -/
-def step (s : S0St) (c : Cmd) : S0St := Id.run do
-  let mut s' := { s with hb := s.hb + 1 }
-  if c.valid then
-    let conOk := s.conIdx.toNat < BANNER_LEN
-    if c.wr then
-      if c.bram then
-        s' := { s' with bram := s'.bram.set! (c.idx % 8) c.wdata }
-      else
-        if c.idx = 1 then s' := { s' with scratch := c.wdata }
-        if c.idx = 3 then s' := { s' with led := c.wdata.setWidth 4 }
-        if c.idx = 4 then s' := { s' with conIdx := 0 }
-    -- read latch (pre-cycle state)
-    let r : BitVec 32 :=
-      if c.bram then s.bram[c.idx % 8]!
-      else match c.idx with
-        | 0 => BitVec.ofNat 32 ID_MAGIC
-        | 1 => s.scratch
-        | 2 => s.hb
-        | 3 => s.led.setWidth 32
-        | 4 => (BitVec.ofNat 5 BANNER_LEN - s.conIdx).setWidth 32
-        | 5 => if conOk
-               then (bannerByte s.conIdx.toNat).setWidth 32 ||| 0x100
-               else 0
-        | _ => 0xDEAD0000
-    s' := { s' with rdReg := r }
-    if ¬ c.wr ∧ ¬ c.bram ∧ c.idx = 5 ∧ conOk then
-      s' := { s' with conIdx := s.conIdx + 1 }
-  return s'
-
-def run (cs : List Cmd) (s : S0St := {}) : S0St := cs.foldl step s
-
-end Iss
-
-/-! ## Lockstep: EDSL open semantics ≡ ISS on a command trace -/
-
 /-- Drive one `Cmd` as a D15 input valuation. -/
-def Cmd.toEnv (c : Cmd) : InEnv := fun n w =>
-  match n with
-  | "cmd_valid" => (BitVec.ofBool c.valid).setWidth w
-  | "cmd_wr"    => (BitVec.ofBool c.wr).setWidth w
-  | "cmd_bram"  => (BitVec.ofBool c.bram).setWidth w
-  | "cmd_idx"   => (BitVec.ofNat 7 c.idx).setWidth w
-  | "cmd_wdata" => c.wdata.setWidth w
-  | _ => 0#w
+def Cmd.toEnv (c : Cmd) : InEnv := InputBinding.toEnv
+  [InputBinding.of cmdValidPort (BitVec.ofBool c.valid),
+   InputBinding.of cmdWrPort (BitVec.ofBool c.wr),
+   InputBinding.of cmdBramPort (BitVec.ofBool c.bram),
+   InputBinding.of cmdIdxPort (BitVec.ofNat 7 c.idx),
+   InputBinding.of cmdWdataPort c.wdata]
 
 /-- The s0 acceptance trace: ID read, scratch write/readback, heartbeat,
 LED write, full banner drain + exhaustion, re-arm, BRAM write/readback. -/
@@ -231,44 +203,43 @@ def acceptanceTrace : List Cmd :=
       ⟨true, false, true,  5, 0⟩,                 -- BRAM[5] read
       ⟨false, false, false, 0, 0⟩]                -- idle cycle
 
-def issRegs (s : S0St) : List (String × Nat) :=
-  [("scratch", s.scratch.toNat), ("led", s.led.toNat),
-   ("con_idx", s.conIdx.toNat), ("rd_reg", s.rdReg.toNat), ("hb", s.hb.toNat)]
-
-/-! ### The fast evaluator as the oracle (open design) -/
+/-! ### The proved generated evaluator (open design) -/
 
 def fast : FastDesign := design.elaborate
 
-/-- Replay the acceptance trace through `fastCycleOpen`, comparing every
-register *and* every BRAM word against the hand ISS after each command.
-The open-design analogue of `S13Soak.fastVsIss`. -/
-def fastVsIss : IO Unit := do
+/-- Replay the acceptance trace and check its externally meaningful final
+outcomes. The transition semantics are not duplicated here: `fastRunOpen_agrees`
+connects this generated evaluator to `Design.runOpen` for every input trace and
+cycle count. -/
+def acceptanceCheck : IO Unit := do
   let mut fs := design.fastReset
-  let mut iss : S0St := {}
-  let mut step := 0
   let mut bad := 0
   for c in acceptanceTrace do
     fs := fastCycleOpen fast c.toEnv fs
-    iss := Iss.step iss c
-    for (n, v) in issRegs iss do
-      match (design.fastRegs fs).lookup n with
-      | some dv =>
-          if dv ≠ v then
-            IO.println s!"MISMATCH step {step} {n}: fast={dv} iss={v}"
-            bad := bad + 1
-      | none =>
-          IO.println s!"MISSING {n}"
+  let expected : List (String × Nat) :=
+    [(scratchReg.name, 0x1EAD5E13), (ledReg.name, 0xA),
+     (conIdxReg.name, 0), (rdRegReg.name, 0xB00051E5),
+     (hbReg.name, acceptanceTrace.length)]
+  let actual := design.fastRegs fs
+  for (name, want) in expected do
+    match actual.lookup name with
+    | some got =>
+        if got ≠ want then
+          IO.println s!"S0BSCAN OUTCOME MISMATCH {name}: got={got} want={want}"
           bad := bad + 1
-    let bram := design.fastMem fs "bram"
-    for a in List.range 8 do
-      if bram.getD a 0 ≠ (iss.bram[a]!).toNat then
-        IO.println s!"MISMATCH step {step} bram[{a}]"
+    | none =>
+        IO.println s!"S0BSCAN OUTCOME MISSING {name}"
         bad := bad + 1
-    step := step + 1
+  let bram := design.fastMem fs bramMem.name
+  for a in List.range 8 do
+    let want := if a = 5 then 0xB00051E5 else 0
+    if bram.getD a 0 ≠ want then
+      IO.println s!"S0BSCAN OUTCOME MISMATCH {bramMem.name}[{a}]"
+      bad := bad + 1
   if bad = 0 then
-    IO.println s!"S0BSCAN FAST≡ISS OK ({acceptanceTrace.length} cmds, regs + BRAM)"
+    IO.println s!"S0BSCAN OUTCOME PASS ({acceptanceTrace.length} cmds, regs + BRAM)"
   else
-    IO.println s!"S0BSCAN FAST≡ISS FAILED ({bad})"
+    throw <| IO.userError s!"S0BSCAN OUTCOME FAIL ({bad} mismatches)"
 
 /-- `fastCycleOpen` ≡ the reference `Design.cycleOpen` over the acceptance
 trace, checking the full register state and BRAM after every command. -/
@@ -285,19 +256,20 @@ def refCheck : IO Unit := do
         IO.println s!"REF MISMATCH step {step} {e.1}"
         bad := bad + 1
     for a in List.range 8 do
-      if (design.fastMem fs "bram").getD a 0 ≠ (σ.mems "bram" a 32).toNat then
+      if (design.fastMem fs bramMem.name).getD a 0 ≠
+          (σ.mems bramMem.name a 32).toNat then
         IO.println s!"REF MISMATCH step {step} bram[{a}]"
         bad := bad + 1
     step := step + 1
   if bad = 0 then
     IO.println "S0BSCAN REF LOCKSTEP OK (fastCycleOpen ≡ Design.cycleOpen)"
   else
-    IO.println s!"S0BSCAN REF LOCKSTEP FAILED ({bad})"
+    throw <| IO.userError s!"S0BSCAN REF LOCKSTEP FAILED ({bad})"
 
 /-- The full acceptance cross-check. -/
 def selftest : IO Unit := do
   refCheck
-  fastVsIss
+  acceptanceCheck
 
 /-- Expected `rd_reg` after each command of the acceptance trace — the
 oracle for the iverilog testbench and the on-silicon JTAG run, produced by
@@ -307,7 +279,7 @@ def predict : IO Unit := do
   let mut k := 0
   for c in acceptanceTrace do
     fs := fastCycleOpen fast c.toEnv fs
-    IO.println s!"{k} rd_reg={((design.fastRegs fs).lookup "rd_reg").getD 0}"
+    IO.println s!"{k} {rdRegReg.name}={((design.fastRegs fs).lookup rdRegReg.name).getD 0}"
     k := k + 1
 
 def emit : IO Unit := design.emit "rtl/s0bscan.v"

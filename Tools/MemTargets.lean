@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
-import Loom.Hw.MemTarget
+import Evidence.Targets.Memory
 import Machines.Acc8.Core
 import Machines.Acc8.Iss
 import Machines.Lnp64u.Hw.Core
@@ -22,7 +22,7 @@ import Machines.Substrate.RetimeDemo
 # `lake exe memtargets` — the portability table (D38)
 
 For every shipped design, which declared memory technologies
-(`Loom/Hw/MemTarget.lean`) can realize its memories. This is the point of
+(`Evidence/Targets/Memory.lean`) can realize its memories. This is the point of
 D38: a design realizable only on `xc7` is *visibly* target-specific rather
 than silently so (`Loom/Hw/MEMTARGET_SPEC.md`).
 
@@ -34,7 +34,7 @@ lake exe memtargets -v       # plus a line per memory per target
 `realizableOnB` reads the *design*, so an `ackMemInit` recorded at an
 emission site rather than on the design (as `epochengine_tiny`'s is, in
 `Machines/Epoch/Emit.lean`) does not show here: the table reports the
-property, `Design.emit` enforces the policy.
+property; `Design.checkTarget` and `Design.emitFor` enforce the policy.
 
 `pingpong` and `satcounter` are omitted: both declare `mems := []`, so they
 are realizable on every target, and their modules each define a root `main`
@@ -42,6 +42,7 @@ and therefore cannot be imported together with anything else.
 -/
 
 open Loom.Hw
+open Loom.Evidence.Targets
 
 /-- The shipped designs, by the name of the `rtl/*.v` they emit. -/
 def shipped : List (String × Design) :=
@@ -70,7 +71,7 @@ def main (args : List String) : IO Unit := do
   let verbose := args.contains "-v"
   IO.println "design            mems  xc7   ecp5  asic   offenders"
   for (n, d) in shipped do
-    let verdict := MemTarget.all.map fun t =>
+    let verdict := Memory.all.map fun t =>
       (t, d.realizableOnB t, (d.unrealizableOn t).map (·.name))
     let cells := String.join <| verdict.map fun (_, ok, _) =>
       pad (if ok then "yes" else "NO") 6
@@ -79,7 +80,7 @@ def main (args : List String) : IO Unit := do
     IO.println <| pad n 18 ++ pad (toString d.mems.length) 6 ++ cells ++
       " " ++ String.intercalate " " bad
     if verbose then
-      for t in MemTarget.all do
+      for t in Memory.all do
         for md in d.mems do
           IO.println (d.realizableReport t md)
   IO.println "\n(pingpong and satcounter declare no memories: realizable on \

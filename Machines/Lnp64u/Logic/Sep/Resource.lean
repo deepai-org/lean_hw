@@ -4,7 +4,7 @@ import Loom.Logic.Sep.Bi
 import Machines.Lnp64u.Logic.Defs
 
 /-!
-# µLog: the LNP64-µ resource algebra (L1, PLAN §5 "L1 µLog")
+# µLog: the LNP64-µ resource algebra
 
 The machine instance of the generic BI core: a µ **resource** is a bundle of
 ownership claims over exactly the sorts T9 conserves — memory words,

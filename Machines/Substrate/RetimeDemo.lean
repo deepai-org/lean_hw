@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Retime
 import Loom.Hw.EmitIO
+import Loom.Hw.Declarations
 
 /-!
 # Retime demo: registered-output split on a write-only observability latch
@@ -23,25 +24,34 @@ namespace Machines.Substrate.RetimeDemo
 
 open Loom.Hw
 
+def cntReg : Reg 8 := ⟨"cnt"⟩
+def obsReg : Reg 8 := ⟨"obs"⟩
+
 /-- Baseline: `cnt` counts; `obs` latches `cnt + 7`. Nothing reads `obs`, so
 `obs ∈` the proved `retimeReg_stutter` observability class. -/
-def baseline : Design where
-  name := "retime_base"
-  regs := [⟨"cnt", 8, 0⟩, ⟨"obs", 8, 7⟩]
-  -- D39a: outputs are mandatory and explicit, like inputs.
-  outputs := ["cnt", "obs"]
-  mems := []
-  rules :=
-    [ ⟨"tick", .write 8 "cnt" (.add (.reg 8 "cnt") (.lit 1))⟩
-    , ⟨"latch", .write 8 "obs" (.add (.reg 8 "cnt") (.lit 7))⟩ ]
+def declarations : Declarations :=
+  Declarations.empty
+    |>.addReg cntReg (exported := true)
+    |>.addReg obsReg (init := 7) (exported := true)
 
-/-- The retimed design: `obs` split through `obs__pre`. Renamed so it can be
+def baseline : Design :=
+  Design.ofDecls "retime_base" declarations
+    [ ⟨"tick", cntReg.set (.add cntReg.rd (.lit 1))⟩
+    , ⟨"latch", obsReg.set (.add cntReg.rd (.lit 7))⟩ ]
+
+def cuts : List RetimeCut := [RetimeCut.ofReg obsReg]
+
+/-- The retimed design: `obs` split through `obs__pre`. The one-cut plan uses
+the same batch API as larger selected-cut transforms. Renamed so it can be
 instantiated alongside the baseline in one testbench. -/
-def retimed : Design := { retimeReg baseline "obs" 8 with name := "retime_base_retimed" }
+def retimed : Design :=
+  { retimePlan baseline cuts with name := "retime_base_retimed" }
 
 /-- The retime is legal (decidable guard passes): `obs` declared at width 8,
 `obs__pre` fresh, no rule reads `obs`. -/
 example : retimeRegOkB baseline "obs" 8 = true := by decide
+
+example : retimePlanOkB baseline cuts = true := by decide
 
 /-! ## EDSL-level self-check of the 1-cycle delay -/
 

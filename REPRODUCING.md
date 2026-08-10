@@ -33,6 +33,10 @@ network. No simulator or synthesizer is required for the theorem. Yosys is
 relevant only when corroborating the separate text/tool and synthesis
 boundaries.
 
+Optional workflow legs print a final `RESULT PASS`, `RESULT FAIL`, or
+`RESULT SKIP` line. A skip is successful workflow control, not positive
+corroboration, and must remain visible in retained release logs.
+
 ## Tier A — full theorem recheck
 
 From a fresh clone:
@@ -42,11 +46,6 @@ git clone https://github.com/deepai-org/lean_hw.git
 cd lean_hw
 scripts/build_verified_release.sh
 ```
-
-At the current repository head this command stops at its initial package
-quality gate; [`STATUS.md`](STATUS.md) lists the two missing SPDX headers.
-The procedure below describes the release check, not a claim that the current
-head completes it before those regressions are fixed.
 
 An optional positive integer selects the maximum Lean process count. With no
 argument, the script derives a cap from available memory and CPUs, with a hard
@@ -73,7 +72,7 @@ The script performs these release-specific steps:
 
 The script builds the precise release dependency closure. It does **not** run
 the repository-wide `lake build`, `lake test`, `lake exe audit`, simulator
-lockstep, or post-synthesis equivalence suite. Run those separately when
+or lockstep suite. Run those separately when
 evaluating the whole repository:
 
 ```console

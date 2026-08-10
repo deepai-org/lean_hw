@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.Declarations
 import Loom.Hw.Semantics
 import Loom.Hw.FastEval
 import Loom.Hw.CompileCorrect
@@ -28,20 +29,17 @@ namespace Machines.Substrate.S0Blinky
 
 open Loom.Hw
 
-def cnt : Expr 28 := .reg 28 "cnt"
+def cntReg : Reg 28 := ⟨"cnt"⟩
+def cnt : Expr 28 := cntReg.rd
 
 /-- One rule: count every cycle (wraps mod 2^28). -/
-def tick : Act := .write 28 "cnt" (.add cnt (.lit 1))
+def tick : Act := cntReg.set (.add cnt (.lit 1))
 
-def design : Design where
-  name  := "s0blinky"
-  regs  := [⟨"cnt", 28, 0⟩]
-  -- D39a: outputs are mandatory and explicit, like inputs. This design's
-  -- whole register set IS its interface, so it says so rather than
-  -- relying on a default that exported everything silently.
-  outputs := ["cnt"]
-  mems  := []
-  rules := [⟨"tick", tick⟩]
+def declarations : Declarations :=
+  Declarations.empty.addReg cntReg (exported := true)
+
+def design : Design :=
+  Design.ofDecls "s0blinky" declarations [⟨"tick", tick⟩]
 
 theorem design_wf : Compile.DesignWF design :=
   Compile.designWFCheck_sound design (by decide)

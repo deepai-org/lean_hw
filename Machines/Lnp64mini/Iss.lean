@@ -14,42 +14,7 @@ Verilog). This is the oracle the EDSL Design is lockstepped against.
 
 namespace Machines.Lnp64mini
 
-/-- **Thread-indexed MEMORIES keep a 5-bit address space, whatever `NT` is.**
-`Core.lean` declares `tpc`/`tdom`/`tcont`/... as `⟨name, 5, w⟩` -- 32 entries --
-and Loom derives the lockstep's comparison coordinates from that declaration,
-so an ISS array sized `NT` gets read at index 8..31 and throws. That is the
-third thing `NT` was silently coupled to, after the round-robin rotate's
-duplication offset and the `cur + 1 + nr_off` wrap.
-
-The split is deliberate rather than a workaround: `NT` scales the **logic** --
-the futex wake comparator bank, the priority encoders, the per-thread
-`tstate`/`tfutex` registers -- which is where the 17.8% lived. The memories are
-block RAM addressed by a 5-bit `cur`; shrinking them would buy almost nothing
-and would force `cur` to change width everywhere it is used. -/
-def NTMEM : Nat := 32
-
 open Loom.Hw
-
-/-! ## Inputs -/
-
-structure MiniIn where
-  mDone    : Bool := false
-  mRdata   : BitVec 64 := 0
-  mBusy    : Bool := false
-  gpDone   : Bool := false
-  gpRdata  : BitVec 32 := 0
-  gpBusy   : Bool := false
-  cmdValid : Bool := false
-  cmdIdx   : Nat  := 0
-  cmdData  : BitVec 32 := 0
-  -- SMP extensions (DUAL_SPEC.md): all inert at `false`.
-  resKill  : Bool := false
-  doorbell : Bool := false
-  -- EXT-4: the key the doorbell wakes on (park/wake directory).
-  doorbellKey : BitVec 64 := 0
-  hold     : Bool := false
-  scFail   : Bool := false
-  deriving Repr
 
 /-! ## State -/
 
@@ -507,8 +472,6 @@ def step (s : MiniSt) (inp : MiniIn) : MiniSt := Id.run do
   s' := { s' with dmem_we := false, core_rd := false, core_wr := false,
                   jtag_wr := false, jtag_rd := false, gp_rd := false, gp_wr := false,
                   lr_req := false, sc_req := false }
-  let localRstn := true   -- wrapper POR handled by reset values; always run.
-
   -- (1) registered priority encoders (separate always block; pre-state)
   s' := { s' with next_ready := compute_next_ready s, free_slot := compute_free_slot s,
                   has_free := compute_has_free s }

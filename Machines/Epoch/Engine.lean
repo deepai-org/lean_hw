@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Loom.Hw.Semantics
 import Loom.Hw.FastEval
+import Loom.Hw.DagEval
 import Loom.Hw.SyncRead
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
@@ -442,23 +443,27 @@ theorem design_fastWF : design.fastWFB = true := by rfl
 
 theorem tiny_fastWF : tiny.fastWFB = true := by rfl
 
+/-- The public generated simulator for `design`; its evaluator and reset are
+derived from the design, and `wf` connects them to the reference semantics. -/
+def simulator : FastEval.VerifiedSimulator design := ⟨design_fastWF⟩
+
+def tinySimulator : FastEval.VerifiedSimulator tiny := ⟨tiny_fastWF⟩
+
 /-- The instantiated open-design theorem: replaying any input trace through
 `fastCycleOpen` agrees with the reference semantics on every declared
 coordinate. This is why the selftest below is evidence about the `Design`
 and not about a hand-written mirror of it. -/
 theorem fastRunOpen_agrees (n : Nat) (ιs : Nat → InEnv) :
     Agree design
-      (fastRunOpen design.elaborate ιs n design.fastReset)
+      (simulator.runOpen ιs n simulator.reset)
       (design.runOpen ιs n design.reset) :=
-  FastEval.fastRunOpen_eq design design_fastWF n ιs _ _
-    (FastEval.agree_fastReset design)
+  simulator.runOpenFromReset_eq n ιs
 
 theorem tiny_fastRunOpen_agrees (n : Nat) (ιs : Nat → InEnv) :
     Agree tiny
-      (fastRunOpen tiny.elaborate ιs n tiny.fastReset)
+      (tinySimulator.runOpen ιs n tinySimulator.reset)
       (tiny.runOpen ιs n tiny.reset) :=
-  FastEval.fastRunOpen_eq tiny tiny_fastWF n ιs _ _
-    (FastEval.agree_fastReset tiny)
+  tinySimulator.runOpenFromReset_eq n ιs
 
 /-! ## The selftest (D18: the verified fast evaluator *is* the oracle)
 
@@ -535,15 +540,13 @@ structure Obs where
 def peekN (d : Design) (fs : FastSt) (n : String) : Nat :=
   ((d.fastRegs fs).lookup n).getD 0
 
-/-- Run a stimulus list through the verified fast evaluator, recording the
-observation after every cycle. -/
-def runTrace (d : Design) (ss : List Stim) : List Obs := Id.run do
-  let fd := d.elaborate
-  let mut fs := d.fastReset
+private def runTraceWith (d : Design) (step : InEnv → FastSt → FastSt)
+    (reset : FastSt) (ss : List Stim) : List Obs := Id.run do
+  let mut fs := reset
   let mut out : List Obs := []
   let mut k := 0
   for s in ss do
-    fs := fastCycleOpen fd s.toEnv fs
+    fs := step s.toEnv fs
     out := out ++ [{ k := k
                      r0v := peekN d fs "resp0_valid", r0c := peekN d fs "resp0_code"
                      r1v := peekN d fs "resp1_valid", r1c := peekN d fs "resp1_code"
@@ -552,6 +555,18 @@ def runTrace (d : Design) (ss : List Stim) : List Obs := Id.run do
                      acked := peekN d fs "b_acked", inval := peekN d fs "inval_valid" }]
     k := k + 1
   return out
+
+/-- Run a stimulus list through the verified tree evaluator, recording the
+observation after every cycle. -/
+def runTrace (d : Design) (ss : List Stim) : List Obs :=
+  runTraceWith d (fastCycleOpen d.elaborate) d.fastReset ss
+
+/-- The same trace runner through an already certified DAG. Keeping the DAG
+as an argument makes certificate failure explicit at the IO boundary and
+amortizes preparation across every scenario in the acceptance ladder. -/
+def runTraceDag {d : Design} (dag : DagEval.VerifiedSimulator d)
+    (ss : List Stim) : List Obs :=
+  runTraceWith d dag.cycleOpen dag.reset ss
 
 /-- The outcome codes volume `k` reported, in order. -/
 def codes (obs : List Obs) (k : Nat) : List Nat :=
@@ -586,21 +601,25 @@ private def expect (name : String) (got want : List Nat) : IO Nat := do
 /-- The engine acceptance ladder. Each scenario is named for the §3
 sentence / Layer-1 theorem it exercises. -/
 def selftest : IO Unit := do
+  let dag ← DagEval.prepareSimulator simulator "epochengine"
+  let tinyDag ← DagEval.prepareSimulator tinySimulator "epochengine_tiny"
+  let run := runTraceDag dag
+  let runTiny := runTraceDag tinyDag
   let mut bad := 0
   -- (1) check-hit: the reset image is coherent (`Protocol.Init`), so a
   -- reference carrying the reset epoch validates.
   bad := bad + (← expect "check-hit          (ok)"
-    (codes (runTrace design (chkSeq 0 5 1)) 0) [OUT_OK])
+    (codes (run (chkSeq 0 5 1)) 0) [OUT_OK])
   -- (1b) precedence: the four failure classes, in §3's order.
   bad := bad + (← expect "check-badref (¬wf)  "
-    (codes (runTrace design (chkSeq 0 5 1 6)) 0) [OUT_BADREF])
+    (codes (run (chkSeq 0 5 1 6)) 0) [OUT_BADREF])
   bad := bad + (← expect "check-denied(¬rts)  "
-    (codes (runTrace design (chkSeq 0 5 1 3)) 0) [OUT_DENIED])
+    (codes (run (chkSeq 0 5 1 3)) 0) [OUT_DENIED])
   bad := bad + (← expect "check-stale (ep≠)   "
-    (codes (runTrace design (chkSeq 0 5 9)) 0) [OUT_STALE])
+    (codes (run (chkSeq 0 5 9)) 0) [OUT_STALE])
   -- (2) bump → broadcast → per-volume ack → return, then the old epoch is
   -- stale at BOTH volumes and the new one validates (T-E1).
-  let t2 := runTrace design (bmpSeq 0 5 ++ chkSeq 0 5 1 ++ chkSeq 1 5 1
+  let t2 := run (bmpSeq 0 5 ++ chkSeq 0 5 1 ++ chkSeq 1 5 1
                               ++ chkSeq 0 5 2 ++ chkSeq 1 5 2)
   bad := bad + (← expect "post-bump vol0      " (codes t2 0) [OUT_STALE, OUT_OK])
   bad := bad + (← expect "post-bump vol1      " (codes t2 1) [OUT_STALE, OUT_OK])
@@ -610,7 +629,7 @@ def selftest : IO Unit := do
     [(t2.filter (fun o => o.bd0 = 1)).length] [1])
   -- (3) poison permanence (T-E3): a poison bump fails *current-epoch*
   -- references too, forever.
-  let t3 := runTrace design (bmpSeq 0 7 true ++ chkSeq 0 7 2 ++ chkSeq 1 7 2
+  let t3 := run (bmpSeq 0 7 true ++ chkSeq 0 7 2 ++ chkSeq 1 7 2
                               ++ gap 20 ++ chkSeq 0 7 2 ++ chkSeq 0 7 1)
   bad := bad + (← expect "poison vol0 forever "
     (codes t3 0) [OUT_POISONED, OUT_POISONED, OUT_POISONED])
@@ -618,7 +637,7 @@ def selftest : IO Unit := do
   -- (4) saturation is permanent death (T-E2), at a width where the
   -- saturation point is reachable.
   let sat := (List.replicate 6 (bmpSeq 0 1)).flatten
-  let t4 := runTrace tiny (sat ++ chkSeq 0 1 7 ++ chkSeq 1 1 7
+  let t4 := runTiny (sat ++ chkSeq 0 1 7 ++ chkSeq 1 1 7
                             ++ bmpSeq 0 1 ++ chkSeq 0 1 7)
   bad := bad + (← expect "saturated ⇒ stale   "
     (codes t4 0) [OUT_STALE, OUT_STALE])
@@ -627,7 +646,7 @@ def selftest : IO Unit := do
   -- succeed — volume 1 checks the pre-bump epoch while the broadcast is
   -- still in flight and gets `ok`; after the return the same check is
   -- `-STALE`.
-  let t5 := runTrace design ([{ r0 := (bmp 0 3).r0, r1 := (chk 1 3 1).r1 }]
+  let t5 := run ([{ r0 := (bmp 0 3).r0, r1 := (chk 1 3 1).r1 }]
                               ++ gap 12 ++ chkSeq 1 3 1)
   bad := bad + (← expect "in-flight ok→stale  " (codes t5 1) [OUT_OK, OUT_STALE])
   -- (6) both volumes may check while a bump is in flight and afterwards.

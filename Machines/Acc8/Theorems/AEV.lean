@@ -75,7 +75,9 @@ theorem cycle_agree (prog : BitVec 8 → BitVec 16) (σ : Loom.Hw.St) :
             have hr' : r = (⟨"acc", 8, 0⟩ : Loom.Hw.RegDecl)
                 ∨ r = (⟨"pc", 8, 0⟩ : Loom.Hw.RegDecl)
                 ∨ r = (⟨"halted", 1, 0⟩ : Loom.Hw.RegDecl) := by
-              simpa [Core.design] using hr
+              simpa [Core.design, Core.declarations, Design.ofDecls,
+                Declarations.empty, Declarations.addReg, Declarations.addMem,
+                Reg.decl, Mem.decl] using hr
             rcases hr' with rfl | rfl | rfl
             · exact fun hc => h1 ⟨hc.1.symm, hc.2.symm⟩
             · exact fun hc => h2 ⟨hc.1.symm, hc.2.symm⟩
@@ -111,7 +113,9 @@ theorem cycle_agree (prog : BitVec 8 → BitVec 16) (σ : Loom.Hw.St) :
           have hm0' : m0 = (⟨"prog", 8, 16, fun a => prog (BitVec.ofNat 8 a)⟩ :
                 Loom.Hw.MemDecl)
               ∨ m0 = (⟨"mem", 8, 8, fun _ => 0⟩ : Loom.Hw.MemDecl) := by
-            simpa [Core.design] using hm0
+            simpa [Core.design, Core.declarations, Design.ofDecls,
+              Declarations.empty, Declarations.addReg, Declarations.addMem,
+              Reg.decl, Mem.decl] using hm0
           rcases hm0' with rfl | rfl
           · exact fun he => hpn he.symm
           · exact fun he => hmn he.symm

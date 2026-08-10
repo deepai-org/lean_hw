@@ -121,6 +121,12 @@ structure Simulation (A C : TSys) where
 
 namespace Simulation
 
+/-- The identity simulation. -/
+def refl (A : TSys) : Simulation A A where
+  abs := id
+  init_ok := fun _ h => h
+  square := fun _ _ h => h
+
 /-- Reachable concrete states abstract to reachable abstract states. -/
 theorem reachable {A C : TSys} (σ : Simulation A C) :
     ∀ s, C.Reachable s → A.Reachable (σ.abs s) := by
@@ -195,6 +201,38 @@ def Simulation.toStutter {A C : TSys} (σ : Simulation A C) :
   square := fun s s' h => Or.inr (σ.square s s' h)
 
 namespace StutterSimulation
+
+/-- The identity stuttering simulation. -/
+def refl (A : TSys) : StutterSimulation A A := (Simulation.refl A).toStutter
+
+/-- Stuttering simulations compose. A concrete step that stutters in the
+intermediate system also stutters after the outer abstraction; a genuine
+intermediate step is handled by the outer stuttering square. -/
+def comp {A B C : TSys} (σ₁ : StutterSimulation A B)
+    (σ₂ : StutterSimulation B C) : StutterSimulation A C where
+  abs := σ₁.abs ∘ σ₂.abs
+  init_ok := fun s h => σ₁.init_ok _ (σ₂.init_ok s h)
+  square := by
+    intro s s' h
+    rcases σ₂.square s s' h with hstutter | hstep
+    · exact Or.inl (congrArg σ₁.abs hstutter)
+    · rcases σ₁.square _ _ hstep with hstutter | hstep'
+      · exact Or.inl hstutter
+      · exact Or.inr hstep'
+
+/-- Compose an outer stuttering simulation with an inner strict simulation. -/
+def compSimulation {A B C : TSys} (σ₁ : StutterSimulation A B)
+    (σ₂ : Simulation B C) : StutterSimulation A C :=
+  σ₁.comp σ₂.toStutter
+
+/-- Compose an outer strict simulation with an inner stuttering simulation. -/
+def ofSimulationComp {A B C : TSys} (σ₁ : Simulation A B)
+    (σ₂ : StutterSimulation B C) : StutterSimulation A C :=
+  σ₁.toStutter.comp σ₂
+
+@[simp] theorem comp_abs {A B C : TSys} (σ₁ : StutterSimulation A B)
+    (σ₂ : StutterSimulation B C) (s : C.S) :
+    (σ₁.comp σ₂).abs s = σ₁.abs (σ₂.abs s) := rfl
 
 theorem reachable {A C : TSys} (σ : StutterSimulation A C) :
     ∀ s, C.Reachable s → A.Reachable (σ.abs s) := by

@@ -1,7 +1,9 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.Declarations
 import Loom.Hw.Semantics
 import Loom.Hw.FastEval
+import Loom.Hw.DagEval
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
@@ -39,11 +41,9 @@ one net `err` increment per cycle no matter how many checkers fire, and
 injection coalescing reads the *pre-cycle* pending bit even while the
 server drains it in the same cycle.
 
-`SoakIss` is the fast executable mirror (the ISS): a structure of BitVecs
-and a step function. `Design.run` at small K is cross-checked against it
-in-repo (`selftest`); the emitted RTL is cross-checked at full K by
-iverilog; the real ZC702 is cross-checked at full K over BSCAN. Refinement
-proofs are deliberately not attempted yet.
+The certified generated evaluator runs the Design at full depth. In-repo
+tests check its agreement with reference semantics and the soak's architectural
+outcomes; emitted RTL and real ZC702 observations remain external evidence.
 -/
 
 namespace Machines.Substrate.S13Soak
@@ -59,21 +59,37 @@ def LFSR_INIT : Nat := 0xACE1
 
 /-! ## Expression shorthands -/
 
-def cyc      : Expr 32 := .reg 32 "cyc"
-def lfsr     : Expr 16 := .reg 16 "lfsr"
-def ptr      : Expr 3  := .reg 3  "ptr"
-def tmr      : Expr 16 := .reg 16 "tmr"
-def dmaBusy  : Expr 1  := .reg 1  "dma_busy"
-def dmaCd    : Expr 4  := .reg 4  "dma_cd"
-def injected : Expr 32 := .reg 32 "injected"
-def serviced : Expr 32 := .reg 32 "serviced"
-def err      : Expr 32 := .reg 32 "err"
-def maxout   : Expr 32 := .reg 32 "maxout"
-def dmaSub   : Expr 32 := .reg 32 "dma_sub"
-def dmaComp  : Expr 32 := .reg 32 "dma_comp"
-def tmrExp   : Expr 32 := .reg 32 "tmr_exp"
-def pend (i : Fin 8) : Expr 1  := .reg 1  s!"pend{i.val}"
-def age  (i : Fin 8) : Expr 11 := .reg 11 s!"age{i.val}"
+def cycReg      : Reg 32 := ⟨"cyc"⟩
+def lfsrReg     : Reg 16 := ⟨"lfsr"⟩
+def ptrReg      : Reg 3  := ⟨"ptr"⟩
+def tmrReg      : Reg 16 := ⟨"tmr"⟩
+def dmaBusyReg  : Reg 1  := ⟨"dma_busy"⟩
+def dmaCdReg    : Reg 4  := ⟨"dma_cd"⟩
+def injectedReg : Reg 32 := ⟨"injected"⟩
+def servicedReg : Reg 32 := ⟨"serviced"⟩
+def errReg      : Reg 32 := ⟨"err"⟩
+def maxoutReg   : Reg 32 := ⟨"maxout"⟩
+def dmaSubReg   : Reg 32 := ⟨"dma_sub"⟩
+def dmaCompReg  : Reg 32 := ⟨"dma_comp"⟩
+def tmrExpReg   : Reg 32 := ⟨"tmr_exp"⟩
+def pendRegs    : RegArray 1 8 := ⟨"pend"⟩
+def ageRegs     : RegArray 11 8 := ⟨"age"⟩
+
+def cyc      : Expr 32 := cycReg.rd
+def lfsr     : Expr 16 := lfsrReg.rd
+def ptr      : Expr 3  := ptrReg.rd
+def tmr      : Expr 16 := tmrReg.rd
+def dmaBusy  : Expr 1  := dmaBusyReg.rd
+def dmaCd    : Expr 4  := dmaCdReg.rd
+def injected : Expr 32 := injectedReg.rd
+def serviced : Expr 32 := servicedReg.rd
+def err      : Expr 32 := errReg.rd
+def maxout   : Expr 32 := maxoutReg.rd
+def dmaSub   : Expr 32 := dmaSubReg.rd
+def dmaComp  : Expr 32 := dmaCompReg.rd
+def tmrExp   : Expr 32 := tmrExpReg.rd
+def pend (i : Fin 8) : Expr 1 := pendRegs.rd i
+def age (i : Fin 8) : Expr 11 := ageRegs.rd i
 
 /-- Engine enable: `cyc < K` (self-timed run, then freeze). -/
 def running : Expr 1 := .ult cyc (.lit (BitVec.ofNat 32 K))
@@ -111,56 +127,55 @@ def popc32 : Expr 32 :=
 
 /-! ## Rules (same order as the original always-block) -/
 
-def tickRule : Rule := ⟨"tick", guard (.write 32 "cyc" (.add cyc (.lit 1)))⟩
+def tickRule : Rule := ⟨"tick", guard (cycReg.set (.add cyc (.lit 1)))⟩
 
 def lfsrRule : Rule :=
-  ⟨"lfsr", guard (.write 16 "lfsr" (.or (.shl lfsr (.lit 1)) (.zext fb 16)))⟩
+  ⟨"lfsr", guard (lfsrReg.set (.or (.shl lfsr (.lit 1)) (.zext fb 16)))⟩
 
-def ptrRule : Rule := ⟨"ptr", guard (.write 3 "ptr" (.add ptr (.lit 1)))⟩
+def ptrRule : Rule := ⟨"ptr", guard (ptrReg.set (.add ptr (.lit 1)))⟩
 
 /-- Round-robin server: drain source `i` if the pointer rests on it. -/
 def serverRule (i : Fin 8) : Rule :=
   ⟨s!"server{i.val}", guard <|
     .ite (.and (.eq ptr (.lit (BitVec.ofNat 3 i.val))) (pend i))
-      (.seq (.write 1 s!"pend{i.val}" (.lit 0))
-            (.write 32 "serviced" (.add serviced (.lit 1))))
+      (.seq (pendRegs.set i (.lit 0))
+            (servicedReg.set (.add serviced (.lit 1))))
       .skip⟩
 
 /-- Random event injection into source `i` (coalesces if already pending). -/
 def injectRule (i : Fin 8) : Rule :=
   ⟨s!"inject{i.val}", guard <|
     .ite (.and injFire (.eq isrc (.lit (BitVec.ofNat 3 i.val))))
-      (.seq (.write 1 s!"pend{i.val}" (.lit 1))
-            (.write 11 s!"age{i.val}" (.lit 0)))
+      (.seq (pendRegs.set i (.lit 1))
+            (ageRegs.set i (.lit 0)))
       .skip⟩
 
 /-- Periodic timer: count, and inject on source 6 at each expiry. -/
 def timerRule : Rule :=
   ⟨"timer", guard <|
-    .seq (.write 16 "tmr" (.mux tmrHit (.lit 0) (.add tmr (.lit 1))))
-      (.seq (.ite tmrHit (.write 32 "tmr_exp" (.add tmrExp (.lit 1))) .skip)
+    .seq (tmrReg.set (.mux tmrHit (.lit 0) (.add tmr (.lit 1))))
+      (.seq (.ite tmrHit (tmrExpReg.set (.add tmrExp (.lit 1))) .skip)
         (.ite tmrInj
-          (.seq (.write 1 "pend6" (.lit 1)) (.write 11 "age6" (.lit 0)))
+          (.seq (pendRegs.set 6 (.lit 1)) (ageRegs.set 6 (.lit 0)))
           .skip))⟩
 
 /-- Conserved injection accounting: one add for both inject paths. -/
 def injectedRule : Rule :=
   ⟨"injected", guard <|
-    .write 32 "injected"
-      (.add injected (.add (.zext injFire 32) (.zext tmrInj 32)))⟩
+    injectedReg.set (.add injected (.add (.zext injFire 32) (.zext tmrInj 32)))⟩
 
 /-- DMA: submit when idle on `lfsr[9:7] == 3'b101`; complete after countdown. -/
 def dmaRule : Rule :=
   ⟨"dma", guard <|
     .ite (.and (.not dmaBusy) (.eq (.slice lfsr 7 3) (.lit 0b101)))
-      (.seq (.write 1 "dma_busy" (.lit 1))
-        (.seq (.write 4 "dma_cd" (.lit 8))
-              (.write 32 "dma_sub" (.add dmaSub (.lit 1)))))
+      (.seq (dmaBusyReg.set (.lit 1))
+        (.seq (dmaCdReg.set (.lit 8))
+              (dmaSubReg.set (.add dmaSub (.lit 1)))))
       (.ite dmaBusy
         (.ite (.eq dmaCd (.lit 0))
-          (.seq (.write 1 "dma_busy" (.lit 0))
-                (.write 32 "dma_comp" (.add dmaComp (.lit 1))))
-          (.write 4 "dma_cd" (.sub dmaCd (.lit 1))))
+          (.seq (dmaBusyReg.set (.lit 0))
+                (dmaCompReg.set (.add dmaComp (.lit 1))))
+          (dmaCdReg.set (.sub dmaCd (.lit 1))))
         .skip)⟩
 
 /-- Age pending source `i`; a source aged past threshold is a LOST WAKEUP. -/
@@ -168,38 +183,43 @@ def agingRule (i : Fin 8) : Rule :=
   ⟨s!"aging{i.val}", guard <|
     .ite (pend i)
       (.ite (.ult (age i) (.lit (BitVec.ofNat 11 AGE_THRESH)))
-        (.write 11 s!"age{i.val}" (.add (age i) (.lit 1)))
-        (.seq (.write 32 "err" (.add err (.lit 1)))
-              (.write 1 s!"pend{i.val}" (.lit 0))))
+        (ageRegs.set i (.add (age i) (.lit 1)))
+        (.seq (errReg.set (.add err (.lit 1)))
+              (pendRegs.set i (.lit 0))))
       .skip⟩
 
 /-- Accounting invariants: never over-service, never over-complete. -/
 def acctRule : Rule :=
   ⟨"acct", guard <|
-    .seq (.ite (.ult injected serviced) (.write 32 "err" (.add err (.lit 1))) .skip)
-         (.ite (.ult dmaSub dmaComp)   (.write 32 "err" (.add err (.lit 1))) .skip)⟩
+    .seq (.ite (.ult injected serviced) (errReg.set (.add err (.lit 1))) .skip)
+         (.ite (.ult dmaSub dmaComp) (errReg.set (.add err (.lit 1))) .skip)⟩
 
 def maxoutRule : Rule :=
-  ⟨"maxout", guard (.ite (.ult maxout popc32) (.write 32 "maxout" popc32) .skip)⟩
+  ⟨"maxout", guard (.ite (.ult maxout popc32) (maxoutReg.set popc32) .skip)⟩
 
-/-- The register list, named so `regs` and D39a's mandatory `outputs`
-provably denote the same thing. -/
-def s13Regs : List Loom.Hw.RegDecl :=
-    [⟨"cyc", 32, 0⟩, ⟨"lfsr", 16, BitVec.ofNat 16 LFSR_INIT⟩, ⟨"ptr", 3, 0⟩,
-     ⟨"tmr", 16, 0⟩, ⟨"dma_busy", 1, 0⟩, ⟨"dma_cd", 4, 0⟩,
-     ⟨"injected", 32, 0⟩, ⟨"serviced", 32, 0⟩, ⟨"err", 32, 0⟩,
-     ⟨"maxout", 32, 0⟩, ⟨"dma_sub", 32, 0⟩, ⟨"dma_comp", 32, 0⟩,
-     ⟨"tmr_exp", 32, 0⟩]
-    ++ (List.finRange 8).map (fun i => ⟨s!"pend{i.val}", 1, 0⟩)
-    ++ (List.finRange 8).map (fun i => ⟨s!"age{i.val}", 11, 0⟩)
+/-- Complete state and observability derived from the typed handles. -/
+def declarations : Declarations :=
+  Declarations.empty
+    |>.addReg cycReg (exported := true)
+    |>.addReg lfsrReg (BitVec.ofNat 16 LFSR_INIT) (exported := true)
+    |>.addReg ptrReg (exported := true)
+    |>.addReg tmrReg (exported := true)
+    |>.addReg dmaBusyReg (exported := true)
+    |>.addReg dmaCdReg (exported := true)
+    |>.addReg injectedReg (exported := true)
+    |>.addReg servicedReg (exported := true)
+    |>.addReg errReg (exported := true)
+    |>.addReg maxoutReg (exported := true)
+    |>.addReg dmaSubReg (exported := true)
+    |>.addReg dmaCompReg (exported := true)
+    |>.addReg tmrExpReg (exported := true)
+    |>.addRegArray pendRegs (exported := true)
+    |>.addRegArray ageRegs (exported := true)
 
-def design : Design where
-  name := "s13soak"
-  regs := s13Regs
-  -- D39a: outputs are mandatory and explicit, like inputs.
-  outputs := s13Regs.map (·.name)
-  mems := []
-  rules :=
+def s13Regs : List RegDecl := declarations.regs
+
+def design : Design :=
+  Design.ofDecls "s13soak" declarations <|
     [tickRule, lfsrRule, ptrRule]
     ++ (List.finRange 8).map serverRule
     ++ (List.finRange 8).map injectRule
@@ -207,128 +227,39 @@ def design : Design where
     ++ (List.finRange 8).map agingRule
     ++ [acctRule, maxoutRule]
 
-/-! ## The fast executable mirror (ISS) -/
-
-structure SoakSt where
-  cyc      : BitVec 32 := 0
-  lfsr     : BitVec 16 := BitVec.ofNat 16 LFSR_INIT
-  ptr      : BitVec 3  := 0
-  tmr      : BitVec 16 := 0
-  dmaBusy  : Bool      := false
-  dmaCd    : BitVec 4  := 0
-  injected : BitVec 32 := 0
-  serviced : BitVec 32 := 0
-  err      : BitVec 32 := 0
-  maxout   : BitVec 32 := 0
-  dmaSub   : BitVec 32 := 0
-  dmaComp  : BitVec 32 := 0
-  tmrExp   : BitVec 32 := 0
-  pend     : BitVec 8  := 0
-  age      : Vector (BitVec 11) 8 := Vector.replicate 8 0
-  deriving Repr, DecidableEq
-
-namespace SoakIss
-
-/-- One engine cycle: every read is from `s` (the pre-cycle state), all
-writes build `s'` — the same discipline as the Design and the Verilog. -/
-def step (s : SoakSt) : SoakSt := Id.run do
-  if ¬ s.cyc.ult (BitVec.ofNat 32 K) then return s   -- frozen
-  let mut s' := s
-  s' := { s' with cyc := s.cyc + 1 }
-  let fb := (s.lfsr.extractLsb' 15 1) ^^^ (s.lfsr.extractLsb' 13 1)
-        ^^^ (s.lfsr.extractLsb' 12 1) ^^^ (s.lfsr.extractLsb' 10 1)
-  s' := { s' with lfsr := (s.lfsr <<< 1) ||| fb.setWidth 16 }
-  s' := { s' with ptr := s.ptr + 1 }
-  -- server: drain pending[ptr] (pre-cycle view)
-  let pi := s.ptr.toNat
-  if s.pend.getLsbD pi then
-    s' := { s' with pend := s'.pend &&& ~~~(1#8 <<< pi),
-                    serviced := s.serviced + 1 }
-  -- random injection (coalescing, pre-cycle pending)
-  let isrc := (s.lfsr.extractLsb' 4 3).toNat
-  let injFire := s.lfsr.extractLsb' 0 4 = 0xA#4 ∧ ¬ s.pend.getLsbD isrc
-  let set6 := injFire ∧ isrc = 6
-  if injFire then
-    s' := { s' with pend := s'.pend ||| (1#8 <<< isrc),
-                    age := s'.age.set! isrc 0 }
-  -- periodic timer -> inject on source 6
-  let tmrHit := s.tmr = BitVec.ofNat 16 TMR_PERIOD
-  let tmrInj := tmrHit ∧ ¬ s.pend.getLsbD 6 ∧ ¬ set6
-  s' := { s' with tmr := if tmrHit then 0 else s.tmr + 1 }
-  if tmrHit then s' := { s' with tmrExp := s.tmrExp + 1 }
-  if tmrInj then
-    s' := { s' with pend := s'.pend ||| (1#8 <<< 6), age := s'.age.set! 6 0 }
-  -- conserved injection accounting
-  s' := { s' with injected :=
-    s.injected + (if injFire then 1 else 0) + (if tmrInj then 1 else 0) }
-  -- DMA
-  if ¬ s.dmaBusy ∧ s.lfsr.extractLsb' 7 3 = 0b101#3 then
-    s' := { s' with dmaBusy := true, dmaCd := 8, dmaSub := s.dmaSub + 1 }
-  else if s.dmaBusy then
-    if s.dmaCd = 0 then
-      s' := { s' with dmaBusy := false, dmaComp := s.dmaComp + 1 }
-    else
-      s' := { s' with dmaCd := s.dmaCd - 1 }
-  -- aging (pre-cycle pending/age); at most one net err bump per cycle
-  let mut errBump := false
-  for i in List.finRange 8 do
-    if s.pend.getLsbD i.val then
-      if (s.age[i.val]'(i.isLt)).ult (BitVec.ofNat 11 AGE_THRESH) then
-        s' := { s' with age := s'.age.set! i.val ((s.age[i.val]'(i.isLt)) + 1) }
-      else
-        errBump := true
-        s' := { s' with pend := s'.pend &&& ~~~(1#8 <<< i.val) }
-  -- accounting invariants
-  if s.injected.ult s.serviced then errBump := true
-  if s.dmaSub.ult s.dmaComp then errBump := true
-  if errBump then s' := { s' with err := s.err + 1 }
-  -- max outstanding (pre-cycle popcount)
-  let popc := BitVec.ofNat 32 ((List.range 8).countP (s.pend.getLsbD ·))
-  if s.maxout.ult popc then s' := { s' with maxout := popc }
-  return s'
-
-def run (n : Nat) (s : SoakSt := {}) : SoakSt := n.fold (fun _ _ s => step s) s
-
-end SoakIss
-
-/-! ## Cross-checks and emission -/
-
-/-- Read the ISS state as the Design's register environment would print. -/
-def issRegs (s : SoakSt) : List (String × Nat) :=
-  [("cyc", s.cyc.toNat), ("lfsr", s.lfsr.toNat), ("ptr", s.ptr.toNat),
-   ("tmr", s.tmr.toNat), ("dma_busy", if s.dmaBusy then 1 else 0),
-   ("dma_cd", s.dmaCd.toNat), ("injected", s.injected.toNat),
-   ("serviced", s.serviced.toNat), ("err", s.err.toNat),
-   ("maxout", s.maxout.toNat), ("dma_sub", s.dmaSub.toNat),
-   ("dma_comp", s.dmaComp.toNat), ("tmr_exp", s.tmrExp.toNat)]
-  ++ (List.range 8).map (fun i => (s!"pend{i}", if s.pend.getLsbD i then 1 else 0))
-  ++ (List.range 8).map (fun i => (s!"age{i}", (s.age[i]!).toNat))
-
-/-! ### The fast evaluator is the oracle
-
-`SoakIss` below is now redundant: the `Design` itself runs at full K through
-`Loom.Hw.FastEval`.  It is kept as an independent second opinion, and
-`fastVsIss` proves the two agree on **every register at the full K = 100000**
-— i.e. the verified fast evaluator reproduces exactly the numbers that were
-read back from ZC702 silicon. -/
+/-! ## Generated execution, checks, and emission -/
 
 /-- The FastEval side condition, discharged in the kernel — so
 `Loom.Hw.FastEval.fastRun_eq` applies: the numbers `fastAt K` prints are a
 *theorem* about `Design.run`, not just a corroborated computation. -/
 theorem design_fastWF : design.fastWFB = true := by rfl
 
+/-- The generated evaluator packaged with its semantic-equality proof. -/
+def simulator : FastEval.VerifiedSimulator design := ⟨design_fastWF⟩
+
 /-- The instantiated theorem: the fast state after `n` cycles agrees with
 `design.run n design.reset` on every declared coordinate. -/
 theorem fastRun_agrees (n : Nat) :
-    Agree design (fastRun design.elaborate n design.fastReset)
+    Agree design (simulator.run n simulator.reset)
       (design.run n design.reset) :=
-  FastEval.fastRun_eq design design_fastWF n _ _ (FastEval.agree_fastReset design)
+  simulator.runFromReset_eq n
+
+/-- Every successfully prepared DAG instance carries the same run theorem;
+preparation is checked at the executable boundary rather than justified by a
+trusted native-decision proof. -/
+theorem dagRun_agrees (dag : DagEval.VerifiedSimulator design) (n : Nat) :
+    Agree design (dag.run n dag.reset) (design.run n design.reset) :=
+  dag.runFromReset_eq n
 
 /-- The elaborated design: names resolved to indices, once. -/
-def fast : FastDesign := design.elaborate
+def fast : FastDesign := simulator.fast
 
 /-- `fastCycle`-evaluated state after `n` cycles from reset. -/
-def fastAt (n : Nat) : FastSt := fastRun fast n design.fastReset
+def fastAt (n : Nat) : FastSt := simulator.run n simulator.reset
+
+/-- Evaluate a long trace with a previously certified DAG. -/
+def dagAt (dag : DagEval.VerifiedSimulator design) (n : Nat) : FastSt :=
+  dag.run n dag.reset
 
 def fastLookup (fs : FastSt) (n : String) : Option Nat :=
   (design.fastRegs fs).lookup n
@@ -340,40 +271,41 @@ def refCheck (depth : Nat := 400) : IO Unit := do
   if ← design.lockstep depth then
     IO.println s!"S13SOAK REF LOCKSTEP OK ({depth} cycles, fastCycle ≡ Design.cycle)"
   else
-    IO.println "S13SOAK REF LOCKSTEP FAILED"
+    throw <| IO.userError "S13SOAK REF LOCKSTEP FAILED"
 
-/-- The EDSL data itself, evaluated by `fastCycle`, against the hand ISS —
-at the FULL K.  The old version capped this at 400 cycles because
-`Design.run` is quadratic; that limitation is gone. -/
-def fastVsIss (depth : Nat := K + 8) : IO Unit := do
-  let fs := fastAt depth
-  let iss := SoakIss.run depth
-  let mut bad := 0
-  for (n, v) in issRegs iss do
-    match fastLookup fs n with
-    | some dv =>
-        if dv ≠ v then
-          IO.println s!"MISMATCH {n}: fast={dv} iss={v}"
-          bad := bad + 1
-    | none =>
-        IO.println s!"MISSING {n} in fast state"
-        bad := bad + 1
-  if bad = 0 then
-    IO.println s!"S13SOAK FAST≡ISS OK depth={depth} (all {(issRegs iss).length} regs)"
+/-- Check the endurance run's architectural outcomes without restating its
+transition function. The generated run is universally related to declarative
+semantics by `dagRun_agrees`. -/
+def outcomeCheck (depth : Nat := K + 8) : IO Unit := do
+  let dag ← DagEval.prepareSimulator simulator "S13Soak"
+  let fs := dagAt dag depth
+  let frozen := dagAt dag K
+  let read {w : Nat} (r : Reg w) := fastLookup fs r.name
+  let outcomesOk :=
+    match read cycReg, read errReg, read servicedReg, read injectedReg,
+        read dmaCompReg, read dmaSubReg, read maxoutReg with
+    | some cyc, some err, some serviced, some injected,
+        some completed, some submitted, some maxout =>
+      decide (cyc = K ∧ err = 0 ∧ serviced ≤ injected ∧
+        completed ≤ submitted ∧ maxout ≤ 8 ∧
+        design.fastRegs fs = design.fastRegs frozen)
+    | _, _, _, _, _, _, _ => false
+  if outcomesOk then
+    IO.println s!"S13SOAK OUTCOME PASS depth={depth} (frozen, error-free, accounting sound)"
   else
-    IO.println s!"S13SOAK FAST≡ISS FAILED ({bad} regs)"
+    throw <| IO.userError s!"S13SOAK OUTCOME FAIL depth={depth}"
 
-/-- Design-vs-ISS lockstep.  `depth` is unbounded now — the oracle is
-`fastCycle`, not `Design.run`. -/
+/-- Reference agreement plus the full-depth architectural outcome check. -/
 def selftest (depth : Nat := K + 8) : IO Unit := do
   refCheck
-  fastVsIss depth
+  outcomeCheck depth
 
 /-- The silicon prediction: the frozen state after K cycles (and a few
 extra guard evaluations — freezing is idempotent), as `name=value` lines,
 straight out of the compiled EDSL spec via the verified fast evaluator. -/
 def predict : IO Unit := do
-  let fs := fastAt (K + 8)
+  let dag ← DagEval.prepareSimulator simulator "S13Soak"
+  let fs := dagAt dag (K + 8)
   for (n, v) in design.fastRegs fs do
     IO.println s!"{n}={v}"
 

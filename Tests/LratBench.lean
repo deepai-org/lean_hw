@@ -8,7 +8,7 @@ import Loom.Dp.Cert.Lrat
 Pigeonhole 4→3 (12 vars, 22 clauses) with a cadical-produced LRAT proof
 (15 steps), embedded as terms and discharged by plain `decide` — pure
 kernel reduction, no `native_decide` (Rule 1). Elapsed time for this file
-is the D2 data point (recorded in PLAN.md).
+is the standing checked benchmark.
 -/
 
 namespace Tests.LratBench

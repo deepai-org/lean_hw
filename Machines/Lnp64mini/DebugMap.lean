@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.DebugTap
+import Machines.Lnp64mini.Interface
 
 /-!
 # LNP64mini dual-board debug map
@@ -15,39 +16,28 @@ namespace Machines.Lnp64mini.DebugMap
 
 open Loom.Hw
 
--- Kept local on purpose: the runtime generator imports no machine design.
--- `DebugMapCheck` independently proves these names exist in the composed dual
--- output surface.
-private def traceRdPc : Reg 64 := ⟨"trace_rd_pc"⟩
-private def traceRdWb : Reg 64 := ⟨"trace_rd_wb"⟩
-private def faultCause : Reg 8 := ⟨"fault_cause"⟩
-private def faultPc : Reg 64 := ⟨"fault_pc"⟩
-private def faultCur : Reg 5 := ⟨"fault_cur"⟩
-private def running : Reg 1 := ⟨"running"⟩
-private def halted : Reg 1 := ⟨"halted"⟩
-
 /-- Current board-bringup surface. Each entry replaces wire declarations,
 instance connections, CDC registers, selected views, and read-case arms that
 were previously maintained by hand in the board top. -/
 def board : Loom.Hw.DebugMap :=
   { name := "lnp64mini_dual_bscan"
-    existingPorts := [{ name := "running", width := 1 }, { name := "halted", width := 1 }]
+    existingPorts := [DebugPort.ofReg runningReg, DebugPort.ofReg haltedReg]
     taps :=
-      [ DebugTap.lowWordOfDualReg 47 traceRdPc
-      , DebugTap.lowWordOfDualReg 48 traceRdWb
+      [ DebugTap.lowWordOfDualReg 47 traceRdPcReg
+      , DebugTap.lowWordOfDualReg 48 traceRdWbReg
       -- The §9.2/op-0 fault record (1235f201): what faulted, where, who.
       -- These replaced the gret_noop/ig_fall diagnostic latches when the
       -- fault semantics landed in the machine -- the diagnostics' entire
       -- job is now an architectural guarantee.
-      , DebugTap.ofDualReg 49 faultPc
-      , DebugTap.ofDualReg 51 faultCause
-      , DebugTap.ofDualReg 52 faultCur
+      , DebugTap.ofDualReg 49 faultPcReg
+      , DebugTap.ofDualReg 51 faultCauseReg
+      , DebugTap.ofDualReg 52 faultCurReg
       -- A typed protocol-violation predicate: one declaration derives the two
       -- child ports, wrapper expression, first-event latch, CDC and read. The
       -- core permits it after cmd 13 start-only; RunHaltInvariant proves it
       -- absent when that host-protocol violation is explicitly excluded.
       , DebugTap.stickyOfDualPredicate 54 "running_and_halted"
-          (.and running.rd halted.rd) (haltOnTrigger := true)
+          (.and runningReg.rd haltedReg.rd) (haltOnTrigger := true)
       ] }
 
 def path : System.FilePath := "fpga/zc702/board/lnp64mini_debug_map.vh"

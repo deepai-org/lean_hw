@@ -17,7 +17,7 @@ inherit is `bv_decide`'s trust posture: that tactic evaluates the checker
 with `ofReduceBool` (native code). Rule 1 forbids that on our trusted path,
 so engines discharge certificates with plain `decide` (kernel reduction).
 The Phase-0 benchmark for this trade lives in `Tests/LratBench.lean`; its
-numbers are recorded at PLAN.md D2.
+the checked benchmark records its resource envelope.
 -/
 
 namespace Loom.Dp.Cert

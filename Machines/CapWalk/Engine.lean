@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Loom.Hw.Semantics
 import Loom.Hw.FastEval
+import Loom.Hw.DagEval
 import Loom.Hw.SyncRead
 import Loom.Hw.Compile
 import Loom.Hw.CompileCorrect
@@ -811,8 +812,8 @@ theorem design_syncReadOk : syncReadOkB design = true := by rfl
 engine's `memPortsOkB` — `Compile.MemWriteWF`'s port condition, written by
 hand here because `cell_flags` and `c_tag` are the two banks with two
 writers — was promoted to Loom as `Design.memPortTraceOkB`, one conjunct of
-`Design.realizableOnB`, and `Design.emit` enforces it for every design
-against a declared `MemTarget` (`Loom/Hw/MemTarget.lean`). CE10's 14× LUT
+`Design.realizableOnB`; `Design.checkTarget` and `Design.emitFor` enforce it
+against an explicit `MemTarget` (`Loom/Hw/MemTarget.lean`). CE10's 14× LUT
 finding is what motivated the promotion. What remains here is the
 obligation, discharged in the kernel, that this engine meets it. -/
 theorem design_memPortTraceOk :
@@ -822,6 +823,9 @@ set_option maxRecDepth 100000 in
 /-- The FastEval side condition, discharged in the kernel, so `fastCycleOpen`
 is a *proved* stand-in for `Design.cycleOpen` on this design (D18). -/
 theorem design_fastWF : design.fastWFB = true := by rfl
+
+/-- The public design-derived evaluator and its semantic side condition. -/
+def simulator : FastEval.VerifiedSimulator design := ⟨design_fastWF⟩
 
 /-- The instantiated open-design theorem: replaying any input trace through
 `fastCycleOpen` agrees with the reference semantics on every declared
@@ -1033,9 +1037,9 @@ def peekN (d : Design) (fs : FastSt) (n : String) : Nat :=
 /-- Run a stimulus list through the verified fast evaluator with a
 closed-loop behavioural DDR of latency `lat`, recording the observation
 after every cycle. -/
-def runSim (d : Design) (lat : Nat) (ss : List Stim) : List Obs := Id.run do
-  let fd := d.elaborate
-  let mut fs := d.fastReset
+private def runSimWith (d : Design) (step : InEnv → FastSt → FastSt)
+    (reset : FastSt) (lat : Nat) (ss : List Stim) : List Obs := Id.run do
+  let mut fs := reset
   let mut out : List Obs := []
   let mut k := 0
   -- `pend = some (countdown, address)` — the in-flight DDR read
@@ -1047,7 +1051,7 @@ def runSim (d : Design) (lat : Nat) (ss : List Stim) : List Obs := Id.run do
     | some (0, a) => mdone := true; mrdata := ddrWord s.ddr a; pend := none
     | some (n + 1, a) => pend := some (n, a)
     | none => pure ()
-    fs := fastCycleOpen fd (stimEnv s mdone mrdata) fs
+    fs := step (stimEnv s mdone mrdata) fs
     if peekN d fs "m_start_rd" = 1 then
       pend := some (lat, peekN d fs "m_addr")
     out := out ++ [{ k := k
@@ -1058,6 +1062,15 @@ def runSim (d : Design) (lat : Nat) (ss : List Stim) : List Obs := Id.run do
                      fcyc := peekN d fs "fill_cycles" }]
     k := k + 1
   return out
+
+/-- Backwards-compatible tree evaluator used by small pure witnesses. -/
+def runSim (d : Design) (lat : Nat) (ss : List Stim) : List Obs :=
+  runSimWith d (fastCycleOpen d.elaborate) d.fastReset lat ss
+
+/-- Closed-loop simulation through an already certified DAG. -/
+def runSimDag (dag : DagEval.VerifiedSimulator design) (lat : Nat)
+    (ss : List Stim) : List Obs :=
+  runSimWith design dag.cycleOpen dag.reset lat ss
 
 /-- The outcome codes reported, in order. -/
 def codes (obs : List Obs) : List Nat :=
@@ -1110,69 +1123,71 @@ private def expect (name : String) (got want : List Nat) : IO Nat := do
 /-- The engine acceptance ladder. Each scenario is named for the §2.2
 sentence, the Layer-1 theorem, or the §41 adversary it exercises. -/
 def selftest : IO Unit := do
+  let dag ← DagEval.prepareSimulator simulator "CapWalk"
+  let run := runSimDag dag 2
   let mut bad := 0
   -- (1) cold start: every slot misses, so the first check is miss → fill → hit.
-  bad := bad + (← expect "miss→fill→ok        " (codes (runSim design 2 (chkM 5 1))) [OUT_OK])
+  bad := bad + (← expect "miss→fill→ok        " (codes (run (chkM 5 1))) [OUT_OK])
   bad := bad + (← expect "  …one fill, no fault"
-    (counters (runSim design 2 (chkM 5 1))) [1, 0])
+    (counters (run (chkM 5 1))) [1, 0])
   -- (2) hit: the second check answers from the cache with NO fabric transaction.
-  let t2 := runSim design 2 (chkM 5 1 ++ chk 5 1)
+  let t2 := run (chkM 5 1 ++ chk 5 1)
   bad := bad + (← expect "hit (no second fill)" (codes t2) [OUT_OK, OUT_OK])
   bad := bad + (← expect "  …fill_count still 1" (counters t2) [1, 0])
   -- (3) eviction: slot 261 shares cache index 5, so it displaces slot 5 and
   -- slot 5's next use must re-fill.
-  let t3 := runSim design 2 (chkM 5 1 ++ chkM 261 1 (need := 0xFF) (off := 0)
+  let t3 := run (chkM 5 1 ++ chkM 261 1 (need := 0xFF) (off := 0)
                               ++ chkM 5 1)
   bad := bad + (← expect "evict → refill      " (codes t3) [OUT_OK, OUT_OK, OUT_OK])
   bad := bad + (← expect "  …three fills      " (counters t3) [3, 0])
   -- (4) -DENIED: a live, current, in-class reference lacking rights (§2.2's
   -- step 4, strictly after freshness).
   bad := bad + (← expect "rights → -DENIED    "
-    (codes (runSim design 2 (chkM 5 1 (need := 0xF0)))) [OUT_DENIED])
+    (codes (run (chkM 5 1 (need := 0xF0)))) [OUT_DENIED])
   -- (4b) -BADREF: wrong object/interface class, and an out-of-range slot.
   bad := bad + (← expect "class → -BADREF     "
-    (codes (runSim design 2 (chkM 5 1 (cls := 2)))) [OUT_BADREF])
+    (codes (run (chkM 5 1 (cls := 2)))) [OUT_BADREF])
   bad := bad + (← expect "slot ≥ 2^sw → -BADREF"
-    (codes (runSim design 2 (chk 0x100005 1))) [OUT_BADREF])
+    (codes (run (chk 0x100005 1))) [OUT_BADREF])
   -- (4c) -STALE on the embedded cell: answered on-chip, so it never reaches DDR.
   bad := bad + (← expect "embedded ep → -STALE"
-    (counters (runSim design 2 (chk 5 9))) [0, 0])
+    (counters (run (chk 5 9))) [0, 0])
   -- (5) -STALE after a lineage bump: one §3 bump on the shared cell, and the
   -- SAME cached entry now fails (Layer-1 T-C4, discharged by §3's T-E1).
-  let t5 := runSim design 2 (chkM 5 1 ++ invSeq 3 2 ++ chk 5 1)
+  let t5 := run (chkM 5 1 ++ invSeq 3 2 ++ chk 5 1)
   bad := bad + (← expect "lineage bump → -STALE" (codes t5) [OUT_OK, OUT_STALE])
   -- ===================== the three fill attacks =====================
   -- (A1) CORRUPTION: slot 6's payload arrives with a rights bit flipped and
   -- its genuine tag. Detected; the slot is poisoned, fail-stop.
-  let a1 := runSim design 2 (chkM 6 1 (need := 0x03) (off := 0x200)
+  let a1 := run (chkM 6 1 (need := 0x03) (off := 0x200)
                               (ddr := DDR_CORRUPT))
   bad := bad + (← expect "A1 corrupted  → FAULT" (codes a1) [OUT_FAULT])
   bad := bad + (← expect "  …0 fills, 1 fault " (counters a1) [0, 1])
   bad := bad + (← expect "  …fault names slot 6"
     ((a1.filter (fun o => o.fv = 1)).map (·.fs)) [6])
   -- and the poison is permanent: an honest store afterwards does not revive it
-  let a1b := runSim design 2 (chkM 6 1 (need := 0x03) (off := 0x200)
+  let a1b := run (chkM 6 1 (need := 0x03) (off := 0x200)
                                 (ddr := DDR_CORRUPT)
                               ++ chkM 6 1 (need := 0x03) (off := 0x200))
   bad := bad + (← expect "  …poison permanent " (codes a1b) [OUT_FAULT, OUT_FAULT])
   -- (A2) SUBSTITUTION: slot 7 is answered with slot 6's entry — correctly
   -- tagged, wrong slot. The tag binds the slot, so it is detected.
-  let a2 := runSim design 2 (chkM 7 1 (off := 0x300) (ddr := DDR_SUBST))
+  let a2 := run (chkM 7 1 (off := 0x300) (ddr := DDR_SUBST))
   bad := bad + (← expect "A2 substituted→ FAULT" (codes a2) [OUT_FAULT])
   bad := bad + (← expect "  …fault names slot 7"
     ((a2.filter (fun o => o.fv = 1)).map (·.fs)) [7])
   -- (A2 control) the very same words, served for slot 6, DO authenticate.
   bad := bad + (← expect "  …control: slot 6 ok"
-    (codes (runSim design 2 (chkM 6 1 (need := 0x03) (off := 0x200)))) [OUT_OK])
+    (codes (run (chkM 6 1 (need := 0x03) (off := 0x200)))) [OUT_OK])
   -- (A3) REPLAY: drop and re-incarnate slot 5 (embedded epoch 1 → 3), then
   -- serve the honest, correctly-tagged, previous-incarnation entry.
   let replay := opSeq OP_DROP 5 ++ opSeq OP_MINT 5 ++ chkM 5 3
-  let a3 := runSim design 2 replay
+  let a3 := run replay
   bad := bad + (← expect "A3 replayed   → FAULT" (codes a3) [OUT_FAULT])
   bad := bad + (← expect "  …0 fills, 1 fault " (counters a3) [0, 1])
   -- (A3 control) the same drop/re-incarnate on slot 8, against a store that
   -- re-issued slot 8's entry under the NEW embedded epoch: authenticates.
-  let a3c := runSim design 2 (opSeq OP_DROP 8 (ddr := DDR_REMINT)
+  let a3c := run (opSeq OP_DROP 8 (ddr := DDR_REMINT)
                               ++ opSeq OP_MINT 8 (ddr := DDR_REMINT)
                               ++ chkM 8 3 (need := 0xFF) (off := 0x400)
                                    (ddr := DDR_REMINT))
@@ -1180,7 +1195,7 @@ def selftest : IO Unit := do
   bad := bad + (← expect "  …one fill, 0 faults" (counters a3c) [1, 0])
   -- (6) reuse safety (Layer-1 T-C5): the pre-drop handle never validates again.
   bad := bad + (← expect "pre-drop handle     "
-    (codes (runSim design 2 (opSeq OP_DROP 5 ++ opSeq OP_MINT 5 ++ chk 5 1)))
+    (codes (run (opSeq OP_DROP 5 ++ opSeq OP_MINT 5 ++ chk 5 1)))
     [OUT_STALE])
   if bad = 0 then
     IO.println "CAPWALK ENGINE SELFTEST OK — hit/miss/fill/evict, §2.2 precedence, lineage -STALE, and all three fill attacks detected"
@@ -1189,7 +1204,8 @@ def selftest : IO Unit := do
 
 /-- Report the measured fill latency, which is the engine's headline number. -/
 def latency : IO Unit := do
-  let t := runSim design 2 (chkM 5 1)
+  let dag ← DagEval.prepareSimulator simulator "CapWalk"
+  let t := runSimDag dag 2 (chkM 5 1)
   let f := (t.filter (fun o => o.rv = 1)).map (·.fcyc)
   IO.println s!"fill latency (miss→3 DDR beats→MAC→install): {f} cycles (DDR latency 2)"
 
@@ -1256,10 +1272,10 @@ def tbTrace : List Stim :=
 /-- Emit the ladder's expected observations, so the iverilog testbench checks
 the *same* oracle the Lean selftest does. -/
 def predict : IO Unit := do
+  let dag ← DagEval.prepareSimulator simulator "CapWalk"
   IO.println "--- capwalk ---"
-  for o in runSim design 2 tbTrace do
+  for o in runSimDag dag 2 tbTrace do
     if o.rv = 1 || o.fv = 1 then
       IO.println s!"{o.k} rv={o.rv} rc={o.rc} fv={o.fv} fs={o.fs} fills={o.fills} faults={o.faults}"
 
 end Machines.CapWalk.Engine
-

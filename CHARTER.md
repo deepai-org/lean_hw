@@ -11,9 +11,9 @@ targets.
 
 This charter states direction and governance. It is not a status report and
 does not turn roadmap items into current claims. Current facts belong in
-[`STATUS.md`](STATUS.md); architecture belongs in [`PLAN.md`](PLAN.md), active
-work in [`NEXTSTEPS.md`](NEXTSTEPS.md), and longer-term direction in
-[`PLATONIC.md`](PLATONIC.md) and [`LOOM_GAPS.md`](LOOM_GAPS.md).
+[`STATUS.md`](STATUS.md); intended architecture belongs in
+[`PLATONIC.md`](PLATONIC.md), and ordered unfinished work belongs in
+[`ROADMAP.md`](ROADMAP.md).
 
 ## Scope
 
@@ -45,13 +45,13 @@ The repository currently contains:
 5. exact concrete-SSA release certificates for Acc8 and LNP64-µ;
 6. BMC/k-induction and LRAT checking, plus an independent unproved LRAT
    checker used for cross-validation;
-7. optional post-synthesis equivalence checks over a reported fragment; and
-8. book generation and FPGA integration evidence.
+7. a planned technology-neutral logical-equivalence boundary; and
+8. book generation and external implementation evidence.
 
-The repository does **not** contain an independent checker for Lean kernel
-exports, a verified place-and-route or bitstream flow, or a proof of arbitrary
-Verilog/Yosys semantics. Those remain possible future assurance work, not
-present capabilities.
+The repository does **not** contain post-synthesis equivalence, an independent
+checker for Lean kernel exports, a verified place-and-route or bitstream flow,
+or a proof of arbitrary HDL or synthesis-tool semantics. Those are not present
+capabilities; target- and tool-specific flows remain outside Loom's core.
 
 ## The LNP64-µ theorem ladder
 

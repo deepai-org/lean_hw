@@ -57,20 +57,23 @@ def main (args : List String) : IO UInt32 := do
     return 2
   let mut bad := 0
   let mut n := 0
+  let mut skipped := 0
   for a in args do
     let p : System.FilePath := a
     if (p.fileName.getD "").startsWith "tb_" then
       IO.println s!"[skip] {a}: testbench, not printer output"
+      skipped := skipped + 1
     else if (← IO.FS.readFile p).splitOn "\n" |>.length |> (· > hugeLines) then
       IO.println s!"[skip] {a}: over {hugeLines} lines — the parser's \
         non-tail line recursion exhausts the default stack (a scale limit \
         of the parser, not of what it accepts)"
+      skipped := skipped + 1
     else
       n := n + 1
       unless ← checkFile p do bad := bad + 1
   if bad == 0 then
-    IO.println s!"ROUND TRIP OK ({n} file(s) parse and reprint byte-identically)"
+    IO.println s!"ROUND TRIP RESULT PASS (checked={n}, skipped={skipped})"
     return 0
   else
-    IO.println s!"ROUND TRIP FAILED ({bad} of {n} file(s))"
+    IO.println s!"ROUND TRIP RESULT FAIL (failed={bad}, checked={n}, skipped={skipped})"
     return 1
