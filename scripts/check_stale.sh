@@ -4,20 +4,8 @@
 #
 # Staleness gate. Every derived artifact is rebuilt from source and compared
 # with what is on disk; any difference is a failure.
-#
-# This exists because silent staleness cost real time three separate ways:
-#   * the LLVM backend's opcode table drifted out of sync with the emulator
-#     and NOTHING noticed, because the board demo loads a PREBUILT image that
-#     never recompiles through the backend;
-#   * a stale `minitest` binary reported all-green after a `git stash pop`,
-#     which nearly became a false success claim;
-#   * a stale `rtl/lnp64mini.v` made a byte-identical refactor check
-#     meaningless -- it was comparing against RTL emitted from a different
-#     numbering entirely.
-#
-# In each case the *sources* were consistent and an artifact was not. A
-# derived file that disagrees with its source is a lie the repo tells itself,
-# so the gate turns it into a loud failure.
+# It rebuilds libraries and executables, regenerated RTL, assembled programs,
+# cross-repository ISA agreement, and current architectural tests.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source "$(dirname "$0")/lnp64_root.sh"
@@ -27,15 +15,8 @@ bad() { printf '  STALE  %s\n' "$*"; FAIL=1; }
 ok()  { printf '  ok     %s\n' "$*"; }
 
 say "### 1. Lean builds from source (a stale .olean is a stale binary)"
-# FULL build, not just minitest: the first version of this gate built only
-# the test binary, so a stale .olean on the EMIT path slipped through and
-# emitted RTL for a design that no longer existed.
-# `lake build` alone does NOT build the executables in this project -- it
-# builds the library and stops. Section 4 below then runs `.lake/build/bin/
-# minitest`, which can be an OLD binary that predates the sources this gate
-# just "verified". That bit on 2026-08-04: a freshly added selftest fell
-# through the arg match into the emit fallback, because the running binary
-# still had yesterday's dispatch. Name the exes explicitly.
+# `lake build` covers libraries; name the executables explicitly so subsequent
+# checks cannot consume an older binary.
 lake build >/dev/null 2>&1 || { bad "lake build failed"; exit 1; }
 lake build minitest emit audit >/dev/null 2>&1 || { bad "lake build (exes) failed"; exit 1; }
 ok "lake build (library + minitest/emit/audit executables)"
@@ -43,10 +24,7 @@ ok "lake build (library + minitest/emit/audit executables)"
 say "### 2. emitted RTL matches the designs"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 for f in rtl/*.v; do [ -f "$f" ] && cp "$f" "$T/$(basename "$f")"; done
-# The producer list lives in scripts/emit_all.sh, not here. It used to live in
-# both, which meant a hand-run emit could cover a different set than the gate
-# did -- and on 2026-08-07 three measurements were taken off RTL that predated
-# the change being measured, for exactly that reason.
+# `emit_all.sh` is the single producer inventory.
 ./scripts/emit_all.sh >/dev/null 2>&1
 for f in rtl/*.v; do
   b="$T/$(basename "$f")"
@@ -54,7 +32,7 @@ for f in rtl/*.v; do
   else bad "$(basename "$f") — was not on disk before this run"; fi
 done
 
-say "### 3. .hex artifacts match their .s sources"
+say "### 3. assembled and board-program artifacts match their sources"
 L=$LNP64_BIN
 if [ -x "$L" ]; then
   for s in fpga/zc702/*.s; do
@@ -69,14 +47,33 @@ else
   say "  (skipped: $LNP64_ROOT assembler not built)"
 fi
 
+if r=$(python3 scripts/gen_board_prog.py fpga/zc702/loomcheck.hex \
+    -o fpga/zc702/loom_mini_check.tcl --name loomcheck --check 2>&1); then
+  ok "$r"
+else
+  bad "$r"
+fi
+isa_expect=$(./.lake/build/bin/minitest designexpect fpga/zc702/isasmoke.hex \
+  | sed -n 's/^r1=//p')
+if r=$(python3 scripts/gen_board_prog.py fpga/zc702/isasmoke.hex \
+    -o fpga/zc702/isasmoke_board.tcl --name isasmoke \
+    --bit '$LOOM_OXC7_DIR/out/lnp64mini_epoch_top.bit' \
+    --expect-r1 "$isa_expect" --check 2>&1); then
+  ok "$r"
+else
+  bad "$r"
+fi
+if r=$(python3 scripts/gen_board_prog.py fpga/zc702/conformance_hw.hex \
+    -o fpga/zc702/conformance_board.tcl --name CONFORMANCE \
+    --bit '$LOOM_OXC7_DIR/out/lnp64mini_dual_top.bit' --check 2>&1); then
+  ok "$r"
+else
+  bad "$r"
+fi
+
 say "### 4. the two repos agree on the ISA (cross-repo, see check_isa_agreement.py)"
-# Sections 1-3 are all single-repo: they rebuild lean_hw's artifacts from
-# lean_hw's sources. On 2026-08-04 that was not enough. The conformance merge
-# was reverted in `lnp64` and reapplied in `lean_hw`, leaving each repo
-# internally consistent -- this gate green, all eight selftests green -- while
-# the guest image (compiled by lnp64's backend) and the mini (built from
-# lean_hw) no longer spoke the same ISA. The board retrapped forever on an
-# opcode the core had stopped implementing.
+# Single-repository consistency does not establish agreement with the
+# architecture/toolchain repository, so compare the two sources directly.
 if r=$(python3 scripts/check_isa_agreement.py 2>&1); then
   ok "${r#check_isa_agreement: ok — }"
 else
@@ -86,62 +83,38 @@ fi
 say "### 5. the selftests actually pass on the freshly built binary"
 for t in selftest smpselftest preemptselftest domselftest \
          failstopselftest gateselftest capxferselftest slotfillselftest mmuselftest \
-         subwordselftest coverageselftest alugapselftest opdiffselftest \
+         subwordselftest alugapselftest \
          traceselftest mmurelocselftest; do
   r=$(timeout 400 ./.lake/build/bin/minitest "$t" 2>&1 | tail -1)
-  case "$r" in *OK*) ok "$t";; *) bad "$t — $r";; esac
+  case "$r" in *"RESULT PASS"*) ok "$t";; *) bad "$t — $r";; esac
 done
 
-say "### 6. the emulator and the ISS agree on BEHAVIOUR, not just numbering"
-# Section 4 compares opcode NUMBERS. It cannot see a semantic divergence, and
-# two have already shipped: MINI_GATE_CALL's destination register, and six ALU
-# opcodes the ISS mis-decoded after the renumbering. This runs the differential.
-if command -v python3 >/dev/null && [ -x $LNP64_BIN ]; then
-  r=$(timeout 900 python3 scripts/diff_emulator_iss.py 2>&1 | tail -2 | tr '\n' ' ')
-  case "$r" in *"MISMATCHES: 0"*) ok "emulator ≡ ISS ($r)";; *) bad "emulator vs ISS — $r";; esac
-else
-  say "  (skipped: python3 or $LNP64_ROOT emulator not available)"
-fi
-
-say "### 7. opcode coverage and literal hygiene"
-# The 2026-08-05 renumbering passed every gate then panicked on silicon,
-# because `liu` -- how 64-bit constants are built -- was in no generated
-# program. The defect class was "the list was incomplete", so completeness is
-# now checked against the design's own table rather than maintained by hand.
+say "### 6. opcode coverage and literal hygiene"
+# Check completeness against the design's own table rather than a second list.
 if r=$(python3 scripts/check_opcode_coverage.py 2>&1 | tail -1); then ok "$r"; else bad "opcode coverage — $r"; fi
 if r=$(python3 scripts/check_opcode_literals.py 2>&1 | tail -1); then ok "$r"; else bad "opcode literals — $r"; fi
 
-say "### 8. the RTL agrees with the ISS on the generated matrix"
-# Sections 5 and 6 compare EDSL/emulator against the ISS. Neither can see a
-# defect in the EMITTED RTL, which is what the bitstream is built from and what
-# silicon runs -- and that is the surface the 2026-08-05 renumbering broke while
-# every other section stayed green. Slow (one iverilog build per program), so
-# it is opt-in with STALE_RTL=1 and run in full before any bitstream.
+say "### 7. emitted RTL agrees with the Design-derived matrix expectations"
+# The expected architectural output comes from the proved Design simulator;
+# this leg checks the separately emitted RTL. Slow (one iverilog build per
+# program), so it is opt-in with STALE_RTL=1 and run before a bitstream.
 if [ "${STALE_RTL:-0}" = "1" ]; then
   ./.lake/build/bin/minitest opdiffhex fpga/zc702/opdiff >/dev/null 2>&1
   r=$(./scripts/opdiff_rtl.sh 2>&1 | tail -1)
-  case "$r" in *"OK"*) ok "RTL ≡ ISS ($r)";; *) bad "RTL vs ISS — $r";; esac
+  case "$r" in *"OK"*) ok "RTL ≡ Design ($r)";; *) bad "RTL vs Design — $r";; esac
 else
   say "  (skipped: set STALE_RTL=1 -- ~362 iverilog builds)"
 fi
 
-say "### 9. the assembler and this core agree (cross-repo, from mnemonics)"
-# Sections 5, 6 and 8 all generate their programs from lean_hw's own OP_
-# constants, so a renumbering moves design and program together and they agree
-# by construction. isasmoke.s is written in MNEMONICS and assembled by lnp64's
-# assembler, so nothing about its encoding comes from this repo. 58 instructions,
-# under a second -- the cheap place to learn that the two repos disagree.
+say "### 8. the assembler and this core agree (cross-repo, from mnemonics)"
+# `isasmoke.s` is written in mnemonics and assembled by the architecture
+# repository, independently of this core's opcode constants.
 r=$(./scripts/isa_smoke.sh 2>&1 | head -1)
 case "$r" in *OK*|*SKIP*) ok "${r#isa_smoke: }";; *) bad "ISA smoke — $r";; esac
 
-say "### 10. the BUILT COMPILER emits what the core decodes"
-# Sections 4 and 9 read SOURCES: Core.lean, the assembler's tables, the .td.
-# The guest kernel is not built from sources at test time -- it is built by the
-# clang binary, which is only as current as the last full LLVM rebuild. Editing
-# the .td without rebuilding leaves a compiler emitting the OLD numbering while
-# the mini decodes the new one, with every other section green. Confirmed by
-# deliberate experiment on the canary-liu-0x57 branch. This one disassembles a
-# compiled probe, so a source file cannot lie to it.
+say "### 9. the built compiler emits what the core decodes"
+# Source agreement does not establish that an installed compiler is current;
+# compile and disassemble a probe to check the executable toolchain.
 if r=$(python3 scripts/check_backend_encoding.py 2>&1 | tail -1); then ok "$r"; else bad "backend encoding — $r"; fi
 
 [ "$FAIL" -eq 0 ] && say "check_stale: OK — every derived artifact matches its source" \

@@ -21,20 +21,10 @@ package loom where
 @[default_target]
 lean_lib Loom
 
-/-- The machine models: LNP64-µ (the driving use case) and Acc8 (the tiny
-pathfinder that keeps the toolchain honest about genericity).
-
-`--tstack`: `Machines/Lnp64mini/Iss.lean` is one cycle-exact `step` whose arm
-chain is as long as the core's state machine, and adding EXT-10's `S_DC` arm
-pushed the elaborator past the default thread stack ("deep recursion was
-detected at 'interpreter'"). The ISS is deliberately a single flat mirror of
-`always @(posedge clk)` rather than a decomposed model -- that is what makes
-the lockstep meaningful -- so the honest fix is to give the compiler the
-stack the shape needs, not to abstract the model until it fits. -/
+/-- The machine models: LNP64-µ (the driving use case), LNP64mini (the board
+integration vehicle), and smaller genericity examples. -/
 @[default_target]
-lean_lib Machines where
-  moreLeanArgs := #["--tstack=131072"]
-  weakLeanArgs := #["--tstack=131072"]
+lean_lib Machines
 
 lean_lib Tools
 
@@ -52,14 +42,7 @@ lean_lib Tests
 lean_exe iss where
   root := `Tools.Iss
 
-/-- **Compiled** lnp64mini selftests. `lake env lean --run
-Machines/Lnp64mini/Emit.lean <target>` runs the same `main` under the
-*interpreter*, where the EDSL≡ISS lockstep costs ~25 minutes per run and
-`Design.reset`'s fold over the (six-increment-grown) register list overflows
-the interpreter stack outright — `capxferselftest` needed
-`ulimit -s unlimited` just to start. Compiled, the same targets run natively.
-Use `lake exe minitest <target>`; the interpreted path still works and stays
-the reference for `--run`-style one-offs. -/
+/-- Compiled LNP64mini emission and architectural selftests. -/
 lean_exe minitest where
   root := `Machines.Lnp64mini.Emit
   supportInterpreter := true

@@ -4,24 +4,24 @@
 #
 # Push fpga/zc702/board/ to the board host, and VERIFY it landed.
 #
-# The §69 incident: the board host's copies of netbsd_up.sh and
-# lnp64_rump_run_dual.tcl had been edited in place and carried the entire
-# EXT-7 stage-B translation block, which existed in no repo. The fix had to
-# be reconstructed by reading a running machine. Then /tmp on that host was
-# cleared and a backup vanished with it.
-#
-# So: this repo is the source of truth for the board layer (REPO_BOUNDARY.md),
-# and this script is the only sanctioned way to update the host. It diffs
-# after copying, because a silent scp failure looks exactly like success.
+# This repository is the source of truth for the board layer
+# (`REPO_BOUNDARY.md`). This script verifies every deployed file after copying.
 #
 #   scripts/board_sync.sh          # push and verify
 #   scripts/board_sync.sh --check  # verify only; non-zero if the host differs
 set -uo pipefail
 cd "$(dirname "$0")/.."
-BOARD=${BOARD:-kevin@100.112.37.3}
-DEST=${DEST:-substrate0/test}
-SSH=(sshpass -p "${BOARD_PW:-deepai}" ssh -o StrictHostKeyChecking=no "$BOARD")
-SCP=(sshpass -p "${BOARD_PW:-deepai}" scp -o StrictHostKeyChecking=no)
+: "${BOARD:?set BOARD to the SSH host, for example user@board-host}"
+BOARD_ROOT=${BOARD_ROOT:-substrate0}
+DEST=${DEST:-$BOARD_ROOT/test}
+if [ -n "${BOARD_PW:-}" ]; then
+  command -v sshpass >/dev/null || { echo "board_sync: BOARD_PW set but sshpass is unavailable"; exit 2; }
+  SSH=(sshpass -p "$BOARD_PW" ssh -o StrictHostKeyChecking=no "$BOARD")
+  SCP=(sshpass -p "$BOARD_PW" scp -o StrictHostKeyChecking=no)
+else
+  SSH=(ssh "$BOARD")
+  SCP=(scp)
+fi
 CHECK_ONLY=0; [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 FAIL=0
 # Most of the board layer lives in $DEST (substrate0/test). A few files belong
@@ -30,7 +30,7 @@ FAIL=0
 # chipdb it references.
 dest_for() {
   case "$1" in
-    build_oxc7_seed.sh) echo "substrate0/oxc7" ;;
+    build_oxc7_seed.sh) echo "$BOARD_ROOT/oxc7" ;;
     *)                  echo "$DEST" ;;
   esac
 }

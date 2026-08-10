@@ -46,7 +46,7 @@ lake exe debugmap --check  # fail if the checked-in include is stale
 Typed taps validate their emitted dual-core output names at build time. Raw
 level and first-event sticky taps are the deliberately unverified escape hatch
 for throwaway probes: they generate wrapper state, CDC sampling, port wiring,
-and read decode without adding ISS or lockstep state. The generated include
+and read decode without adding core semantic state. The generated include
 and observed board values remain outside the release theorem.
 Register-only typed EDSL expressions derive their child-port dependencies and
 wrapper logic automatically. The current map uses this for a sticky
@@ -66,12 +66,19 @@ oxc7/build_oxc7.sh <top> <constraints.xdc> <wrapper.v> <emitted.v>
 Programming and BSCAN readback use the local XSDB/JTAG environment. Those
 host-specific tools and hardware access are not packaged by this repository.
 
+Board-host scripts share `board/board_env.sh` and `board/board_env.tcl`.
+`LOOM_BOARD_ROOT`, `LOOM_OXC7_DIR`, `LNP64_ROOT`, `LOOM_BOARD_STATE_DIR`, and
+`LOOM_VIVADO_BIN` may be overridden; no script contains a developer home path.
+Vivado commands are resolved from `PATH` unless `LOOM_VIVADO_BIN` is set.
+Set `BOARD=user@host` when running `scripts/board_sync.sh`. Passwordless SSH is
+the default; `BOARD_PW` enables the optional `sshpass` path.
+
 ## Acceptance
 
 A current board claim requires all of the following from the same source
 revision and generated artifacts:
 
-1. source/FastEval/ISS agreement for the selected design;
+1. certified Design-derived execution and architectural outcomes;
 2. emitted-RTL simulation against the same workload;
 3. memory-deliverability and configured equivalence checks;
 4. successful place-and-route with positive timing margin;

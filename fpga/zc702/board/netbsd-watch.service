@@ -2,5 +2,6 @@
 Description=Watch the fabric guest and recover it if it stops answering
 [Service]
 Type=oneshot
-User=kevin
-ExecStart=/home/kevin/substrate0/test/netbsd_watch.sh
+Environment=LOOM_BOARD_ROOT=%h/substrate0
+EnvironmentFile=-%h/.config/loom-board.env
+ExecStart=/usr/bin/env bash -c 'exec "$LOOM_BOARD_ROOT/test/netbsd_watch.sh"'

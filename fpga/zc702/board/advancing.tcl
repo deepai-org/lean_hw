@@ -4,7 +4,8 @@
 connect -url tcp:127.0.0.1:3121
 after 400
 targets -set -filter {name =~ "xc7z*"}
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 
 proc ring {} {
   set out ""

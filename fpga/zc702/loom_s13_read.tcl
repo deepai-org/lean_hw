@@ -1,9 +1,10 @@
 # loom_s13_read.tcl -- program the Loom s13soak bitstream, wait for freeze,
 # read the full engine state over BSCAN (jtag_lib.tcl rd protocol).
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 connect
 targets -set -filter {name =~ "xc7z*"}
-fpga -file /home/kevin/substrate0/oxc7/out/s13soak_top.bit
+fpga -file $LOOM_OXC7_DIR/out/s13soak_top.bit
 after 2000
 puts "ID=[format 0x%08x [rd 0]]"
 set hb1 [rd 2]; after 200; set hb2 [rd 2]

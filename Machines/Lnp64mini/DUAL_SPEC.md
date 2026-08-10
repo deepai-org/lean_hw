@@ -27,10 +27,10 @@ must use an explicit runtime sweep or a target that supports the image.
 
 ## Verification
 
-The maintained checks are the core and arbiter selftests, FastEval/ISS
-comparison, emitted-RTL simulation, memory target checks, and the configured
-post-synthesis flow. The wrapper and external DDR/PS behavior are separate
-from the Loom module claim.
+The maintained checks are Design-derived core and arbiter selftests,
+emitted-RTL simulation against Design-derived expectations, memory target
+checks, and the configured post-synthesis flow. The wrapper and external
+DDR/PS behavior are separate from the Loom module claim.
 
 The present board head is green as external evidence: one accounted dual-core
 artifact boots NetBSD, completes ping 4/4, returns `uname` and echo traffic

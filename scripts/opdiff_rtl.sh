@@ -3,17 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 #
 # The RTL leg of the opcode matrix: run every generated program through
-# iverilog on the EMITTED SoC and diff the architectural result against the ISS.
+# iverilog on the emitted SoC and diff the architectural result against the
+# proved Design-derived simulator output stored beside each program.
 #
-# This exists because of the surface gap the 2026-08-05 renumbering exposed.
-# `opdiffselftest` compares EDSL against ISS; `diff_emulator_iss.py` compares
-# emulator against ISS. Both were green and the board still panicked, because
-# **nothing compared against the RTL** -- and the RTL is what the bitstream is
-# built from and what silicon runs. An infinitely thorough emulator-vs-ISS
-# matrix could not have caught it.
-#
-# Simulation is the cheap place to find a decode disagreement. A kernel boot,
-# 41 000 instructions in, is the most expensive place.
+# This keeps decode checking local and deterministic.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -59,19 +52,19 @@ for hex in "$DIR"/*.hex; do
   if ! diff -q "$DIR/$name.rtl" "$T/exp.txt" >/dev/null; then
     bad=$((bad+1)); [ -z "$first" ] && first=$name
     if [ "$bad" -le 5 ]; then
-      echo "  MISMATCH $name  (RTL < , ISS > )"
+      echo "  MISMATCH $name  (RTL < , Design > )"
       diff "$DIR/$name.rtl" "$T/exp.txt" | head -8 | sed 's/^/    /'
     fi
   fi
 done
 
-echo "opdiff_rtl: ran $total program(s) on $SOC, each diffed against the ISS"
+echo "opdiff_rtl: ran $total program(s) on $SOC, each diffed against Design"
 if [ "$noexp" -ne 0 ]; then
   echo "opdiff_rtl: FAILED — $noexp program(s) had no .exp expectation"
   exit 1
 fi
 if [ "$bad" -ne 0 ]; then
-  echo "opdiff_rtl: FAILED — RTL disagreed with the ISS on $bad program(s) (first: $first)"
+  echo "opdiff_rtl: FAILED — RTL disagreed with Design on $bad program(s) (first: $first)"
   exit 1
 fi
-echo "opdiff_rtl: OK — RTL ≡ ISS on all $total generated programs"
+echo "opdiff_rtl: OK — RTL ≡ Design on all $total generated programs"

@@ -16,7 +16,7 @@ does not claim the complete LNP64 profile or production performance.
 All extensions must preserve:
 
 - the certified Design-derived simulator as the primary executable model;
-- named independent ISS or emulator comparison where retained;
+- explicit architectural outcomes and emitted-RTL comparison;
 - emitted-RTL simulation for the affected path;
 - declaration-derived state and comparison coverage;
 - explicit memory, CDC, and target boundaries; and

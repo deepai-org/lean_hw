@@ -55,7 +55,7 @@ space both cores can see.
   needed.
 * `c0_hold` is tied 0; `c1_hold` stays a SoC input (CORE1_HOLD in the
   wrapper). The debug wrapper may OR a generated first-event halt request into
-  core 1's instruction-boundary hold without changing core state or the ISS.
+  core 1's instruction-boundary hold without changing core state.
 * GP/GEM belongs to core 0 (`gpm_*` ← `c0_gp_*`). Core 1's GP responses are
   tied to "instantly done, reads 0", so a stray core-1 GP access completes
   harmlessly instead of wedging the core.

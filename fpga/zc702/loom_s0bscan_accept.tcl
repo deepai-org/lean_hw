@@ -2,10 +2,11 @@
 # ZC702 over the jtag_lib.tcl protocol and print each response, in the same
 # "k rd_reg=<dec>" format as `Emit.lean predict-s0bscan` (step 3, the
 # heartbeat read, is dynamic on silicon: printed as HB and checked ticking).
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 connect
 targets -set -filter {name =~ "xc7z*"}
-fpga -file /home/kevin/substrate0/oxc7/out/s0bscan_top.bit
+fpga -file $LOOM_OXC7_DIR/out/s0bscan_top.bit
 after 2000
 
 set k 0

@@ -30,7 +30,8 @@
 connect -url tcp:127.0.0.1:3121
 after 300
 set DB 0x10000000
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 
 proc retire {} { return [rd 21] }
 proc advancing {label} {

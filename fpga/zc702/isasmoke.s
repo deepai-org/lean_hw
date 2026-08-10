@@ -1,8 +1,7 @@
 ; isasmoke.s -- cross-repo ISA smoke: 64-bit constant assembly + control flow,
 ; reduced to a checksum in r1.
 ;
-; Every other leg of the ladder is single-repo. `opdiffselftest` and
-; `opdiff_rtl.sh` generate their programs from lean_hw's own OP_ constants, so a
+; The generated matrix and `opdiff_rtl.sh` use lean_hw's own OP_ constants, so a
 ; renumbering moves the design AND the test program together and they agree by
 ; construction. That is the right property for the design, and it is blind to
 ; the question that actually broke the board: does the *assembler* -- which
@@ -11,7 +10,7 @@
 ;
 ; So this program is written in MNEMONICS and assembled by lnp64's assembler.
 ; Nothing about its encoding comes from lean_hw. It then runs on the emitted RTL
-; and on silicon, and the checksum is compared against the mini's ISS.
+; and on silicon, and the checksum is compared against the Design-derived model.
 ;
 ; The battery is the constant set from `constBattery`: zero, one, all-ones, both
 ; sign boundaries, and mixed high/low patterns. It is deliberately weighted

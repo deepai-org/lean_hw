@@ -8,10 +8,11 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=kevin
-ExecStart=/home/kevin/substrate0/test/netbsd_up.sh
+Environment=LOOM_BOARD_ROOT=%h/substrate0
+EnvironmentFile=-%h/.config/loom-board.env
+ExecStart=/usr/bin/env bash -c 'exec "$LOOM_BOARD_ROOT/test/netbsd_up.sh"'
 TimeoutStartSec=2100
 RemainAfterExit=yes
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

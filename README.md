@@ -81,9 +81,10 @@ The current workflow derives these views from the Design:
   records exact byte identity, while target profiles, external tools, and
   board observations stay in the separate evidence layer.
 
-The typed single-source migration is not finished. In particular, some
-independent machine oracles and integration adapters remain deliberately
-hand-written. The ordered remaining work is in [`ROADMAP.md`](ROADMAP.md), and
+LNP64mini's cycle mirror has been removed; its execution, architectural
+observations, and RTL expectations derive from the Design. Some integration
+adapters across the wider tree remain machine-specific. The ordered remaining
+work is in [`ROADMAP.md`](ROADMAP.md), and
 the destination and scope test are in [`PLATONIC.md`](PLATONIC.md). The
 low-level multiclock foundation provides schedule-quantified `System`
 semantics and island-invariant lifting; the proposed typed `Chan` and assembly

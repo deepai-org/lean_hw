@@ -30,7 +30,7 @@ implemented in the tree:
 1. **Shared expression evaluation is the machine-simulation default.**
    `Loom/Hw/DagEval.lean` interns resolved expressions across every action root
    and evaluates each node once per cycle. LNP64mini's public `runDesign` and
-   default lockstep prepare the certified DAG fail-closed, with no fallback to
+   public runners prepare the certified DAG fail-closed, with no fallback to
    tree evaluation. The regression suite includes one nontrivial expression
    consumed by five separate funnels and checks that it has one shared DAG
    root with five consumers.
@@ -38,15 +38,14 @@ implemented in the tree:
 2. **The generated `Design` is the primary simulator.** LNP64mini's
    `runDesign` executes the certified shared-DAG core and derives peripheral
    requests from that core's state. `progtest` obtains its architectural
-   outcomes from this path. The hand-written ISS remains an explicitly named
-   independent differential oracle and compatibility diagnostic, not the
-   implementation used by the primary runner.
+   outcomes from this path. LNP64mini's hand-written cycle mirror has been
+   removed; architectural tests, RTL expectations, and board tooling derive
+   from the Design.
 
-3. **`Design.coords` is the default comparison surface.** The primary
-   lockstep derives every compared coordinate from the Design, prepares its
-   flat lookup plan once, and refuses a plan whose resolved size differs from
-   the declared coordinate count. LNP64mini's hand-maintained comparator and
-   its duplicate coverage tables have been removed.
+3. **Typed declarations are the default observation surface.** `Design.coords`
+   and resolved typed slots derive complete comparison or observation plans
+   from the Design. LNP64mini's hand-maintained comparator, duplicate coverage
+   tables, and mirrored state adapter have been removed.
 
 4. **Checked properties are general over `Design`.** `ExprProperty` handles
    state properties and `TransitionProperty` handles typed before/after
@@ -77,10 +76,10 @@ implemented in the tree:
 The reusable control plane lives in Loom. Acc8 is the independent demonstrated
 port: it uses the same runner, derived coordinate coverage, and structured
 results as LNP64mini, and its bespoke comparator and recursive runner are gone.
-LNP64mini has one public core lockstep backed by the generic runner; its prior
-legacy, closure-derived, pure, and fast public variants and its duplicated
-comparison metadata are gone. Its component adapters reuse the same runner
-without standardizing their machine-specific inputs.
+LNP64mini's core and component tests use Design-derived execution and generic
+structured results; its prior parallel runners and duplicated comparison
+metadata are gone. Component adapters reuse the same control plane without
+standardizing their machine-specific inputs.
 
 The boundary remains deliberate:
 

@@ -4,7 +4,8 @@
 # and CHECKs it -> OK; then BUMPs the cell (the §3 bump); then re-presents the
 # SAME epoch 1 and CHECKs -> STALE. The engine owns the cell; software only
 # presents a handle, so the bump -- not a host poke -- is what revokes.
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 connect
 targets -set -filter {name =~ "xc7z*"}
 set DB 0x10000000

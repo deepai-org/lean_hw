@@ -14,7 +14,6 @@
 #     the bitstream and broke the board;
 #   * the harness's test PROGRAMS encoded 0x33/0x35/0x21 directly;
 #   * `Core.lean` defined CAP_SEND_OP := 0x3e beside OP_MINI_CAP_SEND;
-#   * `diff_emulator_iss.py` carried its own opcode table;
 #   * four hand-written `.quad` instruction encodings bypass the LLVM backend
 #     entirely, so no renumbering can reach them.
 #

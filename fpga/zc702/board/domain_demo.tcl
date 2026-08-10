@@ -8,7 +8,8 @@
 # CAP_RECVs -- the receive index is the RUNNING domain, so only domain 2 can
 # take it -- into r7, then returns. r7=0xCAFE means the driver got its cap in
 # its own domain; r8=0 means the send landed.
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 connect
 targets -set -filter {name =~ "xc7z*"}
 set DB 0x10000000
