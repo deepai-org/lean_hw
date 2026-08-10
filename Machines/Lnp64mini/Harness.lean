@@ -1,6 +1,5 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
-import Loom.Hw.StateCover
 import Loom.Hw.Diff
 import Loom.Hw.DagEval
 import Machines.Lnp64mini.Iss
@@ -217,8 +216,7 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
    ("sc_pending",1,if s.sc_pending then 1 else 0)]
   -- EXT-7 stage B: the TLB is per-index REGISTERS, not memories (D20 -- every
   -- entry is read at once, so it is a register file). Listed here so Loom's
-  -- derived comparator finds them; before this they were only in `cmpStates`'s
-  -- hand-written loop, which the derived path does not consult.
+  -- The derived comparator finds every entry from the Design declarations.
   ++ (List.range 8).flatMap (fun i =>
        [(s!"tlb_base{i}",  32, (s.tlb_base[i]!).toNat),
         (s!"tlb_limit{i}", 32, (s.tlb_limit[i]!).toNat),
@@ -227,57 +225,7 @@ def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
         (s!"tlb_cell{i}",   8, (s.tlb_cell[i]!).toNat)])
   ++ (List.range NT).map (fun i => (s!"tstate{i}",2,s.tstate[i]!.toNat))
 
-/-- D20: the four thread-table arrays that became Loom **memories**
-(`tpc`, `tsleep`, `tp_arr`, `sigmask_arr`). The lockstep compares them
-entry by entry the way it already compares `rf`/`dmem`, so the EDSL≡ISS
-gate still covers every bit of the thread table. -/
-def issTArrays (s : MiniSt) : List (String × Array (BitVec 64)) :=
-  [("tpc", s.tpc), ("tsleep", s.tsleep), ("tp_arr", s.tp_arr),
-   ("sigmask_arr", s.sigmask_arr)]
-
-/-- What `cmpStates` actually compares, as plain name lists, so Loom's W5
-coverage check can hold them against the design's own declarations.
-
-Kept immediately beside `issRegs`/`issTArrays` and the memory loops in
-`cmpStates` — if those change and these do not, `coverageSelftest` fails and
-names the difference. That is the whole point: the previous rule was "remember
-to update `cmpStates`", and it was forgotten twice (EXT-2's `tdom`, EXT-7's
-TLB), each time leaving a green test that had never looked at the new state. -/
-def cmpCoveredRegs (s : MiniSt) : List String := (issRegs s).map (·.1)
-
-def cmpCoveredMems (s : MiniSt) : List String :=
-  ["rf", "dmem", "tdom", "tcont", "tcdom", "gdepth",
-   -- EXT-8: the commit-trace ring. Compared, not exempted -- the whole value
-   -- of a trace is that it says what actually happened, so a ring the models
-   -- disagree about would be worse than no ring at all.
-   "trace_pc", "trace_wb",
-   -- EXT-9: the I-cache banks. Compared, not exempted: a cache the two
-   -- models disagree about is a cache that can hand the core a different
-   -- instruction than the reference expects, which is the whole failure
-   -- mode. (The lockstep already caught one such disagreement -- a fill
-   -- that put the tag in the valid bit.)
-   "ic_data", "ic_tag", "dc_data", "dc_tag"]
-    ++ (issTArrays s).map (·.1)
-
-/-- Memories the ISS deliberately does not model, so the lockstep has nothing
-to compare them against. Listed explicitly rather than omitted, so that the
-coverage check passes on a stated exemption instead of on an oversight.
-
-The ISS models the UART by its pointers (`uart_wptr`, `uart_ridx`,
-`uart_byte`, `rx_wptr`, `rx_rptr`) and not by buffer contents: the bytes are a
-host-visible side channel drained over BSCAN, not architectural state the ISS
-claims to reproduce. If the ISS ever models them, delete the entry here and
-the check will require the comparison. -/
-def cmpExemptMems : List String := ["uart_mem", "rx_mem"]
-
 /-! ## EDSL ≡ ISS lockstep -/
-
-/-- Print a failure observation immediately. Locksteps can run for minutes;
-without the explicit flush a real mismatch is indistinguishable from a hung
-process until normal exit flushes stdout. -/
-private def printMismatch (message : String) : IO Unit := do
-  IO.println message
-  (← IO.getStdout).flush
 
 /-- Read one of Loom's derived coordinates out of the ISS.
 
@@ -329,13 +277,9 @@ def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
     -- architectural state the ISS reproduces. Reported as unmodelled.
     | _             => none
 
-/-- The CLOSED list of coordinates the ISS deliberately does not model, with
-the reason. `issAtWith`'s fall-through used to be an anonymous `none`: a NEW
-memory added to the design would have joined the unmodelled set silently,
-visible only as the per-run count drifting — an omission that looks exactly
-like agreement, the same shape as the hand-written comparator this derived
-one replaced (and as the stage-B cmpStates gap before it). Now
-`opDiffSelftest` fails on an unmodelled coordinate that is not NAMED here. -/
+/-- The CLOSED list of coordinates the ISS deliberately does not model. A
+memory added to the Design fails by name unless it is modelled by `issAtWith`
+or deliberately listed here. -/
 def issUnmodelled : List String :=
   [ "uart_mem"   -- host-visible side channel, drained over BSCAN; modelled
                  -- by its pointers, not its contents
@@ -346,148 +290,10 @@ rebuilds a 152-entry list on every call, so calling this once per coordinate
 rebuilds it once per coordinate. -/
 def issAt (s : MiniSt) (c : Loom.Hw.Coord) : Option Nat := issAtWith (issRegs s) s c
 
-/-- Compare the EDSL open-design state `σ` to the ISS `s`: all registers +
-the touched rf/dmem words listed in `mrf`/`mdmem`. Returns the mismatch
-count and prints the first few. -/
-def cmpStates (σ : St) (s : MiniSt) (mrf mdmem : List Nat) (step : Nat) : IO Nat := do
-  let mut bad := 0
-  for (n, w, v) in issRegs s do
-    if (σ.regs n w).toNat ≠ v then
-      if bad < 12 then printMismatch s!"  MISMATCH step {step} reg {n}: edsl={(σ.regs n w).toNat} iss={v}"
-      bad := bad + 1
-  for a in mrf do
-    if (σ.mems "rf" a 64).toNat ≠ (s.rf[a]!).toNat then
-      if bad < 12 then printMismatch s!"  MISMATCH step {step} rf[{a}]: edsl={(σ.mems "rf" a 64).toNat} iss={(s.rf[a]!).toNat}"
-      bad := bad + 1
-  for a in mdmem do
-    if (σ.mems "dmem" a 64).toNat ≠ (s.dmem[a]!).toNat then
-      if bad < 12 then printMismatch s!"  MISMATCH step {step} dmem[{a}]: edsl={(σ.mems "dmem" a 64).toNat} iss={(s.dmem[a]!).toNat}"
-      bad := bad + 1
-  -- EXT-2: the per-thread domain tag (8-bit, so not in `issTArrays`,
-  -- which is the 64-bit thread-table family). Compared at every slot --
-  -- the inheritance rule is a claim about slots the program never reads,
-  -- so a spot check at `cur` would not see a violation.
-  for i in List.range NT do
-    if (σ.mems "tdom" i 8).toNat ≠ (s.tdom[i]!).toNat then
-      if bad < 12 then
-        printMismatch s!"  MISMATCH step {step} tdom[{i}]: edsl={(σ.mems "tdom" i 8).toNat} iss={(s.tdom[i]!).toNat}"
-      bad := bad + 1
-  -- EXT-7: the TLB. These were NOT compared when the MMU landed, so a green
-  -- `MMU-XLAT` meant "the legs agree on core_addr", not "the legs agree on
-  -- the TLB" -- the same trap EXT-2 hit. Widths differ per array, so they
-  -- cannot ride `issTArrays` (which is the 64-bit family).
-  for i in List.range 8 do
-    let checks : List (String × Nat × Nat) :=
-      [(s!"tlb_base{i}", 32, (s.tlb_base[i]!).toNat),
-       (s!"tlb_limit{i}", 32, (s.tlb_limit[i]!).toNat),
-       (s!"tlb_phys{i}", 32, (s.tlb_phys[i]!).toNat),
-       (s!"tlb_dom{i}", 8,  (s.tlb_dom[i]!).toNat),
-       (s!"tlb_cell{i}", 8, (s.tlb_cell[i]!).toNat)]
-    for (rn, w, v) in checks do
-      if (σ.regs rn w).toNat ≠ v then
-        if bad < 12 then
-          printMismatch s!"  MISMATCH step {step} {rn}: edsl={(σ.regs rn w).toNat} iss={v}"
-        bad := bad + 1
-  -- EXT-5/EXT-6: the gate table, the gate continuation, and the capability
-  -- inbox. Found uncompared on 2026-08-04 by Loom's W5 coverage check --
-  -- `gateselftest` and `capxferselftest` were green without ever looking at
-  -- the state their own increments added, the third and fourth instance of
-  -- the trap EXT-2 (`tdom`) and EXT-7 (the TLB) hit. Compared at EVERY slot:
-  -- a gate is a claim about entries the program does not call, so a spot
-  -- check at the invoked index would not see a violation.
-  -- EXT-6 (§17): the capability inbox moved into guest memory, so its
-  -- contents are compared the way all guest memory is -- through the DDR
-  -- model both models drive -- and there is no core bank left to walk here.
-  for i in List.range NT do
-    let checksNT : List (String × Nat × Nat) :=
-      [("tcont", 64, (s.tcont[i]!).toNat), ("tcdom", 8, (s.tcdom[i]!).toNat)]
-    for (mn, w, v) in checksNT do
-      if (σ.mems mn i w).toNat ≠ v then
-        if bad < 12 then
-          printMismatch s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i w).toNat} iss={v}"
-        bad := bad + 1
-  -- D20: the thread-table memories, all 32 entries of each
-  for (mn, arr) in issTArrays s do
-    for i in List.range NT do
-      if (σ.mems mn i 64).toNat ≠ (arr[i]!).toNat then
-        if bad < 12 then
-          printMismatch s!"  MISMATCH step {step} {mn}[{i}]: edsl={(σ.mems mn i 64).toNat} iss={(arr[i]!).toNat}"
-        bad := bad + 1
-  return bad
-
-/-- Legacy closure-state lockstep with a hand-maintained comparison surface.
-Kept only as an explicit diagnostic reference; machine selftests use the
-certified DAG/derived-coordinate `lockstep` defined below. Touched-memory
-address sets are the full rf and dmem windows `[0,64)`. -/
-def lockstepLegacy (image : List (Nat × BitVec 64)) (latency : Nat)
-    (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat) : IO Nat := do
-  let d0 : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
-  let mut s : MiniSt := {}
-  let mut d : DdrModel := d0
-  let mut g : GpModel := {}
-  let mut σ : St := design.reset
-  -- preload the EDSL rf/dmem? Both start zeroed (RAM). DDR image only in the model.
-  let mrf := (List.range 64)
-  let mdmem := (List.range 64)
-  let mut bad := 0
-  for k in List.range nCyc do
-    let (s', d', g', inp) := sysStep s d g (cmds k) (gpVal k)
-    σ := design.cycleOpen inp.toEnv σ
-    s := s'; d := d'; g := g'
-    bad := bad + (← cmpStates σ s mrf mdmem k)
-  return bad
-
-/-- Cycle-level EDSL ≡ ISS using **Loom's derived coordinate set**.
-
-`lockstep`/`cmpStates` enumerate what to compare by hand. This does not: the
-coordinates come from `Design.coords`, i.e. from the design's own register and
-memory declarations, so a coordinate cannot be omitted — there is no list here
-to forget to update. The only machine-specific part is `issAt`, which reads a
-coordinate out of the ISS.
-
-Coordinates the ISS does not model are reported as *unmodelled* rather than
-skipped, which is the distinction that matters: the hand-written comparator
-could only omit them, and an omission is indistinguishable from agreement.
-
-`cap` bounds cells per memory; `rf` alone is 1024 entries, so a cycle-level run
-over every cell of every memory is not free. -/
-def lockstepDerived (image : List (Nat × BitVec 64)) (latency : Nat)
-    (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat)
-    (cap : Nat := 64) : IO (Nat × Nat) := do
-  let mut s : MiniSt := {}
-  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := latency }
-  let mut g : GpModel := {}
-  let mut σ : St := design.reset
-  let mut bad := 0
-  let mut unmodelled := 0
-  for k in List.range nCyc do
-    let (s', d', g', inp) := sysStep s d g (cmds k) (gpVal k)
-    σ := design.cycleOpen inp.toEnv σ
-    s := s'; d := d'; g := g'
-    -- `issRegs` is rebuilt once per CYCLE, not once per coordinate.
-    let regs := issRegs s
-    -- Loom's Oracle carries the CLOSED exclusion list; a coordinate the ISS
-    -- fails to model without declaring it is a failure named after the
-    -- coordinate, not a count drifting (Loom.Hw.Design.diffAgainstOracle).
-    let (mism, undeclared, declared) := design.diffAgainstOracle cap σ
-      { read := issAtWith regs s, unmodelled := issUnmodelled }
-    unmodelled := declared.length
-    if !undeclared.isEmpty then
-      if bad < 8 then
-        for c in undeclared.take 4 do
-          printMismatch s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
-      bad := bad + undeclared.length
-    if !mism.isEmpty then
-      if bad < 8 then
-        for c in mism.take 4 do
-          printMismatch s!"  MISMATCH cycle {k} {c.render}: edsl={σ.at c} iss={(issAtWith regs s c).getD 0}"
-      bad := bad + mism.length
-  return (bad, unmodelled)
-
 /-! ### W5, the deeper half: matrix equality as a THEOREM
 
-`lockstepFast` below is IO only because it prints. This is the same run with
-the printing removed: a pure mismatch count, so a whole test matrix can be a
+The executable runner below prints immediately. This is the same comparison
+with printing removed: a pure mismatch count, so a whole test matrix can be a
 single `Nat` and "the design agrees with the ISS on the matrix" can be stated
 as `matrixMismatches = 0` and discharged by `native_decide` at BUILD time.
 
@@ -575,10 +381,48 @@ def DerivedSystem.step (dag : DagEval.VerifiedSimulator design)
   let core := dag.cycleOpen inp.toEnv system.core
   ({ core, ddr, gp }, inp)
 
-private def lockstepPureDag (dag : DagEval.VerifiedSimulator design)
+/-- Result of executing the generated Design with its behavioral environment. -/
+structure DerivedRun where
+  system : DerivedSystem
+  cycles : Nat
+
+def DerivedRun.reg (run : DerivedRun) (name : String) : Nat :=
+  fastReg simulator.fast run.system.core name
+
+def DerivedRun.mem (run : DerivedRun) (name : String) (addr : Nat) : Nat :=
+  match design.memIdx name with
+  | some index => run.system.core.mems.getD (design.memBase index + addr) 0
+  | none => 0
+
+/-- Pure execution engine for the generated Design. The handwritten ISS is
+not involved; clients with expected architectural outcomes should use this
+runner. -/
+def runDesignDag (dag : DagEval.VerifiedSimulator design)
+    (image : List (Nat × BitVec 64)) (latency : Nat)
+    (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (maxCyc : Nat) :
+    DerivedRun := Id.run do
+  let mut system := DerivedSystem.reset dag image latency
+  let mut cycles := 0
+  for k in List.range maxCyc do
+    if fastBit dag.base.fast system.core "halted" then
+      return { system, cycles }
+    let (next, _) := system.step dag (cmds k) (gpVal k)
+    system := next
+    cycles := cycles + 1
+  return { system, cycles }
+
+/-- Primary public simulator: prepare the certified shared DAG fail-closed,
+then run the Design-derived core and environment. -/
+def runDesign (image : List (Nat × BitVec 64)) (latency : Nat)
+    (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (maxCyc : Nat) :
+    IO DerivedRun := do
+  let dag ← DagEval.prepareSimulator simulator "LNP64mini"
+  return runDesignDag dag image latency cmds gpVal maxCyc
+
+private def evaluateDag (dag : DagEval.VerifiedSimulator design)
     (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (nCyc : Nat) (cap : Nat := 16) : Nat := Id.run do
-  let plan := design.coordPlan cap
+  let some plan := design.coordPlan? cap | return 1
   let mut system := DerivedSystem.reset dag image latency
   let mut s : MiniSt := {}
   let mut bad := 0
@@ -591,54 +435,24 @@ private def lockstepPureDag (dag : DagEval.VerifiedSimulator design)
     bad := bad + mism.length + undeclared.length
   return bad
 
-/-- Pure generated-simulator/ISS mismatch count. A failed DAG certificate is
-loud (`1`) so the build-time matrix theorem cannot silently fall back to a
-different evaluator. -/
-def lockstepPure (image : List (Nat × BitVec 64)) (latency : Nat)
-    (cmds : Nat → MiniIn) (nCyc : Nat) (cap : Nat := 16) : Nat :=
-  match DagEval.prepareSimulator? simulator with
-  | some dag => lockstepPureDag dag image latency cmds nCyc cap
-  | none => 1
-
-
-/-- The same derived-coordinate lockstep, run against `FastEval`.
-
-`lockstepDerived` compares against the closure-based `St`, which is correct and
-gets slower every cycle because `RegEnv` is a function. This runs the design
-through `fastCycleOpen` on the flat state instead, and reads coordinates through
-a `CoordPlan` resolved once outside the loop.
-
-This is not a shortcut around the semantics: the DAG certificate proves its
-cycle equals `fastCycleOpen`, whose theorem proves agreement with
-`Design.cycleOpen`. -/
-def lockstepFast (image : List (Nat × BitVec 64)) (latency : Nat)
+/-- Run the certified Design and ISS through Loom's generic differential
+runner. Coordinate planning and oracle coverage are fail-closed; only the
+machine-specific system step and ISS reader live here. -/
+private def runCertified (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat)
     (cap : Nat := 64) : IO (Nat × Nat) := do
-  let plan := design.coordPlan cap
+  let plan ← design.prepareCoordPlan cap
   let dag ← DagEval.prepareSimulator simulator "LNP64mini"
-  let mut system := DerivedSystem.reset dag image latency
-  let mut s : MiniSt := {}
-  let mut bad := 0
-  let mut unmodelled := 0
-  for k in List.range nCyc do
-    let (system', inp) := system.step dag (cmds k) (gpVal k)
-    s := MiniIss.step s inp
-    system := system'
-    let regs := issRegs s
-    let (mism, undeclared, declared) := diffFastAgainstOracle plan system.core
-      { read := issAtWith regs s, unmodelled := issUnmodelled }
-    unmodelled := declared.length
-    if !undeclared.isEmpty then
-      if bad < 8 then
-        for c in undeclared.take 4 do
-          printMismatch s!"  UNDECLARED-UNMODELLED cycle {k} {c.render}: not in issUnmodelled"
-      bad := bad + undeclared.length
-    if !mism.isEmpty then
-      if bad < 8 then
-        for (c, got, want) in mism.take 4 do
-          printMismatch s!"  MISMATCH cycle {k} {c.render}: edsl={got} iss={want}"
-      bad := bad + mism.length
-  return (bad, unmodelled)
+  let result ← Loom.Runner.run
+    { label := "LNP64mini core Design/ISS", steps := nCyc }
+    (DerivedSystem.reset dag image latency, ({} : MiniSt)) fun k state => do
+      let (system, inp) := state.1.step dag (cmds k) (gpVal k)
+      let s := MiniIss.step state.2 inp
+      let regs := issRegs s
+      let oracle : Oracle :=
+        { read := issAtWith regs s, unmodelled := issUnmodelled }
+      return ((system, s), sampleFastAgainstOracle plan system.core oracle)
+  return (result.failureCount, result.excluded.length)
 
 /-- Primary LNP64mini lockstep.
 
@@ -649,7 +463,7 @@ there is no fallback to tree evaluation or the legacy comparator. -/
 def lockstep (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (nCyc : Nat)
     (cap : Nat := 64) : IO Nat := do
-  let (bad, _) ← lockstepFast image latency cmds gpVal nCyc cap
+  let (bad, _) ← runCertified image latency cmds gpVal nCyc cap
   return bad
 
 /-! ## Directed selftest script
@@ -1029,9 +843,6 @@ def selftest : IO Unit := do
      ("SCH  (CLONE + YIELD + THREAD_EXIT switch)",         progSched, 34, 0),
      ("SLP  (SLEEP + sleep-scan wake + S_WAIT)",           progSleep, 20, 0),
      ("GP   (S_GPL/S_GPS MMIO load/store handshake)",      progGP, 24, 0xABCD)]
-  -- NOTE: LS(54) is the slow outlier (closure-RegEnv cost is ~cubic in the
-  -- window). Each script starts fresh from reset, so per-script cost is
-  -- bounded by its own window; the whole battery completes in a few min.
   let mut total := 0
   for (nm, p, nc, gp) in scripts do
     let img := imageFrom TEXT_BASE p
@@ -1040,13 +851,20 @@ def selftest : IO Unit := do
     else IO.println s!"  FAIL {nm} ({bad} mismatches)"
     total := total + bad
   if total = 0 then
-    IO.println s!"LNP64MINI SELFTEST OK — EDSL≡ISS bit-exact on {scripts.length} scripts (all regs + rf[0..64) + dmem[0..64) + tpc/tsleep/tp_arr/sigmask_arr[0..32))"
+    IO.println s!"LNP64MINI SELFTEST OK — RESULT PASS; certified shared-DAG Design execution agrees with the independent ISS on all Design.coords (cap 64) across {scripts.length} scripts"
   else
-    IO.println s!"LNP64MINI SELFTEST FAILED ({total} total mismatches)"
+    IO.println s!"LNP64MINI SELFTEST RESULT FAIL — {total} total mismatches"
+  let steps := scripts.foldl (fun count item => count + item.2.2.1) 0
+  (Loom.Runner.Result.fromFailureCount "LNP64mini core selftest" steps total
+    "Design/ISS disagreement").requirePass
 
-/-! ## ISS-only system run (fast; no EDSL) -/
+/-! ## Independent differential oracle
 
-/-- Run the ISS+DDR+GP system to `halted` or `maxCyc`, under a cmd stream. -/
+`runIss` is retained for explicit oracle diagnostics and comparison. It is not
+the primary simulator; architectural outcome checks should use `runDesign`.
+-/
+
+/-- Run the independent ISS oracle to `halted` or `maxCyc`. -/
 def runIss (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (maxCyc : Nat) :
     MiniSt × DdrModel × Nat := Id.run do
@@ -1124,7 +942,7 @@ def issStepOpBatch (file : String) : IO Unit := do
         (((parts[1]).splitOn ",").map (fun t => (t.trimAscii.toString.toNat?).getD 0))
       i := i + 1
 
-/-! ## progtest — hand-encoded program to a clean EXIT on the ISS -/
+/-! ## progtest — hand-encoded programs on the Design-derived simulator -/
 
 /-- Program with a trap at word 0 (unknown op 0x7f) then real work: after
 the trap raises, the host SET_PCs past it (cmd 53) and RESUMEs (cmd 54). -/
@@ -1138,15 +956,16 @@ def hexStr (n : Nat) : String := "0x" ++ String.ofList (Nat.toDigits 16 n)
 def progtest : IO Unit := do
   -- (a) prog1 to a clean EXIT.
   let img := imageFrom TEXT_BASE prog1
-  let (s, _, k) := runIss img 1 (fun i => if i = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}) (fun _ => 0) 400
-  IO.println s!"PROGTEST prog1: halted={s.halted} cycles={k} pc={hexStr s.pc.toNat} retire={s.retire.toNat}"
+  let s ← runDesign img 1 (fun i => if i = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}) (fun _ => 0) 400
+  IO.println s!"PROGTEST prog1: halted={s.reg "halted" == 1} cycles={s.cycles} pc={hexStr (s.reg "pc")} retire={s.reg "retire"}"
   IO.print "  rf[1..8] ="
   for i in List.range 8 do
-    IO.print s!" r{i+1}={(s.rf[i+1]!).toNat}"
+    IO.print s!" r{i+1}={s.mem "rf" (i + 1)}"
   IO.println ""
-  IO.println s!"  dmem[0]={(s.dmem[0]!).toNat}"
-  let ok1 := s.halted ∧ (s.rf[1]!).toNat = 7 ∧ (s.rf[3]!).toNat = 12 ∧ (s.rf[5]!).toNat = 35
-            ∧ (s.rf[6]!).toNat = 7 ∧ (s.rf[8]!).toNat = 12 ∧ (s.dmem[0]!).toNat = 12
+  IO.println s!"  dmem[0]={s.mem "dmem" 0}"
+  let ok1 := s.reg "halted" = 1 ∧ s.mem "rf" 1 = 7 ∧ s.mem "rf" 3 = 12 ∧
+    s.mem "rf" 5 = 35 ∧ s.mem "rf" 6 = 7 ∧ s.mem "rf" 8 = 12 ∧
+    s.mem "dmem" 0 = 12
 
   -- (b) trap + RESUME: run to the trap, then at a later cycle SET_PC=0x1008
   -- (word 1) and RESUME (cmd 54).
@@ -1156,11 +975,16 @@ def progtest : IO Unit := do
     else if i = 10 then { cmdValid := true, cmdIdx := 53, cmdData := BitVec.ofNat 32 0x1008 }  -- SET_PC
     else if i = 11 then { cmdValid := true, cmdIdx := 54, cmdData := 1 }                        -- RESUME
     else {}
-  let (st, _, kt) := runIss imgT 1 cmdsT (fun _ => 0) 200
-  IO.println s!"PROGTEST trap+resume: halted={st.halted} cycles={kt} r1={(st.rf[1]!).toNat} trap_active={st.trap_active}"
-  let ok2 := st.halted ∧ (st.rf[1]!).toNat = 55 ∧ st.trap_active = false
+  let st ← runDesign imgT 1 cmdsT (fun _ => 0) 200
+  IO.println s!"PROGTEST trap+resume: halted={st.reg "halted" == 1} cycles={st.cycles} r1={st.mem "rf" 1} trap_active={st.reg "trap_active" == 1}"
+  let ok2 := st.reg "halted" = 1 ∧ st.mem "rf" 1 = 55 ∧ st.reg "trap_active" = 0
 
-  IO.println (if ok1 ∧ ok2 then "PROGTEST OK" else "PROGTEST FAILED")
+  if ok1 ∧ ok2 then
+    IO.println "PROGTEST RESULT PASS — outcomes came from the certified shared-DAG Design simulator"
+  else
+    IO.println "PROGTEST RESULT FAIL"
+  (Loom.Runner.Result.fromBool "LNP64mini Design-derived progtest" st.cycles
+    (decide (ok1 ∧ ok2)) "architectural outcome mismatch").requirePass
 
 /-! ## SMP-extension programs + selftest (DUAL_SPEC ladder step 1)
 
@@ -1286,6 +1110,9 @@ r9={(sx.rf[9]!).toNat} (want 5) | right-key also woke it: halted={sd.halted}"
     IO.println "LNP64MINI SMP SELFTEST OK — EDSL≡ISS on res_kill/sc_fail/doorbell/wake_out/hold + outcomes"
   else
     IO.println s!"LNP64MINI SMP SELFTEST FAILED ({total} mismatches; rk={okRk} sc={okSc} db={okDb} no={okNo} key={okKey} wk={okWk} hd={okHd})"
+  (Loom.Runner.Result.fromBool "LNP64mini SMP selftest" 0
+    (total == 0 && okRk && okSc && okDb && okNo && okKey && okWk && okHd)
+    "differential or SMP outcome assertion failed").requirePass
 
 
 /-! ## EXT-1 — the preemption tick (selftest)
@@ -1454,7 +1281,8 @@ def domSelftest : IO Unit := do
     IO.println "LNP64MINI DOMAIN SELFTEST OK — EDSL≡ISS on the tag + CLONE cannot leave its domain"
   else
     IO.println s!"LNP64MINI DOMAIN SELFTEST FAILED ({bad} mismatches; inherit={okInherit})"
-    throw <| IO.userError "domain selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini domain selftest" 60
+    (bad == 0 && okInherit) "differential or inheritance assertion failed").requirePass
 
 /-! ## EXT-3 — the fail-stop selftest
 
@@ -1506,7 +1334,8 @@ def failstopSelftest : IO Unit := do
     IO.println "LNP64MINI FAILSTOP SELFTEST OK — poison stops the runner AND deschedules the ready"
   else
     IO.println s!"LNP64MINI FAILSTOP SELFTEST FAILED ({bad} mismatches; runner={ok1} ready={ok2})"
-    throw <| IO.userError "failstop selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini fail-stop selftest" 60
+    (bad == 0 && ok1 && ok2) "differential or fail-stop assertion failed").requirePass
 
 /-! ## EXT-10 — the data cache
 
@@ -1560,7 +1389,8 @@ r12={(s.rf[12]!).toNat} (want 7, refilled after conflict eviction)"
     IO.println "LNP64MINI DCACHE SELFTEST OK — hits return the filled value, and a store invalidates its own line"
   else
     IO.println s!"LNP64MINI DCACHE SELFTEST FAILED ({bad} mismatches; values={ok})"
-    throw <| IO.userError "dcache selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini data-cache selftest" 260
+    (bad == 0 && ok) "differential or cache-value assertion failed").requirePass
 
 /-! ## EXT-5 — the gate selftest
 
@@ -1758,7 +1588,10 @@ gdepth0={(sc.gdepth[0]!).toNat} (want 0)"
     IO.println "LNP64MINI GATE SELFTEST OK — a gate is the only way to change domain, and only to the gate's"
   else
     IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2} unbacked={ok3})"
-    throw <| IO.userError "gate selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini gate selftest" 0
+    (bad == 0 && badU == 0 && badN == 0 && badC == 0 &&
+      ok1 && ok2 && ok3 && ok4 && ok5)
+    "differential or gate assertion failed").requirePass
 
 /-- §9 GATE-HAMMER: the driver-spawn trigger shape, directed and isolated (its
 own selftest so the long run doesn't bloat `gateSelftest`). 64× gate_call with a
@@ -1830,6 +1663,9 @@ fault_cause={sp.fault_cause.toNat} fault_cur={sp.fault_cur.toNat} fault_pc=0x{pp
   else
     IO.println s!"LNP64MINI GATE HAMMER: DESYNC REPRODUCED — noop_cnt={s.fault_cause.toNat} \
 slot={s.fault_cur.toNat} pc=0x{pchex} halted={s.halted} r20={(s.rf[20]!).toNat} (this IS the silicon stick, in software)"
+  (Loom.Runner.Result.fromBool "LNP64mini gate hammer" 0
+    (bad == 0 && s.fault_cause.toNat == 0 && s.halted && sp.fault_cause.toNat == 0)
+    "gate accounting desynced (cooperative or preemptive hammer)").requirePass
 
 /-! ## The dwell/wake hammers — the two interleavings the silicon capture named
 
@@ -1992,6 +1828,10 @@ tpc2=0x{String.ofList (Nat.toDigits 16 (ts.tpc[2]!).toNat)}"
   else
     IO.println s!"LNP64MINI GATE DWELL/WAKE/DRVSPAWN: FAIL — noop A={worstA} B={worstB} C={worstC} \
 haltB={ts.halted} haltC={haltC} (a hang with noop=0 is a stall, not a desync — read the traces)"
+  (Loom.Runner.Result.fromBool "LNP64mini gate dwell/wake/drvspawn" 0
+    (worstA == 0 && worstB == 0 && worstC == 0 && badA == 0 && badB == 0 && badC == 0
+      && ts.halted && haltC)
+    "an interleaving faulted, stalled, or diverged from the ISS").requirePass
 
 /-! ## The 1235f201 fault-conformance selftest
 
@@ -2075,7 +1915,8 @@ r2=0x{String.ofList (Nat.toDigits 16 (sm.rf[2]!).toNat)} (want 5a) halted={sm.ha
     IO.println "LNP64MINI REFUSAL CONFORMANCE OK — no refusal reports nothing, and none touches the value register"
   else do
     IO.println "LNP64MINI REFUSAL CONFORMANCE FAILED"
-    throw <| IO.userError "refusal conformance failed"
+  (Loom.Runner.Result.fromBool "LNP64mini refusal conformance" 0 allOk
+    "refusal assertion failed").requirePass
 
 def faultConformanceSelftest : IO Unit := do
   let cmdStart : Nat → MiniIn := fun k =>
@@ -2116,7 +1957,8 @@ in_gate={sc.in_gate.toNat} (want 0) cause={sc.fault_cause.toNat} (want 0) lockst
     IO.println "LNP64MINI FAULT CONFORMANCE OK — bare return faults, op 0 faults in-core, misaligned entry refuses"
   else do
     IO.println "LNP64MINI FAULT CONFORMANCE FAILED"
-    throw <| IO.userError "fault conformance failed"
+  (Loom.Runner.Result.fromBool "LNP64mini fault conformance" 0 allOk
+    "fault assertion failed").requirePass
 
 /-! ## §9.2 the gate return sentinel (spec aebacd95)
 
@@ -2205,7 +2047,8 @@ cause={s3.fault_cause.toNat} lockstep={badN}"
     IO.println "LNP64MINI SENTINEL OK — a handler is an ordinary function; its `ret` IS the crossing return"
   else do
     IO.println "LNP64MINI SENTINEL FAILED"
-    throw <| IO.userError "sentinel selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini sentinel selftest" 0 allOk
+    "sentinel assertion failed").requirePass
 
 /-! ## EXT-6 — the cross-domain transfer selftest
 
@@ -2321,7 +2164,9 @@ mem handle3=0x{String.ofList (Nat.toDigits 16 (h3 dw))}"
     IO.println "LNP64MINI CAPXFER SELFTEST OK — a handle reaches its domain and no other, out of memory the machine walked"
   else
     IO.println s!"LNP64MINI CAPXFER SELFTEST FAILED ({bad}/{badU} mismatches; right={ok1} wrong={ok2} unbacked={ok3})"
-    throw <| IO.userError "capxfer selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini capability-transfer selftest" 0
+    (bad == 0 && badU == 0 && ok1 && ok2 && ok3)
+    "differential or capability-transfer assertion failed").requirePass
 
 /-! ## Thread-slot exhaustion boundary (the NT property a real boot needs)
 
@@ -2366,7 +2211,9 @@ last-clone r4={(s.rf[4]!).toNat} (valid, not -1)"
     IO.println s!"LNP64MINI SLOTFILL SELFTEST OK — {NT-1} clones fill the table and the {NT}th is refused"
   else
     IO.println s!"LNP64MINI SLOTFILL SELFTEST FAILED (occ={occ} want {NT}; overFull={overFull}; lastOk={lastOk})"
-    throw <| IO.userError "slotfill selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini slot-fill selftest" cyc
+    (bad == 0 && occ == NT && overFull && lastOk)
+    "differential or slot-capacity assertion failed").requirePass
 
 /-! ## EXT-7 — the MMU selftest (§15)
 
@@ -2506,7 +2353,9 @@ def mmuSelftest : IO Unit := do
     IO.println "LNP64MINI MMU SELFTEST OK — translation is domain-tagged and the VMA's epoch cell shoots it down"
   else
     IO.println s!"LNP64MINI MMU SELFTEST FAILED (bypass={bad} xlat={bad2}; tag={ok2} shootdown={ok3})"
-    throw <| IO.userError "mmu selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini MMU selftest" 60
+    (bad == 0 && bad2 == 0 && ok2 && ok3)
+    "differential or MMU assertion failed").requirePass
 
 /-- Sub-word stores must not disturb neighbouring bytes, on EITHER memory path.
 
@@ -2543,34 +2392,8 @@ def subwordSelftest : IO Unit := do
     IO.println "LNP64MINI SUBWORD SELFTEST OK — sb/sh merge into their lanes and leave the rest alone, on both paths"
   else
     IO.println s!"LNP64MINI SUBWORD SELFTEST FAILED ({bad} path(s))"
-    throw <| IO.userError "subword selftest failed"
-
-/-- **W5 coverage gate.** Hold `cmpStates`'s claimed coverage against the
-design's own declarations, so that adding state to `lnp64mini` breaks a test
-instead of silently widening the gap between what is simulated and what is
-compared.
-
-This is the check that replaces a rule people were supposed to remember. It
-found five uncompared memories the moment it was first run — `gate_ent`,
-`gate_dom`, `cap_ibox` (EXT-5/EXT-6's gate table and capability inbox) and
-`tcont`/`tcdom` (the gate continuation) — meaning `gateselftest` and
-`capxferselftest` had been green without ever comparing the state their own
-increments introduced. Both still pass now that they do, so the legs really did
-agree; the tests simply had not been looking. -/
-def coverageSelftest : IO Unit := do
-  let s : MiniSt := {}
-  let cr := cmpCoveredRegs s
-  let cm := cmpCoveredMems s ++ cmpExemptMems
-  IO.println s!"  design declares {design.regEntries.length} registers, \
-{design.memEntries.length} memories"
-  IO.println s!"  cmpStates compares {cr.length} registers, {(cmpCoveredMems s).length} \
-memories ({cmpExemptMems.length} exempt: {cmpExemptMems})"
-  let report := design.coverageReport cr cm
-  if report ≠ "" then
-    IO.println report
-    IO.println "LNP64MINI COVERAGE SELFTEST FAILED"
-    throw <| IO.userError "state coverage incomplete"
-  IO.println "LNP64MINI COVERAGE SELFTEST OK — every declared register and memory is compared or explicitly exempt"
+  (Loom.Runner.Result.fromFailureCount "LNP64mini subword selftest" 60 bad
+    "subword path assertion failed").requirePass
 
 /-- EDSL ≡ ISS on the six opcodes the renumbering broke, plus their values. -/
 def aluGapSelftest : IO Unit := do
@@ -2594,7 +2417,8 @@ want 0x{String.ofList (Nat.toDigits 16 w)}  ({lbl})"
     IO.println "LNP64MINI ALUGAP SELFTEST OK — not/sltu/bgeu/srli/srai/sltiu decode and write"
   else
     IO.println "LNP64MINI ALUGAP SELFTEST FAILED"
-    throw <| IO.userError "alu gap selftest failed"
+  (Loom.Runner.Result.fromBool "LNP64mini ALU-gap selftest" 80
+    (mism == 0 && bad == 0) "differential or ALU value assertion failed").requirePass
 
 /-- The testbench's own command stream, so the ISS reference runs the same
 sequence the RTL does: reset (starts the 1024-cycle zeroing sweep), a wait, then
@@ -2747,7 +2571,8 @@ wb={(st.trace_wb[i]!).toNat}"
 instruction, at its own PC, in order"
   else
     IO.println "LNP64MINI TRACE SELFTEST FAILED"
-    throw (IO.userError "trace ring wrong")
+  (Loom.Runner.Result.fromFailureCount "LNP64mini trace selftest" n bad
+    "trace-ring assertion failed").requirePass
 
 /-- Total EDSL≡ISS mismatches over the generated ALU matrix — the same
 programs `opDiffSelftest` runs, as one number.  The unit argument is
@@ -2759,7 +2584,7 @@ def matrixMismatches (_ : Unit) : Nat := Id.run do
   for (form, ops) in [(0, aluOpsRRR), (1, aluOpsRR), (2, aluOpsIMM), (3, selOps)] do
     for (op, _) in ops do
       for (a, b) in opVectors do
-        bad := bad + lockstepPureDag dag
+        bad := bad + evaluateDag dag
           (imageFrom TEXT_BASE (progOp form op a b)) 1 (cmdQuantum 0) 24 16
   return bad
 
@@ -2779,7 +2604,7 @@ def opDiffSelftest : IO Unit := do
         -- covering anything. EVERY DECLARED MEMORY is still compared -- the cap
         -- bounds cells per memory, not which memories -- so the property this
         -- test enforces is unchanged.
-        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 24 16
+        let (m, _) ← runCertified img 1 (cmdQuantum 0) (fun _ => 0) 24 16
         opBad := opBad + m
         ran := ran + 1
       if opBad ≠ 0 then
@@ -2793,7 +2618,7 @@ def opDiffSelftest : IO Unit := do
       let mut opBad := 0
       for (a, _) in opVectors do
         let img := imageFrom TEXT_BASE (progLoad op base a)
-        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 40 16
+        let (m, _) ← runCertified img 1 (cmdQuantum 0) (fun _ => 0) 40 16
         opBad := opBad + m
         ran := ran + 1
       if opBad ≠ 0 then
@@ -2803,7 +2628,7 @@ def opDiffSelftest : IO Unit := do
       let mut opBad := 0
       for (a, _) in opVectors do
         let img := imageFrom TEXT_BASE (progStore op base a)
-        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 48 16
+        let (m, _) ← runCertified img 1 (cmdQuantum 0) (fun _ => 0) 48 16
         opBad := opBad + m
         ran := ran + 1
       if opBad ≠ 0 then
@@ -2814,7 +2639,7 @@ def opDiffSelftest : IO Unit := do
     let mut opBad := 0
     for (a, b) in opVectors do
       let img := imageFrom TEXT_BASE (progBranch op a b)
-      let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 40 16
+      let (m, _) ← runCertified img 1 (cmdQuantum 0) (fun _ => 0) 40 16
       opBad := opBad + m
       ran := ran + 1
     if opBad ≠ 0 then
@@ -2824,7 +2649,7 @@ def opDiffSelftest : IO Unit := do
   -- one liu agree" but "does this exact 64-bit value come out".
   for (hi, lo) in constBattery do
     let img := imageFrom TEXT_BASE (progConst hi lo)
-    let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 24 16
+    let (m, _) ← runCertified img 1 (cmdQuantum 0) (fun _ => 0) 24 16
     ran := ran + 1
     if m ≠ 0 then
       bad := bad + 1
@@ -2837,7 +2662,7 @@ def opDiffSelftest : IO Unit := do
         let img := imageFrom TEXT_BASE
           (if op = OP_AUIPC then [encImmI OP_AUIPC 3 0 a, enc OP_EXIT 0 0 0]
            else progJump op)
-        let (m, _) ← lockstepFast img 1 (cmdQuantum 0) (fun _ => 0) 32 16
+        let (m, _) ← runCertified img 1 (cmdQuantum 0) (fun _ => 0) 32 16
         opBad := opBad + m
         ran := ran + 1
     if opBad ≠ 0 then
@@ -2846,7 +2671,7 @@ def opDiffSelftest : IO Unit := do
   let total := aluOpsRRR.length + aluOpsRR.length + aluOpsIMM.length
              + 2 * (memOpsLoad.length + memOpsStore.length) + brOps.length
              + wideImmOps.length + jumpOps.length
-  let (_, unm) ← lockstepFast (imageFrom TEXT_BASE (progOp 0 OP_ADD 1 2))
+  let (_, unm) ← runCertified (imageFrom TEXT_BASE (progOp 0 OP_ADD 1 2))
                    1 (cmdQuantum 0) (fun _ => 0) 8 16
   IO.println s!"  {total} opcode/path combinations x {opVectors.length} vectors = {ran} programs"
   IO.println s!"  compared against Loom's derived coordinate set \
@@ -2855,7 +2680,8 @@ def opDiffSelftest : IO Unit := do
     IO.println s!"LNP64MINI OPDIFF SELFTEST OK — EDSL≡ISS on {total} ALU/load/store/branch combinations, generated not hand-written"
   else
     IO.println s!"LNP64MINI OPDIFF SELFTEST FAILED ({bad} opcodes disagree)"
-    throw <| IO.userError "opdiff selftest failed"
+  (Loom.Runner.Result.fromFailureCount "LNP64mini opcode differential selftest"
+    ran bad "one or more opcode/path combinations disagreed").requirePass
 
 /-- **Identity translation must equal bypass.**
 
@@ -2999,16 +2825,17 @@ def mmuRelocSelftest : IO Unit := do
   --    translation, cycle for cycle, over Loom's derived coordinates --
   --    including the futex program, where the two models used to disagree
   --    (raw+aligned vs translated+unaligned) with nothing executing the cross.
-  let (m, _) ← lockstepFast img 1 (cmdRelocVma) (fun _ => 0) 600 16
+  let (m, _) ← runCertified img 1 (cmdRelocVma) (fun _ => 0) 600 16
   check (m == 0) s!"EDSL≡ISS lockstep under the 3-entry non-identity map ({m} mismatches)"
-  let (mF, _) ← lockstepFast imgF 1 (cmdRelocVma) (fun _ => 0) 600 16
+  let (mF, _) ← runCertified imgF 1 (cmdRelocVma) (fun _ => 0) 600 16
   check (mF == 0) s!"EDSL≡ISS lockstep on the futex-under-delta program ({mF} mismatches)"
   let bad ← badRef.get
   if bad == 0 then
     IO.println "LNP64MINI MMU-RELOC SELFTEST OK — the catch-all relocates, the carve-outs pin, revocation is scoped per cell"
   else
     IO.println s!"LNP64MINI MMU-RELOC SELFTEST FAILED ({bad})"
-    throw <| IO.userError "mmu reloc selftest failed"
+  (Loom.Runner.Result.fromFailureCount "LNP64mini MMU relocation selftest" 600
+    bad "MMU relocation assertion failed").requirePass
 
 def mmuIdentitySelftest : IO Unit := do
   let mut bad := 0
@@ -3029,7 +2856,8 @@ def mmuIdentitySelftest : IO Unit := do
     IO.println "LNP64MINI MMU-IDENTITY SELFTEST OK — an identity VMA computes exactly what bypass computes"
   else
     IO.println s!"LNP64MINI MMU-IDENTITY SELFTEST FAILED ({bad} base(s))"
-    throw <| IO.userError "mmu identity selftest failed"
+  (Loom.Runner.Result.fromFailureCount "LNP64mini MMU identity selftest" 0
+    bad "identity translation differed from bypass").requirePass
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt
@@ -3081,5 +2909,8 @@ r9={(sc2.rf[9]!).toNat} (want 0) child tstate={(sc2.tstate[1]!).toNat} (want 1 =
     IO.println "LNP64MINI PREEMPT SELFTEST OK — EDSL≡ISS on 3 scripts + switch/no-stall/cooperative/resume/Law-5 spinner"
   else
     IO.println s!"LNP64MINI PREEMPT SELFTEST FAILED ({total} mismatches; switch={ok1} nostall={ok2} coop={ok3} spin={ok4})"
+  (Loom.Runner.Result.fromBool "LNP64mini preemption selftest" 0
+    (total == 0 && ok1 && ok2 && ok3 && ok4)
+    "differential or preemption assertion failed").requirePass
 
 end Machines.Lnp64mini
