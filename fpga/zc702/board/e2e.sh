@@ -99,7 +99,11 @@ c1_entry="$(sed -n 's/.*entry=\(0x[0-9a-fA-F]*\).*/\1/p' <<<"$c1line")"
 c1_status="$(sed -n 's/.*status=\(0x[0-9a-fA-F]*\).*/\1/p' <<<"$c1line")"
 c1_retire="$(sed -n 's/.*retire=\([0-9]*\).*/\1/p' <<<"$c1line")"
 [ "$c1_entry" = "$exp_c1" ] || fail "core 1 entry $c1_entry != nm-derived $exp_c1 (wrong/stale entry)"
-[ "$c1_status" = "0x1" ] || fail "core 1 status $c1_status != 0x1 (not running / faulted)"
+# Status bits (dual_top {bus_req,bus_granted,hp_busy,halted,running}): require
+# running(0x1) AND not halted(0x2). hp_busy/grant/req (0x4/0x8/0x10) are benign
+# transients -- a snapshot mid-DDR-access reads 0x5, still a running core.
+[ "$(( c1_status & 0x3 ))" = "1" ] \
+  || fail "core 1 status $c1_status not (running & !halted); low bits 0x$(printf '%x' "$(( c1_status & 0x3 ))")"
 { [ -n "$c1_retire" ] && [ "$c1_retire" -ge 500 ]; } 2>/dev/null \
   || fail "core 1 retire ${c1_retire:-none} < 500 -- held/idle, not a running SMP worker"
 if grep -qaiE 'CORE1.*(fault|HWTRAP|panic)' "$LOOM_SERVICER_LOG" 2>/dev/null; then
