@@ -2,7 +2,8 @@
 # SECOND xsdb while the dual servicer holds the primary one.  Touches only
 # BSCAN registers (no DDR window, no bus_req), so it cannot disturb either
 # core: reads are captures on the wrapper's readback mux.
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 connect -url tcp:127.0.0.1:3121
 after 300
 proc c1 {i} { return [expr {0x80 | $i}] }

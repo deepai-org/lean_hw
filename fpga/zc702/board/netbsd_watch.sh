@@ -4,10 +4,12 @@
 # consecutive misses (~90 s) trigger one unattended recovery, rate-limited so a
 # genuinely broken board is not power-cycled in a loop.
 set -u
+source "$(dirname "${BASH_SOURCE[0]}")/board_env.sh"
 GUEST=10.106.0.2
 IF=zc702fpga0
-LOG=/home/kevin/autonomy/watch.log
-STAMP=/tmp/netbsd_watch_last_restart
+LOG="$LOOM_BOARD_STATE_DIR/autonomy/watch.log"
+STAMP="$LOOM_BOARD_STATE_DIR/netbsd_watch_last_restart"
+mkdir -p "$(dirname "$LOG")"
 COOLDOWN=1800          # seconds between recoveries
 say() { echo "[$(date +%F' '%T)] $*" >> "$LOG"; }
 
@@ -26,4 +28,4 @@ if [ $((now - last)) -lt "$COOLDOWN" ]; then
 fi
 echo "$now" > "$STAMP"
 say "guest unreachable on 3/3 probes -- triggering netbsd-fabric recovery"
-systemctl restart --no-block netbsd-fabric.service
+systemctl --user restart --no-block netbsd-fabric.service

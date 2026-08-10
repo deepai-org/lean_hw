@@ -28,7 +28,8 @@ connect -url tcp:127.0.0.1:3121
 after 300
 set DB 0x10000000
 set LOADOK 1
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 
 wr 13 1
 after 50
@@ -40,7 +41,7 @@ puts [format "PROBE: write-path check = 0x%016X (want 0xCAFEBABE12345678)" [lind
 
 # --- load the program at guest 0x1000 (TEXT_BASE); the core fetches from DDR
 set triples {}
-set fh [open /home/kevin/bsprobe_words.txt r]
+set fh [open $LOOM_STATE_DIR/bsprobe_words.txt r]
 set i 0
 foreach line [split [read $fh] "\n"] {
   set line [string trim $line]

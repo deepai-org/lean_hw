@@ -1,4 +1,5 @@
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 connect
 targets -set -filter {name =~ "xc7z*"}
 # re-arm: hold the core in reset, release, let it re-run K cycles (4 ms)

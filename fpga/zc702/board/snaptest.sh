@@ -6,20 +6,20 @@
 # the source genuinely running (>1 distinct PC). Together they witness the
 # snapshot crossing is coherent-not-torn on the board. Synced by board_sync.
 set -u
-cd /home/kevin/substrate0
-export PATH=/opt/Xilinx/2025.2/Vivado/bin:$PATH
+source "$(dirname "${BASH_SOURCE[0]}")/board_env.sh"
+cd "$LOOM_BOARD_ROOT"
 export LNP64_MINI_GATE_TBL=0x913000 LNP64_MINI_CAP_TBL=0x913100
 export LNP64_CORE1_ENTRY=0x8cae00 LNP64_CORE1_STACK=0x1700000
-touch /tmp/stop_servicer; pkill -x xsdb 2>/dev/null; sleep 4
-rm -f /tmp/stop_servicer /home/kevin/smp_servicer.log
-( test/boot_gem_dual_smp.sh > /home/kevin/boot_snap.log 2>&1 ) &
-for i in $(seq 1 20); do sleep 15; grep -qa "DOMAINS: core0 cap_tbl_base" /home/kevin/smp_servicer.log 2>/dev/null && break; done
+touch "$LOOM_STOP_FILE"; pkill -x xsdb 2>/dev/null; sleep 4
+rm -f "$LOOM_STOP_FILE" "$LOOM_SERVICER_LOG"
+( "$LOOM_BOARD_TEST_DIR/boot_gem_dual_smp.sh" > "$LOOM_BOARD_STATE_DIR/boot_snap.log" 2>&1 ) &
+for i in $(seq 1 20); do sleep 15; grep -qa "DOMAINS: core0 cap_tbl_base" "$LOOM_SERVICER_LOG" 2>/dev/null && break; done
 echo "=== domains reached; let core run 20s ==="; sleep 20
 # stop servicer; core keeps running autonomously in the fabric
-touch /tmp/stop_servicer; sleep 3; pkill -9 -x xsdb 2>/dev/null; sleep 3
+touch "$LOOM_STOP_FILE"; sleep 3; pkill -9 -x xsdb 2>/dev/null; sleep 3
 timeout 90 xsdb -eval '
   connect -url tcp:127.0.0.1:3121; after 400; targets -set -filter {name =~ "xc7z*"};
-  source test/jtag_lib.tcl; source test/lnp64mini_debug_map.tcl
+  source [file join $::env(LOOM_BOARD_TEST_DIR) board_env.tcl]; source $LOOM_JTAG_LIB; source $LOOM_DEBUG_MAP
   puts [format "core: status=0x%x pc=0x%08x" [rd 20] [rd 22]]
   wr 69 15
   # HOLD: capture once, then read 4x with NO capture -- must all match while

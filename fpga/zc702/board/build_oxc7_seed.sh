@@ -3,7 +3,7 @@
 # gate at every stage.
 #
 # Flow: yosys (synth) -> nextpnr-xilinx (P&R -> FASM) -> fasm2frames -> xc7frames2bit
-# Usage (run from ~/substrate0):
+# Usage (run from the configured board root):
 #   [NPNR_SEED=n] oxc7/build_oxc7_seed.sh <TOP> <xdc> <src.v> [src2.v ...]
 #
 # `pipefail` preserves producer failures through `tee`/`tail`; every stage also
@@ -17,11 +17,12 @@ set -euo pipefail
 NP=/snap/openxc7/current/opt/nextpnr-xilinx
 DB=$NP/external/prjxray-db/zynq7
 PART=xc7z020clg484-1
-CHIPDB=$HOME/substrate0/oxc7/xc7z020.bin
+LOOM_OXC7_DIR=${LOOM_OXC7_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+CHIPDB=${CHIPDB:-$LOOM_OXC7_DIR/xc7z020.bin}
 
 TOP=$1; XDC=$2; shift 2
 SRCS="$@"
-O=$HOME/substrate0/oxc7/out/$TOP
+O=$LOOM_OXC7_DIR/out/$TOP
 mkdir -p "$(dirname "$O")"
 
 # fresher <out> <in>... -- fail unless <out> exists, is non-empty, and is at

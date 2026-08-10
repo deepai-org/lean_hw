@@ -1,7 +1,8 @@
 # gate_demo.tcl -- Goal 1 on silicon: a program crosses a §17 gate, and the
 # zero-descriptor negative test makes that crossing stop (the gate is
 # load-bearing). Runs on the loaded dual bit; no NetBSD boot needed.
-source /home/kevin/substrate0/test/jtag_lib.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
 connect
 targets -set -filter {name =~ "xc7z*"}
 set DB 0x10000000

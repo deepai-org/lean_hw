@@ -91,15 +91,20 @@ def main():
     mini, asm, td = mini_ops(), asm_ops(), td_ops()
     fail = []
 
-    # The backend source exists TWICE: the repo copy (above) and the copy the
-    # CMake tree actually compiles. On 2026-08-04 they drifted, so editing the
-    # repo copy rebuilt nothing and clang kept emitting the old opcode. Two
-    # copies of one source is the same disease as two repos holding one ISA.
+    # The authored backend (TD, above) is the single source of truth and is
+    # git-tracked. `target/llvm-project-src/...` is NOT a rival source: it is a
+    # git-ignored build checkout that run_real_llvm_lnp64.sh regenerates by
+    # `cp -a` from the authored tree before every build. This check verifies
+    # that derived checkout is SYNCHRONIZED with the authored tree — i.e. that
+    # a rebuild has happened since the authored source last changed. If it is
+    # stale, the authored edit is real but the compiled clang still reflects the
+    # old source (the 2026-08-04 symptom); the fix is to rebuild, which re-syncs.
     build_td = (LNP64 / "target/llvm-project-src/llvm/lib/Target/LNP64"
                 / "LNP64InstrInfo.td")
     if build_td.exists() and build_td.read_text() != TD.read_text():
-        fail.append(f"{TD} and {build_td} differ — the tree that gets COMPILED "
-                    f"is the second one, so an edit to the first changes nothing")
+        fail.append(f"authored {TD} and build checkout {build_td} differ — the "
+                    f"checkout is stale; rebuild (run_real_llvm_lnp64.sh) to "
+                    f"re-sync it from the authoritative authored tree")
 
     for name, byte in sorted(mini.items()):
         if name in MINI_LOCAL:

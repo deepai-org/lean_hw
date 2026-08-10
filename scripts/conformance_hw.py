@@ -14,8 +14,8 @@
 #
 # So this leg does not single-step anything. It compiles the whole derived
 # vector set into ONE program written in MNEMONICS, assembles it with lnp64's
-# assembler, and runs it on lnp64mini: the cycle-exact ISS (`minitest
-# issexpect`) and, with --rtl, the emitted `rtl/lnp64mini_soc.v` under iverilog.
+# assembler, and runs it on lnp64mini: the Design-derived simulator (`minitest
+# designexpect`) and, with --rtl, the emitted `rtl/lnp64mini_soc.v` under iverilog.
 # The board leg reuses the identical .hex and reads the same zero-page array
 # back over BSCAN.
 #
@@ -36,7 +36,7 @@
 # the exact failure mode this whole family exists to prevent.
 #
 # And -- `isa_smoke.sh` lines 57-66 -- the program must run to a CLEAN HALT. An
-# instruction the core traps on makes the ISS and the RTL agree perfectly while
+# instruction the core traps on makes the Design and the RTL agree perfectly while
 # the instruction under test never executes. Any TRAP here is attributed to the
 # vector whose instruction the trap PC lands in, reported as a FAILURE with its
 # spec sentence, and the vector is then removed so the remaining ones can run.
@@ -66,7 +66,7 @@ NVEC_ADDR = 0x030
 BITMAP_WORDS = 5            # 5 * 64 = 320 bit positions >= 268 vectors
 DMEM_WORDS = 512            # rtl/lnp64mini_soc.v: reg [63:0] dmem [0:511]
 
-# Architectural registers the ISS and the testbench both print (r1..r9).
+# Architectural registers the Design and the testbench both print (r1..r9).
 R_BITMAP = [1, 2, 3, 4, 5]  # pass bitmap words 0..4
 R_MISMATCH = 6
 R_NVEC = 7
@@ -187,8 +187,8 @@ HEADER = """\
 ;   0x030         number of vectors executed by this program
 ;   0x100 + 8*g   raw 64-bit result of vector g   (g = 0 .. {maxg}, top {top})
 ;
-; ARCHITECTURAL READOUT (r1..r9 are what `minitest issexpect` and
-; fpga/zc702/tb_lnp64mini_soc.v both print, so the ISS and the RTL legs compare
+; ARCHITECTURAL READOUT (r1..r9 are what `minitest designexpect` and
+; fpga/zc702/tb_lnp64mini_soc.v both print, so the Design and the RTL legs compare
 ; the whole bitmap without a custom testbench):
 ;   r1..r5 = bitmap words 0..4     r6 = mismatch count     r7 = vectors executed
 ;   dmem32 (0x100) = vector 0's raw result
@@ -313,7 +313,7 @@ def assemble(binary, src_path, hex_path):
 
 
 def parse_state(text):
-    """The common ISS / testbench readout."""
+    """The common Design / testbench readout."""
     st = {"trap": None, "halted": None, "regs": {}, "dmem32": None}
     for line in text.splitlines():
         m = re.match(r"^TRAP op=([0-9a-fA-F]+) pc=(\d+)", line)
@@ -331,14 +331,14 @@ def parse_state(text):
     return st
 
 
-def run_iss(hex_path):
+def run_design(hex_path):
     exe = LEAN_HW / ".lake" / "build" / "bin" / "minitest"
     if not exe.is_file():
         sys.exit("conformance_hw: %s not built" % exe)
-    r = subprocess.run([str(exe), "issexpect", str(hex_path)],
+    r = subprocess.run([str(exe), "designexpect", str(hex_path)],
                        capture_output=True, text=True, cwd=str(LEAN_HW))
     if r.returncode != 0:
-        sys.exit("conformance_hw: ISS run FAILED\n" + (r.stdout + r.stderr).strip())
+        sys.exit("conformance_hw: Design run FAILED\n" + (r.stdout + r.stderr).strip())
     return r.stdout
 
 
@@ -426,7 +426,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--rtl", action="store_true",
                     help="also run the same .hex on rtl/lnp64mini_soc.v under "
-                         "iverilog and require RTL == ISS == expected")
+                         "iverilog and require RTL == Design == expected")
     ap.add_argument("--keep", metavar="DIR", default=str(LEAN_HW / "fpga" / "zc702"),
                     help="where to write conformance_hw.s / .hex "
                          "(the board leg reads these)")
@@ -475,7 +475,7 @@ def main():
         live = list(indexed)
         trapped = []          # (g, vector, trap_op, pc)
         state = None
-        iss_text = ""
+        design_text = ""
         first_prog_hex = None
 
         for rnd in range(args.max_traps + 1):
@@ -486,8 +486,8 @@ def main():
                 first_prog_hex = str(pathlib.Path(workdir) / "first.hex")
                 shutil.copyfile(hx, first_prog_hex)
             log("  round %d: %d vectors, %d instructions" % (rnd, len(live), p.n_instr()))
-            iss_text = run_iss(hx)
-            state = parse_state(iss_text)
+            design_text = run_design(hx)
+            state = parse_state(design_text)
             if state["trap"] is None:
                 break
             op_hex, pc = state["trap"]
@@ -537,21 +537,21 @@ def main():
                 rtl_report = ("SKIP", "iverilog not found")
             else:
                 rtl_text = run_rtl(hx, workdir)
-                iss_keep = "\n".join(re.sub(r" cycles=\d+", "", l)
-                                     for l in iss_text.splitlines()) + "\n"
-                if rtl_text != iss_keep:
-                    rtl_report = ("MISMATCH", "RTL:\n" + rtl_text + "ISS:\n" + iss_keep)
+                design_keep = "\n".join(re.sub(r" cycles=\d+", "", l)
+                                     for l in design_text.splitlines()) + "\n"
+                if rtl_text != design_keep:
+                    rtl_report = ("MISMATCH", "RTL:\n" + rtl_text + "Design:\n" + design_keep)
                 else:
                     rtl_report = ("OK", "")
-                    # The RTL must also trap where the ISS trapped -- otherwise
+                    # The RTL must also trap where the Design trapped -- otherwise
                     # the removal above hid a divergence rather than a finding.
                     if trapped:
                         first_rtl = parse_state(run_rtl(first_prog_hex, workdir))
-                        first_iss = parse_state(run_iss(first_prog_hex))
-                        if first_rtl["trap"] != first_iss["trap"]:
+                        first_design = parse_state(run_design(first_prog_hex))
+                        if first_rtl["trap"] != first_design["trap"]:
                             rtl_report = ("MISMATCH",
-                                          "first-trap disagreement: RTL %s, ISS %s"
-                                          % (first_rtl["trap"], first_iss["trap"]))
+                                          "first-trap disagreement: RTL %s, Design %s"
+                                          % (first_rtl["trap"], first_design["trap"]))
 
         # ---- diagnostics for non-trap mismatches ----
         detail = {}
@@ -562,7 +562,7 @@ def main():
             dhex = pathlib.Path(workdir) / ("diag%d.hex" % i)
             dsrc.write_text(d.text())
             assemble(binary, dsrc, dhex)
-            ds = parse_state(run_iss(dhex))
+            ds = parse_state(run_design(dhex))
             if ds["halted"] != 1:
                 continue
             for j, (g, _) in enumerate(chunk):
@@ -597,7 +597,7 @@ def report(doc, indexed, live, passed, failed, trapped, skipped, detail,
 
     log()
     log("=" * 78)
-    log("PER-RULE RESULT (lnp64mini, one batched program, cycle-exact ISS)")
+    log("PER-RULE RESULT (lnp64mini, one batched program, Design-derived simulator)")
     log("%-24s %6s %6s %6s %8s" % ("rule", "pass", "fail", "trap", "skipped"))
     tot = [0, 0, 0, 0]
     for r in sorted(set(list(rules) + list(skip_rules))):

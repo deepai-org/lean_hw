@@ -92,12 +92,9 @@ See [`TCB.md`](TCB.md).
   generated core state. That environment now resolves typed register handles
   once into flat-state slots; missing or stale-width handles fail preparation,
   and generic slot-read theorems connect the resulting values to `Agree`.
-  The independent ISS remains available as a differential oracle. The default
-  lockstep compares the fail-closed
-  `Design.coords` plan. The hand-maintained comparator and duplicate coverage
-  tables have been removed. Explicit ISS value bindings derive register and
-  memory names and widths from the Design's typed handles; intentional memory
-  exclusions do the same.
+  LNP64mini's hand-written cycle ISS, state adapter, and lockstep surface have
+  been removed. Architectural tests consume typed `DerivedRun` observations;
+  generated RTL matrices carry expectations produced by the proved simulator.
 - LNP64mini's GP master, HP master, and HP arbiter now declare their inputs and
   state through typed handles. Their executable expressions, environment
   adapters, and outcome checks reuse those handles instead of repeating
@@ -106,19 +103,16 @@ See [`TCB.md`](TCB.md).
   on the Design semantics.
 - Open-machine environment adapters use heterogeneous typed `InputBinding`s;
   LNP64mini core/components and Substrate S0 no longer dispatch inputs through
-  repeated string/width match tables. The core smoke battery now checks seven
-  architectural scenarios on the certified Design-derived simulator rather
-  than treating sampled Design/ISS agreement as its success criterion.
+  repeated string/width match tables. The core smoke battery checks seven
+  architectural scenarios on the certified Design-derived simulator.
 - LNP64mini's domain, fail-stop, data-cache, SMP, slot-capacity, MMU,
   subword, ALU-gap, gate, preemption, MMU-identity, and refusal-conformance
-  campaigns now consume typed `DerivedRun` observations. Preemption additionally
-  audits every
-  observed thread switch through resolved register/memory slots. The old
-  `MiniIss` remains behind the not-yet-migrated gate-stress, fault/sentinel
-  conformance, capability-transfer, trace, opcode-matrix, relocation, and
-  explicit oracle-diagnostic commands. This is the current migration pause
-  boundary; deleting `MiniIss` before those commands move or are deliberately
-  retired would remove useful coverage.
+  gate-hammer/dwell, fault/sentinel, capability-transfer, trace, and relocation
+  campaigns now consume typed `DerivedRun` observations. Preemption also
+  audits every observed thread switch through resolved register/memory slots.
+  The mirror-only opcode differential and emulator-step diagnostics were
+  retired; emitted RTL remains checked against Design-derived architectural
+  expectations.
 - Substrate S0 and S13 no longer maintain second transition functions. Their
   tests use the universally related generated evaluators and check direct
   architectural outcomes through 100,008 S13 cycles and the complete
@@ -164,6 +158,46 @@ not part of this accepted result: the installed openXC7 0.8.2 rejects a legal
 unused terminal `PCOUT`, so the reproducible board script defaults to the
 validated LUT implementation. A DSP-enabled build remains an optional target
 flow optimization.
+
+### Guest artifact provenance (the compiler-fix promotion)
+
+The full mission workload above (`uname`/`echo`/ping/shmif-domain-2) was
+demonstrated on the **currently accepted physical-board guest, md5
+`a5b8afb3…`**, built with the pre-fix clang (r30/tp allocatable).
+
+The tp-reserved (fixed) clang — see the psABI §1 / ISA §2269 conformance fix,
+where the shipping compiler no longer clobbers the thread pointer across a
+call — produces two rebuilt guests, both **simulator-proven only**:
+
+- `934cecf3…` — the GEM-pump zero-trap image: passes the zero-trap gate on the
+  board-DDR emulator (`RUMP_SHMIF_ON_CORE_OK`, all four board-trap opcodes
+  retired=0, ~798M ops).
+- `866ea6a0…` (text; data `b2d087fa…`) — the native-alloc telnet image, the
+  fixed-clang equivalent of `a5b8afb3…` (same recipe, corrected compiler). On
+  the board-DDR emulator it reaches `RUMP_SHMIF_ON_CORE_OK`.
+
+`866ea6a0…` is **board-proven** on the unchanged accounted bitstream
+(`e66d2c22…`): all identity checks pass, PS-DAP fastload succeeds, core 0
+establishes DOMAINS with core 1 started (no fault), the guest console ring
+(read live over JTAG) shows the full boot to `RUMP_SHMIF_ON_CORE_OK`, **ping
+completes 4/4**, and **TCP :23 accepts connections** (telnetd up) — the whole
+rump/shmif/TCP stack runs on silicon under the corrected compiler, with no
+regression. What remains unproven is only the *interactive telnet reply*
+(`uname`/gated `echo`): sustained shell output over the ~3 Hz JTAG-pumped ring
+(~2.8 s RTT) is a known last-mile throughput limit, orthogonal to the compiler
+fix. Until that specific reply is captured, the accepted physical-board
+artifact for the *full interactive* workload remains `a5b8afb3…`.
+
+The networking blocker was diagnosed and fixed host-side (safely — the internet
+path is a separate interface): the `shmif0` tap was left `state DOWN` by the
+bring-up script and the route to the guest lacked a `src`; bringing `shmif0`
+up plus a host-scoped `/32` route (`10.106.0.2 dev shmif0 src 10.106.0.1`)
+yields ping 4/4. The core1 `retire=121` reading was a red herring (normal
+secondary core in an NCPU=1 image); guest health is confirmed by the console
+ring, not the servicer log.
+
+The bitstream is **unchanged across the compiler fix**: a new guest does not
+require a new FPGA implementation.
 
 ## Property limits that remain open
 

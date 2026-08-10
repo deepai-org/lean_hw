@@ -49,10 +49,6 @@
   MUL  r1, r1, r2
   ADD  r1, r1, r14
 
-; This store found a real defect on this program's first ISS run: the
-; assembler's whole St family still emitted the OLD bytes (SD as 0x33 =
-; OBJECT_CTL under the spec numbering), masked in isasmoke by its
-; checksum-before-trap readout. Fixed in the assembler; kept here so the
-; store byte stays exercised end to end.
+; Keep the store byte exercised end to end, not merely the arithmetic result.
   SD   [r0, 0x100], r1
   EXIT r0

@@ -10,8 +10,9 @@
 connect -url tcp:127.0.0.1:3121
 after 400
 targets -set -filter {name =~ "xc7z*"}
-source /home/kevin/substrate0/test/jtag_lib.tcl
-source /home/kevin/substrate0/test/lnp64mini_debug_map.tcl
+source [file join [file dirname [info script]] board_env.tcl]
+source $LOOM_JTAG_LIB
+source $LOOM_DEBUG_MAP
 
 puts "==== FAULT RECORD (core0, §9.2/op-0 -- 0 = clean) ===="
 debug_capture

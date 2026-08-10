@@ -4,23 +4,24 @@
 #
 # One entry point, safe to run from systemd (netbsd-fabric.service), cron,
 # or by hand. Every step retries once through the known JTAG-wedge recovery
-# (pkill the stack + power cycle). Evidence: /home/kevin/autonomy/<ts>/
+# (pkill the stack + power cycle). Evidence is stored under the configured
+# board-state directory.
 # (full log, servicer tail, camera snapshot, STATUS file).
 #
-# Image parameters come from test/smp_image.env (written at image deploy
+# Image parameters come from the deployed `smp_image.env` (written at image deploy
 # time), so an image update never requires editing this script.
 set -u
-export PATH=/opt/Xilinx/2025.2/Vivado/bin:$PATH
+source "$(dirname "${BASH_SOURCE[0]}")/board_env.sh"
 TS=$(date +%Y%m%d-%H%M%S)
-EV=/home/kevin/autonomy/$TS
+EV="$LOOM_BOARD_STATE_DIR/autonomy/$TS"
 mkdir -p "$EV"
 L=$EV/run.log
 exec >> "$L" 2>&1
-cd /home/kevin/substrate0
+cd "$LOOM_BOARD_ROOT"
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { say "FAIL: $*"; echo "FAIL $*" > "$EV/STATUS"; exit 1; }
 
-[ -f test/smp_image.env ] && . test/smp_image.env
+[ -f "$LOOM_BOARD_TEST_DIR/smp_image.env" ] && . "$LOOM_BOARD_TEST_DIR/smp_image.env"
 export LNP64_CORE1_ENTRY="${LNP64_CORE1_ENTRY:-0x8ca100}"
 export LNP64_CORE1_STACK="${LNP64_CORE1_STACK:-0x01700000}"
 export LNP64_MMU="${LNP64_MMU:-0}"
@@ -38,7 +39,7 @@ for attempt in 1 2; do
   pkill -9 -x xsdb 2>/dev/null; pkill -9 -f "lnp64 trap-server" 2>/dev/null
   pkill -9 -f "loader -exec hw_server" 2>/dev/null; pkill -9 -f "unwrapped.*hw_server" 2>/dev/null
   sleep 3
-  bash test/power_cycle.sh > "$EV/power_cycle.$attempt.log" 2>&1
+  bash "$LOOM_BOARD_TEST_DIR/power_cycle.sh" > "$EV/power_cycle.$attempt.log" 2>&1
   grep -q POWER_CYCLE_OK "$EV/power_cycle.$attempt.log" && break
   say "power_cycle attempt $attempt failed"
   [ "$attempt" = 2 ] && fail "power_cycle (see power_cycle.*.log)"
@@ -47,8 +48,8 @@ say "PS up, DDR verified"
 
 say "== boot (program dual bit + fastload + dual servicer) =="
 mkdir -p /tmp/rumpns /tmp/rumpns2
-rm -f /tmp/stop_servicer
-setsid nohup bash /home/kevin/substrate0/test/boot_gem_dual_smp.sh \
+rm -f "$LOOM_STOP_FILE"
+setsid nohup bash "$LOOM_BOARD_TEST_DIR/boot_gem_dual_smp.sh" \
   > "$EV/boot.log" 2>&1 < /dev/null &
 BOOTPID=$!
 
@@ -59,7 +60,7 @@ for i in $(seq 1 120); do
   kill -0 "$BOOTPID" 2>/dev/null || say "note: boot script exited (servicer may still run)"
   sleep 10
 done
-[ "$UP" = 1 ] || fail "no GEM ping after 20 min (see boot.log, ~/smp_servicer.log)"
+[ "$UP" = 1 ] || fail "no GEM ping after 20 min (see boot.log and $LOOM_SERVICER_LOG)"
 say "GEM up after ~$((i*10))s"
 
 say "== verify: ping + telnet banner =="
@@ -68,9 +69,9 @@ ping -I zc702fpga0 -c 5 10.106.0.2 | tail -2
   | tr -d '\r' | grep -a "NetBSD" || say "warn: telnet banner not captured (non-fatal)"
 
 say "== quiesce: stop servicer -> zero-BSCAN steady state =="
-touch /tmp/stop_servicer
+touch "$LOOM_STOP_FILE"
 sleep 10
-tail -5 /home/kevin/smp_servicer.log > "$EV/servicer_tail.log" 2>/dev/null
+tail -5 "$LOOM_SERVICER_LOG" > "$EV/servicer_tail.log" 2>/dev/null
 pkill -9 -x xsdb 2>/dev/null; pkill -9 -f "lnp64 trap-server" 2>/dev/null
 sleep 2
 

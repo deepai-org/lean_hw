@@ -218,7 +218,7 @@ def bReg : Reg 64 := ⟨"b"⟩
 def b : Expr 64 := bReg.rd
 def rdvalReg : Reg 64 := ⟨"rdval"⟩
 def rdval : Expr 64 := rdvalReg.rd
-/-! ### EXT-9 — the instruction cache (CACHE_PLAN.md)
+/-! ### EXT-9 — the instruction cache (`EXTEND_SPEC.md`)
 
 32 KB, direct-mapped, 1-word (8 B) lines: 4096 lines indexed by
 `ddrPc[14:3]`, tag `{valid, ddrPc[31:15]}` packed into 18 bits. Stage 1
@@ -734,8 +734,8 @@ All reads of the four converted arrays are plain **asynchronous**
 `memRead`s — D9 says they evaluate against the pre-cycle state at the
 pre-cycle address, which is exactly what the 32-way mux over pre-cycle
 registers computed. Nothing is restaged, so every register keeps its
-cycle-by-cycle value and the ISS is unchanged except for the `cmd 13` reset
-sweep (D20.3). µVerilog's async read is distributed RAM, which has no
+cycle-by-cycle value except for the explicit `cmd 13` reset sweep (D20.3).
+µVerilog's async read is distributed RAM, which has no
 cross-port collision hazard: the write lands on the clock edge, the read
 sees the old contents, exactly as `Design.cycle` says. -/
 
@@ -750,17 +750,9 @@ def tsleepRd (idx : Expr 5) : Expr 64 := tsleepBank.rd idx
 
 /-! ## Opcode mnemonics (PLATONIC W1.5)
 
-Mini's opcodes were bare hex literals scattered across `opIs`, `opAny`
-lists, `| 0x.. =>` arms and hand-written test programs. That made a
-renumbering impossible to do safely: a two-hex-digit literal is
-ambiguous with data, so any pattern broad enough to catch every opcode
-context also caught things that were not opcodes -- which is exactly how
-the first attempt at ISA conformance stage 2 drove the EDSL and the ISS
-apart (261 sites touched, 1162 lockstep mismatches).
-
-With names, a renumbering is one edit per constant and cannot touch a
-data literal. Names are taken from the emulator's `Instr` variant at the
-same opcode, so the two implementations are legible against each other.
+Opcode constants are the sole source used by dispatch and hand-written test
+programs. Renumbering changes the named constant rather than ambiguous data
+literals. Names follow the architecture's instruction variants.
 -/
 
 /-- An opcode implemented in **no** numbering, for test programs that need a
@@ -813,10 +805,7 @@ def OP_MINI_GATE_RETURN : Nat := 0xf9
 def OP_MINI_CAP_SEND : Nat := 0xf8
 def OP_MINI_CAP_RECV : Nat := 0xf7
 
--- Aliases, not a second source of truth. These were `0x3e`/`0x3f` literals and
--- went stale the moment the opcodes moved: the EDSL trapped on CAP_SEND
--- (`trapped_op = 0xf8`) while the ISS executed it. A duplicated opcode number
--- is the same hazard as `is_alu`'s stale bytes and `ld_wb`'s `0x05`/`0x08`.
+-- Compatibility aliases, not a second source of opcode truth.
 def CAP_SEND_OP : Nat := OP_MINI_CAP_SEND
 def CAP_RECV_OP : Nat := OP_MINI_CAP_RECV
 def OP_SEL : Nat := 0x27
@@ -1070,18 +1059,8 @@ def br_take : Expr 1 :=
   , (opIs OP_BLTU, .ult a b)
   , (opIs OP_BGEU, .not (.ult a b)) ] (L1 0)
 
-/-- sel_cond, keyed on the OP_ constants like every other predicate.
-
-It used to key on `op[2:0]`, which was correct ONLY while the SEL family sat
-on the contiguous block 0x40-0x45. The spec renumbering scattered the family
-(0x27, 0xf6..0xf2), the low bits became meaningless, and every SEL collapsed
-into the default (geu) arm -- `neg ? LLONG_MIN : LLONG_MAX` in strtoll picked
-LLONG_MIN for "2", and NetBSD panicked 41,550 instructions into boot, twice,
-on two independent renumber attempts. The ISS carried the SAME `% 8` keying,
-so EDSL≡ISS≡RTL stayed green while both were wrong together; only the
-emulator (keyed per byte) knew, through an op no differential could drive.
-An opcode-derived ARITHMETIC dependency is the range-membership hazard in a
-costume check_opcode_literals cannot see: there is no literal to find. -/
+/-- Selection condition keyed on named opcode constants. The family is not
+assumed contiguous and no arithmetic property of opcode numbers is used. -/
 def sel_cond : Expr 1 :=
   priTree
   [ (opIs OP_SEL,    .eq a b)
@@ -1095,20 +1074,8 @@ def sel_cond : Expr 1 :=
 def mem_src : Expr 64 := .mux (.eq st (L5 S_L1)) dmem_rd ddr_q
 def lw_shift : Expr 64 := .shr mem_src (.shl (.zext ld_boff_q 64) (L64 3))
 
-/-- Load write-back: narrow the fetched word to the load's width and extend.
-
-These arms were raw hex, and TWO of them were stale after the renumbering:
-`0x05` and `0x08` were `lw` and `lb` under the td-anchored map, and those ops
-now live at `0x70` (`OP_LD_S_70`) and `0x72` (`OP_LD_S_72`). Both therefore fell
-through to the default and returned the **raw 64-bit word instead of
-sign-extending** — every signed byte and word load in the design was wrong, in
-the EDSL, so in the RTL and in the bitstream.
-
-Found by the generated EDSL≡ISS matrix once it covered loads:
-`lb @0x40: rf[4] edsl=255 iss=18446744073709551615`. Storing 255 and loading it
-as a signed byte is −1; the design returned 255.
-
-Named constants now, so a renumbering moves them. -/
+/-- Load write-back narrows to the declared load width and applies the named
+opcode's zero- or sign-extension contract. -/
 def ld_wb : Expr 64 :=
   priTree
   [ (.eq ld_op_q (L8 OP_LD),      mem_src)
@@ -1169,14 +1136,9 @@ def freeBm : Expr 32 :=
   orTreeW ((List.finRange NT).map
     (fun i => .shl (.zext (.eq (tstate i) (L2 0)) 32) (.lit (BitVec.ofNat 32 i.val))))
 
-/-- Wrap a thread index into `[0, NT)`. `NT` is a power of two, so this is a
-mask -- but it must be *written*, because with `NT = 32` a 5-bit add wraps at
-exactly 32 and the modulo is free. That is precisely what made `NT` look like
-a parameter when it was not: at 32 the two places below are correct by
-accident of arithmetic width, and at any smaller `NT` they are silently
-wrong. Both were found by setting `NT = 8` and watching the scheduler stop
-switching with **zero** EDSL/ISS mismatches -- both models faithfully
-implementing the same wrong rotate. -/
+/-- Wrap a thread index into `[0, NT)`. `NT` is a power of two, so the mask
+makes the parameterization explicit even when the expression width is wider
+than the configured thread table. -/
 def tidWrap (x : Expr 5) : Expr 5 := .and x (L5 (NT - 1))
 
 /-- rbm2 = ({ready,ready} >> (cur+1))[63:0] -- the round-robin rotate, done by
@@ -1754,9 +1716,7 @@ where
       (.seq (trapActiveReg.set (L1 0))
         -- EXT-8: `retireInc`, not a bare retire bump. A host-serviced trap
         -- IS a committed instruction, and routing it here keeps the invariant
-        -- "retire incremented <-> a trace entry was pushed" true without
-        -- exception -- which is what lets the ISS mirror the ring at ONE site
-        -- instead of at the ~25 places it counts a retire.
+        -- "retire incremented <-> a trace entry was pushed" true.
         (.seq retireInc
               (stReg.set (L5 S_F0)))) .skip) <|
     .seq (.ite (ci 55) (busReqReg.set (.slice cmdData 0 1)) .skip) <|
@@ -1886,14 +1846,7 @@ def ic_hit : Expr 1 :=
     (.and (.eq (.slice ic_tag_q 25 16) ic_gen)
       (.and (.eq (.slice ic_tag_q 17 8) domCur)
             (.eq (.slice ic_tag_q 0 17) ic_tag)))
-/-- The tag word written on a fill: `valid(1) ++ tag(17)`.
-
-Written wrong the first time -- the TAG was shifted into the valid
-position, so every fill stored `(tag&1) << 17` and the cache both
-mis-validated and lost its tag. The EDSL/ISS lockstep failed on the third
-selftest script with `st: edsl=S_FW iss=S_RD`, i.e. one model hitting where
-the other missed, which is exactly the shape a cache bug has and exactly
-why the ISS models the cache rather than abstracting it. -/
+/-- The cache-fill tag word: valid, generation, domain, and physical tag. -/
 def ic_tag_fill : Expr 42 :=
   .or (.shl (.lit (BitVec.ofNat 42 1)) (.lit (BitVec.ofNat 42 41)))
     (.or (.shl (.zext ic_gen 42) (.lit (BitVec.ofNat 42 25)))
@@ -1910,7 +1863,7 @@ whole bank in O(1) rather than a sweep.
 
 What is different is that data is written. The rungs, in order, are: read
 hits (here), write-through with invalidate-on-store (here), and cross-core
-invalidation (NOT here -- see `DCACHE_PLAN.md`; until that rung lands the
+invalidation (see the cache contract in `EXTEND_SPEC.md`; the
 bank is correct only because a store invalidates the storing core's own copy
 and every other core still reads DDR).
 
@@ -2169,7 +2122,7 @@ deleted, not moved: by invariant Z (`Loom/Hw/D19_SPEC.md` — every triple
 of `rfTriples` either writes a low-index that is guarded nonzero, or is
 the zeroing sweep writing 0) `rf[{t,0}]` is 0 in every reachable state,
 so the mux was the identity. Every register keeps its exact cycle-by-cycle
-value and the ISS is untouched. -/
+value. -/
 def s_rd : Expr 1 × Act := stArm S_RD
   (.seq (aReg.set (rfBank.rd (cat55 cur rs1f)))
     (.seq (bReg.set (rfBank.rd (cat55 cur rs2f)))
@@ -2664,9 +2617,8 @@ the muxed single write port is unambiguous.
 A CLONE gives the child a CLEAN gate state (depth 0, not in a gate): a
 fresh thread has no open gates, regardless of what the reused slot held. A
 THREAD_EXIT clears the exiting thread's depth so its freed slot carries no stale
-gate state to the next CLONE. Without this, a slot reused after a thread left a
-gate open (or exited mid-gate) desyncs `gdepth`/`in_gate` — invisible to the
-ISS (fresh zero arrays) but a real silicon bug (memories retain values). -/
+gate state to the next CLONE. This keeps `gdepth` and `in_gate` synchronized
+when a memory-backed slot is reused. -/
 def gdepthClone : Expr 1 := exG (.and (opIs OP_CLONE_SPAWN) has_free)
 def gdepthExit  : Expr 1 := exG (opIs OP_THREAD_EXIT)
 def gdepthWeE : Expr 1 :=
@@ -2768,7 +2720,7 @@ change retires both caches in one cycle rather than needing a second sweep.
 
 **Not yet cross-core.** `dcStoreInv` invalidates the *storing* core's copy.
 The other core's copy is stale until rung 5 broadcasts the address; until
-then this is a single-core cache, and `DCACHE_PLAN.md` says so rather than
+then this is a single-core cache, and `EXTEND_SPEC.md` says so rather than
 the code implying otherwise. -/
 def dcFill : Expr 1 := .and (.eq st (L5 S_DL)) (.and mDone dc_alloc)
 

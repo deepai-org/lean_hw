@@ -31,6 +31,11 @@ all derived views agree for every input, including a zero divisor.
   record their exact outcomes in `STATUS.md`.
 - Reduce high-volume compiler warnings where doing so does not destabilize
   proof scripts.
+- Use a fixed-workload, paired board run before making a cache performance
+  claim; idle guest retire-rate samples are not controlled evidence.
+- Before a public tag, freeze the supported package/module surface, document
+  that API, state the Lean-version window, and review third-party/generated
+  artifact licensing.
 
 Acceptance: release logs distinguish every executed and skipped leg without
 manual interpretation, and the current status table cites fresh runs.
@@ -42,9 +47,13 @@ manual interpretation, and the current status table cites fresh runs.
 - Improve composition of register, memory, and open-system properties.
 - Add reusable refinement-by-cases support for staged engines and protocols.
 - Keep environment assumptions explicit and checkable for non-vacuity.
+- Prove LNP64mini cache transparency against an uncached architectural view
+  under explicit coherence/external-writer assumptions; directed cache tests
+  remain corroboration, not that refinement theorem.
 
 Acceptance: representative LNP64mini invariants recheck through small declared
-dependency cones without unfolding the complete machine cycle.
+dependency cones without unfolding the complete machine cycle, and the cached
+machine refines its declared uncached architectural view under named premises.
 
 ## 4. Complete typed single-source views
 
@@ -52,12 +61,10 @@ dependency cones without unfolding the complete machine cycle.
   layouts, and coverage reports from typed declarations.
 - Remove remaining hand-maintained name/width tables.
 - Require every exclusion from a generated comparison or report to be named.
-- Migrate or deliberately retire LNP64mini's remaining gate-stress,
-  fault/sentinel conformance, capability-transfer, trace, opcode-matrix, and
-  relocation commands before deleting their `MiniIss` support. Keep an
-  independent oracle only when its diagnostic value justifies a second
-  semantic implementation, and label it as sampled corroboration rather than
-  proof.
+- Extend the same single-source discipline to remaining integration adapters
+  and machine-local reports. Keep an independent oracle only when its
+  diagnostic value justifies a second semantic implementation, and label it
+  as sampled corroboration rather than proof.
 
 Acceptance: adding or changing one state element updates every derived view or
 fails with a specific obligation; no production command depends on an

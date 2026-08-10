@@ -41,7 +41,6 @@ import Machines.Lnp64mini.Core
 import Machines.Lnp64mini.RunHaltInvariant
 import Machines.Lnp64mini.LifecycleInvariant
 import Machines.Lnp64mini.SchedulingInvariant
-import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness
 import Machines.Lnp64mini.HpMaster
 import Machines.Lnp64mini.GpMaster

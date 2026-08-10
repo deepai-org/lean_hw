@@ -8,7 +8,8 @@
 # The servicer tcl still spot-verifies text AND data before trusting this:
 # a dead/uninitialized DAP just fails verification and the BSCAN full-load
 # path runs instead -- fastload is an accelerator, not a correctness gate.
-set TESTD /home/kevin/substrate0/test
+source [file join [file dirname [info script]] board_env.tcl]
+set TESTD $LOOM_TEST_DIR
 set HEX     $TESTD/rump_shmif_telnet_text.hex
 set TEXTBIN $TESTD/rump_shmif_telnet_text.bin
 set DATABIN $TESTD/rump_shmif_telnet_data.bin

@@ -7,6 +7,14 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Single-source LNP64mini execution and portable board automation:** the
+  hand-maintained `MiniIss` cycle mirror, state adapter, mirror-only theorem,
+  and emulator-step differential have been removed. Gate, fault, sentinel,
+  capability, trace, MMU, and RTL-expectation paths now consume the certified
+  Design-derived simulator. ZC702 scripts resolve board roots, tool paths,
+  state, artifacts, and the `lnp64` checkout through shared shell/Tcl
+  configuration rather than developer-specific home paths.
+
 - **Technology-neutral datapath multiplication and concatenation:** the typed
   expression language now carries same-width modular multiplication through
   reference semantics, proved compilation, optimized and shared-DAG

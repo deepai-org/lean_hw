@@ -24,9 +24,10 @@
 #  * bulk_gread: %NEEDMEM pulls batched, many words per jtag sequence
 #  * HWTRACE line per trap (diff against cosim's TRACE reference -- 185 traps expected)
 #  * text range is never pulled (read-only; the trap-server already has it)
-set LN      /home/kevin/substrate0/lnp64
-set HEX     /home/kevin/substrate0/test/rump_shmif_telnet_text.hex
-set DATAHX  /home/kevin/substrate0/test/rump_shmif_telnet_data.hex
+source [file join [file dirname [info script]] board_env.tcl]
+set LN      $LNP64_ROOT
+set HEX     [file join $LOOM_TEST_DIR rump_shmif_telnet_text.hex]
+set DATAHX  [file join $LOOM_TEST_DIR rump_shmif_telnet_data.hex]
 set TSARGS  {--namespace-root /tmp/rumpns -- rump_shmif}
 set DB      0x10000000
 set RING    0x20e000                   ;# shmif ring base (guest); 1MB
@@ -191,10 +192,8 @@ proc install_vma_reloc {p RING tend} {
   wr [expr {$p|63}] 1
 }
 
-# BATCH: words per jtag sequence. Measured on-board 2026-07-04: writes peak
-# ~2000 w/s at 1024 (software per-shift cost dominates, not TCK); verify READS
-# peak at small batches and degrade with size (per-capture cost) -- 1024 is
-# the sweet spot for write+verify. Verified writes catch any drops.
+# Words per JTAG sequence. Override when a host or cable favors another size;
+# verified writes catch dropped transfers.
 set BATCH 1024
 if {[info exists ::env(LNP64_BATCH)]} { set BATCH $::env(LNP64_BATCH) }
 # PRELOADED candidate -> spot-verify DDR really holds this text before trusting
@@ -455,13 +454,7 @@ proc apply_trap_resp_sel {sel regpairs memtriples npc} {
 wr 13 1
 setreg 31 0x17f8000
 wr 53 $entry
-# EXT-7 stage B ORDER BUG, found on silicon (2026-08-05, run 15:12): the MMU
-# install used to sit AFTER `wr 13 2`. Under the identity map that gap was
-# invisible -- mmu_en=0 computes the same addresses. Under stage B the core ran
-# its first ~36k instructions UNTRANSLATED against relocated data: it read
-# zeros where .data lives, wedged in a spin at 0x8d4628, and never trapped
-# once. Core 1's path always had reset -> install -> start; core 0 now matches.
-# (`wr 13 1` zeroes tlb_vld, so the install must come after the reset.)
+# Reset clears `tlb_vld`, so install the MMU map after reset and before start.
 if {$RELOC} {
   install_vma_reloc 0 $RING $text_end
   puts [format "MMU: stage-B VMAs on core 0 (ring cell 2; data +0x800000 cell 1; low pinned); mmu_en=1"]
@@ -543,7 +536,8 @@ set console ""; set traps 0; set exitcode ""; set needmem_total 0
 set traps1 0
 set t0 [clock seconds]; set hb 0; set idlespin 0; set booted 0
 for {set step 0} {$step < 200000000} {incr step} {
-  if {[file exists /tmp/stop_servicer]} { puts "STOPPED by /tmp/stop_servicer (clean, between traps)"; break }
+  set stopfile [expr {[info exists ::env(LOOM_STOP_FILE)] ? $::env(LOOM_STOP_FILE) : [file join $LOOM_STATE_DIR stop_servicer]}]
+  if {[file exists $stopfile]} { puts "STOPPED by $stopfile (clean, between traps)"; break }
   if {[file exists /tmp/opdump]} {
     # snapshot the trap-op tally (touch /tmp/opdump; result in /tmp/ops_<t>.json)
     file delete /tmp/opdump
@@ -669,15 +663,11 @@ foreach cr {0 1} {
       lappend cbytes [expr {($cwd >> ($ci*8)) & 0xff}]
     }
   }
-  # Dump raw hex from three places and let the BYTES say what the layout is:
-  # the ring start, and two windows around the write head. Guessing the stride
-  # from a rendering cost three board cycles -- a rendering silently drops
-  # non-printable bytes, so it cannot tell "one char per word" from "packed".
+  # Render the raw bytes immediately preceding the ring write head.
   set chead [expr {$cw % 0x10000}]
   # Render the window ending at the write head; the ring wraps at 0x10000
-  # chars and this one wraps several times per run, so the start is ancient
-  # history. Runs of repeated characters here are REAL -- the guest writes
-  # them. The PS DAP and the mini's own HP master (regs 40/43/45/46) return
+  # chars and wraps several times per run. Runs of repeated characters are
+  # guest output. The PS DAP and the mini's own HP master (regs 40/43/45/46) return
   # identical words, and `subwordselftest` checks the lane-merge semantics.
   set chead [expr {$cw % 0x10000}]
   set cwin 1200

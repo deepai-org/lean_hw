@@ -5,21 +5,19 @@
 # EXT-1/EXT-2 — the lnp64mini extension ladder (preemption tick, domains)
 # EXT-1 — the preemption tick (`Machines/Lnp64mini/EXTEND_SPEC.md` increment 1):
 #
-#   1. FastEval acceptance selftest (EDSL ≡ ISS on the quantum, + the four
+#   1. Design-derived acceptance selftest (the four
 #      architectural claims: switch / no-stall / cooperative / resume / Law-5)
 #   2. D19 sync-read shape (the core grew registers, not memory reads)
 #   3. emit rtl/lnp64mini{,_soc,_dual}.v and fpga/zc702/preempt.hex
 #   4. iverilog: the spinner program on the emitted soc, preemptive AND
-#      cooperative, diffed against the Lean ISS oracle byte for byte
+#      cooperative, diffed against the Design-derived expectation byte for byte
 #   5. iverilog: the six pre-existing system testbenches, which must still
 #      print exactly DUAL_SPEC's numbers — with the quantum off AND on
 #      (every one of those programs is single-threaded, so a quantum that
 #      only ever preempts to a *different* READY thread cannot move them)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# Compiled selftests: the interpreted path costs ~25 min per lockstep run and
-# overflows the interpreter stack in `Design.reset`. `lake exe minitest` runs
-# the same `main` natively -- the MMU selftest goes 25 min -> 45 s.
+# Run the substantial machine selftests through the compiled executable.
 lake build minitest >/dev/null
 MINI=./.lake/build/bin/minitest
 Z=fpga/zc702
@@ -27,7 +25,7 @@ T=${TMPDIR:-/tmp}/preempt_ladder.$$
 mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT
 
-echo "### 0. EXT-2 domain selftest (EDSL == ISS on cur_dom + all 32 tdom slots,"
+echo "### 0. EXT-2 domain selftest (typed domain observations,"
 echo "        and the architectural claim: CLONE cannot leave its domain)"
 $MINI domselftest
 
@@ -48,7 +46,7 @@ $MINI soc   >/dev/null
 $MINI dual  >/dev/null
 $MINI preempthex >/dev/null
 
-echo "### 4. iverilog: the Law-5 spinner vs the Lean oracle"
+echo "### 4. iverilog: the Law-5 spinner vs the Design-derived expectation"
 iverilog -g2012 -DPROG_HEX="\"$Z/preempt.hex\"" -DQUANTUM="32'd64" \
   -o "$T/pq.vvp" rtl/lnp64mini_soc.v $Z/tb_lnp64mini_preempt.v
 vvp "$T/pq.vvp" | grep '^PREEMPT' > "$T/rtl_q64.txt"
@@ -61,7 +59,7 @@ $MINI preemptpredict 0 > "$T/or_q0.txt"
 diff "$T/or_q0.txt" "$T/rtl_q0.txt"
 grep -q 'halted=1 trap=0 pc=4136 r5=1 r9=42 dmem0=1 t1state=0 preempted=1' "$T/rtl_q64.txt"
 grep -q 'halted=0 trap=0 pc=0 r5=0 r9=0 dmem0=0 t1state=1 preempted=0' "$T/rtl_q0.txt"
-echo "preempt_ladder: iverilog == ISS oracle; the spinner terminates ONLY with a quantum"
+echo "preempt_ladder: iverilog == Design; the spinner terminates ONLY with a quantum"
 
 echo "### 5. the six system testbenches, quantum off and on"
 run_tbs () {                       # $1 = outdir; EXTRA[] = extra iverilog defines

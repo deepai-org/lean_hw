@@ -158,7 +158,7 @@ module tb_boot;
 
   integer i, cyc;
   integer ic_hit_n = 0, ic_miss_n = 0;
-  // ---- D-side profile (DCACHE_PLAN.md: the measurement that decides the shape) ----
+  // ---- D-side profile (external cache evidence; see EXTEND_SPEC.md) ----
   // A read is a FETCH iff its window-relative address is the pc; this tb runs
   // identity translation, so that is exact rather than a heuristic. Everything
   // else on the read channel is data.
