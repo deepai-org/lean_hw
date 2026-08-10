@@ -34,10 +34,9 @@ lake exe audit
 ```
 
 `lean-toolchain` pins Lean 4.28.0 and `lake-manifest.json` pins dependency
-revisions. `lake build` needs no Verilog tools. `lake test` and the package
-quality gate are temporarily red at the current head; see the gate table
-in [`STATUS.md`](STATUS.md) rather than treating this command list as a green
-badge.
+revisions. `lake build` needs no Verilog tools. The current results for these
+commands, including which broader workflows were not rerun, are recorded in
+the gate table in [`STATUS.md`](STATUS.md).
 
 For the broader repository workflow, including emission and optional external
 corroboration, use:
@@ -105,13 +104,67 @@ exact-comparison step. Interpreting the resulting Verilog remains the narrow
 semantic assumption stated in
 [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md).
 
-Post-synthesis equivalence checking is additional corroboration, not part of
-`verifiedReleases`. When Yosys and CaDiCaL are installed, `scripts/eqcheck.sh`
-compares supported signal cones and memory mappings against a synthesized
-netlist. UNSAT certificates are rechecked by a proved LRAT checker; the tool
-reports unsupported operators, excluded signals, acknowledged defects, and
-the unproved netlist-model assumptions. See
-[`Loom/Netlist/EQCHECK_SPEC.md`](Loom/Netlist/EQCHECK_SPEC.md).
+Loom currently makes no post-synthesis equivalence claim. The intended future
+boundary is a small technology-neutral logical netlist, independent of FPGA
+vendor, ASIC library, and synthesis producer. Tool-specific conversion and
+mapped or physical artifacts remain external evidence. The generic proved
+LRAT checker remains available to certificate-backed decision procedures.
+
+## Design-derived tooling
+
+Beyond the compiler, the same `Design` value now derives the surrounding
+toolchain, so a fact stated once in a declaration cannot drift in a
+hand-maintained mirror:
+
+- **Typed declarations.** `Reg w`, `RegArray w n`, and `Mem aw dw` handles
+  declare a name and width once and elaborate to the unchanged core EDSL;
+  the `Declarations` builder derives register, memory, port, sync-read, and
+  initialization metadata from the same source. `Design.emit` enforces
+  read-validity, name uniqueness, declared sync-reads, and write-port shape
+  at emission time — an obligation a caller cannot skip.
+
+- **Certified simulation.** `DagEval` hash-conses a design's expression trees
+  and independently certifies node dependencies, expression/action
+  correspondence, and state layout before exposing cycle execution
+  (`VerifiedSimulator`, with run and reset-to-run theorems). It executes
+  within about 2× of a hand-written simulator while remaining a checked view
+  of the design rather than a second description of it.
+
+- **Differential running.** `Loom.Runner` owns step control, bounded and
+  immediately flushed mismatch events, and structured PASS/FAIL/SKIP results
+  for comparing a design against an independent oracle. Comparison coverage
+  is derived **fail-closed** from `Design.coords`: every declared coordinate
+  is compared or explicitly excluded, so the coordinate nobody thought to
+  list is a failure, not a blind spot. On its first audit this surfaced
+  eleven constant, never-written bus qualifiers that hand-enumerated
+  comparisons had silently skipped.
+
+- **Property automation.** Footprint and support inference reduce an
+  invariant's proof obligation to the rules that can touch it;
+  `PropertyFootprint`/`ExprProperty` build reduced cycles with proved
+  observational agreement, and `TransitionProperty` states typed
+  single-transition properties (unchanged-coordinate preservation and
+  similar) checked against the real design's declaration surface.
+
+- **Verified transformations.** Retiming plans over ordered write-only cuts
+  and fan-out duplication of a register come with stuttering-simulation
+  refinements and invariant transport; `StutterSimulation` composes, so a
+  chain of passes yields one refinement from the legible source design.
+
+- **Evidence discipline.** `Loom.Artifact` gives emitted and observed
+  artifacts exact-byte identity with deterministic, change-only writes;
+  script-level SHA-256 manifests and freshness checks name the producing
+  command when an artifact is stale or a producer fails silently. Debug
+  instrumentation is generated, not hand-wired: a `DebugMap` tap list
+  produces both the wrapper-side decode and the host-side reader from one
+  declaration, including typed first-event sticky captures with optional
+  halt-on-trigger — explicitly outside the theorem boundary, and labelled
+  as such in its own report.
+
+These facilities are machine-independent (`Loom/Runner.lean`,
+`Loom/Artifact.lean`, `Loom/Hw/DagEval.lean`, `Loom/Hw/DebugTap.lean`, and
+the `Loom/Hw` proof modules); the machines in `Machines/` consume them, and
+the largest ones exercise every item above in their standing gates.
 
 ## Hardware boundary
 
@@ -132,11 +185,12 @@ claim audit is [`TRUST.md`](TRUST.md).
 ## Repository map
 
 - `Loom/` — generic semantics, hardware EDSL, compiler, emitter, decision
-  procedures, netlist checking, and release machinery.
+  procedures, and release machinery.
 - `Machines/` — machine definitions, refinements, invariants, and examples.
+- `Evidence/` — explicit target profiles and empirical calibrations outside
+  Loom's generic theorem layer.
 - `Tests/` — Lean test driver and focused regression modules.
-- `Tools/` — executables for audit, emission, release, books, simulation, and
-  equivalence checking.
+- `Tools/` — executables for audit, emission, release, books, and simulation.
 - `scripts/` — CI, reproduction, certificate generation, and external-tool
   workflows.
 - `fpga/zc702/` — untrusted board wrappers and the hardware evidence log.
@@ -150,10 +204,8 @@ Document roles are intentionally non-overlapping:
 - [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md): exact text-semantics
   assumption.
 - [`TRUST.md`](TRUST.md): property and platform limitations.
-- [`PLAN.md`](PLAN.md): current architecture and verification map.
-- [`NEXTSTEPS.md`](NEXTSTEPS.md): ordered active work.
+- [`ROADMAP.md`](ROADMAP.md): ordered unfinished work.
 - [`PLATONIC.md`](PLATONIC.md): strategic destination.
-- [`LOOM_GAPS.md`](LOOM_GAPS.md): capability and assurance gaps.
 
 ## Licensing
 
