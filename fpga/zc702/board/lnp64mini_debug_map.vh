@@ -27,70 +27,100 @@ wire [0:0] loom_debug_source_5_p0_c1 = o_c1_running;
 wire [0:0] loom_debug_source_5_p1_c0 = o_c0_halted;
 wire [0:0] loom_debug_source_5_p1_c1 = o_c1_halted;
 // tap 0: trace_rd_pc_lo (32 bits, BSCAN 47..47)
+reg [31:0] loom_debug_snap_0_c0 = 32'd0;
+reg [31:0] loom_debug_snap_0_c1 = 32'd0;
+always @(posedge sysclk) if (loom_debug_capture) begin
+loom_debug_snap_0_c0 <= loom_debug_source_0_p0_c0[31:0];
+loom_debug_snap_0_c1 <= loom_debug_source_0_p0_c1[31:0];
+end
 reg [31:0] loom_debug_meta_0_c0 = 32'd0;
 reg [31:0] loom_debug_sync_0_c0 = 32'd0;
 reg [31:0] loom_debug_meta_0_c1 = 32'd0;
 reg [31:0] loom_debug_sync_0_c1 = 32'd0;
 always @(posedge drck) begin
-loom_debug_meta_0_c0 <= loom_debug_source_0_p0_c0[31:0];
+loom_debug_meta_0_c0 <= loom_debug_snap_0_c0;
 loom_debug_sync_0_c0 <= loom_debug_meta_0_c0;
-loom_debug_meta_0_c1 <= loom_debug_source_0_p0_c1[31:0];
+loom_debug_meta_0_c1 <= loom_debug_snap_0_c1;
 loom_debug_sync_0_c1 <= loom_debug_meta_0_c1;
 end
 wire [31:0] loom_debug_selected_0 = w_core ?
 loom_debug_sync_0_c1 : loom_debug_sync_0_c0;
 
 // tap 1: trace_rd_wb_lo (32 bits, BSCAN 48..48)
+reg [31:0] loom_debug_snap_1_c0 = 32'd0;
+reg [31:0] loom_debug_snap_1_c1 = 32'd0;
+always @(posedge sysclk) if (loom_debug_capture) begin
+loom_debug_snap_1_c0 <= loom_debug_source_1_p0_c0[31:0];
+loom_debug_snap_1_c1 <= loom_debug_source_1_p0_c1[31:0];
+end
 reg [31:0] loom_debug_meta_1_c0 = 32'd0;
 reg [31:0] loom_debug_sync_1_c0 = 32'd0;
 reg [31:0] loom_debug_meta_1_c1 = 32'd0;
 reg [31:0] loom_debug_sync_1_c1 = 32'd0;
 always @(posedge drck) begin
-loom_debug_meta_1_c0 <= loom_debug_source_1_p0_c0[31:0];
+loom_debug_meta_1_c0 <= loom_debug_snap_1_c0;
 loom_debug_sync_1_c0 <= loom_debug_meta_1_c0;
-loom_debug_meta_1_c1 <= loom_debug_source_1_p0_c1[31:0];
+loom_debug_meta_1_c1 <= loom_debug_snap_1_c1;
 loom_debug_sync_1_c1 <= loom_debug_meta_1_c1;
 end
 wire [31:0] loom_debug_selected_1 = w_core ?
 loom_debug_sync_1_c1 : loom_debug_sync_1_c0;
 
 // tap 2: fault_pc (64 bits, BSCAN 49..50)
+reg [63:0] loom_debug_snap_2_c0 = 64'd0;
+reg [63:0] loom_debug_snap_2_c1 = 64'd0;
+always @(posedge sysclk) if (loom_debug_capture) begin
+loom_debug_snap_2_c0 <= loom_debug_source_2_p0_c0;
+loom_debug_snap_2_c1 <= loom_debug_source_2_p0_c1;
+end
 reg [63:0] loom_debug_meta_2_c0 = 64'd0;
 reg [63:0] loom_debug_sync_2_c0 = 64'd0;
 reg [63:0] loom_debug_meta_2_c1 = 64'd0;
 reg [63:0] loom_debug_sync_2_c1 = 64'd0;
 always @(posedge drck) begin
-loom_debug_meta_2_c0 <= loom_debug_source_2_p0_c0;
+loom_debug_meta_2_c0 <= loom_debug_snap_2_c0;
 loom_debug_sync_2_c0 <= loom_debug_meta_2_c0;
-loom_debug_meta_2_c1 <= loom_debug_source_2_p0_c1;
+loom_debug_meta_2_c1 <= loom_debug_snap_2_c1;
 loom_debug_sync_2_c1 <= loom_debug_meta_2_c1;
 end
 wire [63:0] loom_debug_selected_2 = w_core ?
 loom_debug_sync_2_c1 : loom_debug_sync_2_c0;
 
 // tap 3: fault_cause (8 bits, BSCAN 51..51)
+reg [7:0] loom_debug_snap_3_c0 = 8'd0;
+reg [7:0] loom_debug_snap_3_c1 = 8'd0;
+always @(posedge sysclk) if (loom_debug_capture) begin
+loom_debug_snap_3_c0 <= loom_debug_source_3_p0_c0;
+loom_debug_snap_3_c1 <= loom_debug_source_3_p0_c1;
+end
 reg [7:0] loom_debug_meta_3_c0 = 8'd0;
 reg [7:0] loom_debug_sync_3_c0 = 8'd0;
 reg [7:0] loom_debug_meta_3_c1 = 8'd0;
 reg [7:0] loom_debug_sync_3_c1 = 8'd0;
 always @(posedge drck) begin
-loom_debug_meta_3_c0 <= loom_debug_source_3_p0_c0;
+loom_debug_meta_3_c0 <= loom_debug_snap_3_c0;
 loom_debug_sync_3_c0 <= loom_debug_meta_3_c0;
-loom_debug_meta_3_c1 <= loom_debug_source_3_p0_c1;
+loom_debug_meta_3_c1 <= loom_debug_snap_3_c1;
 loom_debug_sync_3_c1 <= loom_debug_meta_3_c1;
 end
 wire [7:0] loom_debug_selected_3 = w_core ?
 loom_debug_sync_3_c1 : loom_debug_sync_3_c0;
 
 // tap 4: fault_cur (5 bits, BSCAN 52..52)
+reg [4:0] loom_debug_snap_4_c0 = 5'd0;
+reg [4:0] loom_debug_snap_4_c1 = 5'd0;
+always @(posedge sysclk) if (loom_debug_capture) begin
+loom_debug_snap_4_c0 <= loom_debug_source_4_p0_c0;
+loom_debug_snap_4_c1 <= loom_debug_source_4_p0_c1;
+end
 reg [4:0] loom_debug_meta_4_c0 = 5'd0;
 reg [4:0] loom_debug_sync_4_c0 = 5'd0;
 reg [4:0] loom_debug_meta_4_c1 = 5'd0;
 reg [4:0] loom_debug_sync_4_c1 = 5'd0;
 always @(posedge drck) begin
-loom_debug_meta_4_c0 <= loom_debug_source_4_p0_c0;
+loom_debug_meta_4_c0 <= loom_debug_snap_4_c0;
 loom_debug_sync_4_c0 <= loom_debug_meta_4_c0;
-loom_debug_meta_4_c1 <= loom_debug_source_4_p0_c1;
+loom_debug_meta_4_c1 <= loom_debug_snap_4_c1;
 loom_debug_sync_4_c1 <= loom_debug_meta_4_c1;
 end
 wire [4:0] loom_debug_selected_4 = w_core ?
@@ -116,14 +146,20 @@ loom_debug_hold_5_c1 <= loom_debug_expr_5_c1_n0; loom_debug_valid_5_c1 <= 1'b1;
 end
 end
 end
+reg [0:0] loom_debug_snap_5_c0 = 1'd0;
+reg [0:0] loom_debug_snap_5_c1 = 1'd0;
+always @(posedge sysclk) if (loom_debug_capture) begin
+loom_debug_snap_5_c0 <= loom_debug_hold_5_c0;
+loom_debug_snap_5_c1 <= loom_debug_hold_5_c1;
+end
 reg [0:0] loom_debug_meta_5_c0 = 1'd0;
 reg [0:0] loom_debug_sync_5_c0 = 1'd0;
 reg [0:0] loom_debug_meta_5_c1 = 1'd0;
 reg [0:0] loom_debug_sync_5_c1 = 1'd0;
 always @(posedge drck) begin
-loom_debug_meta_5_c0 <= loom_debug_hold_5_c0;
+loom_debug_meta_5_c0 <= loom_debug_snap_5_c0;
 loom_debug_sync_5_c0 <= loom_debug_meta_5_c0;
-loom_debug_meta_5_c1 <= loom_debug_hold_5_c1;
+loom_debug_meta_5_c1 <= loom_debug_snap_5_c1;
 loom_debug_sync_5_c1 <= loom_debug_meta_5_c1;
 end
 wire [0:0] loom_debug_selected_5 = w_core ?

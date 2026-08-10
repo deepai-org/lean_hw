@@ -95,8 +95,21 @@ module lnp64mini_dual_top (
     wire c0_cmd_valid = cmd_pulse & ~lat_core;
     wire c1_cmd_valid = cmd_pulse &  lat_core;
 
-    // CORE1_HOLD into the sysclk domain (2FF; it is a level, not a pulse)
+    // CORE1_HOLD into the sysclk domain (2FF; it is a level, not a pulse).
+    // A single-bit level needs only settling, which two flops give; there is
+    // no coherence question because there is nothing to tear.
     reg h0=1, h1=1; always @(posedge sysclk) begin h0 <= core1_hold; h1 <= h0; end
+
+    // Debug snapshot trigger (sysclk domain). `cmd 76` latches every generated
+    // debug tap into its snapshot register in ONE sysclk cycle, so the values
+    // the reader then crosses are constant while it reads them. Crossing the
+    // taps live instead lets each bit settle on its own schedule and the
+    // reader assemble a word the core never held -- see
+    // Loom/Hw/CdcSnapshot.lean (`torn_read_exists` is the witness;
+    // `holdStable` + `sample_coherent_of_stable` are why this pulse fixes it).
+    // The trigger rides the command channel, whose crossing is already proved
+    // (Loom/Hw/CdcContract.lean, D21), so this adds no new crossing.
+    wire loom_debug_capture = cmd_pulse && (lat_idx == 7'd76);
 
     // ---- the all-Lean dual soc ----
     wire        o_c0_running, o_c0_halted, o_c0_trap_active, o_c0_bus_req;
@@ -239,6 +252,11 @@ module lnp64mini_dual_top (
     wire [63:0] s_ir  = w_core ? ir1b     : ir1a;
     wire [4:0]  s_cst = w_core ? cs1b     : cs1a;
 
+    // NOTE (drck -> update): the `s_*` values below are drck-domain registers
+    // sampled here on `posedge update`. Both clocks are TCK-derived, and the
+    // JTAG TAP guarantees UPDATE follows SHIFT with the data register already
+    // stable, so this is a protocol-ordered handoff rather than a free-running
+    // crossing. Stated because it is an assumption, not a proof.
     always @(posedge update) begin
         if (sel) begin
             case (w_idx)
