@@ -1,14 +1,22 @@
-# Read the frozen latch-bit board: loud-latch, core0 status, trace ring (last 16
-# retired PCs), core0 register file. Zero boot attempts -- pure BSCAN snapshot.
+# Read the frozen board: §9.2/op-0 fault record, core0 status, trace ring (last
+# 16 retired PCs), core0 register file. Zero boot attempts -- pure BSCAN snapshot.
+#
+# The fault quartet decode is NOT hand-maintained here: it is sourced from the
+# generated lnp64mini_debug_map.tcl (produced by Loom.Hw.DebugMap, --check
+# guarded), so index drift can never silently mislabel a register the way the
+# retired gret_noop/ig_fall latch layout once did. That file also carries the
+# debug_capture (cmd 76) coherence latch, so the reads below are snapshot-
+# coherent rather than torn live values (Loom.Hw.Cdc.holdStable).
 connect -url tcp:127.0.0.1:3121
 after 400
 targets -set -filter {name =~ "xc7z*"}
 source /home/kevin/substrate0/test/jtag_lib.tcl
+source /home/kevin/substrate0/test/lnp64mini_debug_map.tcl
 
-puts "==== LOUD-LATCH (core0) ===="
-set cnt [rd 49]; set plo [rd 50]; set phi [rd 51]; set ght [rd 52]; set tc [rd 53]
-puts [format "gret_noop_cnt=%d  pc=0x%08x%08x  gate_had_trap=0x%08x  trapped=%d  cur=%d" \
-  $cnt $phi $plo $ght [expr {($tc>>5)&1}] [expr {$tc & 0x1f}]]
+puts "==== FAULT RECORD (core0, §9.2/op-0 -- 0 = clean) ===="
+debug_capture
+puts [format "fault_pc=0x%016x  fault_cause=0x%02x  fault_cur=%d" \
+  [debug_fault_pc] [debug_fault_cause] [debug_fault_cur]]
 
 puts "==== CORE0 STATUS ===="
 puts [format "status(rd20)=0x%08x  s_pc(rd22)=0x%08x  s_rt(rd21)=0x%08x" [rd 20] [rd 22] [rd 21]]
