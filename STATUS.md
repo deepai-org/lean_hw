@@ -139,53 +139,40 @@ See [`TCB.md`](TCB.md).
 
 ## Hardware integration
 
-The current LNP64mini integration head is **hardware-green as external
-evidence**. One accounted dual-core bitstream and guest image complete the
-full NetBSD mission workload:
+The current integration head is **hardware-green as external evidence** on one
+accounted dual-core bitstream (`e66d2c22…`, unchanged across the compiler fix —
+a new guest does not require a new FPGA implementation):
 
-- the direct generic 64-bit `MUL` executes correctly in the kernel;
-- the stock-openXC7 `-nodsp` implementation routes at 59,035 of 106,400 LUTs
-  (55%), iteration 17, with a reported 32.86 MHz `sysclk` maximum;
-- the sentinel gate ABI runs the write-gate handler as an ordinary C function;
-- `uname` and `echo e2e-ok-through-gate` reply through gate 1/domain 1;
-- the shmif driver runs through the domain-2 path; and
-- ping completes 4/4 while the CDC snapshot/debug changes are present.
+- the generic 64-bit `MUL` executes in the kernel; the stock-openXC7 `-nodsp`
+  build routes at 55% LUT (59,035/106,400), ~32.86 MHz `sysclk`. DSP48 inference
+  is an optional future flow (openXC7 0.8.2 wrongly rejects a legal unused
+  terminal `PCOUT`), not part of this result;
+- the sentinel gate ABI runs the §17 write-gate handler as an ordinary C
+  function.
 
-The accepted image uses roots `0x913000` and core-1 entry `0x8cae00`. This is
-corroborating physical evidence, not a theorem about synthesis, place and
-route, the bitstream, PS7, DDR, Ethernet, or CDC physics. DSP48 inference is
-not part of this accepted result: the installed openXC7 0.8.2 rejects a legal
-unused terminal `PCOUT`, so the reproducible board script defaults to the
-validated LUT implementation. A DSP-enabled build remains an optional target
-flow optimization.
+### Accepted network path: native GEM0, JTAG-free, dual-core SMP
 
-### Accepted network path: native GEM0, JTAG-free (the mission demo)
+The mission network path is **native GEM0**: both fabric cores run one NetBSD
+kernel (`LNP64_SMP` + two rump vCPUs), driving the PS GEM0 MAC directly over the
+GP aperture; JTAG loads the image and then EXITS. `e2e.sh` proves it fail-closed
+on silicon with the **servicer stopped (`xsdb=0`, A9 halted)**:
 
-The accepted mission network path is **native GEM0**: the soft micro-core drives
-the PS GEM0 MAC directly over the GP aperture (in-guest GEM pump), JTAG loads the
-image and then EXITS. Board-proven on the unchanged accounted bitstream
-(`e66d2c22…`, the GP aperture is already in it) with the fixed-clang GEM guest
-`934cecf3…`: identity + PS-DAP fastload, DOMAINS, then with the **servicer
-stopped (`xsdb=0`, A9 halted)** — **ping 4/4** and **interactive telnet**
-(`uname` + gated `echo`, each reply byte crossing the §17 write gate) reply over
-real Ethernet at ~300 ms. No JTAG, no A9, no host bridge in the packet path.
-This is `e2e.sh`; the legacy shmif-over-JTAG-ring path (`ring_pump.tcl` /
-`shmif_bridge.py`, ~2.8 s RTT) is retained for debug only — see `board/LEGACY.md`.
+- boot → DOMAINS → **core 1 running** — the `CORE1: started` line is parsed and
+  required to match the nm-derived entry, `status=0x1`, retirement above a
+  worker threshold, and no core-1 fault;
+- **ping 4/4** over real Ethernet (~300 ms);
+- **telnet** `uname` + gated `echo`, each reply byte crossing the §17 write gate;
+- **`cpus` → `ncpuonline=2`** answered over the network with the JTAG stack dead
+  — a guest-visible two-CPU proof that depends on no BSCAN read.
 
-The tp-reserved (fixed) clang (psABI §1 / ISA §2269 conformance) is **fully
-vindicated**: the interactive telnet reply works, so there is no gated-write
-regression. The earlier 0-reply had a single root cause, unrelated to the
-compiler, pump, or ring throughput: the §17 gate/cap table roots
-(`lnp64_mini_gate_table` / `lnp64_mini_cap_table`) link at a **per-image
-address**, and a stale hardcoded `0x913000` was passed instead of this image's
-`0x912000`, so the machine read an empty gate table and every gated write
-returned `-MALFORMED`. The durable fix: `build_rump_shmif_image.py` emits the
-`nm`-derived roots into `mini_domains.env`, deployed beside the hex, and
-`boot_gem_dual_smp.sh` sources it — the roots can never go stale against the
-image again.
+No JTAG, no A9, no host bridge in the packet path. The legacy shmif-over-JTAG-ring
+path (`ring_pump.tcl` / `shmif_bridge.py`) is debug-only (`board/LEGACY.md`).
 
-The bitstream is **unchanged across the compiler fix**: a new guest does not
-require a new FPGA implementation.
+Every image-specific address — the §17 gate/cap table roots **and** the core-1
+entry — is `nm`-derived at build time into `mini_domains.env` (deployed beside
+the hex, sourced by the boot), so no maintained boot carries a hardcoded
+per-build address. The tp-reserved (fixed) clang (psABI §1 / ISA §2269) is
+vindicated: the gated telnet reply works, so there is no gated-write regression.
 
 ## Property limits that remain open
 

@@ -8,8 +8,9 @@
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/board_env.sh"
 cd "$LOOM_BOARD_ROOT"
-export LNP64_MINI_GATE_TBL=0x913000 LNP64_MINI_CAP_TBL=0x913100
-export LNP64_CORE1_ENTRY=0x8cae00 LNP64_CORE1_STACK=0x1700000
+# Gate/cap roots and core-1 entry are NOT set here -- boot_gem_dual_smp.sh
+# sources the nm-derived mini_domains.env deployed beside the hex, so this test
+# always uses the addresses that match the actual image (never a stale const).
 touch "$LOOM_STOP_FILE"; pkill -x xsdb 2>/dev/null; sleep 4
 rm -f "$LOOM_STOP_FILE" "$LOOM_SERVICER_LOG"
 ( "$LOOM_BOARD_TEST_DIR/boot_gem_dual_smp.sh" > "$LOOM_BOARD_STATE_DIR/boot_snap.log" 2>&1 ) &

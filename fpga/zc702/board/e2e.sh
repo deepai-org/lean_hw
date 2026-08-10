@@ -87,12 +87,25 @@ if grep -qaE "panic|HWTRAP" "$LOOM_SERVICER_LOG" 2>/dev/null; then
 fi
 echo "  DOMAINS established with nm-derived roots"
 
-# Dual-core SMP: the GEM image is built LNP64_SMP + 2 rump vCPUs, so core 1
-# enters the kernel at lnp64_core1_entry (from mini_domains.env). Require it to
-# start and to not fault.
-grep -qa "CORE1: started" "$LOOM_SERVICER_LOG" 2>/dev/null \
-  || fail "core 1 never started -- SMP guest did not bring up the second hardware core"
-echo "  core 1 started: $(grep -aE 'CORE1: started' "$LOOM_SERVICER_LOG" | tail -1)"
+# Dual-core SMP: the servicer prints CORE1: started unconditionally 100ms after
+# RUN, so grepping the text alone proves nothing. PARSE it and require every
+# field: the nm-derived entry, a running status, meaningful retirement (a held
+# secondary sits ~120; a real SMP worker is >1000), and no core-1 fault.
+c1line="$(grep -aE 'CORE1: started' "$LOOM_SERVICER_LOG" 2>/dev/null | tail -1)"
+[ -n "$c1line" ] || fail "core 1 never started -- SMP guest did not bring up the second core"
+exp_c1="$( . "$LOOM_BOARD_TEST_DIR/mini_domains.env"; printf '%s' "${LNP64_CORE1_ENTRY:-}" )"
+[ -n "$exp_c1" ] || fail "dual-core e2e but mini_domains.env has no nm-derived LNP64_CORE1_ENTRY"
+c1_entry="$(sed -n 's/.*entry=\(0x[0-9a-fA-F]*\).*/\1/p' <<<"$c1line")"
+c1_status="$(sed -n 's/.*status=\(0x[0-9a-fA-F]*\).*/\1/p' <<<"$c1line")"
+c1_retire="$(sed -n 's/.*retire=\([0-9]*\).*/\1/p' <<<"$c1line")"
+[ "$c1_entry" = "$exp_c1" ] || fail "core 1 entry $c1_entry != nm-derived $exp_c1 (wrong/stale entry)"
+[ "$c1_status" = "0x1" ] || fail "core 1 status $c1_status != 0x1 (not running / faulted)"
+{ [ -n "$c1_retire" ] && [ "$c1_retire" -ge 500 ]; } 2>/dev/null \
+  || fail "core 1 retire ${c1_retire:-none} < 500 -- held/idle, not a running SMP worker"
+if grep -qaiE 'CORE1.*(fault|HWTRAP|panic)' "$LOOM_SERVICER_LOG" 2>/dev/null; then
+  fail "core 1 fault in servicer log: $(grep -aiE 'CORE1.*(fault|HWTRAP|panic)' "$LOOM_SERVICER_LOG" | tail -1)"
+fi
+echo "  core 1: entry=$c1_entry=nm-derived status=$c1_status retire=$c1_retire -- running SMP worker"
 
 echo "=== let rump + GEM0 link come up (40s) ==="; sleep 40
 
@@ -107,11 +120,19 @@ recv="$(printf '%s\n' "$ping_out" | sed -n 's/.* \([0-9]\+\) received.*/\1/p')";
 echo "  received=$recv/4"
 [ "$recv" -ge 4 ] || fail "ping $recv/4 to $PING_TARGET over GEM0"
 
-echo "=== telnet: uname + gated echo over GEM0 (each byte crosses the §17 gate) ==="
-tel_out="$( { printf 'uname\r\n'; sleep 3; printf 'echo %s\r\n' "$ECHO_TOKEN"; sleep 3; printf 'exit\r\n'; } \
-  | timeout 25 nc -w 18 "$PING_TARGET" 23 2>&1 | tr -d '\0' || true )"
-printf '%s\n' "$tel_out" | grep -aE 'micro-shell|NetBSD|'"$ECHO_TOKEN" | head -6 || true
+echo "=== telnet: uname + gated echo + cpus over GEM0 (JTAG dead) ==="
+tel_out="$( { printf 'uname\r\n'; sleep 3; printf 'echo %s\r\n' "$ECHO_TOKEN"; sleep 3; \
+             printf 'cpus\r\n'; sleep 3; printf 'exit\r\n'; } \
+  | timeout 32 nc -w 24 "$PING_TARGET" 23 2>&1 | tr -d '\0' || true )"
+printf '%s\n' "$tel_out" | grep -aE 'micro-shell|NetBSD|ncpuonline|'"$ECHO_TOKEN" | head -8 || true
 printf '%s\n' "$tel_out" | grep -qa 'NetBSD' || fail "no uname/NetBSD reply through the gate over GEM0"
 printf '%s\n' "$tel_out" | grep -qa "$ECHO_TOKEN" || fail "no gated echo reply ($ECHO_TOKEN) -- §17 write gate not proven"
+# GUEST-VISIBLE SMP proof, over the network with the JTAG stack DEAD (xsdb=0, no
+# BSCAN): the `cpus` command reads the rump kernel's live online-CPU count.
+# ncpuonline=2 means both fabric cores are running in the one kernel -- proven
+# without any JTAG, so SMP is not just a boot-time servicer print.
+printf '%s\n' "$tel_out" | grep -qa 'ncpuonline=2' \
+  || fail "cpus over telnet did not report ncpuonline=2 -- second core not online in the kernel"
+echo "  cpus over telnet (JTAG dead): $(printf '%s\n' "$tel_out" | grep -aoE 'ncpu=[0-9]+ ncpuonline=[0-9]+' | tail -1)"
 
 echo "RESULT PASS"
