@@ -1,8 +1,11 @@
 #!/bin/bash
-# e2e.sh -- the DEFAULT NetBSD-on-fabric regression: native GEM0, JTAG-FREE.
+# e2e.sh -- the DEFAULT NetBSD-on-fabric regression: native GEM0, JTAG-FREE,
+# DUAL-CORE SMP.
 #
-# The soft micro-core drives the PS GEM0 MAC directly (in-guest GEM pump over the
-# GP aperture); JTAG only loads the image and then EXITS. There is NO ring pump,
+# Both fabric cores run one NetBSD kernel (LNP64_SMP + 2 rump vCPUs; core 1
+# enters at lnp64_core1_entry). The soft cores drive the PS GEM0 MAC directly
+# (in-guest GEM pump over the GP aperture); JTAG only loads the image and then
+# EXITS. There is NO ring pump,
 # NO host bridge, NO JTAG and NO A9 in the packet path -- real line-rate Ethernet
 # (~300ms RTT) instead of the ~2.8s JTAG-pumped shmif ring. The legacy
 # shmif-over-JTAG-ring path (ring_pump.tcl / shmif_bridge.py, LEGACY.md) is kept
@@ -50,11 +53,11 @@ check_id "debug-map"      "$LOOM_BOARD_TEST_DIR/lnp64mini_debug_map.tcl"    "$E2
 [ -f "$ROOTS" ] || fail "gate/cap roots missing: $ROOTS (build_rump_shmif_image.py emits mini_domains.env; deploy it)"
 echo "  ok  roots = $(tr '\n' ' ' <"$ROOTS")"
 
-# native GEM0 boots core0 only (the GEM image is single-core, no lnp64_core1_entry).
+# All image-derived params -- gate/cap roots AND the core-1 entry -- come from
+# mini_domains.env (boot_gem_dual_smp sources it). Do NOT hardcode any of them:
+# the SMP image links its tables and lnp64_core1_entry at per-image addresses.
 # power_cycle FIRST: the PS GP path degrades per session and the GP aperture must
-# start fresh (gem-mmio-aperture doctrine). Gate roots come from mini_domains.env
-# (boot_gem_dual_smp sources it) -- do NOT hardcode LNP64_MINI_GATE_TBL here.
-export LNP64_CORE1_ENTRY=0
+# start fresh (gem-mmio-aperture doctrine).
 
 echo "=== power cycle (fresh PS GP for the GEM aperture) ==="
 bash "$LOOM_BOARD_TEST_DIR/power_cycle.sh" >"$LOOM_BOARD_STATE_DIR/power_cycle_e2e.log" 2>&1 \
@@ -83,6 +86,13 @@ if grep -qaE "panic|HWTRAP" "$LOOM_SERVICER_LOG" 2>/dev/null; then
   fail "panic/HWTRAP: $(grep -aE 'panic|HWTRAP' "$LOOM_SERVICER_LOG" | tail -1)"
 fi
 echo "  DOMAINS established with nm-derived roots"
+
+# Dual-core SMP: the GEM image is built LNP64_SMP + 2 rump vCPUs, so core 1
+# enters the kernel at lnp64_core1_entry (from mini_domains.env). Require it to
+# start and to not fault.
+grep -qa "CORE1: started" "$LOOM_SERVICER_LOG" 2>/dev/null \
+  || fail "core 1 never started -- SMP guest did not bring up the second hardware core"
+echo "  core 1 started: $(grep -aE 'CORE1: started' "$LOOM_SERVICER_LOG" | tail -1)"
 
 echo "=== let rump + GEM0 link come up (40s) ==="; sleep 40
 
