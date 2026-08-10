@@ -17,6 +17,8 @@ private def demo : Program where
 
 #guard demo.elaborate |>.isSome
 
+example : (Rhs.bin .mul "a" "b").render = "a * b;" := rfl
+
 example : demo.render = [
     "module demo(",
     "  input wire clk,",

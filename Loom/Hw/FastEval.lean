@@ -64,6 +64,8 @@ inductive FExpr where
   | add (m : Nat) (a b : FExpr)
   /-- `m = 2 ^ w`. -/
   | sub (m : Nat) (a b : FExpr)
+  /-- `m = 2 ^ w`. -/
+  | mul (m : Nat) (a b : FExpr)
   /-- `w` is the width (shift-amount guard), `m = 2 ^ w`. -/
   | shl (w m : Nat) (a b : FExpr)
   /-- `w` is the width (shift-amount guard). -/
@@ -125,6 +127,7 @@ def FExpr.eval (pr pm : Array Nat) : FExpr → Nat
   | .not mask a => mask - a.eval pr pm
   | .add m a b => (a.eval pr pm + b.eval pr pm) % m
   | .sub m a b => (m - b.eval pr pm + a.eval pr pm) % m
+  | .mul m a b => (a.eval pr pm * b.eval pr pm) % m
   | .shl w m a b =>
       let s := b.eval pr pm
       if s < w then (a.eval pr pm <<< s) % m else 0
@@ -212,6 +215,7 @@ def Design.elabExpr (d : Design) : {w : Nat} → Expr w → FExpr
   | w, .not a => .not (2 ^ w - 1) (d.elabExpr a)
   | w, .add a b => .add (2 ^ w) (d.elabExpr a) (d.elabExpr b)
   | w, .sub a b => .sub (2 ^ w) (d.elabExpr a) (d.elabExpr b)
+  | w, .mul a b => .mul (2 ^ w) (d.elabExpr a) (d.elabExpr b)
   | w, .shl a b => .shl w (2 ^ w) (d.elabExpr a) (d.elabExpr b)
   | w, .shr a b => .shr w (d.elabExpr a) (d.elabExpr b)
   | _, .eq a b => .eq (d.elabExpr a) (d.elabExpr b)
@@ -345,6 +349,7 @@ def Design.exprWFB (d : Design) : {w : Nat} → Expr w → Bool
   | _, .not a => d.exprWFB a
   | _, .add a b => d.exprWFB a && d.exprWFB b
   | _, .sub a b => d.exprWFB a && d.exprWFB b
+  | _, .mul a b => d.exprWFB a && d.exprWFB b
   | _, .shl a b => d.exprWFB a && d.exprWFB b
   | _, .shr a b => d.exprWFB a && d.exprWFB b
   | _, .eq a b => d.exprWFB a && d.exprWFB b
@@ -719,6 +724,11 @@ theorem elabExpr_eval {d : Design} {fs : FastSt} {σ : St} (ha : Agree d fs σ) 
     simp only [Design.exprWFB, Bool.and_eq_true] at hwf
     simp only [Design.elabExpr, FExpr.eval, iha hwf.1, ihb hwf.2, Expr.eval,
       BitVec.toNat_sub]
+  | mul a b iha ihb =>
+    intro hwf
+    simp only [Design.exprWFB, Bool.and_eq_true] at hwf
+    simp only [Design.elabExpr, FExpr.eval, iha hwf.1, ihb hwf.2, Expr.eval,
+      BitVec.toNat_mul]
   | shl a b iha ihb =>
     intro hwf
     simp only [Design.exprWFB, Bool.and_eq_true] at hwf

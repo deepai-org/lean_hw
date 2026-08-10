@@ -80,20 +80,19 @@ revision and generated artifacts:
 
 ## Current status
 
-The substrate and machine test programs provide regression assets. The
-present extended LNP64mini board head is not green.
-Opcode agreement covers 70 shared opcodes, the emulator zero-trap gate passes,
-and silicon shows zero traps, but the network is down. Current diagnostics
-show core 0 halted and core 1 remaining in futex wait after 20 retires. Raw
-console data shows guest byte writes replicated across 64-bit words at stride
-eight, while guest C, clang, the Loom/ISS models, and emitted-RTL simulation
-all specify packed single-byte writes. The next diagnostic is a known-pattern
-write-and-halt probe with JTAG readback of the physical DDR location.
+The current dual-core LNP64mini head passes the full NetBSD mission workload
+on one accounted bitstream and guest image. Ping completes 4/4; `uname` and
+`echo e2e-ok-through-gate` return through gate 1/domain 1; and the shmif
+driver uses the domain-2 path. The same artifact includes direct generic
+`MUL`, the sentinel gate ABI, and the current CDC snapshot structure. The
+accepted image uses roots `0x913000` and core-1 entry `0x8cae00`.
 
-There is no accepted NetBSD, ping, telnet, SMP, epoch, or capability result
-for the current head. The next accepted board result must reproduce the ladder
-above and resolve this regression. `STATUS.md` is the repository-wide
-current-state summary.
+The accepted build uses the stock-openXC7-compatible `-nodsp` path: 59,035 of
+106,400 LUTs (55%), routed at iteration 17, with a reported 32.86 MHz
+`sysclk` maximum. The host's openXC7 0.8.2 rejects an unused terminal DSP48
+`PCOUT`; openXC7 0.9.2 contains the upstream fix, but a DSP-enabled artifact
+has not replaced the accepted LUT-mapped result. `STATUS.md` is the
+repository-wide current-state summary.
 
 ## CDC and reset boundary
 

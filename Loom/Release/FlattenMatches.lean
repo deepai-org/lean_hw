@@ -41,6 +41,7 @@ def exprMatchOkB : {w : Nat} → Emit.MicroVerilog.Expr w → Bool
   | _, .reg _ _ => true
   | _, .memRead _ _ addr => exprMatchOkB addr
   | _, .and a b | _, .or a b | _, .xor a b | _, .add a b | _, .sub a b
+  | _, .mul a b
   | _, .shl a b | _, .shr a b | _, .eq a b | _, .ult a b | _, .slt a b =>
       exprMatchOkB a && exprMatchOkB b
   | _, .not a => exprMatchOkB a
@@ -414,6 +415,36 @@ theorem flatten_matches
           ((flatten b).run ((flatten a).run st).2).1)
         ((flatten b).run ((flatten a).run st).2).2 wf2 kwf2
         (flatten_key_sub _ _) (by simp [rhsTokensOk, tok1, tok2]) hsub
+        (fun m hlook => by
+          simp [Symbolic.indexedExprMatches, indexedRhsOf, hlook, mat1, mat2])
+  | @mul w a b iha ihb =>
+      obtain ⟨oka, okb⟩ := hemit
+      simp only [exprMatchOkB, Bool.and_eq_true] at hmatch
+      obtain ⟨wf1, ext1, -⟩ := flatten_spec regs mems a st wf oka
+      obtain ⟨wf2, ext2, -⟩ := flatten_spec regs mems b
+        ((flatten a).run st).2 wf1 okb
+      have extF := freshWire_extends w
+        s!"{((flatten a).run st).1} * {((flatten b).run ((flatten a).run st).2).1}"
+        (.bin .mul ((flatten a).run st).1
+          ((flatten b).run ((flatten a).run st).2).1)
+        ((flatten b).run ((flatten a).run st).2).2
+      have hsub2 : ∀ (i : Nat) (wire : Wire),
+          (((flatten b).run ((flatten a).run st).2).2).wires[i]? = some wire →
+            final[i]? = some wire :=
+        fun i wire h => hsub i wire (extF.2 i wire h)
+      have hsub1 : ∀ (i : Nat) (wire : Wire),
+          (((flatten a).run st).2).wires[i]? = some wire →
+            final[i]? = some wire :=
+        fun i wire h => hsub2 i wire (ext2.2 i wire h)
+      obtain ⟨kwf1, tok1, mat1⟩ := iha st wf kwf oka hmatch.1 hsub1
+      obtain ⟨kwf2, tok2, mat2⟩ := ihb ((flatten a).run st).2 wf1 kwf1 okb
+        hmatch.2 hsub2
+      exact freshWire_finish faithful (.mul a b)
+        s!"{((flatten a).run st).1} * {((flatten b).run ((flatten a).run st).2).1}"
+        (.bin .mul ((flatten a).run st).1
+          ((flatten b).run ((flatten a).run st).2).1)
+        ((flatten b).run ((flatten a).run st).2).2 wf2 kwf2
+        (flatten_key_mul _ _) (by simp [rhsTokensOk, tok1, tok2]) hsub
         (fun m hlook => by
           simp [Symbolic.indexedExprMatches, indexedRhsOf, hlook, mat1, mat2])
   | @shl w a b iha ihb =>

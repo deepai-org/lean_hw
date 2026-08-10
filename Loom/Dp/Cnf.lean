@@ -35,7 +35,7 @@ Bit-blasted **exactly** (with defining Tseitin clauses): `lit`, `reg`,
 
 **Over-approximated** as fresh unconstrained output variables (no clauses;
 sound for UNSAT, a documented completeness loss): `memRead` (memory
-contents are not bit-blasted — every read is free), `add`, `sub`, `eq`,
+contents are not bit-blasted — every read is free), `add`, `sub`, `mul`, `eq`,
 `ult`, `slt`, `shl`, `shr`. A property proved through this encoding holds
 *even if those operators returned arbitrary data*. This v1 fragment is
 exactly what the Acc8 "`halted` is sticky" demo needs — the property is a
@@ -361,8 +361,8 @@ time `t`), allocating aux ids from `n`, extending assignment `f`. Returns
 `cnf` holds — provided `f` already reads registers correctly (`RegOK`).
 
 Coverage: `lit, reg, and, or, xor, not, eq, mux, slice, zext, sext` are
-bit-blasted exactly (with defining clauses). `add, sub, ult, slt, shl, shr,
-memRead` are **over-approximated**: each emits fresh unconstrained output
+bit-blasted exactly (with defining clauses). `add, sub, mul, ult, slt, shl,
+shr, memRead` are **over-approximated**: each emits fresh unconstrained output
 variables (no clauses), which the constructed assignment still sets to the
 real value bits — so `blast_spec` holds uniformly and the UNSAT direction is
 sound, while the solver is free to pick other values there (a documented
@@ -829,6 +829,9 @@ def blast (t : Nat) (σ : St) : {w : Nat} → Expr w → Nat → (Var → Bool) 
   | w, e@(.sub ..), n, f =>
       let r := freshBits n w f (fun i => (e.eval σ).getLsbD i)
       (r.1, [], r.2.1, r.2.2)
+  | w, e@(.mul ..), n, f =>
+      let r := freshBits n w f (fun i => (e.eval σ).getLsbD i)
+      (r.1, [], r.2.1, r.2.2)
   | w, e@(.shl ..), n, f =>
       let r := freshBits n w f (fun i => (e.eval σ).getLsbD i)
       (r.1, [], r.2.1, r.2.2)
@@ -1150,6 +1153,7 @@ theorem blast_spec (t : Nat) (σ : St) :
   | memRead dw m addr _ => intro n f _; exact good_over _ n f
   | add a b _ _ => intro n f _; exact good_over _ n f
   | sub a b _ _ => intro n f _; exact good_over _ n f
+  | mul a b _ _ => intro n f _; exact good_over _ n f
   | shl a b _ _ => intro n f _; exact good_over _ n f
   | shr a b _ _ => intro n f _; exact good_over _ n f
   | eq a b _ _ => intro n f _; exact good_over _ n f
@@ -1301,6 +1305,11 @@ theorem blast_struct (t : Nat) (σ σ' : St) :
     · simp only [blast]; exact (freshBits_struct n _ f f' _ _).1
     · simp only [blast]; exact (freshBits_struct n _ f f' _ _).2
   | sub a b _ _ =>
+    intro n f f'
+    refine ⟨?_, rfl, ?_⟩
+    · simp only [blast]; exact (freshBits_struct n _ f f' _ _).1
+    · simp only [blast]; exact (freshBits_struct n _ f f' _ _).2
+  | mul a b _ _ =>
     intro n f f'
     refine ⟨?_, rfl, ?_⟩
     · simp only [blast]; exact (freshBits_struct n _ f f' _ _).1

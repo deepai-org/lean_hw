@@ -48,6 +48,7 @@ def Expr.eval (σ : St) : {w : Nat} → Expr w → BitVec w
   | _, .not a => ~~~(a.eval σ)
   | _, .add a b => a.eval σ + b.eval σ
   | _, .sub a b => a.eval σ - b.eval σ
+  | _, .mul a b => a.eval σ * b.eval σ
   | _, .shl a b => a.eval σ <<< (b.eval σ).toNat
   | _, .shr a b => a.eval σ >>> (b.eval σ).toNat
   | _, .eq a b => if a.eval σ = b.eval σ then 1#1 else 0#1

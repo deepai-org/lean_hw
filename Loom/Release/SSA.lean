@@ -23,7 +23,7 @@ open Loom.Emit.MicroVerilog
 
 /-- Binary operators admitted by the release subset. -/
 inductive BinOp where
-  | and | or | xor | add | sub | shl | shr | eq | ult
+  | and | or | xor | add | sub | mul | shl | shr | eq | ult
   deriving Repr, DecidableEq
 
 /-- One nonrecursive SSA right-hand side. Operands are previously declared
@@ -106,6 +106,7 @@ def BinOp.token : BinOp → String
   | .xor => "^"
   | .add => "+"
   | .sub => "-"
+  | .mul => "*"
   | .shl => "<<"
   | .shr => ">>"
   | .eq => "=="
@@ -307,6 +308,7 @@ def Rhs.elaborate (regs : List RegHdr) (mems : List MemHdr) (env : Env)
       | .xor => binSame regs env width left right .xor
       | .add => binSame regs env width left right .add
       | .sub => binSame regs env width left right .sub
+      | .mul => binSame regs env width left right .mul
       | .shl => binSame regs env width left right .shl
       | .shr => binSame regs env width left right .shr
       | .eq => comparison regs env width left right (fun a b => .eq a b)

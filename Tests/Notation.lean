@@ -59,9 +59,20 @@ example : declarations.ackMemInit = [] := by decide
 def inputEnv : InEnv :=
   InputBinding.toEnv [InputBinding.of enable (1#1)]
 
+private def zeroSt : St where
+  regs := fun _ w => BitVec.ofNat w 0
+  mems := fun _ _ w => BitVec.ofNat w 0
+
 example : inputEnv enable.name 1 = 1#1 := by decide
 example : inputEnv enable.name 2 = 0#2 := by decide
 example : inputEnv "misspelled" 1 = 0#1 := by decide
+
+/-! Arithmetic and assembly operators preserve fixed-width hardware semantics. -/
+
+example : (((13 : Expr 8) * 20).eval zeroSt) = 4#8 := by decide
+
+example : (((0xAB : Expr 8) ++# (0xCD : Expr 8)).eval zeroSt) = 0xABCD#16 := by
+  decide
 
 example : design.readsOkB = true := by decide
 

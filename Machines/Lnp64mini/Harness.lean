@@ -590,7 +590,7 @@ def prog1 : List (BitVec 64) :=
     encImmI OP_LD 8 0 0,        -- LD r8 = [r0+0] = 12 (zp load)
     enc OP_EXIT 0 0 0 ]           -- EXIT
 
-/-- Fast lockstep program (no long mul/div; reaches EXIT quickly so the
+/-- Fast lockstep program (no long high-mul/div; reaches EXIT quickly so the
 EDSL≡ISS lockstep stays within the closure-RegEnv budget). Covers fetch,
 ALU-reg, ALU-imm, small MUL, small DIV, SEL, GET_PCR(Tid), zp store
 (1-cycle dmem pipeline), zp load, DDR-data store (RMW) + DDR-data load,
@@ -600,7 +600,7 @@ def progLS : List (BitVec 64) :=
     encImmI OP_ADDI 2 0 5,        --       w1  ADDI r2 = 5
     encImmI OP_ADDI 3 0 1,        --       w2  ADDI r3 = 1
     enc OP_ADD 4 1 2,            --       w3  ADD  r4 = 12
-    enc OP_MUL 5 1 3,            --       w4  MUL  r5 = 7*1 = 7 (fast: mul_b=1)
+    enc OP_MUL 5 1 3,            --       w4  direct MUL  r5 = 7*1 = 7
     enc OP_SEL 7 1 1 2,          --       w5  SEL(EQ) r7: r1==r1 -> sel_t=rf[rs3=2]=5
     encImmI OP_GET_PCR 10 2 0,       --       w6  GET_PCR r10 = Tid = cur+1 = 1
     encImmS OP_ST 0 4 0,        --       w7  SD [0] = r4 (zp store)
@@ -1517,7 +1517,7 @@ the gate preserves it. -/
 def progGateHammer : List (BitVec 64) :=
   [ encImmI OP_ADDI 1 0 0,                            -- w0  r1 = 0 (gate id)
     encImmI OP_ADDI 5 0 (Int.ofNat (TEXT_BASE + 10*8)), -- w1 r5 = child entry (w10)
-    encImmI OP_ADDI 20 0 20,                          -- w2  r20 = 20 (> MAXD; < NT so cooperative children don't exhaust slots. The RESCHEDULE variant -- add a quantum so the parent is preempted mid-gate and the clone runs -- is the real reproducer for the reschedule-dependent silicon desync; TODO)
+    encImmI OP_ADDI 20 0 20,                          -- w2  r20 = 20 (> MAXD; < NT so cooperative children do not exhaust slots)
     enc OP_MINI_GATE_CALL 0 1 0,                      -- w3  [loop] GATE_CALL gate r1 -> handler(w7)
     encImmI OP_ADDI 20 20 (-1),                       -- w4  r20 = r20 - 1
     encImmS OP_BNE 20 0 (-2),                         -- w5  BNE r20,r0 -> w3 (PC-relative: w3-w5 = -2)
@@ -1675,10 +1675,8 @@ tstate[0..4]={(s.tstate[0]!).toNat},{(s.tstate[1]!).toNat},{(s.tstate[2]!).toNat
 tpc[cur]=0x{String.ofList (Nat.toDigits 16 (s.tpc[s.cur.toNat]!).toNat)}"
   IO.println s!"  LOUD GATE_RETURN: fault_cause={s.fault_cause.toNat} (want 0) \
 first_fault_pc=0x{pchex} first_fault_cur={s.fault_cur.toNat} in_gate={s.in_gate.toNat}"
-  -- PHASE 2 — the RESCHEDULE variant. A small quantum preempts the parent
-  -- mid-gate; the child spawned inside the gate runs (and, at its EXIT entry,
-  -- frees its slot). If a reschedule hands the gate tail to a clone's slot, the
-  -- loud no-op fires — the reschedule-dependent silicon desync, in software.
+  -- A small quantum preempts the parent mid-gate while the spawned child runs
+  -- and exits. Gate ownership and continuation must remain with the parent.
   IO.println "  --- PREEMPTIVE (quantum=3): reschedule mid-gate ---"
   let mut ps : MiniSt := {}
   let mut pd : DdrModel := { mem := Std.HashMap.ofList img, latency := 1 }
@@ -1710,18 +1708,14 @@ slot={s.fault_cur.toNat} pc=0x{pchex} halted={s.halted} r20={(s.rf[20]!).toNat} 
     (bad == 0 && s.fault_cause.toNat == 0 && s.halted && sp.fault_cause.toNat == 0)
     "gate accounting desynced (cooperative or preemptive hammer)").requirePass
 
-/-! ## The dwell/wake hammers — the two interleavings the silicon capture named
+/-! ## Dwell/wake gate interleavings
 
-2026-08-09, board loud-latch: ONE no-op GATE_RETURN at `drvspawn_entry+0x10`,
-slot 0, with no trap-in-gate involvement — pure in-core scheduling, during a
-handler that does cap_recv + CLONE + return. The surviving suspects are
-interleavings `progGateHammer` never produces:
+These programs cover gate continuations across scheduling shapes not produced
+by the basic cooperative hammer:
 
-* **Shape A (dwell)** — the child THREAD_EXITs *while the parent still holds
-  the gate*. The old hammer's handler was CLONE;RETURN back-to-back, so the
-  child always ran after the parent had left the gate. Here the handler dwells
-  (spin > quantum) between CLONE and RETURN, so preemption runs the child —
-  and its EXIT's `in_gate`/`gdepth` cleanup — mid-gate.
+* **Shape A (dwell)** — the child THREAD_EXITs while the parent still holds
+  the gate. The handler spins for longer than the quantum between CLONE and
+  RETURN, so the child runs and cleans its own slot mid-gate.
 * **Shape B (park+wake)** — the parent FUTEX_WAITs *inside the gate*; the
   child flips the word, fires the (NT=32 **unkeyed**) FUTEX_WAKE, and exits;
   the woken parent then GATE_RETURNs. This is the block-in-gate → unkeyed-wake
@@ -1762,13 +1756,10 @@ def progGateParkWake : List (BitVec 64) :=
     enc OP_FUTEX_WAKE 6 7 0,                            -- w16 UNKEYED wake -> parent READY
     enc OP_THREAD_EXIT 0 0 0 ]                          -- w17 child exits
 
-/-- **Shape C (drvspawn replica)** — the exact board sequence the loud-latch
-fired on (2026-08-09): ONE token sent pre-loop; each iteration gates in and
-CAP_RECVs. Iteration 1 succeeds (token consumed) and CLONEs the driver;
-iterations 2+ fail the recv (all-ones ≠ expected) and take the no-spawn arm —
-the board's retry loop. The silicon no-op GATE_RETURN fired on iteration 1's
-return. Swept over quantum AND DDR latency (the ISS default latency=1 keeps
-the multi-state CAP walk narrow; real HP DDR is many cycles wide). -/
+/-- **Shape C (driver-spawn replica)** — one token is sent before a loop of
+gate entries and capability receives. The first receive consumes the token
+and spawns the driver; later receives take the no-spawn arm. The test sweeps
+quantum and DDR latency around the multi-state capability walk. -/
 def progGateDrvspawn : List (BitVec 64) :=
   [ encImmI OP_ADDI 1 0 0xCAFE,                       -- w0  r1 = handle (CAP_HANDLE; defined later in the file)
     encImmI OP_ADDI 2 0 3,                            -- w1  r2 = target domain 3
@@ -2001,10 +1992,9 @@ in_gate={sc.in_gate.toNat} (want 0) cause={sc.fault_cause.toNat} (want 0) lockst
   (Loom.Runner.Result.fromBool "LNP64mini fault conformance" 0 allOk
     "fault assertion failed").requirePass
 
-/-! ## §9.2 the gate return sentinel (spec aebacd95)
+/-! ## §9.2 gate return sentinel
 
-The proposal this machine's §73 campaign sent up, adopted and landed: a
-crossing is a call to both sides. `gate_call` installs a reserved
+A crossing is a call to both sides. `gate_call` installs a reserved
 non-canonical address in `ra`; fetching it executes `gate_return`. So a gate
 handler is an **ordinary function ending in an ordinary `ret`** -- no asm
 veneer, no gate epilogue in the compiler. The three programs below are the
@@ -2487,18 +2477,10 @@ pc={s.pc.toNat}\n"
 
 /-- Emit the generated matrix's programs as `.hex` files for the RTL leg.
 
-The 2026-08-05 renumbering passed every gate here and panicked on silicon. The
-reason is structural: `opDiffSelftest` compares EDSL against ISS and
-`diff_emulator_iss.py` compares emulator against ISS — **nothing compared
-against the RTL**, which is what the bitstream is built from and what the board
-actually runs. An infinitely thorough emulator-vs-ISS matrix could not have
-caught it.
-
-This writes each generated program to `fpga/zc702/opdiff/`, where
+Source/ISS and emulator/ISS comparisons do not cover RTL lowering. This writes
+each generated program to `fpga/zc702/opdiff/`, where
 `scripts/opdiff_rtl.sh` runs it through iverilog on the emitted SoC and diffs
-the architectural result against the ISS. 41 000 instructions is nothing in
-simulation; a kernel boot is the most expensive possible place to first learn
-about a decode disagreement. -/
+the architectural result against the ISS. -/
 def writeOpDiffHex (dir : String) : IO Unit := do
   let mut n := 0
   let emit : String → List (BitVec 64) → IO Unit := fun nm prog => do

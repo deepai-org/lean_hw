@@ -119,6 +119,9 @@ theorem Expr.eval_congr_of_agree : ∀ {w : Nat} (e : Expr w) {σ τ : St},
   | sub a b iha ihb =>
       intro σ τ h; simp only [Expr.readSites] at h
       simp [Expr.eval, iha h.append_left, ihb h.append_right]
+  | mul a b iha ihb =>
+      intro σ τ h; simp only [Expr.readSites] at h
+      simp [Expr.eval, iha h.append_left, ihb h.append_right]
   | shl a b iha ihb =>
       intro σ τ h; simp only [Expr.readSites] at h
       simp [Expr.eval, iha h.append_left, ihb h.append_right]

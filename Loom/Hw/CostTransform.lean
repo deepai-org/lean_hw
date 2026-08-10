@@ -235,6 +235,11 @@ hash-consed cost it is not: node identity is partly a name, so the intern
 table has to be carried along by the renaming, and the renaming has to be
 injective or the table gets *smaller*. Both facts are proved below. -/
 
+@[simp] theorem Expr.mulOperandWidth_mapSignals (f : String → String) :
+    ∀ {w : Nat} (e : Expr w), (e.mapSignals f).mulOperandWidth = e.mulOperandWidth := by
+  intro w e
+  induction e <;> simp [Expr.mapSignals, Expr.mulOperandWidth, *]
+
 theorem Expr.treeCost_mapSignals (f : String → String) :
     ∀ {w : Nat} (e : Expr w), (e.mapSignals f).treeCost = e.treeCost := by
   intro w e
@@ -318,7 +323,7 @@ theorem Expr.hc_mapSignals {f : String → String} (hf : ∀ x y, f x = f y → 
         = ((e.hc tbl).1, ((e.hc tbl).2).map (ENode.rename f)) := by
   intro w e
   induction e <;> intro tbl <;>
-    simp only [Expr.mapSignals, Expr.hc, *] <;>
+    simp only [Expr.mapSignals, Expr.hc, Expr.mulOperandWidth_mapSignals, *] <;>
     ((try split) <;> (try split) <;>
       first
         | (refine ENode.intern_map_rename_pure hf ?_ _; rfl)
@@ -432,6 +437,13 @@ theorem Expr.hc_weight_le : ∀ {w : Nat} (e : Expr w) (tbl : List ENode),
       simp only [ENode.weight]
       omega
   | sub a b iha ihb =>
+      intro tbl
+      have h1 := iha tbl; have h2 := ihb (a.hc tbl).2
+      simp only [Expr.hc, Expr.treeCost]
+      refine Nat.le_trans (nodesWeight_intern_le _ _) ?_
+      simp only [ENode.weight]
+      omega
+  | mul a b iha ihb =>
       intro tbl
       have h1 := iha tbl; have h2 := ihb (a.hc tbl).2
       simp only [Expr.hc, Expr.treeCost]

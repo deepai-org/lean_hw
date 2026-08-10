@@ -6,19 +6,9 @@
 # Usage (run from ~/substrate0):
 #   [NPNR_SEED=n] oxc7/build_oxc7_seed.sh <TOP> <xdc> <src.v> [src2.v ...]
 #
-# WHY THE GATE EXISTS (fpga_dev.md §71c, 2026-08-07). The previous version had
-# `set -e`, which looks like it covers this and does not: every stage is piped
-# into `tee`/`tail`, so the pipeline's exit status is the *filter's*, not the
-# tool's. A killed yosys therefore returned 0, the script walked straight on to
-# nextpnr against the json from the PREVIOUS build -- five hours old -- and
-# produced a .bit timestamped now, containing a core from then. It even
-# reported a plausible Fmax, because it was the old design's Fmax. The tell was
-# the timestamp pair (.bit at 18:20, .json at 03:02) and nothing else.
-#
-# A bitstream is the most expensive possible file to be lying about. So:
-# `pipefail` makes a dead tool fail the stage, and each stage additionally
-# asserts that its OUTPUT is newer than its INPUT. Belt and braces on purpose --
-# the pipefail fix alone would not catch a tool that exits 0 without writing.
+# `pipefail` preserves producer failures through `tee`/`tail`; every stage also
+# requires a nonempty output at least as new as all of its inputs. This prevents
+# a later stage from accepting an artifact left by an earlier build.
 #
 # This file is the source of truth (REPO_BOUNDARY.md); push it with
 # scripts/board_sync.sh rather than editing the copy on the board host, which
@@ -53,23 +43,10 @@ fresher() {
 
 echo "### [1/4] yosys synth ($TOP) ###"
 rm -f "$O.json"
-# YOSYS_SYNTH_FLAGS defaults to `-nodsp` so this script works on a STOCK
-# openXC7 of any version -- the only custom component in this project is Loom
-# itself, and a board flow that needs a patched tool is not a flow anyone else
-# can run.
-#
-# Why the default is needed: a native 64x64 multiply makes yosys infer DSP48E1
-# macros, and openXC7 up to 0.8.2 treats an unused terminal PCOUT cascade net
-# as fatal -- "Port PCOUT46 has no connections" -- although AMD documents
-# unused cascade outputs as leave-unconnected. Upstream fixed exactly this in
-# nextpnr-xilinx d01b24f5 (error -> warning), released in openXC7 0.9.2.
-#
-# So: on a stock 0.9.2 or newer host you may set YOSYS_SYNTH_FLAGS="" to get
-# the DSP implementation, which is the better one -- roughly 20 DSP48E1 of the
-# 220 on an xc7z020 in place of 3833 LUTs per multiplier. On this host's 0.8.2
-# the LUT fallback measures 59035/106400 = 55%, routed at iteration 17,
-# 32.86 MHz: it fits, with no headroom left. Do not patch the tool to avoid
-# that cost; upgrade the tool, or accept the LUTs.
+# The portable default is the current accepted artifact: stock openXC7 0.8.2
+# with `-nodsp` (59035/106400 LUTs, 32.86 MHz). Set YOSYS_SYNTH_FLAGS="" to
+# exercise DSP inference on openXC7 0.9.2 or newer. No DSP-enabled artifact is
+# currently accepted by the board ladder; see ../README.md.
 yosys -q -p "read_verilog $SRCS; synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS--nodsp} -top $TOP; write_json $O.json" 2>&1 | tee "$O.synth.log"
 fresher "$O.json" $SRCS "$XDC"
 

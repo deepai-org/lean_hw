@@ -12,9 +12,8 @@ declarations everywhere, slices index named wires only, and extensions are
 explicit concatenations — no reliance on Verilog's context-determined width
 rules, which is precisely the latitude the subset excludes.
 
-The parser (`Parse.lean`) and the round-trip theorem close the loop in task
-2.3's second half; until then the printed text is corroborated by
-simulator lockstep (`scripts/lockstep_*.sh`).
+The parser (`Parse.lean`) and round-trip theorem check the printed text against
+the formal module; simulator lockstep remains separate corroboration.
 -/
 
 namespace Loom.Emit.MicroVerilog.Print
@@ -50,6 +49,7 @@ def pExpr : {w : Nat} → Expr w → StateM PSt String
   | w, .not a => do fresh w s!"~{← pExpr a}"
   | w, .add a b => do fresh w s!"{← pExpr a} + {← pExpr b}"
   | w, .sub a b => do fresh w s!"{← pExpr a} - {← pExpr b}"
+  | w, .mul a b => do fresh w s!"{← pExpr a} * {← pExpr b}"
   | w, .shl a b => do fresh w s!"{← pExpr a} << {← pExpr b}"
   | w, .shr a b => do fresh w s!"{← pExpr a} >> {← pExpr b}"
   | _, .eq a b => do fresh 1 s!"{← pExpr a} == {← pExpr b}"
@@ -127,6 +127,7 @@ private unsafe def pExprMGo : {w : Nat} → Expr w → StateM MSt String
   | w, .not a => do freshM w s!"~{← pExprM a}"
   | w, .add a b => do freshM w s!"{← pExprM a} + {← pExprM b}"
   | w, .sub a b => do freshM w s!"{← pExprM a} - {← pExprM b}"
+  | w, .mul a b => do freshM w s!"{← pExprM a} * {← pExprM b}"
   | w, .shl a b => do freshM w s!"{← pExprM a} << {← pExprM b}"
   | w, .shr a b => do freshM w s!"{← pExprM a} >> {← pExprM b}"
   | _, .eq a b => do freshM 1 s!"{← pExprM a} == {← pExprM b}"

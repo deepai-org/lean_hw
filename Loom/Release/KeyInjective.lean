@@ -216,6 +216,7 @@ def keyOf : Rhs → String
   | .bin .xor x y => s!"{x} ^ {y}"
   | .bin .add x y => s!"{x} + {y}"
   | .bin .sub x y => s!"{x} - {y}"
+  | .bin .mul x y => s!"{x} * {y}"
   | .bin .shl x y => s!"{x} << {y}"
   | .bin .shr x y => s!"{x} >> {y}"
   | .bin .eq x y => s!"{x} == {y}"
@@ -233,6 +234,7 @@ def BinOp.keyChars : BinOp → List Char
   | .xor => ['^']
   | .add => ['+']
   | .sub => ['-']
+  | .mul => ['*']
   | .shl => ['<', '<']
   | .shr => ['>', '>']
   | .eq => ['=', '=']
@@ -548,6 +550,9 @@ theorem flatten_key_add (x y : String) :
 theorem flatten_key_sub (x y : String) :
     s!"{x} - {y}" = keyOf (.bin .sub x y) := rfl
 
+theorem flatten_key_mul (x y : String) :
+    s!"{x} * {y}" = keyOf (.bin .mul x y) := rfl
+
 theorem flatten_key_shl (x y : String) :
     s!"{x} << {y}" = keyOf (.bin .shl x y) := rfl
 
@@ -594,6 +599,7 @@ example : keyOf (.ident "n3") = "n3" := rfl
 example : keyOf (.memRead "mem0" "n1") = "mem0[n1]" := rfl
 example : keyOf (.slice "n2" 7 4) = "n2[7:4]" := rfl
 example : keyOf (.not "n2") = "~n2" := rfl
+example : keyOf (.bin .mul "a" "b") = "a * b" := rfl
 example : keyOf (.bin .shl "a" "b") = "a << b" := rfl
 example : keyOf (.bin .ult "a" "b") = "a < b" := rfl
 example : keyOf (.slt "a" "b") = "$signed(a) < $signed(b)" := rfl
@@ -616,6 +622,7 @@ example : keyOf (.sext 24 "n5" 7) = "{{24{n5[7]}}, n5}" := rfl
 #print axioms flatten_key_xor
 #print axioms flatten_key_add
 #print axioms flatten_key_sub
+#print axioms flatten_key_mul
 #print axioms flatten_key_shl
 #print axioms flatten_key_shr
 #print axioms flatten_key_eq

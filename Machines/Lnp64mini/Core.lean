@@ -427,7 +427,7 @@ def gdepthRd (idx : Expr 5) : Expr 3 := gdepthBank.rd idx
 /-- Stack address `cur*MAXD + off` for `tcont`/`tcdom` (MAXD=4 ⇒ `cur<<2 | off`).
 `off` is the depth slot; the low 2 bits suffice since `off < MAXD = 4`. -/
 def gcIdx (off : Expr 3) : Expr 7 :=
-  .or (.shl (.zext cur 7) (.lit (BitVec.ofNat 7 2))) (.zext (.slice off 0 2) 7)
+  .concat cur (.slice off 0 2)
 /-- The stack is full: `gdepth[cur] >= MAXD`. A `gate_call` here is refused
 (§9: a clean bounds-checked overflow), not silently overwriting a frame. -/
 def gateFull : Expr 1 := .not (.ult (gdepthRd cur) (.lit (BitVec.ofNat 3 MAXD)))
@@ -525,18 +525,11 @@ it cannot choose), `cmd 58` (host/debug), and gate call/return — which move
 a thread only to a domain the host installed in the gate table. **There is
 no instruction that lets a thread name a domain and go there.**
 
-The gate table is two small memories: `gate_ent[g]` (entry PC) and
-`gate_dom[g]` (target domain), 16 gates, loaded by the host. A gate call
-saves the return point in the caller's own slot (`tcont[cur]`, `tcdom[cur]`)
-and sets `in_gate[cur]`; a gate return restores them.
-
-**Deviation — the continuation is depth 1, not a stack.** §9 has a
-continuation *stack*; `in_gate` is a bitmap and a second `gate_call` from
-inside a gate is refused (`rd = -1`, no state change) rather than nesting.
-Per-thread stacks are 32 stacks, and EXT-4 just taught this campaign what
-duplicating per-slot structure costs. Depth 1 is enough to demonstrate
-mediation — the property that matters — and the shape generalises: making
-`tcont`/`tcdom` two-deep is a width change, not a redesign.
+The gate descriptor table lives in memory and supplies the entry PC, target
+domain, and validity state. A gate call pushes the return point and prior
+domain on the caller's bounded continuation stack and sets `in_gate[cur]`; a
+gate return pops and restores that frame. Calls fail closed on an invalid
+descriptor or full continuation stack.
 
 **Deviation — opcodes.** §9 assigns `gate_call`/`gate_return` to 0xa0/0xa1,
 but mini's decoder already uses 0xa0–0xba for ALU-immediate ops, so mini's
@@ -548,17 +541,11 @@ def in_gate : Expr 32 := inGateReg.rd
 /-! ### The fault record (spec 1235f201 conformance)
 
 The mini has no fault vectors; its fault story is EXT-3 fail-stop. An
-architectural fault therefore poisons the offending slot IN-CORE (the same
-bitmap `CMD_POISON` writes -- the runner stops at the instruction boundary,
-`running` drops, the host reads the cause) and records what/where/who. The
-faulting instruction does not retire and `pc` stays AT it: precise.
+architectural fault therefore poisons the offending slot in-core, stops at
+the instruction boundary, and records what/where/who. The faulting instruction
+does not retire and `pc` remains at it.
 
-Causes: 1 = `GATE_RETURN` with no continuation frame (§9.2 step 4: a
-synchronous fault, never a fall-through -- the silent no-op cost three
-debugging campaigns before the spec made it illegal); 2 = opcode 0 (the
-spec's "illegal-instruction forever": zeroed memory faults in every
-implementation -- previously the mini non-conformantly trapped it to the
-committed-exec host). -/
+Causes: 1 = `GATE_RETURN` with no continuation frame; 2 = illegal opcode 0. -/
 def FAULT_GRET_EMPTY : Nat := 1
 def FAULT_ILLEGAL_OP0 : Nat := 2
 def fault_cause : Expr 8  := faultCauseReg.rd
@@ -864,12 +851,8 @@ def OP_SEXT_W : Nat := 0x3a
 def OP_ZEXT_B : Nat := 0x3b
 def OP_ZEXT_H : Nat := 0x3c
 def OP_ZEXT_W : Nat := 0x3d
-/-- §4's pinned corner is `clz(0) = ctz(0) = 64`. The core implemented
-exactly half of that sentence: `ctz` was here and `clz` was not, so the
-assembler emitted `0x3e` and the core trapped on it. Found 2026-08-07 by the
-derived Appendix D suite, which is the first check that reads the spec rather
-than this file's own table -- `check_opcode_coverage.py` measures the design
-against itself and is structurally blind to an op the design never named. -/
+/-- §4 pins `clz(0) = ctz(0) = 64`; the derived Appendix D suite checks both
+the opcode's presence and this zero-input corner. -/
 def OP_CLZ : Nat := 0x3e
 def OP_CTZ : Nat := 0x3f
 def OP_ROL : Nat := 0x23
@@ -967,7 +950,7 @@ def opIs (n : Nat) : Expr 1 := .eq op (L8 n)
 def opAny (ns : List Nat) : Expr 1 := orTree (ns.map opIs)
 
 def is_alu : Expr 1 :=
-  opAny [OP_LIU,OP_MOV,OP_ADD,OP_SUB,OP_AND,OP_OR,OP_XOR,OP_NOT,OP_LSL,OP_LSR,OP_ASR,OP_SLT,OP_SLTU,
+  opAny [OP_LIU,OP_MOV,OP_ADD,OP_SUB,OP_MUL,OP_AND,OP_OR,OP_XOR,OP_NOT,OP_LSL,OP_LSR,OP_ASR,OP_SLT,OP_SLTU,
    OP_ADDI,OP_ANDI,OP_ORI,OP_XORI,OP_LSLI,OP_LSRI,OP_ASRI,OP_SLTI,OP_SLTIU,OP_AUIPC,
    OP_SEXT_B,OP_SEXT_H,OP_SEXT_W,OP_ZEXT_B,OP_ZEXT_H,OP_ZEXT_W,OP_BSWAP16,OP_BSWAP32,OP_BSWAP64,OP_ROL,OP_ROR,OP_CTZ,OP_CLZ]
 
@@ -998,6 +981,10 @@ def asr (x : Expr 64) (sh : Expr 6) : Expr 64 :=
 /-- ROL/ROR helper: `6'd0 - amt` (6-bit wrap). -/
 def negShamt (amt : Expr 6) : Expr 6 := .sub (.lit (BitVec.ofNat 6 0)) amt
 
+/-- Ordinary low-half multiply is intentionally a direct combinational
+operator. High-half variants retain the area-oriented `S_MUL` shift-add path. -/
+def mulE : Expr 64 := .mul a b
+
 /-- CTZ: lowest set bit index (64 if a==0). Downward scan, index 0 outermost
 — built as a balanced `priTree` (first-match-wins ⇒ lowest set bit still
 wins), depth 64 → ~2·log₂64. -/
@@ -1019,7 +1006,8 @@ def aluE : Expr 64 :=
   [ (opIs OP_MOV, a)
   , (opIs OP_ADD, .add a b)
   , (opIs OP_SUB, .sub a b)
-  , (opIs OP_LIU, .or (.zext (.slice a 0 32) 64) (.shl (.zext (.slice imm_i 0 32) 64) (L64 32)))
+  , (opIs OP_MUL, mulE)
+  , (opIs OP_LIU, .concat (.slice imm_i 0 32) (.slice a 0 32))
   , (opIs OP_AND, .and a b)
   , (opIs OP_OR, .or a b)
   , (opIs OP_XOR, .xor a b)
@@ -1224,7 +1212,7 @@ def hp_core_owns : Expr 1 :=
 /-! ## {cur,reg} 10-bit index helpers -/
 
 def cat55 (hi lo : Expr 5) : Expr 10 :=
-  .or (.shl (.zext hi 10) (.lit (BitVec.ofNat 10 5))) (.zext lo 10)
+  .concat hi lo
 
 /-! ## The rf write funnel
 
@@ -1443,7 +1431,7 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   [ (zeroing, .zext zctr 10, L64 0)
   -- 2. cmd 52 (wins over zeroing)
   , (.and cmdValid (.and (.eq cmdIdx (L7 52)) (.not (.eq reg_wsel (L5 0)))),
-       cat55 cur reg_wsel, .or (.shl (.zext cmdData 64) (L64 32)) (.zext reg_wlo 64))
+       cat55 cur reg_wsel, .concat cmdData reg_wlo)
   -- 3. FSM writes (mutually exclusive)
   -- §9.2: the activation installs the return sentinel in `ra` (r1). This is
   -- what makes the handler an ordinary function -- its `ret` jumps here and
@@ -1742,7 +1730,7 @@ where
     .seq (.ite (ci 17)
       (.seq (dmemWeReg.set (L1 1))
         (.seq (dmemAReg.set (.slice dmem_addr_j 0 9))
-              (dmemWdReg.set (.or (.shl (.zext cmdData 64) (L64 32)) (.zext dmem_lo_j 64))))) .skip) <|
+              (dmemWdReg.set (.concat cmdData dmem_lo_j)))) .skip) <|
     .seq (.ite (ci 18) (uartRidxReg.set (.slice cmdData 0 8)) .skip) <|
     .seq (.ite (ci 19)
       (.seq (rxBank.write 0 (.slice rx_wptr 0 8) (.slice cmdData 0 8))
@@ -1751,7 +1739,7 @@ where
     .seq (.ite (ci 41) (ddrLoJReg.set cmdData) .skip) <|
     .seq (.ite (ci 42)
       (.seq (jtagWrReg.set (L1 1))
-        (.seq (jtagWdataReg.set (.or (.shl (.zext cmdData 64) (L64 32)) (.zext ddr_lo_j 64)))
+        (.seq (jtagWdataReg.set (.concat cmdData ddr_lo_j))
               (ddrAddrJReg.set (.add ddr_addr_j (L32 8))))) .skip) <|
     .seq (.ite (ci 43) (jtagRdReg.set (L1 1)) .skip) <|
     -- EXT-8: select a commit-trace ring entry to read back. The ring itself
@@ -2218,12 +2206,8 @@ def s_ex_branches : List (Expr 1 × Act) :=
   gcons (opIs OP_NOP) (.seq stepPc (.seq retireInc goF0)) <|
   -- fence
   gcons is_fence (.seq stepPc (.seq retireInc goF0)) <|
-  -- 0x12 MUL
-  gcons (opIs OP_MUL)
-    (.seq (mulAccReg.set (.lit (BitVec.ofNat 128 0)))
-      (.seq (mulAwReg.set (.zext a 128))
-        (.seq (mulBReg.set b) (.seq (mulKindReg.set (L2 0)) (stReg.set (L5 S_MUL)))))) <|
-  -- mulh
+  -- High-half multiplies retain the area-oriented shift-add implementation;
+  -- ordinary MUL is a direct `Expr.mul` ALU operation above.
   gcons is_mulh
     (.seq (mulAccReg.set (.lit (BitVec.ofNat 128 0)))
       (.seq (mulAwReg.set (.zext a 128))
@@ -2231,14 +2215,8 @@ def s_ex_branches : List (Expr 1 × Act) :=
           (.seq (mulKindReg.set (.mux (opIs OP_MULH) (L2 1) (L2 2))) (stReg.set (L5 S_MUL)))))) <|
   -- div
   gcons is_div
-    -- §4.1: "Division and remainder are non-trapping with defined results
-    -- (so the compiler never inserts guard branches)". This arm used to
-    -- trap, which made the parenthetical false: clang emits a bare `div`,
-    -- so a guest divide-by-zero took a fault the generated code was
-    -- promised could not happen. The derived Appendix D suite found it
-    -- (2026-08-07, its first real deviation). SIGFPE is a POSIX personality
-    -- event and belongs above the ISA (§13/Law 6: decoded semantics are
-    -- personality-neutral), not in the divider.
+    -- §4.1 makes division and remainder total and non-trapping. SIGFPE is a
+    -- personality-level event, not part of these decoded ISA semantics.
     (.ite (.eq b (L64 0))
       (.seq stepPc (.seq retireInc goF0))
       (.seq (divRemReg.set (L64 0))
@@ -2278,16 +2256,8 @@ def s_ex_branches : List (Expr 1 × Act) :=
             retireInc)) <|
   -- 0xcb FUTEX_WAIT
   gcons (opIs OP_FUTEX_WAIT)
-    -- EXT-7 stage B bug, found on silicon (2026-08-05, both stage-B boots):
-    -- this address was computed RAW -- DATA_BASE + (rdval & ~7) -- bypassing
-    -- ddrEa entirely. Under the identity map raw == translated, so it was
-    -- invisible through stage A, every selftest, and the first shipped
-    -- bitstream. Under stage B the SMP gate word (guest 0x940240) lives in
-    -- the relocated region: stores to it went through the TLB to +0x800000,
-    -- the futex compare read the unrelocated address, the compare failed
-    -- forever, and core 0 spun in __lnp_futex_wait at half a billion retires
-    -- with ZERO traps. The futex compare is a data access; it goes through
-    -- ddrEa like every other data access.
+    -- The futex comparison is an ordinary data access and must pass through
+    -- the same translation path as loads and stores.
     (.seq (coreAddrReg.set (ddrEa sexEa))
       (.seq (coreRdReg.set (L1 1))
         (.seq (futexAddrQReg.set rdval) (.seq (futexExpReg.set a) (stReg.set (L5 S_FTX1)))))) <|
@@ -2500,7 +2470,7 @@ def s_mul : Expr 1 × Act := stArm S_MUL
 def s_div : Expr 1 × Act := stArm S_DIV
   (.ite (.eq div_cnt (.lit (BitVec.ofNat 7 64)))
     (actSeq [stepPc, retireInc, goF0])
-    (let prem : Expr 65 := .or (.shl (.zext div_rem 65) (.lit (BitVec.ofNat 65 1))) (.zext (.slice div_quo 63 1) 65)
+    (let prem : Expr 65 := .concat div_rem (.slice div_quo 63 1)
      let divd65 : Expr 65 := .zext div_d 65
      actSeq [
        .ite (.not (.ult prem divd65))

@@ -7,6 +7,24 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Technology-neutral datapath multiplication and concatenation:** the typed
+  expression language now carries same-width modular multiplication through
+  reference semantics, proved compilation, optimized and shared-DAG
+  evaluation, analysis and transformation passes, concrete SSA certificates,
+  and the µVerilog parser/printer. Emission uses plain `*`, leaving DSP or gate
+  inference to downstream tools. `Expr.concat` / `++#` provides typed high/low
+  concatenation by lowering to the existing proved primitive algebra.
+  `Expr.umulWide` and `Expr.smulWide` similarly provide complete unsigned and
+  two's-complement products without adding parallel compiler or certificate
+  cases. Cost reporting recognizes extension wiring and charges the meaningful
+  operand widths rather than the widened result width squared.
+  LNP64mini now expresses ordinary low-half `MUL` with the generic operator,
+  while deliberately retaining its iterative shift-add engine for the
+  high-half `MULH`/`MULHU` operations; its canonical high/low assembly sites
+  use the typed concatenation constructor. The direct operator is accepted on
+  the current dual-core NetBSD board workload through the reproducible
+  stock-openXC7 `-nodsp` path; DSP inference remains a separate target-flow
+  optimization rather than a Loom semantic requirement.
 - **Generic runner, diagnostics, coverage, and artifact identity:**
   `Loom.Runner` now owns differential step control, bounded and immediately
   flushed events, closed coverage failures, and structured PASS/FAIL/SKIP

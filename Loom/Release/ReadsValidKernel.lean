@@ -30,7 +30,7 @@ def hwExprReadsOkB (program : Program) :
   | _, .lit _ => true
   | _, .memRead _ _ address => hwExprReadsOkB program address
   | _, .and left right | _, .or left right | _, .xor left right
-  | _, .add left right | _, .sub left right | _, .shl left right
+  | _, .add left right | _, .sub left right | _, .mul left right | _, .shl left right
   | _, .shr left right | _, .eq left right | _, .ult left right
   | _, .slt left right =>
       hwExprReadsOkB program left && hwExprReadsOkB program right

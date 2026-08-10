@@ -51,7 +51,8 @@ completely unaffected.
 | notation | meaning |
 | --- | --- |
 | `1`, `0xA` | `Expr.lit` at the expected width (`OfNat`) |
-| `a + b`, `a - b` | `Expr.add`, `Expr.sub` |
+| `a + b`, `a - b`, `a * b` | `Expr.add`, `Expr.sub`, `Expr.mul` |
+| `a ++# b` | `Expr.concat` (high bits followed by low bits) |
 | `a &&& b`, `a ||| b`, `a ^^^ b`, `~~~a` | bitwise |
 | `a <<< b`, `a >>> b` | shifts |
 | `a === b` | `Expr.eq` (width-1 result) |
@@ -189,6 +190,7 @@ scoped instance instOfNatExpr {w n : Nat} : OfNat (Expr w) n :=
 
 scoped instance {w : Nat} : Add (Expr w) := ⟨Expr.add⟩
 scoped instance {w : Nat} : Sub (Expr w) := ⟨Expr.sub⟩
+scoped instance {w : Nat} : Mul (Expr w) := ⟨Expr.mul⟩
 scoped instance {w : Nat} : AndOp (Expr w) := ⟨Expr.and⟩
 scoped instance {w : Nat} : OrOp (Expr w) := ⟨Expr.or⟩
 scoped instance {w : Nat} : XorOp (Expr w) := ⟨Expr.xor⟩
@@ -202,6 +204,8 @@ scoped infix:50 " === " => Expr.eq
 scoped infix:50 " <ᵤ " => Expr.ult
 /-- Signed less-than. -/
 scoped infix:50 " <ₛ " => Expr.slt
+/-- Concatenate high bits and low bits. -/
+scoped infixr:65 " ++# " => Expr.concat
 /-- `c ?? t ::: f` — the multiplexer. -/
 scoped notation:20 c " ?? " t " ::: " f => Expr.mux c t f
 

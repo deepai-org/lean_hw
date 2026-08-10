@@ -176,7 +176,7 @@ one entry exactly when the emitter would give them one wire, because
 | `{x}` (a `zext`, or a `sext` to its own width) | `rewire w a` |
 | `{{k{x[w-1]}}, x}` | `sextend w' w a` |
 
-Two deliberate deviations, both stated rather than hidden:
+Three deliberate deviations, all stated rather than hidden:
 
 * **`cmp` keeps its input width.** The emitter's key for a comparison is
   `(1, "a == b")` and drops the operand width; the cost key keeps it,
@@ -184,6 +184,14 @@ Two deliberate deviations, both stated rather than hidden:
   differ only for comparisons whose operands render to the same wire at
   two different widths, i.e. for a design with one name at two widths,
   which well-formedness already refuses.
+* **`mul` keeps meaningful operand widths.** Extension wiring is present in
+  the emitted DAG, but a full-width `m × n` product must not be costed as an
+  `(m+n) × (m+n)` multiplier. The cost key therefore records the widths below
+  leading zero/sign extension. This can distinguish multiply nodes whose
+  emitted operand wires coincide but whose extension provenance differs, so
+  it is a conservative refinement of emitter CSE rather than an
+  under-approximation. For ordinary and smart-constructor products with the
+  same child expressions, sharing remains identical.
 * **Wiring is free.** `slice`/`rewire`/`sextend` get a table entry (they
   are wires in the emitted text, and they matter as *operands* — sharing
   cascades through them) but weight `0`, as before.
@@ -198,9 +206,13 @@ algebra usable. The residual error therefore has a known sign —
 `bitOps` over-approximates the emitted node count, never under.
 -/
 
-/-- Binary bit-operators, as the emitter renders them. -/
+/-- Binary bit-operators corresponding to emitted operators. Multiplication
+also carries technology-neutral operand-width cost metadata. -/
 inductive EOp where
   | and | or | xor | add | sub | shl | shr
+  /-- A multiply whose operands contain `leftWidth` and `rightWidth`
+  meaningful bits. The emitted result still has the enclosing node width. -/
+  | mul (leftWidth rightWidth : Nat)
   deriving Repr, DecidableEq
 
 /-- Comparison operators, as the emitter renders them. -/
@@ -239,15 +251,17 @@ inductive ENode where
 /-- Width-weighted work of one emitted node.
 
 Weights are deliberately crude and technology-free: one unit per output
-bit per operator, with comparisons costing their *input* width (a 64-bit
-`eq` is 64 bits of work producing 1), and slices/extensions costing
-nothing because they are wiring on every technology. Memory *banks* are
-counted in `Cost.macroBits`/`Cost.softBits`, not here. Calibration is where
-a target says what a unit is worth; it is not this function's business. -/
+bit for ordinary operators, comparisons cost their *input* width (a 64-bit
+`eq` is 64 bits of work producing 1), and a multiply costs the product of
+its operands' meaningful widths. Slices/extensions cost nothing because
+they are wiring on every technology. Memory *banks* are counted in
+`Cost.macroBits`/`Cost.softBits`, not here. Calibration is where a target
+says what a unit is worth; it is not this function's business. -/
 def ENode.weight : ENode → Nat
   | .lit _ _        => 0
   | .sig _          => 0
   | .mem _ _ _      => 0
+  | .bin (.mul wa wb) _ _ _ => wa * wb
   | .bin _ w _ _    => w
   | .neg w _        => w
   | .cmp _ iw _ _   => iw
@@ -271,6 +285,14 @@ def ENode.intern (n : ENode) (tbl : List ENode) : Nat × List ENode :=
   match n.find? tbl 0 with
   | some i => (i, tbl)
   | none   => (tbl.length, tbl ++ [n])
+
+/-- Width that contributes independent information to a multiply operand.
+Extension wiring does not turn an `n`-bit operand into an intrinsically wider
+multiplier input. Other expressions conservatively use their full width. -/
+def Expr.mulOperandWidth : {w : Nat} → Expr w → Nat
+  | w, .zext a _ => min w a.mulOperandWidth
+  | w, .sext a _ => min w a.mulOperandWidth
+  | w, _ => w
 
 /-- Intern every subexpression of `e` into `tbl`, returning `e`'s node
 index and the extended table. Mirrors `Print.pExprM` one constructor at a
@@ -299,6 +321,9 @@ def Expr.hc : {w : Nat} → Expr w → List ENode → Nat × List ENode
   | w, .sub a b, t =>
       let ra := Expr.hc a t; let rb := Expr.hc b ra.2
       ENode.intern (.bin .sub w ra.1 rb.1) rb.2
+  | w, .mul a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin (.mul a.mulOperandWidth b.mulOperandWidth) w ra.1 rb.1) rb.2
   | w, .shl a b, t =>
       let ra := Expr.hc a t; let rb := Expr.hc b ra.2
       ENode.intern (.bin .shl w ra.1 rb.1) rb.2
@@ -366,6 +391,7 @@ def Expr.treeCost {w : Nat} : Expr w → Nat
   | .not a        => w + a.treeCost
   | .add a b      => w + a.treeCost + b.treeCost
   | .sub a b      => w + a.treeCost + b.treeCost
+  | .mul a b      => a.mulOperandWidth * b.mulOperandWidth + a.treeCost + b.treeCost
   | .shl a b      => w + a.treeCost + b.treeCost
   | .shr a b      => w + a.treeCost + b.treeCost
   | @Expr.eq w' a b  => w' + a.treeCost + b.treeCost
@@ -389,7 +415,7 @@ def Expr.regReads {w : Nat} (n : String) : Expr w → Nat
   | .lit _ => 0
   | .reg _ m => if m = n then 1 else 0
   | .memRead _ _ a => a.regReads n
-  | .and a b | .or a b | .xor a b | .add a b | .sub a b
+  | .and a b | .or a b | .xor a b | .add a b | .sub a b | .mul a b
   | .shl a b | .shr a b => a.regReads n + b.regReads n
   | @Expr.eq _ a b | @Expr.ult _ a b | @Expr.slt _ a b =>
       a.regReads n + b.regReads n

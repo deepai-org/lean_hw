@@ -96,7 +96,8 @@ private unsafe def exprHash : {w : Nat} →
       let base := tagged (match expr with
         | .lit .. => 0 | .reg .. => 1 | .memRead .. => 2
         | .and .. => 3 | .or .. => 4 | .xor .. => 5 | .not .. => 6
-        | .add .. => 7 | .sub .. => 8 | .shl .. => 9 | .shr .. => 10
+        | .add .. => 7 | .sub .. => 8 | .mul .. => 18
+        | .shl .. => 9 | .shr .. => 10
         | .eq .. => 11 | .ult .. => 12 | .slt .. => 13 | .mux .. => 14
         | .slice .. => 15 | .zext .. => 16 | .sext .. => 17) w
       let result ← match expr with
@@ -106,7 +107,8 @@ private unsafe def exprHash : {w : Nat} →
             pure (mixHash (mixHash (mixHash base (hash width)) (hash mem))
               (← exprHash address))
         | .and left right | .or left right | .xor left right
-        | .add left right | .sub left right | .shl left right
+        | .add left right | .sub left right | .mul left right
+        | .shl left right
         | .shr left right | .eq left right | .ult left right
         | .slt left right => do
             pure (mixHash (mixHash base (← exprHash left)) (← exprHash right))
@@ -677,7 +679,7 @@ private structure RuntimeIndexState where
 
 private def binaryTag : Loom.Release.SSA.BinOp → Nat
   | .and => 3 | .or => 4 | .xor => 5 | .add => 7 | .sub => 8
-  | .shl => 9 | .shr => 10 | .eq => 11 | .ult => 12
+  | .mul => 18 | .shl => 9 | .shr => 10 | .eq => 11 | .ult => 12
 
 private def runtimeRefData (state : RuntimeIndexState)
     (reference : Symbolic.Ref) : Option (UInt64 × Nat) := do
