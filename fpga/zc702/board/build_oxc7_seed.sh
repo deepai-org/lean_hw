@@ -53,7 +53,13 @@ fresher() {
 
 echo "### [1/4] yosys synth ($TOP) ###"
 rm -f "$O.json"
-yosys -q -p "read_verilog $SRCS; synth_xilinx -flatten -nowidelut -top $TOP; write_json $O.json" 2>&1 | tee "$O.synth.log"
+# YOSYS_SYNTH_FLAGS: extra `synth_xilinx` flags for this target. The board
+# flow needs `-nodsp` while openXC7 cannot complete an inferred DSP48: a
+# native 64x64 multiply makes yosys emit a DSP macro and the flow dies with
+# "Port PCOUT46 has no connections" (2026-08-10). Measured cost of the
+# fallback on this device: 3833 LUTs per multiplier, so two cores move the
+# dual from ~46% to ~53% -- inside the reseed-lottery band, not free.
+yosys -q -p "read_verilog $SRCS; synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS:-} -top $TOP; write_json $O.json" 2>&1 | tee "$O.synth.log"
 fresher "$O.json" $SRCS "$XDC"
 
 echo "### [2/4] nextpnr-xilinx P&R ###"
