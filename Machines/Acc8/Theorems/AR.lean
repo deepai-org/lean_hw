@@ -208,7 +208,9 @@ theorem square (σ : Loom.Hw.St) :
 /-- Reset abstracts to boot. -/
 private theorem abs_reset (prog : BitVec 8 → BitVec 16) :
     Core.abs (Core.design prog).reset = boot prog := by
-  simp only [Core.abs, Core.design, Design.reset, boot]
+  simp only [Core.abs, Core.design, Core.declarations, Design.ofDecls,
+    Declarations.empty, Declarations.addReg, Declarations.addMem,
+    Reg.decl, Mem.decl, Design.reset, boot]
   refine St.mk.injEq .. ▸ ⟨?_, ?_, ?_, ?_, ?_⟩
   all_goals simp [List.foldl, RegEnv.set]
   funext address

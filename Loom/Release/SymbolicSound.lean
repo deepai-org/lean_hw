@@ -397,7 +397,7 @@ theorem refWidthBefore_raw
                 by_cases equal : checkedRaw.name = (Ref.wire number).render
                 · exact equal
                 · exfalso
-                  simp [guard, equal, optionFailure] at accepted
+                  simp [equal, optionFailure] at accepted
               have widthEq : indexed.width = width := by
                 simpa [guard, nameEq] using accepted
               have positive : table.leafSize > 0 := by
@@ -416,7 +416,7 @@ theorem refWidthBefore_raw
               exact .wire earlier rawAt nameEq
       · simp only [earlier, guard] at accepted
         exfalso
-        simp [guard, earlier, optionFailure] at accepted
+        simp [optionFailure] at accepted
   | namedWire number name =>
       unfold refWidthBefore? at accepted
       by_cases earlier : number < current
@@ -433,7 +433,7 @@ theorem refWidthBefore_raw
                 by_cases equal : checkedRaw.name = name
                 · exact equal
                 · exfalso
-                  simp [guard, equal, optionFailure] at accepted
+                  simp [equal, optionFailure] at accepted
               have widthEq : indexed.width = width := by
                 simpa [guard, nameEq] using accepted
               have positive : table.leafSize > 0 := by
@@ -452,7 +452,7 @@ theorem refWidthBefore_raw
               exact .namedWire earlier rawAt nameEq
       · simp only [earlier, guard] at accepted
         exfalso
-        simp [guard, earlier, optionFailure] at accepted
+        simp [optionFailure] at accepted
 
 /-- Raw, generator-independent typing judgment corresponding to
 `SSA.Rhs.elaborate`. -/

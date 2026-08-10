@@ -64,7 +64,7 @@ some are now **false** — each is labelled.
   before, and are why `par_cost_le` takes read-disjointness as a hypothesis.
 * **The two memory dimensions are conditional**, unchanged.
   `macroBits`/`softBits` are the only entries that consult the target,
-  through `MemTarget.familyOf t d md`, which reads the *whole design*.
+  through `MemTarget.classOf t d md`, which reads the *whole design*.
   Renaming or composing feeds a different design to the predictor, and the
   invariance of that predictor under an injective renaming is taken as a
   hypothesis (`hfam`) rather than proved. The memory-free corollaries
@@ -189,7 +189,7 @@ private theorem foldl_max_append {α : Type} (h : α → Nat) (l1 l2 : List α) 
 
 `Design.cost` is a `let`-heavy definition and the combinators are structure
 literals; unfolding both at once rewrites the design *inside*
-`MemTarget.familyOf` and loses the hypotheses. These `rfl` lemmas expose one
+`MemTarget.classOf` and loses the hypotheses. These `rfl` lemmas expose one
 dimension at a time instead. -/
 
 private theorem cost_stateBits (d : Design) (t : MemTarget) :
@@ -203,7 +203,7 @@ private theorem cost_bitOps (d : Design) (t : MemTarget) :
 private theorem cost_macroBits (d : Design) (t : MemTarget) :
     (d.cost t).macroBits
       = d.mems.foldl (fun acc m =>
-          if t.familyOf d m == MemFamily.bram then
+          if t.classOf d m == MemClass.macro then
             acc + m.dataWidth * 2 ^ m.addrWidth else acc) 0 := rfl
 
 private theorem cost_softBits (d : Design) (t : MemTarget) :
@@ -616,8 +616,8 @@ proved in this repo — so it is a hypothesis here, not an assumption hidden
 inside a proof. -/
 theorem prefixed_cost (p : String) (d : Design) (t : MemTarget)
     (hfam : ∀ md ∈ d.mems,
-      t.familyOf (d.prefixed p) { md with name := p ++ md.name }
-        = t.familyOf d md) :
+      t.classOf (d.prefixed p) { md with name := p ++ md.name }
+        = t.classOf d md) :
     (d.prefixed p).cost t = d.cost t := by
   have hmacro :
       ((d.prefixed p).cost t).macroBits = (d.cost t).macroBits := by
@@ -651,31 +651,31 @@ theorem par_bitOps (a b : Design) (t : MemTarget) :
   rw [foldl_add_append (fun rl : Rule => rl.body.cost)]
 
 /-- The memory dimensions need the same prediction hypothesis `prefixed`
-does, for the same reason: `familyOf` reads the whole (now composite)
+does, for the same reason: `classOf` reads the whole (now composite)
 design. -/
 theorem par_macroBits (a b : Design) (t : MemTarget)
-    (hfa : ∀ md ∈ a.mems, t.familyOf (a.par b) md = t.familyOf a md)
-    (hfb : ∀ md ∈ b.mems, t.familyOf (a.par b) md = t.familyOf b md) :
+    (hfa : ∀ md ∈ a.mems, t.classOf (a.par b) md = t.classOf a md)
+    (hfb : ∀ md ∈ b.mems, t.classOf (a.par b) md = t.classOf b md) :
     ((a.par b).cost t).macroBits
       = (a.cost t).macroBits + (b.cost t).macroBits := by
   rw [cost_macroBits, cost_macroBits, cost_macroBits, par_mems, List.foldl_append]
   rw [foldl_congr_mem (l := a.mems)
       (f := fun acc (m : MemDecl) =>
-        if t.familyOf (a.par b) m == MemFamily.bram then
+        if t.classOf (a.par b) m == MemClass.macro then
           acc + m.dataWidth * 2 ^ m.addrWidth else acc)
       (g := fun acc (m : MemDecl) =>
-        if t.familyOf a m == MemFamily.bram then
+        if t.classOf a m == MemClass.macro then
           acc + m.dataWidth * 2 ^ m.addrWidth else acc)
       (fun md hmd c => by simp only [hfa md hmd]) 0]
   rw [foldl_congr_mem (l := b.mems)
       (f := fun acc (m : MemDecl) =>
-        if t.familyOf (a.par b) m == MemFamily.bram then
+        if t.classOf (a.par b) m == MemClass.macro then
           acc + m.dataWidth * 2 ^ m.addrWidth else acc)
       (g := fun acc (m : MemDecl) =>
-        if t.familyOf b m == MemFamily.bram then
+        if t.classOf b m == MemClass.macro then
           acc + m.dataWidth * 2 ^ m.addrWidth else acc)
       (fun md hmd c => by simp only [hfb md hmd])]
-  exact foldl_ite_add (fun m => t.familyOf b m == MemFamily.bram) b.mems _
+  exact foldl_ite_add (fun m => t.classOf b m == MemClass.macro) b.mems _
 
 /-- **Composition is monotone against `Cost.add`.**
 
@@ -684,8 +684,8 @@ the module docstring. `hab`/`hba` say the parts do not read each other's
 registers — the aliasing `Design.parOkB` refuses; without them the
 `maxFanout` component is genuinely false (`par_maxFanout_gt`). -/
 theorem par_cost_le (a b : Design) (t : MemTarget)
-    (hfa : ∀ md ∈ a.mems, t.familyOf (a.par b) md = t.familyOf a md)
-    (hfb : ∀ md ∈ b.mems, t.familyOf (a.par b) md = t.familyOf b md)
+    (hfa : ∀ md ∈ a.mems, t.classOf (a.par b) md = t.classOf a md)
+    (hfb : ∀ md ∈ b.mems, t.classOf (a.par b) md = t.classOf b md)
     (hab : ∀ r ∈ a.regs, ∀ rl ∈ b.rules, rl.body.regReads r.name = 0)
     (hba : ∀ r ∈ b.regs, ∀ rl ∈ a.rules, rl.body.regReads r.name = 0) :
     (a.par b).cost t ≤ a.cost t + b.cost t := by
@@ -760,14 +760,26 @@ private def fanD : Design where
   rules := [{ name := "r", body := .write 1 "x" (.reg 1 "x") }]
   outputs := ["x"]
 
+/-- Arbitrary technology-neutral profile used only to evaluate a memory-free
+counterexample; none of its target fields can affect the result. -/
+private def fanTarget : MemTarget where
+  name := "logical"
+  macroName := "macro"
+  softName := "soft memory"
+  maxMacroWritePorts := 0
+  macroMinDataBits := 0
+  macroMinDepth := 0
+  macroInitDeliverable := false
+  softInitDeliverable := false
+
 theorem par_maxFanout_gt :
-    ((fanD.par fanD).cost MemTarget.xc7).maxFanout
-      > (fanD.cost MemTarget.xc7 + fanD.cost MemTarget.xc7).maxFanout := by
+    ((fanD.par fanD).cost fanTarget).maxFanout
+      > (fanD.cost fanTarget + fanD.cost fanTarget).maxFanout := by
   decide
 
 theorem par_cost_not_le :
-    ¬ ((fanD.par fanD).cost MemTarget.xc7
-        ≤ fanD.cost MemTarget.xc7 + fanD.cost MemTarget.xc7) := by
+    ¬ ((fanD.par fanD).cost fanTarget
+        ≤ fanD.cost fanTarget + fanD.cost fanTarget) := by
   intro h
   obtain ⟨-, -, -, -, hfan⟩ := h
   exact absurd hfan (by decide)

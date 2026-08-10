@@ -26,24 +26,28 @@
 #   scripts/emit_all.sh --check   # non-zero if any .v differs from a fresh emit
 set -uo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lib/diagnostics.sh
 CHECK_ONLY=0; [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
 if [ "$CHECK_ONLY" = 1 ]; then
   T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
   for f in rtl/*.v; do [ -f "$f" ] && cp "$f" "$T/$(basename "$f")"; done
+  [ -f fpga/zc702/board/lnp64mini_debug_map.vh ] &&
+    cp fpga/zc702/board/lnp64mini_debug_map.vh "$T/lnp64mini_debug_map.vh"
 fi
 
-lake build >/dev/null 2>&1 || { echo "emit_all: lake build FAILED"; exit 1; }
+loom_run_step emit_all "lake build" lake build || exit $?
 
 # --- the producer list. Add new designs HERE and nowhere else. ---
-lake exe emit >/dev/null 2>&1 || { echo "emit_all: lake exe emit FAILED"; exit 1; }
+loom_run_step emit_all "generic emit" lake exe emit || exit $?
+loom_run_step emit_all "debug map" lake exe debugmap || exit $?
 for t in "" soc dual; do
-  lake env lean --run Machines/Lnp64mini/Emit.lean $t >/dev/null 2>&1 \
-    || { echo "emit_all: Lnp64mini/Emit.lean '$t' FAILED"; exit 1; }
+  loom_run_step emit_all "LNP64mini ${t:-core}" \
+    lake env lean --run Machines/Lnp64mini/Emit.lean "$t" || exit $?
 done
-lake env lean --run Machines/Epoch/Emit.lean soc    >/dev/null 2>&1 || { echo "emit_all: Epoch soc FAILED"; exit 1; }
-lake env lean --run Machines/Epoch/Emit.lean engine >/dev/null 2>&1 || { echo "emit_all: Epoch engine FAILED"; exit 1; }
-lake env lean --run Machines/CapWalk/Emit.lean soc  >/dev/null 2>&1 || { echo "emit_all: CapWalk soc FAILED"; exit 1; }
+loom_run_step emit_all "Epoch soc" lake env lean --run Machines/Epoch/Emit.lean soc || exit $?
+loom_run_step emit_all "Epoch engine" lake env lean --run Machines/Epoch/Emit.lean engine || exit $?
+loom_run_step emit_all "CapWalk soc" lake env lean --run Machines/CapWalk/Emit.lean soc || exit $?
 
 if [ "$CHECK_ONLY" = 1 ]; then
   FAIL=0
@@ -53,8 +57,21 @@ if [ "$CHECK_ONLY" = 1 ]; then
       cmp -s "$f" "$b" || { printf '  STALE  %s\n' "$(basename "$f")"; FAIL=1; }
     else printf '  NEW    %s (was not on disk before)\n' "$(basename "$f")"; FAIL=1; fi
   done
-  [ "$FAIL" = 0 ] && echo "emit_all: OK — every .v matches a fresh emit" \
-                  || echo "emit_all: STALE — the RTL on disk is not what the sources emit"
+  if [ -f "$T/lnp64mini_debug_map.vh" ]; then
+    cmp -s fpga/zc702/board/lnp64mini_debug_map.vh "$T/lnp64mini_debug_map.vh" ||
+      { printf '  STALE  %s\n' "lnp64mini_debug_map.vh"; FAIL=1; }
+  else
+    printf '  NEW    %s (was not on disk before)\n' "lnp64mini_debug_map.vh"; FAIL=1
+  fi
+  if [ "$FAIL" = 0 ]; then
+    python3 scripts/artifact_identity.py identify rtl/*.v \
+      fpga/zc702/board/lnp64mini_debug_map.vh
+    loom_result emit_all PASS "every emitted artifact matches a fresh emit"
+  else
+    loom_result emit_all FAIL "the emitted artifacts on disk are stale"
+  fi
   exit "$FAIL"
 fi
-echo "emit_all: OK — $(ls rtl/*.v | wc -l) designs emitted"
+python3 scripts/artifact_identity.py identify rtl/*.v \
+  fpga/zc702/board/lnp64mini_debug_map.vh
+loom_result emit_all PASS "$(ls rtl/*.v | wc -l) designs + LNP64mini debug map emitted"

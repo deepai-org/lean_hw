@@ -4,6 +4,7 @@ import Machines.Substrate.S0Blinky
 import Machines.Substrate.S13Soak
 import Machines.Substrate.S0BscanRegs
 import Machines.Substrate.RetimeDemo
+import Machines.Substrate.FanoutDemo
 import Machines.Substrate.S1Counters
 
 /-!
@@ -17,6 +18,7 @@ lake env lean --run Machines/Substrate/Emit.lean            # emit both .v files
 lake env lean --run Machines/Substrate/Emit.lean selftest   # Design ≡ ISS, small K
 lake env lean --run Machines/Substrate/Emit.lean predict    # ISS state at K (silicon oracle)
 lake env lean --run Machines/Substrate/Emit.lean retime     # emit + EDSL-check retime demo
+lake env lean --run Machines/Substrate/Emit.lean fanout    # emit + check fan-out demo
 ```
 -/
 
@@ -34,6 +36,10 @@ def main (args : List String) : IO Unit := do
   | ["retime"] => do
       RetimeDemo.check
       RetimeDemo.emit
+  | ["fanout"] => do
+      FanoutDemo.check
+      FanoutDemo.reportCost
+      FanoutDemo.emit
   | _ => do
       S0Blinky.emit
       S13Soak.emit

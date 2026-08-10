@@ -1,13 +1,13 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Compile
-import Loom.Hw.MemInitOk
 import Loom.Hw.MemTarget
 import Loom.Hw.Outputs
 import Loom.Hw.SyncRead
 import Loom.Hw.ReadsOk
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
+import Loom.Artifact
 
 /-!
 # One-call Verilog emission
@@ -40,17 +40,6 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
   let inNames := d.inputs.map (·.name)
   if inNames.length ≠ inNames.eraseDups.length then
     throw <| IO.userError "Design.emit: duplicate input names"
-  -- D38 (subsuming D37): refuse a design some memory of which the target
-  -- memory technology cannot realize — a reset image the flow does not
-  -- deliver (D30 — the epoch engine's `cell_flags`, found on silicon), or
-  -- a write-port assignment the compiler's memory theorem does not admit
-  -- (CAPWALK CE10, where the same shape cost 14× the LUTs). The target is
-  -- the one this repo builds for; a design can be checked against another
-  -- with `Design.realizableOnB` (`Loom/Hw/MemTarget.lean`). Image
-  -- offenders the design has written down in `ackMemInit` pass; everything
-  -- else is an error here rather than a `-BADREF` on a board.
-  for md in d.unrealizableUnackedOn Loom.Hw.MemTarget.default do
-    throw <| IO.userError (d.realizableError Loom.Hw.MemTarget.default md)
   -- D39: an observability selection (`Design.outputs`) may only name
   -- declared registers. An unrecognized name would otherwise silently
   -- export nothing at all, which is the failure mode a *selection* is most
@@ -83,14 +72,10 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
     if ! d.syncReadOkB m then
       throw <| IO.userError
         s!"Design.emit: D19 — memory '{m}' of '{d.name}' is read outside a register-latch site, so it would emit as LUTRAM:\n{d.syncReadReport m}"
-  -- **W1.1 — declaration checking, both directions.** `designWFCheck`
-  -- constrains WRITES (a rule may not write an undeclared signal) and was
-  -- previously only exercised on the proof path, so a corroborate-only design
-  -- never ran it. `readsOkB` constrains READS, whose failure mode is worse
-  -- because it is silent: an undeclared or wrong-width read evaluates to 0
-  -- forever, so the design simulates, emits, and is simply wrong. Both are
-  -- emit-time refusals here for the D19/D38/D39 reason — an obligation a
-  -- caller can skip is not an obligation.
+  -- Declaration checking in both directions: `designWFCheck` constrains
+  -- writes, while `readsOkB` constrains reads. Both are mandatory emission
+  -- checks because an undeclared or wrong-width read otherwise evaluates to
+  -- zero silently.
   for (n, w) in d.badRegReads do
     throw <| IO.userError (d.badRegReadError n w)
   for (m, dw) in d.badMemReads do
@@ -100,10 +85,24 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
       s!"Design.emit: design '{d.name}' fails `Compile.designWFCheck` — a rule \
 writes a signal the design does not declare, two register or memory names \
 collide, or a memory's write-port indices do not strictly increase along the \
-design's write order. This was previously checked only on the proof path, so \
-a corroborate-only design could emit without it (W1.1)."
-  if let some dir := path.parent then
-    IO.FS.createDirAll dir
-  IO.FS.writeFile path
+design's write order."
+  let changed ← Loom.Artifact.writeText path
     (Loom.Emit.MicroVerilog.Print.print (Loom.Hw.Compile.compile d))
-  IO.println s!"{path} written"
+  IO.println s!"{path} {if changed then "written" else "unchanged"}"
+
+/-- Check the target-dependent memory obligations for `d` against an explicit
+implementation profile. This is intentionally separate from `Design.emit`:
+generic RTL emission has no FPGA-vendor, ASIC-library, or synthesis-tool
+default. -/
+def Loom.Hw.Design.checkTarget (d : Loom.Hw.Design)
+    (target : Loom.Hw.MemTarget) : IO Unit := do
+  for md in d.unrealizableUnackedOn target do
+    throw <| IO.userError (d.realizableError target md)
+
+/-- Check `d` against the explicitly selected memory target, then emit it.
+Use this entry point for a concrete implementation flow; use `Design.emit`
+when producing target-neutral RTL. -/
+def Loom.Hw.Design.emitFor (d : Loom.Hw.Design)
+    (target : Loom.Hw.MemTarget) (path : System.FilePath) : IO Unit := do
+  d.checkTarget target
+  d.emit path

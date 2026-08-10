@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.CapWalk.Engine
 import Machines.CapWalk.CapSoc
+import Evidence.Targets.Memory
 
 /-!
 # CapWalk runner (Layer 2)
@@ -25,19 +26,20 @@ Emission refuses rather than regressing.
 -/
 
 open Machines.CapWalk
+open Loom.Evidence.Targets
 
 private def checkShape : IO Unit := do
   if ! Engine.syncReadOkB Engine.design then
     IO.println (Engine.syncReadReport Engine.design)
     throw <| IO.userError "D19: the capwalk banks are not sync-read shaped"
   -- D38: the write-port discipline is Loom's now (`Design.memPortTraceOkB`
-  -- and the `MemTarget` image rule, both enforced inside `Design.emit`);
+  -- and the `MemTarget` image rule, enforced by the explicit target check);
   -- checking it here as well keeps the failure at the top of the ladder,
   -- where it names the engine.
-  if ! Engine.design.realizableOnB Loom.Hw.MemTarget.default then
-    IO.println Engine.design.targetReport
+  if ! Engine.design.realizableOnB Memory.xc7 then
+    IO.println (Memory.report Engine.design)
     throw <| IO.userError
-      "D38: capwalk is not realizable on the default memory target"
+      "D38: capwalk is not realizable on memory target 'xc7'"
 
 /-- Write the behavioural DDR image the iverilog testbench loads. One
 64-bit word per line; the Lean selftest and the RTL testbench therefore
@@ -63,14 +65,14 @@ def main (args : List String) : IO Unit := do
   | ["d19"] => do
       IO.println (Engine.syncReadReport Engine.design)
       IO.println CapSoc.syncReadReport
-      IO.println Engine.design.targetReport
+      IO.println (Memory.report Engine.design)
       IO.println s!"composed syncReadOk = {CapSoc.syncReadOk}"
       IO.println s!"composed parOk      = {CapSoc.parOk}"
   | ["predict"] => Engine.predict
   | ["ddr"] => emitDdr
   | ["engine"] => do
       checkShape
-      Engine.design.emit "rtl/capwalk.v"
+      Engine.design.emitFor Memory.xc7 "rtl/capwalk.v"
   | ["soc"] => do
       checkShape
       if ! CapSoc.parOk then
@@ -78,11 +80,11 @@ def main (args : List String) : IO Unit := do
       if ! CapSoc.syncReadOk then
         IO.println CapSoc.syncReadReport
         throw <| IO.userError "cap soc: D19 syncReadOkB failed"
-      CapSoc.capSoc.emit "rtl/lnp64mini_cap.v"
+      CapSoc.capSoc.emitFor Memory.xc7 "rtl/lnp64mini_cap.v"
   | _ => do
       checkShape
-      Engine.design.emit "rtl/capwalk.v"
+      Engine.design.emitFor Memory.xc7 "rtl/capwalk.v"
       emitDdr
       if ! CapSoc.parOk then
         throw <| IO.userError "cap soc: parOkB failed — instance names not disjoint"
-      CapSoc.capSoc.emit "rtl/lnp64mini_cap.v"
+      CapSoc.capSoc.emitFor Memory.xc7 "rtl/lnp64mini_cap.v"

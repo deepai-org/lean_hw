@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Declarations
 import Loom.Hw.ReadsOk
+import Loom.Artifact
 
 /-!
 # Lightweight, explicitly unverified debug taps
@@ -39,6 +40,14 @@ structure DebugPort where
   name : String
   width : Nat
   deriving Repr, BEq
+
+namespace DebugPort
+
+/-- A child-output description derived from its typed register handle. -/
+def ofReg {w : Nat} (reg : Reg w) : DebugPort :=
+  { name := reg.name, width := w }
+
+end DebugPort
 
 /-- One logical debug value. Values wider than 32 bits occupy consecutive
 BSCAN words beginning at `base`. Raw taps place Verilog in `source0` and
@@ -88,7 +97,7 @@ def ofDualReg {w : Nat} (base : Nat) (reg : Reg w) : DebugTap :=
   { base, name := reg.name, width := w
     source0 := sourceWire 0 0
     source1 := sourceWire 0 1
-    ports := [{ name := reg.name, width := w }] }
+    ports := [DebugPort.ofReg reg] }
 
 /-- The low BSCAN word of a typed dual-core register. Useful for wide traces
 when board bring-up needs the low address/value word only. -/
@@ -97,7 +106,7 @@ def lowWordOfDualReg {w : Nat} (base : Nat) (reg : Reg w) : DebugTap :=
   { base, name := s!"{reg.name}_lo", width
     source0 := s!"{sourceWire 0 0}[{width - 1}:0]"
     source1 := s!"{sourceWire 0 1}[{width - 1}:0]"
-    ports := [{ name := reg.name, width := w }] }
+    ports := [DebugPort.ofReg reg] }
 
 private structure ExprRenderState where
   lines : Array String := #[]
@@ -434,9 +443,9 @@ def renderTcl (m : DebugMap) : String :=
 
 private def write (m : DebugMap) (path : System.FilePath) : IO Unit := do
   if let some dir := path.parent then IO.FS.createDirAll dir
-  IO.FS.writeFile path m.render
+  discard <| Loom.Artifact.writeText path m.render
   let tclPath := path.withExtension "tcl"
-  IO.FS.writeFile tclPath m.renderTcl
+  discard <| Loom.Artifact.writeText tclPath m.renderTcl
   IO.println s!"{path} + {tclPath} written\n{m.report}"
 
 /-- Emit without evaluating a design. Intended for a large map with an

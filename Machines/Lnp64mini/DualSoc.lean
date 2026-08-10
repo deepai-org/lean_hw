@@ -54,7 +54,8 @@ space both cores can see.
   there is **no combinational cross-core path** and no extra glue design is
   needed.
 * `c0_hold` is tied 0; `c1_hold` stays a SoC input (CORE1_HOLD in the
-  wrapper).
+  wrapper). The debug wrapper may OR a generated first-event halt request into
+  core 1's instruction-boundary hold without changing core state or the ISS.
 * GP/GEM belongs to core 0 (`gpm_*` ← `c0_gp_*`). Core 1's GP responses are
   tied to "instantly done, reads 0", so a stray core-1 GP access completes
   harmlessly instead of wedging the core.
@@ -106,7 +107,7 @@ def wire (n : String) (w : Nat) : Option (Expr w) :=
   | "c0_doorbell_key", 64 => some (.reg 64 "c1_wake_key")
   | "c1_doorbell_key", 64 => some (.reg 64 "c0_wake_key")
   | "c0_hold",     1  => some (.lit 0)          -- core 0 always runs
-  -- "c1_hold" stays a SoC input (CORE1_HOLD)
+  -- "c1_hold" stays a SoC input (CORE1_HOLD/debug hold)
   -- ---- arbiter requester port 0 ← core 0 (with the JTAG ownership mux) ----
   | "arb_c0_rd",    1  => some (.mux owns0 (.reg 1  "c0_core_rd")    (.reg 1  "c0_jtag_rd"))
   | "arb_c0_wr",    1  => some (.mux owns0 (.reg 1  "c0_core_wr")    (.reg 1  "c0_jtag_wr"))

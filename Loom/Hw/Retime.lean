@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Semantics
+import Loom.Hw.Notation
 
 /-!
 # Retiming: the registered-output split combinator (D17 candidate)
@@ -744,5 +745,86 @@ def retimeReg_stutter (d : Design) (r : String) (w : Nat)
     (leg : RetimeLegal d r w) :
     Loom.StutterSimulation d.toTSys (retimeReg d r w).toTSys :=
   (retimeReg_simulation d r w leg).toStutter
+
+/-! ## Ordered plans of selected cuts
+
+`retimeReg` is one verified cut. A usable transform pass needs to select
+several cuts and return one refinement witness for the whole result. The plan
+below deliberately remains sequential: every cut is checked against the
+design produced by the preceding cuts, so freshness and read-side legality
+cannot be accidentally checked only against the original source.
+-/
+
+/-- One selected registered-output cut. -/
+structure RetimeCut where
+  name : String
+  width : Nat
+  deriving Repr, DecidableEq, Inhabited
+
+namespace RetimeCut
+
+/-- Construct a cut from a typed register handle, keeping its width out of the
+caller's stringly configuration. -/
+def ofReg {w : Nat} (reg : Reg w) : RetimeCut :=
+  ⟨reg.name, w⟩
+
+end RetimeCut
+
+/-- Apply selected cuts in order. Later cuts see every register and copy rule
+introduced by earlier cuts. -/
+def retimePlan : Design → List RetimeCut → Design
+  | design, [] => design
+  | design, cut :: cuts =>
+      retimePlan (retimeReg design cut.name cut.width) cuts
+
+/-- Executable plan guard. As with `retimeRegOkB`, this is the diagnostic
+mirror; theorem consumers carry the corresponding `RetimePlanLegal` witness. -/
+def retimePlanOkB : Design → List RetimeCut → Bool
+  | _, [] => true
+  | design, cut :: cuts =>
+      retimeRegOkB design cut.name cut.width &&
+      retimePlanOkB (retimeReg design cut.name cut.width) cuts
+
+/-- Legality is indexed by the intermediate design at every step. This rules
+out a common batch-pass bug where all freshness checks are performed against
+the initial design even though earlier transforms have already added names. -/
+inductive RetimePlanLegal : (design : Design) → List RetimeCut → Type
+  | nil (design : Design) : RetimePlanLegal design []
+  | cons {design : Design} {cut : RetimeCut} {cuts : List RetimeCut}
+      (head : RetimeLegal design cut.name cut.width)
+      (tail : RetimePlanLegal
+        (retimeReg design cut.name cut.width) cuts) :
+      RetimePlanLegal design (cut :: cuts)
+
+/-- State abstraction induced by a plan, in the reverse order of its concrete
+passes, matching composition of their individual simulations. -/
+def retimePlanAbs : List RetimeCut → St → St
+  | [], state => state
+  | cut :: cuts, state => retimeAbs cut.name (retimePlanAbs cuts state)
+
+/-- One proof-carrying refinement for an arbitrary ordered plan of legal
+cuts. Invariants transport through the returned simulation in one step. -/
+def retimePlan_stutter (design : Design) :
+    (cuts : List RetimeCut) → RetimePlanLegal design cuts →
+      Loom.StutterSimulation design.toTSys (retimePlan design cuts).toTSys
+  | [], .nil _ => Loom.StutterSimulation.refl design.toTSys
+  | cut :: cuts, .cons head tail =>
+      (retimeReg_stutter design cut.name cut.width head).comp
+        (retimePlan_stutter (retimeReg design cut.name cut.width) cuts tail)
+
+/-- The composed simulation exposes the canonical plan abstraction. -/
+@[simp] theorem retimePlan_stutter_abs (design : Design)
+    (cuts : List RetimeCut) (legal : RetimePlanLegal design cuts) (state : St) :
+    (retimePlan_stutter design cuts legal).abs state = retimePlanAbs cuts state := by
+  induction cuts generalizing design with
+  | nil => cases legal; rfl
+  | cons cut cuts ih =>
+      cases legal with
+      | cons head tail =>
+          change retimeAbs cut.name
+            ((retimePlan_stutter
+              (retimeReg design cut.name cut.width) cuts tail).abs state) =
+            retimeAbs cut.name (retimePlanAbs cuts state)
+          rw [ih]
 
 end Loom.Hw

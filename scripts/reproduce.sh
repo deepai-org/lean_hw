@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Kevin Baragona
 # SPDX-License-Identifier: Apache-2.0
-# One-command cold reproduction (NEXTSTEPS §P2): pinned-toolchain build,
+# One-command cold reproduction: pinned-toolchain build,
 # audit gate, emission, RTL hygiene, lockstep corroboration, SAT
 # crosscheck. From a clean clone on a fresh machine:
 #
@@ -35,11 +35,11 @@ if command -v iverilog >/dev/null; then
   scripts/lockstep_acc8.sh
   scripts/lockstep_lnp64u.sh
 else
-  echo "reproduce: SKIP lockstep (iverilog not installed)"
+  echo "reproduce: RESULT SKIP lockstep (iverilog not installed)"
 fi
 
 # Independent-synthesizer corroboration: every shipped design elaborates
 # and synthesizes under yosys (skips itself if yosys is absent).
 scripts/corroborate_yosys.sh
 
-echo "reproduce: OK"
+echo "reproduce: RESULT PASS"

@@ -6,7 +6,7 @@ import Machines.Acc8.Iss
 # Acc8 golden tests
 
 `#guard` checks run at elaboration time: the ISS boots the golden image and
-the results below are the checked-in goldens (PLAN §10 item 6, Acc8 half).
+the results below are the checked-in Acc8 goldens.
 -/
 
 namespace Tests.Acc8

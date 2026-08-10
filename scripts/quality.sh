@@ -22,6 +22,9 @@ for required in lakefile.lean lake-manifest.json README.md LICENSE NOTICE \
 done
 
 while IFS= read -r file; do
+  # `git ls-files` includes unstaged deletions. Missing paths need no header and
+  # will disappear from the index when the deletion is committed.
+  [[ -f "$file" ]] || continue
   if ! grep -q 'SPDX-License-Identifier:' "$file"; then
     echo "quality: missing SPDX header: $file" >&2
     fail=1
@@ -44,4 +47,6 @@ if (( fail != 0 )); then
   exit 1
 fi
 
+scripts/test_emit_all_diagnostics.sh
+scripts/test_generic_diagnostics.sh
 echo "quality: OK"

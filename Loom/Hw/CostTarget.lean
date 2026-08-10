@@ -3,24 +3,19 @@
 import Loom.Hw.Cost
 
 /-!
-# W6 — calibration: from the cost vector to a target's resources and risk
+# Target-parameterized cost estimates
 
-`Cost.lean` is exact and technology-free. Everything here is **empirical
-metadata**: fitted weights, a capacity, and a closure threshold, each
-carrying the provenance that makes it auditable — which tool at which
-version, on which part, fitted over which design family.
+`Cost.lean` supplies the abstract vector. This module defines the generic
+schema and calculations for applying an explicitly supplied calibration.
+Concrete vendor, device, and process calibrations live in the external
+`Evidence` library.
 
 Two claims, kept apart on purpose:
 
 * **Capacity** — does the predicted resource use fit the part at all?
   A hard, physical limit.
-* **Closure risk** — will the tools actually place, route and meet timing
-  there? A *calibrated threshold*, never a universal constant. On this
-  repo's own evidence it sits far below capacity: the lnp64mini dual top
-  at 48 % of the xc7z020's LUTs routed first try at 30.43 MHz, while the
-  epoch top at 52 % burned nine hours across two seeds without routing
-  (fpga_dev.md §69). The same shape governs an ASIC flow, where nobody
-  targets 95 % placement density either.
+* **Closure risk** — will the selected implementation flow place, route, and
+  meet timing there? A calibrated threshold, never a universal constant.
 
 **What this does not claim.** It predicts *risk*, not place-and-route
 success, and it predicts *synthesis* while the observed pain was routing.
@@ -74,19 +69,8 @@ structure CostTarget where
   silent unit mismatch this repo has been bitten by, so the conversion is a
   named field with its own measurement rather than an implicit factor.
 
-  **Measured, on one design family, it is close to constant** — and the
-  first claim to the contrary in this file was WRONG, which is worth keeping
-  because of how it went wrong. A controlled A/B on the dual top (2026-08-07,
-  same wrapper, same seed, cache present vs absent) gives 44 112 cells →
-  55 234 sites (1.252×) and 43 999 → 55 129 (1.253×). The earlier reading of
-  "packing is not a constant" came from comparing a fresh build against a
-  utilization figure recorded in a journal for a DIFFERENT build — no
-  rebuilt baseline, exactly the error `scripts/boot_sim.sh`'s header warns
-  about for simulation, committed in the area domain a day later.
-
-  So: treat this as calibrated per target and re-measure it when the design
-  family changes, but do not assume it swings with structure until a
-  controlled pair says so. -/
+  Treat this as calibrated per target and re-measure it when the design
+  family changes. -/
   packExpansionMilli : Nat
   /-- **Capacity**: primary resources the part physically has. -/
   capacity : Nat
@@ -153,58 +137,5 @@ def report (t : CostTarget) (c : Cost) : String :=
   s!"  estimate predicts RISK, not P&R success; a build is the only oracle."
 
 end CostTarget
-
-/-- **xc7z020 (ZC702)**, the part this repo actually builds on.
-
-Weights fitted by `scripts/fit_cost.py` over measured yosys cell counts;
-the fit is UNDERDETERMINED (three weights, two designs) and says so in its
-provenance, so a report cannot pass it off as settled. More designs
-tighten it; nothing else does.
-
-The closure threshold is the two data points the campaign paid for: the
-dual top routed first try at 30.43 MHz, the epoch top did not route across
-two seeds and nine hours (fpga_dev.md §69). Note what the model then says
-about them — **both land at 52-53 %, above the threshold**. The abstract
-cost vector does *not* separate the design that routed from the one that
-did not; they differ by ~1 % in cells. That is the honest result, and it
-is the argument for calling this a risk signal rather than a verdict: at
-this margin the discriminator is congestion, not capacity. -/
-def xc7z020 : CostTarget where
-  name := "xc7z020"
-  resourceName := "LUT"
-  -- Fitted by scripts/fit_cost.py against measured yosys cell counts for
-  -- lnp64mini_dual (44 112) and lnp64mini_epoch (44 646); worst residual
-  -- 1.0%. wStateBits fits to 0 because state lands in flip-flops, which are
-  -- not the scarce resource here — the model saying so is a small check that
-  -- it is measuring the right thing.
-  wStateBits := 0
-  wBitOps := 7
-  wSoftBits := 400
-  macroBitsPerInstance := 36864
-  packExpansionMilli := 1260
-  capacity := 106400
-  macroCapacity := 140
-  closurePercent := 50
-  weightProvenance := .measured "yosys 0.38 (openXC7), SLICE_LUTX" "2 designs — UNDERDETERMINED fit (3 weights), worst residual 1.0%"
-  closureProvenance := .measured "nextpnr-xilinx (openXC7)" "2026-08 campaign: dual routed at 48-52%, epoch failed 2 seeds at 52-53%"
-  fittedOn := "lnp64mini family only; another family is extrapolation"
-
-/-- A generic ASIC standard-cell profile, in gate-equivalents. Datasheet
-shape only: no ASIC flow has been run in this repo, and the profile says
-so rather than implying a measurement that does not exist. -/
-def asicGE : CostTarget where
-  name := "asicGE"
-  resourceName := "gate-equivalent"
-  wStateBits := 5000
-  wBitOps := 1500
-  wSoftBits := 6000
-  macroBitsPerInstance := 0
-  packExpansionMilli := 1000
-  capacity := 0
-  macroCapacity := 0
-  closurePercent := 70
-  weightProvenance := .datasheet "standard-cell rules of thumb (FF ≈ 5 GE, 2-input gate ≈ 1 GE)"
-  closureProvenance := .datasheet "typical placement-density practice, 60-80%"
-  fittedOn := "nothing in this repo — no ASIC flow has been run here"
 
 end Loom.Hw

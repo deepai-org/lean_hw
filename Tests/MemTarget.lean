@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.EmitIO
+import Evidence.Targets.Memory
 import Machines.Lnp64mini.Core
 
 /-!
@@ -21,20 +22,18 @@ Checked here:
   same bank with a *second* write port no longer fits a 7-series block RAM
   (two ports total), so on `xc7` it is predicted distributed and its image
   is refused — the CapWalk CE9/CE10 shape, the one that measured 14× the
-  LUTs, now caught at emit;
+  LUTs, now caught when emitting for that explicit target;
 * the **port-trace condition is Loom's**, not one machine's
   (`Design.memPortTraceOkB`, promoted from `Machines/CapWalk/Engine.lean`),
   and it is *not* acknowledgeable — it is a compiler precondition, not a
   mapping prediction;
-* the `xc7` profile **is** D37's rule (`xc7_familyOf`, `xc7_imageDelivered`
-  in `Loom/Hw/MemTarget.lean`), so the design-time and netlist-time rules
-  still cannot disagree;
 * the shipped `lnp64mini` is realizable on **all three** profiles.
 -/
 
 namespace Tests.MemTarget
 
 open Loom.Hw
+open Loom.Evidence.Targets
 
 /-- A 512×32 bank — the epoch data banks' shape, which yosys does map to
 block RAM — read the registered D19 way, with a non-zero reset image.
@@ -65,44 +64,45 @@ private def clash : Design :=
 #guard (big true).writePortCount "t" == 2
 
 -- The profiles disagree about the one-port bank, and that is the finding.
-#guard (big false).realizableOnB MemTarget.xc7
-#guard (big false).realizableOnB MemTarget.ecp5
-#guard !((big false).realizableOnB MemTarget.asicSram)
-#guard ((big false).unrealizableOn MemTarget.asicSram).map (·.name) == ["t"]
+#guard (big false).realizableOnB Memory.xc7
+#guard (big false).realizableOnB Memory.ecp5
+#guard !((big false).realizableOnB Memory.asicSram)
+#guard ((big false).unrealizableOn Memory.asicSram).map (·.name) == ["t"]
 
 -- D38's addition over D37: the second write port pushes the bank out of the
 -- macro on every profile, and the image goes with it.
-#guard ((big false).mems.map (MemTarget.xc7.familyOf (big false)))
-         == [MemFamily.bram]
-#guard ((big true).mems.map (MemTarget.xc7.familyOf (big true)))
-         == [MemFamily.lutram]
-#guard !((big true).realizableOnB MemTarget.xc7)
--- …which D37's port-blind prediction could not see:
-#guard (big true).memInitOkB
-
+#guard ((big false).mems.map (Memory.xc7.classOf (big false)))
+         == [MemClass.macro]
+#guard ((big true).mems.map (Memory.xc7.classOf (big true)))
+         == [MemClass.soft]
+#guard !((big true).realizableOnB Memory.xc7)
 -- The port-trace condition, promoted from `Machines/CapWalk/Engine.lean`.
 #guard (big true).memPortTraceOkB "t"
 #guard !(clash.memPortTraceOkB "t")
-#guard !(clash.realizableOnB MemTarget.xc7)
+#guard !(clash.realizableOnB Memory.xc7)
 -- and it is not acknowledgeable, while an image loss is
-#guard !(({ clash with ackMemInit := ["t"] } : Design).realizableAckOkB MemTarget.xc7)
-#guard ({ big true with ackMemInit := ["t"] } : Design).realizableAckOkB MemTarget.xc7
+#guard !(({ clash with ackMemInit := ["t"] } : Design).realizableAckOkB Memory.xc7)
+#guard ({ big true with ackMemInit := ["t"] } : Design).realizableAckOkB Memory.xc7
 
 /-! The shipped mini core is realizable on all three profiles — it depends
 on no reset image at all (D37 fixed `tpc`), so nothing about it is
 FPGA-specific in this respect. -/
-#guard Machines.Lnp64mini.design.realizableOnB MemTarget.xc7
-#guard Machines.Lnp64mini.design.realizableOnB MemTarget.ecp5
-#guard Machines.Lnp64mini.design.realizableOnB MemTarget.asicSram
+#guard Machines.Lnp64mini.design.realizableOnB Memory.xc7
+#guard Machines.Lnp64mini.design.realizableOnB Memory.ecp5
+#guard Machines.Lnp64mini.design.realizableOnB Memory.asicSram
 
-/-! The refusal is an emit-time *error*, and it names the memory, the
-target and the realization. -/
+/-! Neutral emission succeeds, while explicit target emission refuses and
+names the memory, target, and predicted realization. -/
 #eval show IO Unit from do
   let path : System.FilePath := "scratch/memtarget_d38_test.v"
   if ← path.pathExists then IO.FS.removeFile path
+  (big true).emit path
+  unless ← path.pathExists do
+    throw <| IO.userError "D38: target-neutral emit unexpectedly refused"
+  IO.FS.removeFile path
   let refused ←
     try
-      (big true).emit path
+      (big true).emitFor Memory.xc7 path
       pure ""
     catch e => pure (toString e)
   for needle in ["memory 't'", "target 'xc7'", "distributed LUT RAM",
@@ -113,13 +113,13 @@ target and the realization. -/
   if ← path.pathExists then
     throw <| IO.userError "D38: emit refused but still wrote the file"
   -- the acknowledged variant emits; the port clash never does
-  ({ big true with ackMemInit := ["t"] } : Design).emit path
+  ({ big true with ackMemInit := ["t"] } : Design).emitFor Memory.xc7 path
   unless (← path.pathExists) do
     throw <| IO.userError "D38: the acknowledged design did not emit"
   IO.FS.removeFile path
   let refused2 ←
     try
-      ({ clash with ackMemInit := ["t"] } : Design).emit path
+      ({ clash with ackMemInit := ["t"] } : Design).emitFor Memory.xc7 path
       pure ""
     catch e => pure (toString e)
   unless (refused2.splitOn "strictly increase").length == 2 do

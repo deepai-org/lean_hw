@@ -4,6 +4,7 @@ import Loom.Hw.Syntax
 import Loom.Hw.Semantics
 import Loom.Hw.StateCover
 import Loom.Hw.FastEval
+import Loom.Runner
 
 /-!
 # Derived state comparison (PLATONIC W5)
@@ -152,6 +153,22 @@ def Design.coordPlan (d : Design) (cap : Nat) : Array CoordSlot :=
       | some k => acc.push { coord := c, isReg := false, idx := d.memBase k + c.addr }
       | none   => acc) #[]
 
+/-- Fail-closed coordinate-plan construction. The raw `coordPlan` is useful
+for proofs and inspection, but executable comparison paths must not accept a
+plan that resolved fewer entries than `Design.coords` declared. -/
+def Design.coordPlan? (d : Design) (cap : Nat) : Option (Array CoordSlot) :=
+  let plan := d.coordPlan cap
+  if plan.size = (d.coords cap).length then some plan else none
+
+/-- IO adapter for executable gates. A layout/declaration disagreement names
+the design and both counts instead of silently shrinking comparison coverage. -/
+def Design.prepareCoordPlan (d : Design) (cap : Nat) : IO (Array CoordSlot) :=
+  match d.coordPlan? cap with
+  | some plan => pure plan
+  | none => throw <| IO.userError (
+      s!"{d.name}: derived coordinate plan failed: " ++
+      s!"declared={(d.coords cap).length}, resolved={(d.coordPlan cap).size}")
+
 /-- Read a resolved coordinate out of a flat state: two array reads, no lookup. -/
 def FastSt.atSlot (fs : FastSt) (s : CoordSlot) : Nat :=
   if s.isReg then fs.regs.getD s.idx 0 else fs.mems.getD s.idx 0
@@ -223,5 +240,32 @@ def diffFastAgainstOracle (plan : Array CoordSlot) (fs : FastSt)
   let (mism, unm) := diffFastAgainst plan fs o.read
   let (declared, undeclared) := unm.partition (fun c => o.unmodelled.contains c.name)
   (mism, undeclared, declared)
+
+/-! ## Generic-runner adapters
+
+These are the only bridge the differential runner needs to know about hardware
+coordinates. Machines provide an `Oracle`; Loom derives the complete surface
+and turns every undeclared omission into a named coverage failure. -/
+
+def Coord.event (c : Coord) (actual expected : Nat) : Loom.Runner.Event :=
+  { subject := c.render, actual := some (toString actual),
+    expected := some (toString expected) }
+
+/-- Compare a closure state and package the result for `Loom.Runner.run`. -/
+def Design.sampleAgainstOracle (d : Design) (cap : Nat) (σ : St)
+    (o : Oracle) : Loom.Runner.Sample :=
+  let (mism, undeclared, declared) := d.diffAgainstOracle cap σ o
+  { mismatches := mism.map fun c => c.event (σ.at c) ((o.read c).getD 0)
+    coverageGaps := undeclared.map (·.render)
+    excluded := declared.map (·.render) }
+
+/-- Compare a prepared flat state and package the result for
+`Loom.Runner.run`. -/
+def sampleFastAgainstOracle (plan : Array CoordSlot) (fs : FastSt)
+    (o : Oracle) : Loom.Runner.Sample :=
+  let (mism, undeclared, declared) := diffFastAgainstOracle plan fs o
+  { mismatches := mism.map fun (c, actual, expected) => c.event actual expected
+    coverageGaps := undeclared.map (·.render)
+    excluded := declared.map (·.render) }
 
 end Loom.Hw

@@ -68,8 +68,8 @@ for every additional fault, trap, interrupt, and debug source.
 | Renderer to theorem bytes | Kernel equality over bounded rope leaves | Host file must be associated externally |
 | Theorem bytes to RTL files | Exact external `cmp` binder | Correctness of the small binder and host execution |
 | RTL text to Verilog behavior | Explicit concrete-SSA adequacy assumption | Verilog tool semantics and four-state effects |
-| RTL to synthesized netlist | Optional fragment-reporting equivalence checks with LRAT recheck | Driver, executable encoder replacement, netlist/cell model, exclusions, unsupported operators, acknowledgements |
-| Netlist to bitstream/silicon | Dated simulation and hardware corroboration | P&R, configuration, timing, reset, CDC physics, analog and side channels |
+| RTL to a synthesized or mapped artifact | No current Loom equivalence bridge | Synthesis, conversion, target-library semantics, exclusions, and tool behavior |
+| Mapped artifact to bitstream/silicon | External implementation evidence | P&R, configuration, timing, reset, CDC physics, analog and side channels |
 
 The release theorem stops before the text-tool row. Passing lower rows does
 not enlarge the theorem above them.
@@ -91,12 +91,9 @@ cannot cause Lean to accept a bad proof, but could hide policy drift. The final
 release declaration and raw axiom closure remain independently inspectable.
 
 Executable replacements currently accelerate compiler/printer traversals,
-`Design.toProgram`, memory-read diagnostics, and the equivalence checker's
-bit-blaster. The release construction checks candidate witnesses against
-reference definitions, so those replacements are not premises of
-`verifiedReleases`. The equivalence checker is different: trusting a netlist
-report also requires trusting that the executed replacement and driver match
-the proved reference encoder.
+`Design.toProgram`, and memory-read diagnostics. The release construction
+checks candidate witnesses against reference definitions, so those
+replacements are not premises of `verifiedReleases`.
 
 Mathlib adds proof code but not a second proof kernel: its declarations are
 checked by Lean. CaDiCaL and other solvers are untrusted proposal engines where
@@ -109,11 +106,10 @@ has no soundness theorem of its own.
 
 ## Synthesis, memories, and CDC
 
-The post-synthesis checker materially improves evidence but is deliberately
-not summarized as “synthesis is proved.” It reports its operator fragment,
-matched/excluded signals, memory-bank coverage, and acknowledged defects.
-Large SoC checks belong to the manual/nightly workflow; ordinary CI runs only
-small designs when Yosys and CaDiCaL are present.
+Loom currently makes no post-synthesis equivalence claim. Synthesis,
+tool-specific conversion, mapped-cell semantics, and physical implementation
+are external evidence. A future logical-equivalence boundary must consume a
+technology-neutral graph rather than embed a synthesis tool or target library.
 
 Memory target profiles and `syncReadOkB` are prevention/diagnostic mechanisms.
 They predict whether a design shape fits a declared technology; actual mapping
@@ -141,7 +137,7 @@ The most valuable independent review is:
    T6/T7 scheduling assumptions;
 2. clean-clone Tier A reproduction without accepting cached objects;
 3. adversarial review of the tiny host-file binder and concrete-SSA boundary;
-4. independent parsing/cell-library review of netlist equivalence reports;
+4. review of any external synthesis and logical-conversion evidence;
 5. explicit SoC contracts for reset, DMA, interrupts, debug, memory stalls,
    and fault routing; and
 6. a complete board acceptance run on the release commit.

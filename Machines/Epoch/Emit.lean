@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Machines.Epoch.Engine
 import Machines.Epoch.EpochSoc
+import Evidence.Targets.Memory
 
 /-!
 # Epoch-engine runner (Layer 2)
@@ -25,39 +26,17 @@ private def checkD19 : IO Unit := do
     IO.println (Engine.syncReadReport Engine.design)
     throw <| IO.userError "D19: the engine's banks are not sync-read shaped"
 
-/-- `epochengine_tiny` as *emitted*: `Engine.tiny` plus the D37
-acknowledgement that its reset image is one the FPGA flow does not deliver.
-
-**The finding.** `Engine.mems`' docstring says the three epoch banks are
-"exactly the banks the target flow maps to block RAM". That holds for
-`cfg32` (512×32 → `RAMB18E1`, `INIT_xx` delivered — re-confirmed against
-yosys 0.33) and **fails for `cfgTiny`**: 4×3 banks map to `RAM32M`, whose
-image the configuration path drops exactly as it dropped D30's
-`cell_flags`. `Loom/Hw/MemInitOk.lean` predicted it from the declared shape
-and `scripts/check_mem_init.py` confirms it on the netlist. Nothing had ever
-looked: `epochengine_tiny` is not in `eqcheck.sh`'s design list.
-
-**Acknowledged, not fixed, and why.** The reset image *is* `Protocol.Init`
-(deviation E4 — there is no install op), so taking it out of memory the way
-`tpc` and `cell_flags` did would break `abs(reset) = Protocol.Init` and every
-theorem stated over `runOpen`-from-reset. And it costs nothing to leave: the
-board artifacts are `epochengine` and `lnp64mini_epoch`, both `cfg32`;
-`cfgTiny` exists so the iverilog ladder can reach §3's saturation case at a
-width where saturation is reachable. Anyone putting `epochengine_tiny` on a
-fabric must add a reset sweep first.
-
-**Why here and not on `Engine.tiny`.** `ackMemInit` is read by no semantic
-function — it is a fact about emitting the artifact, not about the machine —
-and the Layer-3 theorems in `Refines.lean` are stated over
-`Engine.mkDesign cfgTiny`, which a differing field would no longer unify
-with. Attaching it at the emission site keeps the proved object literally
-unchanged. The emitted text is identical either way. -/
+/-- The tiny simulation configuration uses non-zero images in banks that the
+XC7 profile classifies as soft memory. Its target-specific emitter records
+that known loss. Deploying this configuration requires an explicit reset
+sweep instead of relying on its image. -/
 private def tinyEmit : Loom.Hw.Design :=
   { Machines.Epoch.Engine.tiny with
     ackMemInit := ["cell_epoch", "repl0", "repl1"] }
 
 open Machines.Epoch in
 def main (args : List String) : IO Unit := do
+  let target := Loom.Evidence.Targets.Memory.xc7
   match args with
   | ["selftest"] => do
       Engine.selftest
@@ -73,8 +52,8 @@ def main (args : List String) : IO Unit := do
       Engine.predict "epochengine_tiny" Engine.tiny Engine.tbTraceTiny
   | ["engine"] => do
       checkD19
-      Engine.design.emit "rtl/epochengine.v"
-      tinyEmit.emit "rtl/epochengine_tiny.v"
+      Engine.design.emitFor target "rtl/epochengine.v"
+      tinyEmit.emitFor target "rtl/epochengine_tiny.v"
   | ["soc"] => do
       checkD19
       if ! EpochSoc.parOk then
@@ -82,11 +61,11 @@ def main (args : List String) : IO Unit := do
       if ! EpochSoc.syncReadOk then
         IO.println EpochSoc.syncReadReport
         throw <| IO.userError "epoch soc: D19 syncReadOkB failed"
-      EpochSoc.epochSoc.emit "rtl/lnp64mini_epoch.v"
+      EpochSoc.epochSoc.emitFor target "rtl/lnp64mini_epoch.v"
   | _ => do
       checkD19
-      Engine.design.emit "rtl/epochengine.v"
-      tinyEmit.emit "rtl/epochengine_tiny.v"
+      Engine.design.emitFor target "rtl/epochengine.v"
+      tinyEmit.emitFor target "rtl/epochengine_tiny.v"
       if ! EpochSoc.parOk then
         throw <| IO.userError "epoch soc: parOkB failed — instance names not disjoint"
-      EpochSoc.epochSoc.emit "rtl/lnp64mini_epoch.v"
+      EpochSoc.epochSoc.emitFor target "rtl/lnp64mini_epoch.v"

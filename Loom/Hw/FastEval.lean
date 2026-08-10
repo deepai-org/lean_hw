@@ -1,6 +1,8 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Semantics
+import Loom.Hw.Notation
+import Loom.Runner
 
 /-!
 # FastEval — the verified fast evaluator (L3)
@@ -8,9 +10,9 @@ import Loom.Hw.Semantics
 `Loom/Hw/Semantics.lean` models state with closure-based environments
 (`RegEnv := String → (w : Nat) → BitVec w`).  Every write extends a closure
 chain, so a read after `n` writes costs `O(n)` string comparisons and
-`Design.run` is quadratic in the cycle count — which is why every Loom
-machine so far has been written twice, once as a `Design` and once as a
-hand-written ISS fast enough to be a silicon oracle.
+`Design.run` is quadratic in the cycle count.  That historically encouraged
+machines to grow a second, hand-written ISS fast enough to be a silicon
+oracle.
 
 This module removes that limitation.  A `Design` is *elaborated once* into
 an index-resolved `FastDesign` (registers and inputs → one contiguous index
@@ -78,7 +80,7 @@ inductive FExpr where
   /-- `h = 2 ^ (w - 1)` (source sign bit), `m = 2 ^ w'`,
   `d = 2 ^ w' - 2 ^ w` (zero when narrowing). -/
   | sext (h m d : Nat) (a : FExpr)
-  deriving Inhabited
+  deriving Inhabited, Repr, BEq, Hashable
 
 /-- Width-erased actions with pre-resolved indices. -/
 inductive FAct where
@@ -377,11 +379,11 @@ namespace FastEval
 
 theorem getD_setIfInBounds_self {a : Array Nat} {i x : Nat} (h : i < a.size) :
     (a.setIfInBounds i x).getD i 0 = x := by
-  simp [Array.getD_getElem?, Array.getElem?_setIfInBounds, h]
+  simp [h]
 
 theorem getD_setIfInBounds_ne {a : Array Nat} {i j x : Nat} (h : i ≠ j) :
     (a.setIfInBounds i x).getD j 0 = a.getD j 0 := by
-  simp [Array.getD_getElem?, Array.getElem?_setIfInBounds, h]
+  simp [Array.getD_getElem?, h]
 
 theorem nodupB_sound : ∀ {l : List String}, nodupB l = true → l.Nodup
   | [], _ => List.nodup_nil
@@ -530,6 +532,124 @@ theorem memOkB_sound {d : Design} {m : String} {aw dw : Nat}
     | some md =>
       simp only [hmd, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq] at h
       exact ⟨k, md, rfl, hmd, h.1.1, h.1.2, h.2⟩
+
+/-! ## Typed, declaration-resolved state views
+
+Machine environments should not recover generated state through another table
+of string names and widths.  The typed handles already carry that information.
+The slots below resolve a handle once, retain the facts established by the
+design's declarations, and reduce every subsequent read to an array access.
+
+The proof fields are erased from executable code.  A missing handle or width
+mismatch therefore fails during preparation; it cannot silently read slot zero
+or manufacture a zero value in the simulation loop. -/
+
+/-- A typed register handle resolved into the flat generated-state layout. -/
+structure RegSlot (d : Design) {w : Nat} (r : Reg w) where
+  idx : Nat
+  index_eq : d.regIdx r.name = some idx
+  index_lt : idx < d.regList.length
+  name_eq : (d.regEntry idx).1 = r.name
+  width_eq : (d.regEntry idx).2 = w
+
+/-- Resolve a typed register handle against a design, failing on absence or a
+width disagreement. -/
+def regSlot? (d : Design) {w : Nat} (r : Reg w) : Option (RegSlot d r) :=
+  match hi : d.regIdx r.name with
+  | none => none
+  | some i =>
+      if hlt : i < d.regList.length then
+        if hn : (d.regEntry i).1 = r.name then
+          if hw : (d.regEntry i).2 = w then
+            some ⟨i, hi, hlt, hn, hw⟩
+          else none
+        else none
+      else none
+
+/-- IO preparation adapter with a specific declaration error. -/
+def prepareRegSlot (d : Design) {w : Nat} (r : Reg w) :
+    IO (RegSlot d r) :=
+  match regSlot? d r with
+  | some slot => pure slot
+  | none => throw <| IO.userError
+      s!"{d.name}: register view does not resolve: {r.name} : {w}"
+
+/-- Read a resolved register as a natural number. -/
+@[inline] def RegSlot.readNat {d : Design} {w : Nat} {r : Reg w}
+    (slot : RegSlot d r) (fs : FastSt) : Nat :=
+  fs.regs.getD slot.idx 0
+
+/-- Read a resolved register at the width carried by its typed handle. -/
+@[inline] def RegSlot.read {d : Design} {w : Nat} {r : Reg w}
+    (slot : RegSlot d r) (fs : FastSt) : BitVec w :=
+  BitVec.ofNat w (slot.readNat fs)
+
+/-- A resolved typed-register read is the corresponding semantic coordinate
+whenever the generated and reference states agree. -/
+theorem RegSlot.readNat_eq {d : Design} {w : Nat} {r : Reg w}
+    (slot : RegSlot d r) {fs : FastSt} {sigma : St} (ha : Agree d fs sigma) :
+    slot.readNat fs = (sigma.regs r.name w).toNat := by
+  rw [RegSlot.readNat, ha.regs slot.idx slot.index_lt, slot.name_eq,
+    slot.width_eq]
+
+/-- A typed memory handle resolved into the flat generated-state layout. -/
+structure MemSlot (d : Design) {aw dw : Nat} (m : Mem aw dw) where
+  idx : Nat
+  decl : MemDecl
+  index_eq : d.memIdx m.name = some idx
+  decl_eq : d.mems[idx]? = some decl
+  name_eq : decl.name = m.name
+  addr_width_eq : decl.addrWidth = aw
+  data_width_eq : decl.dataWidth = dw
+
+/-- Resolve a typed memory handle against a design.  Address and data widths
+must both match exactly; unlike expression elaboration, a state view does not
+permit a narrower address expression. -/
+def memSlot? (d : Design) {aw dw : Nat} (m : Mem aw dw) :
+    Option (MemSlot d m) :=
+  match hi : d.memIdx m.name with
+  | none => none
+  | some i =>
+      match hd : d.mems[i]? with
+      | none => none
+      | some md =>
+          if hn : md.name = m.name then
+            if ha : md.addrWidth = aw then
+              if hw : md.dataWidth = dw then
+                some ⟨i, md, hi, hd, hn, ha, hw⟩
+              else none
+            else none
+          else none
+
+/-- IO preparation adapter with a specific declaration error. -/
+def prepareMemSlot (d : Design) {aw dw : Nat} (m : Mem aw dw) :
+    IO (MemSlot d m) :=
+  match memSlot? d m with
+  | some slot => pure slot
+  | none => throw <| IO.userError
+      s!"{d.name}: memory view does not resolve: {m.name} : {aw} -> {dw}"
+
+/-- Read a resolved memory cell as a natural number. -/
+@[inline] def MemSlot.readNat {d : Design} {aw dw : Nat} {m : Mem aw dw}
+    (slot : MemSlot d m) (fs : FastSt) (addr : BitVec aw) : Nat :=
+  fs.mems.getD (d.memBase slot.idx + addr.toNat) 0
+
+/-- Read a resolved memory cell at the data width carried by its handle. -/
+@[inline] def MemSlot.read {d : Design} {aw dw : Nat} {m : Mem aw dw}
+    (slot : MemSlot d m) (fs : FastSt) (addr : BitVec aw) : BitVec dw :=
+  BitVec.ofNat dw (slot.readNat fs addr)
+
+/-- A typed memory-slot read is the corresponding semantic coordinate whenever
+the generated and reference states agree. -/
+theorem MemSlot.readNat_eq {d : Design} {aw dw : Nat} {m : Mem aw dw}
+    (slot : MemSlot d m) {fs : FastSt} {sigma : St} (ha : Agree d fs sigma)
+    (addr : BitVec aw) :
+    slot.readNat fs addr = (sigma.mems m.name addr.toNat dw).toNat := by
+  rw [MemSlot.readNat,
+    ha.mems slot.idx slot.decl slot.decl_eq addr.toNat]
+  · rw [slot.name_eq, slot.data_width_eq]
+  · rw [slot.addr_width_eq]
+    exact addr.isLt
 
 /-! ## Proof: shift guards -/
 
@@ -698,10 +818,10 @@ theorem elabAct_run {d : Design} (hnd : (d.regList.map (·.1)).Nodup)
     simp only [Design.actWFB, Bool.and_eq_true] at hwf
     simp only [Design.elabAct, FAct.run, Act.run, elabExpr_eval ha _ c hwf.1.1]
     by_cases hc : c.eval σ = 1#1
-    · simp only [hc, BitVec.toNat_ofNat, if_pos rfl]
+    · simp only [hc, BitVec.toNat_ofNat]
       exact iht _ _ hwf.1.2 hacc
     · have hne1 : (c.eval σ).toNat ≠ 1 := fun hh => hc (BitVec.toNat_inj.mp hh)
-      simp only [hc, hne1, if_neg, if_false, ite_false]
+      simp only [hc, hne1, if_false]
       exact ihe _ _ hwf.2 hacc
   | write w r v =>
     intro facc τ hwf hacc
@@ -894,6 +1014,92 @@ theorem fastRunOpen_eq (d : Design) (hwf : d.fastWFB = true) :
 theorem agree_fastReset (d : Design) : Agree d d.fastReset d.reset :=
   agree_ofSt d d.reset
 
+/-! ## The public verified-simulator object
+
+`FastDesign` is deliberately just executable data.  `VerifiedSimulator`
+packages the one design-specific proof needed to connect that data back to
+the reference semantics.  A machine can therefore publish one object rather
+than repeat applications of the generic correctness theorems at every call
+site.
+
+The theorem names use `_eq`, but their conclusion is `Agree`: this is the
+extensional equality available between the flat state and `St`, whose
+closure-based environments may also contain undeclared, unobservable
+coordinates. -/
+
+/-- A simulator derived from `d`, together with the checked condition that
+makes its evaluator a proved view of `Design.cycle` / `Design.cycleOpen`. -/
+structure VerifiedSimulator (d : Design) where
+  wf : d.fastWFB = true
+
+namespace VerifiedSimulator
+
+/-- The generated, index-resolved evaluator for this simulator. -/
+def fast {d : Design} (_ : VerifiedSimulator d) : FastDesign := d.elaborate
+
+/-- The generated flat reset state. -/
+def reset {d : Design} (_ : VerifiedSimulator d) : FastSt := d.fastReset
+
+/-- Execute one closed-design cycle. -/
+def cycle {d : Design} (sim : VerifiedSimulator d) (fs : FastSt) : FastSt :=
+  fastCycle sim.fast fs
+
+/-- Execute one open-design cycle. -/
+def cycleOpen {d : Design} (sim : VerifiedSimulator d) (ι : InEnv)
+    (fs : FastSt) : FastSt :=
+  fastCycleOpen sim.fast ι fs
+
+/-- Execute `n` closed-design cycles. -/
+def run {d : Design} (sim : VerifiedSimulator d) (n : Nat) (fs : FastSt) : FastSt :=
+  fastRun sim.fast n fs
+
+/-- Execute `n` open-design cycles. -/
+def runOpen {d : Design} (sim : VerifiedSimulator d) (ιs : Nat → InEnv)
+    (n : Nat) (fs : FastSt) : FastSt :=
+  fastRunOpen sim.fast ιs n fs
+
+/-- The generated closed evaluator equals the reference cycle on every
+declared coordinate. -/
+theorem cycle_eq {d : Design} (sim : VerifiedSimulator d) (fs : FastSt) (σ : St)
+    (ha : Agree d fs σ) : Agree d (sim.cycle fs) (d.cycle σ) := by
+  simpa [cycle, fast] using fastCycle_eq d sim.wf fs σ ha
+
+/-- The generated open evaluator equals the reference open cycle on every
+declared coordinate. -/
+theorem cycleOpen_eq {d : Design} (sim : VerifiedSimulator d) (ι : InEnv)
+    (fs : FastSt) (σ : St) (ha : Agree d fs σ) :
+    Agree d (sim.cycleOpen ι fs) (d.cycleOpen ι σ) := by
+  simpa [cycleOpen, fast] using fastCycleOpen_eq d sim.wf ι fs σ ha
+
+/-- The generated closed evaluator equals the reference run on every
+declared coordinate. -/
+theorem run_eq {d : Design} (sim : VerifiedSimulator d) (n : Nat)
+    (fs : FastSt) (σ : St) (ha : Agree d fs σ) :
+    Agree d (sim.run n fs) (d.run n σ) := by
+  simpa [run, fast] using fastRun_eq d sim.wf n fs σ ha
+
+/-- The generated open evaluator equals the reference open run on every
+declared coordinate. -/
+theorem runOpen_eq {d : Design} (sim : VerifiedSimulator d) (n : Nat)
+    (ιs : Nat → InEnv) (fs : FastSt) (σ : St) (ha : Agree d fs σ) :
+    Agree d (sim.runOpen ιs n fs) (d.runOpen ιs n σ) := by
+  simpa [runOpen, fast] using fastRunOpen_eq d sim.wf n ιs fs σ ha
+
+/-- Direct machine-facing equality from generated reset through a closed
+run. -/
+theorem runFromReset_eq {d : Design} (sim : VerifiedSimulator d) (n : Nat) :
+    Agree d (sim.run n sim.reset) (d.run n d.reset) :=
+  sim.run_eq n _ _ (agree_fastReset d)
+
+/-- Direct machine-facing equality from generated reset through an open
+run. -/
+theorem runOpenFromReset_eq {d : Design} (sim : VerifiedSimulator d) (n : Nat)
+    (ιs : Nat → InEnv) :
+    Agree d (sim.runOpen ιs n sim.reset) (d.runOpen ιs n d.reset) :=
+  sim.runOpen_eq n ιs _ _ (agree_fastReset d)
+
+end VerifiedSimulator
+
 /-- What an oracle consumes: the flat state reproduces every declared
 register/input coordinate exactly. -/
 theorem Agree.peekReg {d : Design} {fs : FastSt} {σ : St} (ha : Agree d fs σ)
@@ -937,22 +1143,33 @@ the two evaluators agree on the designs we ship. -/
 def Design.lockstep (d : Design) (depth : Nat)
     (ιs : Nat → InEnv := fun _ _ w => 0#w) : IO Bool := do
   let fd := d.elaborate
-  let mut fs := d.fastReset
-  let mut σ := d.reset
-  let mut ok := true
-  for c in List.range depth do
-    fs := fastCycleOpen fd (ιs c) fs
-    σ := d.cycleOpen (ιs c) σ
-    for (e, i) in d.regList.zipIdx do
-      if fs.regs.getD i 0 ≠ (σ.regs e.1 e.2).toNat then
-        IO.println s!"LOCKSTEP MISMATCH cycle {c} reg {e.1}: fast={fs.regs.getD i 0} ref={(σ.regs e.1 e.2).toNat}"
-        ok := false
-    for (md, k) in d.mems.zipIdx do
-      for a in List.range (2 ^ md.addrWidth) do
-        if fs.mems.getD (d.memBase k + a) 0 ≠ (σ.mems md.name a md.dataWidth).toNat then
-          IO.println s!"LOCKSTEP MISMATCH cycle {c} {md.name}[{a}]"
-          ok := false
-  return ok
+  let result ← Loom.Runner.run
+    { label := s!"{d.name} FastEval/semantics", steps := depth }
+    (d.fastReset, d.reset) fun c state => do
+      let fs := fastCycleOpen fd (ιs c) state.1
+      let σ := d.cycleOpen (ιs c) state.2
+      let mut events : List Loom.Runner.Event := []
+      for (e, i) in d.regList.zipIdx do
+        let actual := fs.regs.getD i 0
+        let expected := (σ.regs e.1 e.2).toNat
+        if actual ≠ expected then
+          let event : Loom.Runner.Event :=
+            { subject := e.1
+              actual := some (toString actual)
+              expected := some (toString expected) }
+          events := events ++ [event]
+      for (md, k) in d.mems.zipIdx do
+        for a in List.range (2 ^ md.addrWidth) do
+          let actual := fs.mems.getD (d.memBase k + a) 0
+          let expected := (σ.mems md.name a md.dataWidth).toNat
+          if actual ≠ expected then
+            let event : Loom.Runner.Event :=
+              { subject := s!"{md.name}[{a}]"
+                actual := some (toString actual)
+                expected := some (toString expected) }
+            events := events ++ [event]
+      return ((fs, σ), { mismatches := events })
+  return result.verdict == Loom.Runner.Verdict.pass
 
 /-- A cheap deterministic pseudo-random input trace for the harness: an
 xorshift-ish LFSR over the cycle index, sliced per input width. -/

@@ -120,7 +120,7 @@ So the sequencing follows the numbers rather than the wish list:
    one Appendix F already gestures at: engines and caches need not be the
    same core.
 
-The area-reduction work (`LOOM_GAPS.md` W6 / the hotspot analysis) is
+The area-reduction work (the `ROADMAP.md` transformation and cost work) is
 therefore on the critical path for the *epoch* variant, not for the caches
 themselves.
 

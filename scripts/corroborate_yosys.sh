@@ -9,7 +9,7 @@
 # On-demand; run after `lake exe emit`. Fails on any yosys error.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-command -v yosys >/dev/null || { echo "corroborate_yosys: SKIP (yosys not installed)"; exit 0; }
+command -v yosys >/dev/null || { echo "corroborate_yosys: RESULT SKIP (yosys not installed)"; exit 0; }
 echo "corroborate_yosys: $(yosys -V)"
 status=0
 for v in rtl/*.v; do
@@ -26,4 +26,9 @@ for v in rtl/*.v; do
   fi
   rm -f "$log"
 done
+if [ "$status" -eq 0 ]; then
+  echo "corroborate_yosys: RESULT PASS"
+else
+  echo "corroborate_yosys: RESULT FAIL"
+fi
 exit $status

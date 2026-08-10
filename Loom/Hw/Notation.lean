@@ -3,7 +3,7 @@
 import Loom.Hw.Trees
 
 /-!
-# EDSL ergonomics: typed register handles and Verilog-shaped notation
+# EDSL ergonomics: typed signal handles and Verilog-shaped notation
 
 The code review of `Machines/Lnp64mini/Core.lean` found the same three
 papercuts everywhere:
@@ -23,20 +23,24 @@ few `scoped instance`s, and ordinary `notation`/`macro`.
 ## Handles
 
 `Reg w` is a width-typed name; `RegArray w n` is a width-typed family whose
-member names are derived once, by the handle:
+member names are derived once; `Mem aw dw` carries both address and data
+widths:
 
 ```lean
 def cnt  : Reg 28 := ⟨"cnt"⟩
 def bank : RegArray 16 8 := ⟨"bank"⟩
+def ram  : Mem 10 32 := ⟨"ram"⟩
 
 #check cnt.rd            -- Expr 28
 #check cnt ⇐ cnt.rd + 1  -- Act
 #check bank.decls        -- List RegDecl  (bank0 … bank7)
+#check ram.rd addr       -- Expr 32, requiring addr : Expr 10
 ```
 
-A `Reg`/`RegArray` mismatch (writing a 16-bit value into a 28-bit register,
-reading `bank` at index 8) is a *type* error, and the name string exists in
-exactly one place.
+A register or memory width mismatch (writing a 16-bit value into a 28-bit
+register, using the wrong address width for `ram`) is a *type* error, and each
+name string exists in exactly one place. `RegArray` additionally makes a
+statically indexed out-of-bounds access a type error.
 
 ## Notation
 
@@ -78,7 +82,7 @@ def rd {w : Nat} (r : Reg w) : Expr w := .reg w r.name
 def set {w : Nat} (r : Reg w) (e : Expr w) : Act := .write w r.name e
 
 /-- The declaration (reset value defaults to zero). -/
-def decl {w : Nat} (r : Reg w) (init : BitVec w := 0) : RegDecl :=
+@[simp] def decl {w : Nat} (r : Reg w) (init : BitVec w := 0) : RegDecl :=
   ⟨r.name, w, init⟩
 
 /-- As an input-port declaration (D15). -/
@@ -135,6 +139,37 @@ def sum {v : Nat} (ra : RegArray w n) (f : Reg w → Expr v) : Expr v :=
   addTree (ra.handles.map f)
 
 end RegArray
+
+/-! ## Typed memory handles -/
+
+/-- A memory handle whose address and data widths are carried by its type.
+
+The handle is an additive authoring layer: it elaborates directly to the
+existing `MemDecl`, `Expr.memRead`, and `Act.memWrite` representation. -/
+structure Mem (aw dw : Nat) where
+  name : String
+  deriving Repr, DecidableEq, Inhabited
+
+namespace Mem
+
+/-- Declare the memory. Contents default to zero. -/
+def decl {aw dw : Nat} (m : Mem aw dw)
+    (init : Nat → BitVec dw := fun _ => 0) : MemDecl where
+  name := m.name
+  addrWidth := aw
+  dataWidth := dw
+  init := init
+
+/-- Read at a width-checked address. -/
+def rd {aw dw : Nat} (m : Mem aw dw) (addr : Expr aw) : Expr dw :=
+  .memRead dw m.name addr
+
+/-- Write through an explicit physical write-port index. -/
+def write {aw dw : Nat} (m : Mem aw dw) (port : Nat)
+    (addr : Expr aw) (data : Expr dw) : Act :=
+  .memWrite aw dw m.name port addr data
+
+end Mem
 
 /-! ## Guarded actions -/
 

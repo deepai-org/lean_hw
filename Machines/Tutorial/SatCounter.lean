@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
+import Loom.Hw.Declarations
 import Loom.Hw.Semantics
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
@@ -16,29 +17,30 @@ compiled RTL and emitted as Verilog.
 namespace Machines.Tutorial.SatCounter
 
 open Loom.Hw
+open Loom.Hw.Notation
 
 /-- The counter value. -/
-def count : Expr 8 := .reg 8 "count"
+def count : Reg 8 := ⟨"count"⟩
 /-- The saturation flag. -/
-def sat : Expr 1 := .reg 1 "sat"
+def sat : Reg 1 := ⟨"sat"⟩
 
 /-- Each cycle: once the counter reaches 255, raise the sticky flag;
 otherwise keep counting. -/
 def tick : Act :=
-  .ite (.eq count (.lit 255))
-    (.write 1 "sat" (.lit 1))
-    (.write 8 "count" (.add count (.lit 1)))
+  ifA count.rd === 255 then
+    sat ⇐ 1
+  else
+    count ⇐ count.rd + 1
+
+/-- The complete state and external interface, declared from typed handles. -/
+def declarations : Declarations :=
+  Declarations.empty
+    |>.addReg count (exported := true)
+    |>.addReg sat (exported := true)
 
 /-- The complete design. -/
-def design : Design where
-  name := "satcounter"
-  regs := [⟨"count", 8, 0⟩, ⟨"sat", 1, 0⟩]
-  -- D39a: outputs are mandatory and explicit, like inputs. This design's
-  -- whole register set IS its interface, so it says so rather than
-  -- relying on a default that exported everything silently.
-  outputs := ["count", "sat"]
-  mems := []
-  rules := [⟨"tick", tick⟩]
+def design : Design :=
+  Design.ofDecls "satcounter" declarations [⟨"tick", tick⟩]
 
 /-- The compiler's side conditions, discharged by its decision procedure. -/
 theorem design_wf : Compile.DesignWF design :=
@@ -46,7 +48,7 @@ theorem design_wf : Compile.DesignWF design :=
 
 /-- The property: the flag only rises at saturation. -/
 def SatOk (σ : St) : Prop :=
-  σ.regs "sat" 1 = 1#1 → σ.regs "count" 8 = 255#8
+  σ.regs sat.name 1 = 1#1 → σ.regs count.name 8 = 255#8
 
 /-- `SatOk` holds in every reachable state of the model. -/
 theorem satOk_invariant : design.toTSys.Invariant SatOk := by
@@ -57,21 +59,23 @@ theorem satOk_invariant : design.toTSys.Invariant SatOk := by
     simp only [Design.toTSys_init_iff] at hinit
     subst hinit
     intro hsat
-    simp [Design.reset, design, RegEnv.set] at hsat
+    simp [Design.reset, design, declarations, sat, RegEnv.set] at hsat
   · -- step: one cycle preserves the property
     intro s s' hP hstep
     simp only [Design.toTSys_step_iff] at hstep
     subst hstep
-    by_cases hc : s.regs "count" 8 = 255#8
+    by_cases hc : s.regs count.name 8 = 255#8
     · -- saturated: the rule writes `sat`, leaves `count` unchanged
+      simp only [count] at hc
       intro _
-      simp [Design.cycle, design, tick, Act.run, Expr.eval, count,
-        RegEnv.set, hc]
+      simp [Design.cycle, design, declarations, tick, Reg.rd, Reg.set,
+        Act.run, Expr.eval, count, sat, RegEnv.set, hc]
     · -- not saturated: the rule writes `count`, leaves `sat` unchanged
+      simp only [count] at hc
       intro hsat
-      have hsat' : s.regs "sat" 1 = 1#1 := by
-        simpa [Design.cycle, design, tick, Act.run, Expr.eval, count, sat,
-          RegEnv.set, hc] using hsat
+      have hsat' : s.regs sat.name 1 = 1#1 := by
+        simpa [Design.cycle, design, declarations, tick, Reg.rd, Reg.set,
+          Act.run, Expr.eval, count, sat, RegEnv.set, hc] using hsat
       exact absurd (hP hsat') hc
 
 /-- The same property, now of every reachable state of the compiled RTL. -/

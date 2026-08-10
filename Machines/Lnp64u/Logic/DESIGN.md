@@ -18,4 +18,4 @@ declarations and their axiom closure.
 
 The separation and logical-relation layer is not a blanket proof of arbitrary
 adversarial programs. Claims should name the exact theorem and hypotheses;
-planned stronger logical relations remain future work in `NEXTSTEPS.md`.
+planned stronger logical relations remain future work in `ROADMAP.md`.

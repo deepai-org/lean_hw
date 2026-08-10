@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
+import Loom.Hw.Declarations
 import Loom.Hw.Semantics
 import Machines.Acc8.Spec
 
@@ -18,16 +19,25 @@ namespace Machines.Acc8.Core
 
 open Loom.Hw
 
-/-- Shorthands. -/
-private def rAcc : Expr 8 := .reg 8 "acc"
-private def rPc : Expr 8 := .reg 8 "pc"
-private def rHalted : Expr 1 := .reg 1 "halted"
+/-- Architectural register handles. Each name and width is declared here. -/
+abbrev accReg : Reg 8 := ⟨"acc"⟩
+abbrev pcReg : Reg 8 := ⟨"pc"⟩
+abbrev haltedReg : Reg 1 := ⟨"halted"⟩
+
+/-- Program ROM and data RAM handles. -/
+abbrev progMem : Mem 8 16 := ⟨"prog"⟩
+abbrev dataMem : Mem 8 8 := ⟨"mem"⟩
+
+/-- Expression shorthands. -/
+private def rAcc : Expr 8 := accReg.rd
+private def rPc : Expr 8 := pcReg.rd
+private def rHalted : Expr 1 := haltedReg.rd
 /-- The fetched instruction word. -/
-private def fetchW : Expr 16 := .memRead 16 "prog" rPc
+private def fetchW : Expr 16 := progMem.rd rPc
 private def opc : Expr 8 := .slice fetchW 0 8
 private def imm : Expr 8 := .slice fetchW 8 8
-private def pcNext : Act := .write 8 "pc" (.add rPc (.lit 1))
-private def haltNow : Act := .write 1 "halted" (.lit 1)
+private def pcNext : Act := pcReg.set (.add rPc (.lit 1))
+private def haltNow : Act := haltedReg.set (.lit 1)
 
 /-- Dispatch on an opcode value. -/
 private def isOp (n : Nat) : Expr 1 := .eq opc (.lit (BitVec.ofNat 8 n))
@@ -37,37 +47,36 @@ private def execRule : Act :=
   .ite rHalted .skip <|
   -- nop (0): just advance
   .ite (isOp 0) pcNext <|
-  .ite (isOp 1) (.seq (.write 8 "acc" imm) pcNext) <|
-  .ite (isOp 2) (.seq (.write 8 "acc" (.add rAcc imm)) pcNext) <|
-  .ite (isOp 3) (.seq (.write 8 "acc" (.memRead 8 "mem" imm)) pcNext) <|
-  .ite (isOp 4) (.seq (.memWrite 8 8 "mem" 0 imm rAcc) pcNext) <|
-  .ite (isOp 5) (.ite (.eq rAcc (.lit 0)) pcNext (.write 8 "pc" imm)) <|
-  .ite (isOp 6) (.seq (.write 8 "acc" (.sub rAcc imm)) pcNext) <|
+  .ite (isOp 1) (.seq (accReg.set imm) pcNext) <|
+  .ite (isOp 2) (.seq (accReg.set (.add rAcc imm)) pcNext) <|
+  .ite (isOp 3) (.seq (accReg.set (dataMem.rd imm)) pcNext) <|
+  .ite (isOp 4) (.seq (dataMem.write 0 imm rAcc) pcNext) <|
+  .ite (isOp 5) (.ite (.eq rAcc (.lit 0)) pcNext (pcReg.set imm)) <|
+  .ite (isOp 6) (.seq (accReg.set (.sub rAcc imm)) pcNext) <|
   -- hlt (7) and every unknown opcode halt
   haltNow
 
+/-- Acc8 state, interface, and memory initialization from typed handles. -/
+abbrev declarations (prog : BitVec 8 → BitVec 16) : Declarations :=
+  Declarations.empty
+    |>.addReg accReg (exported := true)
+    |>.addReg pcReg (exported := true)
+    |>.addReg haltedReg (exported := true)
+    |>.addMem progMem (fun a => prog (BitVec.ofNat 8 a))
+    |>.addMem dataMem
+
 /-- The Acc8 core for a given program image. -/
-def design (prog : BitVec 8 → BitVec 16) : Design where
-  name := "acc8"
-  regs := [⟨"acc", 8, 0⟩, ⟨"pc", 8, 0⟩, ⟨"halted", 1, 0⟩]
-  -- D39a: outputs are mandatory and explicit, like inputs. This design's
-  -- whole register set IS its interface, so it says so rather than
-  -- relying on a default that exported everything silently.
-  outputs := ["acc", "pc", "halted"]
-  mems :=
-    [ { name := "prog", addrWidth := 8, dataWidth := 16
-        init := fun a => prog (BitVec.ofNat 8 a) }
-    , { name := "mem", addrWidth := 8, dataWidth := 8, init := fun _ => 0 } ]
-  rules := [⟨"exec", execRule⟩]
+def design (prog : BitVec 8 → BitVec 16) : Design :=
+  Design.ofDecls "acc8" (declarations prog) [⟨"exec", execRule⟩]
 
 /-- The abstraction function of the A-R refinement: read the architectural
 state out of the named signals (the program comes from the ROM contents,
 which no rule writes — so the square holds unconditionally). -/
 def abs (σ : Loom.Hw.St) : Machines.Acc8.St where
-  acc := σ.regs "acc" 8
-  pc := σ.regs "pc" 8
-  prog := fun a => σ.mems "prog" a.toNat 16
-  mem := fun a => σ.mems "mem" a.toNat 8
-  halted := σ.regs "halted" 1 == 1#1
+  acc := σ.regs accReg.name 8
+  pc := σ.regs pcReg.name 8
+  prog := fun a => σ.mems progMem.name a.toNat 16
+  mem := fun a => σ.mems dataMem.name a.toNat 8
+  halted := σ.regs haltedReg.name 1 == 1#1
 
 end Machines.Acc8.Core

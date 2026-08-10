@@ -6,7 +6,7 @@ import Lean
 # The audit tool (P5)
 
 Walks the compiled environment and enforces the standing self-check
-(PLAN §10):
+(the repository trust policy):
 
 1. **Ledger report** — every theorem under a `…Theorems…` namespace is
    classified *clean* (only whitelisted axioms), *stated* (depends on
@@ -17,8 +17,8 @@ Walks the compiled environment and enforces the standing self-check
 3. **Axiom policy** — our modules may declare no `axiom` at all except the
    two declarations that expose the µVerilog tool-boundary assumption:
    `ImplementsStandard` and `implements_standard_spec`.
-4. **Import DAG (P0)** — no `Loom.*` module may import a `Machines.*`
-   module; nothing imports `Tools`.
+4. **Import DAG (P0)** — no `Loom.*` module may import `Machines.*`,
+   `Evidence.*`, or `Tools.*`; nothing imports `Tools`.
 5. **Executable trust surface** — every project `unsafe` declaration and
    `implemented_by` replacement is an explicit declaration-level whitelist;
    source `partial` and `extern` declarations are forbidden. Compiler-
@@ -103,24 +103,7 @@ def permittedUnsafeDecls : List String :=
    -- any theorem; the twin exists only so the check does not re-walk the
    -- compiler's shared expression DAGs exponentially (the D13 cost caveat).
    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl.go",
-   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl",
-   -- D22 `Loom.Netlist.blastE`'s pointer-memoized executable twin. Same
-   -- trust shape as `printImpl`: the memo is keyed on pointer identity, so
-   -- a hit means the *same* term, and the encoding of a term is a function
-   -- of the term and the clause state, so the twin emits the reference
-   -- definition's bits. It exists because `Parse` rebuilds the printer's
-   -- SSA wires as a shared DAG and the tree walk re-encodes every
-   -- occurrence (EQCHECK_SPEC.md §Deviations 8). Nothing kernel-facing
-   -- depends on it: the equivalence checker is a tool whose UNSAT verdicts
-   -- are re-checked by the proved LRAT checker.
-   -- D32 (2026-08-01) strengthened this entry rather than adding to it: the
-   -- reference `blastE` the twin stands in for is now PROVED faithful on the
-   -- fragment `encVerified` selects (`Loom.Netlist.encode_sound`), so what
-   -- the twin is trusted to reproduce is a proved definition, not an
-   -- unexamined one. The twin itself is still the untrusted half, and no
-   -- theorem depends on it.
-   "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEGo",
-   "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEM"]
+   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"]
 
 /-- The reference definitions whose compiled execution is replaced. -/
 def permittedImplementedBy : List (String × String) :=
@@ -133,9 +116,7 @@ def permittedImplementedBy : List (String × String) :=
    ("Loom.Hw.Design.toIndexedWires",
     "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl"),
    ("Loom.Hw.Expr.readsMem",
-    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"),
-   ("Loom.Netlist.blastE",
-    "_private.Loom.Netlist.Miter.0.Loom.Netlist.blastEM")]
+    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl")]
 
 /-- Lean generates partial `_unsafe_rec` helpers while elaborating some
 ordinary structural definitions. They are compiler artifacts, not uses of
@@ -146,7 +127,7 @@ def generatedUnsafeRec (n : Name) : Bool :=
 /-- Is this one of our modules (as opposed to Lean core / Mathlib)? -/
 def oursModule (n : Name) : Bool :=
   (`Loom).isPrefixOf n || (`Machines).isPrefixOf n ||
-  (`Tests).isPrefixOf n || (`Tools).isPrefixOf n
+  (`Evidence).isPrefixOf n || (`Tests).isPrefixOf n || (`Tools).isPrefixOf n
 
 /-- Is this declaration in a theorem-ledger namespace? -/
 def inLedger (n : Name) : Bool :=
@@ -182,7 +163,8 @@ def main : IO UInt32 := do
     let mod := header.moduleNames[i]!
     if (`Loom).isPrefixOf mod then
       for imp in header.moduleData[i]!.imports do
-        if (`Machines).isPrefixOf imp.module || (`Tools).isPrefixOf imp.module then
+        if (`Machines).isPrefixOf imp.module || (`Evidence).isPrefixOf imp.module ||
+            (`Tools).isPrefixOf imp.module then
           failures := failures.push
             s!"P0 violation: toolchain module {mod} imports {imp.module}"
 

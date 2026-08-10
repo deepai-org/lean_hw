@@ -25,10 +25,10 @@ import Machines.Substrate.S0Blinky
 import Machines.Substrate.S13Soak
 import Machines.Substrate.S0BscanRegs
 import Machines.Substrate.RetimeDemo
+import Machines.Substrate.FanoutDemo
 import Machines.Substrate.S1Counters
 import Machines.Epoch.Protocol
 import Machines.Epoch.ProtocolLib
-import Machines.Epoch.Bmc
 import Machines.Epoch.Engine
 import Machines.Epoch.EpochSoc
 import Machines.Epoch.Bounded
@@ -38,6 +38,9 @@ import Machines.CapWalk.ProtocolLib
 import Machines.CapWalk.Engine
 import Machines.CapWalk.CapSoc
 import Machines.Lnp64mini.Core
+import Machines.Lnp64mini.RunHaltInvariant
+import Machines.Lnp64mini.LifecycleInvariant
+import Machines.Lnp64mini.SchedulingInvariant
 import Machines.Lnp64mini.Iss
 import Machines.Lnp64mini.Harness
 import Machines.Lnp64mini.HpMaster
@@ -45,6 +48,8 @@ import Machines.Lnp64mini.GpMaster
 import Machines.Lnp64mini.HpArbiter
 import Machines.Lnp64mini.Soc
 import Machines.Lnp64mini.DualSoc
+import Machines.Lnp64mini.DebugMap
+import Machines.Lnp64mini.DebugMapCheck
 
 /-!
 # Machines

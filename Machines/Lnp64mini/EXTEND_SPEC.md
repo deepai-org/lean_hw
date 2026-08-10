@@ -56,7 +56,7 @@ write-and-halt program followed by JTAG readback.
 Accordingly, the extension set is implemented and source-level checks are
 useful, but the present combined hardware head is not release- or demo-ready.
 The immediate task is to isolate the board regression, not to add another
-extension. See `STATUS.md` and `NEXTSTEPS.md`.
+extension. See `STATUS.md` and `ROADMAP.md`.
 
 ## Out of scope
 

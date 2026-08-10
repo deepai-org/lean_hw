@@ -21,8 +21,7 @@ The division of labour, and it is the whole design:
 
 **This predicts risk, not P&R success.** A cost model can say you are near
 the cliff; only a build says which side you landed on. Same honesty
-boundary the post-synthesis equivalence checker states about timing and
-place-and-route.
+boundary required of any external timing and place-and-route evidence.
 
 ## Why a vector and not a number
 
@@ -421,7 +420,7 @@ def Design.cost (d : Design) (t : MemTarget) : Cost :=
   -- which keeps `Design.par` additive and makes `bitOps` an upper bound.
   let ops := d.rules.foldl (fun acc r => acc + r.body.cost) 0
   let macroB := d.mems.foldl (fun acc m =>
-    if t.familyOf d m == MemFamily.bram then acc + m.dataWidth * 2 ^ m.addrWidth else acc) 0
+    if t.classOf d m == MemClass.macro then acc + m.dataWidth * 2 ^ m.addrWidth else acc) 0
   let fan := d.regs.foldl (fun acc r =>
     max acc (d.rules.foldl (fun a rl => a + rl.body.regReads r.name) 0)) 0
   { stateBits := regBits + memBits

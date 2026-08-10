@@ -99,15 +99,15 @@ structure Design where
   inputs : List InputDecl := []
   /-- **D37**: memories whose non-zero reset image the target flow provably
   does *not* deliver, and whose loss is a known, recorded exception. Naming
-  a memory here is the design saying "this bank comes up all-zero on
-  silicon and I have argued that is harmless"; `Design.emit` refuses any
-  such memory that is *not* named (see `Loom/Hw/MemInitOk.lean`). The
-  acknowledgement lives at the design, next to the memory, rather than in
-  a downstream checker's command line. -/
+  a memory here records that loss as an accepted implementation assumption.
+  `Design.checkTarget` and `Design.emitFor` refuse an unacknowledged loss;
+  target-neutral `Design.emit` does not select an implementation profile.
+  The acknowledgement lives beside the memory rather than in a downstream
+  command line. -/
   ackMemInit : List String := []
-  /-- **D19 — declared block-RAM memories.** Memories this design requires
-  to be read *only* through a register-latch site, so the flow maps them to
-  block RAM rather than distributed LUTRAM.
+  /-- **D19 — declared synchronous-read memories.** Memories this design
+  requires to be read only through a register-latch site so an explicit
+  implementation profile may classify them as macro candidates.
 
   This is a *policy* the design owns, not something Loom can infer: whether
   a 512x64 bank must be BRAM depends on how much of the part the rest of
@@ -115,24 +115,14 @@ structure Design where
   deliberately omits `rx_mem` (256x8, read combinationally inside a write
   data path — LUTRAM is the right implementation for it).
 
-  The declaration lives here, next to the memories, for the same reason
-  `ackMemInit` and `outputs` do: `Design.emit` can then enforce it, and a
-  design cannot *forget* to be checked. Before D19 moved into Loom the
-  check was a `checkD19` helper each machine's `Emit.lean` had to remember
-  to call at every emit site — three machines had copies, and adding an
-  emit target without the call silently produced LUTRAM that did not fit.
-  An obligation a caller can skip is not an obligation. -/
+  The declaration lives beside the memory so `Design.emit` can enforce the
+  target-neutral structural obligation at every emission site. -/
   syncReadMems : List String := []
   /-- **D39 — declared observability.** Which registers this design exports
   as `o_<name>` output ports.
 
-  **This field is mandatory** (D39a). It was `Option`, defaulting to `none`
-  = "export every register", and that was a mistake: the default was maximal
-  disclosure, so D39's protection only applied to designs that opted in. That
-  is the same shape as the `checkD19` helper each machine used to call by
-  hand — protection a caller can forget is not protection. Inputs have always
-  been explicit; outputs are the other half of the interface and are now
-  explicit too. A design that genuinely exports everything says so with
+  **This field is mandatory** (D39a). Inputs and outputs are both explicit;
+  a design that genuinely exports everything says so with
   `outputs := <its regs>.map (·.name)`.
 
   * `ns` = exactly the declared registers named in `ns`. A register

@@ -124,108 +124,148 @@ def sysStep (s : MiniSt) (d : DdrModel) (g : GpModel) (cmd : MiniIn) (gpRval : B
 
 /-! ## EDSL InEnv from a MiniIn -/
 
-def MiniIn.toEnv (c : MiniIn) : InEnv := fun n w =>
-  match n with
-  | "m_done"    => (BitVec.ofBool c.mDone).setWidth w
-  | "m_rdata"   => c.mRdata.setWidth w
-  | "m_busy"    => (BitVec.ofBool c.mBusy).setWidth w
-  | "gp_done"   => (BitVec.ofBool c.gpDone).setWidth w
-  | "gp_rdata"  => c.gpRdata.setWidth w
-  | "gp_busy"   => (BitVec.ofBool c.gpBusy).setWidth w
-  | "cmd_valid" => (BitVec.ofBool c.cmdValid).setWidth w
-  | "cmd_idx"   => (BitVec.ofNat 7 c.cmdIdx).setWidth w
-  | "cmd_data"  => c.cmdData.setWidth w
-  | "res_kill"  => (BitVec.ofBool c.resKill).setWidth w
-  | "doorbell"  => (BitVec.ofBool c.doorbell).setWidth w
-  | "doorbell_key" => c.doorbellKey.setWidth w
-  | "hold"      => (BitVec.ofBool c.hold).setWidth w
-  | "sc_fail"   => (BitVec.ofBool c.scFail).setWidth w
-  | _ => 0#w
+def MiniIn.toEnv (c : MiniIn) : InEnv := InputBinding.toEnv
+  [InputBinding.of mDonePort (BitVec.ofBool c.mDone),
+   InputBinding.of mRdataPort c.mRdata,
+   InputBinding.of mBusyPort (BitVec.ofBool c.mBusy),
+   InputBinding.of gpDonePort (BitVec.ofBool c.gpDone),
+   InputBinding.of gpRdataPort c.gpRdata,
+   InputBinding.of gpBusyPort (BitVec.ofBool c.gpBusy),
+   InputBinding.of cmdValidPort (BitVec.ofBool c.cmdValid),
+   InputBinding.of cmdIdxPort (BitVec.ofNat 7 c.cmdIdx),
+   InputBinding.of cmdDataPort c.cmdData,
+   InputBinding.of resKillPort (BitVec.ofBool c.resKill),
+   InputBinding.of doorbellPort (BitVec.ofBool c.doorbell),
+   InputBinding.of doorbellKeyPort c.doorbellKey,
+   InputBinding.of holdPort (BitVec.ofBool c.hold),
+   InputBinding.of scFailPort (BitVec.ofBool c.scFail)]
 
 /-! ## Reading the ISS state as (name, value) pairs (for lockstep vs EDSL) -/
 
+/-- Bind an independent ISS value to a Design handle.  The ISS still supplies
+the value independently; its comparison name and width are derived from the
+same typed declaration used by the Design. -/
+private def issReg {w : Nat} (r : Reg w) (v : BitVec w) : String × Nat × Nat :=
+  (r.name, w, v.toNat)
+
+private def issBool (r : Reg 1) (v : Bool) : String × Nat × Nat :=
+  issReg r (BitVec.ofBool v)
+
 def issRegs (s : MiniSt) : List (String × Nat × Nat) :=
-  -- (name, width, value)
-  [("cur",5,s.cur.toNat), ("pc",64,s.pc.toNat), ("retire",32,s.retire.toNat),
+  [issReg curReg s.cur, issReg pcReg s.pc, issReg retireReg s.retire,
    -- EXT-9/9b: the cache's own registers. The Oracle's closed list makes
    -- adding them mandatory rather than optional -- omitting one reports
    -- UNDECLARED-UNMODELLED instead of quietly shrinking the comparison.
-   ("ic_tag_q",42,s.ic_tag_q.toNat), ("ic_data_q",64,s.ic_data_q.toNat),
-   ("ic_gen",16,s.ic_gen.toNat), ("ic_inv",1,if s.ic_inv then 1 else 0),
-   ("ic_ctr",12,s.ic_ctr.toNat),
-   ("gate_tbl_base",32,s.gate_tbl_base.toNat), ("gate_ent_q",64,s.gate_ent_q.toNat),
-   ("gate_dom_q",8,s.gate_dom_q.toNat),
+   issReg icTagQReg s.ic_tag_q, issReg icDataQReg s.ic_data_q,
+   issReg icGenReg s.ic_gen, issBool icInvReg s.ic_inv, issReg icCtrReg s.ic_ctr,
+   issReg gateTblBaseReg s.gate_tbl_base, issReg gateEntQReg s.gate_ent_q,
+   issReg gateDomQReg s.gate_dom_q,
    -- EXT-6 (§17): the cap-inbox root pointer and walked-flags latch
-   ("cap_tbl_base",32,s.cap_tbl_base.toNat), ("cap_fl_q",64,s.cap_fl_q.toNat),
+   issReg capTblBaseReg s.cap_tbl_base, issReg capFlQReg s.cap_fl_q,
    -- EXT-10: the D-cache's registers.
-   ("dc_tag_q",42,s.dc_tag_q.toNat), ("dc_data_q",64,s.dc_data_q.toNat),
-   ("dc_alloc",1,if s.dc_alloc then 1 else 0),
-   ("trace_wp",4,s.trace_wp.toNat), ("trace_sel",4,s.trace_sel.toNat),
-   ("trace_rd_pc",64,s.trace_rd_pc.toNat), ("trace_rd_wb",64,s.trace_rd_wb.toNat),
-   ("trace_hit",1,if s.trace_hit then 1 else 0),
-   ("trace_in_pc",64,s.trace_in_pc.toNat), ("trace_in_wb",64,s.trace_in_wb.toNat),
-   ("running",1,if s.running then 1 else 0), ("halted",1,if s.halted then 1 else 0),
-   ("st",5,s.st.toNat), ("ir",64,s.ir.toNat), ("a",64,s.a.toNat), ("b",64,s.b.toNat),
-   ("rdval",64,s.rdval.toNat), ("sel_t",64,s.sel_t.toNat), ("sel_f",64,s.sel_f.toNat),
-   ("mem_is_store",1,if s.mem_is_store then 1 else 0),
-   ("trap_active",1,if s.trap_active then 1 else 0), ("trapped_op",8,s.trapped_op.toNat),
-   ("core_rd",1,if s.core_rd then 1 else 0), ("core_wr",1,if s.core_wr then 1 else 0),
-   ("core_addr",32,s.core_addr.toNat), ("core_wdata",64,s.core_wdata.toNat),
-   ("jtag_rd",1,if s.jtag_rd then 1 else 0), ("jtag_wr",1,if s.jtag_wr then 1 else 0),
-   ("jtag_wdata",64,s.jtag_wdata.toNat), ("ddr_addr_j",32,s.ddr_addr_j.toNat),
-   ("ddr_lo_j",32,s.ddr_lo_j.toNat), ("ddr_rd_l",64,s.ddr_rd_l.toNat), ("ddr_q",64,s.ddr_q.toNat),
-   ("bus_req",1,if s.bus_req then 1 else 0),
-   ("gp_rd",1,if s.gp_rd then 1 else 0), ("gp_wr",1,if s.gp_wr then 1 else 0),
-   ("gp_addr_r",32,s.gp_addr_r.toNat), ("gp_wdata_r",32,s.gp_wdata_r.toNat),
-   ("dmem_we",1,if s.dmem_we then 1 else 0), ("dmem_a",9,s.dmem_a.toNat),
-   ("dmem_wd",64,s.dmem_wd.toNat), ("dmem_rd",64,s.dmem_rd.toNat),
-   ("uart_wptr",9,s.uart_wptr.toNat), ("uart_ridx",8,s.uart_ridx.toNat),
-   ("uart_byte",8,s.uart_byte.toNat), ("rx_wptr",9,s.rx_wptr.toNat), ("rx_rptr",9,s.rx_rptr.toNat),
-   ("ld_boff_q",3,s.ld_boff_q.toNat), ("ld_op_q",8,s.ld_op_q.toNat), ("ld_rd_q",5,s.ld_rd_q.toNat),
-   ("lr_addr",64,s.lr_addr.toNat), ("lr_valid",1,if s.lr_valid then 1 else 0),
-   ("futex_exp",64,s.futex_exp.toNat), ("futex_addr_q",64,s.futex_addr_q.toNat),
-   ("sleep_scan",5,s.sleep_scan.toNat), ("next_ready",5,s.next_ready.toNat),
-   ("free_slot",5,s.free_slot.toNat), ("has_free",1,if s.has_free then 1 else 0),
-   ("clone_dst",5,s.clone_dst.toNat), ("clone_tid",5,s.clone_tid.toNat),
-   ("mul_acc",128,s.mul_acc.toNat), ("mul_aw",128,s.mul_aw.toNat), ("mul_b",64,s.mul_b.toNat),
-   ("mul_kind",2,s.mul_kind.toNat), ("div_rem",64,s.div_rem.toNat), ("div_quo",64,s.div_quo.toNat),
-   ("div_d",64,s.div_d.toNat), ("div_cnt",7,s.div_cnt.toNat),
-   ("div_isrem",1,if s.div_isrem then 1 else 0), ("div_negq",1,if s.div_negq then 1 else 0),
-   ("div_negr",1,if s.div_negr then 1 else 0),
-   ("zeroing",1,if s.zeroing then 1 else 0), ("zctr",10,s.zctr.toNat),
-   ("reg_sel",5,s.reg_sel.toNat), ("reg_wsel",5,s.reg_wsel.toNat), ("reg_wlo",32,s.reg_wlo.toNat),
-   ("dmem_addr_j",32,s.dmem_addr_j.toNat), ("dmem_lo_j",32,s.dmem_lo_j.toNat),
-   ("reg_rd",64,s.reg_rd.toNat),
-   ("quantum",32,s.quantum.toNat), ("qctr",32,s.qctr.toNat),
+   issReg dcTagQReg s.dc_tag_q, issReg dcDataQReg s.dc_data_q,
+   issBool dcAllocReg s.dc_alloc,
+   issReg traceWpReg s.trace_wp, issReg traceSelReg s.trace_sel,
+   issReg traceRdPcReg s.trace_rd_pc, issReg traceRdWbReg s.trace_rd_wb,
+   issBool traceHitReg s.trace_hit,
+   issReg traceInPcReg s.trace_in_pc, issReg traceInWbReg s.trace_in_wb,
+   issBool runningReg s.running, issBool haltedReg s.halted,
+   issReg stReg s.st, issReg irReg s.ir, issReg aReg s.a, issReg bReg s.b,
+   issReg rdvalReg s.rdval, issReg selTReg s.sel_t, issReg selFReg s.sel_f,
+   issBool memIsStoreReg s.mem_is_store,
+   issBool trapActiveReg s.trap_active, issReg trappedOpReg s.trapped_op,
+   issBool coreRdReg s.core_rd, issBool coreWrReg s.core_wr,
+   issReg coreAddrReg s.core_addr, issReg coreWdataReg s.core_wdata,
+   issBool jtagRdReg s.jtag_rd, issBool jtagWrReg s.jtag_wr,
+   issReg jtagWdataReg s.jtag_wdata, issReg ddrAddrJReg s.ddr_addr_j,
+   issReg ddrLoJReg s.ddr_lo_j, issReg ddrRdLReg s.ddr_rd_l, issReg ddrQReg s.ddr_q,
+   issBool busReqReg s.bus_req,
+   issBool gpRdReg s.gp_rd, issBool gpWrReg s.gp_wr,
+   issReg gpAddrRReg s.gp_addr_r, issReg gpWdataRReg s.gp_wdata_r,
+   issBool dmemWeReg s.dmem_we, issReg dmemAReg s.dmem_a,
+   issReg dmemWdReg s.dmem_wd, issReg dmemRdReg s.dmem_rd,
+   issReg uartWptrReg s.uart_wptr, issReg uartRidxReg s.uart_ridx,
+   issReg uartByteReg s.uart_byte, issReg rxWptrReg s.rx_wptr, issReg rxRptrReg s.rx_rptr,
+   issReg ldBoffQReg s.ld_boff_q, issReg ldOpQReg s.ld_op_q, issReg ldRdQReg s.ld_rd_q,
+   issReg lrAddrReg s.lr_addr, issBool lrValidReg s.lr_valid,
+   issReg futexExpReg s.futex_exp, issReg futexAddrQReg s.futex_addr_q,
+   issReg sleepScanReg s.sleep_scan, issReg nextReadyReg s.next_ready,
+   issReg freeSlotReg s.free_slot, issBool hasFreeReg s.has_free,
+   issReg cloneDstReg s.clone_dst, issReg cloneTidReg s.clone_tid,
+   issReg mulAccReg s.mul_acc, issReg mulAwReg s.mul_aw, issReg mulBReg s.mul_b,
+   issReg mulKindReg s.mul_kind, issReg divRemReg s.div_rem, issReg divQuoReg s.div_quo,
+   issReg divDReg s.div_d, issReg divCntReg s.div_cnt,
+   issBool divIsremReg s.div_isrem, issBool divNegqReg s.div_negq,
+   issBool divNegrReg s.div_negr,
+   issBool zeroingReg s.zeroing, issReg zctrReg s.zctr,
+   issReg regSelReg s.reg_sel, issReg regWselReg s.reg_wsel, issReg regWloReg s.reg_wlo,
+   issReg dmemAddrJReg s.dmem_addr_j, issReg dmemLoJReg s.dmem_lo_j,
+   issReg regRdReg s.reg_rd,
+   issReg quantumReg s.quantum, issReg qctrReg s.qctr,
    -- EXT-2: the domain observation mirror
-   ("cur_dom",8,s.cur_dom.toNat),
+   issReg curDomReg s.cur_dom,
    -- EXT-3: the fail-stop bitmap
-   ("poison",32,s.poison.toNat),
+   issReg poisonReg s.poison,
    -- EXT-4: the outgoing wake key (informational; the wake is unkeyed now)
-   ("wake_key",64,s.wake_key.toNat),
+   issReg wakeKeyReg s.wake_key,
    -- EXT-5: gates
-   ("in_gate",32,s.in_gate.toNat),
+   issReg inGateReg s.in_gate,
    -- §9 diagnostic: the loud GATE_RETURN latch
-   ("fault_cause",8,s.fault_cause.toNat), ("fault_pc",64,s.fault_pc.toNat),
-   ("fault_cur",5,s.fault_cur.toNat),
+   issReg faultCauseReg s.fault_cause, issReg faultPcReg s.fault_pc,
+   issReg faultCurReg s.fault_cur,
    -- EXT-7: the MMU enable and TLB selector
-   ("mmu_en",1,if s.mmu_en then 1 else 0), ("tlb_sel",3,s.tlb_sel.toNat),
-   ("tlb_vld",8,s.tlb_vld.toNat),
-   ("wake_out",1,if s.wake_out then 1 else 0),
-   ("lr_req",1,if s.lr_req then 1 else 0), ("sc_req",1,if s.sc_req then 1 else 0),
-   ("sc_pending",1,if s.sc_pending then 1 else 0)]
+   issBool mmuEnReg s.mmu_en, issReg tlbSelReg s.tlb_sel,
+   issReg tlbVldReg s.tlb_vld,
+   issBool wakeOutReg s.wake_out,
+   issBool lrReqReg s.lr_req, issBool scReqReg s.sc_req,
+   issBool scPendingReg s.sc_pending]
   -- EXT-7 stage B: the TLB is per-index REGISTERS, not memories (D20 -- every
   -- entry is read at once, so it is a register file). Listed here so Loom's
   -- The derived comparator finds every entry from the Design declarations.
   ++ (List.range 8).flatMap (fun i =>
-       [(s!"tlb_base{i}",  32, (s.tlb_base[i]!).toNat),
-        (s!"tlb_limit{i}", 32, (s.tlb_limit[i]!).toNat),
-        (s!"tlb_phys{i}",  32, (s.tlb_phys[i]!).toNat),
-        (s!"tlb_dom{i}",    8, (s.tlb_dom[i]!).toNat),
-        (s!"tlb_cell{i}",   8, (s.tlb_cell[i]!).toNat)])
-  ++ (List.range NT).map (fun i => (s!"tstate{i}",2,s.tstate[i]!.toNat))
+       [issReg (tlbBaseRegs.regN i) s.tlb_base[i]!,
+        issReg (tlbLimitRegs.regN i) s.tlb_limit[i]!,
+        issReg (tlbPhysRegs.regN i) s.tlb_phys[i]!,
+        issReg (tlbDomRegs.regN i) s.tlb_dom[i]!,
+        issReg (tlbCellRegs.regN i) s.tlb_cell[i]!])
+  ++ (List.range NT).map (fun i => issReg (tstateRegs.regN i) s.tstate[i]!)
 
 /-! ## EDSL ≡ ISS lockstep -/
+
+/-- One independent ISS memory value source, with its identity and shape
+derived from the Design's typed memory handle. -/
+structure IssMemBinding where
+  name : String
+  addrWidth : Nat
+  dataWidth : Nat
+  read : Nat → Option Nat
+
+private def issMem {aw dw : Nat} (m : Mem aw dw)
+    (values : Array (BitVec dw)) : IssMemBinding :=
+  { name := m.name
+    addrWidth := aw
+    dataWidth := dw
+    read := fun addr => (values[addr]?).map (fun value => value.toNat) }
+
+/-- The ISS's modelled memories. Values remain independent; all comparison
+metadata comes from the same handles that declare and access the Design. -/
+def issMems (s : MiniSt) : List IssMemBinding :=
+  [ issMem rfBank s.rf
+  , issMem dmemBank s.dmem
+  , issMem tracePcBank s.trace_pc
+  , issMem traceWbBank s.trace_wb
+  , issMem icDataBank s.ic_data
+  , issMem icTagBank s.ic_tag
+  , issMem dcDataBank s.dc_data
+  , issMem dcTagBank s.dc_tag
+  , issMem tpcBank s.tpc
+  , issMem tsleepBank s.tsleep
+  , issMem tpBank s.tp_arr
+  , issMem sigmaskBank s.sigmask_arr
+  , issMem tdomBank s.tdom
+  , issMem tcontBank s.tcont
+  , issMem tcdomBank s.tcdom
+  , issMem gdepthBank s.gdepth ]
 
 /-- Read one of Loom's derived coordinates out of the ISS.
 
@@ -239,56 +279,28 @@ design is compared without anyone remembering to add it.
 separately from mismatches, which is the distinction the old hand-written
 comparator could not make: it simply omitted them, and an omission looks
 exactly like agreement. -/
-def issAtWith (regs : List (String × Nat × Nat)) (s : MiniSt)
+def issAtWith (regs : List (String × Nat × Nat))
+    (mems : List IssMemBinding)
     (c : Loom.Hw.Coord) : Option Nat :=
   if c.kind = "reg" then
-    (regs.find? (fun r => r.1 = c.name)).map (fun r => r.2.2)
+    (regs.find? (fun r => r.1 = c.name ∧ r.2.1 = c.width)).map (fun r => r.2.2)
   else
-    let idx := c.addr
-    match c.name with
-    | "rf"          => some (s.rf[idx]!).toNat
-    | "dmem"        => some (s.dmem[idx]!).toNat
-    | "tdom"        => some (s.tdom[idx]!).toNat
-    | "tcont"       => some (s.tcont[idx]!).toNat
-    | "tcdom"       => some (s.tcdom[idx]!).toNat
-    | "gdepth"      => some (s.gdepth[idx]!).toNat
-    -- EXT-8: the commit-trace ring is compared like any other memory. It is
-    -- state the design declares, so D39 says it is observable and Loom's
-    -- coordinate enumeration will ask about it; answering `none` would make it
-    -- silently "unmodelled" rather than checked.
-    -- EXT-9: the I-cache banks. The ISS models them cycle-exactly, so they
-    -- are compared like any other memory -- and the Oracle's closed-list
-    -- enforcement is what made that mandatory: adding the banks to the
-    -- design without teaching the oracle produced UNDECLARED-UNMODELLED
-    -- ic_tag[...] on the first run, instead of a silently shrinking
-    -- comparison.
-    | "ic_data"     => some (s.ic_data[idx]!).toNat
-    | "ic_tag"      => some (s.ic_tag[idx]!).toNat
-    | "dc_data"     => some (s.dc_data[idx]!).toNat
-    | "dc_tag"      => some (s.dc_tag[idx]!).toNat
-    | "trace_pc"    => some (s.trace_pc[idx]!).toNat
-    | "trace_wb"    => some (s.trace_wb[idx]!).toNat
-    | "tpc"         => some (s.tpc[idx]!).toNat
-    | "tsleep"      => some (s.tsleep[idx]!).toNat
-    | "tp_arr"      => some (s.tp_arr[idx]!).toNat
-    | "sigmask_arr" => some (s.sigmask_arr[idx]!).toNat
-    -- The UART buffers are modelled by their pointers, not their contents:
-    -- the bytes are a host-visible side channel drained over BSCAN, not
-    -- architectural state the ISS reproduces. Reported as unmodelled.
-    | _             => none
+    match mems.find? (fun mem =>
+        mem.name = c.name ∧ mem.dataWidth = c.width ∧ c.addr < 2 ^ mem.addrWidth) with
+    | some mem => mem.read c.addr
+    | none => none
 
 /-- The CLOSED list of coordinates the ISS deliberately does not model. A
 memory added to the Design fails by name unless it is modelled by `issAtWith`
 or deliberately listed here. -/
 def issUnmodelled : List String :=
-  [ "uart_mem"   -- host-visible side channel, drained over BSCAN; modelled
-                 -- by its pointers, not its contents
-  , "rx_mem" ]   -- same, receive direction
+  [ uartBank.name, rxBank.name ]
 
 /-- Convenience wrapper. Prefer `issAtWith` in a per-cycle loop: `issRegs`
 rebuilds a 152-entry list on every call, so calling this once per coordinate
 rebuilds it once per coordinate. -/
-def issAt (s : MiniSt) (c : Loom.Hw.Coord) : Option Nat := issAtWith (issRegs s) s c
+def issAt (s : MiniSt) (c : Loom.Hw.Coord) : Option Nat :=
+  issAtWith (issRegs s) (issMems s) c
 
 /-! ### W5, the deeper half: matrix equality as a THEOREM
 
@@ -328,24 +340,60 @@ model. Their requests are therefore driven from the generated Design state.
 The handwritten ISS consumes the resulting input stream only as an independent
 differential oracle. -/
 
-private def fastReg (fd : FastDesign) (fs : FastSt) (name : String) : Nat :=
-  (fd.peek fs name).getD 0
+/-! The environment reads a small projection of generated core state.  Resolve
+those typed handles once, before execution, instead of maintaining another
+string/width adapter in the cycle loop. -/
 
-private def fastBit (fd : FastDesign) (fs : FastSt) (name : String) : Bool :=
-  fastReg fd fs name = 1
+structure DerivedView where
+  st        : FastEval.RegSlot design stReg
+  running   : FastEval.RegSlot design runningReg
+  halted    : FastEval.RegSlot design haltedReg
+  coreRd    : FastEval.RegSlot design coreRdReg
+  coreWr    : FastEval.RegSlot design coreWrReg
+  coreAddr  : FastEval.RegSlot design coreAddrReg
+  coreWdata : FastEval.RegSlot design coreWdataReg
+  jtagRd    : FastEval.RegSlot design jtagRdReg
+  jtagWr    : FastEval.RegSlot design jtagWrReg
+  jtagWdata : FastEval.RegSlot design jtagWdataReg
+  ddrAddrJ  : FastEval.RegSlot design ddrAddrJReg
+  gpRd      : FastEval.RegSlot design gpRdReg
+  gpWr      : FastEval.RegSlot design gpWrReg
+
+def derivedView? : Option DerivedView := do
+  let st        ← FastEval.regSlot? design stReg
+  let running   ← FastEval.regSlot? design runningReg
+  let halted    ← FastEval.regSlot? design haltedReg
+  let coreRd    ← FastEval.regSlot? design coreRdReg
+  let coreWr    ← FastEval.regSlot? design coreWrReg
+  let coreAddr  ← FastEval.regSlot? design coreAddrReg
+  let coreWdata ← FastEval.regSlot? design coreWdataReg
+  let jtagRd    ← FastEval.regSlot? design jtagRdReg
+  let jtagWr    ← FastEval.regSlot? design jtagWrReg
+  let jtagWdata ← FastEval.regSlot? design jtagWdataReg
+  let ddrAddrJ  ← FastEval.regSlot? design ddrAddrJReg
+  let gpRd      ← FastEval.regSlot? design gpRdReg
+  let gpWr      ← FastEval.regSlot? design gpWrReg
+  return DerivedView.mk st running halted coreRd coreWr coreAddr coreWdata
+    jtagRd jtagWr jtagWdata ddrAddrJ gpRd gpWr
+
+def prepareDerivedView : IO DerivedView :=
+  match derivedView? with
+  | some view => pure view
+  | none => throw <| IO.userError
+      "LNP64mini: declaration-derived environment view failed"
 
 /-- The external DDR request selected from the generated core's pre-state. -/
-def derivedHpReq (fd : FastDesign) (fs : FastSt) :
+def derivedHpReq (view : DerivedView) (fs : FastSt) :
     Bool × Bool × Nat × BitVec 64 :=
-  let state := fastReg fd fs "st"
-  let owns := fastBit fd fs "running" && state ≠ S_TRAP &&
+  let state := view.st.readNat fs
+  let owns := view.running.readNat fs = 1 && state ≠ S_TRAP &&
     state ≠ S_WAIT && state ≠ S_PAUSE
   if owns then
-    (fastBit fd fs "core_rd", fastBit fd fs "core_wr",
-      fastReg fd fs "core_addr", BitVec.ofNat 64 (fastReg fd fs "core_wdata"))
+    (view.coreRd.readNat fs = 1, view.coreWr.readNat fs = 1,
+      view.coreAddr.readNat fs, view.coreWdata.read fs)
   else
-    (fastBit fd fs "jtag_rd", fastBit fd fs "jtag_wr",
-      fastReg fd fs "ddr_addr_j", BitVec.ofNat 64 (fastReg fd fs "jtag_wdata"))
+    (view.jtagRd.readNat fs = 1, view.jtagWr.readNat fs = 1,
+      view.ddrAddrJ.readNat fs, view.jtagWdata.read fs)
 
 /-- Complete executable system whose core is the certified generated view. -/
 structure DerivedSystem where
@@ -360,7 +408,7 @@ def DerivedSystem.reset (dag : DagEval.VerifiedSimulator design)
 
 /-- One canonical system cycle. Peripheral inputs and request sampling both
 use pre-state, matching `Design.cycleOpen`'s synchronous boundary. -/
-def DerivedSystem.step (dag : DagEval.VerifiedSimulator design)
+def DerivedSystem.step (view : DerivedView) (dag : DagEval.VerifiedSimulator design)
     (system : DerivedSystem) (cmd : MiniIn) (gpRval : BitVec 32) :
     DerivedSystem × MiniIn :=
   let (mdone, mrd) := system.ddr.outputs
@@ -373,11 +421,10 @@ def DerivedSystem.step (dag : DagEval.VerifiedSimulator design)
       gpDone := gdone
       gpRdata := grd
       gpBusy := system.gp.pending }
-  let fd := dag.base.fast
-  let (rd, wr, addr, wdata) := derivedHpReq fd system.core
+  let (rd, wr, addr, wdata) := derivedHpReq view system.core
   let ddr := system.ddr.step rd wr addr wdata
-  let gp := system.gp.step (fastBit fd system.core "gp_rd")
-    (fastBit fd system.core "gp_wr") gpRval
+  let gp := system.gp.step (view.gpRd.readNat system.core = 1)
+    (view.gpWr.readNat system.core = 1) gpRval
   let core := dag.cycleOpen inp.toEnv system.core
   ({ core, ddr, gp }, inp)
 
@@ -386,27 +433,33 @@ structure DerivedRun where
   system : DerivedSystem
   cycles : Nat
 
-def DerivedRun.reg (run : DerivedRun) (name : String) : Nat :=
-  fastReg simulator.fast run.system.core name
+def DerivedRun.reg {w : Nat} (run : DerivedRun) (r : Reg w) : Option (BitVec w) :=
+  (FastEval.regSlot? design r).map (fun slot => slot.read run.system.core)
 
-def DerivedRun.mem (run : DerivedRun) (name : String) (addr : Nat) : Nat :=
-  match design.memIdx name with
-  | some index => run.system.core.mems.getD (design.memBase index + addr) 0
-  | none => 0
+def DerivedRun.regNat {w : Nat} (run : DerivedRun) (r : Reg w) : Option Nat :=
+  (run.reg r).map (fun value => value.toNat)
+
+def DerivedRun.mem {aw dw : Nat} (run : DerivedRun) (m : Mem aw dw)
+    (addr : BitVec aw) : Option (BitVec dw) :=
+  (FastEval.memSlot? design m).map (fun slot => slot.read run.system.core addr)
+
+def DerivedRun.memNat {aw dw : Nat} (run : DerivedRun) (m : Mem aw dw)
+    (addr : BitVec aw) : Option Nat :=
+  (run.mem m addr).map (fun value => value.toNat)
 
 /-- Pure execution engine for the generated Design. The handwritten ISS is
 not involved; clients with expected architectural outcomes should use this
 runner. -/
-def runDesignDag (dag : DagEval.VerifiedSimulator design)
+def runDesignDag (view : DerivedView) (dag : DagEval.VerifiedSimulator design)
     (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (maxCyc : Nat) :
     DerivedRun := Id.run do
   let mut system := DerivedSystem.reset dag image latency
   let mut cycles := 0
   for k in List.range maxCyc do
-    if fastBit dag.base.fast system.core "halted" then
+    if view.halted.readNat system.core = 1 then
       return { system, cycles }
-    let (next, _) := system.step dag (cmds k) (gpVal k)
+    let (next, _) := system.step view dag (cmds k) (gpVal k)
     system := next
     cycles := cycles + 1
   return { system, cycles }
@@ -417,21 +470,44 @@ def runDesign (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32) (maxCyc : Nat) :
     IO DerivedRun := do
   let dag ← DagEval.prepareSimulator simulator "LNP64mini"
-  return runDesignDag dag image latency cmds gpVal maxCyc
+  let view ← prepareDerivedView
+  return runDesignDag view dag image latency cmds gpVal maxCyc
+
+/-- Run the certified Design while counting cycles on which a typed one-bit
+coordinate is asserted. The coordinate is resolved once and failure is
+reported before execution. -/
+def runDesignCount (observed : Reg 1) (image : List (Nat × BitVec 64))
+    (latency : Nat) (cmds : Nat → MiniIn) (gpVal : Nat → BitVec 32)
+    (maxCyc : Nat) : IO (DerivedRun × Nat) := do
+  let dag ← DagEval.prepareSimulator simulator "LNP64mini"
+  let view ← prepareDerivedView
+  let slot ← FastEval.prepareRegSlot design observed
+  let mut system := DerivedSystem.reset dag image latency
+  let mut cycles := 0
+  let mut asserted := 0
+  for k in List.range maxCyc do
+    if view.halted.readNat system.core = 1 then
+      return (⟨system, cycles⟩, asserted)
+    let (next, _) := system.step view dag (cmds k) (gpVal k)
+    system := next
+    cycles := cycles + 1
+    if slot.readNat system.core = 1 then asserted := asserted + 1
+  return (⟨system, cycles⟩, asserted)
 
 private def evaluateDag (dag : DagEval.VerifiedSimulator design)
     (image : List (Nat × BitVec 64)) (latency : Nat)
     (cmds : Nat → MiniIn) (nCyc : Nat) (cap : Nat := 16) : Nat := Id.run do
   let some plan := design.coordPlan? cap | return 1
+  let some view := derivedView? | return 1
   let mut system := DerivedSystem.reset dag image latency
   let mut s : MiniSt := {}
   let mut bad := 0
   for k in List.range nCyc do
-    let (system', inp) := system.step dag (cmds k) 0
+    let (system', inp) := system.step view dag (cmds k) 0
     s := MiniIss.step s inp
     system := system'
     let (mism, undeclared, _) := diffFastAgainstOracle plan system.core
-      { read := issAtWith (issRegs s) s, unmodelled := issUnmodelled }
+      { read := issAtWith (issRegs s) (issMems s), unmodelled := issUnmodelled }
     bad := bad + mism.length + undeclared.length
   return bad
 
@@ -443,14 +519,16 @@ private def runCertified (image : List (Nat × BitVec 64)) (latency : Nat)
     (cap : Nat := 64) : IO (Nat × Nat) := do
   let plan ← design.prepareCoordPlan cap
   let dag ← DagEval.prepareSimulator simulator "LNP64mini"
+  let view ← prepareDerivedView
   let result ← Loom.Runner.run
     { label := "LNP64mini core Design/ISS", steps := nCyc }
     (DerivedSystem.reset dag image latency, ({} : MiniSt)) fun k state => do
-      let (system, inp) := state.1.step dag (cmds k) (gpVal k)
+      let (system, inp) := state.1.step view dag (cmds k) (gpVal k)
       let s := MiniIss.step state.2 inp
       let regs := issRegs s
+      let mems := issMems s
       let oracle : Oracle :=
-        { read := issAtWith regs s, unmodelled := issUnmodelled }
+        { read := issAtWith regs mems, unmodelled := issUnmodelled }
       return ((system, s), sampleFastAgainstOracle plan system.core oracle)
   return (result.failureCount, result.excluded.length)
 
@@ -825,7 +903,7 @@ def cmdStream (resetCyc startCyc : Nat) : Nat → MiniIn := fun k =>
   else if k = startCyc then { cmdValid := true, cmdIdx := 13, cmdData := 2 }  -- start (b1)
   else {}
 
-/-- selftest: lockstep a battery of directed scripts. To keep the zeroing
+/-- Design-derived architectural smoke battery. To keep the zeroing
 sweep short in the harness we START before zeroing completes is NOT valid
 (mini3 gates the FSM on ¬zeroing), so we let the full 1024-cycle sweep run
 but only compare a compact touched set. This is expensive; we cap prog1 to
@@ -835,28 +913,41 @@ def selftest : IO Unit := do
   -- are already zero (RAM reset), tstate0=READY, pc=TEXT_BASE — so we skip
   -- the 1024-cycle zeroing sweep and exercise the FSM directly.
   let start : Nat → MiniIn := fun k => if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
-  let scripts : List (String × List (BitVec 64) × Nat × BitVec 32) :=
-    [("LS   (ALU/MUL/SEL/GET_PCR/zp-st/zp-ld/branch/JAL)", progLS, 54, 0),
-     ("DDR  (S_DL/S_DST/S_DSW RMW store + DDR load)",      progDDR, 30, 0),
-     ("LRSC (LR.D reserve + SC.D success)",                progLRSC, 22, 0),
-     ("UART (UART TX store + UART RX load)",               progUART, 24, 0),
-     ("SCH  (CLONE + YIELD + THREAD_EXIT switch)",         progSched, 34, 0),
-     ("SLP  (SLEEP + sleep-scan wake + S_WAIT)",           progSleep, 20, 0),
-     ("GP   (S_GPL/S_GPS MMIO load/store handshake)",      progGP, 24, 0xABCD)]
-  let mut total := 0
-  for (nm, p, nc, gp) in scripts do
-    let img := imageFrom TEXT_BASE p
-    let bad ← lockstep img 1 start (fun _ => gp) nc
-    if bad = 0 then IO.println s!"  OK  {nm}  ({nc} cyc)"
-    else IO.println s!"  FAIL {nm} ({bad} mismatches)"
-    total := total + bad
-  if total = 0 then
-    IO.println s!"LNP64MINI SELFTEST OK — RESULT PASS; certified shared-DAG Design execution agrees with the independent ISS on all Design.coords (cap 64) across {scripts.length} scripts"
+  let scripts : List
+      (String × List (BitVec 64) × Nat × BitVec 32 × (DerivedRun → Bool)) :=
+    [("LS   (ALU/MUL/SEL/GET_PCR/zp-st/zp-ld/branch/JAL)", progLS, 54, 0,
+      fun run => run.regNat haltedReg == some 1 &&
+        run.memNat rfBank 4 == some 12 && run.memNat rfBank 11 == some 12 &&
+        run.memNat dmemBank 0 == some 12),
+     ("DDR  (S_DL/S_DST/S_DSW RMW store + DDR load)", progDDR, 30, 0,
+      fun run => run.regNat haltedReg == some 1 && run.memNat rfBank 8 == some 42),
+     ("LRSC (LR.D reserve + SC.D success)", progLRSC, 22, 0,
+      fun run => run.regNat haltedReg == some 1 && run.memNat rfBank 6 == some 0 &&
+        run.memNat rfBank 8 == some 77 && run.memNat dmemBank 0 == some 77),
+     ("UART (UART TX store + UART RX load)", progUART, 24, 0,
+      fun run => run.regNat haltedReg == some 1 && run.memNat rfBank 8 == some 0 &&
+        run.memNat uartBank 0 == some 0x41),
+     ("SCH  (CLONE + YIELD + THREAD_EXIT switch)", progSched, 34, 0,
+      fun run => run.regNat haltedReg == some 1),
+     ("SLP  (SLEEP + sleep-scan wake + S_WAIT)", progSleep, 20, 0,
+      fun run => run.regNat haltedReg == some 1),
+     ("GP   (S_GPL/S_GPS MMIO load/store handshake)", progGP, 24, 0xABCD,
+      fun run => run.regNat haltedReg == some 1 && run.memNat rfBank 8 == some 0xABCD)]
+  let mut failed := 0
+  let mut totalSteps := 0
+  for (nm, program, _cycles, gp, check) in scripts do
+    let run ← runDesign (imageFrom TEXT_BASE program) 1 start (fun _ => gp) 400
+    totalSteps := totalSteps + run.cycles
+    if check run then IO.println s!"  OK  {nm}  ({run.cycles} cyc)"
+    else do
+      IO.println s!"  FAIL {nm} (architectural outcome mismatch after {run.cycles} cyc; halted={run.regNat haltedReg})"
+      failed := failed + 1
+  if failed = 0 then
+    IO.println s!"LNP64MINI SELFTEST OK — certified shared-DAG Design outcomes pass across {scripts.length} scripts"
   else
-    IO.println s!"LNP64MINI SELFTEST RESULT FAIL — {total} total mismatches"
-  let steps := scripts.foldl (fun count item => count + item.2.2.1) 0
-  (Loom.Runner.Result.fromFailureCount "LNP64mini core selftest" steps total
-    "Design/ISS disagreement").requirePass
+    IO.println s!"LNP64MINI SELFTEST RESULT FAIL — {failed} scripts"
+  (Loom.Runner.Result.fromFailureCount "LNP64mini core selftest" totalSteps failed
+    "Design architectural outcome mismatch").requirePass
 
 /-! ## Independent differential oracle
 
@@ -957,15 +1048,16 @@ def progtest : IO Unit := do
   -- (a) prog1 to a clean EXIT.
   let img := imageFrom TEXT_BASE prog1
   let s ← runDesign img 1 (fun i => if i = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}) (fun _ => 0) 400
-  IO.println s!"PROGTEST prog1: halted={s.reg "halted" == 1} cycles={s.cycles} pc={hexStr (s.reg "pc")} retire={s.reg "retire"}"
+  IO.println s!"PROGTEST prog1: halted={s.regNat haltedReg == some 1} cycles={s.cycles} pc={hexStr ((s.regNat pcReg).getD 0)} retire={(s.regNat retireReg).getD 0}"
   IO.print "  rf[1..8] ="
   for i in List.range 8 do
-    IO.print s!" r{i+1}={s.mem "rf" (i + 1)}"
+    IO.print s!" r{i+1}={(s.memNat rfBank (BitVec.ofNat 10 (i + 1))).getD 0}"
   IO.println ""
-  IO.println s!"  dmem[0]={s.mem "dmem" 0}"
-  let ok1 := s.reg "halted" = 1 ∧ s.mem "rf" 1 = 7 ∧ s.mem "rf" 3 = 12 ∧
-    s.mem "rf" 5 = 35 ∧ s.mem "rf" 6 = 7 ∧ s.mem "rf" 8 = 12 ∧
-    s.mem "dmem" 0 = 12
+  IO.println s!"  dmem[0]={(s.memNat dmemBank 0).getD 0}"
+  let ok1 := s.regNat haltedReg = some 1 ∧
+    s.memNat rfBank 1 = some 7 ∧ s.memNat rfBank 3 = some 12 ∧
+    s.memNat rfBank 5 = some 35 ∧ s.memNat rfBank 6 = some 7 ∧
+    s.memNat rfBank 8 = some 12 ∧ s.memNat dmemBank 0 = some 12
 
   -- (b) trap + RESUME: run to the trap, then at a later cycle SET_PC=0x1008
   -- (word 1) and RESUME (cmd 54).
@@ -976,8 +1068,9 @@ def progtest : IO Unit := do
     else if i = 11 then { cmdValid := true, cmdIdx := 54, cmdData := 1 }                        -- RESUME
     else {}
   let st ← runDesign imgT 1 cmdsT (fun _ => 0) 200
-  IO.println s!"PROGTEST trap+resume: halted={st.reg "halted" == 1} cycles={st.cycles} r1={st.mem "rf" 1} trap_active={st.reg "trap_active" == 1}"
-  let ok2 := st.reg "halted" = 1 ∧ st.mem "rf" 1 = 55 ∧ st.reg "trap_active" = 0
+  IO.println s!"PROGTEST trap+resume: halted={st.regNat haltedReg == some 1} cycles={st.cycles} r1={(st.memNat rfBank 1).getD 0} trap_active={st.regNat trapActiveReg == some 1}"
+  let ok2 := st.regNat haltedReg = some 1 ∧ st.memNat rfBank 1 = some 55 ∧
+    st.regNat trapActiveReg = some 0
 
   if ok1 ∧ ok2 then
     IO.println "PROGTEST RESULT PASS — outcomes came from the certified shared-DAG Design simulator"
@@ -988,10 +1081,8 @@ def progtest : IO Unit := do
 
 /-! ## SMP-extension programs + selftest (DUAL_SPEC ladder step 1)
 
-Six directed scripts for the `res_kill` / `sc_fail` / `doorbell` / `hold`
-D15 inputs and the `wake_out` register. Each is lockstepped EDSL≡ISS on
-every register (including `wake_out`/`lr_req`/`sc_req`/`sc_pending`) and
-additionally checked for the *architectural* outcome on the ISS. -/
+Directed Design-derived checks for the `res_kill` / `sc_fail` / `doorbell` /
+`hold` inputs and the `wake_out` register. -/
 
 /-- FUTEX_WAIT on the DDR word at 0x2000 (image value 0 = the expected
 value, so the thread blocks), then — after an external `doorbell` — r9=5
@@ -1021,23 +1112,7 @@ def progWake : List (BitVec 64) :=
     encImmI OP_ADDI 9 0 9,        -- r9 = 9
     enc OP_EXIT 0 0 0 ]           -- EXIT
 
-/-- Count the `wake_out` pulses over an ISS run (must be exactly one for
-`progWake`). -/
-def countWake (image : List (Nat × BitVec 64)) (maxCyc : Nat) : Nat × Bool := Id.run do
-  let mut s : MiniSt := {}
-  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := 1 }
-  let mut g : GpModel := {}
-  let mut n := 0
-  for i in List.range maxCyc do
-    if s.halted then return (n, true)
-    let cmd : MiniIn := if i = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
-    let (s', d', g', _) := sysStep s d g cmd 0
-    s := s'; d := d'; g := g'
-    if s.wake_out then n := n + 1
-  return (n, s.halted)
-
-/-- The SMP-extension selftest: EDSL≡ISS lockstep on the six scripts, plus
-the architectural assertions. -/
+/-- The SMP-extension architectural assertions. -/
 def smpSelftest : IO Unit := do
   let start : Nat → MiniIn := fun k =>
     if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
@@ -1058,61 +1133,51 @@ def smpSelftest : IO Unit := do
   let hd : Nat → MiniIn := fun k => { start k with hold := 10 ≤ k ∧ k ≤ 30 }
   -- (4) sc_fail: the arbiter refuses the global SC at the serialization point.
   let sf : Nat → MiniIn := fun k => { start k with scFail := true }
-  let scripts : List (String × List (BitVec 64) × (Nat → MiniIn) × Nat) :=
-    [("RESKILL (res_kill clears lr_valid -> SC fails)", progLRSC, rk, 24),
-     ("SCFAIL  (global SC refused -> rd=1 at S_DSW)",   progScDDR, sf, 40),
-     ("SCOK    (global SC accepted -> rd=0)",           progScDDR, start, 40),
-     ("DOORBELL(FUTEX_WAIT parks; doorbell wakes it)",        progDoorbell, db, 34),
-     ("DBANYKEY(unkeyed wake: any-key doorbell wakes it too)", progDoorbell, dbWrong, 34),
-     ("WAKEOUT (FUTEX_WAKE pulses wake_out)",           progWake, start, 26),
-     ("HOLD    (FSM frozen at S_F0, then resumes)",     progLRSC, hd, 38)]
-  let mut total := 0
-  for (nm, p, c, nc) in scripts do
-    let img := imageFrom TEXT_BASE p
-    let bad ← lockstep img 1 c (fun _ => 0) nc
-    if bad = 0 then IO.println s!"  OK  {nm}  ({nc} cyc)"
-    else IO.println s!"  FAIL {nm} ({bad} mismatches)"
-    total := total + bad
-  -- architectural outcomes on the ISS
-  let (sfs, _, _) := runIss (imageFrom TEXT_BASE progScDDR) 1 sf (fun _ => 0) 200
-  let (sos, _, _) := runIss (imageFrom TEXT_BASE progScDDR) 1 start (fun _ => 0) 200
-  let okSc := sfs.halted && sos.halted && (sfs.rf[6]!).toNat == 1 && (sos.rf[6]!).toNat == 0
-  IO.println s!"  sc_fail: refused r6={(sfs.rf[6]!).toNat} (want 1)  accepted r6={(sos.rf[6]!).toNat} (want 0)"
-  let (sk, _, _) := runIss (imageFrom TEXT_BASE progLRSC) 1 rk (fun _ => 0) 200
-  let okRk := sk.halted && (sk.rf[6]!).toNat == 1 && (sk.dmem[0]!).toNat == 0
-                        && (sk.rf[8]!).toNat == 0
-  IO.println s!"  res_kill: halted={sk.halted} r6(SC result)={(sk.rf[6]!).toNat} (want 1=fail) dmem[0]={(sk.dmem[0]!).toNat} (want 0)"
-  let (sd, _, kd) := runIss (imageFrom TEXT_BASE progDoorbell) 1 db (fun _ => 0) 300
-  let okDb := sd.halted && (sd.rf[9]!).toNat == 5
-  IO.println s!"  doorbell: halted={sd.halted} cycles={kd} r9={(sd.rf[9]!).toNat} (want 5) tstate0={(sd.tstate[0]!).toNat}"
+  let sfs ← runDesign (imageFrom TEXT_BASE progScDDR) 1 sf (fun _ => 0) 200
+  let sos ← runDesign (imageFrom TEXT_BASE progScDDR) 1 start (fun _ => 0) 200
+  let okSc := sfs.regNat haltedReg == some 1 && sos.regNat haltedReg == some 1 &&
+    sfs.memNat rfBank 6 == some 1 && sos.memNat rfBank 6 == some 0
+  IO.println s!"  sc_fail: refused r6={sfs.memNat rfBank 6} (want 1) accepted r6={sos.memNat rfBank 6} (want 0)"
+  let sk ← runDesign (imageFrom TEXT_BASE progLRSC) 1 rk (fun _ => 0) 200
+  let okRk := sk.regNat haltedReg == some 1 && sk.memNat rfBank 6 == some 1 &&
+    sk.memNat dmemBank 0 == some 0 && sk.memNat rfBank 8 == some 0
+  IO.println s!"  res_kill: halted={sk.regNat haltedReg} r6={sk.memNat rfBank 6} (want 1=fail) dmem[0]={sk.memNat dmemBank 0} (want 0)"
+  let sd ← runDesign (imageFrom TEXT_BASE progDoorbell) 1 db (fun _ => 0) 300
+  let okDb := sd.regNat haltedReg == some 1 && sd.memNat rfBank 9 == some 5
+  IO.println s!"  doorbell: halted={sd.regNat haltedReg} cycles={sd.cycles} r9={sd.memNat rfBank 9} (want 5) tstate0={sd.regNat (tstateRegs.reg ⟨0, by decide⟩)}"
   -- doorbell-less control: the thread must STAY parked (no spurious wake)
-  let (sn, _, _) := runIss (imageFrom TEXT_BASE progDoorbell) 1 start (fun _ => 0) 300
-  let okNo := (!sn.halted) && (sn.tstate[0]!).toNat == 3 && (sn.rf[9]!).toNat == 0
-  IO.println s!"  no-doorbell control: halted={sn.halted} (want false) tstate0={(sn.tstate[0]!).toNat} (want 3)"
+  let sn ← runDesign (imageFrom TEXT_BASE progDoorbell) 1 start (fun _ => 0) 300
+  let okNo := sn.regNat haltedReg == some 0 &&
+    sn.regNat (tstateRegs.reg ⟨0, by decide⟩) == some 3 && sn.memNat rfBank 9 == some 0
+  IO.println s!"  no-doorbell control: halted={sn.regNat haltedReg} (want 0) tstate0={sn.regNat (tstateRegs.reg ⟨0, by decide⟩)} (want 3)"
   -- EXT-4 reverted (the NT=32 fit): the wake is unkeyed, so a doorbell on ANY
   -- key wakes a parked thread (a spurious wake is legal; the waiter re-checks).
   -- The keyed "wrong key stays parked" claim no longer holds; what remains is
   -- that a wake REQUIRES a doorbell (the no-doorbell control above).
-  let (sx, _, _) := runIss (imageFrom TEXT_BASE progDoorbell) 1 dbWrong (fun _ => 0) 300
-  let okKey := sx.halted && (sx.rf[9]!).toNat == 5
-  IO.println s!"  any-key doorbell (unkeyed): halted={sx.halted} (want true) \
-r9={(sx.rf[9]!).toNat} (want 5) | right-key also woke it: halted={sd.halted}"
-  let (nw, hw) := countWake (imageFrom TEXT_BASE progWake) 300
-  IO.println s!"  wake_out pulses={nw} (want 1) halted={hw}"
-  let okWk := nw == 1 && hw
+  let sx ← runDesign (imageFrom TEXT_BASE progDoorbell) 1 dbWrong (fun _ => 0) 300
+  let okKey := sx.regNat haltedReg == some 1 && sx.memNat rfBank 9 == some 5
+  IO.println s!"  any-key doorbell (unkeyed): halted={sx.regNat haltedReg} (want 1) r9={sx.memNat rfBank 9} (want 5)"
+  let (wakeRun, nw) ← runDesignCount wakeOutReg (imageFrom TEXT_BASE progWake)
+    1 start (fun _ => 0) 300
+  IO.println s!"  wake_out pulses={nw} (want 1) halted={wakeRun.regNat haltedReg}"
+  let okWk := nw == 1 && wakeRun.regNat haltedReg == some 1
   -- hold: the held run must reach the SAME architectural state as the free run
-  let (sh, _, kh) := runIss (imageFrom TEXT_BASE progLRSC) 1 hd (fun _ => 0) 300
-  let (sf, _, kf) := runIss (imageFrom TEXT_BASE progLRSC) 1 start (fun _ => 0) 300
-  let rfEq := sh.rf == sf.rf
-  let okHd := sh.halted && sf.halted && rfEq && sh.retire == sf.retire && kf < kh
-  IO.println s!"  hold: cycles held={kh} free={kf} (want held>free) rf equal={rfEq} retire={(sh.retire).toNat}"
-  if total == 0 && okRk && okSc && okDb && okNo && okKey && okWk && okHd then
-    IO.println "LNP64MINI SMP SELFTEST OK — EDSL≡ISS on res_kill/sc_fail/doorbell/wake_out/hold + outcomes"
+  let sh ← runDesign (imageFrom TEXT_BASE progLRSC) 1 hd (fun _ => 0) 300
+  let free ← runDesign (imageFrom TEXT_BASE progLRSC) 1 start (fun _ => 0) 300
+  let rfEq := (List.range 1024).all fun i =>
+    sh.memNat rfBank (BitVec.ofNat 10 i) == free.memNat rfBank (BitVec.ofNat 10 i)
+  let okHd := sh.regNat haltedReg == some 1 && free.regNat haltedReg == some 1 &&
+    rfEq && sh.regNat retireReg == free.regNat retireReg && free.cycles < sh.cycles
+  IO.println s!"  hold: cycles held={sh.cycles} free={free.cycles} (want held>free) rf equal={rfEq} retire={sh.regNat retireReg}"
+  if okRk && okSc && okDb && okNo && okKey && okWk && okHd then
+    IO.println "LNP64MINI SMP SELFTEST OK — Design-derived res_kill/sc_fail/doorbell/wake_out/hold outcomes"
   else
-    IO.println s!"LNP64MINI SMP SELFTEST FAILED ({total} mismatches; rk={okRk} sc={okSc} db={okDb} no={okNo} key={okKey} wk={okWk} hd={okHd})"
-  (Loom.Runner.Result.fromBool "LNP64mini SMP selftest" 0
-    (total == 0 && okRk && okSc && okDb && okNo && okKey && okWk && okHd)
-    "differential or SMP outcome assertion failed").requirePass
+    IO.println s!"LNP64MINI SMP SELFTEST FAILED (rk={okRk} sc={okSc} db={okDb} no={okNo} key={okKey} wk={okWk} hd={okHd})"
+  let ok := okRk && okSc && okDb && okNo && okKey && okWk && okHd
+  (Loom.Runner.Result.fromBool "LNP64mini SMP selftest"
+    (sfs.cycles + sos.cycles + sk.cycles + sd.cycles + sn.cycles + sx.cycles +
+      wakeRun.cycles + sh.cycles + free.cycles)
+    ok "Design-derived SMP outcome assertion failed").requirePass
 
 
 /-! ## EXT-1 — the preemption tick (selftest)
@@ -1159,37 +1224,37 @@ def cmdQuantum (q : Nat) : Nat → MiniIn := fun k =>
 def cmdNoQuantum : Nat → MiniIn := fun k =>
   if k = 1 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
 
-/-- Run the ISS and audit **every** preemption. Returns
-`(fires, allChecksPassed, finalState, cycles)`. -/
+/-- Run the certified Design and audit every observed thread switch. For each
+switch, the outgoing PC must be saved and the incoming PC restored from the
+typed thread-PC memory. -/
 def preemptAudit (image : List (Nat × BitVec 64)) (q : Nat) (maxCyc : Nat) :
-    Nat × Bool × MiniSt × Nat := Id.run do
+    IO (Nat × Bool × DerivedRun) := do
+  let dag ← DagEval.prepareSimulator simulator "LNP64mini"
+  let view ← prepareDerivedView
+  let curSlot ← FastEval.prepareRegSlot design curReg
+  let pcSlot ← FastEval.prepareRegSlot design pcReg
+  let stSlot ← FastEval.prepareRegSlot design stReg
+  let tpcSlot ← FastEval.prepareMemSlot design tpcBank
   let cmds := cmdQuantum q
-  let mut s : MiniSt := {}
-  let mut d : DdrModel := { mem := Std.HashMap.ofList image, latency := 1 }
-  let mut g : GpModel := {}
-  let mut fires := 0
+  let mut system := DerivedSystem.reset dag image 1
+  let mut switches := 0
   let mut ok := true
-  let mut k := 0
-  for i in List.range maxCyc do
-    if s.halted then return (fires, ok, s, k)
-    -- the fire predicate, read off the pre-state exactly as the design does
-    let fire := s.running ∧ ¬ s.halted ∧ ¬ s.zeroing ∧ s.st = BitVec.ofNat 5 S_F0
-                ∧ ¬ s.bus_req ∧ ¬ s.trap_active ∧ s.quantum ≠ 0 ∧ s.qctr = 0
-                ∧ s.next_ready ≠ s.cur
-    let savedPc := s.pc
-    let outgoing := s.cur.toNat
-    let incoming := s.next_ready.toNat
-    let target := s.tpc[incoming]!
-    let (s', d', g', _) := sysStep s d g (cmds i) 0
-    if fire then
-      fires := fires + 1
-      if s'.tpc[outgoing]! ≠ savedPc then ok := false   -- saved pc, NOT pc+8
-      if s'.cur.toNat ≠ incoming then ok := false
-      if s'.pc ≠ target then ok := false
-      if s'.st ≠ BitVec.ofNat 5 S_F0 then ok := false   -- costs one cycle, no fetch
-    s := s'; d := d'; g := g'
-    k := i + 1
-  return (fires, ok, s, k)
+  let mut cycles := 0
+  for k in List.range maxCyc do
+    if view.halted.readNat system.core = 1 then
+      return (switches, ok, ⟨system, cycles⟩)
+    let outgoing := curSlot.read system.core
+    let savedPc := pcSlot.read system.core
+    let (next, _) := system.step view dag (cmds k) 0
+    let incoming := curSlot.read next.core
+    if incoming ≠ outgoing then
+      switches := switches + 1
+      if tpcSlot.read next.core outgoing ≠ savedPc then ok := false
+      if pcSlot.read next.core ≠ tpcSlot.read system.core incoming then ok := false
+      if stSlot.readNat next.core ≠ S_F0 then ok := false
+    system := next
+    cycles := cycles + 1
+  return (switches, ok, ⟨system, cycles⟩)
 
 /-! ### The Law-5 program: a spinner that cannot be dislodged cooperatively
 
@@ -1225,25 +1290,19 @@ def writePreemptHex (path : String) : IO Unit := do
   IO.FS.writeFile path (String.intercalate "\n" (progSpin.map hex16) ++ "\n")
   IO.println s!"{path} written ({progSpin.length} words)"
 
-/-- The oracle line for `fpga/zc702/tb_lnp64mini_preempt.v`, printed from
-the ISS. Format and field order are identical to the tb's `$display`. -/
+/-- The prediction line for `fpga/zc702/tb_lnp64mini_preempt.v`, printed from
+the certified Design-derived simulator. -/
 def preemptPredict (q : Nat) (maxCyc : Nat := 20000) : IO Unit := do
-  let (fires, _, s, _) := preemptAudit (imageFrom TEXT_BASE progSpin) q maxCyc
-  IO.println s!"PREEMPT halted={if s.halted then 1 else 0} \
-trap={if s.trap_active then 1 else 0} pc={if s.halted then s.pc.toNat else 0} \
-r5={(s.rf[5]!).toNat} r9={(s.rf[9]!).toNat} dmem0={(s.dmem[0]!).toNat} \
-t1state={(s.tstate[1]!).toNat} preempted={if fires ≠ 0 then 1 else 0}"
+  let (fires, _, run) ← preemptAudit (imageFrom TEXT_BASE progSpin) q maxCyc
+  let halted := run.regNat haltedReg == some 1
+  IO.println s!"PREEMPT halted={if halted then 1 else 0} \
+trap={(run.regNat trapActiveReg).getD 0} pc={if halted then (run.regNat pcReg).getD 0 else 0} \
+r5={(run.memNat rfBank 5).getD 0} r9={(run.memNat rfBank 9).getD 0} dmem0={(run.memNat dmemBank 0).getD 0} \
+t1state={(run.regNat (tstateRegs.reg ⟨1, by decide⟩)).getD 0} preempted={if fires ≠ 0 then 1 else 0}"
 
 /-! ## EXT-2 — the domain selftest
 
-Two claims, and the second is the one that matters:
-
-1. **EDSL ≡ ISS on the domain state**, via the ordinary `lockstep` — which
-   now compares `cur_dom` and all 32 `tdom` slots on every cycle. Slot-wise
-   comparison is deliberate: inheritance is a claim about a slot the running
-   program never reads, so a spot check at `cur` could not observe a
-   violation.
-2. **A thread cannot leave its domain by spawning.** Put the parent in a
+**A thread cannot leave its domain by spawning.** Put the parent in a
    non-zero domain with `cmd 58`, let it `CLONE`, and the child's tag must
    equal the parent's. The domain is non-zero on purpose: with everything at
    0 the test passes even if inheritance is deleted outright, which is
@@ -1266,23 +1325,19 @@ def cmdDomain : Nat → MiniIn := fun k =>
 
 def domSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt
-  -- (1) EDSL ≡ ISS, including `cur_dom` and every `tdom` slot, every cycle.
-  let bad ← lockstep img 1 cmdDomain (fun _ => 0) 60
-  if bad = 0 then IO.println "  OK  DOMAIN (EDSL≡ISS on cur_dom + all 32 tdom slots, 60 cyc)"
-  else IO.println s!"  FAIL DOMAIN ({bad} mismatches)"
-  -- (2) the architectural claim: CLONE inherits, and the tag is non-zero.
-  let (sd, _, _) := runIss img 1 cmdDomain (fun _ => 0) 200
-  let parent := (sd.tdom[0]!).toNat
-  let child  := (sd.tdom[1]!).toNat
-  let others := (List.range NT).drop 2 |>.filter (fun i => (sd.tdom[i]!).toNat ≠ 0)
-  IO.println s!"  domain: parent tdom[0]={parent} (want {DOM_TEST}) child tdom[1]={child} (want {DOM_TEST}) other non-zero slots={others.length} (want 0) cur_dom={sd.cur_dom.toNat}"
-  let okInherit := parent = DOM_TEST && child = DOM_TEST && others.isEmpty
-  if bad = 0 && okInherit then
-    IO.println "LNP64MINI DOMAIN SELFTEST OK — EDSL≡ISS on the tag + CLONE cannot leave its domain"
+  let run ← runDesign img 1 cmdDomain (fun _ => 0) 200
+  let parent := run.memNat tdomBank 0
+  let child  := run.memNat tdomBank 1
+  let others := (List.range NT).drop 2 |>.filter (fun i =>
+    run.memNat tdomBank (BitVec.ofNat 5 i) ≠ some 0)
+  IO.println s!"  domain: parent tdom[0]={parent} (want {DOM_TEST}) child tdom[1]={child} (want {DOM_TEST}) other non-zero slots={others.length} (want 0) cur_dom={run.regNat curDomReg}"
+  let okInherit := parent = some DOM_TEST && child = some DOM_TEST && others.isEmpty
+  if okInherit then
+    IO.println "LNP64MINI DOMAIN SELFTEST OK — Design-derived CLONE cannot leave its domain"
   else
-    IO.println s!"LNP64MINI DOMAIN SELFTEST FAILED ({bad} mismatches; inherit={okInherit})"
-  (Loom.Runner.Result.fromBool "LNP64mini domain selftest" 60
-    (bad == 0 && okInherit) "differential or inheritance assertion failed").requirePass
+    IO.println s!"LNP64MINI DOMAIN SELFTEST FAILED (inherit={okInherit})"
+  (Loom.Runner.Result.fromBool "LNP64mini domain selftest" run.cycles
+    okInherit "Design-derived inheritance assertion failed").requirePass
 
 /-! ## EXT-3 — the fail-stop selftest
 
@@ -1315,27 +1370,27 @@ def cmdPoison (q : Nat) (at_ : Nat) (bm : Nat) : Nat → MiniIn := fun k =>
 
 def failstopSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt
-  -- (0) EDSL ≡ ISS with poison live, every register + all thread arrays.
-  let bad ← lockstep img 1 (cmdPoison 8 24 0xFFFFFFFF) (fun _ => 0) 60
-  if bad = 0 then IO.println "  OK  FAILSTOP (EDSL≡ISS with poison live, 60 cyc)"
-  else IO.println s!"  FAIL FAILSTOP ({bad} mismatches)"
   -- (1) poisoning the running thread stops the core, and it stays stopped.
-  let (sp, _, _) := runIss img 1 (cmdPoison 8 24 0xFFFFFFFF) (fun _ => 0) 4000
-  let (sc, _, _) := runIss img 1 (cmdQuantum 8) (fun _ => 0) 4000
-  IO.println s!"  running-thread: poisoned running={sp.running} (want false) retire={sp.retire.toNat} vs unpoisoned retire={sc.retire.toNat} halted={sc.halted} (want strictly less, control halts)"
-  let ok1 := (¬ sp.running) && sp.retire.toNat < sc.retire.toNat && sc.halted
+  let sp ← runDesign img 1 (cmdPoison 8 24 0xFFFFFFFF) (fun _ => 0) 4000
+  let sc ← runDesign img 1 (cmdQuantum 8) (fun _ => 0) 4000
+  IO.println s!"  running-thread: poisoned running={sp.regNat runningReg} (want 0) retire={sp.regNat retireReg} vs unpoisoned retire={sc.regNat retireReg} halted={sc.regNat haltedReg} (want strictly less, control halts)"
+  let ok1 := match sp.regNat runningReg, sp.regNat retireReg,
+      sc.regNat retireReg, sc.regNat haltedReg with
+    | some 0, some poisonedRetire, some controlRetire, some 1 =>
+      poisonedRetire < controlRetire
+    | _, _, _, _ => false
   -- (2) poisoning ONLY the child (slot 1) descheduules it; the parent runs on.
   --     The parent reaches EXIT, so `halted` is the evidence it was undisturbed.
-  let (sk, _, _) := runIss img 1 (cmdPoison 8 2 0x2) (fun _ => 0) 4000
-  let childPc := (sk.tpc[1]!).toNat
-  IO.println s!"  ready-thread:   parent halted={sk.halted} (want true) r9={(sk.rf[9]!).toNat} (want 2) child tstate={(sk.tstate[1]!).toNat} child tpc=0x{String.ofList (Nat.toDigits 16 childPc)}"
-  let ok2 := sk.halted && (sk.rf[9]!).toNat == 2
-  if bad = 0 && ok1 && ok2 then
+  let sk ← runDesign img 1 (cmdPoison 8 2 0x2) (fun _ => 0) 4000
+  let childPc := sk.memNat tpcBank 1
+  IO.println s!"  ready-thread: parent halted={sk.regNat haltedReg} (want 1) r9={sk.memNat rfBank 9} (want 2) child tstate={sk.regNat (tstateRegs.reg ⟨1, by decide⟩)} child tpc={childPc}"
+  let ok2 := sk.regNat haltedReg = some 1 && sk.memNat rfBank 9 = some 2
+  if ok1 && ok2 then
     IO.println "LNP64MINI FAILSTOP SELFTEST OK — poison stops the runner AND deschedules the ready"
   else
-    IO.println s!"LNP64MINI FAILSTOP SELFTEST FAILED ({bad} mismatches; runner={ok1} ready={ok2})"
-  (Loom.Runner.Result.fromBool "LNP64mini fail-stop selftest" 60
-    (bad == 0 && ok1 && ok2) "differential or fail-stop assertion failed").requirePass
+    IO.println s!"LNP64MINI FAILSTOP SELFTEST FAILED (runner={ok1} ready={ok2})"
+  (Loom.Runner.Result.fromBool "LNP64mini fail-stop selftest" (sp.cycles + sc.cycles + sk.cycles)
+    (ok1 && ok2) "Design-derived fail-stop assertion failed").requirePass
 
 /-! ## EXT-10 — the data cache
 
@@ -1347,10 +1402,9 @@ Three claims, and the third is the one worth the program:
    address sees the stored value and not the filled one. This is the defect a
    write-through cache without invalidation has, and it is invisible to any
    program that loads an address only once;
-3. the caches are cycle-exact against the ISS throughout, which is what makes
-   1 and 2 evidence about the *design* rather than about one trace -- the
-   lockstep compares `dc_data`/`dc_tag` at every slot, so a cache that
-   returned the right value by luck through a wrong tag still fails.
+3. the checks execute the certified Design-derived simulator, so the observed
+   hit, invalidation, and conflict outcomes are observations of the Design
+   semantics rather than a second cache implementation.
 
 `progDcache` uses two addresses 32 KB apart (0x2000 and 0x8002000): the index
 is `ea[14:3]`, so they collide in the same set with different tags, which is
@@ -1376,21 +1430,21 @@ def progDcache : List (BitVec 64) :=
 
 def dcacheSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progDcache
-  let bad ← lockstep img 1 (fun k => if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}) (fun _ => 0) 260
-  if bad = 0 then IO.println "  OK  DCACHE (EDSL≡ISS incl. dc_data/dc_tag banks, 260 cyc)"
-  else IO.println s!"  FAIL DCACHE ({bad} mismatches)"
-  let (s, _, _) := runIss img 1 (fun k => if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}) (fun _ => 0) 600
-  IO.println s!"  halted={s.halted} r8={(s.rf[8]!).toNat} (want 42, fill) r9={(s.rf[9]!).toNat} (want 42, hit) \
-r10={(s.rf[10]!).toNat} (want 7, store INVALIDATED the line) r11={(s.rf[11]!).toNat} (want 99) \
-r12={(s.rf[12]!).toNat} (want 7, refilled after conflict eviction)"
-  let ok := s.halted && (s.rf[8]!).toNat == 42 && (s.rf[9]!).toNat == 42
-            && (s.rf[10]!).toNat == 7 && (s.rf[11]!).toNat == 99 && (s.rf[12]!).toNat == 7
-  if bad = 0 && ok then
+  let start : Nat → MiniIn := fun k =>
+    if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
+  let run ← runDesign img 1 start (fun _ => 0) 600
+  IO.println s!"  halted={run.regNat haltedReg} r8={run.memNat rfBank 8} (want 42, fill) r9={run.memNat rfBank 9} (want 42, hit) \
+r10={run.memNat rfBank 10} (want 7, store INVALIDATED the line) r11={run.memNat rfBank 11} (want 99) \
+r12={run.memNat rfBank 12} (want 7, refilled after conflict eviction)"
+  let ok := run.regNat haltedReg = some 1 && run.memNat rfBank 8 = some 42 &&
+    run.memNat rfBank 9 = some 42 && run.memNat rfBank 10 = some 7 &&
+    run.memNat rfBank 11 = some 99 && run.memNat rfBank 12 = some 7
+  if ok then
     IO.println "LNP64MINI DCACHE SELFTEST OK — hits return the filled value, and a store invalidates its own line"
   else
-    IO.println s!"LNP64MINI DCACHE SELFTEST FAILED ({bad} mismatches; values={ok})"
-  (Loom.Runner.Result.fromBool "LNP64mini data-cache selftest" 260
-    (bad == 0 && ok) "differential or cache-value assertion failed").requirePass
+    IO.println s!"LNP64MINI DCACHE SELFTEST FAILED (values={ok})"
+  (Loom.Runner.Result.fromBool "LNP64mini data-cache selftest" run.cycles
+    ok "Design-derived cache-value assertion failed").requirePass
 
 /-! ## EXT-5 — the gate selftest
 
@@ -1531,67 +1585,56 @@ def gateSelftest : IO Unit := do
   let tbl  := gateDescriptor 0 (TEXT_BASE + 32) GATE_DOM_TEST
   let img  := imageFrom TEXT_BASE progGate ++ tbl
   let imgS := imageFrom TEXT_BASE progGateStay ++ tbl
-  -- (0) EDSL ≡ ISS across a full gate call/return.
-  let bad ← lockstep img 1 cmdGate (fun _ => 0) 80
-  if bad = 0 then IO.println "  OK  GATE (EDSL≡ISS across call+return, 80 cyc)"
-  else IO.println s!"  FAIL GATE ({bad} mismatches)"
   -- (1) the round trip: body ran, returned to the right place, domain restored.
-  let (sg, _, _) := runIss img 1 cmdGate (fun _ => 0) 400
-  IO.println s!"  round trip: halted={sg.halted} r10={(sg.rf[10]!).toNat} (want 5, gate body ran) \
-r9={(sg.rf[9]!).toNat} (want 7, returned to w2) tdom[0]={(sg.tdom[0]!).toNat} (want 0) \
-in_gate={sg.in_gate.toNat} (want 0)"
-  let ok1 := sg.halted && (sg.rf[10]!).toNat == 5 && (sg.rf[9]!).toNat == 7
-             && (sg.tdom[0]!).toNat == 0 && sg.in_gate.toNat == 0
+  let sg ← runDesign img 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  round trip: halted={sg.regNat haltedReg} r10={sg.memNat rfBank 10} (want 5, gate body ran) \
+r9={sg.memNat rfBank 9} (want 7, returned to w2) tdom[0]={sg.memNat tdomBank 0} (want 0) \
+in_gate={sg.regNat inGateReg} (want 0)"
+  let ok1 := sg.regNat haltedReg == some 1 && sg.memNat rfBank 10 == some 5 &&
+    sg.memNat rfBank 9 == some 7 && sg.memNat tdomBank 0 == some 0 &&
+    sg.regNat inGateReg == some 0
   -- (2) halting INSIDE the gate: the thread is in the gate's domain, not its own.
-  let (ss, _, _) := runIss imgS 1 cmdGate (fun _ => 0) 400
-  IO.println s!"  inside gate: halted={ss.halted} tdom[0]={(ss.tdom[0]!).toNat} \
-(want {GATE_DOM_TEST}) in_gate={ss.in_gate.toNat} (want 1) r10={(ss.rf[10]!).toNat} (want 5)"
-  let ok2 := ss.halted && (ss.tdom[0]!).toNat == GATE_DOM_TEST
-             && ss.in_gate.toNat == 1 && (ss.rf[10]!).toNat == 5
+  let ss ← runDesign imgS 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  inside gate: halted={ss.regNat haltedReg} tdom[0]={ss.memNat tdomBank 0} \
+(want {GATE_DOM_TEST}) in_gate={ss.regNat inGateReg} (want 1) r10={ss.memNat rfBank 10} (want 5)"
+  let ok2 := ss.regNat haltedReg == some 1 && ss.memNat tdomBank 0 == some GATE_DOM_TEST &&
+    ss.regNat inGateReg == some 1 && ss.memNat rfBank 10 == some 5
   -- (3) §17 fail-closed: an id with no descriptor must not activate.
-  let (su, _, _) := runIss (imageFrom TEXT_BASE progGateUnbacked ++ tbl) 1 cmdGate (fun _ => 0) 400
-  IO.println s!"  unbacked gate 1: halted={su.halted} r9={(su.rf[9]!).toNat} (want 7, refused) \
-tdom[0]={(su.tdom[0]!).toNat} (want 0) in_gate={su.in_gate.toNat} (want 0)"
-  let ok3 := su.halted && (su.rf[9]!).toNat == 7 && (su.tdom[0]!).toNat == 0
-             && su.in_gate.toNat == 0
-  let badU ← lockstep (imageFrom TEXT_BASE progGateUnbacked ++ tbl) 1 cmdGate (fun _ => 0) 60
-  if badU = 0 then IO.println "  OK  GATE-UNBACKED (EDSL≡ISS, 60 cyc)"
-  else IO.println s!"  FAIL GATE-UNBACKED ({badU} mismatches)"
+  let su ← runDesign (imageFrom TEXT_BASE progGateUnbacked ++ tbl) 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  unbacked gate 1: halted={su.regNat haltedReg} r9={su.memNat rfBank 9} (want 7, refused) \
+tdom[0]={su.memNat tdomBank 0} (want 0) in_gate={su.regNat inGateReg} (want 0)"
+  let ok3 := su.regNat haltedReg == some 1 && su.memNat rfBank 9 == some 7 &&
+    su.memNat tdomBank 0 == some 0 && su.regNat inGateReg == some 0
   -- (4) §9 NESTING: handler A gate_calls gate 1 (handler B). The continuation
   -- STACK must carry both frames; depth 0→1→2→1→0.
   let tblN := gateDescriptor 0 (TEXT_BASE + 32) GATE_DOM_TEST
               ++ gateDescriptor 1 (TEXT_BASE + 64) 4
   let imgN := imageFrom TEXT_BASE progGateNest ++ tblN
-  let badN ← lockstep imgN 1 cmdGate (fun _ => 0) 120
-  if badN = 0 then IO.println "  OK  GATE-NEST (EDSL≡ISS, nested gate_call, 120 cyc)"
-  else IO.println s!"  FAIL GATE-NEST ({badN} mismatches)"
-  let (sn, _, _) := runIss imgN 1 cmdGate (fun _ => 0) 400
-  IO.println s!"  nested: halted={sn.halted} r11={(sn.rf[11]!).toNat} (want 9, inner ran) \
-r10={(sn.rf[10]!).toNat} (want 5, A resumed) r9={(sn.rf[9]!).toNat} (want 7, A returned) \
-in_gate={sn.in_gate.toNat} (want 0) gdepth0={(sn.gdepth[0]!).toNat} (want 0)"
-  let ok4 := sn.halted && (sn.rf[11]!).toNat == 9 && (sn.rf[10]!).toNat == 5
-             && (sn.rf[9]!).toNat == 7 && sn.in_gate.toNat == 0 && (sn.gdepth[0]!).toNat == 0
+  let sn ← runDesign imgN 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  nested: halted={sn.regNat haltedReg} r11={sn.memNat rfBank 11} (want 9, inner ran) \
+r10={sn.memNat rfBank 10} (want 5, A resumed) r9={sn.memNat rfBank 9} (want 7, A returned) \
+in_gate={sn.regNat inGateReg} (want 0) gdepth0={sn.memNat gdepthBank 0} (want 0)"
+  let ok4 := sn.regNat haltedReg == some 1 && sn.memNat rfBank 11 == some 9 &&
+    sn.memNat rfBank 10 == some 5 && sn.memNat rfBank 9 == some 7 &&
+    sn.regNat inGateReg == some 0 && sn.memNat gdepthBank 0 == some 0
   -- (5) CLONE inside a gate (the driver-spawn path): the handler spawns a
   -- child then returns; the caller's continuation must survive.
   let imgC := imageFrom TEXT_BASE progGateClone ++ tbl
-  let badC ← lockstep imgC 1 cmdGate (fun _ => 0) 120
-  if badC = 0 then IO.println "  OK  GATE-CLONE (EDSL≡ISS, spawn inside gate, 120 cyc)"
-  else IO.println s!"  FAIL GATE-CLONE ({badC} mismatches)"
-  let (sc, _, _) := runIss imgC 1 cmdGate (fun _ => 0) 400
-  IO.println s!"  gate-clone: halted={sc.halted} r9={(sc.rf[9]!).toNat} (want 7, parent returned) \
-r10={(sc.rf[10]!).toNat} (want 5) r6={(sc.rf[6]!).toNat} (child tid) in_gate={sc.in_gate.toNat} (want 0) \
-gdepth0={(sc.gdepth[0]!).toNat} (want 0)"
-  let ok5 := sc.halted && (sc.rf[9]!).toNat == 7 && (sc.rf[10]!).toNat == 5
-             && sc.in_gate.toNat == 0 && (sc.gdepth[0]!).toNat == 0
-  if bad = 0 && badU = 0 && badN = 0 && badC = 0
-     && ok1 && ok2 && ok3 && ok4 && ok5 then
+  let sc ← runDesign imgC 1 cmdGate (fun _ => 0) 400
+  IO.println s!"  gate-clone: halted={sc.regNat haltedReg} r9={sc.memNat rfBank 9} (want 7, parent returned) \
+r10={sc.memNat rfBank 10} (want 5) r6={sc.memNat rfBank 6} (child tid) in_gate={sc.regNat inGateReg} (want 0) \
+gdepth0={sc.memNat gdepthBank 0} (want 0)"
+  let ok5 := sc.regNat haltedReg == some 1 && sc.memNat rfBank 9 == some 7 &&
+    sc.memNat rfBank 10 == some 5 && sc.regNat inGateReg == some 0 &&
+    sc.memNat gdepthBank 0 == some 0
+  if ok1 && ok2 && ok3 && ok4 && ok5 then
     IO.println "LNP64MINI GATE SELFTEST OK — a gate is the only way to change domain, and only to the gate's"
   else
-    IO.println s!"LNP64MINI GATE SELFTEST FAILED ({bad} mismatches; roundtrip={ok1} inside={ok2} unbacked={ok3})"
-  (Loom.Runner.Result.fromBool "LNP64mini gate selftest" 0
-    (bad == 0 && badU == 0 && badN == 0 && badC == 0 &&
-      ok1 && ok2 && ok3 && ok4 && ok5)
-    "differential or gate assertion failed").requirePass
+    IO.println s!"LNP64MINI GATE SELFTEST FAILED (roundtrip={ok1} inside={ok2} unbacked={ok3})"
+  (Loom.Runner.Result.fromBool "LNP64mini gate selftest"
+    (sg.cycles + ss.cycles + su.cycles + sn.cycles + sc.cycles)
+    (ok1 && ok2 && ok3 && ok4 && ok5)
+    "Design-derived gate assertion failed").requirePass
 
 /-- §9 GATE-HAMMER: the driver-spawn trigger shape, directed and isolated (its
 own selftest so the long run doesn't bloat `gateSelftest`). 64× gate_call with a
@@ -1893,29 +1936,27 @@ def refusalConformanceSelftest : IO Unit := do
   -- (a) full continuation stack -> -BUSY, value register unchanged
   let tblB := gateDescriptor 0 (TEXT_BASE + 6*8) GATE_DOM_TEST
   let imgB := imageFrom TEXT_BASE progGateBusy ++ tblB
-  let badB ← lockstep imgB 1 cmdGate (fun _ => 0) 300
-  let (sb, _, _) := runIss imgB 1 cmdGate (fun _ => 0) 4000
-  let r3b := (sb.rf[10]!).toNat
-  let okB := r3b == 0xFFFFFFFFFFFFFFF2 && (sb.rf[2]!).toNat == 0x5A
-             && (sb.rf[9]!).toNat == MAXD
+  let sb ← runDesign imgB 1 cmdGate (fun _ => 0) 4000
+  let r3b := (sb.memNat rfBank 10).getD 0
+  let okB := r3b == 0xFFFFFFFFFFFFFFF2 && sb.memNat rfBank 2 == some 0x5A
+             && sb.memNat rfBank 9 == some MAXD
   IO.println s!"  BUSY: captured status=0x{String.ofList (Nat.toDigits 16 r3b)} (want ...fff2 = -BUSY) \
-r2=0x{String.ofList (Nat.toDigits 16 (sb.rf[2]!).toNat)} (want 5a: value register UNCHANGED) \
-depth reached r9={(sb.rf[9]!).toNat} (want {MAXD}) lockstep={badB}"
-  allOk := allOk && okB && badB == 0
+r2={sb.memNat rfBank 2} (want 5a: value register UNCHANGED) depth reached r9={sb.memNat rfBank 9} (want {MAXD})"
+  allOk := allOk && okB
   -- (b) descriptor that does not admit -> -MALFORMED, value unchanged
   let imgM := imageFrom TEXT_BASE progGateMalformed ++ gateDescriptor 0 (TEXT_BASE + 8) GATE_DOM_TEST
-  let badM ← lockstep imgM 1 cmdGate (fun _ => 0) 200
-  let (sm, _, _) := runIss imgM 1 cmdGate (fun _ => 0) 3000
-  let r3m := (sm.rf[3]!).toNat
-  let okM := r3m == 0xFFFFFFFFFFFFFFFC && (sm.rf[2]!).toNat == 0x5A && sm.halted
+  let sm ← runDesign imgM 1 cmdGate (fun _ => 0) 3000
+  let r3m := (sm.memNat rfBank 3).getD 0
+  let okM := r3m == 0xFFFFFFFFFFFFFFFC && sm.memNat rfBank 2 == some 0x5A &&
+    sm.regNat haltedReg == some 1
   IO.println s!"  MALFORMED: r3=0x{String.ofList (Nat.toDigits 16 r3m)} (want ...fffc = -MALFORMED) \
-r2=0x{String.ofList (Nat.toDigits 16 (sm.rf[2]!).toNat)} (want 5a) halted={sm.halted} lockstep={badM}"
-  allOk := allOk && okM && badM == 0
+r2={sm.memNat rfBank 2} (want 5a) halted={sm.regNat haltedReg}"
+  allOk := allOk && okM
   if allOk then
     IO.println "LNP64MINI REFUSAL CONFORMANCE OK — no refusal reports nothing, and none touches the value register"
   else do
     IO.println "LNP64MINI REFUSAL CONFORMANCE FAILED"
-  (Loom.Runner.Result.fromBool "LNP64mini refusal conformance" 0 allOk
+  (Loom.Runner.Result.fromBool "LNP64mini refusal conformance" (sb.cycles + sm.cycles) allOk
     "refusal assertion failed").requirePass
 
 def faultConformanceSelftest : IO Unit := do
@@ -2197,23 +2238,20 @@ def slotFillSelftest : IO Unit := do
   let start : Nat → MiniIn := fun k =>
     if k = 0 then { cmdValid := true, cmdIdx := 13, cmdData := 2 } else {}
   let cyc := NT*8 + 60
-  let bad ← lockstep img 1 start (fun _ => 0) cyc
-  if bad = 0 then IO.println s!"  OK  SLOTFILL (EDSL≡ISS, {cyc} cyc)"
-  else IO.println s!"  FAIL SLOTFILL ({bad} mismatches)"
-  let (s, _, _) := runIss img 1 start (fun _ => 0) (cyc*2)
-  let occ := (List.range NT).foldl
-    (fun n i => if (s.tstate[i]!).toNat != 0 then n+1 else n) 0
-  let overFull := (s.rf[6]!).toNat == 0xFFFFFFFFFFFFFFFF
-  let lastOk := (s.rf[4]!).toNat != 0xFFFFFFFFFFFFFFFF
-  IO.println s!"  occupied slots={occ} (want {NT}); over-full r6={(s.rf[6]!).toNat} (want -1); \
-last-clone r4={(s.rf[4]!).toNat} (valid, not -1)"
-  if bad == 0 && occ == NT && overFull && lastOk then
+  let run ← runDesign img 1 start (fun _ => 0) (cyc*2)
+  let occ := (List.finRange NT).foldl
+    (fun n i => if run.regNat (tstateRegs.reg i) != some 0 then n+1 else n) 0
+  let overFull := run.memNat rfBank 6 == some 0xFFFFFFFFFFFFFFFF
+  let lastOk := run.memNat rfBank 4 != some 0xFFFFFFFFFFFFFFFF
+  IO.println s!"  occupied slots={occ} (want {NT}); over-full r6={run.memNat rfBank 6} (want -1); \
+last-clone r4={run.memNat rfBank 4} (valid, not -1)"
+  if occ == NT && overFull && lastOk then
     IO.println s!"LNP64MINI SLOTFILL SELFTEST OK — {NT-1} clones fill the table and the {NT}th is refused"
   else
     IO.println s!"LNP64MINI SLOTFILL SELFTEST FAILED (occ={occ} want {NT}; overFull={overFull}; lastOk={lastOk})"
-  (Loom.Runner.Result.fromBool "LNP64mini slot-fill selftest" cyc
-    (bad == 0 && occ == NT && overFull && lastOk)
-    "differential or slot-capacity assertion failed").requirePass
+  (Loom.Runner.Result.fromBool "LNP64mini slot-fill selftest" run.cycles
+    (occ == NT && overFull && lastOk)
+    "Design-derived slot-capacity assertion failed").requirePass
 
 /-! ## EXT-7 — the MMU selftest (§15)
 
@@ -2323,39 +2361,33 @@ def mmuSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progLdSt
              ++ [(ddrWord ((BitVec.ofNat 32 DATA_BASE).toNat + (MMU_PPN <<< 12)), 0xD00D),
                  (ddrWord DATA_BASE, 0x0BAD)]
-  -- (1) bypass is the pre-EXT-7 machine.
-  let bad ← lockstep img 1 (cmdQuantum 0) (fun _ => 0) 60
-  if bad = 0 then IO.println "  OK  MMU-BYPASS (mmu_en=0: EDSL≡ISS, the pre-EXT-7 machine, 60 cyc)"
-  else IO.println s!"  FAIL MMU-BYPASS ({bad} mismatches)"
-  -- (2) domain-tagged: the entry's own domain hits, another misses.
-  let bad2 ← lockstep img 1 (cmdMmu MMU_DOM false) (fun _ => 0) 60
-  if bad2 = 0 then IO.println "  OK  MMU-XLAT (mmu_en=1: EDSL≡ISS through the TLB, 60 cyc)"
-  else IO.println s!"  FAIL MMU-XLAT ({bad2} mismatches)"
-  let (sh, dh, _) := runIss img 1 (cmdMmu MMU_DOM false) (fun _ => 0) 300
-  let (sm, _, _)  := runIss img 1 (cmdMmu 5 false) (fun _ => 0) 300
+  -- Domain-tagged: the entry's own domain hits, another misses.
+  let sh ← runDesign img 1 (cmdMmu MMU_DOM false) (fun _ => 0) 300
+  let sm ← runDesign img 1 (cmdMmu 5 false) (fun _ => 0) 300
   -- The observable is the LOADED VALUE, not `core_addr`. `core_addr` at halt
   -- holds the instruction fetch that followed the load, and fetches are
   -- deliberately untranslated (`ddrPc` is separate from `ddrEa`), so it
   -- cannot distinguish a hit from a fail-closed. A hit reads the mapped
   -- physical page; a fail-closed reads `DATA_BASE`, which the image never
   -- wrote, so the two values differ.
-  let hitVal  := (dh.mem.getD (ddrWord ((BitVec.ofNat 32 DATA_BASE).toNat + (MMU_PPN <<< 12))) 0).toNat
-  let missVal := (dh.mem.getD (ddrWord DATA_BASE) 0).toNat
-  IO.println s!"  domain tag: from domain {MMU_DOM} r5={(sh.rf[5]!).toNat} (mapped page holds {hitVal}) \
-| from domain 5 r5={(sm.rf[5]!).toNat} (fail-closed page holds {missVal})"
-  let ok2 := (sh.rf[5]!).toNat == hitVal && (sm.rf[5]!).toNat == missVal && hitVal ≠ missVal
+  let hitVal  := (sh.system.ddr.mem.getD
+    (ddrWord ((BitVec.ofNat 32 DATA_BASE).toNat + (MMU_PPN <<< 12))) 0).toNat
+  let missVal := (sh.system.ddr.mem.getD (ddrWord DATA_BASE) 0).toNat
+  IO.println s!"  domain tag: from domain {MMU_DOM} r5={sh.memNat rfBank 5} (mapped page holds {hitVal}) \
+| from domain 5 r5={sm.memNat rfBank 5} (fail-closed page holds {missVal})"
+  let ok2 := sh.memNat rfBank 5 == some hitVal && sm.memNat rfBank 5 == some missVal && hitVal ≠ missVal
   -- (3) the shootdown: bumping the VMA's cell kills the translation.
-  let (sb, _, _) := runIss img 1 (cmdMmu MMU_DOM true) (fun _ => 0) 300
-  IO.println s!"  shootdown:  after cmd 67 on cell {MMU_CELL}, r5={(sb.rf[5]!).toNat} \
-(want {missVal} = fail-closed) | before the bump it was {(sh.rf[5]!).toNat}"
-  let ok3 := (sb.rf[5]!).toNat == missVal && (sh.rf[5]!).toNat ≠ missVal
-  if bad = 0 && bad2 = 0 && ok2 && ok3 then
+  let sb ← runDesign img 1 (cmdMmu MMU_DOM true) (fun _ => 0) 300
+  IO.println s!"  shootdown: after cmd 67 on cell {MMU_CELL}, r5={sb.memNat rfBank 5} \
+(want {missVal} = fail-closed) | before the bump it was {sh.memNat rfBank 5}"
+  let ok3 := sb.memNat rfBank 5 == some missVal && sh.memNat rfBank 5 != some missVal
+  if ok2 && ok3 then
     IO.println "LNP64MINI MMU SELFTEST OK — translation is domain-tagged and the VMA's epoch cell shoots it down"
   else
-    IO.println s!"LNP64MINI MMU SELFTEST FAILED (bypass={bad} xlat={bad2}; tag={ok2} shootdown={ok3})"
-  (Loom.Runner.Result.fromBool "LNP64mini MMU selftest" 60
-    (bad == 0 && bad2 == 0 && ok2 && ok3)
-    "differential or MMU assertion failed").requirePass
+    IO.println s!"LNP64MINI MMU SELFTEST FAILED (tag={ok2} shootdown={ok3})"
+  (Loom.Runner.Result.fromBool "LNP64mini MMU selftest"
+    (sh.cycles + sm.cycles + sb.cycles) (ok2 && ok3)
+    "Design-derived MMU assertion failed").requirePass
 
 /-- Sub-word stores must not disturb neighbouring bytes, on EITHER memory path.
 
@@ -2376,18 +2408,15 @@ def subwordSelftest : IO Unit := do
   for (nm, base) in [("dmem (ea < 0x1000, 1-cycle on-chip)", 0x40),
                      ("DDR  (ea >= 0x1000, RMW via S_DST/S_DSW)", 0x2000)] do
     let img := imageFrom TEXT_BASE (progSubWord base)
-    -- EDSL ≡ ISS first: if the two models disagree the expected-value check
-    -- below is meaningless, because it only ever consults the ISS.
-    let mism ← lockstep img 1 (cmdQuantum 0) (fun _ => 0) 60
-    let (st, _, _) := runIss img 1 (cmdQuantum 0) (fun _ => 0) 300
-    let got := (st.rf[8]!).toNat
-    let gotB := (st.rf[9]!).toNat
-    let ok := mism == 0 && got == expect && gotB == 0xAA
+    let run ← runDesign img 1 (cmdQuantum 0) (fun _ => 0) 300
+    let got := (run.memNat rfBank 8).getD 0
+    let gotB := (run.memNat rfBank 9).getD 0
+    let ok := run.regNat haltedReg == some 1 && got == expect && gotB == 0xAA
     if !ok then bad := bad + 1
     IO.println s!"  {if ok then "OK  " else "FAIL"} SUBWORD {nm}"
     IO.println s!"       word=0x{String.ofList (Nat.toDigits 16 got)} \
 (want 0x{String.ofList (Nat.toDigits 16 expect)}) lbu=0x{String.ofList (Nat.toDigits 16 gotB)} \
-(want 0xaa) EDSL≡ISS mismatches={mism}"
+(want 0xaa)"
   if bad == 0 then
     IO.println "LNP64MINI SUBWORD SELFTEST OK — sb/sh merge into their lanes and leave the rest alone, on both paths"
   else
@@ -2395,12 +2424,11 @@ def subwordSelftest : IO Unit := do
   (Loom.Runner.Result.fromFailureCount "LNP64mini subword selftest" 60 bad
     "subword path assertion failed").requirePass
 
-/-- EDSL ≡ ISS on the six opcodes the renumbering broke, plus their values. -/
+/-- Direct Design outcomes for the six opcodes the renumbering broke. -/
 def aluGapSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progAluGap
-  let mism ← lockstep img 1 (cmdQuantum 0) (fun _ => 0) 80
-  let (st, _, _) := runIss img 1 (cmdQuantum 0) (fun _ => 0) 400
-  let g : Nat → Nat := fun i => (st.rf[i]!).toNat
+  let run ← runDesign img 1 (cmdQuantum 0) (fun _ => 0) 400
+  let g : Nat → Nat := fun i => (run.memNat rfBank (BitVec.ofNat 10 i)).getD 0
   let want : List (Nat × Nat × String) :=
     [(3, 0xFFFFFFFFFFFFFFF8, "not r1"), (4, 1, "sltu 7<9"), (5, 0, "sltu 9<7"),
      (7, 16, "srli 256>>4"), (8, 0xFFFFFFFFFFFFFFFF, "srai ~7>>4"),
@@ -2412,13 +2440,13 @@ def aluGapSelftest : IO Unit := do
       bad := bad + 1
       IO.println s!"  FAIL r{r} = 0x{String.ofList (Nat.toDigits 16 (g r))} \
 want 0x{String.ofList (Nat.toDigits 16 w)}  ({lbl})"
-  IO.println s!"  EDSL≡ISS mismatches={mism}; value checks failed={bad}"
-  if mism = 0 && bad = 0 then
+  IO.println s!"  Design value checks failed={bad}"
+  if bad = 0 then
     IO.println "LNP64MINI ALUGAP SELFTEST OK — not/sltu/bgeu/srli/srai/sltiu decode and write"
   else
     IO.println "LNP64MINI ALUGAP SELFTEST FAILED"
-  (Loom.Runner.Result.fromBool "LNP64mini ALU-gap selftest" 80
-    (mism == 0 && bad == 0) "differential or ALU value assertion failed").requirePass
+  (Loom.Runner.Result.fromBool "LNP64mini ALU-gap selftest" run.cycles
+    (bad == 0) "Design-derived ALU value assertion failed").requirePass
 
 /-- The testbench's own command stream, so the ISS reference runs the same
 sequence the RTL does: reset (starts the 1024-cycle zeroing sweep), a wait, then
@@ -2841,12 +2869,14 @@ def mmuIdentitySelftest : IO Unit := do
   let mut bad := 0
   for base in [0x2000, 0x4008, 0x10000] do
     let img := imageFrom TEXT_BASE (progXlatProbe base)
-    let (sByp, _, _) := runIss img 1 (cmdQuantum 0) (fun _ => 0) 400
-    let (sXlat, _, _) := runIss img 1 cmdIdentityVma (fun _ => 0) 400
+    let sByp ← runDesign img 1 (cmdQuantum 0) (fun _ => 0) 400
+    let sXlat ← runDesign img 1 cmdIdentityVma (fun _ => 0) 400
     let mut diffs : List String := []
     for r in [6, 7, 8, 9] do
-      if (sByp.rf[r]!) ≠ (sXlat.rf[r]!) then
-        diffs := diffs ++ [s!"r{r}: bypass={(sByp.rf[r]!).toNat} xlat={(sXlat.rf[r]!).toNat}"]
+      let bypass := sByp.memNat rfBank (BitVec.ofNat 10 r)
+      let translated := sXlat.memNat rfBank (BitVec.ofNat 10 r)
+      if bypass ≠ translated then
+        diffs := diffs ++ [s!"r{r}: bypass={bypass} xlat={translated}"]
     if !diffs.isEmpty then
       bad := bad + 1
       IO.println s!"  FAIL base=0x{String.ofList (Nat.toDigits 16 base)}: {diffs}"
@@ -2856,61 +2886,61 @@ def mmuIdentitySelftest : IO Unit := do
     IO.println "LNP64MINI MMU-IDENTITY SELFTEST OK — an identity VMA computes exactly what bypass computes"
   else
     IO.println s!"LNP64MINI MMU-IDENTITY SELFTEST FAILED ({bad} base(s))"
-  (Loom.Runner.Result.fromFailureCount "LNP64mini MMU identity selftest" 0
+  (Loom.Runner.Result.fromFailureCount "LNP64mini MMU identity selftest" 1200
     bad "identity translation differed from bypass").requirePass
 
 def preemptSelftest : IO Unit := do
   let img := imageFrom TEXT_BASE progPreempt
   let imgLS := imageFrom TEXT_BASE progLS
-  -- ---- EDSL ≡ ISS lockstep, every register (incl. quantum/qctr) ----
-  let scripts : List (String × List (BitVec 64) × (Nat → MiniIn) × Nat) :=
-    [("PREEMPT (quantum=8, two runnable threads interleave)", progPreempt, cmdQuantum 8, 46),
-     ("QZERO   (quantum=0, the cooperative machine)",         progPreempt, cmdQuantum 0, 46),
-     ("SOLO    (quantum=4, one thread: expiry is a no-op)",   progLS,      cmdQuantum 4, 46)]
-  let mut total := 0
-  for (nm, p, c, nc) in scripts do
-    let bad ← lockstep (imageFrom TEXT_BASE p) 1 c (fun _ => 0) nc
-    if bad = 0 then IO.println s!"  OK  {nm}  ({nc} cyc)"
-    else IO.println s!"  FAIL {nm} ({bad} mismatches)"
-    total := total + bad
   -- ---- (1)+(4) expiry switches threads; every switch resumes correctly ----
-  let (fires, resumeOk, sp, kp) := preemptAudit img 8 4000
-  let childR10 := (sp.rf[32 + 10]!).toNat
-  IO.println s!"  preempt: fires={fires} resume-audit={resumeOk} cycles={kp} halted={sp.halted} \
-parent r9={(sp.rf[9]!).toNat} (want 2) child r10={childR10} (want >0) trap={sp.trap_active}"
-  let ok1 := fires > 0 && resumeOk && sp.halted && !sp.trap_active
-             && (sp.rf[9]!).toNat == 2 && childR10 > 0
+  let (fires, resumeOk, sp) ← preemptAudit img 8 4000
+  let childR10 := (sp.memNat rfBank (32 + 10)).getD 0
+  IO.println s!"  preempt: switches={fires} resume-audit={resumeOk} cycles={sp.cycles} halted={sp.regNat haltedReg} \
+parent r9={sp.memNat rfBank 9} (want 2) child r10={childR10} (want >0) trap={sp.regNat trapActiveReg}"
+  let ok1 := fires > 0 && resumeOk && sp.regNat haltedReg == some 1 &&
+    sp.regNat trapActiveReg == some 0 && sp.memNat rfBank 9 == some 2 && childR10 > 0
   -- ---- (3) quantum = 0 is the cooperative machine, bit for bit ----
-  let (f0, _, s0, k0) := preemptAudit img 0 4000
-  let (sn, _, kn) := runIss img 1 cmdNoQuantum (fun _ => 0) 4000
-  let coopIdentical := s0.rf == sn.rf && s0.retire == sn.retire && k0 == kn
-                       && s0.tpc == sn.tpc && s0.tstate == sn.tstate
-  IO.println s!"  quantum=0: fires={f0} (want 0) cycles={k0} vs no-cmd control {kn} \
-child r10={(s0.rf[32+10]!).toNat} (want 0) state-identical={coopIdentical}"
-  let ok3 := f0 == 0 && s0.halted && (s0.rf[9]!).toNat == 2
-             && (s0.rf[32 + 10]!).toNat == 0 && coopIdentical
+  let (f0, _, s0) ← preemptAudit img 0 4000
+  let sn ← runDesign img 1 cmdNoQuantum (fun _ => 0) 4000
+  let rfEq := (List.range 1024).all fun i =>
+    s0.memNat rfBank (BitVec.ofNat 10 i) == sn.memNat rfBank (BitVec.ofNat 10 i)
+  let tpcEq := (List.range NTMEM).all fun i =>
+    s0.memNat tpcBank (BitVec.ofNat 5 i) == sn.memNat tpcBank (BitVec.ofNat 5 i)
+  let tstateEq := (List.finRange NT).all fun i =>
+    s0.regNat (tstateRegs.reg i) == sn.regNat (tstateRegs.reg i)
+  let coopIdentical := rfEq && tpcEq && tstateEq &&
+    s0.regNat retireReg == sn.regNat retireReg && s0.cycles == sn.cycles
+  IO.println s!"  quantum=0: switches={f0} (want 0) cycles={s0.cycles} vs no-cmd control {sn.cycles} \
+child r10={s0.memNat rfBank (32+10)} (want 0) state-identical={coopIdentical}"
+  let ok3 := f0 == 0 && s0.regNat haltedReg == some 1 &&
+    s0.memNat rfBank 9 == some 2 && s0.memNat rfBank (32 + 10) == some 0 && coopIdentical
   -- ---- (2) expiry with nobody else READY: same result, SAME cycle count ----
-  let (sq, _, kq) := runIss imgLS 1 (cmdQuantum 4) (fun _ => 0) 4000
-  let (sz, _, kz) := runIss imgLS 1 cmdNoQuantum (fun _ => 0) 4000
-  let ok2 := sq.halted && sz.halted && sq.rf == sz.rf && sq.retire == sz.retire && kq == kz
-  IO.println s!"  solo: quantum=4 cycles={kq} vs quantum=0 cycles={kz} (want equal) \
-rf equal={sq.rf == sz.rf} retire={(sq.retire).toNat}"
+  let sq ← runDesign imgLS 1 (cmdQuantum 4) (fun _ => 0) 4000
+  let sz ← runDesign imgLS 1 cmdNoQuantum (fun _ => 0) 4000
+  let soloRfEq := (List.range 1024).all fun i =>
+    sq.memNat rfBank (BitVec.ofNat 10 i) == sz.memNat rfBank (BitVec.ofNat 10 i)
+  let ok2 := sq.regNat haltedReg == some 1 && sz.regNat haltedReg == some 1 &&
+    soloRfEq && sq.regNat retireReg == sz.regNat retireReg && sq.cycles == sz.cycles
+  IO.println s!"  solo: quantum=4 cycles={sq.cycles} vs quantum=0 cycles={sz.cycles} (want equal) \
+rf equal={soloRfEq} retire={sq.regNat retireReg}"
   -- ---- Law 5: the spinner. Cooperatively it owns the core forever ----
   let imgSpin := imageFrom TEXT_BASE progSpin
-  let (fq, _, sq2, kq2) := preemptAudit imgSpin 64 20000
-  let (_fc, _, sc2, _) := preemptAudit imgSpin 0 20000
-  IO.println s!"  spinner: quantum=64 halted={sq2.halted} cycles={kq2} r9={(sq2.rf[9]!).toNat} \
-(want 42) flag={(sq2.dmem[0]!).toNat} fires={fq} | cooperative halted={sc2.halted} (want false) \
-r9={(sc2.rf[9]!).toNat} (want 0) child tstate={(sc2.tstate[1]!).toNat} (want 1 = READY, never run)"
-  let ok4 := sq2.halted && (sq2.rf[9]!).toNat == 42 && (sq2.dmem[0]!).toNat == 1
-             && fq > 0 && !sc2.halted && (sc2.rf[9]!).toNat == 0
-             && (sc2.dmem[0]!).toNat == 0 && (sc2.tstate[1]!).toNat == 1
-  if total == 0 && ok1 && ok2 && ok3 && ok4 then
-    IO.println "LNP64MINI PREEMPT SELFTEST OK — EDSL≡ISS on 3 scripts + switch/no-stall/cooperative/resume/Law-5 spinner"
+  let (fq, _, sq2) ← preemptAudit imgSpin 64 20000
+  let (_fc, _, sc2) ← preemptAudit imgSpin 0 20000
+  IO.println s!"  spinner: quantum=64 halted={sq2.regNat haltedReg} cycles={sq2.cycles} r9={sq2.memNat rfBank 9} \
+(want 42) flag={sq2.memNat dmemBank 0} switches={fq} | cooperative halted={sc2.regNat haltedReg} (want 0) \
+r9={sc2.memNat rfBank 9} (want 0) child tstate={sc2.regNat (tstateRegs.reg ⟨1, by decide⟩)} (want 1 = READY, never run)"
+  let ok4 := sq2.regNat haltedReg == some 1 && sq2.memNat rfBank 9 == some 42 &&
+    sq2.memNat dmemBank 0 == some 1 && fq > 0 && sc2.regNat haltedReg == some 0 &&
+    sc2.memNat rfBank 9 == some 0 && sc2.memNat dmemBank 0 == some 0 &&
+    sc2.regNat (tstateRegs.reg ⟨1, by decide⟩) == some 1
+  if ok1 && ok2 && ok3 && ok4 then
+    IO.println "LNP64MINI PREEMPT SELFTEST OK — Design-derived switch/no-stall/cooperative/resume/Law-5 outcomes"
   else
-    IO.println s!"LNP64MINI PREEMPT SELFTEST FAILED ({total} mismatches; switch={ok1} nostall={ok2} coop={ok3} spin={ok4})"
-  (Loom.Runner.Result.fromBool "LNP64mini preemption selftest" 0
-    (total == 0 && ok1 && ok2 && ok3 && ok4)
-    "differential or preemption assertion failed").requirePass
+    IO.println s!"LNP64MINI PREEMPT SELFTEST FAILED (switch={ok1} nostall={ok2} coop={ok3} spin={ok4})"
+  (Loom.Runner.Result.fromBool "LNP64mini preemption selftest"
+    (sp.cycles + s0.cycles + sn.cycles + sq.cycles + sz.cycles + sq2.cycles + sc2.cycles)
+    (ok1 && ok2 && ok3 && ok4)
+    "Design-derived preemption assertion failed").requirePass
 
 end Machines.Lnp64mini

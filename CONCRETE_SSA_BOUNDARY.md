@@ -62,9 +62,9 @@ delays, falling-edge or multi-clock event controls, blocking sequential
 assignments, `x`/`z` literals, `casex`/`casez`, tri-states, force/release, DPI,
 randomness, unsized literals, generate statements, or user functions.
 
-Do not confuse this syntax list with the smaller proved fragment of the
-optional post-synthesis CNF encoder. That checker currently excludes and
-reports `shl`, `shr`, and `slt`; the release denotation itself includes them.
+The optional post-synthesis CNF encoder proves every non-memory expression
+constructor in this table. Direct `memRead` expressions remain a deliberate
+cut handled by the checker's separate memory boundary.
 
 ## Module framing
 

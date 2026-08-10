@@ -7,6 +7,7 @@ import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
 import Loom.Hw.SyncRead
 import Loom.Hw.DeclarationReport
+import Machines.Lnp64mini.Interface
 
 /-!
 # Lnp64mini — the DDR-backed MINI LNP64 soft-core, ported to Loom (open design)
@@ -205,9 +206,7 @@ def pcReg : Reg 64 := ⟨"pc"⟩
 def pc : Expr 64 := pcReg.rd
 def retireReg : Reg 32 := ⟨"retire"⟩
 def retire : Expr 32 := retireReg.rd
-def runningReg : Reg 1 := ⟨"running"⟩
 def running : Expr 1 := runningReg.rd
-def haltedReg : Reg 1 := ⟨"halted"⟩
 def halted : Expr 1 := haltedReg.rd
 def stReg : Reg 5 := ⟨"st"⟩
 def st : Expr 5 := stReg.rd
@@ -562,9 +561,6 @@ implementation -- previously the mini non-conformantly trapped it to the
 committed-exec host). -/
 def FAULT_GRET_EMPTY : Nat := 1
 def FAULT_ILLEGAL_OP0 : Nat := 2
-def faultCauseReg : Reg 8  := ⟨"fault_cause"⟩
-def faultPcReg    : Reg 64 := ⟨"fault_pc"⟩
-def faultCurReg   : Reg 5  := ⟨"fault_cur"⟩
 def fault_cause : Expr 8  := faultCauseReg.rd
 def fault_pc    : Expr 64 := faultPcReg.rd
 def fault_cur   : Expr 5  := faultCurReg.rd
@@ -1601,8 +1597,6 @@ def TRACE_AW : Nat := 4
 
 def traceWpReg   : Reg 4  := ⟨"trace_wp"⟩
 def traceSelReg  : Reg 4  := ⟨"trace_sel"⟩
-def traceRdPcReg : Reg 64 := ⟨"trace_rd_pc"⟩
-def traceRdWbReg : Reg 64 := ⟨"trace_rd_wb"⟩
 def traceHitReg  : Reg 1  := ⟨"trace_hit"⟩
 def traceInPcReg : Reg 64 := ⟨"trace_in_pc"⟩
 def traceInWbReg : Reg 64 := ⟨"trace_in_wb"⟩

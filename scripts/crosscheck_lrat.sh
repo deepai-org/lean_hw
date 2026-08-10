@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Kevin Baragona
 # SPDX-License-Identifier: Apache-2.0
-# Cross-validation of the two LRAT checkers (charter Phase 3; PLAN P6 / §8 4.2).
+# Cross-validation of the two LRAT checkers.
 #
 # Legs:
 #   1. `checker/` — the independent, from-scratch, strict hint-driven RUP
@@ -26,7 +26,7 @@ cd "$(dirname "$0")/.."
 
 for dep in cadical python3; do
   if ! command -v "$dep" >/dev/null; then
-    echo "crosscheck_lrat: SKIP ($dep not installed)"
+    echo "crosscheck_lrat: RESULT SKIP ($dep not installed)"
     exit 0
   fi
 done
@@ -126,8 +126,8 @@ for m in flip trunc; do
 done
 
 if [ "$fail" -eq 0 ]; then
-  echo "crosscheck_lrat: OK (both checkers agree on php4..php6 + mutations)"
+  echo "crosscheck_lrat: RESULT PASS (both checkers agree on php4..php6 + mutations)"
 else
-  echo "crosscheck_lrat: FAILURES above"
+  echo "crosscheck_lrat: RESULT FAIL (failures above)"
   exit 1
 fi
