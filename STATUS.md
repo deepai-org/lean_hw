@@ -159,42 +159,30 @@ unused terminal `PCOUT`, so the reproducible board script defaults to the
 validated LUT implementation. A DSP-enabled build remains an optional target
 flow optimization.
 
-### Guest artifact provenance (the compiler-fix promotion)
+### Accepted network path: native GEM0, JTAG-free (the mission demo)
 
-The full mission workload above (`uname`/`echo`/ping/shmif-domain-2) was
-demonstrated on the **currently accepted physical-board guest, md5
-`a5b8afb3…`**, built with the pre-fix clang (r30/tp allocatable).
+The accepted mission network path is **native GEM0**: the soft micro-core drives
+the PS GEM0 MAC directly over the GP aperture (in-guest GEM pump), JTAG loads the
+image and then EXITS. Board-proven on the unchanged accounted bitstream
+(`e66d2c22…`, the GP aperture is already in it) with the fixed-clang GEM guest
+`934cecf3…`: identity + PS-DAP fastload, DOMAINS, then with the **servicer
+stopped (`xsdb=0`, A9 halted)** — **ping 4/4** and **interactive telnet**
+(`uname` + gated `echo`, each reply byte crossing the §17 write gate) reply over
+real Ethernet at ~300 ms. No JTAG, no A9, no host bridge in the packet path.
+This is `e2e.sh`; the legacy shmif-over-JTAG-ring path (`ring_pump.tcl` /
+`shmif_bridge.py`, ~2.8 s RTT) is retained for debug only — see `board/LEGACY.md`.
 
-The tp-reserved (fixed) clang — see the psABI §1 / ISA §2269 conformance fix,
-where the shipping compiler no longer clobbers the thread pointer across a
-call — produces two rebuilt guests, both **simulator-proven only**:
-
-- `934cecf3…` — the GEM-pump zero-trap image: passes the zero-trap gate on the
-  board-DDR emulator (`RUMP_SHMIF_ON_CORE_OK`, all four board-trap opcodes
-  retired=0, ~798M ops).
-- `866ea6a0…` (text; data `b2d087fa…`) — the native-alloc telnet image, the
-  fixed-clang equivalent of `a5b8afb3…` (same recipe, corrected compiler). On
-  the board-DDR emulator it reaches `RUMP_SHMIF_ON_CORE_OK`.
-
-`866ea6a0…` is **board-proven** on the unchanged accounted bitstream
-(`e66d2c22…`): all identity checks pass, PS-DAP fastload succeeds, core 0
-establishes DOMAINS with core 1 started (no fault), the guest console ring
-(read live over JTAG) shows the full boot to `RUMP_SHMIF_ON_CORE_OK`, **ping
-completes 4/4**, and **TCP :23 accepts connections** (telnetd up) — the whole
-rump/shmif/TCP stack runs on silicon under the corrected compiler, with no
-regression. What remains unproven is only the *interactive telnet reply*
-(`uname`/gated `echo`): sustained shell output over the ~3 Hz JTAG-pumped ring
-(~2.8 s RTT) is a known last-mile throughput limit, orthogonal to the compiler
-fix. Until that specific reply is captured, the accepted physical-board
-artifact for the *full interactive* workload remains `a5b8afb3…`.
-
-The networking blocker was diagnosed and fixed host-side (safely — the internet
-path is a separate interface): the `shmif0` tap was left `state DOWN` by the
-bring-up script and the route to the guest lacked a `src`; bringing `shmif0`
-up plus a host-scoped `/32` route (`10.106.0.2 dev shmif0 src 10.106.0.1`)
-yields ping 4/4. The core1 `retire=121` reading was a red herring (normal
-secondary core in an NCPU=1 image); guest health is confirmed by the console
-ring, not the servicer log.
+The tp-reserved (fixed) clang (psABI §1 / ISA §2269 conformance) is **fully
+vindicated**: the interactive telnet reply works, so there is no gated-write
+regression. The earlier 0-reply had a single root cause, unrelated to the
+compiler, pump, or ring throughput: the §17 gate/cap table roots
+(`lnp64_mini_gate_table` / `lnp64_mini_cap_table`) link at a **per-image
+address**, and a stale hardcoded `0x913000` was passed instead of this image's
+`0x912000`, so the machine read an empty gate table and every gated write
+returned `-MALFORMED`. The durable fix: `build_rump_shmif_image.py` emits the
+`nm`-derived roots into `mini_domains.env`, deployed beside the hex, and
+`boot_gem_dual_smp.sh` sources it — the roots can never go stale against the
+image again.
 
 The bitstream is **unchanged across the compiler fix**: a new guest does not
 require a new FPGA implementation.

@@ -13,6 +13,21 @@
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/board_env.sh"
 cd "$LOOM_BOARD_ROOT"
+# The §17 gate/cap table roots are the LINKED addresses of lnp64_mini_gate_table
+# / lnp64_mini_cap_table -- they SHIFT every image build, so a hardcoded value
+# silently reads an empty gate table and every gated write faults -MALFORMED
+# (the 2026-08-10 telnet-reply bug). build_rump_shmif_image.py emits them,
+# derived by `nm`, into mini_domains.env; it is deployed beside the hex.
+# Sourcing it makes the roots ALWAYS match the deployed guest -- never hardcode.
+LNP64_IMAGE_ROOTS="${LNP64_IMAGE_ROOTS:-$LOOM_BOARD_TEST_DIR/mini_domains.env}"
+if [ -f "$LNP64_IMAGE_ROOTS" ]; then
+  # shellcheck disable=SC1090
+  source "$LNP64_IMAGE_ROOTS"
+  export LNP64_MINI_GATE_TBL LNP64_MINI_CAP_TBL
+  echo "== image roots: GATE_TBL=${LNP64_MINI_GATE_TBL:-unset} CAP_TBL=${LNP64_MINI_CAP_TBL:-unset} (from mini_domains.env, nm-derived) =="
+else
+  echo "== WARN: no mini_domains.env beside the hex; gate/cap roots may be stale (gated writes will -MALFORMED) =="
+fi
 mkdir -p /tmp/rumpns /tmp/rumpns2
 pkill -x xsdb 2>/dev/null; pkill -f "lnp64 trap-server" 2>/dev/null
 pkill -f "[r]ing_pump" 2>/dev/null
