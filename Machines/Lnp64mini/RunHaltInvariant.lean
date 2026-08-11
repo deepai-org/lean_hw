@@ -34,10 +34,10 @@ def runHaltExclusive : ExprProperty :=
 def violation : Expr 1 := .and runningReg.rd haltedReg.rd
 
 def runHaltCoords : List (String × Nat) :=
-  [(runningReg.name, 1), (haltedReg.name, 1)]
+  runHaltExclusive.footprint.regs
 
 theorem footprint_regs : runHaltExclusive.footprint.regs = runHaltCoords := by
-  decide
+  rfl
 
 theorem footprint_ok : design.propertyFootprintOkB runHaltExclusive.footprint = true := by
   decide
@@ -138,9 +138,9 @@ theorem runHaltOk_projectRegs_iff (action : Act) (σ acc : St) :
       runHaltOk (action.run σ acc) := by
   unfold runHaltOk
   rw [action.projectRegs_run runHaltCoords runningReg.name 1
-      (by simp [runHaltCoords]) σ acc,
+      (by decide) σ acc,
     action.projectRegs_run runHaltCoords haltedReg.name 1
-      (by simp [runHaltCoords]) σ acc]
+      (by decide) σ acc]
 
 theorem runHaltPropertyStep (σ : St) : runHaltOk σ → cmdStartSafe σ →
     runHaltOk (design.propertyExprCycle runHaltExclusive σ) := by

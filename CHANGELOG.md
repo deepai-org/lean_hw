@@ -241,6 +241,13 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Changed
 
+- **Typed single-source migration completed:** LNP64mini proof projections now
+  derive from checked property footprints, and Epoch/CapWalk memory-policy
+  gates and reports enumerate each composed `Design`'s declarations. The
+  superseded migration-report, manual-comparator coverage layer, and frozen
+  pre-migration declaration snapshots have been removed; the generic typed
+  lowering regression remains the compatibility check for the stable core
+  EDSL.
 - Trust and status documents now distinguish the proved ISS↔EDSL chain from
   executable compiler/printer replacements and the physical µVerilog/SoC
   boundary.

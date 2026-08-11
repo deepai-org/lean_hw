@@ -198,7 +198,7 @@ example : (fsmRule.body.projectRegs runHaltCoords).regWrites =
 example (action : Act) (σ acc : St) :
     ((action.projectRegs runHaltCoords).run σ acc).regs runningReg.name 1 =
       (action.run σ acc).regs runningReg.name 1 :=
-  action.projectRegs_run runHaltCoords runningReg.name 1 (by simp [runHaltCoords]) σ acc
+  action.projectRegs_run runHaltCoords runningReg.name 1 (by decide) σ acc
 
 example : PairSafety.preservesExclusiveB runningReg.name haltedReg.name
     (fsmRule.body.projectRegs runHaltCoords) = true := by

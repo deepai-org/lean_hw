@@ -33,7 +33,6 @@ import Loom.Hw.Trees
 import Loom.Hw.Frame
 import Loom.Hw.PairSafety
 import Loom.Hw.Tactics
-import Loom.Hw.StateCover
 import Loom.Hw.Diff
 import Loom.Runner
 import Loom.Artifact
@@ -50,7 +49,6 @@ import Loom.Hw.System
 import Loom.Hw.Notation
 import Loom.Hw.Declarations
 import Loom.Hw.DebugTap
-import Loom.Hw.DeclarationReport
 import Loom.Hw.CompileWhole
 import Loom.Hw.WholeRegisterPlan
 import Loom.Release.WholeRegisterPlan

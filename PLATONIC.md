@@ -314,9 +314,14 @@ Typed register, memory, input, and output handles should remain the sole source
 for widths and names. Generated adapters, comparators, debug descriptions, and
 coverage checks must derive from those declarations.
 
-Current typed interfaces cover the main examples and LNP64mini. Remaining work
-is migration and removal of duplicated stringly metadata, not creation of
-parallel schemas.
+Typed interfaces cover LNP64mini and the migrated examples. Their state
+adapters, comparison plans, debug taps, output selection, coverage, and
+memory-policy reports derive from typed handles, properties, or the resulting
+`Design`. Designs authored directly in the stable core EDSL remain supported;
+they do not require a parallel typed schema. Independent oracles may remain
+for diagnostic diversity, but never as an unlabelled production semantic
+mirror. New facilities must preserve this single-source discipline rather
+than introduce parallel metadata.
 
 ### W2 — property-directed proof automation
 

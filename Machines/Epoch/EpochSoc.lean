@@ -264,17 +264,12 @@ def parOk : Bool :=
   (c0.parOkB c1) && (a1.parOkB arb) && (a2.parOkB hp) && (a3.parOkB gp)
     && (a4.parOkB ep) && (a5.parOkB mm0) && (a6.parOkB mm1)
 
-/-- The composed design keeps every memory D19 sync-read shaped: the
-cores' `rf`/`dmem`/`uart_mem` and the engine's four banks. -/
+/-- The composed design keeps every declared synchronous memory D19 shaped. -/
 def syncReadOk : Bool :=
-  ["c0_rf", "c0_dmem", "c0_uart_mem", "c1_rf", "c1_dmem", "c1_uart_mem",
-   "ep_cell_epoch", "ep_cell_flags", "ep_repl0", "ep_repl1"].all
-    epochSoc.syncReadOkB
+  epochSoc.syncReadMems.all epochSoc.syncReadOkB
 
 def syncReadReport : String :=
   String.intercalate "\n"
-    (["c0_rf", "c0_dmem", "c0_uart_mem", "c1_rf", "c1_dmem", "c1_uart_mem",
-      "ep_cell_epoch", "ep_cell_flags", "ep_repl0", "ep_repl1"].map
-      epochSoc.syncReadReport)
+    (epochSoc.syncReadMems.map epochSoc.syncReadReport)
 
 end Machines.Epoch.EpochSoc

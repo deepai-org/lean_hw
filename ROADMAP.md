@@ -55,22 +55,7 @@ Acceptance: representative LNP64mini invariants recheck through small declared
 dependency cones without unfolding the complete machine cycle, and the cached
 machine refines its declared uncached architectural view under named premises.
 
-## 4. Complete typed single-source views
-
-- Derive state adapters, comparison membership, debug descriptions, output
-  layouts, and coverage reports from typed declarations.
-- Remove remaining hand-maintained name/width tables.
-- Require every exclusion from a generated comparison or report to be named.
-- Extend the same single-source discipline to remaining integration adapters
-  and machine-local reports. Keep an independent oracle only when its
-  diagnostic value justifies a second semantic implementation, and label it
-  as sampled corroboration rather than proof.
-
-Acceptance: adding or changing one state element updates every derived view or
-fails with a specific obligation; no production command depends on an
-unlabelled hand-maintained semantic mirror.
-
-## 5. Grow verified logical transformations
+## 4. Grow verified logical transformations
 
 - Generalize retiming and fanout duplication only through transformations with
   refinement theorems.
@@ -81,7 +66,7 @@ unlabelled hand-maintained semantic mirror.
 Acceptance: a nontrivial machine can compose several transformations while
 transporting its model property through one checked refinement chain.
 
-## 6. Add technology-neutral logical equivalence
+## 5. Add technology-neutral logical equivalence
 
 - Define a minimal `LogicalNetlist` Boolean transition graph with explicit
   inputs, outputs, state, drivers, and opaque memory cut points.
@@ -96,7 +81,7 @@ transporting its model property through one checked refinement chain.
 Acceptance: the same theorem checks neutral logical artifacts from different
 external producers and remains unchanged across FPGA vendors and ASIC use.
 
-## 7. Derive fast executable views
+## 6. Derive fast executable views
 
 - Extend the certified DAG evaluator and generated state comparison path.
 - Reduce dependence on manually synchronized ISS/emulator implementations;
@@ -110,7 +95,7 @@ external producers and remains unchanged across FPGA vendors and ASIC use.
 Acceptance: large-machine simulation is practical without adding an unproved
 semantic implementation to the trusted path.
 
-## 8. Strengthen compositional system contracts
+## 7. Strengthen compositional system contracts
 
 - Follow the executable, fail-closed multi-clock architecture in
   [`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md).
@@ -128,7 +113,7 @@ semantic implementation to the trusted path.
 Acceptance: open and multi-domain designs state their assumptions at typed
 ports and transport guarantees compositionally.
 
-## 9. Maintain release clarity
+## 8. Maintain release clarity
 
 - Keep theorem, checked-certificate, conversion, implementation, and physical
   claims distinct in generated evidence.

@@ -797,14 +797,11 @@ def design : Design := mkDesign cfg32
 
 /-! ## Obligations -/
 
-/-- All six banks are D19 sync-read shaped. -/
-def bankNames : List String :=
-  ["cell_epoch", "cell_flags", "c_tag", "c_p0", "c_p1", "lin_repl"]
-
-def syncReadOkB (d : Design) : Bool := bankNames.all d.syncReadOkB
+/-- Every memory declared synchronous is D19 shaped. -/
+def syncReadOkB (d : Design) : Bool := d.syncReadMems.all d.syncReadOkB
 
 def syncReadReport (d : Design) : String :=
-  String.intercalate "\n" (bankNames.map d.syncReadReport)
+  String.intercalate "\n" (d.syncReadMems.map d.syncReadReport)
 
 theorem design_syncReadOk : syncReadOkB design = true := by rfl
 
