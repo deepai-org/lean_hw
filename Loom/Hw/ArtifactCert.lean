@@ -44,6 +44,13 @@ def compileExprMatches : {w : Nat} → Loom.Hw.Expr w →
   | _, .shl aa ba, .shl ab bb
   | _, .shr aa ba, .shr ab bb =>
       compileExprMatches aa ab && compileExprMatches ba bb
+  | _, .udiv aa ba, .mux guard (.lit resultZero) (.udiv ab divRight) =>
+      decide (guard = .eq divRight (.lit 0)) && decide (resultZero = 0) &&
+        compileExprMatches aa ab && compileExprMatches ba divRight
+  | _, .urem aa ba, .mux guard zeroResult (.urem remLeft remRight) =>
+      decide (guard = .eq remRight (.lit 0)) &&
+        compileExprMatches aa zeroResult && compileExprMatches aa remLeft &&
+        compileExprMatches ba remRight
   | _, @Loom.Hw.Expr.eq wa aa ba,
       @Loom.Emit.MicroVerilog.Expr.eq wb ab bb
   | _, @Loom.Hw.Expr.ult wa aa ba,
@@ -77,10 +84,23 @@ theorem compileExprMatches_sound : ∀ {w : Nat} (a : Loom.Hw.Expr w)
     (b : Loom.Emit.MicroVerilog.Expr w),
     compileExprMatches a b = true → b = Compile.compileExpr a := by
   intro w a
-  induction a <;> intro b h <;> cases b <;>
-    simp only [compileExprMatches, Bool.and_eq_true, decide_eq_true_eq] at h <;>
-    simp only [Compile.compileExpr] <;>
-    grind
+  induction a <;> intro b h
+  case udiv a divisor iha ihb =>
+    cases b <;> try simp [compileExprMatches] at h
+    case mux condition yes no =>
+      cases yes <;> cases no <;>
+        simp [compileExprMatches] at h ⊢ <;>
+        simp_all [Compile.compileExpr] <;> grind
+  case urem a divisor iha ihb =>
+    cases b <;> try simp [compileExprMatches] at h
+    case mux condition yes no =>
+      cases no <;> simp [compileExprMatches] at h ⊢ <;>
+        simp_all [Compile.compileExpr] <;> grind
+  all_goals
+    cases b <;>
+      simp only [compileExprMatches, Bool.and_eq_true, decide_eq_true_eq] at h <;>
+      simp only [Compile.compileExpr] <;>
+      grind
 
 /-! ## Register-fold certificates -/
 

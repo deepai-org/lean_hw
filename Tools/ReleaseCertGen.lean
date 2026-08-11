@@ -97,6 +97,7 @@ private unsafe def exprHash : {w : Nat} →
         | .lit .. => 0 | .reg .. => 1 | .memRead .. => 2
         | .and .. => 3 | .or .. => 4 | .xor .. => 5 | .not .. => 6
         | .add .. => 7 | .sub .. => 8 | .mul .. => 18
+        | .udiv .. => 19 | .urem .. => 20
         | .shl .. => 9 | .shr .. => 10
         | .eq .. => 11 | .ult .. => 12 | .slt .. => 13 | .mux .. => 14
         | .slice .. => 15 | .zext .. => 16 | .sext .. => 17) w
@@ -108,6 +109,7 @@ private unsafe def exprHash : {w : Nat} →
               (← exprHash address))
         | .and left right | .or left right | .xor left right
         | .add left right | .sub left right | .mul left right
+        | .udiv left right | .urem left right
         | .shl left right
         | .shr left right | .eq left right | .ult left right
         | .slt left right => do
@@ -679,7 +681,8 @@ private structure RuntimeIndexState where
 
 private def binaryTag : Loom.Release.SSA.BinOp → Nat
   | .and => 3 | .or => 4 | .xor => 5 | .add => 7 | .sub => 8
-  | .mul => 18 | .shl => 9 | .shr => 10 | .eq => 11 | .ult => 12
+  | .mul => 18 | .udiv => 19 | .urem => 20
+  | .shl => 9 | .shr => 10 | .eq => 11 | .ult => 12
 
 private def runtimeRefData (state : RuntimeIndexState)
     (reference : Symbolic.Ref) : Option (UInt64 × Nat) := do

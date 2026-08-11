@@ -479,7 +479,7 @@ inductive RawRhsWellFormed (program : Program) (table : WireTable)
       RawRhsWellFormed program table number resultWidth (.not value.render)
   | binSame {op left right} :
       (op = .and ∨ op = .or ∨ op = .xor ∨ op = .add ∨ op = .sub ∨
-        op = .mul ∨ op = .shl ∨ op = .shr) →
+        op = .mul ∨ op = .udiv ∨ op = .urem ∨ op = .shl ∨ op = .shr) →
       RawRefWidth program table number left resultWidth →
       RawRefWidth program table number right resultWidth →
       RawRhsWellFormed program table number resultWidth
@@ -564,7 +564,7 @@ theorem indexedRhsWellFormed_raw
         resultWidth (beq_iff_eq.mp accepted))
   | bin op left right =>
       cases op with
-      | and | or | xor | add | sub | mul | shl | shr =>
+      | and | or | xor | add | sub | mul | udiv | urem | shl | shr =>
           simp only [indexedRhsWellFormed, Bool.and_eq_true, beq_iff_eq]
             at accepted
           exact .binSame (by simp) (refWidthBefore_raw program hmatches table
@@ -757,7 +757,8 @@ theorem RawRhsWellFormed.elaborate_isSome
   | binSame operatorSupported leftWellFormed rightWellFormed =>
       obtain ⟨left, leftEq⟩ := henv _ _ leftWellFormed
       obtain ⟨right, rightEq⟩ := henv _ _ rightWellFormed
-      rcases operatorSupported with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+      rcases operatorSupported with
+        rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
       · refine ⟨.and left right, ?_⟩
         exact binSame_of_resolveAt _ _ _ _ _ _ _ _ leftEq rightEq
       · refine ⟨.or left right, ?_⟩
@@ -769,6 +770,10 @@ theorem RawRhsWellFormed.elaborate_isSome
       · refine ⟨.sub left right, ?_⟩
         exact binSame_of_resolveAt _ _ _ _ _ _ _ _ leftEq rightEq
       · refine ⟨.mul left right, ?_⟩
+        exact binSame_of_resolveAt _ _ _ _ _ _ _ _ leftEq rightEq
+      · refine ⟨.udiv left right, ?_⟩
+        exact binSame_of_resolveAt _ _ _ _ _ _ _ _ leftEq rightEq
+      · refine ⟨.urem left right, ?_⟩
         exact binSame_of_resolveAt _ _ _ _ _ _ _ _ leftEq rightEq
       · refine ⟨.shl left right, ?_⟩
         exact binSame_of_resolveAt _ _ _ _ _ _ _ _ leftEq rightEq
@@ -866,6 +871,18 @@ inductive RawExprMatches (program : Program) (table : WireTable) :
       RawExprMatches program table left leftRef →
       RawExprMatches program table right rightRef →
       RawExprMatches program table (.mul left right) (.wire number)
+  | udiv {width left right leftRef rightRef number raw} :
+      RawWireAt program table number raw → raw.width = width →
+      raw.rhs = .bin .udiv leftRef.render rightRef.render →
+      RawExprMatches program table left leftRef →
+      RawExprMatches program table right rightRef →
+      RawExprMatches program table (.udiv left right) (.wire number)
+  | urem {width left right leftRef rightRef number raw} :
+      RawWireAt program table number raw → raw.width = width →
+      raw.rhs = .bin .urem leftRef.render rightRef.render →
+      RawExprMatches program table left leftRef →
+      RawExprMatches program table right rightRef →
+      RawExprMatches program table (.urem left right) (.wire number)
   | shl {width left right leftRef rightRef number raw} :
       RawWireAt program table number raw → raw.width = width →
       raw.rhs = .bin .shl leftRef.render rightRef.render →
@@ -1288,6 +1305,82 @@ theorem indexedExprMatches_raw
                     (indexed := ⟨indexedNumber, actualWidth,
                       .bin .mul actualLeft actualRight⟩) rawMatch
                   exact .mul rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+  | udiv left right leftIH rightIH =>
+      cases reference with
+      | reg name => simp [indexedExprMatches] at accepted
+      | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case udiv =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .udiv actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .udiv actualLeft actualRight⟩) rawMatch
+                  exact .udiv rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case udiv =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .udiv actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .udiv actualLeft actualRight⟩) rawMatch
+                  exact .udiv rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+  | urem left right leftIH rightIH =>
+      cases reference with
+      | reg name => simp [indexedExprMatches] at accepted
+      | wire number =>
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case urem =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .urem actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .urem actualLeft actualRight⟩) rawMatch
+                  exact .urem rawAt (widthEq.trans accepted.1.1) rhsEq
+                    (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
+      | namedWire number name =>
+          apply RawExprMatches.named
+          cases found : lookupIndexed? indexeds table number with
+          | none => simp [indexedExprMatches, found] at accepted
+          | some indexed =>
+              obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+              cases rhs <;> simp [indexedExprMatches, found] at accepted
+              case bin op actualLeft actualRight =>
+                cases op <;> simp at accepted
+                case urem =>
+                  obtain ⟨raw, rawAt, rawMatch⟩ :=
+                    lookupIndexed_rawWireAt program hmatches table number
+                      ⟨indexedNumber, actualWidth, .bin .urem actualLeft actualRight⟩ found
+                  obtain ⟨widthEq, rhsEq⟩ := IndexedWire.matchesRaw_width_rhs
+                    (indexed := ⟨indexedNumber, actualWidth,
+                      .bin .urem actualLeft actualRight⟩) rawMatch
+                  exact .urem rawAt (widthEq.trans accepted.1.1) rhsEq
                     (leftIH actualLeft accepted.1.2) (rightIH actualRight accepted.2)
   | shl left right leftIH rightIH =>
       cases reference with

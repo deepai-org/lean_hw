@@ -217,6 +217,8 @@ def keyOf : Rhs → String
   | .bin .add x y => s!"{x} + {y}"
   | .bin .sub x y => s!"{x} - {y}"
   | .bin .mul x y => s!"{x} * {y}"
+  | .bin .udiv x y => s!"{x} / {y}"
+  | .bin .urem x y => s!"{x} % {y}"
   | .bin .shl x y => s!"{x} << {y}"
   | .bin .shr x y => s!"{x} >> {y}"
   | .bin .eq x y => s!"{x} == {y}"
@@ -235,6 +237,8 @@ def BinOp.keyChars : BinOp → List Char
   | .add => ['+']
   | .sub => ['-']
   | .mul => ['*']
+  | .udiv => ['/']
+  | .urem => ['%']
   | .shl => ['<', '<']
   | .shr => ['>', '>']
   | .eq => ['=', '=']
@@ -552,6 +556,12 @@ theorem flatten_key_sub (x y : String) :
 
 theorem flatten_key_mul (x y : String) :
     s!"{x} * {y}" = keyOf (.bin .mul x y) := rfl
+
+theorem flatten_key_udiv (x y : String) :
+    s!"{x} / {y}" = keyOf (.bin .udiv x y) := rfl
+
+theorem flatten_key_urem (x y : String) :
+    s!"{x} % {y}" = keyOf (.bin .urem x y) := rfl
 
 theorem flatten_key_shl (x y : String) :
     s!"{x} << {y}" = keyOf (.bin .shl x y) := rfl

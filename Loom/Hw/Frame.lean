@@ -122,6 +122,12 @@ theorem Expr.eval_congr_of_agree : ∀ {w : Nat} (e : Expr w) {σ τ : St},
   | mul a b iha ihb =>
       intro σ τ h; simp only [Expr.readSites] at h
       simp [Expr.eval, iha h.append_left, ihb h.append_right]
+  | udiv a b iha ihb =>
+      intro σ τ h; simp only [Expr.readSites] at h
+      simp [Expr.eval, iha h.append_left, ihb h.append_right]
+  | urem a b iha ihb =>
+      intro σ τ h; simp only [Expr.readSites] at h
+      simp [Expr.eval, iha h.append_left, ihb h.append_right]
   | shl a b iha ihb =>
       intro σ τ h; simp only [Expr.readSites] at h
       simp [Expr.eval, iha h.append_left, ihb h.append_right]

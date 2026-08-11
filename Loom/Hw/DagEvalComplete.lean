@@ -98,6 +98,20 @@ theorem checkExpr_complete_some {nodes : Array Node} {root : Nat} {e : FExpr}
       simp [bound] at node'
       refine ⟨⟨.mul bound node ab cl.proof cr.proof⟩, ?_⟩
       simp [checkExpr, bound, node', ab, hcl, hcr, checkExpr.checkBin]
+  | udiv bound node ab left right ihl ihr =>
+      obtain ⟨cl, hcl⟩ := ihl
+      obtain ⟨cr, hcr⟩ := ihr
+      have node' := node
+      simp [bound] at node'
+      refine ⟨⟨.udiv bound node ab cl.proof cr.proof⟩, ?_⟩
+      simp [checkExpr, bound, node', ab, hcl, hcr, checkExpr.checkBin]
+  | urem bound node ab left right ihl ihr =>
+      obtain ⟨cl, hcl⟩ := ihl
+      obtain ⟨cr, hcr⟩ := ihr
+      have node' := node
+      simp [bound] at node'
+      refine ⟨⟨.urem bound node ab cl.proof cr.proof⟩, ?_⟩
+      simp [checkExpr, bound, node', ab, hcl, hcr, checkExpr.checkBin]
   | shl bound node ab left right ihl ihr =>
       obtain ⟨cl, hcl⟩ := ihl
       obtain ⟨cr, hcr⟩ := ihr
@@ -284,6 +298,12 @@ theorem ExprMatch.mono {small large : Array Node} {root : Nat} {e : FExpr}
         (by exact (pref.getD _ bound).trans node) ab ihl ihr
   | mul bound node ab left right ihl ihr =>
       exact .mul (Nat.lt_of_lt_of_le bound pref.size)
+        (by exact (pref.getD _ bound).trans node) ab ihl ihr
+  | udiv bound node ab left right ihl ihr =>
+      exact .udiv (Nat.lt_of_lt_of_le bound pref.size)
+        (by exact (pref.getD _ bound).trans node) ab ihl ihr
+  | urem bound node ab left right ihl ihr =>
+      exact .urem (Nat.lt_of_lt_of_le bound pref.size)
         (by exact (pref.getD _ bound).trans node) ab ihl ihr
   | shl bound node ab left right ihl ihr =>
       exact .shl (Nat.lt_of_lt_of_le bound pref.size)
@@ -613,6 +633,62 @@ theorem intern_complete (e : FExpr) (s : Build) (valid : s.Valid) :
           ⟨(ra.exprMatch.mono rb.nodesPrefix).root_lt, rb.exprMatch.root_lt⟩
         have hmatch : ExprMatch finish.nodes s2.nodes.size (.mul m a b) :=
           .mul hbound hnode hab hleft hright
+        exact ⟨s2.nodes.size, finish,
+          by simp [intern, hseen', ra.eq, rb.eq, finish, Build.add],
+          rb.valid.add (by simp [Node.refs, hab]) hmatch,
+          (ra.nodesPrefix.trans rb.nodesPrefix).trans (NodesPrefix.push _ _), hmatch⟩
+  | udiv a b iha ihb =>
+      cases hseen : s.seen.get? (.udiv a b) with
+      | some root =>
+        have hseen' : s.seen[FExpr.udiv a b]? = some root := by
+          simpa [Std.HashMap.get?_eq_getElem?] using hseen
+        exact ⟨root, s, by simp [intern, hseen'], valid,
+          NodesPrefix.refl _, valid.seen _ _ hseen⟩
+      | none =>
+        have hseen' : s.seen[FExpr.udiv a b]? = none := by
+          simpa [Std.HashMap.get?_eq_getElem?] using hseen
+        obtain ⟨ia, s1, ra⟩ := iha s valid
+        obtain ⟨ib, s2, rb⟩ := ihb s1 ra.valid
+        let finish := (s2.add (.udiv a b) (.udiv ia ib)).2
+        have hbound : s2.nodes.size < finish.nodes.size := by simp [finish, Build.add]
+        have hnode : finish.nodes.getD s2.nodes.size default = .udiv ia ib := by
+          simp [finish, Build.add]
+        have hleft : ExprMatch finish.nodes ia a :=
+          (ra.exprMatch.mono rb.nodesPrefix).mono (NodesPrefix.push _ _)
+        have hright : ExprMatch finish.nodes ib b :=
+          rb.exprMatch.mono (NodesPrefix.push _ _)
+        have hab : ia < s2.nodes.size ∧ ib < s2.nodes.size :=
+          ⟨(ra.exprMatch.mono rb.nodesPrefix).root_lt, rb.exprMatch.root_lt⟩
+        have hmatch : ExprMatch finish.nodes s2.nodes.size (.udiv a b) :=
+          .udiv hbound hnode hab hleft hright
+        exact ⟨s2.nodes.size, finish,
+          by simp [intern, hseen', ra.eq, rb.eq, finish, Build.add],
+          rb.valid.add (by simp [Node.refs, hab]) hmatch,
+          (ra.nodesPrefix.trans rb.nodesPrefix).trans (NodesPrefix.push _ _), hmatch⟩
+  | urem a b iha ihb =>
+      cases hseen : s.seen.get? (.urem a b) with
+      | some root =>
+        have hseen' : s.seen[FExpr.urem a b]? = some root := by
+          simpa [Std.HashMap.get?_eq_getElem?] using hseen
+        exact ⟨root, s, by simp [intern, hseen'], valid,
+          NodesPrefix.refl _, valid.seen _ _ hseen⟩
+      | none =>
+        have hseen' : s.seen[FExpr.urem a b]? = none := by
+          simpa [Std.HashMap.get?_eq_getElem?] using hseen
+        obtain ⟨ia, s1, ra⟩ := iha s valid
+        obtain ⟨ib, s2, rb⟩ := ihb s1 ra.valid
+        let finish := (s2.add (.urem a b) (.urem ia ib)).2
+        have hbound : s2.nodes.size < finish.nodes.size := by simp [finish, Build.add]
+        have hnode : finish.nodes.getD s2.nodes.size default = .urem ia ib := by
+          simp [finish, Build.add]
+        have hleft : ExprMatch finish.nodes ia a :=
+          (ra.exprMatch.mono rb.nodesPrefix).mono (NodesPrefix.push _ _)
+        have hright : ExprMatch finish.nodes ib b :=
+          rb.exprMatch.mono (NodesPrefix.push _ _)
+        have hab : ia < s2.nodes.size ∧ ib < s2.nodes.size :=
+          ⟨(ra.exprMatch.mono rb.nodesPrefix).root_lt, rb.exprMatch.root_lt⟩
+        have hmatch : ExprMatch finish.nodes s2.nodes.size (.urem a b) :=
+          .urem hbound hnode hab hleft hright
         exact ⟨s2.nodes.size, finish,
           by simp [intern, hseen', ra.eq, rb.eq, finish, Build.add],
           rb.valid.add (by simp [Node.refs, hab]) hmatch,

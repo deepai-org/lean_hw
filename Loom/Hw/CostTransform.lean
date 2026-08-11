@@ -450,6 +450,20 @@ theorem Expr.hc_weight_le : ∀ {w : Nat} (e : Expr w) (tbl : List ENode),
       refine Nat.le_trans (nodesWeight_intern_le _ _) ?_
       simp only [ENode.weight]
       omega
+  | udiv a b iha ihb =>
+      intro tbl
+      have h1 := iha tbl; have h2 := ihb (a.hc tbl).2
+      simp only [Expr.hc, Expr.treeCost]
+      refine Nat.le_trans (nodesWeight_intern_le _ _) ?_
+      simp only [ENode.weight]
+      omega
+  | urem a b iha ihb =>
+      intro tbl
+      have h1 := iha tbl; have h2 := ihb (a.hc tbl).2
+      simp only [Expr.hc, Expr.treeCost]
+      refine Nat.le_trans (nodesWeight_intern_le _ _) ?_
+      simp only [ENode.weight]
+      omega
   | shl a b iha ihb =>
       intro tbl
       have h1 := iha tbl; have h2 := ihb (a.hc tbl).2

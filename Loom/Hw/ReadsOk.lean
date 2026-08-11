@@ -38,6 +38,8 @@ def Expr.readSites : {w : Nat} → Expr w → List (String × Nat) × List (Stri
   | _, .add a b       => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')
   | _, .sub a b       => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')
   | _, .mul a b       => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')
+  | _, .udiv a b      => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')
+  | _, .urem a b      => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')
   | _, .shl a b       => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')
   | _, .shr a b       => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')
   | _, .eq a b        => let (r,s) := a.readSites; let (r',s') := b.readSites; (r++r', s++s')

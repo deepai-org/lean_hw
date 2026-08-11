@@ -49,9 +49,9 @@ Expressions include fixed-width modular multiplication, emitted directly as
 technology-neutral Verilog `*`; typed unsigned and signed full-width products
 (`Expr.umulWide` and `Expr.smulWide`); and a typed concatenation constructor
 (`++#`). Full-width products lower through the same proved primitive path.
-Unsigned division and remainder are not yet expressible; their total
-divide-by-zero semantics must be fixed before adding RTL operators whose raw
-Verilog behavior could introduce `X` values.
+Unsigned `/` and `%` are total: division by zero returns zero and remainder by
+zero returns the dividend. The compiler emits that guard explicitly instead
+of inheriting Verilog's unknown-valued zero-divisor behavior.
 
 The current workflow derives these views from the Design:
 

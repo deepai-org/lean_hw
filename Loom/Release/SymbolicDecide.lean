@@ -152,6 +152,7 @@ private partial def exposeHwExpr (expression : Expr) : MetaM Expr := do
         name == ``Loom.Hw.Expr.or || name == ``Loom.Hw.Expr.xor ||
         name == ``Loom.Hw.Expr.not || name == ``Loom.Hw.Expr.add ||
         name == ``Loom.Hw.Expr.sub || name == ``Loom.Hw.Expr.mul ||
+        name == ``Loom.Hw.Expr.udiv || name == ``Loom.Hw.Expr.urem ||
         name == ``Loom.Hw.Expr.shl ||
         name == ``Loom.Hw.Expr.shr || name == ``Loom.Hw.Expr.eq ||
         name == ``Loom.Hw.Expr.ult || name == ``Loom.Hw.Expr.slt ||
@@ -203,6 +204,7 @@ private unsafe def proveHwExprRegistersValid (cache : ProofCache)
   | some ``Loom.Hw.Expr.and | some ``Loom.Hw.Expr.or |
     some ``Loom.Hw.Expr.xor | some ``Loom.Hw.Expr.add |
     some ``Loom.Hw.Expr.sub | some ``Loom.Hw.Expr.mul |
+    some ``Loom.Hw.Expr.udiv | some ``Loom.Hw.Expr.urem |
     some ``Loom.Hw.Expr.shl |
     some ``Loom.Hw.Expr.shr | some ``Loom.Hw.Expr.eq |
     some ``Loom.Hw.Expr.ult | some ``Loom.Hw.Expr.slt =>
@@ -1013,6 +1015,8 @@ private partial def exposeMvExpr (expression : Expr) : MetaM Expr := do
         name == ``Loom.Emit.MicroVerilog.Expr.add ||
         name == ``Loom.Emit.MicroVerilog.Expr.sub ||
         name == ``Loom.Emit.MicroVerilog.Expr.mul ||
+        name == ``Loom.Emit.MicroVerilog.Expr.udiv ||
+        name == ``Loom.Emit.MicroVerilog.Expr.urem ||
         name == ``Loom.Emit.MicroVerilog.Expr.shl ||
         name == ``Loom.Emit.MicroVerilog.Expr.shr ||
         name == ``Loom.Emit.MicroVerilog.Expr.eq ||
@@ -1329,6 +1333,10 @@ private partial def proveIndexedExprEvidence (cache : IndexedExprCache)
           pure ``IndexedExprEvidence.sub
         else if expressionName == ``Loom.Emit.MicroVerilog.Expr.mul then
           pure ``IndexedExprEvidence.mul
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.udiv then
+          pure ``IndexedExprEvidence.udiv
+        else if expressionName == ``Loom.Emit.MicroVerilog.Expr.urem then
+          pure ``IndexedExprEvidence.urem
         else if expressionName == ``Loom.Emit.MicroVerilog.Expr.shl then
           pure ``IndexedExprEvidence.shl
         else if expressionName == ``Loom.Emit.MicroVerilog.Expr.shr then

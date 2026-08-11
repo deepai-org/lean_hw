@@ -44,7 +44,8 @@ def ref? (name : String) : Option Loom.Release.Symbolic.Ref :=
 
 private def binaryOp? : String → Option Loom.Release.SSA.BinOp
   | "and" => some .and | "or" => some .or | "xor" => some .xor
-  | "add" => some .add | "sub" => some .sub | "mul" => some .mul | "shl" => some .shl
+  | "add" => some .add | "sub" => some .sub | "mul" => some .mul
+  | "udiv" => some .udiv | "urem" => some .urem | "shl" => some .shl
   | "shr" => some .shr | "eq" => some .eq | "ult" => some .ult
   | _ => none
 
