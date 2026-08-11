@@ -1,6 +1,6 @@
 # Project status
 
-Checked against repository head on **2026-08-10**. This file is a current
+Checked against repository head on **2026-08-11**. This file is a current
 snapshot, not a development diary. Historical milestones belong in Git and
 [`CHANGELOG.md`](CHANGELOG.md); detailed hardware campaigns belong in their
 machine and board specifications.
@@ -9,10 +9,10 @@ machine and board specifications.
 
 | Check | Current result | Notes |
 |---|---|---|
-| `lake build` | **PASS** | Rechecked on 2026-08-10; warnings remain. |
-| `lake exe audit` | **PASS** | Rechecked on 2026-08-10; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **PASS** | Rechecked on 2026-08-10, including runner, coverage, identity, and certified-DAG regressions. |
-| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-10. |
+| `lake build` | **PASS** | Rechecked on 2026-08-11; warnings remain. |
+| `lake exe audit` | **PASS** | Rechecked on 2026-08-11; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
+| `lake test` | **PASS** | Rechecked on 2026-08-11, including typed-channel schedule replay, runner, coverage, identity, and certified-DAG regressions. |
+| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-11. |
 | `scripts/emit_all.sh --check` | **PASS** | Rechecked twice on 2026-08-10: the first run correctly rejected stale ignored RTL, and the second reproduced the regenerated artifacts byte-for-byte. |
 | `scripts/ci.sh` | **PASS** | Rechecked on 2026-08-09, including the explicit 528-second Epoch BMC, audit, emissions, debug map, round trip, release binding, and LRAT cross-check. |
 | `scripts/reproduce.sh` | **NOT RECHECKED** | The broader reproduction wrapper remains a separate unrerun gate; optional external checks are host-dependent. |
@@ -26,14 +26,18 @@ the bounded-model-check proof from the standing gate.
 The full reproduction and release workflows remain separate, explicitly
 unrerun gates.
 
-`Loom/Hw/System.lean` provides the low-level multiclock foundation: executable
-set-of-ticking-domain schedules, schedule-quantified `System.Invariant`,
-per-event framing, island reachability, and one-call lifting of ordinary
-Design invariants. `Machines/Multiclock/TwoCounters.lean` demonstrates two
-unconstrained clocks. Typed `Chan` handles, named assembly, endpoint laws,
-concrete CDC refinement, crossing inventories, and multi-clock emission in
-[`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md) remain planned work; existing board
-wrappers do not constitute those layers.
+`Loom/Hw/Chan.lean` and `Loom/Hw/System.lean` provide typed bounded-channel
+handles, generated endpoints, synchronous FIFO lowering, named island
+assembly, explicit co-tick policy, replayable named-clock events, abstract
+multi-clock execution, derived crossing inventories, per-event framing, and
+one-call lifting of ordinary open-Design invariants for every schedule. The
+checked abstract queue proves FIFO-head delivery and capacity preservation;
+regressions exercise both co-tick policies and a two-clock transfer. Concrete
+toggle/async-FIFO refinement, generated endpoint `TransitionProperty` proofs,
+bounded delivery, constraint rendering, hierarchy, production LNP64mini
+adoption, and multi-clock structural emission remain planned. A declaration
+selecting `toggle` or `asyncFifo` cannot be lowered by the synchronous emitter;
+existing board wrappers do not constitute a verified backend.
 
 ## Formal verification state
 

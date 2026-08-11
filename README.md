@@ -87,10 +87,13 @@ LNP64mini's cycle mirror has been removed; its execution, architectural
 observations, and RTL expectations derive from the Design. Some integration
 adapters across the wider tree remain machine-specific. The ordered remaining
 work is in [`ROADMAP.md`](ROADMAP.md), and
-the destination and scope test are in [`PLATONIC.md`](PLATONIC.md). The
-low-level multiclock foundation provides schedule-quantified `System`
-semantics and island-invariant lifting; the proposed typed `Chan` and assembly
-API remains future work recorded in [`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md).
+the destination and scope test are in [`PLATONIC.md`](PLATONIC.md). Typed
+`Chan w` handles now generate source/sink endpoints and synchronous FIFO
+adapters; named `System` assembly provides fail-closed clock/realization
+checks, executable schedule replay, a derived crossing inventory, and
+schedule-quantified lifting of ordinary Design invariants. Physical CDC
+components, refinement, constraints, hierarchy, and the LNP64mini production
+adoption remain ordered in [`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md).
 
 To exercise both LNP64mini execution paths:
 

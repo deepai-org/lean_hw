@@ -5,14 +5,21 @@ designs across clock domains. It refines the destination in
 [`PLATONIC.md`](PLATONIC.md) and the ordered work item in
 [`ROADMAP.md`](ROADMAP.md).
 
-The first low-level foundation is shipped in `Loom/Hw/System.lean`:
-executable clock events and schedules, a vector of synchronous Design islands,
-schedule-quantified `System.Invariant`, per-event framing,
-`System.island_reachable`, and `liftIsland`/`liftIsland₂`. The two-counter
-example demonstrates schedule-independent lifting. The ergonomic assembly API
-shown below (`System.empty`/`island`/`connect`), typed `Chan` handles, endpoint
-adapters and laws, concrete CDC refinement, crossing inventories, hierarchy,
-and verified multi-clock emission remain planned work.
+The public foundation is shipped in `Loom/Hw/Chan.lean` and
+`Loom/Hw/System.lean`: typed `Chan` handles, generated endpoints, a synchronous
+FIFO adapter, explicit co-tick policy, `System.empty`/`island`/`connect`,
+fail-closed structural checks, synchronous lowering, replayable named-clock
+events, abstract multi-clock channel execution, crossing inventories,
+schedule-quantified `System.Invariant`, per-event framing, island reachability,
+and `liftIsland`. `Tests/Chan.lean` exercises the lowered FIFO, both full
+co-tick policies, replay of a two-clock transfer, and theorem lifting. The
+older vector-indexed proof kernel is retained as `ScheduledSystem` and its
+two-counter example still demonstrates unconstrained schedule lifting.
+
+This is a foundation, not a claim that multiclock hardware is verified.
+Generated endpoint-law proofs, `ClockRel`, trace/liveness theorems, concrete
+toggle and Gray-FIFO refinement, neutral constraints, hierarchy, LNP64mini
+production adoption, and verified multi-clock emission remain below.
 
 The architectural rule is:
 
@@ -61,7 +68,7 @@ user surface should have five parts.
 
 ### 1. Channels are typed handles
 
-The intended shape is:
+The shipped shape is:
 
 ```lean
 def cmdQ : Chan 32 := ⟨"cmd", depth := 2⟩
@@ -80,14 +87,15 @@ and refinement that an ordinary `Chan` gets from the library.
 
 ### 2. Composition is `par` with clock names
 
-The intended assembly reads like:
+The shipped assembly reads like (Lean reserves `from`, so the endpoint names
+are `source` and `sink`):
 
 ```lean
 def chip : System :=
   System.empty
     |>.island "core" coreDesign (clock := "clkA")
     |>.island "dsp"  dspDesign  (clock := "clkB")
-    |>.connect cmdQ (from := "core") (to := "dsp")
+    |>.connect cmdQ (source := "core") (sink := "dsp")
 ```
 
 Widths are checked by types, endpoints pair exactly once, names remain unique,
@@ -391,6 +399,12 @@ encoding or an unproved conversion.
 
 ### Phase 1: single-clock `Chan` and `System` API
 
+**Current state: shipped.** Typed handles, generated endpoints, synchronous
+FIFO lowering, assembly gates, abstract queue laws, and public invariant
+lifting are present. The degenerate `singleStep` equality is `rfl`; the richer
+named one-island assembly intentionally lowers through the checked
+`elaborate` boundary rather than pretending an `Except` is definitional.
+
 - Ship typed `Chan` handles, generated stock endpoints, `System.island`, and
   `System.connect` while every island still uses one clock.
 - Make the one-clock system reduce definitionally to existing `par`/`Design`
@@ -406,6 +420,11 @@ backend without changing application code.
 
 ### Phase 2: executable multiclock spine and inventory
 
+**Current state: partial.** Named domains, printable finite schedule
+prefixes, replay, raw-edge-free assembly, crossing inventory, framing, and
+lifting are present. `ClockRel`, neutral constraint inventory, and exhaustive
+schedule generation remain.
+
 - Retain the shipped executable clock events, schedules, low-level `System`
   island vector, per-event framing, island reachability, and invariant lifting.
 - Add named domains, finite schedule prefixes, and `ClockRel` in the
@@ -417,6 +436,12 @@ backend without changing application code.
   and channel layers.
 
 ### Phase 3: multiclock channel semantics and generated endpoint laws
+
+**Current state: partial.** The atomic bounded-queue semantics, mandatory
+co-tick policy, generated endpoint mechanics, capacity theorem, FIFO-head
+theorem, and executable policy regressions are present. Trace-level
+loss/duplication/corruption theorems, checked `TransitionProperty` endpoint
+packages, and bounded exhaustive checking remain.
 
 - Define the abstract channel with mandatory `FullCoTickPolicy`.
 - Generate stock source and destination adapters and package their endpoint

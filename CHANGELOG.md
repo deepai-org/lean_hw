@@ -7,6 +7,17 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Typed channel and named-system foundation:** `Chan w` provides generated
+  enqueue/dequeue endpoints, explicit full co-tick policy, an executable
+  bounded-FIFO specification, and an ordinary-Design synchronous adapter.
+  `System.empty`/`island`/`connect` checks names, endpoints, clocks, depths, and
+  realization choices; all-synchronous systems lower through existing
+  `Design.par`/`connect`, while replayable named-clock events drive the
+  abstract multiclock semantics. Ordinary open-Design invariants lift across
+  every schedule with `System.liftIsland`, and a crossing inventory is derived
+  from the same declaration. Physical CDC refinement and emission remain
+  explicitly outside this increment.
+
 - **Total unsigned division and remainder:** width-indexed `/` and `%` now
   flow through reference semantics, proved compilation, FastEval/DagEval,
   transformations, BMC, SSA and release certificates, and Verilog parsing and
