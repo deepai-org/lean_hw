@@ -68,6 +68,8 @@ def Expr.regReads : {w : Nat} → Expr w → List String
   | _, .add a b       => a.regReads ++ b.regReads
   | _, .sub a b       => a.regReads ++ b.regReads
   | _, .mul a b       => a.regReads ++ b.regReads
+  | _, .udiv a b      => a.regReads ++ b.regReads
+  | _, .urem a b      => a.regReads ++ b.regReads
   | _, .shl a b       => a.regReads ++ b.regReads
   | _, .shr a b       => a.regReads ++ b.regReads
   | _, .eq a b        => a.regReads ++ b.regReads

@@ -145,6 +145,8 @@ private def renderExpr (ports : List DebugPort) (core : Nat) :
   | w, .add a b => do freshExprWire core w s!"({← renderExpr ports core a}) + ({← renderExpr ports core b})"
   | w, .sub a b => do freshExprWire core w s!"({← renderExpr ports core a}) - ({← renderExpr ports core b})"
   | w, .mul a b => do freshExprWire core w s!"({← renderExpr ports core a}) * ({← renderExpr ports core b})"
+  | w, .udiv a b => do freshExprWire core w s!"({← renderExpr ports core a}) / ({← renderExpr ports core b})"
+  | w, .urem a b => do freshExprWire core w s!"({← renderExpr ports core a}) % ({← renderExpr ports core b})"
   | w, .shl a b => do freshExprWire core w s!"({← renderExpr ports core a}) << ({← renderExpr ports core b})"
   | w, .shr a b => do freshExprWire core w s!"({← renderExpr ports core a}) >> ({← renderExpr ports core b})"
   | _, .eq a b => do freshExprWire core 1 s!"({← renderExpr ports core a}) == ({← renderExpr ports core b})"

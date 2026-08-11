@@ -7,6 +7,7 @@ import Tests.Lnp64u
 import Tests.Lnp64uCore
 import Tests.Lnp64miniArithmetic
 import Tests.WideMul
+import Tests.DivRem
 import Tests.MultiPort
 import Tests.MemTarget
 import Tests.Outputs

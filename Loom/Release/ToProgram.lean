@@ -93,6 +93,12 @@ def flatten : {w : Nat} → Emit.MicroVerilog.Expr w → StateM FlattenSt String
   | w, .mul a b => do
       let x ← flatten a; let y ← flatten b
       freshWire w s!"{x} * {y}" (.bin .mul x y)
+  | w, .udiv a b => do
+      let x ← flatten a; let y ← flatten b
+      freshWire w s!"{x} / {y}" (.bin .udiv x y)
+  | w, .urem a b => do
+      let x ← flatten a; let y ← flatten b
+      freshWire w s!"{x} % {y}" (.bin .urem x y)
   | w, .shl a b => do
       let x ← flatten a; let y ← flatten b
       freshWire w s!"{x} << {y}" (.bin .shl x y)
@@ -305,6 +311,12 @@ private unsafe def flattenMGo :
   | w, .mul a b => do
       let x ← flattenM a; let y ← flattenM b
       freshWireM w s!"{x} * {y}" (.bin .mul x y)
+  | w, .udiv a b => do
+      let x ← flattenM a; let y ← flattenM b
+      freshWireM w s!"{x} / {y}" (.bin .udiv x y)
+  | w, .urem a b => do
+      let x ← flattenM a; let y ← flattenM b
+      freshWireM w s!"{x} % {y}" (.bin .urem x y)
   | w, .shl a b => do
       let x ← flattenM a; let y ← flattenM b
       freshWireM w s!"{x} << {y}" (.bin .shl x y)

@@ -7,6 +7,13 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Total unsigned division and remainder:** width-indexed `/` and `%` now
+  flow through reference semantics, proved compilation, FastEval/DagEval,
+  transformations, BMC, SSA and release certificates, and Verilog parsing and
+  printing. Their two-state zero-divisor contract is explicit (`a / 0 = 0`,
+  `a % 0 = a`), and compilation inserts a guard so emitted hardware does not
+  depend on Verilog `X` behavior.
+
 - **Single-source LNP64mini execution and portable board automation:** the
   hand-maintained `MiniIss` cycle mirror, state adapter, mirror-only theorem,
   and emulator-step differential have been removed. Gate, fault, sentinel,

@@ -43,6 +43,14 @@ def compileExpr : {w : Nat} → Expr w → MV.Expr w
   | _, .add a b => .add (compileExpr a) (compileExpr b)
   | _, .sub a b => .sub (compileExpr a) (compileExpr b)
   | _, .mul a b => .mul (compileExpr a) (compileExpr b)
+  | _, .udiv a b =>
+      let a' := compileExpr a
+      let b' := compileExpr b
+      .mux (.eq b' (.lit 0)) (.lit 0) (.udiv a' b')
+  | _, .urem a b =>
+      let a' := compileExpr a
+      let b' := compileExpr b
+      .mux (.eq b' (.lit 0)) a' (.urem a' b')
   | _, .shl a b => .shl (compileExpr a) (compileExpr b)
   | _, .shr a b => .shr (compileExpr a) (compileExpr b)
   | _, .eq a b => .eq (compileExpr a) (compileExpr b)
@@ -76,6 +84,24 @@ theorem compileExpr_eval : ∀ {w : Nat} (e : Expr w) (σ : Loom.Hw.St),
   | add a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
   | sub a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
   | mul a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
+  | udiv a b iha ihb =>
+      intro σ
+      by_cases h : b.eval σ = 0
+      · simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval,
+          ihb, h]
+      · simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval,
+          iha, ihb]
+        intro hz
+        exact (h hz).elim
+  | urem a b iha ihb =>
+      intro σ
+      by_cases h : b.eval σ = 0
+      · simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval,
+          iha, ihb, h]
+      · simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval,
+          iha, ihb]
+        intro hz
+        exact (h hz).elim
   | shl a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
   | shr a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
   | eq a b iha ihb => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, iha, ihb]
@@ -229,6 +255,14 @@ private unsafe def ceGo (cache : IO.Ref (Std.HashMap USize (MV.Expr 0))) :
   | _, .add a b => do pure (.add (← ceImpl cache a) (← ceImpl cache b))
   | _, .sub a b => do pure (.sub (← ceImpl cache a) (← ceImpl cache b))
   | _, .mul a b => do pure (.mul (← ceImpl cache a) (← ceImpl cache b))
+  | _, .udiv a b => do
+      let a' ← ceImpl cache a
+      let b' ← ceImpl cache b
+      pure (.mux (.eq b' (.lit 0)) (.lit 0) (.udiv a' b'))
+  | _, .urem a b => do
+      let a' ← ceImpl cache a
+      let b' ← ceImpl cache b
+      pure (.mux (.eq b' (.lit 0)) a' (.urem a' b'))
   | _, .shl a b => do pure (.shl (← ceImpl cache a) (← ceImpl cache b))
   | _, .shr a b => do pure (.shr (← ceImpl cache a) (← ceImpl cache b))
   | _, .eq a b => do pure (.eq (← ceImpl cache a) (← ceImpl cache b))

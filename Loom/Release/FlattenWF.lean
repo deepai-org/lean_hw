@@ -68,7 +68,7 @@ def RhsOk (regs : List RegDef) (mems : List MemDef) (wires : Array Wire)
   | .not value, w => OperandOk regs wires bound value w
   | .bin op left right, w =>
       match op with
-      | .and | .or | .xor | .add | .sub | .mul | .shl | .shr =>
+      | .and | .or | .xor | .add | .sub | .mul | .udiv | .urem | .shl | .shr =>
           OperandOk regs wires bound left w ∧ OperandOk regs wires bound right w
       | .eq | .ult =>
           w = 1 ∧ ∃ w', OperandOk regs wires bound left w' ∧
@@ -192,7 +192,7 @@ def ExprEmitOk (regs : List RegDef) (mems : List MemDef) :
         header.addrWidth = aw ∧ header.dataWidth = dw) ∧
       ExprEmitOk regs mems addr
   | _, .and a b | _, .or a b | _, .xor a b | _, .add a b | _, .sub a b
-  | _, .mul a b
+  | _, .mul a b | _, .udiv a b | _, .urem a b
   | _, .shl a b | _, .shr a b | _, .eq a b | _, .ult a b | _, .slt a b =>
       ExprEmitOk regs mems a ∧ ExprEmitOk regs mems b
   | _, .not a => ExprEmitOk regs mems a
@@ -736,6 +736,28 @@ theorem flatten_spec (regs : List RegDef) (mems : List MemDef)
       have fs := freshWire_spec (regs := regs) (mems := mems) _
         s!"{((flatten a).run st).1} * {((flatten b).run ((flatten a).run st).2).1}"
         (.bin .mul ((flatten a).run st).1
+          ((flatten b).run ((flatten a).run st).2).1)
+        ((flatten b).run ((flatten a).run st).2).2 wf2
+        ⟨op1.mono ext2.1 ext2.2, op2⟩
+      exact ⟨fs.1, (ext1.trans ext2).trans fs.2.1, fs.2.2⟩
+  | udiv a b iha ihb =>
+      obtain ⟨oka, okb⟩ := ok
+      obtain ⟨wf1, ext1, op1⟩ := iha st wf oka
+      obtain ⟨wf2, ext2, op2⟩ := ihb ((flatten a).run st).2 wf1 okb
+      have fs := freshWire_spec (regs := regs) (mems := mems) _
+        s!"{((flatten a).run st).1} / {((flatten b).run ((flatten a).run st).2).1}"
+        (.bin .udiv ((flatten a).run st).1
+          ((flatten b).run ((flatten a).run st).2).1)
+        ((flatten b).run ((flatten a).run st).2).2 wf2
+        ⟨op1.mono ext2.1 ext2.2, op2⟩
+      exact ⟨fs.1, (ext1.trans ext2).trans fs.2.1, fs.2.2⟩
+  | urem a b iha ihb =>
+      obtain ⟨oka, okb⟩ := ok
+      obtain ⟨wf1, ext1, op1⟩ := iha st wf oka
+      obtain ⟨wf2, ext2, op2⟩ := ihb ((flatten a).run st).2 wf1 okb
+      have fs := freshWire_spec (regs := regs) (mems := mems) _
+        s!"{((flatten a).run st).1} % {((flatten b).run ((flatten a).run st).2).1}"
+        (.bin .urem ((flatten a).run st).1
           ((flatten b).run ((flatten a).run st).2).1)
         ((flatten b).run ((flatten a).run st).2).2 wf2
         ⟨op1.mono ext2.1 ext2.2, op2⟩

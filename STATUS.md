@@ -55,8 +55,10 @@ wrappers do not constitute those layers.
   two's-complement product bits by lowering through that proved primitive;
   abstract cost reporting preserves the operands' meaningful widths. Typed
   concatenation is available as `Expr.concat` / `++#` and lowers to the proved
-  primitive algebra. Division and remainder remain absent pending an explicit
-  total divide-by-zero contract. LNP64mini uses direct generic multiplication
+  primitive algebra. Unsigned division and remainder are total (`a / 0 = 0`,
+  `a % 0 = a`) and compile through explicit guards before neutral `/` and `%`
+  operators, with the same evaluator and release-certificate coverage.
+  LNP64mini uses direct generic multiplication
   for ordinary low-half `MUL`; its high-half `MULH`/`MULHU` instructions remain
   on the intentional iterative shift-add path.
 - `Tools/VerifiedRelease.lean` defines the combined Acc8/LNP64-µ release

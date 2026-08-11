@@ -832,6 +832,12 @@ def blast (t : Nat) (σ : St) : {w : Nat} → Expr w → Nat → (Var → Bool) 
   | w, e@(.mul ..), n, f =>
       let r := freshBits n w f (fun i => (e.eval σ).getLsbD i)
       (r.1, [], r.2.1, r.2.2)
+  | w, e@(.udiv ..), n, f =>
+      let r := freshBits n w f (fun i => (e.eval σ).getLsbD i)
+      (r.1, [], r.2.1, r.2.2)
+  | w, e@(.urem ..), n, f =>
+      let r := freshBits n w f (fun i => (e.eval σ).getLsbD i)
+      (r.1, [], r.2.1, r.2.2)
   | w, e@(.shl ..), n, f =>
       let r := freshBits n w f (fun i => (e.eval σ).getLsbD i)
       (r.1, [], r.2.1, r.2.2)
@@ -1154,6 +1160,8 @@ theorem blast_spec (t : Nat) (σ : St) :
   | add a b _ _ => intro n f _; exact good_over _ n f
   | sub a b _ _ => intro n f _; exact good_over _ n f
   | mul a b _ _ => intro n f _; exact good_over _ n f
+  | udiv a b _ _ => intro n f _; exact good_over _ n f
+  | urem a b _ _ => intro n f _; exact good_over _ n f
   | shl a b _ _ => intro n f _; exact good_over _ n f
   | shr a b _ _ => intro n f _; exact good_over _ n f
   | eq a b _ _ => intro n f _; exact good_over _ n f
@@ -1310,6 +1318,16 @@ theorem blast_struct (t : Nat) (σ σ' : St) :
     · simp only [blast]; exact (freshBits_struct n _ f f' _ _).1
     · simp only [blast]; exact (freshBits_struct n _ f f' _ _).2
   | mul a b _ _ =>
+    intro n f f'
+    refine ⟨?_, rfl, ?_⟩
+    · simp only [blast]; exact (freshBits_struct n _ f f' _ _).1
+    · simp only [blast]; exact (freshBits_struct n _ f f' _ _).2
+  | udiv a b _ _ =>
+    intro n f f'
+    refine ⟨?_, rfl, ?_⟩
+    · simp only [blast]; exact (freshBits_struct n _ f f' _ _).1
+    · simp only [blast]; exact (freshBits_struct n _ f f' _ _).2
+  | urem a b _ _ =>
     intro n f f'
     refine ⟨?_, rfl, ?_⟩
     · simp only [blast]; exact (freshBits_struct n _ f f' _ _).1

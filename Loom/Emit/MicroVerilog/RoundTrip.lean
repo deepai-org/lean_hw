@@ -181,7 +181,9 @@ private def demo : Module where
   mems := [demoMem, demoMem2]
   outs := [⟨"o", 4, .reg 4 "r"⟩,
            ⟨"p", 8, .memRead 8 "m" (.slice (.reg 4 "r") 0 2)⟩,
-           ⟨"product", 4, .mul (.reg 4 "r") (.reg 4 "s")⟩]
+           ⟨"product", 4, .mul (.reg 4 "r") (.reg 4 "s")⟩,
+           ⟨"quotient", 4, .udiv (.reg 4 "r") (.reg 4 "s")⟩,
+           ⟨"remainder", 4, .urem (.reg 4 "r") (.reg 4 "s")⟩]
 
 set_option maxRecDepth 10000 in
 example : demo.parseCheck = true := by decide +kernel

@@ -209,7 +209,7 @@ algebra usable. The residual error therefore has a known sign —
 /-- Binary bit-operators corresponding to emitted operators. Multiplication
 also carries technology-neutral operand-width cost metadata. -/
 inductive EOp where
-  | and | or | xor | add | sub | shl | shr
+  | and | or | xor | add | sub | udiv | urem | shl | shr
   /-- A multiply whose operands contain `leftWidth` and `rightWidth`
   meaningful bits. The emitted result still has the enclosing node width. -/
   | mul (leftWidth rightWidth : Nat)
@@ -324,6 +324,12 @@ def Expr.hc : {w : Nat} → Expr w → List ENode → Nat × List ENode
   | w, .mul a b, t =>
       let ra := Expr.hc a t; let rb := Expr.hc b ra.2
       ENode.intern (.bin (.mul a.mulOperandWidth b.mulOperandWidth) w ra.1 rb.1) rb.2
+  | w, .udiv a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .udiv w ra.1 rb.1) rb.2
+  | w, .urem a b, t =>
+      let ra := Expr.hc a t; let rb := Expr.hc b ra.2
+      ENode.intern (.bin .urem w ra.1 rb.1) rb.2
   | w, .shl a b, t =>
       let ra := Expr.hc a t; let rb := Expr.hc b ra.2
       ENode.intern (.bin .shl w ra.1 rb.1) rb.2
@@ -392,6 +398,8 @@ def Expr.treeCost {w : Nat} : Expr w → Nat
   | .add a b      => w + a.treeCost + b.treeCost
   | .sub a b      => w + a.treeCost + b.treeCost
   | .mul a b      => a.mulOperandWidth * b.mulOperandWidth + a.treeCost + b.treeCost
+  | .udiv a b     => w + a.treeCost + b.treeCost
+  | .urem a b     => w + a.treeCost + b.treeCost
   | .shl a b      => w + a.treeCost + b.treeCost
   | .shr a b      => w + a.treeCost + b.treeCost
   | @Expr.eq w' a b  => w' + a.treeCost + b.treeCost
@@ -416,6 +424,7 @@ def Expr.regReads {w : Nat} (n : String) : Expr w → Nat
   | .reg _ m => if m = n then 1 else 0
   | .memRead _ _ a => a.regReads n
   | .and a b | .or a b | .xor a b | .add a b | .sub a b | .mul a b
+  | .udiv a b | .urem a b
   | .shl a b | .shr a b => a.regReads n + b.regReads n
   | @Expr.eq _ a b | @Expr.ult _ a b | @Expr.slt _ a b =>
       a.regReads n + b.regReads n

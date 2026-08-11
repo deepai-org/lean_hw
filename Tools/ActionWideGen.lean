@@ -373,6 +373,7 @@ private def sourceExprNodeCount : {width : Nat} → Loom.Hw.Expr width → Nat
       sourceExprNodeCount address + 1
   | _, .and left right | _, .or left right | _, .xor left right
   | _, .add left right | _, .sub left right | _, .mul left right
+  | _, .udiv left right | _, .urem left right
   | _, .shl left right
   | _, .shr left right | _, .eq left right | _, .ult left right
   | _, .slt left right =>
@@ -582,6 +583,7 @@ private def runtimeRefEvidenceToLean (program : Tools.RuntimeSsa.Program)
 private def runtimeBinCtor : Loom.Release.SSA.BinOp → String
   | .and => "and" | .or => "or" | .xor => "xor"
   | .add => "add" | .sub => "sub" | .mul => "mul"
+  | .udiv => "udiv" | .urem => "urem"
   | .shl => "shl" | .shr => "shr"
   | .eq => "eq" | .ult => "ult"
 

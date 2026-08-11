@@ -13,9 +13,8 @@ FPGA framework, an ASIC flow, or a formal reimplementation of an EDA tool.
 The core expression language should cover ordinary fixed-width datapaths.
 Multiplication is a same-width modular primitive with typed unsigned and signed
 full-width constructors; concatenation is a typed constructor lowering to the
-primitive algebra. Division and remainder belong
-in the same generic layer once Loom gives zero divisors an explicit total
-two-state meaning and preserves that meaning through emission; their mapping
+primitive algebra. Unsigned division and remainder use an explicit total
+two-state contract (`a / 0 = 0`, `a % 0 = a`) preserved through emission; their mapping
 to DSPs, gates, or staged units is not a Loom-level vendor decision.
 
 This document describes the intended current destination. Current results are

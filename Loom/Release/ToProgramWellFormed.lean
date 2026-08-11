@@ -549,7 +549,7 @@ def exprEmitOkB (regs : List RegDef) (mems : List MemDef) :
        | none => false) &&
       exprEmitOkB regs mems addr
   | _, .and a b | _, .or a b | _, .xor a b | _, .add a b | _, .sub a b
-  | _, .mul a b
+  | _, .mul a b | _, .udiv a b | _, .urem a b
   | _, .shl a b | _, .shr a b | _, .eq a b | _, .ult a b | _, .slt a b =>
       exprEmitOkB regs mems a && exprEmitOkB regs mems b
   | _, .not a => exprEmitOkB regs mems a
@@ -609,6 +609,14 @@ theorem exprEmitOkB_sound {regs : List RegDef} {mems : List MemDef}
       simp only [exprEmitOkB, Bool.and_eq_true] at accepted
       exact ⟨iha accepted.1, ihb accepted.2⟩
   | mul a b iha ihb =>
+      intro accepted
+      simp only [exprEmitOkB, Bool.and_eq_true] at accepted
+      exact ⟨iha accepted.1, ihb accepted.2⟩
+  | udiv a b iha ihb =>
+      intro accepted
+      simp only [exprEmitOkB, Bool.and_eq_true] at accepted
+      exact ⟨iha accepted.1, ihb accepted.2⟩
+  | urem a b iha ihb =>
       intro accepted
       simp only [exprEmitOkB, Bool.and_eq_true] at accepted
       exact ⟨iha accepted.1, ihb accepted.2⟩

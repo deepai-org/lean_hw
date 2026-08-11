@@ -51,7 +51,7 @@ completely unaffected.
 | notation | meaning |
 | --- | --- |
 | `1`, `0xA` | `Expr.lit` at the expected width (`OfNat`) |
-| `a + b`, `a - b`, `a * b` | `Expr.add`, `Expr.sub`, `Expr.mul` |
+| `a + b`, `a - b`, `a * b`, `a / b`, `a % b` | fixed-width arithmetic |
 | `a ++# b` | `Expr.concat` (high bits followed by low bits) |
 | `a &&& b`, `a ||| b`, `a ^^^ b`, `~~~a` | bitwise |
 | `a <<< b`, `a >>> b` | shifts |
@@ -191,6 +191,8 @@ scoped instance instOfNatExpr {w n : Nat} : OfNat (Expr w) n :=
 scoped instance {w : Nat} : Add (Expr w) := ⟨Expr.add⟩
 scoped instance {w : Nat} : Sub (Expr w) := ⟨Expr.sub⟩
 scoped instance {w : Nat} : Mul (Expr w) := ⟨Expr.mul⟩
+scoped instance {w : Nat} : Div (Expr w) := ⟨Expr.udiv⟩
+scoped instance {w : Nat} : Mod (Expr w) := ⟨Expr.urem⟩
 scoped instance {w : Nat} : AndOp (Expr w) := ⟨Expr.and⟩
 scoped instance {w : Nat} : OrOp (Expr w) := ⟨Expr.or⟩
 scoped instance {w : Nat} : XorOp (Expr w) := ⟨Expr.xor⟩

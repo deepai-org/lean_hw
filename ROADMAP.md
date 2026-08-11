@@ -6,24 +6,7 @@ limitations, and gate results are in [`STATUS.md`](STATUS.md).
 
 Completed work belongs in Git and the changelog, not in this file.
 
-## 1. Complete core datapath arithmetic
-
-- Add width-indexed unsigned division and remainder only after defining their
-  total behavior for a zero divisor.
-- Carry that contract through reference semantics, proved compilation,
-  optimized and DAG evaluation, concrete SSA certificates, parsing, emission,
-  and focused regressions.
-- Ensure emitted RTL preserves the chosen two-state semantics explicitly; do
-  not rely on Verilog's unknown-valued divide-by-zero behavior.
-- Keep operator emission technology-neutral. Whether multiplication or
-  division maps to a DSP, gates, or a multicycle implementation is a
-  downstream implementation choice unless the Design states the staging.
-
-Acceptance: ordinary fixed-width datapaths can express multiplication,
-unsigned division, remainder, and concatenation without a hand-built FSM, and
-all derived views agree for every input, including a zero divisor.
-
-## 2. Finish gate and release polish
+## 1. Finish gate and release polish
 
 - Make every optional workflow report `PASS`, `FAIL`, or `SKIP`, including the
   reason and relevant tool version.
@@ -40,7 +23,7 @@ all derived views agree for every input, including a zero divisor.
 Acceptance: release logs distinguish every executed and skipped leg without
 manual interpretation, and the current status table cites fresh runs.
 
-## 3. Improve proof scaling
+## 2. Improve proof scaling
 
 - Extend footprint, support, frame, and projected-cycle automation so proofs
   simplify only the rules relevant to their property.
@@ -55,7 +38,7 @@ Acceptance: representative LNP64mini invariants recheck through small declared
 dependency cones without unfolding the complete machine cycle, and the cached
 machine refines its declared uncached architectural view under named premises.
 
-## 4. Grow verified logical transformations
+## 3. Grow verified logical transformations
 
 - Generalize retiming and fanout duplication only through transformations with
   refinement theorems.
@@ -66,7 +49,7 @@ machine refines its declared uncached architectural view under named premises.
 Acceptance: a nontrivial machine can compose several transformations while
 transporting its model property through one checked refinement chain.
 
-## 5. Add technology-neutral logical equivalence
+## 4. Add technology-neutral logical equivalence
 
 - Define a minimal `LogicalNetlist` Boolean transition graph with explicit
   inputs, outputs, state, drivers, and opaque memory cut points.
@@ -81,7 +64,7 @@ transporting its model property through one checked refinement chain.
 Acceptance: the same theorem checks neutral logical artifacts from different
 external producers and remains unchanged across FPGA vendors and ASIC use.
 
-## 6. Derive fast executable views
+## 5. Derive fast executable views
 
 - Extend the certified DAG evaluator and generated state comparison path.
 - Reduce dependence on manually synchronized ISS/emulator implementations;
@@ -95,7 +78,7 @@ external producers and remains unchanged across FPGA vendors and ASIC use.
 Acceptance: large-machine simulation is practical without adding an unproved
 semantic implementation to the trusted path.
 
-## 7. Strengthen compositional system contracts
+## 6. Strengthen compositional system contracts
 
 - Follow the executable, fail-closed multi-clock architecture in
   [`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md).
@@ -113,7 +96,7 @@ semantic implementation to the trusted path.
 Acceptance: open and multi-domain designs state their assumptions at typed
 ports and transport guarantees compositionally.
 
-## 8. Maintain release clarity
+## 7. Maintain release clarity
 
 - Keep theorem, checked-certificate, conversion, implementation, and physical
   claims distinct in generated evidence.

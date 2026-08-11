@@ -45,6 +45,10 @@ inductive Expr : Nat → Type where
   | add     {w : Nat} (a b : Expr w) : Expr w
   | sub     {w : Nat} (a b : Expr w) : Expr w
   | mul     {w : Nat} (a b : Expr w) : Expr w
+  /-- Total unsigned division: `a / 0 = 0`. -/
+  | udiv    {w : Nat} (a b : Expr w) : Expr w
+  /-- Total unsigned remainder: `a % 0 = a`. -/
+  | urem    {w : Nat} (a b : Expr w) : Expr w
   | shl     {w : Nat} (a b : Expr w) : Expr w
   | shr     {w : Nat} (a b : Expr w) : Expr w
   | eq      {w : Nat} (a b : Expr w) : Expr 1
