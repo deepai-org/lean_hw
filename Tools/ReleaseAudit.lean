@@ -5,38 +5,11 @@ import Lean
 /-!
 # Final release audit
 
-This executable checks the axiom closure of the publication-facing theorem.
+This executable checks the axiom closure of the publication-facing byte and
+simulator theorems.
 -/
 
 open Lean
-
-private structure AxiomCache where
-  done : NameMap (Array Name) := {}
-  visiting : NameSet := {}
-
-private def unionAxioms (left right : Array Name) : Array Name :=
-  right.foldl (fun result name =>
-    if result.contains name then result else result.push name) left
-
-private def collectForMemo (env : Environment) : Nat → Name →
-    StateM AxiomCache (Array Name)
-  | 0, _ => pure #[]
-  | fuel + 1, name => do
-      if let some result := (← get).done.find? name then return result
-      if (← get).visiting.contains name then return #[]
-      modify fun state =>
-        { state with visiting := state.visiting.insert name }
-      let mut result := #[]
-      if let some info := env.constants.find? name then
-        for dependency in info.getUsedConstantsAsSet.toArray do
-          result := unionAxioms result
-            (← collectForMemo env fuel dependency)
-        if let .axiomInfo _ := info then
-          result := unionAxioms result #[name]
-      modify fun state =>
-        { done := state.done.insert name result
-          visiting := state.visiting.erase name }
-      return result
 
 private def expectedAxioms : Array Name :=
   #[`Classical.choice, `Quot.sound, `propext]
@@ -44,14 +17,29 @@ private def expectedAxioms : Array Name :=
 def main : IO UInt32 := do
   initSearchPath (← findSysroot)
   let env ← importModules #[{ module := `Tools.VerifiedRelease }] {}
-  let fuel := env.constants.toList.length + 1
-  let (actual, _) := (collectForMemo env fuel
-    `Loom.Release.Theorems.verifiedReleases).run {}
-  let exact := actual.size == expectedAxioms.size &&
-    expectedAxioms.all actual.contains
-  if exact then
-    IO.println "release audit passed: verifiedReleases uses exactly the three standard axioms"
-    return 0
-  else
-    IO.eprintln s!"release audit failed: unexpected axiom closure {actual}"
-    return 1
+  let headlines := #[
+    `Loom.Release.Theorems.verifiedReleases,
+    `Loom.Release.Theorems.formalSubstance,
+    `Loom.Hw.DagEval.VerifiedSimulator.compiledCycleOpen_eq,
+    `Loom.Hw.DagEval.VerifiedSimulator.compiledRunOpen_eq,
+    `Loom.Hw.DagEval.prepareSimulator?_complete,
+    `Loom.Hw.CertifiedDesign.renderedUTF8_eq,
+    `Loom.Hw.CertifiedDesign.cycleOpen_eq,
+    `Loom.Hw.CertifiedDesign.runOpen_eq]
+  let mut failed := false
+  for headline in headlines do
+    let (_, closure) :=
+      ((Lean.CollectAxioms.collect headline).run env).run
+        ({} : Lean.CollectAxioms.State)
+    let actual := closure.axioms
+    let allowed := actual.all expectedAxioms.contains
+    let exactRequired := headline == `Loom.Release.Theorems.verifiedReleases ||
+      headline == `Loom.Release.Theorems.formalSubstance
+    let exact := actual.size == expectedAxioms.size &&
+      expectedAxioms.all actual.contains
+    if allowed && (!exactRequired || exact) then
+      IO.println s!"release audit passed: {headline} axioms {actual}"
+    else
+      failed := true
+      IO.eprintln s!"release audit failed: {headline} has unexpected axiom closure {actual}"
+  return if failed then 1 else 0

@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.FastEval
+import Loom.Hw.CompileCorrect
 import Std.Data.HashMap
 import Batteries.Data.List.Basic
 
@@ -52,80 +53,81 @@ structure Build where
   nodes : Array Node := #[]
   seen : Std.HashMap FExpr Nat := {}
 
+def Build.add (e : FExpr) (n : Node) (s : Build) : Nat × Build :=
+  let i := s.nodes.size
+  (i, { nodes := s.nodes.push n, seen := s.seen.insert e i })
+
 def intern (e : FExpr) (s : Build) : Nat × Build :=
   match s.seen.get? e with
   | some i => (i, s)
   | none =>
-    let add (n : Node) (s : Build) : Nat × Build :=
-      let i := s.nodes.size
-      (i, { nodes := s.nodes.push n, seen := s.seen.insert e i })
     match e with
-    | .lit v => add (.lit v) s
-    | .reg i => add (.reg i) s
+    | .lit v => s.add e (.lit v)
+    | .reg i => s.add e (.reg i)
     | .memRead base a =>
         let (ia, s) := intern a s
-        add (.memRead base ia) s
+        s.add e (.memRead base ia)
     | .and a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.and ia ib) s
+        s.add e (.and ia ib)
     | .or a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.or ia ib) s
+        s.add e (.or ia ib)
     | .xor a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.xor ia ib) s
+        s.add e (.xor ia ib)
     | .not mask a =>
         let (ia, s) := intern a s
-        add (.not mask ia) s
+        s.add e (.not mask ia)
     | .add m a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.add m ia ib) s
+        s.add e (.add m ia ib)
     | .sub m a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.sub m ia ib) s
+        s.add e (.sub m ia ib)
     | .mul m a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.mul m ia ib) s
+        s.add e (.mul m ia ib)
     | .shl w m a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.shl w m ia ib) s
+        s.add e (.shl w m ia ib)
     | .shr w a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.shr w ia ib) s
+        s.add e (.shr w ia ib)
     | .eq a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.eq ia ib) s
+        s.add e (.eq ia ib)
     | .ult a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.ult ia ib) s
+        s.add e (.ult ia ib)
     | .slt h a b =>
         let (ia, s) := intern a s
         let (ib, s) := intern b s
-        add (.slt h ia ib) s
+        s.add e (.slt h ia ib)
     | .mux c t f =>
         let (ic, s) := intern c s
         let (it, s) := intern t s
         let (if_, s) := intern f s
-        add (.mux ic it if_) s
+        s.add e (.mux ic it if_)
     | .slice lo m a =>
         let (ia, s) := intern a s
-        add (.slice lo m ia) s
+        s.add e (.slice lo m ia)
     | .zext m a =>
         let (ia, s) := intern a s
-        add (.zext m ia) s
+        s.add e (.zext m ia)
     | .sext h m d a =>
         let (ia, s) := intern a s
-        add (.sext h m d ia) s
+        s.add e (.sext h m d ia)
 def lowerAct (a : FAct) (s : Build) : Act × Build :=
   match a with
   | .skip => (.skip, s)
@@ -146,20 +148,22 @@ def lowerAct (a : FAct) (s : Build) : Act × Build :=
       let (data, s) := intern data s
       (.memWrite base addr data, s)
 
+def lowerActs : List FAct → Build → List Act × Build
+  | [], s => ([], s)
+  | a :: as, s =>
+      let (a, s) := lowerAct a s
+      let (as, s) := lowerActs as s
+      (a :: as, s)
+
 structure Design where
   nodes : Array Node
   acts : Array Act
   slots : List (Nat × String × Nat)
   deriving Inhabited
 
-def lower (fd : FastDesign) : Design := Id.run do
-  let mut s : Build := {}
-  let mut acts := Array.mkEmpty fd.acts.size
-  for a in fd.acts do
-    let (a, s') := lowerAct a s
-    s := s'
-    acts := acts.push a
-  return { nodes := s.nodes, acts, slots := fd.slots }
+def lower (fd : FastDesign) : Design :=
+  let (acts, s) := lowerActs fd.acts.toList {}
+  { nodes := s.nodes, acts := acts.toArray, slots := fd.slots }
 
 /-! ## Target-independent DAG structure
 
@@ -347,73 +351,73 @@ theorem nodesWFB_sound {nodes : Array Node} (h : nodesWFB nodes = true) :
   exact of_decide_eq_true ((List.all_eq_true.mp hall) r hr')
 
 inductive ExprMatch (nodes : Array Node) : Nat → FExpr → Prop where
-  | lit {root v} (bound : root < nodes.size) (node : nodes[root] = .lit v) :
+  | lit {root v} (bound : root < nodes.size) (node : nodes.getD root default = .lit v) :
       ExprMatch nodes root (.lit v)
-  | reg {root i} (bound : root < nodes.size) (node : nodes[root] = .reg i) :
+  | reg {root i} (bound : root < nodes.size) (node : nodes.getD root default = .reg i) :
       ExprMatch nodes root (.reg i)
   | memRead {root base a ea} (bound : root < nodes.size)
-      (node : nodes[root] = .memRead base a) (before : a < root)
+      (node : nodes.getD root default = .memRead base a) (before : a < root)
       (addr : ExprMatch nodes a ea) : ExprMatch nodes root (.memRead base ea)
   | and {root a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .and a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .and a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.and ea eb)
   | or {root a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .or a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .or a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.or ea eb)
   | xor {root a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .xor a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .xor a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.xor ea eb)
   | not {root mask a ea} (bound : root < nodes.size)
-      (node : nodes[root] = .not mask a) (before : a < root)
+      (node : nodes.getD root default = .not mask a) (before : a < root)
       (arg : ExprMatch nodes a ea) : ExprMatch nodes root (.not mask ea)
   | add {root m a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .add m a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .add m a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.add m ea eb)
   | sub {root m a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .sub m a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .sub m a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.sub m ea eb)
   | mul {root m a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .mul m a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .mul m a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.mul m ea eb)
   | shl {root w m a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .shl w m a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .shl w m a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.shl w m ea eb)
   | shr {root w a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .shr w a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .shr w a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.shr w ea eb)
   | eq {root a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .eq a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .eq a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.eq ea eb)
   | ult {root a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .ult a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .ult a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.ult ea eb)
   | slt {root h a b ea eb} (bound : root < nodes.size)
-      (node : nodes[root] = .slt h a b) (ab : a < root ∧ b < root)
+      (node : nodes.getD root default = .slt h a b) (ab : a < root ∧ b < root)
       (left : ExprMatch nodes a ea) (right : ExprMatch nodes b eb) :
       ExprMatch nodes root (.slt h ea eb)
   | mux {root c t f ec et ef} (bound : root < nodes.size)
-      (node : nodes[root] = .mux c t f)
+      (node : nodes.getD root default = .mux c t f)
       (ctf : c < root ∧ t < root ∧ f < root)
       (cond : ExprMatch nodes c ec) (yes : ExprMatch nodes t et)
       (no : ExprMatch nodes f ef) : ExprMatch nodes root (.mux ec et ef)
   | slice {root lo m a ea} (bound : root < nodes.size)
-      (node : nodes[root] = .slice lo m a) (before : a < root)
+      (node : nodes.getD root default = .slice lo m a) (before : a < root)
       (arg : ExprMatch nodes a ea) : ExprMatch nodes root (.slice lo m ea)
   | zext {root m a ea} (bound : root < nodes.size)
-      (node : nodes[root] = .zext m a) (before : a < root)
+      (node : nodes.getD root default = .zext m a) (before : a < root)
       (arg : ExprMatch nodes a ea) : ExprMatch nodes root (.zext m ea)
   | sext {root h m d a ea} (bound : root < nodes.size)
-      (node : nodes[root] = .sext h m d a) (before : a < root)
+      (node : nodes.getD root default = .sext h m d a) (before : a < root)
       (arg : ExprMatch nodes a ea) : ExprMatch nodes root (.sext h m d ea)
 
 structure CheckedExpr (nodes : Array Node) (root : Nat) (e : FExpr) : Type where
@@ -422,141 +426,199 @@ structure CheckedExpr (nodes : Array Node) (root : Nat) (e : FExpr) : Type where
 def checkExpr (nodes : Array Node) (root : Nat) :
     (e : FExpr) → Option (CheckedExpr nodes root e)
   | .lit v => if hr : root < nodes.size then
-      match hn : nodes[root] with
-      | .lit v' => if hv : v' = v then by subst v'; exact some ⟨.lit hr hn⟩ else none
+      let n := nodes.getD root default
+      match n with
+      | .lit v' => if hv : v' = v then by
+          subst v'; exact if hn : nodes.getD root default = .lit v then
+            some ⟨.lit hr hn⟩ else none
+        else none
       | _ => none else none
   | .reg i => if hr : root < nodes.size then
-      match hn : nodes[root] with
-      | .reg i' => if hi : i' = i then by subst i'; exact some ⟨.reg hr hn⟩ else none
+      let n := nodes.getD root default
+      match n with
+      | .reg i' => if hi : i' = i then by
+          subst i'; exact if hn : nodes.getD root default = .reg i then
+            some ⟨.reg hr hn⟩ else none
+        else none
       | _ => none else none
   | .memRead base ea => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .memRead base' a => if hb : base' = base then by
           subst base'
-          if ha : a < root then
-            match checkExpr nodes a ea with
-            | some pa => exact some ⟨.memRead hr hn ha pa.proof⟩
-            | none => exact none
-          else exact none
+          exact if hn : nodes.getD root default = .memRead base a then
+            if ha : a < root then
+              match checkExpr nodes a ea with
+              | some pa => some ⟨.memRead hr hn ha pa.proof⟩
+              | none => none
+            else none
+          else none
         else none
       | _ => none else none
   | .and ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
-      | .and a b => checkBin hr hn ea eb ExprMatch.and
+      let n := nodes.getD root default
+      match n with
+      | .and a b => if hn : nodes.getD root default = .and a b then
+          checkBin hr hn ea eb ExprMatch.and (checkExpr nodes a ea) (checkExpr nodes b eb)
+        else none
       | _ => none else none
   | .or ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
-      | .or a b => checkBin hr hn ea eb ExprMatch.or
+      let n := nodes.getD root default
+      match n with
+      | .or a b => if hn : nodes.getD root default = .or a b then
+          checkBin hr hn ea eb ExprMatch.or (checkExpr nodes a ea) (checkExpr nodes b eb)
+        else none
       | _ => none else none
   | .xor ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
-      | .xor a b => checkBin hr hn ea eb ExprMatch.xor
+      let n := nodes.getD root default
+      match n with
+      | .xor a b => if hn : nodes.getD root default = .xor a b then
+          checkBin hr hn ea eb ExprMatch.xor (checkExpr nodes a ea) (checkExpr nodes b eb)
+        else none
       | _ => none else none
   | .not mask ea => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .not mask' a => if hm : mask' = mask then by
-          subst mask'; exact checkUnary hr hn ea ExprMatch.not
+          subst mask'; exact if hn : nodes.getD root default = .not mask a then
+            checkUnary hr hn ea ExprMatch.not (checkExpr nodes a ea) else none
         else none
       | _ => none else none
   | .add m ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .add m' a b => if hm : m' = m then by
-          subst m'; exact checkBin hr hn ea eb ExprMatch.add
+          subst m'; exact if hn : nodes.getD root default = .add m a b then
+            checkBin hr hn ea eb ExprMatch.add (checkExpr nodes a ea) (checkExpr nodes b eb)
+          else none
         else none
       | _ => none else none
   | .sub m ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .sub m' a b => if hm : m' = m then by
-          subst m'; exact checkBin hr hn ea eb ExprMatch.sub
+          subst m'; exact if hn : nodes.getD root default = .sub m a b then
+            checkBin hr hn ea eb ExprMatch.sub (checkExpr nodes a ea) (checkExpr nodes b eb)
+          else none
         else none
       | _ => none else none
   | .mul m ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .mul m' a b => if hm : m' = m then by
-          subst m'; exact checkBin hr hn ea eb ExprMatch.mul
+          subst m'; exact if hn : nodes.getD root default = .mul m a b then
+            checkBin hr hn ea eb ExprMatch.mul (checkExpr nodes a ea) (checkExpr nodes b eb)
+          else none
         else none
       | _ => none else none
   | .shl w m ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .shl w' m' a b => if hw : w' = w then by
           subst w'; exact if hm : m' = m then by
-            subst m'; exact checkBin hr hn ea eb ExprMatch.shl
+            subst m'; exact if hn : nodes.getD root default = .shl w m a b then
+              checkBin hr hn ea eb ExprMatch.shl (checkExpr nodes a ea) (checkExpr nodes b eb)
+            else none
           else none
         else none
       | _ => none else none
   | .shr w ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .shr w' a b => if hw : w' = w then by
-          subst w'; exact checkBin hr hn ea eb ExprMatch.shr
+          subst w'; exact if hn : nodes.getD root default = .shr w a b then
+            checkBin hr hn ea eb ExprMatch.shr (checkExpr nodes a ea) (checkExpr nodes b eb)
+          else none
         else none
       | _ => none else none
   | .eq ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
-      | .eq a b => checkBin hr hn ea eb ExprMatch.eq
+      let n := nodes.getD root default
+      match n with
+      | .eq a b => if hn : nodes.getD root default = .eq a b then
+          checkBin hr hn ea eb ExprMatch.eq (checkExpr nodes a ea) (checkExpr nodes b eb)
+        else none
       | _ => none else none
   | .ult ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
-      | .ult a b => checkBin hr hn ea eb ExprMatch.ult
+      let n := nodes.getD root default
+      match n with
+      | .ult a b => if hn : nodes.getD root default = .ult a b then
+          checkBin hr hn ea eb ExprMatch.ult (checkExpr nodes a ea) (checkExpr nodes b eb)
+        else none
       | _ => none else none
   | .slt h ea eb => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .slt h' a b => if hh : h' = h then by
-          subst h'; exact checkBin hr hn ea eb ExprMatch.slt
+          subst h'; exact if hn : nodes.getD root default = .slt h a b then
+            checkBin hr hn ea eb ExprMatch.slt (checkExpr nodes a ea) (checkExpr nodes b eb)
+          else none
         else none
       | _ => none else none
   | .mux ec et ef => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .mux c t f =>
-          if hc : c < root then if ht : t < root then if hf : f < root then
-            match checkExpr nodes c ec, checkExpr nodes t et, checkExpr nodes f ef with
-            | some pc, some pt, some pf =>
-                some ⟨.mux hr hn ⟨hc, ht, hf⟩ pc.proof pt.proof pf.proof⟩
-            | _, _, _ => none
-          else none else none else none
+          if hn : nodes.getD root default = .mux c t f then
+            if hc : c < root then if ht : t < root then if hf : f < root then
+              match checkExpr nodes c ec, checkExpr nodes t et, checkExpr nodes f ef with
+              | some pc, some pt, some pf =>
+                  some ⟨.mux hr hn ⟨hc, ht, hf⟩ pc.proof pt.proof pf.proof⟩
+              | _, _, _ => none
+            else none else none else none
+          else none
       | _ => none else none
   | .slice lo m ea => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .slice lo' m' a => if hlo : lo' = lo then by
           subst lo'; exact if hm : m' = m then by
-            subst m'; exact checkUnary hr hn ea ExprMatch.slice
+            subst m'; exact if hn : nodes.getD root default = .slice lo m a then
+              checkUnary hr hn ea ExprMatch.slice (checkExpr nodes a ea) else none
           else none
         else none
       | _ => none else none
   | .zext m ea => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .zext m' a => if hm : m' = m then by
-          subst m'; exact checkUnary hr hn ea ExprMatch.zext
+          subst m'; exact if hn : nodes.getD root default = .zext m a then
+            checkUnary hr hn ea ExprMatch.zext (checkExpr nodes a ea) else none
         else none
       | _ => none else none
   | .sext h m d ea => if hr : root < nodes.size then
-      match hn : nodes[root] with
+      let n := nodes.getD root default
+      match n with
       | .sext h' m' d' a => if hh : h' = h then by
           subst h'; exact if hm : m' = m then by
             subst m'; exact if hd : d' = d then by
-              subst d'; exact checkUnary hr hn ea ExprMatch.sext
+              subst d'; exact if hn : nodes.getD root default = .sext h m d a then
+                checkUnary hr hn ea ExprMatch.sext (checkExpr nodes a ea) else none
             else none
           else none
         else none
       | _ => none else none
 where
   checkUnary {root : Nat} {e : FExpr} (hr : root < nodes.size)
-      {a : Nat} {n : Node} (hn : nodes[root] = n) (ea : FExpr)
-      (mk : root < nodes.size → nodes[root] = n → a < root →
-        ExprMatch nodes a ea → ExprMatch nodes root e) :
+      {a : Nat} {n : Node} (hn : nodes.getD root default = n) (ea : FExpr)
+      (mk : root < nodes.size → nodes.getD root default = n → a < root →
+        ExprMatch nodes a ea → ExprMatch nodes root e)
+      (pa : Option (CheckedExpr nodes a ea)) :
       Option (CheckedExpr nodes root e) :=
     if ha : a < root then
-      match checkExpr nodes a ea with
+      match pa with
       | some pa => some ⟨mk hr hn ha pa.proof⟩
       | none => none
     else none
   checkBin {root : Nat} {e : FExpr} (hr : root < nodes.size)
-      {a b : Nat} {n : Node} (hn : nodes[root] = n) (ea eb : FExpr)
-      (mk : root < nodes.size → nodes[root] = n → a < root ∧ b < root →
-        ExprMatch nodes a ea → ExprMatch nodes b eb → ExprMatch nodes root e) :
+      {a b : Nat} {n : Node} (hn : nodes.getD root default = n) (ea eb : FExpr)
+      (mk : root < nodes.size → nodes.getD root default = n → a < root ∧ b < root →
+        ExprMatch nodes a ea → ExprMatch nodes b eb → ExprMatch nodes root e)
+      (pa : Option (CheckedExpr nodes a ea))
+      (pb : Option (CheckedExpr nodes b eb)) :
       Option (CheckedExpr nodes root e) :=
     if ha : a < root then
       if hb : b < root then
-        match checkExpr nodes a ea, checkExpr nodes b eb with
+        match pa, pb with
         | some pa, some pb => some ⟨mk hr hn ⟨ha, hb⟩ pa.proof pb.proof⟩
         | _, _ => none
       else none
@@ -823,11 +885,28 @@ structure VerifiedSimulator (d : Loom.Hw.Design) where
   base : FastEval.VerifiedSimulator d
   dag : Verified base.fast
 
+/-- Agreement between the flat certified simulator state and the formal
+µVerilog compiler state on every coordinate declared by the source Design. -/
+def CompiledAgree (d : Loom.Hw.Design) (fs : FastSt)
+    (state : Loom.Emit.MicroVerilog.St) : Prop :=
+  Agree d fs (Compile.forgetSt state)
+
 def prepareSimulator? {d : Loom.Hw.Design} (base : FastEval.VerifiedSimulator d) :
     Option (VerifiedSimulator d) :=
   match prepare? base.fast with
   | some dag => some ⟨base, dag⟩
   | none => none
+
+/-- Turn a proved successful preparation into the static certified object used
+by theorem packages.  The generic completeness theorem below will make the
+premise automatic for every supported Design; concrete packages can already
+discharge it by kernel reduction. -/
+def verifiedSimulatorOfPreparation {d : Loom.Hw.Design}
+    (base : FastEval.VerifiedSimulator d)
+    (ready : (prepareSimulator? base).isSome = true) : VerifiedSimulator d :=
+  match h : prepareSimulator? base with
+  | some simulator => simulator
+  | none => by simp [h] at ready
 
 /-- IO-facing fail-closed preparation. Pure theorem witnesses can use
 `prepareSimulator?`; executable acceptance paths use this adapter so a failed
@@ -872,6 +951,19 @@ theorem cycleOpen_eq {d : Loom.Hw.Design} (sim : VerifiedSimulator d)
   rw [sim.dag.cycleOpen_eq]
   exact sim.base.cycleOpen_eq ι fs σ ha
 
+/-- The direct simulator/compiler square for one open cycle.  This composes
+the checked DAG, flat evaluator, Design semantics, and proved µVerilog
+compiler in one theorem application. -/
+theorem compiledCycleOpen_eq {d : Loom.Hw.Design} (sim : VerifiedSimulator d)
+    (wf : Compile.DesignWF d) (ι : InEnv) (fs : FastSt)
+    (state : Loom.Emit.MicroVerilog.St) (ha : CompiledAgree d fs state) :
+    CompiledAgree d (sim.cycleOpen ι fs)
+      ((Compile.compile d).cycleOpen ι state) := by
+  unfold CompiledAgree at ha ⊢
+  have hsim := sim.cycleOpen_eq ι fs (Compile.forgetSt state) ha
+  have hcompile := Compile.compile_cycleOpen d wf ι (Compile.forgetSt state)
+  simpa using hcompile ▸ hsim
+
 /-- A certified DAG run agrees with the reference closed-design run on every
 declared coordinate. -/
 theorem run_eq {d : Loom.Hw.Design} (sim : VerifiedSimulator d) (n : Nat)
@@ -890,6 +982,19 @@ theorem runOpen_eq {d : Loom.Hw.Design} (sim : VerifiedSimulator d)
   unfold runOpen
   rw [sim.dag.runOpen_eq]
   exact sim.base.runOpen_eq n ιs fs σ ha
+
+/-- The direct arbitrary-run simulator/compiler theorem.  It quantifies over
+every input stream, cycle count, and pair of initially agreeing states. -/
+theorem compiledRunOpen_eq {d : Loom.Hw.Design} (sim : VerifiedSimulator d)
+    (wf : Compile.DesignWF d) (n : Nat) (ιs : Nat → InEnv) (fs : FastSt)
+    (state : Loom.Emit.MicroVerilog.St) (ha : CompiledAgree d fs state) :
+    CompiledAgree d (sim.runOpen ιs n fs)
+      ((Compile.compile d).runOpen ιs n state) := by
+  unfold CompiledAgree at ha ⊢
+  have hsim := sim.runOpen_eq n ιs fs (Compile.forgetSt state) ha
+  have hcompile :=
+    Compile.compile_runOpen_from_module_state d wf n ιs state
+  simpa using hcompile ▸ hsim
 
 /-- Direct closed-run theorem from the design-derived reset state. -/
 theorem runFromReset_eq {d : Loom.Hw.Design} (sim : VerifiedSimulator d)

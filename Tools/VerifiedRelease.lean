@@ -5,6 +5,8 @@ import GeneratedRelease.Lnp64u.SemanticRelease
 import Machines.Lnp64u.Theorems.T2
 import Machines.Lnp64u.Theorems.T8
 import Machines.Lnp64u.Theorems.T9
+import Machines.Lnp64mini.Harness
+import Machines.Substrate.S0Blinky
 
 /-!
 # Final release theorem
@@ -108,6 +110,36 @@ theorem verifiedReleases : Nonempty VerifiedReleases := by
       (Machines.Lnp64u.Theorems.T9.budget_bounded
         Machines.Lnp64u.Demo.sysManifest
         Machines.Lnp64u.Theorems.DemoWitness.sys_wf)
+  }⟩
+
+/-- The two publication claims in one kernel object: exact released UTF-8
+bytes, and a Design-derived certified simulator connected directly to the
+proved compiler for arbitrary inputs, states, and finite run lengths.  The
+two concrete packages prevent the generic API from being merely schematic. -/
+structure FormalSubstance where
+  releases : VerifiedReleases
+  dagCompilerRun : ∀ {d : Design} (sim : DagEval.VerifiedSimulator d),
+    Compile.DesignWF d → ∀ (n : Nat) (ιs : Nat → InEnv) (fs : FastSt)
+      (state : Loom.Emit.MicroVerilog.St),
+      DagEval.CompiledAgree d fs state →
+      DagEval.CompiledAgree d (sim.runOpen ιs n fs)
+        ((Compile.compile d).runOpen ιs n state)
+  dagPreparation : ∀ {d : Design} (base : FastEval.VerifiedSimulator d),
+    (DagEval.prepareSimulator? base).isSome = true
+  smallDesign : CertifiedDesign Machines.Substrate.S0Blinky.design
+  productionDesign : CertifiedDesign Machines.Lnp64mini.design
+
+/-- Publication-facing closure joining the byte theorem, generic simulator
+theorems, preparation completeness, and two real certified Designs. -/
+theorem formalSubstance : Nonempty FormalSubstance := by
+  obtain ⟨releases⟩ := verifiedReleases
+  exact ⟨{
+    releases
+    dagCompilerRun := fun sim wf n ιs fs state agree =>
+      sim.compiledRunOpen_eq wf n ιs fs state agree
+    dagPreparation := DagEval.prepareSimulator?_complete
+    smallDesign := Machines.Substrate.S0Blinky.certified
+    productionDesign := Machines.Lnp64mini.certified
   }⟩
 
 end Loom.Release.Theorems

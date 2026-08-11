@@ -68,11 +68,11 @@ theorem exactRenderingAndCompilation (design : Loom.Hw.Design)
     (hrender : renderedLines = program.renderTree)
     (hdisk : renderedLines = disk)
     (hcert : ssaMatches design program cert = true) :
-    program.renderTree.flattenBytes = disk.flattenBytes ∧
+    program.renderTree.flattenUTF8 = disk.flattenUTF8 ∧
     ∃ module, program.elaborate = some module ∧
       module.toTSys = (Loom.Hw.Compile.compile design).toTSys := by
   constructor
-  · exact Rope.flattenBytes_congr (hrender.symm.trans hdisk)
+  · exact Rope.flattenUTF8_congr (hrender.symm.trans hdisk)
   · exact ssaMatches_behavior design program cert hcert
 
 end Loom.Release

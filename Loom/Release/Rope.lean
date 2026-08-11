@@ -9,7 +9,8 @@ Large generated RTL must never be normalized as one monolithic Lean `String`.
 emit bounded leaves as separate declarations; internal nodes refer to those
 named theorem constants and compose them by congruence.
 
-The final byte statement is obtained abstractly with `congrArg flattenBytes`.
+The final UTF-8 `ByteArray` statement is obtained abstractly from rope
+equality; the older `String` flattening remains an internal convenience.
 The kernel therefore checks the equality proof without evaluating the complete
 concatenated file. CI independently binds the ordered leaf payloads to the file
 on disk using exact `cmp`.
@@ -113,6 +114,14 @@ file ending in LF. -/
 def Rope.flattenBytes (rope : Rope (List String)) : String :=
   String.intercalate "\n" rope.flattenLists
 
+/-- The literal UTF-8 byte sequence consumed by file and synthesis tools.
+
+`flattenBytes` predates this explicit byte-level projection and returns Lean
+`String`.  Publication-facing claims use `flattenUTF8`; the string projection
+is retained as the structural renderer's convenient internal form. -/
+def Rope.flattenUTF8 (rope : Rope (List String)) : ByteArray :=
+  rope.flattenBytes.toUTF8
+
 /-- Map equal leaf payloads through an arbitrary renderer. This is the generic
 form used by generated named internal proof nodes. -/
 theorem Rope.node_congr {α : Type u} {leftA leftB rightA rightB : Rope α}
@@ -126,6 +135,10 @@ theorem Rope.node_congr {α : Type u} {leftA leftB rightA rightB : Rope α}
 pure congruence: it does not reduce `flattenBytes`. -/
 theorem Rope.flattenBytes_congr {a b : Rope (List String)} (h : a = b) :
     a.flattenBytes = b.flattenBytes := congrArg Rope.flattenBytes h
+
+/-- Equal line ropes denote literally equal UTF-8 byte arrays. -/
+theorem Rope.flattenUTF8_congr {a b : Rope (List String)} (h : a = b) :
+    a.flattenUTF8 = b.flattenUTF8 := congrArg Rope.flattenUTF8 h
 
 /-- A release witness supplies some item type together with a structural
 renderer into bounded line leaves. -/
@@ -144,8 +157,8 @@ this lemma once at the root. -/
 theorem Rendered.exactBytes {Item : Type u} (renderItem : Item → List String)
     (artifact : Rendered Item)
     (h : artifact.renderTree renderItem = artifact.disk) :
-    (artifact.renderTree renderItem).flattenBytes =
-      artifact.disk.flattenBytes :=
-  Rope.flattenBytes_congr h
+    (artifact.renderTree renderItem).flattenUTF8 =
+      artifact.disk.flattenUTF8 :=
+  Rope.flattenUTF8_congr h
 
 end Loom.Release
