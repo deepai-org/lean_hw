@@ -424,14 +424,12 @@ def tiny : Design := mkDesign cfgTiny
 
 /-! ## Obligations -/
 
-/-- The four banks are D19 sync-read shaped, so they infer as block RAM. -/
+/-- Every memory declared synchronous is D19 shaped. -/
 def syncReadOkB (d : Design) : Bool :=
-  d.syncReadOkB "cell_epoch" && d.syncReadOkB "cell_flags"
-    && d.syncReadOkB "repl0" && d.syncReadOkB "repl1"
+  d.syncReadMems.all d.syncReadOkB
 
 def syncReadReport (d : Design) : String :=
-  String.intercalate "\n"
-    (["cell_epoch", "cell_flags", "repl0", "repl1"].map d.syncReadReport)
+  String.intercalate "\n" (d.syncReadMems.map d.syncReadReport)
 
 theorem design_syncReadOk : syncReadOkB design = true := by rfl
 

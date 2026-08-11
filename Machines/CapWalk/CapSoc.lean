@@ -295,16 +295,10 @@ def parOk : Bool :=
     && (a4.parOkB ep) && (a5.parOkB mm0) && (a6.parOkB mm1) && (a7.parOkB cw)
     && (a8.parOkB cwhp) && (a9.parOkB cm0)
 
-/-- The banks the composed design must keep D19 sync-read shaped. -/
-def banks : List String :=
-  ["c0_rf", "c0_dmem", "c0_uart_mem", "c1_rf", "c1_dmem", "c1_uart_mem",
-   "ep_cell_epoch", "ep_cell_flags", "ep_repl0", "ep_repl1",
-   "cw_cell_epoch", "cw_cell_flags", "cw_c_tag", "cw_c_p0", "cw_c_p1",
-   "cw_lin_repl"]
-
-def syncReadOk : Bool := banks.all capSoc.syncReadOkB
+/-- Every memory declared synchronous remains D19 shaped after composition. -/
+def syncReadOk : Bool := capSoc.syncReadMems.all capSoc.syncReadOkB
 
 def syncReadReport : String :=
-  String.intercalate "\n" (banks.map capSoc.syncReadReport)
+  String.intercalate "\n" (capSoc.syncReadMems.map capSoc.syncReadReport)
 
 end Machines.CapWalk.CapSoc

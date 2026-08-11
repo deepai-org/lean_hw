@@ -33,9 +33,6 @@ def haltZeroExclusive : ExprProperty :=
 def lifecycleSafe : ExprProperty :=
   .and runHaltExclusive haltZeroExclusive
 
-def lifecycleCoords : List (String × Nat) :=
-  [(runningReg.name, 1), (haltedReg.name, 1), (zeroingReg.name, 1)]
-
 theorem footprint_regs : lifecycleSafe.footprint.regs =
     [(runningReg.name, 1), (haltedReg.name, 1),
       (haltedReg.name, 1), (zeroingReg.name, 1)] := by
@@ -56,7 +53,7 @@ theorem haltZeroExclusive_eval_iff (σ : St) :
   rfl
 
 def haltZeroCoords : List (String × Nat) :=
-  [(haltedReg.name, 1), (zeroingReg.name, 1)]
+  haltZeroExclusive.footprint.regs
 
 /-- The reset engine can only clear `zeroing`; all datapath writes disappear. -/
 def haltZeroZeroingAction : Act :=
@@ -88,9 +85,9 @@ theorem haltZeroOk_projectRegs_iff (action : Act) (σ acc : St) :
       haltZeroOk (action.run σ acc) := by
   unfold haltZeroOk
   rw [action.projectRegs_run haltZeroCoords haltedReg.name 1
-      (by simp [haltZeroCoords]) σ acc,
+      (by decide) σ acc,
     action.projectRegs_run haltZeroCoords zeroingReg.name 1
-      (by simp [haltZeroCoords]) σ acc]
+      (by decide) σ acc]
 
 theorem projectedZeroing_preserves (σ : St) : haltZeroOk σ →
     haltZeroOk ((zeroingRule.body.projectRegs haltZeroCoords).run σ σ) := by
@@ -183,7 +180,7 @@ theorem projectedFsm_preserves (σ : St) : resetWhileStopped σ →
   by_cases clear : (haltZeroPrefix σ).regs zeroingReg.name 1 = 0#1
   · right
     rw [fsmRule.body.projectRegs_run haltZeroCoords zeroingReg.name 1
-      (by simp [haltZeroCoords]) σ (haltZeroPrefix σ)]
+      (by decide) σ (haltZeroPrefix σ)]
     exact fsmRule.body.run_regs_notin zeroingReg.name 1 (by decide) σ
       (haltZeroPrefix σ) |>.trans clear
   · have set : (haltZeroPrefix σ).regs zeroingReg.name 1 = 1#1 := by
@@ -240,7 +237,7 @@ theorem fullFsm_preserves (σ : St) : resetWhileStopped σ →
       · exact (clear h).elim
       · exact h
     have projectedSet : (haltZeroPrefix σ).regs zeroingReg.name 1 = 1#1 :=
-      (prefix_regs_eq σ zeroingReg.name 1 (by simp [haltZeroCoords])).trans set
+      (prefix_regs_eq σ zeroingReg.name 1 (by decide)).trans set
     have disabled := fsm_disabled_of_prefix_zeroing σ resetSafe projectedSet
     simpa [fsmRule, Act.run, disabled, haltZeroOk] using safe
 

@@ -2,36 +2,20 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Syntax
 import Loom.Hw.Semantics
-import Loom.Hw.StateCover
 import Loom.Hw.FastEval
 import Loom.Runner
 
 /-!
 # Derived state comparison (PLATONIC W5)
 
-`StateCover.lean` checks that a *hand-written* comparator covers every declared
-register and memory. That is the weaker half of the idea: it turns forgetting
-into a named failure, but somebody still writes and maintains the comparator,
-and every machine writes its own.
-
-This file removes the hand-written comparator. The `Design` already declares
+The `Design` already declares
 its registers (name, width) and memories (name, address width, data width), so
 the complete comparison is *derivable* — and a comparison derived from the
 declarations cannot omit a declaration. There is nothing left to cover-check.
 
-That matters because the omissions were not hypothetical. `lnp64mini`'s
-hand-written `cmpStates` silently skipped EXT-2's `tdom`, EXT-7's five TLB
-memories, and EXT-5/EXT-6's gate table, continuation and capability inbox —
-each time leaving a cross-check that reported agreement it had never tested.
-Each was found later, by accident.
-
-## Scope, honestly
-
-This is the *comparator* half of W5. The other half — deriving the reference
-model itself from the `Design`, so that equality is a theorem rather than a
-test — is not done, and nothing here should be read as claiming it. What this
-gives is: whatever reference a machine compares against, the comparison itself
-is complete by construction.
+The primary simulator is now derived from the `Design` and proved against its
+semantics. Independent references remain useful as optional differential
+oracles; this module makes their comparison surface complete by construction.
 -/
 
 namespace Loom.Hw

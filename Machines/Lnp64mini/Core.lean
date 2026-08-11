@@ -6,7 +6,7 @@ import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
 import Loom.Hw.SyncRead
-import Loom.Hw.DeclarationReport
+import Loom.Hw.Declarations
 import Machines.Lnp64mini.Interface
 
 /-!
