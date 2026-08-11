@@ -12,7 +12,7 @@ independent domains — any schedule, any relative rate, no assumption. The
 tutorial already proved each counter's safety invariant `SatOk` as an ordinary
 single-clock `Design`. Here that proof transports to the two-clock system in
 **one application** of `liftIsland`, with the schedule quantifier — "for every
-interleaving of the two clocks" — supplied by `System.Invariant` itself.
+interleaving of the two clocks" — supplied by `ScheduledSystem.Invariant` itself.
 
 Nothing about the counters changed; no schedule appears in the proof; the
 system-level theorem is exactly the conjunction of the two local ones.
@@ -26,7 +26,7 @@ open Machines.Tutorial.SatCounter (design SatOk satOk_invariant)
 /-- Two independent SatCounter islands. `admissible := fun _ => True`: the two
 clocks are entirely unconstrained — arbitrary relative rate, arbitrary phase,
 either or both ticking at any event. -/
-def twoCounters : System where
+def twoCounters : ScheduledSystem where
   n := 2
   islands := fun _ => design
 
