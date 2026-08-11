@@ -7,6 +7,7 @@ import Loom.Core.Ts
 import Loom.Core.Trace
 import Loom.Core.Bounded
 import Loom.Hw.DagEval
+import Loom.Hw.CertifiedDesign
 import Loom.Protocol.Machine
 import Loom.Protocol.Priority
 import Loom.Isa.Decode

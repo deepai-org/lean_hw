@@ -18,7 +18,7 @@ open Loom Loom.Hw Loom.Emit.MicroVerilog
 
 /-- Everything certified about one structurally rendered release artifact.
 
-The external binding step only compares `disk.flattenBytes` with the shipped
+The external binding step only compares `disk.flattenUTF8` with the shipped
 file. Security properties proved as invariants of `spec` are covered by the
 `invariants` field alongside ordinary functional invariants. -/
 structure VerifiedSymbolicArtifact (spec : TSys) (design : Design)
@@ -27,7 +27,7 @@ structure VerifiedSymbolicArtifact (spec : TSys) (design : Design)
     (registers : Rope (List Symbolic.RegisterRoot))
     (memories : List Symbolic.MemoryRoot) (outputs : Rope (List Nat)) where
   /-- The certified renderer produces exactly the externally bound bytes. -/
-  exactBytes : program.renderTree.flattenBytes = disk.flattenBytes
+  exactBytes : program.renderTree.flattenUTF8 = disk.flattenUTF8
   /-- The arbitrary concrete witness denotes the reference compilation at
   every wire, state element, write port, initialization cell, and output. -/
   denotation : Symbolic.ModuleBehavior design program indexeds table registers
@@ -49,7 +49,7 @@ theorem verifiedSymbolicArtifact_of_checks
     (indexeds : Rope (List Symbolic.IndexedWire)) (table : Symbolic.WireTable)
     (registers : Rope (List Symbolic.RegisterRoot))
     (memories : List Symbolic.MemoryRoot) (outputs : Rope (List Nat))
-    (exactBytes : program.renderTree.flattenBytes = disk.flattenBytes)
+    (exactBytes : program.renderTree.flattenUTF8 = disk.flattenUTF8)
     (denotation : Symbolic.ModuleBehavior design program indexeds table
       registers memories outputs)
     (refinement : Simulation spec (Compile.compile design).toTSys.reachablePart) :

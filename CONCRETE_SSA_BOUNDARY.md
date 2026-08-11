@@ -10,8 +10,9 @@ For a release `program`, Lean proves:
 
 - `Symbolic.ModuleBehavior design program ...`, a declarative account of all
   program metadata, SSA wires, registers, memories, writes, and outputs; and
-- exact equality between `program.renderTree.flattenBytes` and a
-  theorem-bound byte rope.
+- exact `ByteArray` equality between `program.renderTree.flattenUTF8` and the
+  theorem-bound disk rope's UTF-8 bytes. String equality is only an internal
+  lemma used to derive this byte equality.
 
 `SSA.Program.elaborate` also reconstructs the intrinsically typed µVerilog
 AST, but the scalable release certificate proves the direct declarative
@@ -20,7 +21,7 @@ relation rather than trusting execution of that elaborator.
 ## Assumption
 
 When a conforming Verilog tool reads exactly
-`program.renderTree.flattenBytes`, it assigns the text the same two-state,
+`program.renderTree.flattenUTF8`, it assigns the UTF-8 text the same two-state,
 synchronous transition behavior as `Symbolic.ModuleBehavior` and Loom's
 µVerilog semantics:
 

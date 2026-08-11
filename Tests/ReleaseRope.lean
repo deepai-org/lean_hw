@@ -23,7 +23,10 @@ private theorem root : artifact.renderTree render = artifact.disk := by
   exact Rope.node_congr left (Rope.node_congr middle right)
 
 example : (artifact.renderTree render).flattenBytes =
-    artifact.disk.flattenBytes := artifact.exactBytes render root
+    artifact.disk.flattenBytes := Rope.flattenBytes_congr root
+
+example : (artifact.renderTree render).flattenUTF8 =
+    artifact.disk.flattenUTF8 := artifact.exactBytes render root
 
 example : artifact.disk.flattenBytes = "1\n2\n3" := by decide +kernel
 

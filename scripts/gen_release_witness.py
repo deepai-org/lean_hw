@@ -621,8 +621,10 @@ def emit_program_tail(out: list[str], data: dict, block_size: int,
               "(Rope.node_congr renderMemTrees " +
               "(Rope.node_congr renderWireTree " +
               "(congrArg Rope.leaf renderSuffix)))", "",
-            "theorem exactBytes : program.renderTree.flattenBytes = " +
+            "theorem exactText : program.renderTree.flattenBytes = " +
               "diskTree.flattenBytes := Rope.flattenBytes_congr renderTree", "",
+            "theorem exactBytes : program.renderTree.flattenUTF8 = " +
+              "diskTree.flattenUTF8 := Rope.flattenUTF8_congr renderTree", "",
             f"end {namespace}", ""]
 
 
@@ -937,8 +939,10 @@ def emit_batched_program(data: dict, output: Path, block_size: int,
              "  exact Rope.node_congr (congrArg Rope.leaf renderPrefix) "
              "(Rope.node_congr renderMemTrees (Rope.node_congr renderWireTree "
              "(congrArg Rope.leaf renderSuffix)))", "",
-             "theorem exactBytes : program.renderTree.flattenBytes = "
+             "theorem exactText : program.renderTree.flattenBytes = "
              "diskTree.flattenBytes := Rope.flattenBytes_congr renderTree", "",
+             "theorem exactBytes : program.renderTree.flattenUTF8 = "
+             "diskTree.flattenUTF8 := Rope.flattenUTF8_congr renderTree", "",
              f"end {namespace}", ""]
     write_if_changed(output, "\n".join(root))
     return generated_modules

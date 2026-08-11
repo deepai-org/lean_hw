@@ -106,4 +106,12 @@ def Module.cycleOpen (m : Module) (ι : String → (w : Nat) → BitVec w)
     (σ : St) : St :=
   m.cycle (σ.setInputs m.ins ι)
 
+/-- Run `n` open cycles under an input stream.  The indexing convention is
+the same as `Loom.Hw.Design.runOpen`: cycle zero consumes `ιs 0`. -/
+def Module.runOpen (m : Module)
+    (ιs : Nat → String → (w : Nat) → BitVec w) : Nat → St → St
+  | 0, σ => σ
+  | n + 1, σ =>
+      m.runOpen (fun k => ιs (k + 1)) n (m.cycleOpen (ιs 0) σ)
+
 end Loom.Emit.MicroVerilog

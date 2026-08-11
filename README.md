@@ -63,7 +63,9 @@ The current workflow derives these views from the Design:
   `DagEval` shares expression subtrees across the whole cycle and checks a
   structural certificate before execution. Its cycle and run theorems connect
   the optimized evaluator to the declarative Design for arbitrary states,
-  inputs, and cycle counts.
+  inputs, and cycle counts; direct theorems also connect the same executions
+  to the proved µVerilog compiler. Loom proves that preparation of its own
+  lowered DAG succeeds for every well-formed fast simulator.
 - **Typed state views.** Register and memory handles resolve once into flat
   simulator slots. Resolution fails on a missing declaration or stale width;
   slot-read theorems connect those values to the same semantic agreement

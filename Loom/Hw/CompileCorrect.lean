@@ -194,6 +194,9 @@ def forgetSt (state : Loom.Emit.MicroVerilog.St) : Loom.Hw.St :=
 @[simp] theorem forgetSt_convSt (state : Loom.Hw.St) :
     forgetSt (convSt state) = state := by cases state; rfl
 
+@[simp] theorem convSt_forgetSt (state : Loom.Emit.MicroVerilog.St) :
+    convSt (forgetSt state) = state := by cases state; rfl
+
 /-- One compiled cycle is exactly one source-design cycle. -/
 theorem compile_cycle (d : Design) (wf : DesignWF d) (state : Loom.Hw.St) :
     forgetSt ((compile d).cycle (convSt state)) = d.cycle state := by
@@ -294,5 +297,34 @@ theorem compile_cycleOpen (d : Design) (wf : DesignWF d) (ι : InEnv)
         d.inputs.map (fun i => { name := i.name, width := i.width }) from rfl,
       convSt_setInputs]
   exact compile_cycle d wf (state.setInputs d.inputs ι)
+
+/-- Every finite compiled open run has exactly the source Design semantics.
+This is the iteration lemma used by the certified simulator/compiler square. -/
+theorem compile_runOpen (d : Design) (wf : DesignWF d) (n : Nat)
+    (ιs : Nat → InEnv) (state : Loom.Hw.St) :
+    forgetSt ((compile d).runOpen ιs n (convSt state)) =
+      d.runOpen ιs n state := by
+  induction n generalizing ιs state with
+  | zero => rfl
+  | succ n ih =>
+      simp only [Loom.Emit.MicroVerilog.Module.runOpen, Design.runOpen]
+      have hcycle := compile_cycleOpen d wf (ιs 0) state
+      have hstate :
+          (compile d).cycleOpen (ιs 0) (convSt state) =
+            convSt (d.cycleOpen (ιs 0) state) := by
+        calc
+          _ = convSt (forgetSt
+                ((compile d).cycleOpen (ιs 0) (convSt state))) := by simp
+          _ = convSt (d.cycleOpen (ιs 0) state) := congrArg convSt hcycle
+      rw [hstate]
+      exact ih (fun k => ιs (k + 1)) (d.cycleOpen (ιs 0) state)
+
+/-- State-record-neutral form of `compile_runOpen`, convenient for clients
+whose current state already inhabits the µVerilog semantics. -/
+theorem compile_runOpen_from_module_state (d : Design) (wf : DesignWF d)
+    (n : Nat) (ιs : Nat → InEnv) (state : Loom.Emit.MicroVerilog.St) :
+    forgetSt ((compile d).runOpen ιs n state) =
+      d.runOpen ιs n (forgetSt state) := by
+  simpa using compile_runOpen d wf n ιs (forgetSt state)
 
 end Loom.Hw.Compile

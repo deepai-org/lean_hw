@@ -4,6 +4,7 @@ import Loom.Hw.Declarations
 import Loom.Hw.Semantics
 import Loom.Hw.FastEval
 import Loom.Hw.CompileCorrect
+import Loom.Hw.CertifiedDesign
 import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
 
@@ -47,6 +48,19 @@ theorem design_wf : Compile.DesignWF design :=
 /-- The FastEval side condition (`Loom/Hw/FastEval.lean`), discharged in the
 kernel: `Loom.Hw.FastEval.fastRun_eq` applies to this design. -/
 theorem design_fastWF : design.fastWFB = true := by rfl
+
+/-- The small publication-independent genericity witness: the same Design
+supplies both the certified shared-DAG simulator and proved compilation. -/
+def simulator : FastEval.VerifiedSimulator design := ⟨design_fastWF⟩
+
+theorem dag_ready : (DagEval.prepareSimulator? simulator).isSome = true := by
+  exact DagEval.prepareSimulator?_complete simulator
+
+def dagSimulator : DagEval.VerifiedSimulator design :=
+  DagEval.verifiedSimulatorOfPreparation simulator dag_ready
+
+def certified : CertifiedDesign design :=
+  CertifiedDesign.of design_wf dagSimulator
 
 /-- Emission entry (root `main` lives in `Machines/Substrate/Emit.lean` so
 this module can sit in the `Machines` umbrella next to the tutorial's). -/

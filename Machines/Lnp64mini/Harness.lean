@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Diff
 import Loom.Hw.DagEval
+import Loom.Hw.CertifiedDesign
 import Machines.Lnp64mini.Core
 import Std.Data.HashMap
 
@@ -103,10 +104,29 @@ The depth option only gives the reducer room to traverse this 182-register,
 18-memory design; the proof remains reflexivity after computation. -/
 theorem design_fastWF : design.fastWFB = true := by rfl
 
+set_option maxRecDepth 100000 in
+/-- Compiler well-formedness for the exact Design used by the primary
+simulator.  Like `design_fastWF`, this is kernel reduction of the independent
+generic checker, not a machine-specific compiler assumption. -/
+theorem design_wf : Compile.DesignWF design :=
+  Compile.designWFCheck_sound design (by rfl)
+
 /-- LNP64mini's public generated simulator.  The executable evaluator is
 derived from `design`; `runOpenFromReset_eq` states its semantic equality to
 `Design.runOpen` on every one of the design's declared coordinates. -/
 def simulator : FastEval.VerifiedSimulator design := ⟨design_fastWF⟩
+
+set_option maxRecDepth 100000 in
+theorem dag_ready : (DagEval.prepareSimulator? simulator).isSome = true := by
+  exact DagEval.prepareSimulator?_complete simulator
+
+def dagSimulator : DagEval.VerifiedSimulator design :=
+  DagEval.verifiedSimulatorOfPreparation simulator dag_ready
+
+/-- LNP64mini's complete single-source package: semantics, certified DAG, and
+µVerilog compilation all have `design` as their sole machine description. -/
+def certified : CertifiedDesign design :=
+  CertifiedDesign.of design_wf dagSimulator
 
 theorem fastRunOpen_agrees (n : Nat) (ιs : Nat → InEnv) :
     Agree design (simulator.runOpen ιs n simulator.reset)

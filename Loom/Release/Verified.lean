@@ -20,14 +20,14 @@ open Loom Loom.Hw Loom.Emit.MicroVerilog
 /-- Everything the kernel certifies about one shipped artifact. `spec` is the
 fully proved processor model (the ISS transition system for the release).
 
-The external file-binding step has only to compare the concatenation denoted
-by `disk.flattenBytes` with the shipped file. -/
+The external file-binding step has only to compare the literal byte array
+`disk.flattenUTF8` with the shipped file. -/
 structure VerifiedArtifact (spec : TSys) (design : Design)
     (program : SSA.Program) (disk : Rope (List String)) where
   /-- The structural elaboration of the concrete SSA witness. -/
   module : Module
   /-- Exact bytes produced by the verified renderer. -/
-  exactBytes : program.renderTree.flattenBytes = disk.flattenBytes
+  exactBytes : program.renderTree.flattenUTF8 = disk.flattenUTF8
   /-- The witness elaborates structurally, without parsing its rendered text. -/
   elaborates : program.elaborate = some module
   /-- Its transition system is exactly the reference compiler's result. -/

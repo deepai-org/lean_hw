@@ -82,7 +82,7 @@ inductive FExpr where
   /-- `h = 2 ^ (w - 1)` (source sign bit), `m = 2 ^ w'`,
   `d = 2 ^ w' - 2 ^ w` (zero when narrowing). -/
   | sext (h m d : Nat) (a : FExpr)
-  deriving Inhabited, Repr, BEq, Hashable
+  deriving Inhabited, Repr, BEq, ReflBEq, DecidableEq, Hashable, LawfulBEq
 
 /-- Width-erased actions with pre-resolved indices. -/
 inductive FAct where
