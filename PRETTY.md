@@ -15,6 +15,21 @@ when its familiar reading is exactly Loom's meaning. Loom uses rules instead
 of event controls, one explicit next-cycle assignment, explicit signedness,
 typed widths, and ordinary Lean as the parameterization language.
 
+The scope includes named multiclock `System`s, but not as an opaque connectivity
+language above hidden RTL. Multiclock authoring has three visible levels:
+
+1. the architecture names clocks, ordinary `Design` islands, typed logical
+   channels, endpoint direction, and admissible clock relations;
+2. an explicit realization selects the actual synthesizable crossing circuit;
+3. optional physical evidence binds technology-specific synchronizers or
+   memories and states any external assumptions.
+
+The architecture block need not repeat Gray equations, synchronizer registers,
+flags, storage ports, or controllers. Those behavioral components are still
+ordinary, public, pretty-printable `Design`s—not secret backend machinery—and
+an expert can inspect or replace them. Only proof plumbing, generated structural
+coordinates, wrappers, and tool constraints remain implementation details.
+
 ## Outcome
 
 The tutorial's saturating counter should eventually read:
@@ -79,6 +94,27 @@ architectural model or reference model remains useful when it is genuinely an
 independent specification, but it is not required merely to execute a design
 or produce RTL expectations.
 
+For multiclock work the same single-source rule composes rather than changes:
+
+```text
+ordinary pretty Design islands + typed logical channels + named clocks
+                              |
+                              v
+                     checked System semantics
+                         |             |
+                         v             v
+              CertifiedSystem replay  explicit compiled CDC realization
+                                             |
+                                             v
+                              certified structural system.v
+```
+
+The channel declaration is the stable protocol meaning. The realization clause
+names which circuit implements it, and that circuit's controller, synchronizer,
+flag, and storage `Design`s remain inspectable hardware. An optional physical
+binding refines those Designs to target cells or macros; it does not silently
+change the channel semantics.
+
 ## Semantic boundary
 
 The authoring layer obeys one rule:
@@ -113,6 +149,17 @@ In particular:
 9. Command-time checks improve locations and messages but never replace core
    validation or the fail-closed emission gate. Programmatically constructed
    designs retain the same authoritative checks.
+10. A multiclock surface lowers to the existing `Chan`, `SystemBuilder`,
+    `System`, `CertifiedSystem`, and certified realization values. It does not
+    create a second crossing semantics or expose one particular CDC circuit as
+    the meaning of a channel.
+11. `Design.cycle` remains a single-clock transition. A combinational output is
+    a pure same-cycle `CombOutput` observation and never an implicit state
+    update, clock crossing, or sensitivity-list construct.
+12. A logical channel is not itself synthesizable hardware. Every emitted
+    cross-clock channel therefore has an explicit realization, and every
+    behavioral component of that realization is available as an ordinary
+    `Design` for inspection, proof, simulation, replacement, and emission.
 
 ## Surface syntax
 
@@ -141,6 +188,8 @@ The initial `hwexpr` audit mirrors the current `Expr` constructors:
 - concatenation as `high ++ low`;
 - `zext value to width` and `sext value to width`;
 - memory reads;
+- logical-channel observations `channel.canSend`, `channel.hasData`, and
+  `channel.data`;
 - parentheses;
 - `$(term)` for an ordinary Lean term expected to elaborate as `Expr w`.
 
@@ -174,12 +223,24 @@ if cond then branch
 case expr of
 | constant => branch
 | default => branch
+for ident in $(term) generate branch
+send expr to channel
+consume channel
 skip
 $stmt(term)
 ```
 
 `$stmt(term)` expects `Act`. It is deliberately distinct from `$(term)`,
 which expects `Expr w`; expression and statement escapes never blur.
+
+Logical channel vocabulary is intentionally behavioral rather than
+signal-level. `q.canSend`, `q.hasData`, and `q.data` lower to `Chan.canEnq`,
+`Chan.canDeq`, and `Chan.deq`; `send value to q` and `consume q` lower to the
+already guarded `Chan.enq` and `Chan.pop` actions. Users never author
+valid/ready bits, payload wires, acknowledgements, pointer state, or endpoint
+maintenance rules. When another register update must occur only with a send or
+receive, the user guards the whole block with `canSend` or `hasData`, making
+the atomic intent visible.
 
 Braces delimit multi-statement blocks. Newlines and indentation are encouraged
 for readability but are not semantic, so v1 does not require a custom
@@ -218,6 +279,8 @@ expression operator  -> the corresponding Expr constructor
 if                    -> Act.ite
 brace sequence        -> right-associated Act.seq ending in Act.skip
 case                   -> a source-ordered, right-nested Act.ite chain
+for/generate           -> an ordered Lean List fold using Act.seq
+send/consume           -> Chan.enq / Chan.pop
 ```
 
 Assignments and escapes use term elaborators rather than translation macros.
@@ -280,6 +343,7 @@ The scalar productions are:
 input wire name : width
 output reg name : width
 output reg name : width := reset-value
+output wire name : width := expression
 reg name : width
 reg name : width := reset-value
 ```
@@ -291,15 +355,17 @@ need a later grammar extension. Widths must reduce far enough to construct the
 indexed handle and declaration, and a zero width receives a direct warning or
 error according to the core policy established in Phase 0.
 
-`input reg` and `output wire` are not accepted: the former lies about
-writability, while combinational outputs require their own core
-`CombOutput`-shaped production rather than pretending they are state. An
-initializer is declaration syntax, not `hwexpr`: it elaborates with expected
-type `BitVec width` and becomes the `RegDecl.init` value. Numeric literals use
-that expected width, and a bare `Nat` constant is lifted with `BitVec.ofNat`,
-so `reg pc : 64 := TEXT_BASE` needs no annotation. An arbitrary computed reset
+`input reg` is not accepted because it lies about writability. `output wire`
+is a distinct combinational-output production: its RHS elaborates as
+`Expr width`, lowers to `Declarations.addCombOutput`, and generates a readable
+`Expr width` definition for reuse. It has no `Reg` handle and cannot appear on
+the left of `<-`; `Design.cycle` is unchanged. A register initializer is
+declaration syntax, not `hwexpr`: it elaborates with expected type
+`BitVec width` and becomes the `RegDecl.init` value. Numeric literals use that
+expected width, and a bare `Nat` constant is lifted with `BitVec.ofNat`, so
+`reg pc : 64 := TEXT_BASE` needs no annotation. An arbitrary computed reset
 image uses an explicit Lean escape. This keeps reset values separate from
-expressions over pre-cycle state.
+expressions over pre-cycle state and same-cycle observations.
 
 The command creates handles, rule bodies, `declarations`, and `design` in the
 current namespace. It uses `withRef` and declaration ranges based on the user
@@ -406,6 +472,405 @@ The faithfulness condition is that wrapped output reparses through the same
 syntax category to the original core term. Pretty output must not depend on an
 ambient coercion that the printed syntax does not reveal.
 
+## Functional Lean and pretty hardware
+
+Lean is the parameterization and construction language; the pretty DSL is the
+notation for the hardware fragments Lean constructs. The boundary should be
+compositional in both directions rather than forcing a choice between an
+entirely pretty rule and an opaque `$stmt(...)` action.
+
+Pretty quotations are ordinary Lean terms and may appear inside functions,
+maps, folds, recursion, and proofs:
+
+```lean
+def wakeOne (i : Fin NT) : Act :=
+  [hwstmt|
+    if wakeEn & (tstate[i] == FUTEX) then
+      tstate[i] <- READY
+  ]
+
+def readyAt (i : Fin NT) : Expr 1 :=
+  [hwexpr| tstate[i] == READY ]
+```
+
+Conversely, a pretty rule may ask Lean to replicate a visible hardware body:
+
+```lean
+rule wake_threads :=
+  for i in $(List.finRange NT) generate {
+    if wakeEn & (tstate[i] == FUTEX) then
+      tstate[i] <- READY
+  }
+```
+
+`generate` means structural construction, not a runtime hardware loop. Its v1
+collection elaborates as `List α`, preserving an explicit order, and lowers to
+one small ordinary Lean combinator:
+
+```lean
+def actFor (xs : List α) (body : α → Act) : Act :=
+  xs.foldr (fun x rest => Act.seq (body x) rest) Act.skip
+```
+
+Thus the example is equivalent to:
+
+```lean
+actFor (List.finRange NT) fun i =>
+  [hwstmt|
+    if wakeEn & (tstate[i] == FUTEX) then
+      tstate[i] <- READY
+  ]
+```
+
+No evaluator, compiler case, or loop semantics is added. The ordinary Lean
+term constructs the same finite `Act.seq` tree the handwritten fold constructs
+today. Collection order is semantically visible because later writes win; v1
+therefore accepts `List`, not unordered containers or an arbitrary traversal
+whose ordering may surprise the author.
+
+Inside a generated body, the binder is an ordinary hygienic Lean local. Index
+elaboration distinguishes two useful cases by type:
+
+- `tstate[i]` with `i : Fin NT` selects one static `RegArray` member;
+- `tstate[idx]` with `idx : Expr w` constructs the existing dynamic read or
+  write network.
+
+Both are valid hardware operations, but they can have very different circuit
+cost. The dynamic form should receive a source-local informational cost note
+when a static index may have been intended. This distinction is derived from
+the types, not from different punctuation.
+
+A generate binder may hygienically shadow an imported non-signal Lean name.
+It may not reuse a design-local signal name: that is a command-time collision
+error, preserving the signal-first identifier rule and preventing the body
+from visually changing the meaning of a declared net.
+
+Ordinary Lean remains available around quotations for richer reductions:
+
+```lean
+def readyAny : Expr 1 :=
+  orTree <| (List.finRange NT).map fun i =>
+    [hwexpr| tstate[i] == READY ]
+```
+
+The first release should not grow `any`, `all`, `sum`, or priority-selection
+syntax merely to hide this small amount of functional Lean. Such reductions
+have ordering, empty-case, cost, and proof-shape decisions of their own. Add a
+pretty reduction only after repeated real use shows that it improves reading
+without concealing those decisions.
+
+`$()` and `$stmt()` remain the universal escape hatches. They are appropriate
+for an isolated pre-existing expression/action or machinery the pretty grammar
+does not model. They are not the preferred way to hide a whole parameterized
+hardware rule. Similarly, a later conditional-generation form should use an
+explicit `generate` keyword so it cannot be confused with runtime hardware
+`if`; it is outside the v1 surface until its declaration and rule behavior is
+specified.
+
+## First-class multiclock systems
+
+Multiclock authoring gets a separate `system` command rather than adding clock
+annotations to `hardware`. A `hardware` block is always one ordinary
+single-clock `Design`; a `system` gives named clocks to islands and connects
+them with logical `Chan`s. This preserves the existing theorem boundary and
+makes a raw cross-clock wire unrepresentable in the pretty surface.
+
+The small two-clock example should eventually read:
+
+```lean
+system twoClock where
+  clock clkA
+  clock clkB
+  clocks asynchronous
+
+  channel q : 8 depth 2
+
+  island producer on clkA where
+    output reg sent : 1
+
+    rule send :=
+      if ~sent & q.canSend then {
+        send 42 to q
+        sent <- 1
+      }
+
+  island consumer on clkB where
+    output reg got : 8
+
+    rule receive :=
+      if q.hasData then {
+        got <- q.data
+        consume q
+      }
+
+  connect q from producer to consumer
+  realize q as async_fifo using registers
+```
+
+The architecture is concise, but the hardware choice is not implicit.
+`async_fifo using registers` names a concrete circuit family and its storage
+implementation. In v1 it denotes the existing certified depth-two profile:
+compiled source and sink controllers, Gray-coded pointers, the existing fixed
+two-register synchronization paths, full/empty logic, and compiled
+register-bank storage. Those are not configurable-looking tokens over fixed
+internals; if Loom later supports another encoding or synchronizer depth, it
+gets a distinct certified profile or a real typed parameter.
+
+The system author does not have to restate that stock circuit on every
+connection. Nevertheless, the generated controller and storage `Design`s are
+public hardware definitions with stable names, and the pretty printer can show
+them in the same `hardware` syntax used for an island. The system command is
+therefore composition plus certified generation, not an architectural model
+that skips the implementation.
+
+A `system` containing an unrealized cross-clock channel is useful for logical
+semantics and proofs, but it is not an emit-ready hardware description. The
+emission gate must reject it. Adding a realization is the step that supplies
+the missing circuit and makes the structural artifact synthesizable.
+
+### System declarations
+
+The v1 system items are:
+
+```text
+clock clockName
+clocks asynchronous
+clocks unconstrained
+clocks left and right aligned
+clocks := $(ClockRel term)
+
+channel name : width depth depthTerm
+channel name : width depth depthTerm when full exchange
+channel name : width depth depthTerm when full refuse
+channel name := $(Chan term)
+
+island name on clockName where hardware-items
+island name on clockName module moduleName where hardware-items
+island name on clockName := $(Design term)
+island name on clockName extends $(Design term) where hardware-items
+island name on clockName module moduleName extends $(Design term) where hardware-items
+
+connect channel from sourceIsland to sinkIsland
+realize channel as async_fifo using registers
+realize channel with $(CertifiedDepthTwoBinding term)
+```
+
+Widths and depths are Lean `Nat` terms. `exchange` is the default and maps to
+`FullCoTickPolicy.exchange`; `refuse` maps to `refusePush`. The clock relation
+forms map directly to `ClockRel.asynchronous`, `.unconstrained`, and `.aligned`.
+The escape form admits a custom `ClockRel` without creating a second schedule
+language. Reset-release skew is already quantified by the channel refinement
+and is not a user declaration. The channel escape reuses an existing typed
+`Chan w`; the other forms generate one from the visible width, depth, and
+full-queue policy.
+
+Every named clock must be declared and used by at least one island. Island,
+clock, and channel names are checked for duplicates and empty names at their
+tokens. A connection must name one declared channel plus declared source and
+sink islands, and every channel is connected exactly once. The command reports
+both locations for duplicates and reports an unused declaration rather than
+silently dropping it from the emitted interface.
+
+An inline island body uses the same declarations, rules, expressions,
+statements, source locations, generated name lemmas, and teaching diagnostics
+as `hardware`. `extends` appends pretty declarations/rules to an existing
+ordinary `Design` before endpoint generation; it is the migration path for a
+large design such as LNP64mini. The plain `:=` form uses an existing `Design`
+unchanged except for the channel endpoints derived below. By default an inline
+island's emitted Design/module name is its island name, while `module` supplies
+an explicit user-owned name. An existing Design retains its name unless the
+optional module override is present. This distinction preserves literal RTL
+identity during migration without exposing structural CDC module names.
+
+### Connections generate endpoints
+
+`connect q from producer to consumer` is the single source of endpoint
+direction. After parsing all items, the command applies `q.withSource` to the
+producer island and `q.withSink` to the consumer island, then constructs the
+existing ordered `SystemBuilder.island` and `.connect` declarations. Users do
+not repeat `source q`/`sink q` inside island bodies and cannot drift endpoint
+direction away from the connection list.
+
+When several channels touch an island, endpoint transforms are folded in
+connection declaration order. Their generated coordinates are disjoint, but
+the order remains deterministic and is recorded in command metadata. The
+ordinary `SystemBuilder.check` remains authoritative: the earlier command
+diagnostics do not replace its fail-closed endpoint, name, and depth checks.
+
+The identifier after `system` is the Lean name of the generated checked
+`System`, not a CDC module name. For `system twoClock`, the public results are
+conceptually:
+
+```lean
+twoClock_q          : Chan 8
+twoClock_producer   : Design
+twoClock_consumer   : Design
+twoClock_builder    : SystemBuilder
+twoClock            : System
+twoClock_q_source_control : Design
+twoClock_q_sink_control   : Design
+twoClock_q_storage_writer : Design
+twoClock_q_storage_reader : Design
+twoClock_q_realization    : CertifiedDepthTwoBinding
+twoClock_certified        : CertifiedSystem twoClock
+twoClock_artifact         : CertifiedRealizedSystem ...
+```
+
+System-local public handles and final island designs use the system-name prefix
+to avoid collisions between several systems in one Lean namespace; inside the
+command their short architectural names remain `q`, `producer`, and `consumer`.
+The realization and its behavioral components are generated only when a
+realization is requested. Their exact public API should follow the existing
+binding structure rather than duplicating it, but it must provide stable access
+to every emitted behavioral `Design`. Base-island intermediates, endpoint
+transforms, lookup equalities, proof terms, ordered-coverage witnesses, and
+structural coordinates may use private generated names. All public and private
+generated names participate in collision and reserved-suffix checks.
+
+### Explicit and inspectable CDC realization
+
+`realize q as async_fifo using registers` selects the unconditional
+compiler-only depth-two route already closed by `CertifiedRealizedSystem`. It
+requires `q` to have depth two, obtains a `CertifiedDesign` for each final
+island, derives the `Chan.Refinement`, constructs the existing compiled
+controllers and register-bank storage, proves ordered coverage, and produces
+the exact `system.v` artifact. The wording names what is built: `portable` is a
+useful property of this realization, but it is not a circuit topology.
+
+The stock realization is inspectable from source and proof states. The exact
+command spelling is a Phase 7 decision, but the required experience is:
+
+```lean
+#show_hardware twoClock_q_source_control
+#show_hardware twoClock_q_sink_control
+#show_hardware twoClock_q_storage_writer
+```
+
+The first view should show ordinary hardware along these lines, derived from
+the actual `AsyncFifoDesign` rather than maintained as a second rendering:
+
+```lean
+hardware q_source_control where
+  input wire raw_read_gray : 2
+  output reg write_binary : 2
+  output reg write_gray : 2
+  reg read_gray_sync0 : 2
+  reg read_gray_sync1 : 2
+
+  rule synchronize_read_pointer := {
+    read_gray_sync0 <- raw_read_gray
+    read_gray_sync1 <- read_gray_sync0
+  }
+
+  -- The remaining flag and pointer rules are printed here too.
+```
+
+This display matters semantically: it makes the start-of-cycle behavior of the
+two synchronizer registers, the Gray transformation, and the full/empty logic
+available to review with the same tools as any handwritten `Design`. It must be
+possible to prove properties of these public components and emit them
+individually for debugging.
+
+This clause is convenience around existing certificates, not a new trusted
+generator. All behavioral CDC logic remains ordinary compiled `Design`s; the
+system renderer remains structural; the mechanical gate continues to reject
+handwritten behavioral CDC RTL; and exact artifact/axiom audits remain the
+release authority. Ordinary architecture-level goals should stay at the logical
+channel/system level. Explicit inspection, unfolding, or a goal about a
+realization component must instead reveal its pretty hardware, not conceal it
+behind an opaque backend constant.
+
+An expert-provided realization uses
+`realize q with $(binding)`. The term must carry the same channel refinement,
+component certification, coverage, and artifact obligations as the stock
+binding. Its controllers and storage can themselves be authored with
+`hardware` blocks and quotations, so replacing the stock implementation does
+not require dropping to raw constructors. This is the escape hatch for a real
+CDC architecture choice, not a way to bypass the emission gate.
+
+Optional FPGA RAM and ASIC SRAM storage remain evidence-layer choices with one
+named assumption each. Generic `Loom.Hw.Dsl` must not import target evidence or
+silently prefer a macro. A later, separate realization command may accept an
+explicit `AsyncQueueStorage.Binding` Lean term after the adapter from that
+binding to the artifact path is finalized; the pretty `system` syntax itself
+continues to describe the same technology-neutral channel. V1 ships the
+explicit register-backed asynchronous FIFO profile rather than freezing
+premature vendor syntax.
+
+### LNP64mini multiclock destination
+
+The production-scale telemetry system should reduce to the architecture it
+actually expresses:
+
+```lean
+system lnpMulticlock where
+  clock core_clk
+  clock observer_clk
+  clocks asynchronous
+
+  channel telemetry : 64 depth 2
+
+  island core on core_clk module lnp64mini_multiclock_core
+      extends $(Machines.Lnp64mini.design) where
+    rule publish_retire_pc :=
+      if telemetry.canSend then
+        send trace_rd_pc to telemetry
+
+  island observer on observer_clk module lnp64mini_retire_observer where
+    output reg observed_pc : 64
+    output reg observed_count : 64
+
+    rule consume :=
+      if telemetry.hasData then {
+        observed_pc <- telemetry.data
+        observed_count <- observed_count + 1
+        consume telemetry
+      }
+
+  connect telemetry from core to observer
+  realize telemetry as async_fifo using registers
+```
+
+The command may need a source-local certificate escape for an exceptionally
+large existing island when automatic kernel reduction exceeds normal limits,
+but that escape supplies a `CertifiedDesign` term for the final island. The
+ordinary system author does not assemble connection records, lookup proofs,
+coverage equations, or clock-rule proofs. The FIFO controls and storage remain
+named public component Designs, however; they are implementation hardware, not
+proof bureaucracy.
+
+### Multiclock proof and diagnostic surface
+
+The command records full-name metadata for islands and connections just as
+`hardware` records generated definitions. A fixed proof helper should support:
+
+```lean
+system_lift lnpMulticlock core using core_invariant
+```
+
+and lower to the existing named-island lookup plus `System.liftIsland` theorem.
+Generated lookup lemmas keep ordinary proofs out of `findIsland?` simplification
+boilerplate. Certified register views should likewise be derivable from an
+island name and typed register handle without manually reconstructing
+`RegSlot`, while retaining the existing fail-closed width/name resolution.
+
+Diagnostics teach both the architectural and realization boundaries:
+
+- a direct cross-island signal reference says to declare and connect a typed
+  channel;
+- a same-clock connection explains that it can lower synchronously, while a
+  cross-clock connection requires certified realization before emission;
+- an `async_fifo using registers` channel with depth other than two points at
+  the depth and states the currently certified implementation limit;
+- a missing realization on an emitted cross-clock channel says that a logical
+  channel is semantics, not a circuit, and offers the certified profile;
+- an island certificate failure points at the island body or supplied design;
+- a realization-component failure names and opens the source controller, sink
+  controller, or storage Design that failed, rather than calling it a backend
+  error;
+- a macro storage selection, once supported, displays its one named external
+  assumption rather than presenting it as a theorem.
+
 ## LNP64mini destination
 
 The following is a representative final-form excerpt based on the actual
@@ -423,6 +888,8 @@ open Loom.Hw
 
 def TEXT_BASE : Nat := 0x1000
 def CMD_QUANTUM : Nat := 72
+def READY : Nat := 1
+def FUTEX : Nat := 3
 
 hardware lnp64mini where
   input wire m_done : 1
@@ -555,31 +1022,37 @@ This is equality dispatch, not a promise of Verilog wildcards or parallel-case
 behavior. For this partial state list the default is mandatory; a case listing
 every value of its finite scrutinee may omit it.
 
-Parametric hardware remains Lean and crosses the boundary explicitly. For
-example, LNP64mini's generated per-thread wake action may remain:
-
-```lean
-def wakeAllApply : Act :=
-  (List.finRange NT).foldr
-    (fun i rest =>
-      Act.seq
-        (.ite (.and wakeEn (.eq (tstateRegs.rd i) (L2 3)))
-          (tstateRegs.set i (L2 1)) .skip)
-        rest)
-    Act.skip
-```
-
-and the pretty rule simply uses:
+LNP64mini's generated per-thread wake action should keep the hardware visible
+while Lean supplies the finite thread set:
 
 ```lean
 rule wake_threads :=
-  $stmt(wakeAllApply)
+  for i in $(List.finRange NT) generate {
+    if wakeEn & (tstate[i] == FUTEX) then
+      tstate[i] <- READY
+  }
 ```
 
-Balanced trees, `Fin`-generated banks, priority encoders, and reusable action
-builders therefore stay ordinary Lean. Scalar state machines, conditions,
-memory traffic, and assignments use the hardware notation. Both paths produce
-the same `Act` values.
+If the body is shared, it can instead be a quoted Lean function and remain
+pretty at its definition site:
+
+```lean
+def wakeOne (i : Fin NT) : Act :=
+  [hwstmt|
+    if wakeEn & (tstate[i] == FUTEX) then
+      tstate[i] <- READY
+  ]
+
+rule wake_threads :=
+  for i in $(List.finRange NT) generate
+    $stmt(wakeOne i)
+```
+
+Balanced trees, `Fin`-generated banks, priority encoders, recursion, and
+reusable builders therefore stay ordinary Lean, with their hardware leaves
+written as `[hwexpr| ...]` or `[hwstmt| ...]`. Scalar state machines,
+conditions, memory traffic, assignments, and generated bodies use hardware
+notation. Every mixture produces the same existing `Expr` and `Act` values.
 
 The current LNP64mini exports every scalar and `tstate` register. The excerpt
 reflects that existing interface rather than prescribing that every future
@@ -642,8 +1115,8 @@ the new aggregate import.
 2. Record omitted constructs and their reason: ambiguous signedness, missing
    truthiness, dynamic slices, blocking assignment, or absent core semantics.
 3. Freeze examples for the tutorial, flat `else if` chains, nested brace
-   blocks, expression precedence, `case`, explicit memory ports, and both
-   escape categories.
+   blocks, expression precedence, `case`, `for ... generate`, explicit memory
+   ports, quotations inside Lean functions, and both escape categories.
 4. Decide ASCII spellings for signed/unsigned comparison and bitwise operators
    before any public parser surface ships.
 5. Put the frozen examples in front of several junior hardware engineers with
@@ -671,6 +1144,10 @@ the new aggregate import.
    depend on parser longest-match for branch ownership.
 8. Prototype `case` lowering and diagnostics, but allow its public shipment to
    follow the scalar tutorial surface.
+9. Add `actFor` and `for i in $(list) generate body`, accepting ordered
+   `List α` only and elaborating the body under a hygienic Lean binder.
+10. Support `[hwexpr| ...]` and `[hwstmt| ...]` under ordinary Lean lambdas,
+    maps, folds, and definitions without requiring command-generated metadata.
 
 ### Phase 2: scalar `hardware` command
 
@@ -680,11 +1157,13 @@ the new aggregate import.
    only as the design's string name.
 4. Elaborate optional register initializers against expected `BitVec w` and
    preserve their values in `RegDecl.init`.
-5. Preserve source locations with `withRef` and declaration ranges.
-6. Implement collision checks across user names, generated names, reserved
+5. Elaborate `output wire` values at expected `Expr w`, generate their readable
+   expression definitions, and lower them only through `addCombOutput`.
+6. Preserve source locations with `withRef` and declaration ranges.
+7. Implement collision checks across user names, generated names, reserved
    suffixes, and the current environment.
-7. Generate public `_name` lemmas and reserve their names.
-8. Add `Loom.Hw.Dsl` as the opt-in aggregate. Existing imports see no syntax or
+8. Generate public `_name` lemmas and reserve their names.
+9. Add `Loom.Hw.Dsl` as the opt-in aggregate. Existing imports see no syntax or
    delaborator changes.
 
 ### Phase 3: proof presentation
@@ -706,6 +1185,8 @@ then golden diagnostic tests for:
 - sequencing and empty/nested brace blocks;
 - every precedence boundary;
 - writes to inputs;
+- writes to combinational outputs, and same-cycle evaluation of valid
+  `output wire` observations without changing `Design.cycle`;
 - target/RHS and splice width mismatches;
 - register reset-value width mismatches;
 - invalid widths and dynamic slice attempts;
@@ -717,6 +1198,13 @@ then golden diagnostic tests for:
 - design-local signal precedence over an imported constant;
 - ambiguity between viable non-signal candidates, plus fully qualified
   disambiguation;
+- empty, singleton, and nested `for ... generate` bodies;
+- generated write ordering, including two iterations writing the same target;
+- a hygienic generate binder that shadows an imported non-signal name without
+  capture, and rejection when it collides with a design-local signal;
+- static `Fin` family indexing versus dynamic `Expr` indexing, including the
+  informational cost diagnostic;
+- quotations embedded in Lean functions, maps, folds, and reusable actions;
 - duplicate registers, inputs, rules, and cross-category names;
 - collisions with `design`, `declarations`, generated suffixes, and an existing
   Lean declaration;
@@ -762,10 +1250,61 @@ ensure ordinary `Reg.rd` terms outside wrappers are not collapsed.
 3. Lower initialization and implementation-policy modifiers into the existing
    `Declarations.addMem` fields without weakening emission checks.
 4. Add family indexing, generated families, and family initialization.
-5. Test multiple write sites, port ordering, sync-read obligations, reset
+5. Make static `Fin` and dynamic `Expr` family indices lower through the
+   existing `RegArray` operations with no duplicated semantics.
+6. Test multiple write sites, port ordering, sync-read obligations, reset
    images, non-power-of-two depths, and policy diagnostics.
 
-### Phase 7: staged LNP64mini conversion
+### Phase 7: first-class systems and certified multiclock realization
+
+1. Add channel observations/statements to `hwexpr`/`hwstmt`, lowering only to
+   `Chan.canEnq`, `canDeq`, `deq`, `enq`, and `pop`.
+2. Implement the `system` grammar for clocks, clock relations, channels,
+   islands, connections, and an explicit per-channel realization clause.
+3. Reuse the `hardware` item elaborators for inline islands and add the
+   `:= Design` and `extends Design where` forms without a second island AST.
+4. Derive source/sink endpoint transforms solely from connections, with stable
+   connection-order folding and source-local direction diagnostics.
+5. Generate the checked `SystemBuilder`/`System` and preserve the existing
+   `SystemBuilder.check` as the authoritative structural gate.
+6. Implement `async_fifo using registers` as the named profile for the existing
+   compiled depth-two controllers, fixed synchronization paths, Gray logic, and
+   register-bank storage. Do not advertise fixed details as configurable
+   parameters.
+7. Give the realization and every behavioral controller/storage `Design`
+   stable public names. Keep only proof plumbing, structural coordinates, and
+   intermediate endpoint transforms private.
+8. Add an inspection command that renders those component Designs through the
+   pretty delaborator, plus `realize channel with $(binding)` for an expert
+   certified replacement.
+9. Generate island certificates, channel refinements, ordered coverage, and
+   `CertifiedRealizedSystem` through the existing certificate types and gate.
+10. Add fixed `system_lift` and certified-view helpers backed by full-name
+   metadata and the existing lookup/slot theorems.
+11. Keep ordinary architecture-level delaboration at the logical
+   system/channel level, while explicit inspection and component-level goals
+   show controller, synchronizer, Gray, flag, and storage hardware readably.
+12. Test the small `TwoClock` and production LNP64mini telemetry systems for
+   structural equality with their handwritten `System`s, identical crossing
+   inventories, certified replay agreement, exact `system.v` bytes, and the
+   exact axiom closure `[propext, Classical.choice, Quot.sound]`.
+13. Test each public realization component against the existing
+    `AsyncFifoDesign`/storage Design and assert that its individually emitted
+    RTL is the hardware included in the final structural artifact.
+14. Run the mechanical boundary gate and assert that no uncertified handwritten
+    behavioral CDC RTL can enter through the new command. Leave FPGA/ASIC
+    storage syntax deferred until the explicit evidence binding has an artifact
+    adapter.
+
+System golden diagnostics cover duplicate/unused clocks, channels, and
+islands; missing or repeated connections; wrong endpoint direction; undeclared
+clock use; malformed channel width/depth/policy; a missing realization;
+non-depth-two `async_fifo using registers`; island or realization-component
+certification failure; incomplete ordered binding coverage; and direct
+cross-island signal references. Same-clock systems also remain tested against
+ordinary synchronous `System.elaborate`.
+
+### Phase 8: staged LNP64mini conversion
 
 Convert by coherent blocks rather than rewriting `Core.lean` at once:
 
@@ -775,7 +1314,7 @@ Convert by coherent blocks rather than rewriting `Core.lean` at once:
 4. cache latch/fill rules and explicit memory ports;
 5. small FSM arms;
 6. command handling and larger dispatch trees;
-7. register families, thread tables, and TLB structures;
+7. register families, generated thread-table actions, and TLB structures;
 8. remaining rules and declaration assembly.
 
 After every block, require equality of the lowered `Design` or an equivalent
@@ -785,10 +1324,13 @@ LNP64mini behavioral and board-facing regression suite. Generated Verilog
 should remain byte-identical whenever only authoring syntax changed; any
 difference stops the migration for review.
 
-Do not mechanically force balanced priority trees, large `List.finRange`
-builders, or reusable parametric actions into statement syntax. Keep those as
-Lean definitions and splice them. The success criterion is readable hardware,
-not eliminating Lean from a Lean EDSL.
+Do not mechanically force balanced reductions, priority trees, recursion, or
+host-side algorithms into new statement syntax. Use ordinary Lean composition
+with pretty quotations at the hardware leaves. Conversely, use
+`for ... generate` when a `List.finRange` fold merely replicates a visible
+action body; hiding that body in a raw constructor fold defeats the readability
+goal. The success criterion is a clear boundary, not eliminating Lean from a
+Lean EDSL or hiding hardware behind it.
 
 ## Completion criteria
 
@@ -819,3 +1361,23 @@ The pretty layer is complete when:
 11. Bare identifiers follow the documented signal-first, unique-candidate
     resolution rule, and every ambiguous non-signal use fails before it can
     select the wrong netlist expression.
+12. Parameterized hardware keeps its generated body visible through
+    quotations and `for ... generate`; Lean maps, folds, functions, and
+    recursion compose with those quotations while lowering to the unchanged
+    finite `Expr`/`Act` core.
+13. The small two-clock example and LNP64mini telemetry system use first-class
+    clocks, islands, logical channels, and connections while lowering to their
+    existing checked `System`/`CertifiedSystem` values and exact artifacts.
+14. The named register-backed asynchronous FIFO realization generates the
+    complete compiled depth-two binding, preserves the exact `system.v` bytes
+    and axiom closure, and still passes the gate rejecting uncertified
+    handwritten behavioral CDC RTL.
+15. Architecture syntax does not force every system author to restate Gray
+    logic, synchronizer stages, FIFO controllers, flag equations, and storage
+    ports. The realization choice is nevertheless explicit, and every emitted
+    behavioral component is a stable public, inspectable, provable, replaceable
+    `Design`; only proof plumbing, structural coordinates, wrappers, and
+    constraints may remain private.
+16. Combinational outputs remain typed pure observations, and optional
+    FPGA/ASIC storage remains an explicit evidence-layer choice with its named
+    assumption rather than a default or hidden theorem.
