@@ -1,17 +1,19 @@
 # Pretty Loom hardware DSL
 
-This document is the implementation plan for a readable, Verilog-shaped
+This document is the implementation plan for a readable, beginner-friendly
 authoring layer over Loom's existing hardware EDSL. The destination is concise
 hardware code that remains an ordinary shallow embedding: syntax elaborates to
 the current `Expr`, `Act`, `Reg`, `Mem`, `Declarations`, and `Design` values,
 and the kernel, semantics, compiler, verified simulators, and emission boundary
 do not acquire a second representation.
 
-The purpose is not to accept Verilog. It is to make Loom hardware immediately
-legible to a Verilog engineer while preserving the places where Loom's model is
-deliberately different: rules instead of event controls, nonblocking writes,
-explicit signedness, typed widths, and ordinary Lean as the parameterization
-language.
+The purpose is not to accept or imitate Verilog. It is to make cycle semantics
+hard to misread, including for a junior hardware engineer. Hardware nouns and
+concepts remain familiar—inputs, outputs, registers, memories, rules, widths,
+ports, cycles, bit selects, and slices—but Verilog punctuation survives only
+when its familiar reading is exactly Loom's meaning. Loom uses rules instead
+of event controls, one explicit next-cycle assignment, explicit signedness,
+typed widths, and ordinary Lean as the parameterization language.
 
 ## Outcome
 
@@ -25,12 +27,14 @@ namespace Machines.Tutorial.SatCounter
 open Loom.Hw
 
 hardware satcounter where
-  output reg [7:0] count
-  output reg [0:0] sat
+  output reg count : 8
+  output reg sat : 1
 
   rule tick :=
-    if (count == 255) sat <= 1;
-    else count <= count + 1;
+    if count == 255 then
+      sat <- 1
+    else
+      count <- count + 1
 
 end Machines.Tutorial.SatCounter
 ```
@@ -79,15 +83,18 @@ or produce RTL expectations.
 
 The authoring layer obeys one rule:
 
-> Every hardware token corresponds to one unambiguous core constructor. A
-> token that would require choosing among plausible semantics is omitted until
-> the core represents that choice explicitly.
+> Every token's obvious reading must be its true cycle-level meaning. Each
+> hardware operation corresponds to one unambiguous core constructor; a token
+> that would require choosing among plausible semantics is omitted until the
+> core represents that choice explicitly.
 
 In particular:
 
 1. Every construct lowers to the existing core. No new expression, action, or
    transition semantics lives only in the parser or elaborator.
-2. Assignment is nonblocking `Act.write`; there is no blocking `=` statement.
+2. `<-` is the only state assignment and lowers to next-cycle `Act.write`.
+   There is no blocking `=` statement and no borrowed `<=` token suggesting a
+   missing alternative assignment form. `:=` remains definition/reset syntax.
 3. Rules replace `always @(posedge clk)`. There are no sensitivity lists.
 4. Numeric literals are unsized and acquire their width from the expected
    `Expr w` type. Loom does not add a second width declaration with `8'd255`.
@@ -102,7 +109,7 @@ In particular:
    `width`. A dynamic part select is rejected at its source span with a direct
    diagnostic.
 8. Memory write-port indices remain explicit. They participate in Loom's
-   compilation obligations and must not be hidden merely to resemble Verilog.
+   compilation obligations and must not be hidden for visual simplicity.
 9. Command-time checks improve locations and messages but never replace core
    validation or the fail-closed emission gate. Programmatically constructed
    designs retain the same authoritative checks.
@@ -131,36 +138,90 @@ The initial `hwexpr` audit mirrors the current `Expr` constructors:
 - equality, unsigned less-than, and signed less-than;
 - ternary mux;
 - static slice and bit select;
-- concatenation;
-- zero- and sign-extension, using syntax that makes the target width explicit;
+- concatenation as `high ++ low`;
+- `zext value to width` and `sext value to width`;
 - memory reads;
 - parentheses;
 - `$(term)` for an ordinary Lean term expected to elaborate as `Expr w`.
 
+A bare identifier is elaborated using the expected `Expr w` type. It may be a
+`Reg w` or `Input w` handle (read through its coercion), an existing `Expr w`
+helper, or a `Nat` constant such as `S_F0`, which is lifted to `Expr.lit` at the
+expected width. This is what lets state-machine code say `st == S_F0` without
+an annotation or escape while retaining width checking. Arbitrary Lean
+computation still uses `$(term)`.
+
+Resolution has a fixed shadowing rule. Inside a `hardware` command, a
+design-local signal wins over every non-signal candidate with the same short
+name. Otherwise the elaborator collects the reachable `Expr w` and `Nat`
+candidates; exactly one viable candidate is accepted, while two or more are an
+ambiguity error at the identifier. Fully qualified names and `$(term)` remain
+available to select an ordinary Lean declaration explicitly. The command may
+emit an informational note when a design-local signal shadows a viable
+imported constant, but it must never silently choose between two non-signal
+candidates. Outside a command wrapper there is no design-local table, so the
+same unique-candidate rule applies without the signal-priority step.
+
 The initial `hwstmt` forms are:
 
 ```lean
-r <= expr;
-mem[port n, addr] <= expr;
-if (cond) statement
-if (cond) statement else statement
-begin statement* end
-$stmt(term);
+r <- expr
+mem[port n, addr] <- expr
+if cond then branch else branch
+if cond then branch else if cond then branch else branch
+if cond then branch
+{ statement* }
+case expr of
+| constant => branch
+| default => branch
+skip
+$stmt(term)
 ```
 
-`$stmt(term);` expects `Act`. It is deliberately distinct from `$(term)`,
+`$stmt(term)` expects `Act`. It is deliberately distinct from `$(term)`,
 which expects `Expr w`; expression and statement escapes never blur.
+
+Braces delimit multi-statement blocks. Newlines and indentation are encouraged
+for readability but are not semantic, so v1 does not require a custom
+whitespace-sensitive parser. `if` owns an entire `else if` chain. A branch is
+an assignment, block, `case`, `skip`, or statement escape—not an unbraced
+nested `if`. A genuinely nested conditional therefore uses braces, and an
+`else` cannot silently attach to the wrong `if`. An `if` without `else` lowers
+its absent branch to `Act.skip`.
+
+`case` matches equality against width-checked compile-time constants and lowers
+to a right-nested `Act.ite`; it has no `casez`/`casex`, wildcard, parallel, or
+priority modes. Labels are normalized to their `BitVec w` values before
+checking, so two different Lean terms that denote the same value are still a
+duplicate. A duplicate label is a command-time error pointing at both arms:
+the later arm would otherwise be silently dead.
+
+`default` is required unless the distinct labels cover all `2 ^ w` values of
+the scrutinee. It may be omitted for provably total coverage. If a total case
+also supplies `default`, the command accepts it but warns that the branch is
+unreachable; a non-final default remains an error. Exhaustiveness is computed
+from the normalized finite label set, never guessed from source spelling.
+
+This construct is v1-adjacent: it should land before the FSM-heavy LNP64mini
+migration even if the scalar tutorial ships without it. Its release is also
+gated on proof ergonomics: right-nested `ite` is semantically simple but may
+produce poor invariant goals for a large state machine. Phase 4 must test the
+ordinary `simp`/case-splitting workflow on an FSM-sized example. If it produces
+an impractical split tower, the case elaborator metadata should support a
+generated per-rule split lemma or tactic; the public surface must not ship on
+the assumption that parsing ergonomics imply proof ergonomics.
 
 Purely structural forms lower with macros:
 
 ```text
 expression operator  -> the corresponding Expr constructor
 if                    -> Act.ite
-begin/end sequence    -> right-associated Act.seq ending in Act.skip
+brace sequence        -> right-associated Act.seq ending in Act.skip
+case                   -> a source-ordered, right-nested Act.ite chain
 ```
 
 Assignments and escapes use term elaborators rather than translation macros.
-The assignment elaborator first elaborates the target, obtains `w` from its
+The `<-` elaborator first elaborates the target, obtains `w` from its
 actual `Reg w` type, then elaborates the RHS with expected type `Expr w`. This
 works for command-generated handles, handwritten handles, and indexed handles.
 It also permits diagnostics at the user's tokens:
@@ -216,21 +277,29 @@ in v1.
 The scalar productions are:
 
 ```text
-input wire [hi:0] name
-output reg [hi:0] name
-output reg [hi:0] name := reset-value
-reg [hi:0] name
-reg [hi:0] name := reset-value
+input wire name : width
+output reg name : width
+output reg name : width := reset-value
+reg name : width
+reg name : width := reset-value
 ```
 
-Only `[N:0]` is accepted initially. The low-bound token receives a targeted
-error for any other value. `input reg` and `output wire` are not accepted:
-the former lies about writability, while combinational outputs require their
-own core `CombOutput`-shaped production rather than pretending they are state.
-An initializer is declaration syntax, not `hwexpr`: it elaborates with expected
+The width position is a Lean `term`, elaborated as `Nat`, rather than a
+Verilog-style `[hi:0]` range. Consequently `reg pc : 64`, `reg idx : addrW`,
+and a computed width all use the same production; parametric widths do not
+need a later grammar extension. Widths must reduce far enough to construct the
+indexed handle and declaration, and a zero width receives a direct warning or
+error according to the core policy established in Phase 0.
+
+`input reg` and `output wire` are not accepted: the former lies about
+writability, while combinational outputs require their own core
+`CombOutput`-shaped production rather than pretending they are state. An
+initializer is declaration syntax, not `hwexpr`: it elaborates with expected
 type `BitVec width` and becomes the `RegDecl.init` value. Numeric literals use
-that expected width; a computed reset image uses an explicit Lean escape. This
-keeps reset values separate from expressions over pre-cycle state.
+that expected width, and a bare `Nat` constant is lifted with `BitVec.ofNat`,
+so `reg pc : 64 := TEXT_BASE` needs no annotation. An arbitrary computed reset
+image uses an explicit Lean escape. This keeps reset values separate from
+expressions over pre-cycle state.
 
 The command creates handles, rule bodies, `declarations`, and `design` in the
 current namespace. It uses `withRef` and declaration ranges based on the user
@@ -250,6 +319,40 @@ already in the current environment. When two user tokens collide, the error
 identifies both locations. Two `hardware` commands in one namespace continue
 to collide on `design`, just as two handwritten designs do today, but the
 second command reports that fact directly.
+
+### Teaching cycle semantics
+
+The syntax makes state updates look distinct from Lean definitions, but it
+cannot by itself prevent the most common software-shaped misconception:
+
+```lean
+rule step := {
+  a <- b
+  c <- a
+}
+```
+
+Here `c` receives the start-of-cycle value of `a`, not the value assigned on
+the preceding line. The command already has the statement tree and can derive
+read/write sets, so the DSL should provide an enabled-by-default informational
+lint at the second `a`:
+
+```text
+reads observe the start-of-cycle value; the write to `a` above takes effect
+next cycle
+```
+
+The same analysis should explain multiple writes rather than reject them.
+Within a rule, and across Loom's ordered rule list, the last executed write
+wins. A diagnostic can list the earlier and later source locations and the
+rule order. This is particularly important for intentional patterns such as
+LNP64mini's `pulse_defaults`, whose early default writes are overridden later.
+
+These findings are informational lints, not proof obligations or semantic
+checks. Intentional sites need a narrow suppression mechanism, and generated
+or highly parametric `$stmt(...)` actions may fall back to the core footprint
+analysis instead of pretending the surface command can see through arbitrary
+Lean. The authoritative semantics and compiler checks remain unchanged.
 
 ### Generated proof support
 
@@ -322,95 +425,94 @@ def TEXT_BASE : Nat := 0x1000
 def CMD_QUANTUM : Nat := 72
 
 hardware lnp64mini where
-  input wire [0:0]  m_done
-  input wire [63:0] m_rdata
-  input wire [0:0]  m_busy
-  input wire [0:0]  cmd_valid
-  input wire [6:0]  cmd_idx
-  input wire [31:0] cmd_data
-  input wire [0:0]  hold
+  input wire m_done : 1
+  input wire m_rdata : 64
+  input wire m_busy : 1
+  input wire cmd_valid : 1
+  input wire cmd_idx : 7
+  input wire cmd_data : 32
+  input wire hold : 1
 
-  output reg [4:0]  cur
-  output reg [63:0] pc := $(BitVec.ofNat 64 TEXT_BASE)
-  output reg [31:0] retire
-  output reg [4:0]  st
+  output reg cur : 5
+  output reg pc : 64 := TEXT_BASE
+  output reg retire : 32
+  output reg st : 5
 
-  output reg [0:0]  dmem_we
-  output reg [8:0]  dmem_a
-  output reg [63:0] dmem_wd
-  output reg [63:0] dmem_rd
+  output reg dmem_we : 1
+  output reg dmem_a : 9
+  output reg dmem_wd : 64
+  output reg dmem_rd : 64
 
-  output reg [0:0]  core_rd
-  output reg [0:0]  core_wr
-  output reg [31:0] core_addr
-  output reg [63:0] core_wdata
+  output reg core_rd : 1
+  output reg core_wr : 1
+  output reg core_addr : 32
+  output reg core_wdata : 64
 
-  output reg [0:0]  gp_rd
-  output reg [0:0]  gp_wr
-  output reg [0:0]  lr_req
-  output reg [0:0]  sc_req
+  output reg gp_rd : 1
+  output reg gp_wr : 1
+  output reg lr_req : 1
+  output reg sc_req : 1
 
-  output reg [3:0]  trace_wp
-  output reg [3:0]  trace_sel
-  output reg [0:0]  trace_hit
-  output reg [63:0] trace_in_pc
-  output reg [63:0] trace_in_wb
-  output reg [63:0] trace_rd_pc
-  output reg [63:0] trace_rd_wb
+  output reg trace_wp : 4
+  output reg trace_sel : 4
+  output reg trace_hit : 1
+  output reg trace_in_pc : 64
+  output reg trace_in_wb : 64
+  output reg trace_rd_pc : 64
+  output reg trace_rd_wb : 64
 
-  output reg [31:0] quantum
-  output reg [31:0] qctr
-  output reg [7:0]  cur_dom
+  output reg quantum : 32
+  output reg qctr : 32
+  output reg cur_dom : 8
 
-  sync memory [63:0] dmem [0:511]
-  sync memory [63:0] rf [0:1023]
-  sync memory [7:0]  uart_mem [0:255]
-  memory [63:0] trace_pc [0:15]
-  memory [63:0] trace_wb [0:15]
-  memory [7:0]  tdom [0:31]
+  sync memory dmem : 64 [512]
+  sync memory rf : 64 [1024]
+  sync memory uart_mem : 8 [256]
+  memory trace_pc : 64 [16]
+  memory trace_wb : 64 [16]
+  memory tdom : 8 [32]
 
   rule latches :=
-    begin
-      if (dmem_we)
-        dmem[port 0, dmem_a] <= dmem_wd;
+    {
+      if dmem_we then
+        dmem[port 0, dmem_a] <- dmem_wd
 
-      dmem_rd     <= dmem[dmem_a];
-      trace_rd_pc <= trace_pc[trace_sel];
-      trace_rd_wb <= trace_wb[trace_sel];
-    end
+      dmem_rd     <- dmem[dmem_a]
+      trace_rd_pc <- trace_pc[trace_sel]
+      trace_rd_wb <- trace_wb[trace_sel]
+    }
 
   rule trace_ring :=
-    if (trace_hit)
-      begin
-        trace_pc[port 0, trace_wp] <= trace_in_pc;
-        trace_wb[port 0, trace_wp] <= trace_in_wb;
-        trace_wp <= trace_wp + 1;
-      end
+    if trace_hit then {
+      trace_pc[port 0, trace_wp] <- trace_in_pc
+      trace_wb[port 0, trace_wp] <- trace_in_wb
+      trace_wp <- trace_wp + 1
+    }
 
   rule pulse_defaults :=
-    begin
-      dmem_we   <= 0;
-      core_rd   <= 0;
-      core_wr   <= 0;
-      gp_rd     <= 0;
-      gp_wr     <= 0;
-      lr_req    <= 0;
-      sc_req    <= 0;
-      trace_hit <= 0;
-    end
+    {
+      dmem_we   <- 0
+      core_rd   <- 0
+      core_wr   <- 0
+      gp_rd     <- 0
+      gp_wr     <- 0
+      lr_req    <- 0
+      sc_req    <- 0
+      trace_hit <- 0
+    }
 
   rule quantum_tick :=
-    if (cmd_valid & (cmd_idx == $(CMD_QUANTUM : Expr 7)))
-      qctr <= cmd_data;
-    else if (cmd_valid & (cmd_idx == 13) & (cmd_data[0:0] == 1))
-      qctr <= quantum;
-    else if ($(preemptAtF0))
-      qctr <= quantum;
-    else if ($(qTick))
-      qctr <= qctr - 1;
+    if cmd_valid & (cmd_idx == CMD_QUANTUM) then
+      qctr <- cmd_data
+    else if cmd_valid & (cmd_idx == 13) & (cmd_data[0] == 1) then
+      qctr <- quantum
+    else if preemptAtF0 then
+      qctr <- quantum
+    else if qTick then
+      qctr <- qctr - 1
 
   rule observe_domain :=
-    cur_dom <= $(tdomRd cur);
+    cur_dom <- tdom[cur]
 
 end Machines.Lnp64mini
 ```
@@ -419,25 +521,39 @@ An FSM arm should become recognizable hardware instead of a constructor tree:
 
 ```lean
 rule fetch_boundary :=
-  if (st == $(S_F0 : Expr 5))
-    if (bus_req)
-      st <= $(S_PAUSE);
-    else if ($(curPoisoned))
-      running <= 0;
-    else if ($(preemptFire))
-      begin
-        cur <= next_ready;
-        pc <= tpc[next_ready];
-      end
-    else if ($(sentinelPc))
-      st <= $(S_GRET);
-    else
-      begin
-        ic_tag_q  <= ic_tag[ic_idx];
-        ic_data_q <= ic_data[ic_idx];
-        st <= $(S_IC);
-      end
+  if st == S_F0 then {
+    if bus_req then
+      st <- S_PAUSE
+    else if curPoisoned then
+      running <- 0
+    else if preemptFire then {
+      cur <- next_ready
+      pc  <- tpc[next_ready]
+    }
+    else if sentinelPc then
+      st <- S_GRET
+    else {
+      ic_tag_q  <- ic_tag[ic_idx]
+      ic_data_q <- ic_data[ic_idx]
+      st        <- S_IC
+    }
+}
 ```
+
+State dispatch can use the deliberately small `case` form once it lands:
+
+```lean
+rule fsm :=
+  case st of
+  | S_F0 => $stmt(s_f0_body)
+  | S_IC => $stmt(s_ic_body)
+  | S_EX => $stmt(s_ex_body)
+  | default => skip
+```
+
+This is equality dispatch, not a promise of Verilog wildcards or parallel-case
+behavior. For this partial state list the default is mandatory; a case listing
+every value of its finite scrutinee may omit it.
 
 Parametric hardware remains Lean and crosses the boundary explicitly. For
 example, LNP64mini's generated per-thread wake action may remain:
@@ -457,7 +573,7 @@ and the pretty rule simply uses:
 
 ```lean
 rule wake_threads :=
-  $stmt(wakeAllApply);
+  $stmt(wakeAllApply)
 ```
 
 Balanced trees, `Fin`-generated banks, priority encoders, and reusable action
@@ -487,15 +603,15 @@ large migration, not improvised during it.
 A candidate readable surface is:
 
 ```lean
-sync memory [63:0] rf [0:1023]
-memory [63:0] trace_pc [0:15]
-output reg [31:0] tlb_base [8]
+sync memory rf : 64 [1024]
+memory trace_pc : 64 [16]
+output reg tlb_base : 32 [8]
 ```
 
 The final productions must determine without ambiguity:
 
 - memory address width and data width;
-- logical depth and whether non-power-of-two depth is permitted;
+- logical depth, the power-of-two restriction, and its diagnostic;
 - reset image expressions;
 - `syncRead` policy;
 - `ackInit` policy;
@@ -503,6 +619,12 @@ The final productions must determine without ambiguity:
 - exported versus internal register families;
 - the generated Lean handle names and physical signal base names;
 - explicit write-port indices at every memory write.
+
+The current `Mem aw dw` represents exactly `2 ^ aw` addresses and carries no
+independent depth. Therefore the first memory declaration syntax accepts only
+power-of-two depths and derives `aw`; it rejects any other depth with an error
+that explains the core limitation. Arbitrary logical depths require a core
+representation decision first, not rounding hidden in the grammar.
 
 The declaration syntax must not pretend an implementation policy is a
 behavioral difference. For example, `sync` above means Loom's declared
@@ -519,20 +641,36 @@ the new aggregate import.
 1. Audit every `Expr` and `Act` constructor and write the syntax-to-core table.
 2. Record omitted constructs and their reason: ambiguous signedness, missing
    truthiness, dynamic slices, blocking assignment, or absent core semantics.
-3. Freeze examples for the tutorial, dangling `else`, nested `begin` blocks,
-   expression precedence, explicit memory ports, and both escape categories.
+3. Freeze examples for the tutorial, flat `else if` chains, nested brace
+   blocks, expression precedence, `case`, explicit memory ports, and both
+   escape categories.
 4. Decide ASCII spellings for signed/unsigned comparison and bitwise operators
    before any public parser surface ships.
+5. Put the frozen examples in front of several junior hardware engineers with
+   no explanation and ask them to narrate the cycle behavior. Treat every
+   plausible misreading as syntax or diagnostic evidence, not user failure.
+6. Settle zero-width policy and the exact distinction between declaration
+   reset values and runtime expressions. Freeze the `case` rules above:
+   normalized duplicate rejection, finite exhaustiveness, optional default
+   only for total coverage, and a dead-default warning.
+7. Freeze identifier resolution examples covering a design-local signal that
+   shadows an imported constant, two viable non-signal candidates, and an
+   explicit fully qualified disambiguation.
 
 ### Phase 1: wrappers and scalar expression/statement syntax
 
 1. Add a syntax module that imports only the existing authoring core.
 2. Declare `hwexpr` and `hwstmt` plus `[hwexpr| ...]` and `[hwstmt| ...]`.
 3. Implement pure constructor lowering with macros.
-4. Implement assignment and escape elaborators with expected-type propagation.
+4. Implement `<-`, bare-identifier/literal lifting, and escape elaborators with
+   expected-type propagation.
 5. Add `Input`, `Input.rd`, its coercion, and `addWireInput` additively.
 6. Test that an input cannot reach `Reg.set` even when the friendly diagnostic
    is bypassed.
+7. Implement brace blocks and the structural flat `else if` grammar; do not
+   depend on parser longest-match for branch ownership.
+8. Prototype `case` lowering and diagnostics, but allow its public shipment to
+   follow the scalar tutorial surface.
 
 ### Phase 2: scalar `hardware` command
 
@@ -564,18 +702,40 @@ the new aggregate import.
 Add positive elaboration and structural equality tests for every production,
 then golden diagnostic tests for:
 
-- dangling `else`, asserting nearest-`if` association;
-- sequencing and empty/nested `begin` blocks;
+- flat `else if` ownership and rejection of an unbraced nested `if` branch;
+- sequencing and empty/nested brace blocks;
 - every precedence boundary;
 - writes to inputs;
 - target/RHS and splice width mismatches;
 - register reset-value width mismatches;
-- nonzero slice lows and dynamic slice attempts;
+- invalid widths and dynamic slice attempts;
+- non-exhaustive `case` without a default;
+- exhaustive `case` without a default (accepted) and with a dead default
+  (warning);
+- duplicate `case` labels both textually and after normalization;
+- non-final default and a pattern of the wrong width;
+- design-local signal precedence over an imported constant;
+- ambiguity between viable non-signal candidates, plus fully qualified
+  disambiguation;
 - duplicate registers, inputs, rules, and cross-category names;
 - collisions with `design`, `declarations`, generated suffixes, and an existing
   Lean declaration;
 - declarations after the first rule;
 - unsupported or ambiguous operator spellings.
+
+Semantic teaching diagnostics receive their own golden tests:
+
+- a register written and then read later in the same rule;
+- one register written more than once in a rule;
+- one register written by several ordered rules;
+- suppression at an intentional site without suppressing other findings.
+
+Proof-shape tests lower an FSM-sized `case` and exercise the standard invariant
+workflow with the tactics used elsewhere in Loom. They record goal count,
+nesting, and whether branch hypotheses retain recognizable case labels. `case`
+does not graduate from v1-adjacent status until this is usable. If ordinary
+splitting is not sane, add and test per-rule case-split metadata/lemmas before
+the LNP64mini FSM migration; do not leave that repair to individual proofs.
 
 Round-trip tests parse each supported expression and action, delaborate it,
 reparse the wrapper, and compare the lowered core term. Separate negative tests
@@ -649,3 +809,13 @@ The pretty layer is complete when:
 8. Full LNP64mini migration preserves the existing design and emitted RTL, or
    explicitly identifies and reviews any intentional semantic change rather
    than hiding it inside syntax conversion.
+9. Cold-reading trials with junior hardware engineers find no recurring
+   incorrect interpretation of assignment timing, branch ownership, widths,
+   signedness, or memory-port behavior; any recurring misreading is addressed
+   in syntax or a source-local teaching diagnostic before declaring v1 stable.
+10. `case` rejects normalized duplicate labels, handles exhaustive/default
+    behavior as specified, and has a tested proof workflow on an FSM-sized
+    rule rather than merely acceptable parser output.
+11. Bare identifiers follow the documented signal-first, unique-candidate
+    resolution rule, and every ambiguous non-signal use fails before it can
+    select the wrong netlist expression.
