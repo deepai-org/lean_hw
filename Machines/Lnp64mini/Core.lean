@@ -2389,13 +2389,20 @@ def s_ex_body : Act :=
 
 def s_ex : Expr 1 × Act := stArm S_EX  s_ex_body
 
-def s_l0 : Expr 1 × Act := stArm S_L0  (stReg.set (L5 S_L1))
+def s_l0 : Expr 1 × Act := stArm S_L0 [hwstmt| stReg <- $(L5 S_L1)]
 
 /-- S_L1: load-wb (rf in funnel) or store commit; then advance. -/
 def s_l1 : Expr 1 × Act := stArm S_L1
-  (actSeq [.ite (.not mem_is_store) .skip
-            (actSeq [dmemWeReg.set (L1 1), dmemAReg.set st_widx, dmemWdReg.set st_merge]),
-           stepPc, retireInc, goF0])
+  [hwstmt| {
+    if ~mem_is_store then skip else {
+      dmemWeReg <- 1,
+      dmemAReg <- st_widx,
+      dmemWdReg <- st_merge
+    },
+    $stmt(stepPc),
+    $stmt(retireInc),
+    $stmt(goF0)
+  }]
 
 /-- **EXT-10 `S_DC`**: the tag check. A hit feeds `ddr_q` from the latched
 data word and joins `S_DST`, so the whole sub-word/sign-extend writeback path
@@ -2403,32 +2410,52 @@ is reused unchanged -- a hit is a load that never touched the bus. A miss
 asserts `core_rd` on the address `S_EX` already wrote and joins `S_DL`,
 setting `dc_alloc` so the fill funnel knows this miss is allocatable. -/
 def s_dc : Expr 1 × Act := stArm S_DC
-  (.ite dc_hit
-    (.seq (ddrQReg.set dc_data_q) (stReg.set (L5 S_DST)))
-    (.seq (coreRdReg.set (L1 1))
-      (.seq (dcAllocReg.set (L1 1)) (stReg.set (L5 S_DL)))))
+  [hwstmt|
+    if dc_hit then {
+      ddrQReg <- dc_data_q,
+      stReg <- $(L5 S_DST)
+    } else {
+      coreRdReg <- 1,
+      dcAllocReg <- 1,
+      stReg <- $(L5 S_DL)
+    }]
 
 def s_dl : Expr 1 × Act := stArm S_DL
-  (.ite mDone
-    (.seq (ddrQReg.set mRdata)
-      (.seq (dcAllocReg.set (L1 0)) (stReg.set (L5 S_DST))))
-    .skip)
+  [hwstmt|
+    if mDone then {
+      ddrQReg <- mRdata,
+      dcAllocReg <- 0,
+      stReg <- $(L5 S_DST)
+    }]
 
 /-- S_DST: load-wb (rf in funnel) + advance, or issue the DDR store. -/
 def s_dst : Expr 1 × Act := stArm S_DST
-  (.ite (.not mem_is_store)
-    (actSeq [stepPc, retireInc, goF0])
-    (actSeq [coreAddrReg.set (ddrEa mem_ea_s), coreWdataReg.set st_merge,
-             coreWrReg.set (L1 1), stReg.set (L5 S_DSW)]))
+  [hwstmt|
+    if ~mem_is_store then {
+      $stmt(stepPc),
+      $stmt(retireInc),
+      $stmt(goF0)
+    } else {
+      coreAddrReg <- $(ddrEa mem_ea_s),
+      coreWdataReg <- st_merge,
+      coreWrReg <- 1,
+      stReg <- $(L5 S_DSW)
+    }]
 
 def s_dsw : Expr 1 × Act := stArm S_DSW
-  (.ite mDone (actSeq [stepPc, retireInc, goF0]) .skip)
+  [hwstmt|
+    if mDone then {
+      $stmt(stepPc),
+      $stmt(retireInc),
+      $stmt(goF0)
+    }]
 
 /-- S_CLONE2: child sp (rf in funnel) + fresh tp/sigmask (both in
 `tarrFunnelRule`, D20) + advance. -/
-def s_clone2 : Expr 1 × Act := stArm S_CLONE2 (stReg.set (L5 S_CLONE3))
+def s_clone2 : Expr 1 × Act := stArm S_CLONE2 [hwstmt| stReg <- $(L5 S_CLONE3)]
 
-def s_clone3 : Expr 1 × Act := stArm S_CLONE3  (actSeq [stepPc, retireInc, goF0])
+def s_clone3 : Expr 1 × Act := stArm S_CLONE3
+  [hwstmt| { $stmt(stepPc), $stmt(retireInc), $stmt(goF0) }]
 
 /-- S_FTX1: FUTEX_WAIT DDR-compare. -/
 def s_ftx1 : Expr 1 × Act := stArm S_FTX1
