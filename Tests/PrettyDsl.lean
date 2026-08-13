@@ -82,6 +82,10 @@ private def expectedTick : Act :=
 
 example : tick = expectedTick := rfl
 
+/-! The teaching executor is an inspection view over the existing one-cycle
+semantics. This trace also pins the old-value/new-value presentation. -/
+#trace_cycle design with {} from { count := 254 }
+
 end Tests.PrettyDsl.Counter
 
 namespace Tests.PrettyDsl.Fsm

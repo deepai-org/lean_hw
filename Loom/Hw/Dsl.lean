@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Declarations
+import Loom.Hw.Semantics
 import Lean.Elab.Term
 
 /-!
@@ -647,5 +648,102 @@ macro_rules
           Loom.Hw.Design.ofDecls $emittedName $declarationsName $ruleList)
       commands := commands.push designCommand
       pure (Lean.mkNullNode commands)
+
+/-! ## One-cycle teaching trace
+
+The renderer delegates every state update to `Act.run`; it only follows the
+same guards to report which leaf writes fired. It is therefore an inspection
+view over the existing semantics, not another simulator. -/
+
+private abbrev NamedNat := String × Nat
+
+private def lookupNamed (bindings : List NamedNat) (name : String) : Option Nat :=
+  (bindings.find? (fun binding => binding.1 == name)).map (fun binding => binding.2)
+
+private def initializeTraceState (design : Loom.Hw.Design)
+    (bindings : List NamedNat) : Except String Loom.Hw.St := do
+  for binding in bindings do
+    let some declaration := design.regs.find? (fun declaration => declaration.name == binding.1)
+      | throw s!"unknown initial register '{binding.1}'"
+    if binding.2 ≥ 2 ^ declaration.width then
+      throw s!"initial value {binding.2} does not fit register '{binding.1}' ({declaration.width} bits)"
+  pure { design.reset with
+    regs := bindings.foldl (fun registers binding =>
+      match design.regs.find? (fun declaration => declaration.name == binding.1) with
+      | some declaration => registers.set binding.1 (BitVec.ofNat declaration.width binding.2)
+      | none => registers) design.reset.regs }
+
+private def traceInputs (design : Loom.Hw.Design) (bindings : List NamedNat) :
+    Except String Loom.Hw.InEnv := do
+  for binding in bindings do
+    let some declaration := design.inputs.find? (fun declaration => declaration.name == binding.1)
+      | throw s!"unknown input '{binding.1}'"
+    if binding.2 ≥ 2 ^ declaration.width then
+      throw s!"input value {binding.2} does not fit '{binding.1}' ({declaration.width} bits)"
+  pure fun name width => BitVec.ofNat width ((lookupNamed bindings name).getD 0)
+
+private def traceAct (pre : Loom.Hw.St) (ruleName : String) :
+    Loom.Hw.Act → Loom.Hw.St → Loom.Hw.St × List String
+  | .skip, accumulator => (accumulator, [])
+  | .seq first second, accumulator =>
+      let (middle, firstEvents) := traceAct pre ruleName first accumulator
+      let (result, secondEvents) := traceAct pre ruleName second middle
+      (result, firstEvents ++ secondEvents)
+  | .ite condition yes no, accumulator =>
+      if condition.eval pre = 1#1 then traceAct pre ruleName yes accumulator
+      else traceAct pre ruleName no accumulator
+  | action@(.write width name _), accumulator =>
+      let before := accumulator.regs name width
+      let result := action.run pre accumulator
+      let after := result.regs name width
+      (result, [s!"rule {ruleName}: {name} {before.toNat} -> {after.toNat}"])
+  | action@(.writeSlice totalWidth name _ _ _ _), accumulator =>
+      let before := accumulator.regs name totalWidth
+      let result := action.run pre accumulator
+      let after := result.regs name totalWidth
+      (result, [s!"rule {ruleName}: {name} {before.toNat} -> {after.toNat} (slice write)"])
+  | action@(.memWrite _ dataWidth name portIndex address _), accumulator =>
+      let addressValue := (address.eval pre).toNat
+      let before := accumulator.mems name addressValue dataWidth
+      let result := action.run pre accumulator
+      let after := result.mems name addressValue dataWidth
+      (result, [s!"rule {ruleName}: {name}[port {portIndex}, {addressValue}] {before.toNat} -> {after.toNat}"])
+
+def traceCycle (design : Loom.Hw.Design) (inputValues initialValues : List NamedNat) : IO Unit := do
+  let initial ← IO.ofExcept (initializeTraceState design initialValues)
+  let inputs ← IO.ofExcept (traceInputs design inputValues)
+  let pre := initial.setInputs design.inputs inputs
+  let (result, events) := design.rules.foldl (fun (accumulator, priorEvents) designRule =>
+    let (next, events) := traceAct pre designRule.name designRule.body accumulator
+    (next, priorEvents ++ events)) (pre, [])
+  let expected := design.cycle pre
+  for declaration in design.regs do
+    unless result.regs declaration.name declaration.width =
+        expected.regs declaration.name declaration.width do
+      throw <| IO.userError
+        s!"internal trace mismatch at register '{declaration.name}'"
+  if events.isEmpty then IO.println "no writes fired"
+  else for event in events do IO.println event
+  IO.println "final registers:"
+  for declaration in design.regs do
+    IO.println s!"  {declaration.name} = {(result.regs declaration.name declaration.width).toNat}"
+
+declare_syntax_cat hwtracebind
+syntax ident ":=" num : hwtracebind
+syntax (name := traceCycleCmd) "#trace_cycle" term:max
+  "with" "{" hwtracebind,* "}" "from" "{" hwtracebind,* "}" : command
+
+private def traceBindingTerm (binding : TSyntax `hwtracebind) : MacroM (TSyntax `term) :=
+  match binding with
+  | `(hwtracebind| $name:ident := $value:num) =>
+      let sourceName := Syntax.mkStrLit name.getId.toString
+      `(($sourceName, $value))
+  | _ => Macro.throwErrorAt binding "invalid trace binding"
+
+macro_rules
+  | `(#trace_cycle $design:term with {$inputs:hwtracebind,*} from {$initial:hwtracebind,*}) => do
+      let inputTerms ← inputs.getElems.mapM traceBindingTerm
+      let initialTerms ← initial.getElems.mapM traceBindingTerm
+      `(#eval Loom.Hw.Dsl.traceCycle $design [$inputTerms,*] [$initialTerms,*])
 
 end Loom.Hw.Dsl
