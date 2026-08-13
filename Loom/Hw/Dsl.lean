@@ -107,7 +107,7 @@ theorem packedHigh_append_low {highWidth lowWidth : Nat}
   simp [packedHigh, packedLow]
 
 inductive DeclarationKind where
-  | register | stateRegister | memory | input | wire | constant | stateValue
+  | register | registerFamily | stateRegister | memory | input | wire | constant | stateValue
   deriving Repr, DecidableEq, Inhabited
 
 structure SourceSpan where
@@ -215,6 +215,7 @@ syntax:max (name := hwShift) "hw_shift% " str term:max term:max : term
 syntax:max (name := hwPackedField) "hw_packed_field% " term:max ident : term
 syntax:max (name := hwPackedWrite) "hw_packed_write% " term:max ident term:max : term
 syntax:max (name := hwWrite) "hw_write% " term:max term:max : term
+syntax:max (name := hwArrayWrite) "hw_array_write% " term:max term:max term:max : term
 
 private def coerceHardwareAtom (valueSyntax : Syntax) (expectedType? : Option Lean.Expr) :
     TermElabM Lean.Expr := do
@@ -323,6 +324,37 @@ when that fails is its final component interpreted as a packed field. -/
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
+@[term_elab hwArrayWrite] def elabHwArrayWrite : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_array_write% $familySyntax:term $indexSyntax:term $valueSyntax:term) => do
+      let family ← elabTerm familySyntax none
+      let familyType ← Meta.whnf (← Meta.inferType family)
+      unless familyType.isAppOfArity ``Loom.Hw.RegArray 2 do
+        throwErrorAt familySyntax "indexed assignment requires a typed register family"
+      let elementWidth := familyType.getAppArgs[0]!
+      let countExpr ← Meta.whnf familyType.getAppArgs[1]!
+      let valueType := Lean.Expr.app (.const ``Loom.Hw.Expr []) elementWidth
+      let value ← elabTerm valueSyntax (some valueType)
+      let index ← elabTerm indexSyntax none
+      let indexType ← Meta.whnf (← Meta.inferType index)
+      let result ← if indexType.isConstOf ``Nat then
+        let some indexValue ← getNatValue? (← Meta.whnf index)
+          | throwErrorAt indexSyntax "static register-family index must reduce to a numeral"
+        let some count ← getNatValue? countExpr
+          | throwErrorAt familySyntax "register-family size must reduce to a numeral"
+        if indexValue ≥ count then
+          throwErrorAt indexSyntax
+            s!"register-family index {indexValue} is outside 0 through {count - 1}"
+        let direct ← `(Loom.Hw.RegArray.set $familySyntax
+          ⟨$(quote indexValue), by decide⟩ $valueSyntax)
+        elabTerm direct expectedType?
+      else
+        unless indexType.isAppOfArity ``Loom.Hw.Expr 1 do
+          throwErrorAt indexSyntax "dynamic register-family index must be a hardware expression"
+        Meta.mkAppM ``Loom.Hw.RegArray.dynSet #[family, index, value]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
 @[term_elab hwIndexLit] def elabHwIndexLit : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_index_lit% $containerSyntax:term $index:num) =>
@@ -342,6 +374,15 @@ when that fails is its final component interpreted as a packed field. -/
           let addressSyntax ← `(hw_lit% $index)
           let address ← elabTerm addressSyntax (some addressType)
           Meta.mkAppM ``Loom.Hw.Mem.rd #[container, address]
+        else if containerType.isAppOfArity ``Loom.Hw.RegArray 2 then
+          let countExpr ← Meta.whnf containerType.getAppArgs[1]!
+          let some count ← getNatValue? countExpr
+            | throwErrorAt containerSyntax "register-family size must reduce to a numeral"
+          if index.getNat ≥ count then
+            throwErrorAt index s!"register-family index {index.getNat} is outside 0 through {count - 1}"
+          let readSyntax ← `(Loom.Hw.RegArray.rd $containerSyntax
+            ⟨$(quote index.getNat), by decide⟩)
+          elabTerm readSyntax expectedType?
         else
           throwErrorAt containerSyntax
             "indexed hardware value must be a register, expression, or memory"
@@ -353,13 +394,23 @@ when that fails is its final component interpreted as a packed field. -/
   | `(hw_mem_read% $memorySyntax:term $addressSyntax:term) =>
       let memory ← elabTerm memorySyntax none
       let memoryType ← Meta.whnf (← Meta.inferType memory)
-      unless memoryType.isAppOfArity ``Loom.Hw.Mem 2 do
+      let result ← if memoryType.isAppOfArity ``Loom.Hw.Mem 2 then
+        let addressWidth := memoryType.getAppArgs[0]!
+        let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
+        let address ← elabTerm addressSyntax (some addressType)
+        Meta.mkAppM ``Loom.Hw.Mem.rd #[memory, address]
+      else if memoryType.isAppOfArity ``Loom.Hw.RegArray 2 then
+        let address ← elabTerm addressSyntax none
+        let addressType ← Meta.whnf (← Meta.inferType address)
+        unless addressType.isAppOfArity ``Loom.Hw.Expr 1 do
+          throwErrorAt addressSyntax "dynamic register-family index must be a hardware expression"
+        let elementWidth := memoryType.getAppArgs[0]!
+        let zeroBits ← Meta.mkAppM ``BitVec.ofNat #[elementWidth, .lit (.natVal 0)]
+        let zero ← Meta.mkAppM ``Loom.Hw.Expr.lit #[zeroBits]
+        Meta.mkAppM ``Loom.Hw.RegArray.dynRd #[memory, address, zero]
+      else
         throwErrorAt memorySyntax
-          "a dynamic hardware index is only available on a typed memory; dynamic bit select is not supported"
-      let addressWidth := memoryType.getAppArgs[0]!
-      let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
-      let address ← elabTerm addressSyntax (some addressType)
-      let result ← Meta.mkAppM ``Loom.Hw.Mem.rd #[memory, address]
+          "a dynamic hardware index is available only on a typed memory or register family; dynamic bit select is not supported"
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -538,6 +589,7 @@ syntax "skip" : hwstmt
 syntax (name := hwStmtSplice) "$stmt" "(" term ")" : hwstmt
 syntax ident " <- " hwexpr : hwstmt
 syntax ident "[" "port" num "," hwexpr "]" " <- " hwexpr : hwstmt
+syntax ident "[" hwexpr "]" " <- " hwexpr : hwstmt
 syntax "let" ident ":" num ":=" hwexpr : hwstmt
 syntax "let" ident ":=" hwexpr : hwstmt
 syntax "suppress" ident "because" str "in" hwstmt : hwstmt
@@ -578,6 +630,11 @@ mutual
           `(hw_packed_write% $register $field [hwexpr| $value])
     | `(hwstmt| $memory:ident[port $portIndex:num, $address:hwexpr] <- $value:hwexpr) =>
         `(Loom.Hw.Mem.write $memory $portIndex [hwexpr| $address] [hwexpr| $value])
+    | `(hwstmt| $family:ident[$index:hwexpr] <- $value:hwexpr) =>
+        match index with
+        | `(hwexpr| $literal:num) =>
+            `(hw_array_write% $family ($literal : Nat) [hwexpr| $value])
+        | _ => `(hw_array_write% $family [hwexpr| $index] [hwexpr| $value])
     | stx@`(hwstmt| let $_:ident : $_:num := $_:hwexpr) =>
         Macro.throwErrorAt stx "a hardware let must be followed by another statement in the same block"
     | stx@`(hwstmt| let $_:ident := $_:hwexpr) =>
@@ -804,6 +861,7 @@ syntax ident ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ":" num "[" num "]" "using" term:max : hwitem
+syntax ident ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ":=" hwstmt : hwitem
 syntax ident ident "suppress" ident "because" str ":=" hwstmt : hwitem
 syntax (name := hardwareCmd) (docComment)? "hardware" ident "where" hwitem* : command
@@ -848,6 +906,12 @@ private structure PackedWireItem where
   name : TSyntax `ident
   typeName : TSyntax `ident
   value : TSyntax `hwexpr
+
+private structure RegArrayItem where
+  name : TSyntax `ident
+  width : TSyntax `num
+  count : TSyntax `num
+  exported : Bool
 
 private structure RuleItem where
   name : TSyntax `ident
@@ -930,6 +994,9 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
   | `(hwstmt| $_:ident[port $_:num, $address:hwexpr] <- $value:hwexpr) =>
       (written, readAfterWriteFindings registers suppressed written address ++
         readAfterWriteFindings registers suppressed written value)
+  | `(hwstmt| $_:ident[$index:hwexpr] <- $value:hwexpr) =>
+      (written, readAfterWriteFindings registers suppressed written index ++
+        readAfterWriteFindings registers suppressed written value)
   | `(hwstmt| let $_:ident : $_:num := $value:hwexpr)
   | `(hwstmt| let $_:ident := $value:hwexpr) =>
       (written, readAfterWriteFindings registers suppressed written value)
@@ -992,6 +1059,10 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
         Macro.throwErrorAt target
           s!"'{target.getId}' is not a writable register in this hardware block"
   | `(hwstmt| $_:ident[port $_:num, $_:hwexpr] <- $_:hwexpr) => pure ()
+  | `(hwstmt| $family:ident[$_:hwexpr] <- $_:hwexpr) =>
+      unless writable.contains family.getId do
+        Macro.throwErrorAt family
+          s!"'{family.getId}' is not a writable register family in this hardware block"
   | `(hwstmt| let $_:ident : $_:num := $_:hwexpr) => pure ()
   | `(hwstmt| let $_:ident := $_:hwexpr) => pure ()
   | `(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) => do
@@ -1115,7 +1186,8 @@ private def exactAddrWidth (depth : TSyntax `num) : MacroM Nat := do
 private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     MacroM (Array ScalarRegItem × Array ConstItem × Array InputItem ×
       Array MemoryItem × Array WireItem × Array PackedRegItem ×
-      Array PackedInputItem × Array PackedWireItem × Array StateDomain × Array RuleItem) := do
+      Array PackedInputItem × Array PackedWireItem × Array RegArrayItem ×
+      Array StateDomain × Array RuleItem) := do
   let mut registers : Array ScalarRegItem := #[]
   let mut constants : Array ConstItem := #[]
   let mut inputs : Array InputItem := #[]
@@ -1124,6 +1196,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
   let mut packedRegisters : Array PackedRegItem := #[]
   let mut packedInputs : Array PackedInputItem := #[]
   let mut packedWires : Array PackedWireItem := #[]
+  let mut registerArrays : Array RegArrayItem := #[]
   let mut stateDomains : Array StateDomain := #[]
   let mut rules : Array RuleItem := #[]
   for item in items do
@@ -1208,13 +1281,20 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| $kind:ident $name:ident : $dataWidth:num [$depth:num]) =>
-        unless kind.getId == `memory do Macro.throwErrorAt kind "expected `memory`"
-        memories := memories.push
-          ⟨name, dataWidth, depth, ← exactAddrWidth depth, none⟩
+        if kind.getId == `memory then
+          memories := memories.push
+            ⟨name, dataWidth, depth, ← exactAddrWidth depth, none⟩
+        else if kind.getId == `reg then
+          registerArrays := registerArrays.push ⟨name, dataWidth, depth, false⟩
+        else Macro.throwErrorAt kind "expected `memory` or register-family `reg`"
     | `(hwitem| $kind:ident $name:ident : $dataWidth:num [$depth:num] using $policy:term) =>
         unless kind.getId == `memory do Macro.throwErrorAt kind "expected `memory`"
         memories := memories.push
           ⟨name, dataWidth, depth, ← exactAddrWidth depth, some policy⟩
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num [$count:num]) =>
+        unless qualifier.getId == `output && kind.getId == `reg do
+          Macro.throwErrorAt qualifier "expected `output reg` family declaration"
+        registerArrays := registerArrays.push ⟨name, width, count, true⟩
     | `(hwitem| $kind:ident $name:ident := $body:hwstmt) =>
         unless kind.getId == `rule do Macro.throwErrorAt kind "expected `rule`"
         rules := rules.push ⟨name, body, none, none⟩
@@ -1231,6 +1311,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     inputs.map (fun item => item.name) ++ memories.map (fun item => item.name) ++
     wires.map (fun item => item.name) ++ packedRegisters.map (fun item => item.name) ++
     packedInputs.map (fun item => item.name) ++ packedWires.map (fun item => item.name) ++
+    registerArrays.map (fun item => item.name) ++
     rules.map (fun item => item.name)
   for localName in locals do
     if localName.getId == `design || localName.getId == `declarations ||
@@ -1242,12 +1323,13 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
       if locals[i]!.getId == locals[j]!.getId then
         Macro.throwErrorAt locals[j]! s!"duplicate design-local name '{locals[j]!.getId}'"
   let writable := registers.map (fun item => item.name.getId) ++
-    packedRegisters.map (fun item => item.name.getId)
+    packedRegisters.map (fun item => item.name.getId) ++
+    registerArrays.map (fun item => item.name.getId)
   for ruleItem in rules do
     validateWriteTargets writable ruleItem.body
     validateCases stateDomains ruleItem.body
   pure (registers, constants, inputs, memories, wires, packedRegisters,
-    packedInputs, packedWires, stateDomains, rules)
+    packedInputs, packedWires, registerArrays, stateDomains, rules)
 
 private def sourceSpan (fileName : String) (sourceSyntax : Syntax) : SourceSpan where
   fileName := fileName
@@ -1281,6 +1363,7 @@ private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
     (constants : Array ConstItem) (inputs : Array InputItem) (memories : Array MemoryItem)
     (wires : Array WireItem) (packedRegisters : Array PackedRegItem)
     (packedInputs : Array PackedInputItem) (packedWires : Array PackedWireItem)
+    (registerArrays : Array RegArrayItem)
     (packedRegisterWidths packedInputWidths packedWireWidths : Array Nat)
     (domains : Array StateDomain) (rules : Array RuleItem) : HardwareMetadata := Id.run do
   let mut declarations := #[]
@@ -1311,6 +1394,10 @@ private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
     declarations := declarations.push
       ⟨packedWire.name.getId, .wire, packedWidth,
         sourceSpan fileName packedWire.name⟩
+  for registerArray in registerArrays do
+    declarations := declarations.push
+      ⟨registerArray.name.getId, .registerFamily, registerArray.width.getNat,
+        sourceSpan fileName registerArray.name⟩
   for constant in constants do
     let kind := if domains.any (fun domain =>
         domain.members.any (fun member => member.getId == constant.name.getId))
@@ -1341,7 +1428,7 @@ private def expandHardwareCommand
     (moduleName : TSyntax `ident)
     (items : Array (TSyntax `hwitem)) : MacroM Syntax := do
   let (registers, constants, inputs, memories, wires, packedRegisters,
-    packedInputs, packedWires, _, rules) ← parseHardwareItems items
+    packedInputs, packedWires, registerArrays, _, rules) ← parseHardwareItems items
   let mut commands : Array Syntax := #[]
   for register in registers do
     let sourceName := Syntax.mkStrLit register.name.getId.toString
@@ -1386,6 +1473,12 @@ private def expandHardwareCommand
     let command ← `(command|
       def $(inputItem.name) : Loom.Hw.PackedInput $(inputItem.typeName) :=
         Loom.Hw.PackedInput.named $sourceName)
+    commands := commands.push command
+  for registerArray in registerArrays do
+    let sourceName := Syntax.mkStrLit registerArray.name.getId.toString
+    let command ← `(command|
+      def $(registerArray.name) : Loom.Hw.RegArray $(registerArray.width) $(registerArray.count) :=
+        ⟨$sourceName⟩)
     commands := commands.push command
   for constant in constants do
     let command ← `(command|
@@ -1433,6 +1526,9 @@ private def expandHardwareCommand
   for wireItem in packedWires do
     let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
     declarations ← `($declarations |>.addPackedCombOutput $sourceName $(wireItem.name))
+  for registerArray in registerArrays do
+    declarations ← `($declarations |>.addRegArray $(registerArray.name)
+      (exported := $(quote registerArray.exported)))
   for wireItem in wires do
     let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
     declarations ← `($declarations |>.addCombOutput $sourceName $(wireItem.name))
@@ -1457,7 +1553,7 @@ private def expandHardwareCommand
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
       let (registers, constants, inputs, memories, wires, packedRegisters,
-        packedInputs, packedWires, domains, rules) ←
+        packedInputs, packedWires, registerArrays, domains, rules) ←
         liftMacroM <| parseHardwareItems items
       let namespaceName ← getCurrNamespace
       let environment ← getEnv
@@ -1466,6 +1562,7 @@ private def expandHardwareCommand
         memories.map (fun item => item.name) ++ wires.map (fun item => item.name) ++
         packedRegisters.map (fun item => item.name) ++
         packedInputs.map (fun item => item.name) ++ packedWires.map (fun item => item.name) ++
+        registerArrays.map (fun item => item.name) ++
         rules.map (fun item => item.name)
       for localName in localNames do
         let fullName := namespaceName ++ localName.getId
@@ -1473,7 +1570,7 @@ private def expandHardwareCommand
           throwErrorAt localName s!"'{fullName}' has already been declared"
       for handleName in registers.map (fun item => item.name) ++ inputs.map (fun item => item.name) ++
           memories.map (fun item => item.name) ++ packedRegisters.map (fun item => item.name) ++
-          packedInputs.map (fun item => item.name) do
+          packedInputs.map (fun item => item.name) ++ registerArrays.map (fun item => item.name) do
         let lemmaName := namespaceName ++
           Name.mkSimple (handleName.getId.toString ++ "_name")
         if environment.contains lemmaName then
@@ -1495,7 +1592,7 @@ private def expandHardwareCommand
       let packedWireWidths ← packedWires.mapM (packedWidth ·.typeName)
       let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName
         registers constants inputs memories wires packedRegisters packedInputs packedWires
-        packedRegisterWidths packedInputWidths packedWireWidths domains rules
+        registerArrays packedRegisterWidths packedInputWidths packedWireWidths domains rules
       let expanded ← liftMacroM <| expandHardwareCommand documentation moduleName items
       elabCommand expanded
       modifyEnv (hardwareMetadataExt.addEntry · metadata)
@@ -1503,6 +1600,7 @@ private def expandHardwareCommand
 
 private def DeclarationKind.label : DeclarationKind → String
   | .register => "register"
+  | .registerFamily => "register family element"
   | .stateRegister => "state register"
   | .memory => "memory element"
   | .input => "input"
