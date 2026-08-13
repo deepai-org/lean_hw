@@ -2459,29 +2459,47 @@ def s_clone3 : Expr 1 × Act := stArm S_CLONE3
 
 /-- S_FTX1: FUTEX_WAIT DDR-compare. -/
 def s_ftx1 : Expr 1 × Act := stArm S_FTX1
-  (.ite mDone
-    (actSeq [.ite (.eq mRdata futex_exp)
-              (actSeq [tstateDynWrite (L2 3) cur,
-                       .ite (.not (.eq next_ready cur))
-                         (actSeq [curReg.set next_ready, setPcFromTpc next_ready, goF0])
-                         (stReg.set (L5 S_WAIT))])
-              (actSeq [stepPc, goF0]),
-             retireInc])
-    .skip)
+  [hwstmt|
+    if mDone then {
+      if mRdata == futex_exp then {
+        $stmt(tstateDynWrite (L2 3) cur),
+        if ~(next_ready == cur) then {
+          curReg <- next_ready,
+          $stmt(setPcFromTpc next_ready),
+          $stmt(goF0)
+        } else stReg <- $(L5 S_WAIT)
+      } else {
+        $stmt(stepPc),
+        $stmt(goF0)
+      },
+      $stmt(retireInc)
+    }]
 
 /-- S_WAIT: pick next ready or halt if all free. -/
 def s_wait : Expr 1 × Act := stArm S_WAIT
-  (.ite (tstateEq next_ready (L2 1))
-    (actSeq [curReg.set next_ready, setPcFromTpc next_ready, goF0])
-    (.ite (.not anyLive) (.seq (haltedReg.set (L1 1)) (runningReg.set (L1 0))) .skip))
+  [hwstmt|
+    if $(tstateEq next_ready (L2 1)) then {
+      curReg <- next_ready,
+      $stmt(setPcFromTpc next_ready),
+      $stmt(goF0)
+    } else
+      if ~anyLive then {
+        haltedReg <- 1,
+        runningReg <- 0
+      }]
 
 /-- S_MUL: shift-add step or done (rf in funnel). -/
 def s_mul : Expr 1 × Act := stArm S_MUL
-  (.ite (.eq mul_b (L64 0))
-    (actSeq [stepPc, retireInc, goF0])
-    (actSeq [.ite (.eq (.slice mul_b 0 1) (L1 1)) (mulAccReg.set (.add mul_acc mul_aw)) .skip,
-             mulAwReg.set (.shl mul_aw (.lit (BitVec.ofNat 128 1))),
-             mulBReg.set (.shr mul_b (L64 1))]))
+  [hwstmt|
+    if mul_b == 0 then {
+      $stmt(stepPc),
+      $stmt(retireInc),
+      $stmt(goF0)
+    } else {
+      if mul_b[0] == 1 then mulAccReg <- mul_acc + mul_aw,
+      mulAwReg <- mul_aw << 1,
+      mulBReg <- mul_b >> 1
+    }]
 
 /-- S_DIV: restoring divide step or done (rf in funnel). 65-bit partial. -/
 def s_div : Expr 1 × Act := stArm S_DIV
@@ -2498,9 +2516,9 @@ def s_div : Expr 1 × Act := stArm S_DIV
        divCntReg.set (.add div_cnt (.lit (BitVec.ofNat 7 1)))]))
 
 def s_gpl : Expr 1 × Act := stArm S_GPL
-  (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)
+  [hwstmt| if gpDone then { $stmt(stepPc), $stmt(retireInc), $stmt(goF0) }]
 def s_gps : Expr 1 × Act := stArm S_GPS
-  (.ite gpDone (actSeq [stepPc, retireInc, goF0]) .skip)
+  [hwstmt| if gpDone then { $stmt(stepPc), $stmt(retireInc), $stmt(goF0) }]
 
 /-- S_TRAP: hold. default state: go F0.
 
