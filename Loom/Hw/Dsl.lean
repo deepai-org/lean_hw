@@ -1059,6 +1059,100 @@ macro_rules
         return e.raw[2][1]
       Macro.throwErrorAt e "unsupported hardware expression"
 
+/-! ## Conservative proof-state delaboration
+
+The delaborator below handles only constructor trees whose inverse is direct.
+Every nested non-atom is parenthesized, so the stricter source precedence
+rules cannot reinterpret the displayed tree. Any unrecognized leaf aborts the
+whole wrapper and lets Lean print ordinary core notation. -/
+
+private structure DelabHwExpr where
+  stx : TSyntax `hwexpr
+  atom : Bool
+
+open Lean.PrettyPrinter.Delaborator
+open Lean.PrettyPrinter.Delaborator.SubExpr
+
+private def DelabHwExpr.group (value : DelabHwExpr) : DelabM (TSyntax `hwexpr) :=
+  if value.atom then pure value.stx else `(hwexpr| ($(value.stx)))
+
+private partial def delabHwExprCore :
+    Lean.PrettyPrinter.Delaborator.DelabM DelabHwExpr := do
+  let expression ← getExpr
+  let arguments := expression.getAppArgs
+  let some head := expression.getAppFn.constName? | failure
+  if head == ``Loom.Hw.Reg.rd || head == ``Loom.Hw.Input.rd then
+    guard (arguments.size == 2)
+    let handle ← withNaryArg 1 delab
+    match handle with
+    | `(term| $name:ident) => pure ⟨⟨name⟩, true⟩
+    | _ => failure
+  else if head == ``Loom.Hw.Expr.lit then
+    guard (arguments.size == 2)
+    let widthExpr ← Meta.whnf arguments[0]!
+    let some width ← getNatValue? widthExpr | failure
+    let valueExpr ← Meta.mkAppM ``BitVec.toNat #[arguments[1]!]
+    let some value ← getNatValue? (← Meta.whnf valueExpr) | failure
+    guard (width > 0 && value < 2 ^ width)
+    pure ⟨⟨Syntax.mkNumLit (toString value)⟩, true⟩
+  else
+    let binary (constructor : Name)
+        (build : TSyntax `hwexpr → TSyntax `hwexpr → DelabM (TSyntax `hwexpr)) :
+        DelabM DelabHwExpr := do
+      guard (head == constructor && arguments.size == 3)
+      let left ← withNaryArg 1 delabHwExprCore
+      let right ← withNaryArg 2 delabHwExprCore
+      let left ← left.group
+      let right ← right.group
+      pure ⟨← build left right, false⟩
+    binary ``Loom.Hw.Expr.add (fun left right => `(hwexpr| $left + $right)) <|>
+    binary ``Loom.Hw.Expr.sub (fun left right => `(hwexpr| $left - $right)) <|>
+    binary ``Loom.Hw.Expr.mul (fun left right => `(hwexpr| $left * $right)) <|>
+    binary ``Loom.Hw.Expr.udiv (fun left right => `(hwexpr| $left / $right)) <|>
+    binary ``Loom.Hw.Expr.urem (fun left right => `(hwexpr| $left % $right)) <|>
+    binary ``Loom.Hw.Expr.and (fun left right => `(hwexpr| $left & $right)) <|>
+    binary ``Loom.Hw.Expr.or (fun left right => `(hwexpr| $left | $right)) <|>
+    binary ``Loom.Hw.Expr.xor (fun left right => `(hwexpr| $left ^ $right)) <|>
+    binary ``Loom.Hw.Expr.shl (fun left right => `(hwexpr| $left << $right)) <|>
+    binary ``Loom.Hw.Expr.shr (fun left right => `(hwexpr| $left >> $right)) <|>
+    binary ``Loom.Hw.Expr.eq (fun left right => `(hwexpr| $left == $right)) <|>
+    binary ``Loom.Hw.Expr.ult (fun left right => `(hwexpr| $left <u $right)) <|>
+    binary ``Loom.Hw.Expr.slt (fun left right => `(hwexpr| $left <s $right)) <|>
+    (do
+      guard (head == ``Loom.Hw.Expr.not && arguments.size == 2)
+      let value ← (← withNaryArg 1 delabHwExprCore).group
+      pure ⟨← `(hwexpr| ~ $value), false⟩) <|>
+    (do
+      guard (head == ``Loom.Hw.Expr.mux && arguments.size == 4)
+      let condition ← (← withNaryArg 1 delabHwExprCore).group
+      let yes ← (← withNaryArg 2 delabHwExprCore).group
+      let no ← (← withNaryArg 3 delabHwExprCore).group
+      pure ⟨← `(hwexpr| if $condition then $yes else $no), false⟩)
+
+open Lean.PrettyPrinter.Delaborator in
+private meta def delabHwExprWrapper : Delab := do
+  let value ← delabHwExprCore
+  `([hwexpr| $(value.stx)])
+
+@[app_delab Loom.Hw.Expr.lit] meta def delabHwLit := delabHwExprWrapper
+@[app_delab Loom.Hw.Reg.rd] meta def delabHwRegRead := delabHwExprWrapper
+@[app_delab Loom.Hw.Input.rd] meta def delabHwInputRead := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.not] meta def delabHwNot := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.and] meta def delabHwAnd := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.or] meta def delabHwOr := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.xor] meta def delabHwXor := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.add] meta def delabHwAdd := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.sub] meta def delabHwSub := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.mul] meta def delabHwMul := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.udiv] meta def delabHwUdiv := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.urem] meta def delabHwUrem := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.shl] meta def delabHwShl := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.shr] meta def delabHwShr := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.eq] meta def delabHwEq := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.ult] meta def delabHwUlt := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.slt] meta def delabHwSlt := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.mux] meta def delabHwMux := delabHwExprWrapper
+
 /-! Statement grammar for scalar state and explicit escapes. Blocks are
 semicolon-separated in quotations for now; the enclosing `hardware` command
 will own newline-separated source statements and preserve their locations. -/
