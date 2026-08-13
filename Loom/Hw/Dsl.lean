@@ -35,6 +35,12 @@ register_option loom.hw.suppressDynamicCost : Bool := {
   descr := "suppress a justified dynamic hardware-cost warning in pretty syntax"
 }
 
+/-- Quotation elaboration can revisit one source term while probing expected
+types.  Cost guidance is author-facing, so emit each identical source finding
+once rather than exposing elaborator retries. -/
+private initialize dynamicCostWarningKeys :
+    IO.Ref (Array (String × Nat × String)) ← IO.mkRef #[]
+
 /-!
 # Pretty hardware quotations
 
@@ -1010,7 +1016,13 @@ private def elaboratePackedFields (typeName : Name)
 private def warnDynamicCost (source : Syntax) (message : String) : TermElabM Unit := do
   let options ← getOptions
   unless loom.hw.suppressDynamicCost.get options || loom.hw.reconstructing.get options do
-    logWarningAt source message
+    let fileName ← getFileName
+    let position := source.getPos?.map (fun pos => pos.byteIdx) |>.getD 0
+    let key := (fileName, position, message)
+    let alreadyReported ← dynamicCostWarningKeys.modifyGet fun keys =>
+      if keys.contains key then (true, keys) else (false, keys.push key)
+    unless alreadyReported do
+      logWarningAt source message
 
 @[term_elab hwArrayWrite] def elabHwArrayWrite : TermElab := fun stx expectedType? => do
   match stx with
