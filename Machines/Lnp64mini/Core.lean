@@ -3113,12 +3113,27 @@ def scalarRegs : List RegDecl :=
         (tlbPhysRegs.reg i).decl, (tlbDomRegs.reg i).decl,
         (tlbCellRegs.reg i).decl])
 
+namespace AuthoredThreadState
+
 /-- The thread-table array that stays per-element registers (D20): `tstate`
 (2-bit, multi-writer, read at every index by the ready/free priority encoders
 and the unkeyed wake). `tfutex` and its 64-bit-wide NT comparator bank were
 deleted to fit NT=32 (the wake is unkeyed now — see `wakeAllApply`). -/
+hardware lnp64mini_tstate where
+  output reg tstate : 2 [32] :=
+    (fun i => if i.val = 0 then 1 else 0)
+
+end AuthoredThreadState
+
+/-- Compatibility for the existing generated-action helpers. The pretty
+declaration and the established family handle name the same coordinates. -/
+theorem authored_tstate_handle : AuthoredThreadState.tstate = tstateRegs := rfl
+
 def arrRegs : List RegDecl :=
-  tstateRegs.decls (fun i => if i.val = 0 then 1 else 0)
+  AuthoredThreadState.declarations.regs
+
+theorem authored_tstate_declarations :
+    arrRegs = tstateRegs.decls (fun i => if i.val = 0 then 1 else 0) := rfl
 
 /-- (12) EXT-2 — the observation mirror. Unconditional: `cur_dom` is
 `tdom[cur]` as of the previous cycle. It is the *only* writer of `cur_dom`
