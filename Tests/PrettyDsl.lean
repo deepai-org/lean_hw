@@ -747,7 +747,7 @@ hardware packed_demo where
   output wire observed : Header := pending
   output wire observed_tag : 3 := pending.tag
 
-  rule capture := {
+  rule capture suppress multiple_write because "the field override exercises ordered packed writes" := {
     pending <- incoming,
     pending.tag <- incoming.tag
   }
@@ -805,7 +805,7 @@ hardware packed_demo where
   output wire observed : Header := pending
   output wire observed_tag : 3 := pending.tag
 
-  rule capture := {
+  rule capture suppress multiple_write because "the field override exercises ordered packed writes" := {
     pending <- incoming,
     pending.tag <- incoming.tag
   }
@@ -1686,6 +1686,29 @@ hardware lint_demo where
   reg a : 8
   reg b : 8
   rule demonstrate := { a <- 1, b <- a, a <- 2 }
+
+namespace Packed
+
+/--
+warning: 'header.tag' may be written more than once in one cycle; the later write wins
+---
+warning: 'header' may be written more than once in one cycle; the later write wins
+---
+warning: 'header.address' reads its start-of-cycle value; an earlier write takes effect next cycle
+-/
+#guard_msgs in
+hardware packed_lint_demo where
+  reg header : Header
+  reg observed : 5
+  rule packed_demonstrate := {
+    header.tag <- 4,
+    header.tag <- 5,
+    header.address <- 17,
+    header <- Header { tag := 5, address := 17 },
+    observed <- header.address
+  }
+
+end Packed
 
 end Reported
 
