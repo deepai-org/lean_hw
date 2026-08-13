@@ -3127,6 +3127,23 @@ private def expandSystemCommand
   commands := commands.push (← `(command|
     $[$documentation]?
     def $systemName : Loom.Hw.System := hw_exact_const% $qualifiedValue))
+  let requiredIsland := mkIdent `Loom.Hw.Dsl.requiredSystemIsland
+  let findRequiredIsland := mkIdent `Loom.Hw.Dsl.find_requiredSystemIsland
+  for island in islands do
+    let assembledName := nestedName
+      (Name.mkSimple (island.name.getId.toString ++ "SystemIsland"))
+    let foundName := nestedName
+      (Name.mkSimple (island.name.getId.toString ++ "Found"))
+    let sourceName := Syntax.mkStrLit island.name.getId.toString
+    commands := commands.push (← `(command|
+      def $assembledName : Loom.Hw.SystemIsland :=
+        $requiredIsland $qualifiedSystem $sourceName
+          (by native_decide)))
+    commands := commands.push (← `(command|
+      theorem $foundName :
+          ($qualifiedSystem).findIsland? $sourceName = some $assembledName :=
+        $findRequiredIsland
+          $qualifiedSystem $sourceName (by native_decide)))
   let mut plan : TSyntax `term ← `(Loom.Hw.RealizationPlan.portable)
   for realization in realizations do
     let routeName := nestedName
@@ -3171,6 +3188,29 @@ Application proofs should name the source island, not reconstruct the generated
 only a checked elaboration convenience around `System.liftIsland`; the theorem
 and its schedule quantification remain unchanged. -/
 
+/-- The exact post-assembly island selected by a checked source name.  System
+syntax generates the `isSome` witness; application authors never construct
+this value directly. -/
+def requiredSystemIsland (system : System) (name : String)
+    (present : (system.findIsland? name).isSome) : SystemIsland :=
+  (system.findIsland? name).get present
+
+/-- Lookup theorem for `requiredSystemIsland`, proved without equality on
+Design values (which may contain functions). -/
+theorem find_requiredSystemIsland (system : System) (name : String)
+    (present : (system.findIsland? name).isSome) :
+    system.findIsland? name = some (requiredSystemIsland system name present) := by
+  unfold requiredSystemIsland
+  generalize foundEq : system.findIsland? name = found at present ⊢
+  cases found with
+  | none => simp at present
+  | some island => rfl
+
+theorem requiredSystemIsland_name (system : System) (name : String)
+    (present : (system.findIsland? name).isSome) :
+    (requiredSystemIsland system name present).name = name :=
+  System.findIsland?_name (find_requiredSystemIsland system name present)
+
 syntax (name := systemLiftTactic)
   "system_lift" ident ident "using" term : tactic
 
@@ -3179,26 +3219,21 @@ syntax (name := systemLiftTactic)
   | `(tactic| system_lift $systemSyntax:ident $islandSyntax:ident using $invariant:term) =>
       withMainContext do
         let systemName ← resolveGlobalConstNoOverload systemSyntax
-        let islandHandleName := systemName ++
-          Name.mkSimple (islandSyntax.getId.toString ++ "Island")
-        unless (← getEnv).contains islandHandleName do
+        let assembledName := systemName ++
+          Name.mkSimple (islandSyntax.getId.toString ++ "SystemIsland")
+        let foundName := systemName ++
+          Name.mkSimple (islandSyntax.getId.toString ++ "Found")
+        unless (← getEnv).contains assembledName do
           throwErrorAt islandSyntax
             s!"system '{systemSyntax.getId}' has no island named '{islandSyntax.getId}'"
         let systemNameSyntax := mkIdentFrom systemSyntax systemName
-        let islandHandleSyntax := mkIdentFrom islandSyntax islandHandleName
-        let valueSyntax := mkIdentFrom systemSyntax (systemName ++ `value)
-        let builderSyntax := mkIdentFrom systemSyntax (systemName ++ `builder)
+        let assembledSyntax := mkIdentFrom islandSyntax assembledName
+        let foundSyntax := mkIdentFrom islandSyntax foundName
         let tactic ← `(tactic|
           exact Loom.Hw.System.liftIsland $systemNameSyntax
-            ($islandHandleSyntax).toSystemIsland
+            $assembledSyntax
             (by
-              unfold $systemNameSyntax $valueSyntax
-              rw [Loom.Hw.System.findIsland?_certify]
-              simp [$builderSyntax:term, Loom.Hw.SystemBuilder.findIsland?,
-                Loom.Hw.SystemBuilder.addIsland, Loom.Hw.SystemBuilder.addChannel,
-                Loom.Hw.SystemBuilder.channel,
-                Loom.Hw.SystemBuilder.withClockRel, Loom.Hw.System.empty,
-                Loom.Hw.IslandHandle.toSystemIsland, $islandHandleSyntax:term])
+              simpa [Loom.Hw.Dsl.requiredSystemIsland_name] using $foundSyntax)
             $invariant)
         evalTactic tactic
   | _ => throwUnsupportedSyntax
