@@ -1186,6 +1186,12 @@ open Loom.Hw.Dsl
 private def a : Reg 8 := ⟨"a"⟩
 private def b : Reg 8 := ⟨"b"⟩
 
+/--
+error: dynamic bit select is not a core operation; shift by the typed index and select bit zero, for example `(x >> i)[0]`
+-/
+#guard_msgs in
+example (i : Reg 8) : Expr 1 := [hwexpr| a[i]]
+
 /-- error: literal 300 does not fit in 8 bits; expected 0 through 255 -/
 #guard_msgs in
 example : Expr 8 := [hwexpr| 300]
