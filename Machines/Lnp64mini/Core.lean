@@ -2258,51 +2258,82 @@ def s_ex_branches : List (Expr 1 × Act) :=
         $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
       } else $stmt(s_ex_trap)] <|
   -- alu
-  gcons is_alu (.seq stepPc (.seq retireInc goF0)) <|
+  gcons is_alu [hwstmt| {
+    $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- 0x20 J
-  gcons (opIs OP_JMP) (.seq (pcReg.set (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs OP_JMP) [hwstmt| {
+    pcReg <- pc + (imm_j << 3), $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- 0x27 JAL
-  gcons (opIs OP_JAL) (.seq (pcReg.set (.add pc (.shl imm_j (L64 3)))) (.seq retireInc goF0)) <|
+  gcons (opIs OP_JAL) [hwstmt| {
+    pcReg <- pc + (imm_j << 3), $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- 0x28 JALR
-  gcons (opIs OP_JALR) (.seq (pcReg.set (.add a imm_i)) (.seq retireInc goF0)) <|
+  gcons (opIs OP_JALR) [hwstmt| {
+    pcReg <- a + imm_i, $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- branch
-  gcons is_branch (.seq (pcReg.set (.mux br_take (.add pc (.shl imm_s (L64 3))) pc8)) (.seq retireInc goF0)) <|
+  gcons is_branch [hwstmt| {
+    pcReg <- if br_take then pc + (imm_s << 3) else pc8,
+    $stmt(retireInc),
+    $stmt(goF0)
+  }] <|
   -- 0x06 YIELD
   gcons (opIs OP_YIELD)
-    (.seq (.ite (.eq next_ready cur) stepPc
-            (.seq (curReg.set next_ready) (setPcFromTpc next_ready)))
-          (.seq retireInc goF0)) <|
+    [hwstmt| {
+      if next_ready == cur then $stmt(stepPc) else {
+        curReg <- next_ready,
+        $stmt(setPcFromTpc next_ready)
+      },
+      $stmt(retireInc),
+      $stmt(goF0)
+    }] <|
   -- 0x07 SLEEP
   gcons (opIs OP_SLEEP)
-    (.seq (tstateDynWrite (L2 2) cur)
-      (.seq (.ite (.not (.eq next_ready cur))
-              (.seq (curReg.set next_ready) (.seq (setPcFromTpc next_ready) goF0))
-              (stReg.set (L5 S_WAIT)))
-            retireInc)) <|
+    [hwstmt| {
+      $stmt(tstateDynWrite (L2 2) cur),
+      if ~(next_ready == cur) then {
+        curReg <- next_ready,
+        $stmt(setPcFromTpc next_ready),
+        $stmt(goF0)
+      } else stReg <- $(L5 S_WAIT),
+      $stmt(retireInc)
+    }] <|
   -- 0xcb FUTEX_WAIT
   gcons (opIs OP_FUTEX_WAIT)
     -- The futex comparison is an ordinary data access and must pass through
     -- the same translation path as loads and stores.
-    (.seq (coreAddrReg.set (ddrEa sexEa))
-      (.seq (coreRdReg.set (L1 1))
-        (.seq (futexAddrQReg.set rdval) (.seq (futexExpReg.set a) (stReg.set (L5 S_FTX1)))))) <|
+    [hwstmt| {
+      coreAddrReg <- $(ddrEa sexEa),
+      coreRdReg <- 1,
+      futexAddrQReg <- rdval,
+      futexExpReg <- a,
+      stReg <- $(L5 S_FTX1)
+    }] <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
   -- only the sequencing half of FUTEX_WAKE.
-  gcons (opIs OP_FUTEX_WAKE) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs OP_FUTEX_WAKE) [hwstmt| {
+    $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- EXT-6 (§17): CAP_SEND (a = handle, b = target domain) and CAP_RECV.
   -- Both walk the in-memory entry: issue the flags-word read here, decide
   -- in S_CS0/S_CR0 once the word is back. `rd` is written in the funnels;
   -- pc advances at the end of the walk (S_DSW or the refusal arm), never
   -- here.
   gcons (opIs CAP_SEND_OP)
-    (.seq (coreAddrReg.set
-            (.add (capEntryAddr capSendSlot) (.lit (BitVec.ofNat 32 8))))
-      (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_CS0)))) <|
+    [hwstmt| {
+      coreAddrReg <- $(capEntryAddr capSendSlot) + 8,
+      coreRdReg <- 1,
+      stReg <- $(L5 S_CS0)
+    }] <|
   gcons (opIs CAP_RECV_OP)
-    (.seq (coreAddrReg.set
-            (.add (capEntryAddr capRecvSlot) (.lit (BitVec.ofNat 32 8))))
-      (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_CR0)))) <|
+    [hwstmt| {
+      coreAddrReg <- $(capEntryAddr capRecvSlot) + 8,
+      coreRdReg <- 1,
+      stReg <- $(L5 S_CR0)
+    }] <|
   -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
   -- change) if this thread is already inside a gate -- the continuation is
   -- depth 1. Otherwise: save the return point, mark in-gate, and jump to
