@@ -429,6 +429,7 @@ syntax:max (name := hwPackedUpdate) "hw_packed_update% " term:max
   "{" hwrecordfield,* "}" : term
 syntax:max (name := hwPackedFromBits) "hw_packed_from_bits% " ident term:max : term
 syntax:max (name := hwEq) "hw_eq% " term:max term:max : term
+syntax:max (name := hwBoundaryError) "hw_boundary_error% " str str str : term
 syntax:max (name := hwWrite) "hw_write% " term:max term:max : term
 syntax:max (name := hwArrayWrite) "hw_array_write% " term:max term:max term:max : term
 syntax:max (name := hwChannelObserve) "hw_channel_observe% " term:max ident : term
@@ -449,6 +450,17 @@ private def addSilentCodeAction (source : Syntax) (replacement title : String) :
     toCodeActionTitle? := some fun _ => title
   }
   discard <| Lean.Meta.Hint.mkSuggestionsMessage #[suggestion] source none false
+
+@[term_elab hwBoundaryError] private def elabHwBoundaryError : TermElab :=
+    fun stx _ => do
+  match stx with
+  | `(hw_boundary_error% $message:str $parsed:str $alternate:str) =>
+      liftM <| addSilentCodeAction stx parsed.getString
+        "Parenthesize the currently parsed grouping"
+      liftM <| addSilentCodeAction stx alternate.getString
+        "Parenthesize the alternate grouping"
+      throwErrorAt stx message.getString
+  | _ => throwUnsupportedSyntax
 
 @[term_elab hwExactConst] private def elabHwExactConst : TermElab := fun stx expectedType? => do
   match stx with
@@ -980,22 +992,80 @@ private def infixFamily : TSyntax `hwexpr → Option InfixFamily
   | `(hwexpr| $_:hwexpr <s $_:hwexpr) => some .comparison
   | _ => none
 
-private def validateInfixBoundary (parent : InfixFamily)
-    (left right : TSyntax `hwexpr) : MacroM Unit := do
-  for child in #[left, right] do
-    let some childFamily := infixFamily child | continue
-    if (parent == .comparison && childFamily == .bitwise) ||
-        (parent == .bitwise && childFamily == .comparison) then
-      Macro.throwErrorAt child
-        "comparison and bitwise operators require parentheses; parenthesize the intended grouping"
-    if (parent == .shift && childFamily == .arithmetic) ||
-        (parent == .arithmetic && childFamily == .shift) then
-      Macro.throwErrorAt child
-        "shift and arithmetic operators require parentheses; parenthesize the intended grouping"
-    if (parent == .concat && childFamily != .concat) ||
-        (parent != .concat && childFamily == .concat) then
-      Macro.throwErrorAt child
-        "concatenation and other infix operators require parentheses; parenthesize the intended grouping"
+private def infixParts : TSyntax `hwexpr →
+    Option (InfixFamily × TSyntax `hwexpr × String × TSyntax `hwexpr)
+  | `(hwexpr| $a:hwexpr * $b:hwexpr) => some (.arithmetic, a, "*", b)
+  | `(hwexpr| $a:hwexpr / $b:hwexpr) => some (.arithmetic, a, "/", b)
+  | `(hwexpr| $a:hwexpr % $b:hwexpr) => some (.arithmetic, a, "%", b)
+  | `(hwexpr| $a:hwexpr + $b:hwexpr) => some (.arithmetic, a, "+", b)
+  | `(hwexpr| $a:hwexpr - $b:hwexpr) => some (.arithmetic, a, "-", b)
+  | `(hwexpr| $a:hwexpr << $b:hwexpr) => some (.shift, a, "<<", b)
+  | `(hwexpr| $a:hwexpr >> $b:hwexpr) => some (.shift, a, ">>", b)
+  | `(hwexpr| $a:hwexpr ++ $b:hwexpr) => some (.concat, a, "++", b)
+  | `(hwexpr| $a:hwexpr & $b:hwexpr) => some (.bitwise, a, "&", b)
+  | `(hwexpr| $a:hwexpr ^ $b:hwexpr) => some (.bitwise, a, "^", b)
+  | `(hwexpr| $a:hwexpr | $b:hwexpr) => some (.bitwise, a, "|", b)
+  | `(hwexpr| $a:hwexpr == $b:hwexpr) => some (.comparison, a, "==", b)
+  | `(hwexpr| $a:hwexpr <u $b:hwexpr) => some (.comparison, a, "<u", b)
+  | `(hwexpr| $a:hwexpr <s $b:hwexpr) => some (.comparison, a, "<s", b)
+  | _ => none
+
+private def incompatibleInfixFamilies (parent child : InfixFamily) : Option String :=
+  if (parent == .comparison && child == .bitwise) ||
+      (parent == .bitwise && child == .comparison) then
+    some "comparison and bitwise operators require parentheses; parenthesize the intended grouping"
+  else if (parent == .shift && child == .arithmetic) ||
+      (parent == .arithmetic && child == .shift) then
+    some "shift and arithmetic operators require parentheses; parenthesize the intended grouping"
+  else if (parent == .concat && child != .concat) ||
+      (parent != .concat && child == .concat) then
+    some "concatenation and other infix operators require parentheses; parenthesize the intended grouping"
+  else none
+
+private def expressionSource (expression : TSyntax `hwexpr) : String :=
+  expression.raw.reprint.getD "<expression>"
+
+private def infixBoundaryError? (parent : InfixFamily) (operator : String)
+    (left right : TSyntax `hwexpr) : Option (String × String × String) :=
+  let leftSource := expressionSource left
+  let rightSource := expressionSource right
+  match infixParts left with
+  | some (childFamily, childLeft, childOperator, childRight) =>
+      match incompatibleInfixFamilies parent childFamily with
+      | some message =>
+          let parsed := s!"[hwexpr| ({leftSource}) {operator} {rightSource}]"
+          let alternate := s!"[hwexpr| {expressionSource childLeft} {childOperator} ({expressionSource childRight} {operator} {rightSource})]"
+          some (message, parsed, alternate)
+      | none =>
+          match infixParts right with
+          | some (rightFamily, rightLeft, rightOperator, rightRight) =>
+              match incompatibleInfixFamilies parent rightFamily with
+              | some message =>
+                  let parsed := s!"[hwexpr| {leftSource} {operator} ({rightSource})]"
+                  let alternate := s!"[hwexpr| ({leftSource} {operator} {expressionSource rightLeft}) {rightOperator} {expressionSource rightRight}]"
+                  some (message, parsed, alternate)
+              | none => none
+          | none => none
+  | none =>
+      match infixParts right with
+      | some (childFamily, childLeft, childOperator, childRight) =>
+          match incompatibleInfixFamilies parent childFamily with
+          | some message =>
+              let parsed := s!"[hwexpr| {leftSource} {operator} ({rightSource})]"
+              let alternate := s!"[hwexpr| ({leftSource} {operator} {expressionSource childLeft}) {childOperator} {expressionSource childRight}]"
+              some (message, parsed, alternate)
+          | none => none
+      | none => none
+
+private def expandInfix (parent : InfixFamily) (operator : String)
+    (constructor : TSyntax `term) (left right : TSyntax `hwexpr) : MacroM (TSyntax `term) :=
+  match infixBoundaryError? parent operator left right with
+  | some (message, parsed, alternate) =>
+      let message := Syntax.mkStrLit message
+      let parsed := Syntax.mkStrLit parsed
+      let alternate := Syntax.mkStrLit alternate
+      `(hw_boundary_error% $message $parsed $alternate)
+  | none => `($constructor [hwexpr| $left] [hwexpr| $right])
 
 private def shiftOperandTerm (operand : TSyntax `hwexpr) : MacroM (TSyntax `term) :=
   match operand with
@@ -1051,26 +1121,43 @@ macro_rules
       `(Loom.Hw.Expr.zext [hwexpr| $e] $width)
   | `([hwexpr| sext $e:hwexpr to $width:num]) =>
       `(Loom.Hw.Expr.sext [hwexpr| $e] $width)
-  | `([hwexpr| $a:hwexpr * $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.mul [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr / $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.udiv [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr % $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.urem [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr + $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.add [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr - $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.sub [hwexpr| $a] [hwexpr| $b])
+  | `([hwexpr| $a:hwexpr * $b:hwexpr]) =>
+      expandInfix .arithmetic "*" ⟨mkIdent ``Loom.Hw.Expr.mul⟩ a b
+  | `([hwexpr| $a:hwexpr / $b:hwexpr]) =>
+      expandInfix .arithmetic "/" ⟨mkIdent ``Loom.Hw.Expr.udiv⟩ a b
+  | `([hwexpr| $a:hwexpr % $b:hwexpr]) =>
+      expandInfix .arithmetic "%" ⟨mkIdent ``Loom.Hw.Expr.urem⟩ a b
+  | `([hwexpr| $a:hwexpr + $b:hwexpr]) =>
+      expandInfix .arithmetic "+" ⟨mkIdent ``Loom.Hw.Expr.add⟩ a b
+  | `([hwexpr| $a:hwexpr - $b:hwexpr]) =>
+      expandInfix .arithmetic "-" ⟨mkIdent ``Loom.Hw.Expr.sub⟩ a b
   | `([hwexpr| $a:hwexpr << $b:hwexpr]) => do
-      validateInfixBoundary .shift a b
-      `(hw_shift% "shl" [hwexpr| $a] $(← shiftOperandTerm b))
+      match infixBoundaryError? .shift "<<" a b with
+      | some (message, parsed, alternate) =>
+          `(hw_boundary_error% $(Syntax.mkStrLit message) $(Syntax.mkStrLit parsed) $(Syntax.mkStrLit alternate))
+      | none => `(hw_shift% "shl" [hwexpr| $a] $(← shiftOperandTerm b))
   | `([hwexpr| $a:hwexpr >> $b:hwexpr]) => do
-      validateInfixBoundary .shift a b
-      `(hw_shift% "shr" [hwexpr| $a] $(← shiftOperandTerm b))
-  | `([hwexpr| $a:hwexpr ++ $b:hwexpr]) => do validateInfixBoundary .concat a b; `(Loom.Hw.Expr.concat [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr & $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.and [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr ^ $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.xor [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr | $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.or [hwexpr| $a] [hwexpr| $b])
+      match infixBoundaryError? .shift ">>" a b with
+      | some (message, parsed, alternate) =>
+          `(hw_boundary_error% $(Syntax.mkStrLit message) $(Syntax.mkStrLit parsed) $(Syntax.mkStrLit alternate))
+      | none => `(hw_shift% "shr" [hwexpr| $a] $(← shiftOperandTerm b))
+  | `([hwexpr| $a:hwexpr ++ $b:hwexpr]) =>
+      expandInfix .concat "++" ⟨mkIdent ``Loom.Hw.Expr.concat⟩ a b
+  | `([hwexpr| $a:hwexpr & $b:hwexpr]) =>
+      expandInfix .bitwise "&" ⟨mkIdent ``Loom.Hw.Expr.and⟩ a b
+  | `([hwexpr| $a:hwexpr ^ $b:hwexpr]) =>
+      expandInfix .bitwise "^" ⟨mkIdent ``Loom.Hw.Expr.xor⟩ a b
+  | `([hwexpr| $a:hwexpr | $b:hwexpr]) =>
+      expandInfix .bitwise "|" ⟨mkIdent ``Loom.Hw.Expr.or⟩ a b
   | `([hwexpr| $a:hwexpr == $b:hwexpr]) => do
-      validateInfixBoundary .comparison a b
-      `(hw_eq% [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr <u $b:hwexpr]) => do validateInfixBoundary .comparison a b; `(Loom.Hw.Expr.ult [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr <s $b:hwexpr]) => do validateInfixBoundary .comparison a b; `(Loom.Hw.Expr.slt [hwexpr| $a] [hwexpr| $b])
+      match infixBoundaryError? .comparison "==" a b with
+      | some (message, parsed, alternate) =>
+          `(hw_boundary_error% $(Syntax.mkStrLit message) $(Syntax.mkStrLit parsed) $(Syntax.mkStrLit alternate))
+      | none => `(hw_eq% [hwexpr| $a] [hwexpr| $b])
+  | `([hwexpr| $a:hwexpr <u $b:hwexpr]) =>
+      expandInfix .comparison "<u" ⟨mkIdent ``Loom.Hw.Expr.ult⟩ a b
+  | `([hwexpr| $a:hwexpr <s $b:hwexpr]) =>
+      expandInfix .comparison "<s" ⟨mkIdent ``Loom.Hw.Expr.slt⟩ a b
   | `([hwexpr| if $c:hwexpr then $t:hwexpr else $f:hwexpr]) =>
       `(Loom.Hw.Expr.mux [hwexpr| $c] [hwexpr| $t] [hwexpr| $f])
   | `([hwexpr| $e:hwexpr]) => do
