@@ -109,10 +109,16 @@ system authoredSystem where
   clocks Clock.asynchronous
   reset Reset.together
   channel retire_pc : 64 depth 2 policy Chan.exchange
-  island core on core_clk := coreBody
+  island core on core_clk module lnp64mini_multiclock_core extends Machines.Lnp64mini.design where
+    rule publish_retire_pc :=
+      if retire_pc.canSend then send traceRdPcReg to retire_pc
   island observer on observer_clk := observerDesign
   connect retire_pc from core to observer
   realize retire_pc with Cdc.grayFifo
+
+/-- The incremental pretty fragment preserves the exact pre-existing core
+Design, not merely its behavior or emitted interface. -/
+theorem authoredCore_eq_coreBody : authoredSystem.core = coreBody := rfl
 
 set_option maxRecDepth 100000 in
 theorem authoredSystem_eq_builder : authoredSystem = builder.certify (by decide) := rfl
