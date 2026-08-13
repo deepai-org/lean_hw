@@ -1070,8 +1070,8 @@ def sel_cond : Expr 1 :=
 
 /-! ### load writeback / store merge -/
 
-def mem_src : Expr 64 := .mux (.eq st (L5 S_L1)) dmem_rd ddr_q
-def lw_shift : Expr 64 := .shr mem_src (.shl (.zext ld_boff_q 64) (L64 3))
+def mem_src : Expr 64 := [hwexpr| if st == $(L5 S_L1) then dmem_rd else ddr_q]
+def lw_shift : Expr 64 := [hwexpr| mem_src >> ((zext ld_boff_q to 64) << 3)]
 
 /-- Load write-back narrows to the declared load width and applies the named
 opcode's zero- or sign-extension contract. -/
@@ -1116,9 +1116,9 @@ def st_merge : Expr 64 :=
 /-! ### div abs helpers -/
 
 def div_a_abs : Expr 64 :=
-  .mux (.and div_sgn (.eq (.slice a 63 1) (L1 1))) (.add (.not a) (L64 1)) a
+  [hwexpr| if div_sgn & (a[63] == 1) then ~a + 1 else a]
 def div_b_abs : Expr 64 :=
-  .mux (.and div_sgn (.eq (.slice b 63 1) (L1 1))) (.add (.not b) (L64 1)) b
+  [hwexpr| if div_sgn & (b[63] == 1) then ~b + 1 else b]
 
 /-! ### scheduler bitmaps / priority encoders -/
 
