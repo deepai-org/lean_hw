@@ -1,7 +1,7 @@
 # Pretty Loom hardware DSL
 
-This document is the implementation plan for a readable, beginner-friendly
-authoring layer over Loom's existing hardware EDSL. The destination is concise
+This document specifies the readable, beginner-friendly authoring layer over
+Loom's existing hardware EDSL and records its validation plan. The result is concise
 hardware code that remains an ordinary shallow embedding: syntax elaborates to
 the current `Expr`, `Act`, `Reg`, `Mem`, `Declarations`, and `Design` values,
 and the kernel, semantics, compiler, verified simulators, and emission boundary
@@ -22,6 +22,23 @@ wrapper, and discoverable reset/realization library aliases—are in scope only
 as definitional or metadata wrappers over existing public values, `Design`
 fields, `Act.seq`, and existing endpoint analysis; they may not introduce a new
 transition or emission behavior.
+
+## Current state
+
+The v1 scalar, packed, memory, register-family, channel, and multiclock syntax
+described here is implemented. Its diagnostics, faithful inspection,
+single-design and scheduled-system runners, endpoint transaction checks, and
+generated component reconstruction have executable regression coverage. Acc8
+is authored through this layer and retains its lockstep, refinement,
+emitted-semantics, and text-round-trip gates. The tutorial and representative
+LNP64mini blocks likewise retain their existing semantic and artifact paths.
+
+The phases below remain the design and regression contract, not a request for
+wholesale source conversion. In particular, full LNP64mini conversion is not a
+deliverable; the SoC Fabric Gauntlet retains its structurally distinct adapter
+ordering; and target-specific `PhysicalLeaf` integration remains an expert
+multiclock/evidence concern until the core exposes an ordinary certified
+application facade for it.
 
 The purpose is not to accept or imitate Verilog. It is to make cycle semantics
 hard to misread. Hardware nouns and
@@ -55,7 +72,7 @@ commands reveal the exact underlying values and generated hardware on demand.
 
 ## Outcome
 
-The tutorial's saturating counter should eventually read:
+The tutorial's saturating counter reads:
 
 ```lean
 import Loom.Hw.Dsl
