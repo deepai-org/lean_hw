@@ -110,6 +110,35 @@ example : ([hwexpr| 0xff + 2] : Expr 8).eval zeroSt = 1#8 := by decide
 example : ([hwexpr| 1 << 8] : Expr 8).eval zeroSt = 0#8 := by decide
 example : ([hwexpr| 0b1010_0011] : Expr 8).eval zeroSt = 0xa3#8 := by decide
 
+namespace SharedConstants
+
+@[hw_const] def OPCODE : Nat := 0xa3
+@[hw_const] opaque OPAQUE_CODE : Nat
+
+end SharedConstants
+
+open SharedConstants
+
+example : ([hwexpr| OPCODE] : Expr 8) = .lit 0xa3#8 := rfl
+
+/--
+error: literal 163 does not fit in 7 bits; expected 0 through 127
+-/
+#guard_msgs in
+example : Expr 7 := [hwexpr| OPCODE]
+
+/--
+error: @[hw_const] value must reduce to a numeral for range checking
+-/
+#guard_msgs in
+example : Expr 8 := [hwexpr| OPAQUE_CODE]
+
+/--
+error: @[hw_const] requires a declaration of type Nat
+-/
+#guard_msgs in
+@[hw_const] def NOT_A_HARDWARE_CONSTANT : String := "no"
+
 end Tests.PrettyDsl
 
 namespace Tests.PrettyDsl.Counter
