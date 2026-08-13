@@ -802,6 +802,34 @@ example : renamed.monitor.rules = monitor.rules := rfl
 
 end Tests.PrettyDsl.ExistingIsland
 
+namespace Tests.PrettyDsl.ExtendedIsland
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+namespace Base
+hardware extension_base where
+  output reg count : 8
+  rule increment := count <- count + 1
+end Base
+
+/-- `extends` is a syntax-only migration seam: base declarations/rules remain
+first and the added pretty fragment is appended before ordinary assembly. -/
+system extended where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk module extension_base extends Base.design where
+    output reg observed : 8
+    rule observe := observed <- Base.count
+
+example : extended.worker.name = Base.design.name := rfl
+example : extended.worker.regs = Base.design.regs ++ [⟨"observed", 8, 0⟩] := rfl
+example : extended.worker.rules.map (·.name) = ["increment", "observe"] := rfl
+example : extended.application.artifact.emissionCheck.isOk := by native_decide
+
+end Tests.PrettyDsl.ExtendedIsland
+
 namespace Tests.PrettyDsl.GroupedRealization
 
 open Loom.Hw
