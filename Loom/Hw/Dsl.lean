@@ -2643,6 +2643,13 @@ private def simpleTermName? (term : TSyntax `term) : Option Name :=
 private def realizationNameIs (realization : PrettyRealization) (suffix : String) : Bool :=
   (simpleTermName? realization.kind).any (fun name => name.toString.endsWith suffix)
 
+private def inlineCombOutput? (item : TSyntax `hwitem) : Option Syntax :=
+  match item with
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $_:num := $_:hwexpr)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $_:ident := $_:hwexpr) =>
+      if qualifier.getId == `output && kind.getId == `wire then some name else none
+  | _ => none
+
 private def expandSystemCommand
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
     (namespaceName : Name) (systemName : TSyntax `ident)
@@ -2789,6 +2796,12 @@ private def expandSystemCommand
     if !independent && recoverable then
       Macro.throwErrorAt realization.kind
         "Cdc.recoverableGrayFifo requires Reset.independentFlush"
+  if !realizations.isEmpty then
+    for island in islands do
+      for item in island.body do
+        if let some output := inlineCombOutput? item then
+          Macro.throwErrorAt output
+            "the current multiclock top renderer does not project an island `output wire`; keep this as a component observation or register the exported value before realizing the system"
 
   let mut commands : Array Syntax := #[]
   let nestedName (localName : Name) := mkIdent (systemName.getId ++ localName)
