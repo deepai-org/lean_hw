@@ -1502,6 +1502,105 @@ private def hardwareLintFindings (registers : Array ScalarRegItem)
     (nextWritten, priorFindings ++ nextFindings)) ([], [])
   findings
 
+private inductive EndpointTransactionKind where
+  | send
+  | consume
+  deriving BEq
+
+private structure EndpointTransactionBound where
+  endpoint : Name
+  kind : EndpointTransactionKind
+  count : Nat
+  source : Syntax
+  generated : Bool := false
+
+private def EndpointTransactionKind.label : EndpointTransactionKind → String
+  | .send => "send"
+  | .consume => "consume"
+
+private def sameEndpointTransaction (left right : EndpointTransactionBound) : Bool :=
+  left.endpoint == right.endpoint && left.kind == right.kind
+
+/-- Sequentially composed statements and separate rules can both fire, so
+their per-endpoint bounds add. -/
+private def sequenceEndpointBounds (left right : List EndpointTransactionBound) :
+    List EndpointTransactionBound :=
+  right.foldl (fun accumulated next =>
+    match accumulated.findIdx? (sameEndpointTransaction · next) with
+    | none => accumulated ++ [next]
+    | some index => accumulated.modify index fun prior =>
+        ⟨prior.endpoint, prior.kind, prior.count + next.count, next.source,
+          prior.generated || next.generated⟩) left
+
+/-- Only one branch of an `if`/`case` fires, so its static bound is the maximum
+rather than the sum. -/
+private def chooseEndpointBounds (left right : List EndpointTransactionBound) :
+    List EndpointTransactionBound :=
+  right.foldl (fun accumulated next =>
+    match accumulated.findIdx? (sameEndpointTransaction · next) with
+    | none => accumulated ++ [next]
+    | some index => accumulated.modify index fun prior =>
+        if next.count > prior.count then next
+        else ⟨prior.endpoint, prior.kind, prior.count, prior.source,
+          prior.generated || next.generated⟩) left
+
+private def generatedCardinality? (values : TSyntax `term) : Option Nat :=
+  let valueTerm : TSyntax `term :=
+    if values.raw.getKind.toString.endsWith "pseudo.antiquot" then
+      ⟨values.raw[2][1]⟩
+    else values
+  match valueTerm with
+  | `(term| [$items,*]) => some items.getElems.size
+  | _ => none
+
+private partial def endpointTransactionBounds :
+    TSyntax `hwstmt → List EndpointTransactionBound
+  | `(hwstmt| send $_:hwexpr to $endpoint:ident) =>
+      [⟨endpoint.getId.eraseMacroScopes, .send, 1, endpoint, false⟩]
+  | statement@`(hwstmt| send $_:hwexpr to $endpoint:ident then $body:hwstmt) =>
+      sequenceEndpointBounds
+        [⟨endpoint.getId.eraseMacroScopes, .send, 1, statement, false⟩]
+        (endpointTransactionBounds body)
+  | `(hwstmt| consume $endpoint:ident) =>
+      [⟨endpoint.getId.eraseMacroScopes, .consume, 1, endpoint, false⟩]
+  | statement@`(hwstmt| receive $_:ident from $endpoint:ident then $body:hwstmt) =>
+      sequenceEndpointBounds (endpointTransactionBounds body)
+        [⟨endpoint.getId.eraseMacroScopes, .consume, 1, statement, false⟩]
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      chooseEndpointBounds (endpointTransactionBounds yes) (endpointTransactionBounds no)
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => endpointTransactionBounds yes
+  | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
+      arms.foldl (fun accumulated arm =>
+        let branch := match arm with
+          | `(hwcasearm| | default => $body:hwstmt)
+          | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => endpointTransactionBounds body
+          | _ => []
+        chooseEndpointBounds accumulated branch) []
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.foldl (fun accumulated statement =>
+        sequenceEndpointBounds accumulated (endpointTransactionBounds statement)) []
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
+      endpointTransactionBounds body
+  | `(hwstmt| for $_:ident in $values:term generate $body:hwstmt) =>
+      let bodyBounds := endpointTransactionBounds body
+      match generatedCardinality? values with
+      | some count => bodyBounds.map fun bound =>
+          ⟨bound.endpoint, bound.kind, count * bound.count, bound.source, false⟩
+      | none => bodyBounds.map fun bound =>
+          ⟨bound.endpoint, bound.kind, bound.count, bound.source, true⟩
+  | _ => []
+
+private def validateEndpointTransactions (rules : Array RuleItem) : MacroM Unit := do
+  let bounds := rules.foldl (fun accumulated rule =>
+    sequenceEndpointBounds accumulated (endpointTransactionBounds rule.body)) []
+  for bound in bounds do
+    if bound.generated then
+      Macro.throwErrorAt bound.source
+        s!"cannot establish the one-{bound.kind.label}-per-event rule for endpoint '{bound.endpoint}' through `for ... generate`; move the transaction outside the generated body"
+    if bound.count > 1 then
+      Macro.throwErrorAt bound.source
+        s!"endpoint '{bound.endpoint}' may receive {bound.count} {bound.kind.label} transactions in one event; Loom permits at most one unless an explicit arbiter combines them"
+
 private partial def deadDefaultFindings (domains : Array StateDomain) :
     TSyntax `hwstmt → List LintFinding
   | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) =>
@@ -1906,6 +2005,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     validateWriteTargets writable ruleItem.body
     validateLocalBinders (locals.map (·.getId)) ruleItem.body
     validateCases stateDomains constants ruleItem.body
+  validateEndpointTransactions rules
   pure (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
     packedInputs, packedWires, registerArrays, stateDomains, rules)
 
