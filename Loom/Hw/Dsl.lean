@@ -42,6 +42,57 @@ instance {width : Nat} : CoeHead (Input width) (Expr width) := ⟨rd⟩
 
 end Input
 
+/-! ## Proof-carrying endpoint action escapes
+
+An ordinary `Act` splice is opaque to the command-time channel checker.  The
+wrapper below carries the exact property that checker needs, stated directly
+with `Act.maxWritesTo`; it deliberately introduces no parallel action
+semantics.  Application syntax normally never mentions this API. -/
+
+/-- Evidence that an action performs at most one source transaction and at
+most one sink transaction at every generated channel coordinate. -/
+structure EndpointFootprint (action : Act) : Prop where
+  source : ∀ {width : Nat} (channel : Chan width),
+    action.maxWritesTo channel.sourceValidName 1 ≤ 1
+  sink : ∀ {width : Nat} (channel : Chan width),
+    action.maxWritesTo channel.sinkPopName 1 ≤ 1
+
+/-- An action whose per-event endpoint transaction footprint has been proved.
+Use this only for an open or irreducible `$stmt` escape; direct hardware
+statements are checked automatically. -/
+structure EndpointAct where
+  action : Act
+  footprint : EndpointFootprint action
+
+namespace EndpointAct
+
+/-- Expert constructor for an arbitrary action.  The obligation is phrased in
+the same core `Act.maxWritesTo` function used by system validation. -/
+def ofAct (action : Act) (footprint : EndpointFootprint action) : EndpointAct :=
+  ⟨action, footprint⟩
+
+def skip : EndpointAct :=
+  ⟨Act.skip, by constructor <;> intro _ channel <;> simp [Act.maxWritesTo]⟩
+
+/-- Mutually exclusive alternatives preserve the one-transaction bound. -/
+def ite (condition : Expr 1) (yes no : EndpointAct) : EndpointAct :=
+  ⟨Act.ite condition yes.action no.action, by
+    constructor <;> intro _ channel
+    · simpa [Act.maxWritesTo] using
+        max_le (yes.footprint.source channel) (no.footprint.source channel)
+    · simpa [Act.maxWritesTo] using
+        max_le (yes.footprint.sink channel) (no.footprint.sink channel)⟩
+
+/-- Sequential composition is intentionally proof-explicit: for open channel
+parameters, Lean cannot assume two differently named variables denote distinct
+generated endpoints.  Concrete non-aliasing obligations normally close with
+`simp`/`native_decide`. -/
+def seq (first second : EndpointAct)
+    (footprint : EndpointFootprint (.seq first.action second.action)) : EndpointAct :=
+  ⟨.seq first.action second.action, footprint⟩
+
+end EndpointAct
+
 /-- Declaration wrapper paired with the read-only `Input` handle. -/
 def Declarations.addWireInput {width : Nat} (declarations : Declarations)
     (input : Input width) : Declarations :=
@@ -925,6 +976,8 @@ will own newline-separated source statements and preserve their locations. -/
 
 syntax "skip" : hwstmt
 syntax (name := hwStmtSplice) "$stmt" "(" term ")" : hwstmt
+syntax (name := hwEndpointStmtSplice) (priority := high)
+  "endpoint_stmt" "(" term ")" : hwstmt
 syntax ident " <- " hwexpr : hwstmt
 syntax ident "[" "port" num "," hwexpr "]" " <- " hwexpr : hwstmt
 syntax ident "[" hwexpr "]" " <- " hwexpr : hwstmt
@@ -942,6 +995,7 @@ syntax "|" hwexpr "=>" hwstmt : hwcasearm
 syntax "|" "default" "=>" hwstmt : hwcasearm
 syntax "case" hwexpr "of" withPosition(many1Indent(ppLine hwcasearm)) : hwstmt
 syntax "{" hwstmt,* "}" : hwstmt
+syntax (name := hwEndpointAction) "hw_endpoint_action%" term : term
 
 mutual
   private partial def expandCase (scrutinee : TSyntax `hwexpr)
@@ -962,6 +1016,8 @@ mutual
 
   private partial def expandStmt : TSyntax `hwstmt → MacroM (TSyntax `term)
     | `(hwstmt| skip) => `(Loom.Hw.Act.skip)
+    | `(hwstmt| endpoint_stmt($action:term)) =>
+        `(hw_endpoint_action% $action)
     | `(hwstmt| $target:ident <- $value:hwexpr) => do
         let name := target.getId
         if name.isAtomic then
@@ -1031,6 +1087,20 @@ mutual
         | _ => do
             `(Loom.Hw.Act.seq $(← expandStmt statement) $(← expandSeq rest))
 end
+
+/-- Elaborate a proof-carrying endpoint escape with a source-level diagnostic,
+rather than exposing the wrapper's projection or a failed coercion. -/
+@[term_elab hwEndpointAction] def elabHwEndpointAction : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_endpoint_action% $actionSyntax:term) => do
+      let action ← elabTerm actionSyntax none
+      let actualType ← Meta.whnf (← Meta.inferType action)
+      unless actualType.isConstOf ``Loom.Hw.EndpointAct do
+        throwErrorAt actionSyntax
+          "an endpoint statement escape requires `EndpointAct`; use `EndpointAct.ofAct`, `.ite`, or `.seq` so Loom can prove the one-transaction-per-endpoint rule"
+      let result ← Meta.mkAppM ``Loom.Hw.EndpointAct.action #[action]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
 
 syntax "[hwstmt| " hwstmt "]" : term
 
@@ -1605,6 +1675,27 @@ private def validateEndpointTransactions (rules : Array RuleItem) : MacroM Unit 
       Macro.throwErrorAt bound.source
         s!"endpoint '{bound.endpoint}' may receive {bound.count} {bound.kind.label} transactions in one event; Loom permits at most one unless an explicit arbiter combines them"
 
+/-- Find an action escape whose endpoint effects cannot be inspected by the
+surface checker. `endpoint_stmt(...)` is separately accepted because its term must
+elaborate as a proof-carrying `EndpointAct`. -/
+private partial def rawStatementEscape? : TSyntax `hwstmt → Option Syntax
+  | statement@`(hwstmt| $stmt($_:term)) => some statement
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt)
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt)
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt)
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt)
+  | `(hwstmt| if $_:hwexpr then $body:hwstmt) => rawStatementEscape? body
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      (rawStatementEscape? yes).orElse (fun _ => rawStatementEscape? no)
+  | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
+      arms.toList.findSome? fun (arm : TSyntax `hwcasearm) => match arm with
+        | `(hwcasearm| | default => $body:hwstmt)
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => rawStatementEscape? body
+        | _ => none
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.toList.findSome? rawStatementEscape?
+  | _ => none
+
 private partial def deadDefaultFindings (domains : Array StateDomain) :
     TSyntax `hwstmt → List LintFinding
   | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) =>
@@ -2018,6 +2109,9 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     validateWriteTargets writable ruleItem.body
     validateLocalBinders (locals.map (·.getId)) ruleItem.body
     validateCases stateDomains constants ruleItem.body
+    if let some escape := rawStatementEscape? ruleItem.body then
+      Macro.throwErrorAt escape
+        "an opaque `$stmt(...)` inside `hardware` could hide multiple channel transactions; use direct hardware statements, or `endpoint_stmt(...)` with an `EndpointAct` built from the endpoint composition API"
   validateEndpointTransactions rules
   pure (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
     packedInputs, packedWires, registerArrays, stateDomains, rules)
