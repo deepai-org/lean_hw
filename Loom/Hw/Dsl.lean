@@ -2439,6 +2439,8 @@ syntax (priority := high) ident systemSameLine ident systemSameLine ":" num syst
 syntax (priority := high) ident systemSameLine ident systemSameLine ":" ident systemSameLine ident num systemSameLine ident term:max : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident ":=" term : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident
+  systemSameLine "module" ident ":=" term : hwsystemitem
+syntax (priority := high) ident systemSameLine ident "on" ident
   (systemSameLine "module" ident)? "where"
   withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "from" ident "to" ident : hwsystemitem
@@ -2587,6 +2589,11 @@ private def expandSystemCommand
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock := design`"
           islands := islands.push { name, clock, design := some design }; pure 4
+      | `(hwsystemitem| $kind:ident $name:ident on $clock:ident module $moduleName:ident := $design:term) =>
+          unless kind.getId == `island do
+            Macro.throwErrorAt kind "expected `island name on clock module moduleName := design`"
+          islands := islands.push { name, clock, design := some design, moduleName := some moduleName }
+          pure 4
       | `(hwsystemitem| $kind:ident $name:ident on $clock:ident $[module $moduleName:ident]? where $body:hwitem*) =>
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock where ...`"
@@ -2703,7 +2710,12 @@ private def expandSystemCommand
                 let resolved := mkIdentFrom name resolvedName
                 `(term| hw_exact_const% $resolved)
             | _ => pure supplied
-          let mut scopedTerm := baseTerm
+          let namedTerm ← match island.moduleName with
+            | none => pure baseTerm
+            | some moduleName =>
+                let emittedName := Syntax.mkStrLit moduleName.getId.toString
+                `(term| { $baseTerm with name := $emittedName })
+          let mut scopedTerm := namedTerm
           for channel in channels.reverse do
             let channelName := nestedName channel.name.getId
             scopedTerm ← `(let $(channel.name) := $channelName; let _ := $(channel.name); $scopedTerm)
