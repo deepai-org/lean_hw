@@ -2293,7 +2293,7 @@ syntax (priority := high) ident systemSameLine ident "on" ident
   (systemSameLine "module" ident)? "where"
   withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "from" ident "to" ident : hwsystemitem
-syntax (priority := high) ident systemSameLine ident "with" term : hwsystemitem
+syntax (priority := high) ident systemSameLine ident,+ "with" term : hwsystemitem
 syntax (name := systemCmd) (docComment)? ident ident "where"
   withPosition(many1Indent(ppLine hwsystemitem)) : command
 
@@ -2398,10 +2398,12 @@ private def expandSystemCommand
           unless kind.getId == `connect do
             Macro.throwErrorAt kind "expected `connect channel from source to sink`"
           connections := connections.push ⟨channel, source, sink⟩; pure 5
-      | `(hwsystemitem| $keyword:ident $channel:ident with $kind:term) =>
+      | `(hwsystemitem| $keyword:ident $routeChannels:ident,* with $kind:term) =>
           unless keyword.getId == `realize do
-            Macro.throwErrorAt keyword "expected `realize channel with implementation`"
-          realizations := realizations.push ⟨channel, kind⟩; pure 6
+            Macro.throwErrorAt keyword "expected `realize channel, ... with implementation`"
+          for channel in routeChannels.getElems do
+            realizations := realizations.push ⟨channel, kind⟩
+          pure 6
       | _ => Macro.throwErrorAt item "unsupported system declaration"
     if phase < priorPhase then
       Macro.throwErrorAt item
