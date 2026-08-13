@@ -652,6 +652,36 @@ outputs:
 
 end Tests.PrettyDsl.Interface
 
+namespace Tests.PrettyDsl.DeclarationTerms
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+private def dataWidth : Nat := 4 + 4
+private def resetNat : Nat := 0xa5
+private def resetBits : BitVec dataWidth := 0x5a
+
+hardware declaration_terms where
+  input incoming : dataWidth
+  output reg fromNat : dataWidth := resetNat
+  reg fromBits : dataWidth := resetBits
+  output wire observed : dataWidth := fromNat
+  memory scratch : dataWidth [16]
+  output reg slots : dataWidth [2]
+  states mode : dataWidth { Idle, Busy } := Idle
+
+  rule hold := skip
+
+example : incoming = (⟨"incoming"⟩ : Input 8) := rfl
+example : fromNat = (⟨"fromNat"⟩ : Reg 8) := rfl
+example : scratch = (⟨"scratch"⟩ : Mem 4 8) := rfl
+example : declarations.regs.map (fun declaration => declaration.init.toNat) =
+    [0xa5, 0x5a, 0, 0, 0] := by decide
+example : slots = (⟨"slots"⟩ : RegArray 8 2) := rfl
+example : mode = (⟨"mode"⟩ : Reg 8) := rfl
+
+end Tests.PrettyDsl.DeclarationTerms
+
 namespace Tests.PrettyDsl.Memory
 
 open Loom.Hw
@@ -1991,6 +2021,54 @@ namespace Tests.PrettyDsl.DeclarationDiagnostics
 
 open Loom.Hw
 open Loom.Hw.Dsl
+
+private opaque opaqueWidth : Nat
+private def zeroWidth : Nat := 0
+private def overflowingReset : Nat := 0x100
+private opaque opaqueReset : Nat
+private def narrowReset : BitVec 7 := 0x7f
+
+namespace OpaqueWidth
+/-- error: hardware declaration width must reduce to a numeral -/
+#guard_msgs in
+hardware opaque_declaration_width where
+  reg opaqueWidthValue : opaqueWidth
+end OpaqueWidth
+
+namespace ZeroWidth
+/-- error: hardware widths must be positive -/
+#guard_msgs in
+hardware zero_declaration_width where
+  reg zeroWidthValue : zeroWidth
+end ZeroWidth
+
+namespace OverflowingReset
+/-- error: reset value 256 does not fit in 8 bits; expected 0 through 255 -/
+#guard_msgs in
+hardware overflowing_reset where
+  reg overflowingResetValue : 8 := overflowingReset
+end OverflowingReset
+
+namespace OpaqueReset
+/-- error: reset constant must reduce to a numeral for range checking -/
+#guard_msgs in
+hardware opaque_reset where
+  reg opaqueResetValue : 8 := opaqueReset
+end OpaqueReset
+
+namespace WrongWidthReset
+/-- error: reset value has width 7, but the register has width 8 -/
+#guard_msgs in
+hardware wrong_width_reset where
+  reg narrowResetValue : 8 := narrowReset
+end WrongWidthReset
+
+namespace NegativeReset
+/-- error: negative reset literals are not implicit bit patterns; use an explicit all-ones `BitVec` value such as `BitVec.ofNat width (2^width - 1)` -/
+#guard_msgs in
+hardware negative_reset where
+  reg negativeResetValue : 8 := (-1)
+end NegativeReset
 
 /-- error: duplicate design-local name 'value' -/
 #guard_msgs in
