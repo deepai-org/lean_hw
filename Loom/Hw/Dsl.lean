@@ -3164,6 +3164,45 @@ private def expandSystemCommand
       elabCommand expanded
   | _ => throwUnsupportedSyntax
 
+/-! ## Multiclock proof surface
+
+Application proofs should name the source island, not reconstruct the generated
+`SystemIsland` value or discharge its lookup equation by hand.  This tactic is
+only a checked elaboration convenience around `System.liftIsland`; the theorem
+and its schedule quantification remain unchanged. -/
+
+syntax (name := systemLiftTactic)
+  "system_lift" ident ident "using" term : tactic
+
+@[tactic systemLiftTactic] def elabSystemLift : Tactic := fun stx => do
+  match stx with
+  | `(tactic| system_lift $systemSyntax:ident $islandSyntax:ident using $invariant:term) =>
+      withMainContext do
+        let systemName ← resolveGlobalConstNoOverload systemSyntax
+        let islandHandleName := systemName ++
+          Name.mkSimple (islandSyntax.getId.toString ++ "Island")
+        unless (← getEnv).contains islandHandleName do
+          throwErrorAt islandSyntax
+            s!"system '{systemSyntax.getId}' has no island named '{islandSyntax.getId}'"
+        let systemNameSyntax := mkIdentFrom systemSyntax systemName
+        let islandHandleSyntax := mkIdentFrom islandSyntax islandHandleName
+        let valueSyntax := mkIdentFrom systemSyntax (systemName ++ `value)
+        let builderSyntax := mkIdentFrom systemSyntax (systemName ++ `builder)
+        let tactic ← `(tactic|
+          exact Loom.Hw.System.liftIsland $systemNameSyntax
+            ($islandHandleSyntax).toSystemIsland
+            (by
+              unfold $systemNameSyntax $valueSyntax
+              rw [Loom.Hw.System.findIsland?_certify]
+              simp [$builderSyntax:term, Loom.Hw.SystemBuilder.findIsland?,
+                Loom.Hw.SystemBuilder.addIsland, Loom.Hw.SystemBuilder.addChannel,
+                Loom.Hw.SystemBuilder.channel,
+                Loom.Hw.SystemBuilder.withClockRel, Loom.Hw.System.empty,
+                Loom.Hw.IslandHandle.toSystemIsland, $islandHandleSyntax:term])
+            $invariant)
+        evalTactic tactic
+  | _ => throwUnsupportedSyntax
+
 private def coTickPolicyName : Loom.Hw.FullCoTickPolicy → String
   | .exchange => "exchange"
   | .refusePush => "refuse-push"

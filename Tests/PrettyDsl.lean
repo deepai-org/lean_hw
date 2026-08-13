@@ -731,6 +731,22 @@ example : existing.monitor = monitor := rfl
 example : existing.islands.head?.map (fun island => island.design.name) =
     some "existing_monitor" := by decide
 
+private theorem monitorTrue :
+    (monitor.toAssumedOpenTSys (fun _ _ => True)).Invariant (fun _ => True) := by
+  intro _ _
+  trivial
+
+/-- The application proof names the declared island; generated handles and
+lookup equalities remain behind the proof command. -/
+example : existing.Invariant
+    (System.atIsland "monitor" (fun _ => True)) := by
+  system_lift existing monitor using monitorTrue
+
+/-- error: system 'existing' has no island named 'missing' -/
+#guard_msgs in
+example : True := by
+  system_lift existing missing using monitorTrue
+
 system renamed where
   clock clk
   clocks Clock.asynchronous
