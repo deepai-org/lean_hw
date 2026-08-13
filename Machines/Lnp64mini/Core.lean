@@ -1670,76 +1670,83 @@ where
   L9 (n : Nat) : Expr 9 := .lit (BitVec.ofNat 9 n)
   L32 (n : Nat) : Expr 32 := .lit (BitVec.ofNat 32 n)
   cmd13reset : Act :=
-    .seq (pcReg.set (L64 TEXT_BASE)) <|
-    .seq (retireReg.set (L32 0)) <|
-    .seq (haltedReg.set (L1 0)) <|
-    .seq (runningReg.set (L1 0)) <|
-    .seq (stReg.set (L5 S_IDLE)) <|
-    .seq (uartWptrReg.set (L9 0)) <|
-    .seq (rxRptrReg.set (L9 0)) <|
-    .seq (rxWptrReg.set (L9 0)) <|
-    .seq (trapActiveReg.set (L1 0)) <|
-    .seq (curReg.set (L5 0)) <|
-    .seq (lrValidReg.set (L1 0)) <|
-    .seq (zeroingReg.set (L1 1)) <|
+    [hwstmt| {
+      pcReg <- $(L64 TEXT_BASE),
+      retireReg <- 0,
+      haltedReg <- 0,
+      runningReg <- 0,
+      stReg <- $(L5 S_IDLE),
+      uartWptrReg <- 0,
+      rxRptrReg <- 0,
+      rxWptrReg <- 0,
+      trapActiveReg <- 0,
+      curReg <- 0,
+      lrValidReg <- 0,
+      zeroingReg <- 1,
     -- D20: `tpc` is a memory, so its 32-entry reset is *swept* by the
     -- zeroing engine (`tpcTriples` entry 1) over the first 32 of the 1024
     -- zeroing cycles instead of being written all at once here. Nothing
     -- reads `tpc` while `zeroing` is high (every read sits under `fsmEn`,
     -- which contains `¬zeroing`), so the transient is unobservable and the
     -- post-sweep contents are identical.
-    .seq (zctrReg.set (.lit (BitVec.ofNat 10 0)))
-      ((List.finRange NT).foldr (fun i acc =>
+      zctrReg <- 0,
+      $stmt((List.finRange NT).foldr (fun i acc =>
         .seq (tstateRegs.set i (if i.val = 0 then L2 1 else L2 0)) acc) .skip)
+    }]
   cmdBody : Act :=
-    .seq (.ite (ci 14) (regSelReg.set (.slice cmdData 0 5)) .skip) <|
-    .seq (.ite (ci 15) (dmemAddrJReg.set cmdData) .skip) <|
-    .seq (.ite (ci 16) (dmemLoJReg.set cmdData) .skip) <|
-    .seq (.ite (ci 17)
-      (.seq (dmemWeReg.set (L1 1))
-        (.seq (dmemAReg.set (.slice dmem_addr_j 0 9))
-              (dmemWdReg.set (.concat cmdData dmem_lo_j)))) .skip) <|
-    .seq (.ite (ci 18) (uartRidxReg.set (.slice cmdData 0 8)) .skip) <|
-    .seq (.ite (ci 19)
-      (.seq (rxBank.write 0 (.slice rx_wptr 0 8) (.slice cmdData 0 8))
-            (rxWptrReg.set (.add rx_wptr (L9 1)))) .skip) <|
-    .seq (.ite (ci 40) (ddrAddrJReg.set cmdData) .skip) <|
-    .seq (.ite (ci 41) (ddrLoJReg.set cmdData) .skip) <|
-    .seq (.ite (ci 42)
-      (.seq (jtagWrReg.set (L1 1))
-        (.seq (jtagWdataReg.set (.concat cmdData ddr_lo_j))
-              (ddrAddrJReg.set (.add ddr_addr_j (L32 8))))) .skip) <|
-    .seq (.ite (ci 43) (jtagRdReg.set (L1 1)) .skip) <|
+    [hwstmt| {
+    if $(ci 14) then regSelReg <- cmdData[4:0],
+    if $(ci 15) then dmemAddrJReg <- cmdData,
+    if $(ci 16) then dmemLoJReg <- cmdData,
+    if $(ci 17) then {
+      dmemWeReg <- 1,
+      dmemAReg <- dmem_addr_j[8:0],
+      dmemWdReg <- cmdData ++ dmem_lo_j
+    },
+    if $(ci 18) then uartRidxReg <- cmdData[7:0],
+    if $(ci 19) then {
+      rxBank[port 0, rx_wptr[7:0]] <- cmdData[7:0],
+      rxWptrReg <- rx_wptr + 1
+    },
+    if $(ci 40) then ddrAddrJReg <- cmdData,
+    if $(ci 41) then ddrLoJReg <- cmdData,
+    if $(ci 42) then {
+      jtagWrReg <- 1,
+      jtagWdataReg <- cmdData ++ ddr_lo_j,
+      ddrAddrJReg <- ddr_addr_j + 8
+    },
+    if $(ci 43) then jtagRdReg <- 1,
     -- EXT-8: select a commit-trace ring entry to read back. The ring itself
     -- is host-readable only; nothing in the core reads it, so a wrong select
     -- cannot perturb execution -- which is what makes it safe to leave armed
     -- during a real boot.
-    .seq (.ite (ci CMD_TRACE_SEL) (traceSelReg.set (.slice cmdData 0 4)) .skip) <|
-    .seq (.ite (ci 50) (regWselReg.set (.slice cmdData 0 5)) .skip) <|
-    .seq (.ite (ci 51) (regWloReg.set cmdData) .skip) <|
-    .seq (.ite (ci 53) (pcReg.set (.zext cmdData 64)) .skip) <|
-    .seq (.ite (.and (ci 54) (.eq (.slice cmdData 0 1) (L1 1)))
-      (.seq (trapActiveReg.set (L1 0))
+    if $(ci CMD_TRACE_SEL) then traceSelReg <- cmdData[3:0],
+    if $(ci 50) then regWselReg <- cmdData[4:0],
+    if $(ci 51) then regWloReg <- cmdData,
+    if $(ci 53) then pcReg <- zext cmdData to 64,
+    if $(ci 54) & (cmdData[0] == 1) then {
+      trapActiveReg <- 0,
         -- EXT-8: `retireInc`, not a bare retire bump. A host-serviced trap
         -- IS a committed instruction, and routing it here keeps the invariant
         -- "retire incremented <-> a trace entry was pushed" true.
-        (.seq retireInc
-              (stReg.set (L5 S_F0)))) .skip) <|
-    .seq (.ite (ci 55) (busReqReg.set (.slice cmdData 0 1)) .skip) <|
+      $stmt(retireInc),
+      stReg <- $(L5 S_F0)
+    },
+    if $(ci 55) then busReqReg <- cmdData[0],
     -- EXT-1: the quantum reload value (0 = preemption disabled). `qctr` is
     -- armed from the same word in `quantumRule`, which owns that register.
-    .seq (.ite (ci CMD_QUANTUM) (quantumReg.set cmdData) .skip) <|
+    if $(ci CMD_QUANTUM) then quantumReg <- cmdData,
     -- EXT-3: the poison bitmap, whole-word (see `CMD_POISON`).
-    .seq (.ite (ci CMD_POISON) (poisonReg.set cmdData) .skip) <|
+    if $(ci CMD_POISON) then poisonReg <- cmdData,
     -- EXT-7: MMU enable and the TLB entry selector.
-    .seq (.ite (ci CMD_MMU_EN) (mmuEnReg.set (.slice cmdData 0 1)) .skip) <|
-    .seq (.ite (ci CMD_GATE_TBL) (gateTblBaseReg.set cmdData) .skip) <|
-    .seq (.ite (ci CMD_CAP_TBL) (capTblBaseReg.set cmdData) .skip) <|
-    .seq (.ite (ci CMD_TLB_SEL) (tlbSelReg.set (.slice cmdData 0 3)) .skip) <|
+    if $(ci CMD_MMU_EN) then mmuEnReg <- cmdData[0],
+    if $(ci CMD_GATE_TBL) then gateTblBaseReg <- cmdData,
+    if $(ci CMD_CAP_TBL) then capTblBaseReg <- cmdData,
+    if $(ci CMD_TLB_SEL) then tlbSelReg <- cmdData[2:0],
     -- EXT-7 stage B: per-entry VMA fill. `cmd 65` = base + domain,
     -- `cmd 66` = limit (and VALIDATES, so a half-written VMA is never live),
     -- `cmd 68` = physical base + the VMA's epoch cell.
-    .seq (actSeq ((List.finRange TLBN).map (fun i =>
+    $stmt(actSeq ((List.finRange TLBN).map (fun i =>
           let sel := .eq tlb_sel (.lit (BitVec.ofNat 3 i.val))
           actSeq
           [ .ite (.and (ci CMD_TLB_VPN) sel)
@@ -1754,12 +1761,16 @@ where
               -- cmd_data[23:0] is the DELTA (phys - base), computed by the
               -- host; [31:24] carries the VMA's epoch cell.
               (.seq (tlbPhysRegs.set i (.zext (.slice cmdData 0 24) 32))
-                    (tlbCellRegs.set i (.slice cmdData 24 8))) .skip ]))) <|
+                    (tlbCellRegs.set i (.slice cmdData 24 8))) .skip ]))),
     -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
-      (.ite (ci 13)
-        (.seq (.ite (.eq (.slice cmdData 0 1) (L1 1)) cmd13reset .skip)
-              (.ite (.eq (.slice cmdData 1 1) (L1 1))
-                (.seq (runningReg.set (L1 1)) (stReg.set (L5 S_F0))) .skip)) .skip)
+    if $(ci 13) then {
+      if cmdData[0] == 1 then $stmt(cmd13reset),
+      if cmdData[1] == 1 then {
+        runningReg <- 1,
+        stReg <- $(L5 S_F0)
+      }
+    }
+  }]
 
 /-- (7) ddr_rd_l latch. -/
 def ddrRdLRule : Rule :=
