@@ -645,11 +645,28 @@ private def certifiedChoice : Loom.Hw.EndpointAct :=
 private def certifiedSkipSequence : Loom.Hw.EndpointAct :=
   Loom.Hw.EndpointAct.skipThen certifiedSend
 
+private def secondaryQueue : Chan 16 := ⟨"secondary_queue", 2, .exchange⟩
+private def secondarySource := secondaryQueue.source
+private def secondarySink := secondaryQueue.sink
+
+/-- Open multi-channel actions require only the meaningful non-alias fact;
+the endpoint footprint itself is derived by the library. -/
+private def certifiedTwoSends : Loom.Hw.EndpointAct :=
+  Loom.Hw.EndpointAct.sendThenSend source (.lit 42#8)
+    secondarySource (.lit 0x1234#16) (by decide)
+private def certifiedTwoConsumes : Loom.Hw.EndpointAct :=
+  Loom.Hw.EndpointAct.consumeThenConsume sink secondarySink (by decide)
+
 example : [hwstmt| endpoint_stmt(certifiedSend)] = source.send (.lit 42#8) := rfl
 example : [hwstmt| endpoint_stmt(certifiedChoice)] =
     Act.ite (.lit 1) (source.send (.lit 42#8)) .skip := rfl
 example : [hwstmt| endpoint_stmt(certifiedSkipSequence)] =
     Act.seq .skip (source.send (.lit 42#8)) := rfl
+example : [hwstmt| endpoint_stmt(certifiedTwoSends)] =
+    Act.seq (source.send (.lit 42#8))
+      (secondarySource.send (.lit 0x1234#16)) := rfl
+example : [hwstmt| endpoint_stmt(certifiedTwoConsumes)] =
+    Act.seq sink.consume secondarySink.consume := rfl
 
 namespace CertifiedEscape
 hardware certified_escape where
