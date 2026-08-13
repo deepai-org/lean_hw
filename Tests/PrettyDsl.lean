@@ -288,6 +288,9 @@ example : ([hwexpr| zext a[3:0] to 8] : Expr 8) =
 
 example : [hwstmt| { a <- b + 1, flag <- 1 }] =
     Act.seq (a.set (.add b.rd (.lit 1))) (flag.set (.lit 1)) := rfl
+example : [hwstmt| {}] = Act.skip := rfl
+example : [hwstmt| {{a <- b}, {flag <- 1}}] =
+    Act.seq (a.set b.rd) (flag.set (.lit 1)) := rfl
 
 example : [hwstmt| if flag then a <- b else b <- a] =
     Act.ite flag.rd (a.set b.rd) (b.set a.rd) := rfl
@@ -1769,3 +1772,46 @@ hardware reserved_generated_suffix where
   reg status_name : 1
 
 end Tests.PrettyDsl.DeclarationDiagnostics
+
+namespace Tests.PrettyDsl.GeneratedNameDiagnostics
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+namespace ExistingHandle
+def occupied : Nat := 0
+
+/-- error: 'Tests.PrettyDsl.GeneratedNameDiagnostics.ExistingHandle.occupied' has already been declared -/
+#guard_msgs in
+hardware existing_handle where
+  reg occupied : 1
+end ExistingHandle
+
+namespace ExistingLemma
+def value_name : String := "occupied"
+
+/-- error: generated name lemma 'Tests.PrettyDsl.GeneratedNameDiagnostics.ExistingLemma.value_name' has already been declared -/
+#guard_msgs in
+hardware existing_name_lemma where
+  reg value : 1
+end ExistingLemma
+
+namespace ExistingBundle
+def declarations : Nat := 0
+
+/-- error: generated declaration 'Tests.PrettyDsl.GeneratedNameDiagnostics.ExistingBundle.declarations' has already been declared -/
+#guard_msgs in
+hardware existing_bundle where
+  reg value : 1
+end ExistingBundle
+
+namespace ExistingStateProof
+def mode_cases : Nat := 0
+
+/-- error: generated state proof declaration 'Tests.PrettyDsl.GeneratedNameDiagnostics.ExistingStateProof.mode_cases' has already been declared -/
+#guard_msgs in
+hardware existing_state_proof where
+  states mode : { Idle, Busy }
+end ExistingStateProof
+
+end Tests.PrettyDsl.GeneratedNameDiagnostics
