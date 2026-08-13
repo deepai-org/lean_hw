@@ -503,13 +503,14 @@ def gdepthRd (idx : Expr 5) : Expr 3 := gdepthBank.rd idx
 /-- Stack address `cur*MAXD + off` for `tcont`/`tcdom` (MAXD=4 ⇒ `cur<<2 | off`).
 `off` is the depth slot; the low 2 bits suffice since `off < MAXD = 4`. -/
 def gcIdx (off : Expr 3) : Expr 7 :=
-  .concat cur (.slice off 0 2)
+  [hwexpr| cur ++ off[1:0]]
 /-- The stack is full: `gdepth[cur] >= MAXD`. A `gate_call` here is refused
 (§9: a clean bounds-checked overflow), not silently overwriting a frame. -/
-def gateFull : Expr 1 := .not (.ult (gdepthRd cur) (.lit (BitVec.ofNat 3 MAXD)))
+def gateFull : Expr 1 :=
+  [hwexpr| ~($(gdepthRd cur) <u $(Expr.lit (BitVec.ofNat 3 MAXD)))]
 /-- Push slot (current depth) and pop slot (depth-1) as `tcont`/`tcdom` indices. -/
 def gPushIdx : Expr 7 := gcIdx (gdepthRd cur)
-def gPopIdx  : Expr 7 := gcIdx (.sub (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
+def gPopIdx  : Expr 7 := gcIdx [hwexpr| $(gdepthRd cur) - 1]
 /-! EXT-7: the TLB. Four parallel arrays indexed by the VPN's low 3 bits
 (direct-mapped), so a lookup is one read of each plus one comparison. -/
 /-- EXT-7: TLB entries. Eight is what the guest's region count needs. -/
@@ -552,10 +553,10 @@ def tlbVldReg : Reg 8 := ⟨"tlb_vld"⟩
 def tlb_vld : Expr 8 := tlbVldReg.rd
 /-- Valid bit of entry `i` at a *static* index (the lookup is associative). -/
 def tlbVldBit (i : Fin TLBN) : Expr 1 :=
-  .eq (.slice (.shr tlb_vld (.lit (BitVec.ofNat 8 i.val))) 0 1) (.lit (BitVec.ofNat 1 1))
+  [hwexpr| (tlb_vld >> $(Expr.lit (BitVec.ofNat 8 i.val)))[0] == 1]
 
 def tlbVldRd  (i : Expr 3) : Expr 1  :=
-  .eq (.slice (.shr tlb_vld (.zext i 8)) 0 1) (.lit (BitVec.ofNat 1 1))
+  [hwexpr| (tlb_vld >> zext i to 8)[0] == 1]
 
 /-- The domain the core is executing in **right now**: the current thread's
 tag, combinationally. See the note above on why this is not a register. -/
@@ -643,7 +644,7 @@ def fault_cur   : Expr 5  := faultCurReg.rd
 -- trap mid-gate?" (the trap-server↔fabric seam hypothesis) in one readback.
 /-- Bit `cur` of `in_gate`: this thread is inside a gate. -/
 def curInGate : Expr 1 :=
-  .eq (.slice (.shr in_gate (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
+  [hwexpr| (in_gate >> zext cur to 32)[0] == 1]
 
 /-- Retired at §17. `cmd 61`/`cmd 62` used to poke the gate banks the host
 owned; the descriptor now lives in guest memory and the machine walks it,
@@ -746,8 +747,7 @@ def CMD_MAP_PROTECT : Nat := 67
 
 /-- Bit `cur` of the poison bitmap: the running thread has been poisoned. -/
 def curPoisoned : Expr 1 :=
-  -- (the `L*` literal helpers are declared below this block)
-  .eq (.slice (.shr poison (.zext cur 32)) 0 1) (.lit (BitVec.ofNat 1 1))
+  [hwexpr| (poison >> zext cur to 32)[0] == 1]
 
 /-- EXT-3. `cmd 60` loads the whole 32-bit poison bitmap. Whole-word rather
 than set/clear-one-bit because the raise is meant to be *atomic across
