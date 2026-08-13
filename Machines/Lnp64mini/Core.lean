@@ -112,52 +112,63 @@ theorem authored_memory_declarations :
        tpBank.decl, sigmaskBank.decl, tdomBank.decl, tcontBank.decl,
        tcdomBank.decl, gdepthBank.decl] := rfl
 
--- FSM states (localparams S_IDLE=0 .. S_GPS=20)
-def S_IDLE : Nat := 0
-def S_F0   : Nat := 1
-def S_FW   : Nat := 2
-def S_EX   : Nat := 3
-def S_L0   : Nat := 4
-def S_L1   : Nat := 5
-def S_TRAP : Nat := 6
-def S_DL   : Nat := 7
-def S_DST  : Nat := 8
-def S_DSW  : Nat := 9
-def S_WAIT : Nat := 10
-def S_CLONE2 : Nat := 11
-def S_FTX1 : Nat := 12
-def S_MUL  : Nat := 13
-def S_RD   : Nat := 14
-def S_RD2  : Nat := 15
-def S_DIV  : Nat := 16
-def S_PAUSE : Nat := 17
-def S_CLONE3 : Nat := 18
-def S_GPL  : Nat := 19
-def S_GPS  : Nat := 20
-/-- **EXT-9**: the I-cache tag check. `S_F0` latches tag+data (the D19
-sync-read sites) and lands here; a hit writes `ir` and goes straight to
-`S_RD`, a miss issues exactly today's single-beat fetch. -/
-def S_IC   : Nat := 21
-/-- **§17 gate walk.** `S_GC0` waits for the descriptor's first word (the
-entry PC), then issues the read of its second (the target domain); `S_GC1`
-waits for that and commits the activation. -/
-def S_GC0  : Nat := 22
-def S_GC1  : Nat := 23
-/-- **§17 cap walk.** Send: `S_CS0` waits for the target entry's flags word
-and refuses or issues the handle write; `S_CS1` waits for that and issues
-the flags write (occupied set); the store completes through `S_DSW`.
-Receive: `S_CR0` waits for this domain's flags word and refuses or issues
-the handle read; `S_CR1` writes `rd` from the handle and issues the flags
-write (occupied cleared), completing through `S_DSW`. -/
-def S_CS0  : Nat := 25
-def S_CS1  : Nat := 26
-def S_CR0  : Nat := 27
-def S_CR1  : Nat := 28
-/-- **EXT-10 `S_DC`**: the data-cache tag check. `S_EX` latches the banks
-(D19 sync read) and lands here; a hit feeds `ddr_q` from the latched data
-word and joins the existing `S_DST` writeback, a miss asserts `core_rd` on
-the address `S_EX` already translated and joins `S_DL`. -/
-def S_DC   : Nat := 24
+/-! The complete FSM encoding is one declared domain.  The order is the
+established hardware encoding, including the later cache, gate, capability,
+and sentinel states; lowering generates the same ordinary 5-bit register and
+literals as the former hand-maintained `Nat` list. -/
+namespace AuthoredFsm
+
+hardware lnp64mini_fsm_state where
+  output states st : 5 {
+    S_IDLE, S_F0, S_FW, S_EX, S_L0, S_L1, S_TRAP, S_DL, S_DST, S_DSW,
+    S_WAIT, S_CLONE2, S_FTX1, S_MUL, S_RD, S_RD2, S_DIV, S_PAUSE,
+    S_CLONE3, S_GPL, S_GPS, S_IC, S_GC0, S_GC1, S_DC, S_CS0, S_CS1,
+    S_CR0, S_CR1, S_GRET
+  } := S_IDLE
+
+end AuthoredFsm
+
+open AuthoredFsm
+
+/-! Stable public names for downstream SoC/proof modules.  These aliases carry
+no duplicate encoding: every value reduces to the generated state member. -/
+abbrev S_IDLE := AuthoredFsm.S_IDLE
+abbrev S_F0 := AuthoredFsm.S_F0
+abbrev S_FW := AuthoredFsm.S_FW
+abbrev S_EX := AuthoredFsm.S_EX
+abbrev S_L0 := AuthoredFsm.S_L0
+abbrev S_L1 := AuthoredFsm.S_L1
+abbrev S_TRAP := AuthoredFsm.S_TRAP
+abbrev S_DL := AuthoredFsm.S_DL
+abbrev S_DST := AuthoredFsm.S_DST
+abbrev S_DSW := AuthoredFsm.S_DSW
+abbrev S_WAIT := AuthoredFsm.S_WAIT
+abbrev S_CLONE2 := AuthoredFsm.S_CLONE2
+abbrev S_FTX1 := AuthoredFsm.S_FTX1
+abbrev S_MUL := AuthoredFsm.S_MUL
+abbrev S_RD := AuthoredFsm.S_RD
+abbrev S_RD2 := AuthoredFsm.S_RD2
+abbrev S_DIV := AuthoredFsm.S_DIV
+abbrev S_PAUSE := AuthoredFsm.S_PAUSE
+abbrev S_CLONE3 := AuthoredFsm.S_CLONE3
+abbrev S_GPL := AuthoredFsm.S_GPL
+abbrev S_GPS := AuthoredFsm.S_GPS
+abbrev S_IC := AuthoredFsm.S_IC
+abbrev S_GC0 := AuthoredFsm.S_GC0
+abbrev S_GC1 := AuthoredFsm.S_GC1
+abbrev S_DC := AuthoredFsm.S_DC
+abbrev S_CS0 := AuthoredFsm.S_CS0
+abbrev S_CS1 := AuthoredFsm.S_CS1
+abbrev S_CR0 := AuthoredFsm.S_CR0
+abbrev S_CR1 := AuthoredFsm.S_CR1
+abbrev S_GRET := AuthoredFsm.S_GRET
+
+/-- Host-side numeric view for harnesses that inspect the FSM register.  The
+encoding is derived from the generated state literal rather than repeated. -/
+def stateEncoding (state : Expr 5) : Nat :=
+  match state with
+  | .lit bits => bits.toNat
+  | _ => 0
 
 /-! ## Input ports (D15) -/
 
@@ -284,7 +295,7 @@ def retireReg : Reg 32 := ⟨"retire"⟩
 def retire : Expr 32 := retireReg.rd
 def running : Expr 1 := runningReg.rd
 def halted : Expr 1 := haltedReg.rd
-def stReg : Reg 5 := ⟨"st"⟩
+def stReg : Reg 5 := AuthoredFsm.st
 def st : Expr 5 := stReg.rd
 def irReg : Reg 64 := ⟨"ir"⟩
 def ir : Expr 64 := irReg.rd
@@ -1156,7 +1167,7 @@ def sel_cond : Expr 1 :=
 
 /-! ### load writeback / store merge -/
 
-def mem_src : Expr 64 := [hwexpr| if st == $(L5 S_L1) then dmem_rd else ddr_q]
+def mem_src : Expr 64 := [hwexpr| if st == S_L1 then dmem_rd else ddr_q]
 def lw_shift : Expr 64 := [hwexpr| mem_src >> ((zext ld_boff_q to 64) << 3)]
 
 /-- Load write-back narrows to the declared load width and applies the named
@@ -1255,8 +1266,8 @@ def hf_c : Expr 1 :=
 def hp_core_owns : Expr 1 :=
   [hwexpr|
     running &
-      (~(st == $(L5 S_TRAP)) &
-        (~(st == $(L5 S_WAIT)) & ~(st == $(L5 S_PAUSE))))]
+      (~(st == S_TRAP) &
+        (~(st == S_WAIT) & ~(st == S_PAUSE)))]
 
 /-! ## {cur,reg} 10-bit index helpers -/
 
@@ -1275,7 +1286,7 @@ reproduce the if-else priority exactly. -/
 
 /-- The *effective* hold: `hold` only bites at the instruction boundary
 `S_F0`, so the core stops with no bus transaction outstanding. -/
-def holdEn : Expr 1 := [hwexpr| hold & (st == $(L5 S_F0))]
+def holdEn : Expr 1 := [hwexpr| hold & (st == S_F0)]
 
 /-- running ∧ ¬halted ∧ ¬zeroing ∧ ¬holdEn — the FSM enable. `hold` (D15
 input, DUAL_SPEC extension 4) freezes the FSM: with `hold` tied 0 this is
@@ -1288,7 +1299,7 @@ branch's own predicate ANDed with fsmEn ∧ st==S_EX; mutual exclusion holds
 because the ISA opcodes are disjoint, so we do not need the full negation
 chain for the rf funnel (order among FSM writes is free per spec). -/
 def exG (p : Expr 1) : Expr 1 :=
-  [hwexpr| fsmEn & ((st == $(L5 S_EX)) & p)]
+  [hwexpr| fsmEn & ((st == S_EX) & p)]
 
 /-! ## EXT-1 — the preemption tick (Law 5)
 
@@ -1325,7 +1336,7 @@ def qExpired  : Expr 1 := [hwexpr| quantumOn & (qctr == 0)]
 
 def preemptAtF0 : Expr 1 :=
   [hwexpr|
-    fsmEn & ((st == $(L5 S_F0)) & (~bus_req & (~trap_active & qExpired)))]
+    fsmEn & ((st == S_F0) & (~bus_req & (~trap_active & qExpired)))]
 
 def preemptFire : Expr 1 := [hwexpr| preemptAtF0 & ~(next_ready == cur)]
 
@@ -1397,7 +1408,7 @@ early would install a domain read from a bank that no longer exists.
 `pc8` is still the right saved continuation: `pc` has not advanced, because
 the gate arm never ran `stepPc`. -/
 def gateCall : Expr 1 :=
-  [hwexpr| fsmEn & ((st == $(L5 S_GC1)) & (mDone & gateActValid))]
+  [hwexpr| fsmEn & ((st == S_GC1) & (mDone & gateActValid))]
 
 /-! ### §9.2 the gate return sentinel (spec aebacd95)
 
@@ -1448,8 +1459,6 @@ disappear (this suite went from hours to 39 s), so the state is no longer
 anyway: the sentinel is a distinct machine event, and a funnel that says
 "we are returning through the sentinel" reads better than one that restates
 the fetch guards. -/
-def S_GRET : Nat := 29
-
 def sentinelPc : Expr 1 := [hwexpr| pc == $(L64 GATE_RET_SENTINEL)]
 
 /-- A gate call refused because the continuation stack is FULL. This refuses
@@ -1463,9 +1472,9 @@ def gateFullRefused : Expr 1 :=
 or the misaligned/zero entry PC `gateActValid` rejects). Fail-closed: the
 instruction steps past and the §9.2 status register reports `-MALFORMED`. -/
 def gateRefused : Expr 1 :=
-  [hwexpr| fsmEn & ((st == $(L5 S_GC1)) & (mDone & ~gateActValid))]
+  [hwexpr| fsmEn & ((st == S_GC1) & (mDone & ~gateActValid))]
 
-def sentinelFetch : Expr 1 := [hwexpr| fsmEn & (st == $(L5 S_GRET))]
+def sentinelFetch : Expr 1 := [hwexpr| fsmEn & (st == S_GRET)]
 
 /-- The gate-return EVENT: the explicit opcode, or a sentinel fetch. -/
 def gateRetEvent : Expr 1 :=
@@ -1504,17 +1513,17 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
   -- EXT-6 (§17): CAP_SEND result, judged in S_CS0 on the walked flags word
   -- -- 0 when the entry is valid and free (the writes that follow cannot
   -- refuse), all-ones otherwise. Fail-closed: a zeroed entry refuses.
-  , (.and fsmEn (.and (.eq st (L5 S_CS0)) (.and mDone (.not (.eq rdf (L5 0))))),
+  , (.and fsmEn (.and (.eq st S_CS0) (.and mDone (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, .mux capSendOk (L64 0) (L64 0xFFFFFFFFFFFFFFFF))
   -- EXT-6 (§17): CAP_RECV refusal, judged in S_CR0 -- all-ones when this
   -- domain's entry is invalid or empty. The entry is `domCur`'s, not an
   -- operand's, so no encoding reaches another domain's inbox.
-  , (.and fsmEn (.and (.eq st (L5 S_CR0))
+  , (.and fsmEn (.and (.eq st S_CR0)
        (.and mDone (.and (.not capRecvOk) (.not (.eq rdf (L5 0)))))),
        cat55 cur rdf, L64 0xFFFFFFFFFFFFFFFF)
   -- EXT-6 (§17): CAP_RECV success -- the handle word the bus returned this
   -- cycle in S_CR1 (`mRdata` directly; the latch would be a cycle late).
-  , (.and fsmEn (.and (.eq st (L5 S_CR1)) (.and mDone (.not (.eq rdf (L5 0))))),
+  , (.and fsmEn (.and (.eq st S_CR1) (.and mDone (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, mRdata)
   -- S_EX GET_PCR Tid (op 0x54, rs1f==2)
   , (exG (.and (opIs OP_GET_PCR) (.and (.eq rs1f (L5 2)) (.not (.eq rdf (L5 0))))),
@@ -1549,31 +1558,31 @@ def rfTriples : List (Expr 1 × Expr 10 × Expr 64) :=
        .or (.zext (rxBank.rd (.slice rx_rptr 0 8)) 64)
            (.mux (.not (.eq rx_rptr rx_wptr)) (.shl (L64 1) (L64 8)) (L64 0)))
   -- S_L1 load writeback
-  , (.and fsmEn (.and (.eq st (L5 S_L1)) (.and (.not mem_is_store) (.not (.eq ld_rd_q (L5 0))))),
+  , (.and fsmEn (.and (.eq st S_L1) (.and (.not mem_is_store) (.not (.eq ld_rd_q (L5 0))))),
        cat55 cur ld_rd_q, ld_wb)
   -- S_DST load writeback (S_DST runs unconditionally; no m_done gate)
-  , (.and fsmEn (.and (.eq st (L5 S_DST)) (.and (.not mem_is_store) (.not (.eq ld_rd_q (L5 0))))),
+  , (.and fsmEn (.and (.eq st S_DST) (.and (.not mem_is_store) (.not (.eq ld_rd_q (L5 0))))),
        cat55 cur ld_rd_q, ld_wb)
   -- S_CLONE2 child sp
-  , (.and fsmEn (.eq st (L5 S_CLONE2)), cat55 clone_tid (L5 31),
+  , (.and fsmEn (.eq st S_CLONE2), cat55 clone_tid (L5 31),
        .add (L64 0x1800000) (.shl (.add (.zext clone_tid 64) (L64 1)) (L64 18)))
   -- S_CLONE3 parent dst
-  , (.and fsmEn (.and (.eq st (L5 S_CLONE3)) (.not (.eq clone_dst (L5 0)))),
+  , (.and fsmEn (.and (.eq st S_CLONE3) (.not (.eq clone_dst (L5 0)))),
        cat55 cur clone_dst, .add (.zext clone_tid 64) (L64 1))
   -- S_MUL done
-  , (.and fsmEn (.and (.eq st (L5 S_MUL)) (.and (.eq mul_b (L64 0)) (.not (.eq rdf (L5 0))))),
+  , (.and fsmEn (.and (.eq st S_MUL) (.and (.eq mul_b (L64 0)) (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, mulDoneWd)
   -- S_DIV done
-  , (.and fsmEn (.and (.eq st (L5 S_DIV)) (.and (.eq div_cnt (.lit (BitVec.ofNat 7 64))) (.not (.eq rdf (L5 0))))),
+  , (.and fsmEn (.and (.eq st S_DIV) (.and (.eq div_cnt (.lit (BitVec.ofNat 7 64))) (.not (.eq rdf (L5 0))))),
        cat55 cur rdf, divDoneWd)
   -- S_GPL done
-  , (.and fsmEn (.and (.eq st (L5 S_GPL)) (.and gpDone (.not (.eq ld_rd_q (L5 0))))),
+  , (.and fsmEn (.and (.eq st S_GPL) (.and gpDone (.not (.eq ld_rd_q (L5 0))))),
        cat55 cur ld_rd_q, .zext gpRdata 64)
   -- S_DSW: a GLOBAL SC the arbiter refused. `ir` still holds the SC, so
   -- `rdf`/`cur` are the ones `S_EX` optimistically wrote 0 to; overwrite
   -- with 1 (= failed) on the completion cycle. Guard is disjoint from every
   -- triple above (they all key on a different `st`).
-  , (.and fsmEn (.and (.eq st (L5 S_DSW))
+  , (.and fsmEn (.and (.eq st S_DSW)
        (.and sc_pending (.and mDone (.and scFail (.not (.eq rdf (L5 0))))))),
        cat55 cur rdf, L64 1)
   ]
@@ -1763,7 +1772,7 @@ where
       retireReg <- 0,
       haltedReg <- 0,
       runningReg <- 0,
-      stReg <- $(L5 S_IDLE),
+      stReg <- S_IDLE,
       uartWptrReg <- 0,
       rxRptrReg <- 0,
       rxWptrReg <- 0,
@@ -1818,7 +1827,7 @@ where
         -- IS a committed instruction, and routing it here keeps the invariant
         -- "retire incremented <-> a trace entry was pushed" true.
       $stmt(retireInc),
-      stReg <- $(L5 S_F0)
+      stReg <- S_F0
     },
     if $(ci 55) then busReqReg <- cmdData[0],
     -- EXT-1: the quantum reload value (0 = preemption disabled). `qctr` is
@@ -1855,7 +1864,7 @@ where
       if cmdData[0] == 1 then $stmt(cmd13reset),
       if cmdData[1] == 1 then {
         runningReg <- 1,
-        stReg <- $(L5 S_F0)
+        stReg <- S_F0
       }
     }
   }]
@@ -1870,7 +1879,8 @@ def ddrRdLRule : Rule :=
 /-- One FSM arm as `(st == x, body)` data, so the whole state dispatch can
 be emitted as one balanced tree (see `fsmRule`). The `fsmEn` half of the
 old per-rule guard `fsmEn ∧ st==x` is hoisted into `fsmRule`. -/
-def stArm (x : Nat) (a : Act) : Expr 1 × Act := ([hwexpr| st == $(L5 x)], a)
+def stArm (state : Expr 5) (action : Act) : Expr 1 × Act :=
+  ([hwexpr| st == state], action)
 
 /-! ### EXT-7 — the translation itself
 
@@ -2014,7 +2024,7 @@ def sexEa : Expr 64 :=
   [hwexpr|
     if $(opIs OP_FUTEX_WAIT) then (zext rdval[63:3] to 64) << 3 else a]
 
-def goF0 : Act := [hwstmt| stReg <- $(L5 S_F0)]
+def goF0 : Act := [hwstmt| stReg <- S_F0]
 
 /-- The §9.2 empty-continuation-stack fault, shared by the explicit opcode
 and the sentinel fetch: poison the slot (EXT-3 fail-stop), record what/where/
@@ -2060,7 +2070,7 @@ rather than merged, which is safe because a futex waiter must re-check its
 condition after waking and the waker retries; merging two keys into one bank
 pass is the thing that cannot be done with one comparator. -/
 def wakeLocal : Expr 1 :=
-  [hwexpr| fsmEn & ((st == $(L5 S_EX)) & $(opIs OP_FUTEX_WAKE))]
+  [hwexpr| fsmEn & ((st == S_EX) & $(opIs OP_FUTEX_WAKE))]
 def wakeEn    : Expr 1 := [hwexpr| wakeLocal | doorbell]
 
 /-- EXT-4 reverted to fit NT=32: the wake is now UNKEYED.
@@ -2104,7 +2114,7 @@ thread's instruction on the next cycle: a preemption costs exactly one
 cycle and issues no bus transaction from the old context. -/
 def s_f0 : Expr 1 × Act := stArm S_F0
   [hwstmt|
-    if bus_req then stReg <- $(L5 S_PAUSE)
+    if bus_req then stReg <- S_PAUSE
     -- EXT-3: fail-stop, checked BEFORE the preemption point and before the
     -- fetch. Nothing has been fetched at `S_F0` and `bus_req` is already
     -- excluded above, so the core stops with no transaction outstanding
@@ -2120,11 +2130,11 @@ def s_f0 : Expr 1 × Act := stArm S_F0
       -- transaction this arm used to issue, one cycle later.
       -- §9.2 sentinel: `ra` has been fetched. No memory fetch is issued;
       -- `S_GRET` does the return next cycle (see `S_GRET`).
-    else if sentinelPc then stReg <- $(L5 S_GRET)
+    else if sentinelPc then stReg <- S_GRET
     else {
       icTagQReg <- icTagBank[ic_idx],
       icDataQReg <- icDataBank[ic_idx],
-      stReg <- $(L5 S_IC)
+      stReg <- S_IC
     }]
 
 /-- `S_GRET`: the sentinel was fetched -- execute the §9.2 gate return. The
@@ -2147,7 +2157,7 @@ def s_gc0 : Expr 1 × Act := stArm S_GC0
       gateEntQReg <- mRdata,
       coreAddrReg <- core_addr + 8,
       coreRdReg <- 1,
-      stReg <- $(L5 S_GC1)
+      stReg <- S_GC1
     }]
 
 /-- `S_GC1`: the domain word has arrived. Latch it and commit the
@@ -2174,7 +2184,7 @@ def s_cs0 : Expr 1 × Act := stArm S_CS0
         coreAddrReg <- core_addr - 8,
         coreWdataReg <- a,
         coreWrReg <- 1,
-        stReg <- $(L5 S_CS1)
+        stReg <- S_CS1
       } else {
         $stmt(stepPc),
         $stmt(retireInc),
@@ -2192,7 +2202,7 @@ def s_cs1 : Expr 1 × Act := stArm S_CS1
       coreWdataReg <- cap_fl_q | 1,
       coreWrReg <- 1,
       scPendingReg <- 0,
-      stReg <- $(L5 S_DSW)
+      stReg <- S_DSW
     }]
 
 /-- **§17 `S_CR0`**: this domain's flags word has arrived. Valid and
@@ -2205,7 +2215,7 @@ def s_cr0 : Expr 1 × Act := stArm S_CR0
         capFlQReg <- mRdata,
         coreAddrReg <- core_addr - 8,
         coreRdReg <- 1,
-        stReg <- $(L5 S_CR1)
+        stReg <- S_CR1
       } else {
         $stmt(stepPc),
         $stmt(retireInc),
@@ -2222,7 +2232,7 @@ def s_cr1 : Expr 1 × Act := stArm S_CR1
       coreWdataReg <- cap_fl_q & ~1,
       coreWrReg <- 1,
       scPendingReg <- 0,
-      stReg <- $(L5 S_DSW)
+      stReg <- S_DSW
     }]
 
 def s_pause : Expr 1 × Act := stArm S_PAUSE
@@ -2232,7 +2242,7 @@ def s_fw : Expr 1 × Act := stArm S_FW
   [hwstmt|
     if mDone then {
       irReg <- mRdata,
-      stReg <- $(L5 S_RD)
+      stReg <- S_RD
     }]
 
 /-- **EXT-9 `S_IC`**: the tag check, one cycle after `S_F0` latched the
@@ -2243,7 +2253,7 @@ def s_ic : Expr 1 × Act := stArm S_IC
   [hwstmt|
     if ic_hit then {
       irReg <- ic_data_q,
-      stReg <- $(L5 S_RD)
+      stReg <- S_RD
     } else {
     -- **EXT-9b: translated fetch.** The miss arm asks the TLB, exactly as
     -- the data path does; the HIT arm above touches no translation at all,
@@ -2257,7 +2267,7 @@ def s_ic : Expr 1 × Act := stArm S_IC
     -- fetched before.
       coreAddrReg <- $(ddrEa pc),
       coreRdReg <- 1,
-      stReg <- $(L5 S_FW)
+      stReg <- S_FW
     }]
 
 /-- `S_RD`: latch the three source operands. **D19 sync-read sites** —
@@ -2276,7 +2286,7 @@ def s_rd : Expr 1 × Act := stArm S_RD
     aReg <- rfBank[$(cat55 cur rs1f)],
     bReg <- rfBank[$(cat55 cur rs2f)],
     rdvalReg <- rfBank[$(cat55 cur rdf)],
-    stReg <- if is_sel then $(L5 S_RD2) else $(L5 S_EX)
+    stReg <- if is_sel then S_RD2 else S_EX
   }]
 
 /-- `S_RD2`: the two extra operands of a SELECT. Same D19 shape; the
@@ -2286,7 +2296,7 @@ def s_rd2 : Expr 1 × Act := stArm S_RD2
   [hwstmt| {
     selTReg <- rfBank[$(cat55 cur rs3f)],
     selFReg <- rfBank[$(cat55 cur rs4f)],
-    stReg <- $(L5 S_EX)
+    stReg <- S_EX
   }]
 
 -- S_EX: if-else priority tree mirroring the Verilog (rf writes in the
@@ -2298,7 +2308,7 @@ def s_ex_trap : Act :=
   [hwstmt| {
     trapActiveReg <- 1,
     trappedOpReg <- op,
-    stReg <- $(L5 S_TRAP)
+    stReg <- S_TRAP
   }]
 
 /-- The S_EX opcode dispatch, kept as an explicit (guard, action) list in
@@ -2319,7 +2329,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
         curReg <- next_ready,
         $stmt(setPcFromTpc next_ready),
         $stmt(goF0)
-      } else stReg <- $(L5 S_WAIT),
+      } else stReg <- S_WAIT,
       $stmt(retireInc)
     }] <|
   -- 0x00 NOP
@@ -2338,7 +2348,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       mulAwReg <- zext a to 128,
       mulBReg <- b,
       mulKindReg <- if $(opIs OP_MULH) then 1 else 2,
-      stReg <- $(L5 S_MUL)
+      stReg <- S_MUL
     }] <|
   -- div
   gcons is_div
@@ -2355,7 +2365,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
         divIsremReg <- $(opIs OP_SREM) | $(opIs OP_UREM),
         divNegqReg <- div_sgn & (a[63] ^ b[63]),
         divNegrReg <- div_sgn & a[63],
-        stReg <- $(L5 S_DIV)
+        stReg <- S_DIV
       }] <|
   -- sel
   gcons is_sel [hwstmt| {
@@ -2407,7 +2417,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
         curReg <- next_ready,
         $stmt(setPcFromTpc next_ready),
         $stmt(goF0)
-      } else stReg <- $(L5 S_WAIT),
+      } else stReg <- S_WAIT,
       $stmt(retireInc)
     }] <|
   -- 0xcb FUTEX_WAIT
@@ -2419,7 +2429,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       coreRdReg <- 1,
       futexAddrQReg <- rdval,
       futexExpReg <- a,
-      stReg <- $(L5 S_FTX1)
+      stReg <- S_FTX1
     }] <|
   -- 0xcc FUTEX_WAKE (per-element wake; count via matches-before-i < a)
   -- EXT-4: the wake bank moved to `smpRule` (one shared bank); S_EX keeps
@@ -2436,13 +2446,13 @@ def s_ex_branches : List (Expr 1 × Act) :=
     [hwstmt| {
       coreAddrReg <- $(capEntryAddr capSendSlot) + 8,
       coreRdReg <- 1,
-      stReg <- $(L5 S_CS0)
+      stReg <- S_CS0
     }] <|
   gcons (opIs CAP_RECV_OP)
     [hwstmt| {
       coreAddrReg <- $(capEntryAddr capRecvSlot) + 8,
       coreRdReg <- 1,
-      stReg <- $(L5 S_CR0)
+      stReg <- S_CR0
     }] <|
   -- EXT-5: 0x60 GATE_CALL. `a` is the gate id. Refused (rd = -1, no state
   -- change) if this thread is already inside a gate -- the continuation is
@@ -2462,7 +2472,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       -- activation commits in S_GC1, once both words are in.
         coreAddrReg <- ($(L32 DATA_BASE) + gate_tbl_base) + ((zext a[3:0] to 32) << 4),
         coreRdReg <- 1,
-        stReg <- $(L5 S_GC0)
+        stReg <- S_GC0
       }] <|
   -- EXT-5: 0x61 GATE_RETURN. Restores the saved pc; the domain and the
   -- in-gate bit are restored in their funnels. A return with NO gate open is
@@ -2486,7 +2496,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
         $stmt(tstateDynWrite (L2 1) free_slot),
         cloneDstReg <- rdf,
         cloneTidReg <- free_slot,
-        stReg <- $(L5 S_CLONE2)
+        stReg <- S_CLONE2
       } else {
         $stmt(stepPc),
         $stmt(retireInc),
@@ -2503,13 +2513,13 @@ def s_ex_branches : List (Expr 1 × Act) :=
       memIsStoreReg <- 0,
       if a <u 0x1000 then {
         dmemAReg <- a[11:3],
-        stReg <- $(L5 S_L0)
+        stReg <- S_L0
       } else {
         coreAddrReg <- $(ddrEa sexEa),
         coreRdReg <- 1,
         -- Tag this read as reservation-taking.
         lrReqReg <- 1,
-        stReg <- $(L5 S_DL)
+        stReg <- S_DL
       }
     }] <|
   -- SC
@@ -2530,7 +2540,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
           -- Tag this write as conditional; its verdict is due at S_DSW.
           scReqReg <- 1,
           scPendingReg <- 1,
-          stReg <- $(L5 S_DSW)
+          stReg <- S_DSW
         }
       else {
         $stmt(stepPc),
@@ -2554,7 +2564,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
         gpAddrRReg <- mem_ea_l[31:0] & 0xffff_fffc,
         gpRdReg <- 1,
         ldRdQReg <- rdf,
-        stReg <- $(L5 S_GPL)
+        stReg <- S_GPL
       } else $stmt(s_ex_trap)] <|
   -- zp load
   gcons (.and is_load l_is_zp)
@@ -2564,7 +2574,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       ldOpQReg <- op,
       ldRdQReg <- rdf,
       memIsStoreReg <- 0,
-      stReg <- $(L5 S_L0)
+      stReg <- S_L0
     }] <|
   -- DDR load. EXT-10: `core_addr` is written but `core_rd` is NOT asserted --
   -- the D-cache banks are latched here (D19 sync read) and `S_DC` decides
@@ -2579,7 +2589,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       ldOpQReg <- op,
       ldRdQReg <- rdf,
       memIsStoreReg <- 0,
-      stReg <- $(L5 S_DC)
+      stReg <- S_DC
     }] <|
   -- UART store
   gcons (.and is_store (.eq mem_ea_s (L64 UART_ADDR)))
@@ -2597,14 +2607,14 @@ def s_ex_branches : List (Expr 1 × Act) :=
         gpAddrRReg <- mem_ea_s[31:0] & 0xffff_fffc,
         gpWdataRReg <- b[31:0],
         gpWrReg <- 1,
-        stReg <- $(L5 S_GPS)
+        stReg <- S_GPS
       } else $stmt(s_ex_trap)] <|
   -- zp store
   gcons (.and is_store s_is_zp)
     [hwstmt| {
       dmemAReg <- st_widx,
       memIsStoreReg <- 1,
-      stReg <- $(L5 S_L0)
+      stReg <- S_L0
     }] <|
   -- DDR store
   gcons is_store
@@ -2613,7 +2623,7 @@ def s_ex_branches : List (Expr 1 × Act) :=
       coreRdReg <- 1,
       memIsStoreReg <- 1,
       scPendingReg <- 0,
-      stReg <- $(L5 S_DL)
+      stReg <- S_DL
     }] <|
   []
 
@@ -2640,7 +2650,7 @@ def s_ex_body : Act :=
 
 def s_ex : Expr 1 × Act := stArm S_EX  s_ex_body
 
-def s_l0 : Expr 1 × Act := stArm S_L0 [hwstmt| stReg <- $(L5 S_L1)]
+def s_l0 : Expr 1 × Act := stArm S_L0 [hwstmt| stReg <- S_L1]
 
 /-- S_L1: load-wb (rf in funnel) or store commit; then advance. -/
 def s_l1 : Expr 1 × Act := stArm S_L1
@@ -2664,11 +2674,11 @@ def s_dc : Expr 1 × Act := stArm S_DC
   [hwstmt|
     if dc_hit then {
       ddrQReg <- dc_data_q,
-      stReg <- $(L5 S_DST)
+      stReg <- S_DST
     } else {
       coreRdReg <- 1,
       dcAllocReg <- 1,
-      stReg <- $(L5 S_DL)
+      stReg <- S_DL
     }]
 
 def s_dl : Expr 1 × Act := stArm S_DL
@@ -2676,7 +2686,7 @@ def s_dl : Expr 1 × Act := stArm S_DL
     if mDone then {
       ddrQReg <- mRdata,
       dcAllocReg <- 0,
-      stReg <- $(L5 S_DST)
+      stReg <- S_DST
     }]
 
 /-- S_DST: load-wb (rf in funnel) + advance, or issue the DDR store. -/
@@ -2690,7 +2700,7 @@ def s_dst : Expr 1 × Act := stArm S_DST
       coreAddrReg <- $(ddrEa mem_ea_s),
       coreWdataReg <- st_merge,
       coreWrReg <- 1,
-      stReg <- $(L5 S_DSW)
+      stReg <- S_DSW
     }]
 
 def s_dsw : Expr 1 × Act := stArm S_DSW
@@ -2703,7 +2713,7 @@ def s_dsw : Expr 1 × Act := stArm S_DSW
 
 /-- S_CLONE2: child sp (rf in funnel) + fresh tp/sigmask (both in
 `tarrFunnelRule`, D20) + advance. -/
-def s_clone2 : Expr 1 × Act := stArm S_CLONE2 [hwstmt| stReg <- $(L5 S_CLONE3)]
+def s_clone2 : Expr 1 × Act := stArm S_CLONE2 [hwstmt| stReg <- S_CLONE3]
 
 def s_clone3 : Expr 1 × Act := stArm S_CLONE3
   [hwstmt| { $stmt(stepPc), $stmt(retireInc), $stmt(goF0) }]
@@ -2718,7 +2728,7 @@ def s_ftx1 : Expr 1 × Act := stArm S_FTX1
           curReg <- next_ready,
           $stmt(setPcFromTpc next_ready),
           $stmt(goF0)
-        } else stReg <- $(L5 S_WAIT)
+        } else stReg <- S_WAIT
       } else {
         $stmt(stepPc),
         $stmt(goF0)
@@ -2785,7 +2795,7 @@ the default arm fire *on the new state* and silently reset the fetch to
 `S_F0`, i.e. an I-cache that never hits and a core that still works. A state
 added above the bound is invisible exactly the way the renumbering's dead
 opcodes were. -/
-def s_default : Expr 1 × Act := (.ult (L5 S_DC) st, goF0)
+def s_default : Expr 1 × Act := (.ult S_DC st, goF0)
 
 /-- (8) the whole `st` dispatch as ONE rule.
 
@@ -2862,7 +2872,7 @@ def tpcTriples : List (Expr 1 × Expr 5 × Expr 64) :=
   -- 4. S_EX CLONE (0x59) with a free slot: the child's entry PC
   , (exG (.and (opIs OP_CLONE_SPAWN) has_free), free_slot, a)
   -- 5. S_FTX1, FUTEX_WAIT that blocks (DDR word still equals the expected)
-  , (.and fsmEn (.and (.eq st (L5 S_FTX1)) (.and mDone (.eq mRdata futex_exp))), cur, pc8)
+  , (.and fsmEn (.and (.eq st S_FTX1) (.and mDone (.eq mRdata futex_exp))), cur, pc8)
   -- 6. EXT-1 preemption at the instruction boundary. Guard is disjoint from
   -- 2–5 (they are all `st = S_EX` or `st = S_FTX1`) and from 1 (`zeroing`
   -- forces `fsmEn` low). The datum is `pc`, NOT `pc8`: at `S_F0` the
@@ -2874,7 +2884,7 @@ def tpcWaE : Expr 5 := priTree (tpcTriples.map (fun t => (t.1, t.2.1))) (L5 0)
 def tpcWdE : Expr 64 := priTree (tpcTriples.map (fun t => (t.1, t.2.2))) (L64 0)
 
 /-- `S_CLONE2` — the only writer of `tp_arr`/`sigmask_arr`. -/
-def cloneFresh : Expr 1 := [hwexpr| fsmEn & (st == $(L5 S_CLONE2))]
+def cloneFresh : Expr 1 := [hwexpr| fsmEn & (st == S_CLONE2)]
 
 /-! ### EXT-2 — the `tdom` write funnel
 
@@ -3024,7 +3034,7 @@ CE9/CE10 measurement, 9 523 vs 671 LUT for identical logic. The fill fires
 on the miss completion in `S_FW`, which is the only moment a line changes
 in stage 1 (invalidate arrives with the sweep, below, through the same
 site). -/
-def icFill : Expr 1 := [hwexpr| (st == $(L5 S_FW)) & mDone]
+def icFill : Expr 1 := [hwexpr| (st == S_FW) & mDone]
 
 def icFillRule : Rule :=
   ⟨"ic_data_funnel", [hwstmt|
@@ -3066,7 +3076,7 @@ change retires both caches in one cycle rather than needing a second sweep.
 The other core's copy is stale until rung 5 broadcasts the address; until
 then this is a single-core cache, and `EXTEND_SPEC.md` says so rather than
 the code implying otherwise. -/
-def dcFill : Expr 1 := [hwexpr| (st == $(L5 S_DL)) & (mDone & dc_alloc)]
+def dcFill : Expr 1 := [hwexpr| (st == S_DL) & (mDone & dc_alloc)]
 
 /-- A store that must invalidate: a DDR store, in `S_EX`, on the cacheable
 path. The zp/UART/GP store arms never reach DDR and cannot alias a line. -/
@@ -3084,10 +3094,10 @@ caught for ordinary stores. The invalidated index is the line of the
 address each state is writing THIS cycle: `core_addr - 8` from `S_CS0`
 (the handle word), `core_addr + 8` from the flags writers. -/
 def dcCapInvS0 : Expr 1 :=
-  [hwexpr| fsmEn & ((st == $(L5 S_CS0)) & (mDone & capSendOk))]
+  [hwexpr| fsmEn & ((st == S_CS0) & (mDone & capSendOk))]
 def dcCapInvFl : Expr 1 :=
   [hwexpr|
-    fsmEn & (((st == $(L5 S_CS1)) | (st == $(L5 S_CR1))) & mDone)]
+    fsmEn & (((st == S_CS1) | (st == S_CR1)) & mDone)]
 def dcCapInv : Expr 1 := [hwexpr| dcCapInvS0 | dcCapInvFl]
 def dc_cap_idx : Expr 12 :=
   [hwexpr| ((if dcCapInvS0 then core_addr - 8 else core_addr + 8) >> 3)[11:0]]
@@ -3171,7 +3181,6 @@ hardware lnp64mini_scalar_prefix where
   output reg trace_in_wb : 64
   output reg running : 1
   output reg halted : 1
-  output reg st : 5
   output reg ir : 64
   output reg a : 64
   output reg b : 64
@@ -3199,7 +3208,7 @@ theorem authored_scalar_prefix_declarations :
       [curReg.decl, pcReg.decl (BitVec.ofNat 64 TEXT_BASE), retireReg.decl,
        traceWpReg.decl, traceSelReg.decl, traceRdPcReg.decl, traceRdWbReg.decl,
        traceHitReg.decl, traceInPcReg.decl, traceInWbReg.decl,
-       runningReg.decl, haltedReg.decl, stReg.decl, irReg.decl,
+       runningReg.decl, haltedReg.decl, irReg.decl,
        aReg.decl, bReg.decl, rdvalReg.decl, selTReg.decl, selFReg.decl,
        icTagQReg.decl, icDataQReg.decl, icGenReg.decl, gateTblBaseReg.decl,
        capTblBaseReg.decl, capFlQReg.decl, dcTagQReg.decl, dcDataQReg.decl,
@@ -3333,7 +3342,11 @@ theorem authored_execution_register_declarations :
        mmuEnReg.decl, tlbSelReg.decl, tlbVldReg.decl] := rfl
 
 def scalarRegs : List RegDecl :=
-  AuthoredScalarPrefix.declarations.regs ++
+  -- `st` remains at its established position while its declaration and every
+  -- encoding now come from the one `states` domain above.
+  AuthoredScalarPrefix.declarations.regs.take 12 ++
+  AuthoredFsm.declarations.regs ++
+  AuthoredScalarPrefix.declarations.regs.drop 12 ++
   AuthoredIoRegs.declarations.regs ++
   AuthoredPipelineRegs.declarations.regs ++
   AuthoredExecutionRegs.declarations.regs
