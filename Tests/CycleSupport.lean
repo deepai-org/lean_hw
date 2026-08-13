@@ -332,9 +332,9 @@ def satOkProperty : ExprProperty :=
 
 theorem satOkProperty_iff (σ : St) : satOkProperty.eval σ ↔ SatOk σ := by
   by_cases hs : σ.regs sat.name 1 = 1#1
-  · simp [satOkProperty, ExprProperty.eval, SatOk, Reg.rd, Expr.eval, hs]
+  · simp_all [satOkProperty, ExprProperty.eval, SatOk, Reg.rd, Expr.eval]
   · have hz : σ.regs sat.name 1 = 0#1 := by bv_omega
-    simp [satOkProperty, ExprProperty.eval, SatOk, Reg.rd, Expr.eval, hz]
+    simp_all [satOkProperty, ExprProperty.eval, SatOk, Reg.rd, Expr.eval]
 
 example : satOkProperty.footprint.regs =
     [(sat.name, 1), (count.name, 8)] := by
@@ -355,12 +355,12 @@ theorem satOkExpr_iff (σ : St) :
     satOkExpr.eval σ = 1#1 ↔ SatOk σ := by
   by_cases hs : σ.regs sat.name 1 = 1#1
   · by_cases hc : σ.regs count.name 8 = 255#8
-    · simp [satOkExpr, SatOk, Reg.rd, Expr.eval, hs, hc]
-    · simp [satOkExpr, SatOk, Reg.rd, Expr.eval, hs, hc]
+    · simp_all [satOkExpr, SatOk, Reg.rd, Expr.eval]
+    · simp_all [satOkExpr, SatOk, Reg.rd, Expr.eval]
   · have hz : σ.regs sat.name 1 = 0#1 := by bv_omega
     by_cases hc : σ.regs count.name 8 = 255#8
-    · simp [satOkExpr, SatOk, Reg.rd, Expr.eval, hz, hc]
-    · simp [satOkExpr, SatOk, Reg.rd, Expr.eval, hz, hc]
+    · simp_all [satOkExpr, SatOk, Reg.rd, Expr.eval]
+    · simp_all [satOkExpr, SatOk, Reg.rd, Expr.eval]
 
 example : (PropertyFootprint.ofExpr satOkExpr).regs =
     [(sat.name, 1), (count.name, 8)] := by
@@ -450,7 +450,7 @@ theorem satOk_propertyStep (σ : St) :
   · have hc : σ.regs count.name 8 ≠ 255#8 := by
       intro heq
       apply hcond
-      simp [Reg.rd, Expr.eval, heq]
+      simpa [Reg.rd, Expr.eval] using heq
     simp only [count] at hc
     intro hsat
     have hsat' : σ.regs sat.name 1 = 1#1 := by

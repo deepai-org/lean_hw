@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
-import Loom.Hw.Declarations
+import Loom.Hw.Dsl
 import Loom.Hw.Semantics
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
@@ -17,30 +17,19 @@ compiled RTL and emitted as Verilog.
 namespace Machines.Tutorial.SatCounter
 
 open Loom.Hw
-open Loom.Hw.Notation
+open Loom.Hw.Dsl
 
-/-- The counter value. -/
-def count : Reg 8 := ⟨"count"⟩
-/-- The saturation flag. -/
-def sat : Reg 1 := ⟨"sat"⟩
+/-- The complete counter state, interface, and transition. Each cycle: once
+the counter reaches 255, raise the sticky flag; otherwise keep counting. -/
+hardware satcounter where
+  output reg count : 8
+  output reg sat : 1
 
-/-- Each cycle: once the counter reaches 255, raise the sticky flag;
-otherwise keep counting. -/
-def tick : Act :=
-  ifA count.rd === 255 then
-    sat ⇐ 1
-  else
-    count ⇐ count.rd + 1
-
-/-- The complete state and external interface, declared from typed handles. -/
-def declarations : Declarations :=
-  Declarations.empty
-    |>.addReg count (exported := true)
-    |>.addReg sat (exported := true)
-
-/-- The complete design. -/
-def design : Design :=
-  Design.ofDecls "satcounter" declarations [⟨"tick", tick⟩]
+  rule tick :=
+    if count == 255 then
+      sat <- 1
+    else
+      count <- count + 1
 
 /-- The compiler's side conditions, discharged by its decision procedure. -/
 theorem design_wf : Compile.DesignWF design :=
@@ -85,7 +74,3 @@ theorem satOk_rtl :
   (Compile.simulation design design_wf).invariant_pullback satOk_invariant
 
 end Machines.Tutorial.SatCounter
-
-/-- Emit the Verilog (`lake env lean --run` needs a root-level `main`). -/
-def main : IO Unit :=
-  Machines.Tutorial.SatCounter.design.emit "rtl/satcounter.v"

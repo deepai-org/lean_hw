@@ -480,24 +480,22 @@ rules.  Later declaration forms extend the item category; they do not change
 the generated `Declarations`/`Design` shape established here. -/
 
 declare_syntax_cat hwitem
-syntax "reg" ident ":" num : hwitem
-syntax "reg" ident ":" num ":=" num : hwitem
-syntax "output" "reg" ident ":" num : hwitem
-syntax "output" "reg" ident ":" num ":=" num : hwitem
-syntax "input" ident ":" num : hwitem
-syntax "output" "wire" ident ":" num ":=" hwexpr : hwitem
-syntax "const" ident ":" num ":=" num : hwitem
-syntax "states" ident ":" "{" ident,* "}" : hwitem
-syntax "states" ident ":" "{" ident,* "}" ":=" ident : hwitem
-syntax "states" ident ":" num "{" ident,* "}" : hwitem
-syntax "states" ident ":" num "{" ident,* "}" ":=" ident : hwitem
-syntax "output" "states" ident ":" "{" ident,* "}" : hwitem
-syntax "output" "states" ident ":" "{" ident,* "}" ":=" ident : hwitem
-syntax "output" "states" ident ":" num "{" ident,* "}" : hwitem
-syntax "output" "states" ident ":" num "{" ident,* "}" ":=" ident : hwitem
-syntax "rule" ident ":=" hwstmt : hwitem
-syntax "rule" ident "suppress" ident "because" str ":=" hwstmt : hwitem
-syntax (name := hardwareCmd) "hardware" ident "where" hwitem* : command
+syntax ident ident ":" num : hwitem
+syntax ident ident ":" num ":=" num : hwitem
+syntax ident ident ident ":" num : hwitem
+syntax ident ident ident ":" num ":=" num : hwitem
+syntax ident ident ident ":" num ":=" hwexpr : hwitem
+syntax ident ident ":" "{" ident,* "}" : hwitem
+syntax ident ident ":" "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ":" num "{" ident,* "}" : hwitem
+syntax ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ident ":" "{" ident,* "}" : hwitem
+syntax ident ident ident ":" "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ident ":" num "{" ident,* "}" : hwitem
+syntax ident ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ":=" hwstmt : hwitem
+syntax ident ident "suppress" ident "because" str ":=" hwstmt : hwitem
+syntax (name := hardwareCmd) (docComment)? "hardware" ident "where" hwitem* : command
 
 private structure ScalarRegItem where
   name : TSyntax `ident
@@ -776,68 +774,81 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
   let mut rules : Array RuleItem := #[]
   for item in items do
     match item with
-    | `(hwitem| reg $name:ident : $width:num) =>
-        registers := registers.push ⟨name, width, false, 0⟩
-    | `(hwitem| reg $name:ident : $width:num := $value:num) =>
-        registers := registers.push ⟨name, width, false, ← checkedValue width value⟩
-    | `(hwitem| output reg $name:ident : $width:num) =>
+    | `(hwitem| $kind:ident $name:ident : $width:num) =>
+        if kind.getId == `reg then registers := registers.push ⟨name, width, false, 0⟩
+        else if kind.getId == `input then inputs := inputs.push ⟨name, width⟩
+        else Macro.throwErrorAt kind "expected `reg` or `input`"
+    | `(hwitem| $kind:ident $name:ident : $width:num := $value:num) =>
+        if kind.getId == `reg then
+          registers := registers.push ⟨name, width, false, ← checkedValue width value⟩
+        else if kind.getId == `const then constants := constants.push ⟨name, width, value⟩
+        else Macro.throwErrorAt kind "expected `reg` or `const`"
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num) =>
+        unless qualifier.getId == `output && kind.getId == `reg do
+          Macro.throwErrorAt qualifier "expected `output reg`"
         registers := registers.push ⟨name, width, true, 0⟩
-    | `(hwitem| output reg $name:ident : $width:num := $value:num) =>
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num := $value:num) =>
+        unless qualifier.getId == `output && kind.getId == `reg do
+          Macro.throwErrorAt qualifier "expected `output reg`"
         registers := registers.push ⟨name, width, true, ← checkedValue width value⟩
-    | `(hwitem| input $name:ident : $width:num) =>
-        inputs := inputs.push ⟨name, width⟩
-    | `(hwitem| output wire $name:ident : $width:num := $value:hwexpr) =>
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num := $value:hwexpr) =>
+        unless qualifier.getId == `output && kind.getId == `wire do
+          Macro.throwErrorAt qualifier "expected `output wire`"
         wires := wires.push ⟨name, width, value⟩
-    | `(hwitem| const $name:ident : $width:num := $value:num) =>
-        constants := constants.push ⟨name, width, value⟩
-    | `(hwitem| states $name:ident : {$members:ident,*}) =>
+    | `(hwitem| $kind:ident $name:ident : {$members:ident,*}) =>
+        unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name none members.getElems none false
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| states $name:ident : {$members:ident,*} := $reset:ident) =>
+    | `(hwitem| $kind:ident $name:ident : {$members:ident,*} := $reset:ident) =>
+        unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name none members.getElems (some reset) false
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| states $name:ident : $width:num {$members:ident,*}) =>
+    | `(hwitem| $kind:ident $name:ident : $width:num {$members:ident,*}) =>
+        unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems none false
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| states $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
+    | `(hwitem| $kind:ident $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
+        unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems (some reset) false
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| output states $name:ident : {$members:ident,*}) =>
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : {$members:ident,*}) =>
+        unless qualifier.getId == `output && kind.getId == `states do
+          Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name none members.getElems none true
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| output states $name:ident : {$members:ident,*} := $reset:ident) =>
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : {$members:ident,*} := $reset:ident) =>
+        unless qualifier.getId == `output && kind.getId == `states do
+          Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name none members.getElems (some reset) true
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| output states $name:ident : $width:num {$members:ident,*}) =>
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num {$members:ident,*}) =>
+        unless qualifier.getId == `output && kind.getId == `states do
+          Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems none true
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| output states $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
+        unless qualifier.getId == `output && kind.getId == `states do
+          Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems (some reset) true
-        registers := registers.push register
-        constants := constants ++ stateConstants
+        registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
-    | `(hwitem| rule $name:ident := $body:hwstmt) =>
+    | `(hwitem| $kind:ident $name:ident := $body:hwstmt) =>
+        unless kind.getId == `rule do Macro.throwErrorAt kind "expected `rule`"
         rules := rules.push ⟨name, body, none, none⟩
-    | `(hwitem| rule $name:ident suppress $lint:ident because $reason:str := $body:hwstmt) =>
+    | `(hwitem| $kind:ident $name:ident suppress $lint:ident because $reason:str := $body:hwstmt) =>
+        unless kind.getId == `rule do
+          Macro.throwErrorAt kind "expected `rule name suppress lint because \"reason\" := ...`"
         unless knownLint lint.getId do
           Macro.throwErrorAt lint
             "unknown hardware lint; expected `read_after_write`, `multiple_write`, or `unguarded_channel`"
-        if reason.getString.isEmpty then
-          Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
+        if reason.getString.isEmpty then Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
         rules := rules.push ⟨name, body, some lint.getId, some reason.getString⟩
     | _ => Macro.throwErrorAt item "unsupported hardware declaration"
   let locals := registers.map (fun item => item.name) ++ constants.map (fun item => item.name) ++
@@ -925,7 +936,9 @@ private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
     suppressions := suppressions
   }
 
-private def expandHardwareCommand (moduleName : TSyntax `ident)
+private def expandHardwareCommand
+    (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
+    (moduleName : TSyntax `ident)
     (items : Array (TSyntax `hwitem)) : MacroM Syntax := do
   let (registers, constants, inputs, wires, _, rules) ← parseHardwareItems items
   let mut commands : Array Syntax := #[]
@@ -987,6 +1000,7 @@ private def expandHardwareCommand (moduleName : TSyntax `ident)
   let emittedName := Syntax.mkStrLit moduleName.getId.toString
   let designName := mkIdentFrom moduleName `design
   let designCommand ← `(command|
+    $[$documentation]?
     def $designName : Loom.Hw.Design :=
       Loom.Hw.Design.ofDecls $emittedName $declarationsName $ruleList)
   commands := commands.push designCommand
@@ -994,7 +1008,7 @@ private def expandHardwareCommand (moduleName : TSyntax `ident)
 
 @[command_elab hardwareCmd] def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
-  | `(hardware $moduleName:ident where $items:hwitem*) => do
+  | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
       let (registers, constants, inputs, wires, domains, rules) ←
         liftMacroM <| parseHardwareItems items
       let namespaceName ← getCurrNamespace
@@ -1018,7 +1032,7 @@ private def expandHardwareCommand (moduleName : TSyntax `ident)
         logWarningAt finding.source finding.message
       let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName
         registers constants inputs wires domains rules
-      let expanded ← liftMacroM <| expandHardwareCommand moduleName items
+      let expanded ← liftMacroM <| expandHardwareCommand documentation moduleName items
       elabCommand expanded
       modifyEnv (hardwareMetadataExt.addEntry · metadata)
   | _ => throwUnsupportedSyntax
