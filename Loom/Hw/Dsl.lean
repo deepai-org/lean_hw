@@ -1203,8 +1203,10 @@ syntax ident ident ident ":" num : hwitem
 syntax ident ident ident ":" num ":=" num : hwitem
 syntax ident ident ident ":" num ":=" hwexpr : hwitem
 syntax ident ident ":" ident : hwitem
+syntax (priority := high) ident ident ":" ident ":=" term:max : hwitem
 syntax ident ident ident ":" ident : hwitem
 syntax ident ident ident ":" ident ":=" hwexpr : hwitem
+syntax (priority := low) ident ident ident ":" ident ":=" term:max : hwitem
 syntax ident ident ":" "{" ident,* "}" : hwitem
 syntax ident ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "{" ident,* "}" : hwitem
@@ -1260,6 +1262,7 @@ private structure PackedRegItem where
   name : TSyntax `ident
   typeName : TSyntax `ident
   exported : Bool
+  init : Option (TSyntax `term) := none
 
 private structure PackedInputItem where
   name : TSyntax `ident
@@ -1890,12 +1893,17 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
           Macro.throwErrorAt qualifier "expected `output wire`"
         wires := wires.push ⟨name, width, value⟩
     | `(hwitem| $kind:ident $name:ident : $typeName:ident) =>
-        if kind.getId == `reg then packedRegisters := packedRegisters.push ⟨name, typeName, false⟩
+        if kind.getId == `reg then
+          packedRegisters := packedRegisters.push ⟨name, typeName, false, none⟩
         else if kind.getId == `input then packedInputs := packedInputs.push ⟨name, typeName⟩
         else Macro.throwErrorAt kind "expected packed `reg` or `input` declaration"
+    | `(hwitem| $kind:ident $name:ident : $typeName:ident := $init:term) =>
+        unless kind.getId == `reg do
+          Macro.throwErrorAt kind "only a packed `reg` accepts a semantic reset value"
+        packedRegisters := packedRegisters.push ⟨name, typeName, false, some init⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $typeName:ident) =>
         if qualifier.getId == `output && kind.getId == `reg then
-          packedRegisters := packedRegisters.push ⟨name, typeName, true⟩
+          packedRegisters := packedRegisters.push ⟨name, typeName, true, none⟩
         else if qualifier.getId == `input && kind.getId == `wire then
           packedInputs := packedInputs.push ⟨name, typeName⟩
         else Macro.throwErrorAt qualifier "expected packed `output reg` or `input wire` declaration"
@@ -1903,6 +1911,10 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         unless qualifier.getId == `output && kind.getId == `wire do
           Macro.throwErrorAt qualifier "expected packed `output wire`"
         packedWires := packedWires.push ⟨name, typeName, value⟩
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $typeName:ident := $init:term) =>
+        unless qualifier.getId == `output && kind.getId == `reg do
+          Macro.throwErrorAt qualifier "a semantic packed initializer is valid only on `output reg`"
+        packedRegisters := packedRegisters.push ⟨name, typeName, true, some init⟩
     | `(hwitem| $kind:ident $name:ident : {$members:ident,*}) =>
         unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name none members.getElems none false
@@ -2220,10 +2232,13 @@ private def expandHardwareCommand
           (syncRead := ($policy : Loom.Hw.MemoryPolicy).syncRead)
           (ackInit := ($policy : Loom.Hw.MemoryPolicy).ackInit))
   for register in packedRegisters do
-    let zero ← `(Loom.Hw.HwPacked.unpack
-      (α := $(register.typeName))
-      (BitVec.ofNat (Loom.Hw.HwPacked.width $(register.typeName)) 0))
-    declarations ← `($declarations |>.addPackedReg $(register.name) $zero
+    let init ← match register.init with
+      | some value => pure value
+      | none => `(Loom.Hw.HwPacked.unpack
+          (α := $(register.typeName))
+          (BitVec.ofNat (Loom.Hw.HwPacked.width $(register.typeName)) 0))
+    declarations ← `($declarations |>.addPackedReg $(register.name)
+      ($init : $(register.typeName))
       (exported := $(quote register.exported)))
   for inputItem in packedInputs do
     declarations ← `($declarations |>.addPackedInput $(inputItem.name))
