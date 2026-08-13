@@ -47,21 +47,32 @@ private def opc : Expr 8 := [hwexpr| fetched.opc]
 private def imm : Expr 8 := [hwexpr| fetched.imm]
 private def loadData : Expr 8 := dataMem.rd imm
 
+/-! Width-typed opcode labels keep the hardware dispatch readable. The ISA
+declaration remains the semantic source; A-R and the text round-trip below
+guard this deliberately small lowering-side mirror. -/
+private abbrev NOP : Expr 8 := .lit 0
+private abbrev LDI : Expr 8 := .lit 1
+private abbrev ADD : Expr 8 := .lit 2
+private abbrev LDA : Expr 8 := .lit 3
+private abbrev STA : Expr 8 := .lit 4
+private abbrev JNZ : Expr 8 := .lit 5
+private abbrev SUB : Expr 8 := .lit 6
+
 /-- The instruction-execution rule, written with the optional pretty syntax.
 The quotation lowers directly to the same `Act` constructors used previously. -/
 private def execRule : Act :=
   [hwstmt|
     if rHalted then skip else
     case opc of
-    | 0 => { let nextPc : 8 := rPc + 1, pcReg <- nextPc }
-    | 1 => { accReg <- imm, pcReg <- rPc + 1 }
-    | 2 => { accReg <- rAcc + imm, pcReg <- rPc + 1 }
-    | 3 => { accReg <- loadData, pcReg <- rPc + 1 }
-    | 4 => { dataMem[port 0, imm] <- rAcc, pcReg <- rPc + 1 }
-    | 5 => {
+    | NOP => { let nextPc : 8 := rPc + 1, pcReg <- nextPc }
+    | LDI => { accReg <- imm, pcReg <- rPc + 1 }
+    | ADD => { accReg <- rAcc + imm, pcReg <- rPc + 1 }
+    | LDA => { accReg <- loadData, pcReg <- rPc + 1 }
+    | STA => { dataMem[port 0, imm] <- rAcc, pcReg <- rPc + 1 }
+    | JNZ => {
         if rAcc == 0 then pcReg <- rPc + 1 else pcReg <- imm
       }
-    | 6 => { accReg <- rAcc - imm, pcReg <- rPc + 1 }
+    | SUB => { accReg <- rAcc - imm, pcReg <- rPc + 1 }
     -- hlt (7) and every unknown opcode halt.
     | default => { haltedReg <- 1 }]
 
