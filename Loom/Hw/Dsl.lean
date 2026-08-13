@@ -2845,9 +2845,20 @@ def showSystemPhysical {system : Loom.Hw.System}
   IO.println artifacts.constraintFile.renderNeutral
   IO.println (Loom.Hw.System.renderResetIntents artifacts.resetIntents)
 
+def showSystemBackend {system : Loom.Hw.System}
+    (application : Loom.Hw.System.Application system)
+    (report : Loom.Hw.System.PhysicalCheckReport application.artifact.realized.artifacts) : IO Unit :=
+  IO.println report.render
+
 syntax (name := showSystemCmd) "#show_system" ident (ident)? : command
+syntax (name := showSystemReportCmd) "#show_system" ident ident term:max : command
 
 macro_rules
+  | `(#show_system $system:ident $view:ident $report:term) => do
+      unless view.getId == `backend do
+        Macro.throwErrorAt view "expected `backend` before a physical-check report"
+      let application := mkIdentFrom system (system.getId ++ `application)
+      `(#eval Loom.Hw.Dsl.showSystemBackend $application $report)
   | `(#show_system $system:ident) =>
       `(#eval Loom.Hw.Dsl.showSystemLogical $system)
   | `(#show_system $system:ident $view:ident) => do
