@@ -2384,26 +2384,51 @@ def s_ex_branches : List (Expr 1 × Act) :=
       }] <|
   -- LR
   gcons is_lr
-    (actSeq [lrAddrReg.set a, lrValidReg.set (L1 1),
-      ldBoffQReg.set (.lit (BitVec.ofNat 3 0)), ldOpQReg.set (L8 OP_LD),
-      ldRdQReg.set rdf, memIsStoreReg.set (L1 0),
-      .ite (.ult a (L64 0x1000))
-        (actSeq [dmemAReg.set (.slice a 3 9), stReg.set (L5 S_L0)])
-        (actSeq [coreAddrReg.set (ddrEa sexEa), coreRdReg.set (L1 1),
-                 lrReqReg.set (L1 1),                 -- tag: this read takes a reservation
-                 stReg.set (L5 S_DL)])]) <|
+    [hwstmt| {
+      lrAddrReg <- a,
+      lrValidReg <- 1,
+      ldBoffQReg <- 0,
+      ldOpQReg <- $(L8 OP_LD),
+      ldRdQReg <- rdf,
+      memIsStoreReg <- 0,
+      if a <u 0x1000 then {
+        dmemAReg <- a[11:3],
+        stReg <- $(L5 S_L0)
+      } else {
+        coreAddrReg <- $(ddrEa sexEa),
+        coreRdReg <- 1,
+        -- Tag this read as reservation-taking.
+        lrReqReg <- 1,
+        stReg <- $(L5 S_DL)
+      }
+    }] <|
   -- SC
   gcons is_sc
-    (.seq (.ite (.and lr_valid (.eq lr_addr a))
-            (.ite (.ult a (L64 0x1000))
-              (.seq (dmemWeReg.set (L1 1)) (.seq (dmemAReg.set (.slice a 3 9)) (.seq (dmemWdReg.set b) (.seq stepPc (.seq retireInc goF0)))))
-              (actSeq [coreAddrReg.set (ddrEa sexEa), coreWdataReg.set b,
-                       coreWrReg.set (L1 1),
-                       scReqReg.set (L1 1),            -- tag: conditional store
-                       scPendingReg.set (L1 1),        -- the verdict is due at S_DSW
-                       stReg.set (L5 S_DSW)]))
-            (.seq stepPc (.seq retireInc goF0)))
-          (lrValidReg.set (L1 0))) <|
+    [hwstmt| {
+      if lr_valid & (lr_addr == a) then
+        if a <u 0x1000 then {
+          dmemWeReg <- 1,
+          dmemAReg <- a[11:3],
+          dmemWdReg <- b,
+          $stmt(stepPc),
+          $stmt(retireInc),
+          $stmt(goF0)
+        } else {
+          coreAddrReg <- $(ddrEa sexEa),
+          coreWdataReg <- b,
+          coreWrReg <- 1,
+          -- Tag this write as conditional; its verdict is due at S_DSW.
+          scReqReg <- 1,
+          scPendingReg <- 1,
+          stReg <- $(L5 S_DSW)
+        }
+      else {
+        $stmt(stepPc),
+        $stmt(retireInc),
+        $stmt(goF0)
+      },
+      lrValidReg <- 0
+    }] <|
   -- UART_RX load
   gcons (.and is_load (.eq mem_ea_l (L64 UART_RX_ADDR)))
     (.seq (.ite (.not (.eq rx_rptr rx_wptr)) (rxRptrReg.set (.add rx_rptr (.lit (BitVec.ofNat 9 1)))) .skip)
