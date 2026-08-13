@@ -3571,7 +3571,8 @@ name retained; existing design and realization gates still reject coordinate
 or rule collisions. -/
 def extendDesign (base added : Design)
     (_disjoint : base.parOkB added)
-    (_readsDeclared : (base.par added).readsOkB) : Design :=
+    (readScope : Design)
+    (_readsDeclared : readScope.readsOkB) : Design :=
   { name := base.name
     regs := base.regs ++ added.regs
     mems := base.mems ++ added.mems
@@ -3954,8 +3955,16 @@ private def expandSystemCommand
           let baseTerm ← resolvedSupplied supplied
           let (generated, addedTerm) ← inlineDesign
           commands := commands ++ generated
+          let plainExtended ← `(term| $baseTerm |>.par $addedTerm)
+          let mut readScope := plainExtended
+          for connection in connections do
+            let channelName := qualifiedNestedName connection.channel.getId
+            if connection.source.getId == island.name.getId then
+              readScope ← `(term| (hw_exact_const% $channelName).withSource $readScope)
+            if connection.sink.getId == island.name.getId then
+              readScope ← `(term| (hw_exact_const% $channelName).withSink $readScope)
           let extended ← `(term| Loom.Hw.Dsl.extendDesign $baseTerm $addedTerm
-            (by native_decide) (by native_decide))
+            (by native_decide) $readScope (by native_decide))
           match island.moduleName with
           | none => pure extended
           | some moduleName =>

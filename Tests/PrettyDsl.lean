@@ -1069,6 +1069,38 @@ example : extended.application.artifact.emissionCheck.isOk := by native_decide
 
 end Tests.PrettyDsl.ExtendedIsland
 
+namespace Tests.PrettyDsl.EndpointExtendedIsland
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+namespace Base
+hardware endpoint_extension_base where
+  output reg value : 8 := 42
+end Base
+
+/-- Endpoint reads introduced by this same checked system declaration are in
+the `extends` validation scope, but are still absent from the returned plain
+island until ordinary channel assembly installs the adapters. -/
+system endpoint_extended where
+  clock sourceClock
+  clock sinkClock
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 2
+  island source on sourceClock extends Base.design where
+    rule publish := send value to q then value <- value + 1
+  island sink on sinkClock where
+    output reg observed : 8
+    rule capture := receive sample from q then observed <- sample
+  connect q from source to sink
+  realize q with Cdc.grayFifo
+
+example : endpoint_extended.application.artifact.emissionCheck.isOk := by native_decide
+example : endpoint_extended.source.rules.map (·.name) = ["publish"] := rfl
+
+end Tests.PrettyDsl.EndpointExtendedIsland
+
 namespace Tests.PrettyDsl.GroupedRealization
 
 open Loom.Hw
