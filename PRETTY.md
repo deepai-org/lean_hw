@@ -2549,6 +2549,18 @@ an explicit core fallback.
 
 ### Phase 11: SoC Fabric Gauntlet usability validation
 
+The existing gauntlet is a deliberate structural-compatibility gate, not a
+blind source rewrite. Its islands currently pre-apply endpoint adapters in a
+machine-specific nesting order that is neither connection order nor its global
+reverse. The `system` command correctly derives adapters from declared
+connections, so migrating those island bodies today would change the exact
+`Design` trees and invalidate proof/artifact equalities even if behavior were
+later shown equivalent. Do not weaken those equalities. Migrate the gauntlet
+only after either (a) its evidence is intentionally regenerated and the
+structural change is reviewed, or (b) a general, user-natural adapter-order
+contract is designed from more than this one compatibility case. A hidden
+gauntlet-specific lowering switch is out of scope.
+
 Use [`SOC_FABRIC_GAUNTLET.md`](SOC_FABRIC_GAUNTLET.md) as the first
 multi-route acceptance test rather than inventing synthetic parser fixtures:
 
