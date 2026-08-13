@@ -299,6 +299,21 @@ example : declarations.combOutputs.map (fun declaration => declaration.name) = [
 example : declarations.regs.head?.map (fun declaration => declaration.init.toNat) = some 0xfe := by
   decide
 
+def enableTrace : Nat → InEnv := fun cycle name width =>
+  BitVec.ofNat width (if name = "enable" ∧ cycle < 2 then 1 else 0)
+
+/--
+info: after 3 cycles:
+inputs:
+  cycle 0: enable=1
+  cycle 1: enable=1
+  cycle 2: enable=0
+outputs:
+  count = 0
+-/
+#guard_msgs in
+#run_hardware design for 3 cycles inputs $(enableTrace)
+
 end Tests.PrettyDsl.Interface
 
 namespace Tests.PrettyDsl.Memory

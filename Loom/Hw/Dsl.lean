@@ -2371,9 +2371,28 @@ def runHardware {design : Loom.Hw.Design}
   let final := simulator.run cycles simulator.reset
   IO.println s!"after {cycles} cycles:"
   for (name, value) in design.fastRegs final do
-    IO.println s!"  {name} = {value}"
+    if design.outputs.contains name then
+      IO.println s!"  {name} = {value}"
+
+def runHardwareOpen {design : Loom.Hw.Design}
+    (simulator : Loom.Hw.FastEval.VerifiedSimulator design) (cycles : Nat)
+    (inputs : Nat → Loom.Hw.InEnv) : IO Unit := do
+  let final := simulator.runOpen inputs cycles simulator.reset
+  IO.println s!"after {cycles} cycles:"
+  if !design.inputs.isEmpty then
+    IO.println "inputs:"
+    for cycle in List.range cycles do
+      let values := design.inputs.map fun declaration =>
+        s!"{declaration.name}={(inputs cycle declaration.name declaration.width).toNat}"
+      IO.println s!"  cycle {cycle}: {String.intercalate ", " values}"
+  IO.println "outputs:"
+  for (name, value) in design.fastRegs final do
+    if design.outputs.contains name then
+      IO.println s!"  {name} = {value}"
 
 syntax (name := runHardwareCmd) "#run_hardware" term:max "for" num ident : command
+syntax (name := runHardwareOpenCmd) "#run_hardware" term:max "for" num ident
+  "inputs" "$" "(" term ")" : command
 
 macro_rules
   | `(#run_hardware $design:term for $count:num $unit:ident) => do
@@ -2383,6 +2402,13 @@ macro_rules
         (design := $design)
         ({ wf := by native_decide } : Loom.Hw.FastEval.VerifiedSimulator $design)
         $count)
+  | `(#run_hardware $design:term for $count:num $unit:ident inputs $($trace:term)) => do
+      unless unit.getId == `cycles do
+        Macro.throwErrorAt unit "expected `cycles`"
+      `(#eval Loom.Hw.Dsl.runHardwareOpen
+        (design := $design)
+        ({ wf := by native_decide } : Loom.Hw.FastEval.VerifiedSimulator $design)
+        $count $trace)
 
 /-! ## Checked multiclock system command
 
