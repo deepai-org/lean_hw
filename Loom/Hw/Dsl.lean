@@ -650,6 +650,51 @@ private def elaborateScalarAtWidth (valueSyntax : TSyntax `term)
       ensureHasType expectedType? (.const name.getId [])
   | _ => throwUnsupportedSyntax
 
+syntax (name := hwResetValue) "hw_reset% " num term:max : term
+
+/-- Elaborate one scalar reset value at its declared width. Ordinary `Nat`
+constants are reduced and range-checked before constructing the `BitVec`;
+explicit `BitVec width` terms remain the escape for deliberately computed or
+modular reset images. -/
+@[term_elab hwResetValue] private def elabHwResetValue : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_reset% $widthSyntax:num $valueSyntax:term) => do
+      let width := widthSyntax.getNat
+      let rendered := valueSyntax.raw.reprint.getD "" |>.trimAscii.toString
+      if rendered.startsWith "-" || rendered.startsWith "(-" then
+        throwErrorAt valueSyntax
+          "negative reset literals are not implicit bit patterns; use an explicit all-ones `BitVec` value such as `BitVec.ofNat width (2^width - 1)`"
+      let finishNat (value : Lean.Expr) : TermElabM Lean.Expr := do
+        let reduced ← withTransparency .all <| Meta.reduce value
+        let some literal ← getNatValue? reduced
+          | throwErrorAt valueSyntax
+              "reset constant must reduce to a numeral for range checking"
+        let limit := 2 ^ width
+        if width == 0 || literal ≥ limit then
+          throwErrorAt valueSyntax
+            s!"reset value {literal} does not fit in {width} bits; expected 0 through {limit - 1}"
+        let result ← `(BitVec.ofNat $(quote width) $(quote literal))
+        elabTermEnsuringType result expectedType?
+      let rawValue ← withoutErrToSorry <| elabTerm valueSyntax none
+      let rawType ← Meta.whnf (← Meta.inferType rawValue)
+      if rawType.isConstOf ``Nat then
+        finishNat rawValue
+      else if rawType.isAppOfArity ``BitVec 1 then
+        let some actualWidth ← getNatValue? (← Meta.whnf rawType.getAppArgs[0]!)
+          | throwErrorAt valueSyntax "reset BitVec width must reduce to a numeral"
+        unless actualWidth == width do
+          throwErrorAt valueSyntax
+            s!"reset value has width {actualWidth}, but the register has width {width}"
+        ensureHasType expectedType? rawValue
+      else
+        try
+          finishNat (← withoutErrToSorry <|
+            elabTerm valueSyntax (some (.const ``Nat [])))
+        catch _ =>
+          throwErrorAt valueSyntax
+            s!"reset value must be a reducible Nat or an explicit BitVec {width}"
+  | _ => throwUnsupportedSyntax
+
 private def checkedHardwareLiteral (source : Syntax) (value : Nat)
     (expectedType? : Option Lean.Expr) : TermElabM Lean.Expr := do
   let some expected := expectedType?
@@ -1925,8 +1970,10 @@ the generated `Declarations`/`Design` shape established here. -/
 declare_syntax_cat hwitem
 syntax ident ident ":" num : hwitem
 syntax ident ident ":" num ":=" num : hwitem
+syntax (priority := low) ident ident ":" num ":=" term:max : hwitem
 syntax ident ident ident ":" num : hwitem
 syntax ident ident ident ":" num ":=" num : hwitem
+syntax (priority := low) ident ident ident ":" num ":=" term:max : hwitem
 syntax ident ident ident ":" num ":=" hwexpr : hwitem
 syntax ident ident ":" ident : hwitem
 syntax (priority := high) ident ident ":" ident ":=" term:max : hwitem
@@ -1937,10 +1984,14 @@ syntax ident ident ":" "{" ident,* "}" : hwitem
 syntax ident ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ":" ident "{" ident,* "}" : hwitem
+syntax ident ident ":" ident "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ident ":" "{" ident,* "}" : hwitem
 syntax ident ident ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ident ":" ident "{" ident,* "}" : hwitem
+syntax ident ident ident ":" ident "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ":" num "[" num "]" ":=" term:max : hwitem
 syntax ident ident ":" num "[" num "]" "using" term:max : hwitem
@@ -1948,6 +1999,8 @@ syntax ident ident ":" ident "[" num "]" : hwitem
 syntax ident ident ":" ident "[" num "]" "using" term:max : hwitem
 syntax ident ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ident ":" num "[" num "]" ":=" term:max : hwitem
+syntax ident ident ident ":" ident "[" num "]" : hwitem
+syntax ident ident ident ":" ident "[" num "]" ":=" term:max : hwitem
 syntax ident ident ":=" hwstmt : hwitem
 syntax ident ident "suppress" ident "because" str ":=" hwstmt : hwitem
 syntax (name := hardwareCmd) (docComment)? "hardware" ident "where" hwitem* : command
@@ -1956,7 +2009,7 @@ private structure ScalarRegItem where
   name : TSyntax `ident
   width : TSyntax `num
   exported : Bool
-  init : Nat := 0
+  init : TSyntax `term := ⟨Syntax.mkNumLit "0"⟩
 
 private structure ConstItem where
   name : TSyntax `ident
@@ -2712,9 +2765,10 @@ private def stateItems (stateName : TSyntax `ident) (width? : Option (TSyntax `n
         let some index := members.findIdx? (fun member => member.getId == reset.getId)
           | Macro.throwErrorAt reset "reset state is not a member of this state declaration"
         pure index
+  let resetTerm : TSyntax `term := ⟨Syntax.mkNumLit (toString resetIndex)⟩
   let constants := members.mapIdx fun index member =>
     { name := member, width := width, value := ⟨Syntax.mkNumLit (toString index)⟩ }
-  pure (⟨stateName, width, exported, resetIndex⟩, constants)
+  pure (⟨stateName, width, exported, resetTerm⟩, constants)
 
 private partial def exactAddrWidthLoop (depth capacity width : Nat) : Option Nat :=
   if depth == capacity then some width
@@ -2760,28 +2814,49 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem))
         "hardware declarations must precede the first rule"
     match item with
     | `(hwitem| $kind:ident $name:ident : $width:num) =>
-        if kind.getId == `reg then registers := registers.push ⟨name, width, false, 0⟩
+        if kind.getId == `reg then
+          registers := registers.push ⟨name, width, false, ⟨Syntax.mkNumLit "0"⟩⟩
         else if kind.getId == `input then inputs := inputs.push ⟨name, width⟩
         else Macro.throwErrorAt kind "expected `reg` or `input`"
     | `(hwitem| $kind:ident $name:ident : $width:num := $value:num) =>
         if kind.getId == `reg then
-          registers := registers.push ⟨name, width, false, ← checkedValue width value⟩
+          let _ ← checkedValue width value
+          registers := registers.push ⟨name, width, false, ⟨value.raw⟩⟩
         else if kind.getId == `const then
           let _ ← checkedValue width value
           constants := constants.push ⟨name, width, value⟩
         else Macro.throwErrorAt kind "expected `reg` or `const`"
+    | `(hwitem| $kind:ident $name:ident : $width:num := $init:term) =>
+        unless kind.getId == `reg do
+          Macro.throwErrorAt kind
+            "only a scalar `reg` accepts a computed reset term; design-local `const` requires a reducible Nat"
+        registers := registers.push ⟨name, width, false, init⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num) =>
         unless qualifier.getId == `output && kind.getId == `reg do
           Macro.throwErrorAt qualifier "expected `output reg`"
-        registers := registers.push ⟨name, width, true, 0⟩
+        registers := registers.push ⟨name, width, true, ⟨Syntax.mkNumLit "0"⟩⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num := $value:num) =>
         unless qualifier.getId == `output && kind.getId == `reg do
           Macro.throwErrorAt qualifier "expected `output reg`"
-        registers := registers.push ⟨name, width, true, ← checkedValue width value⟩
+        let _ ← checkedValue width value
+        registers := registers.push ⟨name, width, true, ⟨value.raw⟩⟩
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num := $init:term) =>
+        unless qualifier.getId == `output && kind.getId == `reg do
+          Macro.throwErrorAt qualifier "only scalar `output reg` accepts a computed reset term"
+        registers := registers.push ⟨name, width, true, init⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num := $value:hwexpr) =>
-        unless qualifier.getId == `output && kind.getId == `wire do
-          Macro.throwErrorAt qualifier "expected `output wire`"
-        wires := wires.push ⟨name, width, value⟩
+        unless qualifier.getId == `output do
+          Macro.throwErrorAt qualifier "expected `output reg` or `output wire`"
+        if kind.getId == `wire then
+          wires := wires.push ⟨name, width, value⟩
+        else if kind.getId == `reg then
+          let resetTerm : TSyntax `term ← match value with
+            | `(hwexpr| $constant:ident) => pure ⟨constant.raw⟩
+            | _ => Macro.throwErrorAt value.raw <|
+                "a register reset is a Lean Nat or BitVec term, not a hardware expression"
+          registers := registers.push ⟨name, width, true, resetTerm⟩
+        else
+          Macro.throwErrorAt kind "expected `output reg` or `output wire`"
     | `(hwitem| $kind:ident $name:ident : $typeName:ident) =>
         if kind.getId == `reg then
           packedRegisters := packedRegisters.push ⟨name, typeName, false, none⟩
@@ -3179,12 +3254,13 @@ private def expandHardwareCommand
     commands := commands.push command
   let mut declarations : TSyntax `term ← `(Loom.Hw.Declarations.empty)
   for register in registers do
+    let resetValue ← `(hw_reset% $(register.width) $(register.init))
     if register.exported then
       declarations ← `($declarations |>.addReg $(register.name)
-        (BitVec.ofNat $(register.width) $(quote register.init)) (exported := true))
+        $resetValue (exported := true))
     else
       declarations ← `($declarations |>.addReg $(register.name)
-        (BitVec.ofNat $(register.width) $(quote register.init)))
+        $resetValue)
   for inputItem in inputs do
     declarations ← `($declarations |>.addWireInput $(inputItem.name))
   for memory in memories do
@@ -3256,13 +3332,92 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
           syntaxShapeEq leftArgs[index]! rightArgs[index]!
   | _, _ => false
 
+private def numeralAt (source : Syntax) (value : Nat) : TSyntax `num :=
+  ⟨Syntax.mkNumLit (toString value) (info := source.getHeadInfo)⟩
+
+/-- Resolve an ambiguous declaration type token as a compile-time width when
+it has type `Nat`; non-`Nat` identifiers remain packed semantic types. A Nat
+width must reduce now because the indexed handle and all downstream metadata
+need one concrete width. -/
+private def declarationWidth? (source : TSyntax `ident) : CommandElabM (Option Nat) :=
+  liftTermElabM do
+    let term : TSyntax `term := ⟨source.raw⟩
+    let value? ← try
+      pure (some (← withoutErrToSorry <| elabTerm term none))
+    catch _ => pure none
+    let some value := value? | return none
+    let type ← Meta.whnf (← Meta.inferType value)
+    unless type.isConstOf ``Nat do return none
+    let some width ← getNatValue? (← withTransparency .all <| Meta.reduce value)
+      | throwErrorAt source
+          "hardware declaration width must reduce to a numeral"
+    if width == 0 then
+      throwErrorAt source "hardware widths must be positive"
+    pure (some width)
+
+/-- Turn a declaration whose ambiguous identifier denotes `Nat` into the
+existing numeral-shaped internal form. Packed identifiers are left untouched,
+so adding parametric scalar widths does not weaken packed type identity. -/
+private def normalizeDeclarationWidth (item : TSyntax `hwitem) :
+    CommandElabM (TSyntax `hwitem) := do
+  let widthNumber? (width : TSyntax `ident) : CommandElabM (Option (TSyntax `num)) := do
+    pure <| (← declarationWidth? width).map (numeralAt width.raw)
+  match item with
+  | `(hwitem| $kind:ident $name:ident : $width:ident {$members:ident,*}) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $kind:ident $name:ident : $numeric:num {$members:ident,*})
+  | `(hwitem| $kind:ident $name:ident : $width:ident {$members:ident,*} := $reset:ident) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $kind:ident $name:ident : $numeric:num {$members:ident,*} := $reset:ident)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident {$members:ident,*}) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num {$members:ident,*})
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident {$members:ident,*} := $reset:ident) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num {$members:ident,*} := $reset:ident)
+  | `(hwitem| $kind:ident $name:ident : $width:ident [$count:num]) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $kind:ident $name:ident : $numeric:num [$count:num])
+  | `(hwitem| $kind:ident $name:ident : $width:ident [$count:num] using $policy:term) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $kind:ident $name:ident : $numeric:num [$count:num] using $policy:term)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident [$count:num]) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num [$count:num])
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident [$count:num] := $init:term) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num [$count:num] := $init:term)
+  | `(hwitem| $kind:ident $name:ident : $width:ident := $init:term) =>
+      let some numeric ← widthNumber? width | return item
+      if kind.getId == `const then
+        let some value := init.raw.isNatLit?
+          | throwErrorAt init "design-local `const` requires a reducible Nat"
+        let literal := numeralAt init.raw value
+        `(hwitem| $kind:ident $name:ident : $numeric:num := $literal:num)
+      else
+        `(hwitem| $kind:ident $name:ident : $numeric:num := $init:term)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident := $value:hwexpr) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num := $value:hwexpr)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident := $init:term) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num := $init:term)
+  | `(hwitem| $kind:ident $name:ident : $width:ident) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $kind:ident $name:ident : $numeric:num)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident) =>
+      let some numeric ← widthNumber? width | return item
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num)
+  | _ => pure item
+
 @[command_elab hardwareCmd] unsafe def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
+      let normalizedItems ← items.mapM normalizeDeclarationWidth
       let deferExternalWrites := loom.hw.deferExtensionWrites.get (← getOptions)
       let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
         packedInputs, packedWires, registerArrays, domains, rules) ←
-        liftMacroM <| parseHardwareItems items deferExternalWrites
+        liftMacroM <| parseHardwareItems normalizedItems deferExternalWrites
       for ruleItem in rules do
         if let some finding := (missingStateDefaults domains ruleItem.body)[0]? then
           if finding.missing.isEmpty then
@@ -3334,7 +3489,7 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
         registers constants inputs memories packedMemories wires packedRegisters packedInputs packedWires
         registerArrays packedMemoryWidths packedRegisterWidths packedInputWidths packedWireWidths domains rules
       let expanded ← liftMacroM <|
-        expandHardwareCommand documentation moduleName items deferExternalWrites
+        expandHardwareCommand documentation moduleName normalizedItems deferExternalWrites
       elabCommand expanded
       modifyEnv (hardwareMetadataExt.addEntry · metadata)
   | _ => throwUnsupportedSyntax

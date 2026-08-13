@@ -33,20 +33,24 @@ declarations own the handles, opcode labels, memory shapes, and rule; the
 outer `design` substitutes only the parameterized ROM initializer. -/
 namespace Authored
 
-hardware acc8_authored where
-  output reg acc : 8
-  output reg pc : 8
-  output reg halted : 1
-  memory prog : 16 [256]
-  memory mem : 8 [256]
+private def byteWidth : Nat := 4 + 4
+private def flagWidth : Nat := 1
+private def instructionWidth : Nat := byteWidth * 2
 
-  const NOP : 8 := 0
-  const LDI : 8 := 1
-  const ADD : 8 := 2
-  const LDA : 8 := 3
-  const STA : 8 := 4
-  const JNZ : 8 := 5
-  const SUB : 8 := 6
+hardware acc8_authored where
+  output reg acc : byteWidth
+  output reg pc : byteWidth
+  output reg halted : flagWidth
+  memory prog : instructionWidth [256]
+  memory mem : byteWidth [256]
+
+  const NOP : byteWidth := 0
+  const LDI : byteWidth := 1
+  const ADD : byteWidth := 2
+  const LDA : byteWidth := 3
+  const STA : byteWidth := 4
+  const JNZ : byteWidth := 5
+  const SUB : byteWidth := 6
 
   rule exec := {
     let fetched := Instruction.fromBits(prog[pc]),
