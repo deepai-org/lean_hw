@@ -2719,16 +2719,17 @@ Runs **after** `fsmRule` so both overrides are deterministic:
 * `res_kill` clears `lr_valid` last, so it also cancels an `LR` issued the
   same cycle (a spurious kill only makes the matching `SC` fail → retry). -/
 def smpRule : Rule :=
-  ⟨"smp", actSeq
-    [ wakeOutReg.set wakeLocal
+  ⟨"smp", [hwstmt| {
+      wakeOutReg <- wakeLocal,
       -- publish the key we woke on (hold otherwise). Kept for the dual SoC
       -- output port + the other core's `doorbell_key`; the wake is unkeyed
       -- now, so the key is informational only.
-    , .ite wakeLocal (wakeKeyReg.set rdval) .skip
+      if wakeLocal then wakeKeyReg <- rdval,
       -- The wake, unkeyed: promote every parked (FUTEX) slot to READY on a
       -- local FUTEX_WAKE or the cross-core doorbell. tstate-only, one cycle.
-    , wakeAllApply
-    , .ite resKill (lrValidReg.set (L1 0)) .skip ]⟩
+      $stmt(wakeAllApply),
+      if resKill then lrValidReg <- 0
+    }]⟩
 
 /-! ### (9a) The thread-table write funnels (D20)
 
@@ -2865,22 +2866,21 @@ def gdepthWdE : Expr 3 :=
                    (.sub (gdepthRd cur) (.lit (BitVec.ofNat 3 1))))
 
 def tarrFunnelRule : Rule :=
-  ⟨"tarr_funnel",
-    .seq (.ite tdomWeE (tdomBank.write 0 tdomWaE tdomWdE) .skip) <|
+  ⟨"tarr_funnel", [hwstmt| {
+    if tdomWeE then tdomBank[port 0, tdomWaE] <- tdomWdE,
     -- EXT-5 (§9): the continuation STACK. A gate call PUSHES the return point
     -- and caller domain at slot `cur*MAXD + gdepth[cur]`; a return reads the
     -- slot below (`gPopIdx`, in the gate-return arm / tdom funnel). One write
     -- port each, at the push slot, on a gate call.
-    .seq (.ite gateCall (tcontBank.write 0 gPushIdx pc8) .skip) <|
-    .seq (.ite gateCall (tcdomBank.write 0 gPushIdx domCur) .skip) <|
+    if gateCall then tcontBank[port 0, gPushIdx] <- pc8,
+    if gateCall then tcdomBank[port 0, gPushIdx] <- domCur,
     -- §9: the per-thread depth. Push on a gate call (++), pop on a gate return
     -- (--); `cmd 13`'s sweep zeroes it, like the other per-thread arrays (D37).
-    .seq (.ite gdepthWeE (gdepthBank.write 0 gdepthWaE gdepthWdE) .skip) <|
-    .seq (inGateReg.set inGateNext) <|
+    if gdepthWeE then gdepthBank[port 0, gdepthWaE] <- gdepthWdE,
+    inGateReg <- inGateNext,
     -- The fault record clears on the cmd-13 sweep head, like the other
     -- host-visible diagnostics; pc/cur are meaningful only while cause != 0.
-    .seq (.ite (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0))))
-            (faultCauseReg.set (L8 0)) .skip) <|
+    if zeroing & (zctr == 0) then faultCauseReg <- 0,
     -- EXT-6 (§17): the inbox is guest memory now -- its writes ride the
     -- ordinary bus path from S_CS1/S_CR1, and there is no core-resident
     -- occupancy state left to update here.
@@ -2893,13 +2893,14 @@ def tarrFunnelRule : Rule :=
     -- EXT-7: the valid bitmap. Fill sets the selected slot; the §15
     -- shootdown clears every slot whose recorded cell was bumped -- several
     -- at once, which is why this is a register and not a memory.
-    .seq (tlbVldReg.set tlbVldNext) <|
+    tlbVldReg <- tlbVldNext,
     -- EXT-5: the host-loaded gate table.
-    .seq (.ite tpcWeE (tpcBank.write 0 tpcWaE tpcWdE) .skip)
-      (.seq (.ite (exG (opIs OP_SLEEP))
-              (tsleepBank.write 1 cur (.mux (.eq a (L64 0)) (L64 1) a)) .skip)
-        (.seq (.ite cloneFresh (tpBank.write 0 clone_tid (L64 0)) .skip)
-              (.ite cloneFresh (sigmaskBank.write 0 clone_tid (L64 0)) .skip)))⟩
+    if tpcWeE then tpcBank[port 0, tpcWaE] <- tpcWdE,
+    if $(exG (opIs OP_SLEEP)) then
+      tsleepBank[port 1, cur] <- if a == 0 then 1 else a,
+    if cloneFresh then tpBank[port 0, clone_tid] <- 0,
+    if cloneFresh then sigmaskBank[port 0, clone_tid] <- 0
+  }]⟩
 
 /-- (9) the single regfile write port. -/
 def rfFunnelRule : Rule :=
