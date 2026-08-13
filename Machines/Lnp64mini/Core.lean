@@ -1018,7 +1018,7 @@ def s_is_gp : Expr 1 :=
 
 /-! ### op predicates -/
 
-def opIs (n : Nat) : Expr 1 := .eq op (L8 n)
+def opIs (n : Nat) : Expr 1 := [hwexpr| op == $(L8 n)]
 
 /-- `orTree` over a list of opcode matches (was a linear `.or` fold). -/
 def opAny (ns : List Nat) : Expr 1 := orTree (ns.map opIs)
@@ -1647,7 +1647,7 @@ def L4 (n : Nat) : Expr 4 := .lit (BitVec.ofNat 4 n)
 /-- `{op[7:0], 24'b0, pc[31:0]}` -- one word, so the ring costs two memories
 rather than three and the reader gets the opcode and the PC together. -/
 def traceWord : Expr 64 :=
-  .or (.shl (.zext op 64) (L64 56)) (.zext (.slice pc 0 32) 64)
+  [hwexpr| ((zext op to 64) << 56) | (zext pc[31:0] to 64)]
 
 def retireInc : Act :=
   [hwstmt| {
@@ -1868,7 +1868,7 @@ def ddrRdLRule : Rule :=
 /-- One FSM arm as `(st == x, body)` data, so the whole state dispatch can
 be emitted as one balanced tree (see `fsmRule`). The `fsmEn` half of the
 old per-rule guard `fsmEn ∧ st==x` is hoisted into `fsmRule`. -/
-def stArm (x : Nat) (a : Act) : Expr 1 × Act := (.eq st (L5 x), a)
+def stArm (x : Nat) (a : Act) : Expr 1 × Act := ([hwexpr| st == $(L5 x)], a)
 
 /-! ### EXT-7 — the translation itself
 
@@ -2057,8 +2057,9 @@ against, and `wakeEn` says whether it does anything at all. Local wins a tie
 rather than merged, which is safe because a futex waiter must re-check its
 condition after waking and the waker retries; merging two keys into one bank
 pass is the thing that cannot be done with one comparator. -/
-def wakeLocal : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) (opIs OP_FUTEX_WAKE))
-def wakeEn    : Expr 1 := .or wakeLocal doorbell
+def wakeLocal : Expr 1 :=
+  [hwexpr| fsmEn & ((st == $(L5 S_EX)) & $(opIs OP_FUTEX_WAKE))]
+def wakeEn    : Expr 1 := [hwexpr| wakeLocal | doorbell]
 
 /-- EXT-4 reverted to fit NT=32: the wake is now UNKEYED.
 
@@ -2871,7 +2872,7 @@ def tpcWaE : Expr 5 := priTree (tpcTriples.map (fun t => (t.1, t.2.1))) (L5 0)
 def tpcWdE : Expr 64 := priTree (tpcTriples.map (fun t => (t.1, t.2.2))) (L64 0)
 
 /-- `S_CLONE2` — the only writer of `tp_arr`/`sigmask_arr`. -/
-def cloneFresh : Expr 1 := .and fsmEn (.eq st (L5 S_CLONE2))
+def cloneFresh : Expr 1 := [hwexpr| fsmEn & (st == $(L5 S_CLONE2))]
 
 /-! ### EXT-2 — the `tdom` write funnel
 
@@ -2916,7 +2917,7 @@ set/clear on a register is one mux where a memory would be a port. -/
 `cur` bit clear. A return from a nested frame (depth ≥ 2) keeps the thread in a
 gate. -/
 def gateRetLast : Expr 1 :=
-  .and gateRet (.eq (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
+  [hwexpr| gateRet & ($(gdepthRd cur) == 1)]
 
 /-- `in_gate` after this cycle: bit `cur` = `gdepth[cur] > 0` (inside ≥1 gate).
 Set on any gate call, cleared when the LAST frame returns; a CLONE clears the
@@ -2955,16 +2956,18 @@ fresh thread has no open gates, regardless of what the reused slot held. A
 THREAD_EXIT clears the exiting thread's depth so its freed slot carries no stale
 gate state to the next CLONE. This keeps `gdepth` and `in_gate` synchronized
 when a memory-backed slot is reused. -/
-def gdepthClone : Expr 1 := exG (.and (opIs OP_CLONE_SPAWN) has_free)
+def gdepthClone : Expr 1 := exG [hwexpr| $(opIs OP_CLONE_SPAWN) & has_free]
 def gdepthExit  : Expr 1 := exG (opIs OP_THREAD_EXIT)
 def gdepthWeE : Expr 1 :=
-  .or (.and zeroing (.ult zctr (.lit (BitVec.ofNat 10 NT))))
-    (.or gdepthClone (.or gdepthExit (.or gateCall gateRet)))
-def gdepthWaE : Expr 5 := .mux zeroing (.slice zctr 0 5) (.mux gdepthClone free_slot cur)
+  [hwexpr|
+    (zeroing & (zctr <u $(Expr.lit (BitVec.ofNat 10 NT)))) |
+      (gdepthClone | (gdepthExit | (gateCall | gateRet)))]
+def gdepthWaE : Expr 5 :=
+  [hwexpr| if zeroing then zctr[4:0] else if gdepthClone then free_slot else cur]
 def gdepthWdE : Expr 3 :=
-  .mux (.or zeroing (.or gdepthClone gdepthExit)) (.lit (BitVec.ofNat 3 0))
-    (.mux gateCall (.add (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
-                   (.sub (gdepthRd cur) (.lit (BitVec.ofNat 3 1))))
+  [hwexpr|
+    if zeroing | (gdepthClone | gdepthExit) then 0
+    else if gateCall then $(gdepthRd cur) + 1 else $(gdepthRd cur) - 1]
 
 def tarrFunnelRule : Rule :=
   ⟨"tarr_funnel", [hwstmt| {
@@ -3017,7 +3020,7 @@ CE9/CE10 measurement, 9 523 vs 671 LUT for identical logic. The fill fires
 on the miss completion in `S_FW`, which is the only moment a line changes
 in stage 1 (invalidate arrives with the sweep, below, through the same
 site). -/
-def icFill : Expr 1 := .and (.eq st (L5 S_FW)) mDone
+def icFill : Expr 1 := [hwexpr| (st == $(L5 S_FW)) & mDone]
 
 def icFillRule : Rule :=
   ⟨"ic_data_funnel", [hwstmt|
@@ -3039,9 +3042,10 @@ Bumping `ic_gen` retires every line at once, in one cycle. `cmd 13`'s soft
 reset is included so a re-armed core cannot inherit lines from the previous
 run. -/
 def icGenBump : Expr 1 :=
-  .and cmdValid
-    (orTree ([CMD_MMU_EN, CMD_TLB_SEL, CMD_TLB_VPN, CMD_TLB_PPN,
-              67, CMD_TLB_PHYS, 13].map (fun n => .eq cmdIdx (L7 n))))
+  [hwexpr|
+    cmdValid &
+      $(orTree ([CMD_MMU_EN, CMD_TLB_SEL, CMD_TLB_VPN, CMD_TLB_PPN,
+                 67, CMD_TLB_PHYS, 13].map (fun n => .eq cmdIdx (L7 n))))]
 
 /-! ### EXT-10 funnels
 
@@ -3058,13 +3062,14 @@ change retires both caches in one cycle rather than needing a second sweep.
 The other core's copy is stale until rung 5 broadcasts the address; until
 then this is a single-core cache, and `EXTEND_SPEC.md` says so rather than
 the code implying otherwise. -/
-def dcFill : Expr 1 := .and (.eq st (L5 S_DL)) (.and mDone dc_alloc)
+def dcFill : Expr 1 := [hwexpr| (st == $(L5 S_DL)) & (mDone & dc_alloc)]
 
 /-- A store that must invalidate: a DDR store, in `S_EX`, on the cacheable
 path. The zp/UART/GP store arms never reach DDR and cannot alias a line. -/
 def dcStoreInv : Expr 1 :=
-  .and (exG is_store) (.and (.not s_is_zp) (.and (.not s_is_gp)
-    (.not (.eq mem_ea_s (L64 UART_ADDR)))))
+  [hwexpr|
+    $(exG is_store) &
+      (~s_is_zp & (~s_is_gp & ~(mem_ea_s == $(L64 UART_ADDR))))]
 
 /-- **§17: the cap walk's stores invalidate too.** The walk writes the
 handle word (issued from `S_CS0`) and the flags word (issued from
@@ -3075,15 +3080,13 @@ caught for ordinary stores. The invalidated index is the line of the
 address each state is writing THIS cycle: `core_addr - 8` from `S_CS0`
 (the handle word), `core_addr + 8` from the flags writers. -/
 def dcCapInvS0 : Expr 1 :=
-  .and fsmEn (.and (.eq st (L5 S_CS0)) (.and mDone capSendOk))
+  [hwexpr| fsmEn & ((st == $(L5 S_CS0)) & (mDone & capSendOk))]
 def dcCapInvFl : Expr 1 :=
-  .and fsmEn (.and (.or (.eq st (L5 S_CS1)) (.eq st (L5 S_CR1))) mDone)
-def dcCapInv : Expr 1 := .or dcCapInvS0 dcCapInvFl
+  [hwexpr|
+    fsmEn & (((st == $(L5 S_CS1)) | (st == $(L5 S_CR1))) & mDone)]
+def dcCapInv : Expr 1 := [hwexpr| dcCapInvS0 | dcCapInvFl]
 def dc_cap_idx : Expr 12 :=
-  .slice (.shr (.mux dcCapInvS0
-                 (.sub core_addr (.lit (BitVec.ofNat 32 8)))
-                 (.add core_addr (.lit (BitVec.ofNat 32 8))))
-               (.lit (BitVec.ofNat 32 3))) 0 12
+  [hwexpr| ((if dcCapInvS0 then core_addr - 8 else core_addr + 8) >> 3)[11:0]]
 
 def dcDataRule : Rule :=
   ⟨"dc_data_funnel", [hwstmt|
