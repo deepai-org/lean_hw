@@ -660,6 +660,7 @@ open Loom.Hw.Dsl
 private def dataWidth : Nat := 4 + 4
 private def resetNat : Nat := 0xa5
 private def resetBits : BitVec dataWidth := 0x5a
+private def commandCode : Nat := 0x3c
 
 hardware declaration_terms where
   input incoming : dataWidth
@@ -669,6 +670,7 @@ hardware declaration_terms where
   memory scratch : dataWidth [16]
   output reg slots : dataWidth [2]
   states mode : dataWidth { Idle, Busy } := Idle
+  const CommandCode : dataWidth := commandCode
 
   rule hold := skip
 
@@ -679,6 +681,8 @@ example : declarations.regs.map (fun declaration => declaration.init.toNat) =
     [0xa5, 0x5a, 0, 0, 0] := by decide
 example : slots = (⟨"slots"⟩ : RegArray 8 2) := rfl
 example : mode = (⟨"mode"⟩ : Reg 8) := rfl
+example : CommandCode = (Expr.lit 0x3c#8) := rfl
+example : declarations.regs.all (fun declaration => declaration.name != "CommandCode") := by decide
 
 end Tests.PrettyDsl.DeclarationTerms
 
@@ -2026,6 +2030,7 @@ private opaque opaqueWidth : Nat
 private def zeroWidth : Nat := 0
 private def overflowingReset : Nat := 0x100
 private opaque opaqueReset : Nat
+private opaque opaqueConstant : Nat
 private def narrowReset : BitVec 7 := 0x7f
 
 namespace OpaqueWidth
@@ -2069,6 +2074,13 @@ namespace NegativeReset
 hardware negative_reset where
   reg negativeResetValue : 8 := (-1)
 end NegativeReset
+
+namespace OpaqueConstant
+/-- error: design-local hardware constant must reduce to a numeral for range checking -/
+#guard_msgs in
+hardware opaque_constant where
+  const Command : 8 := opaqueConstant
+end OpaqueConstant
 
 /-- error: duplicate design-local name 'value' -/
 #guard_msgs in
