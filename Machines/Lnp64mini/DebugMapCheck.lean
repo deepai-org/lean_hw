@@ -19,7 +19,7 @@ private def dualCoreOutputSurface : Loom.Hw.Design :=
         { reg with name := "c0_" ++ reg.name }) ++
       Machines.Lnp64mini.declarations.regs.map (fun reg =>
         { reg with name := "c1_" ++ reg.name })
-    mems := [], rules := [], inputs := []
+    mems := [], rules := [], «inputs» := []
     outputs :=
       Machines.Lnp64mini.declarations.outputs.map ("c0_" ++ ·) ++
       Machines.Lnp64mini.declarations.outputs.map ("c1_" ++ ·) }
