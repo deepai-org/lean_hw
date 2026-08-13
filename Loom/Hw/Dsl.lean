@@ -394,8 +394,8 @@ syntax:80 ident "[" hwexpr "]" : hwexpr
 syntax:80 hwexpr:80 "." ident : hwexpr
 syntax:75 "~" hwexpr:75 : hwexpr
 syntax:75 (name := hwNegativeLiteral) "-" num : hwexpr
-syntax:75 "zext" hwexpr:76 "to" num : hwexpr
-syntax:75 "sext" hwexpr:76 "to" num : hwexpr
+syntax:75 "zext" ppSpace hwexpr:76 ppSpace "to" ppSpace num : hwexpr
+syntax:75 "sext" ppSpace hwexpr:76 ppSpace "to" ppSpace num : hwexpr
 syntax:70 hwexpr:70 " * " hwexpr:71 : hwexpr
 syntax:70 hwexpr:70 " / " hwexpr:71 : hwexpr
 syntax:70 hwexpr:70 " % " hwexpr:71 : hwexpr
@@ -1238,6 +1238,28 @@ private partial def delabHwExprCore :
       let value ← (← withNaryArg 1 delabHwExprCore).group
       pure ⟨← `(hwexpr| ~ $value), false⟩) <|>
     (do
+      guard (head == ``Loom.Hw.Expr.slice && arguments.size == 4)
+      let value ← withNaryArg 1 delabHwExprCore
+      let some low ← getNatValue? (← Meta.whnf arguments[2]!) | failure
+      let some width ← getNatValue? (← Meta.whnf arguments[3]!) | failure
+      guard (width > 0)
+      let lowSyntax := ⟨Syntax.mkNumLit (toString low)⟩
+      if width == 1 then
+        pure ⟨← `(hwexpr| $(value.stx)[$lowSyntax:num]), true⟩
+      else
+        let highSyntax := ⟨Syntax.mkNumLit (toString (low + width - 1))⟩
+        pure ⟨← `(hwexpr| $(value.stx)[$highSyntax:num:$lowSyntax:num]), true⟩) <|>
+    (do
+      guard ((head == ``Loom.Hw.Expr.zext || head == ``Loom.Hw.Expr.sext) &&
+        arguments.size == 3)
+      let value ← withNaryArg 1 delabHwExprCore
+      let some width ← getNatValue? (← Meta.whnf arguments[2]!) | failure
+      let widthSyntax := ⟨Syntax.mkNumLit (toString width)⟩
+      if head == ``Loom.Hw.Expr.zext then
+        pure ⟨← `(hwexpr| zext $(value.stx) to $widthSyntax:num), false⟩
+      else
+        pure ⟨← `(hwexpr| sext $(value.stx) to $widthSyntax:num), false⟩) <|>
+    (do
       guard (head == ``Loom.Hw.Expr.mux && arguments.size == 4)
       let condition ← (← withNaryArg 1 delabHwExprCore).group
       let yes ← (← withNaryArg 2 delabHwExprCore).group
@@ -1267,6 +1289,9 @@ private meta def delabHwExprWrapper : Delab := do
 @[app_delab Loom.Hw.Expr.ult] meta def delabHwUlt := delabHwExprWrapper
 @[app_delab Loom.Hw.Expr.slt] meta def delabHwSlt := delabHwExprWrapper
 @[app_delab Loom.Hw.Expr.mux] meta def delabHwMux := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.slice] meta def delabHwSlice := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.zext] meta def delabHwZext := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.sext] meta def delabHwSext := delabHwExprWrapper
 
 /-! Statement grammar for scalar state and explicit escapes. Blocks are
 semicolon-separated in quotations for now; the enclosing `hardware` command

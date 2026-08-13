@@ -90,6 +90,9 @@ private def b : Reg 8 := ⟨"b"⟩
 private def delaborationProbe : Expr 8 :=
   Expr.shl (Expr.add a.rd (Expr.mul b.rd (.lit 3))) (.lit 2)
 
+private def sliceDelaborationProbe : Expr 8 :=
+  Expr.zext (Expr.slice a.rd 2 4) 8
+
 run_cmd Lean.Elab.Command.liftTermElabM do
   let some info := (← Lean.getEnv).find? ``delaborationProbe
     | throwError "delaboration probe declaration is missing"
@@ -106,6 +109,20 @@ run_cmd Lean.Elab.Command.liftTermElabM do
   let reparsed ← Lean.Elab.Term.elabTerm parsed (some info.type)
   unless ← Lean.Meta.isDefEq value reparsed do
     throwError "delaborated hardware expression did not re-elaborate definitionally: {rendered}"
+  let some sliceInfo := (← Lean.getEnv).find? ``sliceDelaborationProbe
+    | throwError "slice-delaboration probe declaration is missing"
+  let some sliceValue := sliceInfo.value?
+    | throwError "slice-delaboration probe has no reducible value"
+  let sliceRendered := toString (← Lean.Meta.ppExpr sliceValue)
+  unless sliceRendered.contains "[hwexpr| zext a[5:2] to 8]" do
+    throwError "slice/extension delaboration lost source syntax: {sliceRendered}"
+  let sliceParsed ←
+    match Lean.Parser.runParserCategory (← Lean.getEnv) `term sliceRendered with
+    | .ok parsed => pure parsed
+    | .error message => throwError "could not parse delaborated slice: {message}"
+  let sliceReparsed ← Lean.Elab.Term.elabTerm sliceParsed (some sliceInfo.type)
+  unless ← Lean.Meta.isDefEq sliceValue sliceReparsed do
+    throwError "delaborated slice did not re-elaborate definitionally: {sliceRendered}"
 
 private def actionDelaborationProbe : Act :=
   Act.seq (a.set (.add b.rd (.lit 1)))
