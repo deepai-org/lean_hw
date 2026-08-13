@@ -2329,7 +2329,7 @@ private def expandHardwareCommand
     (moduleName : TSyntax `ident)
     (items : Array (TSyntax `hwitem)) : MacroM Syntax := do
   let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
-    packedInputs, packedWires, registerArrays, _, rules) ← parseHardwareItems items
+    packedInputs, packedWires, registerArrays, domains, rules) ← parseHardwareItems items
   let mut commands : Array Syntax := #[]
   for register in registers do
     let sourceName := Syntax.mkStrLit register.name.getId.toString
@@ -2398,6 +2398,29 @@ private def expandHardwareCommand
       def $(constant.name) : Loom.Hw.Expr $(constant.width) :=
         hw_lit% $(constant.value))
     commands := commands.push command
+  for domain in domains do
+    let declaredName := mkIdentFrom domain.register
+      (Name.mkSimple (domain.register.getId.toString ++ "_declared"))
+    let declaredCasesName := mkIdentFrom domain.register
+      (Name.mkSimple (domain.register.getId.toString ++ "_declared_cases"))
+    let casesName := mkIdentFrom domain.register
+      (Name.mkSimple (domain.register.getId.toString ++ "_cases"))
+    let lastMember := domain.members.back!
+    let mut alternatives : TSyntax `term ←
+      `(($(domain.register)).rd.eval state = ($lastMember).eval state)
+    for member in domain.members.pop.reverse do
+      alternatives ← `(($(domain.register)).rd.eval state = ($member).eval state ∨ $alternatives)
+    commands := commands.push (← `(command|
+      def $declaredName (state : Loom.Hw.St) : Prop := $alternatives))
+    commands := commands.push (← `(command|
+      theorem $declaredCasesName {state : Loom.Hw.St}
+          (declared : $declaredName state) : $alternatives := declared))
+    commands := commands.push (← `(command|
+      theorem $casesName (state : Loom.Hw.St) :
+          $alternatives ∨ ¬ $declaredName state := by
+        by_cases declared : $declaredName state
+        · exact Or.inl ($declaredCasesName declared)
+        · exact Or.inr declared))
   for wireItem in wires do
     let command ← `(command|
       def $(wireItem.name) : Loom.Hw.Expr $(wireItem.width) := [hwexpr| $(wireItem.value)])
@@ -2517,6 +2540,13 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
       for generatedName in #[namespaceName ++ `declarations, namespaceName ++ `design] do
         if environment.contains generatedName then
           throwErrorAt moduleName s!"generated declaration '{generatedName}' has already been declared"
+      for domain in domains do
+        for suffix in ["_declared", "_declared_cases", "_cases"] do
+          let generatedName := namespaceName ++
+            Name.mkSimple (domain.register.getId.toString ++ suffix)
+          if environment.contains generatedName then
+            throwErrorAt domain.register
+              s!"generated state proof declaration '{generatedName}' has already been declared"
       for finding in hardwareLintFindings registers rules do
         if let some (replacement, title) := finding.codeAction? then
           liftCoreM <| addSilentCodeAction finding.source replacement title
