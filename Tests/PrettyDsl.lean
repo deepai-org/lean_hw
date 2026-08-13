@@ -96,8 +96,8 @@ run_cmd Lean.Elab.Command.liftTermElabM do
   let some value := info.value?
     | throwError "delaboration probe has no reducible value"
   let rendered := toString (← Lean.Meta.ppExpr value)
-  unless rendered.contains "[hwexpr|" && rendered.contains "a + (b * 3)" &&
-      rendered.contains ") << 2" do
+  unless rendered.contains "[hwexpr|" && rendered.contains "a + (b * 0x03)" &&
+      rendered.contains ") << 0x02" do
     throwError "hardware expression delaboration lost source syntax or grouping: {rendered}"
   let parsed ←
     match Lean.Parser.runParserCategory (← Lean.getEnv) `term rendered with
@@ -117,7 +117,7 @@ run_cmd Lean.Elab.Command.liftTermElabM do
   let some value := info.value?
     | throwError "action-delaboration probe has no reducible value"
   let rendered := toString (← Lean.Meta.ppExpr value)
-  unless rendered.contains "[hwstmt|" && rendered.contains "a <- b + 1" &&
+  unless rendered.contains "[hwstmt|" && rendered.contains "a <- b + 0x01" &&
       rendered.contains "if a == b then" do
     throwError "hardware action delaboration lost source syntax: {rendered}"
   let parsed ←

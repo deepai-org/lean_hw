@@ -1094,7 +1094,10 @@ private partial def delabHwExprCore :
     let valueExpr ← Meta.mkAppM ``BitVec.toNat #[arguments[1]!]
     let some value ← getNatValue? (← Meta.whnf valueExpr) | failure
     guard (width > 0 && value < 2 ^ width)
-    pure ⟨⟨Syntax.mkNumLit (toString value)⟩, true⟩
+    let spelling :=
+      if width < 8 then toString value
+      else "0x" ++ (BitVec.ofNat width value).toHex
+    pure ⟨⟨Syntax.mkNumLit spelling⟩, true⟩
   else
     let binary (constructor : Name)
         (build : TSyntax `hwexpr → TSyntax `hwexpr → DelabM (TSyntax `hwexpr)) :
