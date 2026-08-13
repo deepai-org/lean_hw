@@ -862,12 +862,13 @@ output states name : { State0, State1, ... } := reset-state
 output states name : width { State0, State1, ... } := reset-state
 ```
 
-The width position is a Lean `term`, elaborated as `Nat`, rather than a
-Verilog-style `[hi:0]` range. Consequently `reg pc : 64`, `reg idx : addrW`,
-and a computed width all use the same production; parametric widths do not
-need a later grammar extension. Widths must reduce far enough to construct the
-indexed handle and declaration, and a zero width receives a direct warning or
-error according to the core policy established in Phase 0.
+The width position is a Lean `Nat` term rather than a Verilog-style `[hi:0]`
+range. Consequently `reg pc : 64` and `reg idx : addrW` are direct spellings;
+an inline compound term is parenthesized, as in `reg lane : (bytes * 8)`, to
+keep packed type names and following declaration syntax unambiguous. All three
+forms reduce through the same checked width path. Widths must reduce far enough
+to construct the indexed handle and declaration, and a zero width receives a
+direct warning or error according to the core policy established in Phase 0.
 
 `input reg` is not accepted because it lies about writability. `output wire`
 is a distinct combinational-output production: its RHS elaborates as
