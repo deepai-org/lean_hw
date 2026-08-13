@@ -587,7 +587,7 @@ system packedCrossing where
   clock sinkClock
   clocks Clock.asynchronous
   reset Reset.together
-  channel headers : Header depth 2
+  channel headers : Header depth 2 policy Chan.refusePush
   island source on sourceClock where
     output reg sent : 1
     rule transmit :=
@@ -601,6 +601,7 @@ system packedCrossing where
   realize headers with Cdc.grayFifo
 
 example : PackedChan Header := packedCrossing.headers
+example : packedCrossing.headers.bits.policy = .refusePush := rfl
 example : packedCrossing.connections.head?.map (fun connection => connection.width) = some 8 := by
   native_decide
 example : packedCrossing.application.artifact.emissionCheck.isOk := by native_decide
