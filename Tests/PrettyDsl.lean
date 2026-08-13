@@ -532,7 +532,7 @@ open Loom.Hw.Dsl
 hardware family_demo where
   input index : 2
   input value : 8
-  output reg slots : 8 [4]
+  output reg slots : 8 [4] := (fun i => if i.val = 0 then 7 else 0)
   output reg observed : 8
 
   rule access := {
@@ -547,6 +547,8 @@ example : declarations.regs.map (fun declaration => declaration.name) =
     ["observed", "slots0", "slots1", "slots2", "slots3"] := by decide
 example : declarations.outputs =
     ["observed", "slots0", "slots1", "slots2", "slots3"] := by decide
+example : declarations.regs.map (fun declaration => declaration.init.toNat) =
+    [0, 7, 0, 0, 0] := by decide
 
 /-- error: register-family index 4 is outside 0 through 3 -/
 #guard_msgs in

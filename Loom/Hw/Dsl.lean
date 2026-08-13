@@ -1717,10 +1717,12 @@ syntax ident ident ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "[" num "]" : hwitem
+syntax ident ident ":" num "[" num "]" ":=" term:max : hwitem
 syntax ident ident ":" num "[" num "]" "using" term:max : hwitem
 syntax ident ident ":" ident "[" num "]" : hwitem
 syntax ident ident ":" ident "[" num "]" "using" term:max : hwitem
 syntax ident ident ident ":" num "[" num "]" : hwitem
+syntax ident ident ident ":" num "[" num "]" ":=" term:max : hwitem
 syntax ident ident ":=" hwstmt : hwitem
 syntax ident ident "suppress" ident "because" str ":=" hwstmt : hwitem
 syntax (name := hardwareCmd) (docComment)? "hardware" ident "where" hwitem* : command
@@ -1779,6 +1781,7 @@ private structure RegArrayItem where
   width : TSyntax `num
   count : TSyntax `num
   exported : Bool
+  init : Option (TSyntax `term) := none
 
 private structure RuleItem where
   name : TSyntax `ident
@@ -2564,12 +2567,16 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $kind:ident $name:ident : $dataWidth:num [$depth:num]) =>
-        if kind.getId == `memory then
-          memories := memories.push
+      if kind.getId == `memory then
+        memories := memories.push
             ⟨name, dataWidth, depth, ← exactAddrWidth depth, none⟩
-        else if kind.getId == `reg then
-          registerArrays := registerArrays.push ⟨name, dataWidth, depth, false⟩
-        else Macro.throwErrorAt kind "expected `memory` or register-family `reg`"
+      else if kind.getId == `reg then
+          registerArrays := registerArrays.push ⟨name, dataWidth, depth, false, none⟩
+      else Macro.throwErrorAt kind "expected `memory` or register-family `reg`"
+    | `(hwitem| $kind:ident $name:ident : $width:num [$count:num] := $init:term) =>
+        unless kind.getId == `reg do
+          Macro.throwErrorAt kind "only a register family accepts an initializer function"
+        registerArrays := registerArrays.push ⟨name, width, count, false, some init⟩
     | `(hwitem| $kind:ident $name:ident : $dataWidth:num [$depth:num] using $policy:term) =>
         unless kind.getId == `memory do Macro.throwErrorAt kind "expected `memory`"
         memories := memories.push
@@ -2585,7 +2592,11 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num [$count:num]) =>
         unless qualifier.getId == `output && kind.getId == `reg do
           Macro.throwErrorAt qualifier "expected `output reg` family declaration"
-        registerArrays := registerArrays.push ⟨name, width, count, true⟩
+        registerArrays := registerArrays.push ⟨name, width, count, true, none⟩
+    | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num [$count:num] := $init:term) =>
+        unless qualifier.getId == `output && kind.getId == `reg do
+          Macro.throwErrorAt qualifier "expected `output reg` family declaration"
+        registerArrays := registerArrays.push ⟨name, width, count, true, some init⟩
     | `(hwitem| $kind:ident $name:ident := $body:hwstmt) =>
         unless kind.getId == `rule do Macro.throwErrorAt kind "expected `rule`"
         rules := rules.push ⟨name, body, none, none⟩
@@ -2913,8 +2924,12 @@ private def expandHardwareCommand
     let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
     declarations ← `($declarations |>.addPackedCombOutput $sourceName $(wireItem.name))
   for registerArray in registerArrays do
-    declarations ← `($declarations |>.addRegArray $(registerArray.name)
-      (exported := $(quote registerArray.exported)))
+    declarations ← match registerArray.init with
+      | none => `($declarations |>.addRegArray $(registerArray.name)
+          (exported := $(quote registerArray.exported)))
+      | some init => `($declarations |>.addRegArray $(registerArray.name)
+          ($init : Fin $(registerArray.count) → BitVec $(registerArray.width))
+          (exported := $(quote registerArray.exported)))
   for wireItem in wires do
     let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
     declarations ← `($declarations |>.addCombOutput $sourceName $(wireItem.name))
