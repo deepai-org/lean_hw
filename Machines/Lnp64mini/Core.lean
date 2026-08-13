@@ -195,6 +195,144 @@ hardware lnp64mini_inputs where
 
 end AuthoredInputs
 
+/-! ## Authored scalar register inventories
+
+These declaration blocks live before their compatibility aliases so the
+generated handles are the source of both coordinate names and widths.  The
+camel-case aliases below preserve the established proof and SoC API without
+repeating either fact. -/
+
+namespace AuthoredScalarPrefix
+
+hardware lnp64mini_scalar_prefix where
+  output reg cur : 5
+  output reg pc : 64 := 0x1000
+  output reg retire : 32
+  output reg trace_wp : 4
+  output reg trace_sel : 4
+  output reg trace_rd_pc : 64
+  output reg trace_rd_wb : 64
+  output reg trace_hit : 1
+  output reg trace_in_pc : 64
+  output reg trace_in_wb : 64
+  output reg running : 1
+  output reg halted : 1
+  output reg ir : 64
+  output reg a : 64
+  output reg b : 64
+  output reg rdval : 64
+  output reg sel_t : 64
+  output reg sel_f : 64
+  output reg ic_tag_q : 42
+  output reg ic_data_q : 64
+  output reg ic_gen : 16
+  output reg gate_tbl_base : 32
+  output reg cap_tbl_base : 32
+  output reg cap_fl_q : 64
+  output reg dc_tag_q : 42
+  output reg dc_data_q : 64
+  output reg dc_alloc : 1
+  output reg gate_ent_q : 64
+  output reg gate_dom_q : 8
+  output reg ic_inv : 1
+  output reg ic_ctr : 12
+
+end AuthoredScalarPrefix
+
+namespace AuthoredIoRegs
+
+hardware lnp64mini_io_regs where
+  output reg mem_is_store : 1
+  output reg trap_active : 1
+  output reg trapped_op : 8
+  output reg core_rd : 1
+  output reg core_wr : 1
+  output reg core_addr : 32
+  output reg core_wdata : 64
+  output reg jtag_rd : 1
+  output reg jtag_wr : 1
+  output reg jtag_wdata : 64
+  output reg ddr_addr_j : 32
+  output reg ddr_lo_j : 32
+  output reg ddr_rd_l : 64
+  output reg ddr_q : 64
+  output reg bus_req : 1
+  output reg gp_rd : 1
+  output reg gp_wr : 1
+  output reg gp_addr_r : 32
+  output reg gp_wdata_r : 32
+  output reg dmem_we : 1
+  output reg dmem_a : 9
+  output reg dmem_wd : 64
+  output reg dmem_rd : 64
+
+end AuthoredIoRegs
+
+namespace AuthoredPipelineRegs
+
+hardware lnp64mini_pipeline_regs where
+  output reg uart_wptr : 9
+  output reg uart_ridx : 8
+  output reg uart_byte : 8
+  output reg rx_wptr : 9
+  output reg rx_rptr : 9
+  output reg ld_boff_q : 3
+  output reg ld_op_q : 8
+  output reg ld_rd_q : 5
+  output reg lr_addr : 64
+  output reg lr_valid : 1
+  output reg futex_exp : 64
+  output reg futex_addr_q : 64
+  output reg sleep_scan : 5
+  output reg next_ready : 5
+  output reg free_slot : 5
+  output reg has_free : 1
+  output reg clone_dst : 5
+  output reg clone_tid : 5
+
+end AuthoredPipelineRegs
+
+namespace AuthoredExecutionRegs
+
+hardware lnp64mini_execution_regs where
+  output reg mul_acc : 128
+  output reg mul_aw : 128
+  output reg mul_b : 64
+  output reg mul_kind : 2
+  output reg div_rem : 64
+  output reg div_quo : 64
+  output reg div_d : 64
+  output reg div_cnt : 7
+  output reg div_isrem : 1
+  output reg div_negq : 1
+  output reg div_negr : 1
+  output reg zeroing : 1
+  output reg zctr : 10
+  output reg reg_sel : 5
+  output reg reg_wsel : 5
+  output reg reg_wlo : 32
+  output reg dmem_addr_j : 32
+  output reg dmem_lo_j : 32
+  output reg reg_rd : 64
+  output reg wake_out : 1
+  output reg wake_key : 64
+  output reg lr_req : 1
+  output reg sc_req : 1
+  output reg sc_pending : 1
+  output reg quantum : 32
+  output reg qctr : 32
+  output reg cur_dom : 8
+  output reg poison : 32
+  output reg in_gate : 32
+  output reg fault_cause : 8
+  output reg fault_pc : 64
+  output reg fault_cur : 5
+  output reg mmu_en : 1
+  output reg tlb_sel : 3
+  output reg tlb_vld : 8
+
+end AuthoredExecutionRegs
+
 def mDonePort    : Reg 1  := AuthoredInputs.m_done.reg
 def mRdataPort   : Reg 64 := AuthoredInputs.m_rdata.reg
 def mBusyPort    : Reg 1  := AuthoredInputs.m_busy.reg
@@ -276,34 +414,34 @@ theorem authored_doorbell_handle : AuthoredInputs.doorbell.reg = doorbellPort :=
 executes, regardless of local matches. In the dual SoC it is wired straight
 into the *other* core's `doorbell` input — a register-to-input connection,
 i.e. already a full register stage, no combinational cross-core path. -/
-def wakeOutReg : Reg 1 := ⟨"wake_out"⟩
+def wakeOutReg : Reg 1 := AuthoredExecutionRegs.wake_out
 def wake_out : Expr 1  := wakeOutReg.rd
 
 /-- EXT-4. The key `wake_out` is pulsing for, captured on the pulse cycle and
 held otherwise; wired to the other core's `doorbell_key` in the dual SoC —
 register output to input, so still no combinational cross-core path. -/
-def wakeKeyReg : Reg 64 := ⟨"wake_key"⟩
+def wakeKeyReg : Reg 64 := AuthoredExecutionRegs.wake_key
 def wake_key : Expr 64 := wakeKeyReg.rd
 
 /-! ## Scalar register shorthands -/
 
-def curReg : Reg 5 := ⟨"cur"⟩
+def curReg : Reg 5 := AuthoredScalarPrefix.cur
 def cur : Expr 5 := curReg.rd
-def pcReg : Reg 64 := ⟨"pc"⟩
+def pcReg : Reg 64 := AuthoredScalarPrefix.pc
 def pc : Expr 64 := pcReg.rd
-def retireReg : Reg 32 := ⟨"retire"⟩
+def retireReg : Reg 32 := AuthoredScalarPrefix.retire
 def retire : Expr 32 := retireReg.rd
 def running : Expr 1 := runningReg.rd
 def halted : Expr 1 := haltedReg.rd
 def stReg : Reg 5 := AuthoredFsm.st
 def st : Expr 5 := stReg.rd
-def irReg : Reg 64 := ⟨"ir"⟩
+def irReg : Reg 64 := AuthoredScalarPrefix.ir
 def ir : Expr 64 := irReg.rd
-def aReg : Reg 64 := ⟨"a"⟩
+def aReg : Reg 64 := AuthoredScalarPrefix.a
 def a : Expr 64 := aReg.rd
-def bReg : Reg 64 := ⟨"b"⟩
+def bReg : Reg 64 := AuthoredScalarPrefix.b
 def b : Expr 64 := bReg.rd
-def rdvalReg : Reg 64 := ⟨"rdval"⟩
+def rdvalReg : Reg 64 := AuthoredScalarPrefix.rdval
 def rdval : Expr 64 := rdvalReg.rd
 /-! ### EXT-9 — the instruction cache (`EXTEND_SPEC.md`)
 
@@ -317,7 +455,7 @@ Both banks are D19 sync-read: `S_F0` writes the two latch registers below
 from a bare `memRead`, and `S_IC` consumes them the next cycle. That is
 what makes them block RAM rather than 4096-deep read muxes (the D38/CE9
 lesson, where the difference was 14x). -/
-def icTagQReg : Reg 42 := ⟨"ic_tag_q"⟩
+def icTagQReg : Reg 42 := AuthoredScalarPrefix.ic_tag_q
 def ic_tag_q : Expr 42 := icTagQReg.rd
 /-! ### EXT-9b — invalidation in O(1), not O(cache)
 
@@ -356,106 +494,106 @@ An entry is 16 bytes at `gate_tbl_base + (index << 4)`:
 `gate_tbl_base` is loaded once (`cmd 74`), the way a root pointer is: the
 host says where the table is, and thereafter the machine reads it. That is
 the difference the goal names -- the host stops supplying the *contents*. -/
-def gateTblBaseReg : Reg 32 := ⟨"gate_tbl_base"⟩
+def gateTblBaseReg : Reg 32 := AuthoredScalarPrefix.gate_tbl_base
 def gate_tbl_base : Expr 32 := gateTblBaseReg.rd
 /-- Latched descriptor words, D19 sync-read style (the bus is the source). -/
-def gateEntQReg : Reg 64 := ⟨"gate_ent_q"⟩
+def gateEntQReg : Reg 64 := AuthoredScalarPrefix.gate_ent_q
 def gate_ent_q : Expr 64 := gateEntQReg.rd
-def gateDomQReg : Reg 8 := ⟨"gate_dom_q"⟩
+def gateDomQReg : Reg 8 := AuthoredScalarPrefix.gate_dom_q
 def gate_dom_q : Expr 8 := gateDomQReg.rd
-def icGenReg : Reg 16 := ⟨"ic_gen"⟩
+def icGenReg : Reg 16 := AuthoredScalarPrefix.ic_gen
 def ic_gen : Expr 16 := icGenReg.rd
-def icInvReg : Reg 1 := ⟨"ic_inv"⟩
+def icInvReg : Reg 1 := AuthoredScalarPrefix.ic_inv
 def ic_inv : Expr 1 := icInvReg.rd
-def icCtrReg : Reg 12 := ⟨"ic_ctr"⟩
+def icCtrReg : Reg 12 := AuthoredScalarPrefix.ic_ctr
 def ic_ctr : Expr 12 := icCtrReg.rd
-def icDataQReg : Reg 64 := ⟨"ic_data_q"⟩
+def icDataQReg : Reg 64 := AuthoredScalarPrefix.ic_data_q
 def ic_data_q : Expr 64 := icDataQReg.rd
 -- EXT-10 (the D-cache): the latched tag/data words and the allocate flag.
-def dcTagQReg : Reg 42 := ⟨"dc_tag_q"⟩
+def dcTagQReg : Reg 42 := AuthoredScalarPrefix.dc_tag_q
 def dc_tag_q : Expr 42 := dcTagQReg.rd
-def dcDataQReg : Reg 64 := ⟨"dc_data_q"⟩
+def dcDataQReg : Reg 64 := AuthoredScalarPrefix.dc_data_q
 def dc_data_q : Expr 64 := dcDataQReg.rd
-def dcAllocReg : Reg 1 := ⟨"dc_alloc"⟩
+def dcAllocReg : Reg 1 := AuthoredScalarPrefix.dc_alloc
 def dc_alloc : Expr 1 := dcAllocReg.rd
-def selTReg : Reg 64 := ⟨"sel_t"⟩
+def selTReg : Reg 64 := AuthoredScalarPrefix.sel_t
 def sel_t : Expr 64 := selTReg.rd
-def selFReg : Reg 64 := ⟨"sel_f"⟩
+def selFReg : Reg 64 := AuthoredScalarPrefix.sel_f
 def sel_f : Expr 64 := selFReg.rd
-def memIsStoreReg : Reg 1 := ⟨"mem_is_store"⟩
+def memIsStoreReg : Reg 1 := AuthoredIoRegs.mem_is_store
 def mem_is_store : Expr 1 := memIsStoreReg.rd
-def trapActiveReg : Reg 1 := ⟨"trap_active"⟩
+def trapActiveReg : Reg 1 := AuthoredIoRegs.trap_active
 def trap_active : Expr 1 := trapActiveReg.rd
-def trappedOpReg : Reg 8 := ⟨"trapped_op"⟩
+def trappedOpReg : Reg 8 := AuthoredIoRegs.trapped_op
 def trapped_op : Expr 8 := trappedOpReg.rd
-def coreRdReg : Reg 1 := ⟨"core_rd"⟩
+def coreRdReg : Reg 1 := AuthoredIoRegs.core_rd
 def core_rd : Expr 1 := coreRdReg.rd
-def coreWrReg : Reg 1 := ⟨"core_wr"⟩
+def coreWrReg : Reg 1 := AuthoredIoRegs.core_wr
 def core_wr : Expr 1 := coreWrReg.rd
-def coreAddrReg : Reg 32 := ⟨"core_addr"⟩
+def coreAddrReg : Reg 32 := AuthoredIoRegs.core_addr
 def core_addr : Expr 32 := coreAddrReg.rd
-def coreWdataReg : Reg 64 := ⟨"core_wdata"⟩
+def coreWdataReg : Reg 64 := AuthoredIoRegs.core_wdata
 def core_wdata : Expr 64 := coreWdataReg.rd
-def jtagRdReg : Reg 1 := ⟨"jtag_rd"⟩
+def jtagRdReg : Reg 1 := AuthoredIoRegs.jtag_rd
 def jtag_rd : Expr 1 := jtagRdReg.rd
-def jtagWrReg : Reg 1 := ⟨"jtag_wr"⟩
+def jtagWrReg : Reg 1 := AuthoredIoRegs.jtag_wr
 def jtag_wr : Expr 1 := jtagWrReg.rd
-def jtagWdataReg : Reg 64 := ⟨"jtag_wdata"⟩
+def jtagWdataReg : Reg 64 := AuthoredIoRegs.jtag_wdata
 def jtag_wdata : Expr 64 := jtagWdataReg.rd
-def ddrAddrJReg : Reg 32 := ⟨"ddr_addr_j"⟩
+def ddrAddrJReg : Reg 32 := AuthoredIoRegs.ddr_addr_j
 def ddr_addr_j : Expr 32 := ddrAddrJReg.rd
-def ddrLoJReg : Reg 32 := ⟨"ddr_lo_j"⟩
+def ddrLoJReg : Reg 32 := AuthoredIoRegs.ddr_lo_j
 def ddr_lo_j : Expr 32 := ddrLoJReg.rd
-def ddrRdLReg : Reg 64 := ⟨"ddr_rd_l"⟩
+def ddrRdLReg : Reg 64 := AuthoredIoRegs.ddr_rd_l
 def ddr_rd_l : Expr 64 := ddrRdLReg.rd
-def ddrQReg : Reg 64 := ⟨"ddr_q"⟩
+def ddrQReg : Reg 64 := AuthoredIoRegs.ddr_q
 def ddr_q : Expr 64 := ddrQReg.rd
-def busReqReg : Reg 1 := ⟨"bus_req"⟩
+def busReqReg : Reg 1 := AuthoredIoRegs.bus_req
 def bus_req : Expr 1 := busReqReg.rd
-def gpRdReg : Reg 1 := ⟨"gp_rd"⟩
+def gpRdReg : Reg 1 := AuthoredIoRegs.gp_rd
 def gp_rd : Expr 1 := gpRdReg.rd
-def gpWrReg : Reg 1 := ⟨"gp_wr"⟩
+def gpWrReg : Reg 1 := AuthoredIoRegs.gp_wr
 def gp_wr : Expr 1 := gpWrReg.rd
-def gpAddrRReg : Reg 32 := ⟨"gp_addr_r"⟩
+def gpAddrRReg : Reg 32 := AuthoredIoRegs.gp_addr_r
 def gp_addr_r : Expr 32 := gpAddrRReg.rd
-def gpWdataRReg : Reg 32 := ⟨"gp_wdata_r"⟩
+def gpWdataRReg : Reg 32 := AuthoredIoRegs.gp_wdata_r
 def gp_wdata_r : Expr 32 := gpWdataRReg.rd
-def dmemWeReg : Reg 1 := ⟨"dmem_we"⟩
+def dmemWeReg : Reg 1 := AuthoredIoRegs.dmem_we
 def dmem_we : Expr 1 := dmemWeReg.rd
-def dmemAReg : Reg 9 := ⟨"dmem_a"⟩
+def dmemAReg : Reg 9 := AuthoredIoRegs.dmem_a
 def dmem_a : Expr 9 := dmemAReg.rd
-def dmemWdReg : Reg 64 := ⟨"dmem_wd"⟩
+def dmemWdReg : Reg 64 := AuthoredIoRegs.dmem_wd
 def dmem_wd : Expr 64 := dmemWdReg.rd
-def dmemRdReg : Reg 64 := ⟨"dmem_rd"⟩
+def dmemRdReg : Reg 64 := AuthoredIoRegs.dmem_rd
 def dmem_rd : Expr 64 := dmemRdReg.rd
-def uartWptrReg : Reg 9 := ⟨"uart_wptr"⟩
+def uartWptrReg : Reg 9 := AuthoredPipelineRegs.uart_wptr
 def uart_wptr : Expr 9 := uartWptrReg.rd
-def uartRidxReg : Reg 8 := ⟨"uart_ridx"⟩
+def uartRidxReg : Reg 8 := AuthoredPipelineRegs.uart_ridx
 def uart_ridx : Expr 8 := uartRidxReg.rd
-def uartByteReg : Reg 8 := ⟨"uart_byte"⟩
+def uartByteReg : Reg 8 := AuthoredPipelineRegs.uart_byte
 def uart_byte : Expr 8 := uartByteReg.rd
-def rxWptrReg : Reg 9 := ⟨"rx_wptr"⟩
+def rxWptrReg : Reg 9 := AuthoredPipelineRegs.rx_wptr
 def rx_wptr : Expr 9 := rxWptrReg.rd
-def rxRptrReg : Reg 9 := ⟨"rx_rptr"⟩
+def rxRptrReg : Reg 9 := AuthoredPipelineRegs.rx_rptr
 def rx_rptr : Expr 9 := rxRptrReg.rd
-def ldBoffQReg : Reg 3 := ⟨"ld_boff_q"⟩
+def ldBoffQReg : Reg 3 := AuthoredPipelineRegs.ld_boff_q
 def ld_boff_q : Expr 3 := ldBoffQReg.rd
-def ldOpQReg : Reg 8 := ⟨"ld_op_q"⟩
+def ldOpQReg : Reg 8 := AuthoredPipelineRegs.ld_op_q
 def ld_op_q : Expr 8 := ldOpQReg.rd
-def ldRdQReg : Reg 5 := ⟨"ld_rd_q"⟩
+def ldRdQReg : Reg 5 := AuthoredPipelineRegs.ld_rd_q
 def ld_rd_q : Expr 5 := ldRdQReg.rd
-def lrAddrReg : Reg 64 := ⟨"lr_addr"⟩
+def lrAddrReg : Reg 64 := AuthoredPipelineRegs.lr_addr
 def lr_addr : Expr 64 := lrAddrReg.rd
-def lrValidReg : Reg 1 := ⟨"lr_valid"⟩
+def lrValidReg : Reg 1 := AuthoredPipelineRegs.lr_valid
 def lr_valid : Expr 1 := lrValidReg.rd
 /-- A global (DDR) `SC` is outstanding: `S_DSW` must consume `sc_fail`. -/
-def lrReqReg      : Reg 1 := ⟨"lr_req"⟩
-def scReqReg      : Reg 1 := ⟨"sc_req"⟩
-def scPendingReg  : Reg 1 := ⟨"sc_pending"⟩
+def lrReqReg      : Reg 1 := AuthoredExecutionRegs.lr_req
+def scReqReg      : Reg 1 := AuthoredExecutionRegs.sc_req
+def scPendingReg  : Reg 1 := AuthoredExecutionRegs.sc_pending
 def sc_pending : Expr 1 := scPendingReg.rd
-def futexExpReg : Reg 64 := ⟨"futex_exp"⟩
+def futexExpReg : Reg 64 := AuthoredPipelineRegs.futex_exp
 def futex_exp : Expr 64 := futexExpReg.rd
-def futexAddrQReg : Reg 64 := ⟨"futex_addr_q"⟩
+def futexAddrQReg : Reg 64 := AuthoredPipelineRegs.futex_addr_q
 def futex_addr_q : Expr 64 := futexAddrQReg.rd
 /-! ### EXT-1 — the preemption tick (`EXTEND_SPEC.md` increment 1)
 
@@ -465,9 +603,9 @@ BSCAN `cmd_data` that loads them). `quantum = 0` — the reset value — means
 **disabled**: `quantumOn` is false, so nothing decrements, nothing reloads
 and nothing preempts, and the core is bit-for-bit the cooperative machine
 of §63. -/
-def quantumReg : Reg 32 := ⟨"quantum"⟩
+def quantumReg : Reg 32 := AuthoredExecutionRegs.quantum
 def quantum : Expr 32 := quantumReg.rd
-def qctrReg : Reg 32 := ⟨"qctr"⟩
+def qctrReg : Reg 32 := AuthoredExecutionRegs.qctr
 def qctr : Expr 32 := qctrReg.rd
 /-! ### EXT-2 — protection domains (`EXTEND_SPEC.md` increment 2)
 
@@ -560,7 +698,7 @@ is exactly what `Design.emit` refused when this was a memory (D38/CE10). Same
 shape as EXT-3's `poison` (and EXT-6's retired `cap_ival`, before §17 moved
 the inbox into memory): state written at many indices at once is a register
 bitmap. -/
-def tlbVldReg : Reg 8 := ⟨"tlb_vld"⟩
+def tlbVldReg : Reg 8 := AuthoredExecutionRegs.tlb_vld
 def tlb_vld : Expr 8 := tlbVldReg.rd
 /-- Valid bit of entry `i` at a *static* index (the lookup is associative). -/
 def tlbVldBit (i : Fin TLBN) : Expr 1 :=
@@ -583,7 +721,7 @@ lands with its first consumer (EXT-6/EXT-7), not before. -/
 debug path (which reads registers, not memories) can see the executing
 domain. Nothing in the datapath reads it — the datapath uses `domCur`, which
 does not lag. -/
-def curDomReg : Reg 8 := ⟨"cur_dom"⟩
+def curDomReg : Reg 8 := AuthoredExecutionRegs.cur_dom
 def cur_dom : Expr 8 := curDomReg.rd
 /-! ### EXT-3 — fail-stop / poison (`EXTEND_SPEC.md` increment 3)
 
@@ -613,7 +751,7 @@ Stopping the core (rather than switching to another thread) is the
 fail-*stop* reading of Appendix F: the disposition is "this machine has
 lost the right to proceed", and quietly running someone else would hide it.
 The host sees `running = 0` and the `poison` bitmap says which slot. -/
-def poisonReg : Reg 32 := ⟨"poison"⟩
+def poisonReg : Reg 32 := AuthoredExecutionRegs.poison
 def poison : Expr 32 := poisonReg.rd
 /-! ### EXT-5 — gates (`EXTEND_SPEC.md` increment 5; ISA §9, Law 1)
 
@@ -635,7 +773,7 @@ but mini's decoder already uses 0xa0–0xba for ALU-immediate ops, so mini's
 map diverges from the ISA in that whole block *before* this increment. Gates
 take **0x60/0x61**, which are free in mini. Recorded here rather than
 pretending the encodings match. -/
-def inGateReg : Reg 32 := ⟨"in_gate"⟩
+def inGateReg : Reg 32 := AuthoredExecutionRegs.in_gate
 def in_gate : Expr 32 := inGateReg.rd
 /-! ### The fault record (spec 1235f201 conformance)
 
@@ -707,10 +845,10 @@ racing the same entry could both observe it free. The selftests are
 single-core; the cross-core story arrives with the D-cache's rung-5
 invalidation work, and this note is here so the code does not imply
 otherwise. -/
-def capTblBaseReg : Reg 32 := ⟨"cap_tbl_base"⟩
+def capTblBaseReg : Reg 32 := AuthoredScalarPrefix.cap_tbl_base
 def cap_tbl_base : Expr 32 := capTblBaseReg.rd
 /-- Latched flags word of the entry being walked (D19 sync-read style). -/
-def capFlQReg : Reg 64 := ⟨"cap_fl_q"⟩
+def capFlQReg : Reg 64 := AuthoredScalarPrefix.cap_fl_q
 def cap_fl_q : Expr 64 := capFlQReg.rd
 /-! ### EXT-7 — VMA / translation (`EXTEND_SPEC.md` #7; ISA §15)
 
@@ -734,9 +872,9 @@ this increment is the one worth having:
 `mmu_en = 0` (reset) is **bypass**: `ddrEa` is the identity computation of
 every previous increment, bit for bit, so NetBSD is untouched. That is
 stage A — prove the mechanism, risk nothing. -/
-def mmuEnReg : Reg 1 := ⟨"mmu_en"⟩
+def mmuEnReg : Reg 1 := AuthoredExecutionRegs.mmu_en
 def mmu_en : Expr 1 := mmuEnReg.rd
-def tlbSelReg : Reg 3 := ⟨"tlb_sel"⟩
+def tlbSelReg : Reg 3 := AuthoredExecutionRegs.tlb_sel
 def tlb_sel : Expr 3 := tlbSelReg.rd
 def CMD_MMU_EN   : Nat := 63
 def CMD_TLB_SEL  : Nat := 64
@@ -767,55 +905,55 @@ cycle, and a read-modify-write from the host could interleave with a
 `CLONE` that adds one. -/
 def CMD_POISON : Nat := 60
 
-def sleepScanReg : Reg 5 := ⟨"sleep_scan"⟩
+def sleepScanReg : Reg 5 := AuthoredPipelineRegs.sleep_scan
 def sleep_scan : Expr 5 := sleepScanReg.rd
-def nextReadyReg : Reg 5 := ⟨"next_ready"⟩
+def nextReadyReg : Reg 5 := AuthoredPipelineRegs.next_ready
 def next_ready : Expr 5 := nextReadyReg.rd
-def freeSlotReg : Reg 5 := ⟨"free_slot"⟩
+def freeSlotReg : Reg 5 := AuthoredPipelineRegs.free_slot
 def free_slot : Expr 5 := freeSlotReg.rd
-def hasFreeReg : Reg 1 := ⟨"has_free"⟩
+def hasFreeReg : Reg 1 := AuthoredPipelineRegs.has_free
 def has_free : Expr 1 := hasFreeReg.rd
-def cloneDstReg : Reg 5 := ⟨"clone_dst"⟩
+def cloneDstReg : Reg 5 := AuthoredPipelineRegs.clone_dst
 def clone_dst : Expr 5 := cloneDstReg.rd
-def cloneTidReg : Reg 5 := ⟨"clone_tid"⟩
+def cloneTidReg : Reg 5 := AuthoredPipelineRegs.clone_tid
 def clone_tid : Expr 5 := cloneTidReg.rd
-def mulAccReg : Reg 128 := ⟨"mul_acc"⟩
+def mulAccReg : Reg 128 := AuthoredExecutionRegs.mul_acc
 def mul_acc : Expr 128 := mulAccReg.rd
-def mulAwReg : Reg 128 := ⟨"mul_aw"⟩
+def mulAwReg : Reg 128 := AuthoredExecutionRegs.mul_aw
 def mul_aw : Expr 128 := mulAwReg.rd
-def mulBReg : Reg 64 := ⟨"mul_b"⟩
+def mulBReg : Reg 64 := AuthoredExecutionRegs.mul_b
 def mul_b : Expr 64 := mulBReg.rd
-def mulKindReg : Reg 2 := ⟨"mul_kind"⟩
+def mulKindReg : Reg 2 := AuthoredExecutionRegs.mul_kind
 def mul_kind : Expr 2 := mulKindReg.rd
-def divRemReg : Reg 64 := ⟨"div_rem"⟩
+def divRemReg : Reg 64 := AuthoredExecutionRegs.div_rem
 def div_rem : Expr 64 := divRemReg.rd
-def divQuoReg : Reg 64 := ⟨"div_quo"⟩
+def divQuoReg : Reg 64 := AuthoredExecutionRegs.div_quo
 def div_quo : Expr 64 := divQuoReg.rd
-def divDReg : Reg 64 := ⟨"div_d"⟩
+def divDReg : Reg 64 := AuthoredExecutionRegs.div_d
 def div_d : Expr 64 := divDReg.rd
-def divCntReg : Reg 7 := ⟨"div_cnt"⟩
+def divCntReg : Reg 7 := AuthoredExecutionRegs.div_cnt
 def div_cnt : Expr 7 := divCntReg.rd
-def divIsremReg : Reg 1 := ⟨"div_isrem"⟩
+def divIsremReg : Reg 1 := AuthoredExecutionRegs.div_isrem
 def div_isrem : Expr 1 := divIsremReg.rd
-def divNegqReg : Reg 1 := ⟨"div_negq"⟩
+def divNegqReg : Reg 1 := AuthoredExecutionRegs.div_negq
 def div_negq : Expr 1 := divNegqReg.rd
-def divNegrReg : Reg 1 := ⟨"div_negr"⟩
+def divNegrReg : Reg 1 := AuthoredExecutionRegs.div_negr
 def div_negr : Expr 1 := divNegrReg.rd
-def zeroingReg : Reg 1 := ⟨"zeroing"⟩
+def zeroingReg : Reg 1 := AuthoredExecutionRegs.zeroing
 def zeroing : Expr 1 := zeroingReg.rd
-def zctrReg : Reg 10 := ⟨"zctr"⟩
+def zctrReg : Reg 10 := AuthoredExecutionRegs.zctr
 def zctr : Expr 10 := zctrReg.rd
-def regSelReg : Reg 5 := ⟨"reg_sel"⟩
+def regSelReg : Reg 5 := AuthoredExecutionRegs.reg_sel
 def reg_sel : Expr 5 := regSelReg.rd
-def regWselReg : Reg 5 := ⟨"reg_wsel"⟩
+def regWselReg : Reg 5 := AuthoredExecutionRegs.reg_wsel
 def reg_wsel : Expr 5 := regWselReg.rd
-def regWloReg : Reg 32 := ⟨"reg_wlo"⟩
+def regWloReg : Reg 32 := AuthoredExecutionRegs.reg_wlo
 def reg_wlo : Expr 32 := regWloReg.rd
-def dmemAddrJReg : Reg 32 := ⟨"dmem_addr_j"⟩
+def dmemAddrJReg : Reg 32 := AuthoredExecutionRegs.dmem_addr_j
 def dmem_addr_j : Expr 32 := dmemAddrJReg.rd
-def dmemLoJReg : Reg 32 := ⟨"dmem_lo_j"⟩
+def dmemLoJReg : Reg 32 := AuthoredExecutionRegs.dmem_lo_j
 def dmem_lo_j : Expr 32 := dmemLoJReg.rd
-def regRdReg : Reg 64 := ⟨"reg_rd"⟩
+def regRdReg : Reg 64 := AuthoredExecutionRegs.reg_rd
 def reg_rd : Expr 64 := regRdReg.rd
 /-! ## The thread table (D20)
 
@@ -1643,11 +1781,11 @@ retired, not the one about to be fetched, even though `stepPc` writes `pc` in
 the same `.seq`. -/
 def TRACE_AW : Nat := 4
 
-def traceWpReg   : Reg 4  := ⟨"trace_wp"⟩
-def traceSelReg  : Reg 4  := ⟨"trace_sel"⟩
-def traceHitReg  : Reg 1  := ⟨"trace_hit"⟩
-def traceInPcReg : Reg 64 := ⟨"trace_in_pc"⟩
-def traceInWbReg : Reg 64 := ⟨"trace_in_wb"⟩
+def traceWpReg   : Reg 4  := AuthoredScalarPrefix.trace_wp
+def traceSelReg  : Reg 4  := AuthoredScalarPrefix.trace_sel
+def traceHitReg  : Reg 1  := AuthoredScalarPrefix.trace_hit
+def traceInPcReg : Reg 64 := AuthoredScalarPrefix.trace_in_pc
+def traceInWbReg : Reg 64 := AuthoredScalarPrefix.trace_in_wb
 def trace_wp : Expr 4 := traceWpReg.rd
 def trace_sel : Expr 4 := traceSelReg.rd
 def trace_hit : Expr 1 := traceHitReg.rd
@@ -3161,46 +3299,6 @@ def quantumRule : Rule :=
 
 /-! ## Register / memory / input declarations -/
 
-namespace AuthoredScalarPrefix
-
-/-- Architectural state and the cache/gate pipeline latches, in their exact
-existing declaration order. All are exported because that is the established
-LNP64mini debug interface; this block changes authoring only. -/
-hardware lnp64mini_scalar_prefix where
-  output reg cur : 5
-  output reg pc : 64 := 0x1000
-  output reg retire : 32
-  output reg trace_wp : 4
-  output reg trace_sel : 4
-  output reg trace_rd_pc : 64
-  output reg trace_rd_wb : 64
-  output reg trace_hit : 1
-  output reg trace_in_pc : 64
-  output reg trace_in_wb : 64
-  output reg running : 1
-  output reg halted : 1
-  output reg ir : 64
-  output reg a : 64
-  output reg b : 64
-  output reg rdval : 64
-  output reg sel_t : 64
-  output reg sel_f : 64
-  output reg ic_tag_q : 42
-  output reg ic_data_q : 64
-  output reg ic_gen : 16
-  output reg gate_tbl_base : 32
-  output reg cap_tbl_base : 32
-  output reg cap_fl_q : 64
-  output reg dc_tag_q : 42
-  output reg dc_data_q : 64
-  output reg dc_alloc : 1
-  output reg gate_ent_q : 64
-  output reg gate_dom_q : 8
-  output reg ic_inv : 1
-  output reg ic_ctr : 12
-
-end AuthoredScalarPrefix
-
 theorem authored_scalar_prefix_declarations :
     AuthoredScalarPrefix.declarations.regs =
       [curReg.decl, pcReg.decl (BitVec.ofNat 64 TEXT_BASE), retireReg.decl,
@@ -3213,35 +3311,6 @@ theorem authored_scalar_prefix_declarations :
        dcAllocReg.decl, gateEntQReg.decl, gateDomQReg.decl,
        icInvReg.decl, icCtrReg.decl] := rfl
 
-namespace AuthoredIoRegs
-
-hardware lnp64mini_io_regs where
-  output reg mem_is_store : 1
-  output reg trap_active : 1
-  output reg trapped_op : 8
-  output reg core_rd : 1
-  output reg core_wr : 1
-  output reg core_addr : 32
-  output reg core_wdata : 64
-  output reg jtag_rd : 1
-  output reg jtag_wr : 1
-  output reg jtag_wdata : 64
-  output reg ddr_addr_j : 32
-  output reg ddr_lo_j : 32
-  output reg ddr_rd_l : 64
-  output reg ddr_q : 64
-  output reg bus_req : 1
-  output reg gp_rd : 1
-  output reg gp_wr : 1
-  output reg gp_addr_r : 32
-  output reg gp_wdata_r : 32
-  output reg dmem_we : 1
-  output reg dmem_a : 9
-  output reg dmem_wd : 64
-  output reg dmem_rd : 64
-
-end AuthoredIoRegs
-
 theorem authored_io_register_declarations :
     AuthoredIoRegs.declarations.regs =
       [memIsStoreReg.decl, trapActiveReg.decl, trappedOpReg.decl,
@@ -3251,30 +3320,6 @@ theorem authored_io_register_declarations :
        gpRdReg.decl, gpWrReg.decl, gpAddrRReg.decl, gpWdataRReg.decl,
        dmemWeReg.decl, dmemAReg.decl, dmemWdReg.decl, dmemRdReg.decl] := rfl
 
-namespace AuthoredPipelineRegs
-
-hardware lnp64mini_pipeline_regs where
-  output reg uart_wptr : 9
-  output reg uart_ridx : 8
-  output reg uart_byte : 8
-  output reg rx_wptr : 9
-  output reg rx_rptr : 9
-  output reg ld_boff_q : 3
-  output reg ld_op_q : 8
-  output reg ld_rd_q : 5
-  output reg lr_addr : 64
-  output reg lr_valid : 1
-  output reg futex_exp : 64
-  output reg futex_addr_q : 64
-  output reg sleep_scan : 5
-  output reg next_ready : 5
-  output reg free_slot : 5
-  output reg has_free : 1
-  output reg clone_dst : 5
-  output reg clone_tid : 5
-
-end AuthoredPipelineRegs
-
 theorem authored_pipeline_register_declarations :
     AuthoredPipelineRegs.declarations.regs =
       [uartWptrReg.decl, uartRidxReg.decl, uartByteReg.decl,
@@ -3283,47 +3328,6 @@ theorem authored_pipeline_register_declarations :
        lrAddrReg.decl, lrValidReg.decl, futexExpReg.decl, futexAddrQReg.decl,
        sleepScanReg.decl, nextReadyReg.decl, freeSlotReg.decl, hasFreeReg.decl,
        cloneDstReg.decl, cloneTidReg.decl] := rfl
-
-namespace AuthoredExecutionRegs
-
-hardware lnp64mini_execution_regs where
-  output reg mul_acc : 128
-  output reg mul_aw : 128
-  output reg mul_b : 64
-  output reg mul_kind : 2
-  output reg div_rem : 64
-  output reg div_quo : 64
-  output reg div_d : 64
-  output reg div_cnt : 7
-  output reg div_isrem : 1
-  output reg div_negq : 1
-  output reg div_negr : 1
-  output reg zeroing : 1
-  output reg zctr : 10
-  output reg reg_sel : 5
-  output reg reg_wsel : 5
-  output reg reg_wlo : 32
-  output reg dmem_addr_j : 32
-  output reg dmem_lo_j : 32
-  output reg reg_rd : 64
-  output reg wake_out : 1
-  output reg wake_key : 64
-  output reg lr_req : 1
-  output reg sc_req : 1
-  output reg sc_pending : 1
-  output reg quantum : 32
-  output reg qctr : 32
-  output reg cur_dom : 8
-  output reg poison : 32
-  output reg in_gate : 32
-  output reg fault_cause : 8
-  output reg fault_pc : 64
-  output reg fault_cur : 5
-  output reg mmu_en : 1
-  output reg tlb_sel : 3
-  output reg tlb_vld : 8
-
-end AuthoredExecutionRegs
 
 theorem authored_execution_register_declarations :
     AuthoredExecutionRegs.declarations.regs =
