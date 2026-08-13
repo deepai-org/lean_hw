@@ -1,619 +1,326 @@
-# Multi-clock systems and clock-domain crossings
-
-This is the implementation plan for composing ordinary synchronous Loom
-designs across clock domains. It refines the destination in
-[`PLATONIC.md`](PLATONIC.md) and the ordered work item in
-[`ROADMAP.md`](ROADMAP.md).
-
-The public foundation is shipped in `Loom/Hw/Chan.lean` and
-`Loom/Hw/System.lean`: typed `Chan` handles, generated endpoints, a synchronous
-FIFO adapter, explicit co-tick policy, `System.empty`/`island`/`connect`,
-fail-closed structural checks, synchronous lowering, replayable named-clock
-events, abstract multi-clock channel execution, crossing inventories,
-schedule-quantified `System.Invariant`, per-event framing, island reachability,
-and `liftIsland`. `Tests/Chan.lean` exercises the lowered FIFO, both full
-co-tick policies, replay of a two-clock transfer, and theorem lifting. The
-older vector-indexed proof kernel is retained as `ScheduledSystem` and its
-two-counter example still demonstrates unconstrained schedule lifting.
-
-This is a foundation, not a claim that multiclock hardware is verified.
-Generated endpoint-law proofs, `ClockRel`, trace/liveness theorems, concrete
-toggle and Gray-FIFO refinement, neutral constraints, hierarchy, LNP64mini
-production adoption, and verified multi-clock emission remain below.
-
-The architectural rule is:
-
-> Cycle-exact logic stays inside an ordinary single-clock `Design`. Every
-> cross-domain edge is a declared abstract channel paired with a concrete CDC
-> realization and a checked refinement. There is no raw cross-domain wire API.
-
-This keeps pipelines, bypass networks, register-file forwarding, and
-cycle-sensitive state machines in the semantics they already use. Elasticity
-is system-level composition discipline, not an internal coding style imposed
-on synchronous blocks.
-
-## Non-negotiable boundaries
-
-1. `Design.cycle`, its compiler theorem, `FastEval`, `DagEval`, lockstep, and
-   the single-clock emitter remain unchanged.
-2. A system may connect ordinary ports directly only within one declared
-   clock domain. A crossing type-checks only through a packaged `Crossing`
-   containing:
-   - an abstract channel specification;
-   - proved source and destination endpoint laws;
-   - a concrete CDC component; and
-   - a refinement from that component to the abstract channel.
-3. Valid/ready, credits, payload buses, and pulses never cross an asynchronous
-   boundary as unstructured wires. Valid/ready may be the abstract endpoint
-   protocol; the realization is an asynchronous FIFO, toggle protocol,
-   synchronized credit protocol, or another proved component.
-4. Metastability physics is not silently formalized away. Concrete CDC proofs
-   quantify over an adversarial digital resolution model. MTBF, aperture,
-   placement, routing, and the claim that a first-stage flop settles before it
-   is resampled remain explicit physical assumptions.
-5. Safety and functional transfer theorems may be independent of clock ratios.
-   Progress still names the necessary local-tick, readiness, capacity, and
-   network-deadlock assumptions.
-
-The system assembly API must make an undeclared crossing unrepresentable,
-rather than relying on a report to discover one later.
-
-## Public API and complexity budget
-
-The multiclock layer must preserve the usability boundary Loom already has:
-users write typed declarations and ordinary `Design` proofs; compiler
-correctness, DAG certification, coverage planning, schedules, endpoint-law
-proofs, and CDC refinements remain library machinery. The complete ordinary
-user surface should have five parts.
-
-### 1. Channels are typed handles
-
-The shipped shape is:
-
-```lean
-def cmdQ : Chan 32 := ⟨"cmd", depth := 2⟩
-```
-
-Inside an island, `cmdQ.enq e` is a guarded action and `cmdQ.canEnq` and
-`cmdQ.deq` are typed expressions or declarations used like registers and
-memories today. Users do not write valid/ready signals or prove payload
-stability and no-retraction for a stock channel. The channel declaration
-generates an endpoint adapter satisfying those laws by construction, just as
-typed declarations generate ordinary state and port plumbing.
-
-Custom endpoint protocols and new concrete CDC realizations remain possible,
-but their authors cross an explicit expert boundary and must supply the laws
-and refinement that an ordinary `Chan` gets from the library.
-
-### 2. Composition is `par` with clock names
-
-The shipped assembly reads like (Lean reserves `from`, so the endpoint names
-are `source` and `sink`):
-
-```lean
-def chip : System :=
-  System.empty
-    |>.island "core" coreDesign (clock := "clkA")
-    |>.island "dsp"  dspDesign  (clock := "clkB")
-    |>.connect cmdQ (source := "core") (sink := "dsp")
-```
-
-Widths are checked by types, endpoints pair exactly once, names remain unique,
-and a cross-clock reference outside a `Chan` is an assembly error. These are
-construction and assembly gates, not application proof obligations. On one
-clock, `System` is definitionally the familiar parallel composition of its
-islands and channels use ordinary synchronous state underneath.
-
-### 3. One combinator lifts island theorems
+# Multiclock Loom roadmap
+
+This is the implementation roadmap for Loom's multiclock layer. The concise
+user contract is [`MULTICLOCK.md`](MULTICLOCK.md); the formal/physical trust
+boundary is [`MULTICLOCK_BOUNDARY.md`](MULTICLOCK_BOUNDARY.md). This file lists
+the current architecture and only the unfinished work that still belongs in
+generic Loom.
 
-The public form of island determinacy is one theorem combinator:
-
-```lean
-theorem chip_core_ok : chip.Invariant (atIsland "core" CoreOk) :=
-  liftIsland core_ok_invariant
-```
-
-`liftIsland` hides the local-run projection, framing, and determinacy proof.
-Properties of an island continue to be stated and proved in ordinary
-single-clock `Design` land; moving the island into a system does not require
-restating them over schedules.
-
-### 4. Channels supply the cross-island lemma library
-
-Stock channels expose proved facts such as `Chan.noLoss`, `Chan.fifoOrder`, and
-`Chan.deliveredWithin`. Cross-island proofs combine lifted island invariants
-with these lemmas and simp-level connection facts. The generated adapter,
-selected co-tick semantics, concrete CDC component, and refinement proof live
-behind those statements.
-
-### 5. System invariants hide schedules
-
-`chip.Invariant P` quantifies internally over every schedule admitted by the
-chip's declared clocks and over the permitted CDC-resolution choices. An
-application proof does not mention `SchedulePrefix`, `ClockRel`, fairness, or
-co-tick cases. Readiness or local-tick premises needed by a bounded-delivery
-lemma are stated in channel terms. Raw schedules surface only in executable
-debugging, for example `chip.run (scheduleSeed := 42)`, and in the expert API
-used to implement and prove the library itself.
-
-The governing acceptance test is:
-
-> Going from one clock to two changes one clock annotation in the user's file
-> and zero lines in the user's proofs.
-
-If this test fails, multiclock mechanism has leaked through the abstraction
-and must be moved back into the library.
-
-## Hierarchical composition
-
-The first hierarchy mechanism is Lean itself. A reusable block is a function
-returning islands and channels, parameterized like any other Loom generator.
-Its source remains hierarchical while assembly assigns collision-free
-prefixed identities beneath it, following today's `par` discipline.
-
-When designs need opaque reuse, a proved `System` may be sealed behind an
-interface containing only exported channel endpoints and a theorem bundle.
-Higher levels compose sealed interfaces without inspecting internal islands.
-Sealing is an additive second stage: it must not change the flat composition
-API, invalidate existing proofs, or introduce a second channel model.
-
-## Executable clock model
-
-The proof, runner, and bounded checker must consume the same schedule type.
-The initial representation should therefore be executable data, not an
-abstract set:
-
-```lean
-abbrev DomainId (n : Nat) := Fin n
-abbrev ClockEvent (n : Nat) := DomainId n → Bool
-abbrev SchedulePrefix (n : Nat) := Array (ClockEvent n)
-```
-
-`ClockEvent` says which domains tick at one logical event. It preserves truly
-aligned edges while also representing gated and independently ticking
-domains. `SchedulePrefix` is the object enumerated by BMC, generated by the
-adversarial runner, recorded in a failure artifact, and replayed exactly.
-
-A `ClockRel` is an executable, prefix-closed predicate over schedule prefixes,
-with proved constructors for at least:
-
-- one always-ticking domain;
-- aligned 1:1 domains;
-- explicit enable traces and integer-ratio schedules;
-- singleton-event asynchronous interleaving;
-- bounded drift or bounded starvation; and
-- unconstrained finite schedules for safety checks.
-
-The system transition reads every selected island and channel endpoint from
-the pre-event state and commits the event atomically. Any alternative ordering
-must be represented as a different explicit event or a named choice, never as
-Lean evaluation order.
-
-### Definitional single-domain compatibility
-
-The degenerate case has a strict acceptance bar:
-
-```lean
-@[simp] theorem single_step (d : Design) (s : St) :
-    (System.single d).step ClockEvent.always s = d.cycle s := rfl
-```
-
-The exact declaration may differ, but the equality must remain definitional
-or close by `simp` without a simulation argument. The one-domain state type
-must reduce to `St`, not a one-element product wrapper. This is what lets all
-existing Design theorems and executable tooling continue to apply directly.
-
-## Abstract elastic channels
-
-Start with a typed one-entry channel. Its state contains occupancy and a
-payload. Its interface records source valid/payload and destination ready/data
-events plus accepted enqueue and dequeue events.
-
-### Co-tick policy is mandatory data
-
-A one-entry channel declaration must choose its behavior when it is full and
-producer and consumer both tick:
-
-```lean
-inductive FullCoTickPolicy
-  | refusePush
-  | exchange
-```
-
-- `refusePush`: the consumer may remove the old payload, but the producer sees
-  the pre-event full state and its push is not accepted.
-- `exchange`: the consumer receives the old payload and the producer replaces
-  it atomically, leaving the channel full.
-
-The policy is mandatory checked data, but it need not be routine user input.
-A stock `Chan` constructor selects and documents one library policy; expert
-constructors may select another explicitly. In both cases the selected policy
-is part of the abstract channel declaration, its throughput statements, trace
-semantics, generated inventory, and the refinement obligation for a concrete
-realization. It must never emerge accidentally from evaluator ordering or be
-silently changed by the single-clock or multiclock backend.
-
-Regressions must cover empty/full, push-only, pop-only, simultaneous push/pop,
-backpressure, reset, and every policy. In particular, an aligned 1:1 exchange
-channel must demonstrate one transfer per event after filling, while the
-refuse policy must demonstrate its deliberately lower bound.
-
-## Named nondeterminism and trace determinacy
-
-Specification networks should be Kahn-deterministic except at declared merge
-nodes. Arbitration must not appear as diffuse quantification over all system
-steps. Each merge has a stable identifier and an explicit executable choice
-oracle:
-
-```lean
-abbrev MergeId := String
-abbrev ChoiceOracle := MergeId → Nat → Nat
-```
-
-The exact choice representation may be tightened per merge, but it must be
-finite-prefix executable, recordable, and replayable. A runner failure records
-both its schedule prefix and oracle decisions.
-
-The central network theorem is then sharp:
-
-> For fixed initial state, external accepted-message traces, and named choice
-> oracles, observable transfer traces do not depend on the admissible clock
-> schedule.
-
-Oracle-free subnetworks are deterministic outright. Networks with merges are
-deterministic relative to their declared oracles. If a purportedly
-deterministic block cannot establish this property, it has either an
-undeclared crossing, an undeclared arbiter, or a timing-sensitive interface.
-
-## Endpoint laws reuse `TransitionProperty`
-
-An endpoint is an ordinary island `Design` plus typed declarations identifying
-its channel signals. Required laws are stated as existing general
-`TransitionProperty` values and discharged with the existing footprint,
-support, frame, and projected-cycle machinery.
-
-Initial endpoint laws include:
-
-- payload is stable while `valid && !ready`;
-- valid is not retracted before acceptance;
-- a consumer uses payload only on an accepted transfer;
-- credit never exceeds declared capacity and is never overspent;
-- reset establishes the endpoint's declared empty/quiet state; and
-- any exclusion or environment reliance is named.
-
-Internally, `Endpoint` packages the declarations and proofs, and
-`System.connect` accepts only endpoints compatible with the selected abstract
-channel. Stock `Chan` endpoints are generated with these proofs, so ordinary
-island authors see only the channel handle operations. Authors of custom
-endpoint adapters use the same `TransitionProperty` proof style as for current
-invariants; the system layer introduces no parallel property language.
-
-## Island determinacy
-
-Unticked-domain framing is only the one-event lemma. The first major
-composition deliverable is its cumulative form:
-
-> An island's state is a function only of its initial state, number of local
-> ticks, accepted input-message sequences, external input sequence, and named
-> local choice oracles. The global schedule does not otherwise occur.
-
-This theorem is the multi-domain analogue of Loom's frame results. It lets an
-island retain ordinary cycle-indexed Design proofs, then transport them to a
-system execution using the island's local tick trace. Failure to prove island
-determinacy is itself a fail-closed indication of an undeclared dependency.
-
-Necessary supporting results include:
-
-- unticked islands and endpoint state are unchanged;
-- disjoint island ticks commute when no declared channel event connects them;
-- local projections of a system run equal the corresponding island run over
-  accepted inputs; and
-- channel transfer traces completely mediate cross-island influence.
-
-## Bounded liveness first
-
-The workhorse progress statement is finite-prefix bounded response, phrased in
-local ticks or accepted transfers rather than a global reference clock:
-
-> If a message is accepted and the destination satisfies its readiness
-> contract, delivery occurs within `k` destination ticks.
-
-This fits the existing `TSys` bounded-response and induction machinery, is
-directly executable at small depths, and states the worst-case guarantee a
-hardware consumer needs. Variants may count source ticks, destination ticks,
-channel actions, or a `ClockRel` reference event, but the unit is always part
-of the theorem.
-
-Eventual delivery under fairness is a corollary of a suitable bounded theorem,
-not the primary proof interface. Finite capacity does not by itself establish
-network liveness: cyclic credit dependencies, arbitration, endpoint readiness,
-and reset drainage remain named obligations.
-
-## Concrete CDC refinement
-
-Concrete components form a second layer below the abstract channels.
-`CdcContract.lean` supplies the style: uncertainty at the first synchronizer
-sample is an adversarial oracle, and the digital protocol is proved for every
-oracle result under an explicit event-rate assumption.
-
-The implementation order is:
-
-1. Repackage the existing toggle synchronizer as a concrete realization of an
-   abstract one-entry event channel without weakening its current theorem.
-2. Add a bundled-data toggle channel whose payload-stability contract is
-   proved at both endpoints.
-3. Add a small dual-clock FIFO with binary storage indices, Gray-coded crossing
-   pointers, synchronized pointer observations, and explicit reset behavior.
-4. Prove the adjacent-Gray-code lemma: during one legal pointer transition,
-   an adversarial sample denotes the old or new code, never a third pointer.
-5. Prove the concrete FIFO stutter-refines the selected abstract queue policy,
-   including no loss, duplication, corruption, overflow, underflow, or illegal
-   reordering.
-
-The abstract channel theorem must not assume a particular FPGA primitive,
-ASIC synchronizer cell, synthesis tool, or clock ratio. Concrete physical
-instantiation and sign-off remain external evidence.
-
-## Derived crossing and constraint inventory
-
-Reports arrive with the first system declaration, before verified top-level
-emission. From the typed crossing graph Loom derives:
-
-1. a complete crossing inventory containing channel identity, source and
-   destination domains, endpoint widths, abstract policy, concrete component,
-   reset policy, and discharged proof names; and
-2. a technology-neutral constraint manifest describing asynchronous clock
-   groups, synchronizer paths, maximum-delay requirements, false paths, and
-   any component-specific placement requirements.
-
-Thin evidence-layer renderers may turn that neutral manifest into SDC or XDC.
-Vendor syntax and device-specific constraints do not enter generic `Loom/Hw`.
-Every rendered entry cites its source crossing identity, and every declared
-crossing must be covered exactly once. The board review checklist is generated
-from the same data and fails on an unbound or multiply bound crossing.
-
-These artifacts prevent omissions but do not prove that a P&R tool applied a
-constraint, that synchronizer flops were placed correctly, or that silicon
-meets MTBF. Those remain separately identified implementation evidence.
-
-## Runner and bounded checking
-
-The system runner operates on `SchedulePrefix` and `ChoiceOracle` directly.
-It provides seeded generators for at least:
-
-- aligned edges and alignment-boundary changes;
-- starvation of each domain up to a configured bound;
-- bursty producer and consumer clocks;
-- maximum backpressure;
-- full-channel simultaneous push/pop under every co-tick policy;
-- reset assertion and staggered release; and
-- named-merge contention.
-
-Failures serialize the exact finite schedule, oracle choices, accepted
-transfers, and artifact identity. Replay consumes those bytes without random
-generation. The bounded checker enumerates the same `ClockEvent` values for a
-small channel and shallow schedule; it must not maintain a second schedule
-encoding or an unproved conversion.
-
-## Implementation sequence
-
-### Phase 1: single-clock `Chan` and `System` API
-
-**Current state: shipped.** Typed handles, generated endpoints, synchronous
-FIFO lowering, assembly gates, abstract queue laws, and public invariant
-lifting are present. The degenerate `singleStep` equality is `rfl`; the richer
-named one-island assembly intentionally lowers through the checked
-`elaborate` boundary rather than pretending an `Except` is definitional.
-
-- Ship typed `Chan` handles, generated stock endpoints, `System.island`, and
-  `System.connect` while every island still uses one clock.
-- Make the one-clock system reduce definitionally to existing `par`/`Design`
-  behavior and implement channels with ordinary synchronous state.
-- Provide `System.Invariant`, `liftIsland`, and the initial `Chan` lemma
-  library without exposing a schedule type to application code.
-- Demonstrate modular composition and upward theorem reuse on existing
-  synchronous examples before adding the multiclock backend.
-
-This phase is independently useful and freezes the five public verbs while
-their implementation is cheapest. Later phases strengthen their proofs and
-backend without changing application code.
-
-### Phase 2: executable multiclock spine and inventory
-
-**Current state: partial.** Named domains, printable finite schedule
-prefixes, replay, raw-edge-free assembly, crossing inventory, framing, and
-lifting are present. `ClockRel`, neutral constraint inventory, and exhaustive
-schedule generation remain.
-
-- Retain the shipped executable clock events, schedules, low-level `System`
-  island vector, per-event framing, island reachability, and invariant lifting.
-- Add named domains, finite schedule prefixes, and `ClockRel` in the
-  internal/expert layer.
-- Make raw cross-domain connections unrepresentable.
-- Generate crossing and neutral constraint inventories immediately.
-- Establish the rfl-tight one-domain always-tick case.
-- Preserve the shipped frame and lifting theorems through the named assembly
-  and channel layers.
-
-### Phase 3: multiclock channel semantics and generated endpoint laws
-
-**Current state: partial.** The atomic bounded-queue semantics, mandatory
-co-tick policy, generated endpoint mechanics, capacity theorem, FIFO-head
-theorem, and executable policy regressions are present. Trace-level
-loss/duplication/corruption theorems, checked `TransitionProperty` endpoint
-packages, and bounded exhaustive checking remain.
-
-- Define the abstract channel with mandatory `FullCoTickPolicy`.
-- Generate stock source and destination adapters and package their endpoint
-  laws as `TransitionProperty` proofs behind `Chan`.
-- Prove no loss, duplication, corruption, overflow, or underflow for arbitrary
-  finite schedules.
-- Add executable and bounded exhaustive regressions for both co-tick policies.
-
-### Phase 4: composition and determinacy
-
-- Add named merge nodes and executable choice oracles.
-- Prove island determinacy and local-run projection.
-- Expose those results to applications only through `liftIsland` and the
-  `Chan` lemma library.
-- Prove schedule independence relative to choice oracles.
-- Prove bounded delivery in destination ticks; derive the fairness corollary.
-
-### Phase 5: concrete CDC components
-
-- Connect the existing toggle proof to the abstract event channel.
-- Add and refine a bundled-data toggle channel.
-- Add and refine a small Gray-pointer asynchronous FIFO.
-- Keep physical resolution and implementation assumptions explicit.
-
-### Phase 6: runner, BMC, and evidence adapters
-
-- Add adversarial schedule/oracle generation, recording, and replay.
-- Enumerate shallow schedules through the same executable representation.
-- Render neutral constraints into SDC/XDC in the evidence layer and verify
-  complete crossing coverage.
-
-### Phase 7: multi-clock structural emission
-
-Only after the semantic and reporting layers are stable, consider a small
-top-level structural emitter with explicit clock ports and instantiated proved
-CDC components. Island RTL continues to come from the existing compiler.
-Hand-written wrappers remain supported and are checked against the generated
-crossing inventory.
-
-## Demonstration ladder
-
-The first proof vehicle should be two small non-CPU islands: a bounded
-producer and consumer joined by the one-entry channel. It must demonstrate
-both co-tick policies, schedule replay, bounded delivery, island determinacy,
-and the rfl-tight single-island specialization.
-
-The next vehicle should introduce a named two-input merge and show that traces
-depend on its recorded oracle but not on the schedule. Only then should a real
-machine integration adopt the layer. A CPU is a consumer of the theory, not
-the example from which the generic endpoint interface is designed.
-
-## Production adoption: LNP64mini
-
-The work does not stop at the demonstration ladder. LNP64mini is the required
-production consumer because its board integration already contains real
-DRCK/JTAG-to-`sysclk` crossings, currently split between a proved standalone
-toggle model and a hand-written wrapper.
-
-The adoption must preserve the ordinary LNP64mini core as one unchanged
-single-clock `Design`. The system layer describes the surrounding domains and
-channels; it does not make the CPU pipeline elastic or move its cycle-sensitive
-gate, scheduler, cache, or bus logic into a multi-clock semantics.
-
-### LNP64mini crossing declaration
-
-Add a machine-side system declaration, expected to live in a module such as
-`Machines/Lnp64mini/MultiClock.lean`, with at least:
-
-- the existing LNP64mini `sysclk` Design island;
-- a debug/DRCK domain endpoint representing JTAG update and readback events;
-- a bundled command channel carrying command index and data into `sysclk`;
-- a response/readback channel or an explicitly classified tear-tolerant
-  observation for values returning to DRCK;
-- reset assertion and per-domain reset-release crossings; and
-- the concrete toggle/FIFO realization selected for every channel.
-
-The command payload must be one typed value. It is not acceptable to prove a
-toggle crosses exactly once while leaving `cmd_idx` and `cmd_data` as unrelated
-raw buses. Their stability window and association with the accepted command
-event are part of the bundled channel refinement.
-
-### Adoption ladder
-
-1. **Inventory without wrapper mutation.** Declare every existing LNP64mini
-   board crossing and generate the crossing plus neutral-constraint manifests.
-   Add a fail-closed wrapper-binding check showing that every declared crossing
-   is bound exactly once and that no known wrapper crossing is unlisted.
-2. **Command ingress.** Repackage the existing toggle synchronizer theorem as
-   the concrete realization of the bundled command channel. Connect its
-   accepted-transfer trace to the existing `CmdPulseTrace`/open-Design input
-   contract, so one theorem spans source update, adversarial synchronization,
-   one destination command pulse, and the LNP64mini Design step that consumes
-   the matching payload.
-3. **Readback classification.** Replace each return path with either a proved
-   response channel or an explicit tear-tolerant observation type. Quasi-static
-   captures, counters, and coherent multiword responses must not share one
-   undocumented category.
-4. **Reset crossings.** Model assertion and staggered release for both domains.
-   Prove channel occupancy, toggle phase, and endpoint valid state return to the
-   declared quiet state for every supported release ordering.
-5. **Generated constraints in the board gate.** Render the neutral manifest to
-   the board's SDC/XDC evidence, bind each line back to its crossing identity,
-   and make stale, missing, duplicate, or extra bindings fail the existing
-   quality/reproduction workflow.
-6. **Adversarial execution.** Run the same machine declaration under aligned,
-   bursty, bounded-starvation, reset-boundary, and source/destination
-   near-coincident schedules. Record and replay schedule prefixes and all CDC
-   resolution or merge choices through the generic runner.
-7. **Lift a real machine theorem.** Transport at least one existing LNP64mini
-   property through the production system composition—not merely a channel
-   invariant. The initial target should combine exactly-once command delivery
-   with a typed machine consequence, such as preservation of the wake/gate
-   continuation invariant or the command-constrained lifecycle invariant, for
-   every admissible debug/`sysclk` schedule.
-
-### Production acceptance
-
-LNP64mini adoption is accepted only when:
-
-- its core `Design`, compiler theorem, certified DAG simulator, and internal
-  cycle semantics remain unchanged;
-- every actual board crossing is present in the generated inventory and bound
-  exactly once to the hand-written wrapper;
-- raw `cmd_valid`/`cmd_idx`/`cmd_data` wiring is replaced at the system boundary
-  by one proved bundled command channel;
-- every readback path is proved coherent or visibly typed and reported as
-  tear-tolerant;
-- the board constraint artifact is generated from the crossing declaration and
-  checked for freshness and complete coverage;
-- adversarial schedule and synchronizer-resolution runs are replayable; and
-  their bounded checks cover the command channel's small-depth state space;
-- a real LNP64mini Design property has been lifted to the composed system for
-  all admissible schedules; and
-- the normal LNP64mini emission, selftest, debug-map, board-wrapper, and
-  reproduction gates consume this declaration rather than maintaining a
-  parallel crossing list; and
-- moving the adopted system declaration between its synchronous test
-  configuration and the real DRCK/`sysclk` configuration changes clock
-  annotations and backend selection, but no lifted island proof.
-
-This production leg is part of the workstream's definition of done, not a
-follow-on integration suggestion.
-
-## Completion criteria
-
-This workstream is complete only when all of the following are direct checked
-facts:
-
-- ordinary users need only typed `Chan` handles, `System.island`/`connect`,
-  `liftIsland`, the `Chan` lemma library, and `System.Invariant`;
-- the same public API has a useful single-clock implementation before the
-  multiclock backend, and changing one island to a second clock changes no
-  application proof;
-- existing single-clock designs, proofs, evaluators, and emission remain on
-  unchanged `Design.cycle` semantics;
-- the always-tick one-domain system step reduces definitionally to
-  `Design.cycle`;
-- no system declaration can type-check a raw asynchronous valid/ready or data
-  crossing;
-- every crossing selects an explicit co-tick policy and concrete realization;
-- endpoint laws are ordinary checked `TransitionProperty` obligations;
-- arbitrary-schedule safety, oracle-relative schedule independence, island
-  determinacy, and bounded destination-tick delivery are proved;
-- a concrete adversarial toggle channel and Gray-pointer FIFO refine their
-  abstract channels under named assumptions;
-- proof, runner, replay, and bounded enumeration share one executable schedule
-  representation;
-- crossing and neutral constraint inventories are total derived views, with
-  evidence-layer SDC/XDC rendering; and
-- at least two non-CPU islands and one named merge demonstrate the complete
-  composition path before a large machine depends on it;
-- a proved subsystem can be sealed behind exported channel endpoints and a
-  theorem bundle, then composed without exposing its internals; and
-- LNP64mini satisfies the production-adoption acceptance gates above, including
-  a bundled command crossing and one lifted machine theorem.
+The scope test is:
+
+> Going from one clock to two changes a clock annotation and zero existing
+> island proofs.
+
+An application author should need only ordinary hardware, clock placement,
+typed channels, send/receive operations, and a realization choice.
+`System.Invariant` and `liftIsland` are the next, proof-author level rather than
+prerequisites for constructing a crossing.
+
+Cycle-sensitive logic remains inside an ordinary synchronous `Design`.
+Elasticity is a composition discipline at declared boundaries, not a coding
+style imposed inside CPUs, pipelines, register files, or state machines.
+
+## Architecture
+
+Three layers are enough.
+
+### 1. System semantics
+
+`System` provides named synchronous islands, named clocks, executable clock
+events, typed connections, atomic abstract-channel transitions, and
+schedule-quantified invariants. `SystemBuilder` is the generator-friendly raw
+declaration type; only a checked `System` may be executed, proved, or emitted.
+
+`ClockRel` is an executable, prefix-closed predicate over the same finite event
+prefixes used by proofs and replay. Application invariants do not mention it:
+`System.Invariant` quantifies over every admitted schedule internally.
+`ClockRel.asynchronous` admits coincident unrelated edges; the narrower
+`ClockRel.interleaved` relation is available only when a proof or executable
+experiment deliberately linearizes them.
+
+The public reset policy is deliberately narrow and explicit:
+
+- all islands and abstract channels enter reset together;
+- scheduled execution begins after their common release; and
+- a delayed first tick is not a separate reset state.
+
+There is no unilateral live-reset transition. Supporting one would require an
+explicit flush, epoch, or recovery protocol in the abstract channel semantics;
+it must never arise from an emitter or runner convention.
+
+When every connected island has the same clock, `System.elaborate` lowers the
+assembly through the existing `Design.par`/`Design.connect` path. The result is
+an ordinary `Design` using `Design.cycle`, the existing compiler, simulators,
+proofs, and emitter. Cross-clock systems cannot silently take that path.
+
+### 2. Channel contracts and realizations
+
+`Chan w` is a typed bounded-queue behavior, including an explicit full co-tick
+policy. It does not name a circuit, vendor, FPGA/ASIC flow, clock ratio, or
+synthesis tool.
+
+`Chan.Refinement` is the expert interface for an executable realization. Loom
+ships:
+
+- the ordinary synchronous adapter;
+- a toggle-mailbox model;
+- an asynchronous FIFO model; and
+- a portable certified power-of-two-depth realization whose control and
+  register-bank storage are compiled ordinary `Design`s.
+
+Physical emission selects exactly one realization per connection.
+`RealizedSystem` derives structural RTL, a crossing inventory, and a neutral
+constraint manifest from the same ordered connection set. Coverage theorems
+prevent a connection from disappearing from any artifact. Optional FPGA RAM
+or ASIC SRAM implementations remain replaceable leaves under the same
+technology-neutral storage contract.
+
+Gray-pointer logic is a supplied reference realization, not the meaning of
+`Chan`. Generic Loom contains no handwritten behavioral CDC RTL on the
+certified path. Metastability, MTBF, timing closure, placement, routing, and
+downstream tool interpretation remain physical evidence.
+
+### 3. Small theorem library
+
+The reusable library is intentionally small:
+
+- `Chan.noOverflow`, FIFO-head order, and finite-trace conservation;
+- `System.channelCapacityInvariant` and `channelTraceConservation`;
+- `System.liftIsland` for existing ordinary open-`Design` invariants;
+- `ChannelInvariant.and` and `System.liftChannels` for relational channel
+  safety;
+- `TraceContract.comp` and `mapPrefix_comp` for schedule-free functional
+  trace composition; and
+- `TraceContract.deliveredWithin` for an explicit application-defined service
+  bound, with serial bounds composed by addition.
+
+The last item does not infer liveness from connectivity. A caller must state
+and prove what one service index means (destination ticks, grants, rounds, or
+another suitable unit) and discharge the component bounds.
+
+### Timing-contract requirement
+
+The five-concept application facade may hide handshake plumbing, but it must
+not hide latency. Every selected realization will derive a technology-neutral
+timing contract recording:
+
+- where acceptance and delivery are observed;
+- buffering and synchronizer stages;
+- whether a bound is exact, conditional on named service/tick premises, or
+  absent under the selected `ClockRel`;
+- the bound's unit (source ticks, destination ticks, grants, or named System
+  events); and
+- whether independent recovery can interrupt service and what completion
+  premises it requires.
+
+No wall-clock bound is inferred from a logical schedule. In particular, an
+asynchronous channel under an unconstrained relation has no finite
+global-event delivery bound if the destination may stop ticking. A theorem may
+give a finite destination-tick bound only after stating the consumer,
+backpressure, and synchronizer-progress premises it uses.
+
+The description is derived from the same `RealizationPlan` entry that selects
+the hardware, appears through typed application inspection and an explicitly
+requested human diagnostic, and is covered by the same ordered connection-key
+theorem as the crossing inventory. Normal emission produces no CSV/TSV
+sidecars: ordinary review artifacts are Markdown and programmatic consumers
+use the typed values directly. Expert bindings with no timing
+description fail emission. Positive semantic bounds must be usable directly
+with `TraceContract.deliveredWithin`. Hierarchical composition preserves the
+per-boundary contracts and adds serial bounds; it may not silently replace
+them with a single optimistic number. This is core mechanics, not pretty
+syntax.
+
+## Current acceptance evidence
+
+The small acceptance design is `Machines.Substrate.TwoClock`:
+
+- it is a one-hop mailbox, not a three-stage Gauntlet pipeline;
+- its producer and consumer are ordinary `Design`s connected by `Chan 8`;
+- an existing tutorial `SatCounter` island is reused unchanged;
+- the existing `satOk_invariant` is lifted without restating it over clocks or
+  schedules;
+- channel capacity is proved through the public connection law;
+- the portable certified power-of-two-depth realization is selected; and
+- its literal emitted `system.v` bytes, crossing inventory, and neutral
+  constraints share the checked connection-key domain.
+
+`Machines.Multiclock.ClockGauntlet` is stronger application/evidence work. It
+adds arbitrary-schedule end-to-end trace safety and a specialized bounded
+progress certificate. Its frontier search, rank, digest, campaign runner, and
+board shell remain outside the ordinary Loom API.
+
+`Machines.Lnp64mini.Multiclock` is the production-scale API consumer. It keeps
+the CPU as one unchanged synchronous island and packages a technology-neutral
+multiclock artifact. Board-wrapper adoption and silicon campaigns are useful
+external evidence, not prerequisites for the generic abstraction to be
+well-defined.
+
+## Application facade
+
+`Loom.Hw.Multiclock` now supplies the ordinary-Lean stock path:
+
+- `Chan.send`, `canSend`, `hasData`, `data`, and `consume` expose channel use
+  without raw valid/ready signals;
+- `ClockHandle`, `IslandHandle`, directional channel endpoints, and
+  `ChannelRoute` remove application-spelled topology strings;
+- `PackedChan` endpoints and hierarchical exports carry semantic packed
+  payload types while erasing to the same scalar CDC implementation;
+- `SystemBuilder.addChannel` connects typed island handles and generates both
+  endpoint adapters;
+- `RealizationPlan` selects the compiler-produced synchronous, portable
+  asynchronous, or independently recoverable portable implementation per
+  typed `ChannelRoute`; `System.realizeWith`
+  derives the channel refinements, ordered coverage, clock-rule proofs, and
+  certified realized artifact from one checked gate;
+- the synchronous reference accepts every positive depth, while the portable
+  Gray FIFO and proved register-bank storage accept arbitrary power-of-two
+  depths through the same `Chan`/`PackedChan` API;
+- `CertifiedIslands` and `realizeWithCertified` cache the expensive
+  island/compiler/DAG certificates independently of physical channel plans;
+- `System.Application.run`, `runChecked`, `readReg`, `readChannel`, and `emit`
+  provide replay, inspection, and exact certified emission without exposing
+  certificates; `runRecovery` and `runRecoveryChecked` preserve the same
+  certified island relation for reset-aware replay; and
+- `readinessIssues`, `selectedReadinessReport`, `realizePortableChecked`, and
+  `realizeWithChecked` provide named failures for generator and interactive
+  use.
+
+Both `Machines.Substrate.TwoClock` and `Machines.Lnp64mini.Multiclock` use this
+facade. Neither constructs `CertifiedDepthTwoBinding`, storage witnesses,
+lookup equalities, coverage proofs, or typed DAG register views. The Gauntlet
+artifact remains the expert-level exercise of explicit realization assembly.
+
+## Maintenance requirements
+
+1. Keep the five-concept conceptual API frozen. Application code outside
+   dedicated implementation/evidence modules should not normally mention
+   `inputFor`, `connectionInput?`, generated endpoint names, `PackedQueue`, raw
+   one-bit handshake conversions, `Chan.Refinement`, or storage witnesses.
+2. Keep reset fail-closed. Adding a new `SystemResetPolicy` constructor must
+   force an explicit semantic implementation rather than inherit coordinated
+   behavior accidentally.
+3. Keep one compact typed resolved-connection view for proofs and debugging,
+   so callers do not unfold string dispatch or generated endpoint wiring.
+4. Keep the second-design acceptance test and exact artifact/inventory checks
+   in the ordinary test umbrella.
+5. Keep the Gauntlet's specialized liveness proof intact, but do not move its
+   finite-search or rank machinery into `Loom/Hw`.
+6. At each substantial API increment, review one complete example as an RTL
+   engineer rather than only as a proof author. The checkpoint asks:
+   - Can the author predict latency, initiation interval, buffering, and reset
+     interruption from the typed declaration?
+   - Does generated RTL use recognizable ready/valid/FIFO structure and expose
+     useful hierarchy and names for waveform debug and timing closure?
+   - Is the common path shorter than hand-instantiating CDC plumbing, without
+     requiring certificates, schedules, manifests, CSV/TSV files, or proof
+     internals?
+   - Can an FPGA or ASIC implementation replace the reference leaf without
+     changing island code or weakening the channel theorem?
+   - Did convenience introduce a throughput bubble, combinational loop,
+     hidden clock assumption, or surprising reset loss?
+
+   A negative answer changes the implementation plan; passing type checks and
+   proofs alone is not sufficient evidence that the abstraction is natural.
+
+Parser/elaborator sugar such as `system ... where`, `system_lift`, or
+`#run_system` belongs to the separate prettification plan. It may later render
+the facade pleasantly, but the facade must first be usable as normal Lean and
+must not depend on new syntax.
+
+## Bounded language milestone
+
+Loom's responsibility ends at a precise language/verifier/compiler boundary.
+It proves the digital multiclock semantics and generated portable
+implementation, and emits a complete neutral description of the obligations
+that a target flow must discharge. It does not prove MTBF, macro datasheets,
+timing closure, tool interpretation, board clocks, or PPA.
+
+The required milestone has three parts:
+
+1. **Coherent portable storage — done.** The portable leaf is one clearly
+   named first-word-fall-through combinational register bank. Its reader
+   `Design` has no state or dead response pipeline; the wrapper consumes its
+   sole `read_sample` output; its refinement computes the response from that
+   expression; and timing reports zero physical storage-read stages.
+
+2. **Precise reset behavior — done.** Every distinct clock domain has a typed
+   `ResetIntent`. The current generated modules state that shared active-high
+   `rst` is sampled synchronously, the domain must tick while reset is
+   asserted, and release is sampled independently. This is intentionally not a
+   reset-tree language. `SystemResetPolicy` remains the separate logical
+   traffic-loss/recovery contract.
+
+3. **Validated extension boundary — done for the reference boundary.** The
+   typed physical manifest includes every channel constraint and reset-domain
+   contract. A backend report is constructible only with exact ordered
+   coverage and reports `PASS`, `SKIP`, or `UNCONSTRAINED` for every item. The
+   small reference backend consumes every requirement exactly once. The
+   target-storage mock receives the exact proof-matched width, depth, and read
+   latency and makes its one external leaf assumption explicit. The generated
+   neutral two-clock RTL passes an accessible technology-neutral synthesis
+   sanity test; this is corroboration, not part of Loom's theorem or TCB.
+
+Two realization modes remain intentional:
+
+- **Fully neutral:** compiler-generated register storage and controller RTL,
+  unchanged between FPGA and ASIC flows.
+- **Target refined:** the same channel semantics with compatible RAM/SRAM or
+  synchronizer leaves selected by an evidence profile, with exact parameters
+  and named external assumptions.
+
+## Deferred library and evidence work
+
+These are useful but are not gates on the language milestone:
+
+- a proved one-item-per-destination-tick sink (the current half-rate contract
+  remains legal and must stay prominent);
+- real FPGA block-RAM and ASIC SRAM bindings;
+- production XDC, Quartus, and ASIC CDC/STA adapters;
+- calibrated cost warnings beyond exact structural quantities;
+- stable-level, event/pulse, mailbox, and reset-synchronizer components;
+- further board campaigns; and
+- the experimental independent-recovery whole-wrapper theorem.
+
+Network-wide deadlock freedom, arbitration determinacy, and liveness without a
+service premise remain application or reusable-component properties, not
+automatic consequences of using a channel.
+
+## Evidence policy
+
+Portable formal claims must not depend on Xilinx, Zynq, openXC7, Yosys, an
+ASIC library, or any other particular flow. Evidence-layer adapters may render
+the neutral manifest to XDC, SDC, or tool-specific reports and may exercise an
+available board.
+
+The Clock Gauntlet ZC702 campaign is therefore corroboration of one exact
+artifact, not a generic semantic premise. A syntax simulation is a wiring
+smoke test, a routed CDC audit is implementation evidence, and a silicon soak
+is physical evidence; none substitutes for `Chan.Refinement` or enlarges the
+theorem boundary.
+
+## Stopping criterion
+
+The underlying generic mechanics are at a good stopping point when the small
+non-pipeline acceptance design directly demonstrates all of the following:
+
+- existing synchronous islands compose through typed channels;
+- an existing island invariant lifts unchanged over all admitted schedules;
+- a useful system property is proved without unfolding System wiring;
+- the portable reference realization is selected through its contract;
+- the selected realization's inserted buffering/synchronizer stages and
+  provable latency class are inspectable rather than implicit;
+- the exact emitted RTL plus crossing inventory and constraints are covered by
+  one connection-key theorem; and
+- no generic definition or theorem assumes a vendor, FPGA/ASIC choice, or
+  synthesis tool.
+
+The application API is at a good stopping point only when the same example's
+source is dominated by its islands, channel operations, clock placement, and
+realization choice. Stock certified emission and execution must not require a
+second hand-written section of certificate, FIFO, storage, lookup, coverage,
+view, and replay assembly. The LNP64mini consumer must use the same facade.
+
+After this point, work should be driven by a concrete missing capability, a
+failed abstraction test, or evidence that an existing guarantee is false—not
+by completing the former Gauntlet-specific research wishlist.

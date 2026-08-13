@@ -1,6 +1,6 @@
 # Project status
 
-Checked against repository head on **2026-08-11**. This file is a current
+Checked against repository head on **2026-08-12**. This file is a current
 snapshot, not a development diary. Historical milestones belong in Git and
 [`CHANGELOG.md`](CHANGELOG.md); detailed hardware campaigns belong in their
 machine and board specifications.
@@ -10,9 +10,11 @@ machine and board specifications.
 | Check | Current result | Notes |
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-11; warnings remain. |
-| `lake exe audit` | **PASS** | Rechecked on 2026-08-11; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **PASS** | Rechecked on 2026-08-11, including typed-channel schedule replay, runner, coverage, identity, and certified-DAG regressions. |
-| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-11. |
+| `lake exe audit` | **PASS** | Rechecked on 2026-08-12; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
+| `lake test` | **PASS** | Rechecked on 2026-08-12 under a 28 GiB/no-swap cgroup; includes typed-channel schedule replay, runner, coverage, identity, arithmetic, and certified-DAG regressions. Peak resident memory was 4.5 GiB. |
+| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-12, including the no-handwritten-certified-CDC gate. |
+| `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
+| certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
 | `scripts/emit_all.sh --check` | **PASS** | Rechecked twice on 2026-08-10: the first run correctly rejected stale ignored RTL, and the second reproduced the regenerated artifacts byte-for-byte. |
 | `scripts/ci.sh` | **PASS** | Rechecked on 2026-08-09, including the explicit 528-second Epoch BMC, audit, emissions, debug map, round trip, release binding, and LRAT cross-check. |
 | `scripts/reproduce.sh` | **NOT RECHECKED** | The broader reproduction wrapper remains a separate unrerun gate; optional external checks are host-dependent. |
@@ -30,14 +32,181 @@ unrerun gates.
 handles, generated endpoints, synchronous FIFO lowering, named island
 assembly, explicit co-tick policy, replayable named-clock events, abstract
 multi-clock execution, derived crossing inventories, per-event framing, and
-one-call lifting of ordinary open-Design invariants for every schedule. The
+one-call lifting of ordinary open-Design invariants for every schedule.
+Relational properties over the complete channel store have their own
+`ChannelInvariant.and` and `System.liftChannels` composition/lifting path. The
 checked abstract queue proves FIFO-head delivery and capacity preservation;
-regressions exercise both co-tick policies and a two-clock transfer. Concrete
-toggle/async-FIFO refinement, generated endpoint `TransitionProperty` proofs,
-bounded delivery, constraint rendering, hierarchy, production LNP64mini
-adoption, and multi-clock structural emission remain planned. A declaration
-selecting `toggle` or `asyncFifo` cannot be lowered by the synchronous emitter;
-existing board wrappers do not constitute a verified backend.
+its finite-trace conservation theorem proves ordered losslessness, and a full
+circular-buffer simulation proves the generated synchronous `Design` adapter
+equivalent for every finite event trace. Regressions exercise both co-tick
+policies and a two-clock transfer.
+
+The implementation choice is not stored in `Chan`. `Chan.Refinement` is the
+common proof interface for physical implementations; the actual generated
+synchronous adapter, an adversarial-delay toggle mailbox, and an
+adversarial-pointer-view asynchronous FIFO each satisfy it and inherit its
+all-traces conservation theorem. `RealizedSystem` separately requires one
+ordered physical binding per abstract connection. Its structural emitter
+produces island RTL, generated top-level wiring, and readable crossing and
+physical-intent reports; automation consumes the underlying typed values.
+Checked theorems establish that the exact structured
+channel instances and constraint groups consumed by the renderers cover the
+declared connection list; the path also reuses every ordinary island emission
+check before writing. An unrelated-clock Icarus smoke test compiles the
+generated top and exercises one idealized payload transfer; this establishes
+syntax/elaboration and a concrete wiring execution only, not refinement.
+
+`CertifiedSystem` now packages a preparation-complete certified DAG simulator
+for every island, reuses the exact `System` channel/input plan during replay,
+and carries island agreement with the schedule semantics in every executable
+state. It also requires a `Chan.Refinement` for every declared connection, so
+certification cannot omit crossing behavior while certifying only endpoint
+islands. Both the small and LNP64mini instances select the joined,
+technology-neutral compiled-control/register-bank refinement. Its comparison
+surface is derived from all island coordinates and all
+bounded-channel slots; missing oracle coverage fails with coordinate names.
+Each checked island also exposes its canonical UTF-8 artifact through
+`CertifiedSystem.renderedIslandUTF8`, with a theorem reducing it to the
+ordinary proved compiler and printer. `CertifiedSystem.runPrefix_semantic_eq`
+also states explicitly that certified replay projects to the public System
+runner on the identical schedule and input trace.
+It is instantiated for both the small two-clock producer/consumer example and
+a technology-neutral LNP64mini system whose real core publishes best-effort
+retirement-PC telemetry to an independently clocked observer.
+
+`Loom.Hw.Multiclock` now provides the ordinary application facade.
+`ClockHandle`, `IslandHandle`, directional source/sink endpoints, and
+`ChannelRoute` keep ordinary topology and inspection out of raw strings.
+`SystemBuilder.addChannel` generates both endpoint adapters, and the checked
+System calls `realizePortable` once; Loom derives
+island certificates, stock FIFO controls and register-bank storage,
+refinements, exact ordered artifact coverage, and clock rules.
+`Application.run`, `readReg`, `readChannel`, and `emit` expose replay,
+inspection, and certified output. `PackedChan` uses the same path while
+preserving its semantic payload type through endpoints and hierarchical
+exports, and `realizePortableChecked` reports
+named readiness failures. Both the small
+TwoClock example and the LNP64mini production consumer use this path and no
+longer construct storage witnesses, lookup proofs, coverage proofs, or typed
+DAG register views. Optional `system ... where` and `#run_system` syntax
+remains a separate prettification concern.
+
+`Application.runRecovery` and `runRecoveryChecked` extend the certified DAG
+runner rather than exposing a second semantic evaluator. Their semantic
+projection is proved equal to `System.runRecoveryPrefix` for arbitrary event
+and input traces.
+
+The asynchronous FIFO model now uses finite ring addresses rather than an
+unbounded-memory surrogate. Lean proves that simultaneous successful read and
+write ports address distinct physical slots, then discharges
+`AsyncQueueStorage.CollisionFree`. A single parametric composition theorem
+turns any implementation of that storage contract into a `Chan.Refinement`;
+the compiler-produced depth-two register bank instantiates it without an
+external assumption. Its write-domain bank and read-domain response pipeline
+are ordinary `Design`s, and `AsyncQueueStorage.DepthTwo.rep_step` proves their
+actual `Design.cycleOpen` transitions implement the storage contract. The
+result is joined directly to the parametric FIFO theorem in `Tests.Chan`; the
+semantic reference register bank is no longer used as that non-vacuity witness.
+
+Generic Loom now contains no handwritten behavioral CDC Verilog; a mechanical
+quality gate enforces both that fact and the `Loom`/`Evidence` import boundary.
+The former handwritten Gray FIFO renderer remains available only as explicitly
+unverified integration evidence under `Evidence.ReferenceCdcRtl`. The certified
+path now has ordinary write-domain and read-domain control Designs containing
+the finite pointer registers, Gray increments, two-flop sampling chains, and
+combinational full/empty comparisons. Both halves have `CertifiedDesign` packages and
+cycle-level semantic equations. The executable FIFO model now also carries
+both synchronizer stages explicitly, and the compiled write/read enable
+expressions are proved equal to its accepted/delivered decisions under the
+channel invariant. `AsyncFifoDesign.controlRep_step` proves the complete
+compiled-control relation inductive for arbitrary source/sink tick sets,
+adversarial samples, and held domains. `CertifiedPortableBinding` joins those
+controls to proved compiled register-bank storage for arbitrary power-of-two
+depths; `CertifiedSyncBinding` supplies the ordinary compiled FIFO for every
+positive same-clock depth. `RealizationPlan` selects those leaves, including
+the recovery-wrapped portable leaf, per typed route, and coverage requires
+exactly one closed binding for every declared
+connection. `CertifiedRealizedSystem` emits
+only structural wiring around the compiler artifacts, and `verifiedReleases`
+contains the literal emitted `system.v` artifact together with its exact UTF-8
+equality and emission-list membership. Binary-reflected Gray adjacency is
+machine-checked for ordinary
+increments, finite-width bounds, and wraparound, and the executable FIFO's
+read/write steps are proved to stutter or take such a transition. Metastability
+and the physical old-or-new sampling argument remain outside the semantics.
+The executable `independentFlush` recovery contract now states reset dominance,
+incident-channel loss/flush, and nonincident preservation and has a reusable
+capacity invariant. `Chan.RecoveryRefinement` additionally records the old
+epoch discarded at a recovery completion. Its executable four-phase
+request/acknowledgement protocol refines that contract under arbitrary clock
+schedules, and the per-domain endpoint is a compiler-produced `Design` with a
+proved cycle equation. `RealizationPlan.recoveryPortable` now joins compiled
+endpoints and traffic/reset guards to the compiled portable FIFO, emits
+per-island level request/completion ports, coordinates every incident channel,
+and resets only the requesting island after both halves of every incident
+channel complete. The exact coordinator domain is structured and has a
+membership theorem. Policy/binding compatibility is a constructor proof, and
+flattened parent/child reset-policy disagreement fails final System assembly.
+FIFO halves remain reset throughout the endpoint `flushed` phase; the protocol
+proves both completion edges saw reset asserted, closing the reset-skew hole
+where an early half could sample the peer's old pointer. The RTL regression
+checks every incident pointer and synchronizer is at the common empty origin
+while recovery completion is asserted. A System theorem also lifts the exact
+compiled endpoint reset-hold expression through the structured completion
+domain, so coordinator completion machine-checkably covers every incident
+half rather than relying on the smoke test.
+The three-clock/two-channel RTL recovery regression passes. A coordinated
+channel refinement now retains the logical old epoch when one physical FIFO
+finishes early. The two actual compiled endpoint-controller states are proved
+to follow that model, and the exact generated coordinator domain is proved to
+commit both channels in the regression topology on the same
+`System.advanceRecovery` event. The selected recovery binding's channel state
+and loss accounting are joined at that event without a free alignment premise.
+The remaining formal gap is the state relation carrying the compiled FIFO
+controls, register-bank storage, and datapath guards through early local reset,
+then packaging those facts as one whole-wrapper theorem. The exact compiled
+island reset edge is already proved equal to the System island-reset action;
+the passing unrelated-clock RTL recovery test remains smoke evidence. Checked `SealedBlock`s now package
+typed open endpoints, cached island certificates, and dependent theorem
+bundles; a parent can flatten blocks and close only endpoints indexed by the
+same channel. Name collisions fail closed, while automatic instance prefixing
+remains ergonomic follow-up. Reusable `CertifiedIslands` values cache
+large-island readiness across physical plans. Generated endpoint
+`TransitionProperty` packages and board-wrapper adoption of the LNP64mini
+System remain possible extensions;
+they are not holes in the closed portable FIFO artifact described above.
+See [`MULTICLOCK_BOUNDARY.md`](MULTICLOCK_BOUNDARY.md).
+
+Selected channel timing is now inspectable as typed Application data or an
+on-request human diagnostic. Normal emission has no CSV/TSV sidecars: it emits
+readable `crossings.md` and `clock_constraints.md` reports, while tools consume
+the typed inventory and timing values directly. Timing's
+ordered connection coverage is proved complete. Stock descriptions include
+both endpoint registers, synchronizer/storage stages, local source/sink issue intervals,
+service premises, and recovery interruption. The async row honestly has no
+finite end-to-end delivery bound under the current unbounded-staleness model.
+The report also exposes a current performance limitation: the safe registered
+sink endpoint can consume only once per two destination ticks even when data
+remains available. A one-item-per-tick endpoint and its theorem are still
+required for throughput-sensitive SoC use.
+
+The portable binding also derives neutral physical intent for both exact
+two-stage synchronizer chains and both Gray-pointer buses, including named
+launch/capture objects and period-relative skew/datapath requirements. This is
+substantially stronger than a clock-group-only report. Every distinct clock
+domain also carries a typed reset-delivery contract matching the emitted
+synchronous-reset RTL. Backend reports have exact ordered coverage of the full
+timing-plus-reset requirement list and cannot silently omit an item. A small
+reference backend exercises that boundary; it does not claim target signoff.
+Only an executed FPGA or ASIC backend can report that physical requirements
+passed.
+
+The portable storage contradiction is closed: its compiled reader is now
+explicitly first-word-fall-through and combinational, with no reader registers,
+rules, or unused `read_data`/`read_valid` ports. The wrapper consumes the same
+`read_sample` expression used by the implementation refinement, and timing
+reports zero storage-read stages. Registered-latency RAM/SRAM leaves remain a
+separate substitution contract rather than a dormant second path.
 
 ## Formal verification state
 
@@ -65,9 +234,11 @@ existing board wrappers do not constitute a verified backend.
   LNP64mini uses direct generic multiplication
   for ordinary low-half `MUL`; its high-half `MULH`/`MULHU` instructions remain
   on the intentional iterative shift-add path.
-- `Tools/VerifiedRelease.lean` defines the combined Acc8/LNP64-µ release
-  theorem. Its named LNP64-µ consequences are authority confinement,
-  machine-wide W^X, lineage-ledger conservation, and budget boundedness.
+- `Tools/VerifiedRelease.lean` defines the combined Acc8/LNP64-µ/portable
+  multiclock release theorem. Its named LNP64-µ consequences are authority
+  confinement, machine-wide W^X, lineage-ledger conservation, and budget
+  boundedness; its System leg carries the exact emitted RTL member and the
+  small and production-scale certified-System instances.
 - `Tools/ReleaseAudit.lean` requires the combined theorem's axiom closure to
   be exactly `propext`, `Classical.choice`, and `Quot.sound` when the release
   command builds it.

@@ -1,8 +1,13 @@
 # Declared observability
 
-Every `Design` has a mandatory `outputs : List String`. Only named registers
-become module outputs; internal registers remain present in the implementation
-but are absent from the architectural port list.
+Every `Design` has two explicit output forms:
+
+- `outputs : List String` selects registers exported as `o_<name>` ports.
+- `combOutputs : List CombOutput` declares named same-cycle expression ports.
+
+An unselected register remains in the implementation but is absent from the
+architectural port list unless a declared combinational output deliberately
+reads it.
 
 This is intentionally explicit. A design that wants to export every register
 must say so, for example with `outputs := regs.map (·.name)`. Emission rejects
@@ -10,7 +15,9 @@ unknown output names.
 
 ## Proved properties
 
-`Loom/Hw/Outputs.lean` establishes the interface property at three levels:
+`Loom/Hw/Outputs.lean` establishes the interface property at three levels.
+For a hidden register, the property explicitly requires that no declared
+combinational output reads or republishes it:
 
 - `compile_not_exported`: an unselected register is neither an output port
   nor the driver of one;
@@ -19,8 +26,18 @@ unknown output names.
 - `printed_not_exported`: after a successful parser round trip, the emitted
   artifact also lacks the unselected output.
 
-The file also proves that prefixing renames selections, parallel composition
-combines them safely, and connection cannot republish a hidden register.
+The file also proves that prefixing renames both output forms, parallel
+composition combines them, and connection preserves port names and widths
+while substituting connected inputs into combinational values.
+
+## Same-cycle semantics
+
+`Design.evalCombOutput input state output` evaluates an output from the
+current input valuation and pre-edge state. It takes no transition and does
+not alter `Design.cycle`. `Compile.compileCombOutput_evalOpen` proves that the
+compiled port expression has exactly this value for arbitrary inputs and
+states. Duplicate output names and input/output name collisions are rejected
+by `Design.emitCheck`.
 
 ## Security boundary
 

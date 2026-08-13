@@ -1,5 +1,14 @@
 # Changelog
 
+- Independent-reset recovery now distinguishes channel-local physical
+  completion from the one island-level logical commit. A coordinated channel
+  refinement retains early-reset epochs, the two compiler-source endpoint
+  states are proved to follow it exactly, and the generated coordinator's
+  complete domain is proved to commit every incident binding on the same
+  `System.advanceRecovery` event. This closes the prior free event-alignment
+  premise without pretending the remaining compiled FIFO/storage/guard state
+  relation is complete.
+
 All notable user-visible changes will be recorded here. This project follows
 [Semantic Versioning](https://semver.org/) once the first release is tagged.
 
@@ -7,16 +16,101 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Coherent portable FIFO storage interface:** the portable register-bank
+  reader is now explicitly first-word-fall-through, with one combinational
+  `read_sample` output and no unused registered response pipeline. Its
+  refinement and emitted wrapper consume that same expression, matching the
+  reported zero storage-read stages. Registered-latency target memories remain
+  separate substitution leaves.
+
+- **Complete neutral Gray-FIFO physical intent:** the stock portable binding
+  now carries both exact ordered synchronizer chains and both exact Gray-bus
+  launch/first-capture sets, including source-period-relative skew and datapath
+  bounds. The readable constraint report derives these requirements from the
+  selected binding without choosing FPGA, ASIC, vendor, or tool syntax.
+  Every distinct clock domain also has an exact reset-delivery contract for
+  the generated synchronous-reset RTL. Backend reports cover the combined
+  timing-plus-reset requirement list exactly and classify every item as
+  `PASS`, `SKIP`, or `UNCONSTRAINED`. A reference backend exercises this seam;
+  production target lowering remains optional evidence and generic emission
+  never invents physical signoff.
+
+- **Checked target-storage extension seam:** target-refined leaves receive the
+  exact derived storage interface and proof-matched configuration used by the
+  contract. A mock target leaf demonstrates distinct RTL selection with one
+  visible external assumption, without putting an FPGA family, ASIC library,
+  or synthesis tool into generic Loom.
+
+- **Fail-closed channel endpoint use:** assembly now rejects two sends or two
+  consumes that can execute in one tick for a stock endpoint. The validator is
+  path-sensitive enough to retain mutually exclusive branch alternatives.
+
+- **Honest arbitrary-phase clock relation:** `ClockRel.asynchronous` now admits
+  coincident unrelated edges. The former at-most-one-clock relation is named
+  `ClockRel.interleaved` for proofs and experiments that deliberately serialize
+  edges.
+
+- **Per-realization multiclock timing inspection:** every stock channel
+  realization now supplies a technology-neutral full-path timing description.
+  `Application.timingFor` and `timingReport` expose source/sink endpoint
+  stages, synchronizer/storage stages, local issue intervals, service
+  premises, and recovery interruption. Timing is typed Application data with
+  an on-request human diagnostic, not another emitted CSV/TSV; its ordered
+  connection-key domain is proved complete, and an expert binding with no
+  timing description fails closed. The report deliberately makes no finite
+  async delivery claim under the adversarial-staleness semantics. It also
+  exposes the current registered sink endpoint's two-destination-tick issue
+  interval, now tracked as a throughput cleanup rather than hidden API cost.
+
 - **Typed channel and named-system foundation:** `Chan w` provides generated
   enqueue/dequeue endpoints, explicit full co-tick policy, an executable
   bounded-FIFO specification, and an ordinary-Design synchronous adapter.
-  `System.empty`/`island`/`connect` checks names, endpoints, clocks, depths, and
-  realization choices; all-synchronous systems lower through existing
+  `System.empty`/`island`/`connect` build raw `SystemBuilder` data; only the
+  private-constructor, proof-carrying `System` produced by `assemble` or
+  `certify` can be simulated, proved, or emitted. The gate checks names,
+  endpoints, and depths without choosing a CDC circuit. All-synchronous systems lower through existing
   `Design.par`/`connect`, while replayable named-clock events drive the
-  abstract multiclock semantics. Ordinary open-Design invariants lift across
-  every schedule with `System.liftIsland`, and a crossing inventory is derived
-  from the same declaration. Physical CDC refinement and emission remain
-  explicitly outside this increment.
+  abstract multiclock semantics under an executable prefix-closed `ClockRel`.
+  Ordinary open-Design invariants lift across every admitted schedule with
+  `System.liftIsland`; `ChannelInvariant.and` and `System.liftChannels` do the
+  same for relational safety properties over the complete channel graph;
+  channel capacity and trace conservation are proved; and
+  a crossing inventory is derived from the same declaration. A full
+  circular-buffer simulation proves that the generated synchronous adapter's
+  state and accepted/delivered traces refine the abstract channel for every
+  finite event sequence. A separate `Chan.Refinement` interface now packages
+  that adapter, an adversarial-delay toggle mailbox, and an
+  adversarial-pointer-view asynchronous FIFO under one reusable all-traces
+  theorem. Opaque `RealizedSystem` assembly requires one physical binding per
+  connection; stock and custom implementations share the same interface.
+  Structural emission derives island modules, generated endpoint wiring, and
+  readable Markdown crossing/constraint reports from that value. Typed
+  inventory values remain available to tools without exposing CSV/TSV files
+  in the ordinary artifact set.
+  Handwritten behavioral CDC RTL has moved to explicitly unverified `Evidence`;
+  a quality gate prevents it or higher-layer imports from entering generic Loom.
+  Theorems require the structured top-level channel instances, constraint
+  groups, and inventory artifact domains consumed by rendering to equal the
+  checked connection list exactly. Every island also passes the ordinary
+  reusable Design emission gate before any file is written. The optional
+  evidence-only CDC Verilog text remains outside the theorem boundary.
+  Binary-reflected Gray encoding now has general one-bit-increment,
+  finite-width, and wraparound theorems, and executable FIFO read/write steps
+  are proved to stutter or follow one of those transitions. The separate
+  multiclock boundary document keeps evidence-RTL correspondence, metastability,
+  MTBF, and physical implementation evidence outside that claim and classifies
+  Icarus simulation only as a smoke test.
+
+- **Independent-reset recovery assembly:** the stock recovery-capable
+  realization now holds each FIFO half in reset throughout its endpoint's
+  four-phase `flushed` interval. Machine-checked protocol lemmas show a
+  completion edge asserted both local resets and that an asserted endpoint
+  completion keeps the compiler-source reset expression high. This closes a
+  reset-skew failure mode where an early half could resume sampling the peer's
+  pre-reset pointer. The three-clock/two-channel RTL regression now creates a
+  live nonzero FIFO epoch, requests center-island recovery under load, checks
+  all incident pointer and synchronizer state is at the common empty origin
+  while complete, and verifies traffic resumes after release.
 
 - **Total unsigned division and remainder:** width-indexed `/` and `%` now
   flow through reference semantics, proved compilation, FastEval/DagEval,

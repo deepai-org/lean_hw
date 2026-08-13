@@ -261,7 +261,7 @@ knowledge. From tightest to loosest, v1 uses:
 | Level | Forms | Associativity and typing |
 | --- | --- | --- |
 | postfix | `.field`, `[bit]`, `[hi:lo]`, memory/index forms | tightest, left-chaining; selects are static in v1, so `~x[3]` means `~(x[3])` |
-| prefix/extension | `~x`, `zext x to w`, `sext x to w` | unary; a compound extension operand is parenthesized; v1 has no unary minus |
+| prefix/extension | `~x`, `zext x to w`, `sext x to w`, `reinterpret x to T` | unary; a compound operand is parenthesized; reinterpretation requires equal-width packed types; v1 has no unary minus |
 | multiplicative | `*`, `/`, `%` | left; operands and result have one width |
 | additive | `+`, `-` | left; operands and result have one width |
 | shift | `<<`, `>>` | left; both operands and the result have the left operand's width |
@@ -743,6 +743,7 @@ Request {
 
 request.bits
 Request.fromBits raw_request
+reinterpret request to RawRequest
 ```
 
 Projection lowers to the generated static `Expr.slice`; construction lowers to
@@ -754,25 +755,62 @@ operations, concatenation, and slicing on a whole struct are rejected unless
 the author explicitly writes `.bits`, because those operations have no
 field-level meaning.
 
+Packed types are nominal even when their widths or field layouts match. There
+are two deliberately different conversion forms:
+
+```lean
+Response {                         -- semantic conversion
+  status := request.opcode
+  data   := request.payload
+}
+
+reinterpret request to RawRequest -- representation conversion
+```
+
+Destination construction is the normal semantic conversion: it names the
+meaning of every destination field and independently checks each field's type
+and width. `reinterpret value to Type` is the conspicuous escape for protocols
+whose contract is literally bit identity. It is accepted only when both
+`HwPacked.width`s are definitionally equal and lowers to
+`Type.fromBits(value.bits)`, introducing no logic, state, or timing. It never
+truncates, extends, converts fields by name, or makes the two types generally
+assignment-compatible. A mismatched assignment diagnoses both choices; an
+unequal-width value offers only explicit destination construction.
+
 Record literals elaborate field expressions with their declared expected
-widths. Missing, duplicate, and unknown fields are errors at the literal;
-declaration-field duplicates are errors at both tokens. V1 requires every
-field exactly once and accepts named scalar fields only. Nested packed structs,
-arrays, tagged unions, defaults, and spread syntax are deferred until the
-packed-layout core contract supports them explicitly.
+scalar width or packed semantic type. Missing, duplicate, and unknown fields
+are errors at the literal; declaration-field duplicates are errors at both
+tokens. V1 requires every field exactly once. A field may name an earlier
+packed struct:
+
+```lean
+packed struct Envelope where
+  header : Header
+  payload : 16
+```
+
+Nesting is recursive and semantic at the source boundary: `packet.header`
+has type `PackedExpr Header`, `packet.header.tag` composes projections, and
+`pending.header <- nextHeader` assigns the whole child value.  Layout remains
+padding-free and first-field-MSB throughout.  Lowering composes offsets and
+emits one flat vector—no RTL struct, submodule, register, or cycle boundary is
+introduced by nesting. Arrays, tagged unions, defaults, and spread syntax are
+still deferred.
 
 Partial lvalue assignment is part of v1:
 
 ```lean
 pending.address <- next_pc
 pending.write <- 1
+pending.header.tag <- next_tag
 ```
 
-Each field lvalue resolves the packed register, looks up the field's static
-offset and width, elaborates the RHS with that expected width, and lowers
-directly to the core `Act.writeSlice`. It does not become an independent
-whole-register `Act.write` and does not require the command to merge different
-named rules. Whole-value update remains available as the expression form:
+Each field path resolves the packed register, composes every nested field's
+static offset, elaborates the RHS with the leaf's scalar width or packed type,
+and lowers directly to one core `Act.writeSlice`. It does not become an
+independent whole-register `Act.write` and does not require the command to merge
+different named rules. Whole-value update remains available as the expression
+form:
 
 ```lean
 pending <- { pending with address := next_pc }
@@ -1028,10 +1066,12 @@ rule pulse_defaults suppress multiple_write because
 }
 ```
 
-It suppresses only findings of the named informational lint originating in
-that rule and retains the reason in metadata. Per-statement suppression remains
-the recommended narrow form. Rule-level suppression cannot hide endpoint
-transaction errors, width errors, or findings in later rules, and no
+It marks that rule's writes as intentional override points and retains the
+reason in metadata.  Consequently a later rule overriding one of those writes
+does not produce a `multiple_write` warning; this is the purpose of the
+`pulse_defaults` form.  It does not suppress unrelated later/later conflicts.
+Per-statement suppression remains the recommended narrow form. Rule-level
+suppression cannot hide endpoint transaction errors or width errors, and no
 `defaults` keyword or altered write semantics is introduced.
 
 These findings are informational lints, not proof obligations or semantic
@@ -1251,7 +1291,7 @@ system without replacing the tutorial's differential harness:
 
 ```lean
 #run_hardware design for 10 cycles
-#run_hardware design for 10 cycles inputs $(inputTrace)
+#run_hardware design for 10 cycles with $(inputTrace)
 ```
 
 The command elaborates its subject as an existing `Design` or
@@ -2307,7 +2347,8 @@ Packed-struct golden tests cover:
 
 - exact field offsets, total width, first-field-MSB layout, and no padding;
 - expression projection, complete construction, whole-value update, equality,
-  `.bits`, and `fromBits` lowering;
+  `.bits`, `fromBits`, semantic destination construction, and equal-width
+  `reinterpret ... to ...` lowering;
 - packed registers, inputs, combinational outputs, memories, and channels;
 - rejection of missing, duplicate, unknown, and wrong-width fields;
 - single and multiple partial field writes, conditional merges, disjoint
@@ -2317,7 +2358,9 @@ Packed-struct golden tests cover:
   arithmetic rejection;
 - rejection of out-of-bounds core slices plus evaluator/compiler/certified-
   simulator agreement for valid `Act.writeSlice` actions;
-- rejection of assignment between distinct packed types with the same width;
+- rejection of implicit assignment between distinct packed types with the same
+  width, a conversion-oriented diagnostic, and rejection of unequal-width
+  reinterpretation;
 - reset packing through the same layout used by expression evaluation;
 - delaboration of recognized layouts and visible fallback for an arbitrary
   slice/concatenation tree; and
@@ -2384,15 +2427,17 @@ whole-Design structural check.
    and bounded `Act.writeSlice` constructor specified in `PLATONIC.md`, including
    its evaluator, compiler, footprint, simulator, artifact, and correctness
    cases. Those are core prerequisites, not implementations owned here.
-2. Add `packed struct` for named scalar fields and generate the semantic Lean
-   record, layout metadata, typed views, pack/unpack instance, projection
-   helpers, and collision-checked public names.
+2. Add `packed struct` for named scalar or previously declared packed fields
+   and generate the semantic Lean record, recursive no-padding layout metadata,
+   typed views, pack/unpack instance, projection helpers, and collision-checked
+   public names.
 3. Generalize declaration type positions to distinguish scalar widths from
    registered packed types with source-local ambiguity and unknown-type errors.
 4. Add complete record literals, field projection, whole-value update,
    equality, `.bits`, and `fromBits`; reject implicit whole-record operations.
-5. Lower a packed-register field lvalue directly to bounded `Act.writeSlice`,
-   preserving the field's source metadata and expected RHS width. Reject input,
+5. Lower a packed-register field path directly to one bounded
+   `Act.writeSlice`, composing nested offsets and preserving the leaf's source
+   metadata and expected scalar width or packed type. Reject input,
    combinational-expression, `.bits`, and memory-element field lvalues.
 6. Carry the packed type identity—not only its total width—through register,
    input, output, memory-element, and channel elaboration.
@@ -2737,7 +2782,9 @@ The pretty layer is complete when:
     channels while lowering to the existing total-width core values.
 24. Packed literals, projections, updates, reset values, and delaboration all
     use the same generated layout; distinct packed types of equal width remain
-    type-incompatible unless explicitly converted through bits.
+    type-incompatible. Destination construction performs an explicit semantic
+    conversion, while `reinterpret value to Type` is the only concise
+    representation conversion and preserves every bit with no hardware.
 25. V1 partial packed-register writes lower directly to bounded
     `Act.writeSlice`, compose through existing action/rule accumulation, retain
     independently meaningful rule `Act`s, keep every RHS read pre-cycle, and
