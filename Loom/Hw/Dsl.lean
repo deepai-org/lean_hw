@@ -2834,9 +2834,16 @@ is exactly `Design.par`'s declaration/rule concatenation with the base module
 name retained; existing design and realization gates still reject coordinate
 or rule collisions. -/
 def extendDesign (base added : Design)
-    (_disjoint : base.parOkB added)
-    (_wellFormed : Compile.designWFCheck { base.par added with name := base.name }) : Design :=
-  { base.par added with name := base.name }
+    (_disjoint : base.parOkB added) : Design :=
+  { name := base.name
+    regs := base.regs ++ added.regs
+    mems := base.mems ++ added.mems
+    rules := base.rules ++ added.rules
+    «inputs» := base.inputs ++ added.inputs
+    ackMemInit := base.ackMemInit ++ added.ackMemInit
+    syncReadMems := base.syncReadMems ++ added.syncReadMems
+    outputs := base.outputs ++ added.outputs
+    combOutputs := base.combOutputs ++ added.combOutputs }
 
 declare_syntax_cat hwsystemitem
 
@@ -3211,7 +3218,7 @@ private def expandSystemCommand
           let (generated, addedTerm) ← inlineDesign
           commands := commands ++ generated
           let extended ← `(term| Loom.Hw.Dsl.extendDesign $baseTerm $addedTerm
-            (by native_decide) (by native_decide))
+            (by native_decide))
           match island.moduleName with
           | none => pure extended
           | some moduleName =>
