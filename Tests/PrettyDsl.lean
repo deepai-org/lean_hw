@@ -248,6 +248,49 @@ example : declarations.syncReadMems = ["scratch"] := by decide
 
 end Tests.PrettyDsl.Memory
 
+namespace Tests.PrettyDsl.PackedHardware
+
+open Loom.Hw
+open Loom.Hw.Dsl
+open Tests.PrettyDsl
+
+hardware packed_demo where
+  input wire incoming : Header
+  output reg pending : Header
+  output wire observed : Header := pending
+  output wire observed_tag : 3 := pending.tag
+
+  rule capture := {
+    pending <- incoming,
+    pending.tag <- incoming.tag
+  }
+
+example : pending = (PackedReg.named "pending" : PackedReg Header) := rfl
+example : incoming = (PackedInput.named "incoming" : PackedInput Header) := rfl
+example : declarations.regs.map (fun declaration =>
+    (declaration.name, declaration.width)) = [("pending", 8)] := by decide
+example : declarations.inputs.map (fun declaration =>
+    (declaration.name, declaration.width)) = [("incoming", 8)] := by decide
+example : declarations.outputs = ["pending"] := by decide
+example : declarations.combOutputs.map (fun declaration =>
+    (declaration.name, declaration.width)) = [("observed", 8), ("observed_tag", 3)] := by
+  decide
+
+/--
+info: hardware packed_demo
+declarations:
+  incoming: input 8 bits
+  pending: register 8 bits
+  observed: combinational output 8 bits
+  observed_tag: combinational output 3 bits
+rules:
+  capture
+-/
+#guard_msgs in
+#show_hardware design
+
+end Tests.PrettyDsl.PackedHardware
+
 /--
 error: memory depth 12 is not a power of two; the current Mem core represents exactly 2^addressWidth cells
 -/
