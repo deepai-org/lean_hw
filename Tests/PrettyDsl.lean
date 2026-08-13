@@ -478,6 +478,61 @@ end GuardedTransactions
 
 end Tests.PrettyDsl.ChannelLints
 
+namespace Tests.PrettyDsl.PrettySystem
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+private def producerFor (queue : Chan 8) : Design where
+  name := "pretty_system_producer"
+  regs := []
+  mems := []
+  outputs := []
+  rules := [⟨"send", .ite queue.canEnq (queue.enq (.lit 42)) .skip⟩]
+
+private def consumerFor (queue : Chan 8) : Design where
+  name := "pretty_system_consumer"
+  regs := []
+  mems := []
+  outputs := []
+  rules := [⟨"receive", .ite queue.canDeq queue.pop .skip⟩]
+
+system twoClock where
+  clock clkA
+  clock clkB
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 2
+  island producer on clkA := producerFor q
+  island consumer on clkB := consumerFor q
+  connect q from producer to consumer
+  realize q with Cdc.grayFifo
+
+example : twoClock.islands.map (fun island => island.name) =
+    ["producer", "consumer"] := by native_decide
+example : twoClock.connections.map (fun connection => connection.chan.name) = ["q"] := by
+  native_decide
+example : twoClock.resetPolicy = .coordinated := rfl
+example : twoClock.application.artifact.emissionCheck.isOk := by native_decide
+
+namespace MissingRealization
+
+/-- error: channel 'q' must have exactly one realization; found 0 -/
+#guard_msgs in
+system incomplete where
+  clock clkA
+  clock clkB
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 2
+  island producer on clkA := producerFor q
+  island consumer on clkB := consumerFor q
+  connect q from producer to consumer
+
+end MissingRealization
+
+end Tests.PrettyDsl.PrettySystem
+
 /--
 error: memory depth 12 is not a power of two; the current Mem core represents exactly 2^addressWidth cells
 -/
