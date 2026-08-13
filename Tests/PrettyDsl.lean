@@ -199,7 +199,8 @@ example : design.name = "satcounter" := by
   hw_unfold design
 
 /--
-info: hardware satcounter
+info: hardware summary satcounter
+This is derived declaration metadata, not a reparseable hardware source rendering.
 declarations:
   count: register 8 bits
   sat: register 1 bits
@@ -383,7 +384,8 @@ example : declarations.combOutputs.map (fun declaration =>
   decide
 
 /--
-info: hardware packed_demo
+info: hardware summary packed_demo
+This is derived declaration metadata, not a reparseable hardware source rendering.
 declarations:
   incoming: input 8 bits
   reset_pending: register 8 bits
@@ -975,7 +977,8 @@ hardware suppressed_lints where
   }
 
 /--
-info: hardware suppressed_lints
+info: hardware summary suppressed_lints
+This is derived declaration metadata, not a reparseable hardware source rendering.
 declarations:
   x: register 8 bits
   y: register 8 bits

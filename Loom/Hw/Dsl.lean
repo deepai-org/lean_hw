@@ -2349,7 +2349,9 @@ syntax (name := showHardwareCmd) "#show_hardware" ident : command
       let suppressionLines := metadata.suppressions.toList.map fun suppression =>
         s!"  {suppression.ruleName}: suppress {suppression.lintName} because \"{suppression.reason}\""
       let lines :=
-        [s!"hardware {metadata.moduleName}", "declarations:"] ++ declarationLines ++
+        [s!"hardware summary {metadata.moduleName}",
+          "This is derived declaration metadata, not a reparseable hardware source rendering.",
+          "declarations:"] ++ declarationLines ++
         ["rules:"] ++ ruleLines ++
         (if suppressionLines.isEmpty then [] else ["lint suppressions:"] ++ suppressionLines)
       logInfoAt designSyntax (String.intercalate "\n" lines)
