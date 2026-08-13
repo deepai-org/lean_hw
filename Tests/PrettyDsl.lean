@@ -684,6 +684,28 @@ example : mode = (⟨"mode"⟩ : Reg 8) := rfl
 example : CommandCode = (Expr.lit 0x3c#8) := rfl
 example : declarations.regs.all (fun declaration => declaration.name != "CommandCode") := by decide
 
+namespace Inline
+
+hardware inline_declaration_terms where
+  input incomingInline : (2 * 4)
+  output reg registerInline : (2 * 4) := resetNat
+  output wire observedInline : (2 * 4) := registerInline
+  memory memoryInline : (2 * 4) [16]
+  output reg slotsInline : (2 * 4) [2]
+  output states modeInline : (2 * 4) { Waiting, Running } := Waiting
+  const CommandInline : (2 * 4) := commandCode
+
+  rule holdInline := skip
+
+example : incomingInline = (⟨"incomingInline"⟩ : Input 8) := rfl
+example : registerInline = (⟨"registerInline"⟩ : Reg 8) := rfl
+example : memoryInline = (⟨"memoryInline"⟩ : Mem 4 8) := rfl
+example : slotsInline = (⟨"slotsInline"⟩ : RegArray 8 2) := rfl
+example : modeInline = (⟨"modeInline"⟩ : Reg 8) := rfl
+example : CommandInline = (Expr.lit 0x3c#8) := rfl
+
+end Inline
+
 end Tests.PrettyDsl.DeclarationTerms
 
 namespace Tests.PrettyDsl.Memory
@@ -2046,6 +2068,20 @@ namespace ZeroWidth
 hardware zero_declaration_width where
   reg zeroWidthValue : zeroWidth
 end ZeroWidth
+
+namespace OpaqueComputedWidth
+/-- error: hardware declaration width must reduce to a numeral -/
+#guard_msgs in
+hardware opaque_computed_declaration_width where
+  reg opaqueComputedWidthValue : (opaqueWidth + 0)
+end OpaqueComputedWidth
+
+namespace ZeroComputedWidth
+/-- error: hardware widths must be positive -/
+#guard_msgs in
+hardware zero_computed_declaration_width where
+  reg zeroComputedWidthValue : (zeroWidth + 0)
+end ZeroComputedWidth
 
 namespace OverflowingReset
 /-- error: reset value 256 does not fit in 8 bits; expected 0 through 255 -/

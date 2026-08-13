@@ -1969,12 +1969,17 @@ the generated `Declarations`/`Design` shape established here. -/
 
 declare_syntax_cat hwitem
 syntax ident ident ":" num : hwitem
+syntax ident ident ":" "(" term ")" : hwitem
 syntax ident ident ":" num ":=" num : hwitem
 syntax (priority := low) ident ident ":" num ":=" term:max : hwitem
+syntax (priority := low) ident ident ":" "(" term ")" ":=" term:max : hwitem
 syntax ident ident ident ":" num : hwitem
+syntax ident ident ident ":" "(" term ")" : hwitem
 syntax ident ident ident ":" num ":=" num : hwitem
 syntax (priority := low) ident ident ident ":" num ":=" term:max : hwitem
 syntax ident ident ident ":" num ":=" hwexpr : hwitem
+syntax (priority := low) ident ident ident ":" "(" term ")" ":=" term:max : hwitem
+syntax ident ident ident ":" "(" term ")" ":=" hwexpr : hwitem
 syntax ident ident ":" ident : hwitem
 syntax (priority := high) ident ident ":" ident ":=" term:max : hwitem
 syntax ident ident ident ":" ident : hwitem
@@ -1984,21 +1989,30 @@ syntax ident ident ":" "{" ident,* "}" : hwitem
 syntax ident ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ":" "(" term ")" "{" ident,* "}" : hwitem
+syntax ident ident ":" "(" term ")" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" ident "{" ident,* "}" : hwitem
 syntax ident ident ":" ident "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ident ":" "{" ident,* "}" : hwitem
 syntax ident ident ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ident ":" "(" term ")" "{" ident,* "}" : hwitem
+syntax ident ident ident ":" "(" term ")" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ident ":" ident "{" ident,* "}" : hwitem
 syntax ident ident ident ":" ident "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ":" num "[" num "]" ":=" term:max : hwitem
 syntax ident ident ":" num "[" num "]" "using" term:max : hwitem
+syntax ident ident ":" "(" term ")" "[" num "]" : hwitem
+syntax ident ident ":" "(" term ")" "[" num "]" ":=" term:max : hwitem
+syntax ident ident ":" "(" term ")" "[" num "]" "using" term:max : hwitem
 syntax ident ident ":" ident "[" num "]" : hwitem
 syntax ident ident ":" ident "[" num "]" "using" term:max : hwitem
 syntax ident ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ident ":" num "[" num "]" ":=" term:max : hwitem
+syntax ident ident ident ":" "(" term ")" "[" num "]" : hwitem
+syntax ident ident ident ":" "(" term ")" "[" num "]" ":=" term:max : hwitem
 syntax ident ident ident ":" ident "[" num "]" : hwitem
 syntax ident ident ident ":" ident "[" num "]" ":=" term:max : hwitem
 syntax ident ident ":=" hwstmt : hwitem
@@ -3355,6 +3369,17 @@ private def declarationWidth? (source : TSyntax `ident) : CommandElabM (Option N
       throwErrorAt source "hardware widths must be positive"
     pure (some width)
 
+private def declarationTermWidth (source : TSyntax `term) : CommandElabM Nat :=
+  liftTermElabM do
+    let value ← withoutErrToSorry <|
+      elabTerm source (some (.const ``Nat []))
+    let some width ← getNatValue? (← withTransparency .all <| Meta.reduce value)
+      | throwErrorAt source
+          "hardware declaration width must reduce to a numeral"
+    if width == 0 then
+      throwErrorAt source "hardware widths must be positive"
+    pure width
+
 /-- Turn a declaration whose ambiguous identifier denotes `Nat` into the
 existing numeral-shaped internal form. Packed identifiers are left untouched,
 so adding parametric scalar widths does not weaken packed type identity. -/
@@ -3362,7 +3387,51 @@ private def normalizeDeclarationWidth (item : TSyntax `hwitem) :
     CommandElabM (TSyntax `hwitem) := do
   let widthNumber? (width : TSyntax `ident) : CommandElabM (Option (TSyntax `num)) := do
     pure <| (← declarationWidth? width).map (numeralAt width.raw)
+  let termWidth (width : TSyntax `term) : CommandElabM (TSyntax `num) := do
+    pure <| numeralAt width.raw (← declarationTermWidth width)
   match item with
+  | `(hwitem| $kind:ident $name:ident : ($width:term) {$members:ident,*}) =>
+      let numeric ← termWidth width
+      `(hwitem| $kind:ident $name:ident : $numeric:num {$[$members],*})
+  | `(hwitem| $kind:ident $name:ident : ($width:term) {$members:ident,*} := $reset:ident) =>
+      let numeric ← termWidth width
+      `(hwitem| $kind:ident $name:ident : $numeric:num {$[$members],*} := $reset:ident)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : ($width:term) {$members:ident,*}) =>
+      let numeric ← termWidth width
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num {$[$members],*})
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : ($width:term) {$members:ident,*} := $reset:ident) =>
+      let numeric ← termWidth width
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num {$[$members],*} := $reset:ident)
+  | `(hwitem| $kind:ident $name:ident : ($width:term) [$count:num]) =>
+      let numeric ← termWidth width
+      `(hwitem| $kind:ident $name:ident : $numeric:num [$count:num])
+  | `(hwitem| $kind:ident $name:ident : ($width:term) [$count:num] := $init:term) =>
+      let numeric ← termWidth width
+      `(hwitem| $kind:ident $name:ident : $numeric:num [$count:num] := $init:term)
+  | `(hwitem| $kind:ident $name:ident : ($width:term) [$count:num] using $policy:term) =>
+      let numeric ← termWidth width
+      `(hwitem| $kind:ident $name:ident : $numeric:num [$count:num] using $policy:term)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : ($width:term) [$count:num]) =>
+      let numeric ← termWidth width
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num [$count:num])
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : ($width:term) [$count:num] := $init:term) =>
+      let numeric ← termWidth width
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num [$count:num] := $init:term)
+  | `(hwitem| $kind:ident $name:ident : ($width:term) := $init:term) =>
+      let numeric ← termWidth width
+      `(hwitem| $kind:ident $name:ident : $numeric:num := $init:term)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : ($width:term) := $value:hwexpr) =>
+      let numeric ← termWidth width
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num := $value:hwexpr)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : ($width:term) := $init:term) =>
+      let numeric ← termWidth width
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num := $init:term)
+  | `(hwitem| $kind:ident $name:ident : ($width:term)) =>
+      let numeric ← termWidth width
+      `(hwitem| $kind:ident $name:ident : $numeric:num)
+  | `(hwitem| $qualifier:ident $kind:ident $name:ident : ($width:term)) =>
+      let numeric ← termWidth width
+      `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num)
   | `(hwitem| $kind:ident $name:ident : $width:ident {$members:ident,*}) =>
       let some numeric ← widthNumber? width | return item
       `(hwitem| $kind:ident $name:ident : $numeric:num {$members:ident,*})
