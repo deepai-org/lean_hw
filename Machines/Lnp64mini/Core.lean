@@ -2431,45 +2431,80 @@ def s_ex_branches : List (Expr 1 × Act) :=
     }] <|
   -- UART_RX load
   gcons (.and is_load (.eq mem_ea_l (L64 UART_RX_ADDR)))
-    (.seq (.ite (.not (.eq rx_rptr rx_wptr)) (rxRptrReg.set (.add rx_rptr (.lit (BitVec.ofNat 9 1)))) .skip)
-          (.seq stepPc (.seq retireInc goF0))) <|
+    [hwstmt| {
+      if ~(rx_rptr == rx_wptr) then rxRptrReg <- rx_rptr + 1,
+      $stmt(stepPc),
+      $stmt(retireInc),
+      $stmt(goF0)
+    }] <|
   -- GP load
   gcons (.and is_load l_is_gp)
-    (.ite (opIs OP_LD_31)
-      (.seq (gpAddrRReg.set (.and (.slice mem_ea_l 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
-        (.seq (gpRdReg.set (L1 1)) (.seq (ldRdQReg.set rdf) (stReg.set (L5 S_GPL)))))
-      (.seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP))))) <|
+    [hwstmt|
+      if $(opIs OP_LD_31) then {
+        gpAddrRReg <- mem_ea_l[31:0] & 0xffff_fffc,
+        gpRdReg <- 1,
+        ldRdQReg <- rdf,
+        stReg <- $(L5 S_GPL)
+      } else $stmt(s_ex_trap)] <|
   -- zp load
   gcons (.and is_load l_is_zp)
-    (.seq (dmemAReg.set ld_widx) (.seq (ldBoffQReg.set ld_boff)
-      (.seq (ldOpQReg.set op) (.seq (ldRdQReg.set rdf) (.seq (memIsStoreReg.set (L1 0)) (stReg.set (L5 S_L0))))))) <|
+    [hwstmt| {
+      dmemAReg <- ld_widx,
+      ldBoffQReg <- ld_boff,
+      ldOpQReg <- op,
+      ldRdQReg <- rdf,
+      memIsStoreReg <- 0,
+      stReg <- $(L5 S_L0)
+    }] <|
   -- DDR load. EXT-10: `core_addr` is written but `core_rd` is NOT asserted --
   -- the D-cache banks are latched here (D19 sync read) and `S_DC` decides
   -- next cycle whether the bus transaction is needed at all. The address is
   -- translated exactly once, here, so the hit path costs no translation.
   gcons is_load
-    (.seq (coreAddrReg.set dc_ea)
-      (.seq (dcTagQReg.set (dcTagBank.rd dc_idx))
-        (.seq (dcDataQReg.set (dcDataBank.rd dc_idx))
-          (.seq (ldBoffQReg.set ld_boff) (.seq (ldOpQReg.set op) (.seq (ldRdQReg.set rdf) (.seq (memIsStoreReg.set (L1 0)) (stReg.set (L5 S_DC))))))))) <|
+    [hwstmt| {
+      coreAddrReg <- dc_ea,
+      dcTagQReg <- dcTagBank[dc_idx],
+      dcDataQReg <- dcDataBank[dc_idx],
+      ldBoffQReg <- ld_boff,
+      ldOpQReg <- op,
+      ldRdQReg <- rdf,
+      memIsStoreReg <- 0,
+      stReg <- $(L5 S_DC)
+    }] <|
   -- UART store
   gcons (.and is_store (.eq mem_ea_s (L64 UART_ADDR)))
-    (.seq (uartBank.write 0 (.slice uart_wptr 0 8) (.slice b 0 8))
-      (.seq (uartWptrReg.set (.add uart_wptr (.lit (BitVec.ofNat 9 1)))) (.seq stepPc (.seq retireInc goF0)))) <|
+    [hwstmt| {
+      uartBank[port 0, uart_wptr[7:0]] <- b[7:0],
+      uartWptrReg <- uart_wptr + 1,
+      $stmt(stepPc),
+      $stmt(retireInc),
+      $stmt(goF0)
+    }] <|
   -- GP store
   gcons (.and is_store s_is_gp)
-    (.ite (opIs OP_ST_34)
-      (.seq (gpAddrRReg.set (.and (.slice mem_ea_s 0 32) (.lit (BitVec.ofNat 32 0xFFFFFFFC))))
-        (.seq (gpWdataRReg.set (.slice b 0 32)) (.seq (gpWrReg.set (L1 1)) (stReg.set (L5 S_GPS)))))
-      (.seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP))))) <|
+    [hwstmt|
+      if $(opIs OP_ST_34) then {
+        gpAddrRReg <- mem_ea_s[31:0] & 0xffff_fffc,
+        gpWdataRReg <- b[31:0],
+        gpWrReg <- 1,
+        stReg <- $(L5 S_GPS)
+      } else $stmt(s_ex_trap)] <|
   -- zp store
   gcons (.and is_store s_is_zp)
-    (.seq (dmemAReg.set st_widx) (.seq (memIsStoreReg.set (L1 1)) (stReg.set (L5 S_L0)))) <|
+    [hwstmt| {
+      dmemAReg <- st_widx,
+      memIsStoreReg <- 1,
+      stReg <- $(L5 S_L0)
+    }] <|
   -- DDR store
   gcons is_store
-    (actSeq [coreAddrReg.set (ddrEa mem_ea_s), coreRdReg.set (L1 1),
-             memIsStoreReg.set (L1 1), scPendingReg.set (L1 0),
-             stReg.set (L5 S_DL)]) <|
+    [hwstmt| {
+      coreAddrReg <- $(ddrEa mem_ea_s),
+      coreRdReg <- 1,
+      memIsStoreReg <- 1,
+      scPendingReg <- 0,
+      stReg <- $(L5 S_DL)
+    }] <|
   []
 
 /-- Opcode 0 is illegal-instruction FOREVER (the spec: zeroed memory faults
