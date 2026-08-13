@@ -3186,15 +3186,48 @@ theorem authored_scalar_prefix_declarations :
        dcAllocReg.decl, gateEntQReg.decl, gateDomQReg.decl,
        icInvReg.decl, icCtrReg.decl] := rfl
 
+namespace AuthoredIoRegs
+
+hardware lnp64mini_io_regs where
+  output reg mem_is_store : 1
+  output reg trap_active : 1
+  output reg trapped_op : 8
+  output reg core_rd : 1
+  output reg core_wr : 1
+  output reg core_addr : 32
+  output reg core_wdata : 64
+  output reg jtag_rd : 1
+  output reg jtag_wr : 1
+  output reg jtag_wdata : 64
+  output reg ddr_addr_j : 32
+  output reg ddr_lo_j : 32
+  output reg ddr_rd_l : 64
+  output reg ddr_q : 64
+  output reg bus_req : 1
+  output reg gp_rd : 1
+  output reg gp_wr : 1
+  output reg gp_addr_r : 32
+  output reg gp_wdata_r : 32
+  output reg dmem_we : 1
+  output reg dmem_a : 9
+  output reg dmem_wd : 64
+  output reg dmem_rd : 64
+
+end AuthoredIoRegs
+
+theorem authored_io_register_declarations :
+    AuthoredIoRegs.declarations.regs =
+      [memIsStoreReg.decl, trapActiveReg.decl, trappedOpReg.decl,
+       coreRdReg.decl, coreWrReg.decl, coreAddrReg.decl, coreWdataReg.decl,
+       jtagRdReg.decl, jtagWrReg.decl, jtagWdataReg.decl, ddrAddrJReg.decl,
+       ddrLoJReg.decl, ddrRdLReg.decl, ddrQReg.decl, busReqReg.decl,
+       gpRdReg.decl, gpWrReg.decl, gpAddrRReg.decl, gpWdataRReg.decl,
+       dmemWeReg.decl, dmemAReg.decl, dmemWdReg.decl, dmemRdReg.decl] := rfl
+
 def scalarRegs : List RegDecl :=
   AuthoredScalarPrefix.declarations.regs ++
+  AuthoredIoRegs.declarations.regs ++
   [
-   memIsStoreReg.decl, trapActiveReg.decl, trappedOpReg.decl,
-   coreRdReg.decl, coreWrReg.decl, coreAddrReg.decl, coreWdataReg.decl,
-   jtagRdReg.decl, jtagWrReg.decl, jtagWdataReg.decl, ddrAddrJReg.decl,
-   ddrLoJReg.decl, ddrRdLReg.decl, ddrQReg.decl, busReqReg.decl,
-   gpRdReg.decl, gpWrReg.decl, gpAddrRReg.decl, gpWdataRReg.decl,
-   dmemWeReg.decl, dmemAReg.decl, dmemWdReg.decl, dmemRdReg.decl,
    uartWptrReg.decl, uartRidxReg.decl, uartByteReg.decl,
    rxWptrReg.decl, rxRptrReg.decl,
    ldBoffQReg.decl, ldOpQReg.decl, ldRdQReg.decl,
