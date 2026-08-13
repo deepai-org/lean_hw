@@ -253,6 +253,29 @@ example : declarations.regs.head?.map (fun declaration => declaration.init.toNat
 
 end Tests.PrettyDsl.Fsm
 
+namespace Tests.PrettyDsl.PackedMemory
+
+open Loom.Hw
+open Loom.Hw.Dsl
+open Tests.PrettyDsl
+
+hardware packed_memory where
+  reg address : 2
+  output reg observed : Header
+  memory records : Header [4]
+
+  rule access := {
+    records[port 0, address] <- Header { tag := 3, address := 19 },
+    observed <- records[address]
+  }
+
+example : records = (PackedMem.named "records" : PackedMem 2 Header) := rfl
+example : declarations.mems.head?.map (fun declaration => declaration.dataWidth) = some 8 := by
+  decide
+example : design.rules.length = 1 := rfl
+
+end Tests.PrettyDsl.PackedMemory
+
 namespace Tests.PrettyDsl.Interface
 
 open Loom.Hw
