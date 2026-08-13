@@ -34,10 +34,17 @@ abbrev dataMem : Mem 8 8 := ⟨"mem"⟩
 private def rAcc : Expr 8 := accReg.rd
 private def rPc : Expr 8 := pcReg.rd
 private def rHalted : Expr 1 := haltedReg.rd
-/-- The fetched instruction word. -/
-private def fetchW : Expr 16 := progMem.rd rPc
-private def opc : Expr 8 := .slice fetchW 0 8
-private def imm : Expr 8 := .slice fetchW 8 8
+
+/-- The architectural instruction word as a typed packed view. Declaration
+order is MSB-first, matching Acc8's immediate/opcode encoding exactly. -/
+packed struct Instruction where
+  imm : 8
+  opc : 8
+
+private def fetched : PackedExpr Instruction :=
+  .fromBits (progMem.rd rPc)
+private def opc : Expr 8 := [hwexpr| fetched.opc]
+private def imm : Expr 8 := [hwexpr| fetched.imm]
 private def loadData : Expr 8 := dataMem.rd imm
 
 /-- The instruction-execution rule, written with the optional pretty syntax.
