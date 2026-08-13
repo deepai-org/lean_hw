@@ -254,6 +254,7 @@ syntax:max (name := hwAtom) "hw_atom% " term:max : term
 syntax:max (name := hwDottedAtom) "hw_dotted_atom% " ident : term
 syntax:max (name := hwIndexLit) "hw_index_lit% " term:max num : term
 syntax:max (name := hwMemRead) "hw_mem_read% " term:max term:max : term
+syntax:max (name := hwMemWrite) "hw_mem_write% " term:max num term:max term:max : term
 syntax:max (name := hwShift) "hw_shift% " str term:max term:max : term
 syntax:max (name := hwPackedField) "hw_packed_field% " term:max ident : term
 syntax:max (name := hwPackedWrite) "hw_packed_write% " term:max ident term:max : term
@@ -646,6 +647,12 @@ private def elaboratePackedFields (typeName : Name)
           let addressSyntax ← `(hw_lit% $index)
           let address ← elabTerm addressSyntax (some addressType)
           Meta.mkAppM ``Loom.Hw.Mem.rd #[container, address]
+        else if containerType.isAppOfArity ``Loom.Hw.PackedMem 3 then
+          let addressWidth := containerType.getAppArgs[0]!
+          let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
+          let addressSyntax ← `(hw_lit% $index)
+          let address ← elabTerm addressSyntax (some addressType)
+          Meta.mkAppM ``Loom.Hw.PackedMem.rd #[container, address]
         else if containerType.isAppOfArity ``Loom.Hw.RegArray 2 then
           let countExpr ← Meta.whnf containerType.getAppArgs[1]!
           let some count ← getNatValue? countExpr
@@ -671,6 +678,11 @@ private def elaboratePackedFields (typeName : Name)
         let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
         let address ← elabTerm addressSyntax (some addressType)
         Meta.mkAppM ``Loom.Hw.Mem.rd #[memory, address]
+      else if memoryType.isAppOfArity ``Loom.Hw.PackedMem 3 then
+        let addressWidth := memoryType.getAppArgs[0]!
+        let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
+        let address ← elabTerm addressSyntax (some addressType)
+        Meta.mkAppM ``Loom.Hw.PackedMem.rd #[memory, address]
       else if memoryType.isAppOfArity ``Loom.Hw.RegArray 2 then
         let address ← elabTerm addressSyntax none
         let addressType ← Meta.whnf (← Meta.inferType address)
@@ -683,6 +695,33 @@ private def elaboratePackedFields (typeName : Name)
       else
         throwErrorAt memorySyntax
           "a dynamic hardware index is available only on a typed memory or register family; dynamic bit select is not supported"
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwMemWrite] def elabHwMemWrite : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_mem_write% $memorySyntax:term $port:num $addressSyntax:term $valueSyntax:term) =>
+      let memory ← elabTerm memorySyntax none
+      let memoryType ← Meta.whnf (← Meta.inferType memory)
+      let result ← if memoryType.isAppOfArity ``Loom.Hw.Mem 2 then
+        let addressWidth := memoryType.getAppArgs[0]!
+        let dataWidth := memoryType.getAppArgs[1]!
+        let address ← elabTerm addressSyntax
+          (some (.app (.const ``Loom.Hw.Expr []) addressWidth))
+        let value ← elabTerm valueSyntax
+          (some (.app (.const ``Loom.Hw.Expr []) dataWidth))
+        Meta.mkAppM ``Loom.Hw.Mem.write #[memory, .lit (.natVal port.getNat), address, value]
+      else if memoryType.isAppOfArity ``Loom.Hw.PackedMem 3 then
+        let addressWidth := memoryType.getAppArgs[0]!
+        let address ← elabTerm addressSyntax
+          (some (.app (.const ``Loom.Hw.Expr []) addressWidth))
+        let sample ← Meta.mkAppM ``Loom.Hw.PackedMem.rd #[memory, address]
+        let expectedValue ← Meta.inferType sample
+        let value ← elabTerm valueSyntax (some expectedValue)
+        Meta.mkAppM ``Loom.Hw.PackedMem.write
+          #[memory, .lit (.natVal port.getNat), address, value]
+      else
+        throwErrorAt memorySyntax "memory write requires a typed scalar or packed memory"
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -901,7 +940,7 @@ mutual
           let field := mkIdentFrom target (Name.mkSimple name.getString!)
           `(hw_packed_write% $register $field [hwexpr| $value])
     | `(hwstmt| $memory:ident[port $portIndex:num, $address:hwexpr] <- $value:hwexpr) =>
-        `(Loom.Hw.Mem.write $memory $portIndex [hwexpr| $address] [hwexpr| $value])
+        `(hw_mem_write% $memory $portIndex [hwexpr| $address] [hwexpr| $value])
     | `(hwstmt| $family:ident[$index:hwexpr] <- $value:hwexpr) =>
         match index with
         | `(hwexpr| $literal:num) =>
@@ -1146,6 +1185,8 @@ syntax ident ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ":" num "[" num "]" "using" term:max : hwitem
+syntax ident ident ":" ident "[" num "]" : hwitem
+syntax ident ident ":" ident "[" num "]" "using" term:max : hwitem
 syntax ident ident ident ":" num "[" num "]" : hwitem
 syntax ident ident ":=" hwstmt : hwitem
 syntax ident ident "suppress" ident "because" str ":=" hwstmt : hwitem
@@ -1174,6 +1215,13 @@ private structure WireItem where
 private structure MemoryItem where
   name : TSyntax `ident
   dataWidth : TSyntax `num
+  depth : TSyntax `num
+  addrWidth : Nat
+  policy : Option (TSyntax `term) := none
+
+private structure PackedMemoryItem where
+  name : TSyntax `ident
+  typeName : TSyntax `ident
   depth : TSyntax `num
   addrWidth : Nat
   policy : Option (TSyntax `term) := none
@@ -1575,13 +1623,14 @@ private def exactAddrWidth (depth : TSyntax `num) : MacroM Nat := do
 
 private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     MacroM (Array ScalarRegItem × Array ConstItem × Array InputItem ×
-      Array MemoryItem × Array WireItem × Array PackedRegItem ×
+      Array MemoryItem × Array PackedMemoryItem × Array WireItem × Array PackedRegItem ×
       Array PackedInputItem × Array PackedWireItem × Array RegArrayItem ×
       Array StateDomain × Array RuleItem) := do
   let mut registers : Array ScalarRegItem := #[]
   let mut constants : Array ConstItem := #[]
   let mut inputs : Array InputItem := #[]
   let mut memories : Array MemoryItem := #[]
+  let mut packedMemories : Array PackedMemoryItem := #[]
   let mut wires : Array WireItem := #[]
   let mut packedRegisters : Array PackedRegItem := #[]
   let mut packedInputs : Array PackedInputItem := #[]
@@ -1681,6 +1730,14 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         unless kind.getId == `memory do Macro.throwErrorAt kind "expected `memory`"
         memories := memories.push
           ⟨name, dataWidth, depth, ← exactAddrWidth depth, some policy⟩
+    | `(hwitem| $kind:ident $name:ident : $typeName:ident [$depth:num]) =>
+        unless kind.getId == `memory do Macro.throwErrorAt kind "expected packed `memory`"
+        packedMemories := packedMemories.push
+          ⟨name, typeName, depth, ← exactAddrWidth depth, none⟩
+    | `(hwitem| $kind:ident $name:ident : $typeName:ident [$depth:num] using $policy:term) =>
+        unless kind.getId == `memory do Macro.throwErrorAt kind "expected packed `memory`"
+        packedMemories := packedMemories.push
+          ⟨name, typeName, depth, ← exactAddrWidth depth, some policy⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num [$count:num]) =>
         unless qualifier.getId == `output && kind.getId == `reg do
           Macro.throwErrorAt qualifier "expected `output reg` family declaration"
@@ -1699,6 +1756,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     | _ => Macro.throwErrorAt item "unsupported hardware declaration"
   let locals := registers.map (fun item => item.name) ++ constants.map (fun item => item.name) ++
     inputs.map (fun item => item.name) ++ memories.map (fun item => item.name) ++
+    packedMemories.map (fun item => item.name) ++
     wires.map (fun item => item.name) ++ packedRegisters.map (fun item => item.name) ++
     packedInputs.map (fun item => item.name) ++ packedWires.map (fun item => item.name) ++
     registerArrays.map (fun item => item.name) ++
@@ -1718,7 +1776,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
   for ruleItem in rules do
     validateWriteTargets writable ruleItem.body
     validateCases stateDomains ruleItem.body
-  pure (registers, constants, inputs, memories, wires, packedRegisters,
+  pure (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
     packedInputs, packedWires, registerArrays, stateDomains, rules)
 
 private def sourceSpan (fileName : String) (sourceSyntax : Syntax) : SourceSpan where
@@ -1751,10 +1809,11 @@ private partial def statementSuppressions (fileName : String) (ruleName : Name) 
 private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
     (moduleName : TSyntax `ident) (registers : Array ScalarRegItem)
     (constants : Array ConstItem) (inputs : Array InputItem) (memories : Array MemoryItem)
+    (packedMemories : Array PackedMemoryItem)
     (wires : Array WireItem) (packedRegisters : Array PackedRegItem)
     (packedInputs : Array PackedInputItem) (packedWires : Array PackedWireItem)
     (registerArrays : Array RegArrayItem)
-    (packedRegisterWidths packedInputWidths packedWireWidths : Array Nat)
+    (packedMemoryWidths packedRegisterWidths packedInputWidths packedWireWidths : Array Nat)
     (domains : Array StateDomain) (rules : Array RuleItem) : HardwareMetadata := Id.run do
   let mut declarations := #[]
   for register in registers do
@@ -1769,6 +1828,9 @@ private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
     declarations := declarations.push
       ⟨memory.name.getId, .memory, memory.dataWidth.getNat,
         sourceSpan fileName memory.name⟩
+  for (memory, packedWidth) in packedMemories.zip packedMemoryWidths do
+    declarations := declarations.push
+      ⟨memory.name.getId, .memory, packedWidth, sourceSpan fileName memory.name⟩
   for wireItem in wires do
     declarations := declarations.push
       ⟨wireItem.name.getId, .wire, wireItem.width.getNat, sourceSpan fileName wireItem.name⟩
@@ -1817,7 +1879,7 @@ private def expandHardwareCommand
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
     (moduleName : TSyntax `ident)
     (items : Array (TSyntax `hwitem)) : MacroM Syntax := do
-  let (registers, constants, inputs, memories, wires, packedRegisters,
+  let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
     packedInputs, packedWires, registerArrays, _, rules) ← parseHardwareItems items
   let mut commands : Array Syntax := #[]
   for register in registers do
@@ -1846,6 +1908,18 @@ private def expandHardwareCommand
     let addressWidth := quote memory.addrWidth
     let command ← `(command|
       def $(memory.name) : Loom.Hw.Mem $addressWidth $(memory.dataWidth) := ⟨$sourceName⟩)
+    commands := commands.push command
+    let lemmaName := mkIdentFrom memory.name
+      (Name.mkSimple (memory.name.getId.toString ++ "_name"))
+    let lemmaCommand ← `(command|
+      @[simp] theorem $lemmaName : $(memory.name).name = $sourceName := rfl)
+    commands := commands.push lemmaCommand
+  for memory in packedMemories do
+    let sourceName := Syntax.mkStrLit memory.name.getId.toString
+    let addressWidth := quote memory.addrWidth
+    let command ← `(command|
+      def $(memory.name) : Loom.Hw.PackedMem $addressWidth $(memory.typeName) :=
+        Loom.Hw.PackedMem.named $sourceName)
     commands := commands.push command
     let lemmaName := mkIdentFrom memory.name
       (Name.mkSimple (memory.name.getId.toString ++ "_name"))
@@ -1905,6 +1979,16 @@ private def expandHardwareCommand
         declarations ← `($declarations |>.addMem $(memory.name)
           (syncRead := ($policy : Loom.Hw.MemoryPolicy).syncRead)
           (ackInit := ($policy : Loom.Hw.MemoryPolicy).ackInit))
+  for memory in packedMemories do
+    let zero ← `(fun _ => Loom.Hw.HwPacked.unpack
+      (α := $(memory.typeName))
+      (BitVec.ofNat (Loom.Hw.HwPacked.width $(memory.typeName)) 0))
+    match memory.policy with
+    | none => declarations ← `($declarations |>.addPackedMem $(memory.name) $zero)
+    | some policy =>
+        declarations ← `($declarations |>.addPackedMem $(memory.name) $zero
+          (syncRead := ($policy : Loom.Hw.MemoryPolicy).syncRead)
+          (ackInit := ($policy : Loom.Hw.MemoryPolicy).ackInit))
   for register in packedRegisters do
     let zero ← `(Loom.Hw.HwPacked.unpack
       (α := $(register.typeName))
@@ -1942,14 +2026,15 @@ private def expandHardwareCommand
 @[command_elab hardwareCmd] def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
-      let (registers, constants, inputs, memories, wires, packedRegisters,
+      let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
         packedInputs, packedWires, registerArrays, domains, rules) ←
         liftMacroM <| parseHardwareItems items
       let namespaceName ← getCurrNamespace
       let environment ← getEnv
       let localNames := registers.map (fun item => item.name) ++
         constants.map (fun item => item.name) ++ inputs.map (fun item => item.name) ++
-        memories.map (fun item => item.name) ++ wires.map (fun item => item.name) ++
+        memories.map (fun item => item.name) ++ packedMemories.map (fun item => item.name) ++
+        wires.map (fun item => item.name) ++
         packedRegisters.map (fun item => item.name) ++
         packedInputs.map (fun item => item.name) ++ packedWires.map (fun item => item.name) ++
         registerArrays.map (fun item => item.name) ++
@@ -1960,6 +2045,7 @@ private def expandHardwareCommand
           throwErrorAt localName s!"'{fullName}' has already been declared"
       for handleName in registers.map (fun item => item.name) ++ inputs.map (fun item => item.name) ++
           memories.map (fun item => item.name) ++ packedRegisters.map (fun item => item.name) ++
+          packedMemories.map (fun item => item.name) ++
           packedInputs.map (fun item => item.name) ++ registerArrays.map (fun item => item.name) do
         let lemmaName := namespaceName ++
           Name.mkSimple (handleName.getId.toString ++ "_name")
@@ -1978,11 +2064,12 @@ private def expandHardwareCommand
             | throwErrorAt typeName "packed type width must reduce to a numeral"
           pure width
       let packedRegisterWidths ← packedRegisters.mapM (packedWidth ·.typeName)
+      let packedMemoryWidths ← packedMemories.mapM (packedWidth ·.typeName)
       let packedInputWidths ← packedInputs.mapM (packedWidth ·.typeName)
       let packedWireWidths ← packedWires.mapM (packedWidth ·.typeName)
       let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName
-        registers constants inputs memories wires packedRegisters packedInputs packedWires
-        registerArrays packedRegisterWidths packedInputWidths packedWireWidths domains rules
+        registers constants inputs memories packedMemories wires packedRegisters packedInputs packedWires
+        registerArrays packedMemoryWidths packedRegisterWidths packedInputWidths packedWireWidths domains rules
       let expanded ← liftMacroM <| expandHardwareCommand documentation moduleName items
       elabCommand expanded
       modifyEnv (hardwareMetadataExt.addEntry · metadata)
