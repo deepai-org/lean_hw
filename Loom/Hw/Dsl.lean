@@ -3676,6 +3676,189 @@ private def inlineCombOutput? (item : TSyntax `hwitem) : Option Syntax :=
       if qualifier.getId == `output && kind.getId == `wire then some name else none
   | _ => none
 
+/-! `extends` is the one pretty construct whose surface names can resolve to
+already-existing handles.  Inspect only the base Design's declaration
+projections here: this is kernel reduction of ordinary shallow-EDSL data, not
+a second manifest and not execution of the Design. -/
+
+private structure InspectableDesign where
+  regs : Array (String × Nat)
+  mems : Array (String × Nat × Nat)
+  ports : Array (String × Nat)
+
+private partial def inspectMetaList (value : Lean.Expr) : TermElabM (Array Lean.Expr) := do
+  let value ← withTransparency .all <| Meta.whnf value
+  let some head := value.getAppFn.constName?
+    | throwError "list did not reduce to constructors"
+  let arguments := value.getAppArgs
+  if head == ``List.nil then
+    pure #[]
+  else if head == ``List.cons && arguments.size == 3 then
+    return #[arguments[1]!] ++ (← inspectMetaList arguments[2]!)
+  else
+    throwError "list did not reduce to constructors"
+
+private unsafe def inspectString (value : Lean.Expr) : TermElabM String := do
+  let value ← withTransparency .all <| Meta.reduce value
+  try evalExpr String (.const ``String []) value
+  catch _ => throwError "name did not reduce to a string"
+
+private def inspectNat (value : Lean.Expr) : TermElabM Nat := do
+  let value ← withTransparency .all <| Meta.whnf value
+  let some result ← getNatValue? value
+    | throwError "width did not reduce to a numeral"
+  pure result
+
+private unsafe def inspectRegDecl (declaration : Lean.Expr) : TermElabM (String × Nat) := do
+  let name ← Meta.mkAppM ``RegDecl.name #[declaration] >>= inspectString
+  let width ← Meta.mkAppM ``RegDecl.width #[declaration] >>= inspectNat
+  pure (name, width)
+
+private unsafe def inspectMemDecl (declaration : Lean.Expr) : TermElabM (String × Nat × Nat) := do
+  let name ← Meta.mkAppM ``MemDecl.name #[declaration] >>= inspectString
+  let addressWidth ← Meta.mkAppM ``MemDecl.addrWidth #[declaration] >>= inspectNat
+  let dataWidth ← Meta.mkAppM ``MemDecl.dataWidth #[declaration] >>= inspectNat
+  pure (name, addressWidth, dataWidth)
+
+private unsafe def inspectInputDecl (declaration : Lean.Expr) : TermElabM (String × Nat) := do
+  let name ← Meta.mkAppM ``InputDecl.name #[declaration] >>= inspectString
+  let width ← Meta.mkAppM ``InputDecl.width #[declaration] >>= inspectNat
+  pure (name, width)
+
+private unsafe def inspectBaseDesign (baseSyntax : TSyntax `term) : CommandElabM InspectableDesign :=
+  try
+    liftTermElabM do
+      let base ← elabTerm baseSyntax (some (.const ``Design []))
+      let regs ← Meta.mkAppM ``Design.regs #[base] >>= inspectMetaList
+      let mems ← Meta.mkAppM ``Design.mems #[base] >>= inspectMetaList
+      let ports ← Meta.mkAppM ``Design.inputs #[base] >>= inspectMetaList
+      return {
+        regs := ← regs.mapM inspectRegDecl
+        mems := ← mems.mapM inspectMemDecl
+        ports := ← ports.mapM inspectInputDecl
+      }
+  catch _ =>
+    throwErrorAt baseSyntax
+      "`extends` requires a closed, reducible Design whose declarations Loom can inspect; compose an opaque or parametric Design in ordinary Lean and use the unchanged `island name on clock := design` form"
+
+private partial def syntaxIdentifiers (source : Syntax) : Array (TSyntax `ident) :=
+  if source.isIdent then #[⟨source⟩]
+  else source.getArgs.foldl (fun found child => found ++ syntaxIdentifiers child) #[]
+
+private partial def hardwareBinderNames : TSyntax `hwstmt → Array Name
+  | `(hwstmt| let $name:ident : $_:num := $_:hwexpr)
+  | `(hwstmt| let $name:ident := $_:hwexpr) => #[name.getId.eraseMacroScopes]
+  | `(hwstmt| for $name:ident in $_:term generate $body:hwstmt) =>
+      #[name.getId.eraseMacroScopes] ++ hardwareBinderNames body
+  | `(hwstmt| receive $name:ident from $_:ident then $body:hwstmt) =>
+      #[name.getId.eraseMacroScopes] ++ hardwareBinderNames body
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt)
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) => hardwareBinderNames body
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      hardwareBinderNames yes ++ hardwareBinderNames no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => hardwareBinderNames yes
+  | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
+      arms.foldl (fun names arm => match arm with
+        | `(hwcasearm| | default => $body:hwstmt)
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => names ++ hardwareBinderNames body
+        | _ => names) #[]
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.foldl (fun names statement =>
+        names ++ hardwareBinderNames statement) #[]
+  | _ => #[]
+
+private def itemBinderNames (items : Array (TSyntax `hwitem)) : Array Name :=
+  items.foldl (fun names item => match item with
+    | `(hwitem| $kind:ident $_:ident := $body:hwstmt) =>
+        if kind.getId == `rule then names ++ hardwareBinderNames body else names
+    | `(hwitem| $kind:ident $_:ident suppress $_:ident because $_:str := $body:hwstmt) =>
+        if kind.getId == `rule then names ++ hardwareBinderNames body else names
+    | _ => names) #[]
+
+private def itemLocalNames (items : Array (TSyntax `hwitem)) : Array Name :=
+  items.foldl (fun names item =>
+    let identifiers := item.raw.getArgs.filter (fun child => child.isIdent)
+    if identifiers.size < 2 then names
+    else
+      let first := identifiers[0]!.getId.eraseMacroScopes
+      let candidate :=
+        if first == `output || first == `input then identifiers[2]?
+        else identifiers[1]?
+      match candidate with
+      | some name => names.push name.getId.eraseMacroScopes
+      | none => names) #[]
+
+private unsafe def reducedHandleName? (value type : Lean.Expr) : TermElabM (Option String) := do
+  let projection? : Option Name :=
+    if type.isAppOfArity ``Reg 1 then some ``Reg.name
+    else if type.isAppOfArity ``Input 1 then some ``Input.name
+    else if type.isAppOfArity ``Mem 2 then some ``Mem.name
+    else if type.isAppOfArity ``RegArray 2 then some ``RegArray.base
+    else if type.isAppOfArity ``PackedReg 2 then some ``PackedReg.name
+    else if type.isAppOfArity ``PackedMem 3 then some ``PackedMem.name
+    else none
+  let some projection := projection? | pure none
+  let projected ← Meta.mkAppM projection #[value]
+  try pure (some (← inspectString projected)) catch _ => pure none
+
+private unsafe def validateExtensionIdentifier (base : InspectableDesign)
+    (identifier : TSyntax `ident) : CommandElabM Unit :=
+  liftTermElabM do
+    let inspect (candidate : TSyntax `term) : TermElabM (Option Unit) := do
+      let value? ← try
+        pure (some (← withoutErrToSorry <| elabTerm candidate none))
+      catch _ => pure none
+      let some value := value? | pure none
+      let type ← Meta.whnf (← Meta.inferType value)
+      let some name ← reducedHandleName? value type | pure none
+      let valid ←
+        if type.isAppOfArity ``Reg 1 || type.isAppOfArity ``Input 1 then do
+          let some width ← getNatValue? (← Meta.whnf type.getAppArgs[0]!)
+            | pure false
+          pure <| base.regs.contains (name, width) || base.ports.contains (name, width)
+        else if type.isAppOfArity ``Mem 2 then do
+          let some addressWidth ← getNatValue? (← Meta.whnf type.getAppArgs[0]!)
+            | pure false
+          let some dataWidth ← getNatValue? (← Meta.whnf type.getAppArgs[1]!)
+            | pure false
+          pure <| base.mems.contains (name, addressWidth, dataWidth)
+        else if type.isAppOfArity ``RegArray 2 then do
+          let some width ← getNatValue? (← Meta.whnf type.getAppArgs[0]!)
+            | pure false
+          pure <| base.regs.any (fun declaration =>
+            declaration.1.startsWith name && declaration.2 == width)
+        else if type.isAppOfArity ``PackedReg 2 then
+          pure <| base.regs.any (fun declaration => declaration.1 == name)
+        else if type.isAppOfArity ``PackedMem 3 then
+          pure <| base.mems.any (fun declaration => declaration.1 == name)
+        else pure true
+      if valid then pure (some ())
+      else
+        throwErrorAt identifier
+          s!"extension references hardware coordinate '{name}' that is not declared by its base Design; add it in this extension, use a generated channel endpoint, or compose the foreign Design explicitly in Lean"
+    let whole : TSyntax `term := ⟨identifier.raw⟩
+    if (← inspect whole).isSome then return
+    let name := identifier.getId.eraseMacroScopes
+    if !name.isAtomic then
+      let prefixTerm : TSyntax `term := ⟨(mkIdentFrom identifier name.getPrefix).raw⟩
+      discard <| inspect prefixTerm
+
+private unsafe def validateExtensionBase (baseSyntax : TSyntax `term)
+    (islandName : Name) (items : Array (TSyntax `hwitem))
+    (connections : Array (Name × Name × Name)) : CommandElabM Unit := do
+  let base ← inspectBaseDesign baseSyntax
+  let locals := itemLocalNames items
+  let binders := itemBinderNames items
+  let endpoints := connections.filterMap fun (channel, source, sink) =>
+    if source == islandName || sink == islandName then some channel else none
+  let identifiers := items.foldl (fun found item =>
+    found ++ syntaxIdentifiers item.raw) #[]
+  for identifier in identifiers do
+    let name := identifier.getId.eraseMacroScopes
+    let endpointBase := if name.isAtomic then name else name.getPrefix
+    unless locals.contains name || binders.contains name || endpoints.contains endpointBase do
+      validateExtensionIdentifier base identifier
+
 private def expandSystemCommand
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
     (namespaceName : Name) (systemName : TSyntax `ident)
@@ -4027,10 +4210,17 @@ private def expandSystemCommand
       ($applicationName).certified))
   pure (Lean.mkNullNode commands)
 
-@[command_elab systemCmd] def elabSystemCommand : CommandElab := fun stx => do
+@[command_elab systemCmd] unsafe def elabSystemCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? $keyword:ident $systemName:ident where $items:hwsystemitem*) => do
       unless keyword.getId == `system do throwErrorAt keyword "expected `system`"
+      let connections := items.foldl (fun routes item => match item with
+        | `(hwsystemitem| $kind:ident $channel:ident from $source:ident to $sink:ident) =>
+            if kind.getId == `connect then
+              routes.push (channel.getId.eraseMacroScopes,
+                source.getId.eraseMacroScopes, sink.getId.eraseMacroScopes)
+            else routes
+        | _ => routes) #[]
       for item in items do
         match item with
         | `(hwsystemitem| $kind:ident $($relation:term)) =>
@@ -4040,6 +4230,10 @@ private def expandSystemCommand
                   if group.size == 1 then
                     logWarningAt group[0]!
                       "singleton aligned clock group is redundant; unlisted clocks are already independent singletons"
+        | `(hwsystemitem| $kind:ident $island:ident on $_:ident extends $base:term where $body:hwitem*)
+        | `(hwsystemitem| $kind:ident $island:ident on $_:ident module $_:ident extends $base:term where $body:hwitem*) =>
+            if kind.getId == `island then
+              validateExtensionBase base island.getId.eraseMacroScopes body connections
         | _ => pure ()
       let expanded ← liftMacroM <|
         expandSystemCommand documentation (← getCurrNamespace) systemName items
