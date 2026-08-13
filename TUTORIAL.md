@@ -1,20 +1,19 @@
-# From Verilog to a proved design, and onto an FPGA
+# From a hardware design to proved, emitted RTL
 
 This document assumes you can read basic Verilog and that you know Lean 4 is
 a theorem prover — nothing else. It walks one small design from an empty
-file to: an emitted `.v` you could hand to any synthesis tool, a certified
-Design-derived execution (plus an optional independent differential check), a machine-checked theorem
-about every reachable state of the compiled RTL, and the discipline for
-taking the result onto an FPGA without losing track of what you actually
-know.
+file to an emitted `.v`, a certified Design-derived execution, an optional
+independent differential check, and a machine-checked theorem about every
+reachable state of the compiled µVerilog transition system. The final section
+explains how to take that neutral RTL into an FPGA or ASIC flow without
+confusing external evidence with the theorem.
 
-**The exact promise.** At the end you hold a theorem that your property
-holds in *every reachable state of the compiled RTL* — not of your model, of
-the compilation — inherited through the compiler's once-proved correctness
-theorem. The axioms under it are exactly Lean's three standard ones
-(`propext`, `Classical.choice`, `Quot.sound`). No simulation waveform, no
-"we ran it a lot": a proof, checked by the same kernel that checks
-mathematics.
+**The exact promise.** At the end you hold a theorem that your property holds
+in every reachable state of `Compile.compile design`, inherited through the
+compiler's once-proved correctness theorem. The axioms under it are exactly
+Lean's three standard ones (`propext`, `Classical.choice`, `Quot.sound`). The
+separate text boundary between that formal module and the emitted Verilog is
+stated explicitly rather than silently folded into the claim.
 
 The finished design is checked into the repo at
 `Machines/Tutorial/SatCounter.lean`. Its optional independent reference run is
@@ -33,9 +32,9 @@ Everything below is readable with five facts:
 - `by ...` enters tactic mode: instead of writing the evidence directly, you
   issue proof commands (`intro`, `simp`, `decide`, ...) that construct it.
   Each tactic used below is explained where it first appears.
-- `#eval expr` runs code at compile time and prints the result. We use it to
-  execute a differential test *during the build*, so a regression fails the
-  build.
+- Commands beginning with `#`, such as `#run_hardware`, inspect or execute a
+  value while Lean checks the file. `#eval` executes an ordinary Lean program;
+  a thrown error fails the build.
 
 ## 1. Setup
 
@@ -119,9 +118,11 @@ after 256 cycles:
   sat = 1
 ```
 
-This uses Loom's certified `FastEval` simulator. It does not ask you to write a
-second cycle implementation merely to run the hardware. For a single-cycle
-explanation, including which writes fired and their old and new values, use:
+This uses Loom's certified shared-DAG simulator. Its run theorem connects the
+optimized execution to the same `Design` semantics used below; you do not
+write a second cycle implementation merely to run the hardware. For a
+single-cycle explanation, including which writes fired and their old and new
+values, use:
 
 ```lean
 #trace_cycle design with {} from { count := 254 }
@@ -330,112 +331,171 @@ Check what you proved, from any file:
 
 should report exactly `propext`, `Classical.choice`, `Quot.sound`.
 
-## 7. Onto an FPGA — the discipline
+## 7. Into an FPGA or ASIC flow
 
-Nothing in this section is vendor-specific; it is the shape of the
-boundary, and the practices that keep evidence trustworthy across it.
+The emitted module is technology-neutral. Generic `Design.emit` does not
+choose an FPGA family, ASIC library, memory profile, or synthesis producer.
+Use `emitFor` only when you deliberately want Loom to validate against an
+explicit target evidence profile.
 
-**Know where the theorem stops.** Proved: the invariant, of every reachable
-state of the compiled module. Corroborated but not proved per-design: that
-the printed text means that module (the printer is checked centrally by
-parser round-trip and simulator lockstep on shipped artifacts). Assumed:
-that your synthesis tool implements the standard meaning of the emitted
-subset — sized wires, one positive-edge block, synchronous reset. Entirely
-outside: place-and-route, timing closure, configuration, electrons. From
-here on you are collecting *evidence*, not extending the theorem — the goal
-is that the evidence be attributable and hard to fool.
+Keep four claim layers separate:
 
-**Wrap, don't touch.** The emitted module is a leaf. Board-specific
-material — clock generation, reset conditioning, pin constraints, clock
-domain crossings, debug transports — lives in a small hand-written top that
-instantiates it:
+1. `satOk_invariant` is a theorem about the source `Design` semantics.
+2. `satOk_rtl` transports it to the compiled µVerilog transition system.
+3. Rendering gives deterministic Verilog text. The exact text-semantics
+   assumption is documented in `CONCRETE_SSA_BOUNDARY.md`; selected release
+   artifacts additionally carry byte-exact theorem bindings.
+4. Synthesis, technology mapping, timing closure, reset delivery, placement,
+   configuration, and physics are target-specific external evidence.
 
-```verilog
-module board_top(input wire board_clk, input wire board_rst_n, ...);
-  wire [7:0] count_view;
-  satcounter u_dut(
-    .clk(clk_buffered), .rst(rst_sync),
-    .o_count(count_view), .o_sat(sat_led)
-  );
-  // clocking, reset synchronizer, pin mapping: yours, and untrusted
-endmodule
+That fourth layer is equally external for FPGA and ASIC use. Loom currently
+has no post-synthesis equivalence theorem and does not prove that a particular
+tool, cell library, RAM macro, bitstream, or manufactured device preserves the
+RTL.
+
+Treat generated RTL as a build product with one producer. Do not hand-edit
+`rtl/satcounter.v`; change the `Design`, recheck the proof, and re-emit. A
+board or chip wrapper may add clocks, reset conditioning, pins, scan, power
+intent, memories, or debug, but those additions are outside this counter's
+theorem unless separately modeled.
+
+Make external observations attributable:
+
+- record the exact source RTL and design revision used by each downstream
+  artifact;
+- fail when generated artifacts are stale or a producing command exits without
+  a useful diagnostic;
+- make deployed images self-identifying where practical; and
+- health-check debug or readback transports before treating their values as
+  evidence.
+
+The same independent oracle from step 3 can compare RTL simulation or hardware
+observations, provided the adapter accounts for every declared coordinate.
+That comparison is useful evidence; it does not replace the universal theorem.
+
+## 8. Add states and structured values
+
+The counter used only scalar registers. Real designs can keep intent in the
+type instead of encoding everything as anonymous vectors.
+
+A declared state family chooses the minimum width and generates named values
+and case lemmas:
+
+```lean
+hardware controller where
+  const COMMAND : 7 := 72
+  output states mode : { Idle, Run, Done } := Idle
+
+  rule advance :=
+    case mode of
+    | Idle => mode <- Run
+    | Run  => mode <- Done
+    | Done => mode <- Idle
 ```
 
-Never hand-edit `rtl/satcounter.v`. If the wrapper needs something the
-module doesn't expose, that is a design change: add the export in Lean,
-re-prove (usually: nothing to redo — exports don't change semantics), and
-re-emit. The generated file is a build product with exactly one producer.
+Packed values may contain earlier packed values:
 
-**Give every artifact an identity, and every observation a provenance.**
-The failure mode that wastes weeks is not a wrong design; it is a *stale*
-one — yesterday's bitstream, an old image in memory, a debug readback from
-the previous run — silently read as today's. Practices this repository
-treats as mandatory, all of them cheap:
+```lean
+packed struct Header where
+  tag : 3
+  address : 5
 
-- Record, next to every bitstream, the hash of the exact `.v` (and design
-  revision) it was built from. Deterministic emission makes this
-  meaningful; the repo's script layer maintains such manifests and fails
-  loudly when an artifact is stale or a producer dies silently.
-- Make the design *self-identifying* on the board: reserve an output or a
-  first console action that reports a build stamp. An observation that
-  cannot name the artifact that produced it is not evidence.
-- Health-check the debug channel before believing it. Readback paths
-  degrade; the classic symptom is one stale value returned for every
-  address. Read a few locations that must differ, and refuse the data if
-  they don't. Loud beats plausible.
-- Clear observation buffers between runs, so a fresh boot cannot replay the
-  previous run's success text. (This repository learned that one the hard
-  way.)
+packed struct Packet where
+  header : Header
+  payload : 16
 
-**Generate the observability, both halves.** You exported `count` and `sat`
-in step 2; on a board they typically surface through a debug read port in
-the wrapper. Loom generates that plumbing from a declared tap list — the
-wrapper-side decode *and* the host-side reader script from the same
-declaration, plus sticky first-event captures ("latch the first time this
-predicate fires, optionally halt") for should-never-happen conditions.
-Hand-wired debug decode is where read maps drift; a generated map cannot
-disagree with its reader, and its checker refuses to emit taps for signals
-the design no longer exports. Debug instrumentation is explicitly outside
-the theorem — the tooling labels it as such — but outside-the-theorem does
-not mean sloppy.
+hardware packet_register where
+  input wire incoming : Packet
+  output reg pending : Packet
 
-**Keep the differential loop alive on silicon.** Step 3's reference model
-does not retire when the bitstream exists: the same oracle that checked the
-simulated design checks board readbacks. When board and model disagree,
-you now have three worlds — model, RTL simulation, silicon — and the
-discipline above tells you which pair diverged and which artifact was
-involved. Most "hardware bugs" die at that triage step, identified as a
-stale artifact, an untrusted readback, or a wrapper mistake — each of which
-the practices above catch by construction rather than by heroics.
+  rule capture := {
+    pending.header <- incoming.header,
+    pending.payload <- incoming.payload
+  }
+```
 
-## 8. What you have, and the loop you now own
+This lowers to one padding-free flat vector; nesting and field assignment add
+no cycle. Every right-hand side still reads pre-cycle state. The packed type
+survives through registers, inputs, outputs, memories, and channels, so an
+unrelated equal-width type cannot be assigned accidentally.
 
-- A design stated once, in a form a type checker guards.
-- A build-time differential against an independent model, with fail-closed
-  coverage — every declared coordinate compared or honestly excluded.
-- A kernel-checked invariant of the compiled RTL, three-axiom closure,
-  zero per-design trusted lines.
-- Emitted Verilog with exactly one producer, an identity, and a wrapper
-  discipline that keeps the proved leaf intact on a board.
+Use destination construction when meanings are being mapped. Use
+`reinterpret value to Destination` only when the protocol says the complete
+bit representation is identical. `reinterpret` requires equal widths and
+adds no hardware; it is never an implicit cast, truncation, or extension.
 
-The working loop, from here: edit the design → the emit gate and type
-checker catch structural mistakes → the build-time differential catches
-semantic ones → proofs re-check → re-emit (bytes change only if meaning
-did) → re-synthesize → observe on the board with provenance. Each stage
-catches what the previous one cannot, and nothing in the loop asks you to
-trust a tool this repository could have checked instead.
+The complete authoring contract—including operator precedence, register-family
+indexing, lints, and intentional omissions—is in `PRETTY.md`.
 
-Refinement against a full instruction-set specification — proving a
-processor *implements a program-visible machine* — is the same workflow
-with much larger proofs; the LNP64-µ development under `Machines/Lnp64u/`
-is the in-repo evidence that the path continues. Start smaller than you
-think; this counter is the honest template.
+## 9. Compose clock domains without changing island proofs
 
-## Report what went wrong
+Keep latency-sensitive logic inside ordinary synchronous islands. Cross an
+island boundary through a typed channel and select its physical realization
+separately:
 
-This tutorial is under an explicit falsification protocol: if you had to
-leave this document — read library source, ask for help, guess a name —
-that excursion is a documentation or library bug, not user error. Add an
-entry to the defects ledger kept beside the tutorial files in
-`Machines/Tutorial/`, stating what you expected and what happened. Every
-entry is treated as a defect report.
+```lean
+system twoClock where
+  clock clkA
+  clock clkB
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 2
+
+  island producer on clkA where
+    output reg sent : 1
+    rule transmit :=
+      if ~sent then
+        send 42 to q then sent <- 1
+
+  island consumer on clkB where
+    output reg got : 8
+    rule accept :=
+      receive value from q then got <- value
+
+  connect q from producer to consumer
+  realize q with Cdc.grayFifo
+```
+
+Loom generates and checks the endpoint adapters, compiled FIFO controls,
+synchronizer stages, portable storage, crossing inventory, timing description,
+and neutral physical requirements. Island invariants are still proved on the
+ordinary `Design`; `system_lift` transports them across every admitted clock
+schedule.
+
+Channel latency is not hidden. Inspect it with `#show_system twoClock timing`.
+The current conservative sink can consume at most once per two destination
+ticks under continuous traffic, and an asynchronous schedule supplies no
+finite delivery bound without an explicit progress premise. A downstream
+physical backend must separately discharge every generated timing, reset, and
+CDC obligation.
+
+Start with `MULTICLOCK.md` before using independent reset recovery or a custom
+FPGA/ASIC binding. `MULTICLOCK_BOUNDARY.md` states exactly where the digital
+proof ends.
+
+## 10. What you now have
+
+- A design stated once, with widths, capabilities, and structured values
+  checked at the authoring boundary.
+- A certified executable view derived from that design.
+- An optional independent differential with fail-closed coordinate coverage.
+- A kernel-checked invariant transported to the compiled transition system.
+- Deterministic neutral Verilog plus an explicit text and physical boundary.
+- A path to multiclock composition that preserves ordinary island proofs.
+
+The working loop is: edit the design → run inspection and focused tests →
+recheck proofs → emit deterministic RTL → run target-specific implementation
+and evidence checks. Each stage states what it established and what remains an
+assumption.
+
+Refinement against a full instruction-set specification uses the same shape
+with larger proofs; the LNP64-µ development under `Machines/Lnp64u/` is the
+in-repository example. Start smaller than you think—the counter is the honest
+template.
+
+## Report a tutorial defect
+
+If following this document requires guessing an API name or reading library
+internals, record the unresolved excursion in
+`Machines/Tutorial/DEFECTS.md`: the command that failed, what you expected, and
+the smallest documentation or API change that would have prevented it.

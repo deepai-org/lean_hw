@@ -11,8 +11,9 @@ theorem Loom.Release.Theorems.verifiedReleases :
   Nonempty Loom.Release.Theorems.VerifiedReleases
 ```
 
-`Tools/VerifiedRelease.lean` fixes one Acc8 artifact and one LNP64-µ artifact.
-For each, the kernel checks:
+`Tools/VerifiedRelease.lean` fixes one Acc8 artifact, one LNP64-µ artifact,
+and one portable two-clock `System` artifact. For each processor artifact, the
+kernel checks:
 
 - exact equality between `SSA.Program.renderTree`'s byte rope and a
   theorem-bound disk byte rope;
@@ -22,6 +23,15 @@ For each, the kernel checks:
 - a simulation from the processor model to the reachable part of that
   compiled transition system; and
 - transport of every model invariant through the simulation.
+
+For the System artifact, the kernel checks that every island and every FIFO
+controller/storage component is an ordinary `CertifiedDesign`, every checked
+connection has the technology-neutral parametric FIFO refinement and exactly
+one selected compiler-produced binding (same-clock positive-depth FIFO or
+portable power-of-two Gray FIFO), certified schedule replay projects to the
+public System semantics, and the literal `system.v` object traversed by the
+emitter has the theorem-bound UTF-8 bytes. Its wrapper is structural wiring;
+the mechanical quality gate rejects behavioral CDC RTL in that renderer.
 
 The combined LNP64-µ bundle instantiates that transport for authority
 confinement, machine-wide W^X, lineage-ledger conservation, and budget
@@ -43,10 +53,12 @@ denotation and exact theorem-bound bytes.
 The trusted set grows only when the claim is extended:
 
 1. **Lean statement:** the Lean kernel and the three standard axioms above.
-2. **The two host files:** additionally, the narrow file-association step in
+2. **The three host files:** additionally, the narrow file-association step in
    `scripts/check_release_binding.py`. It reconstructs theorem literals in
-   declared order and invokes exact `cmp -s`; hashes are not used for
-   soundness.
+   declared order and invokes exact `cmp -s` for the two concrete-SSA
+   processor artifacts; the multiclock emitter writes the exact
+   `rtlArtifact` projection named by the System theorem. Hashes are not used
+   for soundness.
 3. **Verilog as interpreted by a tool:** additionally, the concrete-SSA
    semantic adequacy assumption in
    [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md). The current
@@ -59,13 +71,14 @@ The trusted set grows only when the claim is extended:
    layer, not premises of generic Loom theorems.
    Placement, routing, configuration generation, timing, and physics remain
    downstream.
-5. **Board CDC behavior:** additionally, a physical resolution assumption for
+5. **Physical CDC behavior:** additionally, physical resolution assumptions for
    the board wrappers that use the toggle/2FF/XOR crossings. A metastable first
    flop is modeled as resolving adversarially to either Boolean value before
    the next sampling edge. `Loom/Hw/CdcContract.lean` proves the digital
    protocol for every such oracle; it does not prove MTBF, aperture, routing,
-   or analog behavior. The closed single-clock release cores do not require
-   this item.
+   or analog behavior. The portable multiclock digital theorem proves its Gray
+   and channel logic but does not prove those physical premises; the closed
+   single-clock release cores do not require this item.
 
 These are conditional layers, not one claim that every downstream artifact is
 formally verified.
@@ -91,8 +104,9 @@ replacement for kernel checking.
 
 ## Claim boundary
 
-The release theorem concerns two-state, synchronous, closed processor models
-and exact Verilog core bytes. It does not establish electrical reset,
+The release theorem concerns two-state processor models, one schedule-driven
+portable multiclock System, and their exact Verilog bytes. It does not
+establish electrical reset,
 four-state behavior outside the admitted subset, external DMA or interrupts,
 debug and SoC-fabric policy, timing closure, liveness under arbitrary platform
 stalls, power behavior, or physical side-channel resistance.

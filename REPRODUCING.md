@@ -14,10 +14,13 @@ theorem Loom.Release.Theorems.verifiedReleases :
   Nonempty Loom.Release.Theorems.VerifiedReleases
 ```
 
-It contains fixed Acc8 and LNP64-µ artifacts. The Lean theorem binds concrete
-SSA renderings to literal byte ropes; the external binding step then compares
-those literals with `rtl/acc8.v` and `rtl/lnp64u.v`. Lean does not read the
-host filesystem as part of the theorem.
+It contains fixed Acc8, LNP64-µ, and portable two-clock System artifacts. For
+the processors, the Lean theorem binds concrete SSA renderings to literal byte
+ropes and the external binding step compares those literals with `rtl/acc8.v`
+and `rtl/lnp64u.v`. For the System, the theorem names the literal RTL member of
+the certified emitter's file list, and the release command writes that exact
+value to `rtl/certified_multiclock/system.v`. Lean does not read the host
+filesystem as part of the theorem.
 
 ## Prerequisites and pinned inputs
 
@@ -31,7 +34,11 @@ pins:
 After those inputs have been fetched, the Lean verification itself needs no
 network. No simulator or synthesizer is required for the theorem. Yosys is
 relevant only when corroborating the separate text/tool and synthesis
-boundaries.
+boundaries. `scripts/test_multiclock_synthesis.sh` is the small neutral-RTL
+extension-boundary sanity check: it emits the certified two-clock System and
+asks an available Yosys to elaborate, check, and synthesize it. This does not
+tie Loom to Yosys and is not proof that a particular FPGA or ASIC
+implementation is physically safe.
 
 Optional workflow legs print a final `RESULT PASS`, `RESULT FAIL`, or
 `RESULT SKIP` line. A skip is successful workflow control, not positive
@@ -48,26 +55,35 @@ scripts/build_verified_release.sh
 ```
 
 An optional positive integer selects the maximum Lean process count. With no
-argument, the script derives a cap from available memory and CPUs, with a hard
-maximum of 32:
+argument, the script derives a cap from available memory and CPUs, with a
+memory-safety maximum of 8 and 16 GiB reserved outside heavy proof pools:
 
 ```console
 scripts/build_verified_release.sh 8
 ```
 
+On a cgroup-v2 systemd host, the final axiom collector additionally runs in a
+28 GiB/no-swap unit. The measured current peak is 21.4 GiB; exceeding the cap
+kills that release phase rather than pressuring the whole interactive host.
+Other hosts run the same collector serially and print that containment is
+unavailable.
+
 The script performs these release-specific steps:
 
 1. runs package-quality and byte-binding self-tests;
-2. emits fresh `rtl/acc8.v` and `rtl/lnp64u.v`;
+2. emits fresh `rtl/acc8.v`, `rtl/lnp64u.v`, and
+   `rtl/certified_multiclock/system.v`;
 3. generates concrete SSA witnesses and bounded proof modules;
 4. checks each witness against `Design.toProgram`;
 5. exactly binds theorem byte leaves to each RTL file with `cmp -s`;
 6. regenerates structural sources and rejects content drift;
 7. kernel-checks the generated render and semantic declarations;
-8. rejects X/Z-sensitive syntax, missing register resets, and incomplete
-   memory images in the two RTL files;
-9. kernel-checks `Tools/VerifiedRelease.lean`; and
-10. rejects the result unless the final theorem's axiom closure is exactly
+8. rejects X/Z-sensitive syntax in all three RTL artifacts, plus missing
+   register resets and incomplete memory images in the processor artifacts;
+9. independently kernel-checks and exactly axiom-audits
+   `Tools/MulticlockRelease.lean`;
+10. kernel-checks `Tools/VerifiedRelease.lean`; and
+11. rejects the result unless the final theorem's axiom closure is exactly
     `propext`, `Classical.choice`, and `Quot.sound`.
 
 The script builds the precise release dependency closure. It does **not** run
@@ -86,7 +102,7 @@ Consult [`STATUS.md`](STATUS.md) before interpreting these repository-wide
 commands: a release theorem can remain valid while unrelated development
 tests at the current head are red.
 
-Successful material outputs are the two RTL files and
+Successful material outputs are the three RTL files and
 `.lake/build/lib/lean/Tools/VerifiedRelease.olean`. The readable theorem source
 is `Tools/VerifiedRelease.lean`.
 
@@ -137,7 +153,7 @@ scheduler. Results are measurements, not premises of `verifiedReleases`.
 ## Interpreting success
 
 A successful Tier A run establishes the Lean statement and exact association
-with two host files, subject to the trusted list in [`TCB.md`](TCB.md). It does
+with three host RTL files, subject to the trusted list in [`TCB.md`](TCB.md). It does
 not prove Yosys, place-and-route, bitstream generation, a board wrapper,
 electrical reset, timing closure, or silicon physics. Those limits are not
 changed by reproduction.

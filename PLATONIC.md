@@ -70,6 +70,107 @@ implemented in the tree:
    SHA-256 manifests for external workflows; negative freshness, silent-log,
    and identity-mismatch cases run under `scripts/quality.sh`.
 
+## Packed hardware values
+
+Packed hardware values are implemented as a typed authoring facade over the
+durable width-indexed `Expr`, `Reg`, `Mem`, and `Chan` core. `HwPacked` gives a
+semantic Lean type one canonical fixed-width representation and proves
+`pack`/`unpack` inverse laws. `HwPackedLayout` checks unique field names,
+in-bounds disjoint slices, complete padding-free coverage, and MSB-first
+declaration order. `PackedMember` additionally proves that each named Lean
+record projection agrees with its hardware slice.
+
+`PackedExpr`, `PackedReg`, `PackedInput`, `PackedOutput`, `PackedMem`, and
+`PackedChan` retain the semantic type until an explicit `.bits` or `.fromBits`
+boundary. Equal-width but unrelated records therefore do not become
+assignment-compatible, and records acquire no accidental arithmetic or
+ordering. Field reads and record construction lower to the existing
+slice/concatenation expression algebra; packed channels use the unchanged
+scalar queue, recovery, realization, and emission machinery.
+
+Conversion follows the same nominal boundary. A semantic conversion constructs
+the destination record field-by-field; Loom cannot infer that two equally wide
+fields mean the same thing. Intentional representation conversion is spelled
+`reinterpret value to Destination` in pretty syntax, requires equal packed
+widths, and lowers exactly to `Destination.fromBits(value.bits)`. It adds no
+implicit coercion, truncation, extension, logic, state, or latency.
+
+`Act.writeSlice` is the one core action added for partial packed-register
+assignment. Its bound proof makes an invalid slice unrepresentable. Every RHS
+still observes pre-cycle state, preserved bits come from the ordered write
+accumulator, and overlapping writes are last-write-wins. The semantics,
+compiler correctness, evaluators, transformations, footprints, artifact and
+release certificates, generators, and existing proof libraries all handle the
+constructor directly.
+
+The stable layout contract is:
+
+- there is no padding or alignment;
+- total width is exactly the sum of field widths;
+- declaration order fixes placement, with the first field occupying the most
+  significant bits and the last field the least significant bits;
+- reset values and executable observations use the same `pack` function; and
+- equality is packed bit equality.
+
+The core currently supports named scalar `BitVec` fields and whole-element
+packed memory access. Nested packed values, arrays, tagged unions, optional
+fields, padding, memory-field read/modify/write, and external ABI matching are
+separate features, not implied by “struct.” Native SystemVerilog structs are
+also unnecessary: certified emission continues to use the established packed
+vector and static slices. The omitted declaration syntax belongs only to
+[`PRETTY.md`](PRETTY.md); it does not block typed packed designs or multiclock
+use.
+
+## Multiclock system composition
+
+Ordinary synchronous `Design`s remain the proof and implementation unit inside
+clock islands. A typed `Chan` or `PackedChan` is the only application-level
+crossing: scalar and structured payloads use the same queue semantics,
+schedule theorems, realization plan, and emitted binding. Packed records are
+values carried by an endpoint, not a second interface or CDC language.
+
+The application facade owns typed clock/island handles, directional endpoints,
+per-route selection from a small proved realization set, arbitrary positive
+same-clock depths, arbitrary power-of-two portable asynchronous depths, named
+readiness reports, and reusable island certification. It must remain agnostic
+to FPGA versus ASIC implementation and to every vendor or synthesis tool.
+It must also make boundary latency inspectable: each selected realization
+derives a coverage-checked timing description naming acceptance/delivery
+points, buffering and synchronizer stages, exact or premise-dependent bounds
+in domain ticks or System events, and any recovery interruption. Typed
+convenience must never turn inserted cycles into a hidden implementation
+detail.
+
+Independent reset is a separate loss/recovery contract, never an implicit
+variation of coordinated reset. Its current `independentFlush` semantics make
+reset dominance and discarded incident traffic explicit. A loss-explicit
+channel recovery refinement, schedule-executable request/acknowledgement
+protocol, compiler-produced endpoint/guard/coordinator components, and stock
+structural physical binding now implement the graceful request/completion
+shape through the ordinary application facade. Binding/policy mismatches fail
+closed at certified-artifact construction, and hierarchical parent/child reset
+contracts must agree. Every incident channel contributes both endpoint halves
+to the generated completion gate; reset-aware application replay retains the
+certified DAG/semantic relation. Each FIFO half remains reset throughout its
+endpoint's `flushed` phase, so reset skew cannot reintroduce a peer pointer
+from the discarded epoch. Protocol completion is exactly the abstract
+flush event for a single channel. For multi-channel islands, the coordinated
+refinement retains each early-reset channel's logical epoch until the exact
+generated coordinator domain is complete, then commits every incident channel
+to the same `System.advanceRecovery` event. The compiled endpoint-pair
+transition and this global event alignment are proved. The remaining formal
+gap is the whole-wrapper state relation for the compiled FIFO, storage, and
+guards across early local resets; generic reset-aware compiler correctness
+already joins the exact compiled island reset. Checked
+sealed blocks now carry typed exported endpoints, cached
+island certificates, and dependent theorem bundles; packed exports retain
+their semantic record type, and parent composition closes only endpoints
+indexed by the same channel. Automatic instance prefixing is
+ergonomic follow-up rather than a new semantic layer.
+[`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md) is the detailed roadmap and
+[`MULTICLOCK_BOUNDARY.md`](MULTICLOCK_BOUNDARY.md) states the remaining
+physical assumptions.
+
 ## Reusable machine infrastructure
 
 The reusable control plane lives in Loom. Acc8 is the independent demonstrated
@@ -322,6 +423,16 @@ for diagnostic diversity, but never as an unlabelled production semantic
 mirror. New facilities must preserve this single-source discipline rather
 than introduce parallel metadata.
 
+Packed hardware types extend that discipline from scalar coordinates to
+structured values. One packed declaration owns field names, widths, layout,
+semantic pack/unpack, expression projections, typed state/storage/channel
+handles, debug views, and source rendering. None may be restated in a separate
+port map or comparator schema, and equal total width must not make two distinct
+packed types assignment-compatible. `Act.writeSlice` is the sole core mechanism
+for partial packed-register lvalues; it must remain a bounded static-slice
+operation whose compiler and simulators preserve accumulator ordering and
+pre-cycle RHS evaluation.
+
 ### W2 — property-directed proof automation
 
 Footprints, support inference, frame rules, projected actions, and cycle
@@ -439,6 +550,9 @@ Loom reaches the intended shape when:
 
 - a substantial design changes at one declaration site and all derived views
   update or fail with named obligations;
+- a structured hardware value changes at one field declaration and its packed
+  width, projections, state/storage/channel types, observations, proofs, and
+  emitted vector layout update or fail from that same source;
 - proofs recheck in proportion to affected logic;
 - logical transformations compose through refinement theorems;
 - the emitted logical artifact is connected to the design;

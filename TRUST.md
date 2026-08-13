@@ -121,6 +121,26 @@ the digital toggle protocol for all Boolean resolutions. They do not prove a
 flop resolves before the next edge, its MTBF, placement constraints, or any
 analog fact. Those are explicit physical assumptions.
 
+The generic multiclock layer has the same categorical split, documented in
+[`MULTICLOCK_BOUNDARY.md`](MULTICLOCK_BOUNDARY.md). Gray adjacency—including
+finite-width wrap—and its connection to executable FIFO pointer steps are
+machine-checked. Sampled-pointer validity is stated over unbounded source
+generation history, and the finite-ring FIFO proves that every simultaneous
+successful storage read/write uses distinct addresses. The parametric storage
+composition theorem consumes only `AsyncQueueStorage`; optional RAMB and ASIC
+bindings live under `Evidence/Targets` and each expose one named leaf
+assumption rather than entering generic Loom. The certified portable path does
+not use the specialized raw toggle/Gray SystemVerilog renderers: controllers,
+synchronizers, flag logic, and register-bank storage are ordinary compiled
+Designs, and the remaining wrapper is structural wiring whose literal emitted
+RTL value is carried by `verifiedReleases`. The raw renderers remain explicitly
+unverified evidence and cannot inhabit that certified artifact type.
+Metastability, resolution time, MTBF, CDC placement/routing, downstream
+constraint application, and physical storage-macro behavior remain external
+physical assumptions or evidence. An Icarus run is only a syntax/elaboration
+and idealized-execution smoke test; it does not support the refinement or
+metastability claims.
+
 ## Current hardware evidence
 
 The current LNP64mini integration head has an accepted dual-core NetBSD board
