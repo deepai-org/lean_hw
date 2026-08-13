@@ -2340,16 +2340,20 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- the gate's entry in the gate's domain. `tdom`/`tcont`/`tcdom`/`in_gate`
   -- are written in their funnels; this arm owns pc and rd.
   gcons (opIs OP_MINI_GATE_CALL)
-    (.ite gateFull
-      (.seq (.ite (.not (.eq rdf (L5 0))) .skip .skip)
-        (.seq stepPc (.seq retireInc goF0)))
+    [hwstmt|
+      if gateFull then {
+        $stmt(.ite (.not (.eq rdf (L5 0))) .skip .skip),
+        $stmt(stepPc),
+        $stmt(retireInc),
+        $stmt(goF0)
+      } else {
       -- §17: walk the descriptor instead of reading a host-loaded bank.
       -- The address is the table base plus a 16-byte-strided index; the
       -- activation commits in S_GC1, once both words are in.
-      (.seq (coreAddrReg.set
-              (.add (.add (.lit (BitVec.ofNat 32 DATA_BASE)) gate_tbl_base)
-                    (.shl (.zext (.slice a 0 4) 32) (.lit (BitVec.ofNat 32 4)))))
-        (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_GC0))))) <|
+        coreAddrReg <- ($(L32 DATA_BASE) + gate_tbl_base) + ((zext a[3:0] to 32) << 4),
+        coreRdReg <- 1,
+        stReg <- $(L5 S_GC0)
+      }] <|
   -- EXT-5: 0x61 GATE_RETURN. Restores the saved pc; the domain and the
   -- in-gate bit are restored in their funnels. A return with NO gate open is
   -- a synchronous FAULT (spec §9.2 step 4, landed 1235f201): the slot is
@@ -2359,15 +2363,25 @@ def s_ex_branches : List (Expr 1 × Act) :=
   -- campaigns (fpga_dev.md §73): the machine must be loud, at the faulting
   -- instruction, never silent-then-weird-later.
   gcons (opIs OP_MINI_GATE_RETURN)
-    (.ite curInGate
-      (.seq (pcReg.set (tcontRd gPopIdx)) (.seq retireInc goF0))
-      gretEmptyFault) <|
+    [hwstmt|
+      if curInGate then {
+        pcReg <- $(tcontRd gPopIdx),
+        $stmt(retireInc),
+        $stmt(goF0)
+      } else $stmt(gretEmptyFault)] <|
   -- 0x59 CLONE
   gcons (opIs OP_CLONE_SPAWN)
-    (.ite has_free
-      (.seq (tstateDynWrite (L2 1) free_slot)
-        (.seq (cloneDstReg.set rdf) (.seq (cloneTidReg.set free_slot) (stReg.set (L5 S_CLONE2)))))
-      (.seq stepPc (.seq retireInc goF0))) <|
+    [hwstmt|
+      if has_free then {
+        $stmt(tstateDynWrite (L2 1) free_slot),
+        cloneDstReg <- rdf,
+        cloneTidReg <- free_slot,
+        stReg <- $(L5 S_CLONE2)
+      } else {
+        $stmt(stepPc),
+        $stmt(retireInc),
+        $stmt(goF0)
+      }] <|
   -- LR
   gcons is_lr
     (actSeq [lrAddrReg.set a, lrValidReg.set (L1 1),
