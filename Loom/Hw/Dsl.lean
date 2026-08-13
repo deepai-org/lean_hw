@@ -2189,6 +2189,8 @@ syntax (priority := low) ident systemSameLine ident : hwsystemitem
 syntax (priority := high) ident systemSameLine "$" "(" term ")" : hwsystemitem
 syntax (priority := high) ident systemSameLine ident systemSameLine ":" num systemSameLine ident num : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident ":=" term : hwsystemitem
+syntax (priority := high) ident systemSameLine ident "on" ident "where"
+  withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "from" ident "to" ident : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "with" term : hwsystemitem
 syntax (name := systemCmd) (docComment)? ident ident "where"
@@ -2205,7 +2207,8 @@ private structure PrettyChannel where
 private structure PrettyIsland where
   name : TSyntax `ident
   clock : TSyntax `ident
-  design : TSyntax `term
+  design : Option (TSyntax `term) := none
+  body : Array (TSyntax `hwitem) := #[]
 
 private structure PrettyConnection where
   channel : TSyntax `ident
@@ -2263,7 +2266,11 @@ private def expandSystemCommand
       | `(hwsystemitem| $kind:ident $name:ident on $clock:ident := $design:term) =>
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock := design`"
-          islands := islands.push ⟨name, clock, design⟩; pure 4
+          islands := islands.push { name, clock, design := some design }; pure 4
+      | `(hwsystemitem| $kind:ident $name:ident on $clock:ident where $body:hwitem*) =>
+          unless kind.getId == `island do
+            Macro.throwErrorAt kind "expected `island name on clock where ...`"
+          islands := islands.push { name, clock, body }; pure 4
       | `(hwsystemitem| $kind:ident $channel:ident from $source:ident to $sink:ident) =>
           unless kind.getId == `connect do
             Macro.throwErrorAt kind "expected `connect channel from source to sink`"
@@ -2313,6 +2320,8 @@ private def expandSystemCommand
 
   let mut commands : Array Syntax := #[]
   let nestedName (localName : Name) := mkIdent (systemName.getId ++ localName)
+  let qualifiedNestedName (localName : Name) :=
+    mkIdent (namespaceName ++ systemName.getId ++ localName)
   for clock in clocks do
     let sourceName := Syntax.mkStrLit clock.name.getId.toString
     let declarationName := nestedName clock.name.getId
@@ -2326,10 +2335,40 @@ private def expandSystemCommand
         ⟨$sourceName, $(channel.depth), .exchange⟩))
   for island in islands do
     let declarationName := nestedName island.name.getId
-    let mut designTerm := island.design
-    for channel in channels.reverse do
-      let channelName := nestedName channel.name.getId
-      designTerm ← `(let $(channel.name) := $channelName; let _ := $(channel.name); $designTerm)
+    let designTerm ← match island.design with
+      | some supplied => do
+          let mut scopedTerm := supplied
+          for channel in channels.reverse do
+            let channelName := nestedName channel.name.getId
+            scopedTerm ← `(let $(channel.name) := $channelName; let _ := $(channel.name); $scopedTerm)
+          pure scopedTerm
+      | none => do
+          let implementationNamespace := mkIdent
+            (systemName.getId ++ island.name.getId ++ `Hardware)
+          commands := commands.push (← `(command| namespace $implementationNamespace))
+          for connection in connections do
+            if connection.source.getId == island.name.getId ||
+                connection.sink.getId == island.name.getId then
+              if connection.source.getId == connection.sink.getId then
+                Macro.throwErrorAt connection.channel
+                  "an inline island cannot use one short channel name as both source and sink"
+              let endpointName := connection.channel
+              let channelName := qualifiedNestedName connection.channel.getId
+              if connection.source.getId == island.name.getId then
+                commands := commands.push (← `(command|
+                  def $endpointName := (hw_exact_const% $channelName).source))
+              else
+                commands := commands.push (← `(command|
+                  def $endpointName := (hw_exact_const% $channelName).sink))
+          let emittedModuleName := mkIdent
+            (Name.mkSimple (systemName.getId.toString ++ "_" ++ island.name.getId.toString))
+          let body := island.body
+          let hardwareCommand ← `(command| hardware $emittedModuleName where $body*)
+          commands := commands.push hardwareCommand
+          commands := commands.push (← `(command| end $implementationNamespace))
+          let implementationDesign := mkIdent
+            (namespaceName ++ systemName.getId ++ island.name.getId ++ `Hardware ++ `design)
+          pure (← `(term| hw_exact_const% $implementationDesign))
     commands := commands.push (← `(command|
       def $declarationName : Loom.Hw.Design := $designTerm))
     let handleName := nestedName
