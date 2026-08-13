@@ -3389,13 +3389,7 @@ private def normalizeDeclarationWidth (item : TSyntax `hwitem) :
       `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num [$count:num] := $init:term)
   | `(hwitem| $kind:ident $name:ident : $width:ident := $init:term) =>
       let some numeric ← widthNumber? width | return item
-      if kind.getId == `const then
-        let some value := init.raw.isNatLit?
-          | throwErrorAt init "design-local `const` requires a reducible Nat"
-        let literal := numeralAt init.raw value
-        `(hwitem| $kind:ident $name:ident : $numeric:num := $literal:num)
-      else
-        `(hwitem| $kind:ident $name:ident : $numeric:num := $init:term)
+      `(hwitem| $kind:ident $name:ident : $numeric:num := $init:term)
   | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:ident := $value:hwexpr) =>
       let some numeric ← widthNumber? width | return item
       `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num := $value:hwexpr)
@@ -3410,10 +3404,34 @@ private def normalizeDeclarationWidth (item : TSyntax `hwitem) :
       `(hwitem| $qualifier:ident $kind:ident $name:ident : $numeric:num)
   | _ => pure item
 
+/-- Reduce a design-local constant once, at its declaration. This keeps case
+label normalization and generated expression definitions on one checked Nat
+while allowing ordinary Lean definitions to name shared values. -/
+private def normalizeDeclarationConstant (item : TSyntax `hwitem) :
+    CommandElabM (TSyntax `hwitem) := do
+  match item with
+  | `(hwitem| $kind:ident $name:ident : $width:num := $value:term) =>
+      unless kind.getId == `const do return item
+      let literal ← liftTermElabM do
+        let expression ← withoutErrToSorry <|
+          elabTerm value (some (.const ``Nat []))
+        let some literal ← getNatValue? (← withTransparency .all <| Meta.reduce expression)
+          | throwErrorAt value
+              "design-local hardware constant must reduce to a numeral for range checking"
+        pure literal
+      let limit := 2 ^ width.getNat
+      if width.getNat == 0 || literal ≥ limit then
+        throwErrorAt value
+          s!"literal {literal} does not fit in {width.getNat} bits; expected 0 through {limit - 1}"
+      let normalized := numeralAt value.raw literal
+      `(hwitem| $kind:ident $name:ident : $width:num := $normalized:num)
+  | _ => pure item
+
 @[command_elab hardwareCmd] unsafe def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
-      let normalizedItems ← items.mapM normalizeDeclarationWidth
+      let normalizedItems ← items.mapM normalizeDeclarationWidth >>= fun items =>
+        items.mapM normalizeDeclarationConstant
       let deferExternalWrites := loom.hw.deferExtensionWrites.get (← getOptions)
       let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
         packedInputs, packedWires, registerArrays, domains, rules) ←
