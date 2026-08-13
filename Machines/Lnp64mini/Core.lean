@@ -1757,7 +1757,8 @@ where
 
 /-- (7) ddr_rd_l latch. -/
 def ddrRdLRule : Rule :=
-  ⟨"ddr_rd_l", .ite (.and mDone (.not hp_core_owns)) (ddrRdLReg.set mRdata) .skip⟩
+  ⟨"ddr_rd_l", [hwstmt|
+    if mDone & ~hp_core_owns then ddrRdLReg <- mRdata]⟩
 
 /-! ### FSM rules (rf writes live in the funnel) -/
 
@@ -2669,7 +2670,8 @@ def tarrFunnelRule : Rule :=
 
 /-- (9) the single regfile write port. -/
 def rfFunnelRule : Rule :=
-  ⟨"rf_funnel", .ite rfWeE (rfBank.write 0 rfWaE rfWdE) .skip⟩
+  ⟨"rf_funnel", [hwstmt|
+    if rfWeE then rfBank[port 0, rfWaE] <- rfWdE]⟩
 
 /-! ### EXT-9 — the I-cache fill funnel
 
@@ -2683,7 +2685,8 @@ site). -/
 def icFill : Expr 1 := .and (.eq st (L5 S_FW)) mDone
 
 def icFillRule : Rule :=
-  ⟨"ic_data_funnel", .ite icFill (icDataBank.write 0 ic_idx mRdata) .skip⟩
+  ⟨"ic_data_funnel", [hwstmt|
+    if icFill then icDataBank[port 0, ic_idx] <- mRdata]⟩
 
 def icTagRule : Rule :=
   -- ONE syntactic write site, address and data muxed. Two sites on port 0
@@ -2691,12 +2694,10 @@ def icTagRule : Rule :=
   -- LUTs; the emit gate caught exactly that here before any RTL existed.
   -- Sweep wins over fill: during a wrap the bank is being retired, and a
   -- fill landing in the middle of it would survive the sweep.
-  ⟨"ic_tag_funnel",
-    .ite (.or ic_inv icFill)
-      (icTagBank.write 0
-        (.mux ic_inv ic_ctr ic_idx)
-        (.mux ic_inv (.lit (BitVec.ofNat 42 0)) ic_tag_fill))
-      .skip⟩
+  ⟨"ic_tag_funnel", [hwstmt|
+    if ic_inv | icFill then
+      icTagBank[port 0, if ic_inv then ic_ctr else ic_idx] <-
+        if ic_inv then 0 else ic_tag_fill]⟩
 
 /-- Any command that changes the mapping a cached line was filled under.
 Bumping `ic_gen` retires every line at once, in one cycle. `cmd 13`'s soft
@@ -2750,15 +2751,16 @@ def dc_cap_idx : Expr 12 :=
                (.lit (BitVec.ofNat 32 3))) 0 12
 
 def dcDataRule : Rule :=
-  ⟨"dc_data_funnel", .ite dcFill (dcDataBank.write 0 dc_fill_idx mRdata) .skip⟩
+  ⟨"dc_data_funnel", [hwstmt|
+    if dcFill then dcDataBank[port 0, dc_fill_idx] <- mRdata]⟩
 
 def dcTagRule : Rule :=
-  ⟨"dc_tag_funnel",
-    .ite (.or dcStoreInv (.or dcCapInv dcFill))
-      (dcTagBank.write 0
-        (.mux dcStoreInv dc_sidx (.mux dcCapInv dc_cap_idx dc_fill_idx))
-        (.mux (.or dcStoreInv dcCapInv) (.lit (BitVec.ofNat 42 0)) dc_fill_tag))
-      .skip⟩
+  ⟨"dc_tag_funnel", [hwstmt|
+    if dcStoreInv | (dcCapInv | dcFill) then
+      dcTagBank[port 0,
+        if dcStoreInv then dc_sidx else
+        if dcCapInv then dc_cap_idx else dc_fill_idx] <-
+          if dcStoreInv | dcCapInv then 0 else dc_fill_tag]⟩
 
 /-- The generation register, and the wrap fallback.
 
@@ -2768,19 +2770,23 @@ walked once. That keeps the design *correct* rather than merely improbable,
 at an amortized cost of 4096 cycles per 65 536 invalidations -- about 0.06
 cycles each. -/
 def icGenRule : Rule :=
-  ⟨"ic_gen", .ite icGenBump
-    (.ite (.eq ic_gen (.lit (BitVec.ofNat 16 65535)))
-      (.seq (icGenReg.set (.lit (BitVec.ofNat 16 0)))
-        (.seq (icInvReg.set (L1 1)) (icCtrReg.set (.lit (BitVec.ofNat 12 0)))))
-      (icGenReg.set (.add ic_gen (.lit (BitVec.ofNat 16 1))))) .skip⟩
+  ⟨"ic_gen", [hwstmt|
+    if icGenBump then
+      if ic_gen == 0xffff then {
+        icGenReg <- 0,
+        icInvReg <- 1,
+        icCtrReg <- 0
+      } else icGenReg <- ic_gen + 1]⟩
 
 /-- The wrap sweep: a `zeroing` clone over the tag bank, through the same
 single write site. Ends by clearing `ic_inv`, which releases `fsmEn`. -/
 def icInvRule : Rule :=
-  ⟨"ic_inv", .ite ic_inv
-    (.ite (.eq ic_ctr (.lit (BitVec.ofNat 12 4095)))
-      (.seq (icInvReg.set (L1 0)) (icCtrReg.set (.lit (BitVec.ofNat 12 0))))
-      (icCtrReg.set (.add ic_ctr (.lit (BitVec.ofNat 12 1))))) .skip⟩
+  ⟨"ic_inv", [hwstmt|
+    if ic_inv then
+      if ic_ctr == 0xfff then {
+        icInvReg <- 0,
+        icCtrReg <- 0
+      } else icCtrReg <- ic_ctr + 1]⟩
 
 /-- (10) EXT-1 — the quantum counter, the design's **only** writer of
 `qctr`, in strict priority:
@@ -2799,7 +2805,7 @@ immaterial to its value; it sits last because it is the newest. -/
 def quantumRule : Rule :=
   ⟨"quantum", [hwstmt|
     if cmdValid & (cmdIdx == $(L7 CMD_QUANTUM)) then qctrReg <- cmdData else
-    if cmdValid & (cmdIdx == 13) & (cmdData[0] == 1) then qctrReg <- quantum else
+    if cmdValid & ((cmdIdx == 13) & (cmdData[0] == 1)) then qctrReg <- quantum else
     if preemptAtF0 then qctrReg <- quantum else
     if qTick then qctrReg <- qctr - 1]⟩
 
