@@ -10,12 +10,15 @@ import Lean.Elab.Command
 import Lean.Elab.Tactic
 import Lean.Elab.Term
 
-/-- Internal elaboration switch used only by `system ... extends ...`: the
-surface command cannot enumerate an arbitrary base Design's writable handles,
-so it defers that membership check to the composed `designWFCheck` proof. -/
+/-- Internal elaboration switch used only by `system ... extends ...`.
+The enclosing system elaborator first inspects the closed base Design and
+checks direct and helper-hidden coordinates at their source tokens. This switch
+then prevents the nested `hardware` expansion from rejecting those already-
+validated base writes as non-local; the composed `designWFCheck` remains the
+independent semantic backstop. -/
 register_option loom.hw.deferExtensionWrites : Bool := {
   defValue := false
-  descr := "internal: defer inline-extension write membership to the composed Design check"
+  descr := "internal: accept source-validated base writes while lowering an inline extension"
 }
 
 /-!
@@ -3801,8 +3804,46 @@ private unsafe def reducedHandleName? (value type : Lean.Expr) : TermElabM (Opti
   let projected ← Meta.mkAppM projection #[value]
   try pure (some (← inspectString projected)) catch _ => pure none
 
+private abbrev ReadSites :=
+  List (String × Nat) × List (String × Nat)
+
+private unsafe def inspectClosedValue (source : TSyntax `ident)
+    (type value : Lean.Expr) {alpha : Type} (label : String) : TermElabM alpha :=
+  try evalExpr alpha type value
+  catch _ => throwErrorAt source
+    s!"extension helper '{source.getId}' must be closed and reducible so Loom can check its {label}; inline it, expose a reducible definition, or compose it in ordinary Lean"
+
+private def generatedEndpointCoordinate (endpoints : Array Name) (name : String) : Bool :=
+  endpoints.any fun channel =>
+    name.startsWith ("__loom_chan_" ++ channel.toString ++ "_")
+
+private def validateReadSites (base : InspectableDesign) (endpoints : Array Name)
+    (source : TSyntax `ident) (sites : ReadSites) : TermElabM Unit := do
+  for (name, width) in sites.1 do
+    unless base.regs.contains (name, width) || base.ports.contains (name, width) ||
+        generatedEndpointCoordinate endpoints name do
+      throwErrorAt source
+        s!"extension helper '{source.getId}' reads hardware coordinate '{name}' at width {width}, which is not declared by its base Design or generated endpoints"
+  for (name, dataWidth) in sites.2 do
+    unless base.mems.any (fun declaration =>
+        declaration.1 == name && declaration.2.2 == dataWidth) do
+      throwErrorAt source
+        s!"extension helper '{source.getId}' reads memory '{name}' at data width {dataWidth}, which is not declared by its base Design"
+
+private def validateActionWrites (base : InspectableDesign) (endpoints : Array Name)
+    (source : TSyntax `ident) (registers : List (String × Nat))
+    (memories : List String) : TermElabM Unit := do
+  for (name, width) in registers do
+    unless base.regs.contains (name, width) || generatedEndpointCoordinate endpoints name do
+      throwErrorAt source
+        s!"extension helper '{source.getId}' writes hardware coordinate '{name}' at width {width}, which is not declared by its base Design or generated endpoints"
+  for name in memories do
+    unless base.mems.any (fun declaration => declaration.1 == name) do
+      throwErrorAt source
+        s!"extension helper '{source.getId}' writes memory '{name}', which is not declared by its base Design"
+
 private unsafe def validateExtensionIdentifier (base : InspectableDesign)
-    (identifier : TSyntax `ident) : CommandElabM Unit :=
+    (endpoints : Array Name) (identifier : TSyntax `ident) : CommandElabM Unit :=
   liftTermElabM do
     let inspect (candidate : TSyntax `term) : TermElabM (Option Unit) := do
       let value? ← try
@@ -3810,6 +3851,32 @@ private unsafe def validateExtensionIdentifier (base : InspectableDesign)
       catch _ => pure none
       let some value := value? | pure none
       let type ← Meta.whnf (← Meta.inferType value)
+      if type.isAppOfArity ``Expr 1 then
+        let sitesExpr ← Meta.mkAppM ``Expr.readSites #[value]
+        let sites ← inspectClosedValue identifier (← Meta.inferType sitesExpr)
+          sitesExpr "read coordinates"
+        validateReadSites base endpoints identifier sites
+        return some ()
+      if type.isAppOfArity ``PackedExpr 2 then
+        let bits ← Meta.mkAppM ``PackedExpr.bits #[value]
+        let sitesExpr ← Meta.mkAppM ``Expr.readSites #[bits]
+        let sites ← inspectClosedValue identifier (← Meta.inferType sitesExpr)
+          sitesExpr "read coordinates"
+        validateReadSites base endpoints identifier sites
+        return some ()
+      if type.isConstOf ``Act then
+        let sitesExpr ← Meta.mkAppM ``Act.readSites #[value]
+        let sites ← inspectClosedValue identifier (← Meta.inferType sitesExpr)
+          sitesExpr "read coordinates"
+        validateReadSites base endpoints identifier sites
+        let writesExpr ← Meta.mkAppM ``Act.regWrites #[value]
+        let writes ← inspectClosedValue identifier (← Meta.inferType writesExpr)
+          writesExpr "write coordinates"
+        let memWritesExpr ← Meta.mkAppM ``Act.memWrites #[value]
+        let memWrites ← inspectClosedValue identifier (← Meta.inferType memWritesExpr)
+          memWritesExpr "memory writes"
+        validateActionWrites base endpoints identifier writes memWrites
+        return some ()
       let some name ← reducedHandleName? value type | pure none
       let valid ←
         if type.isAppOfArity ``Reg 1 || type.isAppOfArity ``Input 1 then do
@@ -3857,7 +3924,7 @@ private unsafe def validateExtensionBase (baseSyntax : TSyntax `term)
     let name := identifier.getId.eraseMacroScopes
     let endpointBase := if name.isAtomic then name else name.getPrefix
     unless locals.contains name || binders.contains name || endpoints.contains endpointBase do
-      validateExtensionIdentifier base identifier
+      validateExtensionIdentifier base endpoints identifier
 
 private def expandSystemCommand
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))

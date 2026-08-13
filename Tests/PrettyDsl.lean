@@ -1166,11 +1166,27 @@ open Loom.Hw.Dsl
 namespace Base
 hardware extension_boundary_base where
   output reg owned : 8
+
+def ownedPlusOne : Expr 8 := owned.rd.add (.lit 1)
+def bumpOwned : Act := owned.set ownedPlusOne
 end Base
 
 namespace Foreign
 def alien : Reg 8 := ⟨"alien"⟩
+def hiddenRead : Expr 8 := alien.rd
+def hiddenWrite : Act := alien.set (.lit 1)
+def alienMemory : Mem 4 8 := ⟨"alien_mem"⟩
+def hiddenMemoryRead : Expr 8 := alienMemory.rd (.lit 0)
+def hiddenMemoryWrite : Act := alienMemory.write 0 (.lit 0) (.lit 1)
 end Foreign
+
+system helper_coordinates_ok where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    output reg observed : 8
+    rule capture := { observed <- Base.ownedPlusOne, Base.owned <- Base.ownedPlusOne }
 
 /-- error: extension references hardware coordinate 'alien' that is not declared by its base Design; add it in this extension, use a generated channel endpoint, or compose the foreign Design explicitly in Lean -/
 #guard_msgs in
@@ -1190,6 +1206,56 @@ system foreign_write where
   reset Reset.together
   island worker on clk extends Base.design where
     rule corrupt := Foreign.alien <- 1
+
+/-- error: extension helper 'Foreign.hiddenRead' reads hardware coordinate 'alien' at width 8, which is not declared by its base Design or generated endpoints -/
+#guard_msgs in
+system foreign_helper_read where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    output reg observed : 8
+    rule capture := observed <- Foreign.hiddenRead
+
+/-- error: extension helper 'Foreign.hiddenWrite' writes hardware coordinate 'alien' at width 8, which is not declared by its base Design or generated endpoints -/
+#guard_msgs in
+system foreign_helper_write where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    rule corrupt := $stmt(Foreign.hiddenWrite)
+
+/-- error: extension helper 'Foreign.hiddenMemoryRead' reads memory 'alien_mem' at data width 8, which is not declared by its base Design -/
+#guard_msgs in
+system foreign_helper_memory_read where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    output reg observed : 8
+    rule capture := observed <- Foreign.hiddenMemoryRead
+
+/-- error: extension helper 'Foreign.hiddenMemoryWrite' writes memory 'alien_mem', which is not declared by its base Design -/
+#guard_msgs in
+system foreign_helper_memory_write where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    rule corrupt := $stmt(Foreign.hiddenMemoryWrite)
+
+axiom opaqueRead : Expr 8
+
+/-- error: extension helper 'opaqueRead' must be closed and reducible so Loom can check its read coordinates; inline it, expose a reducible definition, or compose it in ordinary Lean -/
+#guard_msgs in
+system opaque_helper_read where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    output reg observed : 8
+    rule capture := observed <- opaqueRead
 
 axiom opaqueBase : Design
 
