@@ -21,69 +21,72 @@ namespace Machines.Acc8.Core
 open Loom.Hw
 open Loom.Hw.Dsl
 
-/-- Architectural register handles. Each name and width is declared here. -/
-abbrev accReg : Reg 8 := ⟨"acc"⟩
-abbrev pcReg : Reg 8 := ⟨"pc"⟩
-abbrev haltedReg : Reg 1 := ⟨"halted"⟩
-
-/-- Program ROM and data RAM handles. -/
-abbrev progMem : Mem 8 16 := ⟨"prog"⟩
-abbrev dataMem : Mem 8 8 := ⟨"mem"⟩
-
-/-- Expression shorthands. -/
-private def rAcc : Expr 8 := accReg.rd
-private def rPc : Expr 8 := pcReg.rd
-private def rHalted : Expr 1 := haltedReg.rd
-
 /-- The architectural instruction word as a typed packed view. Declaration
 order is MSB-first, matching Acc8's immediate/opcode encoding exactly. -/
 packed struct Instruction where
   imm : 8
   opc : 8
 
-private def fetched : PackedExpr Instruction :=
-  [hwexpr| Instruction.fromBits(progMem[rPc])]
-private def opc : Expr 8 := [hwexpr| fetched.opc]
-private def imm : Expr 8 := [hwexpr| fetched.imm]
-private def loadData : Expr 8 := dataMem.rd imm
+/-! The complete authoring surface lives in a nested namespace because Acc8's
+program image is a Lean parameter applied after lowering. The generated
+declarations own the handles, opcode labels, memory shapes, and rule; the
+outer `design` substitutes only the parameterized ROM initializer. -/
+namespace Authored
 
-/-! Width-typed opcode labels keep the hardware dispatch readable. The ISA
-declaration remains the semantic source; A-R and the text round-trip below
-guard this deliberately small lowering-side mirror. -/
-private abbrev NOP : Expr 8 := .lit 0
-private abbrev LDI : Expr 8 := .lit 1
-private abbrev ADD : Expr 8 := .lit 2
-private abbrev LDA : Expr 8 := .lit 3
-private abbrev STA : Expr 8 := .lit 4
-private abbrev JNZ : Expr 8 := .lit 5
-private abbrev SUB : Expr 8 := .lit 6
+-- Lean's unused-variable linter does not see packed-local uses reconstructed
+-- by the `hwexpr` field elaborator; the lowered `exec` term does use `fetched`.
+set_option linter.unusedVariables false in
+hardware acc8_authored where
+  output reg acc : 8
+  output reg pc : 8
+  output reg halted : 1
+  memory prog : 16 [256]
+  memory mem : 8 [256]
 
-/-- The instruction-execution rule, written with the optional pretty syntax.
-The quotation lowers directly to the same `Act` constructors used previously. -/
-private def execRule : Act :=
-  [hwstmt|
-    if rHalted then skip else
+  const NOP : 8 := 0
+  const LDI : 8 := 1
+  const ADD : 8 := 2
+  const LDA : 8 := 3
+  const STA : 8 := 4
+  const JNZ : 8 := 5
+  const SUB : 8 := 6
+
+  rule exec := {
+    let fetched := Instruction.fromBits(prog[pc]),
+    let opc := fetched.opc,
+    let imm := fetched.imm,
+    let loadData := mem[imm],
+    if halted then skip else
     case opc of
-    | NOP => { let nextPc : 8 := rPc + 1, pcReg <- nextPc }
-    | LDI => { accReg <- imm, pcReg <- rPc + 1 }
-    | ADD => { accReg <- rAcc + imm, pcReg <- rPc + 1 }
-    | LDA => { accReg <- loadData, pcReg <- rPc + 1 }
-    | STA => { dataMem[port 0, imm] <- rAcc, pcReg <- rPc + 1 }
+    | NOP => pc <- pc + 1
+    | LDI => { acc <- imm, pc <- pc + 1 }
+    | ADD => { acc <- acc + imm, pc <- pc + 1 }
+    | LDA => { acc <- loadData, pc <- pc + 1 }
+    | STA => { mem[port 0, imm] <- acc, pc <- pc + 1 }
     | JNZ => {
-        if rAcc == 0 then pcReg <- rPc + 1 else pcReg <- imm
+        if acc == 0 then pc <- pc + 1 else pc <- imm
       }
-    | SUB => { accReg <- rAcc - imm, pcReg <- rPc + 1 }
-    -- hlt (7) and every unknown opcode halt.
-    | default => { haltedReg <- 1 }]
+    | SUB => { acc <- acc - imm, pc <- pc + 1 }
+    -- HLT (7) and every unknown opcode halt.
+    | default => halted <- 1
+  }
+
+end Authored
+
+/-- Compatibility names used by the existing refinement development. The
+generated handles are the sole authoring source. -/
+abbrev accReg : Reg 8 := Authored.acc
+abbrev pcReg : Reg 8 := Authored.pc
+abbrev haltedReg : Reg 1 := Authored.halted
+abbrev progMem : Mem 8 16 := Authored.prog
+abbrev dataMem : Mem 8 8 := Authored.mem
+
+private abbrev execRule : Act := Authored.exec
 
 /-- Acc8 state, interface, and memory initialization from typed handles. -/
 abbrev declarations (prog : BitVec 8 → BitVec 16) : Declarations :=
-  Declarations.empty
-    |>.addReg accReg (exported := true)
-    |>.addReg pcReg (exported := true)
-    |>.addReg haltedReg (exported := true)
-    |>.addMem progMem (fun a => prog (BitVec.ofNat 8 a))
-    |>.addMem dataMem
+  { Authored.declarations with
+    mems := [progMem.decl (fun a => prog (BitVec.ofNat 8 a)), dataMem.decl] }
 
 /-- The Acc8 core for a given program image. -/
 def design (prog : BitVec 8 → BitVec 16) : Design :=
