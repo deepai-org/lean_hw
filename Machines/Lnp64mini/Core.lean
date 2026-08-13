@@ -977,12 +977,12 @@ and their eval-equality with the linear forms is proved (`priTree_eval`,
 
 /-! ## Decode (combinational wires) -/
 
-def op   : Expr 8 := .slice ir 56 8
-def rdf  : Expr 5 := .slice ir 51 5
-def rs1f : Expr 5 := .slice ir 46 5
-def rs2f : Expr 5 := .slice ir 41 5
-def rs3f : Expr 5 := .slice ir 36 5
-def rs4f : Expr 5 := .slice ir 31 5
+def op   : Expr 8 := [hwexpr| ir[63:56]]
+def rdf  : Expr 5 := [hwexpr| ir[55:51]]
+def rs1f : Expr 5 := [hwexpr| ir[50:46]]
+def rs2f : Expr 5 := [hwexpr| ir[45:41]]
+def rs3f : Expr 5 := [hwexpr| ir[40:36]]
+def rs4f : Expr 5 := [hwexpr| ir[35:31]]
 
 /-- imm_i = {{32{ir[45]}}, ir[45:14]} — sext of ir[45:14] (32 bits) to 64. -/
 def imm_i : Expr 64 := [hwexpr| sext ir[45:14] to 64]
@@ -1224,7 +1224,7 @@ def freeBm : Expr 32 :=
 /-- Wrap a thread index into `[0, NT)`. `NT` is a power of two, so the mask
 makes the parameterization explicit even when the expression width is wider
 than the configured thread table. -/
-def tidWrap (x : Expr 5) : Expr 5 := .and x (L5 (NT - 1))
+def tidWrap (x : Expr 5) : Expr 5 := [hwexpr| x & $(L5 (NT - 1))]
 
 /-- rbm2 = ({ready,ready} >> (cur+1))[63:0] -- the round-robin rotate, done by
 duplicating the ready bitmap and shifting.
@@ -1233,8 +1233,9 @@ duplicating the ready bitmap and shifting.
 bits `0..NT-1`, so a copy at bit 32 leaves `32-NT` zeros between the two and
 the scan walks into them instead of wrapping round. -/
 def rbm2 : Expr 64 :=
-  .shr (.or (.zext readyBm 64) (.shl (.zext readyBm 64) (L64 NT)))
-       (.zext (.add cur (L5 1)) 64)
+  [hwexpr|
+    ((zext readyBm to 64) | ((zext readyBm to 64) << $(L64 NT))) >>
+      zext (cur + 1) to 64]
 
 /-- Downward scan over rbm2[31:0]: lowest set bit index wins (0 outermost).
 Balanced priority tree — first-match-wins is preserved by `priTree`, so
@@ -1252,14 +1253,15 @@ def hf_c : Expr 1 :=
 
 /-- hp_core_owns = running && st∉{S_TRAP,S_WAIT,S_PAUSE}. -/
 def hp_core_owns : Expr 1 :=
-  .and running
-    (.and (.not (.eq st (L5 S_TRAP)))
-      (.and (.not (.eq st (L5 S_WAIT))) (.not (.eq st (L5 S_PAUSE)))))
+  [hwexpr|
+    running &
+      (~(st == $(L5 S_TRAP)) &
+        (~(st == $(L5 S_WAIT)) & ~(st == $(L5 S_PAUSE))))]
 
 /-! ## {cur,reg} 10-bit index helpers -/
 
 def cat55 (hi lo : Expr 5) : Expr 10 :=
-  .concat hi lo
+  [hwexpr| hi ++ lo]
 
 /-! ## The rf write funnel
 
@@ -1273,19 +1275,20 @@ reproduce the if-else priority exactly. -/
 
 /-- The *effective* hold: `hold` only bites at the instruction boundary
 `S_F0`, so the core stops with no bus transaction outstanding. -/
-def holdEn : Expr 1 := .and hold (.eq st (L5 S_F0))
+def holdEn : Expr 1 := [hwexpr| hold & (st == $(L5 S_F0))]
 
 /-- running ∧ ¬halted ∧ ¬zeroing ∧ ¬holdEn — the FSM enable. `hold` (D15
 input, DUAL_SPEC extension 4) freezes the FSM: with `hold` tied 0 this is
 the original `running ∧ ¬halted ∧ ¬zeroing`. -/
 def fsmEn : Expr 1 :=
-  .and (.not holdEn) (.and running (.and (.not halted) (.and (.not zeroing) (.not ic_inv))))
+  [hwexpr| ~holdEn & (running & (~halted & (~zeroing & ~ic_inv)))]
 
 /-- S_EX branch reached iff earlier branches all missed. We inline each
 branch's own predicate ANDed with fsmEn ∧ st==S_EX; mutual exclusion holds
 because the ISA opcodes are disjoint, so we do not need the full negation
 chain for the rf funnel (order among FSM writes is free per spec). -/
-def exG (p : Expr 1) : Expr 1 := .and fsmEn (.and (.eq st (L5 S_EX)) p)
+def exG (p : Expr 1) : Expr 1 :=
+  [hwexpr| fsmEn & ((st == $(L5 S_EX)) & p)]
 
 /-! ## EXT-1 — the preemption tick (Law 5)
 
@@ -1317,18 +1320,18 @@ current thread's instructions* (`hp_core_owns` excludes `S_TRAP`, `S_WAIT`
 and `S_PAUSE`), so a thread is not charged for time the core spent parked
 or handing the bus to the host. It stops at 0 and waits for the reload,
 which keeps the counter from wrapping past a missed boundary. -/
-def quantumOn : Expr 1 := .not (.eq quantum (L32 0))
-def qExpired  : Expr 1 := .and quantumOn (.eq qctr (L32 0))
+def quantumOn : Expr 1 := [hwexpr| ~(quantum == 0)]
+def qExpired  : Expr 1 := [hwexpr| quantumOn & (qctr == 0)]
 
 def preemptAtF0 : Expr 1 :=
-  .and fsmEn (.and (.eq st (L5 S_F0))
-    (.and (.not bus_req) (.and (.not trap_active) qExpired)))
+  [hwexpr|
+    fsmEn & ((st == $(L5 S_F0)) & (~bus_req & (~trap_active & qExpired)))]
 
-def preemptFire : Expr 1 := .and preemptAtF0 (.not (.eq next_ready cur))
+def preemptFire : Expr 1 := [hwexpr| preemptAtF0 & ~(next_ready == cur)]
 
 def qTick : Expr 1 :=
-  .and fsmEn (.and hp_core_owns
-    (.and (.not trap_active) (.and quantumOn (.not (.eq qctr (L32 0))))))
+  [hwexpr|
+    fsmEn & (hp_core_owns & (~trap_active & (quantumOn & ~(qctr == 0))))]
 
 /-- The BSCAN command index that loads `quantum` (and arms `qctr` with the
 same value). Writing 0 disables preemption and restores the cooperative
@@ -1353,21 +1356,20 @@ def CMD_SETDOM : Nat := 58
 
 `capRecvSlot` is `domCur[3:0]` — the receiver's own domain. It is NOT an
 operand, which is the whole mediation argument. -/
-def capRecvSlot : Expr 4 := .slice domCur 0 4
-def capSendSlot : Expr 4 := .slice b 0 4
+def capRecvSlot : Expr 4 := [hwexpr| domCur[3:0]]
+def capSendSlot : Expr 4 := [hwexpr| b[3:0]]
 /-- The entry address of slot `d`: `DATA_BASE + cap_tbl_base + (d << 4)`. -/
 def capEntryAddr (d : Expr 4) : Expr 32 :=
-  .add (.add (.lit (BitVec.ofNat 32 DATA_BASE)) cap_tbl_base)
-       (.shl (.zext d 32) (.lit (BitVec.ofNat 32 4)))
+  [hwexpr| ($(L32 DATA_BASE) + cap_tbl_base) + ((zext d to 32) << 4)]
 /-- §17 flags-word predicates, on the word the bus returned THIS cycle
 (`mRdata`, not a latch — reads are pre-cycle, D9). Bit 8 is `valid`
 (fail-closed, like `gateDescValid`), bit 0 is `occupied`. -/
-def capFlValid : Expr 1 := .slice mRdata 8 1
-def capFlOcc   : Expr 1 := .slice mRdata 0 1
+def capFlValid : Expr 1 := [hwexpr| mRdata[8]]
+def capFlOcc   : Expr 1 := [hwexpr| mRdata[0]]
 /-- A send lands only on a valid, free entry. -/
-def capSendOk : Expr 1 := .and capFlValid (.not capFlOcc)
+def capSendOk : Expr 1 := [hwexpr| capFlValid & ~capFlOcc]
 /-- A receive lands only on a valid, occupied entry. -/
-def capRecvOk : Expr 1 := .and capFlValid capFlOcc
+def capRecvOk : Expr 1 := [hwexpr| capFlValid & capFlOcc]
 
 /-- **§17 fail-closed.** Bit 8 of the descriptor's second word is `valid`.
 A gate id with no descriptor reads back zeros, and zeros must not be an
