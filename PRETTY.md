@@ -2547,6 +2547,13 @@ structural change is reviewed, or (b) a general, user-natural adapter-order
 contract is designed from more than this one compatibility case. A hidden
 gauntlet-specific lowering switch is out of scope.
 
+The completed SoC Fabric Gauntlet is the preservation baseline for this phase.
+Its canonical RTL SHA-256 is
+`33335f3f906ccb427476d20dd5a7ea718cd7559c249b21802803b419fa1748ac`, and both
+the formal and FPGA evidence manifests verify. A syntax-only conversion must
+retain that byte identity; a mismatch stops the conversion for explicit
+semantic/artifact review rather than regenerating evidence under this plan.
+
 Use [`SOC_FABRIC_GAUNTLET.md`](SOC_FABRIC_GAUNTLET.md) as the first
 multi-route acceptance test rather than inventing synthetic parser fixtures:
 

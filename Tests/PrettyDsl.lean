@@ -1158,6 +1158,52 @@ example : extended.application.artifact.emissionCheck.isOk := by native_decide
 
 end Tests.PrettyDsl.ExtendedIsland
 
+namespace Tests.PrettyDsl.ExtensionBoundary
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+namespace Base
+hardware extension_boundary_base where
+  output reg owned : 8
+end Base
+
+namespace Foreign
+def alien : Reg 8 := ⟨"alien"⟩
+end Foreign
+
+/-- error: extension references hardware coordinate 'alien' that is not declared by its base Design; add it in this extension, use a generated channel endpoint, or compose the foreign Design explicitly in Lean -/
+#guard_msgs in
+system foreign_read where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    output reg observed : 8
+    rule capture := observed <- Foreign.alien
+
+/-- error: extension references hardware coordinate 'alien' that is not declared by its base Design; add it in this extension, use a generated channel endpoint, or compose the foreign Design explicitly in Lean -/
+#guard_msgs in
+system foreign_write where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    rule corrupt := Foreign.alien <- 1
+
+axiom opaqueBase : Design
+
+/-- error: `extends` requires a closed, reducible Design whose declarations Loom can inspect; compose an opaque or parametric Design in ordinary Lean and use the unchanged `island name on clock := design` form -/
+#guard_msgs in
+system opaque_extension where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends opaqueBase where
+    output reg observed : 8
+
+end Tests.PrettyDsl.ExtensionBoundary
+
 namespace Tests.PrettyDsl.EndpointExtendedIsland
 
 open Loom.Hw
