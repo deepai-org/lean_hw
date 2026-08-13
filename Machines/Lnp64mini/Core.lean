@@ -2182,6 +2182,15 @@ def s_rd2 : Expr 1 × Act := stArm S_RD2
 -- S_EX: if-else priority tree mirroring the Verilog (rf writes in the
 -- funnel; here: pc/retire/st/scheduler-array/master-handshake side effects).
 
+/-- Default action for an unknown opcode. Kept ahead of the dispatch data so
+individual readable action leaves can reuse it without duplicating writes. -/
+def s_ex_trap : Act :=
+  [hwstmt| {
+    trapActiveReg <- 1,
+    trappedOpReg <- op,
+    stReg <- $(L5 S_TRAP)
+  }]
+
 /-- The S_EX opcode dispatch, kept as an explicit (guard, action) list in
 the Verilog's textual if/else-if order. `actPriTree` re-associates it into
 a balanced else-if tree: identical first-match-wins behaviour (see
@@ -2189,44 +2198,65 @@ a balanced else-if tree: identical first-match-wins behaviour (see
 levels to ~5. -/
 def s_ex_branches : List (Expr 1 × Act) :=
   -- 0x3a EXIT
-  gcons (opIs OP_EXIT) (.seq (haltedReg.set (L1 1)) (.seq (runningReg.set (L1 0)) retireInc)) <|
+  gcons (opIs OP_EXIT) [hwstmt| {
+    haltedReg <- 1, runningReg <- 0, $stmt(retireInc)
+  }] <|
   -- 0x3b THREAD_EXIT
   gcons (opIs OP_THREAD_EXIT)
-    (.seq (tstateDynWrite (L2 0) cur)
-      (.seq (.ite (.not (.eq next_ready cur))
-              (.seq (curReg.set next_ready) (.seq (setPcFromTpc next_ready) goF0))
-              (stReg.set (L5 S_WAIT)))
-            retireInc)) <|
+    [hwstmt| {
+      $stmt(tstateDynWrite (L2 0) cur),
+      if ~(next_ready == cur) then {
+        curReg <- next_ready,
+        $stmt(setPcFromTpc next_ready),
+        $stmt(goF0)
+      } else stReg <- $(L5 S_WAIT),
+      $stmt(retireInc)
+    }] <|
   -- 0x00 NOP
-  gcons (opIs OP_NOP) (.seq stepPc (.seq retireInc goF0)) <|
+  gcons (opIs OP_NOP) [hwstmt| {
+    $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- fence
-  gcons is_fence (.seq stepPc (.seq retireInc goF0)) <|
+  gcons is_fence [hwstmt| {
+    $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- High-half multiplies retain the area-oriented shift-add implementation;
   -- ordinary MUL is a direct `Expr.mul` ALU operation above.
   gcons is_mulh
-    (.seq (mulAccReg.set (.lit (BitVec.ofNat 128 0)))
-      (.seq (mulAwReg.set (.zext a 128))
-        (.seq (mulBReg.set b)
-          (.seq (mulKindReg.set (.mux (opIs OP_MULH) (L2 1) (L2 2))) (stReg.set (L5 S_MUL)))))) <|
+    [hwstmt| {
+      mulAccReg <- 0,
+      mulAwReg <- zext a to 128,
+      mulBReg <- b,
+      mulKindReg <- if $(opIs OP_MULH) then 1 else 2,
+      stReg <- $(L5 S_MUL)
+    }] <|
   -- div
   gcons is_div
     -- §4.1 makes division and remainder total and non-trapping. SIGFPE is a
     -- personality-level event, not part of these decoded ISA semantics.
-    (.ite (.eq b (L64 0))
-      (.seq stepPc (.seq retireInc goF0))
-      (.seq (divRemReg.set (L64 0))
-        (.seq (divQuoReg.set div_a_abs)
-          (.seq (divDReg.set div_b_abs)
-            (.seq (divCntReg.set (.lit (BitVec.ofNat 7 0)))
-              (.seq (divIsremReg.set (.or (opIs OP_SREM) (opIs OP_UREM)))
-                (.seq (divNegqReg.set (.and div_sgn (.xor (.slice a 63 1) (.slice b 63 1))))
-                  (.seq (divNegrReg.set (.and div_sgn (.slice a 63 1))) (stReg.set (L5 S_DIV)))))))))) <|
+    [hwstmt|
+      if b == 0 then {
+        $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
+      } else {
+        divRemReg <- 0,
+        divQuoReg <- div_a_abs,
+        divDReg <- div_b_abs,
+        divCntReg <- 0,
+        divIsremReg <- $(opIs OP_SREM) | $(opIs OP_UREM),
+        divNegqReg <- div_sgn & (a[63] ^ b[63]),
+        divNegrReg <- div_sgn & a[63],
+        stReg <- $(L5 S_DIV)
+      }] <|
   -- sel
-  gcons is_sel (.seq stepPc (.seq retireInc goF0)) <|
+  gcons is_sel [hwstmt| {
+    $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
+  }] <|
   -- 0x54 GET_PCR
   gcons (opIs OP_GET_PCR)
-    (.ite (.eq rs1f (L5 2)) (.seq stepPc (.seq retireInc goF0))
-      (.seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP))))) <|
+    [hwstmt|
+      if rs1f == 2 then {
+        $stmt(stepPc), $stmt(retireInc), $stmt(goF0)
+      } else $stmt(s_ex_trap)] <|
   -- alu
   gcons is_alu (.seq stepPc (.seq retireInc goF0)) <|
   -- 0x20 J
@@ -2384,14 +2414,6 @@ def opZeroFault : Act :=
     faultCurReg <- cur,
     poisonReg <- poison | (1 << zext cur to 32),
     $stmt(goF0)
-  }]
-
-/-- default: trap on an unknown opcode. -/
-def s_ex_trap : Act :=
-  [hwstmt| {
-    trapActiveReg <- 1,
-    trappedOpReg <- op,
-    stReg <- $(L5 S_TRAP)
   }]
 
 /-- Opcode 0 outranks the host trap: it is an architectural fault, not a
