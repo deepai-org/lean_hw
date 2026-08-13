@@ -2108,7 +2108,11 @@ private structure StateDomain where
   width : Nat
 
 private structure WrittenTarget where
-  name : Name
+  /-- The declared register coordinate.  Packed field writes retain the same
+  base so a later whole-value access cannot accidentally look unrelated. -/
+  base : Name
+  /-- `none` is a whole-register write; `some field` is one packed field. -/
+  field : Option Name
   source : Syntax
   overrideExpected : Bool
 
@@ -2120,6 +2124,29 @@ private structure LintFinding where
 private def knownLint (name : Name) : Bool :=
   name == `read_after_write || name == `multiple_write || name == `unguarded_channel
 
+private def cleanHardwareName (name : Name) : Name := name.eraseMacroScopes
+
+/-- Interpret an assignment target relative to the declared register names.
+The surface language currently has only one-level packed field lvalues, but
+checking the declared base keeps a dotted identifier from being mistaken for
+an unrelated coordinate. -/
+private def writtenTargetOf (registers : Array Name) (target : TSyntax `ident)
+    (overrideExpected : Bool) : WrittenTarget :=
+  let name := cleanHardwareName target.getId
+  let declared := registers.map cleanHardwareName
+  let basePrefix := if name.isAtomic then name else name.getPrefix
+  let base := if declared.contains name then name
+    else if declared.contains basePrefix then basePrefix
+    else name
+  let field := if name == base then none
+    else if !name.isAtomic && name.getPrefix == base then some (Name.mkSimple name.getString!)
+    else none
+  ⟨base, field, target, overrideExpected⟩
+
+private def writtenTargetsOverlap (left right : WrittenTarget) : Bool :=
+  left.base == right.base &&
+    (left.field.isNone || right.field.isNone || left.field == right.field)
+
 private partial def expressionReads : TSyntax `hwexpr → List (TSyntax `ident)
   | `(hwexpr| $_:num) => []
   | `(hwexpr| $name:ident) => [name]
@@ -2127,6 +2154,7 @@ private partial def expressionReads : TSyntax `hwexpr → List (TSyntax `ident)
   | `(hwexpr| $name:ident[$_:num]) => [name]
   | `(hwexpr| $name:ident[$_:num:$__:num]) => [name]
   | `(hwexpr| $memory:ident[$address:hwexpr]) => memory :: expressionReads address
+  | `(hwexpr| $value:hwexpr.$_:ident) => expressionReads value
   | `(hwexpr| $value:hwexpr[$_:num]) => expressionReads value
   | `(hwexpr| $value:hwexpr[$_:num:$__:num]) => expressionReads value
   | `(hwexpr| ~ $value:hwexpr) => expressionReads value
@@ -2157,11 +2185,20 @@ private def readAfterWriteFindings (registers : Array Name)
   if suppressed.contains `read_after_write then []
   else
     (expressionReads expression).filterMap fun (read : TSyntax `ident) =>
-      if registers.contains read.getId && written.any (fun prior => prior.name == read.getId) then
-        some ⟨read.raw,
-          s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle",
-          `read_after_write⟩
-      else none
+      let readName := cleanHardwareName read.getId
+      let declared := registers.map cleanHardwareName
+      let basePrefix := if readName.isAtomic then readName else readName.getPrefix
+      let readBase := if declared.contains readName then some readName
+        else if declared.contains basePrefix then some basePrefix
+        else none
+      if let some base := readBase then
+        if written.any (fun prior => prior.base == base) then
+          some ⟨read.raw,
+            s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle",
+            `read_after_write⟩
+        else none
+      else
+        none
 
 private inductive ChannelGuardKind where
   | canSend
@@ -2215,6 +2252,8 @@ private partial def unguardedDataFindings (suppressed : Array Name)
   | `(hwexpr| $value:hwexpr[$_:num:$__:num]) => unguardedDataFindings suppressed guards value
   | `(hwexpr| $_:ident[$address:hwexpr]) =>
       unguardedDataFindings suppressed guards address
+  | `(hwexpr| $value:hwexpr.$_:ident) =>
+      unguardedDataFindings suppressed guards value
   | `(hwexpr| $left:hwexpr * $right:hwexpr)
   | `(hwexpr| $left:hwexpr / $right:hwexpr)
   | `(hwexpr| $left:hwexpr % $right:hwexpr)
@@ -2251,14 +2290,15 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
   | `(hwstmt| skip) => (written, [])
   | `(hwstmt| $target:ident <- $value:hwexpr) =>
       let readFindings := expressionFindings registers suppressed guards written value
-      let prior := written.filter (fun earlier => earlier.name == target.getId)
       let suppressMultiple := suppressed.contains `multiple_write
+      let current := writtenTargetOf registers target suppressMultiple
+      let prior := written.filter (fun earlier => writtenTargetsOverlap earlier current)
       let multipleFinding :=
         if !prior.isEmpty && !suppressMultiple && prior.any (fun earlier => !earlier.overrideExpected) then
           [⟨target, s!"'{target.getId}' may be written more than once in one cycle; the later write wins",
             `multiple_write⟩]
         else []
-      (written ++ [⟨target.getId, target, suppressMultiple⟩], readFindings ++ multipleFinding)
+      (written ++ [current], readFindings ++ multipleFinding)
   | `(hwstmt| $_:ident[port $_:num, $address:hwexpr] <- $value:hwexpr) =>
       (written, expressionFindings registers suppressed guards written address ++
         expressionFindings registers suppressed guards written value)
@@ -2319,8 +2359,10 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
   | _ => (written, [])
 
 private def hardwareLintFindings (registers : Array ScalarRegItem)
+    (packedRegisters : Array PackedRegItem)
     (rules : Array RuleItem) : List LintFinding :=
-  let registerNames := registers.map (fun register => register.name.getId)
+  let registerNames := registers.map (fun register => register.name.getId) ++
+    packedRegisters.map (fun register => register.name.getId)
   let (_, findings) := rules.foldl (fun (written, priorFindings) ruleItem =>
     let suppressed := ruleItem.suppressedLint.toArray
     let (nextWritten, nextFindings) :=
@@ -3571,7 +3613,7 @@ private def normalizeDeclarationConstant (item : TSyntax `hwitem) :
             throwErrorAt domain.register
               s!"generated state proof declaration '{generatedName}' has already been declared"
       unless loom.hw.reconstructing.get (← getOptions) do
-        for finding in hardwareLintFindings registers rules do
+        for finding in hardwareLintFindings registers packedRegisters rules do
           logWarningAt finding.source finding.message
         for ruleItem in rules do
           for finding in deadDefaultFindings domains ruleItem.body do
