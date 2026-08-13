@@ -43,6 +43,48 @@ instance {width : Nat} : CoeHead (Input width) (Expr width) := ⟨rd⟩
 
 end Input
 
+/-! ## Packed-field proof presentation
+
+Partial packed-register assignment is already the core `Act.writeSlice`
+semantics.  These two field-coordinate lemmas keep ordinary invariant proofs
+at the same abstraction level as the pretty source instead of making authors
+unfold insertion masks. -/
+
+namespace PackedReg
+
+universe u
+
+variable {α : Type u} [HwPacked α]
+
+/-- Reading the field just written yields the pre-cycle RHS. -/
+@[simp] theorem extract_setField_run_self {fieldWidth : Nat}
+    (reg : PackedReg α) (field : PackedField α fieldWidth)
+    (value : Expr fieldWidth) (state accumulator : St) :
+    Loom.Word.extract field.lo fieldWidth
+        (((reg.setField field value).run state accumulator).regs
+          reg.name (HwPacked.width α)) =
+      value.eval state := by
+  simp [setField, Act.run, RegEnv.set, name]
+  exact Loom.Word.extract_insert_self field.lo _ _ field.inBounds
+
+/-- Writing a disjoint field preserves the field being observed. -/
+theorem extract_setField_run_of_disjoint {writtenWidth observedWidth : Nat}
+    (reg : PackedReg α) (written : PackedField α writtenWidth)
+    (observed : PackedField α observedWidth) (value : Expr writtenWidth)
+    (state accumulator : St)
+    (disjoint : observed.lo + observedWidth ≤ written.lo ∨
+      written.lo + writtenWidth ≤ observed.lo) :
+    Loom.Word.extract observed.lo observedWidth
+        (((reg.setField written value).run state accumulator).regs
+          reg.name (HwPacked.width α)) =
+      Loom.Word.extract observed.lo observedWidth
+        (accumulator.regs reg.name (HwPacked.width α)) := by
+  simp [setField, Act.run, RegEnv.set, name]
+  exact Loom.Word.extract_insert_of_disjoint (value.eval state)
+    (accumulator.regs reg.name (HwPacked.width α)) observed.inBounds disjoint
+
+end PackedReg
+
 /-! ## Proof-carrying endpoint action escapes
 
 An ordinary `Act` splice is opaque to the command-time channel checker.  The

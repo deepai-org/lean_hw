@@ -59,6 +59,64 @@ example : ([hwexpr| headerInput.address] : Expr 5) =
 example : [hwstmt| headerReg.tag <- 3] =
     headerReg.setField Header.tagField (.lit 3#3) := rfl
 
+namespace PackedProofShape
+
+hardware packed_proof_shape where
+  output reg header : Header
+
+  rule update := {
+    header.tag <- 5,
+    header.address <- 17
+  }
+
+/-- Reset fields are zero; after the first tick both named assignments hold.
+The preservation proof stays in field coordinates even though lowering uses
+ordered `Act.writeSlice` operations. -/
+def FieldsOk (state : St) : Prop :=
+  (Loom.Word.extract Header.tagField.lo 3
+      (state.regs header.name (HwPacked.width Header)) = 0#3 ∧
+    Loom.Word.extract Header.addressField.lo 5
+      (state.regs header.name (HwPacked.width Header)) = 0#5) ∨
+  (Loom.Word.extract Header.tagField.lo 3
+      (state.regs header.name (HwPacked.width Header)) = 5#3 ∧
+    Loom.Word.extract Header.addressField.lo 5
+      (state.regs header.name (HwPacked.width Header)) = 17#5)
+
+theorem fieldsOk_invariant : design.toTSys.Invariant FieldsOk := by
+  apply Loom.TSys.Inductive.invariant
+  constructor
+  · intro state initial
+    simp only [Design.toTSys_init_iff] at initial
+    subst initial
+    left
+    decide
+  · intro state next _ step
+    simp only [Design.toTSys_step_iff] at step
+    subst next
+    right
+    constructor
+    · change Loom.Word.extract Header.tagField.lo 3
+        (((header.setField Header.addressField (.lit 17#5)).run state
+          ((header.setField Header.tagField (.lit 5#3)).run state state)).regs
+            header.name (HwPacked.width Header)) = 5#3
+      have frame := PackedReg.extract_setField_run_of_disjoint
+        (reg := header) (written := Header.addressField)
+        (observed := Header.tagField) (value := Expr.lit 17#5)
+        (state := state)
+        (accumulator := (header.setField Header.tagField (.lit 5#3)).run state state)
+        (by native_decide)
+      rw [frame]
+      rw [PackedReg.extract_setField_run_self]
+      rfl
+    · change Loom.Word.extract Header.addressField.lo 5
+        (((header.setField Header.addressField (.lit 17#5)).run state
+          ((header.setField Header.tagField (.lit 5#3)).run state state)).regs
+            header.name (HwPacked.width Header)) = 17#5
+      rw [PackedReg.extract_setField_run_self]
+      rfl
+
+end PackedProofShape
+
 /-- error: missing packed field 'address' for 'Tests.PrettyDsl.Header' -/
 #guard_msgs in
 example : PackedExpr Header := [hwexpr| Header { tag := 1 }]
