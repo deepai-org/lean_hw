@@ -646,6 +646,18 @@ example : twoClock.application.artifact.emissionCheck.isOk := by native_decide
 example : twoClock.producer.outputs = ["sent"] := by native_decide
 example : twoClock.consumer.outputs = ["got"] := by native_decide
 
+private theorem assembledProducerTrue :
+    (twoClock.producerSystemIsland.design.toAssumedOpenTSys
+      (fun _ _ => True)).Invariant (fun _ => True) := by
+  intro _ _
+  trivial
+
+/-- Connected islands lift through the exact post-endpoint assembly value;
+the source proof still uses an ordinary single-clock Design transition system. -/
+example : twoClock.Invariant
+    (System.atIsland "producer" (fun _ => True)) := by
+  system_lift twoClock producer using assembledProducerTrue
+
 #show_system twoClock
 #show_system twoClock channel q
 #show_system twoClock timing
