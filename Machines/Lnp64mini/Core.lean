@@ -2125,8 +2125,11 @@ banks. Hit -> `ir` from the latched data word, straight to `S_RD` (a
 3-cycle fetch with no bus transaction at all). Miss -> the exact fetch
 `S_F0` used to issue; the fill happens in `S_FW` through the funnel. -/
 def s_ic : Expr 1 × Act := stArm S_IC
-  (.ite ic_hit
-    (.seq (irReg.set ic_data_q) (stReg.set (L5 S_RD)))
+  [hwstmt|
+    if ic_hit then {
+      irReg <- ic_data_q,
+      stReg <- $(L5 S_RD)
+    } else {
     -- **EXT-9b: translated fetch.** The miss arm asks the TLB, exactly as
     -- the data path does; the HIT arm above touches no translation at all,
     -- which is the entire reason the cache had to come first. EXTEND_SPEC
@@ -2137,8 +2140,10 @@ def s_ic : Expr 1 × Act := stArm S_IC
     -- With `mmu_en = 0`, `ddrEa pc` reduces to `ddrEaRaw pc`, which is
     -- `ddrPc` word-aligned -- so an unmapped machine fetches exactly what it
     -- fetched before.
-    (.seq (coreAddrReg.set (ddrEa pc))
-      (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_FW)))))
+      coreAddrReg <- $(ddrEa pc),
+      coreRdReg <- 1,
+      stReg <- $(L5 S_FW)
+    }]
 
 /-- `S_RD`: latch the three source operands. **D19 sync-read sites** —
 each written value is a bare `memRead` of `rf` (no zero-mux, no shared
@@ -2152,18 +2157,22 @@ the zeroing sweep writing 0) `rf[{t,0}]` is 0 in every reachable state,
 so the mux was the identity. Every register keeps its exact cycle-by-cycle
 value. -/
 def s_rd : Expr 1 × Act := stArm S_RD
-  (.seq (aReg.set (rfBank.rd (cat55 cur rs1f)))
-    (.seq (bReg.set (rfBank.rd (cat55 cur rs2f)))
-      (.seq (rdvalReg.set (rfBank.rd (cat55 cur rdf)))
-            (stReg.set (.mux is_sel (L5 S_RD2) (L5 S_EX))))))
+  [hwstmt| {
+    aReg <- rfBank[$(cat55 cur rs1f)],
+    bReg <- rfBank[$(cat55 cur rs2f)],
+    rdvalReg <- rfBank[$(cat55 cur rdf)],
+    stReg <- if is_sel then $(L5 S_RD2) else $(L5 S_EX)
+  }]
 
 /-- `S_RD2`: the two extra operands of a SELECT. Same D19 shape; the
 addresses name `rs3f`/`rs4f` directly (they are what `r1a`/`r2a` reduced
 to in this state). -/
 def s_rd2 : Expr 1 × Act := stArm S_RD2
-  (.seq (selTReg.set (rfBank.rd (cat55 cur rs3f)))
-    (.seq (selFReg.set (rfBank.rd (cat55 cur rs4f)))
-          (stReg.set (L5 S_EX))))
+  [hwstmt| {
+    selTReg <- rfBank[$(cat55 cur rs3f)],
+    selFReg <- rfBank[$(cat55 cur rs4f)],
+    stReg <- $(L5 S_EX)
+  }]
 
 -- S_EX: if-else priority tree mirroring the Verilog (rf writes in the
 -- funnel; here: pc/retire/st/scheduler-array/master-handshake side effects).
