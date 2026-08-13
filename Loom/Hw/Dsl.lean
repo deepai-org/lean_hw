@@ -84,6 +84,16 @@ def independentFlush : SystemResetPolicy := .independentFlush
 
 end Reset
 
+namespace Chan
+
+/-- Accept a push on a full queue when the same event also removes its head. -/
+def exchange : FullCoTickPolicy := .exchange
+
+/-- Refuse a push observed against a pre-event full queue, even on a co-tick. -/
+def refusePush : FullCoTickPolicy := .refusePush
+
+end Chan
+
 namespace Cdc
 
 def synchronousFifo : RealizationKind := .synchronous
@@ -2276,6 +2286,8 @@ syntax (priority := low) ident systemSameLine ident : hwsystemitem
 syntax (priority := high) ident systemSameLine "$" "(" term ")" : hwsystemitem
 syntax (priority := high) ident systemSameLine ident systemSameLine ":" num systemSameLine ident num : hwsystemitem
 syntax (priority := high) ident systemSameLine ident systemSameLine ":" ident systemSameLine ident num : hwsystemitem
+syntax (priority := high) ident systemSameLine ident systemSameLine ":" num systemSameLine ident num systemSameLine ident term:max : hwsystemitem
+syntax (priority := high) ident systemSameLine ident systemSameLine ":" ident systemSameLine ident num systemSameLine ident term:max : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident ":=" term : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident "where"
   withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
@@ -2292,6 +2304,7 @@ private structure PrettyChannel where
   width : Option (TSyntax `num) := none
   packedType : Option (TSyntax `ident) := none
   depth : TSyntax `num
+  policy : Option (TSyntax `term) := none
 
 private structure PrettyIsland where
   name : TSyntax `ident
@@ -2357,6 +2370,20 @@ private def expandSystemCommand
             Macro.throwErrorAt kind "expected `channel name : PackedType depth amount`"
           if depth.getNat == 0 then Macro.throwErrorAt depth "channel depth must be positive"
           channels := channels.push { name, packedType := some typeName, depth }; pure 3
+      | `(hwsystemitem| $kind:ident $name:ident : $width:num $depthKeyword:ident $depth:num $policyKeyword:ident $policy:term) =>
+          unless kind.getId == `channel && depthKeyword.getId == `depth &&
+              policyKeyword.getId == `policy do
+            Macro.throwErrorAt kind "expected `channel name : width depth amount policy Chan.exchange`"
+          if width.getNat == 0 then Macro.throwErrorAt width "channel width must be positive"
+          if depth.getNat == 0 then Macro.throwErrorAt depth "channel depth must be positive"
+          channels := channels.push { name, width := some width, depth, policy := some policy }; pure 3
+      | `(hwsystemitem| $kind:ident $name:ident : $typeName:ident $depthKeyword:ident $depth:num $policyKeyword:ident $policy:term) =>
+          unless kind.getId == `channel && depthKeyword.getId == `depth &&
+              policyKeyword.getId == `policy do
+            Macro.throwErrorAt kind "expected `channel name : PackedType depth amount policy Chan.exchange`"
+          if depth.getNat == 0 then Macro.throwErrorAt depth "channel depth must be positive"
+          channels := channels.push
+            { name, packedType := some typeName, depth, policy := some policy }; pure 3
       | `(hwsystemitem| $kind:ident $name:ident on $clock:ident := $design:term) =>
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock := design`"
@@ -2426,13 +2453,15 @@ private def expandSystemCommand
     let declarationName := nestedName channel.name.getId
     match channel.width, channel.packedType with
     | some width, none =>
+        let policy := channel.policy.getD (← `(term| Loom.Hw.Chan.exchange))
         commands := commands.push (← `(command|
           def $declarationName : Loom.Hw.Chan $width :=
-            ⟨$sourceName, $(channel.depth), .exchange⟩))
+            ⟨$sourceName, $(channel.depth), $policy⟩))
     | none, some typeName =>
+        let policy := channel.policy.getD (← `(term| Loom.Hw.Chan.exchange))
         commands := commands.push (← `(command|
           def $declarationName : Loom.Hw.PackedChan $typeName :=
-            Loom.Hw.PackedChan.named $sourceName $(channel.depth)))
+            Loom.Hw.PackedChan.named $sourceName $(channel.depth) $policy))
     | _, _ => Macro.throwErrorAt channel.name "invalid channel payload declaration"
   for island in islands do
     let declarationName := nestedName island.name.getId
