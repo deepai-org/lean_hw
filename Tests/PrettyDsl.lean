@@ -346,9 +346,12 @@ open Loom.Hw
 open Loom.Hw.Dsl
 open Tests.PrettyDsl
 
+def resetHeader : Header := { tag := 5, address := 17 }
+
 hardware packed_demo where
   input wire incoming : Header
-  output reg pending : Header
+  reg reset_pending : Header := { tag := 5, address := 17 }
+  output reg pending : Header := { tag := 2, address := 9 }
   output wire observed : Header := pending
   output wire observed_tag : 3 := pending.tag
 
@@ -358,9 +361,16 @@ hardware packed_demo where
   }
 
 example : pending = (PackedReg.named "pending" : PackedReg Header) := rfl
+example : (declarations.regs.find? (fun declaration => declaration.name = "reset_pending")).map
+    (fun declaration => declaration.init.toNat) = some (Header.packBits resetHeader).toNat := by
+  decide
+example : (declarations.regs.find? (fun declaration => declaration.name = "pending")).map
+    (fun declaration => declaration.init.toNat) =
+      some (Header.packBits { tag := 2, address := 9 }).toNat := by
+  decide
 example : incoming = (PackedInput.named "incoming" : PackedInput Header) := rfl
 example : declarations.regs.map (fun declaration =>
-    (declaration.name, declaration.width)) = [("pending", 8)] := by decide
+    (declaration.name, declaration.width)) = [("reset_pending", 8), ("pending", 8)] := by decide
 example : declarations.inputs.map (fun declaration =>
     (declaration.name, declaration.width)) = [("incoming", 8)] := by decide
 example : declarations.outputs = ["pending"] := by decide
@@ -372,6 +382,7 @@ example : declarations.combOutputs.map (fun declaration =>
 info: hardware packed_demo
 declarations:
   incoming: input 8 bits
+  reset_pending: register 8 bits
   pending: register 8 bits
   observed: combinational output 8 bits
   observed_tag: combinational output 3 bits
