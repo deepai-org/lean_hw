@@ -524,6 +524,17 @@ example : twoClock.application.artifact.emissionCheck.isOk := by native_decide
 example : twoClock.producer.outputs = ["sent"] := by native_decide
 example : twoClock.consumer.outputs = ["got"] := by native_decide
 
+#show_system twoClock
+#show_system twoClock timing
+#show_system twoClock physical
+
+#run_system twoClock where
+  tick clkA
+  tick clkA
+  tick clkB
+  tick clkB
+  tick clkB
+
 namespace MissingRealization
 
 /-- error: channel 'q' must have exactly one realization; found 0 -/
