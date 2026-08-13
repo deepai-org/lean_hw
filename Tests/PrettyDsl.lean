@@ -291,6 +291,36 @@ rules:
 
 end Tests.PrettyDsl.PackedHardware
 
+namespace Tests.PrettyDsl.RegisterFamily
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+hardware family_demo where
+  input index : 2
+  input value : 8
+  output reg slots : 8 [4]
+  output reg observed : 8
+
+  rule access := {
+    slots[index] <- value,
+    observed <- slots[index]
+  }
+
+example : slots = (⟨"slots"⟩ : RegArray 8 4) := rfl
+example : ([hwexpr| slots[2]] : Expr 8) = slots.rd ⟨2, by decide⟩ := rfl
+example : [hwstmt| slots[2] <- 9] = slots.set ⟨2, by decide⟩ (.lit 9#8) := rfl
+example : declarations.regs.map (fun declaration => declaration.name) =
+    ["observed", "slots0", "slots1", "slots2", "slots3"] := by decide
+example : declarations.outputs =
+    ["observed", "slots0", "slots1", "slots2", "slots3"] := by decide
+
+/-- error: register-family index 4 is outside 0 through 3 -/
+#guard_msgs in
+example : Expr 8 := [hwexpr| slots[4]]
+
+end Tests.PrettyDsl.RegisterFamily
+
 /--
 error: memory depth 12 is not a power of two; the current Mem core represents exactly 2^addressWidth cells
 -/
