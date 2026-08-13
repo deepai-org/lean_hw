@@ -22,12 +22,15 @@ private def ram : Mem 4 8 := ⟨"ram"⟩
 private def helper : Expr 8 := .xor a.rd b.rd
 private def helperAct : Act := flag.set (.lit 1)
 private def generatedValue (_ : Nat) : Expr 8 := .lit 7
+private def staticShift : Nat := 3
 
 example : ([hwexpr| a + b * 3] : Expr 8) =
     Expr.add a.rd (Expr.mul b.rd (.lit 3)) := rfl
 
 example : ([hwexpr| (a + b) << 2] : Expr 8) =
     Expr.shl (Expr.add a.rd b.rd) (.lit 2) := rfl
+example : ([hwexpr| a << staticShift] : Expr 8) = Expr.shl a.rd (.lit 3) := rfl
+example (dynamicShift : Reg 8) : Expr 8 := [hwexpr| a >> dynamicShift]
 
 example : ([hwexpr| a == b] : Expr 1) = Expr.eq a.rd b.rd := rfl
 example : ([hwexpr| $(helper)] : Expr 8) = helper := rfl
@@ -60,6 +63,8 @@ private def zeroSt : St where
   mems := fun _ _ w => BitVec.ofNat w 0
 
 example : ([hwexpr| 0xff + 2] : Expr 8).eval zeroSt = 1#8 := by decide
+example : ([hwexpr| 1 << 8] : Expr 8).eval zeroSt = 0#8 := by decide
+example : ([hwexpr| 0b1010_0011] : Expr 8).eval zeroSt = 0xa3#8 := by decide
 
 end Tests.PrettyDsl
 

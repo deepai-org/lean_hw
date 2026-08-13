@@ -161,6 +161,7 @@ syntax:max (name := hwLit) "hw_lit% " num : term
 syntax:max (name := hwAtom) "hw_atom% " term:max : term
 syntax:max (name := hwIndexLit) "hw_index_lit% " term:max num : term
 syntax:max (name := hwMemRead) "hw_mem_read% " term:max term:max : term
+syntax:max (name := hwShift) "hw_shift% " str term:max term:max : term
 
 /-- Elaborate a bare hardware name from its own declared type. This avoids the
 result-width ambiguity of `a == b`: a `Reg w` becomes its read expression,
@@ -220,6 +221,48 @@ while an existing `Expr w` remains unchanged. -/
       let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
       let address ← elabTerm addressSyntax (some addressType)
       let result ← Meta.mkAppM ``Loom.Hw.Mem.rd #[memory, address]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwShift] def elabHwShift : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_shift% $operation:str $leftSyntax:term $rightSyntax:term) =>
+      let left ← elabTerm leftSyntax expectedType?
+      let leftType ← Meta.whnf (← Meta.inferType left)
+      unless leftType.isAppOfArity ``Loom.Hw.Expr 1 do
+        throwErrorAt leftSyntax "shift left operand must be a typed hardware expression"
+      let widthExpr ← Meta.whnf leftType.getAppArgs[0]!
+      let liftStatic (amount : Nat) : TermElabM Lean.Expr := do
+          let width? : Option Nat ← getNatValue? widthExpr
+          let some width := width?
+            | throwErrorAt rightSyntax "shift width must reduce before lifting a static amount"
+          let limit := 2 ^ width
+          if width == 0 || amount ≥ limit then
+            throwErrorAt rightSyntax
+              s!"shift amount {amount} does not fit the {width}-bit shift operand"
+          let literalSyntax ← `(Loom.Hw.Expr.lit
+            (BitVec.ofNat $(quote width) $(quote amount)))
+          elabTerm literalSyntax (some leftType)
+      let right ← match rightSyntax.raw.isNatLit? with
+        | some amount => liftStatic amount
+        | none => do
+            let rightValue ← elabTerm rightSyntax none
+            let rightType ← Meta.whnf (← Meta.inferType rightValue)
+            if rightType.isConstOf ``Nat then
+              let amount? : Option Nat ← getNatValue? (← Meta.whnf rightValue)
+              let some amount := amount?
+                | throwErrorAt rightSyntax
+                    "static shift amount must reduce to a numeral; use a typed expression for a dynamic shift"
+              liftStatic amount
+            else if rightType.isAppOfArity ``Loom.Hw.Reg 1 then
+              let read ← Meta.mkAppM ``Loom.Hw.Reg.rd #[rightValue]
+              ensureHasType (some leftType) read
+            else
+              ensureHasType (some leftType) rightValue
+      let constructor ← if operation.getString == "shl" then pure ``Loom.Hw.Expr.shl
+        else if operation.getString == "shr" then pure ``Loom.Hw.Expr.shr
+        else throwErrorAt operation "unknown shift operation"
+      let result ← Meta.mkAppM constructor #[left, right]
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -284,6 +327,12 @@ private def validateInfixBoundary (parent : InfixFamily)
       Macro.throwErrorAt child
         "concatenation and other infix operators require parentheses; parenthesize the intended grouping"
 
+private def shiftOperandTerm (operand : TSyntax `hwexpr) : MacroM (TSyntax `term) :=
+  match operand with
+  | `(hwexpr| $value:num) => pure ⟨value.raw⟩
+  | `(hwexpr| $name:ident) => pure ⟨name.raw⟩
+  | _ => `([hwexpr| $operand])
+
 macro_rules
   | `([hwexpr| $n:num]) => `(hw_lit% $n)
   | `([hwexpr| $id:ident]) => `(hw_atom% $id)
@@ -315,8 +364,12 @@ macro_rules
   | `([hwexpr| $a:hwexpr % $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.urem [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr + $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.add [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr - $b:hwexpr]) => do validateInfixBoundary .arithmetic a b; `(Loom.Hw.Expr.sub [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr << $b:hwexpr]) => do validateInfixBoundary .shift a b; `(Loom.Hw.Expr.shl [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr >> $b:hwexpr]) => do validateInfixBoundary .shift a b; `(Loom.Hw.Expr.shr [hwexpr| $a] [hwexpr| $b])
+  | `([hwexpr| $a:hwexpr << $b:hwexpr]) => do
+      validateInfixBoundary .shift a b
+      `(hw_shift% "shl" [hwexpr| $a] $(← shiftOperandTerm b))
+  | `([hwexpr| $a:hwexpr >> $b:hwexpr]) => do
+      validateInfixBoundary .shift a b
+      `(hw_shift% "shr" [hwexpr| $a] $(← shiftOperandTerm b))
   | `([hwexpr| $a:hwexpr ++ $b:hwexpr]) => do validateInfixBoundary .concat a b; `(Loom.Hw.Expr.concat [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr & $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.and [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr ^ $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.xor [hwexpr| $a] [hwexpr| $b])
