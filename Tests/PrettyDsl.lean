@@ -317,12 +317,23 @@ namespace SharedConstants
 
 @[hw_const] def OPCODE : Nat := 0xa3
 @[hw_const] opaque OPAQUE_CODE : Nat
+@[hw_const SharedOpcodes] def SCOPED_OPCODE : Nat := 0x2a
 
 end SharedConstants
 
 open SharedConstants
 
 example : ([hwexpr| OPCODE] : Expr 8) = .lit 0xa3#8 := rfl
+
+/--
+error: Nat values are not implicitly hardware expressions; mark a shared constant @[hw_const] or use a design-local `const`
+-/
+#guard_msgs in
+example : Expr 8 := [hwexpr| SCOPED_OPCODE]
+
+open scoped SharedOpcodes
+
+example : ([hwexpr| SCOPED_OPCODE] : Expr 8) = .lit 0x2a#8 := rfl
 
 /--
 error: literal 163 does not fit in 7 bits; expected 0 through 127

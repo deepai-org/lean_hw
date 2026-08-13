@@ -381,15 +381,36 @@ namespace Loom.Hw.Dsl
 
 open Lean Macro Elab Term Meta Command Tactic
 
-/-- Explicit opt-in for a shared compile-time hardware constant. Ordinary
-`Nat` definitions are never lifted merely because they happen to be in scope. -/
-initialize hwConstAttr : TagAttribute ←
-  registerTagAttribute `hw_const
-    "allow this Nat declaration to be range-checked and lifted in hardware expressions"
-    (fun declaration => do
+/-- Parser for a local `@[hw_const]` or exported `@[hw_const Scope]`. -/
+syntax (name := hwConstAttrParser) "hw_const" (ppSpace ident)? : attr
+
+/-- Active compile-time constants. A bare `@[hw_const]` entry is deliberately
+file-local; `@[hw_const Scope]` is exported under `Scope` and becomes active
+only after `open scoped Scope`. -/
+initialize hwConstExt : Lean.LabelExtension ← do
+  let extension ← Lean.mkLabelExt `hwConstExt
+  registerBuiltinAttribute {
+    ref := by exact decl_name%
+    name := `hw_const
+    descr := "allow this Nat declaration to be range-checked and lifted in hardware expressions"
+    applicationTime := .afterTypeChecking
+    add := fun declaration syntax _kind => do
       let info ← getConstInfo declaration
       unless info.type.isConstOf ``Nat do
-        throwError "@[hw_const] requires a declaration of type Nat")
+        throwError "@[hw_const] requires a declaration of type Nat"
+      match syntax with
+      | `(attr| hw_const) =>
+          modifyEnv fun environment => extension.addLocalEntry environment declaration
+      | `(attr| hw_const $scope:ident) =>
+          modifyEnv fun environment =>
+            extension.addScopedEntry environment scope.getId declaration
+      | _ => throwErrorAt syntax "expected `@[hw_const]` or `@[hw_const Scope]`"
+    erase := fun declaration => do
+      let current := extension.getState (← getEnv)
+      modifyEnv fun environment => extension.modifyState environment fun _ =>
+        current.erase declaration
+  }
+  pure extension
 
 /-- Ordered elaboration-time action generation. The result has exactly the
 same left-to-right `Act.seq` shape as a handwritten brace block. -/
@@ -665,7 +686,7 @@ private def coerceHardwareAtom (valueSyntax : Syntax) (expectedType? : Option Le
       let some declaration := value.getAppFn.constName?
         | throwErrorAt valueSyntax
             "a lifted hardware constant must be a named declaration marked @[hw_const]"
-      unless hwConstAttr.hasTag (← getEnv) declaration do
+      unless (hwConstExt.getState (← getEnv)).contains declaration do
         throwErrorAt valueSyntax
           "Nat values are not implicitly hardware expressions; mark a shared constant @[hw_const] or use a design-local `const`"
       let some literalValue ← getNatValue? (← Meta.whnf value)
