@@ -21,6 +21,7 @@ private def flag : Reg 1 := ⟨"flag"⟩
 private def ram : Mem 4 8 := ⟨"ram"⟩
 private def helper : Expr 8 := .xor a.rd b.rd
 private def helperAct : Act := flag.set (.lit 1)
+private def generatedValue (_ : Nat) : Expr 8 := .lit 7
 
 example : ([hwexpr| a + b * 3] : Expr 8) =
     Expr.add a.rd (Expr.mul b.rd (.lit 3)) := rfl
@@ -45,6 +46,11 @@ example : [hwstmt| $stmt(helperAct)] = helperAct := rfl
 example : [hwstmt| ram[port 2, a[3:0]] <- b] =
     ram.write 2 (.slice a.rd 0 4) b.rd := rfl
 example : ([hwexpr| ram[a[3:0]]] : Expr 8) = ram.rd (.slice a.rd 0 4) := rfl
+example : [hwstmt| for i in $([0, 1]) generate a <- $(generatedValue i)] =
+    Act.seq (a.set (.lit 7)) (a.set (.lit 7)) := rfl
+
+example (register : Reg 8) : Act := [hwstmt| register <- register + 1]
+example (expression : Expr 8) : Expr 8 := [hwexpr| expression * 3]
 
 example : [hwstmt| { let next : 8 := a + 1, b <- next }] =
     (let next : Expr 8 := .add a.rd (.lit 1); b.set next) := rfl

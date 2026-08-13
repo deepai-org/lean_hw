@@ -49,6 +49,14 @@ namespace Loom.Hw.Dsl
 
 open Lean Macro Elab Term Meta Command
 
+/-- Ordered elaboration-time action generation. The result has exactly the
+same left-to-right `Act.seq` shape as a handwritten brace block. -/
+def actFor {α : Type} (values : List α) (body : α → Loom.Hw.Act) : Loom.Hw.Act :=
+  match values with
+  | [] => .skip
+  | [value] => body value
+  | value :: rest => .seq (body value) (actFor rest body)
+
 inductive DeclarationKind where
   | register | stateRegister | input | wire | constant | stateValue
   deriving Repr, DecidableEq, Inhabited
@@ -333,6 +341,7 @@ syntax ident "[" "port" num "," hwexpr "]" " <- " hwexpr : hwstmt
 syntax "let" ident ":" num ":=" hwexpr : hwstmt
 syntax "let" ident ":=" hwexpr : hwstmt
 syntax "suppress" ident "because" str "in" hwstmt : hwstmt
+syntax "for" ident "in" term "generate" hwstmt : hwstmt
 syntax "if " hwexpr " then " hwstmt " else " hwstmt : hwstmt
 syntax "if " hwexpr " then " hwstmt : hwstmt
 syntax "|" hwexpr "=>" hwstmt : hwcasearm
@@ -368,6 +377,13 @@ mutual
     | stx@`(hwstmt| let $_:ident := $_:hwexpr) =>
         Macro.throwErrorAt stx "a hardware let must be followed by another statement in the same block"
     | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) => expandStmt body
+    | `(hwstmt| for $binder:ident in $values:term generate $body:hwstmt) => do
+        let values : TSyntax `term :=
+          if values.raw.getKind.toString.endsWith "pseudo.antiquot" then
+            ⟨values.raw[2][1]⟩
+          else values
+        let loweredBody ← expandStmt body
+        `(Loom.Hw.Dsl.actFor $values (fun $binder => $loweredBody))
     | `(hwstmt| if $condition:hwexpr then $yes:hwstmt else $no:hwstmt) => do
         `(Loom.Hw.Act.ite [hwexpr| $condition]
           $(← expandStmt yes) $(← expandStmt no))
@@ -535,6 +551,8 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
       (written, readAfterWriteFindings registers suppressed written value)
   | `(hwstmt| suppress $lint:ident because $_:str in $body:hwstmt) =>
       analyzeStatement registers (suppressed.push lint.getId) body written
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
+      analyzeStatement registers suppressed body written
   | `(hwstmt| if $condition:hwexpr then $yes:hwstmt else $no:hwstmt) =>
       let conditionFindings := readAfterWriteFindings registers suppressed written condition
       let (yesWrites, yesFindings) := analyzeStatement registers suppressed yes written
@@ -597,6 +615,8 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
       if reason.getString.isEmpty then
         Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
       validateWriteTargets writable body
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
+      validateWriteTargets writable body
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
       validateWriteTargets writable yes
       validateWriteTargets writable no
@@ -657,6 +677,7 @@ private partial def validateCases (domains : Array StateDomain) : TSyntax `hwstm
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => validateCases domains yes
   | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
       validateCases domains body
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) => validateCases domains body
   | `(hwstmt| {$statements:hwstmt,*}) =>
       for statement in statements.getElems do
         validateCases domains statement
@@ -793,6 +814,8 @@ private partial def statementSuppressions (fileName : String) (ruleName : Name) 
   | statement@`(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) =>
       #[⟨ruleName, lint.getId, reason.getString, sourceSpan fileName statement⟩] ++
         statementSuppressions fileName ruleName body
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
+      statementSuppressions fileName ruleName body
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
       statementSuppressions fileName ruleName yes ++ statementSuppressions fileName ruleName no
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => statementSuppressions fileName ruleName yes
