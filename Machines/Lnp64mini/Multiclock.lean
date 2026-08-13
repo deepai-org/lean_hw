@@ -56,9 +56,31 @@ private def observerBody : Design where
       .skip⟩]
   outputs := [observedPc.name, observedCount.name]
 
+/-! The application-facing observer uses the readable hardware layer. This is
+an ordinary synchronous island; the channel realization remains a separate
+system-level choice. -/
+namespace ObserverHardware
+
+hardware lnp64mini_retire_observer where
+  output reg observed_pc : 64
+  output reg observed_count : 64
+
+  rule «consume» :=
+    if telemetrySink.hasData then {
+      observed_pc <- telemetrySink.data,
+      observed_count <- observed_count + 1,
+      consume telemetrySink
+    }
+
+end ObserverHardware
+
+/-- Syntax lowering preserves the original observer Design exactly, including
+the right-associated write/consume order. -/
+theorem observerHardware_eq : ObserverHardware.design = observerBody := rfl
+
 /-- Public composition handle for the ordinary observer island. Its body is
 kept separately named so the system command can resolve it fail-closed. -/
-def observerDesign : Design := observerBody
+def observerDesign : Design := ObserverHardware.design
 
 /-- Proof-facing name for the generated sink-adapted observer. -/
 private def observer : Design := telemetry.withSink observerBody
