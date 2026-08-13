@@ -2324,7 +2324,7 @@ private def validateEndpointTransactions (rules : Array RuleItem) : MacroM Unit 
   for bound in bounds do
     if bound.generated then
       Macro.throwErrorAt bound.source
-        s!"cannot establish the one-{bound.kind.label}-per-event rule for endpoint '{bound.endpoint}' through `for ... generate`; move the transaction outside the generated body"
+        s!"cannot establish the one-{bound.kind.label}-per-event rule for endpoint '{bound.endpoint}' through `for ... generate`; move the transaction outside the generated body, or replace the loop with `endpoint_stmt(...)` built from a proof-carrying `EndpointAct`"
     if bound.count > 1 then
       Macro.throwErrorAt bound.source
         s!"endpoint '{bound.endpoint}' may receive {bound.count} {bound.kind.label} transactions in one event; Loom permits at most one unless an explicit arbiter combines them"

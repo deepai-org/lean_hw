@@ -684,10 +684,17 @@ private def secondaryQueue : Chan 16 := ⟨"secondary_queue", 2, .exchange⟩
 private def secondarySource := secondaryQueue.source
 private def secondarySink := secondaryQueue.sink
 
-/-- Open multi-channel actions require only the meaningful non-alias fact;
-the endpoint footprint itself is derived by the library. -/
+/-- Open, width-parametric multi-channel actions require only the meaningful
+non-alias fact; the endpoint footprint itself is derived by the library. -/
+private def certifiedParametricTwoSends {leftWidth rightWidth : Nat}
+    (left : Chan.SourceEndpoint leftWidth) (leftPayload : Expr leftWidth)
+    (right : Chan.SourceEndpoint rightWidth) (rightPayload : Expr rightWidth)
+    (separate : left.channel.sourceValidName ≠ right.channel.sourceValidName) :
+    Loom.Hw.EndpointAct :=
+  Loom.Hw.EndpointAct.sendThenSend left leftPayload right rightPayload separate
+
 private def certifiedTwoSends : Loom.Hw.EndpointAct :=
-  Loom.Hw.EndpointAct.sendThenSend source (.lit 42#8)
+  certifiedParametricTwoSends source (.lit 42#8)
     secondarySource (.lit 0x1234#16) (by decide)
 private def certifiedTwoConsumes : Loom.Hw.EndpointAct :=
   Loom.Hw.EndpointAct.consumeThenConsume sink secondarySink (by decide)
@@ -824,6 +831,15 @@ hardware duplicate_consume where
 #guard_msgs in
 hardware generated_send where
   rule transmit := for i in $([0, 1]) generate send $(Expr.lit (BitVec.ofNat 8 i)) to source
+
+private opaque generatedIndices : List Nat
+
+/-- error: cannot establish the one-send-per-event rule for endpoint 'source' through `for ... generate`; move the transaction outside the generated body, or replace the loop with `endpoint_stmt(...)` built from a proof-carrying `EndpointAct` -/
+#guard_msgs in
+hardware irreducible_generated_send where
+  rule transmit :=
+    for i in $(generatedIndices) generate
+      send $(Expr.lit (BitVec.ofNat 8 i)) to source
 
 end Tests.PrettyDsl.ChannelLints
 
