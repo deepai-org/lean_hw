@@ -459,6 +459,33 @@ example : [hwstmt| receive value from sink then received <- value] =
       (let value := sink.data
        Act.seq (received.set value) sink.consume) .skip := rfl
 
+private def certifiedSend : Loom.Hw.EndpointAct := Loom.Hw.EndpointAct.skip
+private def certifiedChoice : Loom.Hw.EndpointAct :=
+  Loom.Hw.EndpointAct.ite (.lit 1) certifiedSend Loom.Hw.EndpointAct.skip
+
+example : [hwstmt| endpoint_stmt(certifiedSend)] = Act.skip := rfl
+example : [hwstmt| endpoint_stmt(certifiedChoice)] =
+    Act.ite (.lit 1) .skip .skip := rfl
+
+namespace CertifiedEscape
+hardware certified_escape where
+  rule transmit := endpoint_stmt(certifiedSend)
+end CertifiedEscape
+
+/--
+error: an opaque `$stmt(...)` inside `hardware` could hide multiple channel transactions; use direct hardware statements, or `endpoint_stmt(...)` with an `EndpointAct` built from the endpoint composition API
+-/
+#guard_msgs in
+hardware opaque_endpoint_escape where
+  rule transmit := $stmt(source.send (.lit 42#8))
+
+/--
+error: an endpoint statement escape requires `EndpointAct`; use `EndpointAct.ofAct`, `.ite`, or `.seq` so Loom can prove the one-transaction-per-endpoint rule
+-/
+#guard_msgs in
+hardware bare_endpoint_escape where
+  rule transmit := endpoint_stmt(source.send (.lit 42#8))
+
 end Tests.PrettyDsl.ChannelActions
 
 namespace Tests.PrettyDsl.ChannelLints
