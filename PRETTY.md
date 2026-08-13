@@ -24,7 +24,7 @@ fields, `Act.seq`, and existing endpoint analysis; they may not introduce a new
 transition or emission behavior.
 
 The purpose is not to accept or imitate Verilog. It is to make cycle semantics
-hard to misread, including for a junior hardware engineer. Hardware nouns and
+hard to misread. Hardware nouns and
 concepts remain familiar—inputs, outputs, registers, memories, rules, widths,
 ports, cycles, bit selects, and slices—but Verilog punctuation survives only
 when its familiar reading is exactly Loom's meaning. Loom uses rules instead
@@ -168,10 +168,9 @@ In particular:
    source order. It is not a Bluespec-style atomic rule, has no scheduler, and
    does not compete with neighboring rules for implicit resources. All reads
    observe pre-cycle state and the last executed write wins. There are no
-   sensitivity lists. Keep the established core noun for v1, but state this
-   divergence beside the first example and include Bluespec-familiar readers
-   in the cold-read trials; rename it before stabilization if they repeatedly
-   infer scheduling or atomicity.
+   sensitivity lists. Keep the established core noun for v1 and state this
+   divergence beside the first example so `rule` cannot silently imply
+   scheduling or atomicity.
 4. Numeric literals are unsized and acquire their width from the expected
    `Expr w` type. They are range-checked before `BitVec.ofNat`: a source `n`
    is accepted only when `n < 2 ^ w`. Loom does not add a second width
@@ -303,7 +302,7 @@ shift position; lowering re-lifts that compile-time value to the required
 `w`-bit operand after the ordinary range check. A
 genuinely dynamic amount remains an `Expr w`, making the potential barrel
 shifter visible in its type and cost diagnostics. When a dynamic selector
-`x[i]` is rejected and `i` already has width `w`, its code action offers the
+`x[i]` is rejected and `i` already has width `w`, its diagnostic shows the
 literal rewrite `(x >> i)[0]`.
 
 A bare identifier is elaborated using the expected `Expr w` type. It may be a
@@ -494,7 +493,7 @@ push after removing the old head; `refusePush` rejects it. `Clock.asynchronous`
 admits coincident unrelated edges, so a channel between distinct domains can
 encounter that co-tick case. Only the deliberately narrower
 `Clock.interleaved` proof relation excludes it. The default policy and this
-distinction must both appear in generated documentation and cold-read tests.
+distinction must both appear in generated documentation and executable tests.
 
 Users never author valid/ready bits, acknowledgements, pointer state, or
 endpoint maintenance rules. The canonical beginner form for a guarded
@@ -512,7 +511,7 @@ the body with `q.canDeq`, and append exactly one `q.pop`. The bound value is a
 typed `Expr`/`PackedExpr`, not a mutable local or an extra register. An empty
 channel executes neither the body nor the consume. The lower-level
 `hasData`/`data`/`consume` forms remain available when hardware needs to inspect
-or conditionally defer the visible head, but tutorials and cold-read examples
+or conditionally defer the visible head, but tutorials and ordinary examples
 prefer `receive` because it makes the validity region and exactly-once consume
 structural.
 
@@ -1024,13 +1023,11 @@ the endpoint checker instead of pretending the surface command can see through
 arbitrary Lean. The authoritative semantics and compiler checks remain
 unchanged.
 
-### Diagnostic voice and editor actions
+### Diagnostic voice
 
-Strict syntax is affordable only when mechanical repairs are cheap. Every
-diagnostic follows one voice: (1) what Loom found, (2) why that reading is
-rejected or risky, and (3) the concrete rewrite. When the repair is mechanical,
-the diagnostic also publishes a Lean editor code action at the exact source
-range. The v1 action set includes:
+Every diagnostic follows one voice: (1) what Loom found, (2) why that reading
+is rejected or risky, and (3) the concrete source rewrite when one exists.
+The important repair cases include:
 
 - parenthesize either plausible grouping for a forbidden operator mixture;
 - insert the appropriate explicit `zext` or `sext` candidate for a width
@@ -1040,12 +1037,12 @@ range. The v1 action set includes:
 - insert `default => skip` when a non-enum `case` is incomplete; and
 - insert the common suppression form with an editable required-reason field.
 
-A code action never changes semantics without showing the resulting source,
-and ambiguous choices are separate actions rather than one preferred guess.
-Golden diagnostics check message voice, source spans, replacement text, and
-that applying the action elaborates to the advertised core term.
+Ambiguous choices are shown as separate rewrites rather than one preferred
+guess. Golden diagnostics check message voice, source spans, suggested source,
+and that each advertised rewrite elaborates to the expected core term. All
+required feedback is ordinary compiler output and inspection-command text.
 
-### One-cycle teaching view and hover information
+### One-cycle teaching view
 
 The syntax layer exposes a non-semantic teaching command:
 
@@ -1067,12 +1064,6 @@ closed teaching-run convention. Unknown names, writes to inputs in `from`,
 state names in `with`, and out-of-range values are source-local errors. The
 header prints that reset/zero-default convention so a short example never
 hides its initial conditions.
-
-Elaboration also attaches hover information to every `hwexpr`: its resulting
-width and, for an identifier, its declaration site and kind (`signal`,
-`const`, scoped `hw_const`, local alias, or splice). Packed values additionally
-show their packed type and total width. Hovers are presentation over elaborator
-metadata and never become inputs to lowering.
 
 ### Generated proof support
 
@@ -1883,14 +1874,12 @@ Diagnostics teach both the architectural and realization boundaries:
 - a target storage selection displays its one named external assumption rather
   than presenting it as a theorem.
 
-The two-clock example joins the cold-read suite before its vocabulary freezes.
-Its normal producer uses `send ... then`; bare best-effort send appears only in
-the deliberate contrast. Readers are asked to predict an unavailable send, an
-empty `q.data` read, the cycle in which `consume` takes effect, a full-queue
-co-tick under both policies, and whether a statement following each send form
-is acceptance-guarded. Recurring
-misreadings change syntax or diagnostics; familiarity with valid/ready naming
-is not assumed to establish that this vocabulary teaches the right semantics.
+The two-clock tests pin the channel vocabulary before it freezes. Its normal
+producer uses `send ... then`; bare best-effort send appears only in the
+deliberate contrast. Executable cases cover an unavailable send, an empty
+`q.data` read, the cycle in which `consume` takes effect, a full-queue co-tick
+under both policies, and whether a statement following each send form is
+acceptance-guarded.
 
 ## LNP64mini destination
 
@@ -2153,32 +2142,27 @@ the new aggregate import.
    Lean functions, and both escape categories.
 4. Decide ASCII spellings for signed/unsigned comparison and bitwise operators
    before any public parser surface ships.
-5. Put the frozen examples in front of several junior hardware engineers and
-   at least one Bluespec-familiar hardware designer with no explanation. Ask
-   them to narrate cycle behavior and specifically what `rule` promises. Treat
-   every plausible misreading as syntax or diagnostic evidence, not user
-   failure.
-6. Settle zero-width policy and freeze the no-truncation rule for source
+5. Settle zero-width policy and freeze the no-truncation rule for source
    literals, lifted locals, `@[hw_const]` declarations, and reset values. Test
    the exact distinction between declaration reset values and runtime
    expressions. Freeze the `case` rules above:
    normalized duplicate rejection, finite exhaustiveness, optional default
    only for total coverage, and a dead-default warning.
-7. Freeze identifier resolution examples covering a design-local signal that
+6. Freeze identifier resolution examples covering a design-local signal that
    shadows an imported `@[hw_const]`, two deliberately registered constants
    with one short name, a hygienic local `Nat`, an unrelated unmarked `Nat`
    that cannot affect an existing body, and explicit fully qualified
    disambiguation.
-8. Record the exact shift contract from the core: equal-width unsigned count,
+7. Record the exact shift contract from the core: equal-width unsigned count,
    logical right shift, width-preserving result, and zero for an out-of-range
    count. Keep arithmetic shift and mixed-width shift syntax omitted, list
    `>>s` explicitly among omitted constructs, and document/test the
    sign-extend/logical-shift/slice helper idiom.
-9. Freeze decimal/hex/binary literal spelling and canonical fallback
+8. Freeze decimal/hex/binary literal spelling and canonical fallback
    delaboration, including underscore separators and exact range checking.
-10. Freeze the diagnostic voice, initial editor-code-action matrix,
-    `#trace_cycle` output, expression hover fields, and statement/rule lint
-    suppression forms before messages proliferate across phases.
+9. Freeze the diagnostic voice, textual repair guidance, `#trace_cycle`
+   output, and statement/rule lint suppression forms before messages
+   proliferate across phases.
 
 ### Phase 1: wrappers and scalar expression/statement syntax
 
@@ -2225,8 +2209,8 @@ the new aggregate import.
 8. Generate public `_name` lemmas and reserve their names.
 9. Add `Loom.Hw.Dsl` as the opt-in aggregate. Existing imports see no syntax or
    delaborator changes.
-10. Add `#trace_cycle` and width/kind hovers over lowered command metadata,
-    checking the teaching trace's final state against the existing evaluator.
+10. Add `#trace_cycle` over lowered command metadata, checking the teaching
+    trace's final state against the existing evaluator.
 
 ### Phase 3: proof presentation
 
@@ -2333,13 +2317,12 @@ Semantic teaching diagnostics receive their own golden tests:
 - the shared required-reason suppression form at an intentional site without
   suppressing other findings or structural endpoint errors;
 - rule-level suppression scoped to one named lint and one rule; and
-- code-action spans and rewrites for parentheses, extension, guarded send,
-  missing default, and suppression, with successful re-elaboration.
+- diagnostic spans and textual rewrites for parentheses, extension, guarded
+  send, missing default, and suppression, with successful re-elaboration.
 
 Teaching-view tests compare `#trace_cycle`'s final state with the existing
 evaluator and pin rule-order guard/write output for pre-cycle reads and
-last-write-wins. Editor-info tests pin widths and identifier kinds for signals,
-local constants, scoped constants, aliases, packed values, and splices.
+last-write-wins.
 
 Proof-shape tests lower an FSM-sized `case` and exercise the standard invariant
 workflow with the tactics used elsewhere in Loom. They record goal count,
@@ -2546,11 +2529,9 @@ an explicit core fallback.
 2. Exercise `#run_system` with source-only, sink-only, aligned, rejected, and
    canonical adversarial prefixes through the existing runner APIs. Include a
    coincident event accepted by `asynchronous` and rejected by `interleaved`.
-3. Run cold-read sessions focused on unavailable sends, empty data, consume
-   timing, an aligned variant's full co-ticks under both policies, and
-   neighboring statements that are not acceptance-guarded.
-4. Freeze channel vocabulary only after recurring misreadings have been fixed
-   in syntax or source-local diagnostics.
+3. Pin unavailable sends, empty data, consume timing, an aligned variant's
+   full co-ticks under both policies, and neighboring statements that are not
+   acceptance-guarded with executable semantic tests.
 
 ### Phase 11: SoC Fabric Gauntlet usability validation
 
@@ -2584,10 +2565,9 @@ multi-route acceptance test rather than inventing synthetic parser fixtures:
 6. Require equality with the handwritten `System`/`RealizationPlan`, the same
    schedule theorems and replay results, exact artifact identity, and unchanged
    proof/evidence boundary before converting the canonical source.
-7. Cold-read the final file with SoC designers and junior hardware engineers.
-   Ask them to identify each arbitration point, CDC route, backpressure path,
-   reset loss behavior, and target-specific assumption. A fact they can learn
-   only by opening generated Lean is a presentation failure.
+7. Require `#show_system` and the source itself to expose each arbitration
+   point, CDC route, backpressure path, reset loss behavior, and
+   target-specific assumption without requiring inspection of generated Lean.
 
 This phase validates syntax and naming only. It does not make the pretty plan
 responsible for the gauntlet's hardware, proofs, FPGA campaigns, or evidence
@@ -2661,12 +2641,9 @@ The pretty layer is complete when:
 8. Full LNP64mini migration preserves the existing design and emitted RTL, or
    explicitly identifies and reviews any intentional semantic change rather
    than hiding it inside syntax conversion.
-9. Cold-reading trials with junior hardware engineers and Bluespec-familiar
-   designers find no recurring
-   incorrect interpretation of assignment timing, branch ownership, widths,
-   signedness, memory-port behavior, or Loom's source-ordered meaning of
-   `rule`; any recurring misreading is addressed in syntax or a source-local
-   teaching diagnostic before declaring v1 stable.
+9. Executable teaching tests and golden diagnostics pin assignment timing,
+   branch ownership, widths, signedness, memory-port behavior, and Loom's
+   source-ordered meaning of `rule`.
 10. `case` rejects normalized duplicate labels, handles exhaustive/default
     behavior as specified, and has a tested proof workflow on an FSM-sized
     rule rather than merely acceptable parser output.
@@ -2731,9 +2708,8 @@ The pretty layer is complete when:
     hides mechanical names by default but never hides an assumption or invents
     PASS. `#run_system` remains readable syntax over the existing named schedule
     and checked runners, while `#run_hardware` delegates to the existing
-    single-design semantics/verified runner. Cold-read trials confirm the
-    channel vocabulary does not teach false acceptance, payload-validity, or
-    consume-timing intuitions.
+    single-design semantics/verified runner. Executable tests pin acceptance,
+    payload-validity, and consume timing.
 22. Work performed under this plan is limited to syntax, lowering, generated
     metadata/names, diagnostics, faithful presentation, and equivalence-based
     migration. Missing core semantics or implementation capability is deferred
@@ -2780,10 +2756,9 @@ The pretty layer is complete when:
 34. Static shifts accept compile-time values directly while dynamic amounts
     retain the core's explicit equal-width type and cost visibility.
 35. Every mechanically repairable rejection follows the common diagnostic
-    voice and supplies tested editor actions; informational findings share one
-    reason-required statement/rule suppression mechanism.
+    voice and supplies tested textual repair guidance; informational findings
+    share one reason-required statement/rule suppression mechanism.
 36. `#trace_cycle` agrees on final state with the existing evaluator and shows
-    source-order fired writes without defining new semantics; expression hovers
-    expose width, declaration site, and identifier kind.
+    source-order fired writes without defining new semantics.
 37. Output/interface widths remain explicit even when an RHS would make them
     inferable, and no `defaults` keyword or special write semantics is added.
