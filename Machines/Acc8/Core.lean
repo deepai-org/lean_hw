@@ -33,9 +33,6 @@ declarations own the handles, opcode labels, memory shapes, and rule; the
 outer `design` substitutes only the parameterized ROM initializer. -/
 namespace Authored
 
--- Lean's unused-variable linter does not see packed-local uses reconstructed
--- by the `hwexpr` field elaborator; the lowered `exec` term does use `fetched`.
-set_option linter.unusedVariables false in
 hardware acc8_authored where
   output reg acc : 8
   output reg pc : 8

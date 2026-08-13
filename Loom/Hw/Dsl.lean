@@ -717,7 +717,13 @@ remain eligible before the packed-field fallback. -/
       let base := mkIdentFrom whole name.getPrefix
       let field := mkIdentFrom whole (Name.mkSimple name.getString!)
       let projection ← `(hw_packed_field% (hw_atom% $base) $field)
-      if (← getLCtx).findFromUserName? base.getId.eraseMacroScopes |>.isSome then
+      if let some localDecl := (← getLCtx).findFromUserName? base.getId.eraseMacroScopes then
+        -- The dotted token is elaborated as one custom syntax node, so the
+        -- ordinary identifier elaborator has no original source node on which
+        -- to record this local use. Preserve that information explicitly: it
+        -- keeps Lean's unused-variable linter honest for `let packet := ...;
+        -- packet.field` without changing the lowered expression.
+        Term.addTermInfo' whole (.fvar localDecl.fvarId)
         elabTerm projection expectedType?
       else try
         let _ ← resolveGlobalConstNoOverload whole
