@@ -1564,10 +1564,12 @@ def traceWord : Expr 64 :=
   .or (.shl (.zext op 64) (L64 56)) (.zext (.slice pc 0 32) 64)
 
 def retireInc : Act :=
-  .seq (retireReg.set (.add retire (.lit (BitVec.ofNat 32 1)))) <|
-  .seq (traceHitReg.set (L1 1)) <|
-  .seq (traceInPcReg.set traceWord)
-       (traceInWbReg.set (.mux rfWeE rfWdE (L64 0)))
+  [hwstmt| {
+    retireReg <- retire + 1,
+    traceHitReg <- 1,
+    traceInPcReg <- traceWord,
+    traceInWbReg <- if rfWeE then rfWdE else 0
+  }]
 
 /-! ## Rules -/
 
@@ -1575,8 +1577,11 @@ def retireInc : Act :=
 def encRule : Rule :=
   -- **Coupling 2.** `cur + 1 + nr_off` is an index into the rotated window and
   -- must come back mod `NT`. At `NT = 32` the 5-bit add did that for free.
-  ⟨"enc", .seq (nextReadyReg.set (.mux nr_any (tidWrap (.add (.add cur (L5 1)) nr_off)) cur))
-    (.seq (freeSlotReg.set fs_off) (hasFreeReg.set hf_c))⟩
+  ⟨"enc", [hwstmt| {
+    nextReadyReg <- if nr_any then $(tidWrap (.add (.add cur (L5 1)) nr_off)) else cur,
+    freeSlotReg <- fs_off,
+    hasFreeReg <- hf_c
+  }]⟩
 
 /-- (2) serialized sleep scan.
 
@@ -1590,21 +1595,20 @@ port **0** — the design's first syntactic `tsleep` write, so
 `MemWriteWF`'s ascending-port condition is met by the `S_EX SLEEP` write
 taking port 1 in `tarrFunnelRule` (a later rule). -/
 def sleepScanRule : Rule :=
-  ⟨"sleepdec", .ite (.and (.not holdEn) (.and running (.not halted)))
-    (let tsl_s : Expr 64 := tsleepRd sleep_scan
-     let scanHit : Expr 1 :=
-       priTree ((List.finRange NT).map
-         (fun i => (.eq sleep_scan (L5 i.val), .eq (tstate i) (L2 2)))) (L1 0)
-     .seq (sleepScanReg.set (.add sleep_scan (L5 1)))
-      (.seq
-        ((List.finRange NT).foldr (fun i acc =>
-          .seq (.ite (.and (.eq sleep_scan (L5 i.val)) (.eq (tstate i) (L2 2)))
-            (.ite (.not (.ult (L64 1) tsl_s))       -- tsleep[sleep_scan] <= 1
-              (tstateRegs.set i (L2 1)) .skip)
-            .skip) acc) .skip)
-        (.ite (.and scanHit (.ult (L64 1) tsl_s))
-          (tsleepBank.write 0 sleep_scan (.sub tsl_s (L64 1))) .skip)))
-    .skip⟩
+  ⟨"sleepdec", [hwstmt|
+    if ~holdEn & (running & ~halted) then {
+      let tsl_s : 64 := $(tsleepRd sleep_scan),
+      let scanHit : 1 := $(priTree ((List.finRange NT).map
+        (fun i => (.eq sleep_scan (L5 i.val), .eq (tstate i) (L2 2)))) (L1 0)),
+      sleepScanReg <- sleep_scan + 1,
+      $stmt((List.finRange NT).foldr (fun i acc =>
+        .seq (.ite (.and (.eq sleep_scan (L5 i.val)) (.eq (tstate i) (L2 2)))
+          (.ite (.not (.ult (L64 1) tsl_s))
+            (tstateRegs.set i (L2 1)) .skip)
+          .skip) acc) .skip),
+      if scanHit & ($(L64 1) <u tsl_s) then
+        tsleepBank[port 0, sleep_scan] <- tsl_s - $(L64 1)
+    }]⟩
 
 /-- (3) latches: dmem_rd/reg_rd/uart_byte from pre-cycle state, plus the
 dmem sync-write block `if (dmem_we) dmem[dmem_a]<=dmem_wd` (pre-cycle regs). -/
@@ -1647,18 +1651,20 @@ def pulseDefaultsRule : Rule :=
 
 /-- (5) zeroing engine (rf write is in the funnel; here dmem + counters). -/
 def zeroingRule : Rule :=
-  ⟨"zeroing", .ite zeroing
-    (.seq (.ite (.ult zctr (.lit (BitVec.ofNat 10 512)))
-            (.seq (dmemWeReg.set (L1 1))
-              (.seq (dmemAReg.set (.slice zctr 0 9)) (dmemWdReg.set (L64 0)))) .skip)
-      (.ite (.eq zctr (.lit (BitVec.ofNat 10 (32*NT-1))))
-        (zeroingReg.set (L1 0))
-        (zctrReg.set (.add zctr (.lit (BitVec.ofNat 10 1))))))
-    .skip⟩
+  ⟨"zeroing", [hwstmt|
+    if zeroing then {
+      if zctr <u 512 then {
+        dmemWeReg <- 1,
+        dmemAReg <- zctr[8:0],
+        dmemWdReg <- 0
+      },
+      if zctr == $((.lit (BitVec.ofNat 10 (32 * NT - 1)) : Expr 10)) then zeroingReg <- 0
+      else zctrReg <- zctr + 1
+    }]⟩
 
 /-- (6) cmd (wr_pulse) surface — rf write (idx 52) is in the funnel. -/
 def cmdRule : Rule :=
-  ⟨"cmd", .ite cmdValid cmdBody .skip⟩
+  ⟨"cmd", [hwstmt| if cmdValid then $stmt(cmdBody)]⟩
 where
   ci (n : Nat) : Expr 1 := .eq cmdIdx (L7 n)
   L9 (n : Nat) : Expr 9 := .lit (BitVec.ofNat 9 n)
