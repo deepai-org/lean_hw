@@ -2444,4 +2444,85 @@ private def expandSystemCommand
       elabCommand expanded
   | _ => throwUnsupportedSyntax
 
+private def coTickPolicyName : Loom.Hw.FullCoTickPolicy → String
+  | .exchange => "exchange"
+  | .refusePush => "refuse-push"
+
+def showSystemLogical (system : Loom.Hw.System) : IO Unit := do
+  IO.println "system architecture"
+  IO.println s!"reset: {repr system.resetPolicy}"
+  IO.println "islands:"
+  for island in system.islands do
+    IO.println s!"  {island.name} on {island.clock}: {island.design.name}"
+  IO.println "channels:"
+  for crossing in system.crossingInventory do
+    IO.println s!"  {crossing.channel}: {crossing.width} bits, depth {crossing.depth}, {coTickPolicyName crossing.policy}"
+    IO.println s!"    {crossing.source} ({crossing.sourceClock.getD "?"}) -> {crossing.sink} ({crossing.sinkClock.getD "?"})"
+
+def showSystemTiming {system : Loom.Hw.System}
+    (application : Loom.Hw.System.Application system) : IO Unit :=
+  IO.println application.timingReport
+
+def showSystemPhysical {system : Loom.Hw.System}
+    (application : Loom.Hw.System.Application system) : IO Unit := do
+  let artifacts := application.artifact.realized.artifacts
+  IO.println artifacts.constraintFile.renderNeutral
+  IO.println (Loom.Hw.System.renderResetIntents artifacts.resetIntents)
+
+syntax (name := showSystemCmd) "#show_system" ident (ident)? : command
+
+macro_rules
+  | `(#show_system $system:ident) =>
+      `(#eval Loom.Hw.Dsl.showSystemLogical $system)
+  | `(#show_system $system:ident $view:ident) => do
+      let application := mkIdentFrom system (system.getId ++ `application)
+      if view.getId == `timing then
+        `(#eval Loom.Hw.Dsl.showSystemTiming $application)
+      else if view.getId == `physical then
+        `(#eval Loom.Hw.Dsl.showSystemPhysical $application)
+      else Macro.throwErrorAt view "expected `timing` or `physical`"
+
+def runSystem {system : Loom.Hw.System}
+    (application : Loom.Hw.System.Application system)
+    (events : Loom.Hw.SchedulePrefix) : IO Unit := do
+  match application.runChecked events with
+  | .error message => throw (IO.userError message)
+  | .ok final =>
+      IO.println s!"after {events.size} clock events:"
+      for island in system.islands do
+        IO.println s!"  island {island.name} ({island.clock})"
+        for output in island.design.outputs do
+          unless output.startsWith "__loom_chan_" do
+            match island.design.regs.find? (fun declaration => declaration.name == output) with
+            | some declaration =>
+                let value := (final.semantic.island island.name).regs
+                  declaration.name declaration.width |>.toNat
+                IO.println s!"    {output} = {value}"
+            | none => pure ()
+      for connection in system.connections do
+        let occupancy := (application.readChannel final connection.chan).length
+        IO.println s!"  channel {connection.chan.name}: occupancy {occupancy}"
+
+declare_syntax_cat hwsystemevent
+syntax ident ident,+ : hwsystemevent
+syntax (name := runSystemCmd) "#run_system" ident "where"
+  withPosition(many1Indent(ppLine hwsystemevent)) : command
+
+macro_rules
+  | `(#run_system $system:ident where $events:hwsystemevent*) => do
+      let application := mkIdentFrom system (system.getId ++ `application)
+      let mut eventTerms : Array (TSyntax `term) := #[]
+      for event in events do
+        match event with
+        | `(hwsystemevent| $keyword:ident $clocks:ident,*) =>
+            unless keyword.getId == `tick do
+              Macro.throwErrorAt keyword "expected `tick`"
+            let clockNames := clocks.getElems.map fun clock =>
+              mkIdentFrom clock (system.getId ++ clock.getId)
+            let tickTerms ← clockNames.mapM fun clock => `(term| ($clock).name)
+            eventTerms := eventTerms.push (← `(term|
+              ({ clocks := [$tickTerms,*] } : Loom.Hw.NamedClockEvent)))
+        | _ => Macro.throwErrorAt event "expected `tick clock` or `tick clockA, clockB`"
+      `(#eval Loom.Hw.Dsl.runSystem $application #[$eventTerms,*])
+
 end Loom.Hw.Dsl
