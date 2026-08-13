@@ -1221,6 +1221,32 @@ error: dynamic bit select is not a core operation; shift by the typed index and 
 #guard_msgs in
 example (i : Reg 8) : Expr 1 := [hwexpr| a[i]]
 
+namespace ExtendMismatch
+
+/--
+error: expression is 4 bits but the target is 8 bits; Loom does not guess signedness, so use `zext` or `sext` explicitly
+-/
+#guard_msgs in
+hardware width_mismatch where
+  reg wide : 8
+  reg narrow : 4
+  rule bad := wide <- narrow
+
+end ExtendMismatch
+
+namespace TruncateMismatch
+
+/--
+error: expression is 8 bits but the target is 4 bits; Loom never truncates implicitly, so select the intended bits explicitly
+-/
+#guard_msgs in
+hardware width_mismatch where
+  reg narrow : 4
+  reg wide : 8
+  rule bad := narrow <- wide
+
+end TruncateMismatch
+
 /-- error: literal 300 does not fit in 8 bits; expected 0 through 255 -/
 #guard_msgs in
 example : Expr 8 := [hwexpr| 300]

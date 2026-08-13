@@ -451,6 +451,42 @@ private def addSilentCodeAction (source : Syntax) (replacement title : String) :
   }
   discard <| Lean.Meta.Hint.mkSuggestionsMessage #[suggestion] source none false
 
+private def hardwareExpressionSource (stx : TSyntax `term) : Syntax × String :=
+  match stx with
+  | `(term| [hwexpr| $expression:hwexpr]) =>
+      (expression, expression.raw.reprint.getD "<expression>")
+  | _ => (stx, stx.raw.reprint.getD "<expression>")
+
+/-- Elaborate a scalar expression at an exact width. If the only problem is a
+smaller independently typed expression, retain Loom's no-implicit-extension
+rule but offer both signedness-explicit repairs at the user's source span. -/
+private def elaborateScalarAtWidth (valueSyntax : TSyntax `term)
+    (expectedWidth : Lean.Expr) : TermElabM Lean.Expr := do
+  let expectedType := Lean.Expr.app (.const ``Loom.Hw.Expr []) expectedWidth
+  try
+    withoutErrToSorry <| elabTerm valueSyntax (some expectedType)
+  catch original =>
+    try
+      let actual ← withoutErrToSorry <| elabTerm valueSyntax none
+      let actualType ← Meta.whnf (← Meta.inferType actual)
+      unless actualType.isAppOfArity ``Loom.Hw.Expr 1 do throw original
+      let some expected ← getNatValue? (← Meta.whnf expectedWidth) | throw original
+      let some actualWidth ←
+          getNatValue? (← Meta.whnf actualType.getAppArgs[0]!) | throw original
+      if actualWidth == expected then throw original
+      let (source, rendered) := hardwareExpressionSource valueSyntax
+      if actualWidth < expected then
+        liftM <| addSilentCodeAction source s!"zext {rendered} to {expected}"
+          s!"Zero-extend {actualWidth} bits to {expected} bits"
+        liftM <| addSilentCodeAction source s!"sext {rendered} to {expected}"
+          s!"Sign-extend {actualWidth} bits to {expected} bits"
+        throwErrorAt source
+          s!"expression is {actualWidth} bits but the target is {expected} bits; Loom does not guess signedness, so use `zext` or `sext` explicitly"
+      else
+        throwErrorAt source
+          s!"expression is {actualWidth} bits but the target is {expected} bits; Loom never truncates implicitly, so select the intended bits explicitly"
+    catch repaired => throw repaired
+
 @[term_elab hwBoundaryError] private def elabHwBoundaryError : TermElab :=
     fun stx _ => do
   match stx with
@@ -704,8 +740,7 @@ private def elaboratePackedFields (typeName : Name)
       unless descriptorType.isAppOfArity ``Loom.Hw.PackedField 3 do
         throwErrorAt fieldName "generated packed field has an invalid descriptor type"
       let fieldWidth := descriptorType.getAppArgs[2]!
-      let valueType := Lean.Expr.app (.const ``Loom.Hw.Expr []) fieldWidth
-      let value ← elabTerm valueSyntax (some valueType)
+      let value ← elaborateScalarAtWidth valueSyntax fieldWidth
       let result ← Meta.mkAppM ``Loom.Hw.PackedReg.setField #[register, descriptor, value]
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
@@ -718,8 +753,7 @@ private def elaboratePackedFields (typeName : Name)
       let result ←
         if targetType.isAppOfArity ``Loom.Hw.Reg 1 then
           let width := targetType.getAppArgs[0]!
-          let valueType := Lean.Expr.app (.const ``Loom.Hw.Expr []) width
-          let value ← elabTerm valueSyntax (some valueType)
+          let value ← elaborateScalarAtWidth valueSyntax width
           Meta.mkAppM ``Loom.Hw.Reg.set #[target, value]
         else if targetType.isAppOfArity ``Loom.Hw.PackedReg 2 then
           let read ← Meta.mkAppM ``Loom.Hw.PackedReg.rd #[target]
@@ -740,8 +774,7 @@ private def elaboratePackedFields (typeName : Name)
         throwErrorAt familySyntax "indexed assignment requires a typed register family"
       let elementWidth := familyType.getAppArgs[0]!
       let countExpr ← Meta.whnf familyType.getAppArgs[1]!
-      let valueType := Lean.Expr.app (.const ``Loom.Hw.Expr []) elementWidth
-      let value ← elabTerm valueSyntax (some valueType)
+      let value ← elaborateScalarAtWidth valueSyntax elementWidth
       let index ← elabTerm indexSyntax none
       let indexType ← Meta.whnf (← Meta.inferType index)
       let result ← if indexType.isConstOf ``Nat then
@@ -797,8 +830,7 @@ private def elaboratePackedFields (typeName : Name)
       let result ←
         if endpointType.isAppOfArity ``Loom.Hw.Chan.SourceEndpoint 1 then
           let width := endpointType.getAppArgs[0]!
-          let payload ← elabTerm payloadSyntax
-            (some (Lean.Expr.app (.const ``Loom.Hw.Expr []) width))
+          let payload ← elaborateScalarAtWidth payloadSyntax width
           Meta.mkAppM ``Loom.Hw.Chan.SourceEndpoint.send #[endpoint, payload]
         else if endpointType.isAppOfArity ``Loom.Hw.PackedChan.SourceEndpoint 2 then
           let channel ← Meta.mkAppM ``Loom.Hw.PackedChan.SourceEndpoint.channel #[endpoint]
@@ -934,8 +966,7 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
         let dataWidth := memoryType.getAppArgs[1]!
         let address ← elabTerm addressSyntax
           (some (.app (.const ``Loom.Hw.Expr []) addressWidth))
-        let value ← elabTerm valueSyntax
-          (some (.app (.const ``Loom.Hw.Expr []) dataWidth))
+        let value ← elaborateScalarAtWidth valueSyntax dataWidth
         Meta.mkAppM ``Loom.Hw.Mem.write #[memory, .lit (.natVal port.getNat), address, value]
       else if memoryType.isAppOfArity ``Loom.Hw.PackedMem 3 then
         let addressWidth := memoryType.getAppArgs[0]!
