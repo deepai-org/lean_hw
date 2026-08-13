@@ -1089,7 +1089,7 @@ system endpoint_extended where
   reset Reset.together
   channel q : 8 depth 2
   island source on sourceClock extends Base.design where
-    rule publish := send value to q then value <- value + 1
+    rule publish := send value to q then skip
   island sink on sinkClock where
     output reg observed : 8
     rule capture := receive sample from q then observed <- sample
@@ -1100,6 +1100,30 @@ example : endpoint_extended.application.artifact.emissionCheck.isOk := by native
 example : endpoint_extended.source.rules.map (·.name) = ["publish"] := rfl
 
 end Tests.PrettyDsl.EndpointExtendedIsland
+
+namespace Tests.PrettyDsl.ExtendedIslandReadBoundary
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+private def undeclared : Reg 8 := ⟨"undeclared"⟩
+
+namespace Base
+hardware read_boundary_base where
+  output reg result : 8
+end Base
+
+/-- error: extended island 'worker' reads outside its inspectable base, new declarations, or declared channel endpoints; declare the handle in the base/fragment or connect its channel in this system -/
+#guard_msgs in
+system rejected_external_read where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    output reg sampled : 8
+    rule sample := sampled <- undeclared
+
+end Tests.PrettyDsl.ExtendedIslandReadBoundary
 
 namespace Tests.PrettyDsl.GroupedRealization
 
