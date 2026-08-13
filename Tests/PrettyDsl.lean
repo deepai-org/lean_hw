@@ -553,6 +553,37 @@ end MissingRealization
 
 end Tests.PrettyDsl.PrettySystem
 
+namespace Tests.PrettyDsl.PackedSystem
+
+open Loom.Hw
+open Loom.Hw.Dsl
+open Tests.PrettyDsl
+
+system packedCrossing where
+  clock sourceClock
+  clock sinkClock
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel headers : Header depth 2
+  island source on sourceClock where
+    output reg sent : 1
+    rule transmit :=
+      if ~sent then
+        send Header { tag := 5, address := 17 } to headers then sent <- 1
+  island sink on sinkClock where
+    output reg observed : Header
+    rule accept :=
+      receive value from headers then observed <- value
+  connect headers from source to sink
+  realize headers with Cdc.grayFifo
+
+example : PackedChan Header := packedCrossing.headers
+example : packedCrossing.connections.head?.map (fun connection => connection.width) = some 8 := by
+  native_decide
+example : packedCrossing.application.artifact.emissionCheck.isOk := by native_decide
+
+end Tests.PrettyDsl.PackedSystem
+
 /--
 error: memory depth 12 is not a power of two; the current Mem core represents exactly 2^addressWidth cells
 -/

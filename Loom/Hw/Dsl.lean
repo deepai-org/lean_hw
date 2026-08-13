@@ -2188,6 +2188,7 @@ private def systemSameLine.parenthesizer : Lean.PrettyPrinter.Parenthesizer := p
 syntax (priority := low) ident systemSameLine ident : hwsystemitem
 syntax (priority := high) ident systemSameLine "$" "(" term ")" : hwsystemitem
 syntax (priority := high) ident systemSameLine ident systemSameLine ":" num systemSameLine ident num : hwsystemitem
+syntax (priority := high) ident systemSameLine ident systemSameLine ":" ident systemSameLine ident num : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident ":=" term : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident "where"
   withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
@@ -2201,7 +2202,8 @@ private structure PrettyClock where
 
 private structure PrettyChannel where
   name : TSyntax `ident
-  width : TSyntax `num
+  width : Option (TSyntax `num) := none
+  packedType : Option (TSyntax `ident) := none
   depth : TSyntax `num
 
 private structure PrettyIsland where
@@ -2262,7 +2264,12 @@ private def expandSystemCommand
             Macro.throwErrorAt kind "expected `channel name : width depth amount`"
           if width.getNat == 0 then Macro.throwErrorAt width "channel width must be positive"
           if depth.getNat == 0 then Macro.throwErrorAt depth "channel depth must be positive"
-          channels := channels.push ⟨name, width, depth⟩; pure 3
+          channels := channels.push { name, width := some width, depth }; pure 3
+      | `(hwsystemitem| $kind:ident $name:ident : $typeName:ident $depthKeyword:ident $depth:num) =>
+          unless kind.getId == `channel && depthKeyword.getId == `depth do
+            Macro.throwErrorAt kind "expected `channel name : PackedType depth amount`"
+          if depth.getNat == 0 then Macro.throwErrorAt depth "channel depth must be positive"
+          channels := channels.push { name, packedType := some typeName, depth }; pure 3
       | `(hwsystemitem| $kind:ident $name:ident on $clock:ident := $design:term) =>
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock := design`"
@@ -2330,9 +2337,16 @@ private def expandSystemCommand
   for channel in channels do
     let sourceName := Syntax.mkStrLit channel.name.getId.toString
     let declarationName := nestedName channel.name.getId
-    commands := commands.push (← `(command|
-      def $declarationName : Loom.Hw.Chan $(channel.width) :=
-        ⟨$sourceName, $(channel.depth), .exchange⟩))
+    match channel.width, channel.packedType with
+    | some width, none =>
+        commands := commands.push (← `(command|
+          def $declarationName : Loom.Hw.Chan $width :=
+            ⟨$sourceName, $(channel.depth), .exchange⟩))
+    | none, some typeName =>
+        commands := commands.push (← `(command|
+          def $declarationName : Loom.Hw.PackedChan $typeName :=
+            Loom.Hw.PackedChan.named $sourceName $(channel.depth)))
+    | _, _ => Macro.throwErrorAt channel.name "invalid channel payload declaration"
   for island in islands do
     let declarationName := nestedName island.name.getId
     let designTerm ← match island.design with
