@@ -602,6 +602,34 @@ example : existing.islands.head?.map (fun island => island.design.name) =
 
 end Tests.PrettyDsl.ExistingIsland
 
+namespace Tests.PrettyDsl.GroupedRealization
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+system grouped where
+  clock sourceClock
+  clock sinkClock
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel command : 8 depth 2
+  channel response : 8 depth 2
+  island source on sourceClock where
+    output reg sourceSeen : 1
+  island sink on sinkClock where
+    output reg sinkSeen : 1
+  connect command from source to sink
+  connect response from source to sink
+  realize command, response with Cdc.grayFifo
+
+example : grouped.connections.length = 2 := rfl
+example : grouped.realizationPlan.select grouped.commandRoute.key = .portableAsync := by
+  native_decide
+example : grouped.realizationPlan.select grouped.responseRoute.key = .portableAsync := by
+  native_decide
+
+end Tests.PrettyDsl.GroupedRealization
+
 namespace Tests.PrettyDsl.PackedSystem
 
 open Loom.Hw
