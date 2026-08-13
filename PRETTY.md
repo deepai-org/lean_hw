@@ -2495,12 +2495,16 @@ emitted-name collisions; and direct cross-island signal references.
    controller/storage Designs stable public aliases. Keep only generated proof
    plumbing, structural coordinates, and intermediate endpoint transforms
    private.
-4. Lower `realize q with $(binding)` to the existing certified-binding escape,
-   with expected-type propagation and errors at the splice.
-5. Keep target storage entirely in the library/evidence layer: its constructor
-   uses the existing exact `PhysicalLeaf` substitution seam and yields a
-   certified binding consumed through `$(binding)`. The named assumption must
-   remain visible in inspection; no target-storage keyword is added.
+4. Keep `realize q with profile` at the existing `RealizationKind` boundary.
+   Do not make a target-specific `PhysicalLeaf` look like an ordinary logical
+   realization: the current certified `Application` carries stock channel
+   bindings, while leaf substitution is an expert evidence-layer operation.
+5. Keep target storage entirely in the library/evidence layer. Its constructor
+   uses the existing exact `PhysicalLeaf` substitution seam, and its named
+   assumption remains explicit there. Integrating such a leaf into the
+   ordinary certified application artifact is multiclock-core work; only after
+   that typed facade exists may pretty syntax expose the facade through an
+   ordinary term position. No target-storage keyword is added here.
 6. Implement `#show_hardware` as a faithful canonical Design renderer. Require
    pretty-print/reparse structural equality before labeling output as pretty
    hardware and visibly fall back to core notation when reification fails.
@@ -2518,7 +2522,7 @@ emitted-name collisions; and direct cross-island signal references.
 
 Realization golden diagnostics cover a missing realization; synchronous/Gray
 clock mismatch; invalid Gray depth; coordinated/recovery mismatch; duplicate
-realization clauses; binding and storage-leaf splice type mismatch; island or
+realization clauses; realization-profile term type mismatch; island or
 realization-component certification failure; incomplete existing binding or
 physical-requirement coverage; and an unrenderable `#show_hardware` value with
 an explicit core fallback.
@@ -2675,13 +2679,14 @@ The pretty layer is complete when:
     `Design`; only proof plumbing, structural coordinates, and wrappers may
     remain private. Physical requirements are not authoring syntax, but they
     remain complete and inspectable through `#show_system ... physical`.
-16. Combinational outputs remain typed pure observations. Optional target
-    storage is constructed as a typed library/evidence binding consumed through
-    the universal `$(binding)` escape, genuinely replaces the portable leaf,
-    and displays its named assumption rather than becoming a default or hidden
-    theorem. Target brands, primitive names, and storage strategies do not enter
-    the grammar. The system syntax does not silently promise top-level
-    projection that the existing renderer lacks.
+16. Combinational outputs remain typed pure observations. Target storage stays
+    behind the typed library/evidence `PhysicalLeaf` seam and is not presented
+    as a stock logical realization. Target brands, primitive names, and storage
+    strategies do not enter the grammar. Pretty syntax may expose a future
+    certified-application binding facade only after the multiclock core owns
+    that type and preserves its named assumption. The system syntax does not
+    silently promise either that facade or top-level projection that the
+    existing renderer lacks.
 17. Every channel token has the frozen availability, empty-data, request, and
     full co-tick behavior above; canonical `send ... then` makes enqueue and
     producer updates both-or-neither, canonical `receive` structurally guards
