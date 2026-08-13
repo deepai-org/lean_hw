@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Declarations
 import Loom.Hw.FastEval
+import Loom.Hw.Multiclock
 import Loom.Hw.Packed
 import Loom.Hw.Semantics
 import Lean.Elab.Command
@@ -216,6 +217,9 @@ syntax:max (name := hwPackedField) "hw_packed_field% " term:max ident : term
 syntax:max (name := hwPackedWrite) "hw_packed_write% " term:max ident term:max : term
 syntax:max (name := hwWrite) "hw_write% " term:max term:max : term
 syntax:max (name := hwArrayWrite) "hw_array_write% " term:max term:max term:max : term
+syntax:max (name := hwChannelObserve) "hw_channel_observe% " term:max ident : term
+syntax:max (name := hwSend) "hw_send% " term:max term:max : term
+syntax:max (name := hwConsume) "hw_consume% " term:max : term
 
 private def coerceHardwareAtom (valueSyntax : Syntax) (expectedType? : Option Lean.Expr) :
     TermElabM Lean.Expr := do
@@ -352,6 +356,67 @@ when that fails is its final component interpreted as a packed field. -/
         unless indexType.isAppOfArity ``Loom.Hw.Expr 1 do
           throwErrorAt indexSyntax "dynamic register-family index must be a hardware expression"
         Meta.mkAppM ``Loom.Hw.RegArray.dynSet #[family, index, value]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwChannelObserve] def elabHwChannelObserve : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_channel_observe% $endpointSyntax:term $operation:ident) => do
+      let endpoint ← elabTerm endpointSyntax none
+      let endpointType ← Meta.whnf (← Meta.inferType endpoint)
+      -- Quotation gives this identifier a macro scope; erase it before
+      -- inspecting the atomic operation name.
+      let op := operation.getId.eraseMacroScopes.getString!
+      let result ←
+        if endpointType.isAppOfArity ``Loom.Hw.Chan.SourceEndpoint 1 then
+          if op == "canSend" then Meta.mkAppM ``Loom.Hw.Chan.SourceEndpoint.canSend #[endpoint]
+          else throwErrorAt operation "a channel source exposes only `canSend`"
+        else if endpointType.isAppOfArity ``Loom.Hw.Chan.SinkEndpoint 1 then
+          if op == "hasData" then Meta.mkAppM ``Loom.Hw.Chan.SinkEndpoint.hasData #[endpoint]
+          else if op == "data" then Meta.mkAppM ``Loom.Hw.Chan.SinkEndpoint.data #[endpoint]
+          else throwErrorAt operation "a channel sink exposes `hasData` and `data`"
+        else if endpointType.isAppOfArity ``Loom.Hw.PackedChan.SourceEndpoint 2 then
+          if op == "canSend" then Meta.mkAppM ``Loom.Hw.PackedChan.SourceEndpoint.canSend #[endpoint]
+          else throwErrorAt operation "a packed channel source exposes only `canSend`"
+        else if endpointType.isAppOfArity ``Loom.Hw.PackedChan.SinkEndpoint 2 then
+          if op == "hasData" then Meta.mkAppM ``Loom.Hw.PackedChan.SinkEndpoint.hasData #[endpoint]
+          else if op == "data" then Meta.mkAppM ``Loom.Hw.PackedChan.SinkEndpoint.data #[endpoint]
+          else throwErrorAt operation "a packed channel sink exposes `hasData` and `data`"
+        else throwErrorAt endpointSyntax "channel observation requires a directional endpoint"
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwSend] def elabHwSend : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_send% $endpointSyntax:term $payloadSyntax:term) => do
+      let endpoint ← elabTerm endpointSyntax none
+      let endpointType ← Meta.whnf (← Meta.inferType endpoint)
+      let result ←
+        if endpointType.isAppOfArity ``Loom.Hw.Chan.SourceEndpoint 1 then
+          let width := endpointType.getAppArgs[0]!
+          let payload ← elabTerm payloadSyntax
+            (some (Lean.Expr.app (.const ``Loom.Hw.Expr []) width))
+          Meta.mkAppM ``Loom.Hw.Chan.SourceEndpoint.send #[endpoint, payload]
+        else if endpointType.isAppOfArity ``Loom.Hw.PackedChan.SourceEndpoint 2 then
+          let channel ← Meta.mkAppM ``Loom.Hw.PackedChan.SourceEndpoint.channel #[endpoint]
+          let sample ← Meta.mkAppM ``Loom.Hw.PackedChan.deq #[channel]
+          let payload ← elabTerm payloadSyntax (some (← Meta.inferType sample))
+          Meta.mkAppM ``Loom.Hw.PackedChan.SourceEndpoint.send #[endpoint, payload]
+        else throwErrorAt endpointSyntax "send requires a directional channel source"
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwConsume] def elabHwConsume : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_consume% $endpointSyntax:term) => do
+      let endpoint ← elabTerm endpointSyntax none
+      let endpointType ← Meta.whnf (← Meta.inferType endpoint)
+      let result ←
+        if endpointType.isAppOfArity ``Loom.Hw.Chan.SinkEndpoint 1 then
+          Meta.mkAppM ``Loom.Hw.Chan.SinkEndpoint.consume #[endpoint]
+        else if endpointType.isAppOfArity ``Loom.Hw.PackedChan.SinkEndpoint 2 then
+          Meta.mkAppM ``Loom.Hw.PackedChan.SinkEndpoint.consume #[endpoint]
+        else throwErrorAt endpointSyntax "consume requires a directional channel sink"
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -530,7 +595,12 @@ macro_rules
       if name.isAtomic then
         `(hw_atom% $id)
       else
-        `(hw_dotted_atom% $id)
+        let final := name.getString!
+        if final == "canSend" || final == "hasData" || final == "data" then
+          let base := mkIdentFrom id name.getPrefix
+          let operation := mkIdentFrom id (Name.mkSimple final)
+          `(hw_channel_observe% $base $operation)
+        else `(hw_dotted_atom% $id)
   | `([hwexpr| ($e:hwexpr)]) => `([hwexpr| $e])
   | `([hwexpr| $id:ident[$bit:num]]) => `(hw_index_lit% $id $bit)
   | `([hwexpr| $id:ident[$hi:num:$lo:num]]) => do
@@ -590,6 +660,10 @@ syntax (name := hwStmtSplice) "$stmt" "(" term ")" : hwstmt
 syntax ident " <- " hwexpr : hwstmt
 syntax ident "[" "port" num "," hwexpr "]" " <- " hwexpr : hwstmt
 syntax ident "[" hwexpr "]" " <- " hwexpr : hwstmt
+syntax "send" hwexpr "to" ident : hwstmt
+syntax "send" hwexpr "to" ident "then" hwstmt : hwstmt
+syntax "consume" ident : hwstmt
+syntax "receive" ident "from" ident "then" hwstmt : hwstmt
 syntax "let" ident ":" num ":=" hwexpr : hwstmt
 syntax "let" ident ":=" hwexpr : hwstmt
 syntax "suppress" ident "because" str "in" hwstmt : hwstmt
@@ -635,6 +709,19 @@ mutual
         | `(hwexpr| $literal:num) =>
             `(hw_array_write% $family ($literal : Nat) [hwexpr| $value])
         | _ => `(hw_array_write% $family [hwexpr| $index] [hwexpr| $value])
+    | `(hwstmt| send $payload:hwexpr to $endpoint:ident then $body:hwstmt) => do
+        `(Loom.Hw.Act.ite (hw_channel_observe% $endpoint canSend)
+          (Loom.Hw.Act.seq (hw_send% $endpoint [hwexpr| $payload]) $(← expandStmt body))
+          Loom.Hw.Act.skip)
+    | `(hwstmt| send $payload:hwexpr to $endpoint:ident) =>
+        `(hw_send% $endpoint [hwexpr| $payload])
+    | `(hwstmt| consume $endpoint:ident) => `(hw_consume% $endpoint)
+    | `(hwstmt| receive $valueName:ident from $endpoint:ident then $body:hwstmt) => do
+        let loweredBody ← expandStmt body
+        `(Loom.Hw.Act.ite (hw_channel_observe% $endpoint hasData)
+          (let $valueName := (hw_channel_observe% $endpoint data)
+           Loom.Hw.Act.seq $loweredBody (hw_consume% $endpoint))
+          Loom.Hw.Act.skip)
     | stx@`(hwstmt| let $_:ident : $_:num := $_:hwexpr) =>
         Macro.throwErrorAt stx "a hardware let must be followed by another statement in the same block"
     | stx@`(hwstmt| let $_:ident := $_:hwexpr) =>
@@ -997,6 +1084,15 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
   | `(hwstmt| $_:ident[$index:hwexpr] <- $value:hwexpr) =>
       (written, readAfterWriteFindings registers suppressed written index ++
         readAfterWriteFindings registers suppressed written value)
+  | `(hwstmt| send $payload:hwexpr to $_:ident) =>
+      (written, readAfterWriteFindings registers suppressed written payload)
+  | `(hwstmt| send $payload:hwexpr to $_:ident then $body:hwstmt) =>
+      let payloadFindings := readAfterWriteFindings registers suppressed written payload
+      let (next, bodyFindings) := analyzeStatement registers suppressed body written
+      (next, payloadFindings ++ bodyFindings)
+  | `(hwstmt| consume $_:ident) => (written, [])
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) =>
+      analyzeStatement registers suppressed body written
   | `(hwstmt| let $_:ident : $_:num := $value:hwexpr)
   | `(hwstmt| let $_:ident := $value:hwexpr) =>
       (written, readAfterWriteFindings registers suppressed written value)
@@ -1063,6 +1159,12 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
       unless writable.contains family.getId do
         Macro.throwErrorAt family
           s!"'{family.getId}' is not a writable register family in this hardware block"
+  | `(hwstmt| send $_:hwexpr to $_:ident) => pure ()
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt) =>
+      validateWriteTargets writable body
+  | `(hwstmt| consume $_:ident) => pure ()
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) =>
+      validateWriteTargets writable body
   | `(hwstmt| let $_:ident : $_:num := $_:hwexpr) => pure ()
   | `(hwstmt| let $_:ident := $_:hwexpr) => pure ()
   | `(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) => do
@@ -1135,6 +1237,8 @@ private partial def validateCases (domains : Array StateDomain) : TSyntax `hwstm
   | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
       validateCases domains body
   | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) => validateCases domains body
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt) => validateCases domains body
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) => validateCases domains body
   | `(hwstmt| {$statements:hwstmt,*}) =>
       for statement in statements.getElems do
         validateCases domains statement

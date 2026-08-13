@@ -321,6 +321,32 @@ example : Expr 8 := [hwexpr| slots[4]]
 
 end Tests.PrettyDsl.RegisterFamily
 
+namespace Tests.PrettyDsl.ChannelActions
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+private def queue : Chan 8 := ⟨"queue", 2, .exchange⟩
+private def source := queue.source
+private def sink := queue.sink
+private def sent : Reg 1 := ⟨"sent"⟩
+private def received : Reg 8 := ⟨"received"⟩
+
+example : ([hwexpr| source.canSend] : Expr 1) = source.canSend := rfl
+example : ([hwexpr| sink.hasData] : Expr 1) = sink.hasData := rfl
+example : ([hwexpr| sink.data] : Expr 8) = sink.data := rfl
+example : [hwstmt| send 42 to source] = source.send (.lit 42#8) := rfl
+example : [hwstmt| consume sink] = sink.consume := rfl
+example : [hwstmt| send 42 to source then sent <- 1] =
+    Act.ite source.canSend
+      (Act.seq (source.send (.lit 42#8)) (sent.set (.lit 1#1))) .skip := rfl
+example : [hwstmt| receive value from sink then received <- value] =
+    Act.ite sink.hasData
+      (let value := sink.data
+       Act.seq (received.set value) sink.consume) .skip := rfl
+
+end Tests.PrettyDsl.ChannelActions
+
 /--
 error: memory depth 12 is not a power of two; the current Mem core represents exactly 2^addressWidth cells
 -/
