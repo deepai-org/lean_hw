@@ -1120,6 +1120,13 @@ example : twoClock.q.fifoParameters.depth = 2 := rfl
 example : twoClock.q.storageShape.width = 8 := rfl
 example : twoClock.q.storageShape.depth = 2 := rfl
 
+run_cmd do
+  for component in [``twoClock.q.sourceControl, ``twoClock.q.sinkControl,
+      ``twoClock.q.storageWriter, ``twoClock.q.storageReader] do
+    let status := Loom.Hw.Dsl.hardwareRenderingStatus (← Lean.getEnv) component
+    unless status == (true, true) do
+      throwError "generated component {component} lacks a structurally checked hardware rendering or emitted-RTL identity check"
+
 private theorem assembledProducerTrue :
     (twoClock.producerSystemIsland.design.toAssumedOpenTSys
       (fun _ _ => True)).Invariant (fun _ => True) := by
@@ -1615,6 +1622,10 @@ system sameClock where
 example : sameClock.realizationPlan.select sameClock.qRoute.key = .synchronous := by
   native_decide
 example : sameClock.application.artifact.emissionCheck.isOk := by native_decide
+run_cmd do
+  let status := Loom.Hw.Dsl.hardwareRenderingStatus (← Lean.getEnv) ``sameClock.q.adapter
+  unless status == (true, true) do
+    throwError "synchronous adapter lacks a structurally checked hardware rendering or emitted-RTL identity check"
 end SameClock
 
 end Tests.PrettyDsl.RealizationDiagnostics
