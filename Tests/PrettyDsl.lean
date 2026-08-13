@@ -199,13 +199,16 @@ example : design.name = "satcounter" := by
   hw_unfold design
 
 /--
-info: hardware summary satcounter
-This is derived declaration metadata, not a reparseable hardware source rendering.
-declarations:
-  count: register 8 bits
-  sat: register 1 bits
-rules:
-  tick
+info: pretty hardware (source round trip checked)
+hardware satcounter where
+  output reg count : 8
+  output reg sat : 1
+
+  rule tick :=
+    if count == 255 then
+      sat <- 1
+    else
+      count <- count + 1
 -/
 #guard_msgs in
 #show_hardware design
@@ -384,16 +387,18 @@ example : declarations.combOutputs.map (fun declaration =>
   decide
 
 /--
-info: hardware summary packed_demo
-This is derived declaration metadata, not a reparseable hardware source rendering.
-declarations:
-  incoming: input 8 bits
-  reset_pending: register 8 bits
-  pending: register 8 bits
-  observed: combinational output 8 bits
-  observed_tag: combinational output 3 bits
-rules:
-  capture
+info: pretty hardware (source round trip checked)
+hardware packed_demo where
+  input wire incoming : Header
+  reg reset_pending : Header := { tag := 5, address := 17 }
+  output reg pending : Header := { tag := 2, address := 9 }
+  output wire observed : Header := pending
+  output wire observed_tag : 3 := pending.tag
+
+  rule capture := {
+    pending <- incoming,
+    pending.tag <- incoming.tag
+  }
 -/
 #guard_msgs in
 #show_hardware design
@@ -977,16 +982,16 @@ hardware suppressed_lints where
   }
 
 /--
-info: hardware summary suppressed_lints
-This is derived declaration metadata, not a reparseable hardware source rendering.
-declarations:
-  x: register 8 bits
-  y: register 8 bits
-rules:
-  first
-lint suppressions:
-  first: suppress multiple_write because "the second assignment is intentional"
-  first: suppress read_after_write because "this rule deliberately samples the old value"
+info: pretty hardware (source round trip checked)
+hardware suppressed_lints where
+  reg x : 8
+  reg y : 8
+  rule first suppress multiple_write because "the second assignment is intentional" := {
+    x <- 1,
+    suppress read_after_write because "this rule deliberately samples the old value" in
+      y <- x,
+    x <- 2
+  }
 -/
 #guard_msgs in
 #show_hardware design
