@@ -169,6 +169,18 @@ private def helperAct : Act := flag.set (.lit 1)
 private def generatedValue (_ : Nat) : Expr 8 := .lit 7
 private def staticShift : Nat := 3
 
+set_option linter.unusedVariables false in
+private def packedLocalShadowProbe : Act :=
+  [hwstmt| {
+    let headerValue := Header { tag := 2, address := 3 },
+    flag <- headerValue.tag[0]
+  }]
+
+example : packedLocalShadowProbe =
+    (let localValue := (PackedExpr.fromBits
+      (Expr.concat (.lit 2#3) (.lit 3#5)) : PackedExpr Header)
+    flag.set (Expr.slice (Header.tagField.read localValue) 0 1)) := rfl
+
 example : ([hwexpr| a + b * 3] : Expr 8) =
     Expr.add a.rd (Expr.mul b.rd (.lit 3)) := rfl
 
