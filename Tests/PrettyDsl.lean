@@ -566,6 +566,17 @@ example : twoClock.consumer.outputs = ["got"] := by native_decide
 #show_system twoClock timing
 #show_system twoClock physical
 
+def skippedPhysicalChecks :
+    System.PhysicalCheckReport twoClock.application.artifact.realized.artifacts where
+  backend := "portable-flow dry run"
+  results := twoClock.application.artifact.realized.artifacts.requirements.map fun requirement =>
+    { requirement, status := .skip, detail := "backend not invoked" }
+  coverage := by simp [Function.comp_def]
+
+#show_system twoClock backend skippedPhysicalChecks
+
+example : skippedPhysicalChecks.passed = false := by native_decide
+
 #run_system twoClock where
   tick clkA
   tick clkA
