@@ -2018,7 +2018,11 @@ caller frame comes from the continuation stack (`tcont`/`tcdom` at
 frame open it is the empty-stack fault. Retires nothing -- no instruction was
 fetched, and the `ret` that jumped here already retired. -/
 def s_gret : Expr 1 × Act := stArm S_GRET
-  (.ite curInGate (.seq (pcReg.set (tcontRd gPopIdx)) goF0) gretEmptyFault)
+  [hwstmt|
+    if curInGate then {
+      pcReg <- $(tcontRd gPopIdx),
+      $stmt(goF0)
+    } else $stmt(gretEmptyFault)]
 
 /-- `S_GC0`: the entry PC has arrived; latch it and ask for the domain word
 at +8. -/
@@ -2088,10 +2092,15 @@ def s_cr1 : Expr 1 × Act := stArm S_CR1
              stReg.set (L5 S_DSW)])
     .skip)
 
-def s_pause : Expr 1 × Act := stArm S_PAUSE  (.ite (.not bus_req) goF0 .skip)
+def s_pause : Expr 1 × Act := stArm S_PAUSE
+  [hwstmt| if ~bus_req then $stmt(goF0)]
 
 def s_fw : Expr 1 × Act := stArm S_FW
-  (.ite mDone (.seq (irReg.set mRdata) (stReg.set (L5 S_RD))) .skip)
+  [hwstmt|
+    if mDone then {
+      irReg <- mRdata,
+      stReg <- $(L5 S_RD)
+    }]
 
 /-- **EXT-9 `S_IC`**: the tag check, one cycle after `S_F0` latched the
 banks. Hit -> `ir` from the latched data word, straight to `S_RD` (a
