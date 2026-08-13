@@ -101,8 +101,8 @@ hardware tiny_fsm where
   rule advance :=
     case st of
     | Idle => { st <- Run, seen <- CMD_QUANTUM }
-    | Run => { st <- Done }
-    | Done => { st <- Idle }
+    | Run => st <- Done
+    | Done => st <- Idle
 
 example : st = (⟨"st"⟩ : Reg 2) := rfl
 example : Idle = (Expr.lit 0 : Expr 2) := rfl
