@@ -1993,24 +1993,29 @@ deviations).
 thread's instruction on the next cycle: a preemption costs exactly one
 cycle and issues no bus transaction from the old context. -/
 def s_f0 : Expr 1 × Act := stArm S_F0
-  (.ite bus_req (stReg.set (L5 S_PAUSE))
+  [hwstmt|
+    if bus_req then stReg <- $(L5 S_PAUSE)
     -- EXT-3: fail-stop, checked BEFORE the preemption point and before the
     -- fetch. Nothing has been fetched at `S_F0` and `bus_req` is already
     -- excluded above, so the core stops with no transaction outstanding
     -- and `pc` still addressing the un-executed instruction.
-    (.ite curPoisoned (runningReg.set (L1 0))
-    (.ite preemptFire
-      (.seq (curReg.set next_ready) (setPcFromTpc next_ready))
+    else if curPoisoned then runningReg <- 0
+    else if preemptFire then {
+      curReg <- next_ready,
+      $stmt(setPcFromTpc next_ready)
+    }
       -- EXT-9: look the line up instead of issuing a fetch. The two writes
       -- below are the D19 sync-read sites for `ic_tag`/`ic_data`; `S_IC`
       -- consumes them next cycle. A miss from there issues exactly the
       -- transaction this arm used to issue, one cycle later.
       -- §9.2 sentinel: `ra` has been fetched. No memory fetch is issued;
       -- `S_GRET` does the return next cycle (see `S_GRET`).
-      (.ite sentinelPc (stReg.set (L5 S_GRET))
-      (.seq (icTagQReg.set (icTagBank.rd ic_idx))
-        (.seq (icDataQReg.set (icDataBank.rd ic_idx))
-          (stReg.set (L5 S_IC))))))))
+    else if sentinelPc then stReg <- $(L5 S_GRET)
+    else {
+      icTagQReg <- icTagBank[ic_idx],
+      icDataQReg <- icDataBank[ic_idx],
+      stReg <- $(L5 S_IC)
+    }]
 
 /-- `S_GRET`: the sentinel was fetched -- execute the §9.2 gate return. The
 caller frame comes from the continuation stack (`tcont`/`tcdom` at
