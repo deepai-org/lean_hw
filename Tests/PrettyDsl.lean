@@ -503,8 +503,15 @@ system twoClock where
   clocks Clock.asynchronous
   reset Reset.together
   channel q : 8 depth 2
-  island producer on clkA := producerFor q
-  island consumer on clkB := consumerFor q
+  island producer on clkA where
+    output reg sent : 1
+    rule transmit :=
+      if ~sent then
+        send 42 to q then sent <- 1
+  island consumer on clkB where
+    output reg got : 8
+    rule accept :=
+      receive value from q then got <- value
   connect q from producer to consumer
   realize q with Cdc.grayFifo
 
@@ -514,6 +521,8 @@ example : twoClock.connections.map (fun connection => connection.chan.name) = ["
   native_decide
 example : twoClock.resetPolicy = .coordinated := rfl
 example : twoClock.application.artifact.emissionCheck.isOk := by native_decide
+example : twoClock.producer.outputs = ["sent"] := by native_decide
+example : twoClock.consumer.outputs = ["got"] := by native_decide
 
 namespace MissingRealization
 
