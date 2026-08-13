@@ -2289,7 +2289,8 @@ syntax (priority := high) ident systemSameLine ident systemSameLine ":" ident sy
 syntax (priority := high) ident systemSameLine ident systemSameLine ":" num systemSameLine ident num systemSameLine ident term:max : hwsystemitem
 syntax (priority := high) ident systemSameLine ident systemSameLine ":" ident systemSameLine ident num systemSameLine ident term:max : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident ":=" term : hwsystemitem
-syntax (priority := high) ident systemSameLine ident "on" ident "where"
+syntax (priority := high) ident systemSameLine ident "on" ident
+  (systemSameLine "module" ident)? "where"
   withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "from" ident "to" ident : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "with" term : hwsystemitem
@@ -2310,6 +2311,7 @@ private structure PrettyIsland where
   name : TSyntax `ident
   clock : TSyntax `ident
   design : Option (TSyntax `term) := none
+  moduleName : Option (TSyntax `ident) := none
   body : Array (TSyntax `hwitem) := #[]
 
 private structure PrettyConnection where
@@ -2388,10 +2390,10 @@ private def expandSystemCommand
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock := design`"
           islands := islands.push { name, clock, design := some design }; pure 4
-      | `(hwsystemitem| $kind:ident $name:ident on $clock:ident where $body:hwitem*) =>
+      | `(hwsystemitem| $kind:ident $name:ident on $clock:ident $[module $moduleName:ident]? where $body:hwitem*) =>
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock where ...`"
-          islands := islands.push { name, clock, body }; pure 4
+          islands := islands.push { name, clock, moduleName, body }; pure 4
       | `(hwsystemitem| $kind:ident $channel:ident from $source:ident to $sink:ident) =>
           unless kind.getId == `connect do
             Macro.throwErrorAt kind "expected `connect channel from source to sink`"
@@ -2467,7 +2469,14 @@ private def expandSystemCommand
     let declarationName := nestedName island.name.getId
     let designTerm ← match island.design with
       | some supplied => do
-          let mut scopedTerm := supplied
+          let baseTerm ← match supplied with
+            | `(term| $name:ident) =>
+                let resolvedName := if name.getId.isAtomic then
+                  namespaceName ++ name.getId else name.getId
+                let resolved := mkIdentFrom name resolvedName
+                `(term| hw_exact_const% $resolved)
+            | _ => pure supplied
+          let mut scopedTerm := baseTerm
           for channel in channels.reverse do
             let channelName := nestedName channel.name.getId
             scopedTerm ← `(let $(channel.name) := $channelName; let _ := $(channel.name); $scopedTerm)
@@ -2490,7 +2499,7 @@ private def expandSystemCommand
               else
                 commands := commands.push (← `(command|
                   def $endpointName := (hw_exact_const% $channelName).sink))
-          let emittedModuleName := mkIdent
+          let emittedModuleName := island.moduleName.getD <| mkIdent
             (Name.mkSimple (systemName.getId.toString ++ "_" ++ island.name.getId.toString))
           let body := island.body
           let hardwareCommand ← `(command| hardware $emittedModuleName where $body*)
@@ -2539,7 +2548,7 @@ private def expandSystemCommand
     def $builderName : Loom.Hw.SystemBuilder := $builder))
   let valueName := nestedName `value
   commands := commands.push (← `(command|
-    def $valueName : Loom.Hw.System := ($builderName).certify (by native_decide)))
+    def $valueName : Loom.Hw.System := ($builderName).certify (by decide)))
 
   let qualifiedSystem := mkIdent (namespaceName ++ systemName.getId)
   let qualifiedValue := mkIdent
@@ -2558,7 +2567,7 @@ private def expandSystemCommand
   let applicationName := nestedName `application
   commands := commands.push (← `(command|
     def $applicationName : Loom.Hw.System.Application $qualifiedSystem :=
-      (hw_exact_const% $qualifiedValue).realizeWith $planName (by native_decide)))
+      (hw_exact_const% $qualifiedValue).realizeWith $planName (by decide)))
   let certifiedName := nestedName `certified
   commands := commands.push (← `(command|
     abbrev $certifiedName : Loom.Hw.CertifiedSystem $qualifiedSystem :=

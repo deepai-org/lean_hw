@@ -526,12 +526,12 @@ system twoClock where
   clocks Clock.asynchronous
   reset Reset.together
   channel q : 8 depth 2
-  island producer on clkA where
+  island producer on clkA module twoClock_producer where
     output reg sent : 1
     rule transmit :=
       if ~sent then
         send 42 to q then sent <- 1
-  island consumer on clkB where
+  island consumer on clkB module twoClock_consumer where
     output reg got : 8
     rule accept :=
       receive value from q then got <- value
@@ -575,6 +575,32 @@ system incomplete where
 end MissingRealization
 
 end Tests.PrettyDsl.PrettySystem
+
+namespace Tests.PrettyDsl.ExistingIsland
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+def monitor : Design :=
+  { name := "existing_monitor"
+    regs := [⟨"seen", 1, 0⟩]
+    mems := []
+    rules := []
+    outputs := ["seen"] }
+
+/-- The generated `existing.monitor` must resolve the supplied RHS to this
+outer declaration instead of capturing the definition currently being made. -/
+system existing where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island monitor on clk := monitor
+
+example : existing.monitor = monitor := rfl
+example : existing.islands.head?.map (fun island => island.design.name) =
+    some "existing_monitor" := by decide
+
+end Tests.PrettyDsl.ExistingIsland
 
 namespace Tests.PrettyDsl.PackedSystem
 
