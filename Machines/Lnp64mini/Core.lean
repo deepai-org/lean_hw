@@ -7,6 +7,7 @@ import Loom.Emit.MicroVerilog.Print
 import Loom.Hw.EmitIO
 import Loom.Hw.SyncRead
 import Loom.Hw.Declarations
+import Loom.Hw.Dsl
 import Machines.Lnp64mini.Interface
 
 /-!
@@ -1608,16 +1609,15 @@ def sleepScanRule : Rule :=
 /-- (3) latches: dmem_rd/reg_rd/uart_byte from pre-cycle state, plus the
 dmem sync-write block `if (dmem_we) dmem[dmem_a]<=dmem_wd` (pre-cycle regs). -/
 def latchRule : Rule :=
-  ⟨"latches",
-    .seq (.ite dmem_we (dmemBank.write 0 dmem_a dmem_wd) .skip)
-      (.seq (dmemRdReg.set (dmemBank.rd dmem_a))
-        (.seq (regRdReg.set (rfBank.rd (cat55 cur reg_sel)))
-          (.seq (uartByteReg.set (uartBank.rd uart_ridx))
-            -- EXT-8: the trace readback latches, alongside `reg_rd` and for
-            -- the same reason -- a registered read site, so the host sees a
-            -- stable word and the memory is not read combinationally.
-            (.seq (traceRdPcReg.set (tracePcBank.rd trace_sel))
-                  (traceRdWbReg.set (traceWbBank.rd trace_sel))))))⟩
+  ⟨"latches", [hwstmt| {
+    if dmem_we then dmemBank[port 0, dmem_a] <- dmem_wd,
+    dmemRdReg <- dmemBank[dmem_a],
+    regRdReg <- rfBank[$(cat55 cur reg_sel)],
+    uartByteReg <- uartBank[uart_ridx],
+    -- EXT-8: registered read sites keep host-visible trace words stable.
+    traceRdPcReg <- tracePcBank[trace_sel],
+    traceRdWbReg <- traceWbBank[trace_sel]
+  }]⟩
 
 /-- EXT-8: the commit-trace ring's single write site.
 
@@ -1625,25 +1625,25 @@ Reads `trace_hit`/`trace_in_*` PRE-cycle (D9), so it is independent of where
 this rule sits in the chain relative to the commit sites that set them. One
 `memWrite` per memory, which is what D38 requires and what fits block RAM. -/
 def traceRule : Rule :=
-  ⟨"trace_ring",
-    .ite trace_hit
-      (.seq (tracePcBank.write 0 trace_wp trace_in_pc)
-        (.seq (traceWbBank.write 0 trace_wp trace_in_wb)
-              (traceWpReg.set (.add trace_wp (L4 1)))))
-      .skip⟩
+  ⟨"trace_ring", [hwstmt|
+    if trace_hit then {
+      tracePcBank[port 0, trace_wp] <- trace_in_pc,
+      traceWbBank[port 0, trace_wp] <- trace_in_wb,
+      traceWpReg <- trace_wp + 1
+    }]⟩
 
 /-- (4) pulse defaults. -/
 def pulseDefaultsRule : Rule :=
-  ⟨"pulse_defaults",
-    actSeq
-      [ dmemWeReg.set (L1 0), coreRdReg.set (L1 0), coreWrReg.set (L1 0)
-      , jtagWrReg.set (L1 0), jtagRdReg.set (L1 0)
-      , gpRdReg.set (L1 0), gpWrReg.set (L1 0)
-      , lrReqReg.set (L1 0), scReqReg.set (L1 0)
-        -- EXT-8: `trace_hit` is a pulse like the rest. Without the default it
-        -- latches high on the first retire and the ring then advances every
-        -- cycle forever, overwriting the very history it exists to keep.
-      , traceHitReg.set (L1 0) ]⟩
+  ⟨"pulse_defaults", [hwstmt| {
+    dmemWeReg <- 0, coreRdReg <- 0, coreWrReg <- 0,
+    jtagWrReg <- 0, jtagRdReg <- 0,
+    gpRdReg <- 0, gpWrReg <- 0,
+    lrReqReg <- 0, scReqReg <- 0,
+    -- `trace_hit` is a pulse; otherwise the ring advances forever.
+    traceHitReg <- 0,
+    -- `actSeq` historically retained this structural trailing skip.
+    skip
+  }]⟩
 
 /-- (5) zeroing engine (rf write is in the funnel; here dmem + counters). -/
 def zeroingRule : Rule :=
@@ -2797,12 +2797,11 @@ def icInvRule : Rule :=
 Every read is pre-cycle (D9), so this rule's position in `rules` is
 immaterial to its value; it sits last because it is the newest. -/
 def quantumRule : Rule :=
-  ⟨"quantum",
-    .ite (.and cmdValid (.eq cmdIdx (L7 CMD_QUANTUM))) (qctrReg.set cmdData)
-      (.ite (.and cmdValid (.and (.eq cmdIdx (L7 13)) (.eq (.slice cmdData 0 1) (L1 1))))
-        (qctrReg.set quantum)
-        (.ite preemptAtF0 (qctrReg.set quantum)
-          (.ite qTick (qctrReg.set (.sub qctr (L32 1))) .skip)))⟩
+  ⟨"quantum", [hwstmt|
+    if cmdValid & (cmdIdx == $(L7 CMD_QUANTUM)) then qctrReg <- cmdData else
+    if cmdValid & (cmdIdx == 13) & (cmdData[0] == 1) then qctrReg <- quantum else
+    if preemptAtF0 then qctrReg <- quantum else
+    if qTick then qctrReg <- qctr - 1]⟩
 
 /-! ## Register / memory / input declarations -/
 
@@ -2873,7 +2872,7 @@ def arrRegs : List RegDecl :=
 `tdom[cur]` as of the previous cycle. It is the *only* writer of `cur_dom`
 and `cur_dom` has no readers inside the design, so it cannot influence
 behaviour — which is what makes it safe to let it lag. -/
-def domainRule : Rule := ⟨"domain", curDomReg.set domCur⟩
+def domainRule : Rule := ⟨"domain", [hwstmt| curDomReg <- domCur]⟩
 
 def declarations : Declarations :=
   { Declarations.empty with
