@@ -6,6 +6,7 @@ import Loom.Hw.Multiclock
 import Loom.Hw.Packed
 import Loom.Hw.ReadsOk
 import Loom.Hw.Semantics
+import Loom.Emit.MicroVerilog.Print
 import Lean.Elab.Command
 import Lean.Elab.Tactic
 import Lean.Elab.Term
@@ -19,6 +20,14 @@ independent semantic backstop. -/
 register_option loom.hw.deferExtensionWrites : Bool := {
   defValue := false
   descr := "internal: accept source-validated base writes while lowering an inline extension"
+}
+
+/-- Internal switch for elaborating a generated `#show_hardware` candidate.
+The source is reconstructed from an already-checked core Design, so repeating
+authoring lints would produce irrelevant warnings at synthetic locations. -/
+register_option loom.hw.reconstructing : Bool := {
+  defValue := false
+  descr := "internal: suppress authoring lints during faithful Design reconstruction"
 }
 
 /-!
@@ -504,6 +513,13 @@ structure HardwareMetadata where
   declarations : Array DeclarationMetadata
   rules : Array RuleMetadata
   suppressions : Array SuppressionMetadata
+  /-- True only for a rendering derived from a core Design and re-elaborated
+  to a definitionally equal value. Authored source uses the original-command
+  round-trip discipline instead. -/
+  reconstructed : Bool := false
+  /-- For reconstructed values, the proved compiler and printer produced the
+  same emitted Verilog bytes from the public and checked Designs. -/
+  emittedRtlIdentityChecked : Bool := false
   deriving Repr, Inhabited
 
 initialize hardwareMetadataExt : SimplePersistentEnvExtension HardwareMetadata
@@ -512,6 +528,11 @@ initialize hardwareMetadataExt : SimplePersistentEnvExtension HardwareMetadata
     addImportedFn := fun imported => imported.foldl (init := #[]) (fun all entries => all ++ entries)
     addEntryFn := fun entries entry => entries.push entry
   }
+
+/-- Counter used only to isolate elaborated `#show_hardware` round-trip
+checks. The declarations live under a reserved internal namespace; the
+checked rendering is registered against the public Design alias. -/
+initialize hardwareRoundTripCounter : IO.Ref Nat ← IO.mkRef 0
 
 def findHardwareMetadata? (environment : Environment) (designName : Name) :
     Option HardwareMetadata :=
@@ -2846,9 +2867,12 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem))
             "only a scalar `reg` accepts a computed reset term; design-local `const` requires a reducible Nat"
         registers := registers.push ⟨name, width, false, init⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num) =>
-        unless qualifier.getId == `output && kind.getId == `reg do
-          Macro.throwErrorAt qualifier "expected `output reg`"
-        registers := registers.push ⟨name, width, true, ⟨Syntax.mkNumLit "0"⟩⟩
+        if qualifier.getId == `output && kind.getId == `reg then
+          registers := registers.push ⟨name, width, true, ⟨Syntax.mkNumLit "0"⟩⟩
+        else if qualifier.getId == `input && kind.getId == `wire then
+          inputs := inputs.push ⟨name, width⟩
+        else
+          Macro.throwErrorAt qualifier "expected `output reg` or `input wire`"
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num := $value:num) =>
         unless qualifier.getId == `output && kind.getId == `reg do
           Macro.throwErrorAt qualifier "expected `output reg`"
@@ -3546,11 +3570,12 @@ private def normalizeDeclarationConstant (item : TSyntax `hwitem) :
           if environment.contains generatedName then
             throwErrorAt domain.register
               s!"generated state proof declaration '{generatedName}' has already been declared"
-      for finding in hardwareLintFindings registers rules do
-        logWarningAt finding.source finding.message
-      for ruleItem in rules do
-        for finding in deadDefaultFindings domains ruleItem.body do
+      unless loom.hw.reconstructing.get (← getOptions) do
+        for finding in hardwareLintFindings registers rules do
           logWarningAt finding.source finding.message
+        for ruleItem in rules do
+          for finding in deadDefaultFindings domains ruleItem.body do
+            logWarningAt finding.source finding.message
       for ruleItem in rules do
         for actionSyntax in rawStatementEscapes ruleItem.body do
           validateRawStatementEscape actionSyntax
@@ -3590,6 +3615,169 @@ private def DeclarationKind.label : DeclarationKind → String
   | .wire => "combinational output"
   | .constant => "constant"
   | .stateValue => "state value"
+
+/-! ## Faithful reconstruction of reducible core Designs
+
+Generated library components do not have source text to preserve.  For the
+closed fragment used by the stock CDC controllers and portable storage,
+derive canonical surface syntax from the actual core value, elaborate
+that syntax in an isolated namespace, and compare the resulting `Design`
+definitionally.  A rendering is registered only after that check succeeds.
+Unsupported values retain the explicit core fallback in `#show_hardware`.
+-/
+
+private def indentLines (amount : Nat) (source : String) : String :=
+  let indentation := String.ofList (List.replicate amount ' ')
+  String.intercalate "\n" <| source.splitOn "\n" |>.map (indentation ++ ·)
+
+private def renderCoreLiteral {width : Nat} (value : BitVec width) : String :=
+  if width >= 8 then "0x" ++ value.toHex else toString value.toNat
+
+private def coreExprIsAtom : {width : Nat} → Expr width → Bool
+  | _, .lit _ | _, .reg _ _ => true
+  | _, _ => false
+
+private partial def renderCoreExpr : {width : Nat} → Expr width → Except String String
+  | _, .lit value => pure (renderCoreLiteral value)
+  | _, .reg _ name => pure name
+  | _, .memRead _ memory address =>
+      return s!"{memory}[{← renderCoreExpr address}]"
+  | _, .and left right => renderBinary "&" left right
+  | _, .or left right => renderBinary "|" left right
+  | _, .xor left right => renderBinary "^" left right
+  | _, .not value => return s!"~{← renderGroupedCoreExpr value}"
+  | _, .add left right => renderBinary "+" left right
+  | _, .sub left right => renderBinary "-" left right
+  | _, .mul left right => renderBinary "*" left right
+  | _, .udiv left right => renderBinary "/" left right
+  | _, .urem left right => renderBinary "%" left right
+  | _, .shl left right => renderBinary "<<" left right
+  | _, .shr left right => renderBinary ">>" left right
+  | _, .eq left right => renderBinary "==" left right
+  | _, .ult left right => renderBinary "<u" left right
+  | _, .slt left right => renderBinary "<s" left right
+  | _, .mux condition yes no =>
+      return s!"if {← renderGroupedCoreExpr condition} then {← renderGroupedCoreExpr yes} else {← renderGroupedCoreExpr no}"
+  | _, .slice value low width =>
+      if width == 0 then throw "zero-width slices have no surface spelling"
+      else if width == 1 then return s!"{← renderGroupedCoreExpr value}[{low}]"
+      else return s!"{← renderGroupedCoreExpr value}[{low + width - 1}:{low}]"
+  | _, .zext value width => return s!"zext {← renderGroupedCoreExpr value} to {width}"
+  | _, .sext value width => return s!"sext {← renderGroupedCoreExpr value} to {width}"
+where
+  renderGroupedCoreExpr {width : Nat} (value : Expr width) : Except String String := do
+    let rendered ← renderCoreExpr value
+    pure <| if coreExprIsAtom value then rendered else s!"({rendered})"
+
+  renderBinary {width : Nat} (operator : String)
+      (left : Expr width) (right : Expr width) : Except String String := do
+    let left ← renderGroupedCoreExpr left
+    let right ← renderGroupedCoreExpr right
+    pure s!"{left} {operator} {right}"
+
+private partial def renderCoreAct : Act → Except String String
+  | .skip => pure "skip"
+  | .seq first second => do
+      let first ← renderCoreAct first
+      let second ← renderCoreAct second
+      pure ("{\n" ++ indentLines 2 first ++ ",\n" ++ indentLines 2 second ++ "\n}")
+  | .ite condition yes no => do
+      let condition ← renderCoreExpr condition
+      let yes ← renderCoreAct yes
+      let no ← renderCoreAct no
+      pure (s!"if ({condition}) then\n" ++ indentLines 2 ("{\n" ++ indentLines 2 yes ++ "\n}") ++
+        "\nelse\n" ++ indentLines 2 ("{\n" ++ indentLines 2 no ++ "\n}"))
+  | .write _ register value => return s!"{register} <- {← renderCoreExpr value}"
+  | .writeSlice _ register low width _ value =>
+      if width == 0 then throw "zero-width writes have no surface spelling"
+      else if width == 1 then return s!"{register}[{low}] <- {← renderCoreExpr value}"
+      else return s!"{register}[{low + width - 1}:{low}] <- {← renderCoreExpr value}"
+  | .memWrite _ _ memory portIndex address data =>
+      return s!"{memory}[port {portIndex}, {← renderCoreExpr address}] <- {← renderCoreExpr data}"
+
+private def renderCoreDesign (design : Design) : Except String String := do
+  unless design.ackMemInit.isEmpty && design.syncReadMems.isEmpty do
+    throw "memory policies are not reconstructible without their declarations"
+  let mut lines := [s!"hardware {design.name} where"]
+  for register in design.regs do
+    let qualifier := if design.outputs.contains register.name then "output " else ""
+    let reset := renderCoreLiteral register.init
+    let resetSuffix := if register.init.toNat == 0 then "" else s!" := {reset}"
+    lines := lines ++ [s!"  {qualifier}reg {register.name} : {register.width}{resetSuffix}"]
+  for input in design.inputs do
+    lines := lines ++ [s!"  input wire {input.name} : {input.width}"]
+  for memory in design.mems do
+    lines := lines ++
+      [s!"  memory {memory.name} : {memory.dataWidth} [{2 ^ memory.addrWidth}]"]
+  for output in design.combOutputs do
+    lines := lines ++
+      [s!"  output wire {output.name} : {output.width} := {← renderCoreExpr output.value}"]
+  if !design.rules.isEmpty then lines := lines ++ [""]
+  for rule in design.rules do
+    lines := lines ++ [s!"  rule {rule.name} :=\n{indentLines 4 (← renderCoreAct rule.body)}"]
+  pure (String.intercalate "\n" lines)
+
+/-- Try to reconstruct and structurally validate one reducible public Design.
+Failure is deliberately non-fatal: `#show_hardware` will expose the ordinary
+core value rather than display plausible but unfaithful hardware. -/
+private unsafe def registerReconstructedHardware (designName : Name) : CommandElabM Unit := do
+  let environment ← getEnv
+  let some declaration := environment.find? designName | return
+  let some value := declaration.value? | return
+  let design ← try
+    liftTermElabM <| evalExpr Design (.const ``Design []) value
+  catch _ => return
+  let source ← match renderCoreDesign design with
+    | .ok source => pure source
+    | .error _ => return
+  let checkSource := "set_option loom.hw.reconstructing true in\n" ++ source
+  let parsed ← match Parser.runParserCategory environment `command checkSource with
+    | .ok parsed => pure parsed
+    | .error _ => return
+  let counter ← hardwareRoundTripCounter.get
+  hardwareRoundTripCounter.set (counter + 1)
+  let scope := Name.mkSimple s!"__loom_pretty_round_trip_{counter}"
+  let parent ← getCurrNamespace
+  let savedState ← get
+  let elaborated ← try
+    Lean.Elab.Command.withNamespace scope <| elabCommand parsed
+    let newMessages := (← get).messages.toList.drop savedState.messages.toList.length
+    if newMessages.any (fun message => message.severity == .error) then
+      set savedState
+      pure false
+    else pure true
+  catch _ =>
+    set savedState
+    pure false
+  unless elaborated do return
+  let checkedName := parent ++ scope ++ `design
+  let equal ← liftTermElabM <| withTransparency .all <|
+    Meta.isDefEq (.const designName []) (.const checkedName [])
+  unless equal do return
+  let some checkedMetadata := findHardwareMetadata? (← getEnv) checkedName | return
+  let checkedDesign ← try
+    let some checkedDeclaration := (← getEnv).find? checkedName | return
+    let some checkedValue := checkedDeclaration.value? | return
+    liftTermElabM <| evalExpr Design (.const ``Design []) checkedValue
+  catch _ => return
+  let emittedIdentity :=
+    Loom.Emit.MicroVerilog.Print.print (Compile.compile design) ==
+      Loom.Emit.MicroVerilog.Print.print (Compile.compile checkedDesign)
+  unless emittedIdentity do return
+  modifyEnv (hardwareMetadataExt.addEntry ·
+    { checkedMetadata with
+      designName := designName
+      sourceRendering := some source
+      reconstructed := true
+      emittedRtlIdentityChecked := true })
+
+/-- Machine-checkable inspection status used by tests and higher-level tools.
+An ordinary user should use `#show_hardware`; this query exists so the release
+suite can prove that generated components did not silently fall back. -/
+def hardwareRenderingStatus (environment : Environment) (designName : Name) : Bool × Bool :=
+  match findHardwareMetadata? environment designName with
+  | some metadata => (metadata.reconstructed, metadata.emittedRtlIdentityChecked)
+  | none => (false, false)
 
 syntax (name := showHardwareCmd) "#show_hardware" ident : command
 
@@ -4621,9 +4809,23 @@ private def expandSystemCommand
             if kind.getId == `island then
               validateExtensionBase base island.getId.eraseMacroScopes body connections
         | _ => pure ()
+      let namespaceName ← getCurrNamespace
       let expanded ← liftMacroM <|
-        expandSystemCommand documentation (← getCurrNamespace) systemName items
+        expandSystemCommand documentation namespaceName systemName items
       elabCommand expanded
+      let publicSystemName := namespaceName ++ systemName.getId
+      for item in items do
+        match item with
+        | `(hwsystemitem| $kind:ident $channels:ident,* with $_:term) =>
+            if kind.getId == `realize then
+              for channel in channels.getElems do
+                let channelName := publicSystemName ++ channel.getId
+                for component in [`sourceControl, `sinkControl, `storageWriter,
+                    `storageReader, `adapter] do
+                  let componentName := channelName ++ component
+                  if (← getEnv).contains componentName then
+                    registerReconstructedHardware componentName
+        | _ => pure ()
   | _ => throwUnsupportedSyntax
 
 /-! ## Multiclock proof surface
