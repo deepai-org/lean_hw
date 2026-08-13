@@ -593,7 +593,6 @@ syntax:max (name := hwChannelObserve) "hw_channel_observe% " term:max ident : te
 syntax:max (name := hwSend) "hw_send% " term:max term:max : term
 syntax:max (name := hwConsume) "hw_consume% " term:max : term
 syntax:max (name := hwExactConst) "hw_exact_const% " ident : term
-syntax:max (name := hwReadScopeProof) "hw_read_scope_proof% " ident : term
 syntax "[hwexpr| " hwexpr "]" : term
 
 /-- Attach an editor quick fix without adding a second informational
@@ -660,20 +659,6 @@ private def elaborateScalarAtWidth (valueSyntax : TSyntax `term)
   match stx with
   | `(hw_exact_const% $name:ident) =>
       ensureHasType expectedType? (.const name.getId [])
-  | _ => throwUnsupportedSyntax
-
-/-- Keep the generated boolean proof behind `extends` source-local. The check
-still reduces the exact `Design.readsOkB` proposition; this elaborator changes
-only the failure voice and span. -/
-@[term_elab hwReadScopeProof] private def elabHwReadScopeProof : TermElab :=
-    fun stx expectedType? => do
-  match stx with
-  | `(hw_read_scope_proof% $island:ident) =>
-      try
-        withoutErrToSorry <| elabTerm (← `(by native_decide)) expectedType?
-      catch _ =>
-        throwErrorAt island
-          s!"extended island '{island.getId.eraseMacroScopes}' reads outside its inspectable base, new declarations, or declared channel endpoints; declare the handle in the base/fragment or connect its channel in this system"
   | _ => throwUnsupportedSyntax
 
 private def checkedHardwareLiteral (source : Syntax) (value : Nat)
@@ -3499,6 +3484,7 @@ def traceCycle (design : Loom.Hw.Design) (inputValues initialValues : List Named
         expected.regs declaration.name declaration.width do
       throw <| IO.userError
         s!"internal trace mismatch at register '{declaration.name}'"
+  IO.println "one cycle from design.reset; listed registers override reset; omitted inputs are 0"
   if events.isEmpty then IO.println "no writes fired"
   else for event in events do IO.println event
   IO.println "final registers:"
@@ -3979,7 +3965,7 @@ private def expandSystemCommand
             if connection.sink.getId == island.name.getId then
               readScope ← `(term| (hw_exact_const% $channelName).withSink $readScope)
           let extended ← `(term| Loom.Hw.Dsl.extendDesign $baseTerm $addedTerm
-            (by native_decide) $readScope (hw_read_scope_proof% $(island.name)))
+            (by native_decide) $readScope (by native_decide))
           match island.moduleName with
           | none => pure extended
           | some moduleName =>
