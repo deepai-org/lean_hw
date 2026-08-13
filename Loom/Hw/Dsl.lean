@@ -45,6 +45,24 @@ def Declarations.addWireInput {width : Nat} (declarations : Declarations)
     (input : Input width) : Declarations :=
   declarations.addInput input.reg
 
+/-- Technology-neutral declaration policy for a Loom memory. This is only a
+readable argument to `Declarations.addMem`; it does not select a vendor macro. -/
+structure MemoryPolicy where
+  syncRead : Bool := false
+  ackInit : Bool := false
+  deriving Repr, DecidableEq, Inhabited
+
+namespace Memory
+
+/-- Ordinary asynchronous-read Loom memory policy. -/
+def asynchronousRead : MemoryPolicy := {}
+
+/-- Declare the memory as a synchronous-read/macro candidate. The target, if
+any, remains an explicit emission/evidence choice. -/
+def synchronousRead : MemoryPolicy := { syncRead := true }
+
+end Memory
+
 end Loom.Hw
 
 namespace Loom.Hw.Dsl
@@ -60,7 +78,7 @@ def actFor {α : Type} (values : List α) (body : α → Loom.Hw.Act) : Loom.Hw.
   | value :: rest => .seq (body value) (actFor rest body)
 
 inductive DeclarationKind where
-  | register | stateRegister | input | wire | constant | stateValue
+  | register | stateRegister | memory | input | wire | constant | stateValue
   deriving Repr, DecidableEq, Inhabited
 
 structure SourceSpan where
@@ -494,6 +512,8 @@ syntax ident ident ident ":" "{" ident,* "}" : hwitem
 syntax ident ident ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" : hwitem
 syntax ident ident ident ":" num "{" ident,* "}" ":=" ident : hwitem
+syntax ident ident ":" num "[" num "]" : hwitem
+syntax ident ident ":" num "[" num "]" "using" term:max : hwitem
 syntax ident ident ":=" hwstmt : hwitem
 syntax ident ident "suppress" ident "because" str ":=" hwstmt : hwitem
 syntax (name := hardwareCmd) (docComment)? "hardware" ident "where" hwitem* : command
@@ -517,6 +537,13 @@ private structure WireItem where
   name : TSyntax `ident
   width : TSyntax `num
   value : TSyntax `hwexpr
+
+private structure MemoryItem where
+  name : TSyntax `ident
+  dataWidth : TSyntax `num
+  depth : TSyntax `num
+  addrWidth : Nat
+  policy : Option (TSyntax `term) := none
 
 private structure RuleItem where
   name : TSyntax `ident
@@ -764,12 +791,28 @@ private def stateItems (stateName : TSyntax `ident) (width? : Option (TSyntax `n
     { name := member, width := width, value := ⟨Syntax.mkNumLit (toString index)⟩ }
   pure (⟨stateName, width, exported, resetIndex⟩, constants)
 
+private partial def exactAddrWidthLoop (depth capacity width : Nat) : Option Nat :=
+  if depth == capacity then some width
+  else if depth < capacity then none
+  else exactAddrWidthLoop depth (capacity * 2) (width + 1)
+
+private def exactAddrWidth (depth : TSyntax `num) : MacroM Nat := do
+  let value := depth.getNat
+  if value == 0 then
+    Macro.throwErrorAt depth "memory depth must be positive"
+  match exactAddrWidthLoop value 1 0 with
+  | some width => pure width
+  | none =>
+      Macro.throwErrorAt depth
+        s!"memory depth {value} is not a power of two; the current Mem core represents exactly 2^addressWidth cells"
+
 private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     MacroM (Array ScalarRegItem × Array ConstItem × Array InputItem ×
-      Array WireItem × Array StateDomain × Array RuleItem) := do
+      Array MemoryItem × Array WireItem × Array StateDomain × Array RuleItem) := do
   let mut registers : Array ScalarRegItem := #[]
   let mut constants : Array ConstItem := #[]
   let mut inputs : Array InputItem := #[]
+  let mut memories : Array MemoryItem := #[]
   let mut wires : Array WireItem := #[]
   let mut stateDomains : Array StateDomain := #[]
   let mut rules : Array RuleItem := #[]
@@ -840,6 +883,14 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         let (register, stateConstants) ← stateItems name (some width) members.getElems (some reset) true
         registers := registers.push register; constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
+    | `(hwitem| $kind:ident $name:ident : $dataWidth:num [$depth:num]) =>
+        unless kind.getId == `memory do Macro.throwErrorAt kind "expected `memory`"
+        memories := memories.push
+          ⟨name, dataWidth, depth, ← exactAddrWidth depth, none⟩
+    | `(hwitem| $kind:ident $name:ident : $dataWidth:num [$depth:num] using $policy:term) =>
+        unless kind.getId == `memory do Macro.throwErrorAt kind "expected `memory`"
+        memories := memories.push
+          ⟨name, dataWidth, depth, ← exactAddrWidth depth, some policy⟩
     | `(hwitem| $kind:ident $name:ident := $body:hwstmt) =>
         unless kind.getId == `rule do Macro.throwErrorAt kind "expected `rule`"
         rules := rules.push ⟨name, body, none, none⟩
@@ -853,7 +904,8 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         rules := rules.push ⟨name, body, some lint.getId, some reason.getString⟩
     | _ => Macro.throwErrorAt item "unsupported hardware declaration"
   let locals := registers.map (fun item => item.name) ++ constants.map (fun item => item.name) ++
-    inputs.map (fun item => item.name) ++ wires.map (fun item => item.name) ++
+    inputs.map (fun item => item.name) ++ memories.map (fun item => item.name) ++
+    wires.map (fun item => item.name) ++
     rules.map (fun item => item.name)
   for localName in locals do
     if localName.getId == `design || localName.getId == `declarations ||
@@ -868,7 +920,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
   for ruleItem in rules do
     validateWriteTargets writable ruleItem.body
     validateCases stateDomains ruleItem.body
-  pure (registers, constants, inputs, wires, stateDomains, rules)
+  pure (registers, constants, inputs, memories, wires, stateDomains, rules)
 
 private def sourceSpan (fileName : String) (sourceSyntax : Syntax) : SourceSpan where
   fileName := fileName
@@ -899,7 +951,8 @@ private partial def statementSuppressions (fileName : String) (ruleName : Name) 
 
 private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
     (moduleName : TSyntax `ident) (registers : Array ScalarRegItem)
-    (constants : Array ConstItem) (inputs : Array InputItem) (wires : Array WireItem)
+    (constants : Array ConstItem) (inputs : Array InputItem) (memories : Array MemoryItem)
+    (wires : Array WireItem)
     (domains : Array StateDomain) (rules : Array RuleItem) : HardwareMetadata := Id.run do
   let mut declarations := #[]
   for register in registers do
@@ -910,6 +963,10 @@ private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
   for inputItem in inputs do
     declarations := declarations.push
       ⟨inputItem.name.getId, .input, inputItem.width.getNat, sourceSpan fileName inputItem.name⟩
+  for memory in memories do
+    declarations := declarations.push
+      ⟨memory.name.getId, .memory, memory.dataWidth.getNat,
+        sourceSpan fileName memory.name⟩
   for wireItem in wires do
     declarations := declarations.push
       ⟨wireItem.name.getId, .wire, wireItem.width.getNat, sourceSpan fileName wireItem.name⟩
@@ -941,7 +998,7 @@ private def expandHardwareCommand
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
     (moduleName : TSyntax `ident)
     (items : Array (TSyntax `hwitem)) : MacroM Syntax := do
-  let (registers, constants, inputs, wires, _, rules) ← parseHardwareItems items
+  let (registers, constants, inputs, memories, wires, _, rules) ← parseHardwareItems items
   let mut commands : Array Syntax := #[]
   for register in registers do
     let sourceName := Syntax.mkStrLit register.name.getId.toString
@@ -963,6 +1020,17 @@ private def expandHardwareCommand
       (Name.mkSimple (inputItem.name.getId.toString ++ "_name"))
     let lemmaCommand ← `(command|
       @[simp] theorem $lemmaName : $(inputItem.name).name = $sourceName := rfl)
+    commands := commands.push lemmaCommand
+  for memory in memories do
+    let sourceName := Syntax.mkStrLit memory.name.getId.toString
+    let addressWidth := quote memory.addrWidth
+    let command ← `(command|
+      def $(memory.name) : Loom.Hw.Mem $addressWidth $(memory.dataWidth) := ⟨$sourceName⟩)
+    commands := commands.push command
+    let lemmaName := mkIdentFrom memory.name
+      (Name.mkSimple (memory.name.getId.toString ++ "_name"))
+    let lemmaCommand ← `(command|
+      @[simp] theorem $lemmaName : $(memory.name).name = $sourceName := rfl)
     commands := commands.push lemmaCommand
   for constant in constants do
     let command ← `(command|
@@ -987,6 +1055,13 @@ private def expandHardwareCommand
         (BitVec.ofNat $(register.width) $(quote register.init)))
   for inputItem in inputs do
     declarations ← `($declarations |>.addWireInput $(inputItem.name))
+  for memory in memories do
+    match memory.policy with
+    | none => declarations ← `($declarations |>.addMem $(memory.name))
+    | some policy =>
+        declarations ← `($declarations |>.addMem $(memory.name)
+          (syncRead := ($policy : Loom.Hw.MemoryPolicy).syncRead)
+          (ackInit := ($policy : Loom.Hw.MemoryPolicy).ackInit))
   for wireItem in wires do
     let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
     declarations ← `($declarations |>.addCombOutput $sourceName $(wireItem.name))
@@ -1010,18 +1085,20 @@ private def expandHardwareCommand
 @[command_elab hardwareCmd] def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
-      let (registers, constants, inputs, wires, domains, rules) ←
+      let (registers, constants, inputs, memories, wires, domains, rules) ←
         liftMacroM <| parseHardwareItems items
       let namespaceName ← getCurrNamespace
       let environment ← getEnv
       let localNames := registers.map (fun item => item.name) ++
         constants.map (fun item => item.name) ++ inputs.map (fun item => item.name) ++
-        wires.map (fun item => item.name) ++ rules.map (fun item => item.name)
+        memories.map (fun item => item.name) ++ wires.map (fun item => item.name) ++
+        rules.map (fun item => item.name)
       for localName in localNames do
         let fullName := namespaceName ++ localName.getId
         if environment.contains fullName then
           throwErrorAt localName s!"'{fullName}' has already been declared"
-      for handleName in registers.map (fun item => item.name) ++ inputs.map (fun item => item.name) do
+      for handleName in registers.map (fun item => item.name) ++ inputs.map (fun item => item.name) ++
+          memories.map (fun item => item.name) do
         let lemmaName := namespaceName ++
           Name.mkSimple (handleName.getId.toString ++ "_name")
         if environment.contains lemmaName then
@@ -1032,7 +1109,7 @@ private def expandHardwareCommand
       for finding in hardwareLintFindings registers rules do
         logWarningAt finding.source finding.message
       let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName
-        registers constants inputs wires domains rules
+        registers constants inputs memories wires domains rules
       let expanded ← liftMacroM <| expandHardwareCommand documentation moduleName items
       elabCommand expanded
       modifyEnv (hardwareMetadataExt.addEntry · metadata)
@@ -1041,6 +1118,7 @@ private def expandHardwareCommand
 private def DeclarationKind.label : DeclarationKind → String
   | .register => "register"
   | .stateRegister => "state register"
+  | .memory => "memory element"
   | .input => "input"
   | .wire => "combinational output"
   | .constant => "constant"

@@ -180,6 +180,37 @@ example : declarations.regs.head?.map (fun declaration => declaration.init.toNat
 
 end Tests.PrettyDsl.Interface
 
+namespace Tests.PrettyDsl.Memory
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+hardware memory_demo where
+  input address : 4
+  input write_data : 8
+  output reg read_data : 8
+  memory scratch : 8 [16] using Memory.synchronousRead
+
+  rule access := {
+    scratch[port 0, address] <- write_data,
+    read_data <- scratch[address]
+  }
+
+example : scratch = (⟨"scratch"⟩ : Mem 4 8) := rfl
+example : declarations.mems.map (fun declaration =>
+    (declaration.name, declaration.addrWidth, declaration.dataWidth)) =
+    [("scratch", 4, 8)] := by decide
+example : declarations.syncReadMems = ["scratch"] := by decide
+
+end Tests.PrettyDsl.Memory
+
+/--
+error: memory depth 12 is not a power of two; the current Mem core represents exactly 2^addressWidth cells
+-/
+#guard_msgs in
+hardware bad_depth where
+  memory scratch : 8 [12]
+
 namespace Tests.PrettyDsl.Lints
 
 open Loom.Hw
