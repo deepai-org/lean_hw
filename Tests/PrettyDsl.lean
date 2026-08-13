@@ -151,6 +151,9 @@ private def delaborationProbe : Expr 8 :=
 private def sliceDelaborationProbe : Expr 8 :=
   Expr.zext (Expr.slice a.rd 2 4) 8
 
+private def concatDelaborationProbe : Expr 16 :=
+  Expr.concat a.rd b.rd
+
 run_cmd Lean.Elab.Command.liftTermElabM do
   let some info := (← Lean.getEnv).find? ``delaborationProbe
     | throwError "delaboration probe declaration is missing"
@@ -181,6 +184,20 @@ run_cmd Lean.Elab.Command.liftTermElabM do
   let sliceReparsed ← Lean.Elab.Term.elabTerm sliceParsed (some sliceInfo.type)
   unless ← Lean.Meta.isDefEq sliceValue sliceReparsed do
     throwError "delaborated slice did not re-elaborate definitionally: {sliceRendered}"
+  let some concatInfo := (← Lean.getEnv).find? ``concatDelaborationProbe
+    | throwError "concat-delaboration probe declaration is missing"
+  let some concatValue := concatInfo.value?
+    | throwError "concat-delaboration probe has no reducible value"
+  let concatRendered := toString (← Lean.Meta.ppExpr concatValue)
+  unless concatRendered.contains "[hwexpr| a ++ b]" do
+    throwError "concatenation delaboration lost source syntax: {concatRendered}"
+  let concatParsed ←
+    match Lean.Parser.runParserCategory (← Lean.getEnv) `term concatRendered with
+    | .ok parsed => pure parsed
+    | .error message => throwError "could not parse delaborated concatenation: {message}"
+  let concatReparsed ← Lean.Elab.Term.elabTerm concatParsed (some concatInfo.type)
+  unless ← Lean.Meta.isDefEq concatValue concatReparsed do
+    throwError "delaborated concatenation did not re-elaborate definitionally: {concatRendered}"
 
 private def actionDelaborationProbe : Act :=
   Act.seq (a.set (.add b.rd (.lit 1)))
@@ -248,6 +265,9 @@ example : ([hwexpr| a << staticShift] : Expr 8) = Expr.shl a.rd (.lit 3) := rfl
 example (dynamicShift : Reg 8) : Expr 8 := [hwexpr| a >> dynamicShift]
 
 example : ([hwexpr| a == b] : Expr 1) = Expr.eq a.rd b.rd := rfl
+example : ([hwexpr| a + b == 7] : Expr 1) =
+    Expr.eq (Expr.add a.rd b.rd) (.lit 7) := rfl
+example : ([hwexpr| ~a[3]] : Expr 1) = Expr.not (Expr.slice a.rd 3 1) := rfl
 example : ([hwexpr| $(helper)] : Expr 8) = helper := rfl
 
 example : ([hwexpr| a[7:4]] : Expr 4) = Expr.slice a.rd 4 4 := rfl
@@ -288,6 +308,10 @@ example : Expr 8 := [hwexpr| -1]
 /-- error: arithmetic right shift is not a v1 operator; sign-extend to a wider value, use logical `>>`, then slice back to the original width -/
 #guard_msgs in
 example : Expr 8 := [hwexpr| a >>s 3]
+
+/-- error: comparison chaining is not supported; combine parenthesized 1-bit comparisons explicitly -/
+#guard_msgs in
+example : Expr 1 := [hwexpr| a <u b <u a]
 
 namespace SharedConstants
 
@@ -1292,6 +1316,33 @@ open Loom.Hw.Dsl
 private def a : Reg 8 := ⟨"a"⟩
 private def b : Reg 8 := ⟨"b"⟩
 
+namespace FlatElseIf
+  hardware flat_else_if where
+    reg first : 1
+    reg second : 1
+    rule choose :=
+      if first then skip
+      else if second then first <- 1
+      else second <- 1
+end FlatElseIf
+
+/-- error: a nested `if` in a branch requires braces; only a direct `else if` forms a flat chain -/
+#guard_msgs in
+hardware ambiguous_nested_if where
+  reg first : 1
+  reg second : 1
+  rule choose :=
+    if first then
+      if second then first <- 0 else first <- 1
+    else second <- 1
+
+/-- error: hardware declarations must precede the first rule -/
+#guard_msgs in
+hardware declaration_after_rule where
+  reg first : 1
+  rule choose := first <- 1
+  reg late : 1
+
 /--
 error: dynamic bit select is not a core operation; shift by the typed index and select bit zero, for example `(x >> i)[0]`
 -/
@@ -1328,6 +1379,14 @@ end TruncateMismatch
 #guard_msgs in
 example : Expr 8 := [hwexpr| 300]
 
+/-- error: bit index 8 is outside the 8-bit value -/
+#guard_msgs in
+example : Expr 1 := [hwexpr| a[8]]
+
+/-- error: slice high bit 9 is outside the 8-bit value -/
+#guard_msgs in
+example : Expr 4 := [hwexpr| a[9:6]]
+
 /-- error: shift and arithmetic operators require parentheses; parenthesize the intended grouping -/
 #guard_msgs in
 example : Expr 8 := [hwexpr| a + b << 2]
@@ -1345,6 +1404,21 @@ example : Expr 16 := [hwexpr| a ++ b + a]
 hardware bad_reset where
   reg overflowing : 8 := 256
 
+/-- error: literal 256 does not fit in 8 bits; expected 0 through 255 -/
+#guard_msgs in
+hardware bad_local_constant where
+  const OVERFLOWING : 8 := 256
+
+/-- error: register width must be positive -/
+#guard_msgs in
+hardware zero_width_register where
+  reg impossible : 0
+
+/-- error: memory data width must be positive -/
+#guard_msgs in
+hardware zero_width_memory where
+  memory impossible : 0 [4]
+
 /-- error: 'readonly' is not a writable register in this hardware block -/
 #guard_msgs in
 hardware bad_input_write where
@@ -1359,6 +1433,25 @@ hardware bad_state_case where
     case mode of
     | Ready => { mode <- Busy }
     | Busy => { mode <- Ready }
+
+/-- error: duplicate state member 'Ready' -/
+#guard_msgs in
+hardware duplicate_state_member where
+  states mode : { Ready, Busy, Ready }
+
+/-- error: state register width 1 cannot encode 3 declared states -/
+#guard_msgs in
+hardware narrow_state_domain where
+  states mode : 1 { Ready, Busy, Broken }
+
+/-- error: the default case arm must be last -/
+#guard_msgs in
+hardware nonfinal_default where
+  reg selector : 1
+  rule dispatch :=
+    case selector of
+    | default => skip
+    | 0 => skip
 
 /-- error: case without a default is allowed only for a declared states register -/
 #guard_msgs in

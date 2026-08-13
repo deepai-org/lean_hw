@@ -8,12 +8,16 @@ and inspection modules; it is not confined to the source file's elaborator. -/
 open Loom.Hw.Dsl
 
 /--
-info: hardware satcounter
-declarations:
-  count: register 8 bits
-  sat: register 1 bits
-rules:
-  tick
+info: pretty hardware (source round trip checked)
+hardware satcounter where
+  output reg count : 8
+  output reg sat : 1
+
+  rule tick :=
+    if count == 255 then
+      sat <- 1
+    else
+      count <- count + 1
 -/
 #guard_msgs in
 #show_hardware Tests.PrettyDsl.Counter.design

@@ -4,6 +4,7 @@ import Loom.Hw.Declarations
 import Loom.Hw.FastEval
 import Loom.Hw.Multiclock
 import Loom.Hw.Packed
+import Loom.Hw.ReadsOk
 import Loom.Hw.Semantics
 import Lean.Elab.Command
 import Lean.Elab.Tactic
@@ -529,15 +530,20 @@ syntax:50 hwexpr:50 " & " hwexpr:51 : hwexpr
 syntax:48 hwexpr:48 " ^ " hwexpr:49 : hwexpr
 @[hwexpr_parser] def bitwiseOrParser := trailing_parser:46
   checkNoLinebreakBefore >> " | " >> Lean.Parser.categoryParser `hwexpr 47
-syntax:40 hwexpr:41 " == " hwexpr:41 : hwexpr
-syntax:40 hwexpr:41 " <u " hwexpr:41 : hwexpr
-syntax:40 hwexpr:41 " <s " hwexpr:41 : hwexpr
+/-! The parser temporarily admits a comparison on the right so a chain reaches
+the macro as one source construct and receives a precise diagnostic.  The
+macro rejects every such tree; no comparison operator is semantically
+associative. -/
+syntax:40 hwexpr:41 " == " hwexpr:40 : hwexpr
+syntax:40 hwexpr:41 " <u " hwexpr:40 : hwexpr
+syntax:40 hwexpr:41 " <s " hwexpr:40 : hwexpr
 syntax:20 "if " hwexpr " then " hwexpr " else " hwexpr : hwexpr
 
 syntax:max (name := hwLit) "hw_lit% " num : term
 syntax:max (name := hwAtom) "hw_atom% " term:max : term
 syntax:max (name := hwDottedAtom) "hw_dotted_atom% " ident : term
 syntax:max (name := hwIndexLit) "hw_index_lit% " term:max num : term
+syntax:max (name := hwSlice) "hw_slice% " term:max num num : term
 syntax:max (name := hwMemRead) "hw_mem_read% " term:max term:max : term
 syntax:max (name := hwMemWrite) "hw_mem_write% " term:max num term:max term:max : term
 syntax:max (name := hwShift) "hw_shift% " str term:max term:max : term
@@ -1001,10 +1007,26 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
       let containerType ← Meta.whnf (← Meta.inferType container)
       let result ←
         if containerType.isAppOfArity ``Loom.Hw.Reg 1 then
+          let some width ← getNatValue? (← Meta.whnf containerType.getAppArgs[0]!)
+            | throwErrorAt containerSyntax "register width must reduce before selecting a bit"
+          if index.getNat ≥ width then
+            throwErrorAt index s!"bit index {index.getNat} is outside the {width}-bit value"
           let value ← Meta.mkAppM ``Loom.Hw.Reg.rd #[container]
           Meta.mkAppM ``Loom.Hw.Expr.slice
             #[value, .lit (.natVal index.getNat), .lit (.natVal 1)]
+        else if containerType.isAppOfArity ``Loom.Hw.Input 1 then
+          let some width ← getNatValue? (← Meta.whnf containerType.getAppArgs[0]!)
+            | throwErrorAt containerSyntax "input width must reduce before selecting a bit"
+          if index.getNat ≥ width then
+            throwErrorAt index s!"bit index {index.getNat} is outside the {width}-bit value"
+          let value ← Meta.mkAppM ``Loom.Hw.Input.rd #[container]
+          Meta.mkAppM ``Loom.Hw.Expr.slice
+            #[value, .lit (.natVal index.getNat), .lit (.natVal 1)]
         else if containerType.isAppOfArity ``Loom.Hw.Expr 1 then
+          let some width ← getNatValue? (← Meta.whnf containerType.getAppArgs[0]!)
+            | throwErrorAt containerSyntax "expression width must reduce before selecting a bit"
+          if index.getNat ≥ width then
+            throwErrorAt index s!"bit index {index.getNat} is outside the {width}-bit value"
           Meta.mkAppM ``Loom.Hw.Expr.slice
             #[container, .lit (.natVal index.getNat), .lit (.natVal 1)]
         else if containerType.isAppOfArity ``Loom.Hw.Mem 2 then
@@ -1031,6 +1053,24 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
         else
           throwErrorAt containerSyntax
             "indexed hardware value must be a register, expression, or memory"
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwSlice] def elabHwSlice : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_slice% $valueSyntax:term $high:num $low:num) => do
+      let value ← elabTerm valueSyntax none
+      let valueType ← Meta.whnf (← Meta.inferType value)
+      unless valueType.isAppOfArity ``Loom.Hw.Expr 1 do
+        throwErrorAt valueSyntax "a static slice requires a typed hardware expression"
+      let some sourceWidth ← getNatValue? (← Meta.whnf valueType.getAppArgs[0]!)
+        | throwErrorAt valueSyntax "expression width must reduce before selecting a slice"
+      if high.getNat ≥ sourceWidth then
+        throwErrorAt high
+          s!"slice high bit {high.getNat} is outside the {sourceWidth}-bit value"
+      let result ← Meta.mkAppM ``Loom.Hw.Expr.slice
+        #[value, .lit (.natVal low.getNat),
+          .lit (.natVal (high.getNat - low.getNat + 1))]
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -1242,6 +1282,13 @@ private def expandInfix (parent : InfixFamily) (operator : String)
       `(hw_boundary_error% $message $parsed $alternate)
   | none => `($constructor [hwexpr| $left] [hwexpr| $right])
 
+private def expandComparison (operator : String) (constructor : TSyntax `term)
+    (left right : TSyntax `hwexpr) : MacroM (TSyntax `term) := do
+  if infixFamily left == some .comparison || infixFamily right == some .comparison then
+    Macro.throwErrorAt (if infixFamily left == some .comparison then left else right)
+      "comparison chaining is not supported; combine parenthesized 1-bit comparisons explicitly"
+  expandInfix .comparison operator constructor left right
+
 private def shiftOperandTerm (operand : TSyntax `hwexpr) : MacroM (TSyntax `term) :=
   match operand with
   | `(hwexpr| $value:num) => pure ⟨value.raw⟩
@@ -1278,7 +1325,7 @@ macro_rules
       let loValue := lo.getNat
       if hiValue < loValue then
         Macro.throwErrorAt hi "slice high bit must be greater than or equal to its low bit"
-      `(Loom.Hw.Expr.slice (hw_atom% $id) $(quote loValue) $(quote (hiValue - loValue + 1)))
+      `(hw_slice% (hw_atom% $id) $hi $lo)
   | `([hwexpr| $memory:ident[$address:hwexpr]]) =>
       `(hw_mem_read% $memory [hwexpr| $address])
   | `([hwexpr| $e:hwexpr[$bit:num]]) =>
@@ -1288,7 +1335,7 @@ macro_rules
       let loValue := lo.getNat
       if hiValue < loValue then
         Macro.throwErrorAt hi "slice high bit must be greater than or equal to its low bit"
-      `(Loom.Hw.Expr.slice [hwexpr| $e] $(quote loValue) $(quote (hiValue - loValue + 1)))
+      `(hw_slice% [hwexpr| $e] $hi $lo)
   | `([hwexpr| $value:hwexpr.$field:ident]) =>
       `(hw_packed_field% [hwexpr| $value] $field)
   | `([hwexpr| ~ $e:hwexpr]) => `(Loom.Hw.Expr.not [hwexpr| $e])
@@ -1325,14 +1372,18 @@ macro_rules
   | `([hwexpr| $a:hwexpr | $b:hwexpr]) =>
       expandInfix .bitwise "|" ⟨mkIdent ``Loom.Hw.Expr.or⟩ a b
   | `([hwexpr| $a:hwexpr == $b:hwexpr]) => do
-      match infixBoundaryError? .comparison "==" a b with
-      | some (message, parsed, alternate) =>
-          `(hw_boundary_error% $(Syntax.mkStrLit message) $(Syntax.mkStrLit parsed) $(Syntax.mkStrLit alternate))
-      | none => `(hw_eq% [hwexpr| $a] [hwexpr| $b])
+      if infixFamily a == some .comparison || infixFamily b == some .comparison then
+        Macro.throwErrorAt (if infixFamily a == some .comparison then a else b)
+          "comparison chaining is not supported; combine parenthesized 1-bit comparisons explicitly"
+      else
+        match infixBoundaryError? .comparison "==" a b with
+        | some (message, parsed, alternate) =>
+            `(hw_boundary_error% $(Syntax.mkStrLit message) $(Syntax.mkStrLit parsed) $(Syntax.mkStrLit alternate))
+        | none => `(hw_eq% [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr <u $b:hwexpr]) =>
-      expandInfix .comparison "<u" ⟨mkIdent ``Loom.Hw.Expr.ult⟩ a b
+      expandComparison "<u" ⟨mkIdent ``Loom.Hw.Expr.ult⟩ a b
   | `([hwexpr| $a:hwexpr <s $b:hwexpr]) =>
-      expandInfix .comparison "<s" ⟨mkIdent ``Loom.Hw.Expr.slt⟩ a b
+      expandComparison "<s" ⟨mkIdent ``Loom.Hw.Expr.slt⟩ a b
   | `([hwexpr| if $c:hwexpr then $t:hwexpr else $f:hwexpr]) =>
       `(Loom.Hw.Expr.mux [hwexpr| $c] [hwexpr| $t] [hwexpr| $f])
   | `([hwexpr| $e:hwexpr]) => do
@@ -1385,6 +1436,11 @@ private partial def delabHwExprCore :
       if width < 8 then toString value
       else "0x" ++ (BitVec.ofNat width value).toHex
     pure ⟨⟨Syntax.mkNumLit spelling⟩, true⟩
+  else if head == ``Loom.Hw.Expr.concat then
+    guard (arguments.size == 4)
+    let left ← (← withNaryArg 2 delabHwExprCore).group
+    let right ← (← withNaryArg 3 delabHwExprCore).group
+    pure ⟨← `(hwexpr| $left ++ $right), false⟩
   else
     let binary (constructor : Name)
         (build : TSyntax `hwexpr → TSyntax `hwexpr → DelabM (TSyntax `hwexpr)) :
@@ -1460,6 +1516,7 @@ private meta def delabHwExprWrapper : Delab := do
 @[app_delab Loom.Hw.Expr.urem] meta def delabHwUrem := delabHwExprWrapper
 @[app_delab Loom.Hw.Expr.shl] meta def delabHwShl := delabHwExprWrapper
 @[app_delab Loom.Hw.Expr.shr] meta def delabHwShr := delabHwExprWrapper
+@[app_delab Loom.Hw.Expr.concat] meta def delabHwConcat := delabHwExprWrapper
 @[app_delab Loom.Hw.Expr.eq] meta def delabHwEq := delabHwExprWrapper
 @[app_delab Loom.Hw.Expr.ult] meta def delabHwUlt := delabHwExprWrapper
 @[app_delab Loom.Hw.Expr.slt] meta def delabHwSlt := delabHwExprWrapper
@@ -2320,8 +2377,10 @@ private partial def deadDefaultFindings (domains : Array StateDomain) :
 private def checkedValue (width value : TSyntax `num) : MacroM Nat := do
   let widthValue := width.getNat
   let valueNat := value.getNat
+  if widthValue == 0 then
+    Macro.throwErrorAt width "hardware widths must be positive"
   let limit := 2 ^ widthValue
-  if widthValue == 0 || valueNat ≥ limit then
+  if valueNat ≥ limit then
     Macro.throwErrorAt value
       s!"literal {valueNat} does not fit in {widthValue} bits; expected 0 through {limit - 1}"
   pure valueNat
@@ -2405,6 +2464,42 @@ private partial def validateLocalBinders (designLocals : Array Name) :
   | `(hwstmt| {$statements:hwstmt,*}) =>
       for statement in statements.getElems do
         validateLocalBinders designLocals statement
+  | _ => pure ()
+
+/-- A nested conditional in a taken branch must be visibly braced.  The `else`
+branch is the one deliberate exception: a direct nested conditional there is
+the flat `else if` chain. -/
+private partial def validateIfOwnership : TSyntax `hwstmt → MacroM Unit
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
+      match yes with
+      | nested@`(hwstmt| if $_:hwexpr then $_:hwstmt else $_:hwstmt)
+      | nested@`(hwstmt| if $_:hwexpr then $_:hwstmt) =>
+          Macro.throwErrorAt nested
+            "a nested `if` in a branch requires braces; only a direct `else if` forms a flat chain"
+      | _ => validateIfOwnership yes
+      -- A direct conditional is the documented flat `else if`; validate its
+      -- own branches without rejecting the chain node itself.
+      validateIfOwnership no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => do
+      match yes with
+      | nested@`(hwstmt| if $_:hwexpr then $_:hwstmt else $_:hwstmt)
+      | nested@`(hwstmt| if $_:hwexpr then $_:hwstmt) =>
+          Macro.throwErrorAt nested
+            "a nested `if` in a branch requires braces; only a direct `else if` forms a flat chain"
+      | _ => validateIfOwnership yes
+  | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
+      for arm in arms do
+        match arm with
+        | `(hwcasearm| | default => $body:hwstmt)
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => validateIfOwnership body
+        | _ => pure ()
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt)
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt)
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt)
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
+      validateIfOwnership body
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      for statement in statements.getElems do validateIfOwnership statement
   | _ => pure ()
 
 private partial def validateCases (domains : Array StateDomain)
@@ -2551,6 +2646,13 @@ private def stateItems (stateName : TSyntax `ident) (width? : Option (TSyntax `n
   let inferred := inferredStateWidth members.size
   let width := width?.getD ⟨Syntax.mkNumLit (toString inferred)⟩
   let widthValue := width.getNat
+  if widthValue == 0 then
+    Macro.throwErrorAt width "state register width must be positive"
+  for i in [:members.size] do
+    for j in [i + 1:members.size] do
+      if members[i]!.getId == members[j]!.getId then
+        Macro.throwErrorAt members[j]!
+          s!"duplicate state member '{members[j]!.getId}'"
   if 2 ^ widthValue < members.size then
     Macro.throwErrorAt width
       s!"state register width {widthValue} cannot encode {members.size} declared states"
@@ -2597,6 +2699,14 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
   let mut stateDomains : Array StateDomain := #[]
   let mut rules : Array RuleItem := #[]
   for item in items do
+    let isRule := match item with
+      | `(hwitem| $kind:ident $_:ident := $_:hwstmt) => kind.getId == `rule
+      | `(hwitem| $kind:ident $_:ident suppress $_:ident because $_:str := $_:hwstmt) =>
+          kind.getId == `rule
+      | _ => false
+    if !rules.isEmpty && !isRule then
+      Macro.throwErrorAt item
+        "hardware declarations must precede the first rule"
     match item with
     | `(hwitem| $kind:ident $name:ident : $width:num) =>
         if kind.getId == `reg then registers := registers.push ⟨name, width, false, 0⟩
@@ -2605,7 +2715,9 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     | `(hwitem| $kind:ident $name:ident : $width:num := $value:num) =>
         if kind.getId == `reg then
           registers := registers.push ⟨name, width, false, ← checkedValue width value⟩
-        else if kind.getId == `const then constants := constants.push ⟨name, width, value⟩
+        else if kind.getId == `const then
+          let _ ← checkedValue width value
+          constants := constants.push ⟨name, width, value⟩
         else Macro.throwErrorAt kind "expected `reg` or `const`"
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num) =>
         unless qualifier.getId == `output && kind.getId == `reg do
@@ -2729,6 +2841,18 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         if reason.getString.isEmpty then Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
         rules := rules.push ⟨name, body, some lint.getId, some reason.getString⟩
     | _ => Macro.throwErrorAt item "unsupported hardware declaration"
+  let requirePositive (description : String) (source : TSyntax `num) : MacroM Unit :=
+    if source.getNat == 0 then
+      Macro.throwErrorAt source s!"{description} must be positive"
+    else pure ()
+  for register in registers do requirePositive "register width" register.width
+  for constant in constants do requirePositive "constant width" constant.width
+  for input in inputs do requirePositive "input width" input.width
+  for wire in wires do requirePositive "combinational output width" wire.width
+  for memory in memories do requirePositive "memory data width" memory.dataWidth
+  for family in registerArrays do
+    requirePositive "register-family element width" family.width
+    requirePositive "register-family element count" family.count
   let locals := registers.map (fun item => item.name) ++ constants.map (fun item => item.name) ++
     inputs.map (fun item => item.name) ++ memories.map (fun item => item.name) ++
     packedMemories.map (fun item => item.name) ++
@@ -2751,6 +2875,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
   for ruleItem in rules do
     validateWriteTargets writable ruleItem.body
     validateLocalBinders (locals.map (·.getId)) ruleItem.body
+    validateIfOwnership ruleItem.body
     validateCases stateDomains constants ruleItem.body
     if let some escape := rawStatementEscape? ruleItem.body then
       Macro.throwErrorAt escape
@@ -3179,9 +3304,20 @@ syntax (name := showHardwareCmd) "#show_hardware" ident : command
   match stx with
   | `(#show_hardware $designSyntax:ident) => do
       let designName ← resolveGlobalConstNoOverload designSyntax
-      let some metadata := findHardwareMetadata? (← getEnv) designName
-        | throwErrorAt designSyntax
-            "no pretty-hardware metadata is registered for this Design"
+      let environment ← getEnv
+      let coreFallback : CommandElabM String := do
+        let some declaration := environment.find? designName
+          | throwErrorAt designSyntax s!"unknown Design '{designName}'"
+        let some value := declaration.value?
+          | pure s!"{designName} (opaque; core value is not available)"
+        let rendered ← liftTermElabM <| Meta.ppExpr value
+        pure (toString rendered)
+      let some metadata := findHardwareMetadata? environment designName
+        | do
+          logInfoAt designSyntax <|
+            "core Design fallback (pretty reconstruction unavailable)\n" ++
+              (← coreFallback)
+          return
       if let some source := metadata.sourceRendering then
         logInfoAt designSyntax <|
           "pretty hardware (source round trip checked)\n" ++ source
@@ -3198,7 +3334,9 @@ syntax (name := showHardwareCmd) "#show_hardware" ident : command
           "declarations:"] ++ declarationLines ++
         ["rules:"] ++ ruleLines ++
         (if suppressionLines.isEmpty then [] else ["lint suppressions:"] ++ suppressionLines)
-      logInfoAt designSyntax (String.intercalate "\n" lines)
+      logInfoAt designSyntax <| String.intercalate "\n" lines ++
+        "\ncore Design fallback (pretty reconstruction unavailable)\n" ++
+        (← coreFallback)
   | _ => throwUnsupportedSyntax
 
 syntax (name := hwUnfoldTactic) "hw_unfold" ident : tactic
@@ -3382,7 +3520,8 @@ is exactly `Design.par`'s declaration/rule concatenation with the base module
 name retained; existing design and realization gates still reject coordinate
 or rule collisions. -/
 def extendDesign (base added : Design)
-    (_disjoint : base.parOkB added) : Design :=
+    (_disjoint : base.parOkB added)
+    (_readsDeclared : (base.par added).readsOkB) : Design :=
   { name := base.name
     regs := base.regs ++ added.regs
     mems := base.mems ++ added.mems
@@ -3766,7 +3905,7 @@ private def expandSystemCommand
           let (generated, addedTerm) ← inlineDesign
           commands := commands ++ generated
           let extended ← `(term| Loom.Hw.Dsl.extendDesign $baseTerm $addedTerm
-            (by native_decide))
+            (by native_decide) (by native_decide))
           match island.moduleName with
           | none => pure extended
           | some moduleName =>
