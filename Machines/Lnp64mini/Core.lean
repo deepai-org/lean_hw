@@ -3133,25 +3133,62 @@ def quantumRule : Rule :=
 
 /-! ## Register / memory / input declarations -/
 
+namespace AuthoredScalarPrefix
+
+/-- Architectural state and the cache/gate pipeline latches, in their exact
+existing declaration order. All are exported because that is the established
+LNP64mini debug interface; this block changes authoring only. -/
+hardware lnp64mini_scalar_prefix where
+  output reg cur : 5
+  output reg pc : 64 := 0x1000
+  output reg retire : 32
+  output reg trace_wp : 4
+  output reg trace_sel : 4
+  output reg trace_rd_pc : 64
+  output reg trace_rd_wb : 64
+  output reg trace_hit : 1
+  output reg trace_in_pc : 64
+  output reg trace_in_wb : 64
+  output reg running : 1
+  output reg halted : 1
+  output reg st : 5
+  output reg ir : 64
+  output reg a : 64
+  output reg b : 64
+  output reg rdval : 64
+  output reg sel_t : 64
+  output reg sel_f : 64
+  output reg ic_tag_q : 42
+  output reg ic_data_q : 64
+  output reg ic_gen : 16
+  output reg gate_tbl_base : 32
+  output reg cap_tbl_base : 32
+  output reg cap_fl_q : 64
+  output reg dc_tag_q : 42
+  output reg dc_data_q : 64
+  output reg dc_alloc : 1
+  output reg gate_ent_q : 64
+  output reg gate_dom_q : 8
+  output reg ic_inv : 1
+  output reg ic_ctr : 12
+
+end AuthoredScalarPrefix
+
+theorem authored_scalar_prefix_declarations :
+    AuthoredScalarPrefix.declarations.regs =
+      [curReg.decl, pcReg.decl (BitVec.ofNat 64 TEXT_BASE), retireReg.decl,
+       traceWpReg.decl, traceSelReg.decl, traceRdPcReg.decl, traceRdWbReg.decl,
+       traceHitReg.decl, traceInPcReg.decl, traceInWbReg.decl,
+       runningReg.decl, haltedReg.decl, stReg.decl, irReg.decl,
+       aReg.decl, bReg.decl, rdvalReg.decl, selTReg.decl, selFReg.decl,
+       icTagQReg.decl, icDataQReg.decl, icGenReg.decl, gateTblBaseReg.decl,
+       capTblBaseReg.decl, capFlQReg.decl, dcTagQReg.decl, dcDataQReg.decl,
+       dcAllocReg.decl, gateEntQReg.decl, gateDomQReg.decl,
+       icInvReg.decl, icCtrReg.decl] := rfl
+
 def scalarRegs : List RegDecl :=
-  [curReg.decl, pcReg.decl (BitVec.ofNat 64 TEXT_BASE), retireReg.decl,
-     -- EXT-8: the commit-trace ring write pointer (wraps at 16).
-     traceWpReg.decl, traceSelReg.decl,
-     traceRdPcReg.decl, traceRdWbReg.decl,
-     traceHitReg.decl, traceInPcReg.decl, traceInWbReg.decl,
-   runningReg.decl, haltedReg.decl, stReg.decl, irReg.decl,
-   aReg.decl, bReg.decl, rdvalReg.decl, selTReg.decl, selFReg.decl,
-   -- EXT-9: the I-cache sync-read latches (D19). Both reset to 0, which is
-   -- an invalid tag, so the cache comes up empty on every technology.
-   icTagQReg.decl, icDataQReg.decl, icGenReg.decl, gateTblBaseReg.decl,
-   -- §17: the cap-inbox root pointer and the walked-flags latch
-   capTblBaseReg.decl, capFlQReg.decl,
-   -- EXT-10 latches. `dc_alloc` records that the miss now in flight came from
-   -- the cacheable path, so the fill funnel cannot allocate for an atomic or
-   -- an out-of-window read that merely happened to pass through S_DL.
-   dcTagQReg.decl, dcDataQReg.decl, dcAllocReg.decl,
-   gateEntQReg.decl, gateDomQReg.decl,
-   icInvReg.decl, icCtrReg.decl,
+  AuthoredScalarPrefix.declarations.regs ++
+  [
    memIsStoreReg.decl, trapActiveReg.decl, trappedOpReg.decl,
    coreRdReg.decl, coreWrReg.decl, coreAddrReg.decl, coreWdataReg.decl,
    jtagRdReg.decl, jtagWrReg.decl, jtagWdataReg.decl, ddrAddrJReg.decl,
