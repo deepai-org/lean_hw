@@ -40,33 +40,23 @@ private def opc : Expr 8 := .slice fetchW 0 8
 private def imm : Expr 8 := .slice fetchW 8 8
 private def loadData : Expr 8 := dataMem.rd imm
 
-/-- Dispatch on an opcode value. -/
-private def isOp (n : Nat) : Expr 1 := .eq opc (.lit (BitVec.ofNat 8 n))
-private def op0 : Expr 1 := isOp 0
-private def op1 : Expr 1 := isOp 1
-private def op2 : Expr 1 := isOp 2
-private def op3 : Expr 1 := isOp 3
-private def op4 : Expr 1 := isOp 4
-private def op5 : Expr 1 := isOp 5
-private def op6 : Expr 1 := isOp 6
-private def accZero : Expr 1 := .eq rAcc (.lit 0)
-
 /-- The instruction-execution rule, written with the optional pretty syntax.
 The quotation lowers directly to the same `Act` constructors used previously. -/
 private def execRule : Act :=
   [hwstmt|
     if rHalted then skip else
-    if op0 then pcReg <- rPc + 1 else
-    if op1 then { accReg <- imm, pcReg <- rPc + 1 } else
-    if op2 then { accReg <- rAcc + imm, pcReg <- rPc + 1 } else
-    if op3 then { accReg <- loadData, pcReg <- rPc + 1 } else
-    if op4 then { dataMem[port 0, imm] <- rAcc, pcReg <- rPc + 1 } else
-    if op5 then
-      if accZero then pcReg <- rPc + 1 else pcReg <- imm
-    else
-    if op6 then { accReg <- rAcc - imm, pcReg <- rPc + 1 } else
-    -- hlt (7) and every unknown opcode halt
-    haltedReg <- 1]
+    case opc of
+    | 0 => { pcReg <- rPc + 1 }
+    | 1 => { accReg <- imm, pcReg <- rPc + 1 }
+    | 2 => { accReg <- rAcc + imm, pcReg <- rPc + 1 }
+    | 3 => { accReg <- loadData, pcReg <- rPc + 1 }
+    | 4 => { dataMem[port 0, imm] <- rAcc, pcReg <- rPc + 1 }
+    | 5 => {
+        if rAcc == 0 then pcReg <- rPc + 1 else pcReg <- imm
+      }
+    | 6 => { accReg <- rAcc - imm, pcReg <- rPc + 1 }
+    -- hlt (7) and every unknown opcode halt.
+    | default => { haltedReg <- 1 }]
 
 /-- Acc8 state, interface, and memory initialization from typed handles. -/
 abbrev declarations (prog : BitVec 8 → BitVec 16) : Declarations :=

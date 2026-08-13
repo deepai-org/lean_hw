@@ -35,6 +35,12 @@ def reg {width : Nat} (input : Input width) : Reg width :=
 instance {width : Nat} : CoeHead (Input width) (Expr width) := ⟨rd⟩
 
 end Input
+
+/-- Declaration wrapper paired with the read-only `Input` handle. -/
+def Declarations.addWireInput {width : Nat} (declarations : Declarations)
+    (input : Input width) : Declarations :=
+  declarations.addInput input.reg
+
 end Loom.Hw
 
 namespace Loom.Hw.Dsl
@@ -376,6 +382,10 @@ private structure RuleItem where
   name : TSyntax `ident
   body : TSyntax `hwstmt
 
+private structure StateDomain where
+  register : TSyntax `ident
+  members : Array (TSyntax `ident)
+
 private def checkedValue (width value : TSyntax `num) : MacroM Nat := do
   let widthValue := width.getNat
   let valueNat := value.getNat
@@ -409,6 +419,54 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
         validateWriteTargets writable statement
   | _ => pure ()
 
+private partial def validateCases (domains : Array StateDomain) : TSyntax `hwstmt → MacroM Unit
+  | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) => do
+      let domain? := match scrutinee with
+        | `(hwexpr| $name:ident) => domains.find? (fun domain => domain.register.getId == name.getId)
+        | _ => none
+      let mut namedArms : Array (TSyntax `ident) := #[]
+      let mut hasDefault := false
+      for arm in arms do
+        match arm with
+        | `(hwcasearm| | default => $body:hwstmt) =>
+            hasDefault := true
+            validateCases domains body
+        | `(hwcasearm| | $name:ident => $body:hwstmt) =>
+            if namedArms.any (fun prior => prior.getId == name.getId) then
+              Macro.throwErrorAt name s!"duplicate case arm '{name.getId}'"
+            namedArms := namedArms.push name
+            validateCases domains body
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => validateCases domains body
+        | _ => pure ()
+      match domain? with
+      | none =>
+          unless hasDefault do
+            Macro.throwErrorAt scrutinee
+              "case without a default is allowed only for a declared states register"
+      | some domain =>
+          for armName in namedArms do
+            unless domain.members.any (fun member => member.getId == armName.getId) do
+              Macro.throwErrorAt armName
+                s!"'{armName.getId}' is not a declared state of '{domain.register.getId}'"
+          let covered := domain.members.all fun member =>
+            namedArms.any (fun armName => armName.getId == member.getId)
+          if !hasDefault && !covered then
+            let missing := domain.members.filter (fun member =>
+              !namedArms.any (fun armName => armName.getId == member.getId))
+            Macro.throwErrorAt scrutinee
+              s!"non-exhaustive state case; missing {String.intercalate ", " (missing.toList.map (toString ·.getId))}"
+          -- A later command-elaboration pass reports a dead-default warning;
+          -- macro expansion itself has no logging capability.
+          pure ()
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
+      validateCases domains yes
+      validateCases domains no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => validateCases domains yes
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      for statement in statements.getElems do
+        validateCases domains statement
+  | _ => pure ()
+
 private partial def inferredStateWidthLoop (count capacity width : Nat) : Nat :=
   if capacity ≥ count then width
   else inferredStateWidthLoop count (capacity * 2) (width + 1)
@@ -439,11 +497,12 @@ private def stateItems (stateName : TSyntax `ident) (width? : Option (TSyntax `n
 
 private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     MacroM (Array ScalarRegItem × Array ConstItem × Array InputItem ×
-      Array WireItem × Array RuleItem) := do
+      Array WireItem × Array StateDomain × Array RuleItem) := do
   let mut registers : Array ScalarRegItem := #[]
   let mut constants : Array ConstItem := #[]
   let mut inputs : Array InputItem := #[]
   let mut wires : Array WireItem := #[]
+  let mut stateDomains : Array StateDomain := #[]
   let mut rules : Array RuleItem := #[]
   for item in items do
     match item with
@@ -465,40 +524,53 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         let (register, stateConstants) ← stateItems name none members.getElems none false
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| states $name:ident : {$members:ident,*} := $reset:ident) =>
         let (register, stateConstants) ← stateItems name none members.getElems (some reset) false
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| states $name:ident : $width:num {$members:ident,*}) =>
         let (register, stateConstants) ← stateItems name (some width) members.getElems none false
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| states $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
         let (register, stateConstants) ← stateItems name (some width) members.getElems (some reset) false
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| output states $name:ident : {$members:ident,*}) =>
         let (register, stateConstants) ← stateItems name none members.getElems none true
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| output states $name:ident : {$members:ident,*} := $reset:ident) =>
         let (register, stateConstants) ← stateItems name none members.getElems (some reset) true
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| output states $name:ident : $width:num {$members:ident,*}) =>
         let (register, stateConstants) ← stateItems name (some width) members.getElems none true
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| output states $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
         let (register, stateConstants) ← stateItems name (some width) members.getElems (some reset) true
         registers := registers.push register
         constants := constants ++ stateConstants
+        stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| rule $name:ident := $body:hwstmt) =>
         rules := rules.push ⟨name, body⟩
     | _ => Macro.throwErrorAt item "unsupported hardware declaration"
   let locals := registers.map (fun item => item.name) ++ constants.map (fun item => item.name) ++
     inputs.map (fun item => item.name) ++ wires.map (fun item => item.name) ++
     rules.map (fun item => item.name)
+  for localName in locals do
+    if localName.getId == `design || localName.getId == `declarations ||
+        localName.getId.toString.endsWith "_name" then
+      Macro.throwErrorAt localName
+        "this name is reserved by the hardware command; choose a name without the `_name` suffix"
   for i in [:locals.size] do
     for j in [i + 1:locals.size] do
       if locals[i]!.getId == locals[j]!.getId then
@@ -506,11 +578,12 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
   let writable := registers.map (fun item => item.name.getId)
   for ruleItem in rules do
     validateWriteTargets writable ruleItem.body
-  pure (registers, constants, inputs, wires, rules)
+    validateCases stateDomains ruleItem.body
+  pure (registers, constants, inputs, wires, stateDomains, rules)
 
 macro_rules
   | `(hardware $moduleName:ident where $items:hwitem*) => do
-      let (registers, constants, inputs, wires, rules) ← parseHardwareItems items
+      let (registers, constants, inputs, wires, _, rules) ← parseHardwareItems items
       let mut commands : Array Syntax := #[]
       for register in registers do
         let sourceName := Syntax.mkStrLit register.name.getId.toString
@@ -518,11 +591,21 @@ macro_rules
           def $(register.name) : Loom.Hw.Reg $(register.width) :=
             ⟨$sourceName⟩)
         commands := commands.push command
+        let lemmaName := mkIdentFrom register.name
+          (Name.mkSimple (register.name.getId.toString ++ "_name"))
+        let lemmaCommand ← `(command|
+          @[simp] theorem $lemmaName : $(register.name).name = $sourceName := rfl)
+        commands := commands.push lemmaCommand
       for inputItem in inputs do
         let sourceName := Syntax.mkStrLit inputItem.name.getId.toString
         let command ← `(command|
           def $(inputItem.name) : Loom.Hw.Input $(inputItem.width) := ⟨$sourceName⟩)
         commands := commands.push command
+        let lemmaName := mkIdentFrom inputItem.name
+          (Name.mkSimple (inputItem.name.getId.toString ++ "_name"))
+        let lemmaCommand ← `(command|
+          @[simp] theorem $lemmaName : $(inputItem.name).name = $sourceName := rfl)
+        commands := commands.push lemmaCommand
       for constant in constants do
         let command ← `(command|
           def $(constant.name) : Loom.Hw.Expr $(constant.width) :=
@@ -545,7 +628,7 @@ macro_rules
           declarations ← `($declarations |>.addReg $(register.name)
             (BitVec.ofNat $(register.width) $(quote register.init)))
       for inputItem in inputs do
-        declarations ← `($declarations |>.addInput $(inputItem.name).reg)
+        declarations ← `($declarations |>.addWireInput $(inputItem.name))
       for wireItem in wires do
         let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
         declarations ← `($declarations |>.addCombOutput $sourceName $(wireItem.name))

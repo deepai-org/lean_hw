@@ -126,6 +126,9 @@ hardware interface_demo where
 
 example : declarations.inputs.map (fun declaration => declaration.name) = ["enable"] := by
   decide
+example : enable = (⟨"enable"⟩ : Input 1) := rfl
+example : enable.name = "enable" := by simp
+example : count.name = "count" := by simp
 example : declarations.combOutputs.map (fun declaration => declaration.name) = ["done"] := by
   decide
 example : declarations.regs.head?.map (fun declaration => declaration.init.toNat) = some 0xfe := by
@@ -163,5 +166,14 @@ hardware bad_reset where
 hardware bad_input_write where
   input readonly : 1
   rule bad := readonly <- 1
+
+/-- error: non-exhaustive state case; missing Broken -/
+#guard_msgs in
+hardware bad_state_case where
+  states mode : { Ready, Busy, Broken }
+  rule incomplete :=
+    case mode of
+    | Ready => { mode <- Busy }
+    | Busy => { mode <- Ready }
 
 end Tests.PrettyDsl.Diagnostics
