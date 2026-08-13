@@ -563,6 +563,7 @@ example : twoClock.producer.outputs = ["sent"] := by native_decide
 example : twoClock.consumer.outputs = ["got"] := by native_decide
 
 #show_system twoClock
+#show_system twoClock channel q
 #show_system twoClock timing
 #show_system twoClock physical
 
