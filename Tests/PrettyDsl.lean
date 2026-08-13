@@ -543,6 +543,9 @@ example : declarations.regs.head?.map (fun declaration => declaration.init.toNat
 def enableTrace : Nat → InEnv := fun cycle name width =>
   BitVec.ofNat width (if name = "enable" ∧ cycle < 2 then 1 else 0)
 
+example : done.eval design.reset = 0#1 := by decide
+example : done.eval (design.cycleOpen (enableTrace 0) design.reset) = 1#1 := by decide
+
 /--
 info: after 3 cycles:
 inputs:
@@ -1439,13 +1442,25 @@ example : Expr 4 := [hwexpr| a[9:6]]
 #guard_msgs in
 example : Expr 8 := [hwexpr| a + b << 2]
 
+/-- error: shift and arithmetic operators require parentheses; parenthesize the intended grouping -/
+#guard_msgs in
+example : Expr 8 := [hwexpr| a << b + 2]
+
 /-- error: comparison and bitwise operators require parentheses; parenthesize the intended grouping -/
 #guard_msgs in
 example : Expr 1 := [hwexpr| a & b == a]
 
+/-- error: comparison and bitwise operators require parentheses; parenthesize the intended grouping -/
+#guard_msgs in
+example : Expr 1 := [hwexpr| a == b & a]
+
 /-- error: concatenation and other infix operators require parentheses; parenthesize the intended grouping -/
 #guard_msgs in
 example : Expr 16 := [hwexpr| a ++ b + a]
+
+/-- error: concatenation and other infix operators require parentheses; parenthesize the intended grouping -/
+#guard_msgs in
+example : Expr 16 := [hwexpr| a + b ++ a]
 
 /-- error: literal 256 does not fit in 8 bits; expected 0 through 255 -/
 #guard_msgs in
@@ -1472,6 +1487,13 @@ hardware zero_width_memory where
 hardware bad_input_write where
   input readonly : 1
   rule bad := readonly <- 1
+
+/-- error: 'observed' is not a writable register in this hardware block -/
+#guard_msgs in
+hardware bad_wire_write where
+  reg source : 1
+  output wire observed : 1 := source
+  rule bad := observed <- 1
 
 /-- error: non-exhaustive state case; missing Broken -/
 #guard_msgs in
@@ -1571,6 +1593,18 @@ hardware wrong_state_case_member where
     case mode of
     | Ready => skip
     | Missing => skip
+
+namespace WrongWidthCaseLabel
+/-- error: expression is 8 bits but the target is 4 bits; Loom never truncates implicitly, so select the intended bits explicitly -/
+#guard_msgs in
+hardware wrong_width_case_label where
+  const Wide : 8 := 1
+  reg wideSelector : 4
+  rule wrongWidthCaseDispatch :=
+    case wideSelector of
+    | Wide => skip
+    | default => skip
+end WrongWidthCaseLabel
 
 namespace DeadDefault
 

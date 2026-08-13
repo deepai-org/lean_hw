@@ -854,11 +854,12 @@ private def elaboratePackedFields (typeName : Name)
   | `(hw_eq% $leftSyntax:term $rightSyntax:term) => do
       let left ← elabTerm leftSyntax none
       let leftType ← Meta.whnf (← Meta.inferType left)
-      let right ← elabTerm rightSyntax (some leftType)
       let result ←
         if leftType.isAppOfArity ``Loom.Hw.Expr 1 then
+          let right ← elaborateScalarAtWidth rightSyntax leftType.getAppArgs[0]!
           Meta.mkAppM ``Loom.Hw.Expr.eq #[left, right]
         else if leftType.isAppOfArity ``Loom.Hw.PackedExpr 2 then
+          let right ← elabTerm rightSyntax (some leftType)
           Meta.mkAppM ``Loom.Hw.PackedExpr.eq #[left, right]
         else
           throwErrorAt leftSyntax "hardware equality requires scalar or same-type packed expressions"
@@ -1614,7 +1615,7 @@ mutual
             expandStmt body
         | `(hwcasearm| | $value:hwexpr => $body:hwstmt) => do
             `(Loom.Hw.Act.ite
-              (Loom.Hw.Expr.eq [hwexpr| $scrutinee] [hwexpr| $value])
+              (hw_eq% [hwexpr| $scrutinee] [hwexpr| $value])
               $(← expandStmt body) $(← expandCase scrutinee rest))
         | _ => Macro.throwErrorAt arm "unsupported hardware case arm"
 
