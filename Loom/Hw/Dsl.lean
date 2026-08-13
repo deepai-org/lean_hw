@@ -71,6 +71,16 @@ namespace Loom.Hw.Dsl
 
 open Lean Macro Elab Term Meta Command Tactic
 
+/-- Explicit opt-in for a shared compile-time hardware constant. Ordinary
+`Nat` definitions are never lifted merely because they happen to be in scope. -/
+initialize hwConstAttr : TagAttribute ←
+  registerTagAttribute `hw_const
+    "allow this Nat declaration to be range-checked and lifted in hardware expressions"
+    (fun declaration => do
+      let info ← getConstInfo declaration
+      unless info.type.isConstOf ``Nat do
+        throwError "@[hw_const] requires a declaration of type Nat")
+
 /-- Ordered elaboration-time action generation. The result has exactly the
 same left-to-right `Act.seq` shape as a handwritten brace block. -/
 def actFor {α : Type} (values : List α) (body : α → Loom.Hw.Act) : Loom.Hw.Act :=
@@ -221,6 +231,26 @@ syntax:max (name := hwChannelObserve) "hw_channel_observe% " term:max ident : te
 syntax:max (name := hwSend) "hw_send% " term:max term:max : term
 syntax:max (name := hwConsume) "hw_consume% " term:max : term
 
+private def checkedHardwareLiteral (source : Syntax) (value : Nat)
+    (expectedType? : Option Lean.Expr) : TermElabM Lean.Expr := do
+  let some expected := expectedType?
+    | throwErrorAt source "hardware literal requires an expected `Expr width` type"
+  let expected ← instantiateMVars expected
+  let expectedWhnf ← Meta.whnf expected
+  unless expectedWhnf.isAppOfArity ``Loom.Hw.Expr 1 do
+    throwErrorAt source "hardware literal requires an expected `Expr width` type"
+  let widthExpr ← Meta.whnf expectedWhnf.getAppArgs[0]!
+  let some width ← getNatValue? widthExpr
+    | throwErrorAt source
+        "hardware literal width must reduce before range checking; use an explicit typed `$(...)` splice"
+  let limit : Nat := 2 ^ width
+  let maxValue : Nat := limit - 1
+  if width == 0 || value ≥ limit then
+    throwErrorAt source
+      s!"literal {value} does not fit in {width} bits; expected 0 through {maxValue}"
+  let literal ← `(Loom.Hw.Expr.lit (BitVec.ofNat $(quote width) $(quote value)))
+  elabTermEnsuringType literal (some expected)
+
 private def coerceHardwareAtom (valueSyntax : Syntax) (expectedType? : Option Lean.Expr) :
     TermElabM Lean.Expr := do
   let value ← elabTerm valueSyntax none
@@ -232,6 +262,17 @@ private def coerceHardwareAtom (valueSyntax : Syntax) (expectedType? : Option Le
     else if valueType.isAppOfArity ``Loom.Hw.PackedExpr 2 then pure value
     else if valueType.isAppOfArity ``Loom.Hw.PackedReg 2 then Meta.mkAppM ``Loom.Hw.PackedReg.rd #[value]
     else if valueType.isAppOfArity ``Loom.Hw.PackedInput 2 then Meta.mkAppM ``Loom.Hw.PackedInput.rd #[value]
+    else if valueType.isConstOf ``Nat then
+      let some declaration := value.getAppFn.constName?
+        | throwErrorAt valueSyntax
+            "a lifted hardware constant must be a named declaration marked @[hw_const]"
+      unless hwConstAttr.hasTag (← getEnv) declaration do
+        throwErrorAt valueSyntax
+          "Nat values are not implicitly hardware expressions; mark a shared constant @[hw_const] or use a design-local `const`"
+      let some literalValue ← getNatValue? (← Meta.whnf value)
+        | throwErrorAt valueSyntax
+            "@[hw_const] value must reduce to a numeral for range checking"
+      checkedHardwareLiteral valueSyntax literalValue expectedType?
     else throwErrorAt valueSyntax
       "hardware identifier must name a typed register, input, expression, or packed value"
   ensureHasType expectedType? result
@@ -525,26 +566,7 @@ when that fails is its final component interpreted as a packed field. -/
 instance, this elaborator refuses truncation and refuses an unknown width. -/
 @[term_elab hwLit] def elabHwLit : TermElab := fun stx expectedType? => do
   match stx with
-  | `(hw_lit% $n:num) =>
-      let some expected := expectedType?
-        | throwErrorAt n "hardware literal requires an expected `Expr width` type"
-      let expected ← instantiateMVars expected
-      let expectedWhnf ← Meta.whnf expected
-      unless expectedWhnf.isAppOfArity ``Loom.Hw.Expr 1 do
-        throwErrorAt n "hardware literal requires an expected `Expr width` type"
-      let widthExpr ← Meta.whnf expectedWhnf.getAppArgs[0]!
-      let width? : Option Nat ← getNatValue? widthExpr
-      let some width := width?
-        | throwErrorAt n
-            "hardware literal width must reduce before range checking; use an explicit typed `$(...)` splice"
-      let value := n.getNat
-      let limit : Nat := 2 ^ width
-      let maxValue : Nat := limit - 1
-      if width == 0 || value ≥ limit then
-        throwErrorAt n
-          "literal {value} does not fit in {width} bits; expected 0 through {maxValue}"
-      let literal ← `(Loom.Hw.Expr.lit (BitVec.ofNat $(quote width) $(quote value)))
-      elabTermEnsuringType literal (some expected)
+  | `(hw_lit% $n:num) => checkedHardwareLiteral n n.getNat expectedType?
   | _ => throwUnsupportedSyntax
 
 syntax "[hwexpr| " hwexpr "]" : term
