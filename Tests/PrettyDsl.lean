@@ -86,6 +86,10 @@ packed struct ZeroWidthHeader where
 
 private def a : Reg 8 := ⟨"a"⟩
 private def b : Reg 8 := ⟨"b"⟩
+
+example : ([hwexpr| a + b == a] : Expr 1) =
+    .eq (.add a.rd b.rd) a.rd := rfl
+example : ([hwexpr| ~a[3]] : Expr 1) = .not (.slice a.rd 3 1) := rfl
 private def flag : Reg 1 := ⟨"flag"⟩
 private def ram : Mem 4 8 := ⟨"ram"⟩
 private def helper : Expr 8 := .xor a.rd b.rd
@@ -987,6 +991,10 @@ example : Expr 8 := [hwexpr| a + b << 2]
 /-- error: comparison and bitwise operators require parentheses; parenthesize the intended grouping -/
 #guard_msgs in
 example : Expr 1 := [hwexpr| a & b == a]
+
+/-- error: concatenation and other infix operators require parentheses; parenthesize the intended grouping -/
+#guard_msgs in
+example : Expr 16 := [hwexpr| a ++ b + a]
 
 /-- error: literal 256 does not fit in 8 bits; expected 0 through 255 -/
 #guard_msgs in
