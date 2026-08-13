@@ -540,13 +540,18 @@ ordinary library wrapper `EndpointAct` containing the `Act`, an
 same core footprint function. A plain syntax annotation is insufficient
 because a false footprint could permit data loss.
 
-Ordinary parametric authors do not write these proofs. Public
-`EndpointAct.send`, `.consume`, `.seq`, `.ite`, and finite-fold builders compose
-the action, footprint, and proof together; `seq` adds bounds, `ite` takes their
-maximum, and a generated list fold adds every iteration. Thus a send inside an
-`n`-element generated loop correctly has bound `n` and is illegal for one
-endpoint when `n > 1`. Closed/reducible surface actions discharge with
-`decide`/`simp`. If a splice supplies a bare irreducible `Act`, the source
+Ordinary authors using direct syntax do not write these proofs. Public
+`EndpointAct.send`, `.consume`, `.ite`, and skip-composition builders compose
+the action, footprint, and proof together. Sequential composition additionally
+requires only an `EndpointAct.Disjoint` witness: for every endpoint, one side
+has zero transactions. This obligation is unavoidable for genuinely open
+channel parameters because two Lean arguments may alias the same run-time
+channel even when their binder names differ; silently assuming distinctness
+would make the one-transaction guarantee false. Concrete/reducible actions
+discharge it with `simp`/`decide`, while the builder derives the full footprint
+centrally. `ite` takes branch maxima, and a generated list fold adds every
+iteration. Thus a send inside an `n`-element generated loop correctly has bound
+`n` and is illegal for one endpoint when `n > 1`. If a splice supplies a bare irreducible `Act`, the source
 diagnostic explains Loom's one-transaction-per-endpoint rule and names
 `EndpointAct` and its builders instead of exposing a typeclass or metavariable
 failure.

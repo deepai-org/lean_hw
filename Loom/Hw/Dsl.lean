@@ -135,13 +135,42 @@ def ite (condition : Expr 1) (yes no : EndpointAct) : EndpointAct :=
     · simpa [Act.maxWritesTo] using
         max_le (yes.footprint.sink channel) (no.footprint.sink channel)⟩
 
-/-- Sequential composition is intentionally proof-explicit: for open channel
-parameters, Lean cannot assume two differently named variables denote distinct
-generated endpoints.  Concrete non-aliasing obligations normally close with
-`simp`/`native_decide`. -/
-def seq (first second : EndpointAct)
-    (footprint : EndpointFootprint (.seq first.action second.action)) : EndpointAct :=
-  ⟨.seq first.action second.action, footprint⟩
+/-- The exact aliasing fact needed to sequence two certified endpoint actions:
+for every possible endpoint, at least one side performs no transaction.  This
+is deliberately weaker and easier to prove than reconstructing the resulting
+`EndpointFootprint` by hand. -/
+structure Disjoint (first second : EndpointAct) : Prop where
+  source : ∀ {width : Nat} (channel : Chan width),
+    first.action.maxWritesTo channel.sourceValidName 1 = 0 ∨
+      second.action.maxWritesTo channel.sourceValidName 1 = 0
+  sink : ∀ {width : Nat} (channel : Chan width),
+    first.action.maxWritesTo channel.sinkPopName 1 = 0 ∨
+      second.action.maxWritesTo channel.sinkPopName 1 = 0
+
+/-- Sequential composition derives its bound from the two existing
+certificates plus the sole remaining semantic obligation: the operands do not
+transact on the same endpoint.  Closed concrete compositions normally
+discharge `disjoint` with `simp`; genuinely open channel parameters must state
+why they cannot alias. -/
+def seq (first second : EndpointAct) (disjoint : Disjoint first second) : EndpointAct :=
+  ⟨.seq first.action second.action, by
+    constructor <;> intro _ channel
+    · rw [Act.maxWritesTo]
+      rcases disjoint.source channel with left | right
+      · simpa [left] using second.footprint.source channel
+      · simpa [right] using first.footprint.source channel
+    · rw [Act.maxWritesTo]
+      rcases disjoint.sink channel with left | right
+      · simpa [left] using second.footprint.sink channel
+      · simpa [right] using first.footprint.sink channel⟩
+
+/-- `skip` composes on the left without any proof obligation. -/
+@[simp] def skipThen (next : EndpointAct) : EndpointAct :=
+  seq skip next (by constructor <;> intros <;> simp [skip, Act.maxWritesTo])
+
+/-- `skip` composes on the right without any proof obligation. -/
+@[simp] def thenSkip (first : EndpointAct) : EndpointAct :=
+  seq first skip (by constructor <;> intros <;> simp [skip, Act.maxWritesTo])
 
 end EndpointAct
 
