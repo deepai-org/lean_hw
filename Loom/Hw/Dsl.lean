@@ -522,19 +522,24 @@ while an existing `Expr w` remains unchanged. -/
   | `(hw_atom% $valueSyntax:term) => coerceHardwareAtom valueSyntax expectedType?
   | _ => throwUnsupportedSyntax
 
-/-- A dotted token is first treated as an ordinary qualified Lean name. Only
-when that fails is its final component interpreted as a packed field. -/
+/-- A dotted token whose base is a lexical local is a packed field first. This
+preserves the documented signal/local-first rule even when a global qualified
+name happens to share the spelling. Otherwise, ordinary qualified Lean names
+remain eligible before the packed-field fallback. -/
 @[term_elab hwDottedAtom] def elabHwDottedAtom : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_dotted_atom% $whole:ident) =>
-      try
+      let name := whole.getId
+      if name.isAtomic then throwErrorAt whole "expected a qualified name or packed field"
+      let base := mkIdentFrom whole name.getPrefix
+      let field := mkIdentFrom whole (Name.mkSimple name.getString!)
+      let projection ← `(hw_packed_field% (hw_atom% $base) $field)
+      if (← getLCtx).findFromUserName? base.getId.eraseMacroScopes |>.isSome then
+        elabTerm projection expectedType?
+      else try
         let _ ← resolveGlobalConstNoOverload whole
-        coerceHardwareAtom whole expectedType?
+        withoutErrToSorry <| coerceHardwareAtom whole expectedType?
       catch _ =>
-        let name := whole.getId
-        if name.isAtomic then throwErrorAt whole "expected a qualified name or packed field"
-        let base := mkIdentFrom whole name.getPrefix
-        let field := mkIdentFrom whole (Name.mkSimple name.getString!)
         let projection ← `(hw_packed_field% (hw_atom% $base) $field)
         elabTerm projection expectedType?
   | _ => throwUnsupportedSyntax
@@ -818,10 +823,29 @@ private def elaboratePackedFields (typeName : Name)
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
+/-- A qualified identifier before an index may be either a qualified memory
+name or a packed local field. Try the ordinary term first, then reinterpret
+the last component as a packed field. This is the indexed counterpart of the
+signal/local-first dotted-atom rule. -/
+private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
+    TermElabM Lean.Expr := do
+  try
+    withoutErrToSorry <| elabTerm containerSyntax none
+  catch _ =>
+    match containerSyntax with
+    | `(term| $whole:ident) =>
+        let name := whole.getId
+        if name.isAtomic then throwErrorAt whole "indexed hardware identifier did not elaborate"
+        let base := mkIdentFrom whole name.getPrefix
+        let field := mkIdentFrom whole (Name.mkSimple name.getString!)
+        let projection ← `(hw_packed_field% (hw_atom% $base) $field)
+        withoutErrToSorry <| elabTerm projection none
+    | _ => throwErrorAt containerSyntax "indexed hardware value did not elaborate"
+
 @[term_elab hwIndexLit] def elabHwIndexLit : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_index_lit% $containerSyntax:term $index:num) =>
-      let container ← elabTerm containerSyntax none
+      let container ← elaborateIndexedContainer containerSyntax
       let containerType ← Meta.whnf (← Meta.inferType container)
       let result ←
         if containerType.isAppOfArity ``Loom.Hw.Reg 1 then
@@ -861,7 +885,7 @@ private def elaboratePackedFields (typeName : Name)
 @[term_elab hwMemRead] def elabHwMemRead : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_mem_read% $memorySyntax:term $addressSyntax:term) =>
-      let memory ← elabTerm memorySyntax none
+      let memory ← elaborateIndexedContainer memorySyntax
       let memoryType ← Meta.whnf (← Meta.inferType memory)
       let result ← if memoryType.isAppOfArity ``Loom.Hw.Mem 2 then
         let addressWidth := memoryType.getAppArgs[0]!
