@@ -53,7 +53,7 @@ private def execRule : Act :=
   [hwstmt|
     if rHalted then skip else
     case opc of
-    | 0 => { pcReg <- rPc + 1 }
+    | 0 => { let nextPc : 8 := rPc + 1, pcReg <- nextPc }
     | 1 => { accReg <- imm, pcReg <- rPc + 1 }
     | 2 => { accReg <- rAcc + imm, pcReg <- rPc + 1 }
     | 3 => { accReg <- loadData, pcReg <- rPc + 1 }

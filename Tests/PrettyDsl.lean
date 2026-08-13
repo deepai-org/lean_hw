@@ -995,3 +995,34 @@ hardware illegal_state_recovery where
 end RecoveryDefault
 
 end Tests.PrettyDsl.Diagnostics
+
+namespace Tests.PrettyDsl.LocalBindingDiagnostics
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+/-- error: local alias 'value' conflicts with a design-local declaration -/
+#guard_msgs in
+hardware collidingLet where
+  reg value : 8
+  reg result : 8
+  rule update := { let value := result, result <- value }
+
+/-- error: generate binder 'slot' conflicts with a design-local declaration -/
+#guard_msgs in
+hardware collidingGenerate where
+  reg slot : 8
+  rule update := for slot in $([0, 1]) generate slot <- 1
+
+namespace TransparentLint
+/--
+warning: 'value' reads its start-of-cycle value; an earlier write takes effect next cycle
+-/
+#guard_msgs in
+hardware transparentLetLint where
+  reg value : 8
+  reg result : 8
+  rule update := { value <- 1, let oldValue := value, result <- oldValue }
+end TransparentLint
+
+end Tests.PrettyDsl.LocalBindingDiagnostics

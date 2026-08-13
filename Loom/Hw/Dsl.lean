@@ -1600,6 +1600,42 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
         validateWriteTargets writable statement
   | _ => pure ()
 
+private partial def validateLocalBinders (designLocals : Array Name) :
+    TSyntax `hwstmt → MacroM Unit
+  | `(hwstmt| let $name:ident : $_:num := $_:hwexpr)
+  | `(hwstmt| let $name:ident := $_:hwexpr) => do
+      if designLocals.contains name.getId then
+        Macro.throwErrorAt name
+          s!"local alias '{name.getId}' conflicts with a design-local declaration"
+  | `(hwstmt| for $name:ident in $_:term generate $body:hwstmt) => do
+      if designLocals.contains name.getId then
+        Macro.throwErrorAt name
+          s!"generate binder '{name.getId}' conflicts with a design-local declaration"
+      validateLocalBinders designLocals body
+  | `(hwstmt| receive $name:ident from $_:ident then $body:hwstmt) => do
+      if designLocals.contains name.getId then
+        Macro.throwErrorAt name
+          s!"receive binder '{name.getId}' conflicts with a design-local declaration"
+      validateLocalBinders designLocals body
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt)
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
+      validateLocalBinders designLocals body
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
+      validateLocalBinders designLocals yes
+      validateLocalBinders designLocals no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => validateLocalBinders designLocals yes
+  | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
+      for arm in arms do
+        match arm with
+        | `(hwcasearm| | default => $body:hwstmt)
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) =>
+            validateLocalBinders designLocals body
+        | _ => pure ()
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      for statement in statements.getElems do
+        validateLocalBinders designLocals statement
+  | _ => pure ()
+
 private partial def validateCases (domains : Array StateDomain)
     (constants : Array ConstItem) : TSyntax `hwstmt → MacroM Unit
   | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) => do
@@ -1868,6 +1904,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     registerArrays.map (fun item => item.name.getId)
   for ruleItem in rules do
     validateWriteTargets writable ruleItem.body
+    validateLocalBinders (locals.map (·.getId)) ruleItem.body
     validateCases stateDomains constants ruleItem.body
   pure (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
     packedInputs, packedWires, registerArrays, stateDomains, rules)
