@@ -52,6 +52,22 @@ declare_syntax_cat hwexpr
 declare_syntax_cat hwstmt
 declare_syntax_cat hwcasearm
 
+/-- Prevent a leading case-arm `|` on the next line from being consumed as a
+bitwise OR. Ordinary multiline expressions remain available by parenthesizing
+the continuation, which is clearer at this already-sensitive boundary. -/
+def checkNoLinebreakBefore : Lean.Parser.Parser where
+  info := Lean.Parser.epsilonInfo
+  fn := fun _ state =>
+    if Lean.Parser.checkTailLinebreak state.stxStack.back then
+      state.mkError "bitwise `|` must remain on the same line as its left operand"
+    else state
+
+@[combinator_formatter checkNoLinebreakBefore]
+def checkNoLinebreakBefore.formatter : Lean.PrettyPrinter.Formatter := pure ()
+
+@[combinator_parenthesizer checkNoLinebreakBefore]
+def checkNoLinebreakBefore.parenthesizer : Lean.PrettyPrinter.Parenthesizer := pure ()
+
 /-! Expression grammar. Precedences match the public table. Comparison is
 non-associative because both operands must bind more tightly than level 40. -/
 
@@ -75,7 +91,8 @@ syntax:60 hwexpr:60 " >> " hwexpr:61 : hwexpr
 syntax:55 hwexpr:56 " ++ " hwexpr:55 : hwexpr
 syntax:50 hwexpr:50 " & " hwexpr:51 : hwexpr
 syntax:48 hwexpr:48 " ^ " hwexpr:49 : hwexpr
-syntax:46 hwexpr:46 " | " hwexpr:47 : hwexpr
+@[hwexpr_parser] def bitwiseOrParser := trailing_parser:46
+  checkNoLinebreakBefore >> " | " >> Lean.Parser.categoryParser `hwexpr 47
 syntax:40 hwexpr:41 " == " hwexpr:41 : hwexpr
 syntax:40 hwexpr:41 " <u " hwexpr:41 : hwexpr
 syntax:40 hwexpr:41 " <s " hwexpr:41 : hwexpr
