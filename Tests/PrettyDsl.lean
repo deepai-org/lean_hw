@@ -347,6 +347,83 @@ example : [hwstmt| receive value from sink then received <- value] =
 
 end Tests.PrettyDsl.ChannelActions
 
+namespace Tests.PrettyDsl.ChannelLints
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+private def queue : Chan 8 := ⟨"lint_queue", 2, .exchange⟩
+private def otherQueue : Chan 8 := ⟨"other_lint_queue", 2, .exchange⟩
+private def source := queue.source
+private def otherSource := otherQueue.source
+private def sink := queue.sink
+
+namespace UnguardedSend
+/--
+warning: send to 'source' is not dominated by its `canSend` guard; a full channel drops the payload
+-/
+#guard_msgs in
+hardware unguarded_send where
+  rule transmit := send 42 to source
+end UnguardedSend
+
+namespace GuardedSend
+hardware guarded_send where
+  rule transmit :=
+    if source.canSend & 1 then
+      send 42 to source
+end GuardedSend
+
+namespace WrongChannel
+/--
+warning: send to 'source' is not dominated by its `canSend` guard; a full channel drops the payload
+-/
+#guard_msgs in
+hardware wrong_channel_guard where
+  rule transmit :=
+    if otherSource.canSend then
+      send 42 to source
+end WrongChannel
+
+namespace Disjunctive
+/--
+warning: send to 'source' is not dominated by its `canSend` guard; a full channel drops the payload
+-/
+#guard_msgs in
+hardware disjunctive_guard where
+  rule transmit :=
+    if source.canSend | 1 then
+      send 42 to source
+end Disjunctive
+
+namespace UnguardedData
+/--
+warning: 'sink.data' is read without a dominating 'sink.hasData' guard; an empty channel has no valid payload
+-/
+#guard_msgs in
+hardware unguarded_data where
+  output reg observed : 8
+  rule sample := observed <- sink.data
+end UnguardedData
+
+namespace GuardedData
+hardware guarded_data where
+  output reg observed : 8
+  rule sample :=
+    if sink.hasData & 1 then
+      observed <- sink.data
+end GuardedData
+
+namespace GuardedTransactions
+hardware guarded_transactions where
+  output reg sent : 1
+  output reg observed : 8
+  rule transmit := send 42 to source then sent <- 1
+  rule sample := receive value from sink then observed <- value
+end GuardedTransactions
+
+end Tests.PrettyDsl.ChannelLints
+
 /--
 error: memory depth 12 is not a power of two; the current Mem core represents exactly 2^addressWidth cells
 -/

@@ -1064,13 +1064,94 @@ private def readAfterWriteFindings (registers : Array Name)
           s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle"⟩
       else none
 
+private inductive ChannelGuardKind where
+  | canSend
+  | hasData
+  deriving DecidableEq
+
+private structure ChannelGuard where
+  endpoint : Name
+  kind : ChannelGuardKind
+  deriving DecidableEq
+
+private def channelObservation? (name : Name) : Option ChannelGuard :=
+  let clean := name.eraseMacroScopes
+  if clean.isAtomic then none
+  else
+    let operation := clean.getString!
+    if operation == "canSend" then some ⟨clean.getPrefix, .canSend⟩
+    else if operation == "hasData" then some ⟨clean.getPrefix, .hasData⟩
+    else none
+
+/-- Exact, deliberately syntactic dominance facts contributed by a condition.
+Only conjunction preserves them; accepting disjunction or inferred shadow state
+would make this informational lint pretend to be a theorem prover. -/
+private partial def conjunctiveChannelGuards : TSyntax `hwexpr → Array ChannelGuard
+  | `(hwexpr| ($condition:hwexpr)) => conjunctiveChannelGuards condition
+  | `(hwexpr| $left:hwexpr & $right:hwexpr) =>
+      conjunctiveChannelGuards left ++ conjunctiveChannelGuards right
+  | `(hwexpr| $name:ident) => (channelObservation? name.getId).toArray
+  | _ => #[]
+
+private def guardPresent (guards : Array ChannelGuard) (endpoint : TSyntax `ident)
+    (kind : ChannelGuardKind) : Bool :=
+  guards.contains ⟨endpoint.getId.eraseMacroScopes, kind⟩
+
+private partial def unguardedDataFindings (suppressed : Array Name)
+    (guards : Array ChannelGuard) : TSyntax `hwexpr → List LintFinding
+  | expression@`(hwexpr| $name:ident) =>
+      if suppressed.contains `unguarded_channel then []
+      else
+        let clean := name.getId.eraseMacroScopes
+        if !clean.isAtomic && clean.getString! == "data" then
+          let endpoint := clean.getPrefix
+          if guards.contains ⟨endpoint, .hasData⟩ then []
+          else [⟨expression, s!"'{endpoint}.data' is read without a dominating '{endpoint}.hasData' guard; an empty channel has no valid payload"⟩]
+        else []
+  | `(hwexpr| ($value:hwexpr))
+  | `(hwexpr| ~ $value:hwexpr)
+  | `(hwexpr| zext $value:hwexpr to $_:num)
+  | `(hwexpr| sext $value:hwexpr to $_:num)
+  | `(hwexpr| $value:hwexpr[$_:num])
+  | `(hwexpr| $value:hwexpr[$_:num:$__:num]) => unguardedDataFindings suppressed guards value
+  | `(hwexpr| $_:ident[$address:hwexpr]) =>
+      unguardedDataFindings suppressed guards address
+  | `(hwexpr| $left:hwexpr * $right:hwexpr)
+  | `(hwexpr| $left:hwexpr / $right:hwexpr)
+  | `(hwexpr| $left:hwexpr % $right:hwexpr)
+  | `(hwexpr| $left:hwexpr + $right:hwexpr)
+  | `(hwexpr| $left:hwexpr - $right:hwexpr)
+  | `(hwexpr| $left:hwexpr << $right:hwexpr)
+  | `(hwexpr| $left:hwexpr >> $right:hwexpr)
+  | `(hwexpr| $left:hwexpr ++ $right:hwexpr)
+  | `(hwexpr| $left:hwexpr & $right:hwexpr)
+  | `(hwexpr| $left:hwexpr ^ $right:hwexpr)
+  | `(hwexpr| $left:hwexpr | $right:hwexpr)
+  | `(hwexpr| $left:hwexpr == $right:hwexpr)
+  | `(hwexpr| $left:hwexpr <u $right:hwexpr)
+  | `(hwexpr| $left:hwexpr <s $right:hwexpr) =>
+      unguardedDataFindings suppressed guards left ++
+        unguardedDataFindings suppressed guards right
+  | `(hwexpr| if $condition:hwexpr then $yes:hwexpr else $no:hwexpr) =>
+      unguardedDataFindings suppressed guards condition ++
+        unguardedDataFindings suppressed (guards ++ conjunctiveChannelGuards condition) yes ++
+        unguardedDataFindings suppressed guards no
+  | _ => []
+
+private def expressionFindings (registers : Array Name) (suppressed : Array Name)
+    (guards : Array ChannelGuard) (written : List WrittenTarget)
+    (expression : TSyntax `hwexpr) : List LintFinding :=
+  readAfterWriteFindings registers suppressed written expression ++
+    unguardedDataFindings suppressed guards expression
+
 private partial def analyzeStatement (registers : Array Name) (suppressed : Array Name)
-    (statement : TSyntax `hwstmt) (written : List WrittenTarget) :
+    (guards : Array ChannelGuard) (statement : TSyntax `hwstmt)
+    (written : List WrittenTarget) :
     List WrittenTarget × List LintFinding :=
   match statement with
   | `(hwstmt| skip) => (written, [])
   | `(hwstmt| $target:ident <- $value:hwexpr) =>
-      let readFindings := readAfterWriteFindings registers suppressed written value
+      let readFindings := expressionFindings registers suppressed guards written value
       let prior := written.filter (fun earlier => earlier.name == target.getId)
       let suppressMultiple := suppressed.contains `multiple_write
       let multipleFinding :=
@@ -1079,38 +1160,45 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
         else []
       (written ++ [⟨target.getId, target, suppressMultiple⟩], readFindings ++ multipleFinding)
   | `(hwstmt| $_:ident[port $_:num, $address:hwexpr] <- $value:hwexpr) =>
-      (written, readAfterWriteFindings registers suppressed written address ++
-        readAfterWriteFindings registers suppressed written value)
+      (written, expressionFindings registers suppressed guards written address ++
+        expressionFindings registers suppressed guards written value)
   | `(hwstmt| $_:ident[$index:hwexpr] <- $value:hwexpr) =>
-      (written, readAfterWriteFindings registers suppressed written index ++
-        readAfterWriteFindings registers suppressed written value)
-  | `(hwstmt| send $payload:hwexpr to $_:ident) =>
-      (written, readAfterWriteFindings registers suppressed written payload)
-  | `(hwstmt| send $payload:hwexpr to $_:ident then $body:hwstmt) =>
-      let payloadFindings := readAfterWriteFindings registers suppressed written payload
-      let (next, bodyFindings) := analyzeStatement registers suppressed body written
+      (written, expressionFindings registers suppressed guards written index ++
+        expressionFindings registers suppressed guards written value)
+  | statement@`(hwstmt| send $payload:hwexpr to $endpoint:ident) =>
+      let guardFinding :=
+        if suppressed.contains `unguarded_channel || guardPresent guards endpoint .canSend then []
+        else [⟨statement, s!"send to '{endpoint.getId.eraseMacroScopes}' is not dominated by its `canSend` guard; a full channel drops the payload"⟩]
+      (written, expressionFindings registers suppressed guards written payload ++ guardFinding)
+  | `(hwstmt| send $payload:hwexpr to $endpoint:ident then $body:hwstmt) =>
+      let payloadFindings := expressionFindings registers suppressed guards written payload
+      let guarded := guards.push ⟨endpoint.getId.eraseMacroScopes, .canSend⟩
+      let (next, bodyFindings) := analyzeStatement registers suppressed guarded body written
       (next, payloadFindings ++ bodyFindings)
   | `(hwstmt| consume $_:ident) => (written, [])
-  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) =>
-      analyzeStatement registers suppressed body written
+  | `(hwstmt| receive $_:ident from $endpoint:ident then $body:hwstmt) =>
+      analyzeStatement registers suppressed
+        (guards.push ⟨endpoint.getId.eraseMacroScopes, .hasData⟩) body written
   | `(hwstmt| let $_:ident : $_:num := $value:hwexpr)
   | `(hwstmt| let $_:ident := $value:hwexpr) =>
-      (written, readAfterWriteFindings registers suppressed written value)
+      (written, expressionFindings registers suppressed guards written value)
   | `(hwstmt| suppress $lint:ident because $_:str in $body:hwstmt) =>
-      analyzeStatement registers (suppressed.push lint.getId) body written
+      analyzeStatement registers (suppressed.push lint.getId) guards body written
   | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
-      analyzeStatement registers suppressed body written
+      analyzeStatement registers suppressed guards body written
   | `(hwstmt| if $condition:hwexpr then $yes:hwstmt else $no:hwstmt) =>
-      let conditionFindings := readAfterWriteFindings registers suppressed written condition
-      let (yesWrites, yesFindings) := analyzeStatement registers suppressed yes written
-      let (noWrites, noFindings) := analyzeStatement registers suppressed no written
+      let conditionFindings := expressionFindings registers suppressed guards written condition
+      let thenGuards := guards ++ conjunctiveChannelGuards condition
+      let (yesWrites, yesFindings) := analyzeStatement registers suppressed thenGuards yes written
+      let (noWrites, noFindings) := analyzeStatement registers suppressed guards no written
       (yesWrites ++ noWrites, conditionFindings ++ yesFindings ++ noFindings)
   | `(hwstmt| if $condition:hwexpr then $yes:hwstmt) =>
-      let conditionFindings := readAfterWriteFindings registers suppressed written condition
-      let (yesWrites, yesFindings) := analyzeStatement registers suppressed yes written
+      let conditionFindings := expressionFindings registers suppressed guards written condition
+      let thenGuards := guards ++ conjunctiveChannelGuards condition
+      let (yesWrites, yesFindings) := analyzeStatement registers suppressed thenGuards yes written
       (yesWrites ++ written, conditionFindings ++ yesFindings)
   | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) =>
-      let initialFindings := readAfterWriteFindings registers suppressed written scrutinee
+      let initialFindings := expressionFindings registers suppressed guards written scrutinee
       arms.foldl (fun (allWrites, allFindings) arm =>
         let body? := match arm with
           | `(hwcasearm| | default => $body:hwstmt)
@@ -1119,11 +1207,11 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
         match body? with
         | none => (allWrites, allFindings)
         | some body =>
-            let (armWrites, armFindings) := analyzeStatement registers suppressed body written
+            let (armWrites, armFindings) := analyzeStatement registers suppressed guards body written
             (allWrites ++ armWrites, allFindings ++ armFindings)) ([], initialFindings)
   | `(hwstmt| {$statements:hwstmt,*}) =>
       statements.getElems.foldl (fun (priorWrites, priorFindings) next =>
-        let (nextWrites, nextFindings) := analyzeStatement registers suppressed next priorWrites
+        let (nextWrites, nextFindings) := analyzeStatement registers suppressed guards next priorWrites
         (nextWrites, priorFindings ++ nextFindings)) (written, [])
   | _ => (written, [])
 
@@ -1133,7 +1221,7 @@ private def hardwareLintFindings (registers : Array ScalarRegItem)
   let (_, findings) := rules.foldl (fun (written, priorFindings) ruleItem =>
     let suppressed := ruleItem.suppressedLint.toArray
     let (nextWritten, nextFindings) :=
-      analyzeStatement registerNames suppressed ruleItem.body written
+      analyzeStatement registerNames suppressed #[] ruleItem.body written
     (nextWritten, priorFindings ++ nextFindings)) ([], [])
   findings
 
