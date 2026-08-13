@@ -223,6 +223,9 @@ run_cmd Lean.Elab.Command.liftTermElabM do
 private def unsupportedDelaborationProbe : Expr 8 :=
   Expr.memRead 8 "ram" (Expr.slice a.rd 0 4)
 
+private def narrowLiteralDelaborationProbe : Expr 4 := .lit 5#4
+private def wideLiteralDelaborationProbe : Expr 8 := .lit 5#8
+
 run_cmd Lean.Elab.Command.liftTermElabM do
   let some info := (← Lean.getEnv).find? ``unsupportedDelaborationProbe
     | throwError "fallback-delaboration probe declaration is missing"
@@ -233,6 +236,20 @@ run_cmd Lean.Elab.Command.liftTermElabM do
     throwError "an unsupported expression was mislabeled as round-trippable hardware syntax: {rendered}"
   unless rendered.contains "Expr.memRead" do
     throwError "unsupported expression did not remain visibly in core notation: {rendered}"
+  let some narrowInfo := (← Lean.getEnv).find? ``narrowLiteralDelaborationProbe
+    | throwError "narrow-literal delaboration probe is missing"
+  let some narrowValue := narrowInfo.value?
+    | throwError "narrow-literal delaboration probe has no value"
+  let narrowRendered := toString (← Lean.Meta.ppExpr narrowValue)
+  unless narrowRendered.contains "[hwexpr| 5]" do
+    throwError "sub-byte literal did not use canonical decimal spelling: {narrowRendered}"
+  let some wideInfo := (← Lean.getEnv).find? ``wideLiteralDelaborationProbe
+    | throwError "wide-literal delaboration probe is missing"
+  let some wideValue := wideInfo.value?
+    | throwError "wide-literal delaboration probe has no value"
+  let wideRendered := toString (← Lean.Meta.ppExpr wideValue)
+  unless wideRendered.contains "[hwexpr| 0x05]" do
+    throwError "byte literal did not use padded canonical hexadecimal spelling: {wideRendered}"
 
 example : ([hwexpr| a + b == a] : Expr 1) =
     .eq (.add a.rd b.rd) a.rd := rfl
@@ -443,6 +460,47 @@ info: after 256 cycles:
 #run_hardware design for 256 cycles
 
 end Tests.PrettyDsl.Counter
+
+namespace Tests.PrettyDsl.CoreInspectionFallback
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+opaque coreOnlyDesign : Design
+
+/--
+info: core Design fallback (pretty reconstruction unavailable)
+Tests.PrettyDsl.CoreInspectionFallback.coreOnlyDesign (opaque; core value is not available)
+-/
+#guard_msgs in
+#show_hardware coreOnlyDesign
+
+end Tests.PrettyDsl.CoreInspectionFallback
+
+namespace Tests.PrettyDsl.UnfoldIsolation.Left
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+hardware shared_surface_name where
+  reg left : 1
+
+example : design.name = "shared_surface_name" := by hw_unfold design
+
+end Tests.PrettyDsl.UnfoldIsolation.Left
+
+namespace Tests.PrettyDsl.UnfoldIsolation.Right
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+hardware shared_surface_name where
+  reg right : 2
+
+example : design.name = "shared_surface_name" := by hw_unfold design
+example : declarations.regs.map (·.width) = [2] := by hw_unfold design
+
+end Tests.PrettyDsl.UnfoldIsolation.Right
 
 namespace Tests.PrettyDsl.TraceOrdering
 
