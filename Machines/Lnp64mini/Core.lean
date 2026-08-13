@@ -2052,49 +2052,63 @@ free entry commits the send -- latch the flags and issue the handle write
 at `+0` (the address walked here is `+8`). Anything else refuses: the rd
 funnel wrote all-ones this cycle, and the instruction just steps past. -/
 def s_cs0 : Expr 1 × Act := stArm S_CS0
-  (.ite mDone
-    (.ite capSendOk
-      (actSeq [capFlQReg.set mRdata,
-               coreAddrReg.set (.sub core_addr (.lit (BitVec.ofNat 32 8))),
-               coreWdataReg.set a,
-               coreWrReg.set (L1 1), stReg.set (L5 S_CS1)])
-      (actSeq [stepPc, retireInc, goF0]))
-    .skip)
+  [hwstmt|
+    if mDone then
+      if capSendOk then {
+        capFlQReg <- mRdata,
+        coreAddrReg <- core_addr - 8,
+        coreWdataReg <- a,
+        coreWrReg <- 1,
+        stReg <- $(L5 S_CS1)
+      } else {
+        $stmt(stepPc),
+        $stmt(retireInc),
+        $stmt(goF0)
+      }]
 
 /-- **§17 `S_CS1`**: the handle write completed; issue the flags write with
 `occupied` set. The store completes through `S_DSW` (which owns the final
 step/retire); `sc_pending` is cleared the way the ordinary DDR-store arm
 clears it, so the SC-verdict funnel cannot misread this store. -/
 def s_cs1 : Expr 1 × Act := stArm S_CS1
-  (.ite mDone
-    (actSeq [coreAddrReg.set (.add core_addr (.lit (BitVec.ofNat 32 8))),
-             coreWdataReg.set (.or cap_fl_q (L64 1)),
-             coreWrReg.set (L1 1), scPendingReg.set (L1 0),
-             stReg.set (L5 S_DSW)])
-    .skip)
+  [hwstmt|
+    if mDone then {
+      coreAddrReg <- core_addr + 8,
+      coreWdataReg <- cap_fl_q | 1,
+      coreWrReg <- 1,
+      scPendingReg <- 0,
+      stReg <- $(L5 S_DSW)
+    }]
 
 /-- **§17 `S_CR0`**: this domain's flags word has arrived. Valid and
 occupied commits the receive -- latch the flags and issue the handle read
 at `+0`. Anything else refuses (rd funnel wrote all-ones) and steps past. -/
 def s_cr0 : Expr 1 × Act := stArm S_CR0
-  (.ite mDone
-    (.ite capRecvOk
-      (actSeq [capFlQReg.set mRdata,
-               coreAddrReg.set (.sub core_addr (.lit (BitVec.ofNat 32 8))),
-               coreRdReg.set (L1 1), stReg.set (L5 S_CR1)])
-      (actSeq [stepPc, retireInc, goF0]))
-    .skip)
+  [hwstmt|
+    if mDone then
+      if capRecvOk then {
+        capFlQReg <- mRdata,
+        coreAddrReg <- core_addr - 8,
+        coreRdReg <- 1,
+        stReg <- $(L5 S_CR1)
+      } else {
+        $stmt(stepPc),
+        $stmt(retireInc),
+        $stmt(goF0)
+      }]
 
 /-- **§17 `S_CR1`**: the handle word arrived (`rd` written from `mRdata` in
 the funnel this cycle); issue the flags write with `occupied` cleared and
 complete through `S_DSW`. -/
 def s_cr1 : Expr 1 × Act := stArm S_CR1
-  (.ite mDone
-    (actSeq [coreAddrReg.set (.add core_addr (.lit (BitVec.ofNat 32 8))),
-             coreWdataReg.set (.and cap_fl_q (.not (L64 1))),
-             coreWrReg.set (L1 1), scPendingReg.set (L1 0),
-             stReg.set (L5 S_DSW)])
-    .skip)
+  [hwstmt|
+    if mDone then {
+      coreAddrReg <- core_addr + 8,
+      coreWdataReg <- cap_fl_q & ~1,
+      coreWrReg <- 1,
+      scPendingReg <- 0,
+      stReg <- $(L5 S_DSW)
+    }]
 
 def s_pause : Expr 1 × Act := stArm S_PAUSE
   [hwstmt| if ~bus_req then $stmt(goF0)]
