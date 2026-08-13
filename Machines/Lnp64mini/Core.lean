@@ -186,6 +186,41 @@ arbiter which read takes a reservation and which write is conditional. -/
 def scFailPort : Reg 1 := ⟨"sc_fail"⟩
 def scFail   : Expr 1  := scFailPort.rd
 
+namespace AuthoredInputs
+
+/-- The environment-owned LNP64mini interface. These declarations generate
+the same input coordinates used by the compatibility `...Port` handles above;
+the user-facing source no longer has to repeat `Reg` and `addInput`. -/
+hardware lnp64mini_inputs where
+  input m_done : 1
+  input m_rdata : 64
+  input m_busy : 1
+  input gp_done : 1
+  input gp_rdata : 32
+  input gp_busy : 1
+  input cmd_valid : 1
+  input cmd_idx : 7
+  input cmd_data : 32
+  input res_kill : 1
+  input doorbell : 1
+  input doorbell_key : 64
+  input hold : 1
+  input sc_fail : 1
+
+end AuthoredInputs
+
+theorem authored_input_declarations :
+    AuthoredInputs.declarations.inputs =
+      [mDonePort.input, mRdataPort.input, mBusyPort.input,
+       gpDonePort.input, gpRdataPort.input, gpBusyPort.input,
+       cmdValidPort.input, cmdIdxPort.input, cmdDataPort.input,
+       resKillPort.input, doorbellPort.input, doorbellKeyPort.input,
+       holdPort.input, scFailPort.input] := rfl
+
+theorem authored_m_done_handle : AuthoredInputs.m_done.reg = mDonePort := rfl
+theorem authored_cmd_data_handle : AuthoredInputs.cmd_data.reg = cmdDataPort := rfl
+theorem authored_doorbell_handle : AuthoredInputs.doorbell.reg = doorbellPort := rfl
+
 /-- `wake_out` pulses for one cycle when `FUTEX_WAKE` (S_EX, op 0xcc)
 executes, regardless of local matches. In the dual SoC it is wired straight
 into the *other* core's `doorbell` input — a register-to-input connection,
@@ -3144,6 +3179,7 @@ def domainRule : Rule := ⟨"domain", [hwstmt| curDomReg <- domCur]⟩
 def declarations : Declarations :=
   { Declarations.empty with
       regs := scalarRegs ++ arrRegs
+      «inputs» := AuthoredInputs.declarations.inputs
       outputs := (scalarRegs ++ arrRegs).map (fun r : RegDecl => r.name) }
     |>.addMem rfBank (syncRead := true)
     |>.addMem dmemBank (syncRead := true)
@@ -3167,20 +3203,6 @@ def declarations : Declarations :=
     |>.addMem tcontBank
     |>.addMem tcdomBank
     |>.addMem gdepthBank
-    |>.addInput mDonePort
-    |>.addInput mRdataPort
-    |>.addInput mBusyPort
-    |>.addInput gpDonePort
-    |>.addInput gpRdataPort
-    |>.addInput gpBusyPort
-    |>.addInput cmdValidPort
-    |>.addInput cmdIdxPort
-    |>.addInput cmdDataPort
-    |>.addInput resKillPort
-    |>.addInput doorbellPort
-    |>.addInput doorbellKeyPort
-    |>.addInput holdPort
-    |>.addInput scFailPort
 
 def coreRules : List Rule :=
   [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
