@@ -206,6 +206,7 @@ structure SuppressionMetadata where
 structure HardwareMetadata where
   designName : Name
   moduleName : String
+  sourceRendering : Option String := none
   declarations : Array DeclarationMetadata
   rules : Array RuleMetadata
   suppressions : Array SuppressionMetadata
@@ -2049,7 +2050,8 @@ private partial def statementSuppressions (fileName : String) (ruleName : Name) 
   | _ => #[]
 
 private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
-    (moduleName : TSyntax `ident) (registers : Array ScalarRegItem)
+    (moduleName : TSyntax `ident) (sourceRendering : Option String)
+    (registers : Array ScalarRegItem)
     (constants : Array ConstItem) (inputs : Array InputItem) (memories : Array MemoryItem)
     (packedMemories : Array PackedMemoryItem)
     (wires : Array WireItem) (packedRegisters : Array PackedRegItem)
@@ -2111,6 +2113,7 @@ private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
   return {
     designName := namespaceName ++ `design
     moduleName := moduleName.getId.toString
+    sourceRendering := sourceRendering
     declarations := declarations.insertionSort fun left right =>
       left.source.startByte < right.source.startByte
     rules := ruleMetadata
@@ -2268,6 +2271,17 @@ private def expandHardwareCommand
   commands := commands.push designCommand
   pure (Lean.mkNullNode commands)
 
+private partial def syntaxShapeEq : Syntax → Syntax → Bool
+  | .missing, .missing => true
+  | .atom _ left, .atom _ right => left == right
+  | .ident _ leftRaw left _ , .ident _ rightRaw right _ =>
+      leftRaw == rightRaw && left == right
+  | .node _ leftKind leftArgs, .node _ rightKind rightArgs =>
+      leftKind == rightKind && leftArgs.size == rightArgs.size &&
+        (List.range leftArgs.size).all fun index =>
+          syntaxShapeEq leftArgs[index]! rightArgs[index]!
+  | _, _ => false
+
 @[command_elab hardwareCmd] def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
@@ -2315,7 +2329,14 @@ private def expandHardwareCommand
       let packedMemoryWidths ← packedMemories.mapM (packedWidth ·.typeName)
       let packedInputWidths ← packedInputs.mapM (packedWidth ·.typeName)
       let packedWireWidths ← packedWires.mapM (packedWidth ·.typeName)
-      let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName
+      let sourceRendering ← match stx.reprint with
+        | none => pure none
+        | some rendered =>
+            match Parser.runParserCategory environment `command rendered with
+            | .error _ => pure none
+            | .ok reparsed =>
+                pure <| if syntaxShapeEq stx reparsed then some rendered else none
+      let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName sourceRendering
         registers constants inputs memories packedMemories wires packedRegisters packedInputs packedWires
         registerArrays packedMemoryWidths packedRegisterWidths packedInputWidths packedWireWidths domains rules
       let expanded ← liftMacroM <| expandHardwareCommand documentation moduleName items
@@ -2342,6 +2363,10 @@ syntax (name := showHardwareCmd) "#show_hardware" ident : command
       let some metadata := findHardwareMetadata? (← getEnv) designName
         | throwErrorAt designSyntax
             "no pretty-hardware metadata is registered for this Design"
+      if let some source := metadata.sourceRendering then
+        logInfoAt designSyntax <|
+          "pretty hardware (source round trip checked)\n" ++ source
+        return
       let declarationLines := metadata.declarations.toList.map fun declaration =>
         s!"  {declaration.name}: {declaration.kind.label} {declaration.width} bits"
       let ruleLines := metadata.rules.toList.map fun ruleMetadata =>
