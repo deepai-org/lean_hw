@@ -1174,6 +1174,27 @@ example : skippedPhysicalChecks.passed = false := by native_decide
   tick clkB
   tick clkB
 
+namespace DeeperGray
+
+/-- The same source-level topology selects every certified power-of-two depth;
+depth two is not embedded in the grammar or its generated aliases. -/
+system depthFour where
+  clock source_clk
+  clock sink_clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 4
+  island producer on source_clk module depthFour_producer := twoClock.producer
+  island consumer on sink_clk module depthFour_consumer := twoClock.consumer
+  connect q from producer to consumer
+  realize q with Cdc.grayFifo
+
+example : depthFour.q.fifoParameters.depth = 4 := rfl
+example : depthFour.q.storageShape.depth = 4 := rfl
+example : depthFour.application.artifact.emissionCheck.isOk := by native_decide
+
+end DeeperGray
+
 namespace MissingRealization
 
 /-- error: channel 'q' must have exactly one realization; found 0 -/
