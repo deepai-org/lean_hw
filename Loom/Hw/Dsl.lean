@@ -65,6 +65,33 @@ def synchronousRead : MemoryPolicy := { syncRead := true }
 
 end Memory
 
+/-! Discoverable system vocabulary. These are aliases over the existing
+multiclock values, not syntax-owned policies or implementations. -/
+
+namespace Clock
+
+def asynchronous : ClockRel := ClockRel.asynchronous
+def interleaved : ClockRel := ClockRel.interleaved
+def aligned (left right : ClockHandle) : ClockRel :=
+  ClockRel.aligned left.name right.name
+
+end Clock
+
+namespace Reset
+
+def together : SystemResetPolicy := .coordinated
+def independentFlush : SystemResetPolicy := .independentFlush
+
+end Reset
+
+namespace Cdc
+
+def synchronousFifo : RealizationKind := .synchronous
+def grayFifo : RealizationKind := .portableAsync
+def recoverableGrayFifo : RealizationKind := .recoveryPortableAsync
+
+end Cdc
+
 end Loom.Hw
 
 namespace Loom.Hw.Dsl
@@ -241,7 +268,14 @@ syntax:max (name := hwArrayWrite) "hw_array_write% " term:max term:max term:max 
 syntax:max (name := hwChannelObserve) "hw_channel_observe% " term:max ident : term
 syntax:max (name := hwSend) "hw_send% " term:max term:max : term
 syntax:max (name := hwConsume) "hw_consume% " term:max : term
+syntax:max (name := hwExactConst) "hw_exact_const% " ident : term
 syntax "[hwexpr| " hwexpr "]" : term
+
+@[term_elab hwExactConst] private def elabHwExactConst : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_exact_const% $name:ident) =>
+      ensureHasType expectedType? (.const name.getId [])
+  | _ => throwUnsupportedSyntax
 
 private def checkedHardwareLiteral (source : Syntax) (value : Nat)
     (expectedType? : Option Lean.Expr) : TermElabM Lean.Expr := do
@@ -2129,5 +2163,246 @@ macro_rules
         (design := $design)
         ({ wf := by native_decide } : Loom.Hw.FastEval.VerifiedSimulator $design)
         $count)
+
+/-! ## Checked multiclock system command
+
+This first surface accepts existing ordinary `Design` values. Inline island
+hardware reuses the `hardware` command in the next slice; topology and
+realization already lower through the same checked System APIs. -/
+
+declare_syntax_cat hwsystemitem
+
+private def systemSameLine : Lean.Parser.Parser where
+  info := Lean.Parser.epsilonInfo
+  fn := fun _ state =>
+    if Lean.Parser.checkTailLinebreak state.stxStack.back then
+      state.mkError "each system declaration must remain on one line"
+    else state
+
+@[combinator_formatter systemSameLine]
+private def systemSameLine.formatter : Lean.PrettyPrinter.Formatter := pure ()
+
+@[combinator_parenthesizer systemSameLine]
+private def systemSameLine.parenthesizer : Lean.PrettyPrinter.Parenthesizer := pure ()
+
+syntax (priority := low) ident systemSameLine ident : hwsystemitem
+syntax (priority := high) ident systemSameLine "$" "(" term ")" : hwsystemitem
+syntax (priority := high) ident systemSameLine ident systemSameLine ":" num systemSameLine ident num : hwsystemitem
+syntax (priority := high) ident systemSameLine ident "on" ident ":=" term : hwsystemitem
+syntax (priority := high) ident systemSameLine ident "from" ident "to" ident : hwsystemitem
+syntax (priority := high) ident systemSameLine ident "with" term : hwsystemitem
+syntax (name := systemCmd) (docComment)? ident ident "where"
+  withPosition(many1Indent(ppLine hwsystemitem)) : command
+
+private structure PrettyClock where
+  name : TSyntax `ident
+
+private structure PrettyChannel where
+  name : TSyntax `ident
+  width : TSyntax `num
+  depth : TSyntax `num
+
+private structure PrettyIsland where
+  name : TSyntax `ident
+  clock : TSyntax `ident
+  design : TSyntax `term
+
+private structure PrettyConnection where
+  channel : TSyntax `ident
+  source : TSyntax `ident
+  sink : TSyntax `ident
+
+private structure PrettyRealization where
+  channel : TSyntax `ident
+  kind : TSyntax `term
+
+private def duplicateNameCheck (kind : String) (names : Array (TSyntax `ident)) : MacroM Unit := do
+  for index in [:names.size] do
+    for later in [index + 1:names.size] do
+      if names[index]!.getId == names[later]!.getId then
+        Macro.throwErrorAt names[later]! s!"duplicate {kind} name '{names[later]!.getId}'"
+
+private def expandSystemCommand
+    (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
+    (namespaceName : Name) (systemName : TSyntax `ident)
+    (items : Array (TSyntax `hwsystemitem)) : MacroM Syntax := do
+  let mut clocks : Array PrettyClock := #[]
+  let mut relation : Option (TSyntax `term) := none
+  let mut resetPolicy : Option (TSyntax `term) := none
+  let mut channels : Array PrettyChannel := #[]
+  let mut islands : Array PrettyIsland := #[]
+  let mut connections : Array PrettyConnection := #[]
+  let mut realizations : Array PrettyRealization := #[]
+  let mut priorPhase := 0
+  for item in items do
+    let phase ← match item with
+      | `(hwsystemitem| $kind:ident $name:ident) =>
+          if kind.getId == `clock then
+            clocks := clocks.push ⟨name⟩; pure 0
+          else if kind.getId == `clocks then
+            if relation.isSome then Macro.throwErrorAt item "a system has exactly one clock relation"
+            relation := some ⟨name.raw⟩; pure 1
+          else if kind.getId == `reset then
+            if resetPolicy.isSome then Macro.throwErrorAt item "a system has exactly one reset policy"
+            resetPolicy := some ⟨name.raw⟩; pure 2
+          else Macro.throwErrorAt kind "expected `clock`, `clocks`, or `reset`"
+      | `(hwsystemitem| $kind:ident $($value:term)) =>
+          if kind.getId == `clocks then
+            if relation.isSome then Macro.throwErrorAt item "a system has exactly one clock relation"
+            relation := some value; pure 1
+          else if kind.getId == `reset then
+            if resetPolicy.isSome then Macro.throwErrorAt item "a system has exactly one reset policy"
+            resetPolicy := some value; pure 2
+          else Macro.throwErrorAt kind "only `clocks` and `reset` accept a Lean term escape"
+      | `(hwsystemitem| $kind:ident $name:ident : $width:num $depthKeyword:ident $depth:num) =>
+          unless kind.getId == `channel && depthKeyword.getId == `depth do
+            Macro.throwErrorAt kind "expected `channel name : width depth amount`"
+          if width.getNat == 0 then Macro.throwErrorAt width "channel width must be positive"
+          if depth.getNat == 0 then Macro.throwErrorAt depth "channel depth must be positive"
+          channels := channels.push ⟨name, width, depth⟩; pure 3
+      | `(hwsystemitem| $kind:ident $name:ident on $clock:ident := $design:term) =>
+          unless kind.getId == `island do
+            Macro.throwErrorAt kind "expected `island name on clock := design`"
+          islands := islands.push ⟨name, clock, design⟩; pure 4
+      | `(hwsystemitem| $kind:ident $channel:ident from $source:ident to $sink:ident) =>
+          unless kind.getId == `connect do
+            Macro.throwErrorAt kind "expected `connect channel from source to sink`"
+          connections := connections.push ⟨channel, source, sink⟩; pure 5
+      | `(hwsystemitem| $keyword:ident $channel:ident with $kind:term) =>
+          unless keyword.getId == `realize do
+            Macro.throwErrorAt keyword "expected `realize channel with implementation`"
+          realizations := realizations.push ⟨channel, kind⟩; pure 6
+      | _ => Macro.throwErrorAt item "unsupported system declaration"
+    if phase < priorPhase then
+      Macro.throwErrorAt item
+        "system items must appear as clocks, clock relation, reset, channels, islands, connections, then realizations"
+    priorPhase := phase
+  if clocks.isEmpty then Macro.throwErrorAt systemName "a system requires at least one clock"
+  let some clockRelation := relation
+    | Macro.throwErrorAt systemName "a system requires one `clocks` relation"
+  let some reset := resetPolicy
+    | Macro.throwErrorAt systemName "a system requires one explicit `reset` policy"
+  duplicateNameCheck "clock" (clocks.map (·.name))
+  duplicateNameCheck "channel" (channels.map (·.name))
+  duplicateNameCheck "island" (islands.map (·.name))
+  for island in islands do
+    unless clocks.any (fun clock => clock.name.getId == island.clock.getId) do
+      Macro.throwErrorAt island.clock s!"undeclared clock '{island.clock.getId}'"
+  for clock in clocks do
+    unless islands.any (fun island => island.clock.getId == clock.name.getId) do
+      Macro.throwErrorAt clock.name s!"clock '{clock.name.getId}' is not used by an island"
+  for connection in connections do
+    unless channels.any (fun channel => channel.name.getId == connection.channel.getId) do
+      Macro.throwErrorAt connection.channel s!"undeclared channel '{connection.channel.getId}'"
+    unless islands.any (fun island => island.name.getId == connection.source.getId) do
+      Macro.throwErrorAt connection.source s!"undeclared source island '{connection.source.getId}'"
+    unless islands.any (fun island => island.name.getId == connection.sink.getId) do
+      Macro.throwErrorAt connection.sink s!"undeclared sink island '{connection.sink.getId}'"
+  for channel in channels do
+    let routes := connections.filter (fun connection => connection.channel.getId == channel.name.getId)
+    if routes.size != 1 then
+      Macro.throwErrorAt channel.name
+        s!"channel '{channel.name.getId}' must have exactly one connection; found {routes.size}"
+    let choices := realizations.filter (fun choice => choice.channel.getId == channel.name.getId)
+    if choices.size != 1 then
+      Macro.throwErrorAt channel.name
+        s!"channel '{channel.name.getId}' must have exactly one realization; found {choices.size}"
+  for realization in realizations do
+    unless channels.any (fun channel => channel.name.getId == realization.channel.getId) do
+      Macro.throwErrorAt realization.channel s!"undeclared channel '{realization.channel.getId}'"
+
+  let mut commands : Array Syntax := #[]
+  let nestedName (localName : Name) := mkIdent (systemName.getId ++ localName)
+  for clock in clocks do
+    let sourceName := Syntax.mkStrLit clock.name.getId.toString
+    let declarationName := nestedName clock.name.getId
+    commands := commands.push (← `(command|
+      def $declarationName : Loom.Hw.ClockHandle := .named $sourceName))
+  for channel in channels do
+    let sourceName := Syntax.mkStrLit channel.name.getId.toString
+    let declarationName := nestedName channel.name.getId
+    commands := commands.push (← `(command|
+      def $declarationName : Loom.Hw.Chan $(channel.width) :=
+        ⟨$sourceName, $(channel.depth), .exchange⟩))
+  for island in islands do
+    let declarationName := nestedName island.name.getId
+    let mut designTerm := island.design
+    for channel in channels.reverse do
+      let channelName := nestedName channel.name.getId
+      designTerm ← `(let $(channel.name) := $channelName; let _ := $(channel.name); $designTerm)
+    commands := commands.push (← `(command|
+      def $declarationName : Loom.Hw.Design := $designTerm))
+    let handleName := nestedName
+      (Name.mkSimple (island.name.getId.toString ++ "Island"))
+    let clockName := nestedName island.clock.getId
+    let sourceName := Syntax.mkStrLit island.name.getId.toString
+    commands := commands.push (← `(command|
+      def $handleName : Loom.Hw.IslandHandle :=
+        .named $sourceName $declarationName $clockName))
+  for connection in connections do
+    let routeName := nestedName
+      (Name.mkSimple (connection.channel.getId.toString ++ "Route"))
+    let sourceHandle := nestedName
+      (Name.mkSimple (connection.source.getId.toString ++ "Island"))
+    let sinkHandle := nestedName
+      (Name.mkSimple (connection.sink.getId.toString ++ "Island"))
+    let channelName := nestedName connection.channel.getId
+    commands := commands.push (← `(command|
+      def $routeName :=
+        ($channelName).between $sourceHandle $sinkHandle))
+  let mut builder : TSyntax `term ← `(Loom.Hw.System.empty)
+  for island in islands do
+    let handleName := nestedName
+      (Name.mkSimple (island.name.getId.toString ++ "Island"))
+    builder ← `($builder |>.addIsland $handleName)
+  for connection in connections do
+    let routeName := nestedName
+      (Name.mkSimple (connection.channel.getId.toString ++ "Route"))
+    builder ← `($builder |>.addChannel $routeName)
+  let mut scopedClockRelation := clockRelation
+  for clock in clocks.reverse do
+    let clockName := nestedName clock.name.getId
+    scopedClockRelation ← `(let $(clock.name) := $clockName; let _ := $(clock.name); $scopedClockRelation)
+  builder ← `($builder |>.withClockRel ($scopedClockRelation : Loom.Hw.ClockRel))
+  builder ← `({ $builder with resetPolicy := ($reset : Loom.Hw.SystemResetPolicy) })
+  let builderName := nestedName `builder
+  commands := commands.push (← `(command|
+    def $builderName : Loom.Hw.SystemBuilder := $builder))
+  let valueName := nestedName `value
+  commands := commands.push (← `(command|
+    def $valueName : Loom.Hw.System := ($builderName).certify (by native_decide)))
+
+  let qualifiedSystem := mkIdent (namespaceName ++ systemName.getId)
+  let qualifiedValue := mkIdent
+    (namespaceName ++ systemName.getId ++ `value)
+  commands := commands.push (← `(command|
+    $[$documentation]?
+    def $systemName : Loom.Hw.System := hw_exact_const% $qualifiedValue))
+  let mut plan : TSyntax `term ← `(Loom.Hw.RealizationPlan.portable)
+  for realization in realizations do
+    let routeName := nestedName
+      (Name.mkSimple (realization.channel.getId.toString ++ "Route"))
+    plan ← `($plan |>.set $routeName ($(realization.kind) : Loom.Hw.RealizationKind))
+  let planName := nestedName `realizationPlan
+  commands := commands.push (← `(command|
+    def $planName : Loom.Hw.RealizationPlan := $plan))
+  let applicationName := nestedName `application
+  commands := commands.push (← `(command|
+    def $applicationName : Loom.Hw.System.Application $qualifiedSystem :=
+      (hw_exact_const% $qualifiedValue).realizeWith $planName (by native_decide)))
+  let certifiedName := nestedName `certified
+  commands := commands.push (← `(command|
+    abbrev $certifiedName : Loom.Hw.CertifiedSystem $qualifiedSystem :=
+      ($applicationName).certified))
+  pure (Lean.mkNullNode commands)
+
+@[command_elab systemCmd] def elabSystemCommand : CommandElab := fun stx => do
+  match stx with
+  | `($[$documentation:docComment]? $keyword:ident $systemName:ident where $items:hwsystemitem*) => do
+      unless keyword.getId == `system do throwErrorAt keyword "expected `system`"
+      let expanded ← liftMacroM <|
+        expandSystemCommand documentation (← getCurrNamespace) systemName items
+      elabCommand expanded
+  | _ => throwUnsupportedSyntax
 
 end Loom.Hw.Dsl
