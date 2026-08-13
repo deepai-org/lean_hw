@@ -381,34 +381,44 @@ namespace Loom.Hw.Dsl
 
 open Lean Macro Elab Term Meta Command Tactic
 
-/-- Parser for a local `@[hw_const]` or exported `@[hw_const Scope]`. -/
-syntax (name := hwConstAttrParser) "hw_const" (ppSpace ident)? : attr
+/-- Bare hardware constants persist across namespaces in their source module,
+but this extension deliberately exports no entries to importers. -/
+initialize hwConstLocalExt : Lean.LabelExtension ←
+  Lean.registerSimpleScopedEnvExtension {
+    name := `hwConstLocalExt
+    initial := #[]
+    addEntry := fun declarations declaration =>
+      if declarations.contains declaration then declarations else declarations.push declaration
+    exportEntry? := fun _ _ => none
+  }
 
-/-- Active compile-time constants. A bare `@[hw_const]` entry is deliberately
-file-local; `@[hw_const Scope]` is exported under `Scope` and becomes active
-only after `open scoped Scope`. -/
-initialize hwConstExt : Lean.LabelExtension ← do
-  let extension ← Lean.mkLabelExt `hwConstExt
+/-- Exported hardware constants live in an ordinary named scope and become
+active only after `open scoped Scope`. -/
+initialize hwConstScopedExt : Lean.LabelExtension ← do
+  let extension ← Lean.mkLabelExt `hwConstScopedExt
   registerBuiltinAttribute {
     ref := by exact decl_name%
     name := `hw_const
     descr := "allow this Nat declaration to be range-checked and lifted in hardware expressions"
     applicationTime := .afterTypeChecking
-    add := fun declaration syntax _kind => do
+    add := fun declaration attrSyntax _kind => do
       let info ← getConstInfo declaration
       unless info.type.isConstOf ``Nat do
         throwError "@[hw_const] requires a declaration of type Nat"
-      match syntax with
-      | `(attr| hw_const) =>
-          modifyEnv fun environment => extension.addLocalEntry environment declaration
-      | `(attr| hw_const $scope:ident) =>
+      match ← Attribute.Builtin.getIdent? attrSyntax with
+      | none =>
+          modifyEnv fun environment => hwConstLocalExt.addEntry environment declaration
+      | some scope =>
           modifyEnv fun environment =>
+            let environment := environment.registerNamespace scope.getId
             extension.addScopedEntry environment scope.getId declaration
-      | _ => throwErrorAt syntax "expected `@[hw_const]` or `@[hw_const Scope]`"
     erase := fun declaration => do
-      let current := extension.getState (← getEnv)
-      modifyEnv fun environment => extension.modifyState environment fun _ =>
-        current.erase declaration
+      let localEntries := hwConstLocalExt.getState (← getEnv)
+      let scopedEntries := extension.getState (← getEnv)
+      modifyEnv fun environment =>
+        let environment := hwConstLocalExt.modifyState environment fun _ =>
+          localEntries.erase declaration
+        extension.modifyState environment fun _ => scopedEntries.erase declaration
   }
   pure extension
 
@@ -686,7 +696,8 @@ private def coerceHardwareAtom (valueSyntax : Syntax) (expectedType? : Option Le
       let some declaration := value.getAppFn.constName?
         | throwErrorAt valueSyntax
             "a lifted hardware constant must be a named declaration marked @[hw_const]"
-      unless (hwConstExt.getState (← getEnv)).contains declaration do
+      unless (hwConstLocalExt.getState (← getEnv)).contains declaration ||
+          (hwConstScopedExt.getState (← getEnv)).contains declaration do
         throwErrorAt valueSyntax
           "Nat values are not implicitly hardware expressions; mark a shared constant @[hw_const] or use a design-local `const`"
       let some literalValue ← getNatValue? (← Meta.whnf value)

@@ -9,7 +9,7 @@ open Loom.Hw.Dsl
 open Loom.Hw
 open Tests.PrettyDsl.SharedConstants
 
-/-- A bare `@[hw_const]` is intentionally source-file local. Importing the
+/- A bare `@[hw_const]` is intentionally source-file local. Importing the
 module does not make it an ambient hardware-expression candidate. -/
 /--
 error: Nat values are not implicitly hardware expressions; mark a shared constant @[hw_const] or use a design-local `const`
