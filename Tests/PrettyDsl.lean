@@ -82,8 +82,26 @@ private def expectedTick : Act :=
 
 example : tick = expectedTick := rfl
 
+/--
+info: hardware satcounter
+declarations:
+  count: register 8 bits
+  sat: register 1 bits
+rules:
+  tick
+-/
+#guard_msgs in
+#show_hardware design
+
 /-! The teaching executor is an inspection view over the existing one-cycle
 semantics. This trace also pins the old-value/new-value presentation. -/
+/--
+info: rule tick: count 254 -> 255
+final registers:
+  count = 255
+  sat = 0
+-/
+#guard_msgs in
 #trace_cycle design with {} from { count := 254 }
 
 end Tests.PrettyDsl.Counter
@@ -139,6 +157,57 @@ example : declarations.regs.head?.map (fun declaration => declaration.init.toNat
   decide
 
 end Tests.PrettyDsl.Interface
+
+namespace Tests.PrettyDsl.Lints
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+namespace Reported
+
+/--
+warning: 'a' reads its start-of-cycle value; an earlier write takes effect next cycle
+---
+warning: 'a' may be written more than once in one cycle; the later write wins
+-/
+#guard_msgs in
+hardware lint_demo where
+  reg a : 8
+  reg b : 8
+  rule demonstrate := { a <- 1, b <- a, a <- 2 }
+
+end Reported
+
+namespace Suppressed
+
+#guard_msgs in
+hardware suppressed_lints where
+  reg x : 8
+  reg y : 8
+  rule first suppress multiple_write because "the second assignment is intentional" := {
+    x <- 1,
+    suppress read_after_write because "this rule deliberately samples the old value" in
+      y <- x,
+    x <- 2
+  }
+
+/--
+info: hardware suppressed_lints
+declarations:
+  x: register 8 bits
+  y: register 8 bits
+rules:
+  first
+lint suppressions:
+  first: suppress multiple_write because "the second assignment is intentional"
+  first: suppress read_after_write because "this rule deliberately samples the old value"
+-/
+#guard_msgs in
+#show_hardware design
+
+end Suppressed
+
+end Tests.PrettyDsl.Lints
 
 namespace Tests.PrettyDsl.Diagnostics
 

@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Declarations
 import Loom.Hw.Semantics
+import Lean.Elab.Command
 import Lean.Elab.Term
 
 /-!
@@ -46,7 +47,56 @@ end Loom.Hw
 
 namespace Loom.Hw.Dsl
 
-open Lean Macro Elab Term Meta
+open Lean Macro Elab Term Meta Command
+
+inductive DeclarationKind where
+  | register | stateRegister | input | wire | constant | stateValue
+  deriving Repr, DecidableEq, Inhabited
+
+structure SourceSpan where
+  fileName : String
+  startByte : Nat
+  endByte : Nat
+  deriving Repr, DecidableEq, Inhabited
+
+structure DeclarationMetadata where
+  name : Name
+  kind : DeclarationKind
+  width : Nat
+  source : SourceSpan
+  deriving Repr, DecidableEq, Inhabited
+
+structure RuleMetadata where
+  name : Name
+  source : SourceSpan
+  deriving Repr, DecidableEq, Inhabited
+
+structure SuppressionMetadata where
+  ruleName : Name
+  lintName : Name
+  reason : String
+  source : SourceSpan
+  deriving Repr, DecidableEq, Inhabited
+
+structure HardwareMetadata where
+  designName : Name
+  moduleName : String
+  declarations : Array DeclarationMetadata
+  rules : Array RuleMetadata
+  suppressions : Array SuppressionMetadata
+  deriving Repr, Inhabited
+
+initialize hardwareMetadataExt : SimplePersistentEnvExtension HardwareMetadata
+    (Array HardwareMetadata) ←
+  registerSimplePersistentEnvExtension {
+    addImportedFn := fun imported => imported.foldl (init := #[]) (fun all entries => all ++ entries)
+    addEntryFn := fun entries entry => entries.push entry
+  }
+
+def findHardwareMetadata? (environment : Environment) (designName : Name) :
+    Option HardwareMetadata :=
+  (hardwareMetadataExt.getState environment).findRev? (fun metadata =>
+    metadata.designName == designName)
 
 declare_syntax_cat hwexpr
 declare_syntax_cat hwstmt
@@ -282,6 +332,7 @@ syntax ident " <- " hwexpr : hwstmt
 syntax ident "[" "port" num "," hwexpr "]" " <- " hwexpr : hwstmt
 syntax "let" ident ":" num ":=" hwexpr : hwstmt
 syntax "let" ident ":=" hwexpr : hwstmt
+syntax "suppress" ident "because" str "in" hwstmt : hwstmt
 syntax "if " hwexpr " then " hwstmt " else " hwstmt : hwstmt
 syntax "if " hwexpr " then " hwstmt : hwstmt
 syntax "|" hwexpr "=>" hwstmt : hwcasearm
@@ -316,6 +367,7 @@ mutual
         Macro.throwErrorAt stx "a hardware let must be followed by another statement in the same block"
     | stx@`(hwstmt| let $_:ident := $_:hwexpr) =>
         Macro.throwErrorAt stx "a hardware let must be followed by another statement in the same block"
+    | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) => expandStmt body
     | `(hwstmt| if $condition:hwexpr then $yes:hwstmt else $no:hwstmt) => do
         `(Loom.Hw.Act.ite [hwexpr| $condition]
           $(← expandStmt yes) $(← expandStmt no))
@@ -374,6 +426,7 @@ syntax "output" "states" ident ":" "{" ident,* "}" ":=" ident : hwitem
 syntax "output" "states" ident ":" num "{" ident,* "}" : hwitem
 syntax "output" "states" ident ":" num "{" ident,* "}" ":=" ident : hwitem
 syntax "rule" ident ":=" hwstmt : hwitem
+syntax "rule" ident "suppress" ident "because" str ":=" hwstmt : hwitem
 syntax (name := hardwareCmd) "hardware" ident "where" hwitem* : command
 
 private structure ScalarRegItem where
@@ -399,10 +452,125 @@ private structure WireItem where
 private structure RuleItem where
   name : TSyntax `ident
   body : TSyntax `hwstmt
+  suppressedLint : Option Name := none
+  suppressionReason : Option String := none
 
 private structure StateDomain where
   register : TSyntax `ident
   members : Array (TSyntax `ident)
+
+private structure WrittenTarget where
+  name : Name
+  source : Syntax
+  overrideExpected : Bool
+
+private structure LintFinding where
+  source : Syntax
+  message : String
+
+private def knownLint (name : Name) : Bool :=
+  name == `read_after_write || name == `multiple_write || name == `unguarded_channel
+
+private partial def expressionReads : TSyntax `hwexpr → List (TSyntax `ident)
+  | `(hwexpr| $_:num) => []
+  | `(hwexpr| $name:ident) => [name]
+  | `(hwexpr| ($value:hwexpr)) => expressionReads value
+  | `(hwexpr| $name:ident[$_:num]) => [name]
+  | `(hwexpr| $name:ident[$_:num:$__:num]) => [name]
+  | `(hwexpr| $memory:ident[$address:hwexpr]) => memory :: expressionReads address
+  | `(hwexpr| $value:hwexpr[$_:num]) => expressionReads value
+  | `(hwexpr| $value:hwexpr[$_:num:$__:num]) => expressionReads value
+  | `(hwexpr| ~ $value:hwexpr) => expressionReads value
+  | `(hwexpr| zext $value:hwexpr to $_:num) => expressionReads value
+  | `(hwexpr| sext $value:hwexpr to $_:num) => expressionReads value
+  | `(hwexpr| $left:hwexpr * $right:hwexpr)
+  | `(hwexpr| $left:hwexpr / $right:hwexpr)
+  | `(hwexpr| $left:hwexpr % $right:hwexpr)
+  | `(hwexpr| $left:hwexpr + $right:hwexpr)
+  | `(hwexpr| $left:hwexpr - $right:hwexpr)
+  | `(hwexpr| $left:hwexpr << $right:hwexpr)
+  | `(hwexpr| $left:hwexpr >> $right:hwexpr)
+  | `(hwexpr| $left:hwexpr ++ $right:hwexpr)
+  | `(hwexpr| $left:hwexpr & $right:hwexpr)
+  | `(hwexpr| $left:hwexpr ^ $right:hwexpr)
+  | `(hwexpr| $left:hwexpr | $right:hwexpr)
+  | `(hwexpr| $left:hwexpr == $right:hwexpr)
+  | `(hwexpr| $left:hwexpr <u $right:hwexpr)
+  | `(hwexpr| $left:hwexpr <s $right:hwexpr) =>
+      expressionReads left ++ expressionReads right
+  | `(hwexpr| if $condition:hwexpr then $yes:hwexpr else $no:hwexpr) =>
+      expressionReads condition ++ expressionReads yes ++ expressionReads no
+  | _ => []
+
+private def readAfterWriteFindings (registers : Array Name)
+    (suppressed : Array Name) (written : List WrittenTarget)
+    (expression : TSyntax `hwexpr) : List LintFinding :=
+  if suppressed.contains `read_after_write then []
+  else
+    (expressionReads expression).filterMap fun (read : TSyntax `ident) =>
+      if registers.contains read.getId && written.any (fun prior => prior.name == read.getId) then
+        some ⟨read.raw,
+          s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle"⟩
+      else none
+
+private partial def analyzeStatement (registers : Array Name) (suppressed : Array Name)
+    (statement : TSyntax `hwstmt) (written : List WrittenTarget) :
+    List WrittenTarget × List LintFinding :=
+  match statement with
+  | `(hwstmt| skip) => (written, [])
+  | `(hwstmt| $target:ident <- $value:hwexpr) =>
+      let readFindings := readAfterWriteFindings registers suppressed written value
+      let prior := written.filter (fun earlier => earlier.name == target.getId)
+      let suppressMultiple := suppressed.contains `multiple_write
+      let multipleFinding :=
+        if !prior.isEmpty && !suppressMultiple && prior.any (fun earlier => !earlier.overrideExpected) then
+          [⟨target, s!"'{target.getId}' may be written more than once in one cycle; the later write wins"⟩]
+        else []
+      (written ++ [⟨target.getId, target, suppressMultiple⟩], readFindings ++ multipleFinding)
+  | `(hwstmt| $_:ident[port $_:num, $address:hwexpr] <- $value:hwexpr) =>
+      (written, readAfterWriteFindings registers suppressed written address ++
+        readAfterWriteFindings registers suppressed written value)
+  | `(hwstmt| let $_:ident : $_:num := $value:hwexpr)
+  | `(hwstmt| let $_:ident := $value:hwexpr) =>
+      (written, readAfterWriteFindings registers suppressed written value)
+  | `(hwstmt| suppress $lint:ident because $_:str in $body:hwstmt) =>
+      analyzeStatement registers (suppressed.push lint.getId) body written
+  | `(hwstmt| if $condition:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      let conditionFindings := readAfterWriteFindings registers suppressed written condition
+      let (yesWrites, yesFindings) := analyzeStatement registers suppressed yes written
+      let (noWrites, noFindings) := analyzeStatement registers suppressed no written
+      (yesWrites ++ noWrites, conditionFindings ++ yesFindings ++ noFindings)
+  | `(hwstmt| if $condition:hwexpr then $yes:hwstmt) =>
+      let conditionFindings := readAfterWriteFindings registers suppressed written condition
+      let (yesWrites, yesFindings) := analyzeStatement registers suppressed yes written
+      (yesWrites ++ written, conditionFindings ++ yesFindings)
+  | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) =>
+      let initialFindings := readAfterWriteFindings registers suppressed written scrutinee
+      arms.foldl (fun (allWrites, allFindings) arm =>
+        let body? := match arm with
+          | `(hwcasearm| | default => $body:hwstmt)
+          | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => some body
+          | _ => none
+        match body? with
+        | none => (allWrites, allFindings)
+        | some body =>
+            let (armWrites, armFindings) := analyzeStatement registers suppressed body written
+            (allWrites ++ armWrites, allFindings ++ armFindings)) ([], initialFindings)
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.foldl (fun (priorWrites, priorFindings) next =>
+        let (nextWrites, nextFindings) := analyzeStatement registers suppressed next priorWrites
+        (nextWrites, priorFindings ++ nextFindings)) (written, [])
+  | _ => (written, [])
+
+private def hardwareLintFindings (registers : Array ScalarRegItem)
+    (rules : Array RuleItem) : List LintFinding :=
+  let registerNames := registers.map (fun register => register.name.getId)
+  let (_, findings) := rules.foldl (fun (written, priorFindings) ruleItem =>
+    let suppressed := ruleItem.suppressedLint.toArray
+    let (nextWritten, nextFindings) :=
+      analyzeStatement registerNames suppressed ruleItem.body written
+    (nextWritten, priorFindings ++ nextFindings)) ([], [])
+  findings
 
 private def checkedValue (width value : TSyntax `num) : MacroM Nat := do
   let widthValue := width.getNat
@@ -422,6 +590,13 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
   | `(hwstmt| $_:ident[port $_:num, $_:hwexpr] <- $_:hwexpr) => pure ()
   | `(hwstmt| let $_:ident : $_:num := $_:hwexpr) => pure ()
   | `(hwstmt| let $_:ident := $_:hwexpr) => pure ()
+  | `(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) => do
+      unless knownLint lint.getId do
+        Macro.throwErrorAt lint
+          "unknown hardware lint; expected `read_after_write`, `multiple_write`, or `unguarded_channel`"
+      if reason.getString.isEmpty then
+        Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
+      validateWriteTargets writable body
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
       validateWriteTargets writable yes
       validateWriteTargets writable no
@@ -480,6 +655,8 @@ private partial def validateCases (domains : Array StateDomain) : TSyntax `hwstm
       validateCases domains yes
       validateCases domains no
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => validateCases domains yes
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
+      validateCases domains body
   | `(hwstmt| {$statements:hwstmt,*}) =>
       for statement in statements.getElems do
         validateCases domains statement
@@ -579,7 +756,14 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         constants := constants ++ stateConstants
         stateDomains := stateDomains.push ⟨name, members.getElems⟩
     | `(hwitem| rule $name:ident := $body:hwstmt) =>
-        rules := rules.push ⟨name, body⟩
+        rules := rules.push ⟨name, body, none, none⟩
+    | `(hwitem| rule $name:ident suppress $lint:ident because $reason:str := $body:hwstmt) =>
+        unless knownLint lint.getId do
+          Macro.throwErrorAt lint
+            "unknown hardware lint; expected `read_after_write`, `multiple_write`, or `unguarded_channel`"
+        if reason.getString.isEmpty then
+          Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
+        rules := rules.push ⟨name, body, some lint.getId, some reason.getString⟩
     | _ => Macro.throwErrorAt item "unsupported hardware declaration"
   let locals := registers.map (fun item => item.name) ++ constants.map (fun item => item.name) ++
     inputs.map (fun item => item.name) ++ wires.map (fun item => item.name) ++
@@ -599,72 +783,198 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     validateCases stateDomains ruleItem.body
   pure (registers, constants, inputs, wires, stateDomains, rules)
 
-macro_rules
+private def sourceSpan (fileName : String) (sourceSyntax : Syntax) : SourceSpan where
+  fileName := fileName
+  startByte := sourceSyntax.getPos?.map (fun position => position.byteIdx) |>.getD 0
+  endByte := sourceSyntax.getTailPos?.map (fun position => position.byteIdx) |>.getD 0
+
+private partial def statementSuppressions (fileName : String) (ruleName : Name) :
+    TSyntax `hwstmt → Array SuppressionMetadata
+  | statement@`(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) =>
+      #[⟨ruleName, lint.getId, reason.getString, sourceSpan fileName statement⟩] ++
+        statementSuppressions fileName ruleName body
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      statementSuppressions fileName ruleName yes ++ statementSuppressions fileName ruleName no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => statementSuppressions fileName ruleName yes
+  | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
+      arms.foldl (fun suppressions arm =>
+        match arm with
+        | `(hwcasearm| | default => $body:hwstmt)
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) =>
+            suppressions ++ statementSuppressions fileName ruleName body
+        | _ => suppressions) #[]
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.foldl (fun suppressions statement =>
+        suppressions ++ statementSuppressions fileName ruleName statement) #[]
+  | _ => #[]
+
+private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
+    (moduleName : TSyntax `ident) (registers : Array ScalarRegItem)
+    (constants : Array ConstItem) (inputs : Array InputItem) (wires : Array WireItem)
+    (domains : Array StateDomain) (rules : Array RuleItem) : HardwareMetadata := Id.run do
+  let mut declarations := #[]
+  for register in registers do
+    let kind := if domains.any (fun domain => domain.register.getId == register.name.getId)
+      then DeclarationKind.stateRegister else .register
+    declarations := declarations.push
+      ⟨register.name.getId, kind, register.width.getNat, sourceSpan fileName register.name⟩
+  for inputItem in inputs do
+    declarations := declarations.push
+      ⟨inputItem.name.getId, .input, inputItem.width.getNat, sourceSpan fileName inputItem.name⟩
+  for wireItem in wires do
+    declarations := declarations.push
+      ⟨wireItem.name.getId, .wire, wireItem.width.getNat, sourceSpan fileName wireItem.name⟩
+  for constant in constants do
+    let kind := if domains.any (fun domain =>
+        domain.members.any (fun member => member.getId == constant.name.getId))
+      then DeclarationKind.stateValue else .constant
+    declarations := declarations.push
+      ⟨constant.name.getId, kind, constant.width.getNat, sourceSpan fileName constant.name⟩
+  let ruleMetadata := rules.map fun ruleItem =>
+    ⟨ruleItem.name.getId, sourceSpan fileName ruleItem.name⟩
+  let mut suppressions := #[]
+  for ruleItem in rules do
+    match ruleItem.suppressedLint, ruleItem.suppressionReason with
+    | some lint, some reason =>
+        suppressions := suppressions.push
+          ⟨ruleItem.name.getId, lint, reason, sourceSpan fileName ruleItem.name⟩
+    | _, _ => pure ()
+    suppressions := suppressions ++ statementSuppressions fileName ruleItem.name.getId ruleItem.body
+  return {
+    designName := namespaceName ++ `design
+    moduleName := moduleName.getId.toString
+    declarations := declarations
+    rules := ruleMetadata
+    suppressions := suppressions
+  }
+
+private def expandHardwareCommand (moduleName : TSyntax `ident)
+    (items : Array (TSyntax `hwitem)) : MacroM Syntax := do
+  let (registers, constants, inputs, wires, _, rules) ← parseHardwareItems items
+  let mut commands : Array Syntax := #[]
+  for register in registers do
+    let sourceName := Syntax.mkStrLit register.name.getId.toString
+    let command ← `(command|
+      def $(register.name) : Loom.Hw.Reg $(register.width) :=
+        ⟨$sourceName⟩)
+    commands := commands.push command
+    let lemmaName := mkIdentFrom register.name
+      (Name.mkSimple (register.name.getId.toString ++ "_name"))
+    let lemmaCommand ← `(command|
+      @[simp] theorem $lemmaName : $(register.name).name = $sourceName := rfl)
+    commands := commands.push lemmaCommand
+  for inputItem in inputs do
+    let sourceName := Syntax.mkStrLit inputItem.name.getId.toString
+    let command ← `(command|
+      def $(inputItem.name) : Loom.Hw.Input $(inputItem.width) := ⟨$sourceName⟩)
+    commands := commands.push command
+    let lemmaName := mkIdentFrom inputItem.name
+      (Name.mkSimple (inputItem.name.getId.toString ++ "_name"))
+    let lemmaCommand ← `(command|
+      @[simp] theorem $lemmaName : $(inputItem.name).name = $sourceName := rfl)
+    commands := commands.push lemmaCommand
+  for constant in constants do
+    let command ← `(command|
+      def $(constant.name) : Loom.Hw.Expr $(constant.width) :=
+        hw_lit% $(constant.value))
+    commands := commands.push command
+  for wireItem in wires do
+    let command ← `(command|
+      def $(wireItem.name) : Loom.Hw.Expr $(wireItem.width) := [hwexpr| $(wireItem.value)])
+    commands := commands.push command
+  for ruleItem in rules do
+    let command ← `(command|
+      def $(ruleItem.name) : Loom.Hw.Act := [hwstmt| $(ruleItem.body)])
+    commands := commands.push command
+  let mut declarations : TSyntax `term ← `(Loom.Hw.Declarations.empty)
+  for register in registers do
+    if register.exported then
+      declarations ← `($declarations |>.addReg $(register.name)
+        (BitVec.ofNat $(register.width) $(quote register.init)) (exported := true))
+    else
+      declarations ← `($declarations |>.addReg $(register.name)
+        (BitVec.ofNat $(register.width) $(quote register.init)))
+  for inputItem in inputs do
+    declarations ← `($declarations |>.addWireInput $(inputItem.name))
+  for wireItem in wires do
+    let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
+    declarations ← `($declarations |>.addCombOutput $sourceName $(wireItem.name))
+  let declarationsName := mkIdentFrom moduleName `declarations
+  let declarationsCommand ← `(command|
+    def $declarationsName : Loom.Hw.Declarations := $declarations)
+  commands := commands.push declarationsCommand
+  let mut ruleList : TSyntax `term ← `([])
+  for ruleItem in rules.reverse do
+    let sourceName := Syntax.mkStrLit ruleItem.name.getId.toString
+    ruleList ← `(⟨$sourceName, $(ruleItem.name)⟩ :: $ruleList)
+  let emittedName := Syntax.mkStrLit moduleName.getId.toString
+  let designName := mkIdentFrom moduleName `design
+  let designCommand ← `(command|
+    def $designName : Loom.Hw.Design :=
+      Loom.Hw.Design.ofDecls $emittedName $declarationsName $ruleList)
+  commands := commands.push designCommand
+  pure (Lean.mkNullNode commands)
+
+@[command_elab hardwareCmd] def elabHardwareCommand : CommandElab := fun stx => do
+  match stx with
   | `(hardware $moduleName:ident where $items:hwitem*) => do
-      let (registers, constants, inputs, wires, _, rules) ← parseHardwareItems items
-      let mut commands : Array Syntax := #[]
-      for register in registers do
-        let sourceName := Syntax.mkStrLit register.name.getId.toString
-        let command ← `(command|
-          def $(register.name) : Loom.Hw.Reg $(register.width) :=
-            ⟨$sourceName⟩)
-        commands := commands.push command
-        let lemmaName := mkIdentFrom register.name
-          (Name.mkSimple (register.name.getId.toString ++ "_name"))
-        let lemmaCommand ← `(command|
-          @[simp] theorem $lemmaName : $(register.name).name = $sourceName := rfl)
-        commands := commands.push lemmaCommand
-      for inputItem in inputs do
-        let sourceName := Syntax.mkStrLit inputItem.name.getId.toString
-        let command ← `(command|
-          def $(inputItem.name) : Loom.Hw.Input $(inputItem.width) := ⟨$sourceName⟩)
-        commands := commands.push command
-        let lemmaName := mkIdentFrom inputItem.name
-          (Name.mkSimple (inputItem.name.getId.toString ++ "_name"))
-        let lemmaCommand ← `(command|
-          @[simp] theorem $lemmaName : $(inputItem.name).name = $sourceName := rfl)
-        commands := commands.push lemmaCommand
-      for constant in constants do
-        let command ← `(command|
-          def $(constant.name) : Loom.Hw.Expr $(constant.width) :=
-            hw_lit% $(constant.value))
-        commands := commands.push command
-      for wireItem in wires do
-        let command ← `(command|
-          def $(wireItem.name) : Loom.Hw.Expr $(wireItem.width) := [hwexpr| $(wireItem.value)])
-        commands := commands.push command
-      for ruleItem in rules do
-        let command ← `(command|
-          def $(ruleItem.name) : Loom.Hw.Act := [hwstmt| $(ruleItem.body)])
-        commands := commands.push command
-      let mut declarations : TSyntax `term ← `(Loom.Hw.Declarations.empty)
-      for register in registers do
-        if register.exported then
-          declarations ← `($declarations |>.addReg $(register.name)
-            (BitVec.ofNat $(register.width) $(quote register.init)) (exported := true))
-        else
-          declarations ← `($declarations |>.addReg $(register.name)
-            (BitVec.ofNat $(register.width) $(quote register.init)))
-      for inputItem in inputs do
-        declarations ← `($declarations |>.addWireInput $(inputItem.name))
-      for wireItem in wires do
-        let sourceName := Syntax.mkStrLit wireItem.name.getId.toString
-        declarations ← `($declarations |>.addCombOutput $sourceName $(wireItem.name))
-      let declarationsName := mkIdentFrom moduleName `declarations
-      let declarationsCommand ← `(command|
-        def $declarationsName : Loom.Hw.Declarations := $declarations)
-      commands := commands.push declarationsCommand
-      let mut ruleList : TSyntax `term ← `([])
-      for ruleItem in rules.reverse do
-        let sourceName := Syntax.mkStrLit ruleItem.name.getId.toString
-        ruleList ← `(⟨$sourceName, $(ruleItem.name)⟩ :: $ruleList)
-      let emittedName := Syntax.mkStrLit moduleName.getId.toString
-      let designName := mkIdentFrom moduleName `design
-      let designCommand ← `(command|
-        def $designName : Loom.Hw.Design :=
-          Loom.Hw.Design.ofDecls $emittedName $declarationsName $ruleList)
-      commands := commands.push designCommand
-      pure (Lean.mkNullNode commands)
+      let (registers, constants, inputs, wires, domains, rules) ←
+        liftMacroM <| parseHardwareItems items
+      let namespaceName ← getCurrNamespace
+      let environment ← getEnv
+      let localNames := registers.map (fun item => item.name) ++
+        constants.map (fun item => item.name) ++ inputs.map (fun item => item.name) ++
+        wires.map (fun item => item.name) ++ rules.map (fun item => item.name)
+      for localName in localNames do
+        let fullName := namespaceName ++ localName.getId
+        if environment.contains fullName then
+          throwErrorAt localName s!"'{fullName}' has already been declared"
+      for handleName in registers.map (fun item => item.name) ++ inputs.map (fun item => item.name) do
+        let lemmaName := namespaceName ++
+          Name.mkSimple (handleName.getId.toString ++ "_name")
+        if environment.contains lemmaName then
+          throwErrorAt handleName s!"generated name lemma '{lemmaName}' has already been declared"
+      for generatedName in #[namespaceName ++ `declarations, namespaceName ++ `design] do
+        if environment.contains generatedName then
+          throwErrorAt moduleName s!"generated declaration '{generatedName}' has already been declared"
+      for finding in hardwareLintFindings registers rules do
+        logWarningAt finding.source finding.message
+      let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName
+        registers constants inputs wires domains rules
+      let expanded ← liftMacroM <| expandHardwareCommand moduleName items
+      elabCommand expanded
+      modifyEnv (hardwareMetadataExt.addEntry · metadata)
+  | _ => throwUnsupportedSyntax
+
+private def DeclarationKind.label : DeclarationKind → String
+  | .register => "register"
+  | .stateRegister => "state register"
+  | .input => "input"
+  | .wire => "combinational output"
+  | .constant => "constant"
+  | .stateValue => "state value"
+
+syntax (name := showHardwareCmd) "#show_hardware" ident : command
+
+@[command_elab showHardwareCmd] def elabShowHardware : CommandElab := fun stx => do
+  match stx with
+  | `(#show_hardware $designSyntax:ident) => do
+      let designName ← resolveGlobalConstNoOverload designSyntax
+      let some metadata := findHardwareMetadata? (← getEnv) designName
+        | throwErrorAt designSyntax
+            "no pretty-hardware metadata is registered for this Design"
+      let declarationLines := metadata.declarations.toList.map fun declaration =>
+        s!"  {declaration.name}: {declaration.kind.label} {declaration.width} bits"
+      let ruleLines := metadata.rules.toList.map fun ruleMetadata =>
+        s!"  {ruleMetadata.name}"
+      let suppressionLines := metadata.suppressions.toList.map fun suppression =>
+        s!"  {suppression.ruleName}: suppress {suppression.lintName} because \"{suppression.reason}\""
+      let lines :=
+        [s!"hardware {metadata.moduleName}", "declarations:"] ++ declarationLines ++
+        ["rules:"] ++ ruleLines ++
+        (if suppressionLines.isEmpty then [] else ["lint suppressions:"] ++ suppressionLines)
+      logInfoAt designSyntax (String.intercalate "\n" lines)
+  | _ => throwUnsupportedSyntax
 
 /-! ## One-cycle teaching trace
 
