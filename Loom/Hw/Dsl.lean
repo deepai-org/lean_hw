@@ -437,6 +437,19 @@ syntax:max (name := hwConsume) "hw_consume% " term:max : term
 syntax:max (name := hwExactConst) "hw_exact_const% " ident : term
 syntax "[hwexpr| " hwexpr "]" : term
 
+/-- Attach an editor quick fix without adding a second informational
+diagnostic. The ordinary warning/error remains the sole message; Lean's code
+action provider discovers this custom info leaf at the same source span. -/
+private def addSilentCodeAction (source : Syntax) (replacement title : String) :
+    CoreM Unit := do
+  let suggestion : Lean.Meta.Hint.Suggestion := {
+    suggestion := replacement
+    span? := some source
+    diffGranularity := .all
+    toCodeActionTitle? := some fun _ => title
+  }
+  discard <| Lean.Meta.Hint.mkSuggestionsMessage #[suggestion] source none false
+
 @[term_elab hwExactConst] private def elabHwExactConst : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_exact_const% $name:ident) =>
@@ -857,6 +870,18 @@ private def elaboratePackedFields (typeName : Name)
         let zeroBits ← Meta.mkAppM ``BitVec.ofNat #[elementWidth, .lit (.natVal 0)]
         let zero ← Meta.mkAppM ``Loom.Hw.Expr.lit #[zeroBits]
         Meta.mkAppM ``Loom.Hw.RegArray.dynRd #[memory, address, zero]
+      else if memoryType.isAppOfArity ``Loom.Hw.Reg 1 ||
+          memoryType.isAppOfArity ``Loom.Hw.Expr 1 then
+        let replacement? := do
+          let container ← memorySyntax.raw.reprint
+          let `(term| [hwexpr| $address:hwexpr]) := addressSyntax | none
+          let index ← address.raw.reprint
+          pure s!"({container} >> {index})[0]"
+        if let some replacement := replacement? then
+          liftM <| addSilentCodeAction memorySyntax replacement
+            "Rewrite dynamic bit select as shift and static select"
+        throwErrorAt memorySyntax
+          "dynamic bit select is not a core operation; shift by the typed index and select bit zero, for example `(x >> i)[0]`"
       else
         throwErrorAt memorySyntax
           "a dynamic hardware index is available only on a typed memory or register family; dynamic bit select is not supported"
@@ -1607,20 +1632,19 @@ private structure WrittenTarget where
 private structure LintFinding where
   source : Syntax
   message : String
-  codeAction? : Option (String × String) := none
+  codeAction? : Option (Syntax × String × String) := none
+  lint : Name := `unknown
 
-/-- Attach an editor quick fix without adding a second informational
-diagnostic. The ordinary warning/error remains the sole message; Lean's code
-action provider discovers this custom info leaf at the same source span. -/
-private def addSilentCodeAction (source : Syntax) (replacement title : String) :
-    CoreM Unit := do
-  let suggestion : Lean.Meta.Hint.Suggestion := {
-    suggestion := replacement
-    span? := some source
-    diffGranularity := .all
-    toCodeActionTitle? := some fun _ => title
-  }
-  discard <| Lean.Meta.Hint.mkSuggestionsMessage #[suggestion] source none false
+private def LintFinding.withSuppressionAction (finding : LintFinding)
+    (lint : Name) (statement : TSyntax `hwstmt) : LintFinding :=
+  let source := statement.raw.reprint.getD "<statement>"
+  { finding with codeAction? := some (statement,
+      s!"suppress {lint} because \"explain why this is intentional\" in {source}",
+      s!"Suppress {lint} with a required reason") }
+
+private def addSuppressionActions (statement : TSyntax `hwstmt)
+    (findings : List LintFinding) : List LintFinding :=
+  findings.map fun finding => finding.withSuppressionAction finding.lint statement
 
 private def knownLint (name : Name) : Bool :=
   name == `read_after_write || name == `multiple_write || name == `unguarded_channel
@@ -1665,7 +1689,7 @@ private def readAfterWriteFindings (registers : Array Name)
       if registers.contains read.getId && written.any (fun prior => prior.name == read.getId) then
         some ⟨read.raw,
           s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle",
-          none⟩
+          none, `read_after_write⟩
       else none
 
 private inductive ChannelGuardKind where
@@ -1710,7 +1734,7 @@ private partial def unguardedDataFindings (suppressed : Array Name)
         if !clean.isAtomic && clean.getString! == "data" then
           let endpoint := clean.getPrefix
           if guards.contains ⟨endpoint, .hasData⟩ then []
-          else [⟨expression, s!"'{endpoint}.data' is read without a dominating '{endpoint}.hasData' guard; an empty channel has no valid payload", none⟩]
+          else [⟨expression, s!"'{endpoint}.data' is read without a dominating '{endpoint}.hasData' guard; an empty channel has no valid payload", none, `unguarded_channel⟩]
         else []
   | `(hwexpr| ($value:hwexpr))
   | `(hwexpr| ~ $value:hwexpr)
@@ -1754,13 +1778,17 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
     List WrittenTarget × List LintFinding :=
   match statement with
   | `(hwstmt| skip) => (written, [])
-  | `(hwstmt| $target:ident <- $value:hwexpr) =>
-      let readFindings := expressionFindings registers suppressed guards written value
+  | statement@`(hwstmt| $target:ident <- $value:hwexpr) =>
+      let readFindings := addSuppressionActions statement
+        (expressionFindings registers suppressed guards written value)
       let prior := written.filter (fun earlier => earlier.name == target.getId)
       let suppressMultiple := suppressed.contains `multiple_write
       let multipleFinding :=
         if !prior.isEmpty && !suppressMultiple && prior.any (fun earlier => !earlier.overrideExpected) then
-          [⟨target, s!"'{target.getId}' may be written more than once in one cycle; the later write wins", none⟩]
+          [⟨target, s!"'{target.getId}' may be written more than once in one cycle; the later write wins",
+            some (statement,
+              s!"suppress multiple_write because \"explain why this is intentional\" in {statement.raw.reprint.getD "<statement>"}",
+              "Suppress multiple_write with a required reason"), `multiple_write⟩]
         else []
       (written ++ [⟨target.getId, target, suppressMultiple⟩], readFindings ++ multipleFinding)
   | `(hwstmt| $_:ident[port $_:num, $address:hwexpr] <- $value:hwexpr) =>
@@ -1777,7 +1805,7 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
             s!"send {payload.raw.reprint.getD "<payload>"} to {endpoint.getId.eraseMacroScopes} then skip"
           [⟨statement,
             s!"send to '{endpoint.getId.eraseMacroScopes}' is not dominated by its `canSend` guard; a full channel drops the payload",
-            some (replacement, "Guard channel send on acceptance")⟩]
+            some (statement, replacement, "Guard channel send on acceptance"), `unguarded_channel⟩]
       (written, expressionFindings registers suppressed guards written payload ++ guardFinding)
   | `(hwstmt| send $payload:hwexpr to $endpoint:ident then $body:hwstmt) =>
       let payloadFindings := expressionFindings registers suppressed guards written payload
@@ -1984,7 +2012,7 @@ private partial def deadDefaultFindings (domains : Array StateDomain) :
               if allEncodingsDeclared && allMembersCovered then
                 ⟨defaultArm,
                   "default arm is unreachable: the declared states cover every register encoding",
-                  none⟩ :: nested
+                  none, `unknown⟩ :: nested
               else nested
           | none => nested
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
@@ -2732,8 +2760,8 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
             throwErrorAt domain.register
               s!"generated state proof declaration '{generatedName}' has already been declared"
       for finding in hardwareLintFindings registers rules do
-        if let some (replacement, title) := finding.codeAction? then
-          liftCoreM <| addSilentCodeAction finding.source replacement title
+        if let some (actionSource, replacement, title) := finding.codeAction? then
+          liftCoreM <| addSilentCodeAction actionSource replacement title
         logWarningAt finding.source finding.message
       for ruleItem in rules do
         for finding in deadDefaultFindings domains ruleItem.body do
