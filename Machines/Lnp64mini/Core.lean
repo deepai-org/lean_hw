@@ -899,15 +899,15 @@ def rs3f : Expr 5 := .slice ir 36 5
 def rs4f : Expr 5 := .slice ir 31 5
 
 /-- imm_i = {{32{ir[45]}}, ir[45:14]} — sext of ir[45:14] (32 bits) to 64. -/
-def imm_i : Expr 64 := .sext (.slice ir 14 32) 64
+def imm_i : Expr 64 := [hwexpr| sext ir[45:14] to 64]
 /-- imm_s = sext ir[40:9]. -/
-def imm_s : Expr 64 := .sext (.slice ir 9 32) 64
+def imm_s : Expr 64 := [hwexpr| sext ir[40:9] to 64]
 /-- imm_j = sext ir[50:19]. -/
-def imm_j : Expr 64 := .sext (.slice ir 19 32) 64
+def imm_j : Expr 64 := [hwexpr| sext ir[50:19] to 64]
 
-def shamt_r : Expr 6 := .slice b 0 6
-def shamt_i : Expr 6 := .slice imm_i 0 6
-def pc8 : Expr 64 := .add pc (L64 8)
+def shamt_r : Expr 6 := [hwexpr| b[5:0]]
+def shamt_i : Expr 6 := [hwexpr| imm_i[5:0]]
+def pc8 : Expr 64 := [hwexpr| pc + 8]
 
 /-! `r1a`/`r2a` — the state-muxed shared read-port addresses
 (`(st == S_RD2) ? rs3f : rs1f`) — are **gone** (D19). The `S_RD` and
@@ -916,21 +916,19 @@ and one shared address net gave `a`/`sel_t` a single `rf[...]` expression
 with fan-out two — which no downstream tool can merge into a block-RAM
 read port. Each site now names its own field directly. -/
 
-def mem_ea_l : Expr 64 := .add a imm_i
-def mem_ea_s : Expr 64 := .add a imm_s
-def ld_widx : Expr 9 := .slice mem_ea_l 3 9
-def st_widx : Expr 9 := .slice mem_ea_s 3 9
-def ld_boff : Expr 3 := .slice mem_ea_l 0 3
-def st_boff : Expr 3 := .slice mem_ea_s 0 3
-def l_is_zp : Expr 1 := .ult mem_ea_l (L64 0x1000)
-def s_is_zp : Expr 1 := .ult mem_ea_s (L64 0x1000)
+def mem_ea_l : Expr 64 := [hwexpr| a + imm_i]
+def mem_ea_s : Expr 64 := [hwexpr| a + imm_s]
+def ld_widx : Expr 9 := [hwexpr| mem_ea_l[11:3]]
+def st_widx : Expr 9 := [hwexpr| mem_ea_s[11:3]]
+def ld_boff : Expr 3 := [hwexpr| mem_ea_l[2:0]]
+def st_boff : Expr 3 := [hwexpr| mem_ea_s[2:0]]
+def l_is_zp : Expr 1 := [hwexpr| mem_ea_l <u 0x1000]
+def s_is_zp : Expr 1 := [hwexpr| mem_ea_s <u 0x1000]
 /-- l_is_gp: (mem_ea_l[31:16]==0xE000) || (mem_ea_l[31:20]==0x0A0). -/
 def l_is_gp : Expr 1 :=
-  .or (.eq (.slice mem_ea_l 16 16) (.lit (BitVec.ofNat 16 0xE000)))
-      (.eq (.slice mem_ea_l 20 12) (.lit (BitVec.ofNat 12 0x0A0)))
+  [hwexpr| (mem_ea_l[31:16] == 0xe000) | (mem_ea_l[31:20] == 0x0a0)]
 def s_is_gp : Expr 1 :=
-  .or (.eq (.slice mem_ea_s 16 16) (.lit (BitVec.ofNat 16 0xE000)))
-      (.eq (.slice mem_ea_s 20 12) (.lit (BitVec.ofNat 12 0x0A0)))
+  [hwexpr| (mem_ea_s[31:16] == 0xe000) | (mem_ea_s[31:20] == 0x0a0)]
 
 /-! ### op predicates -/
 
@@ -955,8 +953,8 @@ def is_fence : Expr 1 := opAny [OP_FENCE,OP_FENCE_D1,OP_FENCE_D2,OP_FENCE_D3,OP_
 /-- is_sel: 0x40<=op<=0x45. -/
 def is_sel : Expr 1 := opAny [OP_SEL,OP_SEL_41,OP_SEL_42,OP_SEL_43,OP_SEL_44,OP_SEL_45]
 def is_div : Expr 1 := opAny [OP_DIV,OP_UDIV,OP_SREM,OP_UREM]
-def is_mulh : Expr 1 := .or (opIs OP_MULH) (opIs OP_MULHU)
-def div_sgn : Expr 1 := .or (opIs OP_DIV) (opIs OP_SREM)
+def is_mulh : Expr 1 := [hwexpr| $(opIs OP_MULH) | $(opIs OP_MULHU)]
+def div_sgn : Expr 1 := [hwexpr| $(opIs OP_DIV) | $(opIs OP_SREM)]
 
 /-! ### ALU (combinational mux chain) -/
 
@@ -964,16 +962,16 @@ def div_sgn : Expr 1 := .or (opIs OP_DIV) (opIs OP_SREM)
 def asr (x : Expr 64) (sh : Expr 6) : Expr 64 :=
   -- sign-preserving: emulate via (x >> sh) with sign fill.
   -- Loom .shr is logical; build arithmetic by mux on sign bit.
-  .mux (.eq (.slice x 63 1) (L1 1))
-    (.not (.shr (.not x) (.zext sh 64)))
-    (.shr x (.zext sh 64))
+  [hwexpr|
+    if x[63] == 1 then ~(~x >> zext sh to 64)
+    else x >> zext sh to 64]
 
 /-- ROL/ROR helper: `6'd0 - amt` (6-bit wrap). -/
-def negShamt (amt : Expr 6) : Expr 6 := .sub (.lit (BitVec.ofNat 6 0)) amt
+def negShamt (amt : Expr 6) : Expr 6 := [hwexpr| 0 - amt]
 
 /-- Ordinary low-half multiply is intentionally a direct combinational
 operator. High-half variants retain the area-oriented `S_MUL` shift-add path. -/
-def mulE : Expr 64 := .mul a b
+def mulE : Expr 64 := [hwexpr| a * b]
 
 /-- CTZ: lowest set bit index (64 if a==0). Downward scan, index 0 outermost
 — built as a balanced `priTree` (first-match-wins ⇒ lowest set bit still
