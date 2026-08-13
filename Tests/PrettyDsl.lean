@@ -630,6 +630,180 @@ example : grouped.realizationPlan.select grouped.responseRoute.key = .portableAs
 
 end Tests.PrettyDsl.GroupedRealization
 
+namespace Tests.PrettyDsl.MixedClocks
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+system mixedClocks where
+  clock cpuClock
+  clock busClock
+  clock debugClock
+  clocks $(Clock.alignGroups Clock.asynchronous [[cpuClock, busClock]])
+  reset Reset.together
+  island cpu on cpuClock where
+    output reg cpuSeen : 1
+  island bus on busClock where
+    output reg busSeen : 1
+  island debug on debugClock where
+    output reg debugSeen : 1
+
+example : mixedClocks.clockRel.accepts #[⟨["cpuClock", "busClock"]⟩] = true := by native_decide
+example : mixedClocks.clockRel.accepts #[⟨["debugClock"]⟩] = true := by native_decide
+example : mixedClocks.clockRel.accepts #[⟨["cpuClock"]⟩] = false := by native_decide
+example : mixedClocks.clockRel.accepts #[⟨["busClock"]⟩] = false := by native_decide
+example : mixedClocks.clockRel.accepts
+    #[⟨["cpuClock", "busClock", "debugClock"]⟩] = true := by native_decide
+
+end Tests.PrettyDsl.MixedClocks
+
+namespace Tests.PrettyDsl.ClockGroupDiagnostics
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+/-- error: an aligned clock group cannot be empty -/
+#guard_msgs in
+system emptyGroup where
+  clock clk
+  clocks $(Clock.alignGroups Clock.asynchronous [[]])
+  reset Reset.together
+  island node on clk where
+    output reg seen : 1
+
+/-- error: clock 'clkA' appears twice in one aligned group -/
+#guard_msgs in
+system duplicateGroupMember where
+  clock clkA
+  clocks $(Clock.alignGroups Clock.asynchronous [[clkA, clkA]])
+  reset Reset.together
+  island node on clkA where
+    output reg seen : 1
+
+/-- error: clock 'clkB' appears in more than one aligned group -/
+#guard_msgs in
+system overlappingGroups where
+  clock clkA
+  clock clkB
+  clock clkC
+  clocks $(Clock.alignGroups Clock.asynchronous [[clkA, clkB], [clkB, clkC]])
+  reset Reset.together
+  island nodeA on clkA where
+    output reg seenA : 1
+  island nodeB on clkB where
+    output reg seenB : 1
+  island nodeC on clkC where
+    output reg seenC : 1
+
+/-- error: undeclared clock 'missingClock' in aligned group -/
+#guard_msgs in
+system undeclaredGroupMember where
+  clock clk
+  clocks $(Clock.alignGroups Clock.asynchronous [[clk, missingClock]])
+  reset Reset.together
+  island node on clk where
+    output reg seen : 1
+
+namespace Singleton
+/--
+warning: singleton aligned clock group is redundant; unlisted clocks are already independent singletons
+-/
+#guard_msgs in
+system singletonGroup where
+  clock clk
+  clocks $(Clock.alignGroups Clock.asynchronous [[clk]])
+  reset Reset.together
+  island node on clk where
+    output reg seen : 1
+end Singleton
+
+end Tests.PrettyDsl.ClockGroupDiagnostics
+
+namespace Tests.PrettyDsl.RealizationDiagnostics
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+/-- error: alignment is a schedule assumption, not a timing-closure fact; the synchronous realization requires one shared physical clock. Select a certified crossing realization or use the same clock handle -/
+#guard_msgs in
+system alignedIsNotSameClock where
+  clock clkA
+  clock clkB
+  clocks $(Clock.aligned clkA clkB)
+  reset Reset.together
+  channel q : 8 depth 2
+  island source on clkA where
+    output reg sourceSeen : 1
+  island sink on clkB where
+    output reg sinkSeen : 1
+  connect q from source to sink
+  realize q with Cdc.synchronousFifo
+
+/-- error: portable Gray FIFO depth must be a power of two at least 2; declared 3 -/
+#guard_msgs in
+system invalidGrayDepth where
+  clock clkA
+  clock clkB
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 3
+  island source on clkA where
+    output reg sourceSeen : 1
+  island sink on clkB where
+    output reg sinkSeen : 1
+  connect q from source to sink
+  realize q with Cdc.grayFifo
+
+/-- error: independent-flush reset requires Cdc.recoverableGrayFifo on every channel -/
+#guard_msgs in
+system missingRecovery where
+  clock clkA
+  clock clkB
+  clocks Clock.asynchronous
+  reset Reset.independentFlush
+  channel q : 8 depth 2
+  island source on clkA where
+    output reg sourceSeen : 1
+  island sink on clkB where
+    output reg sinkSeen : 1
+  connect q from source to sink
+  realize q with Cdc.grayFifo
+
+/-- error: Cdc.recoverableGrayFifo requires Reset.independentFlush -/
+#guard_msgs in
+system needlessRecovery where
+  clock clkA
+  clock clkB
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 2
+  island source on clkA where
+    output reg sourceSeen : 1
+  island sink on clkB where
+    output reg sinkSeen : 1
+  connect q from source to sink
+  realize q with Cdc.recoverableGrayFifo
+
+namespace SameClock
+system sameClock where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 2
+  island source on clk where
+    output reg sourceSeen : 1
+  island sink on clk where
+    output reg sinkSeen : 1
+  connect q from source to sink
+  realize q with Cdc.synchronousFifo
+
+example : sameClock.realizationPlan.select sameClock.qRoute.key = .synchronous := by
+  native_decide
+example : sameClock.application.artifact.emissionCheck.isOk := by native_decide
+end SameClock
+
+end Tests.PrettyDsl.RealizationDiagnostics
+
 namespace Tests.PrettyDsl.PackedSystem
 
 open Loom.Hw

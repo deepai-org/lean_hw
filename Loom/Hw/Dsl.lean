@@ -75,6 +75,26 @@ def interleaved : ClockRel := ClockRel.interleaved
 def aligned (left right : ClockHandle) : ClockRel :=
   ClockRel.aligned left.name right.name
 
+private def intersect (left right : ClockRel) : ClockRel where
+  accepts := fun events => left.accepts events && right.accepts events
+  prefixClosed := by
+    intro first rest accepted
+    have parts := Bool.and_eq_true_iff.mp accepted
+    exact Bool.and_eq_true_iff.mpr
+      ⟨left.prefixClosed first rest parts.1,
+        right.prefixClosed first rest parts.2⟩
+
+private def alignGroup (base : ClockRel) : List ClockHandle → ClockRel
+  | [] => base
+  | first :: rest => rest.foldl
+      (fun relation clock => intersect relation (aligned first clock)) base
+
+/-- Add all-tick-together constraints within each group while retaining the
+base relation between groups and every unlisted clock. This is proof-schedule
+composition only; it does not select or authorize a physical realization. -/
+def alignGroups (base : ClockRel) (groups : List (List ClockHandle)) : ClockRel :=
+  groups.foldl alignGroup base
+
 end Clock
 
 namespace Reset
@@ -2395,6 +2415,54 @@ private def duplicateNameCheck (kind : String) (names : Array (TSyntax `ident)) 
       if names[index]!.getId == names[later]!.getId then
         Macro.throwErrorAt names[later]! s!"duplicate {kind} name '{names[later]!.getId}'"
 
+private def listElements (stx : Syntax) : Option (Array Syntax) := do
+  let args := stx.getArgs
+  guard (args.size == 3)
+  let middle := args[1]!
+  pure <| middle.getArgs.filter (fun item => !item.isAtom)
+
+/-- Recognize the documented `Clock.alignGroups base [[...], ...]` shape for
+source-local well-formedness diagnostics. Arbitrary clock-relation terms remain
+valid escapes and are checked only by their own library constructors. -/
+private def clockGroups? (relation : TSyntax `term) :
+    Option (Array (Array (TSyntax `ident))) := do
+  let appArgs := relation.raw.getArgs
+  guard (relation.raw.getKind == ``Lean.Parser.Term.app && appArgs.size == 2)
+  let function := appArgs[0]!
+  guard (function.isIdent && function.getId.toString.endsWith "Clock.alignGroups")
+  let arguments := appArgs[1]!.getArgs.filter (fun item => !item.isAtom)
+  guard (arguments.size == 2)
+  let groups ← listElements arguments[1]!
+  groups.mapM fun group => do
+    let members ← listElements group
+    members.mapM fun member => do
+      guard member.isIdent
+      pure ⟨member⟩
+
+private def validateClockGroups (declared : Array PrettyClock)
+    (relation : TSyntax `term) : MacroM Unit := do
+  let some groups := clockGroups? relation | pure ()
+  let mut seen : Array (TSyntax `ident) := #[]
+  for group in groups do
+    if group.isEmpty then
+      Macro.throwErrorAt relation "an aligned clock group cannot be empty"
+    let mut within : Array (TSyntax `ident) := #[]
+    for clock in group do
+      unless declared.any (fun item => item.name.getId == clock.getId) do
+        Macro.throwErrorAt clock s!"undeclared clock '{clock.getId}' in aligned group"
+      if within.any (fun prior => prior.getId == clock.getId) then
+        Macro.throwErrorAt clock s!"clock '{clock.getId}' appears twice in one aligned group"
+      if seen.any (fun prior => prior.getId == clock.getId) then
+        Macro.throwErrorAt clock s!"clock '{clock.getId}' appears in more than one aligned group"
+      within := within.push clock
+      seen := seen.push clock
+
+private def simpleTermName? (term : TSyntax `term) : Option Name :=
+  if term.raw.isIdent then some term.raw.getId else none
+
+private def realizationNameIs (realization : PrettyRealization) (suffix : String) : Bool :=
+  (simpleTermName? realization.kind).any (fun name => name.toString.endsWith suffix)
+
 private def expandSystemCommand
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
     (namespaceName : Name) (systemName : TSyntax `ident)
@@ -2481,6 +2549,7 @@ private def expandSystemCommand
   let some reset := resetPolicy
     | Macro.throwErrorAt systemName "a system requires one explicit `reset` policy"
   duplicateNameCheck "clock" (clocks.map (·.name))
+  validateClockGroups clocks clockRelation
   duplicateNameCheck "channel" (channels.map (·.name))
   duplicateNameCheck "island" (islands.map (·.name))
   for island in islands do
@@ -2508,6 +2577,33 @@ private def expandSystemCommand
   for realization in realizations do
     unless channels.any (fun channel => channel.name.getId == realization.channel.getId) do
       Macro.throwErrorAt realization.channel s!"undeclared channel '{realization.channel.getId}'"
+    let some connection := connections.find? (fun route =>
+      route.channel.getId == realization.channel.getId) | unreachable!
+    let some source := islands.find? (fun island =>
+      island.name.getId == connection.source.getId) | unreachable!
+    let some sink := islands.find? (fun island =>
+      island.name.getId == connection.sink.getId) | unreachable!
+    let some channel := channels.find? (fun declaration =>
+      declaration.name.getId == realization.channel.getId) | unreachable!
+    let distinctClocks := source.clock.getId != sink.clock.getId
+    if realizationNameIs realization "Cdc.synchronousFifo" && distinctClocks then
+      Macro.throwErrorAt realization.kind
+        "alignment is a schedule assumption, not a timing-closure fact; the synchronous realization requires one shared physical clock. Select a certified crossing realization or use the same clock handle"
+    let gray := realizationNameIs realization "Cdc.grayFifo"
+    let recoverable := realizationNameIs realization "Cdc.recoverableGrayFifo"
+    if gray || recoverable then
+      let depth := channel.depth.getNat
+      if depth < 2 || (exactAddrWidthLoop depth 1 0).isNone then
+        Macro.throwErrorAt channel.depth
+          s!"portable Gray FIFO depth must be a power of two at least 2; declared {depth}"
+    let resetName := simpleTermName? reset
+    let independent := resetName.any (fun name => name.toString.endsWith "Reset.independentFlush")
+    if independent && !recoverable then
+      Macro.throwErrorAt realization.kind
+        "independent-flush reset requires Cdc.recoverableGrayFifo on every channel"
+    if !independent && recoverable then
+      Macro.throwErrorAt realization.kind
+        "Cdc.recoverableGrayFifo requires Reset.independentFlush"
 
   let mut commands : Array Syntax := #[]
   let nestedName (localName : Name) := mkIdent (systemName.getId ++ localName)
@@ -2646,6 +2742,16 @@ private def expandSystemCommand
   match stx with
   | `($[$documentation:docComment]? $keyword:ident $systemName:ident where $items:hwsystemitem*) => do
       unless keyword.getId == `system do throwErrorAt keyword "expected `system`"
+      for item in items do
+        match item with
+        | `(hwsystemitem| $kind:ident $($relation:term)) =>
+            if kind.getId == `clocks then
+              if let some groups := clockGroups? relation then
+                for group in groups do
+                  if group.size == 1 then
+                    logWarningAt group[0]!
+                      "singleton aligned clock group is redundant; unlisted clocks are already independent singletons"
+        | _ => pure ()
       let expanded ← liftMacroM <|
         expandSystemCommand documentation (← getCurrNamespace) systemName items
       elabCommand expanded
