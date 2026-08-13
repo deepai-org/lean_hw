@@ -2027,21 +2027,25 @@ def s_gret : Expr 1 × Act := stArm S_GRET
 /-- `S_GC0`: the entry PC has arrived; latch it and ask for the domain word
 at +8. -/
 def s_gc0 : Expr 1 × Act := stArm S_GC0
-  (.ite mDone
-    (.seq (gateEntQReg.set mRdata)
-      (.seq (coreAddrReg.set (.add core_addr (.lit (BitVec.ofNat 32 8))))
-        (.seq (coreRdReg.set (L1 1)) (stReg.set (L5 S_GC1)))))
-    .skip)
+  [hwstmt|
+    if mDone then {
+      gateEntQReg <- mRdata,
+      coreAddrReg <- core_addr + 8,
+      coreRdReg <- 1,
+      stReg <- $(L5 S_GC1)
+    }]
 
 /-- `S_GC1`: the domain word has arrived. Latch it and commit the
 activation -- `pc` to the descriptor's entry, and the funnels (`tdom`,
 `tcont`, `tcdom`, `in_gate`) fire on `gateCommit` this cycle. -/
 def s_gc1 : Expr 1 × Act := stArm S_GC1
-  (.ite mDone
-    (.seq (gateDomQReg.set (.slice mRdata 0 8))
-      (.seq (.ite gateActValid (pcReg.set gate_ent_q) stepPc)
-        (.seq retireInc goF0)))
-    .skip)
+  [hwstmt|
+    if mDone then {
+      gateDomQReg <- mRdata[7:0],
+      if gateActValid then pcReg <- gate_ent_q else $stmt(stepPc),
+      $stmt(retireInc),
+      $stmt(goF0)
+    }]
 
 /-- **§17 `S_CS0`**: the target entry's flags word has arrived. A valid,
 free entry commits the send -- latch the flags and issue the handle write
