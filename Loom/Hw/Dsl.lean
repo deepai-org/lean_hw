@@ -30,6 +30,11 @@ register_option loom.hw.reconstructing : Bool := {
   descr := "internal: suppress authoring lints during faithful Design reconstruction"
 }
 
+register_option loom.hw.suppressDynamicCost : Bool := {
+  defValue := false
+  descr := "suppress a justified dynamic hardware-cost warning in pretty syntax"
+}
+
 /-!
 # Pretty hardware quotations
 
@@ -1002,6 +1007,11 @@ private def elaboratePackedFields (typeName : Name)
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
+private def warnDynamicCost (source : Syntax) (message : String) : TermElabM Unit := do
+  let options ← getOptions
+  unless loom.hw.suppressDynamicCost.get options || loom.hw.reconstructing.get options do
+    logWarningAt source message
+
 @[term_elab hwArrayWrite] def elabHwArrayWrite : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_array_write% $familySyntax:term $indexSyntax:term $valueSyntax:term) => do
@@ -1028,6 +1038,8 @@ private def elaboratePackedFields (typeName : Name)
       else
         unless indexType.isAppOfArity ``Loom.Hw.Expr 1 do
           throwErrorAt indexSyntax "dynamic register-family index must be a hardware expression"
+        warnDynamicCost indexSyntax
+          "dynamic register-family write may synthesize a decoder; use a reducible Nat or Fin index when selecting one static member"
         Meta.mkAppM ``Loom.Hw.RegArray.dynSet #[family, index, value]
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
@@ -1205,6 +1217,8 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
         let addressType ← Meta.whnf (← Meta.inferType address)
         unless addressType.isAppOfArity ``Loom.Hw.Expr 1 do
           throwErrorAt addressSyntax "dynamic register-family index must be a hardware expression"
+        warnDynamicCost addressSyntax
+          "dynamic register-family read may synthesize a selection mux; use a reducible Nat or Fin index when selecting one static member"
         let elementWidth := memoryType.getAppArgs[0]!
         let zeroBits ← Meta.mkAppM ``BitVec.ofNat #[elementWidth, .lit (.natVal 0)]
         let zero ← Meta.mkAppM ``Loom.Hw.Expr.lit #[zeroBits]
@@ -1294,9 +1308,15 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
               liftStatic amount
             else if rightType.isAppOfArity ``Loom.Hw.Reg 1 then
               let read ← Meta.mkAppM ``Loom.Hw.Reg.rd #[rightValue]
-              ensureDynamicWidth read
-            else
-              ensureDynamicWidth rightValue
+              let validated ← ensureDynamicWidth read
+              warnDynamicCost rightSyntax
+                "dynamic shift amount may synthesize a barrel shifter; use a reducible Nat for a static shift"
+              pure validated
+            else do
+              let validated ← ensureDynamicWidth rightValue
+              warnDynamicCost rightSyntax
+                "dynamic shift amount may synthesize a barrel shifter; use a reducible Nat for a static shift"
+              pure validated
       let constructor ← if operation.getString == "shl" then pure ``Loom.Hw.Expr.shl
         else if operation.getString == "shr" then pure ``Loom.Hw.Expr.shr
         else throwErrorAt operation "unknown shift operation"
@@ -1719,7 +1739,11 @@ mutual
         Macro.throwErrorAt stx "a hardware let must be followed by another statement in the same block"
     | stx@`(hwstmt| let $_:ident := $_:hwexpr) =>
         Macro.throwErrorAt stx "a hardware let must be followed by another statement in the same block"
-    | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) => expandStmt body
+    | `(hwstmt| suppress $lint:ident because $_:str in $body:hwstmt) => do
+        let expanded ← expandStmt body
+        if lint.getId == `dynamic_cost then
+          `(set_option loom.hw.suppressDynamicCost true in $expanded)
+        else pure expanded
     | `(hwstmt| for $binder:ident in $values:term generate $body:hwstmt) => do
         let values : TSyntax `term :=
           if values.raw.getKind.toString.endsWith "pseudo.antiquot" then
@@ -2122,7 +2146,8 @@ private structure LintFinding where
   lint : Name := `unknown
 
 private def knownLint (name : Name) : Bool :=
-  name == `read_after_write || name == `multiple_write || name == `unguarded_channel
+  name == `read_after_write || name == `multiple_write || name == `unguarded_channel ||
+    name == `dynamic_cost
 
 private def cleanHardwareName (name : Name) : Name := name.eraseMacroScopes
 
@@ -2598,7 +2623,7 @@ private partial def validateWriteTargets (writable : Array Name)
   | `(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) => do
       unless knownLint lint.getId do
         Macro.throwErrorAt lint
-          "unknown hardware lint; expected `read_after_write`, `multiple_write`, or `unguarded_channel`"
+          "unknown hardware lint; expected `read_after_write`, `multiple_write`, `unguarded_channel`, or `dynamic_cost`"
       if reason.getString.isEmpty then
         Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
       validateWriteTargets writable deferExternal body
@@ -3043,7 +3068,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem))
           Macro.throwErrorAt kind "expected `rule name suppress lint because \"reason\" := ...`"
         unless knownLint lint.getId do
           Macro.throwErrorAt lint
-            "unknown hardware lint; expected `read_after_write`, `multiple_write`, or `unguarded_channel`"
+            "unknown hardware lint; expected `read_after_write`, `multiple_write`, `unguarded_channel`, or `dynamic_cost`"
         if reason.getString.isEmpty then Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
         rules := rules.push ⟨name, body, some lint.getId, some reason.getString⟩
     | _ => Macro.throwErrorAt item "unsupported hardware declaration"
@@ -3329,8 +3354,14 @@ private def expandHardwareCommand
         [hwexpr| $(wireItem.value)])
     commands := commands.push command
   for ruleItem in rules do
+    let action ← match ruleItem.suppressedLint with
+      | some lint =>
+          if lint == `dynamic_cost then
+            `(term| set_option loom.hw.suppressDynamicCost true in [hwstmt| $(ruleItem.body)])
+          else `(term| [hwstmt| $(ruleItem.body)])
+      | none => `(term| [hwstmt| $(ruleItem.body)])
     let command ← `(command|
-      def $(ruleItem.name) : Loom.Hw.Act := [hwstmt| $(ruleItem.body)])
+      def $(ruleItem.name) : Loom.Hw.Act := $action)
     commands := commands.push command
   let mut declarations : TSyntax `term ← `(Loom.Hw.Declarations.empty)
   for register in registers do

@@ -280,6 +280,8 @@ example : ([hwexpr| a + b * 3] : Expr 8) =
 example : ([hwexpr| (a + b) << 2] : Expr 8) =
     Expr.shl (Expr.add a.rd b.rd) (.lit 2) := rfl
 example : ([hwexpr| a << staticShift] : Expr 8) = Expr.shl a.rd (.lit 3) := rfl
+/-- warning: dynamic shift amount may synthesize a barrel shifter; use a reducible Nat for a static shift -/
+#guard_msgs in
 example (dynamicShift : Reg 8) : Expr 8 := [hwexpr| a >> dynamicShift]
 
 /-- error: dynamic shift amount is 4 bits but the shifted value is 8 bits; Loom's core requires equal widths -/
@@ -826,7 +828,7 @@ hardware family_demo where
   output reg slots : 8 [4] := (fun i => if i.val = 0 then 7 else 0)
   output reg observed : 8
 
-  rule access := {
+  rule access suppress dynamic_cost because "the example intentionally demonstrates dynamic selection" := {
     slots[index] <- value,
     observed <- slots[index]
   }
@@ -834,6 +836,16 @@ hardware family_demo where
 example : slots = (⟨"slots"⟩ : RegArray 8 4) := rfl
 example : ([hwexpr| slots[2]] : Expr 8) = slots.rd ⟨2, by decide⟩ := rfl
 example : [hwstmt| slots[2] <- 9] = slots.set ⟨2, by decide⟩ (.lit 9#8) := rfl
+/-- warning: dynamic register-family read may synthesize a selection mux; use a reducible Nat or Fin index when selecting one static member -/
+#guard_msgs in
+example : Expr 8 := [hwexpr| slots[index]]
+/-- warning: dynamic register-family write may synthesize a decoder; use a reducible Nat or Fin index when selecting one static member -/
+#guard_msgs in
+example : Act := [hwstmt| slots[index] <- value]
+#guard_msgs in
+example : Act :=
+  [hwstmt| suppress dynamic_cost because "the indexed write is intentional" in
+    slots[index] <- value]
 example : declarations.regs.map (fun declaration => declaration.name) =
     ["observed", "slots0", "slots1", "slots2", "slots3"] := by decide
 example : declarations.outputs =

@@ -300,8 +300,9 @@ The equal-width core operand is not exposed as ceremony for static shifts.
 ordinary local, design-local `const` value, or active `@[hw_const]` directly in
 shift position; lowering re-lifts that compile-time value to the required
 `w`-bit operand after the ordinary range check. A
-genuinely dynamic amount remains an `Expr w`, making the potential barrel
-shifter visible in its type and cost diagnostics. When a dynamic selector
+genuinely dynamic amount remains an `Expr w`; the enabled-by-default
+`dynamic_cost` warning makes the potential barrel shifter visible at its
+source token. When a dynamic selector
 `x[i]` is rejected and `i` already has width `w`, its diagnostic shows the
 literal rewrite `(x >> i)[0]`.
 
@@ -467,10 +468,10 @@ suppress unguarded_channel because "intentional best-effort telemetry" in
 ```
 
 The same form and required nonempty reason string applies to
-`read_after_write` and `multiple_write`. It suppresses only the named finding
-at that statement and remains visible in inspection metadata. It cannot
-suppress structural errors such as two possible sends/consumes to one endpoint
-in an event.
+`read_after_write`, `multiple_write`, and `dynamic_cost`. It suppresses only
+the named finding at that statement and remains visible in inspection
+metadata. It cannot suppress structural errors such as two possible
+sends/consumes to one endpoint in an event.
 
 The canonical producer form is the symmetric guarded transaction:
 
@@ -1195,8 +1196,8 @@ elaboration distinguishes two useful cases by type:
   write network.
 
 Both are valid hardware operations, but they can have very different circuit
-cost. The dynamic form should receive a source-local informational cost note
-when a static index may have been intended. This distinction is derived from
+cost. The dynamic form receives a source-local `dynamic_cost` warning when a
+static index may have been intended. This distinction is derived from
 the types, not from different punctuation.
 
 A generate binder may hygienically shadow an imported non-signal Lean name.
