@@ -88,6 +88,9 @@ private def expectedTick : Act :=
 
 example : tick = expectedTick := rfl
 
+example : design.name = "satcounter" := by
+  hw_unfold design
+
 /--
 info: hardware satcounter
 declarations:

@@ -3,6 +3,7 @@
 import Loom.Hw.Declarations
 import Loom.Hw.Semantics
 import Lean.Elab.Command
+import Lean.Elab.Tactic
 import Lean.Elab.Term
 
 /-!
@@ -47,7 +48,7 @@ end Loom.Hw
 
 namespace Loom.Hw.Dsl
 
-open Lean Macro Elab Term Meta Command
+open Lean Macro Elab Term Meta Command Tactic
 
 /-- Ordered elaboration-time action generation. The result has exactly the
 same left-to-right `Act.seq` shape as a handwritten brace block. -/
@@ -997,6 +998,28 @@ syntax (name := showHardwareCmd) "#show_hardware" ident : command
         ["rules:"] ++ ruleLines ++
         (if suppressionLines.isEmpty then [] else ["lint suppressions:"] ++ suppressionLines)
       logInfoAt designSyntax (String.intercalate "\n" lines)
+  | _ => throwUnsupportedSyntax
+
+syntax (name := hwUnfoldTactic) "hw_unfold" ident : tactic
+
+@[tactic hwUnfoldTactic] def elabHwUnfold : Tactic := fun stx => do
+  match stx with
+  | `(tactic| hw_unfold $designSyntax:ident) => withMainContext do
+      let designName ← resolveGlobalConstNoOverload designSyntax
+      let some metadata := findHardwareMetadata? (← getEnv) designName
+        | throwErrorAt designSyntax
+            "no pretty-hardware metadata is registered for this Design"
+      let namespaceName := designName.getPrefix
+      let generatedNames :=
+        #[designName, namespaceName ++ `declarations] ++
+        metadata.rules.map (fun ruleMetadata => namespaceName ++ ruleMetadata.name) ++
+        metadata.declarations.map (fun declaration => namespaceName ++ declaration.name)
+      let simpArguments : Array (TSyntax ``Lean.Parser.Tactic.simpLemma) ←
+        generatedNames.mapM fun name =>
+          let identifier := mkIdent name
+          `(Lean.Parser.Tactic.simpLemma| $identifier:term)
+      let tactic ← `(tactic| simp [$simpArguments,*])
+      evalTactic tactic
   | _ => throwUnsupportedSyntax
 
 /-! ## One-cycle teaching trace
