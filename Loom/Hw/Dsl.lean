@@ -2851,6 +2851,12 @@ def showSystemTiming {system : Loom.Hw.System}
     (application : Loom.Hw.System.Application system) : IO Unit :=
   IO.println application.timingReport
 
+def showSystemChannel {system : Loom.Hw.System}
+    (application : Loom.Hw.System.Application system) (channel : String) : IO Unit := do
+  let some group := application.timingGroups.find? fun group => group.key.channel == channel
+    | throw <| IO.userError s!"system has no realized channel named '{channel}'"
+  IO.println group.describe
+
 def showSystemPhysical {system : Loom.Hw.System}
     (application : Loom.Hw.System.Application system) : IO Unit := do
   let artifacts := application.artifact.realized.artifacts
@@ -2866,11 +2872,18 @@ syntax (name := showSystemCmd) "#show_system" ident (ident)? : command
 syntax (name := showSystemReportCmd) "#show_system" ident ident term:max : command
 
 macro_rules
-  | `(#show_system $system:ident $view:ident $report:term) => do
-      unless view.getId == `backend do
-        Macro.throwErrorAt view "expected `backend` before a physical-check report"
+  | `(#show_system $system:ident $view:ident $value:term) => do
       let application := mkIdentFrom system (system.getId ++ `application)
-      `(#eval Loom.Hw.Dsl.showSystemBackend $application $report)
+      if view.getId == `backend then
+        `(#eval Loom.Hw.Dsl.showSystemBackend $application $value)
+      else if view.getId == `channel then
+        match value with
+        | `(term| $channel:ident) =>
+            let channelName := Syntax.mkStrLit channel.getId.toString
+            `(#eval Loom.Hw.Dsl.showSystemChannel $application $channelName)
+        | _ => Macro.throwErrorAt value "expected a declared channel name"
+      else
+        Macro.throwErrorAt view "expected `channel` or `backend` before the view argument"
   | `(#show_system $system:ident) =>
       `(#eval Loom.Hw.Dsl.showSystemLogical $system)
   | `(#show_system $system:ident $view:ident) => do
