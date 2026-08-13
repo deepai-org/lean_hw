@@ -770,6 +770,32 @@ example : declarations.combOutputs.map (fun declaration =>
     (declaration.name, declaration.width)) = [("observed", 8), ("observed_tag", 3)] := by
   decide
 
+/-! A scalar-core oracle pins the packed command to the existing representation,
+not merely to matching examples. Since compilation and rendering consume only
+this `Design`, the equality also makes the packed and scalar RTL paths
+definitionally identical. -/
+private def scalarResetPending : Reg 8 := ⟨"reset_pending"⟩
+private def scalarPending : Reg 8 := ⟨"pending"⟩
+private def scalarIncoming : Input 8 := ⟨"incoming"⟩
+
+private def scalarDeclarations : Declarations :=
+  Declarations.empty
+    |>.addReg scalarResetPending (Header.packBits resetHeader)
+    |>.addReg scalarPending (Header.packBits { tag := 2, address := 9 }) (exported := true)
+    |>.addWireInput scalarIncoming
+    |>.addCombOutput "observed" scalarPending.rd
+    |>.addCombOutput "observed_tag" (Expr.slice scalarPending.rd Header.tagField.lo 3)
+
+private def scalarCapture : Act :=
+  Act.seq (scalarPending.set scalarIncoming.rd)
+    (.writeSlice 8 scalarPending.name Header.tagField.lo 3
+      Header.tagField.inBounds (Expr.slice scalarIncoming.rd Header.tagField.lo 3))
+
+private def scalarDesign : Design :=
+  Design.ofDecls "packed_demo" scalarDeclarations [⟨"capture", scalarCapture⟩]
+
+example : design = scalarDesign := rfl
+
 /--
 info: pretty hardware (source round trip checked)
 hardware packed_demo where
