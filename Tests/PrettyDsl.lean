@@ -267,6 +267,23 @@ example : declarations.outputs = ["st", "seen"] := by decide
 example : declarations.regs.head?.map (fun declaration => declaration.init.toNat) = some 0 := by
   decide
 
+example (state : St) (declared : st_declared state) :
+    st.rd.eval state = Idle.eval state ∨
+      st.rd.eval state = Run.eval state ∨
+      st.rd.eval state = Done.eval state := by
+  rcases st_declared_cases declared with idle | run | done
+  · exact Or.inl idle
+  · exact Or.inr (Or.inl run)
+  · exact Or.inr (Or.inr done)
+
+/-- The unconditional split names every declared encoding and retains one
+explicit illegal-encoding branch. -/
+example (state : St) :
+    (st.rd.eval state = Idle.eval state ∨
+      st.rd.eval state = Run.eval state ∨
+      st.rd.eval state = Done.eval state) ∨
+      ¬ st_declared state := st_cases state
+
 end Tests.PrettyDsl.Fsm
 
 namespace Tests.PrettyDsl.PackedMemory
