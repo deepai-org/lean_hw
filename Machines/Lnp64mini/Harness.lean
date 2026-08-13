@@ -184,8 +184,8 @@ def prepareDerivedView : IO DerivedView :=
 def derivedHpReq (view : DerivedView) (fs : FastSt) :
     Bool × Bool × Nat × BitVec 64 :=
   let state := view.st.readNat fs
-  let owns := view.running.readNat fs = 1 && state ≠ S_TRAP &&
-    state ≠ S_WAIT && state ≠ S_PAUSE
+  let owns := view.running.readNat fs = 1 && state ≠ stateEncoding S_TRAP &&
+    state ≠ stateEncoding S_WAIT && state ≠ stateEncoding S_PAUSE
   if owns then
     (view.coreRd.readNat fs = 1, view.coreWr.readNat fs = 1,
       view.coreAddr.readNat fs, view.coreWdata.read fs)
@@ -893,7 +893,7 @@ def preemptAudit (image : List (Nat × BitVec 64)) (q : Nat) (maxCyc : Nat) :
       switches := switches + 1
       if tpcSlot.read next.core outgoing ≠ savedPc then ok := false
       if pcSlot.read next.core ≠ tpcSlot.read system.core incoming then ok := false
-      if stSlot.readNat next.core ≠ S_F0 then ok := false
+      if stSlot.readNat next.core ≠ stateEncoding S_F0 then ok := false
     system := next
     cycles := cycles + 1
   return (switches, ok, ⟨system, cycles⟩)

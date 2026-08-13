@@ -48,9 +48,9 @@ open Machines.Lnp64mini (design S_TRAP S_WAIT S_PAUSE)
 /-- `hp_core_owns = running && st∉{S_TRAP,S_WAIT,S_PAUSE}`, over core regs. -/
 def owns : Expr 1 :=
   .and (.reg 1 "running")
-    (.and (.not (.eq (.reg 5 "st") (.lit (BitVec.ofNat 5 S_TRAP))))
-      (.and (.not (.eq (.reg 5 "st") (.lit (BitVec.ofNat 5 S_WAIT))))
-            (.not (.eq (.reg 5 "st") (.lit (BitVec.ofNat 5 S_PAUSE))))))
+    (.and (.not (.eq (.reg 5 "st") S_TRAP))
+      (.and (.not (.eq (.reg 5 "st") S_WAIT))
+            (.not (.eq (.reg 5 "st") S_PAUSE))))
 
 /-! ## The three instances -/
 
