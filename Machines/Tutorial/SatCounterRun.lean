@@ -30,6 +30,11 @@ def oracle (r : Ref) : Oracle where
     else if c.kind = "reg" && c.name = "sat" then some (if r.sat then 1 else 0)
     else none
 
+/- The normal execution path is the simulator derived from `design`, whose
+agreement with `Design.run` is proved by `VerifiedSimulator.runFromReset_eq`. -/
+#run_hardware design for 256 cycles
+
+/- Optional independent corroboration against a separately written model. -/
 #eval do
   let result ← Loom.Runner.run { label := "satcounter vs reference", steps := 300 }
     (design.reset, ({} : Ref)) fun _ s => do

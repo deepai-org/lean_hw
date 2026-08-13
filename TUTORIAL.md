@@ -2,8 +2,8 @@
 
 This document assumes you can read basic Verilog and that you know Lean 4 is
 a theorem prover — nothing else. It walks one small design from an empty
-file to: an emitted `.v` you could hand to any synthesis tool, a build-time
-differential check against a reference model, a machine-checked theorem
+file to: an emitted `.v` you could hand to any synthesis tool, a certified
+Design-derived execution (plus an optional independent differential check), a machine-checked theorem
 about every reachable state of the compiled RTL, and the discipline for
 taking the result onto an FPGA without losing track of what you actually
 know.
@@ -16,11 +16,11 @@ theorem. The axioms under it are exactly Lean's three standard ones
 "we ran it a lot": a proof, checked by the same kernel that checks
 mathematics.
 
-The finished files are checked into the repo at
-`Machines/Tutorial/SatCounter.lean` and `Machines/Tutorial/SatCounterRun.lean`
-and are built by CI, so the code below cannot drift from the library. If any
-step fails for you, that is a bug in the library or this document — see the
-last section.
+The finished design is checked into the repo at
+`Machines/Tutorial/SatCounter.lean`. Its optional independent reference run is
+in `Machines/Tutorial/SatCounterRun.lean`. Both are built by CI, so the code
+below cannot drift from the library. If any step fails for you, that is a bug
+in the library or this document — see the last section.
 
 ## 0. Thirty seconds of Lean
 
@@ -28,8 +28,6 @@ Everything below is readable with five facts:
 
 - `def name : Type := value` defines a value, like a `localparam` that can
   hold anything — including an entire hardware design.
-- `⟨"count"⟩` builds a structure from its fields; here, a register handle
-  from its name.
 - `theorem name : Statement := proof` is a definition whose *type* is the
   claim and whose *value* is the evidence. If it compiles, the claim holds.
 - `by ...` enters tactic mode: instead of writing the evidence directly, you
@@ -44,7 +42,7 @@ Everything below is readable with five facts:
 From the repo root (the pinned toolchain downloads itself via elan):
 
 ```console
-lake build Loom.Hw.CompileCorrect Loom.Emit.MicroVerilog.Print
+lake build Loom.Hw.Dsl Loom.Hw.CompileCorrect Loom.Emit.MicroVerilog.Print
 ```
 
 The first build of a fresh clone compiles the dependencies; give it a few
@@ -66,7 +64,7 @@ end
 In Loom, the same design is a Lean value:
 
 ```lean
-import Loom.Hw.Declarations
+import Loom.Hw.Dsl
 import Loom.Hw.Semantics
 import Loom.Hw.CompileCorrect
 import Loom.Emit.MicroVerilog.Print
@@ -74,51 +72,67 @@ import Loom.Emit.MicroVerilog.Print
 namespace Machines.Tutorial.SatCounter
 
 open Loom.Hw
-open Loom.Hw.Notation
+open Loom.Hw.Dsl
 
-def count : Reg 8 := ⟨"count"⟩
-def sat : Reg 1 := ⟨"sat"⟩
+hardware satcounter where
+  output reg count : 8
+  output reg sat : 1
 
-def tick : Act :=
-  ifA count.rd === 255 then
-    sat ⇐ 1
-  else
-    count ⇐ count.rd + 1
-
-def declarations : Declarations :=
-  Declarations.empty
-    |>.addReg count (exported := true)
-    |>.addReg sat (exported := true)
-
-def design : Design :=
-  Design.ofDecls "satcounter" declarations [⟨"tick", tick⟩]
+  rule tick :=
+    if count == 255 then
+      sat <- 1
+    else
+      count <- count + 1
 ```
 
-Read it against the Verilog. A design is registers + memories + a list of
-named rules. Rules run every cycle; **reads observe the pre-cycle state and
-writes commit at the cycle edge, last write wins** — ordinary nonblocking
-semantics, stated once as the language's meaning rather than re-learned per
-always-block. `⇐` is `<=`, `ifA ... then ... else` is the procedural `if`,
-`===` is comparison (spelled distinctly because `=` is Lean's own equality).
+Read it against the Verilog. A design contains declarations and a visibly
+ordered list of named rules. Every rule runs every cycle; a rule is not an
+implicitly scheduled or atomic Bluespec rule. **All reads observe the
+start-of-cycle state, writes commit at the edge, and the last executed write
+to one target wins.** `<-` is therefore the only state-assignment spelling.
+`:=` defines declarations and rules; `==` compares hardware values.
 
 Two things have no Verilog counterpart:
 
-- `Reg 8` carries the width in the *type*. A width mismatch is a compile
-  error in the type checker, and each register's name is written exactly
-  once — the declaration, the reads, the writes, the reset entry, and the
-  output port below are all derived from the same handle.
-- `exported := true` declares an output port. Policy is explicit: state you
-  do not export is not observable, and you will want `count` and `sat`
-  observable on the board later. Decide observability at design time, not
-  after the bitstream exists.
+- The width after `:` becomes the width in the generated `Reg` type. A width
+  mismatch is a Lean type error. Numeric literals acquire that expected width
+  and are rejected if they do not fit; they never silently truncate.
+- `output reg` makes the state an output port. Plain `reg` is internal state.
+  The command generates the typed handles, declarations, rule values, and the
+  final `design`; there is no parallel hidden representation.
 
-## 3. Watch it run — against a reference model, during the build
+## 3. Watch the Design-derived simulator run
 
-Before proving anything, check the design does what you meant. The habit
-that scales: never eyeball waveforms; write an independent **reference
-model** (what a testbench golden model is in Verilog, except here it is
-five lines of ordinary code) and compare *every declared coordinate, every
-cycle*. Create `Machines/Tutorial/SatCounterRun.lean`:
+The normal execution path is generated from the `Design` itself and is proved
+to agree with `Design.run` on every declared coordinate. Add this after the
+hardware block, or use it from a small importing file:
+
+```lean
+#run_hardware design for 256 cycles
+```
+
+It prints:
+
+```text
+after 256 cycles:
+  count = 255
+  sat = 1
+```
+
+This uses Loom's certified `FastEval` simulator. It does not ask you to write a
+second cycle implementation merely to run the hardware. For a single-cycle
+explanation, including which writes fired and their old and new values, use:
+
+```lean
+#trace_cycle design with {} from { count := 254 }
+```
+
+which reports the `count` write from 254 to 255. This is especially useful for
+seeing start-of-cycle reads and last-write-wins ordering.
+
+An independent reference model remains valuable when it expresses a genuinely
+separate specification. The checked-in optional differential example is
+`Machines/Tutorial/SatCounterRun.lean`:
 
 ```lean
 import Machines.Tutorial.SatCounter
@@ -153,10 +167,9 @@ def oracle (r : Ref) : Oracle where
 end Machines.Tutorial.SatCounterRun
 ```
 
-`design.cycle` is the design's own semantics — the same function the
-theorems below are about, executed. The runner steps both worlds and
-compares; because the `#eval` runs at build time, a divergence **fails the
-build** with the cycle number and the offending coordinate:
+The runner steps both worlds and compares every declared coordinate. Because
+the `#eval` runs at build time, a divergence **fails the build** with the cycle
+number and offending coordinate:
 
 ```text
 satcounter vs reference: RESULT PASS steps=300 mismatches=0 coverage_gaps=0 excluded=0
@@ -228,7 +241,7 @@ theorem satOk_invariant : design.toTSys.Invariant SatOk := by
 Tactic gloss: `apply` uses a library lemma (here: "inductive implies
 invariant"); `constructor` splits the two obligations; `intro` names
 hypotheses; `subst` rewrites with an equality hypothesis; `by_cases` splits
-on a condition — note it mirrors the `ifA` in the rule, which is the shape
+on a condition — note it mirrors the `if` in the rule, which is the shape
 most hardware proofs take; `simp [...]` simplifies with the listed
 definitions; `have` states an intermediate fact; `exact absurd ...` closes
 a contradictory branch.
@@ -276,18 +289,18 @@ proof about the compilation itself.
 
 ## 6. Emit the Verilog
 
-Add a `main` at the root level, **outside the namespace**, then run the
-file:
+Put the executable wrapper in a separate file so importing the reusable
+Design does not inject a root-level `main` into another program:
 
 ```lean
-end Machines.Tutorial.SatCounter
+import Machines.Tutorial.SatCounter
 
 def main : IO Unit :=
   Machines.Tutorial.SatCounter.design.emit "rtl/satcounter.v"
 ```
 
 ```console
-lake env lean --run Machines/Tutorial/SatCounter.lean
+lake env lean --run Machines/Tutorial/SatCounterEmit.lean
 ```
 
 The output is plain synchronous Verilog — your registers, one explicitly
@@ -302,7 +315,7 @@ module satcounter(
 );
 ```
 
-Every `exported` register became an `o_*` port; nothing else did.
+Every `output reg` became an `o_*` port; nothing else did.
 `Design.emit` is also a gate, not just a printer: duplicate names,
 reads of undeclared state, undeclared synchronous-read memories, and
 malformed write ports are *rejected at emission* — an obligation the caller
