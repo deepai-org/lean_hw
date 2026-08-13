@@ -760,4 +760,35 @@ hardware bad_state_case where
     | Ready => { mode <- Busy }
     | Busy => { mode <- Ready }
 
+/-- error: duplicate case label after normalization; both arms equal 1 -/
+#guard_msgs in
+hardware duplicate_numeric_case where
+  reg selector : 8
+  rule dispatch :=
+    case selector of
+    | 1 => skip
+    | 0x01 => skip
+    | default => skip
+
+/-- error: duplicate case label after normalization; both arms equal 3 -/
+#guard_msgs in
+hardware duplicate_named_case where
+  const FIRST : 8 := 3
+  const ALSO_FIRST : 8 := 3
+  reg selector : 8
+  rule dispatch :=
+    case selector of
+    | FIRST => skip
+    | ALSO_FIRST => skip
+    | default => skip
+
+/-- error: case label must be a compile-time literal or named hardware constant -/
+#guard_msgs in
+hardware computed_case_label where
+  reg selector : 8
+  rule dispatch :=
+    case selector of
+    | 1 + 1 => skip
+    | default => skip
+
 end Tests.PrettyDsl.Diagnostics
