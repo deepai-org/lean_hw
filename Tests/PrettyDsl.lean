@@ -642,6 +642,26 @@ system incomplete where
 
 end MissingRealization
 
+namespace UnsupportedCombProjection
+
+/-- error: the current multiclock top renderer does not project an island `output wire`; keep this as a component observation or register the exported value before realizing the system -/
+#guard_msgs in
+system unsupported_comb_projection where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel q : 8 depth 1
+  island producer on clk where
+    output wire observed : 1 := q.canSend
+    rule transmit := send 1 to q then skip
+  island consumer on clk where
+    output reg received : 8
+    rule accept := receive value from q then received <- value
+  connect q from producer to consumer
+  realize q with Cdc.synchronousFifo
+
+end UnsupportedCombProjection
+
 end Tests.PrettyDsl.PrettySystem
 
 namespace Tests.PrettyDsl.ExistingIsland
