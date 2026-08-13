@@ -17,3 +17,6 @@ rules:
 -/
 #guard_msgs in
 #show_hardware Tests.PrettyDsl.Counter.design
+
+example : Tests.PrettyDsl.Counter.design.name = "satcounter" := by
+  hw_unfold Tests.PrettyDsl.Counter.design
