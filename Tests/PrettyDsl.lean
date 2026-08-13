@@ -107,6 +107,41 @@ run_cmd Lean.Elab.Command.liftTermElabM do
   unless ← Lean.Meta.isDefEq value reparsed do
     throwError "delaborated hardware expression did not re-elaborate definitionally: {rendered}"
 
+private def actionDelaborationProbe : Act :=
+  Act.seq (a.set (.add b.rd (.lit 1)))
+    (Act.ite (.eq a.rd b.rd) (b.set a.rd) Act.skip)
+
+run_cmd Lean.Elab.Command.liftTermElabM do
+  let some info := (← Lean.getEnv).find? ``actionDelaborationProbe
+    | throwError "action-delaboration probe declaration is missing"
+  let some value := info.value?
+    | throwError "action-delaboration probe has no reducible value"
+  let rendered := toString (← Lean.Meta.ppExpr value)
+  unless rendered.contains "[hwstmt|" && rendered.contains "a <- b + 1" &&
+      rendered.contains "if a == b then" do
+    throwError "hardware action delaboration lost source syntax: {rendered}"
+  let parsed ←
+    match Lean.Parser.runParserCategory (← Lean.getEnv) `term rendered with
+    | .ok parsed => pure parsed
+    | .error message => throwError "could not parse delaborated hardware action: {message}"
+  let reparsed ← Lean.Elab.Term.elabTerm parsed (some info.type)
+  unless ← Lean.Meta.isDefEq value reparsed do
+    throwError "delaborated hardware action did not re-elaborate definitionally: {rendered}"
+
+private def unsupportedDelaborationProbe : Expr 8 :=
+  Expr.memRead 8 "ram" (Expr.slice a.rd 0 4)
+
+run_cmd Lean.Elab.Command.liftTermElabM do
+  let some info := (← Lean.getEnv).find? ``unsupportedDelaborationProbe
+    | throwError "fallback-delaboration probe declaration is missing"
+  let some value := info.value?
+    | throwError "fallback-delaboration probe has no reducible value"
+  let rendered := toString (← Lean.Meta.ppExpr value)
+  if rendered.startsWith "[hwexpr|" then
+    throwError "an unsupported expression was mislabeled as round-trippable hardware syntax: {rendered}"
+  unless rendered.contains "Expr.memRead" do
+    throwError "unsupported expression did not remain visibly in core notation: {rendered}"
+
 example : ([hwexpr| a + b == a] : Expr 1) =
     .eq (.add a.rd b.rd) a.rd := rfl
 example : ([hwexpr| ~a[3]] : Expr 1) = .not (.slice a.rd 3 1) := rfl
