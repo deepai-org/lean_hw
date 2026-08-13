@@ -2829,6 +2829,15 @@ This first surface accepts existing ordinary `Design` values. Inline island
 hardware reuses the `hardware` command in the next slice; topology and
 realization already lower through the same checked System APIs. -/
 
+/-- Append a pretty migration fragment to an existing ordinary Design.  This
+is exactly `Design.par`'s declaration/rule concatenation with the base module
+name retained; existing design and realization gates still reject coordinate
+or rule collisions. -/
+def extendDesign (base added : Design)
+    (_disjoint : base.parOkB added)
+    (_wellFormed : Compile.designWFCheck { base.par added with name := base.name }) : Design :=
+  { base.par added with name := base.name }
+
 declare_syntax_cat hwsystemitem
 
 private def systemSameLine : Lean.Parser.Parser where
@@ -2854,6 +2863,12 @@ syntax (priority := high) ident systemSameLine ident "on" ident ":=" term : hwsy
 syntax (priority := high) ident systemSameLine ident "on" ident
   systemSameLine "module" ident ":=" term : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "on" ident
+  systemSameLine "extends" term systemSameLine "where"
+  withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
+syntax (priority := high) ident systemSameLine ident "on" ident
+  systemSameLine "module" ident systemSameLine "extends" term systemSameLine "where"
+  withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
+syntax (priority := high) ident systemSameLine ident "on" ident
   (systemSameLine "module" ident)? "where"
   withPosition(many1Indent(ppLine hwitem)) : hwsystemitem
 syntax (priority := high) ident systemSameLine ident "from" ident "to" ident : hwsystemitem
@@ -2875,6 +2890,7 @@ private structure PrettyIsland where
   name : TSyntax `ident
   clock : TSyntax `ident
   design : Option (TSyntax `term) := none
+  extendsBase : Bool := false
   moduleName : Option (TSyntax `ident) := none
   body : Array (TSyntax `hwitem) := #[]
 
@@ -3014,6 +3030,20 @@ private def expandSystemCommand
             Macro.throwErrorAt kind "expected `island name on clock module moduleName := design`"
           islands := islands.push { name, clock, design := some design, moduleName := some moduleName }
           pure 4
+      | `(hwsystemitem| $kind:ident $name:ident on $clock:ident extends $design:term where $body:hwitem*) =>
+          unless kind.getId == `island do
+            Macro.throwErrorAt kind "expected `island name on clock extends design where ...`"
+          islands := islands.push
+            { name, clock, design := some design, extendsBase := true, body }
+          pure 4
+      | `(hwsystemitem| $kind:ident $name:ident on $clock:ident module $moduleName:ident extends $design:term where $body:hwitem*) =>
+          unless kind.getId == `island do
+            Macro.throwErrorAt kind
+              "expected `island name on clock module moduleName extends design where ...`"
+          islands := islands.push
+            { name, clock, design := some design, extendsBase := true,
+              moduleName := some moduleName, body }
+          pure 4
       | `(hwsystemitem| $kind:ident $name:ident on $clock:ident $[module $moduleName:ident]? where $body:hwitem*) =>
           unless kind.getId == `island do
             Macro.throwErrorAt kind "expected `island name on clock where ...`"
@@ -3127,29 +3157,24 @@ private def expandSystemCommand
     | _, _ => Macro.throwErrorAt channel.name "invalid channel payload declaration"
   for island in islands do
     let declarationName := nestedName island.name.getId
-    let designTerm ← match island.design with
-      | some supplied => do
+    let resolvedSupplied (supplied : TSyntax `term) : MacroM (TSyntax `term) := do
           let baseTerm ← match supplied with
             | `(term| $name:ident) =>
-                let resolvedName := if name.getId.isAtomic then
-                  namespaceName ++ name.getId else name.getId
-                let resolved := mkIdentFrom name resolvedName
-                `(term| hw_exact_const% $resolved)
+                if name.getId.isAtomic then
+                  let resolved := mkIdentFrom name (namespaceName ++ name.getId)
+                  `(term| hw_exact_const% $resolved)
+                else pure supplied
             | _ => pure supplied
-          let namedTerm ← match island.moduleName with
-            | none => pure baseTerm
-            | some moduleName =>
-                let emittedName := Syntax.mkStrLit moduleName.getId.toString
-                `(term| { $baseTerm with name := $emittedName })
-          let mut scopedTerm := namedTerm
+          let mut scopedTerm := baseTerm
           for channel in channels.reverse do
             let channelName := nestedName channel.name.getId
             scopedTerm ← `(let $(channel.name) := $channelName; let _ := $(channel.name); $scopedTerm)
           pure scopedTerm
-      | none => do
+    let inlineDesign : MacroM (Array Syntax × TSyntax `term) := do
+          let mut generated : Array Syntax := #[]
           let implementationNamespace := mkIdent
             (systemName.getId ++ island.name.getId ++ `Hardware)
-          commands := commands.push (← `(command| namespace $implementationNamespace))
+          generated := generated.push (← `(command| namespace $implementationNamespace))
           for connection in connections do
             if connection.source.getId == island.name.getId ||
                 connection.sink.getId == island.name.getId then
@@ -3159,20 +3184,44 @@ private def expandSystemCommand
               let endpointName := connection.channel
               let channelName := qualifiedNestedName connection.channel.getId
               if connection.source.getId == island.name.getId then
-                commands := commands.push (← `(command|
+                generated := generated.push (← `(command|
                   def $endpointName := (hw_exact_const% $channelName).source))
               else
-                commands := commands.push (← `(command|
+                generated := generated.push (← `(command|
                   def $endpointName := (hw_exact_const% $channelName).sink))
           let emittedModuleName := island.moduleName.getD <| mkIdent
             (Name.mkSimple (systemName.getId.toString ++ "_" ++ island.name.getId.toString))
           let body := island.body
           let hardwareCommand ← `(command| hardware $emittedModuleName where $body*)
-          commands := commands.push hardwareCommand
-          commands := commands.push (← `(command| end $implementationNamespace))
+          generated := generated.push hardwareCommand
+          generated := generated.push (← `(command| end $implementationNamespace))
           let implementationDesign := mkIdent
             (namespaceName ++ systemName.getId ++ island.name.getId ++ `Hardware ++ `design)
-          pure (← `(term| hw_exact_const% $implementationDesign))
+          pure (generated, ← `(term| hw_exact_const% $implementationDesign))
+    let designTerm ← match island.design, island.extendsBase with
+      | some supplied, false => do
+          let baseTerm ← resolvedSupplied supplied
+          match island.moduleName with
+          | none => pure baseTerm
+          | some moduleName =>
+              let emittedName := Syntax.mkStrLit moduleName.getId.toString
+              `(term| { $baseTerm with name := $emittedName })
+      | some supplied, true => do
+          let baseTerm ← resolvedSupplied supplied
+          let (generated, addedTerm) ← inlineDesign
+          commands := commands ++ generated
+          let extended ← `(term| Loom.Hw.Dsl.extendDesign $baseTerm $addedTerm
+            (by native_decide) (by native_decide))
+          match island.moduleName with
+          | none => pure extended
+          | some moduleName =>
+              let emittedName := Syntax.mkStrLit moduleName.getId.toString
+              `(term| { $extended with name := $emittedName })
+      | none, false => do
+          let (generated, addedTerm) ← inlineDesign
+          commands := commands ++ generated
+          pure addedTerm
+      | none, true => Macro.throwErrorAt island.name "an extended island requires a base Design"
     commands := commands.push (← `(command|
       def $declarationName : Loom.Hw.Design := $designTerm))
     let handleName := nestedName
