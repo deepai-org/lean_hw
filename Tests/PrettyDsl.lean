@@ -87,6 +87,26 @@ packed struct ZeroWidthHeader where
 private def a : Reg 8 := ⟨"a"⟩
 private def b : Reg 8 := ⟨"b"⟩
 
+private def delaborationProbe : Expr 8 :=
+  Expr.shl (Expr.add a.rd (Expr.mul b.rd (.lit 3))) (.lit 2)
+
+run_cmd Lean.Elab.Command.liftTermElabM do
+  let some info := (← Lean.getEnv).find? ``delaborationProbe
+    | throwError "delaboration probe declaration is missing"
+  let some value := info.value?
+    | throwError "delaboration probe has no reducible value"
+  let rendered := toString (← Lean.Meta.ppExpr value)
+  unless rendered.contains "[hwexpr|" && rendered.contains "a + (b * 3)" &&
+      rendered.contains ") << 2" do
+    throwError "hardware expression delaboration lost source syntax or grouping: {rendered}"
+  let parsed ←
+    match Lean.Parser.runParserCategory (← Lean.getEnv) `term rendered with
+    | .ok parsed => pure parsed
+    | .error message => throwError "could not parse delaborated hardware expression: {message}"
+  let reparsed ← Lean.Elab.Term.elabTerm parsed (some info.type)
+  unless ← Lean.Meta.isDefEq value reparsed do
+    throwError "delaborated hardware expression did not re-elaborate definitionally: {rendered}"
+
 example : ([hwexpr| a + b == a] : Expr 1) =
     .eq (.add a.rd b.rd) a.rd := rfl
 example : ([hwexpr| ~a[3]] : Expr 1) = .not (.slice a.rd 3 1) := rfl
