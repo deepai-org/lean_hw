@@ -72,6 +72,47 @@ def tcontBank   : Mem 7 64  := ⟨"tcont"⟩
 def tcdomBank   : Mem 7 8   := ⟨"tcdom"⟩
 def gdepthBank  : Mem 5 3   := ⟨"gdepth"⟩
 
+namespace AuthoredMemories
+
+/-- Technology-neutral logical memory inventory. `synchronousRead` records
+the existing compiler policy; it does not select an FPGA primitive, ASIC
+macro, vendor, or synthesis tool. -/
+hardware lnp64mini_memories where
+  memory rf : 64 [1024] using Memory.synchronousRead
+  memory dmem : 64 [512] using Memory.synchronousRead
+  memory trace_pc : 64 [16]
+  memory trace_wb : 64 [16]
+  memory uart_mem : 8 [256] using Memory.synchronousRead
+  memory rx_mem : 8 [256]
+  memory ic_data : 64 [4096] using Memory.synchronousRead
+  memory ic_tag : 42 [4096] using Memory.synchronousRead
+  memory dc_data : 64 [4096] using Memory.synchronousRead
+  memory dc_tag : 42 [4096] using Memory.synchronousRead
+  memory tpc : 64 [32]
+  memory tsleep : 64 [32]
+  memory tp_arr : 64 [32]
+  memory sigmask_arr : 64 [32]
+  memory tdom : 8 [32]
+  memory tcont : 64 [128]
+  memory tcdom : 8 [128]
+  memory gdepth : 3 [32]
+
+end AuthoredMemories
+
+theorem authored_memory_handles :
+    AuthoredMemories.rf = rfBank ∧
+    AuthoredMemories.dmem = dmemBank ∧
+    AuthoredMemories.ic_data = icDataBank ∧
+    AuthoredMemories.gdepth = gdepthBank := by decide
+
+theorem authored_memory_declarations :
+    AuthoredMemories.declarations.mems =
+      [rfBank.decl, dmemBank.decl, tracePcBank.decl, traceWbBank.decl,
+       uartBank.decl, rxBank.decl, icDataBank.decl, icTagBank.decl,
+       dcDataBank.decl, dcTagBank.decl, tpcBank.decl, tsleepBank.decl,
+       tpBank.decl, sigmaskBank.decl, tdomBank.decl, tcontBank.decl,
+       tcdomBank.decl, gdepthBank.decl] := rfl
+
 -- FSM states (localparams S_IDLE=0 .. S_GPS=20)
 def S_IDLE : Nat := 0
 def S_F0   : Nat := 1
@@ -3179,30 +3220,10 @@ def domainRule : Rule := ⟨"domain", [hwstmt| curDomReg <- domCur]⟩
 def declarations : Declarations :=
   { Declarations.empty with
       regs := scalarRegs ++ arrRegs
+      mems := AuthoredMemories.declarations.mems
       «inputs» := AuthoredInputs.declarations.inputs
-      outputs := (scalarRegs ++ arrRegs).map (fun r : RegDecl => r.name) }
-    |>.addMem rfBank (syncRead := true)
-    |>.addMem dmemBank (syncRead := true)
-    -- The trace ring and RX FIFO are intentionally distributed memories.
-    |>.addMem tracePcBank
-    |>.addMem traceWbBank
-    |>.addMem uartBank (syncRead := true)
-    |>.addMem rxBank
-    -- Cache tags are 42 bits: valid, generation, and address tag.
-    |>.addMem icDataBank (syncRead := true)
-    |>.addMem icTagBank (syncRead := true)
-    |>.addMem dcDataBank (syncRead := true)
-    |>.addMem dcTagBank (syncRead := true)
-    -- Thread-table memories have all-zero physical reset images; the reset
-    -- sweep establishes live architectural contents before `fsmEn` opens.
-    |>.addMem tpcBank
-    |>.addMem tsleepBank
-    |>.addMem tpBank
-    |>.addMem sigmaskBank
-    |>.addMem tdomBank
-    |>.addMem tcontBank
-    |>.addMem tcdomBank
-    |>.addMem gdepthBank
+      outputs := (scalarRegs ++ arrRegs).map (fun r : RegDecl => r.name)
+      syncReadMems := AuthoredMemories.declarations.syncReadMems }
 
 def coreRules : List Rule :=
   [encRule, sleepScanRule, latchRule, traceRule, pulseDefaultsRule, zeroingRule, cmdRule, ddrRdLRule,
