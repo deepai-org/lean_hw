@@ -683,7 +683,7 @@ private def checkedHardwareLiteral (source : Syntax) (value : Nat)
 
 private def coerceHardwareAtom (valueSyntax : Syntax) (expectedType? : Option Lean.Expr) :
     TermElabM Lean.Expr := do
-  let value ← elabTerm valueSyntax none
+  let value ← withoutErrToSorry <| elabTerm valueSyntax none
   let valueType ← Meta.whnf (← Meta.inferType value)
   let result ←
     if valueType.isAppOfArity ``Loom.Hw.Expr 1 then pure value
@@ -1193,6 +1193,23 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
           let literalSyntax ← `(Loom.Hw.Expr.lit
             (BitVec.ofNat $(quote width) $(quote amount)))
           elabTerm literalSyntax (some leftType)
+      let ensureDynamicWidth (rightValue : Lean.Expr) : TermElabM Lean.Expr := do
+          let rightType ← Meta.whnf (← Meta.inferType rightValue)
+          unless rightType.isAppOfArity ``Loom.Hw.Expr 1 do
+            throwErrorAt rightSyntax
+              "dynamic shift amount must be a typed hardware expression"
+          let rightWidth ← Meta.whnf rightType.getAppArgs[0]!
+          unless ← Meta.isDefEq widthExpr rightWidth do
+            let leftWidth? ← getNatValue? widthExpr
+            let rightWidth? ← getNatValue? rightWidth
+            match leftWidth?, rightWidth? with
+            | some leftWidth, some rightWidth =>
+                throwErrorAt rightSyntax
+                  s!"dynamic shift amount is {rightWidth} bits but the shifted value is {leftWidth} bits; Loom's core requires equal widths"
+            | _, _ =>
+                throwErrorAt rightSyntax
+                  "dynamic shift amount width must equal the shifted value width"
+          pure rightValue
       let right ← match rightSyntax.raw.isNatLit? with
         | some amount => liftStatic amount
         | none => do
@@ -1206,9 +1223,9 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
               liftStatic amount
             else if rightType.isAppOfArity ``Loom.Hw.Reg 1 then
               let read ← Meta.mkAppM ``Loom.Hw.Reg.rd #[rightValue]
-              ensureHasType (some leftType) read
+              ensureDynamicWidth read
             else
-              ensureHasType (some leftType) rightValue
+              ensureDynamicWidth rightValue
       let constructor ← if operation.getString == "shl" then pure ``Loom.Hw.Expr.shl
         else if operation.getString == "shr" then pure ``Loom.Hw.Expr.shr
         else throwErrorAt operation "unknown shift operation"

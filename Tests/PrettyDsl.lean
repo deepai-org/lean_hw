@@ -264,6 +264,16 @@ example : ([hwexpr| (a + b) << 2] : Expr 8) =
 example : ([hwexpr| a << staticShift] : Expr 8) = Expr.shl a.rd (.lit 3) := rfl
 example (dynamicShift : Reg 8) : Expr 8 := [hwexpr| a >> dynamicShift]
 
+/-- error: dynamic shift amount is 4 bits but the shifted value is 8 bits; Loom's core requires equal widths -/
+#guard_msgs in
+example (narrowShift : Reg 4) : Expr 8 := [hwexpr| a >> narrowShift]
+
+private opaque opaqueStaticShift : Nat
+
+/-- error: static shift amount must reduce to a numeral; use a typed expression for a dynamic shift -/
+#guard_msgs in
+example : Expr 8 := [hwexpr| a << opaqueStaticShift]
+
 example : ([hwexpr| a == b] : Expr 1) = Expr.eq a.rd b.rd := rfl
 example : ([hwexpr| a + b == 7] : Expr 1) =
     Expr.eq (Expr.add a.rd b.rd) (.lit 7) := rfl
@@ -1581,3 +1591,94 @@ hardware transparentLetLint where
 end TransparentLint
 
 end Tests.PrettyDsl.LocalBindingDiagnostics
+
+namespace Tests.PrettyDsl.IdentifierResolution
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+namespace FirstLibrary
+@[hw_const FirstOpcodes] def SHARED_CODE : Nat := 0x11
+end FirstLibrary
+
+namespace SecondLibrary
+@[hw_const SecondOpcodes] def SHARED_CODE : Nat := 0x22
+end SecondLibrary
+
+open FirstLibrary SecondLibrary
+open scoped FirstOpcodes SecondOpcodes
+
+/- Two active, deliberately exported constants with the same short name are
+not resolved by import or declaration order. -/
+/--
+error: Ambiguous term
+  SHARED_CODE
+Possible interpretations:
+  SecondLibrary.SHARED_CODE : ℕ
+  
+  FirstLibrary.SHARED_CODE : ℕ
+-/
+#guard_msgs in
+example : Expr 8 := [hwexpr| SHARED_CODE]
+
+example : ([hwexpr| FirstLibrary.SHARED_CODE] : Expr 8) = .lit 0x11#8 := rfl
+example : ([hwexpr| SecondLibrary.SHARED_CODE] : Expr 8) = .lit 0x22#8 := rfl
+
+/- A design-local signal wins over active external constants with the same
+short spelling. -/
+namespace SignalFirst
+hardware signal_first where
+  output reg SHARED_CODE : 8
+  rule increment := SHARED_CODE <- SHARED_CODE + 1
+
+example : increment = SHARED_CODE.set (.add SHARED_CODE.rd (.lit 1#8)) := rfl
+end SignalFirst
+
+def UNMARKED_CODE : Nat := 7
+
+/- Merely importing or opening an ordinary `Nat` cannot make it hardware. -/
+/-- error: Nat values are not implicitly hardware expressions; mark a shared constant @[hw_const] or use a design-local `const` -/
+#guard_msgs in
+example : Expr 8 := [hwexpr| UNMARKED_CODE]
+
+end Tests.PrettyDsl.IdentifierResolution
+
+namespace Tests.PrettyDsl.DeclarationDiagnostics
+
+open Loom.Hw
+open Loom.Hw.Dsl
+
+/-- error: duplicate design-local name 'value' -/
+#guard_msgs in
+hardware duplicate_register where
+  reg value : 8
+  reg value : 8
+
+/-- error: duplicate design-local name 'shared' -/
+#guard_msgs in
+hardware duplicate_cross_category where
+  reg shared : 8
+  input shared : 8
+
+/-- error: duplicate design-local name 'step' -/
+#guard_msgs in
+hardware duplicate_rule where
+  rule step := skip
+  rule step := skip
+
+/-- error: this name is reserved by the hardware command; choose a name without the `_name` suffix -/
+#guard_msgs in
+hardware reserved_design where
+  reg design : 1
+
+/-- error: this name is reserved by the hardware command; choose a name without the `_name` suffix -/
+#guard_msgs in
+hardware reserved_declarations where
+  input declarations : 1
+
+/-- error: this name is reserved by the hardware command; choose a name without the `_name` suffix -/
+#guard_msgs in
+hardware reserved_generated_suffix where
+  reg status_name : 1
+
+end Tests.PrettyDsl.DeclarationDiagnostics
