@@ -1698,11 +1698,9 @@ def sleepScanRule : Rule :=
       let scanHit : 1 := $(priTree ((List.finRange NT).map
         (fun i => (.eq sleep_scan (L5 i.val), .eq (tstate i) (L2 2)))) (L1 0)),
       sleepScanReg <- sleep_scan + 1,
-      $stmt((List.finRange NT).foldr (fun i acc =>
-        .seq (.ite (.and (.eq sleep_scan (L5 i.val)) (.eq (tstate i) (L2 2)))
-          (.ite (.not (.ult (L64 1) tsl_s))
-            (tstateRegs.set i (L2 1)) .skip)
-          .skip) acc) .skip),
+      for i in $(List.finRange NT) generate
+        if (sleep_scan == $(L5 i.val)) & ($(tstate i) == 2) then
+          if ~($(L64 1) <u tsl_s) then $stmt(tstateRegs.set i (L2 1)),
       if scanHit & ($(L64 1) <u tsl_s) then
         tsleepBank[port 0, sleep_scan] <- tsl_s - $(L64 1)
     }]⟩
@@ -1787,8 +1785,8 @@ where
     -- which contains `¬zeroing`), so the transient is unobservable and the
     -- post-sweep contents are identical.
       zctrReg <- 0,
-      $stmt((List.finRange NT).foldr (fun i acc =>
-        .seq (tstateRegs.set i (if i.val = 0 then L2 1 else L2 0)) acc) .skip)
+      for i in $(List.finRange NT) generate
+        $stmt(tstateRegs.set i (if i.val = 0 then L2 1 else L2 0))
     }]
   cmdBody : Act :=
     [hwstmt| {
@@ -2051,8 +2049,8 @@ def gcons (g : Expr 1) (a : Act) (rest : List (Expr 1 × Act)) : List (Expr 1 ×
 (D9: `memRead` evaluates against `σ`). -/
 def setPcFromTpc (idx : Expr 5) : Act := pcReg.set (tpcRd idx)
 def tstateDynWrite (v : Expr 2) (idx : Expr 5) : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.eq idx (L5 i.val)) (tstateRegs.set i v) .skip) acc) .skip
+  Dsl.actFor (List.finRange NT) fun i =>
+    [hwstmt| if idx == $(L5 i.val) then $stmt(tstateRegs.set i v)]
 /-- dynamic tstate[idx]==v test as a (balanced) mux chain. -/
 def tstateEq (idx : Expr 5) (v : Expr 2) : Expr 1 :=
   priTree ((List.finRange NT).map (fun i => (.eq idx (L5 i.val), .eq (tstate i) v))) (L1 0)
@@ -2091,9 +2089,9 @@ spurious wake = legal). The path into `tstate` is a 2-bit test, so unlike the
 old 64-bit-eq→popcount bank it needs no registering. See PLATONIC "the NT=32
 fit" and EXTEND_SPEC EXT-4. -/
 def wakeAllApply : Act :=
-  (List.finRange NT).foldr (fun i acc =>
-    .seq (.ite (.and wakeEn (.eq (tstate i) (L2 3)))
-           (tstateRegs.set i (L2 1)) .skip) acc) .skip
+  Dsl.actFor (List.finRange NT) fun i =>
+    [hwstmt|
+      if wakeEn & ($(tstate i) == 3) then $stmt(tstateRegs.set i (L2 1))]
 
 /-- `S_F0` — the instruction boundary, and (EXT-1) the preemption point.
 
