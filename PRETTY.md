@@ -589,8 +589,8 @@ the branch is unreachable; a non-final default remains an error.
 Exhaustiveness is computed from normalized values and registered enum metadata,
 never guessed from spelling or an invariant.
 
-This construct is v1-adjacent: it should land before the FSM-heavy LNP64mini
-migration even if the scalar tutorial ships without it. Its release is also
+This construct is v1-adjacent: it should land before using an FSM-heavy
+LNP64mini block as an integration example even if the scalar tutorial ships without it. Its release is also
 gated on proof ergonomics: right-nested `ite` is semantically simple but may
 produce poor invariant goals for a large state machine. Phase 4 must test the
 ordinary `simp`/case-splitting workflow on an FSM-sized example. If it produces
@@ -1464,8 +1464,8 @@ silently dropping it from the emitted interface.
 An inline island body uses the same declarations, rules, expressions,
 statements, source locations, generated name lemmas, and teaching diagnostics
 as `hardware`. `extends` appends pretty declarations/rules to an existing
-ordinary `Design` before endpoint generation; it is the migration path for a
-large design such as LNP64mini. The plain `:=` form uses an existing `Design`
+ordinary `Design` before endpoint generation; it permits focused extensions of
+a large existing design without requiring a source rewrite. The plain `:=` form uses an existing `Design`
 unchanged except for the channel endpoints derived below. By default an inline
 island's emitted Design/module name is `systemName_islandName`, while `module`
 supplies an explicit user-owned name. An existing Design retains its name
@@ -1882,7 +1882,7 @@ deliberate contrast. Executable cases cover an unavailable send, an empty
 under both policies, and whether a statement following each send form is
 acceptance-guarded.
 
-## LNP64mini destination
+## Representative LNP64mini integration
 
 The following is a representative final-form excerpt based on the actual
 LNP64mini trace ring, registered memory reads, pulse defaults, quantum counter,
@@ -2076,19 +2076,17 @@ reflects that existing interface rather than prescribing that every future
 internal register be an output.
 
 The current source also has paired authoring names such as `pcReg`/`pc` and
-`mDonePort`/`mDone`. A fully converted command intentionally collapses each
-pair to one handle token such as `pc` or `m_done`. The staged migration must
-update downstream Lean references or provide temporary, explicitly deprecated
-aliases; it must not add an alias field to the hardware syntax and recreate the
-name-drift problem. This is a Lean source-API change, not a `Design` or emitted
-signal-name change.
+`mDonePort`/`mDone`. Representative conversions retain compatibility aliases
+and prove exact lowering. Collapsing those pairs is a separate Lean source-API
+decision and is not required by this plan; the syntax must not add an alias
+field merely to reproduce existing naming scaffolding.
 
 ## Memory and register-family extension
 
-The scalar command is sufficient for the tutorial but not for a complete
-LNP64mini conversion. LNP64mini depends on `Mem`, `RegArray`, initialization,
-and memory implementation policy. Their grammar must be designed before the
-large migration, not improvised during it.
+The scalar command is sufficient for the tutorial, while realistic integration
+examples also exercise `Mem`, `RegArray`, initialization, and memory
+implementation policy. Those constructs need one coherent grammar independent
+of whether any existing large design is rewritten wholesale.
 
 A candidate readable surface is:
 
@@ -2330,7 +2328,8 @@ workflow with the tactics used elsewhere in Loom. They record goal count,
 nesting, and whether branch hypotheses retain recognizable case labels. `case`
 does not graduate from v1-adjacent status until this is usable. If ordinary
 splitting is not sane, add and test per-rule case-split metadata/lemmas before
-the LNP64mini FSM migration; do not leave that repair to individual proofs.
+using an LNP64mini FSM block as the representative integration case; do not
+leave that repair to individual proofs.
 
 Packed proof-shape tests similarly lower representative whole-value plus
 partial-field updates, conditional disjoint field writes, and ordered
@@ -2581,38 +2580,23 @@ This phase validates syntax and naming only. It does not make the pretty plan
 responsible for the gauntlet's hardware, proofs, FPGA campaigns, or evidence
 model.
 
-### Phase 12: staged LNP64mini conversion
+### Phase 12: representative LNP64mini validation
 
-Convert by coherent blocks rather than rewriting `Core.lean` at once:
+LNP64mini is an integration test, not a migration deliverable. Keep a small,
+coherent set of real blocks in readable syntax: declaration families, pulse
+defaults and observation rules, trace/registered-memory traffic, at least one
+FSM arm, a generated thread-table action, and the telemetry `system` surface.
+This is enough to exercise the difficult language boundaries against a
+production-scale consumer. Do not convert the remaining core merely to raise a
+syntax-adoption percentage.
 
-1. ports and scalar handles while retaining existing direct-read compatibility
-   aliases;
-2. pulse defaults and observation-only rules;
-3. trace ring and registered memory-read rules;
-4. cache latch/fill rules and explicit memory ports;
-5. small FSM arms;
-6. command handling and larger dispatch trees;
-7. register families, generated thread-table actions, and TLB structures;
-8. remaining rules and declaration assembly;
-9. the telemetry `system` surface, explicit realization, component inspection,
-   and readable schedule replay;
-10. direct-read alias retirement as its own API-change review after every
-    syntax-only block is stable.
-
-After every block, require equality of the lowered `Design` or an equivalent
-structural characterization, the existing `DesignWF` and sync-read checks,
-FastEval/DagEval agreement, deterministic emitted RTL, and the current
-LNP64mini behavioral and board-facing regression suite. Generated Verilog
-should remain byte-identical whenever only authoring syntax changed; any
-difference stops the migration for review.
-
-Alias collapse is deliberately not hidden inside that syntax-only gate. First
-convert a block while preserving `pcReg`/`pc`-style definitions and require
-byte-identical RTL. Only then remove or redirect aliases in a separate commit,
-record the Lean API change, and review any declaration-order or metadata
-difference independently. A byte difference during alias retirement is not
-waived; it is simply attributed to the correct reviewed block rather than
-making the prettification conversion impossible to diagnose.
+Every syntax-only block that is touched must retain its compatibility aliases
+and prove equality of the lowered `Design` or an equivalent structural
+characterization, plus deterministic byte-identical emitted RTL. Run the
+relevant existing `DesignWF`, sync-read, evaluator, behavioral, and
+board-facing gates in proportion to the touched block. A difference stops that
+conversion for review. Alias retirement remains a separate Lean API project,
+outside this plan.
 
 Do not mechanically force balanced reductions, priority trees, recursion, or
 host-side algorithms into new statement syntax. Use ordinary Lean composition
@@ -2646,9 +2630,9 @@ The pretty layer is complete when:
 7. A representative LNP64mini block reads in the form shown above while its
    generated simulator, proof obligations, and checked RTL path remain
    unchanged.
-8. Full LNP64mini migration preserves the existing design and emitted RTL, or
-   explicitly identifies and reviews any intentional semantic change rather
-   than hiding it inside syntax conversion.
+8. LNP64mini is not required to migrate wholesale. Every representative block
+   converted under this plan preserves its existing Design and emitted RTL;
+   unrelated constructor-heavy code may remain unchanged.
 9. Executable teaching tests and golden diagnostics pin assignment timing,
    branch ownership, widths, signedness, memory-port behavior, and Loom's
    source-ordered meaning of `rule`.
@@ -2749,9 +2733,9 @@ The pretty layer is complete when:
 29. Local hardware `let` bindings are hygienic pure aliases with explicit
     lexical scope, transparent lint analysis, inlined delaboration, and no
     implied register, output port, net, or synthesis-sharing semantics.
-30. Syntax-only LNP64mini blocks preserve compatibility aliases and exact RTL;
-    alias retirement is a separate reviewed Lean-API change rather than a
-    hidden part of prettification.
+30. Representative syntax-only LNP64mini blocks preserve compatibility aliases
+    and exact RTL; neither full-source conversion nor alias retirement is a
+    prettification completion gate.
 31. Design-local `const` makes the common fixed-code path width-typed,
     range-checked once, named in goals, and absent from generated state/ports;
     beginner examples need no `@[hw_const]` ceremony.
