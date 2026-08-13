@@ -1283,6 +1283,15 @@ hardware bad_state_case where
     | Ready => { mode <- Busy }
     | Busy => { mode <- Ready }
 
+/-- error: case without a default is allowed only for a declared states register -/
+#guard_msgs in
+hardware bad_scalar_case where
+  reg selector : 2
+  rule incomplete :=
+    case selector of
+    | 0 => skip
+    | 1 => skip
+
 /-- error: duplicate case label after normalization; both arms equal 1 -/
 #guard_msgs in
 hardware duplicate_numeric_case where

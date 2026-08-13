@@ -2292,7 +2292,6 @@ private partial def validateCases (domains : Array StateDomain)
         | _ => none
       let mut namedArms : Array (TSyntax `ident) := #[]
       let mut normalizedArms : Array (Nat × Syntax) := #[]
-      let mut hasDefault := false
       let recordNormalized (priorArms : Array (Nat × Syntax))
           (source : Syntax) (value : Nat) : MacroM (Array (Nat × Syntax)) := do
         if priorArms.any (fun prior => prior.1 == value) then
@@ -2302,7 +2301,6 @@ private partial def validateCases (domains : Array StateDomain)
       for arm in arms do
         match arm with
         | `(hwcasearm| | default => $body:hwstmt) =>
-            hasDefault := true
             validateCases domains constants body
         | `(hwcasearm| | $value:num => $body:hwstmt) =>
             normalizedArms ← recordNormalized normalizedArms value value.getNat
@@ -2319,22 +2317,15 @@ private partial def validateCases (domains : Array StateDomain)
               "case label must be a compile-time literal or named hardware constant"
         | _ => pure ()
       match domain? with
-      | none =>
-          unless hasDefault do
-            Macro.throwErrorAt scrutinee
-              "case without a default is allowed only for a declared states register"
+      | none => pure ()
       | some domain =>
           for armName in namedArms do
             unless domain.members.any (fun member => member.getId == armName.getId) do
               Macro.throwErrorAt armName
                 s!"'{armName.getId}' is not a declared state of '{domain.register.getId}'"
-          let covered := domain.members.all fun member =>
-            namedArms.any (fun armName => armName.getId == member.getId)
-          if !hasDefault && !covered then
-            let missing := domain.members.filter (fun member =>
-              !namedArms.any (fun armName => armName.getId == member.getId))
-            Macro.throwErrorAt scrutinee
-              s!"non-exhaustive state case; missing {String.intercalate ", " (missing.toList.map (toString ·.getId))}"
+          -- Command elaboration reports a non-exhaustive declared-state case.
+          -- Keeping that repairable error out of `MacroM` lets it attach an
+          -- editor action that inserts the explicit default arm.
           -- A later command-elaboration pass reports a dead-default warning;
           -- macro expansion itself has no logging capability.
           pure ()
@@ -2354,6 +2345,73 @@ private partial def validateCases (domains : Array StateDomain)
       for statement in statements.getElems do
         validateCases domains constants statement
   | _ => pure ()
+
+/-- A case that requires an explicit default arm. For an ordinary expression,
+every case requires one. A declared-state case requires one only when its named
+arms are not exhaustive. Invalid and duplicate labels are still rejected by
+`validateCases`; this separate finding exists solely so command elaboration can
+offer a source-level repair. -/
+private structure MissingStateDefault where
+  source : Syntax
+  scrutinee : Syntax
+  missing : Array (TSyntax `ident)
+
+private partial def missingStateDefaults (domains : Array StateDomain) :
+    TSyntax `hwstmt → Array MissingStateDefault
+  | statement@`(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) => Id.run do
+      let domain? := match scrutinee with
+        | `(hwexpr| $name:ident) =>
+            domains.find? (fun domain => domain.register.getId == name.getId)
+        | _ => none
+      let mut namedArms : Array (TSyntax `ident) := #[]
+      let mut hasDefault := false
+      let mut nested : Array MissingStateDefault := #[]
+      for arm in arms do
+        match arm with
+        | `(hwcasearm| | default => $body:hwstmt) =>
+            hasDefault := true
+            nested := nested ++ missingStateDefaults domains body
+        | `(hwcasearm| | $name:ident => $body:hwstmt) =>
+            namedArms := namedArms.push name
+            nested := nested ++ missingStateDefaults domains body
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) =>
+            nested := nested ++ missingStateDefaults domains body
+        | _ => pure ()
+      match domain? with
+      | none =>
+          if !hasDefault then #[⟨statement, scrutinee, #[]⟩] ++ nested else nested
+      | some domain =>
+          let missing := domain.members.filter (fun member =>
+            !namedArms.any (fun armName => armName.getId == member.getId))
+          if !hasDefault && !missing.isEmpty then
+            #[⟨statement, scrutinee, missing⟩] ++ nested
+          else
+            nested
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      missingStateDefaults domains yes ++ missingStateDefaults domains no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => missingStateDefaults domains yes
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
+      missingStateDefaults domains body
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
+      missingStateDefaults domains body
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt) =>
+      missingStateDefaults domains body
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) =>
+      missingStateDefaults domains body
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.foldl
+        (fun findings statement => findings ++ missingStateDefaults domains statement) #[]
+  | _ => #[]
+
+private def missingDefaultReplacement (source : Syntax) : String :=
+  let rendered := source.reprint.getD "case <state> of"
+  let whitespace (character : Char) := character == ' ' || character == '\t'
+  let armLine? (line : String) :=
+    (line.toList.dropWhile whitespace).head? == some '|'
+  let indent := match (rendered.splitOn "\n").reverse.find? armLine? with
+    | some line => String.ofList (line.toList.takeWhile whitespace)
+    | none => "  "
+  rendered ++ "\n" ++ indent ++ "| default => skip"
 
 private partial def inferredStateWidthLoop (count capacity width : Nat) : Nat :=
   if capacity ≥ count then width
@@ -2894,6 +2952,17 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
       let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
         packedInputs, packedWires, registerArrays, domains, rules) ←
         liftMacroM <| parseHardwareItems items
+      for ruleItem in rules do
+        if let some finding := (missingStateDefaults domains ruleItem.body)[0]? then
+          liftCoreM <| addSilentCodeAction finding.source
+            (missingDefaultReplacement finding.source) "Add explicit default arm"
+          if finding.missing.isEmpty then
+            throwErrorAt finding.scrutinee
+              "case without a default is allowed only for a declared states register"
+          else
+            throwErrorAt finding.scrutinee
+              s!"non-exhaustive state case; missing {String.intercalate ", "
+                (finding.missing.toList.map (toString ·.getId))}"
       let namespaceName ← getCurrNamespace
       let environment ← getEnv
       let localNames := registers.map (fun item => item.name) ++
