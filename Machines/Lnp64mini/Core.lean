@@ -2503,17 +2503,23 @@ def s_mul : Expr 1 × Act := stArm S_MUL
 
 /-- S_DIV: restoring divide step or done (rf in funnel). 65-bit partial. -/
 def s_div : Expr 1 × Act := stArm S_DIV
-  (.ite (.eq div_cnt (.lit (BitVec.ofNat 7 64)))
-    (actSeq [stepPc, retireInc, goF0])
-    (let prem : Expr 65 := .concat div_rem (.slice div_quo 63 1)
-     let divd65 : Expr 65 := .zext div_d 65
-     actSeq [
-       .ite (.not (.ult prem divd65))
-         (actSeq [divRemReg.set (.slice (.sub prem divd65) 0 64),
-                  divQuoReg.set (.or (.shl div_quo (L64 1)) (L64 1))])
-         (actSeq [divRemReg.set (.slice prem 0 64),
-                  divQuoReg.set (.shl div_quo (L64 1))]),
-       divCntReg.set (.add div_cnt (.lit (BitVec.ofNat 7 1)))]))
+  [hwstmt|
+    if div_cnt == 64 then {
+      $stmt(stepPc),
+      $stmt(retireInc),
+      $stmt(goF0)
+    } else {
+      let prem : 65 := div_rem ++ div_quo[63],
+      let divd65 : 65 := zext div_d to 65,
+      if ~(prem <u divd65) then {
+        divRemReg <- (prem - divd65)[63:0],
+        divQuoReg <- (div_quo << 1) | 1
+      } else {
+        divRemReg <- prem[63:0],
+        divQuoReg <- div_quo << 1
+      },
+      divCntReg <- div_cnt + 1
+    }]
 
 def s_gpl : Expr 1 × Act := stArm S_GPL
   [hwstmt| if gpDone then { $stmt(stepPc), $stmt(retireInc), $stmt(goF0) }]
