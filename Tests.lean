@@ -22,6 +22,7 @@ import Tests.ReleaseSSA
 import Tests.ReleaseCertificate
 import Tests.NamedCertificate
 import Tests.Notation
+import Tests.PrettyDsl
 import Tests.DebugTap
 import Tests.CycleSupport
 import Tests.DagEval

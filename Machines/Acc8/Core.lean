@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0 OR SHL-2.1
 import Loom.Hw.Declarations
+import Loom.Hw.Dsl
 import Loom.Hw.Semantics
 import Machines.Acc8.Spec
 
@@ -18,6 +19,7 @@ refinement theorem A-R in `Machines/Acc8/Theorems/AR.lean`.
 namespace Machines.Acc8.Core
 
 open Loom.Hw
+open Loom.Hw.Dsl
 
 /-- Architectural register handles. Each name and width is declared here. -/
 abbrev accReg : Reg 8 := ⟨"acc"⟩
@@ -36,25 +38,35 @@ private def rHalted : Expr 1 := haltedReg.rd
 private def fetchW : Expr 16 := progMem.rd rPc
 private def opc : Expr 8 := .slice fetchW 0 8
 private def imm : Expr 8 := .slice fetchW 8 8
-private def pcNext : Act := pcReg.set (.add rPc (.lit 1))
-private def haltNow : Act := haltedReg.set (.lit 1)
+private def loadData : Expr 8 := dataMem.rd imm
 
 /-- Dispatch on an opcode value. -/
 private def isOp (n : Nat) : Expr 1 := .eq opc (.lit (BitVec.ofNat 8 n))
+private def op0 : Expr 1 := isOp 0
+private def op1 : Expr 1 := isOp 1
+private def op2 : Expr 1 := isOp 2
+private def op3 : Expr 1 := isOp 3
+private def op4 : Expr 1 := isOp 4
+private def op5 : Expr 1 := isOp 5
+private def op6 : Expr 1 := isOp 6
+private def accZero : Expr 1 := .eq rAcc (.lit 0)
 
-/-- The instruction-execution rule. -/
+/-- The instruction-execution rule, written with the optional pretty syntax.
+The quotation lowers directly to the same `Act` constructors used previously. -/
 private def execRule : Act :=
-  .ite rHalted .skip <|
-  -- nop (0): just advance
-  .ite (isOp 0) pcNext <|
-  .ite (isOp 1) (.seq (accReg.set imm) pcNext) <|
-  .ite (isOp 2) (.seq (accReg.set (.add rAcc imm)) pcNext) <|
-  .ite (isOp 3) (.seq (accReg.set (dataMem.rd imm)) pcNext) <|
-  .ite (isOp 4) (.seq (dataMem.write 0 imm rAcc) pcNext) <|
-  .ite (isOp 5) (.ite (.eq rAcc (.lit 0)) pcNext (pcReg.set imm)) <|
-  .ite (isOp 6) (.seq (accReg.set (.sub rAcc imm)) pcNext) <|
-  -- hlt (7) and every unknown opcode halt
-  haltNow
+  [hwstmt|
+    if rHalted then skip else
+    if op0 then pcReg <- rPc + 1 else
+    if op1 then { accReg <- imm, pcReg <- rPc + 1 } else
+    if op2 then { accReg <- rAcc + imm, pcReg <- rPc + 1 } else
+    if op3 then { accReg <- loadData, pcReg <- rPc + 1 } else
+    if op4 then { dataMem[port 0, imm] <- rAcc, pcReg <- rPc + 1 } else
+    if op5 then
+      if accZero then pcReg <- rPc + 1 else pcReg <- imm
+    else
+    if op6 then { accReg <- rAcc - imm, pcReg <- rPc + 1 } else
+    -- hlt (7) and every unknown opcode halt
+    haltedReg <- 1]
 
 /-- Acc8 state, interface, and memory initialization from typed handles. -/
 abbrev declarations (prog : BitVec 8 → BitVec 16) : Declarations :=
