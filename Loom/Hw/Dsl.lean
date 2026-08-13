@@ -1290,6 +1290,58 @@ syntax "[hwstmt| " hwstmt "]" : term
 macro_rules
   | `([hwstmt| $statement:hwstmt]) => expandStmt statement
 
+private structure DelabHwStmt where
+  stx : TSyntax `hwstmt
+  atom : Bool
+
+private def DelabHwStmt.group (value : DelabHwStmt) : DelabM (TSyntax `hwstmt) :=
+  if value.atom then pure value.stx else `(hwstmt| {$(value.stx)})
+
+private partial def delabHwStmtCore : DelabM DelabHwStmt := do
+  let expression ← getExpr
+  let arguments := expression.getAppArgs
+  let some head := expression.getAppFn.constName? | failure
+  if head == ``Loom.Hw.Act.skip then
+    guard arguments.isEmpty
+    pure ⟨← `(hwstmt| skip), true⟩
+  else if head == ``Loom.Hw.Reg.set then
+    guard (arguments.size == 3)
+    let register ← withNaryArg 1 delab
+    let value ← withNaryArg 2 delabHwExprCore
+    match register with
+    | `(term| $name:ident) => pure ⟨← `(hwstmt| $name:ident <- $(value.stx)), true⟩
+    | _ => failure
+  else if head == ``Loom.Hw.Act.write then
+    guard (arguments.size == 3)
+    let some registerName := getStringValue? arguments[1]! | failure
+    guard (!registerName.isEmpty && !registerName.contains '.')
+    let name := mkIdent (Name.mkSimple registerName)
+    let value ← withNaryArg 2 delabHwExprCore
+    pure ⟨← `(hwstmt| $name:ident <- $(value.stx)), true⟩
+  else if head == ``Loom.Hw.Act.seq then
+    guard (arguments.size == 2)
+    let first ← withNaryArg 0 delabHwStmtCore
+    let second ← withNaryArg 1 delabHwStmtCore
+    pure ⟨← `(hwstmt| {$(first.stx), $(second.stx)}), false⟩
+  else if head == ``Loom.Hw.Act.ite then
+    guard (arguments.size == 3)
+    let condition ← withNaryArg 0 delabHwExprCore
+    let yes ← (← withNaryArg 1 delabHwStmtCore).group
+    let no ← (← withNaryArg 2 delabHwStmtCore).group
+    pure ⟨← `(hwstmt| if $(condition.stx) then $yes else $no), false⟩
+  else
+    failure
+
+open Lean.PrettyPrinter.Delaborator in
+private meta def delabHwStmtWrapper : Delab := do
+  let value ← delabHwStmtCore
+  `([hwstmt| $(value.stx)])
+
+@[app_delab Loom.Hw.Reg.set] meta def delabHwRegSet := delabHwStmtWrapper
+@[app_delab Loom.Hw.Act.write] meta def delabHwWrite := delabHwStmtWrapper
+@[app_delab Loom.Hw.Act.seq] meta def delabHwSeq := delabHwStmtWrapper
+@[app_delab Loom.Hw.Act.ite] meta def delabHwIte := delabHwStmtWrapper
+
 /-! ## Packed semantic records
 
 The command below generates an ordinary Lean record and a structural
