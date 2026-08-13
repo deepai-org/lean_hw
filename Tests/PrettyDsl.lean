@@ -459,13 +459,14 @@ example : [hwstmt| receive value from sink then received <- value] =
       (let value := sink.data
        Act.seq (received.set value) sink.consume) .skip := rfl
 
-private def certifiedSend : Loom.Hw.EndpointAct := Loom.Hw.EndpointAct.skip
+private def certifiedSend : Loom.Hw.EndpointAct :=
+  Loom.Hw.EndpointAct.send source (.lit 42#8)
 private def certifiedChoice : Loom.Hw.EndpointAct :=
   Loom.Hw.EndpointAct.ite (.lit 1) certifiedSend Loom.Hw.EndpointAct.skip
 
-example : [hwstmt| endpoint_stmt(certifiedSend)] = Act.skip := rfl
+example : [hwstmt| endpoint_stmt(certifiedSend)] = source.send (.lit 42#8) := rfl
 example : [hwstmt| endpoint_stmt(certifiedChoice)] =
-    Act.ite (.lit 1) .skip .skip := rfl
+    Act.ite (.lit 1) (source.send (.lit 42#8)) .skip := rfl
 
 namespace CertifiedEscape
 hardware certified_escape where
