@@ -139,6 +139,14 @@ example : ([hwexpr| 0xff + 2] : Expr 8).eval zeroSt = 1#8 := by decide
 example : ([hwexpr| 1 << 8] : Expr 8).eval zeroSt = 0#8 := by decide
 example : ([hwexpr| 0b1010_0011] : Expr 8).eval zeroSt = 0xa3#8 := by decide
 
+/-- error: negative hardware literals are not implicit two's-complement; spell the width-specific bit pattern (for all ones at width w, use 2^w - 1) -/
+#guard_msgs in
+example : Expr 8 := [hwexpr| -1]
+
+/-- error: arithmetic right shift is not a v1 operator; sign-extend to a wider value, use logical `>>`, then slice back to the original width -/
+#guard_msgs in
+example : Expr 8 := [hwexpr| a >>s 3]
+
 namespace SharedConstants
 
 @[hw_const] def OPCODE : Nat := 0xa3

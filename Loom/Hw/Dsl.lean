@@ -363,6 +363,7 @@ syntax:80 ident "[" num ":" num "]" : hwexpr
 syntax:80 ident "[" hwexpr "]" : hwexpr
 syntax:80 hwexpr:80 "." ident : hwexpr
 syntax:75 "~" hwexpr:75 : hwexpr
+syntax:75 (name := hwNegativeLiteral) "-" num : hwexpr
 syntax:75 "zext" hwexpr:76 "to" num : hwexpr
 syntax:75 "sext" hwexpr:76 "to" num : hwexpr
 syntax:70 hwexpr:70 " * " hwexpr:71 : hwexpr
@@ -372,6 +373,7 @@ syntax:65 hwexpr:65 " + " hwexpr:66 : hwexpr
 syntax:65 hwexpr:65 " - " hwexpr:66 : hwexpr
 syntax:60 hwexpr:60 " << " hwexpr:61 : hwexpr
 syntax:60 hwexpr:60 " >> " hwexpr:61 : hwexpr
+syntax:60 (name := hwArithmeticShiftRight) hwexpr:60 " >>s " hwexpr:61 : hwexpr
 syntax:55 hwexpr:56 " ++ " hwexpr:55 : hwexpr
 syntax:50 hwexpr:50 " & " hwexpr:51 : hwexpr
 syntax:48 hwexpr:48 " ^ " hwexpr:49 : hwexpr
@@ -1017,7 +1019,13 @@ macro_rules
   | `([hwexpr| if $c:hwexpr then $t:hwexpr else $f:hwexpr]) =>
       `(Loom.Hw.Expr.mux [hwexpr| $c] [hwexpr| $t] [hwexpr| $f])
   | `([hwexpr| $e:hwexpr]) => do
-      if e.raw.getKind.toString.endsWith "pseudo.antiquot" then
+      if e.raw.getKind == ``hwNegativeLiteral then
+        Macro.throwErrorAt e
+          "negative hardware literals are not implicit two's-complement; spell the width-specific bit pattern (for all ones at width w, use 2^w - 1)"
+      else if e.raw.getKind == ``hwArithmeticShiftRight then
+        Macro.throwErrorAt e
+          "arithmetic right shift is not a v1 operator; sign-extend to a wider value, use logical `>>`, then slice back to the original width"
+      else if e.raw.getKind.toString.endsWith "pseudo.antiquot" then
         return e.raw[2][1]
       Macro.throwErrorAt e "unsupported hardware expression"
 
