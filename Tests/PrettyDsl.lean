@@ -267,6 +267,16 @@ example : declarations.outputs = ["st", "seen"] := by decide
 example : declarations.regs.head?.map (fun declaration => declaration.init.toNat) = some 0 := by
   decide
 
+run_cmd do
+  let some stateDoc ← Lean.findDocString? (← Lean.getEnv) ``st
+    | throwError "generated state-register hover documentation is missing"
+  unless stateDoc.contains "Hardware register `st` (2 bits)" do
+    throwError "generated state-register hover documentation lost its kind or width"
+  let some constantDoc ← Lean.findDocString? (← Lean.getEnv) ``CMD_QUANTUM
+    | throwError "generated constant hover documentation is missing"
+  unless constantDoc.contains "Design-local hardware constant `CMD_QUANTUM` (7 bits)" do
+    throwError "generated constant hover documentation lost its kind or width"
+
 example (state : St) (declared : st_declared state) :
     st.rd.eval state = Idle.eval state ∨
       st.rd.eval state = Run.eval state ∨

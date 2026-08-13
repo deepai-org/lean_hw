@@ -2231,6 +2231,11 @@ private def sourceSpan (fileName : String) (sourceSyntax : Syntax) : SourceSpan 
   startByte := sourceSyntax.getPos?.map (fun position => position.byteIdx) |>.getD 0
   endByte := sourceSyntax.getTailPos?.map (fun position => position.byteIdx) |>.getD 0
 
+private def hardwareDocComment (description : String) :
+    TSyntax ``Lean.Parser.Command.docComment :=
+  ⟨Syntax.node .none ``Lean.Parser.Command.docComment
+    #[Syntax.atom .none "/--", Syntax.atom .none (description ++ " -/")]⟩
+
 private partial def statementSuppressions (fileName : String) (ruleName : Name) :
     TSyntax `hwstmt → Array SuppressionMetadata
   | statement@`(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) =>
@@ -2333,7 +2338,10 @@ private def expandHardwareCommand
   let mut commands : Array Syntax := #[]
   for register in registers do
     let sourceName := Syntax.mkStrLit register.name.getId.toString
+    let documentation := hardwareDocComment
+      s!"Hardware register `{register.name.getId}` ({register.width.getNat} bits)."
     let command ← `(command|
+      $documentation:docComment
       def $(register.name) : Loom.Hw.Reg $(register.width) :=
         ⟨$sourceName⟩)
     commands := commands.push command
@@ -2344,7 +2352,10 @@ private def expandHardwareCommand
     commands := commands.push lemmaCommand
   for inputItem in inputs do
     let sourceName := Syntax.mkStrLit inputItem.name.getId.toString
+    let documentation := hardwareDocComment
+      s!"Read-only hardware input `{inputItem.name.getId}` ({inputItem.width.getNat} bits)."
     let command ← `(command|
+      $documentation:docComment
       def $(inputItem.name) : Loom.Hw.Input $(inputItem.width) := ⟨$sourceName⟩)
     commands := commands.push command
     let lemmaName := mkIdentFrom inputItem.name
@@ -2355,7 +2366,10 @@ private def expandHardwareCommand
   for memory in memories do
     let sourceName := Syntax.mkStrLit memory.name.getId.toString
     let addressWidth := quote memory.addrWidth
+    let documentation := hardwareDocComment
+      s!"Hardware memory `{memory.name.getId}` ({memory.dataWidth.getNat}-bit data, {memory.addrWidth}-bit address)."
     let command ← `(command|
+      $documentation:docComment
       def $(memory.name) : Loom.Hw.Mem $addressWidth $(memory.dataWidth) := ⟨$sourceName⟩)
     commands := commands.push command
     let lemmaName := mkIdentFrom memory.name
@@ -2366,7 +2380,10 @@ private def expandHardwareCommand
   for memory in packedMemories do
     let sourceName := Syntax.mkStrLit memory.name.getId.toString
     let addressWidth := quote memory.addrWidth
+    let documentation := hardwareDocComment
+      s!"Packed hardware memory `{memory.name.getId}` ({memory.addrWidth}-bit address)."
     let command ← `(command|
+      $documentation:docComment
       def $(memory.name) : Loom.Hw.PackedMem $addressWidth $(memory.typeName) :=
         Loom.Hw.PackedMem.named $sourceName)
     commands := commands.push command
@@ -2377,24 +2394,36 @@ private def expandHardwareCommand
     commands := commands.push lemmaCommand
   for register in packedRegisters do
     let sourceName := Syntax.mkStrLit register.name.getId.toString
+    let documentation := hardwareDocComment
+      s!"Packed hardware register `{register.name.getId}`."
     let command ← `(command|
+      $documentation:docComment
       def $(register.name) : Loom.Hw.PackedReg $(register.typeName) :=
         Loom.Hw.PackedReg.named $sourceName)
     commands := commands.push command
   for inputItem in packedInputs do
     let sourceName := Syntax.mkStrLit inputItem.name.getId.toString
+    let documentation := hardwareDocComment
+      s!"Read-only packed hardware input `{inputItem.name.getId}`."
     let command ← `(command|
+      $documentation:docComment
       def $(inputItem.name) : Loom.Hw.PackedInput $(inputItem.typeName) :=
         Loom.Hw.PackedInput.named $sourceName)
     commands := commands.push command
   for registerArray in registerArrays do
     let sourceName := Syntax.mkStrLit registerArray.name.getId.toString
+    let documentation := hardwareDocComment
+      s!"Hardware register family `{registerArray.name.getId}` ({registerArray.count.getNat} × {registerArray.width.getNat} bits)."
     let command ← `(command|
+      $documentation:docComment
       def $(registerArray.name) : Loom.Hw.RegArray $(registerArray.width) $(registerArray.count) :=
         ⟨$sourceName⟩)
     commands := commands.push command
   for constant in constants do
+    let documentation := hardwareDocComment
+      s!"Design-local hardware constant `{constant.name.getId}` ({constant.width.getNat} bits)."
     let command ← `(command|
+      $documentation:docComment
       def $(constant.name) : Loom.Hw.Expr $(constant.width) :=
         hw_lit% $(constant.value))
     commands := commands.push command
@@ -2422,11 +2451,17 @@ private def expandHardwareCommand
         · exact Or.inl ($declaredCasesName declared)
         · exact Or.inr declared))
   for wireItem in wires do
+    let documentation := hardwareDocComment
+      s!"Combinational hardware expression `{wireItem.name.getId}` ({wireItem.width.getNat} bits)."
     let command ← `(command|
+      $documentation:docComment
       def $(wireItem.name) : Loom.Hw.Expr $(wireItem.width) := [hwexpr| $(wireItem.value)])
     commands := commands.push command
   for wireItem in packedWires do
+    let documentation := hardwareDocComment
+      s!"Packed combinational hardware expression `{wireItem.name.getId}`."
     let command ← `(command|
+      $documentation:docComment
       def $(wireItem.name) : Loom.Hw.PackedExpr $(wireItem.typeName) :=
         [hwexpr| $(wireItem.value)])
     commands := commands.push command
