@@ -791,4 +791,33 @@ hardware computed_case_label where
     | 1 + 1 => skip
     | default => skip
 
+namespace DeadDefault
+
+/--
+warning: default arm is unreachable: the declared states cover every register encoding
+-/
+#guard_msgs in
+hardware dead_state_default where
+  states mode : { Off, On }
+  rule dispatch :=
+    case mode of
+    | Off => mode <- On
+    | On => mode <- Off
+    | default => skip
+end DeadDefault
+
+namespace RecoveryDefault
+
+/-- A three-state, two-bit register still has one illegal encoding, so its
+explicit recovery arm is meaningful and must not receive the dead warning. -/
+hardware illegal_state_recovery where
+  states recoveryMode : { Idle, Busy, Failed }
+  rule recover :=
+    case recoveryMode of
+    | Idle => recoveryMode <- Busy
+    | Busy => recoveryMode <- Idle
+    | Failed => recoveryMode <- Idle
+    | default => recoveryMode <- Idle
+end RecoveryDefault
+
 end Tests.PrettyDsl.Diagnostics

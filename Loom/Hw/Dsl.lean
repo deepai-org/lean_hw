@@ -1265,6 +1265,7 @@ private structure RuleItem where
 private structure StateDomain where
   register : TSyntax `ident
   members : Array (TSyntax `ident)
+  width : Nat
 
 private structure WrittenTarget where
   name : Name
@@ -1480,6 +1481,50 @@ private def hardwareLintFindings (registers : Array ScalarRegItem)
       analyzeStatement registerNames suppressed #[] ruleItem.body written
     (nextWritten, priorFindings ++ nextFindings)) ([], [])
   findings
+
+private partial def deadDefaultFindings (domains : Array StateDomain) :
+    TSyntax `hwstmt → List LintFinding
+  | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) =>
+      let nested := arms.toList.flatMap fun (arm : TSyntax `hwcasearm) =>
+        match arm with
+        | `(hwcasearm| | default => $body:hwstmt)
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => deadDefaultFindings domains body
+        | _ => []
+      let domain? := match scrutinee with
+        | `(hwexpr| $name:ident) =>
+            domains.find? (fun domain => domain.register.getId == name.getId)
+        | _ => none
+      match domain? with
+      | none => nested
+      | some domain =>
+          let named := arms.foldl (fun names arm =>
+            match arm with
+            | `(hwcasearm| | $name:ident => $_:hwstmt) => names.push name.getId
+            | _ => names) #[]
+          let default? := arms.find? fun arm =>
+            match arm with
+            | `(hwcasearm| | default => $_:hwstmt) => true
+            | _ => false
+          let allEncodingsDeclared := domain.members.size == 2 ^ domain.width
+          let allMembersCovered := domain.members.all fun member => named.contains member.getId
+          match default? with
+          | some defaultArm =>
+              if allEncodingsDeclared && allMembersCovered then
+                ⟨defaultArm,
+                  "default arm is unreachable: the declared states cover every register encoding"⟩ :: nested
+              else nested
+          | none => nested
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      deadDefaultFindings domains yes ++ deadDefaultFindings domains no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => deadDefaultFindings domains yes
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt)
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt)
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt)
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) =>
+      deadDefaultFindings domains body
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.toList.flatMap (deadDefaultFindings domains)
+  | _ => []
 
 private def checkedValue (width value : TSyntax `num) : MacroM Nat := do
   let widthValue := width.getNat
@@ -1707,46 +1752,46 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
         unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name none members.getElems none false
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $kind:ident $name:ident : {$members:ident,*} := $reset:ident) =>
         unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name none members.getElems (some reset) false
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $kind:ident $name:ident : $width:num {$members:ident,*}) =>
         unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems none false
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $kind:ident $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
         unless kind.getId == `states do Macro.throwErrorAt kind "expected `states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems (some reset) false
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : {$members:ident,*}) =>
         unless qualifier.getId == `output && kind.getId == `states do
           Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name none members.getElems none true
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : {$members:ident,*} := $reset:ident) =>
         unless qualifier.getId == `output && kind.getId == `states do
           Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name none members.getElems (some reset) true
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num {$members:ident,*}) =>
         unless qualifier.getId == `output && kind.getId == `states do
           Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems none true
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $qualifier:ident $kind:ident $name:ident : $width:num {$members:ident,*} := $reset:ident) =>
         unless qualifier.getId == `output && kind.getId == `states do
           Macro.throwErrorAt qualifier "expected `output states`"
         let (register, stateConstants) ← stateItems name (some width) members.getElems (some reset) true
         registers := registers.push register; constants := constants ++ stateConstants
-        stateDomains := stateDomains.push ⟨name, members.getElems⟩
+        stateDomains := stateDomains.push ⟨name, members.getElems, register.width.getNat⟩
     | `(hwitem| $kind:ident $name:ident : $dataWidth:num [$depth:num]) =>
         if kind.getId == `memory then
           memories := memories.push
@@ -2084,6 +2129,9 @@ private def expandHardwareCommand
           throwErrorAt moduleName s!"generated declaration '{generatedName}' has already been declared"
       for finding in hardwareLintFindings registers rules do
         logWarningAt finding.source finding.message
+      for ruleItem in rules do
+        for finding in deadDefaultFindings domains ruleItem.body do
+          logWarningAt finding.source finding.message
       let packedWidth (typeName : TSyntax `ident) : CommandElabM Nat :=
         liftTermElabM do
           let widthSyntax ← `(Loom.Hw.HwPacked.width $typeName)
