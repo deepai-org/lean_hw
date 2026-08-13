@@ -66,6 +66,33 @@ structure EndpointAct where
 
 namespace EndpointAct
 
+private theorem append_srcPayload_ne_srcValid (left right : String) :
+    left ++ "src_payload" ≠ right ++ "src_valid" := by
+  intro equal
+  have listed := congrArg (List.reverse ∘ String.toList) equal
+  simp only [Function.comp_apply, String.toList_append, List.reverse_append] at listed
+  have second := congrArg (fun chars => chars[1]?) listed
+  change some 'a' = some 'i' at second
+  cases second
+
+private theorem append_srcPayload_ne_dstPop (left right : String) :
+    left ++ "src_payload" ≠ right ++ "dst_pop" := by
+  intro equal
+  have listed := congrArg (List.reverse ∘ String.toList) equal
+  simp only [Function.comp_apply, String.toList_append, List.reverse_append] at listed
+  have second := congrArg (fun chars => chars[1]?) listed
+  change some 'a' = some 'o' at second
+  cases second
+
+private theorem append_srcValid_ne_dstPop (left right : String) :
+    left ++ "src_valid" ≠ right ++ "dst_pop" := by
+  intro equal
+  have listed := congrArg (List.reverse ∘ String.toList) equal
+  simp only [Function.comp_apply, String.toList_append, List.reverse_append] at listed
+  have second := congrArg (fun chars => chars[1]?) listed
+  change some 'i' = some 'o' at second
+  cases second
+
 /-- Expert constructor for an arbitrary action.  The obligation is phrased in
 the same core `Act.maxWritesTo` function used by system validation. -/
 def ofAct (action : Act) (footprint : EndpointFootprint action) : EndpointAct :=
@@ -73,6 +100,30 @@ def ofAct (action : Act) (footprint : EndpointFootprint action) : EndpointAct :=
 
 def skip : EndpointAct :=
   ⟨Act.skip, by constructor <;> intro _ channel <;> simp [Act.maxWritesTo]⟩
+
+/-- One source transaction. The generated coordinate-separation facts are
+proved here once, so application authors do not handle endpoint names. -/
+def send {width : Nat} (endpoint : Chan.SourceEndpoint width)
+    (payload : Expr width) : EndpointAct :=
+  ⟨endpoint.send payload, by
+    constructor <;> intro _ channel
+    · simp [Chan.SourceEndpoint.send, Chan.enq, Act.maxWritesTo,
+        Chan.sourcePayloadName, Chan.sourceValidName, Chan.stem,
+        append_srcPayload_ne_srcValid]
+      split <;> omega
+    · simp [Chan.SourceEndpoint.send, Chan.enq, Act.maxWritesTo,
+        Chan.sourcePayloadName, Chan.sourceValidName, Chan.sinkPopName,
+        Chan.stem, append_srcPayload_ne_dstPop, append_srcValid_ne_dstPop]⟩
+
+/-- One sink transaction. -/
+def consume {width : Nat} (endpoint : Chan.SinkEndpoint width) : EndpointAct :=
+  ⟨endpoint.consume, by
+    constructor <;> intro _ channel
+    · simp [Chan.SinkEndpoint.consume, Chan.pop, Act.maxWritesTo,
+        Chan.sourceValidName, Chan.sinkPopName, Chan.stem]
+      split <;> omega
+    · simp [Chan.SinkEndpoint.consume, Chan.pop, Act.maxWritesTo]
+      split <;> omega⟩
 
 /-- Mutually exclusive alternatives preserve the one-transaction bound. -/
 def ite (condition : Expr 1) (yes no : EndpointAct) : EndpointAct :=
