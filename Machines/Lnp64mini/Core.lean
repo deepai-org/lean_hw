@@ -516,11 +516,22 @@ def gPopIdx  : Expr 7 := gcIdx (.sub (gdepthRd cur) (.lit (BitVec.ofNat 3 1)))
 /-- EXT-7: TLB entries. Eight is what the guest's region count needs. -/
 def TLBN : Nat := 8
 
-def tlbBaseRegs  : RegArray 32 TLBN := ⟨"tlb_base"⟩
-def tlbLimitRegs : RegArray 32 TLBN := ⟨"tlb_limit"⟩
-def tlbPhysRegs  : RegArray 32 TLBN := ⟨"tlb_phys"⟩
-def tlbDomRegs   : RegArray 8 TLBN  := ⟨"tlb_dom"⟩
-def tlbCellRegs  : RegArray 8 TLBN  := ⟨"tlb_cell"⟩
+namespace AuthoredTlbFamilies
+
+hardware lnp64mini_tlb_families where
+  output reg tlb_base : 32 [8]
+  output reg tlb_limit : 32 [8]
+  output reg tlb_phys : 32 [8]
+  output reg tlb_dom : 8 [8]
+  output reg tlb_cell : 8 [8]
+
+end AuthoredTlbFamilies
+
+def tlbBaseRegs  : RegArray 32 TLBN := AuthoredTlbFamilies.tlb_base
+def tlbLimitRegs : RegArray 32 TLBN := AuthoredTlbFamilies.tlb_limit
+def tlbPhysRegs  : RegArray 32 TLBN := AuthoredTlbFamilies.tlb_phys
+def tlbDomRegs   : RegArray 8 TLBN  := AuthoredTlbFamilies.tlb_dom
+def tlbCellRegs  : RegArray 8 TLBN  := AuthoredTlbFamilies.tlb_cell
 
 /-! EXT-7 stage B: the TLB holds **VMA ranges**, not fixed pages, and the
 lookup is **fully associative** — every entry is compared each cycle, so the
