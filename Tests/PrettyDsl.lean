@@ -41,12 +41,37 @@ example (bits : BitVec 8) : HwPacked.pack (HwPacked.unpack (α := Header) bits) 
 
 private def headerReg : PackedReg Header := .named "header"
 private def headerInput : PackedInput Header := .named "header_input"
+private def headerValue : PackedExpr Header :=
+  [hwexpr| Header { tag := 5, address := 17 }]
+example : headerValue.bits = Expr.concat (.lit 5#3) (.lit 17#5) := rfl
+example : ([hwexpr| { headerValue with tag := 3 }] : PackedExpr Header) =
+    headerValue.setField Header.tagField (.lit 3#3) := rfl
+example : ([hwexpr| headerValue == Header { tag := 5, address := 17 }] : Expr 1) =
+    PackedExpr.eq headerValue
+      (PackedExpr.fromBits (Expr.concat (.lit 5#3) (.lit 17#5))) := rfl
+example : ([hwexpr| headerReg.bits] : Expr 8) = headerReg.rd.bits := rfl
+example (raw : Expr 8) : ([hwexpr| Header.fromBits(raw)] : PackedExpr Header) =
+    PackedExpr.fromBits raw := rfl
 example : ([hwexpr| headerReg.tag] : Expr 3) =
     Header.tagField.read headerReg.rd := rfl
 example : ([hwexpr| headerInput.address] : Expr 5) =
     Header.addressField.read headerInput.rd := rfl
 example : [hwstmt| headerReg.tag <- 3] =
     headerReg.setField Header.tagField (.lit 3#3) := rfl
+
+/-- error: missing packed field 'address' for 'Tests.PrettyDsl.Header' -/
+#guard_msgs in
+example : PackedExpr Header := [hwexpr| Header { tag := 1 }]
+
+/-- error: duplicate packed field 'tag' -/
+#guard_msgs in
+example : PackedExpr Header :=
+  [hwexpr| Header { tag := 1, address := 2, tag := 3 }]
+
+/-- error: duplicate packed field 'tag' -/
+#guard_msgs in
+example : PackedExpr Header :=
+  [hwexpr| { headerValue with tag := 1, tag := 2 }]
 
 /-- error: duplicate packed field 'tag' -/
 #guard_msgs in

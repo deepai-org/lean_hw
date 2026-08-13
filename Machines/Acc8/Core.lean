@@ -42,7 +42,7 @@ packed struct Instruction where
   opc : 8
 
 private def fetched : PackedExpr Instruction :=
-  .fromBits (progMem.rd rPc)
+  [hwexpr| Instruction.fromBits(progMem[rPc])]
 private def opc : Expr 8 := [hwexpr| fetched.opc]
 private def imm : Expr 8 := [hwexpr| fetched.imm]
 private def loadData : Expr 8 := dataMem.rd imm

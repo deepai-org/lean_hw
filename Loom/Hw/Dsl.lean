@@ -169,6 +169,7 @@ def findHardwareMetadata? (environment : Environment) (designName : Name) :
 declare_syntax_cat hwexpr
 declare_syntax_cat hwstmt
 declare_syntax_cat hwcasearm
+declare_syntax_cat hwrecordfield
 
 /-- Prevent a leading case-arm `|` on the next line from being consumed as a
 bitwise OR. Ordinary multiline expressions remain available by parenthesizing
@@ -192,6 +193,10 @@ non-associative because both operands must bind more tightly than level 40. -/
 syntax:max num : hwexpr
 syntax:max ident : hwexpr
 syntax:max "(" hwexpr ")" : hwexpr
+syntax ident ":=" hwexpr : hwrecordfield
+syntax:max ident "{" hwrecordfield,* "}" : hwexpr
+syntax:max "{" hwexpr "with" hwrecordfield,* "}" : hwexpr
+syntax:max ident "(" hwexpr ")" : hwexpr
 syntax:80 hwexpr:80 "[" num "]" : hwexpr
 syntax:80 hwexpr:80 "[" num ":" num "]" : hwexpr
 syntax:80 ident "[" num ":" num "]" : hwexpr
@@ -225,11 +230,18 @@ syntax:max (name := hwMemRead) "hw_mem_read% " term:max term:max : term
 syntax:max (name := hwShift) "hw_shift% " str term:max term:max : term
 syntax:max (name := hwPackedField) "hw_packed_field% " term:max ident : term
 syntax:max (name := hwPackedWrite) "hw_packed_write% " term:max ident term:max : term
+syntax:max (name := hwPackedConstruct) "hw_packed_construct% " ident
+  "{" hwrecordfield,* "}" : term
+syntax:max (name := hwPackedUpdate) "hw_packed_update% " term:max
+  "{" hwrecordfield,* "}" : term
+syntax:max (name := hwPackedFromBits) "hw_packed_from_bits% " ident term:max : term
+syntax:max (name := hwEq) "hw_eq% " term:max term:max : term
 syntax:max (name := hwWrite) "hw_write% " term:max term:max : term
 syntax:max (name := hwArrayWrite) "hw_array_write% " term:max term:max term:max : term
 syntax:max (name := hwChannelObserve) "hw_channel_observe% " term:max ident : term
 syntax:max (name := hwSend) "hw_send% " term:max term:max : term
 syntax:max (name := hwConsume) "hw_consume% " term:max : term
+syntax "[hwexpr| " hwexpr "]" : term
 
 private def checkedHardwareLiteral (source : Syntax) (value : Nat)
     (expectedType? : Option Lean.Expr) : TermElabM Lean.Expr := do
@@ -309,6 +321,9 @@ when that fails is its final component interpreted as a packed field. -/
       let valueType ← Meta.whnf (← Meta.inferType value)
       unless valueType.isAppOfArity ``Loom.Hw.PackedExpr 2 do
         throwErrorAt valueSyntax "field projection requires a packed hardware value"
+      if fieldName.getId.eraseMacroScopes == `bits then
+        let result ← Meta.mkAppM ``Loom.Hw.PackedExpr.bits #[value]
+        return ← ensureHasType expectedType? result
       let semanticType := valueType.getAppArgs[0]!
       let some typeName := semanticType.constName? | throwErrorAt valueSyntax
         "packed field projection requires a named packed struct type"
@@ -319,6 +334,123 @@ when that fails is its final component interpreted as a packed field. -/
           s!"'{fieldName.getId}' is not a generated field of '{typeName}'"
       let descriptor := .const descriptorName []
       let result ← Meta.mkAppM ``Loom.Hw.PackedField.read #[descriptor, value]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+private def recordFieldParts (field : TSyntax `hwrecordfield) :
+    TermElabM (TSyntax `ident × TSyntax `hwexpr) :=
+  match field with
+  | `(hwrecordfield| $name:ident := $value:hwexpr) => pure (name, value)
+  | _ => throwErrorAt field "expected `field := expression`"
+
+private def packedDescriptor (typeName : Name) (field : TSyntax `ident) :
+    TermElabM (Lean.Expr × Lean.Expr) := do
+  let descriptorName := typeName ++
+    Name.mkSimple (field.getId.eraseMacroScopes.toString ++ "Field")
+  unless (← getEnv).contains descriptorName do
+    throwErrorAt field s!"'{field.getId.eraseMacroScopes}' is not a packed field of '{typeName}'"
+  let descriptor := Lean.Expr.const descriptorName []
+  let descriptorType ← Meta.whnf (← Meta.inferType descriptor)
+  unless descriptorType.isAppOfArity ``Loom.Hw.PackedField 3 do
+    throwErrorAt field "generated packed field has an invalid descriptor type"
+  pure (descriptor, descriptorType.getAppArgs[2]!)
+
+private def elaboratePackedFields (typeName : Name)
+    (fields : Array (TSyntax `hwrecordfield)) : TermElabM (Array Lean.Expr) := do
+  let some structureInfo := Lean.getStructureInfo? (← getEnv) typeName
+    | throwError "'{typeName}' is not a packed struct"
+  let parts ← fields.mapM recordFieldParts
+  for index in [:parts.size] do
+    for later in [index + 1:parts.size] do
+      if parts[index]!.1.getId.eraseMacroScopes == parts[later]!.1.getId.eraseMacroScopes then
+        throwErrorAt parts[later]!.1
+          s!"duplicate packed field '{parts[later]!.1.getId.eraseMacroScopes}'"
+  for supplied in parts do
+    unless structureInfo.fieldNames.any (fun declared =>
+        declared.getString! == supplied.1.getId.eraseMacroScopes.getString!) do
+      throwErrorAt supplied.1
+        s!"unknown packed field '{supplied.1.getId.eraseMacroScopes}' for '{typeName}'"
+  let mut values := #[]
+  for declared in structureInfo.fieldNames do
+    let shortName := declared.getString!
+    let some supplied := parts.find? (fun part =>
+        part.1.getId.eraseMacroScopes.getString! == shortName)
+      | throwError s!"missing packed field '{shortName}' for '{typeName}'"
+    let (_, width) ← packedDescriptor typeName supplied.1
+    let expected := Lean.Expr.app (.const ``Loom.Hw.Expr []) width
+    let valueSyntax := supplied.2
+    let quoted ← `(term| [hwexpr| $valueSyntax])
+    values := values.push (← elabTerm quoted (some expected))
+  pure values
+
+@[term_elab hwPackedConstruct] def elabHwPackedConstruct : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_packed_construct% $typeSyntax:ident {$fields:hwrecordfield,*}) => do
+      let typeName ← resolveGlobalConstNoOverload typeSyntax
+      let values ← elaboratePackedFields typeName fields.getElems
+      let some first := values[0]?
+        | throwErrorAt typeSyntax "a packed struct requires at least one field"
+      let mut bits := first
+      for value in values.toList.drop 1 do
+        bits ← Meta.mkAppM ``Loom.Hw.Expr.concat #[bits, value]
+      let result ← Meta.mkAppOptM ``Loom.Hw.PackedExpr.fromBits
+        #[some (.const typeName []), none, some bits]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwPackedUpdate] def elabHwPackedUpdate : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_packed_update% $baseSyntax:term {$fields:hwrecordfield,*}) => do
+      let base ← elabTerm baseSyntax none
+      let baseType ← Meta.whnf (← Meta.inferType base)
+      unless baseType.isAppOfArity ``Loom.Hw.PackedExpr 2 do
+        throwErrorAt baseSyntax "packed update requires a packed hardware value"
+      let semanticType := baseType.getAppArgs[0]!
+      let some typeName := semanticType.constName?
+        | throwErrorAt baseSyntax "packed update requires a named packed struct type"
+      let parts ← fields.getElems.mapM recordFieldParts
+      for index in [:parts.size] do
+        for later in [index + 1:parts.size] do
+          if parts[index]!.1.getId.eraseMacroScopes == parts[later]!.1.getId.eraseMacroScopes then
+            throwErrorAt parts[later]!.1
+              s!"duplicate packed field '{parts[later]!.1.getId.eraseMacroScopes}'"
+      let mut result := base
+      for part in parts do
+        let (descriptor, width) ← packedDescriptor typeName part.1
+        let expected := Lean.Expr.app (.const ``Loom.Hw.Expr []) width
+        let valueSyntax := part.2
+        let quoted ← `(term| [hwexpr| $valueSyntax])
+        let replacement ← elabTerm quoted (some expected)
+        result ← Meta.mkAppM ``Loom.Hw.PackedExpr.setField #[result, descriptor, replacement]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwEq] def elabHwEq : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_eq% $leftSyntax:term $rightSyntax:term) => do
+      let left ← elabTerm leftSyntax none
+      let leftType ← Meta.whnf (← Meta.inferType left)
+      let right ← elabTerm rightSyntax (some leftType)
+      let result ←
+        if leftType.isAppOfArity ``Loom.Hw.Expr 1 then
+          Meta.mkAppM ``Loom.Hw.Expr.eq #[left, right]
+        else if leftType.isAppOfArity ``Loom.Hw.PackedExpr 2 then
+          Meta.mkAppM ``Loom.Hw.PackedExpr.eq #[left, right]
+        else
+          throwErrorAt leftSyntax "hardware equality requires scalar or same-type packed expressions"
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+@[term_elab hwPackedFromBits] def elabHwPackedFromBits : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hw_packed_from_bits% $typeSyntax:ident $bitsSyntax:term) => do
+      let typeName ← resolveGlobalConstNoOverload typeSyntax
+      let width ← Meta.whnf (← Meta.mkAppOptM ``Loom.Hw.HwPacked.width
+        #[some (.const typeName []), none])
+      let bits ← elabTerm bitsSyntax
+        (some (Lean.Expr.app (.const ``Loom.Hw.Expr []) width))
+      let result ← Meta.mkAppOptM ``Loom.Hw.PackedExpr.fromBits
+        #[some (.const typeName []), none, some bits]
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -569,8 +701,6 @@ instance, this elaborator refuses truncation and refuses an unknown width. -/
   | `(hw_lit% $n:num) => checkedHardwareLiteral n n.getNat expectedType?
   | _ => throwUnsupportedSyntax
 
-syntax "[hwexpr| " hwexpr "]" : term
-
 private inductive InfixFamily where
   | arithmetic | shift | concat | bitwise | comparison
   deriving BEq
@@ -611,6 +741,16 @@ private def shiftOperandTerm (operand : TSyntax `hwexpr) : MacroM (TSyntax `term
   | _ => `([hwexpr| $operand])
 
 macro_rules
+  | `([hwexpr| $typeName:ident {$fields:hwrecordfield,*}]) =>
+      `(hw_packed_construct% $typeName {$fields,*})
+  | `([hwexpr| {$base:hwexpr with $fields:hwrecordfield,*}]) =>
+      `(hw_packed_update% [hwexpr| $base] {$fields,*})
+  | `([hwexpr| $operation:ident ($bits:hwexpr)]) => do
+      let name := operation.getId.eraseMacroScopes
+      unless !name.isAtomic && name.getString! == "fromBits" do
+        Macro.throwErrorAt operation "the only hardware expression application is `PackedType.fromBits(value)`"
+      let typeName := mkIdentFrom operation name.getPrefix
+      `(hw_packed_from_bits% $typeName [hwexpr| $bits])
   | `([hwexpr| $n:num]) => `(hw_lit% $n)
   | `([hwexpr| $id:ident]) => do
       let name := id.getId
@@ -663,7 +803,9 @@ macro_rules
   | `([hwexpr| $a:hwexpr & $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.and [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr ^ $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.xor [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr | $b:hwexpr]) => do validateInfixBoundary .bitwise a b; `(Loom.Hw.Expr.or [hwexpr| $a] [hwexpr| $b])
-  | `([hwexpr| $a:hwexpr == $b:hwexpr]) => do validateInfixBoundary .comparison a b; `(Loom.Hw.Expr.eq [hwexpr| $a] [hwexpr| $b])
+  | `([hwexpr| $a:hwexpr == $b:hwexpr]) => do
+      validateInfixBoundary .comparison a b
+      `(hw_eq% [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr <u $b:hwexpr]) => do validateInfixBoundary .comparison a b; `(Loom.Hw.Expr.ult [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| $a:hwexpr <s $b:hwexpr]) => do validateInfixBoundary .comparison a b; `(Loom.Hw.Expr.slt [hwexpr| $a] [hwexpr| $b])
   | `([hwexpr| if $c:hwexpr then $t:hwexpr else $f:hwexpr]) =>
