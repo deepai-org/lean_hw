@@ -136,6 +136,10 @@ private theorem append_srcValid_ne_dstPop (left right : String) :
   change some 'i' = some 'o' at second
   cases second
 
+private theorem append_dstPop_ne_srcValid (left right : String) :
+    left ++ "dst_pop" ≠ right ++ "src_valid" := by
+  exact fun equal => append_srcValid_ne_dstPop right left equal.symm
+
 /-- Expert constructor for an arbitrary action.  The obligation is phrased in
 the same core `Act.maxWritesTo` function used by system validation. -/
 def ofAct (action : Act) (footprint : EndpointFootprint action) : EndpointAct :=
@@ -158,6 +162,15 @@ def send {width : Nat} (endpoint : Chan.SourceEndpoint width)
         Chan.sourcePayloadName, Chan.sourceValidName, Chan.sinkPopName,
         Chan.stem, append_srcPayload_ne_dstPop, append_srcValid_ne_dstPop]⟩
 
+private theorem send_sourceWrites {payloadWidth queriedWidth : Nat}
+    (endpoint : Chan.SourceEndpoint payloadWidth) (payload : Expr payloadWidth)
+    (queried : Chan queriedWidth) :
+    (send endpoint payload).action.maxWritesTo queried.sourceValidName 1 =
+      if endpoint.channel.sourceValidName = queried.sourceValidName then 1 else 0 := by
+  simp [send, Chan.SourceEndpoint.send, Chan.enq, Act.maxWritesTo,
+    Chan.sourcePayloadName, Chan.sourceValidName, Chan.stem,
+    append_srcPayload_ne_srcValid]
+
 /-- One sink transaction. -/
 def consume {width : Nat} (endpoint : Chan.SinkEndpoint width) : EndpointAct :=
   ⟨endpoint.consume, by
@@ -167,6 +180,12 @@ def consume {width : Nat} (endpoint : Chan.SinkEndpoint width) : EndpointAct :=
       split <;> omega
     · simp [Chan.SinkEndpoint.consume, Chan.pop, Act.maxWritesTo]
       split <;> omega⟩
+
+private theorem consume_sinkWrites {payloadWidth queriedWidth : Nat}
+    (endpoint : Chan.SinkEndpoint payloadWidth) (queried : Chan queriedWidth) :
+    (consume endpoint).action.maxWritesTo queried.sinkPopName 1 =
+      if endpoint.channel.sinkPopName = queried.sinkPopName then 1 else 0 := by
+  simp [consume, Chan.SinkEndpoint.consume, Chan.pop, Act.maxWritesTo]
 
 /-- Mutually exclusive alternatives preserve the one-transaction bound. -/
 def ite (condition : Expr 1) (yes no : EndpointAct) : EndpointAct :=
@@ -189,6 +208,51 @@ structure Disjoint (first second : EndpointAct) : Prop where
     first.action.maxWritesTo channel.sinkPopName 1 = 0 ∨
       second.action.maxWritesTo channel.sinkPopName 1 = 0
 
+/-- Sends to two distinct source coordinates may be sequenced.  The caller
+states only the real interface fact; generated endpoint-coordinate arithmetic
+is discharged here once. -/
+theorem sendsDisjoint {leftWidth rightWidth : Nat}
+    (left : Chan.SourceEndpoint leftWidth) (leftPayload : Expr leftWidth)
+    (right : Chan.SourceEndpoint rightWidth) (rightPayload : Expr rightWidth)
+    (separate : left.channel.sourceValidName ≠ right.channel.sourceValidName) :
+    Disjoint (send left leftPayload) (send right rightPayload) := by
+  constructor
+  · intro width channel
+    rw [send_sourceWrites, send_sourceWrites]
+    by_cases leftMatches : left.channel.sourceValidName = channel.sourceValidName
+    · right
+      have rightDiffers : right.channel.sourceValidName ≠ channel.sourceValidName := by
+        intro rightMatches
+        exact separate (leftMatches.trans rightMatches.symm)
+      rw [if_neg rightDiffers]
+    · left
+      simp [leftMatches]
+  · intro width channel
+    simp [send, Chan.SourceEndpoint.send, Chan.enq, Act.maxWritesTo,
+      Chan.sourcePayloadName, Chan.sourceValidName, Chan.sinkPopName,
+      Chan.stem, append_srcPayload_ne_dstPop, append_srcValid_ne_dstPop]
+
+/-- Consumes from two distinct sink coordinates may be sequenced. -/
+theorem consumesDisjoint {leftWidth rightWidth : Nat}
+    (left : Chan.SinkEndpoint leftWidth) (right : Chan.SinkEndpoint rightWidth)
+    (separate : left.channel.sinkPopName ≠ right.channel.sinkPopName) :
+    Disjoint (consume left) (consume right) := by
+  constructor
+  · intro width channel
+    simp [consume, Chan.SinkEndpoint.consume, Chan.pop, Act.maxWritesTo,
+      Chan.sourceValidName, Chan.sinkPopName, Chan.stem,
+      append_dstPop_ne_srcValid]
+  · intro width channel
+    rw [consume_sinkWrites, consume_sinkWrites]
+    by_cases leftMatches : left.channel.sinkPopName = channel.sinkPopName
+    · right
+      have rightDiffers : right.channel.sinkPopName ≠ channel.sinkPopName := by
+        intro rightMatches
+        exact separate (leftMatches.trans rightMatches.symm)
+      rw [if_neg rightDiffers]
+    · left
+      simp [leftMatches]
+
 /-- Sequential composition derives its bound from the two existing
 certificates plus the sole remaining semantic obligation: the operands do not
 transact on the same endpoint.  Closed concrete compositions normally
@@ -205,6 +269,20 @@ def seq (first second : EndpointAct) (disjoint : Disjoint first second) : Endpoi
       rcases disjoint.sink channel with left | right
       · simpa [left] using second.footprint.sink channel
       · simpa [right] using first.footprint.sink channel⟩
+
+/-- Proof-carrying two-channel source sequence. -/
+def sendThenSend {leftWidth rightWidth : Nat}
+    (left : Chan.SourceEndpoint leftWidth) (leftPayload : Expr leftWidth)
+    (right : Chan.SourceEndpoint rightWidth) (rightPayload : Expr rightWidth)
+    (separate : left.channel.sourceValidName ≠ right.channel.sourceValidName) : EndpointAct :=
+  seq (send left leftPayload) (send right rightPayload)
+    (sendsDisjoint left leftPayload right rightPayload separate)
+
+/-- Proof-carrying two-channel sink sequence. -/
+def consumeThenConsume {leftWidth rightWidth : Nat}
+    (left : Chan.SinkEndpoint leftWidth) (right : Chan.SinkEndpoint rightWidth)
+    (separate : left.channel.sinkPopName ≠ right.channel.sinkPopName) : EndpointAct :=
+  seq (consume left) (consume right) (consumesDisjoint left right separate)
 
 /-- `skip` composes on the left without any proof obligation. -/
 @[simp] def skipThen (next : EndpointAct) : EndpointAct :=
