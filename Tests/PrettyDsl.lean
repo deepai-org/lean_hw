@@ -118,6 +118,14 @@ final registers:
 #guard_msgs in
 #trace_cycle design with {} from { count := 254 }
 
+/--
+info: after 256 cycles:
+  count = 255
+  sat = 1
+-/
+#guard_msgs in
+#run_hardware design for 256 cycles
+
 end Tests.PrettyDsl.Counter
 
 namespace Tests.PrettyDsl.Fsm

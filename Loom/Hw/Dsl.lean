@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Declarations
+import Loom.Hw.FastEval
 import Loom.Hw.Semantics
 import Lean.Elab.Command
 import Lean.Elab.Tactic
@@ -1185,5 +1186,30 @@ macro_rules
       let inputTerms ← inputs.getElems.mapM traceBindingTerm
       let initialTerms ← initial.getElems.mapM traceBindingTerm
       `(#eval Loom.Hw.Dsl.traceCycle $design [$inputTerms,*] [$initialTerms,*])
+
+/-! ## Certified teaching run
+
+This compact command uses `FastEval.VerifiedSimulator`, not a second
+hand-maintained cycle function.  The generated proof obligation is checked when
+the command elaborates; the displayed coordinates are the Design's declarations.
+-/
+
+def runHardware {design : Loom.Hw.Design}
+    (simulator : Loom.Hw.FastEval.VerifiedSimulator design) (cycles : Nat) : IO Unit := do
+  let final := simulator.run cycles simulator.reset
+  IO.println s!"after {cycles} cycles:"
+  for (name, value) in design.fastRegs final do
+    IO.println s!"  {name} = {value}"
+
+syntax (name := runHardwareCmd) "#run_hardware" term:max "for" num ident : command
+
+macro_rules
+  | `(#run_hardware $design:term for $count:num $unit:ident) => do
+      unless unit.getId == `cycles do
+        Macro.throwErrorAt unit "expected `cycles`"
+      `(#eval Loom.Hw.Dsl.runHardware
+        (design := $design)
+        ({ wf := by native_decide } : Loom.Hw.FastEval.VerifiedSimulator $design)
+        $count)
 
 end Loom.Hw.Dsl
