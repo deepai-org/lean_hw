@@ -1982,19 +1982,21 @@ where
     $stmt(actSeq ((List.finRange TLBN).map (fun i =>
           let sel := .eq tlb_sel (.lit (BitVec.ofNat 3 i.val))
           actSeq
-          [ .ite (.and (ci CMD_TLB_VPN) sel)
+          [ [hwstmt| if $(ci CMD_TLB_VPN) & $(sel) then {
               -- base is cmd_data[23:0]; [31:24] carries the domain, so the
               -- stored base must be MASKED or the range compare sees the
               -- domain byte in the high bits.
-              (.seq (tlbBaseRegs.set i (.zext (.slice cmdData 0 24) 32))
-                    (tlbDomRegs.set i (.slice cmdData 24 8))) .skip
-          , .ite (.and (ci CMD_TLB_PPN) sel)
-              (tlbLimitRegs.set i cmdData) .skip
-          , .ite (.and (ci CMD_TLB_PHYS) sel)
+              $stmt(tlbBaseRegs.set i [hwexpr| zext cmdData[23:0] to 32]),
+              $stmt(tlbDomRegs.set i [hwexpr| cmdData[31:24]])
+            }]
+          , [hwstmt| if $(ci CMD_TLB_PPN) & $(sel) then
+              $stmt(tlbLimitRegs.set i cmdData)]
+          , [hwstmt| if $(ci CMD_TLB_PHYS) & $(sel) then {
               -- cmd_data[23:0] is the DELTA (phys - base), computed by the
               -- host; [31:24] carries the VMA's epoch cell.
-              (.seq (tlbPhysRegs.set i (.zext (.slice cmdData 0 24) 32))
-                    (tlbCellRegs.set i (.slice cmdData 24 8))) .skip ]))),
+              $stmt(tlbPhysRegs.set i [hwexpr| zext cmdData[23:0] to 32]),
+              $stmt(tlbCellRegs.set i [hwexpr| cmdData[31:24]])
+            }] ]))),
     -- EXT-5: `cmd 62` selects the gate whose entry `cmd 61` then loads.
     if $(ci 13) then {
       if cmdData[0] == 1 then $stmt(cmd13reset),
@@ -2185,7 +2187,7 @@ def gcons (g : Expr 1) (a : Act) (rest : List (Expr 1 × Act)) : List (Expr 1 ×
 /-- `pc <= tpc[idx]`. **D20**: one async memory read instead of a balanced
 32-way select over 32 registers. Same function of the same pre-cycle state
 (D9: `memRead` evaluates against `σ`). -/
-def setPcFromTpc (idx : Expr 5) : Act := pcReg.set (tpcRd idx)
+def setPcFromTpc (idx : Expr 5) : Act := [hwstmt| pcReg <- $(tpcRd idx)]
 def tstateDynWrite (v : Expr 2) (idx : Expr 5) : Act :=
   Dsl.actFor (List.finRange NT) fun i =>
     [hwstmt| if idx == $(L5 i.val) then $stmt(tstateRegs.set i v)]
