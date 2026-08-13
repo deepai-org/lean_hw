@@ -466,7 +466,7 @@ namespace Tests.PrettyDsl.CoreInspectionFallback
 open Loom.Hw
 open Loom.Hw.Dsl
 
-opaque coreOnlyDesign : Design
+axiom coreOnlyDesign : Design
 
 /--
 info: core Design fallback (pretty reconstruction unavailable)
@@ -1178,7 +1178,7 @@ system endpoint_extended where
   reset Reset.together
   channel q : 8 depth 2
   island source on sourceClock extends Base.design where
-    rule publish := send Base.value to q then skip
+    rule publish := send Base.value to q then Base.value <- Base.value + 1
   island sink on sinkClock where
     output reg observed : 8
     rule capture := receive sample from q then observed <- sample

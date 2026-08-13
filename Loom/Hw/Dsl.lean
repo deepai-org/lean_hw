@@ -9,7 +9,14 @@ import Loom.Hw.Semantics
 import Lean.Elab.Command
 import Lean.Elab.Tactic
 import Lean.Elab.Term
-import Lean.Meta.Tactic.TryThis
+
+/-- Internal elaboration switch used only by `system ... extends ...`: the
+surface command cannot enumerate an arbitrary base Design's writable handles,
+so it defers that membership check to the composed `designWFCheck` proof. -/
+register_option loom.hw.deferExtensionWrites : Bool := {
+  defValue := false
+  descr := "internal: defer inline-extension write membership to the composed Design check"
+}
 
 /-!
 # Pretty hardware quotations
@@ -595,19 +602,6 @@ syntax:max (name := hwConsume) "hw_consume% " term:max : term
 syntax:max (name := hwExactConst) "hw_exact_const% " ident : term
 syntax "[hwexpr| " hwexpr "]" : term
 
-/-- Attach an editor quick fix without adding a second informational
-diagnostic. The ordinary warning/error remains the sole message; Lean's code
-action provider discovers this custom info leaf at the same source span. -/
-private def addSilentCodeAction (source : Syntax) (replacement title : String) :
-    CoreM Unit := do
-  let suggestion : Lean.Meta.Hint.Suggestion := {
-    suggestion := replacement
-    span? := some source
-    diffGranularity := .all
-    toCodeActionTitle? := some fun _ => title
-  }
-  discard <| Lean.Meta.Hint.mkSuggestionsMessage #[suggestion] source none false
-
 private def hardwareExpressionSource (stx : TSyntax `term) : Syntax × String :=
   match stx with
   | `(term| [hwexpr| $expression:hwexpr]) =>
@@ -631,12 +625,8 @@ private def elaborateScalarAtWidth (valueSyntax : TSyntax `term)
       let some actualWidth ←
           getNatValue? (← Meta.whnf actualType.getAppArgs[0]!) | throw original
       if actualWidth == expected then throw original
-      let (source, rendered) := hardwareExpressionSource valueSyntax
+      let (source, _) := hardwareExpressionSource valueSyntax
       if actualWidth < expected then
-        liftM <| addSilentCodeAction source s!"zext {rendered} to {expected}"
-          s!"Zero-extend {actualWidth} bits to {expected} bits"
-        liftM <| addSilentCodeAction source s!"sext {rendered} to {expected}"
-          s!"Sign-extend {actualWidth} bits to {expected} bits"
         throwErrorAt source
           s!"expression is {actualWidth} bits but the target is {expected} bits; Loom does not guess signedness, so use `zext` or `sext` explicitly"
       else
@@ -647,11 +637,7 @@ private def elaborateScalarAtWidth (valueSyntax : TSyntax `term)
 @[term_elab hwBoundaryError] private def elabHwBoundaryError : TermElab :=
     fun stx _ => do
   match stx with
-  | `(hw_boundary_error% $message:str $parsed:str $alternate:str) =>
-      liftM <| addSilentCodeAction stx parsed.getString
-        "Parenthesize the currently parsed grouping"
-      liftM <| addSilentCodeAction stx alternate.getString
-        "Parenthesize the alternate grouping"
+  | `(hw_boundary_error% $message:str $_:str $_:str) =>
       throwErrorAt stx message.getString
   | _ => throwUnsupportedSyntax
 
@@ -907,7 +893,24 @@ private def elaboratePackedFields (typeName : Name)
 @[term_elab hwWrite] def elabHwWrite : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_write% $targetSyntax:term $valueSyntax:term) => do
-      let target ← elabTerm targetSyntax none
+      let target ← try
+        withoutErrToSorry <| elabTerm targetSyntax none
+      catch _ =>
+        -- A dotted source target is ambiguous by construction: it may be a
+        -- fully-qualified scalar/packed register, or a field of a local packed
+        -- register. Resolve the complete identifier first. Only when that
+        -- fails do we interpret the final component as a packed field.
+        match targetSyntax with
+        | `(term| $whole:ident) =>
+            let name := whole.getId
+            if name.isAtomic then
+              throwErrorAt whole "assignment target did not elaborate as a hardware register"
+            let register := mkIdentFrom whole name.getPrefix
+            let field := mkIdentFrom whole (Name.mkSimple name.getString!)
+            let fallback ← `(hw_packed_write% $register $field $valueSyntax)
+            return ← elabTerm fallback expectedType?
+        | _ => throwErrorAt targetSyntax
+            "assignment target did not elaborate as a hardware register"
       let targetType ← Meta.whnf (← Meta.inferType target)
       let result ←
         if targetType.isAppOfArity ``Loom.Hw.Reg 1 then
@@ -1133,14 +1136,6 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
         Meta.mkAppM ``Loom.Hw.RegArray.dynRd #[memory, address, zero]
       else if memoryType.isAppOfArity ``Loom.Hw.Reg 1 ||
           memoryType.isAppOfArity ``Loom.Hw.Expr 1 then
-        let replacement? := do
-          let container ← memorySyntax.raw.reprint
-          let `(term| [hwexpr| $address:hwexpr]) := addressSyntax | none
-          let index ← address.raw.reprint
-          pure s!"({container} >> {index})[0]"
-        if let some replacement := replacement? then
-          liftM <| addSilentCodeAction memorySyntax replacement
-            "Rewrite dynamic bit select as shift and static select"
         throwErrorAt memorySyntax
           "dynamic bit select is not a core operation; shift by the typed index and select bit zero, for example `(x >> i)[0]`"
       else
@@ -1623,14 +1618,8 @@ mutual
     | `(hwstmt| skip) => `(Loom.Hw.Act.skip)
     | `(hwstmt| endpoint_stmt($action:term)) =>
         `(hw_endpoint_action% $action)
-    | `(hwstmt| $target:ident <- $value:hwexpr) => do
-        let name := target.getId
-        if name.isAtomic then
-          `(hw_write% $target [hwexpr| $value])
-        else
-          let register := mkIdentFrom target name.getPrefix
-          let field := mkIdentFrom target (Name.mkSimple name.getString!)
-          `(hw_packed_write% $register $field [hwexpr| $value])
+    | `(hwstmt| $target:ident <- $value:hwexpr) =>
+        `(hw_write% $target [hwexpr| $value])
     | `(hwstmt| $memory:ident[port $portIndex:num, $address:hwexpr] <- $value:hwexpr) =>
         `(hw_mem_write% $memory $portIndex [hwexpr| $address] [hwexpr| $value])
     | `(hwstmt| $family:ident[$index:hwexpr] <- $value:hwexpr) =>
@@ -2029,19 +2018,7 @@ private structure WrittenTarget where
 private structure LintFinding where
   source : Syntax
   message : String
-  codeAction? : Option (Syntax × String × String) := none
   lint : Name := `unknown
-
-private def LintFinding.withSuppressionAction (finding : LintFinding)
-    (lint : Name) (statement : TSyntax `hwstmt) : LintFinding :=
-  let source := statement.raw.reprint.getD "<statement>"
-  { finding with codeAction? := some (statement,
-      s!"suppress {lint} because \"explain why this is intentional\" in {source}",
-      s!"Suppress {lint} with a required reason") }
-
-private def addSuppressionActions (statement : TSyntax `hwstmt)
-    (findings : List LintFinding) : List LintFinding :=
-  findings.map fun finding => finding.withSuppressionAction finding.lint statement
 
 private def knownLint (name : Name) : Bool :=
   name == `read_after_write || name == `multiple_write || name == `unguarded_channel
@@ -2086,7 +2063,7 @@ private def readAfterWriteFindings (registers : Array Name)
       if registers.contains read.getId && written.any (fun prior => prior.name == read.getId) then
         some ⟨read.raw,
           s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle",
-          none, `read_after_write⟩
+          `read_after_write⟩
       else none
 
 private inductive ChannelGuardKind where
@@ -2131,7 +2108,7 @@ private partial def unguardedDataFindings (suppressed : Array Name)
         if !clean.isAtomic && clean.getString! == "data" then
           let endpoint := clean.getPrefix
           if guards.contains ⟨endpoint, .hasData⟩ then []
-          else [⟨expression, s!"'{endpoint}.data' is read without a dominating '{endpoint}.hasData' guard; an empty channel has no valid payload", none, `unguarded_channel⟩]
+          else [⟨expression, s!"'{endpoint}.data' is read without a dominating '{endpoint}.hasData' guard; an empty channel has no valid payload", `unguarded_channel⟩]
         else []
   | `(hwexpr| ($value:hwexpr))
   | `(hwexpr| ~ $value:hwexpr)
@@ -2175,17 +2152,14 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
     List WrittenTarget × List LintFinding :=
   match statement with
   | `(hwstmt| skip) => (written, [])
-  | statement@`(hwstmt| $target:ident <- $value:hwexpr) =>
-      let readFindings := addSuppressionActions statement
-        (expressionFindings registers suppressed guards written value)
+  | `(hwstmt| $target:ident <- $value:hwexpr) =>
+      let readFindings := expressionFindings registers suppressed guards written value
       let prior := written.filter (fun earlier => earlier.name == target.getId)
       let suppressMultiple := suppressed.contains `multiple_write
       let multipleFinding :=
         if !prior.isEmpty && !suppressMultiple && prior.any (fun earlier => !earlier.overrideExpected) then
           [⟨target, s!"'{target.getId}' may be written more than once in one cycle; the later write wins",
-            some (statement,
-              s!"suppress multiple_write because \"explain why this is intentional\" in {statement.raw.reprint.getD "<statement>"}",
-              "Suppress multiple_write with a required reason"), `multiple_write⟩]
+            `multiple_write⟩]
         else []
       (written ++ [⟨target.getId, target, suppressMultiple⟩], readFindings ++ multipleFinding)
   | `(hwstmt| $_:ident[port $_:num, $address:hwexpr] <- $value:hwexpr) =>
@@ -2198,11 +2172,9 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
       let guardFinding :=
         if suppressed.contains `unguarded_channel || guardPresent guards endpoint .canSend then []
         else
-          let replacement :=
-            s!"send {payload.raw.reprint.getD "<payload>"} to {endpoint.getId.eraseMacroScopes} then skip"
           [⟨statement,
             s!"send to '{endpoint.getId.eraseMacroScopes}' is not dominated by its `canSend` guard; a full channel drops the payload",
-            some (statement, replacement, "Guard channel send on acceptance"), `unguarded_channel⟩]
+            `unguarded_channel⟩]
       (written, expressionFindings registers suppressed guards written payload ++ guardFinding)
   | `(hwstmt| send $payload:hwexpr to $endpoint:ident then $body:hwstmt) =>
       let payloadFindings := expressionFindings registers suppressed guards written payload
@@ -2409,7 +2381,7 @@ private partial def deadDefaultFindings (domains : Array StateDomain) :
               if allEncodingsDeclared && allMembersCovered then
                 ⟨defaultArm,
                   "default arm is unreachable: the declared states cover every register encoding",
-                  none, `unknown⟩ :: nested
+                  `unknown⟩ :: nested
               else nested
           | none => nested
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
@@ -2435,25 +2407,26 @@ private def checkedValue (width value : TSyntax `num) : MacroM Nat := do
       s!"literal {valueNat} does not fit in {widthValue} bits; expected 0 through {limit - 1}"
   pure valueNat
 
-private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwstmt → MacroM Unit
+private partial def validateWriteTargets (writable : Array Name)
+    (deferExternal : Bool := false) : TSyntax `hwstmt → MacroM Unit
   | `(hwstmt| skip) => pure ()
   | `(hwstmt| $target:ident <- $_:hwexpr) =>
       let targetName := target.getId
       let registerName := if targetName.isAtomic then targetName else targetName.getPrefix
-      unless writable.contains registerName do
+      unless deferExternal || writable.contains registerName do
         Macro.throwErrorAt target
           s!"'{target.getId}' is not a writable register in this hardware block"
   | `(hwstmt| $_:ident[port $_:num, $_:hwexpr] <- $_:hwexpr) => pure ()
   | `(hwstmt| $family:ident[$_:hwexpr] <- $_:hwexpr) =>
-      unless writable.contains family.getId do
+      unless deferExternal || writable.contains family.getId do
         Macro.throwErrorAt family
           s!"'{family.getId}' is not a writable register family in this hardware block"
   | `(hwstmt| send $_:hwexpr to $_:ident) => pure ()
   | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt) =>
-      validateWriteTargets writable body
+      validateWriteTargets writable deferExternal body
   | `(hwstmt| consume $_:ident) => pure ()
   | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) =>
-      validateWriteTargets writable body
+      validateWriteTargets writable deferExternal body
   | `(hwstmt| let $_:ident : $_:num := $_:hwexpr) => pure ()
   | `(hwstmt| let $_:ident := $_:hwexpr) => pure ()
   | `(hwstmt| suppress $lint:ident because $reason:str in $body:hwstmt) => do
@@ -2462,22 +2435,24 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
           "unknown hardware lint; expected `read_after_write`, `multiple_write`, or `unguarded_channel`"
       if reason.getString.isEmpty then
         Macro.throwErrorAt reason "lint suppression requires a nonempty reason"
-      validateWriteTargets writable body
+      validateWriteTargets writable deferExternal body
   | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
-      validateWriteTargets writable body
+      validateWriteTargets writable deferExternal body
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
-      validateWriteTargets writable yes
-      validateWriteTargets writable no
-  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => validateWriteTargets writable yes
+      validateWriteTargets writable deferExternal yes
+      validateWriteTargets writable deferExternal no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) =>
+      validateWriteTargets writable deferExternal yes
   | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
       for arm in arms do
         match arm with
         | `(hwcasearm| | default => $body:hwstmt)
-        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => validateWriteTargets writable body
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) =>
+            validateWriteTargets writable deferExternal body
         | _ => pure ()
   | `(hwstmt| {$statements:hwstmt,*}) =>
       for statement in statements.getElems do
-        validateWriteTargets writable statement
+        validateWriteTargets writable deferExternal statement
   | _ => pure ()
 
 private partial def validateLocalBinders (designLocals : Array Name) :
@@ -2591,11 +2566,10 @@ private partial def validateCases (domains : Array StateDomain)
             unless domain.members.any (fun member => member.getId == armName.getId) do
               Macro.throwErrorAt armName
                 s!"'{armName.getId}' is not a declared state of '{domain.register.getId}'"
-          -- Command elaboration reports a non-exhaustive declared-state case.
-          -- Keeping that repairable error out of `MacroM` lets it attach an
-          -- editor action that inserts the explicit default arm.
-          -- A later command-elaboration pass reports a dead-default warning;
-          -- macro expansion itself has no logging capability.
+          -- Command elaboration reports a non-exhaustive declared-state case
+          -- with the textual repair. A later command-elaboration pass reports
+          -- a dead-default warning; macro expansion itself has no logging
+          -- capability.
           pure ()
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
       validateCases domains constants yes
@@ -2671,16 +2645,6 @@ private partial def missingStateDefaults (domains : Array StateDomain) :
         (fun findings statement => findings ++ missingStateDefaults domains statement) #[]
   | _ => #[]
 
-private def missingDefaultReplacement (source : Syntax) : String :=
-  let rendered := source.reprint.getD "case <state> of"
-  let whitespace (character : Char) := character == ' ' || character == '\t'
-  let armLine? (line : String) :=
-    (line.toList.dropWhile whitespace).head? == some '|'
-  let indent := match (rendered.splitOn "\n").reverse.find? armLine? with
-    | some line => String.ofList (line.toList.takeWhile whitespace)
-    | none => "  "
-  rendered ++ "\n" ++ indent ++ "| default => skip"
-
 private partial def inferredStateWidthLoop (count capacity width : Nat) : Nat :=
   if capacity ≥ count then width
   else inferredStateWidthLoop count (capacity * 2) (width + 1)
@@ -2731,7 +2695,8 @@ private def exactAddrWidth (depth : TSyntax `num) : MacroM Nat := do
       Macro.throwErrorAt depth
         s!"memory depth {value} is not a power of two; the current Mem core represents exactly 2^addressWidth cells"
 
-private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
+private def parseHardwareItems (items : Array (TSyntax `hwitem))
+    (deferExternalWrites : Bool := false) :
     MacroM (Array ScalarRegItem × Array ConstItem × Array InputItem ×
       Array MemoryItem × Array PackedMemoryItem × Array WireItem × Array PackedRegItem ×
       Array PackedInputItem × Array PackedWireItem × Array RegArrayItem ×
@@ -2923,7 +2888,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     packedRegisters.map (fun item => item.name.getId) ++
     registerArrays.map (fun item => item.name.getId)
   for ruleItem in rules do
-    validateWriteTargets writable ruleItem.body
+    validateWriteTargets writable deferExternalWrites ruleItem.body
     validateLocalBinders (locals.map (·.getId)) ruleItem.body
     validateIfOwnership ruleItem.body
     validateCases stateDomains constants ruleItem.body
@@ -3040,9 +3005,11 @@ private def makeHardwareMetadata (fileName : String) (namespaceName : Name)
 private def expandHardwareCommand
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
     (moduleName : TSyntax `ident)
-    (items : Array (TSyntax `hwitem)) : MacroM Syntax := do
+    (items : Array (TSyntax `hwitem))
+    (deferExternalWrites : Bool := false) : MacroM Syntax := do
   let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
-    packedInputs, packedWires, registerArrays, domains, rules) ← parseHardwareItems items
+    packedInputs, packedWires, registerArrays, domains, rules) ←
+      parseHardwareItems items deferExternalWrites
   let mut commands : Array Syntax := #[]
   for register in registers do
     let sourceName := Syntax.mkStrLit register.name.getId.toString
@@ -3259,13 +3226,12 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
 @[command_elab hardwareCmd] def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
+      let deferExternalWrites := loom.hw.deferExtensionWrites.get (← getOptions)
       let (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
         packedInputs, packedWires, registerArrays, domains, rules) ←
-        liftMacroM <| parseHardwareItems items
+        liftMacroM <| parseHardwareItems items deferExternalWrites
       for ruleItem in rules do
         if let some finding := (missingStateDefaults domains ruleItem.body)[0]? then
-          liftCoreM <| addSilentCodeAction finding.source
-            (missingDefaultReplacement finding.source) "Add explicit default arm"
           if finding.missing.isEmpty then
             throwErrorAt finding.scrutinee
               "case without a default is allowed only for a declared states register"
@@ -3306,8 +3272,6 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
             throwErrorAt domain.register
               s!"generated state proof declaration '{generatedName}' has already been declared"
       for finding in hardwareLintFindings registers rules do
-        if let some (actionSource, replacement, title) := finding.codeAction? then
-          liftCoreM <| addSilentCodeAction actionSource replacement title
         logWarningAt finding.source finding.message
       for ruleItem in rules do
         for finding in deadDefaultFindings domains ruleItem.body do
@@ -3333,7 +3297,8 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
       let metadata := makeHardwareMetadata (← getFileName) namespaceName moduleName sourceRendering
         registers constants inputs memories packedMemories wires packedRegisters packedInputs packedWires
         registerArrays packedMemoryWidths packedRegisterWidths packedInputWidths packedWireWidths domains rules
-      let expanded ← liftMacroM <| expandHardwareCommand documentation moduleName items
+      let expanded ← liftMacroM <|
+        expandHardwareCommand documentation moduleName items deferExternalWrites
       elabCommand expanded
       modifyEnv (hardwareMetadataExt.addEntry · metadata)
   | _ => throwUnsupportedSyntax
@@ -3573,7 +3538,8 @@ or rule collisions. -/
 def extendDesign (base added : Design)
     (_disjoint : base.parOkB added)
     (readScope : Design)
-    (_readsDeclared : readScope.readsOkB) : Design :=
+    (_readsDeclared : readScope.readsOkB)
+    (_writesDeclared : Compile.designWFCheck readScope = true) : Design :=
   { name := base.name
     regs := base.regs ++ added.regs
     mems := base.mems ++ added.mems
@@ -3938,7 +3904,9 @@ private def expandSystemCommand
           let emittedModuleName := island.moduleName.getD <| mkIdent
             (Name.mkSimple (systemName.getId.toString ++ "_" ++ island.name.getId.toString))
           let body := island.body
-          let hardwareCommand ← `(command| hardware $emittedModuleName where $body*)
+          let hardwareCommand ← `(command|
+            set_option loom.hw.deferExtensionWrites true in
+            hardware $emittedModuleName where $body*)
           generated := generated.push hardwareCommand
           generated := generated.push (← `(command| end $implementationNamespace))
           let implementationDesign := mkIdent
@@ -3965,7 +3933,7 @@ private def expandSystemCommand
             if connection.sink.getId == island.name.getId then
               readScope ← `(term| (hw_exact_const% $channelName).withSink $readScope)
           let extended ← `(term| Loom.Hw.Dsl.extendDesign $baseTerm $addedTerm
-            (by native_decide) $readScope (by native_decide))
+            (by native_decide) $readScope (by native_decide) (by native_decide))
           match island.moduleName with
           | none => pure extended
           | some moduleName =>
