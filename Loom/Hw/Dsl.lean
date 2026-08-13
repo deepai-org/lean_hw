@@ -1535,24 +1535,39 @@ private partial def validateWriteTargets (writable : Array Name) : TSyntax `hwst
         validateWriteTargets writable statement
   | _ => pure ()
 
-private partial def validateCases (domains : Array StateDomain) : TSyntax `hwstmt → MacroM Unit
+private partial def validateCases (domains : Array StateDomain)
+    (constants : Array ConstItem) : TSyntax `hwstmt → MacroM Unit
   | `(hwstmt| case $scrutinee:hwexpr of $arms:hwcasearm*) => do
       let domain? := match scrutinee with
         | `(hwexpr| $name:ident) => domains.find? (fun domain => domain.register.getId == name.getId)
         | _ => none
       let mut namedArms : Array (TSyntax `ident) := #[]
+      let mut normalizedArms : Array (Nat × Syntax) := #[]
       let mut hasDefault := false
+      let recordNormalized (priorArms : Array (Nat × Syntax))
+          (source : Syntax) (value : Nat) : MacroM (Array (Nat × Syntax)) := do
+        if priorArms.any (fun prior => prior.1 == value) then
+          Macro.throwErrorAt source
+            s!"duplicate case label after normalization; both arms equal {value}"
+        pure <| priorArms.push (value, source)
       for arm in arms do
         match arm with
         | `(hwcasearm| | default => $body:hwstmt) =>
             hasDefault := true
-            validateCases domains body
+            validateCases domains constants body
+        | `(hwcasearm| | $value:num => $body:hwstmt) =>
+            normalizedArms ← recordNormalized normalizedArms value value.getNat
+            validateCases domains constants body
         | `(hwcasearm| | $name:ident => $body:hwstmt) =>
             if namedArms.any (fun prior => prior.getId == name.getId) then
               Macro.throwErrorAt name s!"duplicate case arm '{name.getId}'"
             namedArms := namedArms.push name
-            validateCases domains body
-        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => validateCases domains body
+            if let some constant := constants.find? (fun item => item.name.getId == name.getId) then
+              normalizedArms ← recordNormalized normalizedArms name constant.value.getNat
+            validateCases domains constants body
+        | `(hwcasearm| | $value:hwexpr => $_:hwstmt) =>
+            Macro.throwErrorAt value
+              "case label must be a compile-time literal or named hardware constant"
         | _ => pure ()
       match domain? with
       | none =>
@@ -1575,17 +1590,20 @@ private partial def validateCases (domains : Array StateDomain) : TSyntax `hwstm
           -- macro expansion itself has no logging capability.
           pure ()
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) => do
-      validateCases domains yes
-      validateCases domains no
-  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => validateCases domains yes
+      validateCases domains constants yes
+      validateCases domains constants no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => validateCases domains constants yes
   | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
-      validateCases domains body
-  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) => validateCases domains body
-  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt) => validateCases domains body
-  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) => validateCases domains body
+      validateCases domains constants body
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt) =>
+      validateCases domains constants body
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt) =>
+      validateCases domains constants body
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt) =>
+      validateCases domains constants body
   | `(hwstmt| {$statements:hwstmt,*}) =>
       for statement in statements.getElems do
-        validateCases domains statement
+        validateCases domains constants statement
   | _ => pure ()
 
 private partial def inferredStateWidthLoop (count capacity width : Nat) : Nat :=
@@ -1785,7 +1803,7 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem)) :
     registerArrays.map (fun item => item.name.getId)
   for ruleItem in rules do
     validateWriteTargets writable ruleItem.body
-    validateCases stateDomains ruleItem.body
+    validateCases stateDomains constants ruleItem.body
   pure (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
     packedInputs, packedWires, registerArrays, stateDomains, rules)
 
