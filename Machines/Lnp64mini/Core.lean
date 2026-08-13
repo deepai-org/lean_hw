@@ -1118,16 +1118,16 @@ def aluE : Expr 64 :=
 where
   -- 0xb8: {48'd0, a[7:0], a[15:8]} = bytes swapped in low 16
   bswap16 : Expr 64 :=
-    .or (.shl (.zext (.slice a 0 8) 64) (L64 8)) (.zext (.slice a 8 8) 64)
+    [hwexpr| ((zext a[7:0] to 64) << 8) | (zext a[15:8] to 64)]
   bswap32 : Expr 64 :=
     -- {32'd0, a[7:0],a[15:8],a[23:16],a[31:24]}
-    .zext (byteRev4 (.slice a 0 32)) 64
+    [hwexpr| zext $(byteRev4 [hwexpr| a[31:0]]) to 64]
   bswap64 : Expr 64 := byteRev8 a
   byteRev4 (x : Expr 32) : Expr 32 :=
-    .or (.shl (.zext (.slice x 0 8) 32) (.lit (BitVec.ofNat 32 24)))
-    (.or (.shl (.zext (.slice x 8 8) 32) (.lit (BitVec.ofNat 32 16)))
-    (.or (.shl (.zext (.slice x 16 8) 32) (.lit (BitVec.ofNat 32 8)))
-         (.zext (.slice x 24 8) 32)))
+    [hwexpr|
+      ((zext x[7:0] to 32) << 24) |
+        (((zext x[15:8] to 32) << 16) |
+          (((zext x[23:16] to 32) << 8) | (zext x[31:24] to 32)))]
   -- the 8 lanes are disjoint, so the linear OR fold re-associates freely
   byteRev8 (x : Expr 64) : Expr 64 :=
     orTreeW ((List.range 8).map
@@ -1586,8 +1586,10 @@ where
              (.mux (.eq (.slice b 63 1) (L1 1)) a (L64 0))) ]
       (.slice mul_acc 64 64)
   divDoneWd : Expr 64 :=
-    .mux div_isrem (.mux div_negr (.add (.not div_rem) (L64 1)) div_rem)
-                   (.mux div_negq (.add (.not div_quo) (L64 1)) div_quo)
+    [hwexpr|
+      if div_isrem then
+        if div_negr then ~div_rem + 1 else div_rem
+      else if div_negq then ~div_quo + 1 else div_quo]
 
 /-- Fold the triples: last matching guard wins. Balanced (`priTreeLast` =
 `priTree` on the reversed list = the old `foldl` chain, 19 levels → ~5). -/
@@ -2926,11 +2928,12 @@ carries no stale "in a gate" flag), plus the `cmd 13` reset. -/
 def inGateNext : Expr 32 :=
   let cloneG := exG (.and (opIs OP_CLONE_SPAWN) has_free)
   let exitG  := exG (opIs OP_THREAD_EXIT)
-  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (L32 0)
-    (.mux gateCall (.or in_gate (.shl (L32 1) (.zext cur 32)))
-      (.mux cloneG (.and in_gate (.not (.shl (L32 1) (.zext free_slot 32))))
-        (.mux (.or gateRetLast exitG)
-          (.and in_gate (.not (.shl (L32 1) (.zext cur 32)))) in_gate)))
+  [hwexpr|
+    if zeroing & (zctr == 0) then 0
+    else if gateCall then in_gate | (1 << zext cur to 32)
+    else if cloneG then in_gate & ~(1 << zext free_slot to 32)
+    else if gateRetLast | exitG then in_gate & ~(1 << zext cur to 32)
+    else in_gate]
 
 /-- EXT-7: the valid bitmap after this cycle. `cmd 65` validates the selected
 slot; `cmd 67` clears every slot whose `tlb_cell` equals the bumped cell;
@@ -2942,10 +2945,11 @@ def tlbVldNext : Expr 8 :=
                  (.eq (tlbCell i) (.slice cmdData 0 8)))
         (.shl (.lit (BitVec.ofNat 8 1)) (.lit (BitVec.ofNat 8 i.val)))
         (.lit (BitVec.ofNat 8 0))))
-  .mux (.and zeroing (.eq zctr (.lit (BitVec.ofNat 10 0)))) (.lit (BitVec.ofNat 8 0))
-    (.mux (.and cmdValid (.eq cmdIdx (L7 CMD_TLB_PPN)))
-      (.or tlb_vld (.shl (.lit (BitVec.ofNat 8 1)) (.zext tlb_sel 8)))
-      (.and tlb_vld (.not clearMask)))
+  [hwexpr|
+    if zeroing & (zctr == 0) then 0
+    else if cmdValid & (cmdIdx == $(L7 CMD_TLB_PPN)) then
+      tlb_vld | (1 << zext tlb_sel to 8)
+    else tlb_vld & ~clearMask]
 
 /-- §9: the gate-depth funnel. `cmd 13` sweeps every slot to 0 (`zctr < NT`);
 a gate call increments `gdepth[cur]`, a gate return decrements it; `zeroing`
