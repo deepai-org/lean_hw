@@ -3224,16 +3224,44 @@ theorem authored_io_register_declarations :
        gpRdReg.decl, gpWrReg.decl, gpAddrRReg.decl, gpWdataRReg.decl,
        dmemWeReg.decl, dmemAReg.decl, dmemWdReg.decl, dmemRdReg.decl] := rfl
 
+namespace AuthoredPipelineRegs
+
+hardware lnp64mini_pipeline_regs where
+  output reg uart_wptr : 9
+  output reg uart_ridx : 8
+  output reg uart_byte : 8
+  output reg rx_wptr : 9
+  output reg rx_rptr : 9
+  output reg ld_boff_q : 3
+  output reg ld_op_q : 8
+  output reg ld_rd_q : 5
+  output reg lr_addr : 64
+  output reg lr_valid : 1
+  output reg futex_exp : 64
+  output reg futex_addr_q : 64
+  output reg sleep_scan : 5
+  output reg next_ready : 5
+  output reg free_slot : 5
+  output reg has_free : 1
+  output reg clone_dst : 5
+  output reg clone_tid : 5
+
+end AuthoredPipelineRegs
+
+theorem authored_pipeline_register_declarations :
+    AuthoredPipelineRegs.declarations.regs =
+      [uartWptrReg.decl, uartRidxReg.decl, uartByteReg.decl,
+       rxWptrReg.decl, rxRptrReg.decl,
+       ldBoffQReg.decl, ldOpQReg.decl, ldRdQReg.decl,
+       lrAddrReg.decl, lrValidReg.decl, futexExpReg.decl, futexAddrQReg.decl,
+       sleepScanReg.decl, nextReadyReg.decl, freeSlotReg.decl, hasFreeReg.decl,
+       cloneDstReg.decl, cloneTidReg.decl] := rfl
+
 def scalarRegs : List RegDecl :=
   AuthoredScalarPrefix.declarations.regs ++
   AuthoredIoRegs.declarations.regs ++
+  AuthoredPipelineRegs.declarations.regs ++
   [
-   uartWptrReg.decl, uartRidxReg.decl, uartByteReg.decl,
-   rxWptrReg.decl, rxRptrReg.decl,
-   ldBoffQReg.decl, ldOpQReg.decl, ldRdQReg.decl,
-   lrAddrReg.decl, lrValidReg.decl, futexExpReg.decl, futexAddrQReg.decl,
-   sleepScanReg.decl, nextReadyReg.decl, freeSlotReg.decl, hasFreeReg.decl,
-   cloneDstReg.decl, cloneTidReg.decl,
    mulAccReg.decl, mulAwReg.decl, mulBReg.decl, mulKindReg.decl,
    divRemReg.decl, divQuoReg.decl, divDReg.decl, divCntReg.decl,
    divIsremReg.decl, divNegqReg.decl, divNegrReg.decl,
