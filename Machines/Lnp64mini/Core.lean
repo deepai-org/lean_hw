@@ -3257,31 +3257,66 @@ theorem authored_pipeline_register_declarations :
        sleepScanReg.decl, nextReadyReg.decl, freeSlotReg.decl, hasFreeReg.decl,
        cloneDstReg.decl, cloneTidReg.decl] := rfl
 
+namespace AuthoredExecutionRegs
+
+hardware lnp64mini_execution_regs where
+  output reg mul_acc : 128
+  output reg mul_aw : 128
+  output reg mul_b : 64
+  output reg mul_kind : 2
+  output reg div_rem : 64
+  output reg div_quo : 64
+  output reg div_d : 64
+  output reg div_cnt : 7
+  output reg div_isrem : 1
+  output reg div_negq : 1
+  output reg div_negr : 1
+  output reg zeroing : 1
+  output reg zctr : 10
+  output reg reg_sel : 5
+  output reg reg_wsel : 5
+  output reg reg_wlo : 32
+  output reg dmem_addr_j : 32
+  output reg dmem_lo_j : 32
+  output reg reg_rd : 64
+  output reg wake_out : 1
+  output reg wake_key : 64
+  output reg lr_req : 1
+  output reg sc_req : 1
+  output reg sc_pending : 1
+  output reg quantum : 32
+  output reg qctr : 32
+  output reg cur_dom : 8
+  output reg poison : 32
+  output reg in_gate : 32
+  output reg fault_cause : 8
+  output reg fault_pc : 64
+  output reg fault_cur : 5
+  output reg mmu_en : 1
+  output reg tlb_sel : 3
+  output reg tlb_vld : 8
+
+end AuthoredExecutionRegs
+
+theorem authored_execution_register_declarations :
+    AuthoredExecutionRegs.declarations.regs =
+      [mulAccReg.decl, mulAwReg.decl, mulBReg.decl, mulKindReg.decl,
+       divRemReg.decl, divQuoReg.decl, divDReg.decl, divCntReg.decl,
+       divIsremReg.decl, divNegqReg.decl, divNegrReg.decl,
+       zeroingReg.decl, zctrReg.decl,
+       regSelReg.decl, regWselReg.decl, regWloReg.decl,
+       dmemAddrJReg.decl, dmemLoJReg.decl, regRdReg.decl,
+       wakeOutReg.decl, wakeKeyReg.decl, lrReqReg.decl, scReqReg.decl,
+       scPendingReg.decl, quantumReg.decl, qctrReg.decl, curDomReg.decl,
+       poisonReg.decl, inGateReg.decl,
+       faultCauseReg.decl, faultPcReg.decl, faultCurReg.decl,
+       mmuEnReg.decl, tlbSelReg.decl, tlbVldReg.decl] := rfl
+
 def scalarRegs : List RegDecl :=
   AuthoredScalarPrefix.declarations.regs ++
   AuthoredIoRegs.declarations.regs ++
   AuthoredPipelineRegs.declarations.regs ++
-  [
-   mulAccReg.decl, mulAwReg.decl, mulBReg.decl, mulKindReg.decl,
-   divRemReg.decl, divQuoReg.decl, divDReg.decl, divCntReg.decl,
-   divIsremReg.decl, divNegqReg.decl, divNegrReg.decl,
-   zeroingReg.decl, zctrReg.decl,
-   regSelReg.decl, regWselReg.decl, regWloReg.decl,
-   dmemAddrJReg.decl, dmemLoJReg.decl, regRdReg.decl,
-   wakeOutReg.decl, wakeKeyReg.decl, lrReqReg.decl, scReqReg.decl, scPendingReg.decl,
-   -- EXT-1: both reset to 0 = preemption disabled = the cooperative machine
-   quantumReg.decl, qctrReg.decl,
-   -- EXT-2: observation mirror of `tdom[cur]` (the datapath uses `domCur`)
-   curDomReg.decl,
-   -- EXT-3: fail-stop bitmap; 0 = nothing poisoned = the pre-EXT-3 machine
-   poisonReg.decl,
-   -- EXT-5: gates. `in_gate` = per-slot "inside ≥1 gate" bitmap.
-   inGateReg.decl,
-   -- §9 diagnostic (the loud GATE_RETURN): first no-op return's pc + slot +
-   -- count. Zero unless a GATE_RETURN ran with no gate open on its slot.
-   faultCauseReg.decl, faultPcReg.decl, faultCurReg.decl,
-  -- EXT-7: mmu_en = 0 at reset = bypass = the pre-EXT-7 machine
-   mmuEnReg.decl, tlbSelReg.decl, tlbVldReg.decl]
+  AuthoredExecutionRegs.declarations.regs
   ++ (List.finRange TLBN).flatMap (fun i =>
        [(tlbBaseRegs.reg i).decl, (tlbLimitRegs.reg i).decl,
         (tlbPhysRegs.reg i).decl, (tlbDomRegs.reg i).decl,
