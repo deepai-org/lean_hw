@@ -1377,7 +1377,7 @@ activation -- without this the machine would enter domain 0 at PC 0, which
 is the most privileged thing it can do, on the strength of memory nobody
 wrote. Revocation is therefore just zeroing the entry, and it needs no
 command and no host. -/
-def gateDescValid : Expr 1 := .slice mRdata 8 1
+def gateDescValid : Expr 1 := [hwexpr| mRdata[8]]
 
 /-- §17 activation validity = the flags word's valid bit AND a sane entry PC
 (landed 1235f201: the entry is validated fail-closed at construction; the
@@ -1387,9 +1387,7 @@ past, exactly like a zeroed descriptor. Before this check a clobbered entry
 word (the §73 hammer accident: entry=1) sent fetch to a garbage address and
 wedged the memory FSM silently. -/
 def gateActValid : Expr 1 :=
-  .and gateDescValid
-    (.and (.eq (.slice gate_ent_q 0 3) (.lit (BitVec.ofNat 3 0)))
-      (.not (.eq gate_ent_q (L64 0))))
+  [hwexpr| gateDescValid & ((gate_ent_q[2:0] == 0) & ~(gate_ent_q == 0))]
 
 /-- **§17: the activation commits when the WALK completes, not at S_EX.**
 The descriptor is not known until both words are back, so every funnel that
@@ -1399,7 +1397,7 @@ early would install a domain read from a bank that no longer exists.
 `pc8` is still the right saved continuation: `pc` has not advanced, because
 the gate arm never ran `stepPc`. -/
 def gateCall : Expr 1 :=
-  .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone gateActValid))
+  [hwexpr| fsmEn & ((st == $(L5 S_GC1)) & (mDone & gateActValid))]
 
 /-! ### §9.2 the gate return sentinel (spec aebacd95)
 
@@ -1452,26 +1450,28 @@ anyway: the sentinel is a distinct machine event, and a funnel that says
 the fetch guards. -/
 def S_GRET : Nat := 29
 
-def sentinelPc : Expr 1 := .eq pc (L64 GATE_RET_SENTINEL)
+def sentinelPc : Expr 1 := [hwexpr| pc == $(L64 GATE_RET_SENTINEL)]
 
 /-- A gate call refused because the continuation stack is FULL. This refuses
 at the instruction (it never enters the descriptor walk), so it needs its own
 status arm: ISA d3344899 -- "there is no refusal that reports nothing", and
 `-BUSY` specifically means genuine exhaustion. -/
-def gateFullRefused : Expr 1 := exG (.and (opIs OP_MINI_GATE_CALL) gateFull)
+def gateFullRefused : Expr 1 :=
+  exG [hwexpr| $(opIs OP_MINI_GATE_CALL) & gateFull]
 
 /-- A gate call whose descriptor does not admit the activation (invalid bit,
 or the misaligned/zero entry PC `gateActValid` rejects). Fail-closed: the
 instruction steps past and the §9.2 status register reports `-MALFORMED`. -/
 def gateRefused : Expr 1 :=
-  .and fsmEn (.and (.eq st (L5 S_GC1)) (.and mDone (.not gateActValid)))
+  [hwexpr| fsmEn & ((st == $(L5 S_GC1)) & (mDone & ~gateActValid))]
 
-def sentinelFetch : Expr 1 := .and fsmEn (.eq st (L5 S_GRET))
+def sentinelFetch : Expr 1 := [hwexpr| fsmEn & (st == $(L5 S_GRET))]
 
 /-- The gate-return EVENT: the explicit opcode, or a sentinel fetch. -/
-def gateRetEvent : Expr 1 := .or (exG (opIs OP_MINI_GATE_RETURN)) sentinelFetch
+def gateRetEvent : Expr 1 :=
+  [hwexpr| $(exG (opIs OP_MINI_GATE_RETURN)) | sentinelFetch]
 /-- ...and the committing return: an event with a frame actually open. -/
-def gateRet  : Expr 1 := .and gateRetEvent curInGate
+def gateRet  : Expr 1 := [hwexpr| gateRetEvent & curInGate]
 
 /-- Funnel triples. -/
 
@@ -1888,15 +1888,15 @@ With `mmu_en = 0` this is the identity computation of every increment before
 it, bit for bit — a `mux` on a register that is 0 at reset. -/
 /-- Low 32 bits of the effective address; VMA bounds are 32-bit because the
 DDR aperture is. -/
-def eaLo (ea : Expr 64) : Expr 32 := .slice ea 0 32
+def eaLo (ea : Expr 64) : Expr 32 := [hwexpr| ea[31:0]]
 
 /-- Entry `i` matches: valid, this domain, and `base ≤ ea < limit`. A
 **range**, per §15 — the unit the document translates is the VMA. -/
 def tlbMatch (i : Fin TLBN) (ea : Expr 64) : Expr 1 :=
-  .and (tlbVldBit i)
-    (.and (.eq (tlbDom i) domCur)
-      (.and (.not (.ult (eaLo ea) (tlbBase i)))
-            (.ult (eaLo ea) (tlbLimit i))))
+  [hwexpr|
+    $(tlbVldBit i) &
+      (($(tlbDom i) == domCur) &
+        (~($(eaLo ea) <u $(tlbBase i)) & ($(eaLo ea) <u $(tlbLimit i))))]
 
 def tlbHit (ea : Expr 64) : Expr 1 :=
   orTree ((List.finRange TLBN).map (fun i => tlbMatch i ea))
@@ -1904,7 +1904,7 @@ def tlbHit (ea : Expr 64) : Expr 1 :=
 /-- Untranslated (bypass) DDR effective address — DATA_BASE + word-aligned
 ea, the pre-EXT-7 computation unchanged. -/
 def ddrEaRaw (ea : Expr 64) : Expr 32 :=
-  .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.shl (.slice ea 3 29 |> fun w => .zext w 32) (.lit (BitVec.ofNat 32 3)))
+  [hwexpr| $(L32 DATA_BASE) + ((zext ea[31:3] to 32) << 3)]
 
 /-- Translated address. The obvious form is `phys + (ea - base)`, which
 costs an adder **and** a subtractor per entry — 8 of each, and it measured
@@ -1918,24 +1918,26 @@ function, and the arithmetic that used to be per-access is now per-map.
 `priTree` picks the first match — W3.1 (`Loom/Hw/Trees.lean`) proves that
 equals the linear priority chain, so "first match wins" is a theorem. -/
 def ddrEaXlat (ea : Expr 64) : Expr 32 :=
-  .add (.lit (BitVec.ofNat 32 DATA_BASE))
-    (.add (eaLo ea)
-      (priTree ((List.finRange TLBN).map (fun i => (tlbMatch i ea, tlbPhys i)))
-        (.lit (BitVec.ofNat 32 0))))
+  [hwexpr|
+    $(L32 DATA_BASE) +
+      ($(eaLo ea) +
+        $(priTree ((List.finRange TLBN).map (fun i => (tlbMatch i ea, tlbPhys i)))
+          (L32 0)))]
 
 def ddrEa (ea : Expr 64) : Expr 32 :=
-  .mux mmu_en
-    (.mux (tlbHit ea) (ddrEaXlat ea) (.lit (BitVec.ofNat 32 DATA_BASE)))
-    (ddrEaRaw ea)
-def ddrPc : Expr 32 := .add (.lit (BitVec.ofNat 32 DATA_BASE)) (.slice pc 0 32)
+  [hwexpr|
+    if mmu_en then
+      if $(tlbHit ea) then $(ddrEaXlat ea) else $(L32 DATA_BASE)
+    else $(ddrEaRaw ea)]
+def ddrPc : Expr 32 := [hwexpr| $(L32 DATA_BASE) + pc[31:0]]
 
 /-! ### EXT-9 cache address decode
 
 `ddrPc` is the physical fetch address (still untranslated in stage 1 — the
 whole point of putting the TLB on the miss arm later is that `S_IC`'s hit
 path must not grow a translation). -/
-def ic_idx : Expr 12 := .slice ddrPc 3 12
-def ic_tag : Expr 17 := .slice ddrPc 15 17
+def ic_idx : Expr 12 := [hwexpr| ddrPc[14:3]]
+def ic_tag : Expr 17 := [hwexpr| ddrPc[31:15]]
 /-- A hit is valid ∧ domain match ∧ tag match, read out of the latched word.
 
 **The domain is in the tag** because EXT-9b translates the miss arm: a line
@@ -1946,16 +1948,16 @@ which is the one thing this whole structure exists to avoid. Tagging by
 domain makes the aliasing structurally impossible instead of a rule someone
 has to remember on every domain switch. -/
 def ic_hit : Expr 1 :=
-  .and (.eq (.slice ic_tag_q 41 1) (L1 1))
-    (.and (.eq (.slice ic_tag_q 25 16) ic_gen)
-      (.and (.eq (.slice ic_tag_q 17 8) domCur)
-            (.eq (.slice ic_tag_q 0 17) ic_tag)))
+  [hwexpr|
+    (ic_tag_q[41] == 1) &
+      ((ic_tag_q[40:25] == ic_gen) &
+        ((ic_tag_q[24:17] == domCur) & (ic_tag_q[16:0] == ic_tag)))]
 /-- The cache-fill tag word: valid, generation, domain, and physical tag. -/
 def ic_tag_fill : Expr 42 :=
-  .or (.shl (.lit (BitVec.ofNat 42 1)) (.lit (BitVec.ofNat 42 41)))
-    (.or (.shl (.zext ic_gen 42) (.lit (BitVec.ofNat 42 25)))
-      (.or (.shl (.zext domCur 42) (.lit (BitVec.ofNat 42 17)))
-           (.zext ic_tag 42)))
+  [hwexpr|
+    (1 << 41) |
+      (((zext ic_gen to 42) << 25) |
+        (((zext domCur to 42) << 17) | (zext ic_tag to 42)))]
 
 
 /-! ### EXT-10 — the data cache
@@ -1975,29 +1977,29 @@ The index is computed from the TRANSLATED address, unlike the I-cache's,
 whose stage-1 index was physical-by-accident. `S_EX` already translates the
 load address once (`sexEa`/`ddrEa`), so this adds no second cone. -/
 def dc_ea : Expr 32 := ddrEa mem_ea_l
-def dc_idx : Expr 12 := .slice dc_ea 3 12
-def dc_tag : Expr 17 := .slice dc_ea 15 17
+def dc_idx : Expr 12 := [hwexpr| dc_ea[14:3]]
+def dc_tag : Expr 17 := [hwexpr| dc_ea[31:15]]
 /-- Index and tag of the address a STORE is about to write, for the
 invalidate. Separate from `dc_idx` because the store arm's effective address
 is `mem_ea_s`, not `mem_ea_l`. -/
-def dc_sidx : Expr 12 := .slice (ddrEa mem_ea_s) 3 12
+def dc_sidx : Expr 12 := [hwexpr| $(ddrEa mem_ea_s)[14:3]]
 
 def dc_hit : Expr 1 :=
-  .and (.eq (.slice dc_tag_q 41 1) (L1 1))
-    (.and (.eq (.slice dc_tag_q 25 16) ic_gen)
-      (.and (.eq (.slice dc_tag_q 17 8) domCur)
-            (.eq (.slice dc_tag_q 0 17) dc_tag)))
+  [hwexpr|
+    (dc_tag_q[41] == 1) &
+      ((dc_tag_q[40:25] == ic_gen) &
+        ((dc_tag_q[24:17] == domCur) & (dc_tag_q[16:0] == dc_tag)))]
 
 /-- The tag word written on a fill. The fill happens in `S_DL`, by which time
 `mem_ea_l` no longer holds the address, so the fields come from the latched
 `dc_tag_q`'s index-mates: `dc_fill_tag` is recomputed from `core_addr`, which
 `S_EX` wrote and nothing since has touched. -/
-def dc_fill_idx : Expr 12 := .slice core_addr 3 12
+def dc_fill_idx : Expr 12 := [hwexpr| core_addr[14:3]]
 def dc_fill_tag : Expr 42 :=
-  .or (.shl (.lit (BitVec.ofNat 42 1)) (.lit (BitVec.ofNat 42 41)))
-    (.or (.shl (.zext ic_gen 42) (.lit (BitVec.ofNat 42 25)))
-      (.or (.shl (.zext domCur 42) (.lit (BitVec.ofNat 42 17)))
-           (.zext (.slice core_addr 15 17) 42)))
+  [hwexpr|
+    (1 << 41) |
+      (((zext ic_gen to 42) << 25) |
+        (((zext domCur to 42) << 17) | (zext core_addr[31:15] to 42)))]
 
 /-- The ONE effective address S_EX ever translates. LR and SC translate `a`;
 FUTEX_WAIT translates its aligned futex word (`rdval & ~7`). Muxing the input
@@ -2007,9 +2009,8 @@ fell from 27.36 to 23.98 MHz -- under the 25 MHz board clock. The ops are
 mutually exclusive in S_EX, so per-site behaviour is unchanged, and yosys
 merges the now-identical cones. -/
 def sexEa : Expr 64 :=
-  .mux (opIs OP_FUTEX_WAIT)
-    (.shl (.zext (.slice rdval 3 61) 64) (.lit (BitVec.ofNat 64 3)))
-    a
+  [hwexpr|
+    if $(opIs OP_FUTEX_WAIT) then (zext rdval[63:3] to 64) << 3 else a]
 
 def goF0 : Act := [hwstmt| stReg <- $(L5 S_F0)]
 
