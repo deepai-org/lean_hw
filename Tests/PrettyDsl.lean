@@ -626,6 +626,16 @@ example : existing.monitor = monitor := rfl
 example : existing.islands.head?.map (fun island => island.design.name) =
     some "existing_monitor" := by decide
 
+system renamed where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island monitor on clk module stable_monitor_rtl := monitor
+
+example : renamed.monitor.name = "stable_monitor_rtl" := rfl
+example : renamed.monitor.regs = monitor.regs := rfl
+example : renamed.monitor.rules = monitor.rules := rfl
+
 end Tests.PrettyDsl.ExistingIsland
 
 namespace Tests.PrettyDsl.GroupedRealization
