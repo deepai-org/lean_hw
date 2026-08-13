@@ -243,6 +243,7 @@ private def helper : Expr 8 := .xor a.rd b.rd
 private def helperAct : Act := flag.set (.lit 1)
 private def generatedValue (_ : Nat) : Expr 8 := .lit 7
 private def staticShift : Nat := 3
+private def emptyIndices : List Nat := []
 
 set_option linter.unusedVariables false in
 private def packedLocalShadowProbe : Act :=
@@ -296,6 +297,16 @@ example : [hwstmt| ram[port 2, a[3:0]] <- b] =
 example : ([hwexpr| ram[a[3:0]]] : Expr 8) = ram.rd (.slice a.rd 0 4) := rfl
 example : [hwstmt| for i in $([0, 1]) generate a <- $(generatedValue i)] =
     Act.seq (a.set (.lit 7)) (a.set (.lit 7)) := rfl
+example : [hwstmt| for i in $(emptyIndices) generate a <- $(generatedValue i)] =
+    Act.skip := rfl
+example : [hwstmt| for i in $([0]) generate a <- $(generatedValue i)] =
+    a.set (.lit 7) := rfl
+example : [hwstmt|
+    for i in $([0, 1]) generate
+      for j in $([0, 1]) generate
+        a <- $(generatedValue (i + j))] =
+    Act.seq (Act.seq (a.set (.lit 7)) (a.set (.lit 7)))
+      (Act.seq (a.set (.lit 7)) (a.set (.lit 7))) := rfl
 
 example (register : Reg 8) : Act := [hwstmt| register <- register + 1]
 example (expression : Expr 8) : Expr 8 := [hwexpr| expression * 3]
@@ -1481,6 +1492,28 @@ hardware duplicate_state_member where
 hardware narrow_state_domain where
   states mode : 1 { Ready, Busy, Broken }
 
+/-- error: a state declaration requires at least one named state -/
+#guard_msgs in
+hardware empty_state_domain where
+  states mode : {}
+
+/-- error: reset state is not a member of this state declaration -/
+#guard_msgs in
+hardware invalid_state_reset where
+  states mode : { Ready, Busy } := Missing
+
+namespace ExplicitStateEncoding
+hardware explicit_state_encoding where
+  output states mode : 3 { Ready, Busy, Broken } := Broken
+
+example : declarations.regs.map (fun declaration =>
+    (declaration.name, declaration.width, declaration.init.toNat)) =
+    [("mode", 3, 2)] := by decide
+example : Ready = (.lit 0#3 : Expr 3) := rfl
+example : Busy = (.lit 1#3 : Expr 3) := rfl
+example : Broken = (.lit 2#3 : Expr 3) := rfl
+end ExplicitStateEncoding
+
 /-- error: the default case arm must be last -/
 #guard_msgs in
 hardware nonfinal_default where
@@ -1530,6 +1563,15 @@ hardware computed_case_label where
     | 1 + 1 => skip
     | default => skip
 
+/-- error: 'Missing' is not a declared state of 'mode' -/
+#guard_msgs in
+hardware wrong_state_case_member where
+  states mode : { Ready, Busy }
+  rule dispatch :=
+    case mode of
+    | Ready => skip
+    | Missing => skip
+
 namespace DeadDefault
 
 /--
@@ -1572,6 +1614,17 @@ hardware collidingLet where
   reg value : 8
   reg result : 8
   rule update := { let value := result, result <- value }
+
+/-- error: Unknown identifier `temporary` -/
+#guard_msgs in
+hardware escapedLetScope where
+  reg source : 8
+  reg result : 8
+  reg later : 8
+  rule update := {
+    { let temporary := source, result <- temporary },
+    later <- temporary
+  }
 
 /-- error: generate binder 'slot' conflicts with a design-local declaration -/
 #guard_msgs in
