@@ -2339,26 +2339,53 @@ private def validateEndpointTransactions (rules : Array RuleItem) : MacroM Unit 
       Macro.throwErrorAt bound.source
         s!"endpoint '{bound.endpoint}' may receive {bound.count} {bound.kind.label} transactions in one event; Loom permits at most one unless an explicit arbiter combines them"
 
-/-- Find an action escape whose endpoint effects cannot be inspected by the
-surface checker. `endpoint_stmt(...)` is separately accepted because its term must
-elaborate as a proof-carrying `EndpointAct`. -/
-private partial def rawStatementEscape? : TSyntax `hwstmt → Option Syntax
-  | statement@`(hwstmt| $stmt($_:term)) => some statement
+/-- Collect raw action escapes for semantic inspection after macro parsing.
+Closed, reducible actions that do not touch channel coordinates are ordinary
+Lean composition; channel actions use the proof-carrying `endpoint_stmt` form. -/
+private partial def rawStatementEscapes : TSyntax `hwstmt → Array (TSyntax `term)
+  | `(hwstmt| $stmt($action:term)) => #[action]
   | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt)
   | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt)
   | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt)
   | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt)
-  | `(hwstmt| if $_:hwexpr then $body:hwstmt) => rawStatementEscape? body
+  | `(hwstmt| if $_:hwexpr then $body:hwstmt) => rawStatementEscapes body
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
-      (rawStatementEscape? yes).orElse (fun _ => rawStatementEscape? no)
+      rawStatementEscapes yes ++ rawStatementEscapes no
   | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
-      arms.toList.findSome? fun (arm : TSyntax `hwcasearm) => match arm with
+      arms.foldl (fun found arm => found ++ match arm with
         | `(hwcasearm| | default => $body:hwstmt)
-        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => rawStatementEscape? body
-        | _ => none
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) => rawStatementEscapes body
+        | _ => #[]) #[]
   | `(hwstmt| {$statements:hwstmt,*}) =>
-      statements.getElems.toList.findSome? rawStatementEscape?
-  | _ => none
+      statements.getElems.foldl (fun found statement =>
+        found ++ rawStatementEscapes statement) #[]
+  | _ => #[]
+
+private def isGeneratedEndpointName (name : String) : Bool :=
+  name.startsWith "__loom_chan_" &&
+    (name.endsWith "src_valid" || name.endsWith "src_payload" ||
+      name.endsWith "src_ready" || name.endsWith "src_accepted" ||
+      name.endsWith "dst_valid" || name.endsWith "dst_payload" ||
+      name.endsWith "dst_pop")
+
+private unsafe def validateRawStatementEscape (actionSyntax : TSyntax `term) :
+    CommandElabM Unit :=
+  liftTermElabM do
+    let actionExpr ← try
+      withoutErrToSorry <| elabTerm actionSyntax (some (.const ``Loom.Hw.Act []))
+    catch _ => throwErrorAt actionSyntax
+      "`$stmt(...)` requires a closed, reducible `Act`; for an open or parameterized channel action, use `endpoint_stmt(...)` with `EndpointAct` and its composition builders"
+    let action ← try evalExpr Loom.Hw.Act (.const ``Loom.Hw.Act []) actionExpr
+    catch _ => throwErrorAt actionSyntax
+      "`$stmt(...)` action must be closed and reducible for coordinate checking; expose a reducible helper, or use proof-carrying `endpoint_stmt(...)` for a channel action"
+    let reads := action.readSites.1
+    let writes := action.regWrites
+    if let some (name, _) := reads.find? (isGeneratedEndpointName ·.1) then
+      throwErrorAt actionSyntax
+        s!"`$stmt(...)` reads generated channel coordinate '{name}'; use direct channel syntax, or `endpoint_stmt(...)` with a proof-carrying `EndpointAct`"
+    if let some (name, _) := writes.find? (isGeneratedEndpointName ·.1) then
+      throwErrorAt actionSyntax
+        s!"`$stmt(...)` writes generated channel coordinate '{name}'; use direct channel syntax, or `endpoint_stmt(...)` with a proof-carrying `EndpointAct`"
 
 private partial def deadDefaultFindings (domains : Array StateDomain) :
     TSyntax `hwstmt → List LintFinding
@@ -2901,9 +2928,6 @@ private def parseHardwareItems (items : Array (TSyntax `hwitem))
     validateLocalBinders (locals.map (·.getId)) ruleItem.body
     validateIfOwnership ruleItem.body
     validateCases stateDomains constants ruleItem.body
-    if let some escape := rawStatementEscape? ruleItem.body then
-      Macro.throwErrorAt escape
-        "an opaque `$stmt(...)` inside `hardware` could hide multiple channel transactions; use direct hardware statements, or `endpoint_stmt(...)` with an `EndpointAct` built from the endpoint composition API"
   validateEndpointTransactions rules
   pure (registers, constants, inputs, memories, packedMemories, wires, packedRegisters,
     packedInputs, packedWires, registerArrays, stateDomains, rules)
@@ -3232,7 +3256,7 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
           syntaxShapeEq leftArgs[index]! rightArgs[index]!
   | _, _ => false
 
-@[command_elab hardwareCmd] def elabHardwareCommand : CommandElab := fun stx => do
+@[command_elab hardwareCmd] unsafe def elabHardwareCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? hardware $moduleName:ident where $items:hwitem*) => do
       let deferExternalWrites := loom.hw.deferExtensionWrites.get (← getOptions)
@@ -3285,6 +3309,9 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
       for ruleItem in rules do
         for finding in deadDefaultFindings domains ruleItem.body do
           logWarningAt finding.source finding.message
+      for ruleItem in rules do
+        for actionSyntax in rawStatementEscapes ruleItem.body do
+          validateRawStatementEscape actionSyntax
       let packedWidth (typeName : TSyntax `ident) : CommandElabM Nat :=
         liftTermElabM do
           let widthSyntax ← `(Loom.Hw.HwPacked.width $typeName)

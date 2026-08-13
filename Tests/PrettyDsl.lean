@@ -831,12 +831,33 @@ hardware certified_escape where
   rule transmit := endpoint_stmt(certifiedSend)
 end CertifiedEscape
 
+private def ordinaryState : Reg 8 := ⟨"ordinary_state"⟩
+private def incrementOrdinaryState : Act :=
+  ordinaryState.set (ordinaryState.rd.add (.lit 1))
+
+namespace ClosedOrdinaryEscape
+hardware closed_ordinary_escape where
+  output reg ordinary_state : 8
+  rule increment := $stmt(incrementOrdinaryState)
+end ClosedOrdinaryEscape
+
+example : ClosedOrdinaryEscape.increment = incrementOrdinaryState := rfl
+
 /--
-error: an opaque `$stmt(...)` inside `hardware` could hide multiple channel transactions; use direct hardware statements, or `endpoint_stmt(...)` with an `EndpointAct` built from the endpoint composition API
+error: `$stmt(...)` reads generated channel coordinate '__loom_chan_queue_src_valid'; use direct channel syntax, or `endpoint_stmt(...)` with a proof-carrying `EndpointAct`
 -/
 #guard_msgs in
 hardware opaque_endpoint_escape where
   rule transmit := $stmt(source.send (.lit 42#8))
+
+axiom opaqueAction : Act
+
+/--
+error: `$stmt(...)` action must be closed and reducible for coordinate checking; expose a reducible helper, or use proof-carrying `endpoint_stmt(...)` for a channel action
+-/
+#guard_msgs in
+hardware opaque_action_escape where
+  rule mystery := $stmt(opaqueAction)
 
 /--
 error: an endpoint statement escape requires `EndpointAct`; use `EndpointAct.ofAct`, `.ite`, or `.seq` so Loom can prove the one-transaction-per-endpoint rule
