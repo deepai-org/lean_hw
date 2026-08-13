@@ -1925,17 +1925,20 @@ def sexEa : Expr 64 :=
     (.shl (.zext (.slice rdval 3 61) 64) (.lit (BitVec.ofNat 64 3)))
     a
 
-def goF0 : Act := stReg.set (L5 S_F0)
+def goF0 : Act := [hwstmt| stReg <- $(L5 S_F0)]
 
 /-- The §9.2 empty-continuation-stack fault, shared by the explicit opcode
 and the sentinel fetch: poison the slot (EXT-3 fail-stop), record what/where/
 who, retire nothing, leave `pc` at the faulting point. -/
 def gretEmptyFault : Act :=
-  actSeq [faultCauseReg.set (L8 FAULT_GRET_EMPTY),
-          faultPcReg.set pc, faultCurReg.set cur,
-          poisonReg.set (.or poison (.shl (L32 1) (.zext cur 32))),
-          goF0]
-def stepPc : Act := pcReg.set pc8
+  [hwstmt| {
+    faultCauseReg <- $(L8 FAULT_GRET_EMPTY),
+    faultPcReg <- pc,
+    faultCurReg <- cur,
+    poisonReg <- poison | (1 << zext cur to 32),
+    $stmt(goF0)
+  }]
+def stepPc : Act := [hwstmt| pcReg <- pc8]
 
 /-- Cons for an if/else-if chain kept as *data*, so `actPriTree` can
 re-associate it into a balanced dispatch instead of a linear one. -/
