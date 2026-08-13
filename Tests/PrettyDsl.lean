@@ -514,6 +514,32 @@ hardware guarded_transactions where
   rule sample := receive value from sink then observed <- value
 end GuardedTransactions
 
+namespace ExclusiveTransactions
+hardware exclusive_transactions where
+  input choose : 1
+  rule transmit :=
+    if choose then
+      send 1 to source then skip
+    else
+      send 2 to source then skip
+end ExclusiveTransactions
+
+/-- error: endpoint 'source' may receive 2 send transactions in one event; Loom permits at most one unless an explicit arbiter combines them -/
+#guard_msgs in
+hardware duplicate_send where
+  rule transmit := { send 1 to source, send 2 to source }
+
+/-- error: endpoint 'sink' may receive 2 consume transactions in one event; Loom permits at most one unless an explicit arbiter combines them -/
+#guard_msgs in
+hardware duplicate_consume where
+  rule first := consume sink
+  rule second := consume sink
+
+/-- error: endpoint 'source' may receive 2 send transactions in one event; Loom permits at most one unless an explicit arbiter combines them -/
+#guard_msgs in
+hardware generated_send where
+  rule transmit := for i in $([0, 1]) generate send $(Expr.lit (BitVec.ofNat 8 i)) to source
+
 end Tests.PrettyDsl.ChannelLints
 
 namespace Tests.PrettyDsl.PrettySystem
