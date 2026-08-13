@@ -48,29 +48,7 @@ def MAXD : Nat := 4
 def CW : Nat := 5
 def AW : Nat := 10
 
-/-! ## Typed memory handles
-
-The address/data widths and names below are the single source for memory
-declarations and every core read/write site. -/
-
-def rfBank      : Mem 10 64 := ⟨"rf"⟩
-def dmemBank    : Mem 9 64  := ⟨"dmem"⟩
-def tracePcBank : Mem 4 64  := ⟨"trace_pc"⟩
-def traceWbBank : Mem 4 64  := ⟨"trace_wb"⟩
-def uartBank    : Mem 8 8   := ⟨"uart_mem"⟩
-def rxBank      : Mem 8 8   := ⟨"rx_mem"⟩
-def icDataBank  : Mem 12 64 := ⟨"ic_data"⟩
-def icTagBank   : Mem 12 42 := ⟨"ic_tag"⟩
-def dcDataBank  : Mem 12 64 := ⟨"dc_data"⟩
-def dcTagBank   : Mem 12 42 := ⟨"dc_tag"⟩
-def tpcBank     : Mem 5 64  := ⟨"tpc"⟩
-def tsleepBank  : Mem 5 64  := ⟨"tsleep"⟩
-def tpBank      : Mem 5 64  := ⟨"tp_arr"⟩
-def sigmaskBank : Mem 5 64  := ⟨"sigmask_arr"⟩
-def tdomBank    : Mem 5 8   := ⟨"tdom"⟩
-def tcontBank   : Mem 7 64  := ⟨"tcont"⟩
-def tcdomBank   : Mem 7 8   := ⟨"tcdom"⟩
-def gdepthBank  : Mem 5 3   := ⟨"gdepth"⟩
+/-! ## Typed memory handles -/
 
 namespace AuthoredMemories
 
@@ -98,6 +76,27 @@ hardware lnp64mini_memories where
   memory gdepth : 3 [32]
 
 end AuthoredMemories
+
+/-! Compatibility aliases retain the established Lean API while the hardware
+declaration is the sole source of widths and coordinate strings. -/
+def rfBank      : Mem 10 64 := AuthoredMemories.rf
+def dmemBank    : Mem 9 64  := AuthoredMemories.dmem
+def tracePcBank : Mem 4 64  := AuthoredMemories.trace_pc
+def traceWbBank : Mem 4 64  := AuthoredMemories.trace_wb
+def uartBank    : Mem 8 8   := AuthoredMemories.uart_mem
+def rxBank      : Mem 8 8   := AuthoredMemories.rx_mem
+def icDataBank  : Mem 12 64 := AuthoredMemories.ic_data
+def icTagBank   : Mem 12 42 := AuthoredMemories.ic_tag
+def dcDataBank  : Mem 12 64 := AuthoredMemories.dc_data
+def dcTagBank   : Mem 12 42 := AuthoredMemories.dc_tag
+def tpcBank     : Mem 5 64  := AuthoredMemories.tpc
+def tsleepBank  : Mem 5 64  := AuthoredMemories.tsleep
+def tpBank      : Mem 5 64  := AuthoredMemories.tp_arr
+def sigmaskBank : Mem 5 64  := AuthoredMemories.sigmask_arr
+def tdomBank    : Mem 5 8   := AuthoredMemories.tdom
+def tcontBank   : Mem 7 64  := AuthoredMemories.tcont
+def tcdomBank   : Mem 7 8   := AuthoredMemories.tcdom
+def gdepthBank  : Mem 5 3   := AuthoredMemories.gdepth
 
 theorem authored_memory_handles :
     AuthoredMemories.rf = rfBank ∧
@@ -162,15 +161,38 @@ def S_DC   : Nat := 24
 
 /-! ## Input ports (D15) -/
 
-def mDonePort    : Reg 1  := ⟨"m_done"⟩
-def mRdataPort   : Reg 64 := ⟨"m_rdata"⟩
-def mBusyPort    : Reg 1  := ⟨"m_busy"⟩
-def gpDonePort   : Reg 1  := ⟨"gp_done"⟩
-def gpRdataPort  : Reg 32 := ⟨"gp_rdata"⟩
-def gpBusyPort   : Reg 1  := ⟨"gp_busy"⟩
-def cmdValidPort : Reg 1  := ⟨"cmd_valid"⟩
-def cmdIdxPort   : Reg 7  := ⟨"cmd_idx"⟩
-def cmdDataPort  : Reg 32 := ⟨"cmd_data"⟩
+namespace AuthoredInputs
+
+/-- The environment-owned LNP64mini interface. These declarations generate
+the same input coordinates used by the compatibility `...Port` handles below;
+the user-facing source no longer has to repeat `Reg` and `addInput`. -/
+hardware lnp64mini_inputs where
+  input m_done : 1
+  input m_rdata : 64
+  input m_busy : 1
+  input gp_done : 1
+  input gp_rdata : 32
+  input gp_busy : 1
+  input cmd_valid : 1
+  input cmd_idx : 7
+  input cmd_data : 32
+  input res_kill : 1
+  input doorbell : 1
+  input doorbell_key : 64
+  input hold : 1
+  input sc_fail : 1
+
+end AuthoredInputs
+
+def mDonePort    : Reg 1  := AuthoredInputs.m_done.reg
+def mRdataPort   : Reg 64 := AuthoredInputs.m_rdata.reg
+def mBusyPort    : Reg 1  := AuthoredInputs.m_busy.reg
+def gpDonePort   : Reg 1  := AuthoredInputs.gp_done.reg
+def gpRdataPort  : Reg 32 := AuthoredInputs.gp_rdata.reg
+def gpBusyPort   : Reg 1  := AuthoredInputs.gp_busy.reg
+def cmdValidPort : Reg 1  := AuthoredInputs.cmd_valid.reg
+def cmdIdxPort   : Reg 7  := AuthoredInputs.cmd_idx.reg
+def cmdDataPort  : Reg 32 := AuthoredInputs.cmd_data.reg
 
 def mDone    : Expr 1  := mDonePort.rd
 def mRdata   : Expr 64 := mRdataPort.rd
@@ -201,8 +223,8 @@ exactly as before (silicon regression: `tb_lnp64mini_soc.v` on
   hold safe: no DDR transaction is in flight there, so no `m_done` pulse can
   be missed while the core is stopped (a hold that froze `S_FW`/`S_DL`/
   `S_DSW` would drop the completion and wedge the core forever). -/
-def resKillPort  : Reg 1 := ⟨"res_kill"⟩
-def doorbellPort : Reg 1 := ⟨"doorbell"⟩
+def resKillPort  : Reg 1 := AuthoredInputs.res_kill.reg
+def doorbellPort : Reg 1 := AuthoredInputs.doorbell.reg
 def resKill  : Expr 1  := resKillPort.rd
 def doorbell : Expr 1  := doorbellPort.rd
 
@@ -213,8 +235,8 @@ or doorbell promotes every `tstate == FUTEX` slot. Spurious wakeups are
 spec-legal and recheck the waited-on word. A keyed 64-bit comparator bank does
 not fit alongside 32 thread slots on the target, so `doorbell_key` and
 `wake_key` are informational cross-core wires and do not select wakees. -/
-def doorbellKeyPort : Reg 64 := ⟨"doorbell_key"⟩
-def holdPort        : Reg 1  := ⟨"hold"⟩
+def doorbellKeyPort : Reg 64 := AuthoredInputs.doorbell_key.reg
+def holdPort        : Reg 1  := AuthoredInputs.hold.reg
 def doorbell_key : Expr 64 := doorbellKeyPort.rd
 def hold     : Expr 1  := holdPort.rd
 
@@ -224,31 +246,8 @@ it completes the store-conditional (`m_done` while `sc_pending`). See
 at the serialization point, not two cycles earlier in `S_EX`. The tag
 registers `lr_req`/`sc_req` (pulses beside `core_rd`/`core_wr`) tell the
 arbiter which read takes a reservation and which write is conditional. -/
-def scFailPort : Reg 1 := ⟨"sc_fail"⟩
+def scFailPort : Reg 1 := AuthoredInputs.sc_fail.reg
 def scFail   : Expr 1  := scFailPort.rd
-
-namespace AuthoredInputs
-
-/-- The environment-owned LNP64mini interface. These declarations generate
-the same input coordinates used by the compatibility `...Port` handles above;
-the user-facing source no longer has to repeat `Reg` and `addInput`. -/
-hardware lnp64mini_inputs where
-  input m_done : 1
-  input m_rdata : 64
-  input m_busy : 1
-  input gp_done : 1
-  input gp_rdata : 32
-  input gp_busy : 1
-  input cmd_valid : 1
-  input cmd_idx : 7
-  input cmd_data : 32
-  input res_kill : 1
-  input doorbell : 1
-  input doorbell_key : 64
-  input hold : 1
-  input sc_fail : 1
-
-end AuthoredInputs
 
 theorem authored_input_declarations :
     AuthoredInputs.declarations.inputs =
