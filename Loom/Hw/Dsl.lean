@@ -8,6 +8,7 @@ import Loom.Hw.Semantics
 import Lean.Elab.Command
 import Lean.Elab.Tactic
 import Lean.Elab.Term
+import Lean.Meta.Tactic.TryThis
 
 /-!
 # Pretty hardware quotations
@@ -1428,6 +1429,20 @@ private structure WrittenTarget where
 private structure LintFinding where
   source : Syntax
   message : String
+  codeAction? : Option (String × String) := none
+
+/-- Attach an editor quick fix without adding a second informational
+diagnostic. The ordinary warning/error remains the sole message; Lean's code
+action provider discovers this custom info leaf at the same source span. -/
+private def addSilentCodeAction (source : Syntax) (replacement title : String) :
+    CoreM Unit := do
+  let suggestion : Lean.Meta.Hint.Suggestion := {
+    suggestion := replacement
+    span? := some source
+    diffGranularity := .all
+    toCodeActionTitle? := some fun _ => title
+  }
+  discard <| Lean.Meta.Hint.mkSuggestionsMessage #[suggestion] source none false
 
 private def knownLint (name : Name) : Bool :=
   name == `read_after_write || name == `multiple_write || name == `unguarded_channel
@@ -1471,7 +1486,8 @@ private def readAfterWriteFindings (registers : Array Name)
     (expressionReads expression).filterMap fun (read : TSyntax `ident) =>
       if registers.contains read.getId && written.any (fun prior => prior.name == read.getId) then
         some ⟨read.raw,
-          s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle"⟩
+          s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle",
+          none⟩
       else none
 
 private inductive ChannelGuardKind where
@@ -1516,7 +1532,7 @@ private partial def unguardedDataFindings (suppressed : Array Name)
         if !clean.isAtomic && clean.getString! == "data" then
           let endpoint := clean.getPrefix
           if guards.contains ⟨endpoint, .hasData⟩ then []
-          else [⟨expression, s!"'{endpoint}.data' is read without a dominating '{endpoint}.hasData' guard; an empty channel has no valid payload"⟩]
+          else [⟨expression, s!"'{endpoint}.data' is read without a dominating '{endpoint}.hasData' guard; an empty channel has no valid payload", none⟩]
         else []
   | `(hwexpr| ($value:hwexpr))
   | `(hwexpr| ~ $value:hwexpr)
@@ -1566,7 +1582,7 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
       let suppressMultiple := suppressed.contains `multiple_write
       let multipleFinding :=
         if !prior.isEmpty && !suppressMultiple && prior.any (fun earlier => !earlier.overrideExpected) then
-          [⟨target, s!"'{target.getId}' may be written more than once in one cycle; the later write wins"⟩]
+          [⟨target, s!"'{target.getId}' may be written more than once in one cycle; the later write wins", none⟩]
         else []
       (written ++ [⟨target.getId, target, suppressMultiple⟩], readFindings ++ multipleFinding)
   | `(hwstmt| $_:ident[port $_:num, $address:hwexpr] <- $value:hwexpr) =>
@@ -1578,7 +1594,12 @@ private partial def analyzeStatement (registers : Array Name) (suppressed : Arra
   | statement@`(hwstmt| send $payload:hwexpr to $endpoint:ident) =>
       let guardFinding :=
         if suppressed.contains `unguarded_channel || guardPresent guards endpoint .canSend then []
-        else [⟨statement, s!"send to '{endpoint.getId.eraseMacroScopes}' is not dominated by its `canSend` guard; a full channel drops the payload"⟩]
+        else
+          let replacement :=
+            s!"send {payload.raw.reprint.getD "<payload>"} to {endpoint.getId.eraseMacroScopes} then skip"
+          [⟨statement,
+            s!"send to '{endpoint.getId.eraseMacroScopes}' is not dominated by its `canSend` guard; a full channel drops the payload",
+            some (replacement, "Guard channel send on acceptance")⟩]
       (written, expressionFindings registers suppressed guards written payload ++ guardFinding)
   | `(hwstmt| send $payload:hwexpr to $endpoint:ident then $body:hwstmt) =>
       let payloadFindings := expressionFindings registers suppressed guards written payload
@@ -1784,7 +1805,8 @@ private partial def deadDefaultFindings (domains : Array StateDomain) :
           | some defaultArm =>
               if allEncodingsDeclared && allMembersCovered then
                 ⟨defaultArm,
-                  "default arm is unreachable: the declared states cover every register encoding"⟩ :: nested
+                  "default arm is unreachable: the declared states cover every register encoding",
+                  none⟩ :: nested
               else nested
           | none => nested
   | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
@@ -2467,6 +2489,8 @@ private partial def syntaxShapeEq : Syntax → Syntax → Bool
         if environment.contains generatedName then
           throwErrorAt moduleName s!"generated declaration '{generatedName}' has already been declared"
       for finding in hardwareLintFindings registers rules do
+        if let some (replacement, title) := finding.codeAction? then
+          liftCoreM <| addSilentCodeAction finding.source replacement title
         logWarningAt finding.source finding.message
       for ruleItem in rules do
         for finding in deadDefaultFindings domains ruleItem.body do
