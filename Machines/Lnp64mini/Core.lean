@@ -2378,19 +2378,28 @@ committed-exec host trap like any unknown op -- non-conformant, and it made a
 fall-through into padding a host-dependent behavior. Same fault mechanism as
 the empty-stack return: poison + record, no retire, pc precise. -/
 def opZeroFault : Act :=
-  actSeq [faultCauseReg.set (L8 FAULT_ILLEGAL_OP0),
-          faultPcReg.set pc, faultCurReg.set cur,
-          poisonReg.set (.or poison (.shl (L32 1) (.zext cur 32))),
-          goF0]
+  [hwstmt| {
+    faultCauseReg <- $(L8 FAULT_ILLEGAL_OP0),
+    faultPcReg <- pc,
+    faultCurReg <- cur,
+    poisonReg <- poison | (1 << zext cur to 32),
+    $stmt(goF0)
+  }]
 
 /-- default: trap on an unknown opcode. -/
 def s_ex_trap : Act :=
-  .seq (trapActiveReg.set (L1 1)) (.seq (trappedOpReg.set op) (stReg.set (L5 S_TRAP)))
+  [hwstmt| {
+    trapActiveReg <- 1,
+    trappedOpReg <- op,
+    stReg <- $(L5 S_TRAP)
+  }]
 
 /-- Opcode 0 outranks the host trap: it is an architectural fault, not a
 serviceable unknown (see `opZeroFault`). -/
 def s_ex_body : Act :=
-  .ite (opIs 0) opZeroFault (actPriTree s_ex_branches s_ex_trap)
+  [hwstmt|
+    if $(opIs 0) then $stmt(opZeroFault)
+    else $stmt(actPriTree s_ex_branches s_ex_trap)]
 
 def s_ex : Expr 1 × Act := stArm S_EX  s_ex_body
 
@@ -2554,14 +2563,13 @@ ordered rule list (last-write-wins never had two writers to disambiguate).
 The only memory write below `fsmEn` is `uart_mem` (S_EX UART store), so no
 `memWrite` port ordering changes. -/
 def fsmRule : Rule :=
-  ⟨"fsm", .ite fsmEn
-    (actPriTree
+  ⟨"fsm", [hwstmt|
+    if fsmEn then $stmt(actPriTree
       [s_f0, s_pause, s_fw, s_rd, s_rd2, s_ex, s_l0, s_l1, s_dl, s_dst, s_dsw,
        s_cs0, s_cs1, s_cr0, s_cr1,
        s_clone2, s_clone3, s_ftx1, s_wait, s_mul, s_div, s_gpl, s_gps,
        s_ic, s_gret, s_gc0, s_gc1, s_dc, s_default]
-      .skip)
-    .skip⟩
+      .skip)]⟩
 
 /-- (8b) the SMP cross-core rule (DUAL_SPEC extensions 1–3).
 
