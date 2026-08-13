@@ -15,6 +15,50 @@ namespace Tests.PrettyDsl
 open Loom.Hw
 open Loom.Hw.Dsl
 
+packed struct Header where
+  tag : 3
+  address : 5
+
+packed struct RequestShape where
+  address : 64
+  write : 1
+  size : 3
+  data : 64
+
+example : HwPacked.width Header = 8 := rfl
+example : HwPacked.width RequestShape = 132 := rfl
+example : RequestShape.layout.fields.map (fun field => field.lo) =
+    [68, 67, 64, 0] := by native_decide
+example : Header.layout.fields =
+    [⟨"tag", 3, 5⟩, ⟨"address", 5, 0⟩] := by native_decide
+example : Header.tagField.lo = 5 := rfl
+example : Header.addressField.lo = 0 := rfl
+example : HwPacked.pack ({ tag := 5#3, address := 17#5 } : Header) = 0xb1#8 := rfl
+example (value : Header) : HwPacked.unpack (HwPacked.pack value) = value :=
+  HwPacked.unpack_pack value
+example (bits : BitVec 8) : HwPacked.pack (HwPacked.unpack (α := Header) bits) = bits :=
+  HwPacked.pack_unpack (α := Header) bits
+
+private def headerReg : PackedReg Header := .named "header"
+private def headerInput : PackedInput Header := .named "header_input"
+example : ([hwexpr| headerReg.tag] : Expr 3) =
+    Header.tagField.read headerReg.rd := rfl
+example : ([hwexpr| headerInput.address] : Expr 5) =
+    Header.addressField.read headerInput.rd := rfl
+example : [hwstmt| headerReg.tag <- 3] =
+    headerReg.setField Header.tagField (.lit 3#3) := rfl
+
+/-- error: duplicate packed field 'tag' -/
+#guard_msgs in
+packed struct DuplicateHeader where
+  tag : 3
+  tag : 5
+
+/-- error: packed fields must have positive width -/
+#guard_msgs in
+packed struct ZeroWidthHeader where
+  empty : 0
+
 private def a : Reg 8 := ⟨"a"⟩
 private def b : Reg 8 := ⟨"b"⟩
 private def flag : Reg 1 := ⟨"flag"⟩
