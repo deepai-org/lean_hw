@@ -561,9 +561,10 @@ rejected unless the surrounding escaped `EndpointAct` proves the required
 per-event bound. This is the explicit meeting point between arbitrary Lean
 parameterization and command-time endpoint checking, and it must exist before
 channel syntax ships. Before freezing the wrapper interface, prototype it
-against the LNP64mini telemetry island and a deliberately parametric example
-that operates on several distinct channels; revise the wrapper if either use
-requires hand-authored routine footprint proofs.
+against a deliberately parametric example that operates on several distinct
+channels. The LNP64mini telemetry island should use ordinary direct channel
+syntax unless it genuinely needs an irreducible endpoint action; a production
+example must not be contorted merely to exercise the escape hatch.
 
 Braces delimit multi-statement blocks. Newlines and indentation are encouraged
 for readability but are not semantic, so v1 does not require a custom
@@ -2382,9 +2383,11 @@ whole-Design structural check.
 8. Pass the packed partial-write proof-shape gate above, adding layout-aware
    simplification support if ordinary invariant goals expose raw nested merge
    terms.
-9. Run the packed golden matrix above and convert one real LNP64mini request or
-   pipeline bundle without changing its packed bits, simulator behavior,
-   proofs, or emitted RTL.
+9. Run the packed golden matrix above and validate it against one existing
+   LNP64mini request or pipeline bundle without requiring that bundle's source
+   to be converted. If a small representative syntax version is retained as a
+   test fixture, prove that it preserves the packed bits, simulator behavior,
+   proofs, and emitted RTL.
 
 ### Phase 7: memories and register families
 
@@ -2421,9 +2424,8 @@ whole-Design structural check.
    this wrapper or are rejected.
    Both interfaces must use one core `Act` footprint function. Supply
    proof-carrying send/consume/sequence/conditional/fold builders whose routine
-   obligations close by construction, and prototype the API against the
-   LNP64mini telemetry island plus a parametric multi-channel example before
-   freezing it.
+   obligations close by construction, and prototype the API against a
+   parametric multi-channel example before freezing it.
 4. Implement the `system` grammar for any number of named clocks plus typed term
    positions for one `ClockRel`, one `SystemResetPolicy`, optional channel
    policy, and per-channel realization selection. Supply discoverable
@@ -2652,9 +2654,10 @@ The pretty layer is complete when:
     `EndpointFootprint` through `EndpointAct` rather than bypassing static
     send/consume bounds.
     The closed checker and `EndpointAct` theorem use one core footprint
-    definition, ordinary builders discharge routine proofs, and both the
-    LNP64mini telemetry and a parametric multi-channel example use the API
-    without hand-authored boilerplate proofs.
+    definition, and ordinary builders discharge routine proofs in a parametric
+    multi-channel example without hand-authored footprint boilerplate. Direct
+    channel syntax remains the preferred path for reducible applications such
+    as the LNP64mini telemetry island.
 13. The small two-clock example and LNP64mini telemetry system use first-class
     clocks, islands, logical channels, and connections while lowering to their
     existing checked `System`/`CertifiedSystem` values and exact artifacts.
