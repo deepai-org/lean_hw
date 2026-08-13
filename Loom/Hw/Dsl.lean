@@ -4546,6 +4546,50 @@ private def expandSystemCommand
   commands := commands.push (← `(command|
     def $applicationName : Loom.Hw.System.Application $qualifiedSystem :=
       (hw_exact_const% $qualifiedValue).realizeWith $planName (by decide)))
+  for realization in realizations do
+    let some channel := channels.find? (fun declaration =>
+      declaration.name.getId == realization.channel.getId) | unreachable!
+    let widthTerm : TSyntax `term ← match channel.width, channel.packedType with
+      | some width, none => `(term| $width:num)
+      | none, some typeName => `(term| Loom.Hw.HwPacked.width $typeName)
+      | _, _ => Macro.throwErrorAt channel.name "invalid channel payload declaration"
+    let channelPrefix := realization.channel.getId
+    if realizationNameIs realization "Cdc.grayFifo" ||
+        realizationNameIs realization "Cdc.recoverableGrayFifo" then
+      let fifoParametersName := nestedName (channelPrefix ++ `fifoParameters)
+      let storageShapeName := nestedName (channelPrefix ++ `storageShape)
+      let sourceControlName := nestedName (channelPrefix ++ `sourceControl)
+      let sinkControlName := nestedName (channelPrefix ++ `sinkControl)
+      let storageWriterName := nestedName (channelPrefix ++ `storageWriter)
+      let storageReaderName := nestedName (channelPrefix ++ `storageReader)
+      commands := commands.push (← `(command|
+        def $fifoParametersName : Loom.Hw.Cdc.AsyncFifoDesign.Parameters where
+          width := $widthTerm
+          depth := $(channel.depth)
+          depthAtLeastTwo := by decide
+          powerOfTwo := by decide))
+      commands := commands.push (← `(command|
+        def $storageShapeName : Loom.Hw.Cdc.AsyncQueueStorage.Portable.Shape where
+          width := $widthTerm
+          depth := $(channel.depth)
+          positive := by decide))
+      commands := commands.push (← `(command|
+        def $sourceControlName : Loom.Hw.Design :=
+          Loom.Hw.Cdc.AsyncFifoDesign.sourceControl $fifoParametersName))
+      commands := commands.push (← `(command|
+        def $sinkControlName : Loom.Hw.Design :=
+          Loom.Hw.Cdc.AsyncFifoDesign.sinkControl $fifoParametersName))
+      commands := commands.push (← `(command|
+        def $storageWriterName : Loom.Hw.Design :=
+          Loom.Hw.Cdc.AsyncQueueStorage.Portable.writerDesign $storageShapeName))
+      commands := commands.push (← `(command|
+        def $storageReaderName : Loom.Hw.Design :=
+          Loom.Hw.Cdc.AsyncQueueStorage.Portable.readerDesign $storageShapeName))
+    else if realizationNameIs realization "Cdc.synchronousFifo" then
+      let adapterName := nestedName (channelPrefix ++ `adapter)
+      let channelName := nestedName channelPrefix
+      commands := commands.push (← `(command|
+        def $adapterName : Loom.Hw.Design := ($channelName).physicalAdapter))
   let certifiedName := nestedName `certified
   commands := commands.push (← `(command|
     abbrev $certifiedName : Loom.Hw.CertifiedSystem $qualifiedSystem :=

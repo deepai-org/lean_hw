@@ -1107,6 +1107,18 @@ example : twoClock.resetPolicy = .coordinated := rfl
 example : twoClock.application.artifact.emissionCheck.isOk := by native_decide
 example : twoClock.producer.outputs = ["sent"] := by native_decide
 example : twoClock.consumer.outputs = ["got"] := by native_decide
+example : twoClock.q.sourceControl =
+    Cdc.AsyncFifoDesign.sourceControl twoClock.q.fifoParameters := rfl
+example : twoClock.q.sinkControl =
+    Cdc.AsyncFifoDesign.sinkControl twoClock.q.fifoParameters := rfl
+example : twoClock.q.storageWriter =
+    Cdc.AsyncQueueStorage.Portable.writerDesign twoClock.q.storageShape := rfl
+example : twoClock.q.storageReader =
+    Cdc.AsyncQueueStorage.Portable.readerDesign twoClock.q.storageShape := rfl
+example : twoClock.q.fifoParameters.width = 8 := rfl
+example : twoClock.q.fifoParameters.depth = 2 := rfl
+example : twoClock.q.storageShape.width = 8 := rfl
+example : twoClock.q.storageShape.depth = 2 := rfl
 
 private theorem assembledProducerTrue :
     (twoClock.producerSystemIsland.design.toAssumedOpenTSys
