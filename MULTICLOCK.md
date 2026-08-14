@@ -153,6 +153,15 @@ semantics or application hardware logic. Generated physical metadata lists
 each such assumption against its exact connection and states explicitly that
 RTL generation or successful target-cell inference does not discharge it.
 
+Concrete evidence profiles may additionally impose an executable,
+fail-closed target-selection policy without changing the generic leaf
+contract. Such a policy records simulation, inference, routing, and silicon as
+distinct claim stages. For example, the repository's openXC7/Zynq-7000 profile
+rejects independent-clock inferred storage wider than 36 bits after the
+recorded 46-bit 72-mode failure. Passing that conservative selection gate only
+avoids a known-bad mode; it does not turn the leaf's external assumption into a
+Loom theorem.
+
 `TraceContract` is an optional schedule-free relation for application proofs
 that connect consumed and produced traces. Its `deliveredWithin` relation
 states an explicit service bound over cumulative count traces, and serial

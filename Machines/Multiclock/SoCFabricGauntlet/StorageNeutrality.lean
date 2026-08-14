@@ -11,6 +11,10 @@ This module instantiates the same canonical `System` through the registered
 target-storage path using the synchronous read behavior of an inferred Xilinx
 7-series block RAM.  The leaf presentation is explicit, so it cannot be wired
 through the zero-stage first-word-fall-through wrapper.
+
+The retained wide artifact reproduces inference and the silicon failure. It
+is deliberately *not* accepted by the openXC7/Zynq-7000 target-selection
+policy below and must not be presented as a qualified target implementation.
 -/
 
 namespace Machines.Multiclock.SoCFabricGauntlet.StorageNeutrality
@@ -86,10 +90,29 @@ def bramArtifact : System.CertifiedRealizedSystem system certified :=
 def bramTarget : System.RealizedSystem :=
   bramArtifact.realized
 
+private def profileErrorFor (binding : System.CertifiedPortableBinding) : Option String :=
+  let parameters := (System.CertifiedPortable.storageShape binding.connection
+    binding.depthAtLeastTwo).parameters
+  match Loom.Evidence.Targets.AsyncQueueStorage.openXc7Zynq7000IndependentClockPolicy.check
+      parameters with
+  | .ok _ => none
+  | .error message => some s!"channel {binding.connection.chan.name}: {message}"
+
+/-- Every target-refined channel in this SoC is wider than the conservative
+openXC7 limit. This list is consumed by the emission tool before it writes an
+artifact unless the caller explicitly requests known-bad evidence
+reproduction. -/
+def openXc7TargetPolicyFailures : List String :=
+  [dmaRequestBinding, dmaResponseBinding, targetRequestBinding,
+    targetResponseBinding, auditBinding].filterMap profileErrorFor
+
 example : bramTarget.system = certifiedArtifact.realized.system := rfl
 example : bramTarget.bindings.map (·.key) =
     certifiedArtifact.realized.bindings.map (·.key) := by decide
 example : bramTarget.artifacts.externalAssumptions.length = 5 := by decide
+example : openXc7TargetPolicyFailures.length = 5 := by native_decide
+example : openXc7TargetPolicyFailures.any (·.contains "width 46") = true := by
+  native_decide
 example : (System.renderExternalAssumptions
     bramTarget.artifacts.externalAssumptions).contains
       "not Loom theorems and are not discharged by successful RTL generation or target-cell inference" := by

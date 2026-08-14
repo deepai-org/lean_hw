@@ -402,8 +402,12 @@ should either reject this greater-than-36-bit dual-clock inference or bank the
 payload into independently qualified widths. “The expected primitive was
 inferred” must remain a synthesis fact, not be presented as proof of the
 physical storage contract. Loom's named external assumption and physical
-metadata already establish the right fail-closed seam; the next improvement is
-backend-aware selection or rejection at that seam.
+metadata establish the right seam. The openXC7/Zynq-7000 evidence profile now
+implements executable rejection at that seam for independent-clock widths
+above 36. Its evidence records RTL simulation, primitive inference, routing,
+and silicon as distinct stages, and its checked binding retains the external
+storage-contract assumption even for accepted widths. The old wide artifact
+can now be emitted only with an explicit known-bad evidence-reproduction flag.
 
 When reviewing this feedback file, the useful decision filter is:
 
@@ -417,8 +421,10 @@ When reviewing this feedback file, the useful decision filter is:
 4. Does a target claim say exactly what was proved—simulation, inference,
    routing, or silicon—and name the toolchain/device scope?
 
-The concrete requests justified now are fail-closed target qualification for
-storage modes and backend-aware width banking. Recovery waveform metadata has
-already landed; a sticky observation adapter remains optional transport
-convenience. Vendor JTAG, board shells, constraints, and campaign policy should
-remain outside Loom's core language.
+Fail-closed selection has landed. Backend-aware width banking remains deferred
+until every generated bank configuration is separately qualified; the current
+probe directly covers 32-bit and 14-bit banks, not the 32+18 and 32+6 splits
+the other SoC channels would require. Recovery waveform metadata has also
+landed; a sticky observation adapter remains optional transport convenience.
+Vendor JTAG, board shells, constraints, and campaign policy remain outside
+Loom's core language.
