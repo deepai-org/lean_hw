@@ -198,6 +198,10 @@ theorem checkAct_complete_some {nodes : Array Node} {a : Act} {fa : FAct}
       obtain ⟨checked, hchecked⟩ := checkExpr_complete_some value
       refine ⟨⟨.write checked.proof⟩, ?_⟩
       simp [checkAct, hchecked]
+  | writeSlice value =>
+      obtain ⟨checked, hchecked⟩ := checkExpr_complete_some value
+      refine ⟨⟨.writeSlice checked.proof⟩, ?_⟩
+      simp [checkAct, hchecked]
   | memWrite addr value =>
       obtain ⟨ca, hca⟩ := checkExpr_complete_some addr
       obtain ⟨cv, hcv⟩ := checkExpr_complete_some value
@@ -944,6 +948,7 @@ theorem ActMatch.mono {small large : Array Node} {a : Act} {fa : FAct}
   | seq left right ihl ihr => exact .seq ihl ihr
   | ite cond yes no ihy ihn => exact .ite (cond.mono pref) ihy ihn
   | write value => exact .write (value.mono pref)
+  | writeSlice value => exact .writeSlice (value.mono pref)
   | memWrite addr value => exact .memWrite (addr.mono pref) (value.mono pref)
 
 structure LowerActResult (fa : FAct) (start : Build) (a : Act)
@@ -976,6 +981,11 @@ theorem lowerAct_complete (fa : FAct) (s : Build) (valid : s.Valid) :
       obtain ⟨iv, s1, rv⟩ := intern_complete v s valid
       exact ⟨.write i iv, s1, by simp [lowerAct, rv.eq], rv.valid,
         rv.nodesPrefix, .write rv.exprMatch⟩
+  | writeSlice i totalWidth lo fieldWidth v =>
+      obtain ⟨iv, s1, rv⟩ := intern_complete v s valid
+      exact ⟨.writeSlice i totalWidth lo fieldWidth iv, s1,
+        by simp [lowerAct, rv.eq], rv.valid, rv.nodesPrefix,
+        .writeSlice rv.exprMatch⟩
   | memWrite base addr data =>
       obtain ⟨ia, s1, ra⟩ := intern_complete addr s valid
       obtain ⟨iv, s2, rv⟩ := intern_complete data s1 ra.valid

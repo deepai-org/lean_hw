@@ -66,6 +66,14 @@ def Act.duplicateFanoutAct (source replica : String) (redirect : Bool) : Act →
         .seq (.write width source value') (.write width replica value')
       else
         .write width target value'
+  | .writeSlice width target lo fieldWidth inBounds value =>
+      let value' := if redirect then value.redirectRead source replica else value
+      if target = source then
+        .seq
+          (.writeSlice width source lo fieldWidth inBounds value')
+          (.writeSlice width replica lo fieldWidth inBounds value')
+      else
+        .writeSlice width target lo fieldWidth inBounds value'
   | .memWrite aw dw memory port address data =>
       let address' := if redirect then address.redirectRead source replica else address
       let data' := if redirect then data.redirectRead source replica else data
@@ -380,6 +388,96 @@ theorem FanoutRel.run_duplicate (source replica : String) (hne : source ≠ repl
             (impl.regs.set target _) replica width
           rw [RegEnv.set_get_ne _ _ _ _ _ (Ne.symm targetSource),
               RegEnv.set_get_ne _ _ _ _ _ (Ne.symm targetReplica)]
+          exact related.coherent width
+        · intro width
+          change (spec.regs.set target _) replica width = 0#width
+          rw [RegEnv.set_get_ne _ _ _ _ _ (Ne.symm targetReplica)]
+          exact related.spec_replica width
+  | writeSlice valueWidth target lo fieldWidth inBounds value =>
+      simp only [Act.readsReg] at freshRead
+      simp only [Act.writesReg, beq_eq_false_iff_ne, ne_eq] at freshWrite
+      have valueEq := value.eval_redirectIf source replica state hne stateCoherent
+        redirect freshRead
+      simp only [Act.duplicateFanoutAct]
+      by_cases targetSource : target = source
+      · rw [if_pos targetSource]
+        subst targetSource
+        simp only [Act.run]
+        rw [valueEq]
+        have mergeSource :
+            Loom.Word.insert lo (value.eval (fanoutAbs replica state))
+                (impl.regs target valueWidth) =
+              Loom.Word.insert lo (value.eval (fanoutAbs replica state))
+                (spec.regs target valueWidth) := by
+          rw [related.regs target valueWidth hne]
+        have mergeReplica :
+            Loom.Word.insert lo (value.eval (fanoutAbs replica state))
+                (impl.regs replica valueWidth) =
+              Loom.Word.insert lo (value.eval (fanoutAbs replica state))
+                (spec.regs target valueWidth) := by
+          rw [← related.coherent valueWidth,
+            related.regs target valueWidth hne]
+        rw [mergeSource,
+          RegEnv.set_get_ne _ _ _ _ _ (Ne.symm hne), mergeReplica]
+        refine ⟨?_, ?_, ?_, related.mems⟩
+        · intro name width nameReplica
+          change ((impl.regs.set target _).set replica _) name width =
+            (spec.regs.set target _) name width
+          rw [RegEnv.set_get_ne _ _ _ _ _ nameReplica]
+          by_cases nameSource : name = target
+          · subst nameSource
+            by_cases widths : valueWidth = width
+            · subst widths; rw [RegEnv.set_get_eq, RegEnv.set_get_eq]
+            · rw [RegEnv.set_get_same _ _ _ _ widths,
+                RegEnv.set_get_same _ _ _ _ widths]
+              exact related.regs name width hne
+          · rw [RegEnv.set_get_ne _ _ _ _ _ nameSource,
+              RegEnv.set_get_ne _ _ _ _ _ nameSource]
+            exact related.regs name width nameReplica
+        · intro width
+          change ((impl.regs.set target _).set replica _) target width =
+            ((impl.regs.set target _).set replica _) replica width
+          rw [RegEnv.set_get_ne _ _ _ _ _ hne]
+          by_cases widths : valueWidth = width
+          · subst widths; rw [RegEnv.set_get_eq, RegEnv.set_get_eq]
+          · rw [RegEnv.set_get_same _ _ _ _ widths,
+              RegEnv.set_get_same _ _ _ _ widths,
+              RegEnv.set_get_ne _ _ _ _ _ (Ne.symm hne)]
+            exact related.coherent width
+        · intro width
+          change (spec.regs.set target _) replica width = 0#width
+          rw [RegEnv.set_get_ne _ _ _ _ _ (Ne.symm hne)]
+          exact related.spec_replica width
+      · rw [if_neg targetSource]
+        simp only [Act.run]
+        rw [valueEq]
+        have targetReplica : target ≠ replica := freshWrite
+        have mergeTarget :
+            Loom.Word.insert lo (value.eval (fanoutAbs replica state))
+                (impl.regs target valueWidth) =
+              Loom.Word.insert lo (value.eval (fanoutAbs replica state))
+                (spec.regs target valueWidth) := by
+          rw [related.regs target valueWidth targetReplica]
+        rw [mergeTarget]
+        refine ⟨?_, ?_, ?_, related.mems⟩
+        · intro name width nameReplica
+          change (impl.regs.set target _) name width =
+            (spec.regs.set target _) name width
+          by_cases nameTarget : name = target
+          · subst nameTarget
+            by_cases widths : valueWidth = width
+            · subst widths; rw [RegEnv.set_get_eq, RegEnv.set_get_eq]
+            · rw [RegEnv.set_get_same _ _ _ _ widths,
+                RegEnv.set_get_same _ _ _ _ widths]
+              exact related.regs name width targetReplica
+          · rw [RegEnv.set_get_ne _ _ _ _ _ nameTarget,
+              RegEnv.set_get_ne _ _ _ _ _ nameTarget]
+            exact related.regs name width nameReplica
+        · intro width
+          change (impl.regs.set target _) source width =
+            (impl.regs.set target _) replica width
+          rw [RegEnv.set_get_ne _ _ _ _ _ (Ne.symm targetSource),
+            RegEnv.set_get_ne _ _ _ _ _ (Ne.symm targetReplica)]
           exact related.coherent width
         · intro width
           change (spec.regs.set target _) replica width = 0#width

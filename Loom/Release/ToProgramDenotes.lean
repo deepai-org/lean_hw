@@ -100,7 +100,8 @@ theorem toProgram_denotes (d : Loom.Hw.Design)
     (hemit : moduleEmitOkB (Compile.compile d) = true)
     (hmw : moduleMatchOkB (Compile.compile d) = true)
     (hnames : moduleNamesOkB (Compile.compile d) = true)
-    (hreads : designReadsOkB d d.toProgram = true) :
+    (hreads : designReadsOkB d d.toProgram = true)
+    (hcomb : d.combOutputs = []) :
     Symbolic.ModuleBehavior d d.toProgram d.indexedsOf d.tableOf
       d.registersOf d.memoriesOf d.outputsOf :=
   Symbolic.moduleBehavior_of_checks d d.toProgram d.indexedsOf d.tableOf
@@ -116,7 +117,7 @@ theorem toProgram_denotes (d : Loom.Hw.Design)
     (outputsOf_listLength d 128).symm
     (toProgram_registerBehavior d hemit hmw hnames)
     (toProgram_memoryBehavior d hemit hmw hnames)
-    (toProgram_outputBehavior d)
+    (toProgram_outputBehavior d hcomb)
 
 /-! ## Axiom audit -/
 

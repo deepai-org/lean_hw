@@ -1741,6 +1741,93 @@ theorem indexedExprMatches_raw
                     using rhsEq)
                   accepted.1.1.1.2 (valueIH actual accepted.2)
 
+/-- Soundness of the distinguished-current half of slice insertion. -/
+private theorem indexedInsertClear_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) {width : Nat} (mask : BitVec width)
+    (currentExpr : Loom.Emit.MicroVerilog.Expr width) (current cleared : Ref)
+    (currentMatches : RawExprMatches program table currentExpr current)
+    (accepted :
+      (match lookupRef? indexeds table cleared with
+      | some ⟨_, clearWidth, .bin .and actualCurrent negMask⟩ =>
+          clearWidth == width && actualCurrent == current &&
+            indexedExprMatches indexeds table (.not (.lit mask)) negMask
+      | _ => false) = true) :
+    RawExprMatches program table (.and currentExpr (.not (.lit mask))) cleared := by
+  cases cleared with
+  | reg name => simp [lookupRef?] at accepted
+  | wire number =>
+      cases found : lookupIndexed? indexeds table number with
+      | none => simp [lookupRef?, found] at accepted
+      | some indexed =>
+          obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+          cases rhs <;> simp [lookupRef?, found] at accepted
+          next op actualCurrent negMask =>
+            cases op <;> simp at accepted
+            obtain ⟨raw, rawAt, rawMatch⟩ :=
+              lookupIndexed_rawWireAt program hmatches table number
+                ⟨indexedNumber, actualWidth, .bin .and actualCurrent negMask⟩ found
+            obtain ⟨widthEq, rhsEq⟩ :=
+              IndexedWire.matchesRaw_width_rhs rawMatch
+            exact .and rawAt (widthEq.trans accepted.1.1)
+              (by simpa [IndexedRhs.toRaw] using rhsEq)
+              (accepted.1.2 ▸ currentMatches)
+              (indexedExprMatches_raw program hmatches table _ _ accepted.2)
+  | namedWire number name =>
+      apply RawExprMatches.named
+      cases found : lookupIndexed? indexeds table number with
+      | none => simp [lookupRef?, found] at accepted
+      | some indexed =>
+          obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+          cases rhs <;> simp [lookupRef?, found] at accepted
+          next op actualCurrent negMask =>
+            cases op <;> simp at accepted
+            obtain ⟨raw, rawAt, rawMatch⟩ :=
+              lookupIndexed_rawWireAt program hmatches table number
+                ⟨indexedNumber, actualWidth, .bin .and actualCurrent negMask⟩ found
+            obtain ⟨widthEq, rhsEq⟩ :=
+              IndexedWire.matchesRaw_width_rhs rawMatch
+            exact .and rawAt (widthEq.trans accepted.1.1)
+              (by simpa [IndexedRhs.toRaw] using rhsEq)
+              (accepted.1.2 ▸ currentMatches)
+              (indexedExprMatches_raw program hmatches table _ _ accepted.2)
+
+/-- The insertion checker denotes the compiler's exact mask graph. -/
+theorem indexedInsertMatches_raw
+    (program : Program) {indexeds : Rope (List IndexedWire)}
+    (hmatches : IndexedRopeMatches 0 program.wires indexeds)
+    (table : WireTable) {width fieldWidth : Nat} (lo : Nat)
+    (value : Loom.Hw.Expr fieldWidth)
+    (currentExpr : Loom.Emit.MicroVerilog.Expr width) (current out : Ref)
+    (currentMatches : RawExprMatches program table currentExpr current)
+    (accepted : indexedInsertMatches indexeds table width lo fieldWidth value
+      current out = true) :
+    RawExprMatches program table
+      (Loom.Hw.Compile.insertExpr lo
+        (Loom.Hw.Compile.compileExpr value) currentExpr) out := by
+  cases out with
+  | reg name => simp [indexedInsertMatches] at accepted
+  | namedWire number name => simp [indexedInsertMatches] at accepted
+  | wire number =>
+      cases found : lookupIndexed? indexeds table number with
+      | none => simp [indexedInsertMatches, found] at accepted
+      | some indexed =>
+          obtain ⟨indexedNumber, actualWidth, rhs⟩ := indexed
+          cases rhs <;> simp [indexedInsertMatches, found] at accepted
+          next op cleared shiftedRef =>
+            cases op <;> simp at accepted
+            obtain ⟨raw, rawAt, rawMatch⟩ :=
+              lookupIndexed_rawWireAt program hmatches table number
+                ⟨indexedNumber, actualWidth, .bin .or cleared shiftedRef⟩ found
+            obtain ⟨widthEq, rhsEq⟩ :=
+              IndexedWire.matchesRaw_width_rhs rawMatch
+            unfold Loom.Hw.Compile.insertExpr
+            exact .or rawAt (widthEq.trans accepted.1.1)
+              (by simpa [IndexedRhs.toRaw] using rhsEq)
+              (indexedInsertClear_raw program hmatches table _ currentExpr
+                current cleared currentMatches accepted.1.2)
+              (indexedExprMatches_raw program hmatches table _ _ accepted.2)
 /-- Meaning of the optional symbolic accumulator used while checking an
 action. `none` deliberately imposes no premise: a successful certificate
 must then establish an output independent of the discarded accumulator. -/
@@ -1785,6 +1872,19 @@ private theorem nextReg_eq_of_no_write (register : String) (width : Nat) :
           (register, width) ∉ (Loom.Hw.Act.write actualWidth name value).regWrites := by
         exact (Loom.Hw.Compile.writesRegB_eq_false_iff register width _).1
           accepted
+      simp only [Loom.Hw.Compile.nextReg]
+      by_cases sameName : name = register
+      · rw [if_pos sameName]
+        have differentWidth : actualWidth ≠ width := by
+          intro sameWidth
+          exact notMem (by simp [Loom.Hw.Act.regWrites, sameName, sameWidth])
+        rw [dif_neg differentWidth]
+      · rw [if_neg sameName]
+  | writeSlice actualWidth name lo fieldWidth inBounds value =>
+      intro cur accepted
+      have notMem : (register, width) ∉
+          (Loom.Hw.Act.writeSlice actualWidth name lo fieldWidth inBounds value).regWrites := by
+        exact (Loom.Hw.Compile.writesRegB_eq_false_iff register width _).1 accepted
       simp only [Loom.Hw.Compile.nextReg]
       by_cases sameName : name = register
       · rw [if_pos sameName]
@@ -1838,7 +1938,7 @@ theorem nextRegMatches_raw
             rw [nextReg_eq_of_no_write register width
               (.seq left right) cur (by simpa using accepted.1)]
             exact currentMatches
-    | write => simp [nextRegMatches] at accepted
+    | write | writeSlice => simp [nextRegMatches] at accepted
     | ite thenCert elseCert => simp [nextRegMatches] at accepted
   · rename_i guard thenAction elseAction thenIH elseIH
     by_cases writes : Loom.Hw.Compile.writesRegB register width thenAction ||
@@ -1871,7 +1971,7 @@ theorem nextRegMatches_raw
           | namedWire number name =>
               simp [nextRegMatches] at accepted
       | same => cases current <;> simp [nextRegMatches, writes] at accepted
-      | write => simp [nextRegMatches] at accepted
+      | write | writeSlice => simp [nextRegMatches] at accepted
       | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
     · cases cert with
       | same =>
@@ -1895,7 +1995,7 @@ theorem nextRegMatches_raw
             cases value : (Loom.Hw.Compile.writesRegB register width thenAction ||
               Loom.Hw.Compile.writesRegB register width elseAction) <;> simp_all
           cases out <;> simp [nextRegMatches, writesFalse] at accepted
-      | write => simp [nextRegMatches] at accepted
+      | write | writeSlice => simp [nextRegMatches] at accepted
       | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
   · rename_i actualWidth actualRegister value
     by_cases sameRegister : actualRegister = register
@@ -1907,7 +2007,36 @@ theorem nextRegMatches_raw
             simp only [nextRegMatches, if_pos, dif_pos] at accepted
             rw [Loom.Hw.Compile.nextReg, if_pos rfl, dif_pos rfl]
             exact indexedExprMatches_raw program hmatches table _ _ accepted
+        | writeSlice => simp [nextRegMatches] at accepted
         | same => simp [nextRegMatches] at accepted
+        | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
+        | ite thenCert elseCert => simp [nextRegMatches] at accepted
+      · cases current <;> cases cert <;>
+          simp [nextRegMatches, Loom.Hw.Compile.nextReg,
+            sameRegister, sameWidth] at accepted ⊢
+        subst out
+        exact currentMatches
+    · cases current <;> cases cert <;>
+        simp [nextRegMatches, Loom.Hw.Compile.nextReg,
+          sameRegister] at accepted ⊢
+      subst out
+      exact currentMatches
+  · rename_i actualWidth actualRegister lo fieldWidth inBounds value
+    by_cases sameRegister : actualRegister = register
+    · by_cases sameWidth : actualWidth = width
+      · subst actualRegister
+        subst actualWidth
+        cases cert with
+        | writeSlice =>
+            cases current with
+            | none => simp [nextRegMatches] at accepted
+            | some current =>
+                simp only [nextRegMatches, if_pos, dif_pos] at accepted
+                rw [Loom.Hw.Compile.nextReg, if_pos rfl, dif_pos rfl]
+                exact indexedInsertMatches_raw program hmatches table lo value
+                  cur current out currentMatches accepted
+        | same => simp [nextRegMatches] at accepted
+        | write => simp [nextRegMatches] at accepted
         | seq mid leftCert rightCert => simp [nextRegMatches] at accepted
         | ite thenCert elseCert => simp [nextRegMatches] at accepted
       · cases current <;> cases cert <;>
@@ -2176,7 +2305,7 @@ private theorem memPort_eq_of_no_write (memory : String)
       simp only [Loom.Hw.Compile.portTrace, List.mem_append, not_or] at notMem
       rw [Loom.Hw.Compile.memPort, if_neg]
       simp [Loom.Hw.Compile.writesPortB, notMem]
-  | write => intro _ _; rfl
+  | write | writeSlice => intro _ _; rfl
   | memWrite actualAddressWidth actualDataWidth actualMemory actualPort
       address value =>
       intro current accepted
@@ -2261,6 +2390,9 @@ theorem nextPortMatches_raw
           rw [Loom.Hw.Compile.memPort, if_neg writes]
           exact currentMatches
       | _ => simp [nextPortMatches, writes] at accepted
+  · cases cert <;> simp [nextPortMatches] at accepted
+    subst out
+    exact currentMatches
   · cases cert <;> simp [nextPortMatches] at accepted
     subst out
     exact currentMatches

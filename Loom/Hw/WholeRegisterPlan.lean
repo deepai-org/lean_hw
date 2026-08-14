@@ -22,6 +22,8 @@ set_option maxRecDepth 10000
 inductive RegPlan (width : Nat) where
   | same
   | write (value : Loom.Hw.Expr width)
+  | writeSlice (lo fieldWidth : Nat) (inBounds : lo + fieldWidth ≤ width)
+      (value : Loom.Hw.Expr fieldWidth)
   | seq (left right : RegPlan width)
   | ite (guard : Loom.Hw.Expr 1) (thenPlan elsePlan : RegPlan width)
 
@@ -31,6 +33,8 @@ namespace RegPlan
 def apply {width : Nat} : RegPlan width → MV.Expr width → MV.Expr width
   | .same, current => current
   | .write value, _ => compileExpr value
+  | .writeSlice lo _ _ value, current =>
+      insertExpr lo (compileExpr value) current
   | .seq left right, current => right.apply (left.apply current)
   | .ite guard thenPlan elsePlan, current =>
       .mux (compileExpr guard) (thenPlan.apply current)
@@ -57,6 +61,7 @@ def active {width : Nat} : RegPlan width → Bool
 def dependsOnCurrent {width : Nat} : RegPlan width → Bool
   | .same => true
   | .write _ => false
+  | .writeSlice .. => true
   | .seq left right => left.dependsOnCurrent && right.dependsOnCurrent
   | .ite _ thenPlan elsePlan =>
       thenPlan.dependsOnCurrent || elsePlan.dependsOnCurrent
@@ -73,6 +78,12 @@ def ofAction (name : String) (width : Nat) : Act → RegPlan width
   | .write actualWidth actualName value =>
       if actualName = name then
         if h : actualWidth = width then .write (h ▸ value) else .same
+      else .same
+  | .writeSlice actualWidth actualName lo fieldWidth inBounds value =>
+      if actualName = name then
+        if h : actualWidth = width then
+          .writeSlice lo fieldWidth (h ▸ inBounds) value
+        else .same
       else .same
   | .memWrite .. => .same
 
@@ -105,6 +116,14 @@ theorem active_ofAction (action : Act) (name : String) (width : Nat) :
   | write actualWidth actualName value =>
       by_cases nameEq : actualName = name
       · subst actualName
+        by_cases widthEq : actualWidth = width
+        · subst width
+          simp [ofAction, active, writesRegB]
+        · simp [ofAction, active, writesRegB, widthEq]
+      · simp [ofAction, active, writesRegB, nameEq]
+  | writeSlice actualWidth actualName lo fieldWidth inBounds value =>
+      by_cases nameEq : actualName = name
+      · subst actualName
         by_cases widthEq : actualWidth = width <;>
           simp [ofAction, active, writesRegB, widthEq]
       · simp [ofAction, active, writesRegB, nameEq]
@@ -124,6 +143,14 @@ theorem apply_ofAction (action : Act) (name : String) (width : Nat)
       rw [active_ofAction thenAction name width,
         active_ofAction elseAction name width, thenIH, elseIH]
   | write actualWidth actualName value =>
+      by_cases nameEq : actualName = name
+      · subst actualName
+        by_cases widthEq : actualWidth = width
+        · subst actualWidth
+          simp [ofAction, nextReg, apply]
+        · simp [ofAction, nextReg, apply, widthEq]
+      · simp [ofAction, nextReg, apply, nameEq]
+  | writeSlice actualWidth actualName lo fieldWidth inBounds value =>
       by_cases nameEq : actualName = name
       · subst actualName
         by_cases widthEq : actualWidth = width
@@ -187,6 +214,21 @@ def write (actualWidth : Nat) (actualName : String)
         else .cons .same (write actualWidth actualName value registers)
       else .cons .same (write actualWidth actualName value registers)
 
+def writeSlice (actualWidth : Nat) (actualName : String) (lo fieldWidth : Nat)
+    (inBounds : lo + fieldWidth ≤ actualWidth)
+    (value : Loom.Hw.Expr fieldWidth) :
+    (registers : List RegDecl) → Plans registers
+  | [] => .nil
+  | register :: registers =>
+      if actualName = register.name then
+        if widthEq : actualWidth = register.width then
+          .cons (.writeSlice lo fieldWidth (widthEq ▸ inBounds) value)
+            (writeSlice actualWidth actualName lo fieldWidth inBounds value registers)
+        else .cons .same
+          (writeSlice actualWidth actualName lo fieldWidth inBounds value registers)
+      else .cons .same
+        (writeSlice actualWidth actualName lo fieldWidth inBounds value registers)
+
 /-- Construct every register projection in one source-action traversal. -/
 def ofAction (registers : List RegDecl) : Act → Plans registers
   | .skip => same registers
@@ -195,6 +237,8 @@ def ofAction (registers : List RegDecl) : Act → Plans registers
   | .ite guard thenAction elseAction =>
       branch guard (ofAction registers thenAction) (ofAction registers elseAction)
   | .write width name value => write width name value registers
+  | .writeSlice width name lo fieldWidth inBounds value =>
+      writeSlice width name lo fieldWidth inBounds value registers
   | .memWrite .. => same registers
 
 /-- Pointwise specification of an action-wide plan. -/
@@ -265,6 +309,22 @@ private theorem projects_write (actualWidth : Nat) (actualName : String)
         · simp [write, Projects, RegPlan.ofAction, widthEq, ih]
       · simp [write, Projects, RegPlan.ofAction, nameEq, ih]
 
+private theorem projects_writeSlice (actualWidth : Nat) (actualName : String)
+    (lo fieldWidth : Nat) (inBounds : lo + fieldWidth ≤ actualWidth)
+    (value : Loom.Hw.Expr fieldWidth) (registers : List RegDecl) :
+    Projects (.writeSlice actualWidth actualName lo fieldWidth inBounds value)
+      (writeSlice actualWidth actualName lo fieldWidth inBounds value registers) := by
+  induction registers with
+  | nil => trivial
+  | cons register registers ih =>
+      by_cases nameEq : actualName = register.name
+      · subst actualName
+        by_cases widthEq : actualWidth = register.width
+        · subst actualWidth
+          simp [writeSlice, Projects, RegPlan.ofAction, ih]
+        · simp [writeSlice, Projects, RegPlan.ofAction, widthEq, ih]
+      · simp [writeSlice, Projects, RegPlan.ofAction, nameEq, ih]
+
 /-- The shared construction computes all conventional projections exactly. -/
 theorem ofAction_projects (registers : List RegDecl) (action : Act) :
     Projects action (ofAction registers action) := by
@@ -275,6 +335,8 @@ theorem ofAction_projects (registers : List RegDecl) (action : Act) :
   | ite guard thenAction elseAction thenIH elseIH =>
       exact projects_branch guard thenAction elseAction thenIH elseIH
   | write width name value => exact projects_write width name value registers
+  | writeSlice width name lo fieldWidth inBounds value =>
+      exact projects_writeSlice width name lo fieldWidth inBounds value registers
   | memWrite aw dw memory port address value =>
       exact projects_memWrite aw dw memory port address value registers
 

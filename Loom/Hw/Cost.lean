@@ -368,6 +368,7 @@ def Act.hc : Act → List ENode → List ENode
   | .seq a b, t => b.hc (a.hc t)
   | .ite c x y, t => y.hc (x.hc ((Expr.hc c t).2))
   | .write _ _ v, t => (Expr.hc v t).2
+  | .writeSlice _ _ _ _ _ v, t => (Expr.hc v t).2
   | .memWrite _ _ _ _ a d, t => (Expr.hc d (Expr.hc a t).2).2
 
 /-- **Width-weighted combinational work of an expression**, counting each
@@ -416,6 +417,7 @@ def Act.treeCost : Act → Nat
   | .seq a b => a.treeCost + b.treeCost
   | .ite c t e => c.treeCost + t.treeCost + e.treeCost
   | .write _ _ v => v.treeCost
+  | .writeSlice _ _ _ _ _ v => v.treeCost
   | .memWrite _ _ _ _ a d => a.treeCost + d.treeCost
 
 /-- How many syntactic sites read register `n` — the fanout dimension. -/
@@ -439,6 +441,7 @@ def Act.regReads (n : String) : Act → Nat
   | .seq a b => a.regReads n + b.regReads n
   | .ite c t e => c.regReads n + t.regReads n + e.regReads n
   | .write _ _ v => v.regReads n
+  | .writeSlice _ _ _ _ _ v => v.regReads n
   | .memWrite _ _ _ _ a d => a.regReads n + d.regReads n
 
 /-- The design's cost vector on a declared target.

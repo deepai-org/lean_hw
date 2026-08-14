@@ -7,14 +7,15 @@ import Machines.Lnp64u.Theorems.T8
 import Machines.Lnp64u.Theorems.T9
 import Machines.Lnp64mini.Harness
 import Machines.Substrate.S0Blinky
+import Tools.MulticlockRelease
 
 /-!
 # Final release theorem
 
 This module is built only by the release pipeline, after both generated
 artifact witnesses have been kernel-checked. `verifiedReleases` is the one
-publication-facing theorem binding both shipped byte streams to concrete SSA
-programs, complete declarative denotations, and proved processor refinements.
+publication-facing theorem binding the two processor byte streams and the
+portable System artifact to their checked sources and refinements.
 -/
 
 open Loom Loom.Hw Loom.Release
@@ -47,7 +48,7 @@ abbrev Lnp64uReleaseArtifact := VerifiedSymbolicArtifact
       Loom.GeneratedRelease.Lnp64u.memoryRoots
       Loom.GeneratedRelease.Lnp64u.outputIndexTree
 
-/-- The single publication-facing claim for both exact shipped artifacts.
+/-- The single publication-facing claim for all exact shipped artifacts.
 
 Besides exact bytes, complete concrete-SSA denotation, and ISS refinement,
 the bundle states representative headline security invariants directly over
@@ -56,6 +57,9 @@ machine-wide W^X, lineage-ledger conservation, and budget boundedness. -/
 structure VerifiedReleases where
   acc8 : Acc8ReleaseArtifact
   lnp64u : Lnp64uReleaseArtifact
+  /-- Exact compiler-only two-clock artifact plus the production-scale
+  LNP64mini instantiation, rather than example-only evidence. -/
+  multiclock : CertifiedMulticlockRelease
   authorityConfinement :
     (Compile.compile
       (Machines.Lnp64u.Hw.core Machines.Lnp64u.Demo.sysManifest)).toTSys.Invariant
@@ -85,15 +89,17 @@ structure VerifiedReleases where
         ((lnp64u.refinement.abs state).doms d).budget ≤
           (Machines.Lnp64u.Demo.sysManifest.doms d).budgetQ)
 
-/-- Both shipped Verilog artifacts have exact byte witnesses whose concrete
-SSA denotations refine their proved processor models and carry the named
-LNP64-µ security invariants to the denoted compiled system. -/
+/-- The processor artifacts have exact byte witnesses whose concrete SSA
+denotations refine their models; the System leg carries its exact emitted RTL
+member and the portable channel refinement at both required scales. -/
 theorem verifiedReleases : Nonempty VerifiedReleases := by
   obtain ⟨acc8⟩ := Loom.GeneratedRelease.Acc8.verifiedRelease
   obtain ⟨lnp64u⟩ := Loom.GeneratedRelease.Lnp64u.verifiedRelease
+  obtain ⟨multiclock⟩ := verifiedMulticlockRelease
   exact ⟨{
     acc8
     lnp64u
+    multiclock
     authorityConfinement := lnp64u.invariant_pullback
       (Machines.Lnp64u.Theorems.T2.authority_confined
         Machines.Lnp64u.Demo.sysManifest
@@ -128,6 +134,10 @@ structure FormalSubstance where
     (DagEval.prepareSimulator? base).isSome = true
   smallDesign : CertifiedDesign Machines.Substrate.S0Blinky.design
   productionDesign : CertifiedDesign Machines.Lnp64mini.design
+  smallSystem : CertifiedSystem Machines.Substrate.TwoClock.system
+  productionSystem : CertifiedSystem Machines.Lnp64mini.Multiclock.system
+  productionSystemArtifact : System.CertifiedRealizedSystem
+    Machines.Lnp64mini.Multiclock.system Machines.Lnp64mini.Multiclock.certified
 
 /-- Publication-facing closure joining the byte theorem, generic simulator
 theorems, preparation completeness, and two real certified Designs. -/
@@ -140,6 +150,9 @@ theorem formalSubstance : Nonempty FormalSubstance := by
     dagPreparation := DagEval.prepareSimulator?_complete
     smallDesign := Machines.Substrate.S0Blinky.certified
     productionDesign := Machines.Lnp64mini.certified
+    smallSystem := Machines.Substrate.TwoClock.certified
+    productionSystem := Machines.Lnp64mini.Multiclock.certified
+    productionSystemArtifact := Machines.Lnp64mini.Multiclock.certifiedArtifact
   }⟩
 
 end Loom.Release.Theorems

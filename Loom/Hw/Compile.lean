@@ -112,6 +112,27 @@ theorem compileExpr_eval : ∀ {w : Nat} (e : Expr w) (σ : Loom.Hw.St),
   | zext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
   | sext a w' ih => intro σ; simp [compileExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Expr.eval, ih]
 
+/-- µVerilog expression for replacing an LSB-indexed field. This mirrors
+`Loom.Word.insert`, but keeps the previous accumulated next-state value as an
+expression so ordered partial writes remain in the compiled mux/data path. -/
+def insertExpr {totalWidth fieldWidth : Nat} (lo : Nat)
+    (field : MV.Expr fieldWidth) (cur : MV.Expr totalWidth) : MV.Expr totalWidth :=
+  let mask : BitVec totalWidth :=
+    (BitVec.allOnes fieldWidth).setWidth totalWidth <<< lo
+  .or (.and cur (.not (.lit mask)))
+    (.shl (.zext field totalWidth) (.lit (BitVec.ofNat totalWidth lo)))
+
+theorem insertExpr_eval {totalWidth fieldWidth : Nat} (lo : Nat)
+    (field : MV.Expr fieldWidth) (cur : MV.Expr totalWidth)
+    (σ : Loom.Hw.St) (inBounds : lo + fieldWidth ≤ totalWidth) :
+    mvEval (convSt σ) (insertExpr lo field cur) =
+      Loom.Word.insert lo (mvEval (convSt σ) field) (mvEval (convSt σ) cur) := by
+  have hlo : lo < 2 ^ totalWidth := by
+    have := Nat.lt_two_pow_self (n := totalWidth)
+    omega
+  simp [insertExpr, mvEval, Loom.Emit.MicroVerilog.Expr.eval, Loom.Word.insert,
+    Nat.mod_eq_of_lt hlo]
+
 /-! ## Write-footprint compilation
 
 The stable footprint syntax and semantic frame lemma live in
@@ -131,6 +152,7 @@ def writesRegB (rn : String) (w : Nat) : Act → Bool
   | .ite _ thenAction elseAction =>
       writesRegB rn w thenAction || writesRegB rn w elseAction
   | .write actualWidth name _ => name == rn && actualWidth == w
+  | .writeSlice actualWidth name _ _ _ _ => name == rn && actualWidth == w
   | .memWrite .. => false
 
 theorem writesRegB_eq_true_iff (rn : String) (w : Nat) (action : Act) :
@@ -140,6 +162,14 @@ theorem writesRegB_eq_true_iff (rn : String) (w : Nat) (action : Act) :
   | seq left right leftIH rightIH | ite _ left right leftIH rightIH =>
       simp [writesRegB, Act.regWrites, leftIH, rightIH]
   | write actualWidth name value =>
+      simp only [writesRegB, Bool.and_eq_true, beq_iff_eq, Act.regWrites,
+        List.mem_singleton, Prod.mk.injEq]
+      constructor
+      · rintro ⟨widthEq, nameEq⟩
+        exact ⟨widthEq.symm, nameEq.symm⟩
+      · rintro ⟨widthEq, nameEq⟩
+        exact ⟨widthEq.symm, nameEq.symm⟩
+  | writeSlice actualWidth name lo fieldWidth inBounds value =>
       simp only [writesRegB, Bool.and_eq_true, beq_iff_eq, Act.regWrites,
         List.mem_singleton, Prod.mk.injEq]
       constructor
@@ -168,6 +198,10 @@ def nextReg (r : String) (w : Nat) : Act → MV.Expr w → MV.Expr w
       if r' = r then
         if h : w' = w then h ▸ compileExpr v else cur
       else cur
+  | .writeSlice w' r' lo _ _ v, cur =>
+      if r' = r then
+        if _ : w' = w then insertExpr lo (compileExpr v) cur else cur
+      else cur
   | .memWrite .., cur => cur
 
 /-- A guarded memory write port under construction (the compiled artifact
@@ -183,6 +217,7 @@ def portTrace (m : String) : Act → List Nat
   | .ite _ t e => portTrace m t ++ portTrace m e
   | .memWrite _ _ m' p _ _ => if m' = m then [p] else []
   | .write .. => []
+  | .writeSlice .. => []
 
 /-- Decidable "may write port `p` of memory `m`" — the compiler's
 port-mux pruning test. -/
@@ -212,6 +247,7 @@ def memPort (m : String) (aw dw p : Nat) : Act → Port aw dw → Port aw dw
         else cur
       else cur
   | .write .., cur => cur
+  | .writeSlice .., cur => cur
 
 /-- The whole design's port trace for memory `m` (rule order). -/
 def designTrace (d : Design) (m : String) : List Nat :=
@@ -306,6 +342,7 @@ private unsafe def wrImpl (rn : String) (w : Nat)
       | .seq x y => do pure ((← wrImpl rn w cache x) || (← wrImpl rn w cache y))
       | .ite _ t e => do pure ((← wrImpl rn w cache t) || (← wrImpl rn w cache e))
       | .write w' r' _ => pure (r' == rn && w' == w)
+      | .writeSlice w' r' _ _ _ _ => pure (r' == rn && w' == w)
       | .memWrite .. => pure false
     cache.modify (·.insert k r)
     return r
@@ -329,6 +366,12 @@ private unsafe def nrImpl (ce : {w' : Nat} → Expr w' → BaseIO (MV.Expr w'))
         if r' = rn then
           if h : w' = w then do return (h ▸ (← ce v)) else return cur
         else return cur
+    | .writeSlice w' r' lo _ _ v =>
+        if r' = rn then
+          if _h : w' = w then do
+            return insertExpr lo (← ce v) cur
+          else return cur
+        else return cur
     | .memWrite .. => return cur
 
 /-- Pointer-memoized `writesPortB m p` (per-port cache). -/
@@ -344,6 +387,7 @@ private unsafe def ptImpl (mn : String) (p : Nat)
       | .seq x y => do pure ((← ptImpl mn p cache x) || (← ptImpl mn p cache y))
       | .ite _ t e => do pure ((← ptImpl mn p cache t) || (← ptImpl mn p cache e))
       | .write .. => pure false
+      | .writeSlice .. => pure false
       | .memWrite _ _ m' p' _ _ => pure (m' == mn && p' == p)
     cache.modify (·.insert k r)
     return r
@@ -357,6 +401,7 @@ private unsafe def mpImpl (ce : {w' : Nat} → Expr w' → BaseIO (MV.Expr w'))
     match a with
     | .skip => return cur
     | .write .. => return cur
+    | .writeSlice .. => return cur
     | .seq x y => do mpImpl ce pt mn aw dw p y (← mpImpl ce pt mn aw dw p x cur)
     | .ite c t e => do
         let ct ← mpImpl ce pt mn aw dw p t cur
@@ -398,12 +443,14 @@ private unsafe def compileImpl (d : Design) : MV.Module := unsafeBaseIO do
                         dataWidth := m.dataWidth, init := m.init
                         wrPorts := ports.toList }
   -- D39: only the *exported* registers reach a port (`none` = all of them).
-  let outs : List MV.OutDef := d.exportedRegs.map fun r =>
+  let registerOuts : List MV.OutDef := d.exportedRegs.map fun r =>
     { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
+  let combOuts : List MV.OutDef ← d.combOutputs.mapM fun output => do
+    pure ⟨output.name, output.width, ← ce output.value⟩
   let ins : List MV.InDef := d.inputs.map fun i =>
     { name := i.name, width := i.width }
   return { name := d.name, regs := regs.toList, mems := mems.toList
-           outs := outs, ins := ins }
+           outs := registerOuts ++ combOuts, ins := ins }
 
 /-- Compile a design. Registers become `RegDef`s whose next expression
 folds all rules in order; memories get one guarded write port per used
@@ -422,9 +469,28 @@ def compile (d : Design) : MV.Module where
       init := m.init
       wrPorts := (List.range (numPorts d m.name)).map fun p =>
         compilePort d m.name m.addrWidth m.dataWidth p }
-  outs := d.exportedRegs.map fun r =>
-    { name := s!"o_{r.name}", width := r.width, val := .reg r.width r.name }
+  outs := (d.exportedRegs.map fun r =>
+      { name := s!"o_{r.name}", width := r.width,
+        val := .reg r.width r.name }) ++
+    (d.combOutputs.map fun output =>
+      { name := output.name, width := output.width,
+        val := compileExpr output.value })
   ins := d.inputs.map fun i => { name := i.name, width := i.width }
+
+/-- The combinational-output suffix is definitionally derived by the proved
+expression compiler. Register observability ports remain the prefix. -/
+theorem compile_combOutputs (d : Design) :
+    (compile d).outs.drop d.exportedRegs.length =
+      d.combOutputs.map fun output =>
+        { name := output.name, width := output.width,
+          val := compileExpr output.value } := by
+  simp [compile]
+
+/-- Every combinational output expression has exactly the source `Expr`
+meaning in the compiler state embedding. -/
+theorem compileCombOutput_eval (output : CombOutput) (state : Loom.Hw.St) :
+    mvEval (convSt state) (compileExpr output.value) = output.value.eval state :=
+  compileExpr_eval output.value state
 
 
 /-! ## Register-fold correctness
@@ -499,6 +565,19 @@ theorem nextReg_correct : ∀ (a : Act) (σ acc : Loom.Hw.St) (rn : String) (w :
         rw [hlhs, hcur]
         simp only [Act.run, Loom.Hw.RegEnv.set]
         rw [if_neg (fun (h : rn = r') => hr h.symm)]
+  | writeSlice w' r' lo fieldWidth inBounds v =>
+      intro σ acc rn w cur hcur
+      by_cases hr : r' = rn
+      · subst hr
+        by_cases hw : w' = w
+        · subst hw
+          simp only [nextReg, if_true, dif_pos]
+          rw [insertExpr_eval lo (compileExpr v) cur σ inBounds,
+            compileExpr_eval v σ, hcur]
+          simp [Act.run, Loom.Hw.RegEnv.set]
+        · simp [nextReg, Act.run, Loom.Hw.RegEnv.set, hw, hcur]
+      · have hnr : rn ≠ r' := fun h => hr h.symm
+        simp [nextReg, Act.run, Loom.Hw.RegEnv.set, hr, hnr, hcur]
   | memWrite aw dw mn p addr data =>
       intro σ acc rn w cur hcur
       have hlhs : nextReg rn w (Act.memWrite aw dw mn p addr data) cur = cur := rfl
@@ -709,6 +788,7 @@ def widthsOk (mn : String) (aw dw : Nat) : Act → Bool
   | .ite _ t e => widthsOk mn aw dw t && widthsOk mn aw dw e
   | .memWrite aw' dw' m' _ _ _ => m' != mn || (aw' == aw && dw' == dw)
   | .write .. => true
+  | .writeSlice .. => true
 
 /-- **MemWriteWF** — the correctness precondition of the memory half:
 declared widths everywhere, and strictly increasing port indices along the
@@ -733,6 +813,7 @@ def memLog (σ : Loom.Hw.St) (mn : String) (aw dw : Nat) :
         else []
       else []
   | .write .. => []
+  | .writeSlice .. => []
 
 /-- The whole design's write log for memory `mn` (rule order). -/
 def designLog (d : Design) (σ : Loom.Hw.St) (mn : String) (aw dw : Nat) :
@@ -798,6 +879,7 @@ theorem memLog_ports_sublist (σ : Loom.Hw.St) (mn : String) (aw dw : Nat) :
       · rw [if_pos hc]; exact iht.trans (List.sublist_append_left ..)
       · rw [if_neg hc]; exact ihe.trans (List.sublist_append_right ..)
   | write w r v => simp [memLog, portTrace]
+  | writeSlice w r lo fw h v => simp [memLog, portTrace]
   | memWrite aw' dw' m' p addr data =>
       by_cases hm : m' = mn
       · subst hm
@@ -855,6 +937,7 @@ theorem memPort_correct (σ : Loom.Hw.St) (mn : String) (aw dw p : Nat) :
             hp.2 ((memLog_ports_sublist σ mn aw dw e).subset hm))]
           exact ho
   | write w r v => intro cur o ho; exact ho
+  | writeSlice w r lo fw h v => intro cur o ho; exact ho
   | memWrite aw' dw' m' p' addr data =>
       intro cur o ho
       by_cases hm : m' = mn
@@ -966,6 +1049,7 @@ theorem run_memLog (σ : Loom.Hw.St) (mn : String) (aw dw : Nat) :
             simp [Act.run, hc]]
         exact ihe acc hw.2 x
   | write w r v => intro acc _ x; rfl
+  | writeSlice w r lo fw h v => intro acc _ x; rfl
   | memWrite aw' dw' m' p addr data =>
       intro acc hw x
       rw [widthsOk] at hw
@@ -1323,6 +1407,7 @@ theorem run_mems_offwidth (mn : String) (aw dw w : Nat) (hw : w ≠ dw) :
       · rw [if_pos hc]; exact iht h.1 σ acc x
       · rw [if_neg hc]; exact ihe h.2 σ acc x
   | write => intro _ σ acc x; rfl
+  | writeSlice => intro _ σ acc x; rfl
   | memWrite aw' dw' m' p' addr v =>
       intro h σ acc x
       show (acc.mems.set m' (addr.eval σ).toNat (v.eval σ)) mn x w = _

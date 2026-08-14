@@ -223,6 +223,15 @@ theorem Act.run_regs_congr_acc (a : Act) (σ acc₁ acc₂ : St)
         · subst w; simp
         · simp [hw, h]
       · simp [hr, h]
+  | writeSlice w' rn' lo fw hb v =>
+      simp only [Act.run, RegEnv.set]
+      by_cases hr : rn = rn'
+      · subst rn
+        simp only [if_pos]
+        by_cases hw : w' = w
+        · subst w; simp [h]
+        · simp [hw, h]
+      · simp [hr, h]
   | memWrite => exact h
 
 /-! ### Intra-rule projection
@@ -267,6 +276,10 @@ def Act.projectRegs (coords : List (String × Nat)) : Act → Act
         (elseAction.projectRegs coords)
   | .write width name value =>
       if coords.contains (name, width) then .write width name value else .skip
+  | .writeSlice width name lo fieldWidth inBounds value =>
+      if coords.contains (name, width) then
+        .writeSlice width name lo fieldWidth inBounds value
+      else .skip
   | .memWrite .. => .skip
 
 /-- Projecting an action preserves every selected register coordinate. -/
@@ -303,6 +316,18 @@ theorem Act.projectRegs_run (coords : List (String × Nat))
             have same : (name, width) = (actualName, actualWidth) := by
               simpa [Act.regWrites] using written
             exact kept (same ▸ selected)) σ acc).symm
+  | writeSlice actualWidth actualName lo fieldWidth inBounds value =>
+      intro σ acc
+      by_cases kept : (actualName, actualWidth) ∈ coords
+      · simp [projectRegs, kept]
+      · simp only [projectRegs, List.contains_eq_mem, kept, Act.run]
+        exact (Act.run_regs_notin name width
+          (.writeSlice actualWidth actualName lo fieldWidth inBounds value)
+          (by
+            intro written
+            have same : (name, width) = (actualName, actualWidth) := by
+              simpa [Act.regWrites] using written
+            exact kept (same ▸ selected)) σ acc).symm
   | memWrite => intro σ acc; rfl
 
 /-- Retain only writes to selected memory name/data-width coordinates.
@@ -316,6 +341,7 @@ def Act.projectMems (coords : List (String × Nat)) : Act → Act
       smartIte guard (thenAction.projectMems coords)
         (elseAction.projectMems coords)
   | .write .. => .skip
+  | .writeSlice .. => .skip
   | .memWrite addrWidth dataWidth name port addr value =>
       if coords.contains (name, dataWidth) then
         .memWrite addrWidth dataWidth name port addr value
@@ -335,6 +361,7 @@ theorem Act.run_mems_congr_acc (act : Act) (σ acc₁ acc₂ : St)
       · simp [Act.run, hc, iht _ _ h]
       · simp [Act.run, hc, ihe _ _ h]
   | write => exact h
+  | writeSlice => exact h
   | memWrite aw dw mem port writeAddr data =>
       simp only [Act.run, MemEnv.set]
       by_cases hma : mn = mem ∧ addr = (writeAddr.eval σ).toNat
@@ -368,6 +395,7 @@ theorem Act.projectMems_run (coords : List (String × Nat))
       · simp [Act.run, hguard, ihThen σ acc addr]
       · simp [Act.run, hguard, ihElse σ acc addr]
   | write => intro σ acc addr; rfl
+  | writeSlice => intro σ acc addr; rfl
   | memWrite addrWidth dataWidth actualName port writeAddr value =>
       intro σ acc addr
       by_cases kept : (actualName, dataWidth) ∈ coords
@@ -405,6 +433,9 @@ theorem Act.projectRegs_run_mems (coords : List (String × Nat))
   | write actualWidth actualName value =>
       by_cases kept : (actualName, actualWidth) ∈ coords <;>
         simp [projectRegs, kept, Act.run]
+  | writeSlice actualWidth actualName lo fieldWidth inBounds value =>
+      by_cases kept : (actualName, actualWidth) ∈ coords <;>
+        simp [projectRegs, kept, Act.run]
   | memWrite => rfl
 
 /-- A memory-only projection has no register effect. -/
@@ -426,6 +457,7 @@ theorem Act.projectMems_run_regs (coords : List (String × Nat))
       · simp [Act.run, hguard, ihThen]
       · simp [Act.run, hguard, ihElse]
   | write => rfl
+  | writeSlice => rfl
   | memWrite addrWidth dataWidth actualName port writeAddr value =>
       by_cases kept : (actualName, dataWidth) ∈ coords <;>
         simp [projectMems, kept, Act.run]

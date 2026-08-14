@@ -51,6 +51,8 @@ def nextRegs : Act → RegExprEnv → RegExprEnv
         else current name width
   | .write _ name value, current =>
       current.set name (compileExpr value)
+  | .writeSlice width name lo _ _ value, current =>
+      current.set name (insertExpr lo (compileExpr value) (current name width))
   | .memWrite .., current => current
 
 /-- The whole-environment action compiler agrees pointwise with the existing
@@ -73,6 +75,15 @@ theorem nextRegs_apply (action : Act) (current : RegExprEnv)
       by_cases nameEq : actualName = name
       · subst actualName
         simp [nextRegs, nextReg, RegExprEnv.set]
+      · have reverseNameEq : name ≠ actualName := fun equal => nameEq equal.symm
+        simp [nextRegs, nextReg, RegExprEnv.set, nameEq, reverseNameEq]
+  | writeSlice actualWidth actualName lo fieldWidth inBounds value =>
+      by_cases nameEq : actualName = name
+      · subst actualName
+        by_cases widthEq : actualWidth = width
+        · subst width
+          simp [nextRegs, nextReg, RegExprEnv.set]
+        · simp [nextRegs, nextReg, RegExprEnv.set, widthEq]
       · have reverseNameEq : name ≠ actualName := fun equal => nameEq equal.symm
         simp [nextRegs, nextReg, RegExprEnv.set, nameEq, reverseNameEq]
   | memWrite => rfl

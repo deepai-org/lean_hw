@@ -107,6 +107,7 @@ def ZeroWritesAll : Act → Bool
       if r ∈ r0Names then
         if h : w = 32 then isZeroE canonFuel (h ▸ v) else true
       else true
+  | .writeSlice _ r _ _ _ _ => !(r ∈ r0Names)
 
 theorem run_ZeroWritesAll {σ : Loom.Hw.St} (hσ : R0Zero σ)
     {rn : String} (hrn : rn ∈ r0Names) :
@@ -140,6 +141,16 @@ theorem run_ZeroWritesAll {σ : Loom.Hw.St} (hσ : R0Zero σ)
           exact isZeroE_eval hσ canonFuel v h
         · rw [dif_neg hw]; exact hP
       · rw [if_neg hr]; exact hP
+  | .writeSlice width r lo fieldWidth inBounds value, h, acc, hP => by
+      have targetNotZero : r ∉ r0Names := by
+        simpa [ZeroWritesAll] using h
+      show
+        (acc.regs.set r
+          (Loom.Word.insert lo (value.eval σ) (acc.regs r width))) rn 32 = 0#32
+      rw [RegEnv.set_read_other]
+      · exact hP
+      · intro equal
+        exact targetNotZero (equal ▸ hrn)
 
 /-! ## Per-rule instances (single kernel walks) -/
 

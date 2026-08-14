@@ -61,13 +61,17 @@ def Act.readSites : Act → List (String × Nat) × List (String × Nat)
       let (r,s) := c.readSites; let (r',s') := t.readSites; let (r'',s'') := e.readSites
       (r++r'++r'', s++s'++s'')
   | .write _ _ v => v.readSites
+  | .writeSlice _ _ _ _ _ v => v.readSites
   | .memWrite _ _ _ _ a v =>
       let (r,s) := a.readSites; let (r',s') := v.readSites; (r++r', s++s')
 
 /-- Every read site in the design. -/
 def Design.readSites (d : Design) : List (String × Nat) × List (String × Nat) :=
-  d.rules.foldl (fun (acc : List (String × Nat) × List (String × Nat)) rule =>
+  let ruleSites := d.rules.foldl (fun (acc : List (String × Nat) × List (String × Nat)) rule =>
     let (r, s) := rule.body.readSites; (acc.1 ++ r, acc.2 ++ s)) ([], [])
+  d.combOutputs.foldl (fun acc output =>
+    let (r, s) := output.value.readSites
+    (acc.1 ++ r, acc.2 ++ s)) ruleSites
 
 /-- Register reads that name nothing declared, or name it at the wrong width.
 Inputs count as declared: D15 inputs are read with `Expr.reg`. -/

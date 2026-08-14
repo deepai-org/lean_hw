@@ -727,6 +727,23 @@ def checkDagAction (wires : Rope (List IndexedWire))
           else none
         else if writeRoot.isNone then some root else none
       else none
+  | .writeSlice width name lo fieldWidth _ value, root, needed,
+      .writeSlice index valueRef, .atom writeRoot =>
+      if checkedWriteHeader registers index width name then
+        if needed.testBit index then
+          match lookupStateRef? nodes stateTable registers stateTable.depth root index with
+          | some currentRef =>
+              if indexedInsertMatches wires wireTable width lo fieldWidth value
+                  currentRef valueRef then
+                match writeRoot with
+                | some output =>
+                    if checkedStateWrite nodes stateTable stateTable.depth root index
+                        valueRef output then some output else none
+                | none => none
+              else none
+          | none => none
+        else if writeRoot.isNone then some root else none
+      else none
   | .seq left right, root, needed, .seq summary leftCert rightCert,
       .seq leftTrace rightTrace =>
       if summary == seqSummary leftCert.summary rightCert.summary then do
@@ -780,6 +797,25 @@ inductive DagBitSparseEvidence (wires : Rope (List IndexedWire))
         outputRoot) :
       DagBitSparseEvidence wires wireTable nodes stateTable registers
         (.write width name value) root needed (.write index valueRef) outputRoot
+  | sliceUnused {width name lo fieldWidth inBounds value root needed index valueRef}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (unused : needed.testBit index = false) :
+      DagBitSparseEvidence wires wireTable nodes stateTable registers
+        (.writeSlice width name lo fieldWidth inBounds value) root needed
+        (.writeSlice index valueRef) root
+  | sliceNeeded {width name lo fieldWidth inBounds value root needed index valueRef
+      currentRef outputRoot}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (used : needed.testBit index = true)
+      (currentAccepted : StateLookupEvidence nodes stateTable registers
+        stateTable.depth root index currentRef)
+      (valueAccepted : indexedInsertMatches wires wireTable width lo fieldWidth value
+        currentRef valueRef = true)
+      (writeAccepted : StateWriteEvidence nodes stateTable stateTable.depth root index valueRef
+        outputRoot) :
+      DagBitSparseEvidence wires wireTable nodes stateTable registers
+        (.writeSlice width name lo fieldWidth inBounds value) root needed
+        (.writeSlice index valueRef) outputRoot
   | seq {left right root needed summary leftCert rightCert middleRoot outputRoot}
       (summaryAccepted : summary = seqSummary leftCert.summary rightCert.summary)
       (leftAccepted : DagBitSparseEvidence wires wireTable nodes stateTable
@@ -823,7 +859,7 @@ theorem DagBitSparseEvidence.summary_valid
   induction evidence with
   | skip | memWrite => simp [ActionCert.summary,
       ActionCert.possiblyWritesIndex, ActionCert.definitelyWritesIndex]
-  | writeUnused | writeNeeded =>
+  | writeUnused | writeNeeded | sliceUnused | sliceNeeded =>
       simp [ActionCert.summary, singletonIndex,
         ActionCert.possiblyWritesIndex, ActionCert.definitelyWritesIndex]
   | @seq left right root needed summary leftCert rightCert middleRoot outputRoot
@@ -954,6 +990,57 @@ theorem DagBitSparseEvidence.possiblyWritesIndex_eq_writesRegB
               beq_eq_false_iff_ne.mpr nameNe
             simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
               Loom.Hw.Compile.writesRegB, indexFalse, nameFalse]
+  | @sliceUnused width name lo fieldWidth inBounds value root needed index
+      valueRef headerAccepted unused =>
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          by_cases indexEq : index = query
+          · subst query
+            have regEq : actual = source :=
+              Option.some.inj (actualFound.symm.trans sourceFound)
+            subst source
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, headerAccepted]
+          · have nameNe : name ≠ source.name := by
+              intro nameEq
+              apply indexEq
+              exact unique actualFound sourceFound
+                (headerAccepted.1.trans nameEq)
+            have indexFalse : (index == query) = false :=
+              beq_eq_false_iff_ne.mpr indexEq
+            have nameFalse : (name == source.name) = false :=
+              beq_eq_false_iff_ne.mpr nameNe
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, indexFalse, nameFalse]
+  | @sliceNeeded width name lo fieldWidth inBounds value root needed index
+      valueRef currentRef outputRoot headerAccepted used currentAccepted
+      valueAccepted writeAccepted =>
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          by_cases indexEq : index = query
+          · subst query
+            have regEq : actual = source :=
+              Option.some.inj (actualFound.symm.trans sourceFound)
+            subst source
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, headerAccepted]
+          · have nameNe : name ≠ source.name := by
+              intro nameEq
+              apply indexEq
+              exact unique actualFound sourceFound
+                (headerAccepted.1.trans nameEq)
+            have indexFalse : (index == query) = false :=
+              beq_eq_false_iff_ne.mpr indexEq
+            have nameFalse : (name == source.name) = false :=
+              beq_eq_false_iff_ne.mpr nameNe
+            simp [ActionCert.possiblyWritesIndex, singletonIndex_testBit,
+              Loom.Hw.Compile.writesRegB, indexFalse, nameFalse]
   | seq summaryAccepted leftAccepted rightAccepted leftIH rightIH =>
       simp [ActionCert.possiblyWritesIndex, Loom.Hw.Compile.writesRegB,
         leftIH, rightIH]
@@ -995,9 +1082,29 @@ theorem DagBitSparseEvidence.lookup_unused
       value) :
     StateLookupEvidence nodes stateTable registers stateTable.depth output query value := by
   induction evidence with
-  | skip | memWrite | writeUnused => exact inputLookup
+  | skip | memWrite | writeUnused | sliceUnused => exact inputLookup
   | @writeNeeded width name expression root needed index valueRef outputRoot
       headerAccepted used valueAccepted writeAccepted =>
+      have distinct : index ≠ query := by
+        intro equal
+        subst query
+        rw [used] at unused
+        contradiction
+      have indexBound : index < 2 ^ stateTable.depth := by
+        cases found : registers[index]? with
+        | none => simp [checkedWriteHeader, found] at headerAccepted
+        | some register =>
+            exact Nat.lt_of_lt_of_le (getElem?_eq_some_iff.mp found).1 sizeBound
+      have outputAccepted :
+          lookupStateRef? nodes stateTable registers stateTable.depth outputRoot query =
+            some value := by
+        rw [writeAccepted.lookup_other (registers := registers) emptyValid query
+          (exists_testBit_ne_of_ne_of_lt_pow distinct indexBound queryBound)]
+        exact inputLookup.accepted
+      exact lookupStateRef?_sound outputAccepted
+  | @sliceNeeded width name lo fieldWidth inBounds expression root needed index
+      valueRef currentRef outputRoot headerAccepted used currentAccepted
+      valueAccepted writeAccepted =>
       have distinct : index ≠ query := by
         intro equal
         subst query
@@ -1151,6 +1258,70 @@ theorem DagBitSparseEvidence.nextReg_raw
                 (beq_eq_false_iff_ne.mpr equal)
             refine ⟨inputRef, outputLookup, ?_⟩
             simpa [ActionCert.semanticCurrentRef, definiteFalse,
+              Loom.Hw.Compile.nextReg, nameNe] using currentMatches
+  | @sliceUnused width name lo fieldWidth inBounds expression root needed index
+      valueRef headerAccepted unusedWrite =>
+      intro current currentMatches
+      have distinct : index ≠ query := by
+        intro equal
+        subst query
+        rw [used] at unusedWrite
+        contradiction
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          have nameNe : name ≠ source.name := by
+            intro nameEq
+            apply distinct
+            exact unique actualFound sourceFound
+              (headerAccepted.1.trans nameEq)
+          refine ⟨inputRef, inputLookup, ?_⟩
+          simpa [ActionCert.semanticCurrentRef, ActionCert.summary,
+            Loom.Hw.Compile.nextReg, nameNe] using currentMatches
+  | @sliceNeeded width name lo fieldWidth inBounds expression root needed index
+      valueRef currentRef outputRoot headerAccepted writeUsed currentAccepted
+      valueAccepted writeAccepted =>
+      intro current currentMatches
+      cases actualFound : registers[index]? with
+      | none => simp [checkedWriteHeader, actualFound] at headerAccepted
+      | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at headerAccepted
+          by_cases equal : index = query
+          · subst query
+            have regEq : actual = source :=
+              Option.some.inj (actualFound.symm.trans sourceFound)
+            subst source
+            rcases headerAccepted with ⟨rfl, rfl⟩
+            have currentEq := currentAccepted.unique inputLookup
+            subst currentRef
+            have currentRaw : RawExprMatches program wireTable current inputRef := by
+              simpa [ActionCert.semanticCurrentRef, ActionCert.summary] using
+                currentMatches
+            refine ⟨valueRef,
+              writeAccepted.outputLookup (registers := registers), ?_⟩
+            simpa [Loom.Hw.Compile.nextReg] using
+              indexedInsertMatches_raw program wiresMatch wireTable lo expression
+                current inputRef valueRef currentRaw valueAccepted
+          · have nameNe : name ≠ source.name := by
+              intro nameEq
+              apply equal
+              exact unique actualFound sourceFound
+                (headerAccepted.1.trans nameEq)
+            have indexBound : index < 2 ^ stateTable.depth :=
+              Nat.lt_of_lt_of_le (getElem?_eq_some_iff.mp actualFound).1 sizeBound
+            have outputAccepted :
+                lookupStateRef? nodes stateTable registers stateTable.depth outputRoot query =
+                  some inputRef := by
+              rw [writeAccepted.lookup_other (registers := registers) emptyValid
+                query (exists_testBit_ne_of_ne_of_lt_pow equal indexBound
+                  queryBound)]
+              exact inputLookup.accepted
+            have outputLookup := lookupStateRef?_sound outputAccepted
+            refine ⟨inputRef, outputLookup, ?_⟩
+            simpa [ActionCert.semanticCurrentRef, ActionCert.summary,
               Loom.Hw.Compile.nextReg, nameNe] using currentMatches
   | @seq left right root needed summary leftCert rightCert middleRoot outputRoot
       summaryAccepted leftAccepted rightAccepted leftIH rightIH =>
@@ -1402,6 +1573,39 @@ theorem checkDagAction_sound {wires : Rope (List IndexedWire)}
         subst output
         exact .writeNeeded headerAccepted used valueAccepted
           (checkedStateWrite_sound writeAccepted)
+      case writeSlice.writeSlice.none width name lo fieldWidth inBounds value
+          index valueRef =>
+        cases headerAccepted : checkedWriteHeader registers index width name <;>
+          simp [headerAccepted] at accepted
+        cases unused : needed.testBit index with
+        | false =>
+            simp [unused] at accepted
+            subst output
+            exact .sliceUnused headerAccepted unused
+        | true =>
+            simp [unused] at accepted
+            cases currentFound : lookupStateRef? nodes stateTable registers
+                stateTable.depth root index <;> simp [currentFound] at accepted
+      case writeSlice.writeSlice.some width name lo fieldWidth inBounds value
+          index valueRef outputRoot =>
+        cases headerAccepted : checkedWriteHeader registers index width name <;>
+          simp [headerAccepted] at accepted
+        cases used : needed.testBit index <;> simp [used] at accepted
+        cases currentFound : lookupStateRef? nodes stateTable registers
+            stateTable.depth root index with
+        | none => simp [currentFound] at accepted
+        | some currentRef =>
+            simp [currentFound] at accepted
+            cases valueAccepted : indexedInsertMatches wires wireTable width lo
+                fieldWidth value currentRef valueRef <;>
+              simp [valueAccepted] at accepted
+            cases writeAccepted : checkedStateWrite nodes stateTable stateTable.depth
+                root index valueRef outputRoot <;>
+              simp [writeAccepted] at accepted
+            subst output
+            exact .sliceNeeded headerAccepted used
+              (lookupStateRef?_sound currentFound) valueAccepted
+              (checkedStateWrite_sound writeAccepted)
   | seq leftTrace rightTrace leftIH rightIH =>
       cases action <;> cases cert <;>
         simp [checkDagAction] at accepted

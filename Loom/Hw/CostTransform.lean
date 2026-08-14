@@ -358,6 +358,8 @@ theorem Act.hc_mapSignals {f : String → String} (hf : ∀ x y, f x = f y → x
       intro tbl
       simp only [Act.mapSignals, Act.hc, Expr.hc_mapSignals hf, ihx, ihy]
   | write w r v => intro tbl; simp only [Act.mapSignals, Act.hc, Expr.hc_mapSignals hf]
+  | writeSlice w r lo fw h v =>
+      intro tbl; simp only [Act.mapSignals, Act.hc, Expr.hc_mapSignals hf]
   | memWrite aw dw m p a d =>
       intro tbl; simp only [Act.mapSignals, Act.hc, Expr.hc_mapSignals hf]
 
@@ -562,6 +564,10 @@ theorem Act.hc_weight_le : ∀ (a : Act) (tbl : List ENode),
       have h2 := ihy (x.hc (Expr.hc c tbl).2)
       simp only [Act.hc, Act.treeCost] at *; omega
   | write w r v =>
+      intro tbl
+      have h := Expr.hc_weight_le v tbl
+      simp only [Act.hc, Act.treeCost] at *; omega
+  | writeSlice w r lo fw hb v =>
       intro tbl
       have h := Expr.hc_weight_le v tbl
       simp only [Act.hc, Act.treeCost] at *; omega

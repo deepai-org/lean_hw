@@ -207,6 +207,8 @@ private def nextRegDependsOnCurrent (rn : String) (w : Nat) : Act → Bool
       nextRegDependsOnCurrent rn w thenAct ||
         nextRegDependsOnCurrent rn w elseAct
   | .write actualWidth name _ => !(name == rn && actualWidth == w)
+  | .writeSlice actualWidth name _ _ _ _ =>
+      !(name == rn && actualWidth == w)
   | .memWrite .. => true
 
 private def rulesDependOnCurrent (rn : String) (w : Nat) :
@@ -246,6 +248,13 @@ private unsafe def synthNextReg (index : ExprIndex) (rn : String) (w : Nat) :
       if _hname : name = rn then
         if hwidth : actualWidth = w then
           some (true, Compile.compileExprFast (hwidth ▸ value), .write)
+        else some (false, cur, .same)
+      else some (false, cur, .same)
+  | .writeSlice actualWidth name lo _ _ value, cur, _ =>
+      if _hname : name = rn then
+        if hwidth : actualWidth = w then
+          some (true, Compile.insertExpr lo
+            (Compile.compileExprFast value) (hwidth ▸ cur), .writeSlice)
         else some (false, cur, .same)
       else some (false, cur, .same)
   | .memWrite .., cur, _ => some (false, cur, .same)
@@ -338,6 +347,7 @@ private unsafe def synthNextPort (index : ExprIndex) (mn : String) (aw dw p : Na
             .ite guardName thenPort elsePort thenCert elseCert)
         else pure (false, cur, .same)
   | .write .., cur => some (false, cur, .same)
+  | .writeSlice .., cur => some (false, cur, .same)
   | .memWrite actualAw actualDw name port address value, cur =>
       if _hport : name = mn ∧ port = p then
         if hwidth : actualAw = aw ∧ actualDw = dw then do
@@ -417,6 +427,9 @@ private unsafe def synthPlan (index : ExprIndex) {width : Nat} :
   | .same, current, _ => pure (false, current, .same)
   | .write value, _, _ =>
       pure (true, Compile.compileExprFast value, .write)
+  | .writeSlice lo _ _ value, current, _ =>
+      pure (true, Compile.insertExpr lo (Compile.compileExprFast value) current,
+        .writeSlice)
   | .seq left right, current, outputNeeded => do
       let midNeeded := outputNeeded && right.dependsOnCurrent
       let (leftWrites, mid, leftCert) ← synthPlan index left current midNeeded
@@ -560,6 +573,10 @@ private unsafe def actionSummary
         let some index := registerIndex[(name, width)]? | failure
         let mask : Nat := 1 <<< index
         pure { possible := mask, definite := mask }
+    | .writeSlice width name .. =>
+        let some index := registerIndex[(name, width)]? | failure
+        let mask : Nat := 1 <<< index
+        pure { possible := mask, definite := 0 }
     | .seq left right =>
         let leftSummary ← actionSummary registerIndex left
         let rightSummary ← actionSummary registerIndex right
@@ -631,6 +648,21 @@ private unsafe def synthActionWide (index : ActionWideIndex)
       else if target < refs.size then
         pure (⟨refs.set! target valueRef, [target]⟩,
           .write target valueRef)
+      else failure
+  | .writeSlice width name lo _ _ value, refs, needed => do
+      let some target := registerIndex[(name, width)]? |
+        dbg_trace s!"action-wide: undeclared slice write {name}:{width}"; failure
+      let valueName ← if target ∈ needed then
+        let some current := refs[target]? | failure
+        findActionWideExpr index (Compile.insertExpr lo
+          (Compile.compileExprFast value) (.reg width current.render))
+      else pure name
+      let valueRef := nameRef valueName
+      if target ∉ needed then
+        pure (⟨refs, []⟩, .writeSlice target valueRef)
+      else if target < refs.size then
+        pure (⟨refs.set! target valueRef, [target]⟩,
+          .writeSlice target valueRef)
       else failure
   | .seq left right, refs, needed => do
       let rightSummary ← actionSummary registerIndex right
@@ -899,7 +931,7 @@ private abbrev actionRefToLean := actionWideRefToLean
 
 private def collectActionWideJoins : Symbolic.ActionWide.ActionCert →
     List Symbolic.ActionWide.Join → List Symbolic.ActionWide.Join
-  | .skip | .memWrite | .write .. => fun tail => tail
+  | .skip | .memWrite | .write .. | .writeSlice .. => fun tail => tail
   | .seq _ left right => fun tail =>
       collectActionWideJoins left (collectActionWideJoins right tail)
   | .ite _ _ joins thenCert elseCert => fun tail =>
@@ -989,6 +1021,9 @@ private def actionWideActionNamed : Symbolic.ActionWide.ActionCert →
   | .write index value =>
       pure (".write " ++ toString index ++ " (" ++ actionRefToLean value ++
         ")", 1)
+  | .writeSlice index value =>
+      pure (".writeSlice " ++ toString index ++ " (" ++
+        actionRefToLean value ++ ")", 1)
   | .seq summary left right => do
       let (leftExpr, leftSize) ← actionWideActionNamed left
       let (rightExpr, rightSize) ← actionWideActionNamed right
@@ -1057,6 +1092,10 @@ private def encodeAction (registers : Std.HashMap String Nat)
       pushWord 2
       pushWord index
       pushWord (← encodeActionRef registers value)
+  | .writeSlice index value => do
+      pushWord 2
+      pushWord index
+      pushWord (← encodeActionRef registers value)
   | .seq summary left right => do
       pushWord 3
       encodeSummary registerCount summary
@@ -1111,6 +1150,7 @@ private def optionStringToLean : Option String → String
 private def nextRegToLean {w : Nat} : Named.NextRegCert w → String
   | .same => ".same"
   | .write => ".write"
+  | .writeSlice => ".writeSlice"
   | .seq mid left right =>
       s!".seq {optionStringToLean mid} ({nextRegToLean left}) ({nextRegToLean right})"
   | .ite thenCert elseCert =>
@@ -1149,6 +1189,7 @@ private def optionalRefToLean (name : Option String) : String :=
 private def indexedNextRegToLean {w : Nat} : Named.NextRegCert w → String
   | .same => ".same"
   | .write => ".write"
+  | .writeSlice => ".writeSlice"
   | .seq mid left right =>
       s!".seq ({optionalRefToLean mid}) ({indexedNextRegToLean left}) " ++
         s!"({indexedNextRegToLean right})"
@@ -1175,6 +1216,7 @@ private def symbolicOptionalRefToLean : Option Symbolic.Ref → String
 private def symbolicNextRegToLean : Symbolic.NextRegCert → String
   | .same => ".same"
   | .write => ".write"
+  | .writeSlice => ".writeSlice"
   | .seq mid left right =>
       s!".seq ({symbolicOptionalRefToLean mid}) ({symbolicNextRegToLean left}) " ++
         s!"({symbolicNextRegToLean right})"

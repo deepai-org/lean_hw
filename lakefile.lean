@@ -92,6 +92,36 @@ lean_exe releaseAudit where
   root := `Tools.ReleaseAudit
   supportInterpreter := true
 
+/-- Emit the exact compiler-only two-clock artifact carried by
+`Tools.VerifiedRelease.verifiedReleases`. -/
+lean_exe emitCertifiedMulticlock where
+  root := `Tools.EmitCertifiedMulticlock
+
+/-- Emit the tiny three-clock independent-recovery acceptance artifact. -/
+lean_exe emitMulticlockRecoverySmoke where
+  root := `Tools.EmitMulticlockRecoverySmoke
+
+/-- Exact low-cost axiom audit for the System release, independent of the
+large generated processor release closure. -/
+lean_exe multiclockReleaseAudit where
+  root := `Tools.MulticlockReleaseAudit
+  supportInterpreter := true
+
+/-- Exact artifact/reports plus certified exhaustive and seeded campaigns. -/
+lean_exe clockGauntletEvidence where
+  root := `Tools.ClockGauntletEvidence
+  supportInterpreter := true
+
+/-- Certified replay runner for the bidirectional SoC Fabric Gauntlet. -/
+lean_exe socFabricGauntletCampaign where
+  root := `Tools.SoCFabricGauntletCampaignMain
+  supportInterpreter := true
+
+/-- Deterministic exact RTL, inventory, intent, timing, and hash producer. -/
+lean_exe socFabricGauntletEvidence where
+  root := `Tools.SoCFabricGauntletEvidence
+  supportInterpreter := true
+
 /-- FastEval benchmark / lockstep runner (compiled; the perf target). -/
 lean_exe fastbench where
   root := `Tools.FastEvalBench

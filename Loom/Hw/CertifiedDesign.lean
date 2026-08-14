@@ -31,6 +31,17 @@ def of {design : Design} (designWF : Compile.DesignWF design)
     (simulator : DagEval.VerifiedSimulator design) : CertifiedDesign design :=
   { designWF, simulator, compiled := Compile.compile design, compiled_eq := rfl }
 
+/-- Fully derived constructor from the two executable source checks. DAG
+preparation has a generic completeness theorem, so accepted designs acquire a
+certified shared evaluator without a design-specific runtime rejection path. -/
+def ofChecks {design : Design}
+    (compilerReady : Compile.designWFCheck design = true)
+    (simulatorReady : design.fastWFB = true) : CertifiedDesign design :=
+  let base : FastEval.VerifiedSimulator design := ⟨simulatorReady⟩
+  let simulator := DagEval.verifiedSimulatorOfPreparation base
+    (DagEval.prepareSimulator?_complete base)
+  .of (Compile.designWFCheck_sound design compilerReady) simulator
+
 /-- The canonical emitted Verilog text.  This is a projection of the packaged
 compiler result, not a separately supplied artifact. -/
 def renderedVerilog {design : Design} (cert : CertifiedDesign design) : String :=
@@ -55,6 +66,19 @@ theorem renderedUTF8_eq {design : Design} (cert : CertifiedDesign design) :
       (Loom.Emit.MicroVerilog.Print.print (Compile.compile design)).toUTF8 := by
   exact congrArg String.toUTF8 cert.renderedVerilog_eq
 
+/-- Every declared same-cycle output of the packaged design agrees with its
+compiled port expression for arbitrary current inputs and pre-edge state. -/
+theorem combOutput_eq {design : Design} (cert : CertifiedDesign design)
+    (output : CombOutput) (_declared : output ∈ design.combOutputs)
+    (input : InEnv) (state : St) :
+    Compile.mvEval
+        (Loom.Emit.MicroVerilog.St.setInputs (Compile.convSt state)
+          cert.compiled.ins input)
+        (Compile.compileExpr output.value) =
+      design.evalCombOutput input state output := by
+  rw [cert.compiled_eq]
+  exact Compile.compileCombOutput_evalOpen design output input state
+
 /-- One optimized cycle agrees with the source `Design` semantics. -/
 theorem cycleOpen_eq {design : Design} (cert : CertifiedDesign design)
     (input : InEnv) (fast : FastSt) (state : St)
@@ -62,6 +86,18 @@ theorem cycleOpen_eq {design : Design} (cert : CertifiedDesign design)
     Agree design (cert.simulator.cycleOpen input fast)
       (design.cycleOpen input state) :=
   cert.simulator.cycleOpen_eq input fast state agree
+
+/-- The exact compiled module also agrees on live synchronous-reset edges.
+This is the generic bridge used when a System recovery coordinator resets an
+otherwise ordinary clock island. -/
+theorem compiledCycleOpenWithReset_eq {design : Design}
+    (cert : CertifiedDesign design) (reset : Bool) (input : InEnv)
+    (state : St) :
+    Compile.forgetSt
+        (cert.compiled.cycleOpenWithReset reset input (Compile.convSt state)) =
+      design.cycleOpenWithReset reset input state := by
+  rw [cert.compiled_eq]
+  exact Compile.compile_cycleOpenWithReset design cert.designWF reset input state
 
 /-- Every finite optimized run agrees with the source `Design` semantics. -/
 theorem runOpen_eq {design : Design} (cert : CertifiedDesign design)

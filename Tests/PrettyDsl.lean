@@ -19,6 +19,17 @@ packed struct Header where
   tag : 3
   address : 5
 
+packed struct Envelope where
+  header : Header
+  payload : 16
+
+packed struct Frame where
+  envelope : Envelope
+  valid : 1
+
+packed struct OtherHeader where
+  bits : 8
+
 packed struct RequestShape where
   address : 64
   write : 1
@@ -26,6 +37,14 @@ packed struct RequestShape where
   data : 64
 
 example : HwPacked.width Header = 8 := rfl
+example : HwPacked.width Envelope = 24 := rfl
+example : HwPacked.width Frame = 25 := rfl
+example : Envelope.layout.fields =
+    [⟨"header", 8, 16⟩, ⟨"payload", 16, 0⟩] := by native_decide
+example : Envelope.headerField.lo = 16 := rfl
+example : HwPacked.pack
+    ({ header := { tag := 5#3, address := 17#5 }, payload := 0xcafe#16 } : Envelope) =
+    0xb1cafe#24 := rfl
 example : HwPacked.width RequestShape = 132 := rfl
 example : RequestShape.layout.fields.map (fun field => field.lo) =
     [68, 67, 64, 0] := by native_decide
@@ -43,6 +62,21 @@ private def headerReg : PackedReg Header := .named "header"
 private def headerInput : PackedInput Header := .named "header_input"
 private def headerValue : PackedExpr Header :=
   [hwexpr| Header { tag := 5, address := 17 }]
+private def envelopeReg : PackedReg Envelope := .named "envelope"
+private def frameReg : PackedReg Frame := .named "frame"
+private def otherHeaderValue : PackedExpr OtherHeader :=
+  [hwexpr| OtherHeader { bits := 0xb1 }]
+private def envelopeValue : PackedExpr Envelope :=
+  [hwexpr| Envelope { header := headerValue, payload := 0xcafe }]
+private def semanticOtherHeader : PackedExpr OtherHeader :=
+  [hwexpr| OtherHeader { bits := headerValue.bits }]
+private def reinterpretedOtherHeader : PackedExpr OtherHeader :=
+  [hwexpr| reinterpret headerValue to OtherHeader]
+example : semanticOtherHeader.bits = headerValue.bits := rfl
+example : reinterpretedOtherHeader.bits = headerValue.bits := rfl
+example : ([hwexpr| { envelopeValue with header := headerValue }] :
+    PackedExpr Envelope) =
+    envelopeValue.setSubfield Envelope.headerField headerValue := rfl
 example : headerValue.bits = Expr.concat (.lit 5#3) (.lit 17#5) := rfl
 example : ([hwexpr| { headerValue with tag := 3 }] : PackedExpr Header) =
     headerValue.setField Header.tagField (.lit 3#3) := rfl
@@ -54,10 +88,42 @@ example (raw : Expr 8) : ([hwexpr| Header.fromBits(raw)] : PackedExpr Header) =
     PackedExpr.fromBits raw := rfl
 example : ([hwexpr| headerReg.tag] : Expr 3) =
     Header.tagField.read headerReg.rd := rfl
+example : ([hwexpr| envelopeValue.header] : PackedExpr Header) =
+    Envelope.headerField.read envelopeValue := rfl
+example : ([hwexpr| envelopeValue.header.tag] : Expr 3) =
+    Header.tagField.read (Envelope.headerField.read envelopeValue) := rfl
+example : ([hwexpr| frameReg.envelope.header.tag] : Expr 3) =
+    Header.tagField.read
+      (Envelope.headerField.read (Frame.envelopeField.read frameReg.rd)) := rfl
 example : ([hwexpr| headerInput.address] : Expr 5) =
     Header.addressField.read headerInput.rd := rfl
 example : [hwstmt| headerReg.tag <- 3] =
     headerReg.setField Header.tagField (.lit 3#3) := rfl
+example : [hwstmt| envelopeReg.header <- headerValue] =
+    envelopeReg.setSubfield Envelope.headerField headerValue := rfl
+example : [hwstmt| envelopeReg.header.tag <- 3] =
+    envelopeReg.setField
+      (Envelope.headerField.childField Header.tagField) (.lit 3#3) := rfl
+example : [hwstmt| frameReg.envelope.header.tag <- 3] =
+    frameReg.setField
+      (Frame.envelopeField.childSubfield Envelope.headerField |>.childField
+        Header.tagField) (.lit 3#3) := rfl
+#check_failure ([hwstmt| envelopeReg.header <- otherHeaderValue] : Act)
+example : [hwstmt| headerReg <- reinterpret otherHeaderValue to Header] =
+    headerReg.set (PackedExpr.fromBits otherHeaderValue.bits) := rfl
+
+/--
+error: packed value `otherHeaderValue` has type `OtherHeader`, but `Header` is required; these are distinct semantic types (both are 8 bits). Construct `Header { ... }` field-by-field for a semantic conversion, or write `reinterpret otherHeaderValue to Header` for intentional bit reinterpretation
+-/
+#guard_msgs in
+example : Act := [hwstmt| headerReg <- otherHeaderValue]
+
+/--
+error: cannot reinterpret `Envelope` as `OtherHeader`; source is 24 bits and destination is 8 bits; reinterpretation preserves every bit and therefore requires equal widths
+-/
+#guard_msgs in
+example : PackedExpr OtherHeader :=
+  [hwexpr| reinterpret envelopeValue to OtherHeader]
 
 namespace PackedProofShape
 
@@ -650,7 +716,7 @@ outputs:
   count = 0
 -/
 #guard_msgs in
-#run_hardware design for 3 cycles inputs $(enableTrace)
+#run_hardware design for 3 cycles with $(enableTrace)
 
 end Tests.PrettyDsl.Interface
 
@@ -817,6 +883,43 @@ hardware packed_demo where
 
 end Tests.PrettyDsl.PackedHardware
 
+namespace Tests.PrettyDsl.NestedPackedHardware
+
+open Loom.Hw
+open Loom.Hw.Dsl
+open Tests.PrettyDsl
+
+def resetEnvelope : Envelope :=
+  { header := { tag := 1, address := 2 }, payload := 3 }
+
+hardware nested_packed_demo where
+  input wire incoming : Envelope
+  output reg pending : Envelope := {
+    header := { tag := 1, address := 2 }, payload := 3
+  }
+  memory entries : Envelope [4]
+
+  rule capture suppress multiple_write because "the nested leaf deliberately overrides part of the whole child" := {
+    pending.header <- incoming.header,
+    pending.header.tag <- incoming.header.tag
+  }
+
+example : declarations.regs.map (fun declaration =>
+    (declaration.name, declaration.width)) = [("pending", 24)] := by decide
+example : declarations.inputs.map (fun declaration =>
+    (declaration.name, declaration.width)) = [("incoming", 24)] := by decide
+example : declarations.mems.map (fun declaration =>
+    (declaration.name, declaration.dataWidth)) = [("entries", 24)] := by decide
+example : design.rules.head?.map (fun rule => rule.body) = some
+    (Act.seq
+      (pending.setSubfield Envelope.headerField
+        (Envelope.headerField.read incoming.rd))
+      (pending.setField (Envelope.headerField.childField Header.tagField)
+        (Header.tagField.read (Envelope.headerField.read incoming.rd)))) := by
+  rfl
+
+end Tests.PrettyDsl.NestedPackedHardware
+
 namespace Tests.PrettyDsl.RegisterFamily
 
 open Loom.Hw
@@ -836,6 +939,8 @@ hardware family_demo where
 example : slots = (⟨"slots"⟩ : RegArray 8 4) := rfl
 example : ([hwexpr| slots[2]] : Expr 8) = slots.rd ⟨2, by decide⟩ := rfl
 example : [hwstmt| slots[2] <- 9] = slots.set ⟨2, by decide⟩ (.lit 9#8) := rfl
+example (i : Fin 4) : ([hwexpr| slots[i]] : Expr 8) = slots.rd i := rfl
+example (i : Fin 4) : [hwstmt| slots[i] <- 1] = slots.set i (.lit 1#8) := rfl
 /-- warning: dynamic register-family read may synthesize a selection mux; use a reducible Nat or Fin index when selecting one static member -/
 #guard_msgs in
 example : Expr 8 := [hwexpr| slots[index]]
@@ -1296,6 +1401,8 @@ hardware extension_base where
   rule increment := count <- count + 1
 end Base
 
+example : ExtensionBaseReady Base.design := inferInstance
+
 /-- `extends` is a syntax-only migration seam: base declarations/rules remain
 first and the added pretty fragment is appended before ordinary assembly. -/
 system extended where
@@ -1309,7 +1416,41 @@ system extended where
 example : extended.worker.name = Base.design.name := rfl
 example : extended.worker.regs = Base.design.regs ++ [⟨"observed", 8, 0⟩] := rfl
 example : extended.worker.rules.map (·.name) = ["increment", "observe"] := rfl
+example : extended.worker =
+    { Base.design.par extended.worker.Hardware.design with
+      name := Base.design.name } := rfl
+example : Loom.Emit.MicroVerilog.Print.print (Compile.compile extended.worker) =
+    Loom.Emit.MicroVerilog.Print.print (Compile.compile
+      { Base.design.par extended.worker.Hardware.design with
+        name := Base.design.name }) := rfl
 example : extended.application.artifact.emissionCheck.isOk := by native_decide
+
+/-- Memory-writing migration fragments use the general local certificate;
+the no-memory constructor remains only a fast path. -/
+system extended_with_memory where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends Base.design where
+    memory scratch : 8 [4]
+    rule store := scratch[port 0, 0] <- Base.count
+
+example : extended_with_memory.worker.mems.map (·.name) = ["scratch"] := rfl
+example : Compile.designWFCheck extended_with_memory.worker = true := by decide
+
+private def emptyFragment : Design :=
+  Design.ofDecls "empty" {} []
+private def unrelatedFragment : Design :=
+  { emptyFragment with regs := [⟨"unrelated", 1, 0⟩] }
+
+/-- Regression for the former certificate-substitution hole: an endpoint body
+that certified the empty fragment cannot certify a different returned design. -/
+example : ¬ ExtensionAdaptation unrelatedFragment emptyFragment := by
+  intro adapted
+  have member := adapted.reg_mem
+    ({ name := "unrelated", width := 1, init := 0 }) (by
+      simp [unrelatedFragment])
+  simp [emptyFragment, Design.ofDecls] at member
 
 end Tests.PrettyDsl.ExtendedIsland
 
@@ -1334,6 +1475,51 @@ def alienMemory : Mem 4 8 := ⟨"alien_mem"⟩
 def hiddenMemoryRead : Expr 8 := alienMemory.rd (.lit 0)
 def hiddenMemoryWrite : Act := alienMemory.write 0 (.lit 0) (.lit 1)
 end Foreign
+
+namespace MemoryPortBase
+hardware extension_memory_port_base where
+  memory shared : 8 [4]
+  rule seed := shared[port 2, 0] <- 1
+
+def backwardsHelper : Act := shared.write 1 (.lit 0) (.lit 2)
+def followingHelper : Act := shared.write 3 (.lit 0) (.lit 2)
+end MemoryPortBase
+
+/-- error: memory write port 1 for base memory 'shared' must follow existing base ports; the highest existing port is 2, so use port 3 or greater -/
+#guard_msgs in
+system backwards_memory_port where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends MemoryPortBase.design where
+    rule overwrite := MemoryPortBase.shared[port 1, 0] <- 2
+
+system following_memory_port where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends MemoryPortBase.design where
+    rule append := MemoryPortBase.shared[port 3, 0] <- 2
+
+example : Compile.designWFCheck following_memory_port.worker = true := by decide
+
+/-- error: extension helper 'MemoryPortBase.backwardsHelper' writes base memory 'shared' through port 1, but extension ports must follow existing base ports; the highest existing port is 2, so use port 3 or greater -/
+#guard_msgs in
+system backwards_helper_memory_port where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends MemoryPortBase.design where
+    rule overwrite := $stmt(MemoryPortBase.backwardsHelper)
+
+system following_helper_memory_port where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island worker on clk extends MemoryPortBase.design where
+    rule append := $stmt(MemoryPortBase.followingHelper)
+
+example : Compile.designWFCheck following_helper_memory_port.worker = true := by decide
 
 system helper_coordinates_ok where
   clock clk
@@ -1693,6 +1879,40 @@ example : packedCrossing.connections.head?.map (fun connection => connection.wid
   native_decide
 example : packedCrossing.application.artifact.emissionCheck.isOk := by native_decide
 
+namespace Nested
+
+system nestedPackedCrossing where
+  clock sourceClock
+  clock sinkClock
+  clocks Clock.asynchronous
+  reset Reset.together
+  channel envelopes : Envelope depth 2
+  island source on sourceClock where
+    output reg sent : 1
+    rule transmit :=
+      if ~sent then
+        send Envelope {
+          header := Header { tag := 5, address := 17 },
+          payload := 0xcafe
+        } to envelopes then sent <- 1
+  island sink on sinkClock where
+    output reg observed : Envelope
+    rule accept :=
+      receive value from envelopes then observed <- value
+  connect envelopes from source to sink
+  realize envelopes with Cdc.grayFifo
+
+example : nestedPackedCrossing.connections.head?.map
+    (fun connection => connection.width) = some 24 := by native_decide
+example : nestedPackedCrossing.application.artifact.emissionCheck.isOk := by
+  native_decide
+example : nestedPackedCrossing.application.artifact.renderedVerilog.contains
+    "input wire [23:0] src_payload" := by native_decide
+example : !nestedPackedCrossing.application.artifact.renderedVerilog.contains
+    "struct packed" := by native_decide
+
+end Nested
+
 end Tests.PrettyDsl.PackedSystem
 
 /--
@@ -1721,6 +1941,64 @@ hardware lint_demo where
   rule demonstrate := { a <- 1, b <- a, a <- 2 }
 
 namespace Packed
+
+namespace Disjoint
+
+#guard_msgs in
+hardware packed_disjoint_read where
+  reg disjoint_header : Header
+  reg disjoint_observed : 5
+  rule demonstrate := {
+    disjoint_header.tag <- 1,
+    disjoint_observed <- disjoint_header.address
+  }
+
+end Disjoint
+
+namespace NestedSibling
+
+#guard_msgs in
+hardware packed_nested_sibling_read where
+  reg lint_frame : Frame
+  reg observed_address : 5
+  rule demonstrate := {
+    lint_frame.envelope.header.tag <- 1,
+    observed_address <- lint_frame.envelope.header.address
+  }
+
+end NestedSibling
+
+namespace NestedParentChild
+
+/--
+warning: 'lint_frame.envelope.header.tag' reads its start-of-cycle value; an earlier write takes effect next cycle
+-/
+#guard_msgs in
+hardware packed_nested_parent_child_read where
+  reg lint_frame : Frame
+  reg observed_tag : 3
+  rule demonstrate := {
+    lint_frame.envelope.header <- Header { tag := 1, address := 2 },
+    observed_tag <- lint_frame.envelope.header.tag
+  }
+
+end NestedParentChild
+
+namespace ReinterpretRead
+
+/--
+warning: 'source' reads its start-of-cycle value; an earlier write takes effect next cycle
+-/
+#guard_msgs in
+hardware packed_reinterpret_read where
+  reg source : Header
+  reg destination : OtherHeader
+  rule demonstrate := {
+    source.tag <- 1,
+    destination <- reinterpret source to OtherHeader
+  }
+
+end ReinterpretRead
 
 /--
 warning: 'header.tag' may be written more than once in one cycle; the later write wins

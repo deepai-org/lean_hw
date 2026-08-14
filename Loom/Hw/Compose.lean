@@ -62,6 +62,8 @@ def Design.prefixed (p : String) (d : Design) : Design where
   -- register of `d` stays internal in `p ++ d` (`Loom/Hw/Outputs.lean`,
   -- `prefixed_exportedRegs`). `none` (export all) stays `none`.
   outputs := d.outputs.map (p ++ ·)
+  combOutputs := d.combOutputs.map fun output =>
+    ⟨p ++ output.name, output.width, output.value.mapSignals (p ++ ·)⟩
 
 /-! ## `Design.par` -/
 
@@ -85,6 +87,7 @@ def Design.par (a b : Design) : Design where
   -- concatenation. No `none` case to reason about any more -- a composite
   -- exports exactly what its parts said they export.
   outputs := a.exportedNames ++ b.exportedNames
+  combOutputs := a.combOutputs ++ b.combOutputs
 
 /-- All state/input names a design owns (registers, memories, inputs). The
 disjointness a valid `par` needs. -/
@@ -128,6 +131,12 @@ def Design.connect (d : Design)
   -- the selection are untouched, so an internal register is still internal
   -- after wiring (`Loom/Hw/Outputs.lean`, `connect_exportedRegs`).
   outputs := d.outputs
+  combOutputs := d.combOutputs.map fun output =>
+    ⟨output.name, output.width,
+        d.inputs.foldl (fun value i =>
+          match wire i.name i.width with
+          | some e => Expr.substReg i.name i.width e value
+          | none => value) output.value⟩
   rules := d.rules.map fun r =>
     { r with body :=
         d.inputs.foldl (fun body i =>

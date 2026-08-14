@@ -103,7 +103,27 @@ def permittedUnsafeDecls : List String :=
    -- any theorem; the twin exists only so the check does not re-walk the
    -- compiler's shared expression DAGs exponentially (the D13 cost caveat).
    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl.go",
-   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"]
+   "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl",
+   -- The friendly `hardware`/`system` front end must inspect elaborated closed
+   -- values and register source metadata with Lean's environment.  Lean marks
+   -- that metaprogramming API unsafe.  These declarations run only while
+   -- elaborating source: they construct ordinary kernel-checked definitions
+   -- and proofs and are not reachable from Design semantics, the compiler, or
+   -- a release theorem.  Keep the list declaration-granular so a new escape or
+   -- inspector still fails this audit pending review.
+   "Loom.Hw.Dsl.elabHardwareCommand",
+   "Loom.Hw.Dsl.elabSystemCommand",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.inspectBaseDesign",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.inspectClosedValue",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.inspectInputDecl",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.inspectMemDecl",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.inspectRegDecl",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.inspectString",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.reducedHandleName?",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.registerReconstructedHardware",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.validateExtensionBase",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.validateExtensionIdentifier",
+   "_private.Loom.Hw.Dsl.0.Loom.Hw.Dsl.validateRawStatementEscape"]
 
 /-- The reference definitions whose compiled execution is replaced. -/
 def permittedImplementedBy : List (String × String) :=

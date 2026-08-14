@@ -23,6 +23,8 @@ def planMatches (wires : Rope (List IndexedWire)) (table : WireTable) :
   | _, .same, some current, out, .same => current == out
   | _, .write value, _, out, .write =>
       indexedExprMatches wires table (compileExpr value) out
+  | width, .writeSlice lo fieldWidth _ value, some current, out, .writeSlice =>
+      indexedInsertMatches wires table width lo fieldWidth value current out
   | _, .seq left right, current, out, .seq mid leftCert rightCert =>
       match mid with
       | some mid =>
@@ -88,6 +90,16 @@ theorem planMatches_write_current
     (value : Loom.Hw.Expr width) (current out : Ref)
     (accepted : indexedExprMatches wires table (compileExpr value) out = true) :
     planMatches wires table (.write value) (some current) out .write = true := by
+  simpa [planMatches] using accepted
+
+theorem planMatches_writeSlice
+    (wires : Rope (List IndexedWire)) (table : WireTable) (width : Nat)
+    (lo fieldWidth : Nat) (inBounds : lo + fieldWidth ≤ width)
+    (value : Loom.Hw.Expr fieldWidth) (current out : Ref)
+    (accepted : indexedInsertMatches wires table width lo fieldWidth value
+      current out = true) :
+    planMatches wires table (.writeSlice lo fieldWidth inBounds value)
+      (some current) out .writeSlice = true := by
   simpa [planMatches] using accepted
 
 theorem planMatches_seq_named
@@ -193,6 +205,10 @@ theorem planMatches_raw
   · rename_i value
     cases cert <;> simp [planMatches] at accepted
     exact indexedExprMatches_raw program hmatches table _ _ accepted
+  · rename_i lo fieldWidth inBounds value
+    cases current <;> cases cert <;> simp [planMatches] at accepted
+    exact indexedInsertMatches_raw program hmatches table lo value cur _ out
+      currentMatches accepted
   · rename_i left right leftIH rightIH
     cases cert with
     | seq mid leftCert rightCert =>
@@ -210,6 +226,7 @@ theorem planMatches_raw
                 leftMatches
     | same => simp [planMatches] at accepted
     | write => simp [planMatches] at accepted
+    | writeSlice => simp [planMatches] at accepted
     | ite thenCert elseCert => simp [planMatches] at accepted
   · rename_i guard thenPlan elsePlan thenIH elseIH
     cases cert with
@@ -263,6 +280,7 @@ theorem planMatches_raw
                       currentMatches)
     | same => simp [planMatches] at accepted
     | write => simp [planMatches] at accepted
+    | writeSlice => simp [planMatches] at accepted
     | seq mid leftCert rightCert => simp [planMatches] at accepted
 
 /-- Soundness of the compact ordered-rule fold. -/

@@ -16,10 +16,16 @@ if [[ -z "$jobs" ]]; then
   ((memory_jobs < 1)) && memory_jobs=1
   jobs=$cores
   ((jobs > memory_jobs)) && jobs=$memory_jobs
-  ((jobs > 32)) && jobs=32
+  # Generated proof modules can consume several GiB each. Eight workers is a
+  # deliberate host-safety ceiling; callers may request fewer, never more.
+  ((jobs > 8)) && jobs=8
 fi
 if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "jobs must be a positive integer" >&2
+  exit 2
+fi
+if ((jobs > 8)); then
+  echo "jobs must be at most 8 (release proofs are memory-heavy)" >&2
   exit 2
 fi
 monitor_pid=
@@ -61,7 +67,10 @@ run_phase "release-binding self-tests" python3 scripts/test_release_binding.py
 # the dependency closure of the publication theorem.
 run_phase "Acc8 release witness" scripts/build_release_witness.sh acc8 "$jobs"
 run_phase "LNP64-u release witness" scripts/build_release_witness.sh lnp64u "$jobs"
-run_phase "RTL X/Z hygiene" scripts/check_xfree_rtl.py rtl/acc8.v rtl/lnp64u.v
+run_phase "certified multiclock artifact" lake exe emitCertifiedMulticlock
+run_phase "multiclock theorem axiom closure" scripts/audit_multiclock_release.sh
+run_phase "RTL X/Z hygiene" scripts/check_xfree_rtl.py \
+  rtl/acc8.v rtl/lnp64u.v rtl/certified_multiclock/system.v
 mkdir -p .lake/build/lib/lean/Tools
 
 # VerifiedRelease.lean and ReleaseAudit.lean are compiled directly with
@@ -80,20 +89,38 @@ build_theorem_prerequisites() {
 }
 run_phase "release theorem prerequisites" build_theorem_prerequisites
 
+run_release_axiom_audit() {
+  # Collecting the generated processor closure is intentionally serialized
+  # but peaks near 22 GiB resident. On cgroup-v2/systemd hosts contain that
+  # phase so a regression kills only the audit rather than invoking earlyoom
+  # against the whole interactive machine. Keep a little measured headroom.
+  if command -v systemd-run >/dev/null 2>&1 &&
+      systemctl --user show-environment >/dev/null 2>&1; then
+    systemd-run --user --wait --collect --pipe \
+      --working-directory="$PWD" \
+      -p MemoryMax=28G -p MemorySwapMax=0 \
+      lake exe releaseAudit
+  else
+    echo "release audit: cgroup containment unavailable; running serially" >&2
+    lake exe releaseAudit
+  fi
+}
+
 run_phase "combined release theorem" lake env lean \
   "$(realpath Tools/VerifiedRelease.lean)" \
   -o "$(realpath .lake/build/lib/lean/Tools)/VerifiedRelease.olean"
 # Compiled walker (builds in <1 s from cold; only imports Lean). Measured
 # 698 s interpreted -> 607 s compiled: the phase is dominated by olean
 # deserialization of the release closure, not interpretation.
-run_phase "release theorem axiom closure" lake exe releaseAudit
+run_phase "release theorem axiom closure" run_release_axiom_audit
 if [[ -n "${monitor_pid:-}" ]]; then
   touch "$done_file"
   wait "$monitor_pid"
   monitor_pid=
   echo "Release verification metrics: $metrics_dir"
 fi
-echo "VERIFIED: rtl/acc8.v and rtl/lnp64u.v are the exact bound renderings in"
+echo "VERIFIED: rtl/acc8.v, rtl/lnp64u.v, and rtl/certified_multiclock/system.v"
+echo "are the exact bound renderings in"
 echo "Loom.Release.Theorems.verifiedReleases; kernel axiom closure is exactly"
 echo "propext, Classical.choice, and Quot.sound. Yosys interpretation remains"
 echo "the documented boundary."

@@ -659,6 +659,17 @@ theorem Act.run_regs_congr_acc (a : Act) (σ acc₁ acc₂ : Loom.Hw.St)
         · subst qW; simp
         · simp [hw, h]
       · simp [hr, h]
+  | writeSlice totalWidth rn lo fieldWidth inBounds v =>
+      simp only [Act.run, RegEnv.set]
+      by_cases hr : q = rn
+      · subst q
+        simp only [if_pos]
+        by_cases hw : totalWidth = qW
+        · subst qW
+          simpa only [dif_pos] using
+            congrArg (Loom.Word.insert lo (v.eval σ)) h
+        · simp [hw, h]
+      · simp [hr, h]
   | memWrite => exact h
 
 /-- Memory-entry analogue of `Act.run_regs_congr_acc`. -/
@@ -674,6 +685,7 @@ theorem Act.run_mems_congr_acc (act : Act) (σ acc₁ acc₂ : Loom.Hw.St)
       · simp [Act.run, hc, iht _ _ h]
       · simp [Act.run, hc, ihe _ _ h]
   | write => exact h
+  | writeSlice => exact h
   | memWrite aw dw mn port addr data =>
       simp only [Act.run, MemEnv.set]
       by_cases hma : m = mn ∧ a = (addr.eval σ).toNat
@@ -926,6 +938,7 @@ private def WritesOnly1or8 : Act → Bool
   | .seq a b => WritesOnly1or8 a && WritesOnly1or8 b
   | .ite _ a b => WritesOnly1or8 a && WritesOnly1or8 b
   | .write w _ _ => w == 1 || w == 8
+  | .writeSlice w _ _ _ _ _ => w == 1 || w == 8
   | .memWrite .. => true
 
 private theorem mem_regWrites_width1or8 :
@@ -943,6 +956,11 @@ private theorem mem_regWrites_width1or8 :
       · exact mem_regWrites_width1or8 h.1 p hp
       · exact mem_regWrites_width1or8 h.2 p hp
   | .write w r v, h, p, hp => by
+      simp only [WritesOnly1or8, Bool.or_eq_true, beq_iff_eq] at h
+      simp only [Act.regWrites, List.mem_singleton] at hp
+      subst p
+      exact h
+  | .writeSlice w r lo fieldWidth inBounds v, h, p, hp => by
       simp only [WritesOnly1or8, Bool.or_eq_true, beq_iff_eq] at h
       simp only [Act.regWrites, List.mem_singleton] at hp
       subst p
@@ -1059,6 +1077,7 @@ private def WritesOnlyWidth (w : Nat) : Act → Bool
   | .seq a b => WritesOnlyWidth w a && WritesOnlyWidth w b
   | .ite _ a b => WritesOnlyWidth w a && WritesOnlyWidth w b
   | .write w' _ _ => w' == w
+  | .writeSlice w' _ _ _ _ _ => w' == w
   | .memWrite .. => true
 
 private theorem mem_regWrites_width {w : Nat} :
@@ -1075,6 +1094,11 @@ private theorem mem_regWrites_width {w : Nat} :
       · exact mem_regWrites_width h.1 p hp
       · exact mem_regWrites_width h.2 p hp
   | .write w' r v, h, p, hp => by
+      simp only [WritesOnlyWidth, beq_iff_eq] at h
+      simp only [Act.regWrites, List.mem_singleton] at hp
+      subst p
+      exact h
+  | .writeSlice w' r lo fieldWidth inBounds v, h, p, hp => by
       simp only [WritesOnlyWidth, beq_iff_eq] at h
       simp only [Act.regWrites, List.mem_singleton] at hp
       subst p

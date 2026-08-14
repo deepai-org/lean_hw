@@ -141,14 +141,22 @@ compile_glob() {
 
 # Some generated families need several GiB per module. Running $jobs of them
 # at once exhausts memory and the kernel kills the build -- SemanticWireBatch
-# peaks at about 6.6 GiB per module, so 32 workers demand ~213 GiB. Cap the
-# pool by measured per-module footprint instead of by core count.
+# now peaks above 8 GiB per module, so 32 workers can demand more than 256 GiB.
+# Cap the pool by measured per-module footprint instead of by core count.
 compile_glob_capped() {
   local pattern=$1
   local per_job_kb=$2
   local available_kb cap
   available_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
-  cap=$((available_kb / per_job_kb))
+  # Preserve 16 GiB for the OS, Lake, editors, and proof processes outside
+  # this pool. Dividing all MemAvailable by the measured peak caused earlyoom
+  # exactly when every worker approached its estimate simultaneously.
+  local reserve_kb=$((16 * 1024 * 1024))
+  if ((available_kb > reserve_kb)); then
+    cap=$(((available_kb - reserve_kb) / per_job_kb))
+  else
+    cap=1
+  fi
   ((cap < 1)) && cap=1
   ((cap > jobs)) && cap=$jobs
   echo "    ($pattern: $cap workers, ~$((per_job_kb / 1024 / 1024)) GiB each)"
@@ -250,7 +258,7 @@ fi
 # them regardless of how register certificates were produced.
 run_phase "indexed port cert batches" compile_glob 'IndexedPortCertBatch*.lean'
 
-run_phase "semantic wire batches" compile_glob_capped 'SemanticWireBatch*.lean' 7000000
+run_phase "semantic wire batches" compile_glob_capped 'SemanticWireBatch*.lean' 9000000
 run_phase "semantic wires" lake env lean \
   "$(realpath "$src/SemanticWires.lean")" -o "$lib/SemanticWires.olean"
 

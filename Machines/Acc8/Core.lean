@@ -93,6 +93,17 @@ abbrev declarations (prog : BitVec 8 → BitVec 16) : Declarations :=
 def design (prog : BitVec 8 → BitVec 16) : Design :=
   Design.ofDecls "acc8" (declarations prog) [⟨"exec", execRule⟩]
 
+/-- Acc8's executable logic is wholly authored by `hardware`; specializing a
+program changes only the ROM initializer and public module name.  This exact
+equality is the completeness boundary for the pretty conversion—there is no
+parallel hand-written action or declaration list. -/
+theorem design_eq_pretty (prog : BitVec 8 → BitVec 16) :
+    design prog =
+      { Authored.design with
+        name := "acc8"
+        mems := [progMem.decl (fun a => prog (BitVec.ofNat 8 a)), dataMem.decl] } :=
+  rfl
+
 /-- The abstraction function of the A-R refinement: read the architectural
 state out of the named signals (the program comes from the ROM contents,
 which no rule writes — so the square holds unconditionally). -/

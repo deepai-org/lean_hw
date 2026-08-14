@@ -209,7 +209,8 @@ theorem toProgram_mems_length (d : Loom.Hw.Design)
 one `o_<reg>` per **exported** source register (D39 `Design.outputs`;
 `d.exportedRegs` is `d.regs` for every design that declares no selection),
 driven by the register name itself. -/
-theorem toProgram_outs (d : Loom.Hw.Design) (blockSize chunkLeaves : Nat) :
+theorem toProgram_outs (d : Loom.Hw.Design) (blockSize chunkLeaves : Nat)
+    (hcomb : d.combOutputs = []) :
     (d.toProgram blockSize chunkLeaves).outs =
       d.exportedRegs.map fun r =>
         ({ name := s!"o_{r.name}", width := r.width,
@@ -217,13 +218,14 @@ theorem toProgram_outs (d : Loom.Hw.Design) (blockSize chunkLeaves : Nat) :
   show ((flattenOuts (Compile.compile d).outs).run _).1 = _
   have : (Compile.compile d).outs = d.exportedRegs.map fun r =>
       ({ name := s!"o_{r.name}", width := r.width,
-         val := .reg r.width r.name } : OutDef) := rfl
+         val := .reg r.width r.name } : OutDef) := by
+    simp [Compile.compile, hcomb]
   rw [this, flattenOuts_regOuts]
 
 theorem toProgram_outs_length (d : Loom.Hw.Design)
-    (blockSize chunkLeaves : Nat) :
+    (blockSize chunkLeaves : Nat) (hcomb : d.combOutputs = []) :
     (d.toProgram blockSize chunkLeaves).outs.length = d.exportedRegs.length := by
-  rw [toProgram_outs, List.length_map]
+  rw [toProgram_outs d blockSize chunkLeaves hcomb, List.length_map]
 
 /-! ## Count conjuncts of `ModuleBehavior` -/
 
@@ -286,17 +288,19 @@ theorem outputBehaviorRopeFrom_of_consecutive (design : Loom.Hw.Design)
 
 open Loom.Release.Symbolic in
 theorem toProgram_outputBehaviorAt (d : Loom.Hw.Design) (i : Nat)
+    (hcomb : d.combOutputs = [])
     (bound : i < d.exportedRegs.length) :
     OutputBehaviorAt d (d.toProgram) i := by
   unfold OutputBehaviorAt
-  rw [toProgram_outs]
+  rw [toProgram_outs d 128 16 hcomb]
   have found : d.exportedRegs[i]? = some d.exportedRegs[i] :=
     List.getElem?_eq_getElem bound
   simp [found]
 
 open Loom.Release.Symbolic in
 /-- The output conjunct of `ModuleBehavior` for the constructed witness. -/
-theorem toProgram_outputBehavior (d : Loom.Hw.Design) :
+theorem toProgram_outputBehavior (d : Loom.Hw.Design)
+    (hcomb : d.combOutputs = []) :
     OutputBehaviorRopeFrom d d.toProgram 0 d.outputsOf := by
   apply outputBehaviorRopeFrom_of_consecutive
   · show (d.outputsOf).flattenLists = _
@@ -304,11 +308,11 @@ theorem toProgram_outputBehavior (d : Loom.Hw.Design) :
     unfold Loom.Hw.Design.outputsOf
     rw [balancedRope_chunks_flatten, List.range_eq_range']
   · intro i mem
-    apply toProgram_outputBehaviorAt
+    apply toProgram_outputBehaviorAt d i hcomb
     have : i ∈ List.range (d.toProgram).outs.length := by
       unfold Loom.Hw.Design.outputsOf at mem
       rwa [balancedRope_chunks_flatten] at mem
-    rw [← toProgram_outs_length d 128 16]
+    rw [← toProgram_outs_length d 128 16 hcomb]
     simpa using this
 
 end SSA

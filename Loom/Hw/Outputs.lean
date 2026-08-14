@@ -5,33 +5,22 @@ import Loom.Hw.Compose
 import Loom.Emit.MicroVerilog.RoundTrip
 
 /-!
-# D39 — declared observability: a design may keep a register off the interface
+# Declared observability
 
-Before D39 the compiler exported **every** register as an `o_<name>` output
-port. That is a defect, not a convenience: it means a Loom design
-structurally cannot hold a secret. The capability engine found it — the MAC
-key in `Machines/CapWalk/Engine.lean` had to be a bitstream constant rather
-than a register, because "a never-written register would emit as an `o_*`
-port and publish the key" (`CAPWALK_SPEC.md` deviation CE5, retired by this
-file). `Loom/Hw/OUTPUTS_SPEC.md` is the decision record.
-
-The representation is one optional field on `Design` (`Loom/Hw/Syntax.lean`):
-
-    outputs : Option (List String) := none
-
-`none` = every register, i.e. exactly the pre-D39 behaviour, definitionally
-(`Design.exportedRegs` reduces to `d.regs`), which is why every emitted
-`rtl/*.v` is byte-identical across this change. `some ns` = exactly the
-named registers; everything else is **internal**.
+`Design.outputs` explicitly selects state registers exported as `o_<name>`
+ports. `Design.combOutputs` separately declares named same-cycle expression
+ports. A register absent from `outputs` is internal unless a combinational
+output deliberately reads it. `Loom/Hw/OUTPUTS_SPEC.md` records the complete
+interface and security boundary.
 
 ## What this file contains
 
 1. the decidable well-formedness check `Design.outputsOkB` — a selected name
    that is not a declared register is an error at `Design.emit`, named
    (`Loom/Hw/EmitIO.lean`, beside the D15 name-clash and D37 image checks);
-2. **the theorem** (`compile_not_exported`): for `outputs = some ns`, a name
-   outside `ns` occurs at no output port of `(compile d)` — neither as a port
-   name nor inside a port's driver expression;
+2. **the theorem** (`compile_not_exported`): given that no combinational view
+   republishes it, a name outside `outputs` occurs at no output port of
+   `(compile d)` — neither as a port name nor inside a port's driver;
 3. the same statement one level lower, over the **printed text**
    (`printed_not_exported`), via the independent parser and
    `Module.parseCheck`.
@@ -150,16 +139,24 @@ theorem exportedRegs_all {d : Design} (h : d.outputs = d.regs.map (·.name)) :
 behind the byte-identical acceptance test: nothing downstream of `outs` can
 observe that D39 happened for a design that does not use it. -/
 theorem compile_outs_of_all {d : Design} (h : d.outputs = d.regs.map (·.name)) :
-    (Compile.compile d).outs = d.regs.map fun r =>
-      ({ name := s!"o_{r.name}", width := r.width,
-         val := .reg r.width r.name } : OutDef) := by
+    (Compile.compile d).outs =
+      (d.regs.map fun r =>
+        ({ name := s!"o_{r.name}", width := r.width,
+           val := .reg r.width r.name } : OutDef)) ++
+      (d.combOutputs.map fun output =>
+        ({ name := output.name, width := output.width,
+           val := Compile.compileExpr output.value } : OutDef)) := by
   simp [Compile.compile, exportedRegs_all h]
 
 /-- The port list, in the shape every proof below uses. -/
 theorem compile_outs (d : Design) :
-    (Compile.compile d).outs = d.exportedRegs.map fun r =>
-      ({ name := s!"o_{r.name}", width := r.width,
-         val := .reg r.width r.name } : OutDef) := rfl
+    (Compile.compile d).outs =
+      (d.exportedRegs.map fun r =>
+        ({ name := s!"o_{r.name}", width := r.width,
+           val := .reg r.width r.name } : OutDef)) ++
+      (d.combOutputs.map fun output =>
+        ({ name := output.name, width := output.width,
+           val := Compile.compileExpr output.value } : OutDef)) := rfl
 
 /-- An exported register is a declared register: a selection can only ever
 *remove* ports, never invent one. -/
@@ -187,15 +184,21 @@ inside the port's driver expression. Note it is stated for an arbitrary `n`,
 not merely a declared register: nothing outside the selection is exported,
 whether or not it is a register. -/
 theorem compile_not_exported {d : Design} {ns : List String}
-    (hsel : d.outputs = ns) {n : String} (hn : n ∉ ns) :
+    (hsel : d.outputs = ns) {n : String} (hn : n ∉ ns)
+    (hcomb : ∀ output ∈ d.combOutputs,
+      output.name ≠ s!"o_{n}" ∧
+        n ∉ (Compile.compileExpr output.value).regReads) :
     ∀ o ∈ (Compile.compile d).outs, o.name ≠ s!"o_{n}" ∧ n ∉ o.val.regReads := by
   intro o ho
   rw [compile_outs] at ho
-  obtain ⟨r, hr, rfl⟩ := List.mem_map.mp ho
-  have hrn : r.name ∈ ns := mem_of_mem_exportedRegs hsel hr
-  have hne : r.name ≠ n := fun h => hn (h ▸ hrn)
-  refine ⟨fun h => hne (oPort_inj h), ?_⟩
-  simp [Expr.regReads, Ne.symm hne]
+  rcases List.mem_append.mp ho with register | combinational
+  · obtain ⟨r, hr, rfl⟩ := List.mem_map.mp register
+    have hrn : r.name ∈ ns := mem_of_mem_exportedRegs hsel hr
+    have hne : r.name ≠ n := fun h => hn (h ▸ hrn)
+    refine ⟨fun h => hne (oPort_inj h), ?_⟩
+    simp [Expr.regReads, Ne.symm hne]
+  · obtain ⟨output, member, rfl⟩ := List.mem_map.mp combinational
+    exact hcomb output member
 
 /-- The same, at the module's whole port list: given that no *input* is
 called `o_n` either (the D15 emit check keeps input names disjoint from
@@ -203,6 +206,9 @@ register names; `o_`-prefixed inputs are a caller's choice), an
 unselected `n` has no port at all. -/
 theorem compile_portNames_not_exported {d : Design} {ns : List String}
     (hsel : d.outputs = ns) {n : String} (hn : n ∉ ns)
+    (hcomb : ∀ output ∈ d.combOutputs,
+      output.name ≠ s!"o_{n}" ∧
+        n ∉ (Compile.compileExpr output.value).regReads)
     (hin : ∀ i ∈ d.inputs, i.name ≠ s!"o_{n}") :
     s!"o_{n}" ∉ (Compile.compile d).portNames := by
   intro hmem
@@ -211,7 +217,7 @@ theorem compile_portNames_not_exported {d : Design} {ns : List String}
     obtain ⟨i0, hi0, rfl⟩ := List.mem_map.mp hi
     exact hin i0 hi0 hname
   · obtain ⟨o, ho, hname⟩ := List.mem_map.mp h
-    exact (compile_not_exported hsel hn o ho).1 hname
+    exact (compile_not_exported hsel hn hcomb o ho).1 hname
 
 /-! ## Composition (spec §4)
 
@@ -318,10 +324,24 @@ theorem connect_exportedRegs (d : Design)
     (wire : (n : String) → (w : Nat) → Option (Expr w)) :
     (d.connect wire).exportedRegs = d.exportedRegs := rfl
 
-/-- ...hence the wired design's ports are exactly the unwired design's. -/
+/-- ...hence wiring preserves the output interface names and widths, while
+substituting connected expressions into combinational output values. -/
 theorem connect_outs (d : Design)
     (wire : (n : String) → (w : Nat) → Option (Expr w)) :
-    (Compile.compile (d.connect wire)).outs = (Compile.compile d).outs := rfl
+    (Compile.compile (d.connect wire)).outs.map (fun output =>
+      (output.name, output.width)) =
+    (Compile.compile d).outs.map (fun output =>
+      (output.name, output.width)) := by
+  rw [compile_outs, compile_outs]
+  simp only [List.map_append, List.map_map]
+  apply congrArg₂ (· ++ ·)
+  · rfl
+  · change
+      List.map (fun output : CombOutput => (output.name, output.width))
+        ((d.connect wire).combOutputs) =
+      List.map (fun output : CombOutput => (output.name, output.width))
+        d.combOutputs
+    simp [Design.connect]
 
 /-! ## The theorem, over the printed text
 
@@ -337,12 +357,15 @@ property is a property of the file. -/
 parser recovers from that text exports no unselected name either. -/
 theorem printed_not_exported {d : Design} {ns : List String}
     (hsel : d.outputs = ns) {n : String} (hn : n ∉ ns)
+    (hcomb : ∀ output ∈ d.combOutputs,
+      output.name ≠ s!"o_{n}" ∧
+        n ∉ (Compile.compileExpr output.value).regReads)
     (hrt : (Compile.compile d).parseCheck = true) :
     ∃ m, Parse.parse (Print.print (Compile.compile d)) = some m ∧
       ∀ o ∈ m.outs, o.name ≠ s!"o_{n}" ∧ n ∉ o.val.regReads := by
   obtain ⟨m, hparse, hmatch⟩ := Module.parseCheck_sound hrt
   refine ⟨m, hparse, ?_⟩
   intro o ho
-  exact compile_not_exported hsel hn o (hmatch.outs ▸ ho)
+  exact compile_not_exported hsel hn hcomb o (hmatch.outs ▸ ho)
 
 end Loom.Hw

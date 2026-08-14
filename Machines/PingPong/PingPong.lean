@@ -28,6 +28,7 @@ def design : Design where
   regs := [⟨"a", 1, 1⟩, ⟨"b", 1, 0⟩, ⟨"hops", 8, 0⟩]
   mems := []
   rules := [⟨"swap", swap⟩, ⟨"count", countHops⟩]
+  outputs := ["a", "b", "hops"]
 
 theorem design_wf : Compile.DesignWF design :=
   Compile.designWFCheck_sound design (by decide)

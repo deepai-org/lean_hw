@@ -21,7 +21,10 @@ import Machines.Lnp64u.Logic.SystemOpsWf
 import Machines.Lnp64u.Logic.Sep.Resource
 import Machines.Tutorial.SatCounter
 import Machines.Multiclock.TwoCounters
+import Machines.Multiclock.RecoverySmoke
+import Machines.Multiclock.SoCFabricGauntlet
 import Machines.Substrate.S0Blinky
+import Machines.Substrate.TwoClock
 import Machines.Substrate.S13Soak
 import Machines.Substrate.S0BscanRegs
 import Machines.Substrate.RetimeDemo
@@ -49,6 +52,7 @@ import Machines.Lnp64mini.Soc
 import Machines.Lnp64mini.DualSoc
 import Machines.Lnp64mini.DebugMap
 import Machines.Lnp64mini.DebugMapCheck
+import Machines.Lnp64mini.Multiclock
 
 /-!
 # Machines

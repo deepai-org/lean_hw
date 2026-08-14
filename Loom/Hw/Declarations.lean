@@ -46,6 +46,7 @@ structure Declarations where
   mems : List MemDecl := []
   inputs : List InputDecl := []
   outputs : List String := []
+  combOutputs : List CombOutput := []
   ackMemInit : List String := []
   syncReadMems : List String := []
 
@@ -74,6 +75,13 @@ namespace Declarations
 @[simp] def addInput {w : Nat} (ds : Declarations) (input : Reg w) : Declarations :=
   { ds with inputs := ds.inputs ++ [input.input] }
 
+/-- Add a same-cycle output expression. Its width is carried by the
+expression, so an output cannot be declared at a width different from the
+value that drives it. -/
+@[simp] def addCombOutput {w : Nat} (ds : Declarations) (name : String)
+    (value : Expr w) : Declarations :=
+  { ds with combOutputs := ds.combOutputs ++ [⟨name, w, value⟩] }
+
 /-- Add a memory together with its initialization and implementation policy. -/
 @[simp] def addMem {aw dw : Nat} (ds : Declarations) (mem : Mem aw dw)
     (init : Nat → BitVec dw := fun _ => 0)
@@ -97,5 +105,6 @@ end Declarations
   ackMemInit := decls.ackMemInit
   syncReadMems := decls.syncReadMems
   outputs := decls.outputs
+  combOutputs := decls.combOutputs
 
 end Loom.Hw

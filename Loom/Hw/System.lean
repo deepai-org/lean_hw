@@ -6,8 +6,8 @@ import Loom.Hw.Semantics
 /-!
 # Typed channel assembly and multi-clock system semantics
 
-`Design.cycle` is one synchronous step and stays exactly what it is. A
-The public `System` composes named `Design` **islands** using width-typed
+`Design.cycle` is one synchronous step and stays exactly what it is. The
+public `System` composes named `Design` **islands** using width-typed
 `Chan` handles. A replayable schedule decides which clock names tick at each
 event. The earlier vector-indexed scheduling kernel remains available as
 `ScheduledSystem`; it is useful for small proofs without assembly or channels.
@@ -140,9 +140,9 @@ theorem ScheduledSystem.liftIsland₂ (sys : ScheduledSystem) (i j : Fin sys.n)
 /-! ## Typed named assembly
 
 This is the ordinary-user surface. It lowers a one-clock assembly to the
-existing `Design.par`/`Design.connect` semantics and retains clock/realization
-data for the multiclock backend. Invalid endpoint, name, depth, or realization
-combinations fail closed in `elaborate`.
+existing `Design.par`/`Design.connect` semantics and retains clock data for the
+multiclock semantics. Invalid endpoints, names, and depths fail closed during
+assembly. Physical CDC choices belong to a separate realization layer.
 -/
 
 structure SystemIsland where
@@ -156,28 +156,189 @@ structure SystemConnection where
   source : String
   sink : String
 
-/-- Named system declaration. The only inter-island edge constructor is the
-width-typed `connect`; there is intentionally no raw wire-crossing field. -/
-structure System where
+/-- One intentionally open channel endpoint on a checked hierarchical block.
+It has generated endpoint state/ports but no queue connection until a parent
+connects it to the opposite endpoint carrying the same typed `Chan`. -/
+structure SystemOpenEndpoint where
+  width : Nat
+  chan : Chan width
+  island : String
+
+/-- Reset behavior is declaration data rather than an unstated convention.
+`coordinated` admits only the power-on reset. `independentFlush` additionally
+admits named live island resets through `SystemRecovery`: every channel
+incident to a reset island is flushed, reset dominates a simultaneous tick,
+and traffic resumes from the empty channel epoch. It never preserves or
+silently replays pre-reset messages. -/
+inductive SystemResetPolicy where
+  | coordinated
+  | independentFlush
+  deriving DecidableEq, Repr
+
+/-! ### Executable named-clock relations
+
+The relation consumes the same finite prefixes used by replay and bounded
+checking.  Its semantic interpretation below admits an infinite schedule only
+when every finite prefix is accepted.  This makes safety proofs insensitive to
+how a runner happens to generate schedules and leaves progress assumptions
+explicit in the selected relation.
+-/
+
+/-- A replayable event names every clock that ticks atomically. Unlike a
+function-valued event, this value can be printed directly into a failing test
+artifact and replayed without a second schedule representation. -/
+structure NamedClockEvent where
+  clocks : List String
+  deriving DecidableEq, Repr
+
+def NamedClockEvent.fires (event : NamedClockEvent) (clock : String) : Bool :=
+  event.clocks.contains clock
+
+abbrev NamedSchedule := Nat → NamedClockEvent
+abbrev SchedulePrefix := Array NamedClockEvent
+abbrev ExternalInputs := Nat → String → InEnv
+
+/-- Executable admissibility predicate shared by proof semantics, replay, and
+bounded schedule enumeration.  `accepts` is intentionally a `Bool`: a rejected
+prefix is data a runner can report, not a second proof-only schedule language. -/
+structure ClockRel where
+  accepts : SchedulePrefix → Bool
+  /-- Acceptance is closed under removing a suffix.  This is the executable
+  safety condition that makes rejection detectable at its first bad prefix. -/
+  prefixClosed : ∀ first rest,
+    accepts (first ++ rest) = true → accepts first = true
+
+namespace ClockRel
+
+/-- Every finite schedule is admissible. -/
+def unconstrained : ClockRel where
+  accepts := fun _ => true
+  prefixClosed := by intros; rfl
+
+/-- At most one named clock may tick in each event. This is useful for proofs
+that deliberately linearize clock edges, but it is stronger than physical
+asynchrony: unrelated clocks can have coincident edges. -/
+def interleaved : ClockRel where
+  accepts := fun events =>
+    events.all fun event => event.clocks.eraseDups.length ≤ 1
+  prefixClosed := by
+    intro first rest accepted
+    rw [Array.all_append] at accepted
+    exact (Bool.and_eq_true_iff.mp accepted).1
+
+/-- Physically unrelated clocks with arbitrary phase. Coincident edges are
+admitted because a `NamedClockEvent` can tick several domains atomically.
+This is definitionally the unconstrained finite-prefix relation; progress and
+clock-availability assumptions remain separate from safety admissibility. -/
+def asynchronous : ClockRel := unconstrained
+
+/-- Two named clocks always tick together; other clocks remain unconstrained. -/
+def aligned (left right : String) : ClockRel where
+  accepts := fun events =>
+    events.all fun event => event.fires left == event.fires right
+  prefixClosed := by
+    intro first rest accepted
+    rw [Array.all_append] at accepted
+    exact (Bool.and_eq_true_iff.mp accepted).1
+
+/-- Materialize exactly the prefix consumed by executable checking. -/
+def prefixOf (schedule : NamedSchedule) (length : Nat) : SchedulePrefix :=
+  ((List.range length).map schedule).toArray
+
+/-- Infinite-schedule interpretation used by `System.Invariant`: every finite
+prefix must pass the executable relation. -/
+def Admits (rel : ClockRel) (schedule : NamedSchedule) : Prop :=
+  ∀ length, rel.accepts (prefixOf schedule length) = true
+
+@[simp] theorem unconstrained_admits (schedule : NamedSchedule) :
+    unconstrained.Admits schedule := by
+  intro length
+  rfl
+
+end ClockRel
+
+/-- Generator-friendly declaration builder.  It cannot be simulated, proved,
+or emitted until `certify`/`assemble` produces a checked `System`. -/
+structure SystemBuilder where
   islands : List SystemIsland := []
   connections : List SystemConnection := []
+  openSources : List SystemOpenEndpoint := []
+  openSinks : List SystemOpenEndpoint := []
+  /-- Reset contracts of flattened checked children. Final assembly requires
+  exact agreement with the parent policy; hierarchy may not silently
+  reinterpret a child's reset theorem boundary. -/
+  includedResetPolicies : List SystemResetPolicy := []
+  clockRel : ClockRel := .unconstrained
+  resetPolicy : SystemResetPolicy := .coordinated
 
 namespace System
 
-def empty : System := {}
+def empty : SystemBuilder := {}
 
-def island (sys : System) (name : String) (design : Design)
-    (clock : String := "clk") : System :=
+def _root_.Loom.Hw.SystemBuilder.island (sys : SystemBuilder) (name : String) (design : Design)
+    (clock : String := "clk") : SystemBuilder :=
   { sys with islands := sys.islands ++ [⟨name, clock, design⟩] }
 
-def connect (sys : System) {width : Nat} (chan : Chan width)
-    (source sink : String) : System :=
+def _root_.Loom.Hw.SystemBuilder.connect (sys : SystemBuilder) {width : Nat} (chan : Chan width)
+    (source sink : String) : SystemBuilder :=
   { sys with connections := sys.connections ++ [⟨width, chan, source, sink⟩] }
+
+/-- Generator-level hierarchical source export. Typed application wrappers
+live in `Multiclock`; this lowering records the open endpoint and generates
+its adapter exactly once. -/
+def _root_.Loom.Hw.SystemBuilder.openSource (sys : SystemBuilder) {width : Nat}
+    (chan : Chan width) (source : String) : SystemBuilder :=
+  { sys with
+    islands := sys.islands.map fun island =>
+      if island.name = source then { island with design := chan.withSource island.design }
+      else island
+    openSources := sys.openSources ++ [⟨width, chan, source⟩] }
+
+/-- Generator-level hierarchical sink export. -/
+def _root_.Loom.Hw.SystemBuilder.openSink (sys : SystemBuilder) {width : Nat}
+    (chan : Chan width) (sink : String) : SystemBuilder :=
+  { sys with
+    islands := sys.islands.map fun island =>
+      if island.name = sink then { island with design := chan.withSink island.design }
+      else island
+    openSinks := sys.openSinks ++ [⟨width, chan, sink⟩] }
+
+/-- Exact erased identity check used when a parent closes a typed exported
+endpoint. -/
+def openEndpointMatches {width : Nat}
+    (endpoint : SystemOpenEndpoint) (chan : Chan width) (island : String) : Bool :=
+  endpoint.chan.name == chan.name && endpoint.width == width &&
+    endpoint.chan.depth == chan.depth && endpoint.chan.policy == chan.policy &&
+    endpoint.island == island
+
+/-- Close two previously generated hierarchical endpoints without generating
+their endpoint adapters a second time. Final `SystemBuilder.check` verifies
+that the selected endpoints and channel declaration agree exactly. -/
+def _root_.Loom.Hw.SystemBuilder.connectOpen (sys : SystemBuilder) {width : Nat}
+    (chan : Chan width) (source sink : String) : SystemBuilder :=
+  { sys with
+    connections := sys.connections ++ [⟨width, chan, source, sink⟩]
+    openSources := sys.openSources.filter fun endpoint =>
+      !openEndpointMatches endpoint chan source
+    openSinks := sys.openSinks.filter fun endpoint =>
+      !openEndpointMatches endpoint chan sink }
+
+/-- Select the legal relative-clock schedules without changing island code. -/
+def _root_.Loom.Hw.SystemBuilder.withClockRel (sys : SystemBuilder)
+    (clockRel : ClockRel) : SystemBuilder :=
+  { sys with clockRel }
+
+/-- Opt into the explicit independently resettable, flush-on-reset contract.
+The ordinary coordinated policy remains the default. -/
+def _root_.Loom.Hw.SystemBuilder.withIndependentReset (sys : SystemBuilder) :
+    SystemBuilder :=
+  { sys with resetPolicy := .independentFlush }
 
 def islandPrefix (name : String) := name ++ "__"
 def adapterPrefix (name : String) := "__channel_" ++ name ++ "__"
 
-def findIsland? (sys : System) (name : String) : Option SystemIsland :=
+def _root_.Loom.Hw.SystemBuilder.findIsland? (sys : SystemBuilder)
+    (name : String) : Option SystemIsland :=
   sys.islands.find? fun island => island.name == name
 
 /-- One derived crossing-inventory row. Optional clocks preserve a useful
@@ -188,7 +349,6 @@ structure CrossingInfo where
   width : Nat
   depth : Nat
   policy : FullCoTickPolicy
-  realization : ChanRealization
   source : String
   sourceClock : Option String
   sink : String
@@ -197,13 +357,12 @@ structure CrossingInfo where
 
 /-- Complete channel/crossing inventory, derived from the same declarations
 used by semantics and lowering. -/
-def crossingInventory (sys : System) : List CrossingInfo :=
+def _root_.Loom.Hw.SystemBuilder.crossingInventory (sys : SystemBuilder) : List CrossingInfo :=
   sys.connections.map fun connection =>
     { channel := connection.chan.name
       width := connection.width
       depth := connection.chan.depth
       policy := connection.chan.policy
-      realization := connection.chan.realization
       source := connection.source
       sourceClock := (sys.findIsland? connection.source).map (fun island => island.clock)
       sink := connection.sink
@@ -215,28 +374,78 @@ private def hasReg (d : Design) (name : String) (width : Nat) : Bool :=
 private def hasInput (d : Design) (name : String) (width : Nat) : Bool :=
   d.inputs.any fun input => input.name == name && input.width == width
 
-private def endpointOk (sys : System) (connection : SystemConnection) : Bool :=
+private def declaredEndpointNames (sys : SystemBuilder) (islandName : String) : List String :=
+  (sys.connections.flatMap fun connection =>
+    let sourceNames := if connection.source == islandName then
+      [connection.chan.sourceValidName, connection.chan.sourcePayloadName,
+        connection.chan.sourceReadyName, connection.chan.sourceAcceptedName]
+    else []
+    let sinkNames := if connection.sink == islandName then
+      [connection.chan.sinkPopName, connection.chan.sinkValidName,
+        connection.chan.sinkPayloadName]
+    else []
+    sourceNames ++ sinkNames) ++
+  (sys.openSources.flatMap fun endpoint =>
+    if endpoint.island == islandName then
+      [endpoint.chan.sourceValidName, endpoint.chan.sourcePayloadName,
+        endpoint.chan.sourceReadyName, endpoint.chan.sourceAcceptedName]
+    else []) ++
+  (sys.openSinks.flatMap fun endpoint =>
+    if endpoint.island == islandName then
+      [endpoint.chan.sinkPopName, endpoint.chan.sinkValidName,
+        endpoint.chan.sinkPayloadName]
+    else [])
+
+/-- Generated channel coordinates are a reserved namespace. An island cannot
+smuggle in a generated-looking input/register unless the same checked System
+declares that endpoint for the island. -/
+private def hasOnlyDeclaredEndpoints (sys : SystemBuilder) (island : SystemIsland) : Bool :=
+  let allowed := declaredEndpointNames sys island.name
+  let names := island.design.regs.map (·.name) ++ island.design.inputs.map (·.name)
+  let reserved := "__loom_chan_".toList
+  names.all fun name => !(name.toList.take reserved.length == reserved) ||
+    List.contains allowed name
+
+def _root_.Loom.Hw.SystemBuilder.endpointOk (sys : SystemBuilder)
+    (connection : SystemConnection) : Bool :=
   match sys.findIsland? connection.source, sys.findIsland? connection.sink with
   | some source, some sink =>
       hasReg source.design connection.chan.sourceValidName 1 &&
       hasReg source.design connection.chan.sourcePayloadName connection.width &&
       hasInput source.design connection.chan.sourceReadyName 1 &&
       hasInput source.design connection.chan.sourceAcceptedName 1 &&
+      source.design.maxWritesTo connection.chan.sourceValidName 1 ≤ 2 &&
       hasReg sink.design connection.chan.sinkPopName 1 &&
       hasInput sink.design connection.chan.sinkValidName 1 &&
-      hasInput sink.design connection.chan.sinkPayloadName connection.width
+      hasInput sink.design connection.chan.sinkPayloadName connection.width &&
+      sink.design.maxWritesTo connection.chan.sinkPopName 1 ≤ 2
   | _, _ => false
 
-private def clocksOk (sys : System) (connection : SystemConnection) : Bool :=
-  match sys.findIsland? connection.source, sys.findIsland? connection.sink with
-  | some source, some sink =>
-      match connection.chan.realization with
-      | .synchronous => source.clock == sink.clock
-      | .toggle | .asyncFifo => source.clock != sink.clock
-  | _, _ => false
+private def sourceEndpointOk (sys : SystemBuilder)
+    (endpoint : SystemOpenEndpoint) : Bool :=
+  match sys.findIsland? endpoint.island with
+  | some source =>
+      hasReg source.design endpoint.chan.sourceValidName 1 &&
+      hasReg source.design endpoint.chan.sourcePayloadName endpoint.width &&
+      hasInput source.design endpoint.chan.sourceReadyName 1 &&
+      hasInput source.design endpoint.chan.sourceAcceptedName 1 &&
+      source.design.maxWritesTo endpoint.chan.sourceValidName 1 ≤ 2
+  | none => false
+
+private def sinkEndpointOk (sys : SystemBuilder)
+    (endpoint : SystemOpenEndpoint) : Bool :=
+  match sys.findIsland? endpoint.island with
+  | some sink =>
+      hasReg sink.design endpoint.chan.sinkPopName 1 &&
+      hasInput sink.design endpoint.chan.sinkValidName 1 &&
+      hasInput sink.design endpoint.chan.sinkPayloadName endpoint.width &&
+      sink.design.maxWritesTo endpoint.chan.sinkPopName 1 ≤ 2
+  | none => false
 
 /-- Fail-closed structural gate for the named declaration. -/
-def check (sys : System) : Except String Unit := do
+def _root_.Loom.Hw.SystemBuilder.check (sys : SystemBuilder) : Except String Unit := do
+  if !sys.includedResetPolicies.all (· == sys.resetPolicy) then
+    throw "included System reset policy differs from parent; rebuild or explicitly adapt the child contract"
   let islandNames := sys.islands.map (fun island => island.name)
   if islandNames.eraseDups.length != islandNames.length then
     throw "duplicate system island name"
@@ -244,17 +453,121 @@ def check (sys : System) : Except String Unit := do
     throw "empty system island name"
   if sys.islands.any (fun island => island.clock.isEmpty) then
     throw "empty clock-domain name"
+  for island in sys.islands do
+    if !hasOnlyDeclaredEndpoints sys island then
+      throw s!"island {island.name}: undeclared generated channel endpoint"
   let channelNames := sys.connections.map fun connection => connection.chan.name
+  let openSourceNames := sys.openSources.map fun endpoint => endpoint.chan.name
+  let openSinkNames := sys.openSinks.map fun endpoint => endpoint.chan.name
   if channelNames.eraseDups.length != channelNames.length then
     throw "duplicate channel connection"
+  if openSourceNames.eraseDups.length != openSourceNames.length then
+    throw "duplicate open source endpoint"
+  if openSinkNames.eraseDups.length != openSinkNames.length then
+    throw "duplicate open sink endpoint"
+  if channelNames.any (openSourceNames.contains ·) ||
+      channelNames.any (openSinkNames.contains ·) then
+    throw "connected channel also remains exported"
   for connection in sys.connections do
     if connection.chan.name.isEmpty then throw "empty channel name"
     if connection.chan.depth == 0 then
       throw s!"channel {connection.chan.name}: depth must be positive"
+    match sys.findIsland? connection.source with
+    | some source =>
+        if 2 < source.design.maxWritesTo connection.chan.sourceValidName 1 then
+          throw s!"channel {connection.chan.name}: multiple sends may execute in one source tick; select one payload or use an explicit arbiter"
+    | none => pure ()
+    match sys.findIsland? connection.sink with
+    | some sink =>
+        if 2 < sink.design.maxWritesTo connection.chan.sinkPopName 1 then
+          throw s!"channel {connection.chan.name}: multiple consumes may execute in one sink tick; select one consumer or use an explicit arbiter"
+    | none => pure ()
     if !sys.endpointOk connection then
       throw s!"channel {connection.chan.name}: generated endpoint missing or malformed"
-    if !sys.clocksOk connection then
-      throw s!"channel {connection.chan.name}: realization does not match endpoint clocks"
+  for endpoint in sys.openSources do
+    if endpoint.chan.name.isEmpty then throw "empty open source channel name"
+    if endpoint.chan.depth == 0 then
+      throw s!"channel {endpoint.chan.name}: depth must be positive"
+    if !sourceEndpointOk sys endpoint then
+      throw s!"channel {endpoint.chan.name}: open source endpoint missing or malformed"
+  for endpoint in sys.openSinks do
+    if endpoint.chan.name.isEmpty then throw "empty open sink channel name"
+    if endpoint.chan.depth == 0 then
+      throw s!"channel {endpoint.chan.name}: depth must be positive"
+    if !sinkEndpointOk sys endpoint then
+      throw s!"channel {endpoint.chan.name}: open sink endpoint missing or malformed"
+
+end System
+
+/-- The public system value is structurally valid by construction.  Its only
+constructor is private; raw declaration data remains in `SystemBuilder`. -/
+structure System where
+  private mk ::
+  private decl : SystemBuilder
+  checked : decl.check.isOk
+
+namespace System
+
+/-- Turn generator-friendly declaration data into the type accepted by
+proof- and emission-facing APIs. -/
+def _root_.Loom.Hw.SystemBuilder.assemble (decl : SystemBuilder) : Except String System :=
+  match h : decl.check with
+  | .ok _ => pure ⟨decl, by rw [h]; rfl⟩
+  | .error message => throw message
+
+/-- Kernel-checked assembly for declarations whose gate can be discharged at
+elaboration time. -/
+def _root_.Loom.Hw.SystemBuilder.certify (decl : SystemBuilder)
+    (checked : decl.check.isOk) : System :=
+  ⟨decl, checked⟩
+
+def islands (sys : System) : List SystemIsland := sys.decl.islands
+def connections (sys : System) : List SystemConnection := sys.decl.connections
+def openSources (sys : System) : List SystemOpenEndpoint := sys.decl.openSources
+def openSinks (sys : System) : List SystemOpenEndpoint := sys.decl.openSinks
+def clockRel (sys : System) : ClockRel := sys.decl.clockRel
+def resetPolicy (sys : System) : SystemResetPolicy := sys.decl.resetPolicy
+def findIsland? (sys : System) (name : String) : Option SystemIsland :=
+  sys.decl.findIsland? name
+
+theorem findIsland?_name {sys : System} {name : String} {island : SystemIsland}
+    (found : sys.findIsland? name = some island) : island.name = name := by
+  unfold findIsland? SystemBuilder.findIsland? at found
+  have aux : ∀ (islands : List SystemIsland),
+      islands.find? (fun candidate => candidate.name == name) = some island →
+        island.name = name := by
+    intro islands
+    induction islands with
+    | nil => simp
+    | cons head tail ih =>
+        intro result
+        simp only [List.find?] at result
+        split at result
+        · rename_i matchHead
+          cases result
+          simpa using matchHead
+        · exact ih result
+  exact aux sys.decl.islands found
+def crossingInventory (sys : System) : List CrossingInfo :=
+  sys.decl.crossingInventory
+def check (sys : System) : Except String Unit := sys.decl.check
+
+@[simp] theorem islands_certify (decl : SystemBuilder) (checked : decl.check.isOk) :
+    (decl.certify checked).islands = decl.islands := rfl
+
+@[simp] theorem connections_certify (decl : SystemBuilder) (checked : decl.check.isOk) :
+    (decl.certify checked).connections = decl.connections := rfl
+
+@[simp] theorem openSources_certify (decl : SystemBuilder) (checked : decl.check.isOk) :
+    (decl.certify checked).openSources = decl.openSources := rfl
+
+@[simp] theorem openSinks_certify (decl : SystemBuilder) (checked : decl.check.isOk) :
+    (decl.certify checked).openSinks = decl.openSinks := rfl
+
+@[simp] theorem findIsland?_certify (decl : SystemBuilder) (checked : decl.check.isOk)
+    (name : String) : (decl.certify checked).findIsland? name = decl.findIsland? name := rfl
+
+@[simp] theorem check_isOk (sys : System) : sys.check.isOk := sys.checked
 
 private def connectionWire? (connection : SystemConnection)
     (name : String) (width : Nat) : Option (Expr width) :=
@@ -286,13 +599,15 @@ private def composeChecked : List Design → Except String Design
           else throw s!"component namespace collision: {acc.name} / {next.name}"
 
 /-- Lower a valid all-synchronous system through the existing compositional
-Design layer. Asynchronous realizations remain declarations for the scheduled
-backend and are deliberately refused by this synchronous lowering. -/
+Design layer. A cross-clock abstract channel remains meaningful to scheduled
+semantics but is deliberately refused by this synchronous lowering. -/
 def elaborate (sys : System) : Except String Design := do
   sys.check
   if sys.connections.any (fun connection =>
-      connection.chan.realization != .synchronous) then
-    throw "asynchronous channel requires the multiclock realization backend"
+      match sys.findIsland? connection.source, sys.findIsland? connection.sink with
+      | some source, some sink => source.clock != sink.clock
+      | _, _ => true) then
+    throw "cross-clock channel requires a certified multiclock realization"
   let combined ← composeChecked sys.components
   let design := combined.connect (wire? sys.connections)
   pure design
@@ -306,25 +621,13 @@ def DesignInvariant (sys : System) (property : St → Prop) : Prop :=
 
 /-! ### Executable named-clock semantics -/
 
-/-- A replayable event names every clock that ticks atomically. Unlike a
-function-valued event, this value can be printed directly into a failing test
-artifact and replayed without a second schedule representation. -/
-structure NamedClockEvent where
-  clocks : List String
-  deriving DecidableEq, Repr
-
-def NamedClockEvent.fires (event : NamedClockEvent) (clock : String) : Bool :=
-  event.clocks.contains clock
-
-abbrev NamedSchedule := Nat → NamedClockEvent
-abbrev SchedulePrefix := Array NamedClockEvent
-abbrev ExternalInputs := Nat → String → InEnv
-
 structure PackedQueue where
   width : Nat
   values : List (BitVec width)
 
-private def PackedQueue.asWidth (queue : PackedQueue) (width : Nat) :
+/-- Recover a statically typed queue view. A width mismatch is impossible for
+a checked connection and fails closed for diagnostic/inspection callers. -/
+def PackedQueue.asWidth (queue : PackedQueue) (width : Nat) :
     List (BitVec width) :=
   if h : queue.width = width then h ▸ queue.values else []
 
@@ -343,6 +646,10 @@ private def emptyState : St where
   regs := fun _ _ => 0
   mems := fun _ _ _ => 0
 
+/-- Coordinated power-on/reset state. Every island and abstract channel resets
+together. There is deliberately no `resetIsland` transition: unilateral live
+reset is unsupported until a channel flush/recovery contract is selected and
+proved. -/
 def reset (sys : System) : sys.State where
   island := fun name => match sys.findIsland? name with
     | some island => island.design.reset
@@ -353,12 +660,20 @@ def reset (sys : System) : sys.State where
     | none => packQueue (width := 0) []
   time := 0
 
-private def connectionQueue {sys : System} (state : sys.State)
+def connectionQueue {sys : System} (state : sys.State)
     (connection : SystemConnection) :
     Chan.State connection.width :=
   (state.channel connection.chan.name).asWidth connection.width
 
-private def connectionEvent (sys : System) (event : NamedClockEvent)
+/-- Typed view of one declared channel queue, used by reusable system-level
+safety properties. -/
+def channelState {sys : System} (state : sys.State)
+    (connection : SystemConnection) : Chan.State connection.width :=
+  connectionQueue state connection
+
+/-- Expert proof/debug view of the endpoint request selected for one checked
+connection at an atomic named-clock event. -/
+def connectionEvent (sys : System) (event : NamedClockEvent)
     (state : sys.State) (connection : SystemConnection) :
     Chan.Event connection.width :=
   let sourceTick := match sys.findIsland? connection.source with
@@ -375,16 +690,68 @@ private def connectionEvent (sys : System) (event : NamedClockEvent)
     (Expr.reg 1 connection.chan.sinkPopName).eval sinkState != 0
   { push, pop }
 
-private def connectionResult (sys : System) (event : NamedClockEvent)
+/-- The exact abstract-channel result committed by `advance`. -/
+def connectionResult (sys : System) (event : NamedClockEvent)
     (state : sys.State) (connection : SystemConnection) :
     Chan.Result connection.width :=
   connection.chan.step (connectionQueue state connection)
     (sys.connectionEvent event state connection)
 
-private def boolValue (width : Nat) (h : width = 1) (value : Bool) : BitVec width :=
+/-- Stable proof/debug view of one connection at one atomic event. Application
+proofs can reason about typed queue and transfer values without unfolding the
+string/width dispatch used to construct island input environments. -/
+structure ResolvedConnectionStep (sys : System) (connection : SystemConnection) where
+  queue : Chan.State connection.width
+  request : Chan.Event connection.width
+  result : Chan.Result connection.width
+  sourceReady : Bool
+  sinkValid : Bool
+  sinkPayload : BitVec connection.width
+
+def resolveConnection (sys : System) (event : NamedClockEvent)
+    (state : sys.State) (connection : SystemConnection) :
+    ResolvedConnectionStep sys connection :=
+  let queue := sys.channelState state connection
+  let request := sys.connectionEvent event state connection
+  let result := connection.chan.step queue request
+  let sourceReady := (connection.chan.step queue
+    { push := some 0, pop := request.pop }).accepted
+  { queue, request, result, sourceReady
+    sinkValid := !queue.isEmpty
+    sinkPayload := queue.head?.getD 0 }
+
+@[simp] theorem resolveConnection_queue (sys : System) (event : NamedClockEvent)
+    (state : sys.State) (connection : SystemConnection) :
+    (sys.resolveConnection event state connection).queue =
+      sys.channelState state connection := rfl
+
+@[simp] theorem resolveConnection_request (sys : System) (event : NamedClockEvent)
+    (state : sys.State) (connection : SystemConnection) :
+    (sys.resolveConnection event state connection).request =
+      sys.connectionEvent event state connection := rfl
+
+@[simp] theorem resolveConnection_result (sys : System) (event : NamedClockEvent)
+    (state : sys.State) (connection : SystemConnection) :
+    (sys.resolveConnection event state connection).result =
+      sys.connectionResult event state connection := rfl
+
+@[simp] theorem resolveConnection_sinkValid (sys : System)
+    (event : NamedClockEvent) (state : sys.State)
+    (connection : SystemConnection) :
+    (sys.resolveConnection event state connection).sinkValid =
+      !(sys.channelState state connection).isEmpty := rfl
+
+@[simp] theorem resolveConnection_sinkPayload (sys : System)
+    (event : NamedClockEvent) (state : sys.State)
+    (connection : SystemConnection) :
+    (sys.resolveConnection event state connection).sinkPayload =
+      (sys.channelState state connection).head?.getD 0 := rfl
+
+def boolValue (width : Nat) (h : width = 1) (value : Bool) : BitVec width :=
   h.symm ▸ if value then 1#1 else 0#1
 
-private def connectionInput? (sys : System) (event : NamedClockEvent)
+/-- Expert proof view of the generated input driven by one connection. -/
+def connectionInput? (sys : System) (event : NamedClockEvent)
     (state : sys.State) (connection : SystemConnection)
     (islandName inputName : String) (width : Nat) : Option (BitVec width) :=
   let queue := connectionQueue state connection
@@ -408,12 +775,22 @@ private def connectionInput? (sys : System) (event : NamedClockEvent)
     else none
   else none
 
-private def inputFor (sys : System) (event : NamedClockEvent) (state : sys.State)
+/-- Complete generated-plus-external input valuation for one island.  This is
+public so optimized certified runners can prove they consume the identical
+input plan used by `System.advance`. -/
+def inputFor (sys : System) (event : NamedClockEvent) (state : sys.State)
     (external : String → InEnv) (islandName : String) : InEnv :=
   fun inputName width =>
     (sys.connections.findSome? fun connection =>
       sys.connectionInput? event state connection islandName inputName width).getD
         (external islandName inputName width)
+
+/-- Public proof/execution boundary for the inputs selected for one island at
+an event. Certified System simulators use this exact derived valuation; they
+do not reconstruct channel wiring in a second implementation. -/
+def islandInput (sys : System) (event : NamedClockEvent) (state : sys.State)
+    (external : String → InEnv) (islandName : String) : InEnv :=
+  sys.inputFor event state external islandName
 
 /-- One atomic named-clock event. Channel decisions and island inputs are all
 computed from the pre-event state; selected islands and queues then commit
@@ -423,7 +800,7 @@ def advance (sys : System) (event : NamedClockEvent) (external : String → InEn
   island := fun name => match sys.findIsland? name with
     | some island =>
         if event.fires island.clock then
-          island.design.cycleOpen (sys.inputFor event state external name)
+          island.design.cycleOpen (sys.islandInput event state external name)
             (state.island name)
         else state.island name
     | none => state.island name
@@ -432,6 +809,27 @@ def advance (sys : System) (event : NamedClockEvent) (external : String → InEn
     | some connection => packQueue (sys.connectionResult event state connection).state
     | none => state.channel name
   time := state.time + 1
+
+@[simp] theorem channelState_reset (sys : System) (connection : SystemConnection)
+    (found : sys.connections.find? (fun candidate =>
+      candidate.chan.name == connection.chan.name) = some connection) :
+    channelState sys.reset connection = [] := by
+  unfold channelState connectionQueue
+  simp only [reset]
+  rw [found]
+  simp [PackedQueue.asWidth, packQueue]
+
+@[simp] theorem channelState_advance (sys : System) (event : NamedClockEvent)
+    (external : String → InEnv) (state : sys.State)
+    (connection : SystemConnection)
+    (found : sys.connections.find? (fun candidate =>
+      candidate.chan.name == connection.chan.name) = some connection) :
+    channelState (sys.advance event external state) connection =
+      (sys.connectionResult event state connection).state := by
+  unfold channelState connectionQueue
+  simp only [advance]
+  rw [found]
+  simp [PackedQueue.asWidth, packQueue]
 
 @[simp] theorem advance_island_unticked (sys : System) (event : NamedClockEvent)
     (external : String → InEnv) (state : sys.State) (island : SystemIsland)
@@ -445,7 +843,7 @@ def advance (sys : System) (event : NamedClockEvent) (external : String → InEn
     (found : sys.findIsland? island.name = some island)
     (ticked : event.fires island.clock = true) :
     (sys.advance event external state).island island.name =
-      island.design.cycleOpen (sys.inputFor event state external island.name)
+      island.design.cycleOpen (sys.islandInput event state external island.name)
         (state.island island.name) := by
   simp [advance, found, ticked]
 
@@ -456,27 +854,143 @@ def tsysUnder (sys : System) (schedule : NamedSchedule)
   step := fun state next =>
     next = sys.advance (schedule state.time) (inputs state.time) state
 
+/-- List-level runner used by trace theorems; the public array runner below is
+the same executable schedule representation converted without reinterpretation. -/
+def runEventsFrom (sys : System) (inputs : ExternalInputs) :
+    sys.State → List NamedClockEvent → sys.State
+  | state, [] => state
+  | state, event :: rest =>
+      sys.runEventsFrom inputs
+        (sys.advance event (inputs state.time) state) rest
+
+/-- The abstract events seen by one declared channel during the same system
+run.  Endpoint actions are read from each pre-event state. -/
+def channelEventsFrom (sys : System) (inputs : ExternalInputs)
+    (connection : SystemConnection) :
+    sys.State → List NamedClockEvent → List (Chan.Event connection.width)
+  | _, [] => []
+  | state, event :: rest =>
+      sys.connectionEvent event state connection ::
+        sys.channelEventsFrom inputs connection
+          (sys.advance event (inputs state.time) state) rest
+
 /-- Replay a finite schedule prefix from an explicit state. The same event
 data drives proofs and executable regressions. -/
 def runPrefixFrom (sys : System) (events : SchedulePrefix)
     (inputs : ExternalInputs) (initial : sys.State) : sys.State :=
-  events.foldl (fun state event =>
-    sys.advance event (inputs state.time) state) initial
+  sys.runEventsFrom inputs initial events.toList
+
+/-- System execution projects exactly to the abstract queue runner for every
+declared channel. -/
+theorem channelState_runEventsFrom (sys : System) (inputs : ExternalInputs)
+    (connection : SystemConnection)
+    (found : sys.connections.find? (fun candidate =>
+      candidate.chan.name == connection.chan.name) = some connection)
+    (initial : sys.State) (events : List NamedClockEvent) :
+    channelState (sys.runEventsFrom inputs initial events) connection =
+      (connection.chan.runTrace (channelState initial connection)
+        (sys.channelEventsFrom inputs connection initial events)).state := by
+  induction events generalizing initial with
+  | nil => rfl
+  | cons event rest ih =>
+      simp only [runEventsFrom, channelEventsFrom, Chan.runTrace]
+      rw [ih]
+      rw [channelState_advance sys event (inputs initial.time) initial connection found]
+      rfl
+
+/-- End-to-end channel conservation through named-system composition.  Across
+any finite multiclock execution, the initial queue followed by values accepted
+from the source equals values delivered to the sink followed by the final
+queue.  No schedule or endpoint-specific proof is exposed to callers. -/
+theorem channelTraceConservation (sys : System) (inputs : ExternalInputs)
+    (connection : SystemConnection)
+    (found : sys.connections.find? (fun candidate =>
+      candidate.chan.name == connection.chan.name) = some connection)
+    (initial : sys.State) (events : List NamedClockEvent) :
+    let trace := sys.channelEventsFrom inputs connection initial events
+    channelState initial connection ++
+        (connection.chan.runTrace (channelState initial connection) trace).accepted =
+      (connection.chan.runTrace (channelState initial connection) trace).delivered ++
+        channelState (sys.runEventsFrom inputs initial events) connection := by
+  dsimp only
+  rw [channelState_runEventsFrom sys inputs connection found initial events]
+  exact connection.chan.runTrace_conservation (channelState initial connection)
+    (sys.channelEventsFrom inputs connection initial events)
 
 /-- Replay a finite schedule prefix from system reset. -/
 def runPrefix (sys : System) (events : SchedulePrefix)
     (inputs : ExternalInputs := fun _ _ _ _ => 0) : sys.State :=
   sys.runPrefixFrom events inputs sys.reset
 
-/-- A system invariant hides both the schedule and external-input trace. It is
-therefore valid for every relative clock rate and every environment unless a
-future `ClockRel` or input contract is explicitly built into the System. -/
+/-- Relation-respecting replay boundary.  Debug tools get the rejected prefix
+back as an error instead of silently testing a schedule outside the theorem. -/
+def runPrefixChecked (sys : System) (events : SchedulePrefix)
+    (inputs : ExternalInputs := fun _ _ _ _ => 0) : Except String sys.State :=
+  if sys.clockRel.accepts events then
+    pure (sys.runPrefix events inputs)
+  else
+    throw "schedule prefix rejected by ClockRel"
+
+/-- A system invariant hides both the schedule and external-input trace.  It
+quantifies over precisely the schedules admitted by the executable `ClockRel`
+stored in the same named declaration used by replay and inventory generation. -/
 def Invariant (sys : System) (property : sys.State → Prop) : Prop :=
-  sys.check.isOk ∧ ∀ schedule inputs, (sys.tsysUnder schedule inputs).Invariant property
+  ∀ schedule inputs, sys.clockRel.Admits schedule →
+    (sys.tsysUnder schedule inputs).Invariant property
+
+/-- A property of the complete channel store.  Unlike `atChannel`, this may
+relate any number of queues (for example, conservation across a pipeline or a
+mutual-exclusion condition across two request channels) without mentioning
+island state or clock schedules. -/
+def atChannels {sys : System}
+    (property : (String → PackedQueue) → Prop) (state : sys.State) : Prop :=
+  property state.channel
+
+/-- Schedule-free proof package for a possibly relational, cross-channel
+safety property.  Its step obligation is executable and local to one named
+clock event; `lift` below discharges all admitted schedules once and for all. -/
+structure ChannelInvariant (sys : System)
+    (property : (String → PackedQueue) → Prop) where
+  reset : property sys.reset.channel
+  preserved : ∀ event external state, property state.channel →
+    property (sys.advance event external state).channel
+
+namespace ChannelInvariant
+
+/-- Cross-channel safety properties compose before they are lifted, so users
+do not reopen schedules to combine independently proved channel contracts. -/
+def and {sys : System} {left right : (String → PackedQueue) → Prop}
+    (hLeft : ChannelInvariant sys left) (hRight : ChannelInvariant sys right) :
+    ChannelInvariant sys (fun channels => left channels ∧ right channels) where
+  reset := ⟨hLeft.reset, hRight.reset⟩
+  preserved event external state holds :=
+    ⟨hLeft.preserved event external state holds.1,
+      hRight.preserved event external state holds.2⟩
+
+end ChannelInvariant
+
+/-- Lift a property over the whole channel graph to a system invariant over
+every schedule admitted by the `ClockRel` stored in this named `System`. -/
+theorem liftChannels (sys : System) {property : (String → PackedQueue) → Prop}
+    (certificate : ChannelInvariant sys property) :
+    sys.Invariant (atChannels property) := by
+  intro schedule inputs _ state reachable
+  induction reachable with
+  | init initial =>
+      rw [← initial]
+      exact certificate.reset
+  | step _ stepEq ih =>
+      rename_i before after _
+      rw [stepEq]
+      exact certificate.preserved (schedule before.time) (inputs before.time) before ih
 
 def atIsland {sys : System} (name : String) (property : St → Prop)
     (state : sys.State) : Prop :=
   property (state.island name)
+
+def atChannel {sys : System} (connection : SystemConnection)
+    (property : Chan.State connection.width → Prop) (state : sys.State) : Prop :=
+  property (channelState state connection)
 
 /-- Every reachable named-system island state is reachable in that island's
 ordinary open semantics under arbitrary inputs. Channels completely mediate
@@ -510,21 +1024,40 @@ theorem island_reachable (sys : System) (island : SystemIsland)
 /-- Public theorem-lifting combinator. Island authors prove an ordinary open
 Design invariant; assembly transports it to every named-clock schedule. -/
 theorem liftIsland (sys : System) (island : SystemIsland)
-    (checked : sys.check.isOk)
     (found : sys.findIsland? island.name = some island) {property : St → Prop}
     (localInvariant :
-      (island.design.toAssumedOpenTSys (fun _ _ => True)).Invariant property) :
+    (island.design.toAssumedOpenTSys (fun _ _ => True)).Invariant property) :
     sys.Invariant (atIsland island.name property) := by
-  constructor
-  · exact checked
-  · intro schedule inputs state reachable
-    exact localInvariant _ (sys.island_reachable island found schedule inputs reachable)
+  intro schedule inputs _ state reachable
+  exact localInvariant _ (sys.island_reachable island found schedule inputs reachable)
 
-/-- The degenerate one-island step is definitionally the existing semantics. -/
-def singleStep (design : Design) (state : St) : St := design.cycle state
+/-- System safety facts compose pointwise without reopening schedules. -/
+theorem invariantAnd (sys : System) {left right : sys.State → Prop}
+    (hLeft : sys.Invariant left) (hRight : sys.Invariant right) :
+    sys.Invariant (fun state => left state ∧ right state) := by
+  intro schedule inputs admitted state reachable
+  exact ⟨hLeft schedule inputs admitted state reachable,
+    hRight schedule inputs admitted state reachable⟩
 
-@[simp] theorem single_step (design : Design) (state : St) :
-    singleStep design state = design.cycle state := rfl
+/-- Reusable cross-island safety theorem: every declared channel remains
+within its capacity under every admitted schedule and every environment.  It
+is proved once from the abstract queue transition and composes independently
+of either endpoint's local invariant. -/
+theorem channelCapacityInvariant (sys : System) (connection : SystemConnection)
+    (found : sys.connections.find? (fun candidate =>
+      candidate.chan.name == connection.chan.name) = some connection) :
+    sys.Invariant (atChannel connection fun queue => queue.length ≤ connection.chan.depth) := by
+  intro schedule inputs _ state reachable
+  induction reachable with
+  | init initial =>
+      simp only [atChannel]
+      rw [← initial, channelState_reset sys connection found]
+      simp
+  | step _ stepEq ih =>
+      rename_i before after _
+      simp only [atChannel] at ih ⊢
+      rw [stepEq, channelState_advance sys _ _ before connection found]
+      exact connection.chan.noOverflow _ _ ih
 
 end System
 

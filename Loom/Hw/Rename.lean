@@ -102,6 +102,8 @@ def Act.mapSignals (f : String → String) : Act → Act
   | .seq a b => .seq (a.mapSignals f) (b.mapSignals f)
   | .ite c t e => .ite (c.mapSignals f) (t.mapSignals f) (e.mapSignals f)
   | .write w r v => .write w (f r) (v.mapSignals f)
+  | .writeSlice w r lo fw h v =>
+      .writeSlice w (f r) lo fw h (v.mapSignals f)
   | .memWrite aw dw m p a d =>
       .memWrite aw dw (f m) p (a.mapSignals f) (d.mapSignals f)
 
@@ -114,6 +116,8 @@ def Act.substReg (n : String) (w : Nat) (rep : Expr w) : Act → Act
   | .seq a b => .seq (Act.substReg n w rep a) (Act.substReg n w rep b)
   | .ite c t e => .ite (Expr.substReg n w rep c) (Act.substReg n w rep t) (Act.substReg n w rep e)
   | .write w' r v => .write w' r (Expr.substReg n w rep v)
+  | .writeSlice w' r lo fw h v =>
+      .writeSlice w' r lo fw h (Expr.substReg n w rep v)
   | .memWrite aw dw m p a d =>
       .memWrite aw dw m p (Expr.substReg n w rep a) (Expr.substReg n w rep d)
 

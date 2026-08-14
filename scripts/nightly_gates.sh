@@ -16,7 +16,10 @@
 #   3. tutorial path — the documented user path (design + invariant +
 #                     transport) still builds, and its axiom closure is
 #                     exactly propext/Classical.choice/Quot.sound.
-#   4. CI tier      — representative single-edit warm-cache recheck classes
+#   4. extension audit — compositional pretty extensions, including the
+#                     production-scale LNP64mini instance, retain that same
+#                     exact axiom whitelist.
+#   5. CI tier      — representative single-edit warm-cache recheck classes
 #                     each complete under 600 s. The recheck cost of an
 #                     edit class is measured as recompiling the module the
 #                     edit touches, from the warm cache the audit run just
@@ -61,7 +64,7 @@ measure() { # name limit command...
 # Wipes generated sources and all build objects; pinned .lake/packages kept.
 if [[ "${NIGHTLY_SKIP_CLEAN:-0}" != 1 ]]; then
   rm -rf GeneratedRelease rtl .lake/build
-  measure "audit-clean-release" 14400 scripts/build_verified_release.sh 32
+  measure "audit-clean-release" 14400 scripts/build_verified_release.sh 8
 else
   echo "gate audit-clean-release: SKIPPED (NIGHTLY_SKIP_CLEAN=1)"
 fi
@@ -69,7 +72,7 @@ fi
 # ---- Gate 3: the tutorial path, plus its exact axiom closure.
 tutorial_gate() {
   lake build Machines.Tutorial.SatCounter || return 1
-  lake env lean --run Machines/Tutorial/SatCounter.lean || return 1
+  lake env lean --run Machines/Tutorial/SatCounterEmit.lean || return 1
   local axioms report
   axioms=$(mktemp --suffix=.lean)
   cat > "$axioms" <<'EOF'
@@ -82,7 +85,11 @@ EOF
 }
 measure "tutorial-path" 600 tutorial_gate
 
-# ---- Gate 4: warm-cache single-edit recheck classes.
+# ---- Gate 4: focused compositional-extension axiom closure.
+measure "extension-axiom-audit" 600 \
+  lake env lean Tools/ExtensionAxiomAudit.lean
+
+# ---- Gate 5: warm-cache single-edit recheck classes.
 # Each class re-elaborates and kernel-checks the module a representative
 # edit touches, against the warm cache. Downstream joins are not yet
 # included (v1 approximation, noted in RELEASE_COST.md).
