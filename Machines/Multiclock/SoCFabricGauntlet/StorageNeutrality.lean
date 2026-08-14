@@ -89,6 +89,11 @@ def bramTarget : System.RealizedSystem :=
 example : bramTarget.system = certifiedArtifact.realized.system := rfl
 example : bramTarget.bindings.map (·.key) =
     certifiedArtifact.realized.bindings.map (·.key) := by decide
+example : bramTarget.artifacts.externalAssumptions.length = 5 := by decide
+example : (System.renderExternalAssumptions
+    bramTarget.artifacts.externalAssumptions).contains
+      "not Loom theorems and are not discharged by successful RTL generation or target-cell inference" := by
+  native_decide
 
 /-! The selected artifact now reports and implements the registered stage. -/
 

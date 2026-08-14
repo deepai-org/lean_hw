@@ -363,3 +363,62 @@ sequences, and campaign policy should remain external.
    physical clock provenance, and requirement coverage.
 6. Standardize kernel-only axiom auditing, coherent observation, and typed
    runtime fault injection in the evidence tooling.
+
+## Physical follow-on: recovery observation and target storage (2026-08-14)
+
+The recovery-capable artifact worked on the ZC702 with the genuinely unrelated
+CPU/fabric, DMA, memory, and JTAG-monitor roots. Fabric-only recovery completed
+its generated 12-endpoint handshake under load, discarded two incident
+transactions explicitly, preserved and drained four audit records on the
+unaffected crossing, and completed a clean 256-per-client epoch after common
+reset. This is useful evidence that Loom's recovery protocol is practical in a
+real shell and is not dependent on closely aligned simulator clocks.
+
+One integration detail was easy to misunderstand. Follow-up inspection of the
+generated coordinator and endpoint state shows that `fabric__recovered` is not
+a one-cycle pulse: it is the live level `recover && all incident endpoints
+complete`, and endpoint completion remains held while `recover` is held. A
+slow JTAG poll missing it therefore points to the shell/transport observation
+path or request lifetime, not to Loom intentionally emitting a pulse. Loom now
+states this waveform in typed generated interface metadata and in the physical
+report. A transport-specific sticky latch may still be convenient, but it is
+external observation plumbing rather than a Loom recovery-semantic feature.
+
+The target-storage follow-on found and then isolated a real target failure. The
+neutral Gray FIFO realization passes silicon, while the registered-target
+overlay maps to five `RAMB36E1` cells, completes all 512 transfers, and sets the
+audit monitor's sticky order error on every one of five runs. A smaller probe
+then ran 10,000,000 values through the exact 46-bit wrapper, its raw inferred
+RAM leaf, an ordinary-logic reference, and split 32-bit/14-bit block-RAM banks.
+The wrapper and raw 46-bit leaf failed with payload bit 44 inverted; ordinary
+logic and both split banks passed. Thus Loom's registered presentation logic is
+not at fault. The failure is the openXC7 72-mode `RAMB36E1` inference/lowering
+selected for widths above 36 bits.
+
+This suggests a narrow target-tooling request, not a core multiclock change.
+Target leaves should carry qualification scoped by device family, toolchain,
+primitive mode, width, and clock relationship. An openXC7 Zynq-7000 profile
+should either reject this greater-than-36-bit dual-clock inference or bank the
+payload into independently qualified widths. “The expected primitive was
+inferred” must remain a synthesis fact, not be presented as proof of the
+physical storage contract. Loom's named external assumption and physical
+metadata already establish the right fail-closed seam; the next improvement is
+backend-aware selection or rejection at that seam.
+
+When reviewing this feedback file, the useful decision filter is:
+
+1. Was application hardware expressible in Loom, or did missing semantics force
+   handwritten RTL? In this work, application hardware remained expressible.
+2. Is the issue generic semantics, a target-adapter contract, evidence tooling,
+   or external campaign orchestration? Keep fixes at the narrowest boundary.
+3. Did a symptom confuse a reasonable user even when the implementation was
+   technically behaving as specified? Recovery observation is such a
+   documentation/transport issue.
+4. Does a target claim say exactly what was proved—simulation, inference,
+   routing, or silicon—and name the toolchain/device scope?
+
+The concrete requests justified now are fail-closed target qualification for
+storage modes and backend-aware width banking. Recovery waveform metadata has
+already landed; a sticky observation adapter remains optional transport
+convenience. Vendor JTAG, board shells, constraints, and campaign policy should
+remain outside Loom's core language.

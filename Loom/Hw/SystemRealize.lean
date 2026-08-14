@@ -259,6 +259,10 @@ structure BoundImplementation where
   instanceText : CrossingInfo → String
   constraints : CrossingInfo → List TimingConstraint
   timing : ChannelTiming := .unspecified
+  /-- Named obligations introduced by an external physical leaf. Empty for
+  Loom's compiler-produced realizations. These are reported, never silently
+  upgraded into Loom theorems or backend PASS results. -/
+  externalAssumptions : List String := []
 
 namespace BoundImplementation
 
@@ -293,8 +297,10 @@ def custom (connection : SystemConnection) (name : String) (clockRule : ClockRul
     (refinement : Chan.Refinement connection.chan)
     (moduleName moduleText : CrossingInfo → String)
     (constraints : CrossingInfo → List TimingConstraint)
-    (timing : ChannelTiming := .unspecified) : BoundImplementation :=
-  { connection, name, clockRule, refinement, moduleName, moduleText, constraints, timing
+    (timing : ChannelTiming := .unspecified)
+    (externalAssumptions : List String := []) : BoundImplementation :=
+  { connection, name, clockRule, refinement, moduleName, moduleText, constraints, timing,
+      externalAssumptions
     instanceText := fun info => channelInstance (moduleName info) info }
 
 /-- Structural-instance extension point for a binding whose checked wrapper
@@ -305,14 +311,61 @@ def customInstance (connection : SystemConnection) (name : String)
     (clockRule : ClockRule) (refinement : Chan.Refinement connection.chan)
     (moduleName moduleText instanceText : CrossingInfo → String)
     (constraints : CrossingInfo → List TimingConstraint)
-    (timing : ChannelTiming := .unspecified) : BoundImplementation :=
+    (timing : ChannelTiming := .unspecified)
+    (externalAssumptions : List String := []) : BoundImplementation :=
   ⟨connection, name, clockRule, refinement, moduleName, moduleText,
-    instanceText, constraints, timing⟩
+    instanceText, constraints, timing, externalAssumptions⟩
 
 end BoundImplementation
 
 private abbrev islandSignal := BoundImplementation.islandSignal
 private abbrev islandOutput := BoundImplementation.islandOutput
+
+/-- The generated independent-recovery request is a level protocol, not a
+one-cycle command. A requester holds it through observed completion and then
+releases it to re-arm the endpoint handshake. -/
+inductive RecoveryRequestDiscipline where
+  | holdUntilCompletionThenRelease
+  deriving DecidableEq, Repr
+
+/-- Completion is a live level derived from the request and every incident
+endpoint's completion state. It is neither a pulse nor a sticky host status. -/
+inductive RecoveryCompletionDiscipline where
+  | levelWhileRequestedAndComplete
+  deriving DecidableEq, Repr
+
+/-- Exact generated top-level recovery interface for one island. This is
+digital interface metadata; transport-specific observation and clock-domain
+adaptation remain outside the generated functional System. -/
+structure RecoveryInterfaceIntent where
+  island : String
+  clock : String
+  requestSignal : String
+  completionSignal : String
+  request : RecoveryRequestDiscipline
+  completion : RecoveryCompletionDiscipline
+  participatingClocksMustTick : Bool
+  deriving DecidableEq, Repr
+
+def recoveryInterfaceIntents (system : System) : List RecoveryInterfaceIntent :=
+  if system.resetPolicy = .independentFlush then
+    system.islands.map fun island =>
+      { island := island.name
+        clock := island.clock
+        requestSignal := islandSignal island.name "recover"
+        completionSignal := islandSignal island.name "recovered"
+        request := .holdUntilCompletionThenRelease
+        completion := .levelWhileRequestedAndComplete
+        participatingClocksMustTick := true }
+  else []
+
+/-- One explicit target/evidence assumption attached to the exact connection
+whose physical binding introduced it. -/
+structure ExternalImplementationAssumption where
+  key : ConnectionKey
+  implementation : String
+  statement : String
+  deriving DecidableEq, Repr
 
 def BoundImplementation.key (binding : BoundImplementation) : ConnectionKey :=
   binding.connection.key
@@ -421,6 +474,12 @@ structure PhysicalArtifacts where
   /-- Exact per-domain reset delivery contracts. This is emitted beside CDC
   intent but remains distinct from logical channel recovery policy. -/
   resetIntents : List ResetIntent
+  /-- Generated only for `independentFlush`; absent for ordinary coordinated
+  reset Systems. -/
+  recoveryInterfaces : List RecoveryInterfaceIntent
+  /-- Assumptions from target-refined leaves, kept distinct from checked
+  timing requirements and from downstream PASS/SKIP results. -/
+  externalAssumptions : List ExternalImplementationAssumption
   /-- Typed inspection data, deliberately not an emitted sidecar file. -/
   timing : List TimingGroup
   inventoryText : String
@@ -772,6 +831,32 @@ def renderResetIntents (intents : List ResetIntent) : String :=
       "This describes generated RTL behavior, not a physical reset tree."] ++
     intents.map fun intent => "- " ++ describeResetIntent intent
 
+private def describeRecoveryInterface
+    (intent : RecoveryInterfaceIntent) : String :=
+  s!"Island `{intent.island}` on `{intent.clock}`: drive `{intent.requestSignal}` high " ++
+    s!"and hold it until `{intent.completionSignal}` is high, then release it to re-arm recovery. " ++
+    s!"`{intent.completionSignal}` is a live completion level (`request && all incident endpoints complete`), " ++
+    "not a one-cycle pulse and not a sticky host-readable status. " ++
+    (if intent.participatingClocksMustTick then
+      "The island and incident endpoint clocks must continue ticking until completion."
+    else "No clock-progress premise is declared.")
+
+def renderRecoveryInterfaces (intents : List RecoveryInterfaceIntent) : String :=
+  if intents.isEmpty then "" else
+    String.intercalate "\n" <|
+      ["", "# Recovery interface protocol", "",
+        "This is generated digital-interface behavior. A slower or unrelated observation transport must add its own CDC-safe level observation or acknowledgement adapter."] ++
+      intents.map fun intent => "- " ++ describeRecoveryInterface intent
+
+def renderExternalAssumptions
+    (assumptions : List ExternalImplementationAssumption) : String :=
+  if assumptions.isEmpty then "" else
+    String.intercalate "\n" <|
+      ["", "# External implementation assumptions", "",
+        "These statements are not Loom theorems and are not discharged by successful RTL generation or target-cell inference."] ++
+      assumptions.map fun assumption =>
+        s!"- Channel `{assumption.key.channel}` ({assumption.implementation}): {assumption.statement}"
+
 private def describePhysicalRequirement : PhysicalRequirement → String
   | .timing requirement =>
       s!"channel `{requirement.key.channel}` — " ++
@@ -890,6 +975,10 @@ def RealizedSystem.artifacts (realized : RealizedSystem) : PhysicalArtifacts :=
         channelInstances := instances }
     constraintFile := { groups := constraintGroups }
     resetIntents := resetIntents realized.system
+    recoveryInterfaces := recoveryInterfaceIntents realized.system
+    externalAssumptions := realized.bindings.flatMap fun binding =>
+      binding.externalAssumptions.map fun statement =>
+        { key := binding.key, implementation := binding.name, statement }
     timing := timingGroups
     inventoryText := renderInventory inventory }
 
@@ -965,7 +1054,9 @@ def RealizedSystem.emissionArtifacts (realized : RealizedSystem) :
   [ { kind := .rtl, relativePath := "system.v", text := rtl, crossingKeys := keys },
     { kind := .constraints, relativePath := "clock_constraints.md",
       text := artifacts.constraintFile.renderNeutral ++
-        renderResetIntents artifacts.resetIntents ++ "\n",
+        renderResetIntents artifacts.resetIntents ++
+        renderRecoveryInterfaces artifacts.recoveryInterfaces ++
+        renderExternalAssumptions artifacts.externalAssumptions ++ "\n",
       crossingKeys := artifacts.constraintFile.groups.map (fun group => group.key) },
     { kind := .inventory, relativePath := "crossings.md",
       text := artifacts.inventoryText, crossingKeys := keys } ]

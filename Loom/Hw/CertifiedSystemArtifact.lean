@@ -533,6 +533,7 @@ def CertifiedPortableBinding.toPhysicalWithStorageLeaf
         (CertifiedPortable.fifoParameters binding.connection
           binding.depthAtLeastTwo binding.powerOfTwo)))
     compiledPortableTiming
+    (externalAssumptions := leaf.binding.externalAssumption.toList)
 
 /-- Timing for the conservative registered-leaf presentation wrapper.  The
 leaf contributes one real storage stage; clearing the presentation buffer on
@@ -577,6 +578,7 @@ def CertifiedPortableBinding.toPhysicalWithRegisteredStorageLeaf
         (CertifiedPortable.fifoParameters binding.connection
           binding.depthAtLeastTwo binding.powerOfTwo)))
     registeredTargetStorageTiming
+    (externalAssumptions := leaf.binding.externalAssumption.toList)
 
 /-- Closed certified-artifact package for a registered target leaf.  The
 semantic refinement remains the proved portable FIFO; the exact target RTL and
