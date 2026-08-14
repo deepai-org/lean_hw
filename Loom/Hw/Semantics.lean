@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Syntax
 import Loom.Core.Ts
+import Loom.Core.Word
 
 /-!
 # EDSL semantics (L3)
@@ -27,6 +28,18 @@ structure St where
 
 def RegEnv.set (ρ : RegEnv) (name : String) {w : Nat} (v : BitVec w) : RegEnv :=
   fun n w' => if n = name then (if h : w = w' then h ▸ v else ρ n w') else ρ n w'
+
+/-- Read back a register write at the coordinate just written. -/
+@[simp] theorem RegEnv.set_read_self (ρ : RegEnv) (name : String)
+    {w : Nat} (v : BitVec w) : (ρ.set name v) name w = v := by
+  simp [RegEnv.set]
+
+/-- A register write preserves every differently named coordinate. -/
+@[simp] theorem RegEnv.set_read_other (ρ : RegEnv) (written : String)
+    {wv : Nat} (v : BitVec wv) (name : String) (width : Nat)
+    (different : name ≠ written) :
+    (ρ.set written v) name width = ρ name width := by
+  simp [RegEnv.set, different]
 
 /-- A memory write touches exactly the written `(name, addr, width)` entry;
 entries at other widths are junk (unobservable at declared widths) and are
@@ -61,6 +74,33 @@ def Expr.eval (σ : St) : {w : Nat} → Expr w → BitVec w
   | _, .zext a w' => (a.eval σ).setWidth w'
   | _, .sext a w' => (a.eval σ).signExtend w'
 
+/-- The `concat` smart constructor evaluates to literal bit-vector append.
+This small semantic bridge is useful to proofs over packed records and does
+not add a compiler case because `concat` already lowers to shifts and OR. -/
+theorem Expr.concat_eval {hi lo : Nat} (msbs : Expr hi) (lsbs : Expr lo)
+    (state : St) :
+    (Expr.concat msbs lsbs).eval state = msbs.eval state ++ lsbs.eval state := by
+  cases lo with
+  | zero =>
+      simp [Expr.concat]
+  | succ lo =>
+      apply BitVec.eq_of_getLsbD_eq
+      intro index inBounds
+      have loSmall : lo + 1 < 2 ^ (hi + (lo + 1)) := by
+        have power : hi + (lo + 1) < 2 ^ (hi + (lo + 1)) :=
+          Nat.lt_two_pow_self
+        omega
+      simp only [Expr.concat, Expr.eval, BitVec.getLsbD_or,
+        BitVec.getLsbD_shiftLeft, BitVec.getLsbD_setWidth,
+        BitVec.getLsbD_append, BitVec.toNat_ofNat, Nat.mod_eq_of_lt loSmall]
+      by_cases low : index < lo + 1
+      · have lowHi : index < hi + (lo + 1) := by omega
+        simp [low, lowHi]
+      · have lowGe : lo + 1 ≤ index := by omega
+        have highIndex : index - (lo + 1) < hi := by omega
+        have totalIndex : index - (lo + 1) < hi + (lo + 1) := by omega
+        simp [low, inBounds, lowGe, highIndex, totalIndex]
+
 /-- Run an action: reads from the pre-cycle state `σ`, writes onto the
 accumulator `acc` (last write wins — D9). -/
 def Act.run (σ : St) : Act → St → St
@@ -68,6 +108,9 @@ def Act.run (σ : St) : Act → St → St
   | .seq a b, acc => b.run σ (a.run σ acc)
   | .ite c t e, acc => if c.eval σ = 1#1 then t.run σ acc else e.run σ acc
   | .write _ r v, acc => { acc with regs := acc.regs.set r (v.eval σ) }
+  | .writeSlice totalWidth r lo _ _ v, acc =>
+      let next := Loom.Word.insert lo (v.eval σ) (acc.regs r totalWidth)
+      { acc with regs := acc.regs.set r next }
   | .memWrite _ _ m _ addr data, acc =>
       { acc with mems := acc.mems.set m (addr.eval σ).toNat (data.eval σ) }
 
@@ -84,6 +127,13 @@ def Design.reset (d : Design) : St where
         (m.init a).setWidth w
       else μ n a w)
     (fun _ _ w => 0#w)
+
+/-- One clock edge with the synchronous reset pin made explicit. Reset has
+priority over the ordinary transition, matching the emitted µVerilog module.
+This is useful for live-reset composition without changing the reset-free
+`Design.cycle` used by ordinary island proofs. -/
+def Design.cycleWithReset (d : Design) (reset : Bool) (σ : St) : St :=
+  if reset then d.reset else d.cycle σ
 
 /-- Run `n` cycles. -/
 def Design.run (d : Design) : Nat → St → St
@@ -121,6 +171,15 @@ def InEnv := String → (w : Nat) → BitVec w
 def St.setInputs (σ : St) (ins : List InputDecl) (ι : InEnv) : St :=
   { σ with regs := ins.foldl (fun ρ i => ρ.set i.name (ι i.name i.width)) σ.regs }
 
+/-- Observe one declared combinational output during a clock interval.
+Inputs are installed exactly as they are for `cycleOpen`, but no transition
+is taken: the value is a pure function of the current inputs and pre-edge
+state. After an edge, observing the resulting state naturally exposes the
+post-edge value. -/
+def Design.evalCombOutput (d : Design) (ι : InEnv) (σ : St)
+    (output : CombOutput) : BitVec output.width :=
+  output.value.eval (σ.setInputs d.inputs ι)
+
 /-- Installing inputs preserves a register coordinate absent from the input
 declaration list. Width is part of the coordinate, matching `RegEnv.set`. -/
 theorem St.setInputs_regs_notin (σ : St) (ins : List InputDecl) (ι : InEnv)
@@ -155,6 +214,12 @@ theorem St.setInputs_regs_notin (σ : St) (ins : List InputDecl) (ι : InEnv)
 design cycles. For a closed design this is `cycle`. -/
 def Design.cycleOpen (d : Design) (ι : InEnv) (σ : St) : St :=
   d.cycle (σ.setInputs d.inputs ι)
+
+/-- Open-design edge with synchronous reset. Inputs are irrelevant while
+reset is asserted because the generated reset branch has priority. -/
+def Design.cycleOpenWithReset (d : Design) (reset : Bool)
+    (ι : InEnv) (σ : St) : St :=
+  if reset then d.reset else d.cycleOpen ι σ
 
 /-- Run under an input trace (`ιs k` drives cycle `k`). -/
 def Design.runOpen (d : Design) (ιs : Nat → InEnv) : Nat → St → St
@@ -203,5 +268,30 @@ theorem Design.invariant_of_assumedCycleOpen (d : Design)
   · intro σ τ current transition
     obtain ⟨ι, accepted, rfl⟩ := transition
     exact step σ ι current accepted
+
+/-- A closed invariant is also an arbitrary-input invariant when the Design
+declares no inputs. This is the common bridge for placing an existing closed
+synchronous block into a named System without changing its proof. -/
+theorem Design.openInvariant_of_noInputs (d : Design) {property : St → Prop}
+    (noInputs : d.inputs = []) (invariant : d.toTSys.Invariant property) :
+    (d.toAssumedOpenTSys (fun _ _ => True)).Invariant property := by
+  intro state reachable
+  apply invariant state
+  induction reachable with
+  | init initial =>
+      apply Loom.TSys.Reachable.init
+      simpa [Design.toTSys_init_iff] using initial
+  | step reachable transition ih =>
+      rename_i before after
+      rcases transition with ⟨input, _, next⟩
+      apply Loom.TSys.Reachable.step ih
+      simp only [Design.toTSys_step_iff]
+      rw [← next]
+      unfold Design.cycleOpen
+      rw [noInputs]
+      have unchanged : before.setInputs [] input = before := by
+        cases before
+        rfl
+      rw [unchanged]
 
 end Loom.Hw

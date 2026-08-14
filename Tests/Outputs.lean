@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.EmitIO
+import Loom.Hw.Declarations
 import Machines.CapWalk.Engine
 
 /-!
@@ -61,6 +62,51 @@ private def outNames (x : Design) : List String :=
 #guard outNames (((d ["pub"]).prefixed "u0_").par ((d ["pub", "secret"]).prefixed "u1_"))
         == ["o_u0_pub", "o_u1_pub", "o_u1_secret"]
 #guard outNames ((d ["pub"]).connect (fun _ _ => none)) == ["o_pub"]
+
+/-! Same-cycle outputs are explicit expression views, not state updates. They
+observe current inputs plus pre-edge state, compose through `Design`, and are
+checked as part of the ordinary emitted interface. -/
+
+private def combInput : Reg 8 := ⟨"x"⟩
+private def combSecret : Reg 8 := ⟨"hidden"⟩
+private def combValue : Expr 8 := .add combSecret.rd combInput.rd
+
+private def combDesign : Design :=
+  Design.ofDecls "comb_obs"
+    (Declarations.empty
+      |>.addReg combSecret 42
+      |>.addInput combInput
+      |>.addCombOutput "sum" combValue)
+    []
+
+private def combInputEnv : InEnv :=
+  InputBinding.toEnv [InputBinding.of combInput 3]
+
+#guard outNames combDesign == ["sum"]
+#guard combDesign.evalCombOutput combInputEnv combDesign.reset
+    ⟨"sum", 8, combValue⟩ == 45
+#guard (combDesign.readsOkB)
+
+-- A combinational view may deliberately expose internal state. D39's
+-- non-disclosure theorem therefore requires the view not to read the hidden
+-- coordinate; the interface makes that choice explicit rather than masking it.
+#guard !(combDesign.outputs.contains "hidden")
+#guard (combDesign.combOutputs.any fun output =>
+  output.value.readSites.1.contains ("hidden", 8))
+
+private def duplicateCombPort : Design :=
+  { combDesign with combOutputs := combDesign.combOutputs ++
+      [⟨"sum", 8, combValue⟩] }
+
+private def inputCombCollision : Design :=
+  { combDesign with combOutputs := [⟨"x", 8, combValue⟩] }
+
+#guard match duplicateCombPort.emitCheck with
+  | .error _ => true
+  | .ok _ => false
+#guard match inputCombCollision.emitCheck with
+  | .error _ => true
+  | .ok _ => false
 
 /-! The artifact that needed the capability (CAPWALK CE5, retired). The key
 is six ordinary registers that no rule writes and no port carries. -/

@@ -60,6 +60,17 @@ def writeOutcomes (left right : String) {width : Nat}
     else [input]
   else [input]
 
+/-- A conservative pair abstraction for a bounded partial write. At a
+selected one-bit register the resulting bit is necessarily zero or one; all
+other coordinates are unchanged. -/
+def writeSliceOutcomes (left right : String) (totalWidth : Nat)
+    (name : String) (input : Pair) : List Pair :=
+  if totalWidth = 1 then
+    if name = left then [(0, input.2), (1, input.2)]
+    else if name = right then [(input.1, 0), (input.1, 1)]
+    else [input]
+  else [input]
+
 /-- Every possible selected-pair result of an action. Conditions are explored
 nondeterministically, so the result over-approximates every concrete run. -/
 def outcomes (left right : String) : Act → Pair → List Pair
@@ -71,6 +82,8 @@ def outcomes (left right : String) : Act → Pair → List Pair
       outcomes left right thenAction input ++
         outcomes left right elseAction input
   | .write _ name value, input => writeOutcomes left right name value input
+  | .writeSlice totalWidth name _ _ _ _, input =>
+      writeSliceOutcomes left right totalWidth name input
   | .memWrite .., input => [input]
 
 /-- Concrete selected-pair observation. -/
@@ -110,6 +123,27 @@ theorem observe_run_mem_outcomes (left right : String) (distinct : left ≠ righ
           · simp [Act.run, outcomes, writeOutcomes, observe, RegEnv.set,
               hleft, hright, Ne.symm hleft, Ne.symm hright]
       · simp [Act.run, outcomes, writeOutcomes, observe, RegEnv.set, hwidth]
+  | writeSlice totalWidth name lo fieldWidth inBounds value =>
+      intro σ acc
+      by_cases hwidth : totalWidth = 1
+      · subst totalWidth
+        by_cases hleft : name = left
+        · subst name
+          have bit := bit_toNat_mem
+            (Loom.Word.insert lo (value.eval σ) (acc.regs left 1))
+          simp [Act.run, outcomes, writeSliceOutcomes, observe, RegEnv.set,
+            Ne.symm distinct]
+          simpa using bit
+        · by_cases hright : name = right
+          · subst name
+            have bit := bit_toNat_mem
+              (Loom.Word.insert lo (value.eval σ) (acc.regs right 1))
+            simp [Act.run, outcomes, writeSliceOutcomes, observe, RegEnv.set,
+              hleft, Ne.symm hleft]
+            simpa using bit
+          · simp [Act.run, outcomes, writeSliceOutcomes, observe, RegEnv.set,
+              hleft, hright, Ne.symm hleft, Ne.symm hright]
+      · simp [Act.run, outcomes, writeSliceOutcomes, observe, RegEnv.set, hwidth]
   | memWrite => intro σ acc; simp [Act.run, outcomes, observe]
 
 /-- The pair excludes simultaneous one values. -/

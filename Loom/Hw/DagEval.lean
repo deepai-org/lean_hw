@@ -48,6 +48,7 @@ inductive Act where
   | seq (a b : Act)
   | ite (c : Nat) (t e : Act)
   | write (i v : Nat)
+  | writeSlice (i totalWidth lo fieldWidth v : Nat)
   | memWrite (base addr data : Nat)
   deriving Inhabited, Repr
 
@@ -153,6 +154,9 @@ def lowerAct (a : FAct) (s : Build) : Act × Build :=
   | .write i v =>
       let (v, s) := intern v s
       (.write i v, s)
+  | .writeSlice i totalWidth lo fieldWidth v =>
+      let (v, s) := intern v s
+      (.writeSlice i totalWidth lo fieldWidth v, s)
   | .memWrite base addr data =>
       let (addr, s) := intern addr s
       let (data, s) := intern data s
@@ -195,6 +199,7 @@ def factExprTreeNodes : FAct → Nat
   | .seq a b => factExprTreeNodes a + factExprTreeNodes b
   | .ite c t e => fexprTreeNodes c + factExprTreeNodes t + factExprTreeNodes e
   | .write _ v => fexprTreeNodes v
+  | .writeSlice _ _ _ _ v => fexprTreeNodes v
   | .memWrite _ a v => fexprTreeNodes a + fexprTreeNodes v
 
 def Act.roots : Act → List Nat
@@ -202,6 +207,7 @@ def Act.roots : Act → List Nat
   | .seq a b => a.roots ++ b.roots
   | .ite c t e => c :: (t.roots ++ e.roots)
   | .write _ v => [v]
+  | .writeSlice _ _ _ _ v => [v]
   | .memWrite _ a v => [a, v]
 
 private def bumpUse (uses : Array Nat) (i : Nat) : Array Nat :=
@@ -728,6 +734,10 @@ inductive ActMatch (nodes : Array Node) : Act → FAct → Prop where
       ActMatch nodes (.ite c t e) (.ite ec ft fe)
   | write {i v ev} (value : ExprMatch nodes v ev) :
       ActMatch nodes (.write i v) (.write i ev)
+  | writeSlice {i totalWidth lo fieldWidth v ev}
+      (value : ExprMatch nodes v ev) :
+      ActMatch nodes (.writeSlice i totalWidth lo fieldWidth v)
+        (.writeSlice i totalWidth lo fieldWidth ev)
   | memWrite {base a v ea ev} (addr : ExprMatch nodes a ea)
       (value : ExprMatch nodes v ev) :
       ActMatch nodes (.memWrite base a v) (.memWrite base ea ev)
@@ -752,6 +762,20 @@ def checkAct (nodes : Array Node) :
         match checkExpr nodes v ev with
         | some pv => exact some ⟨.write pv.proof⟩
         | none => exact none
+      else none
+  | .writeSlice i totalWidth lo fieldWidth v,
+      .writeSlice i' totalWidth' lo' fieldWidth' ev =>
+      if hi : i' = i then
+        if hw : totalWidth' = totalWidth then
+          if hl : lo' = lo then
+            if hf : fieldWidth' = fieldWidth then by
+              subst i'; subst totalWidth'; subst lo'; subst fieldWidth'
+              match checkExpr nodes v ev with
+              | some pv => exact some ⟨.writeSlice pv.proof⟩
+              | none => exact none
+            else none
+          else none
+        else none
       else none
   | .memWrite base a v, .memWrite base' ea ev =>
       if hb : base' = base then by
@@ -783,6 +807,11 @@ def Act.run (pr pm vs : Array Nat) : Act → FastSt → FastSt
   | .seq a b, acc => b.run pr pm vs (a.run pr pm vs acc)
   | .ite c t e, acc => if val vs c = 1 then t.run pr pm vs acc else e.run pr pm vs acc
   | .write i v, acc => { acc with regs := acc.regs.setIfInBounds i (val vs v) }
+  | .writeSlice i totalWidth lo fieldWidth v, acc =>
+      let next := Loom.Word.insert lo
+        (BitVec.ofNat fieldWidth (val vs v))
+        (BitVec.ofNat totalWidth (acc.regs.getD i 0))
+      { acc with regs := acc.regs.setIfInBounds i next.toNat }
   | .memWrite base a v, acc =>
       { acc with mems := acc.mems.setIfInBounds (base + val vs a) (val vs v) }
 
@@ -797,6 +826,7 @@ theorem ActMatch.run_eq {nodes : Array Node} {a : Act} {fa : FAct}
       simp only [Act.run, FAct.run, cond.eval pr pm hwf]
       split <;> simp [ihy, ihn]
   | write value => simp [Act.run, FAct.run, value.eval pr pm hwf]
+  | writeSlice value => simp [Act.run, FAct.run, value.eval pr pm hwf]
   | memWrite addr value =>
       simp [Act.run, FAct.run, addr.eval pr pm hwf, value.eval pr pm hwf]
 

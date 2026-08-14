@@ -33,6 +33,6 @@ theorem satcounter_denotes :
     Loom.Release.Symbolic.ModuleBehavior design design.toProgram
       design.indexedsOf design.tableOf design.registersOf design.memoriesOf
       design.outputsOf :=
-  toProgram_denotes design (by decide) (by decide) (by decide) (by decide)
+  toProgram_denotes design (by decide) (by decide) (by decide) (by decide) rfl
 
 end Machines.Tutorial.SatCounter

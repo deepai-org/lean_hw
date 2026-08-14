@@ -1481,9 +1481,43 @@ structure PortRefs where
 inductive NextRegCert where
   | same
   | write
+  | writeSlice
   | seq (mid : Option Ref) (left right : NextRegCert)
   | ite (thenCert elseCert : NextRegCert)
   deriving Repr, DecidableEq
+
+/-- Resolve an SSA-valued reference. Source-register references have no wire
+definition and therefore return `none`. -/
+def lookupRef? (wires : Rope (List IndexedWire)) (table : WireTable) :
+    Ref → Option IndexedWire
+  | .reg _ => none
+  | .wire number | .namedWire number _ => lookupIndexed? wires table number
+
+/-- Validate the fixed mask/insert graph used to compile `Act.writeSlice`.
+The accumulated current value is an SSA reference rather than a source
+expression, so this small checker treats it as the one distinguished leaf and
+uses `indexedExprMatches` for every ordinary expression subtree. -/
+def indexedInsertMatches (wires : Rope (List IndexedWire)) (table : WireTable)
+    (totalWidth lo fieldWidth : Nat) (value : Loom.Hw.Expr fieldWidth)
+    (current out : Ref) : Bool :=
+  let mask : BitVec totalWidth :=
+    (BitVec.allOnes fieldWidth).setWidth totalWidth <<< lo
+  let shifted : Loom.Emit.MicroVerilog.Expr totalWidth :=
+    .shl (.zext (Loom.Hw.Compile.compileExpr value) totalWidth)
+      (.lit (BitVec.ofNat totalWidth lo))
+  match out with
+  | .wire outNumber =>
+      match lookupIndexed? wires table outNumber with
+      | some ⟨_, outWidth, .bin .or cleared shiftedRef⟩ =>
+          outWidth == totalWidth &&
+          (match lookupRef? wires table cleared with
+          | some ⟨_, clearWidth, .bin .and actualCurrent negMask⟩ =>
+              clearWidth == totalWidth && actualCurrent == current &&
+                indexedExprMatches wires table (.not (.lit mask)) negMask
+          | _ => false) &&
+          indexedExprMatches wires table shifted shiftedRef
+      | _ => false
+  | _ => false
 
 inductive NextRulesCert where
   | nil
@@ -1508,6 +1542,16 @@ inductive NoRegWrite (register : String) (width : Nat) : Loom.Hw.Act → Prop
   | writeWidth {actualWidth} (value : Loom.Hw.Expr actualWidth)
       (different : actualWidth ≠ width) :
       NoRegWrite register width (.write actualWidth register value)
+  | writeSliceName {actualWidth name lo fieldWidth}
+      (inBounds : lo + fieldWidth ≤ actualWidth)
+      (value : Loom.Hw.Expr fieldWidth) (different : name ≠ register) :
+      NoRegWrite register width
+        (.writeSlice actualWidth name lo fieldWidth inBounds value)
+  | writeSliceWidth {actualWidth lo fieldWidth}
+      (inBounds : lo + fieldWidth ≤ actualWidth)
+      (value : Loom.Hw.Expr fieldWidth) (different : actualWidth ≠ width) :
+      NoRegWrite register width
+        (.writeSlice actualWidth register lo fieldWidth inBounds value)
   | memWrite {addressWidth dataWidth name port}
       (address : Loom.Hw.Expr addressWidth) (value : Loom.Hw.Expr dataWidth) :
       NoRegWrite register width
@@ -1528,6 +1572,15 @@ theorem NoRegWrite.not_mem {register : String} {width : Nat}
       intro sameName _
       exact different sameName.symm
   | writeWidth _ different =>
+      simp only [Loom.Hw.Act.regWrites, List.mem_singleton, Prod.mk.injEq,
+        true_and]
+      exact fun sameWidth => different sameWidth.symm
+  | writeSliceName _ _ different =>
+      simp only [Loom.Hw.Act.regWrites, List.mem_singleton, Prod.mk.injEq,
+        not_and]
+      intro sameName _
+      exact different sameName.symm
+  | writeSliceWidth _ _ different =>
       simp only [Loom.Hw.Act.regWrites, List.mem_singleton, Prod.mk.injEq,
         true_and]
       exact fun sameWidth => different sameWidth.symm
@@ -1553,6 +1606,14 @@ theorem NoRegWrite.of_not_mem (register : String) (width : Nat) :
         subst actualWidth
         exact h (by simp [Loom.Hw.Act.regWrites])
       · exact NoRegWrite.writeName value hname
+  | .writeSlice actualWidth name lo fieldWidth inBounds value, h => by
+      by_cases hname : name = register
+      · subst name
+        apply NoRegWrite.writeSliceWidth inBounds value
+        intro sameWidth
+        subst actualWidth
+        exact h (by simp [Loom.Hw.Act.regWrites])
+      · exact NoRegWrite.writeSliceName inBounds value hname
   | .memWrite _ _ _ _ address value, _ => NoRegWrite.memWrite address value
 
 theorem NoRegWrite.writesRegB_eq_false {register : String} {width : Nat}
@@ -1675,6 +1736,20 @@ def nextRegMatches (wires : Rope (List IndexedWire)) (table : WireTable)
           | .write => indexedExprMatches wires table
               (Loom.Hw.Compile.compileExpr (h ▸ value)) out
           | _ => false
+        else match current with
+          | some current => cert == .same && current == out
+          | none => false
+      else match current with
+        | some current => cert == .same && current == out
+        | none => false
+  | .writeSlice actualWidth actualRegister lo fieldWidth _ value,
+      current, out, cert =>
+      if actualRegister = register then
+        if _h : actualWidth = width then
+          match current, cert with
+          | some current, .writeSlice =>
+              indexedInsertMatches wires table width lo fieldWidth value current out
+          | _, _ => false
         else match current with
           | some current => cert == .same && current == out
           | none => false
@@ -1892,6 +1967,7 @@ def nextPortMatches (wires : Rope (List IndexedWire)) (table : WireTable)
         else cert == .same && current == out
       else cert == .same && current == out
   | .write .., current, out, .same => current == out
+  | .writeSlice .., current, out, .same => current == out
   | _, _, _, _ => false
 
 /-- Validate an ordered rule fold for one concrete memory write port. -/
@@ -1929,6 +2005,10 @@ theorem nextRegMatches_same_of_noWrite
   | writeName value different =>
       simp [nextRegMatches, different]
   | writeWidth value different =>
+      simp [nextRegMatches, different]
+  | writeSliceName inBounds value different =>
+      simp [nextRegMatches, different]
+  | writeSliceWidth inBounds value different =>
       simp [nextRegMatches, different]
   | memWrite => simp [nextRegMatches]
 

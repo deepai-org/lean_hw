@@ -178,6 +178,7 @@ def CanonWritesAll (names : List String) : Act → Bool
       if r ∈ names then
         if h : w = 32 then isCanonE canonFuel (h ▸ v) else true
       else true
+  | .writeSlice _ r _ _ _ _ => r ∉ names
 
 /-- Preservation: running a checked act keeps every tracked register
 canonical (values evaluate against the pre-state `σ`, which satisfies the
@@ -218,6 +219,18 @@ theorem run_CanonWritesAll {σ : Loom.Hw.St} (hσ : KindCanon σ)
           exact isCanonE_eval hσ canonFuel v h
         · rw [dif_neg hw]; exact hP
       · rw [if_neg hr]; exact hP
+  | .writeSlice w r lo fw hb v, h, acc, hP => by
+      simp only [CanonWritesAll, decide_eq_true_eq] at h
+      show Hw.encKind (Hw.decKind ((acc.regs.set r
+          (Loom.Word.insert lo (v.eval σ) (acc.regs r w))) rn 32)) =
+        (acc.regs.set r
+          (Loom.Word.insert lo (v.eval σ) (acc.regs r w))) rn 32
+      simp only [RegEnv.set]
+      rw [if_neg (by
+        intro equal
+        apply h
+        rwa [← equal])]
+      exact hP
 
 /-! ## Per-rule instances (single kernel walks) -/
 

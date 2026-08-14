@@ -32,6 +32,9 @@ structure Summary where
 inductive ActionCert where
   | skip
   | write (index : Nat) (value : Ref)
+  /-- A partial write changes this register but still depends on its incoming
+  accumulated value, so it is possible but never `definite` for liveness. -/
+  | writeSlice (index : Nat) (value : Ref)
   | seq (summary : Summary) (left right : ActionCert)
   | ite (summary : Summary) (guard : Ref) (joins : List Join)
       (thenCert elseCert : ActionCert)
@@ -110,7 +113,8 @@ def ActionCert.seqRight : ActionCert → ActionCert
 
 def ActionCert.claimedSummary : ActionCert → Summary
   | .seq summary .. | .ite summary .. => summary
-  | .skip | .memWrite | .write .. => { possible := 0, definite := 0 }
+  | .skip | .memWrite | .write .. | .writeSlice .. =>
+      { possible := 0, definite := 0 }
 
 def ActionCert.iteGuardRef : ActionCert → Ref
   | .ite _ guard _ _ _ => guard
@@ -261,6 +265,8 @@ def ActionCert.summary : ActionCert → Summary
   | .skip | .memWrite => { possible := 0, definite := 0 }
   | .write index _ =>
       { possible := singletonIndex index, definite := singletonIndex index }
+  | .writeSlice index _ =>
+      { possible := singletonIndex index, definite := 0 }
   | .seq summary _ _ | .ite summary _ _ _ _ => summary
 
 /-- Whether a concrete certificate contains a write to an index on some
@@ -268,7 +274,8 @@ control-flow path. Unlike the cached summary, this definition structurally
 recomputes the claim and is used only in generic soundness proofs. -/
 def ActionCert.possiblyWritesIndex (query : Nat) : ActionCert → Bool
   | .skip | .memWrite => false
-  | .write index _ => (singletonIndex index).testBit query
+  | .write index _ | .writeSlice index _ =>
+      (singletonIndex index).testBit query
   | .seq _ left right =>
       left.possiblyWritesIndex query || right.possiblyWritesIndex query
   | .ite _ _ _ thenCert elseCert =>
@@ -280,6 +287,7 @@ both branches. -/
 def ActionCert.definitelyWritesIndex (query : Nat) : ActionCert → Bool
   | .skip | .memWrite => false
   | .write index _ => (singletonIndex index).testBit query
+  | .writeSlice _ _ => false
   | .seq _ left right =>
       left.definitelyWritesIndex query || right.definitelyWritesIndex query
   | .ite _ _ _ thenCert elseCert =>
@@ -293,6 +301,7 @@ theorem ActionCert.possiblyWritesIndex_of_definitelyWritesIndex
   | skip | memWrite => simp [ActionCert.definitelyWritesIndex] at definite
   | write => simpa [ActionCert.definitelyWritesIndex,
       ActionCert.possiblyWritesIndex] using definite
+  | writeSlice => simp [ActionCert.definitelyWritesIndex] at definite
   | seq summary left right leftIH rightIH =>
       simp only [ActionCert.definitelyWritesIndex, Bool.or_eq_true] at definite
       simp only [ActionCert.possiblyWritesIndex, Bool.or_eq_true]
@@ -457,6 +466,18 @@ def runAction (wires : Rope (List IndexedWire)) (table : WireTable)
       else if index < refs.size then
         some { refs := refs.set! index valueRef, changed := [index] }
       else none
+  | .writeSlice width name lo fieldWidth _ value, refs, needed,
+      .writeSlice index valueRef => do
+      let source ← registers[index]?
+      if source.name != name || source.width != width then none
+      else if index ∉ needed then some (unchanged refs)
+      else
+        let current ← refs[index]?
+        if !indexedInsertMatches wires table width lo fieldWidth value current
+            valueRef then none
+        else if index < refs.size then
+          some { refs := refs.set! index valueRef, changed := [index] }
+        else none
   | .seq left right, refs, needed, .seq summary leftCert rightCert => do
       if summary != seqSummary leftCert.summary rightCert.summary then none
       let leftNeeded := neededInputs rightCert.summary needed
@@ -570,6 +591,17 @@ def runCheckedAction (wires : Rope (List IndexedWire)) (table : WireTable)
       else do
         guard (indexedExprMatches wires table
           (Loom.Hw.Compile.compileExpr value) valueRef)
+        guard (index < refs.size)
+        some { refs := refs.set! index valueRef, changed := [index] }
+  | .writeSlice width name lo fieldWidth _ value, refs, needed,
+      .writeSlice index valueRef => do
+      let source ← registers[index]?
+      guard (source.name == name && source.width == width)
+      if index ∉ needed then some (unchanged refs)
+      else do
+        let current ← refs[index]?
+        guard (indexedInsertMatches wires table width lo fieldWidth value current
+          valueRef)
         guard (index < refs.size)
         some { refs := refs.set! index valueRef, changed := [index] }
   | .seq left right, refs, needed, .seq summary leftCert rightCert => do
@@ -815,6 +847,18 @@ def runSparseAction (wires : Rope (List IndexedWire)) (table : WireTable)
           (Loom.Hw.Compile.compileExpr value) valueRef then
         some { refs := refs.write index valueRef, changed := [index] }
       else none
+  | .writeSlice width name lo fieldWidth _ value, refs, needed,
+      .writeSlice index valueRef =>
+      if !checkedWriteHeader registers index width name then none
+      else if index ∉ needed then some { refs, changed := [] }
+      else
+        match refs.get? sparseDepth index with
+        | some current =>
+            if indexedInsertMatches wires table width lo fieldWidth value current
+                valueRef then
+              some { refs := refs.write index valueRef, changed := [index] }
+            else none
+        | none => none
   | .seq left right, refs, needed, .seq summary leftCert rightCert => do
       guard (summary == seqSummary leftCert.summary rightCert.summary)
       let leftNeeded := neededInputs rightCert.summary needed
@@ -860,6 +904,23 @@ inductive SparseEvidence (wires : Rope (List IndexedWire)) (table : WireTable)
         (Loom.Hw.Compile.compileExpr value) valueRef = true) :
       SparseEvidence wires table registers (.write width name value) refs needed
         (.write index valueRef)
+        { refs := refs.write index valueRef, changed := [index] }
+  | sliceUnused {width name lo fieldWidth inBounds value refs needed index valueRef}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (unused : index ∉ needed) :
+      SparseEvidence wires table registers
+        (.writeSlice width name lo fieldWidth inBounds value) refs needed
+        (.writeSlice index valueRef) { refs, changed := [] }
+  | sliceNeeded {width name lo fieldWidth inBounds value refs needed index valueRef
+      current}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (used : index ∈ needed)
+      (currentAccepted : refs.get? sparseDepth index = some current)
+      (valueAccepted : indexedInsertMatches wires table width lo fieldWidth value
+        current valueRef = true) :
+      SparseEvidence wires table registers
+        (.writeSlice width name lo fieldWidth inBounds value) refs needed
+        (.writeSlice index valueRef)
         { refs := refs.write index valueRef, changed := [index] }
   | seq {left right refs needed summary leftCert rightCert leftResult rightResult}
       (summaryAccepted : summary =
@@ -970,6 +1031,10 @@ theorem SparseEvidence.accepted
       simp [runSparseAction, headerAccepted, unused]
   | writeNeeded headerAccepted used valueAccepted =>
       simp [runSparseAction, headerAccepted, used, valueAccepted]
+  | sliceUnused headerAccepted unused =>
+      simp [runSparseAction, headerAccepted, unused]
+  | sliceNeeded headerAccepted used currentAccepted valueAccepted =>
+      simp [runSparseAction, headerAccepted, used, currentAccepted, valueAccepted]
   | seq summaryAccepted _ _ leftIH rightIH =>
       subst summaryAccepted
       simp [runSparseAction, leftIH, rightIH, guard]
@@ -1025,6 +1090,23 @@ inductive BitSparseEvidence (wires : Rope (List IndexedWire)) (table : WireTable
         (Loom.Hw.Compile.compileExpr value) valueRef = true) :
       BitSparseEvidence wires table registers (.write width name value) refs needed
         (.write index valueRef)
+        { refs := refs.write index valueRef, changed := 1 <<< index }
+  | sliceUnused {width name lo fieldWidth inBounds value refs needed index valueRef}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (unused : needed.testBit index = false) :
+      BitSparseEvidence wires table registers
+        (.writeSlice width name lo fieldWidth inBounds value) refs needed
+        (.writeSlice index valueRef) { refs, changed := 0 }
+  | sliceNeeded {width name lo fieldWidth inBounds value refs needed index valueRef
+      current}
+      (headerAccepted : checkedWriteHeader registers index width name = true)
+      (used : needed.testBit index = true)
+      (currentAccepted : refs.get? sparseDepth index = some current)
+      (valueAccepted : indexedInsertMatches wires table width lo fieldWidth value
+        current valueRef = true) :
+      BitSparseEvidence wires table registers
+        (.writeSlice width name lo fieldWidth inBounds value) refs needed
+        (.writeSlice index valueRef)
         { refs := refs.write index valueRef, changed := 1 <<< index }
   | seq {left right refs needed summary leftCert rightCert leftResult rightResult}
       (summaryAccepted : summary = seqSummary leftCert.summary rightCert.summary)
@@ -1140,6 +1222,24 @@ private def runPackedAction (wires : Rope (List IndexedWire))
       else do
         guard (indexedExprMatches wires table
           (Loom.Hw.Compile.compileExpr value) valueRef)
+        guard (index < refs.size)
+        pure ({ refs := refs.set! index valueRef, changed := [index] }, summary)
+  | .writeSlice width name lo fieldWidth _ value, refs, needed => do
+      -- Slice writes use the same compact payload as whole writes: target
+      -- register plus the already-computed output reference. The source action
+      -- determines which validation rule applies.
+      guard ((← takeWord) == 2)
+      let index ← takeWord
+      let valueRef ← decodeRef registers (← takeWord)
+      let source ← registers[index]?
+      guard (source.name == name && source.width == width)
+      let mask : Nat := 1 <<< index
+      let summary := { possible := mask, definite := 0 }
+      if index ∉ needed then pure (unchanged refs, summary)
+      else do
+        let current ← refs[index]?
+        guard (indexedInsertMatches wires table width lo fieldWidth value current
+          valueRef)
         guard (index < refs.size)
         pure ({ refs := refs.set! index valueRef, changed := [index] }, summary)
   | .seq left right, refs, needed => do

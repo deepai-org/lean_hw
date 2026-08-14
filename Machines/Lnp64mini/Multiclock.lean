@@ -120,6 +120,13 @@ system authoredSystem where
 Design, not merely its behavior or emitted interface. -/
 theorem authoredCore_eq_coreBody : authoredSystem.core = coreBody := rfl
 
+/-- The incremental certificate is proof-only: compilation and rendering see
+exactly the same core Design bytes as the established hand-composed path. -/
+theorem authoredCore_rtl_eq :
+    Loom.Emit.MicroVerilog.Print.print (Compile.compile authoredSystem.core) =
+      Loom.Emit.MicroVerilog.Print.print (Compile.compile coreBody) := by
+  rw [authoredCore_eq_coreBody]
+
 set_option maxRecDepth 100000 in
 theorem authoredSystem_eq_builder : authoredSystem = builder.certify (by decide) := rfl
 

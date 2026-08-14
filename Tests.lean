@@ -9,6 +9,9 @@ import Tests.Lnp64miniArithmetic
 import Tests.WideMul
 import Tests.DivRem
 import Tests.Chan
+import Tests.MulticlockApi
+import Tests.ClockGauntlet
+import Tests.SoCFabricGauntlet
 import Tests.MultiPort
 import Tests.MemTarget
 import Tests.Outputs
@@ -24,6 +27,7 @@ import Tests.NamedCertificate
 import Tests.Notation
 import Tests.PrettyDsl
 import Tests.PrettyDslImport
+import Tests.Packed
 import Tests.DebugTap
 import Tests.CycleSupport
 import Tests.DagEval

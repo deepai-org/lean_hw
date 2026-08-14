@@ -331,6 +331,11 @@ private def evaluateCert (registers : Array RegDecl) :
       else if index < refs.size then
         some { refs := refs.set! index value, changed := [index] }
       else none
+  | refs, needed, .writeSlice index value =>
+      if index ∉ needed then some { refs, changed := [] }
+      else if index < refs.size then
+        some { refs := refs.set! index value, changed := [index] }
+      else none
   | refs, needed, .seq summary left right => do
       let leftNeeded := Loom.Release.Symbolic.ActionWide.neededInputs
         right.summary needed
@@ -357,12 +362,12 @@ private def indicesToBits (indices : List Nat) : Nat :=
 
 private def actionCertNodeCount :
     Loom.Release.Symbolic.ActionWide.ActionCert → Nat
-  | .skip | .memWrite | .write .. => 1
+  | .skip | .memWrite | .write .. | .writeSlice .. => 1
   | .seq _ left right | .ite _ _ _ left right =>
       actionCertNodeCount left + actionCertNodeCount right + 1
 
 private def sourceActionNodeCount : Loom.Hw.Act → Nat
-  | .skip | .memWrite .. | .write .. => 1
+  | .skip | .memWrite .. | .write .. | .writeSlice .. => 1
   | .seq left right | .ite _ left right =>
       sourceActionNodeCount left + sourceActionNodeCount right + 1
 
@@ -396,6 +401,10 @@ private def actionExprStats : Loom.Hw.Act → List Nat →
     Loom.Release.Symbolic.ActionWide.ActionCert → ExprStats
   | .skip, _, _ | .memWrite .., _, _ => {}
   | .write _ _ value, needed, .write index _ =>
+      if index ∈ needed then
+        ({} : ExprStats).add (sourceExprNodeCount value)
+      else {}
+  | .writeSlice _ _ _ _ _ value, needed, .writeSlice index _ =>
       if index ∈ needed then
         ({} : ExprStats).add (sourceExprNodeCount value)
       else {}
@@ -839,6 +848,12 @@ private partial def collectActionExprSpecs (source : Act)
           toString width ++ " (" ++ sourceExpr ++ ")"
         pure #[{ expression, sourceValue := ⟨width, value⟩, reference }]
       else pure #[]
+  | .writeSlice .., .writeSlice .. =>
+      -- The action-shape/DAG checker validates the accumulator-dependent
+      -- insert graph with `indexedInsertMatches`; it is not a standalone
+      -- `compileExpr value` obligation and therefore has no plain expression
+      -- certificate in this auxiliary collection.
+      pure #[]
   | .seq _ _, .seq _ _ rightCert =>
       let leftNeeded := Loom.Release.Symbolic.ActionWide.neededInputs
         rightCert.summary needed
@@ -1286,6 +1301,12 @@ private partial def evaluateDag (stateDepth : Nat) (source : Act) (input needed 
           recordDagWrite root
           pure root
         else pure input
+    | .writeSlice .., .writeSlice index value =>
+        if needed.testBit index then
+          let root ← dagWrite stateDepth input index value
+          recordDagWrite root
+          pure root
+        else pure input
     | .seq left right, .seq _ leftCert rightCert => do
         let leftNeeded := Loom.Release.Symbolic.ActionWide.neededBitsBefore
           rightCert.summary needed
@@ -1410,6 +1431,13 @@ private partial def dagTraceToLean (source : Act)
   | .skip, .skip | .memWrite .., .memWrite =>
       pure ("Symbolic.ActionWide.DagActionTrace.atom none", cursor)
   | .write _ _ _, .write index _ =>
+      if needed.testBit index then
+        let root ← writeRoots[cursor]?
+        pure ("Symbolic.ActionWide.DagActionTrace.atom (some " ++
+          toString root ++ ")", cursor + 1)
+      else
+        pure ("Symbolic.ActionWide.DagActionTrace.atom none", cursor)
+  | .writeSlice .., .writeSlice index _ =>
       if needed.testBit index then
         let root ← writeRoots[cursor]?
         pure ("Symbolic.ActionWide.DagActionTrace.atom (some " ++
@@ -2976,6 +3004,30 @@ private partial def buildEvidence (registers : Array RegDecl)
             "(kernel_decide_inline) (kernel_decide_inline) " ++
             "(indexed_expr_decide))"
         else "(Symbolic.ActionWide.SparseEvidence.writeUnused " ++
+          "(wires := indexedWireTree) (table := wireTable) " ++
+          "(registers := actionRegisters) " ++
+          "(kernel_decide_inline) (kernel_decide_inline))"
+      let build : EvidenceBuild :=
+        { source := sourceExpr, cert := certExpr, input := inputExpr
+          needed := neededExpr, result := resultExpr, evidence
+          locals := prefixLocals.push resultLocal, size := 1 }
+      pure build
+  | .writeSlice .., .writeSlice index valueRef =>
+      let used := index ∈ neededValues
+      let refsExpr := if used then
+          "(" ++ inputExpr ++ ").write " ++ toString index ++ " (" ++
+            Tools.ReleaseCertGen.actionWideRefToLean valueRef ++ ")"
+        else inputExpr
+      let changed := if used then "[" ++ toString index ++ "]" else "[]"
+      let (resultExpr, resultLocal) ← emitEvidenceResult
+        ("{ refs := " ++ refsExpr ++ ", changed := " ++ changed ++ " }")
+      let evidence := if used then
+          "(Symbolic.ActionWide.SparseEvidence.sliceNeeded " ++
+            "(wires := indexedWireTree) (table := wireTable) " ++
+            "(registers := actionRegisters) " ++
+            "(kernel_decide_inline) (kernel_decide_inline) " ++
+            "(kernel_decide_inline) (kernel_decide_inline))"
+        else "(Symbolic.ActionWide.SparseEvidence.sliceUnused " ++
           "(wires := indexedWireTree) (table := wireTable) " ++
           "(registers := actionRegisters) " ++
           "(kernel_decide_inline) (kernel_decide_inline))"

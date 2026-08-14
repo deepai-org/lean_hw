@@ -29,9 +29,14 @@ The v1 scalar, packed, memory, register-family, channel, and multiclock syntax
 described here is implemented. Its diagnostics, faithful inspection,
 single-design and scheduled-system runners, endpoint transaction checks, and
 generated component reconstruction have executable regression coverage. Acc8
-is authored through this layer and retains its lockstep, refinement,
-emitted-semantics, and text-round-trip gates. The tutorial and representative
-LNP64mini blocks likewise retain their existing semantic and artifact paths.
+is the complete reference conversion: every hardware declaration, handle,
+constant, packed field, expression, action, and rule is generated from its one
+`packed struct` plus `hardware` source block. Its ordinary Lean `design prog`
+wrapper changes only the ROM initializer and module name; the `rfl` theorem
+`Machines.Acc8.Core.design_eq_pretty` fixes that boundary exactly. It retains
+its lockstep, refinement, emitted-semantics, and text-round-trip gates. The
+tutorial and representative LNP64mini blocks likewise retain their existing
+semantic and artifact paths.
 
 The phases below remain the design and regression contract, not a request for
 wholesale source conversion. In particular, full LNP64mini conversion is not a

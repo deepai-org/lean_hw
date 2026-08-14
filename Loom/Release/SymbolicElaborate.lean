@@ -312,6 +312,7 @@ def ActRegistersValid (program : Program) : Loom.Hw.Act → Prop
       HwExprRegistersValid program condition ∧
         ActRegistersValid program yes ∧ ActRegistersValid program no
   | .write _ _ value => HwExprRegistersValid program value
+  | .writeSlice _ _ _ _ _ value => HwExprRegistersValid program value
   | .memWrite _ _ _ _ address value =>
       HwExprRegistersValid program address ∧ HwExprRegistersValid program value
 
@@ -420,6 +421,7 @@ def actRegistersValidB (program : Program) : Loom.Hw.Act → Bool
       hwExprRegistersValidB program condition &&
         actRegistersValidB program yes && actRegistersValidB program no
   | .write _ _ value => hwExprRegistersValidB program value
+  | .writeSlice _ _ _ _ _ value => hwExprRegistersValidB program value
   | .memWrite _ _ _ _ address value =>
       hwExprRegistersValidB program address && hwExprRegistersValidB program value
 
@@ -525,6 +527,16 @@ theorem nextReg_registersValid {program : Program} (register : String)
           exact compileExpr_registersValid value actionValid
         · exact currentValid
       · exact currentValid
+  | writeSlice actualWidth actualName lo fieldWidth inBounds value =>
+      simp only [Loom.Hw.Compile.nextReg]
+      split
+      · split
+        next widthEq =>
+          cases widthEq
+          exact ⟨⟨currentValid, trivial⟩,
+            ⟨compileExpr_registersValid value actionValid, trivial⟩⟩
+        · exact currentValid
+      · exact currentValid
   | memWrite => exact currentValid
 
 /-- The ordered rule fold used for a compiled register preserves register
@@ -584,7 +596,7 @@ theorem memPort_registersValid {program : Program} (memory : String)
           ⟨conditionValid, yesValid.2.1, noValid.2.1⟩,
           ⟨conditionValid, yesValid.2.2, noValid.2.2⟩⟩
       · exact currentValid
-  | write => exact currentValid
+  | write | writeSlice => exact currentValid
   | memWrite actualAddressWidth actualDataWidth actualMemory actualPort
       address value =>
       simp only [Loom.Hw.Compile.memPort]

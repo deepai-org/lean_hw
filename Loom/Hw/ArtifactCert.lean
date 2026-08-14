@@ -111,6 +111,7 @@ making malformed certificate shapes reject definitionally. -/
 inductive NextRegCert (w : Nat) where
   | same
   | write
+  | writeSlice
   | seq (mid : Loom.Emit.MicroVerilog.Expr w)
       (left right : NextRegCert w)
   | ite (thenCert elseCert : NextRegCert w)
@@ -149,6 +150,19 @@ private theorem nextReg_eq_of_no_write (rn : String) (w : Nat) :
           exact hn (by simp [Loom.Hw.Act.regWrites, hname, hw])
         rw [dif_neg hwidth]
       · rw [if_neg hname]
+  | writeSlice actualWidth name lo fieldWidth inBounds value =>
+      intro cur h
+      have hn : (rn, w) ∉
+          (Loom.Hw.Act.writeSlice actualWidth name lo fieldWidth inBounds value).regWrites := by
+        exact (Compile.writesRegB_eq_false_iff rn w _).1 h
+      simp only [Compile.nextReg]
+      by_cases hname : name = rn
+      · rw [if_pos hname]
+        have hwidth : actualWidth ≠ w := by
+          intro hw
+          exact hn (by simp [Loom.Hw.Act.regWrites, hname, hw])
+        rw [dif_neg hwidth]
+      · rw [if_neg hname]
   | memWrite => intro _ _; rfl
 
 /-- Check a supplied result of one `nextReg` action locally. -/
@@ -177,6 +191,21 @@ def nextRegMatches (rn : String) (w : Nat) : Loom.Hw.Act →
         if hw : w' = w then
           match cert with
           | .write => compileExprMatches (hw ▸ v) out
+          | _ => false
+        else
+          match cert with
+          | .same => decide (out = cur)
+          | _ => false
+      else
+        match cert with
+        | .same => decide (out = cur)
+        | _ => false
+  | .writeSlice w' r' lo _ _ v, cur, out, cert =>
+      if _hr : r' = rn then
+        if _hw : w' = w then
+          match cert with
+          | .writeSlice =>
+              decide (out = Compile.insertExpr lo (Compile.compileExpr v) cur)
           | _ => false
         else
           match cert with
@@ -235,6 +264,16 @@ theorem nextRegMatches_sound (rn : String) (w : Nat) :
       · subst r'; subst w'
         cases cert <;> simp [nextRegMatches, Compile.nextReg] at h ⊢
         exact compileExprMatches_sound v out h
+      · cases cert <;> simp [nextRegMatches, Compile.nextReg, hr, hw] at h ⊢
+        exact h
+    · cases cert <;> simp [nextRegMatches, Compile.nextReg, hr] at h ⊢
+      exact h
+  · rename_i w' r' lo fieldWidth inBounds v
+    by_cases hr : r' = rn
+    · by_cases hw : w' = w
+      · subst r'; subst w'
+        cases cert <;> simp [nextRegMatches, Compile.nextReg] at h ⊢
+        exact h
       · cases cert <;> simp [nextRegMatches, Compile.nextReg, hr, hw] at h ⊢
         exact h
     · cases cert <;> simp [nextRegMatches, Compile.nextReg, hr] at h ⊢
@@ -399,7 +438,7 @@ private theorem memPort_eq_of_no_write (mn : String) (aw dw p : Nat) :
       simp only [Compile.portTrace, List.mem_append, not_or] at hn
       rw [Compile.memPort, if_neg]
       simp [Compile.writesPortB, hn]
-  | write => intro _ _; rfl
+  | write | writeSlice => intro _ _; rfl
   | memWrite actualAw actualDw name port address value =>
       intro cur h
       have hn : p ∉ Compile.portTrace mn
@@ -450,6 +489,7 @@ def nextPortMatches (mn : String) (aw dw p : Nat) : Loom.Hw.Act →
         | .same => decide (out = cur)
         | _ => false
   | .write .., cur, out, .same => decide (out = cur)
+  | .writeSlice .., cur, out, .same => decide (out = cur)
   | _, _, _, _ => false
 
 /-- A successful memory-port certificate recovers equality with the
@@ -492,6 +532,8 @@ theorem nextPortMatches_sound (mn : String) (aw dw p : Nat) :
       | _ => simp [nextPortMatches, hwrites] at h
     · cases cert <;> simp [nextPortMatches, Compile.memPort, hwrites] at h ⊢
       exact h
+  · cases cert <;> simp [nextPortMatches, Compile.memPort] at h ⊢
+    exact h
   · cases cert <;> simp [nextPortMatches, Compile.memPort] at h ⊢
     exact h
   · rename_i aw' dw' mn' p' a v
@@ -642,6 +684,62 @@ theorem outsMatch_sound : ∀ (rs : List Loom.Hw.RegDecl)
       simp only [outsMatch, Bool.and_eq_true, List.map_cons] at h ⊢
       rw [outMatches_sound r out h.1, outsMatch_sound rs outs h.2]
 
+/-- Check one source-declared same-cycle output without constructing the
+reference compiler result. -/
+def combOutMatches (source : Loom.Hw.CombOutput)
+    (out : Loom.Emit.MicroVerilog.OutDef) : Bool :=
+  decide (out.name = source.name) &&
+  if h : out.width = source.width then
+    compileExprMatches source.value (h ▸ out.val)
+  else false
+
+/-- Reference compiler contribution of one same-cycle source output. -/
+def compiledCombOut (source : Loom.Hw.CombOutput) :
+    Loom.Emit.MicroVerilog.OutDef where
+  name := source.name
+  width := source.width
+  val := Compile.compileExpr source.value
+
+/-- Successful validation recovers the exact compiler output expression. -/
+theorem combOutMatches_sound (source : Loom.Hw.CombOutput)
+    (out : Loom.Emit.MicroVerilog.OutDef)
+    (h : combOutMatches source out = true) :
+    out = compiledCombOut source := by
+  unfold combOutMatches at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨hn, hrest⟩ := h
+  split at hrest
+  · rename_i hw
+    have hv := compileExprMatches_sound source.value (hw ▸ out.val) hrest
+    cases source
+    cases out
+    simp at hn hw hv ⊢
+    cases hn
+    cases hw
+    cases hv
+    rfl
+  · contradiction
+
+/-- Check all same-cycle outputs in declaration order. -/
+def combOutsMatch : List Loom.Hw.CombOutput →
+    List Loom.Emit.MicroVerilog.OutDef → Bool
+  | [], [] => true
+  | source :: sources, out :: outs =>
+      combOutMatches source out && combOutsMatch sources outs
+  | _, _ => false
+
+theorem combOutsMatch_sound : ∀ (sources : List Loom.Hw.CombOutput)
+    (outs : List Loom.Emit.MicroVerilog.OutDef),
+    combOutsMatch sources outs = true →
+      outs = sources.map compiledCombOut
+  | [], [], _ => rfl
+  | [], _ :: _, h => by simp [combOutsMatch] at h
+  | _ :: _, [], h => by simp [combOutsMatch] at h
+  | source :: sources, out :: outs, h => by
+      simp only [combOutsMatch, Bool.and_eq_true, List.map_cons] at h ⊢
+      rw [combOutMatches_sound source out h.1,
+        combOutsMatch_sound sources outs h.2]
+
 /-! ## Memory-definition certificates -/
 
 /-- The reference memory definition contributed by one source declaration. -/
@@ -761,8 +859,10 @@ def moduleMatches (d : Loom.Hw.Design)
   decide (out.name = d.name) &&
   regsMatch d.rules out.regs cert.regs &&
   memsMatch d out.mems cert.mems &&
-  -- D39: the port list is the design's *exported* registers (`none` = all).
-  outsMatch d.exportedRegs out.outs &&
+  -- Register observability is the prefix; declared same-cycle views are the
+  -- suffix. Both are validated locally against the source Design.
+  outsMatch d.exportedRegs (out.outs.take d.exportedRegs.length) &&
+  combOutsMatch d.combOutputs (out.outs.drop d.exportedRegs.length) &&
   decide (out.ins = d.inputs.map fun i =>
     ({ name := i.name, width := i.width } : Loom.Emit.MicroVerilog.InDef))
 
@@ -773,10 +873,18 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
     (h : moduleMatches d out cert = true) :
     out.Matches (Compile.compile d) := by
   simp only [moduleMatches, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨hn, hrcheck⟩, hmcheck⟩, hocheck⟩, hicheck⟩ := h
+  obtain ⟨⟨⟨⟨⟨hn, hrcheck⟩, hmcheck⟩, horegcheck⟩, hocombcheck⟩,
+    hicheck⟩ := h
   have hr := regsMatch_sound d.rules out.regs cert.regs hrcheck
   have hm := memsMatch_sound d out.mems cert.mems hmcheck
-  have ho := outsMatch_sound d.exportedRegs out.outs hocheck
+  have horeg := outsMatch_sound d.exportedRegs
+    (out.outs.take d.exportedRegs.length) horegcheck
+  have hocomb := combOutsMatch_sound d.combOutputs
+    (out.outs.drop d.exportedRegs.length) hocombcheck
+  have ho : out.outs = (Compile.compile d).outs := by
+    rw [← List.take_append_drop d.exportedRegs.length out.outs,
+      horeg, hocomb]
+    rfl
   refine ⟨hn, ?_, ?_, ?_, ?_⟩
   · simpa only [Compile.compile] using hr
   · simpa only [Compile.compile] using ho

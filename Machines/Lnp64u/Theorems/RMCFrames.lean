@@ -107,6 +107,7 @@ def WritesLit (rn : String) (wd : Nat) (good : List (BitVec wd)) : Act → Bool
           | _ => false
         else true
       else true
+  | .writeSlice _ r _ _ _ _ => r != rn
 
 /-- The semantic content of `WritesLit`: any property holding of the
 tracked register and of every `good` literal is preserved by the run. -/
@@ -143,6 +144,13 @@ theorem run_WritesLit {rn : String} {wd : Nat} {good : List (BitVec wd)}
           all_goals simp at h
         · rw [dif_neg hw]; exact hP
       · rw [if_neg hr]; exact hP
+  | .writeSlice w r lo fw hb v, h, σ, acc, hP => by
+      simp only [WritesLit, bne_iff_ne] at h
+      show P ((acc.regs.set r
+        (Loom.Word.insert lo (v.eval σ) (acc.regs r w))) rn wd)
+      simp only [RegEnv.set]
+      rw [if_neg (fun equal => h equal.symm)]
+      exact hP
 
 /-- `WritesLit` for the issue fold, from the per-domain facts. -/
 theorem issueFold_WritesLit (m : Manifest) (rn : String) (wd : Nat)
@@ -391,6 +399,7 @@ def WritesPrefixed (pre : String) : Act → Bool
   | .ite _ t e => WritesPrefixed pre t && WritesPrefixed pre e
   | .memWrite _ _ _ _ _ _ => true
   | .write _ r _ => r.startsWith pre
+  | .writeSlice _ r _ _ _ _ => r.startsWith pre
 
 theorem run_WritesPrefixed {pre : String} {rn : String}
     (hrn : rn.startsWith pre = false) (w : Nat) :
@@ -410,6 +419,16 @@ theorem run_WritesPrefixed {pre : String} {rn : String}
   | .memWrite .., _, _, _ => rfl
   | .write w' r v, h, σ, acc => by
       show (acc.regs.set r (v.eval σ)) rn w = acc.regs rn w
+      simp only [RegEnv.set]
+      rw [if_neg (fun hcon : rn = r => by
+        simp only [WritesPrefixed] at h
+        rw [hcon] at hrn
+        rw [h] at hrn
+        exact absurd hrn (by simp))]
+  | .writeSlice w' r lo fw hb v, h, σ, acc => by
+      show (acc.regs.set r
+        (Loom.Word.insert lo (v.eval σ) (acc.regs r w'))) rn w =
+          acc.regs rn w
       simp only [RegEnv.set]
       rw [if_neg (fun hcon : rn = r => by
         simp only [WritesPrefixed] at h

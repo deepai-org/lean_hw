@@ -92,6 +92,7 @@ inductive FAct where
   | seq (a b : FAct)
   | ite (c : FExpr) (t e : FAct)
   | write (i : Nat) (v : FExpr)
+  | writeSlice (i totalWidth lo fieldWidth : Nat) (v : FExpr)
   | memWrite (base : Nat) (addr data : FExpr)
   deriving Inhabited
 
@@ -160,6 +161,11 @@ def FAct.run (pr pm : Array Nat) : FAct → FastSt → FastSt
       if c.eval pr pm = 1 then t.run pr pm acc else e.run pr pm acc
   | .write i v, acc =>
       { acc with regs := acc.regs.setIfInBounds i (v.eval pr pm) }
+  | .writeSlice i totalWidth lo fieldWidth v, acc =>
+      let next := Loom.Word.insert lo
+        (BitVec.ofNat fieldWidth (v.eval pr pm))
+        (BitVec.ofNat totalWidth (acc.regs.getD i 0))
+      { acc with regs := acc.regs.setIfInBounds i next.toNat }
   | .memWrite base a dv, acc =>
       { acc with
         mems := acc.mems.setIfInBounds (base + a.eval pr pm) (dv.eval pr pm) }
@@ -240,6 +246,9 @@ def Design.elabAct (d : Design) : Act → FAct
   | .ite c t e => .ite (d.elabExpr c) (d.elabAct t) (d.elabAct e)
   | .write _ r v => match d.regIdx r with
       | some i => .write i (d.elabExpr v)
+      | none => .skip
+  | .writeSlice totalWidth r lo fieldWidth _ v => match d.regIdx r with
+      | some i => .writeSlice i totalWidth lo fieldWidth (d.elabExpr v)
       | none => .skip
   | .memWrite _ _ m _ addr data =>
       match d.memIdx m with
@@ -373,6 +382,8 @@ def Design.actWFB (d : Design) : Act → Bool
   | .seq a b => d.actWFB a && d.actWFB b
   | .ite c t e => d.exprWFB c && d.actWFB t && d.actWFB e
   | .write w r v => d.regOkB r w && d.exprWFB v
+  | .writeSlice totalWidth r _ _ _ v =>
+      d.regOkB r totalWidth && d.exprWFB v
   | .memWrite aw dw m _ addr data =>
       d.memOkB m aw dw && d.exprWFB addr && d.exprWFB data
 
@@ -597,6 +608,15 @@ def prepareRegSlot (d : Design) {w : Nat} (r : Reg w) :
     (slot : RegSlot d r) (fs : FastSt) : BitVec w :=
   BitVec.ofNat w (slot.readNat fs)
 
+/-- Inflating a flat state reads a resolved typed register from exactly the
+same array slot.  This supports compact System runners that delegate endpoint
+planning to the public semantic wiring without copying memory arrays. -/
+theorem RegSlot.read_toSt {d : Design} {w : Nat} {r : Reg w}
+    (slot : RegSlot d r) (fs : FastSt) :
+    slot.read fs = (d.toSt fs).regs r.name w := by
+  simp [RegSlot.read, RegSlot.readNat, Design.toSt, slot.index_eq,
+    slot.width_eq]
+
 /-- A resolved typed-register read is the corresponding semantic coordinate
 whenever the generated and reference states agree. -/
 theorem RegSlot.readNat_eq {d : Design} {w : Nat} {r : Reg w}
@@ -604,6 +624,14 @@ theorem RegSlot.readNat_eq {d : Design} {w : Nat} {r : Reg w}
     slot.readNat fs = (sigma.regs r.name w).toNat := by
   rw [RegSlot.readNat, ha.regs slot.idx slot.index_lt, slot.name_eq,
     slot.width_eq]
+
+/-- Bit-vector form of `readNat_eq`, retaining the register's static width. -/
+theorem RegSlot.read_eq {d : Design} {w : Nat} {r : Reg w}
+    (slot : RegSlot d r) {fs : FastSt} {sigma : St} (ha : Agree d fs sigma) :
+    slot.read fs = sigma.regs r.name w := by
+  apply BitVec.toNat_inj.mp
+  simp only [RegSlot.read, BitVec.toNat_ofNat]
+  rw [slot.readNat_eq ha, Nat.mod_eq_of_lt (BitVec.isLt _)]
 
 /-- A typed memory handle resolved into the flat generated-state layout. -/
 structure MemSlot (d : Design) {aw dw : Nat} (m : Mem aw dw) where
@@ -871,6 +899,32 @@ theorem elabAct_run {d : Design} (hnd : (d.regList.map (·.1)).Nodup)
           have : (d.regEntry i).1 = (d.regList[i]'hlt).1 := by rw [regEntry_eq d hlt]
           rw [← hn, this]
           exact nodup_getElem_ne (f := fun e => e.1) hnd hj hlt (fun hh => hij hh.symm)
+        simp [RegEnv.set, hrne]
+    · intro k md hmd a2 ha2
+      simpa using hacc.mems k md hmd a2 ha2
+  | writeSlice totalWidth r lo fieldWidth inBounds v =>
+    intro facc τ hwf hacc
+    simp only [Design.actWFB, Bool.and_eq_true] at hwf
+    obtain ⟨i, hidx, hlt, hn, hw⟩ := regOkB_sound hwf.1
+    have hev := elabExpr_eval ha _ v hwf.2
+    simp only [Design.elabAct, hidx, FAct.run, Act.run, hev]
+    refine ⟨?_, ?_, ?_, ?_⟩
+    · simpa using hacc.regsSize
+    · simpa using hacc.memsSize
+    · intro j hj
+      by_cases hij : i = j
+      · subst hij
+        rw [getD_setIfInBounds_self (by rw [hacc.regsSize]; exact hlt), hn, hw,
+          hacc.regs i hlt, hn, hw]
+        simp [RegEnv.set]
+      · rw [getD_setIfInBounds_ne hij, hacc.regs j hj]
+        have hrne : (d.regEntry j).1 ≠ r := by
+          rw [regEntry_eq d hj]
+          have : (d.regEntry i).1 = (d.regList[i]'hlt).1 := by
+            rw [regEntry_eq d hlt]
+          rw [← hn, this]
+          exact nodup_getElem_ne (f := fun e => e.1) hnd hj hlt
+            (fun hh => hij hh.symm)
         simp [RegEnv.set, hrne]
     · intro k md hmd a2 ha2
       simpa using hacc.mems k md hmd a2 ha2

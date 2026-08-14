@@ -49,6 +49,18 @@ inductive ActionShapeEvidence (wires : Rope (List IndexedWire))
       (live : needed.testBit index = true) :
       ActionShapeEvidence wires table registers (.write width name value) needed
         (.write index valueRef)
+  | sliceDead {width name lo fieldWidth inBounds value index valueRef needed}
+      (header : checkedWriteHeader registers index width name = true)
+      (dead : needed.testBit index = false) :
+      ActionShapeEvidence wires table registers
+        (.writeSlice width name lo fieldWidth inBounds value) needed
+        (.writeSlice index valueRef)
+  | sliceLive {width name lo fieldWidth inBounds value index valueRef needed}
+      (header : checkedWriteHeader registers index width name = true)
+      (live : needed.testBit index = true) :
+      ActionShapeEvidence wires table registers
+        (.writeSlice width name lo fieldWidth inBounds value) needed
+        (.writeSlice index valueRef)
   | seq {left right needed summary leftCert rightCert}
       (summaryAccepted :
         summary = seqSummary leftCert.summary rightCert.summary)
@@ -117,6 +129,23 @@ inductive RegQueryEvidence (wires : Rope (List IndexedWire))
         (Loom.Hw.Compile.compileExpr value) valueRef = true) :
       RegQueryEvidence wires table registers query width (.write writeWidth name value)
         input needed (.write query valueRef) valueRef
+  | sliceOther {writeWidth name lo fieldWidth inBounds value input needed index valueRef}
+      (different : index ≠ query) :
+      RegQueryEvidence wires table registers query width
+        (.writeSlice writeWidth name lo fieldWidth inBounds value)
+        input needed (.writeSlice index valueRef) input
+  | sliceDead {writeWidth name lo fieldWidth inBounds value input needed valueRef}
+      (dead : needed.testBit query = false) :
+      RegQueryEvidence wires table registers query width
+        (.writeSlice writeWidth name lo fieldWidth inBounds value)
+        input needed (.writeSlice query valueRef) input
+  | sliceLive {writeWidth name lo fieldWidth inBounds value input needed valueRef}
+      (live : needed.testBit query = true)
+      (valueAccepted : indexedInsertMatches wires table writeWidth lo fieldWidth
+        value input valueRef = true) :
+      RegQueryEvidence wires table registers query width
+        (.writeSlice writeWidth name lo fieldWidth inBounds value)
+        input needed (.writeSlice query valueRef) valueRef
   | seq {left right input needed summary leftCert rightCert middle output}
       (leftAccepted : RegQueryEvidence wires table registers query width left input
         (neededBitsBefore rightCert.summary needed) leftCert middle)
@@ -160,6 +189,8 @@ def queryRef (query width : Nat) :
   | .skip, input, _, .skip => some input
   | .memWrite _ _ _ _ _ _, input, _, .memWrite => some input
   | .write _ _ _, input, needed, .write index valueRef =>
+      if index == query && needed.testBit query then some valueRef else some input
+  | .writeSlice _ _ _ _ _ _, input, needed, .writeSlice index valueRef =>
       if index == query && needed.testBit query then some valueRef else some input
   | .seq left right, input, needed, .seq _ leftCert rightCert => do
       let middle ← queryRef query width left input
@@ -246,6 +277,8 @@ def queryState (registers : Array RegDecl) :
   | .skip, input, _, .skip => some input
   | .memWrite _ _ _ _ _ _, input, _, .memWrite => some input
   | .write _ _ _, input, needed, .write index valueRef =>
+      some (if needed.testBit index then input.setIfInBounds index valueRef else input)
+  | .writeSlice _ _ _ _ _ _, input, needed, .writeSlice index valueRef =>
       some (if needed.testBit index then input.setIfInBounds index valueRef else input)
   | .seq left right, input, needed, .seq _ leftCert rightCert => do
       let middle ← queryState registers left input
@@ -469,6 +502,42 @@ private theorem checkedWriteHeader_summary_valid
           singletonIndex_testBit, Loom.Hw.Compile.writesRegB, indexFalse,
           nameFalse]
 
+private theorem checkedWriteHeader_slice_summary_valid
+    {registers : Array RegDecl} {width index query lo fieldWidth : Nat}
+    {name : String} {inBounds : lo + fieldWidth ≤ width}
+    {value : Expr fieldWidth} {valueRef : Ref}
+    (header : checkedWriteHeader registers index width name = true)
+    (unique : RegisterNamesUnique registers) (source : RegDecl)
+    (sourceFound : registers[query]? = some source) :
+    (ActionCert.writeSlice index valueRef).summary.possible.testBit query =
+        Loom.Hw.Compile.writesRegB source.name source.width
+          (.writeSlice width name lo fieldWidth inBounds value) ∧
+      (ActionCert.writeSlice index valueRef).summary.definite.testBit query =
+        (ActionCert.writeSlice index valueRef).definitelyWritesIndex query := by
+  cases actualFound : registers[index]? with
+  | none => simp [checkedWriteHeader, actualFound] at header
+  | some actual =>
+      simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+        beq_iff_eq] at header
+      by_cases indexEq : index = query
+      · subst query
+        have regEq : actual = source :=
+          Option.some.inj (actualFound.symm.trans sourceFound)
+        subst source
+        simp [ActionCert.summary, ActionCert.definitelyWritesIndex,
+          singletonIndex_testBit, Loom.Hw.Compile.writesRegB, header]
+      · have nameNe : name ≠ source.name := by
+          intro nameEq
+          apply indexEq
+          exact unique actualFound sourceFound (header.1.trans nameEq)
+        have indexFalse : (index == query) = false :=
+          beq_eq_false_iff_ne.mpr indexEq
+        have nameFalse : (name == source.name) = false :=
+          beq_eq_false_iff_ne.mpr nameNe
+        simp [ActionCert.summary, ActionCert.definitelyWritesIndex,
+          singletonIndex_testBit, Loom.Hw.Compile.writesRegB, indexFalse,
+          nameFalse]
+
 /-- A shape certificate determines the same structural possible/definite
 write bits as its source action. -/
 theorem ActionShapeEvidence.summary_valid
@@ -489,6 +558,10 @@ theorem ActionShapeEvidence.summary_valid
       exact checkedWriteHeader_summary_valid header unique source sourceFound
   | writeLive header live =>
       exact checkedWriteHeader_summary_valid header unique source sourceFound
+  | sliceDead header dead =>
+      exact checkedWriteHeader_slice_summary_valid header unique source sourceFound
+  | sliceLive header live =>
+      exact checkedWriteHeader_slice_summary_valid header unique source sourceFound
   | @seq left right needed summary leftCert rightCert summaryAccepted leftAccepted
       rightAccepted leftIH rightIH =>
       subst summaryAccepted
@@ -523,7 +596,9 @@ theorem ActionShapeEvidence.summary_definite_false_of_possible_false
     cert.summary.definite.testBit query = false := by
   induction evidence with
   | skip | memWrite => simp [ActionCert.summary]
-  | writeDead | writeLive => simpa [ActionCert.summary] using possibleFalse
+  | writeDead | writeLive =>
+      simpa [ActionCert.summary] using possibleFalse
+  | sliceDead | sliceLive => simp [ActionCert.summary]
   | @seq left right needed summary leftCert rightCert summaryAccepted leftAccepted
       rightAccepted leftIH rightIH =>
       subst summary
@@ -623,6 +698,52 @@ theorem RegQueryEvidence.nextReg_raw
           rcases header with ⟨rfl, rfl⟩
           simpa [Loom.Hw.Compile.nextReg] using
             indexedExprMatches_raw program wiresMatch wireTable _ _ valueAccepted
+  | @sliceOther writeWidth name lo fieldWidth inBounds value input needed index
+      valueRef different =>
+      have finish (header : checkedWriteHeader registers index writeWidth name = true) :
+          RawExprMatches program wireTable
+            (Loom.Hw.Compile.nextReg source.name source.width
+              (.writeSlice writeWidth name lo fieldWidth inBounds value) current)
+            input := by
+        cases actualFound : registers[index]? with
+        | none => simp [checkedWriteHeader, actualFound] at header
+        | some actual =>
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at header
+          have nameNe : name ≠ source.name := by
+            intro nameEq
+            apply different
+            exact unique actualFound sourceFound (header.1.trans nameEq)
+          simpa [ActionCert.semanticCurrentRef, ActionCert.summary,
+            Loom.Hw.Compile.nextReg, nameNe] using currentMatches
+      cases shape with
+      | sliceDead header dead => exact finish header
+      | sliceLive header live => exact finish header
+  | sliceDead dead =>
+      rw [used] at dead
+      contradiction
+  | @sliceLive writeWidth name lo fieldWidth inBounds value input needed valueRef
+      live valueAccepted =>
+      cases shape with
+      | sliceDead header dead =>
+        rw [live] at dead
+        contradiction
+      | sliceLive header shapeLive =>
+        cases actualFound : registers[query]? with
+        | none => simp [checkedWriteHeader, actualFound] at header
+        | some actual =>
+          have actualEq : actual = source :=
+            Option.some.inj (actualFound.symm.trans sourceFound)
+          subst actual
+          simp only [checkedWriteHeader, actualFound, Bool.and_eq_true,
+            beq_iff_eq] at header
+          rcases header with ⟨rfl, rfl⟩
+          have currentRaw : RawExprMatches program wireTable current input := by
+            simpa [ActionCert.semanticCurrentRef, ActionCert.summary] using
+              currentMatches
+          simpa [Loom.Hw.Compile.nextReg] using
+            indexedInsertMatches_raw program wiresMatch wireTable lo value current
+              input valueRef currentRaw valueAccepted
   | @seq left right input needed summary leftCert rightCert middle output
       leftAccepted rightAccepted leftIH rightIH =>
       cases shape with

@@ -103,6 +103,7 @@ def Act.readsReg (n : String) : Act → Bool
   | .seq a b => a.readsReg n || b.readsReg n
   | .ite c t e => c.readsReg n || t.readsReg n || e.readsReg n
   | .write _ _ v => v.readsReg n
+  | .writeSlice _ _ _ _ _ v => v.readsReg n
   | .memWrite _ _ _ _ a d => a.readsReg n || d.readsReg n
 
 /-- Does any rule of the design read register `n`? The decidable side
@@ -119,6 +120,7 @@ def Act.writesReg (n : String) : Act → Bool
   | .seq a b => a.writesReg n || b.writesReg n
   | .ite _ t e => t.writesReg n || e.writesReg n
   | .write _ t _ => t == n
+  | .writeSlice _ t _ _ _ _ => t == n
   | .memWrite _ _ _ _ _ _ => false
 
 /-- Does any rule of the design write register `n`? Used only to state the
@@ -136,6 +138,8 @@ def Act.redirectWrite (r : String) : Act → Act
   | .seq a b => .seq (a.redirectWrite r) (b.redirectWrite r)
   | .ite c t e => .ite c (t.redirectWrite r) (e.redirectWrite r)
   | .write w' t v => .write w' (if t = r then preName r else t) v
+  | .writeSlice w' t lo fw h v =>
+      .writeSlice w' (if t = r then preName r else t) lo fw h v
   | .memWrite aw dw m p a d => .memWrite aw dw m p a d
 
 /-- `preName r` is a genuinely fresh name: the `"__pre"` suffix makes it
@@ -346,6 +350,12 @@ theorem Act.run_regs_notWrite (σ : St) (p : String) :
     simp only [Act.writesReg, beq_eq_false_iff_ne, ne_eq] at h
     show (acc.regs.set tgt (v.eval σ)) p w = acc.regs p w
     exact RegEnv.set_get_ne _ _ _ _ _ (Ne.symm h)
+  | writeSlice wv tgt lo fw hb v =>
+    intro h acc w
+    simp only [Act.writesReg, beq_eq_false_iff_ne, ne_eq] at h
+    show (acc.regs.set tgt
+      (Loom.Word.insert lo (v.eval σ) (acc.regs tgt wv))) p w = acc.regs p w
+    exact RegEnv.set_get_ne _ _ _ _ _ (Ne.symm h)
   | memWrite aw dw m pt ad dt => intro _ acc w; rfl
 
 /-- Folding a rule list none of which writes `p` preserves the `p`
@@ -431,6 +441,69 @@ theorem RetimeRel.run_redirect (r : String) (σ : St)
            = (accs.regs.set tgt (v.eval σ)) r w
         rw [RegEnv.set_get_ne _ _ _ _ _ (Ne.symm hpre),
             RegEnv.set_get_ne _ _ _ _ _ (Ne.symm htr)]
+        exact rel.regs_pre w
+  | writeSlice wv tgt lo fw hb v =>
+    simp only [Act.readsReg] at hr hrp
+    simp only [Act.writesReg, beq_eq_false_iff_ne, ne_eq] at hpre
+    have hval : v.eval (retimeAbs r σ) = v.eval σ :=
+      Expr.eval_retimeAbs r σ v hr hrp
+    simp only [Act.redirectWrite, Act.run]
+    by_cases htr : tgt = r
+    · subst htr
+      rw [if_pos rfl, hval]
+      have hmerged :
+          Loom.Word.insert lo (v.eval σ) (acci.regs (preName tgt) wv) =
+            Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv) := by
+        rw [rel.regs_pre]
+      rw [hmerged]
+      refine ⟨?_, ?_, rel.mems_eq⟩
+      · intro n w hn hnp
+        change (acci.regs.set (preName tgt)
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) n w =
+          (accs.regs.set tgt
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) n w
+        rw [RegEnv.set_get_ne _ _ _ _ _ hnp,
+          RegEnv.set_get_ne _ _ _ _ _ hn]
+        exact rel.regs_other n w hn hnp
+      · intro w
+        change (acci.regs.set (preName tgt)
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) (preName tgt) w =
+          (accs.regs.set tgt
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) tgt w
+        by_cases hw : wv = w
+        · subst hw; rw [RegEnv.set_get_eq, RegEnv.set_get_eq]
+        · rw [RegEnv.set_get_same _ _ _ _ hw,
+            RegEnv.set_get_same _ _ _ _ hw]
+          exact rel.regs_pre w
+    · rw [if_neg htr, hval]
+      have hmerged :
+          Loom.Word.insert lo (v.eval σ) (acci.regs tgt wv) =
+            Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv) := by
+        rw [rel.regs_other tgt wv htr hpre]
+      rw [hmerged]
+      refine ⟨?_, ?_, rel.mems_eq⟩
+      · intro n w hn hnp
+        change (acci.regs.set tgt
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) n w =
+          (accs.regs.set tgt
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) n w
+        by_cases hnt : n = tgt
+        · subst hnt
+          by_cases hw : wv = w
+          · subst hw; rw [RegEnv.set_get_eq, RegEnv.set_get_eq]
+          · rw [RegEnv.set_get_same _ _ _ _ hw,
+              RegEnv.set_get_same _ _ _ _ hw]
+            exact rel.regs_other n w hn hnp
+        · rw [RegEnv.set_get_ne _ _ _ _ _ hnt,
+            RegEnv.set_get_ne _ _ _ _ _ hnt]
+          exact rel.regs_other n w hn hnp
+      · intro w
+        change (acci.regs.set tgt
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) (preName r) w =
+          (accs.regs.set tgt
+            (Loom.Word.insert lo (v.eval σ) (accs.regs tgt wv))) r w
+        rw [RegEnv.set_get_ne _ _ _ _ _ (Ne.symm hpre),
+          RegEnv.set_get_ne _ _ _ _ _ (Ne.symm htr)]
         exact rel.regs_pre w
   | memWrite aw dw m p ad dt =>
     simp only [Act.readsReg, Bool.or_eq_false_iff] at hr hrp

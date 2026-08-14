@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Declarations
+import Loom.Hw.Extension
 import Loom.Hw.FastEval
 import Loom.Hw.Multiclock
 import Loom.Hw.Packed
@@ -611,6 +612,7 @@ syntax:40 hwexpr:41 " == " hwexpr:40 : hwexpr
 syntax:40 hwexpr:41 " <u " hwexpr:40 : hwexpr
 syntax:40 hwexpr:41 " <s " hwexpr:40 : hwexpr
 syntax:20 "if " hwexpr " then " hwexpr " else " hwexpr : hwexpr
+syntax:75 "reinterpret " hwexpr:76 " to " ident : hwexpr
 
 syntax:max (name := hwLit) "hw_lit% " num : term
 syntax:max (name := hwAtom) "hw_atom% " term:max : term
@@ -621,12 +623,13 @@ syntax:max (name := hwMemRead) "hw_mem_read% " term:max term:max : term
 syntax:max (name := hwMemWrite) "hw_mem_write% " term:max num term:max term:max : term
 syntax:max (name := hwShift) "hw_shift% " str term:max term:max : term
 syntax:max (name := hwPackedField) "hw_packed_field% " term:max ident : term
-syntax:max (name := hwPackedWrite) "hw_packed_write% " term:max ident term:max : term
+syntax:max (name := hwPackedPathWrite) "hw_packed_path_write% " ident term:max : term
 syntax:max (name := hwPackedConstruct) "hw_packed_construct% " ident
   "{" hwrecordfield,* "}" : term
 syntax:max (name := hwPackedUpdate) "hw_packed_update% " term:max
   "{" hwrecordfield,* "}" : term
 syntax:max (name := hwPackedFromBits) "hw_packed_from_bits% " ident term:max : term
+syntax:max (name := hwPackedReinterpret) "hw_packed_reinterpret% " term:max ident : term
 syntax:max (name := hwEq) "hw_eq% " term:max term:max : term
 syntax:max (name := hwBoundaryError) "hw_boundary_error% " str str str : term
 syntax:max (name := hwWrite) "hw_write% " term:max term:max : term
@@ -667,6 +670,62 @@ private def elaborateScalarAtWidth (valueSyntax : TSyntax `term)
       else
         throwErrorAt source
           s!"expression is {actualWidth} bits but the target is {expected} bits; Loom never truncates implicitly, so select the intended bits explicitly"
+    catch repaired => throw repaired
+
+private def packedSemanticType? (type : Lean.Expr) : TermElabM (Option Lean.Expr) := do
+  let type ← Meta.whnf type
+  pure <| if type.isAppOfArity ``Loom.Hw.PackedExpr 2 then
+    some type.getAppArgs[0]!
+  else none
+
+private def packedWidth (semanticType : Lean.Expr) : TermElabM Lean.Expr := do
+  Meta.whnf (← Meta.mkAppOptM ``Loom.Hw.HwPacked.width
+    #[some semanticType, none])
+
+private def packedTypeLabel (semanticType : Lean.Expr) : String :=
+  semanticType.constName?.map (·.getString!) |>.getD (toString semanticType)
+
+/-- Elaborate one packed value without weakening nominal type separation.  If
+the source is another packed type, replace Lean's implementation-shaped type
+error with the two intentional conversion choices exposed by the DSL. -/
+private def elaboratePackedAtType (valueSyntax : TSyntax `term)
+    (expectedType : Lean.Expr) : TermElabM Lean.Expr := do
+  try
+    withoutErrToSorry <| elabTerm valueSyntax (some expectedType)
+  catch original =>
+    try
+      let actual ← withoutErrToSorry <| elabTerm valueSyntax none
+      let some actualSemantic ← packedSemanticType? (← Meta.inferType actual)
+        | throw original
+      let some expectedSemantic ← packedSemanticType? expectedType
+        | throw original
+      if ← Meta.isDefEq actualSemantic expectedSemantic then throw original
+      let actualWidth ← packedWidth actualSemantic
+      let expectedWidth ← packedWidth expectedSemantic
+      let actualLabel := packedTypeLabel actualSemantic
+      let expectedLabel := packedTypeLabel expectedSemantic
+      let (source, sourceText) := hardwareExpressionSource valueSyntax
+      let actualWidthValue ← getNatValue? actualWidth
+      let expectedWidthValue ← getNatValue? expectedWidth
+      if ← Meta.isDefEq actualWidth expectedWidth then
+        let widthText := actualWidthValue.map
+          (fun width => s!" (both are {width} bits)") |>.getD ""
+        let message :=
+          s!"packed value `{sourceText}` has type `{actualLabel}`, but `{expectedLabel}` is required; these are distinct semantic types{widthText}. Construct `" ++
+          expectedLabel ++ " { ... }` field-by-field for a semantic conversion, or write `reinterpret " ++
+          sourceText ++ " to " ++ expectedLabel ++ "` for intentional bit reinterpretation"
+        throwErrorAt source
+          message
+      else
+        let widths := match actualWidthValue, expectedWidthValue with
+          | some actual, some expected =>
+              s!" (`{actualLabel}` is {actual} bits; `{expectedLabel}` is {expected} bits)"
+          | _, _ => ""
+        let message :=
+          s!"packed value `{sourceText}` has type `{actualLabel}`, but `{expectedLabel}` is required{widths}; bit reinterpretation requires equal widths, so construct `" ++
+          expectedLabel ++ " { ... }` with an explicit field mapping"
+        throwErrorAt source
+          message
     catch repaired => throw repaired
 
 @[term_elab hwBoundaryError] private def elabHwBoundaryError : TermElab :=
@@ -786,6 +845,13 @@ while an existing `Expr w` remains unchanged. -/
 preserves the documented signal/local-first rule even when a global qualified
 name happens to share the spelling. Otherwise, ordinary qualified Lean names
 remain eligible before the packed-field fallback. -/
+private partial def dottedRoot : Name → Name
+  | .str .anonymous value => .str .anonymous value
+  | .num .anonymous value => .num .anonymous value
+  | .str pre _ => dottedRoot pre
+  | .num pre _ => dottedRoot pre
+  | name => name
+
 @[term_elab hwDottedAtom] def elabHwDottedAtom : TermElab := fun stx expectedType? => do
   match stx with
   | `(hw_dotted_atom% $whole:ident) =>
@@ -793,8 +859,14 @@ remain eligible before the packed-field fallback. -/
       if name.isAtomic then throwErrorAt whole "expected a qualified name or packed field"
       let base := mkIdentFrom whole name.getPrefix
       let field := mkIdentFrom whole (Name.mkSimple name.getString!)
-      let projection ← `(hw_packed_field% (hw_atom% $base) $field)
-      if let some localDecl := (← getLCtx).findFromUserName? base.getId.eraseMacroScopes then
+      let rootName := dottedRoot name
+      let root := mkIdentFrom whole rootName
+      let baseTerm ← if name.getPrefix.isAtomic then
+          `(hw_atom% $base)
+        else
+          `(hw_dotted_atom% $base)
+      let projection ← `(hw_packed_field% $baseTerm $field)
+      if let some localDecl := (← getLCtx).findFromUserName? root.getId.eraseMacroScopes then
         -- The dotted token is elaborated as one custom syntax node, so the
         -- ordinary identifier elaborator has no original source node on which
         -- to record this local use. Preserve that information explicitly: it
@@ -806,7 +878,7 @@ remain eligible before the packed-field fallback. -/
         let _ ← resolveGlobalConstNoOverload whole
         withoutErrToSorry <| coerceHardwareAtom whole expectedType?
       catch _ =>
-        let projection ← `(hw_packed_field% (hw_atom% $base) $field)
+        let projection ← `(hw_packed_field% $baseTerm $field)
         elabTerm projection expectedType?
   | _ => throwUnsupportedSyntax
 
@@ -829,7 +901,14 @@ remain eligible before the packed-field fallback. -/
         throwErrorAt fieldName
           s!"'{fieldName.getId}' is not a generated field of '{typeName}'"
       let descriptor := .const descriptorName []
-      let result ← Meta.mkAppM ``Loom.Hw.PackedField.read #[descriptor, value]
+      let descriptorType ← Meta.whnf (← Meta.inferType descriptor)
+      let result ←
+        if descriptorType.isAppOfArity ``Loom.Hw.PackedField 3 then
+          Meta.mkAppM ``Loom.Hw.PackedField.read #[descriptor, value]
+        else if descriptorType.isAppOfArity ``Loom.Hw.PackedSubfield 4 then
+          Meta.mkAppM ``Loom.Hw.PackedSubfield.read #[descriptor, value]
+        else
+          throwErrorAt fieldName "generated packed field has an invalid descriptor type"
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -839,17 +918,24 @@ private def recordFieldParts (field : TSyntax `hwrecordfield) :
   | `(hwrecordfield| $name:ident := $value:hwexpr) => pure (name, value)
   | _ => throwErrorAt field "expected `field := expression`"
 
+private inductive PackedDescriptorKind where
+  | scalar (width : Lean.Expr)
+  | nested (type : Lean.Expr)
+
 private def packedDescriptor (typeName : Name) (field : TSyntax `ident) :
-    TermElabM (Lean.Expr × Lean.Expr) := do
+    TermElabM (Lean.Expr × PackedDescriptorKind) := do
   let descriptorName := typeName ++
     Name.mkSimple (field.getId.eraseMacroScopes.toString ++ "Field")
   unless (← getEnv).contains descriptorName do
     throwErrorAt field s!"'{field.getId.eraseMacroScopes}' is not a packed field of '{typeName}'"
   let descriptor := Lean.Expr.const descriptorName []
   let descriptorType ← Meta.whnf (← Meta.inferType descriptor)
-  unless descriptorType.isAppOfArity ``Loom.Hw.PackedField 3 do
+  if descriptorType.isAppOfArity ``Loom.Hw.PackedField 3 then
+    pure (descriptor, .scalar descriptorType.getAppArgs[2]!)
+  else if descriptorType.isAppOfArity ``Loom.Hw.PackedSubfield 4 then
+    pure (descriptor, .nested descriptorType.getAppArgs[2]!)
+  else
     throwErrorAt field "generated packed field has an invalid descriptor type"
-  pure (descriptor, descriptorType.getAppArgs[2]!)
 
 private def elaboratePackedFields (typeName : Name)
     (fields : Array (TSyntax `hwrecordfield)) : TermElabM (Array Lean.Expr) := do
@@ -872,11 +958,22 @@ private def elaboratePackedFields (typeName : Name)
     let some supplied := parts.find? (fun part =>
         part.1.getId.eraseMacroScopes.getString! == shortName)
       | throwError s!"missing packed field '{shortName}' for '{typeName}'"
-    let (_, width) ← packedDescriptor typeName supplied.1
-    let expected := Lean.Expr.app (.const ``Loom.Hw.Expr []) width
+    let (_, kind) ← packedDescriptor typeName supplied.1
+    let expected ← match kind with
+      | .scalar width => pure <| Lean.Expr.app (.const ``Loom.Hw.Expr []) width
+      | .nested type => do
+          let packedInstance ← Meta.synthInstance
+            (Lean.Expr.app (.const ``Loom.Hw.HwPacked [.zero]) type)
+          pure <| Lean.Expr.app
+            (Lean.Expr.app (.const ``Loom.Hw.PackedExpr [.zero]) type) packedInstance
     let valueSyntax := supplied.2
     let quoted ← `(term| [hwexpr| $valueSyntax])
-    values := values.push (← elabTerm quoted (some expected))
+    let value ← match kind with
+      | .scalar _ => elabTerm quoted (some expected)
+      | .nested _ => elaboratePackedAtType quoted expected
+    values := values.push (← match kind with
+      | .scalar _ => pure value
+      | .nested _ => Meta.mkAppM ``Loom.Hw.PackedExpr.bits #[value])
   pure values
 
 @[term_elab hwPackedConstruct] def elabHwPackedConstruct : TermElab := fun stx expectedType? => do
@@ -912,12 +1009,24 @@ private def elaboratePackedFields (typeName : Name)
               s!"duplicate packed field '{parts[later]!.1.getId.eraseMacroScopes}'"
       let mut result := base
       for part in parts do
-        let (descriptor, width) ← packedDescriptor typeName part.1
-        let expected := Lean.Expr.app (.const ``Loom.Hw.Expr []) width
+        let (descriptor, kind) ← packedDescriptor typeName part.1
+        let expected ← match kind with
+          | .scalar width => pure <| Lean.Expr.app (.const ``Loom.Hw.Expr []) width
+          | .nested type => do
+              let packedInstance ← Meta.synthInstance
+                (Lean.Expr.app (.const ``Loom.Hw.HwPacked [.zero]) type)
+              pure <| Lean.Expr.app
+                (Lean.Expr.app (.const ``Loom.Hw.PackedExpr [.zero]) type) packedInstance
         let valueSyntax := part.2
         let quoted ← `(term| [hwexpr| $valueSyntax])
-        let replacement ← elabTerm quoted (some expected)
-        result ← Meta.mkAppM ``Loom.Hw.PackedExpr.setField #[result, descriptor, replacement]
+        let replacement ← match kind with
+          | .scalar _ => elabTerm quoted (some expected)
+          | .nested _ => elaboratePackedAtType quoted expected
+        result ← match kind with
+          | .scalar _ =>
+              Meta.mkAppM ``Loom.Hw.PackedExpr.setField #[result, descriptor, replacement]
+          | .nested _ =>
+              Meta.mkAppM ``Loom.Hw.PackedExpr.setSubfield #[result, descriptor, replacement]
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -931,7 +1040,7 @@ private def elaboratePackedFields (typeName : Name)
           let right ← elaborateScalarAtWidth rightSyntax leftType.getAppArgs[0]!
           Meta.mkAppM ``Loom.Hw.Expr.eq #[left, right]
         else if leftType.isAppOfArity ``Loom.Hw.PackedExpr 2 then
-          let right ← elabTerm rightSyntax (some leftType)
+          let right ← elaboratePackedAtType rightSyntax leftType
           Meta.mkAppM ``Loom.Hw.PackedExpr.eq #[left, right]
         else
           throwErrorAt leftSyntax "hardware equality requires scalar or same-type packed expressions"
@@ -951,28 +1060,102 @@ private def elaboratePackedFields (typeName : Name)
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
-@[term_elab hwPackedWrite] def elabHwPackedWrite : TermElab := fun stx expectedType? => do
+/-- Explicitly reinterpret one packed value as another equal-width semantic
+type. This changes no bits and introduces no hardware; unequal widths fail at
+the source boundary rather than acquiring truncation or extension semantics. -/
+@[term_elab hwPackedReinterpret] def elabHwPackedReinterpret : TermElab :=
+    fun stx expectedType? => do
   match stx with
-  | `(hw_packed_write% $registerSyntax:term $fieldName:ident $valueSyntax:term) => do
-      let register ← elabTerm registerSyntax none
+  | `(hw_packed_reinterpret% $valueSyntax:term $targetSyntax:ident) => do
+      let value ← elabTerm valueSyntax none
+      let valueType ← Meta.whnf (← Meta.inferType value)
+      unless valueType.isAppOfArity ``Loom.Hw.PackedExpr 2 do
+        throwErrorAt valueSyntax "`reinterpret` requires a packed hardware value"
+      let sourceType := valueType.getAppArgs[0]!
+      let targetName ← resolveGlobalConstNoOverload targetSyntax
+      let targetType := Lean.Expr.const targetName []
+      let targetInstance ← Meta.synthInstance
+        (Lean.Expr.app (.const ``Loom.Hw.HwPacked [.zero]) targetType)
+      let sourceWidth ← packedWidth sourceType
+      let targetWidth ← packedWidth targetType
+      unless ← Meta.isDefEq sourceWidth targetWidth do
+        let widths := match (← getNatValue? sourceWidth), (← getNatValue? targetWidth) with
+          | some source, some target =>
+              s!"; source is {source} bits and destination is {target} bits"
+          | _, _ => ""
+        throwErrorAt targetSyntax
+          s!"cannot reinterpret `{packedTypeLabel sourceType}` as `{targetName.getString!}`{widths}; reinterpretation preserves every bit and therefore requires equal widths"
+      let bits ← Meta.mkAppM ``Loom.Hw.PackedExpr.bits #[value]
+      let result ← Meta.mkAppOptM ``Loom.Hw.PackedExpr.fromBits
+        #[some targetType, some targetInstance, some bits]
+      ensureHasType expectedType? result
+  | _ => throwUnsupportedSyntax
+
+private partial def dottedParts : Name → List String
+  | .anonymous => []
+  | .str pre value => dottedParts pre ++ [value]
+  | .num pre value => dottedParts pre ++ [toString value]
+
+@[term_elab hwPackedPathWrite] def elabHwPackedPathWrite : TermElab :=
+    fun stx expectedType? => do
+  match stx with
+  | `(hw_packed_path_write% $whole:ident $valueSyntax:term) => do
+      let parts := dottedParts whole.getId.eraseMacroScopes
+      let rootName :: fields := parts
+        | throwErrorAt whole "packed field assignment requires a dotted register path"
+      if fields.isEmpty then
+        throwErrorAt whole "packed field assignment requires at least one field"
+      let root := mkIdentFrom whole (Name.mkSimple rootName)
+      let register ← elabTerm root none
       let registerType ← Meta.whnf (← Meta.inferType register)
       unless registerType.isAppOfArity ``Loom.Hw.PackedReg 2 do
-        throwErrorAt registerSyntax "packed field assignment requires a packed register"
-      let semanticType := registerType.getAppArgs[0]!
-      let some typeName := semanticType.constName? | throwErrorAt registerSyntax
-        "packed field assignment requires a named packed struct type"
-      let descriptorName := typeName ++
-        Name.mkSimple (fieldName.getId.toString ++ "Field")
-      unless (← getEnv).contains descriptorName do
-        throwErrorAt fieldName
-          s!"'{fieldName.getId}' is not a generated field of '{typeName}'"
-      let descriptor := Lean.Expr.const descriptorName []
-      let descriptorType ← Meta.whnf (← Meta.inferType descriptor)
-      unless descriptorType.isAppOfArity ``Loom.Hw.PackedField 3 do
-        throwErrorAt fieldName "generated packed field has an invalid descriptor type"
-      let fieldWidth := descriptorType.getAppArgs[2]!
-      let value ← elaborateScalarAtWidth valueSyntax fieldWidth
-      let result ← Meta.mkAppM ``Loom.Hw.PackedReg.setField #[register, descriptor, value]
+        throwErrorAt root "packed field assignment requires a packed register"
+      let mut currentType := registerType.getAppArgs[0]!
+      let mut composedNested? : Option Lean.Expr := none
+      let mut finalKind? : Option (Lean.Expr × PackedDescriptorKind) := none
+      for index in [:fields.length] do
+        let some typeName := currentType.constName?
+          | throwErrorAt whole "packed field path requires named packed struct types"
+        let fieldSyntax := mkIdentFrom whole (Name.mkSimple fields[index]!)
+        let (descriptor, kind) ← packedDescriptor typeName fieldSyntax
+        let isLast := index + 1 == fields.length
+        match composedNested?, kind with
+        | none, .scalar width =>
+            unless isLast do
+              throwErrorAt fieldSyntax "cannot project another field through a scalar packed field"
+            finalKind? := some (descriptor, .scalar width)
+        | none, .nested childType =>
+            if isLast then finalKind? := some (descriptor, .nested childType)
+            else
+              composedNested? := some descriptor
+              currentType := childType
+        | some outer, .scalar width =>
+            let composed ← Meta.mkAppM ``Loom.Hw.PackedSubfield.childField
+              #[outer, descriptor]
+            unless isLast do
+              throwErrorAt fieldSyntax "cannot project another field through a scalar packed field"
+            finalKind? := some (composed, .scalar width)
+        | some outer, .nested childType =>
+            let composed ← Meta.mkAppM ``Loom.Hw.PackedSubfield.childSubfield
+              #[outer, descriptor]
+            if isLast then finalKind? := some (composed, .nested childType)
+            else
+              composedNested? := some composed
+              currentType := childType
+      let some (descriptor, kind) := finalKind?
+        | throwErrorAt whole "invalid packed field path"
+      let result ← match kind with
+        | .scalar width => do
+            let value ← elaborateScalarAtWidth valueSyntax width
+            Meta.mkAppM ``Loom.Hw.PackedReg.setField #[register, descriptor, value]
+        | .nested childType => do
+            let packedInstance ← Meta.synthInstance
+              (Lean.Expr.app (.const ``Loom.Hw.HwPacked [.zero]) childType)
+            let expected := Lean.Expr.app
+              (Lean.Expr.app (.const ``Loom.Hw.PackedExpr [.zero]) childType)
+              packedInstance
+            let value ← elaboratePackedAtType valueSyntax expected
+            Meta.mkAppM ``Loom.Hw.PackedReg.setSubfield #[register, descriptor, value]
       ensureHasType expectedType? result
   | _ => throwUnsupportedSyntax
 
@@ -991,9 +1174,7 @@ private def elaboratePackedFields (typeName : Name)
             let name := whole.getId
             if name.isAtomic then
               throwErrorAt whole "assignment target did not elaborate as a hardware register"
-            let register := mkIdentFrom whole name.getPrefix
-            let field := mkIdentFrom whole (Name.mkSimple name.getString!)
-            let fallback ← `(hw_packed_write% $register $field $valueSyntax)
+            let fallback ← `(hw_packed_path_write% $whole $valueSyntax)
             return ← elabTerm fallback expectedType?
         | _ => throwErrorAt targetSyntax
             "assignment target did not elaborate as a hardware register"
@@ -1006,7 +1187,7 @@ private def elaboratePackedFields (typeName : Name)
         else if targetType.isAppOfArity ``Loom.Hw.PackedReg 2 then
           let read ← Meta.mkAppM ``Loom.Hw.PackedReg.rd #[target]
           let packedType ← Meta.inferType read
-          let value ← elabTerm valueSyntax (some packedType)
+          let value ← elaboratePackedAtType valueSyntax packedType
           Meta.mkAppM ``Loom.Hw.PackedReg.set #[target, value]
         else
           throwErrorAt targetSyntax "assignment target must be a scalar or packed register"
@@ -1036,7 +1217,9 @@ private def warnDynamicCost (source : Syntax) (message : String) : TermElabM Uni
       let value ← elaborateScalarAtWidth valueSyntax elementWidth
       let index ← elabTerm indexSyntax none
       let indexType ← Meta.whnf (← Meta.inferType index)
-      let result ← if indexType.isConstOf ``Nat then
+      let result ← if indexType.isAppOfArity ``Fin 1 then
+        Meta.mkAppM ``Loom.Hw.RegArray.set #[family, index, value]
+      else if indexType.isConstOf ``Nat then
         let some indexValue ← getNatValue? (← Meta.whnf index)
           | throwErrorAt indexSyntax "static register-family index must reduce to a numeral"
         let some count ← getNatValue? countExpr
@@ -1048,6 +1231,9 @@ private def warnDynamicCost (source : Syntax) (message : String) : TermElabM Uni
           ⟨$(quote indexValue), by decide⟩ $valueSyntax)
         elabTerm direct expectedType?
       else
+        let index ← if indexType.isAppOfArity ``Loom.Hw.Expr 1 then pure index
+          else coerceHardwareAtom indexSyntax none
+        let indexType ← Meta.whnf (← Meta.inferType index)
         unless indexType.isAppOfArity ``Loom.Hw.Expr 1 do
           throwErrorAt indexSyntax "dynamic register-family index must be a hardware expression"
         warnDynamicCost indexSyntax
@@ -1096,7 +1282,7 @@ private def warnDynamicCost (source : Syntax) (message : String) : TermElabM Uni
         else if endpointType.isAppOfArity ``Loom.Hw.PackedChan.SourceEndpoint 2 then
           let channel ← Meta.mkAppM ``Loom.Hw.PackedChan.SourceEndpoint.channel #[endpoint]
           let sample ← Meta.mkAppM ``Loom.Hw.PackedChan.deq #[channel]
-          let payload ← elabTerm payloadSyntax (some (← Meta.inferType sample))
+          let payload ← elaboratePackedAtType payloadSyntax (← Meta.inferType sample)
           Meta.mkAppM ``Loom.Hw.PackedChan.SourceEndpoint.send #[endpoint, payload]
         else throwErrorAt endpointSyntax "send requires a directional channel source"
       ensureHasType expectedType? result
@@ -1217,15 +1403,21 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
       let result ← if memoryType.isAppOfArity ``Loom.Hw.Mem 2 then
         let addressWidth := memoryType.getAppArgs[0]!
         let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
-        let address ← elabTerm addressSyntax (some addressType)
+        let address ← coerceHardwareAtom addressSyntax (some addressType)
         Meta.mkAppM ``Loom.Hw.Mem.rd #[memory, address]
       else if memoryType.isAppOfArity ``Loom.Hw.PackedMem 3 then
         let addressWidth := memoryType.getAppArgs[0]!
         let addressType := .app (.const ``Loom.Hw.Expr []) addressWidth
-        let address ← elabTerm addressSyntax (some addressType)
+        let address ← coerceHardwareAtom addressSyntax (some addressType)
         Meta.mkAppM ``Loom.Hw.PackedMem.rd #[memory, address]
       else if memoryType.isAppOfArity ``Loom.Hw.RegArray 2 then
-        let address ← elabTerm addressSyntax none
+        let rawAddress ← elabTerm addressSyntax none
+        let addressType ← Meta.whnf (← Meta.inferType rawAddress)
+        if addressType.isAppOfArity ``Fin 1 then
+          return ← ensureHasType expectedType?
+            (← Meta.mkAppM ``Loom.Hw.RegArray.rd #[memory, rawAddress])
+        let address ← if addressType.isAppOfArity ``Loom.Hw.Expr 1 then pure rawAddress
+          else coerceHardwareAtom addressSyntax none
         let addressType ← Meta.whnf (← Meta.inferType address)
         unless addressType.isAppOfArity ``Loom.Hw.Expr 1 do
           throwErrorAt addressSyntax "dynamic register-family index must be a hardware expression"
@@ -1263,7 +1455,7 @@ private def elaborateIndexedContainer (containerSyntax : TSyntax `term) :
           (some (.app (.const ``Loom.Hw.Expr []) addressWidth))
         let sample ← Meta.mkAppM ``Loom.Hw.PackedMem.rd #[memory, address]
         let expectedValue ← Meta.inferType sample
-        let value ← elabTerm valueSyntax (some expectedValue)
+        let value ← elaboratePackedAtType valueSyntax expectedValue
         Meta.mkAppM ``Loom.Hw.PackedMem.write
           #[memory, .lit (.natVal port.getNat), address, value]
       else
@@ -1458,6 +1650,8 @@ macro_rules
         Macro.throwErrorAt operation "the only hardware expression application is `PackedType.fromBits(value)`"
       let typeName := mkIdentFrom operation name.getPrefix
       `(hw_packed_from_bits% $typeName [hwexpr| $bits])
+  | `([hwexpr| reinterpret $value:hwexpr to $target:ident]) =>
+      `(hw_packed_reinterpret% [hwexpr| $value] $target)
   | `([hwexpr| $n:num]) => `(hw_lit% $n)
   | `([hwexpr| $id:ident]) => do
       let name := id.getId
@@ -1478,6 +1672,8 @@ macro_rules
       if hiValue < loValue then
         Macro.throwErrorAt hi "slice high bit must be greater than or equal to its low bit"
       `(hw_slice% (hw_atom% $id) $hi $lo)
+  | `([hwexpr| $memory:ident[$address:ident]]) =>
+      `(hw_mem_read% $memory $address)
   | `([hwexpr| $memory:ident[$address:hwexpr]]) =>
       `(hw_mem_read% $memory [hwexpr| $address])
   | `([hwexpr| $e:hwexpr[$bit:num]]) =>
@@ -1733,6 +1929,8 @@ mutual
         match index with
         | `(hwexpr| $literal:num) =>
             `(hw_array_write% $family ($literal : Nat) [hwexpr| $value])
+        | `(hwexpr| $name:ident) =>
+            `(hw_array_write% $family $name [hwexpr| $value])
         | _ => `(hw_array_write% $family [hwexpr| $index] [hwexpr| $value])
     | `(hwstmt| send $payload:hwexpr to $endpoint:ident then $body:hwstmt) => do
         `(Loom.Hw.Act.ite (hw_channel_observe% $endpoint canSend)
@@ -1871,15 +2069,31 @@ The command below generates an ordinary Lean record and a structural
 it is linear in the field count and never invokes a bit-vector SAT tactic. -/
 
 declare_syntax_cat hwpackedfield
+syntax ident ":" ident : hwpackedfield
 syntax ident ":" num : hwpackedfield
 syntax (name := packedStructCmd) (docComment)? ident ident ident "where"
   withPosition(many1Indent(ppLine hwpackedfield)) : command
 
+private structure PackedFieldSyntax where
+  name : TSyntax `ident
+  type : TSyntax `term
+  width : TSyntax `term
+  nestedType? : Option (TSyntax `ident)
+
 private def packedFieldParts (field : TSyntax `hwpackedfield) :
-    MacroM (TSyntax `ident × TSyntax `num) :=
+    MacroM PackedFieldSyntax :=
   match field with
-  | `(hwpackedfield| $name:ident : $width:num) => pure (name, width)
-  | _ => Macro.throwErrorAt field "expected `field : width`"
+  | `(hwpackedfield| $name:ident : $width:num) => do
+      let type ← `(BitVec $width)
+      pure { name, type, width := ⟨width.raw⟩, nestedType? := none }
+  | `(hwpackedfield| $name:ident : $typeName:ident) => do
+      let width ← `(Loom.Hw.HwPacked.width $typeName)
+      pure {
+        name
+        type := ⟨typeName.raw⟩
+        width
+        nestedType? := some typeName }
+  | _ => Macro.throwErrorAt field "expected `field : width` or `field : PackedType`"
 
 private def packedProjection (value field : TSyntax `ident) : MacroM (TSyntax `term) :=
   `($value.$field)
@@ -1887,43 +2101,52 @@ private def packedProjection (value field : TSyntax `ident) : MacroM (TSyntax `t
 private partial def packedAppendTerm (value : TSyntax `ident) :
     List (TSyntax `ident) → MacroM (TSyntax `term)
   | [] => `(0#0)
-  | [field] => packedProjection value field
+  | [field] => do
+      let projection ← packedProjection value field
+      `(Loom.Hw.HwPacked.pack $projection)
   | field :: rest => do
-      let head ← packedProjection value field
-      `($head ++ $(← packedAppendTerm value rest))
+    let head ← packedProjection value field
+    `(Loom.Hw.HwPacked.pack $head ++ $(← packedAppendTerm value rest))
+
+private def packedWidthSum : List (TSyntax `term) → MacroM (TSyntax `term)
+  | [] => `(0)
+  | [width] => pure width
+  | width :: rest => do
+      let tail ← packedWidthSum rest
+      `($width + $tail)
 
 private def packedUnpackTerms (bits : TSyntax `ident)
-    (widths : List Nat) : MacroM (Array (TSyntax `term)) := do
+    (widths : List (TSyntax `term)) : MacroM (Array (TSyntax `term)) := do
   let mut result := #[]
   let mut tail : TSyntax `term := ⟨bits.raw⟩
   for index in [:widths.length] do
     let width := widths[index]!
-    let restWidth := (widths.drop (index + 1)).foldl (· + ·) 0
+    let restWidth ← packedWidthSum (widths.drop (index + 1))
     if index + 1 == widths.length then
-      result := result.push tail
+      result := result.push (← `(Loom.Hw.HwPacked.unpack $tail))
     else
       let high ← `(Loom.Hw.Dsl.packedHigh
-        (highWidth := $(quote width)) (lowWidth := $(quote restWidth)) $tail)
-      result := result.push high
+        (highWidth := $width) (lowWidth := $restWidth) $tail)
+      result := result.push (← `(Loom.Hw.HwPacked.unpack $high))
       tail ← `(Loom.Hw.Dsl.packedLow
-        (highWidth := $(quote width)) (lowWidth := $(quote restWidth)) $tail)
+        (highWidth := $width) (lowWidth := $restWidth) $tail)
   pure result
 
 private partial def packedRejoinProof (bits : TSyntax `term) :
-    List Nat → MacroM (TSyntax `term)
+    List (TSyntax `term) → MacroM (TSyntax `term)
   | [] => `(rfl)
   | [_] => `(rfl)
   | width :: rest => do
-      let restWidth := rest.foldl (· + ·) 0
+      let restWidth ← packedWidthSum rest
       let high ← `(Loom.Hw.Dsl.packedHigh
-        (highWidth := $(quote width)) (lowWidth := $(quote restWidth)) $bits)
+        (highWidth := $width) (lowWidth := $restWidth) $bits)
       let low ← `(Loom.Hw.Dsl.packedLow
-        (highWidth := $(quote width)) (lowWidth := $(quote restWidth)) $bits)
+        (highWidth := $width) (lowWidth := $restWidth) $bits)
       let tailProof ← packedRejoinProof low rest
       `(Eq.trans
         (congrArg (fun remainder => $high ++ remainder) $tailProof)
         (Loom.Hw.Dsl.packedHigh_append_low
-          (highWidth := $(quote width)) (lowWidth := $(quote restWidth)) $bits))
+          (highWidth := $width) (lowWidth := $restWidth) $bits))
 
 private def expandPackedStruct
     (documentation : Option (TSyntax ``Lean.Parser.Command.docComment))
@@ -1931,17 +2154,20 @@ private def expandPackedStruct
   if fields.isEmpty then
     Macro.throwErrorAt typeName "a packed struct requires at least one field"
   let parts ← fields.mapM packedFieldParts
-  let names : Array (TSyntax `ident) := parts.map fun part => part.1
-  let widthSyntax : Array (TSyntax `num) := parts.map fun part => part.2
-  let widths := widthSyntax.toList.map (·.getNat)
-  for index in [:widths.length] do
-    if widths[index]! == 0 then
-      Macro.throwErrorAt widthSyntax[index]! "packed fields must have positive width"
-    for later in [index + 1:widths.length] do
+  let names : Array (TSyntax `ident) := parts.map (·.name)
+  let fieldTypes : Array (TSyntax `term) := parts.map (·.type)
+  let widths : List (TSyntax `term) := parts.toList.map (·.width)
+  for index in [:parts.size] do
+    match fields[index]! with
+    | `(hwpackedfield| $_:ident : $width:num) =>
+        if width.getNat == 0 then
+          Macro.throwErrorAt width "packed fields must have positive width"
+    | _ => pure ()
+    for later in [index + 1:parts.size] do
       if names[index]!.getId == names[later]!.getId then
         Macro.throwErrorAt names[later]!
           s!"duplicate packed field '{names[later]!.getId}'"
-  let totalWidth := widths.foldl (· + ·) 0
+  let totalWidth ← packedWidthSum widths
   let packName := mkIdentFrom typeName (typeName.getId ++ `packBits)
   let unpackName := mkIdentFrom typeName (typeName.getId ++ `unpackBits)
   let layoutName := mkIdentFrom typeName (typeName.getId ++ `layout)
@@ -1951,20 +2177,31 @@ private def expandPackedStruct
   let unpackTerms ← packedUnpackTerms bitsName widths
   let bitsTerm : TSyntax `term := ⟨bitsName.raw⟩
   let rejoinProof ← packedRejoinProof bitsTerm widths
+  let packUnpackProof ← if widths.length == 1 then
+      let some onlyType := fieldTypes[0]?
+        | Macro.throwErrorAt typeName "internal packed-field type indexing error"
+      `(fun $bitsName => by
+        unfold $packName $unpackName
+        exact Loom.Hw.HwPacked.pack_unpack (α := $onlyType) $bitsName)
+    else
+      `(fun $bitsName => by
+        unfold $packName $unpackName
+        simp only [Loom.Hw.HwPacked.pack_unpack]
+        exact $rejoinProof)
   let structureCommand ← `(command|
     $[$documentation]?
     structure $typeName where
-      $[$names:ident : BitVec $widthSyntax:num]*
+      $[$names:ident : $fieldTypes:term]*
       deriving DecidableEq, Repr)
   let packCommand ← `(command|
-    def $packName ($valueName : $typeName) : BitVec $(quote totalWidth) :=
+    def $packName ($valueName : $typeName) : BitVec $totalWidth :=
       $packTerm)
   let unpackCommand ← `(command|
-    def $unpackName ($bitsName : BitVec $(quote totalWidth)) : $typeName :=
+    def $unpackName ($bitsName : BitVec $totalWidth) : $typeName :=
       { $[$names:ident := $unpackTerms:term],* })
   let instanceCommand ← `(command|
     instance : Loom.Hw.HwPacked $typeName where
-      width := $(quote totalWidth)
+      width := $totalWidth
       pack := $packName
       unpack := $unpackName
       unpack_pack := by
@@ -1972,36 +2209,43 @@ private def expandPackedStruct
         cases value
         unfold $packName $unpackName
         simp only [
-          Loom.Hw.Dsl.packedHigh_append, Loom.Hw.Dsl.packedLow_append]
-      pack_unpack := fun $bitsName => by
-        unfold $packName $unpackName
-        exact $rejoinProof)
+          Loom.Hw.Dsl.packedHigh_append, Loom.Hw.Dsl.packedLow_append,
+          Loom.Hw.HwPacked.unpack_pack]
+      pack_unpack := $packUnpackProof)
   let mut spans : Array (TSyntax `term) := #[]
   let mut fieldCommands : Array Syntax := #[]
   for index in [:names.size] do
+    let some part := parts[index]?
+      | Macro.throwErrorAt typeName "internal packed-field indexing error"
     let fieldName := names[index]!
     let width := widths[index]!
-    let lo := (widths.drop (index + 1)).foldl (· + ·) 0
+    let lo ← packedWidthSum (widths.drop (index + 1))
     let sourceName := Syntax.mkStrLit fieldName.getId.toString
-    let span ← `(term| (⟨$sourceName, $(quote width), $(quote lo)⟩ :
+    let span ← `(term| (⟨$sourceName, $width, $lo⟩ :
       Loom.Hw.PackedSpan))
     spans := spans.push span
     let descriptorName := mkIdentFrom fieldName
       (typeName.getId ++ Name.mkSimple (fieldName.getId.toString ++ "Field"))
-    let descriptorCommand ← `(command|
-      def $descriptorName : Loom.Hw.PackedField $typeName $(quote width) :=
-        { name := $sourceName
-          lo := $(quote lo)
-          inBounds := by decide })
+    let descriptorCommand ← match part.nestedType? with
+      | none => `(command|
+          def $descriptorName : Loom.Hw.PackedField $typeName $width :=
+            { name := $sourceName
+              lo := $lo
+              inBounds := by decide })
+      | some nestedType => `(command|
+          def $descriptorName : Loom.Hw.PackedSubfield $typeName $nestedType :=
+            { name := $sourceName
+              lo := $lo
+              inBounds := by decide })
     fieldCommands := fieldCommands.push descriptorCommand
   let layoutCommand ← `(command|
     def $layoutName : Loom.Hw.PackedLayout $typeName where
       fields := [$spans,*]
-      namesUnique := by native_decide
-      inBounds := by native_decide
-      disjoint := by native_decide
-      complete := by native_decide
-      msbFirst := by native_decide)
+      namesUnique := by decide
+      inBounds := by decide
+      disjoint := by decide
+      complete := by decide
+      msbFirst := by decide)
   let layoutInstanceCommand ← `(command|
     instance : Loom.Hw.HwPackedLayout $typeName := ⟨$layoutName⟩)
   pure <| Lean.mkNullNode <|
@@ -2163,26 +2407,30 @@ private def knownLint (name : Name) : Bool :=
 
 private def cleanHardwareName (name : Name) : Name := name.eraseMacroScopes
 
-/-- Interpret an assignment target relative to the declared register names.
-The surface language currently has only one-level packed field lvalues, but
-checking the declared base keeps a dotted identifier from being mistaken for
-an unrelated coordinate. -/
+private partial def nameExtends (base name : Name) : Bool :=
+  name == base || (!name.isAtomic && nameExtends base name.getPrefix)
+
+/-- Interpret a whole or recursively nested assignment target relative to the
+declared register names. Retaining the complete field path lets the lints
+distinguish disjoint siblings while recognizing parent/child overlap. -/
 private def writtenTargetOf (registers : Array Name) (target : TSyntax `ident)
     (overrideExpected : Bool) : WrittenTarget :=
   let name := cleanHardwareName target.getId
   let declared := registers.map cleanHardwareName
-  let basePrefix := if name.isAtomic then name else name.getPrefix
   let base := if declared.contains name then name
-    else if declared.contains basePrefix then basePrefix
-    else name
+    else (declared.find? fun candidate => nameExtends candidate name).getD name
   let field := if name == base then none
-    else if !name.isAtomic && name.getPrefix == base then some (Name.mkSimple name.getString!)
+    else if nameExtends base name then some name
     else none
   ⟨base, field, target, overrideExpected⟩
 
 private def writtenTargetsOverlap (left right : WrittenTarget) : Bool :=
   left.base == right.base &&
-    (left.field.isNone || right.field.isNone || left.field == right.field)
+    (left.field.isNone || right.field.isNone ||
+      (match left.field, right.field with
+       | some leftPath, some rightPath =>
+           nameExtends leftPath rightPath || nameExtends rightPath leftPath
+       | _, _ => false))
 
 private partial def expressionReads : TSyntax `hwexpr → List (TSyntax `ident)
   | `(hwexpr| $_:num) => []
@@ -2197,6 +2445,7 @@ private partial def expressionReads : TSyntax `hwexpr → List (TSyntax `ident)
   | `(hwexpr| ~ $value:hwexpr) => expressionReads value
   | `(hwexpr| zext $value:hwexpr to $_:num) => expressionReads value
   | `(hwexpr| sext $value:hwexpr to $_:num) => expressionReads value
+  | `(hwexpr| reinterpret $value:hwexpr to $_:ident) => expressionReads value
   | `(hwexpr| $left:hwexpr * $right:hwexpr)
   | `(hwexpr| $left:hwexpr / $right:hwexpr)
   | `(hwexpr| $left:hwexpr % $right:hwexpr)
@@ -2222,14 +2471,10 @@ private def readAfterWriteFindings (registers : Array Name)
   if suppressed.contains `read_after_write then []
   else
     (expressionReads expression).filterMap fun (read : TSyntax `ident) =>
-      let readName := cleanHardwareName read.getId
+      let readTarget := writtenTargetOf registers read false
       let declared := registers.map cleanHardwareName
-      let basePrefix := if readName.isAtomic then readName else readName.getPrefix
-      let readBase := if declared.contains readName then some readName
-        else if declared.contains basePrefix then some basePrefix
-        else none
-      if let some base := readBase then
-        if written.any (fun prior => prior.base == base) then
+      if declared.contains readTarget.base then
+        if written.any (fun prior => writtenTargetsOverlap prior readTarget) then
           some ⟨read.raw,
             s!"'{read.getId}' reads its start-of-cycle value; an earlier write takes effect next cycle",
             `read_after_write⟩
@@ -2285,6 +2530,7 @@ private partial def unguardedDataFindings (suppressed : Array Name)
   | `(hwexpr| ~ $value:hwexpr)
   | `(hwexpr| zext $value:hwexpr to $_:num)
   | `(hwexpr| sext $value:hwexpr to $_:num)
+  | `(hwexpr| reinterpret $value:hwexpr to $_:ident)
   | `(hwexpr| $value:hwexpr[$_:num])
   | `(hwexpr| $value:hwexpr[$_:num:$__:num]) => unguardedDataFindings suppressed guards value
   | `(hwexpr| $_:ident[$address:hwexpr]) =>
@@ -2614,9 +2860,10 @@ private partial def validateWriteTargets (writable : Array Name)
     (deferExternal : Bool := false) : TSyntax `hwstmt → MacroM Unit
   | `(hwstmt| skip) => pure ()
   | `(hwstmt| $target:ident <- $_:hwexpr) =>
-      let targetName := target.getId
-      let registerName := if targetName.isAtomic then targetName else targetName.getPrefix
-      unless deferExternal || writable.contains registerName do
+      let targetName := target.getId.eraseMacroScopes
+      let writable := writable.map (·.eraseMacroScopes)
+      unless deferExternal || writable.any (fun register =>
+          nameExtends register targetName) do
         Macro.throwErrorAt target
           s!"'{target.getId}' is not a writable register in this hardware block"
   | `(hwstmt| $_:ident[port $_:num, $_:hwexpr] <- $_:hwexpr) => pure ()
@@ -3688,6 +3935,32 @@ private def normalizeDeclarationConstant (item : TSyntax `hwitem) :
       let expanded ← liftMacroM <|
         expandHardwareCommand documentation moduleName normalizedItems deferExternalWrites
       elabCommand expanded
+      unless deferExternalWrites do
+        let designName := mkIdentFrom moduleName `design
+        let readyCommand ← `(command|
+          instance : Loom.Hw.ExtensionBaseReady $designName where
+            names := by decide
+            reads := (Loom.Hw.Design.readsOkInComponentsB_iff
+              $designName $designName).mp (by decide)
+            compiler := Loom.Hw.Compile.designWFCheck_sound
+              $designName (by decide))
+        -- Readiness is reusable evidence, not an additional validity gate for
+        -- deliberately open/negative `hardware` declarations.  Try to produce
+        -- it once and roll back both declaration and diagnostics if the design
+        -- is not independently ready.
+        let savedState ← get
+        let generated ← try
+          elabCommand readyCommand
+          let newMessages := (← get).messages.toList.drop
+            savedState.messages.toList.length
+          if newMessages.any (fun message => message.severity == .error) then
+            set savedState
+            pure false
+          else pure true
+        catch _ =>
+          set savedState
+          pure false
+        unless generated do pure ()
       modifyEnv (hardwareMetadataExt.addEntry · metadata)
   | _ => throwUnsupportedSyntax
 
@@ -4058,7 +4331,7 @@ def runHardwareOpen {design : Loom.Hw.Design}
 
 syntax (name := runHardwareCmd) "#run_hardware" term:max "for" num ident : command
 syntax (name := runHardwareOpenCmd) "#run_hardware" term:max "for" num ident
-  "inputs" "$" "(" term ")" : command
+  "with" "$" "(" term ")" : command
 
 macro_rules
   | `(#run_hardware $design:term for $count:num $unit:ident) => do
@@ -4068,7 +4341,7 @@ macro_rules
         (design := $design)
         ({ wf := by native_decide } : Loom.Hw.FastEval.VerifiedSimulator $design)
         $count)
-  | `(#run_hardware $design:term for $count:num $unit:ident inputs $($trace:term)) => do
+  | `(#run_hardware $design:term for $count:num $unit:ident with $($trace:term)) => do
       unless unit.getId == `cycles do
         Macro.throwErrorAt unit "expected `cycles`"
       `(#eval Loom.Hw.Dsl.runHardwareOpen
@@ -4086,11 +4359,8 @@ realization already lower through the same checked System APIs. -/
 is exactly `Design.par`'s declaration/rule concatenation with the base module
 name retained; existing design and realization gates still reject coordinate
 or rule collisions. -/
-def extendDesign (base added : Design)
-    (_disjoint : base.parOkB added)
-    (readScope : Design)
-    (_readsDeclared : readScope.readsOkB)
-    (_writesDeclared : Compile.designWFCheck readScope = true) : Design :=
+def extendDesign (base added addedBody readScope : Design)
+    (_certificate : ExtensionCertificate base added addedBody readScope) : Design :=
   { name := base.name
     regs := base.regs ++ added.regs
     mems := base.mems ++ added.mems
@@ -4233,6 +4503,7 @@ projections here: this is kernel reduction of ordinary shallow-EDSL data, not
 a second manifest and not execution of the Design. -/
 
 private structure InspectableDesign where
+  value : Lean.Expr
   regs : Array (String × Nat)
   mems : Array (String × Nat × Nat)
   ports : Array (String × Nat)
@@ -4283,9 +4554,11 @@ private unsafe def inspectBaseDesign (baseSyntax : TSyntax `term) : CommandElabM
       let regs ← Meta.mkAppM ``Design.regs #[base] >>= inspectMetaList
       let mems ← Meta.mkAppM ``Design.mems #[base] >>= inspectMetaList
       let ports ← Meta.mkAppM ``Design.inputs #[base] >>= inspectMetaList
+      let inspectedMems ← mems.mapM inspectMemDecl
       return {
+        value := base
         regs := ← regs.mapM inspectRegDecl
-        mems := ← mems.mapM inspectMemDecl
+        mems := inspectedMems
         ports := ← ports.mapM inspectInputDecl
       }
   catch _ =>
@@ -4339,6 +4612,55 @@ private def itemLocalNames (items : Array (TSyntax `hwitem)) : Array Name :=
       | some name => names.push name.getId.eraseMacroScopes
       | none => names) #[]
 
+private structure SurfaceMemoryWrite where
+  memory : TSyntax `ident
+  portIndex : TSyntax `num
+
+private partial def surfaceMemoryWrites : TSyntax `hwstmt → Array SurfaceMemoryWrite
+  | `(hwstmt| $memory:ident[port $portIndex:num, $_:hwexpr] <- $_:hwexpr) =>
+      #[⟨memory, portIndex⟩]
+  | `(hwstmt| for $_:ident in $_:term generate $body:hwstmt)
+  | `(hwstmt| send $_:hwexpr to $_:ident then $body:hwstmt)
+  | `(hwstmt| receive $_:ident from $_:ident then $body:hwstmt)
+  | `(hwstmt| suppress $_:ident because $_:str in $body:hwstmt) =>
+      surfaceMemoryWrites body
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt else $no:hwstmt) =>
+      surfaceMemoryWrites yes ++ surfaceMemoryWrites no
+  | `(hwstmt| if $_:hwexpr then $yes:hwstmt) => surfaceMemoryWrites yes
+  | `(hwstmt| case $_:hwexpr of $arms:hwcasearm*) =>
+      arms.foldl (fun writes arm => match arm with
+        | `(hwcasearm| | default => $body:hwstmt)
+        | `(hwcasearm| | $_:hwexpr => $body:hwstmt) =>
+            writes ++ surfaceMemoryWrites body
+        | _ => writes) #[]
+  | `(hwstmt| {$statements:hwstmt,*}) =>
+      statements.getElems.foldl (fun writes statement =>
+        writes ++ surfaceMemoryWrites statement) #[]
+  | _ => #[]
+
+private def itemMemoryWrites (items : Array (TSyntax `hwitem)) :
+    Array SurfaceMemoryWrite :=
+  items.foldl (fun writes item => match item with
+    | `(hwitem| $kind:ident $_:ident := $body:hwstmt)
+    | `(hwitem| $kind:ident $_:ident suppress $_:ident because $_:str := $body:hwstmt) =>
+        if kind.getId == `rule then writes ++ surfaceMemoryWrites body else writes
+    | _ => writes) #[]
+
+private def inspectBaseMemoryPorts (base : InspectableDesign)
+    (memory : String) : TermElabM (List Nat) := do
+  let trace ← Meta.mkAppM ``Compile.designTrace
+    #[base.value, Lean.mkStrLit memory] >>= inspectMetaList
+  pure (← trace.mapM inspectNat).toList
+
+private def validateCrossBaseMemoryPort (base : InspectableDesign)
+    (source : Syntax) (memory : String) (portIndex : Nat) : CommandElabM Unit :=
+  liftTermElabM do
+    let oldPorts ← inspectBaseMemoryPorts base memory
+    if let some highest := oldPorts.max? then
+      unless highest < portIndex do
+        throwErrorAt source
+          s!"memory write port {portIndex} for base memory '{memory}' must follow existing base ports; the highest existing port is {highest}, so use port {highest + 1} or greater"
+
 private unsafe def reducedHandleName? (value type : Lean.Expr) : TermElabM (Option String) := do
   let projection? : Option Name :=
     if type.isAppOfArity ``Reg 1 then some ``Reg.name
@@ -4380,15 +4702,21 @@ private def validateReadSites (base : InspectableDesign) (endpoints : Array Name
 
 private def validateActionWrites (base : InspectableDesign) (endpoints : Array Name)
     (source : TSyntax `ident) (registers : List (String × Nat))
-    (memories : List String) : TermElabM Unit := do
+    (memories : List (String × List Nat)) : TermElabM Unit := do
   for (name, width) in registers do
     unless base.regs.contains (name, width) || generatedEndpointCoordinate endpoints name do
       throwErrorAt source
         s!"extension helper '{source.getId}' writes hardware coordinate '{name}' at width {width}, which is not declared by its base Design or generated endpoints"
-  for name in memories do
+  for (name, ports) in memories do
     unless base.mems.any (fun declaration => declaration.1 == name) do
       throwErrorAt source
         s!"extension helper '{source.getId}' writes memory '{name}', which is not declared by its base Design"
+    let oldPorts ← inspectBaseMemoryPorts base name
+    if let some highest := oldPorts.max? then
+      for portIndex in ports do
+        unless highest < portIndex do
+          throwErrorAt source
+            s!"extension helper '{source.getId}' writes base memory '{name}' through port {portIndex}, but extension ports must follow existing base ports; the highest existing port is {highest}, so use port {highest + 1} or greater"
 
 private unsafe def validateExtensionIdentifier (base : InspectableDesign)
     (endpoints : Array Name) (identifier : TSyntax `ident) : CommandElabM Unit :=
@@ -4421,9 +4749,16 @@ private unsafe def validateExtensionIdentifier (base : InspectableDesign)
         let writes ← inspectClosedValue identifier (← Meta.inferType writesExpr)
           writesExpr "write coordinates"
         let memWritesExpr ← Meta.mkAppM ``Act.memWrites #[value]
-        let memWrites ← inspectClosedValue identifier (← Meta.inferType memWritesExpr)
+        let memWrites : List String ← inspectClosedValue identifier
+          (← Meta.inferType memWritesExpr)
           memWritesExpr "memory writes"
-        validateActionWrites base endpoints identifier writes memWrites
+        let memoryPorts ← memWrites.mapM fun memory => do
+          let traceExpr ← Meta.mkAppM ``Compile.portTrace
+            #[Lean.mkStrLit memory, value]
+          let trace ← inspectClosedValue identifier (← Meta.inferType traceExpr)
+            traceExpr "memory write ports"
+          pure (memory, trace)
+        validateActionWrites base endpoints identifier writes memoryPorts
         return some ()
       let some name ← reducedHandleName? value type | pure none
       let valid ←
@@ -4466,6 +4801,11 @@ private unsafe def validateExtensionBase (baseSyntax : TSyntax `term)
   let binders := itemBinderNames items
   let endpoints := connections.filterMap fun (channel, source, sink) =>
     if source == islandName || sink == islandName then some channel else none
+  for write in itemMemoryWrites items do
+    let hardwareName := write.memory.getId.eraseMacroScopes.getString!
+    unless locals.contains write.memory.getId.eraseMacroScopes do
+      validateCrossBaseMemoryPort base write.portIndex.raw hardwareName
+        write.portIndex.getNat
   let identifiers := items.foldl (fun found item =>
     found ++ syntaxIdentifiers item.raw) #[]
   for identifier in identifiers do
@@ -4723,15 +5063,73 @@ private def expandSystemCommand
           let (generated, addedTerm) ← inlineDesign
           commands := commands ++ generated
           let plainExtended ← `(term| $baseTerm |>.par $addedTerm)
-          let mut readScope := plainExtended
-          for connection in connections do
+          let initialShape ← `(term| Loom.Hw.ExtensionShape.par $baseTerm $addedTerm)
+          let initialAdaptation ← `(term|
+            (Loom.Hw.ExtensionAdaptation.refl (added := $addedTerm)))
+          let (readScope, addedBody, shape, adaptation) ← connections.foldlM
+              (fun state connection => do
+            let (readScope, addedBody, shape, adaptation) := state
             let channelName := qualifiedNestedName connection.channel.getId
-            if connection.source.getId == island.name.getId then
-              readScope ← `(term| (hw_exact_const% $channelName).withSource $readScope)
-            if connection.sink.getId == island.name.getId then
-              readScope ← `(term| (hw_exact_const% $channelName).withSink $readScope)
-          let extended ← `(term| Loom.Hw.Dsl.extendDesign $baseTerm $addedTerm
-            (by native_decide) $readScope (by native_decide) (by native_decide))
+            let (readScope, addedBody, shape, adaptation) ←
+              if connection.source.getId == island.name.getId then do
+                let nextScope ← `(term|
+                  (hw_exact_const% $channelName).withSource $readScope)
+                let nextBody ← `(term|
+                  (hw_exact_const% $channelName).withSource $addedBody)
+                let nextShape ← `(term|
+                  Loom.Hw.ExtensionShape.withSource $shape
+                    (hw_exact_const% $channelName))
+                let nextAdaptation ← `(term|
+                  Loom.Hw.ExtensionAdaptation.withSource $adaptation
+                    (hw_exact_const% $channelName))
+                pure (nextScope, nextBody, nextShape, nextAdaptation)
+              else pure (readScope, addedBody, shape, adaptation)
+            if connection.sink.getId == island.name.getId then do
+              let nextScope ← `(term|
+                (hw_exact_const% $channelName).withSink $readScope)
+              let nextBody ← `(term|
+                (hw_exact_const% $channelName).withSink $addedBody)
+              let nextShape ← `(term|
+                Loom.Hw.ExtensionShape.withSink $shape
+                  (hw_exact_const% $channelName))
+              let nextAdaptation ← `(term|
+                Loom.Hw.ExtensionAdaptation.withSink $adaptation
+                  (hw_exact_const% $channelName))
+              pure (nextScope, nextBody, nextShape, nextAdaptation)
+            else pure (readScope, addedBody, shape, adaptation))
+              (plainExtended, addedTerm, initialShape, initialAdaptation)
+          let localReady ← `(term|
+            by
+              first
+              | exact Loom.Hw.ExtensionLocalReady.ofChecksNoMemoryWrites
+                  (base := $baseTerm) (addedBody := $addedBody) (scope := $readScope)
+                  (by decide) (by decide) (by decide) (by decide) (by decide)
+                  (by decide) (by decide) (by decide) (by decide) (by decide)
+              | exact Loom.Hw.ExtensionLocalReady.ofChecks
+                  (base := $baseTerm) (addedBody := $addedBody) (scope := $readScope)
+                  (by decide) (by decide) (by decide) (by decide) (by decide)
+                  (by decide) (by decide) (by decide) (by decide) (by decide)
+                  (by decide))
+          let baseReadyName := nestedName (Name.mkSimple
+            (island.name.getId.toString ++ "ExtensionBaseReady"))
+          commands := commands.push (← `(command|
+            def $baseReadyName : Loom.Hw.ExtensionBaseReady $baseTerm := by
+              first
+              | exact (inferInstance : Loom.Hw.ExtensionBaseReady $baseTerm)
+              | exact {
+                  names := by decide
+                  reads := (Loom.Hw.Design.readsOkInComponentsB_iff
+                    $baseTerm $baseTerm).mp (by decide)
+                  compiler := Loom.Hw.Compile.designWFCheck_sound
+                    $baseTerm (by decide) } ))
+          let certificate ← `(term|
+            Loom.Hw.ExtensionCertificate.ofComponents
+              (base := $baseTerm) (added := $addedTerm)
+              (addedBody := $addedBody) (scope := $readScope)
+              $baseReadyName
+              $adaptation $shape $localReady)
+          let extended ← `(term| Loom.Hw.Dsl.extendDesign
+            $baseTerm $addedTerm $addedBody $readScope $certificate)
           match island.moduleName with
           | none => pure extended
           | some moduleName =>
@@ -4801,12 +5199,12 @@ private def expandSystemCommand
     commands := commands.push (← `(command|
       def $assembledName : Loom.Hw.SystemIsland :=
         $requiredIsland $qualifiedSystem $sourceName
-          (by native_decide)))
+          (by rfl)))
     commands := commands.push (← `(command|
       theorem $foundName :
           ($qualifiedSystem).findIsland? $sourceName = some $assembledName :=
         $findRequiredIsland
-          $qualifiedSystem $sourceName (by native_decide)))
+          $qualifiedSystem $sourceName (by rfl)))
   let mut plan : TSyntax `term ← `(Loom.Hw.RealizationPlan.portable)
   for realization in realizations do
     let routeName := nestedName

@@ -44,6 +44,7 @@ def actionDeclsOk (d : Design) : Act → Bool
   | .seq left right => actionDeclsOk d left && actionDeclsOk d right
   | .ite _ thenAct elseAct => actionDeclsOk d thenAct && actionDeclsOk d elseAct
   | .write width name _ => registerDeclOk d width name
+  | .writeSlice width name _ _ _ _ => registerDeclOk d width name
   | .memWrite aw dw name _ _ _ => memoryDeclOk d aw dw name
 
 /-- A compositional action-declaration certificate over a rule list. -/
@@ -99,6 +100,12 @@ private theorem actionDeclsOk_regWrites (d : Design) : ∀ (action : Act),
     obtain ⟨reg, hreg, hmatch⟩ := List.any_eq_true.mp h
     simp only [Bool.and_eq_true, beq_iff_eq] at hmatch
     exact ⟨reg, hreg, hmatch⟩
+  · rename_i actualWidth actualName lo fieldWidth inBounds value
+    simp only [List.mem_singleton, Prod.mk.injEq] at hwrite
+    rcases hwrite with ⟨rfl, rfl⟩
+    obtain ⟨reg, hreg, hmatch⟩ := List.any_eq_true.mp h
+    simp only [Bool.and_eq_true, beq_iff_eq] at hmatch
+    exact ⟨reg, hreg, hmatch⟩
   · contradiction
 
 private theorem actionDeclsOk_memWrites (d : Design) : ∀ (action : Act),
@@ -118,6 +125,7 @@ private theorem actionDeclsOk_memWrites (d : Design) : ∀ (action : Act),
     rcases List.mem_append.mp hwrite with hwrite | hwrite
     · exact ihThen h.1 name hwrite
     · exact ihElse h.2 name hwrite
+  · contradiction
   · contradiction
   · rename_i aw dw actualName port address value
     simp only [Bool.and_eq_true] at h
@@ -144,6 +152,7 @@ private theorem actionDeclsOk_widths (d : Design) (mem : MemDecl)
       simp only [widthsOk, Bool.and_eq_true]
       exact ⟨ihThen h.1, ihElse h.2⟩
   | write => intro _; rfl
+  | writeSlice => intro _; rfl
   | memWrite aw dw name port address value =>
     intro h
     simp only [actionDeclsOk, memoryDeclOk, Bool.and_eq_true] at h
@@ -154,6 +163,79 @@ private theorem actionDeclsOk_widths (d : Design) (mem : MemDecl)
         beq_iff_eq] at hall
       simp [widthsOk, hname, hall.1.symm, hall.2.symm]
     · simp [widthsOk, hname]
+
+/-- Fragment-local declaration checking supplies register-write witnesses in
+the enlarged design.  Extension certificates use this without rechecking the
+base rules. -/
+theorem RulesDeclsOk.regWrites {d : Design} {rules : List Rule}
+    (valid : RulesDeclsOk d rules) {rule : Rule} (member : rule ∈ rules)
+    {name : String} {width : Nat}
+    (write : (name, width) ∈ rule.body.regWrites) :
+    ∃ reg ∈ d.regs, reg.name = name ∧ reg.width = width :=
+  actionDeclsOk_regWrites d rule.body (valid.all rule member) name width write
+
+/-- Fragment-local declaration checking supplies memory-write witnesses in
+the enlarged design. -/
+theorem RulesDeclsOk.memWrites {d : Design} {rules : List Rule}
+    (valid : RulesDeclsOk d rules) {rule : Rule} (member : rule ∈ rules)
+    {name : String} (write : name ∈ rule.body.memWrites) :
+    ∃ memory ∈ d.mems, memory.name = name :=
+  actionDeclsOk_memWrites d rule.body (valid.all rule member) name write
+
+/-- Fragment-local declaration checking also supplies the memory-width side
+of `MemWriteWF`. -/
+theorem RulesDeclsOk.widths {d : Design} {rules : List Rule}
+    (valid : RulesDeclsOk d rules) {rule : Rule} (member : rule ∈ rules)
+    {memory : MemDecl} (declared : memory ∈ d.mems) :
+    widthsOk memory.name memory.addrWidth memory.dataWidth rule.body = true :=
+  actionDeclsOk_widths d memory declared rule.body (valid.all rule member)
+
+/-- An action that does not write a memory satisfies that memory's width
+obligation without inspecting unrelated declarations. -/
+theorem widthsOk_of_not_memWrites (memory : MemDecl) : ∀ action : Act,
+    memory.name ∉ action.memWrites →
+      widthsOk memory.name memory.addrWidth memory.dataWidth action = true := by
+  intro action
+  induction action with
+  | skip => simp [widthsOk, Act.memWrites]
+  | seq left right ihLeft ihRight =>
+      simp only [Act.memWrites, List.mem_append, not_or]
+      rintro ⟨hleft, hright⟩
+      simp [widthsOk, ihLeft hleft, ihRight hright]
+  | ite guard thenAct elseAct ihThen ihElse =>
+      simp only [Act.memWrites, List.mem_append, not_or]
+      rintro ⟨hthen, helse⟩
+      simp [widthsOk, ihThen hthen, ihElse helse]
+  | write => simp [widthsOk, Act.memWrites]
+  | writeSlice => simp [widthsOk, Act.memWrites]
+  | memWrite aw dw name port address value =>
+      simp only [Act.memWrites, List.mem_singleton]
+      intro different
+      have reverse : name ≠ memory.name := fun equal => different equal.symm
+      simp [widthsOk, reverse]
+
+/-- The port trace for a memory is empty when the action does not write that
+memory. -/
+theorem portTrace_eq_nil_of_not_memWrites (memory : String) : ∀ action : Act,
+    memory ∉ action.memWrites → portTrace memory action = [] := by
+  intro action
+  induction action with
+  | skip => simp [portTrace]
+  | seq left right ihLeft ihRight =>
+      simp only [Act.memWrites, List.mem_append, not_or]
+      rintro ⟨hleft, hright⟩
+      simp [portTrace, ihLeft hleft, ihRight hright]
+  | ite guard thenAct elseAct ihThen ihElse =>
+      simp only [Act.memWrites, List.mem_append, not_or]
+      rintro ⟨hthen, helse⟩
+      simp [portTrace, ihThen hthen, ihElse helse]
+  | write => simp [portTrace, Act.memWrites]
+  | writeSlice => simp [portTrace, Act.memWrites]
+  | memWrite aw dw name port address value =>
+      simp only [Act.memWrites, List.mem_singleton]
+      intro different
+      have reverse : name ≠ memory := fun equal => different equal.symm
+      simp [portTrace, reverse]
 
 /-- Assemble compiler well-formedness from independently checked structural
 components. This form lets large release designs certify action trees and
@@ -275,7 +357,9 @@ preserve them and the emission theorem extends to open designs: poke the
 same input valuation on both sides, and one compiled open cycle is exactly
 one source open cycle. -/
 
-private theorem convSt_setInputs (σ : Loom.Hw.St) (ins : List InputDecl)
+/-- Source and µVerilog input installation commute with the compiler's state
+embedding. This is shared by open-cycle and combinational-output correctness. -/
+theorem convSt_setInputs (σ : Loom.Hw.St) (ins : List InputDecl)
     (ι : InEnv) :
     Loom.Emit.MicroVerilog.St.setInputs (convSt σ)
       (ins.map fun i => { name := i.name, width := i.width }) ι =
@@ -287,6 +371,20 @@ private theorem convSt_setInputs (σ : Loom.Hw.St) (ins : List InputDecl)
         List.foldl_cons] using
         ih { σ with regs := σ.regs.set head.name (ι head.name head.width) }
 
+/-- A compiled same-cycle output has exactly the source `Design` observation
+for arbitrary current inputs and pre-edge state. -/
+theorem compileCombOutput_evalOpen (d : Design) (output : CombOutput)
+    (ι : InEnv) (state : Loom.Hw.St) :
+    mvEval
+        (Loom.Emit.MicroVerilog.St.setInputs (convSt state)
+          (compile d).ins ι)
+        (compileExpr output.value) =
+      d.evalCombOutput ι state output := by
+  rw [show (compile d).ins =
+        d.inputs.map (fun i => { name := i.name, width := i.width }) from rfl,
+      convSt_setInputs]
+  exact compileExpr_eval output.value (state.setInputs d.inputs ι)
+
 /-- The emission theorem for open designs: one compiled open cycle under an
 input valuation is exactly one source open cycle under the same valuation. -/
 theorem compile_cycleOpen (d : Design) (wf : DesignWF d) (ι : InEnv)
@@ -297,6 +395,27 @@ theorem compile_cycleOpen (d : Design) (wf : DesignWF d) (ι : InEnv)
         d.inputs.map (fun i => { name := i.name, width := i.width }) from rfl,
       convSt_setInputs]
   exact compile_cycle d wf (state.setInputs d.inputs ι)
+
+/-- Compiler correctness including the reset pin: an asserted reset edge
+establishes the exact source reset state, while a deasserted edge is the
+existing cycle theorem. -/
+theorem compile_cycleWithReset (d : Design) (wf : DesignWF d)
+    (reset : Bool) (state : Loom.Hw.St) :
+    forgetSt ((compile d).cycleWithReset reset (convSt state)) =
+      d.cycleWithReset reset state := by
+  cases reset <;>
+    simp [Loom.Emit.MicroVerilog.Module.cycleWithReset,
+      Design.cycleWithReset, compile_cycle, wf, compile_reset]
+
+/-- Open-design form. Reset priority makes input values irrelevant on an
+asserted edge, exactly as in the emitted `always` block. -/
+theorem compile_cycleOpenWithReset (d : Design) (wf : DesignWF d)
+    (reset : Bool) (ι : InEnv) (state : Loom.Hw.St) :
+    forgetSt ((compile d).cycleOpenWithReset reset ι (convSt state)) =
+      d.cycleOpenWithReset reset ι state := by
+  cases reset <;>
+    simp [Loom.Emit.MicroVerilog.Module.cycleOpenWithReset,
+      Design.cycleOpenWithReset, compile_cycleOpen, wf, compile_reset]
 
 /-- Every finite compiled open run has exactly the source Design semantics.
 This is the iteration lemma used by the certified simulator/compiler square. -/

@@ -84,6 +84,11 @@ def Module.reset (m : Module) : St where
       else μ n a w)
     (fun _ _ w => 0#w)
 
+/-- One emitted-module clock edge including the synchronous `rst` branch
+printed for every register and memory. -/
+def Module.cycleWithReset (m : Module) (reset : Bool) (σ : St) : St :=
+  if reset then m.reset else m.cycle σ
+
 /-- Run `n` cycles. -/
 def Module.run (m : Module) : Nat → St → St
   | 0, σ => σ
@@ -107,6 +112,11 @@ the clock edge), then the module cycles. For a closed module this is
 def Module.cycleOpen (m : Module) (ι : String → (w : Nat) → BitVec w)
     (σ : St) : St :=
   m.cycle (σ.setInputs m.ins ι)
+
+/-- Open-module edge with the printed synchronous reset priority. -/
+def Module.cycleOpenWithReset (m : Module) (reset : Bool)
+    (ι : String → (w : Nat) → BitVec w) (σ : St) : St :=
+  if reset then m.reset else m.cycleOpen ι σ
 
 /-- Run `n` open cycles under an input stream.  The indexing convention is
 the same as `Loom.Hw.Design.runOpen`: cycle zero consumes `ιs 0`. -/

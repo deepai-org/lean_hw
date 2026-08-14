@@ -25,6 +25,7 @@ namespace Named
 inductive NextRegCert (w : Nat) where
   | same
   | write
+  | writeSlice
   | seq (mid : Option String) (left right : NextRegCert w)
   | ite (thenCert elseCert : NextRegCert w)
 
@@ -96,6 +97,7 @@ private def NextRegCert.materialize (program : SSA.Program) (env : SSA.Env)
       Option (ArtifactCert.NextRegCert w)
   | _, _, _, .same => some .same
   | _, _, _, .write => some .write
+  | _, _, _, .writeSlice => some .writeSlice
   | w, .seq leftAction rightAction, cur, .seq mid left right => do
       let computed := Compile.nextReg rn w leftAction cur
       let mid ← resolveExprRef program env computed mid

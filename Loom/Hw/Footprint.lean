@@ -19,6 +19,7 @@ def Act.memWrites : Act → List String
   | .seq a b => a.memWrites ++ b.memWrites
   | .ite _ t e => t.memWrites ++ e.memWrites
   | .write .. => []
+  | .writeSlice .. => []
   | .memWrite _ _ m _ _ _ => [m]
 
 /-- `(name, width)` pairs of the registers an action may write. -/
@@ -27,6 +28,7 @@ def Act.regWrites : Act → List (String × Nat)
   | .seq a b => a.regWrites ++ b.regWrites
   | .ite _ t e => t.regWrites ++ e.regWrites
   | .write w r _ => [(r, w)]
+  | .writeSlice w r _ _ _ _ => [(r, w)]
   | .memWrite .. => []
 
 /-- Running an action that never writes register `rn` at width `w` leaves
@@ -61,6 +63,19 @@ theorem Act.run_regs_notin (rn : String) (w : Nat) : ∀ (a : Act),
         have hw : w' ≠ w := fun hw => hp ⟨hr.symm, hw⟩
         rw [dif_neg hw]
       · rw [if_neg hr]
+  | writeSlice w' r' lo fw hbounds v =>
+      intro h σ acc
+      have hp : ¬(r' = rn ∧ w' = w) := by
+        intro ⟨h1, h2⟩
+        exact h (by simp [Act.regWrites, h1, h2])
+      show (acc.regs.set r'
+        (Loom.Word.insert lo (v.eval σ) (acc.regs r' w'))) rn w = _
+      unfold RegEnv.set
+      by_cases hr : rn = r'
+      · rw [if_pos hr]
+        have hw : w' ≠ w := fun hw => hp ⟨hr.symm, hw⟩
+        rw [dif_neg hw]
+      · rw [if_neg hr]
   | memWrite => intro _ σ acc; rfl
 
 /-- Running an action that never writes memory `mn` leaves `mn`'s contents
@@ -84,6 +99,7 @@ theorem Act.run_mems_notin (mn : String) : ∀ (a : Act), mn ∉ a.memWrites →
       · rw [if_pos hc]; exact iht h.1 σ acc ad w
       · rw [if_neg hc]; exact ihe h.2 σ acc ad w
   | write => intro _ σ acc ad w; rfl
+  | writeSlice => intro _ σ acc ad w; rfl
   | memWrite aw' dw' m' p' addr v =>
       intro h σ acc ad w
       have hm : mn ≠ m' := by

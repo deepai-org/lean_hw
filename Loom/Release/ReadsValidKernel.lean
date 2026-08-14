@@ -49,6 +49,7 @@ def actReadsOkB (program : Program) : Loom.Hw.Act → Bool
       hwExprReadsOkB program condition &&
         actReadsOkB program yes && actReadsOkB program no
   | .write _ _ value => hwExprReadsOkB program value
+  | .writeSlice _ _ _ _ _ value => hwExprReadsOkB program value
   | .memWrite _ _ _ _ address value =>
       hwExprReadsOkB program address && hwExprReadsOkB program value
 

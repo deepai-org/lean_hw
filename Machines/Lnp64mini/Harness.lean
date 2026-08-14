@@ -3,6 +3,7 @@
 import Loom.Hw.Diff
 import Loom.Hw.DagEval
 import Loom.Hw.CertifiedDesign
+import Loom.Hw.Extension
 import Machines.Lnp64mini.Core
 import Std.Data.HashMap
 
@@ -110,6 +111,15 @@ simulator.  Like `design_fastWF`, this is kernel reduction of the independent
 generic checker, not a machine-specific compiler assumption. -/
 theorem design_wf : Compile.DesignWF design :=
   Compile.designWFCheck_sound design (by rfl)
+
+set_option maxRecDepth 100000 in
+/-- Reusable, kernel-auditable readiness for bounded extensions of the large
+legacy core.  The base read/compiler checks are paid once here; extension
+sites check only their new rules and generated endpoints. -/
+instance design_extensionBaseReady : ExtensionBaseReady design where
+  names := by rfl
+  reads := (Design.readsOkInComponentsB_iff design design).mp (by rfl)
+  compiler := design_wf
 
 /-- LNP64mini's public generated simulator.  The executable evaluator is
 derived from `design`; `runOpenFromReset_eq` states its semantic equality to

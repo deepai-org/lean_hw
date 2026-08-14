@@ -62,8 +62,12 @@ inductive Expr : Nat → Type where
 /-- Concatenate high and low bit vectors. This typed smart constructor lowers
 to the primitive algebra, so it adds no separate compiler or certificate case. -/
 def Expr.concat {hi lo : Nat} (msbs : Expr hi) (lsbs : Expr lo) : Expr (hi + lo) :=
-  .or (.shl (.zext msbs (hi + lo)) (.lit (BitVec.ofNat (hi + lo) lo)))
-    (.zext lsbs (hi + lo))
+  match lo with
+  | 0 => by simpa using msbs
+  | n + 1 =>
+      .or (.shl (.zext msbs (hi + (n + 1)))
+          (.lit (BitVec.ofNat (hi + (n + 1)) (n + 1))))
+        (.zext lsbs (hi + (n + 1)))
 
 /-- The complete unsigned product. The result is wide enough to retain every
 product bit. This is a smart constructor over same-width modular `mul`, so all
@@ -92,6 +96,12 @@ inductive Act where
   | seq (a b : Act)
   | ite (c : Expr 1) (t e : Act)
   | write (w : Nat) (reg : String) (v : Expr w)
+  /-- Replace a statically bounded slice of a register. The replacement value
+  is still evaluated from the pre-cycle state; the untouched bits come from
+  the current write accumulator, so ordered partial and whole-register writes
+  obey the same last-write-wins semantics as `write`. -/
+  | writeSlice (totalWidth : Nat) (reg : String) (lo fieldWidth : Nat)
+      (inBounds : lo + fieldWidth ≤ totalWidth) (v : Expr fieldWidth)
   | memWrite (aw dw : Nat) (mem : String) (port : Nat) (addr : Expr aw) (data : Expr dw)
 
 /-- A named atomic rule. -/
@@ -109,6 +119,15 @@ exactly as before. -/
 structure InputDecl where
   name  : String
   width : Nat
+
+/-- A named same-cycle output expression. Unlike `Design.outputs`, which
+selects state registers for observability, this is an ordinary combinational
+module port. It is technology-neutral and compiled by the same proved
+expression translation used for guards and next-state logic. -/
+structure CombOutput where
+  name : String
+  width : Nat
+  value : Expr width
 
 /-- A synchronous design. Closed when `inputs = []` (the default). -/
 structure Design where
@@ -168,6 +187,9 @@ structure Design where
   A name here that is not a declared register is refused by `Design.emit`
   (`Loom/Hw/Outputs.lean`). -/
   outputs : List String
+  /-- Same-cycle output views. Empty by default, preserving the historical
+  register-only interface for every existing Design. -/
+  combOutputs : List CombOutput := []
 
 /-- **D39.** The registers `d` exports, in declaration order: exactly the
 ones the design names. This is the single place the selection is interpreted — `Compile.compile` and its `implemented_by` twin both read it,

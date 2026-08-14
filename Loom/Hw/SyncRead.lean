@@ -181,6 +181,7 @@ def Act.syncReadSites (m : String) : Act → List ReadSite
   | .write w r (.memRead _ m' addr) =>
       if m' = m then [⟨r, w, addr.key⟩] else []
   | .write .. => []
+  | .writeSlice .. => []
   | .memWrite .. => []
 
 /-- A read of `m` in a position the discipline does not sanction (S1). -/
@@ -192,6 +193,7 @@ def Act.strayReadsMem (m : String) : Act → Bool
   -- (whichever memory it reads), so only its *address* can still be stray
   | .write _ _ (.memRead _ _ addr) => addr.readsMem m
   | .write _ _ v => v.readsMem m
+  | .writeSlice _ _ _ _ _ v => v.readsMem m
   | .memWrite _ _ _ _ addr data => addr.readsMem m || data.readsMem m
 
 /-- Number of syntactic `write` sites targeting register `r` (S2). -/
@@ -200,6 +202,7 @@ def Act.regWriteCount (r : String) : Act → Nat
   | .seq a b => a.regWriteCount r + b.regWriteCount r
   | .ite _ t e => t.regWriteCount r + e.regWriteCount r
   | .write _ r' _ => if r' = r then 1 else 0
+  | .writeSlice _ r' _ _ _ _ => if r' = r then 1 else 0
   | .memWrite .. => 0
 
 /-! ## Design-level queries -/
@@ -208,7 +211,8 @@ def Design.syncReadSites (d : Design) (m : String) : List ReadSite :=
   d.rules.flatMap fun rl => rl.body.syncReadSites m
 
 def Design.strayReadsMem (d : Design) (m : String) : Bool :=
-  d.rules.any fun rl => rl.body.strayReadsMem m
+  (d.rules.any fun rl => rl.body.strayReadsMem m) ||
+    (d.combOutputs.any fun output => output.value.readsMem m)
 
 def Design.regWriteCount (d : Design) (r : String) : Nat :=
   d.rules.foldl (fun n rl => n + rl.body.regWriteCount r) 0

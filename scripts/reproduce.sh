@@ -34,12 +34,14 @@ scripts/ci.sh
 if command -v iverilog >/dev/null; then
   scripts/lockstep_acc8.sh
   scripts/lockstep_lnp64u.sh
+  scripts/test_multiclock_recovery.sh
 else
-  echo "reproduce: RESULT SKIP lockstep (iverilog not installed)"
+  echo "reproduce: RESULT SKIP RTL lockstep/recovery smoke (iverilog not installed)"
 fi
 
 # Independent-synthesizer corroboration: every shipped design elaborates
 # and synthesizes under yosys (skips itself if yosys is absent).
 scripts/corroborate_yosys.sh
+scripts/test_multiclock_synthesis.sh
 
 echo "reproduce: RESULT PASS"

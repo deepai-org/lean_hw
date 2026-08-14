@@ -21,6 +21,7 @@ def Act.regWritesCoveredB (covered : List (String × Nat)) : Act → Bool
       thenAction.regWritesCoveredB covered &&
         elseAction.regWritesCoveredB covered
   | .write width name _ => decide ((name, width) ∈ covered)
+  | .writeSlice width name _ _ _ _ => decide ((name, width) ∈ covered)
   | .memWrite .. => true
 
 /-- A successful shared footprint check covers every syntactic register
@@ -37,6 +38,11 @@ theorem Act.regWritesCoveredB_sound (covered : List (String × Nat)) :
       simp only [Act.regWrites, List.mem_append] at present
       exact present.elim (leftIH accepted.1 key) (rightIH accepted.2 key)
   | write width name value =>
+      intro accepted key present
+      simp only [Act.regWrites, List.mem_singleton] at present
+      subst key
+      simpa [Act.regWritesCoveredB] using accepted
+  | writeSlice width name lo fieldWidth inBounds value =>
       intro accepted key present
       simp only [Act.regWrites, List.mem_singleton] at present
       subst key

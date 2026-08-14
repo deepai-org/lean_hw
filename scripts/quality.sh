@@ -6,6 +6,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+scripts/check_certified_cdc_boundary.sh
+
 fail=0
 
 if [[ ! -f lean-toolchain ]] || grep -qE '(nightly|:latest$)' lean-toolchain; then
