@@ -503,31 +503,138 @@ emission never manufactures it. `skip` is an explicit unavailable check and
 `unconstrained` means the backend left required intent uncovered. -/
 inductive PhysicalCheckStatus where
   | pass
+  | fail
   | skip
   | unconstrained
   deriving DecidableEq, Repr
+
+/-- Whether a report merely exercises the adapter interface or records a
+real target implementation run.  Reference serializers can prove exact
+coverage, but cannot accidentally become signoff evidence. -/
+inductive PhysicalBackendScope where
+  | reference
+  | targetImplementation
+  deriving DecidableEq, Repr
+
+/-- Identity of one downstream implementation invocation.  Tool version and
+target are mandatory for signoff; the optional seed records deterministic or
+exploratory place-and-route choices without imposing a vendor model. -/
+structure PhysicalBackendRun where
+  scope : PhysicalBackendScope := .reference
+  adapter : String := ""
+  target : String := ""
+  tool : String := ""
+  version : String := ""
+  runId : String := ""
+  seed : Option Nat := none
+  deriving DecidableEq, Repr
+
+def PhysicalBackendRun.complete (run : PhysicalBackendRun) : Bool :=
+  run.scope == .targetImplementation && !run.adapter.isEmpty &&
+    !run.target.isEmpty && !run.tool.isEmpty && !run.version.isEmpty &&
+    !run.runId.isEmpty
+
+/-- Artifact identity at the Loom/target boundary.  The first two hashes bind
+the theorem-bound RTL and neutral physical requirements consumed by a run;
+later hashes identify optional downstream products without requiring them for
+flows that stop earlier. -/
+structure PhysicalArtifactIdentity where
+  rtlSha256 : String := ""
+  intentSha256 : String := ""
+  /-- Exact target-specific constraints emitted from the neutral intent. -/
+  constraintsSha256 : Option String := none
+  synthesizedSha256 : Option String := none
+  /-- Source identities recorded by the implementation run itself.  These
+  duplicate the selected inputs deliberately: signoff requires equality, so
+  a routed database cannot be paired with newer source or constraint bytes. -/
+  implementationRtlSha256 : Option String := none
+  implementationConstraintsSha256 : Option String := none
+  routedSha256 : Option String := none
+  /-- Optional because ASIC signoff has no FPGA bitstream analogue. -/
+  bitstreamSha256 : Option String := none
+  deriving DecidableEq, Repr
+
+private def sha256Like (digest : String) : Bool :=
+  digest.length == 64 && digest.toList.all fun c =>
+    c.isDigit || ('a' ≤ c && c ≤ 'f') || ('A' ≤ c && c ≤ 'F')
+
+def PhysicalArtifactIdentity.complete (identity : PhysicalArtifactIdentity) : Bool :=
+  sha256Like identity.rtlSha256 && sha256Like identity.intentSha256 &&
+    identity.constraintsSha256.any sha256Like &&
+    identity.implementationRtlSha256 == some identity.rtlSha256 &&
+    identity.implementationConstraintsSha256 == identity.constraintsSha256 &&
+    identity.routedSha256.any sha256Like
+
+/-- One exact logical-to-post-synthesis name resolution.  Empty requirement
+lists remain valid (for example an asynchronous clock-group declaration),
+while synchronizer and coherent-bus requirements must resolve every generated
+object in order. -/
+structure PhysicalObjectResolution where
+  logical : PhysicalObject
+  resolved : String
+  deriving DecidableEq, Repr
+
+def PhysicalRequirement.objects : PhysicalRequirement → List PhysicalObject
+  | .timing requirement =>
+      match requirement.intent with
+      | .asynchronousClocks .. => []
+      | .maxDelay .. => []
+      | .falsePath .. => []
+      | .synchronizerChain _ stages => stages
+      | .coherentBus _ _ launch capture _ _ _ => [launch, capture]
+  | .reset intent =>
+      match intent.release with
+      | .sampledIndependently => []
+      | .synchronized stages => stages
 
 structure PhysicalCheckResult where
   requirement : PhysicalRequirement
   status : PhysicalCheckStatus
   detail : String := ""
-  deriving Repr
+  run : PhysicalBackendRun := {}
+  artifacts : PhysicalArtifactIdentity := {}
+  resolutions : List PhysicalObjectResolution := []
+  deriving DecidableEq, Repr
+
+def PhysicalCheckResult.objectsResolved (result : PhysicalCheckResult) : Bool :=
+  result.resolutions.map (fun resolution => resolution.logical) ==
+    result.requirement.objects &&
+  result.resolutions.all (fun resolution => !resolution.resolved.isEmpty)
 
 /-- A backend report is constructible only with exact ordered coverage of the
 full neutral requirement list. This prevents a successful wrapper from
 silently omitting a Gray bus, synchronizer chain, or reset-domain contract. -/
 structure PhysicalCheckReport (artifacts : PhysicalArtifacts) where
   backend : String
+  run : PhysicalBackendRun := {}
+  artifactIdentity : PhysicalArtifactIdentity := {}
   results : List PhysicalCheckResult
   coverage : results.map (fun result => result.requirement) =
     artifacts.requirements
 
-def PhysicalCheckReport.passed {artifacts : PhysicalArtifacts}
+/-- Exact requirement coverage and successful adapter handling, useful for
+reference backends and tests. This deliberately does not claim target
+signoff. -/
+def PhysicalCheckReport.requirementsHandled {artifacts : PhysicalArtifacts}
     (report : PhysicalCheckReport artifacts) : Bool :=
   report.results.all fun result => result.status == .pass
 
+/-- A signoff result is fail-closed: every requirement passed, every required
+generated object resolved, the run is a fully identified target invocation,
+the exact target constraints and routed design are hashed, and every
+per-requirement observation names exactly the same artifacts and run. A stale
+or mixed report therefore evaluates false even if all status strings say
+PASS. -/
+def PhysicalCheckReport.passed {artifacts : PhysicalArtifacts}
+    (report : PhysicalCheckReport artifacts) : Bool :=
+  report.run.complete && report.artifactIdentity.complete &&
+    report.results.all fun result =>
+      result.status == .pass && result.objectsResolved &&
+        result.run == report.run && result.artifacts == report.artifactIdentity
+
 def PhysicalCheckStatus.render : PhysicalCheckStatus → String
   | .pass => "PASS"
+  | .fail => "FAIL"
   | .skip => "SKIP"
   | .unconstrained => "UNCONSTRAINED"
 
@@ -865,8 +972,20 @@ private def describePhysicalRequirement : PhysicalRequirement → String
 
 def PhysicalCheckReport.render {artifacts : PhysicalArtifacts}
     (report : PhysicalCheckReport artifacts) : String :=
+  let identity :=
+    if report.run.adapter.isEmpty then [] else
+      [s!"- adapter: {report.run.adapter}",
+        s!"- target: {report.run.target}",
+        s!"- tool: {report.run.tool} {report.run.version}",
+        s!"- run: {report.run.runId}",
+        s!"- theorem-bound RTL SHA-256: {report.artifactIdentity.rtlSha256}",
+        s!"- physical-intent SHA-256: {report.artifactIdentity.intentSha256}",
+        s!"- target-constraints SHA-256: {report.artifactIdentity.constraintsSha256.getD "missing"}",
+        s!"- implementation RTL input SHA-256: {report.artifactIdentity.implementationRtlSha256.getD "missing"}",
+        s!"- implementation constraint input SHA-256: {report.artifactIdentity.implementationConstraintsSha256.getD "missing"}",
+        s!"- routed-design SHA-256: {report.artifactIdentity.routedSha256.getD "missing"}", ""]
   (String.intercalate "\n" <|
-    [s!"# Physical constraint results: {report.backend}", ""] ++
+    [s!"# Physical constraint results: {report.backend}", ""] ++ identity ++
     report.results.map fun result =>
       s!"- {result.status.render}: " ++
         describePhysicalRequirement result.requirement ++

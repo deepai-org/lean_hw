@@ -141,6 +141,20 @@ in domain ticks or System events, and any recovery interruption. Typed
 convenience must never turn inserted cycles into a hidden implementation
 detail.
 
+The compatibility sink's registered request has an explicit two-destination-
+tick issue interval. An opt-in, destination-local two-entry presentation
+buffer provides a proved one-item-per-destination-tick steady state without a
+combinational CDC path. This remains an endpoint presentation choice rather
+than a new channel semantics or a target-specific primitive.
+
+Physical evidence is keyed by exact device, tool/version, primitive mode,
+storage configuration and presentation contract, and clock relationship.
+Changing any key invalidates qualification. Target reports cover every neutral
+requirement, bind exact RTL/intent/target-constraint/routed hashes and
+post-synthesis object names, and fail unless every row is `PASS`; vendor
+adapters remain outside generic Loom
+imports.
+
 Independent reset is a separate loss/recovery contract, never an implicit
 variation of coordinated reset. Its current `independentFlush` semantics make
 reset dominance and discarded incident traffic explicit. A loss-explicit

@@ -4,6 +4,7 @@ import Loom.Hw.TraceContract
 import Machines.Substrate.TwoClock
 import Machines.Multiclock.RecoverySmoke
 import Evidence.Constraints.Mock
+import Evidence.Constraints.OpenXc7
 import Evidence.Targets.AsyncQueueStorage
 
 /-! Regression tests for the deliberately small ordinary-user multiclock API. -/
@@ -110,6 +111,107 @@ def deeperSystem : System := deeperBuilder.certify (by decide)
 
 example : deeperSystem.stockCheck = true := by native_decide
 example : deeperSystem.realizePortableChecked.isOk := by native_decide
+
+/-! The higher-throughput endpoint is explicit and destination-local.  It
+uses the same abstract channel and portable CDC controller, while its timing
+contract and executable behavior expose one-item-per-destination-tick steady
+state service. -/
+
+def fullRateQueue : Chan 8 := ⟨"full_rate", 4, .exchange⟩
+
+def fullRateProducer : Design where
+  name := "full_rate_producer"
+  regs := []
+  mems := []
+  outputs := []
+  rules := []
+
+def fullRateConsumerCore : Design where
+  name := "full_rate_consumer"
+  regs := [⟨"observed", 8, 0⟩]
+  mems := []
+  outputs := ["observed"]
+  rules := [⟨"consume", .ite fullRateQueue.fullRateHasData
+    (.seq (.write 8 "observed" fullRateQueue.fullRateData)
+      fullRateQueue.fullRateConsume) .skip⟩]
+
+def fullRateProducerIsland : IslandHandle :=
+  .named "full_rate_producer" fullRateProducer clkA
+def fullRateConsumerIsland : IslandHandle :=
+  .named "full_rate_consumer" fullRateConsumerCore clkB
+def fullRateRoute := fullRateQueue.between fullRateProducerIsland fullRateConsumerIsland
+def fullRateBuilder : SystemBuilder :=
+  System.empty
+    |>.addIsland fullRateProducerIsland
+    |>.addIsland fullRateConsumerIsland
+    |>.addFullRateChannel fullRateRoute
+    |>.withClockRel .asynchronous
+def fullRateSystem : System := fullRateBuilder.certify (by native_decide)
+
+example : fullRateSystem.stockCheck = true := by native_decide
+example : fullRateSystem.realizePortableChecked.isOk := by native_decide
+
+def fullRateApplication : System.Application fullRateSystem :=
+  fullRateSystem.realizePortable (by native_decide)
+
+example : fullRateApplication.timingFor fullRateRoute =
+    some (System.timingForSinkPresentation true
+      System.compiledPortableTiming) := by native_decide
+example : (fullRateApplication.timingFor fullRateRoute).map
+    (fun timing => timing.sinkIssueInterval) =
+      some (.conditional 1 .sinkTicks
+        [.sinkPayloadAvailableEveryTick, .sinkConsumesWhenAvailable]) := by
+  native_decide
+
+def fullRateSinkDesign : Design :=
+  fullRateQueue.withFullRateSink fullRateConsumerCore
+
+/-- Reserved buffer coordinates without the generated maintenance rule do not
+inherit the full-rate timing contract through expert assembly. -/
+def malformedFullRateSinkDesign : Design :=
+  { fullRateSinkDesign with rules := fullRateConsumerCore.rules }
+
+example : !fullRateQueue.hasFullRateSinkShape malformedFullRateSinkDesign := by
+  native_decide
+
+def malformedFullRateBuilder : SystemBuilder :=
+  System.empty
+    |>.island "full_rate_producer"
+      (fullRateQueue.withSource fullRateProducer) clkA.name
+    |>.island "full_rate_consumer" malformedFullRateSinkDesign clkB.name
+    |>.connect fullRateQueue "full_rate_producer" "full_rate_consumer"
+
+private def malformedFullRateRejected : Bool :=
+  match malformedFullRateBuilder.check with
+    | .error _ => true
+    | .ok _ => false
+
+example : malformedFullRateRejected := by native_decide
+
+def fullRateSteadyState : St :=
+  { fullRateSinkDesign.reset with
+    regs := (((fullRateSinkDesign.reset.regs.set
+      fullRateQueue.sinkBufferCountName 1#2).set
+      fullRateQueue.sinkBufferHeadName 7#8).set
+      fullRateQueue.sinkPopName 1#1) }
+
+def fullRateIncomingEight : InEnv := fun name width =>
+  if name = fullRateQueue.sinkValidName then
+    if h : width = 1 then h ▸ 1#1 else 0
+  else if name = fullRateQueue.sinkPayloadName then
+    if h : width = 8 then h ▸ 8#8 else 0
+  else 0
+
+def fullRateSteadyNext : St :=
+  fullRateSinkDesign.cycleOpen fullRateIncomingEight fullRateSteadyState
+
+example : fullRateSteadyNext.regs "observed" 8 = 7#8 := by native_decide
+example : fullRateSteadyNext.regs fullRateQueue.sinkBufferCountName 2 = 1#2 := by
+  native_decide
+example : fullRateSteadyNext.regs fullRateQueue.sinkBufferHeadName 8 = 8#8 := by
+  native_decide
+example : fullRateSteadyNext.regs fullRateQueue.sinkPopName 1 = 1#1 := by
+  native_decide
 
 def deeperApplication : System.Application deeperSystem :=
   deeperSystem.realizePortable (by native_decide)
@@ -282,7 +384,109 @@ def referencePhysicalReport := Loom.Evidence.Constraints.Mock.check
 /-- The reference adapter proves the extension contract is usable: it must
 consume the full timing-plus-reset list exactly once before it can report
 success. This is an interface test, not target signoff evidence. -/
-example : referencePhysicalReport.passed = true := by native_decide
+example : referencePhysicalReport.requirementsHandled = true := by native_decide
+example : referencePhysicalReport.passed = false := by native_decide
+
+def identifiedRun : System.PhysicalBackendRun where
+  scope := .targetImplementation
+  adapter := "test.real.adapter"
+  target := "test-device"
+  tool := "test-route"
+  version := "1.0"
+  runId := "run-17"
+  seed := some 17
+
+def identifiedArtifacts : System.PhysicalArtifactIdentity where
+  rtlSha256 := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  intentSha256 := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  constraintsSha256 := some
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  implementationRtlSha256 := some
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  implementationConstraintsSha256 := some
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  routedSha256 := some
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+def identifiedPhysicalReport : System.PhysicalCheckReport
+    mixedApplication.artifact.realized.artifacts where
+  backend := "identified test target"
+  run := identifiedRun
+  artifactIdentity := identifiedArtifacts
+  results := mixedApplication.artifact.realized.artifacts.requirements.map
+    fun requirement =>
+      { requirement, status := .pass, run := identifiedRun,
+        artifacts := identifiedArtifacts,
+        resolutions := requirement.objects.map fun logical =>
+          { logical, resolved := "post-synthesis/" ++ logical.render } }
+  coverage := by simp [Function.comp_def]
+
+example : identifiedPhysicalReport.passed = true := by native_decide
+
+example : !({ identifiedArtifacts with
+    implementationRtlSha256 := some
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" } :
+    System.PhysicalArtifactIdentity).complete := by native_decide
+
+/-- A target label and PASS rows cannot substitute for an exact routed
+implementation identity. -/
+def unroutedPhysicalReport : System.PhysicalCheckReport
+    mixedApplication.artifact.realized.artifacts where
+  backend := "identified test target without routed identity"
+  run := identifiedRun
+  artifactIdentity := { identifiedArtifacts with routedSha256 := none }
+  results := mixedApplication.artifact.realized.artifacts.requirements.map
+    fun requirement =>
+      { requirement, status := .pass, run := identifiedRun,
+        artifacts := { identifiedArtifacts with routedSha256 := none },
+        resolutions := requirement.objects.map fun logical =>
+          { logical, resolved := "post-synthesis/" ++ logical.render } }
+  coverage := by simp [Function.comp_def]
+
+example : unroutedPhysicalReport.passed = false := by native_decide
+
+/-- PASS labels cannot bless evidence for different input bytes. -/
+def staleIdentityPhysicalReport : System.PhysicalCheckReport
+    mixedApplication.artifact.realized.artifacts where
+  backend := "identified test target with stale observations"
+  run := identifiedRun
+  artifactIdentity := identifiedArtifacts
+  results := mixedApplication.artifact.realized.artifacts.requirements.map
+    fun requirement =>
+      { requirement, status := .pass, run := identifiedRun,
+        artifacts := { identifiedArtifacts with
+          rtlSha256 := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        resolutions := requirement.objects.map fun logical =>
+          { logical, resolved := "post-synthesis/" ++ logical.render } }
+  coverage := by simp [Function.comp_def]
+
+example : staleIdentityPhysicalReport.passed = false := by native_decide
+
+def openXc7Observation : Loom.Evidence.Constraints.OpenXc7.Observation where
+  run := { identifiedRun with
+    adapter := "loom.openxc7"
+    tool := "nextpnr-xilinx"
+    version := "0.8.2" }
+  artifacts := identifiedArtifacts
+  theoremBoundRtlMatched := true
+  intentManifestMatched := true
+  resolutions := mixedApplication.artifact.realized.artifacts.requirements.flatMap
+    fun requirement => requirement.objects.map fun logical =>
+      { logical, resolved := "routed/" ++ logical.render }
+  routedSynchronizerAuditPassed := true
+  resetContractReviewed := true
+
+def openXc7PhysicalReport := Loom.Evidence.Constraints.OpenXc7.check
+  mixedApplication.artifact.realized.artifacts openXc7Observation
+
+/-- The real target adapter credits its routed structural and reset evidence,
+but cannot mislabel openXC7's unsupported clock-group and Gray-bus timing
+requirements as signoff. -/
+example : openXc7PhysicalReport.results.countP
+    (fun result => result.status == .pass) = 4 := by native_decide
+example : openXc7PhysicalReport.results.countP
+    (fun result => result.status == .unconstrained) = 3 := by native_decide
+example : openXc7PhysicalReport.passed = false := by native_decide
 example : referencePhysicalReport.results.length =
     mixedApplication.artifact.realized.artifacts.requirements.length := by
   native_decide
@@ -312,23 +516,41 @@ private def openXc7Width46Parameters : Cdc.AsyncQueueStorage.Parameters where
   readLatencyPositive := by decide
 
 private def openXc7Width46Error : String :=
-  match openXc7Zynq7000IndependentClockPolicy.check openXc7Width46Parameters with
+  match openXc7Zynq7000IndependentClockPolicy.check
+      (openXc7Zynq7000Key openXc7Width46Parameters) with
   | .ok _ => ""
   | .error message => message
 
 private def openXc7AcceptsWidth32 : Bool :=
-  match openXc7Zynq7000IndependentClockPolicy.check openXc7Width32Parameters with
+  match openXc7Zynq7000IndependentClockPolicy.check
+      (openXc7Zynq7000Key openXc7Width32Parameters) with
   | .ok _ => true
   | .error _ => false
 
 private def openXc7RejectsWidth46 : Bool :=
-  match openXc7Zynq7000IndependentClockPolicy.check openXc7Width46Parameters with
+  match openXc7Zynq7000IndependentClockPolicy.check
+      (openXc7Zynq7000Key openXc7Width46Parameters) with
   | .ok _ => false
   | .error _ => true
 
 example : openXc7AcceptsWidth32 := by native_decide
 example : openXc7RejectsWidth46 := by native_decide
 example : openXc7Width46Error.contains "width 46" := by native_decide
+
+private def changedToolVersionKey : StorageQualificationKey :=
+  { openXc7Zynq7000Key openXc7Width32Parameters with
+    tool := { openXc7Tool with version := "0.8.3" } }
+
+private def wrongPresentationKey : StorageQualificationKey :=
+  { openXc7Zynq7000Key openXc7Width32Parameters with
+    presentation := .firstWordFallThrough }
+
+example : !openXc7Zynq7000IndependentClockPolicy.accepts changedToolVersionKey := by
+  native_decide
+example : !openXc7Zynq7000IndependentClockPolicy.accepts wrongPresentationKey := by
+  native_decide
+example : openXc7Zynq7000IndependentClockPolicy.evidence.all
+    (fun evidence => evidence.key.tool == openXc7Tool) := by native_decide
 
 example : openXc7Zynq7000IndependentClockPolicy.evidence.map (·.stage) =
       [.rtlSimulation, .primitiveInference, .routedImplementation,

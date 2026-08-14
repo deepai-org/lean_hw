@@ -50,6 +50,11 @@ private def generatedXdc : String :=
     "# Compiler-produced two-stage Gray-pointer synchronizers.\n" ++
     "set_property ASYNC_REG TRUE [get_cells -hier -regexp {.*(read_gray_sync|write_gray_sync)[01].*}]\n"
 
+private def physicalIntent : String :=
+  (certifiedArtifact.emissionArtifacts.find?
+    (fun artifact => artifact.relativePath.toString = "clock_constraints.md")).map
+      (·.text) |>.getD "# Missing physical intent (invalid artifact)\n"
+
 private def write (directory : System.FilePath) (name text : String) : IO Unit := do
   let path := directory / name
   let _ ← Loom.Artifact.writeText path text
@@ -81,6 +86,7 @@ def run (directory : System.FilePath) : IO Unit := do
   write directory "system.v.sha256" s!"{digest}  system.v\n"
   write directory "crossing-inventory.json" inventoryJson
   write directory "generated-constraints.xdc" generatedXdc
+  write directory "physical-intent.md" physicalIntent
   write directory "axiom-audit.txt" (← axiomAudit)
   let (campaignsPassed, simulationJson) :=
     Tools.ClockGauntletCampaign.evidenceResultJson

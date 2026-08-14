@@ -44,14 +44,58 @@ inductive TargetEvidenceOutcome where
   | fail
   deriving DecidableEq, Repr
 
-/-- One narrowly scoped external observation. `configuration` is prose on
-purpose: target packages may need device-, tool-, primitive-, width-, depth-,
-or clock-specific qualifiers that do not belong in Loom's semantic types. -/
+/-- Exact device identity used by a qualification record. An empty `part`
+means the evidence is deliberately family-wide; a concrete part number must
+otherwise match literally. -/
+structure TargetDevice where
+  vendor : String
+  family : String
+  part : String
+  deriving DecidableEq, Repr
+
+/-- Exact tool identity. Version is never a comment: changing it changes the
+qualification key and therefore invalidates selection. -/
+structure TargetTool where
+  name : String
+  version : String
+  deriving DecidableEq, Repr
+
+inductive TargetClockRelationship where
+  | sameClock
+  | related
+  | independent
+  deriving DecidableEq, Repr
+
+/-- How the implementation flow obtains the physical storage. -/
+inductive TargetPrimitiveMode where
+  | inferred (flow mode : String)
+  | explicitPrimitive (name mode : String)
+  | macro (name configuration : String)
+  deriving DecidableEq, Repr
+
+/-- Complete machine-comparable scope of one storage qualification claim.
+`Configuration` contributes width, depth, read latency, write mode, and output
+register count; presentation and clock relationship close the remaining
+digital-contract dimensions. -/
+structure StorageQualificationKey where
+  device : TargetDevice
+  tool : TargetTool
+  primitiveMode : TargetPrimitiveMode
+  configuration : Configuration
+  presentation : ReadPresentation
+  clockRelationship : TargetClockRelationship
+  deriving DecidableEq, Repr
+
+/-- One narrowly scoped external observation. The key is exact and
+machine-readable; `detail` explains the observed result but never participates
+in selection. -/
 structure TargetStorageEvidence where
+  key : StorageQualificationKey
   stage : TargetClaimStage
   outcome : TargetEvidenceOutcome
-  configuration : String
+  artifactSha256 : String
   reference : String
+  detail : String
   deriving DecidableEq, Repr
 
 /-- Executable policy used by a target adapter before selecting an assumed
@@ -59,31 +103,66 @@ storage leaf. `accepts` is a conservative permission to attempt the target
 flow, not a proof that the external storage assumption is true. -/
 structure TargetStoragePolicy where
   name : String
-  deviceFamily : String
-  toolchain : String
-  clockRelationship : String
-  accepts : Parameters → Bool
-  rejection : Parameters → String
+  accepts : StorageQualificationKey → Bool
+  rejection : StorageQualificationKey → String
   evidence : List TargetStorageEvidence
 
 namespace TargetStoragePolicy
 
-def Supports (policy : TargetStoragePolicy) (p : Parameters) : Prop :=
-  policy.accepts p = true
+def Supports (policy : TargetStoragePolicy) (key : StorageQualificationKey) : Prop :=
+  policy.accepts key = true
 
-instance (policy : TargetStoragePolicy) (p : Parameters) :
-    Decidable (policy.Supports p) := by
+instance (policy : TargetStoragePolicy) (key : StorageQualificationKey) :
+    Decidable (policy.Supports key) := by
   unfold Supports
   infer_instance
 
 /-- Executable fail-closed boundary for scripts and artifact selectors. -/
-def check (policy : TargetStoragePolicy) (p : Parameters) : Except String Unit :=
-  if policy.accepts p then .ok () else .error (policy.rejection p)
+def check (policy : TargetStoragePolicy) (key : StorageQualificationKey) :
+    Except String Unit :=
+  if policy.accepts key then .ok () else .error (policy.rejection key)
+
+def evidenceFor (policy : TargetStoragePolicy) (key : StorageQualificationKey) :
+    List TargetStorageEvidence :=
+  policy.evidence.filter (·.key == key)
 
 end TargetStoragePolicy
 
 private def dualClockProbeReference :=
   "fpga/substrate0/evidence/dual-clock-bram-probe/RESULT.md"
+
+def openXc7Zynq7000Device : TargetDevice :=
+  { vendor := "AMD/Xilinx", family := "Zynq-7000", part := "xc7z020clg484-1" }
+
+def openXc7Tool : TargetTool :=
+  { name := "openXC7", version := "0.8.2" }
+
+def openXc7InferredRamMode : TargetPrimitiveMode :=
+  .inferred "yosys synth_xilinx" "RAMB18E1/RAMB36E1 automatic width mode"
+
+def openXc7Zynq7000Key (p : Parameters) : StorageQualificationKey :=
+  { device := openXc7Zynq7000Device
+    tool := openXc7Tool
+    primitiveMode := openXc7InferredRamMode
+    configuration := p.configuration .readFirst 1
+    presentation := .registered
+    clockRelationship := .independent }
+
+private def openXc7ProbeKey (width : Nat) : StorageQualificationKey :=
+  { device := openXc7Zynq7000Device
+    tool := openXc7Tool
+    primitiveMode := openXc7InferredRamMode
+    configuration :=
+      { width, depth := 4, readLatency := 1
+        writeMode := .readFirst, outputRegisters := 1 }
+    presentation := .registered
+    clockRelationship := .independent }
+
+private def probeSourceSha256 :=
+  "3195af3c6a4bbe78dd5e17fc2688f3b5a0b077394afdb0cb95aac343ffd7587e"
+
+private def probeBitstreamSha256 :=
+  "12d7cd75b7aa2060dc921af658ac2d8278f23de8a13f0c34d8267b5c9ba75afc"
 
 /-- Conservative policy justified by the 2026-08-14 ZC702 probe. Widths above
 36 are rejected because openXC7 0.8.2 lowers them through the observed-bad
@@ -92,36 +171,43 @@ mode; the selected leaf still carries its external storage-contract
 assumption. -/
 def openXc7Zynq7000IndependentClockPolicy : TargetStoragePolicy where
   name := "openxc7-zynq7000-independent-clock-storage"
-  deviceFamily := "AMD/Xilinx Zynq-7000"
-  toolchain := "openXC7 0.8.2"
-  clockRelationship := "independent write/read clocks"
-  accepts := fun p => decide (p.width ≤ 36)
-  rejection := fun p =>
+  accepts := fun key =>
+    key.device == openXc7Zynq7000Device &&
+    key.tool == openXc7Tool &&
+    key.primitiveMode == openXc7InferredRamMode &&
+    key.presentation == .registered &&
+    key.clockRelationship == .independent &&
+    key.configuration.readLatency == 1 &&
+    key.configuration.writeMode == .readFirst &&
+    key.configuration.outputRegisters == 1 &&
+    decide (key.configuration.width ≤ 36)
+  rejection := fun key =>
     s!"target profile openXC7 0.8.2 / Zynq-7000 rejects independent-clock " ++
-    s!"inferred storage width {p.width}: widths above 36 select an unqualified " ++
-    "72-bit RAMB36E1 lowering; use portable register storage or separately qualified banking"
+    s!"inferred storage width {key.configuration.width}: the exact device, tool version, " ++
+    "primitive mode, configuration, registered presentation, and independent-clock " ++
+    "relationship must match; widths above 36 select an unqualified 72-bit RAMB36E1 lowering"
   evidence := [
-    ⟨.rtlSimulation, .pass, "46-bit dual-clock probe, 4,096 transfers",
-      dualClockProbeReference⟩,
-    ⟨.primitiveInference, .pass, "46-bit probe inferred as 72-bit-mode RAMB36E1",
-      dualClockProbeReference⟩,
-    ⟨.routedImplementation, .pass, "46-bit probe routed on xc7z020clg484-1",
-      dualClockProbeReference⟩,
-    ⟨.siliconExecution, .fail, "46-bit 72-mode leaf; payload bit 44 inverted",
-      dualClockProbeReference⟩,
-    ⟨.siliconExecution, .pass, "32-bit independently inferred RAM bank",
-      dualClockProbeReference⟩,
-    ⟨.siliconExecution, .pass, "14-bit independently inferred RAM bank",
-      dualClockProbeReference⟩]
+    ⟨openXc7ProbeKey 46, .rtlSimulation, .pass, probeSourceSha256,
+      dualClockProbeReference, "4,096 transfers"⟩,
+    ⟨openXc7ProbeKey 46, .primitiveInference, .pass, probeSourceSha256,
+      dualClockProbeReference, "inferred as 72-bit-mode RAMB36E1"⟩,
+    ⟨openXc7ProbeKey 46, .routedImplementation, .pass, probeBitstreamSha256,
+      dualClockProbeReference, "routed on xc7z020clg484-1"⟩,
+    ⟨openXc7ProbeKey 46, .siliconExecution, .fail, probeBitstreamSha256,
+      dualClockProbeReference, "72-mode leaf inverted payload bit 44"⟩,
+    ⟨openXc7ProbeKey 32, .siliconExecution, .pass, probeBitstreamSha256,
+      dualClockProbeReference, "independently inferred lower RAM bank"⟩,
+    ⟨openXc7ProbeKey 14, .siliconExecution, .pass, probeBitstreamSha256,
+      dualClockProbeReference, "independently inferred upper RAM bank"⟩]
 
 /-- Profile-gated binding constructor. The proof is a target-selection gate,
 not a proof of the physical leaf contract; the latter remains the exact named
 external assumption in `BindingBasis.assumed`. -/
 def openXc7Zynq7000InferredBinding (p : Parameters)
-    (_supported : openXc7Zynq7000IndependentClockPolicy.Supports p)
-    (writeMode : WriteMode := .readFirst) (outputRegisters : Nat := 1) : Binding p where
+    (_supported : openXc7Zynq7000IndependentClockPolicy.Supports
+      (openXc7Zynq7000Key p)) : Binding p where
   name := "evidence.openxc7.zynq7000.inferred-independent-clock-ram"
-  configuration := p.configuration writeMode outputRegisters
+  configuration := p.configuration .readFirst 1
   agreesWidth := rfl
   agreesDepth := rfl
   agreesReadLatency := rfl

@@ -342,6 +342,10 @@ def sourceAcceptedName (c : Chan w) := c.stem ++ "src_accepted"
 def sinkValidName (c : Chan w) := c.stem ++ "dst_valid"
 def sinkPayloadName (c : Chan w) := c.stem ++ "dst_payload"
 def sinkPopName (c : Chan w) := c.stem ++ "dst_pop"
+/-- Destination-local coordinates used only by the opt-in buffered sink. -/
+def sinkBufferCountName (c : Chan w) := c.stem ++ "dst_buffer_count"
+def sinkBufferHeadName (c : Chan w) := c.stem ++ "dst_buffer_head"
+def sinkBufferTailName (c : Chan w) := c.stem ++ "dst_buffer_tail"
 
 /-- Maximum writes to one register coordinate along any executable action
 path. Sequential actions add; mutually exclusive branches take the maximum.
@@ -476,6 +480,162 @@ def withSink (c : Chan w) (d : Design) : Design where
   syncReadMems := d.syncReadMems
   outputs := [c.sinkPopName] ++ d.outputs
   combOutputs := d.combOutputs
+
+/-! ### Full-rate registered sink
+
+The ordinary endpoint deliberately inserts a bubble after a consume.  This
+alternative remains entirely in the destination clock domain and uses two
+presentation registers to cover the one outstanding FIFO pop.  It therefore
+has no combinational CDC path and can sustain one accepted consume per
+destination tick while input remains available.
+-/
+
+/-- Values retained by the full-rate endpoint.  The list representation is
+the specification; the generated hardware below uses a two-entry register
+bank. -/
+def FullRateBuffer (w : Nat) := List (BitVec w)
+
+/-- One abstract full-rate presentation step.  Consumption observes the
+pre-event head; an item arriving on the same edge is appended afterwards. -/
+def fullRateBufferStep (buffer : FullRateBuffer w) (incoming : Option (BitVec w))
+    (consume : Bool) : FullRateBuffer w :=
+  (if consume then buffer.drop 1 else buffer) ++ incoming.toList
+
+def fullRateDelivered (buffer : FullRateBuffer w) (consume : Bool) : List (BitVec w) :=
+  if consume then buffer.take 1 else []
+
+/-- The presentation buffer neither loses nor duplicates values. -/
+theorem fullRateBuffer_conservation (buffer : FullRateBuffer w)
+    (incoming : Option (BitVec w)) (consume : Bool) :
+    List.append (fullRateDelivered buffer consume)
+        (fullRateBufferStep buffer incoming consume) =
+      List.append buffer incoming.toList := by
+  cases consume <;> cases buffer <;> simp [fullRateDelivered, fullRateBufferStep]
+
+/-- In the steady state, a simultaneous consume and arrival delivers the old
+head and leaves the new value immediately available for the next tick. -/
+theorem fullRateBuffer_onePerTick (head next : BitVec w) :
+    fullRateDelivered [head] true = [head] ∧
+      fullRateBufferStep [head] (some next) true = [next] := by
+  simp [fullRateDelivered, fullRateBufferStep]
+
+def fullRateCount (c : Chan w) : Expr 2 := .reg 2 c.sinkBufferCountName
+def fullRateHasData (c : Chan w) : Expr 1 :=
+  .not (.eq c.fullRateCount (.lit 0))
+def fullRateData (c : Chan w) : Expr w := .reg w c.sinkBufferHeadName
+private def fullRateIncoming (c : Chan w) : Expr 1 :=
+  .and (.reg 1 c.sinkValidName) (.reg 1 c.sinkPopName)
+private def fullRateCountEq (c : Chan w) (n : Nat) : Expr 1 :=
+  .eq c.fullRateCount (.lit (BitVec.ofNat 2 n))
+
+/-- Destination-local maintenance runs before application rules.  A later
+`fullRateConsume` overrides these writes using the same pre-cycle state,
+which implements an atomic consume-plus-arrival without exposing a
+combinational ready path. -/
+private def fullRateMaintenance (c : Chan w) : Act :=
+  .ite c.fullRateIncoming
+    (.ite (c.fullRateCountEq 0)
+      (.seq (.write w c.sinkBufferHeadName (.reg w c.sinkPayloadName))
+        (.seq (.write 2 c.sinkBufferCountName (.lit 1))
+          (.write 1 c.sinkPopName (.lit 1))))
+      (.ite (c.fullRateCountEq 1)
+        (.seq (.write w c.sinkBufferTailName (.reg w c.sinkPayloadName))
+          (.seq (.write 2 c.sinkBufferCountName (.lit 2))
+            (.write 1 c.sinkPopName (.lit 0))))
+        (.write 1 c.sinkPopName (.lit 0))))
+    (.ite (c.fullRateCountEq 2)
+      (.write 1 c.sinkPopName (.lit 0))
+      (.write 1 c.sinkPopName (.lit 1)))
+
+/-- Consume one presented item.  If the FIFO's previously requested item
+arrives on this edge, it is folded into the post-cycle buffer in the same
+destination transition. -/
+def fullRateConsume (c : Chan w) : Act :=
+  .ite c.fullRateHasData
+    (.ite c.fullRateIncoming
+      (.ite (c.fullRateCountEq 1)
+        (.seq (.write w c.sinkBufferHeadName (.reg w c.sinkPayloadName))
+          (.seq (.write 2 c.sinkBufferCountName (.lit 1))
+            (.write 1 c.sinkPopName (.lit 1))))
+        (.seq (.write w c.sinkBufferHeadName (.reg w c.sinkBufferTailName))
+          (.seq (.write w c.sinkBufferTailName (.reg w c.sinkPayloadName))
+            (.seq (.write 2 c.sinkBufferCountName (.lit 2))
+              (.write 1 c.sinkPopName (.lit 0))))))
+      (.ite (c.fullRateCountEq 1)
+        (.seq (.write 2 c.sinkBufferCountName (.lit 0))
+          (.write 1 c.sinkPopName (.lit 1)))
+        (.seq (.write w c.sinkBufferHeadName (.reg w c.sinkBufferTailName))
+          (.seq (.write 2 c.sinkBufferCountName (.lit 1))
+            (.write 1 c.sinkPopName (.lit 1))))))
+    .skip
+
+/-- Add the proved, destination-local two-entry presentation endpoint.  Its
+pop request starts asserted so the FIFO may present the first item without an
+extra application round trip. -/
+def withFullRateSink (c : Chan w) (d : Design) : Design where
+  name := d.name
+  regs :=
+    ⟨c.sinkPopName, 1, 1⟩ ::
+    ⟨c.sinkBufferCountName, 2, 0⟩ ::
+    ⟨c.sinkBufferHeadName, w, 0⟩ ::
+    ⟨c.sinkBufferTailName, w, 0⟩ :: d.regs
+  mems := d.mems
+  inputs := ⟨c.sinkValidName, 1⟩ :: ⟨c.sinkPayloadName, w⟩ :: d.inputs
+  rules := ⟨c.stem ++ "full_rate_sink_maintenance", c.fullRateMaintenance⟩ :: d.rules
+  ackMemInit := d.ackMemInit
+  syncReadMems := d.syncReadMems
+  outputs := [c.sinkPopName] ++ d.outputs
+  combOutputs := d.combOutputs
+
+/-- Fail-closed structural identity for the generated full-rate presentation
+endpoint.  Timing metadata uses this complete shape rather than inferring a
+one-tick contract from one reserved register name.  The ordinary constructor
+above supplies the shape; expert assembly must supply it exactly. -/
+def hasFullRateSinkShape (c : Chan w) (d : Design) : Bool :=
+  let hasReg (name : String) (width init : Nat) := d.regs.any fun reg =>
+    reg.name == name && reg.width == width && reg.init.toNat == init
+  hasReg c.sinkPopName 1 1 &&
+    hasReg c.sinkBufferCountName 2 0 &&
+    hasReg c.sinkBufferHeadName w 0 &&
+    hasReg c.sinkBufferTailName w 0 &&
+    (d.rules.filter fun rule =>
+      rule.name == c.stem ++ "full_rate_sink_maintenance").length == 1
+
+/-- The generated maintenance-plus-consume actions implement the abstract
+steady-state exchange for arbitrary payloads: the old head is replaced by the
+new FIFO value, occupancy remains one, and the next pop stays issued.  This is
+the action-level bridge from `fullRateBuffer_onePerTick` to actual `Design`
+semantics; compiler correctness then carries the same transition to emitted
+RTL semantics. -/
+theorem fullRateActions_onePerTick (c : Chan w) (head next : BitVec w)
+    (state : St)
+    (count : state.regs c.sinkBufferCountName 2 = 1#2)
+    (oldHead : state.regs c.sinkBufferHeadName w = head)
+    (pending : state.regs c.sinkPopName 1 = 1#1)
+    (valid : state.regs c.sinkValidName 1 = 1#1)
+    (payload : state.regs c.sinkPayloadName w = next) :
+    let afterMaintenance := c.fullRateMaintenance.run state state
+    let afterConsume := c.fullRateConsume.run state afterMaintenance
+    c.fullRateData.eval state = head ∧
+      afterConsume.regs c.sinkBufferCountName 2 = 1#2 ∧
+      afterConsume.regs c.sinkBufferHeadName w = next ∧
+      afterConsume.regs c.sinkPopName 1 = 1#1 := by
+  have head_ne_pop : c.sinkBufferHeadName ≠ c.sinkPopName := by
+    intro equal
+    have chars := congrArg String.toList equal
+    simp [sinkBufferHeadName, sinkPopName, stem] at chars
+    have different : "dst_buffer_head".toList ≠ "dst_pop".toList := by decide
+    exact different chars
+  have head_ne_count : c.sinkBufferHeadName ≠ c.sinkBufferCountName := by
+    intro equal
+    have chars := congrArg String.toList equal
+    simp [sinkBufferHeadName, sinkBufferCountName, stem] at chars
+    have different : "dst_buffer_head".toList ≠ "dst_buffer_count".toList := by decide
+    exact different chars
+  simp [fullRateMaintenance, fullRateConsume, fullRateHasData, fullRateIncoming,
+    fullRateCountEq, fullRateCount, fullRateData, Expr.eval, Act.run, count,
+    oldHead, pending, valid, payload]
+  simp [RegEnv.set, head_ne_pop, head_ne_count]
 
 def count (c : Chan w) : Expr c.countWidth :=
   .reg c.countWidth c.countName

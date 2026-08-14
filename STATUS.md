@@ -101,10 +101,10 @@ unbounded-memory surrogate. Lean proves that simultaneous successful read and
 write ports address distinct physical slots, then discharges
 `AsyncQueueStorage.CollisionFree`. A single parametric composition theorem
 turns any implementation of that storage contract into a `Chan.Refinement`;
-the compiler-produced depth-two register bank instantiates it without an
-external assumption. Its write-domain bank and read-domain response pipeline
-are ordinary `Design`s, and `AsyncQueueStorage.DepthTwo.rep_step` proves their
-actual `Design.cycleOpen` transitions implement the storage contract. The
+the compiler-produced portable register bank instantiates it at every supported
+power-of-two depth without an external assumption. Its write- and read-domain
+halves are ordinary `Design`s, and `AsyncQueueStorage.Portable.rep_step` proves
+their actual `Design.cycleOpen` transitions implement the storage contract. The
 result is joined directly to the parametric FIFO theorem in `Tests.Chan`; the
 semantic reference register bank is no longer used as that non-vacuity witness.
 
@@ -185,10 +185,10 @@ ordered connection coverage is proved complete. Stock descriptions include
 both endpoint registers, synchronizer/storage stages, local source/sink issue intervals,
 service premises, and recovery interruption. The async row honestly has no
 finite end-to-end delivery bound under the current unbounded-staleness model.
-The report also exposes a current performance limitation: the safe registered
-sink endpoint can consume only once per two destination ticks even when data
-remains available. A one-item-per-tick endpoint and its theorem are still
-required for throughput-sensitive SoC use.
+The report also exposes endpoint performance. The compatibility sink consumes
+once per two destination ticks. The opt-in buffered sink is destination-local,
+contains no combinational CDC path, has conservation and steady-state
+one-item-per-tick theorems, and reports a one-tick issue interval.
 
 The portable binding also derives neutral physical intent for both exact
 two-stage synchronizer chains and both Gray-pointer buses, including named
@@ -196,10 +196,13 @@ launch/capture objects and period-relative skew/datapath requirements. This is
 substantially stronger than a clock-group-only report. Every distinct clock
 domain also carries a typed reset-delivery contract matching the emitted
 synchronous-reset RTL. Backend reports have exact ordered coverage of the full
-timing-plus-reset requirement list and cannot silently omit an item. A small
-reference backend exercises that boundary; it does not claim target signoff.
-Only an executed FPGA or ASIC backend can report that physical requirements
-passed.
+timing-plus-reset requirement list and cannot silently omit an item. They bind
+device, tool/version, run/seed, exact RTL/intent/target-constraint/routed
+hashes, and post-synthesis name resolution; identity drift or missing objects
+makes `passed` false. A small reference backend exercises coverage without
+claiming signoff. The optional
+openXC7 adapter consumes routed structural evidence but honestly returns
+`UNCONSTRAINED` for unsupported clock-group and Gray-bus timing intent.
 
 The portable storage contradiction is closed: its compiled reader is now
 explicitly first-word-fall-through and combinational, with no reader registers,

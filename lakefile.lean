@@ -112,6 +112,12 @@ lean_exe clockGauntletEvidence where
   root := `Tools.ClockGauntletEvidence
   supportInterpreter := true
 
+/-- Optional target evidence adapter. It consumes the Clock-Gauntlet routed
+audit and fails unless every neutral physical requirement is discharged. -/
+lean_exe openXc7ClockGauntletSignoff where
+  root := `Tools.OpenXc7ClockGauntletSignoff
+  supportInterpreter := true
+
 /-- Certified replay runner for the bidirectional SoC Fabric Gauntlet. -/
 lean_exe socFabricGauntletCampaign where
   root := `Tools.SoCFabricGauntletCampaignMain

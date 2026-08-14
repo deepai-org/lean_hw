@@ -1320,6 +1320,10 @@ system depthFour where
 example : depthFour.q.fifoParameters.depth = 4 := rfl
 example : depthFour.q.storageShape.depth = 4 := rfl
 example : depthFour.application.artifact.emissionCheck.isOk := by native_decide
+example : depthFour.application.artifact.renderedVerilog.contains "slot_3" := by
+  native_decide
+example : !depthFour.application.artifact.renderedVerilog.contains "depth_two" := by
+  native_decide
 
 end DeeperGray
 
@@ -2446,10 +2450,10 @@ error: Ambiguous term
   SHARED_CODE
 Possible interpretations:
   SecondLibrary.SHARED_CODE : ℕ
-  
+
   FirstLibrary.SHARED_CODE : ℕ
 -/
-#guard_msgs in
+#guard_msgs (whitespace := lax) in
 example : Expr 8 := [hwexpr| SHARED_CODE]
 
 example : ([hwexpr| FirstLibrary.SHARED_CODE] : Expr 8) = .lit 0x11#8 := rfl

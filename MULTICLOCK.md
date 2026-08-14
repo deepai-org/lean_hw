@@ -137,12 +137,18 @@ linearize every edge use the explicitly narrower `ClockRel.interleaved`.
 The stock portable realization now derives exact neutral physical intent for
 its two ordered synchronizer chains and both Gray buses, including period-
 relative skew and datapath bounds. This is a requirement manifest, not a claim
-that a backend honored it. A target adapter must eventually report each
-requirement as `PASS`, `SKIP`, or `UNCONSTRAINED`; physical signoff is incomplete
+that a backend honored it. A target adapter must report each requirement as
+`PASS`, `FAIL`, `SKIP`, or `UNCONSTRAINED`; physical signoff is incomplete
 until all required items pass. The same typed manifest now includes the exact
 per-domain reset behavior of the generated RTL. A small reference backend
 proves the coverage interface can consume every timing and reset requirement
-without omission; it is not a target signoff result.
+without omission; it is not a target signoff result. Target reports bind every
+result to one device/tool/version/run identity and to SHA-256 identities for
+the theorem-bound RTL, physical-intent bytes, emitted target constraints, and
+routed design. The implementation report must independently record the same
+RTL and constraint input hashes. Required generated objects must resolve in
+the post-synthesis namespace. Mixed, incomplete, or stale evidence is
+therefore rejected even when every imported status says `PASS`.
 
 The intended deployment modes share identical channel source code. Fully
 neutral mode uses compiler-generated register storage on FPGA or ASIC. A
@@ -155,12 +161,24 @@ RTL generation or successful target-cell inference does not discharge it.
 
 Concrete evidence profiles may additionally impose an executable,
 fail-closed target-selection policy without changing the generic leaf
-contract. Such a policy records simulation, inference, routing, and silicon as
-distinct claim stages. For example, the repository's openXC7/Zynq-7000 profile
-rejects independent-clock inferred storage wider than 36 bits after the
-recorded 46-bit 72-mode failure. Passing that conservative selection gate only
-avoids a known-bad mode; it does not turn the leaf's external assumption into a
-Loom theorem.
+contract. Qualification keys include the exact device, tool and version,
+primitive mode, width/depth and storage configuration, read-presentation
+contract, and clock relationship; changing any field invalidates the result.
+Simulation, inference, routing, and silicon remain distinct claim stages. For
+example, the repository's openXC7/Zynq-7000 profile rejects independent-clock
+inferred storage wider than 36 bits after the recorded 46-bit 72-mode failure.
+Passing that conservative selection gate only avoids a known-bad mode; it does
+not turn the leaf's external assumption into a Loom theorem.
+
+An optional openXC7 routed adapter lives under `Evidence`, never under generic
+`Loom.Hw`. It resolves and audits routed synchronizer objects and binds reports
+to exact input artifacts. Invoke it as `lake exe
+openXc7ClockGauntletSignoff -- EVIDENCE_DIRECTORY RUN_ID SEED TOOL_VERSION`;
+the audit must record the exact RTL and generated-constraint input hashes.
+Since openXC7 0.8.2 cannot consume the required
+asynchronous-group and period-relative Gray-bus delay/skew intent, those rows
+remain `UNCONSTRAINED` and the adapter correctly refuses full signoff. This is
+a tested extension boundary, not a dependency on openXC7.
 
 `TraceContract` is an optional schedule-free relation for application proofs
 that connect consumed and produced traces. Its `deliveredWithin` relation
@@ -210,17 +228,16 @@ for the portable async FIFO because its proved synchronizer model permits
 unbounded staleness. `TraceContract.deliveredWithin` remains the theorem-level
 foundation for stronger application-specific progress assumptions.
 
-One current endpoint cost is now explicit rather than hidden: `send` uses one
+The conservative endpoint cost is explicit rather than hidden: `send` uses one
 registered source-offer stage and can issue every ready source tick, while the
 registered `consume` request forces a bubble and can consume at most once per
-two destination ticks even under continuous validity. This is safe but not a
-good final default for throughput-sensitive SoCs. A proved one-item-per-tick
-sink endpoint, without a combinational CDC path or duplicate reads, is required
-before the stock facade is performance-natural.
-
-That throughput improvement is deferred library engineering, not a semantic
-correctness gate. The current half-rate behavior remains acceptable because it
-is explicit in the typed timing contract and user-facing diagnostic.
+two destination ticks even under continuous validity. It remains the default
+for compatibility. Throughput-sensitive designs may select
+`addFullRateChannel`, whose destination-local two-entry presentation buffer has
+a conservation theorem, no combinational CDC path, and a one-item-per-
+destination-tick steady-state theorem. The selected certified artifact reports
+the corresponding one-tick issue interval. This is an endpoint presentation
+choice, not a different abstract channel or target-specific FIFO.
 
 ## Reset and recovery contracts
 

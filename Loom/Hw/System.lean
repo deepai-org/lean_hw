@@ -385,7 +385,8 @@ private def declaredEndpointNames (sys : SystemBuilder) (islandName : String) : 
     else []
     let sinkNames := if connection.sink == islandName then
       [connection.chan.sinkPopName, connection.chan.sinkValidName,
-        connection.chan.sinkPayloadName]
+        connection.chan.sinkPayloadName, connection.chan.sinkBufferCountName,
+        connection.chan.sinkBufferHeadName, connection.chan.sinkBufferTailName]
     else []
     sourceNames ++ sinkNames) ++
   (sys.openSources.flatMap fun endpoint =>
@@ -396,7 +397,8 @@ private def declaredEndpointNames (sys : SystemBuilder) (islandName : String) : 
   (sys.openSinks.flatMap fun endpoint =>
     if endpoint.island == islandName then
       [endpoint.chan.sinkPopName, endpoint.chan.sinkValidName,
-        endpoint.chan.sinkPayloadName]
+        endpoint.chan.sinkPayloadName, endpoint.chan.sinkBufferCountName,
+        endpoint.chan.sinkBufferHeadName, endpoint.chan.sinkBufferTailName]
     else [])
 
 /-- Generated channel coordinates are a reserved namespace. An island cannot
@@ -421,7 +423,13 @@ def _root_.Loom.Hw.SystemBuilder.endpointOk (sys : SystemBuilder)
       hasReg sink.design connection.chan.sinkPopName 1 &&
       hasInput sink.design connection.chan.sinkValidName 1 &&
       hasInput sink.design connection.chan.sinkPayloadName connection.width &&
-      sink.design.maxWritesTo connection.chan.sinkPopName 1 ≤ 2
+      sink.design.maxWritesTo connection.chan.sinkPopName 1 ≤ 2 &&
+      let bufferCount := hasReg sink.design connection.chan.sinkBufferCountName 2
+      let bufferHead := hasReg sink.design connection.chan.sinkBufferHeadName connection.width
+      let bufferTail := hasReg sink.design connection.chan.sinkBufferTailName connection.width
+      (!(bufferCount || bufferHead || bufferTail) ||
+        (bufferCount && bufferHead && bufferTail &&
+          connection.chan.hasFullRateSinkShape sink.design))
   | _, _ => false
 
 private def sourceEndpointOk (sys : SystemBuilder)
