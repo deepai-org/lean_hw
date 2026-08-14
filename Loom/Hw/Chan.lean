@@ -587,19 +587,92 @@ def withFullRateSink (c : Chan w) (d : Design) : Design where
   outputs := [c.sinkPopName] ++ d.outputs
   combOutputs := d.combOutputs
 
-/-- Fail-closed structural identity for the generated full-rate presentation
-endpoint.  Timing metadata uses this complete shape rather than inferring a
-one-tick contract from one reserved register name.  The ordinary constructor
-above supplies the shape; expert assembly must supply it exactly. -/
+/-- Proof-erased structural token stream used only to compare a generated
+endpoint action with its canonical body. Each field occupies its own token and
+every constructor has fixed arity, so names cannot collide with delimiters.
+Slice-bound proofs are intentionally erased: proof irrelevance should not make
+two otherwise identical hardware actions compare differently. -/
+private def endpointExprShape : {width : Nat} → Expr width → List String
+  | width, .lit value => ["lit", toString width, toString value.toNat]
+  | _, .reg width name => ["reg", toString width, name]
+  | width, .memRead _ name address =>
+      ["memRead", toString width, name] ++ endpointExprShape address
+  | width, .and left right =>
+      ["and", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .or left right =>
+      ["or", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .xor left right =>
+      ["xor", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .not value => ["not", toString width] ++ endpointExprShape value
+  | width, .add left right =>
+      ["add", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .sub left right =>
+      ["sub", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .mul left right =>
+      ["mul", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .udiv left right =>
+      ["udiv", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .urem left right =>
+      ["urem", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .shl left right =>
+      ["shl", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .shr left right =>
+      ["shr", toString width] ++ endpointExprShape left ++ endpointExprShape right
+  | _, .eq left right => ["eq"] ++ endpointExprShape left ++ endpointExprShape right
+  | _, .ult left right => ["ult"] ++ endpointExprShape left ++ endpointExprShape right
+  | _, .slt left right => ["slt"] ++ endpointExprShape left ++ endpointExprShape right
+  | width, .mux condition yes no =>
+      ["mux", toString width] ++ endpointExprShape condition ++
+        endpointExprShape yes ++ endpointExprShape no
+  | width, .slice value lo _ =>
+      ["slice", toString width, toString lo] ++ endpointExprShape value
+  | width, .zext value _ => ["zext", toString width] ++ endpointExprShape value
+  | width, .sext value _ => ["sext", toString width] ++ endpointExprShape value
+
+private def endpointActShape : Act → List String
+  | .skip => ["skip"]
+  | .seq first second =>
+      ["seq"] ++ endpointActShape first ++ endpointActShape second
+  | .ite condition yes no =>
+      ["ite"] ++ endpointExprShape condition ++ endpointActShape yes ++
+        endpointActShape no
+  | .write width name value =>
+      ["write", toString width, name] ++ endpointExprShape value
+  | .writeSlice totalWidth name lo fieldWidth _ value =>
+      ["writeSlice", toString totalWidth, name, toString lo, toString fieldWidth] ++
+        endpointExprShape value
+  | .memWrite addressWidth dataWidth name port address data =>
+      ["memWrite", toString addressWidth, toString dataWidth, name, toString port] ++
+        endpointExprShape address ++ endpointExprShape data
+
+/-- Fail-closed structural identity for the complete generated full-rate
+presentation fragment. Timing metadata requires the exact declaration
+prefixes, reset values, output, unique leading maintenance rule, and complete
+maintenance action—not merely its reserved name. -/
 def hasFullRateSinkShape (c : Chan w) (d : Design) : Bool :=
-  let hasReg (name : String) (width init : Nat) := d.regs.any fun reg =>
-    reg.name == name && reg.width == width && reg.init.toNat == init
-  hasReg c.sinkPopName 1 1 &&
-    hasReg c.sinkBufferCountName 2 0 &&
-    hasReg c.sinkBufferHeadName w 0 &&
-    hasReg c.sinkBufferTailName w 0 &&
-    (d.rules.filter fun rule =>
-      rule.name == c.stem ++ "full_rate_sink_maintenance").length == 1
+  let ruleName := c.stem ++ "full_rate_sink_maintenance"
+  let regsOk := match d.regs with
+    | pop :: count :: head :: tail :: _ =>
+        pop.name == c.sinkPopName && pop.width == 1 && pop.init.toNat == 1 &&
+        count.name == c.sinkBufferCountName && count.width == 2 && count.init.toNat == 0 &&
+        head.name == c.sinkBufferHeadName && head.width == w && head.init.toNat == 0 &&
+        tail.name == c.sinkBufferTailName && tail.width == w && tail.init.toNat == 0
+    | _ => false
+  let inputsOk := match d.inputs with
+    | valid :: payload :: _ =>
+        valid.name == c.sinkValidName && valid.width == 1 &&
+        payload.name == c.sinkPayloadName && payload.width == w
+    | _ => false
+  let outputOk := match d.outputs with
+    | output :: _ => output == c.sinkPopName
+    | _ => false
+  let ruleOk := match d.rules with
+    | rule :: _ =>
+        rule.name == ruleName &&
+        endpointActShape rule.body == endpointActShape c.fullRateMaintenance
+    | _ => false
+  regsOk && inputsOk && outputOk && ruleOk &&
+    (d.rules.filter fun rule => rule.name == ruleName).length == 1
 
 /-- The generated maintenance-plus-consume actions implement the abstract
 steady-state exchange for arbitrary payloads: the old head is replaced by the

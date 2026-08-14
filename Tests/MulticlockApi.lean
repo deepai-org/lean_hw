@@ -188,6 +188,30 @@ private def malformedFullRateRejected : Bool :=
 
 example : malformedFullRateRejected := by native_decide
 
+/-- A forged maintenance-rule name with a different body is not a full-rate
+endpoint and cannot authorize the one-tick timing contract. -/
+def wrongBodyFullRateSinkDesign : Design :=
+  { fullRateSinkDesign with
+    rules := ⟨fullRateQueue.stem ++ "full_rate_sink_maintenance", .skip⟩ ::
+      fullRateConsumerCore.rules }
+
+example : !fullRateQueue.hasFullRateSinkShape wrongBodyFullRateSinkDesign := by
+  native_decide
+
+def wrongBodyFullRateBuilder : SystemBuilder :=
+  System.empty
+    |>.island "full_rate_producer"
+      (fullRateQueue.withSource fullRateProducer) clkA.name
+    |>.island "full_rate_consumer" wrongBodyFullRateSinkDesign clkB.name
+    |>.connect fullRateQueue "full_rate_producer" "full_rate_consumer"
+
+private def wrongBodyFullRateRejected : Bool :=
+  match wrongBodyFullRateBuilder.check with
+  | .error _ => true
+  | .ok _ => false
+
+example : wrongBodyFullRateRejected := by native_decide
+
 def fullRateSteadyState : St :=
   { fullRateSinkDesign.reset with
     regs := (((fullRateSinkDesign.reset.regs.set
