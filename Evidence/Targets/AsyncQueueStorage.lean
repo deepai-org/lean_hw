@@ -99,6 +99,7 @@ private def renderMockModule (name : String) (interface : PhysicalLeafInterface)
 
 def mockLeaf (p : Parameters) : PhysicalLeaf p where
   binding := mockBinding p
+  readPresentation := .firstWordFallThrough
   moduleName := "loom_mock_target_async_storage"
   renderModule := renderMockModule
 

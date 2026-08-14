@@ -1279,6 +1279,29 @@ example : skippedPhysicalChecks.passed = false := by native_decide
   tick clkB
   tick clkB
 
+private def duplicateSourceAdapterBuilder : SystemBuilder :=
+  System.empty
+    |>.island "producer" twoClock.producerSystemIsland.design (clock := "clkA")
+    |>.island "consumer" (consumerFor twoClock.q) (clock := "clkB")
+    |>.channel twoClock.q "producer" "consumer"
+
+private def checkErrorIs (result : Except String Unit) (expected : String) : Bool :=
+  match result with
+  | .error message => message == expected
+  | .ok _ => false
+
+#guard checkErrorIs duplicateSourceAdapterBuilder.check
+  "channel q: source endpoint adapter was generated more than once; the supplied island appears to be already endpoint-adapted. Supply its unadapted Design body, or assemble the existing endpoints explicitly with SystemBuilder.connect"
+
+private def duplicateSinkAdapterBuilder : SystemBuilder :=
+  System.empty
+    |>.island "producer" (producerFor twoClock.q) (clock := "clkA")
+    |>.island "consumer" twoClock.consumerSystemIsland.design (clock := "clkB")
+    |>.channel twoClock.q "producer" "consumer"
+
+#guard checkErrorIs duplicateSinkAdapterBuilder.check
+  "channel q: sink endpoint adapter was generated more than once; the supplied island appears to be already endpoint-adapted. Supply its unadapted Design body, or assemble the existing endpoints explicitly with SystemBuilder.connect"
+
 namespace DeeperGray
 
 /-- The same source-level topology selects every certified power-of-two depth;
@@ -1338,10 +1361,24 @@ end UnsupportedCombProjection
 
 end Tests.PrettyDsl.PrettySystem
 
+namespace Tests.PrettyDsl.OpenedIslandLibrary
+
+open Loom.Hw
+
+def sharedMonitor : Design :=
+  { name := "opened_namespace_monitor"
+    regs := [⟨"seen", 1, 0⟩]
+    mems := []
+    rules := []
+    outputs := ["seen"] }
+
+end Tests.PrettyDsl.OpenedIslandLibrary
+
 namespace Tests.PrettyDsl.ExistingIsland
 
 open Loom.Hw
 open Loom.Hw.Dsl
+open Tests.PrettyDsl.OpenedIslandLibrary
 
 def monitor : Design :=
   { name := "existing_monitor"
@@ -1387,6 +1424,17 @@ system renamed where
 example : renamed.monitor.name = "stable_monitor_rtl" := rfl
 example : renamed.monitor.regs = monitor.regs := rfl
 example : renamed.monitor.rules = monitor.rules := rfl
+
+/-- Atomic supplied Designs use ordinary Lean opened-namespace resolution;
+the generated `opened.monitor` declaration cannot capture `sharedMonitor`. -/
+system opened where
+  clock clk
+  clocks Clock.asynchronous
+  reset Reset.together
+  island monitor on clk := sharedMonitor
+
+example : opened.monitor =
+    Tests.PrettyDsl.OpenedIslandLibrary.sharedMonitor := rfl
 
 end Tests.PrettyDsl.ExistingIsland
 

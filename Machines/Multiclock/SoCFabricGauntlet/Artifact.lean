@@ -112,6 +112,7 @@ theorem exactRealizationChoices :
       match binding with
       | .synchronous _ => "synchronous"
       | .portable _ => "asynchronous"
+      | .registeredStorage _ => "registered-storage"
       | .recoveryPortable _ => "recovery") =
     ["synchronous", "synchronous", "asynchronous", "asynchronous",
       "asynchronous", "asynchronous", "asynchronous"] := by

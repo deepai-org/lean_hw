@@ -326,6 +326,16 @@ def Parameters.physicalLeafInterface (p : Parameters) : PhysicalLeafInterface :=
     addressWidth := Nat.log2 (p.depth - 1) + 1
     readLatency := p.readLatency }
 
+/-- How a physical leaf presents the addressed word to its wrapper.  A FWFT
+leaf keeps the current address visible combinationally; a registered leaf
+updates its sample only after an enabled read-domain edge.  Keeping this in the
+type-level package prevents a synchronous block RAM from being silently wired
+to a zero-stage FWFT controller. -/
+inductive ReadPresentation where
+  | firstWordFallThrough
+  | registered
+  deriving DecidableEq, Repr
+
 /-- Artifact-boundary package for a target-refined storage leaf. The renderer
 is fed the exact derived port interface and checked `Binding.configuration`;
 it cannot receive a second, drifting width/depth/latency record. Correctness
@@ -333,6 +343,7 @@ of an assumed macro body is the binding's one named downstream obligation,
 not a Loom theorem. -/
 structure PhysicalLeaf (p : Parameters) where
   binding : Binding p
+  readPresentation : ReadPresentation
   moduleName : String
   renderModule : String → PhysicalLeafInterface → Configuration → String
 

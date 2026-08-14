@@ -5267,10 +5267,43 @@ private def expandSystemCommand
       ($applicationName).certified))
   pure (Lean.mkNullNode commands)
 
+private def resolveSystemDesignTerm
+    (design : TSyntax `term) : CommandElabM (TSyntax `term) := do
+  match design with
+  | `(term| $name:ident) =>
+      if name.getId.isAtomic then
+        let resolved ← liftTermElabM <| resolveGlobalConstNoOverload name
+        pure <| mkIdentFrom name resolved
+      else
+        pure design
+  | _ => pure design
+
+/-- Resolve supplied island Designs before generated declarations introduce
+names such as `system.island`.  This both honors ordinary opened-namespace
+resolution and prevents a generated nested declaration from capturing an
+atomic right-hand side with the same short name. -/
+private def resolveSystemIslandItem
+    (item : TSyntax `hwsystemitem) : CommandElabM (TSyntax `hwsystemitem) := do
+  match item with
+  | `(hwsystemitem| $kind:ident $island:ident on $clock:ident := $design:term) =>
+      let design ← resolveSystemDesignTerm design
+      `(hwsystemitem| $kind:ident $island:ident on $clock:ident := $design:term)
+  | `(hwsystemitem| $kind:ident $island:ident on $clock:ident module $moduleName:ident := $design:term) =>
+      let design ← resolveSystemDesignTerm design
+      `(hwsystemitem| $kind:ident $island:ident on $clock:ident module $moduleName:ident := $design:term)
+  | `(hwsystemitem| $kind:ident $island:ident on $clock:ident extends $base:term where $body:hwitem*) =>
+      let base ← resolveSystemDesignTerm base
+      `(hwsystemitem| $kind:ident $island:ident on $clock:ident extends $base:term where $body:hwitem*)
+  | `(hwsystemitem| $kind:ident $island:ident on $clock:ident module $moduleName:ident extends $base:term where $body:hwitem*) =>
+      let base ← resolveSystemDesignTerm base
+      `(hwsystemitem| $kind:ident $island:ident on $clock:ident module $moduleName:ident extends $base:term where $body:hwitem*)
+  | _ => pure item
+
 @[command_elab systemCmd] unsafe def elabSystemCommand : CommandElab := fun stx => do
   match stx with
   | `($[$documentation:docComment]? $keyword:ident $systemName:ident where $items:hwsystemitem*) => do
       unless keyword.getId == `system do throwErrorAt keyword "expected `system`"
+      let items ← items.mapM resolveSystemIslandItem
       let connections := items.foldl (fun routes item => match item with
         | `(hwsystemitem| $kind:ident $channel:ident from $source:ident to $sink:ident) =>
             if kind.getId == `connect then

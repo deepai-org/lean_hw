@@ -31,6 +31,16 @@ test report, release claim, or record of campaign results.
 - The explicit coordinated-reset contract is preferable to an implicit promise
   that arbitrary unilateral reset is safe. Unsupported recovery behavior
   should continue to be rejected rather than approximated.
+- The independent-flush realization composes cleanly on a realistic
+  bidirectional graph. Selecting one recovery-capable implementation per route
+  produces the expected per-island completion fold over both halves of every
+  incident channel; the application topology does not need recovery-specific
+  CDC wiring.
+- Keeping the logical `System` fixed while substituting a registered physical
+  storage leaf is a useful realization boundary. Once read presentation is
+  explicit, the target wrapper can absorb the extra stage, report different
+  timing, and preserve the same certified channel refinement and application
+  behavior.
 
 ### What could improve
 
@@ -51,6 +61,17 @@ test report, release claim, or record of campaign results.
 - Optional observation interfaces would help evidence builds. Queue occupancy,
   coherent snapshots, and fault injection are useful for exercising reset and
   backpressure, but currently tend to require target-specific RTL derivatives.
+- `System.applyRecovery` makes the loss semantics unambiguous, but it does not
+  return an aggregate loss ledger. A user testing a multi-route island must
+  traverse every connection, repeat the `affects` test, and snapshot each queue
+  before the transition. A small `RecoveryResult` containing the next state and
+  per-route discarded values would make the advertised loss-explicit contract
+  much harder to measure incorrectly.
+- Independent channel recovery does not notify application peers which logical
+  requests were discarded. That is a reasonable scope boundary—retry,
+  deduplication, and epoch policy belong to the protocol—but the application
+  facade should say directly that forward progress after a lossy island reset
+  requires such a protocol or an explicit fresh application epoch.
 
 ## Semantics and execution
 
@@ -217,6 +238,11 @@ test report, release claim, or record of campaign results.
 - Technology-neutral RTL and a separate physical-intent inventory are the
   correct boundary. Vendor implementation evidence can strengthen confidence
   without becoming a dependency of Loom's generic semantic claim.
+- A contended, bidirectional transaction fabric with mixed synchronous and
+  asynchronous routes is a realistic enough subsystem to validate the
+  abstraction boundary. Arbitration, requester/tag routing, masked memory
+  operations, lossless telemetry backpressure, and checking remained ordinary
+  island logic; Loom's multiclock layer remained transport and realization.
 - Typed configuration inputs are preferable to post-emission RTL edits for
   traffic limits and evidence modes. They preserve one canonical artifact
   across short and prolonged runs.
@@ -240,6 +266,24 @@ test report, release claim, or record of campaign results.
 - Evidence tooling should distinguish free-running independent oscillators,
   derived clocks, gated domains, and host-driven independent clocks. Treating
   all of them as simply “multiple clocks” is too imprecise for physical review.
+- The first target-storage substitution attempt exposed an underspecified
+  physical contract: `readLatency = 1` did not say whether the addressed word
+  was continuously visible or returned after an enabled read edge. The API now
+  distinguishes first-word-fall-through and registered presentation and
+  requires the matching proof at the wrapper boundary. That fail-closed split
+  was necessary; width, depth, and a latency number alone were not enough to
+  wire a real synchronous block RAM safely.
+- Registered target storage currently needs a dedicated conservative wrapper
+  with a one-word presentation buffer. Generalizing this beyond the two known
+  presentations, or supporting a throughput-optimized prefetch controller,
+  would need a richer request/response timing contract rather than more ad hoc
+  numeric latency fields.
+- Equal-shaped target leaves initially caused duplicate compiled source/sink
+  module declarations because those control names were derived only from FIFO
+  shape. Scoping opaque target-control modules by connection fixes the emitted
+  artifact. In general, artifact assembly should treat per-binding module-name
+  uniqueness as a checked invariant, not rely on widths and depths happening
+  to differ.
 
 ## Scope assessment from handwritten HDL and Tcl
 

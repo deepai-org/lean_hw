@@ -1,6 +1,8 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Machines.Multiclock.SoCFabricGauntlet
+import Machines.Multiclock.SoCFabricGauntlet.RecoveryCampaign
+import Machines.Multiclock.SoCFabricGauntlet.StorageNeutrality
 import Tools.SoCFabricGauntletCampaign
 
 namespace Tests.SoCFabricGauntlet

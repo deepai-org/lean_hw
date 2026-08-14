@@ -315,7 +315,7 @@ def mockSubstitutedRtl : String :=
       let shape := System.CertifiedPortable.storageShape binding.connection
         binding.depthAtLeastTwo
       let leaf := Loom.Evidence.Targets.AsyncQueueStorage.mockLeaf shape.parameters
-      let physical := binding.toPhysicalWithStorageLeaf leaf
+      let physical := binding.toPhysicalWithStorageLeaf leaf (by rfl)
       physical.moduleText
         { channel := binding.connection.chan.name
           width := binding.connection.width

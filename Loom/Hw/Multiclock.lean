@@ -1010,6 +1010,91 @@ structure Application (system : System) where
   certified : CertifiedSystem system
   artifact : CertifiedRealizedSystem system certified
 
+/-! ### Certified realization overlays
+
+Target evidence often changes only a few physical leaves while retaining the
+exact logical System and stock bindings everywhere else.  The overlay keeps
+that operation separate from the technology-neutral `system` declaration and
+derives ordered coverage instead of asking the evidence package to rebuild the
+complete heterogeneous binding inventory by hand. -/
+
+private def replaceCertifiedBinding
+    (replacement current : CertifiedChannelBinding) : CertifiedChannelBinding :=
+  if replacement.key = current.key then replacement else current
+
+private def replaceCertifiedBindingIn
+    (bindings : List CertifiedChannelBinding)
+    (replacement : CertifiedChannelBinding) : List CertifiedChannelBinding :=
+  bindings.map (replaceCertifiedBinding replacement)
+
+@[simp] private theorem replaceCertifiedBinding_key
+    (replacement current : CertifiedChannelBinding) :
+    (replaceCertifiedBinding replacement current).key = current.key := by
+  simp only [replaceCertifiedBinding]
+  split <;> simp_all
+
+@[simp] private theorem replaceCertifiedBindingIn_keys
+    (bindings : List CertifiedChannelBinding)
+    (replacement : CertifiedChannelBinding) :
+    (replaceCertifiedBindingIn bindings replacement).map
+        CertifiedChannelBinding.key =
+      bindings.map CertifiedChannelBinding.key := by
+  simp [replaceCertifiedBindingIn]
+
+/-- A sparse, fail-closed physical overlay. Every replacement must name one
+existing binding exactly once. The replacement itself carries its channel
+refinement and any target-storage assumption; this structure adds no new
+semantic or technology-specific trust. -/
+structure CertifiedBindingOverlay (base : List CertifiedChannelBinding) where
+  replacements : List CertifiedChannelBinding
+  distinct : (replacements.map CertifiedChannelBinding.key).Nodup
+  covered : ∀ replacement ∈ replacements,
+    replacement.key ∈ base.map CertifiedChannelBinding.key
+
+namespace CertifiedBindingOverlay
+
+def apply {base : List CertifiedChannelBinding}
+    (overlay : CertifiedBindingOverlay base) : List CertifiedChannelBinding :=
+  overlay.replacements.foldl replaceCertifiedBindingIn base
+
+private theorem foldl_replaceCertifiedBindingIn_keys
+    (replacements base : List CertifiedChannelBinding) :
+    (replacements.foldl replaceCertifiedBindingIn base).map
+        CertifiedChannelBinding.key =
+      base.map CertifiedChannelBinding.key := by
+  induction replacements generalizing base with
+  | nil => rfl
+  | cons replacement rest ih =>
+      simp only [List.foldl_cons]
+      rw [ih, replaceCertifiedBindingIn_keys]
+
+@[simp] theorem apply_keys {base : List CertifiedChannelBinding}
+    (overlay : CertifiedBindingOverlay base) :
+    overlay.apply.map CertifiedChannelBinding.key =
+      base.map CertifiedChannelBinding.key := by
+  exact foldl_replaceCertifiedBindingIn_keys overlay.replacements base
+
+end CertifiedBindingOverlay
+
+/-- Apply a sparse binding overlay to an existing certified artifact. Ordered
+connection coverage is inherited mechanically. Only the physical clock/reset
+compatibility checks for the replacement bindings remain as explicit local
+obligations, normally discharged by `decide` in the evidence package. -/
+def CertifiedRealizedSystem.withOverlay
+    {system : System} {certified : CertifiedSystem system}
+    (artifact : CertifiedRealizedSystem system certified)
+    (overlay : CertifiedBindingOverlay artifact.bindings)
+    (clockRules : (overlay.apply.map CertifiedChannelBinding.toPhysical).all
+      (clockRuleOk system) = true)
+    (resetCompatibility : resetBindingsCheck system overlay.apply = true) :
+    CertifiedRealizedSystem system certified where
+  bindings := overlay.apply
+  coverage := by
+    rw [CertifiedBindingOverlay.apply_keys]
+    exact artifact.coverage
+  clockRules := clockRules
+  resetCompatibility := resetCompatibility
+
 /-- Assemble a new physical plan around already-certified islands. Only the
 reset/connection realization checks are redone. -/
 def realizeWithCertified (system : System) (islands : CertifiedIslands system)
