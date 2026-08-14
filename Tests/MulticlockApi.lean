@@ -12,6 +12,7 @@ namespace Tests.MulticlockApi
 
 open Loom.Hw
 open Machines.Substrate.TwoClock
+open Loom.Evidence.Targets.AsyncQueueStorage
 
 example : system.resetPolicy = .coordinated := rfl
 
@@ -295,6 +296,49 @@ def mockStorageParameters : Cdc.AsyncQueueStorage.Parameters where
   readLatency := 1
   depthPositive := by decide
   readLatencyPositive := by decide
+
+private def openXc7Width32Parameters : Cdc.AsyncQueueStorage.Parameters where
+  width := 32
+  depth := 4
+  readLatency := 1
+  depthPositive := by decide
+  readLatencyPositive := by decide
+
+private def openXc7Width46Parameters : Cdc.AsyncQueueStorage.Parameters where
+  width := 46
+  depth := 4
+  readLatency := 1
+  depthPositive := by decide
+  readLatencyPositive := by decide
+
+private def openXc7Width46Error : String :=
+  match openXc7Zynq7000IndependentClockPolicy.check openXc7Width46Parameters with
+  | .ok _ => ""
+  | .error message => message
+
+private def openXc7AcceptsWidth32 : Bool :=
+  match openXc7Zynq7000IndependentClockPolicy.check openXc7Width32Parameters with
+  | .ok _ => true
+  | .error _ => false
+
+private def openXc7RejectsWidth46 : Bool :=
+  match openXc7Zynq7000IndependentClockPolicy.check openXc7Width46Parameters with
+  | .ok _ => false
+  | .error _ => true
+
+example : openXc7AcceptsWidth32 := by native_decide
+example : openXc7RejectsWidth46 := by native_decide
+example : openXc7Width46Error.contains "width 46" := by native_decide
+
+example : openXc7Zynq7000IndependentClockPolicy.evidence.map (·.stage) =
+      [.rtlSimulation, .primitiveInference, .routedImplementation,
+        .siliconExecution, .siliconExecution, .siliconExecution] := by
+  native_decide
+
+private def checkedOpenXc7Binding :=
+  openXc7Zynq7000InferredBinding openXc7Width32Parameters (by native_decide)
+
+example : checkedOpenXc7Binding.externalAssumption.isSome := by native_decide
 
 def mockStorageLeaf :=
   Loom.Evidence.Targets.AsyncQueueStorage.mockLeaf mockStorageParameters
