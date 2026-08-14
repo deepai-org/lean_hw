@@ -12,11 +12,12 @@ import Loom.Hw.SystemRecovery
 /-!
 # Certified structural artifacts for multi-clock Systems
 
-This is the closed, technology-neutral release path. A depth-two channel is
-made from four ordinary certified Designs: its write/read controllers and the
-write/read halves of the portable register-bank storage witness. The only RTL
-written here is generated structural instantiation and wiring; every stateful
-or combinational behavioral expression comes from `Compile.compile`.
+This is the closed, technology-neutral release path. Every supported
+power-of-two channel depth is made from four ordinary certified Designs: its
+write/read controllers and the write/read halves of the portable register-bank
+storage witness. The only RTL written here is generated structural
+instantiation and wiring; every stateful or combinational behavioral
+expression comes from `Compile.compile`.
 
 Physical RAM bindings remain a separate extension point behind
 `AsyncQueueStorage`. This file selects the unconditional compiled register
@@ -79,55 +80,16 @@ def compiledRecoveryPortableTiming : ChannelTiming where
       .sourceEventuallyObservesSink, .sinkEventuallyObservesSource,
       .recoveryRequestHeld]
 
-namespace CertifiedDepthTwo
-
-def fifoParameters (width : Nat) : Cdc.AsyncFifoDesign.Parameters where
-  width := width
-  depth := 2
-  depthAtLeastTwo := by decide
-  powerOfTwo := by decide
-
-def storageParameters (width : Nat) : Cdc.AsyncQueueStorage.Parameters :=
-  Cdc.AsyncQueueStorage.DepthTwo.parameters width
-
-end CertifiedDepthTwo
-
-/-- One abstract connection together with certificates for every behavioral
-module in Loom's portable depth-two realization. `depthEq` is explicit: this
-constructor cannot silently truncate or reinterpret another channel shape. -/
-structure CertifiedDepthTwoBinding where
-  connection : SystemConnection
-  depthEq : connection.chan.depth = 2
-  controls : Cdc.AsyncFifoDesign.Controls
-    (CertifiedDepthTwo.fifoParameters connection.width)
-  storage : Cdc.AsyncQueueStorage.CertifiedRegisterBankDesigns
-    (CertifiedDepthTwo.storageParameters connection.width)
-
-def CertifiedDepthTwoBinding.key (binding : CertifiedDepthTwoBinding) :
-    ConnectionKey := binding.connection.key
-
-private def depthTwoStorage {width : Nat} (channel : Chan width)
-    (depthEq : channel.depth = 2) (positive : 0 < channel.depth) :
-    Cdc.AsyncQueueStorage.Implementation
-      (Cdc.AsyncFifo.storageParameters channel positive) := by
-  rcases channel with ⟨name, depth, policy⟩
-  simp only at depthEq
-  subst depth
-  exact Cdc.AsyncQueueStorage.DepthTwo.implementation width
-
-/-- The exact technology-neutral refinement proved for the same control
-Designs and compiled storage implementation carried by the binding. -/
-def CertifiedDepthTwoBinding.refinement (binding : CertifiedDepthTwoBinding) :
-    Chan.Refinement binding.connection.chan := by
-  let p := CertifiedDepthTwo.fifoParameters binding.connection.width
-  have depth : binding.connection.chan.depth = p.depth := by
-    simpa [p, CertifiedDepthTwo.fifoParameters] using binding.depthEq
-  have positive : 0 < binding.connection.chan.depth := by
-    rw [binding.depthEq]
-    decide
-  exact Cdc.AsyncFifoDesign.Compiled.refinement p binding.connection.chan
-    depth positive
-    (depthTwoStorage binding.connection.chan binding.depthEq positive)
+/-- Destination buffering changes the application issue interval, not FIFO
+or synchronizer latency. This adjustment is applied only after System
+assembly has structurally checked the buffered endpoint. -/
+def timingForSinkPresentation (buffered : Bool)
+    (timing : ChannelTiming) : ChannelTiming :=
+  if buffered then
+    { timing with
+      sinkIssueInterval := .conditional 1 .sinkTicks
+        [.sinkPayloadAvailableEveryTick, .sinkConsumesWhenAvailable] }
+  else timing
 
 private def widthDecl (width : Nat) : String :=
   if width = 1 then "" else s!"[{width - 1}:0] "
@@ -162,98 +124,7 @@ def portablePhysicalIntent (info : CrossingInfo)
             { reference := .fasterOf source sink } ]
   | _, _ => []
 
-private def wrapperName (binding : CertifiedDepthTwoBinding) : String :=
-  "loom_compiled_async_fifo_" ++ binding.connection.chan.name
-
-/-- All behavioral modules in the channel artifact. Their text is projected
-from `CertifiedDesign`; none is supplied as an independent string. -/
-def CertifiedDepthTwoBinding.componentModules
-    (binding : CertifiedDepthTwoBinding) : List (String × String) :=
-  [ (binding.controls.source.compiled.name,
-      binding.controls.source.renderedVerilog),
-    (binding.controls.sink.compiled.name,
-      binding.controls.sink.renderedVerilog),
-    (binding.storage.writer.compiled.name,
-      binding.storage.writer.renderedVerilog),
-    (binding.storage.reader.compiled.name,
-      binding.storage.reader.renderedVerilog) ]
-
-/-- Generated structural wrapper for the four proved modules. The signal
-names are the typed declarations in `AsyncFifoDesign` and
-`AsyncQueueStorageDesign`; the wrapper contains no `always`, state, Gray
-logic, flag comparison, or storage behavior. -/
-def CertifiedDepthTwoBinding.wrapperText
-    (binding : CertifiedDepthTwoBinding) : String :=
-  let width := binding.connection.width
-  let pointerWidth := Cdc.AsyncFifoDesign.pointerWidth
-    (CertifiedDepthTwo.fifoParameters width)
-  let addressWidth := Cdc.AsyncFifoDesign.addressWidth
-    (CertifiedDepthTwo.fifoParameters width)
-  let sourceModule := binding.controls.source.compiled.name
-  let sinkModule := binding.controls.sink.compiled.name
-  let writerModule := binding.storage.writer.compiled.name
-  let readerModule := binding.storage.reader.compiled.name
-  String.intercalate "\n" [
-    s!"module {wrapperName binding}(",
-    "  input wire src_clk, input wire dst_clk, input wire rst,",
-    s!"  input wire src_valid, input wire {widthDecl width}src_payload,",
-    "  output wire src_ready,",
-    "  output wire dst_valid,",
-    s!"  output wire {widthDecl width}dst_payload, input wire dst_pop",
-    ");",
-    s!"wire {widthDecl pointerWidth}write_binary, write_gray, read_gray_sync0, read_gray_sync1;",
-    s!"wire {widthDecl pointerWidth}read_binary, read_gray, write_gray_sync0, write_gray_sync1;",
-    "wire write_take, read_take, sink_valid;",
-    s!"wire {widthDecl addressWidth}write_address, read_address;",
-    s!"wire {widthDecl width}write_data, slot_0, slot_1, read_data_0, read_sample;",
-    "wire read_valid_0;",
-    s!"{sourceModule} u_source_control (",
-    "  .clk(src_clk), .rst(rst), .source_valid(src_valid), .source_payload(src_payload),",
-    "  .raw_read_gray(read_gray), .o_write_binary(write_binary), .o_write_gray(write_gray),",
-    "  .o_read_gray_sync0(read_gray_sync0), .o_read_gray_sync1(read_gray_sync1),",
-    "  .source_ready(src_ready), .write_take(write_take),",
-    "  .write_address(write_address), .write_data(write_data));",
-    s!"{sinkModule} u_sink_control (",
-    "  .clk(dst_clk), .rst(rst), .sink_pop(dst_pop), .raw_write_gray(write_gray),",
-    "  .o_read_binary(read_binary), .o_read_gray(read_gray),",
-    "  .o_write_gray_sync0(write_gray_sync0), .o_write_gray_sync1(write_gray_sync1),",
-    "  .sink_valid(sink_valid), .read_take(read_take), .read_address(read_address));",
-    s!"{writerModule} u_storage_writer (",
-    "  .clk(src_clk), .rst(rst), .write_enable(write_take),",
-    "  .write_address(write_address), .write_data(write_data),",
-    "  .o_slot_0(slot_0), .o_slot_1(slot_1));",
-    s!"{readerModule} u_storage_reader (",
-    "  .clk(dst_clk), .rst(rst), .slot_0(slot_0), .slot_1(slot_1),",
-    "  .read_enable(read_take), .read_address(read_address),",
-    "  .o_read_data_0(read_data_0), .o_read_valid_0(read_valid_0),",
-    "  .read_sample(read_sample));",
-    "assign dst_valid = sink_valid;",
-    "assign dst_payload = read_sample;",
-    "endmodule" ]
-
-private def CertifiedDepthTwoBinding.crossingInfo
-    (binding : CertifiedDepthTwoBinding) (sys : System) : CrossingInfo :=
-  { channel := binding.connection.chan.name
-    width := binding.connection.width
-    depth := binding.connection.chan.depth
-    policy := binding.connection.chan.policy
-    source := binding.connection.source
-    sourceClock := (sys.findIsland? binding.connection.source).map (·.clock)
-    sink := binding.connection.sink
-    sinkClock := (sys.findIsland? binding.connection.sink).map (·.clock) }
-
-def CertifiedDepthTwoBinding.toPhysical
-    (binding : CertifiedDepthTwoBinding) : BoundImplementation :=
-  BoundImplementation.custom binding.connection "loom.compiled.depth_two"
-    .any binding.refinement
-    (fun _ => wrapperName binding)
-    (fun _ => binding.wrapperText)
-    (fun info => portablePhysicalIntent info
-      (Cdc.AsyncFifoDesign.pointerWidth
-        (CertifiedDepthTwo.fifoParameters binding.connection.width)))
-    compiledPortableTiming
-
-/-! ## General portable power-of-two binding -/
+/-! ## Portable power-of-two binding -/
 
 namespace CertifiedPortable
 
@@ -284,6 +155,9 @@ power-of-two depth. The depth and payload width are the abstract channel's
 values, not separate renderer configuration. -/
 structure CertifiedPortableBinding where
   connection : SystemConnection
+  /-- Checked destination-local presentation shape. This is deliberately not
+  part of abstract `SystemConnection` identity. -/
+  bufferedSink : Bool := false
   depthAtLeastTwo : 2 ≤ connection.chan.depth
   powerOfTwo : 2 ^ Nat.log2 connection.chan.depth = connection.chan.depth
   controls : Cdc.AsyncFifoDesign.Controls
@@ -392,6 +266,36 @@ private def registeredTargetStorageWrapperName
     (binding : CertifiedPortableBinding) : String :=
   portableWrapperName binding ++ "_registered_target_storage"
 
+private def registeredPresentationModuleName
+    (binding : CertifiedPortableBinding) : String :=
+  "loom_compiled_registered_presentation_" ++ binding.connection.chan.name
+
+/-- Destination-clock presentation control for a one-cycle registered storage
+leaf. It is an ordinary Design compiled by the same proved path as the other
+closed behavioral components; the wrapper below remains purely structural. -/
+def registeredStoragePresentationDesign : Design where
+  name := "loom_registered_storage_presentation"
+  regs := [⟨"payload_ready", 1, 0⟩]
+  mems := []
+  inputs := [⟨"fifo_sink_valid", 1⟩, ⟨"dst_pop", 1⟩]
+  outputs := []
+  rules := [⟨"update", .ite
+    (.and (.reg 1 "payload_ready") (.reg 1 "dst_pop"))
+    (.write 1 "payload_ready" (.lit 0))
+    (.ite (.and (.reg 1 "fifo_sink_valid")
+        (.not (.reg 1 "payload_ready")))
+      (.write 1 "payload_ready" (.lit 1)) .skip)⟩]
+  combOutputs := [
+    ⟨"read_launch", 1, .and (.reg 1 "fifo_sink_valid")
+      (.not (.reg 1 "payload_ready"))⟩,
+    ⟨"fifo_pop", 1, .and (.reg 1 "payload_ready") (.reg 1 "dst_pop")⟩,
+    ⟨"dst_valid", 1, .and (.reg 1 "fifo_sink_valid")
+      (.reg 1 "payload_ready")⟩]
+
+def certifiedRegisteredStoragePresentation :
+    CertifiedDesign registeredStoragePresentationDesign :=
+  .ofChecks (by decide) (by decide)
+
 /-- Target wrappers are opaque per-binding artifact units.  Scope shared
 shape-derived control module names by channel so two equal-width/depth leaves
 cannot emit duplicate Verilog declarations when assembled in one System. -/
@@ -465,6 +369,7 @@ def CertifiedPortableBinding.wrapperTextWithRegisteredStorageLeaf
   let addressWidth := Cdc.AsyncFifoDesign.addressWidth fifo
   let sourceModule := targetControlModuleName binding.controls.source.compiled.name binding
   let sinkModule := targetControlModuleName binding.controls.sink.compiled.name binding
+  let presentationModule := registeredPresentationModuleName binding
   String.intercalate "\n" [
     s!"module {registeredTargetStorageWrapperName binding}(",
     "  input wire src_clk, input wire dst_clk, input wire rst,",
@@ -478,7 +383,6 @@ def CertifiedPortableBinding.wrapperTextWithRegisteredStorageLeaf
     "wire write_take, fifo_read_take, fifo_sink_valid, fifo_pop, read_launch;",
     s!"wire {widthDecl addressWidth}write_address, read_address;",
     s!"wire {widthDecl width}write_data, read_sample;",
-    "reg payload_ready;",
     s!"{sourceModule} u_source_control (",
     "  .clk(src_clk), .rst(rst), .source_valid(src_valid), .source_payload(src_payload),",
     "  .raw_read_gray(read_gray), .o_write_binary(write_binary), .o_write_gray(write_gray),",
@@ -490,19 +394,15 @@ def CertifiedPortableBinding.wrapperTextWithRegisteredStorageLeaf
     "  .o_read_binary(read_binary), .o_read_gray(read_gray),",
     "  .o_write_gray_sync0(write_gray_sync0), .o_write_gray_sync1(write_gray_sync1),",
     "  .sink_valid(fifo_sink_valid), .read_take(fifo_read_take), .read_address(read_address));",
-    "assign read_launch = fifo_sink_valid && !payload_ready;",
-    "assign fifo_pop = payload_ready && dst_pop;",
-    "always @(posedge dst_clk) begin",
-    "  if (rst) payload_ready <= 1'b0;",
-    "  else if (fifo_pop) payload_ready <= 1'b0;",
-    "  else if (read_launch) payload_ready <= 1'b1;",
-    "end",
+    s!"{presentationModule} u_registered_presentation (",
+    "  .clk(dst_clk), .rst(rst), .fifo_sink_valid(fifo_sink_valid),",
+    "  .dst_pop(dst_pop), .read_launch(read_launch), .fifo_pop(fifo_pop),",
+    "  .dst_valid(dst_valid));",
     s!"{leaf.moduleName} u_target_storage (",
     "  .write_clk(src_clk), .read_clk(dst_clk), .rst(rst),",
     "  .write_enable(write_take), .read_enable(read_launch),",
     "  .write_address(write_address), .read_address(read_address),",
     "  .write_data(write_data), .read_sample(read_sample));",
-    "assign dst_valid = fifo_sink_valid && payload_ready;",
     "assign dst_payload = read_sample;",
     "endmodule" ]
 
@@ -532,7 +432,7 @@ def CertifiedPortableBinding.toPhysicalWithStorageLeaf
       (Cdc.AsyncFifoDesign.pointerWidth
         (CertifiedPortable.fifoParameters binding.connection
           binding.depthAtLeastTwo binding.powerOfTwo)))
-    compiledPortableTiming
+    (timingForSinkPresentation binding.bufferedSink compiledPortableTiming)
     (externalAssumptions := leaf.binding.externalAssumption.toList)
 
 /-- Timing for the conservative registered-leaf presentation wrapper.  The
@@ -571,6 +471,9 @@ def CertifiedPortableBinding.toPhysicalWithRegisteredStorageLeaf
       renameRenderedModule binding.controls.sink.renderedVerilog
         binding.controls.sink.compiled.name
         (targetControlModuleName binding.controls.sink.compiled.name binding),
+      renameRenderedModule certifiedRegisteredStoragePresentation.renderedVerilog
+        certifiedRegisteredStoragePresentation.compiled.name
+        (registeredPresentationModuleName binding),
       leaf.moduleText,
       binding.wrapperTextWithRegisteredStorageLeaf leaf])
     (fun info => portablePhysicalIntent info
@@ -615,6 +518,7 @@ def emissionCheck (binding : CertifiedRegisteredStorageBinding) : Except String 
   (Cdc.AsyncFifoDesign.sinkControl
     (CertifiedPortable.fifoParameters binding.connection
       binding.base.depthAtLeastTwo binding.base.powerOfTwo)).emitCheck
+  registeredStoragePresentationDesign.emitCheck
 
 end CertifiedRegisteredStorageBinding
 
@@ -628,7 +532,7 @@ def CertifiedPortableBinding.toPhysical
       (Cdc.AsyncFifoDesign.pointerWidth
         (CertifiedPortable.fifoParameters binding.connection
           binding.depthAtLeastTwo binding.powerOfTwo)))
-    compiledPortableTiming
+    (timingForSinkPresentation binding.bufferedSink compiledPortableTiming)
 
 /-! ## Compiler-produced graceful-recovery wrapper -/
 
@@ -1203,7 +1107,7 @@ def CertifiedRecoveryPortableBinding.toPhysical
       (Cdc.AsyncFifoDesign.pointerWidth
         (CertifiedPortable.fifoParameters binding.connection
           binding.base.depthAtLeastTwo binding.base.powerOfTwo)))
-    compiledRecoveryPortableTiming
+    (timingForSinkPresentation binding.base.bufferedSink compiledRecoveryPortableTiming)
 
 /-! ## Compiled same-clock binding -/
 
@@ -1212,6 +1116,7 @@ refinement is proved in `ChanSync`. It supports every positive depth and both
 co-tick policies, but its physical clock rule requires aligned endpoints. -/
 structure CertifiedSyncBinding where
   connection : SystemConnection
+  bufferedSink : Bool := false
   positiveDepth : 0 < connection.chan.depth
   adapter : CertifiedDesign connection.chan.physicalAdapter
 
@@ -1260,7 +1165,7 @@ def CertifiedSyncBinding.toPhysical
     .same binding.refinement
     (fun _ => syncWrapperName binding)
     (fun _ => binding.wrapperText)
-    (fun _ => []) compiledSyncTiming
+    (fun _ => []) (timingForSinkPresentation binding.bufferedSink compiledSyncTiming)
 
 /-- Closed compiler-produced realization choices supported by the ordinary
 application facade. The sum is deliberately small: a synchronous FIFO for

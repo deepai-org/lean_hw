@@ -187,9 +187,9 @@ well-defined.
   use.
 
 Both `Machines.Substrate.TwoClock` and `Machines.Lnp64mini.Multiclock` use this
-facade. Neither constructs `CertifiedDepthTwoBinding`, storage witnesses,
-lookup equalities, coverage proofs, or typed DAG register views. The Gauntlet
-artifact remains the expert-level exercise of explicit realization assembly.
+facade. Neither constructs low-level storage/binding certificates, lookup
+equalities, coverage proofs, or typed DAG register views. The Gauntlet artifact
+remains the expert-level exercise of explicit realization assembly.
 
 ## Maintenance requirements
 
@@ -251,15 +251,20 @@ The required milestone has three parts:
    reset-tree language. `SystemResetPolicy` remains the separate logical
    traffic-loss/recovery contract.
 
-3. **Validated extension boundary — done for the reference boundary.** The
+3. **Validated extension boundary — done.** The
    typed physical manifest includes every channel constraint and reset-domain
    contract. A backend report is constructible only with exact ordered
-   coverage and reports `PASS`, `SKIP`, or `UNCONSTRAINED` for every item. The
+   coverage and reports `PASS`, `FAIL`, `SKIP`, or `UNCONSTRAINED` for every item. The
    small reference backend consumes every requirement exactly once. The
    target-storage mock receives the exact proof-matched width, depth, and read
    latency and makes its one external leaf assumption explicit. The generated
    neutral two-clock RTL passes an accessible technology-neutral synthesis
    sanity test; this is corroboration, not part of Loom's theorem or TCB.
+   Reports now carry target/tool/run identity, exact
+   RTL/intent/target-constraint/routed hashes, and post-synthesis object
+   resolution. An optional openXC7 adapter consumes real
+   routed-audit evidence and fails honestly on timing obligations that backend
+   cannot discharge.
 
 Two realization modes remain intentional:
 
@@ -273,14 +278,16 @@ Two realization modes remain intentional:
 
 These are useful but are not gates on the language milestone:
 
-- a proved one-item-per-destination-tick sink (the current half-rate contract
-  remains legal and must stay prominent);
 - real FPGA block-RAM and ASIC SRAM bindings;
 - production XDC, Quartus, and ASIC CDC/STA adapters;
 - calibrated cost warnings beyond exact structural quantities;
 - stable-level, event/pulse, mailbox, and reset-synchronizer components;
 - further board campaigns; and
 - the experimental independent-recovery whole-wrapper theorem.
+
+The proved one-item-per-destination-tick buffered sink now exists as an
+explicit option. The conservative half-rate endpoint remains the compatibility
+default until broader use justifies changing source behavior.
 
 Network-wide deadlock freedom, arbitration determinacy, and liveness without a
 service premise remain application or reusable-component properties, not

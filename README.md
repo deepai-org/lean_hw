@@ -222,7 +222,11 @@ The checked System layer provides:
 
 Normal emission produces readable Markdown reports; programmatic clients use
 the underlying typed inventory rather than CSV or TSV sidecars. A physical
-backend must report every requirement as `PASS`, `SKIP`, or `UNCONSTRAINED`.
+backend must report every requirement as `PASS`, `FAIL`, `SKIP`, or
+`UNCONSTRAINED`. A target signoff report also binds the device, tool/version,
+run/seed, exact RTL, neutral-intent, emitted-constraint, and routed-design
+hashes, the implementation run's matching RTL/constraint input hashes, and
+post-synthesis object resolutions.
 Generic Loom emission never manufactures a physical `PASS`.
 
 The portable register implementation is shared by FPGA and ASIC flows. A
@@ -232,9 +236,10 @@ does not alter the source channel semantics.
 
 Timing remains visible. In particular, the current conservative registered
 sink consumes at most once per two destination ticks under continuous traffic;
-a one-item-per-tick sink remains library work. Independent-reset recovery also
-has a documented remaining whole-wrapper state-relation proof. These are not
-hidden behind the general multiclock claim.
+an opt-in destination-local buffered sink has a proved one-item-per-tick
+steady-state contract and reports that distinct timing. Independent-reset
+recovery also has a documented remaining whole-wrapper state-relation proof.
+These are not hidden behind the general multiclock claim.
 
 See [MULTICLOCK.md](MULTICLOCK.md) for the application model,
 [MULTICLOCK_BOUNDARY.md](MULTICLOCK_BOUNDARY.md) for the precise digital versus

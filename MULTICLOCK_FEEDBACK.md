@@ -428,3 +428,49 @@ the other SoC channels would require. Recovery waveform metadata has also
 landed; a sticky observation adapter remains optional transport convenience.
 Vendor JTAG, board shells, constraints, and campaign policy remain outside
 Loom's core language.
+
+## Production-grade closeout assessment (2026-08-14)
+
+The explicit known-bad reproduction workflow is the right behavior for target
+qualification. Requiring an opt-in before artifact creation, reporting
+simulation, inference, routing, silicon, and profile selection separately, and
+making the aggregate result `KNOWN_BAD_REPRODUCED` rather than `PASS` prevents
+a useful forensic artifact from being mistaken for qualified hardware. Exact,
+ordered negative diagnostics also make the selection policy testable rather
+than merely documentary.
+
+The main remaining production boundary is a real target signoff adapter. Loom
+already exports an exact typed list of clock, synchronizer-chain, coherent-bus,
+and reset requirements, but the repository's SDC renderer is deliberately
+partial and the reference checker only proves list coverage. A production
+adapter should consume that list, resolve the generated objects after
+synthesis, lower every supported requirement, implement or verify safe reset
+release, read back post-route CDC/timing results, and return `PASS`, `SKIP`, or
+`UNCONSTRAINED` for every original requirement. Missing or renamed objects and
+unsupported commands should fail closed. Tool version, device, seed,
+constraint hash, routed-design identity, and bitstream hash should travel with
+that report. This is target tooling at Loom's existing interface, not a reason
+to add vendor concepts to generic multiclock semantics.
+
+Target storage qualification would be more reusable as a machine-readable
+capability table keyed by device family, toolchain/version, primitive mode,
+width/depth, presentation contract, and clock relationship. A profile could
+then select only entries backed by the required evidence and automatically
+invalidate or re-run probes when a key changes. Automatic banking should still
+wait for qualification of every generated bank shape.
+
+Two stock-library limitations matter for broader production use but do not
+invalidate the present depth-two evidence. The registered sink endpoint has an
+explicit two-destination-tick issue interval; a proved one-item-per-tick sink
+would make the default suitable for throughput-sensitive fabrics. The closed
+certified portable artifact is specialized to depth two even though lower
+layers support more general power-of-two shapes; either generalize the closed
+artifact or keep the supported-depth restriction prominent and fail closed.
+
+More large application gauntlets are not the highest-value next step. The
+existing unrelated-clock, long-soak, pause, coordinated-reset, recovery, and
+negative-control campaigns exercise the semantics realistically. After a real
+signoff adapter exists, small qualification fixtures covering each supported
+crossing/reset/storage class—and rerun on backend or toolchain changes—will add
+more confidence than another large design. No substantial expansion of Loom's
+core multiclock language appears necessary.

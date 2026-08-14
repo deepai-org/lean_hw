@@ -94,7 +94,7 @@ private def profileErrorFor (binding : System.CertifiedPortableBinding) : Option
   let parameters := (System.CertifiedPortable.storageShape binding.connection
     binding.depthAtLeastTwo).parameters
   match Loom.Evidence.Targets.AsyncQueueStorage.openXc7Zynq7000IndependentClockPolicy.check
-      parameters with
+      (Loom.Evidence.Targets.AsyncQueueStorage.openXc7Zynq7000Key parameters) with
   | .ok _ => none
   | .error message => some s!"channel {binding.connection.chan.name}: {message}"
 
@@ -114,9 +114,10 @@ example : openXc7TargetPolicyFailures.length = 5 := by native_decide
 
 private def expectedProfileFailure (channel : String) (width : Nat) : String :=
   s!"channel {channel}: target profile openXC7 0.8.2 / Zynq-7000 rejects " ++
-  s!"independent-clock inferred storage width {width}: widths above 36 select " ++
-  "an unqualified 72-bit RAMB36E1 lowering; use portable register storage or " ++
-  "separately qualified banking"
+  s!"independent-clock inferred storage width {width}: the exact device, tool " ++
+  "version, primitive mode, configuration, registered presentation, and " ++
+  "independent-clock relationship must match; widths above 36 select an " ++
+  "unqualified 72-bit RAMB36E1 lowering"
 
 example : openXc7TargetPolicyFailures =
     [expectedProfileFailure "dma_request" 50,

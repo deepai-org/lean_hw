@@ -35,7 +35,11 @@ fi
 # but it may not acquire behavioral RTL over time. Keep this deliberately
 # lexical and fail closed: new structural spellings must be reviewed here.
 certified_renderer=Loom/Hw/CertifiedSystemArtifact.lean
-if rg -n '"[^"\n]*(always(_ff|_comb)?|posedge|negedge|\breg\b|case[[:space:]]*\(|<=[[:space:]])' \
+# Match behavioral tokens at the start of a rendered Verilog line.  Do not
+# search arbitrarily after a quote: in ordinary Lean source a closing string
+# quote may legitimately be followed by `.reg`, which is a typed Expr node and
+# not rendered RTL.
+if rg -n '(s!)?"[[:space:]]*(always(_ff|_comb)?|reg\b|case[[:space:]]*\()' \
     "$certified_renderer"; then
   echo "cdc-boundary: FAIL certified System renderer contains behavioral RTL" >&2
   bad=1

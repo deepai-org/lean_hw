@@ -30,9 +30,12 @@ lake exe socFabricStorageNeutralityEmit \
 cp fpga/zc702/tb_soc_fabric_storage_neutrality.v "$output_dir/testbench.v"
 
 [[ $(grep -c '^module .*_registered_target_storage(' "$bram_dir/system.v") -eq 5 ]]
-[[ $(grep -c '^assign read_launch = fifo_sink_valid && !payload_ready;$' \
+# Registered presentation is now an ordinary certified Design rather than
+# handwritten behavioral text in the target wrapper.  Pin both its emitted
+# module and its structural use once per channel.
+[[ $(grep -c '^module loom_compiled_registered_presentation_.*(' \
   "$bram_dir/system.v") -eq 5 ]]
-[[ $(grep -c '^assign fifo_pop = payload_ready && dst_pop;$' \
+[[ $(grep -c '^loom_compiled_registered_presentation_.* u_registered_presentation (' \
   "$bram_dir/system.v") -eq 5 ]]
 [[ $(grep -c 'ram_style = "block"' "$bram_dir/system.v") -eq 5 ]]
 
