@@ -1,4 +1,6 @@
-rtl/
+rtl/*
+!rtl/soc_fabric_gauntlet/
+!rtl/soc_fabric_gauntlet/**
 .lake/
 book-out/
 .claude/

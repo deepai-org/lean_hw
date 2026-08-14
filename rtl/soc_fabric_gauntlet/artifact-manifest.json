@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "artifact": "soc-fabric-gauntlet",
+  "system_v_sha256": "33335f3f906ccb427476d20dd5a7ea718cd7559c249b21802803b419fa1748ac",
+  "reset_policy": "coordinated",
+  "packed_widths": {"request":50,"response":38,"commit_record":46},
+  "packed_layout": "declaration-order MSB-first, no padding",
+  "realizations": ["synchronous","synchronous","asynchronous","asynchronous","asynchronous","asynchronous","asynchronous"],
+  "connections": ["cpu_request","cpu_response","dma_request","dma_response","target_request","target_response","audit"]
+}
