@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: $0 OUTPUT_DIRECTORY" >&2
+usage() {
+  echo "usage: $0 OUTPUT_DIRECTORY --reproduce-known-bad-openxc7" >&2
+  echo "the registered-storage artifact is rejected by the openXC7/Zynq-7000 target profile" >&2
+  echo "the flag is required because this command reproduces known-bad target evidence" >&2
+}
+
+if [[ $# -ne 2 ]]; then
+  usage
+  exit 2
+fi
+
+if [[ $2 != --reproduce-known-bad-openxc7 ]]; then
+  usage
   exit 2
 fi
 
@@ -14,7 +25,8 @@ bram_dir="$output_dir/bram"
 mkdir -p "$neutral_dir" "$bram_dir"
 
 cd "$repo_root"
-lake exe socFabricStorageNeutralityEmit "$neutral_dir" "$bram_dir"
+lake exe socFabricStorageNeutralityEmit \
+  "$neutral_dir" "$bram_dir" --reproduce-known-bad-openxc7
 cp fpga/zc702/tb_soc_fabric_storage_neutrality.v "$output_dir/testbench.v"
 
 [[ $(grep -c '^module .*_registered_target_storage(' "$bram_dir/system.v") -eq 5 ]]
@@ -65,7 +77,14 @@ cat >"$output_dir/manifest.json" <<EOF
   "registered_leaf_sink_issue_interval_ticks": 3,
   "synthesized_xc7_cell": "RAMB36E1",
   "synthesized_xc7_cell_count": 5,
-  "result": "PASS"
+  "target_profile": "openXC7 0.8.2 / Zynq-7000 / independent clocks",
+  "target_profile_selection": "REJECTED",
+  "rtl_simulation": "PASS",
+  "primitive_inference": "PASS",
+  "routed_implementation": "NOT_RUN",
+  "silicon_execution": "KNOWN_FAIL_FROM_RETAINED_EVIDENCE",
+  "silicon_evidence": "fpga/substrate0/evidence/dual-clock-bram-probe/RESULT.md",
+  "result": "KNOWN_BAD_REPRODUCED"
 }
 EOF
 
@@ -79,13 +98,24 @@ cat >"$output_dir/RESULT.md" <<EOF
   transactions per client in both artifacts. Accepted/delivered counts, grants,
   commits, audit records, digests, expected digest, and sticky errors are
   byte-identical in \`neutral/metrics.txt\` and \`bram/metrics.txt\`.
-- **ZYNQ STORAGE: PASS.** Yosys \`synth_xilinx -family xc7\` maps the five
-  registered target leaves to exactly five \`RAMB36E1\` cells.
+- **PRIMITIVE INFERENCE: PASS.** Yosys \`synth_xilinx -family xc7\` maps the
+  five registered target leaves to exactly five \`RAMB36E1\` cells. This is an
+  inference result, not storage-contract qualification.
+- **ROUTED IMPLEMENTATION: NOT RUN.** This script does not place or route the
+  artifact.
+- **SILICON EXECUTION: KNOWN FAIL.** The retained ZC702 probe isolates an
+  openXC7 greater-than-36-bit dual-clock RAMB36E1 lowering failure. See
+  \`fpga/substrate0/evidence/dual-clock-bram-probe/RESULT.md\` in the FPGA
+  evidence repository.
+- **TARGET PROFILE: REJECTED.** All five registered leaves exceed the profile's
+  conservative 36-bit limit. This artifact was emitted only because the caller
+  explicitly requested known-bad evidence reproduction.
 - **ARTIFACT BINDING: PASS.** Exact hashes are recorded in \`manifest.json\`
   and \`SHA256SUMS\`.
 
-This is RTL and XC7 synthesis evidence. A ZC702 silicon replay is a separate
-target corroboration step.
+There is deliberately no overall PASS claim. The successful statements above
+cover exact source binding, RTL simulation, and primitive inference only; the
+target's silicon storage-contract claim is known to fail.
 EOF
 
 (
@@ -99,4 +129,4 @@ EOF
     >SHA256SUMS
 )
 
-echo "SOC_FABRIC_STORAGE_NEUTRALITY_OK neutral=$neutral_sha bram=$bram_sha"
+echo "SOC_FABRIC_STORAGE_KNOWN_BAD_REPRODUCED neutral=$neutral_sha bram=$bram_sha"

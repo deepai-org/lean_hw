@@ -111,7 +111,19 @@ example : bramTarget.bindings.map (·.key) =
     certifiedArtifact.realized.bindings.map (·.key) := by decide
 example : bramTarget.artifacts.externalAssumptions.length = 5 := by decide
 example : openXc7TargetPolicyFailures.length = 5 := by native_decide
-example : openXc7TargetPolicyFailures.any (·.contains "width 46") = true := by
+
+private def expectedProfileFailure (channel : String) (width : Nat) : String :=
+  s!"channel {channel}: target profile openXC7 0.8.2 / Zynq-7000 rejects " ++
+  s!"independent-clock inferred storage width {width}: widths above 36 select " ++
+  "an unqualified 72-bit RAMB36E1 lowering; use portable register storage or " ++
+  "separately qualified banking"
+
+example : openXc7TargetPolicyFailures =
+    [expectedProfileFailure "dma_request" 50,
+      expectedProfileFailure "dma_response" 38,
+      expectedProfileFailure "target_request" 50,
+      expectedProfileFailure "target_response" 38,
+      expectedProfileFailure "audit" 46] := by
   native_decide
 example : (System.renderExternalAssumptions
     bramTarget.artifacts.externalAssumptions).contains
