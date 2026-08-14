@@ -331,6 +331,19 @@ example : mockSubstitutedRtl.contains "MOCK_TARGET_STORAGE" := by native_decide
 example : mockSubstitutedRtl.contains "u_target_storage" := by native_decide
 example : !mockSubstitutedRtl.contains "u_storage_writer" := by native_decide
 
+def mockSubstitutedAssumptions : List String :=
+  match deeperApplication.artifact.bindings with
+  | [.portable binding] =>
+      let shape := System.CertifiedPortable.storageShape binding.connection
+        binding.depthAtLeastTwo
+      let leaf := Loom.Evidence.Targets.AsyncQueueStorage.mockLeaf shape.parameters
+      (binding.toPhysicalWithStorageLeaf leaf (by rfl)).externalAssumptions
+  | _ => []
+
+example : mockSubstitutedAssumptions =
+    ["mock dual-clock memory satisfies the selected AsyncQueueStorage contract"] := by
+  native_decide
+
 example : mixedApplication.artifact.emissionArtifacts.map
     (fun artifact => artifact.relativePath.toString) =
     ["system.v", "clock_constraints.md", "crossings.md"] := by
@@ -661,6 +674,16 @@ example : recoveryDeeperApplication.artifact.renderedVerilog.contains
     "system_recovery_coordinator_cell" := by native_decide
 example : recoveryDeeperApplication.artifact.renderedVerilog.contains
     ".rst(producer__recovery_reset)" := by native_decide
+example : recoveryDeeperApplication.artifact.realized.artifacts.recoveryInterfaces.length =
+    recoveryDeeperSystem.islands.length := by native_decide
+example : (System.renderRecoveryInterfaces
+    recoveryDeeperApplication.artifact.realized.artifacts.recoveryInterfaces).contains
+      "not a one-cycle pulse and not a sticky host-readable status" := by
+  native_decide
+example : (System.renderRecoveryInterfaces
+    recoveryDeeperApplication.artifact.realized.artifacts.recoveryInterfaces).contains
+      "hold it until `producer__recovered` is high" := by
+  native_decide
 
 def recoveryDeeperAssemblyCertificate :=
   recoveryDeeperApplication.artifact.recoveryAssemblyCertificate (by rfl)

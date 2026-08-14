@@ -149,7 +149,9 @@ neutral mode uses compiler-generated register storage on FPGA or ASIC. A
 target-refined profile may substitute compatible FPGA RAM/synchronizer
 resources or ASIC SRAM/synchronizer cells while recording explicit assumptions
 and checking configuration compatibility. Those choices never enter `Design`
-semantics or application hardware logic.
+semantics or application hardware logic. Generated physical metadata lists
+each such assumption against its exact connection and states explicitly that
+RTL generation or successful target-cell inference does not discharge it.
 
 `TraceContract` is an optional schedule-free relation for application proofs
 that connect consumed and produced traces. Its `deliveredWithin` relation
@@ -250,6 +252,14 @@ The request must remain asserted until `recovered`; participating clocks must
 continue ticking until completion. The emission gate rejects an ordinary
 binding under `independentFlush` and rejects a recovery binding under
 `coordinated`.
+
+The generated interface metadata makes the waveform precise: `recover` is a
+level held through observed completion, and `recovered` is the live level
+`recover && all incident endpoints complete`. It remains asserted after
+completion while `recover` remains asserted, then deasserts when the requester
+releases `recover`; it is neither a one-cycle pulse nor a sticky host status.
+A slower or unrelated observation transport must supply its own CDC-safe level
+observation or acknowledgement adapter.
 
 The loss-explicit protocol refinement, endpoint cycle equation, guard behavior,
 ordered binding coverage, and coordinator component are checked individually.
