@@ -474,3 +474,88 @@ signoff adapter exists, small qualification fixtures covering each supported
 crossing/reset/storage class—and rerun on backend or toolchain changes—will add
 more confidence than another large design. No substantial expansion of Loom's
 core multiclock language appears necessary.
+
+## Closeout implementation review (2026-08-14)
+
+The general power-of-two portable artifact, exact target qualification keys,
+route-input identity checks, and evidence-layer adapter resolve the main
+production-tooling requests above. In particular, rejecting retained routed
+evidence that predates the recorded route-input hashes is correct fail-closed
+behavior. Keeping the openXC7 adapter outside generic imports also preserves
+the intended technology-neutral boundary.
+
+The signoff framework and a signed-off deployment should remain distinct in
+user-facing language. The openXC7 adapter usefully proves that a target tool
+can consume the interface and report partial routed evidence, but openXC7
+0.8.2 still leaves asynchronous clock grouping and the period-relative Gray
+bus constraints `UNCONSTRAINED`. It therefore cannot sign off the stock
+asynchronous FIFO. Completing a ZC702 deployment requires a backend capable of
+returning all `PASS` results, such as a qualified Vivado adapter, or new
+openXC7 capabilities; this is no longer a missing generic Loom interface.
+
+Full-rate endpoint classification now compares the complete reserved
+declaration prefixes and a proof-erased structural form of the canonical
+maintenance action. The flat token representation covers every `Expr` and
+`Act` constructor while deliberately erasing only slice-bound proofs. A
+same-named `skip` rule is rejected by the focused regression, so expert
+assembly cannot inherit the one-tick timing contract by forging the reserved
+rule name.
+
+## Remaining FPGA qualification value (2026-08-14)
+
+The highest-value board work is an all-`PASS` target signoff for the exact
+ZC702 routed design. Vivado 2025.2 is present on the board host, but the
+retained probe records that its Zynq-7000 device database is missing. Installing
+that device support and implementing the evidence-layer Vivado adapter would
+allow the typed asynchronous-clock, synchronizer, Gray-bus skew/datapath, and
+reset requirements to be applied and checked against the routed database.
+This would close a physical-assumption gap that additional functional soak
+cannot close.
+
+Production qualification should also quantify synchronizer reliability for
+the declared destination-clock and source-toggle rates using the selected
+device's characterized metastability parameters. The evidence should state a
+per-chain and aggregate MTBF target and the achieved bound. If the present
+two-stage chains do not meet that target, stage count is a target/library
+configuration decision; no feasible functional soak can substitute for this
+calculation.
+
+The newly generalized or optimized library surfaces deserve focused silicon
+qualification. A compact matrix should cover portable depths 2, 4, 8, and 16,
+both ordinary and full-rate sink presentation, back-to-back one-item-per-tick
+delivery, stalls, coordinated reset, and at least one recovery case. It should
+record exact accepted/delivered counts, ordering, digest, sticky error, routed
+identity, and timing/signoff results. This tests the emitted implementations
+whose generality was added after the original gauntlets rather than merely
+rerunning an already-qualified depth.
+
+Several routed seeds are valuable after constraints genuinely pass. Each seed
+should preserve exact source and constraint hashes, obtain all-`PASS` signoff,
+and run a shorter silicon campaign; the worst-slack or most widely separated
+synchronizer placement can receive the long soak. This checks that success was
+not an accidental property of one manually favorable placement.
+
+A cold-start/reset reliability campaign would complement reset-under-load:
+repeat relay power cycles and configuration with independently skewed clock
+startup, require every domain to sample reset, then run a checked traffic
+epoch. Recording XADC die temperature and supply telemetry during a high-
+activity soak would add an accessible operating-condition dimension, although
+it is not a substitute for a characterized voltage/temperature chamber.
+
+The signoff oracle should receive physical negative controls just as the
+runtime checker did: remove one Gray-bus constraint, leave one synchronizer
+object unresolved, alter one route-input hash, or add forbidden fanout, and
+require signoff failure. These small fixtures demonstrate that `PASS` depends
+on the physical facts rather than only on report formatting.
+
+Qualifying the 32+18 and 32+6 bank combinations would support a later safe
+banked-storage profile. Each bank shape should be tested independently and as
+the combined logical payload before the selector accepts it. The known-bad
+greater-than-36-bit monolithic mode should remain as a permanent negative
+control.
+
+A second FPGA family would provide the strongest evidence that the abstraction
+is not Zynq/openXC7-specific, but it is not necessary to close the ZC702 target
+claim. Likewise, a line-rate Ethernet workload would be a useful realistic
+consumer of Loom channels, but it ranks below complete physical signoff and
+focused qualification of the newly generalized depths and full-rate endpoint.
