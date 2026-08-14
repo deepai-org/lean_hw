@@ -1743,33 +1743,35 @@ channel/system level. Explicit inspection, unfolding, or a goal about a
 realization component must instead reveal its pretty hardware, not conceal it
 behind an opaque backend constant.
 
-An expert-provided realization uses
-`realize q with $(binding)`. The term must carry the same channel refinement,
-component certification, coverage, and artifact obligations as the stock
-binding. Its controllers and storage can themselves be authored with
-`hardware` blocks and quotations, so replacing the stock implementation does
-not require dropping to raw constructors. This is the escape hatch for a real
-CDC architecture choice, not a way to bypass the emission gate.
-
-Target storage does not get a second realization grammar. An evidence/library
-module constructs an ordinary certified binding and the fundamental binding
-escape consumes it:
+Target storage and other technology-specific substitutions do not get a second
+realization grammar. The neutral `system` continues to select its semantic CDC
+profile. An evidence/library module then constructs only the replacement
+bindings and applies a sparse certified overlay to the generated artifact:
 
 ```lean
-realize q with $(targetBinding)
+def targetOverlay :
+    System.CertifiedBindingOverlay chip.application.artifact.bindings where
+  replacements := [.registeredStorage targetBinding]
+  distinct := by decide
+  covered := by decide
+
+def targetArtifact :=
+  chip.application.artifact.withOverlay targetOverlay (by decide) (by decide)
 ```
 
-The library constructor used to define `targetBinding` is checked against the
-exact generated `PhysicalLeaf` interface/configuration for `q`; width, depth,
-address width, FWFT combinational read, write mode, reset, and port names flow
-through its Lean type. The leaf genuinely replaces the portable storage modules
-in the emitted wrapper. Its named assumption remains visible in `#show_system`;
-the channel semantics and controller proof do not change. Generic
-`Loom.Hw.Dsl` imports no target evidence and never selects a macro implicitly.
-FPGA/ASIC brand names, primitive names, PDK cells, backend PASS results, and
-constraint-language tokens stay in the supplied library/evidence term rather
-than hardening into Loom syntax. A future ergonomic library combinator may
-shorten construction of `targetBinding`; it still does not add keywords.
+The overlay proves that every replacement names an existing connection exactly
+once and mechanically preserves the canonical ordered coverage list. The only
+remaining local obligations are the replacement bindings' clock and reset
+compatibility. The library constructor used to define `targetBinding` is
+checked against the exact generated `PhysicalLeaf` interface/configuration for
+`q`; width, depth, address width, read presentation, write mode, reset, and port
+names flow through its Lean type. The leaf genuinely replaces the portable
+storage modules in the emitted wrapper. Its named assumption remains visible
+in physical inspection; the channel semantics and controller proof do not
+change. Generic `Loom.Hw.Dsl` imports no target evidence and never selects a
+macro implicitly. FPGA/ASIC brand names, primitive names, PDK cells, backend
+PASS results, and constraint-language tokens stay in the supplied
+library/evidence term rather than hardening into Loom syntax.
 
 ### LNP64mini multiclock destination
 

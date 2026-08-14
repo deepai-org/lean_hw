@@ -388,6 +388,20 @@ outside Loom's theorem boundary. -/
 private def targetStorageWrapperName (binding : CertifiedPortableBinding) : String :=
   portableWrapperName binding ++ "_target_storage"
 
+private def registeredTargetStorageWrapperName
+    (binding : CertifiedPortableBinding) : String :=
+  portableWrapperName binding ++ "_registered_target_storage"
+
+/-- Target wrappers are opaque per-binding artifact units.  Scope shared
+shape-derived control module names by channel so two equal-width/depth leaves
+cannot emit duplicate Verilog declarations when assembled in one System. -/
+private def targetControlModuleName (base : String)
+    (binding : CertifiedPortableBinding) : String :=
+  base ++ "_" ++ binding.connection.chan.name
+
+private def renameRenderedModule (text oldName newName : String) : String :=
+  text.replace ("module " ++ oldName ++ "(") ("module " ++ newName ++ "(")
+
 def CertifiedPortableBinding.wrapperTextWithStorageLeaf
     (binding : CertifiedPortableBinding)
     (leaf : Cdc.AsyncQueueStorage.PhysicalLeaf
@@ -398,8 +412,8 @@ def CertifiedPortableBinding.wrapperTextWithStorageLeaf
   let width := connection.width
   let pointerWidth := Cdc.AsyncFifoDesign.pointerWidth fifo
   let addressWidth := Cdc.AsyncFifoDesign.addressWidth fifo
-  let sourceModule := binding.controls.source.compiled.name
-  let sinkModule := binding.controls.sink.compiled.name
+  let sourceModule := targetControlModuleName binding.controls.source.compiled.name binding
+  let sinkModule := targetControlModuleName binding.controls.sink.compiled.name binding
   String.intercalate "\n" [
     s!"module {targetStorageWrapperName binding}(",
     "  input wire src_clk, input wire dst_clk, input wire rst,",
@@ -433,6 +447,65 @@ def CertifiedPortableBinding.wrapperTextWithStorageLeaf
     "assign dst_payload = read_sample;",
     "endmodule" ]
 
+/-- Latency-aware wrapper for a registered synchronous-read leaf.  A one-word
+presentation buffer launches a read only after the synchronized FIFO reports a
+head word, exposes the returned sample on the following cycle, and advances the
+FIFO pointer only when that buffered word is consumed.  Clearing the buffer on
+every pop intentionally permits a bubble; it avoids speculative reads across
+an empty transition and keeps the wrapper correct for arbitrary clock ratios. -/
+def CertifiedPortableBinding.wrapperTextWithRegisteredStorageLeaf
+    (binding : CertifiedPortableBinding)
+    (leaf : Cdc.AsyncQueueStorage.PhysicalLeaf
+      (CertifiedPortable.storageShape binding.connection
+        binding.depthAtLeastTwo).parameters) : String :=
+  let connection := binding.connection
+  let fifo := CertifiedPortable.fifoParameters connection binding.depthAtLeastTwo binding.powerOfTwo
+  let width := connection.width
+  let pointerWidth := Cdc.AsyncFifoDesign.pointerWidth fifo
+  let addressWidth := Cdc.AsyncFifoDesign.addressWidth fifo
+  let sourceModule := targetControlModuleName binding.controls.source.compiled.name binding
+  let sinkModule := targetControlModuleName binding.controls.sink.compiled.name binding
+  String.intercalate "\n" [
+    s!"module {registeredTargetStorageWrapperName binding}(",
+    "  input wire src_clk, input wire dst_clk, input wire rst,",
+    s!"  input wire src_valid, input wire {widthDecl width}src_payload,",
+    "  output wire src_ready,",
+    "  output wire dst_valid,",
+    s!"  output wire {widthDecl width}dst_payload, input wire dst_pop",
+    ");",
+    s!"wire {widthDecl pointerWidth}write_binary, write_gray, read_gray_sync0, read_gray_sync1;",
+    s!"wire {widthDecl pointerWidth}read_binary, read_gray, write_gray_sync0, write_gray_sync1;",
+    "wire write_take, fifo_read_take, fifo_sink_valid, fifo_pop, read_launch;",
+    s!"wire {widthDecl addressWidth}write_address, read_address;",
+    s!"wire {widthDecl width}write_data, read_sample;",
+    "reg payload_ready;",
+    s!"{sourceModule} u_source_control (",
+    "  .clk(src_clk), .rst(rst), .source_valid(src_valid), .source_payload(src_payload),",
+    "  .raw_read_gray(read_gray), .o_write_binary(write_binary), .o_write_gray(write_gray),",
+    "  .o_read_gray_sync0(read_gray_sync0), .o_read_gray_sync1(read_gray_sync1),",
+    "  .source_ready(src_ready), .write_take(write_take),",
+    "  .write_address(write_address), .write_data(write_data));",
+    s!"{sinkModule} u_sink_control (",
+    "  .clk(dst_clk), .rst(rst), .sink_pop(fifo_pop), .raw_write_gray(write_gray),",
+    "  .o_read_binary(read_binary), .o_read_gray(read_gray),",
+    "  .o_write_gray_sync0(write_gray_sync0), .o_write_gray_sync1(write_gray_sync1),",
+    "  .sink_valid(fifo_sink_valid), .read_take(fifo_read_take), .read_address(read_address));",
+    "assign read_launch = fifo_sink_valid && !payload_ready;",
+    "assign fifo_pop = payload_ready && dst_pop;",
+    "always @(posedge dst_clk) begin",
+    "  if (rst) payload_ready <= 1'b0;",
+    "  else if (fifo_pop) payload_ready <= 1'b0;",
+    "  else if (read_launch) payload_ready <= 1'b1;",
+    "end",
+    s!"{leaf.moduleName} u_target_storage (",
+    "  .write_clk(src_clk), .read_clk(dst_clk), .rst(rst),",
+    "  .write_enable(write_take), .read_enable(read_launch),",
+    "  .write_address(write_address), .read_address(read_address),",
+    "  .write_data(write_data), .read_sample(read_sample));",
+    "assign dst_valid = fifo_sink_valid && payload_ready;",
+    "assign dst_payload = read_sample;",
+    "endmodule" ]
+
 /-- Evidence-layer physical binding whose exact RTL replaces the portable
 storage modules with `leaf`. The semantic refinement remains the same
 technology-neutral channel theorem; correspondence of the external leaf text
@@ -441,13 +514,18 @@ def CertifiedPortableBinding.toPhysicalWithStorageLeaf
     (binding : CertifiedPortableBinding)
     (leaf : Cdc.AsyncQueueStorage.PhysicalLeaf
       (CertifiedPortable.storageShape binding.connection
-        binding.depthAtLeastTwo).parameters) : BoundImplementation :=
+        binding.depthAtLeastTwo).parameters)
+    (_fwft : leaf.readPresentation = .firstWordFallThrough) : BoundImplementation :=
   BoundImplementation.custom binding.connection
     ("target-storage:" ++ leaf.binding.name) .any binding.refinement
     (fun _ => targetStorageWrapperName binding)
     (fun _ => String.intercalate "\n\n" [
-      binding.controls.source.renderedVerilog,
-      binding.controls.sink.renderedVerilog,
+      renameRenderedModule binding.controls.source.renderedVerilog
+        binding.controls.source.compiled.name
+        (targetControlModuleName binding.controls.source.compiled.name binding),
+      renameRenderedModule binding.controls.sink.renderedVerilog
+        binding.controls.sink.compiled.name
+        (targetControlModuleName binding.controls.sink.compiled.name binding),
       leaf.moduleText,
       binding.wrapperTextWithStorageLeaf leaf])
     (fun info => portablePhysicalIntent info
@@ -455,6 +533,88 @@ def CertifiedPortableBinding.toPhysicalWithStorageLeaf
         (CertifiedPortable.fifoParameters binding.connection
           binding.depthAtLeastTwo binding.powerOfTwo)))
     compiledPortableTiming
+
+/-- Timing for the conservative registered-leaf presentation wrapper.  The
+leaf contributes one real storage stage; clearing the presentation buffer on
+each pop limits sustained consumption to one word per three sink ticks through
+the ordinary registered endpoint. -/
+def registeredTargetStorageTiming : ChannelTiming where
+  sourceOfferStages := 1
+  sinkConsumeStages := 1
+  forwardSynchronizerStages := 2
+  reverseSynchronizerStages := 2
+  storageReadStages := 1
+  sourceIssueInterval := .conditional 1 .sourceTicks
+    [.sourceReadyEveryTick]
+  sinkIssueInterval := .conditional 3 .sinkTicks
+    [.sinkPayloadAvailableEveryTick, .sinkConsumesWhenAvailable]
+  delivery := .scheduleDependent
+    [.sinkContinuesTicking, .sinkConsumesWhenAvailable,
+      .sinkEventuallyObservesSource]
+
+/-- Evidence-layer substitution for a registered synchronous-read leaf.  The
+presentation proof keeps this path disjoint from the FWFT wrapper. -/
+def CertifiedPortableBinding.toPhysicalWithRegisteredStorageLeaf
+    (binding : CertifiedPortableBinding)
+    (leaf : Cdc.AsyncQueueStorage.PhysicalLeaf
+      (CertifiedPortable.storageShape binding.connection
+        binding.depthAtLeastTwo).parameters)
+    (_registered : leaf.readPresentation = .registered) : BoundImplementation :=
+  BoundImplementation.custom binding.connection
+    ("target-storage-registered:" ++ leaf.binding.name) .any binding.refinement
+    (fun _ => registeredTargetStorageWrapperName binding)
+    (fun _ => String.intercalate "\n\n" [
+      renameRenderedModule binding.controls.source.renderedVerilog
+        binding.controls.source.compiled.name
+        (targetControlModuleName binding.controls.source.compiled.name binding),
+      renameRenderedModule binding.controls.sink.renderedVerilog
+        binding.controls.sink.compiled.name
+        (targetControlModuleName binding.controls.sink.compiled.name binding),
+      leaf.moduleText,
+      binding.wrapperTextWithRegisteredStorageLeaf leaf])
+    (fun info => portablePhysicalIntent info
+      (Cdc.AsyncFifoDesign.pointerWidth
+        (CertifiedPortable.fifoParameters binding.connection
+          binding.depthAtLeastTwo binding.powerOfTwo)))
+    registeredTargetStorageTiming
+
+/-- Closed certified-artifact package for a registered target leaf.  The
+semantic refinement remains the proved portable FIFO; the exact target RTL and
+its one named external storage assumption are retained in `leaf`. -/
+structure CertifiedRegisteredStorageBinding where
+  base : CertifiedPortableBinding
+  leaf : Cdc.AsyncQueueStorage.PhysicalLeaf
+    (CertifiedPortable.storageShape base.connection
+      base.depthAtLeastTwo).parameters
+  registered : leaf.readPresentation = .registered
+
+namespace CertifiedRegisteredStorageBinding
+
+def connection (binding : CertifiedRegisteredStorageBinding) : SystemConnection :=
+  binding.base.connection
+
+def refinement (binding : CertifiedRegisteredStorageBinding) :
+    Chan.Refinement binding.connection.chan :=
+  binding.base.refinement
+
+def toPhysical (binding : CertifiedRegisteredStorageBinding) : BoundImplementation :=
+  binding.base.toPhysicalWithRegisteredStorageLeaf binding.leaf binding.registered
+
+/-- Target module text already contains channel-scoped compiled controls, the
+exact leaf, and its wrapper, so the certified renderer must not append a second
+copy through the shared component list. -/
+def componentModules (_binding : CertifiedRegisteredStorageBinding) :
+    List (String × String) := []
+
+def emissionCheck (binding : CertifiedRegisteredStorageBinding) : Except String Unit := do
+  (Cdc.AsyncFifoDesign.sourceControl
+    (CertifiedPortable.fifoParameters binding.connection
+      binding.base.depthAtLeastTwo binding.base.powerOfTwo)).emitCheck
+  (Cdc.AsyncFifoDesign.sinkControl
+    (CertifiedPortable.fifoParameters binding.connection
+      binding.base.depthAtLeastTwo binding.base.powerOfTwo)).emitCheck
+
+end CertifiedRegisteredStorageBinding
 
 def CertifiedPortableBinding.toPhysical
     (binding : CertifiedPortableBinding) : BoundImplementation :=
@@ -1106,6 +1266,7 @@ aligned islands and a portable Gray FIFO for unrelated clocks. -/
 inductive CertifiedChannelBinding where
   | synchronous (binding : CertifiedSyncBinding)
   | portable (binding : CertifiedPortableBinding)
+  | registeredStorage (binding : CertifiedRegisteredStorageBinding)
   | recoveryPortable (binding : CertifiedRecoveryPortableBinding)
 
 namespace CertifiedChannelBinding
@@ -1113,6 +1274,7 @@ namespace CertifiedChannelBinding
 def connection : CertifiedChannelBinding → SystemConnection
   | .synchronous binding => binding.connection
   | .portable binding => binding.connection
+  | .registeredStorage binding => binding.connection
   | .recoveryPortable binding => binding.connection
 
 def key (binding : CertifiedChannelBinding) : ConnectionKey :=
@@ -1123,6 +1285,7 @@ def refinement (binding : CertifiedChannelBinding) :
   cases binding with
   | synchronous binding => exact binding.refinement
   | portable binding => exact binding.refinement
+  | registeredStorage binding => exact binding.refinement
   | recoveryPortable binding => exact binding.refinement
 
 def recoveryRefinement? (binding : CertifiedChannelBinding) :
@@ -1130,6 +1293,7 @@ def recoveryRefinement? (binding : CertifiedChannelBinding) :
   match binding with
   | .synchronous _ => none
   | .portable _ => none
+  | .registeredStorage _ => none
   | .recoveryPortable recovery => some recovery.recoveryRefinement
 
 def recoveryCapable : CertifiedChannelBinding → Bool
@@ -1139,11 +1303,13 @@ def recoveryCapable : CertifiedChannelBinding → Bool
 def componentModules : CertifiedChannelBinding → List (String × String)
   | .synchronous binding => binding.componentModules
   | .portable binding => binding.componentModules
+  | .registeredStorage binding => binding.componentModules
   | .recoveryPortable binding => binding.componentModules
 
 def toPhysical : CertifiedChannelBinding → BoundImplementation
   | .synchronous binding => binding.toPhysical
   | .portable binding => binding.toPhysical
+  | .registeredStorage binding => binding.toPhysical
   | .recoveryPortable binding => binding.toPhysical
 
 @[simp] theorem toPhysical_connection (binding : CertifiedChannelBinding) :
@@ -1169,6 +1335,7 @@ def emissionCheck : CertifiedChannelBinding → Except String Unit
       (Cdc.AsyncQueueStorage.Portable.readerDesign
         (CertifiedPortable.storageShape binding.connection
           binding.depthAtLeastTwo)).emitCheck
+  | .registeredStorage binding => binding.emissionCheck
   | .recoveryPortable binding => do
       (Cdc.AsyncFifoDesign.sourceControl
         (CertifiedPortable.fifoParameters binding.connection
@@ -1393,6 +1560,7 @@ theorem binding_recoveryRefines {system : System}
   cases binding with
   | synchronous binding => simp [CertifiedChannelBinding.recoveryCapable] at capable
   | portable binding => simp [CertifiedChannelBinding.recoveryCapable] at capable
+  | registeredStorage binding => simp [CertifiedChannelBinding.recoveryCapable] at capable
   | recoveryPortable binding =>
       exact ⟨binding.recoveryRefinement, rfl⟩
 

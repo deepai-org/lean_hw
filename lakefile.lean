@@ -122,6 +122,16 @@ lean_exe socFabricGauntletEvidence where
   root := `Tools.SoCFabricGauntletEvidence
   supportInterpreter := true
 
+/-- Exact neutral and registered-BRAM artifacts for storage-neutrality evidence. -/
+lean_exe socFabricStorageNeutralityEmit where
+  root := `Tools.SoCFabricStorageNeutralityEmit
+  supportInterpreter := true
+
+/-- Exact recovery-capable artifact for the under-load physical campaign. -/
+lean_exe socFabricRecoveryEmit where
+  root := `Tools.SoCFabricRecoveryEmit
+  supportInterpreter := true
+
 /-- FastEval benchmark / lockstep runner (compiled; the perf target). -/
 lean_exe fastbench where
   root := `Tools.FastEvalBench

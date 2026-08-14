@@ -374,6 +374,9 @@ private def hasReg (d : Design) (name : String) (width : Nat) : Bool :=
 private def hasInput (d : Design) (name : String) (width : Nat) : Bool :=
   d.inputs.any fun input => input.name == name && input.width == width
 
+private def ruleNameCount (d : Design) (name : String) : Nat :=
+  (d.rules.filter fun rule => rule.name == name).length
+
 private def declaredEndpointNames (sys : SystemBuilder) (islandName : String) : List String :=
   (sys.connections.flatMap fun connection =>
     let sourceNames := if connection.source == islandName then
@@ -474,12 +477,18 @@ def _root_.Loom.Hw.SystemBuilder.check (sys : SystemBuilder) : Except String Uni
       throw s!"channel {connection.chan.name}: depth must be positive"
     match sys.findIsland? connection.source with
     | some source =>
-        if 2 < source.design.maxWritesTo connection.chan.sourceValidName 1 then
+        if 1 < ruleNameCount source.design
+            (connection.chan.stem ++ "source_maintenance") then
+          throw s!"channel {connection.chan.name}: source endpoint adapter was generated more than once; the supplied island appears to be already endpoint-adapted. Supply its unadapted Design body, or assemble the existing endpoints explicitly with SystemBuilder.connect"
+        else if 2 < source.design.maxWritesTo connection.chan.sourceValidName 1 then
           throw s!"channel {connection.chan.name}: multiple sends may execute in one source tick; select one payload or use an explicit arbiter"
     | none => pure ()
     match sys.findIsland? connection.sink with
     | some sink =>
-        if 2 < sink.design.maxWritesTo connection.chan.sinkPopName 1 then
+        if 1 < ruleNameCount sink.design
+            (connection.chan.stem ++ "sink_maintenance") then
+          throw s!"channel {connection.chan.name}: sink endpoint adapter was generated more than once; the supplied island appears to be already endpoint-adapted. Supply its unadapted Design body, or assemble the existing endpoints explicitly with SystemBuilder.connect"
+        else if 2 < sink.design.maxWritesTo connection.chan.sinkPopName 1 then
           throw s!"channel {connection.chan.name}: multiple consumes may execute in one sink tick; select one consumer or use an explicit arbiter"
     | none => pure ()
     if !sys.endpointOk connection then
