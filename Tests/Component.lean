@@ -62,7 +62,7 @@ private def assembled : Except String Design := do
   let consumerInstance : ComponentInstance := ⟨"consume", consumerComponent⟩
   let source ← producerInstance.output? producerOutput
   let sink ← consumerInstance.input? consumerInput
-  let connection ← Connection.typed source sink
+  let connection ← Connection.Expert.typedErased source sink
   let graph ← (ComponentGraph.empty "typed_top").addInstance producerInstance
   let graph ← graph.addInstance consumerInstance
   let graph ← graph.connect connection
@@ -107,6 +107,12 @@ private def domainIsland : Except String SystemIsland := do
   | .error _ => false
   | .ok island => island.clock == "core" && island.design.name == "typed_domain_top"
 
+/- Even a previously constructed connection cannot be inserted into a graph
+owned by another clock domain. -/
+#check_failure (DomainComponentGraph.connect (δ := CoreClock) :
+  DomainComponentGraph CoreClock → DomainConnection PeripheralClock →
+    Except String (DomainComponentGraph CoreClock))
+
 /- An erased/dynamic graph cannot bypass the same-domain check: the port's
 domain name remains part of exact interface membership.  Ordinary typed code
 is stronger—the call to `Connection.typed` cannot even be formed because the
@@ -127,12 +133,52 @@ to source order. -/
     let c : ComponentInstance := ⟨"c", consumerComponent⟩
     let source ← p.output? producerOutput
     let sink ← c.input? consumerInput
-    let connection ← Connection.typed source sink
+    let connection ← Connection.Expert.typedErased source sink
     let graph ← (ComponentGraph.empty "duplicate").addInstance p
     let graph ← graph.addInstance c
     let graph ← graph.connect connection
     graph.connect connection with
   | .error _ => true
   | .ok _ => false
+
+/- The optimized topological proposal is accepted only through the compact
+structural checker. These cases pin the graph shapes most likely to regress. -/
+private def topoAccepts (edges : List (String × String)) : Bool :=
+  ComponentGraph.topologicalOrderCheckB edges
+    (ComponentGraph.proposeTopologicalOrder edges)
+
+#guard !topoAccepts [("a", "a")]
+#guard !topoAccepts [("a", "b"), ("b", "a")]
+#guard !topoAccepts [("a", "b"), ("b", "c"), ("c", "a")]
+#guard topoAccepts [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")]
+#guard topoAccepts [("a", "b"), ("a", "b")]
+#guard topoAccepts [("a", "b"), ("c", "d")]
+
+private def branchingEdges : List (String × String) :=
+  (List.range 32).flatMap fun index =>
+    [("root", s!"left{index}"), ("root", s!"right{index}"),
+     (s!"left{index}", s!"leaf{index}"),
+     (s!"right{index}", s!"leaf{index}")]
+
+example : topoAccepts branchingEdges = true := by native_decide
+
+private def referencePathB (edges : List (String × String)) :
+    Nat → String → String → Bool
+  | 0, _, _ => false
+  | fuel + 1, source, target =>
+      edges.any fun edge => edge.1 == source &&
+        (edge.2 == target || referencePathB edges fuel edge.2 target)
+
+private def referenceAcyclicB (edges : List (String × String)) : Bool :=
+  let nodes := (edges.flatMap fun edge => [edge.1, edge.2]).eraseDups
+  nodes.all fun node => !referencePathB edges nodes.length node node
+
+private def tinyEdges : List (String × String) :=
+  [("a", "a"), ("a", "b"), ("b", "a"), ("b", "b")]
+
+/- Exhaust all 16 directed graphs over two named nodes, including
+self-loops, and compare against the intentionally obvious path checker. -/
+#guard tinyEdges.sublists.all fun edges =>
+  topoAccepts edges == referenceAcyclicB edges
 
 end Tests.Component
