@@ -33,6 +33,9 @@ import Tests.DebugTap
 import Tests.CycleSupport
 import Tests.DagEval
 import Tests.SimulationComp
+import Tests.Component
+import Tests.ExternalComponent
+import Tests.Stream
 import Tests.TransformChain
 import Tests.Fanout
 import Tests.Runner
