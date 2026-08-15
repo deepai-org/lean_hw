@@ -98,7 +98,13 @@ admitted schedule. This system theorem uses only the public connection law. -/
 theorem channel_capacity_system :
     system.Invariant
       (System.atChannel connection fun values => values.length ≤ queue.depth) :=
-  system.channelCapacityInvariant connection (by rfl)
+  prettySystem.qConnection.capacity
+
+/-- Capacity and the exact valid/payload presentation seen by the consumer
+are supplied together through the generated stable proof handle. -/
+theorem channel_safety_system :
+    system.Invariant (System.PresentationCoherent system connection) :=
+  prettySystem.qConnection.safety
 
 example : system.resetPolicy = .coordinated := rfl
 

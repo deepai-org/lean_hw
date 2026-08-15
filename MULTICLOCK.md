@@ -97,6 +97,13 @@ Independent-reset applications use `Application.runRecovery` and
 ordinary replay; projecting the result is proved equal to
 `System.runRecoveryPrefix` on the identical event and input trace.
 
+Ordinary `Application.run` has the public equality theorem
+`run_semantic_eq`. Long campaigns may call `runCompact`: its result retains
+only flat certified island states, abstract channels, and event time. The
+kernel theorem `runCompact_agrees` relates every declared island coordinate
+and the complete channel graph to the ordinary `System.runPrefix` result; it
+is not an unchecked comparison or a second simulator.
+
 ## Progressive disclosure
 
 Application authors define ordinary hardware, assign clocks, declare channels,
@@ -107,6 +114,36 @@ readable inspection views, and replay entry point from that declaration.
 Verification authors additionally use `System.Invariant`, `liftIsland`, and
 channel/trace theorems. Schedules remain implicit except when deliberately
 recording or replaying a particular execution.
+
+Every `system ... where` connection also generates a stable proof handle such
+as `chip.qConnection`. The handle closes the checked connection lookup once;
+application theorems call `chip.qConnection.capacity`, `.safety`, or
+`.traceConservation` without naming generated registers, constructing a
+`SystemConnection`, or proving `find? = some ...`. The `.safety` theorem
+packages capacity with the exact valid/payload presentation supplied to the
+consumer at every reachable state.
+
+`Loom.Hw.ChannelProtocol` is the deeper compositional layer. Its ownership
+ledger assigns each in-flight payload to exactly one of destination
+presentation, unreserved FIFO storage, or source staging. An outstanding
+conservative pop is an acknowledgement debt, not a second copy of the FIFO
+head. `OwnershipStep.comp` and `runLedger_conservation` therefore compose
+accepted/consumed trace theorems across larger blocks without double-counting
+endpoint state. `SourceEndpointCertificate` and `SinkEndpointCertificate`
+state the local checked refinement of the exact `withSource`/`withSink`
+`Design.cycleOpen`; their input assumptions are explicit. A
+`RegisteredEndpointBinding` discharges those assumptions at System assembly
+and derives the reachable registered-endpoint coherence invariant. Custom
+endpoint libraries use this expert layer; ordinary application logic does not.
+`System.InterfaceProof` is the sealing surface for larger designs: it bundles a
+schedule-quantified safety invariant with application-level input/output trace
+observations and a `TraceContract`. Its `comp` combinator hides the shared
+intermediate transaction sequence and conjoins the two safety theorems.
+
+Bounded progress remains separate from safety. `TraceContract.BoundedService`
+names its service unit and supports serial addition of bounds, parallel maximum
+of independent bounds, and explicit weakening. Loom does not infer progress
+from the existence of a FIFO or hide a grant/fairness premise.
 
 CDC realization experts may inspect generated controls and replace the stock
 binding with a `Chan.Refinement`. Gray pointers, synchronizer stages, storage

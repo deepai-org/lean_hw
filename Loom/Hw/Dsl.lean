@@ -5188,6 +5188,15 @@ private def expandSystemCommand
   commands := commands.push (← `(command|
     $[$documentation]?
     def $systemName : Loom.Hw.System := hw_exact_const% $qualifiedValue))
+  for connection in connections do
+    let routeName := nestedName
+      (Name.mkSimple (connection.channel.getId.toString ++ "Route"))
+    let proofName := nestedName
+      (Name.mkSimple (connection.channel.getId.toString ++ "Connection"))
+    commands := commands.push (← `(command|
+      def $proofName : Loom.Hw.System.ConnectionHandle $qualifiedSystem
+          ($routeName).toSystemConnection :=
+        ($routeName).proofHandle $qualifiedSystem (by rfl)))
   let requiredIsland := mkIdent `Loom.Hw.Dsl.requiredSystemIsland
   let findRequiredIsland := mkIdent `Loom.Hw.Dsl.find_requiredSystemIsland
   for island in islands do

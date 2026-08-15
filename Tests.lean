@@ -10,6 +10,7 @@ import Tests.WideMul
 import Tests.DivRem
 import Tests.Chan
 import Tests.MulticlockApi
+import Tests.ChannelProtocol
 import Tests.ClockGauntlet
 import Tests.SoCFabricGauntlet
 import Tests.MultiPort
