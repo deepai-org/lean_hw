@@ -1097,6 +1097,49 @@ def _root_.Loom.Hw.SystemBuilder.includeBlock
 def realizationCheck (system : System) (plan : RealizationPlan) : Bool :=
   system.selectedResetCheck plan && system.selectedChannelsCheck plan
 
+/-- A reusable multi-island subsystem. Unlike a scalar component it retains
+its separate islands, open typed channel endpoints, child theorem bundle, and
+an explicit realization choice already checked against its own System. -/
+structure SystemFragment (Interface : System → Type u)
+    (TheoremBundle : (system : System) → Interface system → Type u) where
+  block : SealedBlock Interface TheoremBundle
+  plan : RealizationPlan
+  realizationReady : realizationCheck block.system plan = true
+
+namespace SystemFragment
+
+def system {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (fragment : SystemFragment Interface TheoremBundle) : System :=
+  fragment.block.system
+
+def interface {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (fragment : SystemFragment Interface TheoremBundle) :
+    Interface fragment.system := fragment.block.interface
+
+end SystemFragment
+
+/-- Include a fragment without flattening its islands or CDC channels. -/
+def _root_.Loom.Hw.SystemBuilder.includeFragment
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (builder : SystemBuilder) (fragment : SystemFragment Interface TheoremBundle) :
+    SystemBuilder :=
+  builder.includeBlock fragment.block
+
+/-- Preserve a child's explicit realization choices when building the parent
+plan. Final parent checking still detects key collisions or incompatibility. -/
+def _root_.Loom.Hw.RealizationPlan.includeFragment
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (parent : RealizationPlan) (fragment : SystemFragment Interface TheoremBundle) :
+    RealizationPlan :=
+  ⟨fun key =>
+    if fragment.system.connections.any (fun connection => connection.key == key) then
+      fragment.plan.select key
+    else parent.select key⟩
+
 /-- The complete stock application package. The fields are projections for
 advanced use; ordinary execution, inspection, and emission are provided as
 methods below. -/

@@ -347,6 +347,37 @@ def mixedApplication : System.Application mixedSystem :=
 def mixedIslandCache : System.CertifiedIslands mixedSystem :=
   mixedSystem.certifyIslands (by native_decide)
 
+private abbrev EmptyFragmentInterface (_system : System) := Unit
+
+def mixedBlock : System.SealedBlock EmptyFragmentInterface (fun _ _ => Unit) where
+  system := mixedSystem
+  islands := mixedIslandCache
+  interface := ()
+  theorems := ()
+
+def mixedFragment : System.SystemFragment EmptyFragmentInterface (fun _ _ => Unit) where
+  block := mixedBlock
+  plan := mixedPlan
+  realizationReady := by native_decide
+
+def includedFragmentBuilder : SystemBuilder :=
+  System.empty
+    |>.includeFragment mixedFragment
+    |>.withClockRel .asynchronous
+
+def includedFragmentSystem : System :=
+  includedFragmentBuilder.certify (by native_decide)
+
+def includedFragmentPlan : RealizationPlan :=
+  RealizationPlan.synchronous.includeFragment mixedFragment
+
+example : includedFragmentSystem.selectedCheck includedFragmentPlan = true := by
+  native_decide
+example : includedFragmentPlan.select deeperRoute.key = .portableAsync := by
+  native_decide
+example : includedFragmentPlan.select syncRoute.key = .synchronous := by
+  native_decide
+
 def mixedCachedApplication : System.Application mixedSystem :=
   mixedSystem.realizeWithCertified mixedIslandCache mixedPlan (by native_decide)
 
