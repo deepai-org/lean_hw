@@ -6,11 +6,11 @@ import Loom.Hw.SyncRead
 /-!
 # Typed memory-port library
 
-This module exposes only memory behavior already represented exactly by the
-proved Loom core: asynchronous old-data reads, one-tick registered capture,
-lane-masked writes lowered to an old-word merge, and explicit ordered write
-ports. It does not pretend to support write-first, no-change, nondeterministic,
-or mixed-width behavior before those semantics exist in the core.
+This module exposes memory behavior represented exactly by ordinary Loom
+actions: asynchronous reads, one-tick registered capture, lane-masked writes,
+explicit ordered write ports, and deterministic old-data, new-data, or
+unchanged-output read/write collisions. It does not pretend to support a
+nondeterministic or mixed-width contract before those semantics exist.
 -/
 
 namespace Loom.Hw
@@ -60,10 +60,12 @@ def bits (width : Nat) (positive : 0 < width) : LaneLayout width where
 
 end LaneLayout
 
-/-- The exact currently supported read-during-write behavior. Reads observe
-the pre-cycle memory, independently of writes committed at the edge. -/
+/-- Cycle-visible behavior when one synchronous read and write address match.
+Each constructor has a distinct lowering below. -/
 inductive ReadDuringWrite where
   | oldData
+  | newData
+  | unchangedOutput
   deriving Repr, DecidableEq, BEq
 
 /-- The exact currently supported simultaneous-write behavior. Syntactic
@@ -170,6 +172,64 @@ theorem request_run {δ : Type v} {addressWidth : Nat} {α : Type u}
 
 end SyncReadPort
 
+/-- A same-domain combined synchronous-read/masked-write port. The policy is
+part of the port's type, so a client cannot accidentally substitute a port
+with different collision behavior merely because its widths match. -/
+structure ReadWritePort (policy : ReadDuringWrite) (δ : Type v)
+    (addressWidth : Nat) (α : Type u)
+    [ClockDomain δ] [HwPacked α] where
+  memory : Mem addressWidth (HwPacked.width α)
+  output : Reg (HwPacked.width α)
+  index : Nat
+  layout : LaneLayout (HwPacked.width α)
+
+namespace ReadWritePort
+
+private def collision {policy : ReadDuringWrite} {δ : Type v}
+    {addressWidth : Nat} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (_port : ReadWritePort policy δ addressWidth α)
+    (readEnable writeEnable : Expr 1)
+    (readAddress writeAddress : Expr addressWidth) : Expr 1 :=
+  .and readEnable (.and writeEnable (.eq readAddress writeAddress))
+
+private def nextWord {policy : ReadDuringWrite} {δ : Type v}
+    {addressWidth : Nat} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (port : ReadWritePort policy δ addressWidth α)
+    (writeAddress : Expr addressWidth) (writeData : PackedExpr α)
+    (writeLanes : Expr port.layout.lanes) : Expr (HwPacked.width α) :=
+  port.layout.merge (port.memory.rd writeAddress) writeData.bits writeLanes
+
+/-- One explicitly enabled port cycle. Reads capture at the edge. Writes use
+the same edge and commit the lane merge. `newData` bypasses the merged word on
+a collision; `unchangedOutput` suppresses the read-register update. -/
+def cycle {policy : ReadDuringWrite} {δ : Type v}
+    {addressWidth : Nat} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (port : ReadWritePort policy δ addressWidth α)
+    (readEnable : Expr 1) (readAddress : Expr addressWidth)
+    (writeEnable : Expr 1) (writeAddress : Expr addressWidth)
+    (writeData : PackedExpr α) (writeLanes : Expr port.layout.lanes) : Act :=
+  let same := collision port readEnable writeEnable readAddress writeAddress
+  let merged := port.nextWord writeAddress writeData writeLanes
+  let readAction := match policy with
+    | .oldData =>
+        .ite readEnable (port.output.set (port.memory.rd readAddress)) .skip
+    | .newData =>
+        .ite readEnable
+          (port.output.set (.mux same merged (port.memory.rd readAddress))) .skip
+    | .unchangedOutput =>
+        .ite (.and readEnable (.not same))
+          (port.output.set (port.memory.rd readAddress)) .skip
+  let writeAction :=
+    .ite writeEnable (port.memory.write port.index writeAddress merged) .skip
+  .seq readAction writeAction
+
+def read {policy : ReadDuringWrite} {δ : Type v}
+    {addressWidth : Nat} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (port : ReadWritePort policy δ addressWidth α) : PackedExpr α :=
+  ⟨port.output.rd⟩
+
+end ReadWritePort
+
 /-- A bank-level declaration records the semantic policies that all current
 ports share. The constructors are deliberately singletons until Loom gains
 additional proved core behaviors. -/
@@ -177,7 +237,6 @@ structure Bank (δ : Type v) (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
   memory : Mem addressWidth (HwPacked.width α)
   writes : List (WritePort δ addressWidth α)
-  readDuringWrite : ReadDuringWrite := .oldData
   writeCollision : WriteCollision := .orderedLastWins
 
 namespace Bank
