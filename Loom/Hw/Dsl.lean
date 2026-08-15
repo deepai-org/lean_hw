@@ -4988,8 +4988,20 @@ private def expandSystemCommand
   for clock in clocks do
     let sourceName := Syntax.mkStrLit clock.name.getId.toString
     let declarationName := nestedName clock.name.getId
+    let domainTypeName := nestedName
+      (Name.mkSimple (clock.name.getId.toString ++ "Domain"))
+    let typedClockName := nestedName
+      (Name.mkSimple (clock.name.getId.toString ++ "Typed"))
     commands := commands.push (← `(command|
-      def $declarationName : Loom.Hw.ClockHandle := .named $sourceName))
+      private inductive $domainTypeName))
+    commands := commands.push (← `(command|
+      private instance : Loom.Hw.ClockDomain $domainTypeName where
+        name := $sourceName))
+    commands := commands.push (← `(command|
+      def $typedClockName : Loom.Hw.Clock $domainTypeName :=
+        Loom.Hw.Clock.domain $domainTypeName))
+    commands := commands.push (← `(command|
+      def $declarationName : Loom.Hw.ClockHandle := ($typedClockName).erase))
   for channel in channels do
     let sourceName := Syntax.mkStrLit channel.name.getId.toString
     let declarationName := nestedName channel.name.getId
@@ -5142,13 +5154,25 @@ private def expandSystemCommand
       | none, true => Macro.throwErrorAt island.name "an extended island requires a base Design"
     commands := commands.push (← `(command|
       def $declarationName : Loom.Hw.Design := $designTerm))
+    let domainDesignName := nestedName
+      (Name.mkSimple (island.name.getId.toString ++ "DomainDesign"))
     let handleName := nestedName
       (Name.mkSimple (island.name.getId.toString ++ "Island"))
-    let clockName := nestedName island.clock.getId
+    let domainHandleName := nestedName
+      (Name.mkSimple (island.name.getId.toString ++ "DomainIsland"))
+    let domainTypeName := nestedName
+      (Name.mkSimple (island.clock.getId.toString ++ "Domain"))
+    let typedClockName := nestedName
+      (Name.mkSimple (island.clock.getId.toString ++ "Typed"))
     let sourceName := Syntax.mkStrLit island.name.getId.toString
     commands := commands.push (← `(command|
-      def $handleName : Loom.Hw.IslandHandle :=
-        .named $sourceName $declarationName $clockName))
+      def $domainDesignName : Loom.Hw.DomainDesign $domainTypeName :=
+        Loom.Hw.DomainDesign.ofDesign $declarationName))
+    commands := commands.push (← `(command|
+      def $domainHandleName : Loom.Hw.DomainIslandHandle $domainTypeName :=
+        .named $sourceName $domainDesignName $typedClockName))
+    commands := commands.push (← `(command|
+      def $handleName : Loom.Hw.IslandHandle := ($domainHandleName).erase))
   for connection in connections do
     let routeName := nestedName
       (Name.mkSimple (connection.channel.getId.toString ++ "Route"))
@@ -5162,9 +5186,9 @@ private def expandSystemCommand
         ($channelName).between $sourceHandle $sinkHandle))
   let mut builder : TSyntax `term ← `(Loom.Hw.System.empty)
   for island in islands do
-    let handleName := nestedName
-      (Name.mkSimple (island.name.getId.toString ++ "Island"))
-    builder ← `($builder |>.addIsland $handleName)
+    let domainHandleName := nestedName
+      (Name.mkSimple (island.name.getId.toString ++ "DomainIsland"))
+    builder ← `($builder |>.addDomainIsland $domainHandleName)
   for connection in connections do
     let routeName := nestedName
       (Name.mkSimple (connection.channel.getId.toString ++ "Route"))

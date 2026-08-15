@@ -1221,6 +1221,8 @@ example : twoClock.islands.map (fun island => island.name) =
 example : twoClock.connections.map (fun connection => connection.chan.name) = ["q"] := by
   native_decide
 example : twoClock.resetPolicy = .coordinated := rfl
+example : twoClock.producerDomainIsland.erase = twoClock.producerIsland := rfl
+example : twoClock.consumerDomainIsland.erase = twoClock.consumerIsland := rfl
 example : twoClock.application.artifact.emissionCheck.isOk := by native_decide
 example : twoClock.producer.outputs = ["sent"] := by native_decide
 example : twoClock.consumer.outputs = ["got"] := by native_decide

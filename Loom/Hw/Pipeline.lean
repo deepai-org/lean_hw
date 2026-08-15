@@ -217,13 +217,14 @@ end State
 The stage count is an ordinary Lean parameter. -/
 def componentGraph? {δ : Type v} {α : Type u}
     [ClockDomain δ] [HwPacked α]
-    (name semanticType : String) (depth : Nat) : Except String ComponentGraph := do
+    (name semanticType : String) (depth : Nat) :
+    Except String (DomainComponentGraph δ) := do
   if depth == 0 then
     throw "a concrete registered pipeline requires at least one stage"
   let slice ← Stream.registerSlice? (δ := δ) (α := α)
     (name ++ "_stage") semanticType
   let ports := Stream.registerSlicePorts (δ := δ) (α := α) semanticType
-  let mut graph := ComponentGraph.empty name
+  let mut graph := DomainComponentGraph.empty (δ := δ) name
   for index in List.range depth do
     graph ← graph.addInstance ⟨s!"stage{index}", slice⟩
   for index in List.range (depth - 1) do

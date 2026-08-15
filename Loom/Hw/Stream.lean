@@ -69,14 +69,14 @@ structure SinkEndpoint (δ : Type v) (α : Type u)
 
 def SourcePorts.resolve {δ : Type v} {α : Type u}
     [ClockDomain δ] [HwPacked α] (ports : SourcePorts δ α)
-    (inst : ComponentInstance) : Except String (SourceEndpoint δ α) := do
+    (inst : DomainComponentInstance δ) : Except String (SourceEndpoint δ α) := do
   return { valid := ← inst.output? ports.valid
            payload := ← inst.output? ports.payload
            ready := ← inst.input? ports.ready }
 
 def SinkPorts.resolve {δ : Type v} {α : Type u}
     [ClockDomain δ] [HwPacked α] (ports : SinkPorts δ α)
-    (inst : ComponentInstance) : Except String (SinkEndpoint δ α) := do
+    (inst : DomainComponentInstance δ) : Except String (SinkEndpoint δ α) := do
   return { valid := ← inst.input? ports.valid
            payload := ← inst.input? ports.payload
            ready := ← inst.output? ports.ready }
@@ -85,11 +85,11 @@ def SinkPorts.resolve {δ : Type v} {α : Type u}
 compatibility are established by the shared `α` and `δ`; no runtime heuristic
 chooses a CDC adapter. -/
 def connect {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
-    (graph : ComponentGraph) (source : SourceEndpoint δ α)
-    (sink : SinkEndpoint δ α) : Except String ComponentGraph := do
-  let graph ← graph.connect (← Connection.Expert.typedErased source.valid sink.valid)
-  let graph ← graph.connect (← Connection.Expert.typedErased source.payload sink.payload)
-  graph.connect (← Connection.Expert.typedErased sink.ready source.ready)
+    (graph : DomainComponentGraph δ) (source : SourceEndpoint δ α)
+    (sink : SinkEndpoint δ α) : Except String (DomainComponentGraph δ) := do
+  let graph ← graph.connect (← Connection.typed source.valid sink.valid)
+  let graph ← graph.connect (← Connection.typed source.payload sink.payload)
+  graph.connect (← Connection.typed sink.ready source.ready)
 
 /-- One cycle's logical handshake observation. -/
 structure Sample (α : Type u) where
@@ -215,8 +215,9 @@ def mapperComponent {δ : Type v} {α β : Type u}
 def mapper? {δ : Type v} {α β : Type u}
     [ClockDomain δ] [HwPacked α] [HwPacked β]
     (name inputType outputType : String)
-    (transform : PackedExpr α → PackedExpr β) : Except String Component.Sealed :=
-  (mapperComponent (δ := δ) name inputType outputType transform).seal?
+    (transform : PackedExpr α → PackedExpr β) : Except String (DomainComponent δ) := do
+  DomainComponent.check? (δ := δ) <| ←
+    (mapperComponent (δ := δ) name inputType outputType transform).seal?
 
 /-- Ports of a one-entry registered stream slice. -/
 structure RegisterSlicePorts (δ : Type v) (α : Type u)
@@ -264,8 +265,9 @@ def registerSliceComponent {δ : Type v} {α : Type u}
 
 def registerSlice? {δ : Type v} {α : Type u}
     [ClockDomain δ] [HwPacked α] (name semanticType : String) :
-    Except String Component.Sealed :=
-  (registerSliceComponent (δ := δ) (α := α) name semanticType).seal?
+    Except String (DomainComponent δ) := do
+  DomainComponent.check? (δ := δ) <| ←
+    (registerSliceComponent (δ := δ) (α := α) name semanticType).seal?
 
 /-- Abstract the two implementation registers to the protocol's optional
 buffered transaction. -/
