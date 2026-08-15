@@ -414,7 +414,7 @@ def connectionValidB (graph : ComponentGraph) (connection : Connection) : Bool :
       .input connection.sinkPort connection.semanticType connection.domain
       connection.width
 
-private def combinationalEdges (graph : ComponentGraph) : List (String × String) :=
+def dependencyEdges (graph : ComponentGraph) : List (String × String) :=
   let internal := graph.instances.flatMap fun inst =>
     inst.component.component.combinationalDependencies.map fun edge =>
       (inst.signalPrefix ++ edge.1, inst.signalPrefix ++ edge.2)
@@ -492,12 +492,12 @@ def proposeTopologicalOrder (edges : List (String × String)) : List String :=
 proposal generation is outside the trust boundary; acceptance is exactly the
 small structural certificate checker above. -/
 def combinationalAcyclicB (graph : ComponentGraph) : Bool :=
-  let edges := graph.combinationalEdges
+  let edges := graph.dependencyEdges
   topologicalOrderCheckB edges (proposeTopologicalOrder edges)
 
 theorem combinationalAcyclicB_sound (graph : ComponentGraph)
     (checked : graph.combinationalAcyclicB = true) :
-    DependencyAcyclic graph.combinationalEdges :=
+    DependencyAcyclic graph.dependencyEdges :=
   topologicalOrderCheckB_sound checked
 
 def connect (graph : ComponentGraph) (connection : Connection) :
@@ -673,10 +673,14 @@ structure DomainDesign (δ : Type v) [ClockDomain δ] where
 
 namespace DomainDesign
 
+namespace Expert
+
 /-- Expert/import boundary for a directly authored scalar design.  Calling
 this is the deliberate assertion that all of its state belongs to `δ`. -/
 def ofDesign {δ : Type v} [ClockDomain δ] (design : Design) : DomainDesign δ :=
   ⟨design⟩
+
+end Expert
 
 end DomainDesign
 

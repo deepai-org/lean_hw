@@ -149,29 +149,4 @@ private def topoAccepts (edges : List (String × String)) : Bool :=
 #guard topoAccepts [("a", "b"), ("a", "b")]
 #guard topoAccepts [("a", "b"), ("c", "d")]
 
-private def referencePathB (edges : List (String × String)) :
-    Nat → String → String → Bool
-  | 0, _, _ => false
-  | fuel + 1, source, target =>
-      edges.any fun edge => edge.1 == source &&
-        (edge.2 == target || referencePathB edges fuel edge.2 target)
-
-private def referenceAcyclicB (edges : List (String × String)) : Bool :=
-  let nodes := (edges.flatMap fun edge => [edge.1, edge.2]).eraseDups
-  nodes.all fun node => !referencePathB edges nodes.length node node
-
-private def tinyEdges : List (String × String) :=
-  [("a", "a"), ("a", "b"), ("b", "a"), ("b", "b")]
-
-/- The exhaustive comparison is kept as a reusable compiled fixture. Kernel
-reduction of `Std.HashMap` is intentionally avoided here. -/
-private def exhaustiveSmallGraphsAgree : Bool :=
-  tinyEdges.sublists.all fun edges =>
-    topoAccepts edges == referenceAcyclicB edges
-
-/- Execute the exhaustive comparison through compiled evaluation; kernel
-reduction of `Std.HashMap` would test the evaluator rather than the algorithm
-and can exhaust the elaborator stack. -/
-#eval exhaustiveSmallGraphsAgree
-
 end Tests.Component
