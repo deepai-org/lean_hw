@@ -138,9 +138,23 @@ def locallyValidB {addressWidth dataWidth : Nat}
     registerNames.eraseDups.length == registerNames.length &&
     addresses.eraseDups.length == addresses.length
 
+/-- The sole authority accepted by hardware, documentation, and software-view
+generation. The proof cannot be manufactured for a duplicate address, name,
+or register coordinate. -/
+structure Checked (addressWidth dataWidth : Nat) where
+  raw : Map addressWidth dataWidth
+  valid : raw.locallyValidB = true
+
+def check? {addressWidth dataWidth : Nat} (map : Map addressWidth dataWidth) :
+    Except String (Checked addressWidth dataWidth) :=
+  if valid : map.locallyValidB = true then .ok ⟨map, valid⟩
+  else .error s!"register map '{map.name}' has duplicate or invalid names, addresses, or registers"
+
+namespace Checked
+
 def declarations {addressWidth dataWidth : Nat}
-    (map : Map addressWidth dataWidth) : List RegDecl :=
-  map.entries.map fun entry => entry.register.decl entry.reset
+    (map : Checked addressWidth dataWidth) : List RegDecl :=
+  map.raw.entries.map fun entry => entry.register.decl entry.reset
 
 private def selected {addressWidth dataWidth : Nat}
     (address : Expr addressWidth) (entry : Decl addressWidth dataWidth) : Expr 1 :=
@@ -153,9 +167,9 @@ structure ReadResult (dataWidth : Nat) where
 /-- Combinational read decode. Write-only entries do not hit. Narrow entries
 are zero-extended; the single declaration fixes that policy. -/
 def decodeRead {addressWidth dataWidth : Nat}
-    (map : Map addressWidth dataWidth) (address : Expr addressWidth) :
+    (map : Checked addressWidth dataWidth) (address : Expr addressWidth) :
     ReadResult dataWidth :=
-  let readable := map.entries.filter (·.access.readable)
+  let readable := map.raw.entries.filter (·.access.readable)
   let hit := orTree <| readable.map (selected address)
   let data := readable.foldr (fun entry fallback =>
     .mux (selected address entry)
@@ -172,18 +186,18 @@ private def busWrite {addressWidth dataWidth : Nat}
 /-- Decode one accepted bus write. Address uniqueness makes at most one entry
 eligible; write-only entries are naturally included. -/
 def decodeWrite {addressWidth dataWidth : Nat}
-    (map : Map addressWidth dataWidth) (accepted : Expr 1)
+    (map : Checked addressWidth dataWidth) (accepted : Expr 1)
     (address : Expr addressWidth) (data : Expr dataWidth) : Act :=
   .ite accepted
-    (actSeq <| (map.entries.filter (·.access.writable)).map
+    (actSeq <| (map.raw.entries.filter (·.access.writable)).map
       (busWrite address data)) .skip
 
 /-- Apply clear-on-read side effects for one accepted read. -/
 def decodeReadEffects {addressWidth dataWidth : Nat}
-    (map : Map addressWidth dataWidth) (accepted : Expr 1)
+    (map : Checked addressWidth dataWidth) (accepted : Expr 1)
     (address : Expr addressWidth) : Act :=
   .ite accepted
-    (actSeq <| (map.entries.filter fun entry =>
+    (actSeq <| (map.raw.entries.filter fun entry =>
       entry.access.readable && entry.readBehavior == .clear).map fun entry =>
         .ite (selected address entry) (entry.register.set (.lit 0)) .skip)
     .skip
@@ -191,7 +205,7 @@ def decodeReadEffects {addressWidth dataWidth : Nat}
 /-- One bus event. Read side effects occur first and a simultaneous write wins
 explicitly, matching the returned `Act.seq` order. -/
 def transact {addressWidth dataWidth : Nat}
-    (map : Map addressWidth dataWidth)
+    (map : Checked addressWidth dataWidth)
     (readAccepted writeAccepted : Expr 1)
     (address : Expr addressWidth) (writeData : Expr dataWidth) : Act :=
   .seq (map.decodeReadEffects readAccepted address)
@@ -203,8 +217,8 @@ structure SoftwareConstant where
   deriving Repr, DecidableEq, BEq
 
 def softwareConstants {addressWidth dataWidth : Nat}
-    (map : Map addressWidth dataWidth) : List SoftwareConstant :=
-  map.entries.map fun entry => ⟨entry.name, entry.address.toNat⟩
+    (map : Checked addressWidth dataWidth) : List SoftwareConstant :=
+  map.raw.entries.map fun entry => ⟨entry.name, entry.address.toNat⟩
 
 private def accessName : Access → String
   | .readOnly => "read-only"
@@ -222,13 +236,15 @@ private def readBehaviorName : ReadBehavior → String
 
 /-- Stable Markdown generated from the same entries as hardware decode. -/
 def markdown {addressWidth dataWidth : Nat}
-    (map : Map addressWidth dataWidth) : String :=
-  "# Register map `" ++ map.name ++ "`\n\n" ++
+    (map : Checked addressWidth dataWidth) : String :=
+  "# Register map `" ++ map.raw.name ++ "`\n\n" ++
     "| Name | Address | Width | Access | Write | Read |\n" ++
     "| --- | ---: | ---: | --- | --- | --- |\n" ++
-    String.intercalate "\n" (map.entries.map fun entry =>
+    String.intercalate "\n" (map.raw.entries.map fun entry =>
       s!"| `{entry.name}` | 0x{Nat.toDigits 16 entry.address.toNat |> String.ofList} | {entry.width} | {accessName entry.access} | {writeBehaviorName entry.writeBehavior} | {readBehaviorName entry.readBehavior} |") ++
     "\n"
+
+end Checked
 
 end Map
 

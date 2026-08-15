@@ -24,6 +24,13 @@ example : (evalGrants emptyState (fixedPriority requests)).count true ≤ 1 :=
 example : (fixedPolicy.grants requests).length = requests.length :=
   fixedPolicy.length_preserved requests
 
+example : grantsRespectRequests
+    (evalGrants emptyState (fixedPolicy.grants requests))
+    (requests.map fun request => request.eval emptyState == 1#1) = true :=
+  fixedPolicy.respectsRequests emptyState requests
+
+example : WorkConserving fixedPolicy := fixedPolicy_workConserving
+
 private def selected : Except String (FixedResult 8) :=
   fixed requests [.lit 10, .lit 20, .lit 30, .lit 40]
 

@@ -201,6 +201,27 @@ def seal? (component : Component) : Except String Sealed := do
 
 end Component
 
+/-- A sealed component whose entire public boundary belongs to one nominal
+clock domain.  This is the ordinary building block for synchronous hierarchy;
+the erased `Component.Sealed` form remains the import/generator boundary. -/
+structure DomainComponent (δ : Type v) [ClockDomain δ] where
+  sealed : Component.Sealed
+  domainOk : sealed.component.interface.ports.all
+    (fun port => port.domain == ClockDomain.name δ) = true
+
+namespace DomainComponent
+
+/-- Attach timing ownership to a sealed component, failing at the boundary
+rather than allowing domain strings to disappear during flattening. -/
+def check? {δ : Type v} [ClockDomain δ] (sealed : Component.Sealed) :
+    Except String (DomainComponent δ) := do
+  if h : sealed.component.interface.ports.all
+      (fun port => port.domain == ClockDomain.name δ) = true then
+    return ⟨sealed, h⟩
+  throw s!"component '{sealed.component.name}' contains a port outside clock domain '{ClockDomain.name δ}'"
+
+end DomainComponent
+
 /-- One occurrence of a sealed component.  Paths are semantic hierarchy names;
 the flattening prefix is derived from them in one place. -/
 structure ComponentInstance where
@@ -284,6 +305,7 @@ end ComponentInstance
 /-- Erased connection stored in a heterogeneous component graph.  The public
 `Connection.typed` constructor establishes nominal payload equality first. -/
 structure Connection where
+  private mk ::
   width : Nat
   semanticType : String
   domain : String
@@ -536,5 +558,79 @@ theorem Sealed.compiled_eq {graph : ComponentGraph} (sealed : Sealed graph) :
   sealed.certified.compiled_eq
 
 end ComponentGraph
+
+/-! ## Timing-preserving synchronous hierarchy
+
+The erased graph above is the canonical lowering representation.  Ordinary
+construction uses the indexed wrappers below, so a collection of components
+cannot be flattened and later assigned an unrelated island clock. -/
+
+/-- One instance known to belong wholly to `δ`. -/
+structure DomainComponentInstance (δ : Type v) [ClockDomain δ] where
+  path : String
+  component : DomainComponent δ
+
+namespace DomainComponentInstance
+
+def erase {δ : Type v} [ClockDomain δ]
+    (inst : DomainComponentInstance δ) : ComponentInstance :=
+  ⟨inst.path, inst.component.sealed⟩
+
+def input? {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (inst : DomainComponentInstance δ) (port : Port .input δ α) :
+    Except String (InputEndpoint δ α) := inst.erase.input? port
+
+def output? {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (inst : DomainComponentInstance δ) (port : Port .output δ α) :
+    Except String (OutputEndpoint δ α) := inst.erase.output? port
+
+end DomainComponentInstance
+
+/-- A scalar `Design` with nominal ownership of every sequential element by
+one clock domain.  Its constructor is private: ownership is established only
+by checked component-graph flattening (or an explicit expert check). -/
+structure DomainDesign (δ : Type v) [ClockDomain δ] where
+  private mk ::
+  design : Design
+
+namespace DomainDesign
+
+/-- Expert/import boundary for a directly authored scalar design.  Calling
+this is the deliberate assertion that all of its state belongs to `δ`. -/
+def ofDesign {δ : Type v} [ClockDomain δ] (design : Design) : DomainDesign δ :=
+  ⟨design⟩
+
+end DomainDesign
+
+/-- A component graph which can contain only components owned by `δ`.
+Connections still carry erased evidence internally, but their only public
+constructor is `Connection.typed`. -/
+structure DomainComponentGraph (δ : Type v) [ClockDomain δ] where
+  private mk ::
+  raw : ComponentGraph
+
+namespace DomainComponentGraph
+
+def empty {δ : Type v} [ClockDomain δ] (name : String) :
+    DomainComponentGraph δ := ⟨ComponentGraph.empty name⟩
+
+def addInstance {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
+    (inst : DomainComponentInstance δ) : Except String (DomainComponentGraph δ) :=
+  DomainComponentGraph.mk <$> graph.raw.addInstance inst.erase
+
+def connect {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
+    (connection : Connection) : Except String (DomainComponentGraph δ) :=
+  DomainComponentGraph.mk <$> graph.raw.connect connection
+
+def expose {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
+    (instancePath portName : String) : Except String (DomainComponentGraph δ) :=
+  DomainComponentGraph.mk <$> graph.raw.expose instancePath portName
+
+/-- Timing-preserving canonical lowering. -/
+def flatten? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ) :
+    Except String (DomainDesign δ) :=
+  DomainDesign.mk <$> graph.raw.flatten?
+
+end DomainComponentGraph
 
 end Loom.Hw
