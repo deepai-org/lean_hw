@@ -1,7 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Machines.Multiclock.SoCFabricGauntlet.Protocol
-import Loom.Hw.System
+import Loom.Hw.Multiclock
 
 /-!
 # SoC Fabric Gauntlet design
@@ -265,13 +265,47 @@ def service : Design := targetRequest.withSink <|
   targetResponse.withSource <| audit.withSource serviceBody
 def monitor : Design := audit.withSink monitorBody
 
+/- The two cycle-coupled CPU/fabric blocks deliberately share one phantom
+domain. Every independently scheduled island has a distinct type. -/
+inductive CpuFabricDomain
+inductive DmaDomain
+inductive MemoryDomain
+inductive MonitorDomain
+
+instance : ClockDomain CpuFabricDomain where name := "cpu_fabric_clk"
+instance : ClockDomain DmaDomain where name := "dma_clk"
+instance : ClockDomain MemoryDomain where name := "mem_clk"
+instance : ClockDomain MonitorDomain where name := "mon_clk"
+
+def cpuDomainIsland : DomainIslandHandle CpuFabricDomain :=
+  .named "cpu" (DomainDesign.authored cpu)
+def fabricDomainIsland : DomainIslandHandle CpuFabricDomain :=
+  .named "fabric" (DomainDesign.authored fabric)
+def dmaDomainIsland : DomainIslandHandle DmaDomain :=
+  .named "dma" (DomainDesign.authored dma)
+def serviceDomainIsland : DomainIslandHandle MemoryDomain :=
+  .named "service" (DomainDesign.authored service)
+def monitorDomainIsland : DomainIslandHandle MonitorDomain :=
+  .named "monitor" (DomainDesign.authored monitor)
+
+@[simp] theorem cpuDomainIsland_erases : cpuDomainIsland.toSystemIsland =
+    ⟨"cpu", "cpu_fabric_clk", cpu⟩ := rfl
+@[simp] theorem dmaDomainIsland_erases : dmaDomainIsland.toSystemIsland =
+    ⟨"dma", "dma_clk", dma⟩ := rfl
+@[simp] theorem fabricDomainIsland_erases : fabricDomainIsland.toSystemIsland =
+    ⟨"fabric", "cpu_fabric_clk", fabric⟩ := rfl
+@[simp] theorem serviceDomainIsland_erases : serviceDomainIsland.toSystemIsland =
+    ⟨"service", "mem_clk", service⟩ := rfl
+@[simp] theorem monitorDomainIsland_erases : monitorDomainIsland.toSystemIsland =
+    ⟨"monitor", "mon_clk", monitor⟩ := rfl
+
 def builder : SystemBuilder :=
   System.empty
-    |>.addErasedDesignIsland "cpu" cpu (clock := "cpu_fabric_clk")
-    |>.addErasedDesignIsland "dma" dma (clock := "dma_clk")
-    |>.addErasedDesignIsland "fabric" fabric (clock := "cpu_fabric_clk")
-    |>.addErasedDesignIsland "service" service (clock := "mem_clk")
-    |>.addErasedDesignIsland "monitor" monitor (clock := "mon_clk")
+    |>.addDomainIsland cpuDomainIsland
+    |>.addDomainIsland dmaDomainIsland
+    |>.addDomainIsland fabricDomainIsland
+    |>.addDomainIsland serviceDomainIsland
+    |>.addDomainIsland monitorDomainIsland
     |>.connect cpuRequest.bits (source := "cpu") (sink := "fabric")
     |>.connect cpuResponse.bits (source := "fabric") (sink := "cpu")
     |>.connect dmaRequest.bits (source := "dma") (sink := "fabric")
