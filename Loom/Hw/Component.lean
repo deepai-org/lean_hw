@@ -630,29 +630,48 @@ private def combined (graph : ComponentGraph) : Design :=
     design.par (inst.component.component.design.prefixed inst.signalPrefix))
     (emptyDesign graph.name)
 
-private def substituteConnections {w : Nat} (graph : ComponentGraph) (expression : Expr w) :
-    Expr w :=
-  graph.connections.foldl (fun value connection =>
+private def substituteConnections {w : Nat} (connections : List Connection)
+    (expression : Expr w) : Expr w :=
+  connections.foldl (fun value connection =>
     Expr.substReg connection.sinkFullName connection.width
       (connection.sourceExpression.mapSignals
         (connection.sourceInstance ++ "__" ++ ·)) value) expression
 
-/-- Expand an acyclic graph's connection expressions to their ultimate
-drivers. One pass is insufficient: substituting a downstream input can
-introduce an upstream input which happened to be visited earlier. The graph
-checker rejects cycles, and at most one dependency layer can remain per
-connection, so `connections.length` passes are a simple checked bound which
-is independent of instance or input declaration order. -/
-private def expandConnections {w : Nat} (graph : ComponentGraph) : Nat → Expr w → Expr w
-  | 0, expression => expression
-  | fuel + 1, expression =>
-      expandConnections graph fuel (substituteConnections graph expression)
+private def substituteConnectionActs (connections : List Connection)
+    (action : Act) : Act :=
+  connections.foldl (fun value connection =>
+    Act.substReg connection.sinkFullName connection.width
+      (connection.sourceExpression.mapSignals
+        (connection.sourceInstance ++ "__" ++ ·)) value) action
 
-private def replacement (graph : ComponentGraph)
-    (name : String) (width : Nat) : Option (Expr width) :=
-  graph.connections.findSome? fun connection =>
-    (connection.replacement? name width).map
-      (expandConnections graph graph.connections.length)
+/-- A downstream replacement may introduce an upstream input. Apply
+substitutions from later dependency nodes to earlier ones, so every newly
+introduced input is still ahead in this single pass. The graph's accepted
+topological certificate makes this independent of instance and declaration
+order without the quadratic repeated-substitution fallback. -/
+private def connectionSubstitutionOrder (graph : ComponentGraph) : List Connection :=
+  let order := proposeTopologicalOrder graph.dependencyEdges
+  graph.connections.mergeSort fun left right =>
+    order.idxOf left.sinkFullName ≥ order.idxOf right.sinkFullName
+
+private def inputConnectedB (graph : ComponentGraph) (input : InputDecl) : Bool :=
+  graph.connections.any fun connection =>
+    connection.sinkFullName == input.name && connection.width == input.width
+
+/-- Batched form of `Design.connect` for a checked hierarchy. It drops exactly
+the driven inputs and applies the same `Expr.substReg`/`Act.substReg`
+operations, but traverses the already ordered connection inventory once per
+rule or combinational output instead of re-running a heterogeneous lookup for
+every input/output pair. -/
+private def connectAll (graph : ComponentGraph) (connections : List Connection)
+    (design : Design) : Design :=
+  { design with
+    inputs := design.inputs.filter fun input => !graph.inputConnectedB input
+    combOutputs := design.combOutputs.map fun output =>
+      ⟨output.name, output.width,
+        substituteConnections connections output.value⟩
+    rules := design.rules.map fun rule =>
+      { rule with body := substituteConnectionActs connections rule.body } }
 
 private def exportedStateNames (graph : ComponentGraph) : List String :=
   graph.exports.filterMap fun exposed =>
@@ -667,11 +686,13 @@ private def exportedStateNames (graph : ComponentGraph) : List String :=
 private def outputExported (graph : ComponentGraph) (name : String) : Bool :=
   graph.exports.any fun exposed => exposed.1 ++ "__" ++ exposed.2 == name
 
-/-- Canonical hierarchy lowering.  Prefixing, parallel composition, and input
-substitution are exactly the existing core operations.  The graph boundary is
-then imposed explicitly so unexported child ports remain internal. -/
+/-- Canonical hierarchy lowering. Prefixing and parallel composition are the
+existing Design operations; batched wiring uses the same core signal
+substitutions. The graph boundary is then imposed explicitly so unexported
+child ports remain internal. -/
 def flatten (graph : ComponentGraph) : Design :=
-  let connected := graph.combined.connect graph.replacement
+  let substitutions := graph.connectionSubstitutionOrder
+  let connected := graph.connectAll substitutions graph.combined
   { connected with
     name := graph.name
     outputs := graph.exportedStateNames

@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.ComponentHierarchy
+import Loom.Hw.Pipeline
 
 namespace Tools.ComponentHierarchyScale
 
@@ -32,6 +33,17 @@ private def tinyEdges : List (String × String) :=
    ("b", "a"), ("b", "b"), ("b", "c"),
    ("c", "a"), ("c", "b"), ("c", "c")]
 
+private inductive ScaleDomain
+private instance : ClockDomain ScaleDomain where name := "scale_clk"
+
+private def timedExcept {α : Type} (label : String)
+    (work : Unit → Except String α) : IO α := do
+  let started ← IO.monoMsNow
+  let value ← IO.ofExcept (work ())
+  let finished ← IO.monoMsNow
+  IO.println s!"component hierarchy scale: {label}_ms={finished - started}"
+  return value
+
 def main : IO Unit := do
   let large := branchingEdges 4096
   unless accepts large do
@@ -40,7 +52,19 @@ def main : IO Unit := do
     accepts edges == referenceAcyclicB edges
   unless exhaustive do
     throw <| IO.userError "optimized topology proposal disagrees with the reference checker"
-  IO.println s!"component hierarchy scale: PASS edges={large.length} small_graphs={tinyEdges.sublists.length}"
+  let depth := 128
+  let graph ← timedExcept "construction" fun _ =>
+    Pipeline.componentGraph? (δ := ScaleDomain) (α := BitVec 32)
+      "scale_pipeline" "ScaleWord" depth
+  let orderLength ← timedExcept "structural_certification" fun _ => do
+    let certificate ← ComponentHierarchy.checkDomain? graph
+    return certificate.erased.order.length
+  let implementation ← timedExcept "canonical_flatten" fun _ => graph.flatten?
+  let flattenedRegisters := implementation.design.regs.length
+  let renderedBytes ← timedExcept "simulator_compiler_seal" fun _ => do
+    let sealed ← graph.seal?
+    return sealed.certified.renderedUTF8.size
+  IO.println s!"component hierarchy scale: PASS edges={large.length} small_graphs={tinyEdges.sublists.length} pipeline_depth={depth} connections={graph.connectionCount} order_nodes={orderLength} flattened_registers={flattenedRegisters} rendered_bytes={renderedBytes}"
 
 end Tools.ComponentHierarchyScale
 
