@@ -44,21 +44,46 @@ private def binding : ExternalBinding specification where
   evidence := .assumptionOnly
   assumptions := [⟨"contract", "bound bytes implement neutral_leaf v1"⟩]
 
+private def sealedExternal : SealedExternal where
+  specification := specification
+  specificationValid := by native_decide
+  binding := binding
+  bindingValid := by native_decide
+
+private def domainExternal : DomainExternal CoreClock where
+  sealed := sealedExternal
+  domainOk := by native_decide
+
+private def sourceExternal : ExternalInstance CoreClock := ⟨"source", domainExternal⟩
+private def sinkExternal : ExternalInstance CoreClock := ⟨"sink", domainExternal⟩
+
+private def internalComponent : Component where
+  name := "NeutralLeafInternal"
+  interface := interface
+  design :=
+    { name := "neutral_leaf_internal"
+      regs := []
+      mems := []
+      inputs := [inputPort.reg.input]
+      rules := []
+      outputs := []
+      combOutputs := [⟨outputPort.name, 8, .lit 0#8⟩] }
+
+private def internalDomainComponent : DomainComponent CoreClock where
+  sealed :=
+    { component := internalComponent
+      interfaceOk := by native_decide
+      readsOk := by native_decide
+      certified := CertifiedDesign.ofChecks (by native_decide) (by native_decide) }
+  domainOk := by native_decide
+
 private def graph : Except String (BoundComponentGraph CoreClock) := do
-  match SealedExternal.check? specification binding with
-  | .error message => throw message
-  | .ok sealed =>
-      match DomainExternal.check? (δ := CoreClock) sealed with
-      | .error message => throw message
-      | .ok component => do
-          let source : ExternalInstance CoreClock := ⟨"source", component⟩
-          let sink : ExternalInstance CoreClock := ⟨"sink", component⟩
-          let output ← source.output? outputPort
-          let input ← sink.input? inputPort
-          let connection ← HierarchyConnection.typed output input
-          let graph ← (BoundComponentGraph.empty (δ := CoreClock) "bound_top").addExternal source
-          let graph ← graph.addExternal sink
-          graph.connect connection
+  let output ← sourceExternal.output? outputPort
+  let input ← sinkExternal.input? inputPort
+  let connection ← HierarchyConnection.typed output input
+  let graph ← (BoundComponentGraph.empty (δ := CoreClock) "bound_top").addExternal sourceExternal
+  let graph ← graph.addExternal sinkExternal
+  graph.connect connection
 
 #guard match graph with
   | .error _ => false
@@ -71,6 +96,41 @@ private def graph : Except String (BoundComponentGraph CoreClock) := do
       (value.emissionPlan.instances[1]?).any fun planned =>
         (planned.ports.find? (·.port == "input")).any
           (·.net == "source__output")
+
+private def internalWitness :
+    BoundComponentGraph.DesignContractWitness internalDomainComponent specification where
+  interfaceEq := rfl
+  abstract := fun _ => ()
+  init := trivial
+  tick := by intros; trivial
+  reset := by intros; trivial
+  hold := by intros; trivial
+  observe := by
+    intro input state port member
+    simp [specification, ComponentInterface.outputs, interface, inputPort,
+      outputPort, Port.bits, Port.decl] at member
+    rcases member with ⟨rfl | rfl, direction⟩
+    · exact Bool.noConfusion direction
+    · change 0#8 = BoundComponentGraph.componentOutputEnv
+        internalComponent input state "output" 8
+      rfl
+
+private def replacement : BoundComponentGraph.InternalReplacement sourceExternal where
+  component := internalDomainComponent
+  witness := internalWitness
+
+private def substituted : Except String (BoundComponentGraph CoreClock) := do
+  let original ← graph
+  return (← original.substituteInternal sourceExternal replacement).graph
+
+#guard match substituted with
+  | .error _ => false
+  | .ok value =>
+      value.internal.length == 1 && value.external.length == 1 &&
+      value.externalArtifacts.length == 1 &&
+      value.externalAssumptions.map (·.name) == ["sink.contract"] &&
+      value.emissionPlan.instances.any fun planned =>
+        !planned.external && planned.moduleName == "neutral_leaf_internal"
 
 #check_failure (BoundComponentGraph.connect (δ := CoreClock) :
   BoundComponentGraph CoreClock → HierarchyConnection OtherClock →
