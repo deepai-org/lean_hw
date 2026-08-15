@@ -39,6 +39,8 @@ import Tests.Stream
 import Tests.Plugin
 import Tests.MemoryPort
 import Tests.RegisterMap
+import Tests.Arbiter
+import Tests.Pipeline
 import Tests.TransformChain
 import Tests.Fanout
 import Tests.Runner
