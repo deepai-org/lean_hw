@@ -48,6 +48,7 @@ import Tests.MemoryPort
 import Tests.RegisterMap
 import Tests.Arbiter
 import Tests.Pipeline
+import Tests.CpuHierarchyGate
 import Tests.TransformChain
 import Tests.Fanout
 import Tests.Runner

@@ -241,6 +241,34 @@ def componentGraph? {δ : Type v} {α : Type u}
   graph ← graph.expose s!"stage{last}" ports.output.payload.name
   return graph
 
+/-- Typed boundary of a configured registered pipeline after its internal
+slice hierarchy is sealed. The boundary names are derived from the same stage
+paths used by `componentGraph?`, so hierarchy and interface cannot drift. -/
+structure ComponentPorts (δ : Type v) (α : Type u)
+    [ClockDomain δ] [HwPacked α] where
+  input : Stream.SinkPorts δ α
+  output : Stream.SourcePorts δ α
+
+def componentPorts {δ : Type v} {α : Type u}
+    [ClockDomain δ] [HwPacked α] (semanticType : String) (depth : Nat) :
+    ComponentPorts δ α :=
+  { input := Stream.sinkPorts "stage0__in" semanticType
+    output := Stream.sourcePorts s!"stage{depth - 1}__out" semanticType }
+
+/-- Close a parameterized pipeline hierarchy into one reusable
+`DomainComponent δ`. This uses the ordinary canonical flattening and scalar
+compiler/simulator boundary; it is a construction convenience, not a claim
+of semantic separate compilation for the child slices. -/
+def component? {δ : Type v} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (name semanticType : String) (depth : Nat) :
+    Except String (DomainComponent δ) := do
+  let graph ← componentGraph? (δ := δ) (α := α) name semanticType depth
+  let implementation ← graph.flatten?
+  let ports := componentPorts (δ := δ) (α := α) semanticType depth
+  DomainComponent.seal? name
+    ⟨ports.input.decls ++ ports.output.decls⟩ implementation
+
 end Pipeline
 
 end Loom.Hw
