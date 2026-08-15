@@ -255,6 +255,129 @@ def locallyValidB {δ : Type v} {addressWidth : Nat} {α : Type u}
 
 end Bank
 
+/-! ## Exact mixed-width views -/
+
+/-- A narrow port partitions each storage word into a power-of-two number of
+equal subwords. The proof fields are the address-mapping authority; no backend
+may invent a different lane order. Subword zero is least-significant. -/
+structure MixedWidthLayout (storageWidth portWidth : Nat) where
+  ratio : Nat
+  selectorBits : Nat
+  ratioPositive : 0 < ratio
+  portWidthPositive : 0 < portWidth
+  complete : ratio * portWidth = storageWidth
+  powerOfTwo : 2 ^ selectorBits = ratio
+  deriving Repr
+
+namespace MixedWidthLayout
+
+def checked (storageWidth portWidth : Nat) :
+    Except String (MixedWidthLayout storageWidth portWidth) := do
+  if portPositive : 0 < portWidth then
+    if storagePositive : 0 < storageWidth then
+      if divides : storageWidth % portWidth = 0 then
+        let ratio := storageWidth / portWidth
+        let selectorBits := Nat.log2 ratio
+        if power : 2 ^ selectorBits = ratio then
+          have complete : ratio * portWidth = storageWidth := by
+            rw [Nat.div_mul_cancel (Nat.dvd_of_mod_eq_zero divides)]
+          have ratioPositive : 0 < ratio := by
+            by_contra notPositive
+            have ratioZero : ratio = 0 := Nat.eq_zero_of_not_pos notPositive
+            rw [ratioZero] at complete
+            simp at complete
+            omega
+          return ⟨ratio, selectorBits, ratioPositive, portPositive,
+            complete, power⟩
+        else
+          throw s!"mixed-width ratio {ratio} is not a power of two"
+      else
+        throw s!"storage width {storageWidth} is not divisible by port width {portWidth}"
+    else throw "mixed-width storage width must be positive"
+  else throw "mixed-width port width must be positive"
+
+private def storageAddress {storageAddressWidth storageWidth portWidth : Nat}
+    (layout : MixedWidthLayout storageWidth portWidth)
+    (address : Expr (storageAddressWidth + layout.selectorBits)) :
+    Expr storageAddressWidth :=
+  .slice address layout.selectorBits storageAddressWidth
+
+private def selector {storageAddressWidth storageWidth portWidth : Nat}
+    (layout : MixedWidthLayout storageWidth portWidth)
+    (address : Expr (storageAddressWidth + layout.selectorBits)) :
+    Expr layout.selectorBits :=
+  .slice address 0 layout.selectorBits
+
+private def subwordField {storageWidth portWidth : Nat}
+    (layout : MixedWidthLayout storageWidth portWidth)
+    (index : Fin layout.ratio) : PackedField (BitVec storageWidth) portWidth where
+  name := s!"subword{index.val}"
+  lo := index.val * portWidth
+  inBounds := by
+    change index.val * portWidth + portWidth ≤ storageWidth
+    have below : index.val + 1 ≤ layout.ratio :=
+      Nat.succ_le_iff.mpr index.isLt
+    have scaled := Nat.mul_le_mul_right portWidth below
+    rw [layout.complete] at scaled
+    simpa [Nat.add_mul] using scaled
+
+/-- Read one narrow subword through a finite selector mux. Every underlying
+slice is static and carries its own bound proof. -/
+def read {storageAddressWidth storageWidth portWidth : Nat}
+    (layout : MixedWidthLayout storageWidth portWidth)
+    (memory : Mem storageAddressWidth storageWidth)
+    (address : Expr (storageAddressWidth + layout.selectorBits)) : Expr portWidth :=
+  let full : PackedExpr (BitVec storageWidth) :=
+    ⟨memory.rd (layout.storageAddress address)⟩
+  (List.finRange layout.ratio).foldr (fun index fallback =>
+    .mux (.eq (layout.selector address)
+      (.lit (BitVec.ofNat layout.selectorBits index.val)))
+      ((layout.subwordField index).read full) fallback) (.lit 0)
+
+/-- Replace one selected narrow subword and preserve every other bit. -/
+def replace {storageAddressWidth storageWidth portWidth : Nat}
+    (layout : MixedWidthLayout storageWidth portWidth)
+    (address : Expr (storageAddressWidth + layout.selectorBits))
+    (current : Expr storageWidth) (next : Expr portWidth) : Expr storageWidth :=
+  let full : PackedExpr (BitVec storageWidth) := ⟨current⟩
+  (List.finRange layout.ratio).foldr (fun index fallback =>
+    .mux (.eq (layout.selector address)
+      (.lit (BitVec.ofNat layout.selectorBits index.val)))
+      (full.setField (layout.subwordField index) next).bits fallback) current
+
+end MixedWidthLayout
+
+/-- A full-write narrow view of a wider neutral memory. Address width grows by
+the statically proved selector width; payload nominal type remains exact. -/
+structure MixedWidthPort (δ : Type v) (storageAddressWidth : Nat)
+    (Storage PortValue : Type u)
+    [ClockDomain δ] [HwPacked Storage] [HwPacked PortValue] where
+  memory : Mem storageAddressWidth (HwPacked.width Storage)
+  index : Nat
+  layout : MixedWidthLayout (HwPacked.width Storage) (HwPacked.width PortValue)
+
+namespace MixedWidthPort
+
+def read {δ : Type v} {storageAddressWidth : Nat}
+    {Storage PortValue : Type u}
+    [ClockDomain δ] [HwPacked Storage] [HwPacked PortValue]
+    (port : MixedWidthPort δ storageAddressWidth Storage PortValue)
+    (address : Expr (storageAddressWidth + port.layout.selectorBits)) :
+    PackedExpr PortValue :=
+  ⟨port.layout.read port.memory address⟩
+
+def write {δ : Type v} {storageAddressWidth : Nat}
+    {Storage PortValue : Type u}
+    [ClockDomain δ] [HwPacked Storage] [HwPacked PortValue]
+    (port : MixedWidthPort δ storageAddressWidth Storage PortValue)
+    (address : Expr (storageAddressWidth + port.layout.selectorBits))
+    (value : PackedExpr PortValue) : Act :=
+  let storageAddress := port.layout.storageAddress address
+  port.memory.write port.index storageAddress
+    (port.layout.replace address (port.memory.rd storageAddress) value.bits)
+
+end MixedWidthPort
+
 end MemoryPort
 
 end Loom.Hw

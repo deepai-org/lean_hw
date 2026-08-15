@@ -80,4 +80,28 @@ private def stateWithOutput : St :=
     ⟨.lit 0xAABBCCDD#32⟩ (.lit 0b0101#4)).run stateWithOutput stateWithOutput).regs
       "read_data" 32 == 0xDEADBEEF#32
 
+private def byteView : MixedWidthLayout 32 8 :=
+  match MixedWidthLayout.checked 32 8 with
+  | .ok layout => layout
+  | .error _ =>
+      { ratio := 4, selectorBits := 2, ratioPositive := by omega,
+        portWidthPositive := by omega, complete := by omega,
+        powerOfTwo := by decide }
+
+#guard byteView.ratio == 4 && byteView.selectorBits == 2
+
+private def bytePort : MixedWidthPort CoreClock 4 (BitVec 32) (BitVec 8) :=
+  ⟨memory, 0, byteView⟩
+
+/- Storage address 3, subword 2 selects byte 0x22. -/
+#guard (bytePort.read (.lit 14#6)).bits.eval state == 0x22#8
+
+/- Storage address 3, subword 1 replaces only byte 0x33. -/
+#guard ((bytePort.write (.lit 13#6) ⟨.lit 0xAA#8⟩).run state state).mems
+    "words" 3 32 == 0x1122AA44#32
+
+#guard match MixedWidthLayout.checked 24 8 with
+  | .error _ => true
+  | .ok _ => false
+
 end Tests.MemoryPort
