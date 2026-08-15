@@ -1283,8 +1283,8 @@ example : skippedPhysicalChecks.passed = false := by native_decide
 
 private def duplicateSourceAdapterBuilder : SystemBuilder :=
   System.empty
-    |>.island "producer" twoClock.producerSystemIsland.design (clock := "clkA")
-    |>.island "consumer" (consumerFor twoClock.q) (clock := "clkB")
+    |>.addErasedDesignIsland "producer" twoClock.producerSystemIsland.design (clock := "clkA")
+    |>.addErasedDesignIsland "consumer" (consumerFor twoClock.q) (clock := "clkB")
     |>.channel twoClock.q "producer" "consumer"
 
 private def checkErrorIs (result : Except String Unit) (expected : String) : Bool :=
@@ -1297,8 +1297,8 @@ private def checkErrorIs (result : Except String Unit) (expected : String) : Boo
 
 private def duplicateSinkAdapterBuilder : SystemBuilder :=
   System.empty
-    |>.island "producer" (producerFor twoClock.q) (clock := "clkA")
-    |>.island "consumer" twoClock.consumerSystemIsland.design (clock := "clkB")
+    |>.addErasedDesignIsland "producer" (producerFor twoClock.q) (clock := "clkA")
+    |>.addErasedDesignIsland "consumer" twoClock.consumerSystemIsland.design (clock := "clkB")
     |>.channel twoClock.q "producer" "consumer"
 
 #guard checkErrorIs duplicateSinkAdapterBuilder.check

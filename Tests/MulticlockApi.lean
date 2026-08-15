@@ -57,8 +57,8 @@ def doubleConsumerIsland : IslandHandle := .named "double_consumer" doubleConsum
 def doubleRoute := doubleQueue.between doubleProducerIsland doubleConsumerIsland
 def doubleBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland doubleProducerIsland
-    |>.addIsland doubleConsumerIsland
+    |>.addErasedIsland doubleProducerIsland
+    |>.addErasedIsland doubleConsumerIsland
     |>.addChannel doubleRoute
 
 def doubleRejected : Bool := match doubleBuilder.check with
@@ -104,8 +104,8 @@ def deeperRoute : ChannelRoute 8 :=
   deeperQueue.between deeperProducerIsland deeperConsumerIsland
 def deeperBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland deeperProducerIsland
-    |>.addIsland deeperConsumerIsland
+    |>.addErasedIsland deeperProducerIsland
+    |>.addErasedIsland deeperConsumerIsland
     |>.addChannel deeperRoute
     |>.withClockRel .asynchronous
 def deeperSystem : System := deeperBuilder.certify (by decide)
@@ -143,8 +143,8 @@ def fullRateConsumerIsland : IslandHandle :=
 def fullRateRoute := fullRateQueue.between fullRateProducerIsland fullRateConsumerIsland
 def fullRateBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland fullRateProducerIsland
-    |>.addIsland fullRateConsumerIsland
+    |>.addErasedIsland fullRateProducerIsland
+    |>.addErasedIsland fullRateConsumerIsland
     |>.addFullRateChannel fullRateRoute
     |>.withClockRel .asynchronous
 def fullRateSystem : System := fullRateBuilder.certify (by native_decide)
@@ -177,9 +177,9 @@ example : !fullRateQueue.hasFullRateSinkShape malformedFullRateSinkDesign := by
 
 def malformedFullRateBuilder : SystemBuilder :=
   System.empty
-    |>.island "full_rate_producer"
+    |>.addErasedDesignIsland "full_rate_producer"
       (fullRateQueue.withSource fullRateProducer) clkA.name
-    |>.island "full_rate_consumer" malformedFullRateSinkDesign clkB.name
+    |>.addErasedDesignIsland "full_rate_consumer" malformedFullRateSinkDesign clkB.name
     |>.connect fullRateQueue "full_rate_producer" "full_rate_consumer"
 
 private def malformedFullRateRejected : Bool :=
@@ -201,9 +201,9 @@ example : !fullRateQueue.hasFullRateSinkShape wrongBodyFullRateSinkDesign := by
 
 def wrongBodyFullRateBuilder : SystemBuilder :=
   System.empty
-    |>.island "full_rate_producer"
+    |>.addErasedDesignIsland "full_rate_producer"
       (fullRateQueue.withSource fullRateProducer) clkA.name
-    |>.island "full_rate_consumer" wrongBodyFullRateSinkDesign clkB.name
+    |>.addErasedDesignIsland "full_rate_consumer" wrongBodyFullRateSinkDesign clkB.name
     |>.connect fullRateQueue "full_rate_producer" "full_rate_consumer"
 
 private def wrongBodyFullRateRejected : Bool :=
@@ -324,10 +324,10 @@ def syncRoute : ChannelRoute 8 :=
 
 def mixedBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland deeperProducerIsland
-    |>.addIsland deeperConsumerIsland
-    |>.addIsland syncProducerIsland
-    |>.addIsland syncConsumerIsland
+    |>.addErasedIsland deeperProducerIsland
+    |>.addErasedIsland deeperConsumerIsland
+    |>.addErasedIsland syncProducerIsland
+    |>.addErasedIsland syncConsumerIsland
     |>.addChannel deeperRoute
     |>.addChannel syncRoute
     |>.withClockRel .asynchronous
@@ -769,13 +769,13 @@ def sinkExport : ExportedSink syncQueue :=
 
 def sourceBlockBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland syncProducerIsland
+    |>.addErasedIsland syncProducerIsland
     |>.exportSource sourceExport
 def sourceBlockSystem : System := sourceBlockBuilder.certify (by native_decide)
 
 def sinkBlockBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland syncConsumerIsland
+    |>.addErasedIsland syncConsumerIsland
     |>.exportSink sinkExport
 def sinkBlockSystem : System := sinkBlockBuilder.certify (by native_decide)
 
@@ -1265,8 +1265,8 @@ def unsupportedRoute : ChannelRoute 8 :=
   unsupportedDepth.between deeperProducerIsland deeperConsumerIsland
 def unsupportedBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland deeperProducerIsland
-    |>.addIsland deeperConsumerIsland
+    |>.addErasedIsland deeperProducerIsland
+    |>.addErasedIsland deeperConsumerIsland
     |>.addChannel unsupportedRoute
     |>.withClockRel .asynchronous
 def unsupportedSystem : System := unsupportedBuilder.certify (by decide)

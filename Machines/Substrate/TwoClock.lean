@@ -49,9 +49,9 @@ def monitorOpenInvariant :
 
 def handwrittenBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland producerIsland
-    |>.addIsland consumerIsland
-    |>.addIsland monitorIsland
+    |>.addErasedIsland producerIsland
+    |>.addErasedIsland consumerIsland
+    |>.addErasedIsland monitorIsland
     |>.addChannel queueRoute
     |>.withClockRel .asynchronous
 

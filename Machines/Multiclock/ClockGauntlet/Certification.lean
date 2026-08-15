@@ -26,7 +26,7 @@ def certified : CertifiedSystem system where
     intro connection member
     by_cases firstName : connection.chan.name = sourceToTransform.name
     · have first : connection = firstConnection := by
-        simp [system, builder, System.empty, SystemBuilder.island,
+        simp [system, builder, System.empty, SystemBuilder.addErasedDesignIsland,
           SystemBuilder.connect, SystemBuilder.withClockRel,
           System.connections_certify] at member
         rcases member with first | second
@@ -38,7 +38,7 @@ def certified : CertifiedSystem system where
         sourceToTransform rfl (by decide)
         (Cdc.AsyncQueueStorage.DepthTwo.implementation 32)
     · have second : connection = secondConnection := by
-        simp [system, builder, System.empty, SystemBuilder.island,
+        simp [system, builder, System.empty, SystemBuilder.addErasedDesignIsland,
           SystemBuilder.connect, SystemBuilder.withClockRel,
           System.connections_certify] at member
         rcases member with first | second
@@ -55,7 +55,7 @@ def certified : CertifiedSystem system where
     · subst name
       have islandEq : island = sourceIsland := by
         simpa [system, builder, sourceIsland, System.empty,
-          SystemBuilder.island, SystemBuilder.connect,
+          SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
           SystemBuilder.withClockRel, SystemBuilder.findIsland?,
           System.findIsland?_certify] using found.symm
       subst island
@@ -64,7 +64,7 @@ def certified : CertifiedSystem system where
       · subst name
         have islandEq : island = transformIsland := by
           simpa [system, builder, transformIsland, System.empty,
-            SystemBuilder.island, SystemBuilder.connect,
+            SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
             SystemBuilder.withClockRel, SystemBuilder.findIsland?,
             System.findIsland?_certify] using found.symm
         subst island
@@ -72,7 +72,7 @@ def certified : CertifiedSystem system where
       · have checkerName : name = "checker" := by
           by_contra notChecker
           have impossible : system.findIsland? name = none := by
-            simp [system, builder, System.empty, SystemBuilder.island,
+            simp [system, builder, System.empty, SystemBuilder.addErasedDesignIsland,
               SystemBuilder.connect, SystemBuilder.withClockRel,
               SystemBuilder.findIsland?, System.findIsland?_certify]
             exact ⟨fun nameEq => sourceName nameEq.symm,
@@ -83,7 +83,7 @@ def certified : CertifiedSystem system where
         subst name
         have islandEq : island = checkerIsland := by
           simpa [system, builder, checkerIsland, System.empty,
-            SystemBuilder.island, SystemBuilder.connect,
+            SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
             SystemBuilder.withClockRel, SystemBuilder.findIsland?,
             System.findIsland?_certify] using found.symm
         subst island

@@ -148,7 +148,7 @@ def certified : CertifiedSystem system where
     · subst name
       have islandEq : island = cpuIsland := by
         simpa [system, builder, cpuIsland, System.empty,
-          SystemBuilder.island, SystemBuilder.connect,
+          SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
           SystemBuilder.withClockRel, SystemBuilder.findIsland?,
           System.findIsland?_certify] using found.symm
       subst island
@@ -157,7 +157,7 @@ def certified : CertifiedSystem system where
       · subst name
         have islandEq : island = dmaIsland := by
           simpa [system, builder, dmaIsland, System.empty,
-            SystemBuilder.island, SystemBuilder.connect,
+            SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
             SystemBuilder.withClockRel, SystemBuilder.findIsland?,
             System.findIsland?_certify] using found.symm
         subst island
@@ -166,7 +166,7 @@ def certified : CertifiedSystem system where
         · subst name
           have islandEq : island = fabricIsland := by
             simpa [system, builder, fabricIsland, System.empty,
-              SystemBuilder.island, SystemBuilder.connect,
+              SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
               SystemBuilder.withClockRel, SystemBuilder.findIsland?,
               System.findIsland?_certify] using found.symm
           subst island
@@ -175,7 +175,7 @@ def certified : CertifiedSystem system where
           · subst name
             have islandEq : island = serviceIsland := by
               simpa [system, builder, serviceIsland, System.empty,
-                SystemBuilder.island, SystemBuilder.connect,
+                SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
                 SystemBuilder.withClockRel, SystemBuilder.findIsland?,
                 System.findIsland?_certify] using found.symm
             subst island
@@ -183,7 +183,7 @@ def certified : CertifiedSystem system where
           · have monitorName : name = "monitor" := by
               by_contra notMonitor
               have impossible : system.findIsland? name = none := by
-                simp [system, builder, System.empty, SystemBuilder.island,
+                simp [system, builder, System.empty, SystemBuilder.addErasedDesignIsland,
                   SystemBuilder.connect, SystemBuilder.withClockRel,
                   SystemBuilder.findIsland?, System.findIsland?_certify]
                 exact ⟨fun eq => cpuName eq.symm, fun eq => dmaName eq.symm,
@@ -194,7 +194,7 @@ def certified : CertifiedSystem system where
             subst name
             have islandEq : island = monitorIsland := by
               simpa [system, builder, monitorIsland, System.empty,
-                SystemBuilder.island, SystemBuilder.connect,
+                SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
                 SystemBuilder.withClockRel, SystemBuilder.findIsland?,
                 System.findIsland?_certify] using found.symm
             subst island

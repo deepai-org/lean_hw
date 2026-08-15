@@ -158,8 +158,8 @@ def route (spec : LaneSpec) := spec.channel.between (producerIsland spec) (sinkI
 
 private def addLane (builder : SystemBuilder) (spec : LaneSpec) : SystemBuilder :=
   let withIslands := builder
-    |>.addIsland (producerIsland spec)
-    |>.addIsland (sinkIsland spec)
+    |>.addErasedIsland (producerIsland spec)
+    |>.addErasedIsland (sinkIsland spec)
   match spec.mode with
   | .ordinary => withIslands.addChannel (route spec)
   | .fullRate => withIslands.addFullRateChannel (route spec)

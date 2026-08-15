@@ -136,9 +136,9 @@ def checker : Design := transformToChecker.withSink checkerBody
 
 def builder : SystemBuilder :=
   System.empty
-    |>.island "source" source (clock := "source_clk")
-    |>.island "transform" transform (clock := "transform_clk")
-    |>.island "checker" checker (clock := "checker_clk")
+    |>.addErasedDesignIsland "source" source (clock := "source_clk")
+    |>.addErasedDesignIsland "transform" transform (clock := "transform_clk")
+    |>.addErasedDesignIsland "checker" checker (clock := "checker_clk")
     |>.connect sourceToTransform (source := "source") (sink := "transform")
     |>.connect transformToChecker (source := "transform") (sink := "checker")
     |>.withClockRel .unconstrained

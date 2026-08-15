@@ -216,8 +216,8 @@ def consumer : Design := q.withSink (consumerCore q)
 
 private def chipBuilder : SystemBuilder :=
   System.empty
-    |>.island "producer" producer (clock := "clk")
-    |>.island "consumer" consumer (clock := "clk")
+    |>.addErasedDesignIsland "producer" producer (clock := "clk")
+    |>.addErasedDesignIsland "consumer" consumer (clock := "clk")
     |>.connect q (source := "producer") (sink := "consumer")
 
 def chip : System := chipBuilder.certify (by native_decide)
@@ -227,13 +227,13 @@ example : (match chip.check with | .ok _ => true | .error _ => false) = true := 
 
 private def missingEndpointBuilder : SystemBuilder :=
   System.empty
-    |>.island "producer" producer
+    |>.addErasedDesignIsland "producer" producer
     |>.connect q (source := "producer") (sink := "absent")
 
 private def duplicateIslandBuilder : SystemBuilder :=
   System.empty
-    |>.island "same" producer
-    |>.island "same" consumer
+    |>.addErasedDesignIsland "same" producer
+    |>.addErasedDesignIsland "same" consumer
 
 /-- Malformed declaration data cannot cross the opaque `System` boundary. -/
 example : !(missingEndpointBuilder.assemble.isOk) := by native_decide
@@ -288,8 +288,8 @@ example : refuse.headValue (fillAndExchange refuse) = 2#8 := by native_decide
 
 def wrongClocks : SystemBuilder :=
   System.empty
-    |>.island "producer" producer (clock := "a")
-    |>.island "consumer" consumer (clock := "b")
+    |>.addErasedDesignIsland "producer" producer (clock := "a")
+    |>.addErasedDesignIsland "consumer" consumer (clock := "b")
     |>.connect q (source := "producer") (sink := "consumer")
 
 /-- A cross-clock channel is a valid abstract system, but cannot silently use
@@ -316,8 +316,8 @@ private def asyncConnection : SystemConnection :=
 
 private def asyncChipBuilder : SystemBuilder :=
   System.empty
-    |>.island "producer" asyncProducer (clock := "clkA")
-    |>.island "consumer" asyncConsumer (clock := "clkB")
+    |>.addErasedDesignIsland "producer" asyncProducer (clock := "clkA")
+    |>.addErasedDesignIsland "consumer" asyncConsumer (clock := "clkB")
     |>.connect asyncQ (source := "producer") (sink := "consumer")
 
 def asyncChip : System := asyncChipBuilder.certify (by native_decide)
@@ -347,7 +347,7 @@ private def certifiedInterleavedChip : CertifiedSystem interleavedChip where
     intro connection member
     have connectionEq : connection = asyncConnection := by
       simpa [interleavedChip, asyncChipBuilder, asyncConnection,
-        System.empty, SystemBuilder.island, SystemBuilder.connect,
+        System.empty, SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
         SystemBuilder.withClockRel, System.connections_certify] using member
     subst connection
     exact asyncChannelCertificate
@@ -357,7 +357,7 @@ private def certifiedInterleavedChip : CertifiedSystem interleavedChip where
     · subst name
       have islandEq : island = asyncProducerIsland := by
         simpa [interleavedChip, asyncChipBuilder, asyncProducerIsland,
-          System.empty, SystemBuilder.island, SystemBuilder.connect,
+          System.empty, SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
           SystemBuilder.withClockRel, SystemBuilder.findIsland?,
           System.findIsland?_certify] using found.symm
       subst island
@@ -368,7 +368,7 @@ private def certifiedInterleavedChip : CertifiedSystem interleavedChip where
         have notConsumer' : "consumer" ≠ name := Ne.symm notConsumer
         have impossible : interleavedChip.findIsland? name = none := by
           simp [interleavedChip, asyncChipBuilder,
-            System.empty, SystemBuilder.island, SystemBuilder.connect,
+            System.empty, SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
             SystemBuilder.withClockRel, SystemBuilder.findIsland?,
             System.findIsland?_certify, producerName', notConsumer']
         rw [impossible] at found
@@ -377,7 +377,7 @@ private def certifiedInterleavedChip : CertifiedSystem interleavedChip where
       have islandEq : island =
           (⟨"consumer", "clkB", asyncConsumer⟩ : SystemIsland) := by
         simpa [interleavedChip, asyncChipBuilder,
-          System.empty, SystemBuilder.island, SystemBuilder.connect,
+          System.empty, SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
           SystemBuilder.withClockRel, SystemBuilder.findIsland?,
           System.findIsland?_certify] using found.symm
       subst island
@@ -418,7 +418,7 @@ private def asyncConsumerIsland : SystemIsland :=
 private theorem asyncConsumerFound :
     interleavedChip.findIsland? "consumer" = some asyncConsumerIsland := by
   simp [interleavedChip, asyncChipBuilder, asyncConsumerIsland,
-    System.empty, SystemBuilder.island, SystemBuilder.connect,
+    System.empty, SystemBuilder.addErasedDesignIsland, SystemBuilder.connect,
     SystemBuilder.withClockRel, SystemBuilder.findIsland?,
     System.findIsland?_certify]
 

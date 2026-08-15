@@ -122,8 +122,8 @@ def packetRoute :=
   packetChan.between packetProducerIsland packetConsumerIsland
 def packetSystemBuilder : SystemBuilder :=
   System.empty
-    |>.addIsland packetProducerIsland
-    |>.addIsland packetConsumerIsland
+    |>.addErasedIsland packetProducerIsland
+    |>.addErasedIsland packetConsumerIsland
     |>.addChannel packetRoute
     |>.withClockRel .asynchronous
     |>.withIndependentReset
@@ -140,8 +140,8 @@ example : packetApplication.artifact.renderedVerilog.contains
 def packetExportSource := packetChan.exportSource packetProducerIsland
 def packetExportSink := packetChan.exportSink packetConsumerIsland
 example : (System.empty
-    |>.addIsland packetProducerIsland
-    |>.addIsland packetConsumerIsland
+    |>.addErasedIsland packetProducerIsland
+    |>.addErasedIsland packetConsumerIsland
     |>.exportPackedSource packetExportSource
     |>.exportPackedSink packetExportSink
     |>.connectPackedExports packetExportSource packetExportSink).check.isOk := by

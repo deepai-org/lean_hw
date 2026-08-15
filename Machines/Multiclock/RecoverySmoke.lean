@@ -67,9 +67,9 @@ def outputRoute := outputQueue.between centerIsland sinkIsland
 
 def builder : SystemBuilder :=
   System.empty
-    |>.addIsland sourceIsland
-    |>.addIsland centerIsland
-    |>.addIsland sinkIsland
+    |>.addErasedIsland sourceIsland
+    |>.addErasedIsland centerIsland
+    |>.addErasedIsland sinkIsland
     |>.addChannel inputRoute
     |>.addChannel outputRoute
     |>.withClockRel .asynchronous
