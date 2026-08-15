@@ -81,4 +81,62 @@ private def pipelineComponent : Except String (DomainComponent CoreClock) :=
   | .error _ => true
   | .ok _ => false
 
+private def linkInput (valid payload ready flush : Nat) : InEnv :=
+  fun name width => BitVec.ofNat width <|
+    if name == "in_valid" then valid
+    else if name == "in_payload" then payload
+    else if name == "out_ready" then ready
+    else if name == "flush" then flush
+    else 0
+
+private def combNat (design : Design) (inputs : InEnv) (state : St)
+    (name : String) : Nat :=
+  match design.combOutputs.find? (fun output => output.name == name) with
+  | none => 0
+  | some output => (design.evalCombOutput inputs state output).toNat
+
+private def bypass : Except String (DomainComponent CoreClock) :=
+  bypassComponent? (δ := CoreClock) (α := BitVec 16) "bypass" "Word"
+
+#guard match bypass with
+  | .error _ => false
+  | .ok component =>
+      let design := component.implementation.design
+      combNat design (linkInput 1 0xCAFE 0 0) design.reset "out_valid" == 1 &&
+      combNat design (linkInput 1 0xCAFE 0 0) design.reset "out_payload" == 0xCAFE &&
+      combNat design (linkInput 1 0xCAFE 0 0) design.reset "in_ready" == 0
+
+private def flushable : Except String (DomainComponent CoreClock) :=
+  flushableComponent? (δ := CoreClock) (α := BitVec 16)
+    "flushable" "Word"
+
+#guard match flushable with
+  | .error _ => false
+  | .ok component =>
+      let design := component.implementation.design
+      let buffered := design.cycleOpen (linkInput 1 0xBEEF 0 0) design.reset
+      let flushed := design.cycleOpen (linkInput 0 0 1 1) buffered
+      buffered.regs "full" 1 == 1#1 &&
+      buffered.regs "payload" 16 == 0xBEEF#16 &&
+      combNat design (linkInput 0 0 1 1) buffered "out_valid" == 0 &&
+      flushed.regs "full" 1 == 0#1
+
+private def mixedGraph : Except String (DomainComponentGraph CoreClock) := do
+  let first ← Stream.registerSlice? (δ := CoreClock) (α := BitVec 16)
+    "first" "Word"
+  let middle ← flushable
+  let last ← bypass
+  componentGraphOf? (δ := CoreClock) (α := BitVec 16)
+    "mixed" "Word" [first, middle, last]
+
+#guard match mixedGraph with
+  | .error _ => false
+  | .ok graph =>
+      graph.instances.length == 3 && graph.connectionCount == 6 &&
+      match graph.flatten? with
+      | .error _ => false
+      | .ok implementation =>
+          implementation.design.inputs.any
+            (fun input => input.name == "stage1__flush")
+
 end Tests.Pipeline
