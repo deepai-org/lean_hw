@@ -262,6 +262,50 @@ The hierarchy milestone is complete only when Loom has:
 - one internal component and one assumption-bound external memory leaf used
   interchangeably behind the same contract.
 
+#### Components are clock-island internals, not a second multiclock model
+
+Typed hierarchy and multiclock composition have different semantic units and
+must meet at one explicit boundary:
+
+```text
+Component δ
+    ↓ same-clock composition
+DomainComponentGraph δ
+    ↓ checked flattening
+DomainDesign δ
+    ↓ paired by type with Clock δ
+one System island
+    ↓ Chan plus an explicit CDC realization
+another System island
+```
+
+Every sequential component element and domain-owned memory belongs to `δ`.
+Flattening preserves that index; it does not return an unqualified `Design` to
+ordinary user code. `System` assembly accepts a `DomainDesign δ` only with a
+`Clock δ`, so the association is a Lean typing fact rather than equality of
+emitted strings. The erased `Design`, clock name, and island records remain
+lowering formats for generators, importers, and compatibility code.
+
+Same-clock streams remain ordinary typed component connections. Crossing a
+clock boundary must change the construction deliberately: the endpoints become
+a typed `Chan`, and assembly selects an explicit synchronous or CDC
+realization. A valid/ready/payload bundle must never silently cross domains as
+three raw wires.
+
+A reusable block wholly owned by one clock exports a `Component δ` or
+`DomainDesign δ`. A reusable block containing several independently ticking
+domains seals as a `SystemFragment`, not as one flattened component. A fragment
+contains domain-indexed islands, typed channels, explicit realizations,
+exported stream/channel endpoints, reset contracts, and lifted theorem bundles;
+fragment composition produces another fragment and eventually a checked
+`System`. External PLLs, PHYs, dual-clock macros, and similar IP use a
+multiclock external contract at this System boundary.
+
+The intended rule is simple: use components for cycle-sensitive structure
+inside one island, and use System channels whenever clocks genuinely differ.
+Changing a subsystem from one clock to two must force that boundary change,
+while leaving its existing single-domain logic and proofs intact.
+
 ### Same-clock streams and protocol libraries
 
 A same-clock stream is a nominal payload carried by `valid`, `ready`, and
