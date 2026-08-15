@@ -277,6 +277,93 @@ def emissionPlan {δ : Type v} [ClockDomain δ]
     externalArtifacts := graph.externalArtifacts
     assumptions := graph.externalAssumptions }
 
+/-! ## Proved internal substitution -/
+
+/-- Actual observable component outputs. The default is unreachable for a
+sealed exact interface, but keeps `PortEnv` total outside a declared port. -/
+def componentOutputEnv (component : Component) (input : InEnv) (state : St) :
+    PortEnv := fun name width =>
+  match component.design.exportedRegs.find? (fun reg => reg.name == name) with
+  | some reg =>
+      if equal : reg.width = width then
+        equal ▸ state.regs reg.name reg.width
+      else 0
+  | none =>
+      match component.design.combOutputs.find? (fun output => output.name == name) with
+      | some output =>
+          if equal : output.width = width then
+            equal ▸ component.design.evalCombOutput input state output
+          else 0
+      | none => 0
+
+/-- Kernel obligation tying a real internal `Design` transition to an external
+contract. Reset, active ticks, unticked holds, and observations are explicit;
+the witness cannot be manufactured from matching port names alone. -/
+structure DesignContractWitness {δ : Type v} [ClockDomain δ]
+    (component : DomainComponent δ) (specification : ExternalComponent) where
+  interfaceEq : component.sealed.component.interface = specification.interface
+  abstract : St → specification.behavior.State
+  init : specification.behavior.init
+    (abstract component.sealed.component.design.reset)
+  tick : ∀ event input state,
+    event.ticks (ClockDomain.name δ) = true →
+    event.resets (ClockDomain.name δ) = false →
+    specification.behavior.step event input (abstract state)
+      (abstract (component.sealed.component.design.cycleOpen input state))
+  reset : ∀ event input state,
+    event.resets (ClockDomain.name δ) = true →
+    specification.behavior.step event input (abstract state)
+      (abstract component.sealed.component.design.reset)
+  hold : ∀ event input state,
+    event.ticks (ClockDomain.name δ) = false →
+    event.resets (ClockDomain.name δ) = false →
+    specification.behavior.step event input (abstract state) (abstract state)
+  observe : ∀ input state,
+    PortEnv.AgreeOn specification.interface.outputs
+      (specification.behavior.observe input (abstract state))
+      (componentOutputEnv component.sealed.component input state)
+
+structure InternalReplacement {δ : Type v} [ClockDomain δ]
+    (external : ExternalInstance δ) where
+  component : DomainComponent δ
+  witness : DesignContractWitness component external.component.sealed.specification
+
+structure SubstitutionResult {δ : Type v} [ClockDomain δ]
+    (original : BoundComponentGraph δ) where
+  graph : BoundComponentGraph δ
+  replacedPath : String
+
+private def _root_.Loom.Hw.HierarchyConnection.replaceComponent
+    {δ : Type v} [ClockDomain δ]
+    (connection : HierarchyConnection δ) (path componentName : String) :
+    HierarchyConnection δ :=
+  ⟨connection.width, connection.semanticType,
+    connection.sourceInstance,
+    if connection.sourceInstance == path then componentName else connection.sourceComponent,
+    connection.sourcePort, connection.sinkInstance,
+    if connection.sinkInstance == path then componentName else connection.sinkComponent,
+    connection.sinkPort⟩
+
+/-- Replace one contracted external leaf with a proved internal implementation.
+Its artifact and assumptions disappear because the returned graph no longer
+contains that external instance. -/
+def substituteInternal {δ : Type v} [ClockDomain δ]
+    (graph : BoundComponentGraph δ) (external : ExternalInstance δ)
+    (replacement : InternalReplacement external) :
+    Except String (SubstitutionResult graph) := do
+  unless graph.external.any (·.path == external.path) do
+    throw s!"external instance '{external.path}' does not belong to hierarchy '{graph.name}'"
+  if graph.internal.any (·.path == external.path) then
+    throw s!"internal instance path '{external.path}' already exists"
+  let componentName := replacement.component.sealed.component.name
+  let replaced : BoundComponentGraph δ :=
+    { graph with
+      internal := graph.internal ++ [⟨external.path, replacement.component⟩]
+      external := graph.external.filter (·.path != external.path)
+      connections := graph.connections.map
+        (·.replaceComponent external.path componentName) }
+  return ⟨replaced, external.path⟩
+
 end BoundComponentGraph
 
 end Loom.Hw
