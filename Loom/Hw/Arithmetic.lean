@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
-import Loom.Hw.Semantics
+import Loom.Hw.Trees
 
 /-!
 # Width- and interpretation-explicit arithmetic
@@ -42,9 +42,13 @@ def mul (left right : UnsignedExpr width) : UnsignedExpr width :=
 def lt (left right : UnsignedExpr width) : Expr 1 :=
   .ult left.bits right.bits
 
-def extend (value : UnsignedExpr width) (targetWidth : Nat) :
+def resize (value : UnsignedExpr width) (targetWidth : Nat) :
     UnsignedExpr targetWidth :=
   ⟨.zext value.bits targetWidth⟩
+
+def extend (value : UnsignedExpr width) (targetWidth : Nat)
+    (_widening : width ≤ targetWidth) : UnsignedExpr targetWidth :=
+  value.resize targetWidth
 
 end UnsignedExpr
 
@@ -69,9 +73,13 @@ def mul (left right : SignedExpr width) : SignedExpr width :=
 def lt (left right : SignedExpr width) : Expr 1 :=
   .slt left.bits right.bits
 
-def extend (value : SignedExpr width) (targetWidth : Nat) :
+def resize (value : SignedExpr width) (targetWidth : Nat) :
     SignedExpr targetWidth :=
   ⟨.sext value.bits targetWidth⟩
+
+def extend (value : SignedExpr width) (targetWidth : Nat)
+    (_widening : width ≤ targetWidth) : SignedExpr targetWidth :=
+  value.resize targetWidth
 
 end SignedExpr
 
@@ -122,7 +130,7 @@ private def xorBits {width : Nat} (value : Expr width) : List (Expr 1) :=
 /-- XOR reduction, built as a balanced tree. The zero-width value reduces to
 false. -/
 def reduceXor {width : Nat} (value : Expr width) : Expr 1 :=
-  (xorBits value).foldr .xor (.lit 0)
+  reduceTree .xor (.lit 0) (xorBits value)
 
 @[simp] theorem addWide_eval {width : Nat} (left right : Expr width)
     (state : St) :

@@ -35,10 +35,15 @@ private def command : Entry .writeOnly 8 32 (BitVec 8) where
   reset := 0
   fits := by change 8 ≤ 32; omega
 
-private def registers : Map 8 32 :=
+private def rawRegisters : Map 8 32 :=
   ⟨"device", [status.decl, control.decl, command.decl]⟩
 
-#guard registers.locallyValidB
+private def registers : Map.Checked 8 32 :=
+  match rawRegisters.check? with
+  | .ok checked => checked
+  | .error _ => ⟨rawRegisters, by native_decide⟩
+
+#guard rawRegisters.locallyValidB
 #guard registers.softwareConstants ==
   [⟨"STATUS", 0⟩, ⟨"CONTROL", 4⟩, ⟨"COMMAND", 8⟩]
 
@@ -66,6 +71,10 @@ private def duplicateAddress : Map 8 32 :=
   ⟨"bad", [status.decl, { control.decl with address := 0x00 }]⟩
 
 #guard !duplicateAddress.locallyValidB
+
+#guard match duplicateAddress.check? with
+  | .error _ => true
+  | .ok _ => false
 
 #guard registers.markdown.contains "`CONTROL`"
 

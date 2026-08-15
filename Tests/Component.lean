@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
-import Loom.Hw.Component
+import Loom.Hw.Multiclock
 
 /-! # Typed component hierarchy regressions -/
 
@@ -81,6 +81,31 @@ private def assembled : Except String Design := do
   | .error _ => false
   | .ok design =>
       (design.cycle design.reset).regs "consume__accepted" 8 == 37
+
+/- The ordinary hierarchy path retains `CoreClock` through flattening and
+island placement; the erased Design appears only in the final System record. -/
+private def domainIsland : Except String SystemIsland := do
+  let producerSealed ← producer.seal?
+  let consumerSealed ← consumer.seal?
+  let producerComponent ← DomainComponent.check? (δ := CoreClock) producerSealed
+  let consumerComponent ← DomainComponent.check? (δ := CoreClock) consumerSealed
+  let p : DomainComponentInstance CoreClock := ⟨"produce", producerComponent⟩
+  let c : DomainComponentInstance CoreClock := ⟨"consume", consumerComponent⟩
+  let source ← p.output? producerOutput
+  let sink ← c.input? consumerInput
+  let connection ← Connection.typed source sink
+  let graph := DomainComponentGraph.empty (δ := CoreClock) "typed_domain_top"
+  let graph ← graph.addInstance p
+  let graph ← graph.addInstance c
+  let graph ← graph.connect connection
+  let graph ← graph.expose "consume" "accepted"
+  let design ← graph.flatten?
+  let island : DomainIslandHandle CoreClock := .named "core" design
+  return island.toSystemIsland
+
+#guard match domainIsland with
+  | .error _ => false
+  | .ok island => island.clock == "core" && island.design.name == "typed_domain_top"
 
 /- An erased/dynamic graph cannot bypass the same-domain check: the port's
 domain name remains part of exact interface membership.  Ordinary typed code

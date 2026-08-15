@@ -8,6 +8,7 @@ import Loom.Hw.CertifiedSystemRecovery
 import Loom.Hw.ChanRecovery
 import Loom.Hw.RecoveryProtocol
 import Loom.Hw.RecoveryProtocolDesign
+import Loom.Hw.Component
 
 /-!
 # Application-facing multiclock facade
@@ -25,7 +26,7 @@ not have to construct them.
 
 namespace Loom.Hw
 
-universe u
+universe u v
 
 /-! ## Typed application handles
 
@@ -50,6 +51,27 @@ def tick (clock : ClockHandle) : NamedClockEvent := ⟨[clock.name]⟩
 
 end ClockHandle
 
+/-- A clock whose identity is tied to the same phantom domain used by
+components, streams, memories, and reset policy.  Unlike `ClockHandle`, this
+cannot be paired with an unrelated domain-owned design. -/
+structure Clock (δ : Type v) [ClockDomain δ] where
+  name : String
+  matchesDomain : name = ClockDomain.name δ
+
+namespace Clock
+
+/-- The canonical clock for a nominal domain. -/
+def domain (δ : Type v) [ClockDomain δ] : Clock δ :=
+  ⟨ClockDomain.name δ, rfl⟩
+
+def erase {δ : Type v} [ClockDomain δ] (clock : Clock δ) : ClockHandle :=
+  ⟨clock.name⟩
+
+def tick {δ : Type v} [ClockDomain δ] (clock : Clock δ) : NamedClockEvent :=
+  clock.erase.tick
+
+end Clock
+
 /-- An ordinary synchronous Design placed in one clock domain.  The handle is
 reused by topology, inspection, and later hierarchical export APIs. -/
 structure IslandHandle where
@@ -66,6 +88,35 @@ def toSystemIsland (island : IslandHandle) : SystemIsland :=
   ⟨island.name, island.clock.name, island.design⟩
 
 end IslandHandle
+
+/-- An island whose synchronous design and executable clock share the same
+domain index.  This is the ordinary-user island handle; `IslandHandle` is its
+erased generator/compatibility representation. -/
+structure DomainIslandHandle (δ : Type v) [ClockDomain δ] where
+  name : String
+  clock : Clock δ
+  design : DomainDesign δ
+
+namespace DomainIslandHandle
+
+def named {δ : Type v} [ClockDomain δ] (name : String)
+    (design : DomainDesign δ) (clock : Clock δ := Clock.domain δ) :
+    DomainIslandHandle δ := ⟨name, clock, design⟩
+
+def erase {δ : Type v} [ClockDomain δ]
+    (island : DomainIslandHandle δ) : IslandHandle :=
+  ⟨island.name, island.clock.erase, island.design.design⟩
+
+def toSystemIsland {δ : Type v} [ClockDomain δ]
+    (island : DomainIslandHandle δ) : SystemIsland := island.erase.toSystemIsland
+
+end DomainIslandHandle
+
+/-- Add a clock-checked island.  Heterogeneous domains erase only after the
+type checker has established each design/clock pairing. -/
+def _root_.Loom.Hw.SystemBuilder.addDomainIsland {δ : Type v} [ClockDomain δ]
+    (builder : SystemBuilder) (island : DomainIslandHandle δ) : SystemBuilder :=
+  { builder with islands := builder.islands ++ [island.toSystemIsland] }
 
 /-- Add a typed island declaration.  The raw string-taking `island` builder is
 retained as the generator/expert lowering interface. -/

@@ -35,6 +35,12 @@ example : (Expr.reduceXor (.lit 0b1011#4)).eval state = 1#1 := by decide
 private def unsignedOne : UnsignedExpr 8 := .ofBits (.lit 1#8)
 private def signedMinusOne : SignedExpr 8 := .ofBits (.lit 255#8)
 
+private def widened : UnsignedExpr 16 := unsignedOne.extend 16 (by omega)
+private def deliberatelyNarrowed : UnsignedExpr 4 := unsignedOne.resize 4
+
+#guard widened.bits.eval state == 1#16
+#guard deliberatelyNarrowed.bits.eval state == 1#4
+
 example : (UnsignedExpr.lt unsignedOne signedMinusOne.reinterpretUnsigned).eval state = 1#1 := by
   decide
 
