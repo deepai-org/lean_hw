@@ -165,8 +165,9 @@ runtime naming conventions:
   within the declared outstanding limit.
 - `Loom.Hw.MemoryPort` provides proof-carrying lane masks, asynchronous and
   synchronous reads, old-data/new-data/unchanged-output collision behavior,
-  ordered writes, and power-of-two mixed-width views. Unsupported or ambiguous
-  memory semantics are not represented by a convenient flag.
+  ordered writes, same-domain simple and true dual ports, and power-of-two
+  mixed-width views. Unsupported or ambiguous memory semantics are not
+  represented by a convenient flag.
 - `Loom.Hw.Plugin` resolves a user-defined GADT of typed services in canonical
   order. Missing/duplicate providers, dependency cycles, undeclared reads, and
   exclusive resource conflicts fail before hardware assembly.
