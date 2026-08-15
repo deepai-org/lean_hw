@@ -39,6 +39,7 @@ import Tests.Stream
 import Tests.Bus
 import Tests.Arithmetic
 import Tests.Waveform
+import Tests.Temporal
 import Tests.Plugin
 import Tests.MemoryPort
 import Tests.RegisterMap
