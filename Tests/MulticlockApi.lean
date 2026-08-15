@@ -5,6 +5,7 @@ import Machines.Substrate.TwoClock
 import Machines.Multiclock.RecoverySmoke
 import Evidence.Constraints.Mock
 import Evidence.Constraints.OpenXc7
+import Evidence.Constraints.Vivado
 import Evidence.Targets.AsyncQueueStorage
 
 /-! Regression tests for the deliberately small ordinary-user multiclock API. -/
@@ -418,6 +419,7 @@ def identifiedRun : System.PhysicalBackendRun where
   tool := "test-route"
   version := "1.0"
   runId := "run-17"
+  implementationVariant := "test-placement-strategy"
   seed := some 17
 
 def identifiedArtifacts : System.PhysicalArtifactIdentity where
@@ -431,6 +433,8 @@ def identifiedArtifacts : System.PhysicalArtifactIdentity where
     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   routedSha256 := some
     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  bitstreamSha256 := some
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 
 def identifiedPhysicalReport : System.PhysicalCheckReport
     mixedApplication.artifact.realized.artifacts where
@@ -446,6 +450,9 @@ def identifiedPhysicalReport : System.PhysicalCheckReport
   coverage := by simp [Function.comp_def]
 
 example : identifiedPhysicalReport.passed = true := by native_decide
+example : identifiedPhysicalReport.render.contains
+    "bitstream SHA-256: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" := by
+  native_decide
 
 example : !({ identifiedArtifacts with
     implementationRtlSha256 := some
@@ -511,6 +518,81 @@ example : openXc7PhysicalReport.results.countP
 example : openXc7PhysicalReport.results.countP
     (fun result => result.status == .unconstrained) = 3 := by native_decide
 example : openXc7PhysicalReport.passed = false := by native_decide
+
+/-! ### Physical-signoff oracle negative controls -/
+
+private def allResolvedPhysicalObjects : List System.PhysicalObjectResolution :=
+  mixedApplication.artifact.realized.artifacts.requirements.flatMap fun requirement =>
+    requirement.objects.map fun logical =>
+      { logical, resolved := "routed/" ++ logical.render }
+
+private def passingVivadoObservation :
+    Loom.Evidence.Constraints.Vivado.Observation where
+  run := { identifiedRun with adapter := "loom.vivado", tool := "Vivado" }
+  artifacts := identifiedArtifacts
+  covered := mixedApplication.artifact.realized.artifacts.requirements
+  resolutions := allResolvedPhysicalObjects
+  asynchronousRelationshipPassed := true
+  synchronizerAttributesPassed := true
+  synchronizerStructurePassed := true
+  noForbiddenSynchronizerFanout := true
+  grayBusSkewPassed := true
+  grayBusDatapathPassed := true
+  ordinaryTimingPassed := true
+  resetDeliveryPassed := true
+
+private def passingVivadoReport := Loom.Evidence.Constraints.Vivado.check
+  mixedApplication.artifact.realized.artifacts passingVivadoObservation
+
+example : passingVivadoReport.passed = true := by native_decide
+
+private def firstGrayRequirement? : Option System.PhysicalRequirement :=
+  mixedApplication.artifact.realized.artifacts.requirements.find? fun requirement =>
+    match requirement with
+    | .timing ⟨_, .coherentBus ..⟩ => true
+    | _ => false
+
+private def withoutFirstGrayConstraint : List System.PhysicalRequirement :=
+  match firstGrayRequirement? with
+  | some omitted => passingVivadoObservation.covered.erase omitted
+  | none => passingVivadoObservation.covered
+
+private def missingGrayConstraintReport := Loom.Evidence.Constraints.Vivado.check
+  mixedApplication.artifact.realized.artifacts
+  { passingVivadoObservation with covered := withoutFirstGrayConstraint }
+
+example : firstGrayRequirement?.isSome := by native_decide
+example : missingGrayConstraintReport.passed = false := by native_decide
+
+private def resolutionsMissingOneLogical : List System.PhysicalObjectResolution :=
+  match allResolvedPhysicalObjects.head? with
+  | some omitted => allResolvedPhysicalObjects.filter
+      (fun resolution => resolution.logical != omitted.logical)
+  | none => []
+
+private def unresolvedObjectReport := Loom.Evidence.Constraints.Vivado.check
+  mixedApplication.artifact.realized.artifacts
+  { passingVivadoObservation with resolutions := resolutionsMissingOneLogical }
+
+example : unresolvedObjectReport.passed = false := by native_decide
+
+private def alteredRouteInputArtifacts : System.PhysicalArtifactIdentity :=
+  { identifiedArtifacts with
+    implementationConstraintsSha256 := some
+      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" }
+
+private def alteredRouteInputReport := Loom.Evidence.Constraints.Vivado.check
+  mixedApplication.artifact.realized.artifacts
+  { passingVivadoObservation with artifacts := alteredRouteInputArtifacts }
+
+example : alteredRouteInputReport.passed = false := by native_decide
+
+private def forbiddenSynchronizerFanoutReport :=
+    Loom.Evidence.Constraints.Vivado.check
+      mixedApplication.artifact.realized.artifacts
+      { passingVivadoObservation with noForbiddenSynchronizerFanout := false }
+
+example : forbiddenSynchronizerFanoutReport.passed = false := by native_decide
 example : referencePhysicalReport.results.length =
     mixedApplication.artifact.realized.artifacts.requirements.length := by
   native_decide
@@ -963,6 +1045,12 @@ example : recoveryDeeperApplication.artifact.renderedVerilog.contains
 example : recoveryDeeperApplication.artifact.renderedVerilog.contains
     "system_recovery_coordinator_cell" := by native_decide
 example : recoveryDeeperApplication.artifact.renderedVerilog.contains
+    "system_recovery_completion_synchronizer" := by native_decide
+example : recoveryDeeperApplication.artifact.renderedVerilog.contains
+    ".raw_completion(__loom_recovery_deeper_dst_done)" := by native_decide
+example : recoveryDeeperApplication.artifact.realized.artifacts.constraintFile.groups.head?.map
+    (fun group => group.constraints.length) = some 11 := by native_decide
+example : recoveryDeeperApplication.artifact.renderedVerilog.contains
     ".rst(producer__recovery_reset)" := by native_decide
 example : recoveryDeeperApplication.artifact.realized.artifacts.recoveryInterfaces.length =
     recoveryDeeperSystem.islands.length := by native_decide
@@ -1033,7 +1121,7 @@ example : Machines.Multiclock.RecoverySmoke.application.artifact.emissionCheck.i
 example : Machines.Multiclock.RecoverySmoke.application.artifact.bindings.length = 2 := by
   native_decide
 example : Machines.Multiclock.RecoverySmoke.application.artifact.renderedVerilog.contains
-    ".left(recovery_center__recover), .right(__loom_recovery_recovery_in_src_done), .and_out(recovery_center__recovery_acc_0)" := by
+    ".left(recovery_center__recover), .right(__loom_recovery_sync_recovery_center_recovery_in_src_done), .and_out(recovery_center__recovery_acc_0)" := by
   native_decide
 example : Machines.Multiclock.RecoverySmoke.application.artifact.renderedVerilog.contains
     ".left(recovery_center__recovery_acc_0), .right(__loom_recovery_recovery_in_dst_done), .and_out(recovery_center__recovery_acc_1)" := by
@@ -1042,7 +1130,7 @@ example : Machines.Multiclock.RecoverySmoke.application.artifact.renderedVerilog
     ".left(recovery_center__recovery_acc_1), .right(__loom_recovery_recovery_out_src_done), .and_out(recovery_center__recovery_acc_2)" := by
   native_decide
 example : Machines.Multiclock.RecoverySmoke.application.artifact.renderedVerilog.contains
-    ".left(recovery_center__recovery_acc_2), .right(__loom_recovery_recovery_out_dst_done), .and_out(recovery_center__recovered)" := by
+    ".left(recovery_center__recovery_acc_2), .right(__loom_recovery_sync_recovery_center_recovery_out_dst_done), .and_out(recovery_center__recovered)" := by
   native_decide
 example : Machines.Multiclock.RecoverySmoke.application.artifact.renderedVerilog.contains
     ".rst(recovery_center__recovery_reset)" := by native_decide

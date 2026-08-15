@@ -124,6 +124,42 @@ def portablePhysicalIntent (info : CrossingInfo)
             { reference := .fasterOf source sink } ]
   | _, _ => []
 
+/-- Recovery exports the request/acknowledge chains inside the channel wrapper
+and the persistent remote-completion chain consumed by each island-level reset
+gate.  None of these single-bit CDC paths is left as implicit protocol lore. -/
+def recoveryPhysicalIntent (info : CrossingInfo) :
+    List TimingConstraint :=
+  match info.sourceClock, info.sinkClock with
+  | some source, some sink =>
+      if source = sink then [] else
+        let sourceInstance := recoveryCompletionSyncInstanceName
+          info.source info.channel "dst_done"
+        let sinkInstance := recoveryCompletionSyncInstanceName
+          info.sink info.channel "src_done"
+        let sourceSync0 : PhysicalObject :=
+          { path := [sourceInstance, "completion_sync0"] }
+        let sourceSync1 : PhysicalObject :=
+          { path := [sourceInstance, "completion_sync1"] }
+        let sinkSync0 : PhysicalObject :=
+          { path := [sinkInstance, "completion_sync0"] }
+        let sinkSync1 : PhysicalObject :=
+          { path := [sinkInstance, "completion_sync1"] }
+        let sourceRequest0 := fifoObject info "u_source_recovery" "peer_request_0"
+        let sourceRequest1 := fifoObject info "u_source_recovery" "peer_request_1"
+        let sourceAcknowledge0 := fifoObject info "u_source_recovery" "peer_acknowledge_0"
+        let sourceAcknowledge1 := fifoObject info "u_source_recovery" "peer_acknowledge_1"
+        let sinkRequest0 := fifoObject info "u_sink_recovery" "peer_request_0"
+        let sinkRequest1 := fifoObject info "u_sink_recovery" "peer_request_1"
+        let sinkAcknowledge0 := fifoObject info "u_sink_recovery" "peer_acknowledge_0"
+        let sinkAcknowledge1 := fifoObject info "u_sink_recovery" "peer_acknowledge_1"
+        [ .synchronizerChain source [sourceRequest0, sourceRequest1],
+          .synchronizerChain source [sourceAcknowledge0, sourceAcknowledge1],
+          .synchronizerChain sink [sinkRequest0, sinkRequest1],
+          .synchronizerChain sink [sinkAcknowledge0, sinkAcknowledge1],
+          .synchronizerChain source [sourceSync0, sourceSync1],
+          .synchronizerChain sink [sinkSync0, sinkSync1] ]
+  | _, _ => []
+
 /-! ## Portable power-of-two binding -/
 
 namespace CertifiedPortable
@@ -1106,7 +1142,8 @@ def CertifiedRecoveryPortableBinding.toPhysical
     (fun info => portablePhysicalIntent info
       (Cdc.AsyncFifoDesign.pointerWidth
         (CertifiedPortable.fifoParameters binding.connection
-          binding.base.depthAtLeastTwo binding.base.powerOfTwo)))
+          binding.base.depthAtLeastTwo binding.base.powerOfTwo)) ++
+        recoveryPhysicalIntent info)
     (timingForSinkPresentation binding.base.bufferedSink compiledRecoveryPortableTiming)
 
 /-! ## Compiled same-clock binding -/
@@ -1560,6 +1597,8 @@ structure RecoveryAssemblyCertificate {system : System}
     ∃ recovery : Chan.RecoveryRefinement binding.connection.chan,
       binding.recoveryRefinement? = some recovery
   coordinator : CertifiedDesign RecoveryCoordinator.design
+  completionSynchronizer :
+    CertifiedDesign RecoveryCompletionSynchronizer.design
   /-- A coordinator-visible endpoint completion implies that the exact
   compiler-source reset-hold expression remains asserted. -/
   endpointDoneKeepsReset : ∀ state : St,
@@ -1577,6 +1616,7 @@ def recoveryAssemblyCertificate {system : System}
   bindingRecovery := fun binding member =>
     artifact.binding_recoveryRefines policy binding member
   coordinator := RecoveryCoordinator.certified
+  completionSynchronizer := RecoveryCompletionSynchronizer.certified
   endpointDoneKeepsReset :=
     Chan.RecoveryProtocol.Design.resetHeld_of_flushed_any
 

@@ -154,7 +154,10 @@ compiled traffic/reset guards, and the ordinary compiled portable FIFO using
 structural wiring only. The generated top exposes a level request/completion
 pair per island, folds all incident endpoint completions with a compiled
 coordinator cell, and asserts reset only for the requesting island after
-quiescence. The structured coordinator domain has a checked theorem that both
+quiescence. A remote endpoint completion passes through a certified two-stage
+destination-domain synchronizer before entering that fold; the four internal
+request/acknowledgement chains and both completion chains are exported as exact
+physical requirements. The structured coordinator domain has a checked theorem that both
 physical halves of every incident channel are present. `RealizationPlan.recoveryPortable` exposes this through the
 ordinary application facade. The emission gate requires a recovery-capable
 binding for every `independentFlush` connection and rejects such a binding
@@ -164,6 +167,10 @@ proof in `CertifiedRealizedSystem`.
 The generated endpoint holds its local FIFO half in reset for the complete
 `flushed` phase, rather than issuing a one-cycle pulse. Thus a half that
 finishes early cannot resume sampling a peer pointer from the old epoch.
+An initiating endpoint also retains its request while the external island
+recovery request remains high. Consequently the participating peer's flushed
+level stays asserted across the completion synchronizer's latency instead of
+becoming a transient protocol observation.
 `completes_bothResetHeld` proves both completion edges asserted reset, and the
 endpoint's `flushed` level keeps it asserted until four-phase release. The
 system theorem `recoveryComplete_holds_all_compiledEndpointResets` then lifts
@@ -191,8 +198,8 @@ re-establish the empty representation at the proved global commit.
 compiler theorem for synchronous-reset edges to join every exact certified
 island module directly to the reset state in `System.advanceRecovery`.
 The endpoint cycle equation, datapath masks/resets, component certification,
-coordinator certification, and exact ordered assembly coverage are checked
-separately.
+coordinator and completion-synchronizer certification, and exact ordered
+assembly coverage are checked separately.
 A three-clock Icarus test exercises a requested island incident to two
 channels, checks all four endpoint completions and peer-reset containment, and
 then returns to service. It remains wiring/execution smoke evidence. This gap

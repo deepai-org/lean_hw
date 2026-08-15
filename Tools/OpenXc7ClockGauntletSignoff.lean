@@ -97,6 +97,7 @@ def run (evidenceDir : System.FilePath) (runId toolVersion : String)
       tool := "nextpnr-xilinx"
       version := toolVersion
       runId
+      implementationVariant := s!"nextpnr seed {seed}"
       seed := some seed }
   let artifactIdentity : PhysicalArtifactIdentity :=
     { rtlSha256 := ← sha256 rtlPath

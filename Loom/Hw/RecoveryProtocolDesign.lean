@@ -61,7 +61,7 @@ def blocked : Expr 1 :=
     (.or requestOut.rd (.or peerRequest1.rd flushedOut.rd))
 
 def nextRequest : Expr 1 :=
-  .mux flushedOut.rd zero
+  .mux (.and flushedOut.rd (.not recoverInput.rd)) zero
     (.mux (.or newRequest peerRequest1.rd) one requestOut.rd)
 
 def nextFlushed : Expr 1 :=
