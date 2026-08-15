@@ -1,0 +1,282 @@
+-- Copyright (c) 2026 Kevin Baragona
+-- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.ComponentHierarchy
+import Loom.Hw.ExternalComponent
+
+/-!
+# External leaves in typed component hierarchy
+
+External leaves remain assumption-bound. This module makes them genuine graph
+instances with typed endpoints, checked connections, exact artifact identity,
+and collected release assumptions. It does not invent an executable `Design`
+for external bytes.
+-/
+
+namespace Loom.Hw
+
+universe u v
+
+/-- A valid external contract and exact binding. -/
+structure SealedExternal where
+  specification : ExternalComponent
+  specificationValid : specification.validB = true
+  binding : ExternalBinding specification
+  bindingValid : binding.validB = true
+
+namespace SealedExternal
+
+def check? (specification : ExternalComponent)
+    (binding : ExternalBinding specification) : Except String SealedExternal := do
+  if hSpec : specification.validB = true then
+    if hBinding : binding.validB = true then
+      return ⟨specification, hSpec, binding, hBinding⟩
+    throw s!"external binding for '{specification.name}' is incomplete"
+  throw s!"external component '{specification.name}' has an invalid contract"
+
+end SealedExternal
+
+/-- A single-domain external leaf. Multi-domain IP belongs at the System
+fragment boundary rather than inside a synchronous component graph. -/
+structure DomainExternal (δ : Type v) [ClockDomain δ] where
+  sealed : SealedExternal
+  domainOk :
+    (sealed.specification.domains.length == 1 &&
+      sealed.specification.domains.all (·.domain == ClockDomain.name δ) &&
+      sealed.specification.interface.ports.all
+        (·.domain == ClockDomain.name δ)) = true
+
+namespace DomainExternal
+
+def check? {δ : Type v} [ClockDomain δ] (sealed : SealedExternal) :
+    Except String (DomainExternal δ) := do
+  if h : (sealed.specification.domains.length == 1 &&
+      sealed.specification.domains.all (·.domain == ClockDomain.name δ) &&
+      sealed.specification.interface.ports.all
+        (·.domain == ClockDomain.name δ)) = true then
+    return ⟨sealed, h⟩
+  throw s!"external component '{sealed.specification.name}' is not wholly owned by clock domain '{ClockDomain.name δ}'"
+
+end DomainExternal
+
+structure ExternalInstance (δ : Type v) [ClockDomain δ] where
+  path : String
+  component : DomainExternal δ
+
+/-- Hierarchical endpoints intentionally omit a source expression: an external
+output is a module port, not a fabricated Loom register read. -/
+structure HierarchyOutput (δ : Type v) (α : Type u)
+    [ClockDomain δ] [HwPacked α] : Type (max 1 u v) where
+  instancePath : String
+  componentName : String
+  port : Port .output δ α
+
+structure HierarchyInput (δ : Type v) (α : Type u)
+    [ClockDomain δ] [HwPacked α] : Type (max 1 u v) where
+  instancePath : String
+  componentName : String
+  port : Port .input δ α
+
+namespace HierarchyOutput
+
+def ofInternal {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (endpoint : OutputEndpoint δ α) : HierarchyOutput δ α :=
+  ⟨endpoint.instancePath, endpoint.componentName, endpoint.port⟩
+
+end HierarchyOutput
+
+namespace HierarchyInput
+
+def ofInternal {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (endpoint : InputEndpoint δ α) : HierarchyInput δ α :=
+  ⟨endpoint.instancePath, endpoint.componentName, endpoint.port⟩
+
+end HierarchyInput
+
+namespace ExternalInstance
+
+def input? {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (inst : ExternalInstance δ) (port : Port .input δ α) :
+    Except String (HierarchyInput δ α) := do
+  if inst.component.sealed.specification.interface.contains port.decl then
+    return ⟨inst.path, inst.component.sealed.specification.name, port⟩
+  throw s!"external instance '{inst.path}' has no matching input '{port.name}'"
+
+def output? {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (inst : ExternalInstance δ) (port : Port .output δ α) :
+    Except String (HierarchyOutput δ α) := do
+  if inst.component.sealed.specification.interface.contains port.decl then
+    return ⟨inst.path, inst.component.sealed.specification.name, port⟩
+  throw s!"external instance '{inst.path}' has no matching output '{port.name}'"
+
+end ExternalInstance
+
+structure HierarchyConnection (δ : Type v) [ClockDomain δ] : Type (max 1 v) where
+  private mk ::
+  width : Nat
+  semanticType : String
+  sourceInstance : String
+  sourceComponent : String
+  sourcePort : String
+  sinkInstance : String
+  sinkComponent : String
+  sinkPort : String
+
+namespace HierarchyConnection
+
+def typed {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (source : HierarchyOutput δ α) (sink : HierarchyInput δ α) :
+    Except String (HierarchyConnection δ) := do
+  unless source.port.semanticType == sink.port.semanticType do
+    throw s!"hierarchy connection semantic type mismatch: '{source.port.semanticType}' versus '{sink.port.semanticType}'"
+  return ⟨HwPacked.width α, source.port.semanticType,
+    source.instancePath, source.componentName, source.port.name,
+    sink.instancePath, sink.componentName, sink.port.name⟩
+
+end HierarchyConnection
+
+/-- Mixed internal/external same-clock hierarchy. External instances retain
+their exact binding and assumptions; no flattening operation is offered. -/
+structure BoundComponentGraph (δ : Type v) [ClockDomain δ] where
+  name : String
+  internal : List (DomainComponentInstance δ) := []
+  external : List (ExternalInstance δ) := []
+  connections : List (HierarchyConnection δ) := []
+
+namespace BoundComponentGraph
+
+def empty {δ : Type v} [ClockDomain δ] (name : String) : BoundComponentGraph δ :=
+  { name }
+
+private def paths {δ : Type v} [ClockDomain δ]
+    (graph : BoundComponentGraph δ) : List String :=
+  graph.internal.map (·.path) ++ graph.external.map (·.path)
+
+def addInternal {δ : Type v} [ClockDomain δ] (graph : BoundComponentGraph δ)
+    (inst : DomainComponentInstance δ) : Except String (BoundComponentGraph δ) := do
+  if inst.path.isEmpty then throw "component instance path must not be empty"
+  if graph.paths.contains inst.path then throw s!"duplicate hierarchy path '{inst.path}'"
+  return { graph with internal := graph.internal ++ [inst] }
+
+def addExternal {δ : Type v} [ClockDomain δ] (graph : BoundComponentGraph δ)
+    (inst : ExternalInstance δ) : Except String (BoundComponentGraph δ) := do
+  if inst.path.isEmpty then throw "external instance path must not be empty"
+  if graph.paths.contains inst.path then throw s!"duplicate hierarchy path '{inst.path}'"
+  return { graph with external := graph.external ++ [inst] }
+
+private def hasPort {δ : Type v} [ClockDomain δ] (graph : BoundComponentGraph δ)
+    (path component port semanticType : String) (direction : PortDirection)
+    (width : Nat) : Bool :=
+  let internal := graph.internal.any fun inst =>
+    inst.path == path && inst.component.sealed.component.name == component &&
+      inst.component.sealed.component.interface.ports.any fun candidate =>
+        candidate.name == port && candidate.semanticType == semanticType &&
+          candidate.direction == direction && candidate.width == width
+  let external := graph.external.any fun inst =>
+    inst.path == path && inst.component.sealed.specification.name == component &&
+      inst.component.sealed.specification.interface.ports.any fun candidate =>
+        candidate.name == port && candidate.semanticType == semanticType &&
+          candidate.direction == direction && candidate.width == width
+  internal || external
+
+def connect {δ : Type v} [ClockDomain δ] (graph : BoundComponentGraph δ)
+    (connection : HierarchyConnection δ) : Except String (BoundComponentGraph δ) := do
+  unless graph.hasPort connection.sourceInstance connection.sourceComponent
+      connection.sourcePort connection.semanticType .output connection.width do
+    throw s!"unknown hierarchy source '{connection.sourceInstance}.{connection.sourcePort}'"
+  unless graph.hasPort connection.sinkInstance connection.sinkComponent
+      connection.sinkPort connection.semanticType .input connection.width do
+    throw s!"unknown hierarchy sink '{connection.sinkInstance}.{connection.sinkPort}'"
+  if graph.connections.any fun existing =>
+      existing.sinkInstance == connection.sinkInstance &&
+        existing.sinkPort == connection.sinkPort then
+    throw s!"hierarchy input '{connection.sinkInstance}.{connection.sinkPort}' already has a driver"
+  return { graph with connections := graph.connections ++ [connection] }
+
+/-- Exact external artifact identities which a release must carry. -/
+def externalArtifacts {δ : Type v} [ClockDomain δ] (graph : BoundComponentGraph δ) :
+    List Loom.Artifact.Identity :=
+  graph.external.map (·.component.sealed.binding.artifact)
+
+/-- Instance-qualified premises which remain outside Loom's kernel proof. -/
+def externalAssumptions {δ : Type v} [ClockDomain δ]
+    (graph : BoundComponentGraph δ) : List NamedAssumption :=
+  graph.external.flatMap fun inst =>
+    inst.component.sealed.binding.assumptions.map fun assumption =>
+      { assumption with name := inst.path ++ "." ++ assumption.name }
+
+/-- One exact port connection in a backend-neutral module-instantiation plan. -/
+structure PlannedPort where
+  port : String
+  net : String
+  direction : PortDirection
+  width : Nat
+  deriving Repr, DecidableEq, BEq
+
+/-- A real child-module occurrence ready for a Verilog/VHDL backend. External
+parameters remain structured strings and are never interpolated by this layer. -/
+structure ModuleInstancePlan where
+  path : String
+  moduleName : String
+  parameters : List (String × String)
+  ports : List PlannedPort
+  external : Bool
+  deriving Repr, DecidableEq, BEq
+
+/-- Everything required to emit hierarchy while preserving the assumption
+boundary. Internal module text comes from each child `CertifiedDesign`;
+external bytes are represented only by exact identities. -/
+structure EmissionPlan where
+  topName : String
+  instances : List ModuleInstancePlan
+  internalModules : List (String × String)
+  externalArtifacts : List Loom.Artifact.Identity
+  assumptions : List NamedAssumption
+
+private def sourceNet {δ : Type v} [ClockDomain δ]
+    (connection : HierarchyConnection δ) : String :=
+  connection.sourceInstance ++ "__" ++ connection.sourcePort
+
+private def portNet {δ : Type v} [ClockDomain δ] (graph : BoundComponentGraph δ)
+    (path port : String) (direction : PortDirection) : String :=
+  if direction == .input then
+    match graph.connections.find? fun connection =>
+        connection.sinkInstance == path && connection.sinkPort == port with
+    | some connection => sourceNet connection
+    | none => path ++ "__" ++ port
+  else path ++ "__" ++ port
+
+private def plannedPorts {δ : Type v} [ClockDomain δ]
+    (graph : BoundComponentGraph δ) (path : String)
+    (interface : ComponentInterface) : List PlannedPort :=
+  interface.ports.map fun port =>
+    ⟨port.name, graph.portNet path port.name port.direction,
+      port.direction, port.width⟩
+
+/-- Produce actual module-instantiation data. This operation does not flatten,
+recompile children, or claim that external bytes satisfy their assumptions. -/
+def emissionPlan {δ : Type v} [ClockDomain δ]
+    (graph : BoundComponentGraph δ) : EmissionPlan :=
+  let internalInstances := graph.internal.map fun inst =>
+    { path := inst.path
+      moduleName := inst.component.sealed.component.design.name
+      parameters := []
+      ports := graph.plannedPorts inst.path inst.component.sealed.component.interface
+      external := false }
+  let externalInstances := graph.external.map fun inst =>
+    { path := inst.path
+      moduleName := inst.component.sealed.binding.moduleName
+      parameters := inst.component.sealed.binding.parameters
+      ports := graph.plannedPorts inst.path
+        inst.component.sealed.specification.interface
+      external := true }
+  { topName := graph.name
+    instances := internalInstances ++ externalInstances
+    internalModules := graph.internal.map fun inst =>
+      (inst.component.sealed.component.design.name,
+        inst.component.sealed.certified.renderedVerilog)
+    externalArtifacts := graph.externalArtifacts
+    assumptions := graph.externalAssumptions }
+
+end BoundComponentGraph
+
+end Loom.Hw

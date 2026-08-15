@@ -36,6 +36,7 @@ import Tests.SimulationComp
 import Tests.Component
 import Tests.ComponentHierarchy
 import Tests.ExternalComponent
+import Tests.ExternalHierarchy
 import Tests.Stream
 import Tests.Bus
 import Tests.Arithmetic

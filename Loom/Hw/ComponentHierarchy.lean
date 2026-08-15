@@ -54,6 +54,21 @@ structure Certificate (graph : ComponentGraph) where
   order : List String
   topology : ComponentGraph.topologicalOrderCheckB graph.dependencyEdges order = true
 
+namespace Certificate
+
+/-- Child compiler/simulator evidence is reused verbatim rather than derived
+again from the flattened design. -/
+def childCertified {graph : ComponentGraph} (_certificate : Certificate graph)
+    (inst : ComponentInstance) (_member : inst ∈ graph.instances) :
+    CertifiedDesign inst.component.component.design :=
+  inst.component.certified
+
+theorem dependencyAcyclic {graph : ComponentGraph} (certificate : Certificate graph) :
+    ComponentGraph.DependencyAcyclic graph.dependencyEdges :=
+  ComponentGraph.topologicalOrderCheckB_sound certificate.topology
+
+end Certificate
+
 def check? (graph : ComponentGraph) : Except String (Certificate graph) := do
   if hValid : graph.validB = true then
     if hNamespaces : graphNamespacesDisjointB graph = true then
