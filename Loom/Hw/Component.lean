@@ -405,22 +405,43 @@ private def combinationalEdges (graph : ComponentGraph) : List (String × String
     (connection.sourceFullName, connection.sinkFullName)
   internal ++ wiring
 
-private def pathB (edges : List (String × String))
-    (fuel : Nat) (source target : String) : Bool :=
-  match fuel with
-  | 0 => false
-  | fuel + 1 =>
-      edges.any fun edge =>
-        edge.1 == source &&
-          (edge.2 == target || pathB edges fuel edge.2 target)
-
 /-- No same-cycle dependency can return to its starting signal.  This is a
 structural property of typed component wiring, independent of backend
-heuristics. -/
+heuristics.  Kahn's algorithm visits each node and edge once (with expected
+constant-time hash-table operations), rather than enumerating paths from every
+node on branching graphs. -/
 def combinationalAcyclicB (graph : ComponentGraph) : Bool :=
   let edges := graph.combinationalEdges
-  let nodes := (edges.flatMap fun edge => [edge.1, edge.2]).eraseDups
-  nodes.all fun node => !pathB edges nodes.length node node
+  Id.run do
+    let mut seen : Std.HashSet String := {}
+    let mut nodes : Array String := #[]
+    let mut outgoing : Std.HashMap String (List String) := {}
+    let mut indegree : Std.HashMap String Nat := {}
+    for (source, sink) in edges do
+      if !seen.contains source then
+        seen := seen.insert source
+        nodes := nodes.push source
+        indegree := indegree.insert source 0
+      if !seen.contains sink then
+        seen := seen.insert sink
+        nodes := nodes.push sink
+        indegree := indegree.insert sink 0
+      outgoing := outgoing.insert source (sink :: outgoing.getD source [])
+      indegree := indegree.insert sink (indegree.getD sink 0 + 1)
+    let mut ready : List String := []
+    for node in nodes do
+      if indegree.getD node 0 == 0 then ready := node :: ready
+    let mut visited := 0
+    while !ready.isEmpty do
+      let node := ready.head!
+      ready := ready.tail!
+      visited := visited + 1
+      for sink in outgoing.getD node [] do
+        let degree := indegree.getD sink 0
+        let next := degree - 1
+        indegree := indegree.insert sink next
+        if next == 0 then ready := sink :: ready
+    return visited == nodes.size
 
 def connect (graph : ComponentGraph) (connection : Connection) :
     Except String ComponentGraph := do
