@@ -70,11 +70,13 @@ private def internalComponent : Component where
       combOutputs := [⟨outputPort.name, 8, .lit 0#8⟩] }
 
 private def internalDomainComponent : DomainComponent CoreClock where
+  implementation := DomainDesign.authored internalComponent.design
   sealed :=
     { component := internalComponent
       interfaceOk := by native_decide
       readsOk := by native_decide
       certified := CertifiedDesign.ofChecks (by native_decide) (by native_decide) }
+  implementationEq := rfl
   domainOk := by native_decide
 
 private def graph : Except String (BoundComponentGraph CoreClock) := do

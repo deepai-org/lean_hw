@@ -86,10 +86,10 @@ private def assembled : Except String Design := do
 /- The ordinary hierarchy path retains `CoreClock` through flattening and
 island placement; the erased Design appears only in the final System record. -/
 private def domainIsland : Except String SystemIsland := do
-  let producerSealed ← producer.seal?
-  let consumerSealed ← consumer.seal?
-  let producerComponent ← DomainComponent.check? (δ := CoreClock) producerSealed
-  let consumerComponent ← DomainComponent.check? (δ := CoreClock) consumerSealed
+  let producerComponent ← DomainComponent.seal? producer.name producer.interface
+    (DomainDesign.authored (δ := CoreClock) producer.design)
+  let consumerComponent ← DomainComponent.seal? consumer.name consumer.interface
+    (DomainDesign.authored (δ := CoreClock) consumer.design)
   let p : DomainComponentInstance CoreClock := ⟨"produce", producerComponent⟩
   let c : DomainComponentInstance CoreClock := ⟨"consume", consumerComponent⟩
   let source ← p.output? producerOutput
@@ -107,6 +107,13 @@ private def domainIsland : Except String SystemIsland := do
 #guard match domainIsland with
   | .error _ => false
   | .ok island => island.clock == "core" && island.design.name == "typed_domain_top"
+
+private def peripheralOwnedDesign : DomainDesign PeripheralClock :=
+  DomainDesign.authored producerDesign
+
+/- A domain-owned design cannot be placed on another domain's typed clock. -/
+#check_failure
+  (DomainIslandHandle.named (δ := CoreClock) "bad" peripheralOwnedDesign)
 
 /- An erased/dynamic graph cannot bypass the same-domain check: the port's
 domain name remains part of exact interface membership.  Ordinary typed code

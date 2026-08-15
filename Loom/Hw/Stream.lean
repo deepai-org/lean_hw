@@ -216,8 +216,9 @@ def mapper? {δ : Type v} {α β : Type u}
     [ClockDomain δ] [HwPacked α] [HwPacked β]
     (name inputType outputType : String)
     (transform : PackedExpr α → PackedExpr β) : Except String (DomainComponent δ) := do
-  DomainComponent.check? (δ := δ) <| ←
-    (mapperComponent (δ := δ) name inputType outputType transform).seal?
+  let component := mapperComponent (δ := δ) name inputType outputType transform
+  DomainComponent.seal? component.name component.interface
+    (DomainDesign.authored (δ := δ) component.design)
 
 /-- Ports of a one-entry registered stream slice. -/
 structure RegisterSlicePorts (δ : Type v) (α : Type u)
@@ -266,8 +267,9 @@ def registerSliceComponent {δ : Type v} {α : Type u}
 def registerSlice? {δ : Type v} {α : Type u}
     [ClockDomain δ] [HwPacked α] (name semanticType : String) :
     Except String (DomainComponent δ) := do
-  DomainComponent.check? (δ := δ) <| ←
-    (registerSliceComponent (δ := δ) (α := α) name semanticType).seal?
+  let component := registerSliceComponent (δ := δ) (α := α) name semanticType
+  DomainComponent.seal? component.name component.interface
+    (DomainDesign.authored (δ := δ) component.design)
 
 /-- Abstract the two implementation registers to the protocol's optional
 buffered transaction. -/
