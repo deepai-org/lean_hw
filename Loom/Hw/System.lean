@@ -275,9 +275,17 @@ namespace System
 
 def empty : SystemBuilder := {}
 
-def _root_.Loom.Hw.SystemBuilder.island (sys : SystemBuilder) (name : String) (design : Design)
+/-- Erased generator/import boundary. Ordinary application code should use a
+`DomainIslandHandle δ` and `SystemBuilder.addDomainIsland`. -/
+def _root_.Loom.Hw.SystemBuilder.addErasedDesignIsland (sys : SystemBuilder)
+    (name : String) (design : Design)
     (clock : String := "clk") : SystemBuilder :=
   { sys with islands := sys.islands ++ [⟨name, clock, design⟩] }
+
+@[deprecated SystemBuilder.addErasedDesignIsland (since := "2026-08-15")]
+def _root_.Loom.Hw.SystemBuilder.island (sys : SystemBuilder) (name : String)
+    (design : Design) (clock : String := "clk") : SystemBuilder :=
+  sys.addErasedDesignIsland name design clock
 
 def _root_.Loom.Hw.SystemBuilder.connect (sys : SystemBuilder) {width : Nat} (chan : Chan width)
     (source sink : String) : SystemBuilder :=

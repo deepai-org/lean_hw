@@ -24,8 +24,8 @@ def recoveryRoute := spec.channel.between sourceIsland destinationIsland
 
 def builder : SystemBuilder :=
   System.empty
-    |>.addIsland sourceIsland
-    |>.addIsland destinationIsland
+    |>.addErasedIsland sourceIsland
+    |>.addErasedIsland destinationIsland
     |>.addFullRateChannel recoveryRoute
     |>.withClockRel .asynchronous
     |>.withIndependentReset

@@ -267,11 +267,11 @@ def monitor : Design := audit.withSink monitorBody
 
 def builder : SystemBuilder :=
   System.empty
-    |>.island "cpu" cpu (clock := "cpu_fabric_clk")
-    |>.island "dma" dma (clock := "dma_clk")
-    |>.island "fabric" fabric (clock := "cpu_fabric_clk")
-    |>.island "service" service (clock := "mem_clk")
-    |>.island "monitor" monitor (clock := "mon_clk")
+    |>.addErasedDesignIsland "cpu" cpu (clock := "cpu_fabric_clk")
+    |>.addErasedDesignIsland "dma" dma (clock := "dma_clk")
+    |>.addErasedDesignIsland "fabric" fabric (clock := "cpu_fabric_clk")
+    |>.addErasedDesignIsland "service" service (clock := "mem_clk")
+    |>.addErasedDesignIsland "monitor" monitor (clock := "mon_clk")
     |>.connect cpuRequest.bits (source := "cpu") (sink := "fabric")
     |>.connect cpuResponse.bits (source := "fabric") (sink := "cpu")
     |>.connect dmaRequest.bits (source := "dma") (sink := "fabric")

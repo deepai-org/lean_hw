@@ -82,11 +82,11 @@ private def duplicateCpuSend : Design :=
 
 private def duplicateCpuSendBuilder : SystemBuilder :=
   System.empty
-    |>.island "cpu" duplicateCpuSend (clock := "cpu_fabric_clk")
-    |>.island "dma" dma (clock := "dma_clk")
-    |>.island "fabric" fabric (clock := "cpu_fabric_clk")
-    |>.island "service" service (clock := "mem_clk")
-    |>.island "monitor" monitor (clock := "mon_clk")
+    |>.addErasedDesignIsland "cpu" duplicateCpuSend (clock := "cpu_fabric_clk")
+    |>.addErasedDesignIsland "dma" dma (clock := "dma_clk")
+    |>.addErasedDesignIsland "fabric" fabric (clock := "cpu_fabric_clk")
+    |>.addErasedDesignIsland "service" service (clock := "mem_clk")
+    |>.addErasedDesignIsland "monitor" monitor (clock := "mon_clk")
     |>.connect cpuRequest.bits (source := "cpu") (sink := "fabric")
     |>.connect cpuResponse.bits (source := "fabric") (sink := "cpu")
     |>.connect dmaRequest.bits (source := "dma") (sink := "fabric")
@@ -146,7 +146,7 @@ private def rogueTelemetry : Design :=
     inputs := [⟨"__loom_chan_telemetry_dst_valid", 1⟩] }
 
 private def rogueTelemetryBuilder : SystemBuilder :=
-  System.empty.island "rogue" rogueTelemetry (clock := "rogue_clk")
+  System.empty.addErasedDesignIsland "rogue" rogueTelemetry (clock := "rogue_clk")
 
 /-- Generated-looking telemetry dependencies outside a declared channel are
 rejected during checked System assembly. -/

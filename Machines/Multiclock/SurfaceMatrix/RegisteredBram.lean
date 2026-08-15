@@ -22,8 +22,8 @@ def spec : LaneSpec := ⟨4, .ordinary, by decide, by decide⟩
 
 def builder : SystemBuilder :=
   System.empty
-    |>.addIsland (producerIsland spec)
-    |>.addIsland (sinkIsland spec)
+    |>.addErasedIsland (producerIsland spec)
+    |>.addErasedIsland (sinkIsland spec)
     |>.addChannel (route spec)
     |>.withClockRel .asynchronous
 

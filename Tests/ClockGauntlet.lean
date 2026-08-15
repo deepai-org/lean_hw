@@ -21,7 +21,7 @@ example : certifiedArtifact.bindings.length = system.connections.length := by
 
 private def missingSinkBuilder : SystemBuilder :=
   System.empty
-    |>.island "source" source (clock := "source_clk")
+    |>.addErasedDesignIsland "source" source (clock := "source_clk")
     |>.connect sourceToTransform (source := "source") (sink := "absent")
 
 /-- An unpaired endpoint never crosses the opaque checked-System boundary. -/
@@ -34,7 +34,7 @@ private def rogueCrossDomainInput : Design :=
 
 private def rogueCrossDomainBuilder : SystemBuilder :=
   System.empty
-    |>.island "rogue" rogueCrossDomainInput (clock := "rogue_clk")
+    |>.addErasedDesignIsland "rogue" rogueCrossDomainInput (clock := "rogue_clk")
 
 /-- A raw generated-looking cross-domain input outside a declared `Chan` is
 rejected at checked-System assembly. -/

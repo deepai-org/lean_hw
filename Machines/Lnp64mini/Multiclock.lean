@@ -92,8 +92,8 @@ def telemetryRoute : ChannelRoute 64 :=
 
 def builder : SystemBuilder :=
   System.empty
-    |>.addIsland coreHandle
-    |>.addIsland observerHandle
+    |>.addErasedIsland coreHandle
+    |>.addErasedIsland observerHandle
     |>.addChannel telemetryRoute
     |>.withClockRel .asynchronous
 
@@ -172,7 +172,7 @@ theorem certifiedArtifact_bytes :
 private theorem observerFound :
     system.findIsland? "observer" = some observerIsland := by
   simp [system, builder, observerIsland, observer, System.empty,
-    SystemBuilder.addIsland, SystemBuilder.addChannel, SystemBuilder.channel,
+    SystemBuilder.addErasedIsland, SystemBuilder.addChannel, SystemBuilder.channel,
     telemetryRoute, coreHandle, observerHandle, IslandHandle.named,
     IslandHandle.toSystemIsland, coreClock, observerClock, ClockHandle.named,
     Chan.between,

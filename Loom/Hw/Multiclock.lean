@@ -118,11 +118,16 @@ def _root_.Loom.Hw.SystemBuilder.addDomainIsland {δ : Type v} [ClockDomain δ]
     (builder : SystemBuilder) (island : DomainIslandHandle δ) : SystemBuilder :=
   { builder with islands := builder.islands ++ [island.toSystemIsland] }
 
-/-- Add a typed island declaration.  The raw string-taking `island` builder is
-retained as the generator/expert lowering interface. -/
-def _root_.Loom.Hw.SystemBuilder.addIsland (builder : SystemBuilder)
+/-- Add an erased island handle at an importer/generator boundary. Ordinary
+application code should retain a `DomainIslandHandle δ`. -/
+def _root_.Loom.Hw.SystemBuilder.addErasedIsland (builder : SystemBuilder)
     (island : IslandHandle) : SystemBuilder :=
   { builder with islands := builder.islands ++ [island.toSystemIsland] }
+
+@[deprecated SystemBuilder.addErasedIsland (since := "2026-08-15")]
+def _root_.Loom.Hw.SystemBuilder.addIsland (builder : SystemBuilder)
+    (island : IslandHandle) : SystemBuilder :=
+  builder.addErasedIsland island
 
 namespace Chan
 
