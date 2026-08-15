@@ -128,19 +128,88 @@ def empty (depth : Nat) : State depth α :=
 structure StepResult (depth : Nat) (α : Type u) where
   state : State depth α
   inputReady : Bool
+  /-- Current output transaction, whether or not the consumer accepts it. -/
   output : Option α
+  /-- Output transaction accepted on this step. -/
+  acceptedOutput : Option α
 
 def step {depth : Nat} (state : State depth α)
     (incoming : Option α) (outputReady : Bool) : StepResult depth α :=
   let result := advance state.slots incoming outputReady
-  let output := if outputReady then state.slots.getLast?.join else none
+  let output := match state.slots with
+    | [] => incoming
+    | _ => state.slots.getLast?.join
   { state :=
       { slots := result.1
         depth_eq := by
           rw [advance_length]
           exact state.depth_eq }
     inputReady := result.2
-    output }
+    output
+    acceptedOutput := if outputReady then output else none }
+
+@[simp] theorem occupancy_replicate_none (depth : Nat) :
+    occupancy (List.replicate depth (none : Option α)) = 0 := by
+  induction depth with
+  | zero => rfl
+  | succ depth ih =>
+      rw [List.replicate_succ, occupancy_cons, ih]
+      simp [accepted]
+
+/-- Flush has an explicit loss contract: it accepts no input or output on the
+flush step and reports exactly the number of discarded buffered items. -/
+def advanceWithFlush (slots : List (Option α)) (incoming : Option α)
+    (outputReady flush : Bool) : List (Option α) × Bool :=
+  if flush then (List.replicate slots.length none, false)
+  else advance slots incoming outputReady
+
+def discardedByFlush (slots : List (Option α)) (flush : Bool) : Nat :=
+  if flush then occupancy slots else 0
+
+def outputAcceptedWithFlush (slots : List (Option α)) (incoming : Option α)
+    (outputReady flush : Bool) : Nat :=
+  if flush then 0 else outputAccepted slots incoming outputReady
+
+theorem advanceWithFlush_conservation (slots : List (Option α))
+    (incoming : Option α) (outputReady flush : Bool) :
+    occupancy (advanceWithFlush slots incoming outputReady flush).1 +
+        outputAcceptedWithFlush slots incoming outputReady flush +
+        discardedByFlush slots flush =
+      occupancy slots +
+        accepted incoming (advanceWithFlush slots incoming outputReady flush).2 := by
+  cases flush
+  · simpa [advanceWithFlush, outputAcceptedWithFlush, discardedByFlush] using
+      advance_conservation slots incoming outputReady
+  · cases incoming <;>
+      simp [advanceWithFlush, outputAcceptedWithFlush, discardedByFlush,
+        accepted]
+
+structure FlushResult (depth : Nat) (α : Type u) where
+  state : State depth α
+  inputReady : Bool
+  output : Option α
+  acceptedOutput : Option α
+  discarded : Nat
+
+def stepWithFlush {depth : Nat} (state : State depth α)
+    (incoming : Option α) (outputReady flush : Bool) : FlushResult depth α :=
+  let result := advanceWithFlush state.slots incoming outputReady flush
+  let output := if flush then none else match state.slots with
+    | [] => incoming
+    | _ => state.slots.getLast?.join
+  { state :=
+      { slots := result.1
+        depth_eq := by
+          change (advanceWithFlush state.slots incoming outputReady flush).1.length = depth
+          simp only [advanceWithFlush]
+          split
+          · simp [state.depth_eq]
+          · rw [advance_length]
+            exact state.depth_eq }
+    inputReady := result.2
+    output
+    acceptedOutput := if outputReady then output else none
+    discarded := discardedByFlush state.slots flush }
 
 end State
 

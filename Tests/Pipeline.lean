@@ -22,6 +22,25 @@ private def fourth := third.state.step none true
 #guard second.inputReady && second.output.isNone
 #guard third.inputReady && third.output.isNone
 #guard fourth.output == some 10
+#guard fourth.acceptedOutput == some 10
+
+private def stalledBypass := (State.empty 0 : State 0 Nat).step (some 7) false
+#guard stalledBypass.output == some 7 && stalledBypass.acceptedOutput.isNone &&
+  !stalledBypass.inputReady
+
+private def fullState : State 3 Nat := ⟨[some 1, none, some 2], rfl⟩
+private def flushed := fullState.stepWithFlush (some 3) true true
+#guard flushed.state.slots == [none, none, none] && !flushed.inputReady &&
+  flushed.output.isNone && flushed.discarded == 2
+
+example : occupancy
+      (State.advanceWithFlush [some 1, none, some 2] (some 3) true true).1 +
+      State.outputAcceptedWithFlush [some 1, none, some 2] (some 3) true true +
+      State.discardedByFlush [some 1, none, some 2] true =
+    occupancy [some 1, none, some 2] +
+      accepted (some 3)
+        (State.advanceWithFlush [some 1, none, some 2] (some 3) true true).2 :=
+  State.advanceWithFlush_conservation _ _ _ _
 
 example : occupancy (advance [some 1, some 2, none] (some 3) true).1 +
     outputAccepted [some 1, some 2, none] (some 3) true =
