@@ -35,6 +35,7 @@ import Loom.Hw.Bus
 import Loom.Hw.Arithmetic
 import Loom.Hw.Waveform
 import Loom.Hw.Temporal
+import Loom.Hw.ClockReset
 import Loom.Hw.Plugin
 import Loom.Hw.MemoryPort
 import Loom.Hw.RegisterMap
