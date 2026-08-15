@@ -185,6 +185,318 @@ ergonomic follow-up rather than a new semantic layer.
 [`MULTICLOCK_BOUNDARY.md`](MULTICLOCK_BOUNDARY.md) states the remaining
 physical assumptions.
 
+## SoC construction architecture
+
+Loom should grow from a verified design kernel into a practical SoC
+construction system without turning every useful abstraction into a core
+constructor. The admission rule is semantic, not popularity-based:
+
+- **Core architecture** owns durable composition boundaries and distinctions
+  that change observable transition behavior: typed components, domain
+  membership, reset participation, and memory-port behavior.
+- **Verified libraries** construct core designs and carry reusable refinement
+  theorems. Streams, synchronizers, pipelines, arbiters, register maps, and bus
+  protocols belong here.
+- **Assumption-bound boundaries** describe behavior Loom cannot derive from
+  ordinary logic, including PLLs, pads, bidirectional pins, SRAM macros, and
+  vendor primitives. Each use names its contract and the evidence, theorem, or
+  assumption connecting an implementation to it.
+- **Tool bridges** exchange artifacts, traces, properties, and counterexamples
+  with conventional tools. A bridge may strengthen evidence but may not add an
+  external parser, simulator, or solver to a kernel theorem's hidden TCB.
+
+Syntax is not an architectural layer. The facilities below must first have a
+precise Lean API and semantics; convenient spelling belongs in
+[`PRETTY.md`](PRETTY.md). In particular, streams, bus kinds, arbitration
+policies, reset policies, memory configurations, and IP kinds are library
+values rather than an expanding collection of language keywords.
+
+### Typed components and external IP
+
+A component is a reusable typed interface plus an implementation or behavioral
+contract. Its interface contains packed ports with direction, semantic payload
+type, and clock-domain ownership. Reset, combinational dependencies, latency,
+and statefulness are explicit interface facts rather than conventions inferred
+from signal names. An instance has a stable hierarchical path and may connect
+only type-equal, direction-compatible endpoints. Width-only compatibility is
+insufficient for nominal packed types.
+
+There are three implementation classes:
+
+1. An **internal component** contains an ordinary Loom implementation. Loom
+   proves that instance elaboration and optional flattening preserve its
+   component semantics. Flattened and hierarchy-preserving emission are views
+   of the same instance graph, not distinct designs.
+2. A **contracted component** has a technology-neutral transition or trace
+   contract but no Loom body. It is an explicit cut point. Any theorem that
+   depends on its behavior carries that contract as a named premise.
+3. A **refined external component** pairs the same contract with checked
+   evidence: a Lean refinement theorem, neutral-netlist equivalence, or an
+   explicitly classified external result. Only a kernel-checked refinement or
+   checked neutral equivalence can discharge a Loom logical proof obligation;
+   a contract alone remains a premise and an external report remains external
+   evidence.
+
+The external-IP seam is therefore not arbitrary HDL interpolation. A leaf
+declares its exact interface, clock/reset contract, state and latency contract,
+allowed combinational paths, stable artifact identity, and implementation
+binding. Unsupported parameters, unconnected required ports, multiple drivers,
+domain-crossing connections, contract/version mismatches, and undeclared
+combinational paths fail closed. Verilog, VHDL, FPGA, and ASIC bindings may all
+implement one contract without entering generic imports.
+
+Top-level pads and bidirectional pins terminate at this seam. The verified core
+sees separate input, output, and output-enable signals; the physical binding
+may join them into an `inout`. PLL lock, generated-clock quality, analog pad
+behavior, SRAM electrical behavior, and vendor primitive semantics remain
+named assumptions. Internal tri-state nets are not introduced.
+
+The hierarchy milestone is complete only when Loom has:
+
+- typed component definition and instantiation;
+- deterministic instance paths and collision-free derived names;
+- structural checks for ownership, directions, domains, and drivers;
+- compositional component semantics;
+- a proved flattening/refinement theorem;
+- separate compilation without changing observable behavior; and
+- one internal component and one assumption-bound external memory leaf used
+  interchangeably behind the same contract.
+
+### Same-clock streams and protocol libraries
+
+A same-clock stream is a nominal payload carried by `valid`, `ready`, and
+`payload`. A transfer occurs exactly on a domain tick for which both `valid`
+and `ready` are true. While `valid` is true and no transfer occurs, the producer
+must retain the payload and keep `valid` asserted. These obligations are part
+of the stream contract; neither truthiness nor best-effort loss is implicit.
+Empty payload observation is irrelevant unless `valid` is true.
+
+Stream endpoints and combinators should be ordinary typed library values over
+packed ports and components. The initial verified set should include direct
+connection, register slice, skid buffer, FIFO, fork, join, mux, demux, width
+adapter, mapper, and explicit lossy adapter. Each operator states its buffering,
+latency, ordering, backpressure, and loss contract and carries a refinement to
+an abstract transaction trace. Combinational ready/valid dependency cycles are
+rejected structurally or broken by an explicitly buffered operator.
+
+An asynchronous stream connection is never an implicit rewiring. It selects a
+proved CDC adapter such as a synchronizer, pulse/toggle bridge, or asynchronous
+queue and exposes that adapter's capacity, reset, recovery, and latency
+contract. The existing `Chan` semantics and multiclock realizations should
+provide this foundation rather than being duplicated by a second CDC system.
+
+Bus protocols are typed compositions of streams and packed payloads. AXI,
+APB, TileLink, Wishbone, or a machine-specific bus belongs in a library with:
+
+- a configuration type fixing optional channels, ID/address/data widths, and
+  supported protocol features;
+- nominal request and response payload types;
+- protocol monitors expressed as reusable safety properties;
+- adapters whose ordering, response, buffering, and narrowing behavior is
+  proved; and
+- an explicit subset boundary when Loom does not implement an entire external
+  standard.
+
+No bus adapter may silently discard transactions, invent ordering, or cross a
+clock domain. Unsupported bursts, atomics, reordering, or response modes fail
+at construction. A minimal same-clock stream library should precede branded
+bus libraries so protocol names do not conceal an unproved handshake core.
+
+### Memory-port semantics
+
+Memory behavior belongs in the core wherever it affects a cycle-visible
+result. A neutral memory declaration should separate stored contents from a
+typed list of ports. Every port records:
+
+- owning clock domain;
+- address, element, and physical-lane widths;
+- read, write, or combined read/write capability;
+- read latency in ticks of its owning domain;
+- enable behavior and byte/bit write-mask granularity;
+- read-during-write behavior for same-address collisions;
+- relationships to other ports; and
+- initialization/reset contract, if any.
+
+Read-during-write behavior must be an explicit closed choice such as old data,
+new data, unchanged output, or unspecified-by-contract. “Unspecified” is a
+named nondeterministic premise and cannot be simulated as a convenient fixed
+value. The semantics must also define simultaneous writes: conflicting writes
+are either rejected, assigned an explicit priority, or left nondeterministic
+by a named contract. Source order is not an accidental memory-port priority.
+
+The first complete core profile should cover asynchronous read, synchronous
+read, synchronous write, simple dual-port, and true dual-port memories. Mixed-
+width ports require a single declared bit/lane mapping, alignment rule, and
+endianness; invalid or overlapping accesses fail or follow an explicit
+contract. Byte and bit enables update only the selected lanes. Resetless or
+uninitialized contents begin as symbolic state, never silently as zero.
+
+A neutral logical memory may refine to registers, an FPGA RAM, or an ASIC SRAM
+macro. Register-bank lowering is a proved implementation. A target memory leaf
+uses the external-component seam and must match the exact port, latency, mask,
+collision, initialization, and domain contract. Area, timing, inference style,
+and macro selection remain external. This division permits one logical SoC to
+target FPGA and ASIC without pretending their memories have behavior that the
+contract did not state.
+
+### Lean-native plugins and services
+
+Large generated systems need decentralized construction, but plugins are an
+elaboration facility, not hardware semantics. A plugin has a typed manifest of
+services it provides and requires, configuration values, component/port
+resources it claims, and the components or connections it contributes. A
+service key includes its Lean type; a width-compatible but semantically
+different service cannot satisfy it.
+
+Construction proceeds in explicit phases:
+
+1. **declare** publishes requirements, provisions, and resource claims without
+   reading unresolved services;
+2. **negotiate** resolves unique and multi-provider services, configuration
+   constraints, and optional capabilities;
+3. **build** produces typed components, instances, connections, properties,
+   and refinement obligations; and
+4. **seal** rejects unresolved handles, dependency cycles, duplicate unique
+   providers, conflicting resource claims, unstable names, or unconsumed
+   required services and records an auditable manifest.
+
+Service handles are single-assignment and may be consumed only after their
+declared phase. Resolution is deterministic and independent of plugin list
+order except where an explicit ordered policy says otherwise. An apparent
+elaboration dependency cycle reports the service path that created it rather
+than deadlocking or observing a partially built design.
+
+Plugins may generate ordinary Lean data and use functions, recursion, types,
+and proofs freely. They receive no escape from component typing, domain checks,
+driver checks, channel-footprint checks, or contract closure. A plugin system
+therefore enables NaxRiscv-scale configuration without becoming a second,
+less-checked HDL. The first validation must assemble independently developed
+producer and consumer plugins, replace one provider, diagnose a real cycle,
+and show that two plugin orderings seal to the same canonical component graph.
+
+### Pipelines, register maps, arbitration, and protocols
+
+These facilities are verified libraries built on components, streams, packed
+types, and ordinary state:
+
+- A **pipeline** carries a typed set of payloads through named nodes and links.
+  Links explicitly provide combinational forwarding, registered staging,
+  buffering, stalling, flushing, or replay. The builder may derive transport
+  wires and registers, but it must publish exact latency and prove transaction
+  conservation and ordering under its stated stall/flush policy. Retiming is a
+  refinement-preserving transform, not a syntactic rearrangement.
+- A **register map** owns typed, non-overlapping address regions with alignment,
+  access width, endianness, read/write permissions, reset values, and explicit
+  side effects such as write-one-to-clear or read-to-clear. It derives bus
+  decode, documentation, software constants, and proof obligations from that
+  single declaration. Ambiguous decode and unsupported partial accesses fail
+  closed.
+- An **arbiter** names its policy: fixed priority, round robin, weighted, or a
+  supplied proved policy. Safety guarantees mutual exclusion and transaction
+  conservation. Starvation freedom is claimed only with explicit environment
+  premises and a liveness proof; it is never inferred from the word “fair.”
+- A **protocol component** packages endpoint types, legal traces, monitors,
+  adapters, and optional progress assumptions. Composition proves that adapter
+  output traces satisfy the receiving protocol rather than merely connecting
+  equal-width wires.
+
+The first CPU-scale gate should exercise payload propagation, backpressure,
+flush, bypass, arbitration, and replacement of one service-provided pipeline
+stage. LNP64mini need not be rewritten merely to demonstrate the framework;
+the gate should expose pressure that a smaller hand-wired pipeline does not.
+
+### Clock and reset modeling
+
+Every state element and sequential port belongs to exactly one clock domain.
+A domain specifies its logical active edge and reset-observation policy.
+Schedule semantics determine which domain edges occur, including coincident
+unrelated edges; they do not assume a frequency or phase relation that was not
+declared.
+
+State initialization and reset are distinct:
+
+- **resetless** state has an unconstrained initial value unless a separate
+  initialization contract is selected;
+- **synchronous reset** is observed only on the domain's active edge;
+- **asynchronous reset assertion** may dominate without a clock edge, while
+  its release behavior and any required synchronization are explicit; and
+- **boot/initialization values** are implementation contracts and are not
+  silently treated as reset behavior.
+
+Active polarity, reset value, and participation are declaration facts. A
+clock enable is a guarded state transition in the same domain. A generated or
+gated physical clock is instead an assumption-bound clock component with a
+declared relation to its source; arbitrary logic may not become a clock.
+
+Domain crossings remain typed and explicit. Single-bit levels, pulses,
+monotonic counters, Gray snapshots, reset release, and bulk streams require
+different verified adapters and contracts. A generic “synchronize” operation
+that guesses from width is forbidden. Physical MTBF, pulse-width, skew,
+placement, clock-quality, and reset-recovery requirements remain named target
+requirements. PLLs and clock muxes sit behind component contracts rather than
+adding analog behavior to the two-state core.
+
+### Simulation, waveform, and conventional formal bridges
+
+Loom's proved evaluator remains the reference executable semantics. A
+conventional simulation layer should derive a signal database from component
+paths and typed declarations, accept explicit clock/reset schedules and
+environment drivers, and emit standard waveforms such as VCD or FST. Protocol
+drivers and monitors are libraries over the same stream/bus contracts. A trace
+records the exact design/artifact identity, schedule, inputs, and observation
+schema so it can be replayed against the proved evaluator or an external HDL
+simulator.
+
+External simulators are differential or implementation-evidence producers,
+not semantic authorities. Cosimulation must compare at declared observation
+boundaries and report unsupported four-state values explicitly; it must not
+coerce `X` or `Z` to zero and call the run equivalent.
+
+A conventional property fragment may provide `assert`, `assume`, `cover`,
+bounded temporal delay, `past`, `rose`, `fell`, and `stable` over typed Loom
+expressions. Its Loom trace semantics is primary. SVA generation is accepted
+only for the fragment with a documented semantic correspondence; unsupported
+sampling regions, four-state operators, or event controls fail closed.
+SymbiYosys and other engines remain untrusted search/proof producers.
+Counterexamples should replay in Loom, and a successful external proof is
+reported as external unless Loom checks an accepted proof certificate or a
+separate theorem closes the result.
+
+These bridges are complete when the same named property can run in the proved
+simulator, emit to the supported SVA subset, replay an external counterexample,
+and distinguish a checked Loom proof from an external `PASS` in the report.
+
+### Arithmetic conveniences
+
+Additional arithmetic should preserve Loom's width-explicit, two-state
+semantics. The constructor audit should cover arithmetic right shift, reduction
+AND/OR/XOR, rotates, dynamic bit selection, fixed-width dynamic part selection,
+widening add/sub with carry or borrow, and explicit saturating arithmetic.
+Every operation states operand/result widths, signed interpretation, shift
+amount treatment, out-of-range behavior, and total behavior at exceptional
+inputs. Unsized literals never justify silent truncation.
+
+Operations enter the core only when they provide a useful primitive semantic
+or enable materially better compilation/proof structure. Derived rotates,
+reductions, saturation, and fixed-point arithmetic should otherwise be verified
+library definitions. Nominal signed, unsigned, and fixed-point facades may
+improve typing without changing the durable `BitVec` representation. Dynamic
+selection, if added, requires direct evaluator, compiler, footprint,
+bit-blasting, and bounds theorems rather than a pretty-only lowering.
+
+Four-state arithmetic, implicit signedness, context-dependent result widths,
+silent narrowing, and tool-dependent division or shift behavior remain
+excluded.
+
+### Explicit exclusions
+
+The expanded SoC surface does not admit arbitrary event controls, inferred
+latches, unrestricted multiple drivers, internal tri-state logic, four-state
+`X` as ordinary computation, implicit CDC crossings, target-specific
+primitives in generic designs, or synthesis and physical implementation.
+These exclusions are enabling constraints: they keep transition semantics
+total, composition checkable, and FPGA/ASIC neutrality credible.
+
 ## Reusable machine infrastructure
 
 The reusable control plane lives in Loom. Acc8 is the independent demonstrated
@@ -235,6 +547,8 @@ semantics as part of its roadmap.
 Loom should own:
 
 - the typed design language and its transition semantics;
+- typed component interfaces, instance graphs, and compositional semantics;
+- technology-neutral clock/reset and memory-port behavior;
 - proved compilation into a small logical hardware IR;
 - refinement-preserving logical transformations;
 - derived and proved executable models;
@@ -529,6 +843,79 @@ timing, packing, and routing are measurements supplied by target profiles and
 external tools. They are not portable theorems and are not requirements for
 the logical-equivalence core.
 
+### W7 — typed hierarchy and IP contracts
+
+Define typed component interfaces, deterministic instance graphs,
+compositional semantics, and proved flattening before adding convenient
+instance syntax. Then add the external-component seam with exact
+clock/reset/latency/dependency contracts and artifact-bound implementations.
+The acceptance gate is substitution of an internal memory implementation and
+an external memory leaf behind one unchanged client and contract, with every
+remaining assumption visible in the result.
+
+### W8 — streams and bus protocols
+
+Build a verified same-clock valid/ready stream and its transaction-trace
+refinement, followed by buffered combinators and structural ready/valid-loop
+checking. CDC stream adapters must reuse the existing proved channel
+realizations. Bus libraries follow only after the stream basis is stable, and
+must state the exact supported subset rather than borrowing a standard's name
+for an incomplete, unchecked collection of wires.
+
+### W9 — complete memory ports
+
+Extend neutral memory semantics with synchronous reads, masks, explicit
+read-during-write and write-collision policies, dual-port operation, and
+declared mixed-width lane mapping. Each addition must land together in the
+reference evaluator, optimized evaluator, compiler, footprints, proofs,
+emission, and external-memory contract. Register-bank refinement is the first
+portable implementation; FPGA RAM and ASIC SRAM bindings remain evidence- or
+assumption-bound leaves.
+
+### W10 — plugin and service construction
+
+Implement the phased, typed, deterministic service resolver over component
+construction. It must fail closed on missing or duplicate services, cycles,
+unresolved handles, and resource conflicts, and produce a canonical auditable
+manifest. No plugin API graduates until order-independence and provider
+replacement are demonstrated on separately authored plugins.
+
+### W11 — reusable SoC libraries
+
+Build pipeline, arbitration, register-map, protocol-monitor, and adapter
+libraries from packed values, streams, components, and ordinary state. Every
+library reports exact buffering/latency and separates safety from conditional
+progress. Generated documentation and software views derive from the same
+register-map declaration as the hardware and its proofs.
+
+### W12 — clock and reset completeness
+
+Generalize domain-owned state to distinguish resetless initialization,
+synchronous reset, asynchronous assertion, synchronized release, polarity,
+and clock enable. Preserve schedule semantics for coincident unrelated edges.
+Add distinct verified CDC libraries for levels, pulses, snapshots, reset
+release, and streams; do not introduce a width-directed generic synchronizer.
+Generated/gated clocks, PLLs, and clock muxes remain contracted boundaries with
+named physical requirements.
+
+### W13 — ecosystem bridges
+
+Derive hierarchical signal metadata, replayable traces, and VCD/FST waveforms
+from the design. Provide differential adapters to external simulators and a
+small Loom-defined temporal-property fragment with a fail-closed SVA export.
+External simulation and SymbiYosys results remain classified evidence unless
+connected to a checked certificate; counterexamples should replay against the
+reference semantics.
+
+### W14 — arithmetic completion
+
+Audit arithmetic right shift, reductions, rotations, dynamic selection,
+carry/borrow, saturation, and fixed-point helpers against actual SoC uses.
+Prefer proved library definitions; add a core constructor only when its direct
+semantics, compilation, or proof structure is materially valuable. Every
+accepted operation ships with explicit width/signedness rules and all semantic,
+compiler, evaluator, CNF, and diagnostic coverage required by its role.
+
 ### Derived debug instrumentation
 
 Debug descriptions should derive typed dependencies and observation layouts
@@ -551,7 +938,10 @@ Before adding netlist or implementation work, ask:
 3. Could it be reused unchanged for an ASIC logical netlist?
 4. Could another synthesis tool supply the input without changing the proof?
 
-If all answers are yes, the work belongs in Loom's generic core.
+If all answers are yes, the work may belong in generic Loom. It belongs in the
+semantic core only when it changes observable transition behavior or is needed
+to state a durable composition boundary; otherwise prefer a verified library
+or tool bridge. Reuse alone is not a reason to enlarge the core language.
 
 If the work mentions a vendor cell, tool-specific synthesis serialization,
 standard-cell library, board primitive, bitstream, timing database, or physical
@@ -576,6 +966,19 @@ Loom reaches the intended shape when:
   interchange, not new Loom proofs;
 - switching FPGA vendors or moving to ASIC does not change Loom's logical
   semantics;
+- a component client can substitute an internal implementation or contracted
+  external leaf without changing its typed interface or abstract proof;
+- stream and bus composition preserves transactions under explicitly stated
+  buffering, backpressure, ordering, and progress premises;
+- every memory port has explicit latency, mask, collision, initialization, and
+  domain behavior, and target memories match that exact contract;
+- plugin order does not change the sealed component graph unless an explicitly
+  ordered policy is present, and every provided/required service is recorded;
+- resetless state, reset behavior, clock-domain crossings, and generated-clock
+  assumptions are distinguishable in both semantics and reports;
+- external waveforms, counterexamples, SVA results, and implementation reports
+  bind to exact artifacts and remain visibly separate from checked Loom
+  theorems;
 - every conversion assumption, exclusion, cut point, and physical assumption
   appears in the release report;
 - target measurements remain useful without being confused with theorems.
