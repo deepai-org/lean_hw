@@ -33,6 +33,7 @@ import Loom.Hw.ExternalComponent
 import Loom.Hw.Stream
 import Loom.Hw.Plugin
 import Loom.Hw.MemoryPort
+import Loom.Hw.RegisterMap
 import Loom.Hw.Retime
 import Loom.Hw.Fanout
 import Loom.Hw.FastEval
