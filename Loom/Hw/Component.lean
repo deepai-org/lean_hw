@@ -686,23 +686,41 @@ constructor is `Connection.typed`. -/
 structure DomainComponentGraph (δ : Type v) [ClockDomain δ] where
   private mk ::
   raw : ComponentGraph
+  instances : List (DomainComponentInstance δ)
 
 namespace DomainComponentGraph
 
 def empty {δ : Type v} [ClockDomain δ] (name : String) :
-    DomainComponentGraph δ := ⟨ComponentGraph.empty name⟩
+    DomainComponentGraph δ := ⟨ComponentGraph.empty name, []⟩
+
+def findInstance? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
+    (path : String) : Option (DomainComponentInstance δ) :=
+  graph.instances.find? (·.path == path)
 
 def addInstance {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
-    (inst : DomainComponentInstance δ) : Except String (DomainComponentGraph δ) :=
-  DomainComponentGraph.mk <$> graph.raw.addInstance inst.erase
+    (inst : DomainComponentInstance δ) : Except String (DomainComponentGraph δ) := do
+  let raw ← graph.raw.addInstance inst.erase
+  return ⟨raw, graph.instances ++ [inst]⟩
 
 def connect {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
-    (connection : DomainConnection δ) : Except String (DomainComponentGraph δ) :=
-  DomainComponentGraph.mk <$> graph.raw.connect connection.raw
+    (connection : DomainConnection δ) : Except String (DomainComponentGraph δ) := do
+  return ⟨← graph.raw.connect connection.raw, graph.instances⟩
 
 def expose {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
-    (instancePath portName : String) : Except String (DomainComponentGraph δ) :=
-  DomainComponentGraph.mk <$> graph.raw.expose instancePath portName
+    (instancePath portName : String) : Except String (DomainComponentGraph δ) := do
+  return ⟨← graph.raw.expose instancePath portName, graph.instances⟩
+
+def connectionCount {δ : Type v} [ClockDomain δ]
+    (graph : DomainComponentGraph δ) : Nat := graph.raw.connections.length
+
+def exportCount {δ : Type v} [ClockDomain δ]
+    (graph : DomainComponentGraph δ) : Nat := graph.raw.exports.length
+
+def validB {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ) : Bool :=
+  graph.raw.validB
+
+def seal? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ) :
+    Except String (ComponentGraph.Sealed graph.raw) := graph.raw.seal?
 
 /-- Timing-preserving canonical lowering. -/
 def flatten? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ) :

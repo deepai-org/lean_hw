@@ -48,14 +48,14 @@ example : occupancy (advance [some 1, some 2, none] (some 3) true).1 +
         accepted (some 3) (advance [some 1, some 2, none] (some 3) true).2 :=
   advance_conservation _ _ _
 
-private def graph : Except String ComponentGraph :=
+private def graph : Except String (DomainComponentGraph CoreClock) :=
   componentGraph? (δ := CoreClock) (α := BitVec 16) "pipe" "Word" 3
 
 #guard match graph with
   | .error _ => false
   | .ok graph =>
-      graph.instances.length == 3 && graph.connections.length == 6 &&
-      graph.exports.length == 3 && graph.validB
+      graph.instances.length == 3 && graph.connectionCount == 6 &&
+      graph.exportCount == 3 && graph.validB
 
 #guard match graph with
   | .error _ => false

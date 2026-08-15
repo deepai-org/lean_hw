@@ -83,13 +83,13 @@ structure TargetEndpoint (δ : Type v) (Req Rsp : Type u)
 
 def InitiatorPorts.resolve {δ : Type v} {Req Rsp : Type u}
     [ClockDomain δ] [HwPacked Req] [HwPacked Rsp]
-    (ports : InitiatorPorts δ Req Rsp) (inst : ComponentInstance) :
+    (ports : InitiatorPorts δ Req Rsp) (inst : DomainComponentInstance δ) :
     Except String (InitiatorEndpoint δ Req Rsp) := do
   return ⟨← ports.request.resolve inst, ← ports.response.resolve inst⟩
 
 def TargetPorts.resolve {δ : Type v} {Req Rsp : Type u}
     [ClockDomain δ] [HwPacked Req] [HwPacked Rsp]
-    (ports : TargetPorts δ Req Rsp) (inst : ComponentInstance) :
+    (ports : TargetPorts δ Req Rsp) (inst : DomainComponentInstance δ) :
     Except String (TargetEndpoint δ Req Rsp) := do
   return ⟨← ports.request.resolve inst, ← ports.response.resolve inst⟩
 
@@ -97,8 +97,8 @@ def TargetPorts.resolve {δ : Type v} {Req Rsp : Type u}
 the same nominal `Req`, `Rsp`, and domain `δ` must inhabit both endpoints. -/
 def connect {δ : Type v} {Req Rsp : Type u}
     [ClockDomain δ] [HwPacked Req] [HwPacked Rsp]
-    (graph : ComponentGraph) (initiator : InitiatorEndpoint δ Req Rsp)
-    (target : TargetEndpoint δ Req Rsp) : Except String ComponentGraph := do
+    (graph : DomainComponentGraph δ) (initiator : InitiatorEndpoint δ Req Rsp)
+    (target : TargetEndpoint δ Req Rsp) : Except String (DomainComponentGraph δ) := do
   let graph ← Stream.connect graph initiator.request target.request
   Stream.connect graph target.response initiator.response
 
