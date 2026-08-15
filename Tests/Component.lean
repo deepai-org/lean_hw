@@ -116,12 +116,14 @@ private def peripheralOwnedDesign : DomainDesign PeripheralClock :=
 #check_failure
   (DomainIslandHandle.named (δ := CoreClock) "bad" peripheralOwnedDesign)
 
-/- A connection certified for another domain cannot enter this graph even if
-all erased names and widths would happen to match. -/
-#check_failure
-  (DomainComponentGraph.connect (δ := CoreClock) :
-    DomainComponentGraph CoreClock → DomainConnection PeripheralClock →
-      Except String (DomainComponentGraph CoreClock))
+/- Suppress the expected elaboration diagnostic itself: pretty-printing the
+dependent typeclass mismatch is disproportionately expensive in Lean.  The
+negative test still asks the elaborator to form the actual graph operation. -/
+example (_graph : DomainComponentGraph CoreClock)
+    (_connection : DomainConnection PeripheralClock) : True := by
+  fail_if_success
+    let _ := DomainComponentGraph.connect _graph _connection
+  trivial
 
 /- An erased/dynamic graph cannot bypass the same-domain check: the port's
 domain name remains part of exact interface membership.  Ordinary typed code
