@@ -230,6 +230,78 @@ def read {policy : ReadDuringWrite} {δ : Type v}
 
 end ReadWritePort
 
+/-- Same-domain simple dual port: one synchronous reader and one masked writer
+over the same memory. The shared handle is stored once, so membership cannot
+drift between separately assembled ports. -/
+structure SimpleDualPort (δ : Type v) (addressWidth : Nat) (α : Type u)
+    [ClockDomain δ] [HwPacked α] where
+  memory : Mem addressWidth (HwPacked.width α)
+  readOutput : Reg (HwPacked.width α)
+  writeIndex : Nat
+  layout : LaneLayout (HwPacked.width α)
+
+namespace SimpleDualPort
+
+def readPort {δ : Type v} {addressWidth : Nat} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (port : SimpleDualPort δ addressWidth α) : SyncReadPort δ addressWidth α :=
+  ⟨port.memory, port.readOutput⟩
+
+def writePort {δ : Type v} {addressWidth : Nat} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (port : SimpleDualPort δ addressWidth α) : WritePort δ addressWidth α :=
+  ⟨port.memory, port.writeIndex, port.layout⟩
+
+end SimpleDualPort
+
+/-- Same-domain true dual port with independently selected deterministic read
+collision policies. Port indices are distinct by construction; action order A
+then B makes B the explicit winner of a simultaneous same-address write. -/
+structure TrueDualPort (policyA policyB : ReadDuringWrite)
+    (δ : Type v) (addressWidth : Nat) (α : Type u)
+    [ClockDomain δ] [HwPacked α] where
+  memory : Mem addressWidth (HwPacked.width α)
+  outputA : Reg (HwPacked.width α)
+  outputB : Reg (HwPacked.width α)
+  indexA : Nat
+  indexB : Nat
+  indicesDistinct : indexA ≠ indexB
+  layout : LaneLayout (HwPacked.width α)
+
+namespace TrueDualPort
+
+def portA {policyA policyB : ReadDuringWrite}
+    {δ : Type v} {addressWidth : Nat} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (ports : TrueDualPort policyA policyB δ addressWidth α) :
+    ReadWritePort policyA δ addressWidth α :=
+  ⟨ports.memory, ports.outputA, ports.indexA, ports.layout⟩
+
+def portB {policyA policyB : ReadDuringWrite}
+    {δ : Type v} {addressWidth : Nat} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (ports : TrueDualPort policyA policyB δ addressWidth α) :
+    ReadWritePort policyB δ addressWidth α :=
+  ⟨ports.memory, ports.outputB, ports.indexB, ports.layout⟩
+
+def cycle {policyA policyB : ReadDuringWrite}
+    {δ : Type v} {addressWidth : Nat} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (ports : TrueDualPort policyA policyB δ addressWidth α)
+    (readEnableA : Expr 1) (readAddressA : Expr addressWidth)
+    (writeEnableA : Expr 1) (writeAddressA : Expr addressWidth)
+    (writeDataA : PackedExpr α) (writeLanesA : Expr ports.layout.lanes)
+    (readEnableB : Expr 1) (readAddressB : Expr addressWidth)
+    (writeEnableB : Expr 1) (writeAddressB : Expr addressWidth)
+    (writeDataB : PackedExpr α) (writeLanesB : Expr ports.layout.lanes) : Act :=
+  .seq
+    (ports.portA.cycle readEnableA readAddressA writeEnableA writeAddressA
+      writeDataA writeLanesA)
+    (ports.portB.cycle readEnableB readAddressB writeEnableB writeAddressB
+      writeDataB writeLanesB)
+
+end TrueDualPort
+
 /-- A bank-level declaration records the semantic policies that all current
 ports share. The constructors are deliberately singletons until Loom gains
 additional proved core behaviors. -/
