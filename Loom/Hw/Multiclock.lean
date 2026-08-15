@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.CertifiedSystemArtifact
+import Loom.Hw.ChannelProtocol
 import Loom.Hw.Packed
 import Loom.Hw.SystemRecovery
 import Loom.Hw.CertifiedSystemRecovery
@@ -121,6 +122,18 @@ def ChannelRoute.toSystemConnection {width : Nat} (route : ChannelRoute width) :
 
 def ChannelRoute.key {width : Nat} (route : ChannelRoute width) : System.ConnectionKey :=
   route.toSystemConnection.key
+
+/-- Bind a typed application route to one checked System exactly once.  The
+result is the stable proof handle used by capacity, conservation, endpoint
+safety, and later progress theorems; applications do not pass lookup
+equalities again. -/
+def ChannelRoute.proofHandle {width : Nat} (route : ChannelRoute width)
+    (system : System)
+    (found : system.connections.find? (fun candidate =>
+      candidate.chan.name == route.channel.name) =
+        some route.toSystemConnection) :
+    System.ConnectionHandle system route.toSystemConnection :=
+  System.ConnectionHandle.ofFound system route.toSystemConnection found
 
 /-! ## Typed hierarchical endpoints -/
 
@@ -1224,12 +1237,49 @@ def run {system : System} (application : Application system)
     (inputs : ExternalInputs := fun _ _ _ _ => 0) : application.State :=
   application.certified.runPrefix events inputs
 
+/-- Public correspondence theorem for the executor application authors
+actually call.  No `CertifiedSystem.State` internals or simulator agreement
+relation appears in the statement. -/
+theorem run_semantic_eq {system : System} (application : Application system)
+    (events : SchedulePrefix)
+    (inputs : ExternalInputs := fun _ _ _ _ => 0) :
+    (application.run events inputs).semantic =
+      system.runPrefix events inputs :=
+  application.certified.runPrefix_semantic_eq events inputs
+
+/-- Replay and retain only the flat island states, channel graph, and event
+time.  This is the preferred result for long campaigns that do not need the
+closure-based semantic island states after the correspondence theorem has
+been established. -/
+def runCompact {system : System} (application : Application system)
+    (events : SchedulePrefix)
+    (inputs : ExternalInputs := fun _ _ _ _ => 0) :
+    application.certified.Snapshot :=
+  application.certified.runCompact events inputs
+
+theorem runCompact_agrees {system : System} (application : Application system)
+    (events : SchedulePrefix)
+    (inputs : ExternalInputs := fun _ _ _ _ => 0) :
+    (application.runCompact events inputs).Agrees
+      (system.runPrefix events inputs) :=
+  application.certified.runCompact_agrees events inputs
+
 /-- Fail-closed replay against the declared clock relation. -/
 def runChecked {system : System} (application : Application system)
     (events : SchedulePrefix)
     (inputs : ExternalInputs := fun _ _ _ _ => 0) :
     Except String application.State :=
   application.certified.runPrefixChecked events inputs
+
+/-- A successful fail-closed application run is the same certified execution
+as `run`; checking the clock relation cannot substitute another runner. -/
+theorem runChecked_eq_run {system : System} (application : Application system)
+    (events : SchedulePrefix) (inputs : ExternalInputs)
+    (accepted : system.clockRel.accepts events = true) :
+    application.runChecked events inputs = .ok (application.run events inputs) := by
+  simp [Application.runChecked, CertifiedSystem.runPrefixChecked, accepted,
+    Application.run]
+  rfl
 
 /-- Replay explicit graceful-recovery events through the same certified DAG
 island states used by ordinary application execution. -/

@@ -158,6 +158,64 @@ theorem runPrefix_semantic_eq {system : System} (cert : CertifiedSystem system)
   simpa [runPrefix, System.runPrefix, System.runPrefixFrom] using
     cert.runEvents_semantic_eq inputs cert.reset events.toList
 
+/-! ## Compact certified results
+
+`State` retains the semantic state while executing so channel planning uses
+the literal public `System` semantics and the correspondence theorem remains
+equality-tight.  Long-lived test results usually need only the flat island
+states, abstract channels, and time.  `Snapshot` drops the duplicate semantic
+island closures while retaining a kernel-checked relation to them. -/
+
+/-- Compact post-run state: one flat DAG state per island plus the channel
+graph and schedule time. -/
+structure Snapshot {system : System} (cert : CertifiedSystem system) where
+  time : Nat
+  channel : String → System.PackedQueue
+  fastIsland : ∀ (name : String) (island : SystemIsland),
+    system.findIsland? name = some island → FastSt
+
+/-- A compact snapshot agrees with a semantic System state on time, every
+abstract channel, and every declared coordinate of every checked island. -/
+structure Snapshot.Agrees {system : System} {cert : CertifiedSystem system}
+    (snapshot : cert.Snapshot) (semantic : system.State) : Prop where
+  time : snapshot.time = semantic.time
+  channel : snapshot.channel = semantic.channel
+  islands : ∀ (name : String) (island : SystemIsland)
+    (found : system.findIsland? name = some island),
+    Agree island.design (snapshot.fastIsland name island found)
+      (semantic.island name)
+
+def State.compact {system : System} {cert : CertifiedSystem system}
+    (state : cert.State) : cert.Snapshot where
+  time := state.semantic.time
+  channel := state.semantic.channel
+  fastIsland := state.fastIsland
+
+theorem State.compact_agrees {system : System} {cert : CertifiedSystem system}
+    (state : cert.State) : state.compact.Agrees state.semantic := by
+  constructor
+  · rfl
+  · rfl
+  · intro name island found
+    exact state.islandsAgree name island found
+
+/-- Certified replay returning the compact result surface. -/
+def runCompact {system : System} (cert : CertifiedSystem system)
+    (events : SchedulePrefix)
+    (inputs : ExternalInputs := fun _ _ _ _ => 0) : cert.Snapshot :=
+  (cert.runPrefix events inputs).compact
+
+/-- Kernel-checked correspondence of the compact result to the public System
+runner.  The conclusion is coordinate-complete rather than an unchecked
+readback comparison. -/
+theorem runCompact_agrees {system : System} (cert : CertifiedSystem system)
+    (events : SchedulePrefix)
+    (inputs : ExternalInputs := fun _ _ _ _ => 0) :
+    (cert.runCompact events inputs).Agrees (system.runPrefix events inputs) := by
+  have agreement := (cert.runPrefix events inputs).compact_agrees
+  rw [cert.runPrefix_semantic_eq events inputs] at agreement
+  exact agreement
+
 /-- Fail closed before execution when the prefix violates the System's
 declared clock relation. -/
 def runPrefixChecked {system : System} (cert : CertifiedSystem system)
@@ -185,6 +243,19 @@ theorem RegView.read_eq {system : System} {cert : CertifiedSystem system} {width
     view.read state =
       ((state.semantic.island view.islandName).regs view.reg.name width).toNat :=
   view.slot.readNat_eq (state.islandsAgree view.islandName view.island view.found)
+
+/-- Read the same typed register from a compact post-run snapshot. -/
+def RegView.readSnapshot {system : System} {cert : CertifiedSystem system}
+    {width : Nat} (view : RegView cert width) (snapshot : cert.Snapshot) : Nat :=
+  view.slot.readNat (snapshot.fastIsland view.islandName view.island view.found)
+
+/-- Compact readback is equal to the related semantic coordinate. -/
+theorem RegView.readSnapshot_eq {system : System} {cert : CertifiedSystem system}
+    {width : Nat} (view : RegView cert width) (snapshot : cert.Snapshot)
+    (semantic : system.State) (agrees : snapshot.Agrees semantic) :
+    view.readSnapshot snapshot =
+      ((semantic.island view.islandName).regs view.reg.name width).toNat :=
+  view.slot.readNat_eq (agrees.islands view.islandName view.island view.found)
 
 /-! ## Complete comparison surface -/
 
