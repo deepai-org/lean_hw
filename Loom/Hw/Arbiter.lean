@@ -216,6 +216,80 @@ def fixed {width : Nat} (requests : List (Expr 1))
   let grants := fixedPriority requests
   return ⟨grants, anyGrant grants, selectPayload grants payloads fallback⟩
 
+/-! ## Stateful two-requester round robin -/
+
+/-- A deliberately exact two-requester round-robin arbiter. `turn = 0`
+prefers requester zero and `turn = 1` prefers requester one. The turn changes
+only when the selected transaction is accepted, so backpressure cannot rotate
+a grant away from a stalled requester. -/
+structure TwoWayRoundRobin where
+  turn : Reg 1
+
+namespace TwoWayRoundRobin
+
+structure Result where
+  grant0 : Expr 1
+  grant1 : Expr 1
+
+def grants (arbiter : TwoWayRoundRobin) (request0 request1 : Expr 1) : Result :=
+  { grant0 := .and request0 (.or (.not arbiter.turn.rd) (.not request1))
+    grant1 := .and request1 (.or arbiter.turn.rd (.not request0)) }
+
+def valid (result : Result) : Expr 1 := .or result.grant0 result.grant1
+
+def select {width : Nat} (result : Result) (payload0 payload1 : Expr width)
+    (fallback : Expr width := .lit 0) : Expr width :=
+  .mux result.grant0 payload0 (.mux result.grant1 payload1 fallback)
+
+/-- Advance after a downstream acceptance. A lone requester remains eligible
+regardless of the stored turn; a contested transfer hands priority to the
+other requester. -/
+def advance (arbiter : TwoWayRoundRobin) (result : Result)
+    (accepted : Expr 1) : Act :=
+  let next := .mux result.grant0 (.lit 1)
+    (.mux result.grant1 (.lit 0) arbiter.turn.rd)
+  .ite (.and accepted (valid result)) (arbiter.turn.set next) .skip
+
+theorem grants_atMostOne (arbiter : TwoWayRoundRobin) (state : St)
+    (request0 request1 : Expr 1) :
+    (evalGrants state
+      [(arbiter.grants request0 request1).grant0,
+       (arbiter.grants request0 request1).grant1]).count true ≤ 1 := by
+  rcases Loom.Hw.bv1_cases (arbiter.turn.rd.eval state) with turn | turn <;>
+    simp [Reg.rd, Expr.eval] at turn <;>
+    rcases Loom.Hw.bv1_cases (request0.eval state) with first | first <;>
+    rcases Loom.Hw.bv1_cases (request1.eval state) with second | second <;>
+    simp [grants, evalGrants, asserted, Expr.eval, Reg.rd, turn, first, second]
+
+theorem grants_respect_requests (arbiter : TwoWayRoundRobin) (state : St)
+    (request0 request1 : Expr 1) :
+    grantsRespectRequests
+      (evalGrants state
+        [(arbiter.grants request0 request1).grant0,
+         (arbiter.grants request0 request1).grant1])
+      [asserted (request0.eval state), asserted (request1.eval state)] = true := by
+  rcases Loom.Hw.bv1_cases (arbiter.turn.rd.eval state) with turn | turn <;>
+    simp [Reg.rd, Expr.eval] at turn <;>
+    rcases Loom.Hw.bv1_cases (request0.eval state) with first | first <;>
+    rcases Loom.Hw.bv1_cases (request1.eval state) with second | second <;>
+    simp [grants, evalGrants, grantsRespectRequests, asserted, Expr.eval,
+      Reg.rd, turn, first, second]
+
+theorem workConserving (arbiter : TwoWayRoundRobin) (state : St)
+    (request0 request1 : Expr 1)
+    (active : asserted (request0.eval state) || asserted (request1.eval state) = true) :
+    (evalGrants state
+      [(arbiter.grants request0 request1).grant0,
+       (arbiter.grants request0 request1).grant1]).any id = true := by
+  rcases Loom.Hw.bv1_cases (arbiter.turn.rd.eval state) with turn | turn <;>
+    simp [Reg.rd, Expr.eval] at turn <;>
+    rcases Loom.Hw.bv1_cases (request0.eval state) with first | first <;>
+    rcases Loom.Hw.bv1_cases (request1.eval state) with second | second <;>
+    simp [grants, evalGrants, asserted, Expr.eval, Reg.rd,
+      turn, first, second] at active ⊢
+
+end TwoWayRoundRobin
+
 end Arbiter
 
 end Loom.Hw

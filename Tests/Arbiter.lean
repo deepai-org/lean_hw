@@ -44,4 +44,31 @@ private def selected : Except String (FixedResult 8) :=
   | .error _ => true
   | .ok _ => false
 
+private def turn : Reg 1 := ⟨"turn"⟩
+private def roundRobin : TwoWayRoundRobin := ⟨turn⟩
+
+private def turnState (value : BitVec 1) : St where
+  regs := fun name width =>
+    if name == "turn" && width == 1 then value.setWidth width else 0#width
+  mems := fun _ _ width => 0#width
+
+/- Contention follows the stored turn; a lone requester is never blocked. -/
+#guard let result := roundRobin.grants (.lit 1) (.lit 1)
+  evalGrants (turnState 0) [result.grant0, result.grant1] == [true, false]
+#guard let result := roundRobin.grants (.lit 1) (.lit 1)
+  evalGrants (turnState 1) [result.grant0, result.grant1] == [false, true]
+#guard let result := roundRobin.grants (.lit 1) (.lit 0)
+  evalGrants (turnState 1) [result.grant0, result.grant1] == [true, false]
+
+example (state : St) (request0 request1 : Expr 1) :
+    (evalGrants state
+      [(roundRobin.grants request0 request1).grant0,
+       (roundRobin.grants request0 request1).grant1]).count true ≤ 1 :=
+  roundRobin.grants_atMostOne state request0 request1
+
+/- Acceptance of requester zero hands the next contested grant to one. -/
+#guard let result := roundRobin.grants (.lit 1) (.lit 1)
+  ((roundRobin.advance result (.lit 1)).run (turnState 0) (turnState 0)).regs
+    "turn" 1 == 1#1
+
 end Tests.Arbiter
