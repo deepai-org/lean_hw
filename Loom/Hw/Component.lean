@@ -122,6 +122,31 @@ structure Component where
 
 namespace Component
 
+private def expressionReads : {w : Nat} → Expr w → List String
+  | _, .lit _ => []
+  | _, .reg _ name => [name]
+  | _, .memRead _ _ address => expressionReads address
+  | _, .and left right | _, .or left right | _, .xor left right
+  | _, .add left right | _, .sub left right | _, .mul left right
+  | _, .udiv left right | _, .urem left right
+  | _, .shl left right | _, .shr left right
+  | _, .eq left right | _, .ult left right | _, .slt left right =>
+      expressionReads left ++ expressionReads right
+  | _, .not value => expressionReads value
+  | _, .mux condition yes no =>
+      expressionReads condition ++ expressionReads yes ++ expressionReads no
+  | _, .slice value _ _ | _, .zext value _ | _, .sext value _ =>
+      expressionReads value
+
+/-- Direct input-to-combinational-output dependencies. State outputs have no
+same-cycle dependency edge. Expressions are already fully expanded Loom
+trees, so this relation is exact rather than inferred from naming. -/
+def combinationalDependencies (component : Component) : List (String × String) :=
+  let inputNames := component.design.inputs.map (·.name)
+  component.design.combOutputs.flatMap fun output =>
+    (expressionReads output.value).eraseDups.filterMap fun input =>
+      if inputNames.contains input then some (input, output.name) else none
+
 /-- The scalar shape exported by the underlying Design. -/
 def designPortShapes (component : Component) : List (String × Nat × PortDirection) :=
   component.design.inputs.map (fun input => (input.name, input.width, .input)) ++
@@ -350,6 +375,31 @@ def connectionValidB (graph : ComponentGraph) (connection : Connection) : Bool :
       .input connection.sinkPort connection.semanticType connection.domain
       connection.width
 
+private def combinationalEdges (graph : ComponentGraph) : List (String × String) :=
+  let internal := graph.instances.flatMap fun inst =>
+    inst.component.component.combinationalDependencies.map fun edge =>
+      (inst.signalPrefix ++ edge.1, inst.signalPrefix ++ edge.2)
+  let wiring := graph.connections.map fun connection =>
+    (connection.sourceFullName, connection.sinkFullName)
+  internal ++ wiring
+
+private def pathB (edges : List (String × String))
+    (fuel : Nat) (source target : String) : Bool :=
+  match fuel with
+  | 0 => false
+  | fuel + 1 =>
+      edges.any fun edge =>
+        edge.1 == source &&
+          (edge.2 == target || pathB edges fuel edge.2 target)
+
+/-- No same-cycle dependency can return to its starting signal.  This is a
+structural property of typed component wiring, independent of backend
+heuristics. -/
+def combinationalAcyclicB (graph : ComponentGraph) : Bool :=
+  let edges := graph.combinationalEdges
+  let nodes := (edges.flatMap fun edge => [edge.1, edge.2]).eraseDups
+  nodes.all fun node => !pathB edges nodes.length node node
+
 def connect (graph : ComponentGraph) (connection : Connection) :
     Except String ComponentGraph := do
   if !graph.connectionValidB connection then
@@ -358,7 +408,10 @@ def connect (graph : ComponentGraph) (connection : Connection) :
       existing.sinkInstance == connection.sinkInstance &&
       existing.sinkPort == connection.sinkPort) then
     throw s!"input '{connection.sinkInstance}.{connection.sinkPort}' already has a driver"
-  return { graph with connections := graph.connections ++ [connection] }
+  let connected := { graph with connections := graph.connections ++ [connection] }
+  if !connected.combinationalAcyclicB then
+    throw s!"connection '{connection.sourceInstance}.{connection.sourcePort}' -> '{connection.sinkInstance}.{connection.sinkPort}' creates a combinational dependency cycle"
+  return connected
 
 /-- Make one component output visible at the graph boundary. -/
 def expose (graph : ComponentGraph) (instancePath portName : String) :
@@ -390,7 +443,8 @@ def exportsValidB (graph : ComponentGraph) : Bool :=
 
 def validB (graph : ComponentGraph) : Bool :=
   !graph.name.isEmpty && graph.pathsUniqueB &&
-    graph.connectionsValidB && graph.exportsValidB
+    graph.connectionsValidB && graph.exportsValidB &&
+    graph.combinationalAcyclicB
 
 private def emptyDesign (name : String) : Design where
   name := name

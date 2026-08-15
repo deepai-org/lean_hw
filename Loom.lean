@@ -31,6 +31,7 @@ import Loom.Hw.Compose
 import Loom.Hw.Component
 import Loom.Hw.ExternalComponent
 import Loom.Hw.Stream
+import Loom.Hw.Plugin
 import Loom.Hw.Retime
 import Loom.Hw.Fanout
 import Loom.Hw.FastEval

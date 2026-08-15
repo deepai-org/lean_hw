@@ -36,6 +36,7 @@ import Tests.SimulationComp
 import Tests.Component
 import Tests.ExternalComponent
 import Tests.Stream
+import Tests.Plugin
 import Tests.TransformChain
 import Tests.Fanout
 import Tests.Runner

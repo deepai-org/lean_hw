@@ -16,7 +16,7 @@ universe u v
 
 namespace Stream
 
-variable {α : Type u}
+variable {α β : Type u}
 
 /-- Producer-facing stream port bundle.  `ready` runs in the reverse
 direction, so direction errors remain type errors at each scalar connection. -/
@@ -150,6 +150,73 @@ theorem registerStep_blocked (state : RegisterState α) (payload : α)
 theorem registerStep_replace (old payload : α) :
     registerStep (some old) true payload true = some payload := by
   simp [registerStep, registerReady]
+
+/-! ## Combinational mapping -/
+
+/-- Change only a sample's payload.  Handshake control is definitionally
+preserved, which is the key contract of a stream mapper. -/
+def Sample.mapPayload (f : α → β) (sample : Sample α) : Sample β :=
+  { valid := sample.valid, ready := sample.ready, payload := f sample.payload }
+
+@[simp] theorem Sample.mapPayload_accepted (f : α → β) (sample : Sample α) :
+    (sample.mapPayload f).accepted = sample.accepted := rfl
+
+def mapSamples (f : α → β) : List (Sample α) → List (Sample β) :=
+  List.map (Sample.mapPayload f)
+
+/-- A pure mapper changes accepted payloads pointwise and neither creates nor
+drops a transaction. -/
+theorem transactions_mapSamples (f : α → β) (samples : List (Sample α)) :
+    transactions (mapSamples f samples) =
+      (transactions samples).map f := by
+  induction samples with
+  | nil => rfl
+  | cons sample rest ih =>
+      change transactions (sample.mapPayload f :: mapSamples f rest) = _
+      rw [transactions, Sample.mapPayload_accepted]
+      by_cases accepted : sample.accepted = true <;>
+        simp [transactions, Sample.mapPayload, accepted, ih]
+
+/-- Ports of a combinational stream mapper. -/
+structure MapperPorts (δ : Type v) (α : Type u) (β : Type u)
+    [ClockDomain δ] [HwPacked α] [HwPacked β] where
+  input : SinkPorts δ α
+  output : SourcePorts δ β
+
+def mapperPorts {δ : Type v} {α β : Type u}
+    [ClockDomain δ] [HwPacked α] [HwPacked β]
+    (inputType outputType : String) : MapperPorts δ α β :=
+  ⟨sinkPorts "in" inputType, sourcePorts "out" outputType⟩
+
+/-- A typed, zero-state mapper. `transform` constructs ordinary Loom
+combinational logic; sealing rejects any undeclared signal it tries to read.
+Backpressure is passed backward without reinterpretation. -/
+def mapperComponent {δ : Type v} {α β : Type u}
+    [ClockDomain δ] [HwPacked α] [HwPacked β]
+    (name inputType outputType : String)
+    (transform : PackedExpr α → PackedExpr β) : Component :=
+  let ports : MapperPorts δ α β := mapperPorts inputType outputType
+  { name
+    interface := ⟨ports.input.decls ++ ports.output.decls⟩
+    design :=
+      { name
+        regs := []
+        mems := []
+        inputs := [ports.input.valid.bitReg.input,
+          ports.input.payload.reg.input, ports.output.ready.bitReg.input]
+        rules := []
+        outputs := []
+        combOutputs :=
+          [⟨ports.input.ready.name, 1, ports.output.ready.bitReg.rd⟩,
+           ⟨ports.output.valid.name, 1, ports.input.valid.bitReg.rd⟩,
+           ⟨ports.output.payload.name, HwPacked.width β,
+             (transform ⟨ports.input.payload.reg.rd⟩).bits⟩] } }
+
+def mapper? {δ : Type v} {α β : Type u}
+    [ClockDomain δ] [HwPacked α] [HwPacked β]
+    (name inputType outputType : String)
+    (transform : PackedExpr α → PackedExpr β) : Except String Component.Sealed :=
+  (mapperComponent (δ := δ) name inputType outputType transform).seal?
 
 /-- Ports of a one-entry registered stream slice. -/
 structure RegisterSlicePorts (δ : Type v) (α : Type u)
