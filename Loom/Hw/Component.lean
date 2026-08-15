@@ -455,17 +455,30 @@ structure ComponentGraph where
 
 namespace ComponentGraph
 
+namespace Expert
+
+/-- Erased importer/generator boundary. Ordinary hierarchy construction uses
+`DomainComponentGraph.empty`. -/
 def empty (name : String) : ComponentGraph := { name }
+
+end Expert
+
+@[deprecated ComponentGraph.Expert.empty (since := "2026-08-15")]
+def empty (name : String) : ComponentGraph := Expert.empty name
 
 def findInstance? (graph : ComponentGraph) (path : String) : Option ComponentInstance :=
   graph.instances.find? (·.path == path)
 
-def addInstance (graph : ComponentGraph) (inst : ComponentInstance) :
+def Expert.addInstance (graph : ComponentGraph) (inst : ComponentInstance) :
     Except String ComponentGraph := do
   if inst.path.isEmpty then throw "component instance path must not be empty"
   if graph.instances.any (·.path == inst.path) then
     throw s!"duplicate component instance path '{inst.path}'"
   return { graph with instances := graph.instances ++ [inst] }
+
+@[deprecated ComponentGraph.Expert.addInstance (since := "2026-08-15")]
+def addInstance (graph : ComponentGraph) (inst : ComponentInstance) :
+    Except String ComponentGraph := Expert.addInstance graph inst
 
 private def endpointPresent (graph : ComponentGraph) (instancePath componentName : String)
     (direction : PortDirection) (portName semanticType domain : String)
@@ -572,7 +585,7 @@ theorem combinationalAcyclicB_sound (graph : ComponentGraph)
     DependencyAcyclic graph.dependencyEdges :=
   topologicalOrderCheckB_sound checked
 
-def connect (graph : ComponentGraph) (connection : Connection) :
+def Expert.connect (graph : ComponentGraph) (connection : Connection) :
     Except String ComponentGraph := do
   if !graph.connectionValidB connection then
     throw s!"connection '{connection.sourceInstance}.{connection.sourcePort}' -> '{connection.sinkInstance}.{connection.sinkPort}' does not belong to the graph"
@@ -585,8 +598,12 @@ def connect (graph : ComponentGraph) (connection : Connection) :
     throw s!"connection '{connection.sourceInstance}.{connection.sourcePort}' -> '{connection.sinkInstance}.{connection.sinkPort}' creates a combinational dependency cycle"
   return connected
 
+@[deprecated ComponentGraph.Expert.connect (since := "2026-08-15")]
+def connect (graph : ComponentGraph) (connection : Connection) :
+    Except String ComponentGraph := Expert.connect graph connection
+
 /-- Make one component output visible at the graph boundary. -/
-def expose (graph : ComponentGraph) (instancePath portName : String) :
+def Expert.expose (graph : ComponentGraph) (instancePath portName : String) :
     Except String ComponentGraph := do
   let some inst := graph.findInstance? instancePath
     | throw s!"cannot export from unknown instance '{instancePath}'"
@@ -596,6 +613,10 @@ def expose (graph : ComponentGraph) (instancePath portName : String) :
   if graph.exports.contains key then
     throw s!"output '{instancePath}.{portName}' is already exported"
   return { graph with exports := graph.exports ++ [key] }
+
+@[deprecated ComponentGraph.Expert.expose (since := "2026-08-15")]
+def expose (graph : ComponentGraph) (instancePath portName : String) :
+    Except String ComponentGraph := Expert.expose graph instancePath portName
 
 def pathsUniqueB (graph : ComponentGraph) : Bool :=
   let paths := graph.instances.map (·.path)
@@ -788,7 +809,7 @@ structure DomainComponentGraph (δ : Type v) [ClockDomain δ] where
 namespace DomainComponentGraph
 
 def empty {δ : Type v} [ClockDomain δ] (name : String) :
-    DomainComponentGraph δ := ⟨ComponentGraph.empty name, []⟩
+    DomainComponentGraph δ := ⟨ComponentGraph.Expert.empty name, []⟩
 
 def findInstance? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
     (path : String) : Option (DomainComponentInstance δ) :=
@@ -796,16 +817,17 @@ def findInstance? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph �
 
 def addInstance {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
     (inst : DomainComponentInstance δ) : Except String (DomainComponentGraph δ) := do
-  let raw ← graph.raw.addInstance inst.erase
+  let raw ← ComponentGraph.Expert.addInstance graph.raw inst.erase
   return ⟨raw, graph.instances ++ [inst]⟩
 
 def connect {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
     (connection : DomainConnection δ) : Except String (DomainComponentGraph δ) := do
-  return ⟨← graph.raw.connect connection.raw, graph.instances⟩
+  return ⟨← ComponentGraph.Expert.connect graph.raw connection.raw, graph.instances⟩
 
 def expose {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
     (instancePath portName : String) : Except String (DomainComponentGraph δ) := do
-  return ⟨← graph.raw.expose instancePath portName, graph.instances⟩
+  return ⟨← ComponentGraph.Expert.expose graph.raw instancePath portName,
+    graph.instances⟩
 
 def connectionCount {δ : Type v} [ClockDomain δ]
     (graph : DomainComponentGraph δ) : Nat := graph.raw.connections.length

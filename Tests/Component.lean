@@ -64,10 +64,11 @@ private def assembled : Except String Design := do
   let source ← producerInstance.output? producerOutput
   let sink ← consumerInstance.input? consumerInput
   let connection ← Connection.Expert.typedErased source sink
-  let graph ← (ComponentGraph.empty "typed_top").addInstance producerInstance
-  let graph ← graph.addInstance consumerInstance
-  let graph ← graph.connect connection
-  let graph ← graph.expose "consume" "accepted"
+  let graph ← ComponentGraph.Expert.addInstance
+    (ComponentGraph.Expert.empty "typed_top") producerInstance
+  let graph ← ComponentGraph.Expert.addInstance graph consumerInstance
+  let graph ← ComponentGraph.Expert.connect graph connection
+  let graph ← ComponentGraph.Expert.expose graph "consume" "accepted"
   graph.flatten?
 
 #guard match assembled with
@@ -115,6 +116,13 @@ private def peripheralOwnedDesign : DomainDesign PeripheralClock :=
 #check_failure
   (DomainIslandHandle.named (δ := CoreClock) "bad" peripheralOwnedDesign)
 
+/- A connection certified for another domain cannot enter this graph even if
+all erased names and widths would happen to match. -/
+#check_failure
+  (DomainComponentGraph.connect (δ := CoreClock) :
+    DomainComponentGraph CoreClock → DomainConnection PeripheralClock →
+      Except String (DomainComponentGraph CoreClock))
+
 /- An erased/dynamic graph cannot bypass the same-domain check: the port's
 domain name remains part of exact interface membership.  Ordinary typed code
 is stronger—the call to `Connection.typed` cannot even be formed because the
@@ -136,10 +144,11 @@ to source order. -/
     let source ← p.output? producerOutput
     let sink ← c.input? consumerInput
     let connection ← Connection.Expert.typedErased source sink
-    let graph ← (ComponentGraph.empty "duplicate").addInstance p
-    let graph ← graph.addInstance c
-    let graph ← graph.connect connection
-    graph.connect connection with
+    let graph ← ComponentGraph.Expert.addInstance
+      (ComponentGraph.Expert.empty "duplicate") p
+    let graph ← ComponentGraph.Expert.addInstance graph c
+    let graph ← ComponentGraph.Expert.connect graph connection
+    ComponentGraph.Expert.connect graph connection with
   | .error _ => true
   | .ok _ => false
 
