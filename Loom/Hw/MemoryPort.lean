@@ -19,6 +19,43 @@ universe u v
 
 namespace MemoryPort
 
+/-- A memory handle owned by one clock domain.  The scalar `Mem` remains the
+verified lowering object, but ordinary port construction cannot reuse it under
+an unrelated phantom domain. -/
+structure DomainMem (δ : Type v) (addressWidth dataWidth : Nat)
+    [ClockDomain δ] where
+  private mk ::
+  raw : Mem addressWidth dataWidth
+  deriving DecidableEq
+
+namespace DomainMem
+
+instance {δ : Type v} {addressWidth dataWidth : Nat} [ClockDomain δ] :
+    BEq (DomainMem δ addressWidth dataWidth) where
+  beq left right := left.raw == right.raw
+
+/-- Declare a memory in `δ`.  Its emitted name is diagnostic data; `δ` is the
+timing authority used by every port derived from the handle. -/
+def named {δ : Type v} [ClockDomain δ] (addressWidth dataWidth : Nat)
+    (name : String) : DomainMem δ addressWidth dataWidth :=
+  ⟨⟨name⟩⟩
+
+def name {δ : Type v} {addressWidth dataWidth : Nat} [ClockDomain δ]
+    (memory : DomainMem δ addressWidth dataWidth) : String :=
+  memory.raw.name
+
+def rd {δ : Type v} {addressWidth dataWidth : Nat} [ClockDomain δ]
+    (memory : DomainMem δ addressWidth dataWidth)
+    (address : Expr addressWidth) : Expr dataWidth :=
+  memory.raw.rd address
+
+def write {δ : Type v} {addressWidth dataWidth : Nat} [ClockDomain δ]
+    (memory : DomainMem δ addressWidth dataWidth) (index : Nat)
+    (address : Expr addressWidth) (value : Expr dataWidth) : Act :=
+  memory.raw.write index address value
+
+end DomainMem
+
 /-- A complete, no-padding partition of a word into equal physical lanes.
 Both values and proofs live once in the port, while the mask width is derived
 from `lanes`. -/
@@ -98,7 +135,7 @@ at the construction boundary; the underlying `Mem` remains the proved scalar
 core handle. -/
 structure WritePort (δ : Type v) (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  memory : Mem addressWidth (HwPacked.width α)
+  memory : DomainMem δ addressWidth (HwPacked.width α)
   index : Nat
   layout : LaneLayout (HwPacked.width α)
 
@@ -120,14 +157,15 @@ theorem write_run_readback {δ : Type v} {addressWidth : Nat} {α : Type u}
     ((port.write address data enable).run state accumulator).mems
         port.memory.name (address.eval state).toNat (HwPacked.width α) =
       (port.layout.merge (port.memory.rd address) data.bits enable).eval state := by
-  simp [write, Mem.write, Act.run, MemEnv.set]
+  simp [write, DomainMem.write, DomainMem.rd, DomainMem.name,
+    Mem.write, Act.run, MemEnv.set]
 
 end WritePort
 
 /-- A combinational read port. Its result is explicitly the pre-cycle word. -/
 structure AsyncReadPort (δ : Type v) (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  memory : Mem addressWidth (HwPacked.width α)
+  memory : DomainMem δ addressWidth (HwPacked.width α)
 
 namespace AsyncReadPort
 
@@ -144,7 +182,7 @@ block-memory shape; the checked design still decides whether every use of the
 bank obeys that discipline. -/
 structure SyncReadPort (δ : Type v) (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  memory : Mem addressWidth (HwPacked.width α)
+  memory : DomainMem δ addressWidth (HwPacked.width α)
   output : Reg (HwPacked.width α)
 
 namespace SyncReadPort
@@ -168,7 +206,8 @@ theorem request_run {δ : Type v} {addressWidth : Nat} {α : Type u}
         port.output.name (HwPacked.width α) =
       state.mems port.memory.name (address.eval state).toNat
         (HwPacked.width α) := by
-  simp [request, Reg.set, Mem.rd, Act.run, RegEnv.set, Expr.eval]
+  simp [request, DomainMem.rd, DomainMem.name, Reg.set, Mem.rd, Act.run,
+    RegEnv.set, Expr.eval]
 
 end SyncReadPort
 
@@ -178,7 +217,7 @@ with different collision behavior merely because its widths match. -/
 structure ReadWritePort (policy : ReadDuringWrite) (δ : Type v)
     (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  memory : Mem addressWidth (HwPacked.width α)
+  memory : DomainMem δ addressWidth (HwPacked.width α)
   output : Reg (HwPacked.width α)
   index : Nat
   layout : LaneLayout (HwPacked.width α)
@@ -235,7 +274,7 @@ over the same memory. The shared handle is stored once, so membership cannot
 drift between separately assembled ports. -/
 structure SimpleDualPort (δ : Type v) (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  memory : Mem addressWidth (HwPacked.width α)
+  memory : DomainMem δ addressWidth (HwPacked.width α)
   readOutput : Reg (HwPacked.width α)
   writeIndex : Nat
   layout : LaneLayout (HwPacked.width α)
@@ -260,7 +299,7 @@ then B makes B the explicit winner of a simultaneous same-address write. -/
 structure TrueDualPort (policyA policyB : ReadDuringWrite)
     (δ : Type v) (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  memory : Mem addressWidth (HwPacked.width α)
+  memory : DomainMem δ addressWidth (HwPacked.width α)
   outputA : Reg (HwPacked.width α)
   outputB : Reg (HwPacked.width α)
   indexA : Nat
@@ -294,11 +333,38 @@ def cycle {policyA policyB : ReadDuringWrite}
     (readEnableB : Expr 1) (readAddressB : Expr addressWidth)
     (writeEnableB : Expr 1) (writeAddressB : Expr addressWidth)
     (writeDataB : PackedExpr α) (writeLanesB : Expr ports.layout.lanes) : Act :=
-  .seq
-    (ports.portA.cycle readEnableA readAddressA writeEnableA writeAddressA
-      writeDataA writeLanesA)
-    (ports.portB.cycle readEnableB readAddressB writeEnableB writeAddressB
-      writeDataB writeLanesB)
+  let mergedA := ports.layout.merge (ports.memory.rd writeAddressA)
+    writeDataA.bits writeLanesA
+  let mergedB := ports.layout.merge (ports.memory.rd writeAddressB)
+    writeDataB.bits writeLanesB
+  let collisionA (readEnable : Expr 1) (readAddress : Expr addressWidth) :=
+    .and readEnable (.and writeEnableA (.eq readAddress writeAddressA))
+  let collisionB (readEnable : Expr 1) (readAddress : Expr addressWidth) :=
+    .and readEnable (.and writeEnableB (.eq readAddress writeAddressB))
+  let readAction (policy : ReadDuringWrite)
+      (output : Reg (HwPacked.width α)) (readEnable : Expr 1)
+      (readAddress : Expr addressWidth) :=
+    let hitsA := collisionA readEnable readAddress
+    let hitsB := collisionB readEnable readAddress
+    let anyHit := .or hitsA hitsB
+    match policy with
+    | .oldData =>
+        .ite readEnable (output.set (ports.memory.rd readAddress)) .skip
+    | .newData =>
+        -- B is the declared later writer and therefore owns an overlap.
+        let visible := .mux hitsB mergedB
+          (.mux hitsA mergedA (ports.memory.rd readAddress))
+        .ite readEnable (output.set visible) .skip
+    | .unchangedOutput =>
+        .ite (.and readEnable (.not anyHit))
+          (output.set (ports.memory.rd readAddress)) .skip
+  let readA := readAction policyA ports.outputA readEnableA readAddressA
+  let readB := readAction policyB ports.outputB readEnableB readAddressB
+  let writeA := .ite writeEnableA
+    (ports.memory.write ports.indexA writeAddressA mergedA) .skip
+  let writeB := .ite writeEnableB
+    (ports.memory.write ports.indexB writeAddressB mergedB) .skip
+  .seq readA (.seq readB (.seq writeA writeB))
 
 end TrueDualPort
 
@@ -307,7 +373,7 @@ ports share. The constructors are deliberately singletons until Loom gains
 additional proved core behaviors. -/
 structure Bank (δ : Type v) (addressWidth : Nat) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  memory : Mem addressWidth (HwPacked.width α)
+  memory : DomainMem δ addressWidth (HwPacked.width α)
   writes : List (WritePort δ addressWidth α)
   writeCollision : WriteCollision := .orderedLastWins
 
@@ -424,7 +490,7 @@ the statically proved selector width; payload nominal type remains exact. -/
 structure MixedWidthPort (δ : Type v) (storageAddressWidth : Nat)
     (Storage PortValue : Type u)
     [ClockDomain δ] [HwPacked Storage] [HwPacked PortValue] where
-  memory : Mem storageAddressWidth (HwPacked.width Storage)
+  memory : DomainMem δ storageAddressWidth (HwPacked.width Storage)
   index : Nat
   layout : MixedWidthLayout (HwPacked.width Storage) (HwPacked.width PortValue)
 
@@ -436,7 +502,7 @@ def read {δ : Type v} {storageAddressWidth : Nat}
     (port : MixedWidthPort δ storageAddressWidth Storage PortValue)
     (address : Expr (storageAddressWidth + port.layout.selectorBits)) :
     PackedExpr PortValue :=
-  ⟨port.layout.read port.memory address⟩
+  ⟨port.layout.read port.memory.raw address⟩
 
 def write {δ : Type v} {storageAddressWidth : Nat}
     {Storage PortValue : Type u}

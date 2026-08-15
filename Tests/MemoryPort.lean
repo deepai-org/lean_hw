@@ -11,6 +11,8 @@ open Loom.Hw.MemoryPort
 
 private inductive CoreClock
 private instance : ClockDomain CoreClock where name := "core"
+private inductive OtherClock
+private instance : ClockDomain OtherClock where name := "other"
 
 private def bytes : LaneLayout 32 :=
   match LaneLayout.checked 32 8 with
@@ -19,7 +21,11 @@ private def bytes : LaneLayout 32 :=
 
 #guard bytes.lanes == 4 && bytes.laneWidth == 8
 
-private def memory : Mem 4 32 := ⟨"words"⟩
+private def memory : DomainMem CoreClock 4 32 :=
+  DomainMem.named 4 32 "words"
+
+/- Domain ownership is part of the handle type, not inferred from its name. -/
+#check_failure (memory : DomainMem OtherClock 4 32)
 private def writePort : WritePort CoreClock 4 (BitVec 32) :=
   ⟨memory, 0, bytes⟩
 
@@ -122,5 +128,47 @@ private def dual : TrueDualPort .oldData .newData CoreClock 4 (BitVec 32) :=
     (.lit 0#1) (.lit 3#4) (.lit 1#1) (.lit 3#4)
       ⟨.lit 0xBBBBBBBB#32⟩ (.lit 0b1111#4)).run state state).mems
       "words" 3 32 == 0xBBBBBBBB#32
+
+/- A reads old data even when the collision comes from B, not A. -/
+#guard ((dual.cycle
+    (.lit 1#1) (.lit 3#4) (.lit 0#1) (.lit 0#4)
+      ⟨.lit 0#32⟩ (.lit 0#4)
+    (.lit 0#1) (.lit 0#4) (.lit 1#1) (.lit 3#4)
+      ⟨.lit 0xBBBBBBBB#32⟩ (.lit 0b1111#4)).run state state).regs
+      "read_data" 32 == 0x11223344#32
+
+/- B's new-data policy observes an A-port write to the same address. -/
+#guard ((dual.cycle
+    (.lit 0#1) (.lit 0#4) (.lit 1#1) (.lit 3#4)
+      ⟨.lit 0xAAAAAAAA#32⟩ (.lit 0b1111#4)
+    (.lit 1#1) (.lit 3#4) (.lit 0#1) (.lit 0#4)
+      ⟨.lit 0#32⟩ (.lit 0#4)).run state state).regs
+      "read_data_b" 32 == 0xAAAAAAAA#32
+
+/- If both ports collide with B's read, B is the declared later writer. -/
+#guard ((dual.cycle
+    (.lit 0#1) (.lit 0#4) (.lit 1#1) (.lit 3#4)
+      ⟨.lit 0xAAAAAAAA#32⟩ (.lit 0b1111#4)
+    (.lit 1#1) (.lit 3#4) (.lit 1#1) (.lit 3#4)
+      ⟨.lit 0xBBBBBBBB#32⟩ (.lit 0b1111#4)).run state state).regs
+      "read_data_b" 32 == 0xBBBBBBBB#32
+
+private def unchangedDual :
+    TrueDualPort .unchangedOutput .unchangedOutput CoreClock 4 (BitVec 32) :=
+  { memory
+    outputA := readData
+    outputB := readDataB
+    indexA := 0
+    indexB := 1
+    indicesDistinct := by decide
+    layout := bytes }
+
+/- A cross-port write collision suppresses an unchanged-output capture. -/
+#guard ((unchangedDual.cycle
+    (.lit 1#1) (.lit 3#4) (.lit 0#1) (.lit 0#4)
+      ⟨.lit 0#32⟩ (.lit 0#4)
+    (.lit 0#1) (.lit 0#4) (.lit 1#1) (.lit 3#4)
+      ⟨.lit 0xBBBBBBBB#32⟩ (.lit 0b1111#4)).run
+        stateWithOutput stateWithOutput).regs "read_data" 32 == 0xDEADBEEF#32
 
 end Tests.MemoryPort
