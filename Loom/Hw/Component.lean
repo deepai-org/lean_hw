@@ -180,45 +180,117 @@ authoritative; hierarchy only moves interface failures to the component site. -/
 def seal? (component : Component) : Except String Sealed := do
   if component.name.isEmpty then
     throw "component name must not be empty"
-  else pure ()
-  if hInterface : component.interfaceOkB = true then
-    component.design.emitCheck
-    if hReads : component.design.readsOkB = true then
-      if hCompiler : Compile.designWFCheck component.design = true then
-        if hSimulator : component.design.fastWFB = true then
-          return { component
-                   interfaceOk := hInterface
-                   readsOk := hReads
-                   certified := CertifiedDesign.ofChecks hCompiler hSimulator }
-        else
-          throw s!"component '{component.name}' is not simulator-ready"
-      else
-        throw s!"component '{component.name}' is not compiler-ready"
-    else
-      throw s!"component '{component.name}' contains an undeclared or wrong-width read"
   else
-    throw s!"component '{component.name}' interface does not exactly match its Design ports"
+    if hInterface : component.interfaceOkB = true then
+      component.design.emitCheck
+      if hReads : component.design.readsOkB = true then
+        if hCompiler : Compile.designWFCheck component.design = true then
+          if hSimulator : component.design.fastWFB = true then
+            return { component
+                     interfaceOk := hInterface
+                     readsOk := hReads
+                     certified := CertifiedDesign.ofChecks hCompiler hSimulator }
+          else
+            throw s!"component '{component.name}' is not simulator-ready"
+        else
+          throw s!"component '{component.name}' is not compiler-ready"
+      else
+        throw s!"component '{component.name}' contains an undeclared or wrong-width read"
+    else
+      throw s!"component '{component.name}' interface does not exactly match its Design ports"
+
+/-- Successful sealing retains the exact input component; certification does
+not rewrite or normalize its implementation. -/
+theorem seal?_component_eq {component : Component} {sealed : Sealed}
+    (result : component.seal? = .ok sealed) : sealed.component = component := by
+  unfold seal? at result
+  split at result
+  · simp at result
+  split at result
+  · cases hEmit : component.design.emitCheck with
+    | error message => simp [hEmit, Except.instMonad, Except.bind] at result
+    | ok _unit =>
+      simp [hEmit, Except.instMonad, Except.bind] at result
+      split at result <;> try simp_all
+      split at result <;> try simp_all
+      split at result <;> try simp_all
+      simp [Except.pure] at result
+      subst sealed
+      rfl
+  · simp at result
 
 end Component
 
-/-- A sealed component whose entire public boundary belongs to one nominal
-clock domain.  This is the ordinary building block for synchronous hierarchy;
-the erased `Component.Sealed` form remains the import/generator boundary. -/
+/-- A scalar `Design` with ownership of every sequential element by one clock
+domain. The scalar implementation still has exactly the core's one-clock
+semantics; this wrapper records which System clock is permitted to tick it. -/
+structure DomainDesign (δ : Type v) [ClockDomain δ] where
+  private mk ::
+  design : Design
+
+namespace DomainDesign
+
+/-- Ordinary authoring boundary for a scalar design created in a known domain.
+All of the design's registers and memories acquire the same owner together. -/
+def authored {δ : Type v} [ClockDomain δ] (design : Design) : DomainDesign δ :=
+  ⟨design⟩
+
+namespace Expert
+
+/-- Import/generator boundary for legacy scalar designs. Prefer carrying a
+`DomainDesign` from the point at which new synchronous logic is authored. -/
+def ofDesign {δ : Type v} [ClockDomain δ] (design : Design) : DomainDesign δ :=
+  authored design
+
+end Expert
+
+end DomainDesign
+
+/-- A sealed component whose implementation and entire public boundary belong
+to one nominal clock domain. This is the ordinary building block for
+synchronous hierarchy; the erased `Component.Sealed` form remains the
+import/generator boundary. -/
 structure DomainComponent (δ : Type v) [ClockDomain δ] where
+  implementation : DomainDesign δ
   sealed : Component.Sealed
+  implementationEq : sealed.component.design = implementation.design
   domainOk : sealed.component.interface.ports.all
     (fun port => port.domain == ClockDomain.name δ) = true
 
 namespace DomainComponent
 
-/-- Attach timing ownership to a sealed component, failing at the boundary
-rather than allowing domain strings to disappear during flattening. -/
+/-- Seal an implementation which already carries its timing owner. The
+component cannot be constructed first and assigned a domain afterward. -/
+def seal? {δ : Type v} [ClockDomain δ] (name : String)
+    (interface : ComponentInterface) (implementation : DomainDesign δ) :
+    Except String (DomainComponent δ) := do
+  let component : Component := { name, interface, design := implementation.design }
+  match hSeal : component.seal? with
+  | .error message => throw message
+  | .ok sealed =>
+    have sealedEq : sealed.component = component :=
+      Component.seal?_component_eq hSeal
+    have hEq : sealed.component.design = implementation.design := by
+      rw [sealedEq]
+    if h : sealed.component.interface.ports.all
+        (fun port => port.domain == ClockDomain.name δ) = true then
+      return ⟨implementation, sealed, hEq, h⟩
+    throw s!"component '{sealed.component.name}' contains a port outside clock domain '{ClockDomain.name δ}'"
+
+namespace Expert
+
+/-- Compatibility/import path for an erased sealed component. This operation
+deliberately assigns all scalar state to `δ` after the original seal. -/
 def check? {δ : Type v} [ClockDomain δ] (sealed : Component.Sealed) :
     Except String (DomainComponent δ) := do
   if h : sealed.component.interface.ports.all
       (fun port => port.domain == ClockDomain.name δ) = true then
-    return ⟨sealed, h⟩
+    let implementation := DomainDesign.Expert.ofDesign (δ := δ)
+      sealed.component.design
+    return ⟨implementation, sealed, rfl, h⟩
   throw s!"component '{sealed.component.name}' contains a port outside clock domain '{ClockDomain.name δ}'"
+
+end Expert
 
 end DomainComponent
 
@@ -663,26 +735,6 @@ def output? {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
     Except String (OutputEndpoint δ α) := inst.erase.output? port
 
 end DomainComponentInstance
-
-/-- A scalar `Design` with nominal ownership of every sequential element by
-one clock domain.  Its constructor is private: ownership is established only
-by checked component-graph flattening (or an explicit expert check). -/
-structure DomainDesign (δ : Type v) [ClockDomain δ] where
-  private mk ::
-  design : Design
-
-namespace DomainDesign
-
-namespace Expert
-
-/-- Expert/import boundary for a directly authored scalar design.  Calling
-this is the deliberate assertion that all of its state belongs to `δ`. -/
-def ofDesign {δ : Type v} [ClockDomain δ] (design : Design) : DomainDesign δ :=
-  ⟨design⟩
-
-end Expert
-
-end DomainDesign
 
 /-- A component graph which can contain only components owned by `δ`.
 Connections still carry erased evidence internally, but their only public
