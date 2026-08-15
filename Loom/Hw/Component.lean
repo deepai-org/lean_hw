@@ -317,6 +317,12 @@ structure Connection where
   sinkComponent : String
   sinkPort : String
 
+/-- A connection whose two endpoints were checked in the same nominal clock
+domain.  Erasure is private to the indexed graph lowering. -/
+structure DomainConnection (δ : Type v) [ClockDomain δ] where
+  private mk ::
+  raw : Connection
+
 namespace Connection
 
 /-- Construct a same-clock connection.  Different payload types cannot reach
@@ -324,19 +330,30 @@ this function; different domains are rejected instead of becoming an implicit
 CDC crossing. -/
 def typed {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
     (source : OutputEndpoint δ α) (sink : InputEndpoint δ α) :
-    Except String Connection := do
+    Except String (DomainConnection δ) := do
   unless source.port.semanticType == sink.port.semanticType do
     throw s!"connection semantic type name mismatch: '{source.port.semanticType}' versus '{sink.port.semanticType}'"
-  return { width := HwPacked.width α
-           semanticType := source.port.semanticType
-           domain := ClockDomain.name δ
-           sourceInstance := source.instancePath
-           sourceComponent := source.componentName
-           sourcePort := source.port.name
-           sourceExpression := source.expression
-           sinkInstance := sink.instancePath
-           sinkComponent := sink.componentName
-           sinkPort := sink.port.name }
+  return ⟨{ width := HwPacked.width α
+            semanticType := source.port.semanticType
+            domain := ClockDomain.name δ
+            sourceInstance := source.instancePath
+            sourceComponent := source.componentName
+            sourcePort := source.port.name
+            sourceExpression := source.expression
+            sinkInstance := sink.instancePath
+            sinkComponent := sink.componentName
+            sinkPort := sink.port.name }⟩
+
+namespace Expert
+
+/-- Explicit erasing constructor for importers and legacy graph generators.
+Ordinary hierarchy should retain `DomainConnection δ`. -/
+def typedErased {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (source : OutputEndpoint δ α) (sink : InputEndpoint δ α) :
+    Except String Connection := do
+  return (← Connection.typed source sink).raw
+
+end Expert
 
 def sourceFullName (connection : Connection) : String :=
   connection.sourceInstance ++ "__" ++ connection.sourcePort
@@ -405,13 +422,41 @@ private def combinationalEdges (graph : ComponentGraph) : List (String × String
     (connection.sourceFullName, connection.sinkFullName)
   internal ++ wiring
 
-/-- No same-cycle dependency can return to its starting signal.  This is a
-structural property of typed component wiring, independent of backend
-heuristics.  Kahn's algorithm visits each node and edge once (with expected
-constant-time hash-table operations), rather than enumerating paths from every
-node on branching graphs. -/
-def combinationalAcyclicB (graph : ComponentGraph) : Bool :=
-  let edges := graph.combinationalEdges
+/-- Small executable check that every dependency edge is covered and points
+strictly forward in the proposed order. -/
+def edgesForwardB (order : List String) : List (String × String) → Bool
+  | [] => true
+  | edge :: rest =>
+      order.contains edge.1 && order.contains edge.2 &&
+        decide (order.idxOf edge.1 < order.idxOf edge.2) &&
+        edgesForwardB order rest
+
+/-- Small structural certificate checker: uniqueness plus forward-edge
+coverage. -/
+def topologicalOrderCheckB (edges : List (String × String))
+    (order : List String) : Bool :=
+  order.eraseDups.length == order.length && edgesForwardB order edges
+
+/-- Kernel-level meaning of a topological certificate.  The order contains no
+duplicates, covers both endpoints of every edge, and places every source
+strictly before its sink. -/
+def TopologicalOrder (edges : List (String × String)) (order : List String) : Prop :=
+  topologicalOrderCheckB edges order = true
+
+/-- A finite dependency graph is acyclic when it admits a checked topological
+order.  This definition is independent of the algorithm proposing the order. -/
+def DependencyAcyclic (edges : List (String × String)) : Prop :=
+  ∃ order, TopologicalOrder edges order
+
+theorem topologicalOrderCheckB_sound {edges : List (String × String)}
+    {order : List String} (checked : topologicalOrderCheckB edges order = true) :
+    DependencyAcyclic edges :=
+  ⟨order, checked⟩
+
+/-- Fast, untrusted proposal generation. Kahn's algorithm visits each node and
+edge once with expected constant-time hash-table operations. A cyclic input
+merely yields a partial order which the structural checker rejects. -/
+def proposeTopologicalOrder (edges : List (String × String)) : List String :=
   Id.run do
     let mut seen : Std.HashSet String := {}
     let mut nodes : Array String := #[]
@@ -431,17 +476,29 @@ def combinationalAcyclicB (graph : ComponentGraph) : Bool :=
     let mut ready : List String := []
     for node in nodes do
       if indegree.getD node 0 == 0 then ready := node :: ready
-    let mut visited := 0
+    let mut order : Array String := #[]
     while !ready.isEmpty do
       let node := ready.head!
       ready := ready.tail!
-      visited := visited + 1
+      order := order.push node
       for sink in outgoing.getD node [] do
         let degree := indegree.getD sink 0
         let next := degree - 1
         indegree := indegree.insert sink next
         if next == 0 then ready := sink :: ready
-    return visited == nodes.size
+    return order.toList
+
+/-- No same-cycle dependency can return to its starting signal.  Optimized
+proposal generation is outside the trust boundary; acceptance is exactly the
+small structural certificate checker above. -/
+def combinationalAcyclicB (graph : ComponentGraph) : Bool :=
+  let edges := graph.combinationalEdges
+  topologicalOrderCheckB edges (proposeTopologicalOrder edges)
+
+theorem combinationalAcyclicB_sound (graph : ComponentGraph)
+    (checked : graph.combinationalAcyclicB = true) :
+    DependencyAcyclic graph.combinationalEdges :=
+  topologicalOrderCheckB_sound checked
 
 def connect (graph : ComponentGraph) (connection : Connection) :
     Except String ComponentGraph := do
@@ -640,8 +697,8 @@ def addInstance {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
   DomainComponentGraph.mk <$> graph.raw.addInstance inst.erase
 
 def connect {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
-    (connection : Connection) : Except String (DomainComponentGraph δ) :=
-  DomainComponentGraph.mk <$> graph.raw.connect connection
+    (connection : DomainConnection δ) : Except String (DomainComponentGraph δ) :=
+  DomainComponentGraph.mk <$> graph.raw.connect connection.raw
 
 def expose {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ)
     (instancePath portName : String) : Except String (DomainComponentGraph δ) :=

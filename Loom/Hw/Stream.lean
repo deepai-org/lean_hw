@@ -87,9 +87,9 @@ chooses a CDC adapter. -/
 def connect {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
     (graph : ComponentGraph) (source : SourceEndpoint δ α)
     (sink : SinkEndpoint δ α) : Except String ComponentGraph := do
-  let graph ← graph.connect (← Connection.typed source.valid sink.valid)
-  let graph ← graph.connect (← Connection.typed source.payload sink.payload)
-  graph.connect (← Connection.typed sink.ready source.ready)
+  let graph ← graph.connect (← Connection.Expert.typedErased source.valid sink.valid)
+  let graph ← graph.connect (← Connection.Expert.typedErased source.payload sink.payload)
+  graph.connect (← Connection.Expert.typedErased sink.ready source.ready)
 
 /-- One cycle's logical handshake observation. -/
 structure Sample (α : Type u) where
