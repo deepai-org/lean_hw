@@ -51,6 +51,10 @@ lean_exe audit where
   root := `Tools.Audit
   supportInterpreter := true
 
+/-- Compiled scale/regression gate for compositional hierarchy topology. -/
+lean_exe componentHierarchyScale where
+  root := `Tools.ComponentHierarchyScale
+
 lean_exe emit where
   supportInterpreter := true
   root := `Tools.Emit

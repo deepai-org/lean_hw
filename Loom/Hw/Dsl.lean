@@ -5167,7 +5167,7 @@ private def expandSystemCommand
     let sourceName := Syntax.mkStrLit island.name.getId.toString
     commands := commands.push (← `(command|
       def $domainDesignName : Loom.Hw.DomainDesign $domainTypeName :=
-        Loom.Hw.DomainDesign.ofDesign $declarationName))
+        Loom.Hw.DomainDesign.Expert.ofDesign $declarationName))
     commands := commands.push (← `(command|
       def $domainHandleName : Loom.Hw.DomainIslandHandle $domainTypeName :=
         .named $sourceName $domainDesignName $typedClockName))

@@ -34,6 +34,7 @@ import Tests.CycleSupport
 import Tests.DagEval
 import Tests.SimulationComp
 import Tests.Component
+import Tests.ComponentHierarchy
 import Tests.ExternalComponent
 import Tests.Stream
 import Tests.Bus
