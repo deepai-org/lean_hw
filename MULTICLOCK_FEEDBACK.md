@@ -41,6 +41,10 @@ test report, release claim, or record of campaign results.
   explicit, the target wrapper can absorb the extra stage, report different
   timing, and preserve the same certified channel refinement and application
   behavior.
+- The separate `ChannelTiming` premises are important in practice. They let a
+  full-rate sink state an honest one-per-tick endpoint issue interval without
+  turning upstream payload availability into an unconditional throughput
+  promise.
 
 ### What could improve
 
@@ -72,6 +76,24 @@ test report, release claim, or record of campaign results.
   deduplication, and epoch policy belong to the protocol—but the application
   facade should say directly that forward progress after a lossy island reset
   requires such a protocol or an explicit fresh application epoch.
+- Preparing recovery for routed signoff exposed an important abstraction test:
+  the original island-level completion fold consumed the remote endpoint's
+  `done` level directly.  This could not be repaired honestly in a board shell,
+  because the signal affected generated island reset.  Adding an ordinary
+  certified two-stage completion synchronizer was the right Loom-side boundary,
+  but it also required the initiating endpoint to retain its request while the
+  user-visible recovery request remained held; otherwise the remote completion
+  and reset-held phase could end before the synchronized observation arrived.
+  Recovery now exports the four request/acknowledgement chains and both remote
+  completion chains as exact physical intent.  The practical lesson is that a
+  persistent protocol level still needs both metastability protection and a
+  lifetime contract long enough for that protection's latency.
+- `fullRate` is easy to misread as an end-to-end bubble-free guarantee. With
+  unrelated clocks, a shallow FIFO can leave the presentation endpoint empty
+  while synchronized pointer information makes a round trip, even when the
+  source clock is faster. The API documentation should put the
+  `sinkPayloadAvailableEveryTick` premise next to the user-facing constructor
+  and perhaps use “full-rate presentation” consistently in its name or prose.
 
 ## Semantics and execution
 
@@ -221,10 +243,22 @@ test report, release claim, or record of campaign results.
   report requirement-by-requirement coverage. Ad hoc scripts for synchronizer
   placement and bus constraints are hard to keep aligned with the certified
   connection inventory.
+- The physical-intent inventory describes Gray-pointer crossings but does not
+  classify the payload paths of the portable register-backed storage. Those
+  paths are protocol-stable bundled data rather than synchronizer mistakes,
+  yet a vendor CDC report sees ordinary multi-bit domain crossings. A target
+  adapter needs typed intent for this storage topology so it can review or
+  constrain the exact paths without an ad hoc report waiver.
 - Root provenance, measured activity, tool versions, routing seed, routed
   design identity, and bitstream identity should be standard evidence fields.
   These are general multiclock tooling needs, not facts that each board harness
   should encode in prose.
+- A numeric `seed` is not a portable description of implementation diversity.
+  Vivado exposes reproducible placement strategies/directives rather than a
+  supported random-seed switch, while other backends do expose seeds. The run
+  identity should retain an implementation-variant name and tool arguments in
+  addition to the optional numeric index, so evidence does not call a strategy
+  sweep a random-seed campaign.
 - A cached artifact-verification mode followed by a concise prerequisite report
   would improve board bring-up. Replaying a large Lean dependency graph before
   reporting missing physical tools creates unnecessary diagnostic noise.
@@ -363,6 +397,19 @@ sequences, and campaign policy should remain external.
    physical clock provenance, and requirement coverage.
 6. Standardize kernel-only axiom auditing, coherent observation, and typed
    runtime fault injection in the evidence tooling.
+
+The FPGA work has reached diminishing returns for Loom's central design goals.
+Silicon was valuable because it exposed missing or underspecified abstraction
+boundaries: registered storage presentation, recovery-completion CDC and
+request lifetime, safe coordinated-reset realization, and the distinction
+between functional evidence and physical signoff.  Once those lessons were
+fed back into Loom, additional routes and board campaigns mostly qualified a
+particular backend, device, and shell.  They would not contribute comparable
+confidence in the language semantics or proof interfaces.  Further effort is
+better spent on the generic endpoint refinement, ledger composition,
+reachable-state induction, certified execution, and progress-contract work
+listed above.  The incomplete vendor-specific physical signoff should remain
+explicit rather than drive expansion of Loom's core language.
 
 ## Physical follow-on: recovery observation and target storage (2026-08-14)
 

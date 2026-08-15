@@ -4,6 +4,7 @@ import Loom.Hw.System
 import Loom.Hw.ChanRefinement
 import Loom.Hw.EmitIO
 import Loom.Hw.RecoveryCoordinatorDesign
+import Loom.Hw.RecoveryCompletionSynchronizerDesign
 
 /-!
 # Explicit physical realization of named systems
@@ -526,13 +527,17 @@ structure PhysicalBackendRun where
   tool : String := ""
   version : String := ""
   runId : String := ""
+  /-- Exact implementation strategy/directive identity. This remains a string
+  because backend run diversity is not uniformly represented by a random
+  numeric seed. -/
+  implementationVariant : String := ""
   seed : Option Nat := none
   deriving DecidableEq, Repr
 
 def PhysicalBackendRun.complete (run : PhysicalBackendRun) : Bool :=
   run.scope == .targetImplementation && !run.adapter.isEmpty &&
     !run.target.isEmpty && !run.tool.isEmpty && !run.version.isEmpty &&
-    !run.runId.isEmpty
+    !run.runId.isEmpty && !run.implementationVariant.isEmpty
 
 /-- Artifact identity at the Loom/target boundary.  The first two hashes bind
 the theorem-bound RTL and neutral physical requirements consumed by a run;
@@ -735,6 +740,30 @@ def RecoveryEndpointKey.doneSignal (endpoint : RecoveryEndpointKey) : String :=
     | .sink => "dst_done"
   s!"__loom_recovery_{endpoint.connection.channel}_{suffix}"
 
+def RecoveryEndpointKey.isLocalTo (endpoint : RecoveryEndpointKey)
+    (island : SystemIsland) : Bool :=
+  match endpoint.side with
+  | .source => endpoint.connection.source == island.name
+  | .sink => endpoint.connection.sink == island.name
+
+def RecoveryEndpointKey.sideLabel (endpoint : RecoveryEndpointKey) : String :=
+  match endpoint.side with
+  | .source => "src_done"
+  | .sink => "dst_done"
+
+/-- Stable generated instance identity consumed by physical-intent adapters. -/
+def recoveryCompletionSyncInstanceName (island channel side : String) : String :=
+  s!"u_recovery_sync_{island}_{channel}_{side}"
+
+def RecoveryEndpointKey.syncInstanceName (endpoint : RecoveryEndpointKey)
+    (island : SystemIsland) : String :=
+  recoveryCompletionSyncInstanceName island.name endpoint.connection.channel
+    endpoint.sideLabel
+
+def RecoveryEndpointKey.synchronizedSignal (endpoint : RecoveryEndpointKey)
+    (island : SystemIsland) : String :=
+  s!"__loom_recovery_sync_{island.name}_{endpoint.connection.channel}_{endpoint.sideLabel}"
+
 /-- Exact ordered recovery domain for one island: both physical halves of
 every incident channel, in connection order. -/
 def recoveryEndpointsFor (sys : System)
@@ -744,12 +773,19 @@ def recoveryEndpointsFor (sys : System)
       connection.recoveryEndpointKeys
     else []
 
+def remoteRecoveryEndpointsFor (sys : System)
+    (island : SystemIsland) : List RecoveryEndpointKey :=
+  (recoveryEndpointsFor sys island).filter fun endpoint =>
+    !endpoint.isLocalTo island
+
 /-- A requested island may reset only after every endpoint half of every
 incident channel has flushed. Waiting merely for the local halves is too weak:
 the remote half may have acknowledged the request but not yet completed its
 own FIFO reset. -/
 def recoveryDoneSignals (sys : System) (island : SystemIsland) : List String :=
-  (recoveryEndpointsFor sys island).map RecoveryEndpointKey.doneSignal
+  (recoveryEndpointsFor sys island).map fun endpoint =>
+    if endpoint.isLocalTo island then endpoint.doneSignal
+    else endpoint.synchronizedSignal island
 
 /-- Technology-neutral Boolean meaning of one island's recovery gate. -/
 def recoveryComplete (sys : System) (island : SystemIsland)
@@ -815,6 +851,8 @@ private def internalWires (sys : System) : List String :=
     (sys.islands.flatMap fun island =>
       let incidentCount := (recoveryDoneSignals sys island).length
       [s!"wire {islandSignal island.name "recovery_reset"};"] ++
+        (remoteRecoveryEndpointsFor sys island).map (fun endpoint =>
+          s!"wire {endpoint.synchronizedSignal island};") ++
         (List.range (incidentCount - 1)).map fun index =>
           s!"wire {islandSignal island.name s!"recovery_acc_{index}"};")
    else []) ++ sys.islands.flatMap fun island =>
@@ -836,6 +874,8 @@ private def internalWireNames (sys : System) : List String :=
     (sys.islands.flatMap fun island =>
       let incidentCount := (recoveryDoneSignals sys island).length
       [islandSignal island.name "recovery_reset"] ++
+        (remoteRecoveryEndpointsFor sys island).map (fun endpoint =>
+          endpoint.synchronizedSignal island) ++
         (List.range (incidentCount - 1)).map fun index =>
           islandSignal island.name s!"recovery_acc_{index}")
    else []) ++ sys.islands.flatMap fun island =>
@@ -885,6 +925,16 @@ private def recoveryCoordinatorInstances (sys : System) : List String :=
           s!".clk({island.clock}), .rst(rst), .left(rst), " ++
           s!".right({islandSignal island.name "recovered"}), .and_out(), " ++
           s!".or_out({islandSignal island.name "recovery_reset"}));"]
+  else []
+
+private def recoveryCompletionSynchronizerInstances (sys : System) : List String :=
+  if sys.resetPolicy = .independentFlush then
+    sys.islands.flatMap fun island =>
+      (remoteRecoveryEndpointsFor sys island).map fun endpoint =>
+        s!"{RecoveryCompletionSynchronizer.design.name} {endpoint.syncInstanceName island} (" ++
+          s!".clk({island.clock}), .rst(rst), " ++
+          s!".raw_completion({endpoint.doneSignal}), " ++
+          s!".o_completion_sync1({endpoint.synchronizedSignal island}));"
   else []
 
 def TopModuleArtifact.render (top : TopModuleArtifact) : String :=
@@ -978,12 +1028,14 @@ def PhysicalCheckReport.render {artifacts : PhysicalArtifacts}
         s!"- target: {report.run.target}",
         s!"- tool: {report.run.tool} {report.run.version}",
         s!"- run: {report.run.runId}",
+        s!"- implementation variant: {report.run.implementationVariant}",
         s!"- theorem-bound RTL SHA-256: {report.artifactIdentity.rtlSha256}",
         s!"- physical-intent SHA-256: {report.artifactIdentity.intentSha256}",
         s!"- target-constraints SHA-256: {report.artifactIdentity.constraintsSha256.getD "missing"}",
         s!"- implementation RTL input SHA-256: {report.artifactIdentity.implementationRtlSha256.getD "missing"}",
         s!"- implementation constraint input SHA-256: {report.artifactIdentity.implementationConstraintsSha256.getD "missing"}",
-        s!"- routed-design SHA-256: {report.artifactIdentity.routedSha256.getD "missing"}", ""]
+        s!"- routed-design SHA-256: {report.artifactIdentity.routedSha256.getD "missing"}",
+        s!"- bitstream SHA-256: {report.artifactIdentity.bitstreamSha256.getD "missing"}", ""]
   (String.intercalate "\n" <|
     [s!"# Physical constraint results: {report.backend}", ""] ++ identity ++
     report.results.map fun result =>
@@ -1084,12 +1136,15 @@ def RealizedSystem.artifacts (realized : RealizedSystem) : PhysicalArtifacts :=
     islandModules :=
       (if realized.system.resetPolicy = .independentFlush then
         [(RecoveryCoordinator.design.name,
-          RecoveryCoordinator.certified.renderedVerilog)] else []) ++
+          RecoveryCoordinator.certified.renderedVerilog),
+         (RecoveryCompletionSynchronizer.design.name,
+          RecoveryCompletionSynchronizer.certified.renderedVerilog)] else []) ++
         realized.system.islands.map (islandModule realized.system)
     topModule :=
       { ports := topPorts realized.system
         wires := internalWires realized.system
-        islandInstances := recoveryCoordinatorInstances realized.system ++
+        islandInstances := recoveryCompletionSynchronizerInstances realized.system ++
+          recoveryCoordinatorInstances realized.system ++
           realized.system.islands.map (islandInstance realized.system)
         channelInstances := instances }
     constraintFile := { groups := constraintGroups }

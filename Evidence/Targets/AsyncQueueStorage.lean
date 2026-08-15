@@ -256,6 +256,47 @@ def asicSram (p : Parameters) (macroName : String)
     s!"satisfies AsyncQueueStorage(width={p.width},depth={p.depth}," ++
     s!"readLatency={p.readLatency})")
 
+/-! ## Inferred Xilinx 7-series leaf -/
+
+/-- Inferred Xilinx 7-series independent-clock block RAM used by focused
+silicon qualification designs. The target flow must still prove inference and
+retain the exact external storage-contract assumption in its evidence. -/
+def xilinx7InferredBramBinding (p : Parameters) (stem : String) : Binding p where
+  name := "evidence.xilinx7.inferred-block-ram." ++ stem
+  configuration := p.configuration .readFirst 1
+  agreesWidth := rfl
+  agreesDepth := rfl
+  agreesReadLatency := rfl
+  basis := .assumed
+    "Xilinx 7-series inferred true dual-port block RAM satisfies the synchronous storage contract"
+
+private def renderXilinx7InferredBram (name : String)
+    (interface : PhysicalLeafInterface) (configuration : Configuration) : String :=
+  String.intercalate "\n" [
+    s!"module {name}(",
+    "  input wire write_clk, input wire read_clk, input wire rst,",
+    "  input wire write_enable, input wire read_enable,",
+    s!"  input wire [{interface.addressWidth - 1}:0] write_address, read_address,",
+    s!"  input wire [{interface.width - 1}:0] write_data,",
+    s!"  output reg [{interface.width - 1}:0] read_sample",
+    ");",
+    s!"  // XILINX7_BLOCK_RAM width={interface.width} depth={interface.depth}",
+    s!"  // contract_read_latency={configuration.readLatency}",
+    s!"  (* ram_style = \"block\" *) reg [{interface.width - 1}:0] words [0:{interface.depth - 1}];",
+    "  always @(posedge write_clk) begin",
+    "    if (write_enable) words[write_address] <= write_data;",
+    "  end",
+    "  always @(posedge read_clk) begin",
+    "    if (read_enable) read_sample <= words[read_address];",
+    "  end",
+    "endmodule"]
+
+def xilinx7InferredBramLeaf (p : Parameters) (stem : String) : PhysicalLeaf p where
+  binding := xilinx7InferredBramBinding p stem
+  readPresentation := .registered
+  moduleName := "loom_xilinx7_block_ram_" ++ stem
+  renderModule := renderXilinx7InferredBram
+
 /-! ## Reference extension-boundary leaf
 
 This is intentionally a mock target rather than a vendor or foundry

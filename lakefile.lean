@@ -118,6 +118,26 @@ lean_exe openXc7ClockGauntletSignoff where
   root := `Tools.OpenXc7ClockGauntletSignoff
   supportInterpreter := true
 
+/-- Exact RTL, intent, and lane manifest for depth/endpoint silicon qualification. -/
+lean_exe surfaceMatrixEvidence where
+  root := `Tools.SurfaceMatrixEvidence
+  supportInterpreter := true
+
+/-- Recovery-capable depth-eight/full-rate companion artifact. -/
+lean_exe surfaceMatrixRecoveryEvidence where
+  root := `Tools.SurfaceMatrixRecoveryEvidence
+  supportInterpreter := true
+
+/-- Ingest exact Vivado routed facts into Loom's fail-closed typed report. -/
+lean_exe surfaceMatrixVivadoSignoff where
+  root := `Tools.SurfaceMatrixVivadoSignoff
+  supportInterpreter := true
+
+/-- Minimal independent-clock 32x4 registered-BRAM qualification artifact. -/
+lean_exe surfaceRegisteredBramEvidence where
+  root := `Tools.SurfaceRegisteredBramEvidence
+  supportInterpreter := true
+
 /-- Certified replay runner for the bidirectional SoC Fabric Gauntlet. -/
 lean_exe socFabricGauntletCampaign where
   root := `Tools.SoCFabricGauntletCampaignMain

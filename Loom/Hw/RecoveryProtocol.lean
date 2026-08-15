@@ -95,7 +95,7 @@ def Endpoint.step (endpoint : Endpoint) (tick requestNow peerRequest peerAck : B
       !endpoint.peerAcknowledge1
     { recoverInputSeen := requestNow
       request :=
-        if endpoint.flushed then false
+        if endpoint.flushed && !requestNow then false
         else if endpoint.newRequest requestNow || sawPeerRequest then true
         else endpoint.request
       peerRequest0 := peerRequest
