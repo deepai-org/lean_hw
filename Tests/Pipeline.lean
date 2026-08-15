@@ -64,4 +64,21 @@ private def graph : Except String (DomainComponentGraph CoreClock) :=
       | .error _ => false
       | .ok _ => true
 
+private def pipelineComponent : Except String (DomainComponent CoreClock) :=
+  component? (δ := CoreClock) (α := BitVec 16) "pipe" "Word" 3
+
+#guard match pipelineComponent with
+  | .error _ => false
+  | .ok component =>
+      component.sealed.component.interface.ports.map (fun port =>
+        (port.name, port.direction)) ==
+        [("stage0__in_valid", .input), ("stage0__in_payload", .input),
+         ("stage0__in_ready", .output), ("stage2__out_valid", .output),
+         ("stage2__out_payload", .output), ("stage2__out_ready", .input)]
+
+#guard match component? (δ := CoreClock) (α := BitVec 16)
+    "bad" "Word" 0 with
+  | .error _ => true
+  | .ok _ => false
+
 end Tests.Pipeline

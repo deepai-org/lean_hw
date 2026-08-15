@@ -630,9 +630,29 @@ private def combined (graph : ComponentGraph) : Design :=
     design.par (inst.component.component.design.prefixed inst.signalPrefix))
     (emptyDesign graph.name)
 
+private def substituteConnections {w : Nat} (graph : ComponentGraph) (expression : Expr w) :
+    Expr w :=
+  graph.connections.foldl (fun value connection =>
+    Expr.substReg connection.sinkFullName connection.width
+      (connection.sourceExpression.mapSignals
+        (connection.sourceInstance ++ "__" ++ ·)) value) expression
+
+/-- Expand an acyclic graph's connection expressions to their ultimate
+drivers. One pass is insufficient: substituting a downstream input can
+introduce an upstream input which happened to be visited earlier. The graph
+checker rejects cycles, and at most one dependency layer can remain per
+connection, so `connections.length` passes are a simple checked bound which
+is independent of instance or input declaration order. -/
+private def expandConnections {w : Nat} (graph : ComponentGraph) : Nat → Expr w → Expr w
+  | 0, expression => expression
+  | fuel + 1, expression =>
+      expandConnections graph fuel (substituteConnections graph expression)
+
 private def replacement (graph : ComponentGraph)
     (name : String) (width : Nat) : Option (Expr width) :=
-  graph.connections.findSome? fun connection => connection.replacement? name width
+  graph.connections.findSome? fun connection =>
+    (connection.replacement? name width).map
+      (expandConnections graph graph.connections.length)
 
 private def exportedStateNames (graph : ComponentGraph) : List String :=
   graph.exports.filterMap fun exposed =>
