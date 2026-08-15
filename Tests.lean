@@ -37,6 +37,7 @@ import Tests.Component
 import Tests.ExternalComponent
 import Tests.Stream
 import Tests.Plugin
+import Tests.MemoryPort
 import Tests.TransformChain
 import Tests.Fanout
 import Tests.Runner
