@@ -59,4 +59,37 @@ example : Loom.Hw.Stream.Valid
 example : Loom.Hw.Stream.registerStep (some 4) true 9 true = some 9 := by
   exact Loom.Hw.Stream.registerStep_replace 4 9
 
+example : Loom.Hw.Stream.transactions
+    (Loom.Hw.Stream.mapSamples (· + 10)
+      [{ valid := true, ready := true, payload := 1 },
+       { valid := true, ready := false, payload := 2 },
+       { valid := true, ready := true, payload := 2 }]) = [11, 12] := by
+  decide
+
+private def incrementMapper : Except String Component.Sealed :=
+  Loom.Hw.Stream.mapper? (δ := CoreClock) (α := BitVec 8) (β := BitVec 8)
+    "increment" "Byte" "Byte" fun value =>
+      ⟨.add value.bits (.lit 1#8)⟩
+
+#guard match incrementMapper with
+  | .error _ => false
+  | .ok sealed =>
+      sealed.component.design.regs.isEmpty &&
+      sealed.component.design.rules.isEmpty &&
+      sealed.component.design.combOutputs.length == 3
+
+/- A mapper connected back to itself would be a zero-delay valid, payload,
+and ready loop. The graph rejects the first cyclic edge at construction. -/
+#guard match do
+    let mapper ← incrementMapper
+    let inst : ComponentInstance := ⟨"loop", mapper⟩
+    let ports := Loom.Hw.Stream.mapperPorts
+      (δ := CoreClock) (α := BitVec 8) (β := BitVec 8) "Byte" "Byte"
+    let source ← ports.output.resolve inst
+    let sink ← ports.input.resolve inst
+    let graph ← (ComponentGraph.empty "bad_loop").addInstance inst
+    Loom.Hw.Stream.connect graph source sink with
+  | .error _ => true
+  | .ok _ => false
+
 end Tests.Stream
