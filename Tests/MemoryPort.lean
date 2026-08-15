@@ -104,4 +104,23 @@ private def bytePort : MixedWidthPort CoreClock 4 (BitVec 32) (BitVec 8) :=
   | .error _ => true
   | .ok _ => false
 
+private def readDataB : Reg 32 := ⟨"read_data_b"⟩
+
+private def dual : TrueDualPort .oldData .newData CoreClock 4 (BitVec 32) :=
+  { memory
+    outputA := readData
+    outputB := readDataB
+    indexA := 0
+    indexB := 1
+    indicesDistinct := by decide
+    layout := bytes }
+
+/- Both ports write address 3; the declared A-then-B order makes B win. -/
+#guard ((dual.cycle
+    (.lit 0#1) (.lit 3#4) (.lit 1#1) (.lit 3#4)
+      ⟨.lit 0xAAAAAAAA#32⟩ (.lit 0b1111#4)
+    (.lit 0#1) (.lit 3#4) (.lit 1#1) (.lit 3#4)
+      ⟨.lit 0xBBBBBBBB#32⟩ (.lit 0b1111#4)).run state state).mems
+      "words" 3 32 == 0xBBBBBBBB#32
+
 end Tests.MemoryPort
