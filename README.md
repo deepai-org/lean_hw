@@ -145,6 +145,53 @@ reinterpret source to WireImage -- representation conversion: preserve every bit
 to `WireImage.fromBits(source.bits)`. Loom never infers field meaning,
 truncation, extension, or whole-record arithmetic.
 
+## Typed SoC construction libraries
+
+Loom's first bounded SoC-construction layer is ordinary Lean library code over
+the same `Design` core. It deliberately uses types and proof fields before
+runtime naming conventions:
+
+- `Loom.Hw.Component` gives ports phantom clock-domain and nominal packed
+  payload types. Component graphs reject wrong directions, multiple drivers,
+  unresolved ports, and combinational dependency cycles, then flatten through
+  the existing composition semantics.
+- `Loom.Hw.ExternalComponent` is the assumption-bearing seam for SRAMs, PLLs,
+  pads, and other external leaves. Interface, clock/reset behavior, latency,
+  combinational dependencies, contract refinement, and exact artifact identity
+  remain inspectable data.
+- `Loom.Hw.Stream` and `Loom.Hw.Bus` provide same-clock ready/valid streams and
+  nominal request/response protocols. Domain or payload mismatches are type
+  errors. The ordered bus monitor carries a proof that its request queue stays
+  within the declared outstanding limit.
+- `Loom.Hw.MemoryPort` provides proof-carrying lane masks, asynchronous and
+  synchronous reads, old-data/new-data/unchanged-output collision behavior,
+  ordered writes, and power-of-two mixed-width views. Unsupported or ambiguous
+  memory semantics are not represented by a convenient flag.
+- `Loom.Hw.Plugin` resolves a user-defined GADT of typed services in canonical
+  order. Missing/duplicate providers, dependency cycles, undeclared reads, and
+  exclusive resource conflicts fail before hardware assembly.
+- `Loom.Hw.Pipeline`, `Loom.Hw.Arbiter`, and `Loom.Hw.RegisterMap` provide
+  transaction-conserving elastic stages with explicit flush loss, proof-bearing
+  arbitration policies, and access-typed register-map generation.
+- `Loom.Hw.ClockReset` indexes reset values by domain policy and gives primary
+  element semantics for resetless, synchronous-reset, and asynchronous-assert/
+  synchronous-release state. Only a domain carrying a compatibility proof can
+  lower through today's synchronous-reset scalar core.
+- `Loom.Hw.Waveform` records artifact-bound, replayable semantic traces and
+  emits deterministic VCD. `Loom.Hw.Temporal` defines a finite-trace property
+  fragment and fail-closed SVA/SymbiYosys plan generation while keeping
+  external results classified as external evidence.
+- `Loom.Hw.Arithmetic` separates signed and unsigned expression views at the
+  Lean type level and supplies reductions, widening carry/borrow, and explicit
+  saturating arithmetic over existing verified constructors.
+
+These libraries do not add implicit CDC, unrestricted drivers, inferred
+latches, target primitives, or physical implementation to Loom's semantics.
+They also do not claim complete AXI/TileLink catalogs, every RAM collision
+mode, automatic retiming, or NaxRiscv-scale validation yet. Those are measured
+follow-on library and qualification milestones; [PLATONIC.md](PLATONIC.md)
+defines the intended boundary.
+
 ## Derived execution and proof support
 
 A `Design` contains typed declarations and an ordered action list. From that
