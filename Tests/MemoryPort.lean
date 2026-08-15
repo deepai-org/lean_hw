@@ -54,4 +54,30 @@ private def duplicatePortBank : Bank CoreClock 4 (BitVec 32) :=
 
 #guard !duplicatePortBank.locallyValidB
 
+private def newDataPort : ReadWritePort .newData CoreClock 4 (BitVec 32) :=
+  ⟨memory, readData, 0, bytes⟩
+
+private def oldDataPort : ReadWritePort .oldData CoreClock 4 (BitVec 32) :=
+  ⟨memory, readData, 0, bytes⟩
+
+private def unchangedPort :
+    ReadWritePort .unchangedOutput CoreClock 4 (BitVec 32) :=
+  ⟨memory, readData, 0, bytes⟩
+
+/- The same collision has three deliberately different observable results. -/
+#guard ((newDataPort.cycle (.lit 1#1) (.lit 3#4) (.lit 1#1) (.lit 3#4)
+    ⟨.lit 0xAABBCCDD#32⟩ (.lit 0b0101#4)).run state state).regs
+      "read_data" 32 == 0x11BB33DD#32
+
+#guard ((oldDataPort.cycle (.lit 1#1) (.lit 3#4) (.lit 1#1) (.lit 3#4)
+    ⟨.lit 0xAABBCCDD#32⟩ (.lit 0b0101#4)).run state state).regs
+      "read_data" 32 == 0x11223344#32
+
+private def stateWithOutput : St :=
+  { state with regs := state.regs.set "read_data" 0xDEADBEEF#32 }
+
+#guard ((unchangedPort.cycle (.lit 1#1) (.lit 3#4) (.lit 1#1) (.lit 3#4)
+    ⟨.lit 0xAABBCCDD#32⟩ (.lit 0b0101#4)).run stateWithOutput stateWithOutput).regs
+      "read_data" 32 == 0xDEADBEEF#32
+
 end Tests.MemoryPort
