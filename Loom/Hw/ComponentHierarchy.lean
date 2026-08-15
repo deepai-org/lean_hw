@@ -50,6 +50,9 @@ Child compiler/simulator certificates remain available directly from every
 `graph.instances` entry. -/
 structure Certificate (graph : ComponentGraph) where
   graphValid : graph.validB = true
+  pathsUnique : graph.pathsUniqueB = true
+  connectionsValid : graph.connectionsValidB = true
+  exportBoundaryValid : graph.exportsValidB = true
   namespacesDisjoint : graphNamespacesDisjointB graph = true
   order : List String
   topology : ComponentGraph.topologicalOrderCheckB graph.dependencyEdges order = true
@@ -67,17 +70,43 @@ theorem dependencyAcyclic {graph : ComponentGraph} (certificate : Certificate gr
     ComponentGraph.DependencyAcyclic graph.dependencyEdges :=
   ComponentGraph.topologicalOrderCheckB_sound certificate.topology
 
+/-- Every stored substitution still names an output and input of the certified
+children with the checked width, semantic payload name, and clock domain. -/
+theorem connectionValid {graph : ComponentGraph} (certificate : Certificate graph)
+    {connection : Connection} (member : connection ∈ graph.connections) :
+    graph.connectionValidB connection = true := by
+  have valid := certificate.connectionsValid
+  simp only [ComponentGraph.connectionsValidB, Bool.and_eq_true] at valid
+  exact List.all_eq_true.mp valid.1 connection member
+
+/-- Every exported coordinate belongs to an output of the named child. This
+is the final hierarchy boundary obligation; unlisted child outputs remain
+internal after lowering. -/
+theorem exportValid {graph : ComponentGraph} (certificate : Certificate graph)
+    {exposed : String × String} (member : exposed ∈ graph.exports) :
+    (match graph.findInstance? exposed.1 with
+      | none => false
+      | some inst => (inst.findPort? .output exposed.2).isSome) = true := by
+  exact List.all_eq_true.mp certificate.exportBoundaryValid exposed member
+
 end Certificate
 
 def check? (graph : ComponentGraph) : Except String (Certificate graph) := do
   if hValid : graph.validB = true then
-    if hNamespaces : graphNamespacesDisjointB graph = true then
-      let order := ComponentGraph.proposeTopologicalOrder graph.dependencyEdges
-      if hTopology : ComponentGraph.topologicalOrderCheckB
-          graph.dependencyEdges order = true then
-        return ⟨hValid, hNamespaces, order, hTopology⟩
-      throw s!"component graph '{graph.name}' has no checked topological order"
-    throw s!"component graph '{graph.name}' has colliding flattened namespaces"
+    if hPaths : graph.pathsUniqueB = true then
+      if hConnections : graph.connectionsValidB = true then
+        if hExports : graph.exportsValidB = true then
+          if hNamespaces : graphNamespacesDisjointB graph = true then
+            let order := ComponentGraph.proposeTopologicalOrder graph.dependencyEdges
+            if hTopology : ComponentGraph.topologicalOrderCheckB
+                graph.dependencyEdges order = true then
+              return ⟨hValid, hPaths, hConnections, hExports,
+                hNamespaces, order, hTopology⟩
+            throw s!"component graph '{graph.name}' has no checked topological order"
+          throw s!"component graph '{graph.name}' has colliding flattened namespaces"
+        throw s!"component graph '{graph.name}' has an invalid export boundary"
+      throw s!"component graph '{graph.name}' has an invalid connection substitution"
+    throw s!"component graph '{graph.name}' has duplicate instance paths"
   throw s!"component graph '{graph.name}' is structurally invalid"
 
 structure DomainCertificate {δ : Type v} [ClockDomain δ]

@@ -213,7 +213,112 @@ def stepWithFlush {depth : Nat} (state : State depth α)
 
 end State
 
-/-- Assemble a concrete same-clock pipeline from verified one-entry slices.
+/-! ## Concrete link components -/
+
+/-- Common stream boundary of one pipeline link. -/
+def linkPorts {δ : Type v} {α : Type u}
+    [ClockDomain δ] [HwPacked α] (semanticType : String) :
+    Stream.RegisterSlicePorts δ α :=
+  Stream.registerSlicePorts semanticType
+
+/-- A zero-state combinational link. It is explicit because bypass changes
+latency and combinational-path structure even though it does not change the
+stream transaction sequence. -/
+def bypassComponent? {δ : Type v} {α : Type u}
+    [ClockDomain δ] [HwPacked α] (name semanticType : String) :
+    Except String (DomainComponent δ) := do
+  let ports := linkPorts (δ := δ) (α := α) semanticType
+  let component : Component :=
+    { name
+      interface := ⟨ports.input.decls ++ ports.output.decls⟩
+      design :=
+        { name
+          regs := []
+          mems := []
+          inputs := [ports.input.valid.bitReg.input,
+            ports.input.payload.reg.input, ports.output.ready.bitReg.input]
+          rules := []
+          outputs := []
+          combOutputs :=
+            [⟨ports.input.ready.name, 1, ports.output.ready.bitReg.rd⟩,
+             ⟨ports.output.valid.name, 1, ports.input.valid.bitReg.rd⟩,
+             ⟨ports.output.payload.name, HwPacked.width α,
+                ports.input.payload.reg.rd⟩] } }
+  DomainComponent.seal? component.name component.interface
+    (DomainDesign.authored component.design)
+
+/-- Extra control port of a flushable link. Flush is synchronous to `δ`;
+when asserted, the link accepts and presents no transaction on that cycle and
+discards its buffered item at the edge. -/
+def flushPort {δ : Type v} [ClockDomain δ] :
+    Port .input δ (BitVec 1) := Port.bits .input 1 "flush"
+
+/-- One-entry registered link with an explicit loss-bearing flush input. -/
+def flushableComponent? {δ : Type v} {α : Type u}
+    [ClockDomain δ] [HwPacked α] (name semanticType : String) :
+    Except String (DomainComponent δ) := do
+  let ports := linkPorts (δ := δ) (α := α) semanticType
+  let flush := flushPort (δ := δ)
+  let full : Reg 1 := ⟨"full"⟩
+  let payload : Reg (HwPacked.width α) := ⟨"payload"⟩
+  let active := .not flush.bitReg.rd
+  let canAccept := .and active
+    (.or (.not full.rd) ports.output.ready.bitReg.rd)
+  let outputValid := .and active full.rd
+  let transfer :=
+    .ite canAccept
+      (.seq (full.set ports.input.valid.bitReg.rd)
+        (.ite ports.input.valid.bitReg.rd
+          (payload.set ports.input.payload.reg.rd) .skip))
+      .skip
+  let update := .ite flush.bitReg.rd (full.set (.lit 0)) transfer
+  let component : Component :=
+    { name
+      interface := ⟨ports.input.decls ++ ports.output.decls ++ [flush.decl]⟩
+      design :=
+        { name
+          regs := [full.decl 0, payload.decl 0]
+          mems := []
+          inputs := [ports.input.valid.bitReg.input,
+            ports.input.payload.reg.input, ports.output.ready.bitReg.input,
+            flush.bitReg.input]
+          rules := [⟨"transfer_or_flush", update⟩]
+          outputs := []
+          combOutputs :=
+            [⟨ports.input.ready.name, 1, canAccept⟩,
+             ⟨ports.output.valid.name, 1, outputValid⟩,
+             ⟨ports.output.payload.name, HwPacked.width α, payload.rd⟩] } }
+  DomainComponent.seal? component.name component.interface
+    (DomainDesign.authored component.design)
+
+/-- Assemble a concrete same-clock pipeline from an explicit nonempty link
+inventory. Every link has the same typed stream boundary; individual links
+may be registered, flushable, bypassing, or supplied by a plugin. -/
+def componentGraphOf? {δ : Type v} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (name semanticType : String) (stages : List (DomainComponent δ)) :
+    Except String (DomainComponentGraph δ) := do
+  if stages.isEmpty then
+    throw "a concrete pipeline requires at least one link"
+  let ports := Stream.registerSlicePorts (δ := δ) (α := α) semanticType
+  let mut graph := DomainComponentGraph.empty (δ := δ) name
+  for (stage, index) in stages.zipIdx do
+    graph ← graph.addInstance ⟨s!"stage{index}", stage⟩
+  for index in List.range (stages.length - 1) do
+    let some sourceInstance := graph.findInstance? s!"stage{index}"
+      | throw "internal pipeline source-stage construction failure"
+    let some sinkInstance := graph.findInstance? s!"stage{index + 1}"
+      | throw "internal pipeline sink-stage construction failure"
+    let source ← ports.output.resolve sourceInstance
+    let sink ← ports.input.resolve sinkInstance
+    graph ← Stream.connect graph source sink
+  let last := stages.length - 1
+  graph ← graph.expose "stage0" ports.input.ready.name
+  graph ← graph.expose s!"stage{last}" ports.output.valid.name
+  graph ← graph.expose s!"stage{last}" ports.output.payload.name
+  return graph
+
+/-- Assemble a homogeneous concrete pipeline from verified one-entry slices.
 The stage count is an ordinary Lean parameter. -/
 def componentGraph? {δ : Type v} {α : Type u}
     [ClockDomain δ] [HwPacked α]
@@ -223,23 +328,8 @@ def componentGraph? {δ : Type v} {α : Type u}
     throw "a concrete registered pipeline requires at least one stage"
   let slice ← Stream.registerSlice? (δ := δ) (α := α)
     (name ++ "_stage") semanticType
-  let ports := Stream.registerSlicePorts (δ := δ) (α := α) semanticType
-  let mut graph := DomainComponentGraph.empty (δ := δ) name
-  for index in List.range depth do
-    graph ← graph.addInstance ⟨s!"stage{index}", slice⟩
-  for index in List.range (depth - 1) do
-    let some sourceInstance := graph.findInstance? s!"stage{index}"
-      | throw "internal pipeline source-stage construction failure"
-    let some sinkInstance := graph.findInstance? s!"stage{index + 1}"
-      | throw "internal pipeline sink-stage construction failure"
-    let source ← ports.output.resolve sourceInstance
-    let sink ← ports.input.resolve sinkInstance
-    graph ← Stream.connect graph source sink
-  let last := depth - 1
-  graph ← graph.expose "stage0" ports.input.ready.name
-  graph ← graph.expose s!"stage{last}" ports.output.valid.name
-  graph ← graph.expose s!"stage{last}" ports.output.payload.name
-  return graph
+  componentGraphOf? (δ := δ) (α := α) name semanticType
+    (List.replicate depth slice)
 
 /-- Typed boundary of a configured registered pipeline after its internal
 slice hierarchy is sealed. The boundary names are derived from the same stage
