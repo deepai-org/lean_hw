@@ -36,6 +36,7 @@ import Tests.SimulationComp
 import Tests.Component
 import Tests.ExternalComponent
 import Tests.Stream
+import Tests.Bus
 import Tests.Plugin
 import Tests.MemoryPort
 import Tests.RegisterMap
