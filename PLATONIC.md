@@ -53,11 +53,6 @@ values rather than an expanding collection of language keywords.
 
 The remaining hierarchy milestone is semantic rather than structural:
 
-- replace `StandardEmbedding`'s inventory-prefix premise with an
-  order-independent, builder-generated inclusion witness, so every included
-  sibling fragment receives a projection handle regardless of assembly order;
-  exact typed membership and input/connection dispatch preservation are the
-  proof boundary, not list position;
 - prove that canonical graph flattening refines component composition;
 - reuse sealed child semantic certificates through hierarchy-preserving
   compilation instead of globally recertifying one flattened `Design`;

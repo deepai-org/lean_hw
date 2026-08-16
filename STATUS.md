@@ -11,7 +11,7 @@ machine and board specifications.
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-11; warnings remain. |
 | `lake exe audit` | **PASS** | Rechecked on 2026-08-12; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,280-job graph passed, including the isolated nominal-domain compile-failure regressions. |
+| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,281-job graph passed, including the sibling-order gate and isolated nominal-domain compile-failure regressions. |
 | `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-16, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
@@ -31,7 +31,8 @@ unrerun gates.
 ### Multiclock execution-projection gate
 
 Focused validation on 2026-08-16 passed for `Tests.SystemProjection`,
-`Tests.ProjectionProgress`, and the fail-closed `Tests.ProjectionAxioms`
+`Tests.SiblingProjection`, `Tests.ProjectionProgress`, and the fail-closed
+`Tests.ProjectionAxioms`
 audit. The result transports valid finite
 reset-aware executions, state-dependent observed inputs, fragment island and
 internal-channel state, time, clocks, and resets. It lifts one fragment-wide
@@ -40,7 +41,10 @@ demonstration into two different parents. The latter states request
 presentation, destination readiness, required fragment ticks, and reset
 absence explicitly while permitting arbitrary irrelevant interleavings. The
 standard include-and-close projection is derived from checked finite inventory
-evidence; a manual certificate remains available for transformed adapters.
+evidence. Builder-generated placements now give two sibling fragments
+projections in either assembly order while preserving exact lookup and input
+dispatch; duplicate inventory fails closed. A manual certificate remains
+available for transformed adapters.
 Its exact axiom closure is
 `propext`, `Classical.choice`, and `Quot.sound`.
 

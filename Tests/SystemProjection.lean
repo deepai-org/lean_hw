@@ -329,11 +329,16 @@ def closedCollectorIsland : SystemIsland :=
 
 def asynchronousEmbedding :
     System.StandardEmbedding asynchronousParent fragmentSystem where
+  islandPrefix := []
   islandSuffix := [closedClientIsland, closedCollectorIsland]
+  connectionPrefix := []
   connectionSuffix :=
     [requestRoute.toSystemConnection, responseRoute.toSystemConnection]
   islands := rfl
   connections := rfl
+  islandPrefixDisjoint := rfl
+  connectionPrefixDisjoint := rfl
+  connectionPrefixOutside := rfl
   childEndpoints := by decide
   boundary := by decide
   resetPolicy := rfl
@@ -458,13 +463,18 @@ theorem monitored_connectionResult_eq
 
 def monitoredEmbedding :
     System.StandardEmbedding monitoredParent fragmentSystem where
+  islandPrefix := []
   islandSuffix :=
     [closedClientIsland, closedCollectorIsland,
       monitorIsland.toSystemIsland]
+  connectionPrefix := []
   connectionSuffix :=
     [requestRoute.toSystemConnection, responseRoute.toSystemConnection]
   islands := rfl
   connections := rfl
+  islandPrefixDisjoint := rfl
+  connectionPrefixDisjoint := rfl
+  connectionPrefixOutside := rfl
   childEndpoints := by decide
   boundary := by decide
   resetPolicy := rfl

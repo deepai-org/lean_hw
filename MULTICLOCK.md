@@ -394,14 +394,19 @@ state-dependent input view at the intermediate boundary. The executable
 `fragmentBoundaryCheckB` remains a useful inventory diagnostic; the semantic
 simulation fields and coordinate-inclusion proofs are authoritative.
 
-For the ordinary construction path, `StandardEmbedding` records exact child
-island/connection prefixes, finite endpoint closure, and compatible
-coordinated-reset and clock contracts. `SystemFragment.standardProjection`
-derives the complete execution simulation from that structural evidence. A
-manual `ExecutionProjection` remains the expert escape for adapters that
-transform state, events, or inputs.
+For the ordinary construction path, `includeFragmentPlaced` returns an exact,
+builder-generated inventory placement. `StandardEmbedding` accepts the child
+at any inventory position, proves earlier sibling names disjoint, and proves
+that earlier sibling connections cannot shadow the child's generated inputs.
+Later connections may close the child's exported endpoints. Thus every
+included sibling receives the same projection handle regardless of assembly
+order while exact island/channel membership, endpoint closure, and input
+dispatch remain kernel-checked. Compatible coordinated-reset and clock
+contracts complete the certificate, and `SystemFragment.standardProjection`
+derives the execution simulation. A manual `ExecutionProjection` remains the
+expert escape for adapters that transform state, events, or inputs.
 
-The focused gate contains a worker/engine fragment with an internal
+The focused gates contain a worker/engine fragment with an internal
 asynchronous queue and typed request/response exports. Two parents close those
 exports, one parent adds an unrelated monitor island, and the same internal
 FIFO ordering/no-loss theorem and bounded response theorem are lifted through
@@ -409,6 +414,10 @@ their execution projections. The progress theorem is phrased over predicates:
 no reset, request presentation, destination readiness, and the required
 fragment-domain ticks. It permits arbitrary inserted events that tick neither
 fragment domain instead of requiring equality with one exact witness trace.
+An additional sibling-order gate packages the closed service and an independent
+observer as reusable fragments, includes them in both orders, and lifts a
+theorem from each sibling through each parent. Duplicate fragment inventory is
+rejected at assembly.
 The projection theorem and demonstrator close
 over exactly Lean's standard `propext`, `Classical.choice`, and `Quot.sound`;
 the focused audit fails closed if that set expands.
