@@ -161,13 +161,13 @@ lake build Tests.ProjectionProgress
 lake build Tests.ProjectionAxioms
 ```
 
-The second command prints readable dependency closures and also executes a
+The final command prints readable dependency closures and also executes a
 fail-closed kernel dependency audit. It succeeds only when every focused
-projection, predicate-progress, and demonstration declaration stays within `propext`,
-`Classical.choice`, and `Quot.sound`; a newly introduced axiom makes
-elaboration fail. Consult [`STATUS.md`](STATUS.md) before interpreting a
-repository-wide `lake test`, because an unrelated development target may abort
-while this focused gate remains independently reproducible.
+projection, predicate-progress, and demonstration declaration stays within
+`propext`, `Classical.choice`, and `Quot.sound`; a newly introduced axiom makes
+elaboration fail. This focused gate remains independently reproducible if a
+different development target fails; consult [`STATUS.md`](STATUS.md) for the
+current repository-wide result.
 
 ## Interpreting success
 

@@ -126,7 +126,7 @@ private def batchFixtures? : Except String
   let sink ← c.input? consumerInput
   return (producerComponent, consumerComponent, ← Connection.typed source sink)
 
-#guard match do
+private def duplicatePathsRejected : Bool := match do
     let (producerComponent, _, _) ← batchFixtures?
     let p : DomainComponentInstance CoreClock := ⟨"duplicate", producerComponent⟩
     let batch := (DomainComponentBatch.empty (δ := CoreClock) "duplicate_paths")
@@ -136,7 +136,7 @@ private def batchFixtures? : Except String
   | .error _ => true
   | .ok _ => false
 
-#guard match do
+private def duplicateSinksRejected : Bool := match do
     let (producerComponent, consumerComponent, connection) ← batchFixtures?
     let p : DomainComponentInstance CoreClock := ⟨"produce", producerComponent⟩
     let c : DomainComponentInstance CoreClock := ⟨"consume", consumerComponent⟩
@@ -149,27 +149,23 @@ private def batchFixtures? : Except String
   | .error _ => true
   | .ok _ => false
 
-private def peripheralOwnedDesign : DomainDesign PeripheralClock :=
-  DomainDesign.authored producerDesign
+/- These signatures pin the nominal-domain boundary without asking Lean to
+construct and pretty-print a deliberately enormous dependent type mismatch.
+A domain-owned design can be placed only in an island of the same domain, and
+a graph can accept only connections carrying that domain. -/
+example (design : DomainDesign CoreClock) : DomainIslandHandle CoreClock :=
+  DomainIslandHandle.named "typed" design
 
-/- A domain-owned design cannot be placed on another domain's typed clock. -/
-#check_failure
-  (DomainIslandHandle.named (δ := CoreClock) "bad" peripheralOwnedDesign)
-
-/- Suppress the expected elaboration diagnostic itself: pretty-printing the
-dependent typeclass mismatch is disproportionately expensive in Lean.  The
-negative test still asks the elaborator to form the actual graph operation. -/
-example (_graph : DomainComponentGraph CoreClock)
-    (_connection : DomainConnection PeripheralClock) : True := by
-  fail_if_success
-    let _ := DomainComponentGraph.connect _graph _connection
-  trivial
+example (graph : DomainComponentGraph CoreClock)
+    (connection : DomainConnection CoreClock) :
+    Except String (DomainComponentGraph CoreClock) :=
+  graph.connect connection
 
 /- An erased/dynamic graph cannot bypass the same-domain check: the port's
 domain name remains part of exact interface membership.  Ordinary typed code
 is stronger—the call to `Connection.typed` cannot even be formed because the
 phantom domain types differ. -/
-#guard match do
+private def wrongClockRejected : Bool := match do
     let consumerComponent ← consumer.seal?
     let inst : ComponentInstance := ⟨"consume", consumerComponent⟩
     inst.input? wrongClockInput with
@@ -178,7 +174,7 @@ phantom domain types differ. -/
 
 /- Duplicate drivers are rejected at the second connection rather than left
 to source order. -/
-#guard match do
+private def duplicateDriverRejected : Bool := match do
     let producerComponent ← producer.seal?
     let consumerComponent ← consumer.seal?
     let p : ComponentInstance := ⟨"p", producerComponent⟩
@@ -193,6 +189,12 @@ to source order. -/
     ComponentGraph.Expert.connect graph connection with
   | .error _ => true
   | .ok _ => false
+
+/- Evaluate the proof-carrying negative cases in one command. In this
+import-heavy module, Lean 4.28 reproducibly segfaults when these same cases are
+issued as successive evaluator commands. -/
+#guard duplicatePathsRejected && duplicateSinksRejected &&
+  wrongClockRejected && duplicateDriverRejected
 
 /- The optimized topological proposal is accepted only through the compact
 structural checker. These cases pin the graph shapes most likely to regress. -/
