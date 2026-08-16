@@ -17,173 +17,11 @@ primitive algebra. Unsigned division and remainder use an explicit total
 two-state contract (`a / 0 = 0`, `a % 0 = a`) preserved through emission; their mapping
 to DSPs, gates, or staged units is not a Loom-level vendor decision.
 
-This document describes the intended current destination. Current results are
-recorded in [`STATUS.md`](STATUS.md), and the authoritative trust boundary is
-recorded in [`TCB.md`](TCB.md).
-
-## Immediate foundation
-
-The following high-priority facilities are current requirements and are
-implemented in the tree:
-
-1. **Shared expression evaluation is the machine-simulation default.**
-   `Loom/Hw/DagEval.lean` interns resolved expressions across every action root
-   and evaluates each node once per cycle. LNP64mini's public `runDesign` and
-   public runners prepare the certified DAG fail-closed, with no fallback to
-   tree evaluation. The regression suite includes one nontrivial expression
-   consumed by five separate funnels and checks that it has one shared DAG
-   root with five consumers.
-
-2. **The generated `Design` is the primary simulator.** LNP64mini's
-   `runDesign` executes the certified shared-DAG core and derives peripheral
-   requests from that core's state. `progtest` obtains its architectural
-   outcomes from this path. LNP64mini's hand-written cycle mirror has been
-   removed; architectural tests, RTL expectations, and board tooling derive
-   from the Design.
-
-3. **Typed declarations are the default observation surface.** `Design.coords`
-   and resolved typed slots derive complete comparison or observation plans
-   from the Design. LNP64mini's hand-maintained comparator, duplicate coverage
-   tables, and mirrored state adapter have been removed.
-
-4. **Checked properties are general over `Design`.** `ExprProperty` handles
-   state properties and `TransitionProperty` handles typed before/after
-   relations. Both infer their complete expression footprints, carry generic
-   support/frame theorems, and reduce full Design cycles to the relevant
-   writer cone. LNP64mini applies the general transition language to prove
-   that wake preserves every slot's resume PC, gate stack frame, domain,
-   depth, and in-gate state. In-gate parking is intentionally supported, so
-   the checked rule preserves its continuation rather than falsely forbidding
-   that state.
-
-5. **Differential runs share one control plane.** `Loom.Runner` owns bounded
-   stepping, mismatch and coverage events, immediate flushing, diagnostic
-   limits, early-stop policy, and structured PASS/FAIL/SKIP results. Acc8,
-   LNP64mini's core and bus components, and FastEval corroboration use it;
-   machine code supplies only its opaque state and step callback.
-
-6. **Artifact and command diagnostics are generic.** `Loom.Artifact` provides
-   exact byte identities, identity-bound observations, verification, and
-   change-only deterministic text writing. The generic shell diagnostics
-   library provides freshness checks, captured producer logs, exact failing
-   commands, and structured results. `artifact_identity.py` supplies portable
-   SHA-256 manifests for external workflows; negative freshness, silent-log,
-   and identity-mismatch cases run under `scripts/quality.sh`.
-
-## Packed hardware values
-
-Packed hardware values are implemented as a typed authoring facade over the
-durable width-indexed `Expr`, `Reg`, `Mem`, and `Chan` core. `HwPacked` gives a
-semantic Lean type one canonical fixed-width representation and proves
-`pack`/`unpack` inverse laws. `HwPackedLayout` checks unique field names,
-in-bounds disjoint slices, complete padding-free coverage, and MSB-first
-declaration order. `PackedMember` additionally proves that each named Lean
-record projection agrees with its hardware slice.
-
-`PackedExpr`, `PackedReg`, `PackedInput`, `PackedOutput`, `PackedMem`, and
-`PackedChan` retain the semantic type until an explicit `.bits` or `.fromBits`
-boundary. Equal-width but unrelated records therefore do not become
-assignment-compatible, and records acquire no accidental arithmetic or
-ordering. Field reads and record construction lower to the existing
-slice/concatenation expression algebra; packed channels use the unchanged
-scalar queue, recovery, realization, and emission machinery.
-
-Conversion follows the same nominal boundary. A semantic conversion constructs
-the destination record field-by-field; Loom cannot infer that two equally wide
-fields mean the same thing. Intentional representation conversion is spelled
-`reinterpret value to Destination` in pretty syntax, requires equal packed
-widths, and lowers exactly to `Destination.fromBits(value.bits)`. It adds no
-implicit coercion, truncation, extension, logic, state, or latency.
-
-`Act.writeSlice` is the one core action added for partial packed-register
-assignment. Its bound proof makes an invalid slice unrepresentable. Every RHS
-still observes pre-cycle state, preserved bits come from the ordered write
-accumulator, and overlapping writes are last-write-wins. The semantics,
-compiler correctness, evaluators, transformations, footprints, artifact and
-release certificates, generators, and existing proof libraries all handle the
-constructor directly.
-
-The stable layout contract is:
-
-- there is no padding or alignment;
-- total width is exactly the sum of field widths;
-- declaration order fixes placement, with the first field occupying the most
-  significant bits and the last field the least significant bits;
-- reset values and executable observations use the same `pack` function; and
-- equality is packed bit equality.
-
-The core currently supports named scalar `BitVec` fields and whole-element
-packed memory access. Nested packed values, arrays, tagged unions, optional
-fields, padding, memory-field read/modify/write, and external ABI matching are
-separate features, not implied by “struct.” Native SystemVerilog structs are
-also unnecessary: certified emission continues to use the established packed
-vector and static slices. The omitted declaration syntax belongs only to
-[`PRETTY.md`](PRETTY.md); it does not block typed packed designs or multiclock
-use.
-
-## Multiclock system composition
-
-Ordinary synchronous `Design`s remain the proof and implementation unit inside
-clock islands. A typed `Chan` or `PackedChan` is the only application-level
-crossing: scalar and structured payloads use the same queue semantics,
-schedule theorems, realization plan, and emitted binding. Packed records are
-values carried by an endpoint, not a second interface or CDC language.
-
-The application facade owns typed clock/island handles, directional endpoints,
-per-route selection from a small proved realization set, arbitrary positive
-same-clock depths, arbitrary power-of-two portable asynchronous depths, named
-readiness reports, and reusable island certification. It must remain agnostic
-to FPGA versus ASIC implementation and to every vendor or synthesis tool.
-It must also make boundary latency inspectable: each selected realization
-derives a coverage-checked timing description naming acceptance/delivery
-points, buffering and synchronizer stages, exact or premise-dependent bounds
-in domain ticks or System events, and any recovery interruption. Typed
-convenience must never turn inserted cycles into a hidden implementation
-detail.
-
-The compatibility sink's registered request has an explicit two-destination-
-tick issue interval. An opt-in, destination-local two-entry presentation
-buffer provides a proved one-item-per-destination-tick steady state without a
-combinational CDC path. This remains an endpoint presentation choice rather
-than a new channel semantics or a target-specific primitive.
-
-Physical evidence is keyed by exact device, tool/version, primitive mode,
-storage configuration and presentation contract, and clock relationship.
-Changing any key invalidates qualification. Target reports cover every neutral
-requirement, bind exact RTL/intent/target-constraint/routed hashes and
-post-synthesis object names, and fail unless every row is `PASS`; vendor
-adapters remain outside generic Loom
-imports.
-
-Independent reset is a separate loss/recovery contract, never an implicit
-variation of coordinated reset. Its current `independentFlush` semantics make
-reset dominance and discarded incident traffic explicit. A loss-explicit
-channel recovery refinement, schedule-executable request/acknowledgement
-protocol, compiler-produced endpoint/guard/coordinator components, and stock
-structural physical binding now implement the graceful request/completion
-shape through the ordinary application facade. Binding/policy mismatches fail
-closed at certified-artifact construction, and hierarchical parent/child reset
-contracts must agree. Every incident channel contributes both endpoint halves
-to the generated completion gate; reset-aware application replay retains the
-certified DAG/semantic relation. Each FIFO half remains reset throughout its
-endpoint's `flushed` phase, so reset skew cannot reintroduce a peer pointer
-from the discarded epoch. Protocol completion is exactly the abstract
-flush event for a single channel. For multi-channel islands, the coordinated
-refinement retains each early-reset channel's logical epoch until the exact
-generated coordinator domain is complete, then commits every incident channel
-to the same `System.advanceRecovery` event. The compiled endpoint-pair
-transition and this global event alignment are proved. The remaining formal
-gap is the whole-wrapper state relation for the compiled FIFO, storage, and
-guards across early local resets; generic reset-aware compiler correctness
-already joins the exact compiled island reset. Checked
-sealed blocks now carry typed exported endpoints, cached
-island certificates, and dependent theorem bundles; packed exports retain
-their semantic record type, and parent composition closes only endpoints
-indexed by the same channel. Automatic instance prefixing is
-ergonomic follow-up rather than a new semantic layer.
-[`MULTICLOCK_PLAN.md`](MULTICLOCK_PLAN.md) is the detailed roadmap and
-[`MULTICLOCK_BOUNDARY.md`](MULTICLOCK_BOUNDARY.md) states the remaining
-physical assumptions.
+This document records unfinished architectural destination and durable scope
+rules. Current capabilities belong in [`README.md`](README.md), checked results
+in [`STATUS.md`](STATUS.md), multiclock behavior in
+[`MULTICLOCK.md`](MULTICLOCK.md), and the authoritative trust boundary in
+[`TCB.md`](TCB.md).
 
 ## SoC construction architecture
 
@@ -211,100 +49,25 @@ precise Lean API and semantics; convenient spelling belongs in
 policies, reset policies, memory configurations, and IP kinds are library
 values rather than an expanding collection of language keywords.
 
-### Typed components and external IP
+### Hierarchy and external-IP completion
 
-A component is a reusable typed interface plus an implementation or behavioral
-contract. Its interface contains packed ports with direction, semantic payload
-type, and clock-domain ownership. Reset, combinational dependencies, latency,
-and statefulness are explicit interface facts rather than conventions inferred
-from signal names. An instance has a stable hierarchical path and may connect
-only type-equal, direction-compatible endpoints. Width-only compatibility is
-insufficient for nominal packed types.
+The remaining hierarchy milestone is semantic rather than structural:
 
-There are three implementation classes:
+- prove that canonical graph flattening refines component composition;
+- reuse sealed child semantic certificates through hierarchy-preserving
+  compilation instead of globally recertifying one flattened `Design`;
+- support separate compilation without changing observable behavior;
+- make hierarchy-preserving and flattened emission certified views of the same
+  instance graph; and
+- qualify one internal memory and one assumption-bound external memory leaf as
+  interchangeable implementations of the same exact client contract.
 
-1. An **internal component** contains an ordinary Loom implementation. Loom
-   proves that instance elaboration and optional flattening preserve its
-   component semantics. Flattened and hierarchy-preserving emission are views
-   of the same instance graph, not distinct designs.
-2. A **contracted component** has a technology-neutral transition or trace
-   contract but no Loom body. It is an explicit cut point. Any theorem that
-   depends on its behavior carries that contract as a named premise.
-3. A **refined external component** pairs the same contract with checked
-   evidence: a Lean refinement theorem, neutral-netlist equivalence, or an
-   explicitly classified external result. Only a kernel-checked refinement or
-   checked neutral equivalence can discharge a Loom logical proof obligation;
-   a contract alone remains a premise and an external report remains external
-   evidence.
-
-The external-IP seam is therefore not arbitrary HDL interpolation. A leaf
-declares its exact interface, clock/reset contract, state and latency contract,
-allowed combinational paths, stable artifact identity, and implementation
-binding. Unsupported parameters, unconnected required ports, multiple drivers,
-domain-crossing connections, contract/version mismatches, and undeclared
-combinational paths fail closed. Verilog, VHDL, FPGA, and ASIC bindings may all
-implement one contract without entering generic imports.
-
-Top-level pads and bidirectional pins terminate at this seam. The verified core
-sees separate input, output, and output-enable signals; the physical binding
-may join them into an `inout`. PLL lock, generated-clock quality, analog pad
-behavior, SRAM electrical behavior, and vendor primitive semantics remain
-named assumptions. Internal tri-state nets are not introduced.
-
-The hierarchy milestone is complete only when Loom has:
-
-- typed component definition and instantiation;
-- deterministic instance paths and collision-free derived names;
-- structural checks for ownership, directions, domains, and drivers;
-- compositional component semantics;
-- a proved flattening/refinement theorem;
-- separate compilation without changing observable behavior; and
-- one internal component and one assumption-bound external memory leaf used
-  interchangeably behind the same contract.
-
-#### Components are clock-island internals, not a second multiclock model
-
-Typed hierarchy and multiclock composition have different semantic units and
-must meet at one explicit boundary:
-
-```text
-Component δ
-    ↓ same-clock composition
-DomainComponentGraph δ
-    ↓ checked flattening
-DomainDesign δ
-    ↓ paired by type with Clock δ
-one System island
-    ↓ Chan plus an explicit CDC realization
-another System island
-```
-
-Every sequential component element and domain-owned memory belongs to `δ`.
-Flattening preserves that index; it does not return an unqualified `Design` to
-ordinary user code. `System` assembly accepts a `DomainDesign δ` only with a
-`Clock δ`, so the association is a Lean typing fact rather than equality of
-emitted strings. The erased `Design`, clock name, and island records remain
-lowering formats for generators, importers, and compatibility code.
-
-Same-clock streams remain ordinary typed component connections. Crossing a
-clock boundary must change the construction deliberately: the endpoints become
-a typed `Chan`, and assembly selects an explicit synchronous or CDC
-realization. A valid/ready/payload bundle must never silently cross domains as
-three raw wires.
-
-A reusable block wholly owned by one clock exports a `Component δ` or
-`DomainDesign δ`. A reusable block containing several independently ticking
-domains seals as a `SystemFragment`, not as one flattened component. A fragment
-contains domain-indexed islands, typed channels, explicit realizations,
-exported stream/channel endpoints, reset contracts, and lifted theorem bundles;
-fragment composition produces another fragment and eventually a checked
-`System`. External PLLs, PHYs, dual-clock macros, and similar IP use a
-multiclock external contract at this System boundary.
-
-The intended rule is simple: use components for cycle-sensitive structure
-inside one island, and use System channels whenever clocks genuinely differ.
-Changing a subsystem from one clock to two must force that boundary change,
-while leaving its existing single-domain logic and proofs intact.
+Multidomain contracted leaves such as PLLs, PHYs, and dual-clock macros must
+instantiate at the `SystemFragment` boundary rather than masquerading as
+single-clock components. Top-level pads expose separate logical input, output,
+and output-enable signals; joining them into a physical `inout`, along with
+PLL quality and analog or electrical behavior, remains a named external
+assumption. Internal tri-state nets remain excluded.
 
 ### Same-clock streams and protocol libraries
 
@@ -315,13 +78,13 @@ must retain the payload and keep `valid` asserted. These obligations are part
 of the stream contract; neither truthiness nor best-effort loss is implicit.
 Empty payload observation is irrelevant unless `valid` is true.
 
-Stream endpoints and combinators should be ordinary typed library values over
-packed ports and components. The initial verified set should include direct
-connection, register slice, skid buffer, FIFO, fork, join, mux, demux, width
-adapter, mapper, and explicit lossy adapter. Each operator states its buffering,
-latency, ordering, backpressure, and loss contract and carries a refinement to
-an abstract transaction trace. Combinational ready/valid dependency cycles are
-rejected structurally or broken by an explicitly buffered operator.
+Attach component-derived transaction traces to the existing direct, mapper,
+and register-slice operators, then add skid buffer, FIFO, fork, join, mux,
+demux, width adapter, and explicit lossy adapter. Each operator states its
+buffering, latency, ordering, backpressure, and loss contract and carries a
+refinement to an abstract transaction trace. Combinational ready/valid
+dependency cycles are rejected structurally or broken by an explicitly
+buffered operator.
 
 An asynchronous stream connection is never an implicit rewiring. It selects a
 proved CDC adapter such as a synchronizer, pulse/toggle bridge, or asynchronous
@@ -376,47 +139,11 @@ contract. Byte and bit enables update only the selected lanes. Resetless or
 uninitialized contents begin as symbolic state, never silently as zero.
 
 A neutral logical memory may refine to registers, an FPGA RAM, or an ASIC SRAM
-macro. Register-bank lowering is a proved implementation. A target memory leaf
-uses the external-component seam and must match the exact port, latency, mask,
-collision, initialization, and domain contract. Area, timing, inference style,
-and macro selection remain external. This division permits one logical SoC to
-target FPGA and ASIC without pretending their memories have behavior that the
-contract did not state.
-
-### Lean-native plugins and services
-
-Large generated systems need decentralized construction, but plugins are an
-elaboration facility, not hardware semantics. A plugin has a typed manifest of
-services it provides and requires, configuration values, component/port
-resources it claims, and the components or connections it contributes. A
-service key includes its Lean type; a width-compatible but semantically
-different service cannot satisfy it.
-
-Construction proceeds in explicit phases:
-
-1. **declare** publishes requirements, provisions, and resource claims without
-   reading unresolved services;
-2. **negotiate** resolves unique and multi-provider services, configuration
-   constraints, and optional capabilities;
-3. **build** produces typed components, instances, connections, properties,
-   and refinement obligations; and
-4. **seal** rejects unresolved handles, dependency cycles, duplicate unique
-   providers, conflicting resource claims, unstable names, or unconsumed
-   required services and records an auditable manifest.
-
-Service handles are single-assignment and may be consumed only after their
-declared phase. Resolution is deterministic and independent of plugin list
-order except where an explicit ordered policy says otherwise. An apparent
-elaboration dependency cycle reports the service path that created it rather
-than deadlocking or observing a partially built design.
-
-Plugins may generate ordinary Lean data and use functions, recursion, types,
-and proofs freely. They receive no escape from component typing, domain checks,
-driver checks, channel-footprint checks, or contract closure. A plugin system
-therefore enables NaxRiscv-scale configuration without becoming a second,
-less-checked HDL. The first validation must assemble independently developed
-producer and consumer plugins, replace one provider, diagnose a real cycle,
-and show that two plugin orderings seal to the same canonical component graph.
+macro. A target memory leaf uses the external-component seam and must match the
+exact port, latency, mask, collision, initialization, and domain contract.
+Area, timing, inference style, and macro selection remain external. This
+division permits one logical SoC to target FPGA and ASIC without pretending
+their memories have behavior that the contract did not state.
 
 ### Pipelines, register maps, arbitration, and protocols
 
@@ -443,11 +170,6 @@ types, and ordinary state:
   adapters, and optional progress assumptions. Composition proves that adapter
   output traces satisfy the receiving protocol rather than merely connecting
   equal-width wires.
-
-The first CPU-scale gate should exercise payload propagation, backpressure,
-flush, bypass, arbitration, and replacement of one service-provided pipeline
-stage. LNP64mini need not be rewritten merely to demonstrate the framework;
-the gate should expose pressure that a smaller hand-wired pipeline does not.
 
 ### Clock and reset modeling
 
@@ -513,20 +235,19 @@ and distinguish a checked Loom proof from an external `PASS` in the report.
 ### Arithmetic conveniences
 
 Additional arithmetic should preserve Loom's width-explicit, two-state
-semantics. The constructor audit should cover arithmetic right shift, reduction
-AND/OR/XOR, rotates, dynamic bit selection, fixed-width dynamic part selection,
-widening add/sub with carry or borrow, and explicit saturating arithmetic.
-Every operation states operand/result widths, signed interpretation, shift
-amount treatment, out-of-range behavior, and total behavior at exceptional
-inputs. Unsized literals never justify silent truncation.
+semantics. The remaining constructor audit covers rotates, dynamic bit
+selection, fixed-width dynamic part selection, and fixed-point helpers. Every
+operation states operand/result widths, signed interpretation, shift-amount
+treatment, out-of-range behavior, and total behavior at exceptional inputs.
+Unsized literals never justify silent truncation.
 
 Operations enter the core only when they provide a useful primitive semantic
-or enable materially better compilation/proof structure. Derived rotates,
-reductions, saturation, and fixed-point arithmetic should otherwise be verified
-library definitions. Nominal signed, unsigned, and fixed-point facades may
-improve typing without changing the durable `BitVec` representation. Dynamic
-selection, if added, requires direct evaluator, compiler, footprint,
-bit-blasting, and bounds theorems rather than a pretty-only lowering.
+or enable materially better compilation/proof structure. Rotates and
+fixed-point arithmetic should otherwise be verified library definitions.
+Nominal fixed-point facades may improve typing without changing the durable
+`BitVec` representation. Dynamic selection, if added, requires direct
+evaluator, compiler, footprint, bit-blasting, and bounds theorems rather than a
+pretty-only lowering.
 
 Four-state arithmetic, implicit signedness, context-dependent result widths,
 silent narrowing, and tool-dependent division or shift behavior remain
@@ -542,28 +263,6 @@ These exclusions are enabling constraints: they keep transition semantics
 total, composition checkable, and FPGA/ASIC neutrality credible.
 
 ## Reusable machine infrastructure
-
-The reusable control plane lives in Loom. Acc8 is the independent demonstrated
-port: it uses the same runner, derived coordinate coverage, and structured
-results as LNP64mini, and its bespoke comparator and recursive runner are gone.
-LNP64mini's core and component tests use Design-derived execution and generic
-structured results; its prior parallel runners and duplicated comparison
-metadata are gone. Component adapters reuse the same control plane without
-standardizing their machine-specific inputs.
-
-The boundary remains deliberate:
-
-- Loom owns result/control policy, complete coordinate planning, closed named
-  exclusions, deterministic writes, byte identity, freshness, and command
-  diagnostics.
-- Machines own inputs, environment and peripheral policy, reference adapters,
-  programs, expected architectural outcomes, and properties.
-- Boards own transports, probes, deployment configuration, and read-path
-  health policy, while attaching Loom artifact identity to observations.
-
-Test-program shapes remain machine-side. Dwell, park/wake, replicated spawn,
-and loop-until-refused are useful patterns to name in prose, not code to
-generalize into Loom.
 
 Generic certified-DAG runner packaging, multi-design orchestration, and a
 standard open-Design environment interface remain deferred. The interface must
@@ -747,21 +446,15 @@ artifact, and receive a report whose claims and assumptions are unambiguous.
 
 The intended workflow has these properties:
 
-1. **One declaration per fact.** Names, widths, reset values, interfaces,
-   simulator fields, and comparison coverage derive from one declaration.
-2. **Local proof cost.** An invariant proof sees only rules that can affect its
+1. **Local proof cost.** An invariant proof sees only rules that can affect its
    support.
-3. **Provable logical optimization.** A transformation carries a refinement
+2. **Provable logical optimization.** A transformation carries a refinement
    theorem rather than relying on a comment or downstream synthesis behavior.
-4. **Fast views remain proved views.** Specialized simulators and generators
-   come with kernel-checked equality or soundness theorems.
-5. **External evidence is translation validation.** Synthesis outputs are
+3. **External evidence is translation validation.** Synthesis outputs are
    checked, not trusted as proofs and not reimplemented inside Loom.
-6. **Physical predictions remain estimates.** Abstract cost models may guide
+4. **Physical predictions remain estimates.** Abstract cost models may guide
    engineering, but target measurements retain their provenance and
    uncertainty.
-7. **No green result by omission.** New state, ports, operators, cut points,
-   and assumptions are checked or explicitly reported.
 
 ## Non-negotiable constraints
 
@@ -778,32 +471,10 @@ The intended workflow has these properties:
 - Target measurements never become universal facts without a named target,
   configuration, tool version, and controlled baseline.
 
-## Capability workstreams
+## Remaining capability workstreams
 
-### W1 — typed, single-source designs
-
-Typed register, memory, input, and output handles should remain the sole source
-for widths and names. Generated adapters, comparators, debug descriptions, and
-coverage checks must derive from those declarations.
-
-Typed interfaces cover LNP64mini and the migrated examples. Their state
-adapters, comparison plans, debug taps, output selection, coverage, and
-memory-policy reports derive from typed handles, properties, or the resulting
-`Design`. Designs authored directly in the stable core EDSL remain supported;
-they do not require a parallel typed schema. Independent oracles may remain
-for diagnostic diversity, but never as an unlabelled production semantic
-mirror. New facilities must preserve this single-source discipline rather
-than introduce parallel metadata.
-
-Packed hardware types extend that discipline from scalar coordinates to
-structured values. One packed declaration owns field names, widths, layout,
-semantic pack/unpack, expression projections, typed state/storage/channel
-handles, debug views, and source rendering. None may be restated in a separate
-port map or comparator schema, and equal total width must not make two distinct
-packed types assignment-compatible. `Act.writeSlice` is the sole core mechanism
-for partial packed-register lvalues; it must remain a bounded static-slice
-operation whose compiler and simulators preserve accumulator ordering and
-pre-cycle RHS evaluation.
+Workstream identifiers are retained for continuity with issues and historical
+plans; completed workstreams are no longer repeated here.
 
 ### W2 — property-directed proof automation
 
@@ -811,10 +482,8 @@ Footprints, support inference, frame rules, projected actions, and cycle
 tactics should make proof effort scale with a property's dependency cone.
 Open-system assumptions must remain explicit in theorem statements.
 
-The current register/memory footprint machinery, projected cycles, expression
-properties, and generated support checks establish this direction. Further
-work should improve composition and proof ergonomics without changing machine
-semantics.
+Further work should improve composition and proof ergonomics without changing
+machine semantics.
 
 ### W3 — verified logical transformations
 
@@ -865,17 +534,6 @@ The implementation order is:
 Generic logical-graph proofs are in scope. Adding FPGA primitives, ASIC
 standard cells, or synthesis-tool graph behavior is not.
 
-### W5 — derived simulation
-
-Fast evaluators, DAG evaluators, state comparators, and test matrices should be
-generated from `Design` and connected to it by proofs. Hand-maintained ISS or
-emulator models remain useful differential oracles, but their non-derived
-status must be explicit.
-
-The current certified DAG evaluator and derived state comparison are the
-primary path. Further work should extend their use and performance rather than
-introduce additional manually synchronized simulators.
-
 ### W6 — abstract cost guidance
 
 Loom may attach symbolic, target-parameterized cost vectors to proved
@@ -889,13 +547,11 @@ the logical-equivalence core.
 
 ### W7 — typed hierarchy and IP contracts
 
-Define typed component interfaces, deterministic instance graphs,
-compositional semantics, and proved flattening before adding convenient
-instance syntax. Then add the external-component seam with exact
-clock/reset/latency/dependency contracts and artifact-bound implementations.
-The acceptance gate is substitution of an internal memory implementation and
-an external memory leaf behind one unchanged client and contract, with every
-remaining assumption visible in the result.
+Prove the semantic flattening/refinement boundary, reuse child certificates
+through hierarchy-preserving compilation, and support separate compilation.
+The remaining acceptance gate is substitution of an internal memory
+implementation and an external memory leaf behind one unchanged client and
+exact contract, with every residual assumption visible in the result.
 
 ### W8 — streams and bus protocols
 
@@ -908,57 +564,46 @@ for an incomplete, unchecked collection of wires.
 
 ### W9 — complete memory ports
 
-Extend neutral memory semantics with synchronous reads, masks, explicit
-read-during-write and write-collision policies, dual-port operation, and
-declared mixed-width lane mapping. Each addition must land together in the
-reference evaluator, optimized evaluator, compiler, footprints, proofs,
-emission, and external-memory contract. Register-bank refinement is the first
-portable implementation; FPGA RAM and ASIC SRAM bindings remain evidence- or
+Finish integrating the typed port policies through the optimized evaluator,
+compiler, footprints, proofs, emission, and exact external-memory contract.
+Complete symbolic resetless initialization and any still-unrepresented mixed-
+width or collision contracts without assigning accidental source-order
+semantics. FPGA RAM and ASIC SRAM bindings remain evidence- or
 assumption-bound leaves.
-
-### W10 — plugin and service construction
-
-Implement the phased, typed, deterministic service resolver over component
-construction. It must fail closed on missing or duplicate services, cycles,
-unresolved handles, and resource conflicts, and produce a canonical auditable
-manifest. No plugin API graduates until order-independence and provider
-replacement are demonstrated on separately authored plugins.
 
 ### W11 — reusable SoC libraries
 
-Build pipeline, arbitration, register-map, protocol-monitor, and adapter
-libraries from packed values, streams, components, and ordinary state. Every
-library reports exact buffering/latency and separates safety from conditional
-progress. Generated documentation and software views derive from the same
-register-map declaration as the hardware and its proofs.
+Extend the initial pipeline, arbitration, checked register-map, monitor, and
+adapter libraries into a coherent SoC library set. Every operator must report
+exact buffering/latency, preserve ordered payload traces, and separate safety
+from conditional progress. Generated documentation and software views derive
+from the same checked register-map declaration as the hardware and its proofs.
 
 ### W12 — clock and reset completeness
 
 Generalize domain-owned state to distinguish resetless initialization,
-synchronous reset, asynchronous assertion, synchronized release, polarity,
-and clock enable. Preserve schedule semantics for coincident unrelated edges.
-Add distinct verified CDC libraries for levels, pulses, snapshots, reset
-release, and streams; do not introduce a width-directed generic synchronizer.
-Generated/gated clocks, PLLs, and clock muxes remain contracted boundaries with
-named physical requirements.
+asynchronous assertion, synchronized release, polarity, and clock enable.
+Add distinct verified CDC libraries for levels, pulses, snapshots, and reset
+release; do not introduce a width-directed generic synchronizer. Generated or
+gated clocks, PLLs, and clock muxes remain contracted boundaries with named
+physical requirements.
 
 ### W13 — ecosystem bridges
 
-Derive hierarchical signal metadata, replayable traces, and VCD/FST waveforms
-from the design. Provide differential adapters to external simulators and a
-small Loom-defined temporal-property fragment with a fail-closed SVA export.
-External simulation and SymbiYosys results remain classified evidence unless
-connected to a checked certificate; counterexamples should replay against the
-reference semantics.
+Bind waveform recording to theorem-bound artifact bundles, add FST and robust
+external-simulator adapters, and establish a tested semantic correspondence
+for the supported SVA subset. External simulation and SymbiYosys results remain
+classified evidence unless connected to a checked certificate;
+counterexamples should replay against the reference semantics.
 
 ### W14 — arithmetic completion
 
-Audit arithmetic right shift, reductions, rotations, dynamic selection,
-carry/borrow, saturation, and fixed-point helpers against actual SoC uses.
-Prefer proved library definitions; add a core constructor only when its direct
-semantics, compilation, or proof structure is materially valuable. Every
-accepted operation ships with explicit width/signedness rules and all semantic,
-compiler, evaluator, CNF, and diagnostic coverage required by its role.
+Finish the SoC-driven audit of rotations, dynamic selection, and fixed-point
+helpers. Prefer proved library definitions; add a core constructor only when
+its direct semantics, compilation, or proof structure is materially valuable.
+Every accepted operation ships with explicit width/signedness rules and all
+semantic, compiler, evaluator, CNF, and diagnostic coverage required by its
+role.
 
 ### Derived debug instrumentation
 
@@ -996,28 +641,18 @@ evidence, but it must not add core semantics or proof obligations.
 
 Loom reaches the intended shape when:
 
-- a substantial design changes at one declaration site and all derived views
-  update or fail with named obligations;
-- a structured hardware value changes at one field declaration and its packed
-  width, projections, state/storage/channel types, observations, proofs, and
-  emitted vector layout update or fail from that same source;
 - proofs recheck in proportion to affected logic;
 - logical transformations compose through refinement theorems;
-- the emitted logical artifact is connected to the design;
 - a neutral synthesized netlist is checked by the same generic equivalence
   theorem regardless of producer or eventual FPGA/ASIC target;
 - switching synthesis tools requires only external production of the neutral
   interchange, not new Loom proofs;
 - switching FPGA vendors or moving to ASIC does not change Loom's logical
   semantics;
-- a component client can substitute an internal implementation or contracted
-  external leaf without changing its typed interface or abstract proof;
 - stream and bus composition preserves transactions under explicitly stated
   buffering, backpressure, ordering, and progress premises;
 - every memory port has explicit latency, mask, collision, initialization, and
   domain behavior, and target memories match that exact contract;
-- plugin order does not change the sealed component graph unless an explicitly
-  ordered policy is present, and every provided/required service is recorded;
 - resetless state, reset behavior, clock-domain crossings, and generated-clock
   assumptions are distinguishable in both semantics and reports;
 - external waveforms, counterexamples, SVA results, and implementation reports
