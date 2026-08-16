@@ -151,6 +151,57 @@ Loom's first bounded SoC-construction layer is ordinary Lean library code over
 the same `Design` core. It deliberately uses types and proof fields before
 runtime naming conventions:
 
+### How the construction layers fit together
+
+Lean remains the parameterization language. Plugins and ordinary Lean
+functions select and construct single-clock components; Loom's typed hierarchy
+then composes those components into one clock island. Multiclock composition
+begins only at the island boundary:
+
+```text
+Lean parameters and plugins
+          ↓
+DomainComponent δ
+          ↓  compose through typed ports and same-clock streams
+DomainComponentGraph δ
+          ↓  seal one clock island
+DomainDesign δ
+          ↓  place on Clock δ
+System island
+          ↓  connect independent clocks through Chan
+multiclock System
+          ↓  select explicit CDC realizations
+semantic simulation and certified technology-neutral RTL generation
+```
+
+The practical boundary is deliberately simple:
+
+- Use components, ports, and streams for structure whose state advances on
+  the same clock.
+- Seal one independently ticking region as a `DomainDesign δ` and place it
+  on the matching typed clock as a System island.
+- Cross between clocks only through a typed `Chan` with an explicit CDC
+  realization; a stream never silently becomes raw cross-clock wires.
+- Preserve a reusable subsystem containing several islands as a
+  `SystemFragment`, rather than flattening it into a single-clock component.
+
+Thus moving from one clock to two is a visible architectural change at the
+connection boundary, while the components inside each island and their local
+proofs remain unchanged. [MULTICLOCK.md](MULTICLOCK.md) describes channel,
+schedule, reset, and realization behavior in detail; [PLATONIC.md](PLATONIC.md)
+records the longer-term architectural destination.
+
+`SystemFragment` is also the certified multiclock component boundary. Given a
+checked `ExecutionProjection`, every valid finite parent execution induces the
+fragment execution with matching fragment islands, internal channels, time,
+clock/reset observations, and inputs. Fragment-wide finite-trace safety and
+explicitly conditional bounded-progress theorems can therefore be reused in a
+compatible parent without flattening and reproving the fragment. This is
+semantic theorem reuse; hierarchy-preserving separately compiled RTL is a
+distinct, deferred result.
+
+### Library pieces
+
 - `Loom.Hw.Component` gives ports phantom clock-domain and nominal packed
   payload types. Component graphs reject wrong directions, multiple drivers,
   unresolved ports, and combinational dependency cycles, then flatten through

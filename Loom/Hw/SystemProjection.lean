@@ -256,11 +256,90 @@ structure StateProjects (parent child : System)
       connection.chan.name == name).isSome = true →
     childState.channel name = parentState.channel name
 
+theorem restrictState_projects (child : System) {parent : System}
+    (state : parent.State) :
+    StateProjects parent child state (restrictState child state) := by
+  refine { time := rfl, island := ?_, channel := ?_ }
+  · intro name present
+    simp only [restrictState]
+    rw [if_pos present]
+  · intro name present
+    simp only [restrictState]
+    rw [if_pos present]
+
+namespace StateProjects
+
+/-- Relational state projection is transitive when the inner projection
+certifies that every child coordinate exists in its parent. -/
+theorem trans {outer middle inner : System}
+    {outerState : outer.State} {middleState : middle.State}
+    {innerState : inner.State}
+    (outerMiddle : StateProjects outer middle outerState middleState)
+    (middleInner : StateProjects middle inner middleState innerState)
+    (islandIncluded : ∀ name,
+      (inner.findIsland? name).isSome = true →
+        (middle.findIsland? name).isSome = true)
+    (channelIncluded : ∀ name,
+      (inner.connections.find? fun connection =>
+        connection.chan.name == name).isSome = true →
+      (middle.connections.find? fun connection =>
+        connection.chan.name == name).isSome = true) :
+    StateProjects outer inner outerState innerState := by
+  refine { time := middleInner.time.trans outerMiddle.time,
+           island := ?_, channel := ?_ }
+  · intro name present
+    exact (middleInner.island name present).trans
+      (outerMiddle.island name (islandIncluded name present))
+  · intro name present
+    exact (middleInner.channel name present).trans
+      (outerMiddle.channel name (channelIncluded name present))
+
+/-- Recover the middle-to-inner relation from an outer-to-inner relation and
+a canonical outer-to-middle projection. This is the key state fact needed by
+state-dependent projection composition. -/
+theorem through {outer middle inner : System}
+    {outerState : outer.State} {middleState : middle.State}
+    {innerState : inner.State}
+    (outerInner : StateProjects outer inner outerState innerState)
+    (outerMiddle : StateProjects outer middle outerState middleState)
+    (islandIncluded : ∀ name,
+      (inner.findIsland? name).isSome = true →
+        (middle.findIsland? name).isSome = true)
+    (channelIncluded : ∀ name,
+      (inner.connections.find? fun connection =>
+        connection.chan.name == name).isSome = true →
+      (middle.connections.find? fun connection =>
+        connection.chan.name == name).isSome = true) :
+    StateProjects middle inner middleState innerState := by
+  refine { time := outerInner.time.trans outerMiddle.time.symm,
+           island := ?_, channel := ?_ }
+  · intro name present
+    exact (outerInner.island name present).trans
+      (outerMiddle.island name (islandIncluded name present)).symm
+  · intro name present
+    exact (outerInner.channel name present).trans
+      (outerMiddle.channel name (channelIncluded name present)).symm
+
+end StateProjects
+
 /-- A forward simulation from a parent System to an embedded child System.
 `projectExternal` supplies the inputs that the child observes after its open
 endpoints have been connected by the parent. -/
 structure ExecutionProjection (parent child : System) where
-  boundary : fragmentBoundaryCheckB child parent = true
+  /-- A canonical child-shaped view of a parent state. It is used to compute
+  state-dependent inputs when projections are composed; theorem statements
+  continue to use the extensional `StateProjects` relation. -/
+  projectState : parent.State → child.State := restrictState child
+  projectState_projects : ∀ state,
+    StateProjects parent child state (projectState state)
+  islandIncluded : ∀ name,
+    (child.findIsland? name).isSome = true →
+      (parent.findIsland? name).isSome = true
+  channelIncluded : ∀ name,
+    (child.connections.find? fun connection =>
+      connection.chan.name == name).isSome = true →
+    (parent.connections.find? fun connection =>
+      connection.chan.name == name).isSome = true
   projectEvent : RecoveryEvent → RecoveryEvent
   projectExternal : parent.State → ObservedRecoveryEvent → String → InEnv
   clockEvent : ∀ event clock,
@@ -284,6 +363,73 @@ structure ExecutionProjection (parent child : System) where
         (projectExternal parentState observed) childState)
 
 namespace ExecutionProjection
+
+/-- Compose execution projections through a certified hierarchy. The
+canonical state of the first projection supplies the state-dependent inputs
+seen by the second; the public result remains the extensional fragment-state
+relation. -/
+def comp {outer middle inner : System}
+    (outerMiddle : ExecutionProjection outer middle)
+    (middleInner : ExecutionProjection middle inner) :
+    ExecutionProjection outer inner where
+  projectState := fun state =>
+    middleInner.projectState (outerMiddle.projectState state)
+  projectState_projects := by
+    intro state
+    exact StateProjects.trans
+      (outerMiddle.projectState_projects state)
+      (middleInner.projectState_projects (outerMiddle.projectState state))
+      middleInner.islandIncluded middleInner.channelIncluded
+  islandIncluded := by
+    intro name present
+    exact outerMiddle.islandIncluded name
+      (middleInner.islandIncluded name present)
+  channelIncluded := by
+    intro name present
+    exact outerMiddle.channelIncluded name
+      (middleInner.channelIncluded name present)
+  projectEvent := fun event =>
+    middleInner.projectEvent (outerMiddle.projectEvent event)
+  projectExternal := fun state observed =>
+    middleInner.projectExternal (outerMiddle.projectState state)
+      { event := outerMiddle.projectEvent observed.event
+        external := outerMiddle.projectExternal state observed }
+  clockEvent := by
+    intro event clock
+    rw [middleInner.clockEvent, outerMiddle.clockEvent]
+  resetEvent := by
+    intro event island
+    rw [middleInner.resetEvent, outerMiddle.resetEvent]
+  resetCompatible := by
+    intro event valid
+    exact middleInner.resetCompatible _
+      (outerMiddle.resetCompatible event valid)
+  clockCompatible := by
+    intro events valid
+    have middleValid := outerMiddle.clockCompatible events valid
+    have innerValid := middleInner.clockCompatible
+      (events.map outerMiddle.projectEvent) (by
+        simpa [List.map_map] using middleValid)
+    simpa [List.map_map] using innerValid
+  initial := StateProjects.trans outerMiddle.initial middleInner.initial
+    middleInner.islandIncluded middleInner.channelIncluded
+  step := by
+    intro outerState innerState observed outerInner valid
+    let middleState := outerMiddle.projectState outerState
+    have outerMiddleState : StateProjects outer middle outerState middleState :=
+      outerMiddle.projectState_projects outerState
+    have middleInnerState : StateProjects middle inner middleState innerState :=
+      StateProjects.through outerInner outerMiddleState
+        middleInner.islandIncluded middleInner.channelIncluded
+    have middleValid := outerMiddle.resetCompatible observed.event valid
+    have nextOuterMiddle := outerMiddle.step outerState middleState observed
+      outerMiddleState valid
+    have nextMiddleInner := middleInner.step middleState innerState
+      { event := outerMiddle.projectEvent observed.event
+        external := outerMiddle.projectExternal outerState observed }
+      middleInnerState middleValid
+    exact StateProjects.trans nextOuterMiddle nextMiddleInner
+      middleInner.islandIncluded middleInner.channelIncluded
 
 def projectObserved {parent child : System}
     (projection : ExecutionProjection parent child) (state : parent.State)
