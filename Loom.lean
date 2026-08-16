@@ -83,6 +83,7 @@ import Loom.Hw.SystemRecovery
 import Loom.Hw.CertifiedSystemArtifact
 import Loom.Hw.CertifiedSystemRecovery
 import Loom.Hw.Multiclock
+import Loom.Hw.SystemProjection
 import Loom.Hw.Notation
 import Loom.Hw.Declarations
 import Loom.Hw.Packed
