@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.ComponentHierarchy
 import Loom.Hw.Stream
 
 /-!
@@ -291,32 +292,44 @@ def flushableComponent? {δ : Type v} {α : Type u}
   DomainComponent.seal? component.name component.interface
     (DomainDesign.authored component.design)
 
-/-- Assemble a concrete same-clock pipeline from an explicit nonempty link
-inventory. Every link has the same typed stream boundary; individual links
-may be registered, flushable, bypassing, or supplied by a plugin. -/
+/-- Accumulate a concrete same-clock pipeline without rechecking the growing
+graph after every stream wire. The returned batch has not yet crossed its one
+structural certificate boundary. -/
+def componentBatchOf? {δ : Type v} {α : Type u}
+    [ClockDomain δ] [HwPacked α]
+    (name semanticType : String) (stages : List (DomainComponent δ)) :
+    Except String (DomainComponentBatch δ) := do
+  if stages.isEmpty then
+    throw "a concrete pipeline requires at least one link"
+  let ports := Stream.registerSlicePorts (δ := δ) (α := α) semanticType
+  let instances : List (DomainComponentInstance δ) := stages.zipIdx.map fun entry =>
+    ⟨s!"stage{entry.2}", entry.1⟩
+  let mut batch := DomainComponentBatch.empty (δ := δ) name
+  for inst in instances do
+    batch := batch.addInstance inst
+  for index in List.range (stages.length - 1) do
+    let some sourceInstance := instances[index]?
+      | throw "internal pipeline source-stage construction failure"
+    let some sinkInstance := instances[index + 1]?
+      | throw "internal pipeline sink-stage construction failure"
+    let source ← ports.output.resolve sourceInstance
+    let sink ← ports.input.resolve sinkInstance
+    batch ← Stream.connectBatch batch source sink
+  let last := stages.length - 1
+  batch := batch.expose "stage0" ports.input.ready.name
+  batch := batch.expose s!"stage{last}" ports.output.valid.name
+  batch := batch.expose s!"stage{last}" ports.output.payload.name
+  return batch
+
+/-- Assemble and structurally certify a concrete same-clock pipeline. Every
+link has the same typed stream boundary; individual links may be registered,
+flushable, bypassing, or supplied by a plugin. -/
 def componentGraphOf? {δ : Type v} {α : Type u}
     [ClockDomain δ] [HwPacked α]
     (name semanticType : String) (stages : List (DomainComponent δ)) :
     Except String (DomainComponentGraph δ) := do
-  if stages.isEmpty then
-    throw "a concrete pipeline requires at least one link"
-  let ports := Stream.registerSlicePorts (δ := δ) (α := α) semanticType
-  let mut graph := DomainComponentGraph.empty (δ := δ) name
-  for (stage, index) in stages.zipIdx do
-    graph ← graph.addInstance ⟨s!"stage{index}", stage⟩
-  for index in List.range (stages.length - 1) do
-    let some sourceInstance := graph.findInstance? s!"stage{index}"
-      | throw "internal pipeline source-stage construction failure"
-    let some sinkInstance := graph.findInstance? s!"stage{index + 1}"
-      | throw "internal pipeline sink-stage construction failure"
-    let source ← ports.output.resolve sourceInstance
-    let sink ← ports.input.resolve sinkInstance
-    graph ← Stream.connect graph source sink
-  let last := stages.length - 1
-  graph ← graph.expose "stage0" ports.input.ready.name
-  graph ← graph.expose s!"stage{last}" ports.output.valid.name
-  graph ← graph.expose s!"stage{last}" ports.output.payload.name
-  return graph
+  let batch ← componentBatchOf? (δ := δ) (α := α) name semanticType stages
+  return (← ComponentHierarchy.checkBatch? batch).graph
 
 /-- Assemble a homogeneous concrete pipeline from verified one-entry slices.
 The stage count is an ordinary Lean parameter. -/

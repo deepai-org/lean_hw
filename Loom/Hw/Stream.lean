@@ -91,6 +91,16 @@ def connect {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
   let graph ← graph.connect (← Connection.typed source.payload sink.payload)
   graph.connect (← Connection.typed sink.ready source.ready)
 
+/-- Seal-once form of `connect`. The three typed connections are accumulated
+without graph-wide validation; `ComponentHierarchy.checkBatch?` validates the
+complete inventory once. -/
+def connectBatch {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
+    (batch : DomainComponentBatch δ) (source : SourceEndpoint δ α)
+    (sink : SinkEndpoint δ α) : Except String (DomainComponentBatch δ) := do
+  let batch := batch.connect (← Connection.typed source.valid sink.valid)
+  let batch := batch.connect (← Connection.typed source.payload sink.payload)
+  return batch.connect (← Connection.typed sink.ready source.ready)
+
 /-- One cycle's logical handshake observation. -/
 structure Sample (α : Type u) where
   valid : Bool

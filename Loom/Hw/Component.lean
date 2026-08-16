@@ -684,15 +684,65 @@ the driven inputs and applies the same `Expr.substReg`/`Act.substReg`
 operations, but traverses the already ordered connection inventory once per
 rule or combinational output instead of re-running a heterogeneous lookup for
 every input/output pair. -/
-private def connectAll (graph : ComponentGraph) (connections : List Connection)
+private def connectAll (connections : List Connection)
     (design : Design) : Design :=
   { design with
-    inputs := design.inputs.filter fun input => !graph.inputConnectedB input
+    inputs := design.inputs.filter fun input => !connections.any fun connection =>
+      connection.sinkFullName == input.name && connection.width == input.width
     combOutputs := design.combOutputs.map fun output =>
       ⟨output.name, output.width,
         substituteConnections connections output.value⟩
     rules := design.rules.map fun rule =>
       { rule with body := substituteConnectionActs connections rule.body } }
+
+/-- Deliberately slow specification lowering for connection substitution. It
+walks the complete Design once per connection, making it unsuitable for large
+hierarchies but straightforward enough to serve as the reference algorithm. -/
+private def connectOneReference (connection : Connection) (design : Design) : Design :=
+  { design with
+    inputs := design.inputs.filter fun input =>
+      !(connection.sinkFullName == input.name && connection.width == input.width)
+    combOutputs := design.combOutputs.map fun output =>
+      let replacement := connection.sourceExpression.mapSignals fun name =>
+        connection.sourceInstance ++ "__" ++ name
+      ⟨output.name, output.width,
+        Expr.substReg connection.sinkFullName connection.width
+          replacement output.value⟩
+    rules := design.rules.map fun rule =>
+      let replacement := connection.sourceExpression.mapSignals fun name =>
+        connection.sourceInstance ++ "__" ++ name
+      let body := Act.substReg connection.sinkFullName connection.width
+        replacement rule.body
+      { rule with body := body } }
+
+private def connectAllReference : List Connection → Design → Design
+  | [], design => design
+  | connection :: rest, design =>
+      connectAllReference rest (connectOneReference connection design)
+
+private theorem connectAll_eq_reference (connections : List Connection)
+    (design : Design) :
+    connectAll connections design = connectAllReference connections design := by
+  induction connections generalizing design with
+  | nil =>
+      cases design
+      simp [connectAll, connectAllReference, substituteConnections,
+        substituteConnectionActs]
+  | cons connection rest ih =>
+      rw [connectAllReference, ← ih]
+      cases design
+      simp only [connectAll, connectOneReference, substituteConnections,
+        substituteConnectionActs, List.foldl_cons, List.map_map,
+        List.any_cons, List.filter_filter]
+      congr 1
+      apply List.filter_congr
+      intro input _member
+      simp only [Bool.not_or, Bool.not_and]
+      generalize (!connection.sinkFullName == input.name ||
+        !connection.width == input.width) = current
+      generalize (!rest.any fun connection =>
+        connection.sinkFullName == input.name && connection.width == input.width) = later
+      cases current <;> cases later <;> rfl
 
 private def exportedStateNames (graph : ComponentGraph) : List String :=
   graph.exports.filterMap fun exposed =>
@@ -713,12 +763,31 @@ substitutions. The graph boundary is then imposed explicitly so unexported
 child ports remain internal. -/
 def flatten (graph : ComponentGraph) : Design :=
   let substitutions := graph.connectionSubstitutionOrder
-  let connected := graph.connectAll substitutions graph.combined
+  let connected := connectAll substitutions graph.combined
   { connected with
     name := graph.name
     outputs := graph.exportedStateNames
     combOutputs := connected.combOutputs.filter fun output =>
       graph.outputExported output.name }
+
+/-- Slow, independently structured specification of hierarchy lowering. It
+uses one whole-Design pass per ordered connection and is retained only for
+proof and regression comparison. -/
+def flattenReference (graph : ComponentGraph) : Design :=
+  let substitutions := graph.connectionSubstitutionOrder
+  let connected := connectAllReference substitutions graph.combined
+  { connected with
+    name := graph.name
+    outputs := graph.exportedStateNames
+    combOutputs := connected.combOutputs.filter fun output =>
+      graph.outputExported output.name }
+
+/-- The optimized one-pass connection lowering is exactly the deliberately
+slow reference flattener for every graph. No validity, acyclicity, or source
+ordering hypothesis is needed for this algorithmic equality. -/
+theorem flatten_eq_reference (graph : ComponentGraph) :
+    graph.flatten = graph.flattenReference := by
+  simp only [flatten, flattenReference, connectAll_eq_reference]
 
 /-- Checked entry point.  The final ordinary Design gate remains authoritative,
 so hierarchy cannot accept a graph the scalar compiler would reject. -/
@@ -846,6 +915,75 @@ def flatten? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ) :
     Except String (DomainDesign δ) :=
   DomainDesign.mk <$> graph.raw.flatten?
 
+/-- Proof/regression view of the deliberately slow hierarchy lowering. -/
+def flattenReference {δ : Type v} [ClockDomain δ]
+    (graph : DomainComponentGraph δ) : DomainDesign δ :=
+  ⟨graph.raw.flattenReference⟩
+
+theorem flatten_eq_reference {δ : Type v} [ClockDomain δ]
+    (graph : DomainComponentGraph δ) :
+    graph.raw.flatten = graph.flattenReference.design :=
+  ComponentGraph.flatten_eq_reference graph.raw
+
 end DomainComponentGraph
+
+/-! ## Seal-once typed hierarchy construction
+
+`DomainComponentGraph.connect` intentionally remains the diagnostic-friendly
+incremental API: it rejects a cycle at the edge which creates it. Large
+generated hierarchies should not pay that whole-graph check for every edge.
+The batch inventory below records only already-typed values and is validated
+once by `ComponentHierarchy.checkBatch?` at sealing. Lists are stored in
+reverse insertion order so adding 1,000 instances or connections is linear in
+the inventory size rather than quadratic in repeated append operations. -/
+
+structure DomainComponentBatch (δ : Type v) [ClockDomain δ] where
+  private mk ::
+  name : String
+  instancesRev : List (DomainComponentInstance δ)
+  connectionsRev : List (DomainConnection δ)
+  exportsRev : List (String × String)
+
+namespace DomainComponentBatch
+
+def empty {δ : Type v} [ClockDomain δ] (name : String) :
+    DomainComponentBatch δ := ⟨name, [], [], []⟩
+
+def addInstance {δ : Type v} [ClockDomain δ] (batch : DomainComponentBatch δ)
+    (inst : DomainComponentInstance δ) : DomainComponentBatch δ :=
+  { batch with instancesRev := inst :: batch.instancesRev }
+
+def connect {δ : Type v} [ClockDomain δ] (batch : DomainComponentBatch δ)
+    (connection : DomainConnection δ) : DomainComponentBatch δ :=
+  { batch with connectionsRev := connection :: batch.connectionsRev }
+
+def expose {δ : Type v} [ClockDomain δ] (batch : DomainComponentBatch δ)
+    (instancePath portName : String) : DomainComponentBatch δ :=
+  { batch with exportsRev := (instancePath, portName) :: batch.exportsRev }
+
+def instanceCount {δ : Type v} [ClockDomain δ]
+    (batch : DomainComponentBatch δ) : Nat := batch.instancesRev.length
+
+def connectionCount {δ : Type v} [ClockDomain δ]
+    (batch : DomainComponentBatch δ) : Nat := batch.connectionsRev.length
+
+namespace Expert
+
+/-- Unchecked materialization used by the compositional certificate checker.
+Ordinary code should call `ComponentHierarchy.checkBatch?`, which returns the
+materialized graph together with its certificate. -/
+def materialize {δ : Type v} [ClockDomain δ] (batch : DomainComponentBatch δ) :
+    DomainComponentGraph δ :=
+  let instances := batch.instancesRev.reverse
+  let raw : ComponentGraph :=
+    { name := batch.name
+      instances := instances.map DomainComponentInstance.erase
+      connections := batch.connectionsRev.reverse.map (fun connection => connection.raw)
+      exports := batch.exportsRev.reverse }
+  ⟨raw, instances⟩
+
+end Expert
+
+end DomainComponentBatch
 
 end Loom.Hw

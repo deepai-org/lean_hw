@@ -388,6 +388,102 @@ example : mixedApplication.artifact.emissionCheck.isOk := by native_decide
 example : mixedCachedApplication.artifact.renderedUTF8 =
     mixedApplication.artifact.renderedUTF8 := by native_decide
 
+/-! Fragment theorem transport is checked against the parent's actual clock
+relation. The same local theorem lifts under both an asynchronous parent and
+the stricter interleaved schedule relation. -/
+
+def theoremIslandDesign : Design where
+  name := "fragment_theorem_island"
+  regs := []
+  mems := []
+  rules := []
+  outputs := []
+
+def theoremIsland : IslandHandle :=
+  .named "fragment_theorem_island" theoremIslandDesign ⟨"frag_clk"⟩
+
+def theoremChildBuilder : SystemBuilder :=
+  System.empty
+    |>.addErasedIsland theoremIsland
+    |>.withClockRel .asynchronous
+
+def theoremChildSystem : System := theoremChildBuilder.certify (by native_decide)
+
+def theoremChildCache : System.CertifiedIslands theoremChildSystem :=
+  theoremChildSystem.certifyIslands (by native_decide)
+
+def theoremBlock : System.SealedBlock EmptyFragmentInterface (fun _ _ => Unit) where
+  system := theoremChildSystem
+  islands := theoremChildCache
+  interface := ()
+  theorems := ()
+
+def theoremFragment : System.SystemFragment EmptyFragmentInterface (fun _ _ => Unit) where
+  block := theoremBlock
+  plan := .synchronous
+  realizationReady := by native_decide
+
+def theoremLocal : theoremFragment.LocalInvariant (fun _ => True) where
+  island := theoremIsland.toSystemIsland
+  found := by rfl
+  localInvariant := by
+    intro _state _reachable
+    trivial
+
+example : theoremChildSystem.Invariant
+    (System.atIsland theoremIsland.name (fun _ => True)) :=
+  theoremLocal.inChild
+
+def asynchronousParentBuilder : SystemBuilder :=
+  System.empty.includeFragment theoremFragment |>.withClockRel .asynchronous
+
+def asynchronousParent : System :=
+  asynchronousParentBuilder.certify (by native_decide)
+
+def interleavedParentBuilder : SystemBuilder :=
+  System.empty.includeFragment theoremFragment |>.withClockRel .interleaved
+
+def interleavedParent : System :=
+  interleavedParentBuilder.certify (by native_decide)
+
+example : asynchronousParent.Invariant
+    (System.atIsland theoremIsland.name (fun _ => True)) :=
+  theoremFragment.liftFragment asynchronousParent theoremLocal
+    (by rfl) ⟨ClockRel.refines_asynchronous _⟩
+
+example : interleavedParent.Invariant
+    (System.atIsland theoremIsland.name (fun _ => True)) :=
+  theoremFragment.liftFragment interleavedParent theoremLocal
+    (by rfl) ⟨ClockRel.refines_asynchronous _⟩
+
+def alignedChildBuilder : SystemBuilder :=
+  System.empty
+    |>.addErasedIsland theoremIsland
+    |>.withClockRel (.aligned "frag_clk" "other_clk")
+
+def alignedChildSystem : System := alignedChildBuilder.certify (by native_decide)
+
+def alignedBlock : System.SealedBlock EmptyFragmentInterface (fun _ _ => Unit) where
+  system := alignedChildSystem
+  islands := alignedChildSystem.certifyIslands (by native_decide)
+  interface := ()
+  theorems := ()
+
+def alignedFragment : System.SystemFragment EmptyFragmentInterface (fun _ _ => Unit) where
+  block := alignedBlock
+  plan := .synchronous
+  realizationReady := by native_decide
+
+def incompatibleParentBuilder : SystemBuilder :=
+  System.empty.includeFragment alignedFragment |>.withClockRel .asynchronous
+
+def incompatibleParent : System :=
+  incompatibleParentBuilder.certify (by native_decide)
+
+example : ¬ System.SystemFragment.ClockCompatible incompatibleParent alignedFragment := by
+  intro compatible
+  exact ClockRel.asynchronous_not_refines_aligned (by decide) compatible.refines
+
 /-! Timing is derived from the selected realization rather than guessed from
 the abstract channel. Structural synchronizer stages are visible even when
 the proved model supplies no finite service bound. -/

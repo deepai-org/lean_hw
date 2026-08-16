@@ -1123,6 +1123,53 @@ def interface {Interface : System → Type u}
     (fragment : SystemFragment Interface TheoremBundle) :
     Interface fragment.system := fragment.block.interface
 
+/-- Evidence that a theorem about one fragment island came from its ordinary
+open-Design semantics. This provenance is what makes the theorem transportable
+to a parent; an arbitrary proposition over the child System is not silently
+assumed to survive new parent connections. -/
+structure LocalInvariant
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (fragment : SystemFragment Interface TheoremBundle)
+    (property : St → Prop) where
+  island : SystemIsland
+  found : fragment.system.findIsland? island.name = some island
+  localInvariant :
+    (island.design.toAssumedOpenTSys (fun _ _ => True)).Invariant property
+
+theorem LocalInvariant.inChild
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    {fragment : SystemFragment Interface TheoremBundle}
+    {property : St → Prop} (certificate : LocalInvariant fragment property) :
+    fragment.system.Invariant
+      (System.atIsland certificate.island.name property) :=
+  fragment.system.liftIsland certificate.island certificate.found
+    certificate.localInvariant
+
+/-- Explicit compatibility premise for fragment theorem transport. A parent
+may restrict a child's schedules, but may not admit an event trace the child
+relation excluded. -/
+structure ClockCompatible
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (parent : System) (fragment : SystemFragment Interface TheoremBundle) : Prop where
+  refines : parent.clockRel.Refines fragment.system.clockRel
+
+/-- Lift one transportable fragment theorem into a parent System. Membership
+and clock-relation compatibility are separate proof obligations, so including
+the same bytes under an incompatible schedule policy cannot silently reuse the
+child theorem. -/
+theorem liftFragment
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (parent : System) (fragment : SystemFragment Interface TheoremBundle)
+    {property : St → Prop} (certificate : LocalInvariant fragment property)
+    (found : parent.findIsland? certificate.island.name = some certificate.island)
+    (_compatible : ClockCompatible parent fragment) :
+    parent.Invariant (System.atIsland certificate.island.name property) :=
+  parent.liftIsland certificate.island found certificate.localInvariant
+
 end SystemFragment
 
 /-- Include a fragment without flattening its islands or CDC channels. -/

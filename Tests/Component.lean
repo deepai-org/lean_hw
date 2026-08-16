@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Hw.ComponentHierarchy
 import Loom.Hw.Multiclock
 
 /-! # Typed component hierarchy regressions -/
@@ -108,6 +109,45 @@ private def domainIsland : Except String SystemIsland := do
 #guard match domainIsland with
   | .error _ => false
   | .ok island => island.clock == "core" && island.design.name == "typed_domain_top"
+
+/- Batch construction records already-typed inventory without repeatedly
+checking the growing graph. The one sealing check still rejects duplicate
+paths and duplicate sinks. -/
+private def batchFixtures? : Except String
+    (DomainComponent CoreClock × DomainComponent CoreClock ×
+      DomainConnection CoreClock) := do
+  let producerComponent ← DomainComponent.seal? producer.name producer.interface
+    (DomainDesign.authored (δ := CoreClock) producer.design)
+  let consumerComponent ← DomainComponent.seal? consumer.name consumer.interface
+    (DomainDesign.authored (δ := CoreClock) consumer.design)
+  let p : DomainComponentInstance CoreClock := ⟨"produce", producerComponent⟩
+  let c : DomainComponentInstance CoreClock := ⟨"consume", consumerComponent⟩
+  let source ← p.output? producerOutput
+  let sink ← c.input? consumerInput
+  return (producerComponent, consumerComponent, ← Connection.typed source sink)
+
+#guard match do
+    let (producerComponent, _, _) ← batchFixtures?
+    let p : DomainComponentInstance CoreClock := ⟨"duplicate", producerComponent⟩
+    let batch := (DomainComponentBatch.empty (δ := CoreClock) "duplicate_paths")
+      |>.addInstance p
+      |>.addInstance p
+    ComponentHierarchy.checkBatch? batch with
+  | .error _ => true
+  | .ok _ => false
+
+#guard match do
+    let (producerComponent, consumerComponent, connection) ← batchFixtures?
+    let p : DomainComponentInstance CoreClock := ⟨"produce", producerComponent⟩
+    let c : DomainComponentInstance CoreClock := ⟨"consume", consumerComponent⟩
+    let batch := (DomainComponentBatch.empty (δ := CoreClock) "duplicate_sinks")
+      |>.addInstance p
+      |>.addInstance c
+      |>.connect connection
+      |>.connect connection
+    ComponentHierarchy.checkBatch? batch with
+  | .error _ => true
+  | .ok _ => false
 
 private def peripheralOwnedDesign : DomainDesign PeripheralClock :=
   DomainDesign.authored producerDesign
