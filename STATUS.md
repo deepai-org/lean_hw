@@ -11,8 +11,8 @@ machine and board specifications.
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-11; warnings remain. |
 | `lake exe audit` | **PASS** | Rechecked on 2026-08-12; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,278-job graph passed after repairing the `Tests.Component` evaluator-command crash. |
-| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-12, including the no-handwritten-certified-CDC gate. |
+| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,280-job graph passed, including the isolated nominal-domain compile-failure regressions. |
+| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-16, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
 | `scripts/emit_all.sh --check` | **PASS** | Rechecked twice on 2026-08-10: the first run correctly rejected stale ignored RTL, and the second reproduced the regenerated artifacts byte-for-byte. |
@@ -49,10 +49,11 @@ An earlier repository-wide attempt aborted in the then-unchanged
 proof-carrying negative cases issued as successive evaluator commands in one
 import-heavy module: under Lean 4.28 that layout reproducibly exited 139, while
 each reduced case and one combined Boolean gate completed. The tests now retain
-all four rejection checks in one gate; deliberately ill-typed domain examples
-were replaced by positive kernel-checked signatures to avoid constructing the
-pathological rejected diagnostic. Direct `Tests.Component` compilation and
-the complete `lake test` graph now pass. No component semantics changed; the
+all four runtime/structural rejection checks in one gate. The two deliberately
+ill-typed nominal-domain regressions run in separate lightweight modules, so
+they still verify compile failure without constructing successive pathological
+diagnostics in `Tests.Component`. Direct component-test compilation and the
+complete `lake test` graph now pass. No component semantics changed; the
 lower-level Lean runtime defect has not been diagnosed upstream.
 
 `Loom/Hw/Chan.lean` and `Loom/Hw/System.lean` provide typed bounded-channel
