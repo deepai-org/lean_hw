@@ -250,10 +250,39 @@ prefix must pass the executable relation. -/
 def Admits (rel : ClockRel) (schedule : NamedSchedule) : Prop :=
   ∀ length, rel.accepts (prefixOf schedule length) = true
 
+/-- `parent.Refines child` means every schedule admitted by a parent is also
+admitted by the child. This is the exact condition needed before transporting
+a fragment theorem whose quantifier was proved under `child`. -/
+def Refines (parent child : ClockRel) : Prop :=
+  ∀ schedule, parent.Admits schedule → child.Admits schedule
+
+theorem refines_refl (relation : ClockRel) : relation.Refines relation := by
+  intro schedule admitted
+  exact admitted
+
 @[simp] theorem unconstrained_admits (schedule : NamedSchedule) :
     unconstrained.Admits schedule := by
   intro length
   rfl
+
+/-- Any schedule restriction is compatible with a child that admitted fully
+asynchronous clocks. -/
+theorem refines_asynchronous (parent : ClockRel) :
+    parent.Refines asynchronous := by
+  intro schedule _admitted
+  exact unconstrained_admits schedule
+
+/-- A fully asynchronous parent cannot transport a theorem proved under an
+aligned-clock child relation when the two clock names differ. -/
+theorem asynchronous_not_refines_aligned {left right : String}
+    (different : left ≠ right) :
+    ¬ asynchronous.Refines (aligned left right) := by
+  intro refines
+  let schedule : NamedSchedule := fun _ => ⟨[left]⟩
+  have admitted : asynchronous.Admits schedule := unconstrained_admits schedule
+  have alignedAdmitted := refines schedule admitted 1
+  simp [aligned, prefixOf, schedule, NamedClockEvent.fires] at alignedAdmitted
+  exact different alignedAdmitted.symm
 
 end ClockRel
 

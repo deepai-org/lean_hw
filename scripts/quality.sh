@@ -7,6 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 scripts/check_certified_cdc_boundary.sh
+scripts/check_no_deprecated_hierarchy_calls.sh
 
 fail=0
 

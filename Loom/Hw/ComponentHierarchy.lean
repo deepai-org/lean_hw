@@ -49,15 +49,29 @@ def graphNamespacesDisjointB (graph : ComponentGraph) : Bool :=
 Child compiler/simulator certificates remain available directly from every
 `graph.instances` entry. -/
 structure Certificate (graph : ComponentGraph) where
-  graphValid : graph.validB = true
+  nameValid : (!graph.name.isEmpty) = true
   pathsUnique : graph.pathsUniqueB = true
   connectionsValid : graph.connectionsValidB = true
   exportBoundaryValid : graph.exportsValidB = true
   namespacesDisjoint : graphNamespacesDisjointB graph = true
   order : List String
+  order_eq : order = ComponentGraph.proposeTopologicalOrder graph.dependencyEdges
   topology : ComponentGraph.topologicalOrderCheckB graph.dependencyEdges order = true
 
 namespace Certificate
+
+theorem graphValid {graph : ComponentGraph} (certificate : Certificate graph) :
+    graph.validB = true := by
+  unfold ComponentGraph.validB ComponentGraph.combinationalAcyclicB
+  change (!graph.name.isEmpty && graph.pathsUniqueB &&
+    graph.connectionsValidB && graph.exportsValidB &&
+    ComponentGraph.topologicalOrderCheckB graph.dependencyEdges
+      (ComponentGraph.proposeTopologicalOrder graph.dependencyEdges)) = true
+  rw [← certificate.order_eq]
+  simp only [Bool.and_eq_true]
+  exact ⟨⟨⟨⟨certificate.nameValid, certificate.pathsUnique⟩,
+    certificate.connectionsValid⟩, certificate.exportBoundaryValid⟩,
+    certificate.topology⟩
 
 /-- Child compiler/simulator evidence is reused verbatim rather than derived
 again from the flattened design. -/
@@ -89,10 +103,27 @@ theorem exportValid {graph : ComponentGraph} (certificate : Certificate graph)
       | some inst => (inst.findPort? .output exposed.2).isSome) = true := by
   exact List.all_eq_true.mp certificate.exportBoundaryValid exposed member
 
+/-- Prepare compiler and simulator evidence without executing any structural
+graph obligation again. The structural premise is derived from this exact
+certificate; only checks about the newly flattened scalar Design remain. -/
+def seal? {graph : ComponentGraph} (certificate : Certificate graph) :
+    Except String (ComponentGraph.Sealed graph) := do
+  let hGraph := certificate.graphValid
+  graph.flatten.emitCheck
+  if hReads : graph.flatten.readsOkB = true then
+    if hCompiler : Compile.designWFCheck graph.flatten = true then
+      if hSimulator : graph.flatten.fastWFB = true then
+        return { graphValid := hGraph
+                 readsOk := hReads
+                 certified := CertifiedDesign.ofChecks hCompiler hSimulator }
+      throw s!"component graph '{graph.name}' is not simulator-ready"
+    throw s!"component graph '{graph.name}' is not compiler-ready"
+  throw s!"component graph '{graph.name}' contains an undeclared or wrong-width read"
+
 end Certificate
 
 def check? (graph : ComponentGraph) : Except String (Certificate graph) := do
-  if hValid : graph.validB = true then
+  if hName : (!graph.name.isEmpty) = true then
     if hPaths : graph.pathsUniqueB = true then
       if hConnections : graph.connectionsValidB = true then
         if hExports : graph.exportsValidB = true then
@@ -100,14 +131,14 @@ def check? (graph : ComponentGraph) : Except String (Certificate graph) := do
             let order := ComponentGraph.proposeTopologicalOrder graph.dependencyEdges
             if hTopology : ComponentGraph.topologicalOrderCheckB
                 graph.dependencyEdges order = true then
-              return ⟨hValid, hPaths, hConnections, hExports,
-                hNamespaces, order, hTopology⟩
+              return ⟨hName, hPaths, hConnections, hExports,
+                hNamespaces, order, rfl, hTopology⟩
             throw s!"component graph '{graph.name}' has no checked topological order"
           throw s!"component graph '{graph.name}' has colliding flattened namespaces"
         throw s!"component graph '{graph.name}' has an invalid export boundary"
       throw s!"component graph '{graph.name}' has an invalid connection substitution"
     throw s!"component graph '{graph.name}' has duplicate instance paths"
-  throw s!"component graph '{graph.name}' is structurally invalid"
+  throw "component graph name must not be empty"
 
 structure DomainCertificate {δ : Type v} [ClockDomain δ]
     (graph : DomainComponentGraph δ) where
@@ -116,6 +147,24 @@ structure DomainCertificate {δ : Type v} [ClockDomain δ]
 def checkDomain? {δ : Type v} [ClockDomain δ] (graph : DomainComponentGraph δ) :
     Except String (DomainCertificate graph) :=
   DomainCertificate.mk <$> check? graph.raw
+
+def DomainCertificate.seal? {δ : Type v} [ClockDomain δ]
+    {graph : DomainComponentGraph δ} (certificate : DomainCertificate graph) :
+    Except String (ComponentGraph.Sealed graph.raw) :=
+  certificate.erased.seal?
+
+/-- A batch sealed exactly once. The graph is retained beside the certificate
+so later flattening, simulation preparation, and compilation consume the same
+checked inventory rather than rebuilding or revalidating it. -/
+structure CheckedBatch (δ : Type v) [ClockDomain δ] where
+  graph : DomainComponentGraph δ
+  certificate : DomainCertificate graph
+
+def checkBatch? {δ : Type v} [ClockDomain δ] (batch : DomainComponentBatch δ) :
+    Except String (CheckedBatch δ) := do
+  let graph := DomainComponentBatch.Expert.materialize batch
+  let certificate ← checkDomain? graph
+  return ⟨graph, certificate⟩
 
 end ComponentHierarchy
 
