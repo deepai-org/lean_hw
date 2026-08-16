@@ -11,7 +11,7 @@ machine and board specifications.
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-11; warnings remain. |
 | `lake exe audit` | **PASS** | Rechecked on 2026-08-12; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **ABORTED** | Attempted on 2026-08-16; 8,274 of 8,276 jobs were reached before Lean exited 139 in unchanged `Tests.Component`. This is neither recorded as a test PASS nor as a semantic test failure. The last complete PASS remains the 2026-08-12 run. |
+| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,278-job graph passed after repairing the `Tests.Component` evaluator-command crash. |
 | `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-12, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
@@ -44,13 +44,16 @@ evidence; a manual certificate remains available for transformed adapters.
 Its exact axiom closure is
 `propext`, `Classical.choice`, and `Quot.sound`.
 
-The repository-wide attempt was aborted by the unrelated, unchanged
-`Tests.Component` target. A reduced direct invocation,
-`lake env lean Tests/Component.lean --json`, reproduces exit 139 in about 1.7
-seconds at approximately 1.74 GiB maximum resident memory. The ordinary Lake
-target has the same peak and failure. Raising the process stack limit from
-8 MiB to unlimited does not change the result, and no swap activity was
-observed. Crash diagnosis remains separate from the projection milestone.
+An earlier repository-wide attempt aborted in the then-unchanged
+`Tests.Component` target. Reduction localized the failure to several
+proof-carrying negative cases issued as successive evaluator commands in one
+import-heavy module: under Lean 4.28 that layout reproducibly exited 139, while
+each reduced case and one combined Boolean gate completed. The tests now retain
+all four rejection checks in one gate; deliberately ill-typed domain examples
+were replaced by positive kernel-checked signatures to avoid constructing the
+pathological rejected diagnostic. Direct `Tests.Component` compilation and
+the complete `lake test` graph now pass. No component semantics changed; the
+lower-level Lean runtime defect has not been diagnosed upstream.
 
 `Loom/Hw/Chan.lean` and `Loom/Hw/System.lean` provide typed bounded-channel
 handles, generated endpoints, synchronous FIFO lowering, named island
