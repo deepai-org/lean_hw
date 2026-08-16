@@ -149,10 +149,10 @@ private def duplicateSinksRejected : Bool := match do
   | .error _ => true
   | .ok _ => false
 
-/- These signatures pin the nominal-domain boundary without asking Lean to
-construct and pretty-print a deliberately enormous dependent type mismatch.
-A domain-owned design can be placed only in an island of the same domain, and
-a graph can accept only connections carrying that domain. -/
+/- These signatures keep the nominal-domain boundary visible here without
+constructing a deliberately enormous dependent mismatch. Direct negative
+regressions live in the isolated `Tests.ComponentDomainIslandNegative` and
+`Tests.ComponentConnectionNegative` modules. -/
 example (design : DomainDesign CoreClock) : DomainIslandHandle CoreClock :=
   DomainIslandHandle.named "typed" design
 
