@@ -95,10 +95,15 @@ def fragmentEngineIsland : SystemIsland :=
 
 def fragmentIdentityEmbedding :
     System.StandardEmbedding fragmentSystem fragmentSystem where
+  islandPrefix := []
   islandSuffix := []
+  connectionPrefix := []
   connectionSuffix := []
   islands := by simp
   connections := by simp
+  islandPrefixDisjoint := rfl
+  connectionPrefixDisjoint := rfl
+  connectionPrefixOutside := rfl
   childEndpoints := by decide
   boundary := by decide
   resetPolicy := rfl

@@ -387,19 +387,79 @@ private theorem findSome?_congr {α β : Type} {xs : List α}
       · exact ih (fun value member => same value (by simp [member]))
       · rfl
 
+private theorem find?_eq_none_of_all_false {α : Type} {xs : List α}
+    {predicate : α → Bool}
+    (allFalse : ∀ value ∈ xs, predicate value = false) :
+    xs.find? predicate = none := by
+  induction xs with
+  | nil => rfl
+  | cons head tail ih =>
+      simp only [List.find?_cons, allFalse head (by simp)]
+      exact ih (fun value member => allFalse value (by simp [member]))
+
+private theorem findSome?_eq_none_of_all_none {α β : Type} {xs : List α}
+    {select : α → Option β}
+    (allNone : ∀ value ∈ xs, select value = none) :
+    xs.findSome? select = none := by
+  induction xs with
+  | nil => rfl
+  | cons head tail ih =>
+      simp only [List.findSome?_cons, allNone head (by simp)]
+      exact ih (fun value member => allNone value (by simp [member]))
+
+private theorem find?_append_of_none {α : Type} (predicate : α → Bool)
+    {before after : List α} (beforeNone : before.find? predicate = none) :
+    (before ++ after).find? predicate = after.find? predicate := by
+  induction before with
+  | nil => rfl
+  | cons head tail ih =>
+      simp only [List.find?_cons] at beforeNone ⊢
+      cases selected : predicate head with
+      | false =>
+          simp only [selected] at beforeNone
+          simpa [selected] using ih beforeNone
+      | true => simp [selected] at beforeNone
+
+private theorem predicate_true_of_find?_eq_some {α : Type}
+    {xs : List α} {predicate : α → Bool} {value : α}
+    (found : xs.find? predicate = some value) : predicate value = true := by
+  induction xs with
+  | nil => simp at found
+  | cons head tail ih =>
+      simp only [List.find?_cons] at found
+      cases selected : predicate head with
+      | false => exact ih (by simpa [selected] using found)
+      | true =>
+          simp only [selected] at found
+          cases found
+          exact selected
+
 /-- Structural provenance for the common fragment-parent construction path.
-The child inventories remain exact prefixes; appended connections close typed
-exports or belong wholly to the parent. The Boolean endpoint condition is
-finite evidence that every child connection names declared child islands.
+The child inventories remain an exact contiguous segment at any position;
+preceding sibling inventory is checked not to collide with child identities or
+to drive child inputs. Later connections may close the child's typed exports.
+The Boolean endpoint condition is finite evidence that every child connection
+names declared child islands.
 
 This is intentionally narrower than arbitrary `ExecutionProjection`: it is
 the automatically derivable case, while the latter remains the expert escape
 hatch for adapters that transform state, events, or inputs. -/
 structure StandardEmbedding (parent child : System) where
+  islandPrefix : List SystemIsland
   islandSuffix : List SystemIsland
+  connectionPrefix : List SystemConnection
   connectionSuffix : List SystemConnection
-  islands : parent.islands = child.islands ++ islandSuffix
-  connections : parent.connections = child.connections ++ connectionSuffix
+  islands : parent.islands = islandPrefix ++ child.islands ++ islandSuffix
+  connections : parent.connections =
+    connectionPrefix ++ child.connections ++ connectionSuffix
+  islandPrefixDisjoint : islandPrefix.all (fun earlier =>
+    child.islands.all fun nested => earlier.name != nested.name) = true
+  connectionPrefixDisjoint : connectionPrefix.all (fun earlier =>
+    child.connections.all fun nested =>
+      earlier.chan.name != nested.chan.name) = true
+  connectionPrefixOutside : connectionPrefix.all (fun earlier =>
+    child.islands.all fun nested =>
+      earlier.source != nested.name && earlier.sink != nested.name) = true
   childEndpoints : child.connections.all (fun connection =>
     (child.findIsland? connection.source).isSome &&
       (child.findIsland? connection.sink).isSome) = true
@@ -412,13 +472,59 @@ structure StandardEmbedding (parent child : System) where
 
 namespace StandardEmbedding
 
+theorem islandPrefix_find_none {parent child : System}
+    (embedding : StandardEmbedding parent child) {name : String}
+    (present : (child.findIsland? name).isSome = true) :
+    embedding.islandPrefix.find? (fun candidate =>
+      candidate.name == name) = none := by
+  cases found : child.findIsland? name with
+  | none => simp [found] at present
+  | some island =>
+    apply find?_eq_none_of_all_false
+    intro earlier member
+    have islandMember : island ∈ child.islands :=
+      List.mem_of_find?_eq_some found
+    have allNested := List.all_eq_true.mp embedding.islandPrefixDisjoint
+      earlier member
+    have different := List.all_eq_true.mp allNested island islandMember
+    have nameEq := System.findIsland?_name found
+    exact Bool.eq_false_iff.mpr (by
+      simpa [nameEq] using (bne_iff_ne.mp different))
+
+theorem connectionPrefix_find_none {parent child : System}
+    (embedding : StandardEmbedding parent child) {name : String}
+    (present : (child.connections.find? fun candidate =>
+      candidate.chan.name == name).isSome = true) :
+    embedding.connectionPrefix.find? (fun candidate =>
+      candidate.chan.name == name) = none := by
+  cases found : child.connections.find? (fun candidate =>
+      candidate.chan.name == name) with
+  | none => simp [found] at present
+  | some connection =>
+    apply find?_eq_none_of_all_false
+    intro earlier member
+    have connectionMember : connection ∈ child.connections :=
+      List.mem_of_find?_eq_some found
+    have allNested := List.all_eq_true.mp embedding.connectionPrefixDisjoint
+      earlier member
+    have different := List.all_eq_true.mp allNested connection connectionMember
+    have selected := predicate_true_of_find?_eq_some found
+    have nameEq : connection.chan.name = name := beq_iff_eq.mp selected
+    exact Bool.eq_false_iff.mpr (by
+      simpa [nameEq] using (bne_iff_ne.mp different))
+
 theorem findIsland_eq {parent child : System}
     (embedding : StandardEmbedding parent child) {name : String}
     {island : SystemIsland} (found : child.findIsland? name = some island) :
     parent.findIsland? name = some island := by
   change parent.islands.find? (fun candidate => candidate.name == name) = some island
   rw [embedding.islands]
+  have present : (child.findIsland? name).isSome = true := by
+    rw [found]
+    rfl
   change child.islands.find? (fun candidate => candidate.name == name) = some island at found
+  rw [List.append_assoc]
+  rw [find?_append_of_none _ (embedding.islandPrefix_find_none present)]
   exact find?_append_eq_some _ found
 
 theorem findConnection_eq {parent child : System}
@@ -429,6 +535,8 @@ theorem findConnection_eq {parent child : System}
     parent.connections.find? (fun candidate =>
       candidate.chan.name == name) = some connection := by
   rw [embedding.connections]
+  rw [List.append_assoc]
+  rw [find?_append_of_none _ (embedding.connectionPrefix_find_none (by simp [found]))]
   exact find?_append_eq_some _ found
 
 private theorem endpointPresent {parent child : System}
@@ -486,26 +594,63 @@ theorem childConnectionInputs_eq {parent child : System}
   exact embedding.connectionInput_eq parentState childState represents event
     connection member name inputName width
 
+theorem connectionPrefixInputs_none {parent child : System}
+    (embedding : StandardEmbedding parent child)
+    (parentState : parent.State) (event : NamedClockEvent)
+    (name inputName : String) (width : Nat)
+    (present : (child.findIsland? name).isSome = true) :
+    embedding.connectionPrefix.findSome? (fun connection =>
+      parent.connectionInput? event parentState connection name inputName width) =
+        none := by
+  cases found : child.findIsland? name with
+  | none => simp [found] at present
+  | some island =>
+    apply findSome?_eq_none_of_all_none
+    intro earlier member
+    have islandMember : island ∈ child.islands :=
+      List.mem_of_find?_eq_some found
+    have allNested := List.all_eq_true.mp embedding.connectionPrefixOutside
+      earlier member
+    have outside := List.all_eq_true.mp allNested island islandMember
+    have outsideParts := Bool.and_eq_true_iff.mp outside
+    have sourceDifferent : earlier.source ≠ island.name :=
+      bne_iff_ne.mp outsideParts.1
+    have sinkDifferent : earlier.sink ≠ island.name :=
+      bne_iff_ne.mp outsideParts.2
+    have nameEq := System.findIsland?_name found
+    have sourceNe : name ≠ earlier.source := by
+      simpa [nameEq] using sourceDifferent.symm
+    have sinkNe : name ≠ earlier.sink := by
+      simpa [nameEq] using sinkDifferent.symm
+    simp [System.connectionInput?, sourceNe, sinkNe]
+
 theorem islandInput_eq {parent child : System}
     (embedding : StandardEmbedding parent child)
     (parentState : parent.State) (childState : child.State)
     (represents : StateDataProjects parent child parentState childState)
-    (event : NamedClockEvent) (external : String → InEnv) (name : String) :
+    (event : NamedClockEvent) (external : String → InEnv) (name : String)
+    (present : (child.findIsland? name).isSome = true) :
     child.islandInput event childState
         (parent.islandInput event parentState external) name =
       parent.islandInput event parentState external name := by
   funext inputName width
   unfold System.islandInput System.inputFor
   rw [embedding.connections]
+  rw [List.append_assoc]
+  rw [findSome?_append]
+  rw [embedding.connectionPrefixInputs_none parentState event name inputName width
+    present]
   rw [findSome?_append]
   rw [embedding.childConnectionInputs_eq parentState childState represents]
   cases selected : child.connections.findSome? (fun connection =>
       parent.connectionInput? event parentState connection name inputName width) with
   | none =>
-    simp only [Option.getD_none]
-    rw [findSome?_append]
-    rw [selected]
-  | some value => rfl
+    simp [selected,
+      embedding.connectionPrefixInputs_none parentState event name inputName width
+        present]
+  | some value => simp [selected,
+      embedding.connectionPrefixInputs_none parentState event name inputName width
+        present]
 
 theorem connectionResult_eq {parent child : System}
     (embedding : StandardEmbedding parent child)
@@ -540,6 +685,120 @@ theorem connectionResult_eq {parent child : System}
       exact queueState ▸ rfl
 
 end StandardEmbedding
+
+end System
+
+namespace SystemBuilder
+
+/-- Exact inventory position generated when a checked fragment is inserted
+into a builder. The position remains valid when sibling inventory is appended;
+it records values, not merely names or hashes. -/
+structure FragmentPlacement (builder : SystemBuilder) (child : System) where
+  islandPrefix : List SystemIsland
+  islandSuffix : List SystemIsland
+  connectionPrefix : List SystemConnection
+  connectionSuffix : List SystemConnection
+  islands : builder.islands = islandPrefix ++ child.islands ++ islandSuffix
+  connections : builder.connections =
+    connectionPrefix ++ child.connections ++ connectionSuffix
+
+/-- The builder and exact placement produced by one fragment insertion. -/
+structure FragmentInsertion (child : System) where
+  builder : SystemBuilder
+  placement : FragmentPlacement builder child
+
+/-- Include a fragment and return exact, proof-carrying inventory provenance.
+Unlike reconstructing a prefix after assembly, this works for every sibling
+regardless of which fragment was inserted first. -/
+def includeFragmentPlaced
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (builder : SystemBuilder)
+    (fragment : System.SystemFragment Interface TheoremBundle) :
+    FragmentInsertion fragment.system where
+  builder := builder.includeFragment fragment
+  placement :=
+    { islandPrefix := builder.islands
+      islandSuffix := []
+      connectionPrefix := builder.connections
+      connectionSuffix := []
+      islands := by
+        simp [SystemBuilder.includeFragment, SystemBuilder.includeBlock,
+          SystemBuilder.includeSystem, System.SystemFragment.system]
+      connections := by
+        simp [SystemBuilder.includeFragment, SystemBuilder.includeBlock,
+          SystemBuilder.includeSystem, System.SystemFragment.system] }
+
+/-- Appending a sibling moves that sibling into the suffix of an existing
+placement; the original fragment's exact coordinates are unchanged. -/
+def FragmentPlacement.afterIncludeFragment
+    {builder : SystemBuilder} {child : System}
+    (placement : FragmentPlacement builder child)
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    (sibling : System.SystemFragment Interface TheoremBundle) :
+    FragmentPlacement (builder.includeFragment sibling) child where
+  islandPrefix := placement.islandPrefix
+  islandSuffix := placement.islandSuffix ++ sibling.system.islands
+  connectionPrefix := placement.connectionPrefix
+  connectionSuffix := placement.connectionSuffix ++ sibling.system.connections
+  islands := by
+    simp only [SystemBuilder.includeFragment, SystemBuilder.includeBlock,
+      SystemBuilder.includeSystem, System.SystemFragment.system]
+    rw [placement.islands]
+    simp only [List.append_assoc]
+  connections := by
+    simp only [SystemBuilder.includeFragment, SystemBuilder.includeBlock,
+      SystemBuilder.includeSystem, System.SystemFragment.system]
+    rw [placement.connections]
+    simp only [List.append_assoc]
+
+/-- Seal builder-generated placement provenance into the semantic projection
+certificate. The remaining arguments are finite collision/endpoint checks and
+the already-explicit reset/clock compatibility contract. -/
+def FragmentPlacement.toStandardEmbedding
+    {builder : SystemBuilder} {child : System}
+    (placement : FragmentPlacement builder child)
+    (parentChecked : builder.check.isOk)
+    (islandPrefixDisjoint : placement.islandPrefix.all (fun earlier =>
+      child.islands.all fun nested => earlier.name != nested.name) = true)
+    (connectionPrefixDisjoint : placement.connectionPrefix.all (fun earlier =>
+      child.connections.all fun nested =>
+        earlier.chan.name != nested.chan.name) = true)
+    (connectionPrefixOutside : placement.connectionPrefix.all (fun earlier =>
+      child.islands.all fun nested =>
+        earlier.source != nested.name && earlier.sink != nested.name) = true)
+    (childEndpoints : child.connections.all (fun connection =>
+      (child.findIsland? connection.source).isSome &&
+        (child.findIsland? connection.sink).isSome) = true)
+    (boundary : System.fragmentBoundaryCheckB child
+      (builder.certify parentChecked) = true)
+    (resetPolicy : (builder.certify parentChecked).resetPolicy =
+      child.resetPolicy)
+    (coordinated : child.resetPolicy = .coordinated)
+    (clockCompatible : ∀ (events : List System.RecoveryEvent),
+      (builder.certify parentChecked).clockRel.accepts
+          ((events.map (·.tick)).toArray) = true →
+        child.clockRel.accepts ((events.map (·.tick)).toArray) = true) :
+    System.StandardEmbedding (builder.certify parentChecked) child where
+  islandPrefix := placement.islandPrefix
+  islandSuffix := placement.islandSuffix
+  connectionPrefix := placement.connectionPrefix
+  connectionSuffix := placement.connectionSuffix
+  islands := by simpa using placement.islands
+  connections := by simpa using placement.connections
+  islandPrefixDisjoint := islandPrefixDisjoint
+  connectionPrefixDisjoint := connectionPrefixDisjoint
+  connectionPrefixOutside := connectionPrefixOutside
+  childEndpoints := childEndpoints
+  boundary := boundary
+  resetPolicy := resetPolicy
+  coordinated := coordinated
+  clockCompatible := clockCompatible
+
+end SystemBuilder
+
+namespace System
 
 /-- A forward simulation from a parent System to an embedded child System.
 `projectExternal` supplies the inputs that the child observes after its open
@@ -662,7 +921,8 @@ def toExecutionProjection {parent child : System}
           have stateEq := represents.island name (by simp [found])
           simp only [System.advance]
           rw [found, parentFound]
-          rw [embedding.islandInput_eq parentState childState represents.data]
+          rw [embedding.islandInput_eq parentState childState represents.data
+            observed.event.tick observed.external name (by simp [found])]
           rw [stateEq]
     · intro name present
       cases found : child.connections.find? (fun connection =>
@@ -891,9 +1151,10 @@ abbrev ExecutionProjection
   System.ExecutionProjection parent fragment.system
 
 /-- Derive the standard parent-to-fragment projection when the parent retains
-the fragment inventories as exact prefixes, closes its typed endpoints, and
-preserves its coordinated reset and clock contract. Use `ExecutionProjection`
-directly for state-transforming adapters and other nonstandard embeddings. -/
+the fragment inventories at an exact, non-shadowed placement, closes its typed
+endpoints, and preserves its coordinated reset and clock contract. Use
+`ExecutionProjection` directly for state-transforming adapters and other
+nonstandard embeddings. -/
 def standardProjection
     {Interface : System → Type u}
     {TheoremBundle : (system : System) → Interface system → Type u}

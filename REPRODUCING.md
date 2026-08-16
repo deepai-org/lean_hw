@@ -157,17 +157,18 @@ checked independently of the large release build:
 
 ```console
 lake build Tests.SystemProjection
+lake build Tests.SiblingProjection
 lake build Tests.ProjectionProgress
 lake build Tests.ProjectionAxioms
 ```
 
 The final command prints readable dependency closures and also executes a
 fail-closed kernel dependency audit. It succeeds only when every focused
-projection, predicate-progress, and demonstration declaration stays within
-`propext`, `Classical.choice`, and `Quot.sound`; a newly introduced axiom makes
-elaboration fail. This focused gate remains independently reproducible if a
-different development target fails; consult [`STATUS.md`](STATUS.md) for the
-current repository-wide result.
+projection, sibling-order, predicate-progress, and demonstration declaration
+stays within `propext`, `Classical.choice`, and `Quot.sound`; a newly introduced
+axiom makes elaboration fail. This focused gate remains independently
+reproducible if a different development target fails; consult
+[`STATUS.md`](STATUS.md) for the current repository-wide result.
 
 ## Interpreting success
 
