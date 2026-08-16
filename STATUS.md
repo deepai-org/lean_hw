@@ -1,6 +1,6 @@
 # Project status
 
-Checked against repository head on **2026-08-12**. This file is a current
+Checked against repository head on **2026-08-16**. This file is a current
 snapshot, not a development diary. Historical milestones belong in Git and
 [`CHANGELOG.md`](CHANGELOG.md); detailed hardware campaigns belong in their
 machine and board specifications.
@@ -11,7 +11,7 @@ machine and board specifications.
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-11; warnings remain. |
 | `lake exe audit` | **PASS** | Rechecked on 2026-08-12; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **PASS** | Rechecked on 2026-08-12 under a 28 GiB/no-swap cgroup; includes typed-channel schedule replay, runner, coverage, identity, arithmetic, and certified-DAG regressions. Peak resident memory was 4.5 GiB. |
+| `lake test` | **ABORTED** | Attempted on 2026-08-16; 8,274 of 8,276 jobs were reached before Lean exited 139 in unchanged `Tests.Component`. This is neither recorded as a test PASS nor as a semantic test failure. The last complete PASS remains the 2026-08-12 run. |
 | `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-12, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
@@ -27,6 +27,24 @@ the bounded-model-check proof from the standing gate.
 
 The full reproduction and release workflows remain separate, explicitly
 unrerun gates.
+
+### Multiclock execution-projection gate
+
+Focused validation on 2026-08-16 passed for `Tests.SystemProjection` and the
+fail-closed `Tests.ProjectionAxioms` audit. The result transports valid finite
+reset-aware executions, state-dependent observed inputs, fragment island and
+internal-channel state, time, clocks, and resets. It lifts one fragment-wide
+FIFO ordering/no-loss theorem and one explicitly conditional bounded-response
+demonstration into two different parents. Its exact axiom closure is
+`propext`, `Classical.choice`, and `Quot.sound`.
+
+The repository-wide attempt was aborted by the unrelated, unchanged
+`Tests.Component` target. A reduced direct invocation,
+`lake env lean Tests/Component.lean --json`, reproduces exit 139 in about 1.7
+seconds at approximately 1.74 GiB maximum resident memory. The ordinary Lake
+target has the same peak and failure. Raising the process stack limit from
+8 MiB to unlimited does not change the result, and no swap activity was
+observed. Crash diagnosis remains separate from the projection milestone.
 
 `Loom/Hw/Chan.lean` and `Loom/Hw/System.lean` provide typed bounded-channel
 handles, generated endpoints, synchronous FIFO lowering, named island

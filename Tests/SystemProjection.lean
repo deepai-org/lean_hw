@@ -322,7 +322,19 @@ def monitoredInterface : ClosedParentInterface monitoredParent where
 
 def asynchronousProjection :
     System.ExecutionProjection asynchronousParent fragmentSystem where
-  boundary := by decide
+  projectState_projects := fun state =>
+    System.restrictState_projects fragmentSystem state
+  islandIncluded := by
+    intro name present
+    cases found : fragmentSystem.findIsland? name with
+    | none => simp [found] at present
+    | some island =>
+        simp [asynchronous_find_of_fragment found]
+  channelIncluded := by
+    intro name present
+    have onlyInternal := fragment_channel_name present
+    subst name
+    simp [asynchronous_find_internal]
   projectEvent := id
   projectExternal := fun state observed =>
     asynchronousParent.islandInput observed.event.tick state observed.external
@@ -507,7 +519,19 @@ theorem monitored_connectionResult_eq
 
 def monitoredProjection :
     System.ExecutionProjection monitoredParent fragmentSystem where
-  boundary := by decide
+  projectState_projects := fun state =>
+    System.restrictState_projects fragmentSystem state
+  islandIncluded := by
+    intro name present
+    cases found : fragmentSystem.findIsland? name with
+    | none => simp [found] at present
+    | some island =>
+        simp [monitored_find_of_fragment found]
+  channelIncluded := by
+    intro name present
+    have onlyInternal := fragment_channel_name present
+    subst name
+    simp [monitored_find_internal]
   projectEvent := id
   projectExternal := fun state observed =>
     monitoredParent.islandInput observed.event.tick state observed.external
