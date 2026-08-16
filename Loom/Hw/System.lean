@@ -515,7 +515,7 @@ def _root_.Loom.Hw.SystemBuilder.check (sys : SystemBuilder) : Except String Uni
     throw "duplicate open sink endpoint"
   if channelNames.any (openSourceNames.contains ·) ||
       channelNames.any (openSinkNames.contains ·) then
-    throw "connected channel also remains exported"
+    throw "connected channel still has an exported endpoint; closure requires exact channel name, width, depth, policy, and owner"
   for connection in sys.connections do
     if connection.chan.name.isEmpty then throw "empty channel name"
     if connection.chan.depth == 0 then

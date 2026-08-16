@@ -448,13 +448,11 @@ def interleavedParent : System :=
 
 example : asynchronousParent.Invariant
     (System.atIsland theoremIsland.name (fun _ => True)) :=
-  theoremFragment.liftFragment asynchronousParent theoremLocal
-    (by rfl) ⟨ClockRel.refines_asynchronous _⟩
+  theoremFragment.liftLocalInvariant asynchronousParent theoremLocal (by rfl)
 
 example : interleavedParent.Invariant
     (System.atIsland theoremIsland.name (fun _ => True)) :=
-  theoremFragment.liftFragment interleavedParent theoremLocal
-    (by rfl) ⟨ClockRel.refines_asynchronous _⟩
+  theoremFragment.liftLocalInvariant interleavedParent theoremLocal (by rfl)
 
 def alignedChildBuilder : SystemBuilder :=
   System.empty

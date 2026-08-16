@@ -1156,17 +1156,17 @@ structure ClockCompatible
     (parent : System) (fragment : SystemFragment Interface TheoremBundle) : Prop where
   refines : parent.clockRel.Refines fragment.system.clockRel
 
-/-- Lift one transportable fragment theorem into a parent System. Membership
-and clock-relation compatibility are separate proof obligations, so including
-the same bytes under an incompatible schedule policy cannot silently reuse the
-child theorem. -/
-theorem liftFragment
+/-- Lift a genuinely island-local theorem into any parent containing the same
+island. Local open-Design invariants already quantify over arbitrary inputs,
+so neither the surrounding channel graph nor its clock relation is relevant.
+Schedule-sensitive, fragment-wide theorem transport uses an execution
+projection rather than this operation. -/
+theorem liftLocalInvariant
     {Interface : System → Type u}
     {TheoremBundle : (system : System) → Interface system → Type u}
     (parent : System) (fragment : SystemFragment Interface TheoremBundle)
     {property : St → Prop} (certificate : LocalInvariant fragment property)
-    (found : parent.findIsland? certificate.island.name = some certificate.island)
-    (_compatible : ClockCompatible parent fragment) :
+    (found : parent.findIsland? certificate.island.name = some certificate.island) :
     parent.Invariant (System.atIsland certificate.island.name property) :=
   parent.liftIsland certificate.island found certificate.localInvariant
 
