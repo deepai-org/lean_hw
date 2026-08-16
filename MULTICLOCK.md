@@ -394,11 +394,22 @@ state-dependent input view at the intermediate boundary. The executable
 `fragmentBoundaryCheckB` remains a useful inventory diagnostic; the semantic
 simulation fields and coordinate-inclusion proofs are authoritative.
 
+For the ordinary construction path, `StandardEmbedding` records exact child
+island/connection prefixes, finite endpoint closure, and compatible
+coordinated-reset and clock contracts. `SystemFragment.standardProjection`
+derives the complete execution simulation from that structural evidence. A
+manual `ExecutionProjection` remains the expert escape for adapters that
+transform state, events, or inputs.
+
 The focused gate contains a worker/engine fragment with an internal
 asynchronous queue and typed request/response exports. Two parents close those
 exports, one parent adds an unrelated monitor island, and the same internal
 FIFO ordering/no-loss theorem and bounded response theorem are lifted through
-their execution projections. The projection theorem and demonstrator close
+their execution projections. The progress theorem is phrased over predicates:
+no reset, request presentation, destination readiness, and the required
+fragment-domain ticks. It permits arbitrary inserted events that tick neither
+fragment domain instead of requiring equality with one exact witness trace.
+The projection theorem and demonstrator close
 over exactly Lean's standard `propext`, `Classical.choice`, and `Quot.sound`;
 the focused audit fails closed if that set expands.
 
@@ -406,9 +417,7 @@ The present result proves semantic theorem reuse without flattening the child
 proof. It does not establish unbounded liveness or fairness, semantic separate
 compilation of hierarchy-preserving RTL, physical CDC/timing/metastability
 claims, or reuse across reset policies lacking an explicit compatibility
-proof. Manual `ExecutionProjection` construction remains the expert escape
-hatch while the checked fragment-builder path is being automated; it is not
-yet tutorial-facing syntax.
+proof. The projection API is not yet tutorial-facing syntax.
 
 ## Realizations
 

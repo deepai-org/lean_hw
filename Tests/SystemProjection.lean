@@ -320,90 +320,29 @@ def monitoredInterface : ClosedParentInterface monitoredParent where
   request := requestRoute.proofHandle monitoredParent (by rfl)
   response := responseRoute.proofHandle monitoredParent (by rfl)
 
-def asynchronousProjection :
-    System.ExecutionProjection asynchronousParent fragmentSystem where
-  projectState_projects := fun state =>
-    System.restrictState_projects fragmentSystem state
-  islandIncluded := by
-    intro name present
-    cases found : fragmentSystem.findIsland? name with
-    | none => simp [found] at present
-    | some island =>
-        simp [asynchronous_find_of_fragment found]
-  channelIncluded := by
-    intro name present
-    have onlyInternal := fragment_channel_name present
-    subst name
-    simp [asynchronous_find_internal]
-  projectEvent := id
-  projectExternal := fun state observed =>
-    asynchronousParent.islandInput observed.event.tick state observed.external
-  clockEvent := by intros; rfl
-  resetEvent := by intros; rfl
-  resetCompatible := by
-    intro event valid
-    have none := System.recoveryEventOk_coordinated_noReset
-      asynchronousParent event rfl valid
-    cases event with
-    | mk tick resetIslands =>
-        simp only at none
-        subst resetIslands
-        unfold System.recoveryEventOk
-        change (match fragmentSystem.resetPolicy with
-          | .coordinated => true
-          | .independentFlush => true) = true
-        cases fragmentSystem.resetPolicy <;> rfl
+def closedClientIsland : SystemIsland :=
+  ⟨clientIsland.name, clientIsland.clock.name, request.withSource clientCore⟩
+
+def closedCollectorIsland : SystemIsland :=
+  ⟨collectorIsland.name, collectorIsland.clock.name,
+    response.withSink collectorCore⟩
+
+def asynchronousEmbedding :
+    System.StandardEmbedding asynchronousParent fragmentSystem where
+  islandSuffix := [closedClientIsland, closedCollectorIsland]
+  connectionSuffix :=
+    [requestRoute.toSystemConnection, responseRoute.toSystemConnection]
+  islands := rfl
+  connections := rfl
+  childEndpoints := by decide
+  boundary := by decide
+  resetPolicy := rfl
+  coordinated := rfl
   clockCompatible := by intros; rfl
-  initial :=
-    { time := rfl
-      island := by
-        intro name present
-        cases found : fragmentSystem.findIsland? name with
-        | none => simp [found] at present
-        | some island =>
-            simp [System.reset, found,
-              asynchronous_find_of_fragment found]
-      channel := by
-        intro name present
-        have onlyInternal := fragment_channel_name present
-        subst name
-        simp [System.reset, fragment_find_internal,
-          asynchronous_find_internal] }
-  step := by
-    intro parentState childState observed represents valid
-    have none := System.recoveryEventOk_coordinated_noReset
-      asynchronousParent observed.event rfl valid
-    rw [asynchronousParent.advanceRecovery_noReset observed.event
-      observed.external parentState none]
-    simp only [id_eq]
-    rw [fragmentSystem.advanceRecovery_noReset observed.event
-      (asynchronousParent.islandInput observed.event.tick parentState
-        observed.external) childState none]
-    refine { time := by simp [System.advance, represents.time]
-             island := ?_
-             channel := ?_ }
-    · intro name present
-      cases found : fragmentSystem.findIsland? name with
-      | none => simp [found] at present
-      | some island =>
-          have parentFound := asynchronous_find_of_fragment found
-          have stateEq := represents.island name (by simp [found])
-          simp only [System.advance]
-          rw [found, parentFound]
-          rw [asynchronous_islandInput_eq parentState childState represents]
-          rw [stateEq]
-    · intro name present
-      have onlyInternal : name = internal.name := by
-        rw [show fragmentSystem.connections =
-          [internalRoute.toSystemConnection] by rfl] at present
-        simp [internalRoute, ChannelRoute.toSystemConnection, Chan.between,
-          internal] at present
-        exact present.symm
-      subst name
-      simp only [System.advance]
-      rw [fragment_find_internal, asynchronous_find_internal]
-      dsimp only
-      rw [asynchronous_connectionResult_eq parentState childState represents]
+
+def asynchronousProjection :
+    System.ExecutionProjection asynchronousParent fragmentSystem :=
+  fragment.standardProjection asynchronousEmbedding
 
 theorem monitored_find_worker :
     monitoredParent.findIsland? workerIsland.name =
@@ -517,91 +456,24 @@ theorem monitored_connectionResult_eq
   simp only [internal]
   rw [queueState]
 
+def monitoredEmbedding :
+    System.StandardEmbedding monitoredParent fragmentSystem where
+  islandSuffix :=
+    [closedClientIsland, closedCollectorIsland,
+      monitorIsland.toSystemIsland]
+  connectionSuffix :=
+    [requestRoute.toSystemConnection, responseRoute.toSystemConnection]
+  islands := rfl
+  connections := rfl
+  childEndpoints := by decide
+  boundary := by decide
+  resetPolicy := rfl
+  coordinated := rfl
+  clockCompatible := by intros; rfl
+
 def monitoredProjection :
-    System.ExecutionProjection monitoredParent fragmentSystem where
-  projectState_projects := fun state =>
-    System.restrictState_projects fragmentSystem state
-  islandIncluded := by
-    intro name present
-    cases found : fragmentSystem.findIsland? name with
-    | none => simp [found] at present
-    | some island =>
-        simp [monitored_find_of_fragment found]
-  channelIncluded := by
-    intro name present
-    have onlyInternal := fragment_channel_name present
-    subst name
-    simp [monitored_find_internal]
-  projectEvent := id
-  projectExternal := fun state observed =>
-    monitoredParent.islandInput observed.event.tick state observed.external
-  clockEvent := by intros; rfl
-  resetEvent := by intros; rfl
-  resetCompatible := by
-    intro event valid
-    have none := System.recoveryEventOk_coordinated_noReset
-      monitoredParent event rfl valid
-    cases event with
-    | mk tick resetIslands =>
-        simp only at none
-        subst resetIslands
-        unfold System.recoveryEventOk
-        change (match fragmentSystem.resetPolicy with
-          | .coordinated => true
-          | .independentFlush => true) = true
-        cases fragmentSystem.resetPolicy <;> rfl
-  clockCompatible := by
-    intro events accepted
-    rfl
-  initial :=
-    { time := rfl
-      island := by
-        intro name present
-        cases found : fragmentSystem.findIsland? name with
-        | none => simp [found] at present
-        | some island =>
-            simp [System.reset, found, monitored_find_of_fragment found]
-      channel := by
-        intro name present
-        have onlyInternal := fragment_channel_name present
-        subst name
-        simp [System.reset, fragment_find_internal,
-          monitored_find_internal] }
-  step := by
-    intro parentState childState observed represents valid
-    have none := System.recoveryEventOk_coordinated_noReset
-      monitoredParent observed.event rfl valid
-    rw [monitoredParent.advanceRecovery_noReset observed.event
-      observed.external parentState none]
-    simp only [id_eq]
-    rw [fragmentSystem.advanceRecovery_noReset observed.event
-      (monitoredParent.islandInput observed.event.tick parentState
-        observed.external) childState none]
-    refine { time := by simp [System.advance, represents.time]
-             island := ?_
-             channel := ?_ }
-    · intro name present
-      cases found : fragmentSystem.findIsland? name with
-      | none => simp [found] at present
-      | some island =>
-          have parentFound := monitored_find_of_fragment found
-          have stateEq := represents.island name (by simp [found])
-          simp only [System.advance]
-          rw [found, parentFound]
-          rw [monitored_islandInput_eq parentState childState represents]
-          rw [stateEq]
-    · intro name present
-      have onlyInternal : name = internal.name := by
-        rw [show fragmentSystem.connections =
-          [internalRoute.toSystemConnection] by rfl] at present
-        simp [internalRoute, ChannelRoute.toSystemConnection, Chan.between,
-          internal] at present
-        exact present.symm
-      subst name
-      simp only [System.advance]
-      rw [fragment_find_internal, monitored_find_internal]
-      dsimp only
-      rw [monitored_connectionResult_eq parentState childState represents]
+    System.ExecutionProjection monitoredParent fragmentSystem :=
+  fragment.standardProjection monitoredEmbedding
 
 /-! ## One theorem bundle reused in both parents -/
 
