@@ -157,12 +157,13 @@ checked independently of the large release build:
 
 ```console
 lake build Tests.SystemProjection
+lake build Tests.ProjectionProgress
 lake build Tests.ProjectionAxioms
 ```
 
 The second command prints readable dependency closures and also executes a
 fail-closed kernel dependency audit. It succeeds only when every focused
-projection and demonstration declaration stays within `propext`,
+projection, predicate-progress, and demonstration declaration stays within `propext`,
 `Classical.choice`, and `Quot.sound`; a newly introduced axiom makes
 elaboration fail. Consult [`STATUS.md`](STATUS.md) before interpreting a
 repository-wide `lake test`, because an unrelated development target may abort

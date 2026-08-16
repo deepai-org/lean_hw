@@ -30,12 +30,18 @@ unrerun gates.
 
 ### Multiclock execution-projection gate
 
-Focused validation on 2026-08-16 passed for `Tests.SystemProjection` and the
-fail-closed `Tests.ProjectionAxioms` audit. The result transports valid finite
+Focused validation on 2026-08-16 passed for `Tests.SystemProjection`,
+`Tests.ProjectionProgress`, and the fail-closed `Tests.ProjectionAxioms`
+audit. The result transports valid finite
 reset-aware executions, state-dependent observed inputs, fragment island and
 internal-channel state, time, clocks, and resets. It lifts one fragment-wide
-FIFO ordering/no-loss theorem and one explicitly conditional bounded-response
-demonstration into two different parents. Its exact axiom closure is
+FIFO ordering/no-loss theorem and one predicate-conditioned bounded-response
+demonstration into two different parents. The latter states request
+presentation, destination readiness, required fragment ticks, and reset
+absence explicitly while permitting arbitrary irrelevant interleavings. The
+standard include-and-close projection is derived from checked finite inventory
+evidence; a manual certificate remains available for transformed adapters.
+Its exact axiom closure is
 `propext`, `Classical.choice`, and `Quot.sound`.
 
 The repository-wide attempt was aborted by the unrelated, unchanged

@@ -191,14 +191,16 @@ proofs remain unchanged. [MULTICLOCK.md](MULTICLOCK.md) describes channel,
 schedule, reset, and realization behavior in detail; [PLATONIC.md](PLATONIC.md)
 records the longer-term architectural destination.
 
-`SystemFragment` is also the certified multiclock component boundary. Given a
-checked `ExecutionProjection`, every valid finite parent execution induces the
-fragment execution with matching fragment islands, internal channels, time,
-clock/reset observations, and inputs. Fragment-wide finite-trace safety and
-explicitly conditional bounded-progress theorems can therefore be reused in a
-compatible parent without flattening and reproving the fragment. This is
-semantic theorem reuse; hierarchy-preserving separately compiled RTL is a
-distinct, deferred result.
+`SystemFragment` is also the certified multiclock component boundary. The
+ordinary include-and-close construction derives its checked
+`ExecutionProjection` from finite structural evidence; transformed adapters
+retain an explicit expert certificate. Every valid finite parent execution
+induces the fragment execution with matching fragment islands, internal
+channels, time, clock/reset observations, and inputs. Fragment-wide
+finite-trace safety and predicate-conditioned bounded-progress theorems can
+therefore be reused in a compatible parent without flattening and reproving
+the fragment. This is semantic theorem reuse; hierarchy-preserving separately
+compiled RTL is a distinct, deferred result.
 
 ### Library pieces
 

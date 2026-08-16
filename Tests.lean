@@ -11,6 +11,7 @@ import Tests.DivRem
 import Tests.Chan
 import Tests.MulticlockApi
 import Tests.SystemProjection
+import Tests.ProjectionProgress
 import Tests.ProjectionAxioms
 import Tests.ChannelProtocol
 import Tests.ClockGauntlet
