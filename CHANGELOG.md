@@ -16,6 +16,23 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Typed, scalable component hierarchy:** domain-indexed components, ports,
+  connections, streams, and memories make same-clock ownership and interface
+  compatibility type-level facts. Checked batch construction validates
+  topology once at sealing, canonical flattening is compared against a slow
+  reference lowering, and internal or contract-bearing external leaves can be
+  substituted through the same typed graph without exposing erased assembly
+  as the ordinary API.
+
+- **Compositional multiclock subsystem proofs:** `SystemFragment` preserves
+  clock islands, channels, exports, realization choice, and dependent theorem
+  bundles instead of flattening a multidomain subsystem to one `Design`.
+  State-dependent execution projections transport finite-trace safety and
+  predicate-conditioned progress through nesting. Builder-generated placement
+  witnesses now give every sibling fragment an exact projection independent of
+  assembly order, with island/channel membership, endpoint closure, and input
+  dispatch checked fail-closed.
+
 - **Coherent portable FIFO storage interface:** the portable register-bank
   reader is now explicitly first-word-fall-through, with one combinational
   `read_sample` output and no unused registered response pipeline. Its
@@ -352,6 +369,10 @@ All notable user-visible changes will be recorded here. This project follows
 - External downstream-package smoke test importing `Loom` and `Machines`.
 
 ### Changed
+
+- Recovery-controller one-bit bridge proofs use explicit kernel-checked finite
+  cases, and the smoke application uses kernel `decide`; the repository audit
+  no longer inherits a trusted-compiler dependency from these declarations.
 
 - **Typed single-source migration completed:** LNP64mini proof projections now
   derive from checked property footprints, and Epoch/CapWalk memory-policy

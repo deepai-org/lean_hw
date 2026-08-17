@@ -358,11 +358,14 @@ Remaining large-SoC work is:
 - attach a checked, inspectable timing contract to each realization selection
   and provide composition lemmas/reports, so designers can see and prove the
   latency introduced at every channel boundary;
-- automatic instance prefixing is remaining hierarchy ergonomics. Today
-  sealed blocks carry checked typed exports, cached island certificates, and
-  an arbitrary dependent theorem bundle; parents flatten them and close only
-  source/sink endpoints indexed by the exact same `Chan`, while ordinary
-  assembly rejects name collisions and parent/child reset-policy disagreement.
+- automatic namespace prefixing of flattened instance-local RTL/Lean names is
+  remaining hierarchy ergonomics. This is unrelated to fragment placement:
+  builder-generated witnesses already give every sibling fragment a projection
+  independent of inclusion order. Today sealed blocks carry checked typed
+  exports, cached island certificates, and an arbitrary dependent theorem
+  bundle; parents flatten them and close only source/sink endpoints indexed by
+  the exact same `Chan`, while ordinary assembly rejects name collisions and
+  parent/child reset-policy disagreement.
 
 These are API and proof obligations, not a reason to add a catalogue of CDC
 idioms. Typed queues plus a small number of proved reference realizations

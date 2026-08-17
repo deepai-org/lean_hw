@@ -78,6 +78,6 @@ def builder : SystemBuilder :=
 def system : System := builder.certify (by decide)
 
 def application : System.Application system :=
-  system.realizeWith RealizationPlan.recoveryPortable (by native_decide)
+  system.realizeWith RealizationPlan.recoveryPortable (by decide)
 
 end Machines.Multiclock.RecoverySmoke
