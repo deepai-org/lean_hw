@@ -91,9 +91,12 @@ cannot cause Lean to accept a bad proof, but could hide policy drift. The final
 release declaration and raw axiom closure remain independently inspectable.
 
 Executable replacements currently accelerate compiler/printer traversals,
-`Design.toProgram`, and memory-read diagnostics. The release construction
-checks candidate witnesses against reference definitions, so those
-replacements are not premises of `verifiedReleases`.
+`Design.toProgram`, memory-read diagnostics, and the component graph's Kahn
+topological-order proposal. The latter is an untrusted proposal checked by the
+transparent `topologicalOrderCheckB`; only the checker's soundness theorem
+certifies acyclicity. The release construction likewise checks candidate
+witnesses against reference definitions, so these replacements are not hidden
+premises of `verifiedReleases`.
 
 Mathlib adds proof code but not a second proof kernel: its declarations are
 checked by Lean. CaDiCaL and other solvers are untrusted proposal engines where

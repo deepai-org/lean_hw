@@ -686,6 +686,15 @@ private def islandModule (sys : System) (island : SystemIsland) : Backend.Module
 private def clockPorts (sys : System) : List String :=
   (sys.islands.map (fun island => island.clock)).eraseDups
 
+private def observedCombOutputs (sys : System)
+    (island : SystemIsland) : List CombOutput :=
+  island.design.combOutputs.filter fun output =>
+    sys.observations.any fun observation =>
+      observation.kind == .combinational &&
+        observation.island == island.name &&
+        observation.signal == output.name &&
+        observation.width == output.width
+
 private def topPorts (sys : System) : List String :=
   (clockPorts sys).map ("input wire " ++ ·) ++ ["input wire rst"] ++
   (if sys.resetPolicy = .independentFlush then
@@ -702,7 +711,9 @@ private def topPorts (sys : System) : List String :=
     externalInputs.map (fun input =>
       s!"input wire {portWidth input.width}{islandSignal island.name input.name}") ++
     externalOutputs.map (fun reg =>
-      s!"output wire {portWidth reg.width}{islandOutput island.name reg.name}")
+      s!"output wire {portWidth reg.width}{islandOutput island.name reg.name}") ++
+    (observedCombOutputs sys island).map (fun output =>
+      s!"output wire {portWidth output.width}{islandOutput island.name output.name}")
 
 private def topPortNames (sys : System) : List String :=
   clockPorts sys ++ ["rst"] ++
@@ -716,7 +727,9 @@ private def topPortNames (sys : System) : List String :=
       island.design.outputs.contains reg.name &&
         !endpointOutput sys island.name reg.name
     externalInputs.map (fun input => islandSignal island.name input.name) ++
-      externalOutputs.map (fun reg => islandOutput island.name reg.name)
+      externalOutputs.map (fun reg => islandOutput island.name reg.name) ++
+      (observedCombOutputs sys island).map (fun output =>
+        islandOutput island.name output.name)
 
 /-- One physical endpoint half whose graceful-recovery completion contributes
 to an island's reset gate. Keeping the side explicit prevents an incident
@@ -897,7 +910,9 @@ private def islandInstance (sys : System) (island : SystemIsland) : String :=
     physical.inputs.map (fun input =>
       s!".{input.name}({islandSignal island.name input.name})") ++
     (physical.regs.filter (fun reg => physical.outputs.contains reg.name)).map (fun reg =>
-      s!".o_{reg.name}({islandOutput island.name reg.name})")
+      s!".o_{reg.name}({islandOutput island.name reg.name})") ++
+    (observedCombOutputs sys island).map (fun output =>
+      s!".{output.name}({islandOutput island.name output.name})")
   s!"{physical.name} u_island_{island.name} (" ++
     String.intercalate ", " connections ++ ");"
 

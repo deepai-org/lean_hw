@@ -213,6 +213,21 @@ private def wrongBodyFullRateRejected : Bool :=
 
 example : wrongBodyFullRateRejected := by native_decide
 
+/-! System observations are explicit and fail closed. Generator-facing erased
+requests cannot promote a missing internal signal or invent its width. -/
+
+def badObservationBuilder : SystemBuilder :=
+  System.empty
+    |>.addErasedIsland fullRateConsumerIsland
+    |>.observeErased ⟨7, fullRateConsumerIsland.name, "observed", .registered⟩
+
+def badObservationRejected : Bool :=
+  match badObservationBuilder.check with
+  | .error _ => true
+  | .ok _ => false
+
+example : badObservationRejected := by native_decide
+
 def fullRateSteadyState : St :=
   { fullRateSinkDesign.reset with
     regs := (((fullRateSinkDesign.reset.regs.set
@@ -371,11 +386,39 @@ def includedFragmentSystem : System :=
 def includedFragmentPlan : RealizationPlan :=
   RealizationPlan.synchronous.includeFragment mixedFragment
 
+/-- Parent certification reuses the fragment's cached compiler and simulator
+certificates. No whole-parent `islandsCheck` proof occurs on this path. -/
+def includedFragmentInventory :
+    System.CertifiedIslands.Inventory includedFragmentBuilder.islands := by
+  simpa [includedFragmentBuilder] using
+    System.CertifiedIslands.includeFragment
+      (builder := System.empty) .empty mixedFragment
+
+def includedFragmentCache : System.CertifiedIslands includedFragmentSystem :=
+  System.CertifiedIslands.ofInventory includedFragmentSystem
+    includedFragmentInventory
+
+def includedFragmentCachedApplication : System.Application includedFragmentSystem :=
+  includedFragmentSystem.realizeWithCertified includedFragmentCache
+    includedFragmentPlan (by native_decide)
+
+def includedFragmentBuilt : System.BuiltSystem :=
+  (includedFragmentBuilder.buildWithCertifiedIslands
+    includedFragmentInventory includedFragmentPlan).toOption.get
+    (by native_decide)
+
 example : includedFragmentSystem.selectedCheck includedFragmentPlan = true := by
   native_decide
 example : includedFragmentPlan.select deeperRoute.key = .portableAsync := by
   native_decide
 example : includedFragmentPlan.select syncRoute.key = .synchronous := by
+  native_decide
+example : includedFragmentCachedApplication.artifact.emissionCheck.isOk := by
+  native_decide
+example : includedFragmentBuilt.application.artifact.renderedUTF8 =
+    includedFragmentCachedApplication.artifact.renderedUTF8 := by
+  native_decide
+example : (includedFragmentBuilder.buildChecked includedFragmentPlan).isOk := by
   native_decide
 
 def mixedCachedApplication : System.Application mixedSystem :=

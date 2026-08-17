@@ -84,6 +84,18 @@ def serviceObserverReady : serviceObserverBuilder.check.isOk := by decide
 def serviceObserver : System :=
   serviceObserverBuilder.certify serviceObserverReady
 
+def serviceObserverIslandInventory :
+    System.CertifiedIslands.Inventory serviceObserverBuilder.islands := by
+  simpa [serviceObserverBuilder, observerAfterService, serviceFirst] using
+    System.CertifiedIslands.includeFragment
+      (System.CertifiedIslands.includeFragment
+        (builder := System.empty) .empty serviceFragment)
+      observerFragment
+
+def serviceObserverIslandCache : System.CertifiedIslands serviceObserver :=
+  System.CertifiedIslands.ofInventory serviceObserver
+    serviceObserverIslandInventory
+
 def serviceEmbeddingInServiceObserver :
     System.StandardEmbedding serviceObserver asynchronousParent :=
   servicePlacementInServiceObserver.toStandardEmbedding
@@ -123,6 +135,18 @@ def observerServiceBuilder : SystemBuilder := serviceAfterObserver.builder
 def observerServiceReady : observerServiceBuilder.check.isOk := by decide
 def observerService : System :=
   observerServiceBuilder.certify observerServiceReady
+
+def observerServiceIslandInventory :
+    System.CertifiedIslands.Inventory observerServiceBuilder.islands := by
+  simpa [observerServiceBuilder, serviceAfterObserver, observerFirst] using
+    System.CertifiedIslands.includeFragment
+      (System.CertifiedIslands.includeFragment
+        (builder := System.empty) .empty observerFragment)
+      serviceFragment
+
+def observerServiceIslandCache : System.CertifiedIslands observerService :=
+  System.CertifiedIslands.ofInventory observerService
+    observerServiceIslandInventory
 
 def observerEmbeddingInObserverService :
     System.StandardEmbedding observerService observerSystem :=

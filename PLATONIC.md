@@ -51,11 +51,16 @@ values rather than an expanding collection of language keywords.
 
 ### Hierarchy and external-IP completion
 
-The remaining hierarchy milestone is semantic rather than structural:
+Multiclock fragments already reuse ordered child island certificates and
+transport their execution theorems through compatible parents. Contract-bound
+external islands already provide an exact, assumption-retaining emission seam.
+The remaining hierarchy milestone is semantic separate compilation rather
+than structural assembly:
 
 - prove that canonical graph flattening refines component composition;
 - reuse sealed child semantic certificates through hierarchy-preserving
-  compilation instead of globally recertifying one flattened `Design`;
+  single-clock component compilation instead of certifying one flattened
+  `Design`;
 - support separate compilation without changing observable behavior;
 - make hierarchy-preserving and flattened emission certified views of the same
   instance graph; and

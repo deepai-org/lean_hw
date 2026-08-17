@@ -10,8 +10,8 @@ machine and board specifications.
 | Check | Current result | Notes |
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-17; the complete 8,329-job build passed with existing warnings. |
-| `lake exe audit` | **PASS** | Rechecked on 2026-08-17; reports 1,061 clean ledger theorems, 32 inventoried unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,282-job graph passed, including the sibling-order gate and isolated nominal-domain compile-failure regressions. |
+| `lake exe audit` | **PASS** | Rechecked on 2026-08-17; reports 1,061 clean ledger theorems, 32 inventoried unsafe declarations, 6 reviewed `implemented_by` replacements, 0 source `partial`, and 0 `extern`. The sixth is the untrusted Kahn-order proposal whose result is accepted only by the transparent structural checker. |
+| `lake test` | **PASS** | Rechecked on 2026-08-17; the complete 8,284-job graph passed, including compositional island-certificate reuse, explicit System observations, the contract-bound external-island seam, sibling-order gates, and isolated nominal-domain compile-failure regressions. |
 | `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-17, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
@@ -47,6 +47,22 @@ dispatch; duplicate inventory fails closed. A manual certificate remains
 available for transformed adapters.
 Its exact axiom closure is
 `propext`, `Classical.choice`, and `Quot.sound`.
+
+The current composition closeout also provides an exact ordered
+`CertifiedIslands.Inventory`. Including a `SystemFragment` appends its cached
+child compiler/DAG certificates without recomputing them; the parent checks
+only local islands and its structural channel/reset realization. The generic
+`System.BuiltSystem` package is now the common checked assembly and emission
+result, including the Typed SoC Composition Tile path.
+
+System-level combinational observations are fail-closed declaration data.
+Pretty `output wire` declarations become explicit observations, while internal
+combinational nodes remain private; missing signals, kind/width mismatches, and
+duplicate exports are rejected before realization. Contract-bound whole-island
+substitution is available as a separate optional release layer. It retains the
+certified reference `Design` for semantics and proofs, replaces only the exact
+named emitted module, and records external bytes, evidence classification, and
+named assumptions. External RTL equivalence remains an explicit premise.
 
 `Loom/Hw/Chan.lean` and `Loom/Hw/System.lean` provide typed bounded-channel
 handles, generated endpoints, synchronous FIFO lowering, named island

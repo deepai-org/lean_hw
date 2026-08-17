@@ -129,6 +129,41 @@ def _root_.Loom.Hw.SystemBuilder.addIsland (builder : SystemBuilder)
     (island : IslandHandle) : SystemBuilder :=
   builder.addErasedIsland island
 
+/-! ## Explicit System observations -/
+
+/-- Width-typed request to promote one already-declared island output through
+the System boundary. It creates no logic and cannot name an undeclared signal. -/
+structure Observation (width : Nat) where
+  owner : IslandHandle
+  signal : String
+  kind : SystemObservationKind
+
+namespace Observation
+
+def registered {width : Nat} (owner : IslandHandle) (reg : Reg width) :
+    Observation width := ⟨owner, reg.name, .registered⟩
+
+def combinational (owner : IslandHandle) (output : CombOutput) :
+    Observation output.width := ⟨owner, output.name, .combinational⟩
+
+def erase {width : Nat} (observation : Observation width) :
+    SystemObservation :=
+  ⟨width, observation.owner.name, observation.signal, observation.kind⟩
+
+end Observation
+
+def _root_.Loom.Hw.SystemBuilder.observe (builder : SystemBuilder)
+    {width : Nat} (observation : Observation width) : SystemBuilder :=
+  builder.observeErased observation.erase
+
+/-- Generator convenience used by the pretty `system` command: every
+`output wire` in an inline island is already an explicit declaration, so the
+command promotes exactly that declared list rather than all internal logic. -/
+def _root_.Loom.Hw.SystemBuilder.observeCombOutputs (builder : SystemBuilder)
+    (owner : IslandHandle) : SystemBuilder :=
+  owner.design.combOutputs.foldl (fun builder output =>
+    builder.observe (Observation.combinational owner output)) builder
+
 namespace Chan
 
 /-- Directional handle available inside a channel's source island. -/
@@ -260,6 +295,7 @@ def _root_.Loom.Hw.SystemBuilder.includeSystem (builder : SystemBuilder)
     connections := builder.connections ++ child.connections
     openSources := builder.openSources ++ child.openSources
     openSinks := builder.openSinks ++ child.openSinks
+    observations := builder.observations ++ child.observations
     includedResetPolicies := builder.includedResetPolicies ++
       [child.resetPolicy] }
 
@@ -1064,21 +1100,90 @@ private theorem stockBindings_resetCompatibility {system : System}
   simp [resetBindingsCheck, policyEq, stockBindings,
     CertifiedChannelBinding.recoveryCapable]
 
+namespace CertifiedIslands
+
+/-- Compiler/simulator certificates indexed only by their exact ordered
+island inventory. Unlike a whole-System cache, this value composes before the
+parent's connections, clock relation, and reset policy have been finalized. -/
+inductive Inventory : List SystemIsland → Type
+  | nil : Inventory []
+  | cons {head : SystemIsland} {tail : List SystemIsland}
+      (certificate : CertifiedDesign head.design)
+      (rest : Inventory tail) : Inventory (head :: tail)
+
+def Inventory.empty : Inventory [] := .nil
+
+def Inventory.singleton (island : SystemIsland)
+    (certificate : CertifiedDesign island.design) : Inventory [island] :=
+  .cons certificate .nil
+
+/-- Concatenate already-certified inventories without rechecking either side. -/
+def Inventory.append {right : List SystemIsland} :
+    {left : List SystemIsland} → Inventory left → Inventory right →
+      Inventory (left ++ right)
+  | [], .nil, rightCertified => rightCertified
+  | _ :: _, .cons certificate rest, rightCertified =>
+      .cons certificate (Inventory.append rest rightCertified)
+
+def Inventory.ofChecks : (islands : List SystemIsland) →
+    islands.all (fun island =>
+      Compile.designWFCheck island.design && island.design.fastWFB) = true →
+    Inventory islands
+  | [], _ => .nil
+  | _head :: tail, ready =>
+      have split := Bool.and_eq_true_iff.mp ready
+      have checks := Bool.and_eq_true_iff.mp split.1
+      .cons (CertifiedDesign.ofChecks checks.1 checks.2)
+        (Inventory.ofChecks tail split.2)
+
+/-- Select the certificate paired with the exact successful name lookup.
+The recursion follows the same executable `List.find?` branch as `System`;
+there is no proof-driven search or whole-inventory revalidation. -/
+def Inventory.certificateOfFind? :
+    {islands : List SystemIsland} → Inventory islands →
+      (name : String) → (island : SystemIsland) →
+      islands.find? (fun candidate => candidate.name == name) = some island →
+      CertifiedDesign island.design
+  | [], .nil, _, _, found => by simp at found
+  | head :: tail, .cons certificate rest, name, island, found =>
+      if selected : head.name == name then
+        have found' : some head = some island := by
+          simpa only [List.find?, selected, if_true] using found
+        have same : head = island := Option.some.inj found'
+        same ▸ certificate
+      else
+        have found' : tail.find? (fun candidate => candidate.name == name) =
+            some island := by
+          simpa only [List.find?, selected, if_false] using found
+        Inventory.certificateOfFind? rest name island found'
+
+end CertifiedIslands
+
 /-- Reusable island-only certificate cache. Defining one of these at module
 scope lets Lean's object cache retain expensive compiler/DAG readiness proofs
 while several channel plans or top-level assemblies reuse the islands. -/
 structure CertifiedIslands (system : System) where
-  certificate : ∀ (name : String) (island : SystemIsland),
-    system.findIsland? name = some island → CertifiedDesign island.design
+  inventory : CertifiedIslands.Inventory system.islands
+
+namespace CertifiedIslands
+
+def certificate {system : System} (certified : CertifiedIslands system)
+    (name : String) (island : SystemIsland)
+    (found : system.findIsland? name = some island) :
+    CertifiedDesign island.design :=
+  certified.inventory.certificateOfFind? name island found
+
+def toInventory {system : System} (certified : CertifiedIslands system) :
+    Inventory system.islands := certified.inventory
+
+def ofInventory (system : System) (inventory : Inventory system.islands) :
+    CertifiedIslands system := ⟨inventory⟩
+
+end CertifiedIslands
 
 def certifyIslands (system : System) (ready : islandsCheck system = true) :
-    CertifiedIslands system where
-  certificate := by
-    intro name island found
-    have member : island ∈ system.islands := List.mem_of_find?_eq_some found
-    have checked := List.all_eq_true.mp ready island member
-    have checks := Bool.and_eq_true_iff.mp checked
-    exact CertifiedDesign.ofChecks checks.1 checks.2
+    CertifiedIslands system :=
+  ⟨CertifiedIslands.Inventory.ofChecks system.islands ready⟩
 
 /-- Opaque reusable hierarchy node. The interface is chosen by the block
 author and normally consists of `DeclaredSource`/`DeclaredSink` values; the
@@ -1192,12 +1297,34 @@ def _root_.Loom.Hw.RealizationPlan.includeFragment
       fragment.plan.select key
     else parent.select key⟩
 
+/-- Reuse the exact island certificates cached by a sealed fragment. Only the
+builder's pre-existing inventory is supplied by the parent; no child compiler
+or DAG readiness check is repeated. Repeated applications compose sibling
+fragments in either assembly order. -/
+def CertifiedIslands.includeFragment
+    {Interface : System → Type u}
+    {TheoremBundle : (system : System) → Interface system → Type u}
+    {builder : SystemBuilder}
+    (base : CertifiedIslands.Inventory builder.islands)
+    (fragment : SystemFragment Interface TheoremBundle) :
+    CertifiedIslands.Inventory (builder.includeFragment fragment).islands := by
+  simpa [SystemBuilder.includeFragment, SystemBuilder.includeBlock,
+    SystemBuilder.includeSystem, SystemFragment.system] using
+      base.append fragment.block.islands.toInventory
+
 /-- The complete stock application package. The fields are projections for
 advanced use; ordinary execution, inspection, and emission are provided as
 methods below. -/
 structure Application (system : System) where
   certified : CertifiedSystem system
   artifact : CertifiedRealizedSystem system certified
+
+/-- Existential package for executable assembly and emission workflows. The
+dependent `Application system` cannot drift from the checked `System` it was
+built for, while callers need not expose that index across an `IO` boundary. -/
+structure BuiltSystem where
+  system : System
+  application : Application system
 
 /-! ### Certified realization overlays
 
@@ -1334,6 +1461,40 @@ def realizeWithChecked (system : System) (plan : RealizationPlan) :
       throw <| if report.isEmpty then
         "selected multiclock readiness failed without a diagnostic (internal error)"
       else report
+
+/-- Assemble and realize a generated System through the ordinary complete
+readiness gate. Failure carries the same source-local assembly or realization
+diagnostic as the two explicit operations. -/
+def _root_.Loom.Hw.SystemBuilder.buildChecked (builder : SystemBuilder)
+    (plan : RealizationPlan) : Except String System.BuiltSystem :=
+  match builder.assemble with
+  | .error message => .error message
+  | .ok system =>
+      match System.realizeWithChecked system plan with
+      | .error message => .error message
+      | .ok application => .ok ⟨system, application⟩
+
+/-- Assemble around a compositionally certified island inventory. Compiler
+and DAG readiness are reused from the fragments/local leaves; only structural
+assembly and the selected channel/reset realization are checked here. -/
+def _root_.Loom.Hw.SystemBuilder.buildWithCertifiedIslands
+    (builder : SystemBuilder)
+    (islands : CertifiedIslands.Inventory builder.islands)
+    (plan : RealizationPlan) : Except String System.BuiltSystem :=
+  match checked : builder.check with
+  | .error message => .error message
+  | .ok _ =>
+      let system := builder.certify (by rw [checked]; rfl)
+      let certifiedIslands : CertifiedIslands system :=
+        CertifiedIslands.ofInventory system (by simpa using islands)
+      match ready : realizationCheck system plan with
+      | true => .ok ⟨system,
+          system.realizeWithCertified certifiedIslands plan ready⟩
+      | false =>
+          let report := system.selectedReadinessReport plan
+          .error <| if report.isEmpty then
+            "selected multiclock realization failed without a diagnostic (internal error)"
+          else report
 
 /-- Select Loom's portable certified power-of-two crossing implementation for
 every declared channel. This is the ordinary application-level `realize`.
@@ -1507,5 +1668,32 @@ def emit {system : System} (application : Application system)
   application.artifact.emit directory
 
 end Application
+
+namespace BuiltSystem
+
+def emit (built : BuiltSystem) (directory : System.FilePath) : IO Unit :=
+  built.application.emit directory
+
+end BuiltSystem
+
+/-- One fail-closed executable operation from a raw builder to emitted
+certified artifacts. No partially assembled or readiness-failed System can
+reach the filesystem. -/
+def _root_.Loom.Hw.SystemBuilder.emitChecked (builder : SystemBuilder)
+    (plan : RealizationPlan) (directory : System.FilePath) : IO Unit := do
+  match builder.buildChecked plan with
+  | .ok built => built.emit directory
+  | .error message => throw <| IO.userError message
+
+/-- Compositional counterpart of `emitChecked`; cached child/local island
+certificates are reused and only the selected realization is checked. -/
+def _root_.Loom.Hw.SystemBuilder.emitWithCertifiedIslandsChecked
+    (builder : SystemBuilder)
+    (islands : CertifiedIslands.Inventory builder.islands)
+    (plan : RealizationPlan) (directory : System.FilePath) : IO Unit := do
+  match builder.buildWithCertifiedIslands islands plan with
+  | .ok built => built.emit directory
+  | .error message => throw <| IO.userError message
+
 end System
 end Loom.Hw

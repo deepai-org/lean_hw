@@ -33,6 +33,7 @@ import Loom.Hw.Component
 import Loom.Hw.ComponentHierarchy
 import Loom.Hw.ExternalComponent
 import Loom.Hw.ExternalHierarchy
+import Loom.Hw.ExternalSystem
 import Loom.Hw.Stream
 import Loom.Hw.Bus
 import Loom.Hw.Arithmetic

@@ -915,9 +915,7 @@ abbrev monitorFragment : System.SystemFragment MonitorInterface (fun _ _ => Unit
   plan := .portable
   realizationReady := by decide
 
-structure BuiltTile where
-  system : System
-  application : System.Application system
+abbrev BuiltTile := System.BuiltSystem
 
 private def closeFragments
     (tileFragment : System.SystemFragment TileInterface (fun _ _ => Unit)) :
@@ -934,25 +932,28 @@ private def closeFragments
   let plan : RealizationPlan := RealizationPlan.portable
     |>.includeFragment tileFragment
     |>.includeFragment monitorFragment
-  match SystemBuilder.assemble parentBuilder with
+  let islandInventory : System.CertifiedIslands.Inventory parentBuilder.islands := by
+    simpa [parentBuilder] using
+      System.CertifiedIslands.includeFragment
+        (System.CertifiedIslands.includeFragment
+          (builder := System.empty) .empty tileFragment)
+        monitorFragment
+  match parentBuilder.buildWithCertifiedIslands islandInventory plan with
   | .error message => .error message
-  | .ok system =>
-      match System.realizeWithChecked system plan with
-      | .error message => .error message
-      | .ok application =>
-          if (System.islands system).map (·.name) !=
+  | .ok built =>
+          if (System.islands built.system).map (·.name) !=
               ["tile_core", "tile_memory_internal", "tile_memory_contract",
                 "tile_monitor"] then
             .error "typed SoC tile parent island inventory changed"
-          else if (System.connections system).map (·.chan.name) !=
+          else if (System.connections built.system).map (·.chan.name) !=
               [requestInternal.name, requestContract.name,
                 responseInternal.name, responseContract.name] then
             .error "typed SoC tile parent channel inventory changed"
-          else if !(System.openSources system).isEmpty ||
-              !(System.openSinks system).isEmpty then
+          else if !(System.openSources built.system).isEmpty ||
+              !(System.openSinks built.system).isEmpty then
             .error "typed SoC tile parent retained an open endpoint"
           else
-            .ok (BuiltTile.mk system application)
+            .ok built
 
 /-- Exact end-to-end construction path used by simulation and emission.  It
 retains both typed fragments until their declared endpoints are connected,
