@@ -1355,7 +1355,7 @@ def renderedVerilog {system : System} {certified : CertifiedSystem system}
   let components := uniqueModules
     (artifact.bindings.flatMap (·.componentModules))
   String.intercalate "\n\n" <|
-    physical.islandModules.map (·.2) ++
+    physical.islandModules.map (·.text) ++
     components.map (·.2) ++
     physical.instances.map (·.moduleText) ++
     [physical.topModule.render]
@@ -1386,7 +1386,8 @@ def emissionCheck {system : System} {certified : CertifiedSystem system}
   for binding in artifact.bindings do
     binding.emissionCheck
   let physical := artifact.realized.artifacts
-  let modules := physical.islandModules ++
+  let modules := physical.islandModules.map fun entry => (entry.name, entry.text)
+  let modules := modules ++
     artifact.bindings.flatMap (·.componentModules) ++
     physical.instances.map fun entry => (entry.moduleName, entry.moduleText)
   for module in modules do

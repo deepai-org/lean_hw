@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Chan
+import Loom.Hw.Hierarchy
 import Loom.Hw.Semantics
 
 /-!
@@ -495,8 +496,7 @@ def _root_.Loom.Hw.SystemBuilder.check (sys : SystemBuilder) : Except String Uni
   if !sys.includedResetPolicies.all (· == sys.resetPolicy) then
     throw "included System reset policy differs from parent; rebuild or explicitly adapt the child contract"
   let islandNames := sys.islands.map (fun island => island.name)
-  if islandNames.eraseDups.length != islandNames.length then
-    throw "duplicate system island name"
+  Inventory.ensureUnique islandNames "duplicate system island name"
   if islandNames.any (fun name => name.isEmpty) then
     throw "empty system island name"
   if sys.islands.any (fun island => island.clock.isEmpty) then
@@ -507,14 +507,11 @@ def _root_.Loom.Hw.SystemBuilder.check (sys : SystemBuilder) : Except String Uni
   let channelNames := sys.connections.map fun connection => connection.chan.name
   let openSourceNames := sys.openSources.map fun endpoint => endpoint.chan.name
   let openSinkNames := sys.openSinks.map fun endpoint => endpoint.chan.name
-  if channelNames.eraseDups.length != channelNames.length then
-    throw "duplicate channel connection"
-  if openSourceNames.eraseDups.length != openSourceNames.length then
-    throw "duplicate open source endpoint"
-  if openSinkNames.eraseDups.length != openSinkNames.length then
-    throw "duplicate open sink endpoint"
-  if channelNames.any (openSourceNames.contains ·) ||
-      channelNames.any (openSinkNames.contains ·) then
+  Inventory.ensureUnique channelNames "duplicate channel connection"
+  Inventory.ensureUnique openSourceNames "duplicate open source endpoint"
+  Inventory.ensureUnique openSinkNames "duplicate open sink endpoint"
+  if !Inventory.disjointB channelNames openSourceNames ||
+      !Inventory.disjointB channelNames openSinkNames then
     throw "connected channel still has an exported endpoint; closure requires exact channel name, width, depth, policy, and owner"
   for connection in sys.connections do
     if connection.chan.name.isEmpty then throw "empty channel name"
