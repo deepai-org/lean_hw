@@ -142,6 +142,11 @@ lean_exe surfaceRegisteredBramEvidence where
   root := `Tools.SurfaceRegisteredBramEvidence
   supportInterpreter := true
 
+/-- Typed hierarchy/plugin/fragments/memory/CDC integration artifact. -/
+lean_exe typedSoCTileEvidence where
+  root := `Tools.TypedSoCTileEvidence
+  supportInterpreter := true
+
 /-- Certified replay runner for the bidirectional SoC Fabric Gauntlet. -/
 lean_exe socFabricGauntletCampaign where
   root := `Tools.SoCFabricGauntletCampaignMain

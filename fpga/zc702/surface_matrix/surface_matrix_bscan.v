@@ -2,7 +2,15 @@
 `default_nettype none
 
 // Board transport only. Channel/checker behavior remains in Loom-emitted RTL.
-module surface_matrix_bscan (
+module surface_matrix_bscan #(
+    parameter [31:0] ID_MAGIC_VALUE = 32'h534d_4154,
+    parameter integer UPDATE_SHIFT = 0,
+`ifdef SURFACE_MATRIX_RTL_SHA_PREFIX
+    parameter [31:0] RTL_SHA_PREFIX_VALUE = `SURFACE_MATRIX_RTL_SHA_PREFIX
+`else
+    parameter [31:0] RTL_SHA_PREFIX_VALUE = 32'h0000_0000
+`endif
+) (
     input wire tck, input wire sel, input wire capture, input wire shift,
     input wire update, input wire tdi, output wire tdo,
     input wire clocks_ready, input wire system_reset,
@@ -15,12 +23,8 @@ module surface_matrix_bscan (
     output wire [7:0] control,
     output wire [31:0] run_limit
 );
-    localparam [31:0] ID_MAGIC = 32'h534d_4154; // "SMAT"
-`ifdef SURFACE_MATRIX_RTL_SHA_PREFIX
-    localparam [31:0] RTL_SHA_PREFIX = `SURFACE_MATRIX_RTL_SHA_PREFIX;
-`else
-    localparam [31:0] RTL_SHA_PREFIX = 32'h0000_0000;
-`endif
+    localparam [31:0] ID_MAGIC = ID_MAGIC_VALUE; // default "SMAT"
+    localparam [31:0] RTL_SHA_PREFIX = RTL_SHA_PREFIX_VALUE;
 
     reg [7:0] control_reg = 8'd0;
     reg [31:0] run_limit_reg = 32'd4096;
@@ -95,12 +99,17 @@ module surface_matrix_bscan (
     end
     assign tdo = dr[0];
 
-    wire write_enable = dr[40];
-    wire [6:0] index = dr[38:32];
+    // Vivado's BSCANE2 path uses the established bits [40]/[38:32]/[31:0].
+    // The qualified openXC7 0.8.2 realization presents UPDATE data one bit
+    // higher while leaving CAPTURE aligned.  Keep that backend quirk explicit
+    // and local instead of changing the board-wide JTAG protocol.
+    wire write_enable = UPDATE_SHIFT ? dr[41] : dr[40];
+    wire [6:0] index = UPDATE_SHIFT ? dr[39:33] : dr[38:32];
+    wire [31:0] write_data = UPDATE_SHIFT ? dr[32:1] : dr[31:0];
     always @(posedge tck) begin
         if (sel && update) begin
-            if (write_enable && index == 7'd1) control_reg <= dr[7:0];
-            if (write_enable && index == 7'd2) run_limit_reg <= dr[31:0];
+            if (write_enable && index == 7'd1) control_reg <= write_data[7:0];
+            if (write_enable && index == 7'd2) run_limit_reg <= write_data;
             if (write_enable && (index == 7'd1 || index == 7'd2))
                 command_epoch_reg <= ~command_epoch_reg;
             if (index >= 7'd16 && index < 7'd24) begin

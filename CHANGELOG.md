@@ -1,20 +1,29 @@
 # Changelog
 
-- Independent-reset recovery now distinguishes channel-local physical
-  completion from the one island-level logical commit. A coordinated channel
-  refinement retains early-reset epochs, the two compiler-source endpoint
-  states are proved to follow it exactly, and the generated coordinator's
-  complete domain is proved to commit every incident binding on the same
-  `System.advanceRecovery` event. This closes the prior free event-alignment
-  premise without pretending the remaining compiled FIFO/storage/guard state
-  relation is complete.
-
 All notable user-visible changes will be recorded here. This project follows
 [Semantic Versioning](https://semver.org/) once the first release is tagged.
 
 ## Unreleased
 
 ### Added
+
+- **Audited typed SoC composition tile:** a production-shaped demonstrator
+  combines typed component hierarchy, plugins, request/response traffic,
+  backpressure, arbitration, memory service, and certified multiclock fragment
+  placement. Its proof build, fail-closed realization, negative binding control,
+  exact axiom whitelist, million-transfer RTL campaign, and retained ZC702
+  silicon evidence are tied to hashed artifacts. The evidence distinguishes
+  certified semantics, independent RTL execution, routed implementation, and
+  physical observation rather than collapsing them into one claim.
+
+- **Independent-reset recovery:** channel-local physical completion is now
+  distinguished from the one island-level logical commit. A coordinated
+  channel refinement retains early-reset epochs, the two compiler-source
+  endpoint states are proved to follow it exactly, and the generated
+  coordinator's complete domain is proved to commit every incident binding on
+  the same `System.advanceRecovery` event. This closes the prior free
+  event-alignment premise without pretending the remaining compiled
+  FIFO/storage/guard state relation is complete.
 
 - **Typed, scalable component hierarchy:** domain-indexed components, ports,
   connections, streams, and memories make same-clock ownership and interface

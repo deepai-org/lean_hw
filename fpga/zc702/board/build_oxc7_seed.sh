@@ -48,7 +48,7 @@ rm -f "$O.json"
 # with `-nodsp` (59035/106400 LUTs, 32.86 MHz). Set YOSYS_SYNTH_FLAGS="" to
 # exercise DSP inference on openXC7 0.9.2 or newer. No DSP-enabled artifact is
 # currently accepted by the board ladder; see ../README.md.
-yosys -q -p "read_verilog $SRCS; synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS--nodsp} -top $TOP; write_json $O.json" 2>&1 | tee "$O.synth.log"
+yosys -q -p "read_verilog ${YOSYS_READ_FLAGS:-} $SRCS; synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS--nodsp} -top $TOP; write_json $O.json" 2>&1 | tee "$O.synth.log"
 fresher "$O.json" $SRCS "$XDC"
 
 echo "### [2/4] nextpnr-xilinx P&R ###"
@@ -77,6 +77,7 @@ grep -E "Max frequency for clock .*'sysclk'" "$O.pnr.log" | tail -1 || true
   echo "nextpnr:  $(nextpnr-xilinx --version 2>&1 | head -1)"
   echo "yosys:    $(yosys -V 2>&1 | head -1)"
   echo "chipdb:   $CHIPDB  $(md5sum "$CHIPDB" 2>/dev/null | cut -c1-12)"
+  echo "read:     read_verilog ${YOSYS_READ_FLAGS:-}"
   echo "synth:    synth_xilinx -flatten -nowidelut ${YOSYS_SYNTH_FLAGS--nodsp}"
   echo "seed:     ${NPNR_SEED:-default}"
   echo "sources:  $SRCS"

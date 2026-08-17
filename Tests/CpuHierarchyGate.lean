@@ -188,13 +188,12 @@ private def memoryBehavior : ComponentContract memoryInterface where
     intro state left right _agree port member
     simp [ComponentInterface.outputs, memoryInterface, memoryInput,
       memoryOutput, Port.decl] at member
-    rcases member with ⟨rfl | rfl, direction⟩
-    · exact Bool.noConfusion direction
-    · change BoundComponentGraph.componentOutputEnv memoryComponent left state
-          "read_data" 32 =
-        BoundComponentGraph.componentOutputEnv memoryComponent right state
-          "read_data" 32
-      rfl
+    subst port
+    change BoundComponentGraph.componentOutputEnv memoryComponent left state
+        "read_data" 32 =
+      BoundComponentGraph.componentOutputEnv memoryComponent right state
+        "read_data" 32
+    rfl
 
 private def memorySpecification : ExternalComponent where
   name := "cpu_memory_contract"

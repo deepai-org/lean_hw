@@ -38,6 +38,9 @@ instance (w : Nat) : HwPacked (BitVec w) where
   unpack_pack := by intro; rfl
   pack_unpack := by intro; rfl
 
+@[simp] theorem width_bitVec (w : Nat) :
+    HwPacked.width (BitVec w) = w := rfl
+
 end HwPacked
 
 /-- A packed value in combinational hardware. -/

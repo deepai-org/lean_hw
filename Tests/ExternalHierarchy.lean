@@ -111,11 +111,10 @@ private def internalWitness :
     intro input state port member
     simp [specification, ComponentInterface.outputs, interface, inputPort,
       outputPort, Port.bits, Port.decl] at member
-    rcases member with ⟨rfl | rfl, direction⟩
-    · exact Bool.noConfusion direction
-    · change 0#8 = BoundComponentGraph.componentOutputEnv
-        internalComponent input state "output" 8
-      rfl
+    subst port
+    change 0#8 = BoundComponentGraph.componentOutputEnv
+      internalComponent input state "output" 8
+    rfl
 
 private def replacement : BoundComponentGraph.InternalReplacement sourceExternal where
   component := internalDomainComponent
