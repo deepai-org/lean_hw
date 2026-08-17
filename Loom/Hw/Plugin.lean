@@ -166,9 +166,6 @@ private def countProviders (providers : List (Pending (κ := κ)))
     (key : Key (κ := κ)) : Nat :=
   (providers.filter fun provider => provider.key.sameB key).length
 
-private def allNamesUniqueB (names : List String) : Bool :=
-  names.eraseDups.length == names.length
-
 private def resourcesCompatibleB (plugins : List (Spec (κ := κ))) : Bool :=
   let claims := plugins.flatMap (·.resources)
   claims.all fun claim =>
@@ -180,10 +177,10 @@ private def declarationsValidB (plugins : List (Spec (κ := κ))) : Bool :=
   let providers := declaredProviders plugins
   !plugins.isEmpty &&
     plugins.all (fun plugin => !plugin.name.isEmpty) &&
-    allNamesUniqueB (plugins.map (·.name)) &&
+    Inventory.uniqueB (plugins.map (·.name)) &&
     providers.all (fun pending =>
       !pending.provider.name.isEmpty && !pending.key.name.isEmpty) &&
-    allNamesUniqueB (providers.map Pending.fullName) &&
+    Inventory.uniqueB (providers.map Pending.fullName) &&
     resourcesCompatibleB plugins
 
 private def negotiatedB (providers : List (Pending (κ := κ))) : Bool :=

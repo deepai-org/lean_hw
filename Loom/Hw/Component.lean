@@ -3,6 +3,7 @@
 import Loom.Hw.CertifiedDesign
 import Loom.Hw.Compose
 import Loom.Hw.EmitIO
+import Loom.Hw.Hierarchy
 import Loom.Hw.Packed
 
 /-!
@@ -22,12 +23,6 @@ component body.
 namespace Loom.Hw
 
 universe u v
-
-/-- Port direction at a component boundary. -/
-inductive PortDirection where
-  | input
-  | output
-  deriving Repr, DecidableEq, BEq
 
 /-- Erased, inspectable form of a typed port.  `semanticType` preserves nominal
 meaning after the Lean payload type is erased for heterogeneous interface
@@ -95,8 +90,7 @@ def outputs (interface : ComponentInterface) : List PortDecl :=
   interface.ports.filter (·.direction == .output)
 
 def namesUniqueB (interface : ComponentInterface) : Bool :=
-  let names := interface.ports.map (·.name)
-  names.eraseDups.length == names.length
+  Inventory.uniqueB (interface.ports.map (·.name))
 
 def locallyValidB (interface : ComponentInterface) : Bool :=
   interface.namesUniqueB &&
@@ -294,11 +288,12 @@ end Expert
 
 end DomainComponent
 
-/-- One occurrence of a sealed component.  Paths are semantic hierarchy names;
-the flattening prefix is derived from them in one place. -/
-structure ComponentInstance where
-  path : String
-  component : Component.Sealed
+structure HierarchyInstance (α : Type u) where
+  path : InstancePath
+  component : α
+
+/-- One occurrence of a sealed component. -/
+abbrev ComponentInstance := HierarchyInstance Component.Sealed
 
 namespace ComponentInstance
 
@@ -314,7 +309,7 @@ end ComponentInstance
 /-- A typed input endpoint belonging to a particular instance. -/
 structure InputEndpoint (δ : Type v) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  instancePath : String
+  instancePath : InstancePath
   componentName : String
   port : Port .input δ α
 
@@ -322,7 +317,7 @@ structure InputEndpoint (δ : Type v) (α : Type u)
 The expression is renamed when the instance graph is flattened. -/
 structure OutputEndpoint (δ : Type v) (α : Type u)
     [ClockDomain δ] [HwPacked α] where
-  instancePath : String
+  instancePath : InstancePath
   componentName : String
   port : Port .output δ α
   expression : Expr (HwPacked.width α)
@@ -520,7 +515,7 @@ def edgesForwardB (order : List String) : List (String × String) → Bool
 coverage. -/
 def topologicalOrderCheckB (edges : List (String × String))
     (order : List String) : Bool :=
-  order.eraseDups.length == order.length && edgesForwardB order edges
+  Inventory.uniqueB order && edgesForwardB order edges
 
 /-- Kernel-level meaning of a topological certificate.  The order contains no
 duplicates, covers both endpoints of every edge, and places every source
@@ -619,14 +614,13 @@ def expose (graph : ComponentGraph) (instancePath portName : String) :
     Except String ComponentGraph := Expert.expose graph instancePath portName
 
 def pathsUniqueB (graph : ComponentGraph) : Bool :=
-  let paths := graph.instances.map (·.path)
-  paths.eraseDups.length == paths.length
+  Inventory.uniqueB (graph.instances.map (·.path))
 
 def connectionsValidB (graph : ComponentGraph) : Bool :=
   graph.connections.all graph.connectionValidB &&
     let sinks := graph.connections.map fun connection =>
       (connection.sinkInstance, connection.sinkPort)
-    sinks.eraseDups.length == sinks.length
+    Inventory.uniqueB sinks
 
 def exportsValidB (graph : ComponentGraph) : Bool :=
   graph.exports.all fun exposed =>
@@ -847,9 +841,8 @@ construction uses the indexed wrappers below, so a collection of components
 cannot be flattened and later assigned an unrelated island clock. -/
 
 /-- One instance known to belong wholly to `δ`. -/
-structure DomainComponentInstance (δ : Type v) [ClockDomain δ] where
-  path : String
-  component : DomainComponent δ
+abbrev DomainComponentInstance (δ : Type v) [ClockDomain δ] :=
+  HierarchyInstance (DomainComponent δ)
 
 namespace DomainComponentInstance
 

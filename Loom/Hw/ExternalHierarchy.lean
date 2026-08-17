@@ -59,22 +59,22 @@ def check? {δ : Type v} [ClockDomain δ] (sealed : SealedExternal) :
 end DomainExternal
 
 structure ExternalInstance (δ : Type v) [ClockDomain δ] where
-  path : String
+  path : InstancePath
   component : DomainExternal δ
 
 /-- Hierarchical endpoints intentionally omit a source expression: an external
 output is a module port, not a fabricated Loom register read. -/
-structure HierarchyOutput (δ : Type v) (α : Type u)
+structure HierarchyEndpoint (direction : PortDirection) (δ : Type v) (α : Type u)
     [ClockDomain δ] [HwPacked α] : Type (max 1 u v) where
-  instancePath : String
+  instancePath : InstancePath
   componentName : String
-  port : Port .output δ α
+  port : Port direction δ α
 
-structure HierarchyInput (δ : Type v) (α : Type u)
-    [ClockDomain δ] [HwPacked α] : Type (max 1 u v) where
-  instancePath : String
-  componentName : String
-  port : Port .input δ α
+abbrev HierarchyOutput (δ : Type v) (α : Type u)
+    [ClockDomain δ] [HwPacked α] := HierarchyEndpoint .output δ α
+
+abbrev HierarchyInput (δ : Type v) (α : Type u)
+    [ClockDomain δ] [HwPacked α] := HierarchyEndpoint .input δ α
 
 namespace HierarchyOutput
 
@@ -204,34 +204,6 @@ def externalAssumptions {δ : Type v} [ClockDomain δ]
     inst.component.sealed.binding.assumptions.map fun assumption =>
       { assumption with name := inst.path ++ "." ++ assumption.name }
 
-/-- One exact port connection in a backend-neutral module-instantiation plan. -/
-structure PlannedPort where
-  port : String
-  net : String
-  direction : PortDirection
-  width : Nat
-  deriving Repr, DecidableEq, BEq
-
-/-- A real child-module occurrence ready for a Verilog/VHDL backend. External
-parameters remain structured strings and are never interpolated by this layer. -/
-structure ModuleInstancePlan where
-  path : String
-  moduleName : String
-  parameters : List (String × String)
-  ports : List PlannedPort
-  external : Bool
-  deriving Repr, DecidableEq, BEq
-
-/-- Everything required to emit hierarchy while preserving the assumption
-boundary. Internal module text comes from each child `CertifiedDesign`;
-external bytes are represented only by exact identities. -/
-structure EmissionPlan where
-  topName : String
-  instances : List ModuleInstancePlan
-  internalModules : List (String × String)
-  externalArtifacts : List Loom.Artifact.Identity
-  assumptions : List NamedAssumption
-
 private def sourceNet {δ : Type v} [ClockDomain δ]
     (connection : HierarchyConnection δ) : String :=
   connection.sourceInstance ++ "__" ++ connection.sourcePort
@@ -247,7 +219,7 @@ private def portNet {δ : Type v} [ClockDomain δ] (graph : BoundComponentGraph 
 
 private def plannedPorts {δ : Type v} [ClockDomain δ]
     (graph : BoundComponentGraph δ) (path : String)
-    (interface : ComponentInterface) : List PlannedPort :=
+    (interface : ComponentInterface) : List Backend.PortPlan :=
   interface.ports.map fun port =>
     ⟨port.name, graph.portNet path port.name port.direction,
       port.direction, port.width⟩
@@ -255,7 +227,8 @@ private def plannedPorts {δ : Type v} [ClockDomain δ]
 /-- Produce actual module-instantiation data. This operation does not flatten,
 recompile children, or claim that external bytes satisfy their assumptions. -/
 def emissionPlan {δ : Type v} [ClockDomain δ]
-    (graph : BoundComponentGraph δ) : EmissionPlan :=
+    (graph : BoundComponentGraph δ) :
+    Backend.Plan Loom.Artifact.Identity NamedAssumption :=
   let internalInstances := graph.internal.map fun inst =>
     { path := inst.path
       moduleName := inst.component.sealed.component.design.name
@@ -271,9 +244,9 @@ def emissionPlan {δ : Type v} [ClockDomain δ]
       external := true }
   { topName := graph.name
     instances := internalInstances ++ externalInstances
-    internalModules := graph.internal.map fun inst =>
-      (inst.component.sealed.component.design.name,
-        inst.component.sealed.certified.renderedVerilog)
+    modules := graph.internal.map fun inst =>
+      { name := inst.component.sealed.component.design.name
+        text := inst.component.sealed.certified.renderedVerilog }
     externalArtifacts := graph.externalArtifacts
     assumptions := graph.externalAssumptions }
 

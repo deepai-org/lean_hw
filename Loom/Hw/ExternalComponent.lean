@@ -168,13 +168,13 @@ def validB (specification : ExternalComponent) : Bool :=
   let latencyOutputs := specification.latency.map (·.output)
   !specification.name.isEmpty && !specification.version.isEmpty &&
     specification.interface.locallyValidB &&
-    domainNames.eraseDups.length == domainNames.length &&
+    Inventory.uniqueB domainNames &&
     specification.interface.ports.all
       (fun port => domainNames.contains port.domain) &&
     specification.combinational.all (fun dependency =>
       specification.inputNamed dependency.input &&
         specification.outputNamed dependency.output) &&
-    latencyOutputs.eraseDups.length == latencyOutputs.length &&
+    Inventory.uniqueB latencyOutputs &&
     specification.latency.all (fun latency =>
       specification.outputNamed latency.output &&
       latency.source.all specification.inputNamed && latency.validB)
@@ -225,8 +225,7 @@ def validB {specification : ExternalComponent}
   let parameterNames := binding.parameters.map (·.1)
   let assumptionNames := binding.assumptions.map (·.name)
   specification.validB && !binding.moduleName.isEmpty &&
-    parameterNames.eraseDups.length == parameterNames.length &&
-    assumptionNames.eraseDups.length == assumptionNames.length &&
+    Inventory.uniqueB parameterNames && Inventory.uniqueB assumptionNames &&
     binding.assumptions.all fun assumption =>
       !assumption.name.isEmpty && !assumption.statement.isEmpty
 

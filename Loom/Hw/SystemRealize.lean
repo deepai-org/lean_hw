@@ -469,7 +469,7 @@ their checked structures until the final text-rendering boundary. -/
 structure PhysicalArtifacts where
   inventory : List CrossingInfo
   instances : List InstanceArtifact
-  islandModules : List (String × String)
+  islandModules : List Backend.ModuleArtifact
   topModule : TopModuleArtifact
   constraintFile : ConstraintFileArtifact
   /-- Exact per-domain reset delivery contracts. This is emitted beside CDC
@@ -678,9 +678,10 @@ private def physicalIslandDesign (_sys : System) (island : SystemIsland) : Desig
 private def portWidth (width : Nat) : String :=
   if width = 1 then "" else s!"[{width - 1}:0] "
 
-private def islandModule (sys : System) (island : SystemIsland) : String × String :=
+private def islandModule (sys : System) (island : SystemIsland) : Backend.ModuleArtifact :=
   let design := physicalIslandDesign sys island
-  (design.name, Loom.Emit.MicroVerilog.Print.print (Loom.Hw.Compile.compile design))
+  { name := design.name
+    text := Loom.Emit.MicroVerilog.Print.print (Loom.Hw.Compile.compile design) }
 
 private def clockPorts (sys : System) : List String :=
   (sys.islands.map (fun island => island.clock)).eraseDups
@@ -1135,10 +1136,10 @@ def RealizedSystem.artifacts (realized : RealizedSystem) : PhysicalArtifacts :=
     instances
     islandModules :=
       (if realized.system.resetPolicy = .independentFlush then
-        [(RecoveryCoordinator.design.name,
-          RecoveryCoordinator.certified.renderedVerilog),
-         (RecoveryCompletionSynchronizer.design.name,
-          RecoveryCompletionSynchronizer.certified.renderedVerilog)] else []) ++
+        [{ name := RecoveryCoordinator.design.name
+           text := RecoveryCoordinator.certified.renderedVerilog },
+         { name := RecoveryCompletionSynchronizer.design.name
+           text := RecoveryCompletionSynchronizer.certified.renderedVerilog }] else []) ++
         realized.system.islands.map (islandModule realized.system)
     topModule :=
       { ports := topPorts realized.system
@@ -1183,22 +1184,19 @@ def RealizedSystem.emissionCheck (realized : RealizedSystem) : Except String Uni
       throw (s!"System.emit: channel '{binding.connection.chan.name}' realization " ++
         s!"'{binding.name}' has no timing contract")
   let artifacts := realized.artifacts
-  let moduleNames := artifacts.islandModules.map (fun module => module.1) ++
+  let moduleNames := artifacts.islandModules.map (·.name) ++
     artifacts.instances.map (fun artifact => artifact.moduleName)
   for name in moduleNames do
     if !validIdentifier name then
       throw s!"System.emit: module '{name}' is not a portable Verilog identifier"
-  if moduleNames.length != moduleNames.eraseDups.length then
-    throw "System.emit: generated module-name collision"
+  Inventory.ensureUnique moduleNames "System.emit: generated module-name collision"
   let instanceNames := realized.system.islands.map (fun island => "u_island_" ++ island.name) ++
     realized.system.connections.map (fun connection => "u_" ++ connection.chan.name)
-  if instanceNames.length != instanceNames.eraseDups.length then
-    throw "System.emit: generated instance-name collision"
+  Inventory.ensureUnique instanceNames "System.emit: generated instance-name collision"
   let ports := topPortNames realized.system
-  if ports.length != ports.eraseDups.length then
-    throw "System.emit: generated top-level port-name collision"
+  Inventory.ensureUnique ports "System.emit: generated top-level port-name collision"
   let wires := internalWireNames realized.system
-  if wires.length != wires.eraseDups.length ||
+  if !Inventory.uniqueB wires ||
       wires.any (fun wire => ports.contains wire) then
     throw "System.emit: generated top-level net-name collision"
 
@@ -1222,7 +1220,7 @@ def RealizedSystem.emissionArtifacts (realized : RealizedSystem) :
   let artifacts := realized.artifacts
   let keys := artifacts.instances.map (fun artifact => artifact.key)
   let rtl := String.intercalate "\n\n" <|
-    artifacts.islandModules.map (fun islandModule => islandModule.2) ++
+    artifacts.islandModules.map (·.text) ++
     artifacts.instances.map (fun artifact => artifact.moduleText) ++
     [artifacts.topModule.render]
   [ { kind := .rtl, relativePath := "system.v", text := rtl, crossingKeys := keys },
