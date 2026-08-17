@@ -199,6 +199,9 @@ records the longer-term architectural destination.
 ordinary include-and-close construction derives its checked
 `ExecutionProjection` from finite structural evidence; builder-generated
 placement witnesses work for every sibling regardless of inclusion order.
+Its ordered island-certificate inventory composes with the fragment, so a
+parent checks only newly authored islands plus its connection/reset
+realization instead of rerunning the child compiler and DAG checks.
 Transformed adapters retain an explicit expert certificate. Every valid finite
 parent execution induces the fragment execution with matching fragment
 islands, internal channels, time, clock/reset observations, and inputs.
@@ -222,6 +225,12 @@ compiled RTL is a distinct, deferred result.
   remain inspectable data. Checked external leaves can inhabit typed component
   graphs and produce backend-neutral module-instantiation plans; replacing one
   with an internal `Design` requires a semantic contract witness.
+- `Loom.Hw.ExternalSystem` applies the same discipline at a whole island
+  boundary. The semantic simulator and theorems retain the certified reference
+  `Design`; emission may replace that island's exact module bytes only after a
+  typed contract witness, exact System-membership check, domain/reset check,
+  and module-identity check. The release retains the external bytes and named
+  assumptions and does not relabel them as a kernel theorem.
 - `Loom.Hw.Stream` and `Loom.Hw.Bus` provide same-clock ready/valid streams and
   nominal request/response protocols. Domain or payload mismatches are type
   errors. The ordered bus monitor carries a proof that its request queue stays
@@ -256,14 +265,15 @@ mode, automatic retiming, or NaxRiscv-scale validation yet. Those are measured
 follow-on library and qualification milestones; [PLATONIC.md](PLATONIC.md)
 defines the intended boundary.
 
-Today's proof/execution path still seals a single-domain component graph by
-flattening it to one canonical `Design` and running the ordinary whole-design
-compiler and simulator checks. Batch construction avoids repeatedly checking a
-growing graph, and the proposed topology order is validated structurally, but
-Loom does not yet reuse sealed child compiler certificates compositionally or
-certify separately compiled hierarchy-preserving RTL. The external hierarchy
-emission plan is inspectable integration data, not that future equivalence
-theorem.
+Today's single-domain component path still seals a graph by flattening it to
+one canonical `Design`; Loom does not yet certify separately compiled,
+hierarchy-preserving RTL as semantically equal to that flattening. At the
+multiclock boundary, sealed `SystemFragment`s do compositionally reuse their
+ordered child island compiler/simulator certificates and their semantic
+projection theorems. `System.BuiltSystem` is the generic checked assembly,
+simulation, and emission package used by generated SoCs. These results avoid
+global recertification of child islands, but they are not a claim of semantic
+separate compilation for arbitrary emitted hierarchy.
 
 ## Derived execution and proof support
 

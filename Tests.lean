@@ -43,6 +43,7 @@ import Tests.ComponentConnectionNegative
 import Tests.ComponentHierarchy
 import Tests.ExternalComponent
 import Tests.ExternalHierarchy
+import Tests.ExternalSystem
 import Tests.Stream
 import Tests.Bus
 import Tests.Arithmetic

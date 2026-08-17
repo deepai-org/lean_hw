@@ -7,6 +7,17 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Compositional System build and external-island boundary:** sealed
+  `SystemFragment`s now append exact ordered island compiler/simulator
+  certificates, so parents certify only local islands and their selected
+  channel/reset realization. `System.BuiltSystem` provides one generic checked
+  assembly/emission result. Explicit width-checked combinational observations
+  are the only additional island signals promoted through a System boundary.
+  A separate technology-neutral external-island release layer may replace one
+  exact reference module after a typed behavioral-contract witness and retains
+  the external bytes, evidence classification, and named assumptions without
+  treating external RTL equivalence as a kernel theorem.
+
 - **Audited typed SoC composition tile:** a production-shaped demonstrator
   combines typed component hierarchy, plugins, request/response traffic,
   backpressure, arbitration, memory service, and certified multiclock fragment

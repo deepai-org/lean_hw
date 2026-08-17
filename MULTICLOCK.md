@@ -78,6 +78,21 @@ readiness report. They do not
 ask the application to construct a refinement, certificate, storage witness,
 or artifact-coverage theorem.
 
+Generated and IO-facing code may use `SystemBuilder.buildChecked` to obtain one
+existential `System.BuiltSystem`, then call `run` or `emit` without transporting
+the dependent System index through its own API. `buildWithCertifiedIslands`
+is the compositional form: it reuses the ordered island certificates already
+sealed in included fragments and checks only the parent's structural assembly
+and selected channel/reset realization.
+
+System observability is explicit. Registered values named in a `Design`'s
+output list remain top-level outputs; a combinational value crosses a System
+boundary only when selected by a width-typed `Observation`. In pretty-authored
+islands, `output wire` is that declaration and the generated builder records
+it automatically. Missing signals, wrong widths, duplicate exports, and
+registered/combinational kind mismatches fail during System assembly. Internal
+combinational nodes never become ports merely because they exist.
+
 `PackedChan alpha` follows the same topology and per-route realization path. Its
 directional endpoints accept and return `PackedExpr alpha`; the CDC machinery
 sees only the canonical `HwPacked.width alpha` bits. A record payload therefore
@@ -150,6 +165,17 @@ binding with a `Chan.Refinement`. Gray pointers, synchronizer stages, storage
 contracts, lookup equalities, coverage proofs, and physical assumptions belong
 at this level. Complexity remains accessible without being compulsory.
 
+External IP is also optional expert machinery. `ExternalIslandSubstitution`
+can bind a complete reference island to exact external Verilog bytes after a
+typed `DesignContractWitness`, exact island-membership/design checks, and the
+current clock/reset convention have all succeeded. `ExternalApplication`
+changes only the selected emitted module; simulation and proofs continue to
+use the certified reference `Design`. Its release carries a Markdown inventory
+of the exact byte identities, evidence classification, and every named
+assumption. It is suitable for a technology-neutral FPGA/ASIC integration
+boundary, but it deliberately does not prove that external bytes implement
+their contract.
+
 ## Guarantees
 
 A checked `System` guarantees:
@@ -161,6 +187,8 @@ A checked `System` guarantees:
 - abstract channels preserve capacity, FIFO order, and accepted data;
 - physical emission has exactly one selectable, refinement-backed realization
   for every declared connection;
+- explicitly selected System observations alone become additional
+  combinational top-level ports;
 - a certified realized artifact carries reset-policy/binding compatibility as
   a constructor proof, so an invalid mixture cannot be packaged before IO;
 - RTL and the readable crossing/constraint reports cover the same ordered

@@ -1345,10 +1345,8 @@ system incomplete where
 
 end MissingRealization
 
-namespace UnsupportedCombProjection
+namespace CombProjection
 
-/-- error: the current multiclock top renderer does not project an island `output wire`; keep this as a component observation or register the exported value before realizing the system -/
-#guard_msgs in
 system unsupported_comb_projection where
   clock clk
   clocks Clock.asynchronous
@@ -1363,7 +1361,14 @@ system unsupported_comb_projection where
   connect q from producer to consumer
   realize q with Cdc.synchronousFifo
 
-end UnsupportedCombProjection
+example : unsupported_comb_projection.observations =
+    [⟨1, "producer", "observed", .combinational⟩] := by native_decide
+example : unsupported_comb_projection.application.artifact.renderedVerilog.contains
+    "output wire producer__o_observed" := by native_decide
+example : unsupported_comb_projection.application.artifact.renderedVerilog.contains
+    ".observed(producer__o_observed)" := by native_decide
+
+end CombProjection
 
 end Tests.PrettyDsl.PrettySystem
 

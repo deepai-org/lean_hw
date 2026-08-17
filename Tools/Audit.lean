@@ -136,7 +136,12 @@ def permittedImplementedBy : List (String × String) :=
    ("Loom.Hw.Design.toIndexedWires",
     "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl"),
    ("Loom.Hw.Expr.readsMem",
-    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl")]
+    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"),
+   -- Expected-linear-time Kahn proposal for large component graphs. The
+   -- proposal is not trusted: `topologicalOrderCheckB` checks the returned
+   -- order and is the only premise consumed by `combinationalAcyclicB_sound`.
+   ("Loom.Hw.ComponentGraph.proposeTopologicalOrder",
+    "Loom.Hw.ComponentGraph.proposeTopologicalOrderImpl")]
 
 /-- Lean generates partial `_unsafe_rec` helpers while elaborating some
 ordinary structural definitions. They are compiler artifacts, not uses of

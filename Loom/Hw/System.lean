@@ -165,6 +165,22 @@ structure SystemOpenEndpoint where
   chan : Chan width
   island : String
 
+/-- Which already-declared island output is deliberately promoted through a
+System boundary. This changes only observability, never cycle semantics. -/
+inductive SystemObservationKind where
+  | registered
+  | combinational
+  deriving DecidableEq, Repr
+
+/-- Erased checked observation declaration. Typed constructors live in the
+application-facing multiclock layer; generators may retain this exact form. -/
+structure SystemObservation where
+  width : Nat
+  island : String
+  signal : String
+  kind : SystemObservationKind
+  deriving DecidableEq, Repr
+
 /-- Reset behavior is declaration data rather than an unstated convention.
 `coordinated` admits only the power-on reset. `independentFlush` additionally
 admits named live island resets through `SystemRecovery`: every channel
@@ -294,6 +310,7 @@ structure SystemBuilder where
   connections : List SystemConnection := []
   openSources : List SystemOpenEndpoint := []
   openSinks : List SystemOpenEndpoint := []
+  observations : List SystemObservation := []
   /-- Reset contracts of flattened checked children. Final assembly requires
   exact agreement with the parent policy; hierarchy may not silently
   reinterpret a child's reset theorem boundary. -/
@@ -303,7 +320,18 @@ structure SystemBuilder where
 
 namespace System
 
-def empty : SystemBuilder := {}
+/-- Canonical empty builder. Fields are written explicitly rather than through
+default-value elaboration so downstream proofs which unfold `System.empty` do
+not synthesize module-local equation declarations with a shared global name. -/
+def empty : SystemBuilder where
+  islands := []
+  connections := []
+  openSources := []
+  openSinks := []
+  observations := []
+  includedResetPolicies := []
+  clockRel := .unconstrained
+  resetPolicy := .coordinated
 
 /-- Erased generator/import boundary. Ordinary application code should use a
 `DomainIslandHandle δ` and `SystemBuilder.addDomainIsland`. -/
@@ -320,6 +348,12 @@ def _root_.Loom.Hw.SystemBuilder.island (sys : SystemBuilder) (name : String)
 def _root_.Loom.Hw.SystemBuilder.connect (sys : SystemBuilder) {width : Nat} (chan : Chan width)
     (source sink : String) : SystemBuilder :=
   { sys with connections := sys.connections ++ [⟨width, chan, source, sink⟩] }
+
+/-- Generator/import boundary for an explicitly selected island observation.
+Ordinary code uses the width-typed `SystemBuilder.observe` wrapper. -/
+def _root_.Loom.Hw.SystemBuilder.observeErased (sys : SystemBuilder)
+    (observation : SystemObservation) : SystemBuilder :=
+  { sys with observations := sys.observations ++ [observation] }
 
 /-- Generator-level hierarchical source export. Typed application wrappers
 live in `Multiclock`; this lowering records the open endpoint and generates
@@ -412,6 +446,20 @@ private def hasReg (d : Design) (name : String) (width : Nat) : Bool :=
 private def hasInput (d : Design) (name : String) (width : Nat) : Bool :=
   d.inputs.any fun input => input.name == name && input.width == width
 
+private def observationOk (sys : SystemBuilder)
+    (observation : SystemObservation) : Bool :=
+  match sys.findIsland? observation.island with
+  | none => false
+  | some island =>
+      match observation.kind with
+      | .registered =>
+          island.design.regs.any fun reg =>
+            reg.name == observation.signal && reg.width == observation.width &&
+              island.design.outputs.contains reg.name
+      | .combinational =>
+          island.design.combOutputs.any fun output =>
+            output.name == observation.signal && output.width == observation.width
+
 private def ruleNameCount (d : Design) (name : String) : Nat :=
   (d.rules.filter fun rule => rule.name == name).length
 
@@ -501,6 +549,17 @@ def _root_.Loom.Hw.SystemBuilder.check (sys : SystemBuilder) : Except String Uni
     throw "empty system island name"
   if sys.islands.any (fun island => island.clock.isEmpty) then
     throw "empty clock-domain name"
+  let observationNames := sys.observations.map fun observation =>
+    observation.island ++ "__o_" ++ observation.signal
+  Inventory.ensureUnique observationNames "duplicate system observation"
+  for observation in sys.observations do
+    if observation.island.isEmpty || observation.signal.isEmpty then
+      throw "empty system observation island or signal name"
+    if !observationOk sys observation then
+      let kind := match observation.kind with
+        | .registered => "registered output"
+        | .combinational => "combinational output"
+      throw s!"island {observation.island}: requested {kind} '{observation.signal}' with width {observation.width} is not declared"
   for island in sys.islands do
     if !hasOnlyDeclaredEndpoints sys island then
       throw s!"island {island.name}: undeclared generated channel endpoint"
@@ -576,6 +635,7 @@ def islands (sys : System) : List SystemIsland := sys.decl.islands
 def connections (sys : System) : List SystemConnection := sys.decl.connections
 def openSources (sys : System) : List SystemOpenEndpoint := sys.decl.openSources
 def openSinks (sys : System) : List SystemOpenEndpoint := sys.decl.openSinks
+def observations (sys : System) : List SystemObservation := sys.decl.observations
 def clockRel (sys : System) : ClockRel := sys.decl.clockRel
 def resetPolicy (sys : System) : SystemResetPolicy := sys.decl.resetPolicy
 def findIsland? (sys : System) (name : String) : Option SystemIsland :=
@@ -614,6 +674,9 @@ def check (sys : System) : Except String Unit := sys.decl.check
 
 @[simp] theorem openSinks_certify (decl : SystemBuilder) (checked : decl.check.isOk) :
     (decl.certify checked).openSinks = decl.openSinks := rfl
+
+@[simp] theorem observations_certify (decl : SystemBuilder) (checked : decl.check.isOk) :
+    (decl.certify checked).observations = decl.observations := rfl
 
 @[simp] theorem findIsland?_certify (decl : SystemBuilder) (checked : decl.check.isOk)
     (name : String) : (decl.certify checked).findIsland? name = decl.findIsland? name := rfl

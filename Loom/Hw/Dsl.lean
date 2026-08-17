@@ -4974,13 +4974,6 @@ private def expandSystemCommand
     if !independent && recoverable then
       Macro.throwErrorAt realization.kind
         "Cdc.recoverableGrayFifo requires Reset.independentFlush"
-  if !realizations.isEmpty then
-    for island in islands do
-      for item in island.body do
-        if let some output := inlineCombOutput? item then
-          Macro.throwErrorAt output
-            "the current multiclock top renderer does not project an island `output wire`; keep this as a component observation or register the exported value before realizing the system"
-
   let mut commands : Array Syntax := #[]
   let nestedName (localName : Name) := mkIdent (systemName.getId ++ localName)
   let qualifiedNestedName (localName : Name) :=
@@ -5193,6 +5186,11 @@ private def expandSystemCommand
     let routeName := nestedName
       (Name.mkSimple (connection.channel.getId.toString ++ "Route"))
     builder ← `($builder |>.addChannel $routeName)
+  for island in islands do
+    if island.body.any (fun item => (inlineCombOutput? item).isSome) then
+      let handleName := nestedName
+        (Name.mkSimple (island.name.getId.toString ++ "Island"))
+      builder ← `($builder |>.observeCombOutputs $handleName)
   let mut scopedClockRelation := clockRelation
   for clock in clocks.reverse do
     let clockName := nestedName clock.name.getId
