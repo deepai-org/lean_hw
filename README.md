@@ -1,9 +1,12 @@
 # Loom — hardware design and proof in Lean 4
 
 Loom is a technology-neutral hardware language, verifier, simulator, and
-structural Verilog compiler embedded in Lean 4. One typed `Design` is the
-source for executable semantics, proofs, tests, interfaces, an optimized
-simulator, and emitted RTL.
+structural Verilog compiler embedded in Lean 4. Within one clock domain, a
+typed `Design` is the source for executable semantics, proofs, tests, an
+optimized simulator, and emitted RTL. Typed components compose into clock
+islands; typed `System`s compose independently clocked islands through explicit
+channels and CDC realizations without introducing a second transition
+semantics.
 
 Loom supports ordinary synchronous designs and typed composition across clock
 domains. It is not a synthesis tool or an FPGA-vendor framework: FPGA and ASIC
@@ -15,8 +18,9 @@ often leave informal:
 
 - the simulator used during development is theorem-connected to the same
   `Design` semantics as the compiler; and
-- selected release theorems bind the exact rendered UTF-8 bytes presented to
-  downstream tools, not merely a nearby internal representation.
+- selected release theorems carry exact rendered UTF-8 values, not merely a
+  nearby internal representation; a disclosed byte-for-byte association step
+  binds those values to the host files presented to downstream tools.
 
 ## Quick start
 
@@ -147,7 +151,7 @@ truncation, extension, or whole-record arithmetic.
 
 ## Typed SoC construction libraries
 
-Loom's first bounded SoC-construction layer is ordinary Lean library code over
+Loom's bounded SoC-construction layer is ordinary Lean library code over
 the same `Design` core. It deliberately uses types and proof fields before
 runtime naming conventions:
 
@@ -193,25 +197,31 @@ records the longer-term architectural destination.
 
 `SystemFragment` is also the certified multiclock component boundary. The
 ordinary include-and-close construction derives its checked
-`ExecutionProjection` from finite structural evidence; transformed adapters
-retain an explicit expert certificate. Every valid finite parent execution
-induces the fragment execution with matching fragment islands, internal
-channels, time, clock/reset observations, and inputs. Fragment-wide
-finite-trace safety and predicate-conditioned bounded-progress theorems can
-therefore be reused in a compatible parent without flattening and reproving
-the fragment. This is semantic theorem reuse; hierarchy-preserving separately
+`ExecutionProjection` from finite structural evidence; builder-generated
+placement witnesses work for every sibling regardless of inclusion order.
+Transformed adapters retain an explicit expert certificate. Every valid finite
+parent execution induces the fragment execution with matching fragment
+islands, internal channels, time, clock/reset observations, and inputs.
+Fragment-wide finite-trace safety and predicate-conditioned bounded-progress
+theorems can therefore be reused in a compatible parent without flattening and
+reproving the fragment. Duplicate inventory and input-dispatch shadowing fail
+closed. This is semantic theorem reuse; hierarchy-preserving separately
 compiled RTL is a distinct, deferred result.
 
 ### Library pieces
 
 - `Loom.Hw.Component` gives ports phantom clock-domain and nominal packed
   payload types. Component graphs reject wrong directions, multiple drivers,
-  unresolved ports, and combinational dependency cycles, then flatten through
-  the existing composition semantics.
+  unresolved ports, namespace collisions, and combinational dependency cycles.
+  Large generated graphs use a batch builder and are checked once at sealing;
+  the optimized canonical flattener is proved equal to a deliberately slow
+  reference lowering.
 - `Loom.Hw.ExternalComponent` is the assumption-bearing seam for SRAMs, PLLs,
   pads, and other external leaves. Interface, clock/reset behavior, latency,
   combinational dependencies, contract refinement, and exact artifact identity
-  remain inspectable data.
+  remain inspectable data. Checked external leaves can inhabit typed component
+  graphs and produce backend-neutral module-instantiation plans; replacing one
+  with an internal `Design` requires a semantic contract witness.
 - `Loom.Hw.Stream` and `Loom.Hw.Bus` provide same-clock ready/valid streams and
   nominal request/response protocols. Domain or payload mismatches are type
   errors. The ordered bus monitor carries a proof that its request queue stays
@@ -245,6 +255,15 @@ They also do not claim complete AXI/TileLink catalogs, every RAM collision
 mode, automatic retiming, or NaxRiscv-scale validation yet. Those are measured
 follow-on library and qualification milestones; [PLATONIC.md](PLATONIC.md)
 defines the intended boundary.
+
+Today's proof/execution path still seals a single-domain component graph by
+flattening it to one canonical `Design` and running the ordinary whole-design
+compiler and simulator checks. Batch construction avoids repeatedly checking a
+growing graph, and the proposed topology order is validated structurally, but
+Loom does not yet reuse sealed child compiler certificates compositionally or
+certify separately compiled hierarchy-preserving RTL. The external hierarchy
+emission plan is inspectable integration data, not that future equivalence
+theorem.
 
 ## Derived execution and proof support
 
@@ -330,10 +349,12 @@ hashes, the implementation run's matching RTL/constraint input hashes, and
 post-synthesis object resolutions.
 Generic Loom emission never manufactures a physical `PASS`.
 
-The portable register implementation is shared by FPGA and ASIC flows. A
-target profile may instead bind a compatible FPGA RAM, ASIC SRAM, or
-synchronizer leaf while recording its exact external assumption. This choice
-does not alter the source channel semantics.
+The stock portable implementation is neutral compiled RTL using register-bank
+storage; the same source artifact can be handed to FPGA or ASIC flows without
+selecting either technology in Loom. This is not a claim that either downstream
+flow will map it optimally or correctly. A target profile may instead bind a
+compatible FPGA RAM, ASIC SRAM, or synchronizer leaf while recording its exact
+external assumption. This choice does not alter the source channel semantics.
 
 Timing remains visible. In particular, the current conservative registered
 sink consumes at most once per two destination ticks under continuous traffic;
@@ -360,11 +381,14 @@ theorem Loom.Release.Theorems.verifiedReleases :
   Nonempty Loom.Release.Theorems.VerifiedReleases
 ```
 
-It packages fixed Acc8 and LNP64-µ processor artifacts plus a portable
-two-clock `CertifiedRealizedSystem`. For the selected artifacts, the kernel
-checks the semantic/compiler results and equality with the exact rendered byte
-trees; the System member includes the literal `system.v` bytes traversed by its
-emitter. The checked axiom closure is exactly:
+It packages fixed Acc8 and LNP64-µ processor artifacts plus a multiclock bundle
+containing both the small two-clock example and the production-scale
+LNP64mini/observer `CertifiedRealizedSystem`. For the selected artifacts, the
+kernel checks the semantic/compiler results and equality with the exact
+rendered byte trees; both System members include the literal rendered RTL bytes
+selected from their emission artifacts. The larger multiclock gauntlets and
+board campaigns are separate qualification evidence, not additional members of
+this release theorem. The checked axiom closure is exactly:
 
 ```text
 propext
@@ -417,6 +441,7 @@ post-synthesis equivalence checker in Loom.
 | **LNP64mini** | Larger soft core and SoC integration vehicle using the certified Design-derived simulator. |
 | **Substrate** | Small bring-up, transformation, and multiclock examples. |
 | **Epoch** and **CapWalk** | Focused protocol machines for freshness and capability-walk properties. |
+| **Surface Matrix, Clock Gauntlet, and SoC Fabric Gauntlet** | Multiclock API, schedule/recovery, storage-neutrality, structural CDC, and SoC-style traffic stress tests; their physical runs are evidence, not release-theorem premises. |
 
 LNP64-µ is a demonstrator, not the definitive LNP64 architecture. Recorded
 external ZC702 evidence includes a dual-core LNP64mini NetBSD workload over
@@ -430,6 +455,8 @@ board details in [fpga/zc702/README.md](fpga/zc702/README.md).
 - `Loom/` — generic semantics, authoring DSL, verified execution, compiler,
   emitter, proof support, and release machinery.
 - `Machines/` — machine definitions, refinements, invariants, and examples.
+- `GeneratedRelease/` and `rtl/` — checked release witnesses and canonical
+  emitted artifacts; regeneration and host-file association are explicit gates.
 - `Evidence/` — target profiles, optional bindings, and empirical evidence
   outside the generic theorem layer.
 - `Tests/` — kernel checks and focused regressions.
@@ -440,6 +467,7 @@ board details in [fpga/zc702/README.md](fpga/zc702/README.md).
 The main documents have separate roles:
 
 - [CHARTER.md](CHARTER.md) — mission and scope.
+- [CHANGELOG.md](CHANGELOG.md) — completed user-visible milestones.
 - [STATUS.md](STATUS.md) — current checked facts, limitations, and gate results.
 - [REPRODUCING.md](REPRODUCING.md) — commands and review tiers.
 - [TCB.md](TCB.md) — authoritative release theorem and trusted set.
