@@ -142,26 +142,32 @@ def view (state : St) : RecoveryProtocol.Endpoint where
 @[simp] theorem bool_zero : bool 0#1 = false := by decide
 @[simp] theorem bool_one : bool 1#1 = true := by decide
 
+private theorem bitvec_one_cases (value : BitVec 1) :
+    value = 0#1 ∨ value = 1#1 := by
+  rcases value with ⟨value, bound⟩
+  have : value = 0 ∨ value = 1 := by omega
+  rcases this with rfl | rfl <;> simp
+
 @[simp] private theorem bool_and (left right : BitVec 1) :
     bool (left &&& right) = (bool left && bool right) := by
-  simp only [bool]
-  bv_decide
+  rcases bitvec_one_cases left with rfl | rfl <;>
+    rcases bitvec_one_cases right with rfl | rfl <;> decide
 
 @[simp] private theorem bool_or (left right : BitVec 1) :
     bool (left ||| right) = (bool left || bool right) := by
-  simp only [bool]
-  bv_decide
+  rcases bitvec_one_cases left with rfl | rfl <;>
+    rcases bitvec_one_cases right with rfl | rfl <;> decide
 
 @[simp] private theorem bool_not (value : BitVec 1) :
     bool (~~~value) = !bool value := by
-  simp only [bool]
-  bv_decide
+  rcases bitvec_one_cases value with rfl | rfl <;> decide
 
 @[simp] private theorem bool_mux (condition yes no : BitVec 1) :
     bool (if condition = 1#1 then yes else no) =
       if bool condition then bool yes else bool no := by
-  simp only [bool]
-  bv_decide
+  rcases bitvec_one_cases condition with rfl | rfl <;>
+    rcases bitvec_one_cases yes with rfl | rfl <;>
+      rcases bitvec_one_cases no with rfl | rfl <;> decide
 
 /-- The generated controller resets to the protocol's idle endpoint. -/
 theorem view_reset : view endpoint.reset = ({} : RecoveryProtocol.Endpoint) := by

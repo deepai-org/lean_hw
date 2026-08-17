@@ -1,6 +1,6 @@
 # Project status
 
-Checked against repository head on **2026-08-16**. This file is a current
+Checked against repository head on **2026-08-17**. This file is a current
 snapshot, not a development diary. Historical milestones belong in Git and
 [`CHANGELOG.md`](CHANGELOG.md); detailed hardware campaigns belong in their
 machine and board specifications.
@@ -9,13 +9,13 @@ machine and board specifications.
 
 | Check | Current result | Notes |
 |---|---|---|
-| `lake build` | **PASS** | Rechecked on 2026-08-11; warnings remain. |
-| `lake exe audit` | **PASS** | Rechecked on 2026-08-12; reports 1,061 clean ledger theorems, 19 whitelisted unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
+| `lake build` | **PASS** | Rechecked on 2026-08-17; the complete 8,328-job build passed with existing warnings. |
+| `lake exe audit` | **PASS** | Rechecked on 2026-08-17; reports 1,061 clean ledger theorems, 32 inventoried unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
 | `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,281-job graph passed, including the sibling-order gate and isolated nominal-domain compile-failure regressions. |
-| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-16, including the no-handwritten-certified-CDC gate. |
+| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-17, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
-| `scripts/emit_all.sh --check` | **PASS** | Rechecked twice on 2026-08-10: the first run correctly rejected stale ignored RTL, and the second reproduced the regenerated artifacts byte-for-byte. |
+| `scripts/emit_all.sh --check` | **PASS** | Rechecked on 2026-08-17; all 27 emitted artifacts matched a fresh emission. |
 | `scripts/ci.sh` | **PASS** | Rechecked on 2026-08-09, including the explicit 528-second Epoch BMC, audit, emissions, debug map, round trip, release binding, and LRAT cross-check. |
 | `scripts/reproduce.sh` | **NOT RECHECKED** | The broader reproduction wrapper remains a separate unrerun gate; optional external checks are host-dependent. |
 | `scripts/build_verified_release.sh` | **NOT RECHECKED** | No current release rebuild is claimed by this snapshot. |
@@ -47,18 +47,6 @@ dispatch; duplicate inventory fails closed. A manual certificate remains
 available for transformed adapters.
 Its exact axiom closure is
 `propext`, `Classical.choice`, and `Quot.sound`.
-
-An earlier repository-wide attempt aborted in the then-unchanged
-`Tests.Component` target. Reduction localized the failure to several
-proof-carrying negative cases issued as successive evaluator commands in one
-import-heavy module: under Lean 4.28 that layout reproducibly exited 139, while
-each reduced case and one combined Boolean gate completed. The tests now retain
-all four runtime/structural rejection checks in one gate. The two deliberately
-ill-typed nominal-domain regressions run in separate lightweight modules, so
-they still verify compile failure without constructing successive pathological
-diagnostics in `Tests.Component`. Direct component-test compilation and the
-complete `lake test` graph now pass. No component semantics changed; the
-lower-level Lean runtime defect has not been diagnosed upstream.
 
 `Loom/Hw/Chan.lean` and `Loom/Hw/System.lean` provide typed bounded-channel
 handles, generated endpoints, synchronous FIFO lowering, named island
@@ -201,8 +189,9 @@ island reset edge is already proved equal to the System island-reset action;
 the passing unrelated-clock RTL recovery test remains smoke evidence. Checked `SealedBlock`s now package
 typed open endpoints, cached island certificates, and dependent theorem
 bundles; a parent can flatten blocks and close only endpoints indexed by the
-same channel. Name collisions fail closed, while automatic instance prefixing
-remains ergonomic follow-up. Reusable `CertifiedIslands` values cache
+same channel. Name collisions fail closed, while automatic namespace
+prefixing of flattened instance-local names remains ergonomic follow-up.
+Reusable `CertifiedIslands` values cache
 large-island readiness across physical plans. Generated endpoint
 `TransitionProperty` packages and board-wrapper adoption of the LNP64mini
 System remain possible extensions;
