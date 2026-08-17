@@ -48,6 +48,24 @@ test report, release claim, or record of campaign results.
 
 ### What could improve
 
+- `SystemFragment` inclusion retains each child's exact islands and cached
+  `CertifiedIslands`, but the parent-facing API does not transport those
+  certificates into the included system.  In a realistic hierarchy this
+  leaves the user choosing between rerunning whole-Design compiler/simulator
+  checks after flattening, or writing dependent name-lookup plumbing by hand.
+  A compositional `CertifiedIslands.includeFragment` operation should reuse
+  child certificates and require local certificates only for newly added
+  islands.  This is a proof/tooling gap, not a request to change multiclock
+  semantics.
+- The executable checked path (`assemble`, readiness checks, then
+  `realizeWithChecked`) is a sound practical escape hatch for a generated
+  System too large for kernel normalization: every successful branch still
+  returns the dependent certified object and every failed branch returns only
+  a diagnostic.  However, packaging that existentially indexed application
+  for an `IO` emitter exposed awkward universe/elimination symptoms.  A stock
+  `BuiltSystem` package plus `emitChecked` eliminator would make this normal
+  workflow straightforward and would complement, not replace, compositional
+  certificate transport.
 - The boundary between stable public proof API and internal `System`
   implementation helpers is unclear. Proofs routinely need resolved island
   inputs, connection events/results, channel queues, and channel-state update
@@ -65,6 +83,21 @@ test report, release claim, or record of campaign results.
 - Optional observation interfaces would help evidence builds. Queue occupancy,
   coherent snapshots, and fault injection are useful for exercising reset and
   backpressure, but currently tend to require target-specific RTL derivatives.
+- Component-graph combinational outputs survive island lowering, but a parent
+  `System` does not promote them as top-level observations in the same way as
+  names in `Design.outputs`.  The generated child module therefore has the
+  expected typed counters while its parent silently leaves those ports
+  unconnected.  This is a confusing hierarchy symptom: either System output
+  projection should support `combOutputs`, or assembly should diagnose that a
+  requested child observation will not cross the island boundary.
+- `ExternalComponent` retains exact contracts, bindings, assumptions, and a
+  backend instantiation plan for a typed component hierarchy, but that plan
+  cannot currently become a `System` island or substitute a memory inside one.
+  A mixed internal/contracted memory tile therefore needed a fail-closed
+  evidence-layer RTL transform even though its neutral reference island was
+  certified.  A typed external-island or island-local substitution seam would
+  remove this text-level glue while keeping target modules and their assumptions
+  outside generic multiclock semantics.
 - `System.applyRecovery` makes the loss semantics unambiguous, but it does not
   return an aggregate loss ledger. A user testing a multi-route island must
   traverse every connection, repeat the `affects` test, and snapshot each queue

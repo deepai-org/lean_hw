@@ -9,9 +9,9 @@ machine and board specifications.
 
 | Check | Current result | Notes |
 |---|---|---|
-| `lake build` | **PASS** | Rechecked on 2026-08-17; the complete 8,328-job build passed with existing warnings. |
+| `lake build` | **PASS** | Rechecked on 2026-08-17; the complete 8,329-job build passed with existing warnings. |
 | `lake exe audit` | **PASS** | Rechecked on 2026-08-17; reports 1,061 clean ledger theorems, 32 inventoried unsafe declarations, 5 `implemented_by` replacements, 0 source `partial`, and 0 `extern`. |
-| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,281-job graph passed, including the sibling-order gate and isolated nominal-domain compile-failure regressions. |
+| `lake test` | **PASS** | Rechecked on 2026-08-16; the complete 8,282-job graph passed, including the sibling-order gate and isolated nominal-domain compile-failure regressions. |
 | `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-17, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |

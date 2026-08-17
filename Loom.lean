@@ -28,6 +28,7 @@ import Loom.Hw.EmitIO
 import Loom.Hw.Extension
 import Loom.Hw.Rename
 import Loom.Hw.Compose
+import Loom.Hw.Hierarchy
 import Loom.Hw.Component
 import Loom.Hw.ComponentHierarchy
 import Loom.Hw.ExternalComponent

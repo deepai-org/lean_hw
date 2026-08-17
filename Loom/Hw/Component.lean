@@ -33,7 +33,7 @@ structure PortDecl where
   width : Nat
   semanticType : String
   domain : String
-  deriving Repr, DecidableEq, BEq
+  deriving Repr, DecidableEq, BEq, ReflBEq, LawfulBEq
 
 /-- One canonical artifact name for a phantom clock-domain type.  The type is
 the connection authority; the name is only its erased diagnostic/emission
@@ -116,7 +116,10 @@ structure Component where
 
 namespace Component
 
-private def expressionReads : {w : Nat} → Expr w → List String
+/-- Register/input names read by an expression. Public exposure supports
+compositional hierarchy certificates without reimplementing dependency
+analysis outside the canonical checker. -/
+def expressionReads : {w : Nat} → Expr w → List String
   | _, .lit _ => []
   | _, .reg _ name => [name]
   | _, .memRead _ _ address => expressionReads address
@@ -322,7 +325,9 @@ structure OutputEndpoint (δ : Type v) (α : Type u)
   port : Port .output δ α
   expression : Expr (HwPacked.width α)
 
-private def castExpr? {actual expected : Nat} (equal : actual = expected)
+/-- Width cast used by checked endpoint resolution. Public exposure lets
+generated certificate proofs normalize the resolver one endpoint at a time. -/
+def castExpr? {actual expected : Nat} (equal : actual = expected)
     (expression : Expr actual) : Expr expected := by
   subst equal
   exact expression
@@ -338,7 +343,11 @@ def input? {δ : Type v} {α : Type u} [ClockDomain δ] [HwPacked α]
     return ⟨inst.path, inst.component.component.name, port⟩
   throw s!"instance '{inst.path}' has no input '{port.name}' with semantic type '{port.semanticType}' in domain '{ClockDomain.name δ}'"
 
-private def outputExpr? (inst : ComponentInstance) (name : String)
+/-- Resolve the exact component-local expression which drives an output.
+This projection is public so generated hierarchy certificates can reduce
+individual endpoint obligations without evaluating a whole proof-heavy
+`Except` construction. Ordinary users normally call `output?`. -/
+def outputExpr? (inst : ComponentInstance) (name : String)
     (width : Nat) : Option (Expr width) :=
   match inst.component.component.design.exportedRegs.find?
       (fun reg => reg.name == name) with
@@ -533,10 +542,51 @@ theorem topologicalOrderCheckB_sound {edges : List (String × String)}
     DependencyAcyclic edges :=
   ⟨order, checked⟩
 
-/-- Fast, untrusted proposal generation. Kahn's algorithm visits each node and
-edge once with expected constant-time hash-table operations. A cyclic input
-merely yields a partial order which the structural checker rejects. -/
-def proposeTopologicalOrder (edges : List (String × String)) : List String :=
+/-- Stable endpoint inventory for the transparent topological proposer. -/
+def topologicalNodes (edges : List (String × String)) : List String :=
+  edges.foldl (fun nodes edge =>
+    let nodes := if nodes.contains edge.1 then nodes else nodes ++ [edge.1]
+    if nodes.contains edge.2 then nodes else nodes ++ [edge.2]) []
+
+def topologicalIndegree (edges : List (String × String))
+    (node : String) : Nat :=
+  (edges.filter fun edge => edge.2 == node).length
+
+/-- The hash implementation stores each newly seen sink at the head of its
+source adjacency list. Retaining that order here keeps ordinary rendered
+diagnostics stable across logical and compiled evaluation. -/
+def topologicalOutgoing (edges : List (String × String))
+    (node : String) : List String :=
+  edges.foldl (fun sinks edge =>
+    if edge.1 == node then edge.2 :: sinks else sinks) []
+
+def topologicalLoop : Nat → List (String × String) →
+    List String → List String → List String
+  | 0, _, _, order => order
+  | _ + 1, _, [], order => order
+  | fuel + 1, edges, node :: ready, order =>
+      let outgoing := topologicalOutgoing edges node
+      let remaining := edges.filter fun edge => edge.1 != node
+      let ready := outgoing.foldl (fun ready sink =>
+        if topologicalIndegree remaining sink == 0 &&
+            !ready.contains sink && !order.contains sink then
+          sink :: ready
+        else ready) ready
+      topologicalLoop fuel remaining ready (order ++ [node])
+
+/-- Transparent logical Kahn proposal. It is deliberately simple because the
+result is untrusted and is always checked by `topologicalOrderCheckB`. The
+compiled implementation below retains hash-table scale. -/
+def proposeTopologicalOrderSpec (edges : List (String × String)) : List String :=
+  let nodes := topologicalNodes edges
+  let ready := nodes.foldl (fun ready node =>
+    if topologicalIndegree edges node == 0 then node :: ready else ready) []
+  topologicalLoop nodes.length edges ready []
+
+/-- Fast executable twin. Kahn's algorithm visits each node and edge once
+with expected constant-time hash-table operations. A cyclic input merely
+yields a partial order which the structural checker rejects. -/
+def proposeTopologicalOrderImpl (edges : List (String × String)) : List String :=
   Id.run do
     let mut seen : Std.HashSet String := {}
     let mut nodes : Array String := #[]
@@ -567,6 +617,13 @@ def proposeTopologicalOrder (edges : List (String × String)) : List String :=
         indegree := indegree.insert sink next
         if next == 0 then ready := sink :: ready
     return order.toList
+
+/-- Untrusted proposal generation with a kernel-reducible meaning and a fast
+compiled implementation. Any disagreement is fail-closed because the result
+is structurally checked before it can certify a graph. -/
+@[implemented_by proposeTopologicalOrderImpl]
+def proposeTopologicalOrder (edges : List (String × String)) : List String :=
+  proposeTopologicalOrderSpec edges
 
 /-- No same-cycle dependency can return to its starting signal.  Optimized
 proposal generation is outside the trust boundary; acceptance is exactly the

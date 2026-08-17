@@ -1,12 +1,20 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+
+/-!
+# Shared hierarchy infrastructure
+
+Representation-neutral hierarchy inventories and backend planning records
+shared by single-clock component graphs and multiclock systems.
+-/
+
 namespace Loom.Hw
 universe u v
 abbrev InstancePath := String
 inductive PortDirection where
   | input
   | output
-  deriving Repr, DecidableEq, BEq
+  deriving Repr, DecidableEq, BEq, ReflBEq, LawfulBEq
 
 namespace Inventory
 def uniqueB {α : Type u} [BEq α] (items : List α) : Bool := items.eraseDups.length == items.length

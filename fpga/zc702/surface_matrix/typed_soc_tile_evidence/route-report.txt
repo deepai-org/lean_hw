@@ -1,0 +1,19 @@
+bit:      typed_soc_tile_top.bit  4045715 bytes
+built:    2026-08-17T22:02:13+00:00
+nextpnr:  nextpnr-xilinx -- Next Generation Place and Route (Version 0.8.2)
+yosys:    Yosys 0.38 (git sha1 543faed9c, gcc 9.4.0-1ubuntu1~20.04.2 -fPIC -Os)
+chipdb:   /home/kevin/substrate0/oxc7/xc7z020.bin  9d074929fb30
+read:     read_verilog -DSURFACE_MATRIX_RTL_SHA_PREFIX=32'h84fc8bf3
+synth:    synth_xilinx -flatten -nowidelut -nodsp
+seed:     9
+sources:  system.v surface_reset_release.v surface_matrix_bscan.v typed_soc_tile_top.v
+Info: 	          SLICE_LUTX:  4060/106400     3%
+Info: 	            RAMB18E1:     2/  280     0%
+Info: 	            RAMB36E1:     0/  140     0%
+Info: 	            BUFGCTRL:     4/   32    12%
+Info: Max frequency for clock        'tck': 121.07 MHz (PASS at 12.00 MHz)
+Info: Max frequency for clock   'core_clk': 79.31 MHz (PASS at 12.00 MHz)
+Info: Max frequency for clock 'memory_clk': 133.00 MHz (PASS at 12.00 MHz)
+Info: Max frequency for clock     'clk200': 357.91 MHz (PASS at 12.00 MHz)
+u_tile.u_island_tile_memory_internal.internal_memory.0.0	RAMB18E1_RAMB18E1	RAMB18_X3Y44/RAMB18E1
+u_tile.u_island_tile_memory_contract.contract_memory.0.0	RAMB18E1_RAMB18E1	RAMB18_X3Y30/RAMB18E1
