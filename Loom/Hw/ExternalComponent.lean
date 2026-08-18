@@ -34,6 +34,12 @@ theorem agreeOn_symm {ports : List PortDecl} {left right : PortEnv}
   intro port member
   exact (agree port member).symm
 
+theorem agreeOn_trans {ports : List PortDecl} {left middle right : PortEnv}
+    (first : AgreeOn ports left middle)
+    (second : AgreeOn ports middle right) : AgreeOn ports left right := by
+  intro port member
+  exact (first port member).trans (second port member)
+
 end PortEnv
 
 /-- One logical scheduling observation supplied to a multi-domain contract.

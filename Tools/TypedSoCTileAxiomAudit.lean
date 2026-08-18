@@ -1,6 +1,7 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
 import Machines.Multiclock.TypedSoCTile.Design
+import Tools.TypedSoCTileEvidence
 import Lean.Util.CollectAxioms
 
 open Machines.Multiclock.TypedSoCTile
@@ -9,12 +10,16 @@ open Machines.Multiclock.TypedSoCTile
 #print axioms buildTileFragment
 #print axioms monitorFragment
 #print axioms buildCertifiedArtifact
+#print axioms Tools.TypedSoCTileEvidence.tileMemoryWitness
+#print axioms Loom.Hw.ExternalIslandSubstitution.checkEmittedReference?
 
 private def auditedDeclarations : List Lean.Name :=
   [``coreGraph,
    ``buildTileFragment,
    ``monitorFragment,
-   ``buildCertifiedArtifact]
+   ``buildCertifiedArtifact,
+   ``Tools.TypedSoCTileEvidence.tileMemoryWitness,
+   ``Loom.Hw.ExternalIslandSubstitution.checkEmittedReference?]
 
 private def permittedAxioms : List Lean.Name :=
   [``propext, ``Classical.choice, ``Quot.sound]

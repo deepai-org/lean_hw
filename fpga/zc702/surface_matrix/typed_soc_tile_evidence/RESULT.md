@@ -19,11 +19,19 @@ The enforcing axiom audit reports only `propext`, `Classical.choice`, and
 
 `01b8b73616c9ed5ee8b21e0f31bcc30c46d2585f9a51c4340b247f388f674536`
 
-The target evidence layer changes exactly the `contract_memory` declaration
-to request a 512x32 single-clock Xilinx block RAM. The resulting physical RTL
-SHA-256 is:
+The target evidence layer constructs an `ExternalApplication` for the exact
+checked `tile_memory_contract` island. Loom verifies that the island's emitted
+module is byte-identical to the certified reference, selects external module
+bytes that change exactly the `contract_memory` declaration to request a
+512x32 single-clock Xilinx block RAM, and emits `external_islands.md` with the
+two named assumptions. The old shell-level `sed` rewrite has been retired.
+The resulting physical RTL SHA-256 is unchanged:
 
 `84fc8bf3c1cf85e313e6a66016557307af4ee4ea7c2cd28eeed804ddfd4ea81c`
+
+Because those are the exact bytes previously routed and exercised on silicon,
+the retained route, bitstream, RTL-campaign, and silicon evidence remains
+attached without reinterpretation.
 
 The internal lane remains ordinary Loom-generated memory. Neither memory is
 dual-clock; all cross-domain traffic uses the four certified depth-8 channels.

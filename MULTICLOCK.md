@@ -168,13 +168,18 @@ at this level. Complexity remains accessible without being compulsory.
 External IP is also optional expert machinery. `ExternalIslandSubstitution`
 can bind a complete reference island to exact external Verilog bytes after a
 typed `DesignContractWitness`, exact island-membership/design checks, and the
-current clock/reset convention have all succeeded. `ExternalApplication`
+current clock/reset convention have all succeeded. Generated `BuiltSystem`
+workflows may instead use an exact compiler-rendered reference-module identity
+check, which avoids reconstructing the existential System index without
+accepting a merely similar interface or module name. `ExternalApplication`
 changes only the selected emitted module; simulation and proofs continue to
 use the certified reference `Design`. Its release carries a Markdown inventory
 of the exact byte identities, evidence classification, and every named
 assumption. It is suitable for a technology-neutral FPGA/ASIC integration
 boundary, but it deliberately does not prove that external bytes implement
-their contract.
+their contract. The Typed SoC Composition Tile exercises this complete path:
+Loom emits its selected memory RTL and `external_islands.md`; no shell-level
+RTL rewrite remains.
 
 ## Guarantees
 
