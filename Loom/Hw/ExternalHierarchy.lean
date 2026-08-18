@@ -269,6 +269,17 @@ def componentOutputEnv (component : Component) (input : InEnv) (state : St) :
           else 0
       | none => 0
 
+/-- A register-output-only component's observations do not depend on its
+input environment.  External-island contracts use this to state exact
+registered behavior without inventing dummy input dependencies. -/
+theorem componentOutputEnv_input_independent (component : Component)
+    (noComb : component.design.combOutputs = []) (left right : InEnv)
+    (state : St) :
+    componentOutputEnv component left state =
+      componentOutputEnv component right state := by
+  funext name width
+  simp [componentOutputEnv, noComb]
+
 /-- Kernel obligation tying a real internal `Design` transition to an external
 contract. Reset, active ticks, unticked holds, and observations are explicit;
 the witness cannot be manufactured from matching port names alone. -/

@@ -40,6 +40,28 @@ structure ExternalIslandSubstitution (system : System) where
 
 namespace ExternalIslandSubstitution
 
+private def checkedBinding? {δ : Type v} [ClockDomain δ] {system : System}
+    (islandName : String) (reference : DomainComponent δ)
+    (external : DomainExternal δ) :
+    Except String (ExternalIslandSubstitution system) := do
+  let specification := external.sealed.specification
+  let binding := external.sealed.binding
+  unless binding.format == .verilog do
+    throw s!"external island '{islandName}' must use Verilog bytes"
+  unless binding.parameters.isEmpty do
+    throw s!"external island '{islandName}' cannot use unrendered parameters"
+  unless binding.moduleName == reference.implementation.design.name do
+    throw s!"external island '{islandName}' must retain emitted module name '{reference.implementation.design.name}'"
+  unless specification.domains ==
+      [⟨ClockDomain.name δ, .rising, .synchronous true⟩] do
+    throw s!"external island '{islandName}' must match Loom's rising-edge synchronous-reset island convention"
+  let some text := String.fromUTF8? binding.artifact.bytes
+    | throw s!"external island '{islandName}' artifact is not valid UTF-8 Verilog"
+  unless text.toUTF8 == binding.artifact.bytes do
+    throw s!"external island '{islandName}' artifact did not round-trip to its exact recorded bytes"
+  return .mk islandName binding.moduleName specification.name
+    specification.version text binding.artifact binding.assumptions binding.evidence
+
 /-- Bind an external implementation to the exact certified reference island.
 
 `witness` proves the reference `Design` implements the behavioral contract.
@@ -57,23 +79,37 @@ def check? {δ : Type v} [ClockDomain δ] {system : System}
     Except String (ExternalIslandSubstitution system) := do
   let _ := islandFound
   let _ := designEq
-  let specification := external.sealed.specification
-  let binding := external.sealed.binding
-  unless binding.format == .verilog do
-    throw s!"external island '{owner.name}' must use Verilog bytes"
-  unless binding.parameters.isEmpty do
-    throw s!"external island '{owner.name}' cannot use unrendered parameters"
-  unless binding.moduleName == owner.design.design.name do
-    throw s!"external island '{owner.name}' must retain emitted module name '{owner.design.design.name}'"
-  unless specification.domains ==
-      [⟨ClockDomain.name δ, .rising, .synchronous true⟩] do
-    throw s!"external island '{owner.name}' must match Loom's rising-edge synchronous-reset island convention"
-  let some text := String.fromUTF8? binding.artifact.bytes
-    | throw s!"external island '{owner.name}' artifact is not valid UTF-8 Verilog"
-  unless text.toUTF8 == binding.artifact.bytes do
-    throw s!"external island '{owner.name}' artifact did not round-trip to its exact recorded bytes"
-  return .mk owner.name binding.moduleName specification.name
-    specification.version text binding.artifact binding.assumptions binding.evidence
+  checkedBinding? owner.name reference external
+
+/-- Bind an external module to a reference component in an existentially
+assembled `BuiltSystem`.  This is the generated-system counterpart of
+`check?`: the named island must exist in the checked System, own the reference
+clock, retain the same module name, and compile to the exact same rendered
+module bytes as the certified reference component.  A merely similar port
+list or module name is insufficient.
+
+The behavioral contract is still discharged by `witness`; rendered-module
+identity is only the bridge from an existentially packaged island to that
+reference.  This avoids whole-System proof reconstruction in release tools
+without weakening the fail-closed artifact boundary. -/
+def checkEmittedReference? {δ : Type v} [ClockDomain δ] {system : System}
+    (islandName : String) (reference : DomainComponent δ)
+    (external : DomainExternal δ)
+    (_witness : BoundComponentGraph.DesignContractWitness
+      reference external.sealed.specification) :
+    Except String (ExternalIslandSubstitution system) := do
+  let some island := system.findIsland? islandName
+    | throw s!"external island '{islandName}' is absent from the checked System"
+  unless island.clock == ClockDomain.name δ do
+    throw s!"external island '{islandName}' belongs to clock '{island.clock}', not '{ClockDomain.name δ}'"
+  unless island.design.name == reference.implementation.design.name do
+    throw s!"external island '{islandName}' does not retain reference module name '{reference.implementation.design.name}'"
+  let actual := Loom.Emit.MicroVerilog.Print.print (Compile.compile island.design)
+  let expected := Loom.Emit.MicroVerilog.Print.print
+    (Compile.compile reference.implementation.design)
+  unless actual == expected do
+    throw s!"external island '{islandName}' does not match the exact compiler-rendered reference module"
+  checkedBinding? islandName reference external
 
 end ExternalIslandSubstitution
 
@@ -171,13 +207,13 @@ private def substitutionReport {system : System}
 This is a Markdown release artifact, not a CSV/TSV interface required from an
 ordinary application author. -/
 def report {system : System} (application : ExternalApplication system) : String :=
-  String.intercalate "\n\n" <|
-    ["# External System islands",
-     "",
-     "These modules replace certified reference islands only at emission. " ++
-       "Their behavioral equivalence to the named contracts is an explicit " ++
-       "external assumption, not a Loom kernel theorem."] ++
-    application.substitutions.map substitutionReport
+  let header :=
+    "# External System islands\n\n" ++
+    "These modules replace certified reference islands only at emission. " ++
+    "Their behavioral equivalence to the named contracts is an explicit " ++
+    "external assumption, not a Loom kernel theorem."
+  String.intercalate "\n\n"
+    (header :: application.substitutions.map substitutionReport) ++ "\n"
 
 /-- Recheck both the certified base artifact and the substitution inventory.
 Every selected module must occur exactly once in the base island-module list,

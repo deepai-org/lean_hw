@@ -112,6 +112,13 @@ private def application : ExternalApplication system :=
 
 example : application.emissionCheck.isOk := by native_decide
 
+private def emittedReferenceSubstitution : ExternalIslandSubstitution system :=
+  (ExternalIslandSubstitution.checkEmittedReference? owner.name
+    referenceComponent external witness).toOption.get (by native_decide)
+
+example : emittedReferenceSubstitution.artifact.bytes = binding.artifact.bytes := by
+  native_decide
+
 example : application.externalArtifacts.map (·.bytes) == [binding.artifact.bytes] := by
   native_decide
 
@@ -148,5 +155,24 @@ private def wrongNameRejected : Bool :=
   | .ok _ => false
 
 example : wrongNameRejected := by native_decide
+
+private def changedReferenceDesign : Design :=
+  { referenceDesign with
+    regs := [⟨"changed", 1, 0⟩]
+    outputs := ["changed"] }
+
+private def changedOwner : DomainIslandHandle CoreClock :=
+  .named "leaf" (DomainDesign.authored changedReferenceDesign)
+
+private def changedSystem : System :=
+  System.empty.addDomainIsland changedOwner |>.certify (by decide)
+
+private def changedReferenceRejected : Bool :=
+  match ExternalIslandSubstitution.checkEmittedReference?
+      (system := changedSystem) owner.name referenceComponent external witness with
+  | .error _ => true
+  | .ok _ => false
+
+example : changedReferenceRejected := by native_decide
 
 end Tests.ExternalSystem

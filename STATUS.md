@@ -1,6 +1,6 @@
 # Project status
 
-Checked against repository head on **2026-08-17**. This file is a current
+Checked against repository head on **2026-08-18**. This file is a current
 snapshot, not a development diary. Historical milestones belong in Git and
 [`CHANGELOG.md`](CHANGELOG.md); detailed hardware campaigns belong in their
 machine and board specifications.
@@ -11,8 +11,8 @@ machine and board specifications.
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-17; the complete 8,329-job build passed with existing warnings. |
 | `lake exe audit` | **PASS** | Rechecked on 2026-08-17; reports 1,061 clean ledger theorems, 32 inventoried unsafe declarations, 6 reviewed `implemented_by` replacements, 0 source `partial`, and 0 `extern`. The sixth is the untrusted Kahn-order proposal whose result is accepted only by the transparent structural checker. |
-| `lake test` | **PASS** | Rechecked on 2026-08-17; the complete 8,284-job graph passed, including compositional island-certificate reuse, explicit System observations, the contract-bound external-island seam, sibling-order gates, and isolated nominal-domain compile-failure regressions. |
-| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-17, including the no-handwritten-certified-CDC gate. |
+| `lake test` | **PASS** | Rechecked on 2026-08-18; the complete 8,284-job graph passed, including compositional island-certificate reuse, explicit System observations, the contract-bound external-island seam, sibling-order gates, and isolated nominal-domain compile-failure regressions. |
+| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-18, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
 | `scripts/emit_all.sh --check` | **PASS** | Rechecked on 2026-08-17; all 27 emitted artifacts matched a fresh emission. |
@@ -63,6 +63,11 @@ substitution is available as a separate optional release layer. It retains the
 certified reference `Design` for semantics and proofs, replaces only the exact
 named emitted module, and records external bytes, evidence classification, and
 named assumptions. External RTL equivalence remains an explicit premise.
+The Typed SoC Composition Tile now exercises that path for its contracted
+memory island. Loom emits the target-selected RTL and `external_islands.md`;
+the former shell `sed` rewrite is gone. The physical RTL remains byte-identical
+at SHA-256 `84fc8bf3…ea81c`, so its retained route and silicon evidence remain
+about the exact current physical bytes.
 
 `Loom/Hw/Chan.lean` and `Loom/Hw/System.lean` provide typed bounded-channel
 handles, generated endpoints, synchronous FIFO lowering, named island
