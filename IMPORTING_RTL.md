@@ -140,6 +140,13 @@ the selected policy. Generated Yosys `0.0-0.0` locations are represented as a
 synthetic valid line 1; their stable site identifiers retain exact policy
 selection.
 
+For a large design, review intent in a compact source-level decision file and
+expand it with `scripts/expand_four_state_policy.py`. The expander requires
+every inventoried site to match exactly one decision, rejects unused or
+overlapping decisions, and emits one exact `site`-bound rule per occurrence.
+It records the coverage and decision SHA-256 digests in the result, so a
+regenerated inventory cannot silently inherit stale classifications.
+
 ## Current fail-closed limits
 
 The first Yosys adapter handles one synchronous clock domain, either edge,
