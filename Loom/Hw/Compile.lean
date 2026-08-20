@@ -416,6 +416,37 @@ private unsafe def mpImpl (ce : {w' : Nat} → Expr w' → BaseIO (MV.Expr w'))
           else return cur
         else return cur
 
+/-- One canonical imported write: a unique port guarded by an `ite`, with a
+`skip` false branch. The ordinary compiler semantics for a port occurring
+once is exactly a mux between this write and the all-zero initial port. -/
+private structure SimpleMemPort (aw dw : Nat) where
+  port : Nat
+  guard : Expr 1
+  address : Expr aw
+  data : Expr dw
+
+private def collectSimpleMemPorts? (memory : String) (aw dw : Nat) :
+    Act → List (SimpleMemPort aw dw) → Option (List (SimpleMemPort aw dw))
+  | .skip, ports | .write .., ports | .writeSlice .., ports => some ports
+  | .seq left right, ports => do
+      let ports ← collectSimpleMemPorts? memory aw dw left ports
+      collectSimpleMemPorts? memory aw dw right ports
+  | .ite guard (.memWrite actualAw actualDw actualMemory port address data) .skip,
+      ports =>
+      if actualMemory = memory then
+        if equal : actualAw = aw ∧ actualDw = dw then
+          some ({ port, guard, address := equal.1 ▸ address,
+                  data := equal.2 ▸ data } :: ports)
+        else none
+      else some ports
+  | .ite .., _ | .memWrite .., _ => none
+
+private def simpleDesignMemPorts? (design : Design) (memory : String)
+    (aw dw : Nat) : Option (List (SimpleMemPort aw dw)) := do
+  let ports ← design.rules.foldlM (fun ports rule =>
+    collectSimpleMemPorts? memory aw dw rule.body ports) []
+  if decide (ports.map (·.port)).Nodup then some ports else none
+
 /-- The memoized `compile` (see the section docstring): same module,
 computed in time and heap proportional to the design DAG. -/
 private unsafe def compileImpl (d : Design) : MV.Module := unsafeBaseIO do
@@ -432,13 +463,29 @@ private unsafe def compileImpl (d : Design) : MV.Module := unsafeBaseIO do
   let mut mems : Array MV.MemDef := #[]
   for m in d.mems do
     let mut ports : Array (Port m.addrWidth m.dataWidth) := #[]
-    for p in List.range (numPorts d m.name) do
-      let ptCache ← IO.mkRef ({} : Std.HashMap USize Bool)
-      let pt := ptImpl m.name p ptCache
-      let mut cur : Port m.addrWidth m.dataWidth := { en := .lit 0, addr := .lit 0, data := .lit 0 }
-      for rl in d.rules do
-        cur ← mpImpl ce pt m.name m.addrWidth m.dataWidth p rl.body cur
-      ports := ports.push cur
+    match simpleDesignMemPorts? d m.name m.addrWidth m.dataWidth with
+    | some simple =>
+        for p in List.range (numPorts d m.name) do
+          match simple.find? (·.port == p) with
+          | none =>
+              ports := ports.push { en := .lit 0, addr := .lit 0, data := .lit 0 }
+          | some write =>
+              let guard ← ce write.guard
+              let address ← ce write.address
+              let data ← ce write.data
+              ports := ports.push {
+                en := .mux guard (.lit 1) (.lit 0)
+                addr := .mux guard address (.lit 0)
+                data := .mux guard data (.lit 0) }
+    | none =>
+        for p in List.range (numPorts d m.name) do
+          let ptCache ← IO.mkRef ({} : Std.HashMap USize Bool)
+          let pt := ptImpl m.name p ptCache
+          let mut cur : Port m.addrWidth m.dataWidth :=
+            { en := .lit 0, addr := .lit 0, data := .lit 0 }
+          for rl in d.rules do
+            cur ← mpImpl ce pt m.name m.addrWidth m.dataWidth p rl.body cur
+          ports := ports.push cur
     mems := mems.push { name := m.name, addrWidth := m.addrWidth
                         dataWidth := m.dataWidth, init := m.init
                         wrPorts := ports.toList }

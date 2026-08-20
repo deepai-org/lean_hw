@@ -104,6 +104,16 @@ def permittedUnsafeDecls : List String :=
    -- compiler's shared expression DAGs exponentially (the D13 cost caveat).
    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl.go",
    "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl",
+   -- Neutral-import expression lowering keeps the transparent checked
+   -- recursion as its specification. These executable twins memoize only
+   -- pointer-identical source nodes and share one cache across all roots;
+   -- pointer identity implies value identity, so cache hits reuse the exact
+   -- reference result. The source-read twin checks the same leaf predicates
+   -- once per distinct neutral node before the dependent graph is expanded.
+   "_private.Loom.Hw.ImportIR.0.Loom.Hw.ImportIR.lowerExprMemoGo",
+   "_private.Loom.Hw.ImportIR.0.Loom.Hw.ImportIR.lowerExprImpl",
+   "_private.Loom.Hw.ImportIR.0.Loom.Hw.ImportIR.lowerExprsImpl",
+   "_private.Loom.Hw.ImportIR.0.Loom.Hw.ImportIR.sourceReadsDeclaredImpl",
    -- The friendly `hardware`/`system` front end must inspect elaborated closed
    -- values and register source metadata with Lean's environment.  Lean marks
    -- that metaprogramming API unsafe.  These declarations run only while
@@ -137,6 +147,12 @@ def permittedImplementedBy : List (String × String) :=
     "_private.Loom.Release.ToProgram.0.Loom.Release.SSA.toIndexedWiresImpl"),
    ("Loom.Hw.Expr.readsMem",
     "_private.Loom.Hw.SyncRead.0.Loom.Hw.readsMemImpl"),
+   ("Loom.Hw.ImportIR.lowerExpr?",
+    "_private.Loom.Hw.ImportIR.0.Loom.Hw.ImportIR.lowerExprImpl"),
+   ("Loom.Hw.ImportIR.lowerExprs?",
+    "_private.Loom.Hw.ImportIR.0.Loom.Hw.ImportIR.lowerExprsImpl"),
+   ("Loom.Hw.ImportIR.Module.sourceReadsDeclaredB",
+    "_private.Loom.Hw.ImportIR.0.Loom.Hw.ImportIR.sourceReadsDeclaredImpl"),
    -- Expected-linear-time Kahn proposal for large component graphs. The
    -- proposal is not trusted: `topologicalOrderCheckB` checks the returned
    -- order and is the only premise consumed by `combinationalAcyclicB_sound`.

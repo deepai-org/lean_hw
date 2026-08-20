@@ -10,7 +10,7 @@ machine and board specifications.
 | Check | Current result | Notes |
 |---|---|---|
 | `lake build` | **PASS** | Rechecked on 2026-08-20; the complete 8,337-job build passed with existing warnings. |
-| `lake exe audit` | **PASS** | Rechecked on 2026-08-20; reports 32 inventoried unsafe declarations, 6 reviewed `implemented_by` replacements, 0 source `partial`, and 0 `extern`. The sixth is the untrusted Kahn-order proposal whose result is accepted only by the transparent structural checker. |
+| `lake exe audit` | **PASS** | Rechecked on 2026-08-20; reports 36 inventoried unsafe declarations, 9 reviewed `implemented_by` replacements, 0 source `partial`, and 0 `extern`. The import replacements memoize transparent lowering/read checks by pointer identity; the Kahn-order proposal is accepted only by its transparent structural checker. |
 | `lake test` | **PASS** | Rechecked on 2026-08-20; the complete 8,295-job graph passed, including the hierarchy package import regressions. |
 | `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-20, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
@@ -74,11 +74,18 @@ clock pins used by combinational source cones.
 are the generated baseline and policy-dependent reports. Acceptance is not
 equivalence or signoff. The complete 74-module package passes trusted
 structural checking; full conversion still requires bottom-up per-module
-equivalence PASS and complete-package equivalence closure. A complete
-behavioral `importPackage` stress run was stopped without a result after 30
-minutes at roughly 17 GB resident memory; focused real-module emission passes,
-but whole-package lowering/printing scalability is therefore still an open
-engineering gate rather than an emission PASS.
+equivalence PASS and complete-package equivalence closure. Import lowering now
+memoizes the complete neutral expression-root batch, validates reads on that
+compact source DAG, and recognizes the canonical unique guarded-memory-port
+shape without repeatedly rescanning the action tree. Small fixtures still
+emit and prove equivalent, and the focused real SDRAM package still emits.
+The real two-module TLB
+associative-cache package nevertheless failed to finish a bounded 10-minute
+run and reached about 60 GB RSS: its five masked Yosys memories expand to 63
+bit-plane memories and 4,284 generic write ports. Whole-package emission is
+therefore still an open engineering gate; first-class masked-word memories or
+an equivalence-checked compact implementation contract is required rather
+than further treating this expansion as acceptable.
 
 ### Multiclock execution-projection gate
 

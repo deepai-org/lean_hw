@@ -45,6 +45,15 @@ private def simple (edge : Loom.ClockEdge := .rising) : ImportIR.Module where
   | .ok lowered => lowered.component.interface.ports.map (·.name) == ["d", "q"]
   | .error _ => false
 
+private def undeclaredReadModule : ImportIR.Module :=
+  { simple with
+    outputs := [⟨"q", 8, .signal 8 "missing_state" location, location⟩] }
+
+#guard !undeclaredReadModule.sourceReadsDeclaredB
+#guard match undeclaredReadModule.lowerLocalDesign? with
+  | .error _ => true
+  | .ok _ => false
+
 private def fallingText : Except String String := do
   let lowered ← (simple .falling).lowerLocalDesign?
   pure <| Loom.Emit.MicroVerilog.Print.print

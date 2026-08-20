@@ -35,8 +35,8 @@ private def design (a0 a1 : BitVec 4) (en0 : Bool) : Design where
     [ ⟨"core", .ite (.reg 1 "c0")
         (.memWrite 4 8 "m" 0 (.reg 4 "a0") (.lit 11)) .skip⟩
     , ⟨"mover", .seq
-        (.memWrite 4 8 "m" 1 (.reg 4 "a1") (.lit 22))
-        (.memWrite 4 8 "m" 2 (.reg 4 "a1") (.lit 33))⟩ ]
+        (.ite (.lit 1) (.memWrite 4 8 "m" 1 (.reg 4 "a1") (.lit 22)) .skip)
+        (.ite (.lit 1) (.memWrite 4 8 "m" 2 (.reg 4 "a1") (.lit 33)) .skip)⟩ ]
 
 private def mDecl : MemDecl :=
   { name := "m", addrWidth := 4, dataWidth := 8, init := fun _ => 0 }

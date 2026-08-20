@@ -461,18 +461,92 @@ structure LoweredExpr where
   width : Nat
   value : Loom.Hw.Expr width
 
-private def failAt {α : Type} (source : SourceLocation) (message : String) :
-    Except String α :=
+private def Module.expressionRoots (module : Module) : List Expr :=
+  module.registers.map (·.next) ++
+    module.memories.flatMap (fun memory => memory.writes.flatMap fun write =>
+      [write.enable, write.address, write.data]) ++
+    module.outputs.map (·.value)
+
+private def Expr.readsDeclaredB (regWidths memWidths : Std.HashMap String Nat) :
+    Expr → Bool
+  | .literal .. | .partialLiteral .. => true
+  | .signal width name _ => regWidths.get? name == some width
+  | .unary _ _ value _ | .slice _ value _ _ |
+      .zeroExtend _ value _ | .signExtend _ value _ =>
+      value.readsDeclaredB regWidths memWidths
+  | .binary _ _ left right _ | .concat _ left right _ =>
+      left.readsDeclaredB regWidths memWidths &&
+        right.readsDeclaredB regWidths memWidths
+  | .mux _ condition yes no _ =>
+      condition.readsDeclaredB regWidths memWidths &&
+        yes.readsDeclaredB regWidths memWidths &&
+        no.readsDeclaredB regWidths memWidths
+  | .memoryRead width memory address _ =>
+      memWidths.get? memory == some width &&
+        address.readsDeclaredB regWidths memWidths
+
+def Module.sourceReadsDeclaredB (module : Module) : Bool :=
+  let regWidths := module.ports.foldl (fun widths port =>
+      if port.direction == .input then widths.insert port.name port.width else widths) <|
+    module.registers.foldl (fun widths register =>
+      widths.insert register.name register.width) ({} : Std.HashMap String Nat)
+  let memWidths := module.memories.foldl (fun widths memory =>
+    widths.insert memory.name memory.dataWidth) ({} : Std.HashMap String Nat)
+  module.expressionRoots.all (·.readsDeclaredB regWidths memWidths)
+
+/-- Pointer-memoized executable implementation of the exact source-level
+read check. Unlike checking the expanded dependent `Hw.Expr` graph after
+lowering, this visits the compact neutral DAG before bit-plane write actions
+and width-normalization nodes are constructed. -/
+private unsafe def sourceReadsDeclaredImpl (module : Module) : Bool := Id.run do
+  let regWidths := module.ports.foldl (fun widths port =>
+      if port.direction == .input then widths.insert port.name port.width else widths) <|
+    module.registers.foldl (fun widths register =>
+      widths.insert register.name register.width) ({} : Std.HashMap String Nat)
+  let memWidths := module.memories.foldl (fun widths memory =>
+    widths.insert memory.name memory.dataWidth) ({} : Std.HashMap String Nat)
+  let bucketCount := 65536
+  let mut seen : Array (List USize) := Array.replicate bucketCount []
+  let mut work := module.expressionRoots
+  while !work.isEmpty do
+    let some expression := work.head? | return false
+    work := work.tail
+    let key := ptrAddrUnsafe expression
+    let bucketIndex := (key.toNat >>> 4) &&& (bucketCount - 1)
+    let bucket := seen[bucketIndex]!
+    unless bucket.contains key do
+      seen := seen.set! bucketIndex (key :: bucket)
+      match expression with
+      | .literal .. | .partialLiteral .. => pure ()
+      | .signal width name _ =>
+          unless regWidths.get? name == some width do return false
+      | .unary _ _ value _ | .slice _ value _ _ |
+          .zeroExtend _ value _ | .signExtend _ value _ =>
+          work := value :: work
+      | .binary _ _ left right _ | .concat _ left right _ =>
+          work := left :: right :: work
+      | .mux _ condition yes no _ =>
+          work := condition :: yes :: no :: work
+      | .memoryRead width memory address _ =>
+          unless memWidths.get? memory == some width do return false
+          work := address :: work
+  return true
+
+attribute [implemented_by sourceReadsDeclaredImpl] Module.sourceReadsDeclaredB
+
+private def failAt {m : Type → Type} {α : Type} [Monad m] [MonadExcept String m]
+    (source : SourceLocation) (message : String) : m α :=
   throw s!"{source.render}: {message}"
 
-private def expectWidth (expected : Nat) (expression : LoweredExpr)
-    (source : SourceLocation) : Except String (Loom.Hw.Expr expected) := do
+private def expectWidth {m : Type → Type} [Monad m] [MonadExcept String m]
+    (expected : Nat) (expression : LoweredExpr)
+    (source : SourceLocation) : m (Loom.Hw.Expr expected) := do
   if equal : expression.width = expected then
     return equal ▸ expression.value
   else
     failAt source s!"expression width {expression.width} does not match expected width {expected}"
 
-private def lowerExpr? : Expr → Except String LoweredExpr
+def lowerExpr? : Expr → Except String LoweredExpr
   | .literal width value source => do
       if width == 0 then failAt source "zero-width literal"
       return ⟨width, .lit (BitVec.ofNat width value)⟩
@@ -561,15 +635,136 @@ private def lowerExpr? : Expr → Except String LoweredExpr
       if width == 0 || memory.isEmpty then failAt source "invalid memory read"
       return ⟨width, .memRead width memory address.value⟩
 
-private def lowerWrite? (memory : Memory) (write : MemoryWrite) : Except String Act := do
-  let enable ← lowerExpr? write.enable >>= fun value => expectWidth 1 value write.source
-  let address ← lowerExpr? write.address >>= fun value =>
-    expectWidth memory.addressWidth value write.source
-  let data ← lowerExpr? write.data >>= fun value =>
-    expectWidth memory.dataWidth value write.source
-  return .ite enable
-    (.memWrite memory.addressWidth memory.dataWidth memory.name write.port address data)
-    .skip
+/-! The schema-v2 parser preserves physical sharing from its postorder
+expression table.  The transparent reference lowering above is intentionally
+ordinary structural recursion, but treating that DAG as a tree can repeat a
+large cache mux cone exponentially.  This executable twin memoizes only
+pointer-equal source nodes. Pointer equality implies value equality, and the
+cached result is produced by the same cases and checks as `lowerExpr?`.
+The kernel-visible definition remains the transparent reference function. -/
+
+private unsafe def lowerExprMemoGo
+    (expression : Expr) :
+    StateT (Std.HashMap USize LoweredExpr) (Except String) LoweredExpr := do
+  let key := ptrAddrUnsafe expression
+  if let some lowered := (← get).get? key then
+    return lowered
+  let lowered ← match expression with
+    | .literal width value source => do
+        if width == 0 then failAt source "zero-width literal"
+        return ⟨width, .lit (BitVec.ofNat width value)⟩
+    | .partialLiteral width choice source => do
+        unless choice.validB width do
+          failAt source
+            s!"partial value site '{choice.site}' has an invalid or non-refining implementation choice"
+        return ⟨width, .lit (BitVec.ofNat width choice.implementationValue)⟩
+    | .signal width name source => do
+        if width == 0 || name.isEmpty then failAt source "invalid signal reference"
+        return ⟨width, .reg width name⟩
+    | .unary width op value source => do
+        let value ← lowerExprMemoGo value
+        match op with
+        | .bitNot | .negate =>
+            let value ← expectWidth width value source
+            match op with
+            | .bitNot => return ⟨width, .not value⟩
+            | .negate =>
+                return ⟨width, .sub (.lit (BitVec.ofNat width 0)) value⟩
+            | _ => failAt source "internal width-preserving unary lowering error"
+        | .reduceBool | .reduceAnd | .logicalNot =>
+            if width != 1 then
+              failAt source "logical/reduction result width must be one"
+            else
+              let zero : Loom.Hw.Expr value.width := .lit 0
+              let allOnes : Loom.Hw.Expr value.width :=
+                .lit (BitVec.allOnes value.width)
+              match op with
+              | .reduceBool => return ⟨1, .not (.eq value.value zero)⟩
+              | .reduceAnd => return ⟨1, .eq value.value allOnes⟩
+              | .logicalNot => return ⟨1, .eq value.value zero⟩
+              | _ => failAt source "internal reducing unary lowering error"
+    | .binary width op left right source => do
+        let left ← lowerExprMemoGo left
+        let right ← lowerExprMemoGo right
+        match op with
+        | .equal | .unsignedLessThan | .signedLessThan =>
+            if width != 1 then
+              failAt source "comparison result width must be one"
+            else
+              let leftValue ← expectWidth left.width left source
+              let rightValue ← expectWidth left.width right source
+              match op with
+              | .equal => return ⟨1, .eq leftValue rightValue⟩
+              | .unsignedLessThan => return ⟨1, .ult leftValue rightValue⟩
+              | .signedLessThan => return ⟨1, .slt leftValue rightValue⟩
+              | _ => failAt source "internal comparison lowering error"
+        | _ =>
+            let left ← expectWidth width left source
+            let right ← expectWidth width right source
+            let value : Loom.Hw.Expr width := match op with
+              | .bitAnd => .and left right
+              | .bitOr => .or left right
+              | .bitXor => .xor left right
+              | .add => .add left right
+              | .sub => .sub left right
+              | .mul => .mul left right
+              | .unsignedDiv => .udiv left right
+              | .unsignedRem => .urem left right
+              | .shiftLeft => .shl left right
+              | .logicalShiftRight => .shr left right
+              | _ => .lit 0
+            return ⟨width, value⟩
+    | .mux width condition yes no source => do
+        let condition ← lowerExprMemoGo condition >>=
+          fun value => expectWidth 1 value source
+        let yes ← lowerExprMemoGo yes >>= fun value => expectWidth width value source
+        let no ← lowerExprMemoGo no >>= fun value => expectWidth width value source
+        return ⟨width, .mux condition yes no⟩
+    | .slice width value offset source => do
+        let value ← lowerExprMemoGo value
+        if width == 0 || offset + width > value.width then
+          failAt source "slice is empty or outside its operand"
+        else return ⟨width, .slice value.value offset width⟩
+    | .zeroExtend width value source => do
+        let value ← lowerExprMemoGo value
+        if width < value.width then failAt source "zero extension narrows its operand"
+        else return ⟨width, .zext value.value width⟩
+    | .signExtend width value source => do
+        let value ← lowerExprMemoGo value
+        if width < value.width then failAt source "sign extension narrows its operand"
+        else return ⟨width, .sext value.value width⟩
+    | .concat width high low source => do
+        let high ← lowerExprMemoGo high
+        let low ← lowerExprMemoGo low
+        if equal : high.width + low.width = width then
+          return ⟨width, equal ▸ Loom.Hw.Expr.concat high.value low.value⟩
+        else failAt source "concatenation result width is inconsistent"
+    | .memoryRead width memory address source => do
+        let address ← lowerExprMemoGo address
+        if width == 0 || memory.isEmpty then failAt source "invalid memory read"
+        return ⟨width, .memRead width memory address.value⟩
+  modify (·.insert key lowered)
+  return lowered
+
+private unsafe def lowerExprImpl (expression : Expr) : Except String LoweredExpr :=
+  (lowerExprMemoGo expression).run' {}
+
+attribute [implemented_by lowerExprImpl] lowerExpr?
+
+def lowerExprs? (expressions : List Expr) :
+    Except String (List LoweredExpr) :=
+  expressions.mapM lowerExpr?
+
+/-- The batch implementation deliberately shares one source-node cache across
+all roots in a module. Cache write enables, read addresses, next-state roots,
+and outputs frequently point into the same Yosys expression DAG; restarting a
+cache at each root recreates that DAG many times even when each root is itself
+linear-time. -/
+private unsafe def lowerExprsImpl (expressions : List Expr) :
+    Except String (List LoweredExpr) :=
+  (expressions.mapM lowerExprMemoGo).run' {}
+
+attribute [implemented_by lowerExprsImpl] lowerExprs?
 
 private def sequence (actions : List Act) : Act :=
   actions.foldl .seq .skip
@@ -645,13 +840,21 @@ def Module.lowerLocalDesign? (module : Module) : Except String LoweredModule := 
     failAt module.source
       "hierarchical imports require checked package lowering; single-module lowering cannot bind child nets"
   let domain ← checkModuleBoundary module
+  unless module.sourceReadsDeclaredB do
+    failAt module.source
+      "source expression reads an undeclared or wrong-width register/input/memory"
+  let roots := module.expressionRoots
+  let loweredRoots ← lowerExprs? roots
+  let mut rootIndex := 0
   let mut regs : List RegDecl := []
   let mut actions : List Act := []
   for register in module.registers do
     if register.width == 0 || register.name.isEmpty then
       failAt register.source "invalid register declaration"
-    let next ← lowerExpr? register.next >>= fun value =>
-      expectWidth register.width value register.source
+    let some loweredNext := loweredRoots[rootIndex]?
+      | failAt register.source "internal expression-root inventory mismatch"
+    rootIndex := rootIndex + 1
+    let next ← expectWidth register.width loweredNext register.source
     regs := regs ++ [⟨register.name, register.width,
       BitVec.ofNat register.width register.init⟩]
     actions := actions ++ [.write register.width register.name next]
@@ -681,12 +884,30 @@ def Module.lowerLocalDesign? (module : Module) : Except String LoweredModule := 
          dataWidth := memory.dataWidth,
          init := fun address => BitVec.ofNat memory.dataWidth (memory.init.getD address 0) }]
     for write in memory.writes do
-      actions := actions ++ [← lowerWrite? memory write]
+      let some loweredEnable := loweredRoots[rootIndex]?
+        | failAt write.source "internal expression-root inventory mismatch"
+      rootIndex := rootIndex + 1
+      let some loweredAddress := loweredRoots[rootIndex]?
+        | failAt write.source "internal expression-root inventory mismatch"
+      rootIndex := rootIndex + 1
+      let some loweredData := loweredRoots[rootIndex]?
+        | failAt write.source "internal expression-root inventory mismatch"
+      rootIndex := rootIndex + 1
+      let enable ← expectWidth 1 loweredEnable write.source
+      let address ← expectWidth memory.addressWidth loweredAddress write.source
+      let data ← expectWidth memory.dataWidth loweredData write.source
+      actions := actions ++ [.ite enable
+        (.memWrite memory.addressWidth memory.dataWidth memory.name write.port address data)
+        .skip]
   let mut outputs : List CombOutput := []
   for output in module.outputs do
-    let value ← lowerExpr? output.value >>= fun value =>
-      expectWidth output.width value output.source
+    let some loweredValue := loweredRoots[rootIndex]?
+      | failAt output.source "internal expression-root inventory mismatch"
+    rootIndex := rootIndex + 1
+    let value ← expectWidth output.width loweredValue output.source
     outputs := outputs ++ [⟨output.name, output.width, value⟩]
+  unless rootIndex == loweredRoots.length do
+    failAt module.source "internal expression-root inventory has unused entries"
   let design : Design :=
     { name := module.name
       regs := regs
@@ -696,7 +917,7 @@ def Module.lowerLocalDesign? (module : Module) : Except String LoweredModule := 
         ⟨port.name, port.width⟩
       outputs := []
       combOutputs := outputs }
-  design.emitCheck
+  design.emitCheckAfterImportReads
   return ⟨design, domain.edge, domain.clockPort, domain.reset, module.source⟩
 
 private def checkStatelessBoundary (module : Module) : Except String Unit := do
