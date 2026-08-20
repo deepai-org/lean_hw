@@ -122,6 +122,13 @@ into an implementation refinement. Every matching rule records a stable
 Missing and multiply matching rules fail closed. The policy itself is included
 as a hash-bound manifest artifact.
 
+The same mechanism covers unsigned Yosys `$shiftx` variable part-selects:
+out-of-range source bits use an explicit zero-fill policy, while
+in-range bits are normalized to ordinary shifts and muxes. Signed `$shiftx`
+and one-fill policies still fail closed: negative starting indices need a
+separate exact normalization, and the current Yosys formal model only
+validates the zero-fill case.
+
 The trusted neutral-IR checker verifies that the chosen concrete value agrees
 with every source-known bit before lowering it to an ordinary literal. For
 external evidence, `scripts/rtl_equivalence.py --undef-policy zero|one`
@@ -144,7 +151,7 @@ basic width-normalized combinational subset. It currently blocks:
 - resetless or mixed-reset state, enable-dominant synchronous-reset flops,
   inferred memories and latches;
 - inout/tri-state ports and black boxes without explicit external contracts;
-- four-state variable part-select (`$shiftx`) cells; and
+- signed four-state variable part-select (`$shiftx`) cells; and
 - a module containing more than one clock/edge or reset domain.
 
 Child instances remain in the neutral module and are not silently flattened

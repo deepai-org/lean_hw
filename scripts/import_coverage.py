@@ -94,7 +94,7 @@ def main() -> int:
     for record in records:
         for blocker in record["blockers"]:
             metadata = blocker.get("metadata", {})
-            if blocker["kind"] == "four_state_constant" and "site" in metadata:
+            if blocker["kind"].startswith("four_state_") and "site" in metadata:
                 four_state_sites.append({
                     "module": record["name"], "source": blocker["source"], **metadata,
                 })

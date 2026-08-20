@@ -51,14 +51,17 @@ Four-state constants now have an explicit implementation-refinement path.
 Hash-bound policies classify stable sites and select zero/one only for unknown
 bits; the trusted checker proves the concrete value preserves every known bit.
 Unclassified or ambiguous sites fail closed, and the equivalence adapter can
-apply the same named concretization to both original and emitted RTL. This is
-not yet applied wholesale to KianV, and `$shiftx` remains a separate blocker.
+apply the same named concretization to both original and emitted RTL. Unsigned
+`$shiftx` variable part-selects use the same explicit partial-fill policy and
+normalize to ordinary shifts/muxes; every KianV occurrence is unsigned. This
+is not yet applied wholesale to KianV.
 
 For the exact checked-in KianV elaboration, 37 of 74 modules currently produce
 accepted neutral import IR; 37 remain blocked. Child-instance binding is no
 longer a blocker. The dominant explicit blockers are four-state constants
-(29 modules) and `$shiftx` cells (5), with memories, nonuniform or
-resetless state, and the mixed-edge SDRAM controller also remaining. The full
+(29 modules) and unclassified unsigned `$shiftx` sites (5), with memories,
+nonuniform or resetless state, and the mixed-edge SDRAM controller also
+remaining. The full
 74-module/134-instance structural package serializes to a 17 MiB DAG artifact
 and passes the trusted package checker; behavioral package emission still
 fails closed on the declared module blockers.

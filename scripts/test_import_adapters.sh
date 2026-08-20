@@ -203,6 +203,53 @@ assert equivalence["four_state_concretization"] == "zero"
 PY
 
 python3 scripts/verilog_inventory.py \
+  --top import_shiftx \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_shiftx.v \
+  --json-out "$work/shiftx.inventory.json" \
+  --markdown-out "$work/shiftx.inventory.md" \
+  --elaborated-out "$work/shiftx.elaborated.json"
+
+if python3 scripts/yosys_to_loom_ir.py \
+    --yosys-json "$work/shiftx.elaborated.json" \
+    --inventory "$work/shiftx.inventory.json" \
+    --module import_shiftx \
+    --output "$work/shiftx-unclassified.import.json"; then
+  echo "import adapters: unclassified variable part-select unexpectedly accepted" >&2
+  exit 1
+fi
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/shiftx.elaborated.json" \
+  --inventory "$work/shiftx.inventory.json" \
+  --module import_shiftx \
+  --four-state-policy Tests/fixtures/import_shiftx_policy.json \
+  --output "$work/shiftx.import.json"
+
+lake exe importModule "$work/shiftx.import.json" "$work/shiftx.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_shiftx_refinement \
+  --gold-top import_shiftx \
+  --revised-top import_shiftx \
+  --gold-file Tests/fixtures/import_shiftx.v \
+  --revised-file "$work/shiftx.loom.v" \
+  --undef-policy zero \
+  --assumption "the identified policy selects zero for out-of-range part-select bits" \
+  --log "$work/shiftx.equiv.log" \
+  --output "$work/shiftx.equiv.json"
+
+if python3 scripts/yosys_to_loom_ir.py \
+    --yosys-json "$work/shiftx.elaborated.json" \
+    --inventory "$work/shiftx.inventory.json" \
+    --module import_shiftx \
+    --four-state-policy Tests/fixtures/import_shiftx_policy_one.json \
+    --output "$work/shiftx-one.import.json"; then
+  echo "import adapters: unvalidated one-fill variable part-select unexpectedly accepted" >&2
+  exit 1
+fi
+
+python3 scripts/verilog_inventory.py \
   --top import_hierarchy \
   --source-root "$PWD" \
   --source Tests/fixtures/import_hierarchy.v \
