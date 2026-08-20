@@ -198,8 +198,11 @@ private def parseRegister (json : Json) : Except String Register := do
   let width ← natField json "width"
   let init ← natField json "init"
   let next ← parseExpr (← field json "next")
+  let domain ← match json.getObjVal? "domain" with
+    | .error _ => pure none
+    | .ok value => if value.isNull then pure none else some <$> value.getStr?
   let source ← parseLocation (← field json "source")
-  return { name, width, init, next, source }
+  return { name, width, init, next, domain, source }
 
 private def parseMemoryWrite (json : Json) : Except String MemoryWrite := do
   let port ← natField json "port"
@@ -310,8 +313,11 @@ private def parseRegisterRef (known : Array ImportIR.Expr) (json : Json) :
   let width ← natField json "width"
   let init ← natField json "init"
   let next ← expressionRef known json "next"
+  let domain ← match json.getObjVal? "domain" with
+    | .error _ => pure none
+    | .ok value => if value.isNull then pure none else some <$> value.getStr?
   let source ← parseLocation (← field json "source")
-  return { name, width, init, next, source }
+  return { name, width, init, next, domain, source }
 
 private def parseMemoryWriteRef (known : Array ImportIR.Expr) (json : Json) :
     Except String MemoryWrite := do

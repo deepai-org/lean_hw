@@ -57,21 +57,28 @@ normalize to ordinary shifts/muxes; every KianV occurrence is unsigned. This
 is now applied through a reviewed, exact-site KianV policy.
 
 For the exact checked-in KianV elaboration, the policy-free baseline accepts
-42 of 74 modules. The reviewed 32-decision/279-site four-state refinement
-raises acceptance to 73 modules, with only the mixed-edge SDRAM controller
-still blocked. Child-instance binding, unsigned `$shiftx`, resetless state,
-nonuniform per-register synchronous resets, ROMs, and the six writable-memory
-modules are no longer blockers. Writable `$mem_v2` cells are lowered into
+42 of 74 modules. The reviewed 32-decision/279-site four-state refinement and
+checked mixed-edge package splitting raise acceptance to all 74 modules.
+Child-instance binding, unsigned `$shiftx`, resetless state, nonuniform
+per-register synchronous resets, ROMs, the six writable-memory modules, and
+the falling/rising-edge SDRAM controller are no longer import blockers.
+Writable `$mem_v2` cells are lowered into
 bit-plane memories so arbitrary per-bit enables and ordered port collisions
 remain exact; a checked state-relation map lets external equivalence pair each
-original word with those planes. Behavioral package emission still fails
-closed on the remaining declared multi-clock blocker.
+original word with those planes. A multi-edge source module emits one
+stateless combinational body plus one state-owning body for each clock/edge
+domain; the checked wrapper binds their state nets explicitly and retains
+clock pins used by combinational source cones.
 [`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md) and
 [`Evidence/KianV/import_coverage_policy.md`](Evidence/KianV/import_coverage_policy.md)
 are the generated baseline and policy-dependent reports. Acceptance is not
-equivalence or signoff;
-full conversion still requires the remaining multi-clock import, per-module equivalence PASS and checked
-complete-package emission/equivalence closure.
+equivalence or signoff. The complete 74-module package passes trusted
+structural checking; full conversion still requires bottom-up per-module
+equivalence PASS and complete-package equivalence closure. A complete
+behavioral `importPackage` stress run was stopped without a result after 30
+minutes at roughly 17 GB resident memory; focused real-module emission passes,
+but whole-package lowering/printing scalability is therefore still an open
+engineering gate rather than an emission PASS.
 
 ### Multiclock execution-projection gate
 

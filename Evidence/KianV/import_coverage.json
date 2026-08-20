@@ -2,8 +2,7 @@
   "blocker_module_counts": {
     "four_state_constant": 32,
     "four_state_memory_out_of_range": 2,
-    "four_state_variable_part_select": 5,
-    "multiple_clock_domains": 1
+    "four_state_variable_part_select": 5
   },
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
   "four_state_policy_sha256": null,
@@ -4322,8 +4321,7 @@
     {
       "blocker_kinds": [
         "four_state_constant",
-        "four_state_variable_part_select",
-        "multiple_clock_domains"
+        "four_state_variable_part_select"
       ],
       "blockers": [
         {
@@ -5123,17 +5121,6 @@
             "file": "src/sdram/mt48lc16m16a2_ctrl.v",
             "start_column": 9,
             "start_line": 405
-          }
-        },
-        {
-          "detail": "module contains 2 clock/edge pairs",
-          "kind": "multiple_clock_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 690,
-            "file": "src/sdram/mt48lc16m16a2_ctrl.v",
-            "start_column": 1,
-            "start_line": 23
           }
         }
       ],

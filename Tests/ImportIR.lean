@@ -31,7 +31,8 @@ private def simple (edge : Loom.ClockEdge := .rising) : ImportIR.Module where
      ⟨"q", .output, 8, "byte", location⟩]
   domains := [domain edge .synchronous]
   registers :=
-    [⟨"state", 8, 0, .signal 8 "d" location, location⟩]
+    [{ name := "state", width := 8, init := 0,
+       next := .signal 8 "d" location, source := location }]
   memories := []
   outputs :=
     [⟨"q", 8, .signal 8 "state" location, location⟩]

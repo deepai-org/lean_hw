@@ -344,6 +344,46 @@ python3 scripts/rtl_equivalence.py \
   --output "$work/hierarchy-seq.equiv.json"
 
 python3 scripts/verilog_inventory.py \
+  --top import_mixed_edge \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_mixed_edge.v \
+  --json-out "$work/mixed-edge.inventory.json" \
+  --markdown-out "$work/mixed-edge.inventory.md" \
+  --elaborated-out "$work/mixed-edge.elaborated.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/mixed-edge.elaborated.json" \
+  --inventory "$work/mixed-edge.inventory.json" \
+  --package-top import_mixed_edge \
+  --output "$work/mixed-edge.package.import.json"
+
+lake exe importPackage \
+  "$work/mixed-edge.package.import.json" "$work/mixed-edge.package.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_mixed_edge_import \
+  --gold-top import_mixed_edge \
+  --revised-top import_mixed_edge \
+  --gold-file Tests/fixtures/import_mixed_edge.v \
+  --revised-file "$work/mixed-edge.package.loom.v" \
+  --assumption "the same physical clock drives distinct rising- and falling-edge state bodies" \
+  --log "$work/mixed-edge.equiv.log" \
+  --output "$work/mixed-edge.equiv.json"
+
+python3 - "$work/mixed-edge.package.import.json" \
+    "$work/mixed-edge.package.loom.v" <<'PY'
+import json
+import sys
+
+module = json.load(open(sys.argv[1], encoding="utf-8"))["package"]["modules"][0]
+text = open(sys.argv[2], encoding="utf-8").read()
+assert not module["unsupported"]
+assert len(module["domains"]) == 2
+assert {domain["edge"] for domain in module["domains"]} == {"rising", "falling"}
+assert "always @(posedge clk)" in text and "always @(negedge clk)" in text
+PY
+
+python3 scripts/verilog_inventory.py \
   --top import_resetless \
   --source-root "$PWD" \
   --source Tests/fixtures/import_resetless.v \

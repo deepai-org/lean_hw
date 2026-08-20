@@ -149,7 +149,7 @@ regenerated inventory cannot silently inherit stale classifications.
 
 ## Current fail-closed limits
 
-The first Yosys adapter handles one clock domain, either edge, resetless state,
+The Yosys adapter handles one or more clock/edge domains, resetless state,
 per-register active-high/active-low synchronous resets, both reset-dominant
 and enable-dominant priority, ordinary register enables, and a basic
 width-normalized combinational subset. It also accepts power-of-two `$mem_v2`
@@ -168,7 +168,16 @@ no synthetic common reset is introduced. It currently blocks:
   transparent, or collision-X memory modes, and source latches;
 - inout/tri-state ports and black boxes without explicit external contracts;
 - signed four-state variable part-select (`$shiftx`) cells; and
-- a module containing more than one clock/edge domain.
+- memories inside a module with more than one clock/edge domain until memory
+  ownership is explicit (the current KianV mixed-edge module has no memory).
+
+Single-domain modules lower through the ordinary local-design path. A
+multi-domain package module instead emits one stateless combinational body and
+one resetless state body per declared domain, then uses a checked structural
+wrapper with explicit state nets. Every register must name exactly one domain.
+Clock pins remain available to combinational cones, which is required for the
+KianV controller's derived SDRAM clock. The package path is mandatory for this
+split; the single-module CLI continues to fail closed.
 
 Child instances remain in the neutral module and are not silently flattened
 into local logic. The package checker derives exact child input-to-output
@@ -197,16 +206,20 @@ per-module neutral translation; it is evidence, not a trusted Loom artifact.
 `four_state_decisions.json` records 32 module-specific source-intent decisions;
 the exact-site expander produces 279 hash-bound rules in
 `four_state_policy.json`. With that policy, `import_coverage_policy.md` records
-73 accepted modules and only the mixed-edge SDRAM controller still blocked.
+all 74 modules accepted, including the falling/rising-edge SDRAM controller.
 The unrefined report remains checked
 in separately so policy-dependent progress is never confused with ordinary
 two-state acceptance.
 
-The earlier complete schema-v2 structural package check covered all 74 modules
-and 134 child instances. It must be regenerated after memory lowering before
-new package size/node counts are claimed. `importPackage` correctly cannot yet
-emit the complete SoC because the SDRAM controller retains two clock/edge
-domains.
+The regenerated complete schema-v2 package contains all 74 reachable modules
+and passes `checkImportPackage`. A focused package for the parameterized SDRAM
+controller also emits successfully with separate falling- and rising-edge
+state bodies. These are import and structural-emission results, not a blanket
+equivalence claim. On the current host, a complete behavioral `importPackage`
+run was stopped without a result after 30 minutes at roughly 17 GB resident
+memory. Treat whole-package lowering/printing scalability as an open gate;
+neither the interruption nor the trusted structural PASS is a complete
+emission PASS.
 
 Do not describe KianV as converted until every required reachable module has
 an accepted import and a per-module equivalence `PASS`, hierarchy has been
