@@ -2,6 +2,16 @@
   "schema": 1,
   "decisions": [
     {
+      "name": "associative_cache_partial_memory_behavior",
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "file": "*",
+      "line_start": 0,
+      "line_end": 9999,
+      "classification": "uninitialized_state_or_memory",
+      "fill": "zero",
+      "rationale": "TLB array power-up contents, inactive generated write-port fields, and out-of-range array reads are unspecified; reset establishes valid entries and the implementation selects zero elsewhere."
+    },
+    {
       "name": "sdram_controller_partial_state",
       "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
       "file": "*", "line_start": 0, "line_end": 9999,
@@ -35,6 +45,16 @@
       "file": "*", "line_start": 0, "line_end": 9999,
       "classification": "uninitialized_state_or_memory", "fill": "zero",
       "rationale": "FIFO storage outside its valid occupancy is unspecified and is concretized to zero."
+    },
+    {
+      "name": "lru_partial_memory_behavior",
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "file": "*",
+      "line_start": 0,
+      "line_end": 9999,
+      "classification": "uninitialized_state_or_memory",
+      "fill": "zero",
+      "rationale": "LRU state before its reset writes, inactive generated write-port fields, and out-of-range reads are unspecified and are concretized to zero."
     },
     {
       "name": "sv32_partial_state",
@@ -86,6 +106,16 @@
       "file": "*", "line_start": 0, "line_end": 9999,
       "classification": "uninitialized_state_or_memory", "fill": "zero",
       "rationale": "The behavioral SRAM wrapper explicitly returns X for an invalid read; the implementation refinement selects zero."
+    },
+    {
+      "name": "register_file_uninitialized_contents",
+      "module": "register_file",
+      "file": "*",
+      "line_start": 0,
+      "line_end": 9999,
+      "classification": "uninitialized_state_or_memory",
+      "fill": "zero",
+      "rationale": "Architectural register-file entries have unspecified power-up contents and inactive generated write-port fields; software establishes live values and the implementation selects zero initially."
     },
     {
       "name": "gpio_unselected_readback",

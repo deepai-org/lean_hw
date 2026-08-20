@@ -125,6 +125,14 @@ private def parsePartialValue (json : Json) : Except String PartialValue := do
   return PartialValue.mk site valueClass knownMask knownValue
     implementationValue rationale
 
+private def optionalPartialValueField (json : Json) (name : String) :
+    Except String (Option PartialValue) := do
+  match json.getObjVal? name with
+  | .error _ => return none
+  | .ok value =>
+      if value.isNull then return none
+      return some (← parsePartialValue value)
+
 private partial def parseExpr (json : Json) : Except String ImportIR.Expr := do
   let kind ← stringField json "kind"
   let width ← natField json "width"
@@ -206,9 +214,10 @@ private def parseMemory (json : Json) : Except String Memory := do
   let addressWidth ← natField json "address_width"
   let dataWidth ← natField json "data_width"
   let init ← parseList Json.getNat? (← arrayField json "init")
+  let initRefinement ← optionalPartialValueField json "init_refinement"
   let writes ← parseList parseMemoryWrite (← arrayField json "writes")
   let source ← parseLocation (← field json "source")
-  return { name, addressWidth, dataWidth, init, writes, source }
+  return { name, addressWidth, dataWidth, init, initRefinement, writes, source }
 
 private def parseOutput (json : Json) : Except String Output := do
   let name ← stringField json "name"
@@ -319,9 +328,10 @@ private def parseMemoryRef (known : Array ImportIR.Expr) (json : Json) :
   let addressWidth ← natField json "address_width"
   let dataWidth ← natField json "data_width"
   let init ← parseList Json.getNat? (← arrayField json "init")
+  let initRefinement ← optionalPartialValueField json "init_refinement"
   let writes ← parseList (parseMemoryWriteRef known) (← arrayField json "writes")
   let source ← parseLocation (← field json "source")
-  return { name, addressWidth, dataWidth, init, writes, source }
+  return { name, addressWidth, dataWidth, init, initRefinement, writes, source }
 
 private def parseOutputRef (known : Array ImportIR.Expr) (json : Json) :
     Except String Output := do

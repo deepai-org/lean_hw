@@ -57,19 +57,20 @@ normalize to ordinary shifts/muxes; every KianV occurrence is unsigned. This
 is now applied through a reviewed, exact-site KianV policy.
 
 For the exact checked-in KianV elaboration, the policy-free baseline accepts
-42 of 74 modules. The reviewed 29-decision/237-site four-state refinement
-raises acceptance to 67 modules, with 7 still blocked. Child-instance binding,
-unsigned `$shiftx`, resetless state, and nonuniform per-register synchronous
-resets are no longer blockers. The remaining classes are six memory-bearing
-modules and the mixed-edge SDRAM controller. The full
-74-module/134-instance structural package serializes to a 17 MiB DAG artifact
-and passes the trusted package checker; behavioral package emission still
-fails closed on the declared module blockers.
+42 of 74 modules. The reviewed 32-decision/279-site four-state refinement
+raises acceptance to 73 modules, with only the mixed-edge SDRAM controller
+still blocked. Child-instance binding, unsigned `$shiftx`, resetless state,
+nonuniform per-register synchronous resets, ROMs, and the six writable-memory
+modules are no longer blockers. Writable `$mem_v2` cells are lowered into
+bit-plane memories so arbitrary per-bit enables and ordered port collisions
+remain exact; a checked state-relation map lets external equivalence pair each
+original word with those planes. Behavioral package emission still fails
+closed on the remaining declared multi-clock blocker.
 [`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md) and
 [`Evidence/KianV/import_coverage_policy.md`](Evidence/KianV/import_coverage_policy.md)
 are the generated baseline and policy-dependent reports. Acceptance is not
 equivalence or signoff;
-full conversion still requires per-module equivalence PASS and checked
+full conversion still requires the remaining multi-clock import, per-module equivalence PASS and checked
 complete-package emission/equivalence closure.
 
 ### Multiclock execution-projection gate

@@ -1,10 +1,9 @@
 {
   "blocker_module_counts": {
-    "memory_cell": 6,
     "multiple_clock_domains": 1
   },
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
-  "four_state_policy_sha256": "05152a504b7c689708d8cdf41848416adba57109f8e780f71f0af2bd5bfbf103",
+  "four_state_policy_sha256": "a8b183c6a143c33b80da01bf4694f0179cbdd77b38deac1ba4fa7fac4a14b3e4",
   "four_state_sites": [],
   "inventory_sha256": "c4dab38164842b0c8ea501778f8aa9aaaf8793a2964129fb5f77d2714a25b9ba",
   "modules": [
@@ -27,68 +26,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "memory_cell"
-      ],
-      "blockers": [
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 35,
-            "end_line": 54,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 54
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 35,
-            "end_line": 55,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 55
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 33,
-            "end_line": 58,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 58
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 36,
-            "end_line": 56,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 56
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 35,
-            "end_line": 57,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 57
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
@@ -123,35 +64,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "memory_cell"
-      ],
-      "blockers": [
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 16,
-            "end_line": 255,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 9,
-            "start_line": 246
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 26,
-            "end_line": 225,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 17,
-            "start_line": 225
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -184,24 +100,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "memory_cell"
-      ],
-      "blockers": [
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 27,
-            "end_line": 39,
-            "file": "src/fifo.v",
-            "start_column": 24,
-            "start_line": 39
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -354,24 +256,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "memory_cell"
-      ],
-      "blockers": [
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 16,
-            "end_line": 72,
-            "file": "src/kianv_harris_edition/alu_decoder.v",
-            "start_column": 9,
-            "start_line": 57
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "alu_decoder",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -434,24 +322,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "memory_cell"
-      ],
-      "blockers": [
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 16,
-            "end_line": 57,
-            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
-            "start_column": 13,
-            "start_line": 57
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -526,24 +400,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "memory_cell"
-      ],
-      "blockers": [
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 19,
-            "end_line": 33,
-            "file": "src/kianv_harris_edition/register_file.v",
-            "start_column": 14,
-            "start_line": 33
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "register_file",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -608,8 +468,8 @@
   ],
   "schema": 1,
   "summary": {
-    "accepted_modules": 67,
-    "blocked_modules": 7,
+    "accepted_modules": 73,
+    "blocked_modules": 1,
     "module_count": 74
   }
 }

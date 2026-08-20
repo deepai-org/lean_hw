@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -41,6 +42,41 @@ def safe_paths(paths: list[pathlib.Path], parser: argparse.ArgumentParser) -> No
     if any(any(character.isspace() for character in str(path.resolve()))
            for path in paths):
         parser.error("RTL paths containing whitespace are unsupported")
+
+
+def memory_equivalence_commands(path: pathlib.Path,
+                                parser: argparse.ArgumentParser) -> list[str]:
+    try:
+        report = json.loads(path.read_bytes())
+        mappings = report["module"].get("memory_equivalence", [])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        parser.error(f"invalid neutral-import memory map: {error}")
+    commands = ["cd loom_equiv_miter"]
+    for mapping_index, mapping in enumerate(mappings):
+        try:
+            original = mapping["original"]
+            size = mapping["size"]
+            width = mapping["width"]
+            bit_memories = mapping["bit_memories"]
+        except (KeyError, TypeError) as error:
+            parser.error(f"incomplete memory mapping: {error}")
+        if (not isinstance(original, str) or not original or
+                any(character.isspace() for character in original) or
+                not isinstance(size, int) or size <= 0 or
+                not isinstance(width, int) or width <= 0 or
+                not isinstance(bit_memories, list) or len(bit_memories) != width or
+                any(not isinstance(name, str) or
+                    re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", name) is None
+                    for name in bit_memories)):
+            parser.error("invalid memory equivalence mapping fields")
+        for address in range(size):
+            wire = f"__loom_memory_relation_{mapping_index}_{address}"
+            commands.append(f"add -wire {wire} {width}")
+            for bit, memory in enumerate(bit_memories):
+                commands.append(
+                    f"connect -set {wire}[{bit}] \\{memory}[{address}]_gate")
+            commands.append(f"equiv_add \\{original}[{address}]_gold {wire}")
+    return commands
 
 
 def write_report(args: argparse.Namespace, status: str, detail: str,
@@ -82,6 +118,8 @@ def main() -> int:
     parser.add_argument("--assumption", action="append", default=[])
     parser.add_argument("--seq", type=int, default=12)
     parser.add_argument("--undef-policy", choices=("zero", "one"))
+    parser.add_argument("--memory-map", type=pathlib.Path,
+                        help="neutral import JSON containing checked bit-plane memory relations")
     parser.add_argument("--yosys", default="yosys")
     parser.add_argument("--log", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
@@ -90,6 +128,8 @@ def main() -> int:
     if args.seq <= 0:
         parser.error("--seq must be positive")
     files = [path.resolve() for path in args.gold_file + args.revised_file]
+    if args.memory_map is not None:
+        files.append(args.memory_map.resolve())
     safe_paths(files, parser)
     for include in args.include:
         if any(character.isspace() for character in str(include.resolve())):
@@ -98,7 +138,9 @@ def main() -> int:
     inputs = ([artifact(f"original_rtl_{index}", path)
                for index, path in enumerate(args.gold_file)] +
               [artifact(f"loom_emitted_rtl_{index}", path)
-               for index, path in enumerate(args.revised_file)])
+               for index, path in enumerate(args.revised_file)] +
+              ([] if args.memory_map is None else
+               [artifact("neutral_import_memory_map", args.memory_map)]))
     invocation = [
         args.yosys, "-Q", "<generated-script>",
         "--gold-top", args.gold_top, "--revised-top", args.revised_top,
@@ -106,6 +148,8 @@ def main() -> int:
     ]
     if args.undef_policy:
         invocation += ["--undef-policy", args.undef_policy]
+    if args.memory_map:
+        invocation += ["--memory-map", args.memory_map.resolve().as_posix()]
     identity = hashlib.sha256(json.dumps({
         "module": args.module_label,
         "inputs": inputs,
@@ -113,6 +157,8 @@ def main() -> int:
         "includes": [path.resolve().as_posix() for path in args.include],
         "seq": args.seq,
         "undef_policy": args.undef_policy,
+        "memory_map": (None if args.memory_map is None else
+                       args.memory_map.resolve().as_posix()),
     }, sort_keys=True).encode()).hexdigest()
 
     args.log.parent.mkdir(parents=True, exist_ok=True)
@@ -137,21 +183,24 @@ def main() -> int:
         script_path = pathlib.Path(temp) / "equivalence.ys"
         concretize = ([f"setundef -{args.undef_policy}"]
                       if args.undef_policy else [])
+        memory_commands = ([] if args.memory_map is None else
+                           memory_equivalence_commands(args.memory_map, parser))
         script = "\n".join([
             f"read_verilog {' '.join(options)} {gold_files}",
             f"hierarchy -check -top {args.gold_top}",
-            "proc", *concretize, "memory", "opt_clean", "flatten", "opt_clean",
+            "proc", "memory", *concretize, "opt_clean", "flatten", "opt_clean",
             f"rename {args.gold_top} loom_equiv_gold",
             "design -stash loom_gold_design",
             f"read_verilog {' '.join(options)} {revised_files}",
             f"hierarchy -check -top {args.revised_top}",
-            "proc", *concretize, "memory", "opt_clean", "flatten", "opt_clean",
+            "proc", "memory", *concretize, "opt_clean", "flatten", "opt_clean",
             f"rename {args.revised_top} loom_equiv_revised",
             "design -stash loom_revised_design",
             "design -copy-from loom_gold_design -as loom_equiv_gold loom_equiv_gold",
             "design -copy-from loom_revised_design -as loom_equiv_revised loom_equiv_revised",
             "equiv_make loom_equiv_gold loom_equiv_revised loom_equiv_miter",
             "hierarchy -top loom_equiv_miter",
+            *memory_commands,
             f"equiv_simple -seq {args.seq}",
             f"equiv_induct -seq {args.seq}",
             "equiv_status -assert",
