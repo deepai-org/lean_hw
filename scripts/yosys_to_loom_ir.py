@@ -245,6 +245,7 @@ class ModuleTranslator:
         self.bit_names: dict[int, list[tuple[str, int, int]]] = {}
         self.inputs: dict[tuple[Any, ...], tuple[str, dict[str, Any]]] = {}
         self.registers: dict[tuple[Any, ...], str] = {}
+        self.register_originals: dict[tuple[Any, ...], tuple[str, int]] = {}
         self.drivers: dict[int, Driver] = {}
         self.expression_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.in_progress: set[tuple[str, str]] = set()
@@ -289,6 +290,29 @@ class ModuleTranslator:
         names = [name for name, net in self.netnames.items()
                  if tuple(net.get("bits", [])) == target and not name.startswith("$")]
         return sorted(names, key=lambda item: (len(item), item))[0] if names else fallback
+
+    def register_original(self, bits: list[Any], fallback: str) -> tuple[str, int]:
+        """Return a stable public net and LSB offset for a register Q vector.
+
+        Yosys sometimes splits one source register into several `$dff` cells.
+        Those generated cell names are not nets and disappear in later passes,
+        while the Q vectors remain contiguous slices of the source-level net.
+        Recording that containing net makes the equivalence correspondence
+        independent of Yosys' generated cell naming.
+        """
+        target = tuple(bits)
+        choices: list[tuple[int, str, int]] = []
+        for name, net in self.netnames.items():
+            if name.startswith("$"):
+                continue
+            candidate = net.get("bits", [])
+            for offset in range(len(candidate) - len(bits) + 1):
+                if tuple(candidate[offset:offset + len(bits)]) == target:
+                    choices.append((len(candidate), name, offset))
+        if not choices:
+            return fallback, 0
+        _, name, offset = sorted(choices)[0]
+        return name, offset
 
     def input_port_name(self, bits: list[Any], fallback: str) -> str:
         """Name the module boundary that physically supplies an input bit-vector.
@@ -936,11 +960,10 @@ class ModuleTranslator:
             connections = cell.get("connections", {})
             params = cell.get("parameters", {})
             q = connections.get("Q", [])
-            original_name = self.public_name(q, cell_name.strip("\\$"))
+            original_name = self.register_original(q, cell_name.strip("\\$"))
             reg_name = "__loom_reg_" + self.legal_identifier(cell_name)
             self.registers[tuple(q)] = reg_name
-            self.register_equivalence.append({
-                "original": original_name, "loom": reg_name, "width": len(q)})
+            self.register_originals[tuple(q)] = original_name
             clock_domains.add((tuple(connections.get("CLK", [])),
                                bool(decode_parameter(params.get("CLK_POLARITY"), 1))))
             if kind.startswith("$adff"):
@@ -999,12 +1022,17 @@ class ModuleTranslator:
                 next_value = {"kind": "mux", "width": width, "condition": enable,
                               "yes": next_value, "no": signal(width, name, src),
                               "source": src}
+            register_domain = (domain_names[(tuple(connections.get("CLK", [])),
+                                             bool(decode_parameter(
+                                                 params.get("CLK_POLARITY"), 1)))]
+                               if len(ordered_domains) > 1 else None)
             registers.append({"name": name, "width": width, "init": 0,
-                              "next": next_value,
-                              "domain": (domain_names[(tuple(connections.get("CLK", [])),
-                                                        bool(decode_parameter(params.get("CLK_POLARITY"), 1)))]
-                                         if len(ordered_domains) > 1 else None),
+                              "next": next_value, "domain": register_domain,
                               "source": src})
+            original, original_offset = self.register_originals[tuple(q)]
+            self.register_equivalence.append({
+                "original": original, "original_offset": original_offset,
+                "loom": name, "width": width, "domain": register_domain})
 
         instances = []
         for cell_name, cell in self.cells.items():
