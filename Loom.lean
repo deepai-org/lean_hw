@@ -34,6 +34,7 @@ import Loom.Hw.ComponentHierarchy
 import Loom.Hw.ExternalComponent
 import Loom.Hw.Stateless
 import Loom.Hw.ImportIR
+import Loom.Hw.ImportHierarchy
 import Loom.Hw.ImportJson
 import Loom.Hw.HierarchyEmit
 import Loom.Hw.Signoff

@@ -10,10 +10,12 @@ result to exact artifact hashes.
 1. **Inventory PASS** means Yosys elaborated and classified the exact hashed
    sources, includes, defines, and selected top. Yosys and the inventory
    adapter remain untrusted.
-2. **Neutral import accepted** means Loom parsed the JSON boundary and checked
-   that every represented width, source location, clock/reset contract, and
-   expression can lower to an ordinary `Loom.Hw.Design`. Unsupported
-   constructs stop lowering.
+2. **Neutral import accepted** means the adapter represented every encountered
+   construct without a declared blocker. Loom then parses and checks the
+   artifact before emission. For a schema-v2 package this includes exact child
+   existence, input coverage, port directions and widths, unique drivers,
+   hierarchy acyclicity, and exact bottom-up combinational dependency cycles.
+   Unsupported constructs stop behavioral lowering.
 3. **Loom compiler proof** connects the lowered `Design` transition to the
    emitted µVerilog AST. Clock edge, physical clock/reset names, and
    synchronous-reset polarity are explicit emission metadata; the compiler
@@ -60,6 +62,29 @@ python3 scripts/rtl_equivalence.py \
 fixture and verifies that an intentionally inequivalent fixture reports
 `FAIL`.
 
+For a closed elaborated hierarchy, use the package path:
+
+```console
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json build/my_soc.yosys.json \
+  --inventory build/my_soc.inventory.json \
+  --package-top my_soc --output build/my_soc.package.import.json
+
+lake exe checkImportPackage build/my_soc.package.import.json
+lake exe importPackage \
+  build/my_soc.package.import.json build/my_soc.loom.v
+```
+
+Schema-v2 stores each module's expressions as a shared postorder table rather
+than recursively duplicating its expression DAG. This keeps wide SoC package
+artifacts bounded and makes every reference fail closed if it is forward or
+out of range. The package emitter gives arbitrary child-input expressions to
+a checked Loom body output and represents child outputs as unique body-input
+nets. It emits deterministic source-module wrappers and HDL-safe names for
+Yosys parameter specializations. Both stateless and stateful hierarchy
+fixtures pass original-vs-emitted RTL equivalence; the equivalence adapter
+flattens each selected top before constructing the miter.
+
 `scripts/import_coverage.py` runs the same fail-closed translator over every
 module in one identified elaborated artifact while loading that artifact only
 once. Its `ACCEPTED` count is a conversion-progress metric, not an equivalence
@@ -73,9 +98,11 @@ SHA-256 digest, exact invocation, tool version, and assumptions.
 The neutral IR is in `Loom/Hw/ImportIR.lean`; its JSON parser is in
 `Loom/Hw/ImportJson.lean`. It preserves source modules and child instances.
 `lowerLocalDesign?` lowers module-owned logic into the normal `Design` graph;
-`lowerComponent?` creates the checked component boundary. Structural top
-wrappers over exact child module artifacts are validated and rendered by
-`Loom/Hw/HierarchyEmit.lean`.
+`lowerComponent?` creates the checked component boundary. Checked package
+assembly is in `Loom/Hw/ImportHierarchy.lean`; structural wrappers are
+validated and rendered by `Loom/Hw/HierarchyEmit.lean`. The single-module CLI
+explicitly refuses a module containing children, so it cannot emit dangling
+symbolic nets while bypassing package checking.
 
 Modules with no clock domains lower through `lowerStatelessDesign?` into the
 same ordinary expression graph plus an executable no-state witness. Their
@@ -99,9 +126,11 @@ basic width-normalized combinational subset. It currently blocks:
 - a module containing more than one clock/edge or reset domain.
 
 Child instances remain in the neutral module and are not silently flattened
-into local logic. Hierarchy emission is structural external evidence; it does
-not yet claim a general kernel theorem equating an arbitrary rendered wrapper
-with canonical flattening.
+into local logic. The package checker derives exact child input-to-output
+combinational summaries bottom-up, so registered-only feedback is accepted
+without permitting combinational cycles. Hierarchy emission remains structural
+external evidence; it does not yet claim a general kernel theorem equating an
+arbitrary rendered wrapper with canonical flattening.
 
 ## KianV inventory
 
@@ -116,9 +145,15 @@ The checked-in Markdown/JSON reports identify the `chip_core` configuration,
 all source hashes, 74 reachable elaborated modules, rising/falling edge use,
 reset cells, six memory-bearing modules, latches, instances, and structural
 precheck blockers. `Evidence/KianV/import_coverage.md` separately records the
-actual fail-closed translator result: currently 18 of 74 modules are accepted.
+actual fail-closed translator result: currently 37 of 74 modules are accepted.
 `Evidence/KianV/elaborated.json` is the exact hash-matched Yosys input for
 per-module neutral translation; it is evidence, not a trusted Loom artifact.
+
+The complete 74-module schema-v2 KianV package also serializes successfully as
+a 17 MiB expression-DAG artifact and passes the trusted structural package
+checker (74 modules, 134 child instances, 45,366 expression nodes). This does
+not make the package behaviorally importable: 37 modules still declare at
+least one blocker, so `importPackage` correctly cannot emit the complete SoC.
 
 Do not describe KianV as converted until every required reachable module has
 an accepted import and a per-module equivalence `PASS`, hierarchy has been

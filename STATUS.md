@@ -9,10 +9,10 @@ machine and board specifications.
 
 | Check | Current result | Notes |
 |---|---|---|
-| `lake build` | **PASS** | Rechecked on 2026-08-17; the complete 8,329-job build passed with existing warnings. |
-| `lake exe audit` | **PASS** | Rechecked on 2026-08-17; reports 1,061 clean ledger theorems, 32 inventoried unsafe declarations, 6 reviewed `implemented_by` replacements, 0 source `partial`, and 0 `extern`. The sixth is the untrusted Kahn-order proposal whose result is accepted only by the transparent structural checker. |
-| `lake test` | **PASS** | Rechecked on 2026-08-18; the complete 8,284-job graph passed, including compositional island-certificate reuse, explicit System observations, the contract-bound external-island seam, sibling-order gates, and isolated nominal-domain compile-failure regressions. |
-| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-18, including the no-handwritten-certified-CDC gate. |
+| `lake build` | **PASS** | Rechecked on 2026-08-20; the complete 8,337-job build passed with existing warnings. |
+| `lake exe audit` | **PASS** | Rechecked on 2026-08-20; reports 32 inventoried unsafe declarations, 6 reviewed `implemented_by` replacements, 0 source `partial`, and 0 `extern`. The sixth is the untrusted Kahn-order proposal whose result is accepted only by the transparent structural checker. |
+| `lake test` | **PASS** | Rechecked on 2026-08-20; the complete 8,295-job graph passed, including the hierarchy package import regressions. |
+| `scripts/quality.sh` | **PASS** | Rechecked on 2026-08-20, including the no-handwritten-certified-CDC gate. |
 | `lake exe releaseAudit` | **PASS** | Rechecked on 2026-08-12 under a 24 GiB/no-swap cgroup; the combined and standalone multiclock release theorems have exactly `propext`, `Classical.choice`, and `Quot.sound`. Peak resident memory was 21.4 GiB. |
 | certified multiclock emission | **PASS** | Re-emitted byte-identically on 2026-08-12; Icarus accepted `rtl/certified_multiclock/system.v` as a syntax/elaboration smoke check. |
 | `scripts/emit_all.sh --check` | **PASS** | Rechecked on 2026-08-17; all 27 emitted artifacts matched a fresh emission. |
@@ -38,15 +38,27 @@ mux trees. First-class stateless components emit without synthetic clock/reset
 ports and bind into any typed domain without acquiring state. Focused
 original-vs-emitted sequential and combinational equivalence fixtures pass.
 
-For the exact checked-in KianV elaboration, 18 of 74 modules currently produce
-accepted neutral import IR; 56 remain blocked. The dominant explicit blockers
-are unchecked child-instance output binding (30 modules), four-state constants
-(28), and remaining Yosys cells (21), with memories, nonuniform/resetless
-state, four-state variable part-selects, and the mixed-edge SDRAM controller also
-remaining. [`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md)
+Schema-v2 closed hierarchy packages now carry exact child-input expressions
+and unique child-output nets in a shared expression-DAG encoding. The trusted
+checker validates every child and input binding, width/direction, driver,
+module-instantiation DAG, and exact bottom-up combinational dependency cycle.
+Checked structural wrapper/body emission handles both stateless and stateful
+children; both original-vs-emitted hierarchy equivalence fixtures pass.
+Single-module emission refuses hierarchical modules instead of leaving child
+nets dangling.
+
+For the exact checked-in KianV elaboration, 37 of 74 modules currently produce
+accepted neutral import IR; 37 remain blocked. Child-instance binding is no
+longer a blocker. The dominant explicit blockers are four-state constants
+(29 modules) and `$shiftx` cells (5), with memories, nonuniform or
+resetless state, and the mixed-edge SDRAM controller also remaining. The full
+74-module/134-instance structural package serializes to a 17 MiB DAG artifact
+and passes the trusted package checker; behavioral package emission still
+fails closed on the declared module blockers.
+[`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md)
 is the generated acceptance report. Acceptance is not equivalence or signoff;
 full conversion still requires per-module equivalence PASS and checked
-hierarchy assembly.
+complete-package emission/equivalence closure.
 
 ### Multiclock execution-projection gate
 

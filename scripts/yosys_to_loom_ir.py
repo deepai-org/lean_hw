@@ -206,6 +206,15 @@ class ModuleTranslator:
                  if tuple(net.get("bits", [])) == target and not name.startswith("$")]
         return sorted(names, key=lambda item: (len(item), item))[0] if names else fallback
 
+    @staticmethod
+    def legal_identifier(name: str) -> str:
+        """Injectively encode arbitrary UTF-8 Yosys names as HDL identifiers."""
+        return "_h" + name.encode("utf-8").hex()
+
+    def instance_net(self, cell_name: str, port: str) -> str:
+        return ("__loom_child_" + self.legal_identifier(cell_name) +
+                "__" + self.legal_identifier(port))
+
     def block(self, kind: str, detail: str, src: str | dict[str, Any]) -> None:
         source = src if isinstance(src, dict) else location(src, self.module_source["file"])
         record = {"kind": kind, "detail": detail, "source": source}
@@ -292,10 +301,7 @@ class ModuleTranslator:
             name = self.registers.get(tuple(bits), self.public_name(bits, cell_name.strip("\\$")))
             result = signal(width, name, src)
         elif kind in self.modules:
-            self.block("instance_output_binding",
-                       f"child instance output {cell_name}.{port} requires a checked hierarchy net",
-                       src)
-            result = literal(max(width, 1), 0, src)
+            result = signal(max(width, 1), self.instance_net(cell_name, port), src)
         elif kind.startswith("$mem"):
             self.block("memory_cell", f"memory cell {kind} requires memory lowering", src)
             result = literal(max(width, 1), 0, src)
@@ -467,20 +473,35 @@ class ModuleTranslator:
                                cell.get("attributes", {}).get("src", ""))
                 continue
             src = location(cell.get("attributes", {}).get("src", ""), self.module_source["file"])
+            directions = cell.get("port_directions", {})
+            if cell.get("parameters"):
+                self.block("unelaborated_instance_parameter",
+                           f"child instance {cell_name} retains parameter overrides", src)
+            for port, bits in cell.get("connections", {}).items():
+                if directions.get(port) == "input" and not bits:
+                    self.block("unconnected_instance_input",
+                               f"child input {cell_name}.{port} is unconnected", src)
             instances.append({
                 "name": cell_name, "module_name": kind,
                 "parameters": [{"name": name, "value": str(value)}
                                for name, value in sorted(cell.get("parameters", {}).items())],
                 "connections": [
-                    {"port": port, "signal": self.public_name(bits, f"{cell_name}_{port}"),
-                     "width": len(bits), "source": src}
+                    {"port": port, "direction": directions.get(port, "unknown"),
+                     "signal": self.instance_net(cell_name, port),
+                     "width": len(bits),
+                     "value": self.expr(bits, src)
+                        if directions.get(port) == "input" else None,
+                     "source": src}
                     for port, bits in sorted(cell.get("connections", {}).items())
+                    if bits or directions.get(port) != "output"
                 ], "source": src,
             })
 
         for cell in self.cells.values():
             kind = cell.get("type", "")
-            if kind.startswith("$") and kind not in SEQUENTIAL and kind not in SUPPORTED_COMB and not kind.startswith("$mem"):
+            if (kind.startswith("$") and kind not in self.modules and
+                    kind not in SEQUENTIAL and kind not in SUPPORTED_COMB and
+                    not kind.startswith("$mem")):
                 self.block("yosys_cell", f"unsupported cell type {kind}",
                            cell.get("attributes", {}).get("src", ""))
 
@@ -533,11 +554,91 @@ class ModuleTranslator:
                 "source": self.module_source}
 
 
+EXPRESSION_KINDS = {
+    "literal", "signal", "unary", "binary", "mux", "slice",
+    "zero_extend", "sign_extend", "concat", "memory_read",
+}
+
+
+def encode_module_expression_dag(module: dict[str, Any]) -> dict[str, Any]:
+    """Replace recursive expression trees with a shared postorder table.
+
+    The adapter caches cell expressions, so the semantic representation is a
+    DAG. Encoding it as ordinary recursive JSON duplicates shared cones and
+    becomes exponential on wide SoC modules.
+    """
+    expressions: list[dict[str, Any]] = []
+    ids: dict[int, int] = {}
+
+    def intern(expression: dict[str, Any]) -> int:
+        identity = id(expression)
+        if identity in ids:
+            return ids[identity]
+        kind = expression.get("kind")
+        if kind not in EXPRESSION_KINDS:
+            raise ValueError(f"not an import expression: {kind!r}")
+        node = dict(expression)
+        if kind == "unary":
+            node["value"] = intern(expression["value"])
+        elif kind == "binary":
+            node["left"] = intern(expression["left"])
+            node["right"] = intern(expression["right"])
+        elif kind == "mux":
+            node["condition"] = intern(expression["condition"])
+            node["yes"] = intern(expression["yes"])
+            node["no"] = intern(expression["no"])
+        elif kind in ("slice", "zero_extend", "sign_extend"):
+            node["value"] = intern(expression["value"])
+        elif kind == "concat":
+            node["high"] = intern(expression["high"])
+            node["low"] = intern(expression["low"])
+        elif kind == "memory_read":
+            node["address"] = intern(expression["address"])
+        expression_id = len(expressions)
+        ids[identity] = expression_id
+        expressions.append(node)
+        return expression_id
+
+    encoded = dict(module)
+    encoded["registers"] = [
+        {**register, "next": intern(register["next"])}
+        for register in module["registers"]
+    ]
+    encoded["memories"] = [
+        {**memory, "writes": [
+            {**write, "enable": intern(write["enable"]),
+             "address": intern(write["address"]), "data": intern(write["data"])}
+            for write in memory["writes"]
+        ]}
+        for memory in module["memories"]
+    ]
+    encoded["outputs"] = [
+        {**output, "value": intern(output["value"])}
+        for output in module["outputs"]
+    ]
+    encoded["instances"] = [
+        {**instance, "connections": [
+            {**connection,
+             "value": (intern(connection["value"])
+                       if connection["value"] is not None else None)}
+            for connection in instance["connections"]
+        ]}
+        for instance in module["instances"]
+    ]
+    encoded["expressions"] = expressions
+    return encoded
+
+
 def main() -> int:
+    # Wide Yosys vectors can become exact, deeply nested concat trees. Python's
+    # default JSON recursion limit is too small for real SoC packages.
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 100_000))
     parser = argparse.ArgumentParser()
     parser.add_argument("--yosys-json", type=pathlib.Path, required=True)
     parser.add_argument("--inventory", type=pathlib.Path, required=True)
-    parser.add_argument("--module", required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--module")
+    selection.add_argument("--package-top")
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--manifest-output", type=pathlib.Path)
     args = parser.parse_args()
@@ -551,25 +652,40 @@ def main() -> int:
         raise SystemExit(f"elaborated JSON identity mismatch: inventory={expected} actual={actual}")
     design = json.loads(yosys_bytes)
     modules = design.get("modules", {})
-    if args.module not in modules:
-        raise SystemExit(f"module not found in elaborated design: {args.module}")
-    translated = ModuleTranslator(args.module, modules[args.module], modules).translate()
-    report = {
-        "schema": 1,
-        "frontend": {
-            "name": "yosys-json",
-            "version": inventory.get("frontend", {}).get("tool", "unknown"),
-            "source_set_sha256": inventory.get("source_set_sha256", ""),
-            "inventory_sha256": sha256(inventory_bytes),
-            "elaborated_sha256": actual,
-            "assumptions": [
-                "Yosys correctly parsed and elaborated the identified RTL",
-                "this adapter correctly translated supported Yosys cells",
-                "original-vs-emitted formal equivalence remains required",
-            ],
-        },
-        "module": translated,
+    selected_top = args.module or args.package_top
+    if selected_top not in modules:
+        raise SystemExit(f"module not found in elaborated design: {selected_top}")
+    common_frontend = {
+        "name": "yosys-json",
+        "version": inventory.get("frontend", {}).get("tool", "unknown"),
+        "source_set_sha256": inventory.get("source_set_sha256", ""),
+        "inventory_sha256": sha256(inventory_bytes),
+        "elaborated_sha256": actual,
+        "assumptions": [
+            "Yosys correctly parsed and elaborated the identified RTL",
+            "this adapter correctly translated supported Yosys cells",
+            "original-vs-emitted formal equivalence remains required",
+        ],
     }
+    if args.module:
+        translated = ModuleTranslator(args.module, modules[args.module], modules).translate()
+        translated_modules = [translated]
+        report = {"schema": 1, "frontend": common_frontend, "module": translated}
+    else:
+        translated_modules = []
+        for name, module in sorted(modules.items()):
+            translated = ModuleTranslator(name, module, modules).translate()
+            translated_modules.append(encode_module_expression_dag(translated))
+        report = {
+            "schema": 2,
+            "frontend": common_frontend,
+            "package": {
+                "top": args.package_top,
+                "modules": translated_modules,
+                "source": location(
+                    modules[args.package_top].get("attributes", {}).get("src", "")),
+            },
+        }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     manifest_path = args.manifest_output or pathlib.Path(str(args.output) + ".manifest.json")
@@ -586,7 +702,7 @@ def main() -> int:
         })
     manifest = {
         "schema": 1,
-        "module": args.module,
+        "module": selected_top,
         "frontend": "scripts/yosys_to_loom_ir.py",
         "version": inventory.get("frontend", {}).get("tool", "unknown"),
         "invocation": sys.argv,
@@ -599,13 +715,15 @@ def main() -> int:
              "sha256": sha256(args.output.read_bytes()),
              "bytes": args.output.stat().st_size},
         ],
-        "assumptions": report["frontend"]["assumptions"],
+        "assumptions": common_frontend["assumptions"],
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    status = "PASS" if not translated["unsupported"] else "BLOCKED"
-    print(f"YOSYS_TO_LOOM_IR_{status} module={args.module} "
-          f"unsupported={len(translated['unsupported'])} sha256={sha256(args.output.read_bytes())} "
+    unsupported_count = sum(len(module["unsupported"]) for module in translated_modules)
+    status = "PASS" if unsupported_count == 0 else "BLOCKED"
+    kind = "module" if args.module else "package"
+    print(f"YOSYS_TO_LOOM_IR_{status} {kind}={selected_top} "
+          f"unsupported={unsupported_count} sha256={sha256(args.output.read_bytes())} "
           f"manifest={manifest_path}")
     return 0 if status == "PASS" else 2
 

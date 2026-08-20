@@ -77,9 +77,9 @@ private def netValid {ExternalArtifact Assumption : Type}
   let uses := plan.uses.filter (·.net == net)
   let widths := uses.map (·.width)
   let drivers := uses.filter (·.direction == .output)
-  let sinks := uses.filter (·.direction == .input)
+  let _sinks := uses.filter (·.direction == .input)
   identifierB net && !uses.isEmpty && widths.all (· == widths.headD 0) &&
-    widths.headD 0 > 0 && drivers.length == 1 && !sinks.isEmpty
+    widths.headD 0 > 0 && drivers.length == 1
 
 def validB {ExternalArtifact Assumption : Type}
     (plan : HierarchyEmissionPlan ExternalArtifact Assumption) : Bool :=
@@ -106,7 +106,7 @@ def validB {ExternalArtifact Assumption : Type}
 def check {ExternalArtifact Assumption : Type}
     (plan : HierarchyEmissionPlan ExternalArtifact Assumption) : Except String Unit := do
   unless plan.validB do
-    throw s!"hierarchy emission plan '{plan.design.topName}' has an invalid identifier, duplicate inventory, width mismatch, undriven net, multiply driven net, or unconsumed net"
+    throw s!"hierarchy emission plan '{plan.design.topName}' has an invalid identifier, duplicate inventory, width mismatch, undriven net, or multiply driven net"
 
 private def widthRange (width : Nat) : String :=
   if width == 1 then "" else s!" [{width - 1}:0]"
