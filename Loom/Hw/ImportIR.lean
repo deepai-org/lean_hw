@@ -374,7 +374,12 @@ private def summarizeLoop : Nat → List Module →
               (findSummary? summaries inst.moduleName).isSome with
         | none => none
         | some module =>
-            summarizeLoop fuel (remaining.erase module)
+            -- Package module names are required unique by `validB`; remove the
+            -- completed node by that key instead of invoking the derived
+            -- structural equality over its potentially very large expression
+            -- DAG.  The latter made hierarchy checking proportional to RTL
+            -- contents even though only inventory identity matters here.
+            summarizeLoop fuel (remaining.filter (·.name != module.name))
               (summaries ++ [summarizeModule summaries module])
 
 private def boundarySummaries? (package : Package) :
@@ -761,8 +766,38 @@ and outputs frequently point into the same Yosys expression DAG; restarting a
 cache at each root recreates that DAG many times even when each root is itself
 linear-time. -/
 private unsafe def lowerExprsImpl (expressions : List Expr) :
-    Except String (List LoweredExpr) :=
-  (expressions.mapM lowerExprMemoGo).run' {}
+    Except String (List LoweredExpr) := do
+  -- An ordinary recursive StateT walk still retains one dependent monadic
+  -- continuation per source-DAG level.  Large generated mux/memory cones can
+  -- therefore consume far more heap than their node count suggests even when
+  -- every node result is memoized.  Visit the same cases in explicit
+  -- postorder: once a node's children are cached, `lowerExprMemoGo` performs
+  -- exactly one shallow lowering step and returns immediately on each child.
+  let children : Expr → List Expr
+    | .literal .. | .partialLiteral .. | .signal .. => []
+    | .unary _ _ value _ | .slice _ value _ _ |
+        .zeroExtend _ value _ | .signExtend _ value _ => [value]
+    | .binary _ _ left right _ | .concat _ left right _ => [left, right]
+    | .mux _ condition yes no _ => [condition, yes, no]
+    | .memoryRead _ _ address _ => [address]
+  let mut cache : Std.HashMap USize LoweredExpr := {}
+  let mut work := expressions.map (·, false)
+  while !work.isEmpty do
+    let some (expression, expanded) := work.head?
+      | throw "internal expression worklist mismatch"
+    work := work.tail
+    let key := ptrAddrUnsafe expression
+    unless cache.contains key do
+      if expanded then
+        let (lowered, nextCache) ← (lowerExprMemoGo expression).run cache
+        cache := nextCache.insert key lowered
+      else
+        work := (children expression).map (·, false) ++
+          (expression, true) :: work
+  expressions.mapM fun expression =>
+    match cache.get? (ptrAddrUnsafe expression) with
+    | some lowered => pure lowered
+    | none => throw "internal lowered-expression cache mismatch"
 
 attribute [implemented_by lowerExprsImpl] lowerExprs?
 

@@ -191,6 +191,16 @@ arbitrary rendered wrapper with canonical flattening.
 With the sibling KianV checkout used by this workspace:
 
 ```console
+scripts/convert_kianv.sh \
+  ../kianv/gf180mcu-kianv-rv32ima-sv32 build/kianv-conversion
+```
+
+This regenerates the inventory and exact-site four-state policy, checks and
+emits the complete package, runs an Icarus elaboration smoke check when
+available, and writes hashes for the neutral package, manifest, and emitted
+RTL. To regenerate only the checked-in inventory reports:
+
+```console
 scripts/inventory_kianv.sh \
   ../kianv/gf180mcu-kianv-rv32ima-sv32 Evidence/KianV
 ```
@@ -211,20 +221,31 @@ The unrefined report remains checked
 in separately so policy-dependent progress is never confused with ordinary
 two-state acceptance.
 
-The regenerated complete schema-v2 package contains all 74 reachable modules
-and passes `checkImportPackage`. A focused package for the parameterized SDRAM
-controller also emits successfully with separate falling- and rising-edge
-state bodies. These are import and structural-emission results, not a blanket
-equivalence claim. On the current host, a complete behavioral `importPackage`
-run remains an open gate. The bottleneck is isolated to the reachable
-associative-cache specialization: five masked memories become 63 one-bit
-memories with 68 ports each (4,284 write ports). Batch DAG lowering and a
-canonical guarded-port compiler path remove repeated tree and action rescans,
-but the focused two-module package still exceeded 10 minutes and about 60 GB
-RSS without producing an artifact. This is evidence that KianV needs a native
-masked-word memory representation or an equivalence-checked compact
-implementation contract; neither the interrupted stress run nor the trusted
-structural PASS is a complete emission PASS.
+The regenerated complete schema-v2 package contains all 74 reachable modules,
+passes `checkImportPackage`, and emits all 150 wrapper/body artifacts. On the
+current host the complete emission takes 0.67 seconds with about 241 MiB peak
+RSS, and Icarus accepts the result as a complete `chip_core` syntax/elaboration
+smoke check. Yosys per-bit write enables are represented exactly with ordinary
+Loom word memories: each complete-word port value folds every earlier enabled
+same-address mask, while provably distinct literal-address writes commute and
+are grouped. The associative-cache specialization is consequently five word
+memories with 180 logical writes, rather than the former 63 one-bit memories
+and 4,284 ports. An iterative postorder executable lowering visits the neutral
+DAG without retaining a dependent recursive `StateT` continuation per level.
+Imported state names are injectively HDL-encoded and the neutral artifact
+records each original-to-Loom register and memory correspondence. Internal
+clock aliases select the exact matching input port at the module boundary.
+These are complete import and structural-emission results, not a blanket
+equivalence claim.
+
+The GF180 512x8 SRAM is deliberately not converted into generic gates.
+`Evidence.KianV.Gf180Sram.specification` gives its active-low masked,
+synchronous old-data-read `ExternalComponent` contract. The accompanying
+`Evidence/KianV/gf180_sram_external.json` binds the exact KianV wrapper, GDS,
+LEF, blackbox, and all eight configured Liberty corners. The conversion
+wrapper runs `scripts/verify_kianv_sram_external.py` and fails on a checkout,
+size, or SHA-256 mismatch. Behavioral equivalence from those external bytes
+to the contract remains a named signoff premise rather than a kernel theorem.
 
 Do not describe KianV as converted until every required reachable module has
 an accepted import and a per-module equivalence `PASS`, hierarchy has been
