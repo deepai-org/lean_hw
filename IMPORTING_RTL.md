@@ -111,6 +111,28 @@ checked parser, and emission has no clock/reset ports or event-control block.
 `StatelessComponent.bind?` assigns nominal typed-domain ownership to the pins
 without assigning any state element to that domain.
 
+## Explicit four-state refinement
+
+Ordinary Loom expressions are two-state. A source `x` or `z` therefore never
+gets silently mapped to zero. Supply `--four-state-policy policy.json` to opt
+into an implementation refinement. Every matching rule records a stable
+`four_state_...` site identifier, source/module range, one of
+`synthesis_dont_care`, `unreachable_decode`, `undriven_behavior`, or
+`uninitialized_state_or_memory`, a zero/one fill, and a nonempty rationale.
+Missing and multiply matching rules fail closed. The policy itself is included
+as a hash-bound manifest artifact.
+
+The trusted neutral-IR checker verifies that the chosen concrete value agrees
+with every source-known bit before lowering it to an ordinary literal. For
+external evidence, `scripts/rtl_equivalence.py --undef-policy zero|one`
+applies the same named concretization to both sides. Such a PASS is evidence
+for that declared implementation refinement, not unrestricted four-state RTL
+equivalence. The focused fixture covers unclassified rejection, ambiguous
+policy rejection, trusted known-bit checking, emission, and equivalence under
+the selected policy. Generated Yosys `0.0-0.0` locations are represented as a
+synthetic valid line 1; their stable site identifiers retain exact policy
+selection.
+
 ## Current fail-closed limits
 
 The first Yosys adapter handles one synchronous clock domain, either edge,
@@ -120,7 +142,7 @@ basic width-normalized combinational subset. It currently blocks:
 - asynchronous reset state, including async-assert/sync-release boundaries
   (keep these behind an `ExternalComponent` reset contract);
 - resetless or mixed-reset state, enable-dominant synchronous-reset flops,
-  inferred memories, four-state/unknown values, and latches;
+  inferred memories and latches;
 - inout/tri-state ports and black boxes without explicit external contracts;
 - four-state variable part-select (`$shiftx`) cells; and
 - a module containing more than one clock/edge or reset domain.

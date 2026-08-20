@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "name": "fixture_overlapping_rule_a",
+      "site": "four_state_e8939212baf3afffa049cc56",
+      "module": "import_four_state",
+      "file": "Tests/fixtures/import_four_state.v",
+      "line_start": 1,
+      "line_end": 6,
+      "classification": "synthesis_dont_care",
+      "fill": "zero",
+      "rationale": "First deliberately overlapping rule for the fail-closed ambiguity test."
+    },
+    {
+      "name": "fixture_overlapping_rule_b",
+      "site": "four_state_e8939212baf3afffa049cc56",
+      "module": "import_four_state",
+      "file": "Tests/fixtures/import_four_state.v",
+      "line_start": 1,
+      "line_end": 6,
+      "classification": "synthesis_dont_care",
+      "fill": "one",
+      "rationale": "Second deliberately overlapping rule for the fail-closed ambiguity test."
+    }
+  ]
+}

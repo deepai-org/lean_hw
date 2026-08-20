@@ -99,11 +99,53 @@ inductive BinaryOp where
   | signedLessThan
   deriving Repr, DecidableEq, BEq
 
+/-- Why a four-state source value may be refined to concrete two-state RTL. -/
+inductive PartialValueClass where
+  | synthesisDontCare
+  | unreachableDecode
+  | undrivenBehavior
+  | uninitializedStateOrMemory
+  deriving Repr, DecidableEq, BEq
+
+/-- One explicit implementation choice for a partially specified source
+constant. `knownMask` selects source-known bits. -/
+structure PartialValue where
+  site : String
+  classification : PartialValueClass
+  knownMask : Nat
+  knownValue : Nat
+  implementationValue : Nat
+  rationale : String
+  deriving Repr, DecidableEq
+
+namespace PartialValue
+
+def allowedB (choice : PartialValue) (width candidate : Nat) : Bool :=
+  candidate < 2 ^ width &&
+    (candidate &&& choice.knownMask) ==
+      (choice.knownValue &&& choice.knownMask)
+
+def validB (choice : PartialValue) (width : Nat) : Bool :=
+  (!choice.site.isEmpty && !choice.rationale.isEmpty && width > 0 &&
+    choice.knownMask < 2 ^ width && choice.knownValue < 2 ^ width) &&
+    choice.allowedB width choice.implementationValue
+
+/-- A checked implementation is a member of the set of concrete values
+allowed by the source-known bits. -/
+theorem implementation_allowed {choice : PartialValue} {width : Nat}
+    (valid : choice.validB width = true) :
+    choice.allowedB width choice.implementationValue = true := by
+  exact (Bool.and_eq_true_iff.mp valid).2
+
+end PartialValue
+
 /-- Widths remain explicit at the import boundary.  This is intentionally a
 first-order serializable tree rather than Lean's intrinsically indexed
 `Hw.Expr`; `lowerExpr?` is the checked dependent-typing boundary. -/
 inductive Expr where
   | literal (width value : Nat) (source : SourceLocation)
+  | partialLiteral (width : Nat) (choice : PartialValue)
+      (source : SourceLocation)
   | signal (width : Nat) (name : String) (source : SourceLocation)
   | unary (width : Nat) (op : UnaryOp) (value : Expr) (source : SourceLocation)
   | binary (width : Nat) (op : BinaryOp) (left right : Expr)
@@ -120,13 +162,15 @@ inductive Expr where
 namespace Expr
 
 def width : Expr → Nat
-  | .literal width .. | .signal width .. | .unary width ..
+  | .literal width .. | .partialLiteral width .. |
+      .signal width .. | .unary width ..
   | .binary width .. | .mux width .. | .slice width ..
   | .zeroExtend width .. | .signExtend width .. | .concat width ..
   | .memoryRead width .. => width
 
 def source : Expr → SourceLocation
-  | .literal _ _ source | .signal _ _ source | .unary _ _ _ source
+  | .literal _ _ source | .partialLiteral _ _ source |
+      .signal _ _ source | .unary _ _ _ source
   | .binary _ _ _ _ source | .mux _ _ _ _ source | .slice _ _ _ source
   | .zeroExtend _ _ source | .signExtend _ _ source | .concat _ _ _ source
   | .memoryRead _ _ _ source => source
@@ -218,7 +262,7 @@ namespace Expr
 /-- Signal leaves used by a parent-side binding expression. Duplicates are
 irrelevant to dependency checking and are removed deterministically. -/
 def signals : Expr → List String
-  | .literal .. => []
+  | .literal .. | .partialLiteral .. => []
   | .signal _ name _ => [name]
   | .unary _ _ value _ | .slice _ value _ _ |
       .zeroExtend _ value _ | .signExtend _ value _ => value.signals
@@ -425,6 +469,10 @@ private def lowerExpr? : Expr → Except String LoweredExpr
   | .literal width value source => do
       if width == 0 then failAt source "zero-width literal"
       return ⟨width, .lit (BitVec.ofNat width value)⟩
+  | .partialLiteral width choice source => do
+      unless choice.validB width do
+        failAt source s!"partial value site '{choice.site}' has an invalid or non-refining implementation choice"
+      return ⟨width, .lit (BitVec.ofNat width choice.implementationValue)⟩
   | .signal width name source => do
       if width == 0 || name.isEmpty then failAt source "invalid signal reference"
       return ⟨width, .reg width name⟩

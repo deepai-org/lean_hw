@@ -64,6 +64,7 @@ def write_report(args: argparse.Namespace, status: str, detail: str,
             {"name": f"assumption_{index + 1}", "statement": statement}
             for index, statement in enumerate(args.assumption)
         ],
+        "four_state_concretization": args.undef_policy,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -80,6 +81,7 @@ def main() -> int:
     parser.add_argument("--define", action="append", default=[])
     parser.add_argument("--assumption", action="append", default=[])
     parser.add_argument("--seq", type=int, default=12)
+    parser.add_argument("--undef-policy", choices=("zero", "one"))
     parser.add_argument("--yosys", default="yosys")
     parser.add_argument("--log", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
@@ -102,12 +104,15 @@ def main() -> int:
         "--gold-top", args.gold_top, "--revised-top", args.revised_top,
         "--seq", str(args.seq),
     ]
+    if args.undef_policy:
+        invocation += ["--undef-policy", args.undef_policy]
     identity = hashlib.sha256(json.dumps({
         "module": args.module_label,
         "inputs": inputs,
         "defines": args.define,
         "includes": [path.resolve().as_posix() for path in args.include],
         "seq": args.seq,
+        "undef_policy": args.undef_policy,
     }, sort_keys=True).encode()).hexdigest()
 
     args.log.parent.mkdir(parents=True, exist_ok=True)
@@ -130,15 +135,17 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="loom-rtl-equivalence-") as temp:
         script_path = pathlib.Path(temp) / "equivalence.ys"
+        concretize = ([f"setundef -{args.undef_policy}"]
+                      if args.undef_policy else [])
         script = "\n".join([
             f"read_verilog {' '.join(options)} {gold_files}",
             f"hierarchy -check -top {args.gold_top}",
-            "proc", "memory", "opt_clean", "flatten", "opt_clean",
+            "proc", *concretize, "memory", "opt_clean", "flatten", "opt_clean",
             f"rename {args.gold_top} loom_equiv_gold",
             "design -stash loom_gold_design",
             f"read_verilog {' '.join(options)} {revised_files}",
             f"hierarchy -check -top {args.revised_top}",
-            "proc", "memory", "opt_clean", "flatten", "opt_clean",
+            "proc", *concretize, "memory", "opt_clean", "flatten", "opt_clean",
             f"rename {args.revised_top} loom_equiv_revised",
             "design -stash loom_revised_design",
             "design -copy-from loom_gold_design -as loom_equiv_gold loom_equiv_gold",

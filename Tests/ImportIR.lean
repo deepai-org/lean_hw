@@ -123,6 +123,32 @@ private def unsupportedModule : ImportIR.Module :=
   | .error _ => true
   | .ok _ => false
 
+private def explicitPartial : PartialValue :=
+  { site := "fixture_partial"
+    classification := .synthesisDontCare
+    knownMask := 0xf0
+    knownValue := 0xa0
+    implementationValue := 0xa5
+    rationale := "low nibble is deliberately ignored by the fixture consumer" }
+
+#guard explicitPartial.validB 8
+#guard explicitPartial.allowedB 8 0xaf
+#guard !explicitPartial.allowedB 8 0x5f
+
+private def partialModule : ImportIR.Module :=
+  { statelessModule with
+    outputs := [⟨"q", 8, .partialLiteral 8 explicitPartial location, location⟩] }
+
+#guard match partialModule.lowerStatelessDesign? with
+  | .ok lowered => lowered.implementation.design.combOutputs.length == 1
+  | .error _ => false
+
+#guard match ({ partialModule with outputs :=
+    [⟨"q", 8, .partialLiteral 8
+      { explicitPartial with implementationValue := 0x55 } location, location⟩] }).lowerAny? with
+  | .error _ => true
+  | .ok _ => false
+
 private def hierarchyChild : ImportIR.Module where
   name := "hierarchy_child"
   source := location

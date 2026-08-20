@@ -105,12 +105,35 @@ private def parseBinaryOp (value : String) : Except String BinaryOp :=
   | "signed_less_than" => pure .signedLessThan
   | other => throw s!"unknown binary operation '{other}'"
 
+private def parsePartialValueClass (value : String) :
+    Except String PartialValueClass :=
+  match value with
+  | "synthesis_dont_care" => pure .synthesisDontCare
+  | "unreachable_decode" => pure .unreachableDecode
+  | "undriven_behavior" => pure .undrivenBehavior
+  | "uninitialized_state_or_memory" => pure .uninitializedStateOrMemory
+  | other => throw s!"unknown partial-value classification '{other}'"
+
+private def parsePartialValue (json : Json) : Except String PartialValue := do
+  let site ← stringField json "site"
+  let valueClass ←
+    parsePartialValueClass (← stringField json "classification")
+  let knownMask ← natField json "known_mask"
+  let knownValue ← natField json "known_value"
+  let implementationValue ← natField json "implementation_value"
+  let rationale ← stringField json "rationale"
+  return PartialValue.mk site valueClass knownMask knownValue
+    implementationValue rationale
+
 private partial def parseExpr (json : Json) : Except String ImportIR.Expr := do
   let kind ← stringField json "kind"
   let width ← natField json "width"
   let source ← parseLocation (← field json "source")
   match kind with
   | "literal" => return .literal width (← natField json "value") source
+  | "partial_literal" =>
+      return .partialLiteral width
+        (← parsePartialValue (← field json "partial")) source
   | "signal" => return .signal width (← stringField json "name") source
   | "unary" =>
       return .unary width (← parseUnaryOp (← stringField json "op"))
@@ -235,6 +258,9 @@ private def parseExprNode (known : Array ImportIR.Expr) (json : Json) :
   let source ← parseLocation (← field json "source")
   match kind with
   | "literal" => return .literal width (← natField json "value") source
+  | "partial_literal" =>
+      return .partialLiteral width
+        (← parsePartialValue (← field json "partial")) source
   | "signal" => return .signal width (← stringField json "name") source
   | "unary" =>
       return .unary width (← parseUnaryOp (← stringField json "op"))
