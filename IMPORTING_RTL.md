@@ -184,6 +184,12 @@ precheck blockers. `Evidence/KianV/import_coverage.md` separately records the
 actual fail-closed translator result: currently 37 of 74 modules are accepted.
 `Evidence/KianV/elaborated.json` is the exact hash-matched Yosys input for
 per-module neutral translation; it is evidence, not a trusted Loom artifact.
+`four_state_decisions.json` records 29 module-specific source-intent decisions;
+the exact-site expander produces 237 hash-bound rules in
+`four_state_policy.json`. With that policy, `import_coverage_policy.md` records
+56 accepted modules and 18 still blocked. The unrefined report remains checked
+in separately so policy-dependent progress is never confused with ordinary
+two-state acceptance.
 
 The complete 74-module schema-v2 KianV package also serializes successfully as
 a 17 MiB expression-DAG artifact and passes the trusted structural package

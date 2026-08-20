@@ -16,7 +16,7 @@ import json
 import pathlib
 from collections import Counter
 
-from yosys_to_loom_ir import ModuleTranslator
+from yosys_to_loom_ir import FourStatePolicy, ModuleTranslator
 
 
 def sha256(data: bytes) -> str:
@@ -41,6 +41,8 @@ def render_markdown(report: dict) -> str:
         "## Blocker classes",
         "",
     ]
+    if report.get("four_state_policy_sha256"):
+        lines.insert(10, f"- Four-state policy SHA-256: `{report['four_state_policy_sha256']}`")
     lines += [f"- `{kind}`: {count} module(s)" for kind, count in blockers.items()]
     sites = report.get("four_state_sites", [])
     if sites:
@@ -67,6 +69,7 @@ def main() -> int:
     parser.add_argument("--inventory", type=pathlib.Path, required=True)
     parser.add_argument("--json-out", type=pathlib.Path, required=True)
     parser.add_argument("--markdown-out", type=pathlib.Path, required=True)
+    parser.add_argument("--four-state-policy", type=pathlib.Path)
     args = parser.parse_args()
 
     yosys_bytes = args.yosys_json.read_bytes()
@@ -77,10 +80,14 @@ def main() -> int:
         raise SystemExit(
             f"elaborated JSON identity mismatch: inventory={expected} actual={actual}")
     modules = json.loads(yosys_bytes).get("modules", {})
+    policy_bytes = (args.four_state_policy.read_bytes()
+                    if args.four_state_policy else None)
+    policy = (FourStatePolicy(json.loads(policy_bytes))
+              if policy_bytes is not None else None)
     records = []
     blocker_modules: Counter[str] = Counter()
     for name, module in sorted(modules.items()):
-        translated = ModuleTranslator(name, module, modules).translate()
+        translated = ModuleTranslator(name, module, modules, policy).translate()
         kinds = sorted({item["kind"] for item in translated["unsupported"]})
         blocker_modules.update(kinds)
         records.append({
@@ -102,6 +109,8 @@ def main() -> int:
         "schema": 1,
         "elaborated_sha256": actual,
         "inventory_sha256": sha256(args.inventory.read_bytes()),
+        "four_state_policy_sha256": (sha256(policy_bytes)
+                                      if policy_bytes is not None else None),
         "summary": {
             "module_count": len(records),
             "accepted_modules": accepted,

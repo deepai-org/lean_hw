@@ -51,3 +51,16 @@ python3 scripts/import_coverage.py \
   --inventory "$output_dir/construct_inventory.json" \
   --json-out "$output_dir/import_coverage.json" \
   --markdown-out "$output_dir/import_coverage.md"
+
+if [[ -f "$output_dir/four_state_decisions.json" ]]; then
+  python3 scripts/expand_four_state_policy.py \
+    --coverage "$output_dir/import_coverage.json" \
+    --decisions "$output_dir/four_state_decisions.json" \
+    --output "$output_dir/four_state_policy.json"
+  python3 scripts/import_coverage.py \
+    --yosys-json "$output_dir/elaborated.json" \
+    --inventory "$output_dir/construct_inventory.json" \
+    --four-state-policy "$output_dir/four_state_policy.json" \
+    --json-out "$output_dir/import_coverage_policy.json" \
+    --markdown-out "$output_dir/import_coverage_policy.md"
+fi
