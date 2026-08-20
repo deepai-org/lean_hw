@@ -21,7 +21,8 @@ verified compiler, print with the verified printer, write the file.
 /-- Pure, reusable gate for every path that emits an ordinary `Design`.
 Keeping this separate from file IO prevents structural/system emitters from
 accidentally bypassing the checks enforced by `Design.emit`. -/
-def Loom.Hw.Design.emitCheck (d : Loom.Hw.Design) : Except String Unit := do
+private def Loom.Hw.Design.emitCheckCore (d : Loom.Hw.Design)
+    (readsAlreadyValidated : Bool) : Except String Unit := do
   let taken := d.regs.map (·.name) ++ d.mems.map (·.name)
   for i in d.inputs do
     if taken.contains i.name then
@@ -48,15 +49,31 @@ def Loom.Hw.Design.emitCheck (d : Loom.Hw.Design) : Except String Unit := do
       throw s!"Design.emit: syncReadMems names '{m}', which is not a declared memory of '{d.name}'"
     if !d.syncReadOkB m then
       throw s!"Design.emit: D19 — memory '{m}' of '{d.name}' is read outside a register-latch site, so it would emit as LUTRAM:\n{d.syncReadReport m}"
-  for (n, w) in d.badRegReads do
-    throw (d.badRegReadError n w)
-  for (m, dw) in d.badMemReads do
-    throw (d.badMemReadError m dw)
+  unless readsAlreadyValidated || d.readsOkB do
+    -- The lists retain their transparent footprint semantics and detailed
+    -- diagnostics. They are materialized only on failure; accepted shared
+    -- DAGs use the pointer-memoized Boolean implementation of `readsOkB`.
+    match d.badRegReads, d.badMemReads with
+    | (n, w) :: _, _ => throw (d.badRegReadError n w)
+    | _, (m, dw) :: _ => throw (d.badMemReadError m dw)
+    | _, _ => throw s!"Design.emit: design '{d.name}' failed its read-declaration check"
   if !Loom.Hw.Compile.designWFCheck d then
     throw s!"Design.emit: design '{d.name}' fails `Compile.designWFCheck` — a rule \
 writes a signal the design does not declare, two register or memory names \
 collide, or a memory's write-port indices do not strictly increase along the \
 design's write order."
+
+def Loom.Hw.Design.emitCheck (d : Loom.Hw.Design) : Except String Unit :=
+  d.emitCheckCore false
+
+/-- Import-only continuation of `emitCheck` after the neutral-IR checker has
+validated every source signal and memory read before constructing `d`.
+Generic callers must use `emitCheck`; this function is a named trust boundary,
+not an option to suppress W1.1. `ImportIR.lowerLocalDesign?` is its sole
+intended caller and external RTL equivalence remains required. -/
+def Loom.Hw.Design.emitCheckAfterImportReads (d : Loom.Hw.Design) :
+    Except String Unit :=
+  d.emitCheckCore true
 
 /-- Compile `d` with the verified compiler, print it with the verified
 printer, and write the result to `path` (creating parent directories).

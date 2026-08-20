@@ -216,10 +216,15 @@ and passes `checkImportPackage`. A focused package for the parameterized SDRAM
 controller also emits successfully with separate falling- and rising-edge
 state bodies. These are import and structural-emission results, not a blanket
 equivalence claim. On the current host, a complete behavioral `importPackage`
-run was stopped without a result after 30 minutes at roughly 17 GB resident
-memory. Treat whole-package lowering/printing scalability as an open gate;
-neither the interruption nor the trusted structural PASS is a complete
-emission PASS.
+run remains an open gate. The bottleneck is isolated to the reachable
+associative-cache specialization: five masked memories become 63 one-bit
+memories with 68 ports each (4,284 write ports). Batch DAG lowering and a
+canonical guarded-port compiler path remove repeated tree and action rescans,
+but the focused two-module package still exceeded 10 minutes and about 60 GB
+RSS without producing an artifact. This is evidence that KianV needs a native
+masked-word memory representation or an equivalence-checked compact
+implementation contract; neither the interrupted stress run nor the trusted
+structural PASS is a complete emission PASS.
 
 Do not describe KianV as converted until every required reachable module has
 an accepted import and a per-module equivalence `PASS`, hierarchy has been

@@ -91,8 +91,12 @@ cannot cause Lean to accept a bad proof, but could hide policy drift. The final
 release declaration and raw axiom closure remain independently inspectable.
 
 Executable replacements currently accelerate compiler/printer traversals,
-`Design.toProgram`, memory-read diagnostics, and the component graph's Kahn
-topological-order proposal. The latter is an untrusted proposal checked by the
+`Design.toProgram`, memory-read diagnostics, neutral-import DAG lowering/read
+validation, and the component graph's Kahn topological-order proposal. Import
+memoization is keyed only by pointer identity and retains transparent
+reference definitions; the specialized import emission path validates reads
+on the compact neutral DAG before constructing the dependent expression DAG.
+The Kahn result is an untrusted proposal checked by the
 transparent `topologicalOrderCheckB`; only the checker's soundness theorem
 certifies acyclicity. The release construction likewise checks candidate
 witnesses against reference definitions, so these replacements are not hidden
