@@ -599,7 +599,8 @@ private def checkModuleBoundary (module : Module) : Except String ClockDomain :=
       if resetPort == domain.clockPort then
         failAt domain.source "clock and reset ports must be distinct"
   | .resetless =>
-      failAt domain.source "resetless import requires resetless µVerilog emission"
+      if domain.reset.port.isSome then
+        failAt domain.source "resetless clock domain must not name a reset port"
   if module.ports.any (·.direction == .inout) then
     failAt module.source "inout ports require an explicit external pad/tri-state contract"
   if !Inventory.uniqueB (module.ports.map (·.name)) then

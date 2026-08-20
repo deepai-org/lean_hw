@@ -149,17 +149,19 @@ regenerated inventory cannot silently inherit stale classifications.
 
 ## Current fail-closed limits
 
-The first Yosys adapter handles one synchronous clock domain, either edge,
-active-high or active-low synchronous reset, ordinary registers/enables, and a
-basic width-normalized combinational subset. It currently blocks:
+The first Yosys adapter handles one clock domain, either edge, resetless state,
+per-register active-high/active-low synchronous resets, both reset-dominant
+and enable-dominant priority, ordinary register enables, and a basic
+width-normalized combinational subset. Synchronous resets are made explicit in
+each register's next-state graph and emitted in a genuinely resetless frame;
+no synthetic common reset is introduced. It currently blocks:
 
 - asynchronous reset state, including async-assert/sync-release boundaries
   (keep these behind an `ExternalComponent` reset contract);
-- resetless or mixed-reset state, enable-dominant synchronous-reset flops,
-  inferred memories and latches;
+- inferred memories and source latches that survive elaboration as latches;
 - inout/tri-state ports and black boxes without explicit external contracts;
 - signed four-state variable part-select (`$shiftx`) cells; and
-- a module containing more than one clock/edge or reset domain.
+- a module containing more than one clock/edge domain.
 
 Child instances remain in the neutral module and are not silently flattened
 into local logic. The package checker derives exact child input-to-output
@@ -181,13 +183,14 @@ The checked-in Markdown/JSON reports identify the `chip_core` configuration,
 all source hashes, 74 reachable elaborated modules, rising/falling edge use,
 reset cells, six memory-bearing modules, latches, instances, and structural
 precheck blockers. `Evidence/KianV/import_coverage.md` separately records the
-actual fail-closed translator result: currently 37 of 74 modules are accepted.
+policy-free fail-closed translator result: currently 42 of 74 modules are
+accepted.
 `Evidence/KianV/elaborated.json` is the exact hash-matched Yosys input for
 per-module neutral translation; it is evidence, not a trusted Loom artifact.
 `four_state_decisions.json` records 29 module-specific source-intent decisions;
 the exact-site expander produces 237 hash-bound rules in
 `four_state_policy.json`. With that policy, `import_coverage_policy.md` records
-56 accepted modules and 18 still blocked. The unrefined report remains checked
+67 accepted modules and 7 still blocked. The unrefined report remains checked
 in separately so policy-dependent progress is never confused with ordinary
 two-state acceptance.
 

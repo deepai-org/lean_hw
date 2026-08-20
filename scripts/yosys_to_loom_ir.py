@@ -562,10 +562,7 @@ class ModuleTranslator:
     def translate(self) -> dict[str, Any]:
         registers = []
         clock_domains: set[tuple[tuple[Any, ...], bool]] = set()
-        resets: set[tuple[tuple[Any, ...], bool, str]] = set()
-        resetless_cells: list[str] = []
         asynchronous_cells: list[str] = []
-        enable_dominant_reset_cells: list[str] = []
         sequential_cells = []
         for cell_name, cell in self.cells.items():
             kind = cell.get("type", "")
@@ -580,35 +577,11 @@ class ModuleTranslator:
             clock_domains.add((tuple(connections.get("CLK", [])),
                                bool(decode_parameter(params.get("CLK_POLARITY"), 1))))
             if kind.startswith("$adff"):
-                resets.add((tuple(connections.get("ARST", [])),
-                            bool(decode_parameter(params.get("ARST_POLARITY"), 1)),
-                            "asynchronous"))
                 asynchronous_cells.append(cell_name)
-            elif kind.startswith("$sdff"):
-                resets.add((tuple(connections.get("SRST", [])),
-                            bool(decode_parameter(params.get("SRST_POLARITY"), 1)),
-                            "synchronous"))
-                if kind == "$sdffce":
-                    enable_dominant_reset_cells.append(cell_name)
-            else:
-                resetless_cells.append(cell_name)
-
-        if resetless_cells:
-            detail = ("resetless state cannot use the current always-reset µVerilog frame: " +
-                      ", ".join(sorted(resetless_cells)))
-            self.block("resetless_state", detail, self.module_source)
-        if resetless_cells and resets:
-            self.block("mixed_reset_state",
-                       "resetless and reset-bearing registers share one imported module",
-                       self.module_source)
         if asynchronous_cells:
             self.block("asynchronous_reset_state",
                        "asynchronous reset state must remain behind an external contract: " +
                        ", ".join(sorted(asynchronous_cells)), self.module_source)
-        if enable_dominant_reset_cells:
-            self.block("enable_dominant_reset",
-                       "$sdffce priority is not represented by Loom's reset-dominant frame: " +
-                       ", ".join(sorted(enable_dominant_reset_cells)), self.module_source)
 
         for cell_name, cell in sequential_cells:
             kind = cell["type"]
@@ -619,17 +592,39 @@ class ModuleTranslator:
             width = len(q)
             name = self.registers[tuple(q)]
             next_value = self.expr(connections.get("D", []), src)
+            enable = None
             if kind in ("$dffe", "$sdffe", "$sdffce", "$adffe"):
                 enable = self.expr(connections.get("EN", []), src)
                 if not bool(decode_parameter(params.get("EN_POLARITY"), 1)):
                     enable = {"kind": "unary", "width": 1, "op": "bit_not",
                               "value": enable, "source": src}
+            if kind.startswith("$sdff"):
+                reset = self.expr(connections.get("SRST", []), src)
+                if not bool(decode_parameter(params.get("SRST_POLARITY"), 1)):
+                    reset = {"kind": "unary", "width": 1, "op": "bit_not",
+                             "value": reset, "source": src}
+                reset_value = literal(
+                    width, decode_parameter(params.get("SRST_VALUE", 0)), src)
+                reset_selected = {"kind": "mux", "width": width,
+                                  "condition": reset, "yes": reset_value,
+                                  "no": next_value, "source": src}
+                if kind == "$sdffce":
+                    next_value = {"kind": "mux", "width": width,
+                                  "condition": enable, "yes": reset_selected,
+                                  "no": signal(width, name, src), "source": src}
+                else:
+                    if enable is not None:
+                        next_value = {"kind": "mux", "width": width,
+                                      "condition": enable, "yes": next_value,
+                                      "no": signal(width, name, src), "source": src}
+                    next_value = {"kind": "mux", "width": width,
+                                  "condition": reset, "yes": reset_value,
+                                  "no": next_value, "source": src}
+            elif enable is not None:
                 next_value = {"kind": "mux", "width": width, "condition": enable,
                               "yes": next_value, "no": signal(width, name, src),
                               "source": src}
-            init = decode_parameter(params.get("SRST_VALUE",
-                                    params.get("ARST_VALUE", 0)))
-            registers.append({"name": name, "width": width, "init": init,
+            registers.append({"name": name, "width": width, "init": 0,
                               "next": next_value, "source": src})
 
         instances = []
@@ -688,15 +683,6 @@ class ModuleTranslator:
             clock_name = self.public_name(list(clock_bits), "clk")
             reset_record = {"kind": "resetless", "port": None, "active_high": True,
                             "source": None}
-            if len(resets) > 1:
-                self.block("multiple_reset_domains", f"module contains {len(resets)} reset domains",
-                           self.module_source)
-            if resets:
-                reset_bits, active_high, reset_kind = sorted(resets, key=str)[0]
-                reset_name = self.public_name(list(reset_bits), "rst")
-                reset_record = {"kind": reset_kind, "port": reset_name,
-                                "active_high": active_high,
-                                "source": self.source_for_bits(list(reset_bits))}
             domains.append({"name": f"{self.name}_clock", "clock_port": clock_name,
                             "edge": "rising" if rising else "falling",
                             "reset": reset_record,

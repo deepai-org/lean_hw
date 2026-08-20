@@ -105,6 +105,21 @@ def Loom.Hw.Design.emitWithClockReset (d : Loom.Hw.Design)
         resetActiveHigh))
   IO.println s!"{path} {if changed then "written" else "unchanged"}"
 
+/-- Emit clocked state without a reset port or reset branch. Any source-level
+synchronous reset must already be explicit in the compiled next-state graph. -/
+def Loom.Hw.Design.emitResetless (d : Loom.Hw.Design)
+    (edge : Loom.ClockEdge) (clockName : String)
+    (path : System.FilePath) : IO Unit := do
+  match d.emitCheck with
+  | .ok _ => pure ()
+  | .error message => throw <| IO.userError message
+  let compiled := Loom.Hw.Compile.compileResetless d edge clockName
+  unless compiled.parseCheck do
+    throw <| IO.userError s!"resetless design '{d.name}' failed µVerilog round-trip checking"
+  let changed ← Loom.Artifact.writeText path
+    (Loom.Emit.MicroVerilog.Print.print compiled)
+  IO.println s!"{path} {if changed then "written" else "unchanged"}"
+
 /-- Check the target-dependent memory obligations for `d` against an explicit
 implementation profile. This is intentionally separate from `Design.emit`:
 generic RTL emission has no FPGA-vendor, ASIC-library, or synthesis-tool

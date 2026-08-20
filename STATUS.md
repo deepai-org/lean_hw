@@ -57,11 +57,11 @@ normalize to ordinary shifts/muxes; every KianV occurrence is unsigned. This
 is now applied through a reviewed, exact-site KianV policy.
 
 For the exact checked-in KianV elaboration, the policy-free baseline accepts
-37 of 74 modules. The reviewed 29-decision/237-site four-state refinement
-raises acceptance to 56 modules, with 18 still blocked. Child-instance binding
-and KianV's unsigned `$shiftx` cells are no longer blockers. The remaining
-classes are six memory-bearing modules, eight modules with nonuniform reset,
-four with resetless state, and the mixed-edge SDRAM controller. The full
+42 of 74 modules. The reviewed 29-decision/237-site four-state refinement
+raises acceptance to 67 modules, with 7 still blocked. Child-instance binding,
+unsigned `$shiftx`, resetless state, and nonuniform per-register synchronous
+resets are no longer blockers. The remaining classes are six memory-bearing
+modules and the mixed-edge SDRAM controller. The full
 74-module/134-instance structural package serializes to a 17 MiB DAG artifact
 and passes the trusted package checker; behavioral package emission still
 fails closed on the declared module blockers.

@@ -170,6 +170,9 @@ private def renderHeader (m : Module) : String :=
     let ports := renderDataPorts m
     if ports.isEmpty then s!"module {m.name}(\n);"
     else s!"module {m.name}(\n" ++ String.intercalate ",\n" ports ++ "\n);"
+  else if m.resetless then
+    let ports := s!"  input wire {m.clockName}" :: renderDataPorts m
+    s!"module {m.name}(\n" ++ String.intercalate ",\n" ports ++ "\n);"
   else
     s!"module {m.name}(\n  input wire {m.clockName},\n  input wire {m.resetName}" ++
       String.join (m.ins.map fun i =>
@@ -209,15 +212,16 @@ private unsafe def printImpl (m : Module) : String := Id.run do
     if !m.stateless then
       -- the single always block
       emitM s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
-      emitM s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
-      for r in m.regs do
-        emitM s!"      {r.name} <= {r.width}'d{r.init.toNat};"
-      emitM "    end else begin"
+      if !m.resetless then
+        emitM s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
+        for r in m.regs do
+          emitM s!"      {r.name} <= {r.width}'d{r.init.toNat};"
+        emitM "    end else begin"
       for (r, nw) in regNexts do
         emitM s!"      {r} <= {nw};"
       for (mn, en, ad, dt) in memPorts do
         emitM s!"      if ({en}) {mn}[{ad}] <= {dt};"
-      emitM "    end"
+      if !m.resetless then emitM "    end"
       emitM "  end"
     for a in outAssigns do
       emitM a
@@ -258,15 +262,16 @@ def print (m : Module) : String := Id.run do
     if !m.stateless then
       -- the single always block
       emit s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
-      emit s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
-      for r in m.regs do
-        emit s!"      {r.name} <= {r.width}'d{r.init.toNat};"
-      emit "    end else begin"
+      if !m.resetless then
+        emit s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
+        for r in m.regs do
+          emit s!"      {r.name} <= {r.width}'d{r.init.toNat};"
+        emit "    end else begin"
       for (r, nw) in regNexts do
         emit s!"      {r} <= {nw};"
       for (mn, en, ad, dt) in memPorts do
         emit s!"      if ({en}) {mn}[{ad}] <= {dt};"
-      emit "    end"
+      if !m.resetless then emit "    end"
       emit "  end"
     for a in outAssigns do
       emit a

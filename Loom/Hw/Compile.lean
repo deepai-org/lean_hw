@@ -489,6 +489,18 @@ def compileForClockReset (d : Design) (edge : Loom.ClockEdge)
     (clockName resetName : String) (resetActiveHigh : Bool) : MV.Module :=
   { compile d with edge, clockName, resetName, resetActiveHigh }
 
+/-- Bind a compiled design to a physical clock without inventing a reset
+port or reset branch. Imported next-state logic must represent any source
+synchronous resets explicitly. -/
+def compileResetless (d : Design) (edge : Loom.ClockEdge)
+    (clockName : String) : MV.Module :=
+  { compile d with edge, clockName, resetless := true }
+
+theorem compileResetless_cycle (d : Design) (edge : Loom.ClockEdge)
+    (clockName : String) (state : MV.St) :
+    (compileResetless d edge clockName).cycle state = (compile d).cycle state := by
+  rfl
+
 /-- Compile the expression/output portion of a Design as a genuinely
 clockless module. Callers must separately establish that the Design contains
 no registers, memories, rules, or state-output selections; the checked

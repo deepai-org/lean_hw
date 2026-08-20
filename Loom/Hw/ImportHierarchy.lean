@@ -100,10 +100,14 @@ private def bodyArtifact? (package : Package) (module : Module) :
   | .stateless lowered =>
       return ⟨body.name, lowered.implementation.renderedVerilog⟩
   | .clocked lowered =>
-      let some _resetName := lowered.reset.port
-        | failAtHere module.source "checked hierarchy body lost its reset port"
-      let compiled := Compile.compileForClockReset lowered.design lowered.edge
-        "clk" "rst" lowered.reset.activeHigh
+      let compiled ← match lowered.reset.kind with
+        | .resetless => pure <| Compile.compileResetless lowered.design lowered.edge "clk"
+        | .synchronous =>
+            let some _resetName := lowered.reset.port
+              | failAtHere module.source "checked hierarchy body lost its reset port"
+            pure <| Compile.compileForClockReset lowered.design lowered.edge
+              "clk" "rst" lowered.reset.activeHigh
+        | _ => failAtHere module.source "unsupported reset survived checked lowering"
       return ⟨body.name, Loom.Emit.MicroVerilog.Print.print compiled⟩
 
 private def dataPorts (module : Module) : List Port :=
@@ -144,9 +148,7 @@ private def wrapperPlan? (package : Package) (module : Module) :
   let clockReset := match module.domains with
     | [] => []
     | domain :: _ =>
-        match domain.reset.port with
-        | some resetPort => [⟨"u_loom_body", domain.clockPort, resetPort⟩]
-        | none => []
+        [⟨"u_loom_body", domain.clockPort, domain.reset.port⟩]
   return {
     design :=
       { topName := package.moduleName module

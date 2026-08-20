@@ -346,6 +346,25 @@ def pClockedHeader : List (List Char) →
       pure (nm, clockName, resetName, ins, outs, ls)
   | _ => none
 
+/-- Resetless stateful header: scalar clock followed by ordinary vector data
+ports, with no scalar reset port. -/
+def pResetlessHeader : List (List Char) →
+    Option (String × String × List (String × Nat) × List (String × Nat) ×
+      List (List Char))
+  | l1 :: l2 :: ls => do
+    let cs ← eatS "module " l1
+    let (nm, cs) ← pIdent cs
+    guard (cs == ['('])
+    let (clockName, clockMore) ← pScalarInput l2
+    if !clockMore then do
+      let ls ← expectLine ");" ls
+      pure (nm, clockName, [], [], ls)
+    else do
+      let (ps, ls) ← pPortLines ls
+      let (ins, outs) ← splitPorts ps
+      pure (nm, clockName, ins, outs, ls)
+  | _ => none
+
 /-- Clockless header: only ordinary vector input/output ports.  The printer
 uses the same explicit-width port lines for one-bit data, so this form cannot
 be confused with the scalar clock/reset frame. -/
@@ -625,6 +644,28 @@ private def parseClockedLinesFullC (cut : Bool)
                      resetActiveHigh := resetActiveHigh }
          env := env }
 
+private def parseResetlessLinesFullC (cut : Bool)
+    (ls : List (List Char)) : Option Parsed := do
+  let (nm, clockName, ins, outs, ls) ← pResetlessHeader ls
+  let (rhdrs, mhdrs, ls) ← pDecls [] [] ls
+  guard (!rhdrs.isEmpty || !mhdrs.isEmpty)
+  let syms := rhdrs ++ ins.map (fun p => ⟨p.1, p.2⟩)
+  let (minits, ls) ← pInits mhdrs ls
+  let (env, ls) ← pWires cut syms mhdrs [] ls
+  let (edge, ls) ← pClockEdge clockName ls
+  let rinits := rhdrs.map fun r =>
+    (⟨r.name, r.width, BitVec.ofNat r.width 0⟩ : RegInit)
+  let (regs, ls) ← pRegNexts syms env rinits ls
+  let (mems, ls) ← pMemWrites syms env minits ls
+  let ls ← expectLine "  end" ls
+  let (outDefs, ls) ← pAssigns syms env outs ls
+  let ls ← expectLine "endmodule" ls
+  guard ls.isEmpty
+  pure { module := { name := nm, regs := regs, mems := mems, outs := outDefs,
+                     ins := ins.map (fun p => ⟨p.1, p.2⟩), resetless := true,
+                     edge := edge, clockName := clockName }
+         env := env }
+
 private def parseStatelessLinesFullC (cut : Bool)
     (ls : List (List Char)) : Option Parsed := do
   let (nm, ins, outs, ls) ← pStatelessHeader ls
@@ -646,7 +687,9 @@ wire's name. Clocked and genuinely stateless frames are disjoint. -/
 def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed :=
   match parseClockedLinesFullC cut ls with
   | some parsed => some parsed
-  | none => parseStatelessLinesFullC cut ls
+  | none => match parseResetlessLinesFullC cut ls with
+    | some parsed => some parsed
+    | none => parseStatelessLinesFullC cut ls
 
 /-- Parse a whole printed module from its line list. -/
 def parseLinesFull (ls : List (List Char)) : Option Parsed :=

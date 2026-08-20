@@ -33,8 +33,8 @@ private def plan : HierarchyEmissionPlan Unit Unit where
      ⟨"input_byte", "a", .input, 8⟩,
      ⟨"output_byte", "y", .output, 8⟩]
   clockReset :=
-    [⟨"u_first", "clk_i", "rst_i"⟩,
-     ⟨"u_second", "clk_i", "rst_i"⟩]
+    [⟨"u_first", "clk_i", some "rst_i"⟩,
+     ⟨"u_second", "clk_i", some "rst_i"⟩]
 
 #guard plan.validB
 #guard plan.renderTop?.toOption.any fun text =>

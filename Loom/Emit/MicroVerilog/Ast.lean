@@ -4,8 +4,8 @@ import Loom.Clock
 /-!
 # µVerilog: the formalized subset (L4)
 
-A deliberately minimal synthesizable Verilog subset: one module, one clock,
-synchronous reset, `always_ff` registers with explicit next-value
+A deliberately minimal synthesizable Verilog subset: one module, at most one
+clock, optional synchronous reset, `always_ff` registers with explicit next-value
 expressions, memory arrays with ordered synchronous write ports and in-expression
 asynchronous reads (`mem[addr]` — LUTRAM-shaped at these sizes), and
 combinational expressions with no inference-sensitive constructs. No
@@ -88,8 +88,8 @@ structure InDef where
   name  : String
   width : Nat
 
-/-- A flat µVerilog module: ports are `clk`, `rst`, the inputs, and the
-outputs. Closed when `ins = []` (the default). -/
+/-- A flat µVerilog module: ports are the optional clock/reset frame, inputs,
+and outputs. Closed when `ins = []` (the default). -/
 structure Module where
   name : String
   regs : List RegDef
@@ -101,6 +101,10 @@ structure Module where
   clock/reset ports or event-control block.  Stateful modules retain the
   historical frame. -/
   stateless : Bool := false
+  /-- A resetless stateful module has a clock event but no reset port or reset
+  branch. This is emission metadata; `cycle` remains the ordinary transition
+  function and `reset` remains the abstract initialization function. -/
+  resetless : Bool := false
   /-- Which physical HDL edge realizes one abstract `Module.cycle`.  The
   transition semantics is intentionally independent of this field. -/
   edge : Loom.ClockEdge := .rising

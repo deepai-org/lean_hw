@@ -96,6 +96,7 @@ syntactic equality except for memory init functions beyond the printed
 structure Module.Matches (a b : Module) : Prop where
   name : a.name = b.name
   stateless : a.stateless = b.stateless
+  resetless : a.resetless = b.resetless
   edge : a.edge = b.edge
   clockName : a.clockName = b.clockName
   resetName : a.resetName = b.resetName
@@ -110,7 +111,7 @@ structure Module.Matches (a b : Module) : Prop where
 /-- Decidable form of `Module.Matches`. -/
 def Module.matchesb (a b : Module) : Bool :=
   decide (a.name = b.name) &&
-  decide (a.stateless = b.stateless) &&
+  decide ((a.stateless, a.resetless) = (b.stateless, b.resetless)) &&
   decide (a.edge = b.edge) &&
   decide (a.clockName = b.clockName) &&
   decide (a.resetName = b.resetName) &&
@@ -122,10 +123,10 @@ def Module.matchesb (a b : Module) : Bool :=
 
 theorem Module.matchesb_sound {a b : Module} (h : a.matchesb b = true) :
     a.Matches b := by
-  simp only [matchesb, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨hn, hstateless⟩, hedge⟩, hclock⟩, hreset⟩,
+  simp only [matchesb, Bool.and_eq_true, decide_eq_true_eq, Prod.mk.injEq] at h
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨hn, ⟨hstateless, hresetless⟩⟩, hedge⟩, hclock⟩, hreset⟩,
     hpolarity⟩, hr⟩, ho⟩, hi⟩, hm⟩ := h
-  exact ⟨hn, hstateless, hedge, hclock, hreset, hpolarity, hr, ho,
+  exact ⟨hn, hstateless, hresetless, hedge, hclock, hreset, hpolarity, hr, ho,
     listAll2_sound _ (fun _ _ => MemDef.matchesb_sound) hm, hi⟩
 
 /-- The round-trip checker: print the module, parse the text back, and
