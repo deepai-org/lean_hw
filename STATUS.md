@@ -1,6 +1,6 @@
 # Project status
 
-Checked against repository head on **2026-08-18**. This file is a current
+Checked against repository head on **2026-08-20**. This file is a current
 snapshot, not a development diary. Historical milestones belong in Git and
 [`CHANGELOG.md`](CHANGELOG.md); detailed hardware campaigns belong in their
 machine and board specifications.
@@ -27,6 +27,24 @@ the bounded-model-check proof from the standing gate.
 
 The full reproduction and release workflows remain separate, explicitly
 unrerun gates.
+
+### RTL import status
+
+The module-preserving import path is fail-closed and technology-neutral after
+the external frontend boundary. Its current combinational vocabulary includes
+bitwise and arithmetic operations, logical truth conversion, AND/OR
+reductions, equality/ordering comparisons, and frontend-normalized priority
+mux trees. Focused original-vs-emitted sequential-equivalence fixtures pass.
+
+For the exact checked-in KianV elaboration, 9 of 74 modules currently produce
+accepted neutral import IR; 65 remain blocked. The dominant explicit blockers
+are clockless module emission (37 modules), four-state constants (28), and
+unchecked child-instance output binding (30), with memories, nonuniform/resetless
+state, variable part-select shifts, and the mixed-edge SDRAM controller also
+remaining. [`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md)
+is the generated acceptance report. Acceptance is not equivalence or signoff;
+full conversion still requires per-module equivalence PASS and checked
+hierarchy assembly.
 
 ### Multiclock execution-projection gate
 

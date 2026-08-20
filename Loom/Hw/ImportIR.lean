@@ -75,6 +75,12 @@ structure ClockDomain where
 inductive UnaryOp where
   | bitNot
   | negate
+  /-- One iff at least one operand bit is set. -/
+  | reduceBool
+  /-- One iff every operand bit is set. -/
+  | reduceAnd
+  /-- One iff the operand is zero. -/
+  | logicalNot
   deriving Repr, DecidableEq, BEq
 
 inductive BinaryOp where
@@ -259,10 +265,23 @@ private def lowerExpr? : Expr → Except String LoweredExpr
       return ⟨width, .reg width name⟩
   | .unary width op value source => do
       let lowered ← lowerExpr? value
-      let value ← expectWidth width lowered source
       match op with
-      | .bitNot => return ⟨width, .not value⟩
-      | .negate => return ⟨width, .sub (.lit (BitVec.ofNat width 0)) value⟩
+      | .bitNot | .negate =>
+          let value ← expectWidth width lowered source
+          match op with
+          | .bitNot => return ⟨width, .not value⟩
+          | .negate => return ⟨width, .sub (.lit (BitVec.ofNat width 0)) value⟩
+          | _ => failAt source "internal width-preserving unary lowering error"
+      | .reduceBool | .reduceAnd | .logicalNot =>
+          if width != 1 then failAt source "logical/reduction result width must be one"
+          else
+            let zero : Loom.Hw.Expr lowered.width := .lit 0
+            let allOnes : Loom.Hw.Expr lowered.width := .lit (BitVec.allOnes lowered.width)
+            match op with
+            | .reduceBool => return ⟨1, .not (.eq lowered.value zero)⟩
+            | .reduceAnd => return ⟨1, .eq lowered.value allOnes⟩
+            | .logicalNot => return ⟨1, .eq lowered.value zero⟩
+            | _ => failAt source "internal reducing unary lowering error"
   | .binary width op left right source => do
       let left ← lowerExpr? left
       let right ← lowerExpr? right

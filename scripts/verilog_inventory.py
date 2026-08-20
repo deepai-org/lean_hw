@@ -45,6 +45,8 @@ LOOM_NATIVE_CELLS = {
     "$sdff", "$sdffe",
     "$not", "$neg", "$and", "$or", "$xor", "$add", "$sub", "$mul",
     "$div", "$mod", "$shl", "$shr", "$eq", "$lt", "$mux",
+    "$logic_and", "$logic_or", "$logic_not", "$reduce_and", "$reduce_or",
+    "$reduce_bool", "$ne", "$ge", "$gt", "$le",
 }
 
 SV_FEATURES = {
@@ -322,6 +324,11 @@ def main() -> int:
             f"hierarchy -check -top {args.top}",
             "proc",
             "opt_dff",
+            "opt_clean",
+            # Normalize priority muxes to ordinary mux trees. The adapter still
+            # consumes and validates the resulting neutral expression tree, and
+            # original-vs-emitted equivalence remains a required external gate.
+            "pmuxtree",
             "opt_clean",
             "memory_collect",
             "check",

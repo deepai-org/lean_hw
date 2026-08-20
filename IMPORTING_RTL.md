@@ -59,6 +59,11 @@ python3 scripts/rtl_equivalence.py \
 fixture and verifies that an intentionally inequivalent fixture reports
 `FAIL`.
 
+`scripts/import_coverage.py` runs the same fail-closed translator over every
+module in one identified elaborated artifact while loading that artifact only
+once. Its `ACCEPTED` count is a conversion-progress metric, not an equivalence
+or signoff claim.
+
 The frontend also writes `build/my_module.import.json.manifest.json`. That
 separate manifest avoids a self-hash paradox while binding every source,
 inventory, elaborated JSON, and neutral-IR artifact to its path, byte count,
@@ -80,10 +85,10 @@ basic width-normalized combinational subset. It currently blocks:
 - asynchronous reset state, including async-assert/sync-release boundaries
   (keep these behind an `ExternalComponent` reset contract);
 - resetless or mixed-reset state, enable-dominant synchronous-reset flops,
-  inferred memories, and latches;
+  inferred memories, four-state/unknown values, and latches;
 - clockless combinational-only module emission;
 - inout/tri-state ports and black boxes without explicit external contracts;
-- several Yosys logical/reduction/priority-mux/variable-shift cells; and
+- variable part-select/shift cells and arithmetic right shift; and
 - a module containing more than one clock/edge or reset domain.
 
 Child instances remain in the neutral module and are not silently flattened
@@ -102,10 +107,11 @@ scripts/inventory_kianv.sh \
 
 The checked-in Markdown/JSON reports identify the `chip_core` configuration,
 all source hashes, 74 reachable elaborated modules, rising/falling edge use,
-reset cells, six memory-bearing modules, latches, instances, and current
-import blockers. `Evidence/KianV/elaborated.json` is the exact hash-matched
-Yosys input for per-module neutral translation; it is evidence, not a trusted
-Loom artifact.
+reset cells, six memory-bearing modules, latches, instances, and structural
+precheck blockers. `Evidence/KianV/import_coverage.md` separately records the
+actual fail-closed translator result: currently 9 of 74 modules are accepted.
+`Evidence/KianV/elaborated.json` is the exact hash-matched Yosys input for
+per-module neutral translation; it is evidence, not a trusted Loom artifact.
 
 Do not describe KianV as converted until every required reachable module has
 an accepted import and a per-module equivalence `PASS`, hierarchy has been
