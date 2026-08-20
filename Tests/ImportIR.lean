@@ -123,6 +123,74 @@ private def unsupportedModule : ImportIR.Module :=
   | .error _ => true
   | .ok _ => false
 
+private def hierarchyChild : ImportIR.Module where
+  name := "hierarchy_child"
+  source := location
+  ports :=
+    [⟨"a", .input, 8, "byte", location⟩,
+     ⟨"q", .output, 8, "byte", location⟩]
+  domains := []
+  registers := []
+  memories := []
+  outputs := [⟨"q", 8, .signal 8 "a" location, location⟩]
+
+private def hierarchyParent : ImportIR.Module where
+  name := "hierarchy_parent"
+  source := location
+  ports :=
+    [⟨"a", .input, 8, "byte", location⟩,
+     ⟨"q", .output, 8, "byte", location⟩]
+  domains := []
+  registers := []
+  memories := []
+  outputs :=
+    [⟨"q", 8, .signal 8 "__loom_child_u_child__q" location, location⟩]
+  instances :=
+    [{ name := "u_child", moduleName := "hierarchy_child"
+       connections :=
+         [{ port := "a", direction := .input,
+            signal := "__loom_child_u_child__a", width := 8,
+            value := some (.signal 8 "a" location), source := location },
+          { port := "q", direction := .output,
+            signal := "__loom_child_u_child__q", width := 8,
+            source := location }]
+       source := location }]
+
+private def hierarchyPackage : ImportIR.Package where
+  top := "hierarchy_parent"
+  modules := [hierarchyChild, hierarchyParent]
+  source := location
+
+#guard hierarchyPackage.validB
+
+#guard match hierarchyParent.lowerAny? with
+  | .error _ => true
+  | .ok _ => false
+
+private def childLoopExpr : ImportIR.Expr :=
+  .signal 8 "__loom_child_u_child__q" location
+
+private def cyclicHierarchyParent : ImportIR.Module :=
+  { hierarchyParent with
+    instances := hierarchyParent.instances.map fun inst =>
+      { inst with connections := inst.connections.map fun connection =>
+          if connection.port == "a" then
+            { connection with value := some childLoopExpr }
+          else connection } }
+
+#guard !({ hierarchyPackage with
+  modules := [hierarchyChild, cyclicHierarchyParent] }).validB
+
+private def mistypedHierarchyParent : ImportIR.Module :=
+  { hierarchyParent with
+    instances := hierarchyParent.instances.map fun inst =>
+      { inst with connections := inst.connections.map fun connection =>
+          if connection.port == "a" then { connection with width := 7 }
+          else connection } }
+
+#guard !({ hierarchyPackage with
+  modules := [hierarchyChild, mistypedHierarchyParent] }).validB
+
 private def digest := String.ofList (List.replicate 64 'a')
 
 private def sourceBinding : ArtifactBinding where

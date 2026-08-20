@@ -199,10 +199,13 @@ private def parseParameter (json : Json) : Except String (String × String) := d
 
 private def parseInstanceConnection (json : Json) : Except String InstanceConnection := do
   let port ← stringField json "port"
+  let direction ← parsePortDirection (← stringField json "direction")
   let signal ← stringField json "signal"
   let width ← natField json "width"
+  let valueJson ← field json "value"
+  let value ← if valueJson.isNull then pure none else some <$> parseExpr valueJson
   let source ← parseLocation (← field json "source")
-  return { port, signal, width, source }
+  return { port, direction, signal, width, value, source }
 
 private def parseInstance (json : Json) : Except String Instance := do
   let name ← stringField json "name"
@@ -217,6 +220,126 @@ private def parseUnsupported (json : Json) : Except String UnsupportedConstruct 
   let detail ← stringField json "detail"
   let source ← parseLocation (← field json "source")
   return { kind, detail, source }
+
+private def expressionRef (known : Array ImportIR.Expr) (json : Json)
+    (name : String) : Except String ImportIR.Expr := do
+  let reference ← natField json name
+  let some expression := known[reference]?
+    | throw s!"expression reference {reference} is forward or outside the module table"
+  return expression
+
+private def parseExprNode (known : Array ImportIR.Expr) (json : Json) :
+    Except String ImportIR.Expr := do
+  let kind ← stringField json "kind"
+  let width ← natField json "width"
+  let source ← parseLocation (← field json "source")
+  match kind with
+  | "literal" => return .literal width (← natField json "value") source
+  | "signal" => return .signal width (← stringField json "name") source
+  | "unary" =>
+      return .unary width (← parseUnaryOp (← stringField json "op"))
+        (← expressionRef known json "value") source
+  | "binary" =>
+      return .binary width (← parseBinaryOp (← stringField json "op"))
+        (← expressionRef known json "left")
+        (← expressionRef known json "right") source
+  | "mux" =>
+      return .mux width (← expressionRef known json "condition")
+        (← expressionRef known json "yes")
+        (← expressionRef known json "no") source
+  | "slice" =>
+      return .slice width (← expressionRef known json "value")
+        (← natField json "offset") source
+  | "zero_extend" =>
+      return .zeroExtend width (← expressionRef known json "value") source
+  | "sign_extend" =>
+      return .signExtend width (← expressionRef known json "value") source
+  | "concat" =>
+      return .concat width (← expressionRef known json "high")
+        (← expressionRef known json "low") source
+  | "memory_read" =>
+      return .memoryRead width (← stringField json "memory")
+        (← expressionRef known json "address") source
+  | other => throw s!"unknown import expression kind '{other}'"
+
+private def parseExprTable (values : Array Json) :
+    Except String (Array ImportIR.Expr) := do
+  let mut known := #[]
+  for value in values do
+    known := known.push (← parseExprNode known value)
+  return known
+
+private def parseRegisterRef (known : Array ImportIR.Expr) (json : Json) :
+    Except String Register := do
+  let name ← stringField json "name"
+  let width ← natField json "width"
+  let init ← natField json "init"
+  let next ← expressionRef known json "next"
+  let source ← parseLocation (← field json "source")
+  return { name, width, init, next, source }
+
+private def parseMemoryWriteRef (known : Array ImportIR.Expr) (json : Json) :
+    Except String MemoryWrite := do
+  let port ← natField json "port"
+  let enable ← expressionRef known json "enable"
+  let address ← expressionRef known json "address"
+  let data ← expressionRef known json "data"
+  let source ← parseLocation (← field json "source")
+  return { port, enable, address, data, source }
+
+private def parseMemoryRef (known : Array ImportIR.Expr) (json : Json) :
+    Except String Memory := do
+  let name ← stringField json "name"
+  let addressWidth ← natField json "address_width"
+  let dataWidth ← natField json "data_width"
+  let init ← parseList Json.getNat? (← arrayField json "init")
+  let writes ← parseList (parseMemoryWriteRef known) (← arrayField json "writes")
+  let source ← parseLocation (← field json "source")
+  return { name, addressWidth, dataWidth, init, writes, source }
+
+private def parseOutputRef (known : Array ImportIR.Expr) (json : Json) :
+    Except String Output := do
+  let name ← stringField json "name"
+  let width ← natField json "width"
+  let value ← expressionRef known json "value"
+  let source ← parseLocation (← field json "source")
+  return { name, width, value, source }
+
+private def parseInstanceConnectionRef (known : Array ImportIR.Expr)
+    (json : Json) : Except String InstanceConnection := do
+  let port ← stringField json "port"
+  let direction ← parsePortDirection (← stringField json "direction")
+  let signal ← stringField json "signal"
+  let width ← natField json "width"
+  let valueJson ← field json "value"
+  let value ← if valueJson.isNull then pure none else
+    some <$> expressionRef known json "value"
+  let source ← parseLocation (← field json "source")
+  return { port, direction, signal, width, value, source }
+
+private def parseInstanceRef (known : Array ImportIR.Expr) (json : Json) :
+    Except String Instance := do
+  let name ← stringField json "name"
+  let moduleName ← stringField json "module_name"
+  let parameters ← parseList parseParameter (← arrayField json "parameters")
+  let connections ← parseList (parseInstanceConnectionRef known)
+    (← arrayField json "connections")
+  let source ← parseLocation (← field json "source")
+  return { name, moduleName, parameters, connections, source }
+
+private def parseModuleDagJson (json : Json) : Except String ImportIR.Module := do
+  let known ← parseExprTable (← arrayField json "expressions")
+  let name ← stringField json "name"
+  let ports ← parseList parsePort (← arrayField json "ports")
+  let domains ← parseList parseDomain (← arrayField json "domains")
+  let registers ← parseList (parseRegisterRef known) (← arrayField json "registers")
+  let memories ← parseList (parseMemoryRef known) (← arrayField json "memories")
+  let outputs ← parseList (parseOutputRef known) (← arrayField json "outputs")
+  let instances ← parseList (parseInstanceRef known) (← arrayField json "instances")
+  let unsupported ← parseList parseUnsupported (← arrayField json "unsupported")
+  let source ← parseLocation (← field json "source")
+  return ImportIR.Module.mk name ports domains registers memories outputs
+    instances unsupported source
 
 def parseModuleJson (json : Json) : Except String ImportIR.Module := do
   let name ← stringField json "name"
@@ -239,5 +362,19 @@ def parseDocument (text : String) : Except String ImportIR.Module := do
   unless (← natField json "schema") == 1 do
     throw "unsupported neutral import JSON schema"
   parseModuleJson (← field json "module")
+
+private def parsePackageJson (json : Json) : Except String ImportIR.Package := do
+  let top ← stringField json "top"
+  let modules ← parseList parseModuleDagJson (← arrayField json "modules")
+  let source ← parseLocation (← field json "source")
+  return { top, modules, source }
+
+/-- Parse a schema-v2 closed elaborated hierarchy. Structural acceptance is
+separate (`Package.check?`) so callers cannot confuse parsing with checking. -/
+def parsePackageDocument (text : String) : Except String ImportIR.Package := do
+  let json ← Json.parse text
+  unless (← natField json "schema") == 2 do
+    throw "unsupported neutral import package JSON schema"
+  parsePackageJson (← field json "package")
 
 end Loom.Hw.ImportJson

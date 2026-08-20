@@ -140,6 +140,89 @@ python3 scripts/rtl_equivalence.py \
   --output "$work/stateless.equiv.json"
 
 python3 scripts/verilog_inventory.py \
+  --top import_hierarchy \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_hierarchy.v \
+  --json-out "$work/hierarchy.inventory.json" \
+  --markdown-out "$work/hierarchy.inventory.md" \
+  --elaborated-out "$work/hierarchy.elaborated.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/hierarchy.elaborated.json" \
+  --inventory "$work/hierarchy.inventory.json" \
+  --module import_hierarchy \
+  --output "$work/hierarchy.import.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/hierarchy.elaborated.json" \
+  --inventory "$work/hierarchy.inventory.json" \
+  --package-top import_hierarchy \
+  --output "$work/hierarchy.package.import.json"
+
+lake exe checkImportPackage "$work/hierarchy.package.import.json"
+
+lake exe importPackage \
+  "$work/hierarchy.package.import.json" "$work/hierarchy.package.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_hierarchy_import \
+  --gold-top import_hierarchy \
+  --revised-top import_hierarchy \
+  --gold-file Tests/fixtures/import_hierarchy.v \
+  --revised-file "$work/hierarchy.package.loom.v" \
+  --assumption "ordinary two-state combinational input correspondence" \
+  --log "$work/hierarchy.equiv.log" \
+  --output "$work/hierarchy.equiv.json"
+
+python3 - "$work/hierarchy.import.json" <<'PY'
+import json
+import sys
+
+module = json.load(open(sys.argv[1], encoding="utf-8"))["module"]
+assert not module["unsupported"]
+assert len(module["instances"]) == 1
+connections = {item["port"]: item for item in module["instances"][0]["connections"]}
+assert connections["a"]["direction"] == "input"
+assert connections["a"]["value"] is not None
+assert connections["q"]["direction"] == "output"
+assert connections["q"]["value"] is None
+assert connections["a"]["signal"] != connections["q"]["signal"]
+assert connections["q"]["signal"].startswith("__loom_child__h")
+PY
+
+if lake exe importModule "$work/hierarchy.import.json" "$work/hierarchy.loom.v"; then
+  echo "import adapters: hierarchical module bypassed checked package lowering" >&2
+  exit 1
+fi
+
+python3 scripts/verilog_inventory.py \
+  --top import_hierarchy_seq \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_hierarchy_seq.v \
+  --json-out "$work/hierarchy-seq.inventory.json" \
+  --markdown-out "$work/hierarchy-seq.inventory.md" \
+  --elaborated-out "$work/hierarchy-seq.elaborated.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/hierarchy-seq.elaborated.json" \
+  --inventory "$work/hierarchy-seq.inventory.json" \
+  --package-top import_hierarchy_seq \
+  --output "$work/hierarchy-seq.package.import.json"
+
+lake exe importPackage \
+  "$work/hierarchy-seq.package.import.json" "$work/hierarchy-seq.package.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_hierarchy_seq_import \
+  --gold-top import_hierarchy_seq \
+  --revised-top import_hierarchy_seq \
+  --gold-file Tests/fixtures/import_hierarchy_seq.v \
+  --revised-file "$work/hierarchy-seq.package.loom.v" \
+  --assumption "clock and active-high synchronous reset ports correspond" \
+  --log "$work/hierarchy-seq.equiv.log" \
+  --output "$work/hierarchy-seq.equiv.json"
+
+python3 scripts/verilog_inventory.py \
   --top import_resetless \
   --source-root "$PWD" \
   --source Tests/fixtures/import_resetless.v \

@@ -167,10 +167,14 @@ structure Output where
 
 structure InstanceConnection where
   port : String
+  direction : PortDirection
   signal : String
   width : Nat
+  /-- A child input is driven by this exact parent-side expression. Child
+  outputs have no value: `signal` names the unique symbolic net they drive. -/
+  value : Option Expr := none
   source : SourceLocation
-  deriving Repr, DecidableEq, BEq
+  deriving Repr, DecidableEq
 
 structure Instance where
   name : String
@@ -178,7 +182,7 @@ structure Instance where
   parameters : List (String × String) := []
   connections : List InstanceConnection
   source : SourceLocation
-  deriving Repr, DecidableEq, BEq
+  deriving Repr, DecidableEq
 
 structure UnsupportedConstruct where
   kind : String
@@ -200,6 +204,167 @@ structure Module where
   unsupported : List UnsupportedConstruct := []
   source : SourceLocation
   deriving Repr, DecidableEq
+
+/-- A closed inventory of elaborated modules. Module names are source names;
+backend-safe HDL names are assigned only at the emission boundary. -/
+structure Package where
+  top : String
+  modules : List Module
+  source : SourceLocation
+  deriving Repr, DecidableEq
+
+namespace Expr
+
+/-- Signal leaves used by a parent-side binding expression. Duplicates are
+irrelevant to dependency checking and are removed deterministically. -/
+def signals : Expr → List String
+  | .literal .. => []
+  | .signal _ name _ => [name]
+  | .unary _ _ value _ | .slice _ value _ _ |
+      .zeroExtend _ value _ | .signExtend _ value _ => value.signals
+  | .binary _ _ left right _ | .concat _ left right _ =>
+      (left.signals ++ right.signals).eraseDups
+  | .mux _ condition yes no _ =>
+      (condition.signals ++ yes.signals ++ no.signals).eraseDups
+  | .memoryRead _ _ address _ => address.signals
+
+end Expr
+
+namespace Package
+
+private def findModule? (package : Package) (name : String) : Option Module :=
+  package.modules.find? (·.name == name)
+
+private def connectionShapeOk (child : Module)
+    (connection : InstanceConnection) : Bool :=
+  child.ports.any fun port =>
+    port.name == connection.port && port.direction == connection.direction &&
+      port.width == connection.width &&
+      match connection.direction, connection.value with
+      | .input, some value => value.width == connection.width
+      | .output, none => true
+      | _, _ => false
+
+private def instanceValidB (package : Package) (inst : Instance) : Bool :=
+  match package.findModule? inst.moduleName with
+  | none => false
+  | some child =>
+      !inst.name.isEmpty && inst.source.validB &&
+        inst.parameters.isEmpty &&
+        Inventory.uniqueB (inst.connections.map (·.port)) &&
+        Inventory.uniqueB (inst.connections.map (·.signal)) &&
+        inst.connections.all (fun connection =>
+          !connection.signal.isEmpty && connection.width > 0 &&
+            connection.source.validB && connectionShapeOk child connection) &&
+        (child.ports.filter (·.direction == .input)).all fun port =>
+          inst.connections.any fun connection =>
+            connection.port == port.name && connection.direction == port.direction &&
+              connection.width == port.width
+
+private abbrev BoundarySummary := String × List (String × String)
+
+private def findSummary? (summaries : List BoundarySummary) (name : String) :
+    Option (List (String × String)) :=
+  (summaries.find? (fun summary => summary.1 == name)).map (·.2)
+
+private def reachableNodes : Nat → List (String × String) →
+    List String → List String
+  | 0, _, reached => reached
+  | fuel + 1, edges, reached =>
+      let next := (reached ++ edges.filterMap (fun edge =>
+        if reached.contains edge.1 then some edge.2 else none)).eraseDups
+      if next.length == reached.length then reached
+      else reachableNodes fuel edges next
+
+private def reachableB (edges : List (String × String))
+    (source sink : String) : Bool :=
+  (reachableNodes (edges.length + 1) edges [source]).contains sink
+
+private def moduleDependencyEdges (summaries : List BoundarySummary)
+    (module : Module) : List (String × String) :=
+  module.instances.flatMap fun inst =>
+    let parentEdges := inst.connections.flatMap fun connection =>
+      match connection.direction, connection.value with
+      | .input, some value => value.signals.map (·, connection.signal)
+      | _, _ => []
+    let childEdges := match findSummary? summaries inst.moduleName with
+      | none => []
+      | some dependencies => dependencies.filterMap fun dependency =>
+          let input := inst.connections.find? fun connection =>
+            connection.port == dependency.1 && connection.direction == .input
+          let output := inst.connections.find? fun connection =>
+            connection.port == dependency.2 && connection.direction == .output
+          match input, output with
+          | some input, some output => some (input.signal, output.signal)
+          | _, _ => none
+    parentEdges ++ childEdges
+
+private def summarizeModule (summaries : List BoundarySummary)
+    (module : Module) : BoundarySummary :=
+  let edges := moduleDependencyEdges summaries module
+  let inputs := module.ports.filter (·.direction == .input)
+  let dependencies := module.outputs.flatMap fun output =>
+    inputs.filterMap fun input =>
+      if output.value.signals.any fun signal =>
+          reachableB edges input.name signal then
+        some (input.name, output.name)
+      else none
+  (module.name, dependencies.eraseDups)
+
+private def summarizeLoop : Nat → List Module →
+    List BoundarySummary → Option (List BoundarySummary)
+  | 0, remaining, summaries =>
+      if remaining.isEmpty then some summaries else none
+  | fuel + 1, remaining, summaries =>
+      if remaining.isEmpty then some summaries
+      else
+        match remaining.find? fun module =>
+            module.instances.all fun inst =>
+              (findSummary? summaries inst.moduleName).isSome with
+        | none => none
+        | some module =>
+            summarizeLoop fuel (remaining.erase module)
+              (summaries ++ [summarizeModule summaries module])
+
+private def boundarySummaries? (package : Package) :
+    Option (List BoundarySummary) :=
+  summarizeLoop (package.modules.length + 1) package.modules []
+
+private def moduleValidB (package : Package)
+    (summaries : List BoundarySummary) (module : Module) : Bool :=
+  module.source.validB && !module.name.isEmpty &&
+    Inventory.uniqueB (module.instances.map (·.name)) &&
+    Inventory.uniqueB (module.instances.flatMap fun inst =>
+      inst.connections.map (·.signal)) &&
+    module.instances.all package.instanceValidB &&
+    let edges := moduleDependencyEdges summaries module
+    ComponentGraph.topologicalOrderCheckB edges
+      (ComponentGraph.proposeTopologicalOrder edges)
+
+/-- Trusted structural acceptance for an elaborated hierarchy. It rejects
+missing children, missing child inputs, duplicate/mistyped bindings, shared
+symbolic nets, inout boundaries, and same-cycle cycles. Unconsumed child
+outputs may be absent exactly as named-port HDL permits. -/
+def validB (package : Package) : Bool :=
+  let hierarchyEdges := package.modules.flatMap fun module =>
+    module.instances.map fun inst => (module.name, inst.moduleName)
+  package.source.validB && !package.top.isEmpty && !package.modules.isEmpty &&
+    Inventory.uniqueB (package.modules.map (·.name)) &&
+    package.modules.any (·.name == package.top) &&
+    ComponentGraph.topologicalOrderCheckB hierarchyEdges
+      (ComponentGraph.proposeTopologicalOrder hierarchyEdges) &&
+    match package.boundarySummaries? with
+    | none => false
+    | some summaries => package.modules.all (fun module =>
+        !module.ports.any (·.direction == .inout) &&
+          package.moduleValidB summaries module)
+
+def check? (package : Package) : Except String Package := do
+  unless package.validB do
+    throw s!"{package.source.render}: invalid hierarchy: missing child/top, duplicate inventory/net/port, direction/width/value mismatch, inout, or combinational cycle"
+  return package
+
+end Package
 
 /-- Exact byte identity supplied by an external frontend adapter.  The
 frontend's digest is diagnostic; `identity` remains collision-free inside
@@ -417,6 +582,9 @@ inductive LoweredAnyModule where
 /-- Checked lowering of module-owned logic. Child instances remain in the IR
 for hierarchy-preserving assembly and do not get flattened into this Design. -/
 def Module.lowerLocalDesign? (module : Module) : Except String LoweredModule := do
+  unless module.instances.isEmpty do
+    failAt module.source
+      "hierarchical imports require checked package lowering; single-module lowering cannot bind child nets"
   let domain ← checkModuleBoundary module
   let mut regs : List RegDecl := []
   let mut actions : List Act := []
@@ -490,6 +658,9 @@ ordinary Design wrapped by a proof that its behavior is only the pure
 input-to-output relation. -/
 def Module.lowerStatelessDesign? (module : Module) :
     Except String LoweredStatelessModule := do
+  unless module.instances.isEmpty do
+    failAt module.source
+      "hierarchical imports require checked package lowering; single-module lowering cannot bind child nets"
   checkStatelessBoundary module
   let mut outputs : List CombOutput := []
   for output in module.outputs do

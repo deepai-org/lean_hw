@@ -153,6 +153,16 @@ lean_exe importModule where
   root := `Tools.ImportModule
   supportInterpreter := true
 
+/-- Parse and structurally validate a closed schema-v2 RTL hierarchy. -/
+lean_exe checkImportPackage where
+  root := `Tools.CheckImportPackage
+  supportInterpreter := true
+
+/-- Lower and emit a checked schema-v2 hierarchy package. -/
+lean_exe importPackage where
+  root := `Tools.ImportPackage
+  supportInterpreter := true
+
 /-- Certified replay runner for the bidirectional SoC Fabric Gauntlet. -/
 lean_exe socFabricGauntletCampaign where
   root := `Tools.SoCFabricGauntletCampaignMain
