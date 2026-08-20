@@ -99,7 +99,7 @@ private theorem memResetFold_eq :
 /-- Structurally matching modules have exactly the same reset state. -/
 theorem Module.Matches.reset_eq {a b : Module} (h : a.Matches b) :
     a.reset = b.reset := by
-  rcases h with ⟨_, hregs, _, hmems⟩
+  rcases h with ⟨_, _, _, _, _, hregs, _, hmems, _⟩
   have hr : a.reset.regs = b.reset.regs := by
     simp only [Module.reset]
     rw [hregs]
@@ -112,7 +112,7 @@ theorem Module.Matches.reset_eq {a b : Module} (h : a.Matches b) :
 on every state. -/
 theorem Module.Matches.cycle_eq {a b : Module} (h : a.Matches b) (σ : St) :
     a.cycle σ = b.cycle σ := by
-  rcases h with ⟨_, hregs, _, hmems⟩
+  rcases h with ⟨_, _, _, _, _, hregs, _, hmems, _⟩
   have hr : (a.cycle σ).regs = (b.cycle σ).regs := by
     simp only [Module.cycle]
     rw [hregs]

@@ -22,6 +22,13 @@ often leave informal:
   nearby internal representation; a disclosed byte-for-byte association step
   binds those values to the host files presented to downstream tools.
 
+Existing synthesizable RTL can enter through a hashed, module-preserving,
+fail-closed import boundary. The frontend remains untrusted, unsupported
+constructs stop lowering, and original-vs-Loom RTL equivalence is recorded
+separately from compiler proofs and physical signoff. See
+[IMPORTING_RTL.md](IMPORTING_RTL.md) for the claim ladder, current supported
+subset, commands, and the checked-in KianV construct inventory.
+
 ## Quick start
 
 Install [Elan](https://lean-lang.org/lean4/doc/quickstart.html), then run:

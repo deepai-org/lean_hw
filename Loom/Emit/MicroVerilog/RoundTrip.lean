@@ -95,6 +95,10 @@ syntactic equality except for memory init functions beyond the printed
 (= complete, addressable) image. -/
 structure Module.Matches (a b : Module) : Prop where
   name : a.name = b.name
+  edge : a.edge = b.edge
+  clockName : a.clockName = b.clockName
+  resetName : a.resetName = b.resetName
+  resetActiveHigh : a.resetActiveHigh = b.resetActiveHigh
   regs : a.regs = b.regs
   outs : a.outs = b.outs
   mems : List.Forall₂ MemDef.Matches a.mems b.mems
@@ -105,6 +109,10 @@ structure Module.Matches (a b : Module) : Prop where
 /-- Decidable form of `Module.Matches`. -/
 def Module.matchesb (a b : Module) : Bool :=
   decide (a.name = b.name) &&
+  decide (a.edge = b.edge) &&
+  decide (a.clockName = b.clockName) &&
+  decide (a.resetName = b.resetName) &&
+  decide (a.resetActiveHigh = b.resetActiveHigh) &&
   decide (a.regs = b.regs) &&
   decide (a.outs = b.outs) &&
   decide (a.ins = b.ins) &&
@@ -113,8 +121,9 @@ def Module.matchesb (a b : Module) : Bool :=
 theorem Module.matchesb_sound {a b : Module} (h : a.matchesb b = true) :
     a.Matches b := by
   simp only [matchesb, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨hn, hr⟩, ho⟩, hi⟩, hm⟩ := h
-  exact ⟨hn, hr, ho, listAll2_sound _ (fun _ _ => MemDef.matchesb_sound) hm, hi⟩
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hn, hedge⟩, hclock⟩, hreset⟩, hpolarity⟩, hr⟩, ho⟩, hi⟩, hm⟩ := h
+  exact ⟨hn, hedge, hclock, hreset, hpolarity, hr, ho,
+    listAll2_sound _ (fun _ _ => MemDef.matchesb_sound) hm, hi⟩
 
 /-- The round-trip checker: print the module, parse the text back, and
 compare. `true` means the emitted TEXT determines the module (up to
@@ -219,5 +228,28 @@ private def demoOpen : Module where
 
 set_option maxRecDepth 10000 in
 example : demoOpen.parseCheck = true := by decide +kernel
+
+private def demoFalling : Module where
+  name := "demoFalling"
+  edge := .falling
+  ins := [⟨"d", 1⟩]
+  regs := [⟨"q", 1, 0#1, .reg 1 "d"⟩]
+  mems := []
+  outs := [⟨"q_out", 1, .reg 1 "q"⟩]
+
+private def demoNamedActiveLow : Module :=
+  { demoFalling with
+    name := "demoNamedActiveLow"
+    clockName := "clock_i"
+    resetName := "reset_ni"
+    resetActiveHigh := false }
+
+/- Falling-edge intent is part of the exact emitted-text identity and is
+recovered by the same kernel-checked round-trip boundary. -/
+set_option maxRecDepth 10000 in
+example : demoFalling.parseCheck = true := by decide +kernel
+
+set_option maxRecDepth 10000 in
+example : demoNamedActiveLow.parseCheck = true := by decide +kernel
 
 end Loom.Emit.MicroVerilog

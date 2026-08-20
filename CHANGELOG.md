@@ -7,6 +7,15 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **Fail-closed existing-RTL import foundation:** a source-located neutral IR,
+  checked JSON boundary, Yosys inventory/translation adapters, explicit
+  rising/falling edge and named synchronous-reset emission metadata,
+  hierarchy-preserving structural rendering, per-module sequential-equivalence
+  evidence, and a technology-neutral ordered signoff schema. A reproducible
+  KianV `chip_core` inventory records exact source/elaboration hashes and
+  current unsupported constructs without treating frontend parsing as a Loom
+  theorem.
+
 - **Compositional System build and external-island boundary:** sealed
   `SystemFragment`s now append exact ordered island compiler/simulator
   certificates, so parents certify only local islands and their selected

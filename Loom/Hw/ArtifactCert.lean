@@ -857,6 +857,10 @@ structure ModuleCert (d : Loom.Hw.Design) where
 def moduleMatches (d : Loom.Hw.Design)
     (out : Loom.Emit.MicroVerilog.Module) (cert : ModuleCert d) : Bool :=
   decide (out.name = d.name) &&
+  decide (out.edge = .rising) &&
+  decide (out.clockName = "clk") &&
+  decide (out.resetName = "rst") &&
+  decide (out.resetActiveHigh = true) &&
   regsMatch d.rules out.regs cert.regs &&
   memsMatch d out.mems cert.mems &&
   -- Register observability is the prefix; declared same-cycle views are the
@@ -873,8 +877,8 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
     (h : moduleMatches d out cert = true) :
     out.Matches (Compile.compile d) := by
   simp only [moduleMatches, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨⟨hn, hrcheck⟩, hmcheck⟩, horegcheck⟩, hocombcheck⟩,
-    hicheck⟩ := h
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨hn, hedge⟩, hclock⟩, hreset⟩, hpolarity⟩,
+    hrcheck⟩, hmcheck⟩, horegcheck⟩, hocombcheck⟩, hicheck⟩ := h
   have hr := regsMatch_sound d.rules out.regs cert.regs hrcheck
   have hm := memsMatch_sound d out.mems cert.mems hmcheck
   have horeg := outsMatch_sound d.exportedRegs
@@ -885,7 +889,11 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
     rw [← List.take_append_drop d.exportedRegs.length out.outs,
       horeg, hocomb]
     rfl
-  refine ⟨hn, ?_, ?_, ?_, ?_⟩
+  refine ⟨hn, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · simpa only [Compile.compile] using hedge
+  · simpa only [Compile.compile] using hclock
+  · simpa only [Compile.compile] using hreset
+  · simpa only [Compile.compile] using hpolarity
   · simpa only [Compile.compile] using hr
   · simpa only [Compile.compile] using ho
   · simpa only [Compile.compile, compiledMem, Compile.compilePort] using hm

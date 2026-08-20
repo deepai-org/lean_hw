@@ -147,6 +147,12 @@ lean_exe typedSoCTileEvidence where
   root := `Tools.TypedSoCTileEvidence
   supportInterpreter := true
 
+/-- Validate neutral import JSON, lower it to an ordinary Design, and emit
+edge-aware RTL. -/
+lean_exe importModule where
+  root := `Tools.ImportModule
+  supportInterpreter := true
+
 /-- Certified replay runner for the bidirectional SoC Fabric Gauntlet. -/
 lean_exe socFabricGauntletCampaign where
   root := `Tools.SoCFabricGauntletCampaignMain
