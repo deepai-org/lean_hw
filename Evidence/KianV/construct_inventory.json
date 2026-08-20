@@ -18,7 +18,7 @@
       "Yosys correctly parses and elaborates the identified source bytes and options",
       "cell classification does not establish behavioral equivalence"
     ],
-    "elaborated_sha256": "0b180b9fe84d20e1f3ddf0057756e0d2ce0aec4f9bcc10c2268d1a22a8f0ad24",
+    "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
     "status": "PASS",
     "tool": "Yosys 0.33 (git sha1 2584903a060)"
   },
@@ -224,13 +224,7 @@
       "source": "src/soc.v:709.1-772.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$reduce_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -328,10 +322,7 @@
       "source": "src/soc.v:853.1-893.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -463,11 +454,7 @@
       "source": "src/soc.v:967.1-1035.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -557,11 +544,7 @@
         "genvar"
       ],
       "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$mem_v2",
-        "$reduce_or"
+        "$mem_v2"
       ]
     },
     {
@@ -574,10 +557,11 @@
         "$logic_not": 19,
         "$logic_or": 1,
         "$lt": 2,
-        "$mux": 487,
+        "$mux": 619,
         "$not": 3,
-        "$pmux": 21,
+        "$or": 25,
         "$reduce_bool": 5,
+        "$reduce_or": 20,
         "$sdff": 40,
         "$shiftx": 2,
         "$sub": 4
@@ -834,7 +818,7 @@
           "source": "src/sdram/mt48lc16m16a2_ctrl.v:255.3-351.6"
         }
       ],
-      "combinational_cell_count": 803,
+      "combinational_cell_count": 959,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -1265,12 +1249,6 @@
       "source_file": "src/sdram/mt48lc16m16a2_ctrl.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$ge",
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$pmux",
-        "$reduce_bool",
         "$shiftx"
       ]
     },
@@ -1370,10 +1348,7 @@
       "source": "src/soc.v:853.1-893.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -1383,12 +1358,11 @@
         "$logic_and": 12,
         "$logic_not": 37,
         "$logic_or": 3,
-        "$mux": 199,
+        "$mux": 219,
         "$ne": 2,
         "$not": 1,
-        "$or": 2,
+        "$or": 8,
         "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache": 2,
-        "$pmux": 7,
         "$reduce_and": 2,
         "$reduce_bool": 2,
         "$sdff": 5,
@@ -1445,7 +1419,7 @@
           "source": "src/kianv_harris_edition/sv32_table_walk.v:141.3-167.6"
         }
       ],
-      "combinational_cell_count": 329,
+      "combinational_cell_count": 348,
       "instances": [
         {
           "blackbox": false,
@@ -1587,28 +1561,20 @@
       "source": "src/kianv_harris_edition/sv32_table_walk.v:24.1-308.10",
       "source_file": "src/kianv_harris_edition/sv32_table_walk.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$ne",
-        "$pmux",
-        "$reduce_and",
-        "$reduce_bool"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
       "cell_types": {
         "$eq": 18,
-        "$logic_not": 6,
+        "$logic_not": 2,
         "$mem_v2": 2,
-        "$mux": 148,
-        "$pmux": 4
+        "$mux": 160,
+        "$or": 4
       },
       "clock_domains": [],
       "clocked_cells": [],
-      "combinational_cell_count": 176,
+      "combinational_cell_count": 184,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -1663,9 +1629,7 @@
         "genvar"
       ],
       "unsupported_import_cells": [
-        "$logic_not",
-        "$mem_v2",
-        "$pmux"
+        "$mem_v2"
       ]
     },
     {
@@ -1778,7 +1742,6 @@
       "source_file": "src/cache_sram_D$.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_and",
         "$shift",
         "$shiftx"
       ]
@@ -1925,7 +1888,6 @@
       "source_file": "src/cache_sram_I$.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_and",
         "$shift",
         "$shiftx"
       ]
@@ -2155,11 +2117,7 @@
       "source": "src/soc.v:1037.1-1133.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -2399,11 +2357,11 @@
         "$add": 3,
         "$eq": 6,
         "$logic_and": 2,
-        "$logic_not": 4,
+        "$logic_not": 3,
         "$logic_or": 1,
         "$mem_v2": 1,
-        "$mux": 9,
-        "$pmux": 1,
+        "$mux": 12,
+        "$or": 1,
         "$sdff": 3,
         "$sub": 1
       },
@@ -2433,7 +2391,7 @@
           "source": "src/fifo.v:75.3-85.6"
         }
       ],
-      "combinational_cell_count": 27,
+      "combinational_cell_count": 29,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -2512,11 +2470,7 @@
       "source_file": "src/fifo.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$mem_v2",
-        "$pmux"
+        "$mem_v2"
       ]
     },
     {
@@ -2605,10 +2559,7 @@
       "source": "src/soc.v:818.1-851.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -2617,10 +2568,10 @@
         "$logic_and": 5,
         "$logic_not": 6,
         "$logic_or": 2,
-        "$mux": 25,
+        "$mux": 40,
         "$ne": 2,
+        "$or": 1,
         "$paramod$570b38d59ef2758ddb45cb679c2a1a19cf0ab83f\\sv32_table_walk": 1,
-        "$pmux": 7,
         "$reduce_or": 1,
         "$sdff": 2,
         "$sdffe": 11,
@@ -2713,7 +2664,7 @@
           "source": "src/kianv_harris_edition/sv32.v:102.3-110.6"
         }
       ],
-      "combinational_cell_count": 71,
+      "combinational_cell_count": 80,
       "instances": [
         {
           "blackbox": false,
@@ -2948,14 +2899,7 @@
       "source": "src/kianv_harris_edition/sv32.v:24.1-263.10",
       "source_file": "src/kianv_harris_edition/sv32.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$ne",
-        "$pmux",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -3181,11 +3125,7 @@
       "source": "src/soc.v:774.1-816.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$ge",
-        "$logic_and",
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -3486,13 +3426,7 @@
       "source": "src/soc.v:588.1-707.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$ne",
-        "$reduce_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -3585,9 +3519,7 @@
         "interface",
         "logic"
       ],
-      "unsupported_import_cells": [
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -3768,9 +3700,7 @@
       "systemverilog_features": [
         "generate"
       ],
-      "unsupported_import_cells": [
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -3862,9 +3792,7 @@
       "source": "src/soc.v:895.1-931.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -4493,9 +4421,7 @@
       "source": "src/kianv_harris_edition/datapath_unit.v:24.1-435.10",
       "source_file": "src/kianv_harris_edition/datapath_unit.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -4910,9 +4836,7 @@
       "source": "src/kianv_harris_edition/design_elements.v:81.1-96.10",
       "source_file": "src/kianv_harris_edition/design_elements.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -4977,9 +4901,7 @@
       "source": "src/kianv_harris_edition/design_elements.v:98.1-114.10",
       "source_file": "src/kianv_harris_edition/design_elements.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -5071,9 +4993,7 @@
       "source": "src/soc.v:933.1-965.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -5083,9 +5003,8 @@
         "$logic_and": 8,
         "$logic_not": 4,
         "$logic_or": 2,
-        "$mux": 21,
+        "$mux": 23,
         "$not": 6,
-        "$pmux": 1,
         "$reduce_and": 1,
         "$reduce_or": 2,
         "$sdff": 7,
@@ -5154,7 +5073,7 @@
           "source": "src/spi.v:65.3-124.6"
         }
       ],
-      "combinational_cell_count": 49,
+      "combinational_cell_count": 50,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -5297,14 +5216,7 @@
       "source": "src/spi.v:23.1-126.10",
       "source_file": "src/spi.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$pmux",
-        "$reduce_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -5315,11 +5227,10 @@
         "$ge": 4,
         "$logic_not": 2,
         "$lt": 6,
-        "$mux": 4,
+        "$mux": 25,
         "$ne": 1,
-        "$or": 1,
-        "$pmux": 1,
-        "$reduce_or": 1,
+        "$or": 3,
+        "$reduce_or": 6,
         "$shl": 1,
         "$shr": 1,
         "$sshr": 1,
@@ -5328,7 +5239,7 @@
       },
       "clock_domains": [],
       "clocked_cells": [],
-      "combinational_cell_count": 49,
+      "combinational_cell_count": 76,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -5368,11 +5279,6 @@
       "source_file": "src/kianv_harris_edition/alu.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$ge",
-        "$logic_not",
-        "$ne",
-        "$pmux",
-        "$reduce_or",
         "$sshr"
       ]
     },
@@ -5382,15 +5288,16 @@
         "$and": 1,
         "$eq": 21,
         "$logic_and": 2,
-        "$logic_not": 6,
+        "$logic_not": 3,
         "$logic_or": 1,
         "$mem_v2": 1,
-        "$mux": 5,
-        "$pmux": 3
+        "$mux": 23,
+        "$or": 3,
+        "$reduce_or": 3
       },
       "clock_domains": [],
       "clocked_cells": [],
-      "combinational_cell_count": 39,
+      "combinational_cell_count": 57,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -5442,11 +5349,7 @@
       "source_file": "src/kianv_harris_edition/alu_decoder.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$mem_v2",
-        "$pmux"
+        "$mem_v2"
       ]
     },
     {
@@ -5762,12 +5665,7 @@
       "source": "src/clint.v:22.1-94.10",
       "source_file": "src/clint.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$ge",
-        "$logic_and",
-        "$logic_not",
-        "$reduce_and"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -6176,10 +6074,7 @@
       "source": "src/kianv_harris_edition/control_unit.v:24.1-240.10",
       "source_file": "src/kianv_harris_edition/control_unit.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -6240,10 +6135,7 @@
       "source": "src/kianv_harris_edition/csr_decoder.v:23.1-98.10",
       "source_file": "src/kianv_harris_edition/csr_decoder.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -6473,12 +6365,11 @@
         "$logic_not": 5,
         "$logic_or": 7,
         "$lt": 2,
-        "$mux": 436,
+        "$mux": 517,
         "$not": 3,
-        "$or": 12,
+        "$or": 28,
         "$paramod\\counter\\WIDTH=s32'00000000000000000000000001000000": 3,
-        "$pmux": 5,
-        "$reduce_or": 1,
+        "$reduce_or": 15,
         "$sdff": 29,
         "$shl": 1,
         "$sub": 1,
@@ -6666,7 +6557,7 @@
           "source": "src/kianv_harris_edition/csr_unit.v:191.3-251.6"
         }
       ],
-      "combinational_cell_count": 600,
+      "combinational_cell_count": 706,
       "instances": [
         {
           "blackbox": false,
@@ -7073,14 +6964,7 @@
       "source": "src/kianv_harris_edition/csr_unit.v:24.1-479.10",
       "source_file": "src/kianv_harris_edition/csr_unit.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$ge",
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$pmux",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -7089,14 +6973,14 @@
         "$logic_and": 6,
         "$logic_not": 7,
         "$logic_or": 1,
-        "$mux": 55,
+        "$mux": 76,
         "$ne": 4,
         "$not": 10,
+        "$or": 1,
         "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_D$": 1,
-        "$pmux": 9,
         "$reduce_and": 1,
         "$reduce_bool": 1,
-        "$reduce_or": 10,
+        "$reduce_or": 11,
         "$sdff": 6,
         "$sdffe": 4
       },
@@ -7168,7 +7052,7 @@
           "source": "src/dcache.v:232.3-281.6"
         }
       ],
-      "combinational_cell_count": 142,
+      "combinational_cell_count": 156,
       "instances": [
         {
           "blackbox": false,
@@ -7337,16 +7221,7 @@
       "systemverilog_features": [
         "indexed_part_select"
       ],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$ne",
-        "$pmux",
-        "$reduce_and",
-        "$reduce_bool",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -7357,11 +7232,10 @@
         "$logic_and": 2,
         "$logic_not": 18,
         "$logic_or": 1,
-        "$mux": 59,
+        "$mux": 71,
         "$ne": 14,
         "$not": 6,
-        "$or": 3,
-        "$pmux": 6,
+        "$or": 6,
         "$reduce_and": 10,
         "$reduce_bool": 1,
         "$sdffe": 11,
@@ -7444,7 +7318,7 @@
           "source": "src/kianv_harris_edition/divider.v:101.3-199.6"
         }
       ],
-      "combinational_cell_count": 157,
+      "combinational_cell_count": 166,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -7582,13 +7456,6 @@
       "source_file": "src/kianv_harris_edition/divider.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$ne",
-        "$pmux",
-        "$reduce_and",
-        "$reduce_bool",
         "$shiftx"
       ]
     },
@@ -7642,11 +7509,12 @@
       "cell_types": {
         "$eq": 4,
         "$logic_not": 1,
-        "$pmux": 1
+        "$mux": 5,
+        "$reduce_or": 1
       },
       "clock_domains": [],
       "clocked_cells": [],
-      "combinational_cell_count": 6,
+      "combinational_cell_count": 11,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -7675,10 +7543,7 @@
       "source": "src/kianv_harris_edition/extend.v:23.1-39.10",
       "source_file": "src/kianv_harris_edition/extend.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$pmux"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -7762,9 +7627,9 @@
       "cell_types": {
         "$eq": 3,
         "$logic_not": 2,
-        "$mux": 3,
+        "$mux": 6,
         "$ne": 3,
-        "$pmux": 1,
+        "$or": 1,
         "$reduce_and": 3,
         "$reduce_or": 1,
         "$sdff": 1,
@@ -7802,7 +7667,7 @@
           "source": "src/gpio.v:45.3-45.57"
         }
       ],
-      "combinational_cell_count": 16,
+      "combinational_cell_count": 19,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -7900,23 +7765,17 @@
       "source": "src/gpio.v:22.1-73.10",
       "source_file": "src/gpio.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$ne",
-        "$pmux",
-        "$reduce_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
       "cell_types": {
         "$eq": 13,
         "$logic_not": 4,
-        "$mux": 13,
+        "$mux": 23,
         "$not": 3,
+        "$or": 1,
         "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$": 1,
-        "$pmux": 4,
         "$reduce_or": 3,
         "$sdff": 3
       },
@@ -7946,7 +7805,7 @@
           "source": "src/icache.v:150.3-154.6"
         }
       ],
-      "combinational_cell_count": 40,
+      "combinational_cell_count": 47,
       "instances": [
         {
           "blackbox": false,
@@ -8044,11 +7903,7 @@
       "source": "src/icache.v:23.1-199.10",
       "source_file": "src/icache.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$pmux",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -8294,13 +8149,7 @@
       "source": "src/kianv_harris_edition/interrupt_controller.v:24.1-140.10",
       "source_file": "src/kianv_harris_edition/interrupt_controller.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$ge",
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -8346,9 +8195,7 @@
       "source": "src/kianv_harris_edition/load_alignment.v:23.1-60.10",
       "source_file": "src/kianv_harris_edition/load_alignment.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -8399,10 +8246,7 @@
       "source": "src/kianv_harris_edition/load_decoder.v:24.1-62.10",
       "source_file": "src/kianv_harris_edition/load_decoder.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -8412,9 +8256,9 @@
         "$logic_and": 23,
         "$logic_not": 32,
         "$logic_or": 23,
-        "$mux": 112,
-        "$or": 17,
-        "$pmux": 20,
+        "$mux": 306,
+        "$or": 52,
+        "$reduce_or": 35,
         "$sdff": 1,
         "$sdffe": 1
       },
@@ -8438,7 +8282,7 @@
           "source": "src/kianv_harris_edition/main_fsm.v:272.3-275.6"
         }
       ],
-      "combinational_cell_count": 494,
+      "combinational_cell_count": 738,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -8797,12 +8641,7 @@
       "source": "src/kianv_harris_edition/main_fsm.v:24.1-1006.10",
       "source_file": "src/kianv_harris_edition/main_fsm.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$pmux"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -8917,11 +8756,7 @@
       "source": "src/soc.v:1135.1-1179.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$ne",
-        "$reduce_and"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -9134,13 +8969,7 @@
       "source": "src/kianv_harris_edition/multiplier.v:24.1-183.10",
       "source_file": "src/kianv_harris_edition/multiplier.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$ne",
-        "$reduce_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -9186,9 +9015,7 @@
       "source": "src/kianv_harris_edition/multiplier_decoder.v:23.1-53.10",
       "source_file": "src/kianv_harris_edition/multiplier_decoder.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -9559,12 +9386,7 @@
       "systemverilog_features": [
         "indexed_part_select"
       ],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$reduce_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -9633,9 +9455,7 @@
       "source_file": "src/kianv_harris_edition/register_file.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_and",
-        "$mem_v2",
-        "$reduce_bool"
+        "$mem_v2"
       ]
     },
     {
@@ -9645,14 +9465,14 @@
         "$and": 3,
         "$eq": 19,
         "$logic_not": 6,
-        "$mux": 17,
+        "$mux": 33,
         "$ne": 16,
         "$neg": 2,
         "$not": 3,
-        "$or": 1,
+        "$or": 3,
         "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo": 1,
-        "$pmux": 6,
         "$reduce_and": 5,
+        "$reduce_or": 1,
         "$sdff": 2,
         "$sdffe": 6,
         "$shift": 2,
@@ -9714,7 +9534,7 @@
           "source": "src/rx_uart.v:71.3-134.6"
         }
       ],
-      "combinational_cell_count": 84,
+      "combinational_cell_count": 97,
       "instances": [
         {
           "blackbox": false,
@@ -9828,10 +9648,6 @@
       "source_file": "src/rx_uart.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_not",
-        "$ne",
-        "$pmux",
-        "$reduce_and",
         "$shift"
       ]
     },
@@ -10203,15 +10019,7 @@
       "source": "src/soc.v:25.1-586.10",
       "source_file": "src/soc.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$ge",
-        "$le",
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$reduce_and",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -10220,10 +10028,10 @@
         "$and": 1,
         "$eq": 26,
         "$logic_not": 10,
-        "$mux": 38,
+        "$mux": 53,
         "$ne": 30,
         "$not": 5,
-        "$pmux": 9,
+        "$or": 3,
         "$reduce_and": 6,
         "$sdff": 2,
         "$sdffe": 14,
@@ -10333,7 +10141,7 @@
           "source": "src/spi_nor_flash.v:66.3-182.6"
         }
       ],
-      "combinational_cell_count": 128,
+      "combinational_cell_count": 137,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -10510,12 +10318,7 @@
       "source": "src/spi_nor_flash.v:22.1-183.10",
       "source_file": "src/spi_nor_flash.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$ne",
-        "$pmux",
-        "$reduce_and"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -10619,13 +10422,13 @@
       "blackbox": false,
       "cell_types": {
         "$eq": 15,
-        "$logic_not": 7,
-        "$mux": 10,
-        "$pmux": 5
+        "$logic_not": 3,
+        "$mux": 21,
+        "$or": 1
       },
       "clock_domains": [],
       "clocked_cells": [],
-      "combinational_cell_count": 37,
+      "combinational_cell_count": 40,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -10664,10 +10467,7 @@
       "source": "src/kianv_harris_edition/store_alignment.v:25.1-63.10",
       "source_file": "src/kianv_harris_edition/store_alignment.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$pmux"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -10718,10 +10518,7 @@
       "source": "src/kianv_harris_edition/store_decoder.v:24.1-56.10",
       "source_file": "src/kianv_harris_edition/store_decoder.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_not",
-        "$reduce_or"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -10729,10 +10526,8 @@
         "$eq": 2,
         "$logic_and": 7,
         "$logic_not": 6,
-        "$mux": 102,
-        "$not": 5,
+        "$mux": 107,
         "$or": 2,
-        "$pmux": 5,
         "$sdff": 4
       },
       "clock_domains": [
@@ -10767,7 +10562,7 @@
           "source": "src/kianv_harris_edition/sv32_translate_data_to_physical.v:68.3-78.6"
         }
       ],
-      "combinational_cell_count": 129,
+      "combinational_cell_count": 124,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -10880,11 +10675,7 @@
       "source": "src/kianv_harris_edition/sv32_translate_data_to_physical.v:24.1-162.10",
       "source_file": "src/kianv_harris_edition/sv32_translate_data_to_physical.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$pmux"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -10893,10 +10684,8 @@
         "$logic_and": 7,
         "$logic_not": 6,
         "$logic_or": 1,
-        "$mux": 65,
-        "$not": 5,
+        "$mux": 70,
         "$or": 1,
-        "$pmux": 5,
         "$sdff": 4
       },
       "clock_domains": [
@@ -10931,7 +10720,7 @@
           "source": "src/kianv_harris_edition/sv32_translate_instruction_to_physical.v:69.3-79.6"
         }
       ],
-      "combinational_cell_count": 92,
+      "combinational_cell_count": 87,
       "instances": [],
       "latch_cell_count": 0,
       "latch_cell_types": [],
@@ -11034,12 +10823,7 @@
       "source": "src/kianv_harris_edition/sv32_translate_instruction_to_physical.v:24.1-149.10",
       "source_file": "src/kianv_harris_edition/sv32_translate_instruction_to_physical.v",
       "systemverilog_features": [],
-      "unsupported_import_cells": [
-        "$logic_and",
-        "$logic_not",
-        "$logic_or",
-        "$pmux"
-      ]
+      "unsupported_import_cells": []
     },
     {
       "blackbox": false,
@@ -11100,14 +10884,14 @@
         "$and": 1,
         "$eq": 16,
         "$logic_not": 5,
-        "$mux": 7,
+        "$mux": 21,
         "$ne": 7,
         "$not": 4,
-        "$or": 1,
+        "$or": 3,
         "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo": 1,
-        "$pmux": 5,
         "$reduce_and": 4,
         "$reduce_bool": 1,
+        "$reduce_or": 1,
         "$sdff": 1,
         "$sdffe": 6,
         "$shiftx": 1,
@@ -11163,7 +10947,7 @@
           "source": "src/tx_uart.v:74.3-156.6"
         }
       ],
-      "combinational_cell_count": 58,
+      "combinational_cell_count": 70,
       "instances": [
         {
           "blackbox": false,
@@ -11275,11 +11059,6 @@
       "source_file": "src/tx_uart.v",
       "systemverilog_features": [],
       "unsupported_import_cells": [
-        "$logic_not",
-        "$ne",
-        "$pmux",
-        "$reduce_and",
-        "$reduce_bool",
         "$shiftx"
       ]
     }
@@ -11526,13 +11305,13 @@
   ],
   "summary": {
     "blackbox_modules": 0,
-    "blocked_modules": 69,
+    "blocked_modules": 48,
     "falling_edge_modules": 1,
     "latch_modules": 0,
     "memory_modules": 6,
     "module_count": 74,
     "rising_edge_modules": 37,
-    "unsupported_cell_modules": 56
+    "unsupported_cell_modules": 16
   },
   "top": "chip_core"
 }

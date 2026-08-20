@@ -45,3 +45,9 @@ python3 scripts/verilog_inventory.py \
   --json-out "$output_dir/construct_inventory.json" \
   --markdown-out "$output_dir/construct_inventory.md" \
   --elaborated-out "$output_dir/elaborated.json"
+
+python3 scripts/import_coverage.py \
+  --yosys-json "$output_dir/elaborated.json" \
+  --inventory "$output_dir/construct_inventory.json" \
+  --json-out "$output_dir/import_coverage.json" \
+  --markdown-out "$output_dir/import_coverage.md"

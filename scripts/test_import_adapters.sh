@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 -m py_compile scripts/verilog_inventory.py scripts/yosys_to_loom_ir.py \
+  scripts/import_coverage.py \
   scripts/rtl_equivalence.py
 
 if ! command -v yosys >/dev/null 2>&1; then
@@ -28,6 +29,20 @@ python3 scripts/yosys_to_loom_ir.py \
   --inventory "$work/inventory.json" \
   --module fixture_gold \
   --output "$work/fixture.import.json"
+
+python3 scripts/import_coverage.py \
+  --yosys-json "$work/elaborated.json" \
+  --inventory "$work/inventory.json" \
+  --json-out "$work/coverage.json" \
+  --markdown-out "$work/coverage.md"
+
+python3 - "$work/coverage.json" <<'PY'
+import json
+import sys
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+assert report["summary"] == {
+    "accepted_modules": 1, "blocked_modules": 0, "module_count": 1}
+PY
 
 lake exe importModule "$work/fixture.import.json" "$work/fixture.loom.v"
 
@@ -66,6 +81,32 @@ python3 scripts/rtl_equivalence.py \
   --assumption "falling-edge clock and active-low synchronous reset ports correspond" \
   --log "$work/active-low.equiv.log" \
   --output "$work/active-low.equiv.json"
+
+python3 scripts/verilog_inventory.py \
+  --top import_logic \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_logic.v \
+  --json-out "$work/logic.inventory.json" \
+  --markdown-out "$work/logic.inventory.md" \
+  --elaborated-out "$work/logic.elaborated.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/logic.elaborated.json" \
+  --inventory "$work/logic.inventory.json" \
+  --module import_logic \
+  --output "$work/logic.import.json"
+
+lake exe importModule "$work/logic.import.json" "$work/logic.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_logic_import \
+  --gold-top import_logic \
+  --revised-top import_logic \
+  --gold-file Tests/fixtures/import_logic.v \
+  --revised-file "$work/logic.loom.v" \
+  --assumption "clock and active-high synchronous reset ports correspond" \
+  --log "$work/logic.equiv.log" \
+  --output "$work/logic.equiv.json"
 
 python3 scripts/verilog_inventory.py \
   --top import_resetless \
@@ -140,7 +181,7 @@ if python3 scripts/rtl_equivalence.py \
 fi
 
 python3 - "$work/pass.json" "$work/fail.json" "$work/import-pass.json" \
-    "$work/active-low.equiv.json" <<'PY'
+    "$work/active-low.equiv.json" "$work/logic.equiv.json" <<'PY'
 import json
 import sys
 
@@ -148,10 +189,12 @@ passed = json.load(open(sys.argv[1], encoding="utf-8"))
 failed = json.load(open(sys.argv[2], encoding="utf-8"))
 imported = json.load(open(sys.argv[3], encoding="utf-8"))
 active_low = json.load(open(sys.argv[4], encoding="utf-8"))
+logic = json.load(open(sys.argv[5], encoding="utf-8"))
 assert passed["status"] == "PASS"
 assert failed["status"] == "FAIL"
 assert imported["status"] == "PASS"
 assert active_low["status"] == "PASS"
+assert logic["status"] == "PASS"
 assert all(len(item["sha256"]) == 64 for item in passed["artifacts"])
 assert passed["run"]["version"]
 assert passed["run"]["invocation"]

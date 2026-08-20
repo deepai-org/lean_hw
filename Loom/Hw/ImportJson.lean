@@ -83,6 +83,9 @@ private def parseUnaryOp (value : String) : Except String UnaryOp :=
   match value with
   | "bit_not" => pure .bitNot
   | "negate" => pure .negate
+  | "reduce_bool" => pure .reduceBool
+  | "reduce_and" => pure .reduceAnd
+  | "logical_not" => pure .logicalNot
   | other => throw s!"unknown unary operation '{other}'"
 
 private def parseBinaryOp (value : String) : Except String BinaryOp :=

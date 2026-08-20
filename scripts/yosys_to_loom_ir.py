@@ -28,6 +28,11 @@ SUPPORTED_COMB = {
     "$add": "add", "$sub": "sub", "$mul": "mul", "$div": "unsigned_div",
     "$mod": "unsigned_rem", "$shl": "shift_left", "$shr": "logical_shift_right",
     "$eq": "equal", "$lt": "less_than", "$mux": "mux",
+    "$logic_and": "logical_and", "$logic_or": "logical_or",
+    "$logic_not": "logical_not", "$reduce_and": "reduce_and",
+    "$reduce_or": "reduce_bool", "$reduce_bool": "reduce_bool",
+    "$ne": "not_equal", "$ge": "greater_equal", "$gt": "greater_than",
+    "$le": "less_equal",
 }
 
 
@@ -88,6 +93,22 @@ def resize(value: dict[str, Any], width: int, signed: bool,
         return {"kind": "sign_extend" if signed else "zero_extend",
                 "width": width, "value": value, "source": src}
     return slice_expr(value, 0, width, src)
+
+
+def unary(width: int, op: str, value: dict[str, Any],
+          src: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "unary", "width": width, "op": op,
+            "value": value, "source": src}
+
+
+def binary(width: int, op: str, left: dict[str, Any], right: dict[str, Any],
+           src: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "binary", "width": width, "op": op,
+            "left": left, "right": right, "source": src}
+
+
+def booleanize(value: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    return unary(1, "reduce_bool", value, src)
 
 
 @dataclass
@@ -235,14 +256,31 @@ class ModuleTranslator:
         if kind in SEQUENTIAL:
             name = self.registers.get(tuple(bits), self.public_name(bits, cell_name.strip("\\$")))
             result = signal(width, name, src)
+        elif kind in self.modules:
+            self.block("instance_output_binding",
+                       f"child instance output {cell_name}.{port} requires a checked hierarchy net",
+                       src)
+            result = literal(max(width, 1), 0, src)
+        elif kind.startswith("$mem"):
+            self.block("memory_cell", f"memory cell {kind} requires memory lowering", src)
+            result = literal(max(width, 1), 0, src)
         elif kind not in SUPPORTED_COMB:
             self.block("yosys_cell", f"unsupported cell type {kind}", src)
             result = literal(max(width, 1), 0, src)
         elif kind in ("$not", "$neg"):
             value = resize(self.expr(connections.get("A", []), src), width,
                            bool(decode_parameter(params.get("A_SIGNED"))), src)
-            result = {"kind": "unary", "width": width,
-                      "op": SUPPORTED_COMB[kind], "value": value, "source": src}
+            result = unary(width, SUPPORTED_COMB[kind], value, src)
+        elif kind in ("$logic_not", "$reduce_and", "$reduce_or", "$reduce_bool"):
+            value = self.expr(connections.get("A", []), src)
+            reduced = unary(1, SUPPORTED_COMB[kind], value, src)
+            result = resize(reduced, width, False, src)
+        elif kind in ("$logic_and", "$logic_or"):
+            left = booleanize(self.expr(connections.get("A", []), src), src)
+            right = booleanize(self.expr(connections.get("B", []), src), src)
+            reduced = binary(1, "bit_and" if kind == "$logic_and" else "bit_or",
+                             left, right, src)
+            result = resize(reduced, width, False, src)
         elif kind == "$mux":
             yes = resize(self.expr(connections.get("B", []), src), width, False, src)
             no = resize(self.expr(connections.get("A", []), src), width, False, src)
@@ -253,23 +291,36 @@ class ModuleTranslator:
             left_signed = bool(decode_parameter(params.get("A_SIGNED")))
             right_signed = bool(decode_parameter(params.get("B_SIGNED")))
             op = SUPPORTED_COMB[kind]
-            if kind in ("$eq", "$lt"):
+            if kind in ("$eq", "$ne", "$lt", "$le", "$ge", "$gt"):
                 operand_width = max(len(connections.get("A", [])), len(connections.get("B", [])))
                 left = resize(self.expr(connections.get("A", []), src), operand_width,
                               left_signed, src)
                 right = resize(self.expr(connections.get("B", []), src), operand_width,
                                right_signed, src)
-                result = {"kind": "binary", "width": 1,
-                          "op": "signed_less_than" if kind == "$lt" and left_signed and right_signed
-                          else "unsigned_less_than" if kind == "$lt" else "equal",
-                          "left": left, "right": right, "source": src}
+                less_op = ("signed_less_than" if left_signed and right_signed
+                           else "unsigned_less_than")
+                if kind == "$eq":
+                    compared = binary(1, "equal", left, right, src)
+                elif kind == "$ne":
+                    compared = unary(1, "logical_not",
+                                     binary(1, "equal", left, right, src), src)
+                elif kind == "$lt":
+                    compared = binary(1, less_op, left, right, src)
+                elif kind == "$gt":
+                    compared = binary(1, less_op, right, left, src)
+                elif kind == "$ge":
+                    compared = unary(1, "logical_not",
+                                     binary(1, less_op, left, right, src), src)
+                else:  # $le
+                    compared = unary(1, "logical_not",
+                                     binary(1, less_op, right, left, src), src)
+                result = resize(compared, width, False, src)
             else:
                 left = resize(self.expr(connections.get("A", []), src), width,
                               left_signed, src)
                 right = resize(self.expr(connections.get("B", []), src), width,
                                right_signed, src)
-                result = {"kind": "binary", "width": width, "op": op,
-                          "left": left, "right": right, "source": src}
+                result = binary(width, op, left, right, src)
         self.in_progress.remove(key)
         self.expression_cache[key] = result
         return result
