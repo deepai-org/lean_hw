@@ -47,6 +47,13 @@ children; both original-vs-emitted hierarchy equivalence fixtures pass.
 Single-module emission refuses hierarchical modules instead of leaving child
 nets dangling.
 
+Four-state constants now have an explicit implementation-refinement path.
+Hash-bound policies classify stable sites and select zero/one only for unknown
+bits; the trusted checker proves the concrete value preserves every known bit.
+Unclassified or ambiguous sites fail closed, and the equivalence adapter can
+apply the same named concretization to both original and emitted RTL. This is
+not yet applied wholesale to KianV, and `$shiftx` remains a separate blocker.
+
 For the exact checked-in KianV elaboration, 37 of 74 modules currently produce
 accepted neutral import IR; 37 remain blocked. Child-instance binding is no
 longer a blocker. The dominant explicit blockers are four-state constants

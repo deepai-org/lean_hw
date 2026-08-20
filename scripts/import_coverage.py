@@ -42,6 +42,16 @@ def render_markdown(report: dict) -> str:
         "",
     ]
     lines += [f"- `{kind}`: {count} module(s)" for kind, count in blockers.items()]
+    sites = report.get("four_state_sites", [])
+    if sites:
+        lines += ["", "## Unclassified four-state sites", "",
+                  "These stable identifiers are the exact units selected by an explicit refinement policy.",
+                  "", "| Module | Site | Pattern | Source |", "|---|---|---|---|"]
+        for site in sites:
+            source = site["source"]
+            lines.append(
+                f"| `{site['module']}` | `{site['site']}` | `{site['pattern']}` | "
+                f"`{source['file']}:{source['start_line']}` |")
     lines += ["", "## Per-module status", "", "| Module | Status | Blocker classes |",
               "|---|---|---|"]
     for module in report["modules"]:
@@ -80,6 +90,14 @@ def main() -> int:
             "blockers": translated["unsupported"],
         })
     accepted = sum(record["status"] == "ACCEPTED" for record in records)
+    four_state_sites = []
+    for record in records:
+        for blocker in record["blockers"]:
+            metadata = blocker.get("metadata", {})
+            if blocker["kind"] == "four_state_constant" and "site" in metadata:
+                four_state_sites.append({
+                    "module": record["name"], "source": blocker["source"], **metadata,
+                })
     report = {
         "schema": 1,
         "elaborated_sha256": actual,
@@ -90,6 +108,7 @@ def main() -> int:
             "blocked_modules": len(records) - accepted,
         },
         "blocker_module_counts": dict(sorted(blocker_modules.items())),
+        "four_state_sites": four_state_sites,
         "modules": records,
     }
     args.json_out.parent.mkdir(parents=True, exist_ok=True)

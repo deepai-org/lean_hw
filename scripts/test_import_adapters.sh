@@ -140,6 +140,69 @@ python3 scripts/rtl_equivalence.py \
   --output "$work/stateless.equiv.json"
 
 python3 scripts/verilog_inventory.py \
+  --top import_four_state \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_four_state.v \
+  --json-out "$work/four-state.inventory.json" \
+  --markdown-out "$work/four-state.inventory.md" \
+  --elaborated-out "$work/four-state.elaborated.json"
+
+if python3 scripts/yosys_to_loom_ir.py \
+    --yosys-json "$work/four-state.elaborated.json" \
+    --inventory "$work/four-state.inventory.json" \
+    --module import_four_state \
+    --output "$work/four-state-unclassified.import.json"; then
+  echo "import adapters: unclassified four-state value unexpectedly accepted" >&2
+  exit 1
+fi
+
+if python3 scripts/yosys_to_loom_ir.py \
+    --yosys-json "$work/four-state.elaborated.json" \
+    --inventory "$work/four-state.inventory.json" \
+    --module import_four_state \
+    --four-state-policy Tests/fixtures/import_four_state_policy_ambiguous.json \
+    --output "$work/four-state-ambiguous.import.json"; then
+  echo "import adapters: ambiguous four-state policy unexpectedly accepted" >&2
+  exit 1
+fi
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/four-state.elaborated.json" \
+  --inventory "$work/four-state.inventory.json" \
+  --module import_four_state \
+  --four-state-policy Tests/fixtures/import_four_state_policy.json \
+  --output "$work/four-state.import.json"
+
+lake exe importModule "$work/four-state.import.json" "$work/four-state.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_four_state_refinement \
+  --gold-top import_four_state \
+  --revised-top import_four_state \
+  --gold-file Tests/fixtures/import_four_state.v \
+  --revised-file "$work/four-state.loom.v" \
+  --undef-policy zero \
+  --assumption "the identified policy selects zero for source-unknown bits" \
+  --log "$work/four-state.equiv.log" \
+  --output "$work/four-state.equiv.json"
+
+python3 - "$work/four-state.import.json" \
+    "$work/four-state.import.json.manifest.json" \
+    "$work/four-state.equiv.json" <<'PY'
+import json
+import sys
+
+module = json.load(open(sys.argv[1], encoding="utf-8"))["module"]
+manifest = json.load(open(sys.argv[2], encoding="utf-8"))
+equivalence = json.load(open(sys.argv[3], encoding="utf-8"))
+assert not module["unsupported"]
+assert any(artifact["role"] == "four_state_policy"
+           for artifact in manifest["artifacts"])
+assert equivalence["status"] == "PASS"
+assert equivalence["four_state_concretization"] == "zero"
+PY
+
+python3 scripts/verilog_inventory.py \
   --top import_hierarchy \
   --source-root "$PWD" \
   --source Tests/fixtures/import_hierarchy.v \

@@ -66,13 +66,31 @@ def location(src: str, fallback: str = "<yosys>") -> dict[str, Any]:
     if not match:
         return {"file": fallback, "start_line": 1, "start_column": 0,
                 "end_line": 1, "end_column": 0}
-    return {"file": match.group(1), "start_line": int(match.group(2)),
-            "start_column": int(match.group(3)), "end_line": int(match.group(4)),
+    start_line = int(match.group(2))
+    end_line = int(match.group(4))
+    # Yosys uses 0.0-0.0 for generated netlist objects. Preserve the file but
+    # map that sentinel to a valid synthetic source position; site hashes still
+    # distinguish generated partial values by module and bit pattern.
+    if start_line == 0 and end_line == 0:
+        start_line = end_line = 1
+    return {"file": match.group(1), "start_line": start_line,
+            "start_column": int(match.group(3)), "end_line": end_line,
             "end_column": int(match.group(5))}
 
 
 def literal(width: int, value: int, src: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "literal", "width": width, "value": value, "source": src}
+
+
+def partial_pattern(bits: list[str]) -> str:
+    """Render a bounded diagnostic without dumping hundreds of identical bits."""
+    msb_first = "".join(reversed(bits))
+    if len(set(bits)) == 1:
+        return f"{len(bits)}'{bits[0]}"
+    if len(bits) <= 64:
+        return f"{len(bits)}'{msb_first}"
+    unknown = sum(bit not in ("0", "1") for bit in bits)
+    return f"width={len(bits)} unknown={unknown} pattern_sha256={sha256(msb_first.encode())[:16]}"
 
 
 def signal(width: int, name: str, src: dict[str, Any]) -> dict[str, Any]:
@@ -153,8 +171,53 @@ class Driver:
     offset: int
 
 
+class FourStatePolicy:
+    CLASSIFICATIONS = {
+        "synthesis_dont_care", "unreachable_decode", "undriven_behavior",
+        "uninitialized_state_or_memory",
+    }
+
+    def __init__(self, document: dict[str, Any]):
+        if document.get("schema") != 1:
+            raise ValueError("unsupported four-state policy schema")
+        self.rules = document.get("rules")
+        if not isinstance(self.rules, list) or not self.rules:
+            raise ValueError("four-state policy must contain at least one rule")
+        names = []
+        for rule in self.rules:
+            required = {"name", "module", "file", "line_start", "line_end",
+                        "classification", "fill", "rationale"}
+            if not isinstance(rule, dict) or not required.issubset(rule):
+                raise ValueError("four-state policy rule is incomplete")
+            if rule["classification"] not in self.CLASSIFICATIONS:
+                raise ValueError(f"unknown four-state classification {rule['classification']!r}")
+            if rule["fill"] not in ("zero", "one"):
+                raise ValueError("four-state fill must be 'zero' or 'one'")
+            if (not rule["name"] or not rule["rationale"] or
+                    not isinstance(rule["line_start"], int) or
+                    not isinstance(rule["line_end"], int) or
+                    rule["line_start"] < 0 or rule["line_end"] < rule["line_start"]):
+                raise ValueError("four-state policy rule has invalid metadata")
+            if "site" in rule and (not isinstance(rule["site"], str) or
+                                   not rule["site"].startswith("four_state_")):
+                raise ValueError("four-state policy site must be a stable four_state_ identifier")
+            names.append(rule["name"])
+        if len(names) != len(set(names)):
+            raise ValueError("four-state policy rule names must be unique")
+
+    def matching(self, site: str, module: str,
+                 source: dict[str, Any]) -> list[dict[str, Any]]:
+        line = source["start_line"]
+        return [rule for rule in self.rules
+                if rule.get("site", site) == site
+                and rule["module"] in ("*", module)
+                and rule["file"] in ("*", source["file"])
+                and rule["line_start"] <= line <= rule["line_end"]]
+
+
 class ModuleTranslator:
-    def __init__(self, name: str, module: dict[str, Any], modules: dict[str, Any]):
+    def __init__(self, name: str, module: dict[str, Any], modules: dict[str, Any],
+                 four_state_policy: FourStatePolicy | None = None):
         self.name = name
         self.module = module
         self.modules = modules
@@ -168,6 +231,7 @@ class ModuleTranslator:
         self.expression_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.in_progress: set[tuple[str, str]] = set()
         self.unsupported: list[dict[str, Any]] = []
+        self.four_state_policy = four_state_policy
         self._index()
 
     def _index(self) -> None:
@@ -215,9 +279,12 @@ class ModuleTranslator:
         return ("__loom_child_" + self.legal_identifier(cell_name) +
                 "__" + self.legal_identifier(port))
 
-    def block(self, kind: str, detail: str, src: str | dict[str, Any]) -> None:
+    def block(self, kind: str, detail: str, src: str | dict[str, Any],
+              metadata: dict[str, Any] | None = None) -> None:
         source = src if isinstance(src, dict) else location(src, self.module_source["file"])
         record = {"kind": kind, "detail": detail, "source": source}
+        if metadata is not None:
+            record["metadata"] = metadata
         if record not in self.unsupported:
             self.unsupported.append(record)
 
@@ -225,8 +292,47 @@ class ModuleTranslator:
         if not all(isinstance(bit, str) for bit in bits):
             return None
         if any(bit not in ("0", "1") for bit in bits):
-            self.block("four_state_constant", f"unsupported constant bits {bits}", src)
-            return literal(len(bits), 0, src)
+            site_payload = {"module": self.name, "bits": bits, "source": src}
+            site = "four_state_" + sha256(json.dumps(
+                site_payload, sort_keys=True, separators=(",", ":")).encode())[:24]
+            if self.four_state_policy is None:
+                self.block("four_state_constant",
+                           f"unclassified partial value {site} {partial_pattern(bits)}", src,
+                           {"site": site, "pattern": partial_pattern(bits),
+                            "width": len(bits),
+                            "unknown_bits": sum(bit not in ("0", "1") for bit in bits)})
+                return literal(len(bits), 0, src)
+            matches = self.four_state_policy.matching(site, self.name, src)
+            if len(matches) != 1:
+                kind = ("four_state_policy_missing" if not matches else
+                        "four_state_policy_ambiguous")
+                self.block(kind,
+                           f"partial value {site} matched {len(matches)} policy rules", src,
+                           {"site": site, "pattern": partial_pattern(bits),
+                            "width": len(bits),
+                            "unknown_bits": sum(bit not in ("0", "1") for bit in bits)})
+                return literal(len(bits), 0, src)
+            rule = matches[0]
+            known_mask = sum((1 << index) for index, bit in enumerate(bits)
+                             if bit in ("0", "1"))
+            known_value = sum((1 << index) for index, bit in enumerate(bits)
+                              if bit == "1")
+            unknown_mask = ((1 << len(bits)) - 1) ^ known_mask
+            implementation_value = known_value
+            if rule["fill"] == "one":
+                implementation_value |= unknown_mask
+            return {
+                "kind": "partial_literal", "width": len(bits),
+                "partial": {
+                    "site": site,
+                    "classification": rule["classification"],
+                    "known_mask": known_mask,
+                    "known_value": known_value,
+                    "implementation_value": implementation_value,
+                    "rationale": f"{rule['name']}: {rule['rationale']}",
+                },
+                "source": src,
+            }
         value = sum((1 << index) for index, bit in enumerate(bits) if bit == "1")
         return literal(len(bits), value, src)
 
@@ -555,7 +661,7 @@ class ModuleTranslator:
 
 
 EXPRESSION_KINDS = {
-    "literal", "signal", "unary", "binary", "mux", "slice",
+    "literal", "partial_literal", "signal", "unary", "binary", "mux", "slice",
     "zero_extend", "sign_extend", "concat", "memory_read",
 }
 
@@ -641,6 +747,7 @@ def main() -> int:
     selection.add_argument("--package-top")
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--manifest-output", type=pathlib.Path)
+    parser.add_argument("--four-state-policy", type=pathlib.Path)
     args = parser.parse_args()
 
     yosys_bytes = args.yosys_json.read_bytes()
@@ -651,6 +758,12 @@ def main() -> int:
     if expected != actual:
         raise SystemExit(f"elaborated JSON identity mismatch: inventory={expected} actual={actual}")
     design = json.loads(yosys_bytes)
+    policy_bytes = args.four_state_policy.read_bytes() if args.four_state_policy else None
+    try:
+        four_state_policy = (FourStatePolicy(json.loads(policy_bytes))
+                             if policy_bytes is not None else None)
+    except (ValueError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid four-state policy: {error}") from error
     modules = design.get("modules", {})
     selected_top = args.module or args.package_top
     if selected_top not in modules:
@@ -667,14 +780,19 @@ def main() -> int:
             "original-vs-emitted formal equivalence remains required",
         ],
     }
+    if four_state_policy is not None:
+        common_frontend["assumptions"].append(
+            "the identified four-state policy classifies and concretizes every partial value")
     if args.module:
-        translated = ModuleTranslator(args.module, modules[args.module], modules).translate()
+        translated = ModuleTranslator(args.module, modules[args.module], modules,
+                                      four_state_policy).translate()
         translated_modules = [translated]
         report = {"schema": 1, "frontend": common_frontend, "module": translated}
     else:
         translated_modules = []
         for name, module in sorted(modules.items()):
-            translated = ModuleTranslator(name, module, modules).translate()
+            translated = ModuleTranslator(name, module, modules,
+                                          four_state_policy).translate()
             translated_modules.append(encode_module_expression_dag(translated))
         report = {
             "schema": 2,
@@ -700,13 +818,18 @@ def main() -> int:
             "sha256": source.get("sha256", ""),
             "bytes": source.get("bytes", 0),
         })
+    policy_artifacts = ([] if args.four_state_policy is None else [{
+        "role": "four_state_policy",
+        "path": args.four_state_policy.resolve().as_posix(),
+        "sha256": sha256(policy_bytes), "bytes": len(policy_bytes),
+    }])
     manifest = {
         "schema": 1,
         "module": selected_top,
         "frontend": "scripts/yosys_to_loom_ir.py",
         "version": inventory.get("frontend", {}).get("tool", "unknown"),
         "invocation": sys.argv,
-        "artifacts": source_artifacts + [
+        "artifacts": source_artifacts + policy_artifacts + [
             {"role": "inventory", "path": args.inventory.resolve().as_posix(),
              "sha256": sha256(inventory_bytes), "bytes": len(inventory_bytes)},
             {"role": "elaborated_yosys_json", "path": args.yosys_json.resolve().as_posix(),
