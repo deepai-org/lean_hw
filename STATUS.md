@@ -74,8 +74,12 @@ clock pins used by combinational source cones.
 [`Evidence/KianV/import_coverage_policy.md`](Evidence/KianV/import_coverage_policy.md)
 are the generated baseline and policy-dependent reports. Acceptance is not
 equivalence or signoff. The complete 74-module package passes trusted
-structural checking; full conversion still requires bottom-up per-module
-equivalence PASS and complete-package equivalence closure. Import lowering
+structural checking. The hash-bound compositional equivalence runner currently
+proves 71 specializations directly, records the GF180 SRAM wrapper as its exact
+external contract, and also proves the logarithm hierarchy with an explicit
+flatten fallback. The CPU, `soc`, and whole `chip_core` boundaries pass. The
+five-bank associative-cache specialization remains a bounded solver timeout
+without a counterexample, so full conversion is not yet closed. Import lowering
 memoizes the complete neutral expression-root batch, validates reads on that
 compact source DAG, and uses an iterative postorder executable traversal so
 deep generated cones do not retain recursive dependent-monad continuations.
