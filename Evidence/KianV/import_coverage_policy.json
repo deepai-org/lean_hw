@@ -1,9 +1,7 @@
 {
-  "blocker_module_counts": {
-    "multiple_clock_domains": 1
-  },
+  "blocker_module_counts": {},
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
-  "four_state_policy_sha256": "a8b183c6a143c33b80da01bf4694f0179cbdd77b38deac1ba4fa7fac4a14b3e4",
+  "four_state_policy_sha256": "1c375b59414f2162a087a4822373b127b8763995d25f8f78f44777139dd7739a",
   "four_state_sites": [],
   "inventory_sha256": "c4dab38164842b0c8ea501778f8aa9aaaf8793a2964129fb5f77d2714a25b9ba",
   "modules": [
@@ -32,24 +30,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_clock_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 2 clock/edge pairs",
-          "kind": "multiple_clock_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 690,
-            "file": "src/sdram/mt48lc16m16a2_ctrl.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -468,8 +452,8 @@
   ],
   "schema": 1,
   "summary": {
-    "accepted_modules": 73,
-    "blocked_modules": 1,
+    "accepted_modules": 74,
+    "blocked_modules": 0,
     "module_count": 74
   }
 }

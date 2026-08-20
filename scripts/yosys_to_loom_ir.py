@@ -853,6 +853,12 @@ class ModuleTranslator:
                        ", ".join(sorted(asynchronous_cells)), self.module_source)
 
         memories = self.prepare_memories(clock_domains)
+        ordered_domains = sorted(clock_domains, key=str)
+        domain_names = {
+            domain: (f"{self.name}_clock" if len(ordered_domains) == 1 else
+                     f"{self.name}_clock_{index}")
+            for index, domain in enumerate(ordered_domains)
+        }
 
         for cell_name, cell in sequential_cells:
             kind = cell["type"]
@@ -896,7 +902,11 @@ class ModuleTranslator:
                               "yes": next_value, "no": signal(width, name, src),
                               "source": src}
             registers.append({"name": name, "width": width, "init": 0,
-                              "next": next_value, "source": src})
+                              "next": next_value,
+                              "domain": (domain_names[(tuple(connections.get("CLK", [])),
+                                                        bool(decode_parameter(params.get("CLK_POLARITY"), 1)))]
+                                         if len(ordered_domains) > 1 else None),
+                              "source": src})
 
         instances = []
         for cell_name, cell in self.cells.items():
@@ -943,15 +953,12 @@ class ModuleTranslator:
                           "source": self.source_for_bits(port.get("bits", []))})
 
         domains = []
-        if len(clock_domains) > 1:
-            self.block("multiple_clock_domains", f"module contains {len(clock_domains)} clock/edge pairs",
-                       self.module_source)
-        if clock_domains:
-            clock_bits, rising = sorted(clock_domains, key=str)[0]
+        for domain_key in ordered_domains:
+            clock_bits, rising = domain_key
             clock_name = self.public_name(list(clock_bits), "clk")
             reset_record = {"kind": "resetless", "port": None, "active_high": True,
                             "source": None}
-            domains.append({"name": f"{self.name}_clock", "clock_port": clock_name,
+            domains.append({"name": domain_names[domain_key], "clock_port": clock_name,
                             "edge": "rising" if rising else "falling",
                             "reset": reset_record,
                             "source": self.source_for_bits(list(clock_bits))})
@@ -1106,8 +1113,18 @@ def main() -> int:
         translated_modules = [translated]
         report = {"schema": 1, "frontend": common_frontend, "module": translated}
     else:
+        reachable = {args.package_top}
+        pending = [args.package_top]
+        while pending:
+            parent = pending.pop()
+            for cell in modules[parent].get("cells", {}).values():
+                child = cell.get("type")
+                if child in modules and child not in reachable:
+                    reachable.add(child)
+                    pending.append(child)
         translated_modules = []
-        for name, module in sorted(modules.items()):
+        for name in sorted(reachable):
+            module = modules[name]
             translated = ModuleTranslator(name, module, modules,
                                           four_state_policy).translate()
             translated_modules.append(encode_module_expression_dag(translated))

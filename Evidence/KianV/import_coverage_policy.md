@@ -5,14 +5,13 @@ every module in one exact elaborated artifact. Acceptance means neutral IR
 translation only; it does not imply emitted RTL equivalence or signoff.
 
 - Modules: 74
-- Accepted neutral imports: 73
-- Blocked neutral imports: 1
+- Accepted neutral imports: 74
+- Blocked neutral imports: 0
 - Elaborated JSON SHA-256: `8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9`
-- Four-state policy SHA-256: `a8b183c6a143c33b80da01bf4694f0179cbdd77b38deac1ba4fa7fac4a14b3e4`
+- Four-state policy SHA-256: `1c375b59414f2162a087a4822373b127b8763995d25f8f78f44777139dd7739a`
 
 ## Blocker classes
 
-- `multiple_clock_domains`: 1 module(s)
 
 ## Per-module status
 
@@ -22,7 +21,7 @@ translation only; it does not imply emitted RTL equivalence or signoff.
 | `$paramod$24edb32283c2798b1a9de01e5e8a5775f3de8d6d\spi_if` | ACCEPTED | — |
 | `$paramod$2c2a78eaab39f077d28c359da24eea1bb3ee72ca\sysinfo_if` | ACCEPTED | — |
 | `$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\associative_cache` | ACCEPTED | — |
-| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | BLOCKED | `multiple_clock_domains` |
+| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | ACCEPTED | — |
 | `$paramod$530c0f32123495a95a65ef2dee5adb9a30a708f6\spi_if` | ACCEPTED | — |
 | `$paramod$570b38d59ef2758ddb45cb679c2a1a19cf0ab83f\sv32_table_walk` | ACCEPTED | — |
 | `$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\lru_replacement` | ACCEPTED | — |

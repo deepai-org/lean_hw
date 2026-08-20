@@ -182,6 +182,9 @@ structure Register where
   width : Nat
   init : Nat
   next : Expr
+  /-- Domain ownership is required only when a source module has multiple
+  clock/edge domains. Single-domain imports retain `none` for compatibility. -/
+  domain : Option String := none
   source : SourceLocation
   deriving Repr, DecidableEq
 
@@ -611,6 +614,9 @@ private def checkModuleBoundary (module : Module) : Except String ClockDomain :=
     failAt module.source "duplicate port names"
   if !Inventory.uniqueB (module.registers.map (·.name)) then
     failAt module.source "duplicate register names"
+  unless module.registers.all (fun register =>
+      register.domain.all (· == domain.name)) do
+    failAt module.source "register names a clock domain other than the lowered domain"
   if !Inventory.uniqueB (module.memories.map (·.name)) then
     failAt module.source "duplicate memory names"
   if !Inventory.uniqueB (module.outputs.map (·.name)) then

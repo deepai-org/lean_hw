@@ -14,7 +14,6 @@ translation only; it does not imply emitted RTL equivalence or signoff.
 - `four_state_constant`: 32 module(s)
 - `four_state_memory_out_of_range`: 2 module(s)
 - `four_state_variable_part_select`: 5 module(s)
-- `multiple_clock_domains`: 1 module(s)
 
 ## Unclassified four-state sites
 
@@ -310,7 +309,7 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `$paramod$24edb32283c2798b1a9de01e5e8a5775f3de8d6d\spi_if` | ACCEPTED | — |
 | `$paramod$2c2a78eaab39f077d28c359da24eea1bb3ee72ca\sysinfo_if` | ACCEPTED | — |
 | `$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\associative_cache` | BLOCKED | `four_state_constant`, `four_state_memory_out_of_range` |
-| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | BLOCKED | `four_state_constant`, `four_state_variable_part_select`, `multiple_clock_domains` |
+| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | BLOCKED | `four_state_constant`, `four_state_variable_part_select` |
 | `$paramod$530c0f32123495a95a65ef2dee5adb9a30a708f6\spi_if` | ACCEPTED | — |
 | `$paramod$570b38d59ef2758ddb45cb679c2a1a19cf0ab83f\sv32_table_walk` | BLOCKED | `four_state_constant` |
 | `$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\lru_replacement` | BLOCKED | `four_state_constant`, `four_state_memory_out_of_range` |

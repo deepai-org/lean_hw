@@ -93,9 +93,8 @@ private def hierarchyBody (package : Package) (module : Module) : Module :=
     outputs := module.outputs ++ hiddenOutputs
     instances := [] }
 
-private def bodyArtifact? (package : Package) (module : Module) :
+private def lowerBodyArtifact? (source : SourceLocation) (body : Module) :
     Except String ModuleArtifact := do
-  let body := hierarchyBody package module
   match ← body.lowerAny? with
   | .stateless lowered =>
       return ⟨body.name, lowered.implementation.renderedVerilog⟩
@@ -104,17 +103,103 @@ private def bodyArtifact? (package : Package) (module : Module) :
         | .resetless => pure <| Compile.compileResetless lowered.design lowered.edge "clk"
         | .synchronous =>
             let some _resetName := lowered.reset.port
-              | failAtHere module.source "checked hierarchy body lost its reset port"
+              | failAtHere source "checked hierarchy body lost its reset port"
             pure <| Compile.compileForClockReset lowered.design lowered.edge
               "clk" "rst" lowered.reset.activeHigh
-        | _ => failAtHere module.source "unsupported reset survived checked lowering"
+        | _ => failAtHere source "unsupported reset survived checked lowering"
       return ⟨body.name, Loom.Emit.MicroVerilog.Print.print compiled⟩
 
+private def bodyArtifact? (package : Package) (module : Module) :
+    Except String ModuleArtifact :=
+  lowerBodyArtifact? module.source (hierarchyBody package module)
+
 private def dataPorts (module : Module) : List Port :=
-  match module.domains with
-  | [] => module.ports
-  | domain :: _ => module.ports.filter fun port =>
-      port.name != domain.clockPort && domain.reset.port.all (· != port.name)
+  module.ports.filter fun port => module.domains.all fun domain =>
+    port.name != domain.clockPort && domain.reset.port.all (· != port.name)
+
+private def registerInputPort (register : Register) : Port :=
+  { name := register.name, direction := .input, width := register.width,
+    semanticType := "bits", source := register.source }
+
+private def childOutputPorts (module : Module) : List Port :=
+  (bodyConnections module).filterMap fun connection =>
+    if connection.direction == .output then
+      some { name := connection.signal, direction := .input,
+             width := connection.width, semanticType := "bits",
+             source := connection.source }
+    else none
+
+private def domainBodyName (package : Package) (module : Module)
+    (domain : ClockDomain) : String :=
+  package.bodyName module ++ "__domain" ++ encodedIdentifier domain.name
+
+private def combBodyName (package : Package) (module : Module) : String :=
+  package.bodyName module ++ "__comb"
+
+private def combOutputName (name : String) : String :=
+  "__loom_top_output" ++ encodedIdentifier name
+
+private def stateNetName (name : String) : String :=
+  "__loom_state" ++ encodedIdentifier name
+
+private def domainBody? (package : Package) (module : Module)
+    (domain : ClockDomain) : Except String Module := do
+  let registers := module.registers.filter (·.domain == some domain.name)
+  if registers.isEmpty then
+    failAtHere domain.source s!"multi-domain import domain '{domain.name}' owns no registers"
+  let some clockPort := module.ports.find? fun port =>
+      port.name == domain.clockPort && port.direction == .input && port.width == 1
+    | failAtHere domain.source s!"multi-domain clock port '{domain.clockPort}' is missing"
+  -- Only the owning clock is structural metadata for this body.  Foreign
+  -- clocks (and resets) remain ordinary data dependencies if the source D
+  -- cone reads them; the owning reset must also remain present for checked
+  -- synchronous-reset lowering.
+  let dataInputs := module.ports.filter fun port =>
+    port.direction == .input && port.name != domain.clockPort
+  let foreignRegisters := module.registers.filter (·.domain != some domain.name)
+  return {
+    name := domainBodyName package module domain
+    ports := clockPort :: dataInputs ++ foreignRegisters.map registerInputPort ++
+      childOutputPorts module
+    domains := [domain]
+    registers
+    memories := []
+    outputs := registers.map fun register =>
+      { name := "o_" ++ register.name, width := register.width,
+        value := .signal register.width register.name register.source,
+        source := register.source }
+    instances := []
+    unsupported := []
+    source := module.source }
+
+private def combinationalBody (package : Package) (module : Module) : Module :=
+  let connections := bodyConnections module
+  let hiddenPorts := connections.map fun connection =>
+    { name := connection.signal
+      direction := if connection.direction == .input then .output else .input
+      width := connection.width
+      semanticType := "bits"
+      source := connection.source }
+  let hiddenOutputs := connections.filterMap fun connection =>
+    match connection.direction, connection.value with
+    | .input, some value =>
+        some ({ name := connection.signal, width := connection.width,
+                value, source := connection.source } : Output)
+    | _, _ => none
+  { module with
+    name := combBodyName package module
+    -- Combinational source cones may legitimately observe a clock pin (for
+    -- example while deriving an SDRAM clock output), so retain every original
+    -- port here.  State ownership, not port deletion, separates the domains.
+    ports := module.ports.map (fun port =>
+      if port.direction == .output then { port with name := combOutputName port.name }
+      else port) ++ hiddenPorts ++ module.registers.map registerInputPort
+    domains := []
+    registers := []
+    memories := []
+    outputs := module.outputs.map (fun output =>
+      { output with name := combOutputName output.name }) ++ hiddenOutputs
+    instances := [] }
 
 private def toBackendDirection : PortDirection → Loom.Hw.PortDirection
   | .input => .input
@@ -123,17 +208,6 @@ private def toBackendDirection : PortDirection → Loom.Hw.PortDirection
 
 private def wrapperPlan? (package : Package) (module : Module) :
     Except String (HierarchyEmissionPlan Unit Unit) := do
-  let bodyArtifact ← bodyArtifact? package module
-  let bodyPorts := (dataPorts module).map fun port =>
-    ⟨port.name, port.name, toBackendDirection port.direction, port.width⟩
-  let hiddenBodyPorts := (bodyConnections module).map fun connection =>
-    ⟨connection.signal, connection.signal,
-      if connection.direction == .input then
-        Loom.Hw.PortDirection.output else Loom.Hw.PortDirection.input,
-      connection.width⟩
-  let bodyInstance : InstancePlan :=
-    { path := "u_loom_body", moduleName := bodyArtifact.name,
-      parameters := [], ports := bodyPorts ++ hiddenBodyPorts, external := false }
   let childInstances := module.instances.map fun inst =>
     { path := instanceName inst.name
       moduleName := match package.findModuleByName? inst.moduleName with
@@ -145,15 +219,71 @@ private def wrapperPlan? (package : Package) (module : Module) :
           (directConnectionNet? module connection).getD connection.signal,
           toBackendDirection connection.direction, connection.width⟩
       external := false }
-  let clockReset := match module.domains with
-    | [] => []
-    | domain :: _ =>
-        [⟨"u_loom_body", domain.clockPort, domain.reset.port⟩]
+  let mut bodyArtifacts : List ModuleArtifact := []
+  let mut bodyInstances : List InstancePlan := []
+  let mut clockReset : List InstanceClockReset := []
+  if module.domains.length > 1 then
+    unless module.memories.isEmpty do
+      failAtHere module.source
+        "multi-domain modules with memories require explicit memory-domain ownership"
+    unless module.registers.all (fun register => register.domain.any fun name =>
+        module.domains.any (·.name == name)) do
+      failAtHere module.source
+        "every multi-domain register must name exactly one declared domain"
+    let combBody := combinationalBody package module
+    let combArtifact ← lowerBodyArtifact? module.source combBody
+    bodyArtifacts := bodyArtifacts ++ [combArtifact]
+    bodyInstances := bodyInstances ++ [{
+      path := "u_loom_comb", moduleName := combArtifact.name,
+      parameters := [], external := false,
+      ports := combBody.ports.map fun port =>
+        let net := match module.registers.find? (·.name == port.name) with
+          | some register => stateNetName register.name
+          | none => match module.ports.find? fun original =>
+            original.direction == .output && combOutputName original.name == port.name with
+            | some original => original.name
+            | none => port.name
+        ⟨port.name, net, toBackendDirection port.direction, port.width⟩ }]
+    for index in List.range module.domains.length do
+      let some domain := module.domains[index]?
+        | failAtHere module.source "multi-domain inventory changed during emission"
+      let domainBody ← domainBody? package module domain
+      let artifact ← lowerBodyArtifact? module.source domainBody
+      let path := s!"u_loom_domain_{index}"
+      let inputPorts := domainBody.ports.filter (·.name != domain.clockPort)
+      let owned := module.registers.filter (·.domain == some domain.name)
+      bodyArtifacts := bodyArtifacts ++ [artifact]
+      bodyInstances := bodyInstances ++ [{
+        path, moduleName := artifact.name, parameters := [], external := false,
+        ports := inputPorts.map (fun port =>
+          let net := if module.registers.any (·.name == port.name) then
+            stateNetName port.name else port.name
+          ⟨port.name, net, Loom.Hw.PortDirection.input, port.width⟩) ++
+          owned.map (fun register =>
+            ⟨"o_" ++ register.name, stateNetName register.name,
+              Loom.Hw.PortDirection.output, register.width⟩) }]
+      clockReset := clockReset ++ [⟨path, domain.clockPort, domain.reset.port⟩]
+  else
+    let bodyArtifact ← bodyArtifact? package module
+    let bodyPorts := (dataPorts module).map fun port =>
+      ⟨port.name, port.name, toBackendDirection port.direction, port.width⟩
+    let hiddenBodyPorts := (bodyConnections module).map fun connection =>
+      ⟨connection.signal, connection.signal,
+        if connection.direction == .input then
+          Loom.Hw.PortDirection.output else Loom.Hw.PortDirection.input,
+        connection.width⟩
+    bodyArtifacts := [bodyArtifact]
+    bodyInstances := [{
+      path := "u_loom_body", moduleName := bodyArtifact.name,
+      parameters := [], ports := bodyPorts ++ hiddenBodyPorts, external := false }]
+    clockReset := match module.domains with
+      | [] => []
+      | domain :: _ => [⟨"u_loom_body", domain.clockPort, domain.reset.port⟩]
   return {
     design :=
       { topName := package.moduleName module
-        instances := bodyInstance :: childInstances
-        modules := [bodyArtifact]
+        instances := bodyInstances ++ childInstances
+        modules := bodyArtifacts
         externalArtifacts := []
         assumptions := [] }
     topPorts := module.ports.map fun port =>
