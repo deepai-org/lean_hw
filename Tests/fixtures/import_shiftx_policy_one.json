@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "name": "fixture_unsupported_variable_select_one_fill",
+      "site": "four_state_54def800c7cb90bb3de37a58",
+      "module": "import_shiftx",
+      "file": "Tests/fixtures/import_shiftx.v",
+      "line_start": 1,
+      "line_end": 7,
+      "classification": "synthesis_dont_care",
+      "fill": "one",
+      "rationale": "Negative coverage: this choice lacks an exact Yosys formal normalization."
+    }
+  ]
+}

@@ -1,11 +1,11 @@
 {
   "blocker_module_counts": {
     "four_state_constant": 29,
+    "four_state_variable_part_select": 5,
     "memory_cell": 6,
     "multiple_clock_domains": 1,
     "multiple_reset_domains": 8,
-    "resetless_state": 4,
-    "yosys_cell": 5
+    "resetless_state": 4
   },
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
   "four_state_sites": [
@@ -109,6 +109,20 @@
     },
     {
       "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_13922c7cdcca8c3d9a9eb162",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/sdram/mt48lc16m16a2_ctrl.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
       "pattern": "5'x",
       "site": "four_state_d4b1ed0342f2269a7b3d3a88",
       "source": {
@@ -134,6 +148,20 @@
       },
       "unknown_bits": 5,
       "width": 5
+    },
+    {
+      "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_1b2f3d43291007db003b2fff",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/sdram/mt48lc16m16a2_ctrl.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
     },
     {
       "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
@@ -962,6 +990,20 @@
       "width": 512
     },
     {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_D$",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_c3f8be6f665d820bea97cff9",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/cache_sram_D$.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
       "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
       "pattern": "512'x",
       "site": "four_state_ca45526fc401988fbf77dc7c",
@@ -974,6 +1016,90 @@
       },
       "unknown_bits": 512,
       "width": 512
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_ed2212a0ddd1b4633f8ce4c3",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/cache_sram_I$.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_a3c4605eea60e3980de3cb41",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/cache_sram_I$.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_388e186818e8d597d380e8f2",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/cache_sram_I$.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_4eb2a0cdd4a856c616f1f7bb",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/cache_sram_I$.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_3338e09ecba984f2825fe35b",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/cache_sram_I$.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_d915ab1eec92e714a0e598b2",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/cache_sram_I$.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
     },
     {
       "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
@@ -1604,6 +1730,20 @@
       },
       "unknown_bits": 32,
       "width": 32
+    },
+    {
+      "module": "divider",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_0f020498efc5d5977bce57cd",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/kianv_harris_edition/divider.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
     },
     {
       "module": "divider",
@@ -3172,6 +3312,20 @@
       },
       "unknown_bits": 1,
       "width": 1
+    },
+    {
+      "module": "tx_uart",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_545df7c6ef0e93a29bbd83b1",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/tx_uart.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 1,
+      "width": 1
     }
   ],
   "inventory_sha256": "c4dab38164842b0c8ea501778f8aa9aaaf8793a2964129fb5f77d2714a25b9ba",
@@ -3275,8 +3429,8 @@
     {
       "blocker_kinds": [
         "four_state_constant",
-        "multiple_clock_domains",
-        "yosys_cell"
+        "four_state_variable_part_select",
+        "multiple_clock_domains"
       ],
       "blockers": [
         {
@@ -3399,8 +3553,14 @@
           }
         },
         {
-          "detail": "unsupported cell type $shiftx",
-          "kind": "yosys_cell",
+          "detail": "variable part-select four_state_13922c7cdcca8c3d9a9eb162 matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_13922c7cdcca8c3d9a9eb162",
+            "unknown_bits": 1,
+            "width": 1
+          },
           "source": {
             "end_column": 0,
             "end_line": 1,
@@ -3441,6 +3601,23 @@
             "file": "src/sdram/mt48lc16m16a2_ctrl.v",
             "start_column": 22,
             "start_line": 538
+          }
+        },
+        {
+          "detail": "variable part-select four_state_1b2f3d43291007db003b2fff matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_1b2f3d43291007db003b2fff",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 0,
+            "end_line": 1,
+            "file": "src/sdram/mt48lc16m16a2_ctrl.v",
+            "start_column": 0,
+            "start_line": 1
           }
         },
         {
@@ -4476,7 +4653,7 @@
     {
       "blocker_kinds": [
         "four_state_constant",
-        "yosys_cell"
+        "four_state_variable_part_select"
       ],
       "blockers": [
         {
@@ -4514,8 +4691,14 @@
           }
         },
         {
-          "detail": "unsupported cell type $shiftx",
-          "kind": "yosys_cell",
+          "detail": "variable part-select four_state_c3f8be6f665d820bea97cff9 matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_c3f8be6f665d820bea97cff9",
+            "unknown_bits": 1,
+            "width": 1
+          },
           "source": {
             "end_column": 0,
             "end_line": 1,
@@ -4531,7 +4714,7 @@
     {
       "blocker_kinds": [
         "four_state_constant",
-        "yosys_cell"
+        "four_state_variable_part_select"
       ],
       "blockers": [
         {
@@ -4552,8 +4735,99 @@
           }
         },
         {
-          "detail": "unsupported cell type $shiftx",
-          "kind": "yosys_cell",
+          "detail": "variable part-select four_state_ed2212a0ddd1b4633f8ce4c3 matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_ed2212a0ddd1b4633f8ce4c3",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 0,
+            "end_line": 1,
+            "file": "src/cache_sram_I$.v",
+            "start_column": 0,
+            "start_line": 1
+          }
+        },
+        {
+          "detail": "variable part-select four_state_a3c4605eea60e3980de3cb41 matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_a3c4605eea60e3980de3cb41",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 0,
+            "end_line": 1,
+            "file": "src/cache_sram_I$.v",
+            "start_column": 0,
+            "start_line": 1
+          }
+        },
+        {
+          "detail": "variable part-select four_state_388e186818e8d597d380e8f2 matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_388e186818e8d597d380e8f2",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 0,
+            "end_line": 1,
+            "file": "src/cache_sram_I$.v",
+            "start_column": 0,
+            "start_line": 1
+          }
+        },
+        {
+          "detail": "variable part-select four_state_4eb2a0cdd4a856c616f1f7bb matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_4eb2a0cdd4a856c616f1f7bb",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 0,
+            "end_line": 1,
+            "file": "src/cache_sram_I$.v",
+            "start_column": 0,
+            "start_line": 1
+          }
+        },
+        {
+          "detail": "variable part-select four_state_3338e09ecba984f2825fe35b matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_3338e09ecba984f2825fe35b",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 0,
+            "end_line": 1,
+            "file": "src/cache_sram_I$.v",
+            "start_column": 0,
+            "start_line": 1
+          }
+        },
+        {
+          "detail": "variable part-select four_state_d915ab1eec92e714a0e598b2 matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_d915ab1eec92e714a0e598b2",
+            "unknown_bits": 1,
+            "width": 1
+          },
           "source": {
             "end_column": 0,
             "end_line": 1,
@@ -5511,7 +5785,7 @@
     {
       "blocker_kinds": [
         "four_state_constant",
-        "yosys_cell"
+        "four_state_variable_part_select"
       ],
       "blockers": [
         {
@@ -5668,8 +5942,14 @@
           }
         },
         {
-          "detail": "unsupported cell type $shiftx",
-          "kind": "yosys_cell",
+          "detail": "variable part-select four_state_0f020498efc5d5977bce57cd matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_0f020498efc5d5977bce57cd",
+            "unknown_bits": 1,
+            "width": 1
+          },
           "source": {
             "end_column": 0,
             "end_line": 1,
@@ -7810,8 +8090,8 @@
     {
       "blocker_kinds": [
         "four_state_constant",
-        "multiple_reset_domains",
-        "yosys_cell"
+        "four_state_variable_part_select",
+        "multiple_reset_domains"
       ],
       "blockers": [
         {
@@ -7883,8 +8163,14 @@
           }
         },
         {
-          "detail": "unsupported cell type $shiftx",
-          "kind": "yosys_cell",
+          "detail": "variable part-select four_state_545df7c6ef0e93a29bbd83b1 matched 0 policy rules",
+          "kind": "four_state_variable_part_select",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_545df7c6ef0e93a29bbd83b1",
+            "unknown_bits": 1,
+            "width": 1
+          },
           "source": {
             "end_column": 0,
             "end_line": 1,

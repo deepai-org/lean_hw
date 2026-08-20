@@ -35,6 +35,7 @@ SUPPORTED_COMB = {
     "$reduce_or": "reduce_bool", "$reduce_bool": "reduce_bool",
     "$ne": "not_equal", "$ge": "greater_equal", "$gt": "greater_than",
     "$le": "less_equal",
+    "$shiftx": "explicit_partial_variable_part_select",
 }
 
 
@@ -459,6 +460,67 @@ class ModuleTranslator:
             else:
                 shifted = right
             result = resize(shifted, width, value_signed, src)
+        elif kind == "$shiftx":
+            value = self.expr(connections.get("A", []), src)
+            amount = self.expr(connections.get("B", []), src)
+            if bool(decode_parameter(params.get("B_SIGNED"))):
+                self.block("signed_shiftx",
+                           "signed variable part-select requires negative-index refinement", src)
+                result = literal(max(width, 1), 0, src)
+            else:
+                site_payload = {"module": self.name, "cell": cell_name,
+                                "kind": "$shiftx", "source": src}
+                site = "four_state_" + sha256(json.dumps(
+                    site_payload, sort_keys=True,
+                    separators=(",", ":")).encode())[:24]
+                matches = ([] if self.four_state_policy is None else
+                           self.four_state_policy.matching(site, self.name, src))
+                if len(matches) != 1:
+                    kind_name = ("four_state_variable_part_select" if
+                                 self.four_state_policy is None else
+                                 ("four_state_policy_missing" if not matches else
+                                  "four_state_policy_ambiguous"))
+                    self.block(kind_name,
+                               f"variable part-select {site} matched {len(matches)} policy rules",
+                               src, {"site": site, "pattern": f"{width}'dynamic-x",
+                                     "width": width, "unknown_bits": width})
+                    result = literal(max(width, 1), 0, src)
+                else:
+                    rule = matches[0]
+                    if rule["fill"] != "zero":
+                        self.block(
+                            "four_state_shiftx_fill",
+                            "Yosys formal `$shiftx` only has a validated zero-fill normalization",
+                            src, {"site": site, "pattern": f"{width}'dynamic-x",
+                                  "width": width, "unknown_bits": width})
+                    fill_value = ((1 << width) - 1
+                                  if rule["fill"] == "one" else 0)
+                    fill = {
+                        "kind": "partial_literal", "width": width,
+                        "partial": {
+                            "site": site,
+                            "classification": rule["classification"],
+                            "known_mask": 0, "known_value": 0,
+                            "implementation_value": fill_value,
+                            "rationale": f"{rule['name']}: {rule['rationale']}",
+                        },
+                        "source": src,
+                    }
+                    extended = {"kind": "concat",
+                                "width": value["width"] + width,
+                                "high": fill, "low": value, "source": src}
+                    work_width = max(extended["width"], amount["width"])
+                    extended = resize(extended, work_width, False, src)
+                    amount = resize(amount, work_width, False, src)
+                    shifted = binary(work_width, "logical_shift_right",
+                                     extended, amount, src)
+                    selected = resize(shifted, width, False, src)
+                    in_range = binary(
+                        1, "unsigned_less_than", amount,
+                        literal(work_width, value["width"], src), src)
+                    result = {"kind": "mux", "width": width,
+                              "condition": in_range, "yes": selected,
+                              "no": fill, "source": src}
         else:
             left_signed = bool(decode_parameter(params.get("A_SIGNED")))
             right_signed = bool(decode_parameter(params.get("B_SIGNED")))

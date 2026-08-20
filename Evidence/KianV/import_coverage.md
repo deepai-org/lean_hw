@@ -12,11 +12,11 @@ translation only; it does not imply emitted RTL equivalence or signoff.
 ## Blocker classes
 
 - `four_state_constant`: 29 module(s)
+- `four_state_variable_part_select`: 5 module(s)
 - `memory_cell`: 6 module(s)
 - `multiple_clock_domains`: 1 module(s)
 - `multiple_reset_domains`: 8 module(s)
 - `resetless_state`: 4 module(s)
-- `yosys_cell`: 5 module(s)
 
 ## Unclassified four-state sites
 
@@ -31,8 +31,10 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_330a9d0104644492a1c9e5d4` | `5'x` | `src/sdram/mt48lc16m16a2_ctrl.v:508` |
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_620ea3f1ce9542336ea8f4b3` | `5'x` | `src/sdram/mt48lc16m16a2_ctrl.v:521` |
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_882aabff0147cb8ef4a7a36b` | `5'x` | `src/sdram/mt48lc16m16a2_ctrl.v:542` |
+| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_13922c7cdcca8c3d9a9eb162` | `1'dynamic-x` | `src/sdram/mt48lc16m16a2_ctrl.v:1` |
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_d4b1ed0342f2269a7b3d3a88` | `5'x` | `src/sdram/mt48lc16m16a2_ctrl.v:541` |
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_9c6b5bdea81554b4d0eee795` | `5'x` | `src/sdram/mt48lc16m16a2_ctrl.v:538` |
+| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_1b2f3d43291007db003b2fff` | `1'dynamic-x` | `src/sdram/mt48lc16m16a2_ctrl.v:1` |
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_31f7ec18da20d0101aff75e8` | `4'x` | `src/sdram/mt48lc16m16a2_ctrl.v:500` |
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_3336c8f7907cfe4981cf450d` | `4'x` | `src/sdram/mt48lc16m16a2_ctrl.v:508` |
 | `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | `four_state_2ce1228c52322a5d18fe1220` | `4'x` | `src/sdram/mt48lc16m16a2_ctrl.v:1` |
@@ -92,7 +94,14 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `$paramod$570b38d59ef2758ddb45cb679c2a1a19cf0ab83f\sv32_table_walk` | `four_state_3f3a43401c9498682f2e3860` | `1'x` | `src/kianv_harris_edition/sv32_table_walk.v:254` |
 | `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_D$` | `four_state_daf17c7d51947666fdde7438` | `512'x` | `src/cache_sram_D$.v:98` |
 | `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_D$` | `four_state_e5e5eea7df9212d7b3923e57` | `512'x` | `src/cache_sram_D$.v:96` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_D$` | `four_state_c3f8be6f665d820bea97cff9` | `1'dynamic-x` | `src/cache_sram_D$.v:1` |
 | `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_ca45526fc401988fbf77dc7c` | `512'x` | `src/cache_sram_I$.v:140` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_ed2212a0ddd1b4633f8ce4c3` | `1'dynamic-x` | `src/cache_sram_I$.v:1` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_a3c4605eea60e3980de3cb41` | `1'dynamic-x` | `src/cache_sram_I$.v:1` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_388e186818e8d597d380e8f2` | `1'dynamic-x` | `src/cache_sram_I$.v:1` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_4eb2a0cdd4a856c616f1f7bb` | `1'dynamic-x` | `src/cache_sram_I$.v:1` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_3338e09ecba984f2825fe35b` | `1'dynamic-x` | `src/cache_sram_I$.v:1` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_d915ab1eec92e714a0e598b2` | `1'dynamic-x` | `src/cache_sram_I$.v:1` |
 | `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_a00c569b63a1b284043a6f1f` | `512'x` | `src/cache_sram_I$.v:136` |
 | `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_47ac609d577d41920af882e3` | `512'x` | `src/cache_sram_I$.v:149` |
 | `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | `four_state_54ef6bd571c60cb7ad8d0b14` | `32'x` | `src/cache_sram_I$.v:130` |
@@ -138,6 +147,7 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `divider` | `four_state_ba14f0892dc77675b4f50e02` | `4'x` | `src/kianv_harris_edition/divider.v:124` |
 | `divider` | `four_state_0a44ca2b2dfd1a67ca2ce60f` | `6'x` | `src/kianv_harris_edition/divider.v:124` |
 | `divider` | `four_state_5713948b5f974d85abee0498` | `32'x` | `src/kianv_harris_edition/divider.v:185` |
+| `divider` | `four_state_0f020498efc5d5977bce57cd` | `1'dynamic-x` | `src/kianv_harris_edition/divider.v:1` |
 | `divider` | `four_state_cf5cbcdbfc5767590733feee` | `32'x` | `src/kianv_harris_edition/divider.v:124` |
 | `divider` | `four_state_da0207fdd978d84f811220c0` | `32'x` | `src/kianv_harris_edition/divider.v:188` |
 | `divider_decoder` | `four_state_6e9c3a99232f140c4f0273ad` | `2'x` | `src/kianv_harris_edition/divider_decoder.v:1` |
@@ -250,6 +260,7 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `tx_uart` | `four_state_9dd2fffe4acba6ec10bdb6f1` | `3'x` | `src/tx_uart.v:92` |
 | `tx_uart` | `four_state_f4478415ec444c9346632023` | `17'x` | `src/tx_uart.v:142` |
 | `tx_uart` | `four_state_13f3b488b09fe80841c0396d` | `1'x` | `src/tx_uart.v:1` |
+| `tx_uart` | `four_state_545df7c6ef0e93a29bbd83b1` | `1'dynamic-x` | `src/tx_uart.v:1` |
 
 ## Per-module status
 
@@ -259,12 +270,12 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `$paramod$24edb32283c2798b1a9de01e5e8a5775f3de8d6d\spi_if` | ACCEPTED | — |
 | `$paramod$2c2a78eaab39f077d28c359da24eea1bb3ee72ca\sysinfo_if` | ACCEPTED | — |
 | `$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\associative_cache` | BLOCKED | `memory_cell` |
-| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | BLOCKED | `four_state_constant`, `multiple_clock_domains`, `yosys_cell` |
+| `$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\mt48lc16m16a2_ctrl` | BLOCKED | `four_state_constant`, `four_state_variable_part_select`, `multiple_clock_domains` |
 | `$paramod$530c0f32123495a95a65ef2dee5adb9a30a708f6\spi_if` | ACCEPTED | — |
 | `$paramod$570b38d59ef2758ddb45cb679c2a1a19cf0ab83f\sv32_table_walk` | BLOCKED | `four_state_constant` |
 | `$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\lru_replacement` | BLOCKED | `memory_cell` |
-| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_D$` | BLOCKED | `four_state_constant`, `yosys_cell` |
-| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | BLOCKED | `four_state_constant`, `yosys_cell` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_D$` | BLOCKED | `four_state_constant`, `four_state_variable_part_select` |
+| `$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\cache_sram_I$` | BLOCKED | `four_state_constant`, `four_state_variable_part_select` |
 | `$paramod$7639c2062dbcb83ce6fca4673452b1d6f11c5802\dff_kianV` | ACCEPTED | — |
 | `$paramod$80b52c6771af61c058960d8e594f8fa1878424bc\div_if` | ACCEPTED | — |
 | `$paramod$97c33ce1f197c7d09a6065d46e5aec5f4fa18127\Word_Reducer` | ACCEPTED | — |
@@ -302,7 +313,7 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `csr_exception_handler` | ACCEPTED | — |
 | `csr_unit` | BLOCKED | `four_state_constant` |
 | `dcache` | BLOCKED | `four_state_constant`, `multiple_reset_domains` |
-| `divider` | BLOCKED | `four_state_constant`, `yosys_cell` |
+| `divider` | BLOCKED | `four_state_constant`, `four_state_variable_part_select` |
 | `divider_decoder` | BLOCKED | `four_state_constant` |
 | `extend` | ACCEPTED | — |
 | `gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper` | BLOCKED | `four_state_constant`, `memory_cell`, `resetless_state` |
@@ -328,4 +339,4 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `sv32_translate_data_to_physical` | BLOCKED | `four_state_constant` |
 | `sv32_translate_instruction_to_physical` | BLOCKED | `four_state_constant` |
 | `sync_2ff` | BLOCKED | `resetless_state` |
-| `tx_uart` | BLOCKED | `four_state_constant`, `multiple_reset_domains`, `yosys_cell` |
+| `tx_uart` | BLOCKED | `four_state_constant`, `four_state_variable_part_select`, `multiple_reset_domains` |
