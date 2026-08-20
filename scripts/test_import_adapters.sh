@@ -420,6 +420,59 @@ assert "input wire [0:0] rst_a" in text and "input wire [0:0] rst_bn" in text
 assert "if (rst_a)" not in text and "if (rst_bn)" not in text
 PY
 
+python3 scripts/verilog_inventory.py \
+  --top import_memory \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_memory.v \
+  --json-out "$work/memory.inventory.json" \
+  --markdown-out "$work/memory.inventory.md" \
+  --elaborated-out "$work/memory.elaborated.json"
+
+python3 scripts/import_coverage.py \
+  --yosys-json "$work/memory.elaborated.json" \
+  --inventory "$work/memory.inventory.json" \
+  --json-out "$work/memory.coverage.json" \
+  --markdown-out "$work/memory.coverage.md"
+
+python3 scripts/expand_four_state_policy.py \
+  --coverage "$work/memory.coverage.json" \
+  --decisions Tests/fixtures/import_memory_decisions.json \
+  --output "$work/memory.policy.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/memory.elaborated.json" \
+  --inventory "$work/memory.inventory.json" \
+  --module import_memory \
+  --four-state-policy "$work/memory.policy.json" \
+  --output "$work/memory.import.json"
+
+lake exe importModule "$work/memory.import.json" "$work/memory.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_memory_import \
+  --gold-top import_memory \
+  --revised-top import_memory \
+  --gold-file Tests/fixtures/import_memory.v \
+  --revised-file "$work/memory.loom.v" \
+  --memory-map "$work/memory.import.json" \
+  --undef-policy zero \
+  --assumption "rising clock, exact initial image, async reads, masks, and ordered writes correspond" \
+  --log "$work/memory.equiv.log" \
+  --output "$work/memory.equiv.json"
+
+python3 - "$work/memory.import.json" "$work/memory.loom.v" <<'PY'
+import json
+import sys
+
+module = json.load(open(sys.argv[1], encoding="utf-8"))["module"]
+text = open(sys.argv[2], encoding="utf-8").read()
+assert not module["unsupported"]
+assert len(module["memories"]) == 8
+assert all(memory["data_width"] == 1 for memory in module["memories"])
+assert all(memory["init_refinement"] is not None for memory in module["memories"])
+assert "initial begin" in text and "always @(posedge clk)" in text
+PY
+
 python3 - "$work/inventory.json" <<'PY'
 import json
 import sys

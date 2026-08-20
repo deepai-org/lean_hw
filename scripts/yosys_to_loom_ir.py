@@ -172,6 +172,23 @@ class Driver:
     offset: int
 
 
+@dataclass
+class MemoryInfo:
+    cell_name: str
+    original_name: str
+    source: dict[str, Any]
+    size: int
+    width: int
+    abits: int
+    address_width: int
+    read_ports: int
+    write_ports: int
+    connections: dict[str, list[Any]]
+    init_bits: list[str]
+    init_expr: dict[str, Any]
+    bit_names: list[str]
+
+
 class FourStatePolicy:
     CLASSIFICATIONS = {
         "synthesis_dont_care", "unreachable_decode", "undriven_behavior",
@@ -231,6 +248,7 @@ class ModuleTranslator:
         self.drivers: dict[int, Driver] = {}
         self.expression_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.in_progress: set[tuple[str, str]] = set()
+        self.memory_cells: dict[str, MemoryInfo] = {}
         self.unsupported: list[dict[str, Any]] = []
         self.four_state_policy = four_state_policy
         self._index()
@@ -337,6 +355,63 @@ class ModuleTranslator:
         value = sum((1 << index) for index, bit in enumerate(bits) if bit == "1")
         return literal(len(bits), value, src)
 
+    @staticmethod
+    def parameter_bits(value: Any, width: int) -> list[str] | None:
+        """Decode a Yosys binary parameter into its LSB-first bit vector."""
+        if isinstance(value, int):
+            return ["1" if (value >> index) & 1 else "0" for index in range(width)]
+        if not isinstance(value, str) or len(value) != width:
+            return None
+        return list(reversed(value.lower()))
+
+    @staticmethod
+    def packed_bit(value: Any, index: int, default: str = "0") -> Any:
+        if isinstance(value, str):
+            bits = list(reversed(value))
+            return bits[index] if index < len(bits) else default
+        if isinstance(value, int):
+            return "1" if (value >> index) & 1 else "0"
+        return default
+
+    def partial_slice(self, expression: dict[str, Any], offset: int, width: int,
+                      src: dict[str, Any]) -> dict[str, Any]:
+        """Slice a literal while retaining a checked partial-value witness."""
+        if expression["kind"] == "literal":
+            return literal(width, (expression["value"] >> offset) & ((1 << width) - 1), src)
+        choice = expression["partial"]
+        mask = (1 << width) - 1
+        return {
+            "kind": "partial_literal", "width": width,
+            "partial": {
+                "site": choice["site"],
+                "classification": choice["classification"],
+                "known_mask": (choice["known_mask"] >> offset) & mask,
+                "known_value": (choice["known_value"] >> offset) & mask,
+                "implementation_value":
+                    (choice["implementation_value"] >> offset) & mask,
+                "rationale": choice["rationale"],
+            },
+            "source": src,
+        }
+
+    def partial_projection(self, expression: dict[str, Any], indexes: list[int],
+                           src: dict[str, Any]) -> dict[str, Any] | None:
+        """Project selected source bits into one packed memory initialization."""
+        if expression["kind"] != "partial_literal":
+            return None
+        choice = expression["partial"]
+        def project(field: str) -> int:
+            return sum(((choice[field] >> source_index) & 1) << target_index
+                       for target_index, source_index in enumerate(indexes))
+        return {
+            "site": choice["site"],
+            "classification": choice["classification"],
+            "known_mask": project("known_mask"),
+            "known_value": project("known_value"),
+            "implementation_value": project("implementation_value"),
+            "rationale": choice["rationale"],
+        }
+
     def vector_alias(self, bits: list[Any], aliases: dict[tuple[Any, ...], Any],
                      src: dict[str, Any]) -> dict[str, Any] | None:
         exact = aliases.get(tuple(bits))
@@ -389,6 +464,192 @@ class ModuleTranslator:
                      "high": value, "low": part, "source": src}
         return value
 
+    def memory_address(self, info: MemoryInfo, port: int, write: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+        connection = "WR_ADDR" if write else "RD_ADDR"
+        packed = info.connections.get(connection, [])
+        bits = packed[port * info.abits:(port + 1) * info.abits]
+        full = self.expr(bits, info.source)
+        address = slice_expr(full, 0, info.address_width, info.source)
+        if info.abits == info.address_width:
+            return address, literal(1, 1, info.source)
+        in_range = binary(
+            1, "unsigned_less_than", full,
+            literal(info.abits, info.size, info.source), info.source)
+        return address, in_range
+
+    def memory_oob_fill(self, info: MemoryInfo) -> dict[str, Any]:
+        site_payload = {"module": self.name, "cell": info.cell_name,
+                        "kind": "$mem_v2_out_of_range_read", "source": info.source}
+        site = "four_state_" + sha256(json.dumps(
+            site_payload, sort_keys=True, separators=(",", ":")).encode())[:24]
+        matches = ([] if self.four_state_policy is None else
+                   self.four_state_policy.matching(site, self.name, info.source))
+        if len(matches) != 1:
+            kind = ("four_state_memory_out_of_range" if self.four_state_policy is None else
+                    ("four_state_policy_missing" if not matches else
+                     "four_state_policy_ambiguous"))
+            self.block(kind, f"out-of-range memory read {site} matched {len(matches)} policy rules",
+                       info.source, {"site": site, "pattern": f"{info.width}'dynamic-x",
+                                     "width": info.width, "unknown_bits": info.width})
+            return literal(info.width, 0, info.source)
+        rule = matches[0]
+        implementation = (1 << info.width) - 1 if rule["fill"] == "one" else 0
+        return {"kind": "partial_literal", "width": info.width,
+                "partial": {"site": site, "classification": rule["classification"],
+                            "known_mask": 0, "known_value": 0,
+                            "implementation_value": implementation,
+                            "rationale": f"{rule['name']}: {rule['rationale']}"},
+                "source": info.source}
+
+    def memory_read(self, info: MemoryInfo, port: int) -> dict[str, Any]:
+        address, in_range = self.memory_address(info, port, False)
+        if info.write_ports == 0:
+            words = [self.partial_slice(info.init_expr, index * info.width,
+                                        info.width, info.source)
+                     for index in range(info.size)]
+            result = words[0]
+            for index in range(1, info.size):
+                selected = binary(1, "equal", address,
+                                  literal(info.address_width, index, info.source), info.source)
+                result = {"kind": "mux", "width": info.width,
+                          "condition": selected, "yes": words[index], "no": result,
+                          "source": info.source}
+        else:
+            parts = [{"kind": "memory_read", "width": 1,
+                      "memory": info.bit_names[bit], "address": address,
+                      "source": info.source}
+                     for bit in reversed(range(info.width))]
+            result = parts[0]
+            for part in parts[1:]:
+                result = {"kind": "concat", "width": result["width"] + 1,
+                          "high": result, "low": part, "source": info.source}
+        if info.abits != info.address_width:
+            result = {"kind": "mux", "width": info.width,
+                      "condition": in_range, "yes": result,
+                      "no": self.memory_oob_fill(info), "source": info.source}
+        return result
+
+    def prepare_memories(self, clock_domains: set[tuple[tuple[Any, ...], bool]]) -> list[dict[str, Any]]:
+        memories: list[dict[str, Any]] = []
+        writable: list[MemoryInfo] = []
+        for cell_name, cell in self.cells.items():
+            kind = cell.get("type", "")
+            if not kind.startswith("$mem"):
+                continue
+            src = location(cell.get("attributes", {}).get("src", ""),
+                           self.module_source["file"])
+            if kind != "$mem_v2":
+                self.block("memory_cell", f"unsupported memory cell {kind}", src)
+                continue
+            params = cell.get("parameters", {})
+            connections = cell.get("connections", {})
+            size = decode_parameter(params.get("SIZE"))
+            width = decode_parameter(params.get("WIDTH"))
+            abits = decode_parameter(params.get("ABITS"))
+            read_ports = decode_parameter(params.get("RD_PORTS"))
+            write_ports = decode_parameter(params.get("WR_PORTS"))
+            offset = decode_parameter(params.get("OFFSET"))
+            if (size <= 0 or size & (size - 1) or width <= 0 or abits <= 0 or
+                    read_ports <= 0 or offset != 0):
+                self.block("memory_shape",
+                           "$mem_v2 requires positive power-of-two SIZE, positive widths/read ports, and OFFSET=0",
+                           src)
+                continue
+            address_width = (size - 1).bit_length()
+            expected_lengths = {
+                "RD_ADDR": read_ports * abits, "RD_DATA": read_ports * width,
+                "WR_ADDR": write_ports * abits, "WR_DATA": write_ports * width,
+                "WR_EN": write_ports * width, "WR_CLK": write_ports,
+            }
+            malformed = [name for name, expected in expected_lengths.items()
+                         if len(connections.get(name, [])) != expected]
+            if malformed:
+                self.block("memory_port_shape",
+                           "malformed packed $mem_v2 ports: " + ", ".join(malformed), src)
+                continue
+            unsupported_parameters = []
+            for name in ("RD_CLK_ENABLE", "RD_TRANSPARENCY_MASK",
+                         "RD_COLLISION_X_MASK", "RD_WIDE_CONTINUATION",
+                         "RD_CE_OVER_SRST", "WR_WIDE_CONTINUATION"):
+                if decode_parameter(params.get(name)) != 0:
+                    unsupported_parameters.append(name)
+            if unsupported_parameters:
+                self.block("memory_semantics", "unsupported $mem_v2 features: " +
+                           ", ".join(unsupported_parameters), src)
+                continue
+            for name in ("RD_ARST", "RD_SRST"):
+                if any(bit != "0" for bit in connections.get(name, [])):
+                    self.block("memory_read_control",
+                               f"nonconstant {name} requires clocked-read lowering", src)
+            clock_enable = params.get("WR_CLK_ENABLE", 0)
+            clock_polarity = params.get("WR_CLK_POLARITY", 0)
+            for port in range(write_ports):
+                if self.packed_bit(clock_enable, port) != "1":
+                    self.block("asynchronous_memory_write",
+                               f"write port {port} is not clocked", src)
+                if self.packed_bit(clock_polarity, port) != "1":
+                    self.block("falling_edge_memory_write",
+                               f"write port {port} is not rising-edge", src)
+                clock_domains.add(((connections["WR_CLK"][port],), True))
+            init_width = size * width
+            init_bits = self.parameter_bits(params.get("INIT"), init_width)
+            if init_bits is None:
+                self.block("memory_initialization",
+                           f"INIT is not an exact {init_width}-bit Yosys parameter", src)
+                init_bits = ["x"] * init_width
+            init_expr = self.constant(init_bits, src)
+            if init_expr is None:
+                self.block("memory_initialization", "INIT is not a constant", src)
+                init_expr = literal(init_width, 0, src)
+            bit_names = ["__loom_mem_" + self.legal_identifier(cell_name) +
+                         f"__bit_{bit}" for bit in range(width)]
+            original_name = params.get("MEMID", cell_name)
+            if not isinstance(original_name, str):
+                original_name = cell_name
+            original_name = original_name.removeprefix("\\")
+            info = MemoryInfo(cell_name, original_name, src, size, width, abits, address_width,
+                              read_ports, write_ports, connections, init_bits,
+                              init_expr, bit_names)
+            self.memory_cells[cell_name] = info
+            if write_ports != 0:
+                writable.append(info)
+
+        # Only build write expressions after every memory output has been
+        # indexed: one memory's write data may depend combinationally on a
+        # different memory's read port.
+        for info in writable:
+            connections = info.connections
+            for bit, memory_name in enumerate(info.bit_names):
+                init = [((info.init_expr.get("value", info.init_expr.get("partial", {}).get(
+                    "implementation_value", 0)) >> (address * info.width + bit)) & 1)
+                        for address in range(info.size)]
+                refinement = self.partial_projection(
+                    info.init_expr,
+                    [address * info.width + bit for address in range(info.size)],
+                    info.source)
+                writes = []
+                for port in range(info.write_ports):
+                    address, in_range = self.memory_address(info, port, True)
+                    enable = self.expr([
+                        connections["WR_EN"][port * info.width + bit]], info.source)
+                    if info.abits != info.address_width:
+                        enable = binary(1, "bit_and", enable, in_range, info.source)
+                    data = self.expr([
+                        connections["WR_DATA"][port * info.width + bit]], info.source)
+                    writes.append({"port": port, "enable": enable,
+                                   "address": address, "data": data,
+                                   "source": info.source})
+                memories.append({"name": memory_name,
+                                 "address_width": info.address_width, "data_width": 1,
+                                 "init": init, "init_refinement": refinement,
+                                 "writes": writes, "source": info.source})
+        return memories
+
+    def memory_equivalence(self) -> list[dict[str, Any]]:
+        return [{"original": info.original_name, "size": info.size,
+                 "width": info.width, "bit_memories": info.bit_names}
+                for info in self.memory_cells.values() if info.write_ports != 0]
+
     def cell_expr(self, cell_name: str, port: str) -> dict[str, Any]:
         key = (cell_name, port)
         if key in self.expression_cache:
@@ -409,8 +670,16 @@ class ModuleTranslator:
             result = signal(width, name, src)
         elif kind in self.modules:
             result = signal(max(width, 1), self.instance_net(cell_name, port), src)
+        elif kind == "$mem_v2" and cell_name in self.memory_cells and port == "RD_DATA":
+            info = self.memory_cells[cell_name]
+            parts = [self.memory_read(info, read_port)
+                     for read_port in reversed(range(info.read_ports))]
+            result = parts[0]
+            for part in parts[1:]:
+                result = {"kind": "concat", "width": result["width"] + part["width"],
+                          "high": result, "low": part, "source": src}
         elif kind.startswith("$mem"):
-            self.block("memory_cell", f"memory cell {kind} requires memory lowering", src)
+            self.block("memory_cell", f"unsupported memory output {kind}.{port}", src)
             result = literal(max(width, 1), 0, src)
         elif kind not in SUPPORTED_COMB:
             self.block("yosys_cell", f"unsupported cell type {kind}", src)
@@ -583,6 +852,8 @@ class ModuleTranslator:
                        "asynchronous reset state must remain behind an external contract: " +
                        ", ".join(sorted(asynchronous_cells)), self.module_source)
 
+        memories = self.prepare_memories(clock_domains)
+
         for cell_name, cell in sequential_cells:
             kind = cell["type"]
             connections = cell.get("connections", {})
@@ -631,9 +902,6 @@ class ModuleTranslator:
         for cell_name, cell in self.cells.items():
             kind = cell.get("type", "")
             if kind not in self.modules:
-                if kind.startswith("$mem"):
-                    self.block("memory_cell", f"memory cell {kind} requires memory lowering",
-                               cell.get("attributes", {}).get("src", ""))
                 continue
             src = location(cell.get("attributes", {}).get("src", ""), self.module_source["file"])
             directions = cell.get("port_directions", {})
@@ -703,7 +971,8 @@ class ModuleTranslator:
                            self.source_for_bits(port.get("bits", [])))
 
         return {"name": self.name, "ports": ports, "domains": domains,
-                "registers": registers, "memories": [], "outputs": outputs,
+                "registers": registers, "memories": memories, "outputs": outputs,
+                "memory_equivalence": self.memory_equivalence(),
                 "instances": instances, "unsupported": self.unsupported,
                 "source": self.module_source}
 

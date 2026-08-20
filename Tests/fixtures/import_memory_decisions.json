@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "decisions": [
+    {
+      "name": "fixture_partial_initial_image",
+      "module": "import_memory",
+      "file": "Tests/fixtures/import_memory.v",
+      "line_start": 14,
+      "line_end": 14,
+      "classification": "uninitialized_state_or_memory",
+      "fill": "zero",
+      "rationale": "The high nibble of the final test word is deliberately uninitialized and this implementation selects zero while preserving the known low nibble."
+    },
+    {
+      "name": "fixture_inactive_write_port_fields",
+      "module": "import_memory",
+      "file": "Tests/fixtures/import_memory.v",
+      "line_start": 24,
+      "line_end": 26,
+      "classification": "synthesis_dont_care",
+      "fill": "zero",
+      "rationale": "Yosys leaves write address and data fields unspecified only while their corresponding write-enable bits are inactive."
+    }
+  ]
+}

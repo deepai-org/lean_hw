@@ -1,13 +1,321 @@
 {
   "blocker_module_counts": {
-    "four_state_constant": 29,
+    "four_state_constant": 32,
+    "four_state_memory_out_of_range": 2,
     "four_state_variable_part_select": 5,
-    "memory_cell": 6,
     "multiple_clock_domains": 1
   },
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
   "four_state_policy_sha256": null,
   "four_state_sites": [
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "288'x",
+      "site": "four_state_682d489152435fd72d33c455",
+      "source": {
+        "end_column": 36,
+        "end_line": 56,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 56
+      },
+      "unknown_bits": 288,
+      "width": 288
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "32'x",
+      "site": "four_state_3b3105663243e0ed90185983",
+      "source": {
+        "end_column": 33,
+        "end_line": 58,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 58
+      },
+      "unknown_bits": 32,
+      "width": 32
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "1024'x",
+      "site": "four_state_f3069b8bdd8061cf09eba4e8",
+      "source": {
+        "end_column": 35,
+        "end_line": 57,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 57
+      },
+      "unknown_bits": 1024,
+      "width": 1024
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "32'x",
+      "site": "four_state_d859aa4c51f2675a3e9afa8b",
+      "source": {
+        "end_column": 35,
+        "end_line": 54,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 54
+      },
+      "unknown_bits": 32,
+      "width": 32
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "640'x",
+      "site": "four_state_bbe9570f09abcb4b0580746f",
+      "source": {
+        "end_column": 35,
+        "end_line": 55,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 55
+      },
+      "unknown_bits": 640,
+      "width": 640
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "9'x",
+      "site": "four_state_70c19b4f3361f8283681ea1e",
+      "source": {
+        "end_column": 16,
+        "end_line": 156,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 9,
+        "start_line": 156
+      },
+      "unknown_bits": 9,
+      "width": 9
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "32'x",
+      "site": "four_state_0738f6a55053f25b9d2e7b9e",
+      "source": {
+        "end_column": 23,
+        "end_line": 166,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 18,
+        "start_line": 166
+      },
+      "unknown_bits": 32,
+      "width": 32
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "32'x",
+      "site": "four_state_a139ce9beb812cb3bab9b752",
+      "source": {
+        "end_column": 22,
+        "end_line": 178,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 13,
+        "start_line": 178
+      },
+      "unknown_bits": 32,
+      "width": 32
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_c1da5c0dddb306a5189fec00",
+      "source": {
+        "end_column": 35,
+        "end_line": 54,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 54
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "20'dynamic-x",
+      "site": "four_state_bbdd1aed918e90c84385dcef",
+      "source": {
+        "end_column": 35,
+        "end_line": 55,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 55
+      },
+      "unknown_bits": 20,
+      "width": 20
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "1'dynamic-x",
+      "site": "four_state_cd2fffd116be42640f2fffd7",
+      "source": {
+        "end_column": 33,
+        "end_line": 58,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 58
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "9'dynamic-x",
+      "site": "four_state_edf44e69edcadf9dd88dc68f",
+      "source": {
+        "end_column": 36,
+        "end_line": 56,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 56
+      },
+      "unknown_bits": 9,
+      "width": 9
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "32'x",
+      "site": "four_state_6ef7919235ae299f4c55c097",
+      "source": {
+        "end_column": 16,
+        "end_line": 156,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 9,
+        "start_line": 156
+      },
+      "unknown_bits": 32,
+      "width": 32
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "9'x",
+      "site": "four_state_0357ca3505aa137cd61471a4",
+      "source": {
+        "end_column": 23,
+        "end_line": 166,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 18,
+        "start_line": 166
+      },
+      "unknown_bits": 9,
+      "width": 9
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "9'x",
+      "site": "four_state_fe6b39083885aac7d259e7d5",
+      "source": {
+        "end_column": 22,
+        "end_line": 178,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 13,
+        "start_line": 178
+      },
+      "unknown_bits": 9,
+      "width": 9
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "1'x",
+      "site": "four_state_bc11c2792c808d71b165dfcf",
+      "source": {
+        "end_column": 16,
+        "end_line": 156,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 9,
+        "start_line": 156
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "1'x",
+      "site": "four_state_3fc54b25156abe0c5d1fa4c8",
+      "source": {
+        "end_column": 23,
+        "end_line": 166,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 18,
+        "start_line": 166
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "1'x",
+      "site": "four_state_36242a82ddd5ede0efc15a4b",
+      "source": {
+        "end_column": 22,
+        "end_line": 178,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 13,
+        "start_line": 178
+      },
+      "unknown_bits": 1,
+      "width": 1
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "20'x",
+      "site": "four_state_e0d6d23685c8b937370d4be9",
+      "source": {
+        "end_column": 16,
+        "end_line": 156,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 9,
+        "start_line": 156
+      },
+      "unknown_bits": 20,
+      "width": 20
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "20'x",
+      "site": "four_state_b5ec2914f7aa391282dd938a",
+      "source": {
+        "end_column": 23,
+        "end_line": 166,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 18,
+        "start_line": 166
+      },
+      "unknown_bits": 20,
+      "width": 20
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "20'x",
+      "site": "four_state_ea781fcf1d728dab4b7369a0",
+      "source": {
+        "end_column": 22,
+        "end_line": 178,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 13,
+        "start_line": 178
+      },
+      "unknown_bits": 20,
+      "width": 20
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "pattern": "32'dynamic-x",
+      "site": "four_state_c2ba39550fab21e1cfcd73ca",
+      "source": {
+        "end_column": 35,
+        "end_line": 57,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 28,
+        "start_line": 57
+      },
+      "unknown_bits": 32,
+      "width": 32
+    },
     {
       "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
       "pattern": "1'x",
@@ -961,6 +1269,90 @@
       "width": 1
     },
     {
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "pattern": "24'x",
+      "site": "four_state_ae5079e3c7f3a11fb6e9cd45",
+      "source": {
+        "end_column": 26,
+        "end_line": 225,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 17,
+        "start_line": 225
+      },
+      "unknown_bits": 24,
+      "width": 24
+    },
+    {
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "pattern": "3'x",
+      "site": "four_state_89bad559519acdd65a7aff1d",
+      "source": {
+        "end_column": 20,
+        "end_line": 228,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 13,
+        "start_line": 228
+      },
+      "unknown_bits": 3,
+      "width": 3
+    },
+    {
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "pattern": "3'x",
+      "site": "four_state_48e02c3b851ed647b19db34d",
+      "source": {
+        "end_column": 27,
+        "end_line": 232,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 22,
+        "start_line": 232
+      },
+      "unknown_bits": 3,
+      "width": 3
+    },
+    {
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "pattern": "3'x",
+      "site": "four_state_a900c913678ef1595021957d",
+      "source": {
+        "end_column": 0,
+        "end_line": 1,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 0,
+        "start_line": 1
+      },
+      "unknown_bits": 3,
+      "width": 3
+    },
+    {
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "pattern": "3'x",
+      "site": "four_state_318850b8254c9cdece75d72b",
+      "source": {
+        "end_column": 28,
+        "end_line": 236,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 22,
+        "start_line": 236
+      },
+      "unknown_bits": 3,
+      "width": 3
+    },
+    {
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "pattern": "3'dynamic-x",
+      "site": "four_state_865ce562cf84ee7168b3fee4",
+      "source": {
+        "end_column": 26,
+        "end_line": 225,
+        "file": "src/kianv_harris_edition/associative_cache.v",
+        "start_column": 17,
+        "start_line": 225
+      },
+      "unknown_bits": 3,
+      "width": 3
+    },
+    {
       "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_D$",
       "pattern": "512'x",
       "site": "four_state_daf17c7d51947666fdde7438",
@@ -1144,6 +1536,48 @@
     },
     {
       "module": "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo",
+      "pattern": "128'x",
+      "site": "four_state_64396877abbb7c578603f783",
+      "source": {
+        "end_column": 27,
+        "end_line": 39,
+        "file": "src/fifo.v",
+        "start_column": 24,
+        "start_line": 39
+      },
+      "unknown_bits": 128,
+      "width": 128
+    },
+    {
+      "module": "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo",
+      "pattern": "4'x",
+      "site": "four_state_ca3175f4b29e624455fff6cc",
+      "source": {
+        "end_column": 18,
+        "end_line": 88,
+        "file": "src/fifo.v",
+        "start_column": 9,
+        "start_line": 88
+      },
+      "unknown_bits": 4,
+      "width": 4
+    },
+    {
+      "module": "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo",
+      "pattern": "8'x",
+      "site": "four_state_a6d251523a1891f624785803",
+      "source": {
+        "end_column": 18,
+        "end_line": 88,
+        "file": "src/fifo.v",
+        "start_column": 9,
+        "start_line": 88
+      },
+      "unknown_bits": 8,
+      "width": 8
+    },
+    {
+      "module": "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo",
       "pattern": "5'x",
       "site": "four_state_e4f499f5c4d7ca3c36915859",
       "source": {
@@ -1295,6 +1729,20 @@
       },
       "unknown_bits": 1,
       "width": 1
+    },
+    {
+      "module": "alu_decoder",
+      "pattern": "width=80 unknown=25 pattern_sha256=cfb2b7b018b3c3c9",
+      "site": "four_state_9726ab289ab681961f159ddc",
+      "source": {
+        "end_column": 16,
+        "end_line": 72,
+        "file": "src/kianv_harris_edition/alu_decoder.v",
+        "start_column": 9,
+        "start_line": 57
+      },
+      "unknown_bits": 25,
+      "width": 80
     },
     {
       "module": "alu_decoder",
@@ -1788,6 +2236,62 @@
     },
     {
       "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "pattern": "4096'x",
+      "site": "four_state_ae563c02badc73ee45adef73",
+      "source": {
+        "end_column": 16,
+        "end_line": 57,
+        "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+        "start_column": 13,
+        "start_line": 57
+      },
+      "unknown_bits": 4096,
+      "width": 4096
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "pattern": "9'x",
+      "site": "four_state_b2c58a7bc14737b07719e37f",
+      "source": {
+        "end_column": 13,
+        "end_line": 63,
+        "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+        "start_column": 9,
+        "start_line": 63
+      },
+      "unknown_bits": 9,
+      "width": 9
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "pattern": "9'x",
+      "site": "four_state_d47bc4d9ca64937523e1ef46",
+      "source": {
+        "end_column": 16,
+        "end_line": 65,
+        "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+        "start_column": 11,
+        "start_line": 65
+      },
+      "unknown_bits": 9,
+      "width": 9
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "pattern": "9'x",
+      "site": "four_state_8bb576b3a4aa33459959a864",
+      "source": {
+        "end_column": 50,
+        "end_line": 67,
+        "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+        "start_column": 43,
+        "start_line": 67
+      },
+      "unknown_bits": 9,
+      "width": 9
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
       "pattern": "8'x",
       "site": "four_state_272149da8d92ba066fe3ad99",
       "source": {
@@ -1799,6 +2303,48 @@
       },
       "unknown_bits": 8,
       "width": 8
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "pattern": "8'x",
+      "site": "four_state_6b55f757ec3870c92341403b",
+      "source": {
+        "end_column": 16,
+        "end_line": 65,
+        "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+        "start_column": 11,
+        "start_line": 65
+      },
+      "unknown_bits": 8,
+      "width": 8
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "pattern": "8'x",
+      "site": "four_state_650a8acba11fc2750512b00e",
+      "source": {
+        "end_column": 50,
+        "end_line": 67,
+        "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+        "start_column": 43,
+        "start_line": 67
+      },
+      "unknown_bits": 8,
+      "width": 8
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "pattern": "1'x",
+      "site": "four_state_ff3e941d3d863ed033542f97",
+      "source": {
+        "end_column": 50,
+        "end_line": 67,
+        "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+        "start_column": 43,
+        "start_line": 67
+      },
+      "unknown_bits": 1,
+      "width": 1
     },
     {
       "module": "gpio",
@@ -2149,6 +2695,48 @@
       },
       "unknown_bits": 2,
       "width": 2
+    },
+    {
+      "module": "register_file",
+      "pattern": "1024'x",
+      "site": "four_state_c1b778828cd2c173331d5db9",
+      "source": {
+        "end_column": 19,
+        "end_line": 33,
+        "file": "src/kianv_harris_edition/register_file.v",
+        "start_column": 14,
+        "start_line": 33
+      },
+      "unknown_bits": 1024,
+      "width": 1024
+    },
+    {
+      "module": "register_file",
+      "pattern": "5'x",
+      "site": "four_state_d9cf106b0c6059eb056a184c",
+      "source": {
+        "end_column": 22,
+        "end_line": 37,
+        "file": "src/kianv_harris_edition/register_file.v",
+        "start_column": 9,
+        "start_line": 37
+      },
+      "unknown_bits": 5,
+      "width": 5
+    },
+    {
+      "module": "register_file",
+      "pattern": "32'x",
+      "site": "four_state_ec23cd5dc77673f8d8fc972b",
+      "source": {
+        "end_column": 22,
+        "end_line": 37,
+        "file": "src/kianv_harris_edition/register_file.v",
+        "start_column": 9,
+        "start_line": 37
+      },
+      "unknown_bits": 32,
+      "width": 32
     },
     {
       "module": "rx_uart",
@@ -3349,45 +3937,19 @@
     },
     {
       "blocker_kinds": [
-        "memory_cell"
+        "four_state_constant",
+        "four_state_memory_out_of_range"
       ],
       "blockers": [
         {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 35,
-            "end_line": 54,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 54
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 35,
-            "end_line": 55,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 55
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 33,
-            "end_line": 58,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 28,
-            "start_line": 58
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
+          "detail": "unclassified partial value four_state_682d489152435fd72d33c455 288'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "288'x",
+            "site": "four_state_682d489152435fd72d33c455",
+            "unknown_bits": 288,
+            "width": 288
+          },
           "source": {
             "end_column": 36,
             "end_line": 56,
@@ -3397,8 +3959,354 @@
           }
         },
         {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
+          "detail": "unclassified partial value four_state_3b3105663243e0ed90185983 32'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "32'x",
+            "site": "four_state_3b3105663243e0ed90185983",
+            "unknown_bits": 32,
+            "width": 32
+          },
+          "source": {
+            "end_column": 33,
+            "end_line": 58,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 58
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_f3069b8bdd8061cf09eba4e8 1024'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "1024'x",
+            "site": "four_state_f3069b8bdd8061cf09eba4e8",
+            "unknown_bits": 1024,
+            "width": 1024
+          },
+          "source": {
+            "end_column": 35,
+            "end_line": 57,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 57
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_d859aa4c51f2675a3e9afa8b 32'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "32'x",
+            "site": "four_state_d859aa4c51f2675a3e9afa8b",
+            "unknown_bits": 32,
+            "width": 32
+          },
+          "source": {
+            "end_column": 35,
+            "end_line": 54,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 54
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_bbe9570f09abcb4b0580746f 640'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "640'x",
+            "site": "four_state_bbe9570f09abcb4b0580746f",
+            "unknown_bits": 640,
+            "width": 640
+          },
+          "source": {
+            "end_column": 35,
+            "end_line": 55,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 55
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_70c19b4f3361f8283681ea1e 9'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "9'x",
+            "site": "four_state_70c19b4f3361f8283681ea1e",
+            "unknown_bits": 9,
+            "width": 9
+          },
+          "source": {
+            "end_column": 16,
+            "end_line": 156,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 9,
+            "start_line": 156
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_0738f6a55053f25b9d2e7b9e 32'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "32'x",
+            "site": "four_state_0738f6a55053f25b9d2e7b9e",
+            "unknown_bits": 32,
+            "width": 32
+          },
+          "source": {
+            "end_column": 23,
+            "end_line": 166,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 18,
+            "start_line": 166
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_a139ce9beb812cb3bab9b752 32'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "32'x",
+            "site": "four_state_a139ce9beb812cb3bab9b752",
+            "unknown_bits": 32,
+            "width": 32
+          },
+          "source": {
+            "end_column": 22,
+            "end_line": 178,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 13,
+            "start_line": 178
+          }
+        },
+        {
+          "detail": "out-of-range memory read four_state_c1da5c0dddb306a5189fec00 matched 0 policy rules",
+          "kind": "four_state_memory_out_of_range",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_c1da5c0dddb306a5189fec00",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 35,
+            "end_line": 54,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 54
+          }
+        },
+        {
+          "detail": "out-of-range memory read four_state_bbdd1aed918e90c84385dcef matched 0 policy rules",
+          "kind": "four_state_memory_out_of_range",
+          "metadata": {
+            "pattern": "20'dynamic-x",
+            "site": "four_state_bbdd1aed918e90c84385dcef",
+            "unknown_bits": 20,
+            "width": 20
+          },
+          "source": {
+            "end_column": 35,
+            "end_line": 55,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 55
+          }
+        },
+        {
+          "detail": "out-of-range memory read four_state_cd2fffd116be42640f2fffd7 matched 0 policy rules",
+          "kind": "four_state_memory_out_of_range",
+          "metadata": {
+            "pattern": "1'dynamic-x",
+            "site": "four_state_cd2fffd116be42640f2fffd7",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 33,
+            "end_line": 58,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 58
+          }
+        },
+        {
+          "detail": "out-of-range memory read four_state_edf44e69edcadf9dd88dc68f matched 0 policy rules",
+          "kind": "four_state_memory_out_of_range",
+          "metadata": {
+            "pattern": "9'dynamic-x",
+            "site": "four_state_edf44e69edcadf9dd88dc68f",
+            "unknown_bits": 9,
+            "width": 9
+          },
+          "source": {
+            "end_column": 36,
+            "end_line": 56,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 28,
+            "start_line": 56
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_6ef7919235ae299f4c55c097 32'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "32'x",
+            "site": "four_state_6ef7919235ae299f4c55c097",
+            "unknown_bits": 32,
+            "width": 32
+          },
+          "source": {
+            "end_column": 16,
+            "end_line": 156,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 9,
+            "start_line": 156
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_0357ca3505aa137cd61471a4 9'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "9'x",
+            "site": "four_state_0357ca3505aa137cd61471a4",
+            "unknown_bits": 9,
+            "width": 9
+          },
+          "source": {
+            "end_column": 23,
+            "end_line": 166,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 18,
+            "start_line": 166
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_fe6b39083885aac7d259e7d5 9'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "9'x",
+            "site": "four_state_fe6b39083885aac7d259e7d5",
+            "unknown_bits": 9,
+            "width": 9
+          },
+          "source": {
+            "end_column": 22,
+            "end_line": 178,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 13,
+            "start_line": 178
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_bc11c2792c808d71b165dfcf 1'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "1'x",
+            "site": "four_state_bc11c2792c808d71b165dfcf",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 16,
+            "end_line": 156,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 9,
+            "start_line": 156
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_3fc54b25156abe0c5d1fa4c8 1'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "1'x",
+            "site": "four_state_3fc54b25156abe0c5d1fa4c8",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 23,
+            "end_line": 166,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 18,
+            "start_line": 166
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_36242a82ddd5ede0efc15a4b 1'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "1'x",
+            "site": "four_state_36242a82ddd5ede0efc15a4b",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 22,
+            "end_line": 178,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 13,
+            "start_line": 178
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_e0d6d23685c8b937370d4be9 20'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "20'x",
+            "site": "four_state_e0d6d23685c8b937370d4be9",
+            "unknown_bits": 20,
+            "width": 20
+          },
+          "source": {
+            "end_column": 16,
+            "end_line": 156,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 9,
+            "start_line": 156
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_b5ec2914f7aa391282dd938a 20'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "20'x",
+            "site": "four_state_b5ec2914f7aa391282dd938a",
+            "unknown_bits": 20,
+            "width": 20
+          },
+          "source": {
+            "end_column": 23,
+            "end_line": 166,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 18,
+            "start_line": 166
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_ea781fcf1d728dab4b7369a0 20'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "20'x",
+            "site": "four_state_ea781fcf1d728dab4b7369a0",
+            "unknown_bits": 20,
+            "width": 20
+          },
+          "source": {
+            "end_column": 22,
+            "end_line": 178,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 13,
+            "start_line": 178
+          }
+        },
+        {
+          "detail": "out-of-range memory read four_state_c2ba39550fab21e1cfcd73ca matched 0 policy rules",
+          "kind": "four_state_memory_out_of_range",
+          "metadata": {
+            "pattern": "32'dynamic-x",
+            "site": "four_state_c2ba39550fab21e1cfcd73ca",
+            "unknown_bits": 32,
+            "width": 32
+          },
           "source": {
             "end_column": 35,
             "end_line": 57,
@@ -4606,23 +5514,104 @@
     },
     {
       "blocker_kinds": [
-        "memory_cell"
+        "four_state_constant",
+        "four_state_memory_out_of_range"
       ],
       "blockers": [
         {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
+          "detail": "unclassified partial value four_state_ae5079e3c7f3a11fb6e9cd45 24'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "24'x",
+            "site": "four_state_ae5079e3c7f3a11fb6e9cd45",
+            "unknown_bits": 24,
+            "width": 24
+          },
           "source": {
-            "end_column": 16,
-            "end_line": 255,
+            "end_column": 26,
+            "end_line": 225,
             "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 9,
-            "start_line": 246
+            "start_column": 17,
+            "start_line": 225
           }
         },
         {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
+          "detail": "unclassified partial value four_state_89bad559519acdd65a7aff1d 3'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "3'x",
+            "site": "four_state_89bad559519acdd65a7aff1d",
+            "unknown_bits": 3,
+            "width": 3
+          },
+          "source": {
+            "end_column": 20,
+            "end_line": 228,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 13,
+            "start_line": 228
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_48e02c3b851ed647b19db34d 3'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "3'x",
+            "site": "four_state_48e02c3b851ed647b19db34d",
+            "unknown_bits": 3,
+            "width": 3
+          },
+          "source": {
+            "end_column": 27,
+            "end_line": 232,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 22,
+            "start_line": 232
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_a900c913678ef1595021957d 3'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "3'x",
+            "site": "four_state_a900c913678ef1595021957d",
+            "unknown_bits": 3,
+            "width": 3
+          },
+          "source": {
+            "end_column": 0,
+            "end_line": 1,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 0,
+            "start_line": 1
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_318850b8254c9cdece75d72b 3'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "3'x",
+            "site": "four_state_318850b8254c9cdece75d72b",
+            "unknown_bits": 3,
+            "width": 3
+          },
+          "source": {
+            "end_column": 28,
+            "end_line": 236,
+            "file": "src/kianv_harris_edition/associative_cache.v",
+            "start_column": 22,
+            "start_line": 236
+          }
+        },
+        {
+          "detail": "out-of-range memory read four_state_865ce562cf84ee7168b3fee4 matched 0 policy rules",
+          "kind": "four_state_memory_out_of_range",
+          "metadata": {
+            "pattern": "3'dynamic-x",
+            "site": "four_state_865ce562cf84ee7168b3fee4",
+            "unknown_bits": 3,
+            "width": 3
+          },
           "source": {
             "end_column": 26,
             "end_line": 225,
@@ -4896,10 +5885,60 @@
     },
     {
       "blocker_kinds": [
-        "four_state_constant",
-        "memory_cell"
+        "four_state_constant"
       ],
       "blockers": [
+        {
+          "detail": "unclassified partial value four_state_64396877abbb7c578603f783 128'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "128'x",
+            "site": "four_state_64396877abbb7c578603f783",
+            "unknown_bits": 128,
+            "width": 128
+          },
+          "source": {
+            "end_column": 27,
+            "end_line": 39,
+            "file": "src/fifo.v",
+            "start_column": 24,
+            "start_line": 39
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_ca3175f4b29e624455fff6cc 4'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "4'x",
+            "site": "four_state_ca3175f4b29e624455fff6cc",
+            "unknown_bits": 4,
+            "width": 4
+          },
+          "source": {
+            "end_column": 18,
+            "end_line": 88,
+            "file": "src/fifo.v",
+            "start_column": 9,
+            "start_line": 88
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_a6d251523a1891f624785803 8'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "8'x",
+            "site": "four_state_a6d251523a1891f624785803",
+            "unknown_bits": 8,
+            "width": 8
+          },
+          "source": {
+            "end_column": 18,
+            "end_line": 88,
+            "file": "src/fifo.v",
+            "start_column": 9,
+            "start_line": 88
+          }
+        },
         {
           "detail": "unclassified partial value four_state_e4f499f5c4d7ca3c36915859 5'x",
           "kind": "four_state_constant",
@@ -4915,17 +5954,6 @@
             "file": "src/fifo.v",
             "start_column": 0,
             "start_line": 1
-          }
-        },
-        {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
-          "source": {
-            "end_column": 27,
-            "end_line": 39,
-            "file": "src/fifo.v",
-            "start_column": 24,
-            "start_line": 39
           }
         }
       ],
@@ -5260,13 +6288,18 @@
     },
     {
       "blocker_kinds": [
-        "four_state_constant",
-        "memory_cell"
+        "four_state_constant"
       ],
       "blockers": [
         {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
+          "detail": "unclassified partial value four_state_9726ab289ab681961f159ddc width=80 unknown=25 pattern_sha256=cfb2b7b018b3c3c9",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "width=80 unknown=25 pattern_sha256=cfb2b7b018b3c3c9",
+            "site": "four_state_9726ab289ab681961f159ddc",
+            "unknown_bits": 25,
+            "width": 80
+          },
           "source": {
             "end_column": 16,
             "end_line": 72,
@@ -5949,10 +6982,77 @@
     },
     {
       "blocker_kinds": [
-        "four_state_constant",
-        "memory_cell"
+        "four_state_constant"
       ],
       "blockers": [
+        {
+          "detail": "unclassified partial value four_state_ae563c02badc73ee45adef73 4096'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "4096'x",
+            "site": "four_state_ae563c02badc73ee45adef73",
+            "unknown_bits": 4096,
+            "width": 4096
+          },
+          "source": {
+            "end_column": 16,
+            "end_line": 57,
+            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+            "start_column": 13,
+            "start_line": 57
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_b2c58a7bc14737b07719e37f 9'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "9'x",
+            "site": "four_state_b2c58a7bc14737b07719e37f",
+            "unknown_bits": 9,
+            "width": 9
+          },
+          "source": {
+            "end_column": 13,
+            "end_line": 63,
+            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+            "start_column": 9,
+            "start_line": 63
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_d47bc4d9ca64937523e1ef46 9'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "9'x",
+            "site": "four_state_d47bc4d9ca64937523e1ef46",
+            "unknown_bits": 9,
+            "width": 9
+          },
+          "source": {
+            "end_column": 16,
+            "end_line": 65,
+            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+            "start_column": 11,
+            "start_line": 65
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_8bb576b3a4aa33459959a864 9'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "9'x",
+            "site": "four_state_8bb576b3a4aa33459959a864",
+            "unknown_bits": 9,
+            "width": 9
+          },
+          "source": {
+            "end_column": 50,
+            "end_line": 67,
+            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+            "start_column": 43,
+            "start_line": 67
+          }
+        },
         {
           "detail": "unclassified partial value four_state_272149da8d92ba066fe3ad99 8'x",
           "kind": "four_state_constant",
@@ -5971,14 +7071,54 @@
           }
         },
         {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
+          "detail": "unclassified partial value four_state_6b55f757ec3870c92341403b 8'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "8'x",
+            "site": "four_state_6b55f757ec3870c92341403b",
+            "unknown_bits": 8,
+            "width": 8
+          },
           "source": {
             "end_column": 16,
-            "end_line": 57,
+            "end_line": 65,
             "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
-            "start_column": 13,
-            "start_line": 57
+            "start_column": 11,
+            "start_line": 65
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_650a8acba11fc2750512b00e 8'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "8'x",
+            "site": "four_state_650a8acba11fc2750512b00e",
+            "unknown_bits": 8,
+            "width": 8
+          },
+          "source": {
+            "end_column": 50,
+            "end_line": 67,
+            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+            "start_column": 43,
+            "start_line": 67
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_ff3e941d3d863ed033542f97 1'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "1'x",
+            "site": "four_state_ff3e941d3d863ed033542f97",
+            "unknown_bits": 1,
+            "width": 1
+          },
+          "source": {
+            "end_column": 50,
+            "end_line": 67,
+            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
+            "start_column": 43,
+            "start_line": 67
           }
         }
       ],
@@ -6508,18 +7648,58 @@
     },
     {
       "blocker_kinds": [
-        "memory_cell"
+        "four_state_constant"
       ],
       "blockers": [
         {
-          "detail": "memory cell $mem_v2 requires memory lowering",
-          "kind": "memory_cell",
+          "detail": "unclassified partial value four_state_c1b778828cd2c173331d5db9 1024'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "1024'x",
+            "site": "four_state_c1b778828cd2c173331d5db9",
+            "unknown_bits": 1024,
+            "width": 1024
+          },
           "source": {
             "end_column": 19,
             "end_line": 33,
             "file": "src/kianv_harris_edition/register_file.v",
             "start_column": 14,
             "start_line": 33
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_d9cf106b0c6059eb056a184c 5'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "5'x",
+            "site": "four_state_d9cf106b0c6059eb056a184c",
+            "unknown_bits": 5,
+            "width": 5
+          },
+          "source": {
+            "end_column": 22,
+            "end_line": 37,
+            "file": "src/kianv_harris_edition/register_file.v",
+            "start_column": 9,
+            "start_line": 37
+          }
+        },
+        {
+          "detail": "unclassified partial value four_state_ec23cd5dc77673f8d8fc972b 32'x",
+          "kind": "four_state_constant",
+          "metadata": {
+            "pattern": "32'x",
+            "site": "four_state_ec23cd5dc77673f8d8fc972b",
+            "unknown_bits": 32,
+            "width": 32
+          },
+          "source": {
+            "end_column": 22,
+            "end_line": 37,
+            "file": "src/kianv_harris_edition/register_file.v",
+            "start_column": 9,
+            "start_line": 37
           }
         }
       ],

@@ -152,13 +152,20 @@ regenerated inventory cannot silently inherit stale classifications.
 The first Yosys adapter handles one clock domain, either edge, resetless state,
 per-register active-high/active-low synchronous resets, both reset-dominant
 and enable-dominant priority, ordinary register enables, and a basic
-width-normalized combinational subset. Synchronous resets are made explicit in
+width-normalized combinational subset. It also accepts power-of-two `$mem_v2`
+arrays with asynchronous reads, rising-edge writes, zero offset, ordinary
+ordered-port collision behavior, and arbitrary per-bit write enables. ROMs
+become pure mux logic. Writable words become bit-plane Loom memories, with an
+explicit `memory_equivalence` relation consumed by
+`scripts/rtl_equivalence.py --memory-map`; partial initial images retain a
+trusted `PartialValue` refinement witness. Synchronous resets are made explicit in
 each register's next-state graph and emitted in a genuinely resetless frame;
 no synthetic common reset is introduced. It currently blocks:
 
 - asynchronous reset state, including async-assert/sync-release boundaries
   (keep these behind an `ExternalComponent` reset contract);
-- inferred memories and source latches that survive elaboration as latches;
+- clocked-read, asynchronous-write, falling-edge-write, wide-continuation,
+  transparent, or collision-X memory modes, and source latches;
 - inout/tri-state ports and black boxes without explicit external contracts;
 - signed four-state variable part-select (`$shiftx`) cells; and
 - a module containing more than one clock/edge domain.
@@ -187,18 +194,19 @@ policy-free fail-closed translator result: currently 42 of 74 modules are
 accepted.
 `Evidence/KianV/elaborated.json` is the exact hash-matched Yosys input for
 per-module neutral translation; it is evidence, not a trusted Loom artifact.
-`four_state_decisions.json` records 29 module-specific source-intent decisions;
-the exact-site expander produces 237 hash-bound rules in
+`four_state_decisions.json` records 32 module-specific source-intent decisions;
+the exact-site expander produces 279 hash-bound rules in
 `four_state_policy.json`. With that policy, `import_coverage_policy.md` records
-67 accepted modules and 7 still blocked. The unrefined report remains checked
+73 accepted modules and only the mixed-edge SDRAM controller still blocked.
+The unrefined report remains checked
 in separately so policy-dependent progress is never confused with ordinary
 two-state acceptance.
 
-The complete 74-module schema-v2 KianV package also serializes successfully as
-a 17 MiB expression-DAG artifact and passes the trusted structural package
-checker (74 modules, 134 child instances, 45,366 expression nodes). This does
-not make the package behaviorally importable: 37 modules still declare at
-least one blocker, so `importPackage` correctly cannot emit the complete SoC.
+The earlier complete schema-v2 structural package check covered all 74 modules
+and 134 child instances. It must be regenerated after memory lowering before
+new package size/node counts are claimed. `importPackage` correctly cannot yet
+emit the complete SoC because the SDRAM controller retains two clock/edge
+domains.
 
 Do not describe KianV as converted until every required reachable module has
 an accepted import and a per-module equivalence `PASS`, hierarchy has been

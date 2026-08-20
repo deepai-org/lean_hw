@@ -198,6 +198,10 @@ structure Memory where
   addressWidth : Nat
   dataWidth : Nat
   init : List Nat := []
+  /-- When source memory initialization contains X/Z bits, this records the
+  reviewed two-state implementation refinement for the complete packed image
+  (address zero occupies the least-significant `dataWidth` bits). -/
+  initRefinement : Option PartialValue := none
   writes : List MemoryWrite := []
   source : SourceLocation
   deriving Repr, DecidableEq
@@ -649,6 +653,23 @@ def Module.lowerLocalDesign? (module : Module) : Except String LoweredModule := 
   for memory in module.memories do
     if memory.name.isEmpty || memory.addressWidth == 0 || memory.dataWidth == 0 then
       failAt memory.source "invalid memory declaration"
+    let cells := 2 ^ memory.addressWidth
+    unless memory.init.length == cells do
+      failAt memory.source
+        s!"memory initialization has {memory.init.length} cells, expected {cells}"
+    unless memory.init.all (· < 2 ^ memory.dataWidth) do
+      failAt memory.source "memory initialization value exceeds its data width"
+    let packedInit := memory.init.foldr
+      (fun value rest => value + 2 ^ memory.dataWidth * rest) 0
+    match memory.initRefinement with
+    | none => pure ()
+    | some choice =>
+        let packedWidth := cells * memory.dataWidth
+        unless choice.validB packedWidth do
+          failAt memory.source "invalid partial memory-initialization refinement"
+        unless choice.implementationValue == packedInit do
+          failAt memory.source
+            "partial memory-initialization refinement disagrees with concrete image"
     memories := memories ++
       [{ name := memory.name, addrWidth := memory.addressWidth,
          dataWidth := memory.dataWidth,
