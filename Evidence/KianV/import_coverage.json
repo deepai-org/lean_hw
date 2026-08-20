@@ -8,6 +8,7 @@
     "resetless_state": 4
   },
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
+  "four_state_policy_sha256": null,
   "four_state_sites": [
     {
       "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",

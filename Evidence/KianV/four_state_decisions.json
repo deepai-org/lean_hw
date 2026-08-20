@@ -1,0 +1,187 @@
+{
+  "schema": 1,
+  "decisions": [
+    {
+      "name": "sdram_controller_partial_state",
+      "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Controller state and generated selects expose source-unknown values before their protocol-valid use; the concrete implementation selects zero."
+    },
+    {
+      "name": "sv32_table_walk_partial_state",
+      "module": "$paramod$570b38d59ef2758ddb45cb679c2a1a19cf0ab83f\\sv32_table_walk",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Table-walk state is only consumed in its valid FSM phases; the concrete implementation selects zero outside that contract."
+    },
+    {
+      "name": "dcache_sram_partial_contents",
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_D$",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Invalid or uninitialized cache-array contents and out-of-range generated selects are concretized to zero."
+    },
+    {
+      "name": "icache_sram_partial_contents",
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Invalid or uninitialized cache-array contents and out-of-range generated selects are concretized to zero."
+    },
+    {
+      "name": "fifo_partial_state",
+      "module": "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "FIFO storage outside its valid occupancy is unspecified and is concretized to zero."
+    },
+    {
+      "name": "sv32_partial_state",
+      "module": "$paramod$a16ae7440305347911693e8e0f29ccf27deb10d1\\sv32",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "MMU state outside valid translation phases is unspecified and is concretized to zero."
+    },
+    {
+      "name": "uart_unselected_readback",
+      "module": "$paramod$eb5ad0419ee7e371a55381f60d86c18c54bf32dc\\uart_if",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "undriven_behavior", "fill": "zero",
+      "rationale": "Unselected UART register readback is not architecturally consumed and is concretized to zero."
+    },
+    {
+      "name": "alu_decode_defaults",
+      "module": "alu_decoder", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "unreachable_decode", "fill": "zero",
+      "rationale": "Illegal or unreachable instruction decode defaults are concretized to zero."
+    },
+    {
+      "name": "csr_partial_state",
+      "module": "csr_unit", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "CSR transient state outside the valid operation phase is concretized to zero."
+    },
+    {
+      "name": "dcache_partial_state",
+      "module": "dcache", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Invalid cache metadata/data and inactive FSM values are concretized to zero."
+    },
+    {
+      "name": "divider_partial_state",
+      "module": "divider", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Divider intermediate state outside an active operation is concretized to zero."
+    },
+    {
+      "name": "divider_decode_defaults",
+      "module": "divider_decoder", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "unreachable_decode", "fill": "zero",
+      "rationale": "Non-divider instruction decode defaults are concretized to zero."
+    },
+    {
+      "name": "foundry_sram_invalid_read",
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "The behavioral SRAM wrapper explicitly returns X for an invalid read; the implementation refinement selects zero."
+    },
+    {
+      "name": "gpio_unselected_readback",
+      "module": "gpio", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "undriven_behavior", "fill": "zero",
+      "rationale": "Unselected GPIO register readback is not architecturally consumed and is concretized to zero."
+    },
+    {
+      "name": "icache_partial_state",
+      "module": "icache", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Invalid cache metadata/data and inactive FSM values are concretized to zero."
+    },
+    {
+      "name": "load_alignment_unused_lanes",
+      "module": "load_alignment", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "synthesis_dont_care", "fill": "zero",
+      "rationale": "Source X values occupy byte/halfword lanes excluded by the selected load size and address; zero is selected."
+    },
+    {
+      "name": "load_decode_defaults",
+      "module": "load_decoder", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "unreachable_decode", "fill": "zero",
+      "rationale": "Illegal load decode defaults are concretized to zero."
+    },
+    {
+      "name": "main_fsm_decode_defaults",
+      "module": "main_fsm", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "unreachable_decode", "fill": "zero",
+      "rationale": "Illegal instruction and unreachable FSM decode defaults are concretized to zero."
+    },
+    {
+      "name": "mtime_unselected_readback",
+      "module": "mtime_source", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "undriven_behavior", "fill": "zero",
+      "rationale": "Unselected timer readback bits are not architecturally consumed and are concretized to zero."
+    },
+    {
+      "name": "multiplier_partial_state",
+      "module": "multiplier", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Multiplier intermediate state outside an active operation is concretized to zero."
+    },
+    {
+      "name": "multiplier_decode_defaults",
+      "module": "multiplier_decoder", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "unreachable_decode", "fill": "zero",
+      "rationale": "Non-multiply instruction decode defaults are concretized to zero."
+    },
+    {
+      "name": "rx_uart_partial_state",
+      "module": "rx_uart", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "UART receive transient state outside a valid frame is concretized to zero."
+    },
+    {
+      "name": "soc_unselected_readback",
+      "module": "soc", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "undriven_behavior", "fill": "zero",
+      "rationale": "Unselected SoC peripheral readback paths are not architecturally consumed and are concretized to zero."
+    },
+    {
+      "name": "spi_flash_partial_state",
+      "module": "spi_nor_flash", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "SPI flash receive/transmit transient state outside a valid transfer is concretized to zero."
+    },
+    {
+      "name": "store_alignment_unused_lanes",
+      "module": "store_alignment", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "synthesis_dont_care", "fill": "zero",
+      "rationale": "Source X values occupy byte-enable-masked store lanes; zero is selected."
+    },
+    {
+      "name": "store_decode_defaults",
+      "module": "store_decoder", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "unreachable_decode", "fill": "zero",
+      "rationale": "Illegal store decode defaults are concretized to zero."
+    },
+    {
+      "name": "sv32_data_translation_partial_state",
+      "module": "sv32_translate_data_to_physical", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Data-translation results outside a valid translation phase are concretized to zero."
+    },
+    {
+      "name": "sv32_instruction_translation_partial_state",
+      "module": "sv32_translate_instruction_to_physical", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "Instruction-translation results outside a valid translation phase are concretized to zero."
+    },
+    {
+      "name": "tx_uart_partial_state",
+      "module": "tx_uart", "file": "*", "line_start": 0, "line_end": 9999,
+      "classification": "uninitialized_state_or_memory", "fill": "zero",
+      "rationale": "UART transmit transient state and generated bit selects outside a valid frame are concretized to zero."
+    }
+  ]
+}

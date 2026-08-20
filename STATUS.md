@@ -54,19 +54,21 @@ Unclassified or ambiguous sites fail closed, and the equivalence adapter can
 apply the same named concretization to both original and emitted RTL. Unsigned
 `$shiftx` variable part-selects use the same explicit partial-fill policy and
 normalize to ordinary shifts/muxes; every KianV occurrence is unsigned. This
-is not yet applied wholesale to KianV.
+is now applied through a reviewed, exact-site KianV policy.
 
-For the exact checked-in KianV elaboration, 37 of 74 modules currently produce
-accepted neutral import IR; 37 remain blocked. Child-instance binding is no
-longer a blocker. The dominant explicit blockers are four-state constants
-(29 modules) and unclassified unsigned `$shiftx` sites (5), with memories,
-nonuniform or resetless state, and the mixed-edge SDRAM controller also
-remaining. The full
+For the exact checked-in KianV elaboration, the policy-free baseline accepts
+37 of 74 modules. The reviewed 29-decision/237-site four-state refinement
+raises acceptance to 56 modules, with 18 still blocked. Child-instance binding
+and KianV's unsigned `$shiftx` cells are no longer blockers. The remaining
+classes are six memory-bearing modules, eight modules with nonuniform reset,
+four with resetless state, and the mixed-edge SDRAM controller. The full
 74-module/134-instance structural package serializes to a 17 MiB DAG artifact
 and passes the trusted package checker; behavioral package emission still
 fails closed on the declared module blockers.
-[`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md)
-is the generated acceptance report. Acceptance is not equivalence or signoff;
+[`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md) and
+[`Evidence/KianV/import_coverage_policy.md`](Evidence/KianV/import_coverage_policy.md)
+are the generated baseline and policy-dependent reports. Acceptance is not
+equivalence or signoff;
 full conversion still requires per-module equivalence PASS and checked
 complete-package emission/equivalence closure.
 
