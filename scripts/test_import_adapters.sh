@@ -83,6 +83,45 @@ python3 scripts/rtl_equivalence.py \
   --output "$work/active-low.equiv.json"
 
 python3 scripts/verilog_inventory.py \
+  --top import_clock_alias \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_clock_alias.v \
+  --json-out "$work/clock-alias.inventory.json" \
+  --markdown-out "$work/clock-alias.inventory.md" \
+  --elaborated-out "$work/clock-alias.elaborated.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/clock-alias.elaborated.json" \
+  --inventory "$work/clock-alias.inventory.json" \
+  --module import_clock_alias \
+  --output "$work/clock-alias.import.json"
+
+lake exe importModule "$work/clock-alias.import.json" "$work/clock-alias.loom.v"
+
+grep -q 'input wire clk_osc' "$work/clock-alias.loom.v"
+if grep -qE '^  reg .* q;' "$work/clock-alias.loom.v"; then
+  echo "import adapters: output alias reused as an internal register" >&2
+  exit 1
+fi
+python3 - "$work/clock-alias.import.json" <<'PY'
+import json
+import sys
+module = json.load(open(sys.argv[1], encoding="utf-8"))["module"]
+assert module["register_equivalence"][0]["original"] == "q"
+assert module["register_equivalence"][0]["loom"].startswith("__loom_reg_")
+PY
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_clock_alias_import \
+  --gold-top import_clock_alias \
+  --revised-top import_clock_alias \
+  --gold-file Tests/fixtures/import_clock_alias.v \
+  --revised-file "$work/clock-alias.loom.v" \
+  --assumption "the exact input-port clock alias is retained" \
+  --log "$work/clock-alias.equiv.log" \
+  --output "$work/clock-alias.equiv.json"
+
+python3 scripts/verilog_inventory.py \
   --top import_logic \
   --source-root "$PWD" \
   --source Tests/fixtures/import_logic.v \
@@ -507,8 +546,9 @@ import sys
 module = json.load(open(sys.argv[1], encoding="utf-8"))["module"]
 text = open(sys.argv[2], encoding="utf-8").read()
 assert not module["unsupported"]
-assert len(module["memories"]) == 8
-assert all(memory["data_width"] == 1 for memory in module["memories"])
+assert len(module["memories"]) == 1
+assert module["memories"][0]["data_width"] == 8
+assert len(module["memories"][0]["writes"]) == 3
 assert all(memory["init_refinement"] is not None for memory in module["memories"])
 assert "initial begin" in text and "always @(posedge clk)" in text
 PY

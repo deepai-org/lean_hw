@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "component": "gf180mcu_fd_ip_sram__sram512x8m8wm1",
+  "contract": "Evidence.KianV.Gf180Sram.specification",
+  "kianv_commit": "fdb45471ec3b945c07a7915e2e90b5b7992dae7d",
+  "pdk_commit": "fb4b8f59451d248ef5b310a593759f946a8f6ae8",
+  "artifacts": [
+    {"role":"wrapper","path":"src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v","bytes":1673,"sha256":"517bd60a435e6fd7573ec80d1057ed464b929866a65161918977ca1206f440f0"},
+    {"role":"gds","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/gds/gf180mcu_fd_ip_sram__sram512x8m8wm1.gds","bytes":2941252,"sha256":"40d76d3ccfc8779c9db9f1db7a0bbccbbaf12c4627a3fa5b59049f23eef7d915"},
+    {"role":"lef","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lef/gf180mcu_fd_ip_sram__sram512x8m8wm1.lef","bytes":32075,"sha256":"f30453be8a3919de697ad6f9828cc0e31602ed5ad7cc462dd85b7d54e47872af"},
+    {"role":"blackbox","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/verilog/gf180mcu_fd_ip_sram__sram512x8m8wm1__blackbox.v","bytes":1177,"sha256":"8c938ffeae5605920abf69c8d038306d30290963eae31a18e0bc0e25b670ae8a"},
+    {"role":"lib_tt_025C_5v00","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__tt_025C_5v00.lib","bytes":35624,"sha256":"37176ba5b13be51f6197d1da2cd34f6c2710fd10d53f24e9bda67fec7d333446"},
+    {"role":"lib_ff_n40C_5v50","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__ff_n40C_5v50.lib","bytes":36019,"sha256":"56abe1919d371d2943aff6970d91b9ea6fed16786edb98d2918c2f66f14b896e"},
+    {"role":"lib_ss_125C_4v50","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__ss_125C_4v50.lib","bytes":35362,"sha256":"bf411ffa77f14d92e0c1e9023521d3b30551547ddc8e09b9a8458dcc17f19e36"},
+    {"role":"lib_tt_025C_3v30","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__tt_025C_3v30.lib","bytes":35623,"sha256":"f62f27fc04b557c2e0b99d95b5ba363eb4ea7ae52064cfb4964f253613ce7a9b"},
+    {"role":"lib_ss_n40C_3v00","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__ss_n40C_3v00.lib","bytes":35316,"sha256":"87ef8c0c3783f46540b11f74af478d52a18730826ef286a7ce39605428f7c16e"},
+    {"role":"lib_ss_125C_3v00","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__ss_125C_3v00.lib","bytes":35136,"sha256":"055063c007582b75e01b56b008614de8afd175a45f8165212b4e61710ebcf47b"},
+    {"role":"lib_ff_n40C_3v60","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__ff_n40C_3v60.lib","bytes":36048,"sha256":"0f274d050b41da6b059ae3e168275f5d431578d67ee10cf4100396b37061482e"},
+    {"role":"lib_ff_125C_3v60","path":"gf180mcu/gf180mcuD/libs.ref/gf180mcu_fd_ip_sram/lib/gf180mcu_fd_ip_sram__sram512x8m8wm1__ff_125C_3v60.lib","bytes":35740,"sha256":"730503943dc128817ab82ce733444302a52142ddd1dd9c0d0fa02aea2c4adeec"}
+  ],
+  "assumptions": [
+    "CEN, GWEN, and WEN are active low.",
+    "A selected rising edge captures old memory data into Q and applies the enabled bit writes.",
+    "The disabled-cycle Q value is intentionally unconstrained.",
+    "The wrapper-to-macro behavioral equivalence remains an external signoff obligation."
+  ]
+}

@@ -62,10 +62,11 @@ checked mixed-edge package splitting raise acceptance to all 74 modules.
 Child-instance binding, unsigned `$shiftx`, resetless state, nonuniform
 per-register synchronous resets, ROMs, the six writable-memory modules, and
 the falling/rising-edge SDRAM controller are no longer import blockers.
-Writable `$mem_v2` cells are lowered into
-bit-plane memories so arbitrary per-bit enables and ordered port collisions
-remain exact; a checked state-relation map lets external equivalence pair each
-original word with those planes. A multi-edge source module emits one
+Writable `$mem_v2` cells are lowered into ordinary Loom word memories while
+remaining exact: every whole-word port value folds earlier enabled
+same-address bit masks, and only provably distinct literal-address writes are
+commuted/grouped. The neutral artifact records exact original-to-Loom memory
+and register correspondences for external equivalence. A multi-edge source module emits one
 stateless combinational body plus one state-owning body for each clock/edge
 domain; the checked wrapper binds their state nets explicitly and retains
 clock pins used by combinational source cones.
@@ -74,18 +75,16 @@ clock pins used by combinational source cones.
 are the generated baseline and policy-dependent reports. Acceptance is not
 equivalence or signoff. The complete 74-module package passes trusted
 structural checking; full conversion still requires bottom-up per-module
-equivalence PASS and complete-package equivalence closure. Import lowering now
+equivalence PASS and complete-package equivalence closure. Import lowering
 memoizes the complete neutral expression-root batch, validates reads on that
-compact source DAG, and recognizes the canonical unique guarded-memory-port
-shape without repeatedly rescanning the action tree. Small fixtures still
-emit and prove equivalent, and the focused real SDRAM package still emits.
-The real two-module TLB
-associative-cache package nevertheless failed to finish a bounded 10-minute
-run and reached about 60 GB RSS: its five masked Yosys memories expand to 63
-bit-plane memories and 4,284 generic write ports. Whole-package emission is
-therefore still an open engineering gate; first-class masked-word memories or
-an equivalence-checked compact implementation contract is required rather
-than further treating this expansion as acceptable.
+compact source DAG, and uses an iterative postorder executable traversal so
+deep generated cones do not retain recursive dependent-monad continuations.
+Package topology removes processed modules by their already-unique names
+instead of comparing their complete expression DAGs. The formerly failing
+two-module TLB cache package now emits in 0.13 seconds at about 144 MiB peak
+RSS; the complete 74-module/150-artifact `chip_core` package emits in 0.67
+seconds at about 241 MiB peak RSS and passes an Icarus syntax/elaboration smoke
+check. Complete package emission is no longer an open gate.
 
 ### Multiclock execution-projection gate
 

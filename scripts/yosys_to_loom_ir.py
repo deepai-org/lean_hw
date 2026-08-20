@@ -186,7 +186,7 @@ class MemoryInfo:
     connections: dict[str, list[Any]]
     init_bits: list[str]
     init_expr: dict[str, Any]
-    bit_names: list[str]
+    loom_name: str
 
 
 class FourStatePolicy:
@@ -249,6 +249,7 @@ class ModuleTranslator:
         self.expression_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.in_progress: set[tuple[str, str]] = set()
         self.memory_cells: dict[str, MemoryInfo] = {}
+        self.register_equivalence: list[dict[str, Any]] = []
         self.unsupported: list[dict[str, Any]] = []
         self.four_state_policy = four_state_policy
         self._index()
@@ -288,6 +289,21 @@ class ModuleTranslator:
         names = [name for name, net in self.netnames.items()
                  if tuple(net.get("bits", [])) == target and not name.startswith("$")]
         return sorted(names, key=lambda item: (len(item), item))[0] if names else fallback
+
+    def input_port_name(self, bits: list[Any], fallback: str) -> str:
+        """Name the module boundary that physically supplies an input bit-vector.
+
+        Yosys retains internal aliases for port bits. A clock domain must name
+        the actual input port, not merely the shortest public net alias, or the
+        checked Loom body would request a clock that its wrapper cannot bind.
+        """
+        target = tuple(bits)
+        names = [name for name, port in self.module.get("ports", {}).items()
+                 if port.get("direction") == "input" and
+                 tuple(port.get("bits", [])) == target]
+        if names:
+            return sorted(names, key=lambda item: (len(item), item))[0]
+        return self.public_name(bits, fallback)
 
     @staticmethod
     def legal_identifier(name: str) -> str:
@@ -515,14 +531,9 @@ class ModuleTranslator:
                           "condition": selected, "yes": words[index], "no": result,
                           "source": info.source}
         else:
-            parts = [{"kind": "memory_read", "width": 1,
-                      "memory": info.bit_names[bit], "address": address,
+            result = {"kind": "memory_read", "width": info.width,
+                      "memory": info.loom_name, "address": address,
                       "source": info.source}
-                     for bit in reversed(range(info.width))]
-            result = parts[0]
-            for part in parts[1:]:
-                result = {"kind": "concat", "width": result["width"] + 1,
-                          "high": result, "low": part, "source": info.source}
         if info.abits != info.address_width:
             result = {"kind": "mux", "width": info.width,
                       "condition": in_range, "yes": result,
@@ -601,15 +612,14 @@ class ModuleTranslator:
             if init_expr is None:
                 self.block("memory_initialization", "INIT is not a constant", src)
                 init_expr = literal(init_width, 0, src)
-            bit_names = ["__loom_mem_" + self.legal_identifier(cell_name) +
-                         f"__bit_{bit}" for bit in range(width)]
+            loom_name = "__loom_mem_" + self.legal_identifier(cell_name)
             original_name = params.get("MEMID", cell_name)
             if not isinstance(original_name, str):
                 original_name = cell_name
             original_name = original_name.removeprefix("\\")
             info = MemoryInfo(cell_name, original_name, src, size, width, abits, address_width,
                               read_ports, write_ports, connections, init_bits,
-                              init_expr, bit_names)
+                              init_expr, loom_name)
             self.memory_cells[cell_name] = info
             if write_ports != 0:
                 writable.append(info)
@@ -619,35 +629,120 @@ class ModuleTranslator:
         # different memory's read port.
         for info in writable:
             connections = info.connections
-            for bit, memory_name in enumerate(info.bit_names):
-                init = [((info.init_expr.get("value", info.init_expr.get("partial", {}).get(
-                    "implementation_value", 0)) >> (address * info.width + bit)) & 1)
-                        for address in range(info.size)]
-                refinement = self.partial_projection(
-                    info.init_expr,
-                    [address * info.width + bit for address in range(info.size)],
+            packed_init = info.init_expr.get(
+                "value", info.init_expr.get("partial", {}).get("implementation_value", 0))
+            init = [((packed_init >> (address * info.width)) &
+                     ((1 << info.width) - 1)) for address in range(info.size)]
+            refinement = (info.init_expr.get("partial")
+                          if info.init_expr.get("kind") == "partial_literal" else None)
+
+            # Loom's core memory action writes a complete word.  Preserve a
+            # Yosys per-bit write mask without adding backend semantics by
+            # making each port's complete-word value include every earlier
+            # enabled write to the same address.  All expressions still read
+            # the pre-cycle memory; ordered whole-word commits then reproduce
+            # the source's ordered, per-bit last-write-wins behavior exactly.
+            ports: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any],
+                              tuple[str, ...] | None]] = []
+            for port in range(info.write_ports):
+                address, in_range = self.memory_address(info, port, True)
+                raw_address = tuple(connections["WR_ADDR"][
+                    port * info.abits:(port + 1) * info.abits])
+                static_address = (raw_address if all(
+                    bit in ("0", "1") for bit in raw_address) else None)
+                mask = self.expr(connections["WR_EN"][
+                    port * info.width:(port + 1) * info.width], info.source)
+                if info.abits != info.address_width:
+                    mask = {"kind": "mux", "width": info.width,
+                            "condition": in_range, "yes": mask,
+                            "no": literal(info.width, 0, info.source),
+                            "source": info.source}
+                data = self.expr(connections["WR_DATA"][
+                    port * info.width:(port + 1) * info.width], info.source)
+                ports.append((address, mask, data, static_address))
+
+            # A leading run of literal-address ports can be grouped by exact
+            # address. Writes to different literal addresses commute, while
+            # writes in each group retain their original order. This common
+            # Yosys lowering shape (including KianV's cache clear/refill
+            # waves) avoids constructing comparisons that are statically
+            # false and reduces two writes per cache entry to one Loom port.
+            static_prefix = 0
+            while (static_prefix < len(ports) and
+                   ports[static_prefix][3] is not None):
+                static_prefix += 1
+            if static_prefix:
+                grouped: dict[tuple[str, ...], tuple[
+                    dict[str, Any], dict[str, Any], dict[str, Any], tuple[str, ...]]] = {}
+                order: list[tuple[str, ...]] = []
+                for address, mask, data, key in ports[:static_prefix]:
+                    assert key is not None
+                    if key not in grouped:
+                        order.append(key)
+                        grouped[key] = (address, mask, data, key)
+                    else:
+                        old_address, old_mask, old_data, _ = grouped[key]
+                        inverse = unary(info.width, "bit_not", mask, info.source)
+                        combined_data = binary(info.width, "bit_or",
+                            binary(info.width, "bit_and", old_data, inverse,
+                                   info.source),
+                            binary(info.width, "bit_and", data, mask,
+                                   info.source), info.source)
+                        combined_mask = binary(info.width, "bit_or", old_mask,
+                                               mask, info.source)
+                        grouped[key] = (old_address, combined_mask,
+                                        combined_data, key)
+                ports = [grouped[key] for key in order] + ports[static_prefix:]
+
+            writes = []
+            for port, (address, mask, data, static_address) in enumerate(ports):
+                accumulated = {"kind": "memory_read", "width": info.width,
+                               "memory": info.loom_name, "address": address,
+                               "source": info.source}
+                for (earlier_address, earlier_mask, earlier_data,
+                     earlier_static_address) in ports[:port]:
+                    if (static_address is not None and
+                            earlier_static_address is not None and
+                            static_address != earlier_static_address):
+                        continue
+                    same_address = binary(1, "equal", earlier_address,
+                                          address, info.source)
+                    earlier_enabled = unary(1, "reduce_bool", earlier_mask,
+                                            info.source)
+                    applies = binary(1, "bit_and", same_address,
+                                     earlier_enabled, info.source)
+                    inverse = unary(info.width, "bit_not", earlier_mask,
+                                    info.source)
+                    merged = binary(info.width, "bit_or",
+                                    binary(info.width, "bit_and", accumulated,
+                                           inverse, info.source),
+                                    binary(info.width, "bit_and", earlier_data,
+                                           earlier_mask, info.source),
+                                    info.source)
+                    accumulated = {"kind": "mux", "width": info.width,
+                                   "condition": applies, "yes": merged,
+                                   "no": accumulated, "source": info.source}
+                inverse = unary(info.width, "bit_not", mask, info.source)
+                complete_data = binary(info.width, "bit_or",
+                    binary(info.width, "bit_and", accumulated, inverse,
+                           info.source),
+                    binary(info.width, "bit_and", data, mask, info.source),
                     info.source)
-                writes = []
-                for port in range(info.write_ports):
-                    address, in_range = self.memory_address(info, port, True)
-                    enable = self.expr([
-                        connections["WR_EN"][port * info.width + bit]], info.source)
-                    if info.abits != info.address_width:
-                        enable = binary(1, "bit_and", enable, in_range, info.source)
-                    data = self.expr([
-                        connections["WR_DATA"][port * info.width + bit]], info.source)
-                    writes.append({"port": port, "enable": enable,
-                                   "address": address, "data": data,
-                                   "source": info.source})
-                memories.append({"name": memory_name,
-                                 "address_width": info.address_width, "data_width": 1,
-                                 "init": init, "init_refinement": refinement,
-                                 "writes": writes, "source": info.source})
+                writes.append({"port": port,
+                               "enable": unary(1, "reduce_bool", mask,
+                                               info.source),
+                               "address": address, "data": complete_data,
+                               "source": info.source})
+            memories.append({"name": info.loom_name,
+                             "address_width": info.address_width,
+                             "data_width": info.width, "init": init,
+                             "init_refinement": refinement,
+                             "writes": writes, "source": info.source})
         return memories
 
     def memory_equivalence(self) -> list[dict[str, Any]]:
         return [{"original": info.original_name, "size": info.size,
-                 "width": info.width, "bit_memories": info.bit_names}
+                 "width": info.width, "word_memory": info.loom_name}
                 for info in self.memory_cells.values() if info.write_ports != 0]
 
     def cell_expr(self, cell_name: str, port: str) -> dict[str, Any]:
@@ -841,8 +936,11 @@ class ModuleTranslator:
             connections = cell.get("connections", {})
             params = cell.get("parameters", {})
             q = connections.get("Q", [])
-            reg_name = self.public_name(q, cell_name.strip("\\$"))
+            original_name = self.public_name(q, cell_name.strip("\\$"))
+            reg_name = "__loom_reg_" + self.legal_identifier(cell_name)
             self.registers[tuple(q)] = reg_name
+            self.register_equivalence.append({
+                "original": original_name, "loom": reg_name, "width": len(q)})
             clock_domains.add((tuple(connections.get("CLK", [])),
                                bool(decode_parameter(params.get("CLK_POLARITY"), 1))))
             if kind.startswith("$adff"):
@@ -955,7 +1053,7 @@ class ModuleTranslator:
         domains = []
         for domain_key in ordered_domains:
             clock_bits, rising = domain_key
-            clock_name = self.public_name(list(clock_bits), "clk")
+            clock_name = self.input_port_name(list(clock_bits), "clk")
             reset_record = {"kind": "resetless", "port": None, "active_high": True,
                             "source": None}
             domains.append({"name": domain_names[domain_key], "clock_port": clock_name,
@@ -980,6 +1078,7 @@ class ModuleTranslator:
         return {"name": self.name, "ports": ports, "domains": domains,
                 "registers": registers, "memories": memories, "outputs": outputs,
                 "memory_equivalence": self.memory_equivalence(),
+                "register_equivalence": self.register_equivalence,
                 "instances": instances, "unsupported": self.unsupported,
                 "source": self.module_source}
 

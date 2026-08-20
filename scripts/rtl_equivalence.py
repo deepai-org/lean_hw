@@ -57,25 +57,35 @@ def memory_equivalence_commands(path: pathlib.Path,
             original = mapping["original"]
             size = mapping["size"]
             width = mapping["width"]
-            bit_memories = mapping["bit_memories"]
+            word_memory = mapping.get("word_memory")
+            bit_memories = mapping.get("bit_memories")
         except (KeyError, TypeError) as error:
             parser.error(f"incomplete memory mapping: {error}")
         if (not isinstance(original, str) or not original or
                 any(character.isspace() for character in original) or
                 not isinstance(size, int) or size <= 0 or
                 not isinstance(width, int) or width <= 0 or
-                not isinstance(bit_memories, list) or len(bit_memories) != width or
-                any(not isinstance(name, str) or
-                    re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", name) is None
-                    for name in bit_memories)):
+                ((word_memory is None) == (bit_memories is None)) or
+                (word_memory is not None and
+                 (not isinstance(word_memory, str) or
+                  re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", word_memory) is None)) or
+                (bit_memories is not None and
+                 (not isinstance(bit_memories, list) or len(bit_memories) != width or
+                  any(not isinstance(name, str) or
+                      re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", name) is None
+                      for name in bit_memories)))):
             parser.error("invalid memory equivalence mapping fields")
         for address in range(size):
-            wire = f"__loom_memory_relation_{mapping_index}_{address}"
-            commands.append(f"add -wire {wire} {width}")
-            for bit, memory in enumerate(bit_memories):
-                commands.append(
-                    f"connect -set {wire}[{bit}] \\{memory}[{address}]_gate")
-            commands.append(f"equiv_add \\{original}[{address}]_gold {wire}")
+            if word_memory is not None:
+                revised = f"\\{word_memory}[{address}]_gate"
+            else:
+                wire = f"__loom_memory_relation_{mapping_index}_{address}"
+                commands.append(f"add -wire {wire} {width}")
+                for bit, memory in enumerate(bit_memories):
+                    commands.append(
+                        f"connect -set {wire}[{bit}] \\{memory}[{address}]_gate")
+                revised = wire
+            commands.append(f"equiv_add \\{original}[{address}]_gold {revised}")
     return commands
 
 
@@ -119,7 +129,7 @@ def main() -> int:
     parser.add_argument("--seq", type=int, default=12)
     parser.add_argument("--undef-policy", choices=("zero", "one"))
     parser.add_argument("--memory-map", type=pathlib.Path,
-                        help="neutral import JSON containing checked bit-plane memory relations")
+                        help="neutral import JSON containing checked word or legacy bit-plane memory relations")
     parser.add_argument("--yosys", default="yosys")
     parser.add_argument("--log", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
