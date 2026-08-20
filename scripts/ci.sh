@@ -12,6 +12,7 @@ lake build Machines.Epoch.Bmc
 lake build Tests.Acc8Bmc
 lake build Tests.Lnp64uWitnesses
 scripts/downstream_smoke.sh
+scripts/test_import_adapters.sh
 lake exe audit
 lake exe bookgen >/dev/null
 lake exe emit acc8 >/dev/null

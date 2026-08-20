@@ -32,6 +32,10 @@ import Loom.Hw.Hierarchy
 import Loom.Hw.Component
 import Loom.Hw.ComponentHierarchy
 import Loom.Hw.ExternalComponent
+import Loom.Hw.ImportIR
+import Loom.Hw.ImportJson
+import Loom.Hw.HierarchyEmit
+import Loom.Hw.Signoff
 import Loom.Hw.ExternalHierarchy
 import Loom.Hw.ExternalSystem
 import Loom.Hw.Stream

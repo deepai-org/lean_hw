@@ -163,7 +163,7 @@ end
 
 private unsafe def printImpl (m : Module) : String := Id.run do
   let header :=
-    s!"module {m.name}(\n  input wire clk,\n  input wire rst" ++
+    s!"module {m.name}(\n  input wire {m.clockName},\n  input wire {m.resetName}" ++
     String.join (m.ins.map fun i =>
       s!",\n  input wire [{i.width-1}:0] {i.name}") ++
     String.join (m.outs.map fun o =>
@@ -196,8 +196,8 @@ private unsafe def printImpl (m : Module) : String := Id.run do
       let v ← pExprM o.val
       outAssigns := outAssigns.push s!"  assign {o.name} = {v};"
     -- the single always block
-    emitM "  always @(posedge clk) begin"
-    emitM "    if (rst) begin"
+    emitM s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
+    emitM s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
     for r in m.regs do
       emitM s!"      {r.name} <= {r.width}'d{r.init.toNat};"
     emitM "    end else begin"
@@ -217,7 +217,7 @@ private unsafe def printImpl (m : Module) : String := Id.run do
 @[implemented_by printImpl]
 def print (m : Module) : String := Id.run do
   let header :=
-    s!"module {m.name}(\n  input wire clk,\n  input wire rst" ++
+    s!"module {m.name}(\n  input wire {m.clockName},\n  input wire {m.resetName}" ++
     String.join (m.ins.map fun i =>
       s!",\n  input wire [{i.width-1}:0] {i.name}") ++
     String.join (m.outs.map fun o =>
@@ -250,8 +250,8 @@ def print (m : Module) : String := Id.run do
       let v ← pExpr o.val
       outAssigns := outAssigns ++ [s!"  assign {o.name} = {v};"]
     -- the single always block
-    emit "  always @(posedge clk) begin"
-    emit "    if (rst) begin"
+    emit s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
+    emit s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
     for r in m.regs do
       emit s!"      {r.name} <= {r.width}'d{r.init.toNat};"
     emit "    end else begin"

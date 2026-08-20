@@ -77,6 +77,34 @@ def Loom.Hw.Design.emit (d : Loom.Hw.Design) (path : System.FilePath) :
     (Loom.Emit.MicroVerilog.Print.print (Loom.Hw.Compile.compile d))
   IO.println s!"{path} {if changed then "written" else "unchanged"}"
 
+/-- Emit the same certified `Design` transition on an explicitly selected
+Verilog edge.  Falling-edge import domains therefore do not require a second
+hardware semantics or an unchecked textual rewrite. -/
+def Loom.Hw.Design.emitOn (d : Loom.Hw.Design) (edge : Loom.ClockEdge)
+    (path : System.FilePath) : IO Unit := do
+  match d.emitCheck with
+  | .ok _ => pure ()
+  | .error message => throw <| IO.userError message
+  let changed ← Loom.Artifact.writeText path
+    (Loom.Emit.MicroVerilog.Print.print
+      (Loom.Hw.Compile.compileForEdge d edge))
+  IO.println s!"{path} {if changed then "written" else "unchanged"}"
+
+/-- Emit with explicit physical clock/reset names and synchronous reset
+polarity. The compiler theorems show this metadata leaves the abstract
+transition and reset state unchanged. -/
+def Loom.Hw.Design.emitWithClockReset (d : Loom.Hw.Design)
+    (edge : Loom.ClockEdge) (clockName resetName : String)
+    (resetActiveHigh : Bool) (path : System.FilePath) : IO Unit := do
+  match d.emitCheck with
+  | .ok _ => pure ()
+  | .error message => throw <| IO.userError message
+  let changed ← Loom.Artifact.writeText path
+    (Loom.Emit.MicroVerilog.Print.print
+      (Loom.Hw.Compile.compileForClockReset d edge clockName resetName
+        resetActiveHigh))
+  IO.println s!"{path} {if changed then "written" else "unchanged"}"
+
 /-- Check the target-dependent memory obligations for `d` against an explicit
 implementation profile. This is intentionally separate from `Design.emit`:
 generic RTL emission has no FPGA-vendor, ASIC-library, or synthesis-tool

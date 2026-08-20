@@ -42,7 +42,11 @@ import Tests.ComponentDomainIslandNegative
 import Tests.ComponentConnectionNegative
 import Tests.ComponentHierarchy
 import Tests.ExternalComponent
+import Tests.ImportIR
+import Tests.ImportJson
 import Tests.ExternalHierarchy
+import Tests.HierarchyEmit
+import Tests.Signoff
 import Tests.ExternalSystem
 import Tests.Stream
 import Tests.Bus

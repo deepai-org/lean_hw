@@ -1,5 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
+import Loom.Clock
 /-!
 # µVerilog: the formalized subset (L4)
 
@@ -95,5 +96,13 @@ structure Module where
   mems : List MemDef
   outs : List OutDef
   ins  : List InDef := []
+  /-- Which physical HDL edge realizes one abstract `Module.cycle`.  The
+  transition semantics is intentionally independent of this field. -/
+  edge : Loom.ClockEdge := .rising
+  /-- Physical port names and synchronous-reset polarity are emission
+  metadata. They do not alter the abstract one-tick transition/reset values. -/
+  clockName : String := "clk"
+  resetName : String := "rst"
+  resetActiveHigh : Bool := true
 
 end Loom.Emit.MicroVerilog

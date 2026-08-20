@@ -316,24 +316,34 @@ def splitPorts : List (Bool × String × Nat) →
     guard ins.isEmpty
     pure ([], (nm, w) :: outs)
 
-/-- `module name(` / `  input wire clk,` / `  input wire rst[,]` / the
+/-- A one-bit scalar input in the module header. -/
+def pScalarInput (line : List Char) : Option (String × Bool) := do
+  let chars ← eatS "  input wire " line
+  let (name, chars) ← pIdent chars
+  match chars with
+  | [','] => pure (name, true)
+  | [] => pure (name, false)
+  | _ => none
+
+/-- `module name(` / scalar clock / scalar reset / the
 D15 input ports / the output ports. -/
 def pHeader : List (List Char) →
-    Option (String × List (String × Nat) × List (String × Nat) ×
+    Option (String × String × String × List (String × Nat) × List (String × Nat) ×
       List (List Char))
   | l1 :: l2 :: l3 :: ls => do
     let cs ← eatS "module " l1
     let (nm, cs) ← pIdent cs
     guard (cs == ['('])
-    guard (l2 == "  input wire clk,".toList)
-    if l3 == "  input wire rst".toList then do
+    let (clockName, clockMore) ← pScalarInput l2
+    guard clockMore
+    let (resetName, resetMore) ← pScalarInput l3
+    if !resetMore then do
       let ls ← expectLine ");" ls
-      pure (nm, [], [], ls)
+      pure (nm, clockName, resetName, [], [], ls)
     else do
-      guard (l3 == "  input wire rst,".toList)
       let (ps, ls) ← pPortLines ls
       let (ins, outs) ← splitPorts ps
-      pure (nm, ins, outs, ls)
+      pure (nm, clockName, resetName, ins, outs, ls)
   | _ => none
 
 /-- Register and memory declarations (`  reg [hi:0] r;` and
@@ -544,11 +554,31 @@ structure Parsed where
   module : Module
   env    : Env
 
+private def pClockEdge (clockName : String) : List (List Char) →
+    Option (Loom.ClockEdge × List (List Char))
+  | [] => none
+  | line :: rest =>
+      if line == s!"  always @(posedge {clockName}) begin".toList then
+        some (.rising, rest)
+      else if line == s!"  always @(negedge {clockName}) begin".toList then
+        some (.falling, rest)
+      else none
+
+private def pResetPolarity (resetName : String) : List (List Char) →
+    Option (Bool × List (List Char))
+  | [] => none
+  | line :: rest =>
+      if line == s!"    if ({resetName}) begin".toList then
+        some (true, rest)
+      else if line == s!"    if (!{resetName}) begin".toList then
+        some (false, rest)
+      else none
+
 /-- Parse a whole printed module from its line list. With `cut`, every
 wire whose right-hand side is a memory read becomes a free symbol of that
 wire's name — see `parseCut`. -/
 def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed := do
-  let (nm, ins, outs, ls) ← pHeader ls
+  let (nm, clockName, resetName, ins, outs, ls) ← pHeader ls
   let (rhdrs, mhdrs, ls) ← pDecls [] [] ls
   -- D15 input ports resolve exactly like registers (`Expr.reg`), so they
   -- join the symbol table used for operand resolution; only `rhdrs` gets a
@@ -556,8 +586,8 @@ def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed := do
   let syms := rhdrs ++ ins.map (fun p => ⟨p.1, p.2⟩)
   let (minits, ls) ← pInits mhdrs ls
   let (env, ls) ← pWires cut syms mhdrs [] ls
-  let ls ← expectLine "  always @(posedge clk) begin" ls
-  let ls ← expectLine "    if (rst) begin" ls
+  let (edge, ls) ← pClockEdge clockName ls
+  let (resetActiveHigh, ls) ← pResetPolarity resetName ls
   let (rinits, ls) ← pRegResets rhdrs ls
   let ls ← expectLine "    end else begin" ls
   let (regs, ls) ← pRegNexts syms env rinits ls
@@ -568,7 +598,9 @@ def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed := do
   let ls ← expectLine "endmodule" ls
   guard ls.isEmpty
   pure { module := { name := nm, regs := regs, mems := mems, outs := outDefs,
-                     ins := ins.map (fun p => ⟨p.1, p.2⟩) }
+                     ins := ins.map (fun p => ⟨p.1, p.2⟩), edge := edge,
+                     clockName := clockName, resetName := resetName,
+                     resetActiveHigh := resetActiveHigh }
          env := env }
 
 /-- Parse a whole printed module from its line list. -/

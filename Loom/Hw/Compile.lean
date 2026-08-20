@@ -477,6 +477,46 @@ def compile (d : Design) : MV.Module where
         val := compileExpr output.value })
   ins := d.inputs.map fun i => { name := i.name, width := i.width }
 
+/-- Bind one abstract `Design` tick to an explicit HDL edge.  This changes
+only event-control intent: registers, memories, ports, and transition
+expressions remain the output of the verified compiler. -/
+def compileForEdge (d : Design) (edge : Loom.ClockEdge) : MV.Module :=
+  { compile d with edge }
+
+/-- Bind a compiled design to the source module's physical clock/reset
+interface without changing its proved transition system. -/
+def compileForClockReset (d : Design) (edge : Loom.ClockEdge)
+    (clockName resetName : String) (resetActiveHigh : Bool) : MV.Module :=
+  { compile d with edge, clockName, resetName, resetActiveHigh }
+
+@[simp] theorem compileForEdge_rising (d : Design) :
+    compileForEdge d .rising = compile d := by
+  simp [compileForEdge, compile]
+
+/-- Edge polarity does not change the abstract one-tick transition.  The HDL
+event which selects that tick is represented by `Module.edge`; once selected,
+both polarities execute the exact same proved compiled cycle. -/
+theorem compileForEdge_cycle (d : Design) (edge : Loom.ClockEdge)
+    (state : MV.St) :
+    (compileForEdge d edge).cycle state = (compile d).cycle state := by
+  rfl
+
+theorem compileForEdge_reset (d : Design) (edge : Loom.ClockEdge) :
+    (compileForEdge d edge).reset = (compile d).reset := by
+  rfl
+
+theorem compileForClockReset_cycle (d : Design) (edge : Loom.ClockEdge)
+    (clockName resetName : String) (resetActiveHigh : Bool) (state : MV.St) :
+    (compileForClockReset d edge clockName resetName resetActiveHigh).cycle state =
+      (compile d).cycle state := by
+  rfl
+
+theorem compileForClockReset_reset (d : Design) (edge : Loom.ClockEdge)
+    (clockName resetName : String) (resetActiveHigh : Bool) :
+    (compileForClockReset d edge clockName resetName resetActiveHigh).reset =
+      (compile d).reset := by
+  rfl
+
 /-- The combinational-output suffix is definitionally derived by the proved
 expression compiler. Register observability ports remain the prefix. -/
 theorem compile_combOutputs (d : Design) :

@@ -47,6 +47,12 @@ compiler result, not a separately supplied artifact. -/
 def renderedVerilog {design : Design} (cert : CertifiedDesign design) : String :=
   Loom.Emit.MicroVerilog.Print.print cert.compiled
 
+/-- Canonical rendering of the proved compiled transition with explicit
+clock-edge intent. -/
+def renderedVerilogOn {design : Design} (_cert : CertifiedDesign design)
+    (edge : Loom.ClockEdge) : String :=
+  Loom.Emit.MicroVerilog.Print.print (Compile.compileForEdge design edge)
+
 /-- The literal UTF-8 bytes of the canonical emitted Verilog text. -/
 def renderedUTF8 {design : Design} (cert : CertifiedDesign design) : ByteArray :=
   cert.renderedVerilog.toUTF8
@@ -65,6 +71,13 @@ theorem renderedUTF8_eq {design : Design} (cert : CertifiedDesign design) :
     cert.renderedUTF8 =
       (Loom.Emit.MicroVerilog.Print.print (Compile.compile design)).toUTF8 := by
   exact congrArg String.toUTF8 cert.renderedVerilog_eq
+
+theorem compiledForEdgeCycle_eq {design : Design}
+    (_cert : CertifiedDesign design) (edge : Loom.ClockEdge)
+    (state : Loom.Emit.MicroVerilog.St) :
+    (Compile.compileForEdge design edge).cycle state =
+      (Compile.compile design).cycle state :=
+  Compile.compileForEdge_cycle design edge state
 
 /-- Every declared same-cycle output of the packaged design agrees with its
 compiled port expression for arbitrary current inputs and pre-edge state. -/

@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Loom.Hw.Component
 import Loom.Artifact
+import Loom.Clock
 
 /-!
 # Contract-bearing external components
@@ -107,11 +108,6 @@ def Refinement.comp {interface : ComponentInterface}
       (ab.observe input (bc.abstract state) port member)
 
 end ComponentContract
-
-inductive ClockEdge where
-  | rising
-  | falling
-  deriving Repr, DecidableEq, BEq
 
 inductive ResetBehavior where
   | resetless
