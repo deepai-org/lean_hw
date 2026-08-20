@@ -5,8 +5,8 @@ every module in one exact elaborated artifact. Acceptance means neutral IR
 translation only; it does not imply emitted RTL equivalence or signoff.
 
 - Modules: 74
-- Accepted neutral imports: 37
-- Blocked neutral imports: 37
+- Accepted neutral imports: 42
+- Blocked neutral imports: 32
 - Elaborated JSON SHA-256: `8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9`
 
 ## Blocker classes
@@ -15,8 +15,6 @@ translation only; it does not imply emitted RTL equivalence or signoff.
 - `four_state_variable_part_select`: 5 module(s)
 - `memory_cell`: 6 module(s)
 - `multiple_clock_domains`: 1 module(s)
-- `multiple_reset_domains`: 8 module(s)
-- `resetless_state`: 4 module(s)
 
 ## Unclassified four-state sites
 
@@ -266,7 +264,7 @@ These stable identifiers are the exact units selected by an explicit refinement 
 
 | Module | Status | Blocker classes |
 |---|---|---|
-| `$paramod$07648fe22cda1c5887fba6b98d56d491849e8d4b\sdram_cfg_if` | BLOCKED | `multiple_reset_domains` |
+| `$paramod$07648fe22cda1c5887fba6b98d56d491849e8d4b\sdram_cfg_if` | ACCEPTED | — |
 | `$paramod$24edb32283c2798b1a9de01e5e8a5775f3de8d6d\spi_if` | ACCEPTED | — |
 | `$paramod$2c2a78eaab39f077d28c359da24eea1bb3ee72ca\sysinfo_if` | ACCEPTED | — |
 | `$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\associative_cache` | BLOCKED | `memory_cell` |
@@ -286,7 +284,7 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `$paramod$b21d8177f76650034fcf5c651716b86b29dd0174\spi_nor_if` | ACCEPTED | — |
 | `$paramod$e0de9e5afae9227897f68c4fd4bf06762d640101\Bit_Reducer` | ACCEPTED | — |
 | `$paramod$e990c30bcd7893b07a35da62716c79724dd6c561\dff_kianV` | ACCEPTED | — |
-| `$paramod$eb5ad0419ee7e371a55381f60d86c18c54bf32dc\uart_if` | BLOCKED | `four_state_constant`, `multiple_reset_domains` |
+| `$paramod$eb5ad0419ee7e371a55381f60d86c18c54bf32dc\uart_if` | BLOCKED | `four_state_constant` |
 | `$paramod\Bitmask_Isolate_Rightmost_1_Bit\WORD_WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
 | `$paramod\Logarithm_of_Powers_of_Two\WORD_WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
 | `$paramod\Priority_Encoder\WORD_WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
@@ -296,14 +294,14 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `$paramod\datapath_unit\RESET_ADDR=32'00100000000100000000000000000000` | ACCEPTED | — |
 | `$paramod\dff_kianV\WIDTH=s32'00000000000000000000000000000001` | ACCEPTED | — |
 | `$paramod\dff_kianV\WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
-| `$paramod\dlatch_kianV\WIDTH=s32'00000000000000000000000000000010` | BLOCKED | `resetless_state` |
-| `$paramod\dlatch_kianV\WIDTH=s32'00000000000000000000000000100000` | BLOCKED | `resetless_state` |
+| `$paramod\dlatch_kianV\WIDTH=s32'00000000000000000000000000000010` | ACCEPTED | — |
+| `$paramod\dlatch_kianV\WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
 | `$paramod\mux2\WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
 | `$paramod\mux4\WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
 | `$paramod\mux5\WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
 | `$paramod\mux6\WIDTH=s32'00000000000000000000000000100000` | ACCEPTED | — |
 | `$paramod\plic_if\BASE_HI=8'00001100` | ACCEPTED | — |
-| `$paramod\spi\CPOL=1'0` | BLOCKED | `multiple_reset_domains` |
+| `$paramod\spi\CPOL=1'0` | ACCEPTED | — |
 | `alu` | ACCEPTED | — |
 | `alu_decoder` | BLOCKED | `four_state_constant`, `memory_cell` |
 | `chip_core` | ACCEPTED | — |
@@ -312,31 +310,31 @@ These stable identifiers are the exact units selected by an explicit refinement 
 | `csr_decoder` | ACCEPTED | — |
 | `csr_exception_handler` | ACCEPTED | — |
 | `csr_unit` | BLOCKED | `four_state_constant` |
-| `dcache` | BLOCKED | `four_state_constant`, `multiple_reset_domains` |
+| `dcache` | BLOCKED | `four_state_constant` |
 | `divider` | BLOCKED | `four_state_constant`, `four_state_variable_part_select` |
 | `divider_decoder` | BLOCKED | `four_state_constant` |
 | `extend` | ACCEPTED | — |
-| `gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper` | BLOCKED | `four_state_constant`, `memory_cell`, `resetless_state` |
+| `gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper` | BLOCKED | `four_state_constant`, `memory_cell` |
 | `gpio` | BLOCKED | `four_state_constant` |
-| `icache` | BLOCKED | `four_state_constant`, `multiple_reset_domains` |
+| `icache` | BLOCKED | `four_state_constant` |
 | `interrupt_controller` | ACCEPTED | — |
 | `load_alignment` | BLOCKED | `four_state_constant` |
 | `load_decoder` | BLOCKED | `four_state_constant` |
 | `main_fsm` | BLOCKED | `four_state_constant` |
 | `mtime_source` | BLOCKED | `four_state_constant` |
-| `multiplier` | BLOCKED | `four_state_constant`, `multiple_reset_domains` |
+| `multiplier` | BLOCKED | `four_state_constant` |
 | `multiplier_decoder` | BLOCKED | `four_state_constant` |
 | `multiplier_extension_decoder` | ACCEPTED | — |
 | `mux2` | ACCEPTED | — |
 | `plic` | ACCEPTED | — |
 | `register_file` | BLOCKED | `memory_cell` |
 | `rx_uart` | BLOCKED | `four_state_constant` |
-| `soc` | BLOCKED | `four_state_constant`, `multiple_reset_domains` |
+| `soc` | BLOCKED | `four_state_constant` |
 | `spi_nor_flash` | BLOCKED | `four_state_constant` |
 | `sram_sp_gf180_512x56` | ACCEPTED | — |
 | `store_alignment` | BLOCKED | `four_state_constant` |
 | `store_decoder` | BLOCKED | `four_state_constant` |
 | `sv32_translate_data_to_physical` | BLOCKED | `four_state_constant` |
 | `sv32_translate_instruction_to_physical` | BLOCKED | `four_state_constant` |
-| `sync_2ff` | BLOCKED | `resetless_state` |
-| `tx_uart` | BLOCKED | `four_state_constant`, `four_state_variable_part_select`, `multiple_reset_domains` |
+| `sync_2ff` | ACCEPTED | — |
+| `tx_uart` | BLOCKED | `four_state_constant`, `four_state_variable_part_select` |

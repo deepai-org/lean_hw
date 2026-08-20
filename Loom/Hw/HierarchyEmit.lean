@@ -23,13 +23,13 @@ namespace Backend
 logical hierarchy net; differing names produce a directional assign. -/
 abbrev TopPortPlan := PortPlan
 
-/-- Loom-emitted child modules have fixed `clk`/`rst` ports outside their
-component data interface.  Clock/reset hookups are therefore explicit plan
-data instead of magic renderer conventions. -/
+/-- Loom-emitted stateful child modules have a fixed `clk` and an optional
+`rst` port outside their component data interface. Clock/reset hookups are
+explicit plan data instead of magic renderer conventions. -/
 structure InstanceClockReset where
   path : InstancePath
   clockNet : String
-  resetNet : String
+  resetNet : Option String := none
   deriving Repr, DecidableEq, BEq
 
 structure HierarchyEmissionPlan (ExternalArtifact Assumption : Type) where
@@ -65,7 +65,8 @@ private def uses {ExternalArtifact Assumption : Type}
   let instances := plan.design.instances.flatMap fun inst =>
     inst.ports.map fun port => ⟨port.net, port.direction, port.width⟩
   let clocks := plan.clockReset.flatMap fun clocking =>
-    [⟨clocking.clockNet, .input, 1⟩, ⟨clocking.resetNet, .input, 1⟩]
+    [⟨clocking.clockNet, .input, 1⟩] ++
+      clocking.resetNet.toList.map fun reset => ⟨reset, .input, 1⟩
   top ++ instances ++ clocks
 
 private def netNames {ExternalArtifact Assumption : Type}
@@ -100,7 +101,7 @@ def validB {ExternalArtifact Assumption : Type}
       identifierB port.port && identifierB port.net && port.width > 0) &&
     Inventory.uniqueB clockedPaths && plan.clockReset.all (fun clocking =>
       instancePaths.contains clocking.path && identifierB clocking.clockNet &&
-        identifierB clocking.resetNet) &&
+        clocking.resetNet.all identifierB) &&
     plan.netNames.all plan.netValid
 
 def check {ExternalArtifact Assumption : Type}
@@ -135,8 +136,8 @@ private def renderInstance {ExternalArtifact Assumption : Type}
   let implicit := match plan.clockingFor inst.path with
     | none => []
     | some clocking =>
-        [renderConnection "clk" clocking.clockNet,
-         renderConnection "rst" clocking.resetNet]
+        [renderConnection "clk" clocking.clockNet] ++
+          clocking.resetNet.toList.map (renderConnection "rst")
   let ports := implicit ++ inst.ports.map fun port =>
     renderConnection port.port port.net
   s!"  {inst.moduleName}{parameters} {inst.path} (\n    " ++
@@ -227,7 +228,7 @@ def hierarchyEmissionPlan {δ : Type v} [ClockDomain δ]
       graph.boundaryPorts
   clockReset := graph.internal.filterMap fun inst =>
     if inst.component.sealed.component.kind == .clocked then
-      some ⟨inst.path, clockNet, resetNet⟩
+      some ⟨inst.path, clockNet, some resetNet⟩
     else none
 
 end BoundComponentGraph

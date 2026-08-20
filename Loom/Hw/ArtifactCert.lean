@@ -857,7 +857,7 @@ structure ModuleCert (d : Loom.Hw.Design) where
 def moduleMatches (d : Loom.Hw.Design)
     (out : Loom.Emit.MicroVerilog.Module) (cert : ModuleCert d) : Bool :=
   decide (out.name = d.name) &&
-  decide (out.stateless = false) &&
+  decide ((out.stateless, out.resetless) = (false, false)) &&
   decide (out.edge = .rising) &&
   decide (out.clockName = "clk") &&
   decide (out.resetName = "rst") &&
@@ -877,8 +877,8 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
     (out : Loom.Emit.MicroVerilog.Module) (cert : ModuleCert d)
     (h : moduleMatches d out cert = true) :
     out.Matches (Compile.compile d) := by
-  simp only [moduleMatches, Bool.and_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hn, hstateless⟩, hedge⟩, hclock⟩, hreset⟩,
+  simp only [moduleMatches, Bool.and_eq_true, decide_eq_true_eq, Prod.mk.injEq] at h
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨hn, ⟨hstateless, hresetless⟩⟩, hedge⟩, hclock⟩, hreset⟩,
     hpolarity⟩, hrcheck⟩, hmcheck⟩, horegcheck⟩, hocombcheck⟩, hicheck⟩ := h
   have hr := regsMatch_sound d.rules out.regs cert.regs hrcheck
   have hm := memsMatch_sound d out.mems cert.mems hmcheck
@@ -890,8 +890,9 @@ theorem moduleMatches_sound (d : Loom.Hw.Design)
     rw [← List.take_append_drop d.exportedRegs.length out.outs,
       horeg, hocomb]
     rfl
-  refine ⟨hn, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨hn, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · simpa only [Compile.compile] using hstateless
+  · simpa only [Compile.compile] using hresetless
   · simpa only [Compile.compile] using hedge
   · simpa only [Compile.compile] using hclock
   · simpa only [Compile.compile] using hreset

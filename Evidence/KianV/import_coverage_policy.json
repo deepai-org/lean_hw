@@ -1,34 +1,18 @@
 {
   "blocker_module_counts": {
     "memory_cell": 6,
-    "multiple_clock_domains": 1,
-    "multiple_reset_domains": 8,
-    "resetless_state": 4
+    "multiple_clock_domains": 1
   },
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
-  "four_state_policy_sha256": "803cae01d1edb248e547517b42ec744b8bef8ae76bb68dbe7314b730b8f30d3f",
+  "four_state_policy_sha256": "05152a504b7c689708d8cdf41848416adba57109f8e780f71f0af2bd5bfbf103",
   "four_state_sites": [],
   "inventory_sha256": "c4dab38164842b0c8ea501778f8aa9aaaf8793a2964129fb5f77d2714a25b9ba",
   "modules": [
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 4 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 772,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 709
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod$07648fe22cda1c5887fba6b98d56d491849e8d4b\\sdram_cfg_if",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -256,24 +240,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 2 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 707,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 588
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod$eb5ad0419ee7e371a55381f60d86c18c54bf32dc\\uart_if",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -330,44 +300,16 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "resetless_state"
-      ],
-      "blockers": [
-        {
-          "detail": "resetless state cannot use the current always-reset \u00b5Verilog frame: $procdff$27920",
-          "kind": "resetless_state",
-          "source": {
-            "end_column": 10,
-            "end_line": 124,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 116
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod\\dlatch_kianV\\WIDTH=s32'00000000000000000000000000000010",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "resetless_state"
-      ],
-      "blockers": [
-        {
-          "detail": "resetless state cannot use the current always-reset \u00b5Verilog frame: $procdff$27921",
-          "kind": "resetless_state",
-          "source": {
-            "end_column": 10,
-            "end_line": 124,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 116
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod\\dlatch_kianV\\WIDTH=s32'00000000000000000000000000100000",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -400,24 +342,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 2 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 126,
-            "file": "src/spi.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod\\spi\\CPOL=1'0",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -482,24 +410,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 10 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 685,
-            "file": "src/dcache.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "dcache",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -521,21 +435,9 @@
     },
     {
       "blocker_kinds": [
-        "memory_cell",
-        "resetless_state"
+        "memory_cell"
       ],
       "blockers": [
-        {
-          "detail": "resetless state cannot use the current always-reset \u00b5Verilog frame: $procdff$28398",
-          "kind": "resetless_state",
-          "source": {
-            "end_column": 10,
-            "end_line": 79,
-            "file": "src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        },
         {
           "detail": "memory cell $mem_v2 requires memory lowering",
           "kind": "memory_cell",
@@ -558,24 +460,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 3 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 199,
-            "file": "src/icache.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "icache",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -608,24 +496,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 2 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 183,
-            "file": "src/kianv_harris_edition/multiplier.v",
-            "start_column": 1,
-            "start_line": 24
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "multiplier",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -678,24 +552,10 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 2 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 586,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 25
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "soc",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -734,50 +594,22 @@
       "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "resetless_state"
-      ],
-      "blockers": [
-        {
-          "detail": "resetless state cannot use the current always-reset \u00b5Verilog frame: $procdff$27923",
-          "kind": "resetless_state",
-          "source": {
-            "end_column": 10,
-            "end_line": 189,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 176
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "sync_2ff",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "multiple_reset_domains"
-      ],
-      "blockers": [
-        {
-          "detail": "module contains 2 reset domains",
-          "kind": "multiple_reset_domains",
-          "source": {
-            "end_column": 10,
-            "end_line": 167,
-            "file": "src/tx_uart.v",
-            "start_column": 1,
-            "start_line": 22
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "tx_uart",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     }
   ],
   "schema": 1,
   "summary": {
-    "accepted_modules": 56,
-    "blocked_modules": 18,
+    "accepted_modules": 67,
+    "blocked_modules": 7,
     "module_count": 74
   }
 }

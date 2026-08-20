@@ -351,22 +351,73 @@ python3 scripts/verilog_inventory.py \
   --markdown-out "$work/resetless.inventory.md" \
   --elaborated-out "$work/resetless.elaborated.json"
 
-if python3 scripts/yosys_to_loom_ir.py \
-    --yosys-json "$work/resetless.elaborated.json" \
-    --inventory "$work/resetless.inventory.json" \
-    --module import_resetless \
-    --output "$work/resetless.import.json"; then
-  echo "import adapters: resetless state unexpectedly accepted" >&2
-  exit 1
-fi
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/resetless.elaborated.json" \
+  --inventory "$work/resetless.inventory.json" \
+  --module import_resetless \
+  --output "$work/resetless.import.json"
 
-python3 - "$work/resetless.import.json" <<'PY'
+lake exe importModule "$work/resetless.import.json" "$work/resetless.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_resetless_import \
+  --gold-top import_resetless \
+  --revised-top import_resetless \
+  --gold-file Tests/fixtures/import_resetless.v \
+  --revised-file "$work/resetless.loom.v" \
+  --assumption "clock correspondence with unconstrained initial register state" \
+  --log "$work/resetless.equiv.log" \
+  --output "$work/resetless.equiv.json"
+
+python3 - "$work/resetless.import.json" "$work/resetless.loom.v" <<'PY'
 import json
 import sys
 
 report = json.load(open(sys.argv[1], encoding="utf-8"))
-kinds = [item["kind"] for item in report["module"]["unsupported"]]
-assert "resetless_state" in kinds
+text = open(sys.argv[2], encoding="utf-8").read()
+assert not report["module"]["unsupported"]
+assert "always @(posedge clk)" in text
+assert "input wire rst" not in text
+assert "if (rst)" not in text
+PY
+
+python3 scripts/verilog_inventory.py \
+  --top import_multi_reset \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_multi_reset.v \
+  --json-out "$work/multi-reset.inventory.json" \
+  --markdown-out "$work/multi-reset.inventory.md" \
+  --elaborated-out "$work/multi-reset.elaborated.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/multi-reset.elaborated.json" \
+  --inventory "$work/multi-reset.inventory.json" \
+  --module import_multi_reset \
+  --output "$work/multi-reset.import.json"
+
+lake exe importModule "$work/multi-reset.import.json" "$work/multi-reset.loom.v"
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_multi_reset_import \
+  --gold-top import_multi_reset \
+  --revised-top import_multi_reset \
+  --gold-file Tests/fixtures/import_multi_reset.v \
+  --revised-file "$work/multi-reset.loom.v" \
+  --assumption "clock and per-register synchronous reset inputs correspond" \
+  --log "$work/multi-reset.equiv.log" \
+  --output "$work/multi-reset.equiv.json"
+
+python3 - "$work/multi-reset.elaborated.json" "$work/multi-reset.loom.v" <<'PY'
+import json
+import sys
+
+elaborated = json.load(open(sys.argv[1], encoding="utf-8"))
+text = open(sys.argv[2], encoding="utf-8").read()
+kinds = {cell["type"] for cell in elaborated["modules"]["import_multi_reset"]["cells"].values()}
+assert "$sdff" in kinds
+assert "$sdffce" in kinds
+assert "input wire [0:0] rst_a" in text and "input wire [0:0] rst_bn" in text
+assert "if (rst_a)" not in text and "if (rst_bn)" not in text
 PY
 
 python3 - "$work/inventory.json" <<'PY'
