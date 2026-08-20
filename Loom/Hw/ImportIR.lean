@@ -1,6 +1,6 @@
 -- Copyright (c) 2026 Kevin Baragona
 -- SPDX-License-Identifier: Apache-2.0
-import Loom.Hw.Component
+import Loom.Hw.Stateless
 import Loom.Clock
 import Loom.Artifact
 
@@ -406,6 +406,14 @@ structure LoweredModule where
   reset : Reset
   source : SourceLocation
 
+structure LoweredStatelessModule where
+  implementation : StatelessDesign
+  source : SourceLocation
+
+inductive LoweredAnyModule where
+  | clocked (module : LoweredModule)
+  | stateless (module : LoweredStatelessModule)
+
 /-- Checked lowering of module-owned logic. Child instances remain in the IR
 for hierarchy-preserving assembly and do not get flattened into this Design. -/
 def Module.lowerLocalDesign? (module : Module) : Except String LoweredModule := do
@@ -446,6 +454,81 @@ def Module.lowerLocalDesign? (module : Module) : Except String LoweredModule := 
       combOutputs := outputs }
   design.emitCheck
   return ⟨design, domain.edge, domain.clockPort, domain.reset, module.source⟩
+
+private def checkStatelessBoundary (module : Module) : Except String Unit := do
+  unless module.source.validB do failAt module.source "invalid module source location"
+  if module.name.isEmpty then failAt module.source "module name is empty"
+  match module.unsupported with
+  | first :: _ =>
+      failAt first.source s!"unsupported imported construct '{first.kind}': {first.detail}"
+  | [] => pure ()
+  unless module.domains.isEmpty do
+    failAt module.source "stateless lowering requires no clock domains"
+  unless module.registers.isEmpty && module.memories.isEmpty do
+    failAt module.source "stateless lowering cannot contain registers or memories"
+  if module.ports.any (·.direction == .inout) then
+    failAt module.source "inout ports require an explicit external pad/tri-state contract"
+  unless module.ports.all (fun port =>
+      port.source.validB && !port.name.isEmpty && port.width > 0) do
+    failAt module.source "invalid stateless port declaration"
+  if !Inventory.uniqueB (module.ports.map (·.name)) then
+    failAt module.source "duplicate port names"
+  if !Inventory.uniqueB (module.outputs.map (·.name)) then
+    failAt module.source "duplicate output drivers"
+  unless module.outputs.all (fun output =>
+      module.ports.any fun port =>
+        port.name == output.name && port.direction == .output &&
+          port.width == output.width) do
+    failAt module.source "an output driver does not match an output port"
+  unless (module.ports.filter (·.direction == .output)).all (fun port =>
+      module.outputs.any fun output =>
+        output.name == port.name && output.width == port.width) do
+    failAt module.source "an output port has no exact driver"
+
+/-- Checked lowering for a module with no sequential state.  It produces an
+ordinary Design wrapped by a proof that its behavior is only the pure
+input-to-output relation. -/
+def Module.lowerStatelessDesign? (module : Module) :
+    Except String LoweredStatelessModule := do
+  checkStatelessBoundary module
+  let mut outputs : List CombOutput := []
+  for output in module.outputs do
+    let value ← lowerExpr? output.value >>= fun value =>
+      expectWidth output.width value output.source
+    outputs := outputs ++ [⟨output.name, output.width, value⟩]
+  let design : Design :=
+    { name := module.name
+      regs := []
+      mems := []
+      rules := []
+      inputs := (module.ports.filter (·.direction == .input)).map fun port =>
+        ⟨port.name, port.width⟩
+      outputs := []
+      combOutputs := outputs }
+  return ⟨← StatelessDesign.check? design, module.source⟩
+
+/-- Select the checked module kind from the explicit domain inventory. -/
+def Module.lowerAny? (module : Module) : Except String LoweredAnyModule :=
+  if module.domains.isEmpty then
+    return .stateless (← module.lowerStatelessDesign?)
+  else
+    return .clocked (← module.lowerLocalDesign?)
+
+/-- Domain-polymorphic component template for a checked stateless import. -/
+def Module.lowerStatelessComponent? (module : Module) :
+    Except String StatelessComponent := do
+  let lowered ← module.lowerStatelessDesign?
+  let component : StatelessComponent :=
+    { name := module.name
+      ports := module.ports.map (fun port =>
+        ⟨port.name,
+          match port.direction with
+          | .input => Loom.Hw.PortDirection.input
+          | .output => Loom.Hw.PortDirection.output
+          | .inout => Loom.Hw.PortDirection.input,
+          port.width, port.semanticType⟩)
+      implementation := lowered.implementation }
+  return component
 
 /-- Build the erased-but-checked component boundary used by dynamic importers.
 Nominally typed authored designs should continue to use `DomainComponent`. -/

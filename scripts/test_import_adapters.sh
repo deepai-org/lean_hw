@@ -109,6 +109,37 @@ python3 scripts/rtl_equivalence.py \
   --output "$work/logic.equiv.json"
 
 python3 scripts/verilog_inventory.py \
+  --top import_stateless \
+  --source-root "$PWD" \
+  --source Tests/fixtures/import_stateless.v \
+  --json-out "$work/stateless.inventory.json" \
+  --markdown-out "$work/stateless.inventory.md" \
+  --elaborated-out "$work/stateless.elaborated.json"
+
+python3 scripts/yosys_to_loom_ir.py \
+  --yosys-json "$work/stateless.elaborated.json" \
+  --inventory "$work/stateless.inventory.json" \
+  --module import_stateless \
+  --output "$work/stateless.import.json"
+
+lake exe importModule "$work/stateless.import.json" "$work/stateless.loom.v"
+
+if grep -Eq '\b(clk|rst|always)\b' "$work/stateless.loom.v"; then
+  echo "import adapters: stateless artifact contains a synthetic sequential frame" >&2
+  exit 1
+fi
+
+python3 scripts/rtl_equivalence.py \
+  --module-label fixture_stateless_import \
+  --gold-top import_stateless \
+  --revised-top import_stateless \
+  --gold-file Tests/fixtures/import_stateless.v \
+  --revised-file "$work/stateless.loom.v" \
+  --assumption "ordinary two-state combinational input correspondence" \
+  --log "$work/stateless.equiv.log" \
+  --output "$work/stateless.equiv.json"
+
+python3 scripts/verilog_inventory.py \
   --top import_resetless \
   --source-root "$PWD" \
   --source Tests/fixtures/import_resetless.v \
@@ -181,7 +212,8 @@ if python3 scripts/rtl_equivalence.py \
 fi
 
 python3 - "$work/pass.json" "$work/fail.json" "$work/import-pass.json" \
-    "$work/active-low.equiv.json" "$work/logic.equiv.json" <<'PY'
+    "$work/active-low.equiv.json" "$work/logic.equiv.json" \
+    "$work/stateless.equiv.json" <<'PY'
 import json
 import sys
 
@@ -190,11 +222,13 @@ failed = json.load(open(sys.argv[2], encoding="utf-8"))
 imported = json.load(open(sys.argv[3], encoding="utf-8"))
 active_low = json.load(open(sys.argv[4], encoding="utf-8"))
 logic = json.load(open(sys.argv[5], encoding="utf-8"))
+stateless = json.load(open(sys.argv[6], encoding="utf-8"))
 assert passed["status"] == "PASS"
 assert failed["status"] == "FAIL"
 assert imported["status"] == "PASS"
 assert active_low["status"] == "PASS"
 assert logic["status"] == "PASS"
+assert stateless["status"] == "PASS"
 assert all(len(item["sha256"]) == 64 for item in passed["artifacts"])
 assert passed["run"]["version"]
 assert passed["run"]["invocation"]

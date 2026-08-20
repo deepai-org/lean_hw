@@ -76,6 +76,45 @@ private def fullyAsyncModule : ImportIR.Module :=
   | .error _ => true
   | .ok _ => false
 
+private def statelessModule : ImportIR.Module where
+  name := "imported_stateless"
+  source := location
+  ports :=
+    [⟨"a", .input, 8, "byte", location⟩,
+     ⟨"b", .input, 8, "byte", location⟩,
+     ⟨"q", .output, 8, "byte", location⟩]
+  domains := []
+  registers := []
+  memories := []
+  outputs :=
+    [⟨"q", 8,
+      .binary 8 .bitXor (.signal 8 "a" location)
+        (.signal 8 "b" location) location,
+      location⟩]
+
+private def statelessText : Except String String := do
+  let lowered ← statelessModule.lowerStatelessDesign?
+  unless lowered.implementation.parseCheck do
+    throw "stateless round trip failed"
+  return lowered.implementation.renderedVerilog
+
+#guard statelessText.toOption.any fun text =>
+  !text.contains "clk" && !text.contains "rst" &&
+    !text.contains "always" && text.contains "assign q"
+
+private inductive ImportDomain : Type where
+  | marker
+
+private instance : Loom.Hw.ClockDomain ImportDomain where
+  name := "chosen_domain"
+
+#guard match statelessModule.lowerStatelessComponent? >>= (·.bind? (δ := ImportDomain)) with
+  | .ok component =>
+      component.sealed.component.kind == .stateless &&
+        component.sealed.component.interface.ports.all
+          (·.domain == "chosen_domain")
+  | .error _ => false
+
 private def unsupportedModule : ImportIR.Module :=
   { simple with unsupported :=
       [⟨"tranif1", "bidirectional switch primitive", location⟩] }

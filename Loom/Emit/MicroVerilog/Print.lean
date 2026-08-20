@@ -161,14 +161,25 @@ private unsafe def pExprM {w : Nat} (e : Expr w) : StateM MSt String := do
 
 end
 
-private unsafe def printImpl (m : Module) : String := Id.run do
-  let header :=
+private def renderDataPorts (m : Module) : List String :=
+  (m.ins.map fun i => s!"  input wire [{i.width-1}:0] {i.name}") ++
+  (m.outs.map fun o => s!"  output wire [{o.width-1}:0] {o.name}")
+
+private def renderHeader (m : Module) : String :=
+  if m.stateless then
+    let ports := renderDataPorts m
+    if ports.isEmpty then s!"module {m.name}(\n);"
+    else s!"module {m.name}(\n" ++ String.intercalate ",\n" ports ++ "\n);"
+  else
     s!"module {m.name}(\n  input wire {m.clockName},\n  input wire {m.resetName}" ++
-    String.join (m.ins.map fun i =>
-      s!",\n  input wire [{i.width-1}:0] {i.name}") ++
-    String.join (m.outs.map fun o =>
-      s!",\n  output wire [{o.width-1}:0] {o.name}") ++
-    "\n);"
+      String.join (m.ins.map fun i =>
+        s!",\n  input wire [{i.width-1}:0] {i.name}") ++
+      String.join (m.outs.map fun o =>
+        s!",\n  output wire [{o.width-1}:0] {o.name}") ++
+      "\n);"
+
+private unsafe def printImpl (m : Module) : String := Id.run do
+  let header := renderHeader m
   let decls :=
     (m.regs.map fun r => s!"  reg [{r.width-1}:0] {r.name};") ++
     (m.mems.map fun mm =>
@@ -195,18 +206,19 @@ private unsafe def printImpl (m : Module) : String := Id.run do
     for o in m.outs do
       let v ← pExprM o.val
       outAssigns := outAssigns.push s!"  assign {o.name} = {v};"
-    -- the single always block
-    emitM s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
-    emitM s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
-    for r in m.regs do
-      emitM s!"      {r.name} <= {r.width}'d{r.init.toNat};"
-    emitM "    end else begin"
-    for (r, nw) in regNexts do
-      emitM s!"      {r} <= {nw};"
-    for (mn, en, ad, dt) in memPorts do
-      emitM s!"      if ({en}) {mn}[{ad}] <= {dt};"
-    emitM "    end"
-    emitM "  end"
+    if !m.stateless then
+      -- the single always block
+      emitM s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
+      emitM s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
+      for r in m.regs do
+        emitM s!"      {r.name} <= {r.width}'d{r.init.toNat};"
+      emitM "    end else begin"
+      for (r, nw) in regNexts do
+        emitM s!"      {r} <= {nw};"
+      for (mn, en, ad, dt) in memPorts do
+        emitM s!"      if ({en}) {mn}[{ad}] <= {dt};"
+      emitM "    end"
+      emitM "  end"
     for a in outAssigns do
       emitM a
     : StateM MSt Unit).run {} |>.2
@@ -216,13 +228,7 @@ private unsafe def printImpl (m : Module) : String := Id.run do
 /-- Print a whole module. -/
 @[implemented_by printImpl]
 def print (m : Module) : String := Id.run do
-  let header :=
-    s!"module {m.name}(\n  input wire {m.clockName},\n  input wire {m.resetName}" ++
-    String.join (m.ins.map fun i =>
-      s!",\n  input wire [{i.width-1}:0] {i.name}") ++
-    String.join (m.outs.map fun o =>
-      s!",\n  output wire [{o.width-1}:0] {o.name}") ++
-    "\n);"
+  let header := renderHeader m
   let decls :=
     (m.regs.map fun r => s!"  reg [{r.width-1}:0] {r.name};") ++
     (m.mems.map fun mm =>
@@ -249,18 +255,19 @@ def print (m : Module) : String := Id.run do
     for o in m.outs do
       let v ← pExpr o.val
       outAssigns := outAssigns ++ [s!"  assign {o.name} = {v};"]
-    -- the single always block
-    emit s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
-    emit s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
-    for r in m.regs do
-      emit s!"      {r.name} <= {r.width}'d{r.init.toNat};"
-    emit "    end else begin"
-    for (r, nw) in regNexts do
-      emit s!"      {r} <= {nw};"
-    for (mn, en, ad, dt) in memPorts do
-      emit s!"      if ({en}) {mn}[{ad}] <= {dt};"
-    emit "    end"
-    emit "  end"
+    if !m.stateless then
+      -- the single always block
+      emit s!"  always @({m.edge.verilogKeyword} {m.clockName}) begin"
+      emit s!"    if ({if m.resetActiveHigh then m.resetName else "!" ++ m.resetName}) begin"
+      for r in m.regs do
+        emit s!"      {r.name} <= {r.width}'d{r.init.toNat};"
+      emit "    end else begin"
+      for (r, nw) in regNexts do
+        emit s!"      {r} <= {nw};"
+      for (mn, en, ad, dt) in memPorts do
+        emit s!"      if ({en}) {mn}[{ad}] <= {dt};"
+      emit "    end"
+      emit "  end"
     for a in outAssigns do
       emit a
     : StateM PSt Unit).run {} |>.2

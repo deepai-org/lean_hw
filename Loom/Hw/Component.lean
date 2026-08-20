@@ -103,6 +103,21 @@ def contains (interface : ComponentInterface) (port : PortDecl) : Bool :=
 
 end ComponentInterface
 
+/-- A pure combinational Design has no storage, transition rules, or
+sequential-memory policy. -/
+def Design.statelessB (design : Design) : Bool :=
+  design.regs.isEmpty && design.mems.isEmpty && design.rules.isEmpty &&
+    design.outputs.isEmpty && design.ackMemInit.isEmpty &&
+    design.syncReadMems.isEmpty
+
+/-- Timing ownership of a component implementation. Stateless components may
+be instantiated in any nominal clock domain, but contribute no sequential
+state and require no physical clock/reset hookup. -/
+inductive ComponentKind where
+  | clocked
+  | stateless
+  deriving Repr, DecidableEq, BEq
+
 private def samePortShape (port : PortDecl)
     (name : String) (width : Nat) (direction : PortDirection) : Bool :=
   port.name == name && port.width == width && port.direction == direction
@@ -115,6 +130,9 @@ structure Component where
   design : Design
 
 namespace Component
+
+def kind (component : Component) : ComponentKind :=
+  if component.design.statelessB then .stateless else .clocked
 
 /-- Register/input names read by an expression. Public exposure supports
 compositional hierarchy certificates without reimplementing dependency

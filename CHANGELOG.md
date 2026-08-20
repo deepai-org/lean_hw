@@ -7,6 +7,16 @@ All notable user-visible changes will be recorded here. This project follows
 
 ### Added
 
+- **First-class stateless RTL components:** pure input-to-output Designs now
+  carry an executable no-state witness, bind into any typed domain without
+  acquiring state, compile to an explicit stateless µVerilog module kind,
+  round-trip through the checked parser, and emit without synthetic
+  clock/reset ports or an `always` block. Hierarchy emission omits clock/reset
+  hookups for these instances. Original-vs-emitted combinational equivalence
+  is exercised end to end, including frontend normalization of Yosys `$shift`
+  and signed `$sshr`; KianV neutral-import acceptance rises from 9/74 to 18/74
+  modules.
+
 - **Fail-closed existing-RTL import foundation:** a source-located neutral IR,
   checked JSON boundary, Yosys inventory/translation adapters, explicit
   rising/falling edge and named synchronous-reset emission metadata,

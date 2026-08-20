@@ -19,9 +19,10 @@ result to exact artifact hashes.
    synchronous-reset polarity are explicit emission metadata; the compiler
    proves they do not change the abstract cycle/reset functions.
 4. **RTL equivalence PASS** is external evidence that the original module and
-   Loom-emitted module are sequentially equivalent under the named
-   assumptions. It is recorded per module with exact input/log hashes, tool
-   version, invocation, and run ID. `FAIL` and `SKIP` never satisfy a required
+   Loom-emitted module are behaviorally equivalent (sequentially when state
+   exists) under the named assumptions. It is recorded per module with exact
+   input/log hashes, tool version, invocation, and run ID. `FAIL` and `SKIP`
+   never satisfy a required
    signoff item.
 5. **Synthesis, STA/CDC, extraction, and LVS PASS** are separate downstream
    requirements. Generic Loom does not invent a PDK, standard-cell library,
@@ -76,6 +77,13 @@ The neutral IR is in `Loom/Hw/ImportIR.lean`; its JSON parser is in
 wrappers over exact child module artifacts are validated and rendered by
 `Loom/Hw/HierarchyEmit.lean`.
 
+Modules with no clock domains lower through `lowerStatelessDesign?` into the
+same ordinary expression graph plus an executable no-state witness. Their
+module kind is explicit in µVerilog, their exact text round-trips through the
+checked parser, and emission has no clock/reset ports or event-control block.
+`StatelessComponent.bind?` assigns nominal typed-domain ownership to the pins
+without assigning any state element to that domain.
+
 ## Current fail-closed limits
 
 The first Yosys adapter handles one synchronous clock domain, either edge,
@@ -86,9 +94,8 @@ basic width-normalized combinational subset. It currently blocks:
   (keep these behind an `ExternalComponent` reset contract);
 - resetless or mixed-reset state, enable-dominant synchronous-reset flops,
   inferred memories, four-state/unknown values, and latches;
-- clockless combinational-only module emission;
 - inout/tri-state ports and black boxes without explicit external contracts;
-- variable part-select/shift cells and arithmetic right shift; and
+- four-state variable part-select (`$shiftx`) cells; and
 - a module containing more than one clock/edge or reset domain.
 
 Child instances remain in the neutral module and are not silently flattened
@@ -109,7 +116,7 @@ The checked-in Markdown/JSON reports identify the `chip_core` configuration,
 all source hashes, 74 reachable elaborated modules, rising/falling edge use,
 reset cells, six memory-bearing modules, latches, instances, and structural
 precheck blockers. `Evidence/KianV/import_coverage.md` separately records the
-actual fail-closed translator result: currently 9 of 74 modules are accepted.
+actual fail-closed translator result: currently 18 of 74 modules are accepted.
 `Evidence/KianV/elaborated.json` is the exact hash-matched Yosys input for
 per-module neutral translation; it is evidence, not a trusted Loom artifact.
 

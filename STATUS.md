@@ -34,13 +34,15 @@ The module-preserving import path is fail-closed and technology-neutral after
 the external frontend boundary. Its current combinational vocabulary includes
 bitwise and arithmetic operations, logical truth conversion, AND/OR
 reductions, equality/ordering comparisons, and frontend-normalized priority
-mux trees. Focused original-vs-emitted sequential-equivalence fixtures pass.
+mux trees. First-class stateless components emit without synthetic clock/reset
+ports and bind into any typed domain without acquiring state. Focused
+original-vs-emitted sequential and combinational equivalence fixtures pass.
 
-For the exact checked-in KianV elaboration, 9 of 74 modules currently produce
-accepted neutral import IR; 65 remain blocked. The dominant explicit blockers
-are clockless module emission (37 modules), four-state constants (28), and
-unchecked child-instance output binding (30), with memories, nonuniform/resetless
-state, variable part-select shifts, and the mixed-edge SDRAM controller also
+For the exact checked-in KianV elaboration, 18 of 74 modules currently produce
+accepted neutral import IR; 56 remain blocked. The dominant explicit blockers
+are unchecked child-instance output binding (30 modules), four-state constants
+(28), and remaining Yosys cells (21), with memories, nonuniform/resetless
+state, four-state variable part-selects, and the mixed-edge SDRAM controller also
 remaining. [`Evidence/KianV/import_coverage.md`](Evidence/KianV/import_coverage.md)
 is the generated acceptance report. Acceptance is not equivalence or signoff;
 full conversion still requires per-module equivalence PASS and checked

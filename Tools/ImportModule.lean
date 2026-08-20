@@ -17,14 +17,19 @@ def main (arguments : List String) : IO Unit := do
   let module ← match Loom.Hw.ImportJson.parseDocument text with
     | .ok module => pure module
     | .error message => throw <| IO.userError s!"neutral import parse failed: {message}"
-  let lowered ← match module.lowerLocalDesign? with
+  let lowered ← match module.lowerAny? with
     | .ok lowered => pure lowered
     | .error message => throw <| IO.userError s!"neutral import lowering failed: {message}"
-  let some resetName := lowered.reset.port
-    | throw <| IO.userError "checked synchronous-reset import lost its reset port"
-  lowered.design.emitWithClockReset lowered.edge lowered.clockPort resetName
-    lowered.reset.activeHigh output
-  IO.println s!"LOOM_IMPORT_MODULE_PASS module={module.name} edge={repr lowered.edge}"
+  match lowered with
+  | .stateless lowered =>
+      lowered.implementation.emit output
+      IO.println s!"LOOM_IMPORT_MODULE_PASS module={module.name} kind=stateless"
+  | .clocked lowered =>
+      let some resetName := lowered.reset.port
+        | throw <| IO.userError "checked synchronous-reset import lost its reset port"
+      lowered.design.emitWithClockReset lowered.edge lowered.clockPort resetName
+        lowered.reset.activeHigh output
+      IO.println s!"LOOM_IMPORT_MODULE_PASS module={module.name} kind=clocked edge={repr lowered.edge}"
 
 end Tools.ImportModule
 

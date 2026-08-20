@@ -27,6 +27,8 @@ SUPPORTED_COMB = {
     "$and": "bit_and", "$or": "bit_or", "$xor": "bit_xor",
     "$add": "add", "$sub": "sub", "$mul": "mul", "$div": "unsigned_div",
     "$mod": "unsigned_rem", "$shl": "shift_left", "$shr": "logical_shift_right",
+    "$shift": "normalized_signed_direction_shift",
+    "$sshr": "normalized_arithmetic_shift_right",
     "$eq": "equal", "$lt": "less_than", "$mux": "mux",
     "$logic_and": "logical_and", "$logic_or": "logical_or",
     "$logic_not": "logical_not", "$reduce_and": "reduce_and",
@@ -109,6 +111,39 @@ def binary(width: int, op: str, left: dict[str, Any], right: dict[str, Any],
 
 def booleanize(value: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     return unary(1, "reduce_bool", value, src)
+
+
+def shifted_operand(value: dict[str, Any], amount: dict[str, Any], width: int,
+                    signed_value: bool, src: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Put a shift value and amount in one width without losing amount bits."""
+    work_width = max(value["width"], amount["width"], width)
+    return (resize(value, work_width, signed_value, src),
+            resize(amount, work_width, False, src))
+
+
+def arithmetic_shift_right(value: dict[str, Any], amount: dict[str, Any],
+                           width: int, signed_value: bool,
+                           src: dict[str, Any]) -> dict[str, Any]:
+    base_width = max(value["width"], width)
+    # A logical shift over a sign extension twice as wide preserves the
+    # shifted-in sign bits for every in-range amount. The explicit out-of-
+    # range branch below handles amounts at least the result's base width.
+    work_width = max(base_width * 2 if signed_value else base_width,
+                     amount["width"])
+    value = resize(value, work_width, signed_value, src)
+    amount = resize(amount, work_width, False, src)
+    shifted = binary(value["width"], "logical_shift_right", value, amount, src)
+    if signed_value:
+        sign = slice_expr(value, value["width"] - 1, 1, src)
+        fill = {"kind": "mux", "width": value["width"], "condition": sign,
+                "yes": literal(value["width"], (1 << value["width"]) - 1, src),
+                "no": literal(value["width"], 0, src), "source": src}
+        in_range = binary(1, "unsigned_less_than", amount,
+                          literal(value["width"], base_width, src), src)
+        shifted = {"kind": "mux", "width": value["width"],
+                   "condition": in_range, "yes": shifted, "no": fill,
+                   "source": src}
+    return resize(shifted, width, signed_value, src)
 
 
 @dataclass
@@ -287,6 +322,31 @@ class ModuleTranslator:
             condition = self.expr(connections.get("S", []), src)
             result = {"kind": "mux", "width": width, "condition": condition,
                       "yes": yes, "no": no, "source": src}
+        elif kind == "$sshr":
+            value = self.expr(connections.get("A", []), src)
+            amount = self.expr(connections.get("B", []), src)
+            result = arithmetic_shift_right(
+                value, amount, width,
+                bool(decode_parameter(params.get("A_SIGNED"))), src)
+        elif kind == "$shift":
+            value = self.expr(connections.get("A", []), src)
+            amount_raw = self.expr(connections.get("B", []), src)
+            value_signed = bool(decode_parameter(params.get("A_SIGNED")))
+            amount_signed = bool(decode_parameter(params.get("B_SIGNED")))
+            work_width = max(value["width"], amount_raw["width"], width)
+            value = resize(value, work_width, value_signed, src)
+            amount = resize(amount_raw, work_width, amount_signed, src)
+            right = binary(work_width, "logical_shift_right", value, amount, src)
+            if amount_signed:
+                negative = slice_expr(amount, work_width - 1, 1, src)
+                magnitude = unary(work_width, "negate", amount, src)
+                left = binary(work_width, "shift_left", value, magnitude, src)
+                shifted = {"kind": "mux", "width": work_width,
+                           "condition": negative, "yes": left, "no": right,
+                           "source": src}
+            else:
+                shifted = right
+            result = resize(shifted, width, value_signed, src)
         else:
             left_signed = bool(decode_parameter(params.get("A_SIGNED")))
             right_signed = bool(decode_parameter(params.get("B_SIGNED")))
@@ -452,9 +512,9 @@ class ModuleTranslator:
                             "edge": "rising" if rising else "falling",
                             "reset": reset_record,
                             "source": self.source_for_bits(list(clock_bits))})
-        else:
-            self.block("clockless_module", "combinational-only import requires clockless component emission",
-                       self.module_source)
+        # No inferred sequential cells means a genuinely stateless module.
+        # The neutral IR records this as an empty domain list; Loom's checked
+        # stateless lowering emits no synthetic clock/reset interface.
 
         outputs = []
         for name, port in self.module.get("ports", {}).items():
