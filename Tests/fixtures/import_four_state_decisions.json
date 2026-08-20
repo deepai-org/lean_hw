@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "decisions": [
+    {
+      "name": "fixture_source_level_dont_care",
+      "module": "import_four_state",
+      "file": "Tests/fixtures/import_four_state.v",
+      "line_start": 1,
+      "line_end": 6,
+      "classification": "synthesis_dont_care",
+      "fill": "zero",
+      "rationale": "The low output bit is deliberately unspecified and this fixture selects zero."
+    }
+  ]
+}

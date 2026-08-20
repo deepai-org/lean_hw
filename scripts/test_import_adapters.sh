@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 -m py_compile scripts/verilog_inventory.py scripts/yosys_to_loom_ir.py \
-  scripts/import_coverage.py \
+  scripts/import_coverage.py scripts/expand_four_state_policy.py \
   scripts/rtl_equivalence.py
 
 if ! command -v yosys >/dev/null 2>&1; then
@@ -147,6 +147,17 @@ python3 scripts/verilog_inventory.py \
   --markdown-out "$work/four-state.inventory.md" \
   --elaborated-out "$work/four-state.elaborated.json"
 
+python3 scripts/import_coverage.py \
+  --yosys-json "$work/four-state.elaborated.json" \
+  --inventory "$work/four-state.inventory.json" \
+  --json-out "$work/four-state.coverage.json" \
+  --markdown-out "$work/four-state.coverage.md"
+
+python3 scripts/expand_four_state_policy.py \
+  --coverage "$work/four-state.coverage.json" \
+  --decisions Tests/fixtures/import_four_state_decisions.json \
+  --output "$work/four-state-expanded-policy.json"
+
 if python3 scripts/yosys_to_loom_ir.py \
     --yosys-json "$work/four-state.elaborated.json" \
     --inventory "$work/four-state.inventory.json" \
@@ -170,7 +181,7 @@ python3 scripts/yosys_to_loom_ir.py \
   --yosys-json "$work/four-state.elaborated.json" \
   --inventory "$work/four-state.inventory.json" \
   --module import_four_state \
-  --four-state-policy Tests/fixtures/import_four_state_policy.json \
+  --four-state-policy "$work/four-state-expanded-policy.json" \
   --output "$work/four-state.import.json"
 
 lake exe importModule "$work/four-state.import.json" "$work/four-state.loom.v"
