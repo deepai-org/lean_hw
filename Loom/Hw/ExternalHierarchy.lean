@@ -246,7 +246,11 @@ def emissionPlan {δ : Type v} [ClockDomain δ]
     instances := internalInstances ++ externalInstances
     modules := graph.internal.map fun inst =>
       { name := inst.component.sealed.component.design.name
-        text := inst.component.sealed.certified.renderedVerilog }
+        text :=
+          if inst.component.sealed.component.kind == .stateless then
+            Loom.Emit.MicroVerilog.Print.print
+              (Compile.compileStateless inst.component.sealed.component.design)
+          else inst.component.sealed.certified.renderedVerilog }
     externalArtifacts := graph.externalArtifacts
     assumptions := graph.externalAssumptions }
 

@@ -1,13 +1,12 @@
 {
   "blocker_module_counts": {
-    "clockless_module": 37,
     "four_state_constant": 28,
     "instance_output_binding": 30,
     "memory_cell": 6,
     "multiple_clock_domains": 1,
     "multiple_reset_domains": 8,
     "resetless_state": 4,
-    "yosys_cell": 22
+    "yosys_cell": 21
   },
   "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
   "inventory_sha256": "c4dab38164842b0c8ea501778f8aa9aaaf8793a2964129fb5f77d2714a25b9ba",
@@ -34,7 +33,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding",
         "yosys_cell"
       ],
@@ -48,17 +46,6 @@
             "file": "src/soc.v",
             "start_column": 5,
             "start_line": 878
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 893,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 853
           }
         },
         {
@@ -128,7 +115,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "memory_cell",
         "yosys_cell"
       ],
@@ -197,17 +183,6 @@
             "file": "src/kianv_harris_edition/associative_cache.v",
             "start_column": 9,
             "start_line": 95
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 188,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 1,
-            "start_line": 21
           }
         }
       ],
@@ -744,7 +719,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding",
         "yosys_cell"
       ],
@@ -758,17 +732,6 @@
             "file": "src/soc.v",
             "start_column": 5,
             "start_line": 878
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 893,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 853
           }
         },
         {
@@ -1118,7 +1081,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "memory_cell"
       ],
       "blockers": [
@@ -1143,17 +1105,6 @@
             "start_column": 17,
             "start_line": 225
           }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 296,
-            "file": "src/kianv_harris_edition/associative_cache.v",
-            "start_column": 1,
-            "start_line": 190
-          }
         }
       ],
       "name": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
@@ -1175,17 +1126,6 @@
             "file": "src/cache_sram_D$.v",
             "start_column": 18,
             "start_line": 98
-          }
-        },
-        {
-          "detail": "unsupported cell type $shift",
-          "kind": "yosys_cell",
-          "source": {
-            "end_column": 0,
-            "end_line": 0,
-            "file": "src/cache_sram_D$.v",
-            "start_column": 0,
-            "start_line": 0
           }
         },
         {
@@ -1241,17 +1181,6 @@
             "file": "src/cache_sram_I$.v",
             "start_column": 18,
             "start_line": 140
-          }
-        },
-        {
-          "detail": "unsupported cell type $shift",
-          "kind": "yosys_cell",
-          "source": {
-            "end_column": 0,
-            "end_line": 0,
-            "file": "src/cache_sram_I$.v",
-            "start_column": 0,
-            "start_line": 0
           }
         },
         {
@@ -1338,7 +1267,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding",
         "yosys_cell"
       ],
@@ -1352,17 +1280,6 @@
             "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
             "start_column": 9,
             "start_line": 304
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 312,
-            "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
-            "start_column": 1,
-            "start_line": 255
           }
         },
         {
@@ -1755,21 +1672,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 851,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 818
-          }
-        },
         {
           "detail": "child instance output gpio_I.rdata requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -1985,7 +1890,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding",
         "yosys_cell"
       ],
@@ -2010,17 +1914,6 @@
             "file": "src/kianv_harris_edition/kianv_harris_mc_edition.v",
             "start_column": 5,
             "start_line": 300
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 328,
-            "file": "src/kianv_harris_edition/kianv_harris_mc_edition.v",
-            "start_column": 1,
-            "start_line": 24
           }
         },
         {
@@ -2117,21 +2010,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 816,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 774
-          }
-        },
         {
           "detail": "child instance output u_flash.data requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -2192,24 +2073,10 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 524,
-            "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
-            "start_column": 1,
-            "start_line": 421
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod$e0de9e5afae9227897f68c4fd4bf06762d640101\\Bit_Reducer",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [],
@@ -2339,28 +2206,13 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 100,
-            "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
-            "start_column": 1,
-            "start_line": 85
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod\\Bitmask_Isolate_Rightmost_1_Bit\\WORD_WIDTH=s32'00000000000000000000000000100000",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding",
         "yosys_cell"
       ],
@@ -2374,17 +2226,6 @@
             "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
             "start_column": 5,
             "start_line": 224
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 236,
-            "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
-            "start_column": 1,
-            "start_line": 152
           }
         },
         {
@@ -2404,7 +2245,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding",
         "yosys_cell"
       ],
@@ -2429,17 +2269,6 @@
             "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
             "start_column": 5,
             "start_line": 43
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 69,
-            "file": "src/kianv_harris_edition/design_elements_fpgacpu_ca.v",
-            "start_column": 1,
-            "start_line": 23
           }
         },
         {
@@ -2470,21 +2299,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 156,
-            "file": "src/cache.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        },
         {
           "detail": "child instance output gen_cached.icache_I.cpu_dout_o requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -2601,21 +2418,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 931,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 895
-          }
-        },
         {
           "detail": "child instance output clint_I.rdata requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -2683,7 +2488,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding",
         "yosys_cell"
       ],
@@ -2950,17 +2754,6 @@
             "file": "src/kianv_harris_edition/datapath_unit.v",
             "start_column": 14,
             "start_line": 189
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 435,
-            "file": "src/kianv_harris_edition/datapath_unit.v",
-            "start_column": 1,
-            "start_line": 24
           }
         },
         {
@@ -3262,42 +3055,16 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 33,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod\\mux2\\WIDTH=s32'00000000000000000000000000100000",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 79,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 48
-          }
-        },
         {
           "detail": "child instance output finalmux.y requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -3314,62 +3081,22 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 96,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 81
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod\\mux5\\WIDTH=s32'00000000000000000000000000100000",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 114,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 98
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "$paramod\\mux6\\WIDTH=s32'00000000000000000000000000100000",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 965,
-            "file": "src/soc.v",
-            "start_column": 1,
-            "start_line": 933
-          }
-        },
         {
           "detail": "child instance output plic_I.rdata requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -3450,40 +3177,13 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module",
-        "yosys_cell"
-      ],
-      "blockers": [
-        {
-          "detail": "unsupported cell type $sshr",
-          "kind": "yosys_cell",
-          "source": {
-            "end_column": 55,
-            "end_line": 43,
-            "file": "src/kianv_harris_edition/alu.v",
-            "start_column": 36,
-            "start_line": 43
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 62,
-            "file": "src/kianv_harris_edition/alu.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "alu",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "four_state_constant",
         "memory_cell"
       ],
@@ -3497,17 +3197,6 @@
             "file": "src/kianv_harris_edition/alu_decoder.v",
             "start_column": 9,
             "start_line": 57
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 93,
-            "file": "src/kianv_harris_edition/alu_decoder.v",
-            "start_column": 1,
-            "start_line": 25
           }
         },
         {
@@ -3527,21 +3216,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 172,
-            "file": "src/chip_core.sv",
-            "start_column": 1,
-            "start_line": 5
-          }
-        },
         {
           "detail": "child instance output u_soc.gpio_out requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -3807,21 +3484,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 240,
-            "file": "src/kianv_harris_edition/control_unit.v",
-            "start_column": 1,
-            "start_line": 24
-          }
-        },
         {
           "detail": "child instance output main_fsm_I.ResultSrc requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -4267,42 +3932,16 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 98,
-            "file": "src/kianv_harris_edition/csr_decoder.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "csr_decoder",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 135,
-            "file": "src/kianv_harris_edition/csr_exception_handler.v",
-            "start_column": 1,
-            "start_line": 24
-          }
-        },
         {
           "detail": "child instance output csr_unit_inst.rdata requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -4958,21 +4597,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "four_state_constant"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 54,
-            "file": "src/kianv_harris_edition/divider_decoder.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        },
         {
           "detail": "unsupported constant bits ['x', 'x']",
           "kind": "four_state_constant",
@@ -4989,24 +4616,10 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 39,
-            "file": "src/kianv_harris_edition/extend.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "extend",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
@@ -5191,21 +4804,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "four_state_constant"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 60,
-            "file": "src/kianv_harris_edition/load_alignment.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        },
         {
           "detail": "unsupported constant bits ['x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x']",
           "kind": "four_state_constant",
@@ -5234,21 +4835,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "four_state_constant"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 62,
-            "file": "src/kianv_harris_edition/load_decoder.v",
-            "start_column": 1,
-            "start_line": 24
-          }
-        },
         {
           "detail": "unsupported constant bits ['x', 'x', 'x']",
           "kind": "four_state_constant",
@@ -5470,21 +5059,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "four_state_constant"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 53,
-            "file": "src/kianv_harris_edition/multiplier_decoder.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        },
         {
           "detail": "unsupported constant bits ['x', 'x']",
           "kind": "four_state_constant",
@@ -5502,21 +5079,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 45,
-            "file": "src/kianv_harris_edition/multiplier_extension_decoder.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        },
         {
           "detail": "child instance output multiplier_I.MULop requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -5566,24 +5131,10 @@
       "status": "BLOCKED"
     },
     {
-      "blocker_kinds": [
-        "clockless_module"
-      ],
-      "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 33,
-            "file": "src/kianv_harris_edition/design_elements.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        }
-      ],
+      "blocker_kinds": [],
+      "blockers": [],
       "name": "mux2",
-      "status": "BLOCKED"
+      "status": "ACCEPTED"
     },
     {
       "blocker_kinds": [
@@ -5641,7 +5192,6 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "memory_cell"
       ],
       "blockers": [
@@ -5654,17 +5204,6 @@
             "file": "src/kianv_harris_edition/register_file.v",
             "start_column": 14,
             "start_line": 33
-          }
-        },
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 45,
-            "file": "src/kianv_harris_edition/register_file.v",
-            "start_column": 1,
-            "start_line": 23
           }
         }
       ],
@@ -5731,17 +5270,6 @@
             "file": "src/rx_uart.v",
             "start_column": 15,
             "start_line": 96
-          }
-        },
-        {
-          "detail": "unsupported cell type $shift",
-          "kind": "yosys_cell",
-          "source": {
-            "end_column": 0,
-            "end_line": 0,
-            "file": "src/rx_uart.v",
-            "start_column": 0,
-            "start_line": 0
           }
         },
         {
@@ -6584,21 +6112,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "instance_output_binding"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 152,
-            "file": "src/sram_sp_gf180_512x56.v",
-            "start_column": 1,
-            "start_line": 23
-          }
-        },
         {
           "detail": "child instance output u_tile_6.Q requires a checked hierarchy net",
           "kind": "instance_output_binding",
@@ -6682,21 +6198,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "four_state_constant"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 63,
-            "file": "src/kianv_harris_edition/store_alignment.v",
-            "start_column": 1,
-            "start_line": 25
-          }
-        },
         {
           "detail": "unsupported constant bits ['x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x']",
           "kind": "four_state_constant",
@@ -6769,21 +6273,9 @@
     },
     {
       "blocker_kinds": [
-        "clockless_module",
         "four_state_constant"
       ],
       "blockers": [
-        {
-          "detail": "combinational-only import requires clockless component emission",
-          "kind": "clockless_module",
-          "source": {
-            "end_column": 10,
-            "end_line": 56,
-            "file": "src/kianv_harris_edition/store_decoder.v",
-            "start_column": 1,
-            "start_line": 24
-          }
-        },
         {
           "detail": "unsupported constant bits ['x', 'x']",
           "kind": "four_state_constant",
@@ -7226,8 +6718,8 @@
   ],
   "schema": 1,
   "summary": {
-    "accepted_modules": 9,
-    "blocked_modules": 65,
+    "accepted_modules": 18,
+    "blocked_modules": 56,
     "module_count": 74
   }
 }

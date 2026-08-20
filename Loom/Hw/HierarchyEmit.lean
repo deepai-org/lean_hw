@@ -220,10 +220,15 @@ def hierarchyEmissionPlan {δ : Type v} [ClockDomain δ]
     Backend.HierarchyEmissionPlan Loom.Artifact.Identity NamedAssumption where
   design := graph.emissionPlan
   topPorts :=
-    [⟨clockNet, clockNet, .input, 1⟩, ⟨resetNet, resetNet, .input, 1⟩] ++
+    (if graph.internal.any
+        (fun inst => inst.component.sealed.component.kind == .clocked) then
+      [⟨clockNet, clockNet, .input, 1⟩, ⟨resetNet, resetNet, .input, 1⟩]
+    else []) ++
       graph.boundaryPorts
-  clockReset := graph.internal.map fun inst =>
-    ⟨inst.path, clockNet, resetNet⟩
+  clockReset := graph.internal.filterMap fun inst =>
+    if inst.component.sealed.component.kind == .clocked then
+      some ⟨inst.path, clockNet, resetNet⟩
+    else none
 
 end BoundComponentGraph
 

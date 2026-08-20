@@ -96,6 +96,11 @@ structure Module where
   mems : List MemDef
   outs : List OutDef
   ins  : List InDef := []
+  /-- A stateless module has only input ports, combinational expression
+  wires, and output assignments.  Its printed artifact has no synthetic
+  clock/reset ports or event-control block.  Stateful modules retain the
+  historical frame. -/
+  stateless : Bool := false
   /-- Which physical HDL edge realizes one abstract `Module.cycle`.  The
   transition semantics is intentionally independent of this field. -/
   edge : Loom.ClockEdge := .rising

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Kevin Baragona
 # SPDX-License-Identifier: Apache-2.0
-"""Fail-closed external sequential-RTL equivalence adapter.
+"""Fail-closed external RTL equivalence adapter.
 
 The adapter does not turn Yosys into a Loom theorem.  It produces PASS, FAIL,
 or SKIP evidence bound to every input/output byte, the exact invocation,

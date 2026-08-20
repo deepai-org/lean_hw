@@ -327,7 +327,7 @@ def pScalarInput (line : List Char) : Option (String × Bool) := do
 
 /-- `module name(` / scalar clock / scalar reset / the
 D15 input ports / the output ports. -/
-def pHeader : List (List Char) →
+def pClockedHeader : List (List Char) →
     Option (String × String × String × List (String × Nat) × List (String × Nat) ×
       List (List Char))
   | l1 :: l2 :: l3 :: ls => do
@@ -345,6 +345,27 @@ def pHeader : List (List Char) →
       let (ins, outs) ← splitPorts ps
       pure (nm, clockName, resetName, ins, outs, ls)
   | _ => none
+
+/-- Clockless header: only ordinary vector input/output ports.  The printer
+uses the same explicit-width port lines for one-bit data, so this form cannot
+be confused with the scalar clock/reset frame. -/
+def pStatelessHeader : List (List Char) →
+    Option (String × List (String × Nat) × List (String × Nat) ×
+      List (List Char))
+  | l1 :: ls => do
+    let cs ← eatS "module " l1
+    let (nm, cs) ← pIdent cs
+    guard (cs == ['('])
+    match ls with
+    | [] => none
+    | close :: rest =>
+        if close == ");".toList then
+          pure (nm, [], [], rest)
+        else do
+          let (ps, rest) ← pPortLines ls
+          let (ins, outs) ← splitPorts ps
+          pure (nm, ins, outs, rest)
+  | [] => none
 
 /-- Register and memory declarations (`  reg [hi:0] r;` and
 `  reg [hi:0] m [0:sz];`), in printed order. Stops at the first
@@ -577,8 +598,9 @@ private def pResetPolarity (resetName : String) : List (List Char) →
 /-- Parse a whole printed module from its line list. With `cut`, every
 wire whose right-hand side is a memory read becomes a free symbol of that
 wire's name — see `parseCut`. -/
-def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed := do
-  let (nm, clockName, resetName, ins, outs, ls) ← pHeader ls
+private def parseClockedLinesFullC (cut : Bool)
+    (ls : List (List Char)) : Option Parsed := do
+  let (nm, clockName, resetName, ins, outs, ls) ← pClockedHeader ls
   let (rhdrs, mhdrs, ls) ← pDecls [] [] ls
   -- D15 input ports resolve exactly like registers (`Expr.reg`), so they
   -- join the symbol table used for operand resolution; only `rhdrs` gets a
@@ -602,6 +624,29 @@ def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed := do
                      clockName := clockName, resetName := resetName,
                      resetActiveHigh := resetActiveHigh }
          env := env }
+
+private def parseStatelessLinesFullC (cut : Bool)
+    (ls : List (List Char)) : Option Parsed := do
+  let (nm, ins, outs, ls) ← pStatelessHeader ls
+  let (rhdrs, mhdrs, ls) ← pDecls [] [] ls
+  guard rhdrs.isEmpty
+  guard mhdrs.isEmpty
+  let syms := ins.map (fun p => (⟨p.1, p.2⟩ : RegHdr))
+  let (env, ls) ← pWires cut syms [] [] ls
+  let (outDefs, ls) ← pAssigns syms env outs ls
+  let ls ← expectLine "endmodule" ls
+  guard ls.isEmpty
+  pure { module := { name := nm, regs := [], mems := [], outs := outDefs,
+                     ins := ins.map (fun p => ⟨p.1, p.2⟩), stateless := true }
+         env := env }
+
+/-- Parse a whole printed module from its line list. With `cut`, every
+wire whose right-hand side is a memory read becomes a free symbol of that
+wire's name. Clocked and genuinely stateless frames are disjoint. -/
+def parseLinesFullC (cut : Bool) (ls : List (List Char)) : Option Parsed :=
+  match parseClockedLinesFullC cut ls with
+  | some parsed => some parsed
+  | none => parseStatelessLinesFullC cut ls
 
 /-- Parse a whole printed module from its line list. -/
 def parseLinesFull (ls : List (List Char)) : Option Parsed :=
