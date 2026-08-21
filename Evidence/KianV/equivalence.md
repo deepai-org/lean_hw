@@ -18,7 +18,7 @@ unbounded temporal induction. It does not abstract or omit memory bits.
 
 - Elaborated JSON: `9ef9c33b922374790c85dbfecd4e4a3900eece4b1433558e86dad8a6f57c8d18`
 - Neutral package: `2a84a63d4c019b05b4ff006dec34031a696ef3892d754b9a11e3d97082703399`
-- Loom-emitted RTL: `1fd0f3e931e5f04ac6d5ea9f3590407af9c01cb6b1a42c491cfe9901c7616dbd`
+- Loom-emitted RTL: `87029f94fd18ac30328ece3281410128453a42ba6f3b592a78fa04c8099ae83d`
 - GF180 SRAM contract: `4afb30798e8cc1178f7fbbd506ed3229f0ffec54de2a1a3730edcec2fd60b581`
 
 ## Non-default proof cases
