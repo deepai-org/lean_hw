@@ -348,7 +348,13 @@ It also translates all 21 fixed macro paths in the known-good LibreLane
 configuration. The generated config disables Yosys's optional SAT-based
 resource-sharing pass because the explicit TLB memory reads otherwise cause
 multi-million-variable sharing searches; ordinary memory lowering and mapping
-remain enabled. `verify_kianv_physical_handoff.py` then elaborates the complete
+remain enabled. The first complete Loom route exposed two marginal foundry-deck
+Metal2 antenna markers inside an SRAM-connected group and one M3.2b spacing
+site at a fixed SRAM boundary. The generated config therefore enables
+heuristic diode insertion at the pinned 130-unit threshold and extends macro
+routing blockages by one global-routing cell. These are implementation-only
+controls and do not change the formally proved RTL semantics.
+`verify_kianv_physical_handoff.py` then elaborates the complete
 powered `chip_top` with Yosys and requires exact agreement between the 21
 post-elaboration primitive paths and the translated floorplan. The generated
 manifest binds all neutral, foundry, integration-helper, configuration, and

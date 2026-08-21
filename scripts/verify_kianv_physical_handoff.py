@@ -73,6 +73,12 @@ def main() -> int:
         raise ValueError("known-good KianV floorplan requires exactly 21 SRAM macros")
     if manifest.get("synthesis_options") != {"SYNTH_SHARE_RESOURCES": False}:
         raise ValueError("unexpected Loom synthesis options")
+    if manifest.get("physical_options") != {
+        "RUN_HEURISTIC_DIODE_INSERTION": True,
+        "HEURISTIC_ANTENNA_THRESHOLD": 130,
+        "GRT_MACRO_EXTENSION": 1,
+    }:
+        raise ValueError("unexpected Loom physical repair options")
 
     rtl_text = args.rtl.read_text()
     if "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper__loom_body" in rtl_text:
@@ -82,6 +88,13 @@ def main() -> int:
     config_text = args.config.read_text()
     if config_text.count("SYNTH_SHARE_RESOURCES: false") != 1:
         raise ValueError("Loom physical config must disable pathological resource sharing")
+    for setting in (
+        "RUN_HEURISTIC_DIODE_INSERTION: true",
+        "HEURISTIC_ANTENNA_THRESHOLD: 130",
+        "GRT_MACRO_EXTENSION: 1",
+    ):
+        if config_text.count(setting) != 1:
+            raise ValueError(f"Loom physical config must contain {setting}")
     if "dir::../src/chip_core.sv" in config_text:
         raise ValueError("original chip_core remains in Loom physical source list")
     if config_text.count("dir::../src/chip_core.loom.v") != 1:
