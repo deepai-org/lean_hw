@@ -4,7 +4,7 @@
     "four_state_memory_out_of_range": 2,
     "four_state_variable_part_select": 5
   },
-  "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
+  "elaborated_sha256": "9ef9c33b922374790c85dbfecd4e4a3900eece4b1433558e86dad8a6f57c8d18",
   "four_state_policy_sha256": null,
   "four_state_sites": [
     {
@@ -3914,7 +3914,7 @@
       "width": 1
     }
   ],
-  "inventory_sha256": "c4dab38164842b0c8ea501778f8aa9aaaf8793a2964129fb5f77d2714a25b9ba",
+  "inventory_sha256": "22991557e49e47193e02289be7ba3e32a47014a3847d71f082501e238952ac2e",
   "modules": [
     {
       "blocker_kinds": [],

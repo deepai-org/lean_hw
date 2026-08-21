@@ -18,7 +18,7 @@
       "Yosys correctly parses and elaborates the identified source bytes and options",
       "cell classification does not establish behavioral equivalence"
     ],
-    "elaborated_sha256": "8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9",
+    "elaborated_sha256": "9ef9c33b922374790c85dbfecd4e4a3900eece4b1433558e86dad8a6f57c8d18",
     "status": "PASS",
     "tool": "Yosys 0.33 (git sha1 2584903a060)"
   },
@@ -1558,7 +1558,7 @@
         }
       ],
       "sequential_cell_count": 7,
-      "source": "src/kianv_harris_edition/sv32_table_walk.v:24.1-308.10",
+      "source": "src/kianv_harris_edition/sv32_table_walk.v:24.1-310.10",
       "source_file": "src/kianv_harris_edition/sv32_table_walk.v",
       "systemverilog_features": [],
       "unsupported_import_cells": []
@@ -11065,7 +11065,7 @@
   ],
   "schema": 1,
   "source_root": "../kianv/gf180mcu-kianv-rv32ima-sv32",
-  "source_set_sha256": "66d190184f083b51ffe5254bbf80d857725bdc60ead4736caddff893cb4c7d02",
+  "source_set_sha256": "982b998c4edbc53a4513027a16975ee7e40e9d0e30b3c29db1dfd1506c3b1ec1",
   "sources": [
     {
       "bytes": 4159,
@@ -11243,9 +11243,9 @@
       "sha256": "5b2411a1800d887319805ab92eb614038e56cf8589cb850f20c5fb7a1205cb48"
     },
     {
-      "bytes": 8060,
+      "bytes": 8085,
       "path": "src/kianv_harris_edition/sv32_table_walk.v",
-      "sha256": "f4dadb4329351d653a2d8c284b0ae824afa330f9c972e48c1b84cb985bef3290"
+      "sha256": "7488bd97e999284ddcce1334eeec8fd634a1f396e771847112788dc6e483b0db"
     },
     {
       "bytes": 4473,

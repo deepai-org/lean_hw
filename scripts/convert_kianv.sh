@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 
 kianv_root=${1:-../kianv/gf180mcu-kianv-rv32ima-sv32}
 output_dir=${2:-build/kianv-conversion}
+shift $(( $# < 2 ? $# : 2 ))
 evidence_dir="$output_dir/evidence"
 package_json="$output_dir/chip_core.package.import.json"
 emitted_rtl="$output_dir/chip_core.loom.v"
@@ -16,7 +17,7 @@ install -m 0644 Evidence/KianV/four_state_decisions.json \
   "$evidence_dir/four_state_decisions.json"
 
 python3 scripts/verify_kianv_sram_external.py "$kianv_root"
-scripts/inventory_kianv.sh "$kianv_root" "$evidence_dir"
+scripts/inventory_kianv.sh "$kianv_root" "$evidence_dir" "$@"
 
 python3 scripts/yosys_to_loom_ir.py \
   --yosys-json "$evidence_dir/elaborated.json" \

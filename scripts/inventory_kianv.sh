@@ -7,6 +7,8 @@ cd "$(dirname "$0")/.."
 
 kianv_root=${1:-../kianv/gf180mcu-kianv-rv32ima-sv32}
 output_dir=${2:-Evidence/KianV}
+shift $(( $# < 2 ? $# : 2 ))
+extra_defines=("$@")
 
 if [[ ! -d "$kianv_root/src" ]]; then
   echo "KianV source directory not found: $kianv_root/src" >&2
@@ -23,6 +25,9 @@ mapfile -t sources < <(
 arguments=()
 for source in "${sources[@]}"; do
   arguments+=(--source "src/$source")
+done
+for define in "${extra_defines[@]}"; do
+  arguments+=(--define "$define")
 done
 
 python3 scripts/verilog_inventory.py \
