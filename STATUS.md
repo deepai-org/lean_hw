@@ -89,6 +89,12 @@ two-module TLB cache package now emits in 0.13 seconds at about 144 MiB peak
 RSS; the complete 74-module/150-artifact `chip_core` package emits in 0.67
 seconds at about 241 MiB peak RSS and passes an Icarus syntax/elaboration smoke
 check. Complete package emission is no longer an open gate.
+The separately hash-bound `SIM SYNTHESIS` elaboration of the emitted `soc`
+boots the pinned KianV xv6 image through the existing pin-level
+SDRAM/SPI/UART Verilator harness and reaches its shell at 222,410,634 clocks,
+exactly matching the upstream run. `scripts/boot_kianv_xv6.sh` reproduces the
+package, cleanup, build, and marker checks. This is end-to-end dynamic evidence,
+not a substitute for the remaining associative-cache formal obligation.
 
 ### Multiclock execution-projection gate
 

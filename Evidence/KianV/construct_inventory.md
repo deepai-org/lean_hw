@@ -6,8 +6,8 @@ completed for the exact hashed inputs, not that Loom proved HDL equivalence.
 
 - Frontend: **PASS**, `Yosys 0.33 (git sha1 2584903a060)`
 - Top: `chip_core`
-- Source set SHA-256: `66d190184f083b51ffe5254bbf80d857725bdc60ead4736caddff893cb4c7d02`
-- Elaborated JSON SHA-256: `8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9`
+- Source set SHA-256: `982b998c4edbc53a4513027a16975ee7e40e9d0e30b3c29db1dfd1506c3b1ec1`
+- Elaborated JSON SHA-256: `9ef9c33b922374790c85dbfecd4e4a3900eece4b1433558e86dad8a6f57c8d18`
 - Reachable modules: 74
 - Rising-edge domains: 37
 - Falling-edge domains: 1

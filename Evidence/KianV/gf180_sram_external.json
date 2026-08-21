@@ -2,7 +2,7 @@
   "schema": 1,
   "component": "gf180mcu_fd_ip_sram__sram512x8m8wm1",
   "contract": "Evidence.KianV.Gf180Sram.specification",
-  "kianv_commit": "fdb45471ec3b945c07a7915e2e90b5b7992dae7d",
+  "kianv_commit": "c30ba47d23c926be5dceae275416c7635bd05c58",
   "pdk_commit": "fb4b8f59451d248ef5b310a593759f946a8f6ae8",
   "artifacts": [
     {"role":"wrapper","path":"src/gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper.v","bytes":1673,"sha256":"517bd60a435e6fd7573ec80d1057ed464b929866a65161918977ca1206f440f0"},

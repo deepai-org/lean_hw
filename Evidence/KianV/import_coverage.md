@@ -7,7 +7,7 @@ translation only; it does not imply emitted RTL equivalence or signoff.
 - Modules: 74
 - Accepted neutral imports: 42
 - Blocked neutral imports: 32
-- Elaborated JSON SHA-256: `8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9`
+- Elaborated JSON SHA-256: `9ef9c33b922374790c85dbfecd4e4a3900eece4b1433558e86dad8a6f57c8d18`
 
 ## Blocker classes
 

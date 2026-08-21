@@ -7,8 +7,8 @@ translation only; it does not imply emitted RTL equivalence or signoff.
 - Modules: 74
 - Accepted neutral imports: 74
 - Blocked neutral imports: 0
-- Elaborated JSON SHA-256: `8898eac9eba9975b617b9741cfd96210790f63cf694bcb07cb87f01641dad0f9`
-- Four-state policy SHA-256: `1c375b59414f2162a087a4822373b127b8763995d25f8f78f44777139dd7739a`
+- Elaborated JSON SHA-256: `9ef9c33b922374790c85dbfecd4e4a3900eece4b1433558e86dad8a6f57c8d18`
+- Four-state policy SHA-256: `999d40dc5c7f17043640a3f8722f7068d6692263b68cc10d999f8597f5f9652d`
 
 ## Blocker classes
 

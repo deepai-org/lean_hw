@@ -2,6 +2,7 @@ rtl/*
 !rtl/soc_fabric_gauntlet/
 !rtl/soc_fabric_gauntlet/**
 .lake/
+/build/
 book-out/
 .claude/
 scratch/

@@ -205,6 +205,13 @@ scripts/inventory_kianv.sh \
   ../kianv/gf180mcu-kianv-rv32ima-sv32 Evidence/KianV
 ```
 
+Additional positional arguments are explicit Verilog defines and become part
+of the elaborated artifact identity. For example, appending `SIM SYNTHESIS`
+selects the fast-boot divider defaults while excluding simulation-only system
+tasks from the synthesizable import. Never test a `SIM` upstream executable
+against the default ASIC elaboration: in KianV those configurations reset the
+UART divider to 174 and 1 respectively.
+
 The checked-in Markdown/JSON reports identify the `chip_core` configuration,
 all source hashes, 74 reachable elaborated modules, rising/falling edge use,
 reset cells, six memory-bearing modules, latches, instances, and structural
@@ -268,6 +275,30 @@ counterexample but times out while proving its five mapped 32-word memory
 banks; this is the sole open per-specialization equivalence obligation. The
 compositional CPU specialization, `soc`, and whole `chip_core` boundaries all
 prove. These counts are progress evidence, not total-conversion closure.
+
+For an end-to-end xv6 check, the matched entry point is:
+
+```sh
+scripts/boot_kianv_xv6.sh \
+  ../kianv/gf180mcu-kianv-rv32ima-sv32 build/kianv-xv6-loom
+```
+
+It generates a separately hash-bound `SIM SYNTHESIS` package rooted at `soc`,
+checks and emits it, applies a semantics-preserving Yosys cleanup to collapse
+neutral width-extension wires, compiles the result into KianV's pin-level
+Verilator SDRAM/SPI/UART harness, and requires the normal xv6 shell markers.
+The reference run reached the shell at exactly 222,410,634 modeled clocks, the
+same cycle reported for upstream RTL. The matched `div_if` and `tx_uart`
+specializations also pass the bottom-up equivalence runner. An intentional
+negative differential run against the ASIC elaboration first diverged only at
+the UART divider (ASIC reset 1 versus simulation reset 174), which verifies
+that configuration identity is observable and enforced rather than silently
+papered over.
+The cleanup is operationally important: on the current host direct `-O3`
+compilation of the trace-oriented neutral RTL remained in six multi-gigabyte
+compiler jobs after ten minutes, whereas the cleaned model compiled in under
+ten seconds. `MAX_CYCLES` and `KIANV_XV6_OBJDIR` override the simulation limit
+and ignored Verilator object directory.
 
 The GF180 512x8 SRAM is deliberately not converted into generic gates.
 `Evidence.KianV.Gf180Sram.specification` gives its active-low masked,
