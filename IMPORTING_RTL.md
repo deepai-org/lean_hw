@@ -350,14 +350,18 @@ resource-sharing pass because the explicit TLB memory reads otherwise cause
 multi-million-variable sharing searches; ordinary memory lowering and mapping
 remain enabled. The first complete Loom route exposed two marginal foundry-deck
 Metal2 antenna markers inside an SRAM-connected group and one M3.2b spacing
-site at a fixed SRAM boundary. The generated config therefore enables
-heuristic diode insertion at the pinned 130-unit threshold and extends macro
-routing blockages by one global-routing cell. These are implementation-only
-controls and do not change the formally proved RTL semantics.
+site at a fixed SRAM boundary. Both antenna polygons align exactly with the
+macro LEF's `D[6]` input buffer. The physical wrapper therefore retains one
+GF180 antenna diode on `D[6]` for each of the 21 SRAMs, while the generated
+config extends macro routing blockages by one global-routing cell. A diagnostic
+130-unit length threshold inserted 99,124 diodes and is deliberately forbidden
+by the verifier. These are implementation-only controls and do not change the
+formally proved RTL semantics.
 `verify_kianv_physical_handoff.py` then elaborates the complete
-powered `chip_top` with Yosys and requires exact agreement between the 21
-post-elaboration primitive paths and the translated floorplan. The generated
-manifest binds all neutral, foundry, integration-helper, configuration, and
+powered `chip_top` with Yosys, requires exact agreement between the 21
+post-elaboration primitive paths and the translated floorplan, and proves the
+kept diode is connected exactly to wrapper input `D[6]`. The generated manifest
+binds all neutral, foundry, integration-helper, configuration, and
 physical-output bytes.
 
 This hierarchy gate makes the result a valid input to the pinned physical

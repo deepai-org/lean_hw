@@ -14,6 +14,9 @@ import tempfile
 
 
 SRAM = "gf180mcu_fd_ip_sram__sram512x8m8wm1"
+SRAM_WRAPPER = "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper"
+ANTENNA = "gf180mcu_fd_sc_mcu9t5v0__antenna"
+ANTENNA_INSTANCE = "u_d6_antenna"
 
 
 def digest(path: pathlib.Path) -> str:
@@ -73,28 +76,32 @@ def main() -> int:
         raise ValueError("known-good KianV floorplan requires exactly 21 SRAM macros")
     if manifest.get("synthesis_options") != {"SYNTH_SHARE_RESOURCES": False}:
         raise ValueError("unexpected Loom synthesis options")
-    if manifest.get("physical_options") != {
-        "RUN_HEURISTIC_DIODE_INSERTION": True,
-        "HEURISTIC_ANTENNA_THRESHOLD": 130,
-        "GRT_MACRO_EXTENSION": 1,
-    }:
+    if manifest.get("physical_options") != {"GRT_MACRO_EXTENSION": 1}:
         raise ValueError("unexpected Loom physical repair options")
+    if manifest.get("sram_input_antenna_diodes") != {
+        "cell": ANTENNA,
+        "instance": ANTENNA_INSTANCE,
+        "pin": "D[6]",
+        "instances": 21,
+    }:
+        raise ValueError("unexpected SRAM input antenna repair")
 
     rtl_text = args.rtl.read_text()
     if "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper__loom_body" in rtl_text:
         raise ValueError("behavioral Loom SRAM body survived physical handoff")
     if f"{SRAM} u_prim" not in rtl_text:
         raise ValueError("physical SRAM primitive instance is absent")
+    if rtl_text.count(f"{ANTENNA} {ANTENNA_INSTANCE}") != 1:
+        raise ValueError("physical SRAM D[6] antenna cell is absent or duplicated")
     config_text = args.config.read_text()
     if config_text.count("SYNTH_SHARE_RESOURCES: false") != 1:
         raise ValueError("Loom physical config must disable pathological resource sharing")
-    for setting in (
-        "RUN_HEURISTIC_DIODE_INSERTION: true",
-        "HEURISTIC_ANTENNA_THRESHOLD: 130",
-        "GRT_MACRO_EXTENSION: 1",
-    ):
+    for setting in ("GRT_MACRO_EXTENSION: 1",):
         if config_text.count(setting) != 1:
             raise ValueError(f"Loom physical config must contain {setting}")
+    for forbidden in ("RUN_HEURISTIC_DIODE_INSERTION:", "HEURISTIC_ANTENNA_THRESHOLD:"):
+        if forbidden in config_text:
+            raise ValueError(f"broad heuristic antenna repair must remain disabled: {forbidden}")
     if "dir::../src/chip_core.sv" in config_text:
         raise ValueError("original chip_core remains in Loom physical source list")
     if config_text.count("dir::../src/chip_core.loom.v") != 1:
@@ -126,6 +133,16 @@ def main() -> int:
             raise RuntimeError("Yosys physical hierarchy failed:\n" + result.stdout[-8000:])
         hierarchy = json.loads(hierarchy_json.read_text())
 
+    wrapper = hierarchy["modules"].get(SRAM_WRAPPER)
+    if wrapper is None:
+        raise ValueError("physical SRAM wrapper is absent after Yosys hierarchy")
+    diode = wrapper.get("cells", {}).get(ANTENNA_INSTANCE)
+    if diode is None or diode.get("type") != ANTENNA:
+        raise ValueError("SRAM wrapper does not contain the exact antenna cell")
+    d_bits = wrapper.get("ports", {}).get("D", {}).get("bits", [])
+    if len(d_bits) != 8 or diode.get("connections", {}).get("I") != [d_bits[6]]:
+        raise ValueError("SRAM antenna cell is not connected exactly to D[6]")
+
     top_cell = hierarchy["modules"]["chip_top"]["cells"].get("i_chip_core")
     if top_cell is None or "NUM_BIDIR_PADS" not in top_cell["type"]:
         raise ValueError("chip_top did not specialize the compatible NUM_BIDIR_PADS interface")
@@ -139,7 +156,8 @@ def main() -> int:
         )
     print(
         "KIANV_PHYSICAL_HANDOFF_VERIFY_PASS "
-        f"sram_instances={len(found)} rtl_sha256={digest(args.rtl)}"
+        f"sram_instances={len(found)} antenna_diodes={len(found)} "
+        f"rtl_sha256={digest(args.rtl)}"
     )
     return 0
 

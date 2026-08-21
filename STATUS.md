@@ -105,9 +105,11 @@ SAT-based resource-sharing optimization, which is pathological for the
 explicit TLB memory-read form; normal memory lowering and technology mapping
 remain enabled. The first complete physical run reached final DRC/LVS and
 exposed one SRAM-edge M3.2b site plus two marginal foundry-deck Metal2 antenna
-markers. The handoff now enables a one-GCell macro routing extension and the
-pinned heuristic diode stage at threshold 130; a clean rerun is the release
-gate.
+markers. Their x offsets identify the SRAM LEF's `D[6]` input buffer exactly.
+The handoff now retains one checked `D[6]` antenna diode per SRAM and enables a
+one-GCell macro routing extension. A broad threshold experiment inserted 99,124
+diodes and is fail-closed out of the release config; a clean targeted rerun is
+the release gate.
 The separately hash-bound `SIM SYNTHESIS` elaboration of the emitted `soc`
 boots the pinned KianV xv6 image through the existing pin-level
 SDRAM/SPI/UART Verilator harness and reaches its shell at 222,410,634 clocks,
