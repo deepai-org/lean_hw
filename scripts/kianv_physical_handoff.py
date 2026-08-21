@@ -25,6 +25,8 @@ MODULE = re.compile(
 )
 SRAM_WRAPPER = "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper"
 SRAM_PRIMITIVE = "gf180mcu_fd_ip_sram__sram512x8m8wm1"
+ANTENNA_CELL = "gf180mcu_fd_sc_mcu9t5v0__antenna"
+ANTENNA_INSTANCE = "u_d6_antenna"
 
 
 def digest_bytes(data: bytes) -> str:
@@ -216,6 +218,32 @@ def physical_rtl(emitted: pathlib.Path, wrapper: pathlib.Path,
     foundry_module = wrapper_blocks[SRAM_WRAPPER].group(0)
     if f"{SRAM_PRIMITIVE} u_prim" not in foundry_module:
         raise ValueError("foundry wrapper no longer instantiates the expected u_prim")
+    close_marker = "  );\n\n`else\n"
+    if foundry_module.count(close_marker) != 1:
+        raise ValueError("foundry wrapper primitive close marker changed")
+    # The first routed Loom handoff exposed two foundry-deck Metal2 antenna
+    # markers at x offsets 366.035--366.635 um inside the north-oriented
+    # instruction-cache tile 3 SRAM.  The macro LEF identifies that exact
+    # input buffer as D[6] (pin x=365.150--366.270 um).  OpenROAD cannot see
+    # the macro-internal gate geometry, so retain one physical antenna diode
+    # on D[6] per contracted SRAM wrapper.  This is a bounded 21-cell repair;
+    # generic length-threshold insertion would add about 99,000 diodes.
+    diode = (
+        "  );\n\n"
+        "  (* keep *)\n"
+        f"  {ANTENNA_CELL} {ANTENNA_INSTANCE} (\n"
+        "`ifdef USE_POWER_PINS\n"
+        "      .I  (D[6]),\n"
+        "      .VDD(VDD),\n"
+        "      .VSS(VSS),\n"
+        "      .VNW(VDD),\n"
+        "      .VPW(VSS)\n"
+        "`else\n"
+        "      .I  (D[6])\n"
+        "`endif\n"
+        "  );\n\n`else\n"
+    )
+    foundry_module = foundry_module.replace(close_marker, diode, 1)
     neutral = replace_modules(neutral, {
         SRAM_WRAPPER: foundry_module,
         SRAM_WRAPPER + "__loom_body":
@@ -251,16 +279,13 @@ def physical_config(source: pathlib.Path, translations: dict[str, str]) -> str:
     antenna_marker = "DRT_ANTENNA_MARGIN: 10 # %\n"
     if text.count(antenna_marker) != 1:
         raise ValueError("expected the pinned detailed-route antenna margin")
-    # The first Loom route exposed two foundry-deck Metal2 antenna markers
-    # inside an SRAM-connected group that OpenROAD's LEF-level antenna check
-    # could not see. Insert diodes conservatively on long nets before route.
-    # A one-GCell macro extension also keeps detailed routes away from the
-    # fixed SRAM boundaries, where that run exposed one M3.2b spacing site.
+    # A one-GCell macro extension keeps detailed routes away from the fixed
+    # SRAM boundaries, where the first route exposed one M3.2b spacing site.
+    # The macro-internal D[6] antenna repair is an exact physical RTL cell;
+    # do not enable LibreLane's broad length-threshold diode insertion.
     text = text.replace(
         antenna_marker,
         antenna_marker
-        + "RUN_HEURISTIC_DIODE_INSERTION: true\n"
-        + "HEURISTIC_ANTENNA_THRESHOLD: 130\n"
         + "GRT_MACRO_EXTENSION: 1\n",
         1,
     )
@@ -369,9 +394,13 @@ def main() -> int:
         "specialized_parameters": {"NUM_BIDIR_PADS": 54},
         "synthesis_options": {"SYNTH_SHARE_RESOURCES": False},
         "physical_options": {
-            "RUN_HEURISTIC_DIODE_INSERTION": True,
-            "HEURISTIC_ANTENNA_THRESHOLD": 130,
             "GRT_MACRO_EXTENSION": 1,
+        },
+        "sram_input_antenna_diodes": {
+            "cell": ANTENNA_CELL,
+            "instance": ANTENNA_INSTANCE,
+            "pin": "D[6]",
+            "instances": len(translations),
         },
         "power_modules": power_modules,
         "sram_primitive": SRAM_PRIMITIVE,
