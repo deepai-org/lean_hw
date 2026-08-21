@@ -17,6 +17,7 @@ import hashlib
 import json
 import pathlib
 import re
+import subprocess
 
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
@@ -340,6 +341,13 @@ def display_path(path: pathlib.Path, root: pathlib.Path) -> str:
         return str(path.resolve())
 
 
+def git_commit(root: pathlib.Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--emitted", type=pathlib.Path, required=True)
@@ -370,6 +378,11 @@ def main() -> int:
     manifest = {
         "schema": 1,
         "kind": "kianv_loom_gf180_physical_handoff",
+        "generator": {
+            "path": display_path(pathlib.Path(__file__), args.kianv_root),
+            "sha256": digest(pathlib.Path(__file__)),
+            "loom_commit": git_commit(pathlib.Path(__file__).resolve().parents[1]),
+        },
         "inputs": {
             "neutral_rtl": {"path": display_path(args.emitted, args.kianv_root), "sha256": digest(args.emitted)},
             "package": {"path": display_path(args.package, args.kianv_root), "sha256": digest(args.package)},
