@@ -232,15 +232,7 @@ def physical_rtl(emitted: pathlib.Path, wrapper: pathlib.Path,
         "  );\n\n"
         "  (* keep *)\n"
         f"  {ANTENNA_CELL} {ANTENNA_INSTANCE} (\n"
-        "`ifdef USE_POWER_PINS\n"
-        "      .I  (D[6]),\n"
-        "      .VDD(VDD),\n"
-        "      .VSS(VSS),\n"
-        "      .VNW(VDD),\n"
-        "      .VPW(VSS)\n"
-        "`else\n"
         "      .I  (D[6])\n"
-        "`endif\n"
         "  );\n\n`else\n"
     )
     foundry_module = foundry_module.replace(close_marker, diode, 1)
