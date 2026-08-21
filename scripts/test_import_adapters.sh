@@ -6,7 +6,12 @@ cd "$(dirname "$0")/.."
 
 python3 -m py_compile scripts/verilog_inventory.py scripts/yosys_to_loom_ir.py \
   scripts/import_coverage.py scripts/expand_four_state_policy.py \
-  scripts/rtl_equivalence.py scripts/kianv_bottom_up_equivalence.py
+  scripts/rtl_equivalence.py scripts/kianv_bottom_up_equivalence.py \
+  scripts/kianv_equivalence_evidence.py scripts/test_kianv_bottom_up_runner.py \
+  scripts/test_kianv_equivalence_evidence.py
+
+python3 scripts/test_kianv_bottom_up_runner.py
+python3 scripts/test_kianv_equivalence_evidence.py
 
 if ! command -v yosys >/dev/null 2>&1; then
   echo "import adapters: SKIP (yosys unavailable)"

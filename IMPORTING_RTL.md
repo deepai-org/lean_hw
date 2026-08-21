@@ -256,25 +256,46 @@ port binding without flattening already-proven child state at every ancestor.
 `--flatten-module` is an explicit fallback for hierarchy whose direct flattened
 cone is smaller than its port contract (the 32-bit logarithm specialization).
 
-For example, after `scripts/convert_kianv.sh`:
+The one-command ASIC conversion and proof entry point is:
 
 ```sh
+scripts/verify_kianv_conversion.sh \
+  ../kianv/gf180mcu-kianv-rv32ima-sv32 build/kianv-total-conversion
+```
+
+It converts the exact source, emits the complete package, runs all 74 proof
+obligations, and writes deterministic JSON/Markdown evidence. The equivalent
+expanded proof and evidence commands, after `scripts/convert_kianv.sh`, are:
+
+```sh
+logarithm_module="\$paramod\\Logarithm_of_Powers_of_Two\\WORD_WIDTH=s32'00000000000000000000000000100000"
 python3 scripts/kianv_bottom_up_equivalence.py \
   --elaborated build/kianv-conversion/evidence/elaborated.json \
   --package build/kianv-conversion/chip_core.package.import.json \
   --emitted build/kianv-conversion/chip_core.loom.v \
   --external-contract Evidence/KianV/gf180_sram_external.json \
+  --flatten-module "$logarithm_module" \
   --output-dir build/kianv-equivalence
+
+python3 scripts/kianv_equivalence_evidence.py \
+  --report build/kianv-equivalence/report.json \
+  --json-out Evidence/KianV/equivalence.json \
+  --markdown-out Evidence/KianV/equivalence.md
 ```
 
-The current bounded campaign proves 71 of 74 specializations directly and
-records the GF180 wrapper as the exact named external contract. The logarithm
-specialization also proves with the explicit flatten fallback (33/33 cells in
-60 seconds). The remaining associative-cache specialization has produced no
-counterexample but times out while proving its five mapped 32-word memory
-banks; this is the sole open per-specialization equivalence obligation. The
-compositional CPU specialization, `soc`, and whole `chip_core` boundaries all
-prove. These counts are progress evidence, not total-conversion closure.
+The complete hash-bound campaign covers all 74 specializations: 73 Loom-logic
+proofs pass and the GF180 wrapper is the sole exact named external contract.
+Seventy-two proofs are compositional; the logarithm specialization uses its
+explicit flatten fallback. Four memory-bearing specializations use exact
+memory relational induction. The runner packs every corresponding mapped word
+into a per-memory relation, asserts every state bit and observable port, and
+proves both the declared zero-refinement base state and preservation with
+unbounded one-step temporal induction. The five-bank associative cache now
+passes with all 160 word relations (2,016 state bits); no memory bit is
+abstracted or omitted. The CPU specialization, `soc`, and whole `chip_core`
+boundaries pass. [`Evidence/KianV/equivalence.md`](Evidence/KianV/equivalence.md)
+and its companion JSON record the deterministic closure evidence. The evidence
+generator rejects partial or non-PASS reports.
 
 For an end-to-end xv6 check, the matched entry point is:
 
@@ -298,7 +319,9 @@ The cleanup is operationally important: on the current host direct `-O3`
 compilation of the trace-oriented neutral RTL remained in six multi-gigabyte
 compiler jobs after ten minutes, whereas the cleaned model compiled in under
 ten seconds. `MAX_CYCLES` and `KIANV_XV6_OBJDIR` override the simulation limit
-and ignored Verilator object directory.
+and ignored Verilator object directory. The exact package, RTL, kernel,
+filesystem, transcript hashes, and final cycle are recorded in
+[`Evidence/KianV/xv6_boot.md`](Evidence/KianV/xv6_boot.md).
 
 The GF180 512x8 SRAM is deliberately not converted into generic gates.
 `Evidence.KianV.Gf180Sram.specification` gives its active-low masked,

@@ -75,11 +75,16 @@ clock pins used by combinational source cones.
 are the generated baseline and policy-dependent reports. Acceptance is not
 equivalence or signoff. The complete 74-module package passes trusted
 structural checking. The hash-bound compositional equivalence runner currently
-proves 71 specializations directly, records the GF180 SRAM wrapper as its exact
-external contract, and also proves the logarithm hierarchy with an explicit
-flatten fallback. The CPU, `soc`, and whole `chip_core` boundaries pass. The
-five-bank associative-cache specialization remains a bounded solver timeout
-without a counterexample, so full conversion is not yet closed. Import lowering
+proves all 73 Loom-logic specializations and records the GF180 SRAM wrapper as
+the sole exact external contract. The logarithm hierarchy uses an explicit
+flatten fallback; the other 72 proofs are compositional. The CPU, `soc`, and
+whole `chip_core` boundaries pass. Four memory-bearing modules use exact packed
+state relations plus zero-refinement base and one-step unbounded temporal
+induction. The formerly open five-bank associative cache passes all 160 word
+relations (2,016 state bits), so bottom-up conversion equivalence is closed.
+[`Evidence/KianV/equivalence.md`](Evidence/KianV/equivalence.md) and JSON bind
+the 74/74 result to the exact elaboration, package, emitted RTL, and GF180 SRAM
+contract. Import lowering
 memoizes the complete neutral expression-root batch, validates reads on that
 compact source DAG, and uses an iterative postorder executable traversal so
 deep generated cones do not retain recursive dependent-monad continuations.
@@ -94,7 +99,7 @@ boots the pinned KianV xv6 image through the existing pin-level
 SDRAM/SPI/UART Verilator harness and reaches its shell at 222,410,634 clocks,
 exactly matching the upstream run. `scripts/boot_kianv_xv6.sh` reproduces the
 package, cleanup, build, and marker checks. This is end-to-end dynamic evidence,
-not a substitute for the remaining associative-cache formal obligation.
+complementing the now-complete bottom-up formal result.
 
 ### Multiclock execution-projection gate
 
