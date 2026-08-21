@@ -103,7 +103,11 @@ primitive paths and binds the result in a deterministic manifest before the
 pinned LibreLane flow may start. The handoff disables only Yosys's optional
 SAT-based resource-sharing optimization, which is pathological for the
 explicit TLB memory-read form; normal memory lowering and technology mapping
-remain enabled.
+remain enabled. The first complete physical run reached final DRC/LVS and
+exposed one SRAM-edge M3.2b site plus two marginal foundry-deck Metal2 antenna
+markers. The handoff now enables a one-GCell macro routing extension and the
+pinned heuristic diode stage at threshold 130; a clean rerun is the release
+gate.
 The separately hash-bound `SIM SYNTHESIS` elaboration of the emitted `soc`
 boots the pinned KianV xv6 image through the existing pin-level
 SDRAM/SPI/UART Verilator harness and reaches its shell at 222,410,634 clocks,

@@ -229,6 +229,13 @@ def physical_config(source: pathlib.Path, translations: dict[str, str]) -> str:
     text = source.read_text()
     if re.search(r"(?m)^SYNTH_SHARE_RESOURCES:", text):
         raise ValueError("source config unexpectedly sets SYNTH_SHARE_RESOURCES")
+    for option in (
+        "RUN_HEURISTIC_DIODE_INSERTION",
+        "HEURISTIC_ANTENNA_THRESHOLD",
+        "GRT_MACRO_EXTENSION",
+    ):
+        if re.search(rf"(?m)^{option}:", text):
+            raise ValueError(f"source config unexpectedly sets {option}")
     strategy = 'SYNTH_STRATEGY: "AREA 3"\n'
     if text.count(strategy) != 1:
         raise ValueError("expected the pinned AREA 3 synthesis strategy")
@@ -239,6 +246,22 @@ def physical_config(source: pathlib.Path, translations: dict[str, str]) -> str:
     text = text.replace(
         strategy,
         strategy + "SYNTH_SHARE_RESOURCES: false\n",
+        1,
+    )
+    antenna_marker = "DRT_ANTENNA_MARGIN: 10 # %\n"
+    if text.count(antenna_marker) != 1:
+        raise ValueError("expected the pinned detailed-route antenna margin")
+    # The first Loom route exposed two foundry-deck Metal2 antenna markers
+    # inside an SRAM-connected group that OpenROAD's LEF-level antenna check
+    # could not see. Insert diodes conservatively on long nets before route.
+    # A one-GCell macro extension also keeps detailed routes away from the
+    # fixed SRAM boundaries, where that run exposed one M3.2b spacing site.
+    text = text.replace(
+        antenna_marker,
+        antenna_marker
+        + "RUN_HEURISTIC_DIODE_INSERTION: true\n"
+        + "HEURISTIC_ANTENNA_THRESHOLD: 130\n"
+        + "GRT_MACRO_EXTENSION: 1\n",
         1,
     )
     start = text.find("VERILOG_FILES:\n")
@@ -345,6 +368,11 @@ def main() -> int:
         },
         "specialized_parameters": {"NUM_BIDIR_PADS": 54},
         "synthesis_options": {"SYNTH_SHARE_RESOURCES": False},
+        "physical_options": {
+            "RUN_HEURISTIC_DIODE_INSERTION": True,
+            "HEURISTIC_ANTENNA_THRESHOLD": 130,
+            "GRT_MACRO_EXTENSION": 1,
+        },
         "power_modules": power_modules,
         "sram_primitive": SRAM_PRIMITIVE,
         "sram_instances": len(translations),
