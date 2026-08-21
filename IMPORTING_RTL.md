@@ -332,6 +332,32 @@ wrapper runs `scripts/verify_kianv_sram_external.py` and fails on a checkout,
 size, or SHA-256 mismatch. Behavioral equivalence from those external bytes
 to the contract remains a named signoff premise rather than a kernel theorem.
 
+The fabrication-oriented handoff is generated separately from the neutral
+artifact:
+
+```sh
+scripts/prepare_kianv_physical.sh \
+  ../kianv/gf180mcu-kianv-rv32ima-sv32 build/kianv-physical
+```
+
+`kianv_physical_handoff.py` preserves safe source module and instance names,
+restores the specialized `NUM_BIDIR_PADS=54` integration parameter, replaces
+the executable SRAM contract model with the hash-bound foundry wrapper, and
+threads conditional VDD/VSS ports through every module that reaches an SRAM.
+It also translates all 21 fixed macro paths in the known-good LibreLane
+configuration. The generated config disables Yosys's optional SAT-based
+resource-sharing pass because the explicit TLB memory reads otherwise cause
+multi-million-variable sharing searches; ordinary memory lowering and mapping
+remain enabled. `verify_kianv_physical_handoff.py` then elaborates the complete
+powered `chip_top` with Yosys and requires exact agreement between the 21
+post-elaboration primitive paths and the translated floorplan. The generated
+manifest binds all neutral, foundry, integration-helper, configuration, and
+physical-output bytes.
+
+This hierarchy gate makes the result a valid input to the pinned physical
+flow; fabrication readiness still requires that complete LibreLane run and
+review of its routed STA, DRC, LVS, antenna, PDN, and manufacturability results.
+
 Do not describe KianV as converted until every required reachable module has
 an accepted import and a per-module equivalence `PASS`, hierarchy has been
 checked/emitted, and the selected downstream signoff plan has exact complete

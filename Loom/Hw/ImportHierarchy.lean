@@ -41,10 +41,11 @@ private def encodedIdentifier (name : String) : String :=
     (name.toUTF8.data.toList.map fun byte => toString byte.toNat)
 
 private def instanceName (name : String) : String :=
-  "u" ++ encodedIdentifier name
+  if identifierB name && !name.startsWith "u_loom_" then name
+  else "u" ++ encodedIdentifier name
 
-private def Package.moduleName (package : Package) (module : Module) : String :=
-  if module.name == package.top && identifierB module.name then module.name
+private def Package.moduleName (_package : Package) (module : Module) : String :=
+  if identifierB module.name && !module.name.endsWith "__loom_body" then module.name
   else encodedIdentifier module.name
 
 private def Package.bodyName (package : Package) (module : Module) : String :=

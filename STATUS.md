@@ -94,6 +94,16 @@ two-module TLB cache package now emits in 0.13 seconds at about 144 MiB peak
 RSS; the complete 74-module/150-artifact `chip_core` package emits in 0.67
 seconds at about 241 MiB peak RSS and passes an Icarus syntax/elaboration smoke
 check. Complete package emission is no longer an open gate.
+Safe, unique source module and instance identifiers are now retained in the
+emitted hierarchy, with injective encoding reserved for parameterized or
+otherwise non-portable Yosys names. The GF180 physical handoff restores the
+54-pad integration parameter, real SRAM primitive, conditional power-pin tree,
+and translated fixed placements. Its post-Yosys gate requires exactly 21 SRAM
+primitive paths and binds the result in a deterministic manifest before the
+pinned LibreLane flow may start. The handoff disables only Yosys's optional
+SAT-based resource-sharing optimization, which is pathological for the
+explicit TLB memory-read form; normal memory lowering and technology mapping
+remain enabled.
 The separately hash-bound `SIM SYNTHESIS` elaboration of the emitted `soc`
 boots the pinned KianV xv6 image through the existing pin-level
 SDRAM/SPI/UART Verilator harness and reaches its shell at 222,410,634 clocks,

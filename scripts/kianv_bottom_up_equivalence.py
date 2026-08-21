@@ -27,11 +27,14 @@ def encoded_identifier(name: str) -> str:
 
 
 def module_name(name: str, top: str) -> str:
-    return name if name == top and IDENTIFIER.fullmatch(name) else encoded_identifier(name)
+    del top
+    return (name if IDENTIFIER.fullmatch(name) and not name.endswith("__loom_body")
+            else encoded_identifier(name))
 
 
 def instance_name(name: str) -> str:
-    return "u" + encoded_identifier(name)
+    return (name if IDENTIFIER.fullmatch(name) and not name.startswith("u_loom_")
+            else "u" + encoded_identifier(name))
 
 
 def yosys_id(name: str) -> str:

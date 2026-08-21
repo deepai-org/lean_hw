@@ -16,6 +16,12 @@ assert SPEC is not None and SPEC.loader is not None
 RUNNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNNER)
 
+assert RUNNER.module_name("soc", "chip_core") == "soc"
+assert RUNNER.instance_name("u_soc") == "u_soc"
+assert RUNNER.module_name("$paramod\\cache", "chip_core").startswith("_loom_u")
+assert RUNNER.instance_name("gen_cached.icache_I").startswith("u_loom_u")
+assert RUNNER.instance_name("u_loom_body").startswith("u_loom_u")
+
 
 def module(name: str, memories: list[dict]) -> dict:
     return {
