@@ -1,0 +1,689 @@
+{
+  "schema": 1,
+  "status": "PASS",
+  "module_count": 74,
+  "proved_modules": 73,
+  "external_contracts": 1,
+  "elaborated_sha256": "9ef9c33b922374790c85dbfecd4e4a3900eece4b1433558e86dad8a6f57c8d18",
+  "package_sha256": "2a84a63d4c019b05b4ff006dec34031a696ef3892d754b9a11e3d97082703399",
+  "emitted_sha256": "1fd0f3e931e5f04ac6d5ea9f3590407af9c01cb6b1a42c491cfe9901c7616dbd",
+  "external_contract_sha256": "4afb30798e8cc1178f7fbbd506ed3229f0ffec54de2a1a3730edcec2fd60b581",
+  "proof_strategies": {
+    "equiv_simple_induct": 69,
+    "external_contract": 1,
+    "memory_relational_induction": 4
+  },
+  "proof_modes": {
+    "compositional": 72,
+    "external_contract": 1,
+    "flatten": 1
+  },
+  "results": [
+    {
+      "module": "$paramod$07648fe22cda1c5887fba6b98d56d491849e8d4b\\sdram_cfg_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 7,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$24edb32283c2798b1a9de01e5e8a5775f3de8d6d\\spi_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 13
+    },
+    {
+      "module": "$paramod$2c2a78eaab39f077d28c359da24eea1bb3ee72ca\\sysinfo_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 3,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$492cad6cc1c94f976b64f48c1b13281f93ce86b9\\associative_cache",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "memory_relational_induction",
+      "state_pairs": 160,
+      "child_instances": 1,
+      "child_ports": 7
+    },
+    {
+      "module": "$paramod$51b325c0bf7af6fa0361c6c967cd6867c5a2030e\\mt48lc16m16a2_ctrl",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 40,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$530c0f32123495a95a65ef2dee5adb9a30a708f6\\spi_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 13
+    },
+    {
+      "module": "$paramod$570b38d59ef2758ddb45cb679c2a1a19cf0ab83f\\sv32_table_walk",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 7,
+      "child_instances": 2,
+      "child_ports": 18
+    },
+    {
+      "module": "$paramod$6e553a45e44facf149505def5cdbbf99f283bb05\\lru_replacement",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "memory_relational_induction",
+      "state_pairs": 8,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_D$",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 1,
+      "child_ports": 6
+    },
+    {
+      "module": "$paramod$7478c16320694f6488495fa2a1d26fc9b2532d6c\\cache_sram_I$",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 3,
+      "child_instances": 2,
+      "child_ports": 12
+    },
+    {
+      "module": "$paramod$7639c2062dbcb83ce6fca4673452b1d6f11c5802\\dff_kianV",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$80b52c6771af61c058960d8e594f8fa1878424bc\\div_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 4,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$97c33ce1f197c7d09a6065d46e5aec5f4fa18127\\Word_Reducer",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 32,
+      "child_ports": 64
+    },
+    {
+      "module": "$paramod$9b7a6de76a656f235265b36ced3b9a85d704f591\\fifo",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "memory_relational_induction",
+      "state_pairs": 19,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$9e9c3eac67bdfcffcee59edb9321066a49ebd9bc\\gpio_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 11
+    },
+    {
+      "module": "$paramod$a16ae7440305347911693e8e0f29ccf27deb10d1\\sv32",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 13,
+      "child_instances": 3,
+      "child_ports": 39
+    },
+    {
+      "module": "$paramod$a39b4da5cbc02a0ba8e2c33f3a070905ed9e4012\\kianv_harris_mc_edition",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 3,
+      "child_ports": 156
+    },
+    {
+      "module": "$paramod$b21d8177f76650034fcf5c651716b86b29dd0174\\spi_nor_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 10
+    },
+    {
+      "module": "$paramod$e0de9e5afae9227897f68c4fd4bf06762d640101\\Bit_Reducer",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$e990c30bcd7893b07a35da62716c79724dd6c561\\dff_kianV",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod$eb5ad0419ee7e371a55381f60d86c18c54bf32dc\\uart_if",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 5,
+      "child_instances": 2,
+      "child_ports": 14
+    },
+    {
+      "module": "$paramod\\Bitmask_Isolate_Rightmost_1_Bit\\WORD_WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\Logarithm_of_Powers_of_Two\\WORD_WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "flatten",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 2
+    },
+    {
+      "module": "$paramod\\Priority_Encoder\\WORD_WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 2,
+      "child_ports": 5
+    },
+    {
+      "module": "$paramod\\cache\\BYPASS_CACHES=1'0",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 2,
+      "child_ports": 26
+    },
+    {
+      "module": "$paramod\\clint_if\\BASE_HI=8'00000010",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 12
+    },
+    {
+      "module": "$paramod\\counter\\WIDTH=s32'00000000000000000000000001000000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\datapath_unit\\RESET_ADDR=32'00100000000100000000000000000000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 32,
+      "child_ports": 184
+    },
+    {
+      "module": "$paramod\\dff_kianV\\WIDTH=s32'00000000000000000000000000000001",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\dff_kianV\\WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\dlatch_kianV\\WIDTH=s32'00000000000000000000000000000010",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\dlatch_kianV\\WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\mux2\\WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\mux4\\WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 3,
+      "child_ports": 12
+    },
+    {
+      "module": "$paramod\\mux5\\WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\mux6\\WIDTH=s32'00000000000000000000000000100000",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "$paramod\\plic_if\\BASE_HI=8'00001100",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 12
+    },
+    {
+      "module": "$paramod\\spi\\CPOL=1'0",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 9,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "alu",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "alu_decoder",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "chip_core",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 1,
+      "child_ports": 31
+    },
+    {
+      "module": "clint",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 10,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "control_unit",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 6,
+      "child_ports": 96
+    },
+    {
+      "module": "csr_decoder",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "csr_exception_handler",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 2,
+      "child_ports": 57
+    },
+    {
+      "module": "csr_unit",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 29,
+      "child_instances": 3,
+      "child_ports": 12
+    },
+    {
+      "module": "dcache",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 10,
+      "child_instances": 1,
+      "child_ports": 10
+    },
+    {
+      "module": "divider",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 11,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "divider_decoder",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "extend",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "gf180mcu_fd_ip_sram__sram512x8m8wm1_wrapper",
+      "status": "CONTRACT",
+      "state_pairs": 513,
+      "child_instances": 0,
+      "child_ports": 0,
+      "contract": "Evidence.KianV.Gf180Sram.specification",
+      "contract_sha256": "4afb30798e8cc1178f7fbbd506ed3229f0ffec54de2a1a3730edcec2fd60b581"
+    },
+    {
+      "module": "gpio",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 4,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "icache",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 3,
+      "child_instances": 1,
+      "child_ports": 10
+    },
+    {
+      "module": "interrupt_controller",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 7,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "load_alignment",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "load_decoder",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "main_fsm",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 2,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "mtime_source",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 4,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "multiplier",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 10,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "multiplier_decoder",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "multiplier_extension_decoder",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 2,
+      "child_ports": 8
+    },
+    {
+      "module": "mux2",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "plic",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 11,
+      "child_instances": 2,
+      "child_ports": 4
+    },
+    {
+      "module": "register_file",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "memory_relational_induction",
+      "state_pairs": 32,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "rx_uart",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 8,
+      "child_instances": 1,
+      "child_ports": 8
+    },
+    {
+      "module": "soc",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 5,
+      "child_instances": 15,
+      "child_ports": 192
+    },
+    {
+      "module": "spi_nor_flash",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 16,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "sram_sp_gf180_512x56",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 7,
+      "child_ports": 49
+    },
+    {
+      "module": "store_alignment",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "store_decoder",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 0,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "sv32_translate_data_to_physical",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 4,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "sv32_translate_instruction_to_physical",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 4,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "sync_2ff",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 1,
+      "child_instances": 0,
+      "child_ports": 0
+    },
+    {
+      "module": "tx_uart",
+      "status": "PASS",
+      "proof_mode": "compositional",
+      "proof_strategy": "equiv_simple_induct",
+      "state_pairs": 7,
+      "child_instances": 1,
+      "child_ports": 8
+    }
+  ]
+}

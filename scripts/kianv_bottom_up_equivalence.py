@@ -49,8 +49,10 @@ def yosys_module_id(name: str) -> str:
 def state_pairs(package: dict, root: dict, recursive: bool = False) -> list[dict]:
     modules = {module["name"]: module for module in package["modules"]}
     pairs: list[dict] = []
+    next_memory_group = 0
 
     def visit(module: dict, gold_prefix: str, revised_prefix: str) -> None:
+        nonlocal next_memory_group
         domains = module["domains"]
         for relation in module.get("register_equivalence", []):
             if len(domains) > 1:
@@ -69,8 +71,12 @@ def state_pairs(package: dict, root: dict, recursive: bool = False) -> list[dict
         if module.get("memory_equivalence") and len(domains) > 1:
             raise ValueError(f"multi-domain memory relation unsupported in {module['name']}")
         for relation in module.get("memory_equivalence", []):
+            memory_index = next_memory_group
+            next_memory_group += 1
             for address in range(relation["size"]):
                 pairs.append({"kind": "memory",
+                              "memory_index": memory_index,
+                              "address": address,
                               "gold": f"{gold_prefix}{relation['original']}[{address}]",
                               "revised": (f"{revised_prefix}u_loom_body."
                                           f"{relation['word_memory']}[{address}]"),
@@ -111,14 +117,36 @@ def add_register_relation_wires(lines: list[str], pairs: list[dict],
 
 
 def add_memory_relation_wires(lines: list[str], pairs: list[dict], side: str) -> None:
+    """Expose exact memory state in one packed wire per source memory.
+
+    A word-per-wire representation makes Yosys repeatedly walk the complete
+    module for every word and produces hundreds of independent `$equiv`
+    cells.  Packing does not abstract any state: every word occupies one
+    disjoint slice, while the proof engine receives only one correspondence
+    relation per memory.
+    """
     label = "gold" if side == "gold" else "gate"
-    for index, pair in enumerate(pairs):
-        if pair["kind"] != "memory":
-            continue
-        wire = f"__loom_state_{label}_{index}"
-        lines += [f"add -wire {wire} {pair['width']}",
-                  f"connect -nomap -set {wire} {yosys_id(pair[side])}",
-                  f"setattr -set keep 1 w:{wire}"]
+    groups: dict[int, list[dict]] = {}
+    for pair in pairs:
+        if pair["kind"] == "memory":
+            groups.setdefault(pair["memory_index"], []).append(pair)
+    for memory_index, words in groups.items():
+        words.sort(key=lambda pair: pair["address"])
+        width = sum(pair["width"] for pair in words)
+        wire = f"__loom_memory_{label}_{memory_index}"
+        lines.append(f"add -wire {wire} {width}")
+        offset = 0
+        for pair in words:
+            msb = offset + pair["width"] - 1
+            lines.append(f"connect -nomap -set {wire}[{msb}:{offset}] "
+                         f"{yosys_id(pair[side])}")
+            offset = msb + 1
+        lines.append(f"setattr -set keep 1 w:{wire}")
+
+
+def memory_group_indexes(pairs: list[dict]) -> list[int]:
+    return sorted({pair["memory_index"] for pair in pairs
+                   if pair["kind"] == "memory"})
 
 
 def stable_bit_expression(raw_module: dict, bit: object) -> str:
@@ -233,6 +261,7 @@ def script_for(elaborated: pathlib.Path, emitted: pathlib.Path,
     original = module["name"]
     revised = module_name(original, package["top"])
     pairs = state_pairs(package, module, recursive=flatten_hierarchy)
+    has_memory = bool(memory_group_indexes(pairs))
     lines = [
         f"read_json {elaborated.resolve()}",
         f"hierarchy -check -top {yosys_module_id(original)}",
@@ -244,10 +273,15 @@ def script_for(elaborated: pathlib.Path, emitted: pathlib.Path,
         lines += [f"cd {yosys_module_id(original)}"]
         add_child_harness(lines, module, raw_module, "gold")
     add_register_relation_wires(lines, pairs, "gold")
-    lines += ["cd ..", "memory", f"cd {yosys_module_id(original)}"]
-    add_memory_relation_wires(lines, pairs, "gold")
-    lines += ["cd ..", "setundef -zero", "opt_clean -purge",
-        f"rename {yosys_module_id(original)} loom_equiv_gold",
+    if has_memory:
+        lines += ["opt -full", "memory -nowiden"]
+        add_memory_relation_wires(lines, pairs, "gold")
+        lines += ["setundef -zero", "opt -full", "opt_clean -purge", "cd .."]
+    else:
+        lines += ["cd ..", "memory", f"cd {yosys_module_id(original)}"]
+        add_memory_relation_wires(lines, pairs, "gold")
+        lines += ["cd ..", "setundef -zero", "opt_clean -purge"]
+    lines += [f"rename {yosys_module_id(original)} loom_equiv_gold",
         "design -stash loom_gold_design",
         f"read_verilog {emitted.resolve()}",
         f"hierarchy -check -top {revised}",
@@ -263,25 +297,46 @@ def script_for(elaborated: pathlib.Path, emitted: pathlib.Path,
         lines += [f"flatten c:{cell}" for cell in body_cells]
         add_child_harness(lines, module, raw_module, "revised")
     add_register_relation_wires(lines, pairs, "revised")
-    lines += ["cd ..", "memory", f"cd {revised}"]
-    add_memory_relation_wires(lines, pairs, "revised")
-    lines += ["cd ..", "setundef -zero", "opt_clean -purge",
-        f"rename {revised} loom_equiv_revised",
+    if has_memory:
+        lines += ["opt -full", "memory -nowiden"]
+        add_memory_relation_wires(lines, pairs, "revised")
+        lines += ["setundef -zero", "opt -full", "opt_clean -purge", "cd .."]
+    else:
+        lines += ["cd ..", "memory", f"cd {revised}"]
+        add_memory_relation_wires(lines, pairs, "revised")
+        lines += ["cd ..", "setundef -zero", "opt_clean -purge"]
+    lines += [f"rename {revised} loom_equiv_revised",
         "design -stash loom_revised_design",
         "design -copy-from loom_gold_design -as loom_equiv_gold loom_equiv_gold",
         "design -copy-from loom_revised_design -as loom_equiv_revised loom_equiv_revised",
         "equiv_make loom_equiv_gold loom_equiv_revised loom_equiv_miter",
         "hierarchy -top loom_equiv_miter", "cd loom_equiv_miter",
     ]
-    for index in range(len(pairs)):
+    for index, pair in enumerate(pairs):
         # Optimization may remove state that is unobservable at this module
         # boundary. `-try` skips only an absent side; every surviving pair is
         # still inserted as an induction invariant and must prove.
+        if pair["kind"] != "register":
+            continue
         gold = f"__loom_state_gold_{index}_gold"
         revised_state = f"__loom_state_gate_{index}_gate"
         lines.append(f"equiv_add -try {yosys_id(gold)} {yosys_id(revised_state)}")
-    lines += ["cd ..", f"equiv_simple -seq {depth}",
-              f"equiv_induct -seq {depth}", "equiv_status -assert"]
+    for memory_index in memory_group_indexes(pairs):
+        gold = f"__loom_memory_gold_{memory_index}_gold"
+        revised_state = f"__loom_memory_gate_{memory_index}_gate"
+        lines.append(f"equiv_add -try {yosys_id(gold)} {yosys_id(revised_state)}")
+    lines.append("cd ..")
+    if memory_group_indexes(pairs):
+        # Every memory bit is present in the asserted relation, so equality is
+        # a one-step inductive invariant.  Proving it directly avoids asking
+        # equiv_simple to rediscover thousands of individual word invariants.
+        lines += ["equiv_miter -assert loom_equiv_assert",
+                  "hierarchy -top loom_equiv_assert",
+                  "sat -seq 1 -tempinduct -set-init-zero -set-def-inputs "
+                  "-prove-asserts -verify"]
+    else:
+        lines += [f"equiv_simple -seq {depth}",
+                  f"equiv_induct -seq {depth}", "equiv_status -assert"]
     return "\n".join(lines) + "\n"
 
 
@@ -291,7 +346,8 @@ def main() -> int:
     parser.add_argument("--package", type=pathlib.Path, required=True)
     parser.add_argument("--emitted", type=pathlib.Path, required=True)
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--seq", type=int, default=12)
+    parser.add_argument("--seq", type=int, default=12,
+                        help="equiv induction depth for non-memory modules (default: 12)")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--module", action="append", default=[])
     parser.add_argument("--leaves-only", action="store_true")
@@ -343,26 +399,24 @@ def main() -> int:
                             flatten_hierarchy=flatten_hierarchy)
         started = time.monotonic()
         try:
-            with tempfile.NamedTemporaryFile("w", suffix=".ys") as ys:
+            with (tempfile.NamedTemporaryFile("w", suffix=".ys") as ys,
+                  log_path.open("w", encoding="utf-8") as log):
                 ys.write(script)
                 ys.flush()
                 run = subprocess.run([args.yosys, "-Q", "-s", ys.name], text=True,
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT,
+                                     stdout=log, stderr=subprocess.STDOUT,
                                      timeout=args.timeout)
             status = "PASS" if run.returncode == 0 else "FAIL"
-            output = run.stdout
-        except subprocess.TimeoutExpired as error:
+        except subprocess.TimeoutExpired:
             status = "TIMEOUT"
-            output = error.stdout or ""
-            if isinstance(output, bytes):
-                output = output.decode(errors="replace")
-        log_path.write_text(output, encoding="utf-8")
+        module_pairs = state_pairs(package, module, recursive=flatten_hierarchy)
         result = {"module": module["name"], "status": status,
                   "seconds": round(time.monotonic() - started, 3),
-                  "state_pairs": len(state_pairs(package, module,
-                                      recursive=flatten_hierarchy)),
+                  "state_pairs": len(module_pairs),
                   "proof_mode": ("flatten" if flatten_hierarchy else "compositional"),
+                  "proof_strategy": ("memory_relational_induction"
+                                      if memory_group_indexes(module_pairs)
+                                      else "equiv_simple_induct"),
                   "child_instances": len(module["instances"]),
                   "child_ports": sum(len(instance["connections"])
                                      for instance in module["instances"]),
