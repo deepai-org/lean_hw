@@ -1,8 +1,8 @@
 # Release theorem and trusted computing base
 
-This is the authoritative inventory for the publication release. Operational
-instructions are in [`REPRODUCING.md`](REPRODUCING.md); limitations of the
-properties and platform are in [`TRUST.md`](TRUST.md).
+This is the authoritative release claim. Commands are in
+[`REPRODUCING.md`](REPRODUCING.md); current gate results are in
+[`STATUS.md`](STATUS.md).
 
 ## The theorem
 
@@ -11,32 +11,24 @@ theorem Loom.Release.Theorems.verifiedReleases :
   Nonempty Loom.Release.Theorems.VerifiedReleases
 ```
 
-`Tools/VerifiedRelease.lean` fixes one Acc8 artifact, one LNP64-µ artifact,
-and one portable two-clock `System` artifact. For each processor artifact, the
-kernel checks:
+`Tools/VerifiedRelease.lean` fixes Acc8, LNP64-µ, and one portable two-clock
+System artifact.
 
-- exact equality between `SSA.Program.renderTree`'s byte rope and a
-  theorem-bound disk byte rope;
-- `Symbolic.ModuleBehavior`, covering metadata, indexed SSA wires, register
-  next-state expressions, memory images and writes, and outputs against the
-  reference `Compile.compile` result;
-- a simulation from the processor model to the reachable part of that
-  compiled transition system; and
-- transport of every model invariant through the simulation.
+For each processor, the kernel checks:
 
-For the System artifact, the kernel checks that every island and every FIFO
-controller/storage component is an ordinary `CertifiedDesign`, every checked
-connection has the technology-neutral parametric FIFO refinement and exactly
-one selected compiler-produced binding (same-clock positive-depth FIFO or
-portable power-of-two Gray FIFO), certified schedule replay projects to the
-public System semantics, and the literal `system.v` object traversed by the
-emitter has the theorem-bound UTF-8 bytes. Its wrapper is structural wiring;
-the mechanical quality gate rejects behavioral CDC RTL in that renderer.
+- the compiler's module behavior—SSA wires, registers, memories, and outputs—
+  against `Compile.compile`;
+- simulation from the processor model to reachable compiled states;
+- transport of model invariants through that simulation; and
+- equality between the rendered byte rope and the theorem-bound bytes.
 
-The combined LNP64-µ bundle instantiates that transport for authority
-confinement, machine-wide W^X, lineage-ledger conservation, and budget
-boundedness. `Tools/ReleaseAudit.lean` checks that this declaration depends on
-exactly:
+For the System, the kernel checks certified islands and compiler-produced FIFO
+components, the parametric channel refinement, exactly one compatible binding
+per connection, schedule replay against public System semantics, and the
+literal emitted `system.v` bytes. The top wrapper is structural wiring; a
+quality gate rejects handwritten behavioral CDC logic on this path.
+
+The combined theorem's exact axiom closure is:
 
 ```text
 propext
@@ -44,69 +36,42 @@ Classical.choice
 Quot.sound
 ```
 
-The theorem does not invoke either project µVerilog boundary axiom
-(`ImplementsStandard` or `implements_standard_spec`). It stops at formal
-denotation and exact theorem-bound bytes.
+It does not invoke Loom's µVerilog adequacy boundary assumptions. The theorem
+ends at formal denotation and exact bytes.
 
-## Trusted for each extension of the claim
+## Trust added by each stronger claim
 
-The trusted set grows only when the claim is extended:
-
-1. **Lean statement:** the Lean kernel and the three standard axioms above.
-2. **The three host files:** additionally, the narrow file-association step in
-   `scripts/check_release_binding.py`. It reconstructs theorem literals in
-   declared order and invokes exact `cmp -s` for the two concrete-SSA
-   processor artifacts; the multiclock emitter writes the exact
-   `rtlArtifact` projection named by the System theorem. Hashes are not used
-   for soundness.
-3. **Verilog as interpreted by a tool:** additionally, the concrete-SSA
-   semantic adequacy assumption in
-   [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md). The current
-   corroborating tool/version is Yosys 0.33 (`2584903a060`), but the Lean
-   theorem does not depend on Yosys.
-4. **A synthesized or physical implementation:** additionally, all synthesis,
-   tool-specific conversion, technology mapping, and downstream physical-flow
-   assumptions. Loom currently supplies no post-synthesis equivalence claim.
-   Profiles and calibrations under `Evidence/` are engineering inputs to this
-   layer, not premises of generic Loom theorems.
-   Placement, routing, configuration generation, timing, and physics remain
-   downstream.
-5. **Physical CDC behavior:** additionally, physical resolution assumptions for
-   the board wrappers that use the toggle/2FF/XOR crossings. A metastable first
-   flop is modeled as resolving adversarially to either Boolean value before
-   the next sampling edge. `Loom/Hw/CdcContract.lean` proves the digital
-   protocol for every such oracle; it does not prove MTBF, aperture, routing,
-   or analog behavior. The portable multiclock digital theorem proves its Gray
-   and channel logic but does not prove those physical premises; the closed
-   single-clock release cores do not require this item.
+| Claim | Additional trusted premise |
+| --- | --- |
+| Lean declaration | Lean kernel and the three axioms above |
+| Named host RTL files | narrow file-association logic in `scripts/check_release_binding.py`; exact comparison, not hashes |
+| Verilog as interpreted by a tool | [`CONCRETE_SSA_BOUNDARY.md`](CONCRETE_SSA_BOUNDARY.md) |
+| Synthesized/netlist/physical artifact | synthesis, conversion, technology mapping, external-IP, and downstream signoff assumptions |
+| Physical CDC behavior | synchronizer/metastability resolution model, MTBF, placement, routing, clocks, reset, and timing assumptions |
 
 These are conditional layers, not one claim that every downstream artifact is
-formally verified.
+verified. Yosys is used for corroboration and RTL-import normalization; the
+release theorem does not depend on Yosys.
 
-## Not trusted for theorem acceptance
+## Not trusted for kernel acceptance
 
-The optimized `implemented_by` compiler/printer paths, witness and certificate
-generators, generated-source orchestrator, compiled evaluator, audit reporter,
-SAT solver, simulators, SHA-256, and cached `.olean` files propose data,
-schedule work, or provide corroboration. A defect may cause rejection,
-nontermination, or missed diagnostics, but cannot make the Lean kernel accept
-a declaration with an invalid proof term.
+Optimized `implemented_by` paths, certificate/witness generators, the compiled
+evaluator, audit reporter, SAT solver, simulators, SHA-256, and cached `.olean`
+files may propose data or cause rejection/nontermination. They cannot make the
+kernel accept an invalid proof term.
 
-One qualification matters: such tools can still affect claims outside the
-kernel. The file binder is explicitly trusted for associating host bytes, and
-external drivers/parsers are trusted to the extent that a user relies on
-their synthesis or hardware reports.
+They can still matter outside the theorem: the host-file binder is trusted for
+associating disk bytes, and an external report is only as reliable as its tool,
+driver, parser, configuration, and artifact identity. `lake exe audit` enforces
+repository policy for project axioms, `sorry`, `native_decide`, imports,
+`unsafe`, `implemented_by`, `partial`, and `extern`; it is a CI gate, not an
+axiom.
 
-`lake exe audit` separately enforces the repository policy for project axioms,
-`sorry`, `native_decide`, imports, unsafe declarations, `implemented_by`,
-`partial`, and `extern`. It is a reporting and CI gate, not an axiom and not a
-replacement for kernel checking.
+## Boundary
 
-## Claim boundary
-
-The release theorem concerns two-state processor models, one schedule-driven
-portable multiclock System, and their exact Verilog bytes. It does not
-establish electrical reset,
-four-state behavior outside the admitted subset, external DMA or interrupts,
-debug and SoC-fabric policy, timing closure, liveness under arbitrary platform
-stalls, power behavior, or physical side-channel resistance.
+The theorem concerns fixed two-state processor models and one schedule-driven
+portable multiclock System. It does not establish post-synthesis equivalence,
+four-state behavior outside the admitted subset, external IP or memories,
+DMA/interrupt/debug policy, liveness under arbitrary stalls, timing closure,
+electrical reset delivery, metastability/MTBF, power behavior, physical side
+channels, or silicon correctness.
